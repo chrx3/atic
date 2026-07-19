@@ -1,0 +1,266 @@
+export type RecordingStatus =
+  | "recorded"
+  | "transcribing"
+  | "transcribed"
+  | "summarizing"
+  | "summarized"
+  | "error";
+
+export interface Recording {
+  id: string;
+  title: string;
+  started_at: string;
+  duration_secs: number;
+  mic_path: string | null;
+  system_path: string | null;
+  status: RecordingStatus;
+}
+
+export interface AppConfig {
+  language: string;
+  /** Modelo Whisper para reuniones / grabaciones. */
+  whisper_model: string;
+  /** Modelo Whisper para dictado (latencia). */
+  dictation_whisper_model: string;
+  /** Motor de dictado: local | groq */
+  dictation_backend: string;
+  /** Transcribir los WAV completos automáticamente al terminar. */
+  auto_transcribe_after_recording: boolean;
+  /** Vista previa experimental durante la grabación. */
+  live_transcription: boolean;
+  /** Motor live: local | groq */
+  live_engine: string;
+  /** Modelo Whisper dedicado a live. */
+  live_whisper_model: string;
+  summary_backend: string;
+  summary_model: string;
+  summary_base_url: string;
+  mail_backend: string;
+  smtp_host: string;
+  smtp_port: number;
+  smtp_username: string;
+  smtp_from: string;
+  smtp_use_tls: boolean;
+  global_shortcut: string;
+  /** Atajo global de dictado (mic → texto → pegar). */
+  dictation_shortcut: string;
+  /** Atajo global para traer la pill al cursor. */
+  summon_pill_shortcut: string;
+  /** toggle | push_to_talk */
+  dictation_mode: string;
+  /** Nombre del micrófono. Vacío = por defecto del SO. */
+  mic_device_id: string;
+  /** Micrófono para dictado. Vacío = reutiliza el de reuniones. */
+  dictation_mic_device_id: string;
+  /** Nombre de la salida (altavoces). Vacío = por defecto del SO. */
+  output_device_id: string;
+  show_pill: boolean;
+  pill_position: [number, number] | null;
+  beep_on_start: boolean;
+  /** Pistas a grabar: both | mic | system */
+  record_tracks: string;
+  /** Pistas a transcribir: both | mic | system */
+  transcribe_tracks: string;
+  /** Prioriza solo audio del sistema (evita eco del mic con parlantes). */
+  speakers_mode: boolean;
+  /** Supresión de ruido en mic: off | low | medium | high */
+  noise_suppression: string;
+  /** Arrancar con el sistema. */
+  autostart: boolean;
+  /** Onboarding de primer uso completado. */
+  onboarding_done: boolean;
+  /** Días de conservación; 0 = para siempre. */
+  retention_days: number;
+  retention_auto_cleanup: boolean;
+  detect_meetings: boolean;
+  screenshot_shortcut: string;
+  capture_shelf_side: string;
+  capture_shelf_timeout_seconds: number;
+  capture_retention_hours: number;
+  capture_include_cursor: boolean;
+  capture_click_action: string;
+}
+
+export interface Levels {
+  mic: number;
+  system: number;
+}
+
+export interface StatusPayload {
+  active: boolean;
+  recording: Recording | null;
+}
+
+export interface MeetingDetectionPayload {
+  active: boolean;
+  provider: string | null;
+  title: string | null;
+}
+
+export type DictationPhase =
+  | "idle"
+  | "listening"
+  | "transcribing"
+  | "pasted"
+  | "error";
+
+export interface DictationStatusPayload {
+  phase: DictationPhase;
+  message: string | null;
+}
+
+export interface InputDeviceInfo {
+  id: string;
+  name: string;
+  is_default: boolean;
+  /** true si Windows/cpal no expuso configs; puede fallar al abrir. */
+  may_not_open?: boolean;
+  is_bluetooth?: boolean;
+  is_hands_free?: boolean;
+  sample_rate: number | null;
+  channels: number | null;
+}
+
+export interface AudioPreflight {
+  risk: "none" | "bluetooth_hands_free";
+  message: string | null;
+  current_mic: InputDeviceInfo | null;
+  current_output: InputDeviceInfo | null;
+  recommended_mic_id: string | null;
+  recommended_output_id: string | null;
+}
+
+export interface WavAnalysis {
+  duration_secs: number;
+  sample_rate: number;
+  channels: number;
+  rms: number;
+  peak: number;
+  silent: boolean;
+  clipped: boolean;
+}
+
+export interface AudioTestResult {
+  mic: WavAnalysis | null;
+  system: WavAnalysis | null;
+  preflight: AudioPreflight;
+}
+
+export type Speaker = "me" | "others";
+
+export interface Segment {
+  start_ms: number;
+  end_ms: number;
+  speaker: Speaker;
+  /** Nombre manual del participante. Ausente = Yo/Otros. */
+  speaker_name?: string | null;
+  text: string;
+}
+
+export interface Transcript {
+  language: string | null;
+  segments: Segment[];
+}
+
+export interface ExportResult {
+  path: string;
+  format: "md" | "docx" | "pdf";
+}
+
+export interface RetentionItem {
+  id: string;
+  title: string;
+  started_at: string;
+  bytes: number;
+}
+
+export interface RetentionPreview {
+  days: number;
+  count: number;
+  bytes: number;
+  items: RetentionItem[];
+}
+
+export interface RetentionCleanupResult {
+  deleted: number;
+  bytes_freed: number;
+  errors: string[];
+}
+
+export interface ModelStatus {
+  id: string;
+  display_name: string;
+  approx_size_bytes: number;
+  downloaded: boolean;
+}
+
+export interface DownloadProgress {
+  id: string;
+  downloaded: number;
+  total: number;
+}
+
+export interface TranscribeProgress {
+  id: string;
+  progress: number;
+}
+
+export interface Summary {
+  template: string;
+  title: string;
+  body: string;
+  subject: string | null;
+  backend: string;
+  created_at: string;
+}
+
+export interface TemplateInfo {
+  id: string;
+  label: string;
+}
+
+export interface SummaryProvider {
+  id: string;
+  display_name: string;
+  kind: string;
+  default_base_url: string;
+  default_model: string;
+  needs_api_key: boolean;
+  base_url_editable: boolean;
+  secret_kind: string | null;
+}
+
+export interface SecretsStatus {
+  providers: Record<string, boolean>;
+  has_smtp_password: boolean;
+}
+
+export interface SendMailResult {
+  backend: string;
+  message: string;
+  mailto_url: string | null;
+}
+
+export interface CaptureItem {
+  id: string;
+  path: string;
+  createdAtMs: number;
+  width: number;
+  height: number;
+}
+
+export interface OverlayCandidate {
+  hwnd: number;
+  title: string;
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+
+export interface OverlayInfo {
+  framePath: string;
+  width: number;
+  height: number;
+  candidates: OverlayCandidate[];
+}

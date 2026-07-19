@@ -1,0 +1,26 @@
+# Rust
+/target
+/target-*
+apps/desktop/src-tauri/target-*
+**/*.rs.bk
+
+# Node / frontend
+**/node_modules
+apps/desktop/build
+apps/desktop/.svelte-kit
+
+# Tauri (generado)
+apps/desktop/src-tauri/gen
+
+# Env / secrets locales
+.env
+.env.*
+!.env.example
+
+# Datos locales / logs / editor
+*.log
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+!.vscode/extensions.json

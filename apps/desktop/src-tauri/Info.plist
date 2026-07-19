@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Permisos TCC para macOS (fase 4).
+  Tauri/bundle los fusiona en el Info.plist del .app.
+  ScreenCaptureKit / system audio taps se implementan en crates/audio.
+-->
+<plist version="1.0">
+<dict>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Atic necesita el micrófono para grabar tu voz en reuniones.</string>
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>Atic necesita capturar el audio del sistema para grabar a los demás participantes de la llamada.</string>
+	<key>NSScreenCaptureUsageDescription</key>
+	<string>En macOS, la captura de audio del sistema puede requerir permiso de grabación de pantalla (ScreenCaptureKit).</string>
+</dict>
+</plist>

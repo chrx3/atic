@@ -1,0 +1,56 @@
+name: CI
+
+# whisper-rs compila whisper.cpp: requiere CMake (preinstalado en los runners
+# de GitHub) y LLVM/libclang (lo instalamos con la acción de abajo).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  rust:
+    name: Rust (fmt, clippy, test)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: KyleMayes/install-llvm-action@v2
+        with:
+          version: "18"
+      - uses: Swatinem/rust-cache@v2
+      - name: fmt
+        run: cargo fmt --all --check
+      - name: clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: test
+        run: cargo test --workspace
+
+  build:
+    name: Build app (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: KyleMayes/install-llvm-action@v2
+        with:
+          version: "18"
+      - uses: Swatinem/rust-cache@v2
+      - name: Install frontend deps
+        working-directory: apps/desktop
+        run: pnpm install --frozen-lockfile
+      - name: Build (sin firmar)
+        working-directory: apps/desktop
+        run: pnpm tauri build --no-bundle

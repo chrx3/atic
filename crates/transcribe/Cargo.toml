@@ -1,0 +1,24 @@
+[package]
+name = "atic-transcribe"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = []
+# Aceleración GPU opcional (whisper.cpp). El default es CPU.
+metal = ["whisper-rs/metal"]
+cuda = ["whisper-rs/cuda"]
+vulkan = ["whisper-rs/vulkan"]
+
+[dependencies]
+atic-core = { workspace = true }
+thiserror.workspace = true
+tracing.workspace = true
+
+whisper-rs = { version = "0.16", features = ["tracing_backend"] }
+hound = "3.5"
+symphonia = { version = "0.6", default-features = false, features = ["mp3", "isomp4", "aac", "pcm", "wav", "all-meta"] }
+reqwest = { version = "0.12", features = ["blocking", "multipart"] }
+serde = { workspace = true }
+serde_json = { workspace = true }

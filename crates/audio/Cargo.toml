@@ -1,0 +1,24 @@
+[package]
+name = "atic-audio"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+cpal = "0.15"
+hound = "3.5"
+# Pure Rust RNNoise; sin features default (CLI/hound) para no arrastrar clap.
+nnnoiseless = { version = "0.5.2", default-features = false }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.61.3", features = [
+    "Win32_Devices_FunctionDiscovery",
+    "Win32_Media_Audio",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Variant",
+    "Win32_UI_Shell_PropertiesSystem",
+] }

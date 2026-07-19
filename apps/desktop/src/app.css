@@ -1,0 +1,1011 @@
+@import "tailwindcss";
+
+/* Fondo transparente para la ventana pill. Feel de app nativa. */
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: transparent;
+  cursor: default;
+  overscroll-behavior: none;
+}
+
+button,
+select,
+label,
+[role="button"] {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+button,
+[role="button"] {
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+input,
+textarea,
+[contenteditable="true"] {
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: text;
+}
+
+:root {
+  color-scheme: light;
+  --rb-font: "Aptos", "Avenir Next", "Helvetica Neue", "Segoe UI Variable", sans-serif;
+  --rb-display: "Avenir Next", "Aptos Display", "Helvetica Neue", sans-serif;
+  --rb-mono: "Cascadia Mono", "SFMono-Regular", "Roboto Mono", monospace;
+
+  --rb-bg0: #efefeb;
+  --rb-bg1: #e7e7e1;
+  --rb-surface: #fbfbf8;
+  --rb-surface-2: #f3f3ef;
+  --rb-surface-elevated: #ffffff;
+  --rb-sidebar: #e7e7e1;
+  --rb-panel: #f3f3ef;
+  --rb-border: rgba(24, 24, 22, 0.1);
+  --rb-border-strong: rgba(24, 24, 22, 0.19);
+  --rb-text: #1a1a18;
+  --rb-muted: #666660;
+  --rb-faint: #96968e;
+
+  --rb-record: #e5483f;
+  --rb-record-soft: #f9e7e4;
+  --rb-mic: #3f7355;
+  --rb-sys: #55728b;
+  --rb-accent: #1d1d1b;
+  --rb-accent-soft: #e7e7e2;
+  --rb-warn: #946718;
+  --rb-warn-soft: #f6efdd;
+  --rb-ok: #3f7355;
+  --rb-ok-soft: #e6eee8;
+  --rb-info: #526d83;
+  --rb-info-soft: #e6ecef;
+
+  --rb-radius: 14px;
+  --rb-radius-sm: 8px;
+  --rb-radius-xs: 5px;
+  --rb-shadow: 0 24px 70px rgba(34, 34, 29, 0.12);
+  --rb-backdrop: rgba(30, 30, 27, 0.34);
+  --rb-focus: 0 0 0 3px rgba(229, 72, 63, 0.16), 0 0 0 1px var(--rb-record);
+  --rb-scrollbar-thumb: color-mix(in srgb, var(--rb-text) 24%, transparent);
+  --rb-scrollbar-thumb-hover: color-mix(in srgb, var(--rb-text) 38%, transparent);
+
+  font-family: var(--rb-font);
+  font-optical-sizing: auto;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Scrollbars sobrios y consistentes en WebView2, Chromium y Firefox. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--rb-scrollbar-thumb) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track,
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  min-width: 2.25rem;
+  min-height: 2.25rem;
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background: var(--rb-scrollbar-thumb);
+  background-clip: padding-box;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--rb-scrollbar-thumb-hover);
+  background-clip: padding-box;
+}
+
+/* —— Shell —— */
+.rb-app {
+  position: relative;
+  min-height: 100%;
+  overflow: auto;
+  color: var(--rb-text);
+  background: var(--rb-bg0);
+}
+
+.rb-app::before {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32'%3E%3Ccircle cx='1' cy='1' r='.65' fill='%231a1a18' fill-opacity='.10'/%3E%3C/svg%3E");
+  content: "";
+  opacity: 0.45;
+}
+
+.rb-app > * {
+  position: relative;
+  z-index: 1;
+}
+
+.rb-skip-link {
+  position: fixed;
+  z-index: 110;
+  top: 0.5rem;
+  left: 0.5rem;
+  padding: 0.55rem 0.75rem;
+  border-radius: var(--rb-radius-sm);
+  color: #fbfbf8;
+  background: var(--rb-accent);
+  font-size: 0.8125rem;
+  font-weight: 650;
+  transform: translateY(calc(-100% - 1rem));
+  transition: transform 0.16s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.rb-skip-link:focus-visible {
+  outline: none;
+  box-shadow: var(--rb-focus);
+  transform: translateY(0);
+}
+
+.rb-display {
+  font-family: var(--rb-display);
+  letter-spacing: -0.015em;
+}
+
+/* —— Surfaces —— */
+.rb-surface {
+  background: var(--rb-surface);
+  border: 0;
+  border-radius: var(--rb-radius);
+}
+
+.rb-surface-soft {
+  background: var(--rb-surface-2);
+  border: none;
+  border-radius: var(--rb-radius-sm);
+}
+
+/* —— Buttons —— */
+.rb-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  min-height: 2.25rem;
+  border: 0;
+  border-radius: var(--rb-radius-sm);
+  padding: 0.4rem 0.75rem;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  line-height: 1.2;
+  transition:
+    background 0.15s ease,
+    color 0.15s ease,
+    transform 0.12s ease,
+    opacity 0.15s ease;
+}
+.rb-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.rb-btn:not(:disabled):active {
+  transform: scale(0.98);
+}
+.rb-btn:focus-visible,
+.rb-icon-btn:focus-visible,
+.rb-hotkey:focus-visible,
+.rb-track-btn:focus-visible,
+.rb-seg:focus-visible,
+.rb-player-toggle:focus-visible,
+.rb-player-range:focus-visible {
+  outline: none;
+  box-shadow: var(--rb-focus);
+}
+
+.rb-btn-ghost {
+  color: var(--rb-muted);
+  background: transparent;
+  border: 0;
+}
+.rb-btn-ghost:hover:not(:disabled) {
+  color: var(--rb-text);
+  background: color-mix(in srgb, var(--rb-text) 6%, transparent);
+}
+
+.rb-btn-soft {
+  color: var(--rb-text);
+  background: color-mix(in srgb, var(--rb-text) 6%, transparent);
+  border: 0;
+}
+.rb-btn-soft:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--rb-text) 10%, transparent);
+}
+
+.rb-btn-primary {
+  color: #fbfbf8;
+  background: var(--rb-accent);
+  border: 0;
+  box-shadow: none;
+}
+.rb-btn-primary:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
+.rb-btn-accent {
+  color: #fbfbf8;
+  background: var(--rb-accent);
+  border: 0;
+}
+.rb-btn-accent:hover:not(:disabled) {
+  filter: brightness(1.05);
+}
+
+.rb-btn-danger {
+  color: var(--rb-record);
+  background: transparent;
+  border: 0;
+}
+.rb-btn-danger-solid {
+  color: #fff;
+  background: var(--rb-record);
+  border: 0;
+}
+.rb-btn-danger-solid:hover:not(:disabled) {
+  filter: brightness(1.06);
+}
+.rb-btn-danger:hover:not(:disabled) {
+  background: var(--rb-record-soft);
+}
+
+.rb-btn-mic {
+  color: #0a2e1a;
+  background: color-mix(in srgb, var(--rb-mic) 22%, transparent);
+  border: 0;
+}
+.rb-btn-sys {
+  color: #0a2740;
+  background: color-mix(in srgb, var(--rb-sys) 22%, transparent);
+  border: 0;
+}
+@media (prefers-color-scheme: dark) {
+  .rb-btn-mic {
+    color: #b8f0cc;
+  }
+  .rb-btn-sys {
+    color: #b8ddf5;
+  }
+}
+
+/* —— Track play/pause (recording list) —— */
+.rb-track-btn {
+  gap: 0.35rem;
+  color: var(--rb-muted);
+  background: color-mix(in srgb, var(--rb-text) 6%, transparent);
+  border: 1px solid transparent;
+  font-size: 0.75rem;
+  padding: 0.35rem 0.7rem;
+}
+.rb-track-btn:hover:not(:disabled) {
+  color: var(--rb-text);
+  background: color-mix(in srgb, var(--rb-text) 10%, transparent);
+}
+.rb-track-btn.is-active {
+  color: var(--rb-text);
+  background: color-mix(in srgb, var(--rb-accent) 18%, transparent);
+}
+.rb-track-btn.is-paused {
+  color: var(--rb-text);
+  background: color-mix(in srgb, var(--rb-text) 10%, transparent);
+}
+
+.rb-track-glyph {
+  display: inline-flex;
+  width: 0.65rem;
+  height: 0.65rem;
+  align-items: center;
+  justify-content: center;
+}
+.rb-track-play {
+  width: 0;
+  height: 0;
+  margin-left: 1px;
+  border-style: solid;
+  border-width: 3.5px 0 3.5px 5.5px;
+  border-color: transparent transparent transparent currentColor;
+}
+.rb-track-pause {
+  display: block;
+  width: 7px;
+  height: 8px;
+  background:
+    linear-gradient(currentColor, currentColor) left / 2px 100% no-repeat,
+    linear-gradient(currentColor, currentColor) right / 2px 100% no-repeat;
+}
+
+/* —— Form —— */
+.rb-label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--rb-muted);
+}
+
+.rb-field {
+  width: 100%;
+  border-radius: var(--rb-radius-sm);
+  border: 0;
+  background: var(--rb-surface-2);
+  color: var(--rb-text);
+  padding: 0.55rem 0.75rem;
+  font-size: 0.875rem;
+  font-family: inherit;
+  outline: none;
+  transition:
+    background 0.15s ease,
+    box-shadow 0.15s ease;
+}
+.rb-field:focus {
+  outline: none;
+  box-shadow: var(--rb-focus);
+}
+.rb-field:disabled {
+  opacity: 0.55;
+}
+
+.rb-settings-block {
+  padding: 0.9rem 1rem;
+  border-radius: var(--rb-radius-sm);
+  background: color-mix(in srgb, var(--rb-text) 4.5%, transparent);
+}
+.rb-settings-block + .rb-settings-block {
+  margin-top: 0.65rem;
+}
+
+.rb-settings-layout {
+  display: flex;
+  min-height: min(62vh, 520px);
+  flex: 1;
+}
+.rb-settings-sidebar {
+  display: flex;
+  width: 10.5rem;
+  flex: 0 0 auto;
+  flex-direction: column;
+  gap: 0.15rem;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 0.65rem 0.5rem;
+  background: var(--rb-sidebar);
+}
+.rb-settings-nav-item {
+  display: block;
+  width: 100%;
+  min-height: 2.25rem;
+  border: none;
+  border-radius: var(--rb-radius-xs);
+  padding: 0.5rem 0.65rem;
+  color: var(--rb-muted);
+  background: transparent;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  line-height: 1.35;
+  text-align: left;
+  transition:
+    color 0.12s ease,
+    background 0.12s ease;
+}
+.rb-settings-nav-item:hover {
+  color: var(--rb-text);
+  background: color-mix(in srgb, var(--rb-text) 5%, transparent);
+}
+.rb-settings-nav-item.active {
+  color: var(--rb-text);
+  background: color-mix(in srgb, var(--rb-text) 8%, transparent);
+}
+.rb-settings-content {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--rb-panel);
+}
+.rb-settings-panel {
+  flex: 1;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 1rem 1.125rem 1.25rem;
+}
+.rb-settings-panel-title {
+  margin-bottom: 0.85rem;
+  color: var(--rb-text);
+  font-size: 0.875rem;
+  font-weight: 600;
+  line-height: 1.35;
+}
+.rb-settings-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+.rb-settings-group + .rb-settings-group {
+  margin-top: 1.15rem;
+  padding-top: 1.15rem;
+}
+
+.rb-settings-two-col {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.rb-modal:has(.rb-settings-layout) {
+  max-height: min(88vh, 720px);
+  border: none;
+}
+.rb-modal:has(.rb-settings-layout) .rb-modal-header {
+  padding-bottom: 0.65rem;
+  background: var(--rb-surface);
+}
+.rb-modal:has(.rb-settings-layout) .rb-modal-body {
+  display: flex;
+  overflow: hidden;
+  padding: 0;
+}
+.rb-modal:has(.rb-settings-layout) .rb-modal-footer {
+  border-top: none;
+  background: var(--rb-surface-elevated);
+}
+
+@media (max-width: 52rem) {
+  .rb-settings-layout {
+    flex-direction: column;
+    min-height: 0;
+  }
+  .rb-settings-sidebar {
+    width: 100%;
+    flex-direction: row;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding: 0.5rem 0.65rem;
+  }
+  .rb-settings-nav-item {
+    width: auto;
+    flex: 0 0 auto;
+    white-space: nowrap;
+  }
+  .rb-settings-panel {
+    padding: 0.85rem 0.9rem 1rem;
+  }
+}
+
+.rb-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.65rem;
+  font-size: 0.875rem;
+  color: var(--rb-text);
+  line-height: 1.35;
+}
+.rb-check input {
+  margin-top: 0.2rem;
+}
+.rb-check input[type="checkbox"] {
+  position: relative;
+  width: 2rem;
+  height: 1.125rem;
+  flex: 0 0 auto;
+  appearance: none;
+  border: 0;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--rb-text) 10%, transparent);
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease;
+}
+.rb-check input[type="checkbox"]::before {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 0.75rem;
+  height: 0.75rem;
+  border-radius: 999px;
+  background: var(--rb-muted);
+  content: "";
+  transition:
+    transform 0.15s ease,
+    background 0.15s ease;
+}
+.rb-check input[type="checkbox"]:checked {
+  border-color: var(--rb-accent);
+  background: var(--rb-accent);
+}
+.rb-check input[type="checkbox"]:checked::before {
+  background: #fbfbf8;
+  transform: translateX(0.875rem);
+}
+.rb-check input[type="checkbox"]:focus-visible {
+  outline: none;
+  box-shadow: var(--rb-focus);
+}
+
+.rb-section-title {
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--rb-muted);
+}
+
+.rb-text-muted {
+  color: var(--rb-muted);
+}
+.rb-text-faint {
+  color: var(--rb-faint);
+}
+.rb-text-mic {
+  color: var(--rb-mic);
+}
+.rb-text-system {
+  color: var(--rb-sys);
+}
+.rb-select-text {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.rb-hint {
+  font-size: 0.75rem;
+  line-height: 1.45;
+  color: var(--rb-muted);
+}
+
+/* —— KBD —— */
+.rb-kbd {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.6875rem;
+  color: var(--rb-muted);
+}
+.rb-kbd kbd {
+  display: inline-block;
+  min-width: 1.35rem;
+  padding: 0.15rem 0.4rem;
+  border-radius: 6px;
+  border: none;
+  background: var(--rb-surface-2);
+  font-family: var(--rb-font);
+  font-size: 0.6875rem;
+  font-weight: 500;
+  color: var(--rb-text);
+  text-align: center;
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.2);
+}
+
+/* —— Levels (legacy thin bars) —— */
+.rb-level-track {
+  height: 0.4rem;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--rb-text) 8%, transparent);
+}
+.rb-level-fill {
+  height: 100%;
+  border-radius: 999px;
+}
+.rb-level-mic {
+  background: linear-gradient(90deg, #2aa85a, var(--rb-mic));
+}
+.rb-level-sys {
+  background: linear-gradient(90deg, #3a8fc4, var(--rb-sys));
+}
+
+/* —— Waveforms —— */
+.rb-wave {
+  display: flex;
+  align-items: center;
+  gap: 1.5px;
+  height: 1.1rem;
+  min-width: 3.25rem;
+  flex: 1;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.rb-wave-bar {
+  flex: 1;
+  min-width: 2px;
+  max-width: 4px;
+  border-radius: 999px;
+  transform-origin: center;
+  pointer-events: none;
+}
+.rb-wave-mic .rb-wave-bar,
+.rb-wave-bar-mic {
+  background: linear-gradient(
+    180deg,
+    #6dff9a 0%,
+    var(--rb-mic) 45%,
+    var(--rb-mic) 55%,
+    #6dff9a 100%
+  );
+}
+.rb-wave-sys .rb-wave-bar,
+.rb-wave-bar-sys {
+  background: linear-gradient(
+    180deg,
+    #7ec8ff 0%,
+    var(--rb-sys) 45%,
+    var(--rb-sys) 55%,
+    #7ec8ff 100%
+  );
+}
+.rb-wave-mixed {
+  min-width: 4.5rem;
+  gap: 1px;
+}
+
+.rb-wave-quiet {
+  min-width: 2.75rem;
+  gap: 1.5px;
+  height: 0.9rem;
+  flex: 0 0 auto;
+  width: 2.75rem;
+}
+
+.rb-wave-bar-quiet {
+  background: color-mix(in srgb, var(--rb-text) 45%, transparent);
+  opacity: 0.85;
+}
+
+/* —— Hotkey capture —— */
+.rb-hotkey {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.55rem;
+  border-radius: 999px;
+  border: none;
+  background: color-mix(in srgb, var(--rb-bg0) 45%, var(--rb-surface));
+  padding: 0.45rem 0.85rem;
+  cursor: pointer;
+  transition:
+    box-shadow 0.15s ease,
+    background 0.15s ease;
+}
+.rb-hotkey:hover {
+  background: color-mix(in srgb, var(--rb-text) 8%, var(--rb-surface));
+}
+.rb-hotkey.is-capturing {
+  box-shadow: 0 0 0 2px var(--rb-record);
+  background: var(--rb-record-soft);
+}
+.rb-hotkey.is-compact {
+  gap: 0.35rem;
+  padding: 0.2rem 0.45rem;
+}
+.rb-hotkey.is-compact .rb-kbd kbd {
+  min-width: 1.15rem;
+  padding: 0.1rem 0.3rem;
+  font-size: 0.625rem;
+}
+.rb-hotkey-pulse {
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--rb-record);
+  animation: rb-status-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes rb-status-pulse {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+/* —— Status chip —— */
+.rb-chip {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 0.15rem 0.55rem;
+  font-size: 0.6875rem;
+  font-weight: 500;
+  background: color-mix(in srgb, var(--rb-text) 8%, transparent);
+  color: var(--rb-muted);
+}
+.rb-chip-ok {
+  background: color-mix(in srgb, var(--rb-ok) 12%, transparent);
+  color: color-mix(in srgb, var(--rb-ok) 82%, var(--rb-text));
+}
+.rb-chip-warn {
+  background: color-mix(in srgb, var(--rb-warn) 11%, transparent);
+  color: color-mix(in srgb, var(--rb-warn) 78%, var(--rb-text));
+}
+.rb-chip-rec {
+  background: var(--rb-record-soft);
+  color: var(--rb-record);
+}
+
+/* —— Modal —— */
+.rb-dialog {
+  align-items: center;
+  justify-content: center;
+  width: 100vw;
+  max-width: none;
+  height: 100vh;
+  max-height: none;
+  margin: 0;
+  padding: clamp(0.75rem, 3vw, 1.5rem);
+  overflow: hidden;
+  border: 0;
+  background: transparent;
+  color: var(--rb-text);
+}
+.rb-dialog[open] {
+  display: flex;
+}
+.rb-dialog:not([open]) {
+  display: none;
+}
+.rb-dialog::backdrop {
+  background: var(--rb-backdrop);
+}
+
+.rb-modal {
+  position: relative;
+  display: flex;
+  max-height: min(88vh, 760px);
+  width: min(100%, 42rem);
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: var(--rb-radius);
+  border: 0;
+  background: var(--rb-surface);
+  box-shadow: var(--rb-shadow);
+  color: var(--rb-text);
+}
+.rb-modal-sm {
+  width: min(100%, 24rem);
+}
+.rb-modal-md {
+  width: min(100%, 34rem);
+}
+.rb-modal-lg {
+  width: min(100%, 46rem);
+}
+.rb-modal-xl {
+  width: min(100%, 60rem);
+}
+
+.rb-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  border-bottom: none;
+  padding: 1rem 1.125rem 0.75rem;
+}
+.rb-modal-title {
+  overflow: hidden;
+  color: var(--rb-text);
+  font-size: 1rem;
+  font-weight: 600;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rb-modal-subtitle {
+  margin-top: 0.15rem;
+  overflow: hidden;
+  color: var(--rb-muted);
+  font-size: 0.75rem;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rb-icon-btn {
+  display: inline-flex;
+  width: 2rem;
+  height: 2rem;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--rb-radius-sm);
+  color: var(--rb-muted);
+  background: transparent;
+  font-size: 1.25rem;
+  line-height: 1;
+}
+.rb-icon-btn:hover {
+  color: var(--rb-text);
+  background: color-mix(in srgb, var(--rb-text) 7%, transparent);
+}
+
+.rb-modal-body {
+  flex: 1;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 0.5rem 1.125rem 1.125rem;
+}
+
+.rb-modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  border-top: 0;
+  background: color-mix(in srgb, var(--rb-text) 2.5%, var(--rb-surface));
+  padding: 0.75rem 1.125rem;
+}
+
+/* —— Banners —— */
+.rb-banner {
+  border-radius: var(--rb-radius);
+  border: none;
+  padding: 1rem 1.15rem;
+  font-size: 0.875rem;
+}
+.rb-banner-warn {
+  background: var(--rb-warn-soft);
+}
+.rb-banner-info {
+  background: var(--rb-info-soft);
+}
+
+/* —— Empty —— */
+.rb-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  border-radius: var(--rb-radius);
+  background: color-mix(in srgb, var(--rb-surface) 70%, transparent);
+  border: none;
+  padding: 2.75rem 1.5rem;
+  text-align: center;
+  color: var(--rb-muted);
+}
+
+/* —— Record button —— */
+.rb-rec-btn {
+  display: flex;
+  height: 3.5rem;
+  width: 3.5rem;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  color: #fff;
+  background: var(--rb-record);
+  box-shadow: 0 6px 14px rgba(226, 85, 74, 0.24);
+  transition:
+    transform 0.15s ease,
+    filter 0.15s ease,
+    box-shadow 0.2s ease;
+}
+.rb-rec-btn:hover:not(:disabled) {
+  filter: brightness(1.05);
+  transform: scale(1.02);
+}
+.rb-rec-btn:disabled {
+  opacity: 0.5;
+}
+.rb-rec-btn.is-live {
+  box-shadow: 0 0 0 3px var(--rb-record-soft);
+}
+
+@keyframes rb-fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.rb-fade-in {
+  animation: rb-fade-up 0.35s ease both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+@media (max-width: 760px) {
+  .rb-dialog {
+    padding: 0.75rem;
+  }
+  .rb-modal {
+    max-height: calc(100dvh - 1.5rem);
+  }
+}
+
+@media (max-width: 36rem) {
+  .rb-dialog {
+    padding: 0;
+  }
+
+  .rb-modal,
+  .rb-modal-sm,
+  .rb-modal-md,
+  .rb-modal-lg,
+  .rb-modal-xl {
+    width: 100vw;
+    max-height: 100dvh;
+    min-height: 100dvh;
+    border-radius: 0;
+  }
+
+  .rb-modal-header {
+    padding: 0.875rem 1rem 0.65rem;
+  }
+
+  .rb-modal-body {
+    padding: 0.5rem 1rem 1rem;
+  }
+
+  .rb-modal-footer {
+    flex-wrap: wrap;
+    padding: 0.75rem 1rem max(0.75rem, env(safe-area-inset-bottom));
+  }
+
+  .rb-btn,
+  .rb-icon-btn,
+  .rb-settings-nav-item {
+    min-height: 2.75rem;
+  }
+
+  .rb-field {
+    min-height: 2.75rem;
+    font-size: 1rem;
+  }
+
+  .rb-settings-sidebar {
+    scroll-padding-inline: 0.75rem;
+  }
+
+  .rb-settings-panel {
+    padding-inline: 1rem;
+  }
+
+  .rb-settings-block {
+    padding: 0.875rem;
+  }
+
+  .rb-settings-panel .text-xs,
+  .rb-settings-panel .rb-hint,
+  .rb-modal-body .rb-hint {
+    font-size: 0.8125rem;
+  }
+
+  .rb-settings-two-col {
+    grid-template-columns: 1fr;
+  }
+
+  .rb-modal-footer > .rb-btn {
+    flex: 1 1 8rem;
+  }
+}

@@ -1,0 +1,43 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/core",
+    "crates/audio",
+    "crates/capture",
+    "crates/transcribe",
+    "crates/summarize",
+    "crates/mailer",
+    "apps/desktop/src-tauri",
+]
+
+[workspace.package]
+version = "0.2.0"
+edition = "2021"
+license = "MIT"
+authors = ["CIAT"]
+repository = "https://github.com/ciat/atic"
+
+[workspace.dependencies]
+# Crates internos
+atic-core = { path = "crates/core" }
+atic-audio = { path = "crates/audio" }
+atic-capture = { path = "crates/capture" }
+atic-transcribe = { path = "crates/transcribe" }
+atic-summarize = { path = "crates/summarize" }
+atic-mailer = { path = "crates/mailer" }
+
+# Compartidas
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+anyhow = "1"
+chrono = { version = "0.4", features = ["serde", "clock"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[profile.dev]
+# La captura de audio y whisper son sensibles al rendimiento incluso en debug.
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3

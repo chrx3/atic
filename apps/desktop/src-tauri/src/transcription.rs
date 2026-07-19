@@ -1,0 +1,412 @@
+//! Comandos y eventos de transcripción (gestión de modelos + Whisper local).
+
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
+use std::sync::Arc;
+
+use serde::Serialize;
+use tauri::{AppHandle, Emitter, Manager, State};
+
+use atic_core::{RecordingStatus, Speaker, Transcript};
+use atic_transcribe::{self as transcribe, TrackInput};
+
+use crate::state::AppState;
+
+#[derive(Clone, Serialize)]
+pub struct ModelStatus {
+    pub id: String,
+    pub display_name: String,
+    pub approx_size_bytes: u64,
+    pub downloaded: bool,
+}
+
+#[derive(Clone, Serialize)]
+struct DownloadProgress {
+    id: String,
+    downloaded: u64,
+    total: u64,
+}
+
+#[derive(Clone, Serialize)]
+struct IdPayload {
+    id: String,
+}
+
+#[derive(Clone, Serialize)]
+struct ErrorIdPayload {
+    id: String,
+    message: String,
+}
+
+#[derive(Clone, Serialize)]
+struct TranscribeProgress {
+    id: String,
+    progress: f32,
+}
+
+/// Lista el catálogo de modelos con su estado de descarga.
+#[tauri::command]
+pub fn list_models(state: State<AppState>) -> Vec<ModelStatus> {
+    let dir = state.dirs.models_dir();
+    transcribe::CATALOG
+        .iter()
+        .map(|m| ModelStatus {
+            id: m.id.to_string(),
+            display_name: m.display_name.to_string(),
+            approx_size_bytes: m.approx_size_bytes,
+            downloaded: transcribe::models::is_downloaded(&dir, m),
+        })
+        .collect()
+}
+
+/// ¿Hay lo necesario para transcribir reuniones y dictar?
+#[tauri::command]
+pub fn current_model_ready(state: State<AppState>) -> bool {
+    let cfg = state.config.lock().unwrap().clone();
+    let dir = state.dirs.models_dir();
+    let meeting_ok = transcribe::models::require_downloaded(&dir, &cfg.whisper_model).is_ok();
+    // Groq: key del llavero; no bloquea el arranque.
+    let dictation_ok = if cfg.dictation_backend == "groq" {
+        true
+    } else {
+        transcribe::models::require_downloaded(&dir, &cfg.dictation_whisper_model).is_ok()
+    };
+    let live_ok = if !cfg.live_transcription {
+        true
+    } else if cfg.live_engine == "groq" {
+        let has_groq_key = atic_core::secrets::get_secret(atic_core::SecretKind::GroqApiKey)
+            .ok()
+            .flatten()
+            .is_some_and(|k| !k.trim().is_empty());
+        has_groq_key
+            || transcribe::models::require_downloaded(&dir, &cfg.live_whisper_model).is_ok()
+    } else {
+        transcribe::models::require_downloaded(&dir, &cfg.live_whisper_model).is_ok()
+    };
+    meeting_ok && dictation_ok && live_ok
+}
+
+/// Descarga un modelo en segundo plano, emitiendo progreso.
+#[tauri::command]
+pub fn download_model(app: AppHandle, id: String) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let info = *transcribe::models::find(&id).ok_or_else(|| format!("Modelo desconocido: {id}"))?;
+    let models_dir = state.dirs.models_dir();
+
+    if transcribe::models::is_downloaded(&models_dir, &info) {
+        let _ = app.emit("model-download-done", IdPayload { id });
+        return Ok(());
+    }
+
+    let app2 = app.clone();
+    std::thread::spawn(move || {
+        let last = AtomicU64::new(0);
+        let result = transcribe::models::download(&models_dir, &info, |downloaded, total| {
+            let prev = last.load(Ordering::Relaxed);
+            // Throttle: emitir cada ~2 MB o al terminar.
+            if downloaded.saturating_sub(prev) >= 2_000_000 || downloaded == total {
+                last.store(downloaded, Ordering::Relaxed);
+                let _ = app2.emit(
+                    "model-download-progress",
+                    DownloadProgress {
+                        id: info.id.to_string(),
+                        downloaded,
+                        total,
+                    },
+                );
+            }
+        });
+        match result {
+            Ok(()) => {
+                let _ = app2.emit(
+                    "model-download-done",
+                    IdPayload {
+                        id: info.id.to_string(),
+                    },
+                );
+                // Si es un modelo activo (reuniones o dictado), precargarlo.
+                let state = app2.state::<AppState>();
+                let cfg = state.config.lock().unwrap().clone();
+                if cfg.whisper_model == info.id
+                    || cfg.dictation_whisper_model == info.id
+                    || cfg.live_whisper_model == info.id
+                {
+                    crate::state::preload_whisper_async(&app2);
+                }
+            }
+            Err(err) => {
+                let _ = app2.emit(
+                    "model-download-error",
+                    ErrorIdPayload {
+                        id: info.id.to_string(),
+                        message: err.to_string(),
+                    },
+                );
+            }
+        }
+    });
+    Ok(())
+}
+
+/// Transcribe una grabación en segundo plano.
+#[tauri::command]
+pub fn transcribe_recording(app: AppHandle, id: String) -> Result<(), String> {
+    let state = app.state::<AppState>();
+
+    let rec = state
+        .db
+        .lock()
+        .unwrap()
+        .get_recording(&id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "Grabación no encontrada.".to_string())?;
+
+    let cfg = state.config.lock().unwrap().clone();
+    let model_path =
+        transcribe::models::require_downloaded(&state.dirs.models_dir(), &cfg.whisper_model)
+            .map_err(|e| e.to_string())?;
+
+    let want = cfg.effective_transcribe_tracks();
+    let want_mic = want == "both" || want == "mic";
+    let want_system = want == "both" || want == "system";
+
+    let dir = state.dirs.recording_dir(&id);
+    let transcript_path = state.dirs.transcript_path(&id);
+    let mic = if want_mic {
+        rec.mic_path.as_ref().map(|_| dir.join("mic.wav"))
+    } else {
+        None
+    };
+    let system = if want_system {
+        rec.system_path.as_ref().map(|_| dir.join("system.wav"))
+    } else {
+        None
+    };
+
+    if mic.is_none() && system.is_none() {
+        return Err(
+            "No hay pistas para transcribir con la configuración actual (yo / otros).".into(),
+        );
+    }
+
+    let language = if cfg.language == "auto" {
+        None
+    } else {
+        Some(cfg.language.clone())
+    };
+
+    state
+        .db
+        .lock()
+        .unwrap()
+        .update_status(&id, RecordingStatus::Transcribing)
+        .map_err(|e| e.to_string())?;
+    let _ = app.emit("recordings-changed", ());
+
+    let app2 = app.clone();
+    std::thread::spawn(move || {
+        run_transcription(app2, id, model_path, mic, system, language, transcript_path);
+    });
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_transcription(
+    app: AppHandle,
+    id: String,
+    model_path: PathBuf,
+    mic: Option<PathBuf>,
+    system: Option<PathBuf>,
+    language: Option<String>,
+    transcript_path: PathBuf,
+) {
+    let mut tracks = Vec::new();
+    if let Some(p) = &mic {
+        tracks.push(TrackInput {
+            wav: p,
+            speaker: Speaker::Me,
+        });
+    }
+    if let Some(p) = &system {
+        tracks.push(TrackInput {
+            wav: p,
+            speaker: Speaker::Others,
+        });
+    }
+
+    let state = app.state::<AppState>();
+    let loaded = match crate::state::get_or_load_whisper(&state, &model_path) {
+        Ok(m) => m,
+        Err(message) => {
+            let _ = state
+                .db
+                .lock()
+                .unwrap()
+                .update_status(&id, RecordingStatus::Error);
+            let _ = app.emit(
+                "transcribe-error",
+                ErrorIdPayload {
+                    id: id.clone(),
+                    message,
+                },
+            );
+            let _ = app.emit("recordings-changed", ());
+            return;
+        }
+    };
+
+    let last = Arc::new(AtomicI32::new(-1));
+    let app_prog = app.clone();
+    let id_prog = id.clone();
+    let result = transcribe::transcribe_with_model(
+        &loaded.model,
+        &tracks,
+        language.as_deref(),
+        transcribe::TranscribeMode::Meeting,
+        move |progress| {
+            let pct = (progress * 100.0) as i32;
+            if pct != last.load(Ordering::Relaxed) {
+                last.store(pct, Ordering::Relaxed);
+                let _ = app_prog.emit(
+                    "transcribe-progress",
+                    TranscribeProgress {
+                        id: id_prog.clone(),
+                        progress,
+                    },
+                );
+            }
+        },
+    );
+
+    let state = app.state::<AppState>();
+    match result {
+        Ok(transcript) if transcript.segments.is_empty() => {
+            tracing::warn!(%id, "Whisper terminó sin segmentos de texto");
+            let _ = state
+                .db
+                .lock()
+                .unwrap()
+                .update_status(&id, RecordingStatus::Error);
+            let _ = app.emit(
+                "transcribe-error",
+                ErrorIdPayload {
+                    id: id.clone(),
+                    message:
+                        "Whisper no produjo texto; prueba re-transcribir o revisa la pista/idioma."
+                            .into(),
+                },
+            );
+        }
+        Ok(transcript) => {
+            if let Err(err) = transcript.save(&transcript_path) {
+                tracing::error!(%err, "no se pudo guardar la transcripción");
+                let _ = state
+                    .db
+                    .lock()
+                    .unwrap()
+                    .update_status(&id, RecordingStatus::Error);
+                let _ = app.emit(
+                    "transcribe-error",
+                    ErrorIdPayload {
+                        id: id.clone(),
+                        message: format!("No se pudo guardar la transcripción: {err}"),
+                    },
+                );
+            } else {
+                let _ = state
+                    .db
+                    .lock()
+                    .unwrap()
+                    .update_status(&id, RecordingStatus::Transcribed);
+                let _ = app.emit("transcript-ready", IdPayload { id: id.clone() });
+            }
+        }
+        Err(err) => {
+            let _ = state
+                .db
+                .lock()
+                .unwrap()
+                .update_status(&id, RecordingStatus::Error);
+            let _ = app.emit(
+                "transcribe-error",
+                ErrorIdPayload {
+                    id: id.clone(),
+                    message: err.to_string(),
+                },
+            );
+        }
+    }
+    let _ = app.emit("recordings-changed", ());
+}
+
+/// Devuelve la transcripción guardada de una grabación, si existe.
+#[tauri::command]
+pub fn get_transcript(state: State<AppState>, id: String) -> Result<Option<Transcript>, String> {
+    Transcript::load(&state.dirs.transcript_path(&id)).map_err(|e| e.to_string())
+}
+
+/// Guarda correcciones humanas y deja cualquier resumen anterior como pendiente.
+#[tauri::command]
+pub fn save_transcript(
+    app: AppHandle,
+    state: State<AppState>,
+    id: String,
+    mut transcript: Transcript,
+) -> Result<(), String> {
+    state
+        .db
+        .lock()
+        .unwrap()
+        .get_recording(&id)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "Grabación no encontrada.".to_string())?;
+
+    if transcript.segments.len() > 50_000 {
+        return Err("La transcripción supera el máximo de 50.000 fragmentos.".into());
+    }
+    if transcript
+        .language
+        .as_ref()
+        .is_some_and(|value| value.len() > 16)
+    {
+        return Err("El código de idioma es demasiado largo.".into());
+    }
+
+    let mut total_chars = 0usize;
+    transcript.segments.retain_mut(|segment| {
+        segment.text = segment.text.trim().to_string();
+        if segment.text.is_empty() {
+            return false;
+        }
+        total_chars = total_chars.saturating_add(segment.text.chars().count());
+        segment.start_ms = segment.start_ms.max(0);
+        segment.end_ms = segment.end_ms.max(segment.start_ms + 1);
+        segment.speaker_name = segment
+            .speaker_name
+            .take()
+            .map(|name| name.trim().chars().take(80).collect::<String>())
+            .filter(|name| !name.is_empty());
+        true
+    });
+    if total_chars > 5_000_000 {
+        return Err("La transcripción supera el máximo de cinco millones de caracteres.".into());
+    }
+    transcript.sort();
+    transcript
+        .save(&state.dirs.transcript_path(&id))
+        .map_err(|error| error.to_string())?;
+
+    let summary_path = state.dirs.summary_path(&id);
+    if summary_path.exists() {
+        std::fs::remove_file(&summary_path).map_err(|error| error.to_string())?;
+    }
+    state
+        .db
+        .lock()
+        .unwrap()
+        .update_status(&id, RecordingStatus::Transcribed)
+        .map_err(|error| error.to_string())?;
+    let _ = app.emit("transcript-ready", IdPayload { id: id.clone() });
+    let _ = app.emit("recordings-changed", ());
+    Ok(())
+}

@@ -1,0 +1,140 @@
+name: Release
+
+# Genera instaladores (NSIS / DMG) con artefactos firmados del updater y los
+# sube a GitHub Releases al publicar un tag v*.
+#
+# Secrets necesarios (Settings → Secrets and variables → Actions):
+#   TAURI_SIGNING_PRIVATE_KEY          — contenido de la clave privada
+#   TAURI_SIGNING_PRIVATE_KEY_PASSWORD — contraseña (vacío si no usaste una)
+#
+# La pubkey va en apps/desktop/src-tauri/tauri.conf.json (plugins.updater.pubkey).
+# Generar claves: cd apps/desktop && pnpm tauri signer generate
+#
+# Ejemplo:
+#   git tag v0.1.0
+#   git push origin v0.1.0
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            bundle_targets: nsis
+            bundle_glob: |
+              target/release/bundle/nsis/*-setup.exe
+              target/release/bundle/nsis/*-setup.exe.sig
+          - os: macos-latest
+            bundle_targets: app,dmg
+            bundle_glob: |
+              target/release/bundle/dmg/*.dmg
+              target/release/bundle/macos/*.tar.gz*
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: KyleMayes/install-llvm-action@v2
+        with:
+          version: "18"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+
+      - name: Install frontend deps
+        working-directory: apps/desktop
+        run: pnpm install --frozen-lockfile
+
+      - name: Build instaladores
+        working-directory: apps/desktop
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: pnpm tauri build --bundles ${{ matrix.bundle_targets }}
+
+      - name: Upload a GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ matrix.bundle_glob }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  latest-json:
+    name: Publish latest.json
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Generate and upload latest.json
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#v}"
+          DIR="$(mktemp -d)"
+          gh release download "$TAG" -R "$GITHUB_REPOSITORY" -D "$DIR"
+
+          platforms_json="{}"
+
+          win_exe="$(find "$DIR" -maxdepth 1 -type f -name '*-setup.exe' | head -n 1 || true)"
+          if [[ -n "$win_exe" && -f "${win_exe}.sig" ]]; then
+            win_name="$(basename "$win_exe")"
+            win_sig="$(cat "${win_exe}.sig")"
+            win_url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/${win_name}"
+            platforms_json="$(jq -c --arg sig "$win_sig" --arg url "$win_url" \
+              '. + {"windows-x86_64": {"signature": $sig, "url": $url}}' \
+              <<<"$platforms_json")"
+          fi
+
+          mac_tgz="$(find "$DIR" -maxdepth 1 -type f -name '*.app.tar.gz' | head -n 1 || true)"
+          if [[ -n "$mac_tgz" && -f "${mac_tgz}.sig" ]]; then
+            mac_name="$(basename "$mac_tgz")"
+            mac_sig="$(cat "${mac_tgz}.sig")"
+            mac_url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/${mac_name}"
+            if [[ "$mac_name" == *"x64"* || "$mac_name" == *"x86_64"* ]]; then
+              mac_key="darwin-x86_64"
+            else
+              mac_key="darwin-aarch64"
+            fi
+            platforms_json="$(jq -c --arg key "$mac_key" --arg sig "$mac_sig" --arg url "$mac_url" \
+              '. + {($key): {"signature": $sig, "url": $url}}' \
+              <<<"$platforms_json")"
+          fi
+
+          if [[ "$platforms_json" == "{}" ]]; then
+            echo "No se encontraron artefactos firmados para latest.json" >&2
+            exit 1
+          fi
+
+          pub_date="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+          jq -n \
+            --arg version "$VERSION" \
+            --arg notes "Atic $VERSION" \
+            --arg pub_date "$pub_date" \
+            --argjson platforms "$platforms_json" \
+            '{version: $version, notes: $notes, pub_date: $pub_date, platforms: $platforms}' \
+            > /tmp/latest.json
+
+          gh release upload "$TAG" /tmp/latest.json -R "$GITHUB_REPOSITORY" --clobber

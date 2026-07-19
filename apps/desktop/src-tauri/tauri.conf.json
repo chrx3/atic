@@ -1,0 +1,118 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Atic",
+  "version": "0.2.0",
+  "identifier": "com.ciat.atic",
+  "build": {
+    "beforeDevCommand": "pnpm dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "pnpm build",
+    "frontendDist": "../build"
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [
+      {
+        "label": "main",
+        "title": "Atic",
+        "width": 960,
+        "height": 680,
+        "minWidth": 480,
+        "minHeight": 480,
+        "decorations": false,
+        "visible": true
+      },
+      {
+        "label": "pill",
+        "url": "/pill",
+        "title": "Atic",
+        "width": 146,
+        "height": 48,
+        "minWidth": 146,
+        "minHeight": 48,
+        "maxWidth": 246,
+        "maxHeight": 48,
+        "resizable": false,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "shadow": false,
+        "visible": true
+      },
+      {
+        "label": "capture-shelf",
+        "url": "/capture-shelf",
+        "title": "Captura",
+        "width": 400,
+        "height": 130,
+        "minWidth": 400,
+        "minHeight": 130,
+        "maxWidth": 400,
+        "maxHeight": 130,
+        "resizable": false,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "shadow": false,
+        "visible": true
+      },
+      {
+        "label": "capture-overlay",
+        "url": "/capture-overlay",
+        "title": "Seleccionar captura",
+        "width": 800,
+        "height": 600,
+        "resizable": false,
+        "decorations": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "shadow": false,
+        "visible": true
+      }
+    ],
+    "security": {
+      "csp": null,
+      "assetProtocol": {
+        "enable": true,
+        "scope": []
+      }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis", "dmg"],
+    "createUpdaterArtifacts": true,
+    "publisher": "CIAT",
+    "category": "Productivity",
+    "shortDescription": "Graba llamadas, transcribe y resume en tu PC",
+    "longDescription": "Atic graba el audio del micrófono y del sistema durante llamadas y reuniones, lo transcribe localmente con Whisper y genera resúmenes que puedes editar y enviar por correo.",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": ["Spanish", "English"],
+        "displayLanguageSelector": false
+      }
+    },
+    "macOS": {
+      "infoPlist": "Info.plist",
+      "minimumSystemVersion": "11.0"
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEI5QzQ4NzIyMzE0QTFENkQKUldSdEhVb3hJb2ZFdVJvY25FeUtPeGRqTmlCV29YTzdWQUdiUnFyNVVmMWd1MjVNaUxBNiswNzQK",
+      "endpoints": [
+        "https://github.com/ciat/atic/releases/latest/download/latest.json"
+      ]
+    }
+  }
+}
