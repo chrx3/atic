@@ -394,7 +394,8 @@ pub fn paste_clipboard_item(app: AppHandle, state: State<AppState>, id: String) 
         let _ = win.hide();
     }
     restore_foreground_hwnd();
-    thread::sleep(Duration::from_millis(160));
+    // WebView2/Electron necesitan un poco más para asentar el foco del hijo Chromium.
+    thread::sleep(Duration::from_millis(220));
 
     let result = match item.kind {
         ClipboardKind::Text => {
@@ -407,7 +408,8 @@ pub fn paste_clipboard_item(app: AppHandle, state: State<AppState>, id: String) 
                 .ok_or_else(|| "imagen sin ruta".to_string())?;
             crate::capture::copy_png_to_clipboard(Path::new(&path))?;
             thread::sleep(Duration::from_millis(80));
-            paste_ctrl_v()
+            // Mismo criterio que texto: consolas suelen querer Ctrl+Shift+V.
+            paste_text_hotkey()
         }
     };
 
@@ -539,7 +541,11 @@ pub fn clear_clipboard_history(state: State<AppState>) -> Result<(), String> {
     Ok(())
 }
 
-fn paste_text(text: &str) -> Result<(), String> {
+/// Pone texto en el portapapeles y lo pega en la ventana en primer plano.
+///
+/// En consolas / Electron (Claude Code, Windows Terminal, etc.) usa
+/// Ctrl+Shift+V; en el resto, Ctrl+V. Compartido con dictado.
+pub(crate) fn paste_text(text: &str) -> Result<(), String> {
     {
         let mut clipboard = Clipboard::new().map_err(|e| e.to_string())?;
         clipboard
@@ -547,57 +553,222 @@ fn paste_text(text: &str) -> Result<(), String> {
             .map_err(|e| e.to_string())?;
     }
     thread::sleep(Duration::from_millis(80));
-    paste_ctrl_v()
+    paste_text_hotkey()
 }
 
-fn paste_ctrl_v() -> Result<(), String> {
+/// Elige el atajo de pegado según la clase de la ventana en foco.
+fn paste_text_hotkey() -> Result<(), String> {
     #[cfg(windows)]
     {
-        use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-            SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, VIRTUAL_KEY,
-            VK_CONTROL, VK_V,
-        };
-
-        unsafe fn key(vk: VIRTUAL_KEY, up: bool) -> INPUT {
-            INPUT {
-                r#type: INPUT_KEYBOARD,
-                Anonymous: INPUT_0 {
-                    ki: KEYBDINPUT {
-                        wVk: vk,
-                        wScan: 0,
-                        dwFlags: if up { KEYEVENTF_KEYUP } else { 0 },
-                        time: 0,
-                        dwExtraInfo: 0,
-                    },
-                },
-            }
+        // Terminales / Electron suelen ignorar Ctrl+V (clipboard history) y
+        // requieren Ctrl+Shift+V. Notepad/Word siguen con Ctrl+V.
+        if foreground_prefers_ctrl_shift_v() {
+            paste_ctrl_shift_v()
+        } else {
+            paste_ctrl_v()
         }
-
-        unsafe {
-            let mut inputs = [
-                key(VK_CONTROL as VIRTUAL_KEY, false),
-                key(VK_V as VIRTUAL_KEY, false),
-                key(VK_V as VIRTUAL_KEY, true),
-                key(VK_CONTROL as VIRTUAL_KEY, true),
-            ];
-            let sent = SendInput(
-                inputs.len() as u32,
-                inputs.as_mut_ptr(),
-                std::mem::size_of::<INPUT>() as i32,
-            );
-            if sent == 0 {
-                return Err(
-                    "No se pudo pegar. El contenido quedó en el portapapeles (Ctrl+V)."
-                        .into(),
-                );
-            }
-        }
-        Ok(())
     }
     #[cfg(not(windows))]
     {
         Err("Pega con Ctrl/Cmd+V; el contenido ya está en el portapapeles.".into())
     }
+}
+
+/// Consolas / terminales (y Claude Code / Terax). No usar `Chrome_WidgetWin`
+/// a ciegas: VS Code también es Electron y ahí Ctrl+Shift+V abre preview.
+#[cfg(windows)]
+fn foreground_prefers_ctrl_shift_v() -> bool {
+    use windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+
+    unsafe {
+        let hwnd = GetForegroundWindow();
+        if hwnd.is_null() {
+            return false;
+        }
+        hwnd_prefers_ctrl_shift_v(hwnd)
+    }
+}
+
+#[cfg(windows)]
+fn hwnd_prefers_ctrl_shift_v(hwnd: windows_sys::Win32::Foundation::HWND) -> bool {
+    use windows_sys::Win32::UI::WindowsAndMessaging::GetClassNameW;
+
+    unsafe {
+        let mut buf = [0u16; 256];
+        let len = GetClassNameW(hwnd, buf.as_mut_ptr(), buf.len() as i32);
+        if len > 0 {
+            let class = String::from_utf16_lossy(&buf[..len as usize]).to_ascii_lowercase();
+            if class.contains("console") || class.contains("cascadia") {
+                return true;
+            }
+        }
+
+        let Some(exe) = process_exe_name(hwnd) else {
+            return false;
+        };
+        exe_prefers_ctrl_shift_v(&exe)
+    }
+}
+
+/// Exes de consola / terminales embebidos (Tauri, Electron, nativos).
+/// Evitar editores (code, cursor, devenv): ahí Ctrl+Shift+V no es pegar.
+#[cfg(windows)]
+fn exe_prefers_ctrl_shift_v(exe: &str) -> bool {
+    matches!(
+        exe,
+        "claude.exe"
+            | "windowsterminal.exe"
+            | "wt.exe"
+            | "cmd.exe"
+            | "powershell.exe"
+            | "pwsh.exe"
+            | "conhost.exe"
+            | "alacritty.exe"
+            | "wezterm-gui.exe"
+            | "wezterm.exe"
+            | "warp.exe"
+            | "hyper.exe"
+            | "tabby.exe"
+            | "kitty.exe"
+            | "fluent-terminal.exe"
+            | "conemu64.exe"
+            | "conemu.exe"
+            | "terax.exe"
+            | "terminus.exe"
+            | "rio.exe"
+            | "ghostty.exe"
+            | "electerm.exe"
+            | "mintty.exe"
+            | "putty.exe"
+            | "mobaxterm.exe"
+            | "xshell.exe"
+            | "securecrt.exe"
+            | "cmder.exe"
+            | "firecmd.exe"
+            | "console.exe"
+            | "console2.exe"
+            | "qterminal.exe"
+            | "tilix.exe"
+            | "gnome-terminal.exe"
+            | "iterm2.exe"
+            | "wave.exe"
+    ) || (
+        // Heurística: *terminal*.exe / *term*.exe, sin editores.
+        (exe.contains("terminal") || exe.ends_with("term.exe") || exe.contains("-term."))
+            && !exe.contains("code")
+            && !exe.contains("cursor")
+            && !exe.contains("devenv")
+            && !exe.contains("notepad")
+    )
+}
+
+#[cfg(windows)]
+fn process_exe_name(hwnd: windows_sys::Win32::Foundation::HWND) -> Option<String> {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    use windows_sys::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId;
+
+    unsafe {
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(hwnd, &mut pid);
+        if pid == 0 {
+            return None;
+        }
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle.is_null() {
+            return None;
+        }
+        let mut path_buf = [0u16; 1024];
+        let mut path_len = path_buf.len() as u32;
+        let ok = QueryFullProcessImageNameW(handle, 0, path_buf.as_mut_ptr(), &mut path_len);
+        CloseHandle(handle);
+        if ok == 0 || path_len == 0 {
+            return None;
+        }
+        let path = String::from_utf16_lossy(&path_buf[..path_len as usize]);
+        Some(
+            path.rsplit(['\\', '/'])
+                .next()
+                .unwrap_or(&path)
+                .to_ascii_lowercase(),
+        )
+    }
+}
+
+fn paste_ctrl_v() -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        send_paste_chord(false)
+    }
+    #[cfg(not(windows))]
+    {
+        Err("Pega con Ctrl/Cmd+V; el contenido ya está en el portapapeles.".into())
+    }
+}
+
+#[cfg(windows)]
+fn paste_ctrl_shift_v() -> Result<(), String> {
+    send_paste_chord(true)
+}
+
+#[cfg(windows)]
+fn send_paste_chord(with_shift: bool) -> Result<(), String> {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+        SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, VIRTUAL_KEY,
+        VK_CONTROL, VK_SHIFT, VK_V,
+    };
+
+    unsafe fn key(vk: VIRTUAL_KEY, up: bool) -> INPUT {
+        INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 {
+                ki: KEYBDINPUT {
+                    wVk: vk,
+                    wScan: 0,
+                    dwFlags: if up { KEYEVENTF_KEYUP } else { 0 },
+                    time: 0,
+                    dwExtraInfo: 0,
+                },
+            },
+        }
+    }
+
+    unsafe {
+        let ctrl = VK_CONTROL as VIRTUAL_KEY;
+        let shift = VK_SHIFT as VIRTUAL_KEY;
+        let v = VK_V as VIRTUAL_KEY;
+        let mut inputs = if with_shift {
+            vec![
+                key(ctrl, false),
+                key(shift, false),
+                key(v, false),
+                key(v, true),
+                key(shift, true),
+                key(ctrl, true),
+            ]
+        } else {
+            vec![
+                key(ctrl, false),
+                key(v, false),
+                key(v, true),
+                key(ctrl, true),
+            ]
+        };
+        let sent = SendInput(
+            inputs.len() as u32,
+            inputs.as_mut_ptr(),
+            std::mem::size_of::<INPUT>() as i32,
+        );
+        if sent == 0 {
+            return Err(
+                "No se pudo pegar. El contenido quedó en el portapapeles (Ctrl+V / Ctrl+Shift+V)."
+                    .into(),
+            );
+        }
+    }
+    Ok(())
 }
 
 /// Atajo del clipboard: el frontend hace toggle (cerrar si ya está abierto).
@@ -690,9 +861,8 @@ fn restore_foreground_hwnd() {
     #[cfg(windows)]
     {
         use windows_sys::Win32::Foundation::HWND;
-        use windows_sys::Win32::UI::WindowsAndMessaging::{
-            AllowSetForegroundWindow, IsWindow, SetForegroundWindow, ASFW_ANY,
-        };
+        use windows_sys::Win32::UI::WindowsAndMessaging::IsWindow;
+
         let raw = PREV_FOREGROUND.load(Ordering::SeqCst);
         if raw == 0 {
             return;
@@ -702,8 +872,90 @@ fn restore_foreground_hwnd() {
             if IsWindow(hwnd) == 0 {
                 return;
             }
+            force_foreground_for_paste(hwnd);
+        }
+    }
+}
+
+/// Devuelve el foco a la app destino de forma fiable y, en terminales
+/// WebView2/Electron (Terax, Hyper, Tabby…), al hijo Chromium que recibe teclas.
+#[cfg(windows)]
+fn force_foreground_for_paste(hwnd: windows_sys::Win32::Foundation::HWND) {
+    use std::ptr;
+    use windows_sys::Win32::Foundation::{BOOL, HWND, LPARAM};
+    use windows_sys::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::SetFocus;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        AllowSetForegroundWindow, BringWindowToTop, EnumChildWindows, GetClassNameW,
+        GetForegroundWindow, GetWindowThreadProcessId, IsWindowVisible, SetForegroundWindow,
+        ASFW_ANY,
+    };
+
+    /// DFS: el último `Chrome_*` visible suele ser el widget que recibe input.
+    unsafe extern "system" fn find_chrome_child(child: HWND, lparam: LPARAM) -> BOOL {
+        let best = &mut *(lparam as *mut HWND);
+        if IsWindowVisible(child) != 0 {
+            let mut buf = [0u16; 256];
+            let len = GetClassNameW(child, buf.as_mut_ptr(), buf.len() as i32);
+            if len > 0 {
+                let class = String::from_utf16_lossy(&buf[..len as usize]);
+                if class.starts_with("Chrome_WidgetWin")
+                    || class.starts_with("Chrome_RenderWidget")
+                {
+                    *best = child;
+                }
+            }
+        }
+        EnumChildWindows(child, Some(find_chrome_child), lparam);
+        1
+    }
+
+    unsafe {
+        let mut target_pid = 0u32;
+        let target_tid = GetWindowThreadProcessId(hwnd, &mut target_pid);
+        if target_pid != 0 {
+            let _ = AllowSetForegroundWindow(target_pid);
+        } else {
             let _ = AllowSetForegroundWindow(ASFW_ANY);
-            let _ = SetForegroundWindow(hwnd);
+        }
+
+        let fg = GetForegroundWindow();
+        let cur_tid = GetCurrentThreadId();
+        let mut fg_pid = 0u32;
+        let fg_tid = if !fg.is_null() {
+            GetWindowThreadProcessId(fg, &mut fg_pid)
+        } else {
+            0
+        };
+
+        let attached_fg =
+            fg_tid != 0 && fg_tid != cur_tid && AttachThreadInput(cur_tid, fg_tid, 1) != 0;
+        let attached_tgt = target_tid != 0
+            && target_tid != cur_tid
+            && target_tid != fg_tid
+            && AttachThreadInput(cur_tid, target_tid, 1) != 0;
+
+        let _ = BringWindowToTop(hwnd);
+        let _ = SetForegroundWindow(hwnd);
+
+        let input_hwnd = if hwnd_prefers_ctrl_shift_v(hwnd) {
+            let mut chrome: HWND = ptr::null_mut();
+            EnumChildWindows(hwnd, Some(find_chrome_child), &mut chrome as *mut _ as LPARAM);
+            if !chrome.is_null() {
+                chrome
+            } else {
+                hwnd
+            }
+        } else {
+            hwnd
+        };
+        let _ = SetFocus(input_hwnd);
+
+        if attached_tgt {
+            let _ = AttachThreadInput(cur_tid, target_tid, 0);
+        }
+        if attached_fg {
+            let _ = AttachThreadInput(cur_tid, fg_tid, 0);
         }
     }
 }
