@@ -81,6 +81,7 @@ pub fn set_config(app: AppHandle, state: State<AppState>, config: Config) -> Res
     let shortcut = config.global_shortcut.clone();
     let dictation_shortcut = config.dictation_shortcut.clone();
     let summon_pill_shortcut = config.summon_pill_shortcut.clone();
+    let clipboard_shortcut = config.clipboard_shortcut.clone();
     let screenshot_shortcut = config.screenshot_shortcut.clone();
     let prev = state.config.lock().unwrap().clone();
 
@@ -89,6 +90,7 @@ pub fn set_config(app: AppHandle, state: State<AppState>, config: Config) -> Res
     if shortcut != prev.global_shortcut
         || dictation_shortcut != prev.dictation_shortcut
         || summon_pill_shortcut != prev.summon_pill_shortcut
+        || clipboard_shortcut != prev.clipboard_shortcut
         || screenshot_shortcut != prev.screenshot_shortcut
     {
         crate::shortcuts::register_shortcuts(
@@ -96,6 +98,7 @@ pub fn set_config(app: AppHandle, state: State<AppState>, config: Config) -> Res
             &shortcut,
             &dictation_shortcut,
             &summon_pill_shortcut,
+            &clipboard_shortcut,
             &screenshot_shortcut,
         )?;
     }
@@ -134,6 +137,11 @@ fn sync_autostart(app: &AppHandle, enabled: bool) {
 #[tauri::command]
 pub fn set_pill_visible(app: AppHandle, visible: bool) {
     state::set_pill_visible(&app, visible);
+}
+
+#[tauri::command]
+pub fn show_main_window(app: AppHandle) {
+    state::show_main(&app);
 }
 
 /// Devuelve la ruta absoluta de una pista ("mic" | "system") de una grabación,

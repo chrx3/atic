@@ -72,8 +72,8 @@ pub fn overlay_info(app: AppHandle) -> Result<OverlayInfo, String> {
 
 #[tauri::command]
 pub fn complete_window_capture(app: AppHandle, hwnd: i64) -> Result<String, String> {
-    let path = window_capture_impl(&app, hwnd)?;
-    finish(&app, &path);
+    let (path, anchor) = window_capture_impl(&app, hwnd)?;
+    finish(&app, &path, anchor);
     Ok(path)
 }
 
@@ -85,15 +85,15 @@ pub fn complete_region_capture(
     width: f64,
     height: f64,
 ) -> Result<String, String> {
-    let path = region_capture_impl(&app, left, top, width, height)?;
-    finish(&app, &path);
+    let (path, anchor) = region_capture_impl(&app, left, top, width, height)?;
+    finish(&app, &path, anchor);
     Ok(path)
 }
 
 #[tauri::command]
 pub fn complete_monitor_capture(app: AppHandle, x: f64, y: f64) -> Result<String, String> {
-    let path = monitor_capture_impl(&app, x, y)?;
-    finish(&app, &path);
+    let (path, anchor) = monitor_capture_impl(&app, x, y)?;
+    finish(&app, &path, anchor);
     Ok(path)
 }
 
@@ -102,13 +102,10 @@ pub fn cancel_capture_session(app: AppHandle) {
     end_session(&app);
 }
 
-/// Cierra el overlay, muestra el shelf y notifica la captura nueva.
-fn finish(app: &AppHandle, path: &str) {
+/// Cierra el overlay, copia al portapapeles, muestra el shelf y notifica.
+fn finish(app: &AppHandle, path: &str, shelf_anchor: (i32, i32)) {
     end_session(app);
-    let _ = crate::capture_shelf::show_shelf(app);
-    if let Some(item) = crate::capture::capture_item(std::path::Path::new(path)) {
-        let _ = app.emit("screenshot-created", item);
-    }
+    crate::capture::notify_capture_ready(app, path, Some(shelf_anchor));
 }
 
 fn end_session(app: &AppHandle) {
@@ -218,7 +215,7 @@ fn overlay_info_impl(app: &AppHandle) -> Result<OverlayInfo, String> {
 }
 
 #[cfg(windows)]
-fn window_capture_impl(app: &AppHandle, hwnd: i64) -> Result<String, String> {
+fn window_capture_impl(app: &AppHandle, hwnd: i64) -> Result<(String, (i32, i32)), String> {
     use atic_capture::{engine, windows as capwin};
 
     let state = app.state::<crate::state::AppState>();
@@ -249,7 +246,7 @@ fn region_capture_impl(
     top: f64,
     width: f64,
     height: f64,
-) -> Result<String, String> {
+) -> Result<(String, (i32, i32)), String> {
     use atic_capture::Rect;
 
     let scale = overlay_scale(app);
@@ -273,7 +270,7 @@ fn region_capture_impl(
 }
 
 #[cfg(windows)]
-fn monitor_capture_impl(app: &AppHandle, x: f64, y: f64) -> Result<String, String> {
+fn monitor_capture_impl(app: &AppHandle, x: f64, y: f64) -> Result<(String, (i32, i32)), String> {
     let scale = overlay_scale(app);
     let state = app.state::<crate::state::AppState>();
     let guard = state.overlay_session.lock().unwrap();
@@ -298,16 +295,18 @@ fn monitor_capture_impl(app: &AppHandle, x: f64, y: f64) -> Result<String, Strin
 }
 
 #[cfg(windows)]
-fn save_capture(app: &AppHandle, frame: &atic_capture::Frame) -> Result<String, String> {
+fn save_capture(app: &AppHandle, frame: &atic_capture::Frame) -> Result<(String, (i32, i32)), String> {
     use atic_capture::naming;
     let state = app.state::<crate::state::AppState>();
     let png = frame.to_png().map_err(|e| e.to_string())?;
-    let path = state
-        .dirs
-        .captures_dir()
-        .join(naming::new_capture_filename());
+    let dir = state.dirs.captures_dir();
+    let path = dir.join(naming::unique_capture_filename(&dir));
     std::fs::write(&path, &png).map_err(|e| e.to_string())?;
-    Ok(path.to_string_lossy().into_owned())
+    let anchor = (
+        frame.bounds.x + frame.bounds.width as i32 / 2,
+        frame.bounds.y + frame.bounds.height as i32 / 2,
+    );
+    Ok((path.to_string_lossy().into_owned(), anchor))
 }
 
 #[cfg(windows)]
@@ -332,7 +331,7 @@ fn overlay_info_impl(_app: &AppHandle) -> Result<OverlayInfo, String> {
 }
 
 #[cfg(not(windows))]
-fn window_capture_impl(_app: &AppHandle, _hwnd: i64) -> Result<String, String> {
+fn window_capture_impl(_app: &AppHandle, _hwnd: i64) -> Result<(String, (i32, i32)), String> {
     Err("La captura de pantalla solo está disponible en Windows.".into())
 }
 
@@ -343,11 +342,11 @@ fn region_capture_impl(
     _top: f64,
     _width: f64,
     _height: f64,
-) -> Result<String, String> {
+) -> Result<(String, (i32, i32)), String> {
     Err("La captura de pantalla solo está disponible en Windows.".into())
 }
 
 #[cfg(not(windows))]
-fn monitor_capture_impl(_app: &AppHandle, _x: f64, _y: f64) -> Result<String, String> {
+fn monitor_capture_impl(_app: &AppHandle, _x: f64, _y: f64) -> Result<(String, (i32, i32)), String> {
     Err("La captura de pantalla solo está disponible en Windows.".into())
 }

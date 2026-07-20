@@ -24,6 +24,7 @@ impl AppDirs {
         std::fs::create_dir_all(this.models_dir())?;
         std::fs::create_dir_all(this.captures_dir())?;
         std::fs::create_dir_all(this.overlay_frames_dir())?;
+        std::fs::create_dir_all(this.clipboard_dir())?;
         Ok(this)
     }
 
@@ -51,6 +52,11 @@ impl AppDirs {
     /// Su contenido se sobreescribe/limpia en cada sesión de captura.
     pub fn overlay_frames_dir(&self) -> PathBuf {
         self.data_dir.join("overlay-frames")
+    }
+
+    /// Historial local del portapapeles (índice JSON + PNG de imágenes).
+    pub fn clipboard_dir(&self) -> PathBuf {
+        self.data_dir.join("clipboard")
     }
 
     /// Archivo SQLite principal.

@@ -1,0 +1,10 @@
+{
+  "name": "atic",
+  "private": true,
+  "scripts": {
+    "dev": "pnpm --dir apps/desktop tauri dev",
+    "tauri": "pnpm --dir apps/desktop tauri",
+    "check": "pnpm --dir apps/desktop check",
+    "build": "pnpm --dir apps/desktop tauri build"
+  }
+}

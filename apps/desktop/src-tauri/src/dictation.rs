@@ -180,8 +180,13 @@ fn start_dictation(app: &AppHandle) -> Result<(), String> {
         handle,
     });
 
-    let out = state.config.lock().unwrap().output_device_id.clone();
-    crate::beep::play_dictation_start(&out);
+    let (ui_sounds, out) = {
+        let cfg = state.config.lock().unwrap();
+        (cfg.ui_sounds, cfg.output_device_id.clone())
+    };
+    if ui_sounds {
+        crate::beep::play_dictation_start(&out);
+    }
 
     emit_status(app, DictationPhase::Listening, None);
     Ok(())
@@ -297,14 +302,14 @@ fn stop_and_paste(app: &AppHandle) {
             Ok(text) => {
                 let elapsed_ms = total_started.elapsed().as_millis();
                 tracing::info!(len = text.len(), elapsed_ms, "dictado pegado");
-                let out = app2
-                    .state::<AppState>()
-                    .config
-                    .lock()
-                    .unwrap()
-                    .output_device_id
-                    .clone();
-                crate::beep::play_dictation_done(&out);
+                let (ui_sounds, out) = {
+                    let state = app2.state::<AppState>();
+                    let cfg = state.config.lock().unwrap();
+                    (cfg.ui_sounds, cfg.output_device_id.clone())
+                };
+                if ui_sounds {
+                    crate::beep::play_dictation_done(&out);
+                }
                 emit_status(
                     &app2,
                     DictationPhase::Pasted,

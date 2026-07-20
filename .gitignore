@@ -1,11 +1,13 @@
 # Rust
 /target
 /target-*
+**/target
 apps/desktop/src-tauri/target-*
 **/*.rs.bk
 
 # Node / frontend
 **/node_modules
+**/dist
 apps/desktop/build
 apps/desktop/.svelte-kit
 
@@ -24,3 +26,4 @@ Thumbs.db
 .idea/
 .vscode/
 !.vscode/extensions.json
+.cursor/plans/

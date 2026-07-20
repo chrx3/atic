@@ -84,6 +84,7 @@
   let pendingUpdate = $state<AppUpdate | null>(null);
 
   type SettingsSectionId =
+    | "appearance"
     | "shortcuts"
     | "audio"
     | "transcription"
@@ -94,7 +95,7 @@
     | "mail"
     | "updates";
 
-  let activeSection = $state<SettingsSectionId>("shortcuts");
+  let activeSection = $state<SettingsSectionId>("appearance");
 
   let captureCleanupMsg = $state<string | null>(null);
   async function runCaptureCleanup() {
@@ -110,6 +111,7 @@
   }
 
   const SETTINGS_SECTIONS: { id: SettingsSectionId; label: string }[] = [
+    { id: "appearance", label: "Apariencia" },
     { id: "shortcuts", label: "Atajos" },
     { id: "audio", label: "Audio" },
     { id: "transcription", label: "Transcripción" },
@@ -423,6 +425,8 @@
   onMount(() => {
     (async () => {
       cfg = await getConfig();
+      if (cfg && !cfg.ui_theme) cfg.ui_theme = "system";
+      if (cfg && typeof cfg.ui_sounds !== "boolean") cfg.ui_sounds = true;
       secrets = await secretsStatus();
       providers = await listSummaryProviders();
       try {
@@ -585,7 +589,30 @@
         <div class="rb-settings-panel">
           <h3 class="rb-settings-panel-title">{activeSectionLabel}</h3>
 
-          {#if activeSection === "shortcuts"}
+          {#if activeSection === "appearance"}
+            <div class="rb-settings-group">
+              <label class="rb-label">
+                Tema
+                <select class="rb-field" bind:value={cfg.ui_theme}>
+                  <option value="light">Claro</option>
+                  <option value="dark">Oscuro</option>
+                  <option value="system">Sistema</option>
+                </select>
+              </label>
+              <p class="rb-hint">
+                También puedes cambiarlo con el botón de sol/luna/sistema en la
+                barra superior.
+              </p>
+
+              <label class="rb-check">
+                <input type="checkbox" bind:checked={cfg.ui_sounds} />
+                Sonidos de interfaz
+              </label>
+              <p class="rb-hint">
+                Toques graves al capturar y al dictar (tipo vibración suave).
+              </p>
+            </div>
+          {:else if activeSection === "shortcuts"}
             <div class="rb-settings-group">
               <div>
                 <p class="mb-2 text-xs font-medium" style="color: var(--rb-muted)">
@@ -646,6 +673,24 @@
                 <p class="rb-hint mt-1.5">
                   Muestra la pill (si estaba oculta) y la anima hasta el puntero del
                   mouse.
+                </p>
+              </div>
+
+              <div>
+                <p class="mb-2 text-xs font-medium" style="color: var(--rb-muted)">
+                  Historial de clipboard
+                </p>
+                <HotkeyCapture
+                  value={cfg.clipboard_shortcut}
+                  defaultValue="CmdOrCtrl+Shift+V"
+                  ariaLabel="Cambiar atajo del historial de clipboard"
+                  onChange={(sc) => {
+                    if (cfg) cfg.clipboard_shortcut = sc;
+                  }}
+                />
+                <p class="rb-hint mt-1.5">
+                  Trae la pill al cursor y abre el panel con el historial local
+                  (texto e imágenes).
                 </p>
               </div>
             </div>
@@ -1271,7 +1316,7 @@
               <div class="space-y-2.5 pt-1">
                 <label class="rb-check">
                   <input type="checkbox" bind:checked={cfg.beep_on_start} />
-                  Beep al iniciar (aviso de consentimiento)
+                  Sonido al grabar (aviso de consentimiento)
                 </label>
                 <label class="rb-check">
                   <input type="checkbox" bind:checked={cfg.autostart} />

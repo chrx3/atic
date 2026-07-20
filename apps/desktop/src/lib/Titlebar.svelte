@@ -1,6 +1,23 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { getCurrentWindow } from "@tauri-apps/api/window";
+  import type { ToolDef } from "$lib/tools";
+  import {
+    themeLabel,
+    type UiTheme,
+  } from "$lib/theme";
+
+  let {
+    tool,
+    theme = "system",
+    onToggleTheme,
+    onOpenSettings,
+  }: {
+    tool: ToolDef;
+    theme?: UiTheme;
+    onToggleTheme?: () => void;
+    onOpenSettings?: () => void;
+  } = $props();
 
   let maximized = $state(false);
 
@@ -13,7 +30,7 @@
         const value = await win.isMaximized();
         if (!cancelled) maximized = value;
       } catch {
-        // Fuera de Tauri (preview web) no hay ventana nativa.
+        // Preview web sin ventana nativa.
       }
     })();
 
@@ -47,87 +64,151 @@
   async function close() {
     await appWindow().close();
   }
+
+  const themeTitle = $derived(`Tema: ${themeLabel(theme)} (clic para cambiar)`);
 </script>
 
-<header class="rb-titlebar" aria-label="Barra de ventana">
-  <div
-    class="rb-titlebar-drag"
-    data-tauri-drag-region
-    role="button"
-    tabindex="0"
-    aria-label="Maximizar o restaurar ventana"
-    ondblclick={toggleMaximize}
-    onkeydown={(event) => {
-      if (event.key === "Enter") void toggleMaximize();
-    }}
-  >
-    <span class="rb-titlebar-brand" data-tauri-drag-region>Atic</span>
+<header class="atic-titlebar" aria-label="Barra de ventana">
+  <div class="atic-titlebar-lead" data-tauri-drag-region>
+    <span class="atic-mark" aria-hidden="true" data-tauri-drag-region>
+      <svg viewBox="0 0 512 512" width="14" height="14">
+        <rect width="512" height="512" rx="108" fill="currentColor" />
+        <path
+          fill="var(--rb-surface)"
+          fill-rule="evenodd"
+          d="M256 64L456 308H372V428H140V308H56L256 64Zm-52 252h104v88H204v-88Z"
+        />
+      </svg>
+    </span>
+    <div class="atic-titlebar-copy" data-tauri-drag-region>
+      <strong data-tauri-drag-region>Atic</strong>
+      <span data-tauri-drag-region>{tool.label}</span>
+    </div>
   </div>
 
-  <div class="rb-titlebar-controls">
+  <div
+    class="atic-titlebar-drag"
+    data-tauri-drag-region
+    role="presentation"
+    ondblclick={toggleMaximize}
+  ></div>
+
+  <div class="atic-titlebar-actions">
+    {#if onToggleTheme}
+      <button
+        type="button"
+        class="atic-titlebar-btn"
+        aria-label={themeTitle}
+        title={themeTitle}
+        onclick={onToggleTheme}
+      >
+        {#if theme === "dark"}
+          <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">
+            <path
+              d="M11.5 9.2A5.2 5.2 0 0 1 6.8 4.5 4.6 4.6 0 1 0 11.5 9.2Z"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.25"
+              stroke-linejoin="round"
+            />
+          </svg>
+        {:else if theme === "light"}
+          <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">
+            <circle cx="8" cy="8" r="2.6" fill="none" stroke="currentColor" stroke-width="1.25" />
+            <path
+              d="M8 1.8v1.4M8 12.8v1.4M1.8 8h1.4M12.8 8h1.4M3.4 3.4l1 1M11.6 11.6l1 1M12.6 3.4l-1 1M4.4 11.6l-1 1"
+              stroke="currentColor"
+              stroke-width="1.25"
+              stroke-linecap="round"
+            />
+          </svg>
+        {:else}
+          <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">
+            <circle cx="8" cy="8" r="5.2" fill="none" stroke="currentColor" stroke-width="1.25" />
+            <path d="M8 2.8v10.4" stroke="currentColor" stroke-width="1.25" />
+            <path
+              d="M8 2.8a5.2 5.2 0 0 1 0 10.4"
+              fill="currentColor"
+              opacity="0.35"
+            />
+          </svg>
+        {/if}
+      </button>
+    {/if}
+
+    {#if onOpenSettings}
+      <button
+        type="button"
+        class="atic-titlebar-btn"
+        aria-label="Ajustes"
+        title="Ajustes"
+        onclick={onOpenSettings}
+      >
+        <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">
+          <path
+            d="M6.5 2.5h3l.4 1.6a4.5 4.5 0 0 1 1.2.7l1.5-.6.1.2 1.5 2.6-.1.2-1.3.9c.1.4.1.8 0 1.2l1.3.9.1.2-1.5 2.6-.1.2-1.5-.6a4.5 4.5 0 0 1-1.2.7L9.5 13.5h-3l-.4-1.6a4.5 4.5 0 0 1-1.2-.7l-1.5.6-.1-.2L1.8 9.1l.1-.2 1.3-.9a4.6 4.6 0 0 1 0-1.2L1.9 5.9l-.1-.2L3.3 3.1l.1-.2 1.5.6c.37-.28.77-.5 1.2-.7L6.5 2.5Z"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.2"
+          />
+          <circle cx="8" cy="8" r="1.8" fill="none" stroke="currentColor" stroke-width="1.2" />
+        </svg>
+      </button>
+    {/if}
+
     <button
       type="button"
-      class="rb-titlebar-btn"
+      class="atic-titlebar-btn"
       aria-label="Minimizar"
       title="Minimizar"
       onclick={minimize}
     >
       <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
-        <path d="M1 5h8" stroke="currentColor" stroke-width="1.2" fill="none" />
+        <path d="M1.5 5h7" stroke="currentColor" stroke-width="1.3" />
       </svg>
     </button>
     <button
       type="button"
-      class="rb-titlebar-btn"
+      class="atic-titlebar-btn"
       aria-label={maximized ? "Restaurar" : "Maximizar"}
       title={maximized ? "Restaurar" : "Maximizar"}
       onclick={toggleMaximize}
     >
       {#if maximized}
         <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
-          <rect
-            x="1.2"
-            y="2.8"
-            width="5.5"
-            height="5.5"
-            stroke="currentColor"
-            stroke-width="1.1"
-            fill="none"
-          />
           <path
-            d="M3.2 2.8V1.8h5.5v5.5H7.7"
-            stroke="currentColor"
-            stroke-width="1.1"
+            d="M3 3.5h4.5V8H3V3.5Zm1.2-1.2h4.5V7"
             fill="none"
+            stroke="currentColor"
+            stroke-width="1.15"
           />
         </svg>
       {:else}
         <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
           <rect
-            x="1.5"
-            y="1.5"
-            width="7"
-            height="7"
-            stroke="currentColor"
-            stroke-width="1.1"
+            x="1.6"
+            y="1.6"
+            width="6.8"
+            height="6.8"
             fill="none"
+            stroke="currentColor"
+            stroke-width="1.15"
           />
         </svg>
       {/if}
     </button>
     <button
       type="button"
-      class="rb-titlebar-btn rb-titlebar-btn-close"
+      class="atic-titlebar-btn atic-titlebar-btn-close"
       aria-label="Cerrar"
       title="Cerrar"
       onclick={close}
     >
       <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
         <path
-          d="M2 2l6 6M8 2L2 8"
+          d="M2.2 2.2l5.6 5.6M7.8 2.2L2.2 7.8"
           stroke="currentColor"
-          stroke-width="1.2"
-          fill="none"
+          stroke-width="1.25"
         />
       </svg>
     </button>
@@ -135,44 +216,69 @@
 </header>
 
 <style>
-  .rb-titlebar {
+  .atic-titlebar {
     display: flex;
     align-items: stretch;
     flex: 0 0 auto;
-    height: 34px;
-    border-bottom: 0;
-    background: color-mix(in srgb, var(--rb-bg1) 88%, var(--rb-surface));
+    height: 40px;
+    border-bottom: 1px solid var(--rb-border);
+    background: color-mix(in srgb, var(--rb-surface) 92%, var(--rb-bg1));
     user-select: none;
     -webkit-user-select: none;
   }
 
-  .rb-titlebar-drag {
+  .atic-titlebar-lead {
     display: flex;
-    min-width: 0;
-    flex: 1 1 auto;
     align-items: center;
-    padding: 0 0.75rem;
+    gap: 0.55rem;
+    padding: 0 0.7rem 0 0.75rem;
+    min-width: 0;
   }
 
-  .rb-titlebar-brand {
+  .atic-mark {
+    display: inline-flex;
+    color: var(--rb-text);
+    line-height: 0;
+  }
+
+  .atic-titlebar-copy {
+    display: flex;
+    align-items: baseline;
+    gap: 0.4rem;
+    min-width: 0;
+  }
+
+  .atic-titlebar-copy strong {
+    font-family: var(--rb-display);
+    font-size: 0.8125rem;
+    font-weight: 650;
+    letter-spacing: -0.02em;
+    color: var(--rb-text);
+  }
+
+  .atic-titlebar-copy span {
     overflow: hidden;
     color: var(--rb-muted);
     font-size: 0.6875rem;
-    font-weight: 550;
-    letter-spacing: 0.01em;
+    font-weight: 500;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  .rb-titlebar-controls {
+  .atic-titlebar-drag {
+    flex: 1 1 auto;
+    min-width: 1.5rem;
+  }
+
+  .atic-titlebar-actions {
     display: flex;
     flex: 0 0 auto;
     align-items: stretch;
   }
 
-  .rb-titlebar-btn {
+  .atic-titlebar-btn {
     display: inline-flex;
-    width: 46px;
+    width: 42px;
     align-items: center;
     justify-content: center;
     border: 0;
@@ -183,17 +289,17 @@
     cursor: default;
   }
 
-  .rb-titlebar-btn:hover {
+  .atic-titlebar-btn:hover {
     color: var(--rb-text);
-    background: color-mix(in srgb, var(--rb-text) 8%, transparent);
+    background: color-mix(in srgb, var(--rb-text) 7%, transparent);
   }
 
-  .rb-titlebar-btn:focus-visible {
+  .atic-titlebar-btn:focus-visible {
     outline: none;
     box-shadow: inset var(--rb-focus);
   }
 
-  .rb-titlebar-btn-close:hover {
+  .atic-titlebar-btn-close:hover {
     color: #fff;
     background: #c42b1c;
   }

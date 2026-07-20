@@ -46,6 +46,8 @@ export interface AppConfig {
   dictation_shortcut: string;
   /** Atajo global para traer la pill al cursor. */
   summon_pill_shortcut: string;
+  /** Atajo: traer pill + abrir historial de clipboard. */
+  clipboard_shortcut: string;
   /** toggle | push_to_talk */
   dictation_mode: string;
   /** Nombre del micrófono. Vacío = por defecto del SO. */
@@ -57,6 +59,8 @@ export interface AppConfig {
   show_pill: boolean;
   pill_position: [number, number] | null;
   beep_on_start: boolean;
+  /** Toques graves de interfaz (capturas, dictado). */
+  ui_sounds: boolean;
   /** Pistas a grabar: both | mic | system */
   record_tracks: string;
   /** Pistas a transcribir: both | mic | system */
@@ -79,6 +83,8 @@ export interface AppConfig {
   capture_retention_hours: number;
   capture_include_cursor: boolean;
   capture_click_action: string;
+  /** light | dark | system */
+  ui_theme: string;
 }
 
 export interface Levels {
@@ -243,10 +249,26 @@ export interface SendMailResult {
 
 export interface CaptureItem {
   id: string;
+  /** Etiqueta corta para el shelf (p. ej. `18:10`). */
+  label: string;
   path: string;
   createdAtMs: number;
   width: number;
   height: number;
+}
+
+export type ClipboardKind = "text" | "image";
+
+export interface ClipboardItem {
+  id: string;
+  kind: ClipboardKind;
+  preview: string;
+  text?: string | null;
+  imagePath?: string | null;
+  createdAtMs: number;
+  pinned: boolean;
+  fingerprint: string;
+  source: string;
 }
 
 export interface OverlayCandidate {

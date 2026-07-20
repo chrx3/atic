@@ -119,7 +119,7 @@
       <button class="grab" onmousedown={onDown} title="Clic: abrir · Arrastra: sacar">
         <img src={src} alt="captura" draggable="false" />
       </button>
-      <div class="name">{current.id}</div>
+      <div class="name">{current.label || current.id}</div>
     </div>
   {/key}
 {/if}
@@ -135,8 +135,8 @@
   .thumb {
     display: flex;
     align-items: center;
-    gap: 10px;
-    padding: 8px;
+    gap: 8px;
+    padding: 6px;
     width: fit-content;
   }
 
@@ -153,19 +153,19 @@
   }
   .grab img {
     display: block;
-    max-width: 180px;
-    max-height: 110px;
+    max-width: 96px;
+    max-height: 64px;
     width: auto;
     height: auto;
-    border-radius: 8px;
-    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.55);
+    border-radius: 6px;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5);
   }
 
   .name {
-    max-width: 180px;
-    font: 12px system-ui, sans-serif;
+    max-width: 72px;
+    font: 600 12px/1.2 system-ui, sans-serif;
     color: #fff;
-    text-shadow: 0 1px 4px rgba(0, 0, 0, 0.95);
-    overflow-wrap: anywhere;
+    text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9);
+    letter-spacing: 0.02em;
   }
 </style>

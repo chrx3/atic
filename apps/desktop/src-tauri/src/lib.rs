@@ -4,6 +4,7 @@ mod beep;
 mod capture;
 mod capture_session;
 mod capture_shelf;
+mod clipboard_history;
 mod commands;
 mod dictation;
 mod export;
@@ -19,6 +20,7 @@ mod state;
 mod summarization;
 mod transcription;
 mod tray;
+mod webview_tweaks;
 
 use std::sync::Mutex;
 
@@ -104,6 +106,7 @@ pub fn run() {
             commands::get_config,
             commands::set_config,
             commands::set_pill_visible,
+            commands::show_main_window,
             commands::recording_track_path,
             commands::toggle_dictation,
             commands::dictation_phase,
@@ -146,6 +149,13 @@ pub fn run() {
             capture_session::complete_region_capture,
             capture_session::complete_monitor_capture,
             capture_session::cancel_capture_session,
+            clipboard_history::list_clipboard_history,
+            clipboard_history::paste_clipboard_item,
+            clipboard_history::pin_clipboard_item,
+            clipboard_history::delete_clipboard_item,
+            clipboard_history::clear_clipboard_history,
+            clipboard_history::prepare_clipboard_pill,
+            clipboard_history::restore_pill_position,
         ])
         .setup(move |app| {
             let dirs = AppDirs::new()?;
@@ -164,10 +174,15 @@ pub fn run() {
             let _ = app
                 .asset_protocol_scope()
                 .allow_directory(dirs.overlay_frames_dir(), true);
+            // Miniaturas del historial de clipboard.
+            let _ = app
+                .asset_protocol_scope()
+                .allow_directory(dirs.clipboard_dir(), true);
 
             let shortcut = config.global_shortcut.clone();
             let dictation_shortcut = config.dictation_shortcut.clone();
             let summon_pill_shortcut = config.summon_pill_shortcut.clone();
+            let clipboard_shortcut = config.clipboard_shortcut.clone();
             let screenshot_shortcut = config.screenshot_shortcut.clone();
             let pill_position = config.pill_position;
             let show_pill = config.show_pill;
@@ -182,6 +197,7 @@ pub fn run() {
                 audio_test_running: Mutex::new(false),
                 whisper: Mutex::new(std::collections::HashMap::new()),
                 overlay_session: Mutex::new(None),
+                pre_clipboard_position: Mutex::new(None),
             });
 
             // Repara estados transitorios huérfanos de un cierre abrupto anterior.
@@ -210,16 +226,22 @@ pub fn run() {
                 }
             }
 
-            // Atajos globales: grabación + dictado + traer pill.
+            // Atajos globales: grabación + dictado + pill + clipboard + captura.
             if let Err(err) = shortcuts::register_shortcuts(
                 app.handle(),
                 &shortcut,
                 &dictation_shortcut,
                 &summon_pill_shortcut,
+                &clipboard_shortcut,
                 &screenshot_shortcut,
             ) {
                 tracing::error!(%err, "no se pudieron registrar los atajos globales");
             }
+
+            clipboard_history::start_watcher(app.handle());
+
+            // Sin Ctrl+P / Find / DevTools del WebView2 en ventanas flotantes.
+            webview_tweaks::apply_to_overlay_windows(app.handle());
 
             // Posición y visibilidad inicial de la pill.
             if let Some(pill) = app.get_webview_window("pill") {
@@ -249,7 +271,14 @@ pub fn run() {
             }
             WindowEvent::Moved(pos) if window.label() == "pill" => {
                 if let Some(state) = window.app_handle().try_state::<AppState>() {
-                    state.config.lock().unwrap().pill_position = Some((pos.x as f64, pos.y as f64));
+                    // Durante el clipboard en el cursor no pisar la home guardada.
+                    if state.pre_clipboard_position.lock().unwrap().is_none() {
+                        state
+                            .config
+                            .lock()
+                            .unwrap()
+                            .pill_position = Some((pos.x as f64, pos.y as f64));
+                    }
                 }
             }
             _ => {}

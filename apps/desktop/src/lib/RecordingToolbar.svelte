@@ -107,7 +107,7 @@
         <Waveform level={levels.mic} color="mic" bars={16} variant="quiet" />
       </div>
     {:else}
-      <p>Elige una acción; los dispositivos y atajos se configuran en Ajustes.</p>
+      <p>Elige una acción. El atajo de grabación se cambia arriba.</p>
     {/if}
   </div>
 
@@ -192,7 +192,7 @@
     min-width: 9.75rem;
   }
   .rb-dictate-btn.is-active {
-    color: #fbfbf8;
+    color: var(--rb-on-accent, #fbfbf8);
     background: var(--rb-accent);
   }
   .rb-dictate-icon {

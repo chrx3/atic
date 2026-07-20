@@ -1,9 +1,9 @@
-//! Registro de atajos globales (grabación + dictado + traer pill + captura).
+//! Registro de atajos globales (grabación + dictado + pill + clipboard + captura).
 
 use tauri::{AppHandle, Manager};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
-use crate::{dictation, state};
+use crate::{clipboard_history, dictation, state};
 
 /// Registra (o re-registra) los atajos globales.
 ///
@@ -17,6 +17,7 @@ pub fn register_shortcuts(
     recording_shortcut: &str,
     dictation_shortcut: &str,
     summon_pill_shortcut: &str,
+    clipboard_shortcut: &str,
     screenshot_shortcut: &str,
 ) -> Result<(), String> {
     let recording: Shortcut = recording_shortcut
@@ -28,6 +29,9 @@ pub fn register_shortcuts(
     let summon: Shortcut = summon_pill_shortcut
         .parse()
         .map_err(|e| format!("Atajo de pill inválido ({summon_pill_shortcut}): {e}"))?;
+    let clipboard: Shortcut = clipboard_shortcut
+        .parse()
+        .map_err(|e| format!("Atajo de clipboard inválido ({clipboard_shortcut}): {e}"))?;
     let screenshot: Shortcut = screenshot_shortcut
         .parse()
         .map_err(|e| format!("Atajo de captura inválido ({screenshot_shortcut}): {e}"))?;
@@ -37,6 +41,7 @@ pub fn register_shortcuts(
         ("grabación", recording),
         ("dictado", dictation),
         ("traer pill", summon),
+        ("clipboard", clipboard),
         ("captura", screenshot),
     ];
     for i in 0..named.len() {
@@ -88,6 +93,15 @@ pub fn register_shortcuts(
         }
     }) {
         tracing::error!(%err, "no se pudo registrar el atajo de traer pill");
+    }
+
+    let handle = app.clone();
+    if let Err(err) = gs.on_shortcut(clipboard, move |_app, _sc, event| {
+        if matches!(event.state(), ShortcutState::Pressed) {
+            clipboard_history::summon_clipboard_panel(&handle);
+        }
+    }) {
+        tracing::error!(%err, "no se pudo registrar el atajo de clipboard");
     }
 
     let handle = app.clone();

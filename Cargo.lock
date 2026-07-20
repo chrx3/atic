@@ -254,6 +254,119 @@ dependencies = [
 ]
 
 [[package]]
+name = "atic-audio"
+version = "0.2.0"
+dependencies = [
+ "cpal",
+ "hound",
+ "nnnoiseless",
+ "serde",
+ "thiserror 2.0.18",
+ "tracing",
+ "windows 0.61.3",
+]
+
+[[package]]
+name = "atic-capture"
+version = "0.2.0"
+dependencies = [
+ "chrono",
+ "png 0.17.16",
+ "serde",
+ "thiserror 2.0.18",
+ "tracing",
+ "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "atic-core"
+version = "0.2.0"
+dependencies = [
+ "chrono",
+ "directories",
+ "keyring",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "atic-desktop"
+version = "0.2.0"
+dependencies = [
+ "arboard",
+ "atic-audio",
+ "atic-capture",
+ "atic-core",
+ "atic-mailer",
+ "atic-summarize",
+ "atic-transcribe",
+ "chrono",
+ "cpal",
+ "image",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-autostart",
+ "tauri-plugin-dialog",
+ "tauri-plugin-drag",
+ "tauri-plugin-global-shortcut",
+ "tauri-plugin-opener",
+ "tauri-plugin-process",
+ "tauri-plugin-single-instance",
+ "tauri-plugin-updater",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+ "webview2-com",
+ "windows-core 0.61.2",
+ "windows-sys 0.59.0",
+ "zip",
+]
+
+[[package]]
+name = "atic-mailer"
+version = "0.2.0"
+dependencies = [
+ "lettre",
+ "thiserror 2.0.18",
+ "tracing",
+ "urlencoding",
+]
+
+[[package]]
+name = "atic-summarize"
+version = "0.2.0"
+dependencies = [
+ "atic-core",
+ "chrono",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
+name = "atic-transcribe"
+version = "0.2.0"
+dependencies = [
+ "atic-core",
+ "hound",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "symphonia",
+ "thiserror 2.0.18",
+ "tracing",
+ "whisper-rs",
+]
+
+[[package]]
 name = "atk"
 version = "0.18.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3791,115 +3904,6 @@ dependencies = [
  "wasm-bindgen-futures",
  "wasm-streams",
  "web-sys",
-]
-
-[[package]]
-name = "atic-audio"
-version = "0.2.0"
-dependencies = [
- "cpal",
- "hound",
- "nnnoiseless",
- "serde",
- "thiserror 2.0.18",
- "tracing",
- "windows 0.61.3",
-]
-
-[[package]]
-name = "atic-capture"
-version = "0.2.0"
-dependencies = [
- "chrono",
- "png 0.17.16",
- "serde",
- "thiserror 2.0.18",
- "tracing",
- "windows-sys 0.59.0",
-]
-
-[[package]]
-name = "atic-core"
-version = "0.2.0"
-dependencies = [
- "chrono",
- "directories",
- "keyring",
- "rusqlite",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "atic-desktop"
-version = "0.2.0"
-dependencies = [
- "arboard",
- "chrono",
- "cpal",
- "resume-audio",
- "resume-capture",
- "resume-core",
- "resume-mailer",
- "resume-summarize",
- "resume-transcribe",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-autostart",
- "tauri-plugin-dialog",
- "tauri-plugin-drag",
- "tauri-plugin-global-shortcut",
- "tauri-plugin-opener",
- "tauri-plugin-process",
- "tauri-plugin-single-instance",
- "tauri-plugin-updater",
- "tracing",
- "tracing-subscriber",
- "windows-sys 0.59.0",
- "zip",
-]
-
-[[package]]
-name = "atic-mailer"
-version = "0.2.0"
-dependencies = [
- "lettre",
- "thiserror 2.0.18",
- "tracing",
- "urlencoding",
-]
-
-[[package]]
-name = "atic-summarize"
-version = "0.2.0"
-dependencies = [
- "chrono",
- "reqwest 0.12.28",
- "resume-core",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tracing",
-]
-
-[[package]]
-name = "atic-transcribe"
-version = "0.2.0"
-dependencies = [
- "hound",
- "reqwest 0.12.28",
- "resume-core",
- "serde",
- "serde_json",
- "symphonia",
- "thiserror 2.0.18",
- "tracing",
- "whisper-rs",
 ]
 
 [[package]]

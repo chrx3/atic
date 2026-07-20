@@ -38,31 +38,34 @@ textarea,
   --rb-display: "Avenir Next", "Aptos Display", "Helvetica Neue", sans-serif;
   --rb-mono: "Cascadia Mono", "SFMono-Regular", "Roboto Mono", monospace;
 
-  --rb-bg0: #efefeb;
-  --rb-bg1: #e7e7e1;
-  --rb-surface: #fbfbf8;
-  --rb-surface-2: #f3f3ef;
+  --rb-bg0: #ecece6;
+  --rb-bg1: #e2e2da;
+  --rb-surface: #f7f7f2;
+  --rb-surface-2: #efefe8;
   --rb-surface-elevated: #ffffff;
-  --rb-sidebar: #e7e7e1;
-  --rb-panel: #f3f3ef;
-  --rb-border: rgba(24, 24, 22, 0.1);
-  --rb-border-strong: rgba(24, 24, 22, 0.19);
-  --rb-text: #1a1a18;
-  --rb-muted: #666660;
-  --rb-faint: #96968e;
+  --rb-sidebar: #e4e4dc;
+  --rb-panel: #efefe8;
+  --rb-border: rgba(28, 28, 24, 0.11);
+  --rb-border-strong: rgba(28, 28, 24, 0.2);
+  --rb-text: #171714;
+  --rb-muted: #5f5f58;
+  --rb-faint: #8f8f86;
 
-  --rb-record: #e5483f;
-  --rb-record-soft: #f9e7e4;
-  --rb-mic: #3f7355;
-  --rb-sys: #55728b;
-  --rb-accent: #1d1d1b;
-  --rb-accent-soft: #e7e7e2;
+  --rb-record: #d6453d;
+  --rb-record-soft: #f7e6e3;
+  --rb-mic: #3a6b50;
+  --rb-sys: #4f6a82;
+  --rb-accent: #1a1a17;
+  --rb-accent-soft: #e4e4dc;
   --rb-warn: #946718;
   --rb-warn-soft: #f6efdd;
   --rb-ok: #3f7355;
   --rb-ok-soft: #e6eee8;
   --rb-info: #526d83;
   --rb-info-soft: #e6ecef;
+  --rb-on-accent: #f7f7f2;
+  --rb-glow: rgba(255, 255, 255, 0.55);
+  --rb-dot-opacity: 0.08;
 
   --rb-radius: 14px;
   --rb-radius-sm: 8px;
@@ -76,6 +79,42 @@ textarea,
   font-family: var(--rb-font);
   font-optical-sizing: auto;
   -webkit-font-smoothing: antialiased;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --rb-bg0: #121211;
+  --rb-bg1: #1a1a18;
+  --rb-surface: #1e1e1b;
+  --rb-surface-2: #262622;
+  --rb-surface-elevated: #2a2a26;
+  --rb-sidebar: #171714;
+  --rb-panel: #22221e;
+  --rb-border: rgba(246, 246, 241, 0.1);
+  --rb-border-strong: rgba(246, 246, 241, 0.18);
+  --rb-text: #f0f0ea;
+  --rb-muted: #9a9a90;
+  --rb-faint: #6e6e66;
+
+  --rb-record: #e85a52;
+  --rb-record-soft: #3a2220;
+  --rb-mic: #6faf88;
+  --rb-sys: #7ea0bc;
+  --rb-accent: #f0f0ea;
+  --rb-accent-soft: #2c2c28;
+  --rb-warn: #d4a84b;
+  --rb-warn-soft: #332a18;
+  --rb-ok: #6faf88;
+  --rb-ok-soft: #1d2a22;
+  --rb-info: #7ea0bc;
+  --rb-info-soft: #1d262e;
+  --rb-on-accent: #121211;
+  --rb-glow: rgba(255, 255, 255, 0.04);
+  --rb-dot-opacity: 0.12;
+
+  --rb-shadow: 0 24px 70px rgba(0, 0, 0, 0.45);
+  --rb-backdrop: rgba(0, 0, 0, 0.55);
+  --rb-focus: 0 0 0 3px rgba(232, 90, 82, 0.22), 0 0 0 1px var(--rb-record);
 }
 
 /* Scrollbars sobrios y consistentes en WebView2, Chromium y Firefox. */
@@ -112,19 +151,22 @@ textarea,
 .rb-app {
   position: relative;
   min-height: 100%;
+  height: 100%;
   overflow: auto;
   color: var(--rb-text);
-  background: var(--rb-bg0);
+  background:
+    radial-gradient(120% 80% at 0% 0%, var(--rb-glow), transparent 55%),
+    var(--rb-bg0);
 }
 
 .rb-app::before {
-  position: fixed;
+  position: absolute;
   inset: 0;
   z-index: 0;
   pointer-events: none;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32'%3E%3Ccircle cx='1' cy='1' r='.65' fill='%231a1a18' fill-opacity='.10'/%3E%3C/svg%3E");
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='28' height='28' viewBox='0 0 28 28'%3E%3Ccircle cx='1' cy='1' r='.55' fill='%23888880' fill-opacity='.35'/%3E%3C/svg%3E");
   content: "";
-  opacity: 0.45;
+  opacity: var(--rb-dot-opacity);
 }
 
 .rb-app > * {
@@ -139,7 +181,7 @@ textarea,
   left: 0.5rem;
   padding: 0.55rem 0.75rem;
   border-radius: var(--rb-radius-sm);
-  color: #fbfbf8;
+  color: var(--rb-on-accent);
   background: var(--rb-accent);
   font-size: 0.8125rem;
   font-weight: 650;
@@ -228,7 +270,7 @@ textarea,
 }
 
 .rb-btn-primary {
-  color: #fbfbf8;
+  color: var(--rb-on-accent);
   background: var(--rb-accent);
   border: 0;
   box-shadow: none;
@@ -465,18 +507,39 @@ textarea,
   background: var(--rb-surface-elevated);
 }
 
-@media (max-width: 52rem) {
+/* Ventana compacta: tabs horizontales con scroll real (no se cortan). */
+@media (max-width: 56rem) {
   .rb-settings-layout {
     flex-direction: column;
     min-height: 0;
+    min-width: 0;
   }
   .rb-settings-sidebar {
-    width: 100%;
+    width: auto;
+    max-width: 100%;
+    flex: 0 0 auto;
     flex-direction: row;
     flex-wrap: nowrap;
+    gap: 0.25rem;
     overflow-x: auto;
     overflow-y: hidden;
+    overscroll-behavior-x: contain;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-gutter: stable;
     padding: 0.5rem 0.65rem;
+    /* Scrollbar más visible para descubrir que se puede deslizar. */
+    scrollbar-width: thin;
+    scrollbar-color: var(--rb-scrollbar-thumb) color-mix(in srgb, var(--rb-text) 6%, transparent);
+  }
+  .rb-settings-sidebar::-webkit-scrollbar {
+    height: 8px;
+  }
+  .rb-settings-sidebar::-webkit-scrollbar-thumb {
+    min-width: 2rem;
+    border: 2px solid transparent;
+    border-radius: 999px;
+    background: var(--rb-scrollbar-thumb);
+    background-clip: padding-box;
   }
   .rb-settings-nav-item {
     width: auto;
@@ -531,7 +594,7 @@ textarea,
   background: var(--rb-accent);
 }
 .rb-check input[type="checkbox"]:checked::before {
-  background: #fbfbf8;
+  background: var(--rb-on-accent);
   transform: translateX(0.875rem);
 }
 .rb-check input[type="checkbox"]:focus-visible {

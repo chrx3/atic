@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Atic">
+  <!--
+    Marca Atic: ático minimalista en blanco y negro.
+    Frontón a dos aguas + hueco de ventana (espacio bajo el tejado).
+  -->
+  <rect width="512" height="512" rx="108" fill="#0C0C0B"/>
+  <path
+    fill="#F6F6F1"
+    fill-rule="evenodd"
+    d="M256 64L456 308H372V428H140V308H56L256 64Zm-52 252h104v88H204v-88Z"
+  />
+</svg>

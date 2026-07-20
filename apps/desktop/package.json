@@ -18,7 +18,8 @@
     "@tauri-apps/plugin-dialog": "^2",
     "@tauri-apps/plugin-opener": "^2",
     "@tauri-apps/plugin-process": "^2",
-    "@tauri-apps/plugin-updater": "^2"
+    "@tauri-apps/plugin-updater": "^2",
+    "reicon-svelte": "^1.0.101"
   },
   "devDependencies": {
     "@sveltejs/adapter-static": "^3.0.6",

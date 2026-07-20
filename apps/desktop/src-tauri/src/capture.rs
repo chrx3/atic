@@ -4,6 +4,7 @@
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
+use chrono::TimeZone;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -17,6 +18,8 @@ const SHELF_LIMIT: usize = 5;
 pub struct CaptureItem {
     /// Nombre de archivo, usado como id dentro de la carpeta de capturas.
     pub id: String,
+    /// Etiqueta corta para la UI (p. ej. `18:10`).
+    pub label: String,
     /// Ruta absoluta del PNG.
     pub path: String,
     /// Fecha de creación en milisegundos desde epoch (mtime del archivo).
@@ -31,15 +34,34 @@ pub fn capture_primary_monitor(app: AppHandle) -> Result<String, String> {
     capture_and_show(&app)
 }
 
-/// Captura + guarda + muestra el shelf + emite `screenshot-created`.
+/// Captura + guarda + portapapeles + shelf + emite `screenshot-created`.
 /// Compartido por el comando y el disparador del tray.
 pub fn capture_and_show(app: &AppHandle) -> Result<String, String> {
-    let path = capture_primary(app)?;
-    let _ = crate::capture_shelf::show_shelf(app);
-    if let Some(item) = capture_item(Path::new(&path)) {
+    let (path, anchor) = capture_primary(app)?;
+    notify_capture_ready(app, &path, Some(anchor));
+    Ok(path)
+}
+
+/// Tras guardar un PNG: copiar al portapapeles, mostrar shelf y emitir evento.
+///
+/// `shelf_anchor` (coords físicas) elige en qué monitor aparece el shelf.
+pub fn notify_capture_ready(app: &AppHandle, path: &str, shelf_anchor: Option<(i32, i32)>) {
+    if let Err(error) = copy_png_to_clipboard(Path::new(path)) {
+        tracing::warn!(%error, "no se pudo copiar la captura al portapapeles");
+    }
+    let _ = crate::capture_shelf::show_shelf(app, shelf_anchor);
+    if let Some(item) = capture_item(Path::new(path)) {
         let _ = app.emit("screenshot-created", item);
     }
-    Ok(path)
+
+    let state = app.state::<AppState>();
+    let (ui_sounds, output_device_id) = {
+        let cfg = state.config.lock().unwrap();
+        (cfg.ui_sounds, cfg.output_device_id.clone())
+    };
+    if ui_sounds {
+        crate::beep::play_capture_thump(&output_device_id);
+    }
 }
 
 #[tauri::command]
@@ -64,7 +86,12 @@ pub fn copy_capture_path(path: String) -> Result<(), String> {
 #[tauri::command]
 pub fn copy_capture_image(state: State<AppState>, path: String) -> Result<(), String> {
     let target = ensure_in_dir(&state.dirs.captures_dir(), Path::new(&path))?;
-    let bytes = std::fs::read(&target).map_err(|error| error.to_string())?;
+    copy_png_to_clipboard(&target)
+}
+
+/// Copia el PNG al portapapeles del sistema (imagen, no la ruta).
+pub fn copy_png_to_clipboard(path: &Path) -> Result<(), String> {
+    let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
     let (width, height, rgba) =
         atic_capture::encoding::png_to_rgba(&bytes).map_err(|error| error.to_string())?;
     let mut clipboard = arboard::Clipboard::new().map_err(|error| error.to_string())?;
@@ -147,6 +174,11 @@ pub fn run_capture_cleanup(app: &AppHandle) {
 }
 
 fn recent_captures(dir: &Path) -> Vec<CaptureItem> {
+    recent_captures_limited(dir, SHELF_LIMIT)
+}
+
+/// Listado de capturas recientes (para shelf o merge con historial de clipboard).
+pub(crate) fn recent_captures_limited(dir: &Path, limit: usize) -> Vec<CaptureItem> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
     };
@@ -157,7 +189,7 @@ fn recent_captures(dir: &Path) -> Vec<CaptureItem> {
         .filter_map(|path| capture_item(&path))
         .collect();
     items.sort_by_key(|item| std::cmp::Reverse(item.created_at_ms));
-    items.truncate(SHELF_LIMIT);
+    items.truncate(limit);
     items
 }
 
@@ -172,8 +204,14 @@ pub(crate) fn capture_item(path: &Path) -> Option<CaptureItem> {
     // El IHDR va al inicio del PNG; leer un prefijo basta para las dimensiones.
     let header = read_prefix(path, 1024)?;
     let (width, height) = atic_capture::encoding::png_dimensions(&header).ok()?;
+    let label = chrono::Local
+        .timestamp_millis_opt(created_at_ms as i64)
+        .single()
+        .map(|dt| atic_capture::naming::shelf_label(&dt.naive_local()))
+        .unwrap_or_else(|| "Captura".into());
     Some(CaptureItem {
         id: path.file_name()?.to_string_lossy().into_owned(),
+        label,
         path: path.to_string_lossy().into_owned(),
         created_at_ms,
         width,
@@ -202,7 +240,7 @@ fn ensure_in_dir(dir: &Path, path: &Path) -> Result<PathBuf, String> {
 }
 
 #[cfg(windows)]
-fn capture_primary(app: &AppHandle) -> Result<String, String> {
+fn capture_primary(app: &AppHandle) -> Result<(String, (i32, i32)), String> {
     use atic_capture::{engine, monitors, naming};
 
     let state = app.state::<AppState>();
@@ -217,13 +255,22 @@ fn capture_primary(app: &AppHandle) -> Result<String, String> {
 
     let frame = engine::capture_rect(target.bounds, false).map_err(|error| error.to_string())?;
     let png = frame.to_png().map_err(|error| error.to_string())?;
+    let anchor = rect_center(frame.bounds);
 
-    let path = dir.join(naming::new_capture_filename());
+    let path = dir.join(naming::unique_capture_filename(&dir));
     std::fs::write(&path, &png).map_err(|error| error.to_string())?;
-    Ok(path.to_string_lossy().into_owned())
+    Ok((path.to_string_lossy().into_owned(), anchor))
+}
+
+#[cfg(windows)]
+fn rect_center(bounds: atic_capture::Rect) -> (i32, i32) {
+    (
+        bounds.x + bounds.width as i32 / 2,
+        bounds.y + bounds.height as i32 / 2,
+    )
 }
 
 #[cfg(not(windows))]
-fn capture_primary(_app: &AppHandle) -> Result<String, String> {
+fn capture_primary(_app: &AppHandle) -> Result<(String, (i32, i32)), String> {
     Err("La captura de pantalla solo está disponible en Windows.".into())
 }

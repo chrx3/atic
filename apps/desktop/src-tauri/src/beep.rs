@@ -1,79 +1,94 @@
-//! Sonidos de feedback: grabación (carillón) y dictado (toques suaves).
+//! Sonidos de feedback: toques graves tipo «ANC» / vibración suave.
 //!
-//! Cada nota se sintetiza con envolvente suave (ataque/release) para evitar
-//! clics al inicio o al final.
+//! Baja frecuencia, ataque redondo y poco brillo para que se sientan como
+//! una presión satisfactoria, no como un beep de alerta.
 
 use cpal::traits::{DeviceTrait, StreamTrait};
 use cpal::{SampleFormat, StreamConfig};
 
-/// Arpegio ascendente suave al iniciar grabación.
-const START_NOTES: [(f32, f32); 3] = [(392.00, 0.10), (523.25, 0.10), (659.25, 0.16)];
-/// Arpegio descendente que resuelve al detener: misma identidad, en espejo.
-const STOP_NOTES: [(f32, f32); 3] = [(659.25, 0.09), (523.25, 0.09), (392.00, 0.18)];
+/// Grabación on: presión grave que sube un semitono (como activar ANC).
+const START_NOTES: [(f32, f32); 2] = [(58.0, 0.13), (78.0, 0.11)];
+/// Grabación off: espejo descendente, un poco más largo al final.
+const STOP_NOTES: [(f32, f32); 2] = [(78.0, 0.09), (52.0, 0.15)];
 
-/// Dictado: toque suave al abrir el mic (F3, breve y redondo).
-const DICTATION_START_NOTES: [(f32, f32); 1] = [(174.61, 0.18)];
-/// Dictado: confirmación elegante al pegar (A3 → C4, piano).
-const DICTATION_DONE_NOTES: [(f32, f32); 2] = [(220.00, 0.11), (261.63, 0.16)];
+/// Dictado: un solo golpe suave al abrir mic.
+const DICTATION_START_NOTES: [(f32, f32); 1] = [(64.0, 0.12)];
+/// Dictado listo: confirmación grave en dos pasos.
+const DICTATION_DONE_NOTES: [(f32, f32); 2] = [(56.0, 0.09), (72.0, 0.12)];
 
-const PEAK_AMPLITUDE: f32 = 0.16;
-const DICTATION_PEAK: f32 = 0.085;
-const ATTACK_SECS: f32 = 0.008;
-const RELEASE_SECS: f32 = 0.012;
-const DICTATION_ATTACK_SECS: f32 = 0.028;
-const DICTATION_RELEASE_SECS: f32 = 0.055;
-const DECAY_RATE: f32 = 9.0;
-const DICTATION_DECAY_RATE: f32 = 5.2;
-/// (múltiplo de la fundamental, amplitud relativa, multiplicador de decaimiento).
-const HARMONICS: [(f32, f32, f32); 2] = [(2.0, 0.35, 1.6), (3.0, 0.14, 2.4)];
-/// Timbre suave: poco 2º armónico, casi sin 3º.
-const DICTATION_HARMONICS: [(f32, f32, f32); 2] = [(2.0, 0.12, 2.2), (3.0, 0.04, 3.0)];
+/// Captura: click de obturador grave (una sola pulsación).
+const CAPTURE_NOTES: [(f32, f32); 1] = [(70.0, 0.11)];
+
+const BASS_PEAK: f32 = 0.14;
+const BASS_SOFT_PEAK: f32 = 0.09;
+const BASS_ATTACK_SECS: f32 = 0.045;
+const BASS_RELEASE_SECS: f32 = 0.055;
+const BASS_SOFT_ATTACK_SECS: f32 = 0.055;
+const BASS_SOFT_RELEASE_SECS: f32 = 0.07;
+const BASS_DECAY_RATE: f32 = 4.2;
+const BASS_SOFT_DECAY_RATE: f32 = 3.4;
+/// Poco brillo: sub + un armónico muy atenuado.
+const BASS_HARMONICS: [(f32, f32, f32); 2] = [(0.5, 0.55, 0.7), (2.0, 0.08, 2.8)];
+const BASS_SOFT_HARMONICS: [(f32, f32, f32); 2] = [(0.5, 0.45, 0.75), (2.0, 0.05, 3.2)];
+
 type ToneShape = (f32, f32, f32, f32, &'static [(f32, f32, f32)]);
 
-/// Reproduce el carillón de inicio de grabación en un hilo aparte.
+#[derive(Clone, Copy)]
+enum ToneProfile {
+    /// Grabación / captura: presencia clara pero grave.
+    Bass,
+    /// Dictado: aún más contenido.
+    BassSoft,
+}
+
+/// Carillón grave al iniciar grabación.
 pub fn play_start_beep(output_device_id: &str) {
     play_chime(
         output_device_id,
         &START_NOTES,
-        ToneProfile::Recording,
+        ToneProfile::Bass,
         "grabación (inicio)",
     );
 }
 
-/// Reproduce el carillón de fin de grabación en un hilo aparte.
+/// Carillón grave al detener grabación.
 pub fn play_stop_beep(output_device_id: &str) {
     play_chime(
         output_device_id,
         &STOP_NOTES,
-        ToneProfile::Recording,
+        ToneProfile::Bass,
         "grabación (fin)",
     );
 }
 
-/// Toque suave al iniciar dictado (mic abierto).
+/// Toque al iniciar dictado.
 pub fn play_dictation_start(output_device_id: &str) {
     play_chime(
         output_device_id,
         &DICTATION_START_NOTES,
-        ToneProfile::Dictation,
+        ToneProfile::BassSoft,
         "dictado (inicio)",
     );
 }
 
-/// Confirmación suave al pegar el texto dictado.
+/// Confirmación al pegar el texto dictado.
 pub fn play_dictation_done(output_device_id: &str) {
     play_chime(
         output_device_id,
         &DICTATION_DONE_NOTES,
-        ToneProfile::Dictation,
+        ToneProfile::BassSoft,
         "dictado (listo)",
     );
 }
 
-#[derive(Clone, Copy)]
-enum ToneProfile {
-    Recording,
-    Dictation,
+/// Pulsación grave al completar una captura.
+pub fn play_capture_thump(output_device_id: &str) {
+    play_chime(
+        output_device_id,
+        &CAPTURE_NOTES,
+        ToneProfile::Bass,
+        "captura",
+    );
 }
 
 fn play_chime(
@@ -104,7 +119,7 @@ fn play_chime_blocking(
 
     let total_secs: f32 = notes.iter().map(|(_, dur)| *dur).sum();
     // Silencio breve al inicio para que el dispositivo abra el stream en cero.
-    let lead_in = 0.012;
+    let lead_in = 0.018;
     let mut gen = ChimeGenerator::new(sample_rate, notes, profile, lead_in);
 
     let stream = match sample_format {
@@ -125,12 +140,11 @@ fn play_chime_blocking(
 
     stream.play()?;
     std::thread::sleep(std::time::Duration::from_secs_f32(
-        lead_in + total_secs + 0.06,
+        lead_in + total_secs + 0.08,
     ));
     Ok(())
 }
 
-/// Genera, muestra a muestra, la envolvente de las notas.
 struct ChimeGenerator {
     sample_rate: f32,
     notes: &'static [(f32, f32)],
@@ -157,6 +171,25 @@ impl ChimeGenerator {
         }
     }
 
+    fn shape(&self) -> ToneShape {
+        match self.profile {
+            ToneProfile::Bass => (
+                BASS_ATTACK_SECS,
+                BASS_RELEASE_SECS,
+                BASS_DECAY_RATE,
+                BASS_PEAK,
+                &BASS_HARMONICS,
+            ),
+            ToneProfile::BassSoft => (
+                BASS_SOFT_ATTACK_SECS,
+                BASS_SOFT_RELEASE_SECS,
+                BASS_SOFT_DECAY_RATE,
+                BASS_SOFT_PEAK,
+                &BASS_SOFT_HARMONICS,
+            ),
+        }
+    }
+
     fn next_sample(&mut self) -> f32 {
         if self.lead_remaining > 0.0 {
             self.lead_remaining -= 1.0 / self.sample_rate;
@@ -167,22 +200,7 @@ impl ChimeGenerator {
             return 0.0;
         };
 
-        let (attack_secs, release_secs, decay, peak, harmonics): ToneShape = match self.profile {
-            ToneProfile::Recording => (
-                ATTACK_SECS,
-                RELEASE_SECS,
-                DECAY_RATE,
-                PEAK_AMPLITUDE,
-                &HARMONICS,
-            ),
-            ToneProfile::Dictation => (
-                DICTATION_ATTACK_SECS,
-                DICTATION_RELEASE_SECS,
-                DICTATION_DECAY_RATE,
-                DICTATION_PEAK,
-                &DICTATION_HARMONICS,
-            ),
-        };
+        let (attack_secs, release_secs, decay, peak, harmonics) = self.shape();
 
         // Ataque/release en coseno (0→1→0) para evitar discontinuidades.
         let attack = if attack_secs <= 0.0 {
@@ -200,6 +218,7 @@ impl ChimeGenerator {
         let env = attack * release;
 
         let two_pi = 2.0 * std::f32::consts::PI;
+        // Sine puro + subarmónico: sensación de “vibración” más que de beep.
         let mut s = (two_pi * freq * self.t_in_note).sin() * (-self.t_in_note * decay).exp();
         for &(mult, amp, decay_mult) in harmonics {
             s += (two_pi * freq * mult * self.t_in_note).sin()

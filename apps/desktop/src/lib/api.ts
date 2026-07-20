@@ -27,6 +27,7 @@ import type {
   RetentionCleanupResult,
   MeetingDetectionPayload,
   CaptureItem,
+  ClipboardItem,
   OverlayInfo,
 } from "./types";
 
@@ -47,6 +48,7 @@ export const setConfig = (config: AppConfig) =>
   invoke<void>("set_config", { config });
 export const setPillVisible = (visible: boolean) =>
   invoke<void>("set_pill_visible", { visible });
+export const showMainWindow = () => invoke<void>("show_main_window");
 export const capturePrimaryMonitor = () =>
   invoke<string>("capture_primary_monitor");
 export const listRecentCaptures = () =>
@@ -64,6 +66,36 @@ export const activateCapture = (path: string) =>
 export const cleanupCapturesNow = () =>
   invoke<number>("cleanup_captures_now");
 export const openCapturesDir = () => invoke<void>("open_captures_dir");
+
+// --- Historial de clipboard ---
+export const listClipboardHistory = () =>
+  invoke<ClipboardItem[]>("list_clipboard_history");
+export const pasteClipboardItem = (id: string) =>
+  invoke<void>("paste_clipboard_item", { id });
+export const pinClipboardItem = (id: string, pinned: boolean) =>
+  invoke<void>("pin_clipboard_item", { id, pinned });
+export const deleteClipboardItem = (id: string) =>
+  invoke<void>("delete_clipboard_item", { id });
+export const clearClipboardHistory = () =>
+  invoke<void>("clear_clipboard_history");
+export const prepareClipboardPill = () =>
+  invoke<void>("prepare_clipboard_pill");
+export const restorePillPosition = () =>
+  invoke<boolean>("restore_pill_position");
+
+export const onClipboardHistoryChanged = (
+  cb: () => void,
+): Promise<UnlistenFn> => listen("clipboard-history-changed", () => cb());
+
+export const onPillClipboardToggle = (cb: () => void): Promise<UnlistenFn> =>
+  listen("pill-clipboard-toggle", () => cb());
+
+export const onPillClipboardClose = (cb: () => void): Promise<UnlistenFn> =>
+  listen("pill-clipboard-close", () => cb());
+
+/** Traer pill / reset: cierra clipboard y vuelve a estado compacto. */
+export const onPillReset = (cb: () => void): Promise<UnlistenFn> =>
+  listen("pill-reset", () => cb());
 
 // --- Overlay de selección de captura ---
 export const startCaptureSession = () =>

@@ -10,7 +10,12 @@
     Segment,
     MeetingDetectionPayload,
   } from "$lib/types";
+  import AppShell from "$lib/AppShell.svelte";
+  import CapturesTool from "$lib/CapturesTool.svelte";
+  import ClipboardTool from "$lib/ClipboardTool.svelte";
   import ConfirmModal from "$lib/ConfirmModal.svelte";
+  import DictationTool from "$lib/DictationTool.svelte";
+  import HotkeyCapture from "$lib/HotkeyCapture.svelte";
   import OnboardingModal from "$lib/OnboardingModal.svelte";
   import RecordingDetail from "$lib/RecordingDetail.svelte";
   import RecordingList from "$lib/RecordingList.svelte";
@@ -18,6 +23,13 @@
   import SettingsModal from "$lib/SettingsModal.svelte";
   import SummaryModal from "$lib/SummaryModal.svelte";
   import TranscriptModal from "$lib/TranscriptModal.svelte";
+  import type { ToolId } from "$lib/tools";
+  import {
+    applyTheme,
+    cycleTheme,
+    normalizeTheme,
+    type UiTheme,
+  } from "$lib/theme";
   import { formatMegabytes } from "$lib/format";
   import { playback } from "$lib/playback.svelte";
   import {
@@ -89,6 +101,10 @@
   let deleteTarget = $state<Recording | null>(null);
   let settingsOpen = $state(false);
   let bluetoothConfirmMessage = $state<string | null>(null);
+  let activeTool = $state<ToolId>("meetings");
+  let uiTheme = $state<UiTheme>("system");
+
+  const theme = $derived(normalizeTheme(config?.ui_theme ?? uiTheme));
 
   let timer: ReturnType<typeof setInterval> | null = null;
   let toastTimer: ReturnType<typeof setTimeout> | null = null;
@@ -339,6 +355,41 @@
     }
   }
 
+  /** Parchea config y re-registra atajos al instante. */
+  async function patchConfig(patch: Partial<AppConfig>) {
+    if (!config) return;
+    const previous = config;
+    const next = { ...config, ...patch };
+    config = next;
+    try {
+      await setConfig(next);
+    } catch (error) {
+      config = previous;
+      showToast(String(error));
+    }
+  }
+
+  function toggleTheme() {
+    const next = cycleTheme(theme);
+    uiTheme = next;
+    applyTheme(next);
+    void patchConfig({ ui_theme: next });
+  }
+
+  $effect(() => {
+    const next = normalizeTheme(config?.ui_theme ?? uiTheme);
+    uiTheme = next;
+    applyTheme(next);
+  });
+
+  $effect(() => {
+    if (theme !== "system" || typeof window === "undefined") return;
+    const mq = window.matchMedia("(prefers-color-scheme: dark)");
+    const onChange = () => applyTheme("system");
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  });
+
   onMount(() => {
     const unlisteners: Promise<UnlistenFn>[] = [];
 
@@ -468,293 +519,372 @@
   });
 </script>
 
-<div class="rb-app">
-  <header class="rb-app-header">
-    <div class="rb-brand">
-      <span class="rb-brand-mark" aria-hidden="true"></span>
-      <div>
-        <h1>Atic</h1>
-        <p>Reuniones en audio, texto y acciones</p>
-      </div>
-    </div>
-    <div class="rb-header-actions">
-      {#if modelReady}
-        <span class="rb-local-status">Local listo</span>
-      {/if}
-      <button class="rb-btn rb-btn-soft" onclick={() => (settingsOpen = true)}>
-        Ajustes
-      </button>
-    </div>
-  </header>
+<AppShell
+  bind:activeTool
+  theme={theme}
+  onToggleTheme={toggleTheme}
+  onOpenSettings={() => (settingsOpen = true)}
+>
+  <div class="rb-app">
+    <main id="main-content" class="rb-main" tabindex="-1">
+      {#if activeTool === "meetings"}
+        <div class="atic-meetings-head">
+          <div>
+            <p class="atic-meetings-kicker">Herramienta</p>
+            <h2>Reuniones</h2>
+          </div>
+          {#if modelReady}
+            <span class="rb-local-status">Local listo</span>
+          {/if}
+        </div>
 
-  <main id="main-content" class="rb-main" tabindex="-1">
-    {#if !modelReady}
-      <section class="rb-setup-notice" aria-label="Configurar transcripción">
-        {#if downloading}
-          <div class="min-w-0 flex-1">
-            <div class="rb-notice-heading">
-              <strong>Descargando modelos</strong>
-              <span>{downloadPercent}%</span>
-            </div>
-            <div class="rb-progress-track">
-              <i style="width: {downloadPercent}%"></i>
-            </div>
+        <div class="atic-shortcut-row">
+          <div>
+            <p class="atic-shortcut-label">Atajo de grabación</p>
+            <p class="atic-shortcut-hint">
+              Inicia o detiene la grabación desde cualquier app.
+            </p>
           </div>
-        {:else}
-          <div class="min-w-0 flex-1">
-            <strong>Prepara la transcripción local</strong>
-            <p>Falta descargar {missingModels.map((m) => m.display_name).join(" y ") || "el modelo local"}. El audio se procesa en este equipo.</p>
-          </div>
-          <button class="rb-btn rb-btn-primary" onclick={startDownload}>
-            Descargar{missingModels.length
-              ? ` · ${formatMegabytes(
-                  missingModels.reduce((s, m) => s + m.approx_size_bytes, 0),
-                )}`
-              : ""}
-          </button>
+          <HotkeyCapture
+            value={config?.global_shortcut ?? "CmdOrCtrl+Shift+R"}
+            defaultValue="CmdOrCtrl+Shift+R"
+            ariaLabel="Cambiar atajo de grabación"
+            onChange={(sc) => patchConfig({ global_shortcut: sc })}
+          />
+        </div>
+
+        {#if !modelReady}
+          <section class="rb-setup-notice" aria-label="Configurar transcripción">
+            {#if downloading}
+              <div class="min-w-0 flex-1">
+                <div class="rb-notice-heading">
+                  <strong>Descargando modelos</strong>
+                  <span>{downloadPercent}%</span>
+                </div>
+                <div class="rb-progress-track">
+                  <i style="width: {downloadPercent}%"></i>
+                </div>
+              </div>
+            {:else}
+              <div class="min-w-0 flex-1">
+                <strong>Prepara la transcripción local</strong>
+                <p>
+                  Falta descargar {missingModels
+                    .map((m) => m.display_name)
+                    .join(" y ") || "el modelo local"}. El audio se procesa en
+                  este equipo.
+                </p>
+              </div>
+              <button class="rb-btn rb-btn-primary" onclick={startDownload}>
+                Descargar{missingModels.length
+                  ? ` · ${formatMegabytes(
+                      missingModels.reduce((s, m) => s + m.approx_size_bytes, 0),
+                    )}`
+                  : ""}
+              </button>
+            {/if}
+          </section>
         {/if}
-      </section>
-    {/if}
 
-    {#if summarySetupNeeded}
-      <section class="rb-setup-notice rb-setup-info" aria-label="Configurar resumen">
-        <div class="min-w-0 flex-1">
-          <strong>Configura el proveedor de resúmenes</strong>
-          <p>
-            {config?.summary_backend === "ollama"
-              ? "Ollama no está disponible."
-              : "Falta la API key del proveedor seleccionado."}
-          </p>
+        {#if summarySetupNeeded}
+          <section
+            class="rb-setup-notice rb-setup-info"
+            aria-label="Configurar resumen"
+          >
+            <div class="min-w-0 flex-1">
+              <strong>Configura el proveedor de resúmenes</strong>
+              <p>
+                {config?.summary_backend === "ollama"
+                  ? "Ollama no está disponible."
+                  : "Falta la API key del proveedor seleccionado."}
+              </p>
+            </div>
+            <button
+              class="rb-btn rb-btn-soft"
+              onclick={() => (settingsOpen = true)}
+            >
+              Abrir ajustes
+            </button>
+          </section>
+        {/if}
+
+        {#if detectedMeeting && !recording}
+          <section
+            class="rb-setup-notice rb-setup-info"
+            aria-label="Reunión detectada"
+          >
+            <div class="min-w-0 flex-1">
+              <strong>
+                Reunión detectada en {detectedMeeting.provider ??
+                  "otra aplicación"}
+              </strong>
+              <p class="rb-detected-title">
+                {detectedMeeting.title ?? "Ventana de reunión activa"}
+              </p>
+            </div>
+            <button
+              class="rb-btn rb-btn-primary"
+              onclick={toggleRecording}
+              disabled={busy}
+            >
+              Iniciar grabación
+            </button>
+          </section>
+        {/if}
+
+        <RecordingToolbar
+          {recording}
+          {elapsed}
+          {levels}
+          {busy}
+          {importing}
+          {dictation}
+          {dictationMessage}
+          liveActive={recording && (config?.live_transcription ?? false)}
+          liveError={liveError}
+          recordingNote={recordingNote}
+          onToggle={toggleRecording}
+          onToggleDictation={toggleTextDictation}
+          onImport={importExternalAudio}
+        />
+
+        {#if recording && (liveSegments.length > 0 || livePartial || liveError)}
+          <section class="rb-live-panel" aria-label="Transcripción en vivo">
+            <div class="rb-live-panel-head">
+              <strong>En vivo</strong>
+              {#if liveError}
+                <span class="rb-chip rb-chip-warn">Error live</span>
+              {:else}
+                <span class="rb-chip rb-chip-ok">Transcribiendo</span>
+              {/if}
+            </div>
+            <ul class="rb-live-list" {@attach captureLiveList}>
+              {#each liveSegments as segment, index (`${segment.speaker}-${segment.start_ms}-${index}`)}
+                <li>
+                  <span
+                    class="rb-live-speaker"
+                    class:is-me={segment.speaker === "me"}
+                  >
+                    {segment.speaker === "me" ? "Yo" : "Otros"}
+                  </span>
+                  <span class="rb-live-text">{segment.text}</span>
+                </li>
+              {/each}
+              {#if livePartial}
+                <li class="is-partial">
+                  <span
+                    class="rb-live-speaker"
+                    class:is-me={livePartial.speaker === "me"}
+                  >
+                    {livePartial.speaker === "me" ? "Yo" : "Otros"}
+                  </span>
+                  <span class="rb-live-text">{livePartial.text}</span>
+                </li>
+              {/if}
+            </ul>
+          </section>
+        {/if}
+
+        <div class="rb-workspace">
+          <RecordingList
+            {recordings}
+            {selectedId}
+            progress={transcribeProgress}
+            onSelect={(item) => (selectedId = item.id)}
+          />
+          <RecordingDetail
+            recording={selectedRecording}
+            {modelReady}
+            modelName={meetingModel?.display_name}
+            progress={selectedRecording
+              ? transcribeProgress[selectedRecording.id]
+              : undefined}
+            onRename={renameSelected}
+            onTranscribe={() =>
+              selectedRecording ? transcribe(selectedRecording) : undefined}
+            onOpenTranscript={() => {
+              if (selectedRecording) transcriptFor = selectedRecording;
+            }}
+            onOpenSummary={() => {
+              if (selectedRecording) summaryFor = selectedRecording;
+            }}
+            onDelete={() => {
+              if (selectedRecording) deleteTarget = selectedRecording;
+            }}
+          />
         </div>
-        <button class="rb-btn rb-btn-soft" onclick={() => (settingsOpen = true)}>
-          Abrir ajustes
-        </button>
-      </section>
+      {:else if activeTool === "dictation"}
+        <DictationTool
+          phase={dictation}
+          message={dictationMessage}
+          shortcut={config?.dictation_shortcut ?? ""}
+          pillShortcut={config?.summon_pill_shortcut ?? ""}
+          mode={config?.dictation_mode ?? "toggle"}
+          {busy}
+          onToggle={toggleTextDictation}
+          onShortcutChange={(sc) => patchConfig({ dictation_shortcut: sc })}
+          onPillShortcutChange={(sc) =>
+            patchConfig({ summon_pill_shortcut: sc })
+          }
+          onModeChange={(mode) => patchConfig({ dictation_mode: mode })}
+          onOpenSettings={() => (settingsOpen = true)}
+        />
+      {:else if activeTool === "clipboard"}
+        <ClipboardTool
+          shortcut={config?.clipboard_shortcut ?? "CmdOrCtrl+Shift+V"}
+          onShortcutChange={(sc) => patchConfig({ clipboard_shortcut: sc })}
+          onToast={showToast}
+        />
+      {:else}
+        <CapturesTool
+          shortcut={config?.screenshot_shortcut ?? ""}
+          onToast={showToast}
+          onShortcutChange={(sc) => patchConfig({ screenshot_shortcut: sc })}
+          onOpenSettings={() => (settingsOpen = true)}
+        />
+      {/if}
+    </main>
+
+    {#if toast}
+      <div class="rb-toast" role="status" aria-live="polite">
+        {toast}
+      </div>
     {/if}
 
-    {#if detectedMeeting && !recording}
-      <section class="rb-setup-notice rb-setup-info" aria-label="Reunión detectada">
-        <div class="min-w-0 flex-1">
-          <strong>Reunión detectada en {detectedMeeting.provider ?? "otra aplicación"}</strong>
-          <p class="rb-detected-title">
-            {detectedMeeting.title ?? "Ventana de reunión activa"}
-          </p>
-        </div>
-        <button class="rb-btn rb-btn-primary" onclick={toggleRecording} disabled={busy}>
-          Iniciar grabación
-        </button>
-      </section>
-    {/if}
-
-    <RecordingToolbar
-      {recording}
-      {elapsed}
-      {levels}
-      {busy}
-      {importing}
-      {dictation}
-      {dictationMessage}
-      liveActive={recording && (config?.live_transcription ?? false)}
-      liveError={liveError}
-      recordingNote={recordingNote}
-      onToggle={toggleRecording}
-      onToggleDictation={toggleTextDictation}
-      onImport={importExternalAudio}
-    />
-
-    {#if recording && (liveSegments.length > 0 || livePartial || liveError)}
-      <section class="rb-live-panel" aria-label="Transcripción en vivo">
-        <div class="rb-live-panel-head">
-          <strong>En vivo</strong>
-          {#if liveError}
-            <span class="rb-chip rb-chip-warn">Error live</span>
-          {:else}
-            <span class="rb-chip rb-chip-ok">Transcribiendo</span>
-          {/if}
-        </div>
-        <ul class="rb-live-list" {@attach captureLiveList}>
-          {#each liveSegments as segment, index (`${segment.speaker}-${segment.start_ms}-${index}`)}
-            <li>
-              <span class="rb-live-speaker" class:is-me={segment.speaker === "me"}>
-                {segment.speaker === "me" ? "Yo" : "Otros"}
-              </span>
-              <span class="rb-live-text">{segment.text}</span>
-            </li>
-          {/each}
-          {#if livePartial}
-            <li class="is-partial">
-              <span
-                class="rb-live-speaker"
-                class:is-me={livePartial.speaker === "me"}
-              >
-                {livePartial.speaker === "me" ? "Yo" : "Otros"}
-              </span>
-              <span class="rb-live-text">{livePartial.text}</span>
-            </li>
-          {/if}
-        </ul>
-      </section>
-    {/if}
-
-    <div class="rb-workspace">
-      <RecordingList
-        {recordings}
-        {selectedId}
-        progress={transcribeProgress}
-        onSelect={(item) => (selectedId = item.id)}
+    {#if transcriptFor}
+      <TranscriptModal
+        recording={transcriptFor}
+        modelReady={modelReady}
+        onRetranscribe={() => {
+          if (transcriptFor) void transcribe(transcriptFor);
+        }}
+        onClose={() => (transcriptFor = null)}
       />
-      <RecordingDetail
-        recording={selectedRecording}
-        {modelReady}
-        modelName={meetingModel?.display_name}
-        progress={selectedRecording
-          ? transcribeProgress[selectedRecording.id]
-          : undefined}
-        onRename={renameSelected}
-        onTranscribe={() =>
-          selectedRecording ? transcribe(selectedRecording) : undefined}
-        onOpenTranscript={() => {
-          if (selectedRecording) transcriptFor = selectedRecording;
-        }}
-        onOpenSummary={() => {
-          if (selectedRecording) summaryFor = selectedRecording;
-        }}
-        onDelete={() => {
-          if (selectedRecording) deleteTarget = selectedRecording;
+    {/if}
+
+    {#if summaryFor}
+      <SummaryModal
+        recording={summaryFor}
+        onClose={() => (summaryFor = null)}
+        onToast={showToast}
+        onNeedSetup={() => {
+          summaryFor = null;
+          settingsOpen = true;
+          void loadSummarySetup();
         }}
       />
-    </div>
-  </main>
+    {/if}
 
-  {#if toast}
-    <div class="rb-toast" role="status" aria-live="polite">
-      {toast}
-    </div>
-  {/if}
+    {#if settingsOpen}
+      <SettingsModal
+        onClose={() => (settingsOpen = false)}
+        onSaved={(next) => {
+          config = next;
+          void loadModelState().catch((error) => showToast(String(error)));
+          void loadSummarySetup().catch((error) => showToast(String(error)));
+        }}
+        onToast={showToast}
+      />
+    {/if}
 
-  {#if transcriptFor}
-    <TranscriptModal
-      recording={transcriptFor}
-      modelReady={modelReady}
-      onRetranscribe={() => {
-        if (transcriptFor) void transcribe(transcriptFor);
-      }}
-      onClose={() => (transcriptFor = null)}
-    />
-  {/if}
+    {#if config && !config.onboarding_done}
+      <OnboardingModal config={config} onDone={completeOnboarding} />
+    {/if}
 
-  {#if summaryFor}
-    <SummaryModal
-      recording={summaryFor}
-      onClose={() => (summaryFor = null)}
-      onToast={showToast}
-      onNeedSetup={() => {
-        summaryFor = null;
-        settingsOpen = true;
-        void loadSummarySetup();
-      }}
-    />
-  {/if}
+    {#if deleteTarget}
+      <ConfirmModal
+        title="Eliminar grabación"
+        message={`¿Eliminar «${deleteTarget.title}»? También se borrarán el audio, la transcripción y el resumen.`}
+        confirmLabel="Eliminar"
+        onConfirm={confirmDelete}
+        onCancel={() => (deleteTarget = null)}
+      />
+    {/if}
 
-  {#if settingsOpen}
-    <SettingsModal
-      onClose={() => (settingsOpen = false)}
-      onSaved={(next) => {
-        config = next;
-        void loadModelState().catch((error) => showToast(String(error)));
-        void loadSummarySetup().catch((error) => showToast(String(error)));
-      }}
-      onToast={showToast}
-    />
-  {/if}
-
-  {#if config && !config.onboarding_done}
-    <OnboardingModal config={config} onDone={completeOnboarding} />
-  {/if}
-
-  {#if deleteTarget}
-    <ConfirmModal
-      title="Eliminar grabación"
-      message={`¿Eliminar «${deleteTarget.title}»? También se borrarán el audio, la transcripción y el resumen.`}
-      confirmLabel="Eliminar"
-      onConfirm={confirmDelete}
-      onCancel={() => (deleteTarget = null)}
-    />
-  {/if}
-
-  {#if bluetoothConfirmMessage}
-    <ConfirmModal
-      title="El Bluetooth bajará de calidad"
-      message={bluetoothConfirmMessage}
-      confirmLabel="Grabar de todos modos"
-      cancelLabel="Cancelar"
-      danger={false}
-      onConfirm={confirmBluetoothRecording}
-      onCancel={() => (bluetoothConfirmMessage = null)}
-    />
-  {/if}
-
-</div>
+    {#if bluetoothConfirmMessage}
+      <ConfirmModal
+        title="El Bluetooth bajará de calidad"
+        message={bluetoothConfirmMessage}
+        confirmLabel="Grabar de todos modos"
+        cancelLabel="Cancelar"
+        danger={false}
+        onConfirm={confirmBluetoothRecording}
+        onCancel={() => (bluetoothConfirmMessage = null)}
+      />
+    {/if}
+  </div>
+</AppShell>
 
 <style>
-  .rb-app-header {
+  .atic-meetings-head {
     display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 0.75rem;
+    margin-bottom: 0.15rem;
+  }
+
+  .atic-meetings-kicker {
+    margin: 0;
+    color: var(--rb-muted);
+    font-size: 0.6875rem;
+    font-weight: 650;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+
+  .atic-meetings-head h2 {
+    margin: 0.1rem 0 0;
+    font-family: var(--rb-display);
+    font-size: 1.2rem;
+    font-weight: 650;
+    letter-spacing: -0.03em;
+  }
+
+  .atic-shortcut-row {
+    display: flex;
+    flex-wrap: wrap;
     align-items: center;
     justify-content: space-between;
-    gap: 1rem;
-    width: min(100%, 72rem);
-    margin-inline: auto;
-    padding: 0.75rem 1.25rem;
+    gap: 0.75rem 1rem;
+    padding: 0.75rem 0.9rem;
+    border: 1px solid var(--rb-border);
+    border-radius: var(--rb-radius);
+    background: var(--rb-surface);
   }
-  .rb-brand {
-    display: flex;
-    min-width: 0;
-    align-items: center;
-    gap: 0.75rem;
+
+  .atic-shortcut-label {
+    margin: 0;
+    color: var(--rb-text);
+    font-size: 0.8125rem;
+    font-weight: 600;
   }
-  .rb-brand-mark {
-    display: block;
-    width: 0.625rem;
-    height: 0.625rem;
-    flex: 0 0 auto;
-    border-radius: 999px;
-    background: var(--rb-record);
-    box-shadow: none;
+
+  .atic-shortcut-hint {
+    margin: 0.15rem 0 0;
+    color: var(--rb-muted);
+    font-size: 0.75rem;
   }
-  .rb-header-actions {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-  }
+
   .rb-local-status {
     display: inline-flex;
     align-items: center;
-    min-height: 2.25rem;
-    padding: 0.3rem 0.5rem;
+    min-height: 1.75rem;
+    padding: 0.2rem 0.45rem;
     border-radius: var(--rb-radius-xs);
     color: var(--rb-accent);
     background: transparent;
     font-size: 0.6875rem;
     font-weight: 600;
   }
-  .rb-brand h1 {
-    color: var(--rb-text);
-    font-size: 0.9375rem;
-    font-weight: 650;
-    letter-spacing: -0.015em;
-  }
-  .rb-brand p {
-    margin-top: 0.1rem;
-    color: var(--rb-muted);
-    font-size: 0.6875rem;
-  }
+
   .rb-main {
     display: flex;
-    width: min(100%, 72rem);
-    margin-inline: auto;
+    width: 100%;
+    min-height: 100%;
     flex-direction: column;
     gap: 0.75rem;
-    padding: 0 1.25rem 1.25rem;
+    padding: 0.85rem 1rem 1rem;
   }
 
   .rb-main:focus-visible {
@@ -888,11 +1018,8 @@
     font-size: 0.75rem;
   }
   @media (max-width: 760px) {
-    .rb-app-header {
-      padding-inline: 0.875rem;
-    }
     .rb-main {
-      padding-inline: 0.875rem;
+      padding-inline: 0.75rem;
     }
     .rb-workspace {
       grid-template-columns: 1fr;
@@ -907,22 +1034,13 @@
   }
 
   @media (max-width: 36rem) {
-    .rb-app-header {
-      padding: 0.65rem 0.75rem;
-    }
-
-    .rb-brand {
-      gap: 0.55rem;
-    }
-
-    .rb-brand p,
     .rb-local-status {
       display: none;
     }
 
     .rb-main {
       gap: 0.625rem;
-      padding: 0 0.75rem max(0.75rem, env(safe-area-inset-bottom));
+      padding: 0.7rem 0.7rem max(0.75rem, env(safe-area-inset-bottom));
     }
 
     .rb-setup-notice {

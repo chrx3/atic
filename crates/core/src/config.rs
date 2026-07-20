@@ -49,6 +49,8 @@ pub struct Config {
     pub dictation_shortcut: String,
     /// Atajo global para traer la pill al cursor (animación).
     pub summon_pill_shortcut: String,
+    /// Atajo global: traer pill + abrir historial de clipboard.
+    pub clipboard_shortcut: String,
     /// Modo de dictado: `toggle` | `push_to_talk`.
     pub dictation_mode: String,
     /// Micrófono preferido (ID WASAPI o nombre legacy). Vacío = default del SO.
@@ -62,8 +64,10 @@ pub struct Config {
     pub show_pill: bool,
     /// Última posición conocida de la pill (x, y) en coordenadas de pantalla.
     pub pill_position: Option<(f64, f64)>,
-    /// Emitir un beep audible al iniciar la grabación (aviso de consentimiento).
+    /// Sonido grave al iniciar/detener grabación (aviso de consentimiento).
     pub beep_on_start: bool,
+    /// Toques graves de interfaz (capturas, dictado).
+    pub ui_sounds: bool,
     /// Pistas a grabar: `both` | `mic` | `system`.
     pub record_tracks: String,
     /// Pistas a transcribir: `both` | `mic` | `system`.
@@ -96,6 +100,8 @@ pub struct Config {
     /// Acción al hacer clic en la miniatura: `preview` (abrir imagen) |
     /// `location` (abrir carpeta).
     pub capture_click_action: String,
+    /// Tema de interfaz: `light` | `dark` | `system`.
+    pub ui_theme: String,
 }
 
 impl Default for Config {
@@ -129,6 +135,7 @@ impl Default for Config {
             global_shortcut: "CmdOrCtrl+Shift+R".to_string(),
             dictation_shortcut: "CmdOrCtrl+Shift+D".to_string(),
             summon_pill_shortcut: "CmdOrCtrl+Shift+P".to_string(),
+            clipboard_shortcut: "CmdOrCtrl+Shift+V".to_string(),
             dictation_mode: "push_to_talk".to_string(),
             mic_device_id: String::new(),
             dictation_mic_device_id: String::new(),
@@ -136,6 +143,7 @@ impl Default for Config {
             show_pill: true,
             pill_position: None,
             beep_on_start: false,
+            ui_sounds: true,
             record_tracks: "both".to_string(),
             transcribe_tracks: "both".to_string(),
             speakers_mode: false,
@@ -151,6 +159,7 @@ impl Default for Config {
             capture_retention_hours: 24,
             capture_include_cursor: false,
             capture_click_action: "preview".to_string(),
+            ui_theme: "system".to_string(),
         }
     }
 }
@@ -183,6 +192,7 @@ struct ConfigFile {
     global_shortcut: String,
     dictation_shortcut: Option<String>,
     summon_pill_shortcut: Option<String>,
+    clipboard_shortcut: Option<String>,
     dictation_mode: Option<String>,
     mic_device_id: Option<String>,
     dictation_mic_device_id: Option<String>,
@@ -190,6 +200,7 @@ struct ConfigFile {
     show_pill: bool,
     pill_position: Option<(f64, f64)>,
     beep_on_start: bool,
+    ui_sounds: Option<bool>,
     record_tracks: Option<String>,
     transcribe_tracks: Option<String>,
     speakers_mode: Option<bool>,
@@ -207,6 +218,7 @@ struct ConfigFile {
     capture_retention_hours: Option<u32>,
     capture_include_cursor: Option<bool>,
     capture_click_action: Option<String>,
+    ui_theme: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -266,6 +278,7 @@ impl Default for ConfigFile {
             global_shortcut: d.global_shortcut,
             dictation_shortcut: None,
             summon_pill_shortcut: None,
+            clipboard_shortcut: None,
             dictation_mode: None,
             mic_device_id: None,
             dictation_mic_device_id: None,
@@ -273,6 +286,7 @@ impl Default for ConfigFile {
             show_pill: d.show_pill,
             pill_position: d.pill_position,
             beep_on_start: d.beep_on_start,
+            ui_sounds: None,
             record_tracks: None,
             transcribe_tracks: None,
             speakers_mode: None,
@@ -288,6 +302,7 @@ impl Default for ConfigFile {
             capture_retention_hours: None,
             capture_include_cursor: None,
             capture_click_action: None,
+            ui_theme: None,
         }
     }
 }
@@ -381,6 +396,10 @@ impl From<ConfigFile> for Config {
                 .summon_pill_shortcut
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| "CmdOrCtrl+Shift+P".into()),
+            clipboard_shortcut: f
+                .clipboard_shortcut
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "CmdOrCtrl+Shift+V".into()),
             dictation_mode: match f.dictation_mode.as_deref() {
                 Some("toggle") => "toggle".into(),
                 _ => "push_to_talk".into(),
@@ -391,6 +410,8 @@ impl From<ConfigFile> for Config {
             show_pill: f.show_pill,
             pill_position: f.pill_position,
             beep_on_start: f.beep_on_start,
+            // Configs antiguas: activar toques de UI (captura/dictado).
+            ui_sounds: f.ui_sounds.unwrap_or(true),
             record_tracks: f.record_tracks.unwrap_or_else(|| "both".into()),
             transcribe_tracks: f.transcribe_tracks.unwrap_or_else(|| "both".into()),
             speakers_mode: f.speakers_mode.unwrap_or(false),
@@ -415,6 +436,11 @@ impl From<ConfigFile> for Config {
             capture_click_action: match f.capture_click_action.as_deref() {
                 Some("location") => "location".into(),
                 _ => "preview".into(),
+            },
+            ui_theme: match f.ui_theme.as_deref() {
+                Some("light") => "light".into(),
+                Some("dark") => "dark".into(),
+                _ => "system".into(),
             },
         }
     }
@@ -499,6 +525,7 @@ mod tests {
         assert!(cfg.mic_device_id.is_empty());
         assert!(cfg.output_device_id.is_empty());
         assert_eq!(cfg.record_tracks, "both");
+        assert!(cfg.ui_sounds);
     }
 
     #[test]

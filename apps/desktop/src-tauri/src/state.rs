@@ -28,6 +28,9 @@ pub struct AppState {
     pub whisper: Mutex<HashMap<PathBuf, Arc<LoadedModel>>>,
     /// Sesión de captura de pantalla activa (overlay de selección). Solo una.
     pub overlay_session: Mutex<Option<crate::capture_session::OverlaySession>>,
+    /// Posición de la pill antes de invocar el clipboard en el cursor.
+    /// Se restaura al cerrar/pegar; no se persiste en disco.
+    pub pre_clipboard_position: Mutex<Option<(f64, f64)>>,
 }
 
 /// Grabación actualmente en curso.
@@ -388,6 +391,26 @@ pub fn toggle_pill(app: &AppHandle) {
     set_pill_visible(app, !visible);
 }
 
+/// Coloca la pill centrada en el cursor (sin animación) y la muestra.
+///
+/// No persiste la posición: el clipboard la trata como temporal y restaura
+/// [`AppState::pre_clipboard_position`] al cerrar. Devuelve el tamaño físico
+/// usado para el anclaje.
+pub fn place_pill_at_cursor(app: &AppHandle) -> Option<(i32, i32, i32, i32)> {
+    let pill = app.get_webview_window("pill")?;
+    let (cx, cy) = cursor_screen_position()?;
+    set_pill_visible(app, true);
+    let (w, h) = pill
+        .outer_size()
+        .ok()
+        .map(|s| (s.width as i32, s.height as i32))
+        .unwrap_or((160, 48));
+    let x = cx - w / 2;
+    let y = cy - h / 2;
+    let _ = pill.set_position(tauri::PhysicalPosition::new(x, y));
+    Some((x, y, w, h))
+}
+
 /// Muestra la pill y la anima hacia la posición actual del cursor.
 pub fn summon_pill_to_cursor(app: &AppHandle) {
     let Some(pill) = app.get_webview_window("pill") else {
@@ -402,11 +425,21 @@ pub fn summon_pill_to_cursor(app: &AppHandle) {
 
     set_pill_visible(app, true);
 
+    // Traer pill es un traslado permanente: cancela cualquier home del clipboard.
+    if let Some(state) = app.try_state::<AppState>() {
+        *state.pre_clipboard_position.lock().unwrap() = None;
+    }
+
+    // Cierra historial / basura de UI y fuerza tamaño compacto antes de animar
+    // (si no, un panel a medias o el diálogo Imprimir del WebView queda visible).
+    let _ = app.emit("pill-reset", ());
+    let _ = pill.set_size(tauri::LogicalSize::new(112.0, 48.0));
+
     let (w, h) = pill
         .outer_size()
         .ok()
         .map(|s| (s.width as i32, s.height as i32))
-        .unwrap_or((160, 48));
+        .unwrap_or((112, 48));
     let target_x = cx - w / 2;
     let target_y = cy - h / 2;
     let (start_x, start_y) = pill
