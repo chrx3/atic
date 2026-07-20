@@ -61,8 +61,19 @@ pub fn start_capture_session(app: AppHandle) -> Result<(), String> {
 }
 
 /// Disparador para el atajo global y el tray (no pasa por `invoke`).
+/// Segunda pulsación con sesión abierta: cancela (toggle), no reinicia.
 pub fn trigger(app: &AppHandle) -> Result<(), String> {
-    start_impl(app)
+    if session_is_active(app) {
+        end_session(app);
+        Ok(())
+    } else {
+        start_impl(app)
+    }
+}
+
+fn session_is_active(app: &AppHandle) -> bool {
+    app.try_state::<crate::state::AppState>()
+        .is_some_and(|state| state.overlay_session.lock().unwrap().is_some())
 }
 
 #[tauri::command]
@@ -139,8 +150,11 @@ fn end_session_cleanup(_session: Option<OverlaySession>) {}
 fn start_impl(app: &AppHandle) -> Result<(), String> {
     use atic_capture::{engine, monitors, windows as capwin};
 
-    // Cancela cualquier sesión previa (solo una activa).
-    end_session(app);
+    // Solo una sesión: si ya hay overlay, cancelar (mismo criterio que el atajo).
+    if session_is_active(app) {
+        end_session(app);
+        return Ok(());
+    }
 
     let state = app.state::<crate::state::AppState>();
     let include_cursor = state.config.lock().unwrap().capture_include_cursor;
@@ -162,6 +176,10 @@ fn start_impl(app: &AppHandle) -> Result<(), String> {
         frame_path,
     });
 
+    // Emitir antes de show: el frontend empieza a cargar el PNG mientras
+    // dimensionamos la ventana, y solo revela con fade cuando el frame está listo.
+    let _ = app.emit("overlay-session-started", ());
+
     // La ventana `capture-overlay` es estática (creada oculta al arrancar).
     // Se muestra PRIMERO y luego se dimensiona: `set_size`/`set_position` sobre
     // una ventana oculta no tomaba efecto, dejándola en 800x600 con scroll.
@@ -176,8 +194,6 @@ fn start_impl(app: &AppHandle) -> Result<(), String> {
     let _ = window.set_size(size);
     let _ = window.set_always_on_top(true);
     let _ = window.set_focus();
-    // El webview persiste; re-inicializa con los datos de la nueva sesión.
-    let _ = app.emit("overlay-session-started", ());
     Ok(())
 }
 

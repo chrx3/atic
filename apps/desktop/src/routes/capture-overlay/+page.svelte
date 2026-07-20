@@ -12,9 +12,12 @@
   } from "$lib/api";
 
   const DRAG_THRESHOLD = 4;
+  const FADE_MS = 120;
 
   let frameSrc = $state("");
   let candidates: OverlayCandidate[] = [];
+  /** Evita flash negro: solo se revela cuando el frame ya cargó. */
+  let revealed = $state(false);
 
   let hovered = $state<OverlayCandidate | null>(null);
   let region = $state<{
@@ -29,6 +32,7 @@
   let dragging = false;
   let dragStart = { x: 0, y: 0 };
   let done = false; // evita capturar dos veces
+  let initToken = 0;
 
   const selection = $derived(
     region ??
@@ -41,6 +45,10 @@
           }
         : null),
   );
+
+  function sleep(ms: number) {
+    return new Promise<void>((resolve) => setTimeout(resolve, ms));
+  }
 
   /// Oculta el overlay (cancela la sesión en el backend). NO cierra la ventana:
   /// destruirla provoca un crash de wry en WM_SETFOCUS. Se reutiliza después.
@@ -55,6 +63,8 @@
   async function run(action: () => Promise<unknown>) {
     if (done) return;
     done = true;
+    revealed = false;
+    await sleep(FADE_MS);
     try {
       await action();
     } catch (error) {
@@ -93,14 +103,14 @@
   }
 
   function onMouseDown(e: MouseEvent) {
-    if (e.button !== 0) return;
+    if (!revealed || e.button !== 0) return;
     dragging = true;
     dragStart = { x: e.clientX, y: e.clientY };
     region = null;
   }
 
   function onMouseUp(e: MouseEvent) {
-    if (done) return;
+    if (done || !revealed) return;
     const wasDragging = dragging;
     dragging = false;
     const currentRegion = region;
@@ -123,11 +133,14 @@
     const target = hitTest(e.clientX, e.clientY);
     if (target) {
       run(() => completeWindowCapture(target.hwnd));
+    } else {
+      // Clic en vacío (sin ventana): cancelar, igual que Esc.
+      run(() => safeClose());
     }
   }
 
   function onKeyDown(e: KeyboardEvent) {
-    if (done) return;
+    if (done || !revealed) return;
     if (e.key === "Escape") {
       run(() => safeClose());
     } else if (e.key === " ") {
@@ -147,7 +160,17 @@
   function onContextMenu(e: MouseEvent) {
     // Clic derecho = cancelar (salida de respaldo).
     e.preventDefault();
+    if (!revealed) return;
     run(() => safeClose());
+  }
+
+  function onFrameLoad() {
+    // Un frame para que el paint del <img> ocurra antes del fade-in.
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        if (!done) revealed = true;
+      });
+    });
   }
 
   let unlistenStart: UnlistenFn | null = null;
@@ -155,12 +178,16 @@
   /// (Re)inicializa la sesión: el webview se reutiliza entre capturas, así que
   /// esto corre en cada `overlay-session-started`, no solo al montar.
   async function init() {
+    const token = ++initToken;
     done = false;
+    revealed = false;
     region = null;
     hovered = null;
     dragging = false;
+    frameSrc = "";
     try {
       const info = await overlayInfo();
+      if (token !== initToken) return;
       candidates = info.candidates;
       // Cache-bust: el archivo se reescribe con el mismo nombre cada sesión.
       frameSrc = `${convertFileSrc(info.framePath)}?t=${Date.now()}`;
@@ -190,9 +217,9 @@
   });
 </script>
 
-<div class="overlay" bind:this={overlayEl}>
+<div class="overlay" class:is-revealed={revealed} bind:this={overlayEl}>
   {#if frameSrc}
-    <img class="frame" src={frameSrc} alt="" draggable="false" />
+    <img class="frame" src={frameSrc} alt="" draggable="false" onload={onFrameLoad} />
   {/if}
 
   {#if selection}
@@ -211,7 +238,7 @@
   {/if}
 
   <div class="hint" style="left:{cursor.x}px;">
-    Clic: ventana · Arrastra: región · Espacio: pantalla · Esc: cancelar
+    Clic: ventana · Arrastra: región · Espacio: pantalla · Esc cancela
   </div>
 </div>
 
@@ -220,7 +247,7 @@
   :global(body) {
     margin: 0;
     overflow: hidden;
-    background: #000;
+    background: #111;
     cursor: crosshair;
   }
 
@@ -231,6 +258,11 @@
     height: 100vh;
     overflow: hidden;
     user-select: none;
+    opacity: 0;
+    transition: opacity 140ms ease-out;
+  }
+  .overlay.is-revealed {
+    opacity: 1;
   }
 
   .frame {
@@ -244,21 +276,21 @@
   .dim-full {
     position: absolute;
     inset: 0;
-    background: rgba(0, 0, 0, 0.45);
+    background: rgba(0, 0, 0, 0.28);
     pointer-events: none;
   }
 
   .spotlight {
     position: absolute;
     border: 2px solid #2f9e44;
-    box-shadow: 0 0 0 100000px rgba(0, 0, 0, 0.45);
+    box-shadow: 0 0 0 100000px rgba(0, 0, 0, 0.28);
     box-sizing: border-box;
     pointer-events: none;
   }
 
   .dims {
     position: absolute;
-    background: rgba(0, 0, 0, 0.8);
+    background: rgba(0, 0, 0, 0.75);
     color: #fff;
     font: 12px system-ui, sans-serif;
     padding: 2px 6px;
@@ -271,7 +303,7 @@
     position: fixed;
     bottom: 32px;
     transform: translateX(-50%);
-    background: rgba(0, 0, 0, 0.8);
+    background: rgba(0, 0, 0, 0.75);
     color: #fff;
     font: 13px system-ui, sans-serif;
     padding: 6px 14px;

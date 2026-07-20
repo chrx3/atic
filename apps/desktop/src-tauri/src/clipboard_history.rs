@@ -4,6 +4,7 @@
 //! comandos para listar, pegar, fijar y borrar.
 
 use std::collections::hash_map::DefaultHasher;
+use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicIsize, Ordering};
@@ -62,6 +63,9 @@ struct HistoryState {
     last_fingerprint: Option<String>,
     /// Evita re-capturar lo que nosotros mismos pegamos.
     suppress_until: Option<SystemTime>,
+    /// Ítems borrados a mano: el SO puede seguir teniendo el mismo contenido
+    /// en el portapapeles; sin esto el watcher los re-ingiere al instante.
+    deleted_fingerprints: HashSet<String>,
 }
 
 static HISTORY: Mutex<Option<Arc<Mutex<HistoryState>>>> = Mutex::new(None);
@@ -127,6 +131,9 @@ fn encode_png_rgba(rgba: &[u8], width: usize, height: usize) -> Result<Vec<u8>, 
 }
 
 fn push_item(state: &mut HistoryState, dir: &Path, mut item: ClipboardItem) {
+    if state.deleted_fingerprints.contains(&item.fingerprint) {
+        return;
+    }
     if state
         .last_fingerprint
         .as_ref()
@@ -134,6 +141,9 @@ fn push_item(state: &mut HistoryState, dir: &Path, mut item: ClipboardItem) {
     {
         return;
     }
+    // Contenido nuevo distinto al borrado: ya se puede volver a capturar
+    // el mismo fingerprint si el usuario lo copia otra vez más adelante.
+    state.deleted_fingerprints.clear();
     if let Some(idx) = state
         .items
         .iter()
@@ -193,6 +203,7 @@ pub fn start_watcher(app: &AppHandle) {
         items,
         last_fingerprint: last,
         suppress_until: None,
+        deleted_fingerprints: HashSet::new(),
     }));
     *guard = Some(shared.clone());
     drop(guard);
@@ -275,6 +286,9 @@ fn ingest_image(
     let fp = fingerprint_image(bytes, w, h);
     {
         let hist = shared.lock().unwrap();
+        if hist.deleted_fingerprints.contains(&fp) {
+            return Ok(false);
+        }
         if hist.last_fingerprint.as_ref() == Some(&fp) {
             return Ok(false);
         }
@@ -370,8 +384,9 @@ pub fn list_clipboard_history(state: State<AppState>) -> Result<Vec<ClipboardIte
         });
     }
     items.sort_by(|a, b| {
-        b.pinned
-            .cmp(&a.pinned)
+        // Favoritos al final; dentro de cada grupo, más reciente primero.
+        a.pinned
+            .cmp(&b.pinned)
             .then(b.created_at_ms.cmp(&a.created_at_ms))
     });
     Ok(items)
@@ -397,10 +412,22 @@ pub fn paste_clipboard_item(app: AppHandle, state: State<AppState>, id: String) 
     // WebView2/Electron necesitan un poco más para asentar el foco del hijo Chromium.
     thread::sleep(Duration::from_millis(220));
 
+    #[cfg(windows)]
+    let target = saved_paste_target_hwnd();
+    #[cfg(not(windows))]
+    let target = None;
+
     let result = match item.kind {
         ClipboardKind::Text => {
             let text = item.text.unwrap_or_default();
-            paste_text(&text)
+            {
+                let mut clipboard = Clipboard::new().map_err(|e| e.to_string())?;
+                clipboard
+                    .set_text(text)
+                    .map_err(|e| e.to_string())?;
+            }
+            thread::sleep(Duration::from_millis(80));
+            paste_text_hotkey_for(target)
         }
         ClipboardKind::Image => {
             let path = item
@@ -408,8 +435,7 @@ pub fn paste_clipboard_item(app: AppHandle, state: State<AppState>, id: String) 
                 .ok_or_else(|| "imagen sin ruta".to_string())?;
             crate::capture::copy_png_to_clipboard(Path::new(&path))?;
             thread::sleep(Duration::from_millis(80));
-            // Mismo criterio que texto: consolas suelen querer Ctrl+Shift+V.
-            paste_text_hotkey()
+            paste_text_hotkey_for(target)
         }
     };
 
@@ -499,7 +525,7 @@ pub fn pin_clipboard_item(state: State<AppState>, id: String, pinned: bool) -> R
 }
 
 #[tauri::command]
-pub fn delete_clipboard_item(state: State<AppState>, id: String) -> Result<(), String> {
+pub fn delete_clipboard_item(app: AppHandle, state: State<AppState>, id: String) -> Result<(), String> {
     let dir = state.dirs.clipboard_dir();
     let shared = shared_history()?;
     let mut hist = shared.lock().unwrap();
@@ -507,6 +533,9 @@ pub fn delete_clipboard_item(state: State<AppState>, id: String) -> Result<(), S
         return Err("Ítem no encontrado".into());
     };
     let removed = hist.items.remove(idx);
+    hist.deleted_fingerprints.insert(removed.fingerprint.clone());
+    // Evita carrera con el poll inmediato del watcher.
+    hist.suppress_until = Some(SystemTime::now() + Duration::from_millis(1200));
     if let Some(path) = removed.image_path {
         let p = PathBuf::from(path);
         if p.starts_with(&dir) {
@@ -517,16 +546,22 @@ pub fn delete_clipboard_item(state: State<AppState>, id: String) -> Result<(), S
         hist.last_fingerprint = hist.items.first().map(|i| i.fingerprint.clone());
     }
     save_history(&dir, &hist.items);
+    drop(hist);
+    let _ = app.emit("clipboard-history-changed", ());
     Ok(())
 }
 
 /// Vacía el historial conservando los pines.
 #[tauri::command]
-pub fn clear_clipboard_history(state: State<AppState>) -> Result<(), String> {
+pub fn clear_clipboard_history(app: AppHandle, state: State<AppState>) -> Result<(), String> {
     let dir = state.dirs.clipboard_dir();
     let shared = shared_history()?;
     let mut hist = shared.lock().unwrap();
     let (pinned, rest): (Vec<_>, Vec<_>) = hist.items.drain(..).partition(|i| i.pinned);
+    for item in &rest {
+        hist.deleted_fingerprints.insert(item.fingerprint.clone());
+    }
+    hist.suppress_until = Some(SystemTime::now() + Duration::from_millis(1200));
     for item in rest {
         if let Some(path) = item.image_path {
             let p = PathBuf::from(path);
@@ -538,13 +573,15 @@ pub fn clear_clipboard_history(state: State<AppState>) -> Result<(), String> {
     hist.items = pinned;
     hist.last_fingerprint = hist.items.first().map(|i| i.fingerprint.clone());
     save_history(&dir, &hist.items);
+    drop(hist);
+    let _ = app.emit("clipboard-history-changed", ());
     Ok(())
 }
 
 /// Pone texto en el portapapeles y lo pega en la ventana en primer plano.
 ///
-/// En consolas / Electron (Claude Code, Windows Terminal, etc.) usa
-/// Ctrl+Shift+V; en el resto, Ctrl+V. Compartido con dictado.
+/// Default: Ctrl+V (editores, navegadores, Office). Solo usa Ctrl+Shift+V
+/// cuando detecta una consola/terminal donde Ctrl+V no pega de forma fiable.
 pub(crate) fn paste_text(text: &str) -> Result<(), String> {
     {
         let mut clipboard = Clipboard::new().map_err(|e| e.to_string())?;
@@ -556,13 +593,35 @@ pub(crate) fn paste_text(text: &str) -> Result<(), String> {
     paste_text_hotkey()
 }
 
-/// Elige el atajo de pegado según la clase de la ventana en foco.
+/// Atajo de pegado: Ctrl+V por defecto; Ctrl+Shift+V solo en terminales.
 fn paste_text_hotkey() -> Result<(), String> {
+    paste_text_hotkey_for(None)
+}
+
+/// Como [`paste_text_hotkey`], pero con HWND destino explícito (p. ej. el
+/// guardado al abrir el historial). Evita depender de GetForegroundWindow
+/// tras restaurar el foco, que a veces ya no es Terax/Claude.
+fn paste_text_hotkey_for(
+    #[cfg(windows)] target: Option<windows_sys::Win32::Foundation::HWND>,
+    #[cfg(not(windows))] _target: Option<()>,
+) -> Result<(), String> {
     #[cfg(windows)]
     {
-        // Terminales / Electron suelen ignorar Ctrl+V (clipboard history) y
-        // requieren Ctrl+Shift+V. Notepad/Word siguen con Ctrl+V.
-        if foreground_prefers_ctrl_shift_v() {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, IsWindow};
+
+        let hwnd = unsafe {
+            target
+                .filter(|h| !h.is_null() && IsWindow(*h) != 0)
+                .or_else(|| {
+                    let fg = GetForegroundWindow();
+                    if fg.is_null() {
+                        None
+                    } else {
+                        Some(fg)
+                    }
+                })
+        };
+        if hwnd.is_some_and(hwnd_prefers_ctrl_shift_v) {
             paste_ctrl_shift_v()
         } else {
             paste_ctrl_v()
@@ -570,35 +629,51 @@ fn paste_text_hotkey() -> Result<(), String> {
     }
     #[cfg(not(windows))]
     {
+        let _ = _target;
         Err("Pega con Ctrl/Cmd+V; el contenido ya está en el portapapeles.".into())
     }
 }
 
-/// Consolas / terminales (y Claude Code / Terax). No usar `Chrome_WidgetWin`
-/// a ciegas: VS Code también es Electron y ahí Ctrl+Shift+V abre preview.
 #[cfg(windows)]
-fn foreground_prefers_ctrl_shift_v() -> bool {
-    use windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+fn saved_paste_target_hwnd() -> Option<windows_sys::Win32::Foundation::HWND> {
+    use windows_sys::Win32::Foundation::HWND;
+    use windows_sys::Win32::UI::WindowsAndMessaging::IsWindow;
 
+    let raw = PREV_FOREGROUND.load(Ordering::SeqCst);
+    if raw == 0 {
+        return None;
+    }
     unsafe {
-        let hwnd = GetForegroundWindow();
-        if hwnd.is_null() {
-            return false;
+        let hwnd = raw as HWND;
+        if IsWindow(hwnd) == 0 {
+            None
+        } else {
+            Some(hwnd)
         }
-        hwnd_prefers_ctrl_shift_v(hwnd)
     }
 }
 
+/// Consolas / terminales donde Ctrl+V no es fiable y hace falta Ctrl+Shift+V.
 #[cfg(windows)]
 fn hwnd_prefers_ctrl_shift_v(hwnd: windows_sys::Win32::Foundation::HWND) -> bool {
-    use windows_sys::Win32::UI::WindowsAndMessaging::GetClassNameW;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GetClassNameW, GetWindowTextW};
 
     unsafe {
         let mut buf = [0u16; 256];
         let len = GetClassNameW(hwnd, buf.as_mut_ptr(), buf.len() as i32);
         if len > 0 {
             let class = String::from_utf16_lossy(&buf[..len as usize]).to_ascii_lowercase();
+            // Consola clásica y Windows Terminal / Cascadia.
             if class.contains("console") || class.contains("cascadia") {
+                return true;
+            }
+        }
+
+        let title_len = GetWindowTextW(hwnd, buf.as_mut_ptr(), buf.len() as i32);
+        if title_len > 0 {
+            let title = String::from_utf16_lossy(&buf[..title_len as usize]).to_ascii_lowercase();
+            // Terax / Claude Code a veces reportan un hijo Chrome_*; el título ayuda.
+            if title.contains("terax") || title.contains("claude") {
                 return true;
             }
         }
@@ -610,14 +685,16 @@ fn hwnd_prefers_ctrl_shift_v(hwnd: windows_sys::Win32::Foundation::HWND) -> bool
     }
 }
 
-/// Exes de consola / terminales embebidos (Tauri, Electron, nativos).
-/// Evitar editores (code, cursor, devenv): ahí Ctrl+Shift+V no es pegar.
+/// Exes de consola / terminales. No incluir editores: ahí Ctrl+Shift+V
+/// abre preview (VS Code / Cursor) u otras acciones.
 #[cfg(windows)]
 fn exe_prefers_ctrl_shift_v(exe: &str) -> bool {
+    if exe.contains("terax") || exe.contains("claude") {
+        return true;
+    }
     matches!(
         exe,
-        "claude.exe"
-            | "windowsterminal.exe"
+        "windowsterminal.exe"
             | "wt.exe"
             | "cmd.exe"
             | "powershell.exe"
@@ -633,7 +710,6 @@ fn exe_prefers_ctrl_shift_v(exe: &str) -> bool {
             | "fluent-terminal.exe"
             | "conemu64.exe"
             | "conemu.exe"
-            | "terax.exe"
             | "terminus.exe"
             | "rio.exe"
             | "ghostty.exe"
@@ -938,17 +1014,11 @@ fn force_foreground_for_paste(hwnd: windows_sys::Win32::Foundation::HWND) {
         let _ = BringWindowToTop(hwnd);
         let _ = SetForegroundWindow(hwnd);
 
-        let input_hwnd = if hwnd_prefers_ctrl_shift_v(hwnd) {
-            let mut chrome: HWND = ptr::null_mut();
-            EnumChildWindows(hwnd, Some(find_chrome_child), &mut chrome as *mut _ as LPARAM);
-            if !chrome.is_null() {
-                chrome
-            } else {
-                hwnd
-            }
-        } else {
-            hwnd
-        };
+        // En Electron/Tauri el input real suele ser un hijo Chrome_*; sin ese
+        // foco Ctrl+Shift+V no llega al widget (Claude Code, Terminal, etc.).
+        let mut chrome: HWND = ptr::null_mut();
+        EnumChildWindows(hwnd, Some(find_chrome_child), &mut chrome as *mut _ as LPARAM);
+        let input_hwnd = if !chrome.is_null() { chrome } else { hwnd };
         let _ = SetFocus(input_hwnd);
 
         if attached_tgt {

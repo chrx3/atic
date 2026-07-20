@@ -10,6 +10,7 @@
   import { clipboardItemMatches } from "$lib/clipboardSearch";
   import {
     clearClipboardHistory,
+    deleteCapture,
     deleteClipboardItem,
     pasteClipboardItem,
     pinClipboardItem,
@@ -151,9 +152,14 @@
 
   async function remove(item: ClipboardItem, event: MouseEvent) {
     event.stopPropagation();
-    if (item.id.startsWith("capture-")) return;
+    event.preventDefault();
     try {
-      await deleteClipboardItem(item.id);
+      if (item.id.startsWith("capture-")) {
+        if (!item.imagePath) return;
+        await deleteCapture(item.imagePath);
+      } else {
+        await deleteClipboardItem(item.id);
+      }
       await onRefresh();
     } catch (error) {
       report(error);
@@ -218,7 +224,6 @@
           <Star size={14} weight={favoritesOnly ? "Filled" : "Outline"} />
         </button>
       </div>
-      {#if !compact}
         <button
           type="button"
           class="clip-icon-btn clip-clear"
@@ -229,7 +234,6 @@
         >
           <Trash size={14} />
         </button>
-      {/if}
     </div>
   </div>
 
@@ -303,18 +307,23 @@
             >
               <Star size={14} weight={item.pinned ? "Filled" : "Outline"} />
             </button>
-            {#if !compact && !item.id.startsWith("capture-")}
-              <button
-                type="button"
-                class="clip-icon-btn"
-                onpointerdown={(e) => e.stopPropagation()}
-                onclick={(e) => void remove(item, e)}
-                aria-label="Eliminar"
-                title="Eliminar"
-              >
-                <X size={14} />
-              </button>
-            {/if}
+            <button
+              type="button"
+              class="clip-icon-btn"
+              onpointerdown={(e) => {
+                e.stopPropagation();
+                e.preventDefault();
+              }}
+              onclick={(e) => {
+                e.stopPropagation();
+                e.preventDefault();
+                void remove(item, e);
+              }}
+              aria-label="Eliminar"
+              title="Eliminar"
+            >
+              <X size={14} />
+            </button>
           </div>
         </li>
       {/each}

@@ -2,9 +2,11 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use serde::Serialize;
@@ -16,6 +18,10 @@ use atic_transcribe::LoadedModel;
 
 use crate::live::LiveWorkerHandle;
 
+/// Tras este idle sin uso, se liberan los modelos Whisper de RAM.
+const WHISPER_IDLE_TTL: Duration = Duration::from_secs(10 * 60);
+const WHISPER_IDLE_CHECK: Duration = Duration::from_secs(60);
+
 /// Estado compartido, gestionado por Tauri (`app.manage`).
 pub struct AppState {
     pub dirs: AppDirs,
@@ -26,6 +32,8 @@ pub struct AppState {
     pub audio_test_running: Mutex<bool>,
     /// Modelos Whisper residentes (dictado + reuniones pueden coexistir).
     pub whisper: Mutex<HashMap<PathBuf, Arc<LoadedModel>>>,
+    /// Último uso del cache Whisper (carga o hit).
+    pub whisper_last_used: Mutex<Option<Instant>>,
     /// Sesión de captura de pantalla activa (overlay de selección). Solo una.
     pub overlay_session: Mutex<Option<crate::capture_session::OverlaySession>>,
     /// Posición de la pill antes de invocar el clipboard en el cursor.
@@ -517,6 +525,8 @@ pub fn get_or_load_whisper(
     state: &AppState,
     model_path: &Path,
 ) -> Result<Arc<LoadedModel>, String> {
+    *state.whisper_last_used.lock().unwrap() = Some(Instant::now());
+
     let mut guard = state.whisper.lock().unwrap();
     if let Some(loaded) = guard.get(model_path) {
         return Ok(Arc::clone(loaded));
@@ -535,10 +545,26 @@ pub fn prune_whisper_cache(state: &AppState, keep: &[PathBuf]) {
     guard.retain(|path, _| keep.iter().any(|k| k == path));
 }
 
+fn whisper_in_use(state: &AppState) -> bool {
+    state.active.lock().unwrap().is_some() || state.dictation.lock().unwrap().is_some()
+}
+
+/// Libera todos los modelos Whisper residentes si no hay trabajo activo.
+pub fn unload_whisper_cache(state: &AppState) -> usize {
+    if whisper_in_use(state) {
+        return 0;
+    }
+    let mut guard = state.whisper.lock().unwrap();
+    let n = guard.len();
+    guard.clear();
+    n
+}
+
 /// Precarga los modelos configurados si estan en disco.
 ///
 /// Cuando dictado y reuniones comparten modelo (el default), se carga una sola
 /// vez: reduce el arranque, el uso de RAM y la primera descarga a ~148 MB.
+/// El modelo de live solo se precarga si live local está activo.
 pub fn preload_whisper_async(app: &AppHandle) {
     let app2 = app.clone();
     thread::spawn(move || {
@@ -546,11 +572,13 @@ pub fn preload_whisper_async(app: &AppHandle) {
         let cfg = state.config.lock().unwrap().clone();
         let models_dir = state.dirs.models_dir();
         // Dictado primero: es el camino sensible a latencia.
-        let ids = [
+        let mut ids: Vec<&str> = vec![
             cfg.dictation_whisper_model.as_str(),
             cfg.whisper_model.as_str(),
-            cfg.live_whisper_model.as_str(),
         ];
+        if cfg.live_transcription && cfg.live_engine == "local" {
+            ids.push(cfg.live_whisper_model.as_str());
+        }
         let mut keep = Vec::new();
         for model_id in ids {
             match atic_transcribe::models::require_downloaded(&models_dir, model_id) {
@@ -574,5 +602,44 @@ pub fn preload_whisper_async(app: &AppHandle) {
             }
         }
         prune_whisper_cache(&state, &keep);
+    });
+    ensure_whisper_idle_unloader(app);
+}
+
+/// Hilo único: si Whisper no se usa durante `WHISPER_IDLE_TTL`, libera la RAM.
+fn ensure_whisper_idle_unloader(app: &AppHandle) {
+    static STARTED: AtomicBool = AtomicBool::new(false);
+    if STARTED.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let app2 = app.clone();
+    thread::spawn(move || loop {
+        thread::sleep(WHISPER_IDLE_CHECK);
+        let Some(state) = app2.try_state::<AppState>() else {
+            continue;
+        };
+        if whisper_in_use(&state) {
+            continue;
+        }
+        let last = *state.whisper_last_used.lock().unwrap();
+        let Some(last) = last else {
+            continue;
+        };
+        if last.elapsed() < WHISPER_IDLE_TTL {
+            continue;
+        }
+        let cached = state.whisper.lock().unwrap().len();
+        if cached == 0 {
+            continue;
+        }
+        let n = unload_whisper_cache(&state);
+        if n > 0 {
+            tracing::info!(
+                models = n,
+                idle_secs = WHISPER_IDLE_TTL.as_secs(),
+                "modelos Whisper liberados por idle"
+            );
+            *state.whisper_last_used.lock().unwrap() = None;
+        }
     });
 }

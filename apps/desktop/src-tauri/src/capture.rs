@@ -74,6 +74,7 @@ pub fn delete_capture(app: AppHandle, state: State<AppState>, path: String) -> R
     let target = ensure_in_dir(&state.dirs.captures_dir(), Path::new(&path))?;
     std::fs::remove_file(&target).map_err(|error| error.to_string())?;
     let _ = app.emit("screenshot-shelf-updated", ());
+    let _ = app.emit("clipboard-history-changed", ());
     Ok(())
 }
 

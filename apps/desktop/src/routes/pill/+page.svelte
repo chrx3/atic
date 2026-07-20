@@ -48,6 +48,8 @@
   let clipboardLoading = $state(false);
   let clipboardOpenedAt = 0;
   let pasting = $state(false);
+  /** Evita que startDragging() cierre el clipboard por blur. */
+  let windowDragging = $state(false);
   /** Clipboard siempre crece hacia arriba (barra abajo, lista arriba). */
   let expandUp = $state(false);
 
@@ -260,7 +262,13 @@
       return;
     }
     event.preventDefault();
+    // startDragging quita el foco → no cerrar el panel por ese blur.
+    windowDragging = true;
     void getCurrentWindow().startDragging();
+    // Si el foco no vuelve (Windows), no dejar el flag pegado.
+    window.setTimeout(() => {
+      windowDragging = false;
+    }, 1500);
   }
 
   async function toggleRecord() {
@@ -402,19 +410,24 @@
       }
     };
     const onBlur = () => {
-      if (pasting) return;
+      if (pasting || windowDragging) return;
       if (clipboardOpen && Date.now() - clipboardOpenedAt > 400) {
         void closeClipboardPanel();
       }
     };
+    const onFocus = () => {
+      windowDragging = false;
+    };
     window.addEventListener("keydown", onKey, true);
     window.addEventListener("blur", onBlur);
+    window.addEventListener("focus", onFocus);
 
     return () => {
       stopTimer();
       cancelAnimationFrame(fitRaf);
       window.removeEventListener("keydown", onKey, true);
       window.removeEventListener("blur", onBlur);
+      window.removeEventListener("focus", onFocus);
       unlisteners.forEach((u) => u.then((fn) => fn()));
     };
   });

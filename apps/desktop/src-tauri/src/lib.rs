@@ -196,6 +196,7 @@ pub fn run() {
                 dictation: Mutex::new(None),
                 audio_test_running: Mutex::new(false),
                 whisper: Mutex::new(std::collections::HashMap::new()),
+                whisper_last_used: Mutex::new(None),
                 overlay_session: Mutex::new(None),
                 pre_clipboard_position: Mutex::new(None),
             });
