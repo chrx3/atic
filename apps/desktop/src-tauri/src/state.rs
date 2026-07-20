@@ -391,12 +391,49 @@ pub fn toggle_pill(app: &AppHandle) {
     set_pill_visible(app, !visible);
 }
 
-/// Coloca la pill centrada en el cursor (sin animación) y la muestra.
+/// Anima la pill desde su posición actual hasta `(target_x, target_y)`.
+///
+/// Ease-out cúbico ~340 ms / 28 frames (misma curva que Ctrl+Shift+P).
+/// Bloqueante: llamar desde un hilo dedicado si no se debe congelar el caller.
+pub fn animate_pill_to(app: &AppHandle, target_x: i32, target_y: i32) {
+    let Some(pill) = app.get_webview_window("pill") else {
+        return;
+    };
+    let (start_x, start_y) = pill
+        .outer_position()
+        .ok()
+        .map(|p| (p.x, p.y))
+        .unwrap_or((target_x, target_y));
+
+    if start_x == target_x && start_y == target_y {
+        return;
+    }
+
+    const FRAMES: u32 = 20;
+    const TOTAL_MS: u64 = 190;
+    let step = std::time::Duration::from_millis(TOTAL_MS / u64::from(FRAMES));
+    for i in 1..=FRAMES {
+        let t = f64::from(i) / f64::from(FRAMES);
+        // Ease-out cúbico: arranca rápido y frena cerca del destino.
+        let e = 1.0 - (1.0 - t).powi(3);
+        let x = start_x as f64 + (target_x - start_x) as f64 * e;
+        let y = start_y as f64 + (target_y - start_y) as f64 * e;
+        if let Some(win) = app.get_webview_window("pill") {
+            let _ = win.set_position(tauri::PhysicalPosition::new(
+                x.round() as i32,
+                y.round() as i32,
+            ));
+        }
+        std::thread::sleep(step);
+    }
+}
+
+/// Centra la pill en el cursor con animación fly-to y la muestra.
 ///
 /// No persiste la posición: el clipboard la trata como temporal y restaura
-/// [`AppState::pre_clipboard_position`] al cerrar. Devuelve el tamaño físico
-/// usado para el anclaje.
-pub fn place_pill_at_cursor(app: &AppHandle) -> Option<(i32, i32, i32, i32)> {
+/// [`AppState::pre_clipboard_position`] al cerrar. Bloqueante hasta terminar
+/// el vuelo. Devuelve el rect físico usado para el anclaje.
+pub fn animate_pill_to_cursor(app: &AppHandle) -> Option<(i32, i32, i32, i32)> {
     let pill = app.get_webview_window("pill")?;
     let (cx, cy) = cursor_screen_position()?;
     set_pill_visible(app, true);
@@ -404,11 +441,11 @@ pub fn place_pill_at_cursor(app: &AppHandle) -> Option<(i32, i32, i32, i32)> {
         .outer_size()
         .ok()
         .map(|s| (s.width as i32, s.height as i32))
-        .unwrap_or((160, 48));
-    let x = cx - w / 2;
-    let y = cy - h / 2;
-    let _ = pill.set_position(tauri::PhysicalPosition::new(x, y));
-    Some((x, y, w, h))
+        .unwrap_or((112, 48));
+    let target_x = cx - w / 2;
+    let target_y = cy - h / 2;
+    animate_pill_to(app, target_x, target_y);
+    Some((target_x, target_y, w, h))
 }
 
 /// Muestra la pill y la anima hacia la posición actual del cursor.
@@ -442,31 +479,10 @@ pub fn summon_pill_to_cursor(app: &AppHandle) {
         .unwrap_or((112, 48));
     let target_x = cx - w / 2;
     let target_y = cy - h / 2;
-    let (start_x, start_y) = pill
-        .outer_position()
-        .ok()
-        .map(|p| (p.x, p.y))
-        .unwrap_or((target_x, target_y));
 
     let handle = app.clone();
     std::thread::spawn(move || {
-        const FRAMES: u32 = 28;
-        const TOTAL_MS: u64 = 340;
-        let step = std::time::Duration::from_millis(TOTAL_MS / u64::from(FRAMES));
-        for i in 1..=FRAMES {
-            let t = f64::from(i) / f64::from(FRAMES);
-            // Ease-out cúbico: arranca rápido y frena cerca del cursor.
-            let e = 1.0 - (1.0 - t).powi(3);
-            let x = start_x as f64 + (target_x - start_x) as f64 * e;
-            let y = start_y as f64 + (target_y - start_y) as f64 * e;
-            if let Some(win) = handle.get_webview_window("pill") {
-                let _ = win.set_position(tauri::PhysicalPosition::new(
-                    x.round() as i32,
-                    y.round() as i32,
-                ));
-            }
-            std::thread::sleep(step);
-        }
+        animate_pill_to(&handle, target_x, target_y);
         if let Some(state) = handle.try_state::<AppState>() {
             let mut cfg = state.config.lock().unwrap();
             cfg.pill_position = Some((target_x as f64, target_y as f64));

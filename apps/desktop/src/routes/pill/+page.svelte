@@ -201,8 +201,12 @@
 
   async function closeClipboardPanel() {
     if (!clipboardOpen) return;
+    // Colapsar a compacto primero; el fly-to home espera a que el DOM aplique.
     clipboardOpen = false;
     expandUp = false;
+    await new Promise<void>((resolve) => {
+      requestAnimationFrame(() => resolve());
+    });
     try {
       await restorePillPosition();
     } catch (err) {

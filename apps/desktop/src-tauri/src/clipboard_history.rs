@@ -611,24 +611,26 @@ pub fn summon_clipboard_panel(app: &AppHandle) {
     let _ = app.emit("pill-clipboard-toggle", ());
 }
 
-/// Compacta la pill y la coloca en el cursor (antes de expandir el historial).
+/// Compacta la pill y la anima hasta el cursor (antes de expandir el historial).
 ///
 /// Guarda la posición actual una sola vez por sesión de clipboard para
-/// restaurarla al cerrar o pegar.
+/// restaurarla al cerrar o pegar. Bloquea hasta terminar el fly-to para que
+/// el frontend expanda el panel recién al llegar.
 #[tauri::command]
 pub fn prepare_clipboard_pill(app: AppHandle) -> Result<(), String> {
     if let Some(pill) = app.get_webview_window("pill") {
         let _ = pill.set_size(tauri::LogicalSize::new(112.0, 48.0));
         stash_pre_clipboard_position(&app, &pill);
     }
-    crate::state::place_pill_at_cursor(&app)
+    crate::state::animate_pill_to_cursor(&app)
         .ok_or_else(|| "No se pudo colocar la pill en el cursor".to_string())?;
     Ok(())
 }
 
 /// Restaura la pill a la posición previa al summon del clipboard (si existe).
 ///
-/// Devuelve `true` si hubo posición guardada y se aplicó.
+/// Compacta y anima (fly-to) de vuelta al home. Devuelve `true` si hubo
+/// posición guardada y se aplicó.
 #[tauri::command]
 pub fn restore_pill_position(app: AppHandle) -> Result<bool, String> {
     let Some(state) = app.try_state::<AppState>() else {
@@ -638,13 +640,13 @@ pub fn restore_pill_position(app: AppHandle) -> Result<bool, String> {
         return Ok(false);
     };
 
+    let target_x = x.round() as i32;
+    let target_y = y.round() as i32;
+
     if let Some(pill) = app.get_webview_window("pill") {
         // Compacto primero: la home se guardó con tamaño idle.
         let _ = pill.set_size(tauri::LogicalSize::new(112.0, 48.0));
-        let _ = pill.set_position(tauri::PhysicalPosition::new(
-            x.round() as i32,
-            y.round() as i32,
-        ));
+        crate::state::animate_pill_to(&app, target_x, target_y);
     }
 
     {
