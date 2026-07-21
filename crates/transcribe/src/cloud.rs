@@ -8,8 +8,29 @@ use serde::Deserialize;
 use crate::error::{Result, TranscribeError};
 
 const GROQ_TRANSCRIPTIONS_URL: &str = "https://api.groq.com/openai/v1/audio/transcriptions";
-/// Turbo: mejor latencia/precio para dictado corto.
+
+/// Default: mejor latencia/precio para dictado y live.
 pub const GROQ_DICTATION_MODEL: &str = "whisper-large-v3-turbo";
+
+/// Modelos STT oficiales de Groq (id, etiqueta UI).
+pub const GROQ_WHISPER_MODELS: &[(&str, &str)] = &[
+    (
+        "whisper-large-v3-turbo",
+        "Whisper Large v3 Turbo (rápido)",
+    ),
+    ("whisper-large-v3", "Whisper Large v3 (más preciso)"),
+];
+
+/// Devuelve un id válido del catálogo; desconocidos → turbo.
+pub fn normalize_groq_whisper_model(model: &str) -> &'static str {
+    let trimmed = model.trim();
+    for (id, _) in GROQ_WHISPER_MODELS {
+        if trimmed.eq_ignore_ascii_case(id) {
+            return id;
+        }
+    }
+    GROQ_DICTATION_MODEL
+}
 
 #[derive(Debug, Deserialize)]
 struct GroqTranscriptResponse {
@@ -17,7 +38,12 @@ struct GroqTranscriptResponse {
 }
 
 /// Transcribe un WAV con Groq Whisper (multipart, OpenAI-compatible).
-pub fn transcribe_groq(api_key: &str, wav_path: &Path, language: Option<&str>) -> Result<String> {
+pub fn transcribe_groq(
+    api_key: &str,
+    wav_path: &Path,
+    language: Option<&str>,
+    model: &str,
+) -> Result<String> {
     let key = api_key.trim();
     if key.is_empty() {
         return Err(TranscribeError::MissingApiKey("groq".into()));
@@ -36,7 +62,7 @@ pub fn transcribe_groq(api_key: &str, wav_path: &Path, language: Option<&str>) -
         .unwrap_or("mic.wav")
         .to_string();
 
-    transcribe_groq_wav_bytes(key, bytes, &file_name, language)
+    transcribe_groq_wav_bytes(key, bytes, &file_name, language, model)
 }
 
 /// Transcribe PCM mono `f32` (p. ej. 16 kHz) enviando un WAV en memoria a Groq.
@@ -47,6 +73,7 @@ pub fn transcribe_groq_pcm(
     samples: &[f32],
     sample_rate: u32,
     language: Option<&str>,
+    model: &str,
 ) -> Result<String> {
     let key = api_key.trim();
     if key.is_empty() {
@@ -62,7 +89,7 @@ pub fn transcribe_groq_pcm(
     }
 
     let bytes = pcm_f32_mono_to_wav_bytes(samples, sample_rate)?;
-    transcribe_groq_wav_bytes(key, bytes, "live.wav", language)
+    transcribe_groq_wav_bytes(key, bytes, "live.wav", language, model)
 }
 
 fn pcm_f32_mono_to_wav_bytes(samples: &[f32], sample_rate: u32) -> Result<Vec<u8>> {
@@ -90,14 +117,16 @@ fn transcribe_groq_wav_bytes(
     wav_bytes: Vec<u8>,
     file_name: &str,
     language: Option<&str>,
+    model: &str,
 ) -> Result<String> {
+    let model = normalize_groq_whisper_model(model);
     let part = reqwest::blocking::multipart::Part::bytes(wav_bytes)
         .file_name(file_name.to_string())
         .mime_str("audio/wav")
         .map_err(|e| TranscribeError::BadResponse(e.to_string()))?;
 
     let mut form = reqwest::blocking::multipart::Form::new()
-        .text("model", GROQ_DICTATION_MODEL)
+        .text("model", model)
         .text("response_format", "json")
         .text("temperature", "0")
         .part("file", part);

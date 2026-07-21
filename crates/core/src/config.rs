@@ -19,6 +19,8 @@ pub struct Config {
     pub dictation_whisper_model: String,
     /// Motor de dictado: `local` | `groq`.
     pub dictation_backend: String,
+    /// Modelo Groq Whisper para dictado (`whisper-large-v3-turbo`, …).
+    pub dictation_groq_model: String,
     /// Transcribir automáticamente los WAV completos al terminar una grabación.
     pub auto_transcribe_after_recording: bool,
     /// Vista previa experimental durante la grabación. Nunca es el transcript final.
@@ -27,6 +29,8 @@ pub struct Config {
     pub live_engine: String,
     /// Modelo Whisper dedicado a live (catálogo local).
     pub live_whisper_model: String,
+    /// Modelo Groq Whisper para live.
+    pub live_groq_model: String,
     /// Backend de resumen: id de proveedor (`claude`, `ollama`, `openai`, …).
     pub summary_backend: String,
     /// Modelo activo del backend de resumen.
@@ -119,10 +123,12 @@ impl Default for Config {
             dictation_whisper_model: "base".to_string(),
             // Groq por defecto cuando hay clave BYOK (más rápido en notebook).
             dictation_backend: "groq".to_string(),
+            dictation_groq_model: "whisper-large-v3-turbo".to_string(),
             auto_transcribe_after_recording: true,
             live_transcription: false,
             live_engine: "local".to_string(),
             live_whisper_model: "small".to_string(),
+            live_groq_model: "whisper-large-v3-turbo".to_string(),
             summary_backend: "claude".to_string(),
             summary_model: "claude-opus-4-8".to_string(),
             summary_base_url: String::new(),
@@ -172,10 +178,12 @@ struct ConfigFile {
     whisper_model: String,
     dictation_whisper_model: Option<String>,
     dictation_backend: Option<String>,
+    dictation_groq_model: Option<String>,
     auto_transcribe_after_recording: Option<bool>,
     live_transcription: Option<bool>,
     live_engine: Option<String>,
     live_whisper_model: Option<String>,
+    live_groq_model: Option<String>,
     summary_backend: String,
     summary_model: Option<String>,
     summary_base_url: Option<String>,
@@ -259,10 +267,12 @@ impl Default for ConfigFile {
             whisper_model: d.whisper_model,
             dictation_whisper_model: None,
             dictation_backend: None,
+            dictation_groq_model: None,
             auto_transcribe_after_recording: None,
             live_transcription: None,
             live_engine: None,
             live_whisper_model: None,
+            live_groq_model: None,
             summary_backend: d.summary_backend,
             summary_model: None,
             summary_base_url: None,
@@ -364,6 +374,10 @@ impl From<ConfigFile> for Config {
                 // Default interno: Groq (también configs antiguas sin el campo).
                 _ => "groq".into(),
             },
+            dictation_groq_model: f
+                .dictation_groq_model
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "whisper-large-v3-turbo".into()),
             auto_transcribe_after_recording: f.auto_transcribe_after_recording.unwrap_or(true),
             live_transcription: if migrating_to_batch_default {
                 false
@@ -378,6 +392,10 @@ impl From<ConfigFile> for Config {
                 .live_whisper_model
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| "small".into()),
+            live_groq_model: f
+                .live_groq_model
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "whisper-large-v3-turbo".into()),
             summary_backend: backend,
             summary_model,
             summary_base_url,

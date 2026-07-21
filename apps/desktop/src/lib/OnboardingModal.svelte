@@ -108,6 +108,9 @@
         whisper_model: draft.whisper_model,
         dictation_whisper_model: draft.dictation_whisper_model,
         dictation_backend: config.dictation_backend || "groq",
+        dictation_groq_model:
+          config.dictation_groq_model || "whisper-large-v3-turbo",
+        live_groq_model: config.live_groq_model || "whisper-large-v3-turbo",
         onboarding_done: true,
       });
     } finally {

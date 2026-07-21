@@ -16,7 +16,10 @@ use std::sync::Arc;
 
 use atic_core::{Speaker, Transcript};
 
-pub use cloud::{transcribe_groq, transcribe_groq_pcm, GROQ_DICTATION_MODEL};
+pub use cloud::{
+    normalize_groq_whisper_model, transcribe_groq, transcribe_groq_pcm, GROQ_DICTATION_MODEL,
+    GROQ_WHISPER_MODELS,
+};
 pub use error::{Result, TranscribeError};
 pub use import::import_audio_to_wav;
 pub use live::{LiveEngine, LivePcmChunk, LiveSttBackend, LiveUpdate};

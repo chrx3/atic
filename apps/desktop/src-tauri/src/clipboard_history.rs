@@ -16,6 +16,7 @@ use arboard::{Clipboard, ImageData};
 use image::ImageEncoder;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
+use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
 use crate::state::AppState;
 
@@ -871,6 +872,7 @@ pub fn prepare_clipboard_pill(app: AppHandle) -> Result<(), String> {
     }
     crate::state::animate_pill_to_cursor(&app)
         .ok_or_else(|| "No se pudo colocar la pill en el cursor".to_string())?;
+    register_clipboard_escape_close(&app);
     Ok(())
 }
 
@@ -880,6 +882,7 @@ pub fn prepare_clipboard_pill(app: AppHandle) -> Result<(), String> {
 /// posición guardada y se aplicó.
 #[tauri::command]
 pub fn restore_pill_position(app: AppHandle) -> Result<bool, String> {
+    unregister_clipboard_escape_close(&app);
     let Some(state) = app.try_state::<AppState>() else {
         return Ok(false);
     };
@@ -904,6 +907,36 @@ pub fn restore_pill_position(app: AppHandle) -> Result<bool, String> {
         let _ = snapshot.save(&state.dirs.config_path());
     }
     Ok(true)
+}
+
+/// Esc global mientras el panel está abierto (la pill a menudo no tiene foco).
+pub fn register_clipboard_escape_close(app: &AppHandle) {
+    let Ok(sc) = "Escape".parse::<Shortcut>() else {
+        return;
+    };
+    let gs = app.global_shortcut();
+    let _ = gs.unregister(sc);
+    let handle = app.clone();
+    if let Err(err) = gs.on_shortcut(sc, move |_app, _sc, event| {
+        if !matches!(event.state(), ShortcutState::Pressed) {
+            return;
+        }
+        let Some(state) = handle.try_state::<AppState>() else {
+            return;
+        };
+        if state.pre_clipboard_position.lock().unwrap().is_none() {
+            return;
+        }
+        let _ = handle.emit("pill-clipboard-close", ());
+    }) {
+        tracing::debug!(%err, "no se pudo registrar Escape para cerrar clipboard");
+    }
+}
+
+fn unregister_clipboard_escape_close(app: &AppHandle) {
+    if let Ok(sc) = "Escape".parse::<Shortcut>() {
+        let _ = app.global_shortcut().unregister(sc);
+    }
 }
 
 /// Guarda la posición home solo la primera vez de la sesión (reabrir en el

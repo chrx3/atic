@@ -229,12 +229,18 @@ fn stop_and_paste(app: &AppHandle) {
                 None
             };
             let text = if let Some(api_key) = groq_key {
-                let text = transcribe::transcribe_groq(&api_key, &active.wav_path, language)
-                    .map_err(|e| e.to_string())?;
+                let text = transcribe::transcribe_groq(
+                    &api_key,
+                    &active.wav_path,
+                    language,
+                    &cfg.dictation_groq_model,
+                )
+                .map_err(|e| e.to_string())?;
                 tracing::info!(
                     audio_secs = summary.duration_secs,
                     whisper_ms = whisper_started.elapsed().as_millis(),
                     backend = "groq",
+                    model = %cfg.dictation_groq_model,
                     "dictado transcrito"
                 );
                 text

@@ -18,6 +18,7 @@ pub enum LiveSttBackend<'a> {
     /// API key de Groq del usuario (BYOK).
     Groq {
         api_key: &'a str,
+        model: &'a str,
     },
 }
 
@@ -44,8 +45,8 @@ impl LiveSttBackend<'_> {
                     .collect::<Vec<_>>()
                     .join(" "))
             }
-            LiveSttBackend::Groq { api_key } => {
-                cloud::transcribe_groq_pcm(api_key, pcm, WHISPER_RATE, language)
+            LiveSttBackend::Groq { api_key, model } => {
+                cloud::transcribe_groq_pcm(api_key, pcm, WHISPER_RATE, language, model)
             }
         }
     }

@@ -1,5 +1,5 @@
 <script lang="ts">
-  /** Captura de atajo por teclas (no textbox). */
+  /** Captura de atajo por teclas o botones laterales del mouse. */
 
   let {
     value = "CmdOrCtrl+Shift+R",
@@ -16,11 +16,26 @@
   } = $props();
 
   let capturing = $state(false);
+  /** Aviso breve (p. ej. tecla Windows reservada por el SO). */
+  let rejectHint = $state<string | null>(null);
+  let rejectTimer: ReturnType<typeof setTimeout> | null = null;
 
-  function parts(raw: string): string[] {
+  function showReject(msg: string) {
+    rejectHint = msg;
+    if (rejectTimer) clearTimeout(rejectTimer);
+    rejectTimer = setTimeout(() => {
+      rejectHint = null;
+      rejectTimer = null;
+    }, 3200);
+  }
+
+  function displayParts(raw: string): string[] {
+    if (raw === "MouseX1") return ["Mouse atrás"];
+    if (raw === "MouseX2") return ["Mouse adelante"];
     return raw
       .replace(/CmdOrCtrl/gi, "Ctrl")
       .replace(/CommandOrControl/gi, "Ctrl")
+      .replace(/Super/gi, "Win")
       .split("+")
       .map((p) => p.trim())
       .filter(Boolean);
@@ -28,8 +43,15 @@
 
   function keyEventToShortcut(e: KeyboardEvent): string | null {
     if (["Control", "Shift", "Alt", "Meta", "OS"].includes(e.key)) return null;
+
+    // Win la reserva el SO (Inicio, Win+D, etc.). No registrar atajos con Super.
+    if (e.metaKey) {
+      showReject("Win la usa Windows; prueba Ctrl/Alt/Shift o un botón lateral.");
+      return null;
+    }
+
     const out: string[] = [];
-    if (e.ctrlKey || e.metaKey) out.push("CmdOrCtrl");
+    if (e.ctrlKey) out.push("CmdOrCtrl");
     if (e.altKey) out.push("Alt");
     if (e.shiftKey) out.push("Shift");
 
@@ -43,6 +65,19 @@
     return out.join("+");
   }
 
+  /** Botones laterales: 3 = atrás (X1), 4 = adelante (X2). */
+  function mouseEventToShortcut(e: MouseEvent): string | null {
+    if (e.button === 3) return "MouseX1";
+    if (e.button === 4) return "MouseX2";
+    return null;
+  }
+
+  function commit(sc: string) {
+    capturing = false;
+    rejectHint = null;
+    void onChange(sc);
+  }
+
   function onKey(e: KeyboardEvent) {
     if (!capturing) return;
     e.preventDefault();
@@ -53,11 +88,20 @@
     }
     const sc = keyEventToShortcut(e);
     if (!sc) return;
-    capturing = false;
-    void onChange(sc);
+    commit(sc);
+  }
+
+  function onMouse(e: MouseEvent) {
+    if (!capturing) return;
+    const sc = mouseEventToShortcut(e);
+    if (!sc) return;
+    e.preventDefault();
+    e.stopPropagation();
+    commit(sc);
   }
 
   function startCapture() {
+    rejectHint = null;
     capturing = true;
   }
 
@@ -68,10 +112,16 @@
   $effect(() => {
     if (!capturing) return;
     window.addEventListener("keydown", onKey, true);
-    return () => window.removeEventListener("keydown", onKey, true);
+    window.addEventListener("mousedown", onMouse, true);
+    window.addEventListener("auxclick", onMouse, true);
+    return () => {
+      window.removeEventListener("keydown", onKey, true);
+      window.removeEventListener("mousedown", onMouse, true);
+      window.removeEventListener("auxclick", onMouse, true);
+    };
   });
 
-  const keys = $derived(parts(value));
+  const keys = $derived(displayParts(value));
 </script>
 
 <div class="flex flex-wrap items-center gap-1.5" class:gap-2={!compact}>
@@ -82,7 +132,9 @@
     aria-label={ariaLabel}
   >
     {#if capturing}
-      <span class="rb-hotkey-pulse">{compact ? "…" : "Pulsa la combinación…"}</span>
+      <span class="rb-hotkey-pulse"
+        >{compact ? "…" : "Tecla o botón lateral…"}</span
+      >
       {#if !compact}
         <span class="rb-hint !text-[10px]">Esc cancela</span>
       {/if}
@@ -108,3 +160,8 @@
     </button>
   {/if}
 </div>
+{#if rejectHint}
+  <p class="rb-hint mt-1 w-full" style="color: var(--rb-warn)" role="status">
+    {rejectHint}
+  </p>
+{/if}

@@ -14,6 +14,7 @@ mod live;
 mod macos_notes;
 mod mail;
 mod meeting_detection;
+mod mouse_bindings;
 mod retention;
 mod shortcuts;
 mod state;
@@ -247,9 +248,18 @@ pub fn run() {
             // Posición y visibilidad inicial de la pill.
             if let Some(pill) = app.get_webview_window("pill") {
                 if let Some((x, y)) = pill_position {
-                    let _ = pill.set_position(tauri::PhysicalPosition::new(x, y));
+                    let (w, h) = pill
+                        .outer_size()
+                        .ok()
+                        .map(|s| (s.width as i32, s.height as i32))
+                        .unwrap_or((112, 48));
+                    let (cx, cy) = state::clamp_pill_position(x as i32, y as i32, w, h);
+                    let _ = pill.set_position(tauri::PhysicalPosition::new(cx, cy));
                 }
-                if !show_pill {
+                if show_pill {
+                    let _ = pill.set_always_on_top(true);
+                    let _ = pill.show();
+                } else {
                     let _ = pill.hide();
                 }
             }

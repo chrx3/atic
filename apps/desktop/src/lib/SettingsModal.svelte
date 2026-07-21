@@ -36,6 +36,15 @@
   } from "$lib/api";
   import { looksLikeHeadset } from "$lib/audioHeadset";
 
+  /** Modelos STT oficiales de Groq (mismo catálogo que el backend). */
+  const GROQ_WHISPER_OPTIONS = [
+    {
+      id: "whisper-large-v3-turbo",
+      label: "Whisper Large v3 Turbo (rápido)",
+    },
+    { id: "whisper-large-v3", label: "Whisper Large v3 (más preciso)" },
+  ] as const;
+
   let {
     onClose,
     onSaved,
@@ -654,7 +663,8 @@
                   {:else}
                     Pulsa para empezar, pulsa otra vez para transcribir y pegar.
                   {/if}
-                  El botón de la pill siempre funciona en modo toggle.
+                  Acepta teclado o botón lateral del mouse (atrás/adelante). El
+                  botón de la pill siempre funciona en modo toggle.
                 </p>
               </div>
 
@@ -980,6 +990,14 @@
                     envía a la nube de Groq para transcribir. En modo local el audio
                     no sale de tu PC.
                   </p>
+                  <label class="rb-label">
+                    Modelo Groq (live)
+                    <select class="rb-field" bind:value={cfg.live_groq_model}>
+                      {#each GROQ_WHISPER_OPTIONS as opt (opt.id)}
+                        <option value={opt.id}>{opt.label}</option>
+                      {/each}
+                    </select>
+                  </label>
                   <span
                     class="rb-chip {secrets?.providers?.groq
                       ? 'rb-chip-ok'
@@ -1096,6 +1114,17 @@
 
               {#if cfg.dictation_backend === "groq"}
                 <label class="rb-label">
+                  Modelo Groq (dictado)
+                  <select class="rb-field" bind:value={cfg.dictation_groq_model}>
+                    {#each GROQ_WHISPER_OPTIONS as opt (opt.id)}
+                      <option value={opt.id}>{opt.label}</option>
+                    {/each}
+                  </select>
+                </label>
+                <p class="rb-hint">
+                  Turbo es más rápido y barato; Large v3 prioriza precisión.
+                </p>
+                <label class="rb-label">
                   API key Groq (necesaria para nube)
                   <input
                     type="password"
@@ -1189,12 +1218,24 @@
           {#if selectedProvider}
             <label class="rb-label">
               Modelo
-              <input
-                class="rb-field"
-                bind:value={cfg.summary_model}
-                placeholder={selectedProvider.default_model ||
-                  "nombre-del-modelo"}
-              />
+              {#if (selectedProvider.suggested_models?.length ?? 0) > 0}
+                <select class="rb-field" bind:value={cfg.summary_model}>
+                  {#each selectedProvider.suggested_models as m (m)}
+                    <option value={m}>{m}</option>
+                  {/each}
+                  {#if cfg.summary_model &&
+                    !selectedProvider.suggested_models.includes(cfg.summary_model)}
+                    <option value={cfg.summary_model}>{cfg.summary_model}</option>
+                  {/if}
+                </select>
+              {:else}
+                <input
+                  class="rb-field"
+                  bind:value={cfg.summary_model}
+                  placeholder={selectedProvider.default_model ||
+                    "nombre-del-modelo"}
+                />
+              {/if}
             </label>
 
             {#if selectedProvider.kind !== "claude"}
@@ -1438,7 +1479,8 @@
                 />
                 <p class="rb-hint mt-1.5">
                   Abre la selección: clic en una ventana, arrastra una región o pulsa
-                  Espacio para el monitor. Esc cancela.
+                  Espacio para el monitor. Esc cancela. También puedes usar un
+                  botón lateral del mouse.
                 </p>
               </div>
 

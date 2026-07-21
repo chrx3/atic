@@ -80,7 +80,7 @@ impl LiveWorkerHandle {
 
 enum LiveWorkerMode {
     Local(std::sync::Arc<atic_transcribe::LoadedModel>),
-    Groq { api_key: String },
+    Groq { api_key: String, model: String },
 }
 
 fn resolve_groq_api_key() -> Option<String> {
@@ -103,6 +103,7 @@ pub fn spawn_live_worker(
     language: Option<String>,
     model_id: &str,
     live_engine: &str,
+    groq_model: &str,
 ) -> Result<LiveWorkerHandle, String> {
     let want_groq = live_engine.eq_ignore_ascii_case("groq");
     let groq_key = if want_groq {
@@ -112,7 +113,10 @@ pub fn spawn_live_worker(
     };
 
     let mode = if let Some(api_key) = groq_key {
-        LiveWorkerMode::Groq { api_key }
+        LiveWorkerMode::Groq {
+            api_key,
+            model: atic_transcribe::normalize_groq_whisper_model(groq_model).to_string(),
+        }
     } else {
         if want_groq {
             let _ = app.emit(
@@ -200,7 +204,7 @@ fn run_live_worker(
 fn backend_for(mode: &LiveWorkerMode) -> LiveSttBackend<'_> {
     match mode {
         LiveWorkerMode::Local(loaded) => LiveSttBackend::Local(&loaded.model),
-        LiveWorkerMode::Groq { api_key } => LiveSttBackend::Groq { api_key },
+        LiveWorkerMode::Groq { api_key, model } => LiveSttBackend::Groq { api_key, model },
     }
 }
 

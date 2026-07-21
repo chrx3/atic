@@ -41,6 +41,7 @@ pub struct ProviderDto {
     pub needs_api_key: bool,
     pub base_url_editable: bool,
     pub secret_kind: Option<String>,
+    pub suggested_models: Vec<String>,
 }
 
 impl From<&ProviderInfo> for ProviderDto {
@@ -58,6 +59,11 @@ impl From<&ProviderInfo> for ProviderDto {
             needs_api_key: p.needs_api_key,
             base_url_editable: p.base_url_editable,
             secret_kind: p.secret_kind.map(|s| s.to_string()),
+            suggested_models: p
+                .suggested_models
+                .iter()
+                .map(|m| (*m).to_string())
+                .collect(),
         }
     }
 }

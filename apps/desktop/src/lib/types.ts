@@ -24,6 +24,8 @@ export interface AppConfig {
   dictation_whisper_model: string;
   /** Motor de dictado: local | groq */
   dictation_backend: string;
+  /** Modelo Groq Whisper para dictado. */
+  dictation_groq_model: string;
   /** Transcribir los WAV completos automáticamente al terminar. */
   auto_transcribe_after_recording: boolean;
   /** Vista previa experimental durante la grabación. */
@@ -32,6 +34,8 @@ export interface AppConfig {
   live_engine: string;
   /** Modelo Whisper dedicado a live. */
   live_whisper_model: string;
+  /** Modelo Groq Whisper para live. */
+  live_groq_model: string;
   summary_backend: string;
   summary_model: string;
   summary_base_url: string;
@@ -234,6 +238,8 @@ export interface SummaryProvider {
   needs_api_key: boolean;
   base_url_editable: boolean;
   secret_kind: string | null;
+  /** Si hay elementos, la UI muestra un dropdown; si no, input libre. */
+  suggested_models: string[];
 }
 
 export interface SecretsStatus {

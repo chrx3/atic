@@ -197,6 +197,12 @@
   async function openClipboardPanel() {
     clipboardOpen = true;
     clipboardOpenedAt = Date.now();
+    // Sin foco la webview no recibe Esc (el atajo abre sin activar la ventana).
+    try {
+      await getCurrentWindow().setFocus();
+    } catch {
+      // best-effort
+    }
     await fitClipboardExpanded();
     await refreshClipboard();
   }
@@ -393,6 +399,7 @@
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape" && clipboardOpen) {
         event.preventDefault();
+        event.stopPropagation();
         void closeClipboardPanel();
         return;
       }

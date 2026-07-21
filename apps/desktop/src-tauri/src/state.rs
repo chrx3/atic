@@ -185,6 +185,7 @@ pub fn start_capture(
             language,
             &cfg_snapshot.live_whisper_model,
             &cfg_snapshot.live_engine,
+            &cfg_snapshot.live_groq_model,
         ) {
             Ok(worker) => live = Some(worker),
             Err(message) => {
@@ -383,10 +384,51 @@ pub fn set_pill_visible(app: &AppHandle, visible: bool) {
 
     if let Some(window) = app.get_webview_window("pill") {
         if visible {
+            let _ = window.set_always_on_top(true);
             let _ = window.show();
         } else {
             let _ = window.hide();
         }
+    }
+}
+
+/// Encaja `(x, y)` dentro del área útil de algún monitor para que la pill
+/// de tamaño `(w, h)` no quede fuera de pantalla (p. ej. monitor desconectado).
+pub fn clamp_pill_position(x: i32, y: i32, w: i32, h: i32) -> (i32, i32) {
+    #[cfg(windows)]
+    {
+        let monitors = atic_capture::monitors::enumerate();
+        if monitors.is_empty() {
+            return (x, y);
+        }
+        let margin = 8;
+        let ww = w.max(1);
+        let hh = h.max(1);
+
+        // Si el centro de la pill cae en un work area, solo clampear a ese.
+        let cx = x + ww / 2;
+        let cy = y + hh / 2;
+        let target = monitors
+            .iter()
+            .find(|m| m.work_area.contains(cx, cy))
+            .or_else(|| monitors.iter().find(|m| m.is_primary))
+            .or_else(|| monitors.first());
+
+        let Some(m) = target else {
+            return (x, y);
+        };
+        let work = m.work_area;
+        let max_x = (work.right() - ww - margin).max(work.x + margin);
+        let max_y = (work.bottom() - hh - margin).max(work.y + margin);
+        (
+            x.clamp(work.x + margin, max_x),
+            y.clamp(work.y + margin, max_y),
+        )
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (w, h);
+        (x, y)
     }
 }
 
@@ -407,6 +449,12 @@ pub fn animate_pill_to(app: &AppHandle, target_x: i32, target_y: i32) {
     let Some(pill) = app.get_webview_window("pill") else {
         return;
     };
+    let (w, h) = pill
+        .outer_size()
+        .ok()
+        .map(|s| (s.width as i32, s.height as i32))
+        .unwrap_or((112, 48));
+    let (target_x, target_y) = clamp_pill_position(target_x, target_y, w, h);
     let (start_x, start_y) = pill
         .outer_position()
         .ok()

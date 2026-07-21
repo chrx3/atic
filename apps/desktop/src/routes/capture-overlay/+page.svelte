@@ -15,7 +15,7 @@
   const FADE_MS = 120;
 
   let frameSrc = $state("");
-  let candidates: OverlayCandidate[] = [];
+  let candidates = $state<OverlayCandidate[]>([]);
   /** Evita flash negro: solo se revela cuando el frame ya cargó. */
   let revealed = $state(false);
 
@@ -27,12 +27,13 @@
     height: number;
   } | null>(null);
 
-  let overlayEl: HTMLDivElement;
+  let overlayEl: HTMLDivElement | undefined = $state();
   let cursor = $state({ x: 0, y: 0 });
   let dragging = false;
   let dragStart = { x: 0, y: 0 };
-  let done = false; // evita capturar dos veces
+  let done = false;
   let initToken = 0;
+  let unlistenStart: UnlistenFn | null = null;
 
   const selection = $derived(
     region ??
@@ -50,8 +51,6 @@
     return new Promise<void>((resolve) => setTimeout(resolve, ms));
   }
 
-  /// Oculta el overlay (cancela la sesión en el backend). NO cierra la ventana:
-  /// destruirla provoca un crash de wry en WM_SETFOCUS. Se reutiliza después.
   async function safeClose() {
     try {
       await cancelCaptureSession();
@@ -74,7 +73,6 @@
   }
 
   function hitTest(x: number, y: number): OverlayCandidate | null {
-    // `candidates` viene topmost-first: el primero que contiene el punto gana.
     for (const c of candidates) {
       if (x >= c.left && x < c.left + c.width && y >= c.top && y < c.top + c.height) {
         return c;
@@ -134,7 +132,6 @@
     if (target) {
       run(() => completeWindowCapture(target.hwnd));
     } else {
-      // Clic en vacío (sin ventana): cancelar, igual que Esc.
       run(() => safeClose());
     }
   }
@@ -158,14 +155,12 @@
   }
 
   function onContextMenu(e: MouseEvent) {
-    // Clic derecho = cancelar (salida de respaldo).
     e.preventDefault();
     if (!revealed) return;
     run(() => safeClose());
   }
 
   function onFrameLoad() {
-    // Un frame para que el paint del <img> ocurra antes del fade-in.
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
         if (!done) revealed = true;
@@ -173,10 +168,8 @@
     });
   }
 
-  let unlistenStart: UnlistenFn | null = null;
-
-  /// (Re)inicializa la sesión: el webview se reutiliza entre capturas, así que
-  /// esto corre en cada `overlay-session-started`, no solo al montar.
+  /// Solo corre cuando hay sesión (evento). No llamar al montar: la ventana
+  /// existe oculta desde el arranque y aún no hay frame congelado.
   async function init() {
     const token = ++initToken;
     done = false;
@@ -189,22 +182,48 @@
       const info = await overlayInfo();
       if (token !== initToken) return;
       candidates = info.candidates;
-      // Cache-bust: el archivo se reescribe con el mismo nombre cada sesión.
       frameSrc = `${convertFileSrc(info.framePath)}?t=${Date.now()}`;
     } catch (error) {
       console.error("overlay_info falló", error);
+      revealed = false;
       await safeClose();
     }
   }
 
-  onMount(async () => {
-    overlayEl.addEventListener("mousemove", onMouseMove);
-    overlayEl.addEventListener("mousedown", onMouseDown);
-    overlayEl.addEventListener("mouseup", onMouseUp);
-    overlayEl.addEventListener("contextmenu", onContextMenu);
+  onMount(() => {
+    const el = overlayEl;
+    if (el) {
+      el.addEventListener("mousemove", onMouseMove);
+      el.addEventListener("mousedown", onMouseDown);
+      el.addEventListener("mouseup", onMouseUp);
+      el.addEventListener("contextmenu", onContextMenu);
+    }
     window.addEventListener("keydown", onKeyDown);
-    unlistenStart = await listen("overlay-session-started", () => init());
-    await init();
+
+    let cancelled = false;
+    void (async () => {
+      try {
+        unlistenStart = await listen("overlay-session-started", () => {
+          void init();
+        });
+      } catch (error) {
+        console.error("listen overlay-session-started falló", error);
+      }
+      // Si ya hay sesión (p. ej. atajo antes de que el webview escuchara),
+      // intenta cargar; si no hay, el error se ignora sin tumbar la página.
+      if (!cancelled) {
+        try {
+          await overlayInfo();
+          if (!cancelled) await init();
+        } catch {
+          /* sin sesión aún: normal al arrancar */
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
   });
 
   onDestroy(() => {
@@ -233,13 +252,15 @@
     >
       {Math.round(selection.width)} × {Math.round(selection.height)}
     </div>
-  {:else}
+  {:else if revealed}
     <div class="dim-full"></div>
   {/if}
 
-  <div class="hint" style="left:{cursor.x}px;">
-    Clic: ventana · Arrastra: región · Espacio: pantalla · Esc cancela
-  </div>
+  {#if revealed}
+    <div class="hint" style="left:{cursor.x}px;">
+      Clic: ventana · Arrastra: región · Espacio: pantalla · Esc cancela
+    </div>
+  {/if}
 </div>
 
 <style>
