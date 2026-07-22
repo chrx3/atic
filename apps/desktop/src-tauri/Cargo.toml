@@ -47,13 +47,23 @@ zip = { version = "4.6.1", default-features = false, features = ["deflate"] }
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
+    "Win32_UI_Input",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_WindowsAndMessaging",
+    "Win32_System_LibraryLoader",
     "Win32_System_Threading",
 ] }
 # Misma versión que trae Tauri/wry (desactivar Ctrl+P / atajos del navegador).
 webview2-com = "0.38"
 windows-core = "0.61"
+windows = { version = "0.61", features = [
+  "Foundation",
+  "Globalization",
+  "Graphics_Imaging",
+  "Media_Ocr",
+  "Storage",
+  "Storage_Streams",
+] }
 
 [features]
 default = []

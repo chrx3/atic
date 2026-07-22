@@ -3,6 +3,7 @@
   import {
     activateCapture,
     listRecentCaptures,
+    ocrCaptureAndCopy,
     openCapturesDir,
     startCaptureSession,
   } from "$lib/api";
@@ -27,6 +28,7 @@
   let items = $state<CaptureItem[]>([]);
   let loading = $state(true);
   let busy = $state(false);
+  let ocrBusyPath = $state<string | null>(null);
 
   async function refresh() {
     try {
@@ -55,6 +57,21 @@
       await openCapturesDir();
     } catch (error) {
       onToast(String(error));
+    }
+  }
+
+  async function runOcr(path: string, event?: MouseEvent) {
+    event?.stopPropagation();
+    if (ocrBusyPath) return;
+    ocrBusyPath = path;
+    try {
+      const text = await ocrCaptureAndCopy(path);
+      const preview = text.length > 80 ? `${text.slice(0, 80)}…` : text;
+      onToast(`Texto copiado: ${preview}`);
+    } catch (error) {
+      onToast(String(error));
+    } finally {
+      ocrBusyPath = null;
     }
   }
 
@@ -117,16 +134,27 @@
     <ul class="cap-grid">
       {#each items.slice(0, 12) as item (item.path)}
         <li>
-          <button
-            type="button"
-            class="cap-thumb"
-            title={item.path}
-            onclick={() =>
-              void activateCapture(item.path).catch((e) => onToast(String(e)))}
-          >
-            <img src={convertFileSrc(item.path)} alt="" />
-            <span>{labelFor(item)}</span>
-          </button>
+          <div class="cap-thumb-wrap">
+            <button
+              type="button"
+              class="cap-thumb"
+              title={item.path}
+              onclick={() =>
+                void activateCapture(item.path).catch((e) => onToast(String(e)))}
+            >
+              <img src={convertFileSrc(item.path)} alt="" />
+              <span>{labelFor(item)}</span>
+            </button>
+            <button
+              type="button"
+              class="cap-ocr-btn"
+              disabled={ocrBusyPath === item.path}
+              title="Extraer texto (OCR)"
+              onclick={(e) => void runOcr(item.path, e)}
+            >
+              {ocrBusyPath === item.path ? "…" : "Texto"}
+            </button>
+          </div>
         </li>
       {/each}
     </ul>
@@ -213,6 +241,28 @@
     margin: 0;
     padding: 0;
     list-style: none;
+  }
+
+  .cap-thumb-wrap {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+  }
+
+  .cap-ocr-btn {
+    border: 1px solid var(--rb-border);
+    border-radius: var(--rb-radius-sm);
+    padding: 0.2rem 0.35rem;
+    background: var(--rb-bg1);
+    color: var(--rb-muted);
+    font-size: 0.625rem;
+    font-weight: 650;
+    cursor: pointer;
+  }
+
+  .cap-ocr-btn:hover:not(:disabled) {
+    color: var(--rb-text);
+    border-color: var(--rb-border-strong);
   }
 
   .cap-thumb {

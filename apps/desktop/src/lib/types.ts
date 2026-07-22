@@ -52,6 +52,8 @@ export interface AppConfig {
   summon_pill_shortcut: string;
   /** Atajo: traer pill + abrir historial de clipboard. */
   clipboard_shortcut: string;
+  /** Atajo: traer pill + abrir panel de fragmentos. */
+  snippets_shortcut: string;
   /** toggle | push_to_talk */
   dictation_mode: string;
   /** Nombre del micrófono. Vacío = por defecto del SO. */
@@ -275,6 +277,40 @@ export interface ClipboardItem {
   pinned: boolean;
   fingerprint: string;
   source: string;
+}
+
+export interface Snippet {
+  id: string;
+  name: string;
+  body: string;
+  aliases: string[];
+  updatedAtMs: number;
+}
+
+export interface Scratchpad {
+  body: string;
+  updatedAtMs: number;
+}
+
+export interface PasteQueueItem {
+  id: string;
+  text: string;
+  createdAtMs: number;
+}
+
+export type SearchHitKind =
+  | "snippet"
+  | "clipboard"
+  | "capture"
+  | "scratchpad"
+  | "recording";
+
+export interface SearchHit {
+  id: string;
+  kind: SearchHitKind;
+  title: string;
+  preview: string;
+  score?: number;
 }
 
 export interface OverlayCandidate {

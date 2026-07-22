@@ -55,6 +55,8 @@ pub struct Config {
     pub summon_pill_shortcut: String,
     /// Atajo global: traer pill + abrir historial de clipboard.
     pub clipboard_shortcut: String,
+    /// Atajo global: traer pill + abrir panel de fragmentos.
+    pub snippets_shortcut: String,
     /// Modo de dictado: `toggle` | `push_to_talk`.
     pub dictation_mode: String,
     /// Micrófono preferido (ID WASAPI o nombre legacy). Vacío = default del SO.
@@ -142,6 +144,7 @@ impl Default for Config {
             dictation_shortcut: "CmdOrCtrl+Shift+D".to_string(),
             summon_pill_shortcut: "CmdOrCtrl+Shift+P".to_string(),
             clipboard_shortcut: "CmdOrCtrl+Shift+V".to_string(),
+            snippets_shortcut: "CmdOrCtrl+Shift+S".to_string(),
             dictation_mode: "push_to_talk".to_string(),
             mic_device_id: String::new(),
             dictation_mic_device_id: String::new(),
@@ -201,6 +204,7 @@ struct ConfigFile {
     dictation_shortcut: Option<String>,
     summon_pill_shortcut: Option<String>,
     clipboard_shortcut: Option<String>,
+    snippets_shortcut: Option<String>,
     dictation_mode: Option<String>,
     mic_device_id: Option<String>,
     dictation_mic_device_id: Option<String>,
@@ -289,6 +293,7 @@ impl Default for ConfigFile {
             dictation_shortcut: None,
             summon_pill_shortcut: None,
             clipboard_shortcut: None,
+            snippets_shortcut: None,
             dictation_mode: None,
             mic_device_id: None,
             dictation_mic_device_id: None,
@@ -418,6 +423,10 @@ impl From<ConfigFile> for Config {
                 .clipboard_shortcut
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| "CmdOrCtrl+Shift+V".into()),
+            snippets_shortcut: f
+                .snippets_shortcut
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "CmdOrCtrl+Shift+S".into()),
             dictation_mode: match f.dictation_mode.as_deref() {
                 Some("toggle") => "toggle".into(),
                 _ => "push_to_talk".into(),

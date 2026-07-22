@@ -6,7 +6,7 @@
   import type { UnlistenFn } from "@tauri-apps/api/event";
   import { startDrag } from "@crabnebula/tauri-plugin-drag";
   import type { CaptureItem } from "$lib/types";
-  import { onScreenshotCreated, activateCapture } from "$lib/api";
+  import { onScreenshotCreated, activateCapture, ocrCaptureAndCopy } from "$lib/api";
 
   const DISMISS_MS = 6000;
   const DRAG_THRESHOLD = 5;
@@ -18,7 +18,8 @@
 
   let down: { x: number; y: number } | null = null;
   let dragged = false;
-  let busy = false;
+  let busy = $state(false);
+  let ocrBusy = $state(false);
 
   function clearTimer() {
     if (timer) {
@@ -72,6 +73,23 @@
     hide();
   }
 
+  async function doOcr(event: MouseEvent) {
+    event.stopPropagation();
+    if (!current || ocrBusy) return;
+    ocrBusy = true;
+    clearTimer();
+    try {
+      const text = await ocrCaptureAndCopy(current.path);
+      const preview = text.length > 60 ? `${text.slice(0, 60)}…` : text;
+      console.info("OCR copiado:", preview);
+    } catch (error) {
+      console.error("OCR falló", error);
+    } finally {
+      ocrBusy = false;
+      hide();
+    }
+  }
+
   function cleanupPress() {
     down = null;
     window.removeEventListener("mousemove", onMove);
@@ -119,6 +137,15 @@
       <button class="grab" onmousedown={onDown} title="Clic: abrir · Arrastra: sacar">
         <img src={src} alt="captura" draggable="false" />
       </button>
+      <button
+        type="button"
+        class="ocr"
+        disabled={ocrBusy}
+        title="Extraer texto (OCR)"
+        onclick={(e) => void doOcr(e)}
+      >
+        {ocrBusy ? "…" : "Texto"}
+      </button>
       <div class="name">{current.label || current.id}</div>
     </div>
   {/key}
@@ -150,6 +177,20 @@
   }
   .grab:active {
     cursor: grabbing;
+  }
+  .ocr {
+    flex: none;
+    border: 0;
+    border-radius: 6px;
+    padding: 4px 8px;
+    background: rgba(255, 255, 255, 0.92);
+    color: #111;
+    font: 600 11px/1.2 system-ui, sans-serif;
+    cursor: pointer;
+  }
+  .ocr:disabled {
+    opacity: 0.6;
+    cursor: default;
   }
   .grab img {
     display: block;

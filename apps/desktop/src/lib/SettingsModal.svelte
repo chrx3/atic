@@ -703,6 +703,24 @@
                   (texto e imágenes).
                 </p>
               </div>
+
+              <div>
+                <p class="mb-2 text-xs font-medium" style="color: var(--rb-muted)">
+                  Fragmentos de texto
+                </p>
+                <HotkeyCapture
+                  value={cfg.snippets_shortcut}
+                  defaultValue="CmdOrCtrl+Shift+S"
+                  ariaLabel="Cambiar atajo del panel de fragmentos"
+                  onChange={(sc) => {
+                    if (cfg) cfg.snippets_shortcut = sc;
+                  }}
+                />
+                <p class="rb-hint mt-1.5">
+                  Trae la pill al cursor y abre plantillas reutilizables y el bloc
+                  de notas.
+                </p>
+              </div>
             </div>
           {:else if activeSection === "audio"}
             <div class="rb-settings-group">
@@ -1479,8 +1497,8 @@
                 />
                 <p class="rb-hint mt-1.5">
                   Abre la selección: clic en una ventana, arrastra una región o pulsa
-                  Espacio para el monitor. Esc cancela. También puedes usar un
-                  botón lateral del mouse.
+                  Espacio para el monitor. Esc cancela. También puedes usar un botón
+                  lateral del mouse.
                 </p>
               </div>
 

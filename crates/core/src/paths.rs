@@ -25,6 +25,7 @@ impl AppDirs {
         std::fs::create_dir_all(this.captures_dir())?;
         std::fs::create_dir_all(this.overlay_frames_dir())?;
         std::fs::create_dir_all(this.clipboard_dir())?;
+        std::fs::create_dir_all(this.snippets_dir())?;
         Ok(this)
     }
 
@@ -59,6 +60,11 @@ impl AppDirs {
         self.data_dir.join("clipboard")
     }
 
+    /// Fragmentos de texto reutilizables y bloc de notas.
+    pub fn snippets_dir(&self) -> PathBuf {
+        self.data_dir.join("snippets")
+    }
+
     /// Archivo SQLite principal.
     pub fn db_path(&self) -> PathBuf {
         self.db_path.clone()
@@ -67,6 +73,11 @@ impl AppDirs {
     /// Archivo de configuración (JSON).
     pub fn config_path(&self) -> PathBuf {
         self.data_dir.join("config.json")
+    }
+
+    /// Cola de pegado pendiente (`pegar después`).
+    pub fn paste_queue_path(&self) -> PathBuf {
+        self.data_dir.join("paste_queue.json")
     }
 
     /// Carpeta propia de una grabación concreta.

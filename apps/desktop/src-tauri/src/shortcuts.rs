@@ -1,13 +1,13 @@
-//! Registro de atajos globales (grabación + dictado + pill + clipboard + captura).
+//! Registro de atajos globales (grabación + dictado + pill + clipboard + fragmentos + captura).
 //!
 //! Teclado: `tauri-plugin-global-shortcut`.
-//! Botones laterales del mouse (`MouseX1` / `MouseX2`): hook `WH_MOUSE_LL`.
+//! Botones laterales del mouse: Raw Input (ver `mouse_bindings`).
 
 use tauri::{AppHandle, Manager};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
 use crate::mouse_bindings::{self, MouseAction, SideButton};
-use crate::{clipboard_history, dictation, state};
+use crate::{clipboard_history, dictation, snippets, state};
 
 enum Binding {
     Key(Shortcut),
@@ -44,12 +44,14 @@ pub fn register_shortcuts(
     dictation_shortcut: &str,
     summon_pill_shortcut: &str,
     clipboard_shortcut: &str,
+    snippets_shortcut: &str,
     screenshot_shortcut: &str,
 ) -> Result<(), String> {
     let recording = parse_binding("grabación", recording_shortcut)?;
     let dictation = parse_binding("dictado", dictation_shortcut)?;
     let summon = parse_binding("traer pill", summon_pill_shortcut)?;
     let clipboard = parse_binding("clipboard", clipboard_shortcut)?;
+    let snippets = parse_binding("fragmentos", snippets_shortcut)?;
     let screenshot = parse_binding("captura", screenshot_shortcut)?;
 
     let named = [
@@ -57,6 +59,7 @@ pub fn register_shortcuts(
         ("dictado", &dictation),
         ("traer pill", &summon),
         ("clipboard", &clipboard),
+        ("fragmentos", &snippets),
         ("captura", &screenshot),
     ];
     for i in 0..named.len() {
@@ -143,6 +146,20 @@ pub fn register_shortcuts(
             }
         }
         Binding::Mouse(btn) => mouse.push((*btn, MouseAction::Clipboard)),
+    }
+
+    match &snippets {
+        Binding::Key(sc) => {
+            let handle = app.clone();
+            if let Err(err) = gs.on_shortcut(*sc, move |_app, _sc, event| {
+                if matches!(event.state(), ShortcutState::Pressed) {
+                    snippets::summon_snippets_panel(&handle);
+                }
+            }) {
+                tracing::error!(%err, "no se pudo registrar el atajo de fragmentos");
+            }
+        }
+        Binding::Mouse(btn) => mouse.push((*btn, MouseAction::Snippets)),
     }
 
     match &screenshot {

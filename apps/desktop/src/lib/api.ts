@@ -28,6 +28,10 @@ import type {
   MeetingDetectionPayload,
   CaptureItem,
   ClipboardItem,
+  Snippet,
+  Scratchpad,
+  PasteQueueItem,
+  SearchHit,
   OverlayInfo,
 } from "./types";
 
@@ -93,9 +97,65 @@ export const onPillClipboardToggle = (cb: () => void): Promise<UnlistenFn> =>
 export const onPillClipboardClose = (cb: () => void): Promise<UnlistenFn> =>
   listen("pill-clipboard-close", () => cb());
 
+// --- Fragmentos y bloc ---
+export const listSnippets = () => invoke<Snippet[]>("list_snippets");
+export const upsertSnippet = (snippet: Snippet) =>
+  invoke<Snippet>("upsert_snippet", { snippet });
+export const deleteSnippet = (id: string) =>
+  invoke<void>("delete_snippet", { id });
+export const pasteSnippet = (id: string) =>
+  invoke<void>("paste_snippet", { id });
+export const prepareSnippetsPill = () =>
+  invoke<void>("prepare_snippets_pill");
+export const getScratchpad = () => invoke<Scratchpad>("get_scratchpad");
+export const setScratchpad = (body: string) =>
+  invoke<Scratchpad>("set_scratchpad", { body });
+
+export const onSnippetsChanged = (cb: () => void): Promise<UnlistenFn> =>
+  listen("snippets-changed", () => cb());
+
+export const onPillSnippetsToggle = (cb: () => void): Promise<UnlistenFn> =>
+  listen("pill-snippets-toggle", () => cb());
+
+export const onPillSnippetsClose = (cb: () => void): Promise<UnlistenFn> =>
+  listen("pill-snippets-close", () => cb());
+
 /** Traer pill / reset: cierra clipboard y vuelve a estado compacto. */
 export const onPillReset = (cb: () => void): Promise<UnlistenFn> =>
   listen("pill-reset", () => cb());
+
+// --- Cola de pegado ---
+export const listPasteQueue = () =>
+  invoke<PasteQueueItem[]>("list_paste_queue");
+export const enqueuePaste = (text: string) =>
+  invoke<PasteQueueItem>("enqueue_paste", { text });
+export const dismissPasteQueueItem = (id: string) =>
+  invoke<void>("dismiss_paste_queue_item", { id });
+export const clearPasteQueue = () => invoke<void>("clear_paste_queue");
+export const pasteQueueItemNow = (id: string) =>
+  invoke<void>("paste_queue_item_now", { id });
+export const pasteQueueFlushReady = () =>
+  invoke<boolean>("paste_queue_flush_ready");
+
+export const onPasteQueueChanged = (cb: () => void): Promise<UnlistenFn> =>
+  listen("paste-queue-changed", () => cb());
+
+export const onPasteQueued = (
+  cb: (preview: string) => void,
+): Promise<UnlistenFn> =>
+  listen<{ preview: string }>("paste-queued", (e) => cb(e.payload.preview));
+
+// --- OCR de capturas ---
+export const ocrCaptureText = (path: string) =>
+  invoke<string>("ocr_capture_text", { path });
+export const ocrCaptureAndCopy = (path: string) =>
+  invoke<string>("ocr_capture_and_copy", { path });
+export const readCaptureOcrCache = (path: string) =>
+  invoke<string | null>("read_capture_ocr_cache", { path });
+
+// --- Búsqueda local ---
+export const searchLocal = (query: string) =>
+  invoke<SearchHit[]>("search_local", { query });
 
 // --- Overlay de selección de captura ---
 export const startCaptureSession = () =>

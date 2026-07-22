@@ -46,7 +46,9 @@
 
     // Win la reserva el SO (Inicio, Win+D, etc.). No registrar atajos con Super.
     if (e.metaKey) {
-      showReject("Win la usa Windows; prueba Ctrl/Alt/Shift o un botón lateral.");
+      showReject(
+        "Win la usa Windows; prueba Ctrl/Alt/Shift o un botón lateral.",
+      );
       return null;
     }
 
@@ -75,7 +77,14 @@
   function commit(sc: string) {
     capturing = false;
     rejectHint = null;
-    void onChange(sc);
+    // Diferir bindings de mouse: el mismo pulsado que completa la captura no
+    // debe activar set_config → set_bindings en el mismo DOWN/UP del lateral.
+    const isMouse = sc === "MouseX1" || sc === "MouseX2";
+    if (isMouse) {
+      setTimeout(() => void onChange(sc), 120);
+    } else {
+      void onChange(sc);
+    }
   }
 
   function onKey(e: KeyboardEvent) {
@@ -95,6 +104,7 @@
     if (!capturing) return;
     const sc = mouseEventToShortcut(e);
     if (!sc) return;
+    // Solo consumir laterales; nunca interferir con clic izquierdo/derecho.
     e.preventDefault();
     e.stopPropagation();
     commit(sc);
@@ -111,13 +121,21 @@
 
   $effect(() => {
     if (!capturing) return;
+    const onBlur = () => {
+      capturing = false;
+    };
     window.addEventListener("keydown", onKey, true);
+    // mousedown + mouseup: algunos hosts solo entregan uno de los dos para X1/X2.
     window.addEventListener("mousedown", onMouse, true);
+    window.addEventListener("mouseup", onMouse, true);
     window.addEventListener("auxclick", onMouse, true);
+    window.addEventListener("blur", onBlur);
     return () => {
       window.removeEventListener("keydown", onKey, true);
       window.removeEventListener("mousedown", onMouse, true);
+      window.removeEventListener("mouseup", onMouse, true);
       window.removeEventListener("auxclick", onMouse, true);
+      window.removeEventListener("blur", onBlur);
     };
   });
 

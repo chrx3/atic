@@ -101,6 +101,9 @@ fn start_dictation(app: &AppHandle) -> Result<(), String> {
         return Err("Ya estás dictando.".into());
     }
 
+    // Guardar destino de pegado YA: antes de que la pill/UI robe el foco.
+    crate::clipboard_history::remember_paste_target();
+
     // Validar backend de dictado antes de abrir el mic.
     // Sin key de Groq se cae a Whisper local: el modelo local debe estar listo.
     let cfg = state.config.lock().unwrap().clone();
@@ -206,7 +209,7 @@ fn stop_and_paste(app: &AppHandle) {
         let summary = active.handle.stop();
         let cleanup = active.temp_dir.clone();
 
-        let result = (|| -> Result<String, String> {
+        let result = (|| -> Result<(String, crate::paste_queue::PasteOutcome), String> {
             if !summary.mic_written || !active.wav_path.exists() {
                 return Err("No se capturó audio. Intenta de nuevo.".into());
             }
@@ -298,16 +301,20 @@ fn stop_and_paste(app: &AppHandle) {
                 return Err("No se detectó habla. Prueba otra vez.".into());
             }
 
-            paste_text(&text)?;
-            Ok(text)
+            // Devolver foco a la app donde se inició el dictado (p. ej. Terax).
+            crate::clipboard_history::focus_paste_target();
+            thread::sleep(Duration::from_millis(220));
+            let outcome = crate::paste_queue::try_paste_or_enqueue(&app2, &text)?;
+            Ok((text, outcome))
         })();
 
         let _ = std::fs::remove_dir_all(cleanup);
 
         match result {
-            Ok(text) => {
+            Ok((text, outcome)) => {
                 let elapsed_ms = total_started.elapsed().as_millis();
-                tracing::info!(len = text.len(), elapsed_ms, "dictado pegado");
+                let queued = outcome == crate::paste_queue::PasteOutcome::Queued;
+                tracing::info!(len = text.len(), elapsed_ms, queued, "dictado pegado o encolado");
                 let (ui_sounds, out) = {
                     let state = app2.state::<AppState>();
                     let cfg = state.config.lock().unwrap();
@@ -316,14 +323,22 @@ fn stop_and_paste(app: &AppHandle) {
                 if ui_sounds {
                     crate::beep::play_dictation_done(&out);
                 }
-                emit_status(
-                    &app2,
-                    DictationPhase::Pasted,
-                    Some(format!(
+                let message = if queued {
+                    format!(
+                        "En cola para pegar ({} caracteres)",
+                        text.chars().count()
+                    )
+                } else {
+                    format!(
                         "Pegado ({} caracteres · {:.1} s)",
                         text.chars().count(),
                         elapsed_ms as f64 / 1_000.0
-                    )),
+                    )
+                };
+                emit_status(
+                    &app2,
+                    DictationPhase::Pasted,
+                    Some(message),
                 );
                 // Vuelve a idle tras un momento para no dejar la pill en "Pegado".
                 thread::sleep(Duration::from_millis(1600));
@@ -347,9 +362,4 @@ fn effective_dictation_noise(configured: &str) -> String {
         "medium" => "medium".into(),
         _ => "medium".into(),
     }
-}
-
-fn paste_text(text: &str) -> Result<(), String> {
-    // Misma lógica que el historial: Ctrl+Shift+V en terminales/Electron.
-    crate::clipboard_history::paste_text(text)
 }

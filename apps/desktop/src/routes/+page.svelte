@@ -13,6 +13,7 @@
   import AppShell from "$lib/AppShell.svelte";
   import CapturesTool from "$lib/CapturesTool.svelte";
   import ClipboardTool from "$lib/ClipboardTool.svelte";
+  import SnippetsTool from "$lib/SnippetsTool.svelte";
   import ConfirmModal from "$lib/ConfirmModal.svelte";
   import DictationTool from "$lib/DictationTool.svelte";
   import HotkeyCapture from "$lib/HotkeyCapture.svelte";
@@ -23,6 +24,8 @@
   import SettingsModal from "$lib/SettingsModal.svelte";
   import SummaryModal from "$lib/SummaryModal.svelte";
   import TranscriptModal from "$lib/TranscriptModal.svelte";
+  import SearchModal from "$lib/SearchModal.svelte";
+  import type { SearchHit } from "$lib/types";
   import type { ToolId } from "$lib/tools";
   import {
     applyTheme,
@@ -70,6 +73,10 @@
     checkAppUpdate,
     audioPreflight,
     onMeetingDetection,
+    activateCapture,
+    pasteClipboardItem,
+    pasteSnippet,
+    onPasteQueued,
   } from "$lib/api";
 
   let recordings = $state<Recording[]>([]);
@@ -102,6 +109,8 @@
   let settingsOpen = $state(false);
   let bluetoothConfirmMessage = $state<string | null>(null);
   let activeTool = $state<ToolId>("meetings");
+  let snippetsInitialTab = $state<"snippets" | "scratchpad">("snippets");
+  let searchOpen = $state(false);
   let uiTheme = $state<UiTheme>("system");
 
   const theme = $derived(normalizeTheme(config?.ui_theme ?? uiTheme));
@@ -149,6 +158,41 @@
     if (toastTimer) clearTimeout(toastTimer);
     toast = message;
     toastTimer = setTimeout(() => (toast = null), durationMs);
+  }
+
+  async function handleSearchSelect(hit: SearchHit) {
+    try {
+      switch (hit.kind) {
+        case "snippet":
+          await pasteSnippet(hit.id);
+          showToast(`Fragmento pegado: ${hit.title}`);
+          break;
+        case "clipboard":
+          await pasteClipboardItem(hit.id);
+          showToast("Pegado desde el portapapeles");
+          break;
+        case "capture":
+          await activateCapture(hit.id);
+          showToast("Captura abierta");
+          break;
+        case "scratchpad":
+          snippetsInitialTab = "scratchpad";
+          activeTool = "snippets";
+          showToast("Bloc de notas");
+          break;
+        case "recording":
+          activeTool = "meetings";
+          selectedId = hit.id;
+          showToast(hit.title);
+          break;
+      }
+    } catch (error) {
+      showToast(String(error));
+    }
+  }
+
+  function openSearch() {
+    searchOpen = true;
   }
 
   function startTimer() {
@@ -509,11 +553,24 @@
         showToast(message);
         void refresh();
       }),
+      onPasteQueued((preview) => {
+        showToast(`En cola para pegar: ${preview}`, 6000);
+      }),
     );
+
+    const onSearchKey = (event: KeyboardEvent) => {
+      const mod = event.ctrlKey || event.metaKey;
+      if (mod && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        openSearch();
+      }
+    };
+    window.addEventListener("keydown", onSearchKey);
 
     return () => {
       stopTimer();
       if (toastTimer) clearTimeout(toastTimer);
+      window.removeEventListener("keydown", onSearchKey);
       unlisteners.forEach((listener) => listener.then((unlisten) => unlisten()));
     };
   });
@@ -735,6 +792,13 @@
           onShortcutChange={(sc) => patchConfig({ clipboard_shortcut: sc })}
           onToast={showToast}
         />
+      {:else if activeTool === "snippets"}
+        <SnippetsTool
+          shortcut={config?.snippets_shortcut ?? "CmdOrCtrl+Shift+S"}
+          initialTab={snippetsInitialTab}
+          onShortcutChange={(sc) => patchConfig({ snippets_shortcut: sc })}
+          onToast={showToast}
+        />
       {:else}
         <CapturesTool
           shortcut={config?.screenshot_shortcut ?? ""}
@@ -786,6 +850,12 @@
         onToast={showToast}
       />
     {/if}
+
+    <SearchModal
+      bind:open={searchOpen}
+      onSelect={handleSearchSelect}
+      onClose={() => (searchOpen = false)}
+    />
 
     {#if config && !config.onboarding_done}
       <OnboardingModal config={config} onDone={completeOnboarding} />

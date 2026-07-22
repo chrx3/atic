@@ -7,11 +7,18 @@
     getCurrentWindow,
     LogicalSize,
   } from "@tauri-apps/api/window";
-  import type { ClipboardItem, DictationPhase, Levels } from "$lib/types";
+  import type { ClipboardItem, DictationPhase, Levels, PasteQueueItem, Snippet as TextSnippet } from "$lib/types";
   import Waveform from "$lib/Waveform.svelte";
   import X from "reicon-svelte/icons/X.svelte";
   import ClipboardHistoryList from "$lib/ClipboardHistoryList.svelte";
+  import SnippetsList from "$lib/SnippetsList.svelte";
   import {
+    activateCapture,
+    listPasteQueue,
+    pasteQueueItemNow,
+    dismissPasteQueueItem,
+    onPasteQueueChanged,
+    onPasteQueued,
     startRecording,
     stopRecording,
     isRecording,
@@ -19,6 +26,9 @@
     dictationPhase,
     showMainWindow,
     listClipboardHistory,
+    listSnippets,
+    getScratchpad,
+    setScratchpad,
     onLevels,
     onStatus,
     onCaptureWarn,
@@ -26,11 +36,15 @@
     onLiveTranscriptError,
     onLiveTranscriptFinal,
     prepareClipboardPill,
+    prepareSnippetsPill,
     restorePillPosition,
     onPillClipboardToggle,
     onPillClipboardClose,
+    onPillSnippetsToggle,
+    onPillSnippetsClose,
     onPillReset,
     onClipboardHistoryChanged,
+    onSnippetsChanged,
   } from "$lib/api";
 
   let recording = $state(false);
@@ -47,7 +61,20 @@
   let clipboardItems = $state<ClipboardItem[]>([]);
   let clipboardLoading = $state(false);
   let clipboardOpenedAt = 0;
+
+  let snippetsOpen = $state(false);
+  let snippetsTab = $state<"list" | "scratchpad">("list");
+  let snippetItems = $state<TextSnippet[]>([]);
+  let snippetsLoading = $state(false);
+  let snippetsOpenedAt = 0;
+  let scratchBody = $state("");
+  let scratchLoading = $state(false);
+  let scratchSaving = $state(false);
+  let scratchTimer: ReturnType<typeof setTimeout> | null = null;
+
   let pasting = $state(false);
+  let pasteQueue = $state<PasteQueueItem[]>([]);
+  let pasteQueueBusy = $state(false);
   /** Evita que startDragging() cierre el clipboard por blur. */
   let windowDragging = $state(false);
   /** Clipboard siempre crece hacia arriba (barra abajo, lista arriba). */
@@ -59,6 +86,7 @@
   let fitting = false;
 
   const COMPACT_H = 48;
+  const QUEUE_STRIP_H = 44;
   const IDLE_W = 112;
   const EXPANDED_W = 320;
   const EXPANDED_H = 380;
@@ -72,10 +100,14 @@
 
   const mode = $derived.by(() => {
     if (clipboardOpen) return "clipboard" as const;
+    if (snippetsOpen) return "snippets" as const;
     if (recording) return "recording" as const;
     if (dictating) return "dictation" as const;
     return "idle" as const;
   });
+
+  const panelExpanded = $derived(mode === "clipboard" || mode === "snippets");
+  const queueVisible = $derived(pasteQueue.length > 0 && !panelExpanded);
 
   function startTimer() {
     startedAt = Date.now();
@@ -91,19 +123,18 @@
   }
 
   function targetSize(): { w: number; h: number } {
-    if (mode === "clipboard") return { w: EXPANDED_W, h: EXPANDED_H };
+    if (panelExpanded) return { w: EXPANDED_W, h: EXPANDED_H };
+    let w = IDLE_W;
+    let h = COMPACT_H;
     if (mode === "recording") {
-      return {
-        w: liveError || btWarning || liveActive ? 248 : 210,
-        h: COMPACT_H,
-      };
+      w = liveError || btWarning || liveActive ? 248 : 210;
+    } else if (mode === "dictation") {
+      if (dictation === "listening") w = 210;
+      else if (dictation === "transcribing") w = 200;
+      else w = 220;
     }
-    if (mode === "dictation") {
-      if (dictation === "listening") return { w: 210, h: COMPACT_H };
-      if (dictation === "transcribing") return { w: 200, h: COMPACT_H };
-      return { w: 220, h: COMPACT_H };
-    }
-    return { w: IDLE_W, h: COMPACT_H };
+    if (queueVisible) h += QUEUE_STRIP_H;
+    return { w, h };
   }
 
   async function fitWindow() {
@@ -115,7 +146,7 @@
       await win.setMinSize(new LogicalSize(100, 40));
       await win.setMaxSize(new LogicalSize(360, 420));
       await win.setSize(new LogicalSize(w, h));
-      if (mode !== "clipboard") expandUp = false;
+      if (!panelExpanded) expandUp = false;
     } catch (err) {
       console.warn("pill setSize", err);
     } finally {
@@ -123,8 +154,8 @@
     }
   }
 
-  /** Expande el historial anclado al compacto actual; elige arriba/abajo según espacio. */
-  async function fitClipboardExpanded() {
+  /** Expande el panel anclado al compacto actual; elige arriba/abajo según espacio. */
+  async function fitPanelExpanded() {
     if (fitting) return;
     fitting = true;
     const win = getCurrentWindow();
@@ -170,7 +201,7 @@
         }
       }
     } catch (err) {
-      console.warn("pill clipboard fit", err);
+      console.warn("pill panel fit", err);
     } finally {
       fitting = false;
     }
@@ -181,6 +212,44 @@
     fitRaf = requestAnimationFrame(() => {
       fitRaf = requestAnimationFrame(() => void fitWindow());
     });
+  }
+
+  async function refreshPasteQueue() {
+    try {
+      pasteQueue = await listPasteQueue();
+    } catch {
+      pasteQueue = [];
+    }
+  }
+
+  async function pasteQueueFront() {
+    const front = pasteQueue[0];
+    if (!front || pasteQueueBusy) return;
+    pasteQueueBusy = true;
+    try {
+      await pasteQueueItemNow(front.id);
+      await refreshPasteQueue();
+    } catch (err) {
+      console.warn("paste queue", err);
+    } finally {
+      pasteQueueBusy = false;
+      scheduleFit();
+    }
+  }
+
+  async function dismissQueueFront() {
+    const front = pasteQueue[0];
+    if (!front || pasteQueueBusy) return;
+    pasteQueueBusy = true;
+    try {
+      await dismissPasteQueueItem(front.id);
+      await refreshPasteQueue();
+    } catch (err) {
+      console.warn("dismiss queue", err);
+    } finally {
+      pasteQueueBusy = false;
+      scheduleFit();
+    }
   }
 
   async function refreshClipboard() {
@@ -195,23 +264,96 @@
   }
 
   async function openClipboardPanel() {
+    snippetsOpen = false;
     clipboardOpen = true;
     clipboardOpenedAt = Date.now();
-    // Sin foco la webview no recibe Esc (el atajo abre sin activar la ventana).
     try {
       await getCurrentWindow().setFocus();
     } catch {
       // best-effort
     }
-    await fitClipboardExpanded();
+    await fitPanelExpanded();
     await refreshClipboard();
   }
 
   async function closeClipboardPanel() {
     if (!clipboardOpen) return;
-    // Colapsar a compacto primero; el fly-to home espera a que el DOM aplique.
     clipboardOpen = false;
     expandUp = false;
+    await new Promise<void>((resolve) => {
+      requestAnimationFrame(() => resolve());
+    });
+    try {
+      await restorePillPosition();
+    } catch (err) {
+      console.warn("restore pill position", err);
+    }
+    scheduleFit();
+  }
+
+  async function refreshSnippets() {
+    snippetsLoading = true;
+    try {
+      snippetItems = await listSnippets();
+    } catch {
+      snippetItems = [];
+    } finally {
+      snippetsLoading = false;
+    }
+  }
+
+  async function loadScratchpad() {
+    scratchLoading = true;
+    try {
+      const pad = await getScratchpad();
+      scratchBody = pad.body;
+    } catch {
+      scratchBody = "";
+    } finally {
+      scratchLoading = false;
+    }
+  }
+
+  function scheduleScratchSave() {
+    if (scratchTimer) clearTimeout(scratchTimer);
+    scratchTimer = setTimeout(() => {
+      void persistScratchpad();
+    }, 500);
+  }
+
+  async function persistScratchpad() {
+    if (scratchSaving) return;
+    scratchSaving = true;
+    try {
+      await setScratchpad(scratchBody);
+    } catch (err) {
+      console.warn("scratchpad save", err);
+    } finally {
+      scratchSaving = false;
+    }
+  }
+
+  async function openSnippetsPanel() {
+    clipboardOpen = false;
+    snippetsOpen = true;
+    snippetsOpenedAt = Date.now();
+    try {
+      await getCurrentWindow().setFocus();
+    } catch {
+      // best-effort
+    }
+    await fitPanelExpanded();
+    await Promise.all([refreshSnippets(), loadScratchpad()]);
+  }
+
+  async function closeSnippetsPanel() {
+    if (!snippetsOpen) return;
+    snippetsOpen = false;
+    expandUp = false;
+    if (scratchTimer) {
+      clearTimeout(scratchTimer);
+      scratchTimer = null;
+    }
     await new Promise<void>((resolve) => {
       requestAnimationFrame(() => resolve());
     });
@@ -226,8 +368,13 @@
   /** Estado limpio compacto (tras traer pill o al reabrir clipboard). */
   async function resetPillChrome() {
     clipboardOpen = false;
+    snippetsOpen = false;
     expandUp = false;
     pasting = false;
+    if (scratchTimer) {
+      clearTimeout(scratchTimer);
+      scratchTimer = null;
+    }
     const win = getCurrentWindow();
     try {
       await win.setSize(new LogicalSize(IDLE_W, COMPACT_H));
@@ -256,6 +403,21 @@
     await openClipboardPanel();
   }
 
+  async function onSnippetsHotkey() {
+    if (snippetsOpen) {
+      await resetPillChrome();
+      await new Promise<void>((resolve) => {
+        requestAnimationFrame(() => resolve());
+      });
+    }
+    try {
+      await prepareSnippetsPill();
+    } catch (err) {
+      console.warn("prepare snippets pill", err);
+    }
+    await openSnippetsPanel();
+  }
+
   /** Arrastre de la ventana; no compite con ítems del historial. */
   function beginDrag(event: PointerEvent) {
     const target = event.target as HTMLElement | null;
@@ -278,7 +440,7 @@
   }
 
   async function toggleRecord() {
-    if (busy || dictating || clipboardOpen) return;
+    if (busy || dictating || clipboardOpen || snippetsOpen) return;
     busy = true;
     try {
       if (recording) await stopRecording();
@@ -292,7 +454,7 @@
   }
 
   async function toggleDictate() {
-    if (busy || recording || clipboardOpen) return;
+    if (busy || recording || clipboardOpen || snippetsOpen) return;
     busy = true;
     try {
       await toggleDictation();
@@ -345,6 +507,7 @@
       } catch {
         dictation = "idle";
       }
+      await refreshPasteQueue();
       scheduleFit();
     })();
 
@@ -388,11 +551,27 @@
         pasting = false;
         void closeClipboardPanel();
       }),
+      onPillSnippetsToggle(() => {
+        void onSnippetsHotkey();
+      }),
+      onPillSnippetsClose(() => {
+        pasting = false;
+        void closeSnippetsPanel();
+      }),
       onPillReset(() => {
         void resetPillChrome();
       }),
       onClipboardHistoryChanged(() => {
         if (clipboardOpen) void refreshClipboard();
+      }),
+      onSnippetsChanged(() => {
+        if (snippetsOpen) void refreshSnippets();
+      }),
+      onPasteQueueChanged(() => {
+        void refreshPasteQueue().then(() => scheduleFit());
+      }),
+      onPasteQueued(() => {
+        void refreshPasteQueue().then(() => scheduleFit());
       }),
     );
 
@@ -401,6 +580,12 @@
         event.preventDefault();
         event.stopPropagation();
         void closeClipboardPanel();
+        return;
+      }
+      if (event.key === "Escape" && snippetsOpen) {
+        event.preventDefault();
+        event.stopPropagation();
+        void closeSnippetsPanel();
         return;
       }
       // Bloquea chrome del WebView (Imprimir, Buscar, DevTools, zoom…).
@@ -421,6 +606,9 @@
       if (clipboardOpen && Date.now() - clipboardOpenedAt > 400) {
         void closeClipboardPanel();
       }
+      if (snippetsOpen && Date.now() - snippetsOpenedAt > 400) {
+        void closeSnippetsPanel();
+      }
     };
     const onFocus = () => {
       windowDragging = false;
@@ -432,6 +620,7 @@
     return () => {
       stopTimer();
       cancelAnimationFrame(fitRaf);
+      if (scratchTimer) clearTimeout(scratchTimer);
       window.removeEventListener("keydown", onKey, true);
       window.removeEventListener("blur", onBlur);
       window.removeEventListener("focus", onFocus);
@@ -443,35 +632,113 @@
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
   class="pill-root"
-  class:is-expanded={mode === "clipboard"}
-  class:is-up={expandUp && mode === "clipboard"}
+  class:is-expanded={panelExpanded}
+  class:is-up={expandUp && panelExpanded}
   onpointerdown={beginDrag}
 >
-  {#if mode === "clipboard" && expandUp}
+  {#if queueVisible}
+    <div class="paste-queue-strip" data-no-drag>
+      <span class="paste-queue-badge" title="Cola de pegado">{pasteQueue.length}</span>
+      <span class="paste-queue-preview" title={pasteQueue[0]?.text}>
+        {pasteQueue[0]?.text ?? ""}
+      </span>
+      <button
+        type="button"
+        class="paste-queue-btn"
+        disabled={pasteQueueBusy}
+        onclick={() => void pasteQueueFront()}
+      >
+        Pegar
+      </button>
+      <button
+        type="button"
+        class="paste-queue-btn is-muted"
+        disabled={pasteQueueBusy}
+        onclick={() => void dismissQueueFront()}
+      >
+        Descartar
+      </button>
+    </div>
+  {/if}
+
+  {#if panelExpanded && expandUp}
     <div class="pill-panel" data-no-drag>
-      <ClipboardHistoryList
-        items={clipboardItems}
-        loading={clipboardLoading}
-        compact
-        onRefresh={refreshClipboard}
-        onPasteStart={() => {
-          pasting = true;
-        }}
-        onPasted={() => {
-          void closeClipboardPanel();
-        }}
-        onError={() => {
-          pasting = false;
-        }}
-      />
+      {#if mode === "clipboard"}
+        <ClipboardHistoryList
+          items={clipboardItems}
+          loading={clipboardLoading}
+          compact
+          onRefresh={refreshClipboard}
+          onPasteStart={() => {
+            pasting = true;
+          }}
+          onPasted={() => {
+            void closeClipboardPanel();
+          }}
+          onError={() => {
+            pasting = false;
+          }}
+        />
+      {:else}
+        <div class="snip-pill-tabs" role="tablist" aria-label="Vistas de fragmentos">
+          <button
+            type="button"
+            role="tab"
+            class="snip-pill-tab"
+            class:active={snippetsTab === "list"}
+            aria-selected={snippetsTab === "list"}
+            onclick={() => (snippetsTab = "list")}
+          >
+            Lista
+          </button>
+          <button
+            type="button"
+            role="tab"
+            class="snip-pill-tab"
+            class:active={snippetsTab === "scratchpad"}
+            aria-selected={snippetsTab === "scratchpad"}
+            onclick={() => (snippetsTab = "scratchpad")}
+          >
+            Bloc
+          </button>
+        </div>
+        {#if snippetsTab === "list"}
+          <SnippetsList
+            items={snippetItems}
+            loading={snippetsLoading}
+            compact
+            onRefresh={refreshSnippets}
+            onPasteStart={() => {
+              pasting = true;
+            }}
+            onPasted={() => {
+              void closeSnippetsPanel();
+            }}
+            onError={() => {
+              pasting = false;
+            }}
+          />
+        {:else if scratchLoading}
+          <p class="snip-pill-empty">Cargando bloc…</p>
+        {:else}
+          <textarea
+            class="snip-pill-scratch"
+            bind:value={scratchBody}
+            oninput={scheduleScratchSave}
+            placeholder="Notas temporales…"
+            aria-label="Bloc de notas"
+            data-no-drag
+          ></textarea>
+        {/if}
+      {/if}
     </div>
   {/if}
 
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
     class="pill-shell"
-    class:is-expanded={mode === "clipboard"}
-    class:is-up={expandUp && mode === "clipboard"}
+    class:is-expanded={panelExpanded}
+    class:is-up={expandUp && panelExpanded}
     role="status"
     aria-label="Estado de Atic"
     title={mode === "idle" ? "Arrastra para mover · doble clic para abrir Atic" : undefined}
@@ -488,6 +755,19 @@
         data-no-drag
         onclick={() => void closeClipboardPanel()}
         aria-label="Cerrar historial"
+        title="Cerrar (Esc)"
+      >
+        <X size={14} />
+      </button>
+    {:else if mode === "snippets"}
+      <span class="pill-mark" aria-hidden="true"></span>
+      <span class="pill-label min-w-0 flex-1">Fragmentos</span>
+      <button
+        type="button"
+        class="pill-action pill-close"
+        data-no-drag
+        onclick={() => void closeSnippetsPanel()}
+        aria-label="Cerrar fragmentos"
         title="Cerrar (Esc)"
       >
         <X size={14} />
@@ -545,23 +825,76 @@
     {/if}
   </div>
 
-  {#if mode === "clipboard" && !expandUp}
+  {#if panelExpanded && !expandUp}
     <div class="pill-panel" data-no-drag>
-      <ClipboardHistoryList
-        items={clipboardItems}
-        loading={clipboardLoading}
-        compact
-        onRefresh={refreshClipboard}
-        onPasteStart={() => {
-          pasting = true;
-        }}
-        onPasted={() => {
-          void closeClipboardPanel();
-        }}
-        onError={() => {
-          pasting = false;
-        }}
-      />
+      {#if mode === "clipboard"}
+        <ClipboardHistoryList
+          items={clipboardItems}
+          loading={clipboardLoading}
+          compact
+          onRefresh={refreshClipboard}
+          onPasteStart={() => {
+            pasting = true;
+          }}
+          onPasted={() => {
+            void closeClipboardPanel();
+          }}
+          onError={() => {
+            pasting = false;
+          }}
+        />
+      {:else}
+        <div class="snip-pill-tabs" role="tablist" aria-label="Vistas de fragmentos">
+          <button
+            type="button"
+            role="tab"
+            class="snip-pill-tab"
+            class:active={snippetsTab === "list"}
+            aria-selected={snippetsTab === "list"}
+            onclick={() => (snippetsTab = "list")}
+          >
+            Lista
+          </button>
+          <button
+            type="button"
+            role="tab"
+            class="snip-pill-tab"
+            class:active={snippetsTab === "scratchpad"}
+            aria-selected={snippetsTab === "scratchpad"}
+            onclick={() => (snippetsTab = "scratchpad")}
+          >
+            Bloc
+          </button>
+        </div>
+        {#if snippetsTab === "list"}
+          <SnippetsList
+            items={snippetItems}
+            loading={snippetsLoading}
+            compact
+            onRefresh={refreshSnippets}
+            onPasteStart={() => {
+              pasting = true;
+            }}
+            onPasted={() => {
+              void closeSnippetsPanel();
+            }}
+            onError={() => {
+              pasting = false;
+            }}
+          />
+        {:else if scratchLoading}
+          <p class="snip-pill-empty">Cargando bloc…</p>
+        {:else}
+          <textarea
+            class="snip-pill-scratch"
+            bind:value={scratchBody}
+            oninput={scheduleScratchSave}
+            placeholder="Notas temporales…"
+            aria-label="Bloc de notas"
+            data-no-drag
+          ></textarea>
+        {/if}
+      {/if}
     </div>
   {/if}
 </div>
@@ -588,6 +921,65 @@
   }
   .pill-root:active {
     cursor: grabbing;
+  }
+
+  .paste-queue-strip {
+    display: flex;
+    flex-shrink: 0;
+    align-items: center;
+    gap: 0.35rem;
+    margin-bottom: 0.25rem;
+    border-radius: 12px;
+    padding: 0.3rem 0.45rem;
+    background: color-mix(in srgb, var(--rb-accent) 12%, var(--rb-surface));
+    color: var(--rb-text);
+    cursor: default;
+  }
+
+  .paste-queue-badge {
+    display: inline-flex;
+    min-width: 1.1rem;
+    height: 1.1rem;
+    flex-shrink: 0;
+    align-items: center;
+    justify-content: center;
+    border-radius: 999px;
+    background: var(--rb-accent);
+    color: #fff;
+    font-size: 0.625rem;
+    font-weight: 700;
+  }
+
+  .paste-queue-preview {
+    min-width: 0;
+    flex: 1;
+    overflow: hidden;
+    font-size: 0.6875rem;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    opacity: 0.9;
+  }
+
+  .paste-queue-btn {
+    flex-shrink: 0;
+    border: 0;
+    border-radius: 999px;
+    padding: 0.2rem 0.45rem;
+    background: var(--rb-accent);
+    color: #fff;
+    font-size: 0.625rem;
+    font-weight: 650;
+    cursor: pointer;
+  }
+
+  .paste-queue-btn.is-muted {
+    background: color-mix(in srgb, var(--rb-text) 12%, transparent);
+    color: var(--rb-text);
+  }
+
+  .paste-queue-btn:disabled {
+    opacity: 0.55;
+    cursor: default;
   }
 
   .pill-shell {
@@ -765,6 +1157,51 @@
     min-width: 0;
     flex: 1;
     align-items: center;
+  }
+
+  .snip-pill-tabs {
+    display: flex;
+    flex-shrink: 0;
+    gap: 0.3rem;
+    margin-bottom: 0.35rem;
+  }
+
+  .snip-pill-tab {
+    border: 1px solid color-mix(in srgb, var(--rb-text) 12%, transparent);
+    border-radius: 999px;
+    padding: 0.2rem 0.55rem;
+    background: transparent;
+    color: var(--rb-muted);
+    font-size: 0.6875rem;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .snip-pill-tab.active {
+    border-color: color-mix(in srgb, var(--rb-accent) 40%, transparent);
+    background: color-mix(in srgb, var(--rb-accent) 12%, transparent);
+    color: var(--rb-accent);
+  }
+
+  .snip-pill-scratch {
+    width: 100%;
+    min-height: 0;
+    flex: 1;
+    border: 1px solid color-mix(in srgb, var(--rb-text) 10%, transparent);
+    border-radius: 0.45rem;
+    padding: 0.4rem 0.5rem;
+    background: color-mix(in srgb, var(--rb-bg0) 80%, transparent);
+    color: var(--rb-text);
+    font-size: 0.75rem;
+    font-family: inherit;
+    resize: none;
+    outline: none;
+  }
+
+  .snip-pill-empty {
+    margin: 0.35rem 0 0;
+    color: var(--rb-muted);
+    font-size: 0.75rem;
   }
 
   .pill-root,

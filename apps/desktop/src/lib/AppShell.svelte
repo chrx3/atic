@@ -54,6 +54,11 @@
                 <path d="M7 3.5h4v1.8H7V3.5Z" stroke="currentColor" stroke-width="1.2" />
                 <path d="M7 8h4M7 10.5h4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
               </svg>
+            {:else if item.id === "snippets"}
+              <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+                <path d="M4 4.5h10M4 8h7M4 11.5h9M4 15h6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" />
+                <rect x="3" y="2.5" width="12" height="13" rx="1.5" stroke="currentColor" stroke-width="1.3" />
+              </svg>
             {:else}
               <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
                 <rect x="2.5" y="3.5" width="13" height="10" rx="1.5" stroke="currentColor" stroke-width="1.3" />

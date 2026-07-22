@@ -1,6 +1,6 @@
 /** Herramientas del shell de Atic (caja de utilidades local-first). */
 
-export type ToolId = "meetings" | "dictation" | "clipboard" | "captures";
+export type ToolId = "meetings" | "dictation" | "clipboard" | "snippets" | "captures";
 
 export type ToolDef = {
   id: ToolId;
@@ -30,6 +30,12 @@ export const TOOLS: ToolDef[] = [
     label: "Clipboard",
     short: "Historial",
     blurb: "Historial local de texto e imágenes; atajo para pegar desde la pill.",
+  },
+  {
+    id: "snippets",
+    label: "Fragmentos",
+    short: "Texto rápido",
+    blurb: "Plantillas reutilizables y bloc de notas; atajo para pegar desde la pill.",
   },
   {
     id: "captures",

@@ -82,6 +82,7 @@ pub fn set_config(app: AppHandle, state: State<AppState>, config: Config) -> Res
     let dictation_shortcut = config.dictation_shortcut.clone();
     let summon_pill_shortcut = config.summon_pill_shortcut.clone();
     let clipboard_shortcut = config.clipboard_shortcut.clone();
+    let snippets_shortcut = config.snippets_shortcut.clone();
     let screenshot_shortcut = config.screenshot_shortcut.clone();
     let prev = state.config.lock().unwrap().clone();
 
@@ -91,6 +92,7 @@ pub fn set_config(app: AppHandle, state: State<AppState>, config: Config) -> Res
         || dictation_shortcut != prev.dictation_shortcut
         || summon_pill_shortcut != prev.summon_pill_shortcut
         || clipboard_shortcut != prev.clipboard_shortcut
+        || snippets_shortcut != prev.snippets_shortcut
         || screenshot_shortcut != prev.screenshot_shortcut
     {
         crate::shortcuts::register_shortcuts(
@@ -99,6 +101,7 @@ pub fn set_config(app: AppHandle, state: State<AppState>, config: Config) -> Res
             &dictation_shortcut,
             &summon_pill_shortcut,
             &clipboard_shortcut,
+            &snippets_shortcut,
             &screenshot_shortcut,
         )?;
     }

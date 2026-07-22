@@ -230,6 +230,12 @@ fn read_prefix(path: &Path, bytes: usize) -> Option<Vec<u8>> {
 
 /// Verifica que `path` esté directamente dentro de `dir` (evita leer o borrar
 /// archivos arbitrarios vía comando) y devuelve la ruta canónica.
+pub(crate) fn ensure_capture_in_dir(dir: &Path, path: &Path) -> Result<PathBuf, String> {
+    ensure_in_dir(dir, path)
+}
+
+/// Verifica que `path` esté directamente dentro de `dir` (evita leer o borrar
+/// archivos arbitrarios vía comando) y devuelve la ruta canónica.
 fn ensure_in_dir(dir: &Path, path: &Path) -> Result<PathBuf, String> {
     let canonical_dir = std::fs::canonicalize(dir).map_err(|error| error.to_string())?;
     let resolved = std::fs::canonicalize(path).map_err(|error| error.to_string())?;

@@ -15,8 +15,12 @@ mod macos_notes;
 mod mail;
 mod meeting_detection;
 mod mouse_bindings;
+mod ocr;
+mod paste_queue;
 mod retention;
+mod search;
 mod shortcuts;
+mod snippets;
 mod state;
 mod summarization;
 mod transcription;
@@ -157,6 +161,23 @@ pub fn run() {
             clipboard_history::clear_clipboard_history,
             clipboard_history::prepare_clipboard_pill,
             clipboard_history::restore_pill_position,
+            snippets::list_snippets,
+            snippets::upsert_snippet,
+            snippets::delete_snippet,
+            snippets::paste_snippet,
+            snippets::get_scratchpad,
+            snippets::set_scratchpad,
+            snippets::prepare_snippets_pill,
+            paste_queue::list_paste_queue,
+            paste_queue::enqueue_paste,
+            paste_queue::dismiss_paste_queue_item,
+            paste_queue::clear_paste_queue,
+            paste_queue::paste_queue_item_now,
+            paste_queue::paste_queue_flush_ready,
+            ocr::ocr_capture_text,
+            ocr::ocr_capture_and_copy,
+            ocr::read_capture_ocr_cache,
+            search::search_local,
         ])
         .setup(move |app| {
             let dirs = AppDirs::new()?;
@@ -184,6 +205,7 @@ pub fn run() {
             let dictation_shortcut = config.dictation_shortcut.clone();
             let summon_pill_shortcut = config.summon_pill_shortcut.clone();
             let clipboard_shortcut = config.clipboard_shortcut.clone();
+            let snippets_shortcut = config.snippets_shortcut.clone();
             let screenshot_shortcut = config.screenshot_shortcut.clone();
             let pill_position = config.pill_position;
             let show_pill = config.show_pill;
@@ -228,6 +250,9 @@ pub fn run() {
                 }
             }
 
+            // Mouse lateral: Raw Input (pasivo; no puede congelar el ratón del SO).
+            mouse_bindings::init(app.handle());
+
             // Atajos globales: grabación + dictado + pill + clipboard + captura.
             if let Err(err) = shortcuts::register_shortcuts(
                 app.handle(),
@@ -235,6 +260,7 @@ pub fn run() {
                 &dictation_shortcut,
                 &summon_pill_shortcut,
                 &clipboard_shortcut,
+                &snippets_shortcut,
                 &screenshot_shortcut,
             ) {
                 tracing::error!(%err, "no se pudieron registrar los atajos globales");
