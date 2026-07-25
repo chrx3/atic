@@ -191,6 +191,10 @@ fn start_dictation(app: &AppHandle) -> Result<(), String> {
         crate::beep::play_dictation_start(&out);
     }
 
+    // Seguir el foco mientras dictás: si hacés clic en otro input antes de que
+    // el texto esté listo, ese pasa a ser el destino.
+    crate::clipboard_history::start_foreground_tracking();
+
     emit_status(app, DictationPhase::Listening, None);
     Ok(())
 }
@@ -301,20 +305,48 @@ fn stop_and_paste(app: &AppHandle) {
                 return Err("No se detectó habla. Prueba otra vez.".into());
             }
 
-            // Devolver foco a la app donde se inició el dictado (p. ej. Terax).
-            crate::clipboard_history::focus_paste_target();
-            thread::sleep(Duration::from_millis(220));
+            // Congelar el destino: de acá en más el foco lo movemos nosotros.
+            crate::clipboard_history::stop_foreground_tracking();
+
+            // Si ya estás parado en una ventana externa, ESA es la que querés:
+            // no le robamos el foco para devolvérselo a la que estaba cuando
+            // arrancó el dictado. Antes se restauraba siempre, así que hacer
+            // clic en el input correcto mientras transcribía no servía de nada
+            // —el texto se iba igual a la ventana vieja.
+            if crate::clipboard_history::has_live_external_foreground() {
+                // Ya estás en la ventana correcta: NO se toca el foco.
+                //
+                // Intenté "asegurar" el foco interno acá y fue peor: la única
+                // forma de encontrar el input en Electron/WebView2 es adivinar
+                // —el último hijo `Chrome_*` visible— y esa adivinanza puede
+                // caer en otro panel, moviéndote el cursor FUERA del campo que
+                // acababas de elegir. Si hiciste clic donde querías escribir,
+                // el cursor ya está bien puesto; el sistema no necesita ayuda.
+                crate::clipboard_history::log_focus_state();
+            } else {
+                crate::clipboard_history::focus_paste_target();
+                thread::sleep(Duration::from_millis(220));
+                crate::clipboard_history::log_focus_state();
+            }
             let outcome = crate::paste_queue::try_paste_or_enqueue(&app2, &text)?;
             Ok((text, outcome))
         })();
 
+        // Red de seguridad: el camino feliz ya lo cortó antes de pegar, pero si
+        // la transcripción falló se sale por arriba y el hilo quedaría vivo.
+        crate::clipboard_history::stop_foreground_tracking();
         let _ = std::fs::remove_dir_all(cleanup);
 
         match result {
             Ok((text, outcome)) => {
                 let elapsed_ms = total_started.elapsed().as_millis();
                 let queued = outcome == crate::paste_queue::PasteOutcome::Queued;
-                tracing::info!(len = text.len(), elapsed_ms, queued, "dictado pegado o encolado");
+                tracing::info!(
+                    len = text.len(),
+                    elapsed_ms,
+                    queued,
+                    "dictado pegado o encolado"
+                );
                 let (ui_sounds, out) = {
                     let state = app2.state::<AppState>();
                     let cfg = state.config.lock().unwrap();
@@ -324,10 +356,7 @@ fn stop_and_paste(app: &AppHandle) {
                     crate::beep::play_dictation_done(&out);
                 }
                 let message = if queued {
-                    format!(
-                        "En cola para pegar ({} caracteres)",
-                        text.chars().count()
-                    )
+                    format!("En cola para pegar ({} caracteres)", text.chars().count())
                 } else {
                     format!(
                         "Pegado ({} caracteres · {:.1} s)",
@@ -335,11 +364,7 @@ fn stop_and_paste(app: &AppHandle) {
                         elapsed_ms as f64 / 1_000.0
                     )
                 };
-                emit_status(
-                    &app2,
-                    DictationPhase::Pasted,
-                    Some(message),
-                );
+                emit_status(&app2, DictationPhase::Pasted, Some(message));
                 // Vuelve a idle tras un momento para no dejar la pill en "Pegado".
                 thread::sleep(Duration::from_millis(1600));
                 emit_status(&app2, DictationPhase::Idle, None);

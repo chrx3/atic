@@ -985,6 +985,36 @@ textarea,
   opacity: 0.85;
 }
 
+/* —— Waveform de voz (dictado) ——
+   Monocromo a propósito: Atic es una utilidad neutra y cálida, y un acento de
+   color saturado la convertía en otra app. La amplitud se lee en ALTURA y
+   OPACIDAD, no en tono, así que la tira sigue siendo información y no adorno.
+   Líneas finas y muy separadas: de reojo se lee el movimiento, que es el dato
+   ("te estoy escuchando"), sin que la pill pese sobre lo que estás mirando. */
+.rb-wave-voice {
+  --voice-ink: var(--rb-text);
+  width: 5.75rem;
+  min-width: 5.75rem;
+  height: 1.4rem;
+  flex: 0 0 auto;
+  gap: 3px;
+  justify-content: space-between;
+}
+
+.rb-wave-bar-voice {
+  min-width: 1.5px;
+  max-width: 2.5px;
+  background: color-mix(
+    in oklab,
+    var(--voice-ink) calc(38% + var(--rb-wave-amp, 0) * 62%),
+    transparent
+  );
+  /* La altura la escribe el motor por reloj (60 fps): una transición acá
+     pelearía con él y arrastraría el envión medio frame. Solo la opacidad, que
+     sí salta con el RMS, se suaviza. */
+  transition: background 120ms linear;
+}
+
 /* —— Hotkey capture —— */
 .rb-hotkey {
   display: inline-flex;

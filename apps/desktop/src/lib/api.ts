@@ -90,14 +90,30 @@ export const pinClipboardItem = (id: string, pinned: boolean) =>
   invoke<void>("pin_clipboard_item", { id, pinned });
 export const deleteClipboardItem = (id: string) =>
   invoke<void>("delete_clipboard_item", { id });
-/** `fly`: acercar la pill al cursor (atajo global) o expandir donde está. */
+/**
+ * `fly`: acercar la pill al cursor (atajo global) o expandir donde está.
+ * Devuelve los ms que dura el vuelo (0 si no vuela): hay que esperarlos antes
+ * de expandir el panel, o el reencuadre se ancla a mitad del recorrido.
+ */
 export const prepareClipboardPill = (fly: boolean) =>
-  invoke<void>("prepare_clipboard_pill", { fly });
+  invoke<number>("prepare_clipboard_pill", { fly });
 
-/** Guarda el hogar y centra la pill en el cursor sin animar (rueda). */
-export const snapPillToCursor = () => invoke<void>("snap_pill_to_cursor");
+/** Guarda el hogar de la pill sin moverla. Llamar ANTES de redimensionar: si
+ *  no, se guarda la posición ya desplazada por el pivote y la pill deriva. */
+export const stashPillHome = () => invoke<void>("stash_pill_home");
+
+/** Encoge y vuelve al hogar en un solo movimiento. `false` = no había hogar. */
+export const morphPillHome = (width: number, height: number) =>
+  invoke<boolean>("morph_pill_home", { width, height });
 export const restorePillPosition = () =>
   invoke<boolean>("restore_pill_position");
+
+/** Vuela la pill al cursor y fija ahí su hogar. Se llama al terminar de
+ *  colapsar: antes de eso el ancla se calcularía con el tamaño del panel. */
+export const summonPillHere = () => invoke<void>("summon_pill_here");
+
+/** Manda una traza al log de Rust, para verla junto a las de geometría. */
+export const pillTrace = (msg: string) => invoke<void>("pill_trace", { msg });
 
 export const onClipboardHistoryChanged = (
   cb: () => void,
@@ -117,8 +133,9 @@ export const deleteSnippet = (id: string) =>
   invoke<void>("delete_snippet", { id });
 export const pasteSnippet = (id: string) =>
   invoke<void>("paste_snippet", { id });
+/** Igual que `prepareClipboardPill`: devuelve los ms de vuelo a esperar. */
 export const prepareSnippetsPill = (fly: boolean) =>
-  invoke<void>("prepare_snippets_pill", { fly });
+  invoke<number>("prepare_snippets_pill", { fly });
 export const getScratchpad = () => invoke<Scratchpad>("get_scratchpad");
 export const setScratchpad = (body: string) =>
   invoke<Scratchpad>("set_scratchpad", { body });

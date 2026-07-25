@@ -7,7 +7,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicIsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -22,6 +22,18 @@ use crate::state::AppState;
 
 /// Ventana en primer plano antes de abrir el panel (para pegar ahí).
 static PREV_FOREGROUND: AtomicIsize = AtomicIsize::new(0);
+
+/// Cuándo se vio `PREV_FOREGROUND` por última vez. Solo para diagnóstico: un
+/// destino de hace media hora y uno de hace 200 ms se ven igual sin este dato,
+/// y esa diferencia es justo la que separa un objetivo legítimo de uno heredado
+/// que manda el texto a la app equivocada.
+static SAVED_AT: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+
+/// Hay un seguimiento de foco corriendo.
+static TRACKING: AtomicBool = AtomicBool::new(false);
+
+/// Cada cuánto se relee la ventana en foco durante el dictado.
+const TRACK_MS: u64 = 200;
 
 const MAX_ITEMS: usize = 100;
 const MAX_IMAGE_BYTES: usize = 8 * 1024 * 1024;
@@ -336,8 +348,10 @@ fn find_item(state: &AppState, id: &str) -> Option<ClipboardItem> {
         }
     }
     let captures = crate::capture::recent_captures_limited(&state.dirs.captures_dir(), 20);
-    captures.into_iter().find(|c| format!("capture-{}", c.id) == id).map(|cap| {
-        ClipboardItem {
+    captures
+        .into_iter()
+        .find(|c| format!("capture-{}", c.id) == id)
+        .map(|cap| ClipboardItem {
             id: id.to_string(),
             kind: ClipboardKind::Image,
             preview: if cap.label.is_empty() {
@@ -351,8 +365,7 @@ fn find_item(state: &AppState, id: &str) -> Option<ClipboardItem> {
             pinned: false,
             fingerprint: format!("capture:{}", cap.id),
             source: "capture".into(),
-        }
-    })
+        })
 }
 
 #[tauri::command]
@@ -362,7 +375,11 @@ pub fn list_clipboard_history(state: State<AppState>) -> Result<Vec<ClipboardIte
 
 /// Pone el ítem en el clipboard y envía Ctrl+V a la app que tenía el foco.
 #[tauri::command]
-pub fn paste_clipboard_item(app: AppHandle, state: State<AppState>, id: String) -> Result<(), String> {
+pub fn paste_clipboard_item(
+    app: AppHandle,
+    state: State<AppState>,
+    id: String,
+) -> Result<(), String> {
     let item = find_item(&state, &id).ok_or_else(|| "Ítem no encontrado".to_string())?;
 
     if let Ok(shared) = shared_history() {
@@ -396,9 +413,7 @@ pub fn paste_clipboard_item(app: AppHandle, state: State<AppState>, id: String) 
             }
             {
                 let mut clipboard = Clipboard::new().map_err(|e| e.to_string())?;
-                clipboard
-                    .set_text(text)
-                    .map_err(|e| e.to_string())?;
+                clipboard.set_text(text).map_err(|e| e.to_string())?;
             }
             thread::sleep(Duration::from_millis(80));
             paste_text_hotkey_for(&app, target)
@@ -448,8 +463,7 @@ pub fn pin_clipboard_item(state: State<AppState>, id: String, pinned: bool) -> R
     }
 
     // Favoritar captura: copiar PNG al dir de clipboard y persistir en history.json
-    let virtual_item =
-        find_item(&state, &id).ok_or_else(|| "Ítem no encontrado".to_string())?;
+    let virtual_item = find_item(&state, &id).ok_or_else(|| "Ítem no encontrado".to_string())?;
     let src_path = virtual_item
         .image_path
         .as_deref()
@@ -499,7 +513,11 @@ pub fn pin_clipboard_item(state: State<AppState>, id: String, pinned: bool) -> R
 }
 
 #[tauri::command]
-pub fn delete_clipboard_item(app: AppHandle, state: State<AppState>, id: String) -> Result<(), String> {
+pub fn delete_clipboard_item(
+    app: AppHandle,
+    state: State<AppState>,
+    id: String,
+) -> Result<(), String> {
     let dir = state.dirs.clipboard_dir();
     let shared = shared_history()?;
     let mut hist = shared.lock().unwrap();
@@ -507,7 +525,8 @@ pub fn delete_clipboard_item(app: AppHandle, state: State<AppState>, id: String)
         return Err("Ítem no encontrado".into());
     };
     let removed = hist.items.remove(idx);
-    hist.deleted_fingerprints.insert(removed.fingerprint.clone());
+    hist.deleted_fingerprints
+        .insert(removed.fingerprint.clone());
     // Evita carrera con el poll inmediato del watcher.
     hist.suppress_until = Some(SystemTime::now() + Duration::from_millis(1200));
     if let Some(path) = removed.image_path {
@@ -610,7 +629,9 @@ pub(crate) fn collect_clipboard_items(state: &AppState) -> Result<Vec<ClipboardI
     let captures = crate::capture::recent_captures_limited(&state.dirs.captures_dir(), 20);
     for cap in captures {
         let fp = format!("capture:{}", cap.id);
-        if items.iter().any(|i| i.fingerprint == fp || i.image_path.as_deref() == Some(&cap.path))
+        if items
+            .iter()
+            .any(|i| i.fingerprint == fp || i.image_path.as_deref() == Some(&cap.path))
         {
             continue;
         }
@@ -650,9 +671,12 @@ fn paste_text_hotkey_for(
         let hwnd = target.or_else(resolve_paste_target_hwnd);
         let use_shift = hwnd.is_some_and(hwnd_needs_ctrl_shift_v);
         let exe = hwnd.and_then(process_exe_name).unwrap_or_default();
+        // La edad del destino separa un objetivo legítimo (segundos) de uno
+        // heredado de hace rato, que es como el texto termina en otra app.
         tracing::info!(
             use_shift,
             %exe,
+            visto_hace = %saved_age_label(),
             "pegado: chord {}",
             if use_shift { "Ctrl+Shift+V" } else { "Ctrl+V" }
         );
@@ -720,7 +744,8 @@ fn is_own_app_hwnd(hwnd: windows_sys::Win32::Foundation::HWND) -> bool {
             return true;
         }
     }
-    process_exe_name(hwnd).is_some_and(|exe| matches!(exe.as_str(), "atic-desktop.exe" | "atic.exe"))
+    process_exe_name(hwnd)
+        .is_some_and(|exe| matches!(exe.as_str(), "atic-desktop.exe" | "atic.exe"))
 }
 
 /// True solo si el destino necesita Ctrl+Shift+V para pegar.
@@ -847,13 +872,15 @@ fn reregister_shortcuts_from_config(app: &AppHandle) {
     let cfg = state.config.lock().unwrap().clone();
     if let Err(err) = crate::shortcuts::register_shortcuts(
         app,
-        &cfg.global_shortcut,
-        &cfg.dictation_shortcut,
-        &cfg.summon_pill_shortcut,
-        &cfg.pill_radial_shortcut,
-        &cfg.clipboard_shortcut,
-        &cfg.snippets_shortcut,
-        &cfg.screenshot_shortcut,
+        crate::shortcuts::ShortcutBindings {
+            recording: &cfg.global_shortcut,
+            dictation: &cfg.dictation_shortcut,
+            summon_pill: &cfg.summon_pill_shortcut,
+            pill_radial: &cfg.pill_radial_shortcut,
+            clipboard: &cfg.clipboard_shortcut,
+            snippets: &cfg.snippets_shortcut,
+            screenshot: &cfg.screenshot_shortcut,
+        },
     ) {
         tracing::warn!(%err, "no se pudieron re-registrar atajos tras pegado");
     }
@@ -862,8 +889,9 @@ fn reregister_shortcuts_from_config(app: &AppHandle) {
 #[cfg(windows)]
 fn send_paste_chord(with_shift: bool) -> Result<(), String> {
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-        SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, VIRTUAL_KEY,
-        VK_CONTROL, VK_SHIFT, VK_V,
+        GetAsyncKeyState, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP,
+        VIRTUAL_KEY, VK_CONTROL, VK_LMENU, VK_LSHIFT, VK_LWIN, VK_RMENU, VK_RSHIFT, VK_RWIN,
+        VK_SHIFT, VK_V,
     };
 
     unsafe fn key(vk: VIRTUAL_KEY, up: bool) -> INPUT {
@@ -885,7 +913,36 @@ fn send_paste_chord(with_shift: bool) -> Result<(), String> {
         let ctrl = VK_CONTROL as VIRTUAL_KEY;
         let shift = VK_SHIFT as VIRTUAL_KEY;
         let v = VK_V as VIRTUAL_KEY;
-        let mut inputs = if with_shift {
+
+        // Soltar los modificadores que estén FÍSICAMENTE hundidos y no formen
+        // parte del chord.
+        //
+        // El dictado es mantener-para-hablar, así que al inyectar el pegado es
+        // normal que todavía haya un Alt o un Win apretado del propio atajo.
+        // Ahí nuestro Ctrl+Shift+V le llega a la app como Ctrl+Shift+Alt+V: no
+        // lo reconoce como pegar y Windows contesta con el "ding". Eso es lo
+        // que hacía que pegara a veces sí y a veces no —dependía de cuánto
+        // tardaras en soltar la tecla— y por qué hacer clic primero lo
+        // arreglaba: para cuando clickeabas, ya no quedaba nada hundido.
+        let mut stray: Vec<VIRTUAL_KEY> = vec![VK_LWIN, VK_RWIN, VK_LMENU, VK_RMENU];
+        if !with_shift {
+            stray.push(VK_LSHIFT);
+            stray.push(VK_RSHIFT);
+        }
+        let held: Vec<VIRTUAL_KEY> = stray
+            .into_iter()
+            .filter(|k| GetAsyncKeyState(*k as i32) < 0)
+            .collect();
+        if !held.is_empty() {
+            tracing::debug!(
+                target: "paste_geo",
+                "MODIF      {} modificador(es) hundidos, los suelto antes del chord",
+                held.len()
+            );
+        }
+        let mut inputs: Vec<INPUT> = held.into_iter().map(|k| key(k, true)).collect();
+
+        inputs.extend(if with_shift {
             vec![
                 key(ctrl, false),
                 key(shift, false),
@@ -901,7 +958,7 @@ fn send_paste_chord(with_shift: bool) -> Result<(), String> {
                 key(v, true),
                 key(ctrl, true),
             ]
-        };
+        });
         let sent = SendInput(
             inputs.len() as u32,
             inputs.as_mut_ptr(),
@@ -938,32 +995,36 @@ pub fn summon_clipboard_panel(app: &AppHandle) {
 /// TODAS las apps del sistema (`RegisterHotKey` la consume) y era redundante:
 /// si la pill tiene el foco, el handler local la cierra; y si lo pierde, el
 /// cierre por blur ya se encarga.
+/// Devuelve los milisegundos que dura el vuelo hasta el cursor (0 si no vuela).
+/// El frontend espera ese tiempo antes de expandir el panel: crecer a mitad del
+/// vuelo dejaba el panel abierto en un punto intermedio del recorrido.
 #[tauri::command]
-pub fn prepare_clipboard_pill(app: AppHandle, fly: bool) -> Result<(), String> {
-    if let Some(pill) = app.get_webview_window("pill") {
-        stash_pre_clipboard_position(&app, &pill);
+pub fn prepare_clipboard_pill(app: AppHandle, fly: bool) -> Result<u64, String> {
+    tracing::info!(target: "pill_geo", "CMD        prepare_pill fly={fly}");
+    stash_pre_clipboard_position(&app);
+    if !fly {
+        return Ok(0);
     }
-    if fly {
-        crate::state::animate_pill_to_cursor(&app)
-            .ok_or_else(|| "No se pudo colocar la pill en el cursor".to_string())?;
-    }
-    Ok(())
+    let flight = crate::state::animate_pill_to_cursor(&app)
+        .ok_or_else(|| "No se pudo colocar la pill en el cursor".to_string())?;
+    Ok(flight.ms)
 }
 
-/// Guarda el hogar y coloca la pill en el cursor **sin animar**.
+/// Guarda el hogar de la pill **sin moverla** y la hace visible.
 ///
-/// Para la rueda: el vuelo de 190 ms competía con el reencuadre a 232 px y el
-/// destino quedaba calculado con el tamaño viejo, así que la rueda aparecía
-/// descentrada respecto del puntero. Acá el frontend ya redimensionó, así que
-/// el centrado usa el tamaño final y es exacto.
+/// Tiene que correr ANTES de cualquier reencuadre. Antes esto vivía dentro de
+/// `snap_pill_to_cursor`, que primero dejaba que el frontend redimensionara y
+/// recién después guardaba: para entonces el `resize` con pivote al centro ya
+/// había corrido la ventana 115 px, y ese punto desplazado quedaba grabado
+/// como "hogar". Cada ciclo de rueda perdía 115 px arriba y a la izquierda —
+/// la deriva era exactamente medio crecimiento de la rueda, por ciclo.
 #[tauri::command]
-pub fn snap_pill_to_cursor(app: AppHandle) -> Result<(), String> {
-    if let Some(pill) = app.get_webview_window("pill") {
-        stash_pre_clipboard_position(&app, &pill);
-    }
+pub fn stash_pill_home(app: AppHandle) -> Result<(), String> {
+    app.get_webview_window("pill")
+        .ok_or_else(|| "no existe la ventana pill".to_string())?;
+    stash_pre_clipboard_position(&app);
+    tracing::info!(target: "pill_geo", "CMD        stash_pill_home");
     crate::state::set_pill_visible(&app, true);
-    crate::floating::place(&app, "pill", crate::floating::Anchor::Cursor)
-        .ok_or_else(|| "No se pudo colocar la pill en el cursor".to_string())?;
     Ok(())
 }
 
@@ -973,6 +1034,8 @@ pub fn restore_pill_position(app: AppHandle) -> Result<bool, String> {
     let Some(state) = app.try_state::<AppState>() else {
         return Ok(false);
     };
+    let home = *state.pre_clipboard_position.lock().unwrap();
+    tracing::info!(target: "pill_geo", "CMD        restore_pill_position home={home:?}");
     let Some((x, y)) = state.pre_clipboard_position.lock().unwrap().take() else {
         return Ok(false);
     };
@@ -991,6 +1054,54 @@ pub fn restore_pill_position(app: AppHandle) -> Result<bool, String> {
     Ok(true)
 }
 
+/// Encoge y vuelve al hogar en UN solo movimiento (cierre de la rueda).
+///
+/// El camino viejo eran dos: `resize` con pivote al centro —que corría la
+/// ventana +115 px al implosionar— y recién después el vuelo al hogar desde ese
+/// punto. Interpolando rectángulo completo no hay punto intermedio: la rueda se
+/// achica mientras viaja.
+///
+/// Devuelve `false` si no había hogar guardado; ahí el llamador encoge en el
+/// lugar por el camino normal.
+#[tauri::command]
+pub fn morph_pill_home(app: AppHandle, width: f64, height: f64) -> Result<bool, String> {
+    let window = app
+        .get_webview_window("pill")
+        .ok_or_else(|| "no existe la ventana pill".to_string())?;
+    let scale = window.scale_factor().unwrap_or(1.0);
+    let w = (width * scale).round() as i32;
+    let h = (height * scale).round() as i32;
+
+    let Some(state) = app.try_state::<AppState>() else {
+        return Ok(false);
+    };
+    let Some((hx, hy)) = state.pre_clipboard_position.lock().unwrap().take() else {
+        tracing::info!(target: "pill_geo", "CMD        morph_pill_home SIN HOGAR");
+        return Ok(false);
+    };
+
+    // El clamp usa el tamaño FINAL, no el actual: es el error que hacía que el
+    // destino se calculara contra el borde con las medidas de la rueda.
+    let (x, y) = crate::floating::clamp(hx.round() as i32, hy.round() as i32, w, h);
+    tracing::info!(
+        target: "pill_geo",
+        "CMD        morph_pill_home hogar=({hx},{hy}) size=({w},{h}) -> ({x},{y})"
+    );
+    crate::floating::tween(&app, "pill", crate::floating::Rect { x, y, w, h });
+
+    let mut cfg = state.config.lock().unwrap();
+    let next = Some((f64::from(x), f64::from(y)));
+    // Cerrar la rueda devuelve la pill al MISMO hogar casi siempre: sin esta
+    // guarda, spamear el atajo reescribía config.json en cada ciclo.
+    if cfg.pill_position != next {
+        cfg.pill_position = next;
+        let snapshot = cfg.clone();
+        drop(cfg);
+        let _ = snapshot.save(&state.dirs.config_path());
+    }
+    Ok(true)
+}
+
 /// Suelta el hogar temporal sin mover la pill (la trajo un summon permanente).
 pub(crate) fn unregister_clipboard_escape_close(app: &AppHandle) {
     if let Some(state) = app.try_state::<AppState>() {
@@ -1000,7 +1111,7 @@ pub(crate) fn unregister_clipboard_escape_close(app: &AppHandle) {
 
 /// Guarda la posición home solo la primera vez de la sesión (reabrir en el
 /// cursor no debe pisar el home original).
-fn stash_pre_clipboard_position(app: &AppHandle, pill: &tauri::WebviewWindow) {
+fn stash_pre_clipboard_position(app: &AppHandle) {
     let Some(state) = app.try_state::<AppState>() else {
         return;
     };
@@ -1008,10 +1119,11 @@ fn stash_pre_clipboard_position(app: &AppHandle, pill: &tauri::WebviewWindow) {
     if pre.is_some() {
         return;
     }
-    *pre = pill
-        .outer_position()
-        .ok()
-        .map(|p| (p.x as f64, p.y as f64))
+    // Posición en REPOSO, no la viva. Spameando el atajo, una apertura puede
+    // caer en medio del cierre anterior; leer la posición del momento grabaría
+    // como hogar un punto a mitad de camino y la pill se iría caminando.
+    *pre = crate::floating::resting_position(app, "pill")
+        .map(|(x, y)| (f64::from(x), f64::from(y)))
         .or_else(|| state.config.lock().unwrap().pill_position);
 }
 
@@ -1031,12 +1143,58 @@ fn save_foreground_hwnd() {
         use windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
         unsafe {
             let hwnd = GetForegroundWindow();
+            // Foco en Atic (o nulo): conservar el destino previo. La pill roba
+            // el foco al abrirse, así que el bueno es el de antes.
             if hwnd.is_null() || is_own_app_hwnd(hwnd) {
-                tracing::debug!("no se guarda HWND de pegado: foco en Atic o nulo");
                 return;
             }
-            PREV_FOREGROUND.store(hwnd as isize, Ordering::SeqCst);
+            let raw = hwnd as isize;
+            let changed = PREV_FOREGROUND.swap(raw, Ordering::SeqCst) != raw;
+            // Se sella SIEMPRE, cambie o no: el dato útil es "hace cuánto vi
+            // este destino por última vez", no "hace cuánto cambió". Sellando
+            // solo al cambiar, un destino que se estuvo confirmando cada 200 ms
+            // se reportaba con minutos de antigüedad y parecía basura heredada.
+            *SAVED_AT.lock().unwrap() = Some(std::time::Instant::now());
+            // El log sí es solo al cambiar: esto corre cada 200 ms durante el
+            // dictado y no queremos una línea por tick.
+            if !changed {
+                return;
+            }
+            let exe = process_exe_name(hwnd).unwrap_or_else(|| "?".into());
+            tracing::debug!(target: "paste_geo", "DESTINO    {exe}");
         }
+    }
+}
+
+/// Sigue la ventana externa en foco mientras dura un dictado.
+///
+/// Un solo snapshot al arrancar no alcanza: entre que empezás a hablar y que el
+/// texto está listo pasan segundos, y en ese rato es normal hacer clic en el
+/// input donde realmente lo querés. El destino tiene que ser la última ventana
+/// que tocaste, no la que estaba cuando apretaste el atajo.
+pub(crate) fn start_foreground_tracking() {
+    if TRACKING.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    thread::spawn(|| {
+        while TRACKING.load(Ordering::SeqCst) {
+            save_foreground_hwnd();
+            thread::sleep(Duration::from_millis(TRACK_MS));
+        }
+    });
+}
+
+/// Congela el destino. A partir de acá el foco lo movemos nosotros, así que
+/// seguir mirándolo solo agregaría ruido.
+pub(crate) fn stop_foreground_tracking() {
+    TRACKING.store(false, Ordering::SeqCst);
+}
+
+/// Hace cuánto se guardó el destino de pegado, para las trazas.
+fn saved_age_label() -> String {
+    match *SAVED_AT.lock().unwrap() {
+        Some(at) => format!("{:?}", at.elapsed()),
+        None => "nunca".to_string(),
     }
 }
 
@@ -1060,38 +1218,85 @@ fn restore_foreground_hwnd() {
     }
 }
 
-/// Devuelve el foco a la app destino. En Electron/WebView2 enfoca el hijo
-/// Chromium que recibe teclas; el chord (Ctrl+V vs Ctrl+Shift+V) se elige aparte.
+/// DFS: el último `Chrome_*` visible suele ser el widget que recibe input.
+#[cfg(windows)]
+unsafe extern "system" fn find_chrome_child(
+    child: windows_sys::Win32::Foundation::HWND,
+    lparam: windows_sys::Win32::Foundation::LPARAM,
+) -> windows_sys::Win32::Foundation::BOOL {
+    use windows_sys::Win32::Foundation::HWND;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        EnumChildWindows, GetClassNameW, IsWindowVisible,
+    };
+    let best = &mut *(lparam as *mut HWND);
+    if IsWindowVisible(child) != 0 {
+        let mut buf = [0u16; 256];
+        let len = GetClassNameW(child, buf.as_mut_ptr(), buf.len() as i32);
+        if len > 0 {
+            let class = String::from_utf16_lossy(&buf[..len as usize]);
+            if class.starts_with("Chrome_WidgetWin") || class.starts_with("Chrome_RenderWidget") {
+                *best = child;
+            }
+        }
+    }
+    EnumChildWindows(child, Some(find_chrome_child), lparam);
+    1
+}
+
+/// Registra qué control tiene el foco de teclado en el primer plano actual.
+///
+/// Es el dato que faltaba: mandar el chord a una ventana sin campo editable se
+/// ve EXACTAMENTE igual que un pegado exitoso —`SendInput` no informa si
+/// alguien atendió la tecla—, así que "pegado, queued=false" no prueba nada.
+/// Con la clase del control enfocado se distingue un fallo de foco de un fallo
+/// de tecla sin tener que adivinar.
+pub(crate) fn log_focus_state() {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetFocus;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            GetClassNameW, GetForegroundWindow, GetWindowThreadProcessId,
+        };
+        unsafe {
+            let fg = GetForegroundWindow();
+            if fg.is_null() {
+                return;
+            }
+            let mut pid = 0u32;
+            let tid = GetWindowThreadProcessId(fg, &mut pid);
+            let cur = GetCurrentThreadId();
+            // GetFocus habla de la cola del hilo llamador: sin acoplar, siempre
+            // contestaría por Atic en vez de por la app destino.
+            let attached = tid != 0 && tid != cur && AttachThreadInput(cur, tid, 1) != 0;
+            let focused = GetFocus();
+            let class = if focused.is_null() {
+                "NINGUNO".to_string()
+            } else {
+                let mut buf = [0u16; 256];
+                let len = GetClassNameW(focused, buf.as_mut_ptr(), buf.len() as i32);
+                String::from_utf16_lossy(&buf[..len.max(0) as usize])
+            };
+            if attached {
+                let _ = AttachThreadInput(cur, tid, 0);
+            }
+            tracing::debug!(target: "paste_geo", "FOCO       control={class}");
+        }
+    }
+}
+
+/// Trae la app destino al primer plano y deja su input listo para recibir el
+/// pegado. El chord (Ctrl+V vs Ctrl+Shift+V) se elige aparte.
 #[cfg(windows)]
 fn force_foreground_for_paste(hwnd: windows_sys::Win32::Foundation::HWND) {
     use std::ptr;
-    use windows_sys::Win32::Foundation::{BOOL, HWND, LPARAM};
+    use windows_sys::Win32::Foundation::{HWND, LPARAM};
     use windows_sys::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::SetFocus;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        AllowSetForegroundWindow, BringWindowToTop, EnumChildWindows, GetClassNameW,
-        GetForegroundWindow, GetWindowThreadProcessId, IsWindowVisible, SetForegroundWindow,
-        ASFW_ANY,
+        AllowSetForegroundWindow, BringWindowToTop, EnumChildWindows, GetForegroundWindow,
+        GetWindowThreadProcessId, SetForegroundWindow, ASFW_ANY,
     };
-
-    /// DFS: el último `Chrome_*` visible suele ser el widget que recibe input.
-    unsafe extern "system" fn find_chrome_child(child: HWND, lparam: LPARAM) -> BOOL {
-        let best = &mut *(lparam as *mut HWND);
-        if IsWindowVisible(child) != 0 {
-            let mut buf = [0u16; 256];
-            let len = GetClassNameW(child, buf.as_mut_ptr(), buf.len() as i32);
-            if len > 0 {
-                let class = String::from_utf16_lossy(&buf[..len as usize]);
-                if class.starts_with("Chrome_WidgetWin")
-                    || class.starts_with("Chrome_RenderWidget")
-                {
-                    *best = child;
-                }
-            }
-        }
-        EnumChildWindows(child, Some(find_chrome_child), lparam);
-        1
-    }
 
     unsafe {
         let mut target_pid = 0u32;
@@ -1123,7 +1328,11 @@ fn force_foreground_for_paste(hwnd: windows_sys::Win32::Foundation::HWND) {
 
         // Electron/WebView2: el input real suele ser un hijo Chrome_*.
         let mut chrome: HWND = ptr::null_mut();
-        EnumChildWindows(hwnd, Some(find_chrome_child), &mut chrome as *mut _ as LPARAM);
+        EnumChildWindows(
+            hwnd,
+            Some(find_chrome_child),
+            &mut chrome as *mut _ as LPARAM,
+        );
         let input_hwnd = if !chrome.is_null() { chrome } else { hwnd };
         let _ = SetFocus(input_hwnd);
 

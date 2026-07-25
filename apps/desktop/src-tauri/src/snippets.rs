@@ -87,9 +87,7 @@ fn with_snippets_mut<R>(state: &AppState, f: impl FnOnce(&mut Vec<Snippet>) -> R
 }
 
 fn find_snippet(state: &AppState, id: &str) -> Option<Snippet> {
-    ensure_loaded(state)
-        .into_iter()
-        .find(|s| s.id == id)
+    ensure_loaded(state).into_iter().find(|s| s.id == id)
 }
 
 /// Todos los fragmentos (para búsqueda).
@@ -111,7 +109,8 @@ pub(crate) fn scratchpad_body(state: &AppState) -> Result<String, String> {
 #[tauri::command]
 pub fn list_snippets(state: State<AppState>) -> Result<Vec<Snippet>, String> {
     let mut items = ensure_loaded(&state);
-    items.sort_by(|a, b| b.updated_at_ms.cmp(&a.updated_at_ms));
+    // Más reciente primero.
+    items.sort_by_key(|s| std::cmp::Reverse(s.updated_at_ms));
     Ok(items)
 }
 
@@ -223,6 +222,6 @@ pub fn summon_snippets_panel(app: &AppHandle) {
 
 /// Compacta la pill y la anima hasta el cursor antes de expandir fragmentos.
 #[tauri::command]
-pub fn prepare_snippets_pill(app: AppHandle, fly: bool) -> Result<(), String> {
+pub fn prepare_snippets_pill(app: AppHandle, fly: bool) -> Result<u64, String> {
     clipboard_history::prepare_clipboard_pill(app, fly)
 }

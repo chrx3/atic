@@ -378,12 +378,19 @@ pub fn show_main(app: &AppHandle) {
 /// Aplica la visibilidad de la pill y persiste la preferencia.
 pub fn set_pill_visible(app: &AppHandle, visible: bool) {
     let state = app.state::<AppState>();
-    {
+    let changed = {
         let mut cfg = state.config.lock().unwrap();
+        let changed = cfg.show_pill != visible;
         cfg.show_pill = visible;
+        changed
+    };
+    // Persistir SOLO si cambió. `stash_pill_home` llama acá en cada apertura de
+    // la rueda, así que sin esta guarda cada pulsación del atajo escribía
+    // config.json a disco —sincrónico, en el hilo de UI— para no cambiar nada.
+    if changed {
+        let cfg = state.config.lock().unwrap().clone();
+        let _ = cfg.save(&state.dirs.config_path());
     }
-    let cfg = state.config.lock().unwrap().clone();
-    let _ = cfg.save(&state.dirs.config_path());
 
     if let Some(window) = app.get_webview_window("pill") {
         if visible {
@@ -414,7 +421,13 @@ fn remember_pill_home(app: &AppHandle, x: i32, y: i32) {
         return;
     };
     let mut cfg = state.config.lock().unwrap();
-    cfg.pill_position = Some((f64::from(x), f64::from(y)));
+    let next = Some((f64::from(x), f64::from(y)));
+    // Mismo motivo que en `set_pill_visible`: volver al mismo hogar es el caso
+    // normal, y reescribir el archivo idéntico en cada ciclo no aporta nada.
+    if cfg.pill_position == next {
+        return;
+    }
+    cfg.pill_position = next;
     let snapshot = cfg.clone();
     drop(cfg);
     let _ = snapshot.save(&state.dirs.config_path());
@@ -422,9 +435,10 @@ fn remember_pill_home(app: &AppHandle, x: i32, y: i32) {
 
 /// Lleva la pill al cursor sin persistir el hogar (camino del clipboard).
 ///
-/// Devuelve el destino ya clampeado. El vuelo corre aparte: este comando no
-/// debe quedarse bloqueado esperándolo.
-pub fn animate_pill_to_cursor(app: &AppHandle) -> Option<(i32, i32)> {
+/// Devuelve el vuelo (destino + duración) ya clampeado. El vuelo corre aparte:
+/// este comando no debe quedarse bloqueado esperándolo, pero sí le informa al
+/// frontend cuánto dura para que no redimensione a mitad de camino.
+pub fn animate_pill_to_cursor(app: &AppHandle) -> Option<crate::floating::Flight> {
     set_pill_visible(app, true);
     crate::floating::glide(app, "pill", crate::floating::Anchor::Cursor)
 }
@@ -455,14 +469,35 @@ pub fn summon_pill_to_cursor(app: &AppHandle) {
 
     // Cierra el panel y devuelve la pill a su forma compacta ANTES de medir:
     // el ancla depende del tamaño, y un panel abierto la centraría mal.
+    //
+    // El vuelo lo dispara el frontend con `summon_pill_here`, no esta función.
+    // Volar acá mismo era una carrera contra el colapso: el ancla se resolvía
+    // con los 312×380 del panel (la pill quedaba ~130 px arriba del cursor) y
+    // el reencuadre que llegaba después cancelaba el vuelo a mitad de camino.
+    // Solo el frontend sabe cuándo terminó de encoger.
     let _ = app.emit("pill-reset", ());
+}
 
-    if let Some((x, y)) = crate::floating::glide(app, "pill", crate::floating::Anchor::Cursor)
-    {
-        remember_pill_home(app, x, y);
-    } else {
-        tracing::warn!("no se pudo colocar la pill en el cursor");
-    }
+/// Vuela la pill al cursor y persiste ese punto como su hogar.
+///
+/// Lo invoca el frontend al terminar de colapsar, en respuesta a `pill-reset`.
+#[tauri::command]
+pub fn summon_pill_here(app: AppHandle) -> Result<(), String> {
+    tracing::info!(target: "pill_geo", "CMD        summon_pill_here");
+    let flight = crate::floating::glide(&app, "pill", crate::floating::Anchor::Cursor)
+        .ok_or_else(|| "no se pudo colocar la pill en el cursor".to_string())?;
+    remember_pill_home(&app, flight.x, flight.y);
+    Ok(())
+}
+
+/// Traza del frontend en el mismo flujo que la de Rust.
+///
+/// `console.log` del webview no sale por la terminal, así que sin esto el
+/// recorrido queda contado a medias: se ven las escrituras de posición pero no
+/// la intención que las pidió ni en qué orden las emitió el frontend.
+#[tauri::command]
+pub fn pill_trace(msg: String) {
+    tracing::debug!(target: "pill_geo", "UI         {msg}");
 }
 
 /// Devuelve el modelo Whisper en memoria, cargándolo si hace falta.

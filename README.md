@@ -153,6 +153,31 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
+## Depurar la pill y el pegado
+
+Dos subsistemas son difíciles de depurar leyendo el código, porque el estado
+real vive fuera del proceso: la **geometría** de las ventanas flotantes (varios
+escritores compiten por la posición: el reconciliador, los tweens y el clamp del
+monitor) y el **destino del pegado** (depende de qué ventana tiene el foco en el
+SO y de qué control tiene el cursor dentro de ella).
+
+Los dos tienen trazas dedicadas, apagadas por defecto:
+
+```bash
+# Geometría: cada línea es UNA escritura de posición o tamaño.
+RUST_LOG=info,pill_geo=debug pnpm tauri dev
+
+# Pegado: destino elegido, foco del control y modificadores hundidos.
+RUST_LOG=info,paste_geo=debug pnpm tauri dev
+```
+
+En PowerShell: `$env:RUST_LOG = "info,pill_geo=debug"` antes de `pnpm tauri dev`.
+
+Leídas en orden, las líneas de `pill_geo` reconstruyen el recorrido completo de
+la ventana y dicen quién la movió. `SendInput` no informa si alguien atendió la
+tecla, así que un pegado fallido se ve igual que uno exitoso: `paste_geo` es lo
+que permite distinguirlos.
+
 ## Dónde se guardan los datos
 
 - **Windows:** `%APPDATA%\ciat\atic\data\`

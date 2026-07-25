@@ -99,13 +99,15 @@ pub fn set_config(app: AppHandle, state: State<AppState>, config: Config) -> Res
     {
         crate::shortcuts::register_shortcuts(
             &app,
-            &shortcut,
-            &dictation_shortcut,
-            &summon_pill_shortcut,
-            &pill_radial_shortcut,
-            &clipboard_shortcut,
-            &snippets_shortcut,
-            &screenshot_shortcut,
+            crate::shortcuts::ShortcutBindings {
+                recording: &shortcut,
+                dictation: &dictation_shortcut,
+                summon_pill: &summon_pill_shortcut,
+                pill_radial: &pill_radial_shortcut,
+                clipboard: &clipboard_shortcut,
+                snippets: &snippets_shortcut,
+                screenshot: &screenshot_shortcut,
+            },
         )?;
     }
 

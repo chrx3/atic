@@ -34,7 +34,14 @@
   import ParticleWheel from "$lib/ParticleWheel.svelte";
   import { TOOLS, type ToolId } from "$lib/tools";
   import { formatShortcut } from "$lib/format";
-  import { PILL, createStage, growsFirst, windowFor, type Size } from "$lib/pillStage";
+  import {
+    PILL,
+    createStage,
+    growsFirst,
+    windowFor,
+    type Size,
+    type Pivot,
+  } from "$lib/pillStage";
   import { MOTION, ms, wait } from "$lib/motion";
   import {
     listPasteQueue,
@@ -62,8 +69,11 @@
     onLiveTranscriptFinal,
     prepareClipboardPill,
     prepareSnippetsPill,
-    snapPillToCursor,
+    stashPillHome,
+    morphPillHome,
     restorePillPosition,
+    summonPillHere,
+    pillTrace,
     onPillClipboardToggle,
     onPillClipboardClose,
     onPillSnippetsToggle,
@@ -147,14 +157,52 @@
 
   const target = $derived(windowFor(content));
 
-  const pivot = $derived(
-    surface === "wheel" ? "center" : panelOpen ? "panel" : "center",
-  );
+  /** Traza al log de Rust. Fire-and-forget: no debe alterar el flujo ni fallar. */
+  function trace(msg: string) {
+    void pillTrace(msg).catch(() => {});
+  }
 
-  /** `openWheel` reencuadra por su cuenta; el reconciliador no debe pisarlo. */
+  /**
+   * Hay una transición dueña de la geometría corriendo (morph de la rueda).
+   * Mientras esté puesta, el reconciliador no toca la ventana: un resize suyo
+   * cancelaría el morph a mitad de camino y la dejaría donde llegó.
+   */
   let opening = $state(false);
+  /** Una apertura de rueda ya está en vuelo. Corta el auto-repeat del atajo. */
+  let openingWheel = false;
   /** Solo el colapso de la rueda necesita que la ventana espere. */
   let leavingWheel = false;
+  /**
+   * Qué superficie se está cerrando.
+   *
+   * El pivote del colapso depende de **qué se cierra**, no del estado destino:
+   * para cuando el reconciliador corre, `surface` ya vale `"none"` y los dos
+   * colapsos —rueda y panel— son indistinguibles. Sin este dato ambos usaban
+   * `center`, y ese era el "punto C": el panel se encogía hacia su propio
+   * centro (~130 px arriba y ~80 a la izquierda de la barra) y recién desde
+   * ese punto arrancaba el vuelo al hogar.
+   */
+  let collapsingFrom: "wheel" | "panel" | null = null;
+
+  /**
+   * Punto que se conserva en el próximo reencuadre.
+   *
+   * Al abrir es simétrico al cierre; al cerrar, la rueda vuelve a la marca
+   * (`center`) y el panel deja la barra clavada donde está — arriba o abajo de
+   * la ventana según hacia dónde había abierto.
+   */
+  function pivotFor(): Pivot {
+    if (surface === "wheel") return "center";
+    if (panelOpen) return "panel";
+    // Colapsos: cada uno conserva el punto del que la superficie había salido.
+    if (collapsingFrom === "panel") return panelUp ? "bottomLeft" : "topLeft";
+    if (collapsingFrom === "wheel") return "center";
+    // Estado compacto en reposo. `center` acá era deriva pura: el ancho de la
+    // barra cambia solo (entra el timer, tictaquea de 0:09 a 0:10, aparece el
+    // badge de la cola) y con pivote al centro CADA cambio corría la ventana
+    // media diferencia. Al arrancar, el primer encogimiento la movía 53 px.
+    return "topLeft";
+  }
 
   /**
    * Único reconciliador. La regla de crecer-antes / encoger-después es lo que
@@ -171,8 +219,24 @@
       leavingWheel = false;
       await wait(ms(wheelQuick ? MOTION.morphQuick : MOTION.morphClose));
     }
-    const outcome = await stage.resize(next, pivot);
-    if (outcome.ok) panelUp = outcome.up;
+    // ¿Este reencuadre es un cambio de estado de la barra compacta?
+    //
+    // Solo esos se animan: disco ↔ dictado ↔ grabación ↔ cola, donde el salto
+    // se leía como un parpadeo. Los colapsos de panel y rueda tienen su propia
+    // coreografía —encoger y después volar, o el morph continuo— y animar acá
+    // largaría un tween que el vuelo siguiente cancelaría a mitad de camino.
+    // El primer reencuadre tampoco: al arrancar no hay "estado anterior" desde
+    // el cual transicionar, solo la ventana acomodándose.
+    const morphsInPlace =
+      from !== null && collapsingFrom === null && surface === "none";
+
+    // `pivotFor()` lee `panelUp` (hacia dónde había abierto) y `stage.resize`
+    // lo sobrescribe con el resultado nuevo: en ese orden, no al revés.
+    const outcome = await stage.resize(next, pivotFor(), morphsInPlace);
+    if (outcome.ok) {
+      panelUp = outcome.up;
+      collapsingFrom = null;
+    }
   }
 
   $effect(() => {
@@ -180,17 +244,56 @@
     void reconcile(next);
   });
 
-  // Medir la barra: `max-content` la hace independiente del ancho de ventana,
-  // así que no puede realimentarse con el resize.
+
+  // Medir la barra SOLO en reposo.
+  //
+  // `max-content` la hace independiente del ancho de ventana, pero
+  // `.p-root.is-panel .p-bar { width: 100% }` pisa esa regla: con un panel
+  // abierto la barra mide lo que mide la ventana. Medir ahí cierra un lazo
+  // —ventana define barra define ventana— y el colapso terminaba emitiendo
+  // tres reencuadres, oscilando entre 48 y 320 px de ancho, con un final no
+  // determinista: a veces la pill volvía al hogar convertida en barra ancha.
   $effect(() => {
     const el = barEl;
     if (!el) return;
-    const observer = new ResizeObserver(() => {
-      barW = el.offsetWidth;
-    });
+    const measure = () => {
+      if (surface !== "none") return;
+      // max(offset, scroll): si alguna regla vuelve a topar la barra, el ancho
+      // real del contenido sigue estando en scrollWidth. Sin esto, un clamp
+      // aguas arriba deja la medición mintiendo y la ventana no crece nunca.
+      barW = Math.max(el.offsetWidth, el.scrollWidth);
+    };
+    const observer = new ResizeObserver(measure);
     observer.observe(el);
-    barW = el.offsetWidth;
+    measure();
     return () => observer.disconnect();
+  });
+
+  // Re-medir cuando cambia lo que la barra MUESTRA.
+  //
+  // El ResizeObserver debería alcanzar, pero con `width: max-content` dentro de
+  // una ventana más angosta no dispara de forma confiable: al dictar con el
+  // atajo `barW` se quedaba en 40 y la pill seguía redonda, con la tira de
+  // ondas recortada adentro. Por la rueda no se notaba porque ahí `wheelHome()`
+  // redimensiona explícitamente y arrastra la medición nueva.
+  $effect(() => {
+    const el = barEl;
+    if (!el) return;
+    // Dependencias explícitas: todo lo que cambia el contenido de la barra.
+    void activity;
+    void dictation;
+    void hasQueue;
+    void liveActive;
+    void btWarning;
+    if (surface !== "none") return;
+    // Un frame después: en este tick el DOM todavía tiene el contenido viejo.
+    const frame = requestAnimationFrame(() => {
+      // max(offset, scroll): si alguna regla vuelve a topar la barra, el ancho
+      // real del contenido sigue estando en scrollWidth. Sin esto, un clamp
+      // aguas arriba deja la medición mintiendo y la ventana no crece nunca.
+      barW = Math.max(el.offsetWidth, el.scrollWidth);
+    });
+    return () => cancelAnimationFrame(frame);
   });
 
   // ─── Temporizador de grabación ───────────────────────────────────────────
@@ -239,7 +342,24 @@
    * donde la habías dejado. El hogar se guarda para volver al soltar.
    */
   async function openWheel() {
-    if (surface === "wheel") return;
+    // `surface` recién vale "wheel" al final, después de tres IPC. En esa
+    // ventana el auto-repeat del atajo (Windows reenvía `Pressed` mientras la
+    // tecla está sostenida) podía reentrar acá: el segundo pase cancelaba el
+    // tween del primero y lo reiniciaba desde donde hubiera llegado, así que
+    // sostener la tecla dejaba la rueda creciendo a los tirones.
+    if (surface === "wheel" || openingWheel) return;
+    openingWheel = true;
+    try {
+      await openWheelInner();
+    } finally {
+      // Pase lo que pase: una bandera trabada acá dejaría la rueda muerta para
+      // el resto de la sesión.
+      openingWheel = false;
+    }
+  }
+
+  async function openWheelInner() {
+    trace("openWheel");
     await closePanels({ silent: true });
     wheelQuick = false;
     // Sin selección inicial: un toque accidental del atajo no debe disparar
@@ -247,12 +367,15 @@
     wheelTool = null;
     opening = true;
     try {
-      // ORDEN, no paralelo. Redimensionar y centrar a la vez hacía que el
-      // centrado usara el tamaño viejo (48) sobre una ventana ya de 232: la
-      // rueda aparecía ~92 px abajo-derecha del puntero.
+      // 1) Guardar el hogar ANTES de tocar la geometría. Si se guarda después,
+      //    lo que queda grabado es la posición que ya movió el reencuadre.
+      await stashPillHome();
+      // 2) Viajar al cursor Y crecer como UN solo movimiento: Rust interpola
+      //    el rectángulo completo. Antes eran dos escrituras de posición y
+      //    entre medio se pintaba la rueda sobre la pill vieja, 115 px
+      //    arriba-izquierda — la "tercera posición".
       const side = PILL.wheel - PILL.pad * 2;
-      await stage.resize(windowFor({ w: side, h: side }), "center");
-      await snapPillToCursor();
+      await stage.resize(windowFor({ w: side, h: side }), "cursor");
       await getCurrentWindow().setFocus();
     } catch (err) {
       console.warn("pill wheel summon", err);
@@ -263,14 +386,56 @@
     wheelShown = true;
   }
 
+  /**
+   * Cierra la rueda: de (cursor, grande) a (hogar, chica) en UN movimiento.
+   *
+   * Rust interpola el rectángulo entero, así que la rueda se achica mientras
+   * viaja. El camino viejo eran dos pasos con un salto visible entre medio:
+   * implosionaba al centro (+115 px) y desde ahí volaba al hogar.
+   */
+  async function wheelHome() {
+    const next = target;
+    opening = true;
+    try {
+      if (await morphPillHome(next.w, next.h)) {
+        // Rust ya dejó la ventana en su tamaño final: que el reconciliador lo
+        // sepa, o emitiría un resize que cancelaría este mismo morph.
+        stage.adopt(next);
+        trace(`wheelHome morph -> ${next.w}x${next.h}`);
+        return;
+      }
+    } catch (err) {
+      console.warn("morph pill home", err);
+    } finally {
+      opening = false;
+    }
+    // Sin hogar guardado: encoger en el lugar por el camino normal.
+    trace("wheelHome sin hogar, colapso normal");
+    await collapse();
+  }
+
   /** Cierra la rueda y devuelve la pill a su hogar. No activa nada. */
   async function closeWheel() {
     if (surface !== "wheel") return;
-    leavingWheel = true;
+    trace("closeWheel");
+    // Tomar la geometría ANTES de cambiar de superficie. Si no, el
+    // reconciliador ve el estado nuevo y encoge en el acto —con el salto al
+    // centro— mientras todavía estamos esperando a que salga el contenido.
+    opening = true;
     wheelShown = false;
     wheelTool = null;
+    collapsingFrom = "wheel";
     surface = "none";
-    await goHome();
+    leavingWheel = false;
+    // Sin espera: el morph arranca en el MISMO frame en que el contenido
+    // empieza a cambiar, igual que en la apertura.
+    //
+    // Esperar acá era la tercera posición del cierre. Durante esos 250 ms la
+    // barra de 48 px ya estaba dibujada dentro de la ventana de 290×290
+    // todavía en el cursor, y como el stack es un flex column al tope, se veía
+    // pegada arriba-izquierda del área de la rueda. Recién después la ventana
+    // se movía. Ahora encoge y viaja mientras el contenido se cruza.
+    await wheelHome();
   }
 
   /** Soltar la tecla: activa lo apuntado si la rueda llegó a mostrarse. */
@@ -315,9 +480,7 @@
    */
   async function activateTool(id: ToolId) {
     if (surface !== "wheel") return;
-    const wasShown = wheelShown;
     wheelQuick = true;
-    leavingWheel = wasShown;
     wheelShown = false;
     wheelTool = null;
 
@@ -332,10 +495,15 @@
         await loadSurface(id);
         return;
       }
+      collapsingFrom = "wheel";
+      // Igual que en `closeWheel`: la geometría se toma antes de cambiar de
+      // superficie, para que el reconciliador no encoja por su cuenta.
+      opening = true;
       surface = "none";
-      // Dejar correr el cierre acelerado antes de mover la ventana.
-      if (wasShown) await wait(ms(MOTION.morphQuick));
-      await goHome();
+      // Mismo cierre que `closeWheel`: el morph corre junto al contenido, sin
+      // espera previa. `wheelQuick` ya acelera las curvas CSS de salida.
+      leavingWheel = false;
+      await wheelHome();
       if (id === "captures") await startCaptureSession();
     } catch (err) {
       console.warn("acción de la rueda", err);
@@ -355,11 +523,21 @@
 
   async function openPanel(kind: "clipboard" | "snippets", fly: boolean) {
     try {
-      if (kind === "clipboard") await prepareClipboardPill(fly);
-      else await prepareSnippetsPill(fly);
+      const flight =
+        kind === "clipboard"
+          ? await prepareClipboardPill(fly)
+          : await prepareSnippetsPill(fly);
+      // Esperar el aterrizaje antes de expandir. Volar y crecer a la vez son
+      // dos escritores de la posición: Rust anclaba el panel donde estuviera
+      // la barra en ese frame, y el hilo del vuelo seguía después empujando la
+      // ventana a coordenadas calculadas para el tamaño compacto. El panel
+      // terminaba en un punto intermedio del recorrido, no en el cursor.
+      trace(`openPanel ${kind} fly=${fly} vuelo=${flight}ms`);
+      if (flight > 0) await wait(flight);
     } catch (err) {
       console.warn("prepare pill", err);
     }
+    trace(`openPanel ${kind} expande`);
     surface = kind;
     surfaceOpenedAt = Date.now();
     try {
@@ -377,15 +555,48 @@
       clearTimeout(scratchTimer);
       scratchTimer = null;
     }
+    trace(`closePanels desde=${surface} silent=${silent}`);
+    collapsingFrom = surface === "wheel" ? "wheel" : "panel";
     if (surface === "wheel") leavingWheel = true;
     surface = "none";
     wheelShown = false;
     pasting = false;
+    // Encoger PRIMERO, volar DESPUÉS. Al revés el vuelo salía con el tamaño
+    // del panel todavía puesto: el hogar se clampeaba contra el borde del
+    // monitor usando 312×380 en vez de 48×48, así que la pill no volvía al
+    // punto del que había salido. Además el reencuadre llegaba a mitad del
+    // vuelo y lo cancelaba, dejándola donde estuviera en ese instante.
+    await collapse();
     if (!silent) await goHome();
+  }
+
+  /**
+   * Aplica el encogimiento pendiente y espera a que la ventana quede en su
+   * tamaño final.
+   *
+   * El `$effect` también lo dispara, pero de forma diferida: para cuando corre,
+   * el vuelo al hogar ya salió. Llamarlo en línea vuelve determinista el orden;
+   * el efecto que llega después encuentra el tamaño ya aplicado y `stage.resize`
+   * lo descarta sin IPC.
+   */
+  async function collapse() {
+    // La barra venía estirada al ancho del panel, así que su última medición no
+    // sirve para elegir el tamaño compacto: apuntaría a 320 px de ancho. Volver
+    // a la base y dejar que el observador la ensanche después si hace falta
+    // (timer de grabación, chip de la cola). Así el colapso es un solo paso.
+    if (collapsingFrom === "panel") barW = PILL.bar;
+    const next = target;
+    trace(
+      `collapse from=${collapsingFrom} panelUp=${panelUp} ` +
+        `pivot=${pivotFor()} -> ${next.w}x${next.h}`,
+    );
+    await reconcile(next);
+    trace("collapse listo");
   }
 
   /** Devuelve la pill al hogar guardado (si el summon la había movido). */
   async function goHome() {
+    trace("goHome");
     try {
       await restorePillPosition();
     } catch (err) {
@@ -614,7 +825,18 @@
       onPillSnippetsClose(() => void closePanels()),
       onPillRadialPress(() => void openWheel()),
       onPillRadialRelease(() => onWheelRelease()),
-      onPillReset(() => void closePanels({ silent: true })),
+      // Colapsar y RECIÉN AHÍ volar al cursor. Rust emite el reset pero no
+      // mueve: solo acá se sabe cuándo la ventana terminó de encoger, y el
+      // ancla del cursor se calcula con el tamaño que tenga en ese momento.
+      onPillReset(async () => {
+        trace("pill-reset (summon)");
+        await closePanels({ silent: true });
+        try {
+          await summonPillHere();
+        } catch (err) {
+          console.warn("summon pill", err);
+        }
+      }),
       onClipboardHistoryChanged(() => {
         if (surface === "clipboard") void refreshClipboard();
       }),
@@ -848,28 +1070,41 @@
           <div class="p-wave">
             <Waveform mic={levels.mic} system={levels.system} bars={10} variant="quiet" />
           </div>
+        {:else if dictation === "listening"}
+          <!-- Escuchando: micrófono + ondas, sin texto. El ícono dice QUÉ está
+               pasando (el mic está abierto) y las ondas dicen que te oye; la
+               palabra "Dictando" no agregaba nada sobre esos dos. Todo el
+               conjunto es el botón de parada. Los otros estados sí necesitan
+               texto: "Transcribiendo…" y "Error" no se pueden mostrar con una
+               animación. -->
+          <button
+            type="button"
+            class="p-dict-wave"
+            data-no-drag
+            onclick={toggleDictate}
+            disabled={busy}
+            aria-label="Detener dictado"
+            title="Dictando · clic para detener"
+          >
+            <ToolIcon id="dictation" size={16} strokeWidth={1.5} />
+            <Waveform mic={levels.mic} bars={18} variant="voice" live />
+          </button>
         {:else if activity === "dictating"}
           <button
             type="button"
             class="p-dict"
-            class:is-live={dictation === "listening"}
             class:is-busy={dictation === "transcribing"}
             class:is-ok={dictation === "pasted"}
             class:is-error={dictation === "error"}
             data-no-drag
             onclick={toggleDictate}
             disabled={busy || dictation === "transcribing"}
-            aria-label={dictation === "listening" ? "Detener dictado" : "Dictado"}
+            aria-label="Dictado"
             title={dictationLabel(dictation)}
           >
             <ToolIcon id="dictation" size={16} strokeWidth={1.5} />
           </button>
           <span class="p-label" aria-live="polite">{dictationLabel(dictation)}</span>
-          {#if dictation === "listening"}
-            <div class="p-wave">
-              <Waveform mic={levels.mic} system={0} bars={8} variant="quiet" />
-            </div>
-          {/if}
         {:else if hasQueue}
           <!-- La cola es un badge sobre el disco, no un reemplazo: antes borraba
                la pill entera y con ella el acceso a la rueda. -->
@@ -1050,11 +1285,35 @@
     width: max-content;
     min-width: 40px;
     height: 100%;
+    /* NO encoger. `.p-shell` está topado con `max-width: 100%`, o sea el ancho
+       de la VENTANA, así que sin esto la barra se comprimía hasta su min-width
+       de 40 px y eso era lo que medíamos: la ventana quedaba en 48, el tope en
+       48, la barra en 40. Un abrazo mortal donde la pill no podía crecer sola.
+       Se notaba al dictar con el atajo —quedaba redonda con las ondas
+       recortadas adentro— pero no con la rueda, porque ahí la ventana se
+       redimensiona antes por otro camino y destraba el tope.
+       Overflow lo tapa `.p-shell` durante el frame que la ventana tarda. */
+    flex-shrink: 0;
     align-items: center;
     gap: 8px;
     padding: 0 12px 0 10px;
     white-space: nowrap;
   }
+  /* Lo que entra a la barra se funde en vez de aparecer de golpe.
+     Va sobre los hijos DIRECTOS porque son los que Svelte monta y desmonta al
+     cambiar de estado; lo que sobrevive al cambio —el timer, que solo cambia su
+     texto— no se re-anima y no parpadea.
+     Solo opacidad: `transform` acá pisaría el `scale` de hover de los botones,
+     porque una animación gana sobre una transición. */
+  .p-bar > * {
+    animation: p-in var(--morph-fade-dur) var(--morph-close-ease);
+  }
+  @keyframes p-in {
+    from {
+      opacity: 0;
+    }
+  }
+
   /* Reposo: disco exacto. Con el padding de la barra quedaba elipse. */
   .p-bar.is-disc-only {
     width: 40px;
@@ -1122,6 +1381,29 @@
     align-items: center;
   }
 
+  /* Las ondas SON el control mientras dicta: sin chrome de botón, solo el
+     área clickeable. Sin esto habría que dejar el ícono al lado y volvíamos a
+     tener dos cosas donde alcanza una. */
+  .p-dict-wave {
+    display: flex;
+    height: 100%;
+    align-items: center;
+    gap: 8px;
+    border: 0;
+    background: none;
+    color: var(--rb-text);
+    cursor: pointer;
+    padding: 0 2px;
+    margin: 0;
+  }
+  /* El micrófono no se comprime: es el que da el contexto de la animación. */
+  .p-dict-wave :global(svg) {
+    flex-shrink: 0;
+  }
+  .p-dict-wave:disabled {
+    cursor: default;
+  }
+
   /* ─── Botones ───────────────────────────────────────────────────────── */
   .p-icon,
   .p-rec,
@@ -1167,10 +1449,6 @@
   .p-dict {
     background: transparent;
     color: var(--rb-muted);
-  }
-  .p-dict.is-live {
-    color: var(--rb-text);
-    background: color-mix(in srgb, var(--rb-text) 10%, transparent);
   }
   .p-dict.is-busy {
     color: var(--rb-warn);

@@ -164,7 +164,10 @@ pub fn run() {
             clipboard_history::delete_clipboard_item,
             clipboard_history::clear_clipboard_history,
             clipboard_history::prepare_clipboard_pill,
-            clipboard_history::snap_pill_to_cursor,
+            clipboard_history::stash_pill_home,
+            clipboard_history::morph_pill_home,
+            state::summon_pill_here,
+            state::pill_trace,
             clipboard_history::restore_pill_position,
             snippets::list_snippets,
             snippets::upsert_snippet,
@@ -244,16 +247,30 @@ pub fn run() {
             tray::build_tray(app.handle())?;
 
             // Sincronizar autostart con la preferencia guardada.
+            //
+            // Solo se toca el registro si el estado real difiere del deseado.
+            // Antes se llamaba a `disable()` en cada arranque aunque ya
+            // estuviera deshabilitado, y eso falla con "no se encuentra el
+            // archivo" (os error 2) porque no hay entrada que borrar: un aviso
+            // en cada inicio que no significaba nada y tapaba los reales.
             {
                 use tauri_plugin_autostart::ManagerExt;
                 let manager = app.autolaunch();
-                let result = if want_autostart {
-                    manager.enable()
-                } else {
-                    manager.disable()
-                };
-                if let Err(err) = result {
-                    tracing::warn!(%err, "no se pudo sincronizar autostart al iniciar");
+                match manager.is_enabled() {
+                    Ok(actual) if actual == want_autostart => {}
+                    Ok(_) => {
+                        let result = if want_autostart {
+                            manager.enable()
+                        } else {
+                            manager.disable()
+                        };
+                        if let Err(err) = result {
+                            tracing::warn!(%err, "no se pudo sincronizar autostart al iniciar");
+                        }
+                    }
+                    Err(err) => {
+                        tracing::warn!(%err, "no se pudo leer el estado de autostart");
+                    }
                 }
             }
 
@@ -263,13 +280,15 @@ pub fn run() {
             // Atajos globales: grabación + dictado + pill + clipboard + captura.
             if let Err(err) = shortcuts::register_shortcuts(
                 app.handle(),
-                &shortcut,
-                &dictation_shortcut,
-                &summon_pill_shortcut,
-                &pill_radial_shortcut,
-                &clipboard_shortcut,
-                &snippets_shortcut,
-                &screenshot_shortcut,
+                shortcuts::ShortcutBindings {
+                    recording: &shortcut,
+                    dictation: &dictation_shortcut,
+                    summon_pill: &summon_pill_shortcut,
+                    pill_radial: &pill_radial_shortcut,
+                    clipboard: &clipboard_shortcut,
+                    snippets: &snippets_shortcut,
+                    screenshot: &screenshot_shortcut,
+                },
             ) {
                 tracing::error!(%err, "no se pudieron registrar los atajos globales");
             }
@@ -318,11 +337,8 @@ pub fn run() {
                 if let Some(state) = window.app_handle().try_state::<AppState>() {
                     // Durante el clipboard en el cursor no pisar la home guardada.
                     if state.pre_clipboard_position.lock().unwrap().is_none() {
-                        state
-                            .config
-                            .lock()
-                            .unwrap()
-                            .pill_position = Some((pos.x as f64, pos.y as f64));
+                        state.config.lock().unwrap().pill_position =
+                            Some((pos.x as f64, pos.y as f64));
                     }
                 }
             }

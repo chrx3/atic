@@ -120,10 +120,7 @@ fn ensure_poller(app: &AppHandle) {
                 thread::sleep(Duration::from_millis(POLL_MS));
                 let has_items = {
                     let guard = QUEUE.lock().unwrap();
-                    guard
-                        .as_ref()
-                        .map(|q| !q.items.is_empty())
-                        .unwrap_or(false)
+                    guard.as_ref().map(|q| !q.items.is_empty()).unwrap_or(false)
                 };
                 if !has_items {
                     continue;
@@ -164,23 +161,32 @@ pub(crate) fn enqueue(app: &AppHandle, text: &str) -> Result<PasteQueueItem, Str
 }
 
 /// Pega si hay destino externo listo; si no, encola.
-pub(crate) fn try_paste_or_enqueue(
-    app: &AppHandle,
-    text: &str,
-) -> Result<PasteOutcome, String> {
+pub(crate) fn try_paste_or_enqueue(app: &AppHandle, text: &str) -> Result<PasteOutcome, String> {
     // Preferir primer plano vivo (tras focus_paste_target del caller).
     if clipboard_history::has_live_external_foreground() {
+        tracing::debug!(target: "paste_geo", "TRY        primer plano externo vivo -> pego");
         clipboard_history::paste_text(app, text)?;
         return Ok(PasteOutcome::Pasted);
     }
     // Hay HWND guardado pero Atic sigue con foco: intentar restaurar una vez.
     if clipboard_history::has_saved_external_paste_target() {
+        tracing::debug!(
+            target: "paste_geo",
+            "TRY        Atic tiene el foco; reintento traer el destino guardado"
+        );
         clipboard_history::focus_paste_target();
         thread::sleep(Duration::from_millis(FOCUS_SETTLE_MS));
         if clipboard_history::has_live_external_foreground() {
+            tracing::debug!(target: "paste_geo", "TRY        recuperado -> pego");
             clipboard_history::paste_text(app, text)?;
             return Ok(PasteOutcome::Pasted);
         }
+        tracing::debug!(
+            target: "paste_geo",
+            "TRY        no se pudo traer el destino al frente -> encolo"
+        );
+    } else {
+        tracing::debug!(target: "paste_geo", "TRY        sin destino externo guardado -> encolo");
     }
     enqueue(app, text)?;
     Ok(PasteOutcome::Queued)
@@ -227,7 +233,11 @@ pub fn list_paste_queue(state: State<AppState>) -> Result<Vec<PasteQueueItem>, S
 }
 
 #[tauri::command]
-pub fn enqueue_paste(app: AppHandle, state: State<AppState>, text: String) -> Result<PasteQueueItem, String> {
+pub fn enqueue_paste(
+    app: AppHandle,
+    state: State<AppState>,
+    text: String,
+) -> Result<PasteQueueItem, String> {
     let _ = &state;
     enqueue(&app, &text)
 }

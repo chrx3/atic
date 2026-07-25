@@ -33,6 +33,22 @@ fn binding_dup_key(b: &Binding) -> String {
 
 /// Registra (o re-registra) los atajos globales.
 ///
+/// Los siete atajos globales que registra la app.
+///
+/// Van agrupados y no como siete parámetros sueltos: eran siete `&str` del
+/// mismo tipo en fila, así que intercambiar dos por error compilaba perfecto y
+/// el bug recién aparecía al usar el atajo equivocado. Con campos nombrados,
+/// eso no pasa.
+pub struct ShortcutBindings<'a> {
+    pub recording: &'a str,
+    pub dictation: &'a str,
+    pub summon_pill: &'a str,
+    pub pill_radial: &'a str,
+    pub clipboard: &'a str,
+    pub snippets: &'a str,
+    pub screenshot: &'a str,
+}
+
 /// Los errores de *sintaxis* de cualquier atajo abortan (se valida antes de
 /// persistir en `set_config`). En cambio, un fallo al **registrar** un atajo
 /// concreto (p. ej. conflicto con otra app) no impide registrar los demás: un
@@ -41,23 +57,14 @@ fn binding_dup_key(b: &Binding) -> String {
 /// Esos fallos se acumulan en [`AppState::shortcut_failures`] y se emiten como
 /// `shortcuts-failed`, para que el usuario pueda reasignarlos: un atajo que el
 /// SO rechazó es indistinguible de uno roto si solo queda en el log.
-pub fn register_shortcuts(
-    app: &AppHandle,
-    recording_shortcut: &str,
-    dictation_shortcut: &str,
-    summon_pill_shortcut: &str,
-    pill_radial_shortcut: &str,
-    clipboard_shortcut: &str,
-    snippets_shortcut: &str,
-    screenshot_shortcut: &str,
-) -> Result<(), String> {
-    let recording = parse_binding("grabación", recording_shortcut)?;
-    let dictation = parse_binding("dictado", dictation_shortcut)?;
-    let summon = parse_binding("traer pill", summon_pill_shortcut)?;
-    let radial = parse_binding("rueda de la pill", pill_radial_shortcut)?;
-    let clipboard = parse_binding("clipboard", clipboard_shortcut)?;
-    let snippets = parse_binding("fragmentos", snippets_shortcut)?;
-    let screenshot = parse_binding("captura", screenshot_shortcut)?;
+pub fn register_shortcuts(app: &AppHandle, bindings: ShortcutBindings<'_>) -> Result<(), String> {
+    let recording = parse_binding("grabación", bindings.recording)?;
+    let dictation = parse_binding("dictado", bindings.dictation)?;
+    let summon = parse_binding("traer pill", bindings.summon_pill)?;
+    let radial = parse_binding("rueda de la pill", bindings.pill_radial)?;
+    let clipboard = parse_binding("clipboard", bindings.clipboard)?;
+    let snippets = parse_binding("fragmentos", bindings.snippets)?;
+    let screenshot = parse_binding("captura", bindings.screenshot)?;
 
     let named = [
         ("grabación", &recording),
