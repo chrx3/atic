@@ -294,6 +294,14 @@ export interface Scratchpad {
   updatedAtMs: number;
 }
 
+/** Nota guardada. El título sale de la primera línea; no se pide aparte. */
+export interface Note {
+  id: string;
+  title: string;
+  body: string;
+  updatedAtMs: number;
+}
+
 export interface PasteQueueItem {
   id: string;
   text: string;

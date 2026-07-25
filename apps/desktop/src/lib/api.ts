@@ -30,6 +30,7 @@ import type {
   ClipboardItem,
   Snippet,
   Scratchpad,
+  Note,
   PasteQueueItem,
   SearchHit,
   OverlayInfo,
@@ -137,6 +138,13 @@ export const pasteSnippet = (id: string) =>
 export const prepareSnippetsPill = (fly: boolean) =>
   invoke<number>("prepare_snippets_pill", { fly });
 export const getScratchpad = () => invoke<Scratchpad>("get_scratchpad");
+
+/** Notas guardadas, de la más reciente a la más vieja. */
+export const listNotes = () => invoke<Note[]>("list_notes");
+/** Crea o actualiza. Sin `id` crea una nueva. `null` = cuerpo vacío, no guarda. */
+export const saveNote = (id: string | null, body: string) =>
+  invoke<Note | null>("save_note", { id, body });
+export const deleteNote = (id: string) => invoke<void>("delete_note", { id });
 export const setScratchpad = (body: string) =>
   invoke<Scratchpad>("set_scratchpad", { body });
 

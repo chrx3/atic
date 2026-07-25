@@ -13,6 +13,10 @@ use crate::state::AppState;
 
 const SNIPPETS_FILE: &str = "snippets.json";
 const SCRATCHPAD_FILE: &str = "scratchpad.json";
+const NOTES_FILE: &str = "notes.json";
+
+/// Largo máximo del título derivado de la primera línea.
+const TITLE_MAX: usize = 60;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -30,6 +34,20 @@ pub struct Snippet {
 pub struct Scratchpad {
     pub body: String,
     #[serde(default)]
+    pub updated_at_ms: u64,
+}
+
+/// Una nota guardada.
+///
+/// El título no se pide: sale de la primera línea del cuerpo. Obligar a nombrar
+/// algo antes de escribirlo es fricción justo en el momento en que querés
+/// anotar rápido, que es para lo que existe el bloc.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Note {
+    pub id: String,
+    pub title: String,
+    pub body: String,
     pub updated_at_ms: u64,
 }
 
@@ -204,6 +222,98 @@ pub fn get_scratchpad(state: State<AppState>) -> Result<Scratchpad, String> {
     Ok(serde_json::from_str(&raw).unwrap_or_default())
 }
 
+fn notes_path(dir: &Path) -> std::path::PathBuf {
+    dir.join(NOTES_FILE)
+}
+
+/// Título a partir de la primera línea con contenido.
+fn derive_title(body: &str) -> String {
+    let line = body.lines().map(str::trim).find(|l| !l.is_empty());
+    match line {
+        None => "Nota sin título".to_string(),
+        Some(l) if l.chars().count() <= TITLE_MAX => l.to_string(),
+        Some(l) => {
+            let cut: String = l.chars().take(TITLE_MAX - 1).collect();
+            format!("{cut}…")
+        }
+    }
+}
+
+fn load_notes(dir: &Path) -> Vec<Note> {
+    let Ok(raw) = std::fs::read_to_string(notes_path(dir)) else {
+        return Vec::new();
+    };
+    serde_json::from_str(&raw).unwrap_or_default()
+}
+
+fn save_notes(dir: &Path, notes: &[Note]) -> Result<(), String> {
+    let _ = std::fs::create_dir_all(dir);
+    let raw = serde_json::to_string_pretty(notes).map_err(|e| e.to_string())?;
+    std::fs::write(notes_path(dir), raw).map_err(|e| e.to_string())
+}
+
+/// Notas guardadas, de la más reciente a la más vieja.
+#[tauri::command]
+pub fn list_notes(state: State<AppState>) -> Result<Vec<Note>, String> {
+    let mut notes = load_notes(&state.dirs.snippets_dir());
+    notes.sort_by_key(|n| std::cmp::Reverse(n.updated_at_ms));
+    Ok(notes)
+}
+
+/// Crea o actualiza una nota. Sin `id`, crea una nueva y devuelve la creada.
+///
+/// El cuerpo vacío no se guarda: sería una nota fantasma en la lista, y el
+/// llamador natural (guardar al cambiar de nota) pasa por acá siempre, tenga o
+/// no algo escrito.
+#[tauri::command]
+pub fn save_note(
+    state: State<AppState>,
+    id: Option<String>,
+    body: String,
+) -> Result<Option<Note>, String> {
+    if body.trim().is_empty() {
+        return Ok(None);
+    }
+    let dir = state.dirs.snippets_dir();
+    let mut notes = load_notes(&dir);
+    let title = derive_title(&body);
+    let now = now_ms();
+
+    let note = match id.and_then(|id| notes.iter().position(|n| n.id == id).map(|i| (i, id))) {
+        Some((idx, id)) => {
+            let note = Note {
+                id,
+                title,
+                body,
+                updated_at_ms: now,
+            };
+            notes[idx] = note.clone();
+            note
+        }
+        None => {
+            let note = Note {
+                id: format!("note-{now}"),
+                title,
+                body,
+                updated_at_ms: now,
+            };
+            notes.push(note.clone());
+            note
+        }
+    };
+
+    save_notes(&dir, &notes)?;
+    Ok(Some(note))
+}
+
+#[tauri::command]
+pub fn delete_note(state: State<AppState>, id: String) -> Result<(), String> {
+    let dir = state.dirs.snippets_dir();
+    let mut notes = load_notes(&dir);
+    notes.retain(|n| n.id != id);
+    save_notes(&dir, &notes)
+}
+
 #[tauri::command]
 pub fn set_scratchpad(state: State<AppState>, body: String) -> Result<Scratchpad, String> {
     let dir = state.dirs.snippets_dir();
@@ -227,4 +337,39 @@ pub fn summon_snippets_panel(app: &AppHandle) {
 #[tauri::command]
 pub fn prepare_snippets_pill(app: AppHandle, fly: bool) -> Result<u64, String> {
     clipboard_history::prepare_clipboard_pill(app, fly)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn titulo_usa_la_primera_linea_con_contenido() {
+        assert_eq!(
+            derive_title("  \n\n  Comprar pan\nmás cosas"),
+            "Comprar pan"
+        );
+    }
+
+    #[test]
+    fn titulo_de_cuerpo_vacio_no_queda_en_blanco() {
+        // Una nota sin título en la lista sería una fila sin nada que leer.
+        assert_eq!(derive_title("   \n \n"), "Nota sin título");
+    }
+
+    #[test]
+    fn titulo_largo_se_corta_con_puntos_suspensivos() {
+        let largo = "a".repeat(TITLE_MAX + 20);
+        let titulo = derive_title(&largo);
+        assert_eq!(titulo.chars().count(), TITLE_MAX);
+        assert!(titulo.ends_with('…'));
+    }
+
+    #[test]
+    fn titulo_corta_por_caracteres_no_por_bytes() {
+        // Con acentos, cortar por bytes parte un carácter y entra en pánico.
+        let largo = "á".repeat(TITLE_MAX + 5);
+        let titulo = derive_title(&largo);
+        assert_eq!(titulo.chars().count(), TITLE_MAX);
+    }
 }

@@ -1,16 +1,20 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import HotkeyCapture from "$lib/HotkeyCapture.svelte";
+  import Trash from "reicon-svelte/icons/Trash.svelte";
   import SnippetsList from "$lib/SnippetsList.svelte";
   import ToolPageShell from "$lib/ToolPageShell.svelte";
   import {
+    deleteNote,
     getScratchpad,
+    listNotes,
     listSnippets,
     onSnippetsChanged,
+    saveNote,
     setScratchpad,
     upsertSnippet,
   } from "$lib/api";
-  import type { Snippet as TextSnippet } from "$lib/types";
+  import type { Note as TextNote, Snippet as TextSnippet } from "$lib/types";
   import { toolById } from "$lib/tools";
 
   let {
@@ -32,6 +36,9 @@
   let scratchBody = $state("");
   let scratchLoading = $state(true);
   let scratchSaving = $state(false);
+  let notes = $state<TextNote[]>([]);
+  /** Nota que se está editando en el bloc. `null` = borrador sin archivar. */
+  let currentNoteId = $state<string | null>(null);
   let editing = $state<TextSnippet | null>(null);
   let aliasesText = $state("");
   let saving = $state(false);
@@ -95,6 +102,74 @@
     }
   }
 
+  /* ─── Notas ───────────────────────────────────────────────────────────────
+   *
+   * El bloc es siempre "la nota actual". No hay un botón de guardar que puedas
+   * olvidar: se autoguarda como antes, y cambiar de nota archiva la que estabas
+   * escribiendo. Así nunca hay un estado en el que perder texto sea posible,
+   * que era el problema del bloc único.
+   */
+  const currentTitle = $derived(
+    notes.find((n) => n.id === currentNoteId)?.title ?? "Nota nueva",
+  );
+
+  function noteDate(ms: number): string {
+    return new Date(ms).toLocaleDateString(undefined, {
+      day: "numeric",
+      month: "short",
+    });
+  }
+
+  async function refreshNotes() {
+    try {
+      notes = await listNotes();
+    } catch (error) {
+      onToast?.(String(error));
+    }
+  }
+
+  /** Archiva lo que haya en el bloc. Devuelve el id resultante (o el actual). */
+  async function commitCurrent(): Promise<string | null> {
+    if (!scratchBody.trim()) return currentNoteId;
+    try {
+      const saved = await saveNote(currentNoteId, scratchBody);
+      await refreshNotes();
+      return saved?.id ?? currentNoteId;
+    } catch (error) {
+      onToast?.(String(error));
+      return currentNoteId;
+    }
+  }
+
+  async function startNewNote() {
+    await commitCurrent();
+    currentNoteId = null;
+    scratchBody = "";
+    await persistScratchpad();
+  }
+
+  async function openNote(note: TextNote) {
+    if (note.id === currentNoteId) return;
+    await commitCurrent();
+    currentNoteId = note.id;
+    scratchBody = note.body;
+    await persistScratchpad();
+  }
+
+  async function removeNote(note: TextNote) {
+    try {
+      await deleteNote(note.id);
+      if (note.id === currentNoteId) {
+        currentNoteId = null;
+        scratchBody = "";
+        await persistScratchpad();
+      }
+      await refreshNotes();
+    } catch (error) {
+      onToast?.(String(error));
+    }
+  }
+
   function scheduleScratchSave() {
     if (scratchTimer) clearTimeout(scratchTimer);
     scratchTimer = setTimeout(() => {
@@ -106,7 +181,13 @@
     if (scratchSaving) return;
     scratchSaving = true;
     try {
+      // El bloc guarda el borrador vivo; la nota archivada se actualiza en el
+      // mismo paso para que cerrar la app no deje las dos versiones distintas.
       await setScratchpad(scratchBody);
+      if (currentNoteId && scratchBody.trim()) {
+        await saveNote(currentNoteId, scratchBody);
+        await refreshNotes();
+      }
     } catch (error) {
       onToast?.(String(error));
     } finally {
@@ -117,6 +198,7 @@
   onMount(() => {
     void refresh();
     void loadScratchpad();
+    void refreshNotes();
     const unlisten = onSnippetsChanged(() => void refresh());
     return () => {
       if (scratchTimer) {
@@ -227,16 +309,56 @@
         {#if scratchLoading}
           <p class="snip-empty">Cargando bloc…</p>
         {:else}
+          <div class="snip-note-bar">
+            <span class="snip-note-title">
+              {currentNoteId ? currentTitle : "Nota nueva"}
+            </span>
+            <button
+              type="button"
+              class="rb-btn rb-btn-ghost snip-note-new"
+              onclick={() => void startNewNote()}
+              disabled={!scratchBody.trim()}
+            >
+              Guardar y empezar otra
+            </button>
+          </div>
           <textarea
             class="snip-scratch-area rb-field"
             bind:value={scratchBody}
             oninput={scheduleScratchSave}
             placeholder="Escribí lo que sea. Se guarda solo, acá en tu equipo."
-            aria-label="Bloc de notas"
+            aria-label="Nota"
           ></textarea>
           <p class="snip-scratch-meta">
             {scratchSaving ? "Guardando…" : "Guardado localmente"}
           </p>
+
+          <!-- La lista vive debajo del área de escritura, no en otra pestaña:
+               consultar una nota vieja mientras escribís es el caso normal. -->
+          {#if notes.length > 0}
+            <ul class="snip-notes" role="list">
+              {#each notes as note (note.id)}
+                <li class:is-current={note.id === currentNoteId}>
+                  <button
+                    type="button"
+                    class="snip-note"
+                    onclick={() => void openNote(note)}
+                  >
+                    <span class="snip-note-name">{note.title}</span>
+                    <span class="snip-note-date">{noteDate(note.updatedAtMs)}</span>
+                  </button>
+                  <button
+                    type="button"
+                    class="snip-icon-btn is-danger"
+                    aria-label="Eliminar {note.title}"
+                    onclick={() => void removeNote(note)}
+                  >
+                    <Trash size={14} />
+                  </button>
+                </li>
+              {/each}
+            </ul>
+          {/if}
         {/if}
       </div>
     {/if}
@@ -327,6 +449,93 @@
   }
 
   .snip-scratch-meta,
+  .snip-note-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+  }
+
+  .snip-note-title {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--rb-muted);
+    font-size: 0.75rem;
+    font-weight: 600;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  .snip-note-new {
+    flex-shrink: 0;
+    font-size: 0.75rem;
+  }
+
+  .snip-notes {
+    display: flex;
+    max-height: 12rem;
+    flex-direction: column;
+    gap: 0.3rem;
+    margin: 0.25rem 0 0;
+    padding: 0;
+    list-style: none;
+    overflow: auto;
+  }
+
+  .snip-notes li {
+    display: flex;
+    align-items: stretch;
+    gap: 0.35rem;
+  }
+
+  .snip-note {
+    display: flex;
+    min-width: 0;
+    flex: 1;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.5rem;
+    border: 0;
+    border-radius: 0.5rem;
+    padding: 0.4rem 0.55rem;
+    background: var(--rb-bg0);
+    color: var(--rb-text);
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .snip-notes li.is-current .snip-note {
+    background: var(--rb-accent-soft);
+    color: var(--rb-accent);
+  }
+
+  .snip-note-name {
+    min-width: 0;
+    overflow: hidden;
+    font-size: 0.8125rem;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  .snip-note-date {
+    flex-shrink: 0;
+    color: var(--rb-muted);
+    font-size: 0.6875rem;
+  }
+
+  .snip-icon-btn {
+    border: 0;
+    border-radius: 0.4rem;
+    padding: 0.25rem 0.35rem;
+    background: transparent;
+    color: var(--rb-muted);
+    cursor: pointer;
+  }
+
+  .snip-icon-btn.is-danger:hover {
+    color: var(--rb-record);
+  }
+
   .snip-empty {
     margin: 0;
     color: var(--rb-muted);
