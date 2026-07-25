@@ -2,7 +2,9 @@
 
 export type UiTheme = "light" | "dark" | "system";
 
-const STORAGE_KEY = "atic-theme";
+/** Clave compartida entre ventanas: el evento `storage` sincroniza las flotantes. */
+export const THEME_STORAGE_KEY = "atic-theme";
+const STORAGE_KEY = THEME_STORAGE_KEY;
 
 export function normalizeTheme(value: string | null | undefined): UiTheme {
   if (value === "light" || value === "dark" || value === "system") return value;

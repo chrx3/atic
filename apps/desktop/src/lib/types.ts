@@ -50,6 +50,8 @@ export interface AppConfig {
   dictation_shortcut: string;
   /** Atajo global para traer la pill al cursor. */
   summon_pill_shortcut: string;
+  /** Atajo: abrir la rueda de herramientas en la pill. */
+  pill_radial_shortcut: string;
   /** Atajo: traer pill + abrir historial de clipboard. */
   clipboard_shortcut: string;
   /** Atajo: traer pill + abrir panel de fragmentos. */

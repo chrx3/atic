@@ -149,14 +149,12 @@
     color: var(--rb-record);
   }
 
-  @media (max-width: 760px) {
+  @container atic-main (max-width: 36.999rem) {
     .rb-recording-list {
       max-height: min(38dvh, 21rem);
       border-radius: var(--rb-radius);
     }
-  }
 
-  @media (max-width: 36rem) {
     .rb-recording-row {
       min-height: 4.5rem;
       padding: 0.75rem;

@@ -165,7 +165,7 @@
     flex: 1;
     align-items: center;
     gap: 0.35rem;
-    border: 1px solid var(--rb-border);
+    border: 0;
     border-radius: 0.45rem;
     padding: 0.3rem 0.45rem;
     background: var(--rb-bg0);
@@ -183,7 +183,7 @@
 
   .snip-new {
     flex-shrink: 0;
-    border: 1px solid var(--rb-border);
+    border: 0;
     border-radius: 0.45rem;
     padding: 0.35rem 0.65rem;
     background: var(--rb-accent-soft);
@@ -218,7 +218,7 @@
     flex-direction: column;
     align-items: flex-start;
     gap: 0.15rem;
-    border: 1px solid var(--rb-border);
+    border: 0;
     border-radius: 0.5rem;
     padding: 0.45rem 0.55rem;
     background: var(--rb-bg0);
@@ -262,7 +262,7 @@
   }
 
   .snip-icon-btn {
-    border: 1px solid var(--rb-border);
+    border: 0;
     border-radius: 0.4rem;
     padding: 0.25rem 0.35rem;
     background: transparent;
@@ -288,5 +288,24 @@
 
   .compact .snip-item {
     padding: 0.4rem 0.5rem;
+  }
+
+  @container atic-main (max-width: 36.999rem) {
+    .snip-toolbar {
+      flex-wrap: wrap;
+    }
+
+    .snip-new {
+      min-height: 2.25rem;
+    }
+
+    .snip-search {
+      min-height: 2.25rem;
+    }
+
+    .snip-icon-btn {
+      min-height: 2rem;
+      min-width: 2rem;
+    }
   }
 </style>

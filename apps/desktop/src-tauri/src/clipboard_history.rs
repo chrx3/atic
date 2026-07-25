@@ -16,7 +16,7 @@ use arboard::{Clipboard, ImageData};
 use image::ImageEncoder;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
-use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
+use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut};
 
 use crate::state::AppState;
 
@@ -571,22 +571,35 @@ pub(crate) fn paste_text(app: &AppHandle, text: &str) -> Result<(), String> {
     paste_text_hotkey_for(app, target)
 }
 
-/// True si hay una ventana externa donde pegar (no Atic).
-pub(crate) fn has_external_paste_target() -> bool {
+/// True si hay un HWND externo guardado (aunque Atic tenga el foco ahora).
+pub(crate) fn has_saved_external_paste_target() -> bool {
     #[cfg(windows)]
     {
-        resolve_paste_target_hwnd().is_some()
+        saved_paste_target_hwnd().is_some_and(|h| !is_own_app_hwnd(h))
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}
+
+/// True solo si la ventana en primer plano es externa (lista para SendInput).
+///
+/// Usar en el poller de la cola: un HWND guardado no implica que Ctrl+V
+/// llegue ahí mientras Atic sigue en primer plano.
+pub(crate) fn has_live_external_foreground() -> bool {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, IsWindow};
+        unsafe {
+            let fg = GetForegroundWindow();
+            !fg.is_null() && IsWindow(fg) != 0 && !is_own_app_hwnd(fg)
+        }
     }
     #[cfg(not(windows))]
     {
         true
     }
-}
-
-/// Pega si hay destino externo; si no, encola en `paste_queue`.
-pub(crate) fn paste_text_or_enqueue(app: &AppHandle, text: &str) -> Result<(), String> {
-    crate::paste_queue::try_paste_or_enqueue(app, text)?;
-    Ok(())
 }
 
 /// Ítems del historial para búsqueda u otros agregadores.
@@ -696,7 +709,18 @@ fn resolve_paste_target_hwnd() -> Option<windows_sys::Win32::Foundation::HWND> {
 
 #[cfg(windows)]
 fn is_own_app_hwnd(hwnd: windows_sys::Win32::Foundation::HWND) -> bool {
-    process_exe_name(hwnd).is_some_and(|exe| exe == "atic-desktop.exe")
+    use windows_sys::Win32::System::Threading::GetCurrentProcessId;
+    use windows_sys::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId;
+
+    // PID del proceso actual: cubre atic-desktop.exe (dev) y Atic.exe (release).
+    unsafe {
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(hwnd, &mut pid);
+        if pid != 0 && pid == GetCurrentProcessId() {
+            return true;
+        }
+    }
+    process_exe_name(hwnd).is_some_and(|exe| matches!(exe.as_str(), "atic-desktop.exe" | "atic.exe"))
 }
 
 /// True solo si el destino necesita Ctrl+Shift+V para pegar.
@@ -826,6 +850,7 @@ fn reregister_shortcuts_from_config(app: &AppHandle) {
         &cfg.global_shortcut,
         &cfg.dictation_shortcut,
         &cfg.summon_pill_shortcut,
+        &cfg.pill_radial_shortcut,
         &cfg.clipboard_shortcut,
         &cfg.snippets_shortcut,
         &cfg.screenshot_shortcut,
@@ -903,30 +928,48 @@ pub fn summon_clipboard_panel(app: &AppHandle) {
     let _ = app.emit("pill-clipboard-toggle", ());
 }
 
-/// Compacta la pill y la anima hasta el cursor (antes de expandir el historial).
+/// Prepara la pill para abrir un panel (historial o fragmentos).
 ///
-/// Guarda la posición actual una sola vez por sesión de clipboard para
-/// restaurarla al cerrar o pegar. Bloquea hasta terminar el fly-to para que
-/// el frontend expanda el panel recién al llegar.
+/// Guarda la posición actual —el «hogar»— una sola vez por sesión, para
+/// restaurarla al cerrar o pegar. Con `fly`, además la lleva al cursor (camino
+/// del atajo global); sin él, el panel se expande donde la pill ya está.
+///
+/// Ya no registra Escape como atajo global. Ese hook secuestraba la tecla en
+/// TODAS las apps del sistema (`RegisterHotKey` la consume) y era redundante:
+/// si la pill tiene el foco, el handler local la cierra; y si lo pierde, el
+/// cierre por blur ya se encarga.
 #[tauri::command]
-pub fn prepare_clipboard_pill(app: AppHandle) -> Result<(), String> {
+pub fn prepare_clipboard_pill(app: AppHandle, fly: bool) -> Result<(), String> {
     if let Some(pill) = app.get_webview_window("pill") {
-        let _ = pill.set_size(tauri::LogicalSize::new(112.0, 48.0));
         stash_pre_clipboard_position(&app, &pill);
     }
-    crate::state::animate_pill_to_cursor(&app)
-        .ok_or_else(|| "No se pudo colocar la pill en el cursor".to_string())?;
-    register_clipboard_escape_close(&app);
+    if fly {
+        crate::state::animate_pill_to_cursor(&app)
+            .ok_or_else(|| "No se pudo colocar la pill en el cursor".to_string())?;
+    }
     Ok(())
 }
 
-/// Restaura la pill a la posición previa al summon del clipboard (si existe).
+/// Guarda el hogar y coloca la pill en el cursor **sin animar**.
 ///
-/// Compacta y anima (fly-to) de vuelta al home. Devuelve `true` si hubo
-/// posición guardada y se aplicó.
+/// Para la rueda: el vuelo de 190 ms competía con el reencuadre a 232 px y el
+/// destino quedaba calculado con el tamaño viejo, así que la rueda aparecía
+/// descentrada respecto del puntero. Acá el frontend ya redimensionó, así que
+/// el centrado usa el tamaño final y es exacto.
+#[tauri::command]
+pub fn snap_pill_to_cursor(app: AppHandle) -> Result<(), String> {
+    if let Some(pill) = app.get_webview_window("pill") {
+        stash_pre_clipboard_position(&app, &pill);
+    }
+    crate::state::set_pill_visible(&app, true);
+    crate::floating::place(&app, "pill", crate::floating::Anchor::Cursor)
+        .ok_or_else(|| "No se pudo colocar la pill en el cursor".to_string())?;
+    Ok(())
+}
+
+/// Devuelve la pill al hogar guardado. `true` si había uno y se aplicó.
 #[tauri::command]
 pub fn restore_pill_position(app: AppHandle) -> Result<bool, String> {
-    unregister_clipboard_escape_close(&app);
     let Some(state) = app.try_state::<AppState>() else {
         return Ok(false);
     };
@@ -936,12 +979,7 @@ pub fn restore_pill_position(app: AppHandle) -> Result<bool, String> {
 
     let target_x = x.round() as i32;
     let target_y = y.round() as i32;
-
-    if let Some(pill) = app.get_webview_window("pill") {
-        // Compacto primero: la home se guardó con tamaño idle.
-        let _ = pill.set_size(tauri::LogicalSize::new(112.0, 48.0));
-        crate::state::animate_pill_to(&app, target_x, target_y);
-    }
+    crate::state::animate_pill_to(&app, target_x, target_y);
 
     {
         let mut cfg = state.config.lock().unwrap();
@@ -953,34 +991,10 @@ pub fn restore_pill_position(app: AppHandle) -> Result<bool, String> {
     Ok(true)
 }
 
-/// Esc global mientras el panel está abierto (la pill a menudo no tiene foco).
-pub fn register_clipboard_escape_close(app: &AppHandle) {
-    let Ok(sc) = "Escape".parse::<Shortcut>() else {
-        return;
-    };
-    let gs = app.global_shortcut();
-    let _ = gs.unregister(sc);
-    let handle = app.clone();
-    if let Err(err) = gs.on_shortcut(sc, move |_app, _sc, event| {
-        if !matches!(event.state(), ShortcutState::Pressed) {
-            return;
-        }
-        let Some(state) = handle.try_state::<AppState>() else {
-            return;
-        };
-        if state.pre_clipboard_position.lock().unwrap().is_none() {
-            return;
-        }
-        let _ = handle.emit("pill-clipboard-close", ());
-        let _ = handle.emit("pill-snippets-close", ());
-    }) {
-        tracing::debug!(%err, "no se pudo registrar Escape para cerrar clipboard");
-    }
-}
-
-fn unregister_clipboard_escape_close(app: &AppHandle) {
-    if let Ok(sc) = "Escape".parse::<Shortcut>() {
-        let _ = app.global_shortcut().unregister(sc);
+/// Suelta el hogar temporal sin mover la pill (la trajo un summon permanente).
+pub(crate) fn unregister_clipboard_escape_close(app: &AppHandle) {
+    if let Some(state) = app.try_state::<AppState>() {
+        *state.pre_clipboard_position.lock().unwrap() = None;
     }
 }
 

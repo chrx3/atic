@@ -2,7 +2,7 @@
   import { onMount, untrack } from "svelte";
   import type { AppConfig, ModelStatus } from "$lib/types";
   import ModalShell from "$lib/ModalShell.svelte";
-  import { formatMegabytes } from "$lib/format";
+  import { formatMegabytes, formatShortcut } from "$lib/format";
   import {
     downloadModelAndWait,
     listModels,
@@ -163,6 +163,12 @@
             Puedes eliminar cualquier grabación cuando quieras.
           </li>
         </ul>
+        <p class="rb-hint">
+          Atic vive en una pastilla flotante. Mantén
+          <strong>{formatShortcut(config.pill_radial_shortcut)}</strong>
+          para abrir la rueda de herramientas, elige con la rueda del ratón y
+          suelta para activar.
+        </p>
       {:else if step === 1}
         <p class="font-medium">Consentimiento</p>
         <p class="leading-relaxed" style="color: var(--rb-muted)">
@@ -197,6 +203,11 @@
           <input type="checkbox" bind:checked={draft.autostart} />
           Iniciar con el sistema (bandeja)
         </label>
+        <p class="rb-hint">
+          Atic vive en la bandeja del sistema: cerrar la ventana con la X la
+          oculta, no cierra la app ni detiene una grabación en curso. Para
+          salir del todo, usa «Salir» en el menú de la bandeja.
+        </p>
       {:else}
         <p class="font-medium">Modelos locales</p>
         <p class="leading-relaxed" style="color: var(--rb-muted)">

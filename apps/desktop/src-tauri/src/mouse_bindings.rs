@@ -12,9 +12,10 @@
 //! a `WH_MOUSE_LL`, que bloqueaba todo el input del SO.
 
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
-use std::sync::mpsc::{self, SyncSender};
+use std::sync::mpsc::{self, RecvTimeoutError, SyncSender, TrySendError};
 use std::sync::{Mutex, OnceLock};
 use std::thread;
+use std::time::Duration;
 
 use tauri::{AppHandle, Manager};
 
@@ -58,6 +59,8 @@ struct HookEvent {
 static BIND_X1: AtomicU8 = AtomicU8::new(ACT_NONE);
 static BIND_X2: AtomicU8 = AtomicU8::new(ACT_NONE);
 static RAW_STARTED: AtomicBool = AtomicBool::new(false);
+/// UP de dictado perdido por canal lleno (evita PTT pegado).
+static PENDING_DICTATION_UP: AtomicBool = AtomicBool::new(false);
 static EVENT_TX: OnceLock<SyncSender<HookEvent>> = OnceLock::new();
 static APP_HANDLE: OnceLock<Mutex<Option<AppHandle>>> = OnceLock::new();
 
@@ -152,7 +155,7 @@ fn ensure_rawinput_and_worker() {
         return;
     }
 
-    let (tx, rx) = mpsc::sync_channel::<HookEvent>(64);
+    let (tx, rx) = mpsc::sync_channel::<HookEvent>(256);
     if EVENT_TX.set(tx).is_err() {
         RAW_STARTED.store(false, Ordering::SeqCst);
         tracing::error!("EVENT_TX de mouse ya inicializado");
@@ -162,12 +165,23 @@ fn ensure_rawinput_and_worker() {
     if let Err(err) = thread::Builder::new()
         .name("atic-mouse-worker".into())
         .spawn(move || {
-            while let Ok(ev) = rx.recv() {
+            loop {
+                let ev = match rx.recv_timeout(Duration::from_millis(40)) {
+                    Ok(ev) => Some(ev),
+                    Err(RecvTimeoutError::Timeout) => None,
+                    Err(RecvTimeoutError::Disconnected) => break,
+                };
                 let app = app_slot().lock().ok().and_then(|g| g.clone());
                 let Some(app) = app else {
                     continue;
                 };
-                dispatch(&app, ev.action, ev.edge);
+                if let Some(ev) = ev {
+                    dispatch(&app, ev.action, ev.edge);
+                }
+                // Recuperar UP de dictado si el wndproc lo marcó con canal lleno.
+                if PENDING_DICTATION_UP.swap(false, Ordering::AcqRel) {
+                    dispatch(&app, MouseAction::Dictation, Edge::Up);
+                }
             }
         })
     {
@@ -182,6 +196,29 @@ fn ensure_rawinput_and_worker() {
     if let Err(err) = result {
         RAW_STARTED.store(false, Ordering::SeqCst);
         tracing::error!(%err, "no se pudo arrancar el hilo Raw Input de mouse");
+    }
+}
+
+/// Encola evento desde el wndproc. Si el canal está lleno, no pierde UP de dictado.
+#[cfg(windows)]
+fn enqueue_hook_event(ev: HookEvent) {
+    let Some(tx) = EVENT_TX.get() else {
+        return;
+    };
+    match tx.try_send(ev) {
+        Ok(()) => {}
+        Err(TrySendError::Full(ev)) => {
+            if matches!((ev.action, ev.edge), (MouseAction::Dictation, Edge::Up)) {
+                PENDING_DICTATION_UP.store(true, Ordering::Release);
+            } else {
+                tracing::trace!(
+                    action = ?ev.action,
+                    edge = ?ev.edge,
+                    "evento mouse descartado (canal lleno)"
+                );
+            }
+        }
+        Err(TrySendError::Disconnected(_)) => {}
     }
 }
 
@@ -373,9 +410,7 @@ unsafe extern "system" fn rawinput_wnd_proc(
                     SideButton::X2 => BIND_X2.load(Ordering::Acquire),
                 };
                 if let Some(action) = u8_to_action(bound) {
-                    if let Some(tx) = EVENT_TX.get() {
-                        let _ = tx.try_send(HookEvent { action, edge });
-                    }
+                    enqueue_hook_event(HookEvent { action, edge });
                 }
             }
         }

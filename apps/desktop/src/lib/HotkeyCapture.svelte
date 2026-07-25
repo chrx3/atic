@@ -44,8 +44,11 @@
   function keyEventToShortcut(e: KeyboardEvent): string | null {
     if (["Control", "Shift", "Alt", "Meta", "OS"].includes(e.key)) return null;
 
-    // Win la reserva el SO (Inicio, Win+D, etc.). No registrar atajos con Super.
-    if (e.metaKey) {
+    // En Windows, Win (metaKey) la reserva el SO. En macOS metaKey es Command.
+    const isWindows =
+      typeof navigator !== "undefined" &&
+      (/Win/i.test(navigator.platform) || /Windows/i.test(navigator.userAgent));
+    if (isWindows && e.metaKey) {
       showReject(
         "Win la usa Windows; prueba Ctrl/Alt/Shift o un botón lateral.",
       );
@@ -53,7 +56,7 @@
     }
 
     const out: string[] = [];
-    if (e.ctrlKey) out.push("CmdOrCtrl");
+    if (e.ctrlKey || e.metaKey) out.push("CmdOrCtrl");
     if (e.altKey) out.push("Alt");
     if (e.shiftKey) out.push("Shift");
 

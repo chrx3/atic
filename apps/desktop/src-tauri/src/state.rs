@@ -39,6 +39,9 @@ pub struct AppState {
     /// Posición de la pill antes de invocar el clipboard en el cursor.
     /// Se restaura al cerrar/pegar; no se persiste en disco.
     pub pre_clipboard_position: Mutex<Option<(f64, f64)>>,
+    /// Atajos que el SO rechazó registrar (ya los tiene otra app). Un conflicto
+    /// es silencioso para el usuario si solo se loguea: esto lo hace visible.
+    pub shortcut_failures: Mutex<Vec<String>>,
 }
 
 /// Grabación actualmente en curso.
@@ -387,48 +390,12 @@ pub fn set_pill_visible(app: &AppHandle, visible: bool) {
             let _ = window.set_always_on_top(true);
             let _ = window.show();
         } else {
+            // Esconder la pill con un panel abierto dejaba el Escape global
+            // registrado sin nadie que lo cerrara.
+            crate::clipboard_history::unregister_clipboard_escape_close(app);
+            *state.pre_clipboard_position.lock().unwrap() = None;
             let _ = window.hide();
         }
-    }
-}
-
-/// Encaja `(x, y)` dentro del área útil de algún monitor para que la pill
-/// de tamaño `(w, h)` no quede fuera de pantalla (p. ej. monitor desconectado).
-pub fn clamp_pill_position(x: i32, y: i32, w: i32, h: i32) -> (i32, i32) {
-    #[cfg(windows)]
-    {
-        let monitors = atic_capture::monitors::enumerate();
-        if monitors.is_empty() {
-            return (x, y);
-        }
-        let margin = 8;
-        let ww = w.max(1);
-        let hh = h.max(1);
-
-        // Si el centro de la pill cae en un work area, solo clampear a ese.
-        let cx = x + ww / 2;
-        let cy = y + hh / 2;
-        let target = monitors
-            .iter()
-            .find(|m| m.work_area.contains(cx, cy))
-            .or_else(|| monitors.iter().find(|m| m.is_primary))
-            .or_else(|| monitors.first());
-
-        let Some(m) = target else {
-            return (x, y);
-        };
-        let work = m.work_area;
-        let max_x = (work.right() - ww - margin).max(work.x + margin);
-        let max_y = (work.bottom() - hh - margin).max(work.y + margin);
-        (
-            x.clamp(work.x + margin, max_x),
-            y.clamp(work.y + margin, max_y),
-        )
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = (w, h);
-        (x, y)
     }
 }
 
@@ -441,131 +408,61 @@ pub fn toggle_pill(app: &AppHandle) {
     set_pill_visible(app, !visible);
 }
 
-/// Anima la pill desde su posición actual hasta `(target_x, target_y)`.
+/// Persiste la posición de la pill como su nuevo hogar.
+fn remember_pill_home(app: &AppHandle, x: i32, y: i32) {
+    let Some(state) = app.try_state::<AppState>() else {
+        return;
+    };
+    let mut cfg = state.config.lock().unwrap();
+    cfg.pill_position = Some((f64::from(x), f64::from(y)));
+    let snapshot = cfg.clone();
+    drop(cfg);
+    let _ = snapshot.save(&state.dirs.config_path());
+}
+
+/// Lleva la pill al cursor sin persistir el hogar (camino del clipboard).
 ///
-/// Ease-out cúbico ~340 ms / 28 frames (misma curva que Ctrl+Shift+P).
-/// Bloqueante: llamar desde un hilo dedicado si no se debe congelar el caller.
+/// Devuelve el destino ya clampeado. El vuelo corre aparte: este comando no
+/// debe quedarse bloqueado esperándolo.
+pub fn animate_pill_to_cursor(app: &AppHandle) -> Option<(i32, i32)> {
+    set_pill_visible(app, true);
+    crate::floating::glide(app, "pill", crate::floating::Anchor::Cursor)
+}
+
+/// Lleva la pill a un punto exacto (volver al hogar tras cerrar un panel).
 pub fn animate_pill_to(app: &AppHandle, target_x: i32, target_y: i32) {
-    let Some(pill) = app.get_webview_window("pill") else {
-        return;
-    };
-    let (w, h) = pill
-        .outer_size()
-        .ok()
-        .map(|s| (s.width as i32, s.height as i32))
-        .unwrap_or((112, 48));
-    let (target_x, target_y) = clamp_pill_position(target_x, target_y, w, h);
-    let (start_x, start_y) = pill
-        .outer_position()
-        .ok()
-        .map(|p| (p.x, p.y))
-        .unwrap_or((target_x, target_y));
-
-    if start_x == target_x && start_y == target_y {
-        return;
-    }
-
-    const FRAMES: u32 = 20;
-    const TOTAL_MS: u64 = 190;
-    let step = std::time::Duration::from_millis(TOTAL_MS / u64::from(FRAMES));
-    for i in 1..=FRAMES {
-        let t = f64::from(i) / f64::from(FRAMES);
-        // Ease-out cúbico: arranca rápido y frena cerca del destino.
-        let e = 1.0 - (1.0 - t).powi(3);
-        let x = start_x as f64 + (target_x - start_x) as f64 * e;
-        let y = start_y as f64 + (target_y - start_y) as f64 * e;
-        if let Some(win) = app.get_webview_window("pill") {
-            let _ = win.set_position(tauri::PhysicalPosition::new(
-                x.round() as i32,
-                y.round() as i32,
-            ));
-        }
-        std::thread::sleep(step);
-    }
+    crate::floating::glide(
+        app,
+        "pill",
+        crate::floating::Anchor::Point(target_x, target_y),
+    );
 }
 
-/// Centra la pill en el cursor con animación fly-to y la muestra.
-///
-/// No persiste la posición: el clipboard la trata como temporal y restaura
-/// [`AppState::pre_clipboard_position`] al cerrar. Bloqueante hasta terminar
-/// el vuelo. Devuelve el rect físico usado para el anclaje.
-pub fn animate_pill_to_cursor(app: &AppHandle) -> Option<(i32, i32, i32, i32)> {
-    let pill = app.get_webview_window("pill")?;
-    let (cx, cy) = cursor_screen_position()?;
-    set_pill_visible(app, true);
-    let (w, h) = pill
-        .outer_size()
-        .ok()
-        .map(|s| (s.width as i32, s.height as i32))
-        .unwrap_or((112, 48));
-    let target_x = cx - w / 2;
-    let target_y = cy - h / 2;
-    animate_pill_to(app, target_x, target_y);
-    Some((target_x, target_y, w, h))
-}
-
-/// Muestra la pill y la anima hacia la posición actual del cursor.
+/// Muestra la pill y la trae al cursor. Traslado permanente: persiste el hogar.
 pub fn summon_pill_to_cursor(app: &AppHandle) {
-    let Some(pill) = app.get_webview_window("pill") else {
+    if app.get_webview_window("pill").is_none() {
         return;
-    };
-    let Some((cx, cy)) = cursor_screen_position() else {
-        tracing::warn!("no se pudo leer la posición del cursor");
-        // Al menos muestra la pill en su sitio.
-        set_pill_visible(app, true);
-        return;
-    };
-
+    }
     set_pill_visible(app, true);
 
-    // Traer pill es un traslado permanente: cancela cualquier home del clipboard.
+    // Traer pill cancela cualquier hogar temporal del clipboard. Soltar el
+    // Escape global es parte de cancelarlo: si el panel estaba abierto, nadie
+    // más lo desregistraría y la tecla quedaría secuestrada en todo el SO.
+    crate::clipboard_history::unregister_clipboard_escape_close(app);
     if let Some(state) = app.try_state::<AppState>() {
         *state.pre_clipboard_position.lock().unwrap() = None;
     }
 
-    // Cierra historial / basura de UI y fuerza tamaño compacto antes de animar
-    // (si no, un panel a medias o el diálogo Imprimir del WebView queda visible).
+    // Cierra el panel y devuelve la pill a su forma compacta ANTES de medir:
+    // el ancla depende del tamaño, y un panel abierto la centraría mal.
     let _ = app.emit("pill-reset", ());
-    let _ = pill.set_size(tauri::LogicalSize::new(112.0, 48.0));
 
-    let (w, h) = pill
-        .outer_size()
-        .ok()
-        .map(|s| (s.width as i32, s.height as i32))
-        .unwrap_or((112, 48));
-    let target_x = cx - w / 2;
-    let target_y = cy - h / 2;
-
-    let handle = app.clone();
-    std::thread::spawn(move || {
-        animate_pill_to(&handle, target_x, target_y);
-        if let Some(state) = handle.try_state::<AppState>() {
-            let mut cfg = state.config.lock().unwrap();
-            cfg.pill_position = Some((target_x as f64, target_y as f64));
-            let snapshot = cfg.clone();
-            drop(cfg);
-            let _ = snapshot.save(&state.dirs.config_path());
-        }
-    });
-}
-
-#[cfg(windows)]
-fn cursor_screen_position() -> Option<(i32, i32)> {
-    use windows_sys::Win32::Foundation::POINT;
-    use windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos;
-    let mut pt = POINT { x: 0, y: 0 };
-    // SAFETY: POINT es un struct POD; GetCursorPos escribe coordenadas de pantalla.
-    let ok = unsafe { GetCursorPos(&mut pt) };
-    if ok != 0 {
-        Some((pt.x, pt.y))
+    if let Some((x, y)) = crate::floating::glide(app, "pill", crate::floating::Anchor::Cursor)
+    {
+        remember_pill_home(app, x, y);
     } else {
-        None
+        tracing::warn!("no se pudo colocar la pill en el cursor");
     }
-}
-
-#[cfg(not(windows))]
-fn cursor_screen_position() -> Option<(i32, i32)> {
-    None
 }
 
 /// Devuelve el modelo Whisper en memoria, cargándolo si hace falta.

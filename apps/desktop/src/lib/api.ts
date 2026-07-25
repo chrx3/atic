@@ -69,7 +69,17 @@ export const activateCapture = (path: string) =>
   invoke<void>("activate_capture", { path });
 export const cleanupCapturesNow = () =>
   invoke<number>("cleanup_captures_now");
-export const openCapturesDir = () => invoke<void>("open_captures_dir");
+export type DataDirKind =
+  | "recordings"
+  | "clipboard"
+  | "snippets"
+  | "captures"
+  | "data";
+
+export const openDataDir = (kind: DataDirKind) =>
+  invoke<void>("open_data_dir", { kind });
+/** @deprecated Prefer `openDataDir("captures")`. */
+export const openCapturesDir = () => openDataDir("captures");
 
 // --- Historial de clipboard ---
 export const listClipboardHistory = () =>
@@ -80,10 +90,12 @@ export const pinClipboardItem = (id: string, pinned: boolean) =>
   invoke<void>("pin_clipboard_item", { id, pinned });
 export const deleteClipboardItem = (id: string) =>
   invoke<void>("delete_clipboard_item", { id });
-export const clearClipboardHistory = () =>
-  invoke<void>("clear_clipboard_history");
-export const prepareClipboardPill = () =>
-  invoke<void>("prepare_clipboard_pill");
+/** `fly`: acercar la pill al cursor (atajo global) o expandir donde está. */
+export const prepareClipboardPill = (fly: boolean) =>
+  invoke<void>("prepare_clipboard_pill", { fly });
+
+/** Guarda el hogar y centra la pill en el cursor sin animar (rueda). */
+export const snapPillToCursor = () => invoke<void>("snap_pill_to_cursor");
 export const restorePillPosition = () =>
   invoke<boolean>("restore_pill_position");
 
@@ -105,8 +117,8 @@ export const deleteSnippet = (id: string) =>
   invoke<void>("delete_snippet", { id });
 export const pasteSnippet = (id: string) =>
   invoke<void>("paste_snippet", { id });
-export const prepareSnippetsPill = () =>
-  invoke<void>("prepare_snippets_pill");
+export const prepareSnippetsPill = (fly: boolean) =>
+  invoke<void>("prepare_snippets_pill", { fly });
 export const getScratchpad = () => invoke<Scratchpad>("get_scratchpad");
 export const setScratchpad = (body: string) =>
   invoke<Scratchpad>("set_scratchpad", { body });
@@ -123,6 +135,24 @@ export const onPillSnippetsClose = (cb: () => void): Promise<UnlistenFn> =>
 /** Traer pill / reset: cierra clipboard y vuelve a estado compacto. */
 export const onPillReset = (cb: () => void): Promise<UnlistenFn> =>
   listen("pill-reset", () => cb());
+
+/** Rueda de la pill: la tecla se mantiene presionada (abre). */
+export const onPillRadialPress = (cb: () => void): Promise<UnlistenFn> =>
+  listen("pill-radial-press", () => cb());
+
+/** Rueda de la pill: la tecla se soltó (activa la selección y cierra). */
+export const onPillRadialRelease = (cb: () => void): Promise<UnlistenFn> =>
+  listen("pill-radial-release", () => cb());
+
+// --- Atajos globales rechazados por el SO ---
+/** Nombres de los atajos que otra app ya tenía tomados. */
+export const failedShortcuts = () => invoke<string[]>("failed_shortcuts");
+
+/** Se emite en cada registro, también vacío (permite limpiar el aviso). */
+export const onShortcutsFailed = (
+  cb: (names: string[]) => void,
+): Promise<UnlistenFn> =>
+  listen<string[]>("shortcuts-failed", (e) => cb(e.payload));
 
 // --- Cola de pegado ---
 export const listPasteQueue = () =>

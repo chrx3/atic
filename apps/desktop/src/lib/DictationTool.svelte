@@ -1,5 +1,6 @@
 <script lang="ts">
   import HotkeyCapture from "$lib/HotkeyCapture.svelte";
+  import ToolPageShell from "$lib/ToolPageShell.svelte";
   import type { DictationPhase } from "$lib/types";
   import { toolById } from "$lib/tools";
 
@@ -54,16 +55,64 @@
   );
 </script>
 
-<section class="dict-tool" aria-label="Dictado">
-  <header class="dict-head">
-    <p class="dict-kicker">Herramienta</p>
-    <h2>{tool.label}</h2>
-    <p class="dict-blurb">{tool.blurb}</p>
-  </header>
+<ToolPageShell {tool} dataDir="data">
+  {#snippet actions()}
+    <button type="button" class="rb-btn rb-btn-soft" onclick={onOpenSettings}>
+      Ajustes de dictado
+    </button>
+  {/snippet}
+
+  {#snippet prefs()}
+    <div class="atic-shortcut-row">
+      <div>
+        <p class="atic-shortcut-label">Atajo de dictado</p>
+        <p class="atic-shortcut-hint">
+          {#if mode === "push_to_talk"}
+            Mantén para hablar.
+          {:else}
+            Pulsa para iniciar o parar.
+          {/if}
+        </p>
+      </div>
+      <HotkeyCapture
+        value={shortcut || "CmdOrCtrl+Shift+D"}
+        defaultValue="CmdOrCtrl+Shift+D"
+        ariaLabel="Cambiar atajo de dictado"
+        onChange={onShortcutChange}
+      />
+    </div>
+
+    <div class="atic-shortcut-row">
+      <label class="atic-shortcut-label" for="dict-mode">Modo</label>
+      <select
+        id="dict-mode"
+        class="rb-field dict-mode-select"
+        value={mode}
+        onchange={(e) => onModeChange(e.currentTarget.value)}
+      >
+        <option value="push_to_talk">Push-to-talk (mantener)</option>
+        <option value="toggle">Toggle (pulsar para iniciar/parar)</option>
+      </select>
+    </div>
+
+    <div class="atic-shortcut-row">
+      <p class="atic-shortcut-label">Traer pill al cursor</p>
+      <HotkeyCapture
+        value={pillShortcut || "CmdOrCtrl+Shift+P"}
+        defaultValue="CmdOrCtrl+Shift+P"
+        ariaLabel="Cambiar atajo para traer la pill al cursor"
+        onChange={onPillShortcutChange}
+      />
+    </div>
+  {/snippet}
 
   <div class="dict-card" class:is-live={live}>
     <div class="dict-status">
-      <span class="dict-dot" class:on={phase === "listening"} aria-hidden="true"></span>
+      <span
+        class="dict-dot"
+        class:on={phase === "listening"}
+        aria-hidden="true"
+      ></span>
       <div>
         <strong>{statusLabel}</strong>
         <p>Habla y pega texto en la app enfocada.</p>
@@ -81,88 +130,16 @@
     </button>
   </div>
 
-  <div class="dict-prefs">
-    <div class="dict-pref">
-      <p class="dict-pref-label">Atajo de dictado</p>
-      <HotkeyCapture
-        value={shortcut || "CmdOrCtrl+Shift+D"}
-        defaultValue="CmdOrCtrl+Shift+D"
-        ariaLabel="Cambiar atajo de dictado"
-        onChange={onShortcutChange}
-      />
-      <p class="dict-pref-hint">
-        {#if mode === "push_to_talk"}
-          Mantén el atajo para hablar; al soltar, transcribe y pega.
-        {:else}
-          Pulsa para empezar, pulsa otra vez para transcribir y pegar.
-        {/if}
-      </p>
-    </div>
-
-    <label class="dict-pref">
-      <span class="dict-pref-label">Modo</span>
-      <select
-        class="rb-field"
-        value={mode}
-        onchange={(e) => onModeChange(e.currentTarget.value)}
-      >
-        <option value="push_to_talk">Push-to-talk (mantener)</option>
-        <option value="toggle">Toggle (pulsar para iniciar/parar)</option>
-      </select>
-    </label>
-
-    <div class="dict-pref">
-      <p class="dict-pref-label">Traer pastilla al cursor</p>
-      <HotkeyCapture
-        value={pillShortcut || "CmdOrCtrl+Shift+P"}
-        defaultValue="CmdOrCtrl+Shift+P"
-        ariaLabel="Cambiar atajo para traer la pastilla al cursor"
-        onChange={onPillShortcutChange}
-      />
-    </div>
-  </div>
-
   <ul class="dict-notes">
     <li>Modelo y micrófono se configuran en Ajustes → Dictado.</li>
-    <li>La pastilla flotante siempre dicta en modo toggle.</li>
+    <li>La pill flotante siempre dicta en modo toggle.</li>
   </ul>
-
-  <button type="button" class="rb-btn rb-btn-soft" onclick={onOpenSettings}>
-    Ajustes de dictado
-  </button>
-</section>
+</ToolPageShell>
 
 <style>
-  .dict-tool {
-    display: flex;
-    flex-direction: column;
-    gap: 1rem;
-    padding: 1.1rem 1.15rem 1.25rem;
-  }
-
-  .dict-kicker {
-    margin: 0;
-    color: var(--rb-muted);
-    font-size: 0.6875rem;
-    font-weight: 650;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-  }
-
-  .dict-head h2 {
-    margin: 0.15rem 0 0.35rem;
-    font-family: var(--rb-display);
-    font-size: 1.35rem;
-    font-weight: 650;
-    letter-spacing: -0.03em;
-  }
-
-  .dict-blurb {
-    margin: 0;
-    max-width: 34rem;
-    color: var(--rb-muted);
-    font-size: 0.875rem;
-    line-height: 1.45;
+  .dict-mode-select {
+    min-width: 12rem;
+    max-width: 100%;
   }
 
   .dict-card {
@@ -172,7 +149,7 @@
     justify-content: space-between;
     gap: 0.85rem;
     padding: 1rem 1.05rem;
-    border: 1px solid var(--rb-border);
+    border: 0;
     border-radius: var(--rb-radius);
     background: var(--rb-surface);
   }
@@ -198,38 +175,6 @@
     margin: 0.2rem 0 0;
     color: var(--rb-muted);
     font-size: 0.8125rem;
-  }
-
-  .dict-prefs {
-    display: flex;
-    flex-direction: column;
-    gap: 0.85rem;
-    max-width: 28rem;
-    padding: 0.9rem 1rem;
-    border: 1px solid var(--rb-border);
-    border-radius: var(--rb-radius);
-    background: var(--rb-surface);
-  }
-
-  .dict-pref {
-    display: flex;
-    flex-direction: column;
-    gap: 0.4rem;
-    min-width: 0;
-  }
-
-  .dict-pref-label {
-    margin: 0;
-    color: var(--rb-muted);
-    font-size: 0.75rem;
-    font-weight: 600;
-  }
-
-  .dict-pref-hint {
-    margin: 0;
-    color: var(--rb-faint);
-    font-size: 0.75rem;
-    line-height: 1.4;
   }
 
   .dict-dot {
@@ -259,5 +204,17 @@
 
   :global(.dict-card .rb-btn-primary.is-active) {
     background: var(--rb-record);
+  }
+
+  @container atic-main (max-width: 36.999rem) {
+    .dict-card {
+      flex-direction: column;
+      align-items: stretch;
+      padding: 0.85rem 0.9rem;
+    }
+
+    .dict-card :global(.rb-btn) {
+      width: 100%;
+    }
   }
 </style>

@@ -81,6 +81,7 @@ pub fn set_config(app: AppHandle, state: State<AppState>, config: Config) -> Res
     let shortcut = config.global_shortcut.clone();
     let dictation_shortcut = config.dictation_shortcut.clone();
     let summon_pill_shortcut = config.summon_pill_shortcut.clone();
+    let pill_radial_shortcut = config.pill_radial_shortcut.clone();
     let clipboard_shortcut = config.clipboard_shortcut.clone();
     let snippets_shortcut = config.snippets_shortcut.clone();
     let screenshot_shortcut = config.screenshot_shortcut.clone();
@@ -91,6 +92,7 @@ pub fn set_config(app: AppHandle, state: State<AppState>, config: Config) -> Res
     if shortcut != prev.global_shortcut
         || dictation_shortcut != prev.dictation_shortcut
         || summon_pill_shortcut != prev.summon_pill_shortcut
+        || pill_radial_shortcut != prev.pill_radial_shortcut
         || clipboard_shortcut != prev.clipboard_shortcut
         || snippets_shortcut != prev.snippets_shortcut
         || screenshot_shortcut != prev.screenshot_shortcut
@@ -100,6 +102,7 @@ pub fn set_config(app: AppHandle, state: State<AppState>, config: Config) -> Res
             &shortcut,
             &dictation_shortcut,
             &summon_pill_shortcut,
+            &pill_radial_shortcut,
             &clipboard_shortcut,
             &snippets_shortcut,
             &screenshot_shortcut,
@@ -306,4 +309,35 @@ pub async fn test_audio(app: AppHandle, config: Config) -> Result<AudioTestResul
 
     *app.state::<AppState>().audio_test_running.lock().unwrap() = false;
     joined.map_err(|error| error.to_string())?
+}
+
+/// Abre en el explorador una carpeta de datos de Atic.
+///
+/// `kind`: `recordings` | `clipboard` | `snippets` | `captures` | `data`.
+pub(crate) fn open_data_dir_kind(
+    app: &AppHandle,
+    dirs: &atic_core::AppDirs,
+    kind: &str,
+) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+
+    let dir = match kind.trim().to_ascii_lowercase().as_str() {
+        "recordings" => dirs.recordings_dir(),
+        "clipboard" => dirs.clipboard_dir(),
+        "snippets" => dirs.snippets_dir(),
+        "captures" => dirs.captures_dir(),
+        "data" => dirs.data_dir(),
+        other => {
+            return Err(format!("Carpeta de datos desconocida: {other}"));
+        }
+    };
+    let _ = std::fs::create_dir_all(&dir);
+    app.opener()
+        .open_path(dir.to_string_lossy().into_owned(), None::<&str>)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn open_data_dir(app: AppHandle, state: State<AppState>, kind: String) -> Result<(), String> {
+    open_data_dir_kind(&app, &state.dirs, &kind)
 }

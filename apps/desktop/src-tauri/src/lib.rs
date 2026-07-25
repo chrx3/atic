@@ -8,6 +8,7 @@ mod clipboard_history;
 mod commands;
 mod dictation;
 mod export;
+mod floating;
 mod import;
 mod live;
 #[cfg(target_os = "macos")]
@@ -112,6 +113,9 @@ pub fn run() {
             commands::set_config,
             commands::set_pill_visible,
             commands::show_main_window,
+            shortcuts::failed_shortcuts,
+            floating::resize_floating,
+            commands::open_data_dir,
             commands::recording_track_path,
             commands::toggle_dictation,
             commands::dictation_phase,
@@ -160,6 +164,7 @@ pub fn run() {
             clipboard_history::delete_clipboard_item,
             clipboard_history::clear_clipboard_history,
             clipboard_history::prepare_clipboard_pill,
+            clipboard_history::snap_pill_to_cursor,
             clipboard_history::restore_pill_position,
             snippets::list_snippets,
             snippets::upsert_snippet,
@@ -204,6 +209,7 @@ pub fn run() {
             let shortcut = config.global_shortcut.clone();
             let dictation_shortcut = config.dictation_shortcut.clone();
             let summon_pill_shortcut = config.summon_pill_shortcut.clone();
+            let pill_radial_shortcut = config.pill_radial_shortcut.clone();
             let clipboard_shortcut = config.clipboard_shortcut.clone();
             let snippets_shortcut = config.snippets_shortcut.clone();
             let screenshot_shortcut = config.screenshot_shortcut.clone();
@@ -222,6 +228,7 @@ pub fn run() {
                 whisper_last_used: Mutex::new(None),
                 overlay_session: Mutex::new(None),
                 pre_clipboard_position: Mutex::new(None),
+                shortcut_failures: Mutex::new(Vec::new()),
             });
 
             // Repara estados transitorios huérfanos de un cierre abrupto anterior.
@@ -259,6 +266,7 @@ pub fn run() {
                 &shortcut,
                 &dictation_shortcut,
                 &summon_pill_shortcut,
+                &pill_radial_shortcut,
                 &clipboard_shortcut,
                 &snippets_shortcut,
                 &screenshot_shortcut,
@@ -279,7 +287,7 @@ pub fn run() {
                         .ok()
                         .map(|s| (s.width as i32, s.height as i32))
                         .unwrap_or((112, 48));
-                    let (cx, cy) = state::clamp_pill_position(x as i32, y as i32, w, h);
+                    let (cx, cy) = floating::clamp(x as i32, y as i32, w, h);
                     let _ = pill.set_position(tauri::PhysicalPosition::new(cx, cy));
                 }
                 if show_pill {

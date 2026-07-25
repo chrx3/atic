@@ -146,11 +146,7 @@ pub fn cleanup_captures_now(state: State<AppState>) -> Result<usize, String> {
 
 #[tauri::command]
 pub fn open_captures_dir(app: AppHandle, state: State<AppState>) -> Result<(), String> {
-    use tauri_plugin_opener::OpenerExt;
-    let dir = state.dirs.captures_dir().to_string_lossy().into_owned();
-    app.opener()
-        .open_path(dir, None::<&str>)
-        .map_err(|error| error.to_string())
+    crate::commands::open_data_dir_kind(&app, &state.dirs, "captures")
 }
 
 /// Limpieza automática de capturas al iniciar (según retención configurada).

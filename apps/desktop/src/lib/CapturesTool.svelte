@@ -4,10 +4,10 @@
     activateCapture,
     listRecentCaptures,
     ocrCaptureAndCopy,
-    openCapturesDir,
     startCaptureSession,
   } from "$lib/api";
   import HotkeyCapture from "$lib/HotkeyCapture.svelte";
+  import ToolPageShell from "$lib/ToolPageShell.svelte";
   import type { CaptureItem } from "$lib/types";
   import { toolById } from "$lib/tools";
   import { convertFileSrc } from "@tauri-apps/api/core";
@@ -52,14 +52,6 @@
     }
   }
 
-  async function openFolder() {
-    try {
-      await openCapturesDir();
-    } catch (error) {
-      onToast(String(error));
-    }
-  }
-
   async function runOcr(path: string, event?: MouseEvent) {
     event?.stopPropagation();
     if (ocrBusyPath) return;
@@ -88,14 +80,8 @@
   });
 </script>
 
-<section class="cap-tool" aria-label="Capturas">
-  <header class="cap-head">
-    <p class="cap-kicker">Herramienta</p>
-    <h2>{tool.label}</h2>
-    <p class="cap-blurb">{tool.blurb}</p>
-  </header>
-
-  <div class="cap-actions">
+<ToolPageShell {tool} dataDir="captures">
+  {#snippet actions()}
     <button
       type="button"
       class="rb-btn rb-btn-primary"
@@ -104,32 +90,30 @@
     >
       Nueva captura
     </button>
-    <button type="button" class="rb-btn rb-btn-soft" onclick={openFolder}>
-      Abrir carpeta
-    </button>
     <button type="button" class="rb-btn rb-btn-soft" onclick={onOpenSettings}>
       Ajustes
     </button>
-  </div>
+  {/snippet}
 
-  <div class="cap-shortcut">
-    <p class="cap-shortcut-label">Atajo de captura</p>
-    <HotkeyCapture
-      value={shortcut || "CmdOrCtrl+Shift+4"}
-      defaultValue="CmdOrCtrl+Shift+4"
-      ariaLabel="Cambiar atajo de captura"
-      onChange={onShortcutChange}
-    />
-    <p class="cap-hint">
-      Abre la selección de ventana o región. Cada captura se copia al
-      portapapeles y aparece en el shelf.
-    </p>
-  </div>
+  {#snippet prefs()}
+    <div class="atic-shortcut-row">
+      <div>
+        <p class="atic-shortcut-label">Atajo de captura</p>
+        <p class="atic-shortcut-hint">Selecciona ventana o región.</p>
+      </div>
+      <HotkeyCapture
+        value={shortcut || "CmdOrCtrl+Shift+4"}
+        defaultValue="CmdOrCtrl+Shift+4"
+        ariaLabel="Cambiar atajo de captura"
+        onChange={onShortcutChange}
+      />
+    </div>
+  {/snippet}
 
   {#if loading}
-    <p class="cap-empty">Cargando recientes…</p>
+    <p class="atic-empty">Cargando recientes…</p>
   {:else if items.length === 0}
-    <p class="cap-empty">Aún no hay capturas recientes en este equipo.</p>
+    <p class="atic-empty">Captura una ventana o región para empezar.</p>
   {:else}
     <ul class="cap-grid">
       {#each items.slice(0, 12) as item (item.path)}
@@ -159,78 +143,16 @@
       {/each}
     </ul>
   {/if}
-</section>
+</ToolPageShell>
 
 <style>
-  .cap-tool {
-    display: flex;
-    flex-direction: column;
-    gap: 0.9rem;
-    padding: 1.1rem 1.15rem 1.25rem;
-  }
-
-  .cap-kicker {
-    margin: 0;
-    color: var(--rb-muted);
-    font-size: 0.6875rem;
-    font-weight: 650;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-  }
-
-  .cap-head h2 {
-    margin: 0.15rem 0 0.35rem;
-    font-family: var(--rb-display);
-    font-size: 1.35rem;
-    font-weight: 650;
-    letter-spacing: -0.03em;
-  }
-
-  .cap-blurb {
-    margin: 0;
-    max-width: 34rem;
-    color: var(--rb-muted);
-    font-size: 0.875rem;
-    line-height: 1.45;
-  }
-
-  .cap-actions {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.45rem;
-  }
-
-  .cap-shortcut {
-    display: flex;
-    max-width: 28rem;
-    flex-direction: column;
-    gap: 0.4rem;
-    padding: 0.9rem 1rem;
-    border: 1px solid var(--rb-border);
-    border-radius: var(--rb-radius);
-    background: var(--rb-surface);
-  }
-
-  .cap-shortcut-label {
-    margin: 0;
-    color: var(--rb-muted);
-    font-size: 0.75rem;
-    font-weight: 600;
-  }
-
-  .cap-hint {
-    margin: 0;
-    color: var(--rb-faint);
-    font-size: 0.75rem;
-    line-height: 1.4;
-  }
-
-  .cap-empty {
+  .atic-empty {
     margin: 0;
     padding: 1rem;
-    border: 1px dashed var(--rb-border-strong);
+    border: 0;
     border-radius: var(--rb-radius);
     color: var(--rb-muted);
+    background: color-mix(in srgb, var(--rb-text) 4%, transparent);
     font-size: 0.875rem;
   }
 
@@ -250,7 +172,7 @@
   }
 
   .cap-ocr-btn {
-    border: 1px solid var(--rb-border);
+    border: 0;
     border-radius: var(--rb-radius-sm);
     padding: 0.2rem 0.35rem;
     background: var(--rb-bg1);
@@ -258,6 +180,18 @@
     font-size: 0.625rem;
     font-weight: 650;
     cursor: pointer;
+  }
+
+  @container atic-main (max-width: 36.999rem) {
+    .cap-grid {
+      grid-template-columns: repeat(auto-fill, minmax(6.25rem, 1fr));
+      gap: 0.45rem;
+    }
+
+    .cap-ocr-btn {
+      min-height: 2rem;
+      font-size: 0.6875rem;
+    }
   }
 
   .cap-ocr-btn:hover:not(:disabled) {
@@ -270,7 +204,7 @@
     width: 100%;
     flex-direction: column;
     gap: 0.35rem;
-    border: 1px solid var(--rb-border);
+    border: 0;
     border-radius: var(--rb-radius-sm);
     padding: 0.35rem;
     color: var(--rb-muted);

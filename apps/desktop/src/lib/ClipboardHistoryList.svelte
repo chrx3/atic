@@ -4,12 +4,10 @@
   import List from "reicon-svelte/icons/List.svelte";
   import Search from "reicon-svelte/icons/Search.svelte";
   import Star from "reicon-svelte/icons/Star.svelte";
-  import Trash from "reicon-svelte/icons/Trash.svelte";
   import X from "reicon-svelte/icons/X.svelte";
   import type { ClipboardItem } from "$lib/types";
   import { clipboardItemMatches } from "$lib/clipboardSearch";
   import {
-    clearClipboardHistory,
     deleteCapture,
     deleteClipboardItem,
     pasteClipboardItem,
@@ -166,14 +164,6 @@
     }
   }
 
-  async function clearAll() {
-    try {
-      await clearClipboardHistory();
-      await onRefresh();
-    } catch (error) {
-      report(error);
-    }
-  }
 </script>
 
 <div class="clip-list" class:is-compact={compact}>
@@ -224,16 +214,6 @@
           <Star size={14} weight={favoritesOnly ? "Filled" : "Outline"} />
         </button>
       </div>
-        <button
-          type="button"
-          class="clip-icon-btn clip-clear"
-          onclick={clearAll}
-          disabled={loading}
-          aria-label="Vaciar historial"
-          title="Vaciar historial"
-        >
-          <Trash size={14} />
-        </button>
     </div>
   </div>
 
@@ -374,7 +354,7 @@
   .clip-search {
     width: 100%;
     box-sizing: border-box;
-    border: 1px solid var(--rb-border);
+    border: 0;
     border-radius: 8px;
     margin: 0;
     padding: 0.28rem 0.45rem 0.28rem 1.55rem;
@@ -426,14 +406,6 @@
   .clip-filter-btn.is-on {
     background: color-mix(in srgb, var(--rb-accent) 14%, transparent);
     color: var(--rb-accent);
-  }
-
-  .clip-clear {
-    color: var(--rb-accent);
-  }
-  .clip-clear:disabled {
-    opacity: 0.5;
-    cursor: default;
   }
 
   .clip-empty {
@@ -574,5 +546,22 @@
   }
   .is-compact .clip-search {
     padding: 0.22rem 0.4rem 0.22rem 1.45rem;
+  }
+
+  @container atic-main (max-width: 36.999rem) {
+    .clip-toolbar-row {
+      flex-wrap: wrap;
+    }
+
+    .clip-filter-btn,
+    .clip-icon-btn {
+      min-width: 2rem;
+      height: 2rem;
+    }
+
+    .clip-search {
+      min-height: 2.25rem;
+      font-size: 0.8125rem;
+    }
   }
 </style>

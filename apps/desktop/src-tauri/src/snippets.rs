@@ -223,6 +223,6 @@ pub fn summon_snippets_panel(app: &AppHandle) {
 
 /// Compacta la pill y la anima hasta el cursor antes de expandir fragmentos.
 #[tauri::command]
-pub fn prepare_snippets_pill(app: AppHandle) -> Result<(), String> {
-    clipboard_history::prepare_clipboard_pill(app)
+pub fn prepare_snippets_pill(app: AppHandle, fly: bool) -> Result<(), String> {
+    clipboard_history::prepare_clipboard_pill(app, fly)
 }

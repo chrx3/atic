@@ -3,7 +3,7 @@
 //! Teclado: `tauri-plugin-global-shortcut`.
 //! Botones laterales del mouse: Raw Input (ver `mouse_bindings`).
 
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
 use crate::mouse_bindings::{self, MouseAction, SideButton};
@@ -35,14 +35,18 @@ fn binding_dup_key(b: &Binding) -> String {
 ///
 /// Los errores de *sintaxis* de cualquier atajo abortan (se valida antes de
 /// persistir en `set_config`). En cambio, un fallo al **registrar** un atajo
-/// concreto (p. ej. conflicto con otra app) solo se registra en el log y no
-/// impide registrar los demás: un conflicto de captura no debe desactivar
-/// grabación, dictado ni pill.
+/// concreto (p. ej. conflicto con otra app) no impide registrar los demás: un
+/// conflicto de captura no debe desactivar grabación, dictado ni pill.
+///
+/// Esos fallos se acumulan en [`AppState::shortcut_failures`] y se emiten como
+/// `shortcuts-failed`, para que el usuario pueda reasignarlos: un atajo que el
+/// SO rechazó es indistinguible de uno roto si solo queda en el log.
 pub fn register_shortcuts(
     app: &AppHandle,
     recording_shortcut: &str,
     dictation_shortcut: &str,
     summon_pill_shortcut: &str,
+    pill_radial_shortcut: &str,
     clipboard_shortcut: &str,
     snippets_shortcut: &str,
     screenshot_shortcut: &str,
@@ -50,6 +54,7 @@ pub fn register_shortcuts(
     let recording = parse_binding("grabación", recording_shortcut)?;
     let dictation = parse_binding("dictado", dictation_shortcut)?;
     let summon = parse_binding("traer pill", summon_pill_shortcut)?;
+    let radial = parse_binding("rueda de la pill", pill_radial_shortcut)?;
     let clipboard = parse_binding("clipboard", clipboard_shortcut)?;
     let snippets = parse_binding("fragmentos", snippets_shortcut)?;
     let screenshot = parse_binding("captura", screenshot_shortcut)?;
@@ -58,6 +63,7 @@ pub fn register_shortcuts(
         ("grabación", &recording),
         ("dictado", &dictation),
         ("traer pill", &summon),
+        ("rueda de la pill", &radial),
         ("clipboard", &clipboard),
         ("fragmentos", &snippets),
         ("captura", &screenshot),
@@ -79,6 +85,7 @@ pub fn register_shortcuts(
     }
 
     let mut mouse: Vec<(SideButton, MouseAction)> = Vec::new();
+    let mut failed: Vec<String> = Vec::new();
 
     match &recording {
         Binding::Key(sc) => {
@@ -89,6 +96,7 @@ pub fn register_shortcuts(
                 }
             }) {
                 tracing::error!(%err, "no se pudo registrar el atajo de grabación");
+                failed.push("grabación".to_string());
             }
         }
         Binding::Mouse(btn) => mouse.push((*btn, MouseAction::Recording)),
@@ -115,6 +123,7 @@ pub fn register_shortcuts(
                 }
             }) {
                 tracing::error!(%err, "no se pudo registrar el atajo de dictado");
+                failed.push("dictado".to_string());
             }
         }
         Binding::Mouse(btn) => mouse.push((*btn, MouseAction::Dictation)),
@@ -129,9 +138,54 @@ pub fn register_shortcuts(
                 }
             }) {
                 tracing::error!(%err, "no se pudo registrar el atajo de traer pill");
+                failed.push("traer pill".to_string());
             }
         }
         Binding::Mouse(btn) => mouse.push((*btn, MouseAction::SummonPill)),
+    }
+
+    match &radial {
+        Binding::Key(sc) => {
+            let handle = app.clone();
+            // Mantener-para-abrir: Pressed abre, Released activa y cierra. El
+            // auto-repeat del SO reenvía Pressed mientras se sostiene, pero el
+            // front ignora las repeticiones (openRadial es idempotente).
+            if let Err(err) = gs.on_shortcut(*sc, move |_app, _sc, event| {
+                let Some(pill) = handle.get_webview_window("pill") else {
+                    return;
+                };
+                match event.state() {
+                    ShortcutState::Pressed => {
+                        // La rueda ES la pill: si el usuario la ocultó, no
+                        // resucitarla a la fuerza (nada volvía a esconderla y
+                        // la config quedaba mintiendo).
+                        let visible = handle
+                            .try_state::<state::AppState>()
+                            .map(|s| s.config.lock().unwrap().show_pill)
+                            .unwrap_or(true);
+                        if !visible {
+                            return;
+                        }
+                        // Guardar el destino de pegado ANTES del set_focus del
+                        // front: si no, clipboard/fragmentos abiertos desde la
+                        // rueda pegan en la ventana equivocada (o encolan).
+                        clipboard_history::remember_paste_target();
+                        let _ = pill.set_always_on_top(true);
+                        let _ = pill.show();
+                        let _ = pill.emit("pill-radial-press", ());
+                    }
+                    ShortcutState::Released => {
+                        let _ = pill.emit("pill-radial-release", ());
+                    }
+                }
+            }) {
+                tracing::error!(%err, "no se pudo registrar el atajo de la rueda");
+                failed.push("rueda de herramientas".to_string());
+            }
+        }
+        Binding::Mouse(_) => {
+            tracing::warn!("la rueda de la pill solo admite atajo de teclado");
+        }
     }
 
     match &clipboard {
@@ -143,6 +197,7 @@ pub fn register_shortcuts(
                 }
             }) {
                 tracing::error!(%err, "no se pudo registrar el atajo de clipboard");
+                failed.push("clipboard".to_string());
             }
         }
         Binding::Mouse(btn) => mouse.push((*btn, MouseAction::Clipboard)),
@@ -157,6 +212,7 @@ pub fn register_shortcuts(
                 }
             }) {
                 tracing::error!(%err, "no se pudo registrar el atajo de fragmentos");
+                failed.push("fragmentos".to_string());
             }
         }
         Binding::Mouse(btn) => mouse.push((*btn, MouseAction::Snippets)),
@@ -173,6 +229,7 @@ pub fn register_shortcuts(
                 }
             }) {
                 tracing::error!(%err, "no se pudo registrar el atajo de captura");
+                failed.push("captura".to_string());
             }
         }
         Binding::Mouse(btn) => mouse.push((*btn, MouseAction::Screenshot)),
@@ -180,13 +237,18 @@ pub fn register_shortcuts(
 
     mouse_bindings::set_bindings(app, mouse);
 
-    // unregister_all() arriba quita Esc temporal del clipboard; reponerlo si sigue abierto.
-    if app
-        .try_state::<state::AppState>()
-        .is_some_and(|s| s.pre_clipboard_position.lock().unwrap().is_some())
-    {
-        clipboard_history::register_clipboard_escape_close(app);
+    if let Some(app_state) = app.try_state::<state::AppState>() {
+        *app_state.shortcut_failures.lock().unwrap() = failed.clone();
     }
+    // Siempre se emite, también vacío: así la UI puede limpiar un aviso previo
+    // cuando el usuario reasigna el atajo en conflicto.
+    let _ = app.emit("shortcuts-failed", failed);
 
     Ok(())
+}
+
+/// Atajos que el SO rechazó en el último registro (para la UI).
+#[tauri::command]
+pub fn failed_shortcuts(state: tauri::State<state::AppState>) -> Vec<String> {
+    state.shortcut_failures.lock().unwrap().clone()
 }

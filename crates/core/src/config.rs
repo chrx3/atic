@@ -53,6 +53,8 @@ pub struct Config {
     pub dictation_shortcut: String,
     /// Atajo global para traer la pill al cursor (animación).
     pub summon_pill_shortcut: String,
+    /// Atajo global: abrir la rueda de herramientas en la pill.
+    pub pill_radial_shortcut: String,
     /// Atajo global: traer pill + abrir historial de clipboard.
     pub clipboard_shortcut: String,
     /// Atajo global: traer pill + abrir panel de fragmentos.
@@ -143,6 +145,10 @@ impl Default for Config {
             global_shortcut: "CmdOrCtrl+Shift+R".to_string(),
             dictation_shortcut: "CmdOrCtrl+Shift+D".to_string(),
             summon_pill_shortcut: "CmdOrCtrl+Shift+P".to_string(),
+            // Alt+Space a secas es del SO (menú de ventana de cualquier app):
+            // registrarlo global lo mataba en todo Windows. Alt+Z se sostiene
+            // con la izquierda y deja el mouse libre para la rueda.
+            pill_radial_shortcut: "Alt+Z".to_string(),
             clipboard_shortcut: "CmdOrCtrl+Shift+V".to_string(),
             snippets_shortcut: "CmdOrCtrl+Shift+S".to_string(),
             dictation_mode: "push_to_talk".to_string(),
@@ -203,6 +209,7 @@ struct ConfigFile {
     global_shortcut: String,
     dictation_shortcut: Option<String>,
     summon_pill_shortcut: Option<String>,
+    pill_radial_shortcut: Option<String>,
     clipboard_shortcut: Option<String>,
     snippets_shortcut: Option<String>,
     dictation_mode: Option<String>,
@@ -292,6 +299,7 @@ impl Default for ConfigFile {
             global_shortcut: d.global_shortcut,
             dictation_shortcut: None,
             summon_pill_shortcut: None,
+            pill_radial_shortcut: None,
             clipboard_shortcut: None,
             snippets_shortcut: None,
             dictation_mode: None,
@@ -419,6 +427,13 @@ impl From<ConfigFile> for Config {
                 .summon_pill_shortcut
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| "CmdOrCtrl+Shift+P".into()),
+            // "Alt+Space" fue el default hasta 0.2.0 y secuestraba el menú de
+            // ventana del SO; se reescribe al nuevo para que el arreglo alcance
+            // también a las instalaciones existentes.
+            pill_radial_shortcut: f
+                .pill_radial_shortcut
+                .filter(|s| !s.is_empty() && s != "Alt+Space")
+                .unwrap_or_else(|| "Alt+Z".into()),
             clipboard_shortcut: f
                 .clipboard_shortcut
                 .filter(|s| !s.is_empty())
@@ -568,6 +583,22 @@ mod tests {
     #[test]
     fn default_language_is_spanish() {
         assert_eq!(Config::default().language, "es");
+    }
+
+    #[test]
+    fn migrates_the_radial_shortcut_away_from_the_system_alt_space() {
+        // Alt+Space es el menú de ventana del SO: registrarlo global lo mataba
+        // en todas las apps, así que las configs viejas se reescriben.
+        let json = r#"{ "pill_radial_shortcut": "Alt+Space" }"#;
+        let cfg: Config = serde_json::from_str::<ConfigFile>(json).unwrap().into();
+        assert_eq!(cfg.pill_radial_shortcut, "Alt+Z");
+    }
+
+    #[test]
+    fn keeps_a_radial_shortcut_the_user_chose() {
+        let json = r#"{ "pill_radial_shortcut": "CmdOrCtrl+Shift+Space" }"#;
+        let cfg: Config = serde_json::from_str::<ConfigFile>(json).unwrap().into();
+        assert_eq!(cfg.pill_radial_shortcut, "CmdOrCtrl+Shift+Space");
     }
 
     #[test]

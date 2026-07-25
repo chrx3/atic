@@ -32,7 +32,7 @@
     previewRetention,
     cleanupRetention,
     cleanupCapturesNow,
-    openCapturesDir,
+    openDataDir,
   } from "$lib/api";
   import { looksLikeHeadset } from "$lib/audioHeadset";
 
@@ -93,18 +93,15 @@
   let pendingUpdate = $state<AppUpdate | null>(null);
 
   type SettingsSectionId =
-    | "appearance"
+    | "general"
     | "shortcuts"
     | "audio"
-    | "transcription"
+    | "meetings"
     | "dictation"
     | "summary"
-    | "recording"
-    | "capturas"
-    | "mail"
-    | "updates";
+    | "captures";
 
-  let activeSection = $state<SettingsSectionId>("appearance");
+  let activeSection = $state<SettingsSectionId>("general");
 
   let captureCleanupMsg = $state<string | null>(null);
   async function runCaptureCleanup() {
@@ -120,16 +117,13 @@
   }
 
   const SETTINGS_SECTIONS: { id: SettingsSectionId; label: string }[] = [
-    { id: "appearance", label: "Apariencia" },
+    { id: "general", label: "General" },
     { id: "shortcuts", label: "Atajos" },
     { id: "audio", label: "Audio" },
-    { id: "transcription", label: "Transcripción" },
+    { id: "meetings", label: "Reuniones" },
     { id: "dictation", label: "Dictado" },
-    { id: "summary", label: "Resumen" },
-    { id: "recording", label: "Grabación" },
-    { id: "capturas", label: "Capturas" },
-    { id: "mail", label: "Correo" },
-    { id: "updates", label: "Actualizaciones" },
+    { id: "summary", label: "Resúmenes" },
+    { id: "captures", label: "Capturas" },
   ];
 
   const activeSectionLabel = $derived(
@@ -577,6 +571,1200 @@
   {#if !cfg || !secrets}
     <p class="p-8 text-center text-sm rb-text-muted">Cargando…</p>
   {:else}
+    {#snippet general(c: AppConfig, s: SecretsStatus)}
+      <div class="rb-settings-group">
+        <h4 class="rb-settings-group-title">Interfaz</h4>
+
+        <div class="rb-settings-row">
+          <div class="rb-settings-row-copy">
+            <span class="rb-settings-row-label">Tema</span>
+            <p class="rb-hint">También en el botón sol/luna de la barra.</p>
+          </div>
+          <div class="rb-settings-row-control">
+            <select class="rb-field" bind:value={c.ui_theme}>
+              <option value="light">Claro</option>
+              <option value="dark">Oscuro</option>
+              <option value="system">Sistema</option>
+            </select>
+          </div>
+        </div>
+
+        <label class="rb-settings-row rb-check">
+          <span class="rb-settings-row-copy">
+            <span class="rb-settings-row-label">Sonidos de interfaz</span>
+            <span class="rb-hint">
+              Toques graves al capturar y al dictar (tipo vibración suave).
+            </span>
+          </span>
+          <span class="rb-settings-row-control">
+            <input type="checkbox" bind:checked={c.ui_sounds} />
+          </span>
+        </label>
+      </div>
+
+      <div class="rb-settings-group">
+        <h4 class="rb-settings-group-title">Arranque y pill</h4>
+
+        <label class="rb-settings-row rb-check">
+          <span class="rb-settings-row-copy">
+            <span class="rb-settings-row-label">Iniciar con el sistema</span>
+            <span class="rb-hint">Abre Atic en la bandeja al iniciar sesión.</span>
+          </span>
+          <span class="rb-settings-row-control">
+            <input type="checkbox" bind:checked={c.autostart} />
+          </span>
+        </label>
+
+        <label class="rb-settings-row rb-check">
+          <span class="rb-settings-row-copy">
+            <span class="rb-settings-row-label">Mostrar pill flotante</span>
+            <span class="rb-hint">La barra compacta junto al cursor.</span>
+          </span>
+          <span class="rb-settings-row-control">
+            <input type="checkbox" bind:checked={c.show_pill} />
+          </span>
+        </label>
+
+        <div class="rb-settings-row">
+          <div class="rb-settings-row-copy">
+            <span class="rb-settings-row-label">Carpeta de datos</span>
+            <p class="rb-hint">Grabaciones, capturas y archivos locales de Atic.</p>
+          </div>
+          <div class="rb-settings-row-control">
+            <button
+              type="button"
+              class="rb-btn rb-btn-soft text-xs"
+              onclick={() => void openDataDir("data")}
+            >
+              Abrir carpeta
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div class="rb-settings-group">
+        <h4 class="rb-settings-group-title">Versión y actualizaciones</h4>
+        <p class="rb-hint">
+          Busca versiones nuevas en GitHub Releases (build firmada).
+        </p>
+        <div class="rb-settings-actions">
+          <button
+            type="button"
+            class="rb-btn rb-btn-primary"
+            onclick={searchUpdates}
+            disabled={updateUi.kind === "checking" ||
+              updateUi.kind === "downloading"}
+          >
+            {#if updateUi.kind === "checking"}
+              Buscando…
+            {:else}
+              Buscar actualizaciones
+            {/if}
+          </button>
+          {#if updateUi.kind === "available"}
+            <button
+              type="button"
+              class="rb-btn rb-btn-soft"
+              onclick={installPendingUpdate}
+            >
+              Descargar e instalar {updateUi.update.version}
+            </button>
+          {/if}
+          {#if updateUi.kind === "up_to_date"}
+            <span class="rb-chip rb-chip-ok">Estás al día</span>
+          {:else if updateUi.kind === "available"}
+            <span class="rb-chip rb-chip-warn"
+              >Actualización disponible: {updateUi.update.version}</span
+            >
+          {:else if updateUi.kind === "downloading"}
+            <span class="rb-chip rb-chip-warn">
+              Descargando {updateUi.version}{#if updateUi.percent !== null}
+                … {updateUi.percent}%{/if}
+            </span>
+          {:else if updateUi.kind === "error"}
+            <span class="rb-chip rb-chip-warn">{updateUi.message}</span>
+          {/if}
+        </div>
+        {#if updateUi.kind === "downloading" && updateUi.percent !== null}
+          <div class="rb-level-track">
+            <div
+              class="rb-level-fill rb-level-mic"
+              style="width: {updateUi.percent}%"
+            ></div>
+          </div>
+        {/if}
+      </div>
+    {/snippet}
+
+    {#snippet shortcuts(c: AppConfig, s: SecretsStatus)}
+      <div class="rb-settings-group">
+        <h4 class="rb-settings-group-title">Atajos globales</h4>
+
+        <div class="rb-settings-hotkey">
+          <p class="rb-settings-hotkey-label">Grabar reunión</p>
+          <HotkeyCapture
+            value={c.global_shortcut}
+            defaultValue="CmdOrCtrl+Shift+R"
+            ariaLabel="Cambiar atajo de grabación"
+            onChange={(sc) => {
+              c.global_shortcut = sc;
+            }}
+          />
+        </div>
+
+        <div class="rb-settings-hotkey">
+          <p class="rb-settings-hotkey-label">Dictado</p>
+          <HotkeyCapture
+            value={c.dictation_shortcut}
+            defaultValue="CmdOrCtrl+Shift+D"
+            ariaLabel="Cambiar atajo de dictado"
+            onChange={(sc) => {
+              c.dictation_shortcut = sc;
+            }}
+          />
+          <p class="rb-hint">
+            {#if c.dictation_mode === "push_to_talk"}
+              Mantén para hablar; al soltar, transcribe y pega.
+            {:else}
+              Pulsa para empezar o parar (transcribe y pega).
+            {/if}
+            El modo se configura en Dictado.
+          </p>
+        </div>
+
+        <div class="rb-settings-hotkey">
+          <p class="rb-settings-hotkey-label">Captura de pantalla</p>
+          <HotkeyCapture
+            value={c.screenshot_shortcut}
+            defaultValue="CmdOrCtrl+Shift+4"
+            ariaLabel="Cambiar atajo para abrir la selección de captura"
+            onChange={(sc) => {
+              c.screenshot_shortcut = sc;
+            }}
+          />
+          <p class="rb-hint">
+            Abre la selección de ventana, región o monitor. Esc cancela.
+          </p>
+        </div>
+
+        <div class="rb-settings-hotkey">
+          <p class="rb-settings-hotkey-label">Traer pill al cursor</p>
+          <HotkeyCapture
+            value={c.summon_pill_shortcut}
+            defaultValue="CmdOrCtrl+Shift+P"
+            ariaLabel="Cambiar atajo para traer la pill al cursor"
+            onChange={(sc) => {
+              c.summon_pill_shortcut = sc;
+            }}
+          />
+          <p class="rb-hint">Muestra la pill y la acerca al puntero.</p>
+        </div>
+
+        <div class="rb-settings-hotkey">
+          <p class="rb-settings-hotkey-label">Rueda de herramientas</p>
+          <HotkeyCapture
+            value={c.pill_radial_shortcut}
+            defaultValue="Alt+Z"
+            ariaLabel="Cambiar atajo de la rueda de herramientas"
+            onChange={(sc) => {
+              c.pill_radial_shortcut = sc;
+            }}
+          />
+          <p class="rb-hint">
+            Abre el selector en la pill. Rueda del ratón para elegir, clic para
+            activar.
+          </p>
+        </div>
+
+        <div class="rb-settings-hotkey">
+          <p class="rb-settings-hotkey-label">Historial de clipboard</p>
+          <HotkeyCapture
+            value={c.clipboard_shortcut}
+            defaultValue="CmdOrCtrl+Shift+V"
+            ariaLabel="Cambiar atajo del historial de clipboard"
+            onChange={(sc) => {
+              c.clipboard_shortcut = sc;
+            }}
+          />
+          <p class="rb-hint">Abre el historial local junto a la pill.</p>
+        </div>
+
+        <div class="rb-settings-hotkey">
+          <p class="rb-settings-hotkey-label">Fragmentos de texto</p>
+          <HotkeyCapture
+            value={c.snippets_shortcut}
+            defaultValue="CmdOrCtrl+Shift+S"
+            ariaLabel="Cambiar atajo del panel de fragmentos"
+            onChange={(sc) => {
+              c.snippets_shortcut = sc;
+            }}
+          />
+          <p class="rb-hint">Abre plantillas y el bloc de notas.</p>
+        </div>
+      </div>
+    {/snippet}
+
+    {#snippet audio(c: AppConfig, s: SecretsStatus)}
+      <div class="rb-settings-group">
+        <div class="rb-settings-group-toolbar">
+          <h4 class="rb-settings-group-title">Entrada y salida</h4>
+          <div class="rb-settings-actions">
+            <button
+              type="button"
+              class="rb-btn rb-btn-ghost text-xs"
+              onclick={refreshDevices}
+              disabled={devicesLoading}
+            >
+              {devicesLoading ? "Detectando…" : "Detectar de nuevo"}
+            </button>
+            <button
+              type="button"
+              class="rb-btn rb-btn-ghost text-xs"
+              onclick={runAudioTest}
+              disabled={devicesLoading || audioTestRunning || !cfg}
+            >
+              {audioTestRunning ? "Probando 5 s…" : "Probar audio"}
+            </button>
+          </div>
+        </div>
+
+        <div class="rb-settings-block">
+          <p class="rb-settings-row-label">Perfil para reuniones</p>
+          <p class="rb-hint mt-1">
+            Equilibra calidad, comodidad y las pistas que se graban.
+          </p>
+          <div
+            class="mt-3 flex flex-wrap gap-2"
+            role="group"
+            aria-label="Perfil de audio"
+          >
+            <button
+              type="button"
+              class="rb-btn rb-btn-primary text-xs"
+              onclick={applyQualityProfile}
+              disabled={devicesLoading || inputDevices.length === 0}
+            >
+              Proteger calidad
+            </button>
+            <button
+              type="button"
+              class="rb-btn rb-btn-soft text-xs"
+              onclick={applyHeadsetProfile}
+              disabled={devicesLoading || inputDevices.length === 0}
+            >
+              Usar mic Bluetooth
+            </button>
+            <button
+              type="button"
+              class="rb-btn rb-btn-soft text-xs"
+              onclick={applySystemOnlyProfile}
+              disabled={devicesLoading || outputDevices.length === 0}
+            >
+              Solo otros
+            </button>
+          </div>
+          <p class="rb-hint mt-2">
+            Recomendado: micrófono interno o USB + salida Bluetooth (mantiene
+            A2DP estéreo).
+          </p>
+        </div>
+
+        <label class="rb-label">
+          Micrófono (entrada)
+          <select class="rb-field" bind:value={c.mic_device_id}>
+            <option value="">
+              Por defecto del sistema{defaultInputName
+                ? ` · ${defaultInputName}`
+                : ""}
+            </option>
+            {#each inputDevices as device (device.id)}
+              <option value={device.id}>
+                {device.name}{device.is_default
+                  ? " · predeterminado"
+                  : ""}{deviceFormat(device)}{device.may_not_open
+                  ? " · puede no abrir"
+                  : ""}
+              </option>
+            {/each}
+          </select>
+        </label>
+        {#if micMissing}
+          <span class="rb-chip rb-chip-warn"
+            >El micrófono guardado no está conectado. Detecta de nuevo o elige
+            otro.</span
+          >
+        {:else if bluetoothMicActive && !c.speakers_mode}
+          <div class="rb-banner rb-banner-warn" role="status">
+            <p class="text-xs font-medium">
+              Esta entrada puede activar Hands-Free
+            </p>
+            <p class="rb-hint mt-1">
+              Al grabar te pediremos confirmación. Usa «Proteger calidad» para
+              mantener el audio estéreo.
+            </p>
+          </div>
+        {/if}
+
+        <label class="rb-label">
+          Altavoces / auriculares (salida)
+          <select class="rb-field" bind:value={c.output_device_id}>
+            <option value="">
+              Por defecto del sistema{defaultOutputName
+                ? ` · ${defaultOutputName}`
+                : ""}
+            </option>
+            {#each outputDevices as device (device.id)}
+              <option value={device.id}>
+                {device.name}{device.is_default
+                  ? " · predeterminado"
+                  : ""}{deviceFormat(device)}
+              </option>
+            {/each}
+          </select>
+        </label>
+        {#if outputMissing}
+          <span class="rb-chip rb-chip-warn"
+            >La salida guardada no está conectada. Detecta de nuevo o elige
+            otra.</span
+          >
+        {/if}
+
+        {#if audioTestError}
+          <div class="rb-banner rb-banner-warn" role="alert">
+            <p class="text-xs font-medium">La prueba no pudo completarse</p>
+            <p class="rb-hint mt-1">{audioTestError}</p>
+          </div>
+        {:else if audioTest}
+          <div
+            class="rb-banner {audioTest.mic?.silent || audioTest.system?.silent
+              ? 'rb-banner-warn'
+              : 'rb-banner-info'}"
+            role="status"
+            aria-live="polite"
+          >
+            <p class="text-xs font-medium">Resultado de la prueba</p>
+            <p class="rb-hint mt-1">
+              {describeTrack("Micrófono", audioTest.mic)}
+            </p>
+            <p class="rb-hint">
+              {describeTrack("Otros", audioTest.system)}
+            </p>
+            {#if audioTest.preflight.risk === "bluetooth_hands_free"}
+              <p class="rb-hint mt-2">
+                Puede activar Hands-Free. Aplica «Proteger calidad» y repite la
+                prueba.
+              </p>
+            {/if}
+          </div>
+        {/if}
+
+        {#if devicesError}
+          <span class="rb-chip rb-chip-warn">{devicesError}</span>
+        {:else}
+          <p class="rb-hint">
+            {inputDevices.length} entrada(s), {outputDevices.length} salida(s).
+            Entrada: grabación y dictado. Salida: «Otros» y beep.
+          </p>
+          {#if fewMicsNoHeadset}
+            <span class="rb-chip rb-chip-warn">
+              No aparece un micrófono Bluetooth. En Sonido de Windows elige el
+              perfil Hands-Free del auricular (no solo A2DP) y pulsa «Detectar
+              de nuevo».
+            </span>
+          {:else}
+            <p class="rb-hint">
+              Bluetooth: el micrófono suele estar en Hands-Free; A2DP es solo
+              salida. Grabar con mic del auricular baja la calidad de lo que
+              escuchas hasta detener. Evítalo con mic interno + salida BT, o
+              Modo parlantes.
+            </p>
+          {/if}
+        {/if}
+      </div>
+    {/snippet}
+
+    {#snippet meetings(c: AppConfig, s: SecretsStatus)}
+      <div class="rb-settings-group">
+        <h4 class="rb-settings-group-title">Idioma y transcripción</h4>
+
+        <label class="rb-label">
+          Idioma de la reunión
+          <select class="rb-field" bind:value={c.language}>
+            <option value="es">Español (recomendado)</option>
+            <option value="auto">Autodetectar (puede fallar con ruido)</option>
+            <option value="en">Inglés</option>
+            <option value="pt">Portugués</option>
+            <option value="fr">Francés</option>
+          </select>
+        </label>
+        <p class="rb-hint">
+          Autodetectar a menudo inventa inglés con audio corto o ruidoso.
+        </p>
+
+        <label class="rb-label">
+          Modelo para reuniones
+          <select class="rb-field" bind:value={c.whisper_model}>
+            {#each models as m (m.id)}
+              <option value={m.id}>
+                {m.display_name}{m.downloaded ? " · listo" : ""}
+              </option>
+            {/each}
+          </select>
+        </label>
+        <p class="rb-hint">
+          Base es rápido; Small prioriza precisión si hay más memoria.
+        </p>
+        {#if meetingModel}
+          {@const row = modelRow(meetingModel)}
+          {#if row}
+            <div class="flex items-center justify-between gap-3">
+              {#if row.model.downloaded}
+                <span class="rb-chip rb-chip-ok">Listo</span>
+              {:else if row.downloading}
+                <span class="rb-chip rb-chip-warn">Descargando… {row.pct}%</span>
+              {:else}
+                <span class="rb-hint"
+                  >No descargado · {formatMegabytes(row.model.approx_size_bytes)}</span
+                >
+                <button
+                  type="button"
+                  class="rb-btn rb-btn-primary"
+                  onclick={() => startDownload(row.model.id)}
+                  disabled={Boolean(downloading)}>Descargar</button
+                >
+              {/if}
+            </div>
+            {#if row.downloading}
+              <div class="rb-level-track">
+                <div
+                  class="rb-level-fill rb-level-mic"
+                  style="width: {row.pct}%"
+                ></div>
+              </div>
+            {/if}
+          {/if}
+        {/if}
+
+        <label class="rb-settings-row rb-check">
+          <span class="rb-settings-row-copy">
+            <span class="rb-settings-row-label">Al terminar una reunión</span>
+            <span class="rb-hint">
+              Transcribe en segundo plano. Si falla, el audio queda y puedes
+              reintentar.
+            </span>
+          </span>
+          <span class="rb-settings-row-control">
+            <input
+              type="checkbox"
+              bind:checked={c.auto_transcribe_after_recording}
+            />
+          </span>
+        </label>
+      </div>
+
+      <div class="rb-settings-group">
+        <h4 class="rb-settings-group-title">Grabación</h4>
+
+        <div class="rb-settings-row">
+          <div class="rb-settings-row-copy">
+            <span class="rb-settings-row-label">Carpeta de grabaciones</span>
+          </div>
+          <div class="rb-settings-row-control">
+            <button
+              type="button"
+              class="rb-btn rb-btn-soft text-xs"
+              onclick={() => void openDataDir("recordings")}
+            >
+              Abrir carpeta
+            </button>
+          </div>
+        </div>
+
+        <label class="rb-settings-row rb-check">
+          <span class="rb-settings-row-copy">
+            <span class="rb-settings-row-label">Modo parlantes</span>
+            <span class="rb-hint">
+              Sin auriculares el mic captura eco. Actívalo para grabar solo
+              «otros».
+            </span>
+          </span>
+          <span class="rb-settings-row-control">
+            <input type="checkbox" bind:checked={c.speakers_mode} />
+          </span>
+        </label>
+
+        <label class="rb-label" class:opacity-50={c.speakers_mode}>
+          Qué grabar
+          <select
+            class="rb-field"
+            bind:value={c.record_tracks}
+            disabled={c.speakers_mode}
+          >
+            <option value="both">Yo + otros</option>
+            <option value="mic">Solo yo</option>
+            <option value="system">Solo otros</option>
+          </select>
+        </label>
+
+        <label class="rb-label" class:opacity-50={c.speakers_mode}>
+          Qué transcribir
+          <select
+            class="rb-field"
+            bind:value={c.transcribe_tracks}
+            disabled={c.speakers_mode}
+          >
+            <option value="both">Ambas pistas</option>
+            <option value="mic">Solo yo</option>
+            <option value="system">Solo otros</option>
+          </select>
+          <span class="rb-hint"
+            >Útil si ya grabaste ambas y solo quieres procesar una.</span
+          >
+        </label>
+
+        {#if c.speakers_mode}
+          <span class="rb-chip rb-chip-warn">Modo parlantes: solo «otros»</span>
+        {/if}
+
+        <label class="rb-settings-row rb-check">
+          <span class="rb-settings-row-copy">
+            <span class="rb-settings-row-label"
+              >Sonido al grabar (aviso de consentimiento)</span
+            >
+          </span>
+          <span class="rb-settings-row-control">
+            <input type="checkbox" bind:checked={c.beep_on_start} />
+          </span>
+        </label>
+
+        <label class="rb-settings-row rb-check">
+          <span class="rb-settings-row-copy">
+            <span class="rb-settings-row-label">Detectar reuniones abiertas</span>
+            <span class="rb-hint">
+              Revisa localmente Teams, Zoom, Meet y Webex. Solo ofrece grabar.
+            </span>
+          </span>
+          <span class="rb-settings-row-control">
+            <input type="checkbox" bind:checked={c.detect_meetings} />
+          </span>
+        </label>
+      </div>
+
+      <div class="rb-settings-group">
+        <h4 class="rb-settings-group-title">Conservación</h4>
+        <div class="rb-settings-block">
+          <label class="rb-label">
+            Eliminar grabaciones con más de
+            <select
+              class="rb-field"
+              bind:value={c.retention_days}
+              onchange={() => {
+                retentionPreviewData = null;
+                retentionConfirming = false;
+              }}
+            >
+              <option value={0}>Nunca</option>
+              <option value={30}>30 días</option>
+              <option value={90}>90 días</option>
+              <option value={180}>180 días</option>
+              <option value={365}>1 año</option>
+            </select>
+          </label>
+          <label
+            class="rb-check mt-3"
+            class:opacity-50={c.retention_days === 0}
+          >
+            <input
+              type="checkbox"
+              bind:checked={c.retention_auto_cleanup}
+              disabled={c.retention_days === 0}
+            />
+            Limpiar automáticamente al iniciar
+          </label>
+          <p class="rb-hint mt-2">
+            Incluye audio, transcripción y resumen. Los exportados fuera de Atic
+            no se eliminan.
+          </p>
+          <div class="mt-3 flex flex-wrap gap-2">
+            <button
+              type="button"
+              class="rb-btn rb-btn-soft"
+              onclick={reviewRetention}
+              disabled={retentionBusy || c.retention_days === 0}
+            >
+              {retentionBusy ? "Revisando…" : "Revisar vencidos"}
+            </button>
+            {#if retentionPreviewData?.count && !retentionConfirming}
+              <button
+                type="button"
+                class="rb-btn rb-btn-danger"
+                onclick={() => (retentionConfirming = true)}
+              >
+                Preparar eliminación
+              </button>
+            {/if}
+            {#if retentionConfirming}
+              <button
+                type="button"
+                class="rb-btn rb-btn-danger-solid"
+                onclick={runRetentionCleanup}
+                disabled={retentionBusy}
+              >
+                Confirmar eliminación permanente
+              </button>
+              <button
+                type="button"
+                class="rb-btn rb-btn-ghost"
+                onclick={() => (retentionConfirming = false)}
+                disabled={retentionBusy}
+              >
+                Cancelar
+              </button>
+            {/if}
+          </div>
+          {#if retentionPreviewData}
+            <p class="rb-hint mt-2" aria-live="polite">
+              {retentionPreviewData.count === 0
+                ? "No hay grabaciones vencidas."
+                : `${retentionPreviewData.count} grabación(es), ${formatMegabytes(retentionPreviewData.bytes)}.`}
+            </p>
+          {/if}
+          {#if retentionError}
+            <span class="rb-chip rb-chip-warn" role="alert">{retentionError}</span>
+          {/if}
+        </div>
+      </div>
+
+      <details class="rb-settings-details">
+        <summary>Avanzado</summary>
+        <div class="rb-settings-details-body">
+          <label class="rb-check">
+            <input type="checkbox" bind:checked={c.live_transcription} />
+            <span>
+              <span class="font-medium">Vista previa en vivo (experimental)</span>
+              <span class="rb-hint mt-0.5 block">
+                Subtítulos provisionales mientras grabas. Puede tener retraso o
+                frases incompletas; nunca se guarda ni reemplaza la
+                transcripción final.
+              </span>
+            </span>
+          </label>
+
+          {#if c.live_transcription}
+            <label class="rb-label">
+              Motor en vivo
+              <select class="rb-field" bind:value={c.live_engine}>
+                <option value="local">Local (Whisper en el PC)</option>
+                <option value="groq">Groq Whisper (nube)</option>
+              </select>
+            </label>
+            {#if c.live_engine === "groq"}
+              <p class="rb-hint">
+                Con Groq el audio de la reunión se envía a la nube. En local no
+                sale del PC.
+              </p>
+              <label class="rb-label">
+                Modelo Groq (live)
+                <select class="rb-field" bind:value={c.live_groq_model}>
+                  {#each GROQ_WHISPER_OPTIONS as opt (opt.id)}
+                    <option value={opt.id}>{opt.label}</option>
+                  {/each}
+                </select>
+              </label>
+              <span
+                class="rb-chip {s.providers?.groq
+                  ? 'rb-chip-ok'
+                  : 'rb-chip-warn'}"
+              >
+                {s.providers?.groq
+                  ? "Key configurada en el llavero"
+                  : "Sin key — se usará Whisper local"}
+              </span>
+            {:else}
+              <p class="rb-hint">
+                Local procesa en tu PC. Groq es más rápido pero envía audio a la
+                nube.
+              </p>
+            {/if}
+            {#if c.live_engine === "local" || !s.providers?.groq}
+              <label class="rb-label">
+                Modelo para transcripción en vivo
+                <select class="rb-field" bind:value={c.live_whisper_model}>
+                  {#each models as m (m.id)}
+                    <option value={m.id}>
+                      {m.display_name}{m.downloaded ? " · listo" : ""}
+                    </option>
+                  {/each}
+                </select>
+              </label>
+              <p class="rb-hint">
+                Small equilibra latencia y precisión. Base es más ligero. También
+                se usa si eliges Groq sin API key.
+              </p>
+              {#if liveModel}
+                {@const row = modelRow(liveModel)}
+                {#if row}
+                  <div class="flex items-center justify-between gap-3">
+                    {#if row.model.downloaded}
+                      <span class="rb-chip rb-chip-ok">Listo</span>
+                    {:else if row.downloading}
+                      <span class="rb-chip rb-chip-warn"
+                        >Descargando… {row.pct}%</span
+                      >
+                    {:else}
+                      <span class="rb-hint"
+                        >No descargado · {formatMegabytes(
+                          row.model.approx_size_bytes,
+                        )}</span
+                      >
+                      <button
+                        type="button"
+                        class="rb-btn rb-btn-primary"
+                        onclick={() => startDownload(row.model.id)}
+                        disabled={Boolean(downloading)}>Descargar</button
+                      >
+                    {/if}
+                  </div>
+                  {#if row.downloading}
+                    <div class="rb-level-track">
+                      <div
+                        class="rb-level-fill rb-level-mic"
+                        style="width: {row.pct}%"
+                      ></div>
+                    </div>
+                  {/if}
+                {/if}
+              {/if}
+            {/if}
+
+            {#if showGroqKeyInTranscription}
+              <label class="rb-label">
+                API key Groq (transcripción en vivo)
+                <input
+                  type="password"
+                  class="rb-field"
+                  placeholder={s.providers?.groq
+                    ? "•••••••• (llavero — escribe para reemplazar)"
+                    : "Pega tu API key de Groq…"}
+                  bind:value={groqDictationKey}
+                  autocomplete="off"
+                />
+              </label>
+              <p class="rb-hint">Crea tu cuenta y API key en groq.com</p>
+            {/if}
+          {/if}
+
+          <label class="rb-label">
+            Supresión de ruido (mic)
+            <select class="rb-field" bind:value={c.noise_suppression}>
+              <option value="off">Desactivada (reuniones)</option>
+              <option value="low">Baja</option>
+              <option value="medium">Media (recomendado en notebook)</option>
+              <option value="high">Alta (puede silenciar la voz)</option>
+            </select>
+          </label>
+          <p class="rb-hint">
+            Solo afecta a «Yo». El dictado usa al menos media. Alta puede dejar
+            la pista casi en silencio. No afecta a «Otros».
+          </p>
+        </div>
+      </details>
+    {/snippet}
+
+    {#snippet dictation(c: AppConfig, s: SecretsStatus)}
+      <div class="rb-settings-group">
+        <h4 class="rb-settings-group-title">Modo</h4>
+        <div class="rb-settings-row">
+          <div class="rb-settings-row-copy">
+            <span class="rb-settings-row-label">Cómo activar</span>
+            <span class="rb-hint">El atajo está en Atajos.</span>
+          </div>
+          <div class="rb-settings-row-control">
+            <select class="rb-field" bind:value={c.dictation_mode}>
+              <option value="push_to_talk">Push-to-talk (mantener)</option>
+              <option value="toggle">Toggle (pulsar para iniciar/parar)</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <div class="rb-settings-group">
+        <h4 class="rb-settings-group-title">Motor y micrófono</h4>
+        <label class="rb-label">
+          Motor de dictado
+          <select class="rb-field" bind:value={c.dictation_backend}>
+            <option value="local">Local (Whisper en el PC)</option>
+            <option value="groq">Groq Whisper (nube, más rápido)</option>
+          </select>
+        </label>
+        <p class="rb-hint">
+          Groq es más rápido y requiere API key; sin ella se usa local. El audio
+          solo sale del PC con Groq.
+        </p>
+
+        <label class="rb-label">
+          Micrófono para dictado
+          <select class="rb-field" bind:value={c.dictation_mic_device_id}>
+            <option value="">Usar el micrófono de reuniones</option>
+            {#each inputDevices as device (device.id)}
+              <option value={device.id}>
+                {device.name}{deviceFormat(device)}
+              </option>
+            {/each}
+          </select>
+        </label>
+        <p class="rb-hint">
+          Puedes usar Bluetooth solo para dictados y un mic interno o USB para
+          reuniones.
+        </p>
+
+        {#if c.dictation_backend === "groq"}
+          <label class="rb-label">
+            Modelo Groq (dictado)
+            <select class="rb-field" bind:value={c.dictation_groq_model}>
+              {#each GROQ_WHISPER_OPTIONS as opt (opt.id)}
+                <option value={opt.id}>{opt.label}</option>
+              {/each}
+            </select>
+          </label>
+          <p class="rb-hint">
+            Turbo es más rápido y barato; Large v3 prioriza precisión.
+          </p>
+          <label class="rb-label">
+            API key Groq (necesaria para nube)
+            <input
+              type="password"
+              class="rb-field"
+              placeholder={s.providers?.groq
+                ? "•••••••• (llavero — escribe para reemplazar)"
+                : "Pega tu API key de Groq…"}
+              bind:value={groqDictationKey}
+              autocomplete="off"
+            />
+          </label>
+          <p class="rb-hint">Crea tu cuenta y API key en groq.com</p>
+          <span
+            class="rb-chip {s.providers?.groq
+              ? 'rb-chip-ok'
+              : 'rb-chip-warn'}"
+          >
+            {s.providers?.groq
+              ? "Key configurada en el llavero"
+              : "Sin key — se usará Whisper local"}
+          </span>
+        {/if}
+
+        {#if c.dictation_backend !== "groq"}
+          <label class="rb-label">
+            Modelo local para dictado
+            <select class="rb-field" bind:value={c.dictation_whisper_model}>
+              {#each models as m (m.id)}
+                <option value={m.id}>
+                  {m.display_name}{m.downloaded ? " · listo" : ""}
+                </option>
+              {/each}
+            </select>
+          </label>
+          <p class="rb-hint">
+            Base es más rápido; Small si necesitas más precisión.
+          </p>
+          {#if dictationModel}
+            {@const row = modelRow(dictationModel)}
+            {#if row}
+              <div class="flex items-center justify-between gap-3">
+                {#if row.model.downloaded}
+                  <span class="rb-chip rb-chip-ok">Listo</span>
+                {:else if row.downloading}
+                  <span class="rb-chip rb-chip-warn"
+                    >Descargando… {row.pct}%</span
+                  >
+                {:else}
+                  <span class="rb-hint"
+                    >No descargado · {formatMegabytes(
+                      row.model.approx_size_bytes,
+                    )}</span
+                  >
+                  <button
+                    type="button"
+                    class="rb-btn rb-btn-primary"
+                    onclick={() => startDownload(row.model.id)}
+                    disabled={Boolean(downloading)}>Descargar</button
+                  >
+                {/if}
+              </div>
+              {#if row.downloading}
+                <div class="rb-level-track">
+                  <div
+                    class="rb-level-fill rb-level-mic"
+                    style="width: {row.pct}%"
+                  ></div>
+                </div>
+              {/if}
+            {/if}
+          {/if}
+        {/if}
+      </div>
+    {/snippet}
+
+    {#snippet summary(c: AppConfig, s: SecretsStatus)}
+      <div class="rb-settings-group">
+        <h4 class="rb-settings-group-title">Proveedor</h4>
+        <label class="rb-label">
+          Proveedor
+          <select
+            class="rb-field"
+            value={c.summary_backend}
+            onchange={(e) =>
+              onProviderChange((e.currentTarget as HTMLSelectElement).value)}
+          >
+            {#each providers as p (p.id)}
+              <option value={p.id}>{p.display_name}</option>
+            {/each}
+          </select>
+        </label>
+
+        {#if selectedProvider}
+          <label class="rb-label">
+            Modelo
+            {#if (selectedProvider.suggested_models?.length ?? 0) > 0}
+              <select class="rb-field" bind:value={c.summary_model}>
+                {#each selectedProvider.suggested_models as m (m)}
+                  <option value={m}>{m}</option>
+                {/each}
+                {#if c.summary_model &&
+                  !selectedProvider.suggested_models.includes(c.summary_model)}
+                  <option value={c.summary_model}>{c.summary_model}</option>
+                {/if}
+              </select>
+            {:else}
+              <input
+                class="rb-field"
+                bind:value={c.summary_model}
+                placeholder={selectedProvider.default_model ||
+                  "nombre-del-modelo…"}
+              />
+            {/if}
+          </label>
+
+          {#if selectedProvider.kind !== "claude"}
+            <label class="rb-label">
+              URL base
+              <input
+                class="rb-field"
+                bind:value={c.summary_base_url}
+                placeholder={selectedProvider.default_base_url || "https://…/v1"}
+                disabled={!selectedProvider.base_url_editable}
+              />
+            </label>
+          {/if}
+
+          {#if selectedProvider.needs_api_key && selectedProvider.secret_kind}
+            <label class="rb-label">
+              API key
+              <input
+                type="password"
+                class="rb-field"
+                placeholder={hasProviderKey
+                  ? "•••••••• (ya guardada — escribe para reemplazar)"
+                  : "Pega tu API key…"}
+                bind:value={apiKeyInput}
+                autocomplete="off"
+              />
+            </label>
+            {#if hasProviderKey}
+              <button
+                type="button"
+                class="rb-btn rb-btn-danger"
+                onclick={clearProviderKey}
+              >
+                Eliminar API key
+              </button>
+            {:else}
+              <span class="rb-chip rb-chip-warn"
+                >Necesitas una API key para este proveedor.</span
+              >
+            {/if}
+          {/if}
+
+          {#if selectedProvider.id === "ollama"}
+            <span class="rb-chip {ollamaOk ? 'rb-chip-ok' : 'rb-chip-warn'}">
+              {ollamaOk
+                ? "Ollama responde"
+                : "Ollama no responde — ¿está en marcha?"}
+            </span>
+          {/if}
+
+          {#if selectedProvider.id === "custom"}
+            <p class="rb-hint">
+              Endpoint compatible con OpenAI Chat Completions (Together,
+              Fireworks, LM Studio, vLLM, etc.).
+            </p>
+          {/if}
+        {/if}
+      </div>
+
+      <div class="rb-settings-group">
+        <h4 class="rb-settings-group-title">Enviar</h4>
+        <div class="rb-settings-row">
+          <div class="rb-settings-row-copy">
+            <span class="rb-settings-row-label">Cómo enviar</span>
+            <span class="rb-hint">Mailto abre el cliente; SMTP envía desde Atic.</span>
+          </div>
+          <div class="rb-settings-row-control">
+            <select class="rb-field" bind:value={c.mail_backend}>
+              <option value="mailto">Abrir cliente de correo (mailto)</option>
+              <option value="smtp">SMTP directo</option>
+            </select>
+          </div>
+        </div>
+
+        {#if c.mail_backend === "smtp"}
+          <details class="rb-settings-details">
+            <summary>Configuración SMTP</summary>
+            <div class="rb-settings-details-body">
+              <label class="rb-label">
+                Host
+                <input
+                  class="rb-field"
+                  bind:value={c.smtp_host}
+                  placeholder="smtp.ejemplo.com"
+                />
+              </label>
+              <div class="rb-settings-two-col">
+                <label class="rb-label">
+                  Puerto
+                  <input
+                    type="number"
+                    class="rb-field"
+                    bind:value={c.smtp_port}
+                  />
+                </label>
+                <label class="rb-check items-end pb-2">
+                  <input type="checkbox" bind:checked={c.smtp_use_tls} />
+                  STARTTLS
+                </label>
+              </div>
+              <label class="rb-label">
+                Usuario
+                <input class="rb-field" bind:value={c.smtp_username} />
+              </label>
+              <label class="rb-label">
+                Remitente (From)
+                <input
+                  class="rb-field"
+                  bind:value={c.smtp_from}
+                  placeholder="opcional"
+                />
+              </label>
+              <label class="rb-label">
+                Contraseña
+                <input
+                  type="password"
+                  class="rb-field"
+                  placeholder={s.has_smtp_password
+                    ? "•••••••• (ya guardada)"
+                    : ""}
+                  bind:value={smtpPassword}
+                  autocomplete="off"
+                />
+              </label>
+              {#if s.has_smtp_password}
+                <button
+                  type="button"
+                  class="rb-btn rb-btn-danger"
+                  onclick={clearSmtpPassword}
+                >
+                  Eliminar contraseña
+                </button>
+              {/if}
+            </div>
+          </details>
+        {/if}
+      </div>
+    {/snippet}
+
+    {#snippet captures(c: AppConfig, s: SecretsStatus)}
+      <div class="rb-settings-group">
+        <h4 class="rb-settings-group-title">Atajo</h4>
+        <p class="rb-hint">Cambia el atajo en Atajos.</p>
+      </div>
+
+      <div class="rb-settings-group">
+        <h4 class="rb-settings-group-title">Shelf y retención</h4>
+
+        <label class="rb-label">
+          Lado del shelf
+          <select class="rb-field" bind:value={c.capture_shelf_side}>
+            <option value="right">Derecha</option>
+            <option value="left">Izquierda</option>
+          </select>
+        </label>
+
+        <label class="rb-label">
+          Retracción del shelf (segundos)
+          <input
+            class="rb-field"
+            type="number"
+            min="5"
+            max="120"
+            bind:value={c.capture_shelf_timeout_seconds}
+          />
+        </label>
+
+        <label class="rb-label">
+          Conservar capturas (horas, 0 = sin límite)
+          <input
+            class="rb-field"
+            type="number"
+            min="0"
+            max="720"
+            bind:value={c.capture_retention_hours}
+          />
+        </label>
+      </div>
+
+      <div class="rb-settings-group">
+        <h4 class="rb-settings-group-title">Captura</h4>
+
+        <label class="rb-settings-row rb-check">
+          <span class="rb-settings-row-copy">
+            <span class="rb-settings-row-label">Incluir el cursor</span>
+          </span>
+          <span class="rb-settings-row-control">
+            <input type="checkbox" bind:checked={c.capture_include_cursor} />
+          </span>
+        </label>
+
+        <label class="rb-label">
+          Al hacer clic en la miniatura
+          <select class="rb-field" bind:value={c.capture_click_action}>
+            <option value="preview">Abrir vista previa</option>
+            <option value="location">Abrir ubicación</option>
+          </select>
+        </label>
+
+        <div class="rb-settings-actions">
+          <button
+            type="button"
+            class="rb-btn rb-btn-soft text-xs"
+            onclick={() => void openDataDir("captures")}
+          >
+            Abrir carpeta
+          </button>
+          <button
+            type="button"
+            class="rb-btn rb-btn-soft text-xs"
+            onclick={runCaptureCleanup}
+          >
+            Limpiar capturas ahora
+          </button>
+        </div>
+        {#if captureCleanupMsg}
+          <p class="rb-hint mt-1">{captureCleanupMsg}</p>
+        {/if}
+      </div>
+    {/snippet}
+
     <div class="rb-settings-layout text-sm">
       <nav class="rb-settings-sidebar" aria-label="Secciones de ajustes">
         {#each SETTINGS_SECTIONS as section (section.id)}
@@ -598,1090 +1786,20 @@
         <div class="rb-settings-panel">
           <h3 class="rb-settings-panel-title">{activeSectionLabel}</h3>
 
-          {#if activeSection === "appearance"}
-            <div class="rb-settings-group">
-              <label class="rb-label">
-                Tema
-                <select class="rb-field" bind:value={cfg.ui_theme}>
-                  <option value="light">Claro</option>
-                  <option value="dark">Oscuro</option>
-                  <option value="system">Sistema</option>
-                </select>
-              </label>
-              <p class="rb-hint">
-                También puedes cambiarlo con el botón de sol/luna/sistema en la
-                barra superior.
-              </p>
-
-              <label class="rb-check">
-                <input type="checkbox" bind:checked={cfg.ui_sounds} />
-                Sonidos de interfaz
-              </label>
-              <p class="rb-hint">
-                Toques graves al capturar y al dictar (tipo vibración suave).
-              </p>
-            </div>
+          {#if activeSection === "general"}
+            {@render general(cfg, secrets)}
           {:else if activeSection === "shortcuts"}
-            <div class="rb-settings-group">
-              <div>
-                <p class="mb-2 text-xs font-medium" style="color: var(--rb-muted)">
-                  Atajo de grabación
-                </p>
-                <HotkeyCapture
-                  value={cfg.global_shortcut}
-                  defaultValue="CmdOrCtrl+Shift+R"
-                  ariaLabel="Cambiar atajo de grabación"
-                  onChange={(sc) => {
-                    if (cfg) cfg.global_shortcut = sc;
-                  }}
-                />
-              </div>
-
-              <label class="rb-label">
-                Modo de dictado
-                <select class="rb-field" bind:value={cfg.dictation_mode}>
-                  <option value="push_to_talk">Push-to-talk (mantener)</option>
-                  <option value="toggle">Toggle (pulsar para iniciar/parar)</option>
-                </select>
-              </label>
-
-              <div>
-                <p class="mb-2 text-xs font-medium" style="color: var(--rb-muted)">
-                  Atajo de dictado
-                </p>
-                <HotkeyCapture
-                  value={cfg.dictation_shortcut}
-                  defaultValue="CmdOrCtrl+Shift+D"
-                  ariaLabel="Cambiar atajo de dictado"
-                  onChange={(sc) => {
-                    if (cfg) cfg.dictation_shortcut = sc;
-                  }}
-                />
-                <p class="rb-hint mt-1.5">
-                  {#if cfg.dictation_mode === "push_to_talk"}
-                    Mantén el atajo para hablar; al soltar, transcribe y pega.
-                  {:else}
-                    Pulsa para empezar, pulsa otra vez para transcribir y pegar.
-                  {/if}
-                  Acepta teclado o botón lateral del mouse (atrás/adelante). El
-                  botón de la pill siempre funciona en modo toggle.
-                </p>
-              </div>
-
-              <div>
-                <p class="mb-2 text-xs font-medium" style="color: var(--rb-muted)">
-                  Traer pill al cursor
-                </p>
-                <HotkeyCapture
-                  value={cfg.summon_pill_shortcut}
-                  defaultValue="CmdOrCtrl+Shift+P"
-                  ariaLabel="Cambiar atajo para traer la pill al cursor"
-                  onChange={(sc) => {
-                    if (cfg) cfg.summon_pill_shortcut = sc;
-                  }}
-                />
-                <p class="rb-hint mt-1.5">
-                  Muestra la pill (si estaba oculta) y la anima hasta el puntero del
-                  mouse.
-                </p>
-              </div>
-
-              <div>
-                <p class="mb-2 text-xs font-medium" style="color: var(--rb-muted)">
-                  Historial de clipboard
-                </p>
-                <HotkeyCapture
-                  value={cfg.clipboard_shortcut}
-                  defaultValue="CmdOrCtrl+Shift+V"
-                  ariaLabel="Cambiar atajo del historial de clipboard"
-                  onChange={(sc) => {
-                    if (cfg) cfg.clipboard_shortcut = sc;
-                  }}
-                />
-                <p class="rb-hint mt-1.5">
-                  Trae la pill al cursor y abre el panel con el historial local
-                  (texto e imágenes).
-                </p>
-              </div>
-
-              <div>
-                <p class="mb-2 text-xs font-medium" style="color: var(--rb-muted)">
-                  Fragmentos de texto
-                </p>
-                <HotkeyCapture
-                  value={cfg.snippets_shortcut}
-                  defaultValue="CmdOrCtrl+Shift+S"
-                  ariaLabel="Cambiar atajo del panel de fragmentos"
-                  onChange={(sc) => {
-                    if (cfg) cfg.snippets_shortcut = sc;
-                  }}
-                />
-                <p class="rb-hint mt-1.5">
-                  Trae la pill al cursor y abre plantillas reutilizables y el bloc
-                  de notas.
-                </p>
-              </div>
-            </div>
+            {@render shortcuts(cfg, secrets)}
           {:else if activeSection === "audio"}
-            <div class="rb-settings-group">
-              <div class="flex flex-wrap items-end justify-between gap-2">
-                <p class="text-xs font-medium" style="color: var(--rb-muted)">
-                  Entrada y salida
-                </p>
-                <div class="flex flex-wrap gap-2">
-                  <button
-                    type="button"
-                    class="rb-btn rb-btn-ghost text-xs"
-                    onclick={refreshDevices}
-                    disabled={devicesLoading}
-                  >
-                    {devicesLoading ? "Detectando…" : "Detectar de nuevo"}
-                  </button>
-                  <button
-                    type="button"
-                    class="rb-btn rb-btn-ghost text-xs"
-                    onclick={runAudioTest}
-                    disabled={devicesLoading || audioTestRunning || !cfg}
-                  >
-                    {audioTestRunning ? "Probando 5 s…" : "Probar audio"}
-                  </button>
-                </div>
-              </div>
-
-              <div class="rb-settings-block">
-                <p class="text-xs font-medium" style="color: var(--rb-text)">
-                  Perfil para reuniones
-                </p>
-                <p class="rb-hint mt-1">
-                  Elige cómo equilibrar calidad, comodidad y las pistas que se
-                  graban.
-                </p>
-                <div class="mt-3 flex flex-wrap gap-2" role="group" aria-label="Perfil de audio">
-                  <button
-                    type="button"
-                    class="rb-btn rb-btn-primary text-xs"
-                    onclick={applyQualityProfile}
-                    disabled={devicesLoading || inputDevices.length === 0}
-                  >
-                    Proteger calidad
-                  </button>
-                  <button
-                    type="button"
-                    class="rb-btn rb-btn-soft text-xs"
-                    onclick={applyHeadsetProfile}
-                    disabled={devicesLoading || inputDevices.length === 0}
-                  >
-                    Usar mic Bluetooth
-                  </button>
-                  <button
-                    type="button"
-                    class="rb-btn rb-btn-soft text-xs"
-                    onclick={applySystemOnlyProfile}
-                    disabled={devicesLoading || outputDevices.length === 0}
-                  >
-                    Solo otros
-                  </button>
-                </div>
-                <p class="rb-hint mt-2">
-                  Recomendado: micrófono interno o USB + salida Bluetooth. Así el
-                  auricular conserva el perfil estéreo A2DP.
-                </p>
-              </div>
-
-              <label class="rb-label">
-                Micrófono (entrada)
-                <select class="rb-field" bind:value={cfg.mic_device_id}>
-                  <option value="">
-                    Por defecto del sistema{defaultInputName
-                      ? ` · ${defaultInputName}`
-                      : ""}
-                  </option>
-                  {#each inputDevices as device (device.id)}
-                    <option value={device.id}>
-                      {device.name}{device.is_default
-                        ? " · predeterminado"
-                        : ""}{deviceFormat(device)}{device.may_not_open
-                        ? " · puede no abrir"
-                        : ""}
-                    </option>
-                  {/each}
-                </select>
-              </label>
-              {#if micMissing}
-                <span class="rb-chip rb-chip-warn"
-                  >El micrófono guardado no está conectado. Detecta de nuevo o elige
-                  otro.</span
-                >
-              {:else if bluetoothMicActive && !cfg.speakers_mode}
-                <div class="rb-banner rb-banner-warn" role="status">
-                  <p class="text-xs font-medium">
-                    Esta entrada puede activar Hands-Free
-                  </p>
-                  <p class="rb-hint mt-1">
-                    Al iniciar una grabación te pediremos confirmación. Usa
-                    «Proteger calidad» para mantener el audio estéreo del auricular.
-                  </p>
-                </div>
-              {/if}
-
-              <label class="rb-label">
-                Altavoces / auriculares (salida)
-                <select class="rb-field" bind:value={cfg.output_device_id}>
-                  <option value="">
-                    Por defecto del sistema{defaultOutputName
-                      ? ` · ${defaultOutputName}`
-                      : ""}
-                  </option>
-                  {#each outputDevices as device (device.id)}
-                    <option value={device.id}>
-                      {device.name}{device.is_default
-                        ? " · predeterminado"
-                        : ""}{deviceFormat(device)}
-                    </option>
-                  {/each}
-                </select>
-              </label>
-              {#if outputMissing}
-                <span class="rb-chip rb-chip-warn"
-                  >La salida guardada no está conectada. Detecta de nuevo o elige
-                  otra.</span
-                >
-              {/if}
-
-              {#if audioTestError}
-                <div class="rb-banner rb-banner-warn" role="alert">
-                  <p class="text-xs font-medium">La prueba no pudo completarse</p>
-                  <p class="rb-hint mt-1">{audioTestError}</p>
-                </div>
-              {:else if audioTest}
-                <div
-                  class="rb-banner {audioTest.mic?.silent || audioTest.system?.silent
-                    ? 'rb-banner-warn'
-                    : 'rb-banner-info'}"
-                  role="status"
-                  aria-live="polite"
-                >
-                  <p class="text-xs font-medium">Resultado de la prueba</p>
-                  <p class="rb-hint mt-1">
-                    {describeTrack("Micrófono", audioTest.mic)}
-                  </p>
-                  <p class="rb-hint">
-                    {describeTrack("Otros", audioTest.system)}
-                  </p>
-                  {#if audioTest.preflight.risk === "bluetooth_hands_free"}
-                    <p class="rb-hint mt-2">
-                      Windows está usando una combinación que puede activar
-                      Hands-Free. Aplica «Proteger calidad» y repite la prueba.
-                    </p>
-                  {/if}
-                </div>
-              {/if}
-
-              {#if devicesError}
-                <span class="rb-chip rb-chip-warn">{devicesError}</span>
-              {:else}
-                <p class="rb-hint">
-                  {inputDevices.length} entrada(s), {outputDevices.length} salida(s)
-                  detectadas. Entrada: grabación y dictado. Salida: audio del
-                  sistema («Otros») y beep.
-                </p>
-                {#if fewMicsNoHeadset}
-                  <span class="rb-chip rb-chip-warn">
-                    No aparece un micrófono Bluetooth. En Windows: Configuración →
-                    Sistema → Sonido → Entrada, elige el perfil Hands-Free / Headset
-                    Microphone del auricular (no solo «Auriciculares» A2DP, que es
-                    solo salida). Luego «Detectar de nuevo».
-                  </span>
-                {:else}
-                  <p class="rb-hint">
-                    Si conectas auriculares Bluetooth, Windows suele exponer el
-                    micrófono solo en Hands-Free («Headset Microphone» / «Hands-Free
-                    AG Audio»). A2DP es solo salida. Guarda Ajustes para aplicar.
-                  </p>
-                  <p class="rb-hint">
-                    Al grabar con el micrófono del auricular, Windows cambia a perfil
-                    Hands-Free y baja la calidad del audio que escuchas (mono, ~16 kHz).
-                    Al detener la grabación vuelve a la normalidad. Para evitarlo: usa
-                    micrófono interno + salida Bluetooth, o activa Modo parlantes (solo
-                    «otros»).
-                  </p>
-                {/if}
-              {/if}
-            </div>
-          {:else if activeSection === "transcription"}
-            <div class="rb-settings-group">
-              <label class="rb-label">
-                Idioma
-                <select class="rb-field" bind:value={cfg.language}>
-                  <option value="es">Español (recomendado)</option>
-                  <option value="auto">Autodetectar (puede fallar con ruido)</option>
-                  <option value="en">Inglés</option>
-                  <option value="pt">Portugués</option>
-                  <option value="fr">Francés</option>
-                </select>
-              </label>
-              <p class="rb-hint">
-                Si la reunión es en español, deja «Español». Autodetectar a menudo
-                inventa inglés con audio corto o ruidoso.
-              </p>
-              <label class="rb-label">
-                Modelo para reuniones
-                <select class="rb-field" bind:value={cfg.whisper_model}>
-                  {#each models as m (m.id)}
-                    <option value={m.id}>
-                      {m.display_name}{m.downloaded ? " · listo" : ""}
-                    </option>
-                  {/each}
-                </select>
-              </label>
-              <p class="rb-hint">
-                Base es el perfil local rápido. Elige Small si priorizas precisión
-                en reuniones largas y tienes más memoria disponible.
-              </p>
-              {#if meetingModel}
-                {@const row = modelRow(meetingModel)}
-                {#if row}
-                  <div class="flex items-center justify-between gap-3">
-                    {#if row.model.downloaded}
-                      <span class="rb-chip rb-chip-ok">Listo</span>
-                    {:else if row.downloading}
-                      <span class="rb-chip rb-chip-warn">Descargando… {row.pct}%</span>
-                    {:else}
-                      <span class="rb-hint"
-                        >No descargado · {formatMegabytes(row.model.approx_size_bytes)}</span
-                      >
-                      <button
-                        class="rb-btn rb-btn-primary"
-                        onclick={() => startDownload(row.model.id)}
-                        disabled={Boolean(downloading)}
-                        >Descargar</button
-                      >
-                    {/if}
-                  </div>
-                  {#if row.downloading}
-                    <div class="rb-level-track">
-                      <div
-                        class="rb-level-fill rb-level-mic"
-                        style="width: {row.pct}%"
-                      ></div>
-                    </div>
-                  {/if}
-                {/if}
-              {/if}
-
-              <label class="rb-check">
-                <input
-                  type="checkbox"
-                  bind:checked={cfg.auto_transcribe_after_recording}
-                />
-                Transcribir automáticamente al terminar
-              </label>
-              <p class="rb-hint">
-                Usa las pistas completas para obtener frases más coherentes. Se
-                ejecuta en segundo plano; si falla, el audio queda guardado y puedes
-                reintentar.
-              </p>
-            </div>
-
-            <div class="rb-settings-group">
-              <label class="rb-check">
-                <input type="checkbox" bind:checked={cfg.live_transcription} />
-                Vista previa en vivo (experimental)
-              </label>
-              <p class="rb-hint">
-                Muestra subtítulos provisionales mientras grabas. Puede tener retraso
-                o frases incompletas; nunca se guarda ni reemplaza la transcripción
-                final.
-              </p>
-
-              {#if cfg.live_transcription}
-                <label class="rb-label">
-                  Motor en vivo
-                  <select class="rb-field" bind:value={cfg.live_engine}>
-                    <option value="local">Local (Whisper en el PC)</option>
-                    <option value="groq">Groq Whisper (nube)</option>
-                  </select>
-                </label>
-                {#if cfg.live_engine === "groq"}
-                  <p class="rb-hint">
-                    Aviso de privacidad: al usar Groq, el audio de la reunión se
-                    envía a la nube de Groq para transcribir. En modo local el audio
-                    no sale de tu PC.
-                  </p>
-                  <label class="rb-label">
-                    Modelo Groq (live)
-                    <select class="rb-field" bind:value={cfg.live_groq_model}>
-                      {#each GROQ_WHISPER_OPTIONS as opt (opt.id)}
-                        <option value={opt.id}>{opt.label}</option>
-                      {/each}
-                    </select>
-                  </label>
-                  <span
-                    class="rb-chip {secrets?.providers?.groq
-                      ? 'rb-chip-ok'
-                      : 'rb-chip-warn'}"
-                  >
-                    {secrets?.providers?.groq
-                      ? "Key configurada en el llavero"
-                      : "Sin key — se usará Whisper local"}
-                  </span>
-                {:else}
-                  <p class="rb-hint">
-                    El motor local procesa el audio en tu PC. Groq es más rápido pero
-                    envía audio a la nube con tu API key.
-                  </p>
-                {/if}
-                {#if cfg.live_engine === "local" || !secrets?.providers?.groq}
-                  <label class="rb-label">
-                    Modelo para transcripción en vivo
-                    <select class="rb-field" bind:value={cfg.live_whisper_model}>
-                      {#each models as m (m.id)}
-                        <option value={m.id}>
-                          {m.display_name}{m.downloaded ? " · listo" : ""}
-                        </option>
-                      {/each}
-                    </select>
-                  </label>
-                  <p class="rb-hint">
-                    Small equilibra latencia y precisión en ventanas cortas. Base es
-                    más ligero si la máquina va justa de memoria. También se usa si
-                    eliges Groq sin API key.
-                  </p>
-                  {#if liveModel}
-                    {@const row = modelRow(liveModel)}
-                    {#if row}
-                      <div class="flex items-center justify-between gap-3">
-                        {#if row.model.downloaded}
-                          <span class="rb-chip rb-chip-ok">Listo</span>
-                        {:else if row.downloading}
-                          <span class="rb-chip rb-chip-warn"
-                            >Descargando… {row.pct}%</span
-                          >
-                        {:else}
-                          <span class="rb-hint"
-                            >No descargado · {formatMegabytes(
-                              row.model.approx_size_bytes,
-                            )}</span
-                          >
-                          <button
-                            class="rb-btn rb-btn-primary"
-                            onclick={() => startDownload(row.model.id)}
-                            disabled={Boolean(downloading)}
-                            >Descargar</button
-                          >
-                        {/if}
-                      </div>
-                      {#if row.downloading}
-                        <div class="rb-level-track">
-                          <div
-                            class="rb-level-fill rb-level-mic"
-                            style="width: {row.pct}%"
-                          ></div>
-                        </div>
-                      {/if}
-                    {/if}
-                  {/if}
-                {/if}
-
-                {#if showGroqKeyInTranscription}
-                  <label class="rb-label">
-                    API key Groq (transcripción en vivo)
-                    <input
-                      type="password"
-                      class="rb-field"
-                      placeholder={secrets?.providers?.groq
-                        ? "•••••••• (llavero — escribe para reemplazar)"
-                        : "Pega tu API key de Groq"}
-                      bind:value={groqDictationKey}
-                      autocomplete="off"
-                    />
-                  </label>
-                  <p class="rb-hint">Crea tu cuenta y API key en groq.com</p>
-                {/if}
-              {/if}
-            </div>
+            {@render audio(cfg, secrets)}
+          {:else if activeSection === "meetings"}
+            {@render meetings(cfg, secrets)}
           {:else if activeSection === "dictation"}
-            <div class="rb-settings-group">
-              <label class="rb-label">
-                Motor de dictado
-                <select class="rb-field" bind:value={cfg.dictation_backend}>
-                  <option value="local">Local (Whisper en el PC)</option>
-                  <option value="groq">Groq Whisper (nube, más rápido)</option>
-                </select>
-              </label>
-              <p class="rb-hint">
-                Groq es el modo rápido (nube) y requiere tu propia API key. Sin ella
-                se usa Whisper local. El audio sale del PC solo en modo Groq.
-              </p>
-
-              <label class="rb-label">
-                Micrófono para dictado
-                <select class="rb-field" bind:value={cfg.dictation_mic_device_id}>
-                  <option value="">Usar el micrófono de reuniones</option>
-                  {#each inputDevices as device (device.id)}
-                    <option value={device.id}>
-                      {device.name}{deviceFormat(device)}
-                    </option>
-                  {/each}
-                </select>
-              </label>
-              <p class="rb-hint">
-                Puedes usar el micrófono Bluetooth solo para dictados cortos y
-                mantener un micrófono interno o USB para reuniones.
-              </p>
-
-              {#if cfg.dictation_backend === "groq"}
-                <label class="rb-label">
-                  Modelo Groq (dictado)
-                  <select class="rb-field" bind:value={cfg.dictation_groq_model}>
-                    {#each GROQ_WHISPER_OPTIONS as opt (opt.id)}
-                      <option value={opt.id}>{opt.label}</option>
-                    {/each}
-                  </select>
-                </label>
-                <p class="rb-hint">
-                  Turbo es más rápido y barato; Large v3 prioriza precisión.
-                </p>
-                <label class="rb-label">
-                  API key Groq (necesaria para nube)
-                  <input
-                    type="password"
-                    class="rb-field"
-                    placeholder={secrets?.providers?.groq
-                      ? "•••••••• (llavero — escribe para reemplazar)"
-                      : "Pega tu API key de Groq"}
-                    bind:value={groqDictationKey}
-                    autocomplete="off"
-                  />
-                </label>
-                <p class="rb-hint">Crea tu cuenta y API key en groq.com</p>
-                <span
-                  class="rb-chip {secrets?.providers?.groq
-                    ? 'rb-chip-ok'
-                    : 'rb-chip-warn'}"
-                >
-                  {secrets?.providers?.groq
-                    ? "Key configurada en el llavero"
-                    : "Sin key — se usará Whisper local"}
-                </span>
-              {/if}
-
-              {#if cfg.dictation_backend !== "groq"}
-                <label class="rb-label">
-                  Modelo local para dictado
-                  <select class="rb-field" bind:value={cfg.dictation_whisper_model}>
-                    {#each models as m (m.id)}
-                      <option value={m.id}>
-                        {m.display_name}{m.downloaded ? " · listo" : ""}
-                      </option>
-                    {/each}
-                  </select>
-                </label>
-                <p class="rb-hint">
-                  Base es más rápido para frases cortas; puedes subir a Small si
-                  necesitas más precisión.
-                </p>
-                {#if dictationModel}
-                  {@const row = modelRow(dictationModel)}
-                  {#if row}
-                    <div class="flex items-center justify-between gap-3">
-                      {#if row.model.downloaded}
-                        <span class="rb-chip rb-chip-ok">Listo</span>
-                      {:else if row.downloading}
-                        <span class="rb-chip rb-chip-warn"
-                          >Descargando… {row.pct}%</span
-                        >
-                      {:else}
-                        <span class="rb-hint"
-                          >No descargado · {formatMegabytes(
-                            row.model.approx_size_bytes,
-                          )}</span
-                        >
-                        <button
-                          class="rb-btn rb-btn-primary"
-                          onclick={() => startDownload(row.model.id)}
-                          disabled={Boolean(downloading)}
-                          >Descargar</button
-                        >
-                      {/if}
-                    </div>
-                    {#if row.downloading}
-                      <div class="rb-level-track">
-                        <div
-                          class="rb-level-fill rb-level-mic"
-                          style="width: {row.pct}%"
-                        ></div>
-                      </div>
-                    {/if}
-                  {/if}
-                {/if}
-              {/if}
-            </div>
+            {@render dictation(cfg, secrets)}
           {:else if activeSection === "summary"}
-            <div class="rb-settings-group">
-          <label class="rb-label">
-            Proveedor
-            <select
-              class="rb-field"
-              value={cfg.summary_backend}
-              onchange={(e) =>
-                onProviderChange((e.currentTarget as HTMLSelectElement).value)}
-            >
-              {#each providers as p (p.id)}
-                <option value={p.id}>{p.display_name}</option>
-              {/each}
-            </select>
-          </label>
-
-          {#if selectedProvider}
-            <label class="rb-label">
-              Modelo
-              {#if (selectedProvider.suggested_models?.length ?? 0) > 0}
-                <select class="rb-field" bind:value={cfg.summary_model}>
-                  {#each selectedProvider.suggested_models as m (m)}
-                    <option value={m}>{m}</option>
-                  {/each}
-                  {#if cfg.summary_model &&
-                    !selectedProvider.suggested_models.includes(cfg.summary_model)}
-                    <option value={cfg.summary_model}>{cfg.summary_model}</option>
-                  {/if}
-                </select>
-              {:else}
-                <input
-                  class="rb-field"
-                  bind:value={cfg.summary_model}
-                  placeholder={selectedProvider.default_model ||
-                    "nombre-del-modelo"}
-                />
-              {/if}
-            </label>
-
-            {#if selectedProvider.kind !== "claude"}
-              <label class="rb-label">
-                URL base
-                <input
-                  class="rb-field"
-                  bind:value={cfg.summary_base_url}
-                  placeholder={selectedProvider.default_base_url ||
-                    "https://…/v1"}
-                  disabled={!selectedProvider.base_url_editable}
-                />
-              </label>
-            {/if}
-
-            {#if selectedProvider.needs_api_key && selectedProvider.secret_kind}
-              <label class="rb-label">
-                API key
-                <input
-                  type="password"
-                  class="rb-field"
-                  placeholder={hasProviderKey
-                    ? "•••••••• (ya guardada — escribe para reemplazar)"
-                    : "pega tu API key"}
-                  bind:value={apiKeyInput}
-                  autocomplete="off"
-                />
-              </label>
-              {#if hasProviderKey}
-                <button class="rb-btn rb-btn-danger" onclick={clearProviderKey}
-                  >Eliminar API key</button
-                >
-              {:else}
-                <p class="rb-hint" style="color: var(--rb-warn)">
-                  Necesitas una API key para este proveedor.
-                </p>
-              {/if}
-            {/if}
-
-            {#if selectedProvider.id === "ollama"}
-              <span class="rb-chip {ollamaOk ? 'rb-chip-ok' : 'rb-chip-warn'}">
-                {ollamaOk
-                  ? "Ollama responde"
-                  : "Ollama no responde — ¿está en marcha?"}
-              </span>
-            {/if}
-
-            {#if selectedProvider.id === "custom"}
-              <p class="rb-hint">
-                Endpoint compatible con OpenAI Chat Completions (Together,
-                Fireworks, LM Studio, vLLM, etc.).
-              </p>
-            {/if}
-          {/if}
-            </div>
-          {:else if activeSection === "recording"}
-            <div class="rb-settings-group">
-              <label class="rb-check">
-                <input type="checkbox" bind:checked={cfg.speakers_mode} />
-                <span>
-                  <span class="font-medium">Modo parlantes</span>
-                  <span class="rb-hint mt-0.5 block">
-                    Sin auriculares, el mic captura eco. Activa esto para grabar solo
-                    «otros» (audio del sistema).
-                  </span>
-                </span>
-              </label>
-
-              <label class="rb-label">
-                Supresión de ruido (mic)
-                <select class="rb-field" bind:value={cfg.noise_suppression}>
-                  <option value="off">Desactivada (reuniones)</option>
-                  <option value="low">Baja</option>
-                  <option value="medium">Media (recomendado en notebook)</option>
-                  <option value="high">Alta (puede silenciar la voz)</option>
-                </select>
-              </label>
-              <p class="rb-hint">
-                Solo afecta a «Yo» en grabaciones. El dictado usa al menos media
-                (ventiladores / ruido de fondo). Alta puede dejar la pista casi en
-                silencio. No afecta a «Otros».
-              </p>
-
-              <label class="rb-label" class:opacity-50={cfg.speakers_mode}>
-                Qué grabar
-                <select
-                  class="rb-field"
-                  bind:value={cfg.record_tracks}
-                  disabled={cfg.speakers_mode}
-                >
-                  <option value="both">Yo + otros</option>
-                  <option value="mic">Solo yo</option>
-                  <option value="system">Solo otros</option>
-                </select>
-              </label>
-
-              <label class="rb-label" class:opacity-50={cfg.speakers_mode}>
-                Qué transcribir
-                <select
-                  class="rb-field"
-                  bind:value={cfg.transcribe_tracks}
-                  disabled={cfg.speakers_mode}
-                >
-                  <option value="both">Ambas pistas</option>
-                  <option value="mic">Solo yo</option>
-                  <option value="system">Solo otros</option>
-                </select>
-                <span class="rb-hint"
-                  >Útil si ya grabaste ambas y solo quieres procesar una.</span
-                >
-              </label>
-
-              {#if cfg.speakers_mode}
-                <span class="rb-chip rb-chip-warn"
-                  >Modo parlantes: solo «otros»</span
-                >
-              {/if}
-
-              <div class="space-y-2.5 pt-1">
-                <label class="rb-check">
-                  <input type="checkbox" bind:checked={cfg.beep_on_start} />
-                  Sonido al grabar (aviso de consentimiento)
-                </label>
-                <label class="rb-check">
-                  <input type="checkbox" bind:checked={cfg.autostart} />
-                  Iniciar con el sistema (bandeja)
-                </label>
-                <label class="rb-check">
-                  <input type="checkbox" bind:checked={cfg.show_pill} />
-                  Mostrar pill flotante
-                </label>
-                <label class="rb-check">
-                  <input type="checkbox" bind:checked={cfg.detect_meetings} />
-                  <span>
-                    <span class="font-medium">Detectar reuniones abiertas</span>
-                    <span class="rb-hint mt-0.5 block">
-                      Revisa localmente títulos y procesos de Teams, Zoom, Meet y
-                      Webex. Solo ofrece grabar; nunca inicia por sí solo.
-                    </span>
-                  </span>
-                </label>
-              </div>
-
-              <div class="rb-settings-block">
-                <p class="text-xs font-medium" style="color: var(--rb-text)">
-                  Conservación de datos
-                </p>
-                <label class="rb-label mt-3">
-                  Eliminar grabaciones con más de
-                  <select
-                    class="rb-field"
-                    bind:value={cfg.retention_days}
-                    onchange={() => {
-                      retentionPreviewData = null;
-                      retentionConfirming = false;
-                    }}
-                  >
-                    <option value={0}>Nunca</option>
-                    <option value={30}>30 días</option>
-                    <option value={90}>90 días</option>
-                    <option value={180}>180 días</option>
-                    <option value={365}>1 año</option>
-                  </select>
-                </label>
-                <label class="rb-check mt-3" class:opacity-50={cfg.retention_days === 0}>
-                  <input
-                    type="checkbox"
-                    bind:checked={cfg.retention_auto_cleanup}
-                    disabled={cfg.retention_days === 0}
-                  />
-                  Limpiar automáticamente al iniciar
-                </label>
-                <p class="rb-hint mt-2">
-                  Incluye audio, transcripción y resumen. Los archivos exportados
-                  fuera de Atic no se eliminan.
-                </p>
-                <div class="mt-3 flex flex-wrap gap-2">
-                  <button
-                    type="button"
-                    class="rb-btn rb-btn-soft"
-                    onclick={reviewRetention}
-                    disabled={retentionBusy || cfg.retention_days === 0}
-                  >
-                    {retentionBusy ? "Revisando…" : "Revisar vencidos"}
-                  </button>
-                  {#if retentionPreviewData?.count && !retentionConfirming}
-                    <button
-                      type="button"
-                      class="rb-btn rb-btn-danger"
-                      onclick={() => (retentionConfirming = true)}
-                    >
-                      Preparar eliminación
-                    </button>
-                  {/if}
-                  {#if retentionConfirming}
-                    <button
-                      type="button"
-                      class="rb-btn rb-btn-danger-solid"
-                      onclick={runRetentionCleanup}
-                      disabled={retentionBusy}
-                    >
-                      Confirmar eliminación permanente
-                    </button>
-                    <button
-                      type="button"
-                      class="rb-btn rb-btn-ghost"
-                      onclick={() => (retentionConfirming = false)}
-                      disabled={retentionBusy}
-                    >
-                      Cancelar
-                    </button>
-                  {/if}
-                </div>
-                {#if retentionPreviewData}
-                  <p class="rb-hint mt-2" aria-live="polite">
-                    {retentionPreviewData.count === 0
-                      ? "No hay grabaciones vencidas."
-                      : `${retentionPreviewData.count} grabación(es), ${formatMegabytes(retentionPreviewData.bytes)}.`}
-                  </p>
-                {/if}
-                {#if retentionError}
-                  <p class="rb-hint mt-2" style="color: var(--rb-record)" role="alert">
-                    {retentionError}
-                  </p>
-                {/if}
-              </div>
-            </div>
-          {:else if activeSection === "capturas"}
-            <div class="rb-settings-group">
-              <div>
-                <p class="mb-2 text-xs font-medium" style="color: var(--rb-muted)">
-                  Atajo de captura
-                </p>
-                <HotkeyCapture
-                  value={cfg.screenshot_shortcut}
-                  defaultValue="CmdOrCtrl+Shift+4"
-                  ariaLabel="Cambiar atajo para abrir la selección de captura"
-                  onChange={(sc) => {
-                    if (cfg) cfg.screenshot_shortcut = sc;
-                  }}
-                />
-                <p class="rb-hint mt-1.5">
-                  Abre la selección: clic en una ventana, arrastra una región o pulsa
-                  Espacio para el monitor. Esc cancela. También puedes usar un botón
-                  lateral del mouse.
-                </p>
-              </div>
-
-              <label class="rb-label">
-                Lado del shelf
-                <select class="rb-input" bind:value={cfg.capture_shelf_side}>
-                  <option value="right">Derecha</option>
-                  <option value="left">Izquierda</option>
-                </select>
-              </label>
-
-              <label class="rb-label">
-                Retracción del shelf (segundos)
-                <input
-                  class="rb-input"
-                  type="number"
-                  min="5"
-                  max="120"
-                  bind:value={cfg.capture_shelf_timeout_seconds}
-                />
-              </label>
-
-              <label class="rb-label">
-                Conservar capturas (horas, 0 = sin límite)
-                <input
-                  class="rb-input"
-                  type="number"
-                  min="0"
-                  max="720"
-                  bind:value={cfg.capture_retention_hours}
-                />
-              </label>
-
-              <label class="flex items-center gap-2 text-sm">
-                <input type="checkbox" bind:checked={cfg.capture_include_cursor} />
-                Incluir el cursor en la captura
-              </label>
-
-              <label class="rb-label">
-                Al hacer clic en la miniatura
-                <select class="rb-input" bind:value={cfg.capture_click_action}>
-                  <option value="preview">Abrir vista previa</option>
-                  <option value="location">Abrir ubicación</option>
-                </select>
-              </label>
-
-              <div class="flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  class="rb-btn rb-btn-ghost text-xs"
-                  onclick={openCapturesDir}
-                >
-                  Abrir carpeta
-                </button>
-                <button
-                  type="button"
-                  class="rb-btn rb-btn-ghost text-xs"
-                  onclick={runCaptureCleanup}
-                >
-                  Limpiar capturas ahora
-                </button>
-              </div>
-              {#if captureCleanupMsg}
-                <p class="rb-hint mt-1">{captureCleanupMsg}</p>
-              {/if}
-            </div>
-          {:else if activeSection === "mail"}
-            <div class="rb-settings-group">
-              <label class="rb-label">
-                Backend
-                <select class="rb-field" bind:value={cfg.mail_backend}>
-                  <option value="mailto">Abrir cliente (mailto)</option>
-                  <option value="smtp">SMTP directo</option>
-                </select>
-              </label>
-
-              {#if cfg.mail_backend === "smtp"}
-                <label class="rb-label">
-                  Host
-                  <input
-                    class="rb-field"
-                    bind:value={cfg.smtp_host}
-                    placeholder="smtp.ejemplo.com"
-                  />
-                </label>
-                <div class="rb-settings-two-col">
-                  <label class="rb-label">
-                    Puerto
-                    <input
-                      type="number"
-                      class="rb-field"
-                      bind:value={cfg.smtp_port}
-                    />
-                  </label>
-                  <label class="rb-check items-end pb-2">
-                    <input type="checkbox" bind:checked={cfg.smtp_use_tls} />
-                    STARTTLS
-                  </label>
-                </div>
-                <label class="rb-label">
-                  Usuario
-                  <input class="rb-field" bind:value={cfg.smtp_username} />
-                </label>
-                <label class="rb-label">
-                  Remitente (From)
-                  <input
-                    class="rb-field"
-                    bind:value={cfg.smtp_from}
-                    placeholder="opcional"
-                  />
-                </label>
-                <label class="rb-label">
-                  Contraseña
-                  <input
-                    type="password"
-                    class="rb-field"
-                    placeholder={secrets.has_smtp_password
-                      ? "•••••••• (ya guardada)"
-                      : ""}
-                    bind:value={smtpPassword}
-                    autocomplete="off"
-                  />
-                </label>
-                {#if secrets.has_smtp_password}
-                  <button class="rb-btn rb-btn-danger" onclick={clearSmtpPassword}
-                    >Eliminar contraseña</button
-                  >
-                {/if}
-              {/if}
-            </div>
-          {:else if activeSection === "updates"}
-            <div class="rb-settings-group">
-              <p class="rb-hint">
-                Comprueba si hay una versión nueva publicada en GitHub Releases.
-                Requiere una build firmada (clave configurada en el release).
-              </p>
-              <div class="flex flex-wrap items-center gap-3">
-                <button
-                  class="rb-btn rb-btn-primary"
-                  onclick={searchUpdates}
-                  disabled={updateUi.kind === "checking" ||
-                    updateUi.kind === "downloading"}
-                >
-                  {#if updateUi.kind === "checking"}
-                    Buscando…
-                  {:else}
-                    Buscar actualizaciones
-                  {/if}
-                </button>
-                {#if updateUi.kind === "available"}
-                  <button
-                    class="rb-btn rb-btn-soft"
-                    onclick={installPendingUpdate}
-                  >
-                    Descargar e instalar {updateUi.update.version}
-                  </button>
-                {/if}
-              </div>
-              {#if updateUi.kind === "up_to_date"}
-                <span class="rb-chip rb-chip-ok">Estás al día</span>
-              {:else if updateUi.kind === "available"}
-                <span class="rb-chip rb-chip-warn"
-                  >Actualización disponible: {updateUi.update.version}</span
-                >
-              {:else if updateUi.kind === "downloading"}
-                <span class="rb-chip rb-chip-warn">
-                  Descargando {updateUi.version}{#if updateUi.percent !== null}
-                    … {updateUi.percent}%{/if}
-                </span>
-                {#if updateUi.percent !== null}
-                  <div class="rb-level-track">
-                    <div
-                      class="rb-level-fill rb-level-mic"
-                      style="width: {updateUi.percent}%"
-                    ></div>
-                  </div>
-                {/if}
-              {:else if updateUi.kind === "error"}
-                <p class="rb-hint" style="color: var(--rb-warn)">
-                  {updateUi.message}
-                </p>
-              {/if}
-            </div>
+            {@render summary(cfg, secrets)}
+          {:else if activeSection === "captures"}
+            {@render captures(cfg, secrets)}
           {/if}
         </div>
       </div>
@@ -1689,15 +1807,18 @@
   {/if}
 
   {#snippet actions()}
-      {#if cfg && secrets}
-        <button class="rb-btn rb-btn-ghost" onclick={onClose}>Cancelar</button>
-        <button
-          class="rb-btn rb-btn-primary"
-          onclick={save}
-          disabled={saving}
-        >
-          {saving ? "Guardando…" : "Guardar"}
-        </button>
-      {/if}
-    {/snippet}
+    {#if cfg && secrets}
+      <button type="button" class="rb-btn rb-btn-ghost" onclick={onClose}
+        >Cancelar</button
+      >
+      <button
+        type="button"
+        class="rb-btn rb-btn-primary"
+        onclick={save}
+        disabled={saving}
+      >
+        {saving ? "Guardando…" : "Guardar cambios"}
+      </button>
+    {/if}
+  {/snippet}
 </ModalShell>

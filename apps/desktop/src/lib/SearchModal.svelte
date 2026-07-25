@@ -179,7 +179,7 @@
 
   .search-input {
     width: 100%;
-    border: 1px solid var(--rb-border);
+    border: 0;
     border-radius: var(--rb-radius-sm);
     padding: 0.55rem 0.7rem;
     background: var(--rb-bg1);

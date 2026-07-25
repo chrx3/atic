@@ -25,8 +25,9 @@
   import SummaryModal from "$lib/SummaryModal.svelte";
   import TranscriptModal from "$lib/TranscriptModal.svelte";
   import SearchModal from "$lib/SearchModal.svelte";
+  import ToolPageShell from "$lib/ToolPageShell.svelte";
   import type { SearchHit } from "$lib/types";
-  import type { ToolId } from "$lib/tools";
+  import { toolById, type ToolId } from "$lib/tools";
   import {
     applyTheme,
     cycleTheme,
@@ -77,6 +78,8 @@
     pasteClipboardItem,
     pasteSnippet,
     onPasteQueued,
+    failedShortcuts,
+    onShortcutsFailed,
   } from "$lib/api";
 
   let recordings = $state<Recording[]>([]);
@@ -109,9 +112,12 @@
   let settingsOpen = $state(false);
   let bluetoothConfirmMessage = $state<string | null>(null);
   let activeTool = $state<ToolId>("meetings");
+  let shellView = $state<"hub" | "tool">("hub");
   let snippetsInitialTab = $state<"snippets" | "scratchpad">("snippets");
   let searchOpen = $state(false);
   let uiTheme = $state<UiTheme>("system");
+  /** Atajos que otra app ya tenía tomados: sin esto el fallo era invisible. */
+  let shortcutConflicts = $state<string[]>([]);
 
   const theme = $derived(normalizeTheme(config?.ui_theme ?? uiTheme));
 
@@ -178,10 +184,12 @@
         case "scratchpad":
           snippetsInitialTab = "scratchpad";
           activeTool = "snippets";
+          shellView = "tool";
           showToast("Bloc de notas");
           break;
         case "recording":
           activeTool = "meetings";
+          shellView = "tool";
           selectedId = hit.id;
           showToast(hit.title);
           break;
@@ -556,7 +564,14 @@
       onPasteQueued((preview) => {
         showToast(`En cola para pegar: ${preview}`, 6000);
       }),
+      onShortcutsFailed((names) => (shortcutConflicts = names)),
     );
+
+    // Estado inicial: los atajos se registran en el setup, antes de que esta
+    // ventana escuche el evento.
+    void failedShortcuts()
+      .then((names) => (shortcutConflicts = names))
+      .catch(() => {});
 
     const onSearchKey = (event: KeyboardEvent) => {
       const mod = event.ctrlKey || event.metaKey;
@@ -578,37 +593,59 @@
 
 <AppShell
   bind:activeTool
+  bind:view={shellView}
+  radialShortcut={config?.pill_radial_shortcut ?? ""}
   theme={theme}
   onToggleTheme={toggleTheme}
   onOpenSettings={() => (settingsOpen = true)}
 >
   <div class="rb-app">
     <main id="main-content" class="rb-main" tabindex="-1">
-      {#if activeTool === "meetings"}
-        <div class="atic-meetings-head">
-          <div>
-            <p class="atic-meetings-kicker">Herramienta</p>
-            <h2>Reuniones</h2>
-          </div>
-          {#if modelReady}
-            <span class="rb-local-status">Local listo</span>
-          {/if}
-        </div>
-
-        <div class="atic-shortcut-row">
-          <div>
-            <p class="atic-shortcut-label">Atajo de grabación</p>
-            <p class="atic-shortcut-hint">
-              Inicia o detiene la grabación desde cualquier app.
+      {#if shortcutConflicts.length > 0}
+        <section class="rb-setup-notice" aria-label="Atajos en conflicto">
+          <div class="min-w-0 flex-1">
+            <strong>
+              {shortcutConflicts.length === 1
+                ? "Un atajo no quedó activo"
+                : "Hay atajos que no quedaron activos"}
+            </strong>
+            <p>
+              Otra app ya tiene tomado el atajo de {shortcutConflicts.join(
+                ", ",
+              )}. Asígnale otra combinación para poder usarlo.
             </p>
           </div>
-          <HotkeyCapture
-            value={config?.global_shortcut ?? "CmdOrCtrl+Shift+R"}
-            defaultValue="CmdOrCtrl+Shift+R"
-            ariaLabel="Cambiar atajo de grabación"
-            onChange={(sc) => patchConfig({ global_shortcut: sc })}
-          />
-        </div>
+          <button
+            class="rb-btn rb-btn-soft"
+            onclick={() => (settingsOpen = true)}
+          >
+            Cambiar atajos
+          </button>
+        </section>
+      {/if}
+
+      {#if activeTool === "meetings"}
+        <ToolPageShell tool={toolById("meetings")} dataDir="recordings">
+          {#snippet meta()}
+            {#if modelReady}
+              <span class="rb-local-status">Local listo</span>
+            {/if}
+          {/snippet}
+
+          {#snippet prefs()}
+            <div class="atic-shortcut-row">
+              <div>
+                <p class="atic-shortcut-label">Atajo de grabación</p>
+                <p class="atic-shortcut-hint">Desde cualquier app.</p>
+              </div>
+              <HotkeyCapture
+                value={config?.global_shortcut ?? "CmdOrCtrl+Shift+R"}
+                defaultValue="CmdOrCtrl+Shift+R"
+                ariaLabel="Cambiar atajo de grabación"
+                onChange={(sc) => patchConfig({ global_shortcut: sc })}
+              />
+            </div>
+          {/snippet}
 
         {#if !modelReady}
           <section class="rb-setup-notice" aria-label="Configurar transcripción">
@@ -770,6 +807,7 @@
             }}
           />
         </div>
+        </ToolPageShell>
       {:else if activeTool === "dictation"}
         <DictationTool
           phase={dictation}
@@ -886,56 +924,6 @@
 </AppShell>
 
 <style>
-  .atic-meetings-head {
-    display: flex;
-    align-items: flex-end;
-    justify-content: space-between;
-    gap: 0.75rem;
-    margin-bottom: 0.15rem;
-  }
-
-  .atic-meetings-kicker {
-    margin: 0;
-    color: var(--rb-muted);
-    font-size: 0.6875rem;
-    font-weight: 650;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-  }
-
-  .atic-meetings-head h2 {
-    margin: 0.1rem 0 0;
-    font-family: var(--rb-display);
-    font-size: 1.2rem;
-    font-weight: 650;
-    letter-spacing: -0.03em;
-  }
-
-  .atic-shortcut-row {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    justify-content: space-between;
-    gap: 0.75rem 1rem;
-    padding: 0.75rem 0.9rem;
-    border: 1px solid var(--rb-border);
-    border-radius: var(--rb-radius);
-    background: var(--rb-surface);
-  }
-
-  .atic-shortcut-label {
-    margin: 0;
-    color: var(--rb-text);
-    font-size: 0.8125rem;
-    font-weight: 600;
-  }
-
-  .atic-shortcut-hint {
-    margin: 0.15rem 0 0;
-    color: var(--rb-muted);
-    font-size: 0.75rem;
-  }
-
   .rb-local-status {
     display: inline-flex;
     align-items: center;
@@ -961,17 +949,26 @@
     outline: 2px solid color-mix(in srgb, var(--rb-accent) 72%, transparent);
     outline-offset: -2px;
   }
+  /* Avisos discretos: son estados temporales de configuración, no deben
+     pesar más que la acción principal de la herramienta. El color queda en
+     el texto, no en un bloque de relleno. */
   .rb-setup-notice {
     display: flex;
     align-items: center;
     gap: 0.75rem;
-    padding: 0.75rem 0.875rem;
+    padding: 0.6rem 0.875rem;
     border: 0;
     border-radius: var(--rb-radius);
-    background: var(--rb-warn-soft);
+    background: color-mix(in srgb, var(--rb-warn) 8%, transparent);
+  }
+  .rb-setup-notice strong {
+    color: color-mix(in srgb, var(--rb-warn) 72%, var(--rb-text));
   }
   .rb-setup-info {
-    background: var(--rb-info-soft);
+    background: color-mix(in srgb, var(--rb-text) 5%, transparent);
+  }
+  .rb-setup-info strong {
+    color: var(--rb-text);
   }
   .rb-setup-notice strong {
     color: var(--rb-text);
@@ -1012,14 +1009,24 @@
     border-radius: inherit;
     background: var(--rb-accent);
   }
+  /* Narrow-first: el rail fija ~4.5rem; a minWidth 640 el panel ~35.5rem. */
   .rb-workspace {
     display: grid;
     min-height: 22rem;
-    grid-template-columns: minmax(15rem, 0.85fr) minmax(22rem, 1.35fr);
-    gap: 0;
-    overflow: hidden;
+    grid-template-columns: 1fr;
+    gap: 0.75rem;
+    overflow: visible;
     border-radius: var(--rb-radius);
-    background: var(--rb-surface);
+    background: transparent;
+  }
+
+  @container atic-main (min-width: 37rem) {
+    .rb-workspace {
+      grid-template-columns: minmax(14rem, 0.85fr) minmax(0, 1.35fr);
+      gap: 0;
+      overflow: hidden;
+      background: var(--rb-surface);
+    }
   }
   .rb-live-panel {
     display: flex;
@@ -1087,38 +1094,24 @@
     box-shadow: 0 12px 28px rgba(0, 0, 0, 0.26);
     font-size: 0.75rem;
   }
-  @media (max-width: 760px) {
-    .rb-main {
-      padding-inline: 0.75rem;
-    }
-    .rb-workspace {
-      grid-template-columns: 1fr;
-      gap: 0.75rem;
-      overflow: visible;
-      background: transparent;
-    }
-    .rb-setup-notice {
-      align-items: stretch;
-      flex-direction: column;
-    }
-  }
-
-  @media (max-width: 36rem) {
-    .rb-local-status {
-      display: none;
-    }
-
+  @container atic-main (max-width: 36.999rem) {
     .rb-main {
       gap: 0.625rem;
       padding: 0.7rem 0.7rem max(0.75rem, env(safe-area-inset-bottom));
     }
 
     .rb-setup-notice {
+      align-items: stretch;
+      flex-direction: column;
       padding: 0.75rem;
     }
 
     .rb-setup-notice .rb-btn {
       width: 100%;
+    }
+
+    .rb-local-status {
+      display: none;
     }
 
     .rb-live-list li {

@@ -16,6 +16,16 @@ export function formatDate(iso: string): string {
   }).format(value);
 }
 
+/** Atajo legible para texto corrido: `CmdOrCtrl+Shift+P` → `Ctrl + Shift + P`. */
+export function formatShortcut(raw: string): string {
+  return raw
+    .replace(/CmdOrCtrl/gi, "Ctrl")
+    .split("+")
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .join(" + ");
+}
+
 export function formatMegabytes(bytes: number): string {
   return new Intl.NumberFormat("es-CL", {
     maximumFractionDigits: 0,

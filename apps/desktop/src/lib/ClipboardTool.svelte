@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import HotkeyCapture from "$lib/HotkeyCapture.svelte";
   import ClipboardHistoryList from "$lib/ClipboardHistoryList.svelte";
+  import ToolPageShell from "$lib/ToolPageShell.svelte";
   import {
     listClipboardHistory,
     onClipboardHistoryChanged,
@@ -42,26 +43,21 @@
   });
 </script>
 
-<section class="clip-tool" aria-label="Clipboard">
-  <header class="clip-head">
-    <p class="clip-kicker">Herramienta</p>
-    <h2>{tool.label}</h2>
-    <p class="clip-blurb">{tool.blurb}</p>
-  </header>
-
-  <div class="clip-shortcut">
-    <p class="clip-shortcut-label">Atajo del historial</p>
-    <HotkeyCapture
-      value={shortcut || "CmdOrCtrl+Shift+V"}
-      defaultValue="CmdOrCtrl+Shift+V"
-      ariaLabel="Cambiar atajo del historial de clipboard"
-      onChange={onShortcutChange}
-    />
-    <p class="clip-hint">
-      Trae la pill al cursor, la expande y muestra el historial. Clic en un ítem
-      para pegarlo en la app enfocada.
-    </p>
-  </div>
+<ToolPageShell {tool} dataDir="clipboard">
+  {#snippet prefs()}
+    <div class="atic-shortcut-row">
+      <div>
+        <p class="atic-shortcut-label">Atajo del historial</p>
+        <p class="atic-shortcut-hint">Trae la pill al cursor.</p>
+      </div>
+      <HotkeyCapture
+        value={shortcut || "CmdOrCtrl+Shift+V"}
+        defaultValue="CmdOrCtrl+Shift+V"
+        ariaLabel="Cambiar atajo del historial de clipboard"
+        onChange={onShortcutChange}
+      />
+    </div>
+  {/snippet}
 
   <div class="clip-panel">
     <ClipboardHistoryList
@@ -71,76 +67,23 @@
       onError={(message) => onToast?.(message)}
     />
   </div>
-</section>
+</ToolPageShell>
 
 <style>
-  .clip-tool {
-    display: flex;
-    height: 100%;
-    min-height: 0;
-    flex-direction: column;
-    gap: 1rem;
-    padding: 1.1rem 1.15rem 1.25rem;
-  }
-
-  .clip-head {
-    display: flex;
-    flex-direction: column;
-    gap: 0.25rem;
-  }
-
-  .clip-kicker {
-    margin: 0;
-    color: var(--rb-muted);
-    font-size: 0.6875rem;
-    font-weight: 600;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-  }
-
-  .clip-head h2 {
-    margin: 0;
-    font-size: 1.25rem;
-    font-weight: 650;
-  }
-
-  .clip-blurb {
-    margin: 0;
-    max-width: 36rem;
-    color: var(--rb-muted);
-    font-size: 0.875rem;
-    line-height: 1.45;
-  }
-
-  .clip-shortcut {
-    display: flex;
-    max-width: 28rem;
-    flex-direction: column;
-    gap: 0.45rem;
-  }
-
-  .clip-shortcut-label {
-    margin: 0;
-    color: var(--rb-muted);
-    font-size: 0.75rem;
-    font-weight: 600;
-  }
-
-  .clip-hint {
-    margin: 0;
-    color: var(--rb-muted);
-    font-size: 0.75rem;
-    line-height: 1.4;
-  }
-
   .clip-panel {
     display: flex;
     min-height: 0;
     flex: 1;
     flex-direction: column;
     padding: 0.65rem 0.7rem;
-    border: 1px solid var(--rb-border);
+    border: 0;
     border-radius: var(--rb-radius);
     background: var(--rb-surface);
+  }
+
+  @container atic-main (max-width: 36.999rem) {
+    .clip-panel {
+      padding: 0.5rem 0.55rem;
+    }
   }
 </style>

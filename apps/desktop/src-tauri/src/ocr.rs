@@ -8,7 +8,19 @@ use crate::capture;
 use crate::state::AppState;
 
 fn ocr_sidecar_path(capture_path: &Path) -> PathBuf {
-    PathBuf::from(format!("{}.ocr.txt", capture_path.to_string_lossy()))
+    // Sidecar junto al PNG; quitar \\?\ para rutas normales en disco.
+    let base = strip_verbatim_prefix(capture_path);
+    PathBuf::from(format!("{}.ocr.txt", base.to_string_lossy()))
+}
+
+/// `canonicalize` en Windows añade `\\?\`; WinRT y algunos I/O lo rechazan.
+fn strip_verbatim_prefix(path: &Path) -> PathBuf {
+    let s = path.to_string_lossy();
+    if let Some(rest) = s.strip_prefix(r"\\?\") {
+        PathBuf::from(rest)
+    } else {
+        path.to_path_buf()
+    }
 }
 
 fn ensure_capture_path(state: &AppState, path: &str) -> Result<PathBuf, String> {
@@ -17,21 +29,40 @@ fn ensure_capture_path(state: &AppState, path: &str) -> Result<PathBuf, String> 
 
 #[cfg(windows)]
 fn ocr_image_at(path: &Path) -> Result<String, String> {
-    use windows::core::HSTRING;
     use windows::Graphics::Imaging::BitmapDecoder;
     use windows::Media::Ocr::OcrEngine;
-    use windows::Storage::{FileAccessMode, StorageFile};
+    use windows::Storage::Streams::{DataWriter, InMemoryRandomAccessStream};
 
-    let path_str = path.to_string_lossy();
-    let file = StorageFile::GetFileFromPathAsync(&HSTRING::from(path_str.as_ref()))
-        .map_err(|e| e.to_string())?
-        .get()
-        .map_err(|e| e.to_string())?;
-    let stream = file
-        .OpenAsync(FileAccessMode::Read)
-        .map_err(|e| e.to_string())?
-        .get()
-        .map_err(|e| e.to_string())?;
+    // No usar StorageFile::GetFileFromPathAsync: falla con rutas `\\?\…`
+    // (canonicalize) y produce UNABLE_TO_MASK_PATH / 0x800700A1.
+    let bytes = std::fs::read(path).map_err(|e| {
+        format!(
+            "No se pudo leer la captura ({}): {e}",
+            strip_verbatim_prefix(path).display()
+        )
+    })?;
+    if bytes.is_empty() {
+        return Err("La captura está vacía.".into());
+    }
+
+    let stream = InMemoryRandomAccessStream::new().map_err(|e| e.to_string())?;
+    {
+        let writer = DataWriter::CreateDataWriter(&stream).map_err(|e| e.to_string())?;
+        writer.WriteBytes(&bytes).map_err(|e| e.to_string())?;
+        writer
+            .StoreAsync()
+            .map_err(|e| e.to_string())?
+            .get()
+            .map_err(|e| e.to_string())?;
+        writer
+            .FlushAsync()
+            .map_err(|e| e.to_string())?
+            .get()
+            .map_err(|e| e.to_string())?;
+        let _ = writer.DetachStream();
+    }
+    stream.Seek(0).map_err(|e| e.to_string())?;
+
     let decoder = BitmapDecoder::CreateAsync(&stream)
         .map_err(|e| e.to_string())?
         .get()
@@ -41,16 +72,14 @@ fn ocr_image_at(path: &Path) -> Result<String, String> {
         .map_err(|e| e.to_string())?
         .get()
         .map_err(|e| e.to_string())?;
+
     let engine = OcrEngine::TryCreateFromUserProfileLanguages().map_err(|e| e.to_string())?;
     let result = engine
         .RecognizeAsync(&bitmap)
         .map_err(|e| e.to_string())?
         .get()
         .map_err(|e| e.to_string())?;
-    let text = result
-        .Text()
-        .map_err(|e| e.to_string())?
-        .to_string();
+    let text = result.Text().map_err(|e| e.to_string())?.to_string();
     Ok(text.trim().to_string())
 }
 

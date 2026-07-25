@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { DictationPhase, Levels } from "$lib/types";
   import { formatDuration } from "$lib/format";
+  import ToolIcon from "$lib/ToolIcon.svelte";
   import Waveform from "$lib/Waveform.svelte";
 
   let {
@@ -59,6 +60,7 @@
 <section class="rb-recorder" aria-label="Controles de audio">
   <div class="rb-recorder-primary">
     <button
+      type="button"
       class="rb-rec-btn"
       class:is-live={recording}
       onclick={onToggle}
@@ -66,9 +68,9 @@
       aria-label={recording ? "Detener grabación" : "Grabar reunión"}
     >
       {#if recording}
-        <span class="h-3.5 w-3.5 rounded-[3px] bg-white" aria-hidden="true"></span>
+        <span class="rb-rec-glyph is-stop" aria-hidden="true"></span>
       {:else}
-        <span class="h-4 w-4 rounded-full bg-white" aria-hidden="true"></span>
+        <span class="rb-rec-glyph" aria-hidden="true"></span>
       {/if}
     </button>
 
@@ -107,12 +109,13 @@
         <Waveform level={levels.mic} color="mic" bars={16} variant="quiet" />
       </div>
     {:else}
-      <p>Elige una acción. El atajo de grabación se cambia arriba.</p>
+      <p>Elige una acción.</p>
     {/if}
   </div>
 
   <div class="rb-recorder-actions">
     <button
+      type="button"
       class="rb-btn rb-btn-soft"
       onclick={onImport}
       disabled={busy || recording || dictating || importing}
@@ -120,12 +123,13 @@
       {importing ? "Importando…" : "Importar audio…"}
     </button>
     <button
+      type="button"
       class="rb-btn rb-btn-soft rb-dictate-btn"
       class:is-active={dictation === "listening"}
       onclick={onToggleDictation}
       disabled={busy || recording || importing || dictation === "transcribing"}
     >
-      <span class="rb-dictate-icon" aria-hidden="true"></span>
+      <ToolIcon id="dictation" size={15} strokeWidth={1.4} />
       {dictationLabel}
     </button>
   </div>
@@ -134,13 +138,49 @@
 <style>
   .rb-recorder {
     display: grid;
-    grid-template-columns: minmax(14rem, 1fr) minmax(12rem, 0.9fr) auto;
+    grid-template-columns: 1fr;
     align-items: center;
-    gap: 1rem;
-    padding: 1rem;
+    gap: 0.875rem;
+    padding: 0.875rem;
     border: 0;
     border-radius: var(--rb-radius);
     background: var(--rb-surface);
+  }
+
+  .rb-rec-glyph {
+    width: 0.7rem;
+    height: 0.7rem;
+    border-radius: 999px;
+    background: currentColor;
+    transition: border-radius 0.15s ease;
+  }
+
+  .rb-rec-glyph.is-stop {
+    border-radius: 1px;
+  }
+
+  @container atic-main (min-width: 30rem) {
+    .rb-recorder {
+      grid-template-columns: 1fr auto;
+      gap: 1rem;
+      padding: 1rem;
+    }
+
+    .rb-recorder-meter {
+      grid-column: 1 / -1;
+      padding-top: 0.65rem;
+    }
+  }
+
+  @container atic-main (min-width: 37rem) {
+    .rb-recorder {
+      grid-template-columns: minmax(14rem, 1fr) minmax(12rem, 0.9fr) auto;
+    }
+
+    .rb-recorder-meter {
+      grid-column: auto;
+      padding-top: 0;
+    }
   }
   .rb-recorder-primary {
     display: flex;
@@ -178,8 +218,11 @@
     grid-template-columns: 4.25rem minmax(0, 1fr);
     align-items: center;
     gap: 0.65rem;
-    color: var(--rb-muted);
-    font-size: 0.6875rem;
+    color: var(--rb-faint);
+    font-size: 0.5625rem;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
   }
   .rb-recorder-actions {
     display: flex;
@@ -194,30 +237,9 @@
   .rb-dictate-btn.is-active {
     color: var(--rb-on-accent, #fbfbf8);
     background: var(--rb-accent);
+    box-shadow: none;
   }
-  .rb-dictate-icon {
-    width: 0.7rem;
-    height: 0.7rem;
-    border-radius: 999px 999px 4px 4px;
-    background: currentColor;
-    box-shadow: 0 3px 0 -1px currentColor;
-  }
-  @media (max-width: 760px) {
-    .rb-recorder {
-      grid-template-columns: 1fr auto;
-    }
-    .rb-recorder-meter {
-      grid-column: 1 / -1;
-      padding-top: 0.65rem;
-      border-top: 0;
-    }
-  }
-  @media (max-width: 480px) {
-    .rb-recorder {
-      grid-template-columns: 1fr;
-      gap: 0.875rem;
-      padding: 0.875rem;
-    }
+  @container atic-main (max-width: 29.999rem) {
     .rb-recorder-actions {
       width: 100%;
       flex-direction: column;

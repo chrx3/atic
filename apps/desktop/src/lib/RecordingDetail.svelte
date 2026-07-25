@@ -416,13 +416,11 @@
     background: var(--rb-accent);
   }
 
-  @media (max-width: 760px) {
+  @container atic-main (max-width: 36.999rem) {
     .rb-detail {
       border-radius: var(--rb-radius);
     }
-  }
 
-  @media (max-width: 36rem) {
     .rb-detail-header,
     .rb-detail-section {
       padding: 0.875rem;

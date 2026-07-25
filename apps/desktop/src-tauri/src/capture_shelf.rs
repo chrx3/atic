@@ -31,52 +31,21 @@ pub fn show_shelf(app: &AppHandle, anchor: Option<(i32, i32)>) -> tauri::Result<
     Ok(())
 }
 
-#[cfg(windows)]
-fn position_shelf(app: &AppHandle, window: &WebviewWindow, anchor: Option<(i32, i32)>) {
-    use atic_capture::monitors;
-
-    let monitors = monitors::enumerate();
-    if monitors.is_empty() {
-        return;
-    }
-
-    let target = anchor
-        .and_then(|(x, y)| {
-            monitors
-                .iter()
-                .find(|monitor| monitor.bounds.contains(x, y))
-        })
-        .or_else(|| monitors.iter().find(|monitor| monitor.is_primary))
-        .or_else(|| monitors.first());
-
-    let Some(target) = target else {
-        return;
-    };
-
-    let side = app
+/// Delega en `floating`: la esquina y el clamp al monitor son los mismos que
+/// usa la pill. Antes esto reimplementaba la búsqueda de monitor y el margen.
+fn position_shelf(app: &AppHandle, _window: &WebviewWindow, anchor: Option<(i32, i32)>) {
+    let left_side = app
         .try_state::<crate::state::AppState>()
-        .map(|state| {
-            state
-                .config
-                .lock()
-                .unwrap()
-                .capture_shelf_side
-                .clone()
-        })
-        .unwrap_or_else(|| "right".into());
+        .map(|state| state.config.lock().unwrap().capture_shelf_side.clone())
+        .unwrap_or_else(|| "right".into())
+        == "left";
 
-    let work = target.work_area;
-    if let Ok(size) = window.outer_size() {
-        const MARGIN: i32 = 16;
-        let x = if side == "left" {
-            work.x + MARGIN
-        } else {
-            work.x + work.width as i32 - size.width as i32 - MARGIN
-        };
-        let y = work.y + work.height as i32 - size.height as i32 - MARGIN;
-        let _ = window.set_position(tauri::PhysicalPosition::new(x, y));
-    }
+    crate::floating::place(
+        app,
+        SHELF_LABEL,
+        crate::floating::Anchor::BottomCorner {
+            near: anchor,
+            left_side,
+        },
+    );
 }
-
-#[cfg(not(windows))]
-fn position_shelf(_app: &AppHandle, _window: &WebviewWindow, _anchor: Option<(i32, i32)>) {}

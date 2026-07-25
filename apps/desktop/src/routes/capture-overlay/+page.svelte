@@ -137,10 +137,15 @@
   }
 
   function onKeyDown(e: KeyboardEvent) {
-    if (done || !revealed) return;
+    if (done) return;
+    // Escape SIEMPRE cierra, aunque el frame no haya cargado: si no, un
+    // fallo de carga deja la pantalla tapada por el overlay opaco sin salida.
     if (e.key === "Escape") {
       run(() => safeClose());
-    } else if (e.key === " ") {
+      return;
+    }
+    if (!revealed) return;
+    if (e.key === " ") {
       e.preventDefault();
       run(() => completeMonitorCapture(cursor.x, cursor.y));
     } else if (e.key === "Enter") {
@@ -168,6 +173,15 @@
     });
   }
 
+  /** El PNG congelado no cargó: cerrar en vez de dejar la pantalla tapada. */
+  function onFrameError() {
+    console.error("frame congelado no cargó");
+    if (!done) {
+      done = true;
+      void safeClose();
+    }
+  }
+
   /// Solo corre cuando hay sesión (evento). No llamar al montar: la ventana
   /// existe oculta desde el arranque y aún no hay frame congelado.
   async function init() {
@@ -183,6 +197,15 @@
       if (token !== initToken) return;
       candidates = info.candidates;
       frameSrc = `${convertFileSrc(info.framePath)}?t=${Date.now()}`;
+      // Watchdog: si en 5 s el frame no se reveló (carga colgada), cierra la
+      // sesión en vez de dejar un telón opaco sobre el escritorio.
+      setTimeout(() => {
+        if (token === initToken && !revealed && !done) {
+          console.error("overlay sin revelar tras 5s; cerrando sesión");
+          done = true;
+          void safeClose();
+        }
+      }, 5000);
     } catch (error) {
       console.error("overlay_info falló", error);
       revealed = false;
@@ -238,7 +261,14 @@
 
 <div class="overlay" class:is-revealed={revealed} bind:this={overlayEl}>
   {#if frameSrc}
-    <img class="frame" src={frameSrc} alt="" draggable="false" onload={onFrameLoad} />
+    <img
+      class="frame"
+      src={frameSrc}
+      alt=""
+      draggable="false"
+      onload={onFrameLoad}
+      onerror={onFrameError}
+    />
   {/if}
 
   {#if selection}
@@ -280,7 +310,7 @@
     overflow: hidden;
     user-select: none;
     opacity: 0;
-    transition: opacity 140ms ease-out;
+    transition: opacity var(--duration-quick) var(--ease-smooth-out);
   }
   .overlay.is-revealed {
     opacity: 1;
@@ -297,39 +327,41 @@
   .dim-full {
     position: absolute;
     inset: 0;
-    background: rgba(0, 0, 0, 0.28);
+    background: var(--rb-overlay-scrim);
     pointer-events: none;
   }
 
   .spotlight {
     position: absolute;
-    border: 2px solid #2f9e44;
-    box-shadow: 0 0 0 100000px rgba(0, 0, 0, 0.28);
     box-sizing: border-box;
+    border: 2px solid var(--rb-overlay-select);
+    box-shadow: 0 0 0 100000px var(--rb-overlay-scrim);
     pointer-events: none;
   }
 
-  .dims {
+  .dims,
+  .hint {
     position: absolute;
-    background: rgba(0, 0, 0, 0.75);
-    color: #fff;
-    font: 12px system-ui, sans-serif;
-    padding: 2px 6px;
-    border-radius: 4px;
+    border-radius: var(--rb-radius-xs);
+    background: var(--rb-overlay-chip);
+    color: var(--rb-overlay-ink);
+    font-family: var(--rb-font);
     pointer-events: none;
     white-space: nowrap;
+  }
+
+  .dims {
+    padding: 2px 6px;
+    font-size: 0.75rem;
+    font-variant-numeric: tabular-nums;
   }
 
   .hint {
     position: fixed;
     bottom: 32px;
-    transform: translateX(-50%);
-    background: rgba(0, 0, 0, 0.75);
-    color: #fff;
-    font: 13px system-ui, sans-serif;
     padding: 6px 14px;
-    border-radius: 8px;
-    pointer-events: none;
-    white-space: nowrap;
+    border-radius: var(--rb-radius-sm);
+    font-size: 0.8125rem;
+    transform: translateX(-50%);
   }
 </style>

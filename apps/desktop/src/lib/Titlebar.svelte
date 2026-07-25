@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { getCurrentWindow } from "@tauri-apps/api/window";
+  import AticMark from "$lib/AticMark.svelte";
   import type { ToolDef } from "$lib/tools";
   import {
     themeLabel,
@@ -22,7 +23,13 @@
   let maximized = $state(false);
 
   onMount(() => {
-    const win = getCurrentWindow();
+    let win: ReturnType<typeof getCurrentWindow>;
+    try {
+      win = getCurrentWindow();
+    } catch {
+      // Preview web sin ventana nativa: sin botones de ventana.
+      return;
+    }
     let cancelled = false;
 
     void (async () => {
@@ -70,15 +77,10 @@
 
 <header class="atic-titlebar" aria-label="Barra de ventana">
   <div class="atic-titlebar-lead" data-tauri-drag-region>
-    <span class="atic-mark" aria-hidden="true" data-tauri-drag-region>
-      <svg viewBox="0 0 512 512" width="14" height="14">
-        <rect width="512" height="512" rx="108" fill="currentColor" />
-        <path
-          fill="var(--rb-surface)"
-          fill-rule="evenodd"
-          d="M256 64L456 308H372V428H140V308H56L256 64Zm-52 252h104v88H204v-88Z"
-        />
-      </svg>
+    <!-- La marca es identidad, no navegación: volver al inicio vive en el
+         breadcrumb del contenido, para no duplicar el mismo control. -->
+    <span class="atic-mark" data-tauri-drag-region>
+      <AticMark size={18} strokeWidth={1.5} />
     </span>
     <div class="atic-titlebar-copy" data-tauri-drag-region>
       <strong data-tauri-drag-region>Atic</strong>
@@ -221,7 +223,6 @@
     align-items: stretch;
     flex: 0 0 auto;
     height: 40px;
-    border-bottom: 1px solid var(--rb-border);
     background: color-mix(in srgb, var(--rb-surface) 92%, var(--rb-bg1));
     user-select: none;
     -webkit-user-select: none;
@@ -240,6 +241,7 @@
     color: var(--rb-text);
     line-height: 0;
   }
+
 
   .atic-titlebar-copy {
     display: flex;
@@ -302,5 +304,15 @@
   .atic-titlebar-btn-close:hover {
     color: #fff;
     background: #c42b1c;
+  }
+
+  @container atic-shell (max-width: 47.999rem) {
+    .atic-titlebar-copy span {
+      display: none;
+    }
+
+    .atic-titlebar-btn {
+      width: 36px;
+    }
   }
 </style>

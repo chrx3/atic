@@ -1,19 +1,42 @@
 <script lang="ts">
+  /**
+   * La pill: barra flotante siempre visible con la rueda de herramientas.
+   *
+   * Modelo: tres ejes ORTOGONALES en vez de un enum de prioridad.
+   *
+   *   activity  qué está haciendo la app   (idle | recording | dictating)
+   *   surface   qué hay desplegado          (none | wheel | clipboard | snippets)
+   *   queue     pegados pendientes
+   *
+   * Antes eran un solo `mode` con prioridad clipboard > … > idle, así que abrir
+   * el historial mientras grababas hacía desaparecer la grabación de la pill —
+   * y con ella el botón de detener. Separados, cada eje se pinta en su lugar.
+   *
+   * Geometría: `content` se deriva del estado, un único $effect reconcilia la
+   * ventana, y el tamaño lo aplica Rust en un solo IPC (resize + posición). No
+   * hay banderas de carrera: el reconciliador descarta destinos obsoletos.
+   */
   import { onMount } from "svelte";
   import type { UnlistenFn } from "@tauri-apps/api/event";
-  import { PhysicalPosition } from "@tauri-apps/api/dpi";
-  import {
-    currentMonitor,
-    getCurrentWindow,
-    LogicalSize,
-  } from "@tauri-apps/api/window";
-  import type { ClipboardItem, DictationPhase, Levels, PasteQueueItem, Snippet as TextSnippet } from "$lib/types";
+  import { getCurrentWindow } from "@tauri-apps/api/window";
+  import type {
+    ClipboardItem,
+    DictationPhase,
+    Levels,
+    PasteQueueItem,
+    Snippet as TextSnippet,
+  } from "$lib/types";
   import Waveform from "$lib/Waveform.svelte";
-  import X from "reicon-svelte/icons/X.svelte";
+  import AticMark from "$lib/AticMark.svelte";
+  import ToolIcon from "$lib/ToolIcon.svelte";
   import ClipboardHistoryList from "$lib/ClipboardHistoryList.svelte";
   import SnippetsList from "$lib/SnippetsList.svelte";
+  import ParticleWheel from "$lib/ParticleWheel.svelte";
+  import { TOOLS, type ToolId } from "$lib/tools";
+  import { formatShortcut } from "$lib/format";
+  import { PILL, createStage, growsFirst, windowFor, type Size } from "$lib/pillStage";
+  import { MOTION, ms, wait } from "$lib/motion";
   import {
-    activateCapture,
     listPasteQueue,
     pasteQueueItemNow,
     dismissPasteQueueItem,
@@ -25,6 +48,8 @@
     toggleDictation,
     dictationPhase,
     showMainWindow,
+    startCaptureSession,
+    getConfig,
     listClipboardHistory,
     listSnippets,
     getScratchpad,
@@ -37,79 +62,143 @@
     onLiveTranscriptFinal,
     prepareClipboardPill,
     prepareSnippetsPill,
+    snapPillToCursor,
     restorePillPosition,
     onPillClipboardToggle,
     onPillClipboardClose,
     onPillSnippetsToggle,
     onPillSnippetsClose,
     onPillReset,
+    onPillRadialPress,
+    onPillRadialRelease,
     onClipboardHistoryChanged,
     onSnippetsChanged,
+    openDataDir,
   } from "$lib/api";
 
+  type Surface = "none" | "wheel" | "clipboard" | "snippets";
+
+  // ─── Eje 1: actividad ────────────────────────────────────────────────────
   let recording = $state(false);
   let elapsed = $state(0);
   let levels = $state<Levels>({ mic: 0, system: 0 });
-  let busy = $state(false);
   let dictation = $state<DictationPhase>("idle");
   let dictationMessage = $state<string | null>(null);
   let liveActive = $state(false);
   let liveError = $state<string | null>(null);
   let btWarning = $state<string | null>(null);
+  let busy = $state(false);
 
-  let clipboardOpen = $state(false);
+  const dictating = $derived(dictation !== "idle");
+  const activity = $derived(
+    recording ? "recording" : dictating ? "dictating" : "idle",
+  );
+
+  // ─── Eje 2: superficie ───────────────────────────────────────────────────
+  let surface = $state<Surface>("none");
+  /** Visual, separado del lógico: la rueda se revela recién con la ventana ya
+   *  reencuadrada, para que el morph nunca se pinte a mitad del resize. */
+  let wheelShown = $state(false);
+  let wheelTool = $state<ToolId | null>(null);
+  /** Cierre acelerado: al elegir herramienta la rueda ya cumplió su función. */
+  let wheelQuick = $state(false);
+  /** El panel abrió hacia arriba (lo decide Rust: es quien ve los monitores). */
+  let panelUp = $state(false);
+  let surfaceOpenedAt = 0;
+
+  const panelOpen = $derived(surface === "clipboard" || surface === "snippets");
+
+  // ─── Eje 3: cola de pegado ───────────────────────────────────────────────
+  let queue = $state<PasteQueueItem[]>([]);
+  let queueBusy = $state(false);
+  const hasQueue = $derived(queue.length > 0);
+
+  // ─── Datos de los paneles ────────────────────────────────────────────────
   let clipboardItems = $state<ClipboardItem[]>([]);
   let clipboardLoading = $state(false);
-  let clipboardOpenedAt = 0;
-
-  let snippetsOpen = $state(false);
-  let snippetsTab = $state<"list" | "scratchpad">("list");
   let snippetItems = $state<TextSnippet[]>([]);
   let snippetsLoading = $state(false);
-  let snippetsOpenedAt = 0;
+  let snippetsTab = $state<"list" | "scratchpad">("list");
   let scratchBody = $state("");
   let scratchLoading = $state(false);
   let scratchSaving = $state(false);
   let scratchTimer: ReturnType<typeof setTimeout> | null = null;
 
   let pasting = $state(false);
-  let pasteQueue = $state<PasteQueueItem[]>([]);
-  let pasteQueueBusy = $state(false);
-  /** Evita que startDragging() cierre el clipboard por blur. */
   let windowDragging = $state(false);
-  /** Clipboard siempre crece hacia arriba (barra abajo, lista arriba). */
-  let expandUp = $state(false);
+  let wheelShortcut = $state("");
 
-  let timer: ReturnType<typeof setInterval> | null = null;
-  let startedAt = 0;
-  let fitRaf = 0;
-  let fitting = false;
+  // ─── Geometría ───────────────────────────────────────────────────────────
+  const stage = createStage("pill");
+  /** Ancho real de la barra, medido del DOM. Sin esto habría que mantener una
+   *  tabla de anchos mágicos por estado — la fuente original del desajuste. */
+  let barW = $state<number>(PILL.bar);
+  let barEl = $state<HTMLElement | null>(null);
 
-  const COMPACT_H = 48;
-  const QUEUE_STRIP_H = 44;
-  const IDLE_W = 112;
-  const EXPANDED_W = 320;
-  const EXPANDED_H = 380;
 
-  const dictating = $derived(
-    dictation === "listening" ||
-      dictation === "transcribing" ||
-      dictation === "pasted" ||
-      dictation === "error",
-  );
-
-  const mode = $derived.by(() => {
-    if (clipboardOpen) return "clipboard" as const;
-    if (snippetsOpen) return "snippets" as const;
-    if (recording) return "recording" as const;
-    if (dictating) return "dictation" as const;
-    return "idle" as const;
+  const content = $derived.by((): Size => {
+    if (surface === "wheel") {
+      const side = PILL.wheel - PILL.pad * 2;
+      return { w: side, h: side };
+    }
+    if (panelOpen) return { w: PILL.panelW, h: PILL.bar + PILL.panelH };
+    return { w: Math.max(barW, PILL.bar), h: PILL.bar };
   });
 
-  const panelExpanded = $derived(mode === "clipboard" || mode === "snippets");
-  const queueVisible = $derived(pasteQueue.length > 0 && !panelExpanded);
+  const target = $derived(windowFor(content));
+
+  const pivot = $derived(
+    surface === "wheel" ? "center" : panelOpen ? "panel" : "center",
+  );
+
+  /** `openWheel` reencuadra por su cuenta; el reconciliador no debe pisarlo. */
+  let opening = $state(false);
+  /** Solo el colapso de la rueda necesita que la ventana espere. */
+  let leavingWheel = false;
+
+  /**
+   * Único reconciliador. La regla de crecer-antes / encoger-después es lo que
+   * reemplaza a `chromeHidden`, `radialClosing` y `quickClose` como banderas:
+   * la ventana es siempre la unión de origen y destino mientras algo se anima.
+   */
+  async function reconcile(next: Size) {
+    if (opening) return;
+    const from = stage.applied();
+    if (from && !growsFirst(from, next) && leavingWheel) {
+      // La rueda se colapsa hacia el centro: la ventana tiene que seguir
+      // grande hasta que termine. El resto de los estados no anima tamaño,
+      // así que esperar ahí solo dejaba la barra estirada en pantalla.
+      leavingWheel = false;
+      await wait(ms(wheelQuick ? MOTION.morphQuick : MOTION.morphClose));
+    }
+    const outcome = await stage.resize(next, pivot);
+    if (outcome.ok) panelUp = outcome.up;
+  }
+
+  $effect(() => {
+    const next = target;
+    void reconcile(next);
+  });
+
+  // Medir la barra: `max-content` la hace independiente del ancho de ventana,
+  // así que no puede realimentarse con el resize.
+  $effect(() => {
+    const el = barEl;
+    if (!el) return;
+    const observer = new ResizeObserver(() => {
+      barW = el.offsetWidth;
+    });
+    observer.observe(el);
+    barW = el.offsetWidth;
+    return () => observer.disconnect();
+  });
+
+  // ─── Temporizador de grabación ───────────────────────────────────────────
+  let timer: ReturnType<typeof setInterval> | null = null;
+  let startedAt = 0;
 
   function startTimer() {
+    if (timer) clearInterval(timer);
     startedAt = Date.now();
     elapsed = 0;
     timer = setInterval(
@@ -120,359 +209,6 @@
   function stopTimer() {
     if (timer) clearInterval(timer);
     timer = null;
-  }
-
-  function targetSize(): { w: number; h: number } {
-    if (panelExpanded) return { w: EXPANDED_W, h: EXPANDED_H };
-    let w = IDLE_W;
-    let h = COMPACT_H;
-    if (mode === "recording") {
-      w = liveError || btWarning || liveActive ? 248 : 210;
-    } else if (mode === "dictation") {
-      if (dictation === "listening") w = 210;
-      else if (dictation === "transcribing") w = 200;
-      else w = 220;
-    }
-    if (queueVisible) h += QUEUE_STRIP_H;
-    return { w, h };
-  }
-
-  async function fitWindow() {
-    if (fitting) return;
-    fitting = true;
-    const { w, h } = targetSize();
-    const win = getCurrentWindow();
-    try {
-      await win.setMinSize(new LogicalSize(100, 40));
-      await win.setMaxSize(new LogicalSize(360, 420));
-      await win.setSize(new LogicalSize(w, h));
-      if (!panelExpanded) expandUp = false;
-    } catch (err) {
-      console.warn("pill setSize", err);
-    } finally {
-      fitting = false;
-    }
-  }
-
-  /** Expande el panel anclado al compacto actual; elige arriba/abajo según espacio. */
-  async function fitPanelExpanded() {
-    if (fitting) return;
-    fitting = true;
-    const win = getCurrentWindow();
-    try {
-      const prevPos = await win.outerPosition();
-      const prevSize = await win.outerSize();
-      const monitor = await currentMonitor();
-
-      await win.setMinSize(new LogicalSize(100, 40));
-      await win.setMaxSize(new LogicalSize(360, 420));
-      await win.setSize(new LogicalSize(EXPANDED_W, EXPANDED_H));
-      const nextSize = await win.outerSize();
-      const grow = nextSize.height - prevSize.height;
-
-      const monTop = monitor ? monitor.position.y + 8 : 8;
-      const monBottom = monitor
-        ? monitor.position.y + monitor.size.height - 8
-        : prevPos.y + nextSize.height;
-      const spaceBelow = monBottom - (prevPos.y + prevSize.height);
-
-      // Preferir abrir hacia abajo si cabe; si no, hacia arriba.
-      if (spaceBelow >= grow) {
-        expandUp = false;
-        await win.setPosition(new PhysicalPosition(prevPos.x, prevPos.y));
-      } else {
-        expandUp = true;
-        const nextY = Math.max(monTop, prevPos.y + prevSize.height - nextSize.height);
-        // Si aún se sale por abajo, subir más.
-        const bottom = nextY + nextSize.height;
-        const clampedY =
-          bottom > monBottom ? Math.max(monTop, monBottom - nextSize.height) : nextY;
-        await win.setPosition(new PhysicalPosition(prevPos.x, clampedY));
-      }
-      // Evitar que quede cortado a la derecha/izquierda del monitor.
-      if (monitor) {
-        const pos = await win.outerPosition();
-        const size = await win.outerSize();
-        const minX = monitor.position.x + 8;
-        const maxX = monitor.position.x + monitor.size.width - size.width - 8;
-        const nextX = Math.min(Math.max(pos.x, minX), Math.max(minX, maxX));
-        if (nextX !== pos.x) {
-          await win.setPosition(new PhysicalPosition(nextX, pos.y));
-        }
-      }
-    } catch (err) {
-      console.warn("pill panel fit", err);
-    } finally {
-      fitting = false;
-    }
-  }
-
-  function scheduleFit() {
-    cancelAnimationFrame(fitRaf);
-    fitRaf = requestAnimationFrame(() => {
-      fitRaf = requestAnimationFrame(() => void fitWindow());
-    });
-  }
-
-  async function refreshPasteQueue() {
-    try {
-      pasteQueue = await listPasteQueue();
-    } catch {
-      pasteQueue = [];
-    }
-  }
-
-  async function pasteQueueFront() {
-    const front = pasteQueue[0];
-    if (!front || pasteQueueBusy) return;
-    pasteQueueBusy = true;
-    try {
-      await pasteQueueItemNow(front.id);
-      await refreshPasteQueue();
-    } catch (err) {
-      console.warn("paste queue", err);
-    } finally {
-      pasteQueueBusy = false;
-      scheduleFit();
-    }
-  }
-
-  async function dismissQueueFront() {
-    const front = pasteQueue[0];
-    if (!front || pasteQueueBusy) return;
-    pasteQueueBusy = true;
-    try {
-      await dismissPasteQueueItem(front.id);
-      await refreshPasteQueue();
-    } catch (err) {
-      console.warn("dismiss queue", err);
-    } finally {
-      pasteQueueBusy = false;
-      scheduleFit();
-    }
-  }
-
-  async function refreshClipboard() {
-    clipboardLoading = true;
-    try {
-      clipboardItems = await listClipboardHistory();
-    } catch {
-      clipboardItems = [];
-    } finally {
-      clipboardLoading = false;
-    }
-  }
-
-  async function openClipboardPanel() {
-    snippetsOpen = false;
-    clipboardOpen = true;
-    clipboardOpenedAt = Date.now();
-    try {
-      await getCurrentWindow().setFocus();
-    } catch {
-      // best-effort
-    }
-    await fitPanelExpanded();
-    await refreshClipboard();
-  }
-
-  async function closeClipboardPanel() {
-    if (!clipboardOpen) return;
-    clipboardOpen = false;
-    expandUp = false;
-    await new Promise<void>((resolve) => {
-      requestAnimationFrame(() => resolve());
-    });
-    try {
-      await restorePillPosition();
-    } catch (err) {
-      console.warn("restore pill position", err);
-    }
-    scheduleFit();
-  }
-
-  async function refreshSnippets() {
-    snippetsLoading = true;
-    try {
-      snippetItems = await listSnippets();
-    } catch {
-      snippetItems = [];
-    } finally {
-      snippetsLoading = false;
-    }
-  }
-
-  async function loadScratchpad() {
-    scratchLoading = true;
-    try {
-      const pad = await getScratchpad();
-      scratchBody = pad.body;
-    } catch {
-      scratchBody = "";
-    } finally {
-      scratchLoading = false;
-    }
-  }
-
-  function scheduleScratchSave() {
-    if (scratchTimer) clearTimeout(scratchTimer);
-    scratchTimer = setTimeout(() => {
-      void persistScratchpad();
-    }, 500);
-  }
-
-  async function persistScratchpad() {
-    if (scratchSaving) return;
-    scratchSaving = true;
-    try {
-      await setScratchpad(scratchBody);
-    } catch (err) {
-      console.warn("scratchpad save", err);
-    } finally {
-      scratchSaving = false;
-    }
-  }
-
-  async function openSnippetsPanel() {
-    clipboardOpen = false;
-    snippetsOpen = true;
-    snippetsOpenedAt = Date.now();
-    try {
-      await getCurrentWindow().setFocus();
-    } catch {
-      // best-effort
-    }
-    await fitPanelExpanded();
-    await Promise.all([refreshSnippets(), loadScratchpad()]);
-  }
-
-  async function closeSnippetsPanel() {
-    if (!snippetsOpen) return;
-    snippetsOpen = false;
-    expandUp = false;
-    if (scratchTimer) {
-      clearTimeout(scratchTimer);
-      scratchTimer = null;
-    }
-    await new Promise<void>((resolve) => {
-      requestAnimationFrame(() => resolve());
-    });
-    try {
-      await restorePillPosition();
-    } catch (err) {
-      console.warn("restore pill position", err);
-    }
-    scheduleFit();
-  }
-
-  /** Estado limpio compacto (tras traer pill o al reabrir clipboard). */
-  async function resetPillChrome() {
-    clipboardOpen = false;
-    snippetsOpen = false;
-    expandUp = false;
-    pasting = false;
-    if (scratchTimer) {
-      clearTimeout(scratchTimer);
-      scratchTimer = null;
-    }
-    const win = getCurrentWindow();
-    try {
-      await win.setSize(new LogicalSize(IDLE_W, COMPACT_H));
-    } catch {
-      // best-effort
-    }
-  }
-
-  /**
-   * Atajo clipboard: si ya está abierto, cierra y reabre en el cursor
-   * (recalcula arriba/abajo). No deja el panel solo cerrado.
-   */
-  async function onClipboardHotkey() {
-    if (clipboardOpen) {
-      await resetPillChrome();
-      // Un frame para que el DOM compacto aplique antes de medir/expandir.
-      await new Promise<void>((resolve) => {
-        requestAnimationFrame(() => resolve());
-      });
-    }
-    try {
-      await prepareClipboardPill();
-    } catch (err) {
-      console.warn("prepare clipboard pill", err);
-    }
-    await openClipboardPanel();
-  }
-
-  async function onSnippetsHotkey() {
-    if (snippetsOpen) {
-      await resetPillChrome();
-      await new Promise<void>((resolve) => {
-        requestAnimationFrame(() => resolve());
-      });
-    }
-    try {
-      await prepareSnippetsPill();
-    } catch (err) {
-      console.warn("prepare snippets pill", err);
-    }
-    await openSnippetsPanel();
-  }
-
-  /** Arrastre de la ventana; no compite con ítems del historial. */
-  function beginDrag(event: PointerEvent) {
-    const target = event.target as HTMLElement | null;
-    if (!target) return;
-    if (
-      target.closest(
-        "button, a, input, textarea, [data-no-drag], .clip-item, .clip-items",
-      )
-    ) {
-      return;
-    }
-    event.preventDefault();
-    // startDragging quita el foco → no cerrar el panel por ese blur.
-    windowDragging = true;
-    void getCurrentWindow().startDragging();
-    // Si el foco no vuelve (Windows), no dejar el flag pegado.
-    window.setTimeout(() => {
-      windowDragging = false;
-    }, 1500);
-  }
-
-  async function toggleRecord() {
-    if (busy || dictating || clipboardOpen || snippetsOpen) return;
-    busy = true;
-    try {
-      if (recording) await stopRecording();
-      else await startRecording();
-    } catch (e) {
-      liveError = String(e);
-    } finally {
-      busy = false;
-      scheduleFit();
-    }
-  }
-
-  async function toggleDictate() {
-    if (busy || recording || clipboardOpen || snippetsOpen) return;
-    busy = true;
-    try {
-      await toggleDictation();
-    } catch (e) {
-      dictationMessage = String(e);
-      dictation = "error";
-    } finally {
-      busy = false;
-      scheduleFit();
-    }
-  }
-
-  async function openMain() {
-    try {
-      await showMainWindow();
-    } catch {
-      // best-effort
-    }
   }
 
   function fmt(secs: number): string {
@@ -496,6 +232,339 @@
     }
   }
 
+  // ─── Rueda ───────────────────────────────────────────────────────────────
+  /**
+   * Abre la rueda EN EL CURSOR. Antes crecía donde la pill estuviera, así que
+   * con la tecla sostenida había que cruzar la pantalla con el mouse hasta
+   * donde la habías dejado. El hogar se guarda para volver al soltar.
+   */
+  async function openWheel() {
+    if (surface === "wheel") return;
+    await closePanels({ silent: true });
+    wheelQuick = false;
+    // Sin selección inicial: un toque accidental del atajo no debe disparar
+    // ninguna acción al soltar.
+    wheelTool = null;
+    opening = true;
+    try {
+      // ORDEN, no paralelo. Redimensionar y centrar a la vez hacía que el
+      // centrado usara el tamaño viejo (48) sobre una ventana ya de 232: la
+      // rueda aparecía ~92 px abajo-derecha del puntero.
+      const side = PILL.wheel - PILL.pad * 2;
+      await stage.resize(windowFor({ w: side, h: side }), "center");
+      await snapPillToCursor();
+      await getCurrentWindow().setFocus();
+    } catch (err) {
+      console.warn("pill wheel summon", err);
+    } finally {
+      opening = false;
+    }
+    surface = "wheel";
+    wheelShown = true;
+  }
+
+  /** Cierra la rueda y devuelve la pill a su hogar. No activa nada. */
+  async function closeWheel() {
+    if (surface !== "wheel") return;
+    leavingWheel = true;
+    wheelShown = false;
+    wheelTool = null;
+    surface = "none";
+    await goHome();
+  }
+
+  /** Soltar la tecla: activa lo apuntado si la rueda llegó a mostrarse. */
+  function onWheelRelease() {
+    if (surface !== "wheel") return;
+    if (wheelShown && wheelTool) void activateTool(wheelTool);
+    else void closeWheel();
+  }
+
+  /** Mueve la selección un paso (teclado y rueda del ratón). */
+  function stepWheel(direction: 1 | -1) {
+    const index = TOOLS.findIndex((tool) => tool.id === wheelTool);
+    const next =
+      index < 0
+        ? direction === 1
+          ? 0
+          : TOOLS.length - 1
+        : (index + direction + TOOLS.length) % TOOLS.length;
+    wheelTool = TOOLS[next].id;
+  }
+
+  /** Teclado con la rueda abierta. No preselecciona: enfocar un nodo al abrir
+   *  dejaría una herramienta armada y soltar la tecla la dispararía. */
+  function onWheelKey(event: KeyboardEvent): boolean {
+    if (surface !== "wheel" || !wheelShown) return false;
+    const key = event.key;
+    if (key === "ArrowRight" || key === "ArrowDown") stepWheel(1);
+    else if (key === "ArrowLeft" || key === "ArrowUp") stepWheel(-1);
+    else if (key === "Tab") stepWheel(event.shiftKey ? -1 : 1);
+    else if (key === "Enter" || key === " ") {
+      if (wheelTool) void activateTool(wheelTool);
+      else void closeWheel();
+    } else return false;
+    return true;
+  }
+
+  /**
+   * La rueda ejecuta la herramienta, no navega la app.
+   *
+   * Grabar y dictar no dependen de la ventana: arrancan ya, en paralelo al
+   * cierre del morph, así que la respuesta se percibe inmediata.
+   */
+  async function activateTool(id: ToolId) {
+    if (surface !== "wheel") return;
+    const wasShown = wheelShown;
+    wheelQuick = true;
+    leavingWheel = wasShown;
+    wheelShown = false;
+    wheelTool = null;
+
+    if (id === "meetings") void toggleRecord();
+    else if (id === "dictation") void toggleDictate();
+
+    try {
+      if (id === "clipboard" || id === "snippets") {
+        // La pill ya está en el cursor: el panel se abre acá mismo.
+        surface = id;
+        surfaceOpenedAt = Date.now();
+        await loadSurface(id);
+        return;
+      }
+      surface = "none";
+      // Dejar correr el cierre acelerado antes de mover la ventana.
+      if (wasShown) await wait(ms(MOTION.morphQuick));
+      await goHome();
+      if (id === "captures") await startCaptureSession();
+    } catch (err) {
+      console.warn("acción de la rueda", err);
+    } finally {
+      wheelQuick = false;
+    }
+  }
+
+  // ─── Paneles ─────────────────────────────────────────────────────────────
+  async function loadSurface(kind: "clipboard" | "snippets") {
+    if (kind === "clipboard") {
+      await refreshClipboard();
+      return;
+    }
+    await Promise.all([refreshSnippets(), loadScratchpad()]);
+  }
+
+  async function openPanel(kind: "clipboard" | "snippets", fly: boolean) {
+    try {
+      if (kind === "clipboard") await prepareClipboardPill(fly);
+      else await prepareSnippetsPill(fly);
+    } catch (err) {
+      console.warn("prepare pill", err);
+    }
+    surface = kind;
+    surfaceOpenedAt = Date.now();
+    try {
+      await getCurrentWindow().setFocus();
+    } catch {
+      // best-effort
+    }
+    await loadSurface(kind);
+  }
+
+  /** Cierra cualquier panel/rueda. `silent` evita el viaje de vuelta al hogar. */
+  async function closePanels({ silent = false } = {}) {
+    if (surface === "none") return;
+    if (scratchTimer) {
+      clearTimeout(scratchTimer);
+      scratchTimer = null;
+    }
+    if (surface === "wheel") leavingWheel = true;
+    surface = "none";
+    wheelShown = false;
+    pasting = false;
+    if (!silent) await goHome();
+  }
+
+  /** Devuelve la pill al hogar guardado (si el summon la había movido). */
+  async function goHome() {
+    try {
+      await restorePillPosition();
+    } catch (err) {
+      console.warn("restore pill position", err);
+    }
+  }
+
+  /** Atajo de panel: si ya está abierto, lo reabre en el cursor. */
+  async function onPanelHotkey(kind: "clipboard" | "snippets") {
+    if (surface === kind) {
+      await closePanels();
+    }
+    await openPanel(kind, true);
+  }
+
+  // ─── Datos ───────────────────────────────────────────────────────────────
+  async function refreshClipboard() {
+    clipboardLoading = true;
+    try {
+      clipboardItems = await listClipboardHistory();
+    } catch {
+      clipboardItems = [];
+    } finally {
+      clipboardLoading = false;
+    }
+  }
+
+  async function refreshSnippets() {
+    snippetsLoading = true;
+    try {
+      snippetItems = await listSnippets();
+    } catch {
+      snippetItems = [];
+    } finally {
+      snippetsLoading = false;
+    }
+  }
+
+  async function loadScratchpad() {
+    scratchLoading = true;
+    try {
+      scratchBody = (await getScratchpad()).body;
+    } catch {
+      scratchBody = "";
+    } finally {
+      scratchLoading = false;
+    }
+  }
+
+  function scheduleScratchSave() {
+    if (scratchTimer) clearTimeout(scratchTimer);
+    scratchTimer = setTimeout(() => void persistScratchpad(), 500);
+  }
+
+  async function persistScratchpad() {
+    if (scratchSaving) return;
+    scratchSaving = true;
+    try {
+      await setScratchpad(scratchBody);
+    } catch (err) {
+      console.warn("scratchpad save", err);
+    } finally {
+      scratchSaving = false;
+    }
+  }
+
+  async function refreshQueue() {
+    try {
+      queue = await listPasteQueue();
+    } catch {
+      queue = [];
+    }
+  }
+
+  async function queueAction(run: (id: string) => Promise<void>) {
+    const front = queue[0];
+    if (!front || queueBusy) return;
+    queueBusy = true;
+    try {
+      await run(front.id);
+      await refreshQueue();
+    } catch (err) {
+      console.warn("cola de pegado", err);
+    } finally {
+      queueBusy = false;
+    }
+  }
+
+  // ─── Acciones ────────────────────────────────────────────────────────────
+  async function toggleRecord() {
+    if (busy || dictating) return;
+    // Detener siempre se puede; empezar no, si hay un panel ocupando la barra.
+    if (!recording && panelOpen) return;
+    busy = true;
+    try {
+      if (recording) await stopRecording();
+      else await startRecording();
+    } catch (e) {
+      liveError = String(e);
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function toggleDictate() {
+    if (busy || recording || panelOpen) return;
+    busy = true;
+    try {
+      await toggleDictation();
+    } catch (e) {
+      dictationMessage = String(e);
+      dictation = "error";
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function openMain() {
+    try {
+      await showMainWindow();
+    } catch {
+      // best-effort
+    }
+  }
+
+  // ─── Arrastre ────────────────────────────────────────────────────────────
+  /**
+   * El arrastre solo empieza tras superar un umbral. Llamar a `startDragging()`
+   * en el propio pointerdown metía la ventana en el loop modal de Windows, que
+   * se comía el clic: ni el clic simple ni el doble llegaban nunca.
+   */
+  const DRAG_THRESHOLD = 4;
+  let dragOrigin: { x: number; y: number } | null = null;
+  let dragMoved = false;
+
+  function beginDrag(event: PointerEvent) {
+    const el = event.target as HTMLElement | null;
+    if (!el || event.button !== 0) return;
+    if (el.closest("button, a, input, textarea, [data-no-drag], .clip-item, .clip-items")) {
+      return;
+    }
+    dragOrigin = { x: event.clientX, y: event.clientY };
+    dragMoved = false;
+    window.addEventListener("pointermove", onDragMove);
+    window.addEventListener("pointerup", endDrag);
+    window.addEventListener("pointercancel", endDrag);
+  }
+
+  function onDragMove(event: PointerEvent) {
+    if (!dragOrigin) return;
+    const moved = Math.hypot(
+      event.clientX - dragOrigin.x,
+      event.clientY - dragOrigin.y,
+    );
+    if (moved <= DRAG_THRESHOLD) return;
+    dragMoved = true;
+    stopDragWatch();
+    windowDragging = true;
+    void getCurrentWindow().startDragging();
+    window.setTimeout(() => (windowDragging = false), 1500);
+  }
+
+  function stopDragWatch() {
+    dragOrigin = null;
+    window.removeEventListener("pointermove", onDragMove);
+    window.removeEventListener("pointerup", endDrag);
+    window.removeEventListener("pointercancel", endDrag);
+  }
+
+  /** Soltar sin haber movido = clic. En reposo, abre la rueda. */
+  function endDrag() {
+    const wasClick = dragOrigin !== null && !dragMoved;
+    stopDragWatch();
+    if (wasClick && activity === "idle" && surface === "none" && !hasQueue) {
+      void openWheel();
+    }
+  }
+
+  // ─── Ciclo de vida ───────────────────────────────────────────────────────
   onMount(() => {
     const unlisteners: Promise<UnlistenFn>[] = [];
 
@@ -507,8 +576,12 @@
       } catch {
         dictation = "idle";
       }
-      await refreshPasteQueue();
-      scheduleFit();
+      await refreshQueue();
+      try {
+        wheelShortcut = (await getConfig()).pill_radial_shortcut;
+      } catch {
+        // Sin config, el tooltip solo omite el atajo.
+      }
     })();
 
     unlisteners.push(
@@ -523,69 +596,46 @@
           liveActive = false;
           btWarning = null;
         }
-        scheduleFit();
       }),
       onLevels((l) => (levels = l)),
-      onCaptureWarn((message) => {
-        btWarning = message;
-        scheduleFit();
-      }),
+      onCaptureWarn((message) => (btWarning = message)),
       onLiveTranscriptFinal(() => {
         liveActive = true;
         liveError = null;
-        scheduleFit();
       }),
-      onLiveTranscriptError((message) => {
-        liveError = message;
-        scheduleFit();
-      }),
+      onLiveTranscriptError((message) => (liveError = message)),
       onDictationStatus((s) => {
         dictation = s.phase;
         dictationMessage = s.message;
-        scheduleFit();
       }),
-      onPillClipboardToggle(() => {
-        void onClipboardHotkey();
-      }),
-      onPillClipboardClose(() => {
-        pasting = false;
-        void closeClipboardPanel();
-      }),
-      onPillSnippetsToggle(() => {
-        void onSnippetsHotkey();
-      }),
-      onPillSnippetsClose(() => {
-        pasting = false;
-        void closeSnippetsPanel();
-      }),
-      onPillReset(() => {
-        void resetPillChrome();
-      }),
+      onPillClipboardToggle(() => void onPanelHotkey("clipboard")),
+      onPillSnippetsToggle(() => void onPanelHotkey("snippets")),
+      onPillClipboardClose(() => void closePanels()),
+      onPillSnippetsClose(() => void closePanels()),
+      onPillRadialPress(() => void openWheel()),
+      onPillRadialRelease(() => onWheelRelease()),
+      onPillReset(() => void closePanels({ silent: true })),
       onClipboardHistoryChanged(() => {
-        if (clipboardOpen) void refreshClipboard();
+        if (surface === "clipboard") void refreshClipboard();
       }),
       onSnippetsChanged(() => {
-        if (snippetsOpen) void refreshSnippets();
+        if (surface === "snippets") void refreshSnippets();
       }),
-      onPasteQueueChanged(() => {
-        void refreshPasteQueue().then(() => scheduleFit());
-      }),
-      onPasteQueued(() => {
-        void refreshPasteQueue().then(() => scheduleFit());
-      }),
+      onPasteQueueChanged(() => void refreshQueue()),
+      onPasteQueued(() => void refreshQueue()),
     );
 
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && clipboardOpen) {
+      if (event.key === "Escape" && surface !== "none") {
         event.preventDefault();
         event.stopPropagation();
-        void closeClipboardPanel();
+        if (surface === "wheel") void closeWheel();
+        else void closePanels();
         return;
       }
-      if (event.key === "Escape" && snippetsOpen) {
+      if (onWheelKey(event)) {
         event.preventDefault();
         event.stopPropagation();
-        void closeSnippetsPanel();
         return;
       }
       // Bloquea chrome del WebView (Imprimir, Buscar, DevTools, zoom…).
@@ -603,23 +653,21 @@
     };
     const onBlur = () => {
       if (pasting || windowDragging) return;
-      if (clipboardOpen && Date.now() - clipboardOpenedAt > 400) {
-        void closeClipboardPanel();
-      }
-      if (snippetsOpen && Date.now() - snippetsOpenedAt > 400) {
-        void closeSnippetsPanel();
+      // El margen evita que el propio setFocus de la apertura la cierre.
+      if (surface !== "none" && Date.now() - surfaceOpenedAt > 400) {
+        if (surface === "wheel") void closeWheel();
+        else void closePanels();
       }
     };
-    const onFocus = () => {
-      windowDragging = false;
-    };
+    const onFocus = () => (windowDragging = false);
+
     window.addEventListener("keydown", onKey, true);
     window.addEventListener("blur", onBlur);
     window.addEventListener("focus", onFocus);
 
     return () => {
       stopTimer();
-      cancelAnimationFrame(fitRaf);
+      stopDragWatch();
       if (scratchTimer) clearTimeout(scratchTimer);
       window.removeEventListener("keydown", onKey, true);
       window.removeEventListener("blur", onBlur);
@@ -629,287 +677,254 @@
   });
 </script>
 
-<!-- svelte-ignore a11y_no_static_element_interactions -->
-<div
-  class="pill-root"
-  class:is-expanded={panelExpanded}
-  class:is-up={expandUp && panelExpanded}
-  onpointerdown={beginDrag}
->
-  {#if queueVisible}
-    <div class="paste-queue-strip" data-no-drag>
-      <span class="paste-queue-badge" title="Cola de pegado">{pasteQueue.length}</span>
-      <span class="paste-queue-preview" title={pasteQueue[0]?.text}>
-        {pasteQueue[0]?.text ?? ""}
-      </span>
-      <button
-        type="button"
-        class="paste-queue-btn"
-        disabled={pasteQueueBusy}
-        onclick={() => void pasteQueueFront()}
-      >
-        Pegar
-      </button>
-      <button
-        type="button"
-        class="paste-queue-btn is-muted"
-        disabled={pasteQueueBusy}
-        onclick={() => void dismissQueueFront()}
-      >
-        Descartar
-      </button>
-    </div>
-  {/if}
-
-  {#if panelExpanded && expandUp}
-    <div class="pill-panel" data-no-drag>
-      {#if mode === "clipboard"}
-        <ClipboardHistoryList
-          items={clipboardItems}
-          loading={clipboardLoading}
-          compact
-          onRefresh={refreshClipboard}
-          onPasteStart={() => {
-            pasting = true;
-          }}
-          onPasted={() => {
-            void closeClipboardPanel();
-          }}
-          onError={() => {
-            pasting = false;
-          }}
-        />
-      {:else}
-        <div class="snip-pill-tabs" role="tablist" aria-label="Vistas de fragmentos">
-          <button
-            type="button"
-            role="tab"
-            class="snip-pill-tab"
-            class:active={snippetsTab === "list"}
-            aria-selected={snippetsTab === "list"}
-            onclick={() => (snippetsTab = "list")}
-          >
-            Lista
-          </button>
-          <button
-            type="button"
-            role="tab"
-            class="snip-pill-tab"
-            class:active={snippetsTab === "scratchpad"}
-            aria-selected={snippetsTab === "scratchpad"}
-            onclick={() => (snippetsTab = "scratchpad")}
-          >
-            Bloc
-          </button>
-        </div>
-        {#if snippetsTab === "list"}
-          <SnippetsList
-            items={snippetItems}
-            loading={snippetsLoading}
-            compact
-            onRefresh={refreshSnippets}
-            onPasteStart={() => {
-              pasting = true;
-            }}
-            onPasted={() => {
-              void closeSnippetsPanel();
-            }}
-            onError={() => {
-              pasting = false;
-            }}
-          />
-        {:else if scratchLoading}
-          <p class="snip-pill-empty">Cargando bloc…</p>
-        {:else}
-          <textarea
-            class="snip-pill-scratch"
-            bind:value={scratchBody}
-            oninput={scheduleScratchSave}
-            placeholder="Notas temporales…"
-            aria-label="Bloc de notas"
-            data-no-drag
-          ></textarea>
-        {/if}
-      {/if}
-    </div>
-  {/if}
-
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <div
-    class="pill-shell"
-    class:is-expanded={panelExpanded}
-    class:is-up={expandUp && panelExpanded}
-    role="status"
-    aria-label="Estado de Atic"
-    title={mode === "idle" ? "Arrastra para mover · doble clic para abrir Atic" : undefined}
-    ondblclick={() => {
-      if (mode === "idle") void openMain();
-    }}
+<!-- Testigo de grabación: vive fuera de los modos, por eso sobrevive a que se
+     abra un panel encima. Antes desaparecía y con él el botón de detener. -->
+{#snippet recDot(label: string)}
+  <button
+    type="button"
+    class="p-rec"
+    data-no-drag
+    onclick={toggleRecord}
+    disabled={busy}
+    aria-label="Detener grabación"
+    title={btWarning ?? label}
   >
-    {#if mode === "clipboard"}
-      <span class="pill-mark" aria-hidden="true"></span>
-      <span class="pill-label min-w-0 flex-1">Clipboard</span>
-      <button
-        type="button"
-        class="pill-action pill-close"
-        data-no-drag
-        onclick={() => void closeClipboardPanel()}
-        aria-label="Cerrar historial"
-        title="Cerrar (Esc)"
-      >
-        <X size={14} />
-      </button>
-    {:else if mode === "snippets"}
-      <span class="pill-mark" aria-hidden="true"></span>
-      <span class="pill-label min-w-0 flex-1">Fragmentos</span>
-      <button
-        type="button"
-        class="pill-action pill-close"
-        data-no-drag
-        onclick={() => void closeSnippetsPanel()}
-        aria-label="Cerrar fragmentos"
-        title="Cerrar (Esc)"
-      >
-        <X size={14} />
-      </button>
-    {:else if mode === "recording"}
-      <button
-        type="button"
-        class="pill-action pill-rec is-live"
-        data-no-drag
-        onclick={toggleRecord}
-        disabled={busy}
-        aria-label="Detener grabación"
-        title={btWarning ?? "Detener grabación"}
-      >
-        <span class="pill-rec-square" aria-hidden="true"></span>
-      </button>
-      <span class="pill-timer" aria-live="off">{fmt(elapsed)}</span>
-      {#if liveError}
-        <span class="pill-live is-error" role="status">Error</span>
-      {:else if btWarning}
-        <span class="pill-live is-warn" role="status" title={btWarning}>BT</span>
-      {:else if liveActive}
-        <span class="pill-live" role="status">En vivo</span>
-      {/if}
-      <div class="pill-wave">
-        <Waveform mic={levels.mic} system={levels.system} bars={10} variant="quiet" />
-      </div>
-    {:else if mode === "dictation"}
-      <button
-        type="button"
-        class="pill-action pill-dict"
-        class:is-live={dictation === "listening"}
-        class:is-busy={dictation === "transcribing"}
-        class:is-ok={dictation === "pasted"}
-        class:is-error={dictation === "error"}
-        data-no-drag
-        onclick={toggleDictate}
-        disabled={busy || dictation === "transcribing"}
-        aria-label={dictation === "listening" ? "Detener dictado" : "Dictado"}
-        title={dictation === "listening" ? "Detener dictado" : dictationLabel(dictation)}
-      >
-        <span class="pill-mic" aria-hidden="true"></span>
-      </button>
-      <span class="pill-label min-w-0 flex-1" aria-live="polite" title={dictationLabel(dictation)}>
-        {dictationLabel(dictation)}
-      </span>
-      {#if dictation === "listening"}
-        <div class="pill-wave">
-          <Waveform mic={levels.mic} system={0} bars={8} variant="quiet" />
-        </div>
-      {/if}
+    <span class="p-rec-square" aria-hidden="true"></span>
+  </button>
+{/snippet}
+
+{#snippet iconBtn(
+  label: string,
+  path: string,
+  onClick: () => void,
+  size = 15,
+)}
+  <button
+    type="button"
+    class="p-icon"
+    data-no-drag
+    onclick={onClick}
+    aria-label={label}
+    title={label}
+  >
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="1.5"
+      stroke-linecap="butt"
+      aria-hidden="true"
+    >
+      <path d={path} />
+    </svg>
+  </button>
+{/snippet}
+
+{#snippet panelBody()}
+  <div class="p-panel" data-no-drag>
+    {#if surface === "clipboard"}
+      <ClipboardHistoryList
+        items={clipboardItems}
+        loading={clipboardLoading}
+        compact
+        onRefresh={refreshClipboard}
+        onPasteStart={() => (pasting = true)}
+        onPasted={() => void closePanels()}
+        onError={() => (pasting = false)}
+      />
     {:else}
-      <span class="pill-mark" aria-hidden="true"></span>
-      <span class="pill-label">Atic</span>
+      <div class="p-tabs" role="tablist" aria-label="Vistas de fragmentos">
+        <button
+          type="button"
+          role="tab"
+          class="p-tab"
+          class:active={snippetsTab === "list"}
+          aria-selected={snippetsTab === "list"}
+          onclick={() => (snippetsTab = "list")}
+        >
+          Lista
+        </button>
+        <button
+          type="button"
+          role="tab"
+          class="p-tab"
+          class:active={snippetsTab === "scratchpad"}
+          aria-selected={snippetsTab === "scratchpad"}
+          onclick={() => (snippetsTab = "scratchpad")}
+        >
+          Bloc
+        </button>
+      </div>
+      {#if snippetsTab === "list"}
+        <SnippetsList
+          items={snippetItems}
+          loading={snippetsLoading}
+          compact
+          onRefresh={refreshSnippets}
+          onPasteStart={() => (pasting = true)}
+          onPasted={() => void closePanels()}
+          onError={() => (pasting = false)}
+        />
+      {:else if scratchLoading}
+        <p class="p-empty">Cargando bloc…</p>
+      {:else}
+        <textarea
+          class="p-scratch"
+          bind:value={scratchBody}
+          oninput={scheduleScratchSave}
+          placeholder="Notas temporales…"
+          aria-label="Bloc de notas"
+          data-no-drag
+        ></textarea>
+      {/if}
     {/if}
   </div>
+{/snippet}
 
-  {#if panelExpanded && !expandUp}
-    <div class="pill-panel" data-no-drag>
-      {#if mode === "clipboard"}
-        <ClipboardHistoryList
-          items={clipboardItems}
-          loading={clipboardLoading}
-          compact
-          onRefresh={refreshClipboard}
-          onPasteStart={() => {
-            pasting = true;
-          }}
-          onPasted={() => {
-            void closeClipboardPanel();
-          }}
-          onError={() => {
-            pasting = false;
-          }}
-        />
-      {:else}
-        <div class="snip-pill-tabs" role="tablist" aria-label="Vistas de fragmentos">
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<div
+  class="p-root"
+  class:is-wheel={surface === "wheel"}
+  class:is-panel={panelOpen}
+  class:is-up={panelUp && panelOpen}
+  class:is-quick={wheelQuick}
+  onpointerdown={beginDrag}
+>
+  <!-- La rueda vive siempre montada y se cruza en fundido con el resto del
+       chrome; montarla y desmontarla hacía que la pill reapareciera opaca
+       encima mientras la rueda aún salía. -->
+  <div class="p-wheel" class:is-open={wheelShown} data-no-drag>
+    <ParticleWheel
+      compact
+      wheelNav
+      particles={false}
+      revealed={wheelShown}
+      bind:activeId={wheelTool}
+      caption="Herramientas"
+      onSelect={(id) => void activateTool(id)}
+      onCenter={() => {
+        void closeWheel();
+        void openMain();
+      }}
+    />
+  </div>
+
+  <div class="p-stack" class:is-dim={surface === "wheel"}>
+    <div class="p-shell">
+      <!-- La barra se mide sola (`max-content`): no hay tabla de anchos. -->
+      <div
+        class="p-bar"
+        class:is-disc-only={!panelOpen && activity === "idle" && !hasQueue}
+        bind:this={barEl}
+      >
+        {#if panelOpen}
+          <span class="p-mark"><AticMark size={15} strokeWidth={1.5} /></span>
+          <span class="p-label">
+            {surface === "clipboard" ? "Clipboard" : "Fragmentos"}
+          </span>
+          {#if recording}
+            {@render recDot(`Grabando ${fmt(elapsed)} · clic para detener`)}
+          {/if}
+          {@render iconBtn("Abrir carpeta", "M4 19V6h6l2 2.5h8V19H4Z", () =>
+            void openDataDir(surface === "clipboard" ? "clipboard" : "snippets").catch(
+              console.warn,
+            ),
+          16)}
+          {@render iconBtn("Cerrar (Esc)", "M6 6l12 12M18 6L6 18", () =>
+            void closePanels(),
+          )}
+        {:else if activity === "recording"}
+          {@render recDot("Detener grabación")}
+          <span class="p-timer">{fmt(elapsed)}</span>
+          {#if liveError}
+            <span class="p-chip is-error" role="status">Error</span>
+          {:else if btWarning}
+            <span class="p-chip is-warn" role="status" title={btWarning}>BT</span>
+          {:else if liveActive}
+            <span class="p-chip" role="status">En vivo</span>
+          {/if}
+          <div class="p-wave">
+            <Waveform mic={levels.mic} system={levels.system} bars={10} variant="quiet" />
+          </div>
+        {:else if activity === "dictating"}
           <button
             type="button"
-            role="tab"
-            class="snip-pill-tab"
-            class:active={snippetsTab === "list"}
-            aria-selected={snippetsTab === "list"}
-            onclick={() => (snippetsTab = "list")}
-          >
-            Lista
-          </button>
-          <button
-            type="button"
-            role="tab"
-            class="snip-pill-tab"
-            class:active={snippetsTab === "scratchpad"}
-            aria-selected={snippetsTab === "scratchpad"}
-            onclick={() => (snippetsTab = "scratchpad")}
-          >
-            Bloc
-          </button>
-        </div>
-        {#if snippetsTab === "list"}
-          <SnippetsList
-            items={snippetItems}
-            loading={snippetsLoading}
-            compact
-            onRefresh={refreshSnippets}
-            onPasteStart={() => {
-              pasting = true;
-            }}
-            onPasted={() => {
-              void closeSnippetsPanel();
-            }}
-            onError={() => {
-              pasting = false;
-            }}
-          />
-        {:else if scratchLoading}
-          <p class="snip-pill-empty">Cargando bloc…</p>
-        {:else}
-          <textarea
-            class="snip-pill-scratch"
-            bind:value={scratchBody}
-            oninput={scheduleScratchSave}
-            placeholder="Notas temporales…"
-            aria-label="Bloc de notas"
+            class="p-dict"
+            class:is-live={dictation === "listening"}
+            class:is-busy={dictation === "transcribing"}
+            class:is-ok={dictation === "pasted"}
+            class:is-error={dictation === "error"}
             data-no-drag
-          ></textarea>
+            onclick={toggleDictate}
+            disabled={busy || dictation === "transcribing"}
+            aria-label={dictation === "listening" ? "Detener dictado" : "Dictado"}
+            title={dictationLabel(dictation)}
+          >
+            <ToolIcon id="dictation" size={16} strokeWidth={1.5} />
+          </button>
+          <span class="p-label" aria-live="polite">{dictationLabel(dictation)}</span>
+          {#if dictation === "listening"}
+            <div class="p-wave">
+              <Waveform mic={levels.mic} system={0} bars={8} variant="quiet" />
+            </div>
+          {/if}
+        {:else if hasQueue}
+          <!-- La cola es un badge sobre el disco, no un reemplazo: antes borraba
+               la pill entera y con ella el acceso a la rueda. -->
+          <span class="p-mark is-disc"><AticMark size={20} strokeWidth={1.4} /></span>
+          <span class="p-queue-count">{queue.length}</span>
+          <span class="p-queue-text" title={queue[0]?.text}>{queue[0]?.text ?? ""}</span>
+          <button
+            type="button"
+            class="p-queue-btn"
+            data-no-drag
+            disabled={queueBusy}
+            onclick={() => void queueAction(pasteQueueItemNow)}
+          >
+            Pegar
+          </button>
+          {@render iconBtn("Descartar", "M6 6l12 12M18 6L6 18", () =>
+            void queueAction(dismissPasteQueueItem),
+          13)}
+        {:else}
+          <!-- Reposo: disco con la marca. Un clic abre la rueda; el centro de
+               la rueda abre la app. El doble clic ya no hace falta. -->
+          <span
+            class="p-mark is-disc"
+            title={[
+              wheelShortcut ? `${formatShortcut(wheelShortcut)} · herramientas` : "",
+              "Clic para las herramientas",
+              "Arrastra para mover",
+            ]
+              .filter(Boolean)
+              .join(" · ")}
+          >
+            <AticMark size={22} strokeWidth={1.4} />
+          </span>
         {/if}
-      {/if}
+      </div>
     </div>
-  {/if}
+
+    {#if panelOpen}
+      {@render panelBody()}
+    {/if}
+  </div>
 </div>
 
 <style>
   :global(html),
   :global(body) {
-    overflow: hidden;
-    background: transparent;
     margin: 0;
     width: 100%;
     height: 100%;
+    overflow: hidden;
+    background: transparent;
   }
 
-  .pill-root {
+  .p-root {
+    position: relative;
     display: flex;
     width: 100vw;
     height: 100vh;
@@ -919,95 +934,313 @@
     overflow: hidden;
     cursor: grab;
   }
-  .pill-root:active {
+  .p-root:active {
     cursor: grabbing;
   }
-
-  .paste-queue-strip {
-    display: flex;
-    flex-shrink: 0;
-    align-items: center;
-    gap: 0.35rem;
-    margin-bottom: 0.25rem;
-    border-radius: 12px;
-    padding: 0.3rem 0.45rem;
-    background: color-mix(in srgb, var(--rb-accent) 12%, var(--rb-surface));
-    color: var(--rb-text);
+  .p-root.is-wheel {
+    padding: 0;
     cursor: default;
   }
-
-  .paste-queue-badge {
-    display: inline-flex;
-    min-width: 1.1rem;
-    height: 1.1rem;
-    flex-shrink: 0;
-    align-items: center;
-    justify-content: center;
-    border-radius: 999px;
-    background: var(--rb-accent);
-    color: #fff;
-    font-size: 0.625rem;
-    font-weight: 700;
+  /* El panel hacia arriba invierte el orden visual sin tocar el DOM. */
+  .p-root.is-up .p-stack {
+    flex-direction: column-reverse;
   }
 
-  .paste-queue-preview {
-    min-width: 0;
-    flex: 1;
-    overflow: hidden;
-    font-size: 0.6875rem;
-    white-space: nowrap;
-    text-overflow: ellipsis;
-    opacity: 0.9;
+  /* Cierre acelerado: al elegir herramienta la rueda ya cumplió su función. */
+  .p-root.is-quick {
+    --morph-close-dur: var(--morph-quick-dur);
+    --morph-fade-dur: var(--morph-quick-dur);
   }
 
-  .paste-queue-btn {
-    flex-shrink: 0;
-    border: 0;
-    border-radius: 999px;
-    padding: 0.2rem 0.45rem;
-    background: var(--rb-accent);
-    color: #fff;
-    font-size: 0.625rem;
-    font-weight: 650;
-    cursor: pointer;
-  }
-
-  .paste-queue-btn.is-muted {
-    background: color-mix(in srgb, var(--rb-text) 12%, transparent);
-    color: var(--rb-text);
-  }
-
-  .paste-queue-btn:disabled {
-    opacity: 0.55;
-    cursor: default;
-  }
-
-  .pill-shell {
+  .p-stack {
     display: flex;
     width: 100%;
+    height: 100%;
+    min-height: 0;
+    flex-direction: column;
+    transition:
+      opacity var(--morph-fade-dur) var(--morph-close-ease),
+      filter var(--morph-fade-dur) var(--morph-close-ease);
+  }
+  .p-stack.is-dim {
+    opacity: 0;
+    filter: blur(var(--morph-blur));
+    pointer-events: none;
+    /* Cada estado declara la curva de su dirección; si no, el chrome se iría
+       con la del cierre y rompería el espejo. */
+    transition:
+      opacity var(--morph-fade-dur) var(--morph-ease),
+      filter var(--morph-fade-dur) var(--morph-ease);
+  }
+
+  /* ─── Rueda ─────────────────────────────────────────────────────────── */
+  /* Tamaño fijo y centrado: la rueda mide siempre lo mismo, así las posiciones
+     de los nodos no se recalculan durante el morph. */
+  .p-wheel {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    z-index: 2;
+    display: grid;
+    width: 232px;
+    height: 232px;
+    margin: -116px 0 0 -116px;
+    place-items: center;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity var(--morph-fade-dur) var(--morph-close-ease);
+  }
+  .p-wheel.is-open {
+    opacity: 1;
+    pointer-events: auto;
+    transition: opacity var(--morph-fade-dur) var(--morph-ease);
+  }
+
+  /* Solo el disco escala. Si escalara la rueda entera, la marca del centro
+     crecería con ella y dejaría de ser el punto fijo del morph. */
+  .p-wheel::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: 50%;
+    background: color-mix(in srgb, var(--rb-bg0) 92%, transparent);
+    transform: scale(0.19);
+    transition: transform var(--morph-close-dur) var(--morph-close-ease);
+  }
+  .p-wheel.is-open::before {
+    transform: scale(1);
+    transition: transform var(--morph-open-dur) var(--morph-ease);
+  }
+
+  /* ─── Barra ─────────────────────────────────────────────────────────── */
+  /* Una sola piel para todos los estados. Antes la barra y la tira de cola
+     declaraban la misma superficie por separado y se desincronizaban. */
+  .p-shell {
+    display: flex;
+    /* max-content, no 100%: si la ventana todavía no encogió, con 100% la
+       barra se estiraba a lo ancho y se veía una pastilla larga con la marca
+       pegada a la izquierda. Abrazando el contenido, la forma es correcta
+       aunque la ventana venga atrasada. */
+    width: max-content;
+    max-width: 100%;
     height: 40px;
-    min-width: 0;
     flex-shrink: 0;
     align-items: center;
-    gap: 8px;
+    overflow: hidden;
     border-radius: 999px;
-    padding: 0 12px 0 10px;
     background: color-mix(in srgb, var(--rb-surface) 97%, transparent);
     color: var(--rb-text);
-    box-shadow: 0 5px 14px rgba(0, 0, 0, 0.3);
-    overflow: hidden;
-    white-space: nowrap;
+    transition:
+      border-radius var(--morph-close-dur) var(--morph-close-ease),
+      transform var(--morph-close-dur) var(--morph-close-ease);
   }
-  .pill-shell.is-expanded {
+  /* Con panel la barra sí ocupa el ancho: es la cabecera del panel. */
+  .p-root.is-panel .p-shell {
+    width: 100%;
     border-radius: 16px 16px 0 0;
-    box-shadow: none;
-    padding-right: 8px;
   }
-  .pill-shell.is-expanded.is-up {
+  .p-root.is-panel.is-up .p-shell {
     border-radius: 0 0 16px 16px;
   }
 
-  .pill-panel {
+  /* max-content: el ancho lo fija el contenido, no la ventana. Es lo que hace
+     que medir la barra no se realimente con el resize. */
+  .p-bar {
+    display: flex;
+    width: max-content;
+    min-width: 40px;
+    height: 100%;
+    align-items: center;
+    gap: 8px;
+    padding: 0 12px 0 10px;
+    white-space: nowrap;
+  }
+  /* Reposo: disco exacto. Con el padding de la barra quedaba elipse. */
+  .p-bar.is-disc-only {
+    width: 40px;
+    justify-content: center;
+    padding: 0;
+  }
+  .p-root.is-panel .p-bar {
+    width: 100%;
+    padding-right: 8px;
+  }
+
+  .p-mark {
+    display: inline-flex;
+    flex-shrink: 0;
+    color: var(--rb-text);
+    line-height: 0;
+  }
+
+  .p-label {
+    min-width: 0;
+    flex: 1;
+    overflow: hidden;
+    color: var(--rb-text);
+    font-family: var(--rb-font);
+    font-size: 0.625rem;
+    font-weight: 500;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .p-timer {
+    min-width: 2.4rem;
+    color: var(--rb-text);
+    font-family: var(--rb-font);
+    font-size: 0.6875rem;
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0.06em;
+  }
+
+  .p-chip {
+    overflow: hidden;
+    max-width: 3.5rem;
+    color: var(--rb-muted);
+    font-family: var(--rb-font);
+    font-size: 0.5625rem;
+    font-weight: 500;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .p-chip.is-error {
+    color: var(--rb-record);
+  }
+  .p-chip.is-warn {
+    color: var(--rb-warn);
+  }
+
+  .p-wave {
+    display: flex;
+    min-width: 0;
+    align-items: center;
+  }
+
+  /* ─── Botones ───────────────────────────────────────────────────────── */
+  .p-icon,
+  .p-rec,
+  .p-dict {
+    display: grid;
+    flex-shrink: 0;
+    place-items: center;
+    border: 0;
+    margin: 0;
+    padding: 0;
+    cursor: pointer;
+    transition:
+      color var(--duration-quick) var(--ease-smooth-out),
+      background var(--duration-quick) var(--ease-smooth-out),
+      transform var(--duration-quick) var(--ease-smooth-out);
+  }
+  .p-icon {
+    width: 1.5rem;
+    height: 1.5rem;
+    border-radius: 999px;
+    background: transparent;
+    color: var(--rb-muted);
+  }
+  .p-icon:hover {
+    color: var(--rb-text);
+    background: color-mix(in srgb, var(--rb-text) 8%, transparent);
+  }
+  .p-rec,
+  .p-dict {
+    width: 26px;
+    height: 26px;
+    border-radius: 999px;
+  }
+  .p-rec {
+    background: color-mix(in srgb, var(--rb-record) 24%, transparent);
+    color: var(--rb-record);
+  }
+  .p-rec-square {
+    width: 8px;
+    height: 8px;
+    background: currentColor;
+  }
+  .p-dict {
+    background: transparent;
+    color: var(--rb-muted);
+  }
+  .p-dict.is-live {
+    color: var(--rb-text);
+    background: color-mix(in srgb, var(--rb-text) 10%, transparent);
+  }
+  .p-dict.is-busy {
+    color: var(--rb-warn);
+  }
+  .p-dict.is-ok {
+    color: var(--rb-ok);
+  }
+  .p-dict.is-error {
+    color: var(--rb-record);
+  }
+  .p-icon:active:not(:disabled),
+  .p-rec:active:not(:disabled),
+  .p-dict:active:not(:disabled) {
+    transform: scale(0.94);
+  }
+  .p-icon:disabled,
+  .p-rec:disabled,
+  .p-dict:disabled {
+    opacity: 0.45;
+    cursor: default;
+  }
+  .p-icon:focus-visible,
+  .p-rec:focus-visible,
+  .p-dict:focus-visible,
+  .p-queue-btn:focus-visible,
+  .p-tab:focus-visible {
+    outline: none;
+    box-shadow: var(--rb-focus);
+  }
+
+  /* ─── Cola de pegado ────────────────────────────────────────────────── */
+  .p-queue-count {
+    flex-shrink: 0;
+    color: var(--rb-faint);
+    font-size: 0.625rem;
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0.06em;
+  }
+  .p-queue-text {
+    max-width: 10rem;
+    overflow: hidden;
+    color: var(--rb-muted);
+    font-size: 0.6875rem;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .p-queue-btn {
+    display: inline-flex;
+    height: 1.65rem;
+    flex-shrink: 0;
+    align-items: center;
+    border: 0;
+    border-radius: 999px;
+    padding: 0 0.6rem;
+    background: color-mix(in srgb, var(--rb-text) 8%, transparent);
+    color: var(--rb-text);
+    font-size: 0.5625rem;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    cursor: pointer;
+  }
+  .p-queue-btn:disabled {
+    opacity: 0.45;
+    cursor: default;
+  }
+
+  /* ─── Panel ─────────────────────────────────────────────────────────── */
+  .p-panel {
     display: flex;
     min-height: 0;
     flex: 1;
@@ -1016,158 +1249,21 @@
     padding: 0.45rem 0.5rem 0.55rem;
     background: color-mix(in srgb, var(--rb-surface) 97%, transparent);
     color: var(--rb-text);
-    box-shadow: 0 8px 18px rgba(0, 0, 0, 0.28);
     overflow: hidden;
     cursor: default;
   }
-  .pill-root.is-up .pill-panel {
+  .p-root.is-up .p-panel {
     border-radius: 16px 16px 0 0;
   }
 
-  @media (prefers-color-scheme: light) {
-    .pill-shell,
-    .pill-panel {
-      background: color-mix(in srgb, #ffffff 97%, transparent);
-      box-shadow: 0 5px 14px rgba(15, 23, 32, 0.12);
-    }
-    .pill-shell.is-expanded {
-      box-shadow: none;
-    }
-  }
-
-  .pill-mark {
-    width: 8px;
-    height: 8px;
-    flex-shrink: 0;
-    border-radius: 999px;
-    background: var(--rb-accent);
-  }
-
-  .pill-label {
-    min-width: 0;
-    overflow: hidden;
-    font-size: 0.8125rem;
-    font-weight: 600;
-    color: var(--rb-text);
-    font-family: var(--rb-font);
-    white-space: nowrap;
-    text-overflow: ellipsis;
-  }
-
-  .pill-action {
-    flex-shrink: 0;
-    border: 0;
-    margin: 0;
-    cursor: pointer;
-  }
-
-  .pill-close {
-    display: grid;
-    width: 1.5rem;
-    height: 1.5rem;
-    place-items: center;
-    border-radius: 999px;
-    padding: 0;
-    background: color-mix(in srgb, var(--rb-text) 10%, transparent);
-    color: var(--rb-text);
-  }
-
-  .pill-rec {
-    display: grid;
-    width: 28px;
-    height: 28px;
-    place-items: center;
-    border-radius: 999px;
-    background: var(--rb-record);
-    color: #fff;
-  }
-  .pill-rec.is-live {
-    box-shadow: 0 0 0 2px color-mix(in srgb, var(--rb-record) 22%, transparent);
-  }
-  .pill-rec-square {
-    width: 8px;
-    height: 8px;
-    border-radius: 2px;
-    background: #fff;
-  }
-
-  .pill-dict {
-    display: grid;
-    width: 28px;
-    height: 28px;
-    place-items: center;
-    border-radius: 999px;
-    color: var(--rb-text);
-    background: color-mix(in srgb, var(--rb-text) 10%, transparent);
-  }
-  .pill-dict.is-live {
-    color: #fbfbf8;
-    background: var(--rb-accent);
-    box-shadow: 0 0 0 2px color-mix(in srgb, var(--rb-accent) 22%, transparent);
-  }
-  .pill-dict.is-busy {
-    color: var(--rb-warn);
-    background: var(--rb-warn-soft);
-  }
-  .pill-dict.is-ok {
-    color: var(--rb-ok);
-    background: var(--rb-ok-soft);
-  }
-  .pill-dict.is-error {
-    color: var(--rb-record);
-    background: var(--rb-record-soft);
-  }
-
-  .pill-mic {
-    width: 10px;
-    height: 10px;
-    border-radius: 999px 999px 4px 4px;
-    background: currentColor;
-    box-shadow: 0 3px 0 -1px currentColor;
-  }
-
-  .pill-timer {
-    min-width: 2.4rem;
-    font-size: 0.75rem;
-    font-weight: 600;
-    color: var(--rb-text);
-    font-variant-numeric: tabular-nums;
-    font-family: var(--rb-font);
-  }
-
-  .pill-live {
-    overflow: hidden;
-    max-width: 3.5rem;
-    font-size: 0.6875rem;
-    font-weight: 600;
-    color: var(--rb-accent);
-    font-family: var(--rb-font);
-    white-space: nowrap;
-    text-overflow: ellipsis;
-  }
-  .pill-live.is-error {
-    color: var(--rb-record);
-  }
-  .pill-live.is-warn {
-    color: var(--rb-warn);
-  }
-
-  .pill-wave {
-    display: flex;
-    min-width: 0;
-    flex: 1;
-    align-items: center;
-  }
-
-  .snip-pill-tabs {
+  .p-tabs {
     display: flex;
     flex-shrink: 0;
     gap: 0.3rem;
     margin-bottom: 0.35rem;
   }
-
-  .snip-pill-tab {
-    border: 1px solid color-mix(in srgb, var(--rb-text) 12%, transparent);
+  .p-tab {
+    border: 0;
     border-radius: 999px;
     padding: 0.2rem 0.55rem;
     background: transparent;
@@ -1175,46 +1271,61 @@
     font-size: 0.6875rem;
     font-weight: 600;
     cursor: pointer;
+    transition:
+      color var(--duration-quick) var(--ease-smooth-out),
+      background var(--duration-quick) var(--ease-smooth-out);
   }
-
-  .snip-pill-tab.active {
-    border-color: color-mix(in srgb, var(--rb-accent) 40%, transparent);
+  .p-tab.active {
     background: color-mix(in srgb, var(--rb-accent) 12%, transparent);
     color: var(--rb-accent);
   }
 
-  .snip-pill-scratch {
+  .p-scratch {
     width: 100%;
     min-height: 0;
     flex: 1;
-    border: 1px solid color-mix(in srgb, var(--rb-text) 10%, transparent);
+    border: 0;
     border-radius: 0.45rem;
     padding: 0.4rem 0.5rem;
     background: color-mix(in srgb, var(--rb-bg0) 80%, transparent);
     color: var(--rb-text);
-    font-size: 0.75rem;
     font-family: inherit;
+    font-size: 0.75rem;
     resize: none;
     outline: none;
   }
 
-  .snip-pill-empty {
+  .p-empty {
     margin: 0.35rem 0 0;
     color: var(--rb-muted);
     font-size: 0.75rem;
   }
 
-  .pill-root,
-  .pill-root * {
+  .p-root,
+  .p-root * {
     user-select: none !important;
     -webkit-user-select: none !important;
   }
-
-  .pill-shell :global(button:hover:not(:disabled)) {
-    filter: brightness(1.08);
+  .p-scratch {
+    user-select: text !important;
+    -webkit-user-select: text !important;
   }
 
-  .pill-shell :global(button:active:not(:disabled)) {
-    transform: scale(0.94);
+  @media (prefers-reduced-motion: reduce) {
+    .p-wheel,
+    .p-wheel.is-open,
+    .p-wheel::before,
+    .p-wheel.is-open::before,
+    .p-stack,
+    .p-shell,
+    .p-icon,
+    .p-rec,
+    .p-dict,
+    .p-tab {
+      transition: none !important;
+    }
+    .p-stack.is-dim {
+      filter: none;
+    }
   }
 </style>

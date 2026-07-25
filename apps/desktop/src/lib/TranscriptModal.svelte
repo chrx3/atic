@@ -583,7 +583,7 @@
   .rb-transcript-state.is-error {
     color: var(--rb-record);
   }
-  @media (max-width: 640px) {
+  @media (max-width: 40rem) {
     .rb-transcript-tools {
       grid-template-columns: 1fr auto;
     }
