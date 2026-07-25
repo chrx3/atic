@@ -38,6 +38,13 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 [profile.dev]
 # La captura de audio y whisper son sensibles al rendimiento incluso en debug.
 opt-level = 1
+# Optimizado + incremental corrompe los artefactos en Windows/MSVC: el enlazado
+# falla con `unresolved external symbol anon.*.llvm.*` apuntando a crates que ni
+# se tocaron (zip, bytes, http_body_util…), y la única salida es borrar
+# `target/debug/incremental` a mano — 5 GB, y volvió a pasar dos veces en una
+# sola sesión. Con el perfil ya optimizado, incremental aporta poco reuso y a
+# cambio rompe el ciclo de desarrollo cada tantas recompilaciones.
+incremental = false
 
 [profile.dev.package."*"]
 opt-level = 3
