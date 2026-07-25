@@ -293,8 +293,8 @@ fn pdf_escape(value: &str) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::Utc;
     use atic_core::{Segment, Speaker};
+    use chrono::Utc;
 
     fn fixture() -> (Recording, Transcript) {
         let recording = Recording::new(Utc::now());

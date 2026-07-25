@@ -38,11 +38,7 @@ pub const PROVIDERS: &[ProviderInfo] = &[
         needs_api_key: true,
         base_url_editable: false,
         secret_kind: Some("claude_api_key"),
-        suggested_models: &[
-            "claude-opus-4-8",
-            "claude-sonnet-4-5",
-            "claude-haiku-4-5",
-        ],
+        suggested_models: &["claude-opus-4-8", "claude-sonnet-4-5", "claude-haiku-4-5"],
     },
     ProviderInfo {
         id: "ollama",

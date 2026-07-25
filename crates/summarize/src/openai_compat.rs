@@ -2,9 +2,9 @@
 
 use std::io::{BufRead, BufReader};
 
+use atic_core::{Summary, Transcript};
 use reqwest::blocking::Client;
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
-use atic_core::{Summary, Transcript};
 use serde::{Deserialize, Serialize};
 
 use crate::claude::build_summary;

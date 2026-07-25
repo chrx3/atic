@@ -137,13 +137,15 @@ pub fn capture_rect(rect: Rect, include_cursor: bool) -> Result<Frame> {
 pub fn freeze_monitors(monitors: &[MonitorInfo], include_cursor: bool) -> Vec<Frame> {
     monitors
         .iter()
-        .filter_map(|monitor| match capture_rect(monitor.bounds, include_cursor) {
-            Ok(frame) => Some(frame),
-            Err(error) => {
-                tracing::warn!(%error, id = %monitor.id, "no se pudo congelar el monitor");
-                None
-            }
-        })
+        .filter_map(
+            |monitor| match capture_rect(monitor.bounds, include_cursor) {
+                Ok(frame) => Some(frame),
+                Err(error) => {
+                    tracing::warn!(%error, id = %monitor.id, "no se pudo congelar el monitor");
+                    None
+                }
+            },
+        )
         .collect()
 }
 
@@ -154,8 +156,8 @@ pub fn freeze_monitors(monitors: &[MonitorInfo], include_cursor: bool) -> Vec<Fr
 /// Útil durante el overlay: `PrintWindow` no captura los overlays, y el
 /// fallback (recortar del frame congelado) tampoco.
 pub fn print_window(hwnd: isize) -> Result<Option<Frame>> {
-    let bounds =
-        crate::windows::window_bounds(hwnd).ok_or_else(|| Error::Gdi("ventana sin límites".into()))?;
+    let bounds = crate::windows::window_bounds(hwnd)
+        .ok_or_else(|| Error::Gdi("ventana sin límites".into()))?;
     // SAFETY: `canvas` gestiona los recursos; `hwnd` proviene de la enumeración.
     unsafe {
         let canvas = MemCanvas::new(bounds.width, bounds.height)?;

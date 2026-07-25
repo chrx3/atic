@@ -117,7 +117,11 @@ pub fn reveal_capture(app: AppHandle, state: State<AppState>, path: String) -> R
 /// Acción al hacer clic en la miniatura: abre la vista previa (imagen) o la
 /// ubicación (carpeta), según `capture_click_action`.
 #[tauri::command]
-pub fn activate_capture(app: AppHandle, state: State<AppState>, path: String) -> Result<(), String> {
+pub fn activate_capture(
+    app: AppHandle,
+    state: State<AppState>,
+    path: String,
+) -> Result<(), String> {
     use tauri_plugin_opener::OpenerExt;
     let target = ensure_in_dir(&state.dirs.captures_dir(), Path::new(&path))?;
     let action = state.config.lock().unwrap().capture_click_action.clone();

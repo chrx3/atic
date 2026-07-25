@@ -2,8 +2,8 @@
 
 use std::io::{BufRead, BufReader};
 
-use reqwest::blocking::Client;
 use atic_core::{Summary, Transcript};
+use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 
 use crate::claude::build_summary;

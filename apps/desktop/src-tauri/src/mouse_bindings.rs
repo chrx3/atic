@@ -226,9 +226,7 @@ fn enqueue_hook_event(ev: HookEvent) {
 fn rawinput_thread_main() {
     use windows_sys::Win32::Foundation::HWND;
     use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
-    use windows_sys::Win32::UI::Input::{
-        RegisterRawInputDevices, RAWINPUTDEVICE, RIDEV_INPUTSINK,
-    };
+    use windows_sys::Win32::UI::Input::{RegisterRawInputDevices, RAWINPUTDEVICE, RIDEV_INPUTSINK};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         CreateWindowExW, DispatchMessageW, GetMessageW, RegisterClassW, TranslateMessage,
         CS_HREDRAW, CS_VREDRAW, HWND_MESSAGE, MSG, WNDCLASSW,
@@ -345,7 +343,7 @@ unsafe extern "system" fn rawinput_wnd_proc(
     lparam: windows_sys::Win32::Foundation::LPARAM,
 ) -> windows_sys::Win32::Foundation::LRESULT {
     use windows_sys::Win32::UI::Input::{
-        GetRawInputData, RAWINPUT, RID_INPUT, RIM_TYPEMOUSE, HRAWINPUT,
+        GetRawInputData, HRAWINPUT, RAWINPUT, RID_INPUT, RIM_TYPEMOUSE,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         DefWindowProcW, RI_MOUSE_BUTTON_4_DOWN, RI_MOUSE_BUTTON_4_UP, RI_MOUSE_BUTTON_5_DOWN,
@@ -354,7 +352,8 @@ unsafe extern "system" fn rawinput_wnd_proc(
 
     if msg == WM_INPUT {
         let hraw = lparam as HRAWINPUT;
-        let header_size = std::mem::size_of::<windows_sys::Win32::UI::Input::RAWINPUTHEADER>() as u32;
+        let header_size =
+            std::mem::size_of::<windows_sys::Win32::UI::Input::RAWINPUTHEADER>() as u32;
 
         // Tamaño necesario.
         let mut size: u32 = 0;

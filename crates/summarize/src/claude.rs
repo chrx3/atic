@@ -2,10 +2,10 @@
 
 use std::io::{BufRead, BufReader};
 
+use atic_core::{Summary, Transcript};
 use chrono::Utc;
 use reqwest::blocking::Client;
 use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
-use atic_core::{Summary, Transcript};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Result, SummarizeError};

@@ -63,9 +63,7 @@ pub fn cleanup_captures(dir: &Path, max_age_hours: u32, now: SystemTime) -> Rete
                         result.deleted += 1;
                         result.bytes_freed = result.bytes_freed.saturating_add(bytes);
                     }
-                    Err(error) => result
-                        .errors
-                        .push(format!("{}: {error}", path.display())),
+                    Err(error) => result.errors.push(format!("{}: {error}", path.display())),
                 }
             }
             Ok(_) => result.errors.push(format!(

@@ -243,8 +243,7 @@ fn window_capture_impl(app: &AppHandle, hwnd: i64) -> Result<(String, (i32, i32)
     let frame = match engine::print_window(hwnd as isize).map_err(|e| e.to_string())? {
         Some(frame) => frame,
         None => {
-            let win_bounds =
-                capwin::window_bounds(hwnd as isize).ok_or("ventana sin límites")?;
+            let win_bounds = capwin::window_bounds(hwnd as isize).ok_or("ventana sin límites")?;
             session
                 .frame
                 .crop(win_bounds)
@@ -311,7 +310,10 @@ fn monitor_capture_impl(app: &AppHandle, x: f64, y: f64) -> Result<(String, (i32
 }
 
 #[cfg(windows)]
-fn save_capture(app: &AppHandle, frame: &atic_capture::Frame) -> Result<(String, (i32, i32)), String> {
+fn save_capture(
+    app: &AppHandle,
+    frame: &atic_capture::Frame,
+) -> Result<(String, (i32, i32)), String> {
     use atic_capture::naming;
     let state = app.state::<crate::state::AppState>();
     let png = frame.to_png().map_err(|e| e.to_string())?;
@@ -363,6 +365,10 @@ fn region_capture_impl(
 }
 
 #[cfg(not(windows))]
-fn monitor_capture_impl(_app: &AppHandle, _x: f64, _y: f64) -> Result<(String, (i32, i32)), String> {
+fn monitor_capture_impl(
+    _app: &AppHandle,
+    _x: f64,
+    _y: f64,
+) -> Result<(String, (i32, i32)), String> {
     Err("La captura de pantalla solo está disponible en Windows.".into())
 }

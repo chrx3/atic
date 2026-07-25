@@ -73,7 +73,13 @@ mod tests {
     #[test]
     fn rejects_wrong_buffer_size() {
         let err = bgra_to_png(2, 2, &[0u8; 8]).unwrap_err();
-        assert!(matches!(err, Error::BufferSize { expected: 16, got: 8 }));
+        assert!(matches!(
+            err,
+            Error::BufferSize {
+                expected: 16,
+                got: 8
+            }
+        ));
     }
 
     #[test]

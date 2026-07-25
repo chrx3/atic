@@ -14,10 +14,7 @@ pub const GROQ_DICTATION_MODEL: &str = "whisper-large-v3-turbo";
 
 /// Modelos STT oficiales de Groq (id, etiqueta UI).
 pub const GROQ_WHISPER_MODELS: &[(&str, &str)] = &[
-    (
-        "whisper-large-v3-turbo",
-        "Whisper Large v3 Turbo (rápido)",
-    ),
+    ("whisper-large-v3-turbo", "Whisper Large v3 Turbo (rápido)"),
     ("whisper-large-v3", "Whisper Large v3 (más preciso)"),
 ];
 
