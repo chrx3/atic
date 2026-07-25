@@ -87,7 +87,7 @@
       editing = null;
       aliasesText = "";
       await refresh();
-      onToast?.("Fragmento guardado");
+      onToast?.("Texto guardado");
     } catch (error) {
       onToast?.(String(error));
     } finally {
@@ -119,7 +119,13 @@
     void loadScratchpad();
     const unlisten = onSnippetsChanged(() => void refresh());
     return () => {
-      if (scratchTimer) clearTimeout(scratchTimer);
+      if (scratchTimer) {
+        clearTimeout(scratchTimer);
+        // Guardar lo pendiente, no descartarlo: el autoguardado espera 500 ms
+        // tras la última tecla, y salir de la pestaña dentro de esa ventana
+        // tiraba lo último escrito sin avisar.
+        void persistScratchpad();
+      }
       void unlisten.then((fn) => fn());
     };
   });
@@ -129,19 +135,22 @@
   {#snippet prefs()}
     <div class="atic-shortcut-row">
       <div>
-        <p class="atic-shortcut-label">Atajo de fragmentos</p>
+        <p class="atic-shortcut-label">Atajo de textos</p>
         <p class="atic-shortcut-hint">Trae la pill al cursor.</p>
       </div>
       <HotkeyCapture
         value={shortcut || "CmdOrCtrl+Shift+S"}
         defaultValue="CmdOrCtrl+Shift+S"
-        ariaLabel="Cambiar atajo del panel de fragmentos"
+        ariaLabel="Cambiar atajo del panel de textos"
         onChange={onShortcutChange}
       />
     </div>
   {/snippet}
 
-  <div class="snip-tabs" role="tablist" aria-label="Vistas de fragmentos">
+  <!-- Dos cosas distintas conviven acá: textos que guardás para reusar y un
+       bloc de notas libre. Las pestañas son lo único que las separa, así que
+       tienen que nombrar el CONTENIDO, no la vista. -->
+  <div class="snip-tabs" role="tablist" aria-label="Textos y notas">
     <button
       type="button"
       role="tab"
@@ -150,7 +159,7 @@
       aria-selected={tab === "snippets"}
       onclick={() => (tab = "snippets")}
     >
-      Fragmentos
+      Textos
     </button>
     <button
       type="button"
@@ -160,7 +169,7 @@
       aria-selected={tab === "scratchpad"}
       onclick={() => (tab = "scratchpad")}
     >
-      Bloc de notas
+      Notas
     </button>
   </div>
 
@@ -179,12 +188,16 @@
             <input class="rb-field" type="text" bind:value={editing.name} required />
           </label>
           <label class="snip-field">
-            <span>Alias (separados por coma)</span>
+            <!-- Decía "Alias", que promete expansión automática: escribís
+                 "firma" en cualquier app y se reemplaza sola. Eso NO existe;
+                 estas palabras solo sirven para encontrar el fragmento en el
+                 buscador de la lista. El nombre ahora dice lo que hace. -->
+            <span>Palabras para buscarlo</span>
             <input
               class="rb-field"
               type="text"
               bind:value={aliasesText}
-              placeholder="firma, saludo…"
+              placeholder="firma, saludo, despedida"
             />
           </label>
           <label class="snip-field snip-field-grow">
@@ -218,7 +231,7 @@
             class="snip-scratch-area rb-field"
             bind:value={scratchBody}
             oninput={scheduleScratchSave}
-            placeholder="Notas temporales… se guardan automáticamente."
+            placeholder="Escribí lo que sea. Se guarda solo, acá en tu equipo."
             aria-label="Bloc de notas"
           ></textarea>
           <p class="snip-scratch-meta">

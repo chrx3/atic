@@ -22,7 +22,7 @@
   let searchTimer: ReturnType<typeof setTimeout> | null = null;
 
   const kindLabels: Record<SearchHitKind, string> = {
-    snippet: "Fragmentos",
+    snippet: "Textos",
     clipboard: "Portapapeles",
     capture: "Capturas",
     scratchpad: "Bloc",
@@ -114,7 +114,7 @@
 {#if open}
   <ModalShell
     title="Buscar"
-    subtitle="Fragmentos, portapapeles, capturas, bloc y reuniones"
+    subtitle="Textos, portapapeles, capturas, notas y reuniones"
     size="lg"
     onClose={() => {
       open = false;

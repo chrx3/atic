@@ -554,6 +554,11 @@
     if (scratchTimer) {
       clearTimeout(scratchTimer);
       scratchTimer = null;
+      // Guardar lo pendiente, NO descartarlo. El autoguardado del bloc espera
+      // 500 ms tras la última tecla; cerrar el panel dentro de esa ventana
+      // —Escape, clic afuera, pegar un fragmento— tiraba lo último que
+      // escribiste sin decir nada.
+      void persistScratchpad();
     }
     trace(`closePanels desde=${surface} silent=${silent}`);
     collapsingFrom = surface === "wheel" ? "wheel" : "panel";
@@ -875,6 +880,15 @@
     };
     const onBlur = () => {
       if (pasting || windowDragging) return;
+      // El bloc de notas NO se cierra al perder el foco.
+      //
+      // Cerrar por blur está bien donde la interacción es "elegí y listo"
+      // —clipboard, textos, rueda—: mirar otra ventana significa que ya no lo
+      // querías. Pero el bloc es un campo de escritura libre, y ahí perder el
+      // foco un instante (una notificación, ir a copiar un dato de otra app) es
+      // parte normal de escribir, no una señal de que terminaste. Se cierra con
+      // Escape o con la X, que son intenciones explícitas.
+      if (surface === "snippets" && snippetsTab === "scratchpad") return;
       // El margen evita que el propio setFocus de la apertura la cierre.
       if (surface !== "none" && Date.now() - surfaceOpenedAt > 400) {
         if (surface === "wheel") void closeWheel();
@@ -890,7 +904,11 @@
     return () => {
       stopTimer();
       stopDragWatch();
-      if (scratchTimer) clearTimeout(scratchTimer);
+      if (scratchTimer) {
+        clearTimeout(scratchTimer);
+        // Mismo motivo que en `closePanels`: lo pendiente se guarda.
+        void persistScratchpad();
+      }
       window.removeEventListener("keydown", onKey, true);
       window.removeEventListener("blur", onBlur);
       window.removeEventListener("focus", onFocus);
@@ -957,7 +975,10 @@
         onError={() => (pasting = false)}
       />
     {:else}
-      <div class="p-tabs" role="tablist" aria-label="Vistas de fragmentos">
+      <!-- Las pestañas nombran el contenido, no la vista: "Lista" no decía
+           lista de qué, y era lo único que distinguía los textos reusables del
+           bloc de notas. -->
+      <div class="p-tabs" role="tablist" aria-label="Textos y notas">
         <button
           type="button"
           role="tab"
@@ -966,7 +987,7 @@
           aria-selected={snippetsTab === "list"}
           onclick={() => (snippetsTab = "list")}
         >
-          Lista
+          Textos
         </button>
         <button
           type="button"
@@ -976,7 +997,7 @@
           aria-selected={snippetsTab === "scratchpad"}
           onclick={() => (snippetsTab = "scratchpad")}
         >
-          Bloc
+          Notas
         </button>
       </div>
       {#if snippetsTab === "list"}
@@ -1044,7 +1065,7 @@
         {#if panelOpen}
           <span class="p-mark"><AticMark size={15} strokeWidth={1.5} /></span>
           <span class="p-label">
-            {surface === "clipboard" ? "Clipboard" : "Fragmentos"}
+            {surface === "clipboard" ? "Clipboard" : "Textos"}
           </span>
           {#if recording}
             {@render recDot(`Grabando ${fmt(elapsed)} · clic para detener`)}

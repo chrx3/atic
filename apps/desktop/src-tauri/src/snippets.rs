@@ -187,7 +187,10 @@ pub fn paste_snippet(app: AppHandle, state: State<AppState>, id: String) -> Resu
 
     let _ = app.emit("pill-snippets-close", ());
     if let Some(win) = pill {
-        let _ = win.show();
+        // Ver `show_without_stealing_focus`: reaparecer al frente antes de que
+        // la app destino consuma las teclas se comía el pegado.
+        std::thread::sleep(std::time::Duration::from_millis(120));
+        crate::clipboard_history::show_without_stealing_focus(&win);
     }
     Ok(())
 }

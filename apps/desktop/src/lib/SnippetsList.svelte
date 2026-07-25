@@ -82,9 +82,9 @@
       <Search size={14} aria-hidden="true" />
       <input
         type="search"
-        placeholder="Buscar por nombre o alias…"
+        placeholder="Buscar por nombre o palabra…"
         bind:value={query}
-        aria-label="Buscar fragmentos"
+        aria-label="Buscar textos"
       />
     </label>
     {#if !compact && onEdit}
@@ -97,8 +97,13 @@
   {#if loading}
     <p class="snip-empty">Cargando…</p>
   {:else if visibleItems.length === 0}
+    <!-- Una lista vacía es el momento en que alguien decide si vale la pena
+         entender la herramienta. "Aún no hay fragmentos guardados" no explicaba
+         qué es un fragmento ni para qué sirve. -->
     <p class="snip-empty">
-      {query.trim() ? "Sin coincidencias." : "Aún no hay fragmentos guardados."}
+      {query.trim()
+        ? "Sin coincidencias."
+        : "Guardá los textos que escribís seguido —tu firma, un saludo, una plantilla— y pegalos desde la pill sin volver a tipearlos."}
     </p>
   {:else}
     <ul class="snip-items" role="list">

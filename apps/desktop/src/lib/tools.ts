@@ -33,9 +33,12 @@ export const TOOLS: ToolDef[] = [
   },
   {
     id: "snippets",
-    label: "Fragmentos",
-    short: "Texto rápido",
-    blurb: "Plantillas reutilizables y bloc de notas; atajo para pegar desde la pill.",
+    // "Fragmentos" describía la forma, no el uso, y no decía en qué se
+    // diferencia de Clipboard. La distinción real es el origen: el historial se
+    // llena solo con lo que copiás, esto lo guardás vos a propósito.
+    label: "Textos",
+    short: "Guardados a mano",
+    blurb: "Los textos que escribís siempre, listos para pegar. Más un bloc para notas sueltas.",
   },
   {
     id: "captures",

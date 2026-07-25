@@ -108,7 +108,11 @@ fn prepare_external_paste(app: &AppHandle) -> Option<tauri::WebviewWindow> {
 
 fn restore_pill(pill: Option<tauri::WebviewWindow>) {
     if let Some(win) = pill {
-        let _ = win.show();
+        // La espera y el "sin activar" son por lo mismo: `SendInput` encola las
+        // teclas y no espera a que la app destino las procese. Reaparecer al
+        // frente en ese hueco se comía el pegado.
+        thread::sleep(Duration::from_millis(120));
+        clipboard_history::show_without_stealing_focus(&win);
     }
 }
 

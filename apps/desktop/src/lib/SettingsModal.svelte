@@ -790,11 +790,11 @@
         </div>
 
         <div class="rb-settings-hotkey">
-          <p class="rb-settings-hotkey-label">Fragmentos de texto</p>
+          <p class="rb-settings-hotkey-label">Textos guardados</p>
           <HotkeyCapture
             value={c.snippets_shortcut}
             defaultValue="CmdOrCtrl+Shift+S"
-            ariaLabel="Cambiar atajo del panel de fragmentos"
+            ariaLabel="Cambiar atajo del panel de textos"
             onChange={(sc) => {
               c.snippets_shortcut = sc;
             }}

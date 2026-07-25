@@ -430,7 +430,10 @@ pub fn paste_clipboard_item(
 
     let _ = app.emit("pill-clipboard-close", ());
     if let Some(win) = pill {
-        let _ = win.show();
+        // Darle a la app destino tiempo de consumir las teclas antes de que
+        // reaparezca nada encima. `SendInput` solo las encola.
+        thread::sleep(Duration::from_millis(120));
+        show_without_stealing_focus(&win);
     }
     result
 }
@@ -1204,43 +1207,64 @@ fn restore_foreground_hwnd() {
         use windows_sys::Win32::Foundation::HWND;
         use windows_sys::Win32::UI::WindowsAndMessaging::IsWindow;
 
+        use windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+
         let raw = PREV_FOREGROUND.load(Ordering::SeqCst);
         if raw == 0 {
+            tracing::debug!(target: "paste_geo", "RESTORE    sin destino guardado");
             return;
         }
         unsafe {
             let hwnd = raw as HWND;
             if IsWindow(hwnd) == 0 {
+                tracing::debug!(target: "paste_geo", "RESTORE    el destino guardado ya no existe");
                 return;
             }
             force_foreground_for_paste(hwnd);
+            // Verificar que el SO nos hizo caso. `SetForegroundWindow` puede
+            // fallar en silencio: Windows se lo niega a procesos sin foco ni
+            // input reciente, y ahí las teclas se van a otro lado.
+            let now = GetForegroundWindow();
+            let exe = process_exe_name(hwnd).unwrap_or_else(|| "?".into());
+            if now == hwnd {
+                tracing::debug!(target: "paste_geo", "RESTORE    ok destino={exe}");
+            } else {
+                let actual = if now.is_null() {
+                    "ninguna".to_string()
+                } else {
+                    process_exe_name(now).unwrap_or_else(|| "?".into())
+                };
+                tracing::debug!(
+                    target: "paste_geo",
+                    "RESTORE    FALLO queria={exe} pero el frente es={actual}"
+                );
+            }
         }
     }
 }
 
-/// DFS: el último `Chrome_*` visible suele ser el widget que recibe input.
-#[cfg(windows)]
-unsafe extern "system" fn find_chrome_child(
-    child: windows_sys::Win32::Foundation::HWND,
-    lparam: windows_sys::Win32::Foundation::LPARAM,
-) -> windows_sys::Win32::Foundation::BOOL {
-    use windows_sys::Win32::Foundation::HWND;
-    use windows_sys::Win32::UI::WindowsAndMessaging::{
-        EnumChildWindows, GetClassNameW, IsWindowVisible,
-    };
-    let best = &mut *(lparam as *mut HWND);
-    if IsWindowVisible(child) != 0 {
-        let mut buf = [0u16; 256];
-        let len = GetClassNameW(child, buf.as_mut_ptr(), buf.len() as i32);
-        if len > 0 {
-            let class = String::from_utf16_lossy(&buf[..len as usize]);
-            if class.starts_with("Chrome_WidgetWin") || class.starts_with("Chrome_RenderWidget") {
-                *best = child;
-            }
+/// Vuelve a mostrar la pill SIN robarle la activación a nadie.
+///
+/// `show()` de Tauri usa `SW_SHOW`, que activa la ventana. Como la pill es
+/// always-on-top y se re-muestra justo después de inyectar el pegado, eso la
+/// ponía al frente mientras las teclas todavía estaban en la cola: `SendInput`
+/// encola, no espera a que la app destino las procese. El resultado era un
+/// pegado que a veces llegaba y a veces se perdía.
+///
+/// `SW_SHOWNOACTIVATE` la hace visible sin tocar el foco, que es lo que
+/// corresponde para un HUD flotante: aparecer no es motivo para interrumpir a
+/// nadie.
+pub(crate) fn show_without_stealing_focus(window: &tauri::WebviewWindow) {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_SHOWNOACTIVATE};
+        if let Ok(hwnd) = window.hwnd() {
+            // SAFETY: el HWND es válido mientras viva la ventana.
+            unsafe { ShowWindow(hwnd.0 as _, SW_SHOWNOACTIVATE) };
+            return;
         }
     }
-    EnumChildWindows(child, Some(find_chrome_child), lparam);
-    1
+    let _ = window.show();
 }
 
 /// Registra qué control tiene el foco de teclado en el primer plano actual.
@@ -1289,13 +1313,10 @@ pub(crate) fn log_focus_state() {
 /// pegado. El chord (Ctrl+V vs Ctrl+Shift+V) se elige aparte.
 #[cfg(windows)]
 fn force_foreground_for_paste(hwnd: windows_sys::Win32::Foundation::HWND) {
-    use std::ptr;
-    use windows_sys::Win32::Foundation::{HWND, LPARAM};
     use windows_sys::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
-    use windows_sys::Win32::UI::Input::KeyboardAndMouse::SetFocus;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        AllowSetForegroundWindow, BringWindowToTop, EnumChildWindows, GetForegroundWindow,
-        GetWindowThreadProcessId, SetForegroundWindow, ASFW_ANY,
+        AllowSetForegroundWindow, BringWindowToTop, GetForegroundWindow, GetWindowThreadProcessId,
+        SetForegroundWindow, ASFW_ANY,
     };
 
     unsafe {
@@ -1326,16 +1347,16 @@ fn force_foreground_for_paste(hwnd: windows_sys::Win32::Foundation::HWND) {
         let _ = BringWindowToTop(hwnd);
         let _ = SetForegroundWindow(hwnd);
 
-        // Electron/WebView2: el input real suele ser un hijo Chrome_*.
-        let mut chrome: HWND = ptr::null_mut();
-        EnumChildWindows(
-            hwnd,
-            Some(find_chrome_child),
-            &mut chrome as *mut _ as LPARAM,
-        );
-        let input_hwnd = if !chrome.is_null() { chrome } else { hwnd };
-        let _ = SetFocus(input_hwnd);
-
+        // NO se fuerza el foco a un hijo concreto.
+        //
+        // Acá había un `SetFocus` sobre "el último hijo `Chrome_*` visible",
+        // una adivinanza: en Electron/WebView2 no hay forma de saber cuál es el
+        // campo real, y en una app con varios paneles esa adivinanza cae en el
+        // widget equivocado y MUEVE el cursor fuera del input. Al activar la
+        // ventana, Chromium restaura solo el foco interno que tenía —el cursor
+        // donde el usuario lo dejó—, que es mejor que cualquier suposición
+        // nuestra. Quitar esto mismo del camino del dictado fue lo que lo hizo
+        // funcionar.
         if attached_tgt {
             let _ = AttachThreadInput(cur_tid, target_tid, 0);
         }
