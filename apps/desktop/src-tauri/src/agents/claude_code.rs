@@ -163,8 +163,6 @@ fn translate(line: &str) -> Vec<AgentEvent> {
 
     match v.get("type").and_then(Value::as_str) {
         Some("system") => {
-            // El evento final del turno no trae `type`, así que se reconoce por
-            // sus campos; ver la rama `None` de abajo.
             vec![AgentEvent::Started {
                 session_id: str_at(&v, "session_id"),
                 tools: v
@@ -233,8 +231,15 @@ fn translate(line: &str) -> Vec<AgentEvent> {
             }
         }
 
-        // Sin `type` pero con `stop_reason`: es el resumen final del turno.
-        None if v.get("stop_reason").is_some() || v.get("is_error").is_some() => {
+        // Resumen final del turno.
+        //
+        // El campo `type` aparece casi al FINAL de este objeto, después de
+        // `usage`, `modelUsage` y varios más. Una captura truncada del CLI lo
+        // deja fuera y hace parecer que el evento no tiene tipo — el motivo por
+        // el que la primera versión de este traductor lo mandaba a `Notice` y
+        // el turno nunca se daba por terminado. La rama sin `type` queda como
+        // red por si algún día lo omiten de verdad.
+        Some("result") | None if v.get("stop_reason").is_some() || v.get("is_error").is_some() => {
             vec![AgentEvent::Finished {
                 stop_reason: v
                     .get("stop_reason")
@@ -376,6 +381,21 @@ mod tests {
             }
             other => panic!("esperaba Finished, salió {other:?}"),
         }
+    }
+
+    #[test]
+    fn el_type_del_evento_final_llega_tarde_en_el_objeto() {
+        // Orden real del CLI: `type` va después de `usage` y compañía. Leer una
+        // captura truncada hizo creer que el evento no tenía tipo, y el turno
+        // nunca se daba por terminado.
+        let events = translate(
+            r#"{"is_error":false,"num_turns":1,"stop_reason":"end_turn","usage":{"x":1},"subtype":"success","type":"result","total_cost_usd":0.12}"#,
+        );
+        assert!(
+            matches!(events[0], AgentEvent::Finished { .. }),
+            "el resumen final tiene que cerrar el turno, salió {:?}",
+            events[0]
+        );
     }
 
     #[test]

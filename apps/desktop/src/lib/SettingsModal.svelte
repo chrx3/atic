@@ -14,6 +14,7 @@
   import { formatMegabytes } from "$lib/format";
   import {
     getConfig,
+    previewSound,
     setConfig,
     secretsStatus,
     setSecret,
@@ -425,11 +426,57 @@
     }
   }
 
+  /* ─── Sonidos ────────────────────────────────────────────────────────────
+   *
+   * Las claves coinciden con `SoundAction` en Rust y los ids de timbre con
+   * `ToneProfile::parse`. Vacío significa "el timbre por defecto de esta
+   * acción", que no es el mismo para todas: el dictado suena más contenido que
+   * la grabación a propósito.
+   */
+  const SOUND_ACTIONS = [
+    { key: "recording_start", label: "Empezar a grabar", field: "sound_recording_start" },
+    { key: "recording_stop", label: "Terminar de grabar", field: "sound_recording_stop" },
+    { key: "dictation_start", label: "Empezar a dictar", field: "sound_dictation_start" },
+    { key: "dictation_done", label: "Texto pegado", field: "sound_dictation_done" },
+    { key: "capture", label: "Captura de pantalla", field: "sound_capture" },
+  ] as const;
+
+  type SoundKey = (typeof SOUND_ACTIONS)[number]["key"];
+
+  const SOUND_VOICES = [
+    { id: "", label: "Por defecto" },
+    { id: "grave", label: "Grave" },
+    { id: "suave", label: "Suave" },
+    { id: "cristal", label: "Cristal" },
+    { id: "madera", label: "Madera" },
+    { id: "ninguno", label: "Sin sonido" },
+  ] as const;
+
+  function soundField(key: SoundKey): string {
+    return SOUND_ACTIONS.find((a) => a.key === key)!.field;
+  }
+
+  function soundValue(config: AppConfig, key: SoundKey): string {
+    return (config as unknown as Record<string, string>)[soundField(key)] ?? "";
+  }
+
+  function setSound(config: AppConfig, key: SoundKey, value: string) {
+    (config as unknown as Record<string, string>)[soundField(key)] = value;
+  }
+
   onMount(() => {
     (async () => {
       cfg = await getConfig();
       if (cfg && !cfg.ui_theme) cfg.ui_theme = "system";
       if (cfg && typeof cfg.ui_sounds !== "boolean") cfg.ui_sounds = true;
+      // Config vieja: sin estos campos los selects quedarían en `undefined` y
+      // Svelte los mostraría vacíos en vez de en "Por defecto".
+      if (cfg) {
+        for (const a of SOUND_ACTIONS) {
+          const bag = cfg as unknown as Record<string, string>;
+          if (typeof bag[a.field] !== "string") bag[a.field] = "";
+        }
+      }
       secrets = await secretsStatus();
       providers = await listSummaryProviders();
       try {
@@ -593,13 +640,54 @@
           <span class="rb-settings-row-copy">
             <span class="rb-settings-row-label">Sonidos de interfaz</span>
             <span class="rb-hint">
-              Toques graves al capturar y al dictar (tipo vibración suave).
+              Toques al capturar y al dictar. Desactivarlo silencia todo.
             </span>
           </span>
           <span class="rb-settings-row-control">
             <input type="checkbox" bind:checked={c.ui_sounds} />
           </span>
         </label>
+
+        <!-- Cada acción elige su timbre. El botón de prueba no es un extra:
+             sin escucharlo no se puede elegir, y la alternativa sería guardar y
+             provocar la acción real para comparar. -->
+        {#if c.ui_sounds}
+          <div class="rb-settings-group snd-group">
+            <p class="rb-hint snd-intro">
+              Cada acción suena distinto para reconocerla sin mirar. El timbre lo
+              elegís vos; el gesto —sube al empezar, baja al terminar— no cambia.
+            </p>
+            {#each SOUND_ACTIONS as action (action.key)}
+              <div class="rb-settings-row snd-row">
+                <span class="rb-settings-row-copy">
+                  <span class="rb-settings-row-label">{action.label}</span>
+                </span>
+                <span class="rb-settings-row-control snd-control">
+                  <select
+                    class="rb-field snd-pick"
+                    value={soundValue(c, action.key)}
+                    onchange={(e) =>
+                      setSound(c, action.key, e.currentTarget.value)}
+                    aria-label={`Timbre de ${action.label}`}
+                  >
+                    {#each SOUND_VOICES as voice (voice.id)}
+                      <option value={voice.id}>{voice.label}</option>
+                    {/each}
+                  </select>
+                  <button
+                    type="button"
+                    class="rb-btn rb-btn-ghost snd-try"
+                    onclick={() =>
+                      void previewSound(action.key, soundValue(c, action.key))}
+                    disabled={soundValue(c, action.key) === "ninguno"}
+                  >
+                    Probar
+                  </button>
+                </span>
+              </div>
+            {/each}
+          </div>
+        {/if}
       </div>
 
       <div class="rb-settings-group">

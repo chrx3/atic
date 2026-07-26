@@ -469,6 +469,10 @@ export async function installAppUpdateAndRelaunch(
   await relaunch();
 }
 
+/** Reproduce una acción con una voz arbitraria, para probar desde Ajustes. */
+export const previewSound = (action: string, voice: string) =>
+  invoke<void>("preview_sound", { action, voice });
+
 // --- Agentes ---
 /** Qué agentes conoce Atic y cuáles están instalados. Lanza un proceso por
  *  backend, así que conviene llamarlo al abrir la vista, no en cada render. */

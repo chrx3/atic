@@ -67,8 +67,15 @@ export interface AppConfig {
   show_pill: boolean;
   pill_position: [number, number] | null;
   beep_on_start: boolean;
-  /** Toques graves de interfaz (capturas, dictado). */
+  /** Toques graves de interfaz (capturas, dictado). Interruptor maestro. */
   ui_sounds: boolean;
+  /** Timbre por acción: "" (por defecto de la acción) | grave | suave |
+   *  cristal | madera | ninguno. */
+  sound_recording_start: string;
+  sound_recording_stop: string;
+  sound_dictation_start: string;
+  sound_dictation_done: string;
+  sound_capture: string;
   /** Pistas a grabar: both | mic | system */
   record_tracks: string;
   /** Pistas a transcribir: both | mic | system */
