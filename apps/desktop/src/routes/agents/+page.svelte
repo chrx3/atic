@@ -92,7 +92,21 @@
 
   const CONTEXT_WINDOW = 1_000_000;
 
-  let anchor = $state<{ side: string; offset: number } | null>(null);
+  /**
+   * Cómo salió la burbuja, ya en píxeles de CSS.
+   *
+   * Rust razona en píxeles FÍSICOS —es lo que usa Win32— y el CSS en lógicos.
+   * A escala 100% son el mismo número y la diferencia no se ve; a 125% el
+   * contenido quedaba un 25% más ancho que su ventana y se recortaba por los
+   * dos lados. La conversión vive acá, una sola vez, y no repartida por reglas
+   * de estilo.
+   */
+  let anchor = $state<{
+    side: string;
+    offset: number;
+    w: number;
+    h: number;
+  } | null>(null);
   let shown = $state(false);
   /** Hay un diálogo del sistema abierto. */
   let picking = $state(false);
@@ -225,7 +239,13 @@
     // La burbuja no se pinta hasta saber dónde va la punta: al abrirse ya tiene
     // que estar bien, no acomodarse a la vista.
     const un = onAgentsBubbleAnchor((a) => {
-      anchor = a;
+      const dpr = window.devicePixelRatio || 1;
+      anchor = {
+        side: a.side,
+        offset: a.offset / dpr,
+        w: a.w / dpr,
+        h: a.h / dpr,
+      };
       detached = false;
       // La ventana está volando desde la pill: el contenido se funde durante
       // ese mismo tiempo, así que crecer y aparecer son un solo gesto.
@@ -434,8 +454,13 @@
   });
 
   const slashHits = $derived.by(() => {
-    if (slashQuery === null || !active) return [];
-    return active.commands
+    if (slashQuery === null) return [];
+    // Sin sesión abierta se usan los del backend elegido, vistos la última vez.
+    // Ofrecer comandos solo con una sesión viva dejaba el primer `/` mudo.
+    const list = active?.commands.length
+      ? active.commands
+      : (agents.catalog[active?.backendId ?? picked] ?? []);
+    return list
       .filter((c) => c.name.toLowerCase().startsWith(slashQuery))
       .slice(0, 8);
   });
@@ -534,7 +559,8 @@
   class:is-shown={shown}
   class:is-loose={detached}
   data-side={anchor?.side ?? "top"}
-  style="--tail: {anchor?.offset ?? 40}px; --fade: {flight || 200}ms"
+  style="--tail: {anchor?.offset ?? 40}px; --fade: {flight || 200}ms; --w: {anchor?.w ??
+    580}px; --h: {anchor?.h ?? 520}px"
 >
   <span class="bub-tail" aria-hidden="true"></span>
 
@@ -601,7 +627,7 @@
         <section class="card card-hi">
           <h2 class="card-title">Atic · agentes</h2>
           <span class="hi-mark" class:is-off={!ready}>
-            <ClaudeMark size={38} />
+            <ClaudeMark size={54} />
           </span>
           <div class="hi-copy">
             <p class="card-line">
@@ -636,7 +662,7 @@
           {:else if row.t === "start"}
             <section class="card card-hi">
               <h2 class="card-title">{row.model || "sesión"}</h2>
-              <span class="hi-mark"><ClaudeMark size={26} /></span>
+              <span class="hi-mark"><ClaudeMark size={34} /></span>
               <div class="hi-copy">
                 <p class="card-line dim">{row.cwd}</p>
                 <p class="card-line dim">
@@ -883,7 +909,7 @@
    */
   .bub {
     --inset: 28px;
-    --coral: #d97757;
+    --coral: #da7756;
     --ink: #17151400;
     --shell: #1c1917;
     --line: #332e2b;
@@ -898,10 +924,11 @@
      * plegándose, el texto reflowing— y lo que se vería es una interfaz
      * histérica, no un globo desplegándose. Fijo, simplemente se va
      * descubriendo a medida que la ventana lo destapa.
+     *
+     * El tamaño lo dicta Rust (`--w`/`--h`), no una constante escrita acá: es
+     * quien sabe el rectángulo real de la ventana, y a escalas distintas de
+     * 100% ese número no coincide con el declarado en la config.
      */
-    --w: 636px;
-    --h: 576px;
-
     position: absolute;
     display: flex;
     width: var(--w);

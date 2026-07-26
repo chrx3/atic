@@ -489,7 +489,10 @@ export const hideAgentsWindow = () => invoke<void>("hide_agents_window");
 /** Cómo salió la burbuja: lado de la punta, dónde cae, y cuánto vuela. */
 export interface BubbleOpen {
   side: "top" | "bottom" | "left" | "right";
+  /** Físicos: dividir por `devicePixelRatio` para usarlos como px de CSS. */
   offset: number;
+  w: number;
+  h: number;
   flight: number;
 }
 

@@ -109,7 +109,15 @@ const BUBBLE_INSET: i32 = 28;
 #[serde(rename_all = "camelCase")]
 struct BubbleOpen {
     side: &'static str,
+    /// En píxeles FÍSICOS, como todo lo que sale de la capa de geometría.
+    ///
+    /// La vista los divide por `devicePixelRatio`. Rust trabaja en físicos
+    /// porque es lo que usa Win32; el CSS trabaja en lógicos. A 100% son lo
+    /// mismo y la diferencia no existe, que es justo por lo que se cuela: a
+    /// 125% —dpi 120, lo que tiene esta máquina— todo queda un 25% corrido.
     offset: i32,
+    w: i32,
+    h: i32,
     /// Cuánto dura el vuelo desde la pill. El contenido se funde en ese tiempo.
     flight: u64,
 }
@@ -171,6 +179,8 @@ pub fn show_agents_window(app: AppHandle) {
         BubbleOpen {
             side: anchor.side,
             offset: anchor.offset,
+            w: target.w,
+            h: target.h,
             flight,
         },
     );

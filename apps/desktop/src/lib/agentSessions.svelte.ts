@@ -87,6 +87,16 @@ class AgentSessionStore {
   /** Sesión que se está mirando ahora mismo; sus respuestas no son «nuevas». */
   watching = $state<string | null>(null);
 
+  /**
+   * Comandos vistos por backend, entre sesiones.
+   *
+   * Llegan al abrir una sesión, pero se ofrecen ANTES de tener una: escribir
+   * `/` en el compositor vacío no mostraba nada, que es lo mismo que no tener
+   * autocompletado. Son estables para un backend dado, así que los de la última
+   * sesión sirven perfectamente para el primer `/` de la siguiente.
+   */
+  catalog = $state<Record<string, SlashCommand[]>>({});
+
   #started = false;
   #unlisten: Promise<() => void> | null = null;
   /**
@@ -270,6 +280,7 @@ class AgentSessionStore {
         break;
       case "commands":
         session.commands = payload.commands;
+        this.catalog = { ...this.catalog, [session.backendId]: payload.commands };
         break;
       case "context":
         session.contextTokens = payload.tokens;

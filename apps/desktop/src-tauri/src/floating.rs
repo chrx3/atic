@@ -8,7 +8,7 @@
 //! Regla: el frontend declara *intención* ("al cursor", "a su hogar"); nunca
 //! calcula coordenadas ni llama a `setPosition`.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -25,14 +25,41 @@ const GLIDE_STEP: Duration = Duration::from_millis(8);
 /// Invalida vuelos en curso. Sin esto, dos invocaciones seguidas del atajo
 /// dejaban dos hilos animando la MISMA ventana a destinos distintos, y la pill
 /// terminaba temblando entre ambos.
-static GLIDE_GEN: AtomicU64 = AtomicU64::new(0);
+///
+/// **Por ventana, no global.** Era un solo contador para toda la app, y con una
+/// sola ventana flotante nadie lo notaba. Al sumar la burbuja de agentes se
+/// volvió un cruce: la pill se reencuadra sola todo el tiempo —entra el timer,
+/// se cierra la rueda— y cada uno de esos reencuadres MATABA el vuelo de la
+/// burbuja a mitad de camino, dejándola congelada a medio crecer con el
+/// contenido recortado. Cancelar un vuelo solo puede ser asunto de la ventana
+/// que lo hace.
+static GLIDE_GEN: Mutex<Option<HashMap<String, u64>>> = Mutex::new(None);
 
-/// Destino del tween en curso, junto a la generación que lo emitió.
+/// Sube la generación de `label` y devuelve la nueva.
+fn bump_gen(label: &str) -> u64 {
+    let mut guard = GLIDE_GEN.lock().unwrap();
+    let map = guard.get_or_insert_with(HashMap::new);
+    let next = map.get(label).copied().unwrap_or(0) + 1;
+    map.insert(label.to_string(), next);
+    next
+}
+
+/// La generación viva de `label`.
+fn gen_of(label: &str) -> u64 {
+    GLIDE_GEN
+        .lock()
+        .unwrap()
+        .as_ref()
+        .and_then(|m| m.get(label).copied())
+        .unwrap_or(0)
+}
+
+/// Destino del tween en curso de cada ventana, con la generación que lo emitió.
 ///
 /// Responde "¿dónde va a quedar esto cuando se aquiete?" mientras se mueve. La
-/// generación es lo que lo hace confiable: si ya no coincide con `GLIDE_GEN`,
-/// el tween murió y el dato es basura.
-static TWEEN_DEST: Mutex<Option<(u64, String, Rect)>> = Mutex::new(None);
+/// generación es lo que lo hace confiable: si ya no coincide con la viva, el
+/// tween murió y el dato es basura.
+static TWEEN_DEST: Mutex<Option<HashMap<String, (u64, Rect)>>> = Mutex::new(None);
 
 /// Dónde debe quedar una ventana flotante.
 #[derive(Debug, Clone, Copy)]
@@ -214,7 +241,7 @@ fn set_bounds(window: &tauri::WebviewWindow, x: i32, y: i32, w: i32, h: i32) -> 
 /// Coloca la ventana de inmediato. Cancela cualquier vuelo en curso.
 pub fn place(app: &AppHandle, label: &str, anchor: Anchor) -> Option<(i32, i32)> {
     let target = resolve(app, label, anchor)?;
-    let generation = GLIDE_GEN.fetch_add(1, Ordering::SeqCst) + 1;
+    let generation = bump_gen(label);
     let (from, size) = snapshot(app, label);
     let window = app.get_webview_window(label)?;
     let _ = window.set_position(PhysicalPosition::new(target.0, target.1));
@@ -290,7 +317,7 @@ pub fn resize_floating(
     // coordenadas calculadas para el tamaño VIEJO. Si no se cancela acá, los
     // dos escritores se pisan durante ~190 ms y la ventana termina donde la
     // dejó el que perdió la carrera. Redimensionar manda: invalida el vuelo.
-    let cancelled = GLIDE_GEN.fetch_add(1, Ordering::SeqCst) + 1;
+    let cancelled = bump_gen(&label);
 
     let scale = window.scale_factor().unwrap_or(1.0);
     let prev_pos = window.outer_position().ok();
@@ -457,7 +484,7 @@ pub fn tween(app: &AppHandle, label: &str, to: Rect) -> Option<Flight> {
         h: size.height as i32,
     };
 
-    let generation = GLIDE_GEN.fetch_add(1, Ordering::SeqCst) + 1;
+    let generation = bump_gen(label);
 
     if from == to {
         geo!("TWEEN.SKIP {label} ya estaba en {to:?} gen={generation}");
@@ -473,7 +500,8 @@ pub fn tween(app: &AppHandle, label: &str, to: Rect) -> Option<Flight> {
     // Publicar el destino ANTES de arrancar: quien pregunte dónde va a quedar
     // la ventana tiene que poder saberlo desde el primer frame.
     if let Ok(mut dest) = TWEEN_DEST.lock() {
-        *dest = Some((generation, label.to_string(), to));
+        dest.get_or_insert_with(HashMap::new)
+            .insert(label.to_string(), (generation, to));
     }
 
     let handle = app.clone();
@@ -485,7 +513,7 @@ pub fn tween(app: &AppHandle, label: &str, to: Rect) -> Option<Flight> {
         let mut frames = 0u32;
         loop {
             // Otro tween (o un place) tomó el control: abandonar sin tocar nada.
-            let live = GLIDE_GEN.load(Ordering::SeqCst);
+            let live = gen_of(&label);
             if live != generation {
                 let (at, sz) = snapshot(&handle, &label);
                 geo!(
@@ -549,10 +577,10 @@ pub fn tween(app: &AppHandle, label: &str, to: Rect) -> Option<Flight> {
 /// caminando por la pantalla — la misma deriva de antes, por otra puerta.
 pub fn resting_position(app: &AppHandle, label: &str) -> Option<(i32, i32)> {
     if let Ok(dest) = TWEEN_DEST.lock() {
-        if let Some((generation, tweened, rect)) = dest.as_ref() {
+        if let Some((generation, rect)) = dest.as_ref().and_then(|m| m.get(label)) {
             // La generación viva es la prueba de que el tween sigue corriendo:
             // si otro lo canceló, su destino ya no dice nada.
-            if tweened == label && GLIDE_GEN.load(Ordering::SeqCst) == *generation {
+            if gen_of(label) == *generation {
                 return Some((rect.x, rect.y));
             }
         }
@@ -619,6 +647,15 @@ pub fn bubble_rect(
     let bubble = app.get_webview_window(label)?;
     let size = bubble.outer_size().ok()?;
     let (bw, bh) = (size.width as i32, size.height as i32);
+
+    // `gap`, `corner` e `inset` llegan en píxeles LÓGICOS —son medidas de
+    // diseño, gemelas de las del CSS— y todo lo demás acá es físico. A escala
+    // 100% son el mismo número y la diferencia no existe; a 125% la burbuja
+    // quedaba pegada a la pill y la punta caía sobre la esquina redondeada.
+    let scale = bubble.scale_factor().unwrap_or(1.0);
+    let gap = (gap as f64 * scale).round() as i32;
+    let corner = (corner as f64 * scale).round() as i32;
+    let inset = (inset as f64 * scale).round() as i32;
 
     let anchor_window = app.get_webview_window(origin)?;
     let pos = anchor_window.outer_position().ok()?;
@@ -697,7 +734,7 @@ pub fn snap_rect(app: &AppHandle, label: &str, r: Rect) {
     let Some(window) = app.get_webview_window(label) else {
         return;
     };
-    GLIDE_GEN.fetch_add(1, Ordering::SeqCst);
+    bump_gen(label);
     if !set_bounds(&window, r.x, r.y, r.w, r.h) {
         let _ = window.set_position(PhysicalPosition::new(r.x, r.y));
     }
