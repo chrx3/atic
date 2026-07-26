@@ -31,6 +31,8 @@
   import ToolIcon from "$lib/ToolIcon.svelte";
   import ClipboardHistoryList from "$lib/ClipboardHistoryList.svelte";
   import SnippetsList from "$lib/SnippetsList.svelte";
+  import AgentsChat from "$lib/AgentsChat.svelte";
+  import { agents } from "$lib/agentSessions.svelte";
   import ParticleWheel from "$lib/ParticleWheel.svelte";
   import { TOOLS, type ToolId } from "$lib/tools";
   import { formatShortcut } from "$lib/format";
@@ -86,7 +88,10 @@
     openDataDir,
   } from "$lib/api";
 
-  type Surface = "none" | "wheel" | "clipboard" | "snippets";
+  type Surface = "none" | "wheel" | "clipboard" | "snippets" | "agents";
+
+  /** Paneles: superficies que se despliegan bajo la barra. */
+  type PanelKind = "clipboard" | "snippets" | "agents";
 
   // ─── Eje 1: actividad ────────────────────────────────────────────────────
   let recording = $state(false);
@@ -116,7 +121,18 @@
   let panelUp = $state(false);
   let surfaceOpenedAt = 0;
 
-  const panelOpen = $derived(surface === "clipboard" || surface === "snippets");
+  const panelOpen = $derived(
+    surface === "clipboard" || surface === "snippets" || surface === "agents",
+  );
+
+  /**
+   * Aviso de agente en la barra compacta.
+   *
+   * Es lo que hace que «corre en segundo plano» signifique algo: el panel puede
+   * estar cerrado y la sesión sigue viva, así que la pill tiene que ser el
+   * lugar donde te enteras de que respondió.
+   */
+  const agentAlert = $derived(agents.unread > 0 || agents.working);
 
   // ─── Eje 3: cola de pegado ───────────────────────────────────────────────
   let queue = $state<PasteQueueItem[]>([]);
@@ -488,7 +504,7 @@
     else if (id === "dictation") void toggleDictate();
 
     try {
-      if (id === "clipboard" || id === "snippets") {
+      if (id === "clipboard" || id === "snippets" || id === "agents") {
         // La pill ya está en el cursor: el panel se abre acá mismo.
         surface = id;
         surfaceOpenedAt = Date.now();
@@ -513,20 +529,26 @@
   }
 
   // ─── Paneles ─────────────────────────────────────────────────────────────
-  async function loadSurface(kind: "clipboard" | "snippets") {
+  async function loadSurface(kind: PanelKind) {
     if (kind === "clipboard") {
       await refreshClipboard();
       return;
     }
+    // Los agentes no cargan nada: el estado ya está en el store, que escucha
+    // desde que arranca la pill aunque el panel nunca se haya abierto.
+    if (kind === "agents") return;
     await Promise.all([refreshSnippets(), loadScratchpad()]);
   }
 
-  async function openPanel(kind: "clipboard" | "snippets", fly: boolean) {
+  async function openPanel(kind: PanelKind, fly: boolean) {
     try {
       const flight =
-        kind === "clipboard"
-          ? await prepareClipboardPill(fly)
-          : await prepareSnippetsPill(fly);
+        kind === "snippets"
+          ? await prepareSnippetsPill(fly)
+          : // El comando conserva el nombre del clipboard, pero nunca fue
+            // específico de él: guarda el hogar y, si hace falta, vuela al
+            // cursor. Vale para cualquier panel.
+            await prepareClipboardPill(fly);
       // Esperar el aterrizaje antes de expandir. Volar y crecer a la vez son
       // dos escritores de la posición: Rust anclaba el panel donde estuviera
       // la barra en ese frame, y el hilo del vuelo seguía después empujando la
@@ -609,8 +631,15 @@
     }
   }
 
+  /** Título de la barra con un panel abierto. */
+  function panelTitle(kind: Surface): string {
+    if (kind === "clipboard") return "Clipboard";
+    if (kind === "agents") return "Agentes";
+    return "Textos";
+  }
+
   /** Atajo de panel: si ya está abierto, lo reabre en el cursor. */
-  async function onPanelHotkey(kind: "clipboard" | "snippets") {
+  async function onPanelHotkey(kind: PanelKind) {
     if (surface === kind) {
       await closePanels();
     }
@@ -784,6 +813,11 @@
   onMount(() => {
     const unlisteners: Promise<UnlistenFn>[] = [];
 
+    // Escuchar a los agentes desde el arranque, no al abrir el panel: una
+    // sesión que responde con la pill cerrada tiene que dejar el aviso puesto.
+    // Si empezáramos a escuchar al abrir, el aviso no existiría nunca.
+    void agents.init();
+
     (async () => {
       recording = await isRecording();
       if (recording) startTimer();
@@ -889,6 +923,9 @@
       // parte normal de escribir, no una señal de que terminaste. Se cierra con
       // Escape o con la X, que son intenciones explícitas.
       if (surface === "snippets" && snippetsTab === "scratchpad") return;
+      // Los agentes, igual: se le escribe. Y encima es la superficie donde
+      // salir a mirar otra cosa mientras trabaja es el uso previsto.
+      if (surface === "agents") return;
       // El margen evita que el propio setFocus de la apertura la cierre.
       if (surface !== "none" && Date.now() - surfaceOpenedAt > 400) {
         if (surface === "wheel") void closeWheel();
@@ -974,6 +1011,8 @@
         onPasted={() => void closePanels()}
         onError={() => (pasting = false)}
       />
+    {:else if surface === "agents"}
+      <AgentsChat compact />
     {:else}
       <!-- Las pestañas nombran el contenido, no la vista: "Lista" no decía
            lista de qué, y era lo único que distinguía los textos reusables del
@@ -1059,22 +1098,27 @@
       <!-- La barra se mide sola (`max-content`): no hay tabla de anchos. -->
       <div
         class="p-bar"
-        class:is-disc-only={!panelOpen && activity === "idle" && !hasQueue}
+        class:is-disc-only={!panelOpen &&
+          activity === "idle" &&
+          !hasQueue &&
+          !agentAlert}
         bind:this={barEl}
       >
         {#if panelOpen}
           <span class="p-mark"><AticMark size={15} strokeWidth={1.5} /></span>
-          <span class="p-label">
-            {surface === "clipboard" ? "Clipboard" : "Textos"}
-          </span>
+          <span class="p-label">{panelTitle(surface)}</span>
           {#if recording}
             {@render recDot(`Grabando ${fmt(elapsed)} · clic para detener`)}
           {/if}
-          {@render iconBtn("Abrir carpeta", "M4 19V6h6l2 2.5h8V19H4Z", () =>
-            void openDataDir(surface === "clipboard" ? "clipboard" : "snippets").catch(
-              console.warn,
-            ),
-          16)}
+          <!-- Los agentes no tienen carpeta: su estado son procesos, no
+               archivos que Atic guarde. -->
+          {#if surface === "clipboard" || surface === "snippets"}
+            {@render iconBtn("Abrir carpeta", "M4 19V6h6l2 2.5h8V19H4Z", () =>
+              void openDataDir(surface === "clipboard" ? "clipboard" : "snippets").catch(
+                console.warn,
+              ),
+            16)}
+          {/if}
           {@render iconBtn("Cerrar (Esc)", "M6 6l12 12M18 6L6 18", () =>
             void closePanels(),
           )}
@@ -1159,6 +1203,27 @@
           >
             <AticMark size={22} strokeWidth={1.4} />
           </span>
+          <!-- Aviso del agente: aparece solo si hay algo que decir, y se va al
+               abrir el panel. Es un chip junto al disco y no un reemplazo,
+               porque el disco sigue siendo la puerta a la rueda. -->
+          {#if agentAlert}
+            <button
+              type="button"
+              class="p-agent"
+              class:is-working={agents.working && agents.unread === 0}
+              data-no-drag
+              onclick={() => void openPanel("agents", false)}
+              title={agents.unread > 0
+                ? `${agents.unread} respuesta(s) sin leer`
+                : "El agente está trabajando"}
+              aria-label="Abrir agentes"
+            >
+              <ToolIcon id="agents" size={13} strokeWidth={1.6} />
+              {#if agents.unread > 0}
+                <span class="p-agent-count">{agents.unread}</span>
+              {/if}
+            </button>
+          {/if}
         {/if}
       </div>
     </div>
@@ -1536,6 +1601,50 @@
   .p-queue-btn:disabled {
     opacity: 0.45;
     cursor: default;
+  }
+
+  /* ─── Aviso de agente ───────────────────────────────────────────────── */
+  .p-agent {
+    display: inline-flex;
+    height: 1.65rem;
+    flex-shrink: 0;
+    align-items: center;
+    gap: 0.3rem;
+    border: 0;
+    border-radius: 999px;
+    padding: 0 0.5rem;
+    background: color-mix(in srgb, var(--rb-accent) 16%, transparent);
+    color: var(--rb-accent);
+    cursor: pointer;
+  }
+  /* Trabajando sin nada nuevo que leer: presente, pero sin reclamar atención.
+     El número es la señal fuerte; esto es solo "sigue vivo". */
+  .p-agent.is-working {
+    background: color-mix(in srgb, var(--rb-text) 8%, transparent);
+    color: var(--rb-muted);
+    animation: p-agent-pulse 1.8s ease-in-out infinite;
+  }
+  .p-agent-count {
+    font-size: 0.6875rem;
+    font-weight: 650;
+    font-variant-numeric: tabular-nums;
+  }
+
+  @keyframes p-agent-pulse {
+    0%,
+    100% {
+      opacity: 0.55;
+    }
+    50% {
+      opacity: 1;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .p-agent.is-working {
+      animation: none;
+      opacity: 0.8;
+    }
   }
 
   /* ─── Panel ─────────────────────────────────────────────────────────── */

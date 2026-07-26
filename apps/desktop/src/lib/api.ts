@@ -33,6 +33,7 @@ import type {
   Note,
   AgentBackendInfo,
   AgentEventPayload,
+  AgentSessionInfo,
   PasteQueueItem,
   SearchHit,
   OverlayInfo,
@@ -477,6 +478,8 @@ export const previewSound = (action: string, voice: string) =>
 /** Qué agentes conoce Atic y cuáles están instalados. Lanza un proceso por
  *  backend, así que conviene llamarlo al abrir la vista, no en cada render. */
 export const agentBackends = () => invoke<AgentBackendInfo[]>("agent_backends");
+/** Sesiones vivas: para que una vista recién montada adopte lo que ya corre. */
+export const agentSessions = () => invoke<AgentSessionInfo[]>("agent_sessions");
 /** Arranca una sesión y devuelve su clave local. */
 export const agentStart = (
   backend: string,

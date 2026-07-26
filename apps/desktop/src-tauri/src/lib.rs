@@ -171,6 +171,7 @@ pub fn run() {
             state::pill_trace,
             beep::preview_sound,
             agents::bridge::agent_backends,
+            agents::bridge::agent_sessions,
             agents::bridge::agent_start,
             agents::bridge::agent_send,
             agents::bridge::agent_stop,

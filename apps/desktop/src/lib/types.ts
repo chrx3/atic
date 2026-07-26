@@ -376,5 +376,21 @@ export type AgentEvent =
     }
   | { kind: "failed"; message: string };
 
-/** Un evento ya etiquetado con la sesión que lo produjo. */
-export type AgentEventPayload = AgentEvent & { session: string };
+/**
+ * Un evento ya etiquetado con la sesión que lo produjo.
+ *
+ * Trae también el backend: los eventos son globales y una ventana puede recibir
+ * los de una sesión que arrancó otra, sin nada más con qué nombrarla.
+ */
+export type AgentEventPayload = AgentEvent & {
+  session: string;
+  backendId: string;
+  backendName: string;
+};
+
+/** Una sesión viva. El proceso lo tiene Rust, no la ventana que lo abrió. */
+export interface AgentSessionInfo {
+  id: string;
+  backendId: string;
+  backendName: string;
+}

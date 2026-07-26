@@ -11,6 +11,7 @@
   } from "$lib/types";
   import HotkeyCapture from "$lib/HotkeyCapture.svelte";
   import ModalShell from "$lib/ModalShell.svelte";
+  import UsageGuide from "$lib/UsageGuide.svelte";
   import { formatMegabytes } from "$lib/format";
   import {
     getConfig,
@@ -103,6 +104,9 @@
     | "captures";
 
   let activeSection = $state<SettingsSectionId>("general");
+
+  /** Tutorial de uso, abierto desde General → Ayuda. */
+  let guideOpen = $state(false);
 
   let captureCleanupMsg = $state<string | null>(null);
   async function runCaptureCleanup() {
@@ -694,6 +698,29 @@
             {/each}
           </div>
         {/if}
+      </div>
+
+      <!-- El tutorial se puede saltar en el primer uso, y quien se lo salta es
+           justo quien después no sabe cómo abrir nada: sin esto no había forma
+           de volver a verlo. -->
+      <div class="rb-settings-group">
+        <h4 class="rb-settings-group-title">Ayuda</h4>
+
+        <div class="rb-settings-row">
+          <div class="rb-settings-row-copy">
+            <span class="rb-settings-row-label">Cómo se usa Atic</span>
+            <p class="rb-hint">La pill y los atajos que hay que recordar.</p>
+          </div>
+          <div class="rb-settings-row-control">
+            <button
+              type="button"
+              class="rb-btn rb-btn-ghost"
+              onclick={() => (guideOpen = true)}
+            >
+              Ver el tutorial
+            </button>
+          </div>
+        </div>
       </div>
 
       <div class="rb-settings-group">
@@ -1916,3 +1943,23 @@
     {/if}
   {/snippet}
 </ModalShell>
+
+{#if guideOpen && cfg}
+  <ModalShell
+    title="Cómo se usa Atic"
+    size="md"
+    onClose={() => (guideOpen = false)}
+  >
+    <div class="space-y-4 text-sm" style="color: var(--rb-text)">
+      <UsageGuide config={cfg} />
+    </div>
+
+    {#snippet actions()}
+      <button
+        type="button"
+        class="rb-btn rb-btn-primary"
+        onclick={() => (guideOpen = false)}>Entendido</button
+      >
+    {/snippet}
+  </ModalShell>
+{/if}

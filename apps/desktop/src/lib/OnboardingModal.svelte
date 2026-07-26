@@ -2,7 +2,8 @@
   import { onMount, untrack } from "svelte";
   import type { AppConfig, ModelStatus } from "$lib/types";
   import ModalShell from "$lib/ModalShell.svelte";
-  import { formatMegabytes, formatShortcut } from "$lib/format";
+  import UsageGuide from "$lib/UsageGuide.svelte";
+  import { formatMegabytes } from "$lib/format";
   import {
     downloadModelAndWait,
     listModels,
@@ -285,44 +286,7 @@
           </p>
         {/if}
       {:else}
-        <p class="font-medium">Atic vive fuera de esta ventana</p>
-        <p class="leading-relaxed" style="color: var(--rb-muted)">
-          Esta ventana es para revisar lo que grabaste. El día a día pasa en la
-          <strong>pill</strong>: una pastilla flotante que queda sobre lo que
-          estés haciendo, y que podés arrastrar adonde te sirva.
-        </p>
-
-        <!-- Tres atajos, no siete. Los demás se descubren desde la rueda; una
-             lista completa acá sería imposible de recordar. -->
-        <ul class="ob-keys">
-          <li>
-            <kbd class="ob-key">{formatShortcut(config.pill_radial_shortcut)}</kbd>
-            <span class="ob-key-copy">
-              <strong>Rueda de herramientas.</strong>
-              Mantené la tecla y aparece en el cursor. Elegí con la rueda del
-              ratón y soltá para activar.
-            </span>
-          </li>
-          <li>
-            <kbd class="ob-key">{formatShortcut(config.dictation_shortcut)}</kbd>
-            <span class="ob-key-copy">
-              <strong>Dictar.</strong>
-              Hablá y el texto se pega donde tengas el cursor, en cualquier app.
-            </span>
-          </li>
-          <li>
-            <kbd class="ob-key">{formatShortcut(config.clipboard_shortcut)}</kbd>
-            <span class="ob-key-copy">
-              <strong>Historial del portapapeles.</strong>
-              Todo lo que copiaste, para volver a pegarlo.
-            </span>
-          </li>
-        </ul>
-
-        <p class="rb-hint">
-          Se cambian en Ajustes → Atajos. Si alguno ya lo usa otra app, Atic te
-          avisa para que elijas otro.
-        </p>
+        <UsageGuide {config} />
       {/if}
     </div>
 
@@ -391,44 +355,3 @@
     {/snippet}
 </ModalShell>
 
-<style>
-  .ob-keys {
-    display: flex;
-    flex-direction: column;
-    gap: 0.6rem;
-    margin: 0;
-    padding: 0;
-    list-style: none;
-  }
-
-  .ob-keys li {
-    display: flex;
-    align-items: baseline;
-    gap: 0.6rem;
-  }
-
-  /* El atajo primero y con ancho fijo: la columna de teclas se lee de un
-     vistazo, que es lo que alguien vuelve a mirar cuando olvida uno. */
-  .ob-key {
-    flex-shrink: 0;
-    min-width: 7.5rem;
-    border-radius: 0.4rem;
-    padding: 0.2rem 0.45rem;
-    background: var(--rb-bg0);
-    color: var(--rb-text);
-    font-family: inherit;
-    font-size: 0.75rem;
-    font-weight: 650;
-    text-align: center;
-  }
-
-  .ob-key-copy {
-    color: var(--rb-muted);
-    font-size: 0.8125rem;
-    line-height: 1.45;
-  }
-
-  .ob-key-copy strong {
-    color: var(--rb-text);
-  }
-</style>
