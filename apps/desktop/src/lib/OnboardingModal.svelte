@@ -34,7 +34,23 @@
     dictation_whisper_model: initialConfig.dictation_whisper_model || "base",
   });
 
-  const steps = ["Bienvenida", "Consentimiento", "Preferencias", "Modelos"];
+  /**
+   * El último paso enseña a usar la app, y va último a propósito.
+   *
+   * Antes el onboarding terminaba en "Modelos": salías configurado pero sin que
+   * nadie te hubiera mostrado la pill ni un solo atajo. Toda la interfaz real de
+   * Atic vive fuera de esta ventana, así que sin este paso quedaba invisible.
+   */
+  const steps = [
+    "Bienvenida",
+    "Consentimiento",
+    "Preferencias",
+    "Modelos",
+    "Cómo se usa",
+  ];
+
+  /** Índice del paso de modelos; el tutorial va justo después. */
+  const MODELS_STEP = 3;
 
   /** Modelos recomendados del onboarding (dictado + reuniones). */
   const recommendedIds = $derived([
@@ -87,16 +103,28 @@
     downloadPct = 0;
   }
 
-  async function finish(skipDownload: boolean) {
-    if (busy) return;
-    if (!skipDownload && !allReady) {
+  /**
+   * Sale del paso de modelos hacia el tutorial, descargando si se pidió.
+   *
+   * La descarga ya no termina el onboarding: bajar un modelo y quedar frente a
+   * una app cuyos atajos nadie explicó era justamente el problema.
+   */
+  async function leaveModels(download: boolean) {
+    if (busy || downloadingId) return;
+    if (download && !allReady) {
       await downloadMissing();
       await refreshModels();
       const ready = recommendedIds.every(
         (id) => models.find((m) => m.id === id)?.downloaded,
       );
+      // Si falló la descarga, quedarse acá: el error ya está en pantalla.
       if (!ready) return;
     }
+    step += 1;
+  }
+
+  async function finish() {
+    if (busy) return;
     busy = true;
     try {
       await onDone({
@@ -163,12 +191,7 @@
             Puedes eliminar cualquier grabación cuando quieras.
           </li>
         </ul>
-        <p class="rb-hint">
-          Atic vive en una pastilla flotante. Mantén
-          <strong>{formatShortcut(config.pill_radial_shortcut)}</strong>
-          para abrir la rueda de herramientas, elige con la rueda del ratón y
-          suelta para activar.
-        </p>
+
       {:else if step === 1}
         <p class="font-medium">Consentimiento</p>
         <p class="leading-relaxed" style="color: var(--rb-muted)">
@@ -208,7 +231,7 @@
           oculta, no cierra la app ni detiene una grabación en curso. Para
           salir del todo, usa «Salir» en el menú de la bandeja.
         </p>
-      {:else}
+      {:else if step === MODELS_STEP}
         <p class="font-medium">Modelos locales</p>
         <p class="leading-relaxed" style="color: var(--rb-muted)">
           La transcripción corre en tu PC. Por defecto se descarga un único
@@ -261,6 +284,45 @@
             continuar y descargar después desde Ajustes.
           </p>
         {/if}
+      {:else}
+        <p class="font-medium">Atic vive fuera de esta ventana</p>
+        <p class="leading-relaxed" style="color: var(--rb-muted)">
+          Esta ventana es para revisar lo que grabaste. El día a día pasa en la
+          <strong>pill</strong>: una pastilla flotante que queda sobre lo que
+          estés haciendo, y que podés arrastrar adonde te sirva.
+        </p>
+
+        <!-- Tres atajos, no siete. Los demás se descubren desde la rueda; una
+             lista completa acá sería imposible de recordar. -->
+        <ul class="ob-keys">
+          <li>
+            <kbd class="ob-key">{formatShortcut(config.pill_radial_shortcut)}</kbd>
+            <span class="ob-key-copy">
+              <strong>Rueda de herramientas.</strong>
+              Mantené la tecla y aparece en el cursor. Elegí con la rueda del
+              ratón y soltá para activar.
+            </span>
+          </li>
+          <li>
+            <kbd class="ob-key">{formatShortcut(config.dictation_shortcut)}</kbd>
+            <span class="ob-key-copy">
+              <strong>Dictar.</strong>
+              Hablá y el texto se pega donde tengas el cursor, en cualquier app.
+            </span>
+          </li>
+          <li>
+            <kbd class="ob-key">{formatShortcut(config.clipboard_shortcut)}</kbd>
+            <span class="ob-key-copy">
+              <strong>Historial del portapapeles.</strong>
+              Todo lo que copiaste, para volver a pegarlo.
+            </span>
+          </li>
+        </ul>
+
+        <p class="rb-hint">
+          Se cambian en Ajustes → Atajos. Si alguno ya lo usa otra app, Atic te
+          avisa para que elijas otro.
+        </p>
       {/if}
     </div>
 
@@ -287,39 +349,86 @@
               >Atrás</button
             >
           {/if}
-          {#if step < steps.length - 1}
+          {#if step < MODELS_STEP}
             <button class="rb-btn rb-btn-primary" onclick={() => (step += 1)}
               >Siguiente</button
             >
-          {:else if allReady}
+          {:else if step === MODELS_STEP && allReady}
             <button
               class="rb-btn rb-btn-primary"
-              onclick={() => finish(true)}
-              disabled={busy}
+              onclick={() => void leaveModels(false)}
             >
-              {busy ? "Guardando…" : "Empezar"}
+              Siguiente
             </button>
-          {:else}
+          {:else if step === MODELS_STEP}
             <button
               class="rb-btn rb-btn-ghost"
-              onclick={() => finish(true)}
-              disabled={busy || Boolean(downloadingId)}
+              onclick={() => void leaveModels(false)}
+              disabled={Boolean(downloadingId)}
             >
               Más tarde
             </button>
             <button
               class="rb-btn rb-btn-primary"
-              onclick={() => finish(false)}
-              disabled={busy || Boolean(downloadingId)}
+              onclick={() => void leaveModels(true)}
+              disabled={Boolean(downloadingId)}
             >
               {downloadingId
                 ? `Descargando… ${downloadPct}%`
-                : busy
-                  ? "Guardando…"
-                  : "Descargar y empezar"}
+                : "Descargar y continuar"}
+            </button>
+          {:else}
+            <button
+              class="rb-btn rb-btn-primary"
+              onclick={() => void finish()}
+              disabled={busy}
+            >
+              {busy ? "Guardando…" : "Empezar"}
             </button>
           {/if}
         </div>
       </div>
     {/snippet}
 </ModalShell>
+
+<style>
+  .ob-keys {
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .ob-keys li {
+    display: flex;
+    align-items: baseline;
+    gap: 0.6rem;
+  }
+
+  /* El atajo primero y con ancho fijo: la columna de teclas se lee de un
+     vistazo, que es lo que alguien vuelve a mirar cuando olvida uno. */
+  .ob-key {
+    flex-shrink: 0;
+    min-width: 7.5rem;
+    border-radius: 0.4rem;
+    padding: 0.2rem 0.45rem;
+    background: var(--rb-bg0);
+    color: var(--rb-text);
+    font-family: inherit;
+    font-size: 0.75rem;
+    font-weight: 650;
+    text-align: center;
+  }
+
+  .ob-key-copy {
+    color: var(--rb-muted);
+    font-size: 0.8125rem;
+    line-height: 1.45;
+  }
+
+  .ob-key-copy strong {
+    color: var(--rb-text);
+  }
+</style>

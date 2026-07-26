@@ -786,6 +786,7 @@
             {selectedId}
             progress={transcribeProgress}
             onSelect={(item) => (selectedId = item.id)}
+            recordShortcut={config?.global_shortcut ?? ""}
           />
           <RecordingDetail
             recording={selectedRecording}

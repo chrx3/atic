@@ -1,17 +1,20 @@
 <script lang="ts">
   import type { Recording } from "$lib/types";
-  import { formatDate, formatDuration, statusLabel } from "$lib/format";
+  import { formatDate, formatDuration, formatShortcut, statusLabel } from "$lib/format";
 
   let {
     recordings,
     selectedId,
     progress,
     onSelect,
+    /** Atajo global de grabación, para que el estado vacío diga cómo empezar. */
+    recordShortcut = "",
   }: {
     recordings: Recording[];
     selectedId: string | null;
     progress: Record<string, number>;
     onSelect: (recording: Recording) => void;
+    recordShortcut?: string;
   } = $props();
 </script>
 
@@ -22,9 +25,18 @@
   </header>
 
   {#if recordings.length === 0}
+    <!-- Es la primera pantalla que ve alguien nuevo. "Inicia una grabación"
+         no decía CÓMO se inicia una: ni el atajo, ni dónde está el botón. -->
     <div class="rb-list-empty">
       <p class="font-medium">Aún no hay grabaciones</p>
-      <p>Inicia una grabación para verla aquí.</p>
+      {#if recordShortcut}
+        <p>
+          Apretá <strong>{formatShortcut(recordShortcut)}</strong> desde
+          cualquier app, o usá el botón de grabar en la pill.
+        </p>
+      {:else}
+        <p>Usá el botón de grabar en la pill flotante para empezar.</p>
+      {/if}
     </div>
   {:else}
     <ul>
