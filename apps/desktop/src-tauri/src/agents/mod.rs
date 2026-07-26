@@ -47,9 +47,25 @@ pub enum AgentEvent {
         mcp_servers: Vec<McpServerState>,
     },
 
-    /// Texto del asistente.
+    /// Texto del asistente, ya completo.
     #[serde(rename_all = "camelCase")]
     Message { text: String },
+
+    /// Un trozo de texto según se escribe.
+    ///
+    /// El mensaje completo llega DESPUÉS igual, así que la vista acumula los
+    /// trozos aparte y los descarta al recibirlo. Sumarlos al registro los
+    /// duplicaría; ignorarlos dejaría la respuesta congelada hasta el final,
+    /// que en una tarea larga se ve como que el agente se colgó.
+    #[serde(rename_all = "camelCase")]
+    Delta { text: String },
+
+    /// Razonamiento del modelo, cuando lo expone.
+    ///
+    /// Va aparte de `Message` porque no es la respuesta: es el trabajo previo.
+    /// La vista lo pliega.
+    #[serde(rename_all = "camelCase")]
+    Thinking { text: String },
 
     /// El agente va a usar una herramienta.
     ///

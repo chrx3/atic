@@ -481,17 +481,24 @@ export const previewSound = (action: string, voice: string) =>
 export const agentBackends = () => invoke<AgentBackendInfo[]>("agent_backends");
 /** Sesiones vivas: para que una vista recién montada adopte lo que ya corre. */
 export const agentSessions = () => invoke<AgentSessionInfo[]>("agent_sessions");
-/** Abre la consola de agentes: burbuja anclada a la pill. */
+/** Abre (o repliega) la consola de agentes: sale de la pill y vuelve a ella. */
 export const showAgentsWindow = () => invoke<void>("show_agents_window");
-/** Dónde quedó la punta de la burbuja. Lo decide Rust: es quien ve monitores. */
+/** Repliega la burbuja sobre la pill. Rust la oculta al terminar el vuelo. */
+export const hideAgentsWindow = () => invoke<void>("hide_agents_window");
+
+/** Cómo salió la burbuja: lado de la punta, dónde cae, y cuánto vuela. */
+export interface BubbleOpen {
+  side: "top" | "bottom" | "left" | "right";
+  offset: number;
+  flight: number;
+}
+
+/** Lo decide Rust: es quien ve los monitores y la posición de la pill. */
 export const onAgentsBubbleAnchor = (
-  cb: (a: { side: "top" | "bottom" | "left" | "right"; offset: number }) => void,
+  cb: (a: BubbleOpen) => void,
 ): Promise<UnlistenFn> =>
-  listen<{ side: "top" | "bottom" | "left" | "right"; offset: number }>(
-    "agents-bubble-anchor",
-    (e) => cb(e.payload),
-  );
-/** La pill necesita el frente: la burbuja se repliega. */
+  listen<BubbleOpen>("agents-bubble-anchor", (e) => cb(e.payload));
+/** La burbuja se está replegando: el contenido tiene que apagarse ya. */
 export const onAgentsBubbleDismiss = (cb: () => void): Promise<UnlistenFn> =>
   listen("agents-bubble-dismiss", () => cb());
 /** Arranca una sesión y devuelve su clave local. */

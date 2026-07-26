@@ -69,6 +69,9 @@ impl AgentBackend for ClaudeCode {
             // No aparece en `claude --help`.
             .arg("--permission-prompt-tool")
             .arg("stdio")
+            // Texto según se escribe. Sin esto la respuesta aparece de golpe al
+            // cerrar el turno, y en una tarea larga eso se ve como un cuelgue.
+            .arg("--include-partial-messages")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -212,6 +215,26 @@ fn translate(line: &str) -> Vec<AgentEvent> {
         // conversación y no aportan nada a la vista.
         Some("control_response") | Some("control_cancel_request") => Vec::new(),
 
+        // Escritura en curso. Solo interesa el texto: la apertura y el cierre
+        // de bloque, el uso de tokens y los deltas de herramienta ya llegan
+        // resueltos en el mensaje completo, y mandarlos como `Notice` ahogaría
+        // el registro con una línea por palabra.
+        Some("stream_event") => {
+            let delta = v.get("event").and_then(|e| e.get("delta"));
+            match delta.and_then(|d| d.get("type")).and_then(Value::as_str) {
+                Some("text_delta") => delta
+                    .and_then(|d| d.get("text"))
+                    .and_then(Value::as_str)
+                    .map(|t| {
+                        vec![AgentEvent::Delta {
+                            text: t.to_string(),
+                        }]
+                    })
+                    .unwrap_or_default(),
+                _ => Vec::new(),
+            }
+        }
+
         Some("system") if v.get("subtype").and_then(Value::as_str) == Some("init") => {
             vec![AgentEvent::Started {
                 session_id: str_at(&v, "session_id"),
@@ -250,9 +273,16 @@ fn translate(line: &str) -> Vec<AgentEvent> {
                         name: str_at(b, "name"),
                         input: b.get("input").cloned().unwrap_or(Value::Null),
                     }),
-                    // Bloques que esta capa no modela (thinking, etc.): se
-                    // ignoran en silencio porque no aportan a la conversación
-                    // visible.
+                    // El razonamiento sale, pero con su propio tipo: la vista
+                    // lo pliega. Vacío es el caso normal cuando el modelo no
+                    // expone el contenido, y no merece una tarjeta.
+                    Some("thinking") => b
+                        .get("thinking")
+                        .and_then(Value::as_str)
+                        .filter(|t| !t.trim().is_empty())
+                        .map(|t| AgentEvent::Thinking {
+                            text: t.to_string(),
+                        }),
                     _ => None,
                 })
                 .collect();

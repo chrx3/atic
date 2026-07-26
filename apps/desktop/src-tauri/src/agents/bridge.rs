@@ -104,22 +104,26 @@ const BUBBLE_GAP: i32 = 10;
 const BUBBLE_CORNER: i32 = 26;
 const BUBBLE_INSET: i32 = 28;
 
-/// Abre o cierra la consola de agentes, que cuelga de la pill.
+/// Lo que la vista necesita saber al abrirse.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BubbleOpen {
+    side: &'static str,
+    offset: i32,
+    /// Cuánto dura el vuelo desde la pill. El contenido se funde en ese tiempo.
+    flight: u64,
+}
+
+/// Abre o cierra la consola de agentes, que **sale de la pill**.
 ///
-/// Es una ventana propia y no un panel de la pill: lo que se hace acá --leer
-/// salida larga, revisar qué tocó una herramienta, aprobar-- necesita espacio y
-/// quedarse abierto, que es lo contrario de lo que hace la pill. Pero sale *de*
-/// la pill y apunta a ella, para que se lea como lo que es: la misma cosa,
-/// desplegada.
+/// La ventana arranca del tamaño y en el sitio exactos de la pill, y crece
+/// hasta el globo con el mismo tween que usa la rueda: es la ventana la que se
+/// despliega, no una ventana nueva que aparece con una pestaña dibujada al
+/// lado. Al cerrar hace el camino inverso y recién entonces se oculta.
 ///
-/// Es un interruptor, y esa es la corrección importante. Antes se cerraba al
-/// perder el foco, así que abrir el historial para copiar algo que ibas a
-/// pegarle mataba la sesión justo cuando la necesitabas. Ahora la rueda la abre
-/// y la vuelve a cerrar, y nada más la cierra.
-///
-/// La posición se calcula ANTES de mostrarla. Mostrar primero y acomodar
-/// después deja un frame en la posición vieja, que es exactamente el salto que
-/// costó tanto sacar de la pill.
+/// Es un interruptor. Antes se cerraba al perder el foco, así que abrir el
+/// historial para copiar algo que ibas a pegarle mataba la sesión justo cuando
+/// la necesitabas.
 #[tauri::command]
 pub fn show_agents_window(app: AppHandle) {
     use tauri::{Emitter, Manager};
@@ -127,26 +131,79 @@ pub fn show_agents_window(app: AppHandle) {
         return;
     };
 
-    // Visible y con el foco = segunda pulsación de la rueda: se cierra. Visible
-    // pero tapada por otra app = la querías ver, así que se trae al frente.
-    if window.is_visible().unwrap_or(false) && window.is_focused().unwrap_or(false) {
-        let _ = app.emit("agents-bubble-dismiss", ());
+    // Visible y con el foco = segunda pulsación de la rueda: se repliega.
+    // Visible pero tapada por otra app = la querías ver, así que se trae al
+    // frente sin volver a animarla.
+    if window.is_visible().unwrap_or(false) {
+        if window.is_focused().unwrap_or(false) {
+            hide_agents_window(app);
+        } else {
+            let _ = window.set_focus();
+        }
         return;
     }
 
-    if let Some(anchor) = crate::floating::anchor_bubble(
+    let Some((target, anchor)) = crate::floating::bubble_rect(
         &app,
         "agents",
         "pill",
         BUBBLE_GAP,
         BUBBLE_CORNER,
         BUBBLE_INSET,
-    ) {
-        let _ = app.emit("agents-bubble-anchor", anchor);
-    }
+    ) else {
+        return;
+    };
+
+    // Frame cero: encima de la pill, del tamaño de la pill. Sin esto la ventana
+    // aparecería ya hecha en su sitio y la punta sería un dibujo que insinúa un
+    // origen que nunca ocurrió.
+    let from = crate::floating::rect_of(&app, "pill").unwrap_or(target);
+    crate::floating::snap_rect(&app, "agents", from);
     let _ = window.show();
     let _ = window.unminimize();
     let _ = window.set_focus();
+
+    let flight = crate::floating::tween(&app, "agents", target)
+        .map(|f| f.ms)
+        .unwrap_or(0);
+    let _ = app.emit(
+        "agents-bubble-anchor",
+        BubbleOpen {
+            side: anchor.side,
+            offset: anchor.offset,
+            flight,
+        },
+    );
+}
+
+/// Repliega la burbuja sobre la pill y la oculta al llegar.
+///
+/// El ocultado va en un hilo y no en el frontend a propósito: si la ventana web
+/// se colgara a mitad de la animación, quedaría una ventana muerta en pantalla
+/// sin forma de cerrarla.
+#[tauri::command]
+pub fn hide_agents_window(app: AppHandle) {
+    use tauri::{Emitter, Manager};
+    let Some(window) = app.get_webview_window("agents") else {
+        return;
+    };
+    if !window.is_visible().unwrap_or(false) {
+        return;
+    }
+    let _ = app.emit("agents-bubble-dismiss", ());
+
+    let Some(home) = crate::floating::rect_of(&app, "pill") else {
+        let _ = window.hide();
+        return;
+    };
+    let flight = crate::floating::tween(&app, "agents", home)
+        .map(|f| f.ms)
+        .unwrap_or(0);
+
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(flight));
+        let _ = window.hide();
+    });
 }
 
 /// Qué agentes hay y cuáles se pueden usar.

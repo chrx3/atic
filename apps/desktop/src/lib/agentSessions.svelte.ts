@@ -58,6 +58,13 @@ export interface AgentSessionView {
   unread: number;
   /** Última línea del agente: el resumen que cabe en la pill. */
   lastText: string | null;
+  /**
+   * Lo que el agente está escribiendo ahora mismo.
+   *
+   * Vive aparte del registro y no dentro: el mensaje completo llega igual al
+   * cerrar el bloque, así que meter los trozos en `log` los duplicaría.
+   */
+  streaming: string;
   error: string | null;
   /** Permisos esperando respuesta. Mientras haya uno, el agente no avanza. */
   pending: PendingPermission[];
@@ -192,6 +199,7 @@ class AgentSessionStore {
       log: [],
       unread: 0,
       lastText: null,
+      streaming: "",
       error: null,
       pending: [],
       contextTokens: 0,
@@ -247,8 +255,13 @@ class AgentSessionStore {
         session.mcpServers = payload.mcpServers;
         break;
       case "message":
+        // El bloque cerró: lo escrito en vivo ya está en el registro.
+        session.streaming = "";
         session.lastText = payload.text;
         if (unseen) session.unread += 1;
+        break;
+      case "delta":
+        session.streaming += payload.text;
         break;
       case "context":
         session.contextTokens = payload.tokens;

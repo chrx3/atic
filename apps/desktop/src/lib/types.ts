@@ -400,6 +400,9 @@ export type AgentEvent =
       mcpServers: McpServerState[];
     }
   | { kind: "message"; text: string }
+  /** Trozo de texto según se escribe. El mensaje completo llega después. */
+  | { kind: "delta"; text: string }
+  | { kind: "thinking"; text: string }
   /** `input` es JSON sin interpretar: cada herramienta tiene su forma. */
   | { kind: "toolCall"; id: string; name: string; input: unknown }
   | { kind: "toolResult"; id: string; output: string; isError: boolean }

@@ -596,7 +596,11 @@ pub struct BubbleAnchor {
     pub offset: i32,
 }
 
-/// Pega `label` a `origin` como burbuja y devuelve dónde quedó la punta.
+/// Calcula dónde va la burbuja y dónde cae su punta. **No mueve nada.**
+///
+/// Separado de aplicarlo porque el destino hace falta ANTES: la ventana sale
+/// del tamaño de la pill y crece hasta acá, así que quien la abre necesita el
+/// rectángulo final para poder interpolar hacia él.
 ///
 /// Prueba abajo, arriba, derecha e izquierda en ese orden y se queda con el
 /// primer lado donde entra entera. El orden no es arbitrario: la pill suele
@@ -604,14 +608,14 @@ pub struct BubbleAnchor {
 /// siempre; probar primero el lado con más espacio haría que la burbuja
 /// cambiara de lado por unos pocos píxeles de diferencia entre aperturas.
 #[cfg(windows)]
-pub fn anchor_bubble(
+pub fn bubble_rect(
     app: &AppHandle,
     label: &str,
     origin: &str,
     gap: i32,
     corner: i32,
     inset: i32,
-) -> Option<BubbleAnchor> {
+) -> Option<(Rect, BubbleAnchor)> {
     let bubble = app.get_webview_window(label)?;
     let size = bubble.outer_size().ok()?;
     let (bw, bh) = (size.width as i32, size.height as i32);
@@ -659,24 +663,62 @@ pub fn anchor_bubble(
         (acy - y).clamp(inset + corner, (bh - inset - corner).max(inset + corner))
     };
 
-    if !set_bounds(&bubble, x, y, bw, bh) {
-        let _ = bubble.set_position(PhysicalPosition::new(x, y));
-    }
     geo!("BUBBLE     {label} <- {origin} lado={side} off={along} en {x},{y}");
-    Some(BubbleAnchor {
-        side,
-        offset: along,
+    Some((
+        Rect { x, y, w: bw, h: bh },
+        BubbleAnchor {
+            side,
+            offset: along,
+        },
+    ))
+}
+
+/// El rectángulo actual de una ventana. Punto de partida del morph.
+pub fn rect_of(app: &AppHandle, label: &str) -> Option<Rect> {
+    let window = app.get_webview_window(label)?;
+    let pos = window.outer_position().ok()?;
+    let size = window.outer_size().ok()?;
+    Some(Rect {
+        x: pos.x,
+        y: pos.y,
+        w: size.width as i32,
+        h: size.height as i32,
     })
 }
 
+/// Coloca una ventana en `r` de inmediato, en un solo `SetWindowPos`.
+///
+/// Es el «frame cero» del morph: la burbuja se planta encima de la pill y
+/// recién desde ahí empieza a crecer. Con dos llamadas (tamaño y posición) el
+/// compositor puede colar un frame intermedio, que es el salto que costó tanto
+/// sacar de la rueda.
+#[cfg(windows)]
+pub fn snap_rect(app: &AppHandle, label: &str, r: Rect) {
+    let Some(window) = app.get_webview_window(label) else {
+        return;
+    };
+    GLIDE_GEN.fetch_add(1, Ordering::SeqCst);
+    if !set_bounds(&window, r.x, r.y, r.w, r.h) {
+        let _ = window.set_position(PhysicalPosition::new(r.x, r.y));
+    }
+}
+
 #[cfg(not(windows))]
-pub fn anchor_bubble(
+pub fn snap_rect(_app: &AppHandle, _label: &str, _r: Rect) {}
+
+#[cfg(not(windows))]
+pub fn bubble_rect(
     _app: &AppHandle,
     _label: &str,
     _origin: &str,
     _gap: i32,
     _corner: i32,
     _inset: i32,
-) -> Option<BubbleAnchor> {
+) -> Option<(Rect, BubbleAnchor)> {
+    None
+}
+
+#[cfg(not(windows))]
+pub fn rect_of(_app: &AppHandle, _label: &str) -> Option<Rect> {
     None
 }

@@ -34,6 +34,7 @@
   import {
     agentBackends,
     getConfig,
+    hideAgentsWindow,
     onAgentsBubbleAnchor,
     onAgentsBubbleDismiss,
   } from "$lib/api";
@@ -59,6 +60,7 @@
         done: boolean;
       }
     | { t: "start"; model: string; cwd: string; tools: number; commands: number; mcp: string[] }
+    | { t: "think"; text: string }
     | { t: "meta"; text: string }
     | { t: "warn"; text: string };
 
@@ -86,6 +88,17 @@
   let shown = $state(false);
   /** Hay un diálogo del sistema abierto. */
   let picking = $state(false);
+  /**
+   * La arrastraste: la punta deja de dibujarse.
+   *
+   * Movida de sitio ya no sale de la pill, y una punta que apunta a donde la
+   * pill no está es peor que ninguna. Al volver a abrirla se re-ancla y vuelve.
+   */
+  let detached = $state(false);
+  /** Duración del vuelo desde la pill, para fundir el contenido a la par. */
+  let flight = $state(0);
+  /** Antes de este instante, los movimientos son del vuelo y no del usuario. */
+  let settledAt = 0;
 
   let backends = $state<AgentBackendInfo[]>([]);
   let picked = $state("");
@@ -131,6 +144,9 @@
       switch (e.kind) {
         case "message":
           out.push({ t: "msg", text: e.text });
+          break;
+        case "thinking":
+          out.push({ t: "think", text: e.text });
           break;
         case "toolCall":
           byTool.set(e.id, out.length);
@@ -202,9 +218,31 @@
     // que estar bien, no acomodarse a la vista.
     const un = onAgentsBubbleAnchor((a) => {
       anchor = a;
+      detached = false;
+      // La ventana está volando desde la pill: el contenido se funde durante
+      // ese mismo tiempo, así que crecer y aparecer son un solo gesto.
+      flight = a.flight;
       shown = false;
+      // El vuelo empieza YA; ignorar los `moved` que provoca, o la burbuja se
+      // daría por arrastrada antes de terminar de abrirse.
+      settledAt = Date.now() + a.flight + 120;
       void tick().then(() => requestAnimationFrame(() => (shown = true)));
     });
+
+    // Moverla a mano la desancla. Se detecta por el evento de la ventana y no
+    // por el arrastre en sí: Windows también la mueve al acomodarla contra un
+    // borde, y eso cuenta igual.
+    let unMoved: (() => void) | null = null;
+    void (async () => {
+      try {
+        unMoved = await getCurrentWindow().onMoved(() => {
+          if (Date.now() < settledAt) return;
+          detached = true;
+        });
+      } catch {
+        // Sin ventana nativa no hay nada que seguir.
+      }
+    })();
 
     // La rueda pide cerrarla (segunda pulsación sobre «Agentes»).
     const unDismiss = onAgentsBubbleDismiss(() => void close());
@@ -243,6 +281,7 @@
       window.removeEventListener("keydown", onKeyDown);
       void un.then((fn) => fn());
       void unDismiss.then((fn) => fn());
+      unMoved?.();
       agents.watch(null);
     };
   });
@@ -267,7 +306,9 @@
   });
 
   $effect(() => {
-    const n = active?.log.length ?? 0;
+    // También con cada trozo del streaming: si no, el texto crece por debajo
+    // del borde y hay que perseguirlo con la rueda mientras se escribe.
+    const n = (active?.log.length ?? 0) + (active?.streaming.length ?? 0);
     if (!logEl || n === 0) return;
     void tick().then(() => {
       if (logEl) logEl.scrollTop = logEl.scrollHeight;
@@ -277,23 +318,18 @@
   /**
    * Cierra replegándose sobre la pill.
    *
-   * Espera a que termine la animación antes de ocultar: cortarla delataría que
-   * debajo hay una ventana y no un globo. La duración sale del mismo token que
-   * usa el cierre de la rueda, así las dos superficies se sienten la misma
-   * cosa y no pueden desincronizarse.
+   * Quien mueve y oculta la ventana es Rust: acá solo se apaga el contenido. Si
+   * el ocultado viviera en esta vista, un cuelgue del webview a mitad de la
+   * animación dejaría una ventana muerta en pantalla sin forma de cerrarla.
    */
-  let closing = false;
   async function close() {
-    if (closing || !shown) return;
-    closing = true;
+    if (!shown) return;
     shown = false;
-    await new Promise((r) => setTimeout(r, ms(MOTION.morphClose)));
     try {
-      await getCurrentWindow().hide();
+      await hideAgentsWindow();
     } catch {
-      // Sin ventana nativa (preview web) no hay nada que ocultar.
+      // Sin ventana nativa (preview web) no hay nada que replegar.
     }
-    closing = false;
   }
 
   function mcpConfig(): string | undefined {
@@ -416,8 +452,9 @@
 <div
   class="bub"
   class:is-shown={shown}
+  class:is-loose={detached}
   data-side={anchor?.side ?? "top"}
-  style="--tail: {anchor?.offset ?? 40}px"
+  style="--tail: {anchor?.offset ?? 40}px; --fade: {flight || 200}ms"
 >
   <span class="bub-tail" aria-hidden="true"></span>
 
@@ -425,6 +462,13 @@
     <!-- Sin barra de título: es un modal, no una ventana. Pero como YA NO se
          cierra al perder el foco, tiene que haber una forma visible de
          cerrarlo; si no, la única salida sería recordar el atajo. -->
+    <!-- Franja de arrastre. La burbuja nace pegada a la pill, pero eso no
+         siempre cae donde te sirve: si tapa lo que estás mirando, se mueve. Al
+         moverla se desancla y la punta desaparece, porque ya no sale de ahí. -->
+    <div class="grip" data-tauri-drag-region title="Arrastra para mover">
+      <span class="grip-bar" data-tauri-drag-region></span>
+    </div>
+
     <button
       type="button"
       class="shut"
@@ -527,12 +571,26 @@
             <!-- Cierre de turno: una regla con el costo al medio. Separa las
                  respuestas entre sí, que sin esto se leían como una sola. -->
             <p class="turn"><span class="turn-t">{row.text}</span></p>
+          {:else if row.t === "think"}
+            <!-- El razonamiento es trabajo previo, no la respuesta: se ofrece
+                 plegado para que no compita con lo que el agente dice. -->
+            <details class="think">
+              <summary>pensando</summary>
+              <p>{row.text}</p>
+            </details>
           {:else if row.t === "warn"}
             <p class="warn">{row.text}</p>
           {/if}
         {/each}
 
-        {#if active.status === "working"}
+        <!-- Lo que está escribiendo ahora. Fuera del registro: el mensaje
+             completo llega igual al cerrar el bloque y lo reemplaza. -->
+        {#if active.streaming}
+          <div class="wip">
+            <AgentMessage text={active.streaming} />
+            <span class="caret" aria-hidden="true"></span>
+          </div>
+        {:else if active.status === "working"}
           <p class="meta live">trabajando…</p>
         {/if}
       {/if}
@@ -719,53 +777,62 @@
     --dim: #8d827a;
     --faint: #6b615a;
 
-    position: relative;
+    /* Tamaño FIJO, no `100vw/100vh`.
+     *
+     * La ventana arranca del porte de la pill y crece: con medidas relativas,
+     * el contenido se recompondría en cada frame del vuelo —la barra de abajo
+     * plegándose, el texto reflowing— y lo que se vería es una interfaz
+     * histérica, no un globo desplegándose. Fijo, simplemente se va
+     * descubriendo a medida que la ventana lo destapa.
+     */
+    --w: 636px;
+    --h: 576px;
+
+    position: absolute;
     display: flex;
-    width: 100vw;
-    height: 100vh;
+    width: var(--w);
+    height: var(--h);
     box-sizing: border-box;
     padding: var(--inset);
 
-    /* Mismos tokens que el morph de la rueda: las dos superficies salen de la
-       pill, así que tienen que sentirse la misma cosa. Definidos en un solo
-       sitio (app.css), no pueden desincronizarse. */
+    /* Lo único que anima acá es la opacidad: quien crece es la VENTANA, con el
+       mismo tween que la rueda. Escalar además el contenido sería animar dos
+       veces la misma idea y se notaría como un rebote doble. */
     opacity: 0;
-    transform: scale(0.86);
-    transition:
-      opacity var(--morph-close-dur) ease,
-      transform var(--morph-close-dur) var(--morph-close-ease);
+    transition: opacity var(--fade, 200ms) ease;
   }
   .bub.is-shown {
     opacity: 1;
-    transform: scale(1);
-    transition:
-      opacity var(--morph-fade-dur) ease,
-      transform var(--morph-open-dur) var(--morph-ease);
   }
 
-  /* Crece DESDE la punta: es lo que hace que se lea como desplegarse de la
-     pill y no como una ventana que apareció encima. */
+  /* Anclado al borde por el que sale, y centrado en el otro eje: durante el
+     vuelo la ventana está centrada en la pill, así que la punta se queda sobre
+     ella todo el recorrido. Con `margin` y no `transform`, que acá no hay
+     ninguno que pisar. */
   .bub[data-side="top"] {
-    transform-origin: var(--tail) var(--inset);
+    top: 0;
+    left: 50%;
+    margin-left: calc(var(--w) / -2);
   }
   .bub[data-side="bottom"] {
-    transform-origin: var(--tail) calc(100% - var(--inset));
+    bottom: 0;
+    left: 50%;
+    margin-left: calc(var(--w) / -2);
   }
   .bub[data-side="left"] {
-    transform-origin: var(--inset) var(--tail);
+    top: 50%;
+    left: 0;
+    margin-top: calc(var(--h) / -2);
   }
   .bub[data-side="right"] {
-    transform-origin: calc(100% - var(--inset)) var(--tail);
+    top: 50%;
+    right: 0;
+    margin-top: calc(var(--h) / -2);
   }
 
-  @media (prefers-reduced-motion: reduce) {
-    .bub {
-      transition: opacity 100ms linear;
-      transform: none;
-    }
-    .bub.is-shown {
-      transform: none;
-    }
+  /* Movida de sitio ya no sale de la pill: la punta sobra. */
+  .bub.is-loose .bub-tail {
+    display: none;
   }
 
   .bub-body {
@@ -887,7 +954,8 @@
     flex: 1;
     flex-direction: column;
     gap: 0.6rem;
-    padding: 0.9rem 0.95rem;
+    /* Arriba, sitio para la franja de arrastre y el botón de cerrar. */
+    padding: 1.6rem 0.95rem 0.9rem;
     overflow: auto;
   }
 
@@ -960,6 +1028,45 @@
     animation: pulse 1.6s ease-in-out infinite;
   }
 
+  /* Texto en vivo: el cursor parpadeante es la señal de que sigue escribiendo,
+     y evita tener que poner un «trabajando…» encima de su propia respuesta. */
+  .wip {
+    position: relative;
+  }
+
+  .caret {
+    display: inline-block;
+    width: 0.45rem;
+    height: 0.85rem;
+    margin-left: 0.15rem;
+    background: var(--coral);
+    vertical-align: text-bottom;
+    animation: blink 1s steps(2, start) infinite;
+  }
+
+  @keyframes blink {
+    50% {
+      opacity: 0;
+    }
+  }
+
+  .think {
+    color: var(--faint);
+    font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+    font-size: 0.6875rem;
+  }
+  .think summary {
+    cursor: pointer;
+  }
+  .think p {
+    margin: 0.35rem 0 0;
+    border-left: 2px solid var(--line);
+    padding-left: 0.7rem;
+    color: var(--dim);
+    line-height: 1.5;
+    white-space: pre-wrap;
+  }
+
   /* Cierre de turno: una regla fina que corta el ancho. Sin ella, dos
      respuestas seguidas se leían como una sola parrafada. */
   .turn {
@@ -982,12 +1089,40 @@
     flex-shrink: 0;
   }
 
+  /* Franja de arrastre: ocupa el ancho de arriba y solo se insinúa al pasar
+     por encima. Ocupar sitio con una barra de título completa contradiría que
+     esto es un globo y no una ventana. */
+  .grip {
+    position: absolute;
+    top: var(--inset);
+    right: var(--inset);
+    left: var(--inset);
+    z-index: 4;
+    display: flex;
+    height: 1.5rem;
+    align-items: center;
+    justify-content: center;
+    border-radius: 18px 18px 0 0;
+  }
+
+  .grip-bar {
+    width: 2.2rem;
+    height: 3px;
+    border-radius: 999px;
+    background: var(--line);
+    opacity: 0;
+    transition: opacity 140ms ease;
+  }
+  .grip:hover .grip-bar {
+    opacity: 1;
+  }
+
   /* Flotando sobre el registro y en gris: está para cuando se busca, no para
      competir con lo que el agente está diciendo. */
   .shut {
     position: absolute;
-    top: calc(var(--inset) + 8px);
-    right: calc(var(--inset) + 8px);
+    top: calc(var(--inset) + 3px);
+    right: calc(var(--inset) + 6px);
     z-index: 5;
     display: flex;
     border: 0;
