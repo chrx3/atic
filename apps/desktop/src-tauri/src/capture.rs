@@ -55,12 +55,20 @@ pub fn notify_capture_ready(app: &AppHandle, path: &str, shelf_anchor: Option<(i
     }
 
     let state = app.state::<AppState>();
-    let (ui_sounds, output_device_id) = {
+    let (ui_sounds, output_device_id, sound_voice) = {
         let cfg = state.config.lock().unwrap();
-        (cfg.ui_sounds, cfg.output_device_id.clone())
+        (
+            cfg.ui_sounds,
+            cfg.output_device_id.clone(),
+            cfg.sound_capture.clone(),
+        )
     };
     if ui_sounds {
-        crate::beep::play_capture_thump(&output_device_id);
+        crate::beep::play(
+            crate::beep::SoundAction::Capture,
+            &sound_voice,
+            &output_device_id,
+        );
     }
 }
 

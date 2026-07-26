@@ -74,8 +74,15 @@ pub struct Config {
     pub pill_position: Option<(f64, f64)>,
     /// Sonido grave al iniciar/detener grabación (aviso de consentimiento).
     pub beep_on_start: bool,
-    /// Toques graves de interfaz (capturas, dictado).
+    /// Toques graves de interfaz (capturas, dictado). Interruptor maestro.
     pub ui_sounds: bool,
+    /// Timbre por acción: `grave` | `suave` | `cristal` | `madera` | `ninguno`.
+    /// Vacío = el timbre por defecto de esa acción.
+    pub sound_recording_start: String,
+    pub sound_recording_stop: String,
+    pub sound_dictation_start: String,
+    pub sound_dictation_done: String,
+    pub sound_capture: String,
     /// Pistas a grabar: `both` | `mic` | `system`.
     pub record_tracks: String,
     /// Pistas a transcribir: `both` | `mic` | `system`.
@@ -159,6 +166,11 @@ impl Default for Config {
             pill_position: None,
             beep_on_start: false,
             ui_sounds: true,
+            sound_recording_start: String::new(),
+            sound_recording_stop: String::new(),
+            sound_dictation_start: String::new(),
+            sound_dictation_done: String::new(),
+            sound_capture: String::new(),
             record_tracks: "both".to_string(),
             transcribe_tracks: "both".to_string(),
             speakers_mode: false,
@@ -220,6 +232,11 @@ struct ConfigFile {
     pill_position: Option<(f64, f64)>,
     beep_on_start: bool,
     ui_sounds: Option<bool>,
+    sound_recording_start: Option<String>,
+    sound_recording_stop: Option<String>,
+    sound_dictation_start: Option<String>,
+    sound_dictation_done: Option<String>,
+    sound_capture: Option<String>,
     record_tracks: Option<String>,
     transcribe_tracks: Option<String>,
     speakers_mode: Option<bool>,
@@ -310,6 +327,11 @@ impl Default for ConfigFile {
             pill_position: d.pill_position,
             beep_on_start: d.beep_on_start,
             ui_sounds: None,
+            sound_recording_start: None,
+            sound_recording_stop: None,
+            sound_dictation_start: None,
+            sound_dictation_done: None,
+            sound_capture: None,
             record_tracks: None,
             transcribe_tracks: None,
             speakers_mode: None,
@@ -454,6 +476,11 @@ impl From<ConfigFile> for Config {
             beep_on_start: f.beep_on_start,
             // Configs antiguas: activar toques de UI (captura/dictado).
             ui_sounds: f.ui_sounds.unwrap_or(true),
+            sound_recording_start: f.sound_recording_start.unwrap_or_default(),
+            sound_recording_stop: f.sound_recording_stop.unwrap_or_default(),
+            sound_dictation_start: f.sound_dictation_start.unwrap_or_default(),
+            sound_dictation_done: f.sound_dictation_done.unwrap_or_default(),
+            sound_capture: f.sound_capture.unwrap_or_default(),
             record_tracks: f.record_tracks.unwrap_or_else(|| "both".into()),
             transcribe_tracks: f.transcribe_tracks.unwrap_or_else(|| "both".into()),
             speakers_mode: f.speakers_mode.unwrap_or(false),

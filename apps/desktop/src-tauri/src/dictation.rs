@@ -183,12 +183,16 @@ fn start_dictation(app: &AppHandle) -> Result<(), String> {
         handle,
     });
 
-    let (ui_sounds, out) = {
+    let (ui_sounds, out, voice) = {
         let cfg = state.config.lock().unwrap();
-        (cfg.ui_sounds, cfg.output_device_id.clone())
+        (
+            cfg.ui_sounds,
+            cfg.output_device_id.clone(),
+            cfg.sound_dictation_start.clone(),
+        )
     };
     if ui_sounds {
-        crate::beep::play_dictation_start(&out);
+        crate::beep::play(crate::beep::SoundAction::DictationStart, &voice, &out);
     }
 
     // Seguir el foco mientras dictás: si hacés clic en otro input antes de que
@@ -347,13 +351,17 @@ fn stop_and_paste(app: &AppHandle) {
                     queued,
                     "dictado pegado o encolado"
                 );
-                let (ui_sounds, out) = {
+                let (ui_sounds, out, voice) = {
                     let state = app2.state::<AppState>();
                     let cfg = state.config.lock().unwrap();
-                    (cfg.ui_sounds, cfg.output_device_id.clone())
+                    (
+                        cfg.ui_sounds,
+                        cfg.output_device_id.clone(),
+                        cfg.sound_dictation_done.clone(),
+                    )
                 };
                 if ui_sounds {
-                    crate::beep::play_dictation_done(&out);
+                    crate::beep::play(crate::beep::SoundAction::DictationDone, &voice, &out);
                 }
                 let message = if queued {
                     format!("En cola para pegar ({} caracteres)", text.chars().count())

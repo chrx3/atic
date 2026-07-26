@@ -168,6 +168,7 @@ pub fn run() {
             clipboard_history::morph_pill_home,
             state::summon_pill_here,
             state::pill_trace,
+            beep::preview_sound,
             clipboard_history::restore_pill_position,
             snippets::list_snippets,
             snippets::upsert_snippet,

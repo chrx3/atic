@@ -220,8 +220,14 @@ pub fn start_capture(
 
     // Aviso audible de consentimiento (configurable).
     if state.config.lock().unwrap().beep_on_start {
-        let device_id = state.config.lock().unwrap().output_device_id.clone();
-        crate::beep::play_start_beep(&device_id);
+        let (device_id, voice) = {
+            let cfg = state.config.lock().unwrap();
+            (
+                cfg.output_device_id.clone(),
+                cfg.sound_recording_start.clone(),
+            )
+        };
+        crate::beep::play(crate::beep::SoundAction::RecordingStart, &voice, &device_id);
     }
 
     if let Some(advisory) = atic_audio::bluetooth_recording_advisory(
@@ -300,8 +306,14 @@ pub fn stop_capture(app: &AppHandle) -> Result<Recording, String> {
 
     // Aviso audible de fin de grabación (configurable, mismo toggle que el de inicio).
     if state.config.lock().unwrap().beep_on_start {
-        let device_id = state.config.lock().unwrap().output_device_id.clone();
-        crate::beep::play_stop_beep(&device_id);
+        let (device_id, voice) = {
+            let cfg = state.config.lock().unwrap();
+            (
+                cfg.output_device_id.clone(),
+                cfg.sound_recording_stop.clone(),
+            )
+        };
+        crate::beep::play(crate::beep::SoundAction::RecordingStop, &voice, &device_id);
     }
 
     // 2) UI responsive: "no grabando" antes de cualquier flush live.

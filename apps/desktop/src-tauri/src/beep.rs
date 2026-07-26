@@ -31,64 +31,121 @@ const BASS_SOFT_DECAY_RATE: f32 = 3.4;
 const BASS_HARMONICS: [(f32, f32, f32); 2] = [(0.5, 0.55, 0.7), (2.0, 0.08, 2.8)];
 const BASS_SOFT_HARMONICS: [(f32, f32, f32); 2] = [(0.5, 0.45, 0.75), (2.0, 0.05, 3.2)];
 
+/// Cristal: agudo y corto, como un tick de vidrio.
+const GLASS_PEAK: f32 = 0.07;
+const GLASS_ATTACK_SECS: f32 = 0.004;
+const GLASS_RELEASE_SECS: f32 = 0.09;
+const GLASS_DECAY_RATE: f32 = 9.5;
+const GLASS_HARMONICS: [(f32, f32, f32); 3] = [(1.0, 0.5, 1.0), (2.7, 0.22, 2.0), (5.4, 0.08, 3.5)];
+/// Cuánto sube respecto de la nota base grave.
+const GLASS_PITCH: f32 = 20.0;
+
+/// Madera: registro medio, ataque seco, cola corta.
+const WOOD_PEAK: f32 = 0.11;
+const WOOD_ATTACK_SECS: f32 = 0.006;
+const WOOD_RELEASE_SECS: f32 = 0.11;
+const WOOD_DECAY_RATE: f32 = 6.5;
+/// El 4.º armónico marcado es lo que hace que suene a marimba y no a pitido.
+const WOOD_HARMONICS: [(f32, f32, f32); 3] =
+    [(1.0, 0.55, 1.0), (4.0, 0.18, 2.2), (10.0, 0.04, 4.0)];
+const WOOD_PITCH: f32 = 7.0;
+
 type ToneShape = (f32, f32, f32, f32, &'static [(f32, f32, f32)]);
 
-#[derive(Clone, Copy)]
-enum ToneProfile {
-    /// Grabación / captura: presencia clara pero grave.
+/// Timbre elegible por acción.
+///
+/// El GESTO melódico lo define la acción (sube al iniciar, baja al parar) y no
+/// se toca: es lo que hace que el sonido signifique algo. La voz solo cambia el
+/// color y el registro. Separarlos así evita tener que inventar una melodía
+/// nueva por cada combinación de acción y timbre.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ToneProfile {
+    /// Presencia clara pero grave. El original de grabación y captura.
     Bass,
-    /// Dictado: aún más contenido.
+    /// Aún más contenido. El original del dictado.
     BassSoft,
+    /// Agudo y corto.
+    Glass,
+    /// Registro medio, madera.
+    Wood,
+    /// Silencio: la acción no suena.
+    Silent,
 }
 
-/// Carillón grave al iniciar grabación.
-pub fn play_start_beep(output_device_id: &str) {
-    play_chime(
-        output_device_id,
-        &START_NOTES,
-        ToneProfile::Bass,
-        "grabación (inicio)",
-    );
+impl ToneProfile {
+    /// Desde la config. Un valor desconocido cae al default de la acción, que
+    /// se pasa aparte: no todas las acciones suenan igual de fuerte.
+    pub fn parse(raw: &str, fallback: ToneProfile) -> Self {
+        match raw {
+            "grave" => ToneProfile::Bass,
+            "suave" => ToneProfile::BassSoft,
+            "cristal" => ToneProfile::Glass,
+            "madera" => ToneProfile::Wood,
+            "ninguno" => ToneProfile::Silent,
+            _ => fallback,
+        }
+    }
+
+    /// Multiplicador de frecuencia sobre la nota base.
+    fn pitch(self) -> f32 {
+        match self {
+            ToneProfile::Glass => GLASS_PITCH,
+            ToneProfile::Wood => WOOD_PITCH,
+            _ => 1.0,
+        }
+    }
 }
 
-/// Carillón grave al detener grabación.
-pub fn play_stop_beep(output_device_id: &str) {
-    play_chime(
-        output_device_id,
-        &STOP_NOTES,
-        ToneProfile::Bass,
-        "grabación (fin)",
-    );
+/// Las cinco acciones que suenan. Cada una tiene su gesto y su voz por defecto.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum SoundAction {
+    RecordingStart,
+    RecordingStop,
+    DictationStart,
+    DictationDone,
+    Capture,
 }
 
-/// Toque al iniciar dictado.
-pub fn play_dictation_start(output_device_id: &str) {
-    play_chime(
-        output_device_id,
-        &DICTATION_START_NOTES,
-        ToneProfile::BassSoft,
-        "dictado (inicio)",
-    );
+impl SoundAction {
+    fn notes(self) -> &'static [(f32, f32)] {
+        match self {
+            SoundAction::RecordingStart => &START_NOTES,
+            SoundAction::RecordingStop => &STOP_NOTES,
+            SoundAction::DictationStart => &DICTATION_START_NOTES,
+            SoundAction::DictationDone => &DICTATION_DONE_NOTES,
+            SoundAction::Capture => &CAPTURE_NOTES,
+        }
+    }
+
+    fn default_voice(self) -> ToneProfile {
+        match self {
+            SoundAction::DictationStart | SoundAction::DictationDone => ToneProfile::BassSoft,
+            _ => ToneProfile::Bass,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            SoundAction::RecordingStart => "grabación (inicio)",
+            SoundAction::RecordingStop => "grabación (fin)",
+            SoundAction::DictationStart => "dictado (inicio)",
+            SoundAction::DictationDone => "dictado (listo)",
+            SoundAction::Capture => "captura",
+        }
+    }
 }
 
-/// Confirmación al pegar el texto dictado.
-pub fn play_dictation_done(output_device_id: &str) {
-    play_chime(
-        output_device_id,
-        &DICTATION_DONE_NOTES,
-        ToneProfile::BassSoft,
-        "dictado (listo)",
-    );
-}
-
-/// Pulsación grave al completar una captura.
-pub fn play_capture_thump(output_device_id: &str) {
-    play_chime(
-        output_device_id,
-        &CAPTURE_NOTES,
-        ToneProfile::Bass,
-        "captura",
-    );
+/// Reproduce el sonido de una acción con la voz elegida.
+///
+/// `voice` viene de la config como texto; un valor desconocido cae al default
+/// de la acción en vez de silenciarla, para que una config vieja o corrupta no
+/// deje la app muda sin explicación.
+pub fn play(action: SoundAction, voice: &str, output_device_id: &str) {
+    let profile = ToneProfile::parse(voice, action.default_voice());
+    if profile == ToneProfile::Silent {
+        return;
+    }
+    play_chime(output_device_id, action.notes(), profile, action.label());
 }
 
 fn play_chime(
@@ -187,6 +244,22 @@ impl ChimeGenerator {
                 BASS_SOFT_PEAK,
                 &BASS_SOFT_HARMONICS,
             ),
+            ToneProfile::Glass => (
+                GLASS_ATTACK_SECS,
+                GLASS_RELEASE_SECS,
+                GLASS_DECAY_RATE,
+                GLASS_PEAK,
+                &GLASS_HARMONICS,
+            ),
+            ToneProfile::Wood => (
+                WOOD_ATTACK_SECS,
+                WOOD_RELEASE_SECS,
+                WOOD_DECAY_RATE,
+                WOOD_PEAK,
+                &WOOD_HARMONICS,
+            ),
+            // No se llega acá: `play_chime` corta antes de abrir el stream.
+            ToneProfile::Silent => (0.0, 0.0, 1.0, 0.0, &BASS_HARMONICS),
         }
     }
 
@@ -196,9 +269,12 @@ impl ChimeGenerator {
             return 0.0;
         }
 
-        let Some(&(freq, dur)) = self.notes.get(self.note_idx) else {
+        let Some(&(base_freq, dur)) = self.notes.get(self.note_idx) else {
             return 0.0;
         };
+        // La voz transpone; el intervalo entre notas se conserva, así que el
+        // gesto (sube al iniciar, baja al parar) sigue leyéndose igual.
+        let freq = base_freq * self.profile.pitch();
 
         let (attack_secs, release_secs, decay, peak, harmonics) = self.shape();
 
@@ -243,4 +319,27 @@ impl ChimeGenerator {
             }
         }
     }
+}
+
+/// Reproduce una acción con una voz arbitraria, para probar desde Ajustes.
+///
+/// Existe porque no se puede elegir un sonido sin escucharlo: sin esto, la
+/// única forma de comparar timbres sería guardar y provocar la acción real.
+#[tauri::command]
+pub fn preview_sound(
+    state: tauri::State<'_, crate::state::AppState>,
+    action: String,
+    voice: String,
+) -> Result<(), String> {
+    let which = match action.as_str() {
+        "recording_start" => SoundAction::RecordingStart,
+        "recording_stop" => SoundAction::RecordingStop,
+        "dictation_start" => SoundAction::DictationStart,
+        "dictation_done" => SoundAction::DictationDone,
+        "capture" => SoundAction::Capture,
+        other => return Err(format!("acción de sonido desconocida: {other}")),
+    };
+    let out = state.config.lock().unwrap().output_device_id.clone();
+    play(which, &voice, &out);
+    Ok(())
 }
