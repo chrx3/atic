@@ -40,6 +40,11 @@
     <rect x="9.5" y="3" width="5" height="11" rx="2.5" />
     <path d="M6.5 12a5.5 5.5 0 0 0 11 0" />
     <path d="M12 17.5V20" />
+  {:else if id === "agents"}
+    <!-- Agentes: cursor de consola sobre una ventana. -->
+    <rect x="3" y="4.5" width="18" height="15" rx="2" />
+    <path d="M7 10l2.5 2.5L7 15" />
+    <path d="M12.5 15.5H17" />
   {:else if id === "clipboard"}
     <!-- Historial: hoja trasera enmarcando la de delante, sin cruzarla. -->
     <path d="M4 15V4h11" />

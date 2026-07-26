@@ -1,6 +1,12 @@
 /** Herramientas del shell de Atic (caja de utilidades local-first). */
 
-export type ToolId = "meetings" | "dictation" | "clipboard" | "snippets" | "captures";
+export type ToolId =
+  | "meetings"
+  | "dictation"
+  | "clipboard"
+  | "snippets"
+  | "captures"
+  | "agents";
 
 export type ToolDef = {
   id: ToolId;
@@ -39,6 +45,12 @@ export const TOOLS: ToolDef[] = [
     label: "Textos",
     short: "Guardados a mano",
     blurb: "Los textos que escribís siempre, listos para pegar. Más un bloc para notas sueltas.",
+  },
+  {
+    id: "agents",
+    label: "Agentes",
+    short: "Consola con interfaz",
+    blurb: "Conversá con agentes de consola desde una interfaz, sin perder sus herramientas.",
   },
   {
     id: "captures",

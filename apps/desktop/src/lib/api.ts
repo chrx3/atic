@@ -31,6 +31,8 @@ import type {
   Snippet,
   Scratchpad,
   Note,
+  AgentBackendInfo,
+  AgentEventPayload,
   PasteQueueItem,
   SearchHit,
   OverlayInfo,
@@ -466,3 +468,24 @@ export async function installAppUpdateAndRelaunch(
   await update.downloadAndInstall(onEvent);
   await relaunch();
 }
+
+// --- Agentes ---
+/** Qué agentes conoce Atic y cuáles están instalados. Lanza un proceso por
+ *  backend, así que conviene llamarlo al abrir la vista, no en cada render. */
+export const agentBackends = () => invoke<AgentBackendInfo[]>("agent_backends");
+/** Arranca una sesión y devuelve su clave local. */
+export const agentStart = (
+  backend: string,
+  cwd?: string,
+  resume?: string,
+) => invoke<string>("agent_start", { backend, cwd, resume });
+export const agentSend = (session: string, text: string) =>
+  invoke<void>("agent_send", { session, text });
+export const agentStop = (session: string) =>
+  invoke<void>("agent_stop", { session });
+
+/** Todos los eventos de todas las sesiones. Filtrar por `session`. */
+export const onAgentEvent = (
+  cb: (payload: AgentEventPayload) => void,
+): Promise<UnlistenFn> =>
+  listen<AgentEventPayload>("agent-event", (e) => cb(e.payload));

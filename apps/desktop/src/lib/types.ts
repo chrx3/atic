@@ -338,3 +338,36 @@ export interface OverlayInfo {
   height: number;
   candidates: OverlayCandidate[];
 }
+
+/* ─── Agentes ─────────────────────────────────────────────────────────────
+ *
+ * Estos tipos son el contrato con la capa de agentes de Rust. No describen a
+ * Claude Code: describen el denominador común de cualquier agente de consola,
+ * para que la UI no haya que rehacerla al sumar Codex, Cursor u otro.
+ */
+
+export interface AgentBackendInfo {
+  id: string;
+  displayName: string;
+  /** Instalado y utilizable en este equipo. */
+  available: boolean;
+}
+
+/** Evento normalizado. `kind` discrimina la variante. */
+export type AgentEvent =
+  | { kind: "started"; sessionId: string; tools: string[]; cwd: string }
+  | { kind: "message"; text: string }
+  /** `input` es JSON sin interpretar: cada herramienta tiene su forma. */
+  | { kind: "toolCall"; id: string; name: string; input: unknown }
+  | { kind: "toolResult"; id: string; output: string; isError: boolean }
+  | { kind: "notice"; text: string }
+  | {
+      kind: "finished";
+      stopReason: string | null;
+      isError: boolean;
+      costUsd: number | null;
+    }
+  | { kind: "failed"; message: string };
+
+/** Un evento ya etiquetado con la sesión que lo produjo. */
+export type AgentEventPayload = AgentEvent & { session: string };

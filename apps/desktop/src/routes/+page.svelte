@@ -11,6 +11,7 @@
     MeetingDetectionPayload,
   } from "$lib/types";
   import AppShell from "$lib/AppShell.svelte";
+  import AgentsTool from "$lib/AgentsTool.svelte";
   import CapturesTool from "$lib/CapturesTool.svelte";
   import ClipboardTool from "$lib/ClipboardTool.svelte";
   import SnippetsTool from "$lib/SnippetsTool.svelte";
@@ -837,6 +838,10 @@
           onShortcutChange={(sc) => patchConfig({ snippets_shortcut: sc })}
           onToast={showToast}
         />
+      {:else if activeTool === "agents"}
+        <ToolPageShell tool={toolById("agents")}>
+          <AgentsTool />
+        </ToolPageShell>
       {:else}
         <CapturesTool
           shortcut={config?.screenshot_shortcut ?? ""}
