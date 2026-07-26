@@ -52,7 +52,13 @@ export function parse(source: string): Block[] {
 
   const flush = () => {
     if (paragraph.length === 0) return;
-    blocks.push({ kind: "p", spans: inlines(paragraph.join(" ")) });
+    // Se unen con salto y NO con espacio.
+    //
+    // Markdown diría que un salto simple es un espacio, pero acá el emisor es
+    // un agente: no envuelve a 80 columnas, y sí manda salida por líneas
+    // —`/usage`, listas de estado, tablas de texto—. Uniendo con espacio, ese
+    // tipo de respuesta se convertía en un párrafo ilegible.
+    blocks.push({ kind: "p", spans: inlines(paragraph.join("\n")) });
     paragraph = [];
   };
 
@@ -122,7 +128,8 @@ export function parse(source: string): Block[] {
       continue;
     }
 
-    paragraph.push(line.trim());
+    // `trimEnd` y no `trim`: la sangría de una salida alineada es información.
+    paragraph.push(line.trimEnd());
   }
 
   flush();

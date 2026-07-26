@@ -362,6 +362,14 @@ export interface AgentBackendInfo {
   available: boolean;
 }
 
+/** Un comando de barra que ofrece el agente (skills incluidas). */
+export interface SlashCommand {
+  name: string;
+  description: string;
+  /** Qué espera después del nombre, si espera algo. */
+  argumentHint: string;
+}
+
 /** Un servidor MCP tal como lo reporta el agente al arrancar. */
 export interface McpServerState {
   name: string;
@@ -415,6 +423,7 @@ export type AgentEvent =
       input: unknown;
       suggestions: unknown;
     }
+  | { kind: "commands"; commands: SlashCommand[] }
   | { kind: "context"; tokens: number }
   | { kind: "notice"; text: string }
   | {

@@ -26,7 +26,7 @@ use std::thread;
 
 use serde_json::{json, Value};
 
-use super::{AgentBackend, AgentEvent, AgentSession, McpServerState, StartOptions};
+use super::{AgentBackend, AgentEvent, AgentSession, McpServerState, SlashCommand, StartOptions};
 
 pub struct ClaudeCode;
 
@@ -211,9 +211,29 @@ fn translate(line: &str) -> Vec<AgentEvent> {
             }]
         }
 
-        // Respuestas a lo que preguntamos nosotros (el handshake). No son de la
-        // conversación y no aportan nada a la vista.
-        Some("control_response") | Some("control_cancel_request") => Vec::new(),
+        // La respuesta al handshake trae el catálogo de comandos, que es lo
+        // único que aporta de todo el canal de control.
+        Some("control_response") => v
+            .get("response")
+            .and_then(|r| r.get("response"))
+            .and_then(|r| r.get("commands"))
+            .and_then(Value::as_array)
+            .map(|list| {
+                vec![AgentEvent::Commands {
+                    commands: list
+                        .iter()
+                        .map(|c| SlashCommand {
+                            name: str_at(c, "name"),
+                            description: str_at(c, "description"),
+                            argument_hint: str_at(c, "argumentHint"),
+                        })
+                        .filter(|c| !c.name.is_empty())
+                        .collect(),
+                }]
+            })
+            .unwrap_or_default(),
+
+        Some("control_cancel_request") => Vec::new(),
 
         // Escritura en curso. Solo interesa el texto: la apertura y el cierre
         // de bloque, el uso de tokens y los deltas de herramienta ya llegan

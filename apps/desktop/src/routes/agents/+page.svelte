@@ -64,13 +64,21 @@
     | { t: "meta"; text: string }
     | { t: "warn"; text: string };
 
-  /** Alias y no nombres completos: el alias sigue apuntando al último de la
-   *  familia, así que la lista no envejece con cada release. */
+  /**
+   * Modelos, con lo que hace falta para elegir.
+   *
+   * Se usan ALIAS (`opus`, `sonnet`) y no identificadores completos: el alias
+   * sigue apuntando al último de su familia, así que esta lista no envejece con
+   * cada versión. El nombre y el rasgo van aparte porque «opus» a secas no dice
+   * nada a quien no vive en el CLI, y elegir modelo sin saber qué cambia es
+   * elegir a ciegas.
+   */
   const MODELS = [
-    { id: "", label: "Modelo del CLI" },
-    { id: "opus", label: "Opus" },
-    { id: "sonnet", label: "Sonnet" },
-    { id: "haiku", label: "Haiku" },
+    { id: "", label: "El de tu CLI", note: "Lo que tengas configurado allá" },
+    { id: "fable", label: "Fable 5", note: "El más capaz · 1M · gasta rápido" },
+    { id: "opus", label: "Opus 5", note: "Muy capaz · 1M de contexto" },
+    { id: "sonnet", label: "Sonnet 5", note: "Equilibrado · 1M · más barato" },
+    { id: "haiku", label: "Haiku 4.5", note: "El más rápido · 200K" },
   ];
 
   /** `manual` primero a propósito: con alguien mirando, preguntar cuesta poco
@@ -393,15 +401,63 @@
     }
   }
 
-  async function send() {
-    const text = draft.trim();
+  async function send(override?: string) {
+    const text = (override ?? draft).trim();
     if (!text || !activeId) return;
-    draft = "";
+    if (!override) draft = "";
+    slashOpen = false;
     try {
       await agents.send(activeId, text);
     } catch (err) {
       error = String(err);
     }
+  }
+
+  /**
+   * Cambia el modelo sin reiniciar la sesión.
+   *
+   * Comprobado contra el CLI: `/model haiku` en modo headless responde «Set
+   * model to Haiku 4.5 for this session only». Por eso el selector sigue vivo
+   * con la sesión abierta en vez de quedar bloqueado hasta la siguiente.
+   */
+  async function switchModel(id: string) {
+    model = id;
+    menu = null;
+    if (!activeId || !id) return;
+    await send(`/model ${id}`);
+  }
+
+  /** Los comandos que encajan con lo que llevas escrito. */
+  const slashQuery = $derived.by(() => {
+    const m = /^\/(\S*)$/.exec(draft);
+    return m ? m[1].toLowerCase() : null;
+  });
+
+  const slashHits = $derived.by(() => {
+    if (slashQuery === null || !active) return [];
+    return active.commands
+      .filter((c) => c.name.toLowerCase().startsWith(slashQuery))
+      .slice(0, 8);
+  });
+
+  let slashOpen = $state(false);
+  let slashPick = $state(0);
+
+  // Se abre sola al escribir `/` y se cierra en cuanto deja de encajar. Que sea
+  // derivado y no un estado aparte evita el caso clásico: la lista abierta
+  // sobre un texto que ya no es un comando.
+  $effect(() => {
+    slashOpen = slashHits.length > 0;
+    slashPick = 0;
+  });
+
+  function takeSlash(name: string) {
+    const cmd = active?.commands.find((c) => c.name === name);
+    // Con argumento, se deja el cursor listo para escribirlo en vez de enviar:
+    // `/model` a secas no hace lo que quien lo eligió esperaba.
+    draft = cmd?.argumentHint ? `/${name} ` : `/${name}`;
+    slashOpen = false;
+    inputEl?.focus();
   }
 
   async function stop() {
@@ -423,6 +479,30 @@
   }
 
   function onKey(event: KeyboardEvent) {
+    // Con la lista de comandos abierta, las flechas y Enter son suyas: es lo
+    // que espera cualquiera que haya usado un autocompletado.
+    if (slashOpen && slashHits.length > 0) {
+      if (event.key === "ArrowDown") {
+        event.preventDefault();
+        slashPick = (slashPick + 1) % slashHits.length;
+        return;
+      }
+      if (event.key === "ArrowUp") {
+        event.preventDefault();
+        slashPick = (slashPick - 1 + slashHits.length) % slashHits.length;
+        return;
+      }
+      if (event.key === "Tab" || event.key === "Enter") {
+        event.preventDefault();
+        takeSlash(slashHits[slashPick].name);
+        return;
+      }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        slashOpen = false;
+        return;
+      }
+    }
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
       if (active) void send();
@@ -624,6 +704,31 @@
     {/if}
 
     <div class="cmp">
+      <!-- Comandos del agente, con su descripción. La lista la da él mismo por
+           el canal de control, así que las skills y los plugins que tengas
+           instalados aparecen sin que Atic sepa nada de ellos. -->
+      {#if slashOpen && slashHits.length > 0}
+        <ul class="slash" role="listbox" aria-label="Comandos">
+          {#each slashHits as c, i (c.name)}
+            <li>
+              <button
+                type="button"
+                role="option"
+                aria-selected={i === slashPick}
+                class="slash-o"
+                class:active={i === slashPick}
+                onclick={() => takeSlash(c.name)}
+              >
+                <span class="slash-n">
+                  /{c.name}{c.argumentHint ? ` ${c.argumentHint}` : ""}
+                </span>
+                <span class="slash-d">{c.description}</span>
+              </button>
+            </li>
+          {/each}
+        </ul>
+      {/if}
+
       <div class="cmp-box">
         <textarea
           class="cmp-in"
@@ -686,7 +791,16 @@
               MCP{enabledMcp.length > 0 ? ` · ${enabledMcp.length}` : ""}
             </button>
           {:else}
-            <span class="chip is-static">{active.model || active.backendName}</span>
+            <!-- El modelo sigue vivo con la sesión abierta: `/model <alias>`
+                 lo cambia sin reiniciar. -->
+            <PickerMenu
+              label={modelLabel}
+              open={menu === "model"}
+              options={MODELS.filter((m) => m.id)}
+              value={model}
+              onToggle={() => (menu = menu === "model" ? null : "model")}
+              onPick={(id) => void switchModel(id)}
+            />
             <span class="chip is-static">{modeLabel}</span>
             <button type="button" class="chip" onclick={() => void attach()}>
               Adjuntar
@@ -1202,8 +1316,60 @@
 
   /* ─── Compositor ────────────────────────────────────────────────────── */
   .cmp {
+    position: relative;
     flex-shrink: 0;
     padding: 0 0.7rem 0.7rem;
+  }
+
+  /* Encima del compositor y no debajo: abajo no hay sitio, la burbuja termina
+     ahí. Es el mismo motivo por el que los selectores abren hacia arriba. */
+  .slash {
+    position: absolute;
+    right: 0.7rem;
+    bottom: calc(100% - 0.2rem);
+    left: 0.7rem;
+    z-index: 15;
+    max-height: 13rem;
+    margin: 0;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 0.25rem;
+    background: #262120;
+    box-shadow: 0 -8px 24px rgb(0 0 0 / 45%);
+    list-style: none;
+    overflow: auto;
+  }
+
+  .slash-o {
+    display: block;
+    width: 100%;
+    border: 0;
+    border-radius: 6px;
+    padding: 0.3rem 0.5rem;
+    background: transparent;
+    font-family: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+  .slash-o.active,
+  .slash-o:hover {
+    background: #332e2b;
+  }
+
+  .slash-n {
+    display: block;
+    color: var(--coral);
+    font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+    font-size: 0.71875rem;
+  }
+
+  .slash-d {
+    display: block;
+    overflow: hidden;
+    color: var(--dim);
+    font-size: 0.6875rem;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .cmp-box {

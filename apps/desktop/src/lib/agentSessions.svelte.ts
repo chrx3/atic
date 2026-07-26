@@ -29,6 +29,7 @@ import type {
   AgentEventPayload,
   AgentStartOptions,
   McpServerState,
+  SlashCommand,
 } from "$lib/types";
 
 /** Un permiso pendiente: el agente está detenido esperando la respuesta. */
@@ -74,7 +75,10 @@ export interface AgentSessionView {
   costUsd: number;
   cwd: string;
   model: string;
+  /** Solo los nombres, de `started`. */
   slashCommands: string[];
+  /** Con descripción, del canal de control. Es la que sirve para ofrecerlos. */
+  commands: SlashCommand[];
   mcpServers: McpServerState[];
 }
 
@@ -207,6 +211,7 @@ class AgentSessionStore {
       cwd: "",
       model: "",
       slashCommands: [],
+      commands: [],
       mcpServers: [],
     };
     this.sessions = [...this.sessions, session];
@@ -262,6 +267,9 @@ class AgentSessionStore {
         break;
       case "delta":
         session.streaming += payload.text;
+        break;
+      case "commands":
+        session.commands = payload.commands;
         break;
       case "context":
         session.contextTokens = payload.tokens;

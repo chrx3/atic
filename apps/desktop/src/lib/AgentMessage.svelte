@@ -66,6 +66,12 @@
     margin: 0;
   }
 
+  /* Los saltos de línea se respetan: la salida de `/usage` y compañía viene
+     alineada por líneas, y colapsarlas la vuelve ilegible. */
+  .md-p {
+    white-space: pre-wrap;
+  }
+
   .md-h {
     color: var(--text);
     font-weight: 650;

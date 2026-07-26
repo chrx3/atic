@@ -11,6 +11,8 @@
   interface Option {
     id: string;
     label: string;
+    /** Qué cambia si eliges esto. Sin ella, elegir es adivinar. */
+    note?: string;
     disabled?: boolean;
   }
 
@@ -45,7 +47,10 @@
             disabled={o.disabled}
             onclick={() => onPick(o.id)}
           >
-            {o.label}
+            <span class="pm-opt-l">{o.label}</span>
+            {#if o.note}
+              <span class="pm-opt-n">{o.note}</span>
+            {/if}
           </button>
         </li>
       {/each}
@@ -134,8 +139,22 @@
     background: #332e2b;
     color: var(--text, #e7e2dd);
   }
-  .pm-opt.active {
+  .pm-opt.active .pm-opt-l {
     color: var(--coral, #d97757);
+  }
+
+  .pm-opt-l {
+    display: block;
+    color: var(--text, #e7e2dd);
+  }
+
+  /* El rasgo, más pequeño y apagado: se lee al dudar, no compite con el
+     nombre cuando ya sabes cuál quieres. */
+  .pm-opt-n {
+    display: block;
+    margin-top: 0.05rem;
+    color: var(--faint, #6b615a);
+    font-size: 0.625rem;
   }
   .pm-opt:disabled {
     opacity: 0.4;

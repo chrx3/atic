@@ -106,6 +106,14 @@ pub enum AgentEvent {
         suggestions: serde_json::Value,
     },
 
+    /// Los comandos de barra que este agente acepta.
+    ///
+    /// Llegan por el canal de control al abrir la sesión, con descripción y
+    /// todo. `Started` trae solo los nombres, y un nombre suelto —`/compact`,
+    /// `/effort`— no le dice nada a nadie que no use ya el CLI.
+    #[serde(rename_all = "camelCase")]
+    Commands { commands: Vec<SlashCommand> },
+
     /// Cuánto contexto lleva consumido el turno.
     ///
     /// Se emite por mensaje del asistente, no al final: sirve para una barra
@@ -133,6 +141,16 @@ pub enum AgentEvent {
     /// El backend falló de una forma de la que no se puede seguir.
     #[serde(rename_all = "camelCase")]
     Failed { message: String },
+}
+
+/// Un comando de barra que ofrece el agente (incluidas las skills).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SlashCommand {
+    pub name: String,
+    pub description: String,
+    /// Qué espera después del nombre, si espera algo.
+    pub argument_hint: String,
 }
 
 /// Un servidor MCP tal como lo reporta el agente al arrancar.
