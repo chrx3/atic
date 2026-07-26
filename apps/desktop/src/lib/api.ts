@@ -481,8 +481,16 @@ export const previewSound = (action: string, voice: string) =>
 export const agentBackends = () => invoke<AgentBackendInfo[]>("agent_backends");
 /** Sesiones vivas: para que una vista recién montada adopte lo que ya corre. */
 export const agentSessions = () => invoke<AgentSessionInfo[]>("agent_sessions");
-/** Abre la consola de agentes (ventana propia). */
+/** Abre la consola de agentes: burbuja anclada a la pill. */
 export const showAgentsWindow = () => invoke<void>("show_agents_window");
+/** Dónde quedó la punta de la burbuja. Lo decide Rust: es quien ve monitores. */
+export const onAgentsBubbleAnchor = (
+  cb: (a: { side: "top" | "bottom" | "left" | "right"; offset: number }) => void,
+): Promise<UnlistenFn> =>
+  listen<{ side: "top" | "bottom" | "left" | "right"; offset: number }>(
+    "agents-bubble-anchor",
+    (e) => cb(e.payload),
+  );
 /** Arranca una sesión y devuelve su clave local. */
 export const agentStart = (backend: string, options?: AgentStartOptions) =>
   invoke<string>("agent_start", { backend, options });

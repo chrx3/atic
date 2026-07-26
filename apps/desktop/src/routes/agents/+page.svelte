@@ -1,58 +1,64 @@
 <script lang="ts">
   /**
-   * La consola de agentes: ventana propia, no un panel de la pill.
+   * La consola de agentes: una burbuja que sale de la pill.
    *
-   * Por qué ventana: acá se lee salida larga, se revisa qué tocó una
-   * herramienta y se aprueba o se niega. Todo eso necesita espacio y quedarse
-   * abierto — lo contrario de lo que hace la pill, que aparece, resuelve una
-   * cosa y se va. La pill queda como avisador: te dice que pasó algo y te trae
-   * acá.
+   * # Por qué burbuja y no ventana suelta
    *
-   * El estado NO vive en esta página. Vive en `agents`, que escucha desde que
-   * arranca la app: cerrar la ventana es dejar de mirar, no terminar la sesión.
+   * Una ventana más sería una app aparte que además tiene una pill. La punta
+   * apuntando a la pill dice que es la misma cosa desplegada, y hace obvio de
+   * dónde salió y adónde vuelve al cerrarse. Rust decide de qué lado va la
+   * punta (es quien ve los monitores) y esta vista solo la dibuja.
+   *
+   * # De dónde sale el aspecto
+   *
+   * De dos sitios, a propósito:
+   *
+   *  - **La consola de Claude Code** para el registro: monoespaciada, fondo
+   *    casi negro cálido, un acento coral, cajas con el título incrustado en el
+   *    borde y avisos con barra vertical. Quien ya usa el CLI reconoce lo que
+   *    está mirando; inventar un lenguaje propio acá solo habría hecho que
+   *    hubiera que aprender dos.
+   *  - **El compositor de las GUI de agentes (T3 Code y parecidas)** para lo de
+   *    abajo: caja redondeada, controles en pastillas con su valor a la vista
+   *    —modelo, permisos, carpeta—, anillo de contexto y botón circular de
+   *    enviar. Un `<select>` de formulario ahí abajo rompía el tono y encima
+   *    escondía el valor actual, que es lo que uno mira antes de mandar.
+   *
+   * El estado no vive acá: vive en `agents`, que escucha desde que arranca la
+   * app. Cerrar la burbuja es dejar de mirar, no terminar la sesión.
    */
   import { onMount, tick } from "svelte";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { open as openDialog } from "@tauri-apps/plugin-dialog";
   import { agents } from "$lib/agentSessions.svelte";
-  import { agentBackends, getConfig } from "$lib/api";
+  import { agentBackends, getConfig, onAgentsBubbleAnchor } from "$lib/api";
   import { applyTheme, readCachedTheme } from "$lib/theme";
-  import AticMark from "$lib/AticMark.svelte";
-  import ToolIcon from "$lib/ToolIcon.svelte";
   import McpServersModal from "$lib/McpServersModal.svelte";
+  import PickerMenu from "$lib/PickerMenu.svelte";
   import type { AgentBackendInfo, McpServerConfig } from "$lib/types";
 
-  /**
-   * Modelos ofrecidos.
-   *
-   * Alias y no nombres completos: el alias siempre apunta al último de esa
-   * familia, así que la lista no envejece con cada release. «Por defecto» deja
-   * decidir al CLI, que es lo correcto cuando ya lo configuraste allá.
-   */
+  /** Alias y no nombres completos: el alias sigue apuntando al último de la
+   *  familia, así que la lista no envejece con cada release. */
   const MODELS = [
-    { id: "", label: "El de tu CLI" },
+    { id: "", label: "Modelo del CLI" },
     { id: "opus", label: "Opus" },
     { id: "sonnet", label: "Sonnet" },
     { id: "haiku", label: "Haiku" },
   ];
 
-  /**
-   * Cuánto se pregunta antes de actuar.
-   *
-   * `manual` es el default a propósito: una interfaz gráfica con alguien
-   * mirando es justo el caso donde preguntar cuesta poco y equivocarse cuesta
-   * caro. Los modos permisivos existen porque para tareas largas parar en cada
-   * archivo no es viable, pero elegirlos es una decisión consciente.
-   */
+  /** `manual` primero a propósito: con alguien mirando, preguntar cuesta poco
+   *  y equivocarse cuesta caro. Los permisivos existen para tareas largas. */
   const MODES = [
     { id: "manual", label: "Preguntar siempre" },
     { id: "acceptEdits", label: "Aceptar ediciones" },
     { id: "plan", label: "Solo planificar" },
-    { id: "bypassPermissions", label: "No preguntar nada" },
+    { id: "bypassPermissions", label: "Acceso total" },
   ];
 
-  /** Ventana de contexto de referencia para la barra. */
   const CONTEXT_WINDOW = 1_000_000;
+
+  let anchor = $state<{ side: string; offset: number } | null>(null);
+  let shown = $state(false);
 
   let backends = $state<AgentBackendInfo[]>([]);
   let picked = $state("");
@@ -66,6 +72,7 @@
   let inputEl = $state<HTMLTextAreaElement | null>(null);
   let mcpOpen = $state(false);
   let mcpServers = $state<McpServerConfig[]>([]);
+  let menu = $state<"model" | "mode" | "agent" | null>(null);
 
   let activeId = $state<string | null>(null);
   const active = $derived(agents.byId(activeId));
@@ -73,10 +80,25 @@
     backends.find((b) => b.id === picked)?.available ?? false,
   );
   const enabledMcp = $derived(mcpServers.filter((s) => s.enabled));
+  const modelLabel = $derived(
+    MODELS.find((m) => m.id === model)?.label ?? "Modelo",
+  );
+  const modeLabel = $derived(MODES.find((m) => m.id === mode)?.label ?? "Permisos");
+  const ctxPct = $derived(
+    Math.min(100, ((active?.contextTokens ?? 0) / CONTEXT_WINDOW) * 100),
+  );
 
   onMount(() => {
     applyTheme(readCachedTheme());
     void agents.init();
+
+    // La burbuja no se pinta hasta saber dónde va la punta: al abrirse ya tiene
+    // que estar bien, no acomodarse a la vista.
+    const un = onAgentsBubbleAnchor((a) => {
+      anchor = a;
+      shown = false;
+      void tick().then(() => requestAnimationFrame(() => (shown = true)));
+    });
 
     void (async () => {
       try {
@@ -86,14 +108,25 @@
         error = String(err);
       }
       try {
-        const cfg = await getConfig();
-        mcpServers = parseMcp(cfg.agent_mcp_servers);
+        mcpServers = parseMcp((await getConfig()).agent_mcp_servers);
       } catch {
-        // Sin config, se arranca sin servidores extra.
+        // Sin config se arranca sin servidores extra.
       }
     })();
 
-    return () => agents.watch(null);
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !mcpOpen && !menu) {
+        event.preventDefault();
+        void close();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      void un.then((fn) => fn());
+      agents.watch(null);
+    };
   });
 
   function parseMcp(raw: string | undefined): McpServerConfig[] {
@@ -115,8 +148,6 @@
     agents.watch(activeId);
   });
 
-  // Seguir el final de la conversación. Sin esto la respuesta larga aparece
-  // arriba y hay que bajar a mano justo cuando el agente sigue escribiendo.
   $effect(() => {
     const n = active?.log.length ?? 0;
     if (!logEl || n === 0) return;
@@ -125,12 +156,18 @@
     });
   });
 
-  /**
-   * Los servidores habilitados, en el formato que espera el CLI.
-   *
-   * Cada uno guarda su JSON como string para poder pegarlo tal cual desde la
-   * documentación del servidor; acá se arma el objeto que va en `--mcp-config`.
-   */
+  /** Cierra con la animación puesta: ocultar en seco delataría que es una
+   *  ventana y no una burbuja que se repliega sobre la pill. */
+  async function close() {
+    shown = false;
+    await new Promise((r) => setTimeout(r, 140));
+    try {
+      await getCurrentWindow().hide();
+    } catch {
+      // Sin ventana nativa (preview web) no hay nada que ocultar.
+    }
+  }
+
   function mcpConfig(): string | undefined {
     if (enabledMcp.length === 0) return undefined;
     const servers: Record<string, unknown> = {};
@@ -139,7 +176,7 @@
         servers[server.name] = JSON.parse(server.json);
       } catch {
         // Un servidor con JSON roto se salta: mejor arrancar sin él que no
-        // arrancar. El aviso ya está en la pantalla donde se edita.
+        // arrancar. El aviso ya está donde se edita.
       }
     }
     return JSON.stringify({ mcpServers: servers });
@@ -159,9 +196,8 @@
       const chosen = await openDialog({ multiple: true });
       const paths = Array.isArray(chosen) ? chosen : chosen ? [chosen] : [];
       if (paths.length === 0) return;
-      // Se adjunta la RUTA, no el contenido: el agente ya sabe leer archivos y
-      // tiene permiso sobre su directorio. Volcar el archivo entero en el
-      // mensaje gastaría contexto en algo que él puede abrir cuando le sirva.
+      // Se manda la RUTA, no el contenido: el agente sabe leer archivos, y
+      // volcarlos acá gastaría contexto en algo que él abre cuando le sirva.
       draft = [draft.trim(), ...paths].filter(Boolean).join("\n");
       inputEl?.focus();
     } catch (err) {
@@ -219,7 +255,8 @@
   function onKey(event: KeyboardEvent) {
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
-      void send();
+      if (active) void send();
+      else void start();
     }
   }
 
@@ -229,7 +266,8 @@
     return String(n);
   }
 
-  /** El argumento más informativo de una herramienta, para el encabezado. */
+  /** El argumento más informativo de una herramienta. Es lo que se escanea
+   *  cuando el agente hizo veinte cosas y buscas una. */
   function toolSummary(input: unknown): string {
     if (!input || typeof input !== "object") return "";
     const o = input as Record<string, unknown>;
@@ -239,275 +277,258 @@
     }
     return JSON.stringify(o);
   }
-
-  const win = () => {
-    try {
-      return getCurrentWindow();
-    } catch {
-      return null;
-    }
-  };
 </script>
 
-<div class="cons">
-  <header class="cons-bar" data-tauri-drag-region>
-    <span class="cons-mark"><AticMark size={15} strokeWidth={1.5} /></span>
-    <span class="cons-title" data-tauri-drag-region>Agentes</span>
+<div
+  class="bub"
+  class:is-shown={shown}
+  data-side={anchor?.side ?? "top"}
+  style="--tail: {anchor?.offset ?? 40}px"
+>
+  <span class="bub-tail" aria-hidden="true"></span>
 
-    {#if agents.sessions.length > 0}
-      <div class="cons-tabs" role="tablist" aria-label="Sesiones">
-        {#each agents.sessions as s (s.id)}
-          <button
-            type="button"
-            role="tab"
-            class="cons-tab"
-            class:active={s.id === activeId}
-            class:is-waiting={s.pending.length > 0}
-            aria-selected={s.id === activeId}
-            onclick={() => (activeId = s.id)}
-          >
-            {s.backendName}
-            {#if s.pending.length > 0}
-              <span class="cons-dot" title="Espera tu permiso"></span>
-            {:else if s.status === "working"}
-              <span class="cons-dot is-busy" title="Trabajando"></span>
-            {:else if s.unread > 0}
-              <span class="cons-dot is-new" title="{s.unread} sin leer"></span>
-            {/if}
-          </button>
-        {/each}
-      </div>
-    {/if}
+  <div class="bub-body">
+    <!-- Cabecera al estilo de la consola: el título vive incrustado en el
+         borde de la caja, no en una barra aparte. -->
+    <header class="hdr" data-tauri-drag-region>
+      <span class="hdr-name" data-tauri-drag-region>Agentes</span>
 
-    <div class="cons-win">
+      {#if agents.sessions.length > 0}
+        <div class="tabs" role="tablist" aria-label="Sesiones">
+          {#each agents.sessions as s (s.id)}
+            <button
+              type="button"
+              role="tab"
+              class="tab"
+              class:active={s.id === activeId}
+              aria-selected={s.id === activeId}
+              onclick={() => (activeId = s.id)}
+            >
+              {#if s.pending.length > 0}
+                <span class="dot is-wait"></span>
+              {:else if s.status === "working"}
+                <span class="dot is-busy"></span>
+              {:else if s.unread > 0}
+                <span class="dot is-new"></span>
+              {:else}
+                <span class="dot"></span>
+              {/if}
+              {s.backendName}
+            </button>
+          {/each}
+        </div>
+      {/if}
+
       <button
         type="button"
-        class="rb-icon-btn"
-        onclick={() => void win()?.minimize()}
-        aria-label="Minimizar">–</button
-      >
-      <button
-        type="button"
-        class="rb-icon-btn"
-        onclick={() => void win()?.hide()}
+        class="hdr-x"
+        onclick={() => void close()}
         aria-label="Cerrar">×</button
       >
-    </div>
-  </header>
+    </header>
 
-  {#if !active}
-    <!-- Sin sesión: la pantalla es la configuración de arranque. Estas
-         opciones solo se pueden fijar al empezar, así que no tiene sentido
-         esconderlas detrás de un botón. -->
-    <div class="cons-setup">
-      <h2 class="cons-h">Nueva sesión</h2>
-      <p class="cons-sub">
-        Atic no reemplaza a tu agente: lanza el que ya tienes instalado, con tu
-        sesión, tus herramientas y tus skills. Solo le pone una interfaz.
-      </p>
-
-      <label class="rb-label">
-        Agente
-        <select class="rb-field" bind:value={picked}>
-          {#each backends as b (b.id)}
-            <option value={b.id} disabled={!b.available}>
-              {b.displayName}{b.available ? "" : " — no instalado"}
-            </option>
-          {/each}
-        </select>
-      </label>
-
-      <div class="cons-grid">
-        <label class="rb-label">
-          Modelo
-          <select class="rb-field" bind:value={model}>
-            {#each MODELS as m (m.id)}
-              <option value={m.id}>{m.label}</option>
-            {/each}
-          </select>
-        </label>
-
-        <label class="rb-label">
-          Permisos
-          <select class="rb-field" bind:value={mode}>
-            {#each MODES as m (m.id)}
-              <option value={m.id}>{m.label}</option>
-            {/each}
-          </select>
-        </label>
-      </div>
-
-      <label class="rb-label">
-        Carpeta de trabajo
-        <span class="cons-row">
-          <input
-            class="rb-field"
-            bind:value={cwd}
-            placeholder="La del proyecto que quieras que toque"
-          />
-          <button type="button" class="rb-btn rb-btn-ghost" onclick={() => void pickFolder()}>
-            Elegir
-          </button>
-        </span>
-      </label>
-
-      <div class="cons-row cons-mcp">
-        <span class="rb-hint">
-          {enabledMcp.length === 0
-            ? "Sin servidores MCP extra."
-            : `${enabledMcp.length} servidor(es) MCP se sumarán a esta sesión.`}
-        </span>
-        <button type="button" class="rb-btn rb-btn-ghost" onclick={() => (mcpOpen = true)}>
-          Servidores MCP
-        </button>
-      </div>
-
-      {#if error}
-        <p class="cons-error" role="alert">{error}</p>
-      {/if}
-
-      <button
-        type="button"
-        class="rb-btn rb-btn-primary cons-go"
-        onclick={() => void start()}
-        disabled={starting || !ready}
-      >
-        {starting ? "Iniciando…" : "Iniciar sesión"}
-      </button>
-
-      {#if backends.length > 0 && !ready}
-        <p class="rb-hint">
-          No se encontró el ejecutable. Instálalo y ábrelo una vez en la consola
-          para iniciar sesión; Atic usa esa misma cuenta.
-        </p>
-      {/if}
-    </div>
-  {:else}
-    <div class="cons-log" bind:this={logEl} role="log">
-      {#each active.log as entry, i (i)}
-        {#if entry.kind === "message"}
-          <p class="cons-msg">{entry.text}</p>
-        {:else if entry.kind === "toolCall"}
-          <div class="cons-tool">
-            <span class="cons-tool-name">{entry.name}</span>
-            <span class="cons-tool-arg">{toolSummary(entry.input)}</span>
-          </div>
-        {:else if entry.kind === "toolResult"}
-          <pre class="cons-out" class:is-error={entry.isError}>{entry.output}</pre>
-        {:else if entry.kind === "started"}
-          <p class="cons-meta">
-            {entry.model} · {entry.cwd} · {entry.tools.length} herramientas{entry
-              .mcpServers.length > 0
-              ? ` · MCP: ${entry.mcpServers.map((s) => s.name).join(", ")}`
-              : ""}
+    <div class="log" bind:this={logEl} role="log">
+      {#if !active}
+        <!-- Caja de bienvenida con el título en el borde, como el CLI. -->
+        <section class="card">
+          <h2 class="card-title">Atic · agentes</h2>
+          <p class="card-line">
+            Lanza el agente que ya tienes instalado, con tu sesión, tus
+            herramientas y tus skills. Atic solo le pone cara.
           </p>
-        {:else if entry.kind === "finished"}
-          <p class="cons-meta">
-            fin del turno{entry.costUsd !== null
-              ? ` · $${entry.costUsd.toFixed(4)}`
-              : ""}
+          <p class="card-line dim">
+            Elige abajo el agente, el modelo y cuánto quieres que pregunte.
+            Escribe y pulsa Enter para empezar.
           </p>
-        {:else if entry.kind === "notice"}
-          <p class="cons-meta">{entry.text}</p>
-        {:else if entry.kind === "failed"}
-          <p class="cons-error">{entry.message}</p>
+        </section>
+
+        {#if backends.length > 0 && !ready}
+          <p class="warn">
+            No se encontró el ejecutable. Instálalo y ábrelo una vez en la
+            consola para iniciar sesión; Atic usa esa misma cuenta.
+          </p>
         {/if}
-      {/each}
+      {:else}
+        {#each active.log as entry, i (i)}
+          {#if entry.kind === "message"}
+            <p class="msg">{entry.text}</p>
+          {:else if entry.kind === "toolCall"}
+            <p class="tool">
+              <span class="tool-mark">⏺</span>
+              <span class="tool-name">{entry.name}</span>
+              <span class="tool-arg">{toolSummary(entry.input)}</span>
+            </p>
+          {:else if entry.kind === "toolResult"}
+            <pre class="out" class:is-error={entry.isError}>{entry.output}</pre>
+          {:else if entry.kind === "started"}
+            <section class="card">
+              <h2 class="card-title">{entry.model || "sesión"}</h2>
+              <p class="card-line dim">{entry.cwd}</p>
+              <p class="card-line dim">
+                {entry.tools.length} herramientas · {entry.slashCommands.length}
+                comandos{entry.mcpServers.length > 0
+                  ? ` · MCP: ${entry.mcpServers.map((s) => s.name).join(", ")}`
+                  : ""}
+              </p>
+            </section>
+          {:else if entry.kind === "finished"}
+            <p class="meta">
+              ─ fin del turno{entry.costUsd !== null
+                ? ` · $${entry.costUsd.toFixed(4)}`
+                : ""}
+            </p>
+          {:else if entry.kind === "notice"}
+            <p class="notice">{entry.text}</p>
+          {:else if entry.kind === "failed"}
+            <p class="warn">{entry.message}</p>
+          {/if}
+        {/each}
 
-      {#if active.status === "working"}
-        <p class="cons-meta cons-live">trabajando…</p>
+        {#if active.status === "working"}
+          <p class="meta live">⏺ trabajando…</p>
+        {/if}
       {/if}
     </div>
 
-    <!-- El permiso va abajo, pegado al compositor: es donde están los ojos
-         cuando el agente está trabajando, y es una decisión, no una línea más
-         del registro. -->
-    {#each active.pending as p (p.id)}
-      <div class="cons-perm" role="alertdialog" aria-label="Permiso pendiente">
-        <div class="cons-perm-copy">
-          <p class="cons-perm-title">
-            Quiere usar <strong>{p.tool}</strong>
-          </p>
-          <p class="cons-perm-what">{p.description || toolSummary(p.input)}</p>
+    <!-- El permiso va pegado al compositor: ahí están los ojos mientras el
+         agente trabaja, y es una decisión, no una línea más del registro. -->
+    {#each active?.pending ?? [] as p (p.id)}
+      <div class="perm" role="alertdialog" aria-label="Permiso pendiente">
+        <div class="perm-copy">
+          <p class="perm-t">Quiere usar <strong>{p.tool}</strong></p>
+          <p class="perm-w">{p.description || toolSummary(p.input)}</p>
         </div>
-        <div class="cons-perm-acts">
+        <div class="perm-acts">
+          <button type="button" class="btn" onclick={() => void decide(p.id, false)}>
+            Denegar
+          </button>
           <button
             type="button"
-            class="rb-btn rb-btn-ghost"
-            onclick={() => void decide(p.id, false)}>Denegar</button
+            class="btn is-go"
+            onclick={() => void decide(p.id, true)}
           >
-          <button
-            type="button"
-            class="rb-btn rb-btn-primary"
-            onclick={() => void decide(p.id, true)}>Permitir</button
-          >
+            Permitir
+          </button>
         </div>
       </div>
     {/each}
 
-    {#if error || active.error}
-      <p class="cons-error cons-error-bar" role="alert">{error ?? active.error}</p>
+    {#if error || active?.error}
+      <p class="warn warn-bar" role="alert">{error ?? active?.error}</p>
     {/if}
 
-    <div class="cons-compose">
-      <textarea
-        class="cons-input"
-        bind:this={inputEl}
-        bind:value={draft}
-        onkeydown={onKey}
-        rows="3"
-        placeholder="Escribe y Enter para enviar · Shift+Enter para salto de línea"
-        aria-label="Mensaje para el agente"
-      ></textarea>
+    <div class="cmp">
+      <div class="cmp-box">
+        <textarea
+          class="cmp-in"
+          bind:this={inputEl}
+          bind:value={draft}
+          onkeydown={onKey}
+          rows="2"
+          placeholder={active
+            ? "Escribe · Enter envía, Shift+Enter salta línea"
+            : "Describe lo que quieres y Enter para empezar…"}
+          aria-label="Mensaje para el agente"
+        ></textarea>
 
-      <div class="cons-actions">
-        <button
-          type="button"
-          class="cons-act"
-          onclick={() => void attach()}
-          title="Adjuntar archivos (se envía la ruta)"
-          aria-label="Adjuntar archivos"
-        >
-          <ToolIcon id="captures" size={15} strokeWidth={1.5} />
-        </button>
+        <div class="cmp-row">
+          {#if !active}
+            <!-- Estas tres solo se pueden fijar al arrancar, así que están a la
+                 vista con su valor puesto y no escondidas en un ajuste. -->
+            <PickerMenu
+              label={backends.find((b) => b.id === picked)?.displayName ??
+                "Agente"}
+              open={menu === "agent"}
+              options={backends.map((b) => ({
+                id: b.id,
+                label: b.displayName,
+                disabled: !b.available,
+              }))}
+              value={picked}
+              onToggle={() => (menu = menu === "agent" ? null : "agent")}
+              onPick={(id) => {
+                picked = id;
+                menu = null;
+              }}
+            />
+            <PickerMenu
+              label={modelLabel}
+              open={menu === "model"}
+              options={MODELS}
+              value={model}
+              onToggle={() => (menu = menu === "model" ? null : "model")}
+              onPick={(id) => {
+                model = id;
+                menu = null;
+              }}
+            />
+            <PickerMenu
+              label={modeLabel}
+              open={menu === "mode"}
+              options={MODES}
+              value={mode}
+              onToggle={() => (menu = menu === "mode" ? null : "mode")}
+              onPick={(id) => {
+                mode = id;
+                menu = null;
+              }}
+            />
+            <button type="button" class="chip" onclick={() => void pickFolder()}>
+              {cwd ? cwd.split(/[\\/]/).pop() : "Carpeta"}
+            </button>
+            <button type="button" class="chip" onclick={() => (mcpOpen = true)}>
+              MCP{enabledMcp.length > 0 ? ` · ${enabledMcp.length}` : ""}
+            </button>
+          {:else}
+            <span class="chip is-static">{active.model || active.backendName}</span>
+            <span class="chip is-static">{modeLabel}</span>
+            <button type="button" class="chip" onclick={() => void attach()}>
+              Adjuntar
+            </button>
+            <button type="button" class="chip" onclick={() => void stop()}>
+              Terminar
+            </button>
+          {/if}
 
-        <!-- El contexto es el recurso que se agota sin avisar: por eso está
-             siempre visible y no detrás de un comando. -->
-        <span class="cons-ctx" title="Contexto usado">
-          <span class="cons-ctx-track">
+          <span class="cmp-gap"></span>
+
+          {#if active}
+            <!-- El contexto es el recurso que se agota sin avisar: anillo
+                 siempre visible, no un comando que haya que recordar. -->
             <span
-              class="cons-ctx-fill"
-              style="width: {Math.min(
-                100,
-                (active.contextTokens / CONTEXT_WINDOW) * 100,
-              )}%"
-            ></span>
-          </span>
-          {shortNumber(active.contextTokens)}
-        </span>
+              class="ring"
+              title="Contexto: {shortNumber(active.contextTokens)} tokens"
+              style="--pct: {ctxPct}"
+            >
+              <span class="ring-n">{shortNumber(active.contextTokens)}</span>
+            </span>
+            {#if active.costUsd > 0}
+              <span class="cost">${active.costUsd.toFixed(3)}</span>
+            {/if}
+          {/if}
 
-        {#if active.costUsd > 0}
-          <span class="cons-cost" title="Costo de la sesión">
-            ${active.costUsd.toFixed(3)}
-          </span>
-        {/if}
-
-        <span class="cons-spacer"></span>
-
-        <button type="button" class="rb-btn rb-btn-ghost" onclick={() => void stop()}>
-          Terminar
-        </button>
-        <button
-          type="button"
-          class="rb-btn rb-btn-primary"
-          onclick={() => void send()}
-          disabled={!draft.trim()}
-        >
-          Enviar
-        </button>
+          <button
+            type="button"
+            class="go"
+            onclick={() => (active ? void send() : void start())}
+            disabled={starting || (!active && !ready) || (!!active && !draft.trim())}
+            aria-label={active ? "Enviar" : "Iniciar sesión"}
+          >
+            <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">
+              <path
+                d="M12 19V5M5 12l7-7 7 7"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </svg>
+          </button>
+        </div>
       </div>
     </div>
-  {/if}
+  </div>
 </div>
 
 {#if mcpOpen}
@@ -526,346 +547,507 @@
   :global(body) {
     margin: 0;
     height: 100%;
-    background: var(--rb-bg0);
+    background: transparent;
+    overflow: hidden;
   }
 
-  .cons {
+  /* ─── La burbuja ────────────────────────────────────────────────────────
+   *
+   * El hueco para la punta se reserva con padding en el lado que apunta, así
+   * el cuerpo nunca la tapa y la sombra la envuelve entera.
+   */
+  .bub {
+    --coral: #d97757;
+    --ink: #17151400;
+    --shell: #1c1917;
+    --line: #332e2b;
+    --text: #e7e2dd;
+    --dim: #8d827a;
+    --faint: #6b615a;
+
+    position: relative;
     display: flex;
     width: 100vw;
     height: 100vh;
     box-sizing: border-box;
+    padding: 14px;
+
+    opacity: 0;
+    transform: scale(0.94);
+    transition:
+      opacity 140ms ease,
+      transform 180ms cubic-bezier(0.34, 1.3, 0.64, 1);
+  }
+  .bub.is-shown {
+    opacity: 1;
+    transform: scale(1);
+  }
+
+  /* Crece DESDE la punta: es lo que hace que se lea como desplegarse de la
+     pill y no como una ventana que apareció encima. */
+  .bub[data-side="top"] {
+    transform-origin: var(--tail) 0;
+    padding-top: 14px;
+    padding-bottom: 0;
+  }
+  .bub[data-side="bottom"] {
+    transform-origin: var(--tail) 100%;
+    padding-top: 0;
+    padding-bottom: 14px;
+  }
+  .bub[data-side="left"] {
+    transform-origin: 0 var(--tail);
+    padding-left: 14px;
+    padding-right: 0;
+  }
+  .bub[data-side="right"] {
+    transform-origin: 100% var(--tail);
+    padding-left: 0;
+    padding-right: 14px;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .bub {
+      transition: opacity 100ms linear;
+      transform: none;
+    }
+    .bub.is-shown {
+      transform: none;
+    }
+  }
+
+  .bub-body {
+    display: flex;
+    min-width: 0;
+    flex: 1;
     flex-direction: column;
-    background: var(--rb-bg0);
-    color: var(--rb-text);
+    border: 1px solid var(--line);
+    border-radius: 18px;
+    background: var(--shell);
+    box-shadow: 0 18px 48px rgb(0 0 0 / 45%);
+    color: var(--text);
     overflow: hidden;
   }
 
-  .cons-bar {
+  /* La punta: un cuadrado girado 45°, con el mismo borde y fondo que el
+     cuerpo. Un triángulo con `border` no puede llevar borde propio, y sin él
+     se ve como un pegote suelto al lado de la burbuja. */
+  .bub-tail {
+    position: absolute;
+    width: 16px;
+    height: 16px;
+    border: 1px solid var(--line);
+    background: var(--shell);
+    transform: rotate(45deg);
+  }
+  .bub[data-side="top"] .bub-tail {
+    top: 7px;
+    left: calc(var(--tail) - 8px);
+    border-right: 0;
+    border-bottom: 0;
+    border-top-left-radius: 4px;
+  }
+  .bub[data-side="bottom"] .bub-tail {
+    bottom: 7px;
+    left: calc(var(--tail) - 8px);
+    border-left: 0;
+    border-top: 0;
+    border-bottom-right-radius: 4px;
+  }
+  .bub[data-side="left"] .bub-tail {
+    top: calc(var(--tail) - 8px);
+    left: 7px;
+    border-top: 0;
+    border-right: 0;
+    border-bottom-left-radius: 4px;
+  }
+  .bub[data-side="right"] .bub-tail {
+    top: calc(var(--tail) - 8px);
+    right: 7px;
+    border-bottom: 0;
+    border-left: 0;
+    border-top-right-radius: 4px;
+  }
+
+  /* ─── Cabecera ──────────────────────────────────────────────────────── */
+  .hdr {
     display: flex;
-    height: 2.4rem;
+    height: 2.1rem;
     flex-shrink: 0;
     align-items: center;
     gap: 0.5rem;
-    border-bottom: 1px solid var(--rb-border);
-    padding: 0 0.4rem 0 0.7rem;
-    background: var(--rb-surface);
+    padding: 0 0.5rem 0 0.9rem;
   }
 
-  .cons-mark {
-    display: flex;
-    color: var(--rb-muted);
-  }
-
-  .cons-title {
-    color: var(--rb-muted);
+  .hdr-name {
+    color: var(--coral);
+    font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
     font-size: 0.75rem;
-    font-weight: 600;
-    letter-spacing: 0.04em;
   }
 
-  .cons-tabs {
+  .tabs {
     display: flex;
     min-width: 0;
-    gap: 0.25rem;
+    gap: 0.2rem;
     overflow-x: auto;
+    scrollbar-width: none;
   }
 
-  .cons-tab {
+  .tab {
     display: inline-flex;
     align-items: center;
     gap: 0.35rem;
     border: 0;
-    border-radius: 0.4rem;
-    padding: 0.2rem 0.5rem;
+    border-radius: 999px;
+    padding: 0.15rem 0.55rem;
     background: transparent;
-    color: var(--rb-muted);
-    font-size: 0.75rem;
+    color: var(--dim);
+    font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+    font-size: 0.6875rem;
     white-space: nowrap;
     cursor: pointer;
   }
-  .cons-tab.active {
-    background: var(--rb-bg0);
-    color: var(--rb-text);
-  }
-  .cons-tab.is-waiting {
-    color: var(--rb-record);
+  .tab.active {
+    background: #2a2522;
+    color: var(--text);
   }
 
-  .cons-dot {
-    width: 0.4rem;
-    height: 0.4rem;
+  .dot {
+    width: 0.35rem;
+    height: 0.35rem;
     border-radius: 999px;
-    background: var(--rb-record);
+    background: var(--faint);
   }
-  .cons-dot.is-busy {
-    background: var(--rb-muted);
-    animation: cons-pulse 1.6s ease-in-out infinite;
+  .dot.is-wait {
+    background: var(--coral);
   }
-  .cons-dot.is-new {
-    background: var(--rb-accent);
+  .dot.is-busy {
+    background: var(--dim);
+    animation: pulse 1.6s ease-in-out infinite;
+  }
+  .dot.is-new {
+    background: #7dd3a0;
   }
 
-  @keyframes cons-pulse {
+  @keyframes pulse {
     0%,
     100% {
-      opacity: 0.4;
+      opacity: 0.35;
     }
     50% {
       opacity: 1;
     }
   }
 
-  .cons-win {
-    display: flex;
+  .hdr-x {
     margin-left: auto;
-    gap: 0.15rem;
-  }
-
-  /* ─── Arranque ──────────────────────────────────────────────────────── */
-  .cons-setup {
-    display: flex;
-    max-width: 34rem;
-    flex-direction: column;
-    gap: 0.85rem;
-    margin: 0 auto;
-    padding: 2rem 1.5rem;
-    overflow: auto;
-  }
-
-  .cons-h {
-    margin: 0;
+    border: 0;
+    border-radius: 0.35rem;
+    padding: 0.1rem 0.45rem;
+    background: transparent;
+    color: var(--faint);
     font-size: 1rem;
-    font-weight: 650;
+    line-height: 1;
+    cursor: pointer;
+  }
+  .hdr-x:hover {
+    color: var(--text);
   }
 
-  .cons-sub {
-    margin: 0;
-    color: var(--rb-muted);
-    font-size: 0.8125rem;
-    line-height: 1.5;
-  }
-
-  .cons-grid {
-    display: grid;
-    gap: 0.85rem;
-    grid-template-columns: 1fr 1fr;
-  }
-
-  .cons-row {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-  }
-  .cons-row .rb-field {
-    min-width: 0;
-    flex: 1;
-  }
-
-  .cons-mcp {
-    justify-content: space-between;
-    border-top: 1px solid var(--rb-border);
-    padding-top: 0.85rem;
-  }
-
-  .cons-go {
-    margin-top: 0.4rem;
-  }
-
-  /* ─── Conversación ──────────────────────────────────────────────────── */
-  .cons-log {
+  /* ─── Registro ──────────────────────────────────────────────────────── */
+  .log {
     display: flex;
     min-height: 0;
     flex: 1;
     flex-direction: column;
     gap: 0.6rem;
-    padding: 1rem 1.1rem;
+    padding: 0.35rem 0.95rem 0.9rem;
     overflow: auto;
   }
 
-  .cons-msg {
+  /* Caja con el título incrustado en el borde: el gesto que define la consola
+     de Claude Code y lo que hace que un bloque se lea como una unidad. */
+  .card {
+    position: relative;
+    margin-top: 0.5rem;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 0.75rem 0.85rem 0.7rem;
+  }
+
+  .card-title {
+    position: absolute;
+    top: -0.55rem;
+    left: 0.7rem;
     margin: 0;
-    font-size: 0.875rem;
+    padding: 0 0.35rem;
+    background: var(--shell);
+    color: var(--coral);
+    font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+    font-size: 0.6875rem;
+    font-weight: 400;
+  }
+
+  .card-line {
+    margin: 0 0 0.35rem;
+    font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+    font-size: 0.75rem;
     line-height: 1.55;
+  }
+  .card-line:last-child {
+    margin-bottom: 0;
+  }
+  .card-line.dim {
+    color: var(--dim);
+  }
+
+  .msg {
+    margin: 0;
+    font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+    font-size: 0.78125rem;
+    line-height: 1.6;
     white-space: pre-wrap;
   }
 
-  .cons-meta {
-    margin: 0;
-    color: var(--rb-faint);
-    font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
-    font-size: 0.6875rem;
-  }
-
-  .cons-live {
-    animation: cons-pulse 1.6s ease-in-out infinite;
-  }
-
-  /* La herramienta se lee como una línea de consola: nombre y argumento. Es
-     lo que se escanea cuando el agente hizo veinte cosas y buscas una. */
-  .cons-tool {
+  .tool {
     display: flex;
-    gap: 0.5rem;
+    gap: 0.45rem;
+    margin: 0;
     font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
     font-size: 0.75rem;
   }
-
-  .cons-tool-name {
-    flex-shrink: 0;
-    color: var(--rb-accent);
-    font-weight: 650;
+  .tool-mark {
+    color: var(--coral);
   }
-
-  .cons-tool-arg {
+  .tool-name {
+    flex-shrink: 0;
+    color: var(--text);
+  }
+  .tool-arg {
     min-width: 0;
     overflow: hidden;
-    color: var(--rb-muted);
+    color: var(--dim);
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  .cons-out {
-    max-height: 14rem;
-    margin: 0;
-    border-left: 2px solid var(--rb-border);
+  /* Salida de herramienta con barra a la izquierda, como los avisos del CLI:
+     se distingue del texto del agente sin gritar. */
+  .out {
+    max-height: 12rem;
+    margin: 0 0 0 0.35rem;
+    border-left: 2px solid var(--line);
     padding: 0 0 0 0.7rem;
-    color: var(--rb-muted);
+    color: var(--dim);
     font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
-    font-size: 0.75rem;
+    font-size: 0.71875rem;
     line-height: 1.5;
     white-space: pre-wrap;
     overflow: auto;
   }
-  .cons-out.is-error {
-    border-left-color: var(--rb-record);
+  .out.is-error {
+    border-left-color: var(--coral);
   }
 
-  .cons-error {
+  .meta,
+  .notice {
     margin: 0;
-    color: var(--rb-record);
-    font-size: 0.8125rem;
+    color: var(--faint);
+    font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+    font-size: 0.6875rem;
   }
-  .cons-error-bar {
+  .notice {
+    border-left: 2px solid var(--line);
+    padding-left: 0.7rem;
+  }
+  .live {
+    animation: pulse 1.6s ease-in-out infinite;
+  }
+
+  .warn {
+    margin: 0;
+    color: var(--coral);
+    font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+    font-size: 0.71875rem;
+    line-height: 1.5;
+  }
+  .warn-bar {
     flex-shrink: 0;
-    padding: 0 1.1rem 0.5rem;
+    padding: 0 0.95rem 0.5rem;
   }
 
   /* ─── Permiso ───────────────────────────────────────────────────────── */
-  .cons-perm {
+  .perm {
     display: flex;
     flex-shrink: 0;
     align-items: center;
-    gap: 1rem;
-    border-top: 1px solid var(--rb-record);
-    padding: 0.7rem 1.1rem;
-    background: color-mix(in srgb, var(--rb-record) 10%, transparent);
+    gap: 0.85rem;
+    border-top: 1px solid color-mix(in srgb, var(--coral) 45%, transparent);
+    padding: 0.6rem 0.95rem;
+    background: color-mix(in srgb, var(--coral) 12%, transparent);
   }
-
-  .cons-perm-copy {
+  .perm-copy {
     min-width: 0;
     flex: 1;
   }
-
-  .cons-perm-title {
+  .perm-t {
     margin: 0;
-    font-size: 0.8125rem;
-  }
-
-  .cons-perm-what {
-    margin: 0.15rem 0 0;
-    color: var(--rb-muted);
     font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
     font-size: 0.75rem;
+  }
+  .perm-w {
+    margin: 0.1rem 0 0;
     overflow: hidden;
+    color: var(--dim);
+    font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+    font-size: 0.6875rem;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-
-  .cons-perm-acts {
+  .perm-acts {
     display: flex;
     flex-shrink: 0;
-    gap: 0.4rem;
+    gap: 0.35rem;
+  }
+
+  .btn {
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    padding: 0.25rem 0.7rem;
+    background: transparent;
+    color: var(--text);
+    font-family: inherit;
+    font-size: 0.71875rem;
+    cursor: pointer;
+  }
+  .btn.is-go {
+    border-color: var(--coral);
+    background: var(--coral);
+    color: #1c1917;
+    font-weight: 600;
   }
 
   /* ─── Compositor ────────────────────────────────────────────────────── */
-  .cons-compose {
-    display: flex;
+  .cmp {
     flex-shrink: 0;
-    flex-direction: column;
-    gap: 0.5rem;
-    border-top: 1px solid var(--rb-border);
-    padding: 0.7rem 1.1rem 0.8rem;
-    background: var(--rb-surface);
+    padding: 0 0.7rem 0.7rem;
   }
 
-  .cons-input {
+  .cmp-box {
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 0.55rem 0.6rem 0.5rem;
+    background: #211d1b;
+  }
+  .cmp-box:focus-within {
+    border-color: color-mix(in srgb, var(--coral) 55%, var(--line));
+  }
+
+  .cmp-in {
+    display: block;
     width: 100%;
     box-sizing: border-box;
-    border: 1px solid var(--rb-border);
-    border-radius: 0.5rem;
-    padding: 0.5rem 0.6rem;
-    background: var(--rb-bg0);
-    color: var(--rb-text);
-    font-family: inherit;
-    font-size: 0.8125rem;
-    line-height: 1.5;
+    border: 0;
+    padding: 0.1rem 0.15rem 0.4rem;
+    background: transparent;
+    color: var(--text);
+    font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+    font-size: 0.78125rem;
+    line-height: 1.55;
     resize: none;
   }
-  .cons-input:focus {
-    outline: 2px solid var(--rb-accent);
-    outline-offset: -1px;
+  .cmp-in:focus {
+    outline: none;
+  }
+  .cmp-in::placeholder {
+    color: var(--faint);
   }
 
-  .cons-actions {
+  .cmp-row {
     display: flex;
     align-items: center;
-    gap: 0.6rem;
+    gap: 0.3rem;
   }
 
-  .cons-act {
-    display: inline-flex;
-    align-items: center;
-    border: 0;
-    border-radius: 0.4rem;
-    padding: 0.3rem;
+  .cmp-gap {
+    flex: 1;
+  }
+
+  /* Pastilla con el valor puesto. Un `<select>` acá escondía el valor actual,
+     que es justo lo que uno mira antes de mandar. */
+  .chip {
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    padding: 0.2rem 0.6rem;
     background: transparent;
-    color: var(--rb-muted);
+    color: var(--dim);
+    font-family: inherit;
+    font-size: 0.6875rem;
+    max-width: 10rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
     cursor: pointer;
   }
-  .cons-act:hover {
-    color: var(--rb-text);
+  .chip:hover {
+    color: var(--text);
+  }
+  .chip.is-static {
+    cursor: default;
   }
 
-  .cons-ctx {
+  /* Anillo de contexto: el relleno es un cono cónico recortado con máscara. */
+  .ring {
+    position: relative;
     display: inline-flex;
+    width: 1.75rem;
+    height: 1.75rem;
+    flex-shrink: 0;
     align-items: center;
-    gap: 0.4rem;
-    color: var(--rb-faint);
-    font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
-    font-size: 0.6875rem;
-  }
-
-  .cons-ctx-track {
-    display: block;
-    width: 3.5rem;
-    height: 0.25rem;
+    justify-content: center;
     border-radius: 999px;
-    background: var(--rb-border);
-    overflow: hidden;
+    background: conic-gradient(
+      var(--coral) calc(var(--pct) * 1%),
+      #35302c 0
+    );
   }
-
-  .cons-ctx-fill {
-    display: block;
-    height: 100%;
-    background: var(--rb-accent);
+  .ring::after {
+    position: absolute;
+    border-radius: 999px;
+    background: #211d1b;
+    content: "";
+    inset: 2px;
   }
-
-  .cons-cost {
-    color: var(--rb-faint);
+  .ring-n {
+    position: relative;
+    z-index: 1;
+    color: var(--dim);
     font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
-    font-size: 0.6875rem;
+    font-size: 0.5625rem;
   }
 
-  .cons-spacer {
-    flex: 1;
+  .cost {
+    color: var(--faint);
+    font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+    font-size: 0.625rem;
+  }
+
+  .go {
+    display: inline-flex;
+    width: 1.75rem;
+    height: 1.75rem;
+    flex-shrink: 0;
+    align-items: center;
+    justify-content: center;
+    border: 0;
+    border-radius: 999px;
+    background: var(--coral);
+    color: #1c1917;
+    cursor: pointer;
+  }
+  .go:disabled {
+    background: #35302c;
+    color: var(--faint);
+    cursor: default;
   }
 </style>

@@ -578,3 +578,99 @@ pub fn glide(app: &AppHandle, label: &str, anchor: Anchor) -> Option<Flight> {
         },
     )
 }
+
+/// Dónde quedó la punta de una burbuja y a qué distancia de su esquina.
+///
+/// La punta es la que convierte una ventana en un globo de diálogo: dice de
+/// dónde salió. Si la burbuja se corre para no salirse de la pantalla, la punta
+/// tiene que quedarse apuntando al origen igual, así que su posición se calcula
+/// aparte y no se deduce del centro.
+#[derive(Clone, Copy, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BubbleAnchor {
+    /// Lado de la burbuja donde va la punta: `top`, `bottom`, `left`, `right`.
+    /// Es el lado que mira al origen.
+    pub side: &'static str,
+    /// Píxeles desde la esquina superior izquierda de la burbuja hasta el
+    /// centro de la punta, a lo largo del lado.
+    pub offset: i32,
+}
+
+/// Pega `label` a `origin` como burbuja y devuelve dónde quedó la punta.
+///
+/// Prueba abajo, arriba, derecha e izquierda en ese orden y se queda con el
+/// primer lado donde entra entera. El orden no es arbitrario: la pill suele
+/// vivir en la mitad superior y arrastrarse poco, así que abajo acierta casi
+/// siempre; probar primero el lado con más espacio haría que la burbuja
+/// cambiara de lado por unos pocos píxeles de diferencia entre aperturas.
+#[cfg(windows)]
+pub fn anchor_bubble(
+    app: &AppHandle,
+    label: &str,
+    origin: &str,
+    gap: i32,
+    corner: i32,
+) -> Option<BubbleAnchor> {
+    let bubble = app.get_webview_window(label)?;
+    let size = bubble.outer_size().ok()?;
+    let (bw, bh) = (size.width as i32, size.height as i32);
+
+    let anchor_window = app.get_webview_window(origin)?;
+    let pos = anchor_window.outer_position().ok()?;
+    let asize = anchor_window.outer_size().ok()?;
+    let (ax, ay, aw, ah) = (pos.x, pos.y, asize.width as i32, asize.height as i32);
+    let (acx, acy) = (ax + aw / 2, ay + ah / 2);
+
+    let monitors = atic_capture::monitors::enumerate();
+    let work = monitors
+        .iter()
+        .find(|m| m.work_area.contains(acx, acy))
+        .or_else(|| monitors.iter().find(|m| m.is_primary))
+        .or_else(|| monitors.first())
+        .map(|m| m.work_area)?;
+
+    let fits_below = ay + ah + gap + bh + MARGIN <= work.bottom();
+    let fits_above = ay - gap - bh - MARGIN >= work.y;
+    let fits_right = ax + aw + gap + bw + MARGIN <= work.right();
+
+    // (x, y, lado de la burbuja que mira al origen)
+    let (x, y, side) = if fits_below {
+        (acx - bw / 2, ay + ah + gap, "top")
+    } else if fits_above {
+        (acx - bw / 2, ay - gap - bh, "bottom")
+    } else if fits_right {
+        (ax + aw + gap, acy - bh / 2, "left")
+    } else {
+        (ax - gap - bw, acy - bh / 2, "right")
+    };
+
+    let (x, y) = clamp(x, y, bw, bh);
+
+    // La punta no puede caer sobre una esquina redondeada: se vería despegada
+    // del borde. `corner` es el radio, y se le suma el ancho de la propia punta.
+    let along = if side == "top" || side == "bottom" {
+        (acx - x).clamp(corner, (bw - corner).max(corner))
+    } else {
+        (acy - y).clamp(corner, (bh - corner).max(corner))
+    };
+
+    if !set_bounds(&bubble, x, y, bw, bh) {
+        let _ = bubble.set_position(PhysicalPosition::new(x, y));
+    }
+    geo!("BUBBLE     {label} <- {origin} lado={side} off={along} en {x},{y}");
+    Some(BubbleAnchor {
+        side,
+        offset: along,
+    })
+}
+
+#[cfg(not(windows))]
+pub fn anchor_bubble(
+    _app: &AppHandle,
+    _label: &str,
+    _origin: &str,
+    _gap: i32,
+    _corner: i32,
+) -> Option<BubbleAnchor> {
+    None
+}

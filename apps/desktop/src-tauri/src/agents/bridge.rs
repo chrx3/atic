@@ -93,19 +93,38 @@ pub fn agent_sessions() -> Vec<SessionInfo> {
         .unwrap_or_default()
 }
 
-/// Abre la consola de agentes.
+/// Separación entre la pill y la burbuja, y radio de sus esquinas.
+///
+/// El hueco es donde vive la punta: si fuera 0, la punta quedaría por dentro
+/// del borde y la burbuja se vería pegada, no apuntando.
+const BUBBLE_GAP: i32 = 14;
+const BUBBLE_CORNER: i32 = 26;
+
+/// Abre la consola de agentes como burbuja de la pill.
 ///
 /// Es una ventana propia y no un panel de la pill: lo que se hace acá —leer
 /// salida larga, revisar qué tocó una herramienta, aprobar— necesita espacio y
-/// quedarse abierto, que es lo contrario de lo que hace la pill.
+/// quedarse abierto, que es lo contrario de lo que hace la pill. Pero sale *de*
+/// la pill y apunta a ella, para que se lea como lo que es: la misma cosa,
+/// desplegada.
+///
+/// La posición se calcula ANTES de mostrarla. Mostrar primero y acomodar
+/// después deja un frame en la posición vieja, que es exactamente el salto que
+/// costó tanto sacar de la pill.
 #[tauri::command]
 pub fn show_agents_window(app: AppHandle) {
-    use tauri::Manager;
-    if let Some(window) = app.get_webview_window("agents") {
-        let _ = window.show();
-        let _ = window.unminimize();
-        let _ = window.set_focus();
+    use tauri::{Emitter, Manager};
+    let Some(window) = app.get_webview_window("agents") else {
+        return;
+    };
+    if let Some(anchor) =
+        crate::floating::anchor_bubble(&app, "agents", "pill", BUBBLE_GAP, BUBBLE_CORNER)
+    {
+        let _ = app.emit("agents-bubble-anchor", anchor);
     }
+    let _ = window.show();
+    let _ = window.unminimize();
+    let _ = window.set_focus();
 }
 
 /// Qué agentes hay y cuáles se pueden usar.

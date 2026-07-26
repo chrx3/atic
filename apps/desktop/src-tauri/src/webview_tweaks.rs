@@ -38,7 +38,7 @@ pub fn disable_browser_accelerator_keys(_window: &WebviewWindow) {}
 
 /// Aplica los tweaks a pill + ventanas de captura.
 pub fn apply_to_overlay_windows(app: &tauri::AppHandle) {
-    for label in ["pill", "capture-shelf", "capture-overlay"] {
+    for label in ["pill", "capture-shelf", "capture-overlay", "agents"] {
         if let Some(window) = app.get_webview_window(label) {
             disable_browser_accelerator_keys(&window);
         }
