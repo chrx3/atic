@@ -443,12 +443,18 @@
 
   type SoundKey = (typeof SOUND_ACTIONS)[number]["key"];
 
+  /** Ordenadas de grave a agudo: recorrer la lista es un barrido de registro,
+   *  que es la diferencia que primero se oye entre dos timbres. */
   const SOUND_VOICES = [
     { id: "", label: "Por defecto" },
     { id: "grave", label: "Grave" },
-    { id: "suave", label: "Suave" },
-    { id: "cristal", label: "Cristal" },
+    { id: "aire", label: "Aire" },
+    { id: "pulso", label: "Pulso" },
     { id: "madera", label: "Madera" },
+    { id: "cuerda", label: "Cuerda" },
+    { id: "campana", label: "Campana" },
+    { id: "digital", label: "Digital" },
+    { id: "cristal", label: "Cristal" },
     { id: "ninguno", label: "Sin sonido" },
   ] as const;
 

@@ -19,68 +19,144 @@ const DICTATION_DONE_NOTES: [(f32, f32); 2] = [(56.0, 0.09), (72.0, 0.12)];
 /// Captura: click de obturador grave (una sola pulsación).
 const CAPTURE_NOTES: [(f32, f32); 1] = [(70.0, 0.11)];
 
+/* --- Voces -------------------------------------------------------------
+ *
+ * Cada voz es (ataque, release, decaimiento, pico, armonicos) mas dos
+ * multiplicadores: de frecuencia y de duracion.
+ *
+ * Lo que separa una voz de otra, por orden de cuanto se nota:
+ *   1. REGISTRO (multiplicador de frecuencia). Es lo primero que se oye.
+ *   2. DECAIMIENTO: un tick seco y una campana que resuena son cosas
+ *      distintas aunque compartan nota.
+ *   3. ARMONICOS: el color. Enteros suenan a instrumento afinado; no enteros,
+ *      a metal.
+ *   4. ATAQUE: golpe seco contra entrada suave.
+ *
+ * Las dos primeras voces de esta app compartian registro y armonicos y solo
+ * variaban el volumen: sonaban iguales. Si dos voces no se separan en al menos
+ * dos de esos ejes, sobra una.
+ */
+
+/// Grave: presion baja tipo ANC. El original de grabacion.
 const BASS_PEAK: f32 = 0.14;
-const BASS_SOFT_PEAK: f32 = 0.09;
 const BASS_ATTACK_SECS: f32 = 0.045;
 const BASS_RELEASE_SECS: f32 = 0.055;
-const BASS_SOFT_ATTACK_SECS: f32 = 0.055;
-const BASS_SOFT_RELEASE_SECS: f32 = 0.07;
 const BASS_DECAY_RATE: f32 = 4.2;
-const BASS_SOFT_DECAY_RATE: f32 = 3.4;
-/// Poco brillo: sub + un armónico muy atenuado.
 const BASS_HARMONICS: [(f32, f32, f32); 2] = [(0.5, 0.55, 0.7), (2.0, 0.08, 2.8)];
-const BASS_SOFT_HARMONICS: [(f32, f32, f32); 2] = [(0.5, 0.45, 0.75), (2.0, 0.05, 3.2)];
+
+/// Pulso: toque corto y seco, dos octavas mas arriba. Reemplaza al viejo
+/// "suave", que era el grave con menos volumen y sonaba igual.
+const TAP_PEAK: f32 = 0.11;
+const TAP_ATTACK_SECS: f32 = 0.003;
+const TAP_RELEASE_SECS: f32 = 0.05;
+const TAP_DECAY_RATE: f32 = 14.0;
+const TAP_HARMONICS: [(f32, f32, f32); 2] = [(1.0, 0.40, 1.4), (3.0, 0.10, 3.0)];
+const TAP_PITCH: f32 = 2.6;
+const TAP_DURATION: f32 = 0.55;
 
 /// Cristal: agudo y corto, como un tick de vidrio.
 const GLASS_PEAK: f32 = 0.07;
 const GLASS_ATTACK_SECS: f32 = 0.004;
 const GLASS_RELEASE_SECS: f32 = 0.09;
 const GLASS_DECAY_RATE: f32 = 9.5;
-const GLASS_HARMONICS: [(f32, f32, f32); 3] = [(1.0, 0.5, 1.0), (2.7, 0.22, 2.0), (5.4, 0.08, 3.5)];
-/// Cuánto sube respecto de la nota base grave.
+const GLASS_HARMONICS: [(f32, f32, f32); 3] =
+    [(1.0, 0.50, 1.0), (2.7, 0.22, 2.0), (5.4, 0.08, 3.5)];
 const GLASS_PITCH: f32 = 20.0;
 
 /// Madera: registro medio, ataque seco, cola corta.
 const WOOD_PEAK: f32 = 0.11;
 const WOOD_ATTACK_SECS: f32 = 0.006;
 const WOOD_RELEASE_SECS: f32 = 0.11;
+/// El 4.o armonico marcado es lo que hace que suene a marimba y no a pitido.
 const WOOD_DECAY_RATE: f32 = 6.5;
-/// El 4.º armónico marcado es lo que hace que suene a marimba y no a pitido.
 const WOOD_HARMONICS: [(f32, f32, f32); 3] =
     [(1.0, 0.55, 1.0), (4.0, 0.18, 2.2), (10.0, 0.04, 4.0)];
 const WOOD_PITCH: f32 = 7.0;
 
+/// Campana: resuena. Parciales NO enteros --2.76 y 5.40, las razones que hacen
+/// sonar a metal-- y decaimiento lento; con enteros sonaria a organo.
+const BELL_PEAK: f32 = 0.075;
+const BELL_ATTACK_SECS: f32 = 0.005;
+const BELL_RELEASE_SECS: f32 = 0.18;
+const BELL_DECAY_RATE: f32 = 2.4;
+const BELL_HARMONICS: [(f32, f32, f32); 3] =
+    [(2.76, 0.28, 1.3), (5.40, 0.12, 2.0), (8.93, 0.05, 3.0)];
+const BELL_PITCH: f32 = 11.0;
+/// Se le da el doble de tiempo: cortarla en seco anularia lo que la define.
+const BELL_DURATION: f32 = 2.0;
+
+/// Cuerda: pulsada. Ataque instantaneo y armonicos impares, como al soltar.
+const PLUCK_PEAK: f32 = 0.10;
+const PLUCK_ATTACK_SECS: f32 = 0.002;
+const PLUCK_RELEASE_SECS: f32 = 0.12;
+const PLUCK_DECAY_RATE: f32 = 5.0;
+const PLUCK_HARMONICS: [(f32, f32, f32); 3] =
+    [(2.0, 0.30, 1.6), (3.0, 0.16, 2.2), (5.0, 0.07, 3.2)];
+const PLUCK_PITCH: f32 = 9.0;
+const PLUCK_DURATION: f32 = 1.4;
+
+/// Aire: entra sin golpe. El unico sin transitorio, para cuando el sonido no
+/// deberia interrumpir lo que estas haciendo.
+const AIR_PEAK: f32 = 0.085;
+const AIR_ATTACK_SECS: f32 = 0.10;
+const AIR_RELEASE_SECS: f32 = 0.16;
+const AIR_DECAY_RATE: f32 = 1.6;
+const AIR_HARMONICS: [(f32, f32, f32); 2] = [(0.5, 0.40, 0.9), (2.0, 0.06, 1.8)];
+const AIR_PITCH: f32 = 4.0;
+const AIR_DURATION: f32 = 1.8;
+
+/// Digital: armonicos impares fuertes = onda cuadrada. Suena a consola vieja.
+const CHIP_PEAK: f32 = 0.065;
+const CHIP_ATTACK_SECS: f32 = 0.002;
+const CHIP_RELEASE_SECS: f32 = 0.04;
+const CHIP_DECAY_RATE: f32 = 11.0;
+const CHIP_HARMONICS: [(f32, f32, f32); 3] = [(3.0, 0.33, 1.0), (5.0, 0.20, 1.0), (7.0, 0.14, 1.0)];
+const CHIP_PITCH: f32 = 14.0;
+const CHIP_DURATION: f32 = 0.5;
+
 type ToneShape = (f32, f32, f32, f32, &'static [(f32, f32, f32)]);
 
-/// Timbre elegible por acción.
+/// Timbre elegible por accion.
 ///
-/// El GESTO melódico lo define la acción (sube al iniciar, baja al parar) y no
-/// se toca: es lo que hace que el sonido signifique algo. La voz solo cambia el
-/// color y el registro. Separarlos así evita tener que inventar una melodía
-/// nueva por cada combinación de acción y timbre.
+/// El GESTO melodico lo define la accion (sube al iniciar, baja al parar) y no
+/// se toca: es lo que hace que el sonido signifique algo sin mirar la pantalla.
+/// La voz solo cambia color, registro y duracion. Separarlos asi evita tener
+/// que inventar una melodia nueva por cada combinacion de accion y timbre.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ToneProfile {
-    /// Presencia clara pero grave. El original de grabación y captura.
+    /// Presion grave tipo ANC.
     Bass,
-    /// Aún más contenido. El original del dictado.
-    BassSoft,
-    /// Agudo y corto.
+    /// Toque corto y seco.
+    Tap,
+    /// Agudo y corto, como vidrio.
     Glass,
     /// Registro medio, madera.
     Wood,
-    /// Silencio: la acción no suena.
+    /// Metalico, resuena.
+    Bell,
+    /// Cuerda pulsada.
+    Pluck,
+    /// Entra sin golpe.
+    Air,
+    /// Onda cuadrada, tipo consola vieja.
+    Chip,
+    /// Silencio: la accion no suena.
     Silent,
 }
 
 impl ToneProfile {
-    /// Desde la config. Un valor desconocido cae al default de la acción, que
+    /// Desde la config. Un valor desconocido cae al default de la accion, que
     /// se pasa aparte: no todas las acciones suenan igual de fuerte.
     pub fn parse(raw: &str, fallback: ToneProfile) -> Self {
         match raw {
             "grave" => ToneProfile::Bass,
-            "suave" => ToneProfile::BassSoft,
+            "pulso" => ToneProfile::Tap,
             "cristal" => ToneProfile::Glass,
             "madera" => ToneProfile::Wood,
+            "campana" => ToneProfile::Bell,
+            "cuerda" => ToneProfile::Pluck,
+            "aire" => ToneProfile::Air,
+            "digital" => ToneProfile::Chip,
             "ninguno" => ToneProfile::Silent,
             _ => fallback,
         }
@@ -89,8 +165,29 @@ impl ToneProfile {
     /// Multiplicador de frecuencia sobre la nota base.
     fn pitch(self) -> f32 {
         match self {
+            ToneProfile::Tap => TAP_PITCH,
             ToneProfile::Glass => GLASS_PITCH,
             ToneProfile::Wood => WOOD_PITCH,
+            ToneProfile::Bell => BELL_PITCH,
+            ToneProfile::Pluck => PLUCK_PITCH,
+            ToneProfile::Air => AIR_PITCH,
+            ToneProfile::Chip => CHIP_PITCH,
+            _ => 1.0,
+        }
+    }
+
+    /// Cuanto se estira o acorta la nota.
+    ///
+    /// Las duraciones base estan pensadas para el registro grave. Una campana
+    /// con esa duracion se cortaria antes de resonar, y un tick digital
+    /// arrastraria cola muerta.
+    fn duration(self) -> f32 {
+        match self {
+            ToneProfile::Tap => TAP_DURATION,
+            ToneProfile::Bell => BELL_DURATION,
+            ToneProfile::Pluck => PLUCK_DURATION,
+            ToneProfile::Air => AIR_DURATION,
+            ToneProfile::Chip => CHIP_DURATION,
             _ => 1.0,
         }
     }
@@ -119,7 +216,9 @@ impl SoundAction {
 
     fn default_voice(self) -> ToneProfile {
         match self {
-            SoundAction::DictationStart | SoundAction::DictationDone => ToneProfile::BassSoft,
+            // El dictado interrumpe menos que una grabación: toque corto en vez
+            // de presión grave.
+            SoundAction::DictationStart | SoundAction::DictationDone => ToneProfile::Tap,
             _ => ToneProfile::Bass,
         }
     }
@@ -174,7 +273,9 @@ fn play_chime_blocking(
     let sample_format = supported.sample_format();
     let config: StreamConfig = supported.into();
 
-    let total_secs: f32 = notes.iter().map(|(_, dur)| *dur).sum();
+    // El multiplicador de la voz cambia cuanto dura el sonido, asi que la
+    // espera tiene que contarlo o el stream se cerraria a mitad de la campana.
+    let total_secs: f32 = notes.iter().map(|(_, dur)| *dur).sum::<f32>() * profile.duration();
     // Silencio breve al inicio para que el dispositivo abra el stream en cero.
     let lead_in = 0.018;
     let mut gen = ChimeGenerator::new(sample_rate, notes, profile, lead_in);
@@ -237,12 +338,12 @@ impl ChimeGenerator {
                 BASS_PEAK,
                 &BASS_HARMONICS,
             ),
-            ToneProfile::BassSoft => (
-                BASS_SOFT_ATTACK_SECS,
-                BASS_SOFT_RELEASE_SECS,
-                BASS_SOFT_DECAY_RATE,
-                BASS_SOFT_PEAK,
-                &BASS_SOFT_HARMONICS,
+            ToneProfile::Tap => (
+                TAP_ATTACK_SECS,
+                TAP_RELEASE_SECS,
+                TAP_DECAY_RATE,
+                TAP_PEAK,
+                &TAP_HARMONICS,
             ),
             ToneProfile::Glass => (
                 GLASS_ATTACK_SECS,
@@ -258,7 +359,35 @@ impl ChimeGenerator {
                 WOOD_PEAK,
                 &WOOD_HARMONICS,
             ),
-            // No se llega acá: `play_chime` corta antes de abrir el stream.
+            ToneProfile::Bell => (
+                BELL_ATTACK_SECS,
+                BELL_RELEASE_SECS,
+                BELL_DECAY_RATE,
+                BELL_PEAK,
+                &BELL_HARMONICS,
+            ),
+            ToneProfile::Pluck => (
+                PLUCK_ATTACK_SECS,
+                PLUCK_RELEASE_SECS,
+                PLUCK_DECAY_RATE,
+                PLUCK_PEAK,
+                &PLUCK_HARMONICS,
+            ),
+            ToneProfile::Air => (
+                AIR_ATTACK_SECS,
+                AIR_RELEASE_SECS,
+                AIR_DECAY_RATE,
+                AIR_PEAK,
+                &AIR_HARMONICS,
+            ),
+            ToneProfile::Chip => (
+                CHIP_ATTACK_SECS,
+                CHIP_RELEASE_SECS,
+                CHIP_DECAY_RATE,
+                CHIP_PEAK,
+                &CHIP_HARMONICS,
+            ),
+            // No se llega aca: `play` corta antes de abrir el stream.
             ToneProfile::Silent => (0.0, 0.0, 1.0, 0.0, &BASS_HARMONICS),
         }
     }
@@ -269,9 +398,10 @@ impl ChimeGenerator {
             return 0.0;
         }
 
-        let Some(&(base_freq, dur)) = self.notes.get(self.note_idx) else {
+        let Some(&(base_freq, base_dur)) = self.notes.get(self.note_idx) else {
             return 0.0;
         };
+        let dur = base_dur * self.profile.duration();
         // La voz transpone; el intervalo entre notas se conserva, así que el
         // gesto (sube al iniciar, baja al parar) sigue leyéndose igual.
         let freq = base_freq * self.profile.pitch();
