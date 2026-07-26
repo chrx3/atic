@@ -491,6 +491,9 @@ export const onAgentsBubbleAnchor = (
     "agents-bubble-anchor",
     (e) => cb(e.payload),
   );
+/** La pill necesita el frente: la burbuja se repliega. */
+export const onAgentsBubbleDismiss = (cb: () => void): Promise<UnlistenFn> =>
+  listen("agents-bubble-dismiss", () => cb());
 /** Arranca una sesión y devuelve su clave local. */
 export const agentStart = (backend: string, options?: AgentStartOptions) =>
   invoke<string>("agent_start", { backend, options });

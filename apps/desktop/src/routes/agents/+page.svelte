@@ -31,10 +31,17 @@
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { open as openDialog } from "@tauri-apps/plugin-dialog";
   import { agents } from "$lib/agentSessions.svelte";
-  import { agentBackends, getConfig, onAgentsBubbleAnchor } from "$lib/api";
+  import {
+    agentBackends,
+    getConfig,
+    onAgentsBubbleAnchor,
+    onAgentsBubbleDismiss,
+  } from "$lib/api";
   import { applyTheme, readCachedTheme } from "$lib/theme";
+  import { MOTION, ms } from "$lib/motion";
   import McpServersModal from "$lib/McpServersModal.svelte";
   import PickerMenu from "$lib/PickerMenu.svelte";
+  import ClaudeMark from "$lib/ClaudeMark.svelte";
   import type { AgentBackendInfo, McpServerConfig } from "$lib/types";
 
   /** Alias y no nombres completos: el alias sigue apuntando al último de la
@@ -59,6 +66,10 @@
 
   let anchor = $state<{ side: string; offset: number } | null>(null);
   let shown = $state(false);
+  /** Cuándo se abrió, para no cerrarla con el blur de su propia apertura. */
+  let openedAt = 0;
+  /** Hay un diálogo del sistema abierto: el blur que produce no es «me fui». */
+  let picking = $state(false);
 
   let backends = $state<AgentBackendInfo[]>([]);
   let picked = $state("");
@@ -97,8 +108,23 @@
     const un = onAgentsBubbleAnchor((a) => {
       anchor = a;
       shown = false;
+      openedAt = Date.now();
       void tick().then(() => requestAnimationFrame(() => (shown = true)));
     });
+
+    // La pill va a desplegar algo y necesita el frente.
+    const unDismiss = onAgentsBubbleDismiss(() => void close());
+
+    // Clic fuera = listo, sigo con lo mío. Es el mismo trato que la rueda y el
+    // historial: aparecen para una cosa y se van sin que haya que cerrarlas.
+    const onBlur = () => {
+      // El margen evita que el propio setFocus de la apertura la cierre, y el
+      // diálogo de archivos es otra ventana: elegir una carpeta no es irse.
+      if (picking || mcpOpen) return;
+      if (Date.now() - openedAt < 400) return;
+      void close();
+    };
+    window.addEventListener("blur", onBlur);
 
     void (async () => {
       try {
@@ -124,7 +150,9 @@
 
     return () => {
       window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("blur", onBlur);
       void un.then((fn) => fn());
+      void unDismiss.then((fn) => fn());
       agents.watch(null);
     };
   });
@@ -156,16 +184,26 @@
     });
   });
 
-  /** Cierra con la animación puesta: ocultar en seco delataría que es una
-   *  ventana y no una burbuja que se repliega sobre la pill. */
+  /**
+   * Cierra replegándose sobre la pill.
+   *
+   * Espera a que termine la animación antes de ocultar: cortarla delataría que
+   * debajo hay una ventana y no un globo. La duración sale del mismo token que
+   * usa el cierre de la rueda, así las dos superficies se sienten la misma
+   * cosa y no pueden desincronizarse.
+   */
+  let closing = false;
   async function close() {
+    if (closing || !shown) return;
+    closing = true;
     shown = false;
-    await new Promise((r) => setTimeout(r, 140));
+    await new Promise((r) => setTimeout(r, ms(MOTION.morphClose)));
     try {
       await getCurrentWindow().hide();
     } catch {
       // Sin ventana nativa (preview web) no hay nada que ocultar.
     }
+    closing = false;
   }
 
   function mcpConfig(): string | undefined {
@@ -183,15 +221,19 @@
   }
 
   async function pickFolder() {
+    picking = true;
     try {
       const chosen = await openDialog({ directory: true, multiple: false });
       if (typeof chosen === "string") cwd = chosen;
     } catch (err) {
       error = String(err);
+    } finally {
+      picking = false;
     }
   }
 
   async function attach() {
+    picking = true;
     try {
       const chosen = await openDialog({ multiple: true });
       const paths = Array.isArray(chosen) ? chosen : chosen ? [chosen] : [];
@@ -202,6 +244,8 @@
       inputEl?.focus();
     } catch (err) {
       error = String(err);
+    } finally {
+      picking = false;
     }
   }
 
@@ -288,58 +332,55 @@
   <span class="bub-tail" aria-hidden="true"></span>
 
   <div class="bub-body">
-    <!-- Cabecera al estilo de la consola: el título vive incrustado en el
-         borde de la caja, no en una barra aparte. -->
-    <header class="hdr" data-tauri-drag-region>
-      <span class="hdr-name" data-tauri-drag-region>Agentes</span>
-
-      {#if agents.sessions.length > 0}
-        <div class="tabs" role="tablist" aria-label="Sesiones">
-          {#each agents.sessions as s (s.id)}
-            <button
-              type="button"
-              role="tab"
-              class="tab"
-              class:active={s.id === activeId}
-              aria-selected={s.id === activeId}
-              onclick={() => (activeId = s.id)}
-            >
-              {#if s.pending.length > 0}
-                <span class="dot is-wait"></span>
-              {:else if s.status === "working"}
-                <span class="dot is-busy"></span>
-              {:else if s.unread > 0}
-                <span class="dot is-new"></span>
-              {:else}
-                <span class="dot"></span>
-              {/if}
-              {s.backendName}
-            </button>
-          {/each}
-        </div>
-      {/if}
-
-      <button
-        type="button"
-        class="hdr-x"
-        onclick={() => void close()}
-        aria-label="Cerrar">×</button
-      >
-    </header>
+    <!-- Sin barra de título ni botones de ventana: es un modal, y un modal se
+         va solo al tocar fuera. La única fila de arriba es la que hace falta
+         cuando hay más de una sesión. -->
+    {#if agents.sessions.length > 1}
+      <div class="tabs" role="tablist" aria-label="Sesiones">
+        {#each agents.sessions as s (s.id)}
+          <button
+            type="button"
+            role="tab"
+            class="tab"
+            class:active={s.id === activeId}
+            aria-selected={s.id === activeId}
+            onclick={() => (activeId = s.id)}
+          >
+            {#if s.pending.length > 0}
+              <span class="dot is-wait"></span>
+            {:else if s.status === "working"}
+              <span class="dot is-busy"></span>
+            {:else if s.unread > 0}
+              <span class="dot is-new"></span>
+            {:else}
+              <span class="dot"></span>
+            {/if}
+            {s.backendName}
+          </button>
+        {/each}
+      </div>
+    {/if}
 
     <div class="log" bind:this={logEl} role="log">
       {#if !active}
-        <!-- Caja de bienvenida con el título en el borde, como el CLI. -->
-        <section class="card">
+        <!-- Caja de bienvenida con el título en el borde, como el CLI. El
+             bicho identifica al backend: cuando sea Codex o Gemini irá su
+             marca, no esta. -->
+        <section class="card card-hi">
           <h2 class="card-title">Atic · agentes</h2>
-          <p class="card-line">
-            Lanza el agente que ya tienes instalado, con tu sesión, tus
-            herramientas y tus skills. Atic solo le pone cara.
-          </p>
-          <p class="card-line dim">
-            Elige abajo el agente, el modelo y cuánto quieres que pregunte.
-            Escribe y pulsa Enter para empezar.
-          </p>
+          <span class="hi-mark" class:is-off={!ready}>
+            <ClaudeMark size={38} />
+          </span>
+          <div class="hi-copy">
+            <p class="card-line">
+              Lanza el agente que ya tienes instalado, con tu sesión, tus
+              herramientas y tus skills. Atic solo le pone cara.
+            </p>
+            <p class="card-line dim">
+              Elige abajo con qué arrancar. Escribe y Enter para empezar; toca
+              fuera y sigue trabajando, que la pill te avisa.
+            </p>
+          </div>
         </section>
 
         {#if backends.length > 0 && !ready}
@@ -361,15 +402,18 @@
           {:else if entry.kind === "toolResult"}
             <pre class="out" class:is-error={entry.isError}>{entry.output}</pre>
           {:else if entry.kind === "started"}
-            <section class="card">
+            <section class="card card-hi">
               <h2 class="card-title">{entry.model || "sesión"}</h2>
-              <p class="card-line dim">{entry.cwd}</p>
-              <p class="card-line dim">
-                {entry.tools.length} herramientas · {entry.slashCommands.length}
-                comandos{entry.mcpServers.length > 0
-                  ? ` · MCP: ${entry.mcpServers.map((s) => s.name).join(", ")}`
-                  : ""}
-              </p>
+              <span class="hi-mark"><ClaudeMark size={28} /></span>
+              <div class="hi-copy">
+                <p class="card-line dim">{entry.cwd}</p>
+                <p class="card-line dim">
+                  {entry.tools.length} herramientas · {entry.slashCommands.length}
+                  comandos{entry.mcpServers.length > 0
+                    ? ` · MCP: ${entry.mcpServers.map((s) => s.name).join(", ")}`
+                    : ""}
+                </p>
+              </div>
             </section>
           {:else if entry.kind === "finished"}
             <p class="meta">
@@ -572,15 +616,21 @@
     box-sizing: border-box;
     padding: 14px;
 
+    /* Mismos tokens que el morph de la rueda: las dos superficies salen de la
+       pill, así que tienen que sentirse la misma cosa. Definidos en un solo
+       sitio (app.css), no pueden desincronizarse. */
     opacity: 0;
-    transform: scale(0.94);
+    transform: scale(0.86);
     transition:
-      opacity 140ms ease,
-      transform 180ms cubic-bezier(0.34, 1.3, 0.64, 1);
+      opacity var(--morph-close-dur) ease,
+      transform var(--morph-close-dur) var(--morph-close-ease);
   }
   .bub.is-shown {
     opacity: 1;
     transform: scale(1);
+    transition:
+      opacity var(--morph-fade-dur) ease,
+      transform var(--morph-open-dur) var(--morph-ease);
   }
 
   /* Crece DESDE la punta: es lo que hace que se lea como desplegarse de la
@@ -669,26 +719,13 @@
     border-top-right-radius: 4px;
   }
 
-  /* ─── Cabecera ──────────────────────────────────────────────────────── */
-  .hdr {
-    display: flex;
-    height: 2.1rem;
-    flex-shrink: 0;
-    align-items: center;
-    gap: 0.5rem;
-    padding: 0 0.5rem 0 0.9rem;
-  }
-
-  .hdr-name {
-    color: var(--coral);
-    font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
-    font-size: 0.75rem;
-  }
-
+  /* ─── Sesiones ──────────────────────────────────────────────────────── */
   .tabs {
     display: flex;
     min-width: 0;
+    flex-shrink: 0;
     gap: 0.2rem;
+    padding: 0.5rem 0.7rem 0;
     overflow-x: auto;
     scrollbar-width: none;
   }
@@ -739,21 +776,6 @@
     }
   }
 
-  .hdr-x {
-    margin-left: auto;
-    border: 0;
-    border-radius: 0.35rem;
-    padding: 0.1rem 0.45rem;
-    background: transparent;
-    color: var(--faint);
-    font-size: 1rem;
-    line-height: 1;
-    cursor: pointer;
-  }
-  .hdr-x:hover {
-    color: var(--text);
-  }
-
   /* ─── Registro ──────────────────────────────────────────────────────── */
   .log {
     display: flex;
@@ -761,7 +783,7 @@
     flex: 1;
     flex-direction: column;
     gap: 0.6rem;
-    padding: 0.35rem 0.95rem 0.9rem;
+    padding: 0.9rem 0.95rem;
     overflow: auto;
   }
 
@@ -799,6 +821,29 @@
   }
   .card-line.dim {
     color: var(--dim);
+  }
+
+  /* La marca a la izquierda y el texto al lado, como el saludo del CLI. */
+  .card-hi {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.85rem;
+  }
+
+  .hi-mark {
+    flex-shrink: 0;
+    color: var(--coral);
+    line-height: 0;
+  }
+  /* Sin el agente instalado, la marca se apaga: el estado se ve antes de leer
+     el aviso de abajo. */
+  .hi-mark.is-off {
+    color: var(--faint);
+  }
+
+  .hi-copy {
+    min-width: 0;
+    flex: 1;
   }
 
   .msg {

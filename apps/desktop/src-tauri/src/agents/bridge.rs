@@ -122,9 +122,32 @@ pub fn show_agents_window(app: AppHandle) {
     {
         let _ = app.emit("agents-bubble-anchor", anchor);
     }
+    let _ = window.set_always_on_top(true);
     let _ = window.show();
     let _ = window.unminimize();
     let _ = window.set_focus();
+}
+
+/// La pill va a desplegar algo: la burbuja se aparta.
+///
+/// Las dos son `alwaysOnTop`, así que entre ellas gana la última activada — y
+/// era la burbuja. El resultado era que la rueda o el historial salían DETRÁS y
+/// no se podía ni ver qué se iba a pegar.
+///
+/// Se hace en dos tiempos y por eso no basta con avisar al frontend: quitarle
+/// el «siempre encima` la manda abajo en el mismo frame, sin depender de que
+/// una ventana web reaccione. El evento es solo para que se repliegue con la
+/// animación en vez de desaparecer de golpe.
+pub fn dismiss_bubble(app: &AppHandle) {
+    use tauri::{Emitter, Manager};
+    let Some(window) = app.get_webview_window("agents") else {
+        return;
+    };
+    if !window.is_visible().unwrap_or(false) {
+        return;
+    }
+    let _ = window.set_always_on_top(false);
+    let _ = app.emit("agents-bubble-dismiss", ());
 }
 
 /// Qué agentes hay y cuáles se pueden usar.
