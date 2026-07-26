@@ -330,7 +330,6 @@ pub fn set_scratchpad(state: State<AppState>, body: String) -> Result<Scratchpad
 /// Atajo de fragmentos: el frontend hace toggle (cerrar si ya está abierto).
 pub fn summon_snippets_panel(app: &AppHandle) {
     clipboard_history::remember_paste_target();
-    crate::agents::bridge::dismiss_bubble(app);
     let _ = app.emit("pill-snippets-toggle", ());
 }
 

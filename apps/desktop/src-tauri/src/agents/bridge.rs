@@ -93,20 +93,29 @@ pub fn agent_sessions() -> Vec<SessionInfo> {
         .unwrap_or_default()
 }
 
-/// Separación entre la pill y la burbuja, y radio de sus esquinas.
+/// Separación entre la pill y el globo, radio de sus esquinas, y el marco
+/// transparente que la ventana lleva alrededor.
 ///
-/// El hueco es donde vive la punta: si fuera 0, la punta quedaría por dentro
-/// del borde y la burbuja se vería pegada, no apuntando.
-const BUBBLE_GAP: i32 = 14;
+/// `BUBBLE_INSET` tiene que valer lo mismo que `--inset` en la vista: es el
+/// margen donde cabe la sombra, y la ventana mide el globo MÁS ese marco por
+/// los cuatro lados. Sin descontarlo acá, el globo quedaría flotando lejos de
+/// la pill y la punta no llegaría a tocarla.
+const BUBBLE_GAP: i32 = 10;
 const BUBBLE_CORNER: i32 = 26;
+const BUBBLE_INSET: i32 = 28;
 
-/// Abre la consola de agentes como burbuja de la pill.
+/// Abre o cierra la consola de agentes, que cuelga de la pill.
 ///
-/// Es una ventana propia y no un panel de la pill: lo que se hace acá —leer
-/// salida larga, revisar qué tocó una herramienta, aprobar— necesita espacio y
+/// Es una ventana propia y no un panel de la pill: lo que se hace acá --leer
+/// salida larga, revisar qué tocó una herramienta, aprobar-- necesita espacio y
 /// quedarse abierto, que es lo contrario de lo que hace la pill. Pero sale *de*
 /// la pill y apunta a ella, para que se lea como lo que es: la misma cosa,
 /// desplegada.
+///
+/// Es un interruptor, y esa es la corrección importante. Antes se cerraba al
+/// perder el foco, así que abrir el historial para copiar algo que ibas a
+/// pegarle mataba la sesión justo cuando la necesitabas. Ahora la rueda la abre
+/// y la vuelve a cerrar, y nada más la cierra.
 ///
 /// La posición se calcula ANTES de mostrarla. Mostrar primero y acomodar
 /// después deja un frame en la posición vieja, que es exactamente el salto que
@@ -117,37 +126,27 @@ pub fn show_agents_window(app: AppHandle) {
     let Some(window) = app.get_webview_window("agents") else {
         return;
     };
-    if let Some(anchor) =
-        crate::floating::anchor_bubble(&app, "agents", "pill", BUBBLE_GAP, BUBBLE_CORNER)
-    {
+
+    // Visible y con el foco = segunda pulsación de la rueda: se cierra. Visible
+    // pero tapada por otra app = la querías ver, así que se trae al frente.
+    if window.is_visible().unwrap_or(false) && window.is_focused().unwrap_or(false) {
+        let _ = app.emit("agents-bubble-dismiss", ());
+        return;
+    }
+
+    if let Some(anchor) = crate::floating::anchor_bubble(
+        &app,
+        "agents",
+        "pill",
+        BUBBLE_GAP,
+        BUBBLE_CORNER,
+        BUBBLE_INSET,
+    ) {
         let _ = app.emit("agents-bubble-anchor", anchor);
     }
-    let _ = window.set_always_on_top(true);
     let _ = window.show();
     let _ = window.unminimize();
     let _ = window.set_focus();
-}
-
-/// La pill va a desplegar algo: la burbuja se aparta.
-///
-/// Las dos son `alwaysOnTop`, así que entre ellas gana la última activada — y
-/// era la burbuja. El resultado era que la rueda o el historial salían DETRÁS y
-/// no se podía ni ver qué se iba a pegar.
-///
-/// Se hace en dos tiempos y por eso no basta con avisar al frontend: quitarle
-/// el «siempre encima` la manda abajo en el mismo frame, sin depender de que
-/// una ventana web reaccione. El evento es solo para que se repliegue con la
-/// animación en vez de desaparecer de golpe.
-pub fn dismiss_bubble(app: &AppHandle) {
-    use tauri::{Emitter, Manager};
-    let Some(window) = app.get_webview_window("agents") else {
-        return;
-    };
-    if !window.is_visible().unwrap_or(false) {
-        return;
-    }
-    let _ = window.set_always_on_top(false);
-    let _ = app.emit("agents-bubble-dismiss", ());
 }
 
 /// Qué agentes hay y cuáles se pueden usar.

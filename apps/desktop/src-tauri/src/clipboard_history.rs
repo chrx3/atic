@@ -985,7 +985,6 @@ fn send_paste_chord(with_shift: bool) -> Result<(), String> {
 pub fn summon_clipboard_panel(app: &AppHandle) {
     // Guardar el foco ANTES de que la pill lo robe (solo importa al abrir).
     save_foreground_hwnd();
-    crate::agents::bridge::dismiss_bubble(app);
     let _ = app.emit("pill-clipboard-toggle", ());
 }
 

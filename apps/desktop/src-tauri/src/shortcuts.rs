@@ -179,7 +179,6 @@ pub fn register_shortcuts(app: &AppHandle, bindings: ShortcutBindings<'_>) -> Re
                         clipboard_history::remember_paste_target();
                         let _ = pill.set_always_on_top(true);
                         let _ = pill.show();
-                        crate::agents::bridge::dismiss_bubble(&handle);
                         let _ = pill.emit("pill-radial-press", ());
                     }
                     ShortcutState::Released => {

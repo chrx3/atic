@@ -610,6 +610,7 @@ pub fn anchor_bubble(
     origin: &str,
     gap: i32,
     corner: i32,
+    inset: i32,
 ) -> Option<BubbleAnchor> {
     let bubble = app.get_webview_window(label)?;
     let size = bubble.outer_size().ok()?;
@@ -629,19 +630,23 @@ pub fn anchor_bubble(
         .or_else(|| monitors.first())
         .map(|m| m.work_area)?;
 
-    let fits_below = ay + ah + gap + bh + MARGIN <= work.bottom();
-    let fits_above = ay - gap - bh - MARGIN >= work.y;
-    let fits_right = ax + aw + gap + bw + MARGIN <= work.right();
+    // La ventana es MÁS GRANDE que el globo: `inset` es el marco transparente
+    // donde vive la sombra. Sin descontarlo, el hueco visible entre la pill y
+    // el globo sería `gap + inset` y la punta no llegaría a tocarla.
+    let (vw, vh) = (bw - inset * 2, bh - inset * 2);
+    let fits_below = ay + ah + gap + vh + MARGIN <= work.bottom();
+    let fits_above = ay - gap - vh - MARGIN >= work.y;
+    let fits_right = ax + aw + gap + vw + MARGIN <= work.right();
 
-    // (x, y, lado de la burbuja que mira al origen)
+    // (x, y de la VENTANA, lado del globo que mira al origen)
     let (x, y, side) = if fits_below {
-        (acx - bw / 2, ay + ah + gap, "top")
+        (acx - bw / 2, ay + ah + gap - inset, "top")
     } else if fits_above {
-        (acx - bw / 2, ay - gap - bh, "bottom")
+        (acx - bw / 2, ay - gap - vh - inset, "bottom")
     } else if fits_right {
-        (ax + aw + gap, acy - bh / 2, "left")
+        (ax + aw + gap - inset, acy - bh / 2, "left")
     } else {
-        (ax - gap - bw, acy - bh / 2, "right")
+        (ax - gap - vw - inset, acy - bh / 2, "right")
     };
 
     let (x, y) = clamp(x, y, bw, bh);
@@ -649,9 +654,9 @@ pub fn anchor_bubble(
     // La punta no puede caer sobre una esquina redondeada: se vería despegada
     // del borde. `corner` es el radio, y se le suma el ancho de la propia punta.
     let along = if side == "top" || side == "bottom" {
-        (acx - x).clamp(corner, (bw - corner).max(corner))
+        (acx - x).clamp(inset + corner, (bw - inset - corner).max(inset + corner))
     } else {
-        (acy - y).clamp(corner, (bh - corner).max(corner))
+        (acy - y).clamp(inset + corner, (bh - inset - corner).max(inset + corner))
     };
 
     if !set_bounds(&bubble, x, y, bw, bh) {
@@ -671,6 +676,7 @@ pub fn anchor_bubble(
     _origin: &str,
     _gap: i32,
     _corner: i32,
+    _inset: i32,
 ) -> Option<BubbleAnchor> {
     None
 }

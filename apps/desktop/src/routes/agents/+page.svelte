@@ -42,7 +42,25 @@
   import McpServersModal from "$lib/McpServersModal.svelte";
   import PickerMenu from "$lib/PickerMenu.svelte";
   import ClaudeMark from "$lib/ClaudeMark.svelte";
+  import AgentMessage from "$lib/AgentMessage.svelte";
+  import AgentToolCard from "$lib/AgentToolCard.svelte";
   import type { AgentBackendInfo, McpServerConfig } from "$lib/types";
+
+  /** Una fila ya lista para pintar. */
+  type Row =
+    | { t: "msg"; text: string }
+    | {
+        t: "tool";
+        id: string;
+        name: string;
+        input: unknown;
+        output?: string;
+        isError: boolean;
+        done: boolean;
+      }
+    | { t: "start"; model: string; cwd: string; tools: number; commands: number; mcp: string[] }
+    | { t: "meta"; text: string }
+    | { t: "warn"; text: string };
 
   /** Alias y no nombres completos: el alias sigue apuntando al último de la
    *  familia, así que la lista no envejece con cada release. */
@@ -66,9 +84,7 @@
 
   let anchor = $state<{ side: string; offset: number } | null>(null);
   let shown = $state(false);
-  /** Cuándo se abrió, para no cerrarla con el blur de su propia apertura. */
-  let openedAt = 0;
-  /** Hay un diálogo del sistema abierto: el blur que produce no es «me fui». */
+  /** Hay un diálogo del sistema abierto. */
   let picking = $state(false);
 
   let backends = $state<AgentBackendInfo[]>([]);
@@ -99,6 +115,85 @@
     Math.min(100, ((active?.contextTokens ?? 0) / CONTEXT_WINDOW) * 100),
   );
 
+  /**
+   * El registro plano, emparejado en filas.
+   *
+   * La llamada a una herramienta y su resultado llegan como eventos separados y
+   * con lo que haya en medio. Unirlos acá —y no en el store— mantiene el
+   * registro crudo intacto: es el que sirve para depurar cuando la UI miente.
+   */
+  const rows = $derived.by((): Row[] => {
+    const log = active?.log ?? [];
+    const out: Row[] = [];
+    const byTool = new Map<string, number>();
+
+    for (const e of log) {
+      switch (e.kind) {
+        case "message":
+          out.push({ t: "msg", text: e.text });
+          break;
+        case "toolCall":
+          byTool.set(e.id, out.length);
+          out.push({
+            t: "tool",
+            id: e.id,
+            name: e.name,
+            input: e.input,
+            isError: false,
+            done: false,
+          });
+          break;
+        case "toolResult": {
+          const at = byTool.get(e.id);
+          const row = at !== undefined ? out[at] : undefined;
+          if (row && row.t === "tool") {
+            row.output = e.output;
+            row.isError = e.isError;
+            row.done = true;
+          } else {
+            // Resultado sin llamada: no debería pasar, pero tirarlo dejaría a
+            // la vista mintiendo sobre lo que el agente hizo.
+            out.push({
+              t: "tool",
+              id: e.id,
+              name: "resultado",
+              input: null,
+              output: e.output,
+              isError: e.isError,
+              done: true,
+            });
+          }
+          break;
+        }
+        case "started":
+          out.push({
+            t: "start",
+            model: e.model,
+            cwd: e.cwd,
+            tools: e.tools.length,
+            commands: e.slashCommands.length,
+            mcp: e.mcpServers.map((s) => s.name),
+          });
+          break;
+        case "finished":
+          out.push({
+            t: "meta",
+            text: e.costUsd !== null ? `$${e.costUsd.toFixed(4)}` : "",
+          });
+          break;
+        case "notice":
+          out.push({ t: "meta", text: e.text });
+          break;
+        case "failed":
+          out.push({ t: "warn", text: e.message });
+          break;
+        default:
+          break;
+      }
+    }
+    return out;
+  });
+
   onMount(() => {
     applyTheme(readCachedTheme());
     void agents.init();
@@ -108,23 +203,19 @@
     const un = onAgentsBubbleAnchor((a) => {
       anchor = a;
       shown = false;
-      openedAt = Date.now();
       void tick().then(() => requestAnimationFrame(() => (shown = true)));
     });
 
-    // La pill va a desplegar algo y necesita el frente.
+    // La rueda pide cerrarla (segunda pulsación sobre «Agentes»).
     const unDismiss = onAgentsBubbleDismiss(() => void close());
 
-    // Clic fuera = listo, sigo con lo mío. Es el mismo trato que la rueda y el
-    // historial: aparecen para una cosa y se van sin que haya que cerrarlas.
-    const onBlur = () => {
-      // El margen evita que el propio setFocus de la apertura la cierre, y el
-      // diálogo de archivos es otra ventana: elegir una carpeta no es irse.
-      if (picking || mcpOpen) return;
-      if (Date.now() - openedAt < 400) return;
-      void close();
-    };
-    window.addEventListener("blur", onBlur);
+    // NO se cierra al perder el foco.
+    //
+    // Lo hacía, por simetría con la rueda y el historial, y estaba mal: esos
+    // aparecen para una acción y se van. Una sesión de agente es una
+    // conversación en curso — abrir el clipboard para copiar algo que le vas a
+    // pegar la mataba justo cuando hacía falta. La rueda la abre y la cierra;
+    // perder el foco solo la manda atrás.
 
     void (async () => {
       try {
@@ -150,7 +241,6 @@
 
     return () => {
       window.removeEventListener("keydown", onKeyDown);
-      window.removeEventListener("blur", onBlur);
       void un.then((fn) => fn());
       void unDismiss.then((fn) => fn());
       agents.watch(null);
@@ -332,9 +422,27 @@
   <span class="bub-tail" aria-hidden="true"></span>
 
   <div class="bub-body">
-    <!-- Sin barra de título ni botones de ventana: es un modal, y un modal se
-         va solo al tocar fuera. La única fila de arriba es la que hace falta
-         cuando hay más de una sesión. -->
+    <!-- Sin barra de título: es un modal, no una ventana. Pero como YA NO se
+         cierra al perder el foco, tiene que haber una forma visible de
+         cerrarlo; si no, la única salida sería recordar el atajo. -->
+    <button
+      type="button"
+      class="shut"
+      onclick={() => void close()}
+      aria-label="Cerrar (Esc)"
+      title="Cerrar · Esc"
+    >
+      <svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true">
+        <path
+          d="M6 6l12 12M18 6L6 18"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2.2"
+          stroke-linecap="round"
+        />
+      </svg>
+    </button>
+
     {#if agents.sessions.length > 1}
       <div class="tabs" role="tablist" aria-label="Sesiones">
         {#each agents.sessions as s (s.id)}
@@ -390,46 +498,42 @@
           </p>
         {/if}
       {:else}
-        {#each active.log as entry, i (i)}
-          {#if entry.kind === "message"}
-            <p class="msg">{entry.text}</p>
-          {:else if entry.kind === "toolCall"}
-            <p class="tool">
-              <span class="tool-mark">⏺</span>
-              <span class="tool-name">{entry.name}</span>
-              <span class="tool-arg">{toolSummary(entry.input)}</span>
-            </p>
-          {:else if entry.kind === "toolResult"}
-            <pre class="out" class:is-error={entry.isError}>{entry.output}</pre>
-          {:else if entry.kind === "started"}
+        {#each rows as row, i (i)}
+          {#if row.t === "msg"}
+            <AgentMessage text={row.text} />
+          {:else if row.t === "tool"}
+            <AgentToolCard
+              name={row.name}
+              input={row.input}
+              output={row.output}
+              isError={row.isError}
+              done={row.done}
+            />
+          {:else if row.t === "start"}
             <section class="card card-hi">
-              <h2 class="card-title">{entry.model || "sesión"}</h2>
-              <span class="hi-mark"><ClaudeMark size={28} /></span>
+              <h2 class="card-title">{row.model || "sesión"}</h2>
+              <span class="hi-mark"><ClaudeMark size={26} /></span>
               <div class="hi-copy">
-                <p class="card-line dim">{entry.cwd}</p>
+                <p class="card-line dim">{row.cwd}</p>
                 <p class="card-line dim">
-                  {entry.tools.length} herramientas · {entry.slashCommands.length}
-                  comandos{entry.mcpServers.length > 0
-                    ? ` · MCP: ${entry.mcpServers.map((s) => s.name).join(", ")}`
+                  {row.tools} herramientas · {row.commands} comandos{row.mcp
+                    .length > 0
+                    ? ` · MCP: ${row.mcp.join(", ")}`
                     : ""}
                 </p>
               </div>
             </section>
-          {:else if entry.kind === "finished"}
-            <p class="meta">
-              ─ fin del turno{entry.costUsd !== null
-                ? ` · $${entry.costUsd.toFixed(4)}`
-                : ""}
-            </p>
-          {:else if entry.kind === "notice"}
-            <p class="notice">{entry.text}</p>
-          {:else if entry.kind === "failed"}
-            <p class="warn">{entry.message}</p>
+          {:else if row.t === "meta"}
+            <!-- Cierre de turno: una regla con el costo al medio. Separa las
+                 respuestas entre sí, que sin esto se leían como una sola. -->
+            <p class="turn"><span class="turn-t">{row.text}</span></p>
+          {:else if row.t === "warn"}
+            <p class="warn">{row.text}</p>
           {/if}
         {/each}
 
         {#if active.status === "working"}
-          <p class="meta live">⏺ trabajando…</p>
+          <p class="meta live">trabajando…</p>
         {/if}
       {/if}
     </div>
@@ -597,10 +701,16 @@
 
   /* ─── La burbuja ────────────────────────────────────────────────────────
    *
-   * El hueco para la punta se reserva con padding en el lado que apunta, así
-   * el cuerpo nunca la tapa y la sombra la envuelve entera.
+   * El marco transparente (`--inset`) NO es decorativo: es el sitio donde la
+   * sombra tiene que caber. Antes había 14 px de hueco y una sombra de 48 px de
+   * difuminado, así que la ventana la cortaba en seco y lo que se veía era una
+   * banda oscura con bordes rectos alrededor del globo — la «sombra fea».
+   *
+   * La regla es: desplazamiento + difuminado <= inset. Cambiar una obliga a
+   * mirar la otra, y Rust usa el mismo número para descontarlo al colocarla.
    */
   .bub {
+    --inset: 28px;
     --coral: #d97757;
     --ink: #17151400;
     --shell: #1c1917;
@@ -614,7 +724,7 @@
     width: 100vw;
     height: 100vh;
     box-sizing: border-box;
-    padding: 14px;
+    padding: var(--inset);
 
     /* Mismos tokens que el morph de la rueda: las dos superficies salen de la
        pill, así que tienen que sentirse la misma cosa. Definidos en un solo
@@ -636,24 +746,16 @@
   /* Crece DESDE la punta: es lo que hace que se lea como desplegarse de la
      pill y no como una ventana que apareció encima. */
   .bub[data-side="top"] {
-    transform-origin: var(--tail) 0;
-    padding-top: 14px;
-    padding-bottom: 0;
+    transform-origin: var(--tail) var(--inset);
   }
   .bub[data-side="bottom"] {
-    transform-origin: var(--tail) 100%;
-    padding-top: 0;
-    padding-bottom: 14px;
+    transform-origin: var(--tail) calc(100% - var(--inset));
   }
   .bub[data-side="left"] {
-    transform-origin: 0 var(--tail);
-    padding-left: 14px;
-    padding-right: 0;
+    transform-origin: var(--inset) var(--tail);
   }
   .bub[data-side="right"] {
-    transform-origin: 100% var(--tail);
-    padding-left: 0;
-    padding-right: 14px;
+    transform-origin: calc(100% - var(--inset)) var(--tail);
   }
 
   @media (prefers-reduced-motion: reduce) {
@@ -674,7 +776,9 @@
     border: 1px solid var(--line);
     border-radius: 18px;
     background: var(--shell);
-    box-shadow: 0 18px 48px rgb(0 0 0 / 45%);
+    /* Cabe entera en `--inset` (6 + 20 = 26 < 28), así que la ventana no la
+       recorta y el globo queda flotando de verdad. */
+    box-shadow: 0 6px 20px rgb(0 0 0 / 42%);
     color: var(--text);
     overflow: hidden;
   }
@@ -691,14 +795,14 @@
     transform: rotate(45deg);
   }
   .bub[data-side="top"] .bub-tail {
-    top: 7px;
+    top: calc(var(--inset) - 8px);
     left: calc(var(--tail) - 8px);
     border-right: 0;
     border-bottom: 0;
     border-top-left-radius: 4px;
   }
   .bub[data-side="bottom"] .bub-tail {
-    bottom: 7px;
+    bottom: calc(var(--inset) - 8px);
     left: calc(var(--tail) - 8px);
     border-left: 0;
     border-top: 0;
@@ -706,14 +810,14 @@
   }
   .bub[data-side="left"] .bub-tail {
     top: calc(var(--tail) - 8px);
-    left: 7px;
+    left: calc(var(--inset) - 8px);
     border-top: 0;
     border-right: 0;
     border-bottom-left-radius: 4px;
   }
   .bub[data-side="right"] .bub-tail {
     top: calc(var(--tail) - 8px);
-    right: 7px;
+    right: calc(var(--inset) - 8px);
     border-bottom: 0;
     border-left: 0;
     border-top-right-radius: 4px;
@@ -846,67 +950,56 @@
     flex: 1;
   }
 
-  .msg {
-    margin: 0;
-    font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
-    font-size: 0.78125rem;
-    line-height: 1.6;
-    white-space: pre-wrap;
-  }
-
-  .tool {
-    display: flex;
-    gap: 0.45rem;
-    margin: 0;
-    font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
-    font-size: 0.75rem;
-  }
-  .tool-mark {
-    color: var(--coral);
-  }
-  .tool-name {
-    flex-shrink: 0;
-    color: var(--text);
-  }
-  .tool-arg {
-    min-width: 0;
-    overflow: hidden;
-    color: var(--dim);
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  /* Salida de herramienta con barra a la izquierda, como los avisos del CLI:
-     se distingue del texto del agente sin gritar. */
-  .out {
-    max-height: 12rem;
-    margin: 0 0 0 0.35rem;
-    border-left: 2px solid var(--line);
-    padding: 0 0 0 0.7rem;
-    color: var(--dim);
-    font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
-    font-size: 0.71875rem;
-    line-height: 1.5;
-    white-space: pre-wrap;
-    overflow: auto;
-  }
-  .out.is-error {
-    border-left-color: var(--coral);
-  }
-
-  .meta,
-  .notice {
+  .meta {
     margin: 0;
     color: var(--faint);
     font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
     font-size: 0.6875rem;
   }
-  .notice {
-    border-left: 2px solid var(--line);
-    padding-left: 0.7rem;
-  }
   .live {
     animation: pulse 1.6s ease-in-out infinite;
+  }
+
+  /* Cierre de turno: una regla fina que corta el ancho. Sin ella, dos
+     respuestas seguidas se leían como una sola parrafada. */
+  .turn {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    margin: 0.15rem 0;
+    color: var(--faint);
+    font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+    font-size: 0.625rem;
+  }
+  .turn::before,
+  .turn::after {
+    height: 1px;
+    flex: 1;
+    background: var(--line);
+    content: "";
+  }
+  .turn-t {
+    flex-shrink: 0;
+  }
+
+  /* Flotando sobre el registro y en gris: está para cuando se busca, no para
+     competir con lo que el agente está diciendo. */
+  .shut {
+    position: absolute;
+    top: calc(var(--inset) + 8px);
+    right: calc(var(--inset) + 8px);
+    z-index: 5;
+    display: flex;
+    border: 0;
+    border-radius: 999px;
+    padding: 0.25rem;
+    background: transparent;
+    color: var(--faint);
+    cursor: pointer;
+  }
+  .shut:hover {
+    background: #2a2522;
+    color: var(--text);
   }
 
   .warn {
