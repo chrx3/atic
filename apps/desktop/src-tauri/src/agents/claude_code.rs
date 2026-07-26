@@ -26,7 +26,7 @@ use std::thread;
 
 use serde_json::{json, Value};
 
-use super::{AgentBackend, AgentEvent, AgentSession, StartOptions};
+use super::{AgentBackend, AgentEvent, AgentSession, McpServerState, StartOptions};
 
 pub struct ClaudeCode;
 
@@ -63,6 +63,12 @@ impl AgentBackend for ClaudeCode {
             .arg("stream-json")
             // stream-json no emite el detalle sin esto.
             .arg("--verbose")
+            // Sin esto el modo `manual` NO pregunta: deniega la herramienta y
+            // la lista en `permission_denials` del resultado. Comprobado: con
+            // el flag llega `control_request/can_use_tool` y el turno espera.
+            // No aparece en `claude --help`.
+            .arg("--permission-prompt-tool")
+            .arg("stdio")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -72,6 +78,19 @@ impl AgentBackend for ClaudeCode {
         }
         if let Some(id) = &options.resume {
             cmd.arg("--resume").arg(id);
+        }
+        if let Some(model) = &options.model {
+            cmd.arg("--model").arg(model);
+        }
+        // Sin modo explícito, se preguntan todos: es el default seguro para una
+        // interfaz gráfica, donde el usuario está mirando y puede contestar.
+        cmd.arg("--permission-mode")
+            .arg(options.permission_mode.as_deref().unwrap_or("manual"));
+        if let Some(mcp) = &options.mcp_config {
+            cmd.arg("--mcp-config").arg(mcp);
+        }
+        for dir in &options.add_dirs {
+            cmd.arg("--add-dir").arg(dir);
         }
 
         #[cfg(windows)]
@@ -130,11 +149,16 @@ impl AgentBackend for ClaudeCode {
             });
         }
 
-        Ok(Box::new(ClaudeSession {
+        let mut session = ClaudeSession {
             child,
             stdin: Some(stdin),
             stopping,
-        }))
+        };
+        // Handshake del canal de control. Abre la vía por la que después llegan
+        // las pedidas de permiso; sin él, el turno se bloquearía esperando una
+        // respuesta que nadie podría mandar.
+        session.control(json!({ "subtype": "initialize" }))?;
+        Ok(Box::new(session))
     }
 }
 
@@ -162,43 +186,83 @@ fn translate(line: &str) -> Vec<AgentEvent> {
     };
 
     match v.get("type").and_then(Value::as_str) {
-        Some("system") => {
-            vec![AgentEvent::Started {
-                session_id: str_at(&v, "session_id"),
-                tools: v
-                    .get("tools")
-                    .and_then(Value::as_array)
-                    .map(|a| {
-                        a.iter()
-                            .filter_map(Value::as_str)
-                            .map(str::to_string)
-                            .collect()
-                    })
-                    .unwrap_or_default(),
-                cwd: str_at(&v, "cwd"),
+        // El agente quedó esperando una respuesta nuestra.
+        Some("control_request")
+            if v.get("request")
+                .and_then(|r| r.get("subtype"))
+                .and_then(Value::as_str)
+                == Some("can_use_tool") =>
+        {
+            let req = v.get("request").cloned().unwrap_or(Value::Null);
+            vec![AgentEvent::Permission {
+                // El id del control, no el del tool_use: es lo que hay que
+                // devolver para desbloquear el turno.
+                id: str_at(&v, "request_id"),
+                tool: str_at(&req, "tool_name"),
+                description: str_at(&req, "description"),
+                input: req.get("input").cloned().unwrap_or(Value::Null),
+                suggestions: req
+                    .get("permission_suggestions")
+                    .cloned()
+                    .unwrap_or(Value::Null),
             }]
         }
 
-        Some("assistant") => blocks(&v)
-            .iter()
-            .filter_map(|b| match b.get("type").and_then(Value::as_str) {
-                Some("text") => {
-                    b.get("text")
-                        .and_then(Value::as_str)
-                        .map(|t| AgentEvent::Message {
-                            text: t.to_string(),
-                        })
-                }
-                Some("tool_use") => Some(AgentEvent::ToolCall {
-                    id: str_at(b, "id"),
-                    name: str_at(b, "name"),
-                    input: b.get("input").cloned().unwrap_or(Value::Null),
-                }),
-                // Bloques que esta capa no modela (thinking, etc.): se ignoran
-                // en silencio porque no aportan a la conversación visible.
-                _ => None,
-            })
-            .collect(),
+        // Respuestas a lo que preguntamos nosotros (el handshake). No son de la
+        // conversación y no aportan nada a la vista.
+        Some("control_response") | Some("control_cancel_request") => Vec::new(),
+
+        Some("system") if v.get("subtype").and_then(Value::as_str) == Some("init") => {
+            vec![AgentEvent::Started {
+                session_id: str_at(&v, "session_id"),
+                tools: strings_at(&v, "tools"),
+                cwd: str_at(&v, "cwd"),
+                model: str_at(&v, "model"),
+                slash_commands: strings_at(&v, "slash_commands"),
+                mcp_servers: v
+                    .get("mcp_servers")
+                    .and_then(Value::as_array)
+                    .map(|a| {
+                        a.iter()
+                            .map(|s| McpServerState {
+                                name: str_at(s, "name"),
+                                status: str_at(s, "status"),
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+            }]
+        }
+
+        Some("assistant") => {
+            let mut out: Vec<AgentEvent> = blocks(&v)
+                .iter()
+                .filter_map(|b| match b.get("type").and_then(Value::as_str) {
+                    Some("text") => {
+                        b.get("text")
+                            .and_then(Value::as_str)
+                            .map(|t| AgentEvent::Message {
+                                text: t.to_string(),
+                            })
+                    }
+                    Some("tool_use") => Some(AgentEvent::ToolCall {
+                        id: str_at(b, "id"),
+                        name: str_at(b, "name"),
+                        input: b.get("input").cloned().unwrap_or(Value::Null),
+                    }),
+                    // Bloques que esta capa no modela (thinking, etc.): se
+                    // ignoran en silencio porque no aportan a la conversación
+                    // visible.
+                    _ => None,
+                })
+                .collect();
+            // El contexto se mide por mensaje, no al final del turno: lo que se
+            // quiere ver es cómo sube mientras el agente trabaja.
+            if let Some(tokens) = context_tokens(&v) {
+                out.push(AgentEvent::Context { tokens });
+            }
+            out
+        }
 
         // Los resultados de herramienta llegan como un turno de usuario.
         Some("user") => blocks(&v)
@@ -263,6 +327,33 @@ fn str_at(v: &Value, key: &str) -> String {
         .to_string()
 }
 
+/// Una lista de strings, tolerando que el campo no esté.
+fn strings_at(v: &Value, key: &str) -> Vec<String> {
+    v.get(key)
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Cuánto contexto ocupa el mensaje.
+///
+/// Se suman los tres tipos de entrada —nueva, leída de caché y escrita a
+/// caché— porque las tres ocupan ventana. Mirar solo `input_tokens` daría un
+/// número minúsculo en cualquier conversación con caché, que son todas.
+fn context_tokens(v: &Value) -> Option<u64> {
+    let usage = v.get("message")?.get("usage")?;
+    let field = |k: &str| usage.get(k).and_then(Value::as_u64).unwrap_or(0);
+    let total = field("input_tokens")
+        + field("cache_read_input_tokens")
+        + field("cache_creation_input_tokens");
+    (total > 0).then_some(total)
+}
+
 /// Los bloques de contenido de un mensaje, vengan como lista o como texto.
 fn blocks(v: &Value) -> Vec<Value> {
     v.get("message")
@@ -295,19 +386,55 @@ struct ClaudeSession {
     stopping: Arc<AtomicBool>,
 }
 
-impl AgentSession for ClaudeSession {
-    fn send(&mut self, text: &str) -> Result<(), String> {
+impl ClaudeSession {
+    /// Escribe una línea en stdin del agente.
+    fn write(&mut self, line: Value) -> Result<(), String> {
         let stdin = self
             .stdin
             .as_mut()
             .ok_or_else(|| "la sesión ya está cerrada".to_string())?;
-        // Mismo sobre que la Messages API: el CLI espera un turno de usuario.
-        let line = json!({
-            "type": "user",
-            "message": { "role": "user", "content": [{ "type": "text", "text": text }] }
-        });
         writeln!(stdin, "{line}").map_err(|e| format!("no se pudo enviar: {e}"))?;
         stdin.flush().map_err(|e| format!("no se pudo enviar: {e}"))
+    }
+
+    /// Manda un pedido por el canal de control.
+    fn control(&mut self, request: Value) -> Result<(), String> {
+        let id = uuid::Uuid::new_v4().to_string();
+        self.write(json!({
+            "type": "control_request",
+            "request_id": id,
+            "request": request,
+        }))
+    }
+}
+
+impl AgentSession for ClaudeSession {
+    fn send(&mut self, text: &str) -> Result<(), String> {
+        // Mismo sobre que la Messages API: el CLI espera un turno de usuario.
+        self.write(json!({
+            "type": "user",
+            "message": { "role": "user", "content": [{ "type": "text", "text": text }] }
+        }))
+    }
+
+    fn respond_permission(&mut self, id: &str, allow: bool) -> Result<(), String> {
+        // El `request_id` de la respuesta tiene que ser el del pedido: es lo
+        // que empareja la contestación con el turno detenido.
+        let decision = if allow {
+            // Sin `updatedInput` el CLI toma la herramienta como aprobada tal
+            // cual la pidió. Modificarla es otra función, no esta.
+            json!({ "behavior": "allow" })
+        } else {
+            json!({ "behavior": "deny", "message": "Permiso denegado desde Atic." })
+        };
+        self.write(json!({
+            "type": "control_response",
+            "response": {
+                "subtype": "success",
+                "request_id": id,
+                "response": decision,
+            }
+        }))
     }
 
     fn stop(&mut self) {
@@ -334,20 +461,61 @@ mod tests {
     #[test]
     fn traduce_el_init_del_sistema() {
         let events = translate(
-            r#"{"type":"system","subtype":"init","cwd":"C:\\p","session_id":"s1","tools":["Bash","Read"]}"#,
+            r#"{"type":"system","subtype":"init","cwd":"C:\\p","session_id":"s1","tools":["Bash","Read"],"model":"claude-sonnet-5","slash_commands":["review"],"mcp_servers":[]}"#,
         );
         match &events[0] {
             AgentEvent::Started {
                 session_id,
                 tools,
                 cwd,
+                model,
+                ..
             } => {
                 assert_eq!(session_id, "s1");
                 assert_eq!(tools, &["Bash".to_string(), "Read".to_string()]);
                 assert_eq!(cwd, "C:\\p");
+                assert_eq!(model, "claude-sonnet-5");
             }
             other => panic!("esperaba Started, salió {other:?}"),
         }
+    }
+
+    /// El permiso trae el id del CANAL DE CONTROL, no el del `tool_use`.
+    ///
+    /// Contestar con el del tool_use deja el turno colgado para siempre: el
+    /// CLI empareja la respuesta por `request_id` y descarta lo que no reconoce.
+    #[test]
+    fn traduce_una_pedida_de_permiso() {
+        let events = translate(
+            r#"{"type":"control_request","request_id":"c7a3","request":{"subtype":"can_use_tool","tool_name":"Write","display_name":"Write","input":{"file_path":"a.txt"},"description":"a.txt","permission_suggestions":[{"type":"setMode","mode":"acceptEdits"}],"tool_use_id":"toolu_9"}}"#,
+        );
+        match &events[0] {
+            AgentEvent::Permission {
+                id,
+                tool,
+                description,
+                ..
+            } => {
+                assert_eq!(id, "c7a3");
+                assert_eq!(tool, "Write");
+                assert_eq!(description, "a.txt");
+            }
+            other => panic!("esperaba Permission, salió {other:?}"),
+        }
+    }
+
+    /// El contexto son las tres entradas sumadas. Con caché, `input_tokens`
+    /// solo es una fracción minúscula y la barra parecería vacía siempre.
+    #[test]
+    fn el_contexto_suma_el_cache() {
+        let events = translate(
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"hola"}],"usage":{"input_tokens":10,"cache_read_input_tokens":900,"cache_creation_input_tokens":90,"output_tokens":5}}}"#,
+        );
+        let tokens = events.iter().find_map(|e| match e {
+            AgentEvent::Context { tokens } => Some(*tokens),
+            _ => None,
+        });
+        assert_eq!(tokens, Some(1000));
     }
 
     #[test]

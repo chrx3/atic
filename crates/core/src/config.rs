@@ -83,6 +83,12 @@ pub struct Config {
     pub sound_dictation_start: String,
     pub sound_dictation_done: String,
     pub sound_capture: String,
+
+    /// Servidores MCP que Atic le suma al agente, como JSON serializado.
+    ///
+    /// Se guarda crudo porque el formato lo define cada servidor y esta capa no
+    /// tiene por qué conocerlo: solo lo transporta hasta `--mcp-config`.
+    pub agent_mcp_servers: String,
     /// Pistas a grabar: `both` | `mic` | `system`.
     pub record_tracks: String,
     /// Pistas a transcribir: `both` | `mic` | `system`.
@@ -171,6 +177,7 @@ impl Default for Config {
             sound_dictation_start: String::new(),
             sound_dictation_done: String::new(),
             sound_capture: String::new(),
+            agent_mcp_servers: String::new(),
             record_tracks: "both".to_string(),
             transcribe_tracks: "both".to_string(),
             speakers_mode: false,
@@ -237,6 +244,7 @@ struct ConfigFile {
     sound_dictation_start: Option<String>,
     sound_dictation_done: Option<String>,
     sound_capture: Option<String>,
+    agent_mcp_servers: Option<String>,
     record_tracks: Option<String>,
     transcribe_tracks: Option<String>,
     speakers_mode: Option<bool>,
@@ -332,6 +340,7 @@ impl Default for ConfigFile {
             sound_dictation_start: None,
             sound_dictation_done: None,
             sound_capture: None,
+            agent_mcp_servers: None,
             record_tracks: None,
             transcribe_tracks: None,
             speakers_mode: None,
@@ -481,6 +490,7 @@ impl From<ConfigFile> for Config {
             sound_dictation_start: f.sound_dictation_start.unwrap_or_default(),
             sound_dictation_done: f.sound_dictation_done.unwrap_or_default(),
             sound_capture: f.sound_capture.unwrap_or_default(),
+            agent_mcp_servers: f.agent_mcp_servers.unwrap_or_default(),
             record_tracks: f.record_tracks.unwrap_or_else(|| "both".into()),
             transcribe_tracks: f.transcribe_tracks.unwrap_or_else(|| "both".into()),
             speakers_mode: f.speakers_mode.unwrap_or(false),

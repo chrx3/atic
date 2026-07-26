@@ -103,6 +103,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_drag::init())
+        .plugin(tauri_plugin_notification::init())
         .invoke_handler(tauri::generate_handler![
             commands::start_recording,
             commands::stop_recording,
@@ -170,10 +171,12 @@ pub fn run() {
             state::summon_pill_here,
             state::pill_trace,
             beep::preview_sound,
+            agents::bridge::show_agents_window,
             agents::bridge::agent_backends,
             agents::bridge::agent_sessions,
             agents::bridge::agent_start,
             agents::bridge::agent_send,
+            agents::bridge::agent_permission,
             agents::bridge::agent_stop,
             clipboard_history::restore_pill_position,
             snippets::list_snippets,
@@ -339,7 +342,13 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| match event {
-            WindowEvent::CloseRequested { api, .. } if window.label() == "main" => {
+            // Cerrar oculta, no destruye. En la consola de agentes eso además
+            // es lo correcto de fondo: el proceso del agente sigue vivo, así
+            // que destruir la ventana dejaría la sesión corriendo sin ninguna
+            // vista posible que la recupere.
+            WindowEvent::CloseRequested { api, .. }
+                if window.label() == "main" || window.label() == "agents" =>
+            {
                 api.prevent_close();
                 let _ = window.hide();
             }

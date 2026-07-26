@@ -34,6 +34,7 @@ import type {
   AgentBackendInfo,
   AgentEventPayload,
   AgentSessionInfo,
+  AgentStartOptions,
   PasteQueueItem,
   SearchHit,
   OverlayInfo,
@@ -480,14 +481,16 @@ export const previewSound = (action: string, voice: string) =>
 export const agentBackends = () => invoke<AgentBackendInfo[]>("agent_backends");
 /** Sesiones vivas: para que una vista recién montada adopte lo que ya corre. */
 export const agentSessions = () => invoke<AgentSessionInfo[]>("agent_sessions");
+/** Abre la consola de agentes (ventana propia). */
+export const showAgentsWindow = () => invoke<void>("show_agents_window");
 /** Arranca una sesión y devuelve su clave local. */
-export const agentStart = (
-  backend: string,
-  cwd?: string,
-  resume?: string,
-) => invoke<string>("agent_start", { backend, cwd, resume });
+export const agentStart = (backend: string, options?: AgentStartOptions) =>
+  invoke<string>("agent_start", { backend, options });
 export const agentSend = (session: string, text: string) =>
   invoke<void>("agent_send", { session, text });
+/** Contesta un permiso. El turno del agente está detenido hasta esta llamada. */
+export const agentPermission = (session: string, id: string, allow: boolean) =>
+  invoke<void>("agent_permission", { session, id, allow });
 export const agentStop = (session: string) =>
   invoke<void>("agent_stop", { session });
 

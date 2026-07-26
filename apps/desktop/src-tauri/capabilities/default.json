@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Permisos para las ventanas principal y pill",
-  "windows": ["main", "pill", "capture-shelf", "capture-overlay"],
+  "windows": ["main", "pill", "capture-shelf", "capture-overlay", "agents"],
   "permissions": [
     "core:default",
     "core:event:default",
@@ -29,6 +29,7 @@
     "global-shortcut:allow-register-all",
     "global-shortcut:allow-unregister",
     "global-shortcut:allow-unregister-all",
-    "drag:default"
+    "drag:default",
+    "notification:default"
   ]
 }

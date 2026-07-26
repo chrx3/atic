@@ -31,7 +31,6 @@
   import ToolIcon from "$lib/ToolIcon.svelte";
   import ClipboardHistoryList from "$lib/ClipboardHistoryList.svelte";
   import SnippetsList from "$lib/SnippetsList.svelte";
-  import AgentsChat from "$lib/AgentsChat.svelte";
   import { agents } from "$lib/agentSessions.svelte";
   import ParticleWheel from "$lib/ParticleWheel.svelte";
   import { TOOLS, type ToolId } from "$lib/tools";
@@ -86,12 +85,21 @@
     onClipboardHistoryChanged,
     onSnippetsChanged,
     openDataDir,
+    showAgentsWindow,
   } from "$lib/api";
 
-  type Surface = "none" | "wheel" | "clipboard" | "snippets" | "agents";
+  type Surface = "none" | "wheel" | "clipboard" | "snippets";
 
-  /** Paneles: superficies que se despliegan bajo la barra. */
-  type PanelKind = "clipboard" | "snippets" | "agents";
+  /**
+   * Paneles: superficies que se despliegan bajo la barra.
+   *
+   * Los agentes NO están acá y no es un olvido. Un panel de la pill sirve para
+   * «elegí y listo»: mirás una lista, tocás una cosa, se cierra. Una sesión de
+   * agente es lo contrario —salida larga, revisar qué tocó, aprobar— y eso pide
+   * una ventana que se queda. La pill se queda con el aviso, que sí es su
+   * trabajo: decirte que pasó algo y llevarte a la consola.
+   */
+  type PanelKind = "clipboard" | "snippets";
 
   // ─── Eje 1: actividad ────────────────────────────────────────────────────
   let recording = $state(false);
@@ -121,16 +129,14 @@
   let panelUp = $state(false);
   let surfaceOpenedAt = 0;
 
-  const panelOpen = $derived(
-    surface === "clipboard" || surface === "snippets" || surface === "agents",
-  );
+  const panelOpen = $derived(surface === "clipboard" || surface === "snippets");
 
   /**
    * Aviso de agente en la barra compacta.
    *
-   * Es lo que hace que «corre en segundo plano» signifique algo: el panel puede
-   * estar cerrado y la sesión sigue viva, así que la pill tiene que ser el
-   * lugar donde te enteras de que respondió.
+   * Es lo que hace que «corre en segundo plano» signifique algo: la consola
+   * puede estar cerrada y la sesión sigue viva, así que la pill tiene que ser
+   * el lugar donde te enteras de que respondió o de que te está esperando.
    */
   const agentAlert = $derived(agents.unread > 0 || agents.working);
 
@@ -504,7 +510,7 @@
     else if (id === "dictation") void toggleDictate();
 
     try {
-      if (id === "clipboard" || id === "snippets" || id === "agents") {
+      if (id === "clipboard" || id === "snippets") {
         // La pill ya está en el cursor: el panel se abre acá mismo.
         surface = id;
         surfaceOpenedAt = Date.now();
@@ -521,6 +527,9 @@
       leavingWheel = false;
       await wheelHome();
       if (id === "captures") await startCaptureSession();
+      // La consola es una ventana aparte: la rueda la abre y se va, igual que
+      // con la ventana principal.
+      else if (id === "agents") await showAgentsWindow();
     } catch (err) {
       console.warn("acción de la rueda", err);
     } finally {
@@ -534,9 +543,6 @@
       await refreshClipboard();
       return;
     }
-    // Los agentes no cargan nada: el estado ya está en el store, que escucha
-    // desde que arranca la pill aunque el panel nunca se haya abierto.
-    if (kind === "agents") return;
     await Promise.all([refreshSnippets(), loadScratchpad()]);
   }
 
@@ -633,9 +639,7 @@
 
   /** Título de la barra con un panel abierto. */
   function panelTitle(kind: Surface): string {
-    if (kind === "clipboard") return "Clipboard";
-    if (kind === "agents") return "Agentes";
-    return "Textos";
+    return kind === "clipboard" ? "Clipboard" : "Textos";
   }
 
   /** Atajo de panel: si ya está abierto, lo reabre en el cursor. */
@@ -816,7 +820,9 @@
     // Escuchar a los agentes desde el arranque, no al abrir el panel: una
     // sesión que responde con la pill cerrada tiene que dejar el aviso puesto.
     // Si empezáramos a escuchar al abrir, el aviso no existiría nunca.
-    void agents.init();
+    // La pill es la que notifica: es la única ventana que siempre está viva, y
+    // si notificaran todas habría un toast por ventana abierta.
+    void agents.init({ notify: true });
 
     (async () => {
       recording = await isRecording();
@@ -923,9 +929,6 @@
       // parte normal de escribir, no una señal de que terminaste. Se cierra con
       // Escape o con la X, que son intenciones explícitas.
       if (surface === "snippets" && snippetsTab === "scratchpad") return;
-      // Los agentes, igual: se le escribe. Y encima es la superficie donde
-      // salir a mirar otra cosa mientras trabaja es el uso previsto.
-      if (surface === "agents") return;
       // El margen evita que el propio setFocus de la apertura la cierre.
       if (surface !== "none" && Date.now() - surfaceOpenedAt > 400) {
         if (surface === "wheel") void closeWheel();
@@ -1011,8 +1014,6 @@
         onPasted={() => void closePanels()}
         onError={() => (pasting = false)}
       />
-    {:else if surface === "agents"}
-      <AgentsChat compact />
     {:else}
       <!-- Las pestañas nombran el contenido, no la vista: "Lista" no decía
            lista de qué, y era lo único que distinguía los textos reusables del
@@ -1110,15 +1111,11 @@
           {#if recording}
             {@render recDot(`Grabando ${fmt(elapsed)} · clic para detener`)}
           {/if}
-          <!-- Los agentes no tienen carpeta: su estado son procesos, no
-               archivos que Atic guarde. -->
-          {#if surface === "clipboard" || surface === "snippets"}
-            {@render iconBtn("Abrir carpeta", "M4 19V6h6l2 2.5h8V19H4Z", () =>
-              void openDataDir(surface === "clipboard" ? "clipboard" : "snippets").catch(
-                console.warn,
-              ),
-            16)}
-          {/if}
+          {@render iconBtn("Abrir carpeta", "M4 19V6h6l2 2.5h8V19H4Z", () =>
+            void openDataDir(surface === "clipboard" ? "clipboard" : "snippets").catch(
+              console.warn,
+            ),
+          16)}
           {@render iconBtn("Cerrar (Esc)", "M6 6l12 12M18 6L6 18", () =>
             void closePanels(),
           )}
@@ -1210,16 +1207,23 @@
             <button
               type="button"
               class="p-agent"
-              class:is-working={agents.working && agents.unread === 0}
+              class:is-waiting={agents.waiting > 0}
+              class:is-working={agents.waiting === 0 &&
+                agents.working &&
+                agents.unread === 0}
               data-no-drag
-              onclick={() => void openPanel("agents", false)}
-              title={agents.unread > 0
-                ? `${agents.unread} respuesta(s) sin leer`
-                : "El agente está trabajando"}
-              aria-label="Abrir agentes"
+              onclick={() => void showAgentsWindow()}
+              title={agents.waiting > 0
+                ? "El agente espera tu permiso"
+                : agents.unread > 0
+                  ? `${agents.unread} respuesta(s) sin leer`
+                  : "El agente está trabajando"}
+              aria-label="Abrir la consola de agentes"
             >
               <ToolIcon id="agents" size={13} strokeWidth={1.6} />
-              {#if agents.unread > 0}
+              {#if agents.waiting > 0}
+                <span class="p-agent-count">permiso</span>
+              {:else if agents.unread > 0}
                 <span class="p-agent-count">{agents.unread}</span>
               {/if}
             </button>
@@ -1616,6 +1620,12 @@
     background: color-mix(in srgb, var(--rb-accent) 16%, transparent);
     color: var(--rb-accent);
     cursor: pointer;
+  }
+  /* Espera una decisión: es lo único que de verdad bloquea al agente, así que
+     es lo único que usa el color de alerta. */
+  .p-agent.is-waiting {
+    background: color-mix(in srgb, var(--rb-record) 20%, transparent);
+    color: var(--rb-record);
   }
   /* Trabajando sin nada nuevo que leer: presente, pero sin reclamar atención.
      El número es la señal fuerte; esto es solo "sigue vivo". */

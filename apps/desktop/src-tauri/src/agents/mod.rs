@@ -39,6 +39,12 @@ pub enum AgentEvent {
         tools: Vec<String>,
         /// Directorio de trabajo del agente.
         cwd: String,
+        /// Modelo en uso, tal como lo informa el backend.
+        model: String,
+        /// Comandos de barra ofrecidos por el agente (skills incluidas).
+        slash_commands: Vec<String>,
+        /// Servidores MCP que el agente cargó y con qué estado.
+        mcp_servers: Vec<McpServerState>,
     },
 
     /// Texto del asistente.
@@ -65,6 +71,35 @@ pub enum AgentEvent {
         is_error: bool,
     },
 
+    /// El agente pide permiso para usar una herramienta y **está esperando**.
+    ///
+    /// Nada avanza hasta que se conteste con
+    /// [`AgentSession::respond_permission`]. Es el único evento con esa
+    /// propiedad, y por eso la UI lo trata distinto: no es una línea más del
+    /// registro, es un turno que quedó bloqueado en el usuario.
+    #[serde(rename_all = "camelCase")]
+    Permission {
+        /// Con qué contestar. Es del canal de control, no del turno.
+        id: String,
+        tool: String,
+        /// Resumen corto que ya arma el agente (el archivo, el comando…).
+        description: String,
+        input: serde_json::Value,
+        /// Atajos que sugiere el propio agente, p. ej. «aceptar ediciones
+        /// por el resto de la sesión».
+        suggestions: serde_json::Value,
+    },
+
+    /// Cuánto contexto lleva consumido el turno.
+    ///
+    /// Se emite por mensaje del asistente, no al final: sirve para una barra
+    /// que se mueve mientras trabaja, que es cuando importa saberlo.
+    #[serde(rename_all = "camelCase")]
+    Context {
+        /// Tokens de entrada, incluido el caché: el tamaño real del contexto.
+        tokens: u64,
+    },
+
     /// Aviso que no interrumpe: límites de uso, advertencias del backend, o un
     /// tipo de evento que este adaptador todavía no traduce.
     #[serde(rename_all = "camelCase")]
@@ -84,13 +119,37 @@ pub enum AgentEvent {
     Failed { message: String },
 }
 
+/// Un servidor MCP tal como lo reporta el agente al arrancar.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpServerState {
+    pub name: String,
+    /// `connected`, `failed`, … Lo informa el backend; no se interpreta acá.
+    pub status: String,
+}
+
 /// Con qué arrancar una sesión.
+///
+/// Todo opcional: sin nada, el agente usa su propia configuración. Estas
+/// opciones **agregan** a lo que el usuario ya tenga en su CLI, no lo
+/// reemplazan; ese es el trato de colgarse de una instalación existente.
 #[derive(Debug, Clone, Default)]
 pub struct StartOptions {
     /// Directorio de trabajo. `None` = el de la app.
     pub cwd: Option<String>,
     /// Id de sesión previa a reanudar.
     pub resume: Option<String>,
+    /// Modelo o alias (`opus`, `sonnet`, …).
+    pub model: Option<String>,
+    /// Cómo se piden permisos. `None` = pedirlos todos.
+    pub permission_mode: Option<String>,
+    /// Servidores MCP extra, como JSON `{"mcpServers": {…}}`.
+    ///
+    /// Son para **el agente**: le suman herramientas a él. Atic solo los
+    /// administra y se los pasa al arrancar.
+    pub mcp_config: Option<String>,
+    /// Carpetas adicionales a las que el agente puede acceder.
+    pub add_dirs: Vec<String>,
 }
 
 /// Un agente de consola que Atic sabe manejar.
@@ -125,6 +184,15 @@ pub trait AgentBackend: Send + Sync {
 pub trait AgentSession: Send {
     /// Manda un mensaje del usuario.
     fn send(&mut self, text: &str) -> Result<(), String>;
+
+    /// Contesta un [`AgentEvent::Permission`] pendiente.
+    ///
+    /// Por defecto no hace nada: un backend que no sabe pedir permiso tampoco
+    /// puede recibir una respuesta, y devolver error obligaría a la UI a
+    /// distinguir backends. Mientras no emita `Permission`, nadie llama a esto.
+    fn respond_permission(&mut self, _id: &str, _allow: bool) -> Result<(), String> {
+        Ok(())
+    }
 
     /// Termina la sesión y libera el proceso.
     fn stop(&mut self);

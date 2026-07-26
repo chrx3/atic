@@ -18,13 +18,26 @@
  * con `agentSessions()` al montar y después sigue el flujo de eventos.
  */
 import {
+  agentPermission,
   agentSend,
   agentSessions,
   agentStart,
   agentStop,
   onAgentEvent,
 } from "$lib/api";
-import type { AgentEventPayload } from "$lib/types";
+import type {
+  AgentEventPayload,
+  AgentStartOptions,
+  McpServerState,
+} from "$lib/types";
+
+/** Un permiso pendiente: el agente está detenido esperando la respuesta. */
+export interface PendingPermission {
+  id: string;
+  tool: string;
+  description: string;
+  input: unknown;
+}
 
 /**
  * En qué anda una sesión.
@@ -32,7 +45,7 @@ import type { AgentEventPayload } from "$lib/types";
  * `working` no lo dice el backend: se deduce de haber mandado algo y no haber
  * visto el fin del turno. Es lo que permite mostrar «pensando» sin preguntar.
  */
-export type AgentStatus = "ready" | "working" | "failed";
+export type AgentStatus = "ready" | "working" | "waiting" | "failed";
 
 export interface AgentSessionView {
   id: string;
@@ -46,6 +59,16 @@ export interface AgentSessionView {
   /** Última línea del agente: el resumen que cabe en la pill. */
   lastText: string | null;
   error: string | null;
+  /** Permisos esperando respuesta. Mientras haya uno, el agente no avanza. */
+  pending: PendingPermission[];
+  /** Contexto consumido, en tokens. */
+  contextTokens: number;
+  /** Costo acumulado de la sesión. */
+  costUsd: number;
+  cwd: string;
+  model: string;
+  slashCommands: string[];
+  mcpServers: McpServerState[];
 }
 
 class AgentSessionStore {
@@ -55,6 +78,14 @@ class AgentSessionStore {
 
   #started = false;
   #unlisten: Promise<() => void> | null = null;
+  /**
+   * Quién avisa al sistema operativo.
+   *
+   * Solo una ventana lo hace: los eventos llegan a todas, y sin esto una misma
+   * respuesta produciría un toast por ventana abierta. La pill se ofrece porque
+   * es la que siempre está viva.
+   */
+  #notifier = false;
 
   /** Hay algo pendiente de leer: lo que enciende el aviso en la pill. */
   get unread(): number {
@@ -67,10 +98,21 @@ class AgentSessionStore {
   }
 
   /**
+   * Alguien está esperando una decisión tuya.
+   *
+   * Se separa de `unread` porque es la única señal con urgencia real: el agente
+   * está detenido y no avanza hasta que contestes.
+   */
+  get waiting(): number {
+    return this.sessions.reduce((total, s) => total + s.pending.length, 0);
+  }
+
+  /**
    * Empieza a escuchar y adopta lo que ya estuviera corriendo. Idempotente:
    * cualquier vista puede llamarlo al montar sin coordinarse con las demás.
    */
-  async init(): Promise<void> {
+  async init({ notify = false } = {}): Promise<void> {
+    if (notify) this.#notifier = true;
     if (this.#started) return;
     this.#started = true;
     this.#unlisten = onAgentEvent((payload) => this.#receive(payload));
@@ -90,8 +132,11 @@ class AgentSessionStore {
     if (un) (await un)();
   }
 
-  async start(backendId: string): Promise<string> {
-    const id = await agentStart(backendId);
+  async start(
+    backendId: string,
+    options?: AgentStartOptions,
+  ): Promise<string> {
+    const id = await agentStart(backendId, options);
     // El primer evento la crearía igual; crearla acá evita el hueco en el que
     // la UI ya tiene el id pero todavía no tiene nada que mostrar.
     this.#ensure(id, backendId, backendId);
@@ -148,9 +193,38 @@ class AgentSessionStore {
       unread: 0,
       lastText: null,
       error: null,
+      pending: [],
+      contextTokens: 0,
+      costUsd: 0,
+      cwd: "",
+      model: "",
+      slashCommands: [],
+      mcpServers: [],
     };
     this.sessions = [...this.sessions, session];
     return session;
+  }
+
+  /**
+   * Avisa por el sistema operativo.
+   *
+   * Es lo que hace que valga la pena dejar al agente trabajando: sin esto
+   * habría que volver a mirar la ventana cada tanto, que es exactamente el
+   * trabajo que la sesión en segundo plano venía a evitar.
+   */
+  #notify(title: string, body: string): void {
+    if (!this.#notifier) return;
+    void (async () => {
+      try {
+        const api = await import("@tauri-apps/plugin-notification");
+        let allowed = await api.isPermissionGranted();
+        if (!allowed) allowed = (await api.requestPermission()) === "granted";
+        if (allowed) api.sendNotification({ title, body });
+      } catch (err) {
+        // Sin notificaciones se sigue: el aviso de la pill ya está puesto.
+        console.warn("notificar agente", err);
+      }
+    })();
   }
 
   #receive(payload: AgentEventPayload): void {
@@ -166,21 +240,75 @@ class AgentSessionStore {
 
     const unseen = this.watching !== session.id;
     switch (payload.kind) {
+      case "started":
+        session.cwd = payload.cwd;
+        session.model = payload.model;
+        session.slashCommands = payload.slashCommands;
+        session.mcpServers = payload.mcpServers;
+        break;
       case "message":
         session.lastText = payload.text;
         if (unseen) session.unread += 1;
         break;
+      case "context":
+        session.contextTokens = payload.tokens;
+        break;
+      case "permission":
+        session.pending = [
+          ...session.pending,
+          {
+            id: payload.id,
+            tool: payload.tool,
+            description: payload.description,
+            input: payload.input,
+          },
+        ];
+        session.status = "waiting";
+        // Un permiso siempre cuenta como no leído, incluso mirando la sesión:
+        // si la ventana está detrás de otra app, «estar mirando» no es cierto,
+        // y este es el evento que no se puede perder.
+        session.unread += 1;
+        this.#notify(
+          `${session.backendName} pide permiso`,
+          `${payload.tool}${payload.description ? `: ${payload.description}` : ""}`,
+        );
+        break;
       case "finished":
         session.status = payload.isError ? "failed" : "ready";
+        if (payload.costUsd !== null) session.costUsd += payload.costUsd;
+        // Solo si no lo estás mirando: avisar de algo que está en pantalla es
+        // ruido, y el fin de turno es el evento más frecuente de todos.
+        if (unseen) {
+          this.#notify(
+            `${session.backendName} terminó`,
+            session.lastText?.slice(0, 140) ?? "",
+          );
+        }
         break;
       case "failed":
         session.status = "failed";
         session.error = payload.message;
         if (unseen) session.unread += 1;
+        this.#notify(`${session.backendName} falló`, payload.message);
         break;
       default:
         break;
     }
+  }
+
+  /**
+   * Contesta un permiso y devuelve la sesión a «trabajando».
+   *
+   * El estado se corrige acá y no al recibir el siguiente evento porque entre
+   * la respuesta y el próximo mensaje puede pasar bastante: dejarla en
+   * «esperando» haría parecer que el clic no hizo nada.
+   */
+  async decide(sessionId: string, permissionId: string, allow: boolean) {
+    const session = this.byId(sessionId);
+    if (!session) return;
+    session.pending = session.pending.filter((p) => p.id !== permissionId);
+    if (session.pending.length === 0) session.status = "working";
+    await agentPermission(sessionId, permissionId, allow);
   }
 }
 

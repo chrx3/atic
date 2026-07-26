@@ -76,6 +76,8 @@ export interface AppConfig {
   sound_dictation_start: string;
   sound_dictation_done: string;
   sound_capture: string;
+  /** Servidores MCP para el agente, como JSON serializado. */
+  agent_mcp_servers: string;
   /** Pistas a grabar: both | mic | system */
   record_tracks: string;
   /** Pistas a transcribir: both | mic | system */
@@ -360,13 +362,57 @@ export interface AgentBackendInfo {
   available: boolean;
 }
 
+/** Un servidor MCP tal como lo reporta el agente al arrancar. */
+export interface McpServerState {
+  name: string;
+  status: string;
+}
+
+/** Servidor MCP configurado en Atic para pasárselo al agente. */
+export interface McpServerConfig {
+  /** Nombre con el que el agente lo expone (`mcp__<nombre>__…`). */
+  name: string;
+  /** Definición JSON, tal cual va en `mcpServers`. */
+  json: string;
+  enabled: boolean;
+}
+
+/** Con qué arrancar una sesión. Todo opcional. */
+export interface AgentStartOptions {
+  cwd?: string;
+  resume?: string;
+  model?: string;
+  permissionMode?: string;
+  /** JSON `{"mcpServers": {…}}` con los servidores que suma Atic. */
+  mcpConfig?: string;
+  addDirs?: string[];
+}
+
 /** Evento normalizado. `kind` discrimina la variante. */
 export type AgentEvent =
-  | { kind: "started"; sessionId: string; tools: string[]; cwd: string }
+  | {
+      kind: "started";
+      sessionId: string;
+      tools: string[];
+      cwd: string;
+      model: string;
+      slashCommands: string[];
+      mcpServers: McpServerState[];
+    }
   | { kind: "message"; text: string }
   /** `input` es JSON sin interpretar: cada herramienta tiene su forma. */
   | { kind: "toolCall"; id: string; name: string; input: unknown }
   | { kind: "toolResult"; id: string; output: string; isError: boolean }
+  /** El agente está DETENIDO esperando esta respuesta. */
+  | {
+      kind: "permission";
+      id: string;
+      tool: string;
+      description: string;
+      input: unknown;
+      suggestions: unknown;
+    }
+  | { kind: "context"; tokens: number }
   | { kind: "notice"; text: string }
   | {
       kind: "finished";

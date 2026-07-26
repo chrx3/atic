@@ -70,6 +70,17 @@
         "skipTaskbar": true,
         "shadow": false,
         "visible": true
+      },
+      {
+        "label": "agents",
+        "url": "/agents",
+        "title": "Agentes",
+        "width": 780,
+        "height": 660,
+        "minWidth": 460,
+        "minHeight": 400,
+        "decorations": false,
+        "visible": false
       }
     ],
     "security": {

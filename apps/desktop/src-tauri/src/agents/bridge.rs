@@ -93,6 +93,21 @@ pub fn agent_sessions() -> Vec<SessionInfo> {
         .unwrap_or_default()
 }
 
+/// Abre la consola de agentes.
+///
+/// Es una ventana propia y no un panel de la pill: lo que se hace acá —leer
+/// salida larga, revisar qué tocó una herramienta, aprobar— necesita espacio y
+/// quedarse abierto, que es lo contrario de lo que hace la pill.
+#[tauri::command]
+pub fn show_agents_window(app: AppHandle) {
+    use tauri::Manager;
+    if let Some(window) = app.get_webview_window("agents") {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    }
+}
+
 /// Qué agentes hay y cuáles se pueden usar.
 ///
 /// `is_available` lanza un proceso por backend, así que esto no es gratis: la
@@ -109,14 +124,37 @@ pub fn agent_backends() -> Vec<BackendInfo> {
         .collect()
 }
 
+/// Lo que la UI elige antes de arrancar. Todo opcional: sin nada, el agente
+/// corre con su propia configuración.
+#[derive(Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StartRequest {
+    pub cwd: Option<String>,
+    pub resume: Option<String>,
+    pub model: Option<String>,
+    pub permission_mode: Option<String>,
+    /// JSON `{"mcpServers": {…}}` con los servidores que sume Atic.
+    pub mcp_config: Option<String>,
+    #[serde(default)]
+    pub add_dirs: Vec<String>,
+}
+
 /// Arranca una sesión y devuelve su clave local.
 #[tauri::command]
 pub fn agent_start(
     app: AppHandle,
     backend: String,
-    cwd: Option<String>,
-    resume: Option<String>,
+    options: Option<StartRequest>,
 ) -> Result<String, String> {
+    let options = options.unwrap_or_default();
+    let StartRequest {
+        cwd,
+        resume,
+        model,
+        permission_mode,
+        mcp_config,
+        add_dirs,
+    } = options;
     let agent = find(&backend).ok_or_else(|| format!("backend desconocido: {backend}"))?;
     let key = uuid::Uuid::new_v4().to_string();
     let display_name = agent.display_name().to_string();
@@ -125,7 +163,14 @@ pub fn agent_start(
     let emit_backend = backend.clone();
     let emit_name = display_name.clone();
     let session = agent.start(
-        StartOptions { cwd, resume },
+        StartOptions {
+            cwd,
+            resume,
+            model,
+            permission_mode,
+            mcp_config,
+            add_dirs,
+        },
         Box::new(move |event| {
             let _ = app.emit(
                 "agent-event",
@@ -165,6 +210,19 @@ pub fn agent_send(session: String, text: String) -> Result<(), String> {
         .ok_or_else(|| "esa sesión ya no existe".to_string())?
         .session
         .send(&text)
+}
+
+/// Contesta un permiso pendiente. El turno del agente está detenido hasta acá.
+#[tauri::command]
+pub fn agent_permission(session: String, id: String, allow: bool) -> Result<(), String> {
+    let mut guard = SESSIONS.lock().unwrap();
+    guard
+        .as_mut()
+        .ok_or_else(|| "no hay sesiones abiertas".to_string())?
+        .get_mut(&session)
+        .ok_or_else(|| "esa sesión ya no existe".to_string())?
+        .session
+        .respond_permission(&id, allow)
 }
 
 #[tauri::command]
