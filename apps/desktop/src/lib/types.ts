@@ -394,57 +394,158 @@ export interface AgentStartOptions {
   /** JSON `{"mcpServers": {…}}` con los servidores que suma Atic. */
   mcpConfig?: string;
   addDirs?: string[];
+  /** Al reanudar, bifurcar en vez de seguir escribiendo el hilo original. */
+  fork?: boolean;
 }
 
-/** Evento normalizado. `kind` discrimina la variante. */
-export type AgentEvent =
+/**
+ * Qué se le contesta a un pedido de permiso.
+ *
+ * `allowAlways` no es `allow` repetido: graba la regla que sugirió el agente
+ * —el modo de permisos, o el patrón de herramienta— para el resto de la sesión.
+ */
+export type PermissionDecision = "allow" | "allowAlways" | "deny";
+
+/** Una skill encontrada en disco, con su descripción. */
+export interface AgentSkill {
+  name: string;
+  description: string;
+  /** Ruta del `SKILL.md`. */
+  path: string;
+  /** `user` (config del CLI) o `project` (la carpeta de trabajo). */
+  scope: "user" | "project";
+}
+
+/**
+ * En qué anda una herramienta. Son los estados de ACP.
+ */
+export type ToolStatus = "pending" | "in_progress" | "completed" | "failed";
+
+/**
+ * Qué clase de herramienta es.
+ *
+ * Lo decide el backend, no la vista. Antes el ícono y el resumen se deducían
+ * de la entrada cruda (`file_path` → archivo, `command` → comando), que acierta
+ * con las herramientas que ya conocés y con ninguna otra.
+ */
+export type ToolKind =
+  | "read"
+  | "edit"
+  | "delete"
+  | "move"
+  | "search"
+  | "execute"
+  | "think"
+  | "fetch"
+  | "switch_mode"
+  | "other";
+
+export type PermissionStatus = "pending" | "allowed" | "denied";
+
+export type PlanStatus = "pending" | "in_progress" | "completed";
+
+export interface PlanEntry {
+  text: string;
+  status: PlanStatus;
+}
+
+/**
+ * Lo que la conversación muestra. `kind` discrimina la variante.
+ *
+ * Todos llevan `id` estable: es lo que permite que un item **cambie** en vez de
+ * volver a dibujarse. Una herramienta es UN item que pasa de `in_progress` a
+ * `completed`, no dos eventos que la vista tiene que emparejar.
+ */
+export type AgentItem = { id: string } & (
+  | { kind: "message"; role: "user" | "assistant"; text: string; streaming: boolean }
+  | { kind: "reasoning"; text: string; streaming: boolean }
   | {
-      kind: "started";
-      sessionId: string;
-      tools: string[];
-      cwd: string;
-      model: string;
-      slashCommands: string[];
-      mcpServers: McpServerState[];
+      kind: "tool";
+      name: string;
+      /** Texto legible. Lo arma el backend una vez, no la vista en cada render. */
+      title: string;
+      toolKind: ToolKind;
+      status: ToolStatus;
+      /** JSON sin interpretar: cada herramienta tiene su propia forma. */
+      input: unknown;
+      output: string;
+      /** Archivos que toca, para poder seguirla. */
+      locations: string[];
     }
-  | { kind: "message"; text: string }
-  /** Trozo de texto según se escribe. El mensaje completo llega después. */
-  | { kind: "delta"; text: string }
-  | { kind: "thinking"; text: string }
-  /** `input` es JSON sin interpretar: cada herramienta tiene su forma. */
-  | { kind: "toolCall"; id: string; name: string; input: unknown }
-  | { kind: "toolResult"; id: string; output: string; isError: boolean }
-  /** El agente está DETENIDO esperando esta respuesta. */
+  | { kind: "plan"; entries: PlanEntry[] }
+  /** El agente está DETENIDO hasta que se conteste. */
   | {
       kind: "permission";
-      id: string;
       tool: string;
       description: string;
       input: unknown;
-      suggestions: unknown;
+      status: PermissionStatus;
     }
-  | { kind: "commands"; commands: SlashCommand[] }
-  | { kind: "context"; tokens: number }
   | { kind: "notice"; text: string }
-  | {
-      kind: "finished";
-      stopReason: string | null;
-      isError: boolean;
-      costUsd: number | null;
-    }
-  | { kind: "failed"; message: string };
+);
+
+/** Qué cambió de un item. Lo ausente no se toca. */
+export interface ItemPatch {
+  text?: string;
+  streaming?: boolean;
+  status?: ToolStatus | PermissionStatus;
+  output?: string;
+  title?: string;
+  locations?: string[];
+  entries?: PlanEntry[];
+}
+
+export type TurnStatus = "running" | "done" | "failed" | "cancelled";
+
+/** Qué cambió del hilo, no de un item suelto. */
+export interface ThreadPatch {
+  /** Id de sesión DEL BACKEND, con el que se reanuda. */
+  providerSession?: string;
+  cwd?: string;
+  model?: string;
+  mode?: string;
+  /** Contexto consumido. Llega durante el turno, no al final. */
+  tokens?: number;
+  commands?: SlashCommand[];
+  mcpServers?: McpServerState[];
+  tools?: string[];
+}
 
 /**
- * Un evento ya etiquetado con la sesión que lo produjo.
+ * Qué cambió. Es lo único que viaja del backend a la vista.
  *
- * Trae también el backend: los eventos son globales y una ventana puede recibir
+ * Reemplaza al registro plano de eventos: acá `item.chunk` **sabe a qué item
+ * pertenece**, así que no hace falta un campo de streaming paralelo, y dos
+ * bloques transmitiendo a la vez ya no se pisan.
+ */
+export type AgentDelta =
+  | { t: "turn.start"; turn: string }
+  | { t: "item.add"; turn: string; item: AgentItem }
+  | { t: "item.chunk"; item: string; text: string }
+  | { t: "item.patch"; item: string; patch: ItemPatch }
+  | { t: "thread.patch"; patch: ThreadPatch }
+  | { t: "turn.end"; turn: string; status: TurnStatus; costUsd: number | null }
+  | { t: "failed"; message: string };
+
+/**
+ * Un delta ya etiquetado con la sesión que lo produjo.
+ *
+ * Trae también el backend: los deltas son globales y una ventana puede recibir
  * los de una sesión que arrancó otra, sin nada más con qué nombrarla.
  */
-export type AgentEventPayload = AgentEvent & {
+export type AgentDeltaPayload = AgentDelta & {
   session: string;
   backendId: string;
   backendName: string;
 };
+
+/** Un turno: un ciclo usuario → agente. */
+export interface AgentTurn {
+  id: string;
+  items: AgentItem[];
+  status: TurnStatus;
+  costUsd: number | null;
+}
 
 /** Una sesión viva. El proceso lo tiene Rust, no la ventana que lo abrió. */
 export interface AgentSessionInfo {

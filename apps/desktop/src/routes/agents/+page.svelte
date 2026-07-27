@@ -35,6 +35,7 @@
     agentBackends,
     getConfig,
     hideAgentsWindow,
+    toggleDictation,
     onAgentsBubbleAnchor,
     onAgentsBubbleDismiss,
   } from "$lib/api";
@@ -45,24 +46,12 @@
   import ClaudeMark from "$lib/ClaudeMark.svelte";
   import AgentMessage from "$lib/AgentMessage.svelte";
   import AgentToolCard from "$lib/AgentToolCard.svelte";
-  import type { AgentBackendInfo, McpServerConfig } from "$lib/types";
-
-  /** Una fila ya lista para pintar. */
-  type Row =
-    | { t: "msg"; text: string }
-    | {
-        t: "tool";
-        id: string;
-        name: string;
-        input: unknown;
-        output?: string;
-        isError: boolean;
-        done: boolean;
-      }
-    | { t: "start"; model: string; cwd: string; tools: number; commands: number; mcp: string[] }
-    | { t: "think"; text: string }
-    | { t: "meta"; text: string }
-    | { t: "warn"; text: string };
+  import AgentIcons from "$lib/AgentIcons.svelte";
+  import type {
+    AgentBackendInfo,
+    McpServerConfig,
+    PermissionDecision,
+  } from "$lib/types";
 
   /**
    * Modelos, con lo que hace falta para elegir.
@@ -89,6 +78,14 @@
     { id: "plan", label: "Solo planificar" },
     { id: "bypassPermissions", label: "Acceso total" },
   ];
+
+  /** El escudo que corresponde al modo. La forma dice el nivel de guardia. */
+  const SHIELDS: Record<string, "shield-manual" | "shield-edits" | "shield-plan" | "shield-open"> = {
+    manual: "shield-manual",
+    acceptEdits: "shield-edits",
+    plan: "shield-plan",
+    bypassPermissions: "shield-open",
+  };
 
   const CONTEXT_WINDOW = 1_000_000;
 
@@ -151,90 +148,43 @@
   );
 
   /**
-   * El registro plano, emparejado en filas.
+   * Los items de la conversación, en orden.
    *
-   * La llamada a una herramienta y su resultado llegan como eventos separados y
-   * con lo que haya en medio. Unirlos acá —y no en el store— mantiene el
-   * registro crudo intacto: es el que sirve para depurar cuando la UI miente.
+   * Antes acá vivía una derivación que recorría el registro plano emparejando
+   * cada `toolCall` con su `toolResult` por id, porque llegaban como eventos
+   * separados y con lo que hubiera en medio. Ya no hace falta: el backend
+   * manda items con identidad y el store los mantiene actualizados, así que
+   * esto es aplanar turnos y nada más.
    */
-  const rows = $derived.by((): Row[] => {
-    const log = active?.log ?? [];
-    const out: Row[] = [];
-    const byTool = new Map<string, number>();
+  const items = $derived((active?.turns ?? []).flatMap((t) => t.items));
 
-    for (const e of log) {
-      switch (e.kind) {
-        case "message":
-          out.push({ t: "msg", text: e.text });
-          break;
-        case "thinking":
-          out.push({ t: "think", text: e.text });
-          break;
-        case "toolCall":
-          byTool.set(e.id, out.length);
-          out.push({
-            t: "tool",
-            id: e.id,
-            name: e.name,
-            input: e.input,
-            isError: false,
-            done: false,
-          });
-          break;
-        case "toolResult": {
-          const at = byTool.get(e.id);
-          const row = at !== undefined ? out[at] : undefined;
-          if (row && row.t === "tool") {
-            row.output = e.output;
-            row.isError = e.isError;
-            row.done = true;
-          } else {
-            // Resultado sin llamada: no debería pasar, pero tirarlo dejaría a
-            // la vista mintiendo sobre lo que el agente hizo.
-            out.push({
-              t: "tool",
-              id: e.id,
-              name: "resultado",
-              input: null,
-              output: e.output,
-              isError: e.isError,
-              done: true,
-            });
-          }
-          break;
-        }
-        case "started":
-          out.push({
-            t: "start",
-            model: e.model,
-            cwd: e.cwd,
-            tools: e.tools.length,
-            commands: e.slashCommands.length,
-            mcp: e.mcpServers.map((s) => s.name),
-          });
-          break;
-        case "finished":
-          out.push({
-            t: "meta",
-            text: e.costUsd !== null ? `$${e.costUsd.toFixed(4)}` : "",
-          });
-          break;
-        case "notice":
-          out.push({ t: "meta", text: e.text });
-          break;
-        case "failed":
-          out.push({ t: "warn", text: e.message });
-          break;
-        default:
-          break;
-      }
-    }
-    return out;
+  /**
+   * El agente está escribiendo ahora mismo.
+   *
+   * Solo los items de texto tienen `streaming`; una herramienta corriendo no
+   * cuenta, porque ahí lo que se muestra es su tarjeta latiendo y no un cursor.
+   */
+  const writing = $derived.by(() => {
+    const last = items.at(-1);
+    return !!last && "streaming" in last && last.streaming;
   });
+
+  /** El cierre de cada turno, para dibujar la regla con el costo. */
+  const turnEnds = $derived(
+    new Map(
+      (active?.turns ?? [])
+        .filter((t) => t.status !== "running")
+        .map((t) => [t.items.at(-1)?.id ?? t.id, t.costUsd]),
+    ),
+  );
 
   onMount(() => {
     applyTheme(readCachedTheme());
     void agents.init();
+    // Al abrir la ventana y no al escribir `/`: leer el disco toma lo suyo, y
+    // hacerlo con la lista ya desplegada la dejaría llenándose sola debajo del
+    // cursor justo mientras se elige.
+    void agents.loadSkills(active?.cwd || undefined);
 
     // La burbuja no se pinta hasta saber dónde va la punta: al abrirse ya tiene
     // que estar bien, no acomodarse a la vista.
@@ -336,7 +286,10 @@
   $effect(() => {
     // También con cada trozo del streaming: si no, el texto crece por debajo
     // del borde y hay que perseguirlo con la rueda mientras se escribe.
-    const n = (active?.log.length ?? 0) + (active?.streaming.length ?? 0);
+    // También con el último trozo: si no, el texto crece por debajo del borde
+    // y hay que perseguirlo con la rueda mientras se escribe.
+    const last = items.at(-1);
+    const n = items.length + (last && "text" in last ? last.text.length : 0);
     if (!logEl || n === 0) return;
     void tick().then(() => {
       if (logEl) logEl.scrollTop = logEl.scrollHeight;
@@ -383,6 +336,22 @@
       error = String(err);
     } finally {
       picking = false;
+    }
+  }
+
+  /**
+   * Dicta dentro del compositor.
+   *
+   * El foco va PRIMERO: el dictado de Atic pega en el control que tenga el
+   * foco del sistema cuando termina, así que sin esto el texto acabaría en la
+   * app que estuviera detrás de la burbuja.
+   */
+  async function dictate() {
+    inputEl?.focus();
+    try {
+      await toggleDictation();
+    } catch (err) {
+      error = String(err);
     }
   }
 
@@ -453,14 +422,38 @@
     return m ? m[1].toLowerCase() : null;
   });
 
+  /**
+   * Los comandos, con las skills completadas desde el disco.
+   *
+   * Claude Code ya ofrece las skills como comandos de barra, así que no hacen
+   * falta un prefijo ni una lista aparte: hacen falta las descripciones, que el
+   * agente no manda y solo están en el `SKILL.md`. Una skill que el agente no
+   * llegó a listar se suma igual — de eso se trata poder descubrirlas.
+   */
+  const commands = $derived.by(() => {
+    const list = active?.commands.length
+      ? active.commands
+      : (agents.catalog[active?.backendId ?? picked] ?? []);
+    const bySkill = new Map(agents.skills.map((s) => [s.name, s]));
+    const merged = list.map((c) => {
+      const skill = bySkill.get(c.name);
+      if (!skill) return c;
+      bySkill.delete(c.name);
+      return c.description ? c : { ...c, description: skill.description };
+    });
+    const rest = [...bySkill.values()].map((s) => ({
+      name: s.name,
+      description: s.description,
+      argumentHint: "",
+    }));
+    return [...merged, ...rest];
+  });
+
   const slashHits = $derived.by(() => {
     if (slashQuery === null) return [];
     // Sin sesión abierta se usan los del backend elegido, vistos la última vez.
     // Ofrecer comandos solo con una sesión viva dejaba el primer `/` mudo.
-    const list = active?.commands.length
-      ? active.commands
-      : (agents.catalog[active?.backendId ?? picked] ?? []);
-    return list
+    return commands
       .filter((c) => c.name.toLowerCase().startsWith(slashQuery))
       .slice(0, 8);
   });
@@ -477,7 +470,7 @@
   });
 
   function takeSlash(name: string) {
-    const cmd = active?.commands.find((c) => c.name === name);
+    const cmd = commands.find((c) => c.name === name);
     // Con argumento, se deja el cursor listo para escribirlo en vez de enviar:
     // `/model` a secas no hace lo que quien lo eligió esperaba.
     draft = cmd?.argumentHint ? `/${name} ` : `/${name}`;
@@ -494,10 +487,10 @@
     }
   }
 
-  async function decide(permissionId: string, allow: boolean) {
+  async function decide(permissionId: string, decision: PermissionDecision) {
     if (!activeId) return;
     try {
-      await agents.decide(activeId, permissionId, allow);
+      await agents.decide(activeId, permissionId, decision);
     } catch (err) {
       error = String(err);
     }
@@ -541,17 +534,6 @@
     return String(n);
   }
 
-  /** El argumento más informativo de una herramienta. Es lo que se escanea
-   *  cuando el agente hizo veinte cosas y buscas una. */
-  function toolSummary(input: unknown): string {
-    if (!input || typeof input !== "object") return "";
-    const o = input as Record<string, unknown>;
-    for (const key of ["file_path", "command", "pattern", "path", "url", "prompt"]) {
-      const value = o[key];
-      if (typeof value === "string") return value;
-    }
-    return JSON.stringify(o);
-  }
 </script>
 
 <div
@@ -648,55 +630,73 @@
           </p>
         {/if}
       {:else}
-        {#each rows as row, i (i)}
-          {#if row.t === "msg"}
-            <AgentMessage text={row.text} />
-          {:else if row.t === "tool"}
+        {#each items as item (item.id)}
+          {#if item.kind === "message" && item.role === "user"}
+            <!-- El turno del usuario. Antes no se dibujaba en ninguna parte:
+                 el registro solo tenía lo que venía del backend, así que la
+                 conversación se leía como un monólogo del agente. -->
+            <div class="mine">
+              <span class="mine-who">tú</span>
+              <AgentMessage text={item.text} />
+            </div>
+          {:else if item.kind === "message"}
+            <div class:wip={item.streaming}>
+              <AgentMessage text={item.text} />
+              {#if item.streaming}
+                <span class="caret" aria-hidden="true"></span>
+              {/if}
+            </div>
+          {:else if item.kind === "tool"}
             <AgentToolCard
-              name={row.name}
-              input={row.input}
-              output={row.output}
-              isError={row.isError}
-              done={row.done}
+              name={item.name}
+              title={item.title}
+              toolKind={item.toolKind}
+              input={item.input}
+              output={item.output}
+              status={item.status}
+              locations={item.locations}
             />
-          {:else if row.t === "start"}
-            <section class="card card-hi">
-              <h2 class="card-title">{row.model || "sesión"}</h2>
-              <span class="hi-mark"><ClaudeMark size={34} /></span>
-              <div class="hi-copy">
-                <p class="card-line dim">{row.cwd}</p>
-                <p class="card-line dim">
-                  {row.tools} herramientas · {row.commands} comandos{row.mcp
-                    .length > 0
-                    ? ` · MCP: ${row.mcp.join(", ")}`
-                    : ""}
-                </p>
-              </div>
-            </section>
-          {:else if row.t === "meta"}
-            <!-- Cierre de turno: una regla con el costo al medio. Separa las
-                 respuestas entre sí, que sin esto se leían como una sola. -->
-            <p class="turn"><span class="turn-t">{row.text}</span></p>
-          {:else if row.t === "think"}
+          {:else if item.kind === "reasoning"}
             <!-- El razonamiento es trabajo previo, no la respuesta: se ofrece
                  plegado para que no compita con lo que el agente dice. -->
             <details class="think">
               <summary>pensando</summary>
-              <p>{row.text}</p>
+              <p>{item.text}</p>
             </details>
-          {:else if row.t === "warn"}
-            <p class="warn">{row.text}</p>
+          {:else if item.kind === "plan"}
+            <div class="plan">
+              <div class="plan-h">plan</div>
+              {#each item.entries as e, i (i)}
+                <div class="plan-e" data-s={e.status}>
+                  <span class="plan-b"
+                    >{e.status === "completed"
+                      ? "✓"
+                      : e.status === "in_progress"
+                        ? "▸"
+                        : "○"}</span
+                  >
+                  <span class="plan-t">{e.text}</span>
+                </div>
+              {/each}
+            </div>
+          {:else if item.kind === "notice"}
+            <p class="warn">{item.text}</p>
+          {/if}
+
+          <!-- Cierre de turno: una regla con el costo al medio. Separa las
+               respuestas entre sí, que sin esto se leían como una sola. -->
+          {#if turnEnds.has(item.id)}
+            <p class="turn">
+              <span class="turn-t"
+                >{turnEnds.get(item.id) !== null
+                  ? `$${turnEnds.get(item.id)?.toFixed(4)}`
+                  : "fin del turno"}</span
+              >
+            </p>
           {/if}
         {/each}
 
-        <!-- Lo que está escribiendo ahora. Fuera del registro: el mensaje
-             completo llega igual al cerrar el bloque y lo reemplaza. -->
-        {#if active.streaming}
-          <div class="wip">
-            <AgentMessage text={active.streaming} />
-            <span class="caret" aria-hidden="true"></span>
-          </div>
-        {:else if active.status === "working"}
+        {#if active.status === "working" && !writing}
           <p class="meta live">trabajando…</p>
         {/if}
       {/if}
@@ -708,16 +708,27 @@
       <div class="perm" role="alertdialog" aria-label="Permiso pendiente">
         <div class="perm-copy">
           <p class="perm-t">Quiere usar <strong>{p.tool}</strong></p>
-          <p class="perm-w">{p.description || toolSummary(p.input)}</p>
+          <p class="perm-w">{p.description}</p>
         </div>
         <div class="perm-acts">
-          <button type="button" class="btn" onclick={() => void decide(p.id, false)}>
+          <button type="button" class="btn" onclick={() => void decide(p.id, "deny")}>
             Denegar
+          </button>
+          <!-- «Siempre» graba la regla que sugiere el propio agente, por esta
+               sesión. Sin este botón, la única salida a contestar veinte veces
+               lo mismo es arrancar en `acceptEdits`, que renuncia a preguntar
+               por todo lo demás. -->
+          <button
+            type="button"
+            class="btn"
+            onclick={() => void decide(p.id, "allowAlways")}
+          >
+            Siempre
           </button>
           <button
             type="button"
             class="btn is-go"
-            onclick={() => void decide(p.id, true)}
+            onclick={() => void decide(p.id, "allow")}
           >
             Permitir
           </button>
@@ -809,8 +820,13 @@
                 mode = id;
                 menu = null;
               }}
-            />
+            >
+              {#snippet icon()}
+                <AgentIcons name={SHIELDS[mode] ?? "shield-manual"} />
+              {/snippet}
+            </PickerMenu>
             <button type="button" class="chip" onclick={() => void pickFolder()}>
+              <AgentIcons name="folder" />
               {cwd ? cwd.split(/[\\/]/).pop() : "Carpeta"}
             </button>
             <button type="button" class="chip" onclick={() => (mcpOpen = true)}>
@@ -827,7 +843,10 @@
               onToggle={() => (menu = menu === "model" ? null : "model")}
               onPick={(id) => void switchModel(id)}
             />
-            <span class="chip is-static">{modeLabel}</span>
+            <span class="chip is-static">
+              <AgentIcons name={SHIELDS[mode] ?? "shield-manual"} />
+              {modeLabel}
+            </span>
             <button type="button" class="chip" onclick={() => void attach()}>
               Adjuntar
             </button>
@@ -837,6 +856,19 @@
           {/if}
 
           <span class="cmp-gap"></span>
+
+          <!-- Dictar al agente. Es lo que ninguna GUI de agentes tiene, y acá
+               sale gratis: el dictado ya pega en el control con el foco, así
+               que enfocar el compositor antes es todo lo que hace falta. -->
+          <button
+            type="button"
+            class="chip is-icon"
+            onclick={() => void dictate()}
+            title="Dictar · Ctrl+Shift+D"
+            aria-label="Dictar"
+          >
+            <AgentIcons name="mic" size={12} />
+          </button>
 
           {#if active}
             <!-- El contexto es el recurso que se agota sin avisar: anillo
@@ -1191,6 +1223,57 @@
     }
   }
 
+  /* El turno del usuario: barra al costado, sin caja. Es la voz propia
+     dentro del registro, no una tarjeta más. */
+  .mine {
+    border-left: 2px solid var(--coral);
+    padding-left: 0.55rem;
+  }
+  .mine-who {
+    display: block;
+    color: var(--faint);
+    font-size: 0.6875rem;
+    letter-spacing: 0.03em;
+  }
+
+  /* Plan propuesto por el agente, con el estado de cada paso. */
+  .plan {
+    border: 1px solid var(--line);
+    border-radius: 9px;
+    padding: 0.45rem 0.6rem;
+    background: #1f1b19;
+  }
+  .plan-h {
+    color: var(--faint);
+    font-size: 0.6875rem;
+    letter-spacing: 0.03em;
+  }
+  .plan-e {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
+    color: var(--dim);
+    font-size: 0.71875rem;
+  }
+  .plan-b {
+    flex-shrink: 0;
+    width: 1.1em;
+    color: var(--faint);
+  }
+  .plan-e[data-s="in_progress"] {
+    color: var(--text);
+  }
+  .plan-e[data-s="in_progress"] .plan-b {
+    color: var(--coral);
+  }
+  .plan-e[data-s="completed"] .plan-b {
+    color: #7dd3a0;
+  }
+  .plan-e[data-s="completed"] .plan-t {
+    text-decoration: line-through;
+    text-decoration-color: var(--line);
+  }
+
   .think {
     color: var(--faint);
     font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
@@ -1441,6 +1524,11 @@
 
   /* Pastilla con el valor puesto. Un `<select>` acá escondía el valor actual,
      que es justo lo que uno mira antes de mandar. */
+  .chip.is-icon {
+    padding-right: 0.4rem;
+    padding-left: 0.4rem;
+  }
+
   .chip {
     border: 1px solid var(--line);
     border-radius: 999px;

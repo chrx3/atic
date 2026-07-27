@@ -21,14 +21,19 @@ import {
   agentPermission,
   agentSend,
   agentSessions,
+  agentSkills,
   agentStart,
   agentStop,
-  onAgentEvent,
+  onAgentDelta,
 } from "$lib/api";
 import type {
-  AgentEventPayload,
+  AgentDeltaPayload,
+  AgentItem,
+  AgentTurn,
+  AgentSkill,
   AgentStartOptions,
   McpServerState,
+  PermissionDecision,
   SlashCommand,
 } from "$lib/types";
 
@@ -43,8 +48,8 @@ export interface PendingPermission {
 /**
  * En qué anda una sesión.
  *
- * `working` no lo dice el backend: se deduce de haber mandado algo y no haber
- * visto el fin del turno. Es lo que permite mostrar «pensando» sin preguntar.
+ * `working` no lo dice el backend: se deduce de tener un turno abierto. Es lo
+ * que permite mostrar «pensando» sin preguntar.
  */
 export type AgentStatus = "ready" | "working" | "waiting" | "failed";
 
@@ -53,19 +58,19 @@ export interface AgentSessionView {
   backendId: string;
   backendName: string;
   status: AgentStatus;
-  /** Todo lo recibido, en orden. */
-  log: AgentEventPayload[];
+  /**
+   * La conversación, en turnos.
+   *
+   * Reemplaza al `log: AgentEventPayload[]` plano. La diferencia práctica: acá
+   * los items tienen identidad, así que una tarjeta de herramienta pasa de
+   * «ejecutando» a «listo» **en su sitio**, y ya no hace falta un `streaming`
+   * suelto en paralelo para saber dónde poner el texto que va llegando.
+   */
+  turns: AgentTurn[];
   /** Respuestas llegadas mientras nadie miraba esta sesión. */
   unread: number;
   /** Última línea del agente: el resumen que cabe en la pill. */
   lastText: string | null;
-  /**
-   * Lo que el agente está escribiendo ahora mismo.
-   *
-   * Vive aparte del registro y no dentro: el mensaje completo llega igual al
-   * cerrar el bloque, así que meter los trozos en `log` los duplicaría.
-   */
-  streaming: string;
   error: string | null;
   /** Permisos esperando respuesta. Mientras haya uno, el agente no avanza. */
   pending: PendingPermission[];
@@ -75,11 +80,12 @@ export interface AgentSessionView {
   costUsd: number;
   cwd: string;
   model: string;
-  /** Solo los nombres, de `started`. */
-  slashCommands: string[];
+  /** Id con el que el backend reanuda esta conversación. */
+  providerSession: string | null;
   /** Con descripción, del canal de control. Es la que sirve para ofrecerlos. */
   commands: SlashCommand[];
   mcpServers: McpServerState[];
+  tools: string[];
 }
 
 class AgentSessionStore {
@@ -96,6 +102,16 @@ class AgentSessionStore {
    * sesión sirven perfectamente para el primer `/` de la siguiente.
    */
   catalog = $state<Record<string, SlashCommand[]>>({});
+
+  /**
+   * Skills leídas del disco, con descripción.
+   *
+   * El agente ya las ofrece entre sus comandos de barra, pero con el nombre
+   * pelado. Un nombre suelto sirve para invocar la que ya conocés y no para
+   * encontrar la que no; la descripción, que es lo único que dice para qué es,
+   * solo está en el archivo.
+   */
+  skills = $state<AgentSkill[]>([]);
 
   #started = false;
   #unlisten: Promise<() => void> | null = null;
@@ -136,7 +152,7 @@ class AgentSessionStore {
     if (notify) this.#notifier = true;
     if (this.#started) return;
     this.#started = true;
-    this.#unlisten = onAgentEvent((payload) => this.#receive(payload));
+    this.#unlisten = onAgentDelta((payload) => this.#receive(payload));
     try {
       const live = await agentSessions();
       for (const info of live) this.#ensure(info.id, info.backendId, info.backendName);
@@ -210,19 +226,19 @@ class AgentSessionStore {
       backendId,
       backendName,
       status: "ready",
-      log: [],
+      turns: [],
       unread: 0,
       lastText: null,
-      streaming: "",
       error: null,
       pending: [],
       contextTokens: 0,
       costUsd: 0,
       cwd: "",
       model: "",
-      slashCommands: [],
+      providerSession: null,
       commands: [],
       mcpServers: [],
+      tools: [],
     };
     this.sessions = [...this.sessions, session];
     return session;
@@ -250,82 +266,156 @@ class AgentSessionStore {
     })();
   }
 
-  #receive(payload: AgentEventPayload): void {
-    const session = this.#ensure(
+  /**
+   * Aplica un delta.
+   *
+   * Es la misma operación que hace `Thread::apply` en Rust, y vive dos veces a
+   * propósito: el store del backend reconstruye el hilo sin frontend, y la
+   * vista lo aplica sin ida y vuelta. Lo que las mantiene juntas es que el
+   * delta es el mismo tipo, no una copia paralela.
+   */
+  #receive(payload: AgentDeltaPayload): void {
+    const s = this.#ensure(
       payload.session,
       payload.backendId,
       payload.backendName,
     );
     // Nombre real en cuanto llega: `start` la crea con el id como etiqueta
     // provisional para no depender de que el backend responda.
-    session.backendName = payload.backendName;
-    session.log = [...session.log, payload];
+    s.backendName = payload.backendName;
 
-    const unseen = this.watching !== session.id;
-    switch (payload.kind) {
-      case "started":
-        session.cwd = payload.cwd;
-        session.model = payload.model;
-        session.slashCommands = payload.slashCommands;
-        session.mcpServers = payload.mcpServers;
-        break;
-      case "message":
-        // El bloque cerró: lo escrito en vivo ya está en el registro.
-        session.streaming = "";
-        session.lastText = payload.text;
-        if (unseen) session.unread += 1;
-        break;
-      case "delta":
-        session.streaming += payload.text;
-        break;
-      case "commands":
-        session.commands = payload.commands;
-        this.catalog = { ...this.catalog, [session.backendId]: payload.commands };
-        break;
-      case "context":
-        session.contextTokens = payload.tokens;
-        break;
-      case "permission":
-        session.pending = [
-          ...session.pending,
-          {
-            id: payload.id,
-            tool: payload.tool,
-            description: payload.description,
-            input: payload.input,
-          },
+    const unseen = this.watching !== s.id;
+
+    switch (payload.t) {
+      case "turn.start":
+        s.turns = [
+          ...s.turns,
+          { id: payload.turn, items: [], status: "running", costUsd: null },
         ];
-        session.status = "waiting";
-        // Un permiso siempre cuenta como no leído, incluso mirando la sesión:
-        // si la ventana está detrás de otra app, «estar mirando» no es cierto,
-        // y este es el evento que no se puede perder.
-        session.unread += 1;
-        this.#notify(
-          `${session.backendName} pide permiso`,
-          `${payload.tool}${payload.description ? `: ${payload.description}` : ""}`,
-        );
+        s.status = "working";
         break;
-      case "finished":
-        session.status = payload.isError ? "failed" : "ready";
-        if (payload.costUsd !== null) session.costUsd += payload.costUsd;
+
+      case "item.add": {
+        // Un item cuyo turno no existe no se descarta: se le abre uno. Perderlo
+        // dejaría un hueco en la conversación, que es peor que un turno de más.
+        let turn = s.turns.find((t) => t.id === payload.turn);
+        if (!turn) {
+          turn = { id: payload.turn, items: [], status: "running", costUsd: null };
+          s.turns = [...s.turns, turn];
+        }
+        turn.items = [...turn.items, payload.item];
+
+        const it = payload.item;
+        if (it.kind === "permission") {
+          s.pending = [
+            ...s.pending,
+            {
+              id: it.id,
+              tool: it.tool,
+              description: it.description,
+              input: it.input,
+            },
+          ];
+          s.status = "waiting";
+          // Un permiso siempre cuenta como no leído, incluso mirando la sesión:
+          // si la ventana está detrás de otra app, «estar mirando» no es cierto,
+          // y este es el evento que no se puede perder.
+          s.unread += 1;
+          this.#notify(
+            `${s.backendName} pide permiso`,
+            `${it.tool}${it.description ? `: ${it.description}` : ""}`,
+          );
+        } else if (it.kind === "message" && it.role === "assistant" && !it.streaming) {
+          s.lastText = it.text;
+          if (unseen) s.unread += 1;
+        }
+        break;
+      }
+
+      case "item.chunk": {
+        const it = this.#item(s, payload.item);
+        if (it && (it.kind === "message" || it.kind === "reasoning")) {
+          it.text += payload.text;
+        }
+        break;
+      }
+
+      case "item.patch": {
+        const it = this.#item(s, payload.item);
+        if (!it) break;
+        // `Object.assign` y no un `switch` por variante: el parche ya trae solo
+        // las claves que cambian, y enumerarlas acá sería repetir el tipo.
+        Object.assign(it, payload.patch);
+        if (it.kind === "message" && it.role === "assistant" && payload.patch.text !== undefined) {
+          s.lastText = it.text;
+          if (unseen && payload.patch.streaming === false) s.unread += 1;
+        }
+        if (it.kind === "permission" && it.status !== "pending") {
+          s.pending = s.pending.filter((p) => p.id !== it.id);
+        }
+        break;
+      }
+
+      case "thread.patch": {
+        const p = payload.patch;
+        if (p.providerSession !== undefined) s.providerSession = p.providerSession;
+        if (p.cwd !== undefined) s.cwd = p.cwd;
+        if (p.model !== undefined) s.model = p.model;
+        if (p.tokens !== undefined) s.contextTokens = p.tokens;
+        if (p.tools !== undefined) s.tools = p.tools;
+        if (p.mcpServers !== undefined) s.mcpServers = p.mcpServers;
+        if (p.commands !== undefined) {
+          s.commands = p.commands;
+          this.catalog = { ...this.catalog, [s.backendId]: p.commands };
+        }
+        break;
+      }
+
+      case "turn.end": {
+        const turn = s.turns.find((t) => t.id === payload.turn);
+        if (turn) {
+          turn.status = payload.status;
+          turn.costUsd = payload.costUsd;
+        }
+        if (payload.costUsd !== null) s.costUsd += payload.costUsd;
+        s.status = payload.status === "failed" ? "failed" : "ready";
         // Solo si no lo estás mirando: avisar de algo que está en pantalla es
         // ruido, y el fin de turno es el evento más frecuente de todos.
         if (unseen) {
           this.#notify(
-            `${session.backendName} terminó`,
-            session.lastText?.slice(0, 140) ?? "",
+            `${s.backendName} terminó`,
+            s.lastText?.slice(0, 140) ?? "",
           );
         }
         break;
-      case "failed":
-        session.status = "failed";
-        session.error = payload.message;
-        if (unseen) session.unread += 1;
-        this.#notify(`${session.backendName} falló`, payload.message);
+      }
+
+      case "failed": {
+        s.status = "failed";
+        s.error = payload.message;
+        const last = s.turns.at(-1);
+        if (last?.status === "running") last.status = "failed";
+        if (unseen) s.unread += 1;
+        this.#notify(`${s.backendName} falló`, payload.message);
         break;
-      default:
-        break;
+      }
     }
+  }
+
+  /**
+   * Busca un item por id.
+   *
+   * De atrás para adelante: lo que se parchea es casi siempre lo último que
+   * llegó, y una conversación larga tiene miles de items.
+   */
+  #item(s: AgentSessionView, id: string): AgentItem | undefined {
+    for (let i = s.turns.length - 1; i >= 0; i--) {
+      const items = s.turns[i].items;
+      for (let j = items.length - 1; j >= 0; j--) {
+        if (items[j].id === id) return items[j];
+      }
+    }
+    return undefined;
   }
 
   /**
@@ -335,12 +425,33 @@ class AgentSessionStore {
    * la respuesta y el próximo mensaje puede pasar bastante: dejarla en
    * «esperando» haría parecer que el clic no hizo nada.
    */
-  async decide(sessionId: string, permissionId: string, allow: boolean) {
+  async decide(
+    sessionId: string,
+    permissionId: string,
+    decision: PermissionDecision,
+  ) {
     const session = this.byId(sessionId);
     if (!session) return;
     session.pending = session.pending.filter((p) => p.id !== permissionId);
     if (session.pending.length === 0) session.status = "working";
-    await agentPermission(sessionId, permissionId, allow);
+    await agentPermission(sessionId, permissionId, decision);
+  }
+
+  /**
+   * Relee las skills del disco para una carpeta.
+   *
+   * No se cachean entre llamadas: son archivos que el usuario edita con su
+   * editor abierto al lado, y una lista guardada sería una lista vieja justo
+   * en el momento en que acaba de escribir una skill nueva y la quiere probar.
+   */
+  async loadSkills(cwd?: string): Promise<void> {
+    try {
+      this.skills = await agentSkills(cwd);
+    } catch (err) {
+      // Sin skills se sigue: son un atajo para descubrirlas, no la única vía
+      // de invocarlas — escribir el comando a mano funciona igual.
+      console.warn("leer skills", err);
+    }
   }
 }
 

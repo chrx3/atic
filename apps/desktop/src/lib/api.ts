@@ -32,9 +32,11 @@ import type {
   Scratchpad,
   Note,
   AgentBackendInfo,
-  AgentEventPayload,
+  AgentDeltaPayload,
   AgentSessionInfo,
+  AgentSkill,
   AgentStartOptions,
+  PermissionDecision,
   PasteQueueItem,
   SearchHit,
   OverlayInfo,
@@ -510,13 +512,19 @@ export const agentStart = (backend: string, options?: AgentStartOptions) =>
 export const agentSend = (session: string, text: string) =>
   invoke<void>("agent_send", { session, text });
 /** Contesta un permiso. El turno del agente está detenido hasta esta llamada. */
-export const agentPermission = (session: string, id: string, allow: boolean) =>
-  invoke<void>("agent_permission", { session, id, allow });
+export const agentPermission = (
+  session: string,
+  id: string,
+  decision: PermissionDecision,
+) => invoke<void>("agent_permission", { session, id, decision });
+/** Skills visibles desde `cwd`. Se consulta cada vez: son archivos editables. */
+export const agentSkills = (cwd?: string) =>
+  invoke<AgentSkill[]>("agent_skills", { cwd: cwd ?? null });
 export const agentStop = (session: string) =>
   invoke<void>("agent_stop", { session });
 
 /** Todos los eventos de todas las sesiones. Filtrar por `session`. */
-export const onAgentEvent = (
-  cb: (payload: AgentEventPayload) => void,
+export const onAgentDelta = (
+  cb: (payload: AgentDeltaPayload) => void,
 ): Promise<UnlistenFn> =>
-  listen<AgentEventPayload>("agent-event", (e) => cb(e.payload));
+  listen<AgentDeltaPayload>("agent-event", (e) => cb(e.payload));

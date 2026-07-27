@@ -13,44 +13,34 @@
    * sí es lo único que importa.
    */
   import { editDiff } from "$lib/agentMarkdown";
+  import type { ToolKind, ToolStatus } from "$lib/types";
 
   let {
     name,
+    title,
+    toolKind,
     input,
     output,
-    isError = false,
-    done,
+    status,
+    locations = [],
   }: {
     name: string;
+    /** Texto legible. Lo arma el backend; la vista ya no lo deduce. */
+    title: string;
+    toolKind: ToolKind;
     input: unknown;
     output?: string;
-    isError?: boolean;
-    done: boolean;
+    status: ToolStatus;
+    /** Archivos que toca. */
+    locations?: string[];
   } = $props();
 
   let open = $state(false);
 
   const diff = $derived(editDiff(input));
-  const isBash = $derived(name === "Bash");
-
-  /** El argumento que identifica la llamada: la ruta, el comando, el patrón. */
-  const summary = $derived.by(() => {
-    if (!input || typeof input !== "object") return "";
-    const o = input as Record<string, unknown>;
-    for (const key of [
-      "file_path",
-      "command",
-      "pattern",
-      "path",
-      "url",
-      "prompt",
-      "description",
-    ]) {
-      const value = o[key];
-      if (typeof value === "string") return value;
-    }
-    return JSON.stringify(o);
-  });
+  const isError = $derived(status === "failed");
+  const done = $derived(status === "completed" || status === "failed");
+  const isBash = $derived(toolKind === "execute");
 
   /** Cuánto cambia, para decirlo sin abrir la tarjeta. */
   const counts = $derived.by(() => {
@@ -85,7 +75,7 @@
   >
     <span class="tc-st" class:is-run={!done} class:is-bad={isError}></span>
     <span class="tc-name">{name}</span>
-    <span class="tc-arg">{summary}</span>
+    <span class="tc-arg">{title}</span>
 
     {#if counts}
       <span class="tc-num">
@@ -109,7 +99,7 @@
           {/each}
         </div>
       {:else if isBash}
-        <pre class="tc-cmd">$ {summary}</pre>
+        <pre class="tc-cmd">$ {title}</pre>
       {:else}
         <pre class="tc-json">{body}</pre>
       {/if}
@@ -118,6 +108,12 @@
         <pre class="tc-out" class:is-error={isError}>{output}</pre>
       {:else if !done}
         <p class="tc-wait">ejecutando…</p>
+      {/if}
+
+      {#if locations.length > 0}
+        <div class="tc-loc">
+          {#each locations as l (l)}<span>{l}</span>{/each}
+        </div>
       {/if}
     </div>
   {/if}
@@ -284,6 +280,21 @@
   }
   .tc-out.is-error {
     color: #e8a496;
+  }
+
+  /* Archivos que la herramienta toca. Llegan del backend en `locations`. */
+  .tc-loc {
+    display: flex;
+    flex-wrap: wrap;
+    margin-top: 0.4rem;
+    gap: 0.25rem;
+  }
+  .tc-loc span {
+    border-radius: 4px;
+    padding: 0.05rem 0.35rem;
+    background: #16130f;
+    color: var(--faint);
+    font-size: 0.625rem;
   }
 
   .tc-wait {
