@@ -16,6 +16,8 @@
     disabled?: boolean;
   }
 
+  import type { Snippet } from "svelte";
+
   let {
     label,
     options,
@@ -23,8 +25,11 @@
     open,
     onToggle,
     onPick,
+    icon,
   }: {
     label: string;
+    /** Ícono a la izquierda de la etiqueta. Opcional: no todas lo necesitan. */
+    icon?: Snippet;
     options: Option[];
     value: string;
     open: boolean;
@@ -65,6 +70,7 @@
     aria-expanded={open}
     onclick={onToggle}
   >
+    {#if icon}<span class="pm-icon">{@render icon()}</span>{/if}
     <span class="pm-label">{label}</span>
     <span class="pm-caret" aria-hidden="true">⌄</span>
   </button>
@@ -98,6 +104,13 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .pm-icon {
+    display: flex;
+    flex-shrink: 0;
+    align-items: center;
+    color: var(--dim);
   }
 
   .pm-caret {
