@@ -20,131 +20,60 @@
 //! repo) no se fuerza dentro de este molde: o queda afuera, o vive en una vista
 //! específica de ese backend.
 
+pub mod acp;
 pub mod bridge;
 pub mod claude_code;
+pub mod exe;
+pub mod model;
+pub mod skills;
+pub mod store;
+pub mod turns;
 
 use serde::Serialize;
 
-/// Un evento de agente, ya normalizado.
+pub use model::AgentDelta;
+
+/// Qué se contesta a un item [`model::ItemKind::Permission`].
 ///
-/// Se serializa a la UI en camelCase con `kind` como discriminante.
+/// «Siempre» no es «sí» repetido: el agente manda, junto al pedido, la regla
+/// que habría que grabar para no volver a preguntar por eso —el modo de
+/// permisos, o el patrón de herramienta— y contestar «siempre» es aceptar esa
+/// regla, no solo esta invocación. Sin la variante, la única forma de no vivir
+/// contestando lo mismo es abrir la sesión en `acceptEdits` desde el principio,
+/// que renuncia a preguntar por todo lo demás.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PermissionDecision {
+    Allow,
+    /// Aceptar y grabar la regla que sugirió el agente, por esta sesión.
+    AllowAlways,
+    Deny,
+}
+
+/// Una skill encontrada en disco.
+///
+/// El agente ya las ofrece como comandos de barra, pero solo el nombre: ni la
+/// descripción ni de dónde salió. Eso alcanza para invocarla si ya sabés que
+/// existe, y no alcanza para descubrirla, que es justo lo que un selector
+/// tiene que resolver.
 #[derive(Debug, Clone, Serialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
-pub enum AgentEvent {
-    /// La sesión arrancó. `session_id` permite reanudarla más tarde.
-    #[serde(rename_all = "camelCase")]
-    Started {
-        session_id: String,
-        /// Herramientas disponibles, para que la UI sepa qué puede aparecer.
-        tools: Vec<String>,
-        /// Directorio de trabajo del agente.
-        cwd: String,
-        /// Modelo en uso, tal como lo informa el backend.
-        model: String,
-        /// Comandos de barra ofrecidos por el agente (skills incluidas).
-        slash_commands: Vec<String>,
-        /// Servidores MCP que el agente cargó y con qué estado.
-        mcp_servers: Vec<McpServerState>,
-    },
-
-    /// Texto del asistente, ya completo.
-    #[serde(rename_all = "camelCase")]
-    Message { text: String },
-
-    /// Un trozo de texto según se escribe.
-    ///
-    /// El mensaje completo llega DESPUÉS igual, así que la vista acumula los
-    /// trozos aparte y los descarta al recibirlo. Sumarlos al registro los
-    /// duplicaría; ignorarlos dejaría la respuesta congelada hasta el final,
-    /// que en una tarea larga se ve como que el agente se colgó.
-    #[serde(rename_all = "camelCase")]
-    Delta { text: String },
-
-    /// Razonamiento del modelo, cuando lo expone.
-    ///
-    /// Va aparte de `Message` porque no es la respuesta: es el trabajo previo.
-    /// La vista lo pliega.
-    #[serde(rename_all = "camelCase")]
-    Thinking { text: String },
-
-    /// El agente va a usar una herramienta.
-    ///
-    /// `input` queda como JSON sin interpretar a propósito: cada herramienta
-    /// tiene su propia forma y esta capa no puede conocerlas todas. La UI
-    /// decide si lo renderiza en crudo o con una vista especializada.
-    #[serde(rename_all = "camelCase")]
-    ToolCall {
-        id: String,
-        name: String,
-        input: serde_json::Value,
-    },
-
-    /// Resultado de una herramienta.
-    #[serde(rename_all = "camelCase")]
-    ToolResult {
-        id: String,
-        output: String,
-        is_error: bool,
-    },
-
-    /// El agente pide permiso para usar una herramienta y **está esperando**.
-    ///
-    /// Nada avanza hasta que se conteste con
-    /// [`AgentSession::respond_permission`]. Es el único evento con esa
-    /// propiedad, y por eso la UI lo trata distinto: no es una línea más del
-    /// registro, es un turno que quedó bloqueado en el usuario.
-    #[serde(rename_all = "camelCase")]
-    Permission {
-        /// Con qué contestar. Es del canal de control, no del turno.
-        id: String,
-        tool: String,
-        /// Resumen corto que ya arma el agente (el archivo, el comando…).
-        description: String,
-        input: serde_json::Value,
-        /// Atajos que sugiere el propio agente, p. ej. «aceptar ediciones
-        /// por el resto de la sesión».
-        suggestions: serde_json::Value,
-    },
-
-    /// Los comandos de barra que este agente acepta.
-    ///
-    /// Llegan por el canal de control al abrir la sesión, con descripción y
-    /// todo. `Started` trae solo los nombres, y un nombre suelto —`/compact`,
-    /// `/effort`— no le dice nada a nadie que no use ya el CLI.
-    #[serde(rename_all = "camelCase")]
-    Commands { commands: Vec<SlashCommand> },
-
-    /// Cuánto contexto lleva consumido el turno.
-    ///
-    /// Se emite por mensaje del asistente, no al final: sirve para una barra
-    /// que se mueve mientras trabaja, que es cuando importa saberlo.
-    #[serde(rename_all = "camelCase")]
-    Context {
-        /// Tokens de entrada, incluido el caché: el tamaño real del contexto.
-        tokens: u64,
-    },
-
-    /// Aviso que no interrumpe: límites de uso, advertencias del backend, o un
-    /// tipo de evento que este adaptador todavía no traduce.
-    #[serde(rename_all = "camelCase")]
-    Notice { text: String },
-
-    /// El turno terminó.
-    #[serde(rename_all = "camelCase")]
-    Finished {
-        stop_reason: Option<String>,
-        is_error: bool,
-        /// Costo del turno en USD, si el backend lo informa.
-        cost_usd: Option<f64>,
-    },
-
-    /// El backend falló de una forma de la que no se puede seguir.
-    #[serde(rename_all = "camelCase")]
-    Failed { message: String },
+#[serde(rename_all = "camelCase")]
+pub struct AgentSkill {
+    pub name: String,
+    pub description: String,
+    /// Ruta del `SKILL.md`, para poder abrirlo desde la interfaz.
+    pub path: String,
+    /// `user` (config del CLI) o `project` (la carpeta de trabajo).
+    pub scope: String,
 }
 
 /// Un comando de barra que ofrece el agente (incluidas las skills).
-#[derive(Debug, Clone, Serialize)]
+///
+/// `Deserialize` porque viaja dentro del hilo persistido: al reabrir una
+/// conversación guardada, los comandos que el agente ofrecía tienen que volver
+/// del disco. Sin eso, el autocompletado quedaría vacío hasta que el backend
+/// arranque de nuevo y los vuelva a informar.
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SlashCommand {
     pub name: String,
@@ -154,7 +83,7 @@ pub struct SlashCommand {
 }
 
 /// Un servidor MCP tal como lo reporta el agente al arrancar.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct McpServerState {
     pub name: String,
@@ -173,6 +102,16 @@ pub struct StartOptions {
     pub cwd: Option<String>,
     /// Id de sesión previa a reanudar.
     pub resume: Option<String>,
+    /// Id a usar para una sesión nueva, elegido por nosotros.
+    ///
+    /// Esperar a que el backend lo informe deja un hueco: entre arrancar y ver
+    /// el primer evento la sesión no tiene nombre con el que guardarse, y si la
+    /// app se cierra en ese rato la conversación queda huérfana en el disco del
+    /// CLI, sin forma de encontrarla. Eligiéndolo nosotros, existe desde antes
+    /// que el proceso.
+    pub session_id: Option<String>,
+    /// Al reanudar, seguir en una rama nueva en vez de escribir sobre la vieja.
+    pub fork: bool,
     /// Modelo o alias (`opus`, `sonnet`, …).
     pub model: Option<String>,
     /// Cómo se piden permisos. `None` = pedirlos todos.
@@ -204,13 +143,15 @@ pub trait AgentBackend: Send + Sync {
 
     /// Arranca una sesión.
     ///
-    /// `on_event` corre en los hilos lectores del backend, no en el que llama.
-    /// Pide `Sync` porque un backend puede tener más de un lector —Claude Code
-    /// lee stdout y stderr en paralelo— y ambos comparten el mismo callback.
+    /// `on_delta` corre en los hilos lectores del backend, **y también en el
+    /// hilo que manda mensajes**: el turno del usuario lo abre quien escribe,
+    /// no quien lee. Pide `Sync` por eso y porque un backend puede tener más de
+    /// un lector —Claude Code lee stdout y stderr en paralelo— compartiendo el
+    /// mismo callback.
     fn start(
         &self,
         options: StartOptions,
-        on_event: Box<dyn Fn(AgentEvent) + Send + Sync + 'static>,
+        on_delta: Box<dyn Fn(AgentDelta) + Send + Sync + 'static>,
     ) -> Result<Box<dyn AgentSession>, String>;
 }
 
@@ -219,12 +160,16 @@ pub trait AgentSession: Send {
     /// Manda un mensaje del usuario.
     fn send(&mut self, text: &str) -> Result<(), String>;
 
-    /// Contesta un [`AgentEvent::Permission`] pendiente.
+    /// Contesta un item [`model::ItemKind::Permission`] pendiente.
     ///
     /// Por defecto no hace nada: un backend que no sabe pedir permiso tampoco
     /// puede recibir una respuesta, y devolver error obligaría a la UI a
     /// distinguir backends. Mientras no emita `Permission`, nadie llama a esto.
-    fn respond_permission(&mut self, _id: &str, _allow: bool) -> Result<(), String> {
+    fn respond_permission(
+        &mut self,
+        _id: &str,
+        _decision: PermissionDecision,
+    ) -> Result<(), String> {
         Ok(())
     }
 
