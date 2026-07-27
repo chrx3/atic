@@ -12,7 +12,7 @@ pub mod summary;
 pub mod transcript;
 
 pub use config::Config;
-pub use db::Db;
+pub use db::{AgentThreadRow, Db};
 pub use error::{Error, Result};
 pub use models::{Recording, RecordingStatus};
 pub use paths::AppDirs;
