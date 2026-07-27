@@ -27,6 +27,37 @@ crates/
   summarize/   Resumen BYOK: Claude, Ollama, OpenAI-compat (OpenAI, OpenRouter, Groq, MiniMax, Custom)
   mailer/      Envío SMTP (lettre) o borrador mailto:
 apps/desktop/  App Tauri 2: ventana principal + pill + tray + capturas + detección de llamadas
+  src-tauri/src/agents/   Agentes de consola dentro de Atic (ver abajo)
+```
+
+### Agentes
+
+Claude Code, OpenCode, Cursor y Codex conversando dentro de la app, con sus
+herramientas, sus permisos y tu misma sesión del CLI. Atic no autentica nada:
+se cuelga de la instalación que ya tenés.
+
+```
+agents/model.rs       Modelo canónico: hilo → turnos → items con id estable
+agents/turns.rs       Emitir deltas y saber en qué turno se está
+agents/claude_code.rs Adaptador de Claude Code (su `stream-json` propio)
+agents/acp.rs         Adaptador ACP: OpenCode y Cursor con el mismo código
+agents/exe.rs         Encontrar el ejecutable (shims de npm, PATHEXT, `cmd /C`)
+agents/store.rs       Persistencia de conversaciones en `atic.db3`
+agents/skills.rs      Descubrir skills en disco, con su descripción
+agents/bridge.rs      Comandos de Tauri y registro de sesiones vivas
+```
+
+La clave está en `model.rs`: la interfaz **solo** conoce el modelo canónico, y
+cada backend traduce hacia él. Ese modelo tiene a propósito la forma de
+[ACP](https://agentclientprotocol.com/), así que sumar un agente que ya hable
+ACP es cambiar una constante.
+
+Estado, plan y traspaso: **[`docs/PLAN_AGENTES.md`](docs/PLAN_AGENTES.md)**.
+
+Para probar un adaptador sin abrir la interfaz:
+
+```bash
+cargo run -p atic-desktop --example acp_real -- opencode "lee README.md y di de que trata"
 ```
 
 ## Requisitos de desarrollo
@@ -38,6 +69,19 @@ apps/desktop/  App Tauri 2: ventana principal + pill + tray + capturas + detecci
 - **CMake** y **LLVM/libclang** — los necesita `whisper-rs`, que compila
   whisper.cpp. En Windows, si `libclang.dll` no está en el PATH, exporta
   `LIBCLANG_PATH` apuntando a `…\LLVM\bin`.
+- **`CPATH` apuntando a `INCLUDE`**, si compilas fuera del «Developer PowerShell
+  for VS». `libclang` **no** lee `INCLUDE` —la variable que define MSVC— así que
+  encuentra su propia DLL pero no las cabeceras del sistema. El síntoma engaña:
+  `fatal error: 'stdio.h' file not found`, seguido de un
+  `attempt to compute 12_usize - 16_usize` en unos bindings de **Linux** que
+  `whisper-rs-sys` usa de reserva. No es un problema de Rust ni del proyecto.
+
+  ```powershell
+  $env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
+  cmd /c '"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat" >nul && set' |
+    ForEach-Object { if ($_ -match '^([^=]+)=(.*)$') { Set-Item "env:$($matches[1])" $matches[2] -ErrorAction SilentlyContinue } }
+  $env:CPATH = $env:INCLUDE
+  ```
 - Node.js 22+ y pnpm 10+
 - WebView2 (incluido en Windows 11)
 
