@@ -1,6 +1,6 @@
 //! Punto de entrada de la aplicación de escritorio Atic.
 
-mod agents;
+pub mod agents;
 mod beep;
 mod capture;
 mod capture_session;
@@ -178,7 +178,11 @@ pub fn run() {
             agents::bridge::agent_start,
             agents::bridge::agent_send,
             agents::bridge::agent_permission,
+            agents::bridge::agent_skills,
             agents::bridge::agent_stop,
+            agents::bridge::agent_threads,
+            agents::bridge::agent_thread,
+            agents::bridge::agent_thread_delete,
             clipboard_history::restore_pill_position,
             snippets::list_snippets,
             snippets::upsert_snippet,
@@ -370,7 +374,7 @@ pub fn run() {
             if let RunEvent::Exit = event {
                 // Los agentes son procesos externos: si Atic se va sin cerrarlos,
                 // quedan corriendo y consumiendo tokens sin nadie mirando.
-                agents::bridge::stop_all();
+                agents::bridge::stop_all(app);
                 if let Some(state) = app.try_state::<AppState>() {
                     let cfg = state.config.lock().unwrap().clone();
                     let _ = cfg.save(&state.dirs.config_path());

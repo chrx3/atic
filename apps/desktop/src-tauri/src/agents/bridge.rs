@@ -9,9 +9,12 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use serde::Serialize;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
-use super::{claude_code::ClaudeCode, AgentBackend, AgentEvent, AgentSession, StartOptions};
+use super::{
+    claude_code::ClaudeCode, AgentBackend, AgentDelta, AgentSession, AgentSkill,
+    PermissionDecision, StartOptions,
+};
 
 /// Una sesión viva más lo que hace falta para nombrarla sin volver a mirar la
 /// lista de backends.
@@ -29,8 +32,16 @@ struct Entry {
 static SESSIONS: Mutex<Option<HashMap<String, Entry>>> = Mutex::new(None);
 
 /// Backends conocidos. Sumar uno es agregarlo a esta lista.
+///
+/// Claude Code tiene adaptador propio porque habla su `stream-json`; los otros
+/// dos son el MISMO adaptador con otra constante, porque los dos hablan ACP.
+/// Ese es el pago de haber moldeado el modelo canónico sobre ese protocolo.
 fn backends() -> Vec<Box<dyn AgentBackend>> {
-    vec![Box::new(ClaudeCode)]
+    vec![
+        Box::new(ClaudeCode),
+        Box::new(super::acp::OPENCODE),
+        Box::new(super::acp::CURSOR),
+    ]
 }
 
 fn find(id: &str) -> Option<Box<dyn AgentBackend>> {
@@ -47,9 +58,9 @@ pub struct BackendInfo {
     pub available: bool,
 }
 
-/// Lo que viaja al frontend en cada evento.
+/// Lo que viaja al frontend en cada cambio.
 ///
-/// Lleva el backend además de la sesión porque los eventos son globales: una
+/// Lleva el backend además de la sesión porque los deltas son globales: una
 /// ventana puede ver la conversación de una sesión que arrancó otra, y sin este
 /// dato no tendría con qué nombrarla.
 #[derive(Clone, Serialize)]
@@ -58,8 +69,10 @@ struct EventPayload {
     session: String,
     backend_id: String,
     backend_name: String,
+    /// Aplanado: el discriminante `t` del delta queda al mismo nivel que la
+    /// sesión, así el frontend hace un solo `switch` sin desenvolver nada.
     #[serde(flatten)]
-    event: AgentEvent,
+    delta: AgentDelta,
 }
 
 /// Una sesión abierta, para que una vista que se monta tarde se ponga al día.
@@ -134,7 +147,6 @@ struct BubbleOpen {
 /// la necesitabas.
 #[tauri::command]
 pub fn show_agents_window(app: AppHandle) {
-    use tauri::{Emitter, Manager};
     let Some(window) = app.get_webview_window("agents") else {
         return;
     };
@@ -146,6 +158,34 @@ pub fn show_agents_window(app: AppHandle) {
         if window.is_focused().unwrap_or(false) {
             hide_agents_window(app);
         } else {
+            // Traerla al frente Y volver a plantarle su tamaño. Lo segundo es lo
+            // que la recompone: un vuelo que no llegó —la pantalla se bloqueó, el
+            // equipo suspendió, algo pisó el tween— deja la ventana visible a
+            // medio crecer, y como sigue estando «visible» esta rama era la única
+            // que se alcanzaba. Sin reponer la geometría, la única salida era
+            // reiniciar la app. Visto: quedó en 252x252 con el compositor
+            // desbordado y ninguna pulsación la arreglaba.
+            if let Some((target, anchor)) = crate::floating::bubble_rect(
+                &app,
+                "agents",
+                "pill",
+                BUBBLE_GAP,
+                BUBBLE_CORNER,
+                BUBBLE_INSET,
+            ) {
+                crate::floating::snap_rect(&app, "agents", target);
+                let _ = app.emit(
+                    "agents-bubble-anchor",
+                    BubbleOpen {
+                        side: anchor.side,
+                        offset: anchor.offset,
+                        w: target.w,
+                        h: target.h,
+                        // Ya está en su sitio: sin vuelo que acompañar.
+                        flight: 0,
+                    },
+                );
+            }
             let _ = window.set_focus();
         }
         return;
@@ -193,7 +233,6 @@ pub fn show_agents_window(app: AppHandle) {
 /// sin forma de cerrarla.
 #[tauri::command]
 pub fn hide_agents_window(app: AppHandle) {
-    use tauri::{Emitter, Manager};
     let Some(window) = app.get_webview_window("agents") else {
         return;
     };
@@ -245,6 +284,9 @@ pub struct StartRequest {
     pub mcp_config: Option<String>,
     #[serde(default)]
     pub add_dirs: Vec<String>,
+    /// Al reanudar, bifurcar en vez de seguir escribiendo el hilo original.
+    #[serde(default)]
+    pub fork: bool,
 }
 
 /// Arranca una sesión y devuelve su clave local.
@@ -262,10 +304,15 @@ pub fn agent_start(
         permission_mode,
         mcp_config,
         add_dirs,
+        fork,
     } = options;
     let agent = find(&backend).ok_or_else(|| format!("backend desconocido: {backend}"))?;
     let key = uuid::Uuid::new_v4().to_string();
     let display_name = agent.display_name().to_string();
+
+    // Seguir el hilo desde ANTES de arrancar: el primer delta puede llegar
+    // mientras `start` todavía no volvió, y sin el hilo abierto se perdería.
+    super::store::open(&key, &backend, &display_name, cwd.as_deref().unwrap_or(""));
 
     let emit_key = key.clone();
     let emit_backend = backend.clone();
@@ -273,20 +320,34 @@ pub fn agent_start(
     let session = agent.start(
         StartOptions {
             cwd,
+            // La clave local se usa también como id de la conversación en el
+            // CLI. Son dos identidades que no tienen por qué coincidir, y
+            // hacerlas coincidir vale la pena: el id que la interfaz muestra es
+            // el mismo con el que se reanuda, sin tabla de equivalencias en el
+            // medio. Al bifurcar deja de ser cierto —ahí el CLI acuña uno
+            // nuevo— y el id real llega en `Started`.
+            session_id: Some(key.clone()),
             resume,
+            fork,
             model,
             permission_mode,
             mcp_config,
             add_dirs,
         },
-        Box::new(move |event| {
+        Box::new(move |delta| {
+            // Primero al store, después a la ventana. El orden importa poco
+            // para la vista y mucho para el disco: si emitir fallara, el hilo
+            // ya quedó aplicado igual.
+            if super::store::apply(&emit_key, &delta) {
+                with_db(&app, |db| super::store::flush(db, &emit_key));
+            }
             let _ = app.emit(
                 "agent-event",
                 EventPayload {
                     session: emit_key.clone(),
                     backend_id: emit_backend.clone(),
                     backend_name: emit_name.clone(),
-                    event,
+                    delta,
                 },
             );
         }),
@@ -322,7 +383,11 @@ pub fn agent_send(session: String, text: String) -> Result<(), String> {
 
 /// Contesta un permiso pendiente. El turno del agente está detenido hasta acá.
 #[tauri::command]
-pub fn agent_permission(session: String, id: String, allow: bool) -> Result<(), String> {
+pub fn agent_permission(
+    session: String,
+    id: String,
+    decision: PermissionDecision,
+) -> Result<(), String> {
     let mut guard = SESSIONS.lock().unwrap();
     guard
         .as_mut()
@@ -330,11 +395,21 @@ pub fn agent_permission(session: String, id: String, allow: bool) -> Result<(), 
         .get_mut(&session)
         .ok_or_else(|| "esa sesión ya no existe".to_string())?
         .session
-        .respond_permission(&id, allow)
+        .respond_permission(&id, decision)
+}
+
+/// Las skills disponibles para una carpeta de trabajo.
+///
+/// Se consulta cada vez en vez de guardarse: son archivos que el usuario edita
+/// con el editor abierto al lado, y una lista cacheada sería una lista vieja
+/// justo cuando acaba de escribir una.
+#[tauri::command]
+pub fn agent_skills(cwd: Option<String>) -> Vec<AgentSkill> {
+    super::skills::discover(cwd.as_deref())
 }
 
 #[tauri::command]
-pub fn agent_stop(session: String) {
+pub fn agent_stop(app: AppHandle, session: String) {
     let taken = SESSIONS
         .lock()
         .unwrap()
@@ -345,10 +420,20 @@ pub fn agent_stop(session: String) {
     if let Some(mut entry) = taken {
         entry.session.stop();
     }
+    with_db(&app, |db| super::store::close(db, &session));
 }
 
 /// Cierra todo. Se llama al salir para no dejar procesos huérfanos.
-pub fn stop_all() {
+///
+/// Baja los hilos a disco ANTES de matar los procesos: es el punto donde una
+/// conversación en curso se guarda de verdad, y hacerlo después dejaría fuera
+/// lo último que el agente alcanzó a decir.
+pub fn stop_all(app: &AppHandle) {
+    with_db(app, |db| {
+        for id in super::store::tracked() {
+            super::store::flush(db, &id);
+        }
+    });
     let taken: Vec<_> = SESSIONS
         .lock()
         .unwrap()
@@ -358,4 +443,40 @@ pub fn stop_all() {
     for mut entry in taken {
         entry.session.stop();
     }
+}
+
+/// Corre algo con la base, si la app ya la tiene montada.
+///
+/// `try_state` y no `state`: al cerrar, el estado puede haberse desmontado ya, y
+/// entrar en pánico dentro del apagado dejaría procesos del agente huérfanos.
+fn with_db<T>(app: &AppHandle, f: impl FnOnce(&atic_core::Db) -> T) -> Option<T> {
+    let state = app.try_state::<crate::state::AppState>()?;
+    let db = state.db.lock().ok()?;
+    Some(f(&db))
+}
+
+/// Las conversaciones guardadas, de la más reciente a la más vieja.
+///
+/// Sin los turnos: la lista solo necesita con qué reconocerlas, y mandar la
+/// conversación entera de cada una sería cargar megabytes para pintar líneas.
+#[tauri::command]
+pub fn agent_threads(app: AppHandle) -> Result<Vec<super::store::StoredThread>, String> {
+    with_db(&app, super::store::list)
+        .unwrap_or_else(|| Err("la base no está disponible".to_string()))
+}
+
+/// Una conversación guardada, con todos sus turnos.
+#[tauri::command]
+pub fn agent_thread(
+    app: AppHandle,
+    id: String,
+) -> Result<Option<super::store::StoredThread>, String> {
+    with_db(&app, |db| super::store::get(db, &id))
+        .unwrap_or_else(|| Err("la base no está disponible".to_string()))
+}
+
+#[tauri::command]
+pub fn agent_thread_delete(app: AppHandle, id: String) -> Result<(), String> {
+    with_db(&app, |db| super::store::delete(db, &id))
+        .unwrap_or_else(|| Err("la base no está disponible".to_string()))
 }
