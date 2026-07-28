@@ -770,8 +770,3 @@ pub fn bubble_rect(
 ) -> Option<(Rect, BubbleAnchor)> {
     None
 }
-
-#[cfg(not(windows))]
-pub fn rect_of(_app: &AppHandle, _label: &str) -> Option<Rect> {
-    None
-}
