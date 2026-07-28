@@ -39,18 +39,21 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use agent_client_protocol::schema::v1::{
-    ContentBlock, ContentChunk, ImageContent, InitializeRequest, NewSessionRequest,
-    PermissionOptionKind, PromptRequest, RequestPermissionOutcome, RequestPermissionRequest,
-    RequestPermissionResponse, SelectedPermissionOutcome, SessionConfigKind,
-    SessionConfigOption, SessionConfigOptionCategory, SessionConfigSelect,
+    AuthenticateRequest, ContentBlock, ContentChunk, ImageContent, InitializeRequest,
+    NewSessionRequest, PermissionOptionKind, PromptRequest, RequestPermissionOutcome,
+    RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome,
+    SessionConfigKind, SessionConfigOption, SessionConfigOptionCategory, SessionConfigSelect,
     SessionConfigSelectOption, SessionConfigSelectOptions, SessionNotification, SessionUpdate,
     SetSessionConfigOptionRequest, TextContent, ToolCall, ToolCallStatus as AcpToolStatus,
     ToolCallUpdate, ToolKind as AcpToolKind, UsageUpdate,
 };
 use agent_client_protocol::schema::ProtocolVersion;
-use agent_client_protocol::{AcpAgent, AcpAgentConfig, Agent, ConnectionTo};
+use agent_client_protocol::{
+    AcpAgent, AcpAgentConfig, Agent, ConnectionTo, JsonRpcRequest, JsonRpcResponse,
+};
 use futures::channel::{mpsc, oneshot};
 use futures::StreamExt;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::model::{
@@ -86,14 +89,47 @@ pub const CURSOR: Acp = Acp {
 
 /// Lo que la sesión le pide al hilo de conexión.
 enum Cmd {
-    /// El texto y, si entró por un puente de Atic, por cuál.
-    Prompt(String, Option<Origin>),
+    /// Turno ya anunciado a la UI: el hilo de conexión solo habla con el agente.
+    Prompt {
+        turn: String,
+        /// Texto ya limpio de rutas embebidas (el que ve el modelo).
+        prompt: String,
+        files: Vec<String>,
+    },
     SetModel {
         model: String,
         effort: Option<String>,
         fast: Option<bool>,
     },
     Stop,
+}
+
+/// Cursor pide input estructurado y **bloquea** el turno hasta la respuesta.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonRpcRequest)]
+#[request(method = "cursor/ask_question", response = CursorAskQuestionResponse)]
+struct CursorAskQuestionRequest {
+    #[serde(default)]
+    title: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonRpcResponse)]
+struct CursorAskQuestionResponse {
+    outcome: Value,
+}
+
+/// Cursor pide aprobar un plan y también bloquea hasta contestar.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonRpcRequest)]
+#[request(method = "cursor/create_plan", response = CursorCreatePlanResponse)]
+struct CursorCreatePlanRequest {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    overview: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonRpcResponse)]
+struct CursorCreatePlanResponse {
+    outcome: Value,
 }
 
 /// Estado que comparten el hilo de conexión y la sesión.
@@ -243,7 +279,9 @@ async fn connect(
 
     let perm = {
         let (emit, shared) = (emit.clone(), shared.clone());
-        move |req: RequestPermissionRequest, responder: agent_client_protocol::Responder<_>| {
+        move |req: RequestPermissionRequest,
+              responder: agent_client_protocol::Responder<RequestPermissionResponse>,
+              cx: ConnectionTo<Agent>| {
             let (emit, shared) = (emit.clone(), shared.clone());
             async move {
                 let id = format!("perm:{}", req.tool_call.tool_call_id.0);
@@ -276,31 +314,103 @@ async fn connect(
                 });
                 emit.all(out);
 
-                // Acá se detiene el turno del agente hasta que el usuario decida.
-                let decision = wait.await.unwrap_or(PermissionDecision::Deny);
-                shared.pending.lock().unwrap().remove(&id);
-                emit.send(AgentDelta::ItemPatch {
-                    item: id,
-                    patch: ItemPatch {
-                        status: serde_json::to_value(match decision {
-                            PermissionDecision::Deny => PermissionStatus::Denied,
-                            _ => PermissionStatus::Allowed,
-                        })
-                        .ok(),
-                        ..Default::default()
-                    },
-                });
+                // No await acá: el bus ACP es un solo task. Si esperamos al
+                // usuario dentro del handler, se congelan los chunks y el
+                // prompt queda muerto aunque la UI ya muestre el permiso.
+                cx.spawn(async move {
+                    let decision = wait.await.unwrap_or(PermissionDecision::Deny);
+                    shared.pending.lock().unwrap().remove(&id);
+                    emit.send(AgentDelta::ItemPatch {
+                        item: id,
+                        patch: ItemPatch {
+                            status: serde_json::to_value(match decision {
+                                PermissionDecision::Deny => PermissionStatus::Denied,
+                                _ => PermissionStatus::Allowed,
+                            })
+                            .ok(),
+                            ..Default::default()
+                        },
+                    });
 
-                match pick_option(&req, decision) {
-                    Some(opt) => responder.respond(RequestPermissionResponse::new(
-                        RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(opt)),
-                    )),
-                    // El agente no ofreció ninguna opción utilizable: cancelar
-                    // es lo honesto, y deja el turno cerrado en vez de colgado.
-                    None => responder.respond(RequestPermissionResponse::new(
-                        RequestPermissionOutcome::Cancelled,
-                    )),
-                }
+                    match pick_option(&req, decision) {
+                        Some(opt) => responder.respond(RequestPermissionResponse::new(
+                            RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(
+                                opt,
+                            )),
+                        )),
+                        None => responder.respond(RequestPermissionResponse::new(
+                            RequestPermissionOutcome::Cancelled,
+                        )),
+                    }?;
+                    Ok(())
+                })?;
+                Ok(())
+            }
+        }
+    };
+
+    let ask = {
+        let (emit, shared) = (emit.clone(), shared.clone());
+        move |req: CursorAskQuestionRequest,
+              responder: agent_client_protocol::Responder<CursorAskQuestionResponse>,
+              _cx: ConnectionTo<Agent>| {
+            let (emit, shared) = (emit.clone(), shared.clone());
+            async move {
+                let mut out = Vec::new();
+                let turn = ensure_turn(&shared.turns, &mut out);
+                let n = shared.seen.lock().unwrap().len();
+                let title = req.title.unwrap_or_else(|| "pregunta".into());
+                out.push(AgentDelta::ItemAdd {
+                    turn: turn.clone(),
+                    item: Item::new(
+                        format!("{turn}-ask{n}"),
+                        ItemKind::Notice {
+                            text: format!(
+                                "Cursor preguntó «{title}»; se omitió (aún sin UI)."
+                            ),
+                        },
+                    ),
+                });
+                emit.all(out);
+                responder.respond(CursorAskQuestionResponse {
+                    outcome: serde_json::json!({
+                        "outcome": "skipped",
+                        "reason": "sin UI de preguntas en Atic"
+                    }),
+                })
+            }
+        }
+    };
+
+    let plan = {
+        let (emit, shared) = (emit.clone(), shared.clone());
+        move |req: CursorCreatePlanRequest,
+              responder: agent_client_protocol::Responder<CursorCreatePlanResponse>,
+              _cx: ConnectionTo<Agent>| {
+            let (emit, shared) = (emit.clone(), shared.clone());
+            async move {
+                let mut out = Vec::new();
+                let turn = ensure_turn(&shared.turns, &mut out);
+                let n = shared.seen.lock().unwrap().len();
+                let name = req
+                    .name
+                    .or(req.overview)
+                    .unwrap_or_else(|| "plan".into());
+                out.push(AgentDelta::ItemAdd {
+                    turn: turn.clone(),
+                    item: Item::new(
+                        format!("{turn}-planask{n}"),
+                        ItemKind::Notice {
+                            text: format!(
+                                "Cursor pidió aprobar «{name}»; se aceptó (aún sin UI)."
+                            ),
+                        },
+                    ),
+                });
+                emit.all(out);
+                responder.respond(CursorCreatePlanResponse {
+                    outcome: serde_json::json!({ "outcome": "accepted" }),
+                })
             }
         }
     };
@@ -313,13 +423,39 @@ async fn connect(
             agent_client_protocol::on_receive_notification!(),
         )
         .on_receive_request(
-            async move |req: RequestPermissionRequest, responder, _conn| perm(req, responder).await,
+            async move |req: RequestPermissionRequest, responder, cx| {
+                perm(req, responder, cx).await
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |req: CursorAskQuestionRequest, responder, cx| ask(req, responder, cx).await,
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |req: CursorCreatePlanRequest, responder, cx| plan(req, responder, cx).await,
             agent_client_protocol::on_receive_request!(),
         )
         .connect_with(agent, |conn: ConnectionTo<Agent>| async move {
-            conn.send_request(InitializeRequest::new(ProtocolVersion::V1))
+            let init = conn
+                .send_request(InitializeRequest::new(ProtocolVersion::V1))
                 .block_task()
                 .await?;
+
+            // Cursor (y otros) anuncian authMethods; la doc pide authenticate
+            // antes de session/new. Sin login previo falla; con CLI ya logueado
+            // es un no-op útil.
+            if let Some(method) = init
+                .auth_methods
+                .iter()
+                .find(|m| m.id().0.as_ref() == "cursor_login")
+                .or_else(|| init.auth_methods.first())
+            {
+                let _ = conn
+                    .send_request(AuthenticateRequest::new(method.id().clone()))
+                    .block_task()
+                    .await;
+            }
 
             let session = conn
                 .send_request(NewSessionRequest::new(std::path::PathBuf::from(&cwd)))
@@ -397,9 +533,21 @@ async fn connect(
                         )
                         .await?;
                     }
-                    Cmd::Prompt(text, origin) => {
-                        prompt_turn(&conn, &session.session_id, text, origin, &emit, &shared)
-                            .await?;
+                    Cmd::Prompt {
+                        turn,
+                        prompt,
+                        files,
+                    } => {
+                        prompt_turn(
+                            &conn,
+                            &session.session_id,
+                            turn,
+                            prompt,
+                            files,
+                            &emit,
+                            &shared,
+                        )
+                        .await?;
                     }
                 }
             }
@@ -412,38 +560,12 @@ async fn connect(
 async fn prompt_turn(
     conn: &ConnectionTo<Agent>,
     session_id: &agent_client_protocol::schema::v1::SessionId,
-    text: String,
-    origin: Option<Origin>,
+    turn: String,
+    prompt: String,
+    files: Vec<String>,
     emit: &Emit,
     shared: &Shared,
 ) -> agent_client_protocol::Result<()> {
-    let files = origin
-        .as_ref()
-        .map(|o| o.files.clone())
-        .unwrap_or_default();
-    let prompt = {
-        let stripped = super::media::strip_embedded_paths(&text, &files);
-        if stripped.is_empty() && !files.is_empty() {
-            "Mira esta imagen.".to_string()
-        } else {
-            stripped
-        }
-    };
-
-    let turn = start_turn(&shared.turns, emit);
-    emit.send(AgentDelta::ItemAdd {
-        turn: turn.clone(),
-        item: Item::new(
-            format!("{turn}-u"),
-            ItemKind::Message {
-                role: Role::User,
-                text: prompt.clone(),
-                streaming: false,
-            },
-        )
-        .con_origen(origin),
-    });
-
     let mut blocks: Vec<ContentBlock> = Vec::new();
     for path in &files {
         match super::media::read_image_base64(std::path::Path::new(path)) {
@@ -1024,6 +1146,11 @@ fn translate(update: &SessionUpdate, shared: &Shared) -> Vec<AgentDelta> {
 
         SessionUpdate::UsageUpdate(u) => out.push(usage(u, shared)),
 
+        // Metadatos de sesión / config: no son conversación. Antes caían en
+        // «ACP sin traducir» y ensuciaban el hilo (y el «trabajando…» se leía
+        // como si no hubiera empezado nada).
+        SessionUpdate::SessionInfoUpdate(_) | SessionUpdate::ConfigOptionUpdate(_) => {}
+
         // Lo que todavía no traducimos se nombra en vez de descartarse: el
         // protocolo va a crecer, y tragar en silencio hace que lo nuevo se vea
         // como si nada hubiera pasado.
@@ -1258,8 +1385,42 @@ struct AcpSession {
 
 impl AgentSession for AcpSession {
     fn send(&mut self, text: &str, origin: Option<Origin>) -> Result<(), String> {
+        let files = origin
+            .as_ref()
+            .map(|o| o.files.clone())
+            .unwrap_or_default();
+        let prompt = {
+            let stripped = super::media::strip_embedded_paths(text, &files);
+            if stripped.is_empty() && !files.is_empty() {
+                "Mira esta imagen.".to_string()
+            } else {
+                stripped
+            }
+        };
+
+        // Anunciar el turno YA: el hilo ACP puede tardar en conectar (cmd.exe
+        // + cursor-agent). Sin esto la UI queda en «trabajando…» vacía y parece
+        // que Cursor no responde, cuando ni siquiera empezó el prompt.
+        let turn = start_turn(&self.shared.turns, &self.emit);
+        self.emit.send(AgentDelta::ItemAdd {
+            turn: turn.clone(),
+            item: Item::new(
+                format!("{turn}-u"),
+                ItemKind::Message {
+                    role: Role::User,
+                    text: prompt.clone(),
+                    streaming: false,
+                },
+            )
+            .con_origen(origin),
+        });
+
         self.tx
-            .unbounded_send(Cmd::Prompt(text.to_string(), origin))
+            .unbounded_send(Cmd::Prompt {
+                turn,
+                prompt,
+                files,
+            })
             .map_err(|_| "la sesión ya está cerrada".to_string())
     }
 

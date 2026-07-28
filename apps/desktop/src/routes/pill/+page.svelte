@@ -1095,6 +1095,9 @@
   </div>
 
   <div class="p-stack" class:is-dim={surface === "wheel"}>
+    <!-- Cuerpo líquido: con panel, barra + cuerpo son UNA superficie (join
+         tipo Liquid UI). Sin panel, es solo un wrapper transparente. -->
+    <div class="p-liquid" class:is-fused={panelOpen}>
     <div class="p-shell">
       <!-- La barra se mide sola (`max-content`): no hay tabla de anchos. -->
       <div
@@ -1235,6 +1238,7 @@
     {#if panelOpen}
       {@render panelBody()}
     {/if}
+    </div>
   </div>
 </div>
 
@@ -1266,9 +1270,12 @@
     padding: 0;
     cursor: default;
   }
-  /* El panel hacia arriba invierte el orden visual sin tocar el DOM. */
-  .p-root.is-up .p-stack {
+  /* El panel hacia arriba invierte barra/cuerpo dentro del blob líquido. */
+  .p-root.is-up .p-liquid.is-fused {
     flex-direction: column-reverse;
+  }
+  .p-root.is-up .p-liquid.is-fused .p-shell {
+    box-shadow: inset 0 1px 0 color-mix(in srgb, var(--rb-text) 7%, transparent);
   }
 
   /* Cierre acelerado: al elegir herramienta la rueda ya cumplió su función. */
@@ -1337,6 +1344,33 @@
     transition: transform var(--morph-open-dur) var(--morph-ease);
   }
 
+  /* ─── Cuerpo líquido (barra sola o barra+panel fusionados) ───────────── */
+  .p-liquid {
+    display: flex;
+    width: max-content;
+    max-width: 100%;
+    min-height: 0;
+    flex-direction: column;
+  }
+  .p-liquid.is-fused {
+    width: 100%;
+    flex: 1;
+    overflow: hidden;
+    border-radius: 18px;
+    background: color-mix(in srgb, var(--rb-surface) 97%, transparent);
+    box-shadow:
+      0 1px 0 rgba(255, 255, 255, 0.42) inset,
+      0 12px 32px rgba(0, 0, 0, 0.14);
+    animation: p-liquid-in var(--panel-dur) var(--morph-ease);
+  }
+  @keyframes p-liquid-in {
+    from {
+      opacity: 0.88;
+      filter: blur(2px);
+      transform: scale(0.975);
+    }
+  }
+
   /* ─── Barra ─────────────────────────────────────────────────────────── */
   /* Una sola piel para todos los estados. Antes la barra y la tira de cola
      declaraban la misma superficie por separado y se desincronizaban. */
@@ -1357,15 +1391,15 @@
     color: var(--rb-text);
     transition:
       border-radius var(--morph-close-dur) var(--morph-close-ease),
+      background var(--morph-close-dur) var(--morph-close-ease),
       transform var(--morph-close-dur) var(--morph-close-ease);
   }
-  /* Con panel la barra sí ocupa el ancho: es la cabecera del panel. */
-  .p-root.is-panel .p-shell {
+  /* Fusionado: la piel la pinta `.p-liquid`; la barra es solo cabecera. */
+  .p-liquid.is-fused .p-shell {
     width: 100%;
-    border-radius: 16px 16px 0 0;
-  }
-  .p-root.is-panel.is-up .p-shell {
-    border-radius: 0 0 16px 16px;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--rb-text) 7%, transparent);
   }
 
   /* max-content: el ancho lo fija el contenido, no la ventana. Es lo que hace
@@ -1663,15 +1697,12 @@
     min-height: 0;
     flex: 1;
     flex-direction: column;
-    border-radius: 0 0 16px 16px;
+    border-radius: 0;
     padding: 0.45rem 0.5rem 0.55rem;
-    background: color-mix(in srgb, var(--rb-surface) 97%, transparent);
+    background: transparent;
     color: var(--rb-text);
     overflow: hidden;
     cursor: default;
-  }
-  .p-root.is-up .p-panel {
-    border-radius: 16px 16px 0 0;
   }
 
   .p-tabs {
@@ -1736,11 +1767,13 @@
     .p-wheel.is-open::before,
     .p-stack,
     .p-shell,
+    .p-liquid.is-fused,
     .p-icon,
     .p-rec,
     .p-dict,
     .p-tab {
       transition: none !important;
+      animation: none !important;
     }
     .p-stack.is-dim {
       filter: none;

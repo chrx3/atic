@@ -9,6 +9,8 @@ intrusivo: barra flotante ("pill"), atajo global y bandeja del sistema.
 > audio) en andamiaje — requiere Mac. **Fase 6** documentada en
 > [`docs/MOBILE.md`](docs/MOBILE.md).
 >
+> Catálogo de capacidades (hechas e ideas): **[`Features/`](Features/)**.
+>
 > En Ajustes: **modo parlantes**, pistas yo/otros, **autostart** y detección
 > mejorada (Meet en navegador + mic en uso). Onboarding de primer uso con nota
 > de consentimiento.

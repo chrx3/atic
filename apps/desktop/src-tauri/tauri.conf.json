@@ -83,6 +83,20 @@
         "skipTaskbar": true,
         "shadow": false,
         "visible": false
+      },
+      {
+        "label": "launcher",
+        "url": "/launcher",
+        "title": "Buscar",
+        "width": 560,
+        "height": 420,
+        "resizable": false,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "shadow": false,
+        "visible": true
       }
     ],
     "security": {

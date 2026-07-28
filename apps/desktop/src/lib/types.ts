@@ -95,6 +95,8 @@ export interface AppConfig {
   retention_auto_cleanup: boolean;
   detect_meetings: boolean;
   screenshot_shortcut: string;
+  /** Atajo global del launcher tipo Spotlight. */
+  launcher_shortcut: string;
   capture_shelf_side: string;
   capture_shelf_timeout_seconds: number;
   capture_retention_hours: number;
@@ -329,6 +331,16 @@ export interface SearchHit {
   kind: SearchHitKind;
   title: string;
   preview: string;
+  score?: number;
+}
+
+export type LauncherKind = "app" | "action";
+
+export interface LauncherHit {
+  id: string;
+  kind: LauncherKind;
+  title: string;
+  subtitle: string;
   score?: number;
 }
 

@@ -869,6 +869,21 @@
         </div>
 
         <div class="rb-settings-hotkey">
+          <p class="rb-settings-hotkey-label">Buscador (launcher)</p>
+          <HotkeyCapture
+            value={c.launcher_shortcut}
+            defaultValue="CmdOrCtrl+Space"
+            ariaLabel="Cambiar atajo del buscador"
+            onChange={(sc) => {
+              c.launcher_shortcut = sc;
+            }}
+          />
+          <p class="rb-hint">
+            Abre programas del menú Inicio y acciones de Atic. Esc cierra.
+          </p>
+        </div>
+
+        <div class="rb-settings-hotkey">
           <p class="rb-settings-hotkey-label">Traer pill al cursor</p>
           <HotkeyCapture
             value={c.summon_pill_shortcut}

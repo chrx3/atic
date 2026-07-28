@@ -116,6 +116,7 @@ fn describe(d: &AgentDelta) {
                 ItemKind::Plan { entries } => format!("plan({} pasos)", entries.len()),
                 ItemKind::Permission { tool, .. } => format!("PERMISO {tool}"),
                 ItemKind::Notice { text } => format!("notice {text}"),
+                ItemKind::Collab { .. } => "collab".into(),
             };
             println!("item.add    #{} {que}", item.id);
         }

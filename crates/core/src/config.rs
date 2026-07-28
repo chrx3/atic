@@ -115,6 +115,8 @@ pub struct Config {
     pub detect_meetings: bool,
     /// Atajo global para abrir el overlay de selección de captura.
     pub screenshot_shortcut: String,
+    /// Atajo global para el launcher tipo Spotlight.
+    pub launcher_shortcut: String,
     /// Lado del shelf de capturas: `right` | `left`.
     pub capture_shelf_side: String,
     /// Segundos sin interacción antes de que el shelf se retraiga.
@@ -194,6 +196,7 @@ impl Default for Config {
             retention_auto_cleanup: false,
             detect_meetings: false,
             screenshot_shortcut: "CmdOrCtrl+Shift+4".to_string(),
+            launcher_shortcut: "CmdOrCtrl+Space".to_string(),
             capture_shelf_side: "right".to_string(),
             capture_shelf_timeout_seconds: 20,
             capture_retention_hours: 24,
@@ -264,6 +267,7 @@ struct ConfigFile {
     retention_auto_cleanup: Option<bool>,
     detect_meetings: Option<bool>,
     screenshot_shortcut: Option<String>,
+    launcher_shortcut: Option<String>,
     capture_shelf_side: Option<String>,
     capture_shelf_timeout_seconds: Option<u32>,
     capture_retention_hours: Option<u32>,
@@ -359,6 +363,7 @@ impl Default for ConfigFile {
             retention_auto_cleanup: None,
             detect_meetings: None,
             screenshot_shortcut: None,
+            launcher_shortcut: None,
             capture_shelf_side: None,
             capture_shelf_timeout_seconds: None,
             capture_retention_hours: None,
@@ -514,6 +519,10 @@ impl From<ConfigFile> for Config {
                 .screenshot_shortcut
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| "CmdOrCtrl+Shift+4".into()),
+            launcher_shortcut: f
+                .launcher_shortcut
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "CmdOrCtrl+Space".into()),
             capture_shelf_side: match f.capture_shelf_side.as_deref() {
                 Some("left") => "left".into(),
                 _ => "right".into(),

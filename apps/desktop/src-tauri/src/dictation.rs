@@ -312,30 +312,14 @@ fn stop_and_paste(app: &AppHandle) {
             // Congelar el destino: de acá en más el foco lo movemos nosotros.
             crate::clipboard_history::stop_foreground_tracking();
 
-            // Agentes abierto: no restaurar foco externo ni Ctrl+V. El insert
-            // interno lo hace try_paste_or_enqueue; tocar el foco acá tapaba
-            // la burbuja al terminar el dictado.
-            if crate::clipboard_history::agents_visible(&app2) {
-                let outcome = crate::paste_queue::try_paste_or_enqueue(&app2, &text)?;
-                return Ok((text, outcome));
-            }
-
-            // Si ya estás parado en una ventana externa, ESA es la que querés:
-            // no le robamos el foco para devolvérselo a la que estaba cuando
-            // arrancó el dictado. Antes se restauraba siempre, así que hacer
-            // clic en el input correcto mientras transcribía no servía de nada
-            // —el texto se iba igual a la ventana vieja.
+            // Si ya estás en una ventana externa, ESA es la que querés: no
+            // tocar el foco. Si no, restaurar el destino guardado al arrancar
+            // (o el último clic externo durante el dictado). Agentes abierto
+            // no corta este camino: try_paste_or_enqueue pega afuera primero
+            // y solo cae al compositor de agentes si no hay destino externo.
             if crate::clipboard_history::has_live_external_foreground() {
-                // Ya estás en la ventana correcta: NO se toca el foco.
-                //
-                // Intenté "asegurar" el foco interno acá y fue peor: la única
-                // forma de encontrar el input en Electron/WebView2 es adivinar
-                // —el último hijo `Chrome_*` visible— y esa adivinanza puede
-                // caer en otro panel, moviéndote el cursor FUERA del campo que
-                // acababas de elegir. Si hiciste clic donde querías escribir,
-                // el cursor ya está bien puesto; el sistema no necesita ayuda.
                 crate::clipboard_history::log_focus_state();
-            } else {
+            } else if crate::clipboard_history::has_saved_external_paste_target() {
                 crate::clipboard_history::focus_paste_target();
                 thread::sleep(Duration::from_millis(220));
                 crate::clipboard_history::log_focus_state();

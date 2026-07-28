@@ -43,6 +43,7 @@ import type {
   PermissionDecision,
   PasteQueueItem,
   SearchHit,
+  LauncherHit,
   OverlayInfo,
 } from "./types";
 
@@ -239,6 +240,17 @@ export const readCaptureOcrCache = (path: string) =>
 // --- Búsqueda local ---
 export const searchLocal = (query: string) =>
   invoke<SearchHit[]>("search_local", { query });
+
+// --- Launcher Spotlight ---
+export const toggleLauncher = () => invoke<void>("toggle_launcher");
+export const hideLauncher = () => invoke<void>("hide_launcher");
+export const launcherSearch = (query: string) =>
+  invoke<LauncherHit[]>("launcher_search", { query });
+export const launcherRun = (id: string) =>
+  invoke<void>("launcher_run", { id });
+export const launcherReindex = () => invoke<number>("launcher_reindex");
+export const onLauncherOpened = (cb: () => void): Promise<UnlistenFn> =>
+  listen("launcher-opened", () => cb());
 
 // --- Overlay de selección de captura ---
 export const startCaptureSession = () =>

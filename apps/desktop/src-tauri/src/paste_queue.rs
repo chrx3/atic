@@ -164,16 +164,14 @@ pub(crate) fn enqueue(app: &AppHandle, text: &str) -> Result<PasteQueueItem, Str
     Ok(item)
 }
 
-/// Pega si hay destino externo listo; si no, encola.
+/// Pega si hay destino externo listo; si no, agentes (si está a la vista); si
+/// no, encola.
 ///
-/// Si la burbuja de agentes está abierta, inserta ahí por evento interno:
-/// el Ctrl+V a otra app sacaba el foco y hacía parecer que se cerraba.
+/// El orden importa: con la burbuja de agentes abierta, el dictado iba siempre
+/// al compositor de agentes aunque el usuario estuviera en Chrome/Word/etc.
+/// Primero el input externo donde estaba (o el que tocó mientras hablaba);
+/// agentes solo si no hay destino externo.
 pub(crate) fn try_paste_or_enqueue(app: &AppHandle, text: &str) -> Result<PasteOutcome, String> {
-    if clipboard_history::agents_visible(app) {
-        tracing::debug!(target: "paste_geo", "TRY        agentes visible -> insert interno");
-        clipboard_history::insert_text_into_agents(app, text)?;
-        return Ok(PasteOutcome::Pasted);
-    }
     // Preferir primer plano vivo (tras focus_paste_target del caller).
     if clipboard_history::has_live_external_foreground() {
         tracing::debug!(target: "paste_geo", "TRY        primer plano externo vivo -> pego");
@@ -193,6 +191,19 @@ pub(crate) fn try_paste_or_enqueue(app: &AppHandle, text: &str) -> Result<PasteO
             clipboard_history::paste_text(app, text)?;
             return Ok(PasteOutcome::Pasted);
         }
+        tracing::debug!(
+            target: "paste_geo",
+            "TRY        no se pudo traer el destino al frente"
+        );
+    }
+    // Sin destino externo usable: si agentes está a la vista, insertar ahí
+    // (evento interno; Ctrl+V externo sacaría el foco y taparía la burbuja).
+    if clipboard_history::agents_visible(app) {
+        tracing::debug!(target: "paste_geo", "TRY        sin externo; agentes visible -> insert interno");
+        clipboard_history::insert_text_into_agents(app, text)?;
+        return Ok(PasteOutcome::Pasted);
+    }
+    if clipboard_history::has_saved_external_paste_target() {
         tracing::debug!(
             target: "paste_geo",
             "TRY        no se pudo traer el destino al frente -> encolo"

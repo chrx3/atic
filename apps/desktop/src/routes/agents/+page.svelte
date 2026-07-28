@@ -56,11 +56,17 @@
     filterVisibleModels,
     isFilterableBackend,
     modelLabelFor,
+    rememberBackend,
+    rememberCwd,
     rememberEffort,
     rememberFast,
+    rememberMode,
     rememberModel,
+    rememberedBackend,
+    rememberedCwd,
     rememberedEffort,
     rememberedFast,
+    rememberedMode,
     rememberedModel,
     resolveModelChoice,
     setVisibleModelIds,
@@ -351,8 +357,7 @@
    * cuenta, porque ahí lo que se muestra es su tarjeta latiendo y no un cursor.
    */
   const writing = $derived.by(() => {
-    const last = items.at(-1);
-    return !!last && "streaming" in last && last.streaming;
+    return items.some((it) => "streaming" in it && !!it.streaming);
   });
   const sendBlocked = $derived(
     !!active &&
@@ -449,7 +454,12 @@
     void (async () => {
       try {
         backends = await agentBackends();
-        picked = backends.find((b) => b.available)?.id ?? backends[0]?.id ?? "";
+        picked = rememberedBackend(backends);
+        if (picked) {
+          mode = rememberedMode(picked);
+          const folder = rememberedCwd(picked);
+          if (folder) cwd = folder;
+        }
       } catch (err) {
         error = String(err);
       }
@@ -601,9 +611,16 @@
     void tick().then(resizeComposer);
   });
 
+  // Con sesión viva, el backend manda el modo. Sin sesión, el de la UI es el
+  // que recordamos para ese agente (escudo Opus/High/etc. al reabrir).
   $effect(() => {
-    const sessionMode = active?.mode;
-    if (sessionMode && sessionMode !== mode) mode = sessionMode;
+    if (active?.mode) {
+      if (active.mode !== mode) mode = active.mode;
+      return;
+    }
+    if (!picked) return;
+    const remembered = rememberedMode(picked);
+    if (mode !== remembered) mode = remembered;
   });
 
   // Sesión viva: el patch puede traer slug wire; lo partimos a grupo+effort+fast.
@@ -665,12 +682,33 @@
     picking = true;
     try {
       const chosen = await openDialog({ directory: true, multiple: false });
-      if (typeof chosen === "string") cwd = chosen;
+      if (typeof chosen === "string") {
+        cwd = chosen;
+        if (picked) rememberCwd(picked, chosen);
+      }
     } catch (err) {
       error = String(err);
     } finally {
       picking = false;
     }
+  }
+
+  function selectBackend(id: string, sessionId: string | null) {
+    picked = id;
+    rememberBackend(id);
+    if (sessionId) {
+      activeId = sessionId;
+      return;
+    }
+    activeId = null;
+    mode = rememberedMode(id);
+    cwd = rememberedCwd(id);
+  }
+
+  function selectMode(id: string) {
+    mode = id;
+    if (picked) rememberMode(picked, id);
+    menu = null;
   }
 
   /**
@@ -966,6 +1004,7 @@
         permissionMode: mode,
       });
       picked = thread.backendId;
+      rememberBackend(thread.backendId);
       cwd = thread.cwd;
       model = thread.model;
       reading = null;
@@ -1305,6 +1344,23 @@
   </button>
 {/snippet}
 
+<!-- Filtro goo solo para el cuello de la burbuja (Liquid UI). No se aplica
+     al contenido: el blur+threshold borraría el texto. -->
+<svg class="liquid-defs" width="0" height="0" aria-hidden="true" focusable="false">
+  <defs>
+    <filter id="bub-liquid-goo" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="5" result="blur" />
+      <feColorMatrix
+        in="blur"
+        mode="matrix"
+        values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 18 -7"
+        result="goo"
+      />
+      <feComposite in="SourceGraphic" in2="goo" operator="atop" />
+    </filter>
+  </defs>
+</svg>
+
 <div
   class="bub"
   class:is-shown={bubble.shown}
@@ -1313,7 +1369,11 @@
   data-prov={active?.backendId ?? picked}
   style={bubble.vars}
 >
-  <span class="bub-tail" aria-hidden="true"></span>
+  <!-- Cuello líquido hacia la pill: dos blobs fusionados con filtro goo. -->
+  <span class="bub-neck" aria-hidden="true">
+    <i class="bub-neck-blob is-root"></i>
+    <i class="bub-neck-blob is-tip"></i>
+  </span>
 
   <!-- Agarraderas. Viven en el margen de la sombra, del lado opuesto a la
        punta, así que estirar nunca despega el globo de la pill. La de la
@@ -1385,16 +1445,7 @@
           disabled={!b.available && !open}
           title={b.available ? b.displayName : `${b.displayName} · no instalado`}
           data-tauri-drag-region="false"
-          onclick={() => {
-            if (open) {
-              activeId = open.id;
-              picked = b.id;
-              return;
-            }
-            // Nueva conversación con este agente sin matar las otras.
-            picked = b.id;
-            activeId = null;
-          }}
+          onclick={() => selectBackend(b.id, open?.id ?? null)}
           style="--tv: {ACCENTS[b.id] ?? 'var(--coral)'}"
         >
           <span class="tab-mark"><AgentMark backend={b.id} size={13} /></span>
@@ -1891,10 +1942,7 @@
                   options={MODES}
                   value={mode}
                   onToggle={() => (menu = menu === "mode" ? null : "mode")}
-                  onPick={(id) => {
-                    mode = id;
-                    menu = null;
-                  }}
+                  onPick={(id) => selectMode(id)}
                 >
                   {#snippet icon()}
                     <AgentIcons name={SHIELDS[mode] ?? "shield-manual"} />
@@ -2020,10 +2068,7 @@
                         role="menuitem"
                         disabled={!!active}
                         title={active ? "Se elige al iniciar una sesión" : undefined}
-                        onclick={() => {
-                          mode = "plan";
-                          menu = null;
-                        }}
+                        onclick={() => selectMode("plan")}
                       >
                         Modo plan
                       </button>
@@ -2297,7 +2342,7 @@
   }
 
   /* Movida de sitio ya no sale de la pill: la punta sobra. */
-  .bub.is-loose .bub-tail {
+  .bub.is-loose .bub-neck {
     display: none;
   }
 
@@ -2407,6 +2452,8 @@
   }
 
   .bub-body {
+    position: relative;
+    z-index: 1;
     display: flex;
     min-width: 0;
     flex: 1;
@@ -2423,44 +2470,71 @@
     overflow: hidden;
   }
 
-  /* La punta: un cuadrado girado 45°, con el mismo borde y fondo que el
-     cuerpo. Un triángulo con `border` no puede llevar borde propio, y sin él
-     se ve como un pegote suelto al lado de la burbuja. */
-  .bub-tail {
+  .liquid-defs {
     position: absolute;
-    width: 16px;
-    height: 16px;
-    border: 1px solid var(--line);
+    width: 0;
+    height: 0;
+    overflow: hidden;
+  }
+
+  /* Cuello líquido hacia la pill: dos blobs + filtro goo (estilo Liquid UI).
+     Solo envuelve formas vacías, nunca el texto del globo. */
+  .bub-neck {
+    position: absolute;
+    z-index: 0;
+    display: grid;
+    place-items: center;
+    width: 28px;
+    height: 36px;
+    filter: url(#bub-liquid-goo);
+    pointer-events: none;
+  }
+  .bub-neck-blob {
+    display: block;
+    border-radius: 999px;
     background: var(--shell);
-    transform: rotate(45deg);
+    box-shadow: 0 0 0 1px var(--line);
   }
-  .bub[data-side="top"] .bub-tail {
-    top: calc(var(--inset) - 8px);
-    left: calc(var(--tail) - 8px);
-    border-right: 0;
-    border-bottom: 0;
-    border-top-left-radius: 4px;
+  .bub-neck-blob.is-root {
+    width: 22px;
+    height: 18px;
   }
-  .bub[data-side="bottom"] .bub-tail {
-    bottom: calc(var(--inset) - 8px);
-    left: calc(var(--tail) - 8px);
-    border-left: 0;
-    border-top: 0;
-    border-bottom-right-radius: 4px;
+  .bub-neck-blob.is-tip {
+    width: 14px;
+    height: 14px;
+    margin-top: -6px;
   }
-  .bub[data-side="left"] .bub-tail {
-    top: calc(var(--tail) - 8px);
-    left: calc(var(--inset) - 8px);
-    border-top: 0;
-    border-right: 0;
-    border-bottom-left-radius: 4px;
+  .bub[data-side="top"] .bub-neck {
+    top: calc(var(--inset) - 28px);
+    left: calc(var(--tail) - 14px);
   }
-  .bub[data-side="right"] .bub-tail {
-    top: calc(var(--tail) - 8px);
-    right: calc(var(--inset) - 8px);
-    border-bottom: 0;
-    border-left: 0;
-    border-top-right-radius: 4px;
+  .bub[data-side="bottom"] .bub-neck {
+    bottom: calc(var(--inset) - 28px);
+    left: calc(var(--tail) - 14px);
+    transform: rotate(180deg);
+  }
+  .bub[data-side="left"] .bub-neck {
+    top: calc(var(--tail) - 18px);
+    left: calc(var(--inset) - 28px);
+    width: 36px;
+    height: 28px;
+    transform: rotate(-90deg);
+  }
+  .bub[data-side="right"] .bub-neck {
+    top: calc(var(--tail) - 18px);
+    right: calc(var(--inset) - 28px);
+    width: 36px;
+    height: 28px;
+    transform: rotate(90deg);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .bub-neck {
+      filter: none;
+    }
+    .bub-neck-blob.is-tip {
+      margin-top: -4px;
+    }
   }
 
   /* ─── Sesiones ──────────────────────────────────────────────────────── */

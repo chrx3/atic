@@ -85,6 +85,7 @@ pub fn set_config(app: AppHandle, state: State<AppState>, config: Config) -> Res
     let clipboard_shortcut = config.clipboard_shortcut.clone();
     let snippets_shortcut = config.snippets_shortcut.clone();
     let screenshot_shortcut = config.screenshot_shortcut.clone();
+    let launcher_shortcut = config.launcher_shortcut.clone();
     let prev = state.config.lock().unwrap().clone();
 
     // Si algún atajo cambió, validar+registrar PRIMERO: aborta si es inválido
@@ -96,6 +97,7 @@ pub fn set_config(app: AppHandle, state: State<AppState>, config: Config) -> Res
         || clipboard_shortcut != prev.clipboard_shortcut
         || snippets_shortcut != prev.snippets_shortcut
         || screenshot_shortcut != prev.screenshot_shortcut
+        || launcher_shortcut != prev.launcher_shortcut
     {
         crate::shortcuts::register_shortcuts(
             &app,
@@ -107,6 +109,7 @@ pub fn set_config(app: AppHandle, state: State<AppState>, config: Config) -> Res
                 clipboard: &clipboard_shortcut,
                 snippets: &snippets_shortcut,
                 screenshot: &screenshot_shortcut,
+                launcher: &launcher_shortcut,
             },
         )?;
     }

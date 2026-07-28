@@ -1026,6 +1026,7 @@ fn reregister_shortcuts_from_config(app: &AppHandle) {
             clipboard: &cfg.clipboard_shortcut,
             snippets: &cfg.snippets_shortcut,
             screenshot: &cfg.screenshot_shortcut,
+            launcher: &cfg.launcher_shortcut,
         },
     ) {
         tracing::warn!(%err, "no se pudieron re-registrar atajos tras pegado");

@@ -30,6 +30,17 @@ const STORAGE_KEY = "atic-agent-models";
 const FILTER_STORAGE_KEY = "atic-agent-model-filter";
 const EFFORT_STORAGE_KEY = "atic-agent-efforts";
 const FAST_STORAGE_KEY = "atic-agent-fast";
+const MODE_STORAGE_KEY = "atic-agent-modes";
+const BACKEND_STORAGE_KEY = "atic-agent-backend";
+const CWD_STORAGE_KEY = "atic-agent-cwds";
+
+/** Modos de permiso que la UI ofrece (ids estables). */
+const KNOWN_MODES = new Set([
+  "manual",
+  "acceptEdits",
+  "plan",
+  "bypassPermissions",
+]);
 
 /** Backends cuyo catálogo de modelos se puede filtrar en el selector. */
 export const FILTERABLE_BACKENDS = ["cursor", "opencode"] as const;
@@ -262,6 +273,30 @@ function readFilterMap(): Record<string, string[]> {
   }
 }
 
+function readStringMap(key: string): Record<string, string> {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object") return {};
+    const out: Record<string, string> = {};
+    for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+      if (typeof v === "string" && v) out[k] = v;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+function writeStringMap(key: string, map: Record<string, string>): void {
+  try {
+    localStorage.setItem(key, JSON.stringify(map));
+  } catch {
+    // ignore
+  }
+}
+
 /** Último modelo recordado para este backend, si sigue en la lista. */
 export function rememberedModel(
   backendId: string,
@@ -348,6 +383,63 @@ export function rememberFast(
   } catch {
     // ignore
   }
+}
+
+/** Último modo de permisos recordado para este backend. */
+export function rememberedMode(backendId: string): string {
+  if (!backendId) return "manual";
+  const mode = readStringMap(MODE_STORAGE_KEY)[backendId];
+  return mode && KNOWN_MODES.has(mode) ? mode : "manual";
+}
+
+/** Guarda el modo de permisos (escudo) para ese backend. */
+export function rememberMode(backendId: string, mode: string): void {
+  if (!backendId || !KNOWN_MODES.has(mode)) return;
+  const map = readStringMap(MODE_STORAGE_KEY);
+  map[backendId] = mode;
+  writeStringMap(MODE_STORAGE_KEY, map);
+}
+
+/** Último backend (pestaña) recordado, si sigue disponible. */
+export function rememberedBackend(
+  backends: { id: string; available?: boolean }[],
+): string {
+  if (backends.length === 0) return "";
+  try {
+    const id = localStorage.getItem(BACKEND_STORAGE_KEY) ?? "";
+    if (id && backends.some((b) => b.id === id)) return id;
+  } catch {
+    // ignore
+  }
+  return backends.find((b) => b.available)?.id ?? backends[0]?.id ?? "";
+}
+
+/** Guarda la pestaña de agente elegida. */
+export function rememberBackend(backendId: string): void {
+  if (!backendId) return;
+  try {
+    localStorage.setItem(BACKEND_STORAGE_KEY, backendId);
+  } catch {
+    // ignore
+  }
+}
+
+/** Última carpeta de trabajo recordada para este backend. */
+export function rememberedCwd(backendId: string): string {
+  if (!backendId) return "";
+  return readStringMap(CWD_STORAGE_KEY)[backendId] ?? "";
+}
+
+/** Guarda la carpeta de trabajo para ese backend. */
+export function rememberCwd(backendId: string, cwd: string): void {
+  if (!backendId) return;
+  const map = readStringMap(CWD_STORAGE_KEY);
+  if (!cwd.trim()) {
+    delete map[backendId];
+  } else {
+    map[backendId] = cwd;
+  }
+  writeStringMap(CWD_STORAGE_KEY, map);
 }
 
 /**

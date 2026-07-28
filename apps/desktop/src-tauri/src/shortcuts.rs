@@ -1,4 +1,4 @@
-//! Registro de atajos globales (grabación + dictado + pill + clipboard + fragmentos + captura).
+//! Registro de atajos globales (grabación + dictado + pill + clipboard + fragmentos + captura + launcher).
 //!
 //! Teclado: `tauri-plugin-global-shortcut`.
 //! Botones laterales del mouse: Raw Input (ver `mouse_bindings`).
@@ -7,7 +7,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
 use crate::mouse_bindings::{self, MouseAction, SideButton};
-use crate::{clipboard_history, dictation, snippets, state};
+use crate::{clipboard_history, dictation, launcher, snippets, state};
 
 enum Binding {
     Key(Shortcut),
@@ -33,11 +33,11 @@ fn binding_dup_key(b: &Binding) -> String {
 
 /// Registra (o re-registra) los atajos globales.
 ///
-/// Los siete atajos globales que registra la app.
+/// Los atajos globales que registra la app.
 ///
-/// Van agrupados y no como siete parámetros sueltos: eran siete `&str` del
-/// mismo tipo en fila, así que intercambiar dos por error compilaba perfecto y
-/// el bug recién aparecía al usar el atajo equivocado. Con campos nombrados,
+/// Van agrupados y no como parámetros sueltos: eran varios `&str` del mismo
+/// tipo en fila, así que intercambiar dos por error compilaba perfecto y el
+/// bug recién aparecía al usar el atajo equivocado. Con campos nombrados,
 /// eso no pasa.
 pub struct ShortcutBindings<'a> {
     pub recording: &'a str,
@@ -47,6 +47,7 @@ pub struct ShortcutBindings<'a> {
     pub clipboard: &'a str,
     pub snippets: &'a str,
     pub screenshot: &'a str,
+    pub launcher: &'a str,
 }
 
 /// Los errores de *sintaxis* de cualquier atajo abortan (se valida antes de
@@ -65,6 +66,7 @@ pub fn register_shortcuts(app: &AppHandle, bindings: ShortcutBindings<'_>) -> Re
     let clipboard = parse_binding("clipboard", bindings.clipboard)?;
     let snippets = parse_binding("fragmentos", bindings.snippets)?;
     let screenshot = parse_binding("captura", bindings.screenshot)?;
+    let launcher_bind = parse_binding("launcher", bindings.launcher)?;
 
     let named = [
         ("grabación", &recording),
@@ -74,6 +76,7 @@ pub fn register_shortcuts(app: &AppHandle, bindings: ShortcutBindings<'_>) -> Re
         ("clipboard", &clipboard),
         ("fragmentos", &snippets),
         ("captura", &screenshot),
+        ("launcher", &launcher_bind),
     ];
     for i in 0..named.len() {
         for j in (i + 1)..named.len() {
@@ -240,6 +243,23 @@ pub fn register_shortcuts(app: &AppHandle, bindings: ShortcutBindings<'_>) -> Re
             }
         }
         Binding::Mouse(btn) => mouse.push((*btn, MouseAction::Screenshot)),
+    }
+
+    match &launcher_bind {
+        Binding::Key(sc) => {
+            let handle = app.clone();
+            if let Err(err) = gs.on_shortcut(*sc, move |_app, _sc, event| {
+                if matches!(event.state(), ShortcutState::Pressed) {
+                    launcher::toggle(&handle);
+                }
+            }) {
+                tracing::error!(%err, "no se pudo registrar el atajo del launcher");
+                failed.push("launcher".to_string());
+            }
+        }
+        Binding::Mouse(_) => {
+            tracing::warn!("el launcher solo admite atajo de teclado");
+        }
     }
 
     mouse_bindings::set_bindings(app, mouse);

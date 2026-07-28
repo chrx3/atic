@@ -11,6 +11,7 @@ mod dictation;
 mod export;
 mod floating;
 mod import;
+mod launcher;
 mod live;
 #[cfg(target_os = "macos")]
 mod macos_notes;
@@ -211,6 +212,11 @@ pub fn run() {
             ocr::ocr_capture_and_copy,
             ocr::read_capture_ocr_cache,
             search::search_local,
+            launcher::toggle_launcher,
+            launcher::hide_launcher,
+            launcher::launcher_reindex,
+            launcher::launcher_search,
+            launcher::launcher_run,
         ])
         .setup(move |app| {
             let dirs = AppDirs::new()?;
@@ -241,6 +247,7 @@ pub fn run() {
             let clipboard_shortcut = config.clipboard_shortcut.clone();
             let snippets_shortcut = config.snippets_shortcut.clone();
             let screenshot_shortcut = config.screenshot_shortcut.clone();
+            let launcher_shortcut = config.launcher_shortcut.clone();
             let pill_position = config.pill_position;
             let show_pill = config.show_pill;
             let want_autostart = config.autostart;
@@ -306,7 +313,7 @@ pub fn run() {
             // Mouse lateral: Raw Input (pasivo; no puede congelar el ratón del SO).
             mouse_bindings::init(app.handle());
 
-            // Atajos globales: grabación + dictado + pill + clipboard + captura.
+            // Atajos globales: grabación + dictado + pill + clipboard + captura + launcher.
             if let Err(err) = shortcuts::register_shortcuts(
                 app.handle(),
                 shortcuts::ShortcutBindings {
@@ -317,11 +324,13 @@ pub fn run() {
                     clipboard: &clipboard_shortcut,
                     snippets: &snippets_shortcut,
                     screenshot: &screenshot_shortcut,
+                    launcher: &launcher_shortcut,
                 },
             ) {
                 tracing::error!(%err, "no se pudieron registrar los atajos globales");
             }
 
+            launcher::start_indexing();
             clipboard_history::start_watcher(app.handle());
 
             // Sin Ctrl+P / Find / DevTools del WebView2 en ventanas flotantes.
@@ -349,7 +358,7 @@ pub fn run() {
             // Las ventanas de captura se declaran `visible: true` (para que las
             // decoraciones/transparencia se apliquen igual que en la pill) y se
             // ocultan aquí hasta que se usan.
-            for label in ["capture-shelf", "capture-overlay"] {
+            for label in ["capture-shelf", "capture-overlay", "launcher"] {
                 if let Some(window) = app.get_webview_window(label) {
                     let _ = window.hide();
                 }
@@ -363,7 +372,9 @@ pub fn run() {
             // que destruir la ventana dejaría la sesión corriendo sin ninguna
             // vista posible que la recupere.
             WindowEvent::CloseRequested { api, .. }
-                if window.label() == "main" || window.label() == "agents" =>
+                if window.label() == "main"
+                    || window.label() == "agents"
+                    || window.label() == "launcher" =>
             {
                 api.prevent_close();
                 let _ = window.hide();
