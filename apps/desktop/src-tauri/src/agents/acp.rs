@@ -1376,6 +1376,7 @@ mod tests {
             cost: Mutex::new(Costo::default()),
             model_config_id: Mutex::new(None),
             effort_config_id: Mutex::new(None),
+            model_templates: Mutex::new(HashMap::new()),
         }
     }
 
