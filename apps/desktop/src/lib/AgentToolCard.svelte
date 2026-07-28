@@ -13,6 +13,7 @@
    * sí es lo único que importa.
    */
   import { editDiff } from "$lib/agentMarkdown";
+  import AgentIcons from "$lib/AgentIcons.svelte";
   import type { ToolKind, ToolStatus } from "$lib/types";
 
   let {
@@ -73,7 +74,16 @@
     onclick={() => (open = !open)}
     aria-expanded={open}
   >
-    <span class="tc-st" class:is-run={!done} class:is-bad={isError}></span>
+    <span
+      class="tc-st"
+      class:is-run={!done}
+      class:is-ok={done && !isError}
+      class:is-bad={isError}
+    ></span>
+    <!-- El ícono sale de `kind`, que lo manda el agente. Antes había que
+         deducirlo del nombre de la herramienta, y cada backend la llama
+         distinto. -->
+    <span class="tc-kind"><AgentIcons name={toolKind} /></span>
     <span class="tc-name">{name}</span>
     <span class="tc-arg">{title}</span>
 
@@ -123,11 +133,11 @@
   .tc {
     border: 1px solid var(--line);
     border-radius: 9px;
-    background: #1f1b19;
+    background: var(--card);
     overflow: hidden;
   }
   .tc.is-error {
-    border-color: color-mix(in srgb, var(--coral) 55%, var(--line));
+    border-color: color-mix(in srgb, var(--del) 55%, var(--line));
   }
 
   .tc-head {
@@ -145,7 +155,7 @@
     cursor: pointer;
   }
   .tc-head:hover {
-    background: #26211e;
+    background: var(--hover);
   }
 
   /* Punto de estado: relleno cuando terminó, latiendo mientras corre. Es la
@@ -155,14 +165,19 @@
     height: 0.4rem;
     flex-shrink: 0;
     border-radius: 999px;
-    background: var(--dim);
+    background: var(--faint);
   }
   .tc-st.is-run {
     background: var(--coral);
     animation: tc-pulse 1.4s ease-in-out infinite;
   }
+  /* Verde al terminar bien, rojo al fallar. Sin el verde, «listo» y «ni
+     empezó» eran el mismo punto gris y había que abrir la tarjeta. */
+  .tc-st.is-ok {
+    background: var(--add);
+  }
   .tc-st.is-bad {
-    background: var(--coral);
+    background: var(--del);
     animation: none;
   }
 
@@ -174,6 +189,14 @@
     50% {
       opacity: 1;
     }
+  }
+
+  /* El ícono no compite con el nombre: es una pista, no el dato. */
+  .tc-kind {
+    display: inline-flex;
+    flex-shrink: 0;
+    align-items: center;
+    color: var(--faint);
   }
 
   .tc-name {
@@ -188,22 +211,32 @@
     color: var(--dim);
     text-overflow: ellipsis;
     white-space: nowrap;
-    /* La cola es lo informativo de una ruta larga, no la cabeza. */
+    /* La cola es lo informativo de una ruta larga, no la cabeza: `rtl` mueve
+       los puntos suspensivos al principio.
+       `bidi-override` y no solo `direction` porque las rutas de Windows están
+       llenas de caracteres neutros —`\`, `-`, `·`— que en contexto RTL el
+       algoritmo bidi reordena: sin esto, `…-SPA-Documentos-atic\memory\x.md`
+       salía con los tramos dados vuelta. Se recorta por donde queremos y se
+       lee en el orden en que se escribió. */
     direction: rtl;
+    unicode-bidi: bidi-override;
     text-align: left;
   }
 
+  /* Tabulares: los contadores cambian en vivo y con cifras de ancho variable
+     la fila entera se corre a cada actualización. */
   .tc-num {
     display: flex;
     flex-shrink: 0;
     gap: 0.3rem;
     font-size: 0.6875rem;
+    font-variant-numeric: tabular-nums;
   }
   .tc-num .add {
-    color: #7dd3a0;
+    color: var(--add);
   }
   .tc-num .del {
-    color: #e08a7a;
+    color: var(--del);
   }
 
   .tc-caret {
@@ -220,7 +253,7 @@
   .tc-diff {
     max-height: 15rem;
     border-radius: 6px;
-    background: #16130f;
+    background: var(--code);
     font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
     font-size: 0.71875rem;
     line-height: 1.5;
@@ -234,10 +267,10 @@
     white-space: pre;
   }
   .dl[data-sign="+"] {
-    background: color-mix(in srgb, #7dd3a0 12%, transparent);
+    background: color-mix(in srgb, var(--add) 12%, transparent);
   }
   .dl[data-sign="-"] {
-    background: color-mix(in srgb, #e08a7a 12%, transparent);
+    background: color-mix(in srgb, var(--del) 12%, transparent);
   }
 
   .dl-s {
@@ -245,10 +278,10 @@
     color: var(--faint);
   }
   .dl[data-sign="+"] .dl-s {
-    color: #7dd3a0;
+    color: var(--add);
   }
   .dl[data-sign="-"] .dl-s {
-    color: #e08a7a;
+    color: var(--del);
   }
 
   .dl-t {
@@ -262,7 +295,7 @@
     margin: 0;
     border-radius: 6px;
     padding: 0.4rem 0.5rem;
-    background: #16130f;
+    background: var(--code);
     color: var(--dim);
     font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
     font-size: 0.71875rem;
@@ -292,7 +325,7 @@
   .tc-loc span {
     border-radius: 4px;
     padding: 0.05rem 0.35rem;
-    background: #16130f;
+    background: var(--code);
     color: var(--faint);
     font-size: 0.625rem;
   }

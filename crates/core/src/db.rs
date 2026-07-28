@@ -43,6 +43,8 @@ CREATE TABLE agent_threads (
 CREATE INDEX agent_threads_updated ON agent_threads (updated_at DESC);
 "#;
 
+const MIGRATION_3: &str = "ALTER TABLE agent_threads ADD COLUMN preview TEXT NOT NULL DEFAULT '';";
+
 /// Un hilo de agente tal como se guarda.
 #[derive(Debug, Clone)]
 pub struct AgentThreadRow {
@@ -55,6 +57,8 @@ pub struct AgentThreadRow {
     pub model: String,
     /// Segundos desde epoch.
     pub updated_at: i64,
+    /// Primer mensaje del usuario, para listar sin leer todos los turnos.
+    pub preview: String,
     /// Los turnos, serializados. Esta capa no los interpreta.
     pub turns: String,
 }
@@ -98,6 +102,11 @@ impl Db {
             self.conn
                 .execute("INSERT INTO schema_version (version) VALUES (2)", [])?;
         }
+        if current < 3 {
+            self.conn.execute_batch(MIGRATION_3)?;
+            self.conn
+                .execute("INSERT INTO schema_version (version) VALUES (3)", [])?;
+        }
         Ok(())
     }
 
@@ -110,14 +119,15 @@ impl Db {
     pub fn save_agent_thread(&self, t: &AgentThreadRow) -> Result<()> {
         self.conn.execute(
             "INSERT INTO agent_threads
-               (id, backend_id, backend_name, provider_session, cwd, model, updated_at, turns)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+               (id, backend_id, backend_name, provider_session, cwd, model, updated_at, preview, turns)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
              ON CONFLICT(id) DO UPDATE SET
                backend_name     = excluded.backend_name,
                provider_session = excluded.provider_session,
                cwd              = excluded.cwd,
                model            = excluded.model,
                updated_at       = excluded.updated_at,
+               preview          = excluded.preview,
                turns            = excluded.turns",
             params![
                 t.id,
@@ -127,6 +137,7 @@ impl Db {
                 t.cwd,
                 t.model,
                 t.updated_at,
+                t.preview,
                 t.turns,
             ],
         )?;
@@ -140,7 +151,8 @@ impl Db {
     /// para mostrar diez líneas.
     pub fn list_agent_threads(&self, limit: u32) -> Result<Vec<AgentThreadRow>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, backend_id, backend_name, provider_session, cwd, model, updated_at, turns
+            "SELECT id, backend_id, backend_name, provider_session, cwd, model,
+                    updated_at, preview, '' AS turns
              FROM agent_threads ORDER BY updated_at DESC LIMIT ?1",
         )?;
         let rows = stmt
@@ -151,7 +163,8 @@ impl Db {
 
     pub fn get_agent_thread(&self, id: &str) -> Result<Option<AgentThreadRow>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, backend_id, backend_name, provider_session, cwd, model, updated_at, turns
+            "SELECT id, backend_id, backend_name, provider_session, cwd, model,
+                    updated_at, preview, turns
              FROM agent_threads WHERE id = ?1",
         )?;
         Ok(stmt.query_row([id], agent_thread_from_row).optional()?)
@@ -266,6 +279,7 @@ fn agent_thread_from_row(row: &Row<'_>) -> rusqlite::Result<AgentThreadRow> {
         cwd: row.get("cwd")?,
         model: row.get("model")?,
         updated_at: row.get("updated_at")?,
+        preview: row.get("preview")?,
         turns: row.get("turns")?,
     })
 }
@@ -274,7 +288,7 @@ fn agent_thread_from_row(row: &Row<'_>) -> rusqlite::Result<AgentThreadRow> {
 mod agent_thread_tests {
     use super::*;
 
-    fn db() -> Db {
+    fn temp_db_path() -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!(
             "atic-test-{}",
             std::time::SystemTime::now()
@@ -282,7 +296,11 @@ mod agent_thread_tests {
                 .unwrap()
                 .as_nanos()
         ));
-        Db::open(&dir.join("atic.db3")).unwrap()
+        dir.join("atic.db3")
+    }
+
+    fn db() -> Db {
+        Db::open(&temp_db_path()).unwrap()
     }
 
     fn row(id: &str, at: i64) -> AgentThreadRow {
@@ -294,6 +312,7 @@ mod agent_thread_tests {
             cwd: "C:/p".into(),
             model: "opus".into(),
             updated_at: at,
+            preview: format!("Vista previa de {id}"),
             turns: r#"[{"id":"t1"}]"#.into(),
         }
     }
@@ -308,6 +327,7 @@ mod agent_thread_tests {
         assert_eq!(back.backend_id, "claude-code");
         assert_eq!(back.provider_session.as_deref(), Some("s1"));
         assert_eq!(back.cwd, "C:/p");
+        assert_eq!(back.preview, "Vista previa de h1");
         assert_eq!(back.turns, r#"[{"id":"t1"}]"#);
     }
 
@@ -325,6 +345,19 @@ mod agent_thread_tests {
         let back = db.get_agent_thread("h1").unwrap().unwrap();
         assert_eq!(back.updated_at, 200);
         assert_eq!(back.turns, r#"[{"id":"t1"},{"id":"t2"}]"#);
+    }
+
+    #[test]
+    fn listar_no_carga_los_turnos() {
+        let db = db();
+        db.save_agent_thread(&row("h1", 100)).unwrap();
+
+        let listed = db.list_agent_threads(10).unwrap();
+        assert_eq!(listed[0].preview, "Vista previa de h1");
+        assert!(
+            listed[0].turns.is_empty(),
+            "el listado no debe leer la conversación completa"
+        );
     }
 
     /// Del más reciente al más viejo: es el orden en el que se buscan.
@@ -373,5 +406,27 @@ mod agent_thread_tests {
         assert!(db.list_recordings().unwrap().is_empty());
         db.save_agent_thread(&row("h1", 1)).unwrap();
         assert_eq!(db.list_agent_threads(10).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn la_migracion_3_agrega_la_vista_previa_a_una_base_existente() {
+        let path = temp_db_path();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_version (version INTEGER NOT NULL);
+             INSERT INTO schema_version (version) VALUES (2);",
+        )
+        .unwrap();
+        conn.execute_batch(MIGRATION_1).unwrap();
+        conn.execute_batch(MIGRATION_2).unwrap();
+        drop(conn);
+
+        let db = Db::open(&path).unwrap();
+        db.save_agent_thread(&row("h1", 1)).unwrap();
+        assert_eq!(
+            db.get_agent_thread("h1").unwrap().unwrap().preview,
+            "Vista previa de h1"
+        );
     }
 }

@@ -156,12 +156,16 @@ pub fn run() {
             capture::open_captures_dir,
             capture_session::start_capture_session,
             capture_session::overlay_info,
+            capture_session::show_capture_overlay,
             capture_session::complete_window_capture,
             capture_session::complete_region_capture,
             capture_session::complete_monitor_capture,
             capture_session::cancel_capture_session,
             clipboard_history::list_clipboard_history,
             clipboard_history::paste_clipboard_item,
+            clipboard_history::agents_window_visible,
+            clipboard_history::clipboard_drag_path,
+            clipboard_history::read_clipboard_drag_text,
             clipboard_history::pin_clipboard_item,
             clipboard_history::delete_clipboard_item,
             clipboard_history::clear_clipboard_history,
@@ -173,12 +177,15 @@ pub fn run() {
             beep::preview_sound,
             agents::bridge::show_agents_window,
             agents::bridge::hide_agents_window,
+            agents::bridge::resize_agents_bubble,
+            agents::bridge::agent_set_model,
             agents::bridge::agent_backends,
             agents::bridge::agent_sessions,
             agents::bridge::agent_start,
             agents::bridge::agent_send,
             agents::bridge::agent_permission,
             agents::bridge::agent_skills,
+            agents::bridge::agent_list_models,
             agents::bridge::agent_stop,
             agents::bridge::agent_threads,
             agents::bridge::agent_thread,
@@ -261,6 +268,10 @@ pub fn run() {
             // Precarga Whisper en background para que el primer dictado no espere
             // la carga del GGML desde disco.
             state::preload_whisper_async(app.handle());
+
+            // Precarga catálogos de modelos de agentes (Cursor, Claude, …)
+            // para que el selector no espere al abrir la consola.
+            agents::discover::preload_models_async();
 
             tray::build_tray(app.handle())?;
 

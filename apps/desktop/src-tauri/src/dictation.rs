@@ -312,6 +312,14 @@ fn stop_and_paste(app: &AppHandle) {
             // Congelar el destino: de acá en más el foco lo movemos nosotros.
             crate::clipboard_history::stop_foreground_tracking();
 
+            // Agentes abierto: no restaurar foco externo ni Ctrl+V. El insert
+            // interno lo hace try_paste_or_enqueue; tocar el foco acá tapaba
+            // la burbuja al terminar el dictado.
+            if crate::clipboard_history::agents_visible(&app2) {
+                let outcome = crate::paste_queue::try_paste_or_enqueue(&app2, &text)?;
+                return Ok((text, outcome));
+            }
+
             // Si ya estás parado en una ventana externa, ESA es la que querés:
             // no le robamos el foco para devolvérselo a la que estaba cuando
             // arrancó el dictado. Antes se restauraba siempre, así que hacer

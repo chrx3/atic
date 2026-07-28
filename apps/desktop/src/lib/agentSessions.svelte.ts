@@ -21,6 +21,7 @@ import {
   agentPermission,
   agentSend,
   agentSessions,
+  agentSetModel,
   agentSkills,
   agentStart,
   agentStop,
@@ -29,6 +30,8 @@ import {
 import type {
   AgentDeltaPayload,
   AgentItem,
+  AgentModel,
+  AgentOrigin,
   AgentTurn,
   AgentSkill,
   AgentStartOptions,
@@ -76,12 +79,33 @@ export interface AgentSessionView {
   pending: PendingPermission[];
   /** Contexto consumido, en tokens. */
   contextTokens: number;
+  /**
+   * Tamaño de la ventana, cuando el agente lo informa.
+   *
+   * `null` mientras no lo diga: ahí la vista cae en su valor por defecto, que
+   * es lo único que se puede hacer sin saberlo.
+   */
+  contextSize: number | null;
   /** Costo acumulado de la sesión. */
   costUsd: number;
   cwd: string;
   model: string;
+  /** Modo de permisos efectivo informado por el backend. */
+  mode: string;
   /** Id con el que el backend reanuda esta conversación. */
   providerSession: string | null;
+  /**
+   * Los modelos que ofrece este agente, tal como los informó él.
+   *
+   * Vacío mientras no llegue el aviso, y también para siempre en OpenCode y
+   * Cursor: ACP no nombra los modelos en su protocolo, así que ahí el modelo lo
+   * elige su propia configuración y no hay nada que ofrecer.
+   */
+  models: AgentModel[];
+  /** Esfuerzo en curso, si el backend lo maneja. */
+  effort: string | null;
+  /** Variante rápida (Cursor). */
+  fast: boolean | null;
   /** Con descripción, del canal de control. Es la que sirve para ofrecerlos. */
   commands: SlashCommand[];
   mcpServers: McpServerState[];
@@ -180,14 +204,14 @@ class AgentSessionStore {
     return id;
   }
 
-  async send(id: string, text: string): Promise<void> {
+  async send(id: string, text: string, origin?: AgentOrigin): Promise<void> {
     const session = this.byId(id);
     if (session) {
       session.status = "working";
       session.error = null;
     }
     try {
-      await agentSend(id, text);
+      await agentSend(id, text, origin);
     } catch (err) {
       if (session) {
         session.status = "failed";
@@ -195,6 +219,22 @@ class AgentSessionStore {
       }
       throw err;
     }
+  }
+
+  /** Cambia el modelo, el esfuerzo y (si aplica) la variante rápida. */
+  async setModel(
+    id: string,
+    model: string,
+    effort?: string,
+    fast?: boolean,
+  ): Promise<void> {
+    const session = this.byId(id);
+    if (session) {
+      session.model = model;
+      session.effort = effort ?? null;
+      session.fast = fast ?? null;
+    }
+    await agentSetModel(id, model, effort, fast);
   }
 
   async stop(id: string): Promise<void> {
@@ -232,9 +272,14 @@ class AgentSessionStore {
       error: null,
       pending: [],
       contextTokens: 0,
+      contextSize: null,
+      models: [],
+      effort: null,
+      fast: null,
       costUsd: 0,
       cwd: "",
       model: "",
+      mode: "",
       providerSession: null,
       commands: [],
       mcpServers: [],
@@ -346,8 +391,14 @@ class AgentSessionStore {
         // `Object.assign` y no un `switch` por variante: el parche ya trae solo
         // las claves que cambian, y enumerarlas acá sería repetir el tipo.
         Object.assign(it, payload.patch);
-        if (it.kind === "message" && it.role === "assistant" && payload.patch.text !== undefined) {
-          s.lastText = it.text;
+        if (it.kind === "message" && it.role === "assistant") {
+          // Lo que marca «te contestó» es que DEJE de escribirse, no que venga
+          // texto en el parche: ACP acumula por trozos y al cerrar solo apaga
+          // la señal, sin repetir la respuesta entera. Colgando el aviso del
+          // texto, la pill se quedaba muda en OpenCode y Cursor.
+          if (payload.patch.text !== undefined || payload.patch.streaming === false) {
+            s.lastText = it.text;
+          }
           if (unseen && payload.patch.streaming === false) s.unread += 1;
         }
         if (it.kind === "permission" && it.status !== "pending") {
@@ -361,7 +412,12 @@ class AgentSessionStore {
         if (p.providerSession !== undefined) s.providerSession = p.providerSession;
         if (p.cwd !== undefined) s.cwd = p.cwd;
         if (p.model !== undefined) s.model = p.model;
+        if (p.mode !== undefined) s.mode = p.mode;
         if (p.tokens !== undefined) s.contextTokens = p.tokens;
+        if (p.contextSize !== undefined) s.contextSize = p.contextSize;
+        if (p.models !== undefined) s.models = p.models;
+        if (p.effort !== undefined) s.effort = p.effort;
+        if (p.fast !== undefined) s.fast = p.fast;
         if (p.tools !== undefined) s.tools = p.tools;
         if (p.mcpServers !== undefined) s.mcpServers = p.mcpServers;
         if (p.commands !== undefined) {

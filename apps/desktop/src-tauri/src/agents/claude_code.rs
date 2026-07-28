@@ -18,7 +18,7 @@
 //! razón por la que este backend es el más barato de integrar. Si algún día
 //! hiciera falta autenticar, sería un problema del CLI, no de Atic.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -28,8 +28,8 @@ use std::thread;
 use serde_json::{json, Value};
 
 use super::model::{
-    AgentDelta, Item, ItemId, ItemKind, ItemPatch, PermissionStatus, Role, ThreadPatch, ToolKind,
-    ToolStatus, TurnId, TurnStatus,
+    AgentDelta, Item, ItemId, ItemKind, ItemPatch, Origin,
+    PermissionStatus, Role, ThreadPatch, ToolKind, ToolStatus, TurnId, TurnStatus,
 };
 use super::turns::{end_turn, ensure_turn, start_turn, Emit, Turns};
 use super::{
@@ -37,6 +37,9 @@ use super::{
 };
 
 pub struct ClaudeCode;
+
+/// Tope del resultado que se guarda como resumen de un subagente.
+const MAX_COLLAB_SUMMARY: usize = 8 * 1024;
 
 impl AgentBackend for ClaudeCode {
     fn id(&self) -> &'static str {
@@ -100,6 +103,13 @@ impl AgentBackend for ClaudeCode {
         }
         if let Some(model) = &options.model {
             cmd.arg("--model").arg(model);
+        }
+        // Cuánto piensa antes de contestar. No aparece en la vista de ningún
+        // otro backend con este nombre, pero el CLI lo acepta desde hace rato y
+        // es la diferencia entre una respuesta de tres segundos y una de dos
+        // minutos: dejarlo fuera era decidir por el usuario siempre lo mismo.
+        if let Some(effort) = &options.effort {
+            cmd.arg("--effort").arg(effort);
         }
         // Sin modo explícito, se preguntan todos: es el default seguro para una
         // interfaz gráfica, donde el usuario está mirando y puede contestar.
@@ -206,6 +216,17 @@ impl AgentBackend for ClaudeCode {
         // las pedidas de permiso; sin él, el turno se bloquearía esperando una
         // respuesta que nadie podría mandar.
         session.control(json!({ "subtype": "initialize" }))?;
+
+        // Claude Code no tiene una llamada que liste modelos, así que los
+        // informa el adaptador. No envejece como una lista de identificadores
+        // completos porque son ALIAS: `opus` apunta siempre al último de su
+        // familia, y esa indirección la mantiene Anthropic, no nosotros.
+        session.emit.send(AgentDelta::ThreadPatch {
+            patch: ThreadPatch {
+                models: Some(super::discover::claude_fallback_models()),
+                ..Default::default()
+            },
+        });
         Ok(Box::new(session))
     }
 }
@@ -243,6 +264,9 @@ struct Translator {
     streaming: Option<ItemId>,
     /// Contador para los items que el CLI no nombra (mensajes, razonamiento).
     seq: u64,
+    /// Ids que corresponden a `Task`/`Agent`, para parchear su resultado como
+    /// colaboración y no como herramienta genérica.
+    collab: HashSet<ItemId>,
 }
 
 impl Translator {
@@ -252,6 +276,7 @@ impl Translator {
             rules,
             streaming: None,
             seq: 0,
+            collab: HashSet::new(),
         }
     }
 
@@ -476,24 +501,49 @@ impl Translator {
                         Some("tool_use") => {
                             let name = str_at(&b, "name");
                             let input = b.get("input").cloned().unwrap_or(Value::Null);
+                            let id = str_at(&b, "id");
+                            let kind = if matches!(name.as_str(), "Task" | "Agent") {
+                                self.collab.insert(id.clone());
+                                let title = input
+                                    .get("description")
+                                    .and_then(Value::as_str)
+                                    .filter(|s| !s.is_empty())
+                                    .unwrap_or(&name)
+                                    .to_string();
+                                let subagent_type = input
+                                    .get("subagent_type")
+                                    .or_else(|| input.get("agent"))
+                                    .and_then(Value::as_str)
+                                    .filter(|s| !s.is_empty())
+                                    .unwrap_or("task")
+                                    .to_string();
+                                ItemKind::Collab {
+                                    name,
+                                    title,
+                                    subagent_type,
+                                    status: ToolStatus::InProgress,
+                                    summary: String::new(),
+                                    parent_turn_id: Some(turn.clone()),
+                                    creation_source: "provider_native".to_string(),
+                                }
+                            } else {
+                                ItemKind::Tool {
+                                    title: tool_title(&input),
+                                    tool_kind: ToolKind::guess(&name),
+                                    name,
+                                    status: ToolStatus::InProgress,
+                                    locations: tool_locations(&input),
+                                    input,
+                                    output: String::new(),
+                                }
+                            };
                             out.push(AgentDelta::ItemAdd {
                                 turn: turn.clone(),
                                 // El id del CLI es el id del item: el
                                 // `tool_result` que llega después lo trae, y
                                 // así el parche encuentra su tarjeta sin tabla
                                 // de equivalencias.
-                                item: Item::new(
-                                    str_at(&b, "id"),
-                                    ItemKind::Tool {
-                                        title: tool_title(&input),
-                                        tool_kind: ToolKind::guess(&name),
-                                        name,
-                                        status: ToolStatus::InProgress,
-                                        locations: tool_locations(&input),
-                                        input,
-                                        output: String::new(),
-                                    },
-                                ),
+                                item: Item::new(id, kind),
                             });
                         }
                         _ => {}
@@ -515,14 +565,18 @@ impl Translator {
                         continue;
                     }
                     let is_error = b.get("is_error").and_then(Value::as_bool).unwrap_or(false);
+                    let id = b
+                        .get("tool_use_id")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string();
+                    let result = render_content(b.get("content"));
+                    let collab = self.collab.contains(&id);
                     out.push(AgentDelta::ItemPatch {
-                        item: b
-                            .get("tool_use_id")
-                            .and_then(Value::as_str)
-                            .unwrap_or_default()
-                            .to_string(),
+                        item: id,
                         patch: ItemPatch {
-                            output: Some(render_content(b.get("content"))),
+                            output: (!collab).then_some(result.clone()),
+                            summary: collab.then(|| cap_collab_summary(&result)),
                             ..ItemPatch::tool_status(if is_error {
                                 ToolStatus::Failed
                             } else {
@@ -715,6 +769,17 @@ fn render_content(v: Option<&Value>) -> String {
     }
 }
 
+fn cap_collab_summary(text: &str) -> String {
+    if text.len() <= MAX_COLLAB_SUMMARY {
+        return text.to_string();
+    }
+    let mut end = MAX_COLLAB_SUMMARY;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &text[..end])
+}
+
 struct ClaudeSession {
     child: Child,
     stdin: Option<ChildStdin>,
@@ -752,7 +817,7 @@ impl ClaudeSession {
 }
 
 impl AgentSession for ClaudeSession {
-    fn send(&mut self, text: &str) -> Result<(), String> {
+    fn send(&mut self, text: &str, origin: Option<Origin>) -> Result<(), String> {
         // El turno lo abre QUIEN ESCRIBE, no quien lee: un turno es un ciclo
         // usuario → agente, así que empieza acá y no cuando el agente contesta.
         //
@@ -760,6 +825,19 @@ impl AgentSession for ClaudeSession {
         // parte: el registro solo tenía lo que venía del backend, así que la
         // conversación se leía como un monólogo del agente y, al guardarla, la
         // mitad de cada intercambio no llegaba al disco.
+        let files = origin
+            .as_ref()
+            .map(|o| o.files.clone())
+            .unwrap_or_default();
+        let prompt = {
+            let stripped = super::media::strip_embedded_paths(text, &files);
+            if stripped.is_empty() && !files.is_empty() {
+                "Mira esta imagen.".to_string()
+            } else {
+                stripped
+            }
+        };
+
         let turn = start_turn(&self.turns, &self.emit);
         self.emit.send(AgentDelta::ItemAdd {
             turn: turn.clone(),
@@ -767,17 +845,49 @@ impl AgentSession for ClaudeSession {
                 format!("{turn}-u"),
                 ItemKind::Message {
                     role: Role::User,
-                    text: text.to_string(),
+                    text: prompt.clone(),
                     streaming: false,
                 },
-            ),
+            )
+            .con_origen(origin),
         });
+
+        // Content multimodal: imágenes primero, texto después (como Messages API).
+        let mut content = Vec::new();
+        for path in &files {
+            match super::media::claude_image_block(std::path::Path::new(path)) {
+                Ok(block) => content.push(block),
+                Err(e) => {
+                    content.push(json!({
+                        "type": "text",
+                        "text": format!("[no se pudo adjuntar {path}: {e}]"),
+                    }));
+                }
+            }
+        }
+        if !prompt.is_empty() {
+            content.push(json!({ "type": "text", "text": prompt }));
+        }
 
         // Mismo sobre que la Messages API: el CLI espera un turno de usuario.
         self.write(json!({
             "type": "user",
-            "message": { "role": "user", "content": [{ "type": "text", "text": text }] }
+            "message": { "role": "user", "content": content }
         }))
+    }
+
+    /// `/model <alias>` en caliente. Comprobado contra el CLI: contesta «Set
+    /// model to … for this session only».
+    ///
+    /// El esfuerzo NO se puede cambiar así —es un flag de arranque— y por eso
+    /// se ignora acá en vez de fingir que se aplicó.
+    fn set_model(
+        &mut self,
+        model: &str,
+        _effort: Option<&str>,
+        _fast: Option<bool>,
+    ) -> Result<(), String> {
+        self.send(&format!("/model {model}"), None)
     }
 
     fn respond_permission(&mut self, id: &str, decision: PermissionDecision) -> Result<(), String> {
@@ -954,6 +1064,45 @@ mod tests {
         assert_eq!(items.len(), 2);
         assert!(matches!(items[0].kind, ItemKind::Message { .. }));
         assert!(matches!(items[1].kind, ItemKind::Tool { .. }));
+    }
+
+    #[test]
+    fn task_se_traduce_como_colaboracion_y_su_resultado_la_actualiza() {
+        let mut t = tr();
+        let abre = t.translate(
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"agent_1","name":"Task","input":{"description":"Revisar cambios","subagent_type":"review","prompt":"texto largo"}}]}}"#,
+        );
+        let it = added(&abre)[0];
+        match &it.kind {
+            ItemKind::Collab {
+                name,
+                title,
+                subagent_type,
+                status,
+                summary,
+                creation_source,
+                ..
+            } => {
+                assert_eq!(name, "Task");
+                assert_eq!(title, "Revisar cambios");
+                assert_eq!(subagent_type, "review");
+                assert_eq!(*status, ToolStatus::InProgress);
+                assert!(summary.is_empty(), "el prompt no es un resumen");
+                assert_eq!(creation_source, "provider_native");
+            }
+            other => panic!("se esperaba Collab, llegó {other:?}"),
+        }
+
+        let cierra = t.translate(
+            r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"agent_1","content":"Revisión completa","is_error":false}]}}"#,
+        );
+        let p = patches(&cierra, "agent_1")[0];
+        assert_eq!(p.summary.as_deref(), Some("Revisión completa"));
+        assert!(p.output.is_none());
+        assert_eq!(
+            p.status.as_ref(),
+            serde_json::to_value(ToolStatus::Completed).ok().as_ref()
+        );
     }
 
     /// El id del CLI es el id del item, así el `tool_result` que llega después

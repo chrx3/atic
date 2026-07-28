@@ -72,6 +72,11 @@ pub struct Config {
     pub show_pill: bool,
     /// Última posición conocida de la pill (x, y) en coordenadas de pantalla.
     pub pill_position: Option<(f64, f64)>,
+    /// Tamaño al que dejaste la burbuja de agentes, en píxeles lógicos.
+    ///
+    /// Es la VENTANA, marco de sombra incluido, que es lo mismo que mide
+    /// `BubbleShape`. `None` = nunca la redimensionaste y vale la de diseño.
+    pub agents_bubble_size: Option<(i32, i32)>,
     /// Sonido grave al iniciar/detener grabación (aviso de consentimiento).
     pub beep_on_start: bool,
     /// Toques graves de interfaz (capturas, dictado). Interruptor maestro.
@@ -170,6 +175,7 @@ impl Default for Config {
             output_device_id: String::new(),
             show_pill: true,
             pill_position: None,
+            agents_bubble_size: None,
             beep_on_start: false,
             ui_sounds: true,
             sound_recording_start: String::new(),
@@ -237,6 +243,7 @@ struct ConfigFile {
     output_device_id: Option<String>,
     show_pill: bool,
     pill_position: Option<(f64, f64)>,
+    agents_bubble_size: Option<(i32, i32)>,
     beep_on_start: bool,
     ui_sounds: Option<bool>,
     sound_recording_start: Option<String>,
@@ -333,6 +340,7 @@ impl Default for ConfigFile {
             output_device_id: None,
             show_pill: d.show_pill,
             pill_position: d.pill_position,
+            agents_bubble_size: d.agents_bubble_size,
             beep_on_start: d.beep_on_start,
             ui_sounds: None,
             sound_recording_start: None,
@@ -482,6 +490,7 @@ impl From<ConfigFile> for Config {
             output_device_id: f.output_device_id.unwrap_or_default(),
             show_pill: f.show_pill,
             pill_position: f.pill_position,
+            agents_bubble_size: f.agents_bubble_size,
             beep_on_start: f.beep_on_start,
             // Configs antiguas: activar toques de UI (captura/dictado).
             ui_sounds: f.ui_sounds.unwrap_or(true),

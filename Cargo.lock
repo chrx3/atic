@@ -355,6 +355,7 @@ dependencies = [
  "atic-mailer",
  "atic-summarize",
  "atic-transcribe",
+ "base64 0.22.1",
  "chrono",
  "cpal",
  "futures",

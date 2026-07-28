@@ -390,6 +390,10 @@ export interface AgentStartOptions {
   cwd?: string;
   resume?: string;
   model?: string;
+  /** Cuánto tiene que pensar. Los niveles los define cada backend. */
+  effort?: string;
+  /** Variante rápida (Cursor). */
+  fast?: boolean;
   permissionMode?: string;
   /** JSON `{"mcpServers": {…}}` con los servidores que suma Atic. */
   mcpConfig?: string;
@@ -438,6 +442,7 @@ export type ToolKind =
   | "think"
   | "fetch"
   | "switch_mode"
+  | "collab"
   | "other";
 
 export type PermissionStatus = "pending" | "allowed" | "denied";
@@ -456,7 +461,23 @@ export interface PlanEntry {
  * volver a dibujarse. Una herramienta es UN item que pasa de `in_progress` a
  * `completed`, no dos eventos que la vista tiene que emparejar.
  */
-export type AgentItem = { id: string } & (
+/**
+ * De dónde salió lo que escribió el usuario.
+ *
+ * Solo lo llevan sus mensajes, y solo cuando entraron por un puente de Atic:
+ * el dictado, una captura o el portapapeles. Ningún agente lo manda ni lo
+ * entiende — se escribe de este lado y se guarda con el hilo.
+ */
+export interface AgentOrigin {
+  /** Etiqueta corta: «dictado», «captura», «portapapeles». */
+  via: string;
+  /** Nombre visible del adjunto, si lo hubo. Se dibuja como tarjeta. */
+  file?: string;
+  /** Rutas absolutas de imágenes a embeber en el content del turno. */
+  files?: string[];
+}
+
+export type AgentItem = { id: string; origin?: AgentOrigin } & (
   | { kind: "message"; role: "user" | "assistant"; text: string; streaming: boolean }
   | { kind: "reasoning"; text: string; streaming: boolean }
   | {
@@ -471,6 +492,16 @@ export type AgentItem = { id: string } & (
       output: string;
       /** Archivos que toca, para poder seguirla. */
       locations: string[];
+    }
+  | {
+      kind: "collab";
+      name: string;
+      title: string;
+      subagentType: string;
+      status: ToolStatus;
+      summary: string;
+      parentTurnId?: string;
+      creationSource: string;
     }
   | { kind: "plan"; entries: PlanEntry[] }
   /** El agente está DETENIDO hasta que se conteste. */
@@ -491,6 +522,8 @@ export interface ItemPatch {
   status?: ToolStatus | PermissionStatus;
   output?: string;
   title?: string;
+  summary?: string;
+  subagentType?: string;
   locations?: string[];
   entries?: PlanEntry[];
 }
@@ -498,7 +531,37 @@ export interface ItemPatch {
 export type TurnStatus = "running" | "done" | "failed" | "cancelled";
 
 /** Qué cambió del hilo, no de un item suelto. */
+/** Un nivel de esfuerzo, con el texto que explica cuándo conviene. */
+export interface AgentEffort {
+  id: string;
+  description: string;
+}
+
+/**
+ * Un modelo que ofrece el agente.
+ *
+ * **Lo informa el backend**, no una lista escrita acá. Codex usa `model/list`;
+ * Claude Code alias de fallback o lo que descubra el probe; Cursor/OpenCode
+ * CLI (y ACP `config_options` en sesión).
+ */
+export interface AgentModel {
+  id: string;
+  name: string;
+  description: string;
+  /** Vacío = este modelo no deja elegir esfuerzo. */
+  efforts: AgentEffort[];
+  defaultEffort?: string;
+  /** Cursor: variantes `*-fast` como switch aparte. */
+  supportsFast?: boolean;
+}
+
 export interface ThreadPatch {
+  /** Los modelos del agente. Llega una vez, al arrancar la sesión. */
+  models?: AgentModel[];
+  /** Esfuerzo en curso, cuando el backend lo maneja. */
+  effort?: string;
+  /** Variante rápida (Cursor). */
+  fast?: boolean;
   /** Id de sesión DEL BACKEND, con el que se reanuda. */
   providerSession?: string;
   cwd?: string;
@@ -506,6 +569,15 @@ export interface ThreadPatch {
   mode?: string;
   /** Contexto consumido. Llega durante el turno, no al final. */
   tokens?: number;
+  /**
+   * Tamaño de la ventana de contexto, según el agente.
+   *
+   * Lo mandan ACP (`usage_update.size`) y Codex (`modelContextWindow`). Sin
+   * esto la vista lo adivinaba con una constante de un millón, que es de Claude
+   * y de nadie más: la ventana de Codex ronda los 258K, así que el anillo
+   * mostraba un cuarto de lo consumido de verdad.
+   */
+  contextSize?: number;
   commands?: SlashCommand[];
   mcpServers?: McpServerState[];
   tools?: string[];
@@ -552,4 +624,27 @@ export interface AgentSessionInfo {
   id: string;
   backendId: string;
   backendName: string;
+}
+
+/**
+ * Una conversación guardada en `atic.db3`.
+ *
+ * Los turnos son los MISMOS que los de una sesión viva, y por eso la vista los
+ * dibuja con el mismo código: lo guardado no es un resumen ni otro formato, es
+ * el hilo tal cual quedó. Al listar llegan vacíos —serían megabytes para pintar
+ * unas líneas—, y solo `agentThread` los trae de verdad.
+ */
+export interface StoredThread {
+  id: string;
+  backendId: string;
+  backendName: string;
+  /** Id con el que Claude Code o Codex reanudan la conversación. */
+  providerSession: string | null;
+  cwd: string;
+  model: string;
+  /** Segundos desde epoch. */
+  updatedAt: number;
+  /** Las primeras palabras del usuario: con lo que se reconoce en la lista. */
+  preview: string;
+  turns: AgentTurn[];
 }

@@ -69,6 +69,7 @@ pub enum ToolKind {
     Think,
     Fetch,
     SwitchMode,
+    Collab,
     Other,
 }
 
@@ -85,7 +86,8 @@ impl ToolKind {
             "Grep" | "Glob" => Self::Search,
             "Bash" | "BashOutput" | "KillShell" => Self::Execute,
             "WebFetch" | "WebSearch" => Self::Fetch,
-            "Task" | "TodoWrite" | "ExitPlanMode" => Self::Think,
+            "Task" | "Agent" => Self::Collab,
+            "TodoWrite" | "ExitPlanMode" => Self::Think,
             _ => Self::Other,
         }
     }
@@ -165,6 +167,24 @@ pub enum ItemKind {
         locations: Vec<String>,
     },
 
+    /// Trabajo delegado a otro agente por el proveedor.
+    #[serde(rename_all = "camelCase")]
+    Collab {
+        /// Etiqueta corta: tipo de subagente o nombre de la herramienta.
+        name: String,
+        title: String,
+        /// `explore` | `review` | `build` | `plan` | `task` | `other`.
+        subagent_type: String,
+        status: ToolStatus,
+        /// Avance o resumen del resultado.
+        summary: String,
+        /// Turno padre, cuando el proveedor permite seguir la procedencia.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parent_turn_id: Option<String>,
+        #[serde(default)]
+        creation_source: String,
+    },
+
     /// El plan que el agente propone, con el estado de cada paso.
     #[serde(rename_all = "camelCase")]
     Plan { entries: Vec<PlanEntry> },
@@ -187,6 +207,32 @@ pub enum ItemKind {
     Notice { text: String },
 }
 
+/// De dónde salió lo que escribió el usuario.
+///
+/// Es lo propio de Atic. El dictado, la captura y el portapapeles ya vivían en
+/// la pill; esto es el rastro que dejan cuando se usan para hablarle a un
+/// agente, y es lo que ninguna otra GUI puede copiar porque no tiene con qué.
+///
+/// El texto del origen (`via`, `file`) es solo para la conversación guardada.
+/// Las rutas en `files` **sí** viajan al backend: se leen y se mandan como
+/// bloques de imagen en el content del turno.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Origin {
+    /// Etiqueta corta y legible: «dictado», «captura», «portapapeles».
+    ///
+    /// Texto y no enum, por lo mismo que `title` en las herramientas: la lista
+    /// de puentes va a crecer, y cada uno nuevo no debería obligar a tocar el
+    /// modelo, los tres adaptadores y la vista para poder nombrarse.
+    pub via: String,
+    /// Nombre visible del adjunto, si lo hubo. La vista lo dibuja como tarjeta.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<String>,
+    /// Rutas absolutas de imágenes a embeber en el content del turno.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files: Vec<String>,
+}
+
 /// Un item: identidad más contenido.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -194,6 +240,14 @@ pub struct Item {
     pub id: ItemId,
     #[serde(flatten)]
     pub kind: ItemKind,
+    /// Sólo lo llevan los mensajes del usuario que entraron por un puente.
+    ///
+    /// Vive en el item y no dentro de `ItemKind::Message` para no obligar a los
+    /// otros dieciocho sitios que construyen mensajes a escribir `None`. Y
+    /// `default` para que los hilos guardados antes de que esto existiera se
+    /// sigan leyendo.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<Origin>,
 }
 
 impl Item {
@@ -201,7 +255,14 @@ impl Item {
         Self {
             id: id.into(),
             kind,
+            origin: None,
         }
+    }
+
+    /// El mismo item, diciendo por dónde entró.
+    pub fn con_origen(mut self, origin: Option<Origin>) -> Self {
+        self.origin = origin;
+        self
     }
 }
 
@@ -224,6 +285,10 @@ pub struct ItemPatch {
     pub output: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subagent_type: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub locations: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -249,10 +314,61 @@ pub enum TurnStatus {
     Cancelled,
 }
 
+/// Un nivel de esfuerzo que un modelo acepta.
+///
+/// Con descripción porque «medium» no le dice nada a nadie: los CLIs que lo
+/// ofrecen mandan el texto que explica cuándo conviene, y perderlo dejaría un
+/// selector de palabras sueltas.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EffortOption {
+    pub id: String,
+    pub description: String,
+}
+
+/// Un modelo que el agente ofrece.
+///
+/// **Lo informa el backend**, no una lista escrita a mano en la vista. Esa era
+/// la forma vieja y envejecía sola: cada versión del CLI suma o saca modelos, y
+/// una constante en el frontend no se entera. Codex los da con
+/// `model/list` —nombre, descripción y esfuerzos soportados—; Claude Code no
+/// tiene esa llamada y su adaptador informa sus alias, que son estables a
+/// propósito. Los agentes ACP pueden informarlos en `config_options` al crear
+/// la sesión, o vía descubrimiento previo al arranque.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelInfo {
+    /// Lo que se le pasa al CLI (o id de grupo, en Cursor).
+    pub id: String,
+    /// Nombre legible.
+    pub name: String,
+    /// Para qué sirve. Vacío si el backend no lo dice.
+    pub description: String,
+    /// Niveles de esfuerzo que ESTE modelo acepta. Vacío = no se puede elegir.
+    #[serde(default)]
+    pub efforts: Vec<EffortOption>,
+    /// El que trae puesto, si el backend lo dice.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_effort: Option<String>,
+    /// Si el modelo tiene variantes rápidas (Cursor `*-fast`). Fast es un
+    /// switch aparte del nivel de esfuerzo, al estilo Synara / T3 Code.
+    #[serde(default)]
+    pub supports_fast: bool,
+}
+
 /// Lo que cambia del hilo, no de un item suelto.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ThreadPatch {
+    /// Los modelos que ofrece este agente. Llega una vez, al arrancar.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub models: Option<Vec<ModelInfo>>,
+    /// Esfuerzo en curso, cuando el backend lo maneja.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
+    /// Variante rápida activa (Cursor). Independiente del nivel de esfuerzo.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fast: Option<bool>,
     /// Id de sesión **del backend**, con el que se reanuda. Distinto del id
     /// local del hilo: el local existe desde antes de que el proceso arranque.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -493,6 +609,28 @@ fn apply_patch(kind: &mut ItemKind, patch: &ItemPatch) {
                 *locations = v.clone();
             }
         }
+        ItemKind::Collab {
+            status,
+            summary,
+            title,
+            subagent_type,
+            ..
+        } => {
+            if let Some(v) = &patch.status {
+                if let Ok(s) = serde_json::from_value::<ToolStatus>(v.clone()) {
+                    *status = s;
+                }
+            }
+            if let Some(v) = &patch.summary {
+                *summary = v.clone();
+            }
+            if let Some(v) = &patch.title {
+                *title = v.clone();
+            }
+            if let Some(v) = &patch.subagent_type {
+                *subagent_type = v.clone();
+            }
+        }
         ItemKind::Permission { status, .. } => {
             if let Some(v) = &patch.status {
                 if let Ok(s) = serde_json::from_value::<PermissionStatus>(v.clone()) {
@@ -569,6 +707,51 @@ mod tests {
         };
         assert_eq!(*status, ToolStatus::Completed);
         assert_eq!(output, "ok");
+    }
+
+    #[test]
+    fn un_subagente_se_actualiza_sin_duplicarse() {
+        let mut h = thread();
+        h.apply(&AgentDelta::TurnStart { turn: "t1".into() });
+        h.apply(&AgentDelta::ItemAdd {
+            turn: "t1".into(),
+            item: Item::new(
+                "a1",
+                ItemKind::Collab {
+                    name: "Task".into(),
+                    title: "Revisar cambios".into(),
+                    subagent_type: "review".into(),
+                    status: ToolStatus::InProgress,
+                    summary: String::new(),
+                    parent_turn_id: Some("t1".into()),
+                    creation_source: "provider_native".into(),
+                },
+            ),
+        });
+        h.apply(&AgentDelta::ItemPatch {
+            item: "a1".into(),
+            patch: ItemPatch {
+                status: serde_json::to_value(ToolStatus::Completed).ok(),
+                summary: Some("No encontró problemas.".into()),
+                title: Some("Revisión terminada".into()),
+                ..Default::default()
+            },
+        });
+
+        let ItemKind::Collab {
+            status,
+            summary,
+            title,
+            subagent_type,
+            ..
+        } = &h.turns[0].items[0].kind
+        else {
+            panic!("se esperaba colaboración");
+        };
+        assert_eq!(*status, ToolStatus::Completed);
+        assert_eq!(summary, "No encontró problemas.");
+        assert_eq!(title, "Revisión terminada");
+        assert_eq!(subagent_type, "review");
     }
 
     /// El trozo sabe a qué mensaje pertenece: dos bloques a la vez no se pisan.

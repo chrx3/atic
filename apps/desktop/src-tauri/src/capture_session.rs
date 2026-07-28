@@ -11,10 +11,19 @@
 //! El overlay es opaco a propósito: las ventanas transparentes de WebView2
 //! hacen crashear a wry en `WM_SETFOCUS` al recibir un clic.
 
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
 const OVERLAY_LABEL: &str = "capture-overlay";
+
+/// `start_impl` está congelando el escritorio (aún sin sesión activa).
+/// Sin esto, un segundo atajo rápido abre otra captura en paralelo y un
+/// `show()` tardío deja la ventana gris tapando el escritorio sin sesión.
+static STARTING: AtomicBool = AtomicBool::new(false);
+/// Sube en cada cancelación. El arranque en curso aborta si su token no coincide.
+static GENERATION: AtomicU64 = AtomicU64::new(0);
 
 #[cfg(windows)]
 pub struct OverlaySession {
@@ -61,9 +70,9 @@ pub fn start_capture_session(app: AppHandle) -> Result<(), String> {
 }
 
 /// Disparador para el atajo global y el tray (no pasa por `invoke`).
-/// Segunda pulsación con sesión abierta: cancela (toggle), no reinicia.
+/// Segunda pulsación con sesión abierta o arranque en curso: cancela (toggle).
 pub fn trigger(app: &AppHandle) -> Result<(), String> {
-    if session_is_active(app) {
+    if session_is_active(app) || STARTING.load(Ordering::SeqCst) {
         end_session(app);
         Ok(())
     } else {
@@ -74,6 +83,10 @@ pub fn trigger(app: &AppHandle) -> Result<(), String> {
 fn session_is_active(app: &AppHandle) -> bool {
     app.try_state::<crate::state::AppState>()
         .is_some_and(|state| state.overlay_session.lock().unwrap().is_some())
+}
+
+fn abort_requested(token: u64) -> bool {
+    GENERATION.load(Ordering::SeqCst) != token
 }
 
 #[tauri::command]
@@ -120,6 +133,10 @@ fn finish(app: &AppHandle, path: &str, shelf_anchor: (i32, i32)) {
 }
 
 fn end_session(app: &AppHandle) {
+    // Invalida cualquier `start_impl` en vuelo antes de ocultar/limpiar.
+    GENERATION.fetch_add(1, Ordering::SeqCst);
+    STARTING.store(false, Ordering::SeqCst);
+
     // Ocultar (no cerrar): destruir la ventana provoca un crash de wry cuando
     // recibe WM_SETFOCUS durante su destrucción. Se reutiliza en la próxima
     // sesión.
@@ -130,6 +147,7 @@ fn end_session(app: &AppHandle) {
         let taken = state.overlay_session.lock().unwrap().take();
         end_session_cleanup(taken);
     }
+    let _ = app.emit("overlay-session-ended", ());
 }
 
 #[cfg(windows)]
@@ -155,46 +173,133 @@ fn start_impl(app: &AppHandle) -> Result<(), String> {
         end_session(app);
         return Ok(());
     }
+    // Otro arranque en curso: cancelar ese (toggle), no apilar otro.
+    if STARTING
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        end_session(app);
+        return Ok(());
+    }
 
+    let token = GENERATION.load(Ordering::SeqCst);
     let state = app.state::<crate::state::AppState>();
     let include_cursor = state.config.lock().unwrap().capture_include_cursor;
 
+    // Si un intento anterior dejó el overlay visible (telón #111), BitBlt lo
+    // congela como “escritorio” gris. Ocultar y dar un frame a DWM.
+    ensure_overlay_hidden(app);
+    std::thread::sleep(std::time::Duration::from_millis(32));
+    if abort_requested(token) {
+        STARTING.store(false, Ordering::SeqCst);
+        return Ok(());
+    }
+
     let virtual_screen = monitors::virtual_screen();
-    let frame = engine::capture_rect(virtual_screen, include_cursor).map_err(|e| e.to_string())?;
-    let png = frame.to_png().map_err(|e| e.to_string())?;
+    let frame = match engine::capture_rect(virtual_screen, include_cursor) {
+        Ok(frame) => frame,
+        Err(error) => {
+            STARTING.store(false, Ordering::SeqCst);
+            return Err(error.to_string());
+        }
+    };
+    if abort_requested(token) {
+        STARTING.store(false, Ordering::SeqCst);
+        return Ok(());
+    }
+
+    let png = match frame.to_png() {
+        Ok(png) => png,
+        Err(error) => {
+            STARTING.store(false, Ordering::SeqCst);
+            return Err(error.to_string());
+        }
+    };
+    if abort_requested(token) {
+        STARTING.store(false, Ordering::SeqCst);
+        return Ok(());
+    }
 
     let frame_path = state.dirs.overlay_frames_dir().join("overlay.png");
-    std::fs::write(&frame_path, &png).map_err(|e| e.to_string())?;
+    if let Err(error) = std::fs::write(&frame_path, &png) {
+        STARTING.store(false, Ordering::SeqCst);
+        return Err(error.to_string());
+    }
 
     let monitors = monitors::enumerate();
     let candidates = capwin::enumerate_candidates(std::process::id(), &monitors);
 
-    *state.overlay_session.lock().unwrap() = Some(OverlaySession {
-        frame,
-        candidates,
-        monitors,
-        frame_path,
-    });
+    {
+        let mut guard = state.overlay_session.lock().unwrap();
+        if abort_requested(token) {
+            STARTING.store(false, Ordering::SeqCst);
+            drop(guard);
+            let _ = std::fs::remove_file(&frame_path);
+            return Ok(());
+        }
+        *guard = Some(OverlaySession {
+            frame,
+            candidates,
+            monitors,
+            frame_path,
+        });
+        STARTING.store(false, Ordering::SeqCst);
+    }
 
-    // Emitir antes de show: el frontend empieza a cargar el PNG mientras
-    // dimensionamos la ventana, y solo revela con fade cuando el frame está listo.
+    if abort_requested(token) {
+        end_session(app);
+        return Ok(());
+    }
+
+    // No mostrar aún: el webview carga el PNG oculto y llama a
+    // `show_capture_overlay` cuando el frame ya está pintado. Así no hay telón gris.
     let _ = app.emit("overlay-session-started", ());
+    Ok(())
+}
 
-    // La ventana `capture-overlay` es estática (creada oculta al arrancar).
-    // Se muestra PRIMERO y luego se dimensiona: `set_size`/`set_position` sobre
-    // una ventana oculta no tomaba efecto, dejándola en 800x600 con scroll.
+/// Muestra el overlay solo cuando el frontend ya tiene el frame listo.
+#[tauri::command]
+pub fn show_capture_overlay(app: AppHandle) -> Result<(), String> {
+    show_overlay_window(&app)
+}
+
+fn ensure_overlay_hidden(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window(OVERLAY_LABEL) {
+        let _ = window.hide();
+    }
+}
+
+#[cfg(windows)]
+fn show_overlay_window(app: &AppHandle) -> Result<(), String> {
+    let state = app.state::<crate::state::AppState>();
+    let bounds = {
+        let guard = state.overlay_session.lock().unwrap();
+        let session = match guard.as_ref() {
+            Some(session) => session,
+            // Cancelaron mientras el PNG cargaba: no mostrar el telón.
+            None => return Ok(()),
+        };
+        session.frame.bounds
+    };
+
     let window = app
         .get_webview_window(OVERLAY_LABEL)
         .ok_or("la ventana del overlay no existe")?;
-    let position = tauri::PhysicalPosition::new(virtual_screen.x, virtual_screen.y);
-    let size = tauri::PhysicalSize::new(virtual_screen.width, virtual_screen.height);
+    let position = tauri::PhysicalPosition::new(bounds.x, bounds.y);
+    let size = tauri::PhysicalSize::new(bounds.width, bounds.height);
     let _ = window.set_decorations(false);
+    // show → size: sobre ventana oculta a veces no aplicaba el tamaño.
     let _ = window.show();
     let _ = window.set_position(position);
     let _ = window.set_size(size);
     let _ = window.set_always_on_top(true);
     let _ = window.set_focus();
     Ok(())
+}
+
+#[cfg(not(windows))]
+fn show_overlay_window(_app: &AppHandle) -> Result<(), String> {
+    Err("La captura de pantalla solo está disponible en Windows.".into())
 }
 
 #[cfg(windows)]

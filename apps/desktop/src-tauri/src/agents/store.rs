@@ -24,7 +24,7 @@ use std::sync::Mutex;
 
 use atic_core::{AgentThreadRow, Db};
 
-use super::model::{AgentDelta, Thread, Turn};
+use super::model::{AgentDelta, ItemKind, Role, Thread, Turn};
 
 /// Los hilos vivos, indexados por la clave local de la sesión.
 ///
@@ -98,6 +98,7 @@ pub fn flush(db: &Db, id: &str) {
         if thread.turns.is_empty() {
             return;
         }
+        let preview = thread_preview(&thread.turns);
         match serde_json::to_string(&thread.turns) {
             Ok(turns) => AgentThreadRow {
                 id: thread.id.clone(),
@@ -107,6 +108,7 @@ pub fn flush(db: &Db, id: &str) {
                 cwd: thread.cwd.clone(),
                 model: thread.model.clone(),
                 updated_at: thread.updated_at,
+                preview,
                 turns,
             },
             Err(e) => {
@@ -157,19 +159,11 @@ pub struct StoredThread {
 }
 
 fn to_stored(row: AgentThreadRow, with_turns: bool) -> StoredThread {
-    let turns: Vec<Turn> = serde_json::from_str(&row.turns).unwrap_or_default();
-    let preview = turns
-        .iter()
-        .flat_map(|t| &t.items)
-        .find_map(|i| match &i.kind {
-            super::model::ItemKind::Message {
-                role: super::model::Role::User,
-                text,
-                ..
-            } => Some(text.chars().take(120).collect::<String>()),
-            _ => None,
-        })
-        .unwrap_or_default();
+    let turns = if with_turns {
+        serde_json::from_str(&row.turns).unwrap_or_default()
+    } else {
+        Vec::new()
+    };
     StoredThread {
         id: row.id,
         backend_id: row.backend_id,
@@ -178,11 +172,26 @@ fn to_stored(row: AgentThreadRow, with_turns: bool) -> StoredThread {
         cwd: row.cwd,
         model: row.model,
         updated_at: row.updated_at,
-        preview,
+        preview: row.preview,
         // Al listar no se mandan: son la conversación entera de cada hilo, y
         // la lista solo necesita con qué reconocerlos.
-        turns: if with_turns { turns } else { Vec::new() },
+        turns,
     }
+}
+
+fn thread_preview(turns: &[Turn]) -> String {
+    turns
+        .iter()
+        .flat_map(|turn| &turn.items)
+        .find_map(|i| match &i.kind {
+            ItemKind::Message {
+                role: Role::User,
+                text,
+                ..
+            } => Some(text.chars().take(120).collect::<String>()),
+            _ => None,
+        })
+        .unwrap_or_default()
 }
 
 pub fn list(db: &Db) -> Result<Vec<StoredThread>, String> {

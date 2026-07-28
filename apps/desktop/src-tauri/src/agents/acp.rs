@@ -39,10 +39,13 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use agent_client_protocol::schema::v1::{
-    ContentBlock, ContentChunk, InitializeRequest, NewSessionRequest, PermissionOptionKind,
-    PromptRequest, RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
-    SelectedPermissionOutcome, SessionNotification, SessionUpdate, TextContent, ToolCall,
-    ToolCallStatus as AcpToolStatus, ToolCallUpdate, ToolKind as AcpToolKind, UsageUpdate,
+    ContentBlock, ContentChunk, ImageContent, InitializeRequest, NewSessionRequest,
+    PermissionOptionKind, PromptRequest, RequestPermissionOutcome, RequestPermissionRequest,
+    RequestPermissionResponse, SelectedPermissionOutcome, SessionConfigKind,
+    SessionConfigOption, SessionConfigOptionCategory, SessionConfigSelect,
+    SessionConfigSelectOption, SessionConfigSelectOptions, SessionNotification, SessionUpdate,
+    SetSessionConfigOptionRequest, TextContent, ToolCall, ToolCallStatus as AcpToolStatus,
+    ToolCallUpdate, ToolKind as AcpToolKind, UsageUpdate,
 };
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::{AcpAgent, AcpAgentConfig, Agent, ConnectionTo};
@@ -51,8 +54,8 @@ use futures::StreamExt;
 use serde_json::Value;
 
 use super::model::{
-    AgentDelta, Item, ItemId, ItemKind, ItemPatch, PermissionStatus, PlanEntry, PlanStatus, Role,
-    ThreadPatch, ToolKind, ToolStatus, TurnStatus,
+    AgentDelta, Item, ItemId, ItemKind, ItemPatch, ModelInfo, Origin, PermissionStatus, PlanEntry,
+    PlanStatus, Role, ThreadPatch, ToolKind, ToolStatus, TurnStatus,
 };
 use super::turns::{end_turn, ensure_turn, start_turn, Emit, Turns};
 use super::{AgentBackend, AgentSession, PermissionDecision, SlashCommand, StartOptions};
@@ -83,7 +86,13 @@ pub const CURSOR: Acp = Acp {
 
 /// Lo que la sesión le pide al hilo de conexión.
 enum Cmd {
-    Prompt(String),
+    /// El texto y, si entró por un puente de Atic, por cuál.
+    Prompt(String, Option<Origin>),
+    SetModel {
+        model: String,
+        effort: Option<String>,
+        fast: Option<bool>,
+    },
     Stop,
 }
 
@@ -100,6 +109,15 @@ struct Shared {
     /// Items de texto ya anunciados. Un chunk con id conocido continúa; uno
     /// nuevo abre.
     seen: Mutex<HashSet<ItemId>>,
+    /// Los de arriba que siguen abiertos en el turno en curso.
+    ///
+    /// ACP no dice «este bloque terminó»: los chunks simplemente dejan de
+    /// llegar y el turno cierra. Sin anotarlos para cerrarlos a mano, el item
+    /// queda `streaming: true` para siempre y la vista lo dibuja con el cursor
+    /// parpadeando sin que nadie escriba —el mismo agujero que `claude_code.rs`
+    /// tapa en su rama de `result`—. Y lo que es peor, la pill nunca se entera
+    /// de que el agente contestó, porque ese aviso cuelga del cierre.
+    abiertos: Mutex<Vec<ItemId>>,
     /// Costo de la sesión: lo último que informó el agente, y lo ya atribuido
     /// a turnos anteriores.
     ///
@@ -107,6 +125,15 @@ struct Shared {
     /// turno quiere lo suyo. Sin restar, cada turno reportaría todo lo gastado
     /// antes y el total de la conversación crecería al cuadrado.
     cost: Mutex<Costo>,
+    /// Id ACP del selector de modelo, si el agente lo informó en `config_options`.
+    model_config_id: Mutex<Option<String>>,
+    /// Id ACP del selector de esfuerzo/razonamiento, si existe.
+    effort_config_id: Mutex<Option<String>>,
+    /// Plantillas ACP por id de grupo: `grok-4.5` → `grok-4.5[effort=high,fast=true]`.
+    ///
+    /// Cursor no acepta los slugs del CLI (`cursor-grok-4.5-high`); hay que
+    /// mandar el value con parámetros entre corchetes y mutar effort/fast ahí.
+    model_templates: Mutex<HashMap<String, String>>,
 }
 
 impl AgentBackend for Acp {
@@ -141,16 +168,24 @@ impl AgentBackend for Acp {
             turns: Mutex::new(Turns::default()),
             pending: Mutex::new(HashMap::new()),
             seen: Mutex::new(HashSet::new()),
+            abiertos: Mutex::new(Vec::new()),
             cost: Mutex::new(Costo::default()),
+            model_config_id: Mutex::new(None),
+            effort_config_id: Mutex::new(None),
+            model_templates: Mutex::new(HashMap::new()),
         });
 
         let (tx, rx) = mpsc::unbounded::<Cmd>();
         let cwd = options.cwd.clone().unwrap_or_else(|| ".".to_string());
+        let desired_model = options.model.clone();
+        let desired_effort = options.effort.clone();
+        let desired_fast = options.fast;
         let args: Vec<String> = prefijo
             .into_iter()
             .chain(self.args.iter().map(|a| a.to_string()))
             .collect();
         let name = self.display_name;
+        let backend_id = self.id;
 
         {
             let emit = emit.clone();
@@ -160,6 +195,10 @@ impl AgentBackend for Acp {
                     program,
                     args,
                     cwd,
+                    backend_id,
+                    desired_model,
+                    desired_effort,
+                    desired_fast,
                     rx,
                     emit.clone(),
                     shared,
@@ -181,6 +220,10 @@ async fn connect(
     program: std::path::PathBuf,
     args: Vec<String>,
     cwd: String,
+    backend_id: &'static str,
+    desired_model: Option<String>,
+    desired_effort: Option<String>,
+    desired_fast: Option<bool>,
     mut rx: mpsc::UnboundedReceiver<Cmd>,
     emit: Emit,
     shared: Arc<Shared>,
@@ -283,57 +326,586 @@ async fn connect(
                 .block_task()
                 .await?;
 
-            emit.send(AgentDelta::ThreadPatch {
-                patch: ThreadPatch {
-                    provider_session: Some(session.session_id.0.to_string()),
-                    cwd: Some(cwd.clone()),
-                    ..Default::default()
-                },
-            });
+            let mut patch = ThreadPatch {
+                provider_session: Some(session.session_id.0.to_string()),
+                cwd: Some(cwd.clone()),
+                ..Default::default()
+            };
+
+            if let Some(config_options) = &session.config_options {
+                if let Some(model_cfg) = find_model_config(config_options) {
+                    *shared.model_config_id.lock().unwrap() = Some(model_cfg.config_id);
+                    let (models, templates) =
+                        normalize_cursor_acp_models(backend_id, model_cfg.models);
+                    *shared.model_templates.lock().unwrap() = templates;
+                    if !models.is_empty() {
+                        let current = model_cfg.current;
+                        let (group_id, effort_id, fast) =
+                            resolve_grouped_selection(&models, &current);
+                        patch.models = Some(models);
+                        patch.model = Some(group_id);
+                        if let Some(e) = effort_id {
+                            patch.effort = Some(e);
+                        }
+                        if let Some(f) = fast {
+                            patch.fast = Some(f);
+                        }
+                    } else {
+                        patch.model = Some(model_cfg.current);
+                    }
+                }
+                if let Some((effort_id, current)) = find_effort_config(config_options) {
+                    *shared.effort_config_id.lock().unwrap() = Some(effort_id);
+                    // Solo pisa si no vino ya del agrupado Cursor.
+                    if patch.effort.is_none() {
+                        patch.effort = Some(current);
+                    }
+                }
+            }
+
+            emit.send(AgentDelta::ThreadPatch { patch });
+
+            if desired_model.is_some() || desired_effort.is_some() || desired_fast.is_some() {
+                apply_config(
+                    &conn,
+                    &session.session_id,
+                    &shared,
+                    desired_model.as_deref(),
+                    desired_effort.as_deref(),
+                    desired_fast,
+                    &emit,
+                )
+                .await?;
+            }
 
             while let Some(cmd) = rx.next().await {
-                let text = match cmd {
+                match cmd {
                     Cmd::Stop => break,
-                    Cmd::Prompt(t) => t,
-                };
-
-                let turn = start_turn(&shared.turns, &emit);
-                emit.send(AgentDelta::ItemAdd {
-                    turn: turn.clone(),
-                    item: Item::new(
-                        format!("{turn}-u"),
-                        ItemKind::Message {
-                            role: Role::User,
-                            text: text.clone(),
-                            streaming: false,
-                        },
-                    ),
-                });
-
-                let done = conn
-                    .send_request(PromptRequest::new(
-                        session.session_id.clone(),
-                        vec![ContentBlock::Text(TextContent::new(text))],
-                    ))
-                    .block_task()
-                    .await;
-
-                let status = match &done {
-                    Ok(_) => TurnStatus::Done,
-                    Err(_) => TurnStatus::Failed,
-                };
-                emit.send(AgentDelta::TurnEnd {
-                    turn,
-                    status,
-                    cost_usd: shared.cost.lock().unwrap().del_turno(),
-                });
-                end_turn(&shared.turns);
-                done?;
+                    Cmd::SetModel {
+                        model,
+                        effort,
+                        fast,
+                    } => {
+                        apply_config(
+                            &conn,
+                            &session.session_id,
+                            &shared,
+                            Some(&model),
+                            effort.as_deref(),
+                            fast,
+                            &emit,
+                        )
+                        .await?;
+                    }
+                    Cmd::Prompt(text, origin) => {
+                        prompt_turn(&conn, &session.session_id, text, origin, &emit, &shared)
+                            .await?;
+                    }
+                }
             }
             Ok(())
         })
         .await
         .map_err(|e| e.to_string())
+}
+
+async fn prompt_turn(
+    conn: &ConnectionTo<Agent>,
+    session_id: &agent_client_protocol::schema::v1::SessionId,
+    text: String,
+    origin: Option<Origin>,
+    emit: &Emit,
+    shared: &Shared,
+) -> agent_client_protocol::Result<()> {
+    let files = origin
+        .as_ref()
+        .map(|o| o.files.clone())
+        .unwrap_or_default();
+    let prompt = {
+        let stripped = super::media::strip_embedded_paths(&text, &files);
+        if stripped.is_empty() && !files.is_empty() {
+            "Mira esta imagen.".to_string()
+        } else {
+            stripped
+        }
+    };
+
+    let turn = start_turn(&shared.turns, emit);
+    emit.send(AgentDelta::ItemAdd {
+        turn: turn.clone(),
+        item: Item::new(
+            format!("{turn}-u"),
+            ItemKind::Message {
+                role: Role::User,
+                text: prompt.clone(),
+                streaming: false,
+            },
+        )
+        .con_origen(origin),
+    });
+
+    let mut blocks: Vec<ContentBlock> = Vec::new();
+    for path in &files {
+        match super::media::read_image_base64(std::path::Path::new(path)) {
+            Ok((mime, data)) => {
+                blocks.push(ContentBlock::Image(ImageContent::new(data, mime)));
+            }
+            Err(e) => {
+                blocks.push(ContentBlock::Text(TextContent::new(format!(
+                    "[no se pudo adjuntar {path}: {e}]"
+                ))));
+            }
+        }
+    }
+    if !prompt.is_empty() {
+        blocks.push(ContentBlock::Text(TextContent::new(prompt)));
+    }
+    if blocks.is_empty() {
+        blocks.push(ContentBlock::Text(TextContent::new(String::new())));
+    }
+
+    let done = conn
+        .send_request(PromptRequest::new(session_id.clone(), blocks))
+        .block_task()
+        .await;
+
+    // Cerrar lo que quedó escribiéndose, ANTES de dar el turno por
+    // terminado: el texto acumulado por trozos ya es el definitivo,
+    // así que el parche solo apaga la señal de «sigue escribiendo».
+    for id in shared.abiertos.lock().unwrap().drain(..) {
+        emit.send(AgentDelta::ItemPatch {
+            item: id,
+            patch: ItemPatch {
+                streaming: Some(false),
+                ..Default::default()
+            },
+        });
+    }
+
+    let status = match &done {
+        Ok(_) => TurnStatus::Done,
+        Err(_) => TurnStatus::Failed,
+    };
+    emit.send(AgentDelta::TurnEnd {
+        turn,
+        status,
+        cost_usd: shared.cost.lock().unwrap().del_turno(),
+    });
+    end_turn(&shared.turns);
+    done?;
+    Ok(())
+}
+
+struct ModelConfig {
+    config_id: String,
+    models: Vec<ModelInfo>,
+    current: String,
+}
+
+fn is_model_option(opt: &SessionConfigOption) -> bool {
+    matches!(opt.category, Some(SessionConfigOptionCategory::Model))
+        || opt.id.0.contains("model")
+}
+
+fn is_effort_option(opt: &SessionConfigOption) -> bool {
+    matches!(opt.category, Some(SessionConfigOptionCategory::ThoughtLevel))
+        || {
+            let id = opt.id.0.to_ascii_lowercase();
+            id.contains("thought") || id.contains("effort") || id.contains("reasoning")
+        }
+}
+
+fn select_option_to_model(opt: &SessionConfigSelectOption) -> ModelInfo {
+    ModelInfo {
+        id: opt.value.0.to_string(),
+        name: opt.name.clone(),
+        description: opt.description.clone().unwrap_or_default(),
+        efforts: Vec::new(),
+        default_effort: None,
+        supports_fast: false,
+    }
+}
+
+fn select_to_models(sel: &SessionConfigSelect) -> Vec<ModelInfo> {
+    match &sel.options {
+        SessionConfigSelectOptions::Ungrouped(opts) => {
+            opts.iter().map(select_option_to_model).collect()
+        }
+        SessionConfigSelectOptions::Grouped(groups) => groups
+            .iter()
+            .flat_map(|g| g.options.iter().map(select_option_to_model))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Cursor ACP: `grok-4.5[effort=high,fast=true]`. OpenCode: ids planos.
+fn normalize_cursor_acp_models(
+    backend_id: &str,
+    models: Vec<ModelInfo>,
+) -> (Vec<ModelInfo>, HashMap<String, String>) {
+    if backend_id != "cursor" {
+        return (models, HashMap::new());
+    }
+
+    let mut templates = HashMap::new();
+    let mut out = Vec::new();
+    for m in models {
+        let parsed = parse_acp_model_value(&m.id);
+        templates.insert(parsed.base.clone(), m.id.clone());
+        let (efforts, default_effort, supports_fast) = acp_efforts_from_params(&parsed.params);
+        out.push(ModelInfo {
+            id: parsed.base,
+            name: if m.name.is_empty() {
+                parsed_display_name(&m.id)
+            } else {
+                m.name
+            },
+            description: m.description,
+            efforts,
+            default_effort,
+            supports_fast,
+        });
+    }
+    (out, templates)
+}
+
+struct AcpModelParsed {
+    base: String,
+    params: Vec<(String, String)>,
+}
+
+fn parse_acp_model_value(raw: &str) -> AcpModelParsed {
+    let raw = raw.trim();
+    if let Some((base, rest)) = raw.split_once('[') {
+        let inner = rest.trim_end_matches(']').trim();
+        let params = if inner.is_empty() {
+            Vec::new()
+        } else {
+            inner
+                .split(',')
+                .filter_map(|pair| {
+                    let (k, v) = pair.split_once('=')?;
+                    Some((k.trim().to_string(), v.trim().to_string()))
+                })
+                .collect()
+        };
+        AcpModelParsed {
+            base: base.trim().to_string(),
+            params,
+        }
+    } else {
+        AcpModelParsed {
+            base: raw.to_string(),
+            params: Vec::new(),
+        }
+    }
+}
+
+fn parsed_display_name(raw: &str) -> String {
+    parse_acp_model_value(raw).base
+}
+
+fn acp_efforts_from_params(
+    params: &[(String, String)],
+) -> (Vec<super::model::EffortOption>, Option<String>, bool) {
+    let has_effort = params.iter().any(|(k, _)| k == "effort" || k == "reasoning");
+    let supports_fast = params.iter().any(|(k, _)| k == "fast");
+    let current = params
+        .iter()
+        .find(|(k, _)| k == "effort" || k == "reasoning")
+        .map(|(_, v)| normalize_acp_effort(v));
+
+    if !has_effort {
+        return (Vec::new(), None, supports_fast);
+    }
+
+    // Niveles habituales en Cursor ACP. El CLI lista más variantes; acá el
+    // selector muta el param del value entre corchetes.
+    let levels = ["low", "medium", "high", "xhigh", "max"];
+    let efforts = levels
+        .iter()
+        .map(|id| super::model::EffortOption {
+            id: (*id).to_string(),
+            description: match *id {
+                "low" => "Contesta rápido. Para lo mecánico.".into(),
+                "medium" => "El equilibrio de siempre.".into(),
+                "high" => "Piensa antes. Para lo que tiene vueltas.".into(),
+                "xhigh" => "Se toma su tiempo. Problemas difíciles.".into(),
+                "max" => "Todo lo que puede. Lento y caro.".into(),
+                _ => format!("Nivel «{id}»."),
+            },
+        })
+        .collect();
+
+    (efforts, current, supports_fast)
+}
+
+fn normalize_acp_effort(v: &str) -> String {
+    match v {
+        "extra-high" | "extra_high" => "xhigh".into(),
+        other => other.to_string(),
+    }
+}
+
+fn format_acp_model_value(base: &str, params: &[(String, String)]) -> String {
+    if params.is_empty() {
+        return format!("{base}[]");
+    }
+    let body = params
+        .iter()
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    format!("{base}[{body}]")
+}
+
+/// Arma el value ACP a mandar: plantilla del base + effort/fast pedidos.
+fn build_acp_model_wire(
+    templates: &HashMap<String, String>,
+    model: &str,
+    effort: Option<&str>,
+    fast: Option<bool>,
+) -> String {
+    let base = resolve_acp_base(templates, model);
+    let template = templates
+        .get(&base)
+        .cloned()
+        .unwrap_or_else(|| format!("{base}[]"));
+    let mut parsed = parse_acp_model_value(&template);
+
+    if let Some(level) = effort {
+        let level = normalize_acp_effort(level);
+        if level != "default" {
+            let key = if parsed.params.iter().any(|(k, _)| k == "reasoning") {
+                "reasoning"
+            } else {
+                "effort"
+            };
+            upsert_param(&mut parsed.params, key, &level);
+        }
+    }
+
+    if let Some(f) = fast {
+        if parsed.params.iter().any(|(k, _)| k == "fast") || f {
+            upsert_param(
+                &mut parsed.params,
+                "fast",
+                if f { "true" } else { "false" },
+            );
+        }
+    }
+
+    format_acp_model_value(&parsed.base, &parsed.params)
+}
+
+fn upsert_param(params: &mut Vec<(String, String)>, key: &str, value: &str) {
+    if let Some(slot) = params.iter_mut().find(|(k, _)| k == key) {
+        slot.1 = value.to_string();
+    } else {
+        params.push((key.to_string(), value.to_string()));
+    }
+}
+
+/// CLI usa `cursor-grok-4.5`; ACP usa `grok-4.5`.
+fn resolve_acp_base(templates: &HashMap<String, String>, model: &str) -> String {
+    if templates.contains_key(model) {
+        return model.to_string();
+    }
+    let (cli_base, _, _) = super::discover::split_cursor_wire(model);
+    if templates.contains_key(&cli_base) {
+        return cli_base;
+    }
+    let stripped = cli_base.strip_prefix("cursor-").unwrap_or(&cli_base);
+    if templates.contains_key(stripped) {
+        return stripped.to_string();
+    }
+    // Substring: plantilla cuya base está contenida en el id pedido o viceversa.
+    for key in templates.keys() {
+        if model.contains(key) || key.contains(stripped) || stripped.contains(key.as_str()) {
+            return key.clone();
+        }
+    }
+    stripped.to_string()
+}
+
+fn find_model_config(options: &[SessionConfigOption]) -> Option<ModelConfig> {
+    for opt in options {
+        if !is_model_option(opt) {
+            continue;
+        }
+        let SessionConfigKind::Select(sel) = &opt.kind else {
+            continue;
+        };
+        let models = select_to_models(sel);
+        if models.is_empty() {
+            continue;
+        }
+        return Some(ModelConfig {
+            config_id: opt.id.0.to_string(),
+            models,
+            current: sel.current_value.0.to_string(),
+        });
+    }
+    None
+}
+
+fn find_effort_config(options: &[SessionConfigOption]) -> Option<(String, String)> {
+    for opt in options {
+        if !is_effort_option(opt) {
+            continue;
+        }
+        let SessionConfigKind::Select(sel) = &opt.kind else {
+            continue;
+        };
+        return Some((opt.id.0.to_string(), sel.current_value.0.to_string()));
+    }
+    None
+}
+
+async fn apply_config(
+    conn: &ConnectionTo<Agent>,
+    session_id: &agent_client_protocol::schema::v1::SessionId,
+    shared: &Shared,
+    model: Option<&str>,
+    effort: Option<&str>,
+    fast: Option<bool>,
+    emit: &Emit,
+) -> agent_client_protocol::Result<()> {
+    let mut patch = ThreadPatch::default();
+    let has_effort_config = shared.effort_config_id.lock().unwrap().is_some();
+    let templates = shared.model_templates.lock().unwrap().clone();
+
+    // Cursor ACP: mutar params del value `base[effort=…,fast=…]`.
+    // Sin plantillas (OpenCode u otros), mandar el id tal cual.
+    let wire_model = if !has_effort_config {
+        if let Some(m) = model {
+            if !templates.is_empty() {
+                Some(build_acp_model_wire(&templates, m, effort, fast))
+            } else if let Some(level) = effort {
+                // Fallback CLI-style (sin sesión ACP tipada).
+                Some(super::discover::compose_cursor_wire(
+                    m,
+                    level,
+                    fast.unwrap_or(false),
+                    &[],
+                ))
+            } else if fast == Some(true) {
+                Some(super::discover::compose_cursor_wire(m, "default", true, &[]))
+            } else {
+                Some(m.to_string())
+            }
+        } else {
+            None
+        }
+    } else {
+        model.map(str::to_string)
+    };
+
+    if let Some(wire) = wire_model.as_deref() {
+        if let Some(config_id) = shared.model_config_id.lock().unwrap().clone() {
+            conn.send_request(SetSessionConfigOptionRequest::new(
+                session_id.clone(),
+                config_id,
+                wire,
+            ))
+            .block_task()
+            .await?;
+            if !has_effort_config {
+                if let Some(m) = model {
+                    let base = if templates.is_empty() {
+                        m.to_string()
+                    } else {
+                        resolve_acp_base(&templates, m)
+                    };
+                    patch.model = Some(base);
+                }
+                if let Some(e) = effort {
+                    patch.effort = Some(normalize_acp_effort(e));
+                }
+                if let Some(f) = fast {
+                    patch.fast = Some(f);
+                }
+            } else {
+                patch.model = Some(wire.to_string());
+            }
+        }
+    }
+
+    if let Some(effort) = effort {
+        if let Some(config_id) = shared.effort_config_id.lock().unwrap().clone() {
+            conn.send_request(SetSessionConfigOptionRequest::new(
+                session_id.clone(),
+                config_id,
+                effort,
+            ))
+            .block_task()
+            .await?;
+            patch.effort = Some(effort.to_string());
+        }
+    }
+
+    if patch.model.is_some() || patch.effort.is_some() || patch.fast.is_some() {
+        emit.send(AgentDelta::ThreadPatch { patch });
+    }
+
+    Ok(())
+}
+
+/// Dado un value ACP / slug CLI / id de grupo → `(grupo, effort, fast)`.
+fn resolve_grouped_selection(
+    models: &[ModelInfo],
+    wire_or_group: &str,
+) -> (String, Option<String>, Option<bool>) {
+    let parsed = parse_acp_model_value(wire_or_group);
+    if !parsed.params.is_empty() || models.iter().any(|m| m.id == parsed.base) {
+        let effort = parsed
+            .params
+            .iter()
+            .find(|(k, _)| k == "effort" || k == "reasoning")
+            .map(|(_, v)| normalize_acp_effort(v));
+        let fast = parsed
+            .params
+            .iter()
+            .find(|(k, _)| k == "fast")
+            .map(|(_, v)| v == "true");
+        if let Some(m) = models.iter().find(|m| m.id == parsed.base) {
+            return (
+                m.id.clone(),
+                effort.or_else(|| m.default_effort.clone()),
+                if m.supports_fast {
+                    Some(fast.unwrap_or(false))
+                } else {
+                    None
+                },
+            );
+        }
+        return (parsed.base, effort, fast);
+    }
+
+    let (base, level, fast) = super::discover::split_cursor_wire(wire_or_group);
+    for m in models {
+        if m.id == wire_or_group {
+            return (
+                m.id.clone(),
+                m.default_effort.clone(),
+                if m.supports_fast { Some(false) } else { None },
+            );
+        }
+        if m.id == base || m.id == base.strip_prefix("cursor-").unwrap_or(&base) {
+            let effort = if m.efforts.iter().any(|e| e.id == level) {
+                Some(level.clone())
+            } else {
+                m.default_effort.clone()
+            };
+            return (
+                m.id.clone(),
+                effort,
+                if m.supports_fast { Some(fast) } else { None },
+            );
+        }
+    }
+    (wire_or_group.to_string(), None, None)
 }
 
 /// Texto corto para el pedido de permiso.
@@ -507,6 +1079,7 @@ fn chunk(c: &ContentChunk, prefix: &str, role: Role, shared: &Shared, out: &mut 
             turn,
             item: Item::new(id.clone(), kind),
         });
+        shared.abiertos.lock().unwrap().push(id.clone());
     }
     out.push(AgentDelta::ItemChunk { item: id, text });
 }
@@ -684,9 +1257,24 @@ struct AcpSession {
 }
 
 impl AgentSession for AcpSession {
-    fn send(&mut self, text: &str) -> Result<(), String> {
+    fn send(&mut self, text: &str, origin: Option<Origin>) -> Result<(), String> {
         self.tx
-            .unbounded_send(Cmd::Prompt(text.to_string()))
+            .unbounded_send(Cmd::Prompt(text.to_string(), origin))
+            .map_err(|_| "la sesión ya está cerrada".to_string())
+    }
+
+    fn set_model(
+        &mut self,
+        model: &str,
+        effort: Option<&str>,
+        fast: Option<bool>,
+    ) -> Result<(), String> {
+        self.tx
+            .unbounded_send(Cmd::SetModel {
+                model: model.to_string(),
+                effort: effort.map(str::to_string),
+                fast,
+            })
             .map_err(|_| "la sesión ya está cerrada".to_string())
     }
 
@@ -777,5 +1365,65 @@ mod tests {
     #[test]
     fn sin_opciones_no_hay_nada_que_elegir() {
         assert_eq!(pick_option(&pedido(&[]), PermissionDecision::Allow), None);
+    }
+
+    fn compartido() -> Shared {
+        Shared {
+            turns: Mutex::new(Turns::default()),
+            pending: Mutex::new(HashMap::new()),
+            seen: Mutex::new(HashSet::new()),
+            abiertos: Mutex::new(Vec::new()),
+            cost: Mutex::new(Costo::default()),
+            model_config_id: Mutex::new(None),
+            effort_config_id: Mutex::new(None),
+        }
+    }
+
+    fn trozo(id: &str, texto: &str) -> ContentChunk {
+        let mut c = ContentChunk::new(ContentBlock::Text(TextContent::new(texto)));
+        c.message_id = Some(agent_client_protocol::schema::v1::MessageId::new(id));
+        c
+    }
+
+    /// Sin esto el item queda escribiéndose para siempre: ACP no manda un
+    /// «terminé», solo deja de mandar trozos.
+    #[test]
+    fn un_bloque_abierto_queda_anotado_para_cerrarlo() {
+        let shared = compartido();
+        let mut out = Vec::new();
+
+        chunk(&trozo("m1", "ho"), "m", Role::Assistant, &shared, &mut out);
+        chunk(&trozo("m1", "la"), "m", Role::Assistant, &shared, &mut out);
+
+        assert_eq!(
+            shared.abiertos.lock().unwrap().as_slice(),
+            ["m:m1"],
+            "el bloque se anota UNA vez, no una por trozo"
+        );
+    }
+
+    /// El razonamiento y la respuesta de OpenCode comparten `messageId`, así
+    /// que hay que cerrar los dos y no uno.
+    #[test]
+    fn el_razonamiento_y_la_respuesta_se_cierran_por_separado() {
+        let shared = compartido();
+        let mut out = Vec::new();
+
+        chunk(
+            &trozo("m1", "pienso"),
+            "r",
+            Role::Assistant,
+            &shared,
+            &mut out,
+        );
+        chunk(
+            &trozo("m1", "digo"),
+            "m",
+            Role::Assistant,
+            &shared,
+            &mut out,
+        );
+
+        assert_eq!(shared.abiertos.lock().unwrap().as_slice(), ["r:m1", "m:m1"]);
     }
 }

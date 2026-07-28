@@ -23,7 +23,10 @@
 pub mod acp;
 pub mod bridge;
 pub mod claude_code;
+pub mod codex;
+pub mod discover;
 pub mod exe;
+pub mod media;
 pub mod model;
 pub mod skills;
 pub mod store;
@@ -114,6 +117,14 @@ pub struct StartOptions {
     pub fork: bool,
     /// Modelo o alias (`opus`, `sonnet`, …).
     pub model: Option<String>,
+    /// Cuánto tiene que pensar: `low`, `medium`, `high`, `xhigh`, `max`.
+    ///
+    /// Los nombres los define cada backend y por eso viaja como texto: Claude
+    /// Code lo toma por `--effort` y Codex lo manda en cada turno. Quien no lo
+    /// entienda simplemente lo ignora.
+    pub effort: Option<String>,
+    /// Variante rápida (Cursor `*-fast`). Independiente del nivel de esfuerzo.
+    pub fast: Option<bool>,
     /// Cómo se piden permisos. `None` = pedirlos todos.
     pub permission_mode: Option<String>,
     /// Servidores MCP extra, como JSON `{"mcpServers": {…}}`.
@@ -158,7 +169,12 @@ pub trait AgentBackend: Send + Sync {
 /// Una sesión viva con un agente.
 pub trait AgentSession: Send {
     /// Manda un mensaje del usuario.
-    fn send(&mut self, text: &str) -> Result<(), String>;
+    ///
+    /// `origin` dice por qué puente entró —dictado, captura, portapapeles— y no
+    /// viaja al agente: es para la conversación. Va acá y no en un comando
+    /// aparte porque el item del usuario lo crea el adaptador, al abrir el
+    /// turno, y ese es el único momento en que existe algo a lo que colgárselo.
+    fn send(&mut self, text: &str, origin: Option<model::Origin>) -> Result<(), String>;
 
     /// Contesta un item [`model::ItemKind::Permission`] pendiente.
     ///
@@ -169,6 +185,21 @@ pub trait AgentSession: Send {
         &mut self,
         _id: &str,
         _decision: PermissionDecision,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// Cambia el modelo, el esfuerzo y (si aplica) la variante rápida.
+    ///
+    /// Por defecto no hace nada: hay backends que no saben cambiarlo en
+    /// caliente —ACP ni siquiera nombra los modelos en su protocolo— y devolver
+    /// error obligaría a la vista a saber cuál es cuál. Un backend que no
+    /// informa modelos tampoco recibe esta llamada, porque no hay qué elegir.
+    fn set_model(
+        &mut self,
+        _model: &str,
+        _effort: Option<&str>,
+        _fast: Option<bool>,
     ) -> Result<(), String> {
         Ok(())
     }

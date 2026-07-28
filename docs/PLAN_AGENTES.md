@@ -5,10 +5,12 @@ permisos, herramientas, historial persistente y reanudación. Sin git,
 sin worktrees, sin revisión de diffs — eso queda documentado al final como
 "lo que no se hace".
 
-> Estado: **Fases 0 y 1 hechas.** Claude Code y OpenCode funcionan de verdad;
-> Cursor comparte el código de OpenCode pero no se pudo probar. Codex y la UI
-> quedan pendientes. Si venís a retomar esto, arrancá por
-> [Traspaso](#traspaso-para-quien-siga) al final.
+> Estado: **modelo canónico + 4 backends + UI + persistencia andan.** Claude
+> Code, OpenCode, Codex y Cursor están cableados. Resume expuesto para Claude y
+> Codex. Subagentes nativos se ven como items `collab`. Worktrees/checkpoints
+> siguen fuera de alcance. Roadmap de adopción Synara/T3: composer UX, resume,
+> collab visible, approvals/listados ligeros. Si venís a retomar, arrancá por
+> [Traspaso](#traspaso-para-quien-siga).
 
 ## El hallazgo que ordena todo
 
@@ -240,8 +242,15 @@ y el texto autoritativo llega igual al cerrar el bloque. Lo que esto **no**
 cubre: una caída dura de Atic con un turno a medio correr pierde ese turno.
 
 **Pendiente de la fase:** el `static SESSIONS` sigue en `bridge.rs` (mover a
-`state.rs` no aportaba nada todavía) y la interfaz aún no ofrece la lista de
-hilos guardados — los comandos están, la vista no.
+`state.rs` no aportaba nada todavía).
+
+**Cerrado después:** la vista del historial. Una pastilla «Historial» en el
+compositor abre la lista dentro de la burbuja, y un hilo guardado se dibuja con
+el **mismo** código que uno vivo — tienen la misma forma, así que la vista no
+distingue: lo único que cambia es que el guardado ya no crece. Borrar pide
+confirmación en el propio botón. No hay «Reanudar»: `options.resume` solo lo
+honra `claude_code.rs`, y en OpenCode el botón arrancaría una sesión nueva
+fingiendo que sigue la vieja.
 
 ### Fase 1 — ACP · **HECHA**
 
@@ -264,8 +273,13 @@ y depende del core 0.11.1, no del 2.0.
 
 **Lo que el modelo de la Fase 0 aguantó sin tocarse:** los `tool_call` /
 `tool_call_update` de ACP son exactamente el item que muta; `usage_update` da
-`used` **y** `size`, así que el tamaño de la ventana ya no se adivina con una
-constante; y `available_commands_update` trae las skills con descripción.
+`used` **y** `size`; y `available_commands_update` trae las skills con
+descripción.
+
+**Corregido en la Fase 2:** ese `size` llegaba al `ThreadPatch` de Rust y **el
+TypeScript lo tiraba** — no existía el campo. La vista siguió dibujando el
+anillo contra una constante de un millón hasta que Codex, con su ventana de
+258K, dejó el error a la vista: mostraba un cuarto de lo consumido de verdad.
 
 **Lo que descubrió la prueba real:** OpenCode manda el razonamiento y la
 respuesta del mismo turno con el **mismo `messageId`**. El id de item tiene que
@@ -279,22 +293,110 @@ ser `tipo:messageId` y no `messageId` solo, o los dos bloques quedan pegados.
   declara `sessionCapabilities: {list, resume, close}`.
 - Cursor no se pudo probar: no está instalado en esta máquina.
 
-### Fase 2 — Codex
+### Fase 2 — Codex · **HECHA**
 
-`agents/codex.rs` sobre `codex app-server` (JSON-RPC por stdio). Su propio
-`--help` lo marca `[experimental]`: la API va a cambiar, y este adaptador va a
-ser el que más mantenimiento pida. Va tercero por eso.
+`agents/codex.rs` sobre `codex app-server`: JSON-RPC 2.0 por stdio, **una línea
+por mensaje** (JSONL, sin cabeceras `Content-Length`). Probado contra
+`codex-cli 0.145.0`.
 
-### Fase 3 — UI
+**El esquema lo genera el propio CLI.** Es la fuente autoritativa y evita
+adivinar:
 
-Recién acá, cuando ya se sabe qué tienen en común los cuatro. Partir
+```bash
+codex app-server generate-json-schema --out <dir>   # 234 archivos, v1 y v2
+codex app-server generate-ts --out <dir>            # lo mismo en TypeScript
+```
+
+**Corrección a lo que decía este plan:** Codex **no** manda pares
+`exec_command_begin` / `…_end`. Eso es el protocolo viejo. El v2 es
+`item/started` → `item/completed` sobre un **item con id estable**, que es
+exactamente la forma de `model.rs`. La traducción terminó pareciéndose a la de
+ACP y no a la de Claude Code — el modelo canónico aguantó un tercer transporte
+sin tocarse.
+
+**Lo que sí es más grande de lo esperado:** 89 peticiones y 70 notificaciones.
+Se traduce el subconjunto que el modelo sabe mostrar y **el resto se ignora en
+silencio**, al revés que en `claude_code.rs`, donde lo desconocido sale como
+`Notice`. Allá el vocabulario es chico y una línea nueva vale la pena verla; acá
+la mayoría habla de cuentas, plugins, watchers de disco y sesiones de voz, y
+mostrarlas enterraría la conversación.
+
+**El handshake es lento, y eso mandó el diseño.** `thread/start` tardó **8
+segundos** en esta máquina: antes de contestar levanta todos los servidores MCP
+que el usuario tenga configurados. Hacerlo dentro de `start()` congelaría la
+interfaz mientras se abre la burbuja, así que corre en el hilo lector y
+`send` **encola** lo que se escriba mientras tanto. Para quien escribe, la
+sesión está lista desde el primer momento.
+
+**Lo que Codex no da:** costo en dólares. `cost_usd` va en `None`. A cambio da
+el tamaño real de la ventana de contexto (`modelContextWindow`), que es mejor
+que la constante escrita a mano que había.
+
+**Lo que mapeó uno a uno:** las tres decisiones de permiso
+(`accept` / `acceptForSession` / `decline`) contra los tres botones que ya
+tenía la interfaz. Existe una cuarta, `cancel` —denegar **y** cortar el turno—
+que no se ofrece: es otra decisión, y la que hay significa «esto no, seguí».
+
+**Trampas de esta fase:**
+
+- El id del item de permiso **no puede ser** el del item que lo motiva
+  (`perm:{itemId}`): son dos cosas distintas en la conversación. Es la misma
+  lección que dejó OpenCode repitiendo el `messageId`.
+- La salida de un comando llega por trozos, pero `ItemChunk` solo acumula en
+  texto y razonamiento —es lo que el modelo define—, así que se junta en el
+  adaptador y se entrega entera al cerrar el item.
+- Codex escribe trazas por stderr, incluidos errores de OAuth de servidores MCP
+  ajenos. Solo se muestran las líneas que dicen `ERROR`, o el registro se llena
+  de ruido que no es de la conversación.
+
+### Fase 3 — UI · **HECHA en código, PENDIENTE de mirar**
+
+Recién acá, cuando ya se sabe qué tienen en común los cuatro. Lo que salió de
 `routes/agents/+page.svelte`:
 
-- geometría del globo anclado a la pill → su propio módulo (hoy convive con el
-  protocolo en el mismo archivo)
-- render de la conversación → un componente que recorre `turns[].items[]`
-- selector de proveedor / modelo / modo → aparte
-- `AgentToolCard.svelte` usa `kind` y `title` del item en vez de adivinar
+| Salió a | Qué se llevó |
+|---|---|
+| `lib/AgentConversation.svelte` | El render de `turns[].items[]`, con sus estilos. |
+| `lib/bubble.svelte.ts` | La geometría del globo: ancla, vuelo, desanclado, y la conversión de píxeles físicos a lógicos. |
+| `lib/agentModels.ts` | Los modelos, ahora **por backend**. |
+| `AgentToolCard.svelte` | Ya usaba `kind` y `title` desde la Fase 0. |
+
+**Que la conversación sea un componente no es solo orden:** dibujarla dejó de
+depender de estar dentro de la burbuja, y por eso el historial de hilos
+guardados la reusa tal cual. Un hilo guardado y uno vivo tienen la misma forma,
+así que el componente no los distingue.
+
+**Un bug que apareció al sacar los modelos:** la lista era la de Claude
+—`opus`, `sonnet`, `haiku`— para los cuatro agentes. Elegir «Opus 5» en una
+sesión de Codex le pasaba un modelo que no existe. Los de Codex ahora salen de
+su propio `model/list`. Los de OpenCode y Cursor **no se inventan**: enrutan a
+varios proveedores según lo que tengas configurado allá, así que se ofrece solo
+«el de tu CLI».
+
+> **Ojo:** esto pasó `pnpm check` sin errores ni avisos, pero **nadie lo vio
+> corriendo**. Un `svelte-check` limpio no dice nada del vuelo de la burbuja ni
+> de si un estilo se quedó sin mudar. Es lo primero que hay que mirar en el QA.
+
+**Cómo tiene que verse ya está decidido**, en una maqueta que no es un dibujo
+sino el modelo de la Fase 0 corriendo:
+
+> https://claude.ai/code/artifact/cfc27024-e414-47c5-b80b-2f96b6ee60af
+
+La burbuja está a tamaño real (580×520, lo que manda Rust) y se mueve con un
+guion de `AgentDelta` escrito a mano — misma máquina de estados, sin CLI detrás.
+Se puede cambiar de agente, redimensionar, y recorrer tres escenas: sesión
+entera, permiso y dictado + captura. Lo que deja resuelto:
+
+- la tarjeta de herramienta con el ícono desde `kind` y el texto desde `title`,
+  y el estado en la **forma** (el punto late mientras corre), no sólo en color
+- el permiso pegado al compositor, porque es lo único que detiene el turno
+- el compositor en dos grupos: los ajustes se comprimen y bajan de línea, las
+  acciones nunca — a 580px el botón de enviar se salía del panel
+- el acento como única pieza que cambia entre los cuatro agentes, que es la
+  prueba visible de que el modelo canónico sirvió
+
+Los tokens de color de la maqueta son los mismos de `+page.svelte`, así que se
+puede leer como referencia de implementación y no sólo de intención.
 
 ## Riesgos
 
@@ -345,17 +447,18 @@ reconstruir el contexto leyendo diffs.
 
 | Cosa | Estado |
 |---|---|
-| Modelo canónico (`agents/model.rs`) | Anda. 6 tests. |
-| Claude Code (`agents/claude_code.rs`) | Anda. 18 tests. Era lo que ya existía, re-cableado. |
-| OpenCode vía ACP (`agents/acp.rs`) | **Anda de verdad**, probado contra el CLI instalado, con herramienta incluida. |
-| Cursor vía ACP | Mismo código que OpenCode. **Sin probar** — no estaba instalado. |
-| Persistencia (`agents/store.rs` + migración 2) | Anda. 7 tests. Escribe en los bordes del turno. |
-| Resolución del ejecutable (`agents/exe.rs`) | Anda. 10 tests. |
-| Codex | **No empezado.** |
+| Modelo canónico (`agents/model.rs`) | Anda. Incluye `ItemKind::Collab` para subagentes nativos. |
+| Claude Code (`agents/claude_code.rs`) | Anda. `Task`/`Agent` → Collab. Resume con `--resume`. |
+| OpenCode vía ACP (`agents/acp.rs`) | Anda. Resume/MCP/modelo ACP aún parcial (no fingir en UI). |
+| Cursor vía ACP | Mismo adaptador ACP. Probar con `agente_real -- cursor`. |
+| Persistencia (`agents/store.rs` + migraciones 2–3) | Anda. Columna `preview` para listados sin deserializar turnos. |
+| Resolución del ejecutable (`agents/exe.rs`) | Anda. |
+| Codex (`agents/codex.rs`) | Traducción + collab + rechazo seguro de requests desconocidas. Resume vía `thread/resume`. |
+| UI consola (`routes/agents/+page.svelte`) | Empty state, composer con estados, menú `+`, Continuar (Claude/Codex), riesgo en Acceso total. |
+| Historial | Lista ligera + lectura + Continuar cuando hay `providerSession`. |
 
-Validación completa en verde: `cargo fmt --check`, `cargo clippy --workspace
---all-targets -- -D warnings`, `cargo test --workspace`, y `pnpm check` del
-frontend.
+Validar con: `cargo test -p atic-core`, `cargo test -p atic-desktop --lib`,
+`pnpm check` en desktop, y `agente_real` contra cada CLI.
 
 ## Antes de compilar en una máquina nueva (Windows)
 
@@ -381,15 +484,16 @@ tiene nada que ver con la causa y manda a buscar al lado equivocado.
 
 ## Lo que sigue, en orden
 
-1. **Vista de hilos guardados.** Los comandos existen y están probados
-   (`agent_threads`, `agent_thread`, `agent_thread_delete`), pero **ninguna
-   pantalla los usa**. Hoy la persistencia funciona y no se puede ver: hay que
-   mirar el `atic.db3` para comprobarla. Es lo más barato con más valor visible.
-2. **Codex** (`codex app-server`, JSON-RPC por stdio). Va tercero a propósito:
-   su propio `--help` lo marca `[experimental]` y va a ser el que más
-   mantenimiento pida.
-3. **Cerrar lo suelto de ACP** — ver la lista de la Fase 1.
-4. **UI** (Fase 3) y **puentes de Atic** (Fase 5, Atic como servidor MCP).
+1. **QA visual con la app abierta** (globo, conversación, historial, Continuar,
+   tarjeta Collab, permiso naranja en Acceso total).
+2. **Ejercer Codex/Cursor de punta a punta** con `agente_real` y permisos reales.
+3. **ACP resume** cuando OpenCode/Cursor lo expongan de forma fiable; hasta
+   entonces no ofrecer Continuar para esos backends.
+4. **Interrupt de turno** sin matar la sesión (hoy el CTA en streaming solo
+   bloquea envíos; no hay cancel suave).
+5. **Puentes de Atic** (dictado, OCR, captura como tools MCP del harness).
+6. **Fuera todavía**: worktrees, checkpoints, diff review, orquestador propio
+   tipo Synara `create_threads`, committee/advisor.
 
 ## Trampas que ya pagamos, para no repetirlas
 
@@ -411,14 +515,24 @@ tiene nada que ver con la causa y manda a buscar al lado equivocado.
 
 ## Cómo probar sin la interfaz
 
-Hay un ejemplo que corre el adaptador contra un agente instalado e imprime cada
-`AgentDelta` como lo recibiría la vista. No es un test —lanza un proceso, tarda
-y gasta tokens— y por eso vive como ejemplo:
+Hay un ejemplo que corre **cualquiera** de los cuatro adaptadores contra el CLI
+instalado e imprime cada `AgentDelta` como lo recibiría la vista. No es un test
+—lanza un proceso, tarda y gasta tokens— y por eso vive como ejemplo:
 
 ```bash
-cargo run -p atic-desktop --example acp_real -- opencode "lee README.md y di de que trata"
-cargo run -p atic-desktop --example acp_real -- cursor "hola"
+cargo run -p atic-desktop --example agente_real -- codex    "responde solo: hola"
+cargo run -p atic-desktop --example agente_real -- opencode "lee README.md y di de que trata"
+cargo run -p atic-desktop --example agente_real -- cursor   "hola"
+cargo run -p atic-desktop --example agente_real -- claude   "hola"
 ```
+
+Que cubra los cuatro es el punto: los cuatro emiten los **mismos** deltas, así
+que la salida tiene que leerse igual para todos. Si para uno se lee distinto, la
+traducción está mal. Los permisos se conceden solos y se avisa por pantalla, o
+un agente que pregunta dejaría el ejemplo colgado esperando a nadie.
+
+(Antes era `acp_real` y solo sabía de ACP. Se unificó al sumar Codex: la
+alternativa era duplicar el impresor de deltas en dos archivos.)
 
 ## Decisiones que conviene no revisar sin leer el porqué
 

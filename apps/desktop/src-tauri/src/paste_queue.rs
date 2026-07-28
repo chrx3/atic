@@ -165,7 +165,15 @@ pub(crate) fn enqueue(app: &AppHandle, text: &str) -> Result<PasteQueueItem, Str
 }
 
 /// Pega si hay destino externo listo; si no, encola.
+///
+/// Si la burbuja de agentes está abierta, inserta ahí por evento interno:
+/// el Ctrl+V a otra app sacaba el foco y hacía parecer que se cerraba.
 pub(crate) fn try_paste_or_enqueue(app: &AppHandle, text: &str) -> Result<PasteOutcome, String> {
+    if clipboard_history::agents_visible(app) {
+        tracing::debug!(target: "paste_geo", "TRY        agentes visible -> insert interno");
+        clipboard_history::insert_text_into_agents(app, text)?;
+        return Ok(PasteOutcome::Pasted);
+    }
     // Preferir primer plano vivo (tras focus_paste_target del caller).
     if clipboard_history::has_live_external_foreground() {
         tracing::debug!(target: "paste_geo", "TRY        primer plano externo vivo -> pego");

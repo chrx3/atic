@@ -1,30 +1,46 @@
-//! Prueba manual del adaptador ACP contra un agente instalado de verdad.
+//! Prueba manual de un adaptador contra el CLI instalado de verdad.
 //!
 //! No es un test: lanza un proceso externo, tarda, gasta tokens y depende de
 //! qué tengas instalado. Vive como ejemplo para poder correrlo a mano cuando se
-//! toca el adaptador, sin ensuciar `cargo test`.
+//! toca un adaptador, sin ensuciar `cargo test`.
+//!
+//! Cubre los cuatro backends porque el punto es justamente ese: los cuatro
+//! emiten los MISMOS deltas, así que la salida de este programa tiene que
+//! leerse igual para todos. Si para uno se lee distinto, la traducción está mal.
 //!
 //! ```bash
-//! cargo run -p atic-desktop --example acp_real -- opencode "lee README.md y di su primera linea"
+//! cargo run -p atic-desktop --example agente_real -- codex    "responde solo: hola"
+//! cargo run -p atic-desktop --example agente_real -- opencode "lee README.md y di su primera linea"
+//! cargo run -p atic-desktop --example agente_real -- cursor   "hola"
+//! cargo run -p atic-desktop --example agente_real -- claude   "hola"
 //! ```
 //!
-//! Imprime cada `AgentDelta` tal como lo recibiría la interfaz.
+//! Los permisos se conceden solos y se avisa por pantalla: sin eso, un agente
+//! que pide permiso deja el ejemplo colgado esperando a nadie.
 
 use std::sync::mpsc;
 
 use atic_desktop_lib::agents::model::{AgentDelta, ItemKind};
-use atic_desktop_lib::agents::{acp, AgentBackend, StartOptions};
+use atic_desktop_lib::agents::{
+    acp, claude_code::ClaudeCode, codex::Codex, AgentBackend, PermissionDecision, StartOptions,
+};
 
 fn main() {
     let mut args = std::env::args().skip(1);
-    let cual = args.next().unwrap_or_else(|| "opencode".into());
+    let cual = args.next().unwrap_or_else(|| "codex".into());
     let prompt = args
         .next()
         .unwrap_or_else(|| "Responde solo: hola".to_string());
 
     let backend: &dyn AgentBackend = match cual.as_str() {
+        "claude" => &ClaudeCode,
+        "codex" => &Codex,
         "cursor" => &acp::CURSOR,
-        _ => &acp::OPENCODE,
+        "opencode" => &acp::OPENCODE,
+        otro => {
+            println!("no conozco «{otro}». Son: claude, codex, cursor, opencode.");
+            return;
+        }
     };
 
     if !backend.is_available() {
@@ -51,14 +67,21 @@ fn main() {
         )
         .expect("no arrancó");
 
-    session.send(&prompt).expect("no se pudo mandar");
+    session.send(&prompt, None).expect("no se pudo mandar");
 
-    // Hasta el fin de turno, o hasta que deje de llegar nada por un rato.
+    // El primer mensaje puede tardar: Codex levanta los servidores MCP del
+    // usuario antes de contestar el handshake, y eso midió 8 segundos.
     let limite = std::time::Duration::from_secs(120);
     loop {
         match rx.recv_timeout(limite) {
             Ok(delta) => {
                 describe(&delta);
+                if let AgentDelta::ItemAdd { item, .. } = &delta {
+                    if matches!(item.kind, ItemKind::Permission { .. }) {
+                        println!("            ↳ se concede solo (esto es una prueba)");
+                        let _ = session.respond_permission(&item.id, PermissionDecision::Allow);
+                    }
+                }
                 if matches!(
                     delta,
                     AgentDelta::TurnEnd { .. } | AgentDelta::Failed { .. }

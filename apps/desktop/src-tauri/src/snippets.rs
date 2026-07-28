@@ -279,7 +279,7 @@ pub fn save_note(
     let title = derive_title(&body);
     let now = now_ms();
 
-    let note = match id.and_then(|id| notes.iter().position(|n| n.id == id).map(|i| (i, id))) {
+    let note = match id.and_then(|id| notes.iter().position(|n| n.id == id).zip(Some(id))) {
         Some((idx, id)) => {
             let note = Note {
                 id,

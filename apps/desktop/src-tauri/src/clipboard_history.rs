@@ -373,7 +373,115 @@ pub fn list_clipboard_history(state: State<AppState>) -> Result<Vec<ClipboardIte
     collect_clipboard_items(&state)
 }
 
+/// Payload para insertar un ítem del clipboard en el compositor de agentes.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentsComposerInsert {
+    pub kind: ClipboardKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image_path: Option<String>,
+}
+
+fn agents_window_is_visible(app: &AppHandle) -> bool {
+    app.get_webview_window("agents")
+        .map(|w| w.is_visible().unwrap_or(false))
+        .unwrap_or(false)
+}
+
+/// True si la burbuja de agentes está a la vista (crate-interno).
+pub(crate) fn agents_visible(app: &AppHandle) -> bool {
+    agents_window_is_visible(app)
+}
+
+/// Inserta texto en el compositor de agentes y le devuelve el foco.
+///
+/// Evita Ctrl+V externo: ese camino saca el foco y tapa/oculta la burbuja.
+pub(crate) fn insert_text_into_agents(app: &AppHandle, text: &str) -> Result<(), String> {
+    if text.is_empty() {
+        return Err("texto vacío".into());
+    }
+    let _ = app.emit(
+        "agents-composer-insert",
+        AgentsComposerInsert {
+            kind: ClipboardKind::Text,
+            text: Some(text.to_string()),
+            image_path: None,
+        },
+    );
+    if let Some(win) = app.get_webview_window("agents") {
+        let _ = win.set_focus();
+    }
+    Ok(())
+}
+
+/// True si la burbuja de agentes está a la vista.
+#[tauri::command]
+pub fn agents_window_visible(app: AppHandle) -> bool {
+    agents_window_is_visible(&app)
+}
+
+/// Ruta de archivo para arrastrar un ítem del clipboard (OLE / startDrag).
+///
+/// Las imágenes ya tienen PNG en disco. El texto se materializa como
+/// `.atic-drag-{id}.txt` bajo el dir de clipboard para poder cruzar ventanas
+/// Tauri (HTML5 `text/plain` no llega al webview de agentes).
+#[tauri::command]
+pub fn clipboard_drag_path(state: State<AppState>, id: String) -> Result<String, String> {
+    let item = find_item(&state, &id).ok_or_else(|| "Ítem no encontrado".to_string())?;
+    match item.kind {
+        ClipboardKind::Image => item
+            .image_path
+            .ok_or_else(|| "imagen sin ruta".to_string()),
+        ClipboardKind::Text => {
+            let text = item
+                .text
+                .filter(|t| !t.is_empty())
+                .unwrap_or_else(|| item.preview.clone());
+            if text.is_empty() {
+                return Err("Ítem de texto vacío".into());
+            }
+            let path = state
+                .dirs
+                .clipboard_dir()
+                .join(format!(".atic-drag-{id}.txt"));
+            std::fs::write(&path, text.as_bytes())
+                .map_err(|e| format!("no se pudo preparar el arrastre: {e}"))?;
+            Ok(path.to_string_lossy().into_owned())
+        }
+    }
+}
+
+/// Lee un `.atic-drag-*.txt` del dir de clipboard (solo esas rutas).
+#[tauri::command]
+pub fn read_clipboard_drag_text(state: State<AppState>, path: String) -> Result<String, String> {
+    let path = PathBuf::from(&path);
+    let name = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("");
+    if !name.starts_with(".atic-drag-") || !name.ends_with(".txt") {
+        return Err("ruta no permitida".into());
+    }
+    let dir = state.dirs.clipboard_dir();
+    let dir_ok = path
+        .canonicalize()
+        .ok()
+        .and_then(|p| dir.canonicalize().ok().map(|d| (p, d)))
+        .map(|(p, d)| p.starts_with(d))
+        .unwrap_or_else(|| path.starts_with(&dir));
+    if !dir_ok {
+        return Err("ruta fuera del historial".into());
+    }
+    std::fs::read_to_string(&path).map_err(|e| e.to_string())
+}
+
 /// Pone el ítem en el clipboard y envía Ctrl+V a la app que tenía el foco.
+///
+/// Si la burbuja de agentes está abierta, inserta ahí (evento interno) en vez
+/// de pegar en una app externa: el Ctrl+V externo sacaba el foco y dejaba la
+/// burbuja tapada justo cuando se quería usarla.
 #[tauri::command]
 pub fn paste_clipboard_item(
     app: AppHandle,
@@ -385,6 +493,41 @@ pub fn paste_clipboard_item(
     if let Ok(shared) = shared_history() {
         let mut hist = shared.lock().unwrap();
         hist.suppress_until = Some(SystemTime::now() + Duration::from_millis(1600));
+    }
+
+    if agents_window_is_visible(&app) {
+        let payload = match item.kind {
+            ClipboardKind::Text => {
+                let text = item
+                    .text
+                    .filter(|t| !t.is_empty())
+                    .unwrap_or_else(|| item.preview.clone());
+                if text.is_empty() {
+                    return Err("Ítem de texto vacío".into());
+                }
+                AgentsComposerInsert {
+                    kind: ClipboardKind::Text,
+                    text: Some(text),
+                    image_path: None,
+                }
+            }
+            ClipboardKind::Image => {
+                let path = item
+                    .image_path
+                    .ok_or_else(|| "imagen sin ruta".to_string())?;
+                AgentsComposerInsert {
+                    kind: ClipboardKind::Image,
+                    text: None,
+                    image_path: Some(path),
+                }
+            }
+        };
+        let _ = app.emit("agents-composer-insert", payload);
+        if let Some(win) = app.get_webview_window("agents") {
+            let _ = win.set_focus();
+        }
+        let _ = app.emit("pill-clipboard-close", ());
+        return Ok(());
     }
 
     // La pill tiene el foco al hacer clic: hay que ocultarla y devolver el foco

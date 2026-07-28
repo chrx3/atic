@@ -28,14 +28,18 @@ import type {
   MeetingDetectionPayload,
   CaptureItem,
   ClipboardItem,
+  ClipboardKind,
   Snippet,
   Scratchpad,
   Note,
   AgentBackendInfo,
   AgentDeltaPayload,
+  AgentModel,
+  AgentOrigin,
   AgentSessionInfo,
   AgentSkill,
   AgentStartOptions,
+  StoredThread,
   PermissionDecision,
   PasteQueueItem,
   SearchHit,
@@ -93,6 +97,24 @@ export const listClipboardHistory = () =>
   invoke<ClipboardItem[]>("list_clipboard_history");
 export const pasteClipboardItem = (id: string) =>
   invoke<void>("paste_clipboard_item", { id });
+/** True si la burbuja de agentes está visible. */
+export const agentsWindowVisible = () => invoke<boolean>("agents_window_visible");
+/** Ruta de archivo para `startDrag` (imagen o .atic-drag-*.txt). */
+export const clipboardDragPath = (id: string) =>
+  invoke<string>("clipboard_drag_path", { id });
+/** Contenido de un `.atic-drag-*.txt` del historial. */
+export const readClipboardDragText = (path: string) =>
+  invoke<string>("read_clipboard_drag_text", { path });
+export type AgentsComposerInsert = {
+  kind: ClipboardKind;
+  text?: string | null;
+  imagePath?: string | null;
+};
+/** Insertar en el compositor cuando el clipboard pega con agentes abierto. */
+export const onAgentsComposerInsert = (
+  cb: (payload: AgentsComposerInsert) => void,
+): Promise<UnlistenFn> =>
+  listen<AgentsComposerInsert>("agents-composer-insert", (e) => cb(e.payload));
 export const pinClipboardItem = (id: string, pinned: boolean) =>
   invoke<void>("pin_clipboard_item", { id, pinned });
 export const deleteClipboardItem = (id: string) =>
@@ -235,6 +257,9 @@ export const completeMonitorCapture = (x: number, y: number) =>
   invoke<string>("complete_monitor_capture", { x, y });
 export const cancelCaptureSession = () =>
   invoke<void>("cancel_capture_session");
+/** Muestra el overlay cuando el frame congelado ya cargó (evita telón gris). */
+export const showCaptureOverlay = () =>
+  invoke<void>("show_capture_overlay");
 export const toggleDictation = () => invoke<void>("toggle_dictation");
 export const dictationPhase = () => invoke<DictationPhase>("dictation_phase");
 export const listInputDevices = () =>
@@ -486,6 +511,19 @@ export const agentSessions = () => invoke<AgentSessionInfo[]>("agent_sessions");
 /** Abre (o repliega) la consola de agentes: sale de la pill y vuelve a ella. */
 export const showAgentsWindow = () => invoke<void>("show_agents_window");
 /** Repliega la burbuja sobre la pill. Rust la oculta al terminar el vuelo. */
+/**
+ * Cambia el tamaño de la burbuja, anclada por el lado del que sale.
+ *
+ * `commit` es «ya soltaste»: durante el arrastre llega en cada cuadro y solo el
+ * último tiene que ir al disco.
+ */
+export const resizeAgentsBubble = (
+  w: number,
+  h: number,
+  side: string,
+  commit: boolean,
+) => invoke<void>("resize_agents_bubble", { w, h, side, commit });
+
 export const hideAgentsWindow = () => invoke<void>("hide_agents_window");
 
 /** Cómo salió la burbuja: lado de la punta, dónde cae, y cuánto vuela. */
@@ -509,8 +547,29 @@ export const onAgentsBubbleDismiss = (cb: () => void): Promise<UnlistenFn> =>
 /** Arranca una sesión y devuelve su clave local. */
 export const agentStart = (backend: string, options?: AgentStartOptions) =>
   invoke<string>("agent_start", { backend, options });
-export const agentSend = (session: string, text: string) =>
-  invoke<void>("agent_send", { session, text });
+/** Catálogo de modelos del proveedor (cacheado ~5 min en Rust). */
+export const agentListModels = (backend: string) =>
+  invoke<AgentModel[]>("agent_list_models", { backend });
+/** `origin` dice por qué puente entró el texto. No viaja al agente. */
+export const agentSend = (
+  session: string,
+  text: string,
+  origin?: AgentOrigin,
+) => invoke<void>("agent_send", { session, text, origin: origin ?? null });
+/** Cambia el modelo y el esfuerzo sin reiniciar la sesión. */
+export const agentSetModel = (
+  session: string,
+  model: string,
+  effort?: string,
+  fast?: boolean,
+) =>
+  invoke<void>("agent_set_model", {
+    session,
+    model,
+    effort: effort ?? null,
+    fast: fast ?? null,
+  });
+
 /** Contesta un permiso. El turno del agente está detenido hasta esta llamada. */
 export const agentPermission = (
   session: string,
@@ -522,6 +581,14 @@ export const agentSkills = (cwd?: string) =>
   invoke<AgentSkill[]>("agent_skills", { cwd: cwd ?? null });
 export const agentStop = (session: string) =>
   invoke<void>("agent_stop", { session });
+
+/** Conversaciones guardadas, de la más reciente a la más vieja y sin turnos. */
+export const agentThreads = () => invoke<StoredThread[]>("agent_threads");
+/** Una conversación guardada, ya con todos sus turnos. */
+export const agentThread = (id: string) =>
+  invoke<StoredThread | null>("agent_thread", { id });
+export const agentThreadDelete = (id: string) =>
+  invoke<void>("agent_thread_delete", { id });
 
 /** Todos los eventos de todas las sesiones. Filtrar por `session`. */
 export const onAgentDelta = (

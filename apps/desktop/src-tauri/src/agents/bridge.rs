@@ -39,6 +39,7 @@ static SESSIONS: Mutex<Option<HashMap<String, Entry>>> = Mutex::new(None);
 fn backends() -> Vec<Box<dyn AgentBackend>> {
     vec![
         Box::new(ClaudeCode),
+        Box::new(super::codex::Codex),
         Box::new(super::acp::OPENCODE),
         Box::new(super::acp::CURSOR),
     ]
@@ -106,16 +107,51 @@ pub fn agent_sessions() -> Vec<SessionInfo> {
         .unwrap_or_default()
 }
 
-/// Separación entre la pill y el globo, radio de sus esquinas, y el marco
-/// transparente que la ventana lleva alrededor.
+/// La forma del globo de agentes.
 ///
-/// `BUBBLE_INSET` tiene que valer lo mismo que `--inset` en la vista: es el
-/// margen donde cabe la sombra, y la ventana mide el globo MÁS ese marco por
-/// los cuatro lados. Sin descontarlo acá, el globo quedaría flotando lejos de
-/// la pill y la punta no llegaría a tocarla.
-const BUBBLE_GAP: i32 = 10;
-const BUBBLE_CORNER: i32 = 26;
-const BUBBLE_INSET: i32 = 28;
+/// `inset` tiene que valer lo mismo que `--inset` en la vista: es el margen
+/// donde cabe la sombra, y la ventana mide el globo MÁS ese marco por los
+/// cuatro lados. Sin descontarlo, el globo quedaría flotando lejos de la pill y
+/// la punta no llegaría a tocarla. Así que `w` y `h` son los de
+/// `tauri.conf.json` —la ventana— y el globo que se ve mide 580×520.
+///
+/// Los 62 salen de la sombra: `0 18px 44px`, y la regla es desplazamiento +
+/// difuminado <= inset, o la ventana la corta en seco y en vez de sombra se ve
+/// una banda oscura de bordes rectos.
+///
+/// El tamaño vive acá y no se mide de la ventana porque al cerrarse la burbuja
+/// se repliega sobre la pill y queda guardada de ese tamaño: midiéndola, la
+/// segunda apertura crecía hasta los 48px de la pill.
+const BUBBLE: crate::floating::BubbleShape = crate::floating::BubbleShape {
+    w: 704,
+    h: 644,
+    gap: 10,
+    corner: 26,
+    inset: 62,
+};
+
+/// Lo más chica que puede quedar la VENTANA sin que el compositor se rompa.
+///
+/// Por debajo de esto los dos grupos de la fila de abajo dejan de caber en una
+/// línea y el botón de enviar se sale del panel — que es lo que pasaba a 580px
+/// antes de partir el compositor en dos grupos.
+const BUBBLE_MIN_W: i32 = 544;
+const BUBBLE_MIN_H: i32 = 464;
+
+/// La forma del globo, con el tamaño al que lo haya dejado el usuario.
+fn bubble_shape(app: &AppHandle) -> crate::floating::BubbleShape {
+    let saved = app
+        .try_state::<crate::AppState>()
+        .and_then(|s| s.config.lock().ok().and_then(|c| c.agents_bubble_size));
+    match saved {
+        Some((w, h)) => crate::floating::BubbleShape {
+            w: w.max(BUBBLE_MIN_W),
+            h: h.max(BUBBLE_MIN_H),
+            ..BUBBLE
+        },
+        None => BUBBLE,
+    }
+}
 
 /// Lo que la vista necesita saber al abrirse.
 #[derive(Clone, Serialize)]
@@ -165,14 +201,9 @@ pub fn show_agents_window(app: AppHandle) {
             // que se alcanzaba. Sin reponer la geometría, la única salida era
             // reiniciar la app. Visto: quedó en 252x252 con el compositor
             // desbordado y ninguna pulsación la arreglaba.
-            if let Some((target, anchor)) = crate::floating::bubble_rect(
-                &app,
-                "agents",
-                "pill",
-                BUBBLE_GAP,
-                BUBBLE_CORNER,
-                BUBBLE_INSET,
-            ) {
+            if let Some((target, anchor)) =
+                crate::floating::bubble_rect(&app, "agents", "pill", bubble_shape(&app))
+            {
                 crate::floating::snap_rect(&app, "agents", target);
                 let _ = app.emit(
                     "agents-bubble-anchor",
@@ -191,14 +222,9 @@ pub fn show_agents_window(app: AppHandle) {
         return;
     }
 
-    let Some((target, anchor)) = crate::floating::bubble_rect(
-        &app,
-        "agents",
-        "pill",
-        BUBBLE_GAP,
-        BUBBLE_CORNER,
-        BUBBLE_INSET,
-    ) else {
+    let Some((target, anchor)) =
+        crate::floating::bubble_rect(&app, "agents", "pill", bubble_shape(&app))
+    else {
         return;
     };
 
@@ -224,6 +250,62 @@ pub fn show_agents_window(app: AppHandle) {
             flight,
         },
     );
+}
+
+/// Redimensiona la burbuja **anclada por el lado del que sale**.
+///
+/// El lado que mira a la pill NO se mueve: si la punta está arriba, crecer
+/// empuja el borde de abajo; si está abajo, crece hacia arriba. Es lo que hace
+/// que la punta siga tocando la pill mientras arrastrás, en vez de despegarse y
+/// tener que reacomodar la ventana después.
+///
+/// `w`/`h` son de la VENTANA y en píxeles lógicos, que es lo que la vista
+/// maneja. Se guardan para la próxima apertura.
+#[tauri::command]
+pub fn resize_agents_bubble(app: AppHandle, w: i32, h: i32, side: String, commit: bool) {
+    let Some(window) = app.get_webview_window("agents") else {
+        return;
+    };
+    let scale = window.scale_factor().unwrap_or(1.0);
+
+    let w = w.max(BUBBLE_MIN_W);
+    let h = h.max(BUBBLE_MIN_H);
+    let (pw, ph) = (
+        (w as f64 * scale).round() as i32,
+        (h as f64 * scale).round() as i32,
+    );
+
+    let Some(now) = crate::floating::rect_of(&app, "agents") else {
+        return;
+    };
+
+    // El borde anclado se queda quieto; el opuesto es el que se mueve.
+    let (x, y) = match side.as_str() {
+        "bottom" => (now.x, now.y + now.h - ph),
+        "right" => (now.x + now.w - pw, now.y),
+        // `top` y `left` anclan por arriba y por la izquierda, que es el origen.
+        _ => (now.x, now.y),
+    };
+
+    crate::floating::snap_rect(&app, "agents", crate::floating::Rect { x, y, w: pw, h: ph });
+
+    // Al disco solo al soltar. Mientras arrastrás esto llega en cada cuadro, y
+    // reescribir el JSON sesenta veces por segundo castiga el disco para
+    // guardar sesenta valores que nadie va a leer: el único que importa es el
+    // último.
+    if !commit {
+        return;
+    }
+    if let Some(state) = app.try_state::<crate::AppState>() {
+        let snapshot = {
+            let Ok(mut cfg) = state.config.lock() else {
+                return;
+            };
+            cfg.agents_bubble_size = Some((w, h));
+            cfg.clone()
+        };
+        let _ = snapshot.save(&state.dirs.config_path());
+    }
 }
 
 /// Repliega la burbuja sobre la pill y la oculta al llegar.
@@ -279,6 +361,10 @@ pub struct StartRequest {
     pub cwd: Option<String>,
     pub resume: Option<String>,
     pub model: Option<String>,
+    /// Cuánto tiene que pensar. Los nombres los define cada backend.
+    pub effort: Option<String>,
+    /// Variante rápida (Cursor). Independiente del effort.
+    pub fast: Option<bool>,
     pub permission_mode: Option<String>,
     /// JSON `{"mcpServers": {…}}` con los servidores que sume Atic.
     pub mcp_config: Option<String>,
@@ -301,6 +387,8 @@ pub fn agent_start(
         cwd,
         resume,
         model,
+        effort,
+        fast,
         permission_mode,
         mcp_config,
         add_dirs,
@@ -330,6 +418,8 @@ pub fn agent_start(
             resume,
             fork,
             model,
+            effort,
+            fast,
             permission_mode,
             mcp_config,
             add_dirs,
@@ -368,8 +458,18 @@ pub fn agent_start(
     Ok(key)
 }
 
+/// Manda un turno.
+///
+/// `origin` lo pone la vista: dice si el texto entró dictado, con una captura o
+/// desde el portapapeles. Las rutas en `origin.files` se leen y se envían al
+/// agente como bloques de imagen; el resto del origen queda en la conversación
+/// guardada.
 #[tauri::command]
-pub fn agent_send(session: String, text: String) -> Result<(), String> {
+pub fn agent_send(
+    session: String,
+    text: String,
+    origin: Option<super::model::Origin>,
+) -> Result<(), String> {
     let mut guard = SESSIONS.lock().unwrap();
     let sessions = guard
         .as_mut()
@@ -378,7 +478,30 @@ pub fn agent_send(session: String, text: String) -> Result<(), String> {
         .get_mut(&session)
         .ok_or_else(|| "esa sesión ya no existe".to_string())?
         .session
-        .send(&text)
+        .send(&text, origin)
+}
+
+/// Cambia el modelo —y con él el esfuerzo— sin reiniciar la sesión.
+///
+/// No todos saben: los de ACP no nombran los modelos en su protocolo, y ahí
+/// esto no hace nada. La vista no ofrece el selector cuando el backend no
+/// informó ninguno, así que no llega a llamarse.
+#[tauri::command]
+pub fn agent_set_model(
+    session: String,
+    model: String,
+    effort: Option<String>,
+    fast: Option<bool>,
+) -> Result<(), String> {
+    let mut guard = SESSIONS.lock().unwrap();
+    let sessions = guard
+        .as_mut()
+        .ok_or_else(|| "no hay sesiones abiertas".to_string())?;
+    sessions
+        .get_mut(&session)
+        .ok_or_else(|| "esa sesión ya no existe".to_string())?
+        .session
+        .set_model(&model, effort.as_deref(), fast)
 }
 
 /// Contesta un permiso pendiente. El turno del agente está detenido hasta acá.
@@ -406,6 +529,19 @@ pub fn agent_permission(
 #[tauri::command]
 pub fn agent_skills(cwd: Option<String>) -> Vec<AgentSkill> {
     super::skills::discover(cwd.as_deref())
+}
+
+/// Modelos disponibles para un backend, sin abrir sesión.
+///
+/// Corre en `spawn_blocking`: los probes CLI (sobre todo OpenCode) tardan
+/// segundos y un comando sync congelaba la ventana («No responde»).
+#[tauri::command]
+pub async fn agent_list_models(
+    backend: String,
+) -> Result<Vec<crate::agents::model::ModelInfo>, String> {
+    tauri::async_runtime::spawn_blocking(move || crate::agents::discover::list_models(&backend))
+        .await
+        .map_err(|e| format!("list_models cancelado: {e}"))?
 }
 
 #[tauri::command]

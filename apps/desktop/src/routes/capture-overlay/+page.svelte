@@ -9,6 +9,7 @@
     completeRegionCapture,
     completeMonitorCapture,
     cancelCaptureSession,
+    showCaptureOverlay,
   } from "$lib/api";
 
   const DRAG_THRESHOLD = 4;
@@ -34,6 +35,7 @@
   let done = false;
   let initToken = 0;
   let unlistenStart: UnlistenFn | null = null;
+  let unlistenEnd: UnlistenFn | null = null;
 
   const selection = $derived(
     region ??
@@ -46,6 +48,17 @@
           }
         : null),
   );
+
+  function resetUi() {
+    initToken += 1;
+    done = true;
+    revealed = false;
+    region = null;
+    hovered = null;
+    dragging = false;
+    frameSrc = "";
+    candidates = [];
+  }
 
   function sleep(ms: number) {
     return new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -166,9 +179,19 @@
   }
 
   function onFrameLoad() {
+    // Pintar el frame mientras la ventana sigue oculta; recién después show.
+    // Si show primero, el usuario ve el body #111 (telón gris) hasta el fade.
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
-        if (!done) revealed = true;
+        if (done) return;
+        revealed = true;
+        void showCaptureOverlay().catch((error) => {
+          console.error("show_capture_overlay falló", error);
+          if (!done) {
+            done = true;
+            void safeClose();
+          }
+        });
       });
     });
   }
@@ -229,8 +252,18 @@
         unlistenStart = await listen("overlay-session-started", () => {
           void init();
         });
+        unlistenEnd = await listen("overlay-session-ended", () => {
+          // Si ya hay una sesión nueva (ended viejo llegó tarde), no tumbar el init.
+          void overlayInfo()
+            .then(() => {
+              /* sesión vigente: ignorar */
+            })
+            .catch(() => {
+              resetUi();
+            });
+        });
       } catch (error) {
-        console.error("listen overlay-session-started falló", error);
+        console.error("listen overlay-session falló", error);
       }
       // Si ya hay sesión (p. ej. atajo antes de que el webview escuchara),
       // intenta cargar; si no hay, el error se ignora sin tumbar la página.
@@ -256,6 +289,7 @@
     overlayEl?.removeEventListener("contextmenu", onContextMenu);
     window.removeEventListener("keydown", onKeyDown);
     unlistenStart?.();
+    unlistenEnd?.();
   });
 </script>
 

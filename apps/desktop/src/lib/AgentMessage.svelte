@@ -106,7 +106,7 @@
     border: 1px solid var(--line);
     border-radius: 8px;
     padding: 0.55rem 0.7rem;
-    background: #16130f;
+    background: var(--code);
     color: var(--text);
     font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
     font-size: 0.75rem;

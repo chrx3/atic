@@ -624,6 +624,23 @@ pub struct BubbleAnchor {
     pub offset: i32,
 }
 
+/// Las medidas de diseño de una burbuja, en píxeles **lógicos**.
+///
+/// Van juntas porque se leen juntas: son las gemelas de las del CSS, y la
+/// conversión a físicos pasa una sola vez, dentro de [`bubble_rect`].
+#[derive(Clone, Copy)]
+pub struct BubbleShape {
+    /// Tamaño de la VENTANA, marco transparente incluido.
+    pub w: i32,
+    pub h: i32,
+    /// Separación entre el origen y el globo.
+    pub gap: i32,
+    /// Radio de las esquinas del globo: la punta no puede caer sobre ellas.
+    pub corner: i32,
+    /// El marco transparente donde vive la sombra, por lado.
+    pub inset: i32,
+}
+
 /// Calcula dónde va la burbuja y dónde cae su punta. **No mueve nada.**
 ///
 /// Separado de aplicarlo porque el destino hace falta ANTES: la ventana sale
@@ -640,22 +657,23 @@ pub fn bubble_rect(
     app: &AppHandle,
     label: &str,
     origin: &str,
-    gap: i32,
-    corner: i32,
-    inset: i32,
+    shape: BubbleShape,
 ) -> Option<(Rect, BubbleAnchor)> {
     let bubble = app.get_webview_window(label)?;
-    let size = bubble.outer_size().ok()?;
-    let (bw, bh) = (size.width as i32, size.height as i32);
 
-    // `gap`, `corner` e `inset` llegan en píxeles LÓGICOS —son medidas de
-    // diseño, gemelas de las del CSS— y todo lo demás acá es físico. A escala
+    // La forma llega en píxeles LÓGICOS y todo lo demás acá es físico. A escala
     // 100% son el mismo número y la diferencia no existe; a 125% la burbuja
     // quedaba pegada a la pill y la punta caía sobre la esquina redondeada.
     let scale = bubble.scale_factor().unwrap_or(1.0);
-    let gap = (gap as f64 * scale).round() as i32;
-    let corner = (corner as f64 * scale).round() as i32;
-    let inset = (inset as f64 * scale).round() as i32;
+    let fisico = |v: i32| (v as f64 * scale).round() as i32;
+    let (gap, corner, inset) = (fisico(shape.gap), fisico(shape.corner), fisico(shape.inset));
+
+    // El tamaño lo dice quien llama, y NO se mide la ventana: al cerrarse, la
+    // burbuja se repliega sobre la pill y queda guardada de ese tamaño. Midiendo
+    // `outer_size()` la segunda apertura crecía hasta el tamaño de la pill —una
+    // ventana de 48px con el compositor adentro— y no había pulsación que la
+    // recuperara. El destino es un dato de diseño, no el estado que quedó.
+    let (bw, bh) = (fisico(shape.w), fisico(shape.h));
 
     let anchor_window = app.get_webview_window(origin)?;
     let pos = anchor_window.outer_position().ok()?;
@@ -748,9 +766,7 @@ pub fn bubble_rect(
     _app: &AppHandle,
     _label: &str,
     _origin: &str,
-    _gap: i32,
-    _corner: i32,
-    _inset: i32,
+    _shape: BubbleShape,
 ) -> Option<(Rect, BubbleAnchor)> {
     None
 }
