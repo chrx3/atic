@@ -138,7 +138,7 @@
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEI5QzQ4NzIyMzE0QTFENkQKUldSdEhVb3hJb2ZFdVJvY25FeUtPeGRqTmlCV29YTzdWQUdiUnFyNVVmMWd1MjVNaUxBNiswNzQK",
       "endpoints": [
-        "https://github.com/ciat/atic/releases/latest/download/latest.json"
+        "https://github.com/chrx3/atic/releases/latest/download/latest.json"
       ]
     }
   }

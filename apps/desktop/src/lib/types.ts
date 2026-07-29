@@ -94,6 +94,8 @@ export interface AppConfig {
   retention_days: number;
   retention_auto_cleanup: boolean;
   detect_meetings: boolean;
+  /** Guardar en disco lo que pasa por el portapapeles. */
+  clipboard_history: boolean;
   screenshot_shortcut: string;
   /** Atajo global del launcher tipo Spotlight. */
   launcher_shortcut: string;

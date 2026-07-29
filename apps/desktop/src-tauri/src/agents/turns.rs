@@ -92,6 +92,7 @@ fn lock(turns: &Mutex<Turns>) -> std::sync::MutexGuard<'_, Turns> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use atic_core::MutexExt;
 
     #[test]
     fn los_turnos_se_numeran_en_orden() {
@@ -135,7 +136,7 @@ mod tests {
         let t = Arc::new(Mutex::new(Turns::default()));
         let otro = t.clone();
         let _ = std::thread::spawn(move || {
-            let _g = otro.lock().unwrap();
+            let _g = otro.lock_or_recover();
             panic!("hilo que muere con el candado tomado");
         })
         .join();

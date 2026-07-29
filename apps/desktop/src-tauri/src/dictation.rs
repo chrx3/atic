@@ -14,6 +14,7 @@ use atic_core::{secrets, SecretKind, Speaker};
 use atic_transcribe::{self as transcribe, TrackInput};
 
 use crate::state::{AppState, ErrorPayload, LevelsPayload};
+use atic_core::MutexExt;
 
 fn resolve_groq_api_key() -> Option<String> {
     if let Ok(Some(key)) = secrets::get_secret(SecretKind::GroqApiKey) {
@@ -60,7 +61,7 @@ fn emit_status(app: &AppHandle, phase: DictationPhase, message: Option<String>) 
 /// Alterna dictado (modo toggle): start → stop+transcribe+paste.
 pub fn toggle_dictation(app: &AppHandle) {
     let state = app.state::<AppState>();
-    let listening = state.dictation.lock().unwrap().is_some();
+    let listening = state.dictation.lock_or_recover().is_some();
     if listening {
         stop_and_paste(app);
     } else if let Err(message) = start_dictation(app) {
@@ -73,7 +74,7 @@ pub fn toggle_dictation(app: &AppHandle) {
 /// Push-to-talk: mantener = escuchar, soltar = transcribir y pegar.
 pub fn dictation_key_down(app: &AppHandle) {
     let state = app.state::<AppState>();
-    if state.dictation.lock().unwrap().is_some() {
+    if state.dictation.lock_or_recover().is_some() {
         return;
     }
     if let Err(message) = start_dictation(app) {
@@ -86,7 +87,7 @@ pub fn dictation_key_down(app: &AppHandle) {
 /// Push-to-talk: al soltar la tecla.
 pub fn dictation_key_up(app: &AppHandle) {
     let state = app.state::<AppState>();
-    if state.dictation.lock().unwrap().is_some() {
+    if state.dictation.lock_or_recover().is_some() {
         stop_and_paste(app);
     }
 }
@@ -94,10 +95,10 @@ pub fn dictation_key_up(app: &AppHandle) {
 fn start_dictation(app: &AppHandle) -> Result<(), String> {
     let state = app.state::<AppState>();
 
-    if state.active.lock().unwrap().is_some() {
+    if state.active.lock_or_recover().is_some() {
         return Err("Hay una grabación de reunión en curso. Deténla antes de dictar.".into());
     }
-    if state.dictation.lock().unwrap().is_some() {
+    if state.dictation.lock_or_recover().is_some() {
         return Err("Ya estás dictando.".into());
     }
 
@@ -106,7 +107,7 @@ fn start_dictation(app: &AppHandle) -> Result<(), String> {
 
     // Validar backend de dictado antes de abrir el mic.
     // Sin key de Groq se cae a Whisper local: el modelo local debe estar listo.
-    let cfg = state.config.lock().unwrap().clone();
+    let cfg = state.config.lock_or_recover().clone();
     let use_groq = cfg.dictation_backend == "groq" && resolve_groq_api_key().is_some();
     if !use_groq {
         if cfg.dictation_backend == "groq" {
@@ -135,7 +136,7 @@ fn start_dictation(app: &AppHandle) -> Result<(), String> {
         .join(format!("{}", Utc::now().timestamp_millis()));
     std::fs::create_dir_all(&temp_dir).map_err(|e| e.to_string())?;
     let wav_path = temp_dir.join("mic.wav");
-    let cfg = state.config.lock().unwrap().clone();
+    let cfg = state.config.lock_or_recover().clone();
     // Notebooks: ventiladores suelen tapar la voz. El dictado siempre aplica
     // al menos RNNoise medium (aunque en reuniones esté en off/low).
     let noise_suppression = effective_dictation_noise(&cfg.noise_suppression);
@@ -177,14 +178,14 @@ fn start_dictation(app: &AppHandle) -> Result<(), String> {
         }
     });
 
-    *state.dictation.lock().unwrap() = Some(ActiveDictation {
+    *state.dictation.lock_or_recover() = Some(ActiveDictation {
         wav_path,
         temp_dir,
         handle,
     });
 
     let (ui_sounds, out, voice) = {
-        let cfg = state.config.lock().unwrap();
+        let cfg = state.config.lock_or_recover();
         (
             cfg.ui_sounds,
             cfg.output_device_id.clone(),
@@ -205,7 +206,7 @@ fn start_dictation(app: &AppHandle) -> Result<(), String> {
 
 fn stop_and_paste(app: &AppHandle) {
     let state = app.state::<AppState>();
-    let Some(active) = state.dictation.lock().unwrap().take() else {
+    let Some(active) = state.dictation.lock_or_recover().take() else {
         return;
     };
 
@@ -226,7 +227,7 @@ fn stop_and_paste(app: &AppHandle) {
             }
 
             let state = app2.state::<AppState>();
-            let cfg = state.config.lock().unwrap().clone();
+            let cfg = state.config.lock_or_recover().clone();
             let language = if cfg.language == "auto" {
                 None
             } else {
@@ -345,7 +346,7 @@ fn stop_and_paste(app: &AppHandle) {
                 );
                 let (ui_sounds, out, voice) = {
                     let state = app2.state::<AppState>();
-                    let cfg = state.config.lock().unwrap();
+                    let cfg = state.config.lock_or_recover();
                     (
                         cfg.ui_sounds,
                         cfg.output_device_id.clone(),

@@ -20,7 +20,10 @@ const CACHE_TTL: Duration = Duration::from_secs(5 * 60);
 const ID_INITIALIZE: u64 = 1;
 const ID_MODELS: u64 = 3;
 
-static CACHE: Mutex<Option<HashMap<String, (Instant, Vec<ModelInfo>)>>> = Mutex::new(None);
+/// Lo cacheado por backend: cuándo se pidió, y qué contestó.
+type ModelCache = HashMap<String, (Instant, Vec<ModelInfo>)>;
+
+static CACHE: Mutex<Option<ModelCache>> = Mutex::new(None);
 
 /// Lista los modelos de un backend. Resultados cacheados 5 minutos.
 pub fn list_models(backend: &str) -> Result<Vec<ModelInfo>, String> {
@@ -53,10 +56,9 @@ fn cache_get(backend: &str) -> Option<Vec<ModelInfo>> {
 
 fn cache_put(backend: &str, models: &[ModelInfo]) {
     if let Ok(mut guard) = CACHE.lock() {
-        guard.get_or_insert_with(HashMap::new).insert(
-            backend.to_string(),
-            (Instant::now(), models.to_vec()),
-        );
+        guard
+            .get_or_insert_with(HashMap::new)
+            .insert(backend.to_string(), (Instant::now(), models.to_vec()));
     }
 }
 
@@ -285,9 +287,8 @@ fn list_cursor_models() -> Result<Vec<ModelInfo>, String> {
 fn list_opencode_models() -> Result<Vec<ModelInfo>, String> {
     // Sin `--verbose` primero: la lista plana basta y evita un volcado enorme
     // que llenaba el pipe y congelaba la UI mientras el proceso no terminaba.
-    let stdout = run_cli_capture("opencode", &["models"], 20).or_else(|_| {
-        run_cli_capture("opencode", &["models", "--verbose"], 15)
-    })?;
+    let stdout = run_cli_capture("opencode", &["models"], 20)
+        .or_else(|_| run_cli_capture("opencode", &["models", "--verbose"], 15))?;
     let models = parse_opencode_cli(&stdout);
     if models.is_empty() {
         return Err("opencode models no devolvió modelos reconocibles".to_string());
@@ -344,9 +345,7 @@ fn run_cli_capture(program: &str, args: &[&str], timeout_secs: u64) -> Result<St
                     let _ = child.wait();
                     let _ = stdout_h.join();
                     let _ = stderr_h.join();
-                    return Err(format!(
-                        "«{program}» tardó más de {timeout_secs} segundos"
-                    ));
+                    return Err(format!("«{program}» tardó más de {timeout_secs} segundos"));
                 }
                 thread::sleep(Duration::from_millis(50));
             }
@@ -511,12 +510,7 @@ pub fn split_cursor_wire(id: &str) -> (String, String, bool) {
 ///
 /// Prueba las formas habituales (`xhigh` / `extra-high`) y, si se pasa la
 /// lista de slugs conocidos del grupo, elige una que exista.
-pub fn compose_cursor_wire(
-    base: &str,
-    effort: &str,
-    fast: bool,
-    known: &[String],
-) -> String {
+pub fn compose_cursor_wire(base: &str, effort: &str, fast: bool, known: &[String]) -> String {
     let level = if effort.is_empty() { "default" } else { effort };
     let candidates = wire_candidates(base, level, fast);
     if known.is_empty() {
@@ -917,7 +911,10 @@ cursor-grok-4.5-low - Cursor Grok 4.5 Low
 cursor-grok-4.5-medium - Cursor Grok 4.5 Medium
 ",
         );
-        let g = grok_full.iter().find(|m| m.id == "cursor-grok-4.5").unwrap();
+        let g = grok_full
+            .iter()
+            .find(|m| m.id == "cursor-grok-4.5")
+            .unwrap();
         assert_eq!(
             g.efforts.iter().map(|e| e.id.as_str()).collect::<Vec<_>>(),
             vec!["low", "medium", "high"]

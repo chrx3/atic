@@ -13,6 +13,7 @@
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
+use atic_core::MutexExt;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -82,7 +83,7 @@ pub fn trigger(app: &AppHandle) -> Result<(), String> {
 
 fn session_is_active(app: &AppHandle) -> bool {
     app.try_state::<crate::state::AppState>()
-        .is_some_and(|state| state.overlay_session.lock().unwrap().is_some())
+        .is_some_and(|state| state.overlay_session.lock_or_recover().is_some())
 }
 
 fn abort_requested(token: u64) -> bool {
@@ -144,7 +145,7 @@ fn end_session(app: &AppHandle) {
         let _ = window.hide();
     }
     if let Some(state) = app.try_state::<crate::state::AppState>() {
-        let taken = state.overlay_session.lock().unwrap().take();
+        let taken = state.overlay_session.lock_or_recover().take();
         end_session_cleanup(taken);
     }
     let _ = app.emit("overlay-session-ended", ());
@@ -184,7 +185,7 @@ fn start_impl(app: &AppHandle) -> Result<(), String> {
 
     let token = GENERATION.load(Ordering::SeqCst);
     let state = app.state::<crate::state::AppState>();
-    let include_cursor = state.config.lock().unwrap().capture_include_cursor;
+    let include_cursor = state.config.lock_or_recover().capture_include_cursor;
 
     // Si un intento anterior dejó el overlay visible (telón #111), BitBlt lo
     // congela como “escritorio” gris. Ocultar y dar un frame a DWM.
@@ -230,7 +231,7 @@ fn start_impl(app: &AppHandle) -> Result<(), String> {
     let candidates = capwin::enumerate_candidates(std::process::id(), &monitors);
 
     {
-        let mut guard = state.overlay_session.lock().unwrap();
+        let mut guard = state.overlay_session.lock_or_recover();
         if abort_requested(token) {
             STARTING.store(false, Ordering::SeqCst);
             drop(guard);
@@ -273,7 +274,7 @@ fn ensure_overlay_hidden(app: &AppHandle) {
 fn show_overlay_window(app: &AppHandle) -> Result<(), String> {
     let state = app.state::<crate::state::AppState>();
     let bounds = {
-        let guard = state.overlay_session.lock().unwrap();
+        let guard = state.overlay_session.lock_or_recover();
         let session = match guard.as_ref() {
             Some(session) => session,
             // Cancelaron mientras el PNG cargaba: no mostrar el telón.
@@ -305,7 +306,7 @@ fn show_overlay_window(_app: &AppHandle) -> Result<(), String> {
 #[cfg(windows)]
 fn overlay_info_impl(app: &AppHandle) -> Result<OverlayInfo, String> {
     let state = app.state::<crate::state::AppState>();
-    let guard = state.overlay_session.lock().unwrap();
+    let guard = state.overlay_session.lock_or_recover();
     let session = guard.as_ref().ok_or("sin sesión de captura activa")?;
 
     let scale = overlay_scale(app);
@@ -340,7 +341,7 @@ fn window_capture_impl(app: &AppHandle, hwnd: i64) -> Result<(String, (i32, i32)
     use atic_capture::{engine, windows as capwin};
 
     let state = app.state::<crate::state::AppState>();
-    let guard = state.overlay_session.lock().unwrap();
+    let guard = state.overlay_session.lock_or_recover();
     let session = guard.as_ref().ok_or("sin sesión de captura activa")?;
 
     // PrintWindow renderiza solo la ventana; si falla/negro, recorta del frame
@@ -371,7 +372,7 @@ fn region_capture_impl(
 
     let scale = overlay_scale(app);
     let state = app.state::<crate::state::AppState>();
-    let guard = state.overlay_session.lock().unwrap();
+    let guard = state.overlay_session.lock_or_recover();
     let session = guard.as_ref().ok_or("sin sesión de captura activa")?;
     let bounds = session.frame.bounds;
 
@@ -393,7 +394,7 @@ fn region_capture_impl(
 fn monitor_capture_impl(app: &AppHandle, x: f64, y: f64) -> Result<(String, (i32, i32)), String> {
     let scale = overlay_scale(app);
     let state = app.state::<crate::state::AppState>();
-    let guard = state.overlay_session.lock().unwrap();
+    let guard = state.overlay_session.lock_or_recover();
     let session = guard.as_ref().ok_or("sin sesión de captura activa")?;
     let bounds = session.frame.bounds;
 

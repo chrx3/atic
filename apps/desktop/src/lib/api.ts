@@ -86,6 +86,7 @@ export type DataDirKind =
   | "clipboard"
   | "snippets"
   | "captures"
+  | "logs"
   | "data";
 
 export const openDataDir = (kind: DataDirKind) =>

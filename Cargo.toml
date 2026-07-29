@@ -15,7 +15,7 @@ version = "0.2.0"
 edition = "2021"
 license = "MIT"
 authors = ["CIAT"]
-repository = "https://github.com/ciat/atic"
+repository = "https://github.com/chrx3/atic"
 
 [workspace.dependencies]
 # Crates internos
@@ -34,6 +34,7 @@ anyhow = "1"
 chrono = { version = "0.4", features = ["serde", "clock"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-appender = "0.2"
 
 [profile.dev]
 # La captura de audio y whisper son sensibles al rendimiento incluso en debug.

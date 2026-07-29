@@ -59,7 +59,7 @@ Estado, plan y traspaso: **[`docs/PLAN_AGENTES.md`](docs/PLAN_AGENTES.md)**.
 Para probar un adaptador sin abrir la interfaz:
 
 ```bash
-cargo run -p atic-desktop --example acp_real -- opencode "lee README.md y di de que trata"
+cargo run -p atic-desktop --example agente_real -- opencode "lee README.md y di de que trata"
 ```
 
 ## Requisitos de desarrollo
@@ -71,18 +71,32 @@ cargo run -p atic-desktop --example acp_real -- opencode "lee README.md y di de 
 - **CMake** y **LLVM/libclang** — los necesita `whisper-rs`, que compila
   whisper.cpp. En Windows, si `libclang.dll` no está en el PATH, exporta
   `LIBCLANG_PATH` apuntando a `…\LLVM\bin`.
-- **`CPATH` apuntando a `INCLUDE`**, si compilas fuera del «Developer PowerShell
-  for VS». `libclang` **no** lee `INCLUDE` —la variable que define MSVC— así que
-  encuentra su propia DLL pero no las cabeceras del sistema. El síntoma engaña:
-  `fatal error: 'stdio.h' file not found`, seguido de un
-  `attempt to compute 12_usize - 16_usize` en unos bindings de **Linux** que
-  `whisper-rs-sys` usa de reserva. No es un problema de Rust ni del proyecto.
+- **`CPATH` con las cabeceras de clang Y las de MSVC**, si compilas fuera del
+  «Developer PowerShell for VS». `libclang` **no** lee `INCLUDE` —la variable
+  que define MSVC— así que encuentra su propia DLL pero no las cabeceras del
+  sistema. El síntoma engaña: `fatal error: 'stdio.h' file not found`, seguido
+  de un `attempt to compute 12_usize - 16_usize` en unos bindings de **Linux**
+  que `whisper-rs-sys` usa de reserva. No es un problema de Rust ni del proyecto.
+
+  Desde LLVM 19 hace falta además el directorio de cabeceras *propias* de clang
+  (`lib\clang\<mayor>\include`). Sin él el error cambia a `'stdbool.h' file not
+  found` —un header que provee el compilador, no el sistema— y agregar `INCLUDE`
+  no alcanza. Ajusta el número de versión al de tu instalación.
 
   ```powershell
+  $vc = "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
+  & cmd.exe /c "`"$vc`" > nul & set" |
+    ForEach-Object { if ($_ -match '^([^=]+)=(.*)$') { [Environment]::SetEnvironmentVariable($matches[1], $matches[2]) } }
   $env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
-  cmd /c '"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat" >nul && set' |
-    ForEach-Object { if ($_ -match '^([^=]+)=(.*)$') { Set-Item "env:$($matches[1])" $matches[2] -ErrorAction SilentlyContinue } }
-  $env:CPATH = $env:INCLUDE
+  $env:CPATH = "C:\Program Files\LLVM\lib\clang\22\include;" + $env:INCLUDE
+  ```
+
+  Si ya hubo un intento fallido, cargo **cachea** los bindings malos: el error
+  vuelve idéntico aunque el entorno ya esté bien. Hay que borrar el directorio
+  del build script y dejar que se regenere:
+
+  ```powershell
+  Remove-Item -Recurse -Force target\debug\build\whisper-rs-sys-*
   ```
 - Node.js 22+ y pnpm 10+
 - WebView2 (incluido en Windows 11)
@@ -186,7 +200,7 @@ pnpm tauri signer generate
 
 Nunca subas la clave privada al repositorio. El endpoint del updater apunta a:
 
-`https://github.com/ciat/atic/releases/latest/download/latest.json`
+`https://github.com/chrx3/atic/releases/latest/download/latest.json`
 
 En Ajustes hay un botón **Buscar actualizaciones**. Al arrancar la app también
 hace un chequeo discreto (solo un aviso si hay update).
@@ -235,6 +249,13 @@ Contenido típico:
 - `recordings/<id>/transcript.json` — transcripción
 - `recordings/<id>/summary.json` — resumen editable
 - `captures/` — capturas de pantalla temporales
+- `clipboard/history.json` — historial del portapapeles, en texto plano. Se
+  apaga desde Ajustes, y nunca archiva lo que un gestor de contraseñas marcó
+  como efímero (formatos `ExcludeClipboardContentFromMonitorProcessing` y
+  `CanIncludeInClipboardHistory` de Windows)
+- `logs/atic.YYYY-MM-DD.log` — registro de la app, 7 días. Incluye los pánicos
+  con su traza; es lo que hay que adjuntar en un reporte. Hay un botón para
+  abrir la carpeta en Ajustes
 - `atic.db3` — índice de grabaciones (SQLite)
 - `config.json` — preferencias (no contiene secretos)
 - API keys de proveedores (Claude, OpenAI, OpenRouter, Groq, MiniMax, Custom)

@@ -7,6 +7,7 @@ use atic_core::{RecordingStatus, SecretKind, Summary, Transcript};
 use atic_summarize::{self as summarize, ProviderInfo, SummarizerConfig, SummaryTemplate};
 
 use crate::state::AppState;
+use atic_core::MutexExt;
 
 #[derive(Clone, Serialize)]
 struct IdPayload {
@@ -89,7 +90,7 @@ pub fn list_summary_providers() -> Vec<ProviderDto> {
 /// ¿Ollama responde en la URL configurada?
 #[tauri::command]
 pub fn ollama_available(state: State<AppState>) -> bool {
-    let url = state.config.lock().unwrap().summary_base_url.clone();
+    let url = state.config.lock_or_recover().summary_base_url.clone();
     let url = if url.trim().is_empty() {
         "http://127.0.0.1:11434".to_string()
     } else {
@@ -121,8 +122,7 @@ pub fn summarize_recording(app: AppHandle, id: String, template: String) -> Resu
 
     let rec = state
         .db
-        .lock()
-        .unwrap()
+        .lock_or_recover()
         .get_recording(&id)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "Grabación no encontrada.".to_string())?;
@@ -132,7 +132,7 @@ pub fn summarize_recording(app: AppHandle, id: String, template: String) -> Resu
         .ok_or_else(|| "No hay transcripción. Transcribe primero.".to_string())?;
 
     let template = SummaryTemplate::parse(&template).map_err(|e| e.to_string())?;
-    let cfg = state.config.lock().unwrap().clone();
+    let cfg = state.config.lock_or_recover().clone();
     let summary_path = state.dirs.summary_path(&id);
     let title = rec.title.clone();
 
@@ -142,8 +142,7 @@ pub fn summarize_recording(app: AppHandle, id: String, template: String) -> Resu
 
     state
         .db
-        .lock()
-        .unwrap()
+        .lock_or_recover()
         .update_status(&id, RecordingStatus::Summarizing)
         .map_err(|e| e.to_string())?;
     let _ = app.emit("recordings-changed", ());
@@ -195,8 +194,7 @@ fn run_summarize(
                 tracing::error!(%err, "no se pudo guardar el resumen");
                 let _ = state
                     .db
-                    .lock()
-                    .unwrap()
+                    .lock_or_recover()
                     .update_status(&id, RecordingStatus::Error);
                 let _ = app.emit(
                     "summarize-error",
@@ -208,8 +206,7 @@ fn run_summarize(
             } else {
                 let _ = state
                     .db
-                    .lock()
-                    .unwrap()
+                    .lock_or_recover()
                     .update_status(&id, RecordingStatus::Summarized);
                 let _ = app.emit("summary-ready", IdPayload { id: id.clone() });
             }
@@ -217,8 +214,7 @@ fn run_summarize(
         Err(err) => {
             let _ = state
                 .db
-                .lock()
-                .unwrap()
+                .lock_or_recover()
                 .update_status(&id, RecordingStatus::Transcribed);
             let _ = app.emit(
                 "summarize-error",
@@ -248,8 +244,7 @@ pub fn save_summary(
 ) -> Result<(), String> {
     let _ = state
         .db
-        .lock()
-        .unwrap()
+        .lock_or_recover()
         .get_recording(&id)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "Grabación no encontrada.".to_string())?;
@@ -259,8 +254,7 @@ pub fn save_summary(
         .map_err(|e| e.to_string())?;
     state
         .db
-        .lock()
-        .unwrap()
+        .lock_or_recover()
         .update_status(&id, RecordingStatus::Summarized)
         .map_err(|e| e.to_string())?;
     let _ = app.emit("recordings-changed", ());

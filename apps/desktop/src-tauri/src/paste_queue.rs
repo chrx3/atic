@@ -9,6 +9,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::clipboard_history;
 use crate::state::AppState;
+use atic_core::MutexExt;
 
 const MAX_ITEMS: usize = 20;
 const POLL_MS: u64 = 400;
@@ -58,7 +59,7 @@ fn save_to_disk(path: &std::path::Path, items: &[PasteQueueItem]) {
 
 fn ensure_queue_loaded(state: &AppState) {
     let path = state.dirs.paste_queue_path();
-    let mut guard = QUEUE.lock().unwrap();
+    let mut guard = QUEUE.lock_or_recover();
     if guard.is_none() {
         *guard = Some(QueueState {
             items: load_from_disk(&path),
@@ -68,14 +69,14 @@ fn ensure_queue_loaded(state: &AppState) {
 
 fn with_queue<R>(state: &AppState, f: impl FnOnce(&[PasteQueueItem]) -> R) -> R {
     ensure_queue_loaded(state);
-    let guard = QUEUE.lock().unwrap();
+    let guard = QUEUE.lock_or_recover();
     f(&guard.as_ref().unwrap().items)
 }
 
 fn with_queue_mut<R>(state: &AppState, f: impl FnOnce(&mut Vec<PasteQueueItem>) -> R) -> R {
     let path = state.dirs.paste_queue_path();
     ensure_queue_loaded(state);
-    let mut guard = QUEUE.lock().unwrap();
+    let mut guard = QUEUE.lock_or_recover();
     let items = &mut guard.as_mut().unwrap().items;
     let result = f(items);
     save_to_disk(&path, items);
@@ -123,7 +124,7 @@ fn ensure_poller(app: &AppHandle) {
             loop {
                 thread::sleep(Duration::from_millis(POLL_MS));
                 let has_items = {
-                    let guard = QUEUE.lock().unwrap();
+                    let guard = QUEUE.lock_or_recover();
                     guard.as_ref().map(|q| !q.items.is_empty()).unwrap_or(false)
                 };
                 if !has_items {

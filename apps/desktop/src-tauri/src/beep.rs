@@ -3,6 +3,7 @@
 //! Baja frecuencia, ataque redondo y poco brillo para que se sientan como
 //! una presión satisfactoria, no como un beep de alerta.
 
+use atic_core::MutexExt;
 use cpal::traits::{DeviceTrait, StreamTrait};
 use cpal::{SampleFormat, StreamConfig};
 
@@ -469,7 +470,7 @@ pub fn preview_sound(
         "capture" => SoundAction::Capture,
         other => return Err(format!("acción de sonido desconocida: {other}")),
     };
-    let out = state.config.lock().unwrap().output_device_id.clone();
+    let out = state.config.lock_or_recover().output_device_id.clone();
     play(which, &voice, &out);
     Ok(())
 }

@@ -12,6 +12,7 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+use atic_core::MutexExt;
 use tauri::{AppHandle, Manager, PhysicalPosition};
 
 /// Margen mínimo contra el borde del área útil.
@@ -37,7 +38,7 @@ static GLIDE_GEN: Mutex<Option<HashMap<String, u64>>> = Mutex::new(None);
 
 /// Sube la generación de `label` y devuelve la nueva.
 fn bump_gen(label: &str) -> u64 {
-    let mut guard = GLIDE_GEN.lock().unwrap();
+    let mut guard = GLIDE_GEN.lock_or_recover();
     let map = guard.get_or_insert_with(HashMap::new);
     let next = map.get(label).copied().unwrap_or(0) + 1;
     map.insert(label.to_string(), next);
@@ -47,8 +48,7 @@ fn bump_gen(label: &str) -> u64 {
 /// La generación viva de `label`.
 fn gen_of(label: &str) -> u64 {
     GLIDE_GEN
-        .lock()
-        .unwrap()
+        .lock_or_recover()
         .as_ref()
         .and_then(|m| m.get(label).copied())
         .unwrap_or(0)

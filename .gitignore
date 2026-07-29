@@ -21,6 +21,7 @@ apps/desktop/src-tauri/gen
 
 # Datos locales / logs / editor
 *.log
+*.stackdump
 .DS_Store
 Thumbs.db
 .idea/

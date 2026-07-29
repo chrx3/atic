@@ -8,6 +8,7 @@ use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
 use crate::mouse_bindings::{self, MouseAction, SideButton};
 use crate::{clipboard_history, dictation, launcher, snippets, state};
+use atic_core::MutexExt;
 
 enum Binding {
     Key(Shortcut),
@@ -118,7 +119,7 @@ pub fn register_shortcuts(app: &AppHandle, bindings: ShortcutBindings<'_>) -> Re
             if let Err(err) = gs.on_shortcut(*sc, move |app, _sc, event| {
                 let mode = app
                     .try_state::<state::AppState>()
-                    .map(|s| s.config.lock().unwrap().dictation_mode.clone())
+                    .map(|s| s.config.lock_or_recover().dictation_mode.clone())
                     .unwrap_or_else(|| "push_to_talk".into());
 
                 match (mode.as_str(), event.state()) {
@@ -171,7 +172,7 @@ pub fn register_shortcuts(app: &AppHandle, bindings: ShortcutBindings<'_>) -> Re
                         // la config quedaba mintiendo).
                         let visible = handle
                             .try_state::<state::AppState>()
-                            .map(|s| s.config.lock().unwrap().show_pill)
+                            .map(|s| s.config.lock_or_recover().show_pill)
                             .unwrap_or(true);
                         if !visible {
                             return;
@@ -265,7 +266,7 @@ pub fn register_shortcuts(app: &AppHandle, bindings: ShortcutBindings<'_>) -> Re
     mouse_bindings::set_bindings(app, mouse);
 
     if let Some(app_state) = app.try_state::<state::AppState>() {
-        *app_state.shortcut_failures.lock().unwrap() = failed.clone();
+        *app_state.shortcut_failures.lock_or_recover() = failed.clone();
     }
     // Siempre se emite, también vacío: así la UI puede limpiar un aviso previo
     // cuando el usuario reasigna el atajo en conflicto.
@@ -277,5 +278,5 @@ pub fn register_shortcuts(app: &AppHandle, bindings: ShortcutBindings<'_>) -> Re
 /// Atajos que el SO rechazó en el último registro (para la UI).
 #[tauri::command]
 pub fn failed_shortcuts(state: tauri::State<state::AppState>) -> Vec<String> {
-    state.shortcut_failures.lock().unwrap().clone()
+    state.shortcut_failures.lock_or_recover().clone()
 }

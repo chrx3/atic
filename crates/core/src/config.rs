@@ -113,6 +113,14 @@ pub struct Config {
     pub retention_auto_cleanup: bool,
     /// Detectar ventanas de reuniones y ofrecer iniciar una grabación.
     pub detect_meetings: bool,
+    /// Guardar en disco lo que pasa por el portapapeles.
+    ///
+    /// Apagado, el panel sigue existiendo pero queda vacío: no hay vigilante
+    /// que mire el portapapeles ni `history.json` que crezca. Es opt-out y no
+    /// opt-in porque el historial es la razón por la que existe el panel, pero
+    /// tiene que poder apagarse: lo copiado incluye lo que el usuario nunca
+    /// eligió archivar.
+    pub clipboard_history: bool,
     /// Atajo global para abrir el overlay de selección de captura.
     pub screenshot_shortcut: String,
     /// Atajo global para el launcher tipo Spotlight.
@@ -195,6 +203,7 @@ impl Default for Config {
             retention_days: 0,
             retention_auto_cleanup: false,
             detect_meetings: false,
+            clipboard_history: true,
             screenshot_shortcut: "CmdOrCtrl+Shift+4".to_string(),
             launcher_shortcut: "CmdOrCtrl+Space".to_string(),
             capture_shelf_side: "right".to_string(),
@@ -266,6 +275,7 @@ struct ConfigFile {
     retention_days: Option<u32>,
     retention_auto_cleanup: Option<bool>,
     detect_meetings: Option<bool>,
+    clipboard_history: Option<bool>,
     screenshot_shortcut: Option<String>,
     launcher_shortcut: Option<String>,
     capture_shelf_side: Option<String>,
@@ -362,6 +372,7 @@ impl Default for ConfigFile {
             retention_days: None,
             retention_auto_cleanup: None,
             detect_meetings: None,
+            clipboard_history: None,
             screenshot_shortcut: None,
             launcher_shortcut: None,
             capture_shelf_side: None,
@@ -515,6 +526,9 @@ impl From<ConfigFile> for Config {
             retention_days: f.retention_days.unwrap_or(0).min(3_650),
             retention_auto_cleanup: f.retention_auto_cleanup.unwrap_or(false),
             detect_meetings: f.detect_meetings.unwrap_or(false),
+            // Ausente en configs viejas: ahí el historial ya venía andando, y
+            // apagarlo de golpe en una actualización perdería lo guardado.
+            clipboard_history: f.clipboard_history.unwrap_or(true),
             screenshot_shortcut: f
                 .screenshot_shortcut
                 .filter(|s| !s.is_empty())
@@ -582,12 +596,14 @@ impl Config {
     }
 
     /// Persiste la configuración a disco (JSON con formato legible).
+    ///
+    /// Atómica a propósito: [`Config::load`] está escrito para no fallar ante
+    /// un archivo roto —devuelve los valores por defecto—, así que una escritura
+    /// truncada a mitad no se vería como un error sino como la configuración del
+    /// usuario borrada, sin aviso.
     pub fn save(&self, path: &Path) -> Result<()> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
         let text = serde_json::to_string_pretty(self)?;
-        std::fs::write(path, text)?;
+        crate::fs_atomic::write_atomic_str(path, &text)?;
         Ok(())
     }
 }
@@ -670,6 +686,20 @@ mod tests {
         let cfg: Config = serde_json::from_str::<ConfigFile>(json).unwrap().into();
         assert_eq!(cfg.whisper_model, "small");
         assert_eq!(cfg.dictation_whisper_model, "base");
+    }
+
+    #[test]
+    fn keeps_the_clipboard_history_on_for_configs_without_the_field() {
+        let json = r#"{ "language": "es" }"#;
+        let cfg: Config = serde_json::from_str::<ConfigFile>(json).unwrap().into();
+        assert!(cfg.clipboard_history);
+    }
+
+    #[test]
+    fn respects_an_explicit_clipboard_history_opt_out() {
+        let json = r#"{ "clipboard_history": false }"#;
+        let cfg: Config = serde_json::from_str::<ConfigFile>(json).unwrap().into();
+        assert!(!cfg.clipboard_history);
     }
 
     #[test]

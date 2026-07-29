@@ -17,6 +17,7 @@ use atic_core::{AppDirs, Config, Db, Recording, RecordingStatus};
 use atic_transcribe::LoadedModel;
 
 use crate::live::LiveWorkerHandle;
+use atic_core::MutexExt;
 
 /// Tras este idle sin uso, se liberan los modelos Whisper de RAM.
 const WHISPER_IDLE_TTL: Duration = Duration::from_secs(10 * 60);
@@ -79,26 +80,25 @@ pub fn start_capture(
 ) -> Result<Recording, String> {
     let state = app.state::<AppState>();
 
-    if *state.audio_test_running.lock().unwrap() {
+    if *state.audio_test_running.lock_or_recover() {
         return Err("Hay una prueba de audio en curso.".into());
     }
 
-    if state.dictation.lock().unwrap().is_some() {
+    if state.dictation.lock_or_recover().is_some() {
         return Err("Hay un dictado en curso. Termínalo antes de grabar.".into());
     }
 
-    let mut active = state.active.lock().unwrap();
+    let mut active = state.active.lock_or_recover();
     if active.is_some() {
         return Err("Ya hay una grabación en curso.".into());
     }
 
     let tracks = state
         .config
-        .lock()
-        .unwrap()
+        .lock_or_recover()
         .effective_record_tracks()
         .to_string();
-    let cfg_snapshot = state.config.lock().unwrap().clone();
+    let cfg_snapshot = state.config.lock_or_recover().clone();
     let noise_suppression = cfg_snapshot.noise_suppression.clone();
     let mic_device_id = cfg_snapshot.mic_device_id.clone();
     let output_device_id = cfg_snapshot.output_device_id.clone();
@@ -219,9 +219,9 @@ pub fn start_capture(
     drop(active);
 
     // Aviso audible de consentimiento (configurable).
-    if state.config.lock().unwrap().beep_on_start {
+    if state.config.lock_or_recover().beep_on_start {
         let (device_id, voice) = {
-            let cfg = state.config.lock().unwrap();
+            let cfg = state.config.lock_or_recover();
             (
                 cfg.output_device_id.clone(),
                 cfg.sound_recording_start.clone(),
@@ -261,7 +261,7 @@ pub fn start_capture(
 pub fn stop_capture(app: &AppHandle) -> Result<Recording, String> {
     let state = app.state::<AppState>();
 
-    let taken = state.active.lock().unwrap().take();
+    let taken = state.active.lock_or_recover().take();
     let Some(active) = taken else {
         return Err("No hay ninguna grabación en curso.".into());
     };
@@ -299,15 +299,14 @@ pub fn stop_capture(app: &AppHandle) -> Result<Recording, String> {
 
     state
         .db
-        .lock()
-        .unwrap()
+        .lock_or_recover()
         .insert_recording(&rec)
         .map_err(|e| e.to_string())?;
 
     // Aviso audible de fin de grabación (configurable, mismo toggle que el de inicio).
-    if state.config.lock().unwrap().beep_on_start {
+    if state.config.lock_or_recover().beep_on_start {
         let (device_id, voice) = {
-            let cfg = state.config.lock().unwrap();
+            let cfg = state.config.lock_or_recover();
             (
                 cfg.output_device_id.clone(),
                 cfg.sound_recording_stop.clone(),
@@ -326,7 +325,10 @@ pub fn stop_capture(app: &AppHandle) -> Result<Recording, String> {
     );
     let _ = app.emit("recordings-changed", ());
 
-    let auto_transcribe = state.config.lock().unwrap().auto_transcribe_after_recording;
+    let auto_transcribe = state
+        .config
+        .lock_or_recover()
+        .auto_transcribe_after_recording;
     let app_bg = app.clone();
     let rec_id = rec.id.clone();
     let start_batch = move || {
@@ -360,13 +362,18 @@ pub fn stop_capture(app: &AppHandle) -> Result<Recording, String> {
 
 /// Alterna grabación (usado por el atajo global).
 pub fn toggle_recording(app: &AppHandle) {
-    if app.state::<AppState>().dictation.lock().unwrap().is_some() {
+    if app
+        .state::<AppState>()
+        .dictation
+        .lock_or_recover()
+        .is_some()
+    {
         let message = "Hay un dictado en curso. Termínalo antes de grabar.".to_string();
         tracing::warn!(%message, "atajo de grabación bloqueado");
         let _ = app.emit("capture-error", ErrorPayload { message });
         return;
     }
-    let recording = app.state::<AppState>().active.lock().unwrap().is_some();
+    let recording = app.state::<AppState>().active.lock_or_recover().is_some();
     let result = if recording {
         stop_capture(app)
     } else {
@@ -391,7 +398,7 @@ pub fn show_main(app: &AppHandle) {
 pub fn set_pill_visible(app: &AppHandle, visible: bool) {
     let state = app.state::<AppState>();
     let changed = {
-        let mut cfg = state.config.lock().unwrap();
+        let mut cfg = state.config.lock_or_recover();
         let changed = cfg.show_pill != visible;
         cfg.show_pill = visible;
         changed
@@ -400,7 +407,7 @@ pub fn set_pill_visible(app: &AppHandle, visible: bool) {
     // la rueda, así que sin esta guarda cada pulsación del atajo escribía
     // config.json a disco —sincrónico, en el hilo de UI— para no cambiar nada.
     if changed {
-        let cfg = state.config.lock().unwrap().clone();
+        let cfg = state.config.lock_or_recover().clone();
         let _ = cfg.save(&state.dirs.config_path());
     }
 
@@ -412,7 +419,7 @@ pub fn set_pill_visible(app: &AppHandle, visible: bool) {
             // Esconder la pill con un panel abierto dejaba el Escape global
             // registrado sin nadie que lo cerrara.
             crate::clipboard_history::unregister_clipboard_escape_close(app);
-            *state.pre_clipboard_position.lock().unwrap() = None;
+            *state.pre_clipboard_position.lock_or_recover() = None;
             let _ = window.hide();
         }
     }
@@ -432,7 +439,7 @@ fn remember_pill_home(app: &AppHandle, x: i32, y: i32) {
     let Some(state) = app.try_state::<AppState>() else {
         return;
     };
-    let mut cfg = state.config.lock().unwrap();
+    let mut cfg = state.config.lock_or_recover();
     let next = Some((f64::from(x), f64::from(y)));
     // Mismo motivo que en `set_pill_visible`: volver al mismo hogar es el caso
     // normal, y reescribir el archivo idéntico en cada ciclo no aporta nada.
@@ -476,7 +483,7 @@ pub fn summon_pill_to_cursor(app: &AppHandle) {
     // más lo desregistraría y la tecla quedaría secuestrada en todo el SO.
     crate::clipboard_history::unregister_clipboard_escape_close(app);
     if let Some(state) = app.try_state::<AppState>() {
-        *state.pre_clipboard_position.lock().unwrap() = None;
+        *state.pre_clipboard_position.lock_or_recover() = None;
     }
 
     // Cierra el panel y devuelve la pill a su forma compacta ANTES de medir:
@@ -517,9 +524,9 @@ pub fn get_or_load_whisper(
     state: &AppState,
     model_path: &Path,
 ) -> Result<Arc<LoadedModel>, String> {
-    *state.whisper_last_used.lock().unwrap() = Some(Instant::now());
+    *state.whisper_last_used.lock_or_recover() = Some(Instant::now());
 
-    let mut guard = state.whisper.lock().unwrap();
+    let mut guard = state.whisper.lock_or_recover();
     if let Some(loaded) = guard.get(model_path) {
         return Ok(Arc::clone(loaded));
     }
@@ -533,12 +540,12 @@ pub fn get_or_load_whisper(
 
 /// Quita del cache rutas que ya no estan en la config (libera RAM).
 pub fn prune_whisper_cache(state: &AppState, keep: &[PathBuf]) {
-    let mut guard = state.whisper.lock().unwrap();
+    let mut guard = state.whisper.lock_or_recover();
     guard.retain(|path, _| keep.iter().any(|k| k == path));
 }
 
 fn whisper_in_use(state: &AppState) -> bool {
-    state.active.lock().unwrap().is_some() || state.dictation.lock().unwrap().is_some()
+    state.active.lock_or_recover().is_some() || state.dictation.lock_or_recover().is_some()
 }
 
 /// Libera todos los modelos Whisper residentes si no hay trabajo activo.
@@ -546,7 +553,7 @@ pub fn unload_whisper_cache(state: &AppState) -> usize {
     if whisper_in_use(state) {
         return 0;
     }
-    let mut guard = state.whisper.lock().unwrap();
+    let mut guard = state.whisper.lock_or_recover();
     let n = guard.len();
     guard.clear();
     n
@@ -561,7 +568,7 @@ pub fn preload_whisper_async(app: &AppHandle) {
     let app2 = app.clone();
     thread::spawn(move || {
         let state = app2.state::<AppState>();
-        let cfg = state.config.lock().unwrap().clone();
+        let cfg = state.config.lock_or_recover().clone();
         let models_dir = state.dirs.models_dir();
         // Dictado primero: es el camino sensible a latencia.
         let mut ids: Vec<&str> = vec![
@@ -613,14 +620,14 @@ fn ensure_whisper_idle_unloader(app: &AppHandle) {
         if whisper_in_use(&state) {
             continue;
         }
-        let last = *state.whisper_last_used.lock().unwrap();
+        let last = *state.whisper_last_used.lock_or_recover();
         let Some(last) = last else {
             continue;
         };
         if last.elapsed() < WHISPER_IDLE_TTL {
             continue;
         }
-        let cached = state.whisper.lock().unwrap().len();
+        let cached = state.whisper.lock_or_recover().len();
         if cached == 0 {
             continue;
         }
@@ -631,7 +638,7 @@ fn ensure_whisper_idle_unloader(app: &AppHandle) {
                 idle_secs = WHISPER_IDLE_TTL.as_secs(),
                 "modelos Whisper liberados por idle"
             );
-            *state.whisper_last_used.lock().unwrap() = None;
+            *state.whisper_last_used.lock_or_recover() = None;
         }
     });
 }

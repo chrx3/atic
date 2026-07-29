@@ -22,11 +22,11 @@ pub struct Summary {
 }
 
 impl Summary {
+    /// Atómica: un resumen es caro de rehacer —hay que volver a gastar el
+    /// modelo— y una escritura truncada lo perdería sin dejar rastro.
     pub fn save(&self, path: &Path) -> Result<()> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(path, serde_json::to_string_pretty(self)?)?;
+        let text = serde_json::to_string_pretty(self)?;
+        crate::fs_atomic::write_atomic_str(path, &text)?;
         Ok(())
     }
 

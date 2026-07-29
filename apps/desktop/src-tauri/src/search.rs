@@ -6,6 +6,7 @@ use tauri::State;
 use crate::clipboard_history;
 use crate::snippets;
 use crate::state::AppState;
+use atic_core::MutexExt;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -169,8 +170,7 @@ pub fn search_local(state: State<AppState>, query: String) -> Result<Vec<SearchH
 
     let recordings = state
         .db
-        .lock()
-        .unwrap()
+        .lock_or_recover()
         .list_recordings()
         .map_err(|e| e.to_string())?;
     for rec in recordings {

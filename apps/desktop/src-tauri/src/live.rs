@@ -13,6 +13,7 @@ use atic_core::{secrets, SecretKind, Segment, Speaker};
 use atic_transcribe::{LiveEngine, LivePcmChunk, LiveSttBackend, LiveUpdate};
 
 use crate::state::{get_or_load_whisper, AppState};
+use atic_core::MutexExt;
 
 const GROQ_LIVE_KEY_REQUIRED_MSG: &str =
     "Configura tu API key de Groq en Ajustes para usar el motor en la nube.";
@@ -65,13 +66,13 @@ impl LiveWorkerHandle {
                 if join.join().is_err() {
                     tracing::warn!("el worker de vista previa terminó inesperadamente");
                 }
-                if let Some(callback) = callback_bg.lock().unwrap().take() {
+                if let Some(callback) = callback_bg.lock_or_recover().take() {
                     callback();
                 }
             })
         {
             tracing::warn!(%err, "no se pudo crear el hilo de cierre de vista previa");
-            if let Some(callback) = callback.lock().unwrap().take() {
+            if let Some(callback) = callback.lock_or_recover().take() {
                 callback();
             }
         }

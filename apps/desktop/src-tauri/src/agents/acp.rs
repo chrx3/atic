@@ -62,6 +62,7 @@ use super::model::{
 };
 use super::turns::{end_turn, ensure_turn, start_turn, Emit, Turns};
 use super::{AgentBackend, AgentSession, PermissionDecision, SlashCommand, StartOptions};
+use atic_core::MutexExt;
 
 /// Un agente ACP, descrito por cómo se lanza.
 pub struct Acp {
@@ -228,13 +229,15 @@ impl AgentBackend for Acp {
             let shared = shared.clone();
             std::thread::spawn(move || {
                 let result = futures::executor::block_on(connect(
-                    program,
-                    args,
-                    cwd,
-                    backend_id,
-                    desired_model,
-                    desired_effort,
-                    desired_fast,
+                    Arranque {
+                        program,
+                        args,
+                        cwd,
+                        backend_id,
+                        desired_model,
+                        desired_effort,
+                        desired_fast,
+                    },
                     rx,
                     emit.clone(),
                     shared,
@@ -251,8 +254,13 @@ impl AgentBackend for Acp {
     }
 }
 
-/// Corre la conexión entera. Vive lo que la sesión.
-async fn connect(
+/// Con qué arrancar la conexión: el proceso y lo que el usuario pidió antes de
+/// que hubiera sesión donde pedirlo.
+///
+/// Van juntos en un struct y no sueltos porque son siete y se leen de a pares
+/// mal apareados en el sitio de llamada; con nombres, un `desired_effort` en el
+/// lugar de `cwd` deja de compilar en vez de fallar en runtime.
+struct Arranque {
     program: std::path::PathBuf,
     args: Vec<String>,
     cwd: String,
@@ -260,10 +268,24 @@ async fn connect(
     desired_model: Option<String>,
     desired_effort: Option<String>,
     desired_fast: Option<bool>,
+}
+
+/// Corre la conexión entera. Vive lo que la sesión.
+async fn connect(
+    arranque: Arranque,
     mut rx: mpsc::UnboundedReceiver<Cmd>,
     emit: Emit,
     shared: Arc<Shared>,
 ) -> Result<(), String> {
+    let Arranque {
+        program,
+        args,
+        cwd,
+        backend_id,
+        desired_model,
+        desired_effort,
+        desired_fast,
+    } = arranque;
     let agent = AcpAgent::new(AcpAgentConfig::new(&program).args(args));
 
     let notif = {
@@ -286,7 +308,7 @@ async fn connect(
             async move {
                 let id = format!("perm:{}", req.tool_call.tool_call_id.0);
                 let (tx, wait) = oneshot::channel();
-                shared.pending.lock().unwrap().insert(id.clone(), tx);
+                shared.pending.lock_or_recover().insert(id.clone(), tx);
 
                 let mut out = Vec::new();
                 let turn = ensure_turn(&shared.turns, &mut out);
@@ -319,7 +341,7 @@ async fn connect(
                 // prompt queda muerto aunque la UI ya muestre el permiso.
                 cx.spawn(async move {
                     let decision = wait.await.unwrap_or(PermissionDecision::Deny);
-                    shared.pending.lock().unwrap().remove(&id);
+                    shared.pending.lock_or_recover().remove(&id);
                     emit.send(AgentDelta::ItemPatch {
                         item: id,
                         patch: ItemPatch {
@@ -334,9 +356,7 @@ async fn connect(
 
                     match pick_option(&req, decision) {
                         Some(opt) => responder.respond(RequestPermissionResponse::new(
-                            RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(
-                                opt,
-                            )),
+                            RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(opt)),
                         )),
                         None => responder.respond(RequestPermissionResponse::new(
                             RequestPermissionOutcome::Cancelled,
@@ -358,16 +378,14 @@ async fn connect(
             async move {
                 let mut out = Vec::new();
                 let turn = ensure_turn(&shared.turns, &mut out);
-                let n = shared.seen.lock().unwrap().len();
+                let n = shared.seen.lock_or_recover().len();
                 let title = req.title.unwrap_or_else(|| "pregunta".into());
                 out.push(AgentDelta::ItemAdd {
                     turn: turn.clone(),
                     item: Item::new(
                         format!("{turn}-ask{n}"),
                         ItemKind::Notice {
-                            text: format!(
-                                "Cursor preguntó «{title}»; se omitió (aún sin UI)."
-                            ),
+                            text: format!("Cursor preguntó «{title}»; se omitió (aún sin UI)."),
                         },
                     ),
                 });
@@ -391,19 +409,14 @@ async fn connect(
             async move {
                 let mut out = Vec::new();
                 let turn = ensure_turn(&shared.turns, &mut out);
-                let n = shared.seen.lock().unwrap().len();
-                let name = req
-                    .name
-                    .or(req.overview)
-                    .unwrap_or_else(|| "plan".into());
+                let n = shared.seen.lock_or_recover().len();
+                let name = req.name.or(req.overview).unwrap_or_else(|| "plan".into());
                 out.push(AgentDelta::ItemAdd {
                     turn: turn.clone(),
                     item: Item::new(
                         format!("{turn}-planask{n}"),
                         ItemKind::Notice {
-                            text: format!(
-                                "Cursor pidió aprobar «{name}»; se aceptó (aún sin UI)."
-                            ),
+                            text: format!("Cursor pidió aprobar «{name}»; se aceptó (aún sin UI)."),
                         },
                     ),
                 });
@@ -470,10 +483,10 @@ async fn connect(
 
             if let Some(config_options) = &session.config_options {
                 if let Some(model_cfg) = find_model_config(config_options) {
-                    *shared.model_config_id.lock().unwrap() = Some(model_cfg.config_id);
+                    *shared.model_config_id.lock_or_recover() = Some(model_cfg.config_id);
                     let (models, templates) =
                         normalize_cursor_acp_models(backend_id, model_cfg.models);
-                    *shared.model_templates.lock().unwrap() = templates;
+                    *shared.model_templates.lock_or_recover() = templates;
                     if !models.is_empty() {
                         let current = model_cfg.current;
                         let (group_id, effort_id, fast) =
@@ -491,7 +504,7 @@ async fn connect(
                     }
                 }
                 if let Some((effort_id, current)) = find_effort_config(config_options) {
-                    *shared.effort_config_id.lock().unwrap() = Some(effort_id);
+                    *shared.effort_config_id.lock_or_recover() = Some(effort_id);
                     // Solo pisa si no vino ya del agrupado Cursor.
                     if patch.effort.is_none() {
                         patch.effort = Some(current);
@@ -594,7 +607,7 @@ async fn prompt_turn(
     // Cerrar lo que quedó escribiéndose, ANTES de dar el turno por
     // terminado: el texto acumulado por trozos ya es el definitivo,
     // así que el parche solo apaga la señal de «sigue escribiendo».
-    for id in shared.abiertos.lock().unwrap().drain(..) {
+    for id in shared.abiertos.lock_or_recover().drain(..) {
         emit.send(AgentDelta::ItemPatch {
             item: id,
             patch: ItemPatch {
@@ -611,7 +624,7 @@ async fn prompt_turn(
     emit.send(AgentDelta::TurnEnd {
         turn,
         status,
-        cost_usd: shared.cost.lock().unwrap().del_turno(),
+        cost_usd: shared.cost.lock_or_recover().del_turno(),
     });
     end_turn(&shared.turns);
     done?;
@@ -625,16 +638,17 @@ struct ModelConfig {
 }
 
 fn is_model_option(opt: &SessionConfigOption) -> bool {
-    matches!(opt.category, Some(SessionConfigOptionCategory::Model))
-        || opt.id.0.contains("model")
+    matches!(opt.category, Some(SessionConfigOptionCategory::Model)) || opt.id.0.contains("model")
 }
 
 fn is_effort_option(opt: &SessionConfigOption) -> bool {
-    matches!(opt.category, Some(SessionConfigOptionCategory::ThoughtLevel))
-        || {
-            let id = opt.id.0.to_ascii_lowercase();
-            id.contains("thought") || id.contains("effort") || id.contains("reasoning")
-        }
+    matches!(
+        opt.category,
+        Some(SessionConfigOptionCategory::ThoughtLevel)
+    ) || {
+        let id = opt.id.0.to_ascii_lowercase();
+        id.contains("thought") || id.contains("effort") || id.contains("reasoning")
+    }
 }
 
 fn select_option_to_model(opt: &SessionConfigSelectOption) -> ModelInfo {
@@ -731,7 +745,9 @@ fn parsed_display_name(raw: &str) -> String {
 fn acp_efforts_from_params(
     params: &[(String, String)],
 ) -> (Vec<super::model::EffortOption>, Option<String>, bool) {
-    let has_effort = params.iter().any(|(k, _)| k == "effort" || k == "reasoning");
+    let has_effort = params
+        .iter()
+        .any(|(k, _)| k == "effort" || k == "reasoning");
     let supports_fast = params.iter().any(|(k, _)| k == "fast");
     let current = params
         .iter()
@@ -810,11 +826,7 @@ fn build_acp_model_wire(
 
     if let Some(f) = fast {
         if parsed.params.iter().any(|(k, _)| k == "fast") || f {
-            upsert_param(
-                &mut parsed.params,
-                "fast",
-                if f { "true" } else { "false" },
-            );
+            upsert_param(&mut parsed.params, "fast", if f { "true" } else { "false" });
         }
     }
 
@@ -895,8 +907,8 @@ async fn apply_config(
     emit: &Emit,
 ) -> agent_client_protocol::Result<()> {
     let mut patch = ThreadPatch::default();
-    let has_effort_config = shared.effort_config_id.lock().unwrap().is_some();
-    let templates = shared.model_templates.lock().unwrap().clone();
+    let has_effort_config = shared.effort_config_id.lock_or_recover().is_some();
+    let templates = shared.model_templates.lock_or_recover().clone();
 
     // Cursor ACP: mutar params del value `base[effort=…,fast=…]`.
     // Sin plantillas (OpenCode u otros), mandar el id tal cual.
@@ -913,7 +925,12 @@ async fn apply_config(
                     &[],
                 ))
             } else if fast == Some(true) {
-                Some(super::discover::compose_cursor_wire(m, "default", true, &[]))
+                Some(super::discover::compose_cursor_wire(
+                    m,
+                    "default",
+                    true,
+                    &[],
+                ))
             } else {
                 Some(m.to_string())
             }
@@ -924,8 +941,14 @@ async fn apply_config(
         model.map(str::to_string)
     };
 
+    // El `.clone()` sale a su propia sentencia a propósito: dentro de un `if let`
+    // el temporal del guard vive TODO el cuerpo, y el cuerpo tiene un `.await`.
+    // Ese mismo mutex lo escribe el handler de notificaciones (más arriba, al
+    // leer los `config_id`), así que un `std::sync::Mutex` tomado mientras el
+    // request está en vuelo no es una espera: es un deadlock.
+    let model_config_id = shared.model_config_id.lock_or_recover().clone();
     if let Some(wire) = wire_model.as_deref() {
-        if let Some(config_id) = shared.model_config_id.lock().unwrap().clone() {
+        if let Some(config_id) = model_config_id {
             conn.send_request(SetSessionConfigOptionRequest::new(
                 session_id.clone(),
                 config_id,
@@ -954,8 +977,9 @@ async fn apply_config(
         }
     }
 
+    let effort_config_id = shared.effort_config_id.lock_or_recover().clone();
     if let Some(effort) = effort {
-        if let Some(config_id) = shared.effort_config_id.lock().unwrap().clone() {
+        if let Some(config_id) = effort_config_id {
             conn.send_request(SetSessionConfigOptionRequest::new(
                 session_id.clone(),
                 config_id,
@@ -1105,7 +1129,7 @@ fn translate(update: &SessionUpdate, shared: &Shared) -> Vec<AgentDelta> {
             // apilar una lista nueva debajo.
             let id = format!("{turn}-plan");
             let entries = plan_entries(&p.entries);
-            if shared.seen.lock().unwrap().insert(id.clone()) {
+            if shared.seen.lock_or_recover().insert(id.clone()) {
                 out.push(AgentDelta::ItemAdd {
                     turn,
                     item: Item::new(id, ItemKind::Plan { entries }),
@@ -1156,7 +1180,7 @@ fn translate(update: &SessionUpdate, shared: &Shared) -> Vec<AgentDelta> {
         // como si nada hubiera pasado.
         other => {
             let turn = ensure_turn(&shared.turns, &mut out);
-            let n = shared.seen.lock().unwrap().len();
+            let n = shared.seen.lock_or_recover().len();
             out.push(AgentDelta::ItemAdd {
                 turn: turn.clone(),
                 item: Item::new(
@@ -1189,7 +1213,7 @@ fn chunk(c: &ContentChunk, prefix: &str, role: Role, shared: &Shared, out: &mut 
         .unwrap_or_else(|| turn.clone());
     let id = format!("{prefix}:{key}");
 
-    if shared.seen.lock().unwrap().insert(id.clone()) {
+    if shared.seen.lock_or_recover().insert(id.clone()) {
         let kind = if prefix == "r" {
             ItemKind::Reasoning {
                 text: String::new(),
@@ -1206,7 +1230,7 @@ fn chunk(c: &ContentChunk, prefix: &str, role: Role, shared: &Shared, out: &mut 
             turn,
             item: Item::new(id.clone(), kind),
         });
-        shared.abiertos.lock().unwrap().push(id.clone());
+        shared.abiertos.lock_or_recover().push(id.clone());
     }
     out.push(AgentDelta::ItemChunk { item: id, text });
 }
@@ -1314,7 +1338,7 @@ impl Costo {
 
 fn usage(u: &UsageUpdate, shared: &Shared) -> AgentDelta {
     if let Some(c) = &u.cost {
-        shared.cost.lock().unwrap().acumulado = c.amount;
+        shared.cost.lock_or_recover().acumulado = c.amount;
     }
     AgentDelta::ThreadPatch {
         patch: ThreadPatch {
@@ -1385,10 +1409,7 @@ struct AcpSession {
 
 impl AgentSession for AcpSession {
     fn send(&mut self, text: &str, origin: Option<Origin>) -> Result<(), String> {
-        let files = origin
-            .as_ref()
-            .map(|o| o.files.clone())
-            .unwrap_or_default();
+        let files = origin.as_ref().map(|o| o.files.clone()).unwrap_or_default();
         let prompt = {
             let stripped = super::media::strip_embedded_paths(text, &files);
             if stripped.is_empty() && !files.is_empty() {
@@ -1440,7 +1461,7 @@ impl AgentSession for AcpSession {
     }
 
     fn respond_permission(&mut self, id: &str, decision: PermissionDecision) -> Result<(), String> {
-        let tx = self.shared.pending.lock().unwrap().remove(id);
+        let tx = self.shared.pending.lock_or_recover().remove(id);
         match tx {
             Some(tx) => tx
                 .send(decision)
@@ -1558,7 +1579,7 @@ mod tests {
         chunk(&trozo("m1", "la"), "m", Role::Assistant, &shared, &mut out);
 
         assert_eq!(
-            shared.abiertos.lock().unwrap().as_slice(),
+            shared.abiertos.lock_or_recover().as_slice(),
             ["m:m1"],
             "el bloque se anota UNA vez, no una por trozo"
         );
@@ -1586,6 +1607,9 @@ mod tests {
             &mut out,
         );
 
-        assert_eq!(shared.abiertos.lock().unwrap().as_slice(), ["r:m1", "m:m1"]);
+        assert_eq!(
+            shared.abiertos.lock_or_recover().as_slice(),
+            ["r:m1", "m:m1"]
+        );
     }
 }

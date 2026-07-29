@@ -3,7 +3,7 @@
    * Overlay del launcher tipo Spotlight.
    * Atajo global → buscar apps / acciones → Enter abre.
    */
-  import { onMount, tick, type Component } from "svelte";
+  import { onMount, tick } from "svelte";
   import type { UnlistenFn } from "@tauri-apps/api/event";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import ArrowDown from "reicon-svelte/icons/ArrowDown.svelte";
@@ -36,7 +36,12 @@
 
   let searchGen = 0;
 
-  const ACTION_ICONS: Record<string, Component> = {
+  // Los iconos de `reicon-svelte` son componentes de clase (Svelte 4), no el
+  // `Component` funcional de Svelte 5: tiparlos con `Component` no compila.
+  // Como todos comparten firma, uno cualquiera sirve de tipo para el resto.
+  type Icon = typeof Microphone;
+
+  const ACTION_ICONS: Record<string, Icon> = {
     "action:dictation": Microphone,
     "action:capture": Crop,
     "action:clipboard": Clipboard,
@@ -45,7 +50,7 @@
     "action:settings": Settings,
   };
 
-  function iconFor(hit: LauncherHit): Component {
+  function iconFor(hit: LauncherHit): Icon {
     return ACTION_ICONS[hit.id] ?? (hit.kind === "app" ? Window : Search);
   }
 

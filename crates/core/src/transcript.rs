@@ -72,11 +72,12 @@ impl Transcript {
     }
 
     /// Persiste la transcripción como JSON.
+    ///
+    /// Atómica: transcribir de nuevo cuesta minutos de CPU, y las ediciones que
+    /// el usuario hizo sobre los segmentos no se recuperan de ningún lado.
     pub fn save(&self, path: &Path) -> Result<()> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(path, serde_json::to_string_pretty(self)?)?;
+        let text = serde_json::to_string_pretty(self)?;
+        crate::fs_atomic::write_atomic_str(path, &text)?;
         Ok(())
     }
 

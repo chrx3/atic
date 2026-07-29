@@ -1,0 +1,528 @@
+<!doctype html>
+<html lang="es" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Atic · launcher: ahora vs. con windowEffects</title>
+    <style>
+      /* ───────────────────────────────────────────────────────────────
+         Tokens copiados de apps/desktop/src/app.css, sin tocar.
+         Si acá se ven distintos que en la app, la demo está mintiendo.
+         ─────────────────────────────────────────────────────────────── */
+      :root {
+        color-scheme: light;
+        --rb-font: "Aptos", "Avenir Next", "Segoe UI Variable", sans-serif;
+        --rb-surface: #f7f7f2;
+        --rb-surface-2: #efefe8;
+        --rb-surface-elevated: #ffffff;
+        --rb-border: rgba(28, 28, 24, 0.11);
+        --rb-hairline: rgba(28, 28, 24, 0.08);
+        --rb-text: #171714;
+        --rb-muted: #5f5f58;
+        --rb-faint: #8f8f86;
+        --rb-accent: #1a1a17;
+        --rb-ok: #3f7355;
+      }
+      :root[data-theme="dark"] {
+        color-scheme: dark;
+        --rb-surface: #1e1e1b;
+        --rb-surface-2: #262622;
+        --rb-surface-elevated: #2a2a26;
+        --rb-border: rgba(246, 246, 241, 0.1);
+        --rb-hairline: rgba(246, 246, 241, 0.08);
+        --rb-text: #f0f0ea;
+        --rb-muted: #9a9a90;
+        --rb-faint: #6e6e66;
+        --rb-accent: #f0f0ea;
+        --rb-ok: #6faf88;
+      }
+
+      * { box-sizing: border-box; }
+      html, body { height: 100%; margin: 0; }
+      body {
+        font-family: var(--rb-font);
+        color: var(--rb-text);
+        overflow: hidden;
+        -webkit-font-smoothing: antialiased;
+      }
+
+      /* ─── El "escritorio" de atrás ────────────────────────────────────
+         Tiene detalle a propósito: un desenfoque sobre un fondo plano no
+         se ve. Lo que delata si el vidrio funciona es el texto y los
+         bordes duros pasando por debajo. */
+      .desk {
+        position: fixed;
+        inset: 0;
+        background:
+          radial-gradient(1100px 700px at 12% 8%, #ff9a3d 0%, transparent 55%),
+          radial-gradient(900px 800px at 88% 22%, #6c7dff 0%, transparent 55%),
+          radial-gradient(1000px 900px at 45% 95%, #17c9a4 0%, transparent 55%),
+          linear-gradient(150deg, #2a1c3f 0%, #101a2e 55%, #05131c 100%);
+        animation: drift 26s ease-in-out infinite alternate;
+      }
+      @keyframes drift {
+        to { transform: scale(1.06) translate3d(-2%, -1.5%, 0); }
+      }
+      .desk-stripes {
+        position: fixed;
+        inset: 0;
+        background: repeating-linear-gradient(
+          115deg,
+          rgba(255, 255, 255, 0.07) 0 2px,
+          transparent 2px 26px
+        );
+      }
+      /* Ventana falsa con texto: es el detector de si hay blur real.
+         Ocupa todo el ancho y llega hasta abajo A PROPÓSITO: los dos
+         paneles tienen que caer sobre el MISMO fondo. Si uno queda sobre
+         el código y el otro sobre el degradado liso, la comparación
+         miente — el difuminado se luce contra detalle, no contra un
+         color plano. */
+      .desk-win {
+        position: fixed;
+        top: 6%;
+        left: 50%;
+        width: min(1320px, 94vw);
+        height: 84%;
+        transform: translateX(-50%);
+        border-radius: 14px;
+        overflow: hidden;
+        box-shadow: 0 30px 90px rgba(0, 0, 0, 0.45);
+        font-family: "Cascadia Mono", ui-monospace, monospace;
+        font-size: 13px;
+        line-height: 1.85;
+      }
+      .desk-win-body { height: 100%; }
+      .desk-win-cols {
+        column-count: 2;
+        column-gap: 70px;
+      }
+      .desk-win-bar {
+        display: flex;
+        gap: 7px;
+        align-items: center;
+        padding: 10px 14px;
+        background: #23232b;
+      }
+      .desk-win-bar i {
+        width: 11px; height: 11px; border-radius: 999px; display: block;
+      }
+      .desk-win-body {
+        padding: 16px 22px 26px;
+        background: #16161c;
+        color: #cfd3e0;
+      }
+      .desk-win-body .k { color: #ff7b9c; }
+      .desk-win-body .s { color: #9ae6a0; }
+      .desk-win-body .c { color: #6b7285; }
+      .desk-win-body .f { color: #7cc7ff; }
+
+      /* ─── Escenario de comparación ───────────────────────────────── */
+      .stage {
+        position: relative;
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: clamp(24px, 5vw, 72px);
+        align-items: center;
+        justify-items: center;
+        height: 100%;
+        padding: 0 clamp(20px, 4vw, 64px);
+      }
+      .slot { width: min(430px, 100%); }
+      .slot-tag {
+        display: inline-flex;
+        align-items: baseline;
+        gap: 10px;
+        /* Chip propio: el rótulo cae sobre el código del fondo y sin una
+           base sólida se vuelve ilegible justo en la demo que trata de
+           legibilidad. */
+        margin: 0 0 14px 2px;
+        padding: 7px 12px;
+        border-radius: 999px;
+        background: rgba(10, 10, 14, 0.82);
+        border: 1px solid rgba(255, 255, 255, 0.16);
+        font-size: 11px;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: #fff;
+      }
+      .slot-tag b { font-weight: 700; }
+      .slot-tag span {
+        font-size: 11px;
+        letter-spacing: 0.02em;
+        text-transform: none;
+        opacity: 0.72;
+      }
+      /* El vaivén va sobre el bloque entero (rótulo + panel) para que la
+         etiqueta no quede tapada por su propio panel. */
+      .roam { animation: roam 9s ease-in-out infinite alternate; }
+      @keyframes roam {
+        from { transform: translate3d(0, -22px, 0); }
+        to   { transform: translate3d(0, 26px, 0); }
+      }
+      body.static .roam,
+      body.static .desk { animation: none; }
+
+      /* ─── El launcher: markup y medidas del archivo real ──────────── */
+      .launcher-panel {
+        display: flex;
+        flex-direction: column;
+        border-radius: 20px;
+        overflow: hidden;
+        position: relative;
+      }
+
+      /* AHORA — tal cual launcher/+page.svelte:260.
+         El `backdrop-filter: blur(18px)` del archivo NO se replica acá,
+         porque en la app tampoco hace nada: la ventana es transparente y
+         no hay nada pintado detrás dentro del webview para muestrear.
+         Esto es lo que se ve hoy. */
+      .is-now {
+        background: color-mix(in srgb, var(--rb-surface-elevated) 92%, transparent);
+        border: 1px solid var(--rb-border);
+        box-shadow:
+          0 1px 0 rgba(255, 255, 255, 0.45) inset,
+          0 18px 48px rgba(0, 0, 0, 0.18);
+      }
+
+      /* CON EL CAMBIO — lo que produce windowEffects (Acrylic/vibrancy).
+         El compositor del SO desenfoca el escritorio y la superficie baja
+         a ~62% para que ese desenfoque se vea. Acá se simula con
+         backdrop-filter, que en una página normal SÍ tiene backdrop. */
+      .is-next {
+        background: color-mix(in srgb, var(--rb-surface-elevated) 62%, transparent);
+        border: 1px solid color-mix(in srgb, var(--rb-border) 60%, transparent);
+        backdrop-filter: blur(30px) saturate(180%);
+        -webkit-backdrop-filter: blur(30px) saturate(180%);
+        box-shadow: 0 24px 60px rgba(0, 0, 0, 0.3);
+      }
+      /* Grano: Acrylic lo tiene, y es lo que evita el banding en gradientes
+         grandes vistos a través del vidrio. */
+      .is-next::before {
+        content: "";
+        position: absolute;
+        inset: 0;
+        border-radius: inherit;
+        pointer-events: none;
+        opacity: 0.05;
+        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)'/%3E%3C/svg%3E");
+      }
+      /* Especular que recorre TODO el perímetro con intensidad variable,
+         en vez de la línea recta de arriba. Es la diferencia entre
+         glassmorphism y liquid glass: el brillo sigue la curvatura. */
+      .is-next::after {
+        content: "";
+        position: absolute;
+        inset: 0;
+        border-radius: inherit;
+        padding: 1.2px;
+        pointer-events: none;
+        background: conic-gradient(
+          from 215deg,
+          rgba(255, 255, 255, 0.9) 0%,
+          rgba(255, 255, 255, 0.06) 18%,
+          rgba(255, 255, 255, 0.42) 38%,
+          rgba(255, 255, 255, 0.04) 62%,
+          rgba(255, 255, 255, 0.55) 82%,
+          rgba(255, 255, 255, 0.9) 100%
+        );
+        -webkit-mask:
+          linear-gradient(#000 0 0) content-box,
+          linear-gradient(#000 0 0);
+        -webkit-mask-composite: xor;
+        mask:
+          linear-gradient(#000 0 0) content-box,
+          linear-gradient(#000 0 0);
+        mask-composite: exclude;
+      }
+      :root[data-theme="dark"] .is-next::after {
+        background: conic-gradient(
+          from 215deg,
+          rgba(255, 255, 255, 0.55) 0%,
+          rgba(255, 255, 255, 0.03) 18%,
+          rgba(255, 255, 255, 0.24) 38%,
+          rgba(255, 255, 255, 0.02) 62%,
+          rgba(255, 255, 255, 0.3) 82%,
+          rgba(255, 255, 255, 0.55) 100%
+        );
+      }
+
+      /* Accesibilidad: si el sistema pide menos transparencia, el vidrio
+         se apaga y queda una superficie sólida. Hoy la app no lo hace. */
+      @media (prefers-reduced-transparency: reduce) {
+        .is-next {
+          background: var(--rb-surface-elevated);
+          backdrop-filter: none;
+          -webkit-backdrop-filter: none;
+        }
+        .is-next::before, .is-next::after { display: none; }
+      }
+
+      .launcher-search {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 14px 16px;
+        border-bottom: 1px solid var(--rb-hairline);
+        position: relative;
+        z-index: 1;
+      }
+      .launcher-icon { display: inline-flex; color: var(--rb-muted); }
+      .launcher-input {
+        flex: 1;
+        font: inherit;
+        font-size: 17px;
+        letter-spacing: -0.01em;
+        color: var(--rb-text);
+      }
+      .launcher-input .ph { color: var(--rb-faint); }
+
+      .launcher-list {
+        list-style: none;
+        margin: 0;
+        padding: 8px;
+        position: relative;
+        z-index: 1;
+      }
+      .launcher-row {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        border-radius: 12px;
+        padding: 10px 12px;
+      }
+      .launcher-row.selected {
+        background: color-mix(in srgb, var(--rb-accent) 8%, transparent);
+      }
+      .launcher-tile {
+        flex: 0 0 auto;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 32px;
+        height: 32px;
+        border-radius: 10px;
+        color: var(--rb-muted);
+        background: var(--rb-surface-2);
+      }
+      .launcher-tile[data-kind="action"] { color: var(--rb-ok); }
+      .launcher-text { display: flex; flex-direction: column; min-width: 0; }
+      .launcher-title { font-size: 14px; }
+      .launcher-sub { font-size: 12px; color: var(--rb-faint); }
+
+      .launcher-footer {
+        display: flex;
+        gap: 16px;
+        padding: 10px 16px;
+        border-top: 1px solid var(--rb-hairline);
+        font-size: 11px;
+        color: var(--rb-faint);
+        position: relative;
+        z-index: 1;
+      }
+      .launcher-hint { display: inline-flex; align-items: center; gap: 6px; }
+      .launcher-kbd {
+        display: inline-flex;
+        gap: 2px;
+        padding: 2px 5px;
+        border: 1px solid var(--rb-border);
+        border-radius: 6px;
+      }
+
+      /* ─── Controles ──────────────────────────────────────────────── */
+      .bar {
+        position: fixed;
+        left: 50%;
+        bottom: 22px;
+        transform: translateX(-50%);
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        padding: 8px;
+        border-radius: 14px;
+        background: rgba(18, 18, 22, 0.78);
+        backdrop-filter: blur(20px);
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        box-shadow: 0 14px 40px rgba(0, 0, 0, 0.4);
+        z-index: 10;
+      }
+      .bar button {
+        border: 1px solid rgba(255, 255, 255, 0.16);
+        border-radius: 9px;
+        padding: 8px 13px;
+        background: rgba(255, 255, 255, 0.07);
+        color: #f4f4ef;
+        font: inherit;
+        font-size: 12.5px;
+        cursor: pointer;
+      }
+      .bar button:hover { background: rgba(255, 255, 255, 0.15); }
+      .bar .sep { width: 1px; height: 22px; background: rgba(255, 255, 255, 0.18); }
+
+      .note {
+        position: fixed;
+        left: 22px;
+        bottom: 22px;
+        max-width: 330px;
+        padding: 12px 14px;
+        border-radius: 12px;
+        background: rgba(18, 18, 22, 0.8);
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        color: #d8d8d2;
+        font-size: 11.5px;
+        line-height: 1.6;
+        z-index: 10;
+      }
+      .note b { color: #fff; }
+      .note code {
+        font-family: "Cascadia Mono", ui-monospace, monospace;
+        font-size: 11px;
+        color: #ffcf8b;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="desk"></div>
+    <div class="desk-stripes"></div>
+
+    <div class="desk-win" aria-hidden="true">
+      <div class="desk-win-bar">
+        <i style="background:#ff5f57"></i><i style="background:#febc2e"></i><i style="background:#28c840"></i>
+      </div>
+      <div class="desk-win-body">
+        <div class="desk-win-cols">
+          <div><span class="c">// si esto no se lee borroso detrás del panel, no hay vidrio</span></div>
+          <div><span class="k">pub fn</span> <span class="f">write_atomic</span>(path: &amp;Path, bytes: &amp;[<span class="k">u8</span>]) -&gt; Result&lt;()&gt; {</div>
+          <div>&nbsp;&nbsp;<span class="k">let</span> tmp = dir.join(<span class="s">format!(".{name}.tmp")</span>);</div>
+          <div>&nbsp;&nbsp;file.<span class="f">write_all</span>(bytes)?;</div>
+          <div>&nbsp;&nbsp;file.<span class="f">sync_all</span>()?;</div>
+          <div>&nbsp;&nbsp;fs::<span class="f">rename</span>(&amp;tmp, path)</div>
+          <div>}</div>
+          <div>&nbsp;</div>
+          <div><span class="k">const</span> DIAS_DE_LOG: <span class="k">usize</span> = <span class="s">7</span>;</div>
+          <div><span class="k">static</span> SESSIONS: Mutex&lt;Entry&gt;</div>
+          <div><span class="k">let</span> g = cfg.<span class="f">lock_or_recover</span>();</div>
+          <div>&nbsp;</div>
+          <div><span class="c">// migración en transacción</span></div>
+          <div><span class="k">let</span> tx = conn.<span class="f">unchecked_transaction</span>()?;</div>
+          <div>tx.<span class="f">execute_batch</span>(sql)?;</div>
+          <div>tx.<span class="f">commit</span>()?;</div>
+          <div>&nbsp;</div>
+          <div><span class="k">match</span> archivo {</div>
+          <div>&nbsp;&nbsp;<span class="k">Ok</span>(appender) =&gt; {</div>
+          <div>&nbsp;&nbsp;&nbsp;&nbsp;<span class="f">non_blocking</span>(appender)</div>
+          <div>&nbsp;&nbsp;}</div>
+          <div>&nbsp;&nbsp;<span class="k">Err</span>(e) =&gt; <span class="f">warn!</span>(<span class="s">"sin log"</span>),</div>
+          <div>}</div>
+          <div>&nbsp;</div>
+          <div><span class="k">fn</span> <span class="f">clipboard_is_sensitive</span>() -&gt; <span class="k">bool</span> {</div>
+          <div>&nbsp;&nbsp;<span class="k">let</span> f = <span class="f">format_id</span>(<span class="s">"Exclude…"</span>);</div>
+          <div>&nbsp;&nbsp;<span class="f">IsClipboardFormatAvailable</span>(f) != <span class="s">0</span></div>
+          <div>}</div>
+          <div>&nbsp;</div>
+          <div><span class="c">// backdrop-filter no muestrea</span></div>
+          <div><span class="c">// lo que está fuera del webview</span></div>
+          <div>panel { <span class="f">backdrop-filter</span>: <span class="s">blur(18px)</span> }</div>
+          <div><span class="c">// ↑ no-op con ventana transparente</span></div>
+        </div>
+      </div>
+    </div>
+
+    <main class="stage">
+      <section class="slot roam">
+        <p class="slot-tag"><b>Ahora</b> <span>92% opaco · el blur no llega al escritorio</span></p>
+        <div class="launcher-panel is-now">
+          <div class="launcher-search">
+            <span class="launcher-icon">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.2-3.2"/></svg>
+            </span>
+            <span class="launcher-input">dic<span class="ph">tado</span></span>
+          </div>
+          <ul class="launcher-list">
+            <li><div class="launcher-row selected">
+              <span class="launcher-tile" data-kind="action"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg></span>
+              <span class="launcher-text"><span class="launcher-title">Dictado</span><span class="launcher-sub">Hablar y pegar en la app con foco</span></span>
+            </div></li>
+            <li><div class="launcher-row">
+              <span class="launcher-tile" data-kind="action"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M7 3v14h14M3 7h14v14"/></svg></span>
+              <span class="launcher-text"><span class="launcher-title">Captura de pantalla</span><span class="launcher-sub">Recorte al portapapeles</span></span>
+            </div></li>
+            <li><div class="launcher-row">
+              <span class="launcher-tile"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M9 3h6v3H9z"/></svg></span>
+              <span class="launcher-text"><span class="launcher-title">Historial del portapapeles</span><span class="launcher-sub">Últimos 100 elementos</span></span>
+            </div></li>
+          </ul>
+          <footer class="launcher-footer">
+            <span class="launcher-hint"><span class="launcher-kbd">↑↓</span> navegar</span>
+            <span class="launcher-hint"><span class="launcher-kbd">↵</span> abrir</span>
+            <span class="launcher-hint"><span class="launcher-kbd">esc</span> cerrar</span>
+          </footer>
+        </div>
+      </section>
+
+      <section class="slot roam">
+        <p class="slot-tag"><b>Con windowEffects</b> <span>62% + Acrylic · grano y especular</span></p>
+        <div class="launcher-panel is-next">
+          <div class="launcher-search">
+            <span class="launcher-icon">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.2-3.2"/></svg>
+            </span>
+            <span class="launcher-input">dic<span class="ph">tado</span></span>
+          </div>
+          <ul class="launcher-list">
+            <li><div class="launcher-row selected">
+              <span class="launcher-tile" data-kind="action"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg></span>
+              <span class="launcher-text"><span class="launcher-title">Dictado</span><span class="launcher-sub">Hablar y pegar en la app con foco</span></span>
+            </div></li>
+            <li><div class="launcher-row">
+              <span class="launcher-tile" data-kind="action"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M7 3v14h14M3 7h14v14"/></svg></span>
+              <span class="launcher-text"><span class="launcher-title">Captura de pantalla</span><span class="launcher-sub">Recorte al portapapeles</span></span>
+            </div></li>
+            <li><div class="launcher-row">
+              <span class="launcher-tile"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M9 3h6v3H9z"/></svg></span>
+              <span class="launcher-text"><span class="launcher-title">Historial del portapapeles</span><span class="launcher-sub">Últimos 100 elementos</span></span>
+            </div></li>
+          </ul>
+          <footer class="launcher-footer">
+            <span class="launcher-hint"><span class="launcher-kbd">↑↓</span> navegar</span>
+            <span class="launcher-hint"><span class="launcher-kbd">↵</span> abrir</span>
+            <span class="launcher-hint"><span class="launcher-kbd">esc</span> cerrar</span>
+          </footer>
+        </div>
+      </section>
+    </main>
+
+    <div class="note">
+      <b>Cómo leer esto.</b> El panel de la izquierda <b>no</b> lleva
+      <code>backdrop-filter</code> a propósito: en la app tampoco hace nada,
+      porque la ventana es transparente y el webview no puede muestrear el
+      escritorio. Así se ve hoy. El de la derecha simula con
+      <code>backdrop-filter</code> lo que produciría el compositor del sistema
+      con <code>windowEffects</code>.
+    </div>
+
+    <div class="bar">
+      <button id="theme">Tema oscuro</button>
+      <span class="sep"></span>
+      <button id="motion">Congelar</button>
+    </div>
+
+    <script>
+      const root = document.documentElement;
+      const theme = document.getElementById("theme");
+      // `#dark` / `#static` en la URL: para capturar cada estado sin clics.
+      if (location.hash.includes("dark")) root.dataset.theme = "dark";
+      if (location.hash.includes("static")) document.body.classList.add("static");
+      theme.onclick = () => {
+        const dark = root.dataset.theme === "dark";
+        root.dataset.theme = dark ? "light" : "dark";
+        theme.textContent = dark ? "Tema oscuro" : "Tema claro";
+      };
+      const motion = document.getElementById("motion");
+      motion.onclick = () => {
+        const frozen = document.body.classList.toggle("static");
+        motion.textContent = frozen ? "Mover" : "Congelar";
+      };
+    </script>
+  </body>
+</html>

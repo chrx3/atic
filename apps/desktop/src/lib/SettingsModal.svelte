@@ -761,6 +761,25 @@
             </button>
           </div>
         </div>
+
+        <div class="rb-settings-row">
+          <div class="rb-settings-row-copy">
+            <span class="rb-settings-row-label">Registro de la aplicación</span>
+            <p class="rb-hint">
+              Los últimos 7 días, incluidos los errores. Es lo que hay que
+              adjuntar si algo falla o la app se cierra sola.
+            </p>
+          </div>
+          <div class="rb-settings-row-control">
+            <button
+              type="button"
+              class="rb-btn rb-btn-soft text-xs"
+              onclick={() => void openDataDir("logs")}
+            >
+              Abrir carpeta
+            </button>
+          </div>
+        </div>
       </div>
 
       <div class="rb-settings-group">
@@ -1282,6 +1301,19 @@
           </span>
           <span class="rb-settings-row-control">
             <input type="checkbox" bind:checked={c.detect_meetings} />
+          </span>
+        </label>
+
+        <label class="rb-settings-row rb-check">
+          <span class="rb-settings-row-copy">
+            <span class="rb-settings-row-label">Guardar historial del portapapeles</span>
+            <span class="rb-hint">
+              Conserva en disco lo que copiás, para volver a pegarlo. Nunca
+              guarda lo que un gestor de contraseñas marcó como efímero.
+            </span>
+          </span>
+          <span class="rb-settings-row-control">
+            <input type="checkbox" bind:checked={c.clipboard_history} />
           </span>
         </label>
       </div>

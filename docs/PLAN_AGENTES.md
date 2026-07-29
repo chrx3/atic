@@ -464,23 +464,35 @@ Validar con: `cargo test -p atic-core`, `cargo test -p atic-desktop --lib`,
 
 Esto costó media hora de perseguir un error que no era del proyecto, así que
 queda escrito. `whisper-rs` compila whisper.cpp con bindgen, y en Windows
-necesita **tres** cosas en el entorno, no una:
+necesita **cuatro** cosas en el entorno, no una:
 
 ```powershell
-# 1. libclang, que es lo que el README ya pedía
+# 1. el entorno de MSVC (cabeceras y linker)
+$vc = "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
+& cmd.exe /c "`"$vc`" > nul & set" |
+  ForEach-Object { if ($_ -match '^([^=]+)=(.*)$') { [Environment]::SetEnvironmentVariable($matches[1], $matches[2]) } }
+
+# 2. libclang, que es lo que el README ya pedía
 $env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
 
-# 2. el entorno de MSVC (cabeceras y linker)
-cmd /c '"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat" >nul && set' |
-  ForEach-Object { if ($_ -match '^([^=]+)=(.*)$') { Set-Item "env:$($matches[1])" $matches[2] -ErrorAction SilentlyContinue } }
-
-# 3. el puente que falta: libclang NO lee INCLUDE, lee CPATH
-$env:CPATH = $env:INCLUDE
+# 3+4. el puente que falta: libclang NO lee INCLUDE, lee CPATH — y desde LLVM 19
+#      tampoco encuentra sus PROPIAS cabeceras si no se las nombra.
+$env:CPATH = "C:\Program Files\LLVM\lib\clang\22\include;" + $env:INCLUDE
 ```
 
 Sin el paso 3 el error es `fatal error: 'stdio.h' file not found` seguido de
 `attempt to compute 12_usize - 16_usize` en unos bindings de Linux — que no
-tiene nada que ver con la causa y manda a buscar al lado equivocado.
+tiene nada que ver con la causa y manda a buscar al lado equivocado. Sin el 4
+es el mismo teatro con `'stdbool.h'`, que confunde todavía más porque ese
+header lo trae el compilador y uno lo busca en el SDK.
+
+Y si ya hubo un intento fallido, el entorno arreglado no alcanza: cargo guarda
+los bindings malos y los reusa, así que el error vuelve igual. Hay que borrar
+`target\debug\build\whisper-rs-sys-*` para que el build script corra de nuevo.
+
+La versión de `Set-Item` que estaba acá antes falla en PowerShell 5.1 no
+interactivo («too many arguments»); `[Environment]::SetEnvironmentVariable`
+anda en los dos.
 
 ## Lo que sigue, en orden
 

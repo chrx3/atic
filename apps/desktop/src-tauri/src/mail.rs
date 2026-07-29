@@ -10,6 +10,7 @@ use atic_core::secrets::{self, SecretKind};
 use atic_mailer::{self as mailer, OutgoingMail, SmtpConfig};
 
 use crate::state::AppState;
+use atic_core::MutexExt;
 
 #[derive(Clone, Serialize)]
 pub struct SecretsStatus {
@@ -60,13 +61,12 @@ pub fn send_summary_email(
 ) -> Result<SendMailResult, String> {
     let _ = state
         .db
-        .lock()
-        .unwrap()
+        .lock_or_recover()
         .get_recording(&id)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "Grabación no encontrada.".to_string())?;
 
-    let cfg = state.config.lock().unwrap().clone();
+    let cfg = state.config.lock_or_recover().clone();
     let mail = OutgoingMail {
         to: to
             .into_iter()

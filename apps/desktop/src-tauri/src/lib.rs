@@ -7,6 +7,7 @@ mod capture_session;
 mod capture_shelf;
 mod clipboard_history;
 mod commands;
+mod diagnostics;
 mod dictation;
 mod export;
 mod floating;
@@ -37,6 +38,7 @@ use tauri::{Manager, RunEvent, WindowEvent};
 use atic_core::{AppDirs, Config, Db, RecordingStatus, Summary, Transcript};
 
 use crate::state::AppState;
+use atic_core::MutexExt;
 
 /// Repara estados transitorios huérfanos tras un cierre abrupto.
 ///
@@ -45,7 +47,7 @@ use crate::state::AppState;
 /// hay trabajo en curso, así que degradamos cada fila a un estado consistente
 /// con lo que exista en disco para que el usuario pueda reintentar.
 fn recover_orphaned_statuses(state: &AppState) {
-    let recs = match state.db.lock().unwrap().list_recordings() {
+    let recs = match state.db.lock_or_recover().list_recordings() {
         Ok(recs) => recs,
         Err(err) => {
             tracing::warn!(%err, "no se pudieron revisar estados huérfanos al iniciar");
@@ -68,7 +70,7 @@ fn recover_orphaned_statuses(state: &AppState) {
             }
             _ => continue,
         };
-        match state.db.lock().unwrap().update_status(&rec.id, next) {
+        match state.db.lock_or_recover().update_status(&rec.id, next) {
             Ok(()) => tracing::info!(
                 id = %rec.id, from = ?rec.status, to = ?next,
                 "estado huérfano recuperado al iniciar"
@@ -82,12 +84,16 @@ fn recover_orphaned_statuses(state: &AppState) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .try_init();
+    // Antes que nada: si algo de acá en adelante panica, queremos leerlo.
+    // `AppDirs::new()` se llama otra vez más abajo, en el setup; es idempotente
+    // —crea directorios y ya— y este orden es el que permite que un fallo del
+    // arranque quede registrado en vez de perderse.
+    let logs_dir = AppDirs::new()
+        .map(|dirs| dirs.logs_dir())
+        .unwrap_or_else(|_| std::env::temp_dir().join("atic-logs"));
+    // El guard vive hasta el final de `run()`. Soltarlo antes se lleva puestas
+    // las últimas líneas, que son las del cierre.
+    let _log_guard = diagnostics::init(&logs_dir);
 
     tauri::Builder::default()
         // single-instance debe registrarse primero.
@@ -382,8 +388,8 @@ pub fn run() {
             WindowEvent::Moved(pos) if window.label() == "pill" => {
                 if let Some(state) = window.app_handle().try_state::<AppState>() {
                     // Durante el clipboard en el cursor no pisar la home guardada.
-                    if state.pre_clipboard_position.lock().unwrap().is_none() {
-                        state.config.lock().unwrap().pill_position =
+                    if state.pre_clipboard_position.lock_or_recover().is_none() {
+                        state.config.lock_or_recover().pill_position =
                             Some((pos.x as f64, pos.y as f64));
                     }
                 }
@@ -398,7 +404,7 @@ pub fn run() {
                 // quedan corriendo y consumiendo tokens sin nadie mirando.
                 agents::bridge::stop_all(app);
                 if let Some(state) = app.try_state::<AppState>() {
-                    let cfg = state.config.lock().unwrap().clone();
+                    let cfg = state.config.lock_or_recover().clone();
                     let _ = cfg.save(&state.dirs.config_path());
                 }
             }

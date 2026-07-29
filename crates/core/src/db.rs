@@ -92,21 +92,30 @@ impl Db {
             |row| row.get(0),
         )?;
 
-        if current < 1 {
-            self.conn.execute_batch(MIGRATION_1)?;
-            self.conn
-                .execute("INSERT INTO schema_version (version) VALUES (1)", [])?;
+        for (version, sql) in [(1, MIGRATION_1), (2, MIGRATION_2), (3, MIGRATION_3)] {
+            if current < version {
+                self.apply_migration(version, sql)?;
+            }
         }
-        if current < 2 {
-            self.conn.execute_batch(MIGRATION_2)?;
-            self.conn
-                .execute("INSERT INTO schema_version (version) VALUES (2)", [])?;
-        }
-        if current < 3 {
-            self.conn.execute_batch(MIGRATION_3)?;
-            self.conn
-                .execute("INSERT INTO schema_version (version) VALUES (3)", [])?;
-        }
+        Ok(())
+    }
+
+    /// Aplica una migración y sube la versión, o no hace ninguna de las dos.
+    ///
+    /// El `COMMIT` va después de subir la versión a propósito. Sin transacción,
+    /// una migración multi-sentencia que falla a la mitad deja el DDL a medio
+    /// aplicar y la versión sin subir: el siguiente arranque la reintenta desde
+    /// el principio, choca con «table already exists», y la app **no vuelve a
+    /// abrir nunca más**. No hay pantalla para eso ni forma de que el usuario
+    /// salga solo. SQLite hace DDL transaccional, así que alcanza con pedirlo.
+    fn apply_migration(&self, version: i64, sql: &str) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute_batch(sql)?;
+        tx.execute(
+            "INSERT INTO schema_version (version) VALUES (?1)",
+            [version],
+        )?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -428,5 +437,46 @@ mod agent_thread_tests {
             db.get_agent_thread("h1").unwrap().unwrap().preview,
             "Vista previa de h1"
         );
+    }
+
+    /// Una migración que falla a mitad no puede dejar la mitad aplicada: si lo
+    /// hiciera, el arranque siguiente la reintentaría desde cero, chocaría con
+    /// lo que ya existe, y la app no volvería a abrir.
+    #[test]
+    fn una_migracion_que_falla_no_deja_nada_a_medias() {
+        let path = temp_db_path();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let db = Db::open(&path).unwrap();
+
+        // Primera sentencia válida, segunda rota: el caso exacto de MIGRATION_2.
+        let rota = "CREATE TABLE a_medias (x TEXT); ESTO NO ES SQL;";
+        assert!(db.apply_migration(99, rota).is_err());
+
+        // Ni la tabla de la primera sentencia ni la versión sobrevivieron.
+        let tablas: i64 = db
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='a_medias'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(tablas, 0, "la tabla quedó a medio crear");
+
+        let version: i64 = db
+            .conn
+            .query_row(
+                "SELECT COALESCE(MAX(version), 0) FROM schema_version",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(version, 3, "la versión no tendría que haber subido");
+
+        // Y la base sigue usable: reabrirla no explota.
+        drop(db);
+        let db = Db::open(&path).unwrap();
+        db.save_agent_thread(&row("h1", 1)).unwrap();
+        assert_eq!(db.list_agent_threads(10).unwrap().len(), 1);
     }
 }

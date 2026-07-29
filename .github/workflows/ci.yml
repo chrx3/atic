@@ -10,8 +10,15 @@ on:
 
 jobs:
   rust:
-    name: Rust (fmt, clippy, test)
-    runs-on: windows-latest
+    name: Rust (${{ matrix.os }})
+    # Las dos plataformas, porque buena parte del código está detrás de `cfg`:
+    # con solo Windows, todo lo `#[cfg(not(windows))]` —los stubs de macOS, la
+    # fase 4— no lo compila ni lo revisa nadie hasta que alguien abre un Mac.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -21,7 +28,10 @@ jobs:
         with:
           version: "18"
       - uses: Swatinem/rust-cache@v2
+      # El formato no depende del sistema: correrlo dos veces solo duplica el
+      # tiempo y el ruido cuando falla.
       - name: fmt
+        if: matrix.os == 'windows-latest'
         run: cargo fmt --all --check
       - name: clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
@@ -51,6 +61,11 @@ jobs:
       - name: Install frontend deps
         working-directory: apps/desktop
         run: pnpm install --frozen-lockfile
+      # `tauri build` corre `vite build`, que NO typechequea: sin este paso los
+      # errores de TypeScript llegan a main sin que nadie los vea.
+      - name: Check (svelte-check)
+        working-directory: apps/desktop
+        run: pnpm check
       - name: Build (sin firmar)
         working-directory: apps/desktop
         run: pnpm tauri build --no-bundle

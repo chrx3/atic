@@ -8,6 +8,7 @@ use tauri::{AppHandle, Emitter, State};
 use atic_core::{Recording, RecordingStatus};
 
 use crate::state::AppState;
+use atic_core::MutexExt;
 
 /// Importa uno o más archivos de audio (WAV/MP3/M4A) como grabaciones de una pista.
 ///
@@ -50,7 +51,7 @@ pub fn import_audio(
                 rec.system_path = None;
                 rec.status = RecordingStatus::Recorded;
 
-                if let Err(err) = state.db.lock().unwrap().insert_recording(&rec) {
+                if let Err(err) = state.db.lock_or_recover().insert_recording(&rec) {
                     let _ = std::fs::remove_dir_all(&dir);
                     return Err(err.to_string());
                 }

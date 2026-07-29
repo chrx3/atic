@@ -5,19 +5,23 @@
 pub mod config;
 pub mod db;
 pub mod error;
+pub mod fs_atomic;
 pub mod models;
 pub mod paths;
 pub mod secrets;
 pub mod summary;
+pub mod sync;
 pub mod transcript;
 
 pub use config::Config;
 pub use db::{AgentThreadRow, Db};
 pub use error::{Error, Result};
+pub use fs_atomic::{write_atomic, write_atomic_str};
 pub use models::{Recording, RecordingStatus};
 pub use paths::AppDirs;
 pub use secrets::SecretKind;
 pub use summary::Summary;
+pub use sync::MutexExt;
 pub use transcript::{Segment, Speaker, Transcript};
 
 #[cfg(test)]

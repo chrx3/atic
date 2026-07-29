@@ -19,6 +19,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut};
 
 use crate::state::AppState;
+use atic_core::MutexExt;
 
 /// Ventana en primer plano antes de abrir el panel (para pegar ahí).
 static PREV_FOREGROUND: AtomicIsize = AtomicIsize::new(0);
@@ -122,10 +123,13 @@ fn load_history(dir: &Path) -> Vec<ClipboardItem> {
     serde_json::from_str(&raw).unwrap_or_default()
 }
 
+/// Atómica: el historial se reescribe entero con cada copia —cada 450 ms hay
+/// una oportunidad de morir a mitad—, y `load_history` ante un JSON roto
+/// devuelve una lista vacía, o sea que un truncado se vería como «se borró
+/// todo» y no como un error.
 fn save_history(dir: &Path, items: &[ClipboardItem]) {
-    let _ = std::fs::create_dir_all(dir);
     if let Ok(raw) = serde_json::to_string_pretty(items) {
-        let _ = std::fs::write(history_path(dir), raw);
+        let _ = atic_core::write_atomic_str(&history_path(dir), &raw);
     }
 }
 
@@ -200,13 +204,81 @@ fn prune(state: &mut HistoryState, dir: &Path) {
     }
 }
 
+/// ¿Lo que hay en el portapapeles pidió no quedar archivado?
+///
+/// Windows define dos formatos con los que quien copia declara que su contenido
+/// es efímero. Los ponen los gestores de contraseñas (Bitwarden, 1Password,
+/// KeePass) y algunos navegadores en campos de contraseña:
+///
+/// - `ExcludeClipboardContentFromMonitorProcessing` — su sola presencia
+///   significa «ningún monitor debería tocar esto».
+/// - `CanIncludeInClipboardHistory` — un DWORD; `0` es «no lo archives».
+///
+/// `arboard` no los mira: entrega el texto igual. Sin esta comprobación, una
+/// contraseña copiada termina en `history.json` en claro y sobrevive al pegado,
+/// que es exactamente lo que el gestor intentó evitar.
+#[cfg(windows)]
+fn clipboard_is_sensitive() -> bool {
+    use windows_sys::Win32::System::DataExchange::{
+        CloseClipboard, GetClipboardData, IsClipboardFormatAvailable, OpenClipboard,
+        RegisterClipboardFormatW,
+    };
+    use windows_sys::Win32::System::Memory::{GlobalLock, GlobalUnlock};
+
+    fn format_id(name: &str) -> u32 {
+        let wide: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
+        unsafe { RegisterClipboardFormatW(wide.as_ptr()) }
+    }
+
+    unsafe {
+        let exclude = format_id("ExcludeClipboardContentFromMonitorProcessing");
+        if exclude != 0 && IsClipboardFormatAvailable(exclude) != 0 {
+            return true;
+        }
+
+        let can_include = format_id("CanIncludeInClipboardHistory");
+        if can_include == 0 || IsClipboardFormatAvailable(can_include) == 0 {
+            return false;
+        }
+
+        // El formato está: hay que leer el DWORD, porque un `1` es permiso
+        // explícito y tratarlo como negativa perdería ítems legítimos.
+        if OpenClipboard(std::ptr::null_mut()) == 0 {
+            // Otro proceso lo tiene abierto. Ante la duda no se guarda: perder
+            // un ítem se nota y se rehace; archivar una contraseña, no.
+            return true;
+        }
+        let handle = GetClipboardData(can_include);
+        let mut opt_out = true;
+        if !handle.is_null() {
+            let ptr = GlobalLock(handle) as *const u32;
+            if !ptr.is_null() {
+                opt_out = std::ptr::read_unaligned(ptr) == 0;
+                GlobalUnlock(handle);
+            }
+        }
+        CloseClipboard();
+        opt_out
+    }
+}
+
+/// Fuera de Windows no existen esos formatos, así que no hay nada que consultar.
+#[cfg(not(windows))]
+fn clipboard_is_sensitive() -> bool {
+    false
+}
+
 /// Arranca el watcher (una sola vez) y carga el historial desde disco.
+///
+/// El hilo se levanta siempre, incluso con el historial apagado en Ajustes: la
+/// decisión se consulta en cada vuelta, así que encenderlo y apagarlo surte
+/// efecto sin reiniciar la app.
 pub fn start_watcher(app: &AppHandle) {
     let state = app.state::<AppState>();
     let dir = state.dirs.clipboard_dir();
     let _ = std::fs::create_dir_all(&dir);
 
-    let mut guard = HISTORY.lock().unwrap();
+    let mut guard = HISTORY.lock_or_recover();
     if guard.is_some() {
         return;
     }
@@ -232,10 +304,23 @@ pub fn start_watcher(app: &AppHandle) {
             let Some(app_state) = handle.try_state::<AppState>() else {
                 continue;
             };
+            // Se relee en cada vuelta y no una vez al arrancar: apagar el
+            // historial en Ajustes tiene que dejar de guardar en el acto, no en
+            // el próximo arranque.
+            if !app_state.config.lock_or_recover().clipboard_history {
+                continue;
+            }
             let dir = app_state.dirs.clipboard_dir();
 
+            // Lo que el dueño del contenido pidió no archivar no se archiva.
+            // Es la única señal que existe: los gestores de contraseñas la
+            // ponen justamente para que su copia no sobreviva al pegado.
+            if clipboard_is_sensitive() {
+                continue;
+            }
+
             {
-                let mut hist = shared.lock().unwrap();
+                let mut hist = shared.lock_or_recover();
                 if let Some(until) = hist.suppress_until {
                     if SystemTime::now() < until {
                         continue;
@@ -272,7 +357,7 @@ pub fn start_watcher(app: &AppHandle) {
                     fingerprint: fp,
                     source: "watcher".into(),
                 };
-                let mut hist = shared.lock().unwrap();
+                let mut hist = shared.lock_or_recover();
                 let before_fp = hist.items.first().map(|i| i.fingerprint.clone());
                 push_item(&mut hist, &dir, item);
                 let after_fp = hist.items.first().map(|i| i.fingerprint.clone());
@@ -298,7 +383,7 @@ fn ingest_image(
     }
     let fp = fingerprint_image(bytes, w, h);
     {
-        let hist = shared.lock().unwrap();
+        let hist = shared.lock_or_recover();
         if hist.deleted_fingerprints.contains(&fp) {
             return Ok(false);
         }
@@ -325,7 +410,7 @@ fn ingest_image(
         fingerprint: fp,
         source: "watcher".into(),
     };
-    let mut hist = shared.lock().unwrap();
+    let mut hist = shared.lock_or_recover();
     let before = hist.items.first().map(|i| i.fingerprint.clone());
     push_item(&mut hist, dir, item);
     let after = hist.items.first().map(|i| i.fingerprint.clone());
@@ -334,8 +419,7 @@ fn ingest_image(
 
 fn shared_history() -> Result<Arc<Mutex<HistoryState>>, String> {
     HISTORY
-        .lock()
-        .unwrap()
+        .lock_or_recover()
         .as_ref()
         .cloned()
         .ok_or_else(|| "historial de clipboard no iniciado".into())
@@ -343,7 +427,7 @@ fn shared_history() -> Result<Arc<Mutex<HistoryState>>, String> {
 
 fn find_item(state: &AppState, id: &str) -> Option<ClipboardItem> {
     if let Ok(shared) = shared_history() {
-        if let Some(item) = shared.lock().unwrap().items.iter().find(|i| i.id == id) {
+        if let Some(item) = shared.lock_or_recover().items.iter().find(|i| i.id == id) {
             return Some(item.clone());
         }
     }
@@ -431,9 +515,7 @@ pub fn agents_window_visible(app: AppHandle) -> bool {
 pub fn clipboard_drag_path(state: State<AppState>, id: String) -> Result<String, String> {
     let item = find_item(&state, &id).ok_or_else(|| "Ítem no encontrado".to_string())?;
     match item.kind {
-        ClipboardKind::Image => item
-            .image_path
-            .ok_or_else(|| "imagen sin ruta".to_string()),
+        ClipboardKind::Image => item.image_path.ok_or_else(|| "imagen sin ruta".to_string()),
         ClipboardKind::Text => {
             let text = item
                 .text
@@ -457,10 +539,7 @@ pub fn clipboard_drag_path(state: State<AppState>, id: String) -> Result<String,
 #[tauri::command]
 pub fn read_clipboard_drag_text(state: State<AppState>, path: String) -> Result<String, String> {
     let path = PathBuf::from(&path);
-    let name = path
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or("");
+    let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
     if !name.starts_with(".atic-drag-") || !name.ends_with(".txt") {
         return Err("ruta no permitida".into());
     }
@@ -468,7 +547,7 @@ pub fn read_clipboard_drag_text(state: State<AppState>, path: String) -> Result<
     let dir_ok = path
         .canonicalize()
         .ok()
-        .and_then(|p| dir.canonicalize().ok().map(|d| (p, d)))
+        .zip(dir.canonicalize().ok())
         .map(|(p, d)| p.starts_with(d))
         .unwrap_or_else(|| path.starts_with(&dir));
     if !dir_ok {
@@ -491,7 +570,7 @@ pub fn paste_clipboard_item(
     let item = find_item(&state, &id).ok_or_else(|| "Ítem no encontrado".to_string())?;
 
     if let Ok(shared) = shared_history() {
-        let mut hist = shared.lock().unwrap();
+        let mut hist = shared.lock_or_recover();
         hist.suppress_until = Some(SystemTime::now() + Duration::from_millis(1600));
     }
 
@@ -587,7 +666,7 @@ pub fn pin_clipboard_item(state: State<AppState>, id: String, pinned: bool) -> R
     let shared = shared_history()?;
 
     {
-        let mut hist = shared.lock().unwrap();
+        let mut hist = shared.lock_or_recover();
         if let Some(item) = hist.items.iter_mut().find(|i| i.id == id) {
             item.pinned = pinned;
             save_history(&dir, &hist.items);
@@ -642,7 +721,7 @@ pub fn pin_clipboard_item(state: State<AppState>, id: String, pinned: bool) -> R
         },
     };
 
-    let mut hist = shared.lock().unwrap();
+    let mut hist = shared.lock_or_recover();
     if let Some(existing) = hist
         .items
         .iter_mut()
@@ -666,7 +745,7 @@ pub fn delete_clipboard_item(
 ) -> Result<(), String> {
     let dir = state.dirs.clipboard_dir();
     let shared = shared_history()?;
-    let mut hist = shared.lock().unwrap();
+    let mut hist = shared.lock_or_recover();
     let Some(idx) = hist.items.iter().position(|i| i.id == id) else {
         return Err("Ítem no encontrado".into());
     };
@@ -695,7 +774,7 @@ pub fn delete_clipboard_item(
 pub fn clear_clipboard_history(app: AppHandle, state: State<AppState>) -> Result<(), String> {
     let dir = state.dirs.clipboard_dir();
     let shared = shared_history()?;
-    let mut hist = shared.lock().unwrap();
+    let mut hist = shared.lock_or_recover();
     let (pinned, rest): (Vec<_>, Vec<_>) = hist.items.drain(..).partition(|i| i.pinned);
     for item in &rest {
         hist.deleted_fingerprints.insert(item.fingerprint.clone());
@@ -770,7 +849,7 @@ pub(crate) fn has_live_external_foreground() -> bool {
 /// Ítems del historial para búsqueda u otros agregadores.
 pub(crate) fn collect_clipboard_items(state: &AppState) -> Result<Vec<ClipboardItem>, String> {
     let shared = shared_history()?;
-    let mut items = shared.lock().unwrap().items.clone();
+    let mut items = shared.lock_or_recover().items.clone();
 
     let captures = crate::capture::recent_captures_limited(&state.dirs.captures_dir(), 20);
     for cap in captures {
@@ -970,7 +1049,7 @@ fn paste_ctrl_v() -> Result<(), String> {
 fn paste_ctrl_shift_v(app: &AppHandle) -> Result<(), String> {
     let clipboard_sc = app
         .try_state::<AppState>()
-        .map(|s| s.config.lock().unwrap().clipboard_shortcut.clone());
+        .map(|s| s.config.lock_or_recover().clipboard_shortcut.clone());
 
     let suspended = clipboard_sc
         .as_deref()
@@ -1015,7 +1094,7 @@ fn reregister_shortcuts_from_config(app: &AppHandle) {
     let Some(state) = app.try_state::<AppState>() else {
         return;
     };
-    let cfg = state.config.lock().unwrap().clone();
+    let cfg = state.config.lock_or_recover().clone();
     if let Err(err) = crate::shortcuts::register_shortcuts(
         app,
         crate::shortcuts::ShortcutBindings {
@@ -1181,9 +1260,9 @@ pub fn restore_pill_position(app: AppHandle) -> Result<bool, String> {
     let Some(state) = app.try_state::<AppState>() else {
         return Ok(false);
     };
-    let home = *state.pre_clipboard_position.lock().unwrap();
+    let home = *state.pre_clipboard_position.lock_or_recover();
     tracing::info!(target: "pill_geo", "CMD        restore_pill_position home={home:?}");
-    let Some((x, y)) = state.pre_clipboard_position.lock().unwrap().take() else {
+    let Some((x, y)) = state.pre_clipboard_position.lock_or_recover().take() else {
         return Ok(false);
     };
 
@@ -1192,7 +1271,7 @@ pub fn restore_pill_position(app: AppHandle) -> Result<bool, String> {
     crate::state::animate_pill_to(&app, target_x, target_y);
 
     {
-        let mut cfg = state.config.lock().unwrap();
+        let mut cfg = state.config.lock_or_recover();
         cfg.pill_position = Some((x, y));
         let snapshot = cfg.clone();
         drop(cfg);
@@ -1222,7 +1301,7 @@ pub fn morph_pill_home(app: AppHandle, width: f64, height: f64) -> Result<bool, 
     let Some(state) = app.try_state::<AppState>() else {
         return Ok(false);
     };
-    let Some((hx, hy)) = state.pre_clipboard_position.lock().unwrap().take() else {
+    let Some((hx, hy)) = state.pre_clipboard_position.lock_or_recover().take() else {
         tracing::info!(target: "pill_geo", "CMD        morph_pill_home SIN HOGAR");
         return Ok(false);
     };
@@ -1236,7 +1315,7 @@ pub fn morph_pill_home(app: AppHandle, width: f64, height: f64) -> Result<bool, 
     );
     crate::floating::tween(&app, "pill", crate::floating::Rect { x, y, w, h });
 
-    let mut cfg = state.config.lock().unwrap();
+    let mut cfg = state.config.lock_or_recover();
     let next = Some((f64::from(x), f64::from(y)));
     // Cerrar la rueda devuelve la pill al MISMO hogar casi siempre: sin esta
     // guarda, spamear el atajo reescribía config.json en cada ciclo.
@@ -1252,7 +1331,7 @@ pub fn morph_pill_home(app: AppHandle, width: f64, height: f64) -> Result<bool, 
 /// Suelta el hogar temporal sin mover la pill (la trajo un summon permanente).
 pub(crate) fn unregister_clipboard_escape_close(app: &AppHandle) {
     if let Some(state) = app.try_state::<AppState>() {
-        *state.pre_clipboard_position.lock().unwrap() = None;
+        *state.pre_clipboard_position.lock_or_recover() = None;
     }
 }
 
@@ -1262,7 +1341,7 @@ fn stash_pre_clipboard_position(app: &AppHandle) {
     let Some(state) = app.try_state::<AppState>() else {
         return;
     };
-    let mut pre = state.pre_clipboard_position.lock().unwrap();
+    let mut pre = state.pre_clipboard_position.lock_or_recover();
     if pre.is_some() {
         return;
     }
@@ -1271,7 +1350,7 @@ fn stash_pre_clipboard_position(app: &AppHandle) {
     // como hogar un punto a mitad de camino y la pill se iría caminando.
     *pre = crate::floating::resting_position(app, "pill")
         .map(|(x, y)| (f64::from(x), f64::from(y)))
-        .or_else(|| state.config.lock().unwrap().pill_position);
+        .or_else(|| state.config.lock_or_recover().pill_position);
 }
 
 /// Guarda la ventana en foco para pegar después (dictado / clipboard).
@@ -1301,7 +1380,7 @@ fn save_foreground_hwnd() {
             // este destino por última vez", no "hace cuánto cambió". Sellando
             // solo al cambiar, un destino que se estuvo confirmando cada 200 ms
             // se reportaba con minutos de antigüedad y parecía basura heredada.
-            *SAVED_AT.lock().unwrap() = Some(std::time::Instant::now());
+            *SAVED_AT.lock_or_recover() = Some(std::time::Instant::now());
             // El log sí es solo al cambiar: esto corre cada 200 ms durante el
             // dictado y no queremos una línea por tick.
             if !changed {
@@ -1339,7 +1418,7 @@ pub(crate) fn stop_foreground_tracking() {
 
 /// Hace cuánto se guardó el destino de pegado, para las trazas.
 fn saved_age_label() -> String {
-    match *SAVED_AT.lock().unwrap() {
+    match *SAVED_AT.lock_or_recover() {
         Some(at) => format!("{:?}", at.elapsed()),
         None => "nunca".to_string(),
     }

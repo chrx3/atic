@@ -56,7 +56,7 @@ xcode-select -p
 ## 2. Clonar el repo
 
 ```bash
-git clone https://github.com/ciat/atic.git
+git clone https://github.com/chrx3/atic.git
 cd atic
 ```
 
@@ -230,7 +230,7 @@ Ajustes → Privacidad → permitir apps de desarrolladores no identificados.
 
 ## 9. Contacto / contexto del proyecto
 
-- Repo: https://github.com/ciat/atic
+- Repo: https://github.com/chrx3/atic
 - Arquitectura y estado general: [`README.md`](../README.md)
 - Notas técnicas macOS (fase 4): `apps/desktop/src-tauri/src/macos_notes.rs`
 - Permisos TCC: `apps/desktop/src-tauri/Info.plist`

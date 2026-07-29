@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::thread;
 
+use atic_core::MutexExt;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
 use tauri_plugin_opener::OpenerExt;
@@ -266,7 +267,7 @@ fn collect_start_menu_apps() -> Vec<LauncherEntry> {
     for root in roots {
         walk_lnks(&root, &mut out, &mut seen);
     }
-    out.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase()));
+    out.sort_by_key(|entry| entry.title.to_lowercase());
     out
 }
 
@@ -322,7 +323,7 @@ fn collect_start_menu_apps() -> Vec<LauncherEntry> {
     for root in roots {
         walk_apps(&root, &mut out, &mut seen);
     }
-    out.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase()));
+    out.sort_by_key(|entry| entry.title.to_lowercase());
     out
 }
 
@@ -382,13 +383,13 @@ pub fn start_indexing() {
     thread::spawn(|| {
         let entries = rebuild_index();
         let count = entries.len();
-        *index().lock().unwrap() = entries;
+        *index().lock_or_recover() = entries;
         tracing::info!(count, "índice del launcher listo");
     });
 }
 
 fn ensure_index_populated() {
-    let mut guard = index().lock().unwrap();
+    let mut guard = index().lock_or_recover();
     if guard.is_empty() {
         *guard = rebuild_index();
     }
@@ -425,12 +426,7 @@ fn active_monitor_origin(window: &WebviewWindow, w: i32, h: i32) -> Option<(i32,
                 .find(|m| m.bounds.contains(cx, cy))
                 .map(|m| m.work_area)
         })
-        .or_else(|| {
-            monitors
-                .iter()
-                .find(|m| m.is_primary)
-                .map(|m| m.work_area)
-        })
+        .or_else(|| monitors.iter().find(|m| m.is_primary).map(|m| m.work_area))
         .or_else(|| monitors.first().map(|m| m.work_area))?;
 
     let x = work.x + (work.width as i32 - w) / 2;
@@ -495,14 +491,14 @@ pub fn hide_launcher(app: AppHandle) {
 pub fn launcher_reindex() -> Result<usize, String> {
     let entries = rebuild_index();
     let count = entries.len();
-    *index().lock().unwrap() = entries;
+    *index().lock_or_recover() = entries;
     Ok(count)
 }
 
 #[tauri::command]
 pub fn launcher_search(query: String) -> Result<Vec<LauncherHit>, String> {
     ensure_index_populated();
-    let guard = index().lock().unwrap();
+    let guard = index().lock_or_recover();
     let q = query.trim();
 
     if q.is_empty() {
@@ -587,7 +583,7 @@ fn run_action(app: &AppHandle, action: &str) -> Result<(), String> {
 pub fn launcher_run(app: AppHandle, id: String) -> Result<(), String> {
     ensure_index_populated();
     let entry = {
-        let guard = index().lock().unwrap();
+        let guard = index().lock_or_recover();
         guard.iter().find(|e| e.id == id).cloned()
     };
     let Some(entry) = entry else {

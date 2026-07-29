@@ -32,7 +32,8 @@ pub fn read_image_base64(path: &Path) -> Result<(String, String), String> {
     let mime = image_mime(path)
         .ok_or_else(|| format!("no es una imagen soportada: {}", path.display()))?
         .to_string();
-    let meta = std::fs::metadata(path).map_err(|e| format!("no se pudo leer {}: {e}", path.display()))?;
+    let meta =
+        std::fs::metadata(path).map_err(|e| format!("no se pudo leer {}: {e}", path.display()))?;
     if meta.len() > MAX_BYTES {
         return Err(format!(
             "{} pesa más de {} MiB",

@@ -6,6 +6,7 @@
 //! aquí solo se muestra y reposiciona: crear ventanas WebView2 en caliente
 //! crasheaba a wry.
 
+use atic_core::MutexExt;
 use tauri::{AppHandle, Manager, WebviewWindow};
 
 const SHELF_LABEL: &str = "capture-shelf";
@@ -36,7 +37,7 @@ pub fn show_shelf(app: &AppHandle, anchor: Option<(i32, i32)>) -> tauri::Result<
 fn position_shelf(app: &AppHandle, _window: &WebviewWindow, anchor: Option<(i32, i32)>) {
     let left_side = app
         .try_state::<crate::state::AppState>()
-        .map(|state| state.config.lock().unwrap().capture_shelf_side.clone())
+        .map(|state| state.config.lock_or_recover().capture_shelf_side.clone())
         .unwrap_or_else(|| "right".into())
         == "left";
 

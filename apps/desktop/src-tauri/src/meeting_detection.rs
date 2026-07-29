@@ -6,6 +6,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::state::AppState;
+use atic_core::MutexExt;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct MeetingInfo {
@@ -28,7 +29,7 @@ pub fn spawn_detector(app: AppHandle) {
             loop {
                 let enabled = app
                     .try_state::<AppState>()
-                    .is_some_and(|state| state.config.lock().unwrap().detect_meetings);
+                    .is_some_and(|state| state.config.lock_or_recover().detect_meetings);
                 let current = if enabled { detect_meeting() } else { None };
                 if current != previous {
                     let payload = match &current {

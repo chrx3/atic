@@ -11,6 +11,8 @@ use std::sync::Mutex;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
+use atic_core::MutexExt;
+
 use super::{
     claude_code::ClaudeCode, AgentBackend, AgentDelta, AgentSession, AgentSkill,
     PermissionDecision, StartOptions,
@@ -92,8 +94,7 @@ pub struct SessionInfo {
 #[tauri::command]
 pub fn agent_sessions() -> Vec<SessionInfo> {
     SESSIONS
-        .lock()
-        .unwrap()
+        .lock_or_recover()
         .as_ref()
         .map(|map| {
             map.iter()
@@ -444,8 +445,7 @@ pub fn agent_start(
     )?;
 
     SESSIONS
-        .lock()
-        .unwrap()
+        .lock_or_recover()
         .get_or_insert_with(HashMap::new)
         .insert(
             key.clone(),
@@ -470,7 +470,7 @@ pub fn agent_send(
     text: String,
     origin: Option<super::model::Origin>,
 ) -> Result<(), String> {
-    let mut guard = SESSIONS.lock().unwrap();
+    let mut guard = SESSIONS.lock_or_recover();
     let sessions = guard
         .as_mut()
         .ok_or_else(|| "no hay sesiones abiertas".to_string())?;
@@ -493,7 +493,7 @@ pub fn agent_set_model(
     effort: Option<String>,
     fast: Option<bool>,
 ) -> Result<(), String> {
-    let mut guard = SESSIONS.lock().unwrap();
+    let mut guard = SESSIONS.lock_or_recover();
     let sessions = guard
         .as_mut()
         .ok_or_else(|| "no hay sesiones abiertas".to_string())?;
@@ -511,7 +511,7 @@ pub fn agent_permission(
     id: String,
     decision: PermissionDecision,
 ) -> Result<(), String> {
-    let mut guard = SESSIONS.lock().unwrap();
+    let mut guard = SESSIONS.lock_or_recover();
     guard
         .as_mut()
         .ok_or_else(|| "no hay sesiones abiertas".to_string())?
@@ -547,8 +547,7 @@ pub async fn agent_list_models(
 #[tauri::command]
 pub fn agent_stop(app: AppHandle, session: String) {
     let taken = SESSIONS
-        .lock()
-        .unwrap()
+        .lock_or_recover()
         .as_mut()
         .and_then(|s| s.remove(&session));
     // Fuera del lock: `stop` espera a que el proceso termine de vaciar, y
@@ -571,8 +570,7 @@ pub fn stop_all(app: &AppHandle) {
         }
     });
     let taken: Vec<_> = SESSIONS
-        .lock()
-        .unwrap()
+        .lock_or_recover()
         .as_mut()
         .map(|s| s.drain().map(|(_, v)| v).collect())
         .unwrap_or_default();

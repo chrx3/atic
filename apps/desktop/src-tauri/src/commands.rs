@@ -6,6 +6,7 @@ use tauri::{AppHandle, Manager, State};
 use atic_core::{Config, Recording};
 
 use crate::state::{self, AppState};
+use atic_core::MutexExt;
 
 #[tauri::command]
 pub fn start_recording(
@@ -22,15 +23,14 @@ pub fn stop_recording(app: AppHandle) -> Result<Recording, String> {
 
 #[tauri::command]
 pub fn is_recording(state: State<AppState>) -> bool {
-    state.active.lock().unwrap().is_some()
+    state.active.lock_or_recover().is_some()
 }
 
 #[tauri::command]
 pub fn list_recordings(state: State<AppState>) -> Result<Vec<Recording>, String> {
     state
         .db
-        .lock()
-        .unwrap()
+        .lock_or_recover()
         .list_recordings()
         .map_err(|e| e.to_string())
 }
@@ -41,8 +41,7 @@ pub fn delete_recording(state: State<AppState>, id: String) -> Result<(), String
     // parámetro IPC sin comprobar que corresponde a una grabación conocida.
     let recording = state
         .db
-        .lock()
-        .unwrap()
+        .lock_or_recover()
         .get_recording(&id)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "Grabación no encontrada.".to_string())?;
@@ -52,8 +51,7 @@ pub fn delete_recording(state: State<AppState>, id: String) -> Result<(), String
     }
     state
         .db
-        .lock()
-        .unwrap()
+        .lock_or_recover()
         .delete_recording(&id)
         .map_err(|e| e.to_string())?;
     Ok(())
@@ -63,15 +61,14 @@ pub fn delete_recording(state: State<AppState>, id: String) -> Result<(), String
 pub fn rename_recording(state: State<AppState>, id: String, title: String) -> Result<(), String> {
     state
         .db
-        .lock()
-        .unwrap()
+        .lock_or_recover()
         .update_title(&id, &title)
         .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn get_config(state: State<AppState>) -> Config {
-    state.config.lock().unwrap().clone()
+    state.config.lock_or_recover().clone()
 }
 
 #[tauri::command]
@@ -86,7 +83,7 @@ pub fn set_config(app: AppHandle, state: State<AppState>, config: Config) -> Res
     let snippets_shortcut = config.snippets_shortcut.clone();
     let screenshot_shortcut = config.screenshot_shortcut.clone();
     let launcher_shortcut = config.launcher_shortcut.clone();
-    let prev = state.config.lock().unwrap().clone();
+    let prev = state.config.lock_or_recover().clone();
 
     // Si algún atajo cambió, validar+registrar PRIMERO: aborta si es inválido
     // antes de persistir un valor que dejaría el hotkey muerto.
@@ -118,7 +115,7 @@ pub fn set_config(app: AppHandle, state: State<AppState>, config: Config) -> Res
         || config.dictation_whisper_model != prev.dictation_whisper_model
         || config.live_whisper_model != prev.live_whisper_model;
     {
-        *state.config.lock().unwrap() = config.clone();
+        *state.config.lock_or_recover() = config.clone();
     }
     config
         .save(&state.dirs.config_path())
@@ -170,8 +167,7 @@ pub fn recording_track_path(
     };
     let recording = state
         .db
-        .lock()
-        .unwrap()
+        .lock_or_recover()
         .get_recording(&id)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "Grabación no encontrada.".to_string())?;
@@ -197,7 +193,7 @@ pub fn toggle_dictation(app: AppHandle) {
 
 #[tauri::command]
 pub fn dictation_phase(state: State<AppState>) -> crate::dictation::DictationPhase {
-    if state.dictation.lock().unwrap().is_some() {
+    if state.dictation.lock_or_recover().is_some() {
         crate::dictation::DictationPhase::Listening
     } else {
         crate::dictation::DictationPhase::Idle
@@ -221,7 +217,7 @@ pub fn debug_list_audio_devices() -> Result<String, String> {
 
 #[tauri::command]
 pub fn audio_preflight(state: State<AppState>) -> Result<atic_audio::AudioPreflight, String> {
-    let config = state.config.lock().unwrap().clone();
+    let config = state.config.lock_or_recover().clone();
     let tracks = config.effective_record_tracks();
     atic_audio::audio_preflight(
         tracks == "both" || tracks == "mic",
@@ -244,14 +240,14 @@ pub struct AudioTestResult {
 pub async fn test_audio(app: AppHandle, config: Config) -> Result<AudioTestResult, String> {
     {
         let state = app.state::<AppState>();
-        let mut running = state.audio_test_running.lock().unwrap();
+        let mut running = state.audio_test_running.lock_or_recover();
         if *running {
             return Err("Ya hay una prueba de audio en curso.".into());
         }
-        if state.active.lock().unwrap().is_some() {
+        if state.active.lock_or_recover().is_some() {
             return Err("Detén la grabación antes de probar el audio.".into());
         }
-        if state.dictation.lock().unwrap().is_some() {
+        if state.dictation.lock_or_recover().is_some() {
             return Err("Termina el dictado antes de probar el audio.".into());
         }
         *running = true;
@@ -312,13 +308,13 @@ pub async fn test_audio(app: AppHandle, config: Config) -> Result<AudioTestResul
     })
     .await;
 
-    *app.state::<AppState>().audio_test_running.lock().unwrap() = false;
+    *app.state::<AppState>().audio_test_running.lock_or_recover() = false;
     joined.map_err(|error| error.to_string())?
 }
 
 /// Abre en el explorador una carpeta de datos de Atic.
 ///
-/// `kind`: `recordings` | `clipboard` | `snippets` | `captures` | `data`.
+/// `kind`: `recordings` | `clipboard` | `snippets` | `captures` | `logs` | `data`.
 pub(crate) fn open_data_dir_kind(
     app: &AppHandle,
     dirs: &atic_core::AppDirs,
@@ -331,6 +327,7 @@ pub(crate) fn open_data_dir_kind(
         "clipboard" => dirs.clipboard_dir(),
         "snippets" => dirs.snippets_dir(),
         "captures" => dirs.captures_dir(),
+        "logs" => dirs.logs_dir(),
         "data" => dirs.data_dir(),
         other => {
             return Err(format!("Carpeta de datos desconocida: {other}"));

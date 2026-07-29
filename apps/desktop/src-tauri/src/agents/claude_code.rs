@@ -28,10 +28,11 @@ use std::thread;
 use serde_json::{json, Value};
 
 use super::model::{
-    AgentDelta, Item, ItemId, ItemKind, ItemPatch, Origin,
-    PermissionStatus, Role, ThreadPatch, ToolKind, ToolStatus, TurnId, TurnStatus,
+    AgentDelta, Item, ItemId, ItemKind, ItemPatch, Origin, PermissionStatus, Role, ThreadPatch,
+    ToolKind, ToolStatus, TurnId, TurnStatus,
 };
 use super::turns::{end_turn, ensure_turn, start_turn, Emit, Turns};
+
 use super::{
     AgentBackend, AgentSession, McpServerState, PermissionDecision, SlashCommand, StartOptions,
 };
@@ -825,10 +826,7 @@ impl AgentSession for ClaudeSession {
         // parte: el registro solo tenía lo que venía del backend, así que la
         // conversación se leía como un monólogo del agente y, al guardarla, la
         // mitad de cada intercambio no llegaba al disco.
-        let files = origin
-            .as_ref()
-            .map(|o| o.files.clone())
-            .unwrap_or_default();
+        let files = origin.as_ref().map(|o| o.files.clone()).unwrap_or_default();
         let prompt = {
             let stripped = super::media::strip_embedded_paths(text, &files);
             if stripped.is_empty() && !files.is_empty() {
@@ -947,6 +945,7 @@ impl Drop for ClaudeSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use atic_core::MutexExt;
 
     fn tr() -> Translator {
         Translator::new(
@@ -1030,7 +1029,7 @@ mod tests {
         let ds = t.translate(
             r#"{"type":"control_request","request_id":"c1","request":{"subtype":"can_use_tool","tool_name":"Write","permission_suggestions":[{"type":"setMode","mode":"acceptEdits"}]}}"#,
         );
-        assert!(rules.lock().unwrap().contains_key("c1"));
+        assert!(rules.lock_or_recover().contains_key("c1"));
         let json = serde_json::to_string(&ds).unwrap();
         assert!(
             !json.contains("setMode"),

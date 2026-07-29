@@ -10,6 +10,7 @@ use zip::write::SimpleFileOptions;
 use atic_core::{Recording, Summary, Transcript};
 
 use crate::state::AppState;
+use atic_core::MutexExt;
 
 #[derive(Serialize)]
 pub struct ExportResult {
@@ -26,8 +27,7 @@ pub fn export_recording(
 ) -> Result<ExportResult, String> {
     let recording = state
         .db
-        .lock()
-        .unwrap()
+        .lock_or_recover()
         .get_recording(&id)
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "Grabación no encontrada.".to_string())?;

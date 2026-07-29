@@ -46,8 +46,8 @@ use std::thread;
 use serde_json::{json, Value};
 
 use super::model::{
-    AgentDelta, Item, ItemId, ItemKind, ItemPatch, Origin,
-    PermissionStatus, PlanEntry, PlanStatus, Role, ThreadPatch, ToolKind, ToolStatus, TurnStatus,
+    AgentDelta, Item, ItemId, ItemKind, ItemPatch, Origin, PermissionStatus, PlanEntry, PlanStatus,
+    Role, ThreadPatch, ToolKind, ToolStatus, TurnStatus,
 };
 use super::turns::{end_turn, ensure_turn, start_turn, Emit, Turns};
 use super::{AgentBackend, AgentSession, McpServerState, PermissionDecision, StartOptions};
@@ -1184,10 +1184,7 @@ impl AgentSession for CodexSession {
     fn send(&mut self, text: &str, origin: Option<Origin>) -> Result<(), String> {
         // El turno lo abre quien escribe, y el mensaje del usuario es un item
         // más: sin esto la conversación guardada se lee como un monólogo.
-        let files = origin
-            .as_ref()
-            .map(|o| o.files.clone())
-            .unwrap_or_default();
+        let files = origin.as_ref().map(|o| o.files.clone()).unwrap_or_default();
         let prompt = {
             let stripped = super::media::strip_embedded_paths(text, &files);
             if stripped.is_empty() && !files.is_empty() {
@@ -1316,6 +1313,7 @@ impl Drop for CodexSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use atic_core::MutexExt;
 
     /// Un traductor sin proceso detrás.
     ///
@@ -1578,7 +1576,7 @@ mod tests {
             otro => panic!("se esperaba un permiso, salió {otro:?}"),
         }
         assert_eq!(
-            t.shared.pending.lock().unwrap().get("perm:c1"),
+            t.shared.pending.lock_or_recover().get("perm:c1"),
             Some(&json!(77)),
             "hay que recordar a qué petición contestarle"
         );
@@ -1754,7 +1752,7 @@ mod tests {
     fn lo_escrito_durante_el_handshake_queda_encolado() {
         let t = tr();
         t.shared.prompt("hola", Vec::new()).unwrap();
-        let q = t.shared.queued.lock().unwrap();
+        let q = t.shared.queued.lock_or_recover();
         assert_eq!(q.len(), 1);
         assert_eq!(q[0].text, "hola");
     }

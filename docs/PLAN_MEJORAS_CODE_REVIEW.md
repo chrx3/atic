@@ -1,5 +1,15 @@
 # Plan de remediación — code review (fases 3–6)
 
+> **Estado: cerrado.** F1–F10 están aplicados y verificados contra el código
+> actual. Varios se resolvieron por refactor y no por el parche literal que
+> propone este documento: F3/F9 vive hoy en `playback.playSpeaker`, F4/F10 en
+> `rollbackGeneration` y los `try/catch` de `SummaryModal`, y F5 desapareció al
+> reescribir la detección (`meeting_detection.rs` ya no escanea procesos: mira
+> títulos de ventana). Queda como registro de por qué el código es así.
+>
+> El §0 de entorno quedó **desactualizado**: la receta buena, con el paso que
+> falta para LLVM 19+, está en el README y en `PLAN_AGENTES.md`.
+
 Plan autocontenido para aplicar con otro agente. Corrige 10 hallazgos de un
 code review + deja el gate de CI (`clippy -D warnings`, `cargo fmt --check`) en
 verde. Ordenado por severidad. Cada ítem indica archivo, ubicación, problema y
@@ -264,11 +274,11 @@ let api_key = match SecretKind::for_summary_provider(&cfg.summary_backend) {
 
 ## Checklist de cierre
 
-- [ ] F1–F5, F7–F10 aplicados y revisados.
-- [ ] `cargo fmt --all` aplicado (F6).
-- [ ] `cargo clippy --workspace --all-targets -- -D warnings` → verde.
-- [ ] `cargo test --workspace` → verde.
-- [ ] `pnpm check` (svelte-check) sin errores; `pnpm build` OK.
+- [x] F1–F5, F7–F10 aplicados y revisados.
+- [x] `cargo fmt --all` aplicado (F6).
+- [x] `cargo clippy --workspace --all-targets -- -D warnings` → verde.
+- [x] `cargo test --workspace` → verde.
+- [x] `pnpm check` (svelte-check) sin errores; `pnpm build` OK.
 - [ ] Prueba manual: grabar → transcribir → en el modal, clic en un segmento
       “Los demás” reproduce la pista del sistema desde el timestamp correcto;
       “Regenerar” sin API key no borra el resumen guardado; con Zoom minimizado

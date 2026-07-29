@@ -11,6 +11,7 @@ use atic_core::{RecordingStatus, Speaker, Transcript};
 use atic_transcribe::{self as transcribe, TrackInput};
 
 use crate::state::AppState;
+use atic_core::MutexExt;
 
 #[derive(Clone, Serialize)]
 pub struct ModelStatus {
@@ -62,7 +63,7 @@ pub fn list_models(state: State<AppState>) -> Vec<ModelStatus> {
 /// ¿Hay lo necesario para transcribir reuniones y dictar?
 #[tauri::command]
 pub fn current_model_ready(state: State<AppState>) -> bool {
-    let cfg = state.config.lock().unwrap().clone();
+    let cfg = state.config.lock_or_recover().clone();
     let dir = state.dirs.models_dir();
     let meeting_ok = transcribe::models::require_downloaded(&dir, &cfg.whisper_model).is_ok();
     // Groq: key del llavero; no bloquea el arranque.
@@ -126,7 +127,7 @@ pub fn download_model(app: AppHandle, id: String) -> Result<(), String> {
                 );
                 // Si es un modelo activo (reuniones o dictado), precargarlo.
                 let state = app2.state::<AppState>();
-                let cfg = state.config.lock().unwrap().clone();
+                let cfg = state.config.lock_or_recover().clone();
                 if cfg.whisper_model == info.id
                     || cfg.dictation_whisper_model == info.id
                     || cfg.live_whisper_model == info.id
@@ -155,13 +156,12 @@ pub fn transcribe_recording(app: AppHandle, id: String) -> Result<(), String> {
 
     let rec = state
         .db
-        .lock()
-        .unwrap()
+        .lock_or_recover()
         .get_recording(&id)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "Grabación no encontrada.".to_string())?;
 
-    let cfg = state.config.lock().unwrap().clone();
+    let cfg = state.config.lock_or_recover().clone();
     let model_path =
         transcribe::models::require_downloaded(&state.dirs.models_dir(), &cfg.whisper_model)
             .map_err(|e| e.to_string())?;
@@ -197,8 +197,7 @@ pub fn transcribe_recording(app: AppHandle, id: String) -> Result<(), String> {
 
     state
         .db
-        .lock()
-        .unwrap()
+        .lock_or_recover()
         .update_status(&id, RecordingStatus::Transcribing)
         .map_err(|e| e.to_string())?;
     let _ = app.emit("recordings-changed", ());
@@ -240,8 +239,7 @@ fn run_transcription(
         Err(message) => {
             let _ = state
                 .db
-                .lock()
-                .unwrap()
+                .lock_or_recover()
                 .update_status(&id, RecordingStatus::Error);
             let _ = app.emit(
                 "transcribe-error",
@@ -284,8 +282,7 @@ fn run_transcription(
             tracing::warn!(%id, "Whisper terminó sin segmentos de texto");
             let _ = state
                 .db
-                .lock()
-                .unwrap()
+                .lock_or_recover()
                 .update_status(&id, RecordingStatus::Error);
             let _ = app.emit(
                 "transcribe-error",
@@ -302,8 +299,7 @@ fn run_transcription(
                 tracing::error!(%err, "no se pudo guardar la transcripción");
                 let _ = state
                     .db
-                    .lock()
-                    .unwrap()
+                    .lock_or_recover()
                     .update_status(&id, RecordingStatus::Error);
                 let _ = app.emit(
                     "transcribe-error",
@@ -315,8 +311,7 @@ fn run_transcription(
             } else {
                 let _ = state
                     .db
-                    .lock()
-                    .unwrap()
+                    .lock_or_recover()
                     .update_status(&id, RecordingStatus::Transcribed);
                 let _ = app.emit("transcript-ready", IdPayload { id: id.clone() });
             }
@@ -324,8 +319,7 @@ fn run_transcription(
         Err(err) => {
             let _ = state
                 .db
-                .lock()
-                .unwrap()
+                .lock_or_recover()
                 .update_status(&id, RecordingStatus::Error);
             let _ = app.emit(
                 "transcribe-error",
@@ -355,8 +349,7 @@ pub fn save_transcript(
 ) -> Result<(), String> {
     state
         .db
-        .lock()
-        .unwrap()
+        .lock_or_recover()
         .get_recording(&id)
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "Grabación no encontrada.".to_string())?;
@@ -402,8 +395,7 @@ pub fn save_transcript(
     }
     state
         .db
-        .lock()
-        .unwrap()
+        .lock_or_recover()
         .update_status(&id, RecordingStatus::Transcribed)
         .map_err(|error| error.to_string())?;
     let _ = app.emit("transcript-ready", IdPayload { id: id.clone() });

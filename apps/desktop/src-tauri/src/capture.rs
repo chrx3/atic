@@ -9,6 +9,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::state::AppState;
+use atic_core::MutexExt;
 
 /// Máximo de capturas que muestra el shelf.
 const SHELF_LIMIT: usize = 5;
@@ -56,7 +57,7 @@ pub fn notify_capture_ready(app: &AppHandle, path: &str, shelf_anchor: Option<(i
 
     let state = app.state::<AppState>();
     let (ui_sounds, output_device_id, sound_voice) = {
-        let cfg = state.config.lock().unwrap();
+        let cfg = state.config.lock_or_recover();
         (
             cfg.ui_sounds,
             cfg.output_device_id.clone(),
@@ -132,7 +133,7 @@ pub fn activate_capture(
 ) -> Result<(), String> {
     use tauri_plugin_opener::OpenerExt;
     let target = ensure_in_dir(&state.dirs.captures_dir(), Path::new(&path))?;
-    let action = state.config.lock().unwrap().capture_click_action.clone();
+    let action = state.config.lock_or_recover().capture_click_action.clone();
     if action == "location" {
         app.opener()
             .reveal_item_in_dir(target)
@@ -147,7 +148,7 @@ pub fn activate_capture(
 /// Limpia ahora las capturas más antiguas que `capture_retention_hours`.
 #[tauri::command]
 pub fn cleanup_captures_now(state: State<AppState>) -> Result<usize, String> {
-    let hours = state.config.lock().unwrap().capture_retention_hours;
+    let hours = state.config.lock_or_recover().capture_retention_hours;
     let result = atic_capture::retention::cleanup_captures(
         &state.dirs.captures_dir(),
         hours,
@@ -164,7 +165,7 @@ pub fn open_captures_dir(app: AppHandle, state: State<AppState>) -> Result<(), S
 /// Limpieza automática de capturas al iniciar (según retención configurada).
 pub fn run_capture_cleanup(app: &AppHandle) {
     let state = app.state::<AppState>();
-    let hours = state.config.lock().unwrap().capture_retention_hours;
+    let hours = state.config.lock_or_recover().capture_retention_hours;
     if hours == 0 {
         return;
     }

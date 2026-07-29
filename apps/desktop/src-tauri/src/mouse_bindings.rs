@@ -20,6 +20,7 @@ use std::time::Duration;
 use tauri::{AppHandle, Manager};
 
 use crate::{clipboard_history, dictation, snippets, state};
+use atic_core::MutexExt;
 
 /// Botón lateral del mouse.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -425,7 +426,7 @@ fn dispatch(app: &AppHandle, action: MouseAction, edge: Edge) {
         (MouseAction::Dictation, edge) => {
             let mode = app
                 .try_state::<state::AppState>()
-                .map(|s| s.config.lock().unwrap().dictation_mode.clone())
+                .map(|s| s.config.lock_or_recover().dictation_mode.clone())
                 .unwrap_or_else(|| "push_to_talk".into());
             match (mode.as_str(), edge) {
                 ("push_to_talk", Edge::Down) => dictation::dictation_key_down(app),

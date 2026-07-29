@@ -9,6 +9,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use atic_core::Recording;
 
 use crate::state::AppState;
+use atic_core::MutexExt;
 
 #[derive(Clone, Serialize)]
 pub struct RetentionItem {
@@ -51,7 +52,7 @@ pub fn cleanup_retention(
     if !confirm {
         return Err("La limpieza requiere confirmación explícita.".into());
     }
-    if state.active.lock().unwrap().is_some() || state.dictation.lock().unwrap().is_some() {
+    if state.active.lock_or_recover().is_some() || state.dictation.lock_or_recover().is_some() {
         return Err("Termina la grabación o el dictado antes de limpiar datos.".into());
     }
     let result = cleanup(&state, days)?;
@@ -61,7 +62,7 @@ pub fn cleanup_retention(
 
 pub fn run_auto_cleanup(app: &AppHandle) {
     let state = app.state::<AppState>();
-    let config = state.config.lock().unwrap().clone();
+    let config = state.config.lock_or_recover().clone();
     if !config.retention_auto_cleanup || config.retention_days == 0 {
         return;
     }
@@ -78,7 +79,7 @@ pub fn run_auto_cleanup(app: &AppHandle) {
 
 fn preview(state: &AppState, override_days: Option<u32>) -> Result<RetentionPreview, String> {
     let days = override_days
-        .unwrap_or_else(|| state.config.lock().unwrap().retention_days)
+        .unwrap_or_else(|| state.config.lock_or_recover().retention_days)
         .min(3_650);
     if days == 0 {
         return Ok(RetentionPreview {
@@ -91,8 +92,7 @@ fn preview(state: &AppState, override_days: Option<u32>) -> Result<RetentionPrev
     let cutoff = Utc::now() - Duration::days(i64::from(days));
     let recordings = state
         .db
-        .lock()
-        .unwrap()
+        .lock_or_recover()
         .list_recordings()
         .map_err(|error| error.to_string())?;
     let mut items = Vec::new();
@@ -148,7 +148,7 @@ fn cleanup(state: &AppState, override_days: Option<u32>) -> Result<RetentionClea
                 }
             }
         }
-        match state.db.lock().unwrap().delete_recording(&item.id) {
+        match state.db.lock_or_recover().delete_recording(&item.id) {
             Ok(()) => {
                 result.deleted += 1;
                 result.bytes_freed = result.bytes_freed.saturating_add(item.bytes);

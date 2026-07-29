@@ -10,6 +10,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::clipboard_history;
 use crate::state::AppState;
+use atic_core::MutexExt;
 
 const SNIPPETS_FILE: &str = "snippets.json";
 const SCRATCHPAD_FILE: &str = "scratchpad.json";
@@ -84,7 +85,7 @@ fn save_snippets_to_disk(dir: &Path, items: &[Snippet]) {
 }
 
 fn ensure_loaded(state: &AppState) -> Vec<Snippet> {
-    let mut guard = SNIPPETS.lock().unwrap();
+    let mut guard = SNIPPETS.lock_or_recover();
     if guard.is_none() {
         let items = load_snippets_from_disk(&state.dirs.snippets_dir());
         *guard = Some(items);
@@ -94,7 +95,7 @@ fn ensure_loaded(state: &AppState) -> Vec<Snippet> {
 
 fn with_snippets_mut<R>(state: &AppState, f: impl FnOnce(&mut Vec<Snippet>) -> R) -> R {
     let dir = state.dirs.snippets_dir();
-    let mut guard = SNIPPETS.lock().unwrap();
+    let mut guard = SNIPPETS.lock_or_recover();
     if guard.is_none() {
         *guard = Some(load_snippets_from_disk(&dir));
     }
