@@ -63,3 +63,19 @@ hacerla nacer de él, al estilo de una Dynamic Island. No se duplica el renderer
 - Reduced motion conserva todos los estados sin desplazamientos.
 - `pnpm check`, autofixer Svelte, Rust fmt/clippy/tests y build pasan.
 - Validación visual final realizada dentro de WebView2, no solo en navegador.
+
+## Estado verificado · 2026-07-31
+
+- `pnpm check`: 0 errores y 0 warnings.
+- `pnpm build`: build estático correcto; `/pill-v2` y `/lab/floating-v2`
+  responden HTTP 200 desde preview.
+- Test geométrico: contornos cerrados, puente pill-panel, apertura hacia arriba,
+  caché y variación de `Blend` comprobados.
+- Perfil CPU orientativo: 60 contornos de la escena de agentes en 208.2 ms
+  (3.47 ms por cálculo en esta máquina).
+- `cargo fmt --all --check` y `cargo check --workspace`: correctos.
+- `cargo test --workspace`: la compilación no terminó dentro del límite de cinco
+  minutos; no se considera aprobado ni fallido.
+- QA visual WebView2: pendiente. Las capacidades de navegador y control de
+  Windows no estuvieron disponibles en esta sesión; no se sustituye por una
+  afirmación visual sin evidencia.

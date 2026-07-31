@@ -43,7 +43,9 @@ crispEngine.setBridges(crispScene.bridges);
 crispEngine.setParameters({ ...crispScene.parameters, k: 0 });
 const crisp = crispEngine.compute().d;
 crispEngine.setParameters({ ...crispScene.parameters, k: 48 });
-const goo = crispEngine.compute().d;
+const gooPath = crispEngine.compute();
+const goo = gooPath.d;
 assert(crisp !== goo, "changing Blend must recompute the fused outline");
+assert(Object.is(gooPath, crispEngine.compute()), "unchanged geometry must return the cached path object");
 
 console.log("Liquid engine geometry checks passed.");

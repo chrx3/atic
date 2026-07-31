@@ -146,7 +146,7 @@
             {@const count = queueCount > 0 ? queueCount : agentCount}
             <b>{Math.min(count, 9)}{count > 9 ? "+" : ""}</b>
           {/if}
-        {#if activity !== "idle" || agentWorking}<span class="status-pulse"></span>{/if}
+          {#if activity !== "idle" || agentWorking}<span class="status-pulse"></span>{/if}
         </span>
         <span class="pill-copy">
           <strong>{pillTitle}</strong>
@@ -167,8 +167,8 @@
         <button
           class:selected={selectedTool === tool.id}
           class="wheel-control"
-        style:--node-x={`${WHEEL_POSITIONS[index].x}px`}
-        style:--node-y={`${WHEEL_POSITIONS[index].y}px`}
+          style:--node-x={`${WHEEL_POSITIONS[index].x}px`}
+          style:--node-y={`${WHEEL_POSITIONS[index].y}px`}
           type="button"
           tabindex={wheelOpen ? 0 : -1}
           aria-label={`${tool.label}: ${tool.short}`}
@@ -290,6 +290,7 @@
     font-family: "Aptos", "Avenir Next", "Helvetica Neue", "Segoe UI Variable", sans-serif;
     font-size: 14px;
     isolation: isolate;
+    pointer-events: none;
   }
 
   .floating-experience.window-layout {
@@ -316,6 +317,7 @@
     border-radius: 25px;
     color: var(--ink);
     background: transparent;
+    pointer-events: auto;
     transform: translateX(-50%);
   }
 
