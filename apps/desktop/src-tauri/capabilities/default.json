@@ -9,7 +9,7 @@
     "capture-overlay",
     "agents",
     "launcher",
-    "liquid-world",
+    "liquid-world-*",
     "liquid-spike-*"
   ],
   "permissions": [

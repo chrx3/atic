@@ -167,9 +167,44 @@ Comprobaciones cerradas:
   la fusión por proximidad;
 - la ruta y las ventanas son opt-in: no se crean en un arranque normal.
 
-Pendiente para cerrar el spike:
+Pendientes del comportamiento de objetos, ya fuera del riesgo del compositor:
 
 - arrastre humano sostenido y foco del campo durante interacción cruzada;
 - medición p95 del cálculo y de la entrega de snapshots durante arrastre;
 - z-order después de muchos movimientos y cambios de foco;
 - transferencia a un monitor con otro DPI.
+
+### DecisiÃ³n cerrada del compositor Â· 2026-07-31
+
+El spike se extendiÃ³ a una `LiquidWorld` click-through por monitor y se ejecutÃ³
+desde un binario Tauri estÃ¡tico (`tauri build --debug --no-bundle`), sin servidor
+de desarrollo ni HMR. El equipo de prueba expuso dos monitores de 1536Ã—864
+(Ã¡rea Ãºtil 1536Ã—816), ambos a 120 DPI / 125 %.
+
+Evidencia reproducible obtenida sobre las ventanas WebView2 reales:
+
+- 38 movimientos nativos de Reuniones, con 120 ms entre posiciones, mantuvieron
+  `Pearl Flow agents` como foreground y el DOM reportÃ³
+  `focused=true active=input#-` durante la secuencia;
+- el SDF del compositor primario registrÃ³ 60 muestras con media entre 1,28 y
+  1,44 ms y p95 mÃ¡ximo de 2,70 ms, muy por debajo del lÃ­mite de 20 ms;
+- despuÃ©s de 12 ciclos alternando foco entre Reuniones y Agentes, las ventanas
+  interactivas siguieron delante de pill y ambas delante de la capa global;
+- la telemetrÃ­a por monitor midiÃ³, tras el cruce, p95 SDF de 1,10 ms en el
+  destino y 3,40 ms en el origen; la entrega de snapshots fue 6 ms p95 en el
+  destino;
+- Reuniones cruzÃ³ de `x=528` a `x=-800` sin activar su ventana: apareciÃ³ una
+  sola vez en `monitor-0`, desapareciÃ³ del contorno de `monitor-1` y Agentes
+  conservÃ³ foco en el monitor primario;
+- las dos capas globales conservaron `WS_EX_TRANSPARENT` y
+  `WS_EX_NOACTIVATE`; las superficies de contenido conservaron input nativo.
+
+**DecisiÃ³n:** se acepta el compositor hÃ­brido por monitor como base de
+producciÃ³n. El fallback por cluster no es necesario con la evidencia actual.
+El caso de monitores con DPI diferentes queda como prueba de robustez porque el
+hardware disponible usa la misma escala; la conversiÃ³n ya se hace contra el
+`scale_factor` de cada `LiquidWorld`.
+
+La siguiente fase promueve este contrato a `FloatingWorld`: registro persistente
+de superficies, pill circular, agrupaciÃ³n y separaciÃ³n. El spike sigue opt-in y
+la UI anterior permanece disponible para rollback hasta completar QA.

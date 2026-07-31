@@ -16,18 +16,36 @@
   };
 
   type Snapshot = {
+    worldLabel: string;
     width: number;
     height: number;
     scale: number;
+    revision: number;
+    emittedAtMs: number;
     objects: SnapshotObject[];
   };
 
   let label = $state("");
   let focusInput: HTMLInputElement | undefined = $state();
-  let snapshot = $state<Snapshot>({ width: 1, height: 1, scale: 1, objects: [] });
-  let renderSamples: number[] = [];
-  const isWorld = $derived(label === "liquid-world");
+  let snapshot = $state<Snapshot>({
+    worldLabel: "",
+    width: 1,
+    height: 1,
+    scale: 1,
+    revision: 0,
+    emittedAtMs: 0,
+    objects: [],
+  });
+  let renderSamples = $state<number[]>([]);
+  let renderCount = 0;
+  let deliverySamples = $state<number[]>([]);
+  let focused = $state(false);
+  let activeElement = $state("none");
+  const isWorld = $derived(label.startsWith("liquid-world-"));
   const objectId = $derived(label.replace("liquid-spike-", ""));
+  const renderP95 = $derived(percentile(renderSamples, 0.95));
+  const renderAverage = $derived(average(renderSamples));
+  const deliveryP95 = $derived(percentile(deliverySamples, 0.95));
   const boxes = $derived<LiquidBox[]>(
     snapshot.objects.map((object) => ({
       id: object.id,
@@ -40,39 +58,70 @@
   );
 
   function recordRender(milliseconds: number) {
-    renderSamples.push(milliseconds);
-    if (renderSamples.length < 60) return;
-    const samples = renderSamples;
-    renderSamples = [];
-    void invoke("report_liquid_world_metrics", { samples });
+    renderCount += 1;
+    renderSamples = [...renderSamples.slice(-239), milliseconds];
+    if (renderCount % 60 === 0) {
+      void invoke("report_liquid_world_metrics", { label, samples: renderSamples.slice(-60) });
+    }
+  }
+
+  function percentile(samples: number[], quantile: number) {
+    if (samples.length === 0) return 0;
+    const ordered = [...samples].sort((a, b) => a - b);
+    return ordered[Math.round((ordered.length - 1) * quantile)] ?? 0;
+  }
+
+  function average(samples: number[]) {
+    return samples.length === 0 ? 0 : samples.reduce((total, value) => total + value, 0) / samples.length;
+  }
+
+  function acceptSnapshot(value: Snapshot) {
+    if (value.worldLabel !== label) return;
+    snapshot = value;
+    if (value.emittedAtMs > 0) {
+      deliverySamples = [...deliverySamples.slice(-239), Math.max(0, Date.now() - value.emittedAtMs)];
+    }
   }
 
   function reportFocus() {
     const active = document.activeElement;
+    focused = document.hasFocus();
+    activeElement = active instanceof HTMLElement ? `${active.tagName.toLowerCase()}#${active.id || "-"}` : "none";
     void invoke("report_liquid_world_focus", {
       label,
-      focused: document.hasFocus(),
-      active: active instanceof HTMLElement ? `${active.tagName.toLowerCase()}#${active.id || "-"}` : "none",
+      focused,
+      active: activeElement,
     });
   }
 
   onMount(() => {
     label = getCurrentWindow().label;
-    if (label !== "liquid-world") {
+    if (!label.startsWith("liquid-world-")) {
       if (label === "liquid-spike-agents") {
         let unlistenFocus: UnlistenFn | undefined;
+        const refreshFocus = () => window.setTimeout(reportFocus, 0);
+        window.addEventListener("focus", refreshFocus);
+        window.addEventListener("blur", refreshFocus);
+        document.addEventListener("focusin", refreshFocus);
+        document.addEventListener("focusout", refreshFocus);
         window.setTimeout(() => {
           focusInput?.focus();
           reportFocus();
         }, 180);
         void listen("liquid-world-updated", () => reportFocus()).then((off) => (unlistenFocus = off));
-        return () => unlistenFocus?.();
+        return () => {
+          unlistenFocus?.();
+          window.removeEventListener("focus", refreshFocus);
+          window.removeEventListener("blur", refreshFocus);
+          document.removeEventListener("focusin", refreshFocus);
+          document.removeEventListener("focusout", refreshFocus);
+        };
       }
       return;
     }
     let unlisten: UnlistenFn | undefined;
-    void invoke<Snapshot>("liquid_world_snapshot").then((value) => (snapshot = value));
-    void listen<Snapshot>("liquid-world-updated", (event) => (snapshot = event.payload)).then(
+    void invoke<Snapshot>("liquid_world_snapshot", { label }).then(acceptSnapshot);
+    void listen<Snapshot>("liquid-world-updated", (event) => acceptSnapshot(event.payload)).then(
       (off) => (unlisten = off),
     );
     return () => unlisten?.();
@@ -89,6 +138,12 @@
       duration={90}
       onRender={recordRender}
     />
+    <output class="telemetry" aria-label="Telemetria del compositor">
+      <span>SDF p95 <strong>{renderP95.toFixed(2)} ms</strong></span>
+      <span>media {renderAverage.toFixed(2)} ms</span>
+      <span>evento p95 {deliveryP95.toFixed(1)} ms</span>
+      <span>{renderSamples.length} frames / rev {snapshot.revision} / {snapshot.scale.toFixed(2)}x</span>
+    </output>
   </main>
 {:else if objectId === "pill"}
   <button class="pill-ink" type="button" data-tauri-drag-region aria-label="Mover núcleo de Atic">
@@ -108,6 +163,9 @@
       {#if objectId === "agents"}
         <p>El campo conserva foco mientras la piel vive en otra ventana.</p>
         <input bind:this={focusInput} aria-label="Mensaje de prueba" placeholder="Escribe para probar el foco…" />
+        <output class:verified={focused && activeElement.startsWith("input#")} class="focus-state">
+          {focused && activeElement.startsWith("input#") ? "Foco conservado" : "Sin foco de escritura"}
+        </output>
       {:else}
         <button type="button"><span></span>Iniciar reunión</button>
         <p>Arrastra el encabezado para acercar este objeto a la pill o a Agentes.</p>
@@ -126,6 +184,22 @@
 
   :global(body) { margin: 0; }
   .world { position: relative; width: 100%; height: 100%; pointer-events: none; }
+  .telemetry {
+    position: absolute;
+    top: 12px;
+    right: 12px;
+    display: flex;
+    gap: 6px 12px;
+    flex-wrap: wrap;
+    max-width: 520px;
+    padding: 7px 10px;
+    color: oklch(0.94 0.006 255);
+    border-radius: 8px;
+    background: oklch(0.18 0.012 255 / 0.88);
+    font: 11px/1.35 "Cascadia Mono", monospace;
+  }
+
+  .telemetry strong { color: white; font-weight: 650; }
 
   .pill-ink {
     display: grid;
@@ -183,6 +257,18 @@
   section button { color: white; background: oklch(0.22 0.012 255); cursor: pointer; }
   section input { padding: 0 12px; color: inherit; background: oklch(1 0 0 / 0.48); outline: 1px solid oklch(0.22 0.012 255 / 0.12); }
   section input:focus { outline: 2px solid oklch(0.62 0.18 252 / 0.62); }
+  .focus-state {
+    justify-self: start;
+    padding: 4px 8px;
+    color: oklch(0.42 0.014 255);
+    border-radius: 999px;
+    background: oklch(0.22 0.012 255 / 0.07);
+    font-size: 10px;
+  }
+  .focus-state.verified {
+    color: oklch(0.42 0.13 154);
+    background: oklch(0.78 0.13 154 / 0.18);
+  }
 
   @media (prefers-color-scheme: dark) {
     .pill-ink, .surface-ink { color: oklch(0.9 0.008 255); }
