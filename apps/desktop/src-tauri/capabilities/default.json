@@ -8,7 +8,9 @@
     "capture-shelf",
     "capture-overlay",
     "agents",
-    "launcher"
+    "launcher",
+    "liquid-world",
+    "liquid-spike-*"
   ],
   "permissions": [
     "core:default",

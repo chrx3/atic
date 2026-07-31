@@ -9,6 +9,7 @@
     width,
     height,
     duration = 300,
+    onRender,
   }: {
     boxes: LiquidBox[];
     bridges?: LiquidBridge[];
@@ -16,6 +17,7 @@
     width: number;
     height: number;
     duration?: number;
+    onRender?: (milliseconds: number) => void;
   } = $props();
 
   const engine = new LiquidEngine();
@@ -87,10 +89,12 @@
   }
 
   function render(boxValues: LiquidBox[], bridgeValues: LiquidBridge[], parameterValues: LiquidParameters) {
+    const started = performance.now();
     engine.setBoxes(boxValues);
     engine.setBridges(bridgeValues);
     engine.setParameters(parameterValues);
     path = engine.compute().d;
+    onRender?.(performance.now() - started);
   }
 
   function morph(targetBoxes: LiquidBox[], targetBridges: LiquidBridge[], targetParameters: LiquidParameters) {

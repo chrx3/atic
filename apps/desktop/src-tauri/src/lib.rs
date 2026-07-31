@@ -13,6 +13,7 @@ mod export;
 mod floating;
 mod import;
 mod launcher;
+mod liquid_world;
 mod live;
 #[cfg(target_os = "macos")]
 mod macos_notes;
@@ -223,6 +224,10 @@ pub fn run() {
             launcher::launcher_reindex,
             launcher::launcher_search,
             launcher::launcher_run,
+            liquid_world::liquid_world_snapshot,
+            liquid_world::close_liquid_world_spike,
+            liquid_world::report_liquid_world_metrics,
+            liquid_world::report_liquid_world_focus,
         ])
         .setup(move |app| {
             let dirs = AppDirs::new()?;
@@ -342,6 +347,13 @@ pub fn run() {
             // Sin Ctrl+P / Find / DevTools del WebView2 en ventanas flotantes.
             webview_tweaks::apply_to_overlay_windows(app.handle());
 
+            // Spike opt-in: nunca aparece en un arranque normal. Permite medir
+            // la arquitectura híbrida dentro de WebView2 con el binario real.
+            if std::env::var_os("ATIC_LIQUID_WORLD_SPIKE").is_some() {
+                liquid_world::open_spike(app.handle())
+                    .map_err(|error| format!("no se pudo abrir el spike líquido: {error}"))?;
+            }
+
             // Posición y visibilidad inicial de la pill.
             if let Some(pill) = app.get_webview_window("pill") {
                 if let Some((x, y)) = pill_position {
@@ -393,6 +405,9 @@ pub fn run() {
                             Some((pos.x as f64, pos.y as f64));
                     }
                 }
+            }
+            WindowEvent::Moved(_) if liquid_world::is_spike_object(window.label()) => {
+                liquid_world::emit_snapshot(window.app_handle());
             }
             _ => {}
         })

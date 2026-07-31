@@ -144,3 +144,32 @@ ventanas de contenido sin parpadeo, el fallback es una ventana compuesta por
 cluster: cada grupo líquido vive en una ventana ajustada a su bounding box; los
 objetos libres conservan ventanas propias. Ese fallback se valida antes de
 construir la UI final.
+
+### Evidencia inicial del spike · 2026-07-31
+
+El binario estático debug se ejecutó con `ATIC_LIQUID_WORLD_SPIKE=1` dentro de
+WebView2 y creó cuatro ventanas reales:
+
+- `Pearl Flow world`: 1536×816 en coordenadas lógicas del monitor, capa SDF;
+- `Pearl Flow pill`: 48×48 físicos;
+- `Pearl Flow meetings`: 280×180 físicos;
+- `Pearl Flow agents`: 360×260 físicos, con campo de texto real.
+
+Comprobaciones cerradas:
+
+- proceso vivo y responsive, sin salida en `stderr`;
+- la capa global tiene `WS_EX_TRANSPARENT` y `WS_EX_NOACTIVATE`;
+- las tres ventanas de contenido no tienen esas banderas y siguen siendo
+  regiones interactivas independientes;
+- a 125% de escala, piel y tinta quedaron alineadas en la captura compuesta;
+- mover Reuniones mediante `SetWindowPos` disparó `WindowEvent::Moved`, actualizó
+  el snapshot y produjo tres contornos separados; restaurarlo vuelve a permitir
+  la fusión por proximidad;
+- la ruta y las ventanas son opt-in: no se crean en un arranque normal.
+
+Pendiente para cerrar el spike:
+
+- arrastre humano sostenido y foco del campo durante interacción cruzada;
+- medición p95 del cálculo y de la entrega de snapshots durante arrastre;
+- z-order después de muchos movimientos y cambios de foco;
+- transferencia a un monitor con otro DPI.
