@@ -7,7 +7,7 @@ export type LiquidScene = {
   parameters: LiquidParameters;
 };
 
-const WHEEL_POSITIONS = [
+export const WHEEL_POSITIONS = [
   { x: -140, y: 62 },
   { x: -112, y: 116 },
   { x: -42, y: 148 },

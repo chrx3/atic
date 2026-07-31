@@ -3,7 +3,7 @@
   import ToolIcon from "$lib/ToolIcon.svelte";
   import { TOOLS, toolById, type ToolId } from "$lib/tools";
   import LiquidSkin from "./liquid/LiquidSkin.svelte";
-  import { sceneFor } from "./liquid/scene";
+  import { sceneFor, WHEEL_POSITIONS } from "./liquid/scene";
   import { surfaceForTool, type FloatingActivity, type FloatingPlacement, type FloatingSurface } from "./types";
 
   let {
@@ -82,15 +82,6 @@
             ? "Agente trabajando"
             : "Herramientas",
   );
-
-  const wheelPositions = [
-    { x: -140, y: 62 },
-    { x: -112, y: 116 },
-    { x: -42, y: 148 },
-    { x: 42, y: 148 },
-    { x: 112, y: 116 },
-    { x: 140, y: 62 },
-  ];
 
   function toggleWheel() {
     if (!interactive) return;
@@ -176,8 +167,8 @@
         <button
           class:selected={selectedTool === tool.id}
           class="wheel-control"
-          style:--node-x={`${wheelPositions[index].x}px`}
-          style:--node-y={`${wheelPositions[index].y}px`}
+        style:--node-x={`${WHEEL_POSITIONS[index].x}px`}
+        style:--node-y={`${WHEEL_POSITIONS[index].y}px`}
           type="button"
           tabindex={wheelOpen ? 0 : -1}
           aria-label={`${tool.label}: ${tool.short}`}
@@ -192,7 +183,7 @@
       {/each}
     </div>
 
-    <section class="tool-surface" aria-hidden={!panelOpen} aria-label={agentOpen ? "Agentes" : surface.kind === "queue" ? "Cola de pegado" : activeTool?.label}>
+    <section class="tool-surface" inert={!panelOpen} aria-hidden={!panelOpen} aria-label={agentOpen ? "Agentes" : surface.kind === "queue" ? "Cola de pegado" : activeTool?.label}>
       <header class="surface-header">
         <div class="surface-identity">
           {#if surface.kind === "tool"}

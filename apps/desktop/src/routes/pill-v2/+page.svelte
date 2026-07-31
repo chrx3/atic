@@ -227,20 +227,6 @@
 
   async function activateTool(tool: ToolId) {
     wheelTool = null;
-    if (tool === "meetings") {
-      await setSurface({ kind: "pill" });
-      await changeActivity(activity === "recording" ? "idle" : "recording");
-      return;
-    }
-    if (tool === "dictation") {
-      await setSurface({ kind: "pill" });
-      await changeActivity(activity === "dictating" ? "idle" : "dictating");
-      return;
-    }
-    if (tool === "captures") {
-      await runCapture();
-      return;
-    }
     if (tool === "agents") {
       await setSurface({ kind: "agents" });
       return;
