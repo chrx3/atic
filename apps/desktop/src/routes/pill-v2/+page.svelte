@@ -6,24 +6,33 @@
   import SnippetsList from "$lib/SnippetsList.svelte";
   import FloatingExperience from "$lib/floating-v2/FloatingExperience.svelte";
   import { envelopeFor, opensLargeSurface, pivotForTransition } from "$lib/floating-v2/geometry";
-  import type { FloatingActivity, FloatingSurface } from "$lib/floating-v2/types";
+  import { surfaceForTool, type FloatingActivity, type FloatingSurface } from "$lib/floating-v2/types";
   import { createStage, growsFirst } from "$lib/pillStage";
-  import type { ClipboardItem, DictationPhase, Snippet as TextSnippet } from "$lib/types";
+  import { TOOLS, type ToolId } from "$lib/tools";
+  import type { ClipboardItem, DictationPhase, PasteQueueItem, Snippet as TextSnippet } from "$lib/types";
   import {
     dictationPhase,
+    dismissPasteQueueItem,
+    getScratchpad,
     isRecording,
     listClipboardHistory,
+    listPasteQueue,
     listSnippets,
     onClipboardHistoryChanged,
     onDictationStatus,
     onPillClipboardClose,
     onPillClipboardToggle,
     onPillRadialPress,
+    onPillRadialRelease,
     onPillReset,
     onPillSnippetsClose,
     onPillSnippetsToggle,
     onSnippetsChanged,
     onStatus,
+    onPasteQueueChanged,
+    onPasteQueued,
+    pasteQueueItemNow,
+    setScratchpad,
     showAgentsWindow,
     showMainWindow,
     startCaptureSession,
@@ -47,6 +56,14 @@
   let clipboardLoading = $state(false);
   let snippetItems = $state<TextSnippet[]>([]);
   let snippetsLoading = $state(false);
+  let snippetsTab = $state<"texts" | "scratchpad">("texts");
+  let scratchBody = $state("");
+  let scratchLoading = $state(false);
+  let scratchSaving = $state(false);
+  let scratchTimer: ReturnType<typeof setTimeout> | null = null;
+  let queue = $state<PasteQueueItem[]>([]);
+  let queueBusy = $state(false);
+  let wheelTool = $state<ToolId | null>(null);
 
   function sameSurface(a: FloatingSurface, b: FloatingSurface): boolean {
     if (a.kind !== b.kind) return false;
@@ -76,10 +93,68 @@
     }
   }
 
+  async function loadScratchpad() {
+    scratchLoading = true;
+    try {
+      scratchBody = (await getScratchpad()).body;
+    } catch (cause) {
+      error = String(cause);
+    } finally {
+      scratchLoading = false;
+    }
+  }
+
+  async function persistScratchpad() {
+    if (scratchSaving) return;
+    scratchSaving = true;
+    try {
+      await setScratchpad(scratchBody);
+    } catch (cause) {
+      error = String(cause);
+    } finally {
+      scratchSaving = false;
+    }
+  }
+
+  function scheduleScratchSave() {
+    if (scratchTimer) clearTimeout(scratchTimer);
+    scratchTimer = setTimeout(() => {
+      scratchTimer = null;
+      void persistScratchpad();
+    }, 500);
+  }
+
+  async function refreshQueue() {
+    try {
+      queue = await listPasteQueue();
+    } catch (cause) {
+      error = String(cause);
+    }
+  }
+
+  async function runQueueAction(action: (id: string) => Promise<void>) {
+    const front = queue[0];
+    if (!front || queueBusy) return;
+    queueBusy = true;
+    try {
+      await action(front.id);
+      await refreshQueue();
+      if (queue.length === 0) await setSurface({ kind: "pill" });
+    } catch (cause) {
+      error = String(cause);
+    } finally {
+      queueBusy = false;
+    }
+  }
+
   async function prepareSurface(next: FloatingSurface) {
+    if (next.kind === "queue") {
+      await refreshQueue();
+      return;
+    }
     if (next.kind !== "tool") return;
     if (next.tool === "clipboard") await refreshClipboard();
-    if (next.tool === "snippets") await refreshSnippets();
+    if (next.tool === "snippets") await Promise.all([refreshSnippets(), loadScratchpad()]);
   }
 
   async function setSurface(next: FloatingSurface) {
@@ -93,6 +168,11 @@
     const pivot = pivotForTransition(from, next, openedUp);
 
     try {
+      if (from.kind === "tool" && from.tool === "snippets" && scratchTimer) {
+        clearTimeout(scratchTimer);
+        scratchTimer = null;
+        await persistScratchpad();
+      }
       await prepareSurface(next);
       if (growsFirst(fromSize, nextSize)) {
         const outcome = await stage.resize(nextSize, pivot);
@@ -145,12 +225,49 @@
     }
   }
 
+  function stepWheel(direction: 1 | -1) {
+    const index = TOOLS.findIndex((tool) => tool.id === wheelTool);
+    const next = index < 0
+      ? direction === 1 ? 0 : TOOLS.length - 1
+      : (index + direction + TOOLS.length) % TOOLS.length;
+    wheelTool = TOOLS[next].id;
+  }
+
+  async function activateTool(tool: ToolId) {
+    wheelTool = null;
+    if (tool === "meetings") {
+      await setSurface({ kind: "pill" });
+      await changeActivity(activity === "recording" ? "idle" : "recording");
+      return;
+    }
+    if (tool === "dictation") {
+      await setSurface({ kind: "pill" });
+      await changeActivity(activity === "dictating" ? "idle" : "dictating");
+      return;
+    }
+    if (tool === "captures") {
+      await runCapture();
+      return;
+    }
+    if (tool === "agents") {
+      await openAgents();
+      return;
+    }
+    await setSurface(surfaceForTool(tool));
+  }
+
+  function releaseRadial() {
+    if (surface.kind !== "wheel") return;
+    if (wheelTool) void activateTool(wheelTool);
+    else void setSurface({ kind: "pill" });
+  }
+
   onMount(() => {
     const unlisteners: Promise<UnlistenFn>[] = [];
     let dragOrigin: { x: number; y: number } | null = null;
 
     void stage.resize(envelopeFor(surface), "topCenter");
-    void Promise.all([isRecording(), dictationPhase()]).then(([recording, phase]) => {
+    void Promise.all([isRecording(), dictationPhase(), refreshQueue()]).then(([recording, phase]) => {
       dictation = phase;
       activity = recording ? "recording" : phase === "idle" ? "idle" : "dictating";
     });
@@ -173,11 +290,17 @@
       onPillSnippetsToggle(() => void setSurface({ kind: "tool", tool: "snippets" })),
       onPillClipboardClose(() => void setSurface({ kind: "pill" })),
       onPillSnippetsClose(() => void setSurface({ kind: "pill" })),
-      onPillRadialPress(() => void setSurface({ kind: "wheel" })),
+      onPillRadialPress(() => {
+        wheelTool = null;
+        void setSurface({ kind: "wheel" });
+      }),
+      onPillRadialRelease(releaseRadial),
       onPillReset(async () => {
         await setSurface({ kind: "pill" });
         await summonPillHere().catch(() => {});
       }),
+      onPasteQueueChanged(() => void refreshQueue()),
+      onPasteQueued(() => void refreshQueue()),
     );
 
     const onPointerDown = (event: PointerEvent) => {
@@ -193,12 +316,32 @@
     const onDoubleClick = (event: MouseEvent) => {
       if ((event.target as HTMLElement).closest(".pill-control")) void showMainWindow();
     };
+    const onWheel = (event: WheelEvent) => {
+      if (surface.kind !== "wheel" || Math.abs(event.deltaY) < 1) return;
+      event.preventDefault();
+      stepWheel(event.deltaY > 0 ? 1 : -1);
+    };
+    const onKeydown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && surface.kind !== "pill") {
+        event.preventDefault();
+        void setSurface({ kind: "pill" });
+        return;
+      }
+      if (surface.kind !== "wheel") return;
+      if (event.key === "ArrowRight" || event.key === "ArrowDown" || event.key === "Tab" && !event.shiftKey) stepWheel(1);
+      else if (event.key === "ArrowLeft" || event.key === "ArrowUp" || event.key === "Tab" && event.shiftKey) stepWheel(-1);
+      else if ((event.key === "Enter" || event.key === " ") && wheelTool) void activateTool(wheelTool);
+      else return;
+      event.preventDefault();
+    };
 
     window.addEventListener("pointerdown", onPointerDown);
     window.addEventListener("pointermove", onPointerMove);
     window.addEventListener("pointerup", clearDrag);
     window.addEventListener("pointercancel", clearDrag);
     window.addEventListener("dblclick", onDoubleClick);
+    window.addEventListener("wheel", onWheel, { passive: false });
+    window.addEventListener("keydown", onKeydown, true);
 
     return () => {
       for (const pending of unlisteners) void pending.then((unlisten) => unlisten());
@@ -207,6 +350,12 @@
       window.removeEventListener("pointerup", clearDrag);
       window.removeEventListener("pointercancel", clearDrag);
       window.removeEventListener("dblclick", onDoubleClick);
+      window.removeEventListener("wheel", onWheel);
+      window.removeEventListener("keydown", onKeydown, true);
+      if (scratchTimer) {
+        clearTimeout(scratchTimer);
+        void persistScratchpad();
+      }
     };
   });
 </script>
@@ -242,14 +391,49 @@
       onError={(message) => (error = message)}
     />
   {:else if current.kind === "tool" && current.tool === "snippets"}
-    <SnippetsList
-      items={snippetItems}
-      loading={snippetsLoading}
-      compact
-      onRefresh={refreshSnippets}
-      onPasted={() => void setSurface({ kind: "pill" })}
-      onError={(message) => (error = message)}
-    />
+    <div class="snippets-surface">
+      <div class="surface-tabs" role="tablist" aria-label="Textos y notas">
+        <button class:active={snippetsTab === "texts"} type="button" role="tab" aria-selected={snippetsTab === "texts"} onclick={() => (snippetsTab = "texts")}>Textos</button>
+        <button class:active={snippetsTab === "scratchpad"} type="button" role="tab" aria-selected={snippetsTab === "scratchpad"} onclick={() => (snippetsTab = "scratchpad")}>Bloc de notas</button>
+      </div>
+      {#if snippetsTab === "texts"}
+        <SnippetsList
+          items={snippetItems}
+          loading={snippetsLoading}
+          compact
+          onRefresh={refreshSnippets}
+          onPasted={() => void setSurface({ kind: "pill" })}
+          onError={(message) => (error = message)}
+        />
+      {:else if scratchLoading}
+        <p class="surface-empty">Cargando notas…</p>
+      {:else}
+        <label class="scratchpad">
+          <span>Se guarda automáticamente</span>
+          <textarea bind:value={scratchBody} oninput={scheduleScratchSave} placeholder="Escribe una nota temporal…"></textarea>
+          <small>{scratchSaving ? "Guardando…" : "Guardado localmente"}</small>
+        </label>
+      {/if}
+    </div>
+  {:else if current.kind === "queue"}
+    <div class="queue-surface">
+      {#if queue.length === 0}
+        <div class="queue-empty"><strong>La cola está vacía</strong><p>No hay texto esperando para pegar.</p></div>
+      {:else}
+        <span class="queue-kicker">SIGUIENTE</span>
+        <blockquote>{queue[0].text}</blockquote>
+        <div class="queue-actions">
+          <button class="secondary" type="button" disabled={queueBusy} onclick={() => void runQueueAction(dismissPasteQueueItem)}>Descartar</button>
+          <button type="button" disabled={queueBusy} onclick={() => void runQueueAction(pasteQueueItemNow)}>Pegar ahora</button>
+        </div>
+        {#if queue.length > 1}
+          <div class="queue-rest">
+            <span>{queue.length - 1} {queue.length === 2 ? "elemento más" : "elementos más"}</span>
+            {#each queue.slice(1, 4) as item (item.id)}<p>{item.text}</p>{/each}
+          </div>
+        {/if}
+      {/if}
+    </div>
   {:else if current.kind === "tool" && current.tool === "captures"}
     <div class="quick-action">
       <span class="action-orb capture"><i></i></span>
@@ -273,9 +457,14 @@
     {activity}
     layout="window"
     interactive={!transitioning}
+    queueCount={queue.length}
+    selectedTool={wheelTool}
     content={productionContent}
     onSurfaceChange={(next) => void setSurface(next)}
     onActivityChange={(next) => void changeActivity(next)}
+    onQueueOpen={() => void setSurface({ kind: "queue" })}
+    onToolSelect={(tool) => void activateTool(tool)}
+    onToolHighlight={(tool) => (wheelTool = tool)}
   />
   {#if error}<p class="host-error" role="status">{error}</p>{/if}
 </main>
@@ -318,6 +507,121 @@
     justify-content: center;
     text-align: center;
   }
+
+  .snippets-surface {
+    display: flex;
+    height: 100%;
+    min-height: 0;
+    flex-direction: column;
+  }
+
+  .surface-tabs {
+    display: flex;
+    margin-bottom: 12px;
+    gap: 4px;
+    align-self: center;
+    padding: 3px;
+    border: 1px solid oklch(0.22 0.012 255 / 0.08);
+    border-radius: 999px;
+    background: oklch(1 0 0 / 0.35);
+  }
+
+  .surface-tabs button {
+    min-height: 27px;
+    padding: 0 10px;
+    border: 0;
+    border-radius: 999px;
+    color: oklch(0.48 0.014 255);
+    background: transparent;
+    font: inherit;
+    font-size: 9px;
+    cursor: pointer;
+  }
+
+  .surface-tabs button.active {
+    color: white;
+    background: oklch(0.22 0.012 255);
+  }
+
+  .scratchpad {
+    display: grid;
+    min-height: 0;
+    flex: 1;
+    grid-template-rows: auto 1fr auto;
+    gap: 8px;
+  }
+
+  .scratchpad > span,
+  .scratchpad > small {
+    color: oklch(0.48 0.014 255);
+    font-size: 9px;
+  }
+
+  .scratchpad textarea {
+    min-height: 0;
+    padding: 14px;
+    resize: none;
+    border: 1px solid oklch(0.22 0.012 255 / 0.1);
+    border-radius: 14px;
+    outline: none;
+    color: oklch(0.22 0.012 255);
+    background: oklch(1 0 0 / 0.42);
+    font: 12px/1.5 inherit;
+  }
+
+  .scratchpad textarea:focus { border-color: oklch(0.62 0.18 252 / 0.55); }
+  .scratchpad > small { text-align: right; }
+  .surface-empty { margin: auto; color: oklch(0.48 0.014 255); font-size: 10px; }
+
+  .queue-surface {
+    display: flex;
+    height: 100%;
+    flex-direction: column;
+    justify-content: center;
+  }
+
+  .queue-kicker {
+    color: oklch(0.62 0.18 252);
+    font-size: 8px;
+    font-weight: 760;
+    letter-spacing: 0.14em;
+  }
+
+  .queue-surface blockquote {
+    max-height: 112px;
+    margin: 12px 0 16px;
+    padding: 14px;
+    overflow: auto;
+    border: 1px solid oklch(0.22 0.012 255 / 0.09);
+    border-radius: 14px;
+    color: oklch(0.22 0.012 255);
+    background: oklch(1 0 0 / 0.42);
+    font-size: 11px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+  }
+
+  .queue-actions { display: flex; gap: 8px; justify-content: flex-end; }
+  .queue-actions button {
+    min-height: 34px;
+    padding: 0 13px;
+    border: 0;
+    border-radius: 999px;
+    color: white;
+    background: oklch(0.22 0.012 255);
+    font: inherit;
+    font-size: 10px;
+    font-weight: 650;
+    cursor: pointer;
+  }
+  .queue-actions button.secondary { border: 1px solid oklch(0.22 0.012 255 / 0.12); color: oklch(0.48 0.014 255); background: transparent; }
+  .queue-actions button:disabled { opacity: 0.45; }
+  .queue-rest { margin-top: 20px; padding-top: 13px; border-top: 1px solid oklch(0.22 0.012 255 / 0.08); }
+  .queue-rest > span { color: oklch(0.48 0.014 255); font-size: 9px; }
+  .queue-rest p { margin: 8px 0 0; overflow: hidden; color: oklch(0.48 0.014 255); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+  .queue-empty { text-align: center; }
+  .queue-empty strong { font-size: 15px; }
+  .queue-empty p { color: oklch(0.48 0.014 255); font-size: 10px; }
 
   .quick-action strong {
     margin-top: 14px;

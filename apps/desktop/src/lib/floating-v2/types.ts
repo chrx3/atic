@@ -5,6 +5,7 @@ export type FloatingActivity = "idle" | "recording" | "dictating";
 export type FloatingSurface =
   | { kind: "pill" }
   | { kind: "wheel" }
+  | { kind: "queue" }
   | { kind: "tool"; tool: Exclude<ToolId, "agents"> }
   | { kind: "agents" };
 

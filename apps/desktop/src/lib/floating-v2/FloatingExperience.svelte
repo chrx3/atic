@@ -11,28 +11,48 @@
     placement = "free",
     layout = "stage",
     interactive = true,
+    queueCount = 0,
+    selectedTool = null,
     content,
     onSurfaceChange = () => {},
     onActivityChange = () => {},
+    onQueueOpen = () => {},
+    onToolSelect = (tool: ToolId) => onSurfaceChange(surfaceForTool(tool)),
+    onToolHighlight = () => {},
   }: {
     surface: FloatingSurface;
     activity?: FloatingActivity;
     placement?: FloatingPlacement;
     layout?: "stage" | "window";
     interactive?: boolean;
+    queueCount?: number;
+    selectedTool?: ToolId | null;
     content?: Snippet<[FloatingSurface]>;
     onSurfaceChange?: (surface: FloatingSurface) => void;
     onActivityChange?: (activity: FloatingActivity) => void;
+    onQueueOpen?: () => void;
+    onToolSelect?: (tool: ToolId) => void;
+    onToolHighlight?: (tool: ToolId | null) => void;
   } = $props();
 
   const filterId = `atic-liquid-${Math.random().toString(36).slice(2)}`;
   const wheelOpen = $derived(surface.kind === "wheel");
-  const panelOpen = $derived(surface.kind === "tool" || surface.kind === "agents");
+  const panelOpen = $derived(surface.kind === "tool" || surface.kind === "agents" || surface.kind === "queue");
   const agentOpen = $derived(surface.kind === "agents");
   const activeTool = $derived(surface.kind === "tool" ? toolById(surface.tool) : null);
   const stateLabel = $derived(
     activity === "recording" ? "Grabando reunión" : activity === "dictating" ? "Escuchando dictado" : "Atic listo",
   );
+  const pillTitle = $derived(
+    activity === "recording"
+      ? "Grabando"
+      : activity === "dictating"
+        ? "Dictando"
+        : queueCount > 0
+          ? `${queueCount} ${queueCount === 1 ? "pendiente" : "pendientes"}`
+          : "Atic",
+  );
+  const pillSubtitle = $derived(activity === "idle" && queueCount > 0 ? "Listo para pegar" : activity === "idle" ? "Herramientas" : "Toca para abrir");
 
   const wheelPositions = [
     { x: -140, y: 62 },
@@ -48,9 +68,15 @@
     onSurfaceChange(wheelOpen ? { kind: "pill" } : { kind: "wheel" });
   }
 
+  function activatePill() {
+    if (!interactive) return;
+    if (activity === "idle" && queueCount > 0) onQueueOpen();
+    else toggleWheel();
+  }
+
   function openTool(tool: ToolId) {
     if (!interactive) return;
-    onSurfaceChange(surfaceForTool(tool));
+    onToolSelect(tool);
   }
 
   function closePanel() {
@@ -92,32 +118,44 @@
   <span class="panel-skin" aria-hidden="true"></span>
 
   <div class="floating-ink">
-    <button
-      class="pill-control"
-      type="button"
-      aria-label={wheelOpen ? "Cerrar herramientas" : "Abrir herramientas"}
-      aria-expanded={wheelOpen}
-      onclick={toggleWheel}
-    >
-      <span class="status-orb" aria-hidden="true">
+    <div class="pill-control">
+      <button
+        class="pill-main"
+        type="button"
+        aria-label={queueCount > 0 && activity === "idle" ? "Abrir cola de pegado" : wheelOpen ? "Cerrar herramientas" : "Abrir herramientas"}
+        onclick={activatePill}
+      >
+        <span class:has-count={queueCount > 0 && activity === "idle"} class="status-orb" aria-hidden="true">
+          {#if queueCount > 0 && activity === "idle"}<b>{Math.min(queueCount, 9)}{queueCount > 9 ? "+" : ""}</b>{/if}
         {#if activity !== "idle"}<span class="status-pulse"></span>{/if}
-      </span>
-      <span class="pill-copy">
-        <strong>{activity === "idle" ? "Atic" : activity === "recording" ? "Grabando" : "Dictando"}</strong>
-        <small>{activity === "idle" ? "Herramientas" : "Toca para abrir"}</small>
-      </span>
-      <span class="pill-glyph" aria-hidden="true"><i></i><i></i></span>
-    </button>
+        </span>
+        <span class="pill-copy">
+          <strong>{pillTitle}</strong>
+          <small>{pillSubtitle}</small>
+        </span>
+      </button>
+      <button
+        class="pill-glyph"
+        type="button"
+        aria-label={wheelOpen ? "Cerrar herramientas" : "Abrir herramientas"}
+        aria-expanded={wheelOpen}
+        onclick={toggleWheel}
+      ><i></i><i></i></button>
+    </div>
 
     <div class="wheel-controls" aria-hidden={!wheelOpen}>
       {#each TOOLS as tool, index (tool.id)}
         <button
+          class:selected={selectedTool === tool.id}
           class="wheel-control"
           style:--node-x={`${wheelPositions[index].x}px`}
           style:--node-y={`${wheelPositions[index].y}px`}
           type="button"
           tabindex={wheelOpen ? 0 : -1}
           aria-label={`${tool.label}: ${tool.short}`}
+          onfocus={() => onToolHighlight(tool.id)}
+          onmouseenter={() => onToolHighlight(tool.id)}
+          onmouseleave={() => onToolHighlight(null)}
           onclick={() => openTool(tool.id)}
         >
           <ToolIcon id={tool.id} size={21} />
@@ -126,17 +164,19 @@
       {/each}
     </div>
 
-    <section class="tool-surface" aria-hidden={!panelOpen} aria-label={agentOpen ? "Agentes" : activeTool?.label}>
+    <section class="tool-surface" aria-hidden={!panelOpen} aria-label={agentOpen ? "Agentes" : surface.kind === "queue" ? "Cola de pegado" : activeTool?.label}>
       <header class="surface-header">
         <div class="surface-identity">
           {#if surface.kind === "tool"}
             <ToolIcon id={surface.tool} size={19} />
+          {:else if surface.kind === "queue"}
+            <ToolIcon id="clipboard" size={19} />
           {:else}
             <ToolIcon id="agents" size={19} />
           {/if}
           <div>
-            <strong>{agentOpen ? "Agentes" : activeTool?.label}</strong>
-            <span>{agentOpen ? "Espacio de trabajo" : activeTool?.short}</span>
+            <strong>{agentOpen ? "Agentes" : surface.kind === "queue" ? "Pegado pendiente" : activeTool?.label}</strong>
+            <span>{agentOpen ? "Espacio de trabajo" : surface.kind === "queue" ? "Cola local" : activeTool?.short}</span>
           </div>
         </div>
         <button class="close-control" type="button" tabindex={panelOpen ? 0 : -1} aria-label="Cerrar panel" onclick={closePanel}>
@@ -369,13 +409,25 @@
     align-items: center;
     width: 154px;
     height: 50px;
-    padding: 0 14px 0 11px;
-    border: 0;
+    padding: 0 10px 0 7px;
     border-radius: 25px;
     color: var(--ink);
     background: transparent;
-    cursor: pointer;
     transform: translateX(-50%);
+  }
+
+  .pill-main {
+    display: grid;
+    min-width: 0;
+    height: 42px;
+    padding: 0 4px;
+    grid-column: 1 / 3;
+    grid-template-columns: 28px 1fr;
+    align-items: center;
+    border: 0;
+    color: inherit;
+    background: transparent;
+    cursor: pointer;
   }
 
   .pill-control:focus-visible,
@@ -401,6 +453,9 @@
     background: var(--pearl);
     content: "";
   }
+
+  .status-orb.has-count::after { display: none; }
+  .status-orb b { color: white; font-size: 8px; font-weight: 760; }
 
   .active .status-orb {
     background: var(--record);
@@ -437,8 +492,14 @@
 
   .pill-glyph {
     position: relative;
+    display: block;
     width: 18px;
     height: 18px;
+    padding: 0;
+    border: 0;
+    color: inherit;
+    background: transparent;
+    cursor: pointer;
   }
 
   .pill-glyph i {
@@ -515,12 +576,14 @@
     transform: translate(calc(-50% + var(--node-x)), var(--node-y)) scale(1);
   }
 
-  .wheel-control:hover {
+  .wheel-control:hover,
+  .wheel-control.selected {
     color: var(--signal);
   }
 
   .wheel-control:hover span,
-  .wheel-control:focus-visible span {
+  .wheel-control:focus-visible span,
+  .wheel-control.selected span {
     opacity: 1;
     transform: translate(-50%, 0);
   }
