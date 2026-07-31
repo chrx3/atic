@@ -4,12 +4,14 @@
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import ClipboardHistoryList from "$lib/ClipboardHistoryList.svelte";
   import SnippetsList from "$lib/SnippetsList.svelte";
+  import FloatingAgents from "$lib/floating-v2/FloatingAgents.svelte";
   import FloatingExperience from "$lib/floating-v2/FloatingExperience.svelte";
   import { envelopeFor, opensLargeSurface, pivotForTransition } from "$lib/floating-v2/geometry";
   import { surfaceForTool, type FloatingActivity, type FloatingSurface } from "$lib/floating-v2/types";
   import { createStage, growsFirst } from "$lib/pillStage";
   import { TOOLS, type ToolId } from "$lib/tools";
   import type { ClipboardItem, DictationPhase, PasteQueueItem, Snippet as TextSnippet } from "$lib/types";
+  import { agents } from "$lib/agentSessions.svelte";
   import {
     dictationPhase,
     dismissPasteQueueItem,
@@ -33,7 +35,6 @@
     onPasteQueued,
     pasteQueueItemNow,
     setScratchpad,
-    showAgentsWindow,
     showMainWindow,
     startCaptureSession,
     startRecording,
@@ -216,15 +217,6 @@
     }
   }
 
-  async function openAgents() {
-    await setSurface({ kind: "pill" });
-    try {
-      await showAgentsWindow();
-    } catch (cause) {
-      error = String(cause);
-    }
-  }
-
   function stepWheel(direction: 1 | -1) {
     const index = TOOLS.findIndex((tool) => tool.id === wheelTool);
     const next = index < 0
@@ -250,7 +242,7 @@
       return;
     }
     if (tool === "agents") {
-      await openAgents();
+      await setSurface({ kind: "agents" });
       return;
     }
     await setSurface(surfaceForTool(tool));
@@ -267,6 +259,7 @@
     let dragOrigin: { x: number; y: number } | null = null;
 
     void stage.resize(envelopeFor(surface), "topCenter");
+    void agents.init({ notify: true });
     void Promise.all([isRecording(), dictationPhase(), refreshQueue()]).then(([recording, phase]) => {
       dictation = phase;
       activity = recording ? "recording" : phase === "idle" ? "idle" : "dictating";
@@ -442,12 +435,7 @@
       <button type="button" onclick={() => void runCapture()}>Elegir área</button>
     </div>
   {:else if current.kind === "agents"}
-    <div class="quick-action agents-action">
-      <span class="action-orb agent"><i>&gt;_</i></span>
-      <strong>Espacio de agentes</strong>
-      <p>La conversación real sigue disponible mientras migramos su superficie al renderer compartido.</p>
-      <button type="button" onclick={() => void openAgents()}>Abrir agentes</button>
-    </div>
+    <FloatingAgents />
   {/if}
 {/snippet}
 
@@ -459,11 +447,14 @@
     layout="window"
     interactive={!transitioning}
     queueCount={queue.length}
+    agentCount={Math.max(agents.unread, agents.waiting)}
+    agentWorking={agents.working}
     selectedTool={wheelTool}
     content={productionContent}
     onSurfaceChange={(next) => void setSurface(next)}
     onActivityChange={(next) => void changeActivity(next)}
     onQueueOpen={() => void setSurface({ kind: "queue" })}
+    onAgentOpen={() => void setSurface({ kind: "agents" })}
     onToolSelect={(tool) => void activateTool(tool)}
     onToolHighlight={(tool) => (wheelTool = tool)}
   />
@@ -687,7 +678,6 @@
   .action-orb.voice.listening i { animation: listening 800ms ease-in-out infinite alternate; }
 
   .action-orb.capture > i { width: 30px; height: 24px; border: 1.5px dashed currentColor; border-radius: 4px; background: transparent; }
-  .action-orb.agent > i { width: auto; height: auto; border-radius: 0; background: transparent; font: 13px var(--rb-mono, monospace); }
 
   @keyframes listening { to { transform: scaleY(0.45); } }
 

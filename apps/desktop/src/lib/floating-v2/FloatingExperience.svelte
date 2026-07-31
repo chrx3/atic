@@ -15,11 +15,14 @@
     blend,
     interactive = true,
     queueCount = 0,
+    agentCount = 0,
+    agentWorking = false,
     selectedTool = null,
     content,
     onSurfaceChange = () => {},
     onActivityChange = () => {},
     onQueueOpen = () => {},
+    onAgentOpen = () => onSurfaceChange({ kind: "agents" }),
     onToolSelect = (tool: ToolId) => onSurfaceChange(surfaceForTool(tool)),
     onToolHighlight = () => {},
   }: {
@@ -31,11 +34,14 @@
     blend?: number;
     interactive?: boolean;
     queueCount?: number;
+    agentCount?: number;
+    agentWorking?: boolean;
     selectedTool?: ToolId | null;
     content?: Snippet<[FloatingSurface]>;
     onSurfaceChange?: (surface: FloatingSurface) => void;
     onActivityChange?: (activity: FloatingActivity) => void;
     onQueueOpen?: () => void;
+    onAgentOpen?: () => void;
     onToolSelect?: (tool: ToolId) => void;
     onToolHighlight?: (tool: ToolId | null) => void;
   } = $props();
@@ -61,9 +67,21 @@
         ? "Dictando"
         : queueCount > 0
           ? `${queueCount} ${queueCount === 1 ? "pendiente" : "pendientes"}`
+          : agentCount > 0
+            ? `${agentCount} ${agentCount === 1 ? "aviso" : "avisos"}`
           : "Atic",
   );
-  const pillSubtitle = $derived(activity === "idle" && queueCount > 0 ? "Listo para pegar" : activity === "idle" ? "Herramientas" : "Toca para abrir");
+  const pillSubtitle = $derived(
+    activity !== "idle"
+      ? "Toca para abrir"
+      : queueCount > 0
+        ? "Listo para pegar"
+        : agentCount > 0
+          ? "Agente listo"
+          : agentWorking
+            ? "Agente trabajando"
+            : "Herramientas",
+  );
 
   const wheelPositions = [
     { x: -140, y: 62 },
@@ -82,6 +100,7 @@
   function activatePill() {
     if (!interactive) return;
     if (activity === "idle" && queueCount > 0) onQueueOpen();
+    else if (activity === "idle" && agentCount > 0) onAgentOpen();
     else toggleWheel();
   }
 
@@ -109,6 +128,7 @@
   class:window-layout={layout === "window"}
   class:opens-up={opensUp && panelOpen}
   class:active={activity !== "idle"}
+  class:agent-working={activity === "idle" && agentWorking}
   class="floating-experience"
   data-activity={activity}
   bind:clientWidth={sceneWidth}
@@ -127,12 +147,15 @@
       <button
         class="pill-main"
         type="button"
-        aria-label={queueCount > 0 && activity === "idle" ? "Abrir cola de pegado" : wheelOpen ? "Cerrar herramientas" : "Abrir herramientas"}
+        aria-label={queueCount > 0 && activity === "idle" ? "Abrir cola de pegado" : agentCount > 0 && activity === "idle" ? "Abrir respuestas de agentes" : wheelOpen ? "Cerrar herramientas" : "Abrir herramientas"}
         onclick={activatePill}
       >
-        <span class:has-count={queueCount > 0 && activity === "idle"} class="status-orb" aria-hidden="true">
-          {#if queueCount > 0 && activity === "idle"}<b>{Math.min(queueCount, 9)}{queueCount > 9 ? "+" : ""}</b>{/if}
-        {#if activity !== "idle"}<span class="status-pulse"></span>{/if}
+        <span class:has-count={(queueCount > 0 || agentCount > 0) && activity === "idle"} class="status-orb" aria-hidden="true">
+          {#if (queueCount > 0 || agentCount > 0) && activity === "idle"}
+            {@const count = queueCount > 0 ? queueCount : agentCount}
+            <b>{Math.min(count, 9)}{count > 9 ? "+" : ""}</b>
+          {/if}
+        {#if activity !== "idle" || agentWorking}<span class="status-pulse"></span>{/if}
         </span>
         <span class="pill-copy">
           <strong>{pillTitle}</strong>
@@ -350,12 +373,18 @@
     background: var(--record);
   }
 
+  .agent-working .status-orb { background: var(--signal); }
+
   .status-pulse {
     position: absolute;
     inset: -4px;
     border: 1px solid color-mix(in oklch, var(--record) 55%, transparent);
     border-radius: 50%;
     animation: quiet-pulse 1.8s ease-out infinite;
+  }
+
+  .agent-working .status-pulse {
+    border-color: color-mix(in oklch, var(--signal) 55%, transparent);
   }
 
   .pill-copy {
@@ -587,6 +616,11 @@
     min-height: 0;
     padding: 16px 20px 20px;
     overflow: auto;
+  }
+
+  .agent-open .surface-body {
+    padding: 0;
+    overflow: hidden;
   }
 
   .hero-action {
