@@ -1,0 +1,565 @@
+<script lang="ts">
+  /**
+   * Banco de pruebas del sistema líquido. Solo dev.
+   *
+   * Existe para contestar una pregunta que `Features/liquid.md` deja abierta:
+   * si el filtro de fusión se comporta igual dentro de WebView2 que en Chrome,
+   * que es donde se diseñó. La respuesta condiciona toda la capa `liquid/` de
+   * la reescritura, así que se mide antes de escribirla.
+   *
+   * A diferencia de `docs/demos/`, que son una implementación aparte, esto usa
+   * el `GooFilter` de producción y la misma geometría de cuello que
+   * `AgentsSurface`. Lo que se ve acá es lo que hace la app.
+   *
+   * Qué se mide:
+   *
+   *   - **Alcance.** Apagando "dibujar cuello" quedan dos formas sueltas y el
+   *     único puente posible es el que pone el filtro. El hueco donde se cortan
+   *     tiene que ser `1.72·σ`. Si no lo es, WebView2 no está interpretando el
+   *     endurecido igual (el sospechoso es `color-interpolation-filters`).
+   *   - **Engorde.** El contorno punteado marca la geometría EXACTA pedida. La
+   *     silueta filtrada tiene que morir encima de él: si asoma, `preFilter()`
+   *     no está compensando lo que este motor engorda.
+   *   - **Costo.** El filtro declara una región de `-50%/200%`, o sea cuatro
+   *     veces el área de la caja. "Animar" mueve la geometría en cada cuadro,
+   *     que es el peor caso, y el interruptor del filtro da el A/B contra el
+   *     mismo trabajo sin filtrar.
+   */
+  import { onMount } from "svelte";
+  import GooFilter, { GOO_GROW, preFilter } from "$lib/GooFilter.svelte";
+
+  let { standalone = false, onClose }: {
+    /** Fuera del overlay no hay escritorio detrás: hace falta un fondo propio. */
+    standalone?: boolean;
+    onClose?: () => void;
+  } = $props();
+
+  /* ─── Geometría, copiada de AgentsSurface a propósito ───────────────────
+   *
+   * Copiada y no importada: el lab tiene que poder contradecir a la app. Si un
+   * día estos números se separan de los de allá, el que manda es el de allá y
+   * este archivo está desactualizado.
+   */
+  const NECK_THICK = 26;
+  const NECK_THIN = 10;
+  const NECK_MIN_THICK = 6;
+  const NECK_MAX = 140;
+  const BUBBLE_CORNER = 26;
+
+  /** Medidas reales: la barra de la pill y el cuerpo de la consola. */
+  const PILL_W = 176;
+  const PILL_H = 40;
+  const BUB_W = 580;
+  const BUB_H = 520;
+
+  type Box = { x: number; y: number; w: number; h: number };
+
+  let sigma = $state(5);
+  let drawNeck = $state(true);
+  let filterOn = $state(true);
+  let showOutline = $state(true);
+  let animate = $state(false);
+
+  /** El alcance del filtro por su cuenta, sin cuello dibujado. */
+  const reach = $derived(1.72 * sigma);
+
+  let vw = $state(1280);
+  let vh = $state(800);
+
+  /**
+   * La pill, bajada lo justo para que el globo entre entero.
+   *
+   * En el overlay real sobra sitio —cubre el escritorio— pero en una ventana
+   * de navegador un globo de 520 px se sale por arriba, y con el borde cortado
+   * no se puede juzgar si la silueta es la que se pidió.
+   */
+  const pill = $derived<Box>({
+    x: Math.round(vw / 2 - PILL_W / 2),
+    y: Math.round(Math.min(Math.max(vh * 0.66, BUB_H + 60), vh - 80)),
+    w: PILL_W,
+    h: PILL_H,
+  });
+
+  /** Desplazamiento del globo respecto de su sitio "pegado" (hueco 0). */
+  let offX = $state(0);
+  let offY = $state(-10);
+  let animPhase = $state(0);
+
+  const bubble = $derived<Box>({
+    x: Math.round(pill.x + PILL_W / 2 - BUB_W / 2 + offX),
+    y: Math.round(pill.y - BUB_H + offY + (animate ? Math.sin(animPhase) * 60 - 60 : 0)),
+    w: BUB_W,
+    h: BUB_H,
+  });
+
+  /* ─── El puente, con la misma cuenta que la app ─────────────────────────── */
+
+  const span = $derived.by(() => {
+    const a = bubble;
+    const p = pill;
+    const gapX = Math.max(p.x - (a.x + a.w), a.x - (p.x + p.w));
+    const gapY = Math.max(p.y - (a.y + a.h), a.y - (p.y + p.h));
+    const vertical =
+      gapY > gapX ||
+      (gapY === gapX &&
+        Math.abs(p.y + p.h / 2 - (a.y + a.h / 2)) >
+          Math.abs(p.x + p.w / 2 - (a.x + a.w / 2)));
+
+    const gap = vertical ? gapY : gapX;
+    const pillFirst = vertical
+      ? p.y + p.h / 2 < a.y + a.h / 2
+      : p.x + p.w / 2 < a.x + a.w / 2;
+    const pillEdge = vertical
+      ? pillFirst
+        ? p.y + p.h
+        : p.y
+      : pillFirst
+        ? p.x + p.w
+        : p.x;
+    const bubEdge = vertical
+      ? pillFirst
+        ? a.y + a.h
+        : a.y
+      : pillFirst
+        ? a.x + a.w
+        : a.x;
+
+    const pillLo = vertical ? p.x : p.y;
+    const pillHi = vertical ? p.x + p.w : p.y + p.h;
+    const bubLo = (vertical ? a.x : a.y) + BUBBLE_CORNER;
+    const bubHi = (vertical ? a.x + a.w : a.y + a.h) - BUBBLE_CORNER;
+    const lo = Math.max(pillLo, bubLo);
+    const hi = Math.min(pillHi, bubHi);
+
+    return {
+      vertical,
+      gap,
+      pillEdge,
+      bubEdge: vertical
+        ? pillFirst
+          ? a.y
+          : a.y + a.h
+        : pillFirst
+          ? a.x
+          : a.x + a.w,
+      stretch: Math.min(Math.max(gap, 0) / NECK_MAX, 1),
+      center:
+        lo > hi
+          ? (lo + hi) / 2
+          : Math.min(Math.max((pillLo + pillHi) / 2, lo), hi),
+      overlap:
+        Math.min(pillHi, vertical ? a.x + a.w : a.y + a.h) -
+        Math.max(pillLo, vertical ? a.x : a.y),
+    };
+  });
+
+  const joined = $derived(span.gap <= NECK_MAX && span.overlap >= NECK_THIN);
+
+  const skinBox = $derived.by<Box>(() => {
+    const a = bubble;
+    const p = joined ? pill : null;
+    const x = p ? Math.min(a.x, p.x) : a.x;
+    const y = p ? Math.min(a.y, p.y) : a.y;
+    return {
+      x,
+      y,
+      w: (p ? Math.max(a.x + a.w, p.x + p.w) : a.x + a.w) - x,
+      h: (p ? Math.max(a.y + a.h, p.y + p.h) : a.y + a.h) - y,
+    };
+  });
+
+  function local(r: Box): Box {
+    return { ...r, x: r.x - skinBox.x, y: r.y - skinBox.y };
+  }
+
+  /** Encogida lo que el endurecido le va a devolver. */
+  function preFiltered(r: Box): Box {
+    const l = local(r);
+    return { x: l.x + GOO_GROW, y: l.y + GOO_GROW, w: preFilter(r.w), h: preFilter(r.h) };
+  }
+
+  const neck = $derived.by(() => {
+    if (!drawNeck || !joined) return null;
+    const s = span;
+    const thick = Math.max(
+      NECK_MIN_THICK,
+      NECK_THICK + (NECK_THIN - NECK_THICK) * s.stretch,
+    );
+    const dir = Math.sign(s.bubEdge - s.pillEdge) || 1;
+    const from = s.pillEdge - dir * 9;
+    const to = s.bubEdge + dir * 7;
+    const lo = Math.min(from, to);
+    const long = Math.abs(to - from);
+    return local(
+      s.vertical
+        ? { x: s.center - thick / 2, y: lo, w: thick, h: long }
+        : { x: lo, y: s.center - thick / 2, w: long, h: thick },
+    );
+  });
+
+  const pillBlob = $derived({ ...preFiltered(pill), r: PILL_H / 2 });
+  const bubBlob = $derived({ ...preFiltered(bubble), r: BUBBLE_CORNER - GOO_GROW });
+
+  /** Cuántos píxeles rasteriza el filtro: la región es -50%/200%, o sea 4×. */
+  const regionMpx = $derived((skinBox.w * 2 * (skinBox.h * 2)) / 1_000_000);
+
+  /* ─── Medición de cuadros ───────────────────────────────────────────────── */
+
+  let fps = $state(0);
+  let p95 = $state(0);
+  let worst = $state(0);
+
+  function resetMetrics() {
+    times.length = 0;
+    fps = 0;
+    p95 = 0;
+    worst = 0;
+  }
+
+  const times: number[] = [];
+
+  onMount(() => {
+    const measure = () => {
+      vw = window.innerWidth;
+      vh = window.innerHeight;
+    };
+    measure();
+    window.addEventListener("resize", measure);
+
+    let last = performance.now();
+    let raf = 0;
+    const tick = (now: number) => {
+      const dt = now - last;
+      last = now;
+      if (dt > 0 && dt < 1000) {
+        times.push(dt);
+        if (times.length > 180) times.shift();
+      }
+      if (animate) animPhase += 0.03;
+      if (times.length > 20) {
+        const sorted = [...times].sort((a, b) => a - b);
+        const avg = times.reduce((s, t) => s + t, 0) / times.length;
+        fps = Math.round(1000 / avg);
+        p95 = Math.round(sorted[Math.floor(sorted.length * 0.95)] * 10) / 10;
+        worst = Math.round(sorted[sorted.length - 1] * 10) / 10;
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+
+    return () => {
+      window.removeEventListener("resize", measure);
+      cancelAnimationFrame(raf);
+    };
+  });
+
+  /* ─── Arrastre del globo ────────────────────────────────────────────────── */
+
+  let from: { x: number; y: number; ox: number; oy: number } | null = null;
+
+  function startDrag(event: PointerEvent) {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+    from = { x: event.clientX, y: event.clientY, ox: offX, oy: offY };
+    resetMetrics();
+  }
+
+  function moveDrag(event: PointerEvent) {
+    if (!from) return;
+    offX = from.ox + (event.clientX - from.x);
+    offY = from.oy + (event.clientY - from.y);
+  }
+
+  function endDrag(event: PointerEvent) {
+    if (!from) return;
+    from = null;
+    (event.currentTarget as HTMLElement).releasePointerCapture(event.pointerId);
+  }
+
+  function nudge(dy: number) {
+    offY += dy;
+    resetMetrics();
+  }
+</script>
+
+<div class="lab" class:is-standalone={standalone}>
+  <GooFilter id="lab-goo" {sigma} />
+
+  <!-- La piel: siluetas y nada más. Filtrada. -->
+  <div
+    class="skin"
+    style:left="{skinBox.x}px"
+    style:top="{skinBox.y}px"
+    style:width="{skinBox.w}px"
+    style:height="{skinBox.h}px"
+    style:filter={filterOn
+      ? `url(#lab-goo) drop-shadow(0 18px 30px rgba(0,0,0,.45))`
+      : "none"}
+    aria-hidden="true"
+  >
+    <i
+      class="blob"
+      style:left="{pillBlob.x}px"
+      style:top="{pillBlob.y}px"
+      style:width="{pillBlob.w}px"
+      style:height="{pillBlob.h}px"
+      style:border-radius="{pillBlob.r}px"
+    ></i>
+    {#if neck}
+      <i
+        class="blob"
+        style:left="{neck.x}px"
+        style:top="{neck.y}px"
+        style:width="{neck.w}px"
+        style:height="{neck.h}px"
+        style:border-radius="{Math.min(neck.w, neck.h) / 2}px"
+      ></i>
+    {/if}
+    <i
+      class="blob"
+      style:left="{bubBlob.x}px"
+      style:top="{bubBlob.y}px"
+      style:width="{bubBlob.w}px"
+      style:height="{bubBlob.h}px"
+      style:border-radius="{bubBlob.r}px"
+    ></i>
+  </div>
+
+  <!-- Contornos exactos, sin filtrar: la piel tiene que morir justo encima. -->
+  {#if showOutline}
+    <i
+      class="outline"
+      style:left="{pill.x}px"
+      style:top="{pill.y}px"
+      style:width="{pill.w}px"
+      style:height="{pill.h}px"
+      style:border-radius="{PILL_H / 2}px"
+    ></i>
+    <i
+      class="outline"
+      style:left="{bubble.x}px"
+      style:top="{bubble.y}px"
+      style:width="{bubble.w}px"
+      style:height="{bubble.h}px"
+      style:border-radius="{BUBBLE_CORNER}px"
+    ></i>
+  {/if}
+
+  <!-- Zona de arrastre del globo. -->
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div
+    class="grab"
+    style:left="{bubble.x}px"
+    style:top="{bubble.y}px"
+    style:width="{bubble.w}px"
+    style:height="{bubble.h}px"
+    onpointerdown={startDrag}
+    onpointermove={moveDrag}
+    onpointerup={endDrag}
+    onpointercancel={endDrag}
+  >
+    <span class="grab-hint">arrastrame</span>
+  </div>
+
+  <div class="panel">
+    <header>
+      <strong>liquid lab</strong>
+      <span class="tag">{standalone ? "ventana normal" : "overlay real"}</span>
+    </header>
+
+    <label class="row">
+      <span>viscosidad σ</span>
+      <input type="range" min="0" max="20" step="0.5" bind:value={sigma} />
+      <b>{sigma.toFixed(1)}</b>
+    </label>
+
+    <div class="grid">
+      <span>alcance 1.72·σ</span><b>{reach.toFixed(1)} px</b>
+      <span>hueco real</span><b class:bad={span.gap > reach && !drawNeck}>{span.gap.toFixed(1)} px</b>
+      <span>predicción</span>
+      <b>
+        {#if drawNeck}
+          {joined ? "cuello dibujado" : "cortado"}
+        {:else}
+          {span.gap <= reach ? "debe fundir" : "debe cortar"}
+        {/if}
+      </b>
+      <span>grosor cuello</span>
+      <b>{neck ? Math.min(neck.w, neck.h).toFixed(1) + " px" : "—"}</b>
+      <span>caja</span><b>{skinBox.w}×{skinBox.h}</b>
+      <span>región filtro</span><b>{regionMpx.toFixed(2)} Mpx</b>
+      <span>fps</span><b class:bad={fps > 0 && fps < 50}>{fps || "—"}</b>
+      <span>cuadro p95</span><b class:bad={p95 > 20}>{p95 || "—"} ms</b>
+      <span>peor cuadro</span><b>{worst || "—"} ms</b>
+    </div>
+
+    <div class="nudges">
+      <span>hueco</span>
+      <button type="button" onclick={() => nudge(-1)}>−1</button>
+      <button type="button" onclick={() => nudge(1)}>+1</button>
+      <button type="button" onclick={() => nudge(-5)}>−5</button>
+      <button type="button" onclick={() => nudge(5)}>+5</button>
+      <button type="button" onclick={() => { offX = 0; offY = -10; resetMetrics(); }}>10</button>
+    </div>
+
+    <label class="check"><input type="checkbox" bind:checked={drawNeck} /> dibujar cuello</label>
+    <label class="check"><input type="checkbox" bind:checked={filterOn} /> filtro goo</label>
+    <label class="check"><input type="checkbox" bind:checked={showOutline} /> contorno exacto</label>
+    <label class="check">
+      <input type="checkbox" bind:checked={animate} onchange={resetMetrics} /> animar (peor caso)
+    </label>
+
+    {#if onClose}
+      <button type="button" class="close" onclick={onClose}>cerrar lab</button>
+    {/if}
+  </div>
+</div>
+
+<style>
+  .lab {
+    position: fixed;
+    inset: 0;
+    touch-action: none;
+    user-select: none;
+    font-family: var(--rb-mono, monospace);
+    color: #e7e2dd;
+  }
+
+  /* En el overlay el fondo es el escritorio; suelto hace falta uno. */
+  .is-standalone {
+    background:
+      radial-gradient(60% 60% at 30% 20%, #2f3a63 0%, transparent 60%),
+      linear-gradient(160deg, #14161f, #0d1016 60%, #090b10);
+  }
+
+  .skin {
+    position: absolute;
+    pointer-events: none;
+  }
+
+  .blob {
+    position: absolute;
+    display: block;
+    /* Regla 2 del sistema líquido: todo lo que se funde, del mismo color. */
+    background: #1c1917;
+  }
+
+  .outline {
+    position: absolute;
+    pointer-events: none;
+    border: 1px dashed rgba(255, 120, 60, 0.9);
+    box-sizing: border-box;
+  }
+
+  .grab {
+    position: absolute;
+    cursor: grab;
+    background: transparent;
+  }
+
+  .grab:active {
+    cursor: grabbing;
+  }
+
+  .grab-hint {
+    position: absolute;
+    inset: auto 0 12px 0;
+    text-align: center;
+    font-size: 11px;
+    color: #6b615a;
+  }
+
+  .panel {
+    position: absolute;
+    top: 24px;
+    left: 24px;
+    width: 236px;
+    padding: 12px;
+    display: grid;
+    gap: 8px;
+    background: rgba(18, 18, 22, 0.9);
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    border-radius: 12px;
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .panel header {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+  }
+
+  .tag {
+    color: #8d827a;
+  }
+
+  .row {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 4px 8px;
+    align-items: center;
+  }
+
+  .row input {
+    grid-column: 1 / -1;
+    width: 100%;
+  }
+
+  .grid {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 3px 8px;
+  }
+
+  .grid span,
+  .row span {
+    color: #8d827a;
+  }
+
+  .grid b {
+    color: #e7e2dd;
+    font-weight: 500;
+  }
+
+  .bad {
+    color: #da7756;
+  }
+
+  .nudges {
+    display: flex;
+    gap: 4px;
+    align-items: center;
+  }
+
+  .nudges span {
+    color: #8d827a;
+    margin-right: 2px;
+  }
+
+  button {
+    font: inherit;
+    color: #e7e2dd;
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    border-radius: 6px;
+    padding: 3px 6px;
+    cursor: pointer;
+  }
+
+  button:hover {
+    background: rgba(255, 255, 255, 0.16);
+  }
+
+  .check {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    cursor: pointer;
+  }
+
+  .close {
+    margin-top: 4px;
+  }
+</style>

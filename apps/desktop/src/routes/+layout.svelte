@@ -8,7 +8,7 @@
 
   // Ventanas flotantes: sin chrome de app (fondo transparente).
   const isFloating = $derived(
-    ["/pill", "/capture-shelf", "/capture-overlay", "/launcher"].includes(
+    ["/pill", "/capture-shelf", "/capture-overlay", "/launcher", "/overlay"].includes(
       page.url.pathname,
     ),
   );
@@ -39,9 +39,24 @@
     };
     mq.addEventListener("change", onScheme);
 
+    // Interruptor del banco de pruebas líquido (solo dev).
+    //
+    // La ventana overlay nace `focusable(false)`, así que no recibe teclas: el
+    // atajo tiene que vivir en una ventana normal y viajar por `localStorage`,
+    // igual que el tema. Ctrl+Alt+L.
+    const onLabKey = (event: KeyboardEvent) => {
+      if (!event.ctrlKey || !event.altKey || event.key.toLowerCase() !== "l") return;
+      event.preventDefault();
+      const on = localStorage.getItem("atic-liquid-lab") === "1";
+      if (on) localStorage.removeItem("atic-liquid-lab");
+      else localStorage.setItem("atic-liquid-lab", "1");
+    };
+    if (import.meta.env.DEV) window.addEventListener("keydown", onLabKey);
+
     return () => {
       document.removeEventListener("contextmenu", block);
       window.removeEventListener("storage", onStorage);
+      window.removeEventListener("keydown", onLabKey);
       mq.removeEventListener("change", onScheme);
     };
   });
