@@ -16,6 +16,31 @@ que son una implementación aparte, usa el **`GooFilter` de producción** y **la
 geometría de cuello que `AgentsSurface`** (cápsula de 26→10 px, penetración 9/7, piso de 6,
 corte a 140, `preFilter()` en las formas exactas). Lo que se ve es lo que hace la app.
 
+## Dos renderizadores sobre la misma geometría
+
+El botón de arriba del panel cambia entre los dos. **Esa comparación es el verdadero
+objeto del spike**, más que el sí/no de WebView2.
+
+**`filtro goo`** — el de producción. Difumina el alfa del grupo y lo vuelve a endurecer con
+`a' = 18a − 7`. Tres consecuencias: depende del motor (de ahí este documento), engorda la
+silueta `0.28σ` por lado y hay que compensarlo con `preFilter()`, y cruza como mucho `1.72σ`
+por su cuenta — por eso el cuello de la burbuja hay que dibujarlo con cinco constantes
+(penetración 9/7, grosor 26→10, piso 6, corte 140).
+
+**`sdf`** — `apps/desktop/src/lib/liquid/{sdf,contour}.ts`. Cada forma es un campo de
+distancia con signo; el grupo es la unión suave (`smin`) de esos campos, y el contorno se
+traza con marching squares a un `<path>`. El filete cóncavo deja de ser un artefacto del
+desenfoque y pasa a ser la geometría real de la unión. No depende del motor, no engorda, y
+el alcance lo fija `k` en vez de estar atado a la viscosidad.
+
+Su límite es otro: **marching squares no ve nada más fino que su celda**. El cuello de esta
+escena baja a 6 px, así que `cell` tiene que ser 3 o menos, y el costo va con el cuadrado.
+Para que eso sea viable, `contour.ts` descarta en bloque lo que está lejos del contorno
+(`BLOCK`): en la escena de la pill eso baja las evaluaciones del campo de 39k a 11k por
+cuadro, con un contorno idéntico —mismo número de puntos, mismo dibujo—. El descarte es
+exacto, no una aproximación: como el gradiente del campo nunca supera 1, `|d| > lado·1.71`
+en el centro de un bloque garantiza que no hay cruce ni ahí ni en las celdas que lo tocan.
+
 ## Cómo se abre
 
 **Dentro del overlay real (WebView2) — es la medición que importa:**
@@ -93,36 +118,51 @@ arrastrar sobre ventanas de otras apps.
 
 ## Referencia de Chrome (medida)
 
-Chrome 1504×732, dpr 1.25, σ = 5, hueco 10, escena completa (pill 176×40 + globo 580×520).
+Chrome 1504×732, dpr 1.25, escena completa (pill 176×40 + globo 580×520, caja ~580×570).
+`goo` con σ = 5; `sdf` con k = 26, `cell` = 3, suavizado 2. "Animando" mueve la geometría en
+cada cuadro, que es el peor caso y más de lo que la app pide nunca.
 
-| Escenario | fps | cuadro p95 | peor cuadro |
+| Escenario | fps | p95 | peor cuadro |
 | --- | --- | --- | --- |
-| Reposo | 176 | 5.8 ms | 11.1 ms |
-| Animando, **con** filtro | 80 | 16.9 ms | 22.4 ms |
-| Animando, **sin** filtro | 136 | 11.2 ms | 16.6 ms |
+| Reposo (cualquiera) | ~176 | 5.8 ms | 11 ms |
+| Animando, **goo** | 80 | 16.9 ms | 22.4 ms |
+| Animando, **sdf** (banda estrecha) | **96** | **16.7 ms** | 22.1 ms |
+| Animando, sdf sin banda estrecha | 70 | 22.2 ms | 28 ms |
+| Animando, sin ninguno de los dos | 136 | 11.2 ms | 16.6 ms |
 
-Región del filtro: **1.32–1.45 Mpx** (la caja mide ~580×570 y la región es `-50%/200%`, o
-sea 4× el área). Fusión y filetes: correctos.
+Fusión y filetes: correctos en los dos.
 
-> Nota: `liquid.md` estima esa región en "cerca de 3 Mpx". El número medido es la mitad.
-> También difiere el grosor del cuello: el documento dice "de 22 px a 8" y el código
+- **goo:** región del filtro **1.32–1.45 Mpx** (`-50%/200%` = 4× el área de la caja).
+- **sdf:** **11.1k evaluaciones** de 39k vértices de grilla, ~5.8 ms de cálculo por cuadro,
+  3.084 puntos de contorno.
+
+El titular es que en Chrome el SDF ya **iguala o supera** al filtro, pese a correr en el
+hilo principal en vez del compositor. Sin el descarte por bloques no lo haría: costaba
+11 ms por cuadro y quedaba por debajo.
+
+> Nota: `liquid.md` estima la región del filtro en "cerca de 3 Mpx". El número medido es la
+> mitad. También difiere el grosor del cuello: el documento dice "de 22 px a 8" y el código
 > (`AgentsSurface.svelte`) usa `NECK_THICK = 26` → `NECK_THIN = 10`. Manda el código.
 
 ## Resultado en WebView2
 
-_Pendiente de correr._
+_Pendiente de correr._ Cada prueba se corre **con los dos renderizadores**.
 
-| Prueba | Resultado | Notas |
-| --- | --- | --- |
-| 1. Fusión y filetes | | |
-| 2. Alcance a σ=5 / 3 / 8 | | |
-| 3. Engorde vs contorno | | |
-| 4. fps y p95 (arrastre / animando / sin filtro) | | |
-| 5. Ventana transparente | | |
+| Prueba | goo | sdf | Notas |
+| --- | --- | --- | --- |
+| 1. Fusión y filetes | | | |
+| 2. Alcance (σ=5/3/8 · k=10/26/60) | | | |
+| 3. Engorde vs contorno | | | |
+| 4. fps y p95 (arrastre / animando) | | | |
+| 5. Ventana transparente | | | |
 
-**Si algo falla**, el plan B ya está decidido: la piel pasa a `<svg>` con paths analíticos o
-a `<canvas>`. Las primitivas `Skin`/`Blob` reciben **solo números** justamente para que ese
-cambio sea de renderizador y no de arquitectura.
+**El SDF ya es el plan B implementado.** Si el filtro falla en WebView2, no hay que rediseñar
+nada: se cambia el renderizador y la arquitectura queda igual, que es exactamente para lo que
+`Skin`/`Blob` reciben solo números.
+
+Y si el filtro pasa, la decisión igual no es obvia — el SDF además borra `preFilter()`,
+`GOO_GROW` y las cinco constantes del cuello dibujado. Esa es la comparación que hay que
+hacer con los dos delante.
 
 Cuando esté corrido, el resultado se vuelca al pendiente de
 [`Features/liquid.md`](../Features/liquid.md).

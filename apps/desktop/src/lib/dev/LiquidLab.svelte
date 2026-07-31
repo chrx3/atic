@@ -27,6 +27,8 @@
    */
   import { onMount } from "svelte";
   import GooFilter, { GOO_GROW, preFilter } from "$lib/GooFilter.svelte";
+  import { Field, type Shape } from "$lib/liquid/sdf";
+  import { fieldToPath } from "$lib/liquid/contour";
 
   let { standalone = false, onClose }: {
     /** Fuera del overlay no hay escritorio detrás: hace falta un fondo propio. */
@@ -54,11 +56,36 @@
 
   type Box = { x: number; y: number; w: number; h: number };
 
+  /**
+   * Los dos renderizadores, sobre exactamente la misma geometría.
+   *
+   * `goo` es el de producción: difuminar el alfa y volver a endurecerlo, con lo
+   * que eso implica (depende del motor, engorda 0.28σ por lado, y no cruza más
+   * de 1.72σ por su cuenta).
+   *
+   * `sdf` calcula el campo de distancia, lo une con `smin` y traza el contorno.
+   * No depende del motor, no engorda, y el alcance lo fija `k` en vez de estar
+   * atado a la viscosidad. La comparación es el punto de este banco.
+   */
+  let renderer = $state<"goo" | "sdf">("goo");
+
   let sigma = $state(5);
   let drawNeck = $state(true);
   let filterOn = $state(true);
   let showOutline = $state(true);
   let animate = $state(false);
+
+  /** Mezcla del `smin`. Es al SDF lo que σ es al filtro. */
+  let blend = $state(26);
+  /**
+   * Lado de la celda de muestreo.
+   *
+   * Marching squares no ve nada más fino que su celda, y el cuello de esta
+   * escena baja a 6 px: por eso el valor por defecto es 3 y no el 6 que se usa
+   * en escenas de tarjetas. El costo va con el cuadrado.
+   */
+  let cell = $state(3);
+  let smooth = $state(2);
 
   /** El alcance del filtro por su cuenta, sin cuello dibujado. */
   const reach = $derived(1.72 * sigma);
@@ -178,7 +205,8 @@
     return { x: l.x + GOO_GROW, y: l.y + GOO_GROW, w: preFilter(r.w), h: preFilter(r.h) };
   }
 
-  const neck = $derived.by(() => {
+  /** El cuello en coordenadas del overlay. El SDF lo necesita sin trasladar. */
+  const neckAbs = $derived.by(() => {
     if (!drawNeck || !joined) return null;
     const s = span;
     const thick = Math.max(
@@ -190,18 +218,64 @@
     const to = s.bubEdge + dir * 7;
     const lo = Math.min(from, to);
     const long = Math.abs(to - from);
-    return local(
-      s.vertical
-        ? { x: s.center - thick / 2, y: lo, w: thick, h: long }
-        : { x: lo, y: s.center - thick / 2, w: long, h: thick },
-    );
+    return s.vertical
+      ? { x: s.center - thick / 2, y: lo, w: thick, h: long }
+      : { x: lo, y: s.center - thick / 2, w: long, h: thick };
   });
+
+  const neck = $derived(neckAbs ? local(neckAbs) : null);
 
   const pillBlob = $derived({ ...preFiltered(pill), r: PILL_H / 2 });
   const bubBlob = $derived({ ...preFiltered(bubble), r: BUBBLE_CORNER - GOO_GROW });
 
   /** Cuántos píxeles rasteriza el filtro: la región es -50%/200%, o sea 4×. */
   const regionMpx = $derived((skinBox.w * 2 * (skinBox.h * 2)) / 1_000_000);
+
+  /* ─── El renderizador SDF ───────────────────────────────────────────────
+   *
+   * Las mismas tres formas, descritas como campos en vez de como divs. Acá NO
+   * se aplica `preFilter()`: el contorno pasa por la geometría pedida, que es
+   * justamente una de las cosas que este banco tiene que comprobar contra el
+   * contorno punteado.
+   */
+  const sdf = $derived.by(() => {
+    if (renderer !== "sdf") return null;
+
+    const shapes: Shape[] = [
+      {
+        kind: "box",
+        cx: pill.x + pill.w / 2,
+        cy: pill.y + pill.h / 2,
+        hw: pill.w / 2,
+        hh: pill.h / 2,
+        r: PILL_H / 2,
+      },
+      {
+        kind: "box",
+        cx: bubble.x + bubble.w / 2,
+        cy: bubble.y + bubble.h / 2,
+        hw: bubble.w / 2,
+        hh: bubble.h / 2,
+        r: BUBBLE_CORNER,
+      },
+    ];
+
+    // El cuello explícito es opcional a propósito: la pregunta interesante es
+    // si `blend` solo ya cruza el hueco sin necesidad de dibujarlo.
+    const n = neckAbs;
+    if (n) {
+      const r = Math.min(n.w, n.h) / 2;
+      shapes.push(
+        n.w > n.h
+          ? { kind: "capsule", ax: n.x + r, ay: n.y + n.h / 2, bx: n.x + n.w - r, by: n.y + n.h / 2, r }
+          : { kind: "capsule", ax: n.x + n.w / 2, ay: n.y + r, bx: n.x + n.w / 2, by: n.y + n.h - r, r },
+      );
+    }
+
+    const t0 = performance.now();
+    const path = fieldToPath(new Field(shapes, blend), { cell, smooth });
+    return { ...path, ms: Math.round((performance.now() - t0) * 100) / 100 };
+  });
 
   /* ─── Medición de cuadros ───────────────────────────────────────────────── */
 
@@ -286,6 +360,24 @@
 <div class="lab" class:is-standalone={standalone}>
   <GooFilter id="lab-goo" {sigma} />
 
+  {#if renderer === "sdf"}
+    <!-- La piel como una sola forma trazada. Sin filtro: es geometría. -->
+    {#if sdf && sdf.d}
+      <svg
+        class="sdf"
+        style:left="{sdf.minX}px"
+        style:top="{sdf.minY}px"
+        width={sdf.width}
+        height={sdf.height}
+        viewBox="{sdf.minX} {sdf.minY} {sdf.width} {sdf.height}"
+        aria-hidden="true"
+      >
+        <!-- `evenodd` porque los lazos no se orientan de forma consistente: con
+             la regla por defecto, una isla interior se rellenaría. -->
+        <path d={sdf.d} fill="#1c1917" fill-rule="evenodd" />
+      </svg>
+    {/if}
+  {:else}
   <!-- La piel: siluetas y nada más. Filtrada. -->
   <div
     class="skin"
@@ -325,6 +417,7 @@
       style:border-radius="{bubBlob.r}px"
     ></i>
   </div>
+  {/if}
 
   <!-- Contornos exactos, sin filtrar: la piel tiene que morir justo encima. -->
   {#if showOutline}
@@ -368,27 +461,73 @@
       <span class="tag">{standalone ? "ventana normal" : "overlay real"}</span>
     </header>
 
-    <label class="row">
-      <span>viscosidad σ</span>
-      <input type="range" min="0" max="20" step="0.5" bind:value={sigma} />
-      <b>{sigma.toFixed(1)}</b>
-    </label>
+    <div class="seg">
+      <button
+        type="button"
+        class:on={renderer === "goo"}
+        onclick={() => { renderer = "goo"; resetMetrics(); }}>filtro goo</button
+      >
+      <button
+        type="button"
+        class:on={renderer === "sdf"}
+        onclick={() => { renderer = "sdf"; resetMetrics(); }}>sdf</button
+      >
+    </div>
+
+    {#if renderer === "goo"}
+      <label class="row">
+        <span>viscosidad σ</span>
+        <input type="range" min="0" max="20" step="0.5" bind:value={sigma} />
+        <b>{sigma.toFixed(1)}</b>
+      </label>
+    {:else}
+      <label class="row">
+        <span>mezcla k</span>
+        <input type="range" min="0" max="90" step="1" bind:value={blend} />
+        <b>{blend}</b>
+      </label>
+      <label class="row">
+        <span>celda</span>
+        <input type="range" min="1" max="12" step="1" bind:value={cell} />
+        <b>{cell} px</b>
+      </label>
+      <label class="row">
+        <span>suavizado</span>
+        <input type="range" min="0" max="4" step="1" bind:value={smooth} />
+        <b>{smooth}</b>
+      </label>
+    {/if}
 
     <div class="grid">
-      <span>alcance 1.72·σ</span><b>{reach.toFixed(1)} px</b>
-      <span>hueco real</span><b class:bad={span.gap > reach && !drawNeck}>{span.gap.toFixed(1)} px</b>
-      <span>predicción</span>
-      <b>
-        {#if drawNeck}
-          {joined ? "cuello dibujado" : "cortado"}
-        {:else}
-          {span.gap <= reach ? "debe fundir" : "debe cortar"}
-        {/if}
+      <span>hueco real</span>
+      <b class:bad={renderer === "goo" && span.gap > reach && !drawNeck}>
+        {span.gap.toFixed(1)} px
       </b>
+      {#if renderer === "goo"}
+        <span>alcance 1.72·σ</span><b>{reach.toFixed(1)} px</b>
+        <span>predicción</span>
+        <b>
+          {#if drawNeck}
+            {joined ? "cuello dibujado" : "cortado"}
+          {:else}
+            {span.gap <= reach ? "debe fundir" : "debe cortar"}
+          {/if}
+        </b>
+        <span>región filtro</span><b>{regionMpx.toFixed(2)} Mpx</b>
+      {:else if sdf}
+        <span>alcance k/4</span><b>{(blend / 4).toFixed(1)} px</b>
+        <span>evaluadas</span>
+        <b class:bad={sdf.evals > 40_000}>
+          {(sdf.evals / 1000).toFixed(1)}k de {(sdf.samples / 1000).toFixed(0)}k
+        </b>
+        <span>celda real</span>
+        <b class:bad={sdf.cell > cell}>{sdf.cell.toFixed(1)} px</b>
+        <span>puntos</span><b>{sdf.points}</b>
+        <span>cálculo</span><b class:bad={sdf.ms > 8}>{sdf.ms} ms</b>
+      {/if}
       <span>grosor cuello</span>
       <b>{neck ? Math.min(neck.w, neck.h).toFixed(1) + " px" : "—"}</b>
       <span>caja</span><b>{skinBox.w}×{skinBox.h}</b>
-      <span>región filtro</span><b>{regionMpx.toFixed(2)} Mpx</b>
       <span>fps</span><b class:bad={fps > 0 && fps < 50}>{fps || "—"}</b>
       <span>cuadro p95</span><b class:bad={p95 > 20}>{p95 || "—"} ms</b>
       <span>peor cuadro</span><b>{worst || "—"} ms</b>
@@ -403,8 +542,13 @@
       <button type="button" onclick={() => { offX = 0; offY = -10; resetMetrics(); }}>10</button>
     </div>
 
-    <label class="check"><input type="checkbox" bind:checked={drawNeck} /> dibujar cuello</label>
-    <label class="check"><input type="checkbox" bind:checked={filterOn} /> filtro goo</label>
+    <label class="check">
+      <input type="checkbox" bind:checked={drawNeck} />
+      {renderer === "sdf" ? "cuello explícito" : "dibujar cuello"}
+    </label>
+    {#if renderer === "goo"}
+      <label class="check"><input type="checkbox" bind:checked={filterOn} /> aplicar filtro</label>
+    {/if}
     <label class="check"><input type="checkbox" bind:checked={showOutline} /> contorno exacto</label>
     <label class="check">
       <input type="checkbox" bind:checked={animate} onchange={resetMetrics} /> animar (peor caso)
@@ -443,6 +587,29 @@
     display: block;
     /* Regla 2 del sistema líquido: todo lo que se funde, del mismo color. */
     background: #1c1917;
+  }
+
+  /* La sombra va sobre el path ya trazado, igual que va después del goo. */
+  .sdf {
+    position: absolute;
+    overflow: visible;
+    pointer-events: none;
+    filter: drop-shadow(0 18px 30px rgba(0, 0, 0, 0.45));
+  }
+
+  .seg {
+    display: flex;
+    gap: 4px;
+  }
+
+  .seg button {
+    flex: 1;
+  }
+
+  .seg button.on {
+    background: #da7756;
+    border-color: #da7756;
+    color: #1c1917;
   }
 
   .outline {
