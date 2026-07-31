@@ -62,6 +62,8 @@ export const renameRecording = (id: string, title: string) =>
 export const getConfig = () => invoke<AppConfig>("get_config");
 export const setConfig = (config: AppConfig) =>
   invoke<void>("set_config", { config });
+export const onConfigChanged = (cb: (config: AppConfig) => void): Promise<UnlistenFn> =>
+  listen<AppConfig>("config-changed", (event) => cb(event.payload));
 export const setPillVisible = (visible: boolean) =>
   invoke<void>("set_pill_visible", { visible });
 export const showMainWindow = () => invoke<void>("show_main_window");

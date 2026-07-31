@@ -70,6 +70,8 @@ pub struct Config {
     pub output_device_id: String,
     /// Mostrar la pill flotante.
     pub show_pill: bool,
+    /// Forma de la pill en reposo: `circle` | `compact`.
+    pub pill_rest_shape: String,
     /// Última posición conocida de la pill (x, y) en coordenadas de pantalla.
     pub pill_position: Option<(f64, f64)>,
     /// Tamaño al que dejaste la burbuja de agentes, en píxeles lógicos.
@@ -184,6 +186,7 @@ impl Default for Config {
             dictation_mic_device_id: String::new(),
             output_device_id: String::new(),
             show_pill: true,
+            pill_rest_shape: "circle".to_string(),
             pill_position: None,
             agents_bubble_size: None,
             beep_on_start: false,
@@ -254,6 +257,7 @@ struct ConfigFile {
     dictation_mic_device_id: Option<String>,
     output_device_id: Option<String>,
     show_pill: bool,
+    pill_rest_shape: Option<String>,
     pill_position: Option<(f64, f64)>,
     agents_bubble_size: Option<(i32, i32)>,
     beep_on_start: bool,
@@ -353,6 +357,7 @@ impl Default for ConfigFile {
             dictation_mic_device_id: None,
             output_device_id: None,
             show_pill: d.show_pill,
+            pill_rest_shape: None,
             pill_position: d.pill_position,
             agents_bubble_size: d.agents_bubble_size,
             beep_on_start: d.beep_on_start,
@@ -505,6 +510,10 @@ impl From<ConfigFile> for Config {
             dictation_mic_device_id: f.dictation_mic_device_id.unwrap_or_default(),
             output_device_id: f.output_device_id.unwrap_or_default(),
             show_pill: f.show_pill,
+            pill_rest_shape: match f.pill_rest_shape.as_deref() {
+                Some("compact") => "compact".into(),
+                _ => "circle".into(),
+            },
             pill_position: f.pill_position,
             agents_bubble_size: f.agents_bubble_size,
             beep_on_start: f.beep_on_start,
@@ -654,6 +663,18 @@ mod tests {
     #[test]
     fn default_language_is_spanish() {
         assert_eq!(Config::default().language, "es");
+    }
+
+    #[test]
+    fn pill_rest_shape_defaults_to_circle_and_keeps_compact_choice() {
+        let default: Config = serde_json::from_str::<ConfigFile>("{}").unwrap().into();
+        assert_eq!(default.pill_rest_shape, "circle");
+
+        let compact: Config =
+            serde_json::from_str::<ConfigFile>(r#"{ "pill_rest_shape": "compact" }"#)
+                .unwrap()
+                .into();
+        assert_eq!(compact.pill_rest_shape, "compact");
     }
 
     #[test]

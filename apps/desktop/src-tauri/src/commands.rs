@@ -1,7 +1,7 @@
 //! Comandos invocables desde el frontend.
 
 use serde::Serialize;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 use atic_core::{Config, Recording};
 
@@ -125,6 +125,7 @@ pub fn set_config(app: AppHandle, state: State<AppState>, config: Config) -> Res
     }
     state::set_pill_visible(&app, show_pill);
     sync_autostart(&app, want_autostart);
+    let _ = app.emit("config-changed", config);
 
     Ok(())
 }

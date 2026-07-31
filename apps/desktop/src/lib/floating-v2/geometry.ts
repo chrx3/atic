@@ -1,5 +1,5 @@
 import type { Pivot, Size } from "$lib/pillStage";
-import type { FloatingSurface } from "./types";
+import type { FloatingActivity, FloatingSurface, PillRestShape } from "./types";
 
 export const FLOATING_ENVELOPES = {
   pill: { w: 190, h: 90 },
@@ -9,7 +9,19 @@ export const FLOATING_ENVELOPES = {
   agents: { w: 700, h: 620 },
 } as const satisfies Record<FloatingSurface["kind"], Size>;
 
-export function envelopeFor(surface: FloatingSurface): Size {
+export const CIRCLE_PILL_ENVELOPE = { w: 64, h: 64 } as const satisfies Size;
+
+export function pillPresentationFor(
+  surface: FloatingSurface,
+  activity: FloatingActivity,
+  restShape: PillRestShape,
+  hasAttention = false,
+): PillRestShape {
+  return surface.kind === "pill" && activity === "idle" && !hasAttention ? restShape : "compact";
+}
+
+export function envelopeFor(surface: FloatingSurface, pillShape: PillRestShape = "compact"): Size {
+  if (surface.kind === "pill" && pillShape === "circle") return CIRCLE_PILL_ENVELOPE;
   return FLOATING_ENVELOPES[surface.kind];
 }
 

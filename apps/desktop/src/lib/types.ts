@@ -65,6 +65,8 @@ export interface AppConfig {
   /** Nombre de la salida (altavoces). Vacío = por defecto del SO. */
   output_device_id: string;
   show_pill: boolean;
+  /** Forma en reposo: circle | compact. */
+  pill_rest_shape: string;
   pill_position: [number, number] | null;
   beep_on_start: boolean;
   /** Toques graves de interfaz (capturas, dictado). Interruptor maestro. */

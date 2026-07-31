@@ -22,6 +22,13 @@ const pill = compute({ kind: "pill" });
 assert(/^M /.test(pill.path.d), "the pill must generate a closed SVG contour");
 assert(pill.path.width > 154 && pill.path.height > 50, "field bounds must retain the smooth-union padding");
 
+const circleScene = sceneFor({ kind: "pill" }, 64, 64, false, "circle");
+const circle = circleScene.boxes[0];
+equal(circle.cx, 32, "the idle circle must stay centered in its native envelope");
+equal(circle.cy, 32, "the idle circle must stay centered vertically");
+equal(circle.hw, 24, "the idle circle must render at 48px");
+equal(circle.r, 24, "the idle circle must not degrade into a rounded rectangle");
+
 const wheel = compute({ kind: "wheel" });
 equal(wheel.scene.boxes.length, 7, "the wheel must include the pill and six tool nodes");
 assert((wheel.path.d.match(/\bM /g) ?? []).length >= 2, "the wheel may trace multiple droplets in one SVG skin");

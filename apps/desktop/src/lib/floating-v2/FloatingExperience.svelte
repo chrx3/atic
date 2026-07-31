@@ -4,7 +4,14 @@
   import { TOOLS, toolById, type ToolId } from "$lib/tools";
   import LiquidSkin from "./liquid/LiquidSkin.svelte";
   import { sceneFor, WHEEL_POSITIONS } from "./liquid/scene";
-  import { surfaceForTool, type FloatingActivity, type FloatingPlacement, type FloatingSurface } from "./types";
+  import {
+    surfaceForTool,
+    type FloatingActivity,
+    type FloatingPlacement,
+    type FloatingSurface,
+    type PillRestShape,
+  } from "./types";
+  import { pillPresentationFor } from "./geometry";
 
   let {
     surface,
@@ -12,6 +19,7 @@
     placement = "free",
     layout = "stage",
     opensUp = false,
+    pillRestShape = "circle",
     blend,
     interactive = true,
     queueCount = 0,
@@ -31,6 +39,7 @@
     placement?: FloatingPlacement;
     layout?: "stage" | "window";
     opensUp?: boolean;
+    pillRestShape?: PillRestShape;
     blend?: number;
     interactive?: boolean;
     queueCount?: number;
@@ -52,7 +61,11 @@
   const panelOpen = $derived(surface.kind === "tool" || surface.kind === "agents" || surface.kind === "queue");
   const agentOpen = $derived(surface.kind === "agents");
   const activeTool = $derived(surface.kind === "tool" ? toolById(surface.tool) : null);
-  const liquidScene = $derived(sceneFor(surface, Math.max(1, sceneWidth), Math.max(1, sceneHeight), opensUp));
+  const hasAttention = $derived(queueCount > 0 || agentCount > 0 || agentWorking);
+  const pillShape = $derived(pillPresentationFor(surface, activity, pillRestShape, hasAttention));
+  const liquidScene = $derived(
+    sceneFor(surface, Math.max(1, sceneWidth), Math.max(1, sceneHeight), opensUp, pillShape),
+  );
   const liquidParameters = $derived({
     ...liquidScene.parameters,
     k: blend ?? liquidScene.parameters.k,
@@ -120,6 +133,7 @@
   class:opens-up={opensUp && panelOpen}
   class:active={activity !== "idle"}
   class:agent-working={activity === "idle" && agentWorking}
+  class:circle-pill={pillShape === "circle"}
   class="floating-experience"
   data-activity={activity}
   bind:clientWidth={sceneWidth}
@@ -319,6 +333,28 @@
     background: transparent;
     pointer-events: auto;
     transform: translateX(-50%);
+  }
+
+  .circle-pill .pill-control {
+    top: 8px;
+    width: 48px;
+    height: 48px;
+    padding: 0;
+    grid-template-columns: 1fr;
+  }
+
+  .circle-pill .pill-main {
+    width: 48px;
+    height: 48px;
+    padding: 0;
+    grid-column: 1;
+    grid-template-columns: 1fr;
+    place-items: center;
+  }
+
+  .circle-pill .pill-copy,
+  .circle-pill .pill-glyph {
+    display: none;
   }
 
   .pill-main {

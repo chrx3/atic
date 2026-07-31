@@ -6,8 +6,18 @@
   import SnippetsList from "$lib/SnippetsList.svelte";
   import FloatingAgents from "$lib/floating-v2/FloatingAgents.svelte";
   import FloatingExperience from "$lib/floating-v2/FloatingExperience.svelte";
-  import { envelopeFor, opensLargeSurface, pivotForTransition } from "$lib/floating-v2/geometry";
-  import { surfaceForTool, type FloatingActivity, type FloatingSurface } from "$lib/floating-v2/types";
+  import {
+    envelopeFor,
+    opensLargeSurface,
+    pillPresentationFor,
+    pivotForTransition,
+  } from "$lib/floating-v2/geometry";
+  import {
+    surfaceForTool,
+    type FloatingActivity,
+    type FloatingSurface,
+    type PillRestShape,
+  } from "$lib/floating-v2/types";
   import { createStage, growsFirst } from "$lib/pillStage";
   import { TOOLS, type ToolId } from "$lib/tools";
   import type { ClipboardItem, DictationPhase, PasteQueueItem, Snippet as TextSnippet } from "$lib/types";
@@ -15,12 +25,14 @@
   import {
     dictationPhase,
     dismissPasteQueueItem,
+    getConfig,
     getScratchpad,
     isRecording,
     listClipboardHistory,
     listPasteQueue,
     listSnippets,
     onClipboardHistoryChanged,
+    onConfigChanged,
     onDictationStatus,
     onPillClipboardClose,
     onPillClipboardToggle,
@@ -65,6 +77,27 @@
   let queue = $state<PasteQueueItem[]>([]);
   let queueBusy = $state(false);
   let wheelTool = $state<ToolId | null>(null);
+  let pillRestShape = $state<PillRestShape>("circle");
+  let pillEnvelopeKey = "";
+  const pillHasAttention = $derived(queue.length > 0 || agents.unread > 0 || agents.waiting > 0 || agents.working);
+  const pillShape = $derived(pillPresentationFor(surface, activity, pillRestShape, pillHasAttention));
+
+  function normalizedPillShape(value: string): PillRestShape {
+    return value === "compact" ? "compact" : "circle";
+  }
+
+  function presentationFor(next: FloatingSurface): PillRestShape {
+    return pillPresentationFor(next, activity, pillRestShape, pillHasAttention);
+  }
+
+  $effect(() => {
+    if (surface.kind !== "pill" || transitioning) return;
+    const size = envelopeFor(surface, pillShape);
+    const key = `${size.w}x${size.h}`;
+    if (key === pillEnvelopeKey) return;
+    pillEnvelopeKey = key;
+    void stage.resize(size, "topCenter");
+  });
 
   function sameSurface(a: FloatingSurface, b: FloatingSurface): boolean {
     if (a.kind !== b.kind) return false;
@@ -164,8 +197,8 @@
     error = null;
 
     const from = surface;
-    const fromSize = envelopeFor(from);
-    const nextSize = envelopeFor(next);
+    const fromSize = envelopeFor(from, presentationFor(from));
+    const nextSize = envelopeFor(next, presentationFor(next));
     const pivot = pivotForTransition(from, next, openedUp);
 
     try {
@@ -244,7 +277,10 @@
     const unlisteners: Promise<UnlistenFn>[] = [];
     let dragOrigin: { x: number; y: number } | null = null;
 
-    void stage.resize(envelopeFor(surface), "topCenter");
+    const initialSize = envelopeFor(surface, pillShape);
+    pillEnvelopeKey = `${initialSize.w}x${initialSize.h}`;
+    void stage.resize(initialSize, "topCenter");
+    void getConfig().then((config) => (pillRestShape = normalizedPillShape(config.pill_rest_shape)));
     void agents.init({ notify: true });
     void Promise.all([isRecording(), dictationPhase(), refreshQueue()]).then(([recording, phase]) => {
       dictation = phase;
@@ -261,6 +297,9 @@
       }),
       onClipboardHistoryChanged(() => {
         if (surface.kind === "tool" && surface.tool === "clipboard") void refreshClipboard();
+      }),
+      onConfigChanged((config) => {
+        pillRestShape = normalizedPillShape(config.pill_rest_shape);
       }),
       onSnippetsChanged(() => {
         if (surface.kind === "tool" && surface.tool === "snippets") void refreshSnippets();
@@ -429,6 +468,7 @@
   <FloatingExperience
     {surface}
     {activity}
+    {pillRestShape}
     opensUp={openedUp}
     layout="window"
     interactive={!transitioning}

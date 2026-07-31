@@ -1,6 +1,7 @@
 import type { ToolId } from "$lib/tools";
 
 export type FloatingActivity = "idle" | "recording" | "dictating";
+export type PillRestShape = "circle" | "compact";
 
 export type FloatingSurface =
   | { kind: "pill" }

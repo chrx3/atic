@@ -746,6 +746,19 @@
           </span>
         </label>
 
+        <label class="rb-settings-row">
+          <span class="rb-settings-row-copy">
+            <span class="rb-settings-row-label">Forma en reposo</span>
+            <span class="rb-hint">Se alarga automÃ¡ticamente al mostrar actividad o avisos.</span>
+          </span>
+          <span class="rb-settings-row-control">
+            <select class="rb-field" bind:value={c.pill_rest_shape} aria-label="Forma de la pill en reposo">
+              <option value="circle">Circular</option>
+              <option value="compact">Compacta</option>
+            </select>
+          </span>
+        </label>
+
         <div class="rb-settings-row">
           <div class="rb-settings-row-copy">
             <span class="rb-settings-row-label">Carpeta de datos</span>

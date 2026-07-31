@@ -1,4 +1,4 @@
-import type { FloatingSurface } from "../types";
+import type { FloatingSurface, PillRestShape } from "../types";
 import type { LiquidBox, LiquidBridge, LiquidParameters } from "./engine";
 
 export type LiquidScene = {
@@ -38,11 +38,15 @@ export function sceneFor(
   width: number,
   height: number,
   opensUp = false,
+  pillShape: PillRestShape = "compact",
 ): LiquidScene {
   const centerX = width / 2;
   const large = isLarge(surface);
-  const pillTop = opensUp && large ? height - 82 : 32;
-  const pill = box("pill", centerX - 77, pillTop, 154, 50, 25);
+  const circular = surface.kind === "pill" && pillShape === "circle";
+  const pillTop = circular ? 8 : opensUp && large ? height - 82 : 32;
+  const pill = circular
+    ? box("pill", centerX - 24, pillTop, 48, 48, 24)
+    : box("pill", centerX - 77, pillTop, 154, 50, 25);
 
   if (surface.kind === "wheel") {
     return {
