@@ -173,9 +173,9 @@
 <svg class="liquid-skin" viewBox={`0 0 ${Math.max(1, width)} ${Math.max(1, height)}`} preserveAspectRatio="none" aria-hidden="true">
   <defs>
     <linearGradient id={gradientId} x1="0" y1="0" x2="0.8" y2="1">
-      <stop offset="0" stop-color="oklch(1 0 0)" />
-      <stop offset="0.58" stop-color="oklch(0.965 0.006 255)" />
-      <stop offset="1" stop-color="oklch(0.915 0.009 255)" />
+      <stop offset="0" stop-color="var(--liquid-pearl-top)" />
+      <stop offset="0.58" stop-color="var(--liquid-pearl)" />
+      <stop offset="1" stop-color="var(--liquid-pearl-deep)" />
     </linearGradient>
   </defs>
   <path class="skin-path" d={path} fill={`url(#${gradientId})`} />
@@ -184,6 +184,12 @@
 
 <style>
   .liquid-skin {
+    --liquid-pearl-top: oklch(1 0 0);
+    --liquid-pearl: oklch(0.965 0.006 255);
+    --liquid-pearl-deep: oklch(0.915 0.009 255);
+    --liquid-shadow: oklch(0.2 0.015 255 / 0.14);
+    --liquid-shadow-near: oklch(0.2 0.015 255 / 0.08);
+    --liquid-highlight: oklch(1 0 0 / 0.72);
     position: absolute;
     z-index: 0;
     inset: 0;
@@ -194,12 +200,21 @@
   }
 
   .skin-path {
-    filter: drop-shadow(0 24px 32px oklch(0.2 0.015 255 / 0.14)) drop-shadow(0 3px 7px oklch(0.2 0.015 255 / 0.08));
+    filter: drop-shadow(0 24px 32px var(--liquid-shadow)) drop-shadow(0 3px 7px var(--liquid-shadow-near));
   }
 
   .skin-highlight {
-    stroke: oklch(1 0 0 / 0.72);
+    stroke: var(--liquid-highlight);
     stroke-width: 1;
     vector-effect: non-scaling-stroke;
+  }
+
+  :global(:root[data-theme="dark"]) .liquid-skin {
+    --liquid-pearl-top: oklch(0.3 0.01 255);
+    --liquid-pearl: oklch(0.245 0.012 255);
+    --liquid-pearl-deep: oklch(0.19 0.012 255);
+    --liquid-shadow: oklch(0.03 0.01 255 / 0.42);
+    --liquid-shadow-near: oklch(0.03 0.01 255 / 0.3);
+    --liquid-highlight: oklch(1 0 0 / 0.16);
   }
 </style>

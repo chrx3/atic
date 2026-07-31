@@ -22,6 +22,7 @@
     scale: number;
     revision: number;
     emittedAtMs: number;
+    debug: boolean;
     objects: SnapshotObject[];
   };
 
@@ -34,6 +35,7 @@
     scale: 1,
     revision: 0,
     emittedAtMs: 0,
+    debug: false,
     objects: [],
   });
   let renderSamples = $state<number[]>([]);
@@ -132,18 +134,20 @@
   <main class="world" aria-hidden="true">
     <LiquidSkin
       {boxes}
-      parameters={{ k: 34, cell: 5, smooth: 2 }}
+      parameters={{ k: 42, cell: 5, smooth: 2 }}
       width={snapshot.width}
       height={snapshot.height}
       duration={90}
       onRender={recordRender}
     />
-    <output class="telemetry" aria-label="Telemetria del compositor">
-      <span>SDF p95 <strong>{renderP95.toFixed(2)} ms</strong></span>
-      <span>media {renderAverage.toFixed(2)} ms</span>
-      <span>evento p95 {deliveryP95.toFixed(1)} ms</span>
-      <span>{renderSamples.length} frames / rev {snapshot.revision} / {snapshot.scale.toFixed(2)}x</span>
-    </output>
+    {#if snapshot.debug}
+      <output class="telemetry" aria-label="Telemetria del compositor">
+        <span>SDF p95 <strong>{renderP95.toFixed(2)} ms</strong></span>
+        <span>media {renderAverage.toFixed(2)} ms</span>
+        <span>evento p95 {deliveryP95.toFixed(1)} ms</span>
+        <span>{renderSamples.length} frames / rev {snapshot.revision} / {snapshot.scale.toFixed(2)}x</span>
+      </output>
+    {/if}
   </main>
 {:else if objectId === "pill"}
   <button class="pill-ink" type="button" data-tauri-drag-region aria-label="Mover núcleo de Atic">

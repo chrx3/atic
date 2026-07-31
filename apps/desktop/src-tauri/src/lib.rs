@@ -11,6 +11,7 @@ mod diagnostics;
 mod dictation;
 mod export;
 mod floating;
+mod floating_world;
 mod import;
 mod launcher;
 mod liquid_world;
@@ -228,9 +229,13 @@ pub fn run() {
             liquid_world::close_liquid_world_spike,
             liquid_world::report_liquid_world_metrics,
             liquid_world::report_liquid_world_focus,
+            floating_world::open_floating_tool,
+            floating_world::close_floating_tool,
+            floating_world::get_floating_world,
         ])
         .setup(move |app| {
             let dirs = AppDirs::new()?;
+            let floating_world_path = dirs.data_dir().join("floating-world.json");
             let db = Db::open(&dirs.db_path())?;
             let config = Config::load(&dirs.config_path());
 
@@ -276,6 +281,7 @@ pub fn run() {
                 pre_clipboard_position: Mutex::new(None),
                 shortcut_failures: Mutex::new(Vec::new()),
             });
+            floating_world::manage(app.handle(), floating_world_path);
 
             // Repara estados transitorios huérfanos de un cierre abrupto anterior.
             recover_orphaned_statuses(&app.state::<AppState>());
@@ -382,6 +388,10 @@ pub fn run() {
                 }
             }
 
+            liquid_world::open_worlds(app.handle())
+                .map_err(|error| format!("no se pudo abrir el compositor liquido: {error}"))?;
+            floating_world::restore_open_tools(app.handle());
+
             Ok(())
         })
         .on_window_event(|window, event| match event {
@@ -397,6 +407,12 @@ pub fn run() {
                 api.prevent_close();
                 let _ = window.hide();
             }
+            WindowEvent::CloseRequested { api, .. }
+                if floating_world::is_tool_window(window.label()) =>
+            {
+                api.prevent_close();
+                floating_world::hide_from_close_request(window.app_handle(), window.label());
+            }
             WindowEvent::Moved(pos) if window.label() == "pill" => {
                 if let Some(state) = window.app_handle().try_state::<AppState>() {
                     // Durante el clipboard en el cursor no pisar la home guardada.
@@ -405,8 +421,23 @@ pub fn run() {
                             Some((pos.x as f64, pos.y as f64));
                     }
                 }
+                liquid_world::emit_snapshot(window.app_handle());
             }
-            WindowEvent::Moved(_) if liquid_world::is_spike_object(window.label()) => {
+            WindowEvent::Moved(_)
+                if liquid_world::is_spike_object(window.label())
+                    || floating_world::is_tool_window(window.label()) =>
+            {
+                if floating_world::is_tool_window(window.label()) {
+                    floating_world::remember_window(window.app_handle(), window.label());
+                }
+                liquid_world::emit_snapshot(window.app_handle());
+            }
+            WindowEvent::Resized(_)
+                if window.label() == "pill" || floating_world::is_tool_window(window.label()) =>
+            {
+                if floating_world::is_tool_window(window.label()) {
+                    floating_world::remember_window(window.app_handle(), window.label());
+                }
                 liquid_world::emit_snapshot(window.app_handle());
             }
             _ => {}

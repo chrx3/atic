@@ -13,7 +13,6 @@
     pivotForTransition,
   } from "$lib/floating-v2/geometry";
   import {
-    surfaceForTool,
     type FloatingActivity,
     type FloatingSurface,
     type PillRestShape,
@@ -45,6 +44,8 @@
     onStatus,
     onPasteQueueChanged,
     onPasteQueued,
+    openFloatingTool,
+    closeFloatingTool,
     pasteQueueItemNow,
     setScratchpad,
     showMainWindow,
@@ -260,11 +261,12 @@
 
   async function activateTool(tool: ToolId) {
     wheelTool = null;
-    if (tool === "agents") {
-      await setSurface({ kind: "agents" });
-      return;
+    if (surface.kind !== "pill") await setSurface({ kind: "pill" });
+    try {
+      await openFloatingTool(tool);
+    } catch (cause) {
+      error = String(cause);
     }
-    await setSurface(surfaceForTool(tool));
   }
 
   function releaseRadial() {
@@ -304,10 +306,10 @@
       onSnippetsChanged(() => {
         if (surface.kind === "tool" && surface.tool === "snippets") void refreshSnippets();
       }),
-      onPillClipboardToggle(() => void setSurface({ kind: "tool", tool: "clipboard" })),
-      onPillSnippetsToggle(() => void setSurface({ kind: "tool", tool: "snippets" })),
-      onPillClipboardClose(() => void setSurface({ kind: "pill" })),
-      onPillSnippetsClose(() => void setSurface({ kind: "pill" })),
+      onPillClipboardToggle(() => void activateTool("clipboard")),
+      onPillSnippetsToggle(() => void activateTool("snippets")),
+      onPillClipboardClose(() => void closeFloatingTool("clipboard")),
+      onPillSnippetsClose(() => void closeFloatingTool("snippets")),
       onPillRadialPress(() => {
         wheelTool = null;
         void setSurface({ kind: "wheel" });
@@ -472,6 +474,7 @@
     opensUp={openedUp}
     layout="window"
     interactive={!transitioning}
+    renderSkin={surface.kind === "queue"}
     queueCount={queue.length}
     agentCount={Math.max(agents.unread, agents.waiting)}
     agentWorking={agents.working}
@@ -480,7 +483,7 @@
     onSurfaceChange={(next) => void setSurface(next)}
     onActivityChange={(next) => void changeActivity(next)}
     onQueueOpen={() => void setSurface({ kind: "queue" })}
-    onAgentOpen={() => void setSurface({ kind: "agents" })}
+    onAgentOpen={() => void activateTool("agents")}
     onToolSelect={(tool) => void activateTool(tool)}
     onToolHighlight={(tool) => (wheelTool = tool)}
   />

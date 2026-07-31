@@ -8,7 +8,7 @@
 
   // Ventanas flotantes: sin chrome de app (fondo transparente).
   const isFloating = $derived(
-    ["/pill", "/pill-v2", "/capture-shelf", "/capture-overlay", "/launcher", "/lab/liquid-world"].includes(
+    ["/pill", "/pill-v2", "/floating-tool", "/capture-shelf", "/capture-overlay", "/launcher", "/lab/liquid-world"].includes(
       page.url.pathname,
     ),
   );

@@ -2,6 +2,7 @@ import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { check, type DownloadEvent, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
+import type { ToolId } from "./tools";
 import type {
   Recording,
   AppConfig,
@@ -67,6 +68,32 @@ export const onConfigChanged = (cb: (config: AppConfig) => void): Promise<Unlist
 export const setPillVisible = (visible: boolean) =>
   invoke<void>("set_pill_visible", { visible });
 export const showMainWindow = () => invoke<void>("show_main_window");
+
+export type FloatingWorldObject = {
+  id: ToolId;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  visible: boolean;
+};
+
+export type FloatingWorldGroup = {
+  id: string;
+  members: Array<"pill" | ToolId>;
+};
+
+export type FloatingWorld = {
+  version: number;
+  objects: FloatingWorldObject[];
+  groups: FloatingWorldGroup[];
+};
+
+export const openFloatingTool = (tool: ToolId) =>
+  invoke<void>("open_floating_tool", { tool });
+export const closeFloatingTool = (tool: ToolId) =>
+  invoke<void>("close_floating_tool", { tool });
+export const getFloatingWorld = () => invoke<FloatingWorld>("get_floating_world");
 export const capturePrimaryMonitor = () =>
   invoke<string>("capture_primary_monitor");
 export const listRecentCaptures = () =>

@@ -10,7 +10,8 @@
     "agents",
     "launcher",
     "liquid-world-*",
-    "liquid-spike-*"
+    "liquid-spike-*",
+    "pearl-tool-*"
   ],
   "permissions": [
     "core:default",

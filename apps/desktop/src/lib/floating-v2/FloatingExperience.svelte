@@ -22,6 +22,7 @@
     pillRestShape = "circle",
     blend,
     interactive = true,
+    renderSkin = true,
     queueCount = 0,
     agentCount = 0,
     agentWorking = false,
@@ -42,6 +43,7 @@
     pillRestShape?: PillRestShape;
     blend?: number;
     interactive?: boolean;
+    renderSkin?: boolean;
     queueCount?: number;
     agentCount?: number;
     agentWorking?: boolean;
@@ -139,13 +141,15 @@
   bind:clientWidth={sceneWidth}
   bind:clientHeight={sceneHeight}
 >
-  <LiquidSkin
-    boxes={liquidScene.boxes}
-    bridges={liquidScene.bridges}
-    parameters={liquidParameters}
-    width={sceneWidth}
-    height={sceneHeight}
-  />
+  {#if renderSkin}
+    <LiquidSkin
+      boxes={liquidScene.boxes}
+      bridges={liquidScene.bridges}
+      parameters={liquidParameters}
+      width={sceneWidth}
+      height={sceneHeight}
+    />
+  {/if}
 
   <div class="floating-ink">
     <div class="pill-control">
@@ -310,6 +314,16 @@
   .floating-experience.window-layout {
     width: 100%;
     height: 100%;
+  }
+
+  :global(:root[data-theme="dark"]) .floating-experience {
+    --pearl: oklch(0.245 0.012 255);
+    --pearl-deep: oklch(0.19 0.012 255);
+    --ink: oklch(0.92 0.008 255);
+    --muted: oklch(0.7 0.012 255);
+    --line: oklch(1 0 0 / 0.12);
+    --soft-line: oklch(1 0 0 / 0.075);
+    --surface-shadow: 0 32px 80px oklch(0.03 0.01 255 / 0.44), 0 4px 16px oklch(0.03 0.01 255 / 0.28);
   }
 
   .floating-ink {

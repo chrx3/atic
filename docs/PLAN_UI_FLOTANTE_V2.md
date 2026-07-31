@@ -208,3 +208,28 @@ hardware disponible usa la misma escala; la conversiÃ³n ya se hace contra el
 La siguiente fase promueve este contrato a `FloatingWorld`: registro persistente
 de superficies, pill circular, agrupaciÃ³n y separaciÃ³n. El spike sigue opt-in y
 la UI anterior permanece disponible para rollback hasta completar QA.
+
+### Registro persistente y superficies reales - 2026-07-31
+
+La arquitectura aceptada ya opera en el arranque normal, no solo en el spike:
+
+- se crea una `LiquidWorld` click-through por monitor y la pill conserva su
+  ventana interactiva de 64x64 px fisicos a 125 %;
+- `FloatingWorldState` mantiene una instancia por herramienta, posicion,
+  tamano y visibilidad en `floating-world.json`;
+- las herramientas nuevas se crean desde un comando asincrono para evitar el
+  deadlock de WebView2 al construir un WebView desde un comando Tauri sincrono;
+- Reuniones y Clipboard se abrieron desde la rueda mediante sus nombres UIA,
+  coexistieron a ambos lados de la pill y conservaron DOM interactivo;
+- cerrar Clipboard actualizo `visible=false` sin destruir Reuniones; al
+  reiniciar el binario solo Reuniones fue restaurada;
+- el primer objeto se coloca a la derecha, el segundo a la izquierda y los
+  siguientes abajo/arriba, evitando que las superficies nazcan superpuestas;
+- la piel global conoce la pill circular, la forma compacta, los seis nodos de
+  la rueda y todas las ventanas `pearl-tool-*`; la tinta no se duplica dentro
+  del SVG;
+- la piel y la tinta usan variantes claras y oscuras coherentes; la telemetria
+  del spike queda oculta en produccion.
+
+La UI anterior (`/pill` y `/agents`) sigue disponible como rollback. Agrupacion,
+separacion y la sustitucion funcional completa de Agentes continuan pendientes.
