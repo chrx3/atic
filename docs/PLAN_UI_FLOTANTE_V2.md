@@ -79,3 +79,68 @@ hacerla nacer de él, al estilo de una Dynamic Island. No se duplica el renderer
 - QA visual WebView2: pendiente. Las capacidades de navegador y control de
   Windows no estuvieron disponibles en esta sesión; no se sustituye por una
   afirmación visual sin evidencia.
+
+## Goal Pearl Flow persistente · brief confirmado
+
+La segunda etapa cambia el modelo de “una pill que se agranda y reemplaza su
+contenido” por un mundo de objetos persistentes:
+
+- la pill reposa como círculo y solo se alarga para actividad, progreso o
+  confirmaciones; la forma de reposo será configurable;
+- cada herramienta nace desde la pill, queda abierta como objeto arrastrable y
+  no obliga a cerrar las demás;
+- una sola instancia por herramienta; Agentes contiene varias conversaciones;
+- la cercanía crea unión líquida y atracción; al soltar, los objetos forman un
+  grupo que se mueve como conjunto;
+- `Separar` y `Alt+arrastrar` desprenden un miembro de forma explícita;
+- la nueva superficie de Agentes debe crear y operar sesiones completas sin
+  depender de `/agents`;
+- la ventana principal pasa a ser biblioteca y centro de control, con
+  navegación líquida lateral o inferior según el ancho.
+
+El modo anclado al borde tipo Dynamic Island sigue siendo posterior. Debe usar
+el mismo renderer y el mismo registro de objetos, no una implementación paralela.
+
+## ADR: compositor híbrido por monitor
+
+### Decisión inicial
+
+El spike parte con una capa visual global **siempre click-through** y ventanas
+interactivas pequeñas para la pill y el contenido de cada herramienta.
+
+```text
+Rust FloatingWorld (geometría, grupos, monitores)
+             │
+             ├──> LiquidWorld por monitor (SDF, click-through, sin foco)
+             └──> ventanas de contenido (DOM accesible, foco e interacción)
+```
+
+Una WebView interactiva del tamaño del monitor queda descartada como diseño de
+producción: WebView2 recibe los clics también en sus píxeles transparentes, y
+alternar `ignore_cursor_events` afecta a la ventana completa. El enfoque híbrido
+conserva el escritorio utilizable sin exigir hit-testing por píxel dentro del
+WebView.
+
+La rama `ui-rewrite` ya midió el SDF dentro del overlay WebView2 real: 2.3 ms de
+cálculo por cuadro, 88 fps y p95 de 16.9 ms en su peor caso animado. Nuestra V2
+también usa SDF y ya comprobó contornos, puentes y caché. El riesgo principal ya
+no es el contorno: es sincronizar piel, contenido y z-order entre ventanas.
+
+### Spike que debe cerrar la decisión
+
+Antes de migrar herramientas, un prototipo con pill + dos objetos debe probar:
+
+1. El escritorio recibe clics fuera de las ventanas de contenido.
+2. Un campo de texto conserva foco mientras se mueve otra superficie.
+3. La piel sigue a las ventanas sin tearing visible ni saltos de DPI.
+4. Acercar objetos crea cuello; soltarlos agrupa; arrastrar uno mueve el grupo.
+5. `Alt+arrastrar` y la acción `Separar` desprenden solo el objeto elegido.
+6. El p95 permanece bajo 20 ms durante arrastre en WebView2.
+7. Al cruzar de monitor, el objeto cambia de compositor sin duplicarse ni
+   bloquear clics.
+
+Si el z-order de una capa global no puede mantenerse detrás de todas las
+ventanas de contenido sin parpadeo, el fallback es una ventana compuesta por
+cluster: cada grupo líquido vive en una ventana ajustada a su bounding box; los
+objetos libres conservan ventanas propias. Ese fallback se valida antes de
+construir la UI final.
