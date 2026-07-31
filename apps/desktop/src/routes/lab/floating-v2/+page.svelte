@@ -7,11 +7,16 @@
   let surface = $state<FloatingSurface>(INITIAL_FLOATING_STATE.surface);
   let activity = $state<FloatingActivity>(INITIAL_FLOATING_STATE.activity);
   let showGrid = $state(false);
+  let opensUp = $state(false);
+  let blend = $state(18);
 
   onMount(() => {
     const params = new URLSearchParams(window.location.search);
     const requestedSurface = params.get("surface");
     const requestedActivity = params.get("activity");
+    opensUp = params.get("direction") === "up";
+    const requestedBlend = Number(params.get("blend"));
+    if (Number.isFinite(requestedBlend) && requestedBlend >= 0) blend = Math.min(64, requestedBlend);
 
     if (requestedSurface === "wheel") surface = { kind: "wheel" };
     else if (requestedSurface === "agents") surface = { kind: "agents" };
@@ -64,6 +69,8 @@
     <FloatingExperience
       {surface}
       {activity}
+      {opensUp}
+      {blend}
       onSurfaceChange={(next) => (surface = next)}
       onActivityChange={(next) => (activity = next)}
     />
@@ -83,6 +90,16 @@
       <button class:active={activity === "recording"} type="button" onclick={() => (activity = "recording")}>Grabando</button>
       <button class:active={activity === "dictating"} type="button" onclick={() => (activity = "dictating")}>Dictando</button>
     </div>
+
+    <label class="blend-control">
+      <span>BLEND</span>
+      <input type="range" min="0" max="64" step="1" bind:value={blend} />
+      <output>{blend}</output>
+    </label>
+
+    <button class:active={opensUp} type="button" aria-pressed={opensUp} onclick={() => (opensUp = !opensUp)}>
+      Hacia arriba
+    </button>
 
     <button class:active={showGrid} class="grid-toggle" type="button" aria-pressed={showGrid} onclick={() => (showGrid = !showGrid)}>
       Retícula
@@ -205,6 +222,28 @@
   }
 
   .control-group > span { margin-right: 7px; }
+
+  .blend-control {
+    display: grid;
+    min-width: 180px;
+    gap: 8px;
+    grid-template-columns: auto minmax(80px, 1fr) 22px;
+    align-items: center;
+    color: var(--muted);
+    font: 9px var(--rb-mono, "Cascadia Mono", monospace);
+  }
+
+  .blend-control > span {
+    font-weight: 720;
+    letter-spacing: 0.16em;
+  }
+
+  .blend-control input {
+    width: 100%;
+    accent-color: var(--ink);
+  }
+
+  .blend-control output { text-align: right; }
 
   .lab-controls button {
     min-height: 30px;

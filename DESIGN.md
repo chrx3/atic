@@ -65,7 +65,9 @@ superficie ya es persistente.
 ## Component vocabulary
 
 - `LiquidScene`: sistema de coordenadas y estados.
-- `LiquidSkin`: siluetas sin texto ni iconos, procesadas por un único filtro.
+- `LiquidSkin`: una sola silueta SVG calculada desde un campo SDF. Las cajas se
+  unen con `smooth-min`; marching squares traza el contorno y Chaikin suaviza la
+  curva antes de pintar la piel perlada.
 - `LiquidInk`: contenido nítido alineado con la piel.
 - `FloatingPill`: origen, actividad y regreso.
 - `ToolWheel`: seis acciones de primera clase.
@@ -78,6 +80,7 @@ superficie ya es persistente.
 
 - Lab y producción importan los mismos componentes.
 - Un solo DOM para toda silueta que deba fusionarse.
-- Ningún texto o icono dentro de la capa filtrada.
-- La interfaz sigue siendo utilizable sin filtro SVG y con reduced motion.
+- Ningún texto o icono dentro de la piel SVG; el contenido real permanece en DOM.
+- `Blend` modifica el `k` del campo SDF, desde juntas nítidas hasta cuellos suaves.
+- La interfaz sigue siendo utilizable con reduced motion.
 - WebView2 es el entorno de validación visual autoritativo en Windows.

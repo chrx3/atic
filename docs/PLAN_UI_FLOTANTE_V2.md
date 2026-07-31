@@ -20,7 +20,8 @@ Toda superficie que se fusione vive en el mismo documento.
 
 ### 1. Renderer y lab compartidos
 
-- Tokens V2 y filtro SVG central.
+- Tokens V2 y piel SVG única generada con SDF, smooth-union y marching squares.
+- Control `Blend` en el lab para recorrer juntas geométricas y fusión orgánica.
 - Estado explícito: `idle`, `wheel`, `tool`, `agents`.
 - Pill, seis herramientas y panel representativo con datos falsos.
 - Navegación por mouse y teclado; reduced motion.

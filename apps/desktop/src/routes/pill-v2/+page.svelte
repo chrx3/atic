@@ -455,6 +455,7 @@
   <FloatingExperience
     {surface}
     {activity}
+    opensUp={openedUp}
     layout="window"
     interactive={!transitioning}
     queueCount={queue.length}

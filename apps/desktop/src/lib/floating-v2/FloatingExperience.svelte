@@ -2,7 +2,8 @@
   import type { Snippet } from "svelte";
   import ToolIcon from "$lib/ToolIcon.svelte";
   import { TOOLS, toolById, type ToolId } from "$lib/tools";
-  import LiquidFilter from "./LiquidFilter.svelte";
+  import LiquidSkin from "./liquid/LiquidSkin.svelte";
+  import { sceneFor } from "./liquid/scene";
   import { surfaceForTool, type FloatingActivity, type FloatingPlacement, type FloatingSurface } from "./types";
 
   let {
@@ -10,6 +11,8 @@
     activity = "idle",
     placement = "free",
     layout = "stage",
+    opensUp = false,
+    blend,
     interactive = true,
     queueCount = 0,
     selectedTool = null,
@@ -24,6 +27,8 @@
     activity?: FloatingActivity;
     placement?: FloatingPlacement;
     layout?: "stage" | "window";
+    opensUp?: boolean;
+    blend?: number;
     interactive?: boolean;
     queueCount?: number;
     selectedTool?: ToolId | null;
@@ -35,11 +40,17 @@
     onToolHighlight?: (tool: ToolId | null) => void;
   } = $props();
 
-  const filterId = `atic-liquid-${Math.random().toString(36).slice(2)}`;
+  let sceneWidth = $state(760);
+  let sceneHeight = $state(620);
   const wheelOpen = $derived(surface.kind === "wheel");
   const panelOpen = $derived(surface.kind === "tool" || surface.kind === "agents" || surface.kind === "queue");
   const agentOpen = $derived(surface.kind === "agents");
   const activeTool = $derived(surface.kind === "tool" ? toolById(surface.tool) : null);
+  const liquidScene = $derived(sceneFor(surface, Math.max(1, sceneWidth), Math.max(1, sceneHeight), opensUp));
+  const liquidParameters = $derived({
+    ...liquidScene.parameters,
+    k: blend ?? liquidScene.parameters.k,
+  });
   const stateLabel = $derived(
     activity === "recording" ? "Grabando reunión" : activity === "dictating" ? "Escuchando dictado" : "Atic listo",
   );
@@ -96,26 +107,20 @@
   class:agent-open={agentOpen}
   class:edge-placement={placement === "edge"}
   class:window-layout={layout === "window"}
+  class:opens-up={opensUp && panelOpen}
   class:active={activity !== "idle"}
   class="floating-experience"
   data-activity={activity}
+  bind:clientWidth={sceneWidth}
+  bind:clientHeight={sceneHeight}
 >
-  <LiquidFilter id={filterId} />
-
-  <div class="liquid-skin" style:filter={`url(#${filterId})`} aria-hidden="true">
-    <span class="skin-pill"></span>
-
-    {#each TOOLS as tool, index (tool.id)}
-      <span
-        class="skin-wheel-node"
-        style:--node-x={`${wheelPositions[index].x}px`}
-        style:--node-y={`${wheelPositions[index].y}px`}
-      ></span>
-    {/each}
-
-    <span class="skin-neck"></span>
-  </div>
-  <span class="panel-skin" aria-hidden="true"></span>
+  <LiquidSkin
+    boxes={liquidScene.boxes}
+    bridges={liquidScene.bridges}
+    parameters={liquidParameters}
+    width={sceneWidth}
+    height={sceneHeight}
+  />
 
   <div class="floating-ink">
     <div class="pill-control">
@@ -274,130 +279,14 @@
   }
 
   .floating-experience.window-layout {
-    width: 190px;
-    height: 90px;
-  }
-
-  .floating-experience.window-layout.wheel-open {
-    width: 400px;
-    height: 280px;
-  }
-
-  .floating-experience.window-layout.panel-open {
-    width: 520px;
-    height: 560px;
-  }
-
-  .floating-experience.window-layout.agent-open {
-    width: 700px;
-    height: 620px;
-  }
-
-  .liquid-skin,
-  .floating-ink,
-  .panel-skin {
-    position: absolute;
-  }
-
-  .liquid-skin,
-  .floating-ink { inset: 0; }
-
-  .liquid-skin {
-    z-index: 0;
-    pointer-events: none;
-  }
-
-  .panel-skin {
-    z-index: 0;
-    top: 186px;
-    left: 50%;
-    display: block;
-    width: 448px;
-    height: 346px;
-    border-radius: 34px;
-    background: linear-gradient(145deg, white 0%, var(--pearl) 55%, var(--pearl-deep) 100%);
-    box-shadow: var(--surface-shadow), inset 0 1px 0 oklch(1 0 0 / 0.9);
-    opacity: 0;
-    pointer-events: none;
-    transform: translateX(-50%) translateY(-28px) scale(0.9);
-    transition:
-      transform 260ms cubic-bezier(0.22, 1, 0.36, 1),
-      opacity 180ms ease,
-      top 260ms cubic-bezier(0.22, 1, 0.36, 1),
-      width 260ms cubic-bezier(0.22, 1, 0.36, 1),
-      height 260ms cubic-bezier(0.22, 1, 0.36, 1),
-      border-radius 260ms cubic-bezier(0.22, 1, 0.36, 1);
+    width: 100%;
+    height: 100%;
   }
 
   .floating-ink {
-    z-index: 1;
-  }
-
-  .skin-pill,
-  .skin-wheel-node,
-  .skin-neck {
     position: absolute;
-    left: 50%;
-    display: block;
-    background: linear-gradient(145deg, white 0%, var(--pearl) 55%, var(--pearl-deep) 100%);
-    box-shadow: inset 0 1px 0 oklch(1 0 0 / 0.9);
-    transform-origin: 50% 50%;
-    transition:
-      transform 260ms cubic-bezier(0.22, 1, 0.36, 1),
-      opacity 180ms ease,
-      width 260ms cubic-bezier(0.22, 1, 0.36, 1),
-      height 260ms cubic-bezier(0.22, 1, 0.36, 1),
-      border-radius 260ms cubic-bezier(0.22, 1, 0.36, 1);
-  }
-
-  .skin-pill {
-    top: 32px;
-    width: 154px;
-    height: 50px;
-    border-radius: 25px;
-    box-shadow: var(--surface-shadow), inset 0 1px 0 oklch(1 0 0 / 0.9);
-    transform: translateX(-50%);
-  }
-
-  .skin-wheel-node {
-    top: 34px;
-    width: 52px;
-    height: 52px;
-    border-radius: 50%;
-    opacity: 0;
-    transform: translateX(-50%) translate(var(--node-x), 8px) scale(0.48);
-  }
-
-  .wheel-open .skin-wheel-node {
-    opacity: 1;
-    transform: translateX(-50%) translate(var(--node-x), var(--node-y)) scale(1);
-  }
-
-  .skin-neck {
-    top: 66px;
-    width: 48px;
-    height: 150px;
-    border-radius: 999px;
-    opacity: 0;
-    transform: translateX(-50%) scaleY(0.2);
-    transform-origin: 50% 0;
-  }
-
-  .panel-open .skin-neck {
-    opacity: 1;
-    transform: translateX(-50%) scaleY(1);
-  }
-
-  .panel-open .panel-skin {
-    opacity: 1;
-    transform: translateX(-50%) translateY(0) scale(1);
-  }
-
-  .agent-open .panel-skin {
-    top: 156px;
-    width: 640px;
-    height: 424px;
-    border-radius: 38px;
+    inset: 0;
+    z-index: 1;
   }
 
   .pill-control {
@@ -619,6 +508,18 @@
     top: 156px;
     width: 640px;
     height: 424px;
+  }
+
+  .opens-up .pill-control {
+    top: calc(100% - 82px);
+  }
+
+  .opens-up .tool-surface {
+    top: 28px;
+  }
+
+  .opens-up.agent-open .tool-surface {
+    top: 40px;
   }
 
   .surface-header {
@@ -923,7 +824,7 @@
   }
 
   @media (prefers-reduced-motion: reduce) {
-    .skin-pill, .skin-wheel-node, .skin-neck, .panel-skin, .wheel-control, .tool-surface, .pill-glyph i { transition-duration: 100ms; }
+    .wheel-control, .tool-surface, .pill-glyph i { transition-duration: 100ms; }
     .status-pulse, .voice-orb.running i { animation: none; }
   }
 </style>
