@@ -305,7 +305,9 @@ fn show_overlay_window(_app: &AppHandle) -> Result<(), String> {
 
 #[cfg(windows)]
 fn overlay_info_impl(app: &AppHandle) -> Result<OverlayInfo, String> {
-    let state = app.state::<crate::state::AppState>();
+    let state = app
+        .try_state::<crate::state::AppState>()
+        .ok_or("Atic todavía está iniciando")?;
     let guard = state.overlay_session.lock_or_recover();
     let session = guard.as_ref().ok_or("sin sesión de captura activa")?;
 
