@@ -28,7 +28,7 @@
   import { onMount } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import GooFilter, { GOO_GROW, preFilter } from "$lib/GooFilter.svelte";
-  import { Field, type Shape } from "$lib/liquid/sdf";
+  import { Field, sminBulge, sminReach, type Shape } from "$lib/liquid/sdf";
   import { fieldToPath } from "$lib/liquid/contour";
 
   let { standalone = false, onClose }: {
@@ -583,7 +583,11 @@
         </b>
         <span>región filtro</span><b>{regionMpx.toFixed(2)} Mpx</b>
       {:else if sdf}
-        <span>alcance k/4</span><b>{(blend / 4).toFixed(1)} px</b>
+        <span>alcance k/2</span>
+        <b class:bad={span.gap > sminReach(blend) && !drawNeck}>
+          {sminReach(blend).toFixed(1)} px
+        </b>
+        <span>bulto k/4</span><b>{sminBulge(blend).toFixed(1)} px</b>
         <span>evaluadas</span>
         <b class:bad={sdf.evals > 40_000}>
           {(sdf.evals / 1000).toFixed(1)}k de {(sdf.samples / 1000).toFixed(0)}k

@@ -92,6 +92,22 @@ export function sminBulge(k: number): number {
   return k / 4;
 }
 
+/**
+ * El hueco más grande que el cuello todavía cruza: **k/2**.
+ *
+ * Es el equivalente del `1.72·σ` del filtro, y el número que decide si hace
+ * falta dibujar un cuello o no. Sale de mirar el punto medio del hueco: ahí la
+ * distancia a cada forma es `g/2`, así que el campo vale `g/2 − k/4`, y deja de
+ * ser positivo —o sea, se llena— cuando `g ≤ k/2`.
+ *
+ * No confundir con `sminBulge`. Los dos salen de la misma cuenta pero miden
+ * cosas distintas: `k/4` es cuánto engorda la silueta cerca de una junta, `k/2`
+ * es hasta dónde alcanza a unir.
+ */
+export function sminReach(k: number): number {
+  return k / 2;
+}
+
 export interface RoundBox {
   kind: "box";
   cx: number;

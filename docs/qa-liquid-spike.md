@@ -146,15 +146,41 @@ hilo principal en vez del compositor. Sin el descarte por bloques no lo haría: 
 
 ## Resultado en WebView2
 
-_Pendiente de correr._ Cada prueba se corre **con los dos renderizadores**.
+**El SDF pasa.** Medido en la ventana overlay real, con la escena completa y `animar`
+encendido (geometría nueva en cada cuadro, más de lo que la app pide nunca):
 
-| Prueba | goo | sdf | Notas |
-| --- | --- | --- | --- |
-| 1. Fusión y filetes | | | |
-| 2. Alcance (σ=5/3/8 · k=10/26/60) | | | |
-| 3. Engorde vs contorno | | | |
-| 4. fps y p95 (arrastre / animando) | | | |
-| 5. Ventana transparente | | | |
+| | valor |
+| --- | --- |
+| Ajustes | `k` = 75, `cell` = 4, suavizado 2, **sin cuello explícito** |
+| Hueco cruzado | 27 px, contra un alcance `k/2` de 37.5 |
+| Cálculo | **2.3 ms** por cuadro |
+| Evaluaciones | 9.2k de 25k vértices |
+| fps / p95 | **88** / 16.9 ms (peor cuadro suelto: 33.5 ms) |
+
+Prácticamente lo mismo que en Chrome, que es justo lo que el enfoque prometía: el contorno
+sale de aritmética en JS, no del motor.
+
+**El hallazgo que más cambia el diseño: el cuello se forma solo.** Con `cuello explícito`
+apagado la junta igual se lee entera, porque el alcance del `smin` es `k/2` y no `1.72·σ`.
+Incluso con el `k` por defecto de 26 el alcance es 13 px, ya por encima del hueco de 10 que
+usa la app. Eso deja sin razón de ser a las cinco constantes de `AgentsSurface`:
+
+```
+NECK_THICK 26   NECK_THIN 10   NECK_MIN_THICK 6   NECK_MAX 140   penetración 9/7
+```
+
+Existen solo porque el filtro se queda a 8.6 px del hueco de 10.
+
+**Queda pendiente** medir el renderizador `goo` en WebView2 con el mismo protocolo. Ya no
+bloquea nada —el SDF cubre el caso— pero sirve para decidir con los dos delante.
+
+| Prueba | goo |
+| --- | --- |
+| 1. Fusión y filetes | |
+| 2. Alcance a σ=5 / 3 / 8 | |
+| 3. Engorde vs contorno | |
+| 4. fps y p95 | |
+| 5. Ventana transparente | |
 
 **El SDF ya es el plan B implementado.** Si el filtro falla en WebView2, no hay que rediseñar
 nada: se cambia el renderizador y la arquitectura queda igual, que es exactamente para lo que
