@@ -26,6 +26,7 @@
    *     mismo trabajo sin filtrar.
    */
   import { onMount } from "svelte";
+  import { invoke } from "@tauri-apps/api/core";
   import GooFilter, { GOO_GROW, preFilter } from "$lib/GooFilter.svelte";
   import { Field, type Shape } from "$lib/liquid/sdf";
   import { fieldToPath } from "$lib/liquid/contour";
@@ -94,30 +95,54 @@
   let vh = $state(800);
 
   /**
-   * La pill, bajada lo justo para que el globo entre entero.
+   * Dónde vive la escena. Las dos formas se arrastran por separado.
    *
-   * En el overlay real sobra sitio —cubre el escritorio— pero en una ventana
-   * de navegador un globo de 520 px se sale por arriba, y con el borde cortado
-   * no se puede juzgar si la silueta es la que se pidió.
+   * El overlay cubre el escritorio VIRTUAL, así que centrar en el viewport deja
+   * la junta partida justo en la unión entre dos monitores — que es el único
+   * sitio donde no se puede mirar. Rust sabe dónde está cada pantalla:
+   * `overlay_work_areas` devuelve sus rectángulos en los mismos píxeles CSS del
+   * overlay que usa `pillCssStage`.
    */
+  type XY = { x: number; y: number };
+  let pillAt = $state<XY | null>(null);
+  let bubAt = $state<XY | null>(null);
+  let animPhase = $state(0);
+
+  let areas = $state<Box[]>([]);
+  let areaIdx = $state(0);
+
   const pill = $derived<Box>({
-    x: Math.round(vw / 2 - PILL_W / 2),
-    y: Math.round(Math.min(Math.max(vh * 0.66, BUB_H + 60), vh - 80)),
+    x: pillAt?.x ?? Math.round(vw / 2 - PILL_W / 2),
+    y: pillAt?.y ?? Math.round(vh * 0.72),
     w: PILL_W,
     h: PILL_H,
   });
 
-  /** Desplazamiento del globo respecto de su sitio "pegado" (hueco 0). */
-  let offX = $state(0);
-  let offY = $state(-10);
-  let animPhase = $state(0);
-
   const bubble = $derived<Box>({
-    x: Math.round(pill.x + PILL_W / 2 - BUB_W / 2 + offX),
-    y: Math.round(pill.y - BUB_H + offY + (animate ? Math.sin(animPhase) * 60 - 60 : 0)),
+    x: bubAt?.x ?? Math.round(pill.x + PILL_W / 2 - BUB_W / 2),
+    y:
+      (bubAt?.y ?? pill.y - BUB_H - 10) +
+      (animate ? Math.round(Math.sin(animPhase) * 60 - 60) : 0),
     w: BUB_W,
     h: BUB_H,
   });
+
+  /** Planta la escena en una pantalla: pill abajo, globo encima. */
+  function place(area: Box) {
+    const lo = area.y + 40 + BUB_H + 10;
+    const hi = area.y + area.h - PILL_H - 40;
+    const y = hi >= lo ? Math.min(Math.max(area.y + area.h * 0.72, lo), hi) : lo;
+    const cx = area.x + area.w / 2;
+    pillAt = { x: Math.round(cx - PILL_W / 2), y: Math.round(y) };
+    bubAt = { x: Math.round(cx - BUB_W / 2), y: Math.round(y - BUB_H - 10) };
+    resetMetrics();
+  }
+
+  function nextArea() {
+    if (areas.length === 0) return;
+    areaIdx = (areaIdx + 1) % areas.length;
+    place(areas[areaIdx]);
+  }
 
   /* ─── El puente, con la misma cuenta que la app ─────────────────────────── */
 
@@ -300,6 +325,17 @@
     measure();
     window.addEventListener("resize", measure);
 
+    // La más grande primero: con monitores desiguales, es donde se mira.
+    void invoke<Box[]>("overlay_work_areas")
+      .then((list) => {
+        areas = [...list].sort((a, b) => b.w * b.h - a.w * a.h);
+        if (areas[0]) place(areas[0]);
+      })
+      .catch(() => {
+        // Fuera de Tauri no hay monitores que preguntar: el viewport es todo.
+        place({ x: 0, y: 0, w: window.innerWidth, h: window.innerHeight });
+      });
+
     let last = performance.now();
     let raf = 0;
     const tick = (now: number) => {
@@ -329,20 +365,36 @@
 
   /* ─── Arrastre del globo ────────────────────────────────────────────────── */
 
-  let from: { x: number; y: number; ox: number; oy: number } | null = null;
+  type DragId = "pill" | "bub";
+  let from: { id: DragId; x: number; y: number; ox: number; oy: number } | null = null;
 
-  function startDrag(event: PointerEvent) {
-    if (event.button !== 0) return;
-    event.preventDefault();
-    (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
-    from = { x: event.clientX, y: event.clientY, ox: offX, oy: offY };
-    resetMetrics();
+  function startDrag(id: DragId) {
+    return (event: PointerEvent) => {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+      // Del origen guardado, no del derivado: el del globo lleva sumado el
+      // vaivén de "animar" y el arrastre daría un salto al empezar.
+      const at = id === "pill" ? pillAt : bubAt;
+      from = {
+        id,
+        x: event.clientX,
+        y: event.clientY,
+        ox: at?.x ?? (id === "pill" ? pill.x : bubble.x),
+        oy: at?.y ?? (id === "pill" ? pill.y : bubble.y),
+      };
+      resetMetrics();
+    };
   }
 
   function moveDrag(event: PointerEvent) {
     if (!from) return;
-    offX = from.ox + (event.clientX - from.x);
-    offY = from.oy + (event.clientY - from.y);
+    const next = {
+      x: Math.round(from.ox + (event.clientX - from.x)),
+      y: Math.round(from.oy + (event.clientY - from.y)),
+    };
+    if (from.id === "pill") pillAt = next;
+    else bubAt = next;
   }
 
   function endDrag(event: PointerEvent) {
@@ -351,8 +403,10 @@
     (event.currentTarget as HTMLElement).releasePointerCapture(event.pointerId);
   }
 
+  /** Acerca o aleja el globo sin arrastrar, para buscar el corte al píxel. */
   function nudge(dy: number) {
-    offY += dy;
+    const at = bubAt ?? { x: bubble.x, y: bubble.y };
+    bubAt = { x: at.x, y: at.y - dy };
     resetMetrics();
   }
 </script>
@@ -439,7 +493,8 @@
     ></i>
   {/if}
 
-  <!-- Zona de arrastre del globo. -->
+  <!-- Zonas de arrastre. Las dos formas se mueven por separado: el hueco y el
+       eje de la junta son justo lo que hay que poder cambiar a mano. -->
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
     class="grab"
@@ -447,13 +502,26 @@
     style:top="{bubble.y}px"
     style:width="{bubble.w}px"
     style:height="{bubble.h}px"
-    onpointerdown={startDrag}
+    onpointerdown={startDrag("bub")}
     onpointermove={moveDrag}
     onpointerup={endDrag}
     onpointercancel={endDrag}
   >
-    <span class="grab-hint">arrastrame</span>
+    <span class="grab-hint">globo</span>
   </div>
+
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div
+    class="grab"
+    style:left="{pill.x}px"
+    style:top="{pill.y}px"
+    style:width="{pill.w}px"
+    style:height="{pill.h}px"
+    onpointerdown={startDrag("pill")}
+    onpointermove={moveDrag}
+    onpointerup={endDrag}
+    onpointercancel={endDrag}
+  ></div>
 
   <div class="panel">
     <header>
@@ -539,7 +607,17 @@
       <button type="button" onclick={() => nudge(1)}>+1</button>
       <button type="button" onclick={() => nudge(-5)}>−5</button>
       <button type="button" onclick={() => nudge(5)}>+5</button>
-      <button type="button" onclick={() => { offX = 0; offY = -10; resetMetrics(); }}>10</button>
+    </div>
+
+    <div class="nudges">
+      <button type="button" onclick={() => areas[areaIdx] && place(areas[areaIdx])}>
+        recentrar
+      </button>
+      {#if areas.length > 1}
+        <button type="button" onclick={nextArea}>
+          pantalla {areaIdx + 1}/{areas.length}
+        </button>
+      {/if}
     </div>
 
     <label class="check">
