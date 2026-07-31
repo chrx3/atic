@@ -28,6 +28,8 @@ Toda superficie que se fusione vive en el mismo documento.
 
 ### 2. Host de escritorio
 
+- La rama `codex/floating-ui-v2` apunta la ventana `pill` a `/pill-v2`; la ruta
+  anterior se conserva para comparación y rollback hasta completar QA visual.
 - Una escena por monitor activo, empezando por un monitor.
 - Hit-testing transparente fuera de superficies vivas.
 - Foco activable solo cuando hay campos de texto.
