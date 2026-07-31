@@ -40,7 +40,7 @@ disco del usuario. Dos cosas lo acotan:
 
 - [ ] Revisar UX cuando agentes está abierto y el usuario quiere pegar afuera
       (prioridad externa ya aplicada en dictado; alinear clipboard si hace falta)
-- [ ] Retención / límites de ítems si crece mucho el historial
+- [ ] Retención temporal y límite configurable (hoy se conservan hasta 100 ítems)
 
 ## Relacionado
 

@@ -4,8 +4,9 @@
 
 ## Resumen
 
-Textos expandibles / atajos de escritura gestionados en Atic para pegar o
-disparar contenido repetitivo sin salir del flujo de trabajo.
+Textos reutilizables gestionados en Atic para pegar contenido repetitivo sin
+salir del flujo de trabajo. La expansión automática por trigger todavía no
+está implementada.
 
 ## Cómo se usa
 
@@ -15,7 +16,8 @@ disparar contenido repetitivo sin salir del flujo de trabajo.
 ## Código
 
 - [`apps/desktop/src-tauri/src/snippets.rs`](../apps/desktop/src-tauri/src/snippets.rs)
-- Persistencia vía config/DB en [`crates/core/`](../crates/core/)
+- Persistencia local en `snippets.json`, `scratchpad.json` y `notes.json`,
+  implementada en el mismo módulo.
 
 ## Pendiente / siguiente
 
