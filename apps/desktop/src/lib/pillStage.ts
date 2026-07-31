@@ -82,7 +82,15 @@ export function growsFirst(from: Size, to: Size): boolean {
  * - `cursor`: no conserva nada. Centra la ventana ya redimensionada en el
  *   puntero. Es el único absoluto: crecer e ir al cursor en una escritura.
  */
-export type Pivot = "topLeft" | "center" | "panel" | "bottomLeft" | "cursor";
+export type Pivot =
+  | "topLeft"
+  | "topCenter"
+  | "center"
+  | "panel"
+  | "panelCenter"
+  | "bottomLeft"
+  | "bottomCenter"
+  | "cursor";
 
 export type ResizeOutcome = {
   /** Cambió el tamaño (false = descartado por uno más nuevo). */

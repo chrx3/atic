@@ -256,14 +256,23 @@ pub fn place(app: &AppHandle, label: &str, anchor: Anchor) -> Option<(i32, i32)>
 pub enum Pivot {
     /// Esquina superior izquierda (crecimiento normal, hacia abajo-derecha).
     TopLeft,
+    /// Centro horizontal del borde superior. Mantiene una pill centrada en el
+    /// mismo punto mientras la superficie crece hacia abajo.
+    TopCenter,
     /// Centro: la rueda crece desde la marca en vez de desplegarse.
     Center,
     /// Barra fija: el panel crece hacia abajo, o hacia arriba si no entra.
     Panel,
+    /// Variante centrada de `Panel`: conserva el centro horizontal de la pill
+    /// y decide arriba/abajo según el espacio disponible.
+    PanelCenter,
     /// Esquina inferior izquierda. Es el pivote del colapso de un panel que
     /// había abierto hacia arriba: ahí la barra vive en el borde de abajo de la
     /// ventana, así que preservar la esquina superior la haría saltar.
     BottomLeft,
+    /// Centro horizontal del borde inferior. Es el colapso simétrico de un
+    /// panel centrado que tuvo que abrir hacia arriba.
+    BottomCenter,
     /// No es un pivote relativo: centra la ventana **ya redimensionada** en el
     /// cursor. Existe para que crecer e ir al cursor sean UNA escritura de
     /// posición. Cuando eran dos (`resize` + `place`), entre medio se pintaba
@@ -275,9 +284,12 @@ pub enum Pivot {
 impl Pivot {
     fn parse(raw: &str) -> Self {
         match raw {
+            "topCenter" => Pivot::TopCenter,
             "center" => Pivot::Center,
             "panel" => Pivot::Panel,
+            "panelCenter" => Pivot::PanelCenter,
             "bottomLeft" => Pivot::BottomLeft,
+            "bottomCenter" => Pivot::BottomCenter,
             "cursor" => Pivot::Cursor,
             _ => Pivot::TopLeft,
         }
@@ -341,6 +353,7 @@ pub fn resize_floating(
     let mut up = false;
     let (x, y) = match pivot {
         Pivot::TopLeft => (prev_pos.x, prev_pos.y),
+        Pivot::TopCenter => (prev_pos.x + (prev_w - next_w) / 2, prev_pos.y),
         Pivot::Center => (
             prev_pos.x + (prev_w - next_w) / 2,
             prev_pos.y + (prev_h - next_h) / 2,
@@ -355,9 +368,25 @@ pub fn resize_floating(
                 (prev_pos.x, prev_pos.y + prev_h - next_h)
             }
         }
+        Pivot::PanelCenter => {
+            let centered_x = prev_pos.x + (prev_w - next_w) / 2;
+            if fits_below(centered_x, prev_pos.y, next_w, next_h) {
+                (centered_x, prev_pos.y)
+            } else {
+                up = true;
+                (centered_x, prev_pos.y + prev_h - next_h)
+            }
+        }
         Pivot::BottomLeft => {
             up = true;
             (prev_pos.x, prev_pos.y + prev_h - next_h)
+        }
+        Pivot::BottomCenter => {
+            up = true;
+            (
+                prev_pos.x + (prev_w - next_w) / 2,
+                prev_pos.y + prev_h - next_h,
+            )
         }
         // Centrado con el tamaño NUEVO. Ese era el punto de todo: hacerlo con
         // el viejo dejaba la ventana descentrada respecto del puntero.

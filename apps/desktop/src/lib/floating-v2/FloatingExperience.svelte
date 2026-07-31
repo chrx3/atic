@@ -1,4 +1,5 @@
 <script lang="ts">
+  import type { Snippet } from "svelte";
   import ToolIcon from "$lib/ToolIcon.svelte";
   import { TOOLS, toolById, type ToolId } from "$lib/tools";
   import LiquidFilter from "./LiquidFilter.svelte";
@@ -8,14 +9,18 @@
     surface,
     activity = "idle",
     placement = "free",
+    layout = "stage",
     interactive = true,
+    content,
     onSurfaceChange = () => {},
     onActivityChange = () => {},
   }: {
     surface: FloatingSurface;
     activity?: FloatingActivity;
     placement?: FloatingPlacement;
+    layout?: "stage" | "window";
     interactive?: boolean;
+    content?: Snippet<[FloatingSurface]>;
     onSurfaceChange?: (surface: FloatingSurface) => void;
     onActivityChange?: (activity: FloatingActivity) => void;
   } = $props();
@@ -64,6 +69,7 @@
   class:panel-open={panelOpen}
   class:agent-open={agentOpen}
   class:edge-placement={placement === "edge"}
+  class:window-layout={layout === "window"}
   class:active={activity !== "idle"}
   class="floating-experience"
   data-activity={activity}
@@ -139,7 +145,9 @@
       </header>
 
       <div class="surface-body">
-        {#if surface.kind === "tool" && surface.tool === "meetings"}
+        {#if content}
+          {@render content(surface)}
+        {:else if surface.kind === "tool" && surface.tool === "meetings"}
           <div class="hero-action">
             <button class:running={activity === "recording"} type="button" onclick={() => toggleActivity("recording")}>
               <span class="record-mark"></span>
@@ -223,6 +231,26 @@
     font-family: "Aptos", "Avenir Next", "Helvetica Neue", "Segoe UI Variable", sans-serif;
     font-size: 14px;
     isolation: isolate;
+  }
+
+  .floating-experience.window-layout {
+    width: 190px;
+    height: 90px;
+  }
+
+  .floating-experience.window-layout.wheel-open {
+    width: 400px;
+    height: 280px;
+  }
+
+  .floating-experience.window-layout.panel-open {
+    width: 520px;
+    height: 560px;
+  }
+
+  .floating-experience.window-layout.agent-open {
+    width: 700px;
+    height: 620px;
   }
 
   .liquid-skin,
