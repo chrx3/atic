@@ -283,3 +283,38 @@ Smoke real en el binario WebView2 estatico:
   y la UI volvio a `Ninguna sesion activa`;
 - la unica ventana principal del proceso siguio siendo `Pearl Flow Agentes`:
   la ruta antigua `/agents` no se creo ni participo del flujo.
+
+### Centro de control Pearl Flow - 2026-07-31
+
+La ventana principal ya no usa la rueda como portada ni obliga a volver a un
+hub entre herramientas. Ahora es una biblioteca persistente con seis destinos:
+Inicio, Reuniones, Textos, Capturas, Agentes y Ajustes.
+
+- `AppShell` usa `LiquidSkin`, el mismo renderer SDF de la experiencia
+  flotante, para unir el rail con la seleccion activa y animar la silueta entre
+  secciones;
+- en ventanas normales la navegacion es lateral; por debajo de 48 rem se
+  convierte en un dock inferior cuya seleccion nace hacia arriba de la base;
+- Inicio muestra estado real de grabacion, dictado y modelo local, ofrece
+  acciones directas y enlaza reuniones recientes y toda la biblioteca;
+- Textos reune guardados/notas, portapapeles y dictado como tres vistas del
+  mismo espacio, sin retirar ninguna funcion ni atajo existente;
+- Ajustes se renderiza dentro del centro de control. Conserva las siete
+  secciones y el guardado existente; en ancho estrecho su rail interno pasa a
+  pestañas horizontales para recuperar espacio de contenido;
+- Agentes monta `FloatingAgents` directamente. La ventana principal y la
+  superficie flotante comparten ahora la misma sesion, modelos, permisos,
+  adjuntos, dictado, errores y compositor; ya no hay un boton hacia la consola
+  antigua.
+
+QA WebView2 del binario estatico:
+
+- la silueta lateral se desplazo de Inicio a Capturas, Ajustes y Agentes sin
+  separar el nodo activo del material base;
+- a 480 px CSS el rail desaparecio y el dock inferior mostro la misma union
+  liquida, con Textos activo y las tres vistas accesibles;
+- Ajustes se abrio como seccion, no como `dialog`, y mantuvo los controles
+  scrollables sin cubrir el dock;
+- Agentes mostro el formulario funcional de nueva sesion dentro de la ventana
+  principal, sin crear la ruta ni la ventana antigua;
+- `svelte-check`, build estatico, `cargo check` y el build Tauri debug pasan.

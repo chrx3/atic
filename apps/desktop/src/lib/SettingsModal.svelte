@@ -51,10 +51,12 @@
     onClose,
     onSaved,
     onToast,
+    embedded = false,
   }: {
     onClose: () => void;
     onSaved: (cfg: AppConfig) => void;
     onToast: (msg: string) => void;
+    embedded?: boolean;
   } = $props();
 
   let cfg = $state<AppConfig | null>(null);
@@ -533,7 +535,7 @@
       ollamaOk = await ollamaAvailable();
       onSaved(cfg);
       onToast("Ajustes guardados");
-      onClose();
+      if (!embedded) onClose();
     } catch (e) {
       onToast(String(e));
     } finally {
@@ -623,6 +625,8 @@
   title="Ajustes"
   subtitle="Preferencias esenciales"
   size="xl"
+  {embedded}
+  dismissible={!embedded}
   onClose={onClose}
 >
   {#if !cfg || !secrets}
@@ -1989,9 +1993,11 @@
 
   {#snippet actions()}
     {#if cfg && secrets}
-      <button type="button" class="rb-btn rb-btn-ghost" onclick={onClose}
-        >Cancelar</button
-      >
+      {#if !embedded}
+        <button type="button" class="rb-btn rb-btn-ghost" onclick={onClose}
+          >Cancelar</button
+        >
+      {/if}
       <button
         type="button"
         class="rb-btn rb-btn-primary"

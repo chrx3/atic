@@ -11,6 +11,7 @@
     MeetingDetectionPayload,
   } from "$lib/types";
   import AppShell from "$lib/AppShell.svelte";
+  import HomeControl from "$lib/HomeControl.svelte";
   import AgentsTool from "$lib/AgentsTool.svelte";
   import CapturesTool from "$lib/CapturesTool.svelte";
   import ClipboardTool from "$lib/ClipboardTool.svelte";
@@ -28,7 +29,7 @@
   import SearchModal from "$lib/SearchModal.svelte";
   import ToolPageShell from "$lib/ToolPageShell.svelte";
   import type { SearchHit } from "$lib/types";
-  import { toolById, type ToolId } from "$lib/tools";
+  import { toolById, type AppSectionId } from "$lib/tools";
   import {
     applyTheme,
     cycleTheme,
@@ -110,10 +111,9 @@
   let transcriptFor = $state<Recording | null>(null);
   let summaryFor = $state<Recording | null>(null);
   let deleteTarget = $state<Recording | null>(null);
-  let settingsOpen = $state(false);
   let bluetoothConfirmMessage = $state<string | null>(null);
-  let activeTool = $state<ToolId>("meetings");
-  let shellView = $state<"hub" | "tool">("hub");
+  let activeSection = $state<AppSectionId>("home");
+  let textTool = $state<"snippets" | "clipboard" | "dictation">("snippets");
   let snippetsInitialTab = $state<"snippets" | "scratchpad">("snippets");
   let searchOpen = $state(false);
   let uiTheme = $state<UiTheme>("system");
@@ -184,13 +184,12 @@
           break;
         case "scratchpad":
           snippetsInitialTab = "scratchpad";
-          activeTool = "snippets";
-          shellView = "tool";
+          textTool = "snippets";
+          activeSection = "texts";
           showToast("Bloc de notas");
           break;
         case "recording":
-          activeTool = "meetings";
-          shellView = "tool";
+          activeSection = "meetings";
           selectedId = hit.id;
           showToast(hit.title);
           break;
@@ -202,6 +201,10 @@
 
   function openSearch() {
     searchOpen = true;
+  }
+
+  function openSettings() {
+    activeSection = "settings";
   }
 
   function startTimer() {
@@ -593,12 +596,9 @@
 </script>
 
 <AppShell
-  bind:activeTool
-  bind:view={shellView}
-  radialShortcut={config?.pill_radial_shortcut ?? ""}
+  bind:section={activeSection}
   theme={theme}
   onToggleTheme={toggleTheme}
-  onOpenSettings={() => (settingsOpen = true)}
 >
   <div class="rb-app">
     <main id="main-content" class="rb-main" tabindex="-1">
@@ -618,14 +618,27 @@
           </div>
           <button
             class="rb-btn rb-btn-soft"
-            onclick={() => (settingsOpen = true)}
+            onclick={openSettings}
           >
             Cambiar atajos
           </button>
         </section>
       {/if}
 
-      {#if activeTool === "meetings"}
+      {#if activeSection === "home"}
+        <HomeControl
+          {recording}
+          {elapsed}
+          {dictation}
+          {modelReady}
+          {recordings}
+          pillShortcut={config?.summon_pill_shortcut ?? ""}
+          onToggleRecording={() => void toggleRecording()}
+          onToggleDictation={() => void toggleTextDictation()}
+          onSearch={openSearch}
+          onNavigate={(section) => (activeSection = section)}
+        />
+      {:else if activeSection === "meetings"}
         <ToolPageShell tool={toolById("meetings")} dataDir="recordings">
           {#snippet meta()}
             {#if modelReady}
@@ -696,7 +709,7 @@
             </div>
             <button
               class="rb-btn rb-btn-soft"
-              onclick={() => (settingsOpen = true)}
+              onclick={openSettings}
             >
               Abrir ajustes
             </button>
@@ -810,45 +823,90 @@
           />
         </div>
         </ToolPageShell>
-      {:else if activeTool === "dictation"}
-        <DictationTool
-          phase={dictation}
-          message={dictationMessage}
-          shortcut={config?.dictation_shortcut ?? ""}
-          pillShortcut={config?.summon_pill_shortcut ?? ""}
-          mode={config?.dictation_mode ?? "toggle"}
-          {busy}
-          onToggle={toggleTextDictation}
-          onShortcutChange={(sc) => patchConfig({ dictation_shortcut: sc })}
-          onPillShortcutChange={(sc) =>
-            patchConfig({ summon_pill_shortcut: sc })
-          }
-          onModeChange={(mode) => patchConfig({ dictation_mode: mode })}
-          onOpenSettings={() => (settingsOpen = true)}
-        />
-      {:else if activeTool === "clipboard"}
-        <ClipboardTool
-          shortcut={config?.clipboard_shortcut ?? "CmdOrCtrl+Shift+V"}
-          onShortcutChange={(sc) => patchConfig({ clipboard_shortcut: sc })}
-          onToast={showToast}
-        />
-      {:else if activeTool === "snippets"}
-        <SnippetsTool
-          shortcut={config?.snippets_shortcut ?? "CmdOrCtrl+Shift+S"}
-          initialTab={snippetsInitialTab}
-          onShortcutChange={(sc) => patchConfig({ snippets_shortcut: sc })}
-          onToast={showToast}
-        />
-      {:else if activeTool === "agents"}
+      {:else if activeSection === "texts"}
+        <section class="text-library" aria-label="Biblioteca de textos">
+          <div class="text-library-tabs" role="tablist" aria-label="Herramientas de texto">
+            <button
+              type="button"
+              role="tab"
+              class:active={textTool === "snippets"}
+              aria-selected={textTool === "snippets"}
+              onclick={() => (textTool = "snippets")}
+            >
+              Guardados y notas
+            </button>
+            <button
+              type="button"
+              role="tab"
+              class:active={textTool === "clipboard"}
+              aria-selected={textTool === "clipboard"}
+              onclick={() => (textTool = "clipboard")}
+            >
+              Portapapeles
+            </button>
+            <button
+              type="button"
+              role="tab"
+              class:active={textTool === "dictation"}
+              aria-selected={textTool === "dictation"}
+              onclick={() => (textTool = "dictation")}
+            >
+              Dictado
+            </button>
+          </div>
+
+          <div class="text-library-body" role="tabpanel">
+            {#if textTool === "dictation"}
+              <DictationTool
+                phase={dictation}
+                message={dictationMessage}
+                shortcut={config?.dictation_shortcut ?? ""}
+                pillShortcut={config?.summon_pill_shortcut ?? ""}
+                mode={config?.dictation_mode ?? "toggle"}
+                {busy}
+                onToggle={toggleTextDictation}
+                onShortcutChange={(sc) => patchConfig({ dictation_shortcut: sc })}
+                onPillShortcutChange={(sc) => patchConfig({ summon_pill_shortcut: sc })}
+                onModeChange={(mode) => patchConfig({ dictation_mode: mode })}
+                onOpenSettings={openSettings}
+              />
+            {:else if textTool === "clipboard"}
+              <ClipboardTool
+                shortcut={config?.clipboard_shortcut ?? "CmdOrCtrl+Shift+V"}
+                onShortcutChange={(sc) => patchConfig({ clipboard_shortcut: sc })}
+                onToast={showToast}
+              />
+            {:else}
+              <SnippetsTool
+                shortcut={config?.snippets_shortcut ?? "CmdOrCtrl+Shift+S"}
+                initialTab={snippetsInitialTab}
+                onShortcutChange={(sc) => patchConfig({ snippets_shortcut: sc })}
+                onToast={showToast}
+              />
+            {/if}
+          </div>
+        </section>
+      {:else if activeSection === "agents"}
         <ToolPageShell tool={toolById("agents")}>
           <AgentsTool />
         </ToolPageShell>
-      {:else}
+      {:else if activeSection === "captures"}
         <CapturesTool
           shortcut={config?.screenshot_shortcut ?? ""}
           onToast={showToast}
           onShortcutChange={(sc) => patchConfig({ screenshot_shortcut: sc })}
-          onOpenSettings={() => (settingsOpen = true)}
+          onOpenSettings={openSettings}
+        />
+      {:else}
+        <SettingsModal
+          embedded
+          onClose={() => (activeSection = "home")}
+          onSaved={(next) => {
+            config = next;
+            void loadModelState().catch((error) => showToast(String(error)));
+            void loadSummarySetup().catch((error) => showToast(String(error)));
+          }}
+          onToast={showToast}
         />
       {/if}
     </main>
@@ -877,21 +935,9 @@
         onToast={showToast}
         onNeedSetup={() => {
           summaryFor = null;
-          settingsOpen = true;
+          openSettings();
           void loadSummarySetup();
         }}
-      />
-    {/if}
-
-    {#if settingsOpen}
-      <SettingsModal
-        onClose={() => (settingsOpen = false)}
-        onSaved={(next) => {
-          config = next;
-          void loadModelState().catch((error) => showToast(String(error)));
-          void loadSummarySetup().catch((error) => showToast(String(error)));
-        }}
-        onToast={showToast}
       />
     {/if}
 
@@ -954,6 +1000,66 @@
   .rb-main:focus-visible {
     outline: 2px solid color-mix(in srgb, var(--rb-accent) 72%, transparent);
     outline-offset: -2px;
+  }
+
+  .text-library {
+    display: flex;
+    min-height: 0;
+    flex: 1;
+    flex-direction: column;
+    gap: 0.7rem;
+  }
+
+  .text-library-tabs {
+    display: inline-flex;
+    align-self: flex-start;
+    gap: 0.2rem;
+    padding: 0.22rem;
+    border-radius: 999px;
+    background: var(--rb-bg1);
+  }
+
+  .text-library-tabs button {
+    min-height: 2.15rem;
+    border: 0;
+    border-radius: 999px;
+    padding: 0 0.8rem;
+    color: var(--rb-muted);
+    background: transparent;
+    font: inherit;
+    font-size: 0.75rem;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .text-library-tabs button:hover,
+  .text-library-tabs button.active {
+    color: var(--rb-text);
+  }
+
+  .text-library-tabs button.active {
+    background: var(--rb-surface);
+  }
+
+  .text-library-tabs button:focus-visible {
+    outline: none;
+    box-shadow: var(--rb-focus);
+  }
+
+  .text-library-body {
+    display: flex;
+    min-height: 0;
+    flex: 1;
+    flex-direction: column;
+  }
+
+  :global(.rb-main > .rb-embedded-modal) {
+    min-height: 0;
+    flex: 1;
+  }
+
+  :global(.rb-embedded-modal .rb-settings-layout) {
+    min-height: 0;
   }
   /* Avisos discretos: son estados temporales de configuración, no deben
      pesar más que la acción principal de la herramienta. El color queda en
@@ -1104,6 +1210,17 @@
     .rb-main {
       gap: 0.625rem;
       padding: 0.7rem 0.7rem max(0.75rem, env(safe-area-inset-bottom));
+    }
+
+    .text-library-tabs {
+      width: 100%;
+    }
+
+    .text-library-tabs button {
+      min-width: 0;
+      flex: 1;
+      padding-inline: 0.35rem;
+      font-size: 0.6875rem;
     }
 
     .rb-setup-notice {

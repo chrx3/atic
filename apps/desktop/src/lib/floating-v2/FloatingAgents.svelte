@@ -541,7 +541,7 @@
     --text: var(--ink);
     --dim: var(--muted);
     --faint: color-mix(in oklch, var(--muted) 76%, transparent);
-    --card: color-mix(in oklch, white 52%, transparent);
+    --card: color-mix(in oklch, var(--ink) 6%, transparent);
     --code: color-mix(in oklch, var(--soft) 70%, transparent);
     --hover: color-mix(in oklch, var(--soft) 80%, transparent);
     --add: oklch(0.56 0.13 145);
@@ -559,7 +559,7 @@
   .session-list { display: flex; gap: 4px; flex-direction: column; }
   .session-list > button { display: grid; min-width: 0; min-height: 48px; padding: 7px; grid-template-columns: 22px minmax(0, 1fr); align-items: center; gap: 7px; border: 1px solid transparent; border-radius: 9px; color: var(--ink); background: transparent; text-align: left; cursor: pointer; }
   .session-list > button:hover { background: var(--soft); }
-  .session-list > button.current { border-color: var(--line); background: color-mix(in oklch, white 48%, var(--soft)); }
+  .session-list > button.current { border-color: var(--line); background: var(--card); }
   .session-list > button span { display: flex; min-width: 0; flex-direction: column; }
   .session-list strong { overflow: hidden; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
   .session-list small { margin-top: 2px; color: var(--muted); font-size: 8px; }
@@ -570,7 +570,7 @@
   .agent-toolbar { display: flex; min-width: 0; min-height: 49px; padding: 6px 10px; align-items: flex-end; gap: 5px; border-bottom: 1px solid var(--line); }
   .agent-toolbar label, .launch-options label { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 2px; }
   .agent-toolbar label > span, .launch-options label > span, .folder-button > span { color: var(--muted); font-size: 7px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; }
-  select { width: 100%; min-width: 0; height: 27px; border: 1px solid var(--line); border-radius: 7px; padding: 0 22px 0 7px; color: var(--ink); background: color-mix(in oklch, white 42%, transparent); font: 9px inherit; outline: none; }
+  select { width: 100%; min-width: 0; height: 27px; border: 1px solid var(--line); border-radius: 7px; padding: 0 22px 0 7px; color: var(--ink); background: var(--card); font: 9px inherit; outline: none; }
   select:focus-visible { border-color: var(--signal); box-shadow: 0 0 0 2px color-mix(in oklch, var(--signal) 18%, transparent); }
   .effort-control { max-width: 92px; }
   .stop-button { height: 27px; flex: 0 0 auto; border: 1px solid color-mix(in oklch, oklch(0.58 0.17 28) 24%, var(--line)); border-radius: 7px; padding: 0 9px; color: oklch(0.55 0.16 28); background: transparent; font: 9px inherit; cursor: pointer; }
@@ -583,7 +583,7 @@
   .new-session { min-height: 0; padding: 12px 22px; grid-template-rows: auto auto auto; gap: 8px; }
   .new-session > div:nth-child(2) { max-width: 310px; }
   .launch-options { display: grid; width: min(100%, 350px); grid-template-columns: 1fr 1fr; gap: 6px; }
-  .folder-button { display: flex; min-width: 0; height: 43px; flex-direction: column; justify-content: center; align-items: flex-start; border: 1px solid var(--line); border-radius: 7px; padding: 4px 8px; color: var(--ink); background: color-mix(in oklch, white 42%, transparent); cursor: pointer; }
+  .folder-button { display: flex; min-width: 0; height: 43px; flex-direction: column; justify-content: center; align-items: flex-start; border: 1px solid var(--line); border-radius: 7px; padding: 4px 8px; color: var(--ink); background: var(--card); cursor: pointer; }
   .folder-button strong { max-width: 100%; margin-top: 2px; overflow: hidden; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
   .backend-warning { color: oklch(0.58 0.17 36); }
 
@@ -592,8 +592,8 @@
   .permission > span { display: flex; min-width: 0; flex-direction: column; }
   .permission small { max-width: 260px; overflow: hidden; color: var(--muted); text-overflow: ellipsis; white-space: nowrap; }
   .permission > div { display: flex; flex: 0 0 auto; gap: 3px; }
-  .permission button { min-height: 25px; border: 1px solid var(--line); border-radius: 6px; padding: 0 7px; color: var(--ink); background: color-mix(in oklch, white 60%, transparent); font: inherit; cursor: pointer; }
-  .permission button.allow { color: white; background: var(--ink); }
+  .permission button { min-height: 25px; border: 1px solid var(--line); border-radius: 6px; padding: 0 7px; color: var(--ink); background: var(--card); font: inherit; cursor: pointer; }
+  .permission button.allow { color: var(--rb-on-accent, white); background: var(--ink); }
 
   .attachments { display: flex; min-width: 0; padding: 5px 10px 0; gap: 5px; overflow-x: auto; }
   .attachments > span { position: relative; display: grid; width: 88px; height: 42px; flex: 0 0 auto; grid-template-columns: 34px minmax(0, 1fr); align-items: center; gap: 5px; border: 1px solid var(--line); border-radius: 7px; padding: 3px 18px 3px 3px; background: var(--soft); }
@@ -601,16 +601,16 @@
   .attachments small { overflow: hidden; color: var(--muted); font-size: 7px; text-overflow: ellipsis; white-space: nowrap; }
   .attachments button { position: absolute; top: 1px; right: 2px; border: 0; color: var(--muted); background: transparent; cursor: pointer; }
 
-  .composer { display: grid; min-height: 48px; margin: 6px 10px 9px; padding: 5px; grid-template-columns: auto minmax(0, 1fr) 32px; align-items: center; gap: 5px; border: 1px solid var(--line); border-radius: 12px; background: color-mix(in oklch, white 52%, transparent); }
+  .composer { display: grid; min-height: 48px; margin: 6px 10px 9px; padding: 5px; grid-template-columns: auto minmax(0, 1fr) 32px; align-items: center; gap: 5px; border: 1px solid var(--line); border-radius: 12px; background: var(--card); }
   .composer-actions { display: flex; gap: 2px; }
   .composer-actions button, .send-button { display: grid; width: 27px; height: 27px; place-items: center; border: 0; border-radius: 7px; color: var(--muted); background: transparent; cursor: pointer; }
   .composer-actions button:hover, .composer-actions button.active { color: var(--signal); background: var(--soft); }
   .composer textarea { min-width: 0; max-height: 62px; resize: none; border: 0; padding: 5px; color: var(--ink); background: transparent; font: 10px/1.35 inherit; outline: none; }
   .composer textarea::placeholder { color: var(--muted); }
-  .send-button { width: 30px; height: 30px; color: white; background: var(--ink); }
+  .send-button { width: 30px; height: 30px; color: var(--rb-on-accent, white); background: var(--ink); }
   .send-button:disabled { opacity: 0.28; cursor: default; }
 
-  .agent-error { position: absolute; right: 10px; bottom: 63px; left: 10px; display: flex; min-height: 34px; padding: 6px 7px 6px 9px; align-items: center; gap: 6px; border-left: 2px solid oklch(0.58 0.17 28); color: oklch(0.5 0.17 28); background: color-mix(in oklch, oklch(0.95 0.035 28) 92%, white); box-shadow: 0 8px 24px oklch(0.2 0.02 28 / 0.13); font-size: 8px; }
+  .agent-error { position: absolute; right: 10px; bottom: 63px; left: 10px; display: flex; min-height: 34px; padding: 6px 7px 6px 9px; align-items: center; gap: 6px; border-left: 2px solid oklch(0.58 0.17 28); color: color-mix(in oklch, oklch(0.64 0.18 28) 76%, var(--ink)); background: color-mix(in oklch, oklch(0.64 0.18 28) 12%, var(--card)); box-shadow: 0 8px 24px oklch(0.2 0.02 28 / 0.13); font-size: 8px; }
   .agent-error span { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .agent-error button { min-height: 24px; border: 0; border-radius: 6px; padding: 0 7px; color: inherit; background: color-mix(in oklch, currentColor 8%, transparent); font: inherit; cursor: pointer; }
 

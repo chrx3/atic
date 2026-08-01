@@ -2,7 +2,7 @@
   import { onMount } from "svelte";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import AticMark from "$lib/AticMark.svelte";
-  import type { ToolDef } from "$lib/tools";
+  import type { AppSectionDef, ToolDef } from "$lib/tools";
   import {
     themeLabel,
     type UiTheme,
@@ -14,7 +14,7 @@
     onToggleTheme,
     onOpenSettings,
   }: {
-    tool: ToolDef;
+    tool: ToolDef | AppSectionDef;
     theme?: UiTheme;
     onToggleTheme?: () => void;
     onOpenSettings?: () => void;

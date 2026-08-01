@@ -8,6 +8,66 @@ export type ToolId =
   | "captures"
   | "agents";
 
+/** Secciones estables de la ventana principal. Las utilidades de texto
+ * (dictado, portapapeles y textos guardados) comparten una sola biblioteca. */
+export type AppSectionId =
+  | "home"
+  | "meetings"
+  | "texts"
+  | "captures"
+  | "agents"
+  | "settings";
+
+export type AppSectionDef = {
+  id: AppSectionId;
+  label: string;
+  short: string;
+  blurb: string;
+};
+
+export const APP_SECTIONS: AppSectionDef[] = [
+  {
+    id: "home",
+    label: "Inicio",
+    short: "Centro de control",
+    blurb: "Estado, acciones rápidas y acceso a todo Atic.",
+  },
+  {
+    id: "meetings",
+    label: "Reuniones",
+    short: "Grabar y resumir",
+    blurb: "Audio del PC, transcripción local y resúmenes editables.",
+  },
+  {
+    id: "texts",
+    label: "Textos",
+    short: "Escribir y recuperar",
+    blurb: "Textos guardados, notas, portapapeles y dictado en un solo lugar.",
+  },
+  {
+    id: "captures",
+    label: "Capturas",
+    short: "Pantalla",
+    blurb: "Recortes rápidos, historial y extracción de texto.",
+  },
+  {
+    id: "agents",
+    label: "Agentes",
+    short: "Conversaciones",
+    blurb: "Sesiones de agentes con contexto, permisos y archivos.",
+  },
+  {
+    id: "settings",
+    label: "Ajustes",
+    short: "Preferencias",
+    blurb: "Configura la interfaz, audio, modelos, atajos y privacidad.",
+  },
+];
+
+export function sectionById(id: AppSectionId): AppSectionDef {
+  return APP_SECTIONS.find((section) => section.id === id) ?? APP_SECTIONS[0];
+}
+
 export type ToolDef = {
   id: ToolId;
   label: string;
