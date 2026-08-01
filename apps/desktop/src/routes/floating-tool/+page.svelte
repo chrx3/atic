@@ -11,8 +11,11 @@
   import type { CaptureItem, ClipboardItem, DictationPhase, Snippet as TextSnippet } from "$lib/types";
   import {
     activateCapture,
+    beginFloatingDrag,
     closeFloatingTool,
+    detachFloatingObject,
     dictationPhase,
+    getFloatingWorld,
     getScratchpad,
     isRecording,
     listClipboardHistory,
@@ -20,6 +23,7 @@
     listSnippets,
     onClipboardHistoryChanged,
     onDictationStatus,
+    onFloatingWorldChanged,
     onSnippetsChanged,
     onStatus,
     setScratchpad,
@@ -27,6 +31,7 @@
     startRecording,
     stopRecording,
     toggleDictation,
+    type FloatingWorld,
   } from "$lib/api";
 
   let tool = $state<ToolId>("meetings");
@@ -41,11 +46,16 @@
   let snippetsTab = $state<"texts" | "scratchpad">("texts");
   let scratchpad = $state("");
   let scratchSaving = $state(false);
+  let floatingWorld = $state<FloatingWorld | null>(null);
   let scratchTimer: ReturnType<typeof setTimeout> | null = null;
 
   const definition = $derived(toolById(tool));
+  const group = $derived(floatingWorld?.groups.find((item) => item.members.includes(tool)) ?? null);
+  const grouped = $derived(Boolean(group));
   const status = $derived(
-    tool === "meetings" && recording
+    grouped
+      ? `Unido a ${Math.max(1, (group?.members.length ?? 1) - 1)} superficie${(group?.members.length ?? 1) > 2 ? "s" : ""}`
+      : tool === "meetings" && recording
       ? "Grabando"
       : tool === "dictation" && dictation !== "idle"
         ? dictation === "listening" ? "Escuchando" : "Procesando"
@@ -106,6 +116,26 @@
     }
   }
 
+  async function startToolDrag(event: PointerEvent) {
+    if (event.button !== 0 || (event.target as HTMLElement).closest("button")) return;
+    event.preventDefault();
+    try {
+      await beginFloatingDrag(tool, event.altKey);
+      await getCurrentWindow().startDragging();
+    } catch (cause) {
+      error = String(cause);
+    }
+  }
+
+  async function detachSurface() {
+    try {
+      await detachFloatingObject(tool);
+      floatingWorld = await getFloatingWorld();
+    } catch (cause) {
+      error = String(cause);
+    }
+  }
+
   function toggleMeeting() {
     void run(async () => {
       if (recording) await stopRecording();
@@ -132,6 +162,8 @@
   onMount(() => {
     tool = toolFromWindowLabel(getCurrentWindow().label);
     const unlisteners: Promise<UnlistenFn>[] = [];
+    void getFloatingWorld().then((world) => (floatingWorld = world));
+    unlisteners.push(onFloatingWorldChanged((world) => (floatingWorld = world)));
 
     if (tool === "meetings") {
       void isRecording().then((value) => (recording = value));
@@ -162,12 +194,27 @@
 <svelte:head><title>Atic · {definition.label}</title></svelte:head>
 
 <main class:agent-surface={tool === "agents"} class="floating-tool" data-tool={tool}>
-  <header class="tool-header" data-tauri-drag-region>
-    <span class="tool-mark" data-tauri-drag-region><ToolIcon id={tool} size={18} /></span>
-    <div class="tool-heading" data-tauri-drag-region>
-      <strong data-tauri-drag-region>{definition.label}</strong>
-      <span data-tauri-drag-region>{status}</span>
+  <header
+    class="tool-header"
+    role="group"
+    aria-label={`Mover ${definition.label}`}
+    onpointerdown={startToolDrag}
+    title="Arrastra para mover · Alt+arrastrar separa"
+  >
+    <span class="tool-mark"><ToolIcon id={tool} size={18} /></span>
+    <div class="tool-heading">
+      <strong>{definition.label}</strong>
+      <span>{status}</span>
     </div>
+    {#if grouped}
+      <button
+        class="detach-button"
+        type="button"
+        aria-label={`Separar ${definition.label} del grupo`}
+        title="Separar del grupo"
+        onclick={detachSurface}
+      ><i></i></button>
+    {/if}
     <button
       class="close-button"
       type="button"
@@ -290,6 +337,24 @@
     background: transparent;
     cursor: pointer;
   }
+  .detach-button {
+    position: relative;
+    display: grid;
+    width: 36px;
+    height: 36px;
+    flex: 0 0 auto;
+    place-items: center;
+    border: 0;
+    border-radius: 50%;
+    color: var(--pearl-muted);
+    background: transparent;
+    cursor: pointer;
+  }
+  .detach-button:hover { color: var(--pearl-ink); background: var(--pearl-soft); }
+  .detach-button:focus-visible { outline: 2px solid var(--pearl-signal); outline-offset: -3px; }
+  .detach-button i, .detach-button i::after { width: 9px; height: 9px; border: 1.5px solid currentColor; border-radius: 50%; content: ""; }
+  .detach-button i { transform: translate(-3px, -2px); }
+  .detach-button i::after { display: block; transform: translate(7px, 5px); background: var(--pearl-soft); }
   .close-button:hover { color: var(--pearl-ink); background: var(--pearl-soft); }
   .close-button:focus-visible { outline: 2px solid var(--pearl-signal); outline-offset: -3px; }
   .close-button i::before, .close-button i::after { position: absolute; top: 17px; left: 11px; width: 14px; height: 1.5px; border-radius: 2px; background: currentColor; content: ""; }

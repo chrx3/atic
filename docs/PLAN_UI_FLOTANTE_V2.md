@@ -231,5 +231,28 @@ La arquitectura aceptada ya opera en el arranque normal, no solo en el spike:
 - la piel y la tinta usan variantes claras y oscuras coherentes; la telemetria
   del spike queda oculta en produccion.
 
-La UI anterior (`/pill` y `/agents`) sigue disponible como rollback. Agrupacion,
-separacion y la sustitucion funcional completa de Agentes continuan pendientes.
+La UI anterior (`/pill` y `/agents`) sigue disponible como rollback. La
+sustitucion funcional completa de Agentes continua pendiente.
+
+### Grupos magneticos nativos - 2026-07-31
+
+La proximidad ya gobierna ventanas WebView2 reales y persiste en
+`floating-world.json`:
+
+- cada herramienta nueva se agrupa con la pill y conserva una sola instancia;
+- arrastrar cualquier miembro traslada todas las ventanas del grupo con el
+  mismo delta fisico, sin convertirlas en un panel monolitico;
+- al soltar una superficie a 26 px logicos o menos, el iman la ajusta a un gap
+  de 7 px y fusiona ambos grupos para que el SDF dibuje el cuello liquido;
+- el boton accesible `Separar del grupo` y `Alt+arrastrar` desacoplan una
+  superficie, marcandola como `detached` para respetar la decision al reabrir;
+- el final del arrastre lo detecta Rust mediante el estado real del boton
+  primario. Esto evita depender de la promesa inmediata de `startDragging()` en
+  WebView2.
+
+La validacion nativa movio Reuniones `+100,+50` px logicos y la pill recorrio
+exactamente el mismo delta. Tras separarla, el mismo arrastre dejo la pill
+inmovil. Acercarla de nuevo creo `group:meetings+pill` y la posicion final dejo
+7 px entre el borde visible de la pill y Reuniones. Una prueba adicional con
+Alt presionado elimino el grupo y dejo `detached=true`. Las pruebas puras de
+persistencia, merge, separacion y atraccion pasan 3/3.

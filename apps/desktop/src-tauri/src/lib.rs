@@ -232,6 +232,9 @@ pub fn run() {
             floating_world::open_floating_tool,
             floating_world::close_floating_tool,
             floating_world::get_floating_world,
+            floating_world::begin_floating_drag,
+            floating_world::end_floating_drag,
+            floating_world::detach_floating_object,
         ])
         .setup(move |app| {
             let dirs = AppDirs::new()?;
@@ -421,16 +424,17 @@ pub fn run() {
                             Some((pos.x as f64, pos.y as f64));
                     }
                 }
-                liquid_world::emit_snapshot(window.app_handle());
+                floating_world::handle_window_moved(window.app_handle(), window.label(), *pos);
             }
-            WindowEvent::Moved(_)
+            WindowEvent::Moved(pos)
                 if liquid_world::is_spike_object(window.label())
                     || floating_world::is_tool_window(window.label()) =>
             {
                 if floating_world::is_tool_window(window.label()) {
-                    floating_world::remember_window(window.app_handle(), window.label());
+                    floating_world::handle_window_moved(window.app_handle(), window.label(), *pos);
+                } else {
+                    liquid_world::emit_snapshot(window.app_handle());
                 }
-                liquid_world::emit_snapshot(window.app_handle());
             }
             WindowEvent::Resized(_)
                 if window.label() == "pill" || floating_world::is_tool_window(window.label()) =>

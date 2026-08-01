@@ -76,6 +76,7 @@ export type FloatingWorldObject = {
   width: number;
   height: number;
   visible: boolean;
+  detached: boolean;
 };
 
 export type FloatingWorldGroup = {
@@ -94,6 +95,14 @@ export const openFloatingTool = (tool: ToolId) =>
 export const closeFloatingTool = (tool: ToolId) =>
   invoke<void>("close_floating_tool", { tool });
 export const getFloatingWorld = () => invoke<FloatingWorld>("get_floating_world");
+export const beginFloatingDrag = (objectId: "pill" | ToolId, detach = false) =>
+  invoke<void>("begin_floating_drag", { objectId, detach });
+export const endFloatingDrag = (objectId: "pill" | ToolId) =>
+  invoke<void>("end_floating_drag", { objectId });
+export const detachFloatingObject = (objectId: "pill" | ToolId) =>
+  invoke<void>("detach_floating_object", { objectId });
+export const onFloatingWorldChanged = (cb: (world: FloatingWorld) => void): Promise<UnlistenFn> =>
+  listen<FloatingWorld>("floating-world-changed", (event) => cb(event.payload));
 export const capturePrimaryMonitor = () =>
   invoke<string>("capture_primary_monitor");
 export const listRecentCaptures = () =>

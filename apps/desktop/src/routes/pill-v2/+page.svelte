@@ -22,6 +22,7 @@
   import type { ClipboardItem, DictationPhase, PasteQueueItem, Snippet as TextSnippet } from "$lib/types";
   import { agents } from "$lib/agentSessions.svelte";
   import {
+    beginFloatingDrag,
     dictationPhase,
     dismissPasteQueueItem,
     getConfig,
@@ -277,7 +278,8 @@
 
   onMount(() => {
     const unlisteners: Promise<UnlistenFn>[] = [];
-    let dragOrigin: { x: number; y: number } | null = null;
+    let dragOrigin: { x: number; y: number; detach: boolean } | null = null;
+    let dragRunning = false;
 
     const initialSize = envelopeFor(surface, pillShape);
     pillEnvelopeKey = `${initialSize.w}x${initialSize.h}`;
@@ -325,12 +327,25 @@
 
     const onPointerDown = (event: PointerEvent) => {
       if (event.button !== 0 || !(event.target as HTMLElement).closest(".pill-control")) return;
-      dragOrigin = { x: event.screenX, y: event.screenY };
+      dragOrigin = { x: event.screenX, y: event.screenY, detach: event.altKey };
+    };
+    const dragPill = async (detach: boolean) => {
+      if (dragRunning) return;
+      dragRunning = true;
+      try {
+        await beginFloatingDrag("pill", detach);
+        await getCurrentWindow().startDragging();
+      } catch (cause) {
+        error = String(cause);
+      } finally {
+        dragRunning = false;
+      }
     };
     const onPointerMove = (event: PointerEvent) => {
       if (!dragOrigin || Math.hypot(event.screenX - dragOrigin.x, event.screenY - dragOrigin.y) < 4) return;
+      const detach = dragOrigin.detach || event.altKey;
       dragOrigin = null;
-      void getCurrentWindow().startDragging();
+      void dragPill(detach);
     };
     const clearDrag = () => (dragOrigin = null);
     const onDoubleClick = (event: MouseEvent) => {
