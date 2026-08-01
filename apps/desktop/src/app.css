@@ -366,13 +366,11 @@ textarea,
   background: color-mix(in srgb, var(--rb-sys) 22%, transparent);
   border: 0;
 }
-@media (prefers-color-scheme: dark) {
-  .rb-btn-mic {
-    color: #b8f0cc;
-  }
-  .rb-btn-sys {
-    color: #b8ddf5;
-  }
+:root[data-theme="dark"] .rb-btn-mic {
+  color: #b8f0cc;
+}
+:root[data-theme="dark"] .rb-btn-sys {
+  color: #b8ddf5;
 }
 
 /* —— Track play/pause (recording list) —— */
@@ -525,7 +523,11 @@ textarea,
   background: var(--rb-panel);
 }
 .rb-settings-panel {
+  width: 100%;
+  min-width: 0;
   flex: 1;
+  box-sizing: border-box;
+  overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior: contain;
   padding: 1rem 1.125rem 1.25rem;

@@ -288,7 +288,7 @@
     display: none;
   }
 
-  @container atic-shell (max-width: 47.999rem) {
+  @container atic-shell (max-width: 51.999rem) {
     .pearl-rail {
       display: none;
     }

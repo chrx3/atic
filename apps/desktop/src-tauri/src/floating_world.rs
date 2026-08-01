@@ -492,7 +492,7 @@ fn set_visibility(app: &tauri::AppHandle, tool: &str, visible: bool) {
     schedule_save(app);
 }
 
-fn open_tool(app: &tauri::AppHandle, tool: &str, focus: bool) -> Result<(), String> {
+pub(crate) fn open_tool(app: &tauri::AppHandle, tool: &str, focus: bool) -> Result<(), String> {
     if !is_valid_tool(tool) {
         return Err(format!("herramienta flotante desconocida: {tool}"));
     }

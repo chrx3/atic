@@ -113,7 +113,9 @@
   let deleteTarget = $state<Recording | null>(null);
   let bluetoothConfirmMessage = $state<string | null>(null);
   let activeSection = $state<AppSectionId>("home");
-  let textTool = $state<"snippets" | "clipboard" | "dictation">("snippets");
+  type TextTool = "snippets" | "clipboard" | "dictation";
+  const TEXT_TOOLS: TextTool[] = ["snippets", "clipboard", "dictation"];
+  let textTool = $state<TextTool>("snippets");
   let snippetsInitialTab = $state<"snippets" | "scratchpad">("snippets");
   let searchOpen = $state(false);
   let uiTheme = $state<UiTheme>("system");
@@ -121,6 +123,22 @@
   let shortcutConflicts = $state<string[]>([]);
 
   const theme = $derived(normalizeTheme(config?.ui_theme ?? uiTheme));
+
+  function moveTextTab(event: KeyboardEvent) {
+    const key = event.key;
+    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(key)) return;
+    event.preventDefault();
+    const index = TEXT_TOOLS.indexOf(textTool);
+    const next = key === "Home"
+      ? TEXT_TOOLS[0]
+      : key === "End"
+        ? TEXT_TOOLS.at(-1)!
+        : TEXT_TOOLS[(index + (key === "ArrowRight" ? 1 : -1) + TEXT_TOOLS.length) % TEXT_TOOLS.length];
+    textTool = next;
+    requestAnimationFrame(() => {
+      document.querySelector<HTMLButtonElement>(`#text-tab-${next}`)?.focus();
+    });
+  }
 
   let timer: ReturnType<typeof setInterval> | null = null;
   let toastTimer: ReturnType<typeof setTimeout> | null = null;
@@ -827,35 +845,52 @@
         <section class="text-library" aria-label="Biblioteca de textos">
           <div class="text-library-tabs" role="tablist" aria-label="Herramientas de texto">
             <button
+              id="text-tab-snippets"
               type="button"
               role="tab"
               class:active={textTool === "snippets"}
               aria-selected={textTool === "snippets"}
+              aria-controls="text-tool-panel"
+              tabindex={textTool === "snippets" ? 0 : -1}
               onclick={() => (textTool = "snippets")}
+              onkeydown={moveTextTab}
             >
               Guardados y notas
             </button>
             <button
+              id="text-tab-clipboard"
               type="button"
               role="tab"
               class:active={textTool === "clipboard"}
               aria-selected={textTool === "clipboard"}
+              aria-controls="text-tool-panel"
+              tabindex={textTool === "clipboard" ? 0 : -1}
               onclick={() => (textTool = "clipboard")}
+              onkeydown={moveTextTab}
             >
               Portapapeles
             </button>
             <button
+              id="text-tab-dictation"
               type="button"
               role="tab"
               class:active={textTool === "dictation"}
               aria-selected={textTool === "dictation"}
+              aria-controls="text-tool-panel"
+              tabindex={textTool === "dictation" ? 0 : -1}
               onclick={() => (textTool = "dictation")}
+              onkeydown={moveTextTab}
             >
               Dictado
             </button>
           </div>
 
-          <div class="text-library-body" role="tabpanel">
+          <div
+            id="text-tool-panel"
+            class="text-library-body"
+            role="tabpanel"
+            aria-labelledby={`text-tab-${textTool}`}
+          >
             {#if textTool === "dictation"}
               <DictationTool
                 phase={dictation}
@@ -900,6 +935,7 @@
       {:else}
         <SettingsModal
           embedded
+          currentTheme={theme}
           onClose={() => (activeSection = "home")}
           onSaved={(next) => {
             config = next;

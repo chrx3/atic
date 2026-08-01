@@ -37,6 +37,7 @@
     openDataDir,
   } from "$lib/api";
   import { looksLikeHeadset } from "$lib/audioHeadset";
+  import type { UiTheme } from "$lib/theme";
 
   /** Modelos STT oficiales de Groq (mismo catálogo que el backend). */
   const GROQ_WHISPER_OPTIONS = [
@@ -52,14 +53,27 @@
     onSaved,
     onToast,
     embedded = false,
+    currentTheme,
   }: {
     onClose: () => void;
     onSaved: (cfg: AppConfig) => void;
     onToast: (msg: string) => void;
     embedded?: boolean;
+    currentTheme?: UiTheme;
   } = $props();
 
   let cfg = $state<AppConfig | null>(null);
+  let observedTheme = $state<UiTheme | undefined>();
+
+  // La barra puede cambiar el tema mientras Ajustes permanece montado.
+  // Solo reaccionamos a cambios externos para no pisar una selección local
+  // que el usuario todavía no guardó.
+  $effect(() => {
+    const next = currentTheme;
+    if (!next || !cfg || next === observedTheme) return;
+    observedTheme = next;
+    cfg.ui_theme = next;
+  });
   let secrets = $state<SecretsStatus | null>(null);
   let providers = $state<SummaryProvider[]>([]);
   let models = $state<ModelStatus[]>([]);

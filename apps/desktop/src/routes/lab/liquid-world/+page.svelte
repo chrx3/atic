@@ -274,8 +274,8 @@
     background: oklch(0.78 0.13 154 / 0.18);
   }
 
-  @media (prefers-color-scheme: dark) {
-    .pill-ink, .surface-ink { color: oklch(0.9 0.008 255); }
-    section p, header small { color: oklch(0.7 0.012 255); }
-  }
+  :global(:root[data-theme="dark"]) .pill-ink,
+  :global(:root[data-theme="dark"]) .surface-ink { color: oklch(0.9 0.008 255); }
+  :global(:root[data-theme="dark"]) section p,
+  :global(:root[data-theme="dark"]) header small { color: oklch(0.7 0.012 255); }
 </style>

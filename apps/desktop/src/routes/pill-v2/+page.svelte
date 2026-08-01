@@ -18,6 +18,7 @@
     type PillRestShape,
   } from "$lib/floating-v2/types";
   import { createStage, growsFirst } from "$lib/pillStage";
+  import { prefersReducedMotion } from "$lib/motion";
   import { TOOLS, type ToolId } from "$lib/tools";
   import type { ClipboardItem, DictationPhase, PasteQueueItem, Snippet as TextSnippet } from "$lib/types";
   import { agents } from "$lib/agentSessions.svelte";
@@ -58,7 +59,7 @@
   } from "$lib/api";
 
   const stage = createStage("pill");
-  const MORPH_MS = 280;
+  const MORPH_MS = 250;
 
   let surface = $state<FloatingSurface>({ kind: "pill" });
   let activity = $state<FloatingActivity>("idle");
@@ -83,6 +84,18 @@
   let pillEnvelopeKey = "";
   const pillHasAttention = $derived(queue.length > 0 || agents.unread > 0 || agents.waiting > 0 || agents.working);
   const pillShape = $derived(pillPresentationFor(surface, activity, pillRestShape, pillHasAttention));
+
+  function moveSnippetsTab(event: KeyboardEvent) {
+    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+    event.preventDefault();
+    snippetsTab = event.key === "ArrowRight" || event.key === "End" ? "scratchpad" : "texts";
+    requestAnimationFrame(() => {
+      (event.currentTarget as HTMLElement)
+        .closest("[role='tablist']")
+        ?.querySelector<HTMLButtonElement>(`[data-tab='${snippetsTab}']`)
+        ?.focus();
+    });
+  }
 
   function normalizedPillShape(value: string): PillRestShape {
     return value === "compact" ? "compact" : "circle";
@@ -217,7 +230,9 @@
         surface = next;
       } else {
         surface = next;
-        await new Promise((resolve) => window.setTimeout(resolve, MORPH_MS));
+        if (!prefersReducedMotion()) {
+          await new Promise((resolve) => window.setTimeout(resolve, MORPH_MS));
+        }
         const outcome = await stage.resize(nextSize, pivot);
         if (outcome.ok && opensLargeSurface(from)) openedUp = false;
       }
@@ -258,6 +273,11 @@
       ? direction === 1 ? 0 : TOOLS.length - 1
       : (index + direction + TOOLS.length) % TOOLS.length;
     wheelTool = TOOLS[next].id;
+    requestAnimationFrame(() => {
+      document
+        .querySelector<HTMLButtonElement>(`.wheel-control[data-tool='${wheelTool}']`)
+        ?.focus();
+    });
   }
 
   async function activateTool(tool: ToolId) {
@@ -428,9 +448,10 @@
   {:else if current.kind === "tool" && current.tool === "snippets"}
     <div class="snippets-surface">
       <div class="surface-tabs" role="tablist" aria-label="Textos y notas">
-        <button class:active={snippetsTab === "texts"} type="button" role="tab" aria-selected={snippetsTab === "texts"} onclick={() => (snippetsTab = "texts")}>Textos</button>
-        <button class:active={snippetsTab === "scratchpad"} type="button" role="tab" aria-selected={snippetsTab === "scratchpad"} onclick={() => (snippetsTab = "scratchpad")}>Bloc de notas</button>
+        <button id="pill-snippets-tab-texts" data-tab="texts" class:active={snippetsTab === "texts"} type="button" role="tab" aria-selected={snippetsTab === "texts"} aria-controls="pill-snippets-panel" tabindex={snippetsTab === "texts" ? 0 : -1} onclick={() => (snippetsTab = "texts")} onkeydown={moveSnippetsTab}>Textos</button>
+        <button id="pill-snippets-tab-scratchpad" data-tab="scratchpad" class:active={snippetsTab === "scratchpad"} type="button" role="tab" aria-selected={snippetsTab === "scratchpad"} aria-controls="pill-snippets-panel" tabindex={snippetsTab === "scratchpad" ? 0 : -1} onclick={() => (snippetsTab = "scratchpad")} onkeydown={moveSnippetsTab}>Bloc de notas</button>
       </div>
+      <div id="pill-snippets-panel" role="tabpanel" aria-labelledby={`pill-snippets-tab-${snippetsTab}`} class="snippets-panel">
       {#if snippetsTab === "texts"}
         <SnippetsList
           items={snippetItems}
@@ -449,6 +470,7 @@
           <small>{scratchSaving ? "Guardando…" : "Guardado localmente"}</small>
         </label>
       {/if}
+      </div>
     </div>
   {:else if current.kind === "queue"}
     <div class="queue-surface">
@@ -577,6 +599,13 @@
   .surface-tabs button.active {
     color: white;
     background: oklch(0.22 0.012 255);
+  }
+
+  .snippets-panel {
+    display: flex;
+    min-height: 0;
+    flex: 1;
+    flex-direction: column;
   }
 
   .scratchpad {

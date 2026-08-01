@@ -1,7 +1,13 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { page } from "$app/state";
-  import { applyTheme, readCachedTheme, THEME_STORAGE_KEY } from "$lib/theme";
+  import { getConfig, onConfigChanged } from "$lib/api";
+  import {
+    applyTheme,
+    normalizeTheme,
+    readCachedTheme,
+    THEME_STORAGE_KEY,
+  } from "$lib/theme";
   import "../app.css";
 
   let { children } = $props();
@@ -23,6 +29,19 @@
     // en los tokens claros aunque la app estuviera en oscuro.
     applyTheme(readCachedTheme());
 
+    // WebView2 no garantiza que `storage` se propague entre todos sus perfiles.
+    // La configuración nativa sí es compartida y `set_config` emite este
+    // evento a cada ventana, por lo que es la fuente autoritativa del tema.
+    void getConfig()
+      .then((config) => applyTheme(normalizeTheme(config.ui_theme)))
+      .catch(() => {
+        // El valor cacheado de arriba mantiene la ventana utilizable si el
+        // backend todavía está arrancando.
+      });
+    const unlistenConfig = onConfigChanged((config) => {
+      applyTheme(normalizeTheme(config.ui_theme));
+    });
+
     // localStorage es compartido entre ventanas del mismo origen: `storage`
     // avisa a las flotantes cuando la principal cambia el tema.
     const onStorage = (event: StorageEvent) => {
@@ -43,6 +62,7 @@
       document.removeEventListener("contextmenu", block);
       window.removeEventListener("storage", onStorage);
       mq.removeEventListener("change", onScheme);
+      void unlistenConfig.then((unlisten) => unlisten());
     };
   });
 </script>

@@ -567,10 +567,7 @@ fn run_action(app: &AppHandle, action: &str) -> Result<(), String> {
             crate::snippets::summon_snippets_panel(app);
             Ok(())
         }
-        "agents" => {
-            crate::agents::bridge::show_agents_window(app.clone());
-            Ok(())
-        }
+        "agents" => crate::floating_world::open_tool(app, "agents", true),
         "settings" => {
             crate::state::show_main(app);
             Ok(())

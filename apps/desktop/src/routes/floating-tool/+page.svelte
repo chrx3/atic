@@ -49,6 +49,18 @@
   let floatingWorld = $state<FloatingWorld | null>(null);
   let scratchTimer: ReturnType<typeof setTimeout> | null = null;
 
+  function moveSnippetsTab(event: KeyboardEvent) {
+    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+    event.preventDefault();
+    snippetsTab = event.key === "ArrowRight" || event.key === "End" ? "scratchpad" : "texts";
+    requestAnimationFrame(() => {
+      (event.currentTarget as HTMLElement)
+        .closest("[role='tablist']")
+        ?.querySelector<HTMLButtonElement>(`[data-tab='${snippetsTab}']`)
+        ?.focus();
+    });
+  }
+
   const definition = $derived(toolById(tool));
   const group = $derived(floatingWorld?.groups.find((item) => item.members.includes(tool)) ?? null);
   const grouped = $derived(Boolean(group));
@@ -252,9 +264,10 @@
       />
     {:else if tool === "snippets"}
       <div class="tabs" role="tablist" aria-label="Textos y notas">
-        <button class:active={snippetsTab === "texts"} type="button" role="tab" aria-selected={snippetsTab === "texts"} onclick={() => (snippetsTab = "texts")}>Textos</button>
-        <button class:active={snippetsTab === "scratchpad"} type="button" role="tab" aria-selected={snippetsTab === "scratchpad"} onclick={() => (snippetsTab = "scratchpad")}>Bloc</button>
+        <button id="floating-snippets-tab-texts" data-tab="texts" class:active={snippetsTab === "texts"} type="button" role="tab" aria-selected={snippetsTab === "texts"} aria-controls="floating-snippets-panel" tabindex={snippetsTab === "texts" ? 0 : -1} onclick={() => (snippetsTab = "texts")} onkeydown={moveSnippetsTab}>Textos</button>
+        <button id="floating-snippets-tab-scratchpad" data-tab="scratchpad" class:active={snippetsTab === "scratchpad"} type="button" role="tab" aria-selected={snippetsTab === "scratchpad"} aria-controls="floating-snippets-panel" tabindex={snippetsTab === "scratchpad" ? 0 : -1} onclick={() => (snippetsTab = "scratchpad")} onkeydown={moveSnippetsTab}>Bloc</button>
       </div>
+      <div id="floating-snippets-panel" role="tabpanel" aria-labelledby={`floating-snippets-tab-${snippetsTab}`} class="snippets-panel">
       {#if snippetsTab === "texts"}
         <SnippetsList items={snippets} {loading} compact onRefresh={refreshSnippets} onPasted={() => {}} onError={(message) => (error = message)} />
       {:else}
@@ -263,6 +276,7 @@
           <textarea bind:value={scratchpad} oninput={scheduleScratchSave} placeholder="Escribe una nota temporal…"></textarea>
         </label>
       {/if}
+      </div>
     {:else if tool === "captures"}
       <div class="capture-actions">
         <button type="button" disabled={busy} onclick={() => void run(startCaptureSession)}><ToolIcon id="captures" size={18} /><span><strong>Nueva captura</strong><small>Área, ventana o monitor</small></span></button>
@@ -380,7 +394,8 @@
   .tabs button { min-height: 32px; flex: 1; border: 0; border-radius: 7px; color: var(--pearl-muted); background: transparent; font: inherit; cursor: pointer; }
   .tabs button.active { color: var(--pearl-ink); background: oklch(1 0 0 / 0.52); }
   .tabs button:focus-visible { outline: 2px solid var(--pearl-signal); }
-  .scratchpad { display: grid; height: calc(100% - 47px); grid-template-rows: auto 1fr; gap: 6px; color: var(--pearl-muted); font-size: 10px; }
+  .snippets-panel { display: flex; height: calc(100% - 47px); min-height: 0; flex-direction: column; }
+  .scratchpad { display: grid; height: 100%; grid-template-rows: auto 1fr; gap: 6px; color: var(--pearl-muted); font-size: 10px; }
   .scratchpad textarea { min-height: 180px; resize: none; border: 0; border-radius: 10px; padding: 12px; color: var(--pearl-ink); background: var(--pearl-soft); font: 13px/1.5 inherit; outline: none; }
   .scratchpad textarea:focus { box-shadow: inset 0 0 0 2px var(--pearl-signal); }
 
@@ -395,12 +410,6 @@
   .recent-captures p { grid-column: 1 / -1; margin: 8px 0; color: var(--pearl-muted); text-align: center; }
 
   .surface-error { position: absolute; right: 12px; bottom: 10px; left: 12px; margin: 0; border-radius: 8px; padding: 7px 10px; color: oklch(0.34 0.18 28); background: oklch(0.93 0.05 28 / 0.96); font-size: 10px; }
-
-  @media (prefers-color-scheme: dark) {
-    .floating-tool { --pearl-ink: oklch(0.92 0.008 255); --pearl-muted: oklch(0.7 0.012 255); --pearl-line: oklch(1 0 0 / 0.1); --pearl-soft: oklch(1 0 0 / 0.07); }
-    .tabs button.active { background: oklch(1 0 0 / 0.1); }
-    .quick-state button, .capture-actions > button { color: oklch(0.17 0.01 255); background: oklch(0.91 0.008 255); }
-  }
 
   :global(:root[data-theme="dark"]) .floating-tool {
     --pearl-ink: oklch(0.92 0.008 255);

@@ -469,9 +469,23 @@ pub struct AgentsComposerInsert {
 }
 
 fn agents_window_is_visible(app: &AppHandle) -> bool {
-    app.get_webview_window("agents")
-        .map(|w| w.is_visible().unwrap_or(false))
-        .unwrap_or(false)
+    ["pearl-tool-agents", "agents"].iter().any(|label| {
+        app.get_webview_window(label)
+            .map(|window| window.is_visible().unwrap_or(false))
+            .unwrap_or(false)
+    })
+}
+
+fn focus_visible_agents_window(app: &AppHandle) {
+    for label in ["pearl-tool-agents", "agents"] {
+        let Some(window) = app.get_webview_window(label) else {
+            continue;
+        };
+        if window.is_visible().unwrap_or(false) {
+            let _ = window.set_focus();
+            break;
+        }
+    }
 }
 
 /// True si la burbuja de agentes está a la vista (crate-interno).
@@ -494,9 +508,7 @@ pub(crate) fn insert_text_into_agents(app: &AppHandle, text: &str) -> Result<(),
             image_path: None,
         },
     );
-    if let Some(win) = app.get_webview_window("agents") {
-        let _ = win.set_focus();
-    }
+    focus_visible_agents_window(app);
     Ok(())
 }
 
@@ -602,9 +614,7 @@ pub fn paste_clipboard_item(
             }
         };
         let _ = app.emit("agents-composer-insert", payload);
-        if let Some(win) = app.get_webview_window("agents") {
-            let _ = win.set_focus();
-        }
+        focus_visible_agents_window(&app);
         let _ = app.emit("pill-clipboard-close", ());
         return Ok(());
     }

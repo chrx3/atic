@@ -59,6 +59,10 @@
 
   let sceneWidth = $state(760);
   let sceneHeight = $state(620);
+  let pillButton = $state<HTMLButtonElement | null>(null);
+  let wheelControls = $state<HTMLDivElement | null>(null);
+  let closeButton = $state<HTMLButtonElement | null>(null);
+  let lastFocusSurface: FloatingSurface["kind"] | null = null;
   const wheelOpen = $derived(surface.kind === "wheel");
   const panelOpen = $derived(surface.kind === "tool" || surface.kind === "agents" || surface.kind === "queue");
   const agentOpen = $derived(surface.kind === "agents");
@@ -97,6 +101,26 @@
             ? "Agente trabajando"
             : "Herramientas",
   );
+
+  // Al cambiar de geometría, el foco no puede quedarse en un nodo que pasó
+  // a `aria-hidden`/`inert`. La propia forma líquida explica el movimiento y
+  // este traslado mantiene el mismo recorrido disponible por teclado.
+  $effect(() => {
+    const next = surface.kind;
+    if (lastFocusSurface === null) {
+      lastFocusSurface = next;
+      return;
+    }
+    if (next === lastFocusSurface) return;
+    lastFocusSurface = next;
+    if (!interactive) return;
+    requestAnimationFrame(() => {
+      if (next === "pill") pillButton?.focus();
+      else if (next === "wheel") {
+        wheelControls?.querySelector<HTMLButtonElement>("button")?.focus();
+      } else closeButton?.focus();
+    });
+  });
 
   function toggleWheel() {
     if (!interactive) return;
@@ -154,6 +178,7 @@
   <div class="floating-ink">
     <div class="pill-control">
       <button
+        bind:this={pillButton}
         class="pill-main"
         type="button"
         aria-label={queueCount > 0 && activity === "idle" ? "Abrir cola de pegado" : agentCount > 0 && activity === "idle" ? "Abrir respuestas de agentes" : wheelOpen ? "Cerrar herramientas" : "Abrir herramientas"}
@@ -180,11 +205,12 @@
       ><i></i><i></i></button>
     </div>
 
-    <div class="wheel-controls" aria-hidden={!wheelOpen}>
+    <div bind:this={wheelControls} class="wheel-controls" aria-hidden={!wheelOpen}>
       {#each TOOLS as tool, index (tool.id)}
         <button
           class:selected={selectedTool === tool.id}
           class="wheel-control"
+          data-tool={tool.id}
           style:--node-x={`${WHEEL_POSITIONS[index].x}px`}
           style:--node-y={`${WHEEL_POSITIONS[index].y}px`}
           type="button"
@@ -216,7 +242,7 @@
             <span>{agentOpen ? "Espacio de trabajo" : surface.kind === "queue" ? "Cola local" : activeTool?.short}</span>
           </div>
         </div>
-        <button class="close-control" type="button" tabindex={panelOpen ? 0 : -1} aria-label="Cerrar panel" onclick={closePanel}>
+        <button bind:this={closeButton} class="close-control" type="button" tabindex={panelOpen ? 0 : -1} aria-label="Cerrar panel" onclick={closePanel}>
           <span aria-hidden="true"></span>
         </button>
       </header>
