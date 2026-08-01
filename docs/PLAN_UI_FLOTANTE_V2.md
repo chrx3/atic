@@ -256,3 +256,30 @@ inmovil. Acercarla de nuevo creo `group:meetings+pill` y la posicion final dejo
 7 px entre el borde visible de la pill y Reuniones. Una prueba adicional con
 Alt presionado elimino el grupo y dejo `detached=true`. Las pruebas puras de
 persistencia, merge, separacion y atraccion pasan 3/3.
+
+### Agentes autosuficiente en Pearl Flow - 2026-07-31
+
+`FloatingAgents` ya no importa ni invoca `showAgentsWindow`. La superficie
+`pearl-tool-agents` contiene el flujo primario completo:
+
+- crea multiples sesiones y permite cambiar entre las que siguen vivas;
+- descubre agentes/proveedores instalados y sus modelos reales antes de abrir
+  una sesion; permite elegir modelo, esfuerzo, modo de permisos y carpeta;
+- un solo envio inicia la sesion y entrega el primer mensaje, incluidos
+  adjuntos de imagen, captura de pantalla, drop nativo y dictado;
+- continua conversaciones en la misma superficie, muestra streaming,
+  herramientas, planes, costos y permisos con Denegar, Siempre o Permitir;
+- permite cancelar/cerrar la sesion, conserva errores visibles y ofrece
+  Reintentar con el ultimo mensaje del usuario;
+- se adapta a ventanas estrechas, respeta teclado, foco visible y reduced
+  motion.
+
+Smoke real en el binario WebView2 estatico:
+
+- se eligio Codex con `GPT-5.6-Sol` desde la superficie nueva;
+- el primer mensaje recibio `ATIC_OK` y el segundo, en la misma sesion,
+  `ATIC_CONTINUA`;
+- durante un tercer turno aparecio `Cancelar`; al activarlo la sesion se cerro
+  y la UI volvio a `Ninguna sesion activa`;
+- la unica ventana principal del proceso siguio siendo `Pearl Flow Agentes`:
+  la ruta antigua `/agents` no se creo ni participo del flujo.
