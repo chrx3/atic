@@ -6,10 +6,10 @@
    * detrás de otra en el mismo archivo. Acá cada una es un componente que se
    * entiende solo, y el panel únicamente decide cuál se ve.
    *
-   * Tres secciones siguen en la UI vieja y se dicen a la cara: Atajos necesita
-   * la captura de combinaciones, Audio la enumeración de dispositivos y
-   * Resúmenes el manejo de claves de proveedor. Prometer una pantalla vacía
-   * sería peor que mandar a la que funciona.
+   * Dos secciones siguen en la UI vieja y se dicen a la cara: Audio necesita
+   * la enumeración de dispositivos y Resúmenes el manejo de claves de
+   * proveedor. Prometer una pantalla vacía sería peor que mandar a la que
+   * funciona.
    */
   import SettingsNav from "$patterns/SettingsNav.svelte";
   import Banner from "$ui/Banner.svelte";
@@ -17,6 +17,7 @@
   import DictationSection from "./DictationSection.svelte";
   import GeneralSection from "./GeneralSection.svelte";
   import MeetingsSection from "./MeetingsSection.svelte";
+  import ShortcutsSection from "./ShortcutsSection.svelte";
 
   type SectionId =
     | "general"
@@ -38,7 +39,6 @@
   ];
 
   const PENDING: Record<string, string> = {
-    shortcuts: "La captura de combinaciones de teclas todavía no está reescrita.",
     audio: "La lista de micrófonos y salidas todavía no está reescrita.",
     summary: "El manejo de claves de los proveedores todavía no está reescrito.",
   };
@@ -58,6 +58,8 @@
       <DictationSection />
     {:else if section === "captures"}
       <CapturesSection />
+    {:else if section === "shortcuts"}
+      <ShortcutsSection />
     {:else}
       <Banner tone="info" title={PENDING[section]}>
         Volvé a la interfaz anterior con Ctrl+Alt+M para cambiarlo.
