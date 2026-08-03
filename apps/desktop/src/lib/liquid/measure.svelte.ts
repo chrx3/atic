@@ -37,6 +37,16 @@ export class RectTracker {
   /** Lo último medido, en coordenadas del elemento de referencia. */
   rects = $state<Record<string, Rect>>({});
 
+  /**
+   * Dónde está la referencia dentro del viewport.
+   *
+   * Lo necesita quien publica sus siluetas a un grupo compartido: ahí las
+   * formas tienen que estar en coordenadas comunes, y estas lo están en las de
+   * la referencia. Se mide en el mismo cuadro que el resto, no aparte: pedirlo
+   * después daría la posición de otro instante durante una animación.
+   */
+  originAt = $state<{ x: number; y: number }>({ x: 0, y: 0 });
+
   /** Registro plano, igual que `rects`: se recorre, no se observa. */
   #els: Record<string, HTMLElement> = {};
   #origin: HTMLElement | null = null;
@@ -108,7 +118,19 @@ export class RectTracker {
       if (!same(this.rects[id], rect)) changed = true;
     }
 
-    if (changed || Object.keys(next).length !== Object.keys(this.rects).length) {
+    // La referencia también se mueve: durante un vuelo cambia de sitio sin
+    // cambiar de tamaño, y quien publica al grupo compartido necesita las dos
+    // cosas del MISMO cuadro.
+    const moved =
+      Math.abs(this.originAt.x - base.x) >= EPSILON ||
+      Math.abs(this.originAt.y - base.y) >= EPSILON;
+    if (moved) this.originAt = { x: base.x, y: base.y };
+
+    if (
+      changed ||
+      moved ||
+      Object.keys(next).length !== Object.keys(this.rects).length
+    ) {
       this.rects = next;
       this.#still = 0;
     } else {

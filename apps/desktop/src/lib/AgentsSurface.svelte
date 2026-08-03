@@ -88,7 +88,9 @@
   import AgentMark from "$lib/AgentMark.svelte";
   import AgentConversation from "$lib/AgentConversation.svelte";
   import AgentIcons from "$lib/AgentIcons.svelte";
-  import GooFilter, { GOO_GROW, preFilter } from "$lib/GooFilter.svelte";
+  import { boxShape, gapBetween } from "$lib/liquid/geometry";
+  import { REACH } from "$lib/liquid/constants";
+  import { liquid } from "$surfaces/overlay/group.svelte";
   import { surfaces } from "$surfaces/overlay/surfaces.svelte";
   import type {
     AgentBackendInfo,
@@ -257,236 +259,53 @@
 
   /* ─── La junta líquida ──────────────────────────────────────────────────
    *
-   * Tres siluetas en una sola capa filtrada: la pill, dos gotas de cuello y el
-   * globo. Todo en píxeles CSS del overlay, que es el único sistema de
-   * coordenadas que queda.
+   * Ya no se dibuja: se publica.
    *
-   * Las medidas del cuello salen de la demo (`docs/demos/agentes.html`): la
-   * gota gruesa va centrada en el borde de la pill y la fina en el del globo.
-   * Con `gap = 10` y σ = 5 el alcance del filtro es 8.6 px, o sea que sin ellas
-   * el cuello no se forma y el globo queda suelto.
+   * Antes acá vivían tres siluetas en una capa filtrada —una copia de la pill,
+   * dos gotas de cuello y el globo— y cinco constantes que existían para suplir
+   * al filtro: grosor 26 que adelgazaba a 10, piso de 6 px, corte a los 140 y
+   * penetración contra las esquinas. Hacían falta porque el goo con σ = 5 solo
+   * cruza 8.6 px por su cuenta, menos que el hueco de 10 que usa la app: el
+   * cuello no se formaba solo y había que pintarlo.
+   *
+   * El campo de distancia con `BLEND` cruza 29.5, así que la unión sale de la
+   * mezcla. Lo único que queda es decir dónde está el globo; el cuello, su
+   * grosor y el momento en que se corta los decide el campo.
    */
-  /** Grosor del cuello pegado a la pill, y al que adelgaza al estirarse. */
-  const NECK_THICK = 26;
-  const NECK_THIN = 10;
+
   /** Radio de las esquinas del globo. Gemelo de `corner` en `bridge.rs`. */
   const BUBBLE_CORNER = 26;
-  /**
-   * Hasta dónde estira el cuello antes de cortarse.
-   *
-   * No sale del filtro: el filtro solo cruza 8.6 px por su cuenta, y por eso el
-   * cuello se DIBUJA — es una forma más, no un hueco que se rellene solo. El
-   * límite es lo que se lee como una sola cosa estirándose; más allá son dos
-   * cosas unidas por un hilo.
-   */
-  const NECK_MAX = 140;
-  /**
-   * Lo más fino que puede quedar sin desaparecer.
-   *
-   * El endurecido borra lo que no llegue al umbral: una barra de grosor `g`
-   * difuminada con σ = 5 queda con alfa `2·Φ(g/10) − 1` en su eje, y hace falta
-   * pasar 7/18. Por debajo de 6 px el cuello se corta solo a mitad del estirado,
-   * que es peor que cortarse limpio.
-   */
-  const NECK_MIN_THICK = 6;
 
   /** Rectángulo de la pill, publicado por ella misma al medirse. */
   const pillSkin = $derived(surfaces.live["pill-skin"]);
 
   /**
-   * ¿El cuello sigue saliendo de la pill?
+   * ¿El globo todavía sale de la pill?
    *
-   * Se corta por dos motivos, y los dos son el mismo: el globo ya no sale de
-   * ahí. Arrastrarlo lo despega a mano; alejar la pill lo despega solo, porque
-   * las dos gotas dejan de solaparse en cuanto el hueco pasa de `NECK_REACH` y
-   * lo que quedaría es un par de motas flotando entre las dos formas.
+   * Una sola cuenta contra el alcance del campo. Antes eran dos condiciones
+   * —hueco y solape lateral— porque el cuello era un dibujo y necesitaba un
+   * sitio por donde pasar; el campo no necesita permiso: si las dos formas
+   * están dentro del alcance se funden, estén como estén.
    */
-  /**
-   * Por dónde se miran las dos formas, medido AQUÍ y en vivo.
-   *
-   * El `side` que manda Rust dice dónde COLOCÓ el globo, y eso se decide una
-   * vez, mirando los monitores. Pero el globo se arrastra: llevarlo arriba de
-   * la pill no cambiaba ese dato, así que se seguía midiendo el hueco por el
-   * eje equivocado y la unión solo aparecía cuando se tocaban. Qué borde mira a
-   * cuál es una pregunta viva, y se contesta con los dos rectángulos.
-   */
-  const span = $derived.by(() => {
+  const joined = $derived.by(() => {
     const a = bubble.anchor;
     const p = pillSkin;
-    if (!a || !p) return null;
-
-    // Separación por eje: positiva si hay hueco, negativa si se solapan.
-    const gapX = Math.max(p.x - (a.x + a.w), a.x - (p.x + p.w));
-    const gapY = Math.max(p.y - (a.y + a.h), a.y - (p.y + p.h));
-    // Manda el eje que de verdad los separa. Empatados —o solapados en los
-    // dos— gana el que tenga los centros más lejos, que es por donde se lee
-    // que una sale de la otra.
-    const vertical =
-      gapY > gapX ||
-      (gapY === gapX &&
-        Math.abs(p.y + p.h / 2 - (a.y + a.h / 2)) >
-          Math.abs(p.x + p.w / 2 - (a.x + a.w / 2)));
-
-    const gap = vertical ? gapY : gapX;
-    const pillFirst = vertical ? p.y + p.h / 2 < a.y + a.h / 2 : p.x + p.w / 2 < a.x + a.w / 2;
-    const pillEdge = vertical
-      ? pillFirst
-        ? p.y + p.h
-        : p.y
-      : pillFirst
-        ? p.x + p.w
-        : p.x;
-    const bubEdge = vertical
-      ? pillFirst
-        ? a.y
-        : a.y + a.h
-      : pillFirst
-        ? a.x
-        : a.x + a.w;
-
-    // Dónde puede nacer el cuello en el otro eje: tiene que tocar la pill y no
-    // caer sobre una esquina redondeada del globo, que se vería despegado.
-    const pillLo = vertical ? p.x : p.y;
-    const pillHi = vertical ? p.x + p.w : p.y + p.h;
-    const bubLo = (vertical ? a.x : a.y) + BUBBLE_CORNER;
-    const bubHi = (vertical ? a.x + a.w : a.y + a.h) - BUBBLE_CORNER;
-    const lo = Math.max(pillLo, bubLo);
-    const hi = Math.min(pillHi, bubHi);
-
-    return {
-      vertical,
-      gap,
-      pillEdge,
-      bubEdge,
-      // Cuánto está estirado, 0..1. Manda el grosor del cuello.
-      stretch: Math.min(Math.max(gap, 0) / NECK_MAX, 1),
-      // Sale del CENTRO de la pill, no del `offset` de Rust: ese se calculó
-      // contra el sitio donde el globo nació, y encima ya venía clampeado
-      // contra las esquinas, así que arrastrar la pill lo dejaba corrido.
-      center:
-        lo > hi
-          ? (lo + hi) / 2
-          : Math.min(Math.max((pillLo + pillHi) / 2, lo), hi),
-      // Tramo común: sin él no hay por dónde pasar.
-      overlap: Math.min(pillHi, vertical ? a.x + a.w : a.y + a.h) -
-        Math.max(pillLo, vertical ? a.x : a.y),
-    };
-  });
-
-  const joined = $derived.by(() => {
-    const s = span;
-    if (!s || !bubble.alive) return false;
-    // Arrastrar el globo YA NO lo despega.
-    //
-    // Lo hacía porque el cuello era un dibujo fijo: movido de sitio apuntaba a
-    // donde la pill no estaba, y borrarlo era mejor que mentir. Ahora el cuello
-    // se calcula contra los dos rectángulos en vivo, así que se estira siguiendo
-    // al globo y se corta cuando de verdad están lejos — que es lo que hace un
-    // líquido y lo que la demo mostraba.
-    //
-    // Solapadas (hueco negativo) cuenta como unidas: es lo que pasa al
-    // redimensionar el globo contra la pill.
-    return s.gap <= NECK_MAX && s.overlap >= NECK_THIN;
+    if (!a || !p || !bubble.alive) return false;
+    return gapBetween(p, a) <= REACH;
   });
 
   /**
-   * La caja que envuelve pill y globo.
+   * El globo, como forma del campo.
    *
-   * El filtro solo alcanza su propia región, y la región se mide contra la caja
-   * del elemento filtrado: si la capa midiera solo el globo, el cuello y la
-   * pill quedarían recortados fuera.
+   * Va en coordenadas del overlay porque el grupo mezcla esto con las siluetas
+   * de la pill, y solo son comparables en un origen común. Se publica siempre
+   * que esté vivo, esté unido o no: suelto es una silueta más del grupo, y el
+   * campo ya sabe que a esa distancia no toca a nadie.
    */
-  const skinBox = $derived.by(() => {
+  $effect(() => {
     const a = bubble.anchor;
-    if (!a || !bubble.alive) return null;
-    const p = joined ? pillSkin : null;
-    const x = p ? Math.min(a.x, p.x) : a.x;
-    const y = p ? Math.min(a.y, p.y) : a.y;
-    return {
-      x,
-      y,
-      w: (p ? Math.max(a.x + a.w, p.x + p.w) : a.x + a.w) - x,
-      h: (p ? Math.max(a.y + a.h, p.y + p.h) : a.y + a.h) - y,
-    };
-  });
-
-  type Box = { x: number; y: number; w: number; h: number };
-
-  /** Del overlay a la caja de la capa. */
-  function local(r: Box): Box {
-    return { ...r, x: r.x - (skinBox?.x ?? 0), y: r.y - (skinBox?.y ?? 0) };
-  }
-
-  /**
-   * Igual, pero encogido lo que el filtro le va a devolver.
-   *
-   * El endurecido del alfa engorda la silueta `GOO_GROW` por lado. Va en las
-   * dos formas cuyo tamaño final tiene que ser exacto —la copia de la pill, que
-   * si no asomaría 2.8 px por debajo de la de verdad, y el globo, que tiene que
-   * medir lo mismo que la caja de contenido que lleva encima—. Las gotas del
-   * cuello NO: ahí el tamaño es un aspecto, no una medida, y sus números salen
-   * de la demo tal cual.
-   */
-  function preFiltered(r: Box): Box {
-    const l = local(r);
-    return {
-      x: l.x + GOO_GROW,
-      y: l.y + GOO_GROW,
-      w: preFilter(r.w),
-      h: preFilter(r.h),
-    };
-  }
-
-  const anchorBlob = $derived.by(() => {
-    if (!joined || !pillSkin) return null;
-    const r = preFiltered(pillSkin);
-    // Pastilla o caja: la pill es una pastilla salvo cuando tiene un panel
-    // abierto, y ahí es la caja de 18 px de radio que declara `.p-liquid`.
-    return { ...r, r: pillSkin.h > 48 ? 18 : r.h / 2 };
-  });
-
-  const bodyBlob = $derived.by(() => {
-    const a = bubble.anchor;
-    if (!a) return null;
-    return { ...preFiltered(a), r: 26 - GOO_GROW };
-  });
-
-  /**
-   * Las dos gotas del cuello, del borde de la pill al del globo.
-   *
-   * Una sola cuenta para los cuatro lados: `side` dice qué borde de la pill
-   * mira al globo, y con eso salen el eje del cuello y el centro por el que
-   * pasa. El `offset` lo calculó Rust contra el globo YA ubicado, así que
-   * cuando el globo se corre contra un canto de la pantalla el cuello se corre
-   * con él en vez de quedar apuntando al aire.
-   */
-  const neck = $derived.by(() => {
-    const s = span;
-    if (!joined || !s || !skinBox) return null;
-
-    // Una sola cápsula que entra en las dos formas, no dos gotas sueltas.
-    //
-    // Las gotas eran del diseño con hueco fijo de 10 px: cada una centrada en
-    // un borde, solapándose en el medio. En cuanto el globo se despega dejan de
-    // tocarse y quedan dos motas flotando. Una cápsula que va de dentro de la
-    // pill a dentro del globo cruza siempre; lo que cambia al estirarse es el
-    // grosor, que es exactamente lo que hace un cuello de líquido. Los filetes
-    // cóncavos de las dos puntas los pone el filtro.
-    const thick = Math.max(
-      NECK_MIN_THICK,
-      NECK_THICK + (NECK_THIN - NECK_THICK) * s.stretch,
-    );
-    const dir = Math.sign(s.bubEdge - s.pillEdge) || 1;
-    const from = s.pillEdge - dir * 9;
-    const to = s.bubEdge + dir * 7;
-    const lo = Math.min(from, to);
-    const long = Math.abs(to - from);
-
-    return local(
-      s.vertical
-        ? { x: s.center - thick / 2, y: lo, w: thick, h: long }
-        : { x: lo, y: s.center - thick / 2, w: long, h: thick },
-    );
+    if (!a || !bubble.alive) return;
+    return liquid.publish("agents", [boxShape(a, BUBBLE_CORNER)]);
   });
 
   /**
@@ -1639,56 +1458,15 @@
   </button>
 {/snippet}
 
-<!-- Filtro goo de la junta. No se aplica al contenido: el difuminado +
-     endurecido borraría el texto. -->
-<GooFilter id="bub-liquid-goo" />
-
 <!--
-  La capa fundida: silueta de la pill + gotas del cuello + silueta del globo.
+  La silueta no se dibuja acá.
 
-  Van juntas porque un filtro solo funde lo que comparte capa. La de la pill se
-  dibuja DOS VECES —acá y en la propia pill, que tiene su filtro para fundir su
-  barra con su panel—, del mismo color y del mismo tamaño, así que la de acá no
-  se ve: lo único que aporta es darle al cuello algo con qué fundirse.
--->
-<!--
-  La paleta vive en el envoltorio y no en el globo.
-
-  La piel es HERMANA del globo, no hija: un filtro tiene que envolver las tres
-  siluetas, y ninguna de ellas puede estar dentro del contenido. Con los tokens
-  declarados en `.bub`, la piel se quedaba sin `--shell` y sus formas salían
-  con `background: var(--shell)` sin resolver, o sea transparentes: la consola
-  se veía sin fondo.
+  La pill y el globo publican sus formas al grupo del overlay, que las traza
+  juntas en un solo campo. Antes esta capa llevaba una COPIA de la pill —para
+  darle al cuello algo con qué fundirse— y las gotas del cuello; con un campo
+  compartido la pill de verdad ya está adentro y el cuello sale de la mezcla.
 -->
 <div class="console" data-prov={active?.backendId ?? picked}>
-{#if skinBox}
-  <div
-    class="bub-skin"
-    class:is-shown={bubble.shown}
-    aria-hidden="true"
-    style="left: {skinBox.x}px; top: {skinBox.y}px; width: {skinBox.w}px; height: {skinBox.h}px"
-  >
-    {#if anchorBlob}
-      <i
-        class="bs-blob"
-        style="left: {anchorBlob.x}px; top: {anchorBlob.y}px; width: {anchorBlob.w}px; height: {anchorBlob.h}px; border-radius: {anchorBlob.r}px"
-      ></i>
-    {/if}
-    {#if neck}
-      <i
-        class="bs-blob"
-        style="left: {neck.x}px; top: {neck.y}px; width: {neck.w}px; height: {neck.h}px; border-radius: 999px"
-      ></i>
-    {/if}
-    {#if bodyBlob}
-      <i
-        class="bs-blob"
-        style="left: {bodyBlob.x}px; top: {bodyBlob.y}px; width: {bodyBlob.w}px; height: {bodyBlob.h}px; border-radius: {bodyBlob.r}px"
-      ></i>
-    {/if}
-  </div>
-{/if}
-
 <div
   class="bub"
   class:is-shown={bubble.shown}
@@ -2674,31 +2452,6 @@
     transform-origin: 100% var(--tail);
   }
 
-  /*
-   * La capa fundida: siluetas y nada más.
-   *
-   * Sigue la regla del sistema líquido — el filtro difumina todo lo que tenga
-   * adentro, así que acá no puede haber ni texto ni iconos. La sombra va
-   * DESPUÉS del goo en la misma cadena: una `box-shadow` por forma entraría al
-   * filtro como alfa parcial y alargaría el cuello.
-   */
-  .bub-skin {
-    position: absolute;
-    z-index: 0;
-    opacity: 0;
-    filter: url(#bub-liquid-goo) drop-shadow(0 18px 44px rgb(0 0 0 / 42%));
-    pointer-events: none;
-    transition: opacity var(--morph-fade-dur) var(--morph-close-ease);
-  }
-  .bub-skin.is-shown {
-    opacity: 1;
-    transition: opacity var(--morph-fade-dur) var(--morph-ease);
-  }
-  .bs-blob {
-    position: absolute;
-    display: block;
-    background: var(--shell);
-  }
 
   /* El acento sigue al proveedor: es la única pieza de color que cambia entre
      los cuatro agentes, y por eso es la prueba visible de que abajo hay un solo

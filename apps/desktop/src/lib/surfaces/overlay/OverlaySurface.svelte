@@ -18,6 +18,8 @@
   import { getConfig } from "$ipc/config";
   import { onPillVisibility, setOverlayTextMode } from "$ipc/overlay";
   import { liveArea } from "./surfaces.svelte";
+  import { liquid } from "./group.svelte";
+  import Skin from "$liquid/Skin.svelte";
   import type { Component } from "svelte";
 
   const debug = $derived(page.url.searchParams.has("debug"));
@@ -168,6 +170,18 @@
       <Lab onClose={() => localStorage.removeItem(LAB_KEY)} />
     </div>
   {:else}
+    <!--
+      La piel de TODO lo que se funde, trazada una sola vez.
+
+      Va acá y no en cada superficie porque un campo de distancia solo funde lo
+      que comparte campo: con la pill trazando su contorno y la consola el suyo,
+      el cuello entre las dos no podía existir y había que pintarlo a mano.
+
+      Primero en el orden, o sea debajo de todo: es una silueta, y el contenido
+      —texto, iconos, controles— vive encima con la misma geometría.
+    -->
+    <Skin shapes={liquid.shapes} />
+
     <!-- Siempre montada, visible o no: es quien escucha los eventos de sesión,
          y desmontarla dejaría la consola sorda mientras está cerrada. -->
     <AgentsSurface />

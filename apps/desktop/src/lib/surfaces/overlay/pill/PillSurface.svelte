@@ -27,8 +27,8 @@
   import { snippets } from "$domain/snippets.svelte";
   import Waveform from "$lib/Waveform.svelte";
   import AticMark from "$lib/AticMark.svelte";
-  import GooFilter from "$lib/GooFilter.svelte";
-  import Skin from "$lib/liquid/Skin.svelte";
+  import { liquid } from "$surfaces/overlay/group.svelte";
+  import type { Rect } from "$lib/liquid/geometry";
   import { RectTracker } from "$lib/liquid/measure.svelte";
   import { boxShape, pillShape } from "$lib/liquid/geometry";
   import ToolIcon from "$lib/ToolIcon.svelte";
@@ -184,14 +184,14 @@
 
   /* ─── La piel, por campo de distancia ───────────────────────────────────
    *
-   * El filtro SVG sigue disponible con `Ctrl+Alt+P`: esta superficie se usa
-   * todos los días y conviene poder volver en un gesto si algo se ve mal.
+   * Ya no hay vuelta atrás al filtro SVG, y por eso se fue el `Ctrl+Alt+P`: la
+   * consola también dibuja por campo, así que volver al goo dejaría la mitad
+   * del grupo sin trazar. No hay a qué volver.
    *
-   * El CSS no cambia. Sigue decidiendo la geometría y las animaciones —cómo
-   * se derrama el panel, cómo llega la gota, cómo se invierte todo al abrir
-   * hacia arriba— y lo único que cambia es quién dibuja el contorno.
+   * El CSS no cambia. Sigue decidiendo la geometría y las animaciones —cómo se
+   * derrama el panel, cómo llega la gota, cómo se invierte todo al abrir hacia
+   * arriba— y lo único que cambia es quién dibuja el contorno.
    */
-  let sdf = $state(true);
   const tracker = new RectTracker();
 
   $effect(() => {
@@ -221,21 +221,7 @@
     tracker.wake();
   });
 
-  onMount(() => {
-    sdf = localStorage.getItem("atic-pill-goo") !== "1";
-    const onToggle = (event: KeyboardEvent) => {
-      if (!event.ctrlKey || !event.altKey || event.key.toLowerCase() !== "p") return;
-      sdf = !sdf;
-      if (sdf) localStorage.removeItem("atic-pill-goo");
-      else localStorage.setItem("atic-pill-goo", "1");
-      tracker.wake();
-    };
-    window.addEventListener("keydown", onToggle);
-    return () => {
-      window.removeEventListener("keydown", onToggle);
-      tracker.stop();
-    };
-  });
+  onMount(() => () => tracker.stop());
 
   /**
    * Las siluetas medidas, como formas del campo.
@@ -246,12 +232,25 @@
    */
   const skinShapes = $derived.by(() => {
     const r = tracker.rects;
+    // A coordenadas del overlay: el grupo mezcla las formas de la pill con las
+    // de la consola, y solo son comparables en un origen común.
+    const o = tracker.originAt;
+    const at = (rect: Rect): Rect => ({ ...rect, x: rect.x + o.x, y: rect.y + o.y });
     const shapes = [];
-    if (r.bar) shapes.push(pillShape(r.bar));
-    if (r.tail) shapes.push(pillShape(r.tail));
-    if (r.panel) shapes.push(boxShape(r.panel, 18));
+    if (r.bar) shapes.push(pillShape(at(r.bar)));
+    if (r.tail) shapes.push(pillShape(at(r.tail)));
+    if (r.panel) shapes.push(boxShape(at(r.panel), 18));
     return shapes;
   });
+
+  /**
+   * La pill no traza su contorno: lo publica.
+   *
+   * Quien traza es el overlay, con TODO el grupo en un solo campo. Es lo único
+   * que hace que el cuello hacia la consola exista sin dibujarlo: dos campos
+   * separados no se pueden fundir por definición.
+   */
+  $effect(() => liquid.publish("pill", skinShapes));
 
   /**
    * El hogar: dónde vuelve la pill cuando se cierra lo que haya abierto.
@@ -1032,8 +1031,6 @@
   </div>
 {/snippet}
 
-<GooFilter id="pill-goo" />
-
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
   class="p-root"
@@ -1065,14 +1062,11 @@
     />
   </div>
 
-  <!-- La piel medida cuelga del stack y no del cuerpo líquido: `.p-liquid`
-       recorta con `overflow: hidden` para contener el sobrepaso del morph, y
-       ese recorte se comería el bulto de la silueta fundida. -->
+  <!-- El stack es la REFERENCIA de medida y nada más: la silueta ya no se
+       dibuja acá, se publica al grupo del overlay. Sigue estando fuera de
+       `.p-liquid` porque ese recorta con `overflow: hidden` para contener el
+       sobrepaso del morph, y el recorte se comería lo que se mide. -->
   <div class="p-stack" class:is-dim={surface === "wheel"} bind:this={stackEl}>
-    {#if sdf}
-      <Skin shapes={skinShapes} />
-    {/if}
-
     <!-- Cuerpo líquido: con panel, barra + cuerpo son DOS siluetas que se
          funden (join tipo Liquid UI). Sin panel, es solo la barra. -->
     <div class="p-liquid" class:is-fused={panelOpen} bind:this={liquidEl}>
@@ -1084,7 +1078,7 @@
            las animaciones —que es donde está todo el conocimiento de cómo se
            derrama el panel y cómo llega la gota— y `Skin` dibuja el contorno
            a partir de lo medido. -->
-      <div class="p-skin" class:is-sdf={sdf} aria-hidden="true">
+      <div class="p-skin" aria-hidden="true">
         <i class="p-skin-bar" {@attach trackBar}></i>
         {#if !discOnly && !panelOpen}
           <i class="p-skin-tail" {@attach trackTail}></i>
@@ -1370,65 +1364,48 @@
     overflow: hidden;
     border-radius: 18px;
 
-    /* Ya no pinta la superficie —eso lo hace `.p-skin`—, solo proyecta la
-       sombra. El brillo de 1px que había acá se fue con el fondo: era una
-       línea recta arriba, y lo que ahora dibuja la unión es el filete cóncavo
-       del hombro, que es justamente el gesto que la línea tapaba. */
-    box-shadow: 0 12px 32px rgb(0 0 0 / 14%);
+    /* Sin sombra: la proyecta el contorno ya trazado, no esta caja. Dejar las
+       dos dibujaba un rectángulo por detrás de una silueta redondeada. */
     animation: p-liquid-in var(--panel-dur) var(--morph-ease);
   }
 
   /*
-   * La piel: las siluetas, fundidas entre sí, sin nada de contenido adentro.
+   * La piel: solo REFERENCIAS DE MEDIDA.
+   *
+   * Estos `<i>` no se pintan. El CSS de abajo sigue decidiendo su geometría y
+   * sus animaciones —cómo se derrama el panel, cómo llega la gota, cómo se
+   * invierte todo al abrir hacia arriba—, la pill los mide, y el contorno lo
+   * traza el campo del overlay a partir de esos rectángulos.
    *
    * `flex-direction: inherit` no es un atajo: `.p-root.is-up` invierte
    * `.p-liquid` a `column-reverse` cuando el panel abre hacia arriba, y así la
    * piel se da vuelta con él sin repetir la regla.
    */
   .p-skin {
-    position: absolute;
-    z-index: 0;
-    inset: var(--goo-grow);
-    display: flex;
-    flex-direction: inherit;
-    pointer-events: none;
-    filter: url("#pill-goo");
-  }
-
-  .p-skin > i {
-    display: block;
-    background: var(--skin);
-  }
-
-  /* Con el campo de distancia los `<i>` no se pintan ni se filtran: solo se
-     miden. La silueta la dibuja `Skin` a partir de sus rectángulos. */
-  .p-skin.is-sdf {
-    filter: none;
-
     /*
-     * Y se anula el descuento del engorde.
+     * El descuento del engorde queda en cero.
      *
-     * Todas las medidas de la piel están escritas como `40px - goo-grow * 2`
+     * Las medidas de acá abajo están escritas como `40px - goo-grow * 2`
      * porque el endurecido del filtro devolvía 2.8 px por lado. El contorno
-     * trazado NO engorda: pasa por la geometría pedida. Dejando el descuento,
-     * el disco de 40 se dibujaba de 37.2.
+     * trazado NO engorda: pasa por la geometría pedida. Con el descuento
+     * puesto, el disco de 40 se medía de 37.2.
      *
      * Se apaga con la variable y no regla por regla: así vale para las tres
      * siluetas y para el `inset` de una sola vez.
      */
     --goo-grow: 0px;
 
+    position: absolute;
+    z-index: 0;
     inset: 0;
+    display: flex;
+    flex-direction: inherit;
+    pointer-events: none;
   }
 
-  .p-skin.is-sdf > i {
+  .p-skin > i {
+    display: block;
     background: transparent;
-  }
-
-  /* Y la sombra la proyecta el path ya trazado, no la caja: dejar las dos
-     dibujaba un rectángulo por detrás de una silueta redondeada. */
-  .p-liquid.is-fused:has(.p-skin.is-sdf) {
-    box-shadow: none;
   }
 
   /* La pastilla de siempre. El alto descuenta lo que el filtro va a devolver
