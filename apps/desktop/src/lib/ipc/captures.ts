@@ -1,9 +1,17 @@
 /** Capturas de pantalla: el disparo, la selección, el archivo y su OCR. */
 
-import { invoke } from "@tauri-apps/api/core";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import type { CaptureItem, OverlayInfo } from "$core/types";
 import { on } from "./events";
+
+/**
+ * URL mostrable para un archivo del disco.
+ *
+ * El webview no puede abrir un `file://` propio: Tauri lo sirve por su
+ * protocolo de assets, y sin esta conversión la imagen no carga.
+ */
+export const captureSrc = (path: string): string => convertFileSrc(path);
 
 export const capturePrimaryMonitor = () => invoke<string>("capture_primary_monitor");
 export const listRecentCaptures = () => invoke<CaptureItem[]>("list_recent_captures");

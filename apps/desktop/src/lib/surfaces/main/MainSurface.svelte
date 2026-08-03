@@ -11,7 +11,11 @@
   import { toolById, type ToolId } from "$core/tools";
   import { sessionEffect } from "$domain/session";
   import { toasts } from "$domain/toasts.svelte";
+  import CapturesTool from "$features/captures/CapturesTool.svelte";
+  import ClipboardTool from "$features/clipboard/ClipboardTool.svelte";
+  import DictationTool from "$features/dictation/DictationTool.svelte";
   import MeetingsTool from "$features/meetings/MeetingsTool.svelte";
+  import SnippetsTool from "$features/snippets/SnippetsTool.svelte";
   import { closeWindow, minimizeWindow, toggleMaximizeWindow } from "$ipc/windows";
   import WindowFrame from "$patterns/WindowFrame.svelte";
   import Button from "$ui/Button.svelte";
@@ -23,12 +27,29 @@
 
   const ui = provideMainUi();
 
-  /** Lo que ya está reescrito. Crece con la fase 5. */
-  const READY: ToolId[] = ["meetings"];
+  /** Lo que ya está reescrito. Falta agentes, que depende de la fase 7. */
+  const READY: ToolId[] = [
+    "meetings",
+    "dictation",
+    "clipboard",
+    "snippets",
+    "captures",
+  ];
 
   // Una sola declaración de qué necesita esta ventana. Sin esto, cada vista
   // volvía a suscribirse por su cuenta y el estado quedaba duplicado.
-  $effect(() => sessionEffect(["config", "recordings", "models", "capture"]));
+  $effect(() =>
+    sessionEffect([
+      "config",
+      "recordings",
+      "models",
+      "capture",
+      "dictation",
+      "clipboard",
+      "snippets",
+      "captures",
+    ]),
+  );
 
   const tool = $derived(toolById(ui.activeTool));
 
@@ -73,6 +94,14 @@
     <HubView ready={READY} onOpen={(id) => ui.openTool(id)} />
   {:else if ui.activeTool === "meetings"}
     <MeetingsTool />
+  {:else if ui.activeTool === "dictation"}
+    <DictationTool />
+  {:else if ui.activeTool === "clipboard"}
+    <ClipboardTool />
+  {:else if ui.activeTool === "snippets"}
+    <SnippetsTool initialTab={ui.snippetsTab} />
+  {:else if ui.activeTool === "captures"}
+    <CapturesTool />
   {:else}
     <EmptyState title="{tool.label} todavía no está reescrita" hint={tool.blurb}>
       {#snippet action()}

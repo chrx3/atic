@@ -17,9 +17,13 @@
  */
 
 import { capture } from "./capture.svelte";
+import { captures } from "./captures.svelte";
+import { clipboard } from "./clipboard.svelte";
 import { config } from "./config.svelte";
+import { dictation } from "./dictation.svelte";
 import { models } from "./models.svelte";
 import { recordings } from "./recordings.svelte";
+import { snippets } from "./snippets.svelte";
 import { createSession, type DomainStore } from "./store";
 
 const REGISTRY = {
@@ -27,6 +31,10 @@ const REGISTRY = {
   recordings,
   models,
   capture,
+  dictation,
+  clipboard,
+  snippets,
+  captures,
 } satisfies Record<string, DomainStore>;
 
 export type DomainName = keyof typeof REGISTRY;
