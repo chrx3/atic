@@ -18,13 +18,13 @@
    */
   import { onMount } from "svelte";
   import type { UnlistenFn } from "@tauri-apps/api/event";
-  import type {
-    ClipboardItem,
-    DictationPhase,
-    Levels,
-    PasteQueueItem,
-    Snippet as TextSnippet,
-  } from "$lib/types";
+  import type { DictationPhase } from "$core/types";
+  import { capture } from "$domain/capture.svelte";
+  import { clipboard } from "$domain/clipboard.svelte";
+  import { dictation as dictationStore } from "$domain/dictation.svelte";
+  import { paste } from "$domain/paste.svelte";
+  import { sessionEffect } from "$domain/session";
+  import { snippets } from "$domain/snippets.svelte";
   import Waveform from "$lib/Waveform.svelte";
   import AticMark from "$lib/AticMark.svelte";
   import GooFilter from "$lib/GooFilter.svelte";
@@ -60,47 +60,25 @@
     type Surface,
   } from "$surfaces/overlay/pill/pillPlan";
   import { MOTION, ms, wait } from "$lib/motion";
+  // Lo que queda son los comandos DE LA PILL: su geometría, sus atajos y las
+  // ventanas que abre. El estado de la app lo traen los stores.
+  import { showAgentsWindow } from "$ipc/agents";
+  import { startCaptureSession } from "$ipc/captures";
+  import { getConfig, openDataDir, showMainWindow } from "$ipc/config";
   import {
-    listPasteQueue,
-    pasteQueueItemNow,
-    dismissPasteQueueItem,
-    onPasteQueueChanged,
-    onPasteQueued,
-    startRecording,
-    stopRecording,
-    isRecording,
-    toggleDictation,
-    dictationPhase,
-    showMainWindow,
-    startCaptureSession,
-    getConfig,
-    listClipboardHistory,
-    listSnippets,
-    getScratchpad,
-    setScratchpad,
-    onLevels,
-    onStatus,
-    onCaptureWarn,
-    onDictationStatus,
-    onLiveTranscriptError,
-    onLiveTranscriptFinal,
+    onOverlayDismiss,
+    onPillClipboardClose,
+    onPillClipboardToggle,
+    onPillRadialPress,
+    onPillRadialRelease,
+    onPillReset,
+    onPillSnippetsClose,
+    onPillSnippetsToggle,
     overlayCursor,
     pillHome,
     pillTrace,
-    onPillClipboardToggle,
-    onPillClipboardClose,
-    onPillSnippetsToggle,
-    onPillSnippetsClose,
-    onPillReset,
-    onPillRadialPress,
-    onPillRadialRelease,
-    onClipboardHistoryChanged,
-    onSnippetsChanged,
-    openDataDir,
-    showAgentsWindow,
     savePillHome,
-    onOverlayDismiss,
-  } from "$lib/api";
+  } from "$ipc/overlay";
 
   /*
    * Los tipos y las decisiones viven en `pill/pillPlan.ts`, que es TS puro y
@@ -113,18 +91,35 @@
    * se queda. La pill se queda con el aviso, que sí es su trabajo.
    */
 
-  // ─── Eje 1: actividad ────────────────────────────────────────────────────
-  let recording = $state(false);
-  let elapsed = $state(0);
-  let levels = $state<Levels>({ mic: 0, system: 0 });
-  let dictation = $state<DictationPhase>("idle");
-  let dictationMessage = $state<string | null>(null);
-  let liveActive = $state(false);
-  let liveError = $state<string | null>(null);
-  let btWarning = $state<string | null>(null);
-  let busy = $state(false);
+  /**
+   * El estado de la app no es de la pill.
+   *
+   * Grabación, dictado, portapapeles, textos y cola vivían acá con sus propias
+   * copias y sus propios oyentes, duplicados con la ventana principal: dos
+   * cronómetros contando lo mismo. Ahora se declara una vez qué necesita esta
+   * ventana y el resto se lee.
+   *
+   * La pill los necesita TODOS desde el arranque, aunque los paneles estén
+   * cerrados: se abren por atajo global y tienen que salir con el contenido ya
+   * puesto, no vacíos esperando un viaje a Rust.
+   */
+  $effect(() =>
+    sessionEffect(["config", "capture", "dictation", "clipboard", "snippets", "paste"]),
+  );
 
-  const dictating = $derived(dictation !== "idle");
+  // ─── Eje 1: actividad ────────────────────────────────────────────────────
+  const recording = $derived(capture.active);
+  const elapsed = $derived(capture.elapsed);
+  const levels = $derived(capture.levels);
+  const dictation = $derived(dictationStore.phase);
+  const dictationMessage = $derived(dictationStore.message);
+  /** Llegó al menos un fragmento en vivo: la transcripción en directo anda. */
+  const liveActive = $derived(capture.segments.length > 0);
+  const liveError = $derived(capture.liveError);
+  const btWarning = $derived(capture.note);
+  const busy = $derived(capture.busy);
+
+  const dictating = $derived(dictationStore.active);
   const activity = $derived(
     recording ? "recording" : dictating ? "dictating" : "idle",
   );
@@ -153,9 +148,7 @@
   const agentAlert = $derived(agents.unread > 0 || agents.working);
 
   // ─── Eje 3: cola de pegado ───────────────────────────────────────────────
-  let queue = $state<PasteQueueItem[]>([]);
-  let queueBusy = $state(false);
-  const hasQueue = $derived(queue.length > 0);
+  const hasQueue = $derived(paste.count > 0);
 
   /**
    * Reposo: la barra es SOLO el disco.
@@ -166,15 +159,9 @@
   const discOnly = $derived(isDiscOnly({ surface, activity, hasQueue, agentAlert }));
 
   // ─── Datos de los paneles ────────────────────────────────────────────────
-  let clipboardItems = $state<ClipboardItem[]>([]);
-  let clipboardLoading = $state(false);
-  let snippetItems = $state<TextSnippet[]>([]);
-  let snippetsLoading = $state(false);
+  // Las listas y el bloc salen de los stores; lo único local es qué pestaña se
+  // está mirando, que es estado de esta ventana y de ninguna otra.
   let snippetsTab = $state<"list" | "scratchpad">("list");
-  let scratchBody = $state("");
-  let scratchLoading = $state(false);
-  let scratchSaving = $state(false);
-  let scratchTimer: ReturnType<typeof setTimeout> | null = null;
 
   let pasting = $state(false);
   let windowDragging = $state(false);
@@ -476,24 +463,6 @@
     return () => cancelAnimationFrame(frame);
   });
 
-  // ─── Temporizador de grabación ───────────────────────────────────────────
-  let timer: ReturnType<typeof setInterval> | null = null;
-  let startedAt = 0;
-
-  function startTimer() {
-    if (timer) clearInterval(timer);
-    startedAt = Date.now();
-    elapsed = 0;
-    timer = setInterval(
-      () => (elapsed = Math.floor((Date.now() - startedAt) / 1000)),
-      500,
-    );
-  }
-  function stopTimer() {
-    if (timer) clearInterval(timer);
-    timer = null;
-  }
-
   function fmt(secs: number): string {
     const m = Math.floor(secs / 60);
     const s = secs % 60;
@@ -652,10 +621,11 @@
 
     try {
       if (id === "clipboard" || id === "snippets") {
-        // La pill ya está en el cursor: el panel se abre acá mismo.
+        // La pill ya está en el cursor: el panel se abre acá mismo, y con el
+        // contenido ya puesto porque los stores están montados desde el
+        // arranque.
         surface = id;
         surfaceOpenedAt = Date.now();
-        await loadSurface(id);
         return;
       }
       collapsingFrom = "wheel";
@@ -679,14 +649,6 @@
   }
 
   // ─── Paneles ─────────────────────────────────────────────────────────────
-  async function loadSurface(kind: PanelKind) {
-    if (kind === "clipboard") {
-      await refreshClipboard();
-      return;
-    }
-    await Promise.all([refreshSnippets(), loadScratchpad()]);
-  }
-
   async function openPanel(kind: PanelKind, fly: boolean) {
     // Guardar el hogar y, si hace falta, volar al cursor. Antes eran dos
     // comandos de Rust (`prepare_clipboard_pill` / `prepare_snippets_pill`)
@@ -710,21 +672,15 @@
     trace(`openPanel ${kind} expande`);
     surface = kind;
     surfaceOpenedAt = Date.now();
-    await loadSurface(kind);
   }
 
   /** Cierra cualquier panel/rueda. `silent` evita el viaje de vuelta al hogar. */
   async function closePanels({ silent = false } = {}) {
     if (surface === "none") return;
-    if (scratchTimer) {
-      clearTimeout(scratchTimer);
-      scratchTimer = null;
-      // Guardar lo pendiente, NO descartarlo. El autoguardado del bloc espera
-      // 500 ms tras la última tecla; cerrar el panel dentro de esa ventana
-      // —Escape, clic afuera, pegar un fragmento— tiraba lo último que
-      // escribiste sin decir nada.
-      void persistScratchpad();
-    }
+    // Guardar lo pendiente del bloc, NO descartarlo. El autoguardado espera
+    // tras la última tecla; cerrar el panel dentro de esa ventana —Escape, clic
+    // afuera, pegar un fragmento— tiraba lo último que escribiste sin avisar.
+    snippets.flushScratchpad();
     trace(`closePanels desde=${surface} silent=${silent}`);
     collapsingFrom = surface === "wheel" ? "wheel" : "panel";
     if (surface === "wheel") leavingWheel = true;
@@ -783,105 +739,24 @@
     await openPanel(kind, true);
   }
 
-  // ─── Datos ───────────────────────────────────────────────────────────────
-  async function refreshClipboard() {
-    clipboardLoading = true;
-    try {
-      clipboardItems = await listClipboardHistory();
-    } catch {
-      clipboardItems = [];
-    } finally {
-      clipboardLoading = false;
-    }
-  }
-
-  async function refreshSnippets() {
-    snippetsLoading = true;
-    try {
-      snippetItems = await listSnippets();
-    } catch {
-      snippetItems = [];
-    } finally {
-      snippetsLoading = false;
-    }
-  }
-
-  async function loadScratchpad() {
-    scratchLoading = true;
-    try {
-      scratchBody = (await getScratchpad()).body;
-    } catch {
-      scratchBody = "";
-    } finally {
-      scratchLoading = false;
-    }
-  }
-
-  function scheduleScratchSave() {
-    if (scratchTimer) clearTimeout(scratchTimer);
-    scratchTimer = setTimeout(() => void persistScratchpad(), 500);
-  }
-
-  async function persistScratchpad() {
-    if (scratchSaving) return;
-    scratchSaving = true;
-    try {
-      await setScratchpad(scratchBody);
-    } catch (err) {
-      console.warn("scratchpad save", err);
-    } finally {
-      scratchSaving = false;
-    }
-  }
-
-  async function refreshQueue() {
-    try {
-      queue = await listPasteQueue();
-    } catch {
-      queue = [];
-    }
-  }
-
-  async function queueAction(run: (id: string) => Promise<void>) {
-    const front = queue[0];
-    if (!front || queueBusy) return;
-    queueBusy = true;
-    try {
-      await run(front.id);
-      await refreshQueue();
-    } catch (err) {
-      console.warn("cola de pegado", err);
-    } finally {
-      queueBusy = false;
-    }
-  }
-
   // ─── Acciones ────────────────────────────────────────────────────────────
   async function toggleRecord() {
     if (busy || dictating) return;
     // Detener siempre se puede; empezar no, si hay un panel ocupando la barra.
     if (!recording && panelOpen) return;
-    busy = true;
     try {
-      if (recording) await stopRecording();
-      else await startRecording();
-    } catch (e) {
-      liveError = String(e);
-    } finally {
-      busy = false;
+      await capture.toggle();
+    } catch (err) {
+      console.warn("grabación", err);
     }
   }
 
   async function toggleDictate() {
     if (busy || recording || panelOpen) return;
-    busy = true;
     try {
-      await toggleDictation();
-    } catch (e) {
-      dictationMessage = String(e);
-      dictation = "error";
-    } finally {
-      busy = false;
+      await dictationStore.toggle();
+    } catch (err) {
+      console.warn("dictado", err);
     }
   }
 
@@ -981,14 +856,6 @@
         stage.moveTo(saved);
         at = stage.at();
       }
-      recording = await isRecording();
-      if (recording) startTimer();
-      try {
-        dictation = await dictationPhase();
-      } catch {
-        dictation = "idle";
-      }
-      await refreshQueue();
       try {
         wheelShortcut = (await getConfig()).pill_radial_shortcut;
       } catch {
@@ -996,30 +863,10 @@
       }
     })();
 
+    // Lo que queda acá son los eventos DE LA PILL: los atajos que la abren y la
+    // cierran, y el clic fuera. La actividad, los datos y la cola los escuchan
+    // sus stores.
     unlisteners.push(
-      onStatus((s) => {
-        recording = s.active;
-        if (s.active) {
-          startTimer();
-          liveActive = false;
-          liveError = null;
-        } else {
-          stopTimer();
-          liveActive = false;
-          btWarning = null;
-        }
-      }),
-      onLevels((l) => (levels = l)),
-      onCaptureWarn((message) => (btWarning = message)),
-      onLiveTranscriptFinal(() => {
-        liveActive = true;
-        liveError = null;
-      }),
-      onLiveTranscriptError((message) => (liveError = message)),
-      onDictationStatus((s) => {
-        dictation = s.phase;
-        dictationMessage = s.message;
-      }),
       onPillClipboardToggle(() => {
         trace("RX pill-clipboard-toggle");
         void onPanelHotkey("clipboard");
@@ -1045,14 +892,6 @@
         home = { ...at };
         void savePillHome(at.x, at.y);
       }),
-      onClipboardHistoryChanged(() => {
-        if (surface === "clipboard") void refreshClipboard();
-      }),
-      onSnippetsChanged(() => {
-        if (surface === "snippets") void refreshSnippets();
-      }),
-      onPasteQueueChanged(() => void refreshQueue()),
-      onPasteQueued(() => void refreshQueue()),
     );
 
     const onKey = (event: KeyboardEvent) => {
@@ -1098,13 +937,7 @@
     trace(`listeners registrados n=${unlisteners.length}`);
 
     return () => {
-      stopTimer();
       stopDragWatch();
-      if (scratchTimer) {
-        clearTimeout(scratchTimer);
-        // Mismo motivo que en `closePanels`: lo pendiente se guarda.
-        void persistScratchpad();
-      }
       window.removeEventListener("keydown", onKey, true);
       unlisteners.forEach((u) => u.then((fn) => fn()));
     };
@@ -1160,10 +993,10 @@
   <div class="p-panel" data-no-drag>
     {#if surface === "clipboard"}
       <ClipboardHistoryList
-        items={clipboardItems}
-        loading={clipboardLoading}
+        items={clipboard.items}
+        loading={false}
         compact
-        onRefresh={refreshClipboard}
+        onRefresh={() => void clipboard.hydrate()}
         onPasteStart={() => (pasting = true)}
         onPasted={() => void closePanels()}
         onError={() => (pasting = false)}
@@ -1196,21 +1029,19 @@
       </div>
       {#if snippetsTab === "list"}
         <SnippetsList
-          items={snippetItems}
-          loading={snippetsLoading}
+          items={snippets.items}
+          loading={false}
           compact
-          onRefresh={refreshSnippets}
+          onRefresh={() => void snippets.hydrate()}
           onPasteStart={() => (pasting = true)}
           onPasted={() => void closePanels()}
           onError={() => (pasting = false)}
         />
-      {:else if scratchLoading}
-        <p class="p-empty">Cargando bloc…</p>
       {:else}
         <textarea
           class="p-scratch"
-          bind:value={scratchBody}
-          oninput={scheduleScratchSave}
+          value={snippets.scratchpad?.body ?? ""}
+          oninput={(event) => snippets.editScratchpad(event.currentTarget.value)}
           placeholder="Notas temporales…"
           aria-label="Bloc de notas"
           data-no-drag
@@ -1351,19 +1182,21 @@
           <!-- La cola es un badge sobre el disco, no un reemplazo: antes borraba
                la pill entera y con ella el acceso a la rueda. -->
           <span class="p-mark is-disc"><AticMark size={20} strokeWidth={1.4} /></span>
-          <span class="p-queue-count">{queue.length}</span>
-          <span class="p-queue-text" title={queue[0]?.text}>{queue[0]?.text ?? ""}</span>
+          <span class="p-queue-count">{paste.count}</span>
+          <span class="p-queue-text" title={paste.front?.text}>
+            {paste.front?.text ?? ""}
+          </span>
           <button
             type="button"
             class="p-queue-btn"
             data-no-drag
-            disabled={queueBusy}
-            onclick={() => void queueAction(pasteQueueItemNow)}
+            disabled={paste.busy}
+            onclick={() => void paste.paste()}
           >
             Pegar
           </button>
           {@render iconBtn("Descartar", "M6 6l12 12M18 6L6 18", () =>
-            void queueAction(dismissPasteQueueItem),
+            void paste.dismiss(),
           13)}
         {:else}
           <!-- Reposo: disco con la marca. Un clic abre la rueda; el centro de
@@ -2040,12 +1873,6 @@
     font-size: 0.75rem;
     resize: none;
     outline: none;
-  }
-
-  .p-empty {
-    margin: 0.35rem 0 0;
-    color: var(--rb-muted);
-    font-size: 0.75rem;
   }
 
   .p-root,
