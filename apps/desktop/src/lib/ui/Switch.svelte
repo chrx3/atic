@@ -36,17 +36,20 @@
   <label
     for={id}
     class="mt-px inline-flex h-4 w-7 shrink-0 cursor-pointer items-center rounded-pill border
-           border-line bg-surface-2 p-px
+           p-px
            transition-colors duration-(--duration-quick) ease-calm
-           peer-checked:border-accent peer-checked:bg-accent
            peer-disabled:cursor-not-allowed peer-disabled:opacity-45
            peer-focus-visible:outline peer-focus-visible:outline-2
-           peer-focus-visible:outline-offset-2 peer-focus-visible:outline-accent"
+           peer-focus-visible:outline-offset-2 peer-focus-visible:outline-accent
+           {checked ? 'border-accent bg-accent' : 'border-line bg-surface-2'}"
     aria-hidden="true"
   >
+    <!-- El estado se decide en JS y no con `peer-checked:`.
+         `peer-*` compila a un selector de HERMANO (`~`), y la perilla es hija
+         del label: el track cambiaba de color y ella se quedaba quieta. -->
     <span
-      class="size-3 rounded-pill bg-faint transition-transform duration-(--duration-quick)
-             ease-calm peer-checked:translate-x-3 peer-checked:bg-on-accent"
+      class="size-3 rounded-pill transition-transform duration-(--duration-quick) ease-calm
+             {checked ? 'translate-x-3.5 bg-on-accent' : 'translate-x-0 bg-faint'}"
     ></span>
   </label>
 
