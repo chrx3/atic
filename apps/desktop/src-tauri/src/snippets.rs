@@ -6,7 +6,7 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, State};
 
 use crate::clipboard_history;
 use crate::state::AppState;
@@ -195,22 +195,12 @@ pub fn paste_snippet(app: AppHandle, state: State<AppState>, id: String) -> Resu
         return Err("El fragmento está vacío".into());
     }
 
-    let pill = app.get_webview_window("pill");
-    if let Some(ref win) = pill {
-        let _ = win.hide();
-    }
     clipboard_history::focus_paste_target();
     thread::sleep(Duration::from_millis(220));
 
     crate::paste_queue::paste_text_or_enqueue(&app, &snippet.body)?;
 
     let _ = app.emit("pill-snippets-close", ());
-    if let Some(win) = pill {
-        // Ver `show_without_stealing_focus`: reaparecer al frente antes de que
-        // la app destino consuma las teclas se comía el pegado.
-        std::thread::sleep(std::time::Duration::from_millis(120));
-        crate::clipboard_history::show_without_stealing_focus(&win);
-    }
     Ok(())
 }
 

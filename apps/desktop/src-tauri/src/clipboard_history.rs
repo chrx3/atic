@@ -468,15 +468,12 @@ pub struct AgentsComposerInsert {
     pub image_path: Option<String>,
 }
 
-fn agents_window_is_visible(app: &AppHandle) -> bool {
-    app.get_webview_window("agents")
-        .map(|w| w.is_visible().unwrap_or(false))
-        .unwrap_or(false)
-}
-
 /// True si la burbuja de agentes está a la vista (crate-interno).
-pub(crate) fn agents_visible(app: &AppHandle) -> bool {
-    agents_window_is_visible(app)
+///
+/// Lo contestaba `is_visible()` sobre su ventana. La consola vive dentro del
+/// overlay, así que el estado lo lleva el propio puente.
+pub(crate) fn agents_visible(_app: &AppHandle) -> bool {
+    crate::agents::bridge::agents_open()
 }
 
 /// Inserta texto en el compositor de agentes y le devuelve el foco.
@@ -494,16 +491,15 @@ pub(crate) fn insert_text_into_agents(app: &AppHandle, text: &str) -> Result<(),
             image_path: None,
         },
     );
-    if let Some(win) = app.get_webview_window("agents") {
-        let _ = win.set_focus();
-    }
+    // Sin `set_focus`: la consola ya no es una ventana, y el foco del overlay lo
+    // pide el propio campo al recibir el clic (`set_overlay_text_mode`).
     Ok(())
 }
 
 /// True si la burbuja de agentes está a la vista.
 #[tauri::command]
 pub fn agents_window_visible(app: AppHandle) -> bool {
-    agents_window_is_visible(&app)
+    agents_visible(&app)
 }
 
 /// Ruta de archivo para arrastrar un ítem del clipboard (OLE / startDrag).
@@ -574,7 +570,7 @@ pub fn paste_clipboard_item(
         hist.suppress_until = Some(SystemTime::now() + Duration::from_millis(1600));
     }
 
-    if agents_window_is_visible(&app) {
+    if agents_visible(&app) {
         let payload = match item.kind {
             ClipboardKind::Text => {
                 let text = item
@@ -602,19 +598,14 @@ pub fn paste_clipboard_item(
             }
         };
         let _ = app.emit("agents-composer-insert", payload);
-        if let Some(win) = app.get_webview_window("agents") {
-            let _ = win.set_focus();
-        }
         let _ = app.emit("pill-clipboard-close", ());
         return Ok(());
     }
 
-    // La pill tiene el foco al hacer clic: hay que ocultarla y devolver el foco
-    // a la app anterior; si no, Ctrl+V se traga la propia webview.
-    let pill = app.get_webview_window("pill");
-    if let Some(ref win) = pill {
-        let _ = win.hide();
-    }
+    // Devolver el foco a la app anterior; si no, Ctrl+V se lo traga la webview.
+    //
+    // Antes esto además escondía la pill, que tenía ventana propia y sí se
+    // quedaba el foco al hacer clic. Dentro del overlay no lo toma nunca.
     restore_foreground_hwnd();
     // WebView2/Electron necesitan un poco más para asentar el foco del hijo Chromium.
     thread::sleep(Duration::from_millis(220));
@@ -651,12 +642,6 @@ pub fn paste_clipboard_item(
     };
 
     let _ = app.emit("pill-clipboard-close", ());
-    if let Some(win) = pill {
-        // Darle a la app destino tiempo de consumir las teclas antes de que
-        // reaparezca nada encima. `SendInput` solo las encola.
-        thread::sleep(Duration::from_millis(120));
-        show_without_stealing_focus(&win);
-    }
     result
 }
 
@@ -1208,6 +1193,7 @@ fn send_paste_chord(with_shift: bool) -> Result<(), String> {
 pub fn summon_clipboard_panel(app: &AppHandle) {
     // Guardar el foco ANTES de que la pill lo robe (solo importa al abrir).
     save_foreground_hwnd();
+    tracing::info!(target: "overlay", "emit pill-clipboard-toggle");
     let _ = app.emit("pill-clipboard-toggle", ());
 }
 
@@ -1443,7 +1429,7 @@ fn restore_foreground_hwnd() {
                 tracing::debug!(target: "paste_geo", "RESTORE    el destino guardado ya no existe");
                 return;
             }
-            force_foreground_for_paste(hwnd);
+            force_foreground(hwnd);
             // Verificar que el SO nos hizo caso. `SetForegroundWindow` puede
             // fallar en silencio: Windows se lo niega a procesos sin foco ni
             // input reciente, y ahí las teclas se van a otro lado.
@@ -1464,30 +1450,6 @@ fn restore_foreground_hwnd() {
             }
         }
     }
-}
-
-/// Vuelve a mostrar la pill SIN robarle la activación a nadie.
-///
-/// `show()` de Tauri usa `SW_SHOW`, que activa la ventana. Como la pill es
-/// always-on-top y se re-muestra justo después de inyectar el pegado, eso la
-/// ponía al frente mientras las teclas todavía estaban en la cola: `SendInput`
-/// encola, no espera a que la app destino las procese. El resultado era un
-/// pegado que a veces llegaba y a veces se perdía.
-///
-/// `SW_SHOWNOACTIVATE` la hace visible sin tocar el foco, que es lo que
-/// corresponde para un HUD flotante: aparecer no es motivo para interrumpir a
-/// nadie.
-pub(crate) fn show_without_stealing_focus(window: &tauri::WebviewWindow) {
-    #[cfg(windows)]
-    {
-        use windows_sys::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_SHOWNOACTIVATE};
-        if let Ok(hwnd) = window.hwnd() {
-            // SAFETY: el HWND es válido mientras viva la ventana.
-            unsafe { ShowWindow(hwnd.0 as _, SW_SHOWNOACTIVATE) };
-            return;
-        }
-    }
-    let _ = window.show();
 }
 
 /// Registra qué control tiene el foco de teclado en el primer plano actual.
@@ -1532,10 +1494,14 @@ pub(crate) fn log_focus_state() {
     }
 }
 
-/// Trae la app destino al primer plano y deja su input listo para recibir el
-/// pegado. El chord (Ctrl+V vs Ctrl+Shift+V) se elige aparte.
+/// Trae una ventana al primer plano y deja su input listo para escribir.
+///
+/// Nació para el pegado —traer la app destino antes del Ctrl+V— y la usa
+/// también el modo texto del overlay: es la única forma de activar una ventana
+/// sin que `tao` inyecte `VK_LMENU` cuando `SetForegroundWindow` le falla, y
+/// esta app manda teclas de verdad por el mismo canal.
 #[cfg(windows)]
-fn force_foreground_for_paste(hwnd: windows_sys::Win32::Foundation::HWND) {
+pub fn force_foreground(hwnd: windows_sys::Win32::Foundation::HWND) {
     use windows_sys::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         AllowSetForegroundWindow, BringWindowToTop, GetForegroundWindow, GetWindowThreadProcessId,

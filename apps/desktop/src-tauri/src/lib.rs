@@ -20,6 +20,7 @@ mod mail;
 mod meeting_detection;
 mod mouse_bindings;
 mod ocr;
+mod overlay;
 mod paste_queue;
 mod retention;
 mod search;
@@ -95,7 +96,36 @@ pub fn run() {
     // las últimas líneas, que son las del cierre.
     let _log_guard = diagnostics::init(&logs_dir);
 
+    // El estado se construye ANTES del Builder, no dentro de `setup()`.
+    //
+    // Las ventanas declaradas en `tauri.conf.json` nacen antes de que corra
+    // `setup()`, y sus webviews empiezan a cargar enseguida: pueden invocar
+    // comandos mientras `setup()` todavía está abriendo la base y leyendo la
+    // config. El síntoma era la app arrancando con «state not managed for
+    // field `state` on command `get_config`», intermitente según qué webview
+    // ganara la carrera.
+    //
+    // Registrándolo en la cadena del Builder, `.manage()` corre antes de que
+    // exista la primera ventana y la carrera deja de ser posible.
+    let dirs = AppDirs::new().expect("no se pudo resolver el directorio de datos");
+    let db = Db::open(&dirs.db_path()).expect("no se pudo abrir la base de datos");
+    let config = Config::load(&dirs.config_path());
+    let app_state = AppState {
+        dirs,
+        db: Mutex::new(db),
+        config: Mutex::new(config),
+        active: Mutex::new(None),
+        dictation: Mutex::new(None),
+        audio_test_running: Mutex::new(false),
+        whisper: Mutex::new(std::collections::HashMap::new()),
+        whisper_last_used: Mutex::new(None),
+        overlay_session: Mutex::new(None),
+        pre_clipboard_position: Mutex::new(None),
+        shortcut_failures: Mutex::new(Vec::new()),
+    };
+
     tauri::Builder::default()
+        .manage(app_state)
         // single-instance debe registrarse primero.
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             state::show_main(app);
@@ -124,6 +154,13 @@ pub fn run() {
             commands::show_main_window,
             shortcuts::failed_shortcuts,
             floating::resize_floating,
+            overlay::overlay_rect,
+            overlay::overlay_cursor,
+            overlay::overlay_work_areas,
+            overlay::save_pill_home,
+            overlay::pill_home,
+            overlay::set_overlay_hit_rects,
+            overlay::set_overlay_text_mode,
             commands::open_data_dir,
             commands::recording_track_path,
             commands::toggle_dictation,
@@ -184,7 +221,7 @@ pub fn run() {
             beep::preview_sound,
             agents::bridge::show_agents_window,
             agents::bridge::hide_agents_window,
-            agents::bridge::resize_agents_bubble,
+            agents::bridge::save_agents_bubble_size,
             agents::bridge::agent_set_model,
             agents::bridge::agent_backends,
             agents::bridge::agent_sessions,
@@ -225,9 +262,8 @@ pub fn run() {
             launcher::launcher_run,
         ])
         .setup(move |app| {
-            let dirs = AppDirs::new()?;
-            let db = Db::open(&dirs.db_path())?;
-            let config = Config::load(&dirs.config_path());
+            // El estado ya está registrado por el Builder: acá solo se lee.
+            let dirs = app.state::<AppState>().dirs.clone();
 
             // Permite reproducir los WAV grabados vía el protocolo asset://.
             let _ = app
@@ -246,31 +282,35 @@ pub fn run() {
                 .asset_protocol_scope()
                 .allow_directory(dirs.clipboard_dir(), true);
 
-            let shortcut = config.global_shortcut.clone();
-            let dictation_shortcut = config.dictation_shortcut.clone();
-            let summon_pill_shortcut = config.summon_pill_shortcut.clone();
-            let pill_radial_shortcut = config.pill_radial_shortcut.clone();
-            let clipboard_shortcut = config.clipboard_shortcut.clone();
-            let snippets_shortcut = config.snippets_shortcut.clone();
-            let screenshot_shortcut = config.screenshot_shortcut.clone();
-            let launcher_shortcut = config.launcher_shortcut.clone();
-            let pill_position = config.pill_position;
-            let show_pill = config.show_pill;
-            let want_autostart = config.autostart;
-
-            app.manage(AppState {
-                dirs,
-                db: Mutex::new(db),
-                config: Mutex::new(config),
-                active: Mutex::new(None),
-                dictation: Mutex::new(None),
-                audio_test_running: Mutex::new(false),
-                whisper: Mutex::new(std::collections::HashMap::new()),
-                whisper_last_used: Mutex::new(None),
-                overlay_session: Mutex::new(None),
-                pre_clipboard_position: Mutex::new(None),
-                shortcut_failures: Mutex::new(Vec::new()),
-            });
+            // Una sola toma del lock: la config se lee entera y se suelta.
+            let (
+                shortcut,
+                dictation_shortcut,
+                summon_pill_shortcut,
+                pill_radial_shortcut,
+                clipboard_shortcut,
+                snippets_shortcut,
+                screenshot_shortcut,
+                launcher_shortcut,
+                want_autostart,
+            ) = {
+                let cfg = app.state::<AppState>();
+                let cfg = cfg.config.lock_or_recover();
+                (
+                    cfg.global_shortcut.clone(),
+                    cfg.dictation_shortcut.clone(),
+                    cfg.summon_pill_shortcut.clone(),
+                    cfg.pill_radial_shortcut.clone(),
+                    cfg.clipboard_shortcut.clone(),
+                    cfg.snippets_shortcut.clone(),
+                    cfg.screenshot_shortcut.clone(),
+                    cfg.launcher_shortcut.clone(),
+                    cfg.autostart,
+                )
+            };
+            // `pill_position` y `show_pill` ya no se aplican desde acá: la pill
+            // es un div del overlay y los lee ella misma (`pill_home()` y
+            // `getConfig()`).
 
             // Repara estados transitorios huérfanos de un cierre abrupto anterior.
             recover_orphaned_statuses(&app.state::<AppState>());
@@ -342,25 +382,6 @@ pub fn run() {
             // Sin Ctrl+P / Find / DevTools del WebView2 en ventanas flotantes.
             webview_tweaks::apply_to_overlay_windows(app.handle());
 
-            // Posición y visibilidad inicial de la pill.
-            if let Some(pill) = app.get_webview_window("pill") {
-                if let Some((x, y)) = pill_position {
-                    let (w, h) = pill
-                        .outer_size()
-                        .ok()
-                        .map(|s| (s.width as i32, s.height as i32))
-                        .unwrap_or((112, 48));
-                    let (cx, cy) = floating::clamp(x as i32, y as i32, w, h);
-                    let _ = pill.set_position(tauri::PhysicalPosition::new(cx, cy));
-                }
-                if show_pill {
-                    let _ = pill.set_always_on_top(true);
-                    let _ = pill.show();
-                } else {
-                    let _ = pill.hide();
-                }
-            }
-
             // Las ventanas de captura se declaran `visible: true` (para que las
             // decoraciones/transparencia se apliquen igual que en la pill) y se
             // ocultan aquí hasta que se usan.
@@ -370,30 +391,22 @@ pub fn run() {
                 }
             }
 
+            // El overlay va DESPUÉS de la pill: elige monitor mirando dónde
+            // quedó ella.
+            overlay::setup(app.handle());
+
             Ok(())
         })
         .on_window_event(|window, event| match event {
-            // Cerrar oculta, no destruye. En la consola de agentes eso además
-            // es lo correcto de fondo: el proceso del agente sigue vivo, así
-            // que destruir la ventana dejaría la sesión corriendo sin ninguna
-            // vista posible que la recupere.
+            // Cerrar oculta, no destruye.
             WindowEvent::CloseRequested { api, .. }
-                if window.label() == "main"
-                    || window.label() == "agents"
-                    || window.label() == "launcher" =>
+                if window.label() == "main" || window.label() == "launcher" =>
             {
                 api.prevent_close();
                 let _ = window.hide();
             }
-            WindowEvent::Moved(pos) if window.label() == "pill" => {
-                if let Some(state) = window.app_handle().try_state::<AppState>() {
-                    // Durante el clipboard en el cursor no pisar la home guardada.
-                    if state.pre_clipboard_position.lock_or_recover().is_none() {
-                        state.config.lock_or_recover().pill_position =
-                            Some((pos.x as f64, pos.y as f64));
-                    }
-                }
-            }
+            // La pill ya no es una ventana, así que nadie avisa cuando se mueve:
+            // la persiste `save_pill_home` al soltar el arrastre.
             _ => {}
         })
         .build(tauri::generate_context!())

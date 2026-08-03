@@ -78,6 +78,18 @@ export default {
       "/^(transition-duration|animation-duration)$/": ["/^[0-9]/"],
       "/^(transition-timing-function|animation-timing-function)$/": ["/^cubic-bezier/"],
     },
+    /**
+     * Los estados de un mismo elemento se agrupan juntos.
+     *
+     * `.p-icon:disabled` después de `.p-icon:active:not(:disabled)` dispara
+     * esta regla, pero las dos tienen la MISMA especificidad y `:not(:disabled)`
+     * ya excluye el caso: no hay nada que se pise. Lo que la regla quiere evitar
+     * —una regla débil que nunca se aplica porque llega tarde— acá no puede
+     * pasar, y obedecerla obligaría a partir cada grupo de estados en tantos
+     * bloques como elementos, que se lee mucho peor.
+     */
+    "no-descending-specificity": null,
+
     // El proyecto usa kebab-case en las custom properties, no BEM.
     "custom-property-pattern": null,
     // Las paletas agrupan tokens con líneas en blanco —superficies, tinta,

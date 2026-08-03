@@ -38,13 +38,7 @@
   import ParticleWheel from "$lib/ParticleWheel.svelte";
   import { TOOLS, type ToolId } from "$lib/tools";
   import { formatShortcut } from "$lib/format";
-  import {
-    PILL,
-    growsFirst,
-    windowFor,
-    type Size,
-    type Pivot,
-  } from "$surfaces/overlay/pillStage";
+  import { PILL, growsFirst, windowFor, type Size } from "$surfaces/overlay/pillStage";
   import { createCssStage } from "$surfaces/overlay/pillCssStage";
   import { surfaces } from "$surfaces/overlay/surfaces.svelte";
   import {
@@ -120,9 +114,7 @@
   const busy = $derived(capture.busy);
 
   const dictating = $derived(dictationStore.active);
-  const activity = $derived(
-    recording ? "recording" : dictating ? "dictating" : "idle",
-  );
+  const activity = $derived(recording ? "recording" : dictating ? "dictating" : "idle");
 
   // ─── Eje 2: superficie ───────────────────────────────────────────────────
   let surface = $state<Surface>("none");
@@ -134,7 +126,6 @@
   let wheelQuick = $state(false);
   /** El panel abrió hacia arriba (lo decide Rust: es quien ve los monitores). */
   let panelUp = $state(false);
-  let surfaceOpenedAt = 0;
 
   const panelOpen = $derived(isPanel(surface));
 
@@ -164,7 +155,6 @@
   let snippetsTab = $state<"list" | "scratchpad">("list");
 
   let pasting = $state(false);
-  let windowDragging = $state(false);
   let wheelShortcut = $state("");
 
   // ─── Geometría ───────────────────────────────────────────────────────────
@@ -275,7 +265,6 @@
   /** El vuelo lo hace una transición CSS; esto la enciende solo cuando toca. */
   let flying = $state(false);
 
-
   /** Duración del vuelo. Es la misma curva que usaba el tween de Rust. */
   const FLIGHT_MS = 190;
 
@@ -310,7 +299,6 @@
    *  tabla de anchos mágicos por estado — la fuente original del desajuste. */
   let barW = $state<number>(PILL.bar);
   let barEl = $state<HTMLElement | null>(null);
-
 
   const target = $derived(windowFor(contentFor(surface, barW)));
 
@@ -410,7 +398,6 @@
     void box.h;
     surfaces.schedule();
   });
-
 
   // Medir la barra SOLO en reposo.
   //
@@ -625,7 +612,6 @@
         // contenido ya puesto porque los stores están montados desde el
         // arranque.
         surface = id;
-        surfaceOpenedAt = Date.now();
         return;
       }
       collapsingFrom = "wheel";
@@ -671,7 +657,6 @@
 
     trace(`openPanel ${kind} expande`);
     surface = kind;
-    surfaceOpenedAt = Date.now();
   }
 
   /** Cierra cualquier panel/rueda. `silent` evita el viaje de vuelta al hogar. */
@@ -785,7 +770,9 @@
   function beginDrag(event: PointerEvent) {
     const el = event.target as HTMLElement | null;
     if (!el || event.button !== 0) return;
-    if (el.closest("button, a, input, textarea, [data-no-drag], .clip-item, .clip-items")) {
+    if (
+      el.closest("button, a, input, textarea, [data-no-drag], .clip-item, .clip-items")
+    ) {
       return;
     }
     dragOrigin = { x: event.clientX, y: event.clientY, ox: at.x, oy: at.y };
@@ -960,12 +947,7 @@
   </button>
 {/snippet}
 
-{#snippet iconBtn(
-  label: string,
-  path: string,
-  onClick: () => void,
-  size = 15,
-)}
+{#snippet iconBtn(label: string, path: string, onClick: () => void, size = 15)}
   <button
     type="button"
     class="p-icon"
@@ -1044,8 +1026,7 @@
           oninput={(event) => snippets.editScratchpad(event.currentTarget.value)}
           placeholder="Notas temporales…"
           aria-label="Bloc de notas"
-          data-no-drag
-        ></textarea>
+          data-no-drag></textarea>
       {/if}
     {/if}
   </div>
@@ -1113,141 +1094,155 @@
         {/if}
       </div>
 
-    <div class="p-shell">
-      <!-- La barra se mide sola (`max-content`): no hay tabla de anchos. -->
-      <div class="p-bar" class:is-disc-only={discOnly} bind:this={barEl}>
-        {#if panelOpen}
-          <span class="p-mark"><AticMark size={15} strokeWidth={1.5} /></span>
-          <span class="p-label">{panelTitle(surface)}</span>
-          {#if recording}
-            {@render recDot(`Grabando ${fmt(elapsed)} · clic para detener`)}
-          {/if}
-          {@render iconBtn("Abrir carpeta", "M4 19V6h6l2 2.5h8V19H4Z", () =>
-            void openDataDir(surface === "clipboard" ? "clipboard" : "snippets").catch(
-              console.warn,
-            ),
-          16)}
-          {@render iconBtn("Cerrar (Esc)", "M6 6l12 12M18 6L6 18", () =>
-            void closePanels(),
-          )}
-        {:else if activity === "recording"}
-          {@render recDot("Detener grabación")}
-          <span class="p-timer">{fmt(elapsed)}</span>
-          {#if liveError}
-            <span class="p-chip is-error" role="status">Error</span>
-          {:else if btWarning}
-            <span class="p-chip is-warn" role="status" title={btWarning}>BT</span>
-          {:else if liveActive}
-            <span class="p-chip" role="status">En vivo</span>
-          {/if}
-          <div class="p-wave">
-            <Waveform mic={levels.mic} system={levels.system} bars={10} variant="quiet" />
-          </div>
-        {:else if dictation === "listening"}
-          <!-- Escuchando: micrófono + ondas, sin texto. El ícono dice QUÉ está
+      <div class="p-shell">
+        <!-- La barra se mide sola (`max-content`): no hay tabla de anchos. -->
+        <div class="p-bar" class:is-disc-only={discOnly} bind:this={barEl}>
+          {#if panelOpen}
+            <span class="p-mark"><AticMark size={15} strokeWidth={1.5} /></span>
+            <span class="p-label">{panelTitle(surface)}</span>
+            {#if recording}
+              {@render recDot(`Grabando ${fmt(elapsed)} · clic para detener`)}
+            {/if}
+            {@render iconBtn(
+              "Abrir carpeta",
+              "M4 19V6h6l2 2.5h8V19H4Z",
+              () =>
+                void openDataDir(
+                  surface === "clipboard" ? "clipboard" : "snippets",
+                ).catch(console.warn),
+              16,
+            )}
+            {@render iconBtn(
+              "Cerrar (Esc)",
+              "M6 6l12 12M18 6L6 18",
+              () => void closePanels(),
+            )}
+          {:else if activity === "recording"}
+            {@render recDot("Detener grabación")}
+            <span class="p-timer">{fmt(elapsed)}</span>
+            {#if liveError}
+              <span class="p-chip is-error" role="status">Error</span>
+            {:else if btWarning}
+              <span class="p-chip is-warn" role="status" title={btWarning}>BT</span>
+            {:else if liveActive}
+              <span class="p-chip" role="status">En vivo</span>
+            {/if}
+            <div class="p-wave">
+              <Waveform
+                mic={levels.mic}
+                system={levels.system}
+                bars={10}
+                variant="quiet"
+              />
+            </div>
+          {:else if dictation === "listening"}
+            <!-- Escuchando: micrófono + ondas, sin texto. El ícono dice QUÉ está
                pasando (el mic está abierto) y las ondas dicen que te oye; la
                palabra "Dictando" no agregaba nada sobre esos dos. Todo el
                conjunto es el botón de parada. Los otros estados sí necesitan
                texto: "Transcribiendo…" y "Error" no se pueden mostrar con una
                animación. -->
-          <button
-            type="button"
-            class="p-dict-wave"
-            data-no-drag
-            onclick={toggleDictate}
-            disabled={busy}
-            aria-label="Detener dictado"
-            title="Dictando · clic para detener"
-          >
-            <ToolIcon id="dictation" size={16} strokeWidth={1.5} />
-            <Waveform mic={levels.mic} bars={18} variant="voice" live />
-          </button>
-        {:else if activity === "dictating"}
-          <button
-            type="button"
-            class="p-dict"
-            class:is-busy={dictation === "transcribing"}
-            class:is-ok={dictation === "pasted"}
-            class:is-error={dictation === "error"}
-            data-no-drag
-            onclick={toggleDictate}
-            disabled={busy || dictation === "transcribing"}
-            aria-label="Dictado"
-            title={dictationLabel(dictation)}
-          >
-            <ToolIcon id="dictation" size={16} strokeWidth={1.5} />
-          </button>
-          <span class="p-label" aria-live="polite">{dictationLabel(dictation)}</span>
-        {:else if hasQueue}
-          <!-- La cola es un badge sobre el disco, no un reemplazo: antes borraba
-               la pill entera y con ella el acceso a la rueda. -->
-          <span class="p-mark is-disc"><AticMark size={20} strokeWidth={1.4} /></span>
-          <span class="p-queue-count">{paste.count}</span>
-          <span class="p-queue-text" title={paste.front?.text}>
-            {paste.front?.text ?? ""}
-          </span>
-          <button
-            type="button"
-            class="p-queue-btn"
-            data-no-drag
-            disabled={paste.busy}
-            onclick={() => void paste.paste()}
-          >
-            Pegar
-          </button>
-          {@render iconBtn("Descartar", "M6 6l12 12M18 6L6 18", () =>
-            void paste.dismiss(),
-          13)}
-        {:else}
-          <!-- Reposo: disco con la marca. Un clic abre la rueda; el centro de
-               la rueda abre la app. El doble clic ya no hace falta. -->
-          <span
-            class="p-mark is-disc"
-            title={[
-              wheelShortcut ? `${formatShortcut(wheelShortcut)} · herramientas` : "",
-              "Clic para las herramientas",
-              "Arrastra para mover",
-            ]
-              .filter(Boolean)
-              .join(" · ")}
-          >
-            <AticMark size={22} strokeWidth={1.4} />
-          </span>
-          <!-- Aviso del agente: aparece solo si hay algo que decir, y se va al
-               abrir el panel. Es un chip junto al disco y no un reemplazo,
-               porque el disco sigue siendo la puerta a la rueda. -->
-          {#if agentAlert}
             <button
               type="button"
-              class="p-agent"
-              class:is-waiting={agents.waiting > 0}
-              class:is-working={agents.waiting === 0 &&
-                agents.working &&
-                agents.unread === 0}
+              class="p-dict-wave"
               data-no-drag
-              onclick={() => void showAgentsWindow()}
-              title={agents.waiting > 0
-                ? "El agente espera tu permiso"
-                : agents.unread > 0
-                  ? `${agents.unread} respuesta(s) sin leer`
-                  : "El agente está trabajando"}
-              aria-label="Abrir la consola de agentes"
+              onclick={toggleDictate}
+              disabled={busy}
+              aria-label="Detener dictado"
+              title="Dictando · clic para detener"
             >
-              <ToolIcon id="agents" size={13} strokeWidth={1.6} />
-              {#if agents.waiting > 0}
-                <span class="p-agent-count">permiso</span>
-              {:else if agents.unread > 0}
-                <span class="p-agent-count">{agents.unread}</span>
-              {/if}
+              <ToolIcon id="dictation" size={16} strokeWidth={1.5} />
+              <Waveform mic={levels.mic} bars={18} variant="voice" live />
             </button>
+          {:else if activity === "dictating"}
+            <button
+              type="button"
+              class="p-dict"
+              class:is-busy={dictation === "transcribing"}
+              class:is-ok={dictation === "pasted"}
+              class:is-error={dictation === "error"}
+              data-no-drag
+              onclick={toggleDictate}
+              disabled={busy || dictation === "transcribing"}
+              aria-label="Dictado"
+              title={dictationLabel(dictation)}
+            >
+              <ToolIcon id="dictation" size={16} strokeWidth={1.5} />
+            </button>
+            <span class="p-label" aria-live="polite">{dictationLabel(dictation)}</span>
+          {:else if hasQueue}
+            <!-- La cola es un badge sobre el disco, no un reemplazo: antes borraba
+               la pill entera y con ella el acceso a la rueda. -->
+            <span class="p-mark is-disc"><AticMark size={20} strokeWidth={1.4} /></span>
+            <span class="p-queue-count">{paste.count}</span>
+            <span class="p-queue-text" title={paste.front?.text}>
+              {paste.front?.text ?? ""}
+            </span>
+            <button
+              type="button"
+              class="p-queue-btn"
+              data-no-drag
+              disabled={paste.busy}
+              onclick={() => void paste.paste()}
+            >
+              Pegar
+            </button>
+            {@render iconBtn(
+              "Descartar",
+              "M6 6l12 12M18 6L6 18",
+              () => void paste.dismiss(),
+              13,
+            )}
+          {:else}
+            <!-- Reposo: disco con la marca. Un clic abre la rueda; el centro de
+               la rueda abre la app. El doble clic ya no hace falta. -->
+            <span
+              class="p-mark is-disc"
+              title={[
+                wheelShortcut ? `${formatShortcut(wheelShortcut)} · herramientas` : "",
+                "Clic para las herramientas",
+                "Arrastra para mover",
+              ]
+                .filter(Boolean)
+                .join(" · ")}
+            >
+              <AticMark size={22} strokeWidth={1.4} />
+            </span>
+            <!-- Aviso del agente: aparece solo si hay algo que decir, y se va al
+               abrir el panel. Es un chip junto al disco y no un reemplazo,
+               porque el disco sigue siendo la puerta a la rueda. -->
+            {#if agentAlert}
+              <button
+                type="button"
+                class="p-agent"
+                class:is-waiting={agents.waiting > 0}
+                class:is-working={agents.waiting === 0 &&
+                  agents.working &&
+                  agents.unread === 0}
+                data-no-drag
+                onclick={() => void showAgentsWindow()}
+                title={agents.waiting > 0
+                  ? "El agente espera tu permiso"
+                  : agents.unread > 0
+                    ? `${agents.unread} respuesta(s) sin leer`
+                    : "El agente está trabajando"}
+                aria-label="Abrir la consola de agentes"
+              >
+                <ToolIcon id="agents" size={13} strokeWidth={1.6} />
+                {#if agents.waiting > 0}
+                  <span class="p-agent-count">permiso</span>
+                {:else if agents.unread > 0}
+                  <span class="p-agent-count">{agents.unread}</span>
+                {/if}
+              </button>
+            {/if}
           {/if}
-        {/if}
+        </div>
       </div>
-    </div>
 
-    {#if panelOpen}
-      {@render panelBody()}
-    {/if}
+      {#if panelOpen}
+        {@render panelBody()}
+      {/if}
     </div>
   </div>
 </div>
@@ -1270,25 +1265,30 @@
     overflow: hidden;
     cursor: grab;
   }
+
   /* El vuelo al hogar y al cursor. Solo mientras dura: si la transición
      quedara siempre puesta, cada reencuadre de la barra compacta —el timer
      tictaqueando, el badge de la cola— se arrastraría 190 ms. */
   .p-root.is-flying {
     transition:
-      left 190ms cubic-bezier(0.22, 1, 0.36, 1),
-      top 190ms cubic-bezier(0.22, 1, 0.36, 1);
+      left 190ms var(--ease-calm),
+      top 190ms var(--ease-calm);
   }
+
   .p-root:active {
     cursor: grabbing;
   }
+
   .p-root.is-wheel {
     padding: 0;
     cursor: default;
   }
+
   /* El panel hacia arriba invierte barra/cuerpo dentro del blob líquido. */
   .p-root.is-up .p-liquid.is-fused {
     flex-direction: column-reverse;
   }
+
   /* Abriendo hacia arriba la piel se da vuelta sola (`flex-direction: inherit`),
      así que acá ya no hace falta invertir nada. */
 
@@ -1309,10 +1309,12 @@
       opacity var(--morph-fade-dur) var(--morph-close-ease),
       filter var(--morph-fade-dur) var(--morph-close-ease);
   }
+
   .p-stack.is-dim {
     opacity: 0;
     filter: blur(var(--morph-blur));
     pointer-events: none;
+
     /* Cada estado declara la curva de su dirección; si no, el chrome se iría
        con la del cierre y rompería el espejo. */
     transition:
@@ -1321,6 +1323,7 @@
   }
 
   /* ─── Rueda ─────────────────────────────────────────────────────────── */
+
   /* Tamaño fijo y centrado: la rueda mide siempre lo mismo, así las posiciones
      de los nodos no se recalculan durante el morph. */
   .p-wheel {
@@ -1337,6 +1340,7 @@
     pointer-events: none;
     transition: opacity var(--morph-fade-dur) var(--morph-close-ease);
   }
+
   .p-wheel.is-open {
     opacity: 1;
     pointer-events: auto;
@@ -1359,16 +1363,18 @@
     min-height: 0;
     flex-direction: column;
   }
+
   .p-liquid.is-fused {
     width: 100%;
     flex: 1;
     overflow: hidden;
     border-radius: 18px;
+
     /* Ya no pinta la superficie —eso lo hace `.p-skin`—, solo proyecta la
        sombra. El brillo de 1px que había acá se fue con el fondo: era una
        línea recta arriba, y lo que ahora dibuja la unión es el filete cóncavo
        del hombro, que es justamente el gesto que la línea tapaba. */
-    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.14);
+    box-shadow: 0 12px 32px rgb(0 0 0 / 14%);
     animation: p-liquid-in var(--panel-dur) var(--morph-ease);
   }
 
@@ -1386,8 +1392,9 @@
     display: flex;
     flex-direction: inherit;
     pointer-events: none;
-    filter: url(#pill-goo);
+    filter: url("#pill-goo");
   }
+
   .p-skin > i {
     display: block;
     background: var(--skin);
@@ -1413,6 +1420,7 @@
 
     inset: 0;
   }
+
   .p-skin.is-sdf > i {
     background: transparent;
   }
@@ -1422,6 +1430,7 @@
   .p-liquid.is-fused:has(.p-skin.is-sdf) {
     box-shadow: none;
   }
+
   /* La pastilla de siempre. El alto descuenta lo que el filtro va a devolver
      por los dos lados, así que el borde final cae exactamente en los 40. */
   .p-skin-bar {
@@ -1429,6 +1438,7 @@
     flex-shrink: 0;
     border-radius: 999px;
   }
+
   /* Sin panel, el blob base es SOLO el disco: el resto del ancho lo trae la
      gota, que es la que hace visible que la barra creció absorbiendo algo. */
   .p-liquid:not(.is-fused) .p-skin-bar {
@@ -1454,18 +1464,18 @@
     border-radius: 999px;
     animation: p-skin-arrive var(--panel-dur) var(--morph-ease);
   }
+
   @keyframes p-skin-arrive {
     from {
-      top: 7px;
-      right: 4px;
-      bottom: 7px;
-      left: calc(100% - 28px);
+      inset: 7px 4px 7px calc(100% - 28px);
     }
   }
+
   .p-skin-panel {
     min-height: 0;
     flex: 1;
     border-radius: 18px;
+
     /*
      * El panel se DERRAMA de la barra en vez de aparecer entero.
      *
@@ -1477,14 +1487,17 @@
     transform-origin: 50% 0;
     animation: p-skin-pour var(--panel-dur) var(--morph-ease);
   }
+
   .p-root.is-up .p-liquid.is-fused .p-skin-panel {
     transform-origin: 50% 100%;
   }
+
   @keyframes p-skin-pour {
     from {
       transform: scale(0.34, 0.02);
     }
   }
+
   @keyframes p-liquid-in {
     from {
       opacity: 0.88;
@@ -1494,6 +1507,7 @@
   }
 
   /* ─── Barra ─────────────────────────────────────────────────────────── */
+
   /* Una sola piel para todos los estados. Antes la barra y la tira de cola
      declaraban la misma superficie por separado y se desincronizaban. */
   .p-shell {
@@ -1502,6 +1516,7 @@
     position: relative;
     z-index: 1;
     display: flex;
+
     /* max-content, no 100%: si la ventana todavía no encogió, con 100% la
        barra se estiraba a lo ancho y se veía una pastilla larga con la marca
        pegada a la izquierda. Abrazando el contenido, la forma es correcta
@@ -1513,14 +1528,16 @@
     align-items: center;
     overflow: hidden;
     border-radius: 999px;
+
     /* Sin fondo: la superficie la pinta `.p-skin`. Acá el radio y el overflow
        siguen haciendo falta, pero solo para recortar el CONTENIDO a la forma
        de la pastilla. */
-    color: var(--rb-text);
+    color: var(--text);
     transition:
       border-radius var(--morph-close-dur) var(--morph-close-ease),
       transform var(--morph-close-dur) var(--morph-close-ease);
   }
+
   /* Fusionado: la barra es solo cabecera.
      Sin línea divisoria: abarcaba todo el ancho, y la silueta en el hombro se
      mete para adentro, así que los dos extremos quedaban colgando sobre la
@@ -1537,6 +1554,7 @@
     width: max-content;
     min-width: 40px;
     height: 100%;
+
     /* NO encoger. `.p-shell` está topado con `max-width: 100%`, o sea el ancho
        de la VENTANA, así que sin esto la barra se comprimía hasta su min-width
        de 40 px y eso era lo que medíamos: la ventana quedaba en 48, el tope en
@@ -1551,6 +1569,7 @@
     padding: 0 12px 0 10px;
     white-space: nowrap;
   }
+
   /* Lo que entra a la barra se funde en vez de aparecer de golpe.
      Va sobre los hijos DIRECTOS porque son los que Svelte monta y desmonta al
      cambiar de estado; lo que sobrevive al cambio —el timer, que solo cambia su
@@ -1560,6 +1579,7 @@
   .p-bar > * {
     animation: p-in var(--morph-fade-dur) var(--morph-close-ease);
   }
+
   @keyframes p-in {
     from {
       opacity: 0;
@@ -1572,6 +1592,7 @@
     justify-content: center;
     padding: 0;
   }
+
   .p-root.is-panel .p-bar {
     width: 100%;
     padding-right: 8px;
@@ -1580,7 +1601,7 @@
   .p-mark {
     display: inline-flex;
     flex-shrink: 0;
-    color: var(--rb-text);
+    color: var(--text);
     line-height: 0;
   }
 
@@ -1588,8 +1609,8 @@
     min-width: 0;
     flex: 1;
     overflow: hidden;
-    color: var(--rb-text);
-    font-family: var(--rb-font);
+    color: var(--text);
+    font-family: var(--font-sans);
     font-size: 0.625rem;
     font-weight: 500;
     letter-spacing: 0.1em;
@@ -1600,8 +1621,8 @@
 
   .p-timer {
     min-width: 2.4rem;
-    color: var(--rb-text);
-    font-family: var(--rb-font);
+    color: var(--text);
+    font-family: var(--font-sans);
     font-size: 0.6875rem;
     font-weight: 500;
     font-variant-numeric: tabular-nums;
@@ -1611,8 +1632,8 @@
   .p-chip {
     overflow: hidden;
     max-width: 3.5rem;
-    color: var(--rb-muted);
-    font-family: var(--rb-font);
+    color: var(--muted);
+    font-family: var(--font-sans);
     font-size: 0.5625rem;
     font-weight: 500;
     letter-spacing: 0.1em;
@@ -1620,11 +1641,13 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
+
   .p-chip.is-error {
-    color: var(--rb-record);
+    color: var(--rec);
   }
+
   .p-chip.is-warn {
-    color: var(--rb-warn);
+    color: var(--warn);
   }
 
   .p-wave {
@@ -1643,15 +1666,17 @@
     gap: 8px;
     border: 0;
     background: none;
-    color: var(--rb-text);
+    color: var(--text);
     cursor: pointer;
     padding: 0 2px;
     margin: 0;
   }
+
   /* El micrófono no se comprime: es el que da el contexto de la animación. */
   .p-dict-wave :global(svg) {
     flex-shrink: 0;
   }
+
   .p-dict-wave:disabled {
     cursor: default;
   }
@@ -1672,82 +1697,98 @@
       background var(--duration-quick) var(--ease-smooth-out),
       transform var(--duration-quick) var(--ease-smooth-out);
   }
+
   .p-icon {
     width: 1.5rem;
     height: 1.5rem;
     border-radius: 999px;
     background: transparent;
-    color: var(--rb-muted);
+    color: var(--muted);
   }
+
   .p-icon:hover {
-    color: var(--rb-text);
-    background: color-mix(in srgb, var(--rb-text) 8%, transparent);
+    color: var(--text);
+    background: color-mix(in sRGB, var(--text) 8%, transparent);
   }
+
   .p-rec,
   .p-dict {
     width: 26px;
     height: 26px;
     border-radius: 999px;
   }
+
   .p-rec {
-    background: color-mix(in srgb, var(--rb-record) 24%, transparent);
-    color: var(--rb-record);
+    background: color-mix(in sRGB, var(--rec) 24%, transparent);
+    color: var(--rec);
   }
+
   .p-rec-square {
     width: 8px;
     height: 8px;
     background: currentColor;
   }
+
   .p-dict {
     background: transparent;
-    color: var(--rb-muted);
+    color: var(--muted);
   }
+
   .p-dict.is-busy {
-    color: var(--rb-warn);
+    color: var(--warn);
   }
+
   .p-dict.is-ok {
-    color: var(--rb-ok);
+    color: var(--ok);
   }
+
   .p-dict.is-error {
-    color: var(--rb-record);
+    color: var(--rec);
   }
+
   .p-icon:active:not(:disabled),
   .p-rec:active:not(:disabled),
   .p-dict:active:not(:disabled) {
     transform: scale(0.94);
   }
+
   .p-icon:disabled,
   .p-rec:disabled,
   .p-dict:disabled {
     opacity: 0.45;
     cursor: default;
   }
+
+  /* El anillo va por dentro y no como `outline`: la pill vive sobre una
+     silueta redondeada y un contorno exterior se sale del contorno fundido. */
   .p-icon:focus-visible,
   .p-rec:focus-visible,
   .p-dict:focus-visible,
   .p-queue-btn:focus-visible,
   .p-tab:focus-visible {
     outline: none;
-    box-shadow: var(--rb-focus);
+    box-shadow: inset 0 0 0 2px var(--accent);
   }
 
   /* ─── Cola de pegado ────────────────────────────────────────────────── */
   .p-queue-count {
     flex-shrink: 0;
-    color: var(--rb-faint);
+    color: var(--faint);
     font-size: 0.625rem;
     font-weight: 500;
     font-variant-numeric: tabular-nums;
     letter-spacing: 0.06em;
   }
+
   .p-queue-text {
     max-width: 10rem;
     overflow: hidden;
-    color: var(--rb-muted);
+    color: var(--muted);
     font-size: 0.6875rem;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
+
   .p-queue-btn {
     display: inline-flex;
     height: 1.65rem;
@@ -1756,14 +1797,15 @@
     border: 0;
     border-radius: 999px;
     padding: 0 0.6rem;
-    background: color-mix(in srgb, var(--rb-text) 8%, transparent);
-    color: var(--rb-text);
+    background: color-mix(in sRGB, var(--text) 8%, transparent);
+    color: var(--text);
     font-size: 0.5625rem;
     font-weight: 600;
     letter-spacing: 0.1em;
     text-transform: uppercase;
     cursor: pointer;
   }
+
   .p-queue-btn:disabled {
     opacity: 0.45;
     cursor: default;
@@ -1779,23 +1821,26 @@
     border: 0;
     border-radius: 999px;
     padding: 0 0.5rem;
-    background: color-mix(in srgb, var(--rb-accent) 16%, transparent);
-    color: var(--rb-accent);
+    background: color-mix(in sRGB, var(--accent) 16%, transparent);
+    color: var(--accent);
     cursor: pointer;
   }
+
   /* Espera una decisión: es lo único que de verdad bloquea al agente, así que
      es lo único que usa el color de alerta. */
   .p-agent.is-waiting {
-    background: color-mix(in srgb, var(--rb-record) 20%, transparent);
-    color: var(--rb-record);
+    background: color-mix(in sRGB, var(--rec) 20%, transparent);
+    color: var(--rec);
   }
+
   /* Trabajando sin nada nuevo que leer: presente, pero sin reclamar atención.
      El número es la señal fuerte; esto es solo "sigue vivo". */
   .p-agent.is-working {
-    background: color-mix(in srgb, var(--rb-text) 8%, transparent);
-    color: var(--rb-muted);
+    background: color-mix(in sRGB, var(--text) 8%, transparent);
+    color: var(--muted);
     animation: p-agent-pulse 1.8s ease-in-out infinite;
   }
+
   .p-agent-count {
     font-size: 0.6875rem;
     font-weight: 650;
@@ -1807,6 +1852,7 @@
     100% {
       opacity: 0.55;
     }
+
     50% {
       opacity: 1;
     }
@@ -1831,7 +1877,7 @@
     border-radius: 0;
     padding: 0.45rem 0.5rem 0.55rem;
     background: transparent;
-    color: var(--rb-text);
+    color: var(--text);
     overflow: hidden;
     cursor: default;
   }
@@ -1842,12 +1888,13 @@
     gap: 0.3rem;
     margin-bottom: 0.35rem;
   }
+
   .p-tab {
     border: 0;
     border-radius: 999px;
     padding: 0.2rem 0.55rem;
     background: transparent;
-    color: var(--rb-muted);
+    color: var(--muted);
     font-size: 0.6875rem;
     font-weight: 600;
     cursor: pointer;
@@ -1855,9 +1902,18 @@
       color var(--duration-quick) var(--ease-smooth-out),
       background var(--duration-quick) var(--ease-smooth-out);
   }
+
   .p-tab.active {
-    background: color-mix(in srgb, var(--rb-accent) 12%, transparent);
-    color: var(--rb-accent);
+    background: color-mix(in sRGB, var(--accent) 12%, transparent);
+    color: var(--accent);
+  }
+
+  /* La pill entera es inseleccionable: es una superficie que se arrastra, y un
+     arrastre que empieza sobre texto termina seleccionándolo en vez de mover
+     nada. El bloc es la excepción, porque ahí sí se escribe. */
+  .p-root,
+  .p-root * {
+    user-select: none !important;
   }
 
   .p-scratch {
@@ -1867,22 +1923,13 @@
     border: 0;
     border-radius: 0.45rem;
     padding: 0.4rem 0.5rem;
-    background: color-mix(in srgb, var(--rb-bg0) 80%, transparent);
-    color: var(--rb-text);
+    background: color-mix(in sRGB, var(--bg) 80%, transparent);
+    color: var(--text);
     font-family: inherit;
     font-size: 0.75rem;
     resize: none;
     outline: none;
-  }
-
-  .p-root,
-  .p-root * {
-    user-select: none !important;
-    -webkit-user-select: none !important;
-  }
-  .p-scratch {
     user-select: text !important;
-    -webkit-user-select: text !important;
   }
 
   @media (prefers-reduced-motion: reduce) {
@@ -1900,6 +1947,7 @@
       transition: none !important;
       animation: none !important;
     }
+
     .p-stack.is-dim {
       filter: none;
     }

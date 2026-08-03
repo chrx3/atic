@@ -411,26 +411,27 @@ pub fn set_pill_visible(app: &AppHandle, visible: bool) {
         let _ = cfg.save(&state.dirs.config_path());
     }
 
-    if let Some(window) = app.get_webview_window("pill") {
-        if visible {
-            let _ = window.set_always_on_top(true);
-            let _ = window.show();
-        } else {
-            // Esconder la pill con un panel abierto dejaba el Escape global
-            // registrado sin nadie que lo cerrara.
-            crate::clipboard_history::unregister_clipboard_escape_close(app);
-            *state.pre_clipboard_position.lock_or_recover() = None;
-            let _ = window.hide();
-        }
+    if !visible {
+        // Esconder la pill con un panel abierto dejaba el Escape global
+        // registrado sin nadie que lo cerrara.
+        crate::clipboard_history::unregister_clipboard_escape_close(app);
+        *state.pre_clipboard_position.lock_or_recover() = None;
     }
+    // La pill es un div del overlay: mostrarla u ocultarla es montarla o
+    // desmontarla, no `show()`/`hide()` sobre una ventana.
+    let _ = app.emit("pill-visibility", visible);
 }
 
 /// Alterna la visibilidad de la pill (usado por el menú del tray).
+///
+/// La verdad la tiene la config y ya no `is_visible()` de una ventana: el
+/// overlay está siempre visible, así que preguntarle no diría nada sobre la
+/// pill.
 pub fn toggle_pill(app: &AppHandle) {
     let visible = app
-        .get_webview_window("pill")
-        .and_then(|w| w.is_visible().ok())
-        .unwrap_or(false);
+        .try_state::<AppState>()
+        .map(|s| s.config.lock_or_recover().show_pill)
+        .unwrap_or(true);
     set_pill_visible(app, !visible);
 }
 
@@ -473,7 +474,7 @@ pub fn animate_pill_to(app: &AppHandle, target_x: i32, target_y: i32) {
 
 /// Muestra la pill y la trae al cursor. Traslado permanente: persiste el hogar.
 pub fn summon_pill_to_cursor(app: &AppHandle) {
-    if app.get_webview_window("pill").is_none() {
+    if app.get_webview_window(crate::overlay::LABEL).is_none() {
         return;
     }
     set_pill_visible(app, true);

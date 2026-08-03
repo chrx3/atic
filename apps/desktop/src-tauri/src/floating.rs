@@ -628,17 +628,20 @@ pub struct BubbleAnchor {
 ///
 /// Van juntas porque se leen juntas: son las gemelas de las del CSS, y la
 /// conversión a físicos pasa una sola vez, dentro de [`bubble_rect`].
+///
+/// Ya no hay `inset`. Existía porque una ventana recorta su propia sombra, así
+/// que el globo vivía dentro de un marco transparente de 62 px y toda la
+/// geometría tenía que descontarlo. Dentro del overlay no hay ventana que
+/// recortar: el rectángulo que sale de acá es el del globo y nada más.
 #[derive(Clone, Copy)]
 pub struct BubbleShape {
-    /// Tamaño de la VENTANA, marco transparente incluido.
+    /// Tamaño del globo.
     pub w: i32,
     pub h: i32,
     /// Separación entre el origen y el globo.
     pub gap: i32,
     /// Radio de las esquinas del globo: la punta no puede caer sobre ellas.
     pub corner: i32,
-    /// El marco transparente donde vive la sombra, por lado.
-    pub inset: i32,
 }
 
 /// Calcula dónde va la burbuja y dónde cae su punta. **No mueve nada.**
@@ -653,32 +656,31 @@ pub struct BubbleShape {
 /// siempre; probar primero el lado con más espacio haría que la burbuja
 /// cambiara de lado por unos pocos píxeles de diferencia entre aperturas.
 #[cfg(windows)]
+/// El origen llega como RECTÁNGULO y ya no como etiqueta de ventana.
+///
+/// La pill dejó de ser una ventana —vive dentro del overlay—, así que
+/// `get_webview_window("pill")` devolvía `None` y la burbuja no se mostraba.
+/// Quien llama sabe dónde está la pill (`overlay::pill_rect()`); acá solo se
+/// hace la geometría.
 pub fn bubble_rect(
     app: &AppHandle,
-    label: &str,
-    origin: &str,
+    origin_rect: Rect,
     shape: BubbleShape,
 ) -> Option<(Rect, BubbleAnchor)> {
-    let bubble = app.get_webview_window(label)?;
-
     // La forma llega en píxeles LÓGICOS y todo lo demás acá es físico. A escala
     // 100% son el mismo número y la diferencia no existe; a 125% la burbuja
     // quedaba pegada a la pill y la punta caía sobre la esquina redondeada.
-    let scale = bubble.scale_factor().unwrap_or(1.0);
+    let scale = crate::overlay::scale(app);
     let fisico = |v: i32| (v as f64 * scale).round() as i32;
-    let (gap, corner, inset) = (fisico(shape.gap), fisico(shape.corner), fisico(shape.inset));
+    let (gap, corner) = (fisico(shape.gap), fisico(shape.corner));
 
-    // El tamaño lo dice quien llama, y NO se mide la ventana: al cerrarse, la
-    // burbuja se repliega sobre la pill y queda guardada de ese tamaño. Midiendo
-    // `outer_size()` la segunda apertura crecía hasta el tamaño de la pill —una
-    // ventana de 48px con el compositor adentro— y no había pulsación que la
-    // recuperara. El destino es un dato de diseño, no el estado que quedó.
+    // El tamaño lo dice quien llama, y NO se mide nada: al cerrarse, la burbuja
+    // se repliega sobre la pill. Midiéndola, la segunda apertura crecía hasta
+    // el tamaño de la pill y no había pulsación que la recuperara. El destino
+    // es un dato de diseño, no el estado que quedó.
     let (bw, bh) = (fisico(shape.w), fisico(shape.h));
 
-    let anchor_window = app.get_webview_window(origin)?;
-    let pos = anchor_window.outer_position().ok()?;
-    let asize = anchor_window.outer_size().ok()?;
-    let (ax, ay, aw, ah) = (pos.x, pos.y, asize.width as i32, asize.height as i32);
+    let (ax, ay, aw, ah) = (origin_rect.x, origin_rect.y, origin_rect.w, origin_rect.h);
     let (acx, acy) = (ax + aw / 2, ay + ah / 2);
 
     let monitors = atic_capture::monitors::enumerate();
@@ -689,23 +691,19 @@ pub fn bubble_rect(
         .or_else(|| monitors.first())
         .map(|m| m.work_area)?;
 
-    // La ventana es MÁS GRANDE que el globo: `inset` es el marco transparente
-    // donde vive la sombra. Sin descontarlo, el hueco visible entre la pill y
-    // el globo sería `gap + inset` y la punta no llegaría a tocarla.
-    let (vw, vh) = (bw - inset * 2, bh - inset * 2);
-    let fits_below = ay + ah + gap + vh + MARGIN <= work.bottom();
-    let fits_above = ay - gap - vh - MARGIN >= work.y;
-    let fits_right = ax + aw + gap + vw + MARGIN <= work.right();
+    let fits_below = ay + ah + gap + bh + MARGIN <= work.bottom();
+    let fits_above = ay - gap - bh - MARGIN >= work.y;
+    let fits_right = ax + aw + gap + bw + MARGIN <= work.right();
 
-    // (x, y de la VENTANA, lado del globo que mira al origen)
+    // (x, y del globo, lado del globo que mira al origen)
     let (x, y, side) = if fits_below {
-        (acx - bw / 2, ay + ah + gap - inset, "top")
+        (acx - bw / 2, ay + ah + gap, "top")
     } else if fits_above {
-        (acx - bw / 2, ay - gap - vh - inset, "bottom")
+        (acx - bw / 2, ay - gap - bh, "bottom")
     } else if fits_right {
-        (ax + aw + gap - inset, acy - bh / 2, "left")
+        (ax + aw + gap, acy - bh / 2, "left")
     } else {
-        (ax - gap - vw - inset, acy - bh / 2, "right")
+        (ax - gap - bw, acy - bh / 2, "right")
     };
 
     let (x, y) = clamp(x, y, bw, bh);
@@ -713,12 +711,12 @@ pub fn bubble_rect(
     // La punta no puede caer sobre una esquina redondeada: se vería despegada
     // del borde. `corner` es el radio, y se le suma el ancho de la propia punta.
     let along = if side == "top" || side == "bottom" {
-        (acx - x).clamp(inset + corner, (bw - inset - corner).max(inset + corner))
+        (acx - x).clamp(corner, (bw - corner).max(corner))
     } else {
-        (acy - y).clamp(inset + corner, (bh - inset - corner).max(inset + corner))
+        (acy - y).clamp(corner, (bh - corner).max(corner))
     };
 
-    geo!("BUBBLE     {label} <- {origin} lado={side} off={along} en {x},{y}");
+    geo!("BUBBLE     agentes <- pill lado={side} off={along} en {x},{y} tam {bw}x{bh}");
     Some((
         Rect { x, y, w: bw, h: bh },
         BubbleAnchor {
@@ -728,44 +726,10 @@ pub fn bubble_rect(
     ))
 }
 
-/// El rectángulo actual de una ventana. Punto de partida del morph.
-pub fn rect_of(app: &AppHandle, label: &str) -> Option<Rect> {
-    let window = app.get_webview_window(label)?;
-    let pos = window.outer_position().ok()?;
-    let size = window.outer_size().ok()?;
-    Some(Rect {
-        x: pos.x,
-        y: pos.y,
-        w: size.width as i32,
-        h: size.height as i32,
-    })
-}
-
-/// Coloca una ventana en `r` de inmediato, en un solo `SetWindowPos`.
-///
-/// Es el «frame cero» del morph: la burbuja se planta encima de la pill y
-/// recién desde ahí empieza a crecer. Con dos llamadas (tamaño y posición) el
-/// compositor puede colar un frame intermedio, que es el salto que costó tanto
-/// sacar de la rueda.
-#[cfg(windows)]
-pub fn snap_rect(app: &AppHandle, label: &str, r: Rect) {
-    let Some(window) = app.get_webview_window(label) else {
-        return;
-    };
-    bump_gen(label);
-    if !set_bounds(&window, r.x, r.y, r.w, r.h) {
-        let _ = window.set_position(PhysicalPosition::new(r.x, r.y));
-    }
-}
-
-#[cfg(not(windows))]
-pub fn snap_rect(_app: &AppHandle, _label: &str, _r: Rect) {}
-
 #[cfg(not(windows))]
 pub fn bubble_rect(
     _app: &AppHandle,
-    _label: &str,
-    _origin: &str,
+    _origin_rect: Rect,
     _shape: BubbleShape,
 ) -> Option<(Rect, BubbleAnchor)> {
     None

@@ -6,6 +6,7 @@
 //! a cuál pertenece cada línea.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 use serde::Serialize;
@@ -108,36 +109,31 @@ pub fn agent_sessions() -> Vec<SessionInfo> {
         .unwrap_or_default()
 }
 
-/// La forma del globo de agentes.
+/// La forma del globo de agentes, en píxeles lógicos.
 ///
-/// `inset` tiene que valer lo mismo que `--inset` en la vista: es el margen
-/// donde cabe la sombra, y la ventana mide el globo MÁS ese marco por los
-/// cuatro lados. Sin descontarlo, el globo quedaría flotando lejos de la pill y
-/// la punta no llegaría a tocarla. Así que `w` y `h` son los de
-/// `tauri.conf.json` —la ventana— y el globo que se ve mide 580×520.
+/// Antes estos números eran los de la VENTANA: incluían un marco transparente
+/// de 62 px por lado donde cabía la sombra, porque una ventana recorta la suya.
+/// El globo visible medía 580×520 y toda la geometría tenía que descontar el
+/// marco. Dentro del overlay no hay ventana que recorte nada, así que esto es
+/// el globo y se acabó el `inset`.
 ///
-/// Los 62 salen de la sombra: `0 18px 44px`, y la regla es desplazamiento +
-/// difuminado <= inset, o la ventana la corta en seco y en vez de sombra se ve
-/// una banda oscura de bordes rectos.
-///
-/// El tamaño vive acá y no se mide de la ventana porque al cerrarse la burbuja
-/// se repliega sobre la pill y queda guardada de ese tamaño: midiéndola, la
-/// segunda apertura crecía hasta los 48px de la pill.
+/// El tamaño vive acá y no se mide del DOM porque al cerrarse la burbuja se
+/// repliega sobre la pill; midiéndola, la segunda apertura crecía hasta el
+/// tamaño de la pill.
 const BUBBLE: crate::floating::BubbleShape = crate::floating::BubbleShape {
-    w: 704,
-    h: 644,
+    w: 580,
+    h: 520,
     gap: 10,
     corner: 26,
-    inset: 62,
 };
 
-/// Lo más chica que puede quedar la VENTANA sin que el compositor se rompa.
+/// Lo más chico que puede quedar el globo sin que el compositor se rompa.
 ///
 /// Por debajo de esto los dos grupos de la fila de abajo dejan de caber en una
-/// línea y el botón de enviar se sale del panel — que es lo que pasaba a 580px
-/// antes de partir el compositor en dos grupos.
-const BUBBLE_MIN_W: i32 = 544;
-const BUBBLE_MIN_H: i32 = 464;
+/// línea y el botón de enviar se sale del panel. Son los de antes menos el
+/// marco de la sombra, que ya no existe: 544−124 y 464−124.
+const BUBBLE_MIN_W: i32 = 420;
+const BUBBLE_MIN_H: i32 = 340;
 
 /// La forma del globo, con el tamaño al que lo haya dejado el usuario.
 fn bubble_shape(app: &AppHandle) -> crate::floating::BubbleShape {
@@ -154,149 +150,94 @@ fn bubble_shape(app: &AppHandle) -> crate::floating::BubbleShape {
     }
 }
 
-/// Lo que la vista necesita saber al abrirse.
+/// Dónde va el globo, **en píxeles CSS del overlay**.
+///
+/// Antes esto salía en físicos y la vista los dividía por `devicePixelRatio`.
+/// Ya no: el globo se dibuja dentro del overlay, así que la única unidad que
+/// tiene sentido al otro lado es la del viewport. La conversión pasa una vez,
+/// acá, con la escala de la ventana que de verdad lo va a pintar.
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct BubbleOpen {
+    /// Lado del globo que mira a la pill: de ahí le sale el cuello.
     side: &'static str,
-    /// En píxeles FÍSICOS, como todo lo que sale de la capa de geometría.
-    ///
-    /// La vista los divide por `devicePixelRatio`. Rust trabaja en físicos
-    /// porque es lo que usa Win32; el CSS trabaja en lógicos. A 100% son lo
-    /// mismo y la diferencia no existe, que es justo por lo que se cuela: a
-    /// 125% —dpi 120, lo que tiene esta máquina— todo queda un 25% corrido.
-    offset: i32,
-    w: i32,
-    h: i32,
-    /// Cuánto dura el vuelo desde la pill. El contenido se funde en ese tiempo.
-    flight: u64,
+    /// Desde la esquina del globo hasta el centro del cuello, por ese lado.
+    offset: f64,
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+}
+
+/// ¿Está la consola a la vista?
+///
+/// Antes lo contestaba `window.is_visible()`. Sin ventana propia, el estado
+/// vive acá: es lo único que queda de ella, y hace falta porque el atajo y la
+/// rueda son interruptores.
+static OPEN: AtomicBool = AtomicBool::new(false);
+
+/// ¿La consola está desplegada? Lo pregunta el historial del portapapeles, que
+/// con ella abierta inserta en el compositor en vez de pegar afuera.
+pub fn agents_open() -> bool {
+    OPEN.load(Ordering::Relaxed)
 }
 
 /// Abre o cierra la consola de agentes, que **sale de la pill**.
 ///
-/// La ventana arranca del tamaño y en el sitio exactos de la pill, y crece
-/// hasta el globo con el mismo tween que usa la rueda: es la ventana la que se
-/// despliega, no una ventana nueva que aparece con una pestaña dibujada al
-/// lado. Al cerrar hace el camino inverso y recién entonces se oculta.
+/// Ya no hay ventana que mover: se calcula dónde va el globo y se le manda a la
+/// vista, que lo despliega con CSS. Con eso desaparecen el «frame cero» encima
+/// de la pill, el tween, y la rama de recuperación que existía para cuando el
+/// tween no llegaba y dejaba una ventana a medio crecer.
 ///
-/// Es un interruptor. Antes se cerraba al perder el foco, así que abrir el
-/// historial para copiar algo que ibas a pegarle mataba la sesión justo cuando
-/// la necesitabas.
+/// Es un interruptor. No se cierra al perder el foco: abrir el historial para
+/// copiar algo que ibas a pegarle mataba la sesión justo cuando la necesitabas.
 #[tauri::command]
 pub fn show_agents_window(app: AppHandle) {
-    let Some(window) = app.get_webview_window("agents") else {
-        return;
-    };
-
-    // Visible y con el foco = segunda pulsación de la rueda: se repliega.
-    // Visible pero tapada por otra app = la querías ver, así que se trae al
-    // frente sin volver a animarla.
-    if window.is_visible().unwrap_or(false) {
-        if window.is_focused().unwrap_or(false) {
-            hide_agents_window(app);
-        } else {
-            // Traerla al frente Y volver a plantarle su tamaño. Lo segundo es lo
-            // que la recompone: un vuelo que no llegó —la pantalla se bloqueó, el
-            // equipo suspendió, algo pisó el tween— deja la ventana visible a
-            // medio crecer, y como sigue estando «visible» esta rama era la única
-            // que se alcanzaba. Sin reponer la geometría, la única salida era
-            // reiniciar la app. Visto: quedó en 252x252 con el compositor
-            // desbordado y ninguna pulsación la arreglaba.
-            if let Some((target, anchor)) =
-                crate::floating::bubble_rect(&app, "agents", "pill", bubble_shape(&app))
-            {
-                crate::floating::snap_rect(&app, "agents", target);
-                let _ = app.emit(
-                    "agents-bubble-anchor",
-                    BubbleOpen {
-                        side: anchor.side,
-                        offset: anchor.offset,
-                        w: target.w,
-                        h: target.h,
-                        // Ya está en su sitio: sin vuelo que acompañar.
-                        flight: 0,
-                    },
-                );
-            }
-            let _ = window.set_focus();
-        }
+    if OPEN.load(Ordering::Relaxed) {
+        hide_agents_window(app);
         return;
     }
 
-    let Some((target, anchor)) =
-        crate::floating::bubble_rect(&app, "agents", "pill", bubble_shape(&app))
+    let Some((target, anchor)) = crate::overlay::pill_rect()
+        .and_then(|origen| crate::floating::bubble_rect(&app, origen, bubble_shape(&app)))
     else {
         return;
     };
+    let Some(area) = crate::overlay::to_local(&app, target) else {
+        return;
+    };
 
-    // Frame cero: encima de la pill, del tamaño de la pill. Sin esto la ventana
-    // aparecería ya hecha en su sitio y la punta sería un dibujo que insinúa un
-    // origen que nunca ocurrió.
-    let from = crate::floating::rect_of(&app, "pill").unwrap_or(target);
-    crate::floating::snap_rect(&app, "agents", from);
-    let _ = window.show();
-    let _ = window.unminimize();
-    let _ = window.set_focus();
-
-    let flight = crate::floating::tween(&app, "agents", target)
-        .map(|f| f.ms)
-        .unwrap_or(0);
+    OPEN.store(true, Ordering::Relaxed);
+    // El overlay nunca se activa, así que tampoco sube solo entre las ventanas
+    // topmost: sin esto, la consola puede abrirse debajo del launcher.
+    crate::overlay::raise(&app);
     let _ = app.emit(
         "agents-bubble-anchor",
         BubbleOpen {
             side: anchor.side,
-            offset: anchor.offset,
-            w: target.w,
-            h: target.h,
-            flight,
+            offset: f64::from(anchor.offset) / crate::overlay::scale(&app),
+            x: area.x,
+            y: area.y,
+            w: area.w,
+            h: area.h,
         },
     );
 }
 
-/// Redimensiona la burbuja **anclada por el lado del que sale**.
+/// Guarda a qué tamaño dejaste el globo, para la próxima apertura.
 ///
-/// El lado que mira a la pill NO se mueve: si la punta está arriba, crecer
-/// empuja el borde de abajo; si está abajo, crece hacia arriba. Es lo que hace
-/// que la punta siga tocando la pill mientras arrastrás, en vez de despegarse y
-/// tener que reacomodar la ventana después.
+/// Antes esto además MOVÍA la ventana en cada cuadro del arrastre, y por eso
+/// recibía el lado anclado: el borde que mira a la pill no se mueve y el
+/// opuesto sí. Esa cuenta se fue a la vista, que es la que ahora dibuja el
+/// globo — acá solo queda el disco.
 ///
-/// `w`/`h` son de la VENTANA y en píxeles lógicos, que es lo que la vista
-/// maneja. Se guardan para la próxima apertura.
+/// Llega solo al soltar. Mientras arrastrás llegaba sesenta veces por segundo,
+/// y reescribir el JSON otras tantas castiga el disco para guardar valores que
+/// nadie va a leer: el único que importa es el último.
 #[tauri::command]
-pub fn resize_agents_bubble(app: AppHandle, w: i32, h: i32, side: String, commit: bool) {
-    let Some(window) = app.get_webview_window("agents") else {
-        return;
-    };
-    let scale = window.scale_factor().unwrap_or(1.0);
-
+pub fn save_agents_bubble_size(app: AppHandle, w: i32, h: i32) {
     let w = w.max(BUBBLE_MIN_W);
     let h = h.max(BUBBLE_MIN_H);
-    let (pw, ph) = (
-        (w as f64 * scale).round() as i32,
-        (h as f64 * scale).round() as i32,
-    );
-
-    let Some(now) = crate::floating::rect_of(&app, "agents") else {
-        return;
-    };
-
-    // El borde anclado se queda quieto; el opuesto es el que se mueve.
-    let (x, y) = match side.as_str() {
-        "bottom" => (now.x, now.y + now.h - ph),
-        "right" => (now.x + now.w - pw, now.y),
-        // `top` y `left` anclan por arriba y por la izquierda, que es el origen.
-        _ => (now.x, now.y),
-    };
-
-    crate::floating::snap_rect(&app, "agents", crate::floating::Rect { x, y, w: pw, h: ph });
-
-    // Al disco solo al soltar. Mientras arrastrás esto llega en cada cuadro, y
-    // reescribir el JSON sesenta veces por segundo castiga el disco para
-    // guardar sesenta valores que nadie va a leer: el único que importa es el
-    // último.
-    if !commit {
-        return;
-    }
     if let Some(state) = app.try_state::<crate::AppState>() {
         let snapshot = {
             let Ok(mut cfg) = state.config.lock() else {
@@ -309,33 +250,17 @@ pub fn resize_agents_bubble(app: AppHandle, w: i32, h: i32, side: String, commit
     }
 }
 
-/// Repliega la burbuja sobre la pill y la oculta al llegar.
+/// Repliega la burbuja sobre la pill.
 ///
-/// El ocultado va en un hilo y no en el frontend a propósito: si la ventana web
-/// se colgara a mitad de la animación, quedaría una ventana muerta en pantalla
-/// sin forma de cerrarla.
+/// Ya no oculta ninguna ventana: avisa, y la vista se encarga del repliegue. El
+/// hilo con el `sleep` que esperaba a que terminara el vuelo antes de esconder
+/// la ventana se fue con ella.
 #[tauri::command]
 pub fn hide_agents_window(app: AppHandle) {
-    let Some(window) = app.get_webview_window("agents") else {
-        return;
-    };
-    if !window.is_visible().unwrap_or(false) {
+    if !OPEN.swap(false, Ordering::Relaxed) {
         return;
     }
     let _ = app.emit("agents-bubble-dismiss", ());
-
-    let Some(home) = crate::floating::rect_of(&app, "pill") else {
-        let _ = window.hide();
-        return;
-    };
-    let flight = crate::floating::tween(&app, "agents", home)
-        .map(|f| f.ms)
-        .unwrap_or(0);
-
-    std::thread::spawn(move || {
-        std::thread::sleep(std::time::Duration::from_millis(flight));
-        let _ = window.hide();
-    });
 }
 
 /// Qué agentes hay y cuáles se pueden usar.

@@ -14,7 +14,7 @@
    */
   import { page } from "$app/state";
   import AgentsSurface from "$lib/AgentsSurface.svelte";
-  import PillSurface from "$lib/PillSurface.svelte";
+  import PillSurface from "./pill/PillSurface.svelte";
   import { getConfig } from "$ipc/config";
   import { onPillVisibility, setOverlayTextMode } from "$ipc/overlay";
   import { liveArea } from "./surfaces.svelte";

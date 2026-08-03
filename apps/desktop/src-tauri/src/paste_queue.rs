@@ -96,25 +96,17 @@ fn emit_queued(app: &AppHandle, preview: &str) {
     );
 }
 
-/// Oculta la pill, restaura el foco externo y espera a que el SO asiente.
-fn prepare_external_paste(app: &AppHandle) -> Option<tauri::WebviewWindow> {
-    let pill = app.get_webview_window("pill");
-    if let Some(ref win) = pill {
-        let _ = win.hide();
-    }
+/// Restaura el foco externo y espera a que el SO asiente.
+///
+/// Antes también escondía la pill y la volvía a mostrar después del pegado,
+/// porque tenía ventana propia y reaparecer al frente en el hueco que deja
+/// `SendInput` se comía las teclas. Dentro del overlay no hay nada que
+/// esconder: la ventana nunca tuvo el foco, así que no hay que devolvérselo a
+/// nadie.
+fn prepare_external_paste(app: &AppHandle) {
+    let _ = app;
     clipboard_history::focus_paste_target();
     thread::sleep(Duration::from_millis(FOCUS_SETTLE_MS));
-    pill
-}
-
-fn restore_pill(pill: Option<tauri::WebviewWindow>) {
-    if let Some(win) = pill {
-        // La espera y el "sin activar" son por lo mismo: `SendInput` encola las
-        // teclas y no espera a que la app destino las procese. Reaparecer al
-        // frente en ese hueco se comía el pegado.
-        thread::sleep(Duration::from_millis(120));
-        clipboard_history::show_without_stealing_focus(&win);
-    }
 }
 
 fn ensure_poller(app: &AppHandle) {
@@ -301,9 +293,8 @@ pub fn paste_queue_item_now(
     })
     .ok_or_else(|| "Ítem no encontrado".to_string())?;
 
-    let pill = prepare_external_paste(&app);
+    prepare_external_paste(&app);
     let paste_result = clipboard_history::paste_text(&app, &text);
-    restore_pill(pill);
     paste_result?;
 
     let removed = with_queue_mut(&state, |items| {

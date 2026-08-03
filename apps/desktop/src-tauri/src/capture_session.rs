@@ -148,6 +148,7 @@ fn end_session(app: &AppHandle) {
         let taken = state.overlay_session.lock_or_recover().take();
         end_session_cleanup(taken);
     }
+    crate::overlay::set_capturing(app, false);
     let _ = app.emit("overlay-session-ended", ());
 }
 
@@ -254,6 +255,7 @@ fn start_impl(app: &AppHandle) -> Result<(), String> {
 
     // No mostrar aún: el webview carga el PNG oculto y llama a
     // `show_capture_overlay` cuando el frame ya está pintado. Así no hay telón gris.
+    crate::overlay::set_capturing(app, true);
     let _ = app.emit("overlay-session-started", ());
     Ok(())
 }

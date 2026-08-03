@@ -162,7 +162,8 @@ pub fn register_shortcuts(app: &AppHandle, bindings: ShortcutBindings<'_>) -> Re
             // auto-repeat del SO reenvía Pressed mientras se sostiene, pero el
             // front ignora las repeticiones (openRadial es idempotente).
             if let Err(err) = gs.on_shortcut(*sc, move |_app, _sc, event| {
-                let Some(pill) = handle.get_webview_window("pill") else {
+                // La pill vive dentro del overlay: los eventos van ahí.
+                let Some(pill) = handle.get_webview_window(crate::overlay::LABEL) else {
                     return;
                 };
                 match event.state() {

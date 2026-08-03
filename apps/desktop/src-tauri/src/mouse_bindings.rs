@@ -348,7 +348,8 @@ unsafe extern "system" fn rawinput_wnd_proc(
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         DefWindowProcW, RI_MOUSE_BUTTON_4_DOWN, RI_MOUSE_BUTTON_4_UP, RI_MOUSE_BUTTON_5_DOWN,
-        RI_MOUSE_BUTTON_5_UP, WM_INPUT,
+        RI_MOUSE_BUTTON_5_UP, RI_MOUSE_LEFT_BUTTON_DOWN, RI_MOUSE_MIDDLE_BUTTON_DOWN,
+        RI_MOUSE_RIGHT_BUTTON_DOWN, WM_INPUT,
     };
 
     if msg == WM_INPUT {
@@ -413,6 +414,26 @@ unsafe extern "system" fn rawinput_wnd_proc(
                     enqueue_hook_event(HookEvent { action, edge });
                 }
             }
+
+            // Clic fuera de las zonas del overlay = «cerrá lo que tengas
+            // abierto». Reemplaza al `blur` de la pill, que dentro del overlay
+            // dejó de significar eso.
+            const MAIN_DOWN: u32 = RI_MOUSE_LEFT_BUTTON_DOWN
+                | RI_MOUSE_RIGHT_BUTTON_DOWN
+                | RI_MOUSE_MIDDLE_BUTTON_DOWN;
+            if flags & MAIN_DOWN != 0 {
+                crate::overlay::on_button_down();
+            }
+
+            // El overlay se arma cuando el cursor entra a una de sus zonas.
+            //
+            // Se cuelga acá y no de un timer propio porque este hilo YA recibe
+            // un paquete por cada reporte del mouse —125 a 1000 por segundo— y
+            // hasta hoy los tiraba. Sale gratis, no despierta a nadie cuando el
+            // mouse está quieto, y muestrea mucho más fino que los 16 ms de un
+            // timer a 60 Hz. La función respeta el contrato de esta wndproc:
+            // solo atomics y `try_send`.
+            crate::overlay::on_cursor_sample();
         }
 
         return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) };
