@@ -14,13 +14,22 @@
   import Banner from "$ui/Banner.svelte";
   import Button from "$ui/Button.svelte";
   import Chip from "$ui/Chip.svelte";
+  import ConfirmDialog from "$ui/ConfirmDialog.svelte";
   import EmptyState from "$ui/EmptyState.svelte";
   import Field from "$ui/Field.svelte";
+  import IconButton from "$ui/IconButton.svelte";
   import Input from "$ui/Input.svelte";
   import Kbd from "$ui/Kbd.svelte";
+  import Meter from "$ui/Meter.svelte";
   import Modal from "$ui/Modal.svelte";
+  import ProgressBar from "$ui/ProgressBar.svelte";
   import SegmentedControl from "$ui/SegmentedControl.svelte";
+  import Select from "$ui/Select.svelte";
   import Switch from "$ui/Switch.svelte";
+  import TextArea from "$ui/TextArea.svelte";
+  import ToastStack from "$ui/ToastStack.svelte";
+  import ListDetail from "$patterns/ListDetail.svelte";
+  import Toolbar from "$patterns/Toolbar.svelte";
 
   const PALETTES = [
     { name: "oscuro", attrs: { "data-theme": "dark" } },
@@ -34,6 +43,20 @@
   let off = $state(false);
   let seg = $state<"todos" | "míos" | "otros">("todos");
   let modalOpen = $state(false);
+  let confirmOpen = $state(false);
+  let pinned = $state(false);
+  let model = $state<"small" | "medium" | "large">("small");
+  let note = $state("");
+  let selected = $state<string | null>("Reunión de equipo");
+  let toasts = $state<{ id: number; message: string }[]>([]);
+  let nextToast = 1;
+
+  const ITEMS = ["Reunión de equipo", "Llamada con cliente", "Retro del sprint"];
+
+  function addToast() {
+    const id = nextToast++;
+    toasts = [...toasts, { id, message: `Copiado al portapapeles (${id})` }].slice(-3);
+  }
 </script>
 
 <svelte:head><title>kitchen sink</title></svelte:head>
@@ -134,6 +157,69 @@
           full
         />
 
+        <div class="flex items-center gap-1">
+          <IconButton label="Reproducir">
+            <svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M8 5l11 7-11 7z" fill="currentColor" />
+            </svg>
+          </IconButton>
+          <IconButton label="Silenciar" variant="soft">
+            <svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M4 9h4l5-4v14l-5-4H4z" fill="currentColor" />
+            </svg>
+          </IconButton>
+          <IconButton label="Fijar" pressed={pinned} onclick={() => (pinned = !pinned)}>
+            <svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="12" cy="12" r="5" fill="currentColor" />
+            </svg>
+          </IconButton>
+          <IconButton label="Borrar" variant="danger">
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              aria-hidden="true"
+            >
+              <path
+                d="M5 7h14M9 7V5h6v2M7 7l1 12h8l1-12"
+                stroke="currentColor"
+                stroke-width="1.6"
+                stroke-linecap="round"
+              />
+            </svg>
+          </IconButton>
+        </div>
+
+        <Select
+          bind:value={model}
+          options={[
+            { value: "small", label: "Whisper small · 487 MB" },
+            { value: "medium", label: "Whisper medium · 1.5 GB" },
+            { value: "large", label: "Whisper large · 3.1 GB" },
+          ]}
+        />
+
+        <Field label="Nota" hint="Crece sola hasta 12 líneas.">
+          {#snippet children({ id, describedBy })}
+            <TextArea
+              {id}
+              aria-describedby={describedBy}
+              bind:value={note}
+              autogrow
+              placeholder="Escribí una nota…"
+            />
+          {/snippet}
+        </Field>
+
+        <ProgressBar value={0.62} label="Descargando modelo" />
+        <ProgressBar indeterminate label="Transcribiendo" tone="ok" />
+
+        <div class="flex flex-col gap-1">
+          <Meter value={0.72} tone="mic" label="mic" />
+          <Meter value={0.31} tone="sys" label="sis" />
+        </div>
+
         <div class="flex items-center gap-2 text-xs text-muted">
           <span>Buscar</span>
           <Kbd combo="Ctrl+K" />
@@ -169,9 +255,92 @@
     {/each}
   </div>
 
-  <div class="mt-6">
-    <Button variant="soft" onclick={() => (modalOpen = true)}>Abrir un modal</Button>
-  </div>
+  <!-- Los patrones no entran en una columna: ocupan el ancho por definición. -->
+  <section class="mt-6 flex flex-col gap-3">
+    <h2 class="text-micro text-faint uppercase">patrones</h2>
+
+    <div class="h-72 overflow-hidden rounded-md border border-line bg-surface">
+      <div class="flex h-full flex-col">
+        <Toolbar label="Acciones de grabaciones">
+          <Button variant="primary" size="sm">Grabar</Button>
+          <Button variant="soft" size="sm">Importar</Button>
+          {#snippet end()}
+            <Chip tone="rec">grabando · 00:14</Chip>
+          {/snippet}
+        </Toolbar>
+
+        <div class="min-h-0 flex-1">
+          <ListDetail hasSelection={selected !== null} listLabel="Grabaciones">
+            {#snippet list()}
+              <ul class="flex flex-col">
+                {#each ITEMS as item (item)}
+                  <li>
+                    <button
+                      type="button"
+                      class="flex w-full flex-col gap-0.5 border-b border-line px-3 py-2
+                             text-left transition-colors duration-(--duration-quick)
+                             hover:bg-surface-2
+                             {selected === item ? 'bg-surface-2' : ''}"
+                      onclick={() => (selected = item)}
+                    >
+                      <span class="truncate text-sm text-text">{item}</span>
+                      <span class="font-mono text-xs text-faint" data-numeric>
+                        14:32 · hoy
+                      </span>
+                    </button>
+                  </li>
+                {/each}
+              </ul>
+            {/snippet}
+
+            {#snippet detail()}
+              <div class="flex flex-col gap-2 p-4">
+                <h3 class="text-lg font-semibold">{selected}</h3>
+                <p class="text-sm text-muted">
+                  Angostá la ventana: bajo el corte la lista cede el sitio al detalle en
+                  vez de apilarse. El corte lo decide el ancho del contenedor, no el de
+                  la pantalla.
+                </p>
+                <div>
+                  <Button variant="ghost" size="sm" onclick={() => (selected = null)}>
+                    Volver a la lista
+                  </Button>
+                </div>
+              </div>
+            {/snippet}
+
+            {#snippet empty()}
+              <EmptyState title="Elegí una grabación" hint="Se muestra acá al lado." />
+            {/snippet}
+          </ListDetail>
+        </div>
+      </div>
+    </div>
+
+    <div class="flex flex-wrap gap-2">
+      <Button variant="soft" onclick={() => (modalOpen = true)}>Abrir un modal</Button>
+      <Button variant="soft" onclick={() => (confirmOpen = true)}
+        >Pedir confirmación</Button
+      >
+      <Button variant="soft" onclick={addToast}>Lanzar un aviso</Button>
+    </div>
+  </section>
+
+  <ToastStack
+    items={toasts}
+    onDismiss={(id) => (toasts = toasts.filter((t) => t.id !== id))}
+  />
+
+  {#if confirmOpen}
+    <ConfirmDialog
+      title="Borrar 3 grabaciones"
+      body="Se borran el audio, la transcripción y el resumen de las tres. No se puede deshacer."
+      confirmLabel="Borrar"
+      tone="danger"
+      onConfirm={() => (confirmOpen = false)}
+      onCancel={() => (confirmOpen = false)}
+    />
+  {/if}
 
   {#if modalOpen}
     <Modal
