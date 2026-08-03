@@ -6,18 +6,16 @@
    * detrás de otra en el mismo archivo. Acá cada una es un componente que se
    * entiende solo, y el panel únicamente decide cuál se ve.
    *
-   * Dos secciones siguen en la UI vieja y se dicen a la cara: Audio necesita
-   * la enumeración de dispositivos y Resúmenes el manejo de claves de
-   * proveedor. Prometer una pantalla vacía sería peor que mandar a la que
-   * funciona.
+   * Las siete están reescritas.
    */
   import SettingsNav from "$patterns/SettingsNav.svelte";
-  import Banner from "$ui/Banner.svelte";
+  import AudioSection from "./AudioSection.svelte";
   import CapturesSection from "./CapturesSection.svelte";
   import DictationSection from "./DictationSection.svelte";
   import GeneralSection from "./GeneralSection.svelte";
   import MeetingsSection from "./MeetingsSection.svelte";
   import ShortcutsSection from "./ShortcutsSection.svelte";
+  import SummarySection from "./SummarySection.svelte";
 
   type SectionId =
     | "general"
@@ -38,11 +36,6 @@
     { value: "summary", label: "Resúmenes" },
   ];
 
-  const PENDING: Record<string, string> = {
-    audio: "La lista de micrófonos y salidas todavía no está reescrita.",
-    summary: "El manejo de claves de los proveedores todavía no está reescrito.",
-  };
-
   let section = $state<SectionId>("general");
 </script>
 
@@ -60,10 +53,10 @@
       <CapturesSection />
     {:else if section === "shortcuts"}
       <ShortcutsSection />
+    {:else if section === "audio"}
+      <AudioSection />
     {:else}
-      <Banner tone="info" title={PENDING[section]}>
-        Volvé a la interfaz anterior con Ctrl+Alt+M para cambiarlo.
-      </Banner>
+      <SummarySection />
     {/if}
   </div>
 </div>
