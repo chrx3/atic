@@ -14,6 +14,12 @@
   import ToolIcon from "$lib/ToolIcon.svelte";
   import GooFilter, { preFilter } from "$lib/GooFilter.svelte";
   import { TOOLS, type ToolId } from "$lib/tools";
+  import {
+    nodeAngle as angleOf,
+    nodePosition,
+    separators as wedgeSeparators,
+    wedgeClip,
+  } from "$surfaces/overlay/pill/wheelGeometry";
 
   let {
     caption = "Elige una herramienta",
@@ -113,7 +119,7 @@
 
   /** Ángulo del nodo i; 0 rad = arriba, sentido horario. */
   function nodeAngle(index: number): number {
-    return (index / NODE_COUNT) * Math.PI * 2 - Math.PI / 2;
+    return angleOf(index, NODE_COUNT);
   }
 
   /** Lado menor: escala el anillo y el núcleo (los gajos usan todo el área). */
@@ -127,64 +133,19 @@
    */
   const coreSize = $derived(compact ? SKIN.core : ringRadius * 1.2);
 
-  /**
-   * Sector angular como polígono, en PÍXELES: los gajos cubren el rectángulo
-   * completo, esquinas incluidas. Con porcentajes el sector se deformaba con
-   * la relación de aspecto y quedaban franjas muertas a los lados.
-   *
-   * clip-path recorta también el hit-testing, así que todo el sector queda
-   * clickeable sin dibujar nada.
-   */
-  function wedgeClip(index: number): string {
-    const half = Math.PI / NODE_COUNT;
-    const center = nodeAngle(index);
-    const cx = width / 2;
-    const cy = height / 2;
-    // Radio mayor que la media diagonal: el polígono desborda el rectángulo,
-    // así que dentro de él las fronteras son los rayos exactos del sector.
-    const R = Math.hypot(width, height);
-    const points = [-1, -0.5, 0, 0.5, 1].map((t) => {
-      const a = center + t * half;
-      const x = cx + R * Math.cos(a);
-      const y = cy + R * Math.sin(a);
-      return `${x.toFixed(1)}px ${y.toFixed(1)}px`;
-    });
-    return `polygon(${cx.toFixed(1)}px ${cy.toFixed(1)}px, ${points.join(", ")})`;
-  }
-
   const nodes = $derived(
-    TOOLS.map((tool, index) => {
-      const angle = nodeAngle(index);
-      return {
-        tool,
-        x: width / 2 + Math.cos(angle) * ringRadius,
-        y: height / 2 + Math.sin(angle) * ringRadius,
-        clip: wedgeClip(index),
-      };
-    }),
+    TOOLS.map((tool, index) => ({
+      tool,
+      ...nodePosition(index, NODE_COUNT, { width, height }, ringRadius),
+      clip: wedgeClip(index, NODE_COUNT, { width, height }),
+    })),
   );
 
   /** El separador nace fuera del núcleo. */
   const sepInner = $derived(coreSize / 2 + 8);
 
-  /**
-   * Fronteras entre gajos. Cada una llega hasta el borde del lienzo según su
-   * propio ángulo (distancia rayo–rectángulo) y se disuelve ahí: así la
-   * división se lee completa, coherente con que todo el área es clickeable.
-   */
-  const separators = $derived(
-    TOOLS.map((_, index) => {
-      const deg = -90 + (360 / NODE_COUNT) * index + 180 / NODE_COUNT;
-      const rad = (deg * Math.PI) / 180;
-      const cos = Math.abs(Math.cos(rad));
-      const sin = Math.abs(Math.sin(rad));
-      const toEdge = Math.min(
-        cos < 1e-6 ? Infinity : width / 2 / cos,
-        sin < 1e-6 ? Infinity : height / 2 / sin,
-      );
-      return { deg, len: Math.max(0, toEdge - sepInner) };
-    }),
-  );
+  /** Fronteras entre gajos: se disuelven en el borde del lienzo. */
+  const separators = $derived(wedgeSeparators(NODE_COUNT, { width, height }, sepInner));
 
   // El tamaño se mide siempre, haya partículas o no: de él dependen las
   // posiciones de los nodos. offsetWidth y no getBoundingClientRect, porque
