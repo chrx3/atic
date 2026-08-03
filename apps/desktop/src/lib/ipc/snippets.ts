@@ -1,0 +1,30 @@
+/** Fragmentos, bloc y notas. */
+
+import { invoke } from "@tauri-apps/api/core";
+import type { UnlistenFn } from "@tauri-apps/api/event";
+import type { Note, Scratchpad, Snippet } from "$core/types";
+import { on } from "./events";
+
+export const listSnippets = () => invoke<Snippet[]>("list_snippets");
+export const upsertSnippet = (snippet: Snippet) =>
+  invoke<Snippet>("upsert_snippet", { snippet });
+export const deleteSnippet = (id: string) => invoke<void>("delete_snippet", { id });
+export const pasteSnippet = (id: string) => invoke<void>("paste_snippet", { id });
+
+/** Igual que `prepareClipboardPill`: devuelve los ms de vuelo a esperar. */
+export const prepareSnippetsPill = (fly: boolean) =>
+  invoke<number>("prepare_snippets_pill", { fly });
+
+export const getScratchpad = () => invoke<Scratchpad>("get_scratchpad");
+export const setScratchpad = (body: string) =>
+  invoke<Scratchpad>("set_scratchpad", { body });
+
+/** Notas guardadas, de la más reciente a la más vieja. */
+export const listNotes = () => invoke<Note[]>("list_notes");
+/** Crea o actualiza. Sin `id` crea una nueva. `null` = cuerpo vacío, no guarda. */
+export const saveNote = (id: string | null, body: string) =>
+  invoke<Note | null>("save_note", { id, body });
+export const deleteNote = (id: string) => invoke<void>("delete_note", { id });
+
+export const onSnippetsChanged = (cb: () => void): Promise<UnlistenFn> =>
+  on("snippets-changed", cb);

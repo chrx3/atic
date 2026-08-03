@@ -1,11 +1,2 @@
-import type { Snippet } from "./types";
-
-export function emptySnippet(): Snippet {
-  return {
-    id: "",
-    name: "",
-    body: "",
-    aliases: [],
-    updatedAtMs: 0,
-  };
-}
+/** Puente hacia `$core`. Se borra cuando el arbol viejo deje de importarlo. */
+export * from "./core/snippetsModel";
