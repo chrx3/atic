@@ -9,12 +9,14 @@
    * esto solo decide qué se dibuja.
    */
   import { toolById, type ToolId } from "$core/tools";
+  import { recordings } from "$domain/recordings.svelte";
   import { sessionEffect } from "$domain/session";
   import { toasts } from "$domain/toasts.svelte";
   import CapturesTool from "$features/captures/CapturesTool.svelte";
   import ClipboardTool from "$features/clipboard/ClipboardTool.svelte";
   import DictationTool from "$features/dictation/DictationTool.svelte";
   import MeetingsTool from "$features/meetings/MeetingsTool.svelte";
+  import SearchModal from "$features/search/SearchModal.svelte";
   import SettingsPanel from "$features/settings/SettingsPanel.svelte";
   import SnippetsTool from "$features/snippets/SnippetsTool.svelte";
   import Modal from "$ui/Modal.svelte";
@@ -56,8 +58,15 @@
   const tool = $derived(toolById(ui.activeTool));
 
   let settingsOpen = $state(false);
+  let searchOpen = $state(false);
 
   function onKeydown(event: KeyboardEvent) {
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
+      event.preventDefault();
+      searchOpen = true;
+      return;
+    }
+
     // Esc vuelve al hub, salvo que haya un diálogo abierto —el nativo lo cierra
     // él— o que el foco esté en un campo, donde Esc suele significar otra cosa.
     if (event.key !== "Escape" || ui.view !== "tool") return;
@@ -95,6 +104,18 @@
   {/snippet}
 
   {#snippet actions()}
+    <IconButton label="Buscar (Ctrl+K)" size="sm" onclick={() => (searchOpen = true)}>
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <circle cx="11" cy="11" r="6" stroke="currentColor" stroke-width="1.8" />
+        <path
+          d="m20 20-3.5-3.5"
+          stroke="currentColor"
+          stroke-width="1.8"
+          stroke-linecap="round"
+        />
+      </svg>
+    </IconButton>
+
     <IconButton label="Ajustes" size="sm" onclick={() => (settingsOpen = true)}>
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
         <circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="1.8" />
@@ -130,6 +151,23 @@
     </EmptyState>
   {/if}
 </WindowFrame>
+
+{#if searchOpen}
+  <SearchModal
+    onClose={() => (searchOpen = false)}
+    onNavigate={(hit) => {
+      // Los resultados que son un sitio y no una acción: se abre la
+      // herramienta que los contiene y se selecciona lo elegido.
+      if (hit.kind === "recording") {
+        recordings.select(hit.id);
+        ui.openTool("meetings");
+      } else if (hit.kind === "scratchpad") {
+        ui.snippetsTab = "scratchpad";
+        ui.openTool("snippets");
+      }
+    }}
+  />
+{/if}
 
 {#if settingsOpen}
   <Modal title="Ajustes" size="lg" onClose={() => (settingsOpen = false)}>
