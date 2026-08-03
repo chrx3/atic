@@ -173,10 +173,21 @@
     }, 500);
   }
 
-  async function refreshQueue() {
+  const backendReadyDelay = (attempt: number) =>
+    new Promise<void>((resolve) => window.setTimeout(resolve, 45 * (attempt + 1)));
+
+  function isBackendStarting(cause: unknown) {
+    return String(cause).includes("state not managed");
+  }
+
+  async function refreshQueue(attempt = 0) {
     try {
       queue = await listPasteQueue();
     } catch (cause) {
+      if (isBackendStarting(cause) && attempt < 8) {
+        await backendReadyDelay(attempt);
+        return refreshQueue(attempt + 1);
+      }
       error = String(cause);
     }
   }
@@ -511,7 +522,7 @@
     opensUp={openedUp}
     layout="window"
     interactive={!transitioning}
-    renderSkin={surface.kind === "queue"}
+    renderSkin
     queueCount={queue.length}
     agentCount={Math.max(agents.unread, agents.waiting)}
     agentWorking={agents.working}
@@ -579,9 +590,9 @@
     gap: 4px;
     align-self: center;
     padding: 3px;
-    border: 1px solid oklch(0.22 0.012 255 / 0.08);
+    border: 1px solid var(--soft-line);
     border-radius: 999px;
-    background: oklch(1 0 0 / 0.35);
+    background: var(--panel-fill-dim);
   }
 
   .surface-tabs button {
@@ -589,7 +600,7 @@
     padding: 0 10px;
     border: 0;
     border-radius: 999px;
-    color: oklch(0.48 0.014 255);
+    color: var(--muted);
     background: transparent;
     font: inherit;
     font-size: 9px;
@@ -597,8 +608,8 @@
   }
 
   .surface-tabs button.active {
-    color: white;
-    background: oklch(0.22 0.012 255);
+    color: var(--solid-ink);
+    background: var(--solid-bg);
   }
 
   .snippets-panel {
@@ -618,7 +629,7 @@
 
   .scratchpad > span,
   .scratchpad > small {
-    color: oklch(0.48 0.014 255);
+    color: var(--muted);
     font-size: 9px;
   }
 
@@ -626,17 +637,17 @@
     min-height: 0;
     padding: 14px;
     resize: none;
-    border: 1px solid oklch(0.22 0.012 255 / 0.1);
+    border: 1px solid var(--line);
     border-radius: 14px;
     outline: none;
-    color: oklch(0.22 0.012 255);
-    background: oklch(1 0 0 / 0.42);
+    color: var(--ink);
+    background: var(--panel-fill);
     font: 12px/1.5 inherit;
   }
 
-  .scratchpad textarea:focus { border-color: oklch(0.62 0.18 252 / 0.55); }
+  .scratchpad textarea:focus { border-color: color-mix(in oklch, var(--signal) 55%, transparent); }
   .scratchpad > small { text-align: right; }
-  .surface-empty { margin: auto; color: oklch(0.48 0.014 255); font-size: 10px; }
+  .surface-empty { margin: auto; color: var(--muted); font-size: 10px; }
 
   .queue-surface {
     display: flex;
@@ -646,7 +657,7 @@
   }
 
   .queue-kicker {
-    color: oklch(0.62 0.18 252);
+    color: var(--signal);
     font-size: 8px;
     font-weight: 760;
     letter-spacing: 0.14em;
@@ -657,10 +668,10 @@
     margin: 12px 0 16px;
     padding: 14px;
     overflow: auto;
-    border: 1px solid oklch(0.22 0.012 255 / 0.09);
+    border: 1px solid var(--line);
     border-radius: 14px;
-    color: oklch(0.22 0.012 255);
-    background: oklch(1 0 0 / 0.42);
+    color: var(--ink);
+    background: var(--panel-fill);
     font-size: 11px;
     line-height: 1.5;
     white-space: pre-wrap;
@@ -672,25 +683,25 @@
     padding: 0 13px;
     border: 0;
     border-radius: 999px;
-    color: white;
-    background: oklch(0.22 0.012 255);
+    color: var(--solid-ink);
+    background: var(--solid-bg);
     font: inherit;
     font-size: 10px;
     font-weight: 650;
     cursor: pointer;
   }
-  .queue-actions button.secondary { border: 1px solid oklch(0.22 0.012 255 / 0.12); color: oklch(0.48 0.014 255); background: transparent; }
+  .queue-actions button.secondary { border: 1px solid var(--line); color: var(--muted); background: transparent; }
   .queue-actions button:disabled { opacity: 0.45; }
-  .queue-rest { margin-top: 20px; padding-top: 13px; border-top: 1px solid oklch(0.22 0.012 255 / 0.08); }
-  .queue-rest > span { color: oklch(0.48 0.014 255); font-size: 9px; }
-  .queue-rest p { margin: 8px 0 0; overflow: hidden; color: oklch(0.48 0.014 255); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+  .queue-rest { margin-top: 20px; padding-top: 13px; border-top: 1px solid var(--soft-line); }
+  .queue-rest > span { color: var(--muted); font-size: 9px; }
+  .queue-rest p { margin: 8px 0 0; overflow: hidden; color: var(--muted); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
   .queue-empty { text-align: center; }
   .queue-empty strong { font-size: 15px; }
-  .queue-empty p { color: oklch(0.48 0.014 255); font-size: 10px; }
+  .queue-empty p { color: var(--muted); font-size: 10px; }
 
   .quick-action strong {
     margin-top: 14px;
-    color: oklch(0.22 0.012 255);
+    color: var(--ink);
     font-size: 17px;
     letter-spacing: -0.025em;
   }
@@ -698,7 +709,7 @@
   .quick-action p {
     max-width: 270px;
     margin: 7px 0 18px;
-    color: oklch(0.48 0.014 255);
+    color: var(--muted);
     font-size: 11px;
     line-height: 1.45;
   }
@@ -708,15 +719,16 @@
     padding: 0 17px;
     border: 0;
     border-radius: 999px;
-    color: white;
-    background: oklch(0.22 0.012 255);
+    color: var(--solid-ink);
+    background: var(--solid-bg);
     font: inherit;
     font-size: 11px;
     font-weight: 650;
     cursor: pointer;
   }
 
-  .quick-action button.danger { background: oklch(0.61 0.2 28); }
+  /* El rojo de grabación no invierte con el tema: la tinta sigue siendo clara. */
+  .quick-action button.danger { color: oklch(1 0 0); background: var(--record); }
   .quick-action button:disabled { opacity: 0.45; cursor: wait; }
 
   .action-orb {
@@ -725,8 +737,8 @@
     height: 70px;
     place-items: center;
     border-radius: 50%;
-    color: oklch(0.22 0.012 255);
-    background: oklch(0.915 0.009 255);
+    color: var(--ink);
+    background: var(--pearl-deep);
   }
 
   .action-orb > i {
@@ -736,7 +748,7 @@
     background: currentColor;
   }
 
-  .action-orb.recording { color: oklch(0.61 0.2 28); }
+  .action-orb.recording { color: var(--record); }
   .action-orb.recording > i { border-radius: 3px; }
 
   .action-orb.voice {
@@ -747,7 +759,7 @@
   }
   .action-orb.voice i { width: 2px; height: 18px; border-radius: 2px; }
   .action-orb.voice i:nth-child(2) { height: 30px; }
-  .action-orb.voice.listening { color: oklch(0.62 0.18 252); }
+  .action-orb.voice.listening { color: var(--signal); }
   .action-orb.voice.listening i { animation: listening 800ms ease-in-out infinite alternate; }
 
   .action-orb.capture > i { width: 30px; height: 24px; border: 1.5px dashed currentColor; border-radius: 4px; background: transparent; }

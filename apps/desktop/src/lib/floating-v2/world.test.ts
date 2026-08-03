@@ -7,6 +7,7 @@ import {
   upsertObject,
   type FloatingWorld,
 } from "./world";
+import { connectorBridges } from "./liquid/connectors";
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -65,5 +66,26 @@ const replaced = upsertObject(initial, {
 });
 equal(replaced.objects.filter((item) => item.id === "agents").length, 1);
 assert(replaced.objects.find((item) => item.id === "agents")?.rect.x !== 700, "upsert must replace the live tool");
+
+const connectors = connectorBridges(
+  [
+    { id: "pill", x: 100, y: 100, width: 48, height: 48 },
+    { id: "meetings", x: 155, y: 88, width: 240, height: 180 },
+    { id: "agents", x: 402, y: 88, width: 520, height: 420 },
+  ],
+  [{ id: "group:flow", members: ["pill", "meetings", "agents"] }],
+);
+equal(connectors.length, 2, "a three-object group should use a minimal two-neck tree");
+assert(connectors.every((bridge) => bridge.r >= 11 && bridge.r <= 21), "connector radii stay visibly liquid");
+assert(connectors.every((bridge) => bridge.ax !== bridge.bx || bridge.ay !== bridge.by), "connectors have length");
+
+const distant = connectorBridges(
+  [
+    { id: "pill", x: 0, y: 0, width: 48, height: 48 },
+    { id: "agents", x: 500, y: 0, width: 520, height: 420 },
+  ],
+  [{ id: "group:distant", members: ["pill", "agents"] }],
+);
+equal(distant.length, 0, "a stale group must not draw a cable across the desktop");
 
 console.log("Floating world geometry checks passed.");

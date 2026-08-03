@@ -205,7 +205,7 @@
 
 <svelte:head><title>Atic · {definition.label}</title></svelte:head>
 
-<main class:agent-surface={tool === "agents"} class="floating-tool" data-tool={tool}>
+<main class:agent-surface={tool === "agents"} class:grouped class="floating-tool own-skin" data-tool={tool}>
   <header
     class="tool-header"
     role="group"
@@ -315,6 +315,12 @@
     --pearl-soft: oklch(0.22 0.012 255 / 0.055);
     --pearl-signal: oklch(0.62 0.18 252);
     --pearl-record: oklch(0.61 0.2 28);
+    /* Mismos tonos que LiquidSkin, para que el fondo propio y el del
+       compositor sean el mismo pearl. */
+    --pearl-top: oklch(1 0 0);
+    --pearl-mid: oklch(0.965 0.006 255);
+    --pearl-deep: oklch(0.915 0.009 255);
+    --pearl-highlight: oklch(1 0 0 / 0.72);
     position: relative;
     display: grid;
     width: 100%;
@@ -323,6 +329,30 @@
     grid-template-rows: 58px minmax(0, 1fr);
     color: var(--pearl-ink);
     font: 13px/1.4 "Aptos", "Segoe UI Variable", system-ui, sans-serif;
+  }
+
+  /* El cuerpo vive siempre junto al contenido. El compositor global dibuja
+     únicamente los cuellos que atraviesan el espacio entre ventanas. */
+  .floating-tool.own-skin {
+    overflow: hidden;
+    border-radius: 15px;
+    background: linear-gradient(
+      to bottom right,
+      var(--pearl-top),
+      var(--pearl-mid) 58%,
+      var(--pearl-deep)
+    );
+    box-shadow: inset 0 0 0 1px var(--pearl-highlight);
+  }
+
+  /* Coincide con `radius_for` en liquid_world.rs. */
+  .floating-tool.own-skin.agent-surface {
+    border-radius: 16px;
+  }
+
+  /* La piel global aporta el borde continuo cuando forma parte de un grupo. */
+  .floating-tool.own-skin.grouped {
+    box-shadow: none;
   }
 
   .tool-header {
@@ -416,6 +446,10 @@
     --pearl-muted: oklch(0.7 0.012 255);
     --pearl-line: oklch(1 0 0 / 0.1);
     --pearl-soft: oklch(1 0 0 / 0.07);
+    --pearl-top: oklch(0.3 0.01 255);
+    --pearl-mid: oklch(0.245 0.012 255);
+    --pearl-deep: oklch(0.19 0.012 255);
+    --pearl-highlight: oklch(1 0 0 / 0.16);
   }
 
   :global(:root[data-theme="dark"]) .tabs button.active {

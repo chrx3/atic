@@ -327,6 +327,22 @@
     --line: oklch(0.22 0.012 255 / 0.12);
     --soft-line: oklch(0.22 0.012 255 / 0.075);
     --surface-shadow: 0 32px 80px oklch(0.2 0.015 255 / 0.18), 0 4px 16px oklch(0.2 0.015 255 / 0.08);
+    /* Paneles y botones macizos del contenido inyectado en `content`. */
+    --panel-fill: oklch(1 0 0 / 0.42);
+    --panel-fill-dim: oklch(1 0 0 / 0.35);
+    --solid-bg: oklch(0.22 0.012 255);
+    --solid-ink: oklch(1 0 0);
+    /*
+     * Contrato `--pearl-*`: lo consumen los componentes que se montan tanto
+     * acá como en la ventana principal o la de herramienta (FloatingAgents).
+     * Sin estos alias caen a su fallback claro y quedan tinta oscura sobre
+     * pearl oscuro.
+     */
+    --pearl-ink: var(--ink);
+    --pearl-muted: var(--muted);
+    --pearl-line: var(--line);
+    --pearl-soft: var(--soft-line);
+    --pearl-signal: var(--signal);
     position: relative;
     width: min(760px, 100%);
     height: 620px;
@@ -350,6 +366,10 @@
     --line: oklch(1 0 0 / 0.12);
     --soft-line: oklch(1 0 0 / 0.075);
     --surface-shadow: 0 32px 80px oklch(0.03 0.01 255 / 0.44), 0 4px 16px oklch(0.03 0.01 255 / 0.28);
+    --panel-fill: oklch(1 0 0 / 0.06);
+    --panel-fill-dim: oklch(1 0 0 / 0.045);
+    --solid-bg: oklch(0.91 0.008 255);
+    --solid-ink: oklch(0.17 0.01 255);
   }
 
   .floating-ink {

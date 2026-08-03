@@ -232,6 +232,9 @@ fn rect_gap(first: PhysicalRect, second: PhysicalRect) -> f64 {
 }
 
 fn attraction_delta(moving: PhysicalRect, target: PhysicalRect, desired_gap: i32) -> (i32, i32) {
+    if let Some(delta) = overlap_separation_delta(moving, target, desired_gap) {
+        return delta;
+    }
     let moving_right = moving.x + moving.width;
     let moving_bottom = moving.y + moving.height;
     let target_right = target.x + target.width;
@@ -251,6 +254,30 @@ fn attraction_delta(moving: PhysicalRect, target: PhysicalRect, desired_gap: i32
         0
     };
     (dx, dy)
+}
+
+fn overlap_separation_delta(
+    moving: PhysicalRect,
+    target: PhysicalRect,
+    desired_gap: i32,
+) -> Option<(i32, i32)> {
+    let moving_right = moving.x + moving.width;
+    let moving_bottom = moving.y + moving.height;
+    let target_right = target.x + target.width;
+    let target_bottom = target.y + target.height;
+    let overlaps_x = moving.x < target_right && moving_right > target.x;
+    let overlaps_y = moving.y < target_bottom && moving_bottom > target.y;
+    if !overlaps_x || !overlaps_y {
+        return None;
+    }
+    [
+        (target.x - desired_gap - moving_right, 0),
+        (target_right + desired_gap - moving.x, 0),
+        (0, target.y - desired_gap - moving_bottom),
+        (0, target_bottom + desired_gap - moving.y),
+    ]
+    .into_iter()
+    .min_by_key(|(dx, dy)| dx.abs() + dy.abs())
 }
 
 fn tool_title(tool: &str) -> &'static str {
@@ -429,6 +456,56 @@ fn set_object_position(app: &tauri::AppHandle, id: &str, x: i32, y: i32) {
     }
 }
 
+fn clamp_window_to_work_area(window: &tauri::WebviewWindow) {
+    let (Ok(position), Ok(size)) = (window.outer_position(), window.outer_size()) else {
+        return;
+    };
+    let monitors = atic_capture::monitors::enumerate();
+    let center_x = position.x + size.width as i32 / 2;
+    let center_y = position.y + size.height as i32 / 2;
+    let monitor = monitors
+        .iter()
+        .find(|monitor| monitor.work_area.contains(center_x, center_y))
+        .or_else(|| monitors.iter().find(|monitor| monitor.is_primary))
+        .or_else(|| monitors.first());
+    let Some(monitor) = monitor else {
+        return;
+    };
+    let work = monitor.work_area;
+    let margin = 10;
+    let max_x = (work.right() - size.width as i32 - margin).max(work.x + margin);
+    let max_y = (work.bottom() - size.height as i32 - margin).max(work.y + margin);
+    let x = position.x.clamp(work.x + margin, max_x);
+    let y = position.y.clamp(work.y + margin, max_y);
+    if x != position.x || y != position.y {
+        let _ = window.set_position(PhysicalPosition::new(x, y));
+    }
+}
+
+fn repair_group_overlap(app: &tauri::AppHandle, id: &str) {
+    let Some(moving) = live_rect(app, id) else {
+        return;
+    };
+    let members = app
+        .try_state::<FloatingWorldState>()
+        .map(|state| group_members(&state.world.lock_or_recover(), id))
+        .unwrap_or_default();
+    let desired_gap = object_label(id)
+        .and_then(|label| app.get_webview_window(&label))
+        .and_then(|window| window.scale_factor().ok())
+        .map(|scale| (FUSED_GAP * scale).round() as i32)
+        .unwrap_or(FUSED_GAP as i32);
+    let separation = members
+        .iter()
+        .filter(|member| member.as_str() != id)
+        .filter_map(|member| overlap_separation_delta(moving, live_rect(app, member)?, desired_gap))
+        .min_by_key(|(dx, dy)| dx.abs() + dy.abs());
+    let (Some((dx, dy)), Some((x, y))) = (separation, live_position(app, id)) else {
+        return;
+    };
+    set_object_position(app, id, x + dx, y + dy);
+}
+
 fn translate_members(app: &tauri::AppHandle, members: &[String], dx: i32, dy: i32) {
     if dx == 0 && dy == 0 {
         return;
@@ -500,11 +577,14 @@ pub(crate) fn open_tool(app: &tauri::AppHandle, tool: &str, focus: bool) -> Resu
     if let Some(window) = app.get_webview_window(&label) {
         let _ = window.set_always_on_top(true);
         window.show().map_err(|error| error.to_string())?;
+        clamp_window_to_work_area(&window);
         if focus {
             let _ = window.set_focus();
         }
-        remember_window(app, &label);
         attach_to_pill_by_default(app, tool);
+        repair_group_overlap(app, tool);
+        clamp_window_to_work_area(&window);
+        remember_window(app, &label);
         crate::liquid_world::emit_snapshot(app);
         return Ok(());
     }
@@ -552,11 +632,14 @@ pub(crate) fn open_tool(app: &tauri::AppHandle, tool: &str, focus: bool) -> Resu
         .map_err(|error| error.to_string())?;
     crate::webview_tweaks::disable_browser_accelerator_keys(&window);
     window.show().map_err(|error| error.to_string())?;
+    clamp_window_to_work_area(&window);
     if focus {
         let _ = window.set_focus();
     }
-    remember_window(app, &label);
     attach_to_pill_by_default(app, tool);
+    repair_group_overlap(app, tool);
+    clamp_window_to_work_area(&window);
+    remember_window(app, &label);
     crate::liquid_world::emit_snapshot(app);
     Ok(())
 }
@@ -726,6 +809,9 @@ pub fn begin_floating_drag(
         anchor_y,
         members,
     });
+    // Oculta la piel global antes de entregar el drag a Windows. Esperar al
+    // primer WindowEvent::Moved deja un frame con el cuerpo anterior visible.
+    crate::liquid_world::emit_snapshot(&app);
     if detach {
         schedule_save(&app);
         emit_world_changed(&app);
@@ -822,6 +908,31 @@ pub fn remember_window(app: &tauri::AppHandle, label: &str) {
     }
     drop(world);
     schedule_save(app);
+}
+
+/// Grupos que requieren cuellos líquidos entre ventanas independientes.
+///
+/// Cada superficie pinta siempre su propio cuerpo. El compositor solo necesita
+/// conocer las relaciones entre miembros para dibujar el material que ocupa el
+/// espacio vacío entre ellos.
+pub fn merged_groups(app: &tauri::AppHandle) -> Vec<PersistedGroup> {
+    let Some(state) = app.try_state::<FloatingWorldState>() else {
+        return Vec::new();
+    };
+    let world = state.world.lock_or_recover();
+    world
+        .groups
+        .iter()
+        .filter(|group| group.members.len() >= 2)
+        .cloned()
+        .collect()
+}
+
+/// `true` mientras haya un arrastre en curso. El compositor lo consulta para
+/// pintar la piel sin interpolar mientras dura.
+pub fn is_dragging(app: &tauri::AppHandle) -> bool {
+    app.try_state::<FloatingWorldState>()
+        .is_some_and(|state| state.drag.lock_or_recover().is_some())
 }
 
 pub fn handle_window_moved(app: &tauri::AppHandle, label: &str, position: PhysicalPosition<i32>) {

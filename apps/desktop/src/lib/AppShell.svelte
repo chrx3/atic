@@ -51,28 +51,28 @@
   ]);
 
   const horizontalBoxes = $derived([
-    { id: "pill", cx: 210, cy: 49, hw: 204, hh: 23, r: 23 },
+    { id: "pill", cx: 192, cy: 46, hw: 184, hh: 20, r: 20 },
     {
       id: "active",
-      cx: 35 + activeIndex * 70,
-      cy: 27,
-      hw: 28,
-      hh: 25,
-      r: 25,
+      cx: 32 + activeIndex * 64,
+      cy: 23,
+      hw: 23,
+      hh: 23,
+      r: 23,
     },
   ]);
   const horizontalBridges = $derived([
     {
       id: "nav-bridge",
-      ax: 35 + activeIndex * 70,
-      ay: 27,
-      bx: 35 + activeIndex * 70,
-      by: 49,
-      r: 18,
+      ax: 32 + activeIndex * 64,
+      ay: 23,
+      bx: 32 + activeIndex * 64,
+      by: 46,
+      r: 14,
     },
   ]);
 
-  const liquidParameters = { k: 13, cell: 3, smooth: 2 };
+  const liquidParameters = { k: 10, cell: 3, smooth: 2 };
 
   function choose(next: AppSectionId) {
     section = next;
@@ -136,9 +136,9 @@
           boxes={horizontalBoxes}
           bridges={horizontalBridges}
           parameters={liquidParameters}
-          width={420}
-          height={74}
-          duration={230}
+          width={384}
+          height={68}
+          duration={210}
         />
         <nav class="pearl-dock" aria-label="Navegación principal">
           {#each APP_SECTIONS as item (item.id)}
@@ -294,25 +294,25 @@
     }
 
     .atic-shell-main {
-      padding-bottom: 5.1rem;
+      padding-bottom: 4.85rem;
     }
 
     .pearl-dock-wrap {
       position: absolute;
       z-index: 20;
       right: 0;
-      bottom: max(0.25rem, env(safe-area-inset-bottom));
+      bottom: max(0.6rem, env(safe-area-inset-bottom));
       left: 0;
       display: flex;
       justify-content: center;
-      padding-inline: 0.4rem;
+      padding-inline: 0.75rem;
       pointer-events: none;
     }
 
     .pearl-dock-stage {
       position: relative;
-      width: min(26.25rem, 100%);
-      height: 4.625rem;
+      width: min(24rem, 100%);
+      height: 4.25rem;
       pointer-events: auto;
     }
 
@@ -330,18 +330,19 @@
       flex-direction: column;
       align-items: center;
       justify-content: flex-start;
-      gap: 0.16rem;
+      gap: 0.12rem;
       border: 0;
-      padding: 0.72rem 0.08rem 0;
+      padding: 0.55rem 0.08rem 0;
       color: var(--rb-muted);
       background: transparent;
       cursor: pointer;
+      transition: color 160ms ease-out, transform 180ms cubic-bezier(0.22, 1, 0.36, 1);
     }
 
     .pearl-dock-item span {
       max-width: 100%;
       overflow: hidden;
-      font-size: 0.5625rem;
+      font-size: 0.59375rem;
       font-weight: 600;
       text-overflow: ellipsis;
       white-space: nowrap;
@@ -350,6 +351,10 @@
     .pearl-dock-item:hover,
     .pearl-dock-item.is-active {
       color: var(--rb-text);
+    }
+
+    .pearl-dock-item.is-active {
+      transform: translateY(-0.18rem);
     }
   }
 
@@ -360,7 +365,7 @@
 
     .pearl-dock-item {
       justify-content: flex-start;
-      padding-top: 0.95rem;
+      padding-top: 0.8rem;
     }
   }
 

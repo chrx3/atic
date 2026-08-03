@@ -9,6 +9,7 @@
     width,
     height,
     duration = 300,
+    connectorOnly = false,
     onRender,
   }: {
     boxes: LiquidBox[];
@@ -17,6 +18,7 @@
     width: number;
     height: number;
     duration?: number;
+    connectorOnly?: boolean;
     onRender?: (milliseconds: number) => void;
   } = $props();
 
@@ -88,6 +90,17 @@
     };
   }
 
+  function bridgeAnchor(bridge: LiquidBridge): LiquidBox {
+    return {
+      id: "connector-anchor",
+      cx: (bridge.ax + bridge.bx) / 2,
+      cy: (bridge.ay + bridge.by) / 2,
+      hw: 1.5,
+      hh: 1.5,
+      r: 1.5,
+    };
+  }
+
   function render(boxValues: LiquidBox[], bridgeValues: LiquidBridge[], parameterValues: LiquidParameters) {
     const started = performance.now();
     engine.setBoxes(boxValues);
@@ -110,7 +123,18 @@
     }
 
     const boxesById = alignedBoxes(currentBoxes, targetBoxes);
-    const anchor = targetBoxes.find((box) => box.id === "pill") ?? boxesById.to[0];
+    const seedBridge = targetBridges[0] ?? currentBridges[0];
+    const anchor = targetBoxes.find((box) => box.id === "pill")
+      ?? boxesById.to[0]
+      ?? (seedBridge ? bridgeAnchor(seedBridge) : undefined);
+    if (!anchor) {
+      initialized = true;
+      currentBoxes = [];
+      currentBridges = [];
+      currentParameters = { ...targetParameters };
+      render(currentBoxes, currentBridges, currentParameters);
+      return;
+    }
     const bridgesById = alignedBridges(currentBridges, targetBridges, anchor);
     const fromParameters = { ...currentParameters };
     let started = 0;
@@ -170,7 +194,7 @@
   onDestroy(() => cancelAnimationFrame(animationFrame));
 </script>
 
-<svg class="liquid-skin" viewBox={`0 0 ${Math.max(1, width)} ${Math.max(1, height)}`} preserveAspectRatio="none" aria-hidden="true">
+<svg class:connector-only={connectorOnly} class="liquid-skin" viewBox={`0 0 ${Math.max(1, width)} ${Math.max(1, height)}`} preserveAspectRatio="none" aria-hidden="true">
   <defs>
     <linearGradient id={gradientId} x1="0" y1="0" x2="0.8" y2="1">
       <stop offset="0" stop-color="var(--liquid-pearl-top)" />
@@ -178,7 +202,7 @@
       <stop offset="1" stop-color="var(--liquid-pearl-deep)" />
     </linearGradient>
   </defs>
-  <path class="skin-path" d={path} fill={`url(#${gradientId})`} />
+  <path class="skin-path" d={path} fill={connectorOnly ? "var(--liquid-pearl)" : `url(#${gradientId})`} />
   <path class="skin-highlight" d={path} fill="none" />
 </svg>
 
@@ -207,6 +231,14 @@
     stroke: var(--liquid-highlight);
     stroke-width: 1;
     vector-effect: non-scaling-stroke;
+  }
+
+  .connector-only .skin-path {
+    filter: drop-shadow(0 8px 12px var(--liquid-shadow-near));
+  }
+
+  .connector-only .skin-highlight {
+    opacity: 0.55;
   }
 
   :global(:root[data-theme="dark"]) .liquid-skin {

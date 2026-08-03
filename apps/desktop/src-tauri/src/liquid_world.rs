@@ -36,6 +36,13 @@ pub struct LiquidWorldSnapshot {
     pub revision: u64,
     pub emitted_at_ms: u128,
     pub debug: bool,
+    /// Hay un arrastre en curso. La piel debe seguir a la ventana sin
+    /// interpolar: el sistema mueve el WebView del contenido al instante y una
+    /// transición acá se lee como que el fondo va detrás del texto.
+    pub dragging: bool,
+    /// Relaciones lógicas entre las superficies. El WebView crea un árbol de
+    /// puentes cortos y lo une con los cuerpos en un solo campo SDF.
+    pub groups: Vec<crate::floating_world::PersistedGroup>,
     pub objects: Vec<LiquidWorldObject>,
 }
 
@@ -63,6 +70,30 @@ fn ensure_window(
         .visible(false)
         .build()
         .map_err(|error| error.to_string())
+}
+
+/// Windows vuelve a inscribir la ventana en la barra de tareas al mostrarla, así
+/// que el `skip_taskbar(true)` del builder no sobrevive al primer `show()`. El
+/// compositor es una superficie de fondo, no una ventana del usuario, y debe
+/// quedar fuera de la barra y de Alt+Tab de forma estable: eso lo da
+/// WS_EX_TOOLWINDOW, que sí es parte del estilo de la ventana.
+#[cfg(windows)]
+fn keep_out_of_taskbar(window: &tauri::WebviewWindow) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetWindowLongPtrW, SetWindowLongPtrW, GWL_EXSTYLE, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW,
+    };
+    let Ok(hwnd) = window.hwnd() else {
+        return;
+    };
+    // SAFETY: el HWND es válido mientras viva la ventana; ambas llamadas solo
+    // leen y escriben el estilo extendido y no retienen el puntero.
+    unsafe {
+        let current = GetWindowLongPtrW(hwnd.0 as _, GWL_EXSTYLE);
+        let updated = (current & !(WS_EX_APPWINDOW as isize)) | WS_EX_TOOLWINDOW as isize;
+        if updated != current {
+            SetWindowLongPtrW(hwnd.0 as _, GWL_EXSTYLE, updated);
+        }
+    }
 }
 
 #[cfg(windows)]
@@ -97,6 +128,9 @@ fn ensure_worlds(app: &tauri::AppHandle) -> Result<Vec<tauri::WebviewWindow>, St
 pub fn open_worlds(app: &tauri::AppHandle) -> Result<(), String> {
     for world in ensure_worlds(app)? {
         let _ = world.show();
+        // Después de `show()`: al mostrarla, tao reescribe el estilo extendido
+        // desde su propio estado y pisa cualquier cambio anterior.
+        keep_out_of_taskbar(&world);
     }
     if let Some(pill) = app.get_webview_window("pill") {
         let _ = pill.set_always_on_top(true);
@@ -197,9 +231,29 @@ pub fn liquid_world_snapshot(
         .cloned()
         .collect();
 
+    let groups = crate::floating_world::merged_groups(&app);
+    let merged = groups
+        .iter()
+        .flat_map(|group| group.members.iter().cloned())
+        .collect::<std::collections::HashSet<_>>();
+
     let objects = object_labels
         .into_iter()
         .filter_map(|label| {
+            let id = label
+                .trim_start_matches(OBJECT_PREFIX)
+                .trim_start_matches(crate::floating_world::TOOL_WINDOW_PREFIX)
+                .to_string();
+            // Solo los miembros agrupados entran al campo global. Cada ventana
+            // mantiene además un cuerpo local para que el contenido nunca se
+            // despegue durante el arrastre; la piel global se oculta al mover.
+            if label.starts_with(crate::floating_world::TOOL_WINDOW_PREFIX) && !merged.contains(&id)
+            {
+                return None;
+            }
+            if label == "pill" && !merged.contains(&id) {
+                return None;
+            }
             let window = app.get_webview_window(&label)?;
             if !window.is_visible().unwrap_or(false) {
                 return None;
@@ -225,10 +279,7 @@ pub fn liquid_world_snapshot(
                 (0.0, 0.0, logical_width, logical_height)
             };
             Some(LiquidWorldObject {
-                id: label
-                    .trim_start_matches(OBJECT_PREFIX)
-                    .trim_start_matches(crate::floating_world::TOOL_WINDOW_PREFIX)
-                    .to_string(),
+                id,
                 x: logical(position.x - origin.x) + inset_x,
                 y: logical(position.y - origin.y) + inset_y,
                 width,
@@ -237,39 +288,6 @@ pub fn liquid_world_snapshot(
             })
         })
         .collect::<Vec<_>>();
-
-    let mut objects = objects;
-    if let Some(pill) = app.get_webview_window("pill") {
-        if pill.is_visible().unwrap_or(false) {
-            if let (Ok(position), Ok(size)) = (pill.outer_position(), pill.outer_size()) {
-                let pill_width = f64::from(size.width) / scale;
-                let pill_height = f64::from(size.height) / scale;
-                if pill_width > 300.0 && pill_height < 400.0 {
-                    const WHEEL_POSITIONS: [(f64, f64); 6] = [
-                        (-140.0, 62.0),
-                        (-112.0, 116.0),
-                        (-42.0, 148.0),
-                        (42.0, 148.0),
-                        (112.0, 116.0),
-                        (140.0, 62.0),
-                    ];
-                    let local_x = logical(position.x - origin.x);
-                    let local_y = logical(position.y - origin.y);
-                    let center_x = pill_width / 2.0;
-                    objects.extend(WHEEL_POSITIONS.into_iter().enumerate().map(
-                        |(index, (offset_x, offset_y))| LiquidWorldObject {
-                            id: format!("pill-wheel-{index}"),
-                            x: local_x + center_x + offset_x - 26.0,
-                            y: local_y + 34.0 + offset_y,
-                            width: 52.0,
-                            height: 52.0,
-                            radius: 26.0,
-                        },
-                    ));
-                }
-            }
-        }
-    }
 
     Ok(LiquidWorldSnapshot {
         world_label: label,
@@ -282,6 +300,8 @@ pub fn liquid_world_snapshot(
             .unwrap_or_default()
             .as_millis(),
         debug: std::env::var_os("ATIC_LIQUID_WORLD_SPIKE").is_some(),
+        dragging: crate::floating_world::is_dragging(&app),
+        groups,
         objects,
     })
 }

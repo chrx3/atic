@@ -415,7 +415,7 @@
 <div class="agent-workspace">
   <aside aria-label="Sesiones de agentes">
     <div class="rail-heading">
-      <span>SESIONES</span>
+      <span>Sesiones</span>
       <button type="button" aria-label="Nueva sesión" title="Nueva sesión" onclick={newSession}>+</button>
     </div>
     <div class="session-list">
@@ -435,14 +435,14 @@
         </button>
       {/each}
       {#if agents.sessions.length === 0}
-        <p>Ninguna sesión activa.</p>
+        <p>Aún no hay sesiones.<br />Crea una con el botón superior.</p>
       {/if}
     </div>
   </aside>
 
   <section class="conversation-pane" aria-label={active ? `Conversación con ${active.backendName}` : "Nueva sesión de agente"}>
     <header class="agent-toolbar">
-      <label>
+      <label class="backend-control">
         <span>Agente</span>
         <select aria-label="Agente o proveedor" value={backendId} disabled={Boolean(active)} onchange={(event) => void chooseBackend(event.currentTarget.value)}>
           {#each backends as item (item.id)}
@@ -450,7 +450,7 @@
           {/each}
         </select>
       </label>
-      <label>
+      <label class="model-control">
         <span>Modelo</span>
         <select aria-label="Modelo" value={model} disabled={modelsLoading || models.length === 0} onchange={(event) => void chooseModel(event.currentTarget.value)}>
           {#if modelsLoading && models.length === 0}<option value="">Cargando…</option>{/if}
@@ -482,14 +482,18 @@
       </div>
     {:else}
       <div class="new-session">
-        <AgentMark backend={picked || "codex"} size={40} />
-        <div><strong>Nueva sesión</strong><p>Empieza aquí. No hace falta abrir la consola antigua.</p></div>
+        <span class="new-session-mark"><AgentMark backend={picked || "codex"} size={42} /></span>
+        <div class="new-session-copy">
+          <strong>¿Qué quieres resolver?</strong>
+          <p>Describe la tarea abajo. Esta conversación quedará disponible en esta misma superficie.</p>
+        </div>
         <div class="launch-options">
           <label><span>Permisos</span><select bind:value={mode} aria-label="Modo de permisos">{#each MODES as item (item.id)}<option value={item.id}>{item.label}</option>{/each}</select></label>
           <button type="button" class="folder-button" onclick={() => void pickFolder()} title={cwd || "Elegir carpeta"}>
             <span>Carpeta</span><strong>{cwd ? fileName(cwd) : "Elegir…"}</strong>
           </button>
         </div>
+        <p class="new-session-hint">Agente, modelo y esfuerzo se pueden ajustar arriba antes de enviar.</p>
         {#if !ready && picked}<p class="backend-warning" role="status">Este agente no está disponible en el equipo.</p>{/if}
       </div>
     {/if}
@@ -571,42 +575,47 @@
     display: grid;
     height: 100%;
     min-height: 0;
-    grid-template-columns: 142px minmax(0, 1fr);
+    grid-template-columns: 158px minmax(0, 1fr);
     overflow: hidden;
   }
 
-  aside { min-width: 0; padding: 8px; border-right: 1px solid var(--line); background: color-mix(in oklch, var(--soft) 56%, transparent); }
-  .rail-heading { display: flex; min-height: 39px; padding: 0 2px 5px 5px; align-items: center; justify-content: space-between; color: var(--muted); font-size: 9px; font-weight: 750; letter-spacing: 0.1em; }
+  aside { min-width: 0; padding: 10px 8px 10px 10px; border-right: 1px solid var(--line); background: color-mix(in oklch, var(--soft) 54%, transparent); }
+  .rail-heading { display: flex; min-height: 42px; padding: 0 2px 6px 6px; align-items: center; justify-content: space-between; color: var(--muted); font-size: 11px; font-weight: 680; }
   .rail-heading button { width: 36px; height: 36px; border: 0; border-radius: 9px; color: var(--ink); background: var(--soft); font-size: 18px; cursor: pointer; }
-  .session-list { display: flex; gap: 4px; flex-direction: column; }
-  .session-list > button { display: grid; min-width: 0; min-height: 48px; padding: 7px; grid-template-columns: 22px minmax(0, 1fr); align-items: center; gap: 7px; border: 1px solid transparent; border-radius: 9px; color: var(--ink); background: transparent; text-align: left; cursor: pointer; }
+  .rail-heading button:hover { background: color-mix(in oklch, var(--soft) 72%, var(--ink) 6%); }
+  .session-list { display: flex; gap: 5px; flex-direction: column; }
+  .session-list > button { display: grid; min-width: 0; min-height: 52px; padding: 8px; grid-template-columns: 24px minmax(0, 1fr); align-items: center; gap: 8px; border: 1px solid transparent; border-radius: 10px; color: var(--ink); background: transparent; text-align: left; cursor: pointer; }
   .session-list > button:hover { background: var(--soft); }
   .session-list > button.current { border-color: var(--line); background: var(--card); }
   .session-list > button span { display: flex; min-width: 0; flex-direction: column; }
   .session-list strong { overflow: hidden; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
   .session-list small { margin-top: 2px; color: var(--muted); font-size: 9px; }
   .session-list small.waiting { color: oklch(0.61 0.16 48); }
-  .session-list p { margin: 10px 5px; color: var(--muted); font-size: 10px; line-height: 1.45; }
+  .session-list p { margin: 12px 6px; color: var(--muted); font-size: 10px; line-height: 1.55; }
 
   .conversation-pane { position: relative; display: grid; min-width: 0; min-height: 0; grid-template-rows: auto minmax(0, 1fr) auto auto auto; }
-  .agent-toolbar { display: flex; min-width: 0; min-height: 58px; padding: 7px 10px; align-items: flex-end; gap: 6px; border-bottom: 1px solid var(--line); }
-  .agent-toolbar label, .launch-options label { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 2px; }
-  .agent-toolbar label > span, .launch-options label > span, .folder-button > span { color: var(--muted); font-size: 8px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; }
-  select { width: 100%; min-width: 0; height: 36px; border: 1px solid var(--line); border-radius: 8px; padding: 0 25px 0 9px; color: var(--ink); background: var(--card); font: 11px inherit; outline: none; }
+  .agent-toolbar { display: grid; min-width: 0; min-height: 64px; padding: 9px 12px 11px; grid-template-columns: minmax(122px, 0.8fr) minmax(170px, 1.35fr) minmax(94px, 0.52fr) auto; align-items: end; gap: 8px; border-bottom: 1px solid var(--line); }
+  .agent-toolbar label, .launch-options label { display: flex; min-width: 0; flex-direction: column; gap: 3px; }
+  .agent-toolbar label > span, .launch-options label > span, .folder-button > span { color: var(--muted); font-size: 9px; font-weight: 650; }
+  select { width: 100%; min-width: 0; height: 40px; border: 1px solid var(--line); border-radius: 9px; padding: 0 28px 0 10px; color: var(--ink); background: color-mix(in oklch, var(--soft) 70%, transparent); font: 12px inherit; outline: none; }
   select:focus-visible { border-color: var(--signal); box-shadow: 0 0 0 2px color-mix(in oklch, var(--signal) 18%, transparent); }
-  .effort-control { max-width: 92px; }
-  .stop-button { height: 36px; flex: 0 0 auto; border: 1px solid color-mix(in oklch, oklch(0.58 0.17 28) 24%, var(--line)); border-radius: 8px; padding: 0 10px; color: oklch(0.55 0.16 28); background: transparent; font: 11px inherit; cursor: pointer; }
+  .effort-control { min-width: 94px; }
+  .stop-button { height: 40px; border: 1px solid color-mix(in oklch, oklch(0.58 0.17 28) 24%, var(--line)); border-radius: 9px; padding: 0 12px; color: oklch(0.62 0.14 28); background: transparent; font: 11px inherit; cursor: pointer; }
 
   .conversation-log { min-height: 0; padding: 12px 14px; overflow: auto; scrollbar-width: thin; }
   .conversation-log :global(.mine), .conversation-log :global(.wip), .conversation-log :global(.plan), .conversation-log :global(.think), .conversation-log :global(.warn) { margin-bottom: 11px; }
   .empty-state, .new-session { display: grid; height: 100%; place-content: center; justify-items: center; color: var(--muted); text-align: center; }
-  .empty-state strong, .new-session strong { color: var(--ink); font-size: 14px; }
-  .empty-state p, .new-session p { margin: 5px 0 0; font-size: 11px; line-height: 1.45; }
-  .new-session { min-height: 0; padding: 12px 22px; grid-template-rows: auto auto auto; gap: 8px; }
-  .new-session > div:nth-child(2) { max-width: 310px; }
-  .launch-options { display: grid; width: min(100%, 350px); grid-template-columns: 1fr 1fr; gap: 6px; }
-  .folder-button { display: flex; min-width: 0; height: 48px; flex-direction: column; justify-content: center; align-items: flex-start; border: 1px solid var(--line); border-radius: 8px; padding: 5px 9px; color: var(--ink); background: var(--card); cursor: pointer; }
-  .folder-button strong { max-width: 100%; margin-top: 2px; overflow: hidden; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+  .empty-state strong { color: var(--ink); font-size: 15px; }
+  .empty-state p { margin: 6px 0 0; font-size: 11px; line-height: 1.5; }
+  .new-session { min-height: 0; padding: 24px; grid-template-rows: auto auto auto auto; align-content: center; gap: 11px; }
+  .new-session-mark { display: grid; width: 58px; height: 58px; place-items: center; border-radius: 15px; color: var(--ink); background: var(--soft); }
+  .new-session-copy { max-width: 430px; }
+  .new-session-copy strong { color: var(--ink); font-size: 18px; font-weight: 680; letter-spacing: -0.02em; }
+  .new-session-copy p { margin: 6px 0 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+  .new-session-hint { width: min(100%, 430px); margin: 0; color: var(--muted); font-size: 10px; line-height: 1.45; }
+  .launch-options { display: grid; width: min(100%, 430px); grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; }
+  .folder-button { display: flex; min-width: 0; height: 54px; flex-direction: column; justify-content: center; align-items: flex-start; border: 1px solid var(--line); border-radius: 9px; padding: 6px 10px; color: var(--ink); background: color-mix(in oklch, var(--soft) 70%, transparent); cursor: pointer; }
+  .folder-button strong { max-width: 100%; margin-top: 3px; overflow: hidden; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
   .backend-warning { color: oklch(0.58 0.17 36); }
 
   .permission-stack { display: flex; padding: 0 10px; gap: 5px; flex-direction: column; }
@@ -623,13 +632,13 @@
   .attachments small { overflow: hidden; color: var(--muted); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
   .attachments button { position: absolute; top: 6px; right: 2px; width: 36px; height: 36px; border: 0; color: var(--muted); background: transparent; cursor: pointer; }
 
-  .composer { display: grid; min-height: 58px; margin: 6px 10px 9px; padding: 6px; grid-template-columns: auto minmax(0, 1fr) 38px; align-items: center; gap: 5px; border: 1px solid var(--line); border-radius: 12px; background: var(--card); }
+  .composer { display: grid; min-height: 62px; margin: 8px 12px 11px; padding: 7px; grid-template-columns: auto minmax(0, 1fr) 40px; align-items: center; gap: 6px; border: 1px solid var(--line); border-radius: 12px; background: color-mix(in oklch, var(--soft) 72%, transparent); }
   .composer-actions { display: flex; gap: 2px; }
   .composer-actions button, .send-button { display: grid; width: 36px; height: 36px; place-items: center; border: 0; border-radius: 8px; color: var(--muted); background: transparent; cursor: pointer; }
   .composer-actions button:hover, .composer-actions button.active { color: var(--signal); background: var(--soft); }
-  .composer textarea { min-width: 0; max-height: 72px; resize: none; border: 0; padding: 6px; color: var(--ink); background: transparent; font: 12px/1.4 inherit; outline: none; }
+  .composer textarea { min-width: 0; max-height: 84px; resize: none; border: 0; padding: 7px; color: var(--ink); background: transparent; font: 13px/1.45 inherit; outline: none; }
   .composer textarea::placeholder { color: var(--muted); }
-  .send-button { width: 38px; height: 38px; color: var(--rb-on-accent, white); background: var(--ink); }
+  .send-button { width: 40px; height: 40px; color: var(--rb-on-accent, white); background: var(--ink); }
   .send-button:disabled { opacity: 0.28; cursor: default; }
 
   .agent-error { position: absolute; right: 10px; bottom: 73px; left: 10px; display: flex; min-height: 42px; padding: 6px 7px 6px 10px; align-items: center; gap: 6px; border: 1px solid color-mix(in oklch, oklch(0.58 0.17 28) 36%, var(--line)); border-radius: 8px; color: color-mix(in oklch, oklch(0.64 0.18 28) 76%, var(--ink)); background: color-mix(in oklch, oklch(0.64 0.18 28) 12%, var(--card)); box-shadow: 0 6px 12px oklch(0.2 0.02 28 / 0.13); font-size: 10px; }
@@ -645,8 +654,9 @@
     .rail-heading { height: 46px; padding: 0 5px; }
     .session-list { flex-direction: row; overflow-x: auto; }
     .session-list > button { min-width: 112px; min-height: 46px; }
-    .agent-toolbar { overflow-x: auto; }
-    .agent-toolbar label { min-width: 110px; }
+    .agent-toolbar { grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr); }
+    .effort-control, .stop-button { min-width: 0; }
+    .launch-options { grid-template-columns: 1fr; }
   }
 
   @media (prefers-reduced-motion: reduce) {

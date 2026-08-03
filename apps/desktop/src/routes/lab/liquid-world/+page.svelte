@@ -4,6 +4,7 @@
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import LiquidSkin from "$lib/floating-v2/liquid/LiquidSkin.svelte";
+  import { connectorBridges, type ConnectorGroup } from "$lib/floating-v2/liquid/connectors";
   import type { LiquidBox } from "$lib/floating-v2/liquid/engine";
 
   type SnapshotObject = {
@@ -23,6 +24,8 @@
     revision: number;
     emittedAtMs: number;
     debug: boolean;
+    dragging: boolean;
+    groups: ConnectorGroup[];
     objects: SnapshotObject[];
   };
 
@@ -36,6 +39,8 @@
     revision: 0,
     emittedAtMs: 0,
     debug: false,
+    dragging: false,
+    groups: [],
     objects: [],
   });
   let renderSamples = $state<number[]>([]);
@@ -57,6 +62,9 @@
       hh: object.height / 2,
       r: object.radius,
     })),
+  );
+  const bridges = $derived(
+    snapshot.debug ? [] : connectorBridges(snapshot.objects, snapshot.groups),
   );
 
   function recordRender(milliseconds: number) {
@@ -131,13 +139,14 @@
 </script>
 
 {#if isWorld}
-  <main class="world" aria-hidden="true">
+  <main class:dragging={snapshot.dragging && !snapshot.debug} class="world" aria-hidden="true">
     <LiquidSkin
       {boxes}
-      parameters={{ k: 42, cell: 5, smooth: 2 }}
+      {bridges}
+      parameters={snapshot.debug ? { k: 42, cell: 5, smooth: 2 } : { k: 34, cell: 4, smooth: 2 }}
       width={snapshot.width}
       height={snapshot.height}
-      duration={90}
+      duration={snapshot.debug ? 90 : 0}
       onRender={recordRender}
     />
     {#if snapshot.debug}
@@ -187,7 +196,21 @@
   }
 
   :global(body) { margin: 0; }
-  .world { position: relative; width: 100%; height: 100%; pointer-events: none; }
+  .world {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    opacity: 1;
+    pointer-events: none;
+    transition: opacity 100ms ease-out;
+  }
+
+  /* Durante el drag el cuerpo local permanece pegado al contenido. La piel
+     completa vuelve a aparecer solo cuando ya recibió la geometría final. */
+  .world.dragging {
+    opacity: 0;
+    transition-duration: 35ms;
+  }
   .telemetry {
     position: absolute;
     top: 12px;
