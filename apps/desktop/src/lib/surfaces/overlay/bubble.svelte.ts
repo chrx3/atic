@@ -19,6 +19,7 @@
 import { tick } from "svelte";
 import type { BubbleOpen } from "$core/types";
 import { MOTION, ms } from "$lib/motion";
+import { BUBBLE_MIN_H, BUBBLE_MIN_W } from "./contract";
 
 /** Dónde salió la burbuja, en píxeles CSS del overlay. */
 export interface Anchor {
@@ -30,9 +31,9 @@ export interface Anchor {
   h: number;
 }
 
-/** Lo más chico que puede quedar el globo. Gemelos de `BUBBLE_MIN_*` en Rust. */
-export const BUBBLE_MIN_W = 420;
-export const BUBBLE_MIN_H = 340;
+// Los mínimos del globo viven en `contract.ts`, que es lo que el test compara
+// contra Rust. Se re-exportan porque la consola los pide desde acá.
+export { BUBBLE_MIN_H, BUBBLE_MIN_W };
 
 export class Bubble {
   anchor = $state<Anchor | null>(null);

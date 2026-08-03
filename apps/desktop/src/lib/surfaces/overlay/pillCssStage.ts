@@ -18,12 +18,10 @@
 
 import { overlayCursor, overlayWorkAreas, type Area, type Point } from "$ipc/overlay";
 
+import { MARGIN } from "./contract";
 import { sameSize, type Pivot, type ResizeOutcome, type Size } from "./pillStage";
 
 export type { Point };
-
-/** Margen contra el borde del monitor. Es el mismo `MARGIN` de `floating.rs`. */
-const MARGIN = 8;
 
 /**
  * Encaja un rectángulo dentro del área útil del monitor que le corresponde.
