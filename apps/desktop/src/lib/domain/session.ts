@@ -22,6 +22,7 @@ import { clipboard } from "./clipboard.svelte";
 import { config } from "./config.svelte";
 import { dictation } from "./dictation.svelte";
 import { models } from "./models.svelte";
+import { paste } from "./paste.svelte";
 import { recordings } from "./recordings.svelte";
 import { snippets } from "./snippets.svelte";
 import { summaries } from "./summaries.svelte";
@@ -37,6 +38,7 @@ const REGISTRY = {
   snippets,
   captures,
   summaries,
+  paste,
 } satisfies Record<string, DomainStore>;
 
 export type DomainName = keyof typeof REGISTRY;

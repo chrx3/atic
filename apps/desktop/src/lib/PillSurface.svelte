@@ -47,6 +47,18 @@
   } from "$surfaces/overlay/pillStage";
   import { createCssStage } from "$surfaces/overlay/pillCssStage";
   import { surfaces } from "$surfaces/overlay/surfaces.svelte";
+  import {
+    blocksBrowserChrome,
+    contentFor,
+    isDiscOnly,
+    isPanel,
+    morphsInPlace,
+    pivotFor,
+    stepWheel as nextWheelTool,
+    wheelKeyAction,
+    type PanelKind,
+    type Surface,
+  } from "$surfaces/overlay/pill/pillPlan";
   import { MOTION, ms, wait } from "$lib/motion";
   import {
     listPasteQueue,
@@ -90,18 +102,16 @@
     onOverlayDismiss,
   } from "$lib/api";
 
-  type Surface = "none" | "wheel" | "clipboard" | "snippets";
-
-  /**
-   * Paneles: superficies que se despliegan bajo la barra.
+  /*
+   * Los tipos y las decisiones viven en `pill/pillPlan.ts`, que es TS puro y
+   * está testeado. Acá queda la ejecución: el estado, los efectos y los viajes
+   * a Rust.
    *
-   * Los agentes NO están acá y no es un olvido. Un panel de la pill sirve para
-   * «elegí y listo»: mirás una lista, tocás una cosa, se cierra. Una sesión de
-   * agente es lo contrario —salida larga, revisar qué tocó, aprobar— y eso pide
-   * una ventana que se queda. La pill se queda con el aviso, que sí es su
-   * trabajo: decirte que pasó algo y llevarte a la consola.
+   * Nota sobre los paneles: los agentes NO son uno, y no es un olvido. Un panel
+   * de la pill sirve para «elegí y listo» —mirás una lista, tocás una cosa, se
+   * cierra—. Una sesión de agente es lo contrario, así que pide una ventana que
+   * se queda. La pill se queda con el aviso, que sí es su trabajo.
    */
-  type PanelKind = "clipboard" | "snippets";
 
   // ─── Eje 1: actividad ────────────────────────────────────────────────────
   let recording = $state(false);
@@ -131,7 +141,7 @@
   let panelUp = $state(false);
   let surfaceOpenedAt = 0;
 
-  const panelOpen = $derived(surface === "clipboard" || surface === "snippets");
+  const panelOpen = $derived(isPanel(surface));
 
   /**
    * Aviso de agente en la barra compacta.
@@ -153,9 +163,7 @@
    * Estaba escrito en línea en la clase de `.p-bar`; ahora lo mira también la
    * piel, que monta la gota que llega justo cuando esto deja de valer.
    */
-  const discOnly = $derived(
-    !panelOpen && activity === "idle" && !hasQueue && !agentAlert,
-  );
+  const discOnly = $derived(isDiscOnly({ surface, activity, hasQueue, agentAlert }));
 
   // ─── Datos de los paneles ────────────────────────────────────────────────
   let clipboardItems = $state<ClipboardItem[]>([]);
@@ -317,16 +325,7 @@
   let barEl = $state<HTMLElement | null>(null);
 
 
-  const content = $derived.by((): Size => {
-    if (surface === "wheel") {
-      const side = PILL.wheel - PILL.pad * 2;
-      return { w: side, h: side };
-    }
-    if (panelOpen) return { w: PILL.panelW, h: PILL.bar + PILL.panelH };
-    return { w: Math.max(barW, PILL.bar), h: PILL.bar };
-  });
-
-  const target = $derived(windowFor(content));
+  const target = $derived(windowFor(contentFor(surface, barW)));
 
   /** Traza al log de Rust. Fire-and-forget: no debe alterar el flujo ni fallar. */
   function trace(msg: string) {
@@ -355,24 +354,9 @@
    */
   let collapsingFrom: "wheel" | "panel" | null = null;
 
-  /**
-   * Punto que se conserva en el próximo reencuadre.
-   *
-   * Al abrir es simétrico al cierre; al cerrar, la rueda vuelve a la marca
-   * (`center`) y el panel deja la barra clavada donde está — arriba o abajo de
-   * la ventana según hacia dónde había abierto.
-   */
-  function pivotFor(): Pivot {
-    if (surface === "wheel") return "center";
-    if (panelOpen) return "panel";
-    // Colapsos: cada uno conserva el punto del que la superficie había salido.
-    if (collapsingFrom === "panel") return panelUp ? "bottomLeft" : "topLeft";
-    if (collapsingFrom === "wheel") return "center";
-    // Estado compacto en reposo. `center` acá era deriva pura: el ancho de la
-    // barra cambia solo (entra el timer, tictaquea de 0:09 a 0:10, aparece el
-    // badge de la cola) y con pivote al centro CADA cambio corría la ventana
-    // media diferencia. Al arrancar, el primer encogimiento la movía 53 px.
-    return "topLeft";
+  /** El estado del que dependen las decisiones de `pillPlan`. */
+  function plan() {
+    return { surface, collapsingFrom, panelUp };
   }
 
   /**
@@ -390,20 +374,13 @@
       leavingWheel = false;
       await wait(ms(wheelQuick ? MOTION.morphQuick : MOTION.morphClose));
     }
-    // ¿Este reencuadre es un cambio de estado de la barra compacta?
-    //
-    // Solo esos se animan: disco ↔ dictado ↔ grabación ↔ cola, donde el salto
-    // se leía como un parpadeo. Los colapsos de panel y rueda tienen su propia
-    // coreografía —encoger y después volar, o el morph continuo— y animar acá
-    // largaría un tween que el vuelo siguiente cancelaría a mitad de camino.
-    // El primer reencuadre tampoco: al arrancar no hay "estado anterior" desde
-    // el cual transicionar, solo la ventana acomodándose.
-    const morphsInPlace =
-      from !== null && collapsingFrom === null && surface === "none";
-
-    // `pivotFor()` lee `panelUp` (hacia dónde había abierto) y `stage.resize`
-    // lo sobrescribe con el resultado nuevo: en ese orden, no al revés.
-    const outcome = await stage.resize(next, pivotFor(), morphsInPlace);
+    // `pivotFor` lee `panelUp` (hacia dónde había abierto) y `stage.resize` lo
+    // sobrescribe con el resultado nuevo: en ese orden, no al revés.
+    const outcome = await stage.resize(
+      next,
+      pivotFor(plan()),
+      morphsInPlace({ ...plan(), from }),
+    );
     if (outcome.ok) {
       panelUp = outcome.up;
       collapsingFrom = null;
@@ -643,30 +620,18 @@
     else void closeWheel();
   }
 
-  /** Mueve la selección un paso (teclado y rueda del ratón). */
-  function stepWheel(direction: 1 | -1) {
-    const index = TOOLS.findIndex((tool) => tool.id === wheelTool);
-    const next =
-      index < 0
-        ? direction === 1
-          ? 0
-          : TOOLS.length - 1
-        : (index + direction + TOOLS.length) % TOOLS.length;
-    wheelTool = TOOLS[next].id;
-  }
-
   /** Teclado con la rueda abierta. No preselecciona: enfocar un nodo al abrir
    *  dejaría una herramienta armada y soltar la tecla la dispararía. */
   function onWheelKey(event: KeyboardEvent): boolean {
     if (surface !== "wheel" || !wheelShown) return false;
-    const key = event.key;
-    if (key === "ArrowRight" || key === "ArrowDown") stepWheel(1);
-    else if (key === "ArrowLeft" || key === "ArrowUp") stepWheel(-1);
-    else if (key === "Tab") stepWheel(event.shiftKey ? -1 : 1);
-    else if (key === "Enter" || key === " ") {
+    const action = wheelKeyAction(event.key, event.shiftKey);
+    if (!action) return false;
+    if (action === "activate") {
       if (wheelTool) void activateTool(wheelTool);
       else void closeWheel();
-    } else return false;
+    } else {
+      wheelTool = nextWheelTool(wheelTool, action === "next" ? 1 : -1, TOOLS);
+    }
     return true;
   }
 
@@ -793,7 +758,7 @@
     const next = target;
     trace(
       `collapse from=${collapsingFrom} panelUp=${panelUp} ` +
-        `pivot=${pivotFor()} -> ${next.w}x${next.h}`,
+        `pivot=${pivotFor(plan())} -> ${next.w}x${next.h}`,
     );
     await reconcile(next);
     trace("collapse listo");
@@ -1103,15 +1068,7 @@
         event.stopPropagation();
         return;
       }
-      // Bloquea chrome del WebView (Imprimir, Buscar, DevTools, zoom…).
-      const mod = event.ctrlKey || event.metaKey;
-      const key = event.key.toLowerCase();
-      if (mod && ["p", "f", "g", "u", "j", "i", "r", "=", "+", "-", "0"].includes(key)) {
-        event.preventDefault();
-        event.stopPropagation();
-        return;
-      }
-      if (event.key === "F3" || event.key === "F5" || event.key === "F12") {
+      if (blocksBrowserChrome(event)) {
         event.preventDefault();
         event.stopPropagation();
       }
