@@ -12,6 +12,7 @@
     size = "md",
     full = false,
     label,
+    onchange,
   }: {
     value: T;
     options: { value: T; label: string; disabled?: boolean }[];
@@ -19,6 +20,8 @@
     full?: boolean;
     /** Para lectores de pantalla: qué se está eligiendo. */
     label: string;
+    /** Para cuando elegir tiene un efecto y no solo cambia una variable. */
+    onchange?: (value: T) => void;
   } = $props();
 
   const name = $props.id();
@@ -50,7 +53,10 @@
         value={option.value}
         checked={option.value === value}
         disabled={option.disabled}
-        onchange={() => (value = option.value)}
+        onchange={() => {
+          value = option.value;
+          onchange?.(option.value);
+        }}
       />
       {option.label}
     </label>

@@ -15,7 +15,9 @@
   import ClipboardTool from "$features/clipboard/ClipboardTool.svelte";
   import DictationTool from "$features/dictation/DictationTool.svelte";
   import MeetingsTool from "$features/meetings/MeetingsTool.svelte";
+  import SettingsPanel from "$features/settings/SettingsPanel.svelte";
   import SnippetsTool from "$features/snippets/SnippetsTool.svelte";
+  import Modal from "$ui/Modal.svelte";
   import { closeWindow, minimizeWindow, toggleMaximizeWindow } from "$ipc/windows";
   import WindowFrame from "$patterns/WindowFrame.svelte";
   import Button from "$ui/Button.svelte";
@@ -52,6 +54,8 @@
   );
 
   const tool = $derived(toolById(ui.activeTool));
+
+  let settingsOpen = $state(false);
 
   function onKeydown(event: KeyboardEvent) {
     // Esc vuelve al hub, salvo que haya un diálogo abierto —el nativo lo cierra
@@ -90,6 +94,20 @@
     {/if}
   {/snippet}
 
+  {#snippet actions()}
+    <IconButton label="Ajustes" size="sm" onclick={() => (settingsOpen = true)}>
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="1.8" />
+        <path
+          d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6l1.4 1.4M17 17l1.4 1.4M18.4 5.6L17 7M7 17l-1.4 1.4"
+          stroke="currentColor"
+          stroke-width="1.8"
+          stroke-linecap="round"
+        />
+      </svg>
+    </IconButton>
+  {/snippet}
+
   {#if ui.view === "hub"}
     <HubView ready={READY} onOpen={(id) => ui.openTool(id)} />
   {:else if ui.activeTool === "meetings"}
@@ -112,5 +130,15 @@
     </EmptyState>
   {/if}
 </WindowFrame>
+
+{#if settingsOpen}
+  <Modal title="Ajustes" size="lg" onClose={() => (settingsOpen = false)}>
+    <!-- Sin padding propio: el panel maneja el suyo, y la navegación va pegada
+         al borde. -->
+    <div class="-mx-4 -my-3 h-[60vh]">
+      <SettingsPanel />
+    </div>
+  </Modal>
+{/if}
 
 <ToastStack items={toasts.items} onDismiss={(id) => toasts.dismiss(id)} />
