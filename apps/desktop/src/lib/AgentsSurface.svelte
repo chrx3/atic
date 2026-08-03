@@ -4,10 +4,18 @@
    *
    * # Por qué burbuja y no ventana suelta
    *
-   * Una ventana más sería una app aparte que además tiene una pill. La punta
-   * apuntando a la pill dice que es la misma cosa desplegada, y hace obvio de
-   * dónde salió y adónde vuelve al cerrarse. Rust decide de qué lado va la
-   * punta (es quien ve los monitores) y esta vista solo la dibuja.
+   * Una ventana más sería una app aparte que además tiene una pill. El cuello
+   * que la une a la pill dice que es la misma cosa desplegada, y hace obvio de
+   * dónde salió y adónde vuelve al cerrarse. Rust decide de qué lado sale (es
+   * quien ve los monitores) y esta vista solo lo dibuja.
+   *
+   * # Por qué el cuello es de verdad
+   *
+   * Mientras esto fue una ventana aparte, el cuello era un puente PINTADO: un
+   * filtro SVG solo alcanza lo que está en el mismo `document`, así que la
+   * pill y el globo nunca podían fundirse — se tocaban. Compartiendo el
+   * overlay, una sola capa `.bub-skin` lleva la silueta de la pill, las gotas
+   * del cuello y la del globo, y el filtro las une con un filete cóncavo.
    *
    * # De dónde sale el aspecto
    *
@@ -39,7 +47,7 @@
     agentThreadDelete,
     agentThreads,
     capturePrimaryMonitor,
-    resizeAgentsBubble,
+    saveAgentsBubbleSize,
     hideAgentsWindow,
     toggleDictation,
     onDictationStatus,
@@ -80,6 +88,8 @@
   import AgentMark from "$lib/AgentMark.svelte";
   import AgentConversation from "$lib/AgentConversation.svelte";
   import AgentIcons from "$lib/AgentIcons.svelte";
+  import GooFilter, { GOO_GROW, preFilter } from "$lib/GooFilter.svelte";
+  import { surfaces } from "$lib/overlaySurfaces.svelte";
   import type {
     AgentBackendInfo,
     AgentModel,
@@ -196,10 +206,10 @@
   /**
    * Redimensionado en curso: de dónde salió el arrastre y con qué tamaño.
    *
-   * Se miden las coordenadas de PANTALLA y no las de la ventana: el borde
-   * anclado se queda quieto pero el opuesto se mueve mientras estirás, así que
-   * el marco de referencia de la ventana cambia bajo el cursor y las
-   * coordenadas locales darían un arrastre que se acelera solo.
+   * Las coordenadas son las del VIEWPORT, que es el overlay entero y no se
+   * mueve. Antes eran las de pantalla porque el globo era una ventana y el
+   * borde opuesto al anclado se movía bajo el cursor, así que su marco de
+   * referencia cambiaba a mitad del gesto y el arrastre se aceleraba solo.
    */
   let rz = $state<{
     axis: "h" | "v" | "both";
@@ -215,8 +225,8 @@
     (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
     rz = {
       axis,
-      x: event.screenX,
-      y: event.screenY,
+      x: event.clientX,
+      y: event.clientY,
       w: bubble.anchor.w,
       h: bubble.anchor.h,
     };
@@ -227,16 +237,11 @@
     const g = bubble.grips;
     // El signo lo da de qué lado se agarra: por la izquierda, alejarse del
     // centro es restar coordenada y sumar ancho.
-    const dx = (event.screenX - rz.x) * (g.h === "right" ? 1 : -1);
-    const dy = (event.screenY - rz.y) * (g.v === "bottom" ? 1 : -1);
-    const w = Math.max(544, rz.axis === "v" ? rz.w : rz.w + dx);
-    const h = Math.max(464, rz.axis === "h" ? rz.h : rz.h + dy);
-    bubble.resized(Math.round(w), Math.round(h));
-    void resizeAgentsBubble(
-      Math.round(w),
-      Math.round(h),
-      bubble.anchor?.side ?? "top",
-      false,
+    const dx = (event.clientX - rz.x) * (g.h === "right" ? 1 : -1);
+    const dy = (event.clientY - rz.y) * (g.v === "bottom" ? 1 : -1);
+    bubble.resize(
+      rz.axis === "v" ? rz.w : rz.w + dx,
+      rz.axis === "h" ? rz.h : rz.h + dy,
     );
   }
 
@@ -244,13 +249,304 @@
     if (!rz) return;
     moveResize(event);
     rz = null;
-    // El último tamaño, ahora sí, al disco.
-    void resizeAgentsBubble(
-      Math.round(bubble.anchor?.w ?? 704),
-      Math.round(bubble.anchor?.h ?? 644),
-      bubble.anchor?.side ?? "top",
-      true,
+    // El tamaño lo aplica la vista en cada cuadro; al disco va solo el último.
+    if (bubble.anchor) {
+      void saveAgentsBubbleSize(bubble.anchor.w, bubble.anchor.h);
+    }
+  }
+
+  /* ─── La junta líquida ──────────────────────────────────────────────────
+   *
+   * Tres siluetas en una sola capa filtrada: la pill, dos gotas de cuello y el
+   * globo. Todo en píxeles CSS del overlay, que es el único sistema de
+   * coordenadas que queda.
+   *
+   * Las medidas del cuello salen de la demo (`docs/demos/agentes.html`): la
+   * gota gruesa va centrada en el borde de la pill y la fina en el del globo.
+   * Con `gap = 10` y σ = 5 el alcance del filtro es 8.6 px, o sea que sin ellas
+   * el cuello no se forma y el globo queda suelto.
+   */
+  /** Grosor del cuello pegado a la pill, y al que adelgaza al estirarse. */
+  const NECK_THICK = 26;
+  const NECK_THIN = 10;
+  /** Radio de las esquinas del globo. Gemelo de `corner` en `bridge.rs`. */
+  const BUBBLE_CORNER = 26;
+  /**
+   * Hasta dónde estira el cuello antes de cortarse.
+   *
+   * No sale del filtro: el filtro solo cruza 8.6 px por su cuenta, y por eso el
+   * cuello se DIBUJA — es una forma más, no un hueco que se rellene solo. El
+   * límite es lo que se lee como una sola cosa estirándose; más allá son dos
+   * cosas unidas por un hilo.
+   */
+  const NECK_MAX = 140;
+  /**
+   * Lo más fino que puede quedar sin desaparecer.
+   *
+   * El endurecido borra lo que no llegue al umbral: una barra de grosor `g`
+   * difuminada con σ = 5 queda con alfa `2·Φ(g/10) − 1` en su eje, y hace falta
+   * pasar 7/18. Por debajo de 6 px el cuello se corta solo a mitad del estirado,
+   * que es peor que cortarse limpio.
+   */
+  const NECK_MIN_THICK = 6;
+
+  /** Rectángulo de la pill, publicado por ella misma al medirse. */
+  const pillSkin = $derived(surfaces.live["pill-skin"]);
+
+  /**
+   * ¿El cuello sigue saliendo de la pill?
+   *
+   * Se corta por dos motivos, y los dos son el mismo: el globo ya no sale de
+   * ahí. Arrastrarlo lo despega a mano; alejar la pill lo despega solo, porque
+   * las dos gotas dejan de solaparse en cuanto el hueco pasa de `NECK_REACH` y
+   * lo que quedaría es un par de motas flotando entre las dos formas.
+   */
+  /**
+   * Por dónde se miran las dos formas, medido AQUÍ y en vivo.
+   *
+   * El `side` que manda Rust dice dónde COLOCÓ el globo, y eso se decide una
+   * vez, mirando los monitores. Pero el globo se arrastra: llevarlo arriba de
+   * la pill no cambiaba ese dato, así que se seguía midiendo el hueco por el
+   * eje equivocado y la unión solo aparecía cuando se tocaban. Qué borde mira a
+   * cuál es una pregunta viva, y se contesta con los dos rectángulos.
+   */
+  const span = $derived.by(() => {
+    const a = bubble.anchor;
+    const p = pillSkin;
+    if (!a || !p) return null;
+
+    // Separación por eje: positiva si hay hueco, negativa si se solapan.
+    const gapX = Math.max(p.x - (a.x + a.w), a.x - (p.x + p.w));
+    const gapY = Math.max(p.y - (a.y + a.h), a.y - (p.y + p.h));
+    // Manda el eje que de verdad los separa. Empatados —o solapados en los
+    // dos— gana el que tenga los centros más lejos, que es por donde se lee
+    // que una sale de la otra.
+    const vertical =
+      gapY > gapX ||
+      (gapY === gapX &&
+        Math.abs(p.y + p.h / 2 - (a.y + a.h / 2)) >
+          Math.abs(p.x + p.w / 2 - (a.x + a.w / 2)));
+
+    const gap = vertical ? gapY : gapX;
+    const pillFirst = vertical ? p.y + p.h / 2 < a.y + a.h / 2 : p.x + p.w / 2 < a.x + a.w / 2;
+    const pillEdge = vertical
+      ? pillFirst
+        ? p.y + p.h
+        : p.y
+      : pillFirst
+        ? p.x + p.w
+        : p.x;
+    const bubEdge = vertical
+      ? pillFirst
+        ? a.y
+        : a.y + a.h
+      : pillFirst
+        ? a.x
+        : a.x + a.w;
+
+    // Dónde puede nacer el cuello en el otro eje: tiene que tocar la pill y no
+    // caer sobre una esquina redondeada del globo, que se vería despegado.
+    const pillLo = vertical ? p.x : p.y;
+    const pillHi = vertical ? p.x + p.w : p.y + p.h;
+    const bubLo = (vertical ? a.x : a.y) + BUBBLE_CORNER;
+    const bubHi = (vertical ? a.x + a.w : a.y + a.h) - BUBBLE_CORNER;
+    const lo = Math.max(pillLo, bubLo);
+    const hi = Math.min(pillHi, bubHi);
+
+    return {
+      vertical,
+      gap,
+      pillEdge,
+      bubEdge,
+      // Cuánto está estirado, 0..1. Manda el grosor del cuello.
+      stretch: Math.min(Math.max(gap, 0) / NECK_MAX, 1),
+      // Sale del CENTRO de la pill, no del `offset` de Rust: ese se calculó
+      // contra el sitio donde el globo nació, y encima ya venía clampeado
+      // contra las esquinas, así que arrastrar la pill lo dejaba corrido.
+      center:
+        lo > hi
+          ? (lo + hi) / 2
+          : Math.min(Math.max((pillLo + pillHi) / 2, lo), hi),
+      // Tramo común: sin él no hay por dónde pasar.
+      overlap: Math.min(pillHi, vertical ? a.x + a.w : a.y + a.h) -
+        Math.max(pillLo, vertical ? a.x : a.y),
+    };
+  });
+
+  const joined = $derived.by(() => {
+    const s = span;
+    if (!s || !bubble.alive) return false;
+    // Arrastrar el globo YA NO lo despega.
+    //
+    // Lo hacía porque el cuello era un dibujo fijo: movido de sitio apuntaba a
+    // donde la pill no estaba, y borrarlo era mejor que mentir. Ahora el cuello
+    // se calcula contra los dos rectángulos en vivo, así que se estira siguiendo
+    // al globo y se corta cuando de verdad están lejos — que es lo que hace un
+    // líquido y lo que la demo mostraba.
+    //
+    // Solapadas (hueco negativo) cuenta como unidas: es lo que pasa al
+    // redimensionar el globo contra la pill.
+    return s.gap <= NECK_MAX && s.overlap >= NECK_THIN;
+  });
+
+  /**
+   * La caja que envuelve pill y globo.
+   *
+   * El filtro solo alcanza su propia región, y la región se mide contra la caja
+   * del elemento filtrado: si la capa midiera solo el globo, el cuello y la
+   * pill quedarían recortados fuera.
+   */
+  const skinBox = $derived.by(() => {
+    const a = bubble.anchor;
+    if (!a || !bubble.alive) return null;
+    const p = joined ? pillSkin : null;
+    const x = p ? Math.min(a.x, p.x) : a.x;
+    const y = p ? Math.min(a.y, p.y) : a.y;
+    return {
+      x,
+      y,
+      w: (p ? Math.max(a.x + a.w, p.x + p.w) : a.x + a.w) - x,
+      h: (p ? Math.max(a.y + a.h, p.y + p.h) : a.y + a.h) - y,
+    };
+  });
+
+  type Box = { x: number; y: number; w: number; h: number };
+
+  /** Del overlay a la caja de la capa. */
+  function local(r: Box): Box {
+    return { ...r, x: r.x - (skinBox?.x ?? 0), y: r.y - (skinBox?.y ?? 0) };
+  }
+
+  /**
+   * Igual, pero encogido lo que el filtro le va a devolver.
+   *
+   * El endurecido del alfa engorda la silueta `GOO_GROW` por lado. Va en las
+   * dos formas cuyo tamaño final tiene que ser exacto —la copia de la pill, que
+   * si no asomaría 2.8 px por debajo de la de verdad, y el globo, que tiene que
+   * medir lo mismo que la caja de contenido que lleva encima—. Las gotas del
+   * cuello NO: ahí el tamaño es un aspecto, no una medida, y sus números salen
+   * de la demo tal cual.
+   */
+  function preFiltered(r: Box): Box {
+    const l = local(r);
+    return {
+      x: l.x + GOO_GROW,
+      y: l.y + GOO_GROW,
+      w: preFilter(r.w),
+      h: preFilter(r.h),
+    };
+  }
+
+  const anchorBlob = $derived.by(() => {
+    if (!joined || !pillSkin) return null;
+    const r = preFiltered(pillSkin);
+    // Pastilla o caja: la pill es una pastilla salvo cuando tiene un panel
+    // abierto, y ahí es la caja de 18 px de radio que declara `.p-liquid`.
+    return { ...r, r: pillSkin.h > 48 ? 18 : r.h / 2 };
+  });
+
+  const bodyBlob = $derived.by(() => {
+    const a = bubble.anchor;
+    if (!a) return null;
+    return { ...preFiltered(a), r: 26 - GOO_GROW };
+  });
+
+  /**
+   * Las dos gotas del cuello, del borde de la pill al del globo.
+   *
+   * Una sola cuenta para los cuatro lados: `side` dice qué borde de la pill
+   * mira al globo, y con eso salen el eje del cuello y el centro por el que
+   * pasa. El `offset` lo calculó Rust contra el globo YA ubicado, así que
+   * cuando el globo se corre contra un canto de la pantalla el cuello se corre
+   * con él en vez de quedar apuntando al aire.
+   */
+  const neck = $derived.by(() => {
+    const s = span;
+    if (!joined || !s || !skinBox) return null;
+
+    // Una sola cápsula que entra en las dos formas, no dos gotas sueltas.
+    //
+    // Las gotas eran del diseño con hueco fijo de 10 px: cada una centrada en
+    // un borde, solapándose en el medio. En cuanto el globo se despega dejan de
+    // tocarse y quedan dos motas flotando. Una cápsula que va de dentro de la
+    // pill a dentro del globo cruza siempre; lo que cambia al estirarse es el
+    // grosor, que es exactamente lo que hace un cuello de líquido. Los filetes
+    // cóncavos de las dos puntas los pone el filtro.
+    const thick = Math.max(
+      NECK_MIN_THICK,
+      NECK_THICK + (NECK_THIN - NECK_THICK) * s.stretch,
     );
+    const dir = Math.sign(s.bubEdge - s.pillEdge) || 1;
+    const from = s.pillEdge - dir * 9;
+    const to = s.bubEdge + dir * 7;
+    const lo = Math.min(from, to);
+    const long = Math.abs(to - from);
+
+    return local(
+      s.vertical
+        ? { x: s.center - thick / 2, y: lo, w: thick, h: long }
+        : { x: lo, y: s.center - thick / 2, w: long, h: thick },
+    );
+  });
+
+  /**
+   * Mientras están fundidas, la pill se pinta de consola.
+   *
+   * Va por una clase en la raíz y no por una prop porque quien tiene que
+   * cambiar de color es la pill, que es hermana y no hija: los tokens bajan por
+   * herencia desde `:root`, así que ese es el sitio donde el cambio llega a las
+   * dos sin pasarse el dato de mano en mano. La regla y los tonos viven en
+   * `app.css`, junto al resto del sistema líquido.
+   */
+  $effect(() => {
+    const root = document.documentElement;
+    root.classList.toggle("is-console-open", bubble.shown && joined);
+    return () => root.classList.remove("is-console-open");
+  });
+
+  /** El globo como zona viva: sin esto el overlay lo deja pasar de largo. */
+  let bubEl = $state<HTMLElement | null>(null);
+  $effect(() =>
+    bubEl && bubble.shown ? surfaces.add("agents", bubEl) : undefined,
+  );
+  // Mover algo con `left`/`top` no es un cambio de tamaño, así que el
+  // observador del registro no se entera: hay que pedir la medición.
+  $effect(() => {
+    void bubble.anchor;
+    surfaces.schedule();
+  });
+
+  /**
+   * Arrastre del globo. Antes lo hacía `data-tauri-drag-region`.
+   *
+   * Ese atributo mueve la VENTANA, y la ventana ahora es el overlay: dejarlo
+   * puesto arrastraría la lámina que cubre el escritorio entero. Acá el globo
+   * es un `div`, así que moverlo es aritmética.
+   */
+  let dragFrom: { x: number; y: number } | null = null;
+
+  function startDrag(event: PointerEvent) {
+    if (event.button !== 0 || !bubble.anchor) return;
+    // Los controles de la franja y de las pestañas se marcan `data-no-drag`:
+    // sin eso, tocar una pestaña arrastraría el globo en vez de cambiar de
+    // sesión.
+    if ((event.target as HTMLElement).closest("[data-no-drag]")) return;
+    event.preventDefault();
+    (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+    dragFrom = { x: event.clientX, y: event.clientY };
+    surfaces.dragging = true;
+  }
+
+  function moveDrag(event: PointerEvent) {
+    if (!dragFrom) return;
+    bubble.moveBy(event.clientX - dragFrom.x, event.clientY - dragFrom.y);
+    dragFrom = { x: event.clientX, y: event.clientY };
+  }
+
+  function endDrag() {
+    if (!dragFrom) return;
+    dragFrom = null;
+    surfaces.dragging = false;
   }
 
   const backendForModels = $derived(active?.backendId ?? picked);
@@ -423,17 +719,8 @@
       if (phase === "pasted") origin = { via: "dictado" };
     });
 
-    // Moverla a mano la desancla. Se detecta por el evento de la ventana y no
-    // por el arrastre en sí: Windows también la mueve al acomodarla contra un
-    // borde, y eso cuenta igual.
-    let unMoved: (() => void) | null = null;
-    void (async () => {
-      try {
-        unMoved = await getCurrentWindow().onMoved(() => bubble.moved());
-      } catch {
-        // Sin ventana nativa no hay nada que seguir.
-      }
-    })();
+    // El `onMoved` de la ventana se fue con la ventana: acá el desanclado lo
+    // marca el propio arrastre (`bubble.moveBy`), que es lo único que la mueve.
 
     // La rueda pide cerrarla (segunda pulsación sobre «Agentes»).
     const unDismiss = onAgentsBubbleDismiss(() => void close());
@@ -466,11 +753,19 @@
     })();
 
     // Drop nativo (OLE / Explorador / arrastre desde el clipboard de la pill).
+    //
+    // La ventana es el overlay, o sea la pantalla entera, así que el drop llega
+    // caiga donde caiga. Se filtra por el rectángulo del globo: soltar un
+    // archivo sobre el escritorio no tiene por qué mandárselo a un agente.
     let unDrop: (() => void) | null = null;
     void (async () => {
       try {
         unDrop = await getCurrentWindow().onDragDropEvent((event) => {
           if (event.payload.type !== "drop") return;
+          const a = bubble.anchor;
+          if (!a || !bubble.shown) return;
+          const { x, y } = event.payload.position;
+          if (x < a.x || y < a.y || x > a.x + a.w || y > a.y + a.h) return;
           void acceptDroppedPaths(event.payload.paths);
         });
       } catch {
@@ -480,6 +775,7 @@
 
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
+      if (!bubble.shown) return;
       if (previewPath) {
         previewPath = null;
         event.preventDefault();
@@ -503,7 +799,6 @@
       void unDict.then((fn) => fn());
       void unDismiss.then((fn) => fn());
       void unInsert.then((fn) => fn());
-      unMoved?.();
       unDrop?.();
       agents.watch(null);
     };
@@ -659,9 +954,9 @@
   /**
    * Cierra replegándose sobre la pill.
    *
-   * Quien mueve y oculta la ventana es Rust: acá solo se apaga el contenido. Si
-   * el ocultado viviera en esta vista, un cuelgue del webview a mitad de la
-   * animación dejaría una ventana muerta en pantalla sin forma de cerrarla.
+   * Se avisa a Rust igual aunque el repliegue sea todo CSS: es quien lleva la
+   * cuenta de si la consola está abierta, y de eso depende que la siguiente
+   * pulsación del atajo la abra en vez de intentar cerrarla otra vez.
    */
   async function close() {
     if (!bubble.shown) return;
@@ -669,7 +964,7 @@
     try {
       await hideAgentsWindow();
     } catch {
-      // Sin ventana nativa (preview web) no hay nada que replegar.
+      // Sin Tauri (preview web) no hay a quién avisarle.
     }
   }
 
@@ -1344,40 +1639,66 @@
   </button>
 {/snippet}
 
-<!-- Filtro goo solo para el cuello de la burbuja (Liquid UI). No se aplica
-     al contenido: el blur+threshold borraría el texto. -->
-<svg class="liquid-defs" width="0" height="0" aria-hidden="true" focusable="false">
-  <defs>
-    <filter id="bub-liquid-goo" x="-50%" y="-50%" width="200%" height="200%">
-      <feGaussianBlur in="SourceGraphic" stdDeviation="5" result="blur" />
-      <feColorMatrix
-        in="blur"
-        mode="matrix"
-        values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 18 -7"
-        result="goo"
-      />
-      <feComposite in="SourceGraphic" in2="goo" operator="atop" />
-    </filter>
-  </defs>
-</svg>
+<!-- Filtro goo de la junta. No se aplica al contenido: el difuminado +
+     endurecido borraría el texto. -->
+<GooFilter id="bub-liquid-goo" />
+
+<!--
+  La capa fundida: silueta de la pill + gotas del cuello + silueta del globo.
+
+  Van juntas porque un filtro solo funde lo que comparte capa. La de la pill se
+  dibuja DOS VECES —acá y en la propia pill, que tiene su filtro para fundir su
+  barra con su panel—, del mismo color y del mismo tamaño, así que la de acá no
+  se ve: lo único que aporta es darle al cuello algo con qué fundirse.
+-->
+<!--
+  La paleta vive en el envoltorio y no en el globo.
+
+  La piel es HERMANA del globo, no hija: un filtro tiene que envolver las tres
+  siluetas, y ninguna de ellas puede estar dentro del contenido. Con los tokens
+  declarados en `.bub`, la piel se quedaba sin `--shell` y sus formas salían
+  con `background: var(--shell)` sin resolver, o sea transparentes: la consola
+  se veía sin fondo.
+-->
+<div class="console" data-prov={active?.backendId ?? picked}>
+{#if skinBox}
+  <div
+    class="bub-skin"
+    class:is-shown={bubble.shown}
+    aria-hidden="true"
+    style="left: {skinBox.x}px; top: {skinBox.y}px; width: {skinBox.w}px; height: {skinBox.h}px"
+  >
+    {#if anchorBlob}
+      <i
+        class="bs-blob"
+        style="left: {anchorBlob.x}px; top: {anchorBlob.y}px; width: {anchorBlob.w}px; height: {anchorBlob.h}px; border-radius: {anchorBlob.r}px"
+      ></i>
+    {/if}
+    {#if neck}
+      <i
+        class="bs-blob"
+        style="left: {neck.x}px; top: {neck.y}px; width: {neck.w}px; height: {neck.h}px; border-radius: 999px"
+      ></i>
+    {/if}
+    {#if bodyBlob}
+      <i
+        class="bs-blob"
+        style="left: {bodyBlob.x}px; top: {bodyBlob.y}px; width: {bodyBlob.w}px; height: {bodyBlob.h}px; border-radius: {bodyBlob.r}px"
+      ></i>
+    {/if}
+  </div>
+{/if}
 
 <div
   class="bub"
   class:is-shown={bubble.shown}
-  class:is-loose={bubble.detached}
   data-side={bubble.anchor?.side ?? "top"}
-  data-prov={active?.backendId ?? picked}
   style={bubble.vars}
+  bind:this={bubEl}
 >
-  <!-- Cuello líquido hacia la pill: dos blobs fusionados con filtro goo. -->
-  <span class="bub-neck" aria-hidden="true">
-    <i class="bub-neck-blob is-root"></i>
-    <i class="bub-neck-blob is-tip"></i>
-  </span>
-
-  <!-- Agarraderas. Viven en el margen de la sombra, del lado opuesto a la
-       punta, así que estirar nunca despega el globo de la pill. La de la
-       esquina lleva una marca visible: sin ella nadie sabe que se puede. -->
+  <!-- Agarraderas. Van pegadas a los bordes opuestos al cuello, así que
+       estirar nunca despega el globo de la pill. La de la esquina lleva una
+       marca visible: sin ella nadie sabe que se puede. -->
   <button
     type="button"
     class="rz rz-h"
@@ -1419,9 +1740,17 @@
          cerrarlo; si no, la única salida sería recordar el atajo. -->
     <!-- Franja de arrastre. La burbuja nace pegada a la pill, pero eso no
          siempre cae donde te sirve: si tapa lo que estás mirando, se mueve. Al
-         moverla se desancla y la punta desaparece, porque ya no sale de ahí. -->
-    <div class="grip" data-tauri-drag-region title="Arrastra para mover">
-      <span class="grip-bar" data-tauri-drag-region></span>
+         moverla se desancla y el cuello se corta, porque ya no sale de ahí. -->
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div
+      class="grip"
+      title="Arrastra para mover"
+      onpointerdown={startDrag}
+      onpointermove={moveDrag}
+      onpointerup={endDrag}
+      onlostpointercapture={endDrag}
+    >
+      <span class="grip-bar"></span>
     </div>
 
     <!-- Las pestañas SON el selector de agente, no solo un conmutador entre
@@ -1432,7 +1761,17 @@
          segunda. Ahora están siempre y siempre dicen lo mismo: con quién estás
          hablando y con quién más podrías. Tocar una sin sesión la deja elegida;
          tocarla con sesión abierta cambia a ella. -->
-    <div class="tabs" role="tablist" aria-label="Agentes" data-tauri-drag-region>
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div
+      class="tabs"
+      role="tablist"
+      aria-label="Agentes"
+      tabindex="-1"
+      onpointerdown={startDrag}
+      onpointermove={moveDrag}
+      onpointerup={endDrag}
+      onlostpointercapture={endDrag}
+    >
       {#each backends as b (b.id)}
         {@const open = agents.sessions.find((s) => s.backendId === b.id)}
         <button
@@ -1444,7 +1783,7 @@
           aria-selected={open ? open.id === activeId : !active && picked === b.id}
           disabled={!b.available && !open}
           title={b.available ? b.displayName : `${b.displayName} · no instalado`}
-          data-tauri-drag-region="false"
+          data-no-drag
           onclick={() => selectBackend(b.id, open?.id ?? null)}
           style="--tv: {ACCENTS[b.id] ?? 'var(--coral)'}"
         >
@@ -1468,7 +1807,7 @@
            cosas de la SESIÓN, y esta fila pasó a ser la de las sesiones. En el
            compositor competían con los ajustes del mensaje, que es lo que el
            artifact deja ahí y nada más. -->
-      <div class="tabs-end" data-tauri-drag-region="false">
+      <div class="tabs-end" data-no-drag>
         {#if active}
           <button
             type="button"
@@ -2168,6 +2507,7 @@
     </div>
   </div>
 </div>
+</div>
 
 {#if previewPath}
   <div
@@ -2240,18 +2580,26 @@
 
   /* ─── La burbuja ────────────────────────────────────────────────────────
    *
-   * El marco transparente (`--inset`) NO es decorativo: es el sitio donde la
-   * sombra tiene que caber. Antes había 14 px de hueco y una sombra de 48 px de
-   * difuminado, así que la ventana la cortaba en seco y lo que se veía era una
-   * banda oscura con bordes rectos alrededor del globo — la «sombra fea».
-   *
-   * La regla es: desplazamiento + difuminado <= inset. Cambiar una obliga a
-   * mirar la otra, y Rust usa el mismo número para descontarlo al colocarla.
+   * Ya no hay `--inset`. Era un marco transparente de 62 px donde tenía que
+   * caber la sombra, porque una ventana recorta la suya y lo que se veía era
+   * una banda oscura de bordes rectos alrededor del globo. Dentro del overlay
+   * no hay ventana que recorte nada: la sombra la proyecta la capa fundida,
+   * después del filtro, y le sale a la silueta ENTERA — pill incluida, que es
+   * lo correcto ahora que son un solo cuerpo.
    */
-  .bub {
-    --inset: 62px;
+  /* Cubre el overlay entero y no recibe el mouse: solo está para que la piel y
+     el globo compartan tokens y sistema de coordenadas. */
+  .console {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+
     --coral: #da7756;
-    --shell: #1c1917;
+    --shell: var(--console-shell);
+    /* La burbuja tiene paleta propia, así que el color del sistema líquido
+       apunta acá y no al `--rb-surface` de la app: todo lo que se funda con el
+       globo tiene que ser exactamente su mismo tono. */
+    --skin: var(--shell);
     --line: #332e2b;
     --text: #e7e2dd;
     --dim: #8d827a;
@@ -2272,7 +2620,9 @@
      * significar lo mismo en los cuatro. */
     --wait: #d4a24c;
     --wait-text: #d9bd85;
+  }
 
+  .bub {
     /* Tamaño FIJO, no `100vw/100vh`.
      *
      * La ventana arranca del porte de la pill y crece: con medidas relativas,
@@ -2287,71 +2637,89 @@
      */
     position: absolute;
     display: flex;
+    left: var(--x);
+    top: var(--y);
     width: var(--w);
     height: var(--h);
     box-sizing: border-box;
-    padding: var(--inset);
 
-    /* Lo único que anima acá es la opacidad: quien crece es la VENTANA, con el
-       mismo tween que la rueda. Escalar además el contenido sería animar dos
-       veces la misma idea y se notaría como un rebote doble. */
+    /* Nace replegado sobre el cuello y se derrama desde ahí: es el mismo gesto
+       que hace el panel de la pill al salir de su barra. Antes crecía la
+       VENTANA y esto solo se fundía; sin ventana, el gesto vive acá. */
     opacity: 0;
-    transition: opacity var(--fade, 200ms) ease;
+    transform: scale(0.965);
+    pointer-events: none;
+    transition:
+      opacity var(--morph-fade-dur) var(--morph-close-ease),
+      transform var(--morph-close-dur) var(--morph-close-ease);
   }
   .bub.is-shown {
     opacity: 1;
+    transform: none;
+    pointer-events: auto;
+    transition:
+      opacity var(--morph-fade-dur) var(--morph-ease),
+      transform var(--morph-open-dur) var(--morph-ease);
+  }
+  .bub[data-side="top"] {
+    transform-origin: var(--tail) 0;
+  }
+  .bub[data-side="bottom"] {
+    transform-origin: var(--tail) 100%;
+  }
+  .bub[data-side="left"] {
+    transform-origin: 0 var(--tail);
+  }
+  .bub[data-side="right"] {
+    transform-origin: 100% var(--tail);
+  }
+
+  /*
+   * La capa fundida: siluetas y nada más.
+   *
+   * Sigue la regla del sistema líquido — el filtro difumina todo lo que tenga
+   * adentro, así que acá no puede haber ni texto ni iconos. La sombra va
+   * DESPUÉS del goo en la misma cadena: una `box-shadow` por forma entraría al
+   * filtro como alfa parcial y alargaría el cuello.
+   */
+  .bub-skin {
+    position: absolute;
+    z-index: 0;
+    opacity: 0;
+    filter: url(#bub-liquid-goo) drop-shadow(0 18px 44px rgb(0 0 0 / 42%));
+    pointer-events: none;
+    transition: opacity var(--morph-fade-dur) var(--morph-close-ease);
+  }
+  .bub-skin.is-shown {
+    opacity: 1;
+    transition: opacity var(--morph-fade-dur) var(--morph-ease);
+  }
+  .bs-blob {
+    position: absolute;
+    display: block;
+    background: var(--shell);
   }
 
   /* El acento sigue al proveedor: es la única pieza de color que cambia entre
      los cuatro agentes, y por eso es la prueba visible de que abajo hay un solo
      modelo. Sin sesión abierta manda el que elegiste para arrancar, así que el
      globo ya se pinta del color del agente antes del primer mensaje. */
-  .bub[data-prov="opencode"] {
+  .console[data-prov="opencode"] {
     --coral: #7fae86;
   }
-  .bub[data-prov="codex"] {
+  .console[data-prov="codex"] {
     --coral: #8fa9b8;
   }
-  .bub[data-prov="cursor"] {
+  .console[data-prov="cursor"] {
     --coral: #a88fc4;
-  }
-
-  /* Anclado al borde por el que sale, y centrado en el otro eje: durante el
-     vuelo la ventana está centrada en la pill, así que la punta se queda sobre
-     ella todo el recorrido. Con `margin` y no `transform`, que acá no hay
-     ninguno que pisar. */
-  .bub[data-side="top"] {
-    top: 0;
-    left: 50%;
-    margin-left: calc(var(--w) / -2);
-  }
-  .bub[data-side="bottom"] {
-    bottom: 0;
-    left: 50%;
-    margin-left: calc(var(--w) / -2);
-  }
-  .bub[data-side="left"] {
-    top: 50%;
-    left: 0;
-    margin-top: calc(var(--h) / -2);
-  }
-  .bub[data-side="right"] {
-    top: 50%;
-    right: 0;
-    margin-top: calc(var(--h) / -2);
-  }
-
-  /* Movida de sitio ya no sale de la pill: la punta sobra. */
-  .bub.is-loose .bub-neck {
-    display: none;
   }
 
   /* ─── Agarraderas ─────────────────────────────────────────────────────
    *
-   * Viven DENTRO del margen de la sombra, así que no le quitan sitio al globo
-   * ni pisan la franja de arrastre o el botón de cerrar. Son invisibles hasta
-   * que las buscás; la de la esquina no, porque si nada indica que se puede
-   * estirar, nadie lo intenta. */
+   * Vivían en el margen de la sombra; sin ese margen, van pegadas por dentro a
+   * los bordes OPUESTOS al cuello. Son finas y transparentes, así que no le
+   * quitan sitio al contenido; la de la esquina lleva marca, porque si nada
+   * indica que se puede estirar, nadie lo intenta. */
   .rz {
     position: absolute;
     z-index: 6;
@@ -2370,48 +2738,50 @@
     outline-offset: 1px;
   }
 
-  /* Barra vertical, en el borde izquierdo o derecho según de qué lado salga. */
+  /* Barra vertical, en el borde izquierdo o derecho según de qué lado salga.
+     Se detiene a 26 px de las esquinas —el radio del globo— para dejarle sitio
+     a la agarradera de esquina. */
   .rz-h {
-    top: var(--inset);
-    bottom: var(--inset);
-    width: 15px;
+    top: 26px;
+    bottom: 26px;
+    width: 8px;
     cursor: ew-resize;
   }
   .rz-h[data-h="right"] {
-    right: calc(var(--inset) - 15px);
+    right: 0;
   }
   .rz-h[data-h="left"] {
-    left: calc(var(--inset) - 15px);
+    left: 0;
   }
 
   .rz-v {
-    right: var(--inset);
-    left: var(--inset);
-    height: 15px;
+    right: 26px;
+    left: 26px;
+    height: 8px;
     cursor: ns-resize;
   }
   .rz-v[data-v="bottom"] {
-    bottom: calc(var(--inset) - 15px);
+    bottom: 0;
   }
   .rz-v[data-v="top"] {
-    top: calc(var(--inset) - 15px);
+    top: 0;
   }
 
   .rz-c {
-    width: 22px;
-    height: 22px;
+    width: 26px;
+    height: 26px;
   }
   .rz-c[data-h="right"] {
-    right: calc(var(--inset) - 14px);
+    right: 0;
   }
   .rz-c[data-h="left"] {
-    left: calc(var(--inset) - 14px);
+    left: 0;
   }
   .rz-c[data-v="bottom"] {
-    bottom: calc(var(--inset) - 14px);
+    bottom: 0;
   }
   .rz-c[data-v="top"] {
-    top: calc(var(--inset) - 14px);
+    top: 0;
   }
   .rz-c[data-h="right"][data-v="bottom"],
   .rz-c[data-h="left"][data-v="top"] {
@@ -2451,6 +2821,15 @@
     border-color: #fff;
   }
 
+  /*
+   * El cuerpo: SOLO contenido.
+   *
+   * Sin fondo, sin borde y sin sombra — todo eso lo pone la capa fundida de
+   * abajo. El borde de 1 px sobre todo: dentro del goo, esa línea cruzaba la
+   * base del cuello y delataba que el globo y la pill eran dos cosas pegadas.
+   * El radio y el `overflow` siguen haciendo falta, pero solo para recortar el
+   * contenido a la forma que la piel ya dibujó.
+   */
   .bub-body {
     position: relative;
     z-index: 1;
@@ -2458,83 +2837,11 @@
     min-width: 0;
     flex: 1;
     flex-direction: column;
-    border: 1px solid var(--line);
-    /* 26 y no 18: es el mismo número que `BUBBLE_CORNER` en Rust, que lo usa
-       para que la punta no caiga sobre la curva. Estaban desfasados. */
+    /* 26 y no 18: es el mismo número que `corner` en Rust, que lo usa para que
+       el cuello no nazca sobre la curva. */
     border-radius: 26px;
-    background: var(--shell);
-    /* Cabe entera en `--inset` (18 + 44 = 62 <= 62), así que la ventana no la
-       recorta y el globo queda flotando de verdad. */
-    box-shadow: 0 18px 44px rgb(0 0 0 / 42%);
     color: var(--text);
     overflow: hidden;
-  }
-
-  .liquid-defs {
-    position: absolute;
-    width: 0;
-    height: 0;
-    overflow: hidden;
-  }
-
-  /* Cuello líquido hacia la pill: dos blobs + filtro goo (estilo Liquid UI).
-     Solo envuelve formas vacías, nunca el texto del globo. */
-  .bub-neck {
-    position: absolute;
-    z-index: 0;
-    display: grid;
-    place-items: center;
-    width: 28px;
-    height: 36px;
-    filter: url(#bub-liquid-goo);
-    pointer-events: none;
-  }
-  .bub-neck-blob {
-    display: block;
-    border-radius: 999px;
-    background: var(--shell);
-    box-shadow: 0 0 0 1px var(--line);
-  }
-  .bub-neck-blob.is-root {
-    width: 22px;
-    height: 18px;
-  }
-  .bub-neck-blob.is-tip {
-    width: 14px;
-    height: 14px;
-    margin-top: -6px;
-  }
-  .bub[data-side="top"] .bub-neck {
-    top: calc(var(--inset) - 28px);
-    left: calc(var(--tail) - 14px);
-  }
-  .bub[data-side="bottom"] .bub-neck {
-    bottom: calc(var(--inset) - 28px);
-    left: calc(var(--tail) - 14px);
-    transform: rotate(180deg);
-  }
-  .bub[data-side="left"] .bub-neck {
-    top: calc(var(--tail) - 18px);
-    left: calc(var(--inset) - 28px);
-    width: 36px;
-    height: 28px;
-    transform: rotate(-90deg);
-  }
-  .bub[data-side="right"] .bub-neck {
-    top: calc(var(--tail) - 18px);
-    right: calc(var(--inset) - 28px);
-    width: 36px;
-    height: 28px;
-    transform: rotate(90deg);
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .bub-neck {
-      filter: none;
-    }
-    .bub-neck-blob.is-tip {
-      margin-top: -4px;
-    }
   }
 
   /* ─── Sesiones ──────────────────────────────────────────────────────── */
@@ -2544,6 +2851,7 @@
      otra cosa. */
   .tabs {
     display: flex;
+    touch-action: none;
     min-width: 0;
     flex-shrink: 0;
     gap: 0.1rem;
@@ -2952,6 +3260,9 @@
     height: 0.85rem;
     align-items: center;
     justify-content: center;
+    /* Sin esto el navegador se queda el gesto para hacer pan y los
+       `pointermove` dejan de llegar apenas arranca el arrastre. */
+    touch-action: none;
     cursor: grab;
   }
   .grip:active {

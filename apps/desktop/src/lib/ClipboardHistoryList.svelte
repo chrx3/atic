@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { onMount } from "svelte";
   import { convertFileSrc } from "@tauri-apps/api/core";
   import { startDrag } from "@crabnebula/tauri-plugin-drag";
   import List from "reicon-svelte/icons/List.svelte";
@@ -9,7 +8,6 @@
   import type { ClipboardItem } from "$lib/types";
   import { clipboardItemMatches } from "$lib/clipboardSearch";
   import {
-    agentsWindowVisible,
     clipboardDragPath,
     deleteCapture,
     deleteClipboardItem,
@@ -40,8 +38,6 @@
   let busyId = $state<string | null>(null);
   let query = $state("");
   let favoritesOnly = $state(false);
-  /** Cache: HTML5 dragstart exige preventDefault síncrono. */
-  let agentsOpen = $state(false);
   let press: {
     id: string;
     x: number;
@@ -49,17 +45,6 @@
     item: ClipboardItem;
   } | null = null;
   let didDrag = false;
-
-  onMount(() => {
-    const refresh = () => {
-      void agentsWindowVisible()
-        .then((v) => (agentsOpen = v))
-        .catch(() => (agentsOpen = false));
-    };
-    refresh();
-    const id = window.setInterval(refresh, 800);
-    return () => window.clearInterval(id);
-  });
 
   const visibleItems = $derived.by(() => {
     let list = items;
@@ -95,9 +80,6 @@
     if (event.button !== 0 || busyId) return;
     const target = event.target as HTMLElement;
     if (target.closest(".clip-actions, .clip-icon-btn")) return;
-    void agentsWindowVisible()
-      .then((v) => (agentsOpen = v))
-      .catch(() => (agentsOpen = false));
     press = { id: item.id, x: event.clientX, y: event.clientY, item };
     didDrag = false;
     window.addEventListener("pointermove", onItemMove);
@@ -110,8 +92,8 @@
     if (Math.hypot(event.clientX - press.x, event.clientY - press.y) < DRAG_THRESHOLD) {
       return;
     }
-    // OLE file-drag: cruza ventanas Tauri (agentes). Texto a apps externas
-    // sigue por HTML5 en `ondragstart` cuando agentes no está abierto.
+    // Solo imágenes: son archivos en disco y el arrastre OLE los lleva tanto a
+    // una app externa como al compositor. El texto no pasa por acá.
     didDrag = true;
     const item = press.item;
     cleanupPress();
@@ -134,10 +116,16 @@
 
   async function dragItem(item: ClipboardItem) {
     try {
-      // Con agentes abierto, texto e imagen van por archivo (OLE) para que el
-      // webview de agentes pueda recibir el drop. Sin agentes, el texto usa
-      // HTML5 text/plain hacia apps externas (ver onTextDragStart).
-      if (item.kind === "text" && !agentsOpen) return;
+      // El texto va SIEMPRE por HTML5 (`onTextDragStart`), sin mirar si la
+      // consola está abierta.
+      //
+      // Antes se materializaba en un `.atic-drag-*.txt` y se arrastraba como
+      // archivo, porque `text/plain` no cruzaba de la ventana de la pill a la
+      // de agentes. Comparten documento: ya cruza. Y seguir con el archivo era
+      // peor que inútil — el arrastre OLE se queda el gesto, así que soltarlo
+      // sobre Word o el Explorador dejaba de pegar texto y pasaba a copiar un
+      // archivo temporal.
+      if (item.kind === "text") return;
       const path = await clipboardDragPath(item.id);
       await startDrag({ item: [path], icon: path, mode: "copy" });
     } catch (error) {
@@ -147,7 +135,7 @@
 
   function onTextDragStart(event: DragEvent, item: ClipboardItem) {
     const text = item.text ?? item.preview ?? "";
-    if (!text || agentsOpen) {
+    if (!text) {
       event.preventDefault();
       return;
     }
@@ -260,17 +248,13 @@
             role="option"
             aria-selected="false"
             tabindex="0"
-            title={agentsOpen
-              ? item.kind === "text"
-                ? "Clic: enviar al agente · Arrastra al compositor"
-                : "Clic: enviar al agente · Arrastra al compositor"
-              : item.kind === "text"
-                ? "Clic: pegar · Arrastra: soltar texto"
-                : "Clic: pegar · Arrastra: soltar imagen"}
-            draggable={item.kind === "text" && !agentsOpen}
+            title={item.kind === "text"
+              ? "Clic: pegar · Arrastra: soltar texto"
+              : "Clic: pegar · Arrastra: soltar imagen"}
+            draggable={item.kind === "text"}
             onpointerdown={(e) => onItemDown(e, item)}
             ondragstart={(e) => {
-              if (item.kind === "text" && !agentsOpen) onTextDragStart(e, item);
+              if (item.kind === "text") onTextDragStart(e, item);
               else e.preventDefault();
             }}
             onkeydown={(e) => {

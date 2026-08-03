@@ -46,9 +46,9 @@
      * Ctrl+Alt+L — banco de pruebas líquido. La ventana overlay nace
      *   `focusable(false)`, así que no recibe teclas: el interruptor vive acá y
      *   viaja por `localStorage`, igual que el tema.
-     * Ctrl+Alt+M — alterna entre la UI actual y la reescrita. Ninguna ventana
-     *   tiene barra de direcciones, así que sin esto la pantalla nueva no se
-     *   puede abrir donde importa, que es dentro de la app.
+     * Ctrl+Alt+M — vuelve a la UI anterior, que sigue en `/legacy` hasta que
+     *   la nueva pase una vuelta completa acá adentro. Ninguna ventana tiene
+     *   barra de direcciones, así que sin esto no habría forma de volver.
      */
     const onDevKey = (event: KeyboardEvent) => {
       if (!event.ctrlKey || !event.altKey) return;
@@ -65,7 +65,7 @@
       if (key === "m") {
         event.preventDefault();
         const path = window.location.pathname;
-        void goto(path.startsWith("/dev/main") ? "/" : "/dev/main");
+        void goto(path.startsWith("/legacy") ? "/" : "/legacy");
       }
     };
     if (import.meta.env.DEV) window.addEventListener("keydown", onDevKey);

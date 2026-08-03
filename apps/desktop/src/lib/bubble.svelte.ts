@@ -3,106 +3,123 @@
  *
  * # Por qué vive aparte
  *
- * En `routes/agents/+page.svelte` convivía con el protocolo y con el render, y
- * no tiene nada que ver con ninguno de los dos: acá no se sabe qué es un agente
- * ni qué es un turno. Es solo dónde está la burbuja, de qué lado le sale la
- * punta y si ya se puede mostrar.
+ * En `AgentsSurface.svelte` convivía con el protocolo y con el render, y no
+ * tiene nada que ver con ninguno de los dos: acá no se sabe qué es un agente ni
+ * qué es un turno. Es solo dónde está la burbuja, de qué lado le sale el cuello
+ * y si ya se puede mostrar.
  *
- * # La conversión que hay que hacer una sola vez
+ * # La conversión que se fue
  *
- * Rust razona en píxeles **físicos** —es lo que usa Win32— y el CSS en lógicos.
- * A escala 100% son el mismo número y la diferencia no se ve; a 125% el
- * contenido quedaba un 25% más ancho que su ventana y se recortaba por los dos
- * lados. La división por `devicePixelRatio` pasa **una vez**, acá, y no
- * repartida por reglas de estilo.
+ * Acá había una división por `devicePixelRatio`: Rust razonaba en píxeles
+ * físicos —es lo que usa Win32— y mandaba el tamaño de una ventana. Dentro del
+ * overlay el globo es un `div`, así que la geometría **nunca sale de CSS** y la
+ * conversión pasa una sola vez, en Rust, con la escala de la ventana que de
+ * verdad lo pinta.
  */
 import { tick } from "svelte";
 import type { BubbleOpen } from "$lib/api";
+import { MOTION, ms } from "$lib/motion";
 
-/** Cómo salió la burbuja, ya en píxeles de CSS. */
+/** Dónde salió la burbuja, en píxeles CSS del overlay. */
 export interface Anchor {
   side: string;
   offset: number;
+  x: number;
+  y: number;
   w: number;
   h: number;
 }
 
+/** Lo más chico que puede quedar el globo. Gemelos de `BUBBLE_MIN_*` en Rust. */
+export const BUBBLE_MIN_W = 420;
+export const BUBBLE_MIN_H = 340;
+
 export class Bubble {
   anchor = $state<Anchor | null>(null);
-  /** Ya se puede pintar: antes de esto no se sabe dónde va la punta. */
+  /** Ya se puede pintar: antes de esto no se sabe dónde va el cuello. */
   shown = $state(false);
   /**
-   * La arrastraste: la punta deja de dibujarse.
+   * Sigue en pantalla, aunque sea replegándose.
    *
-   * Movida de sitio ya no sale de la pill, y una punta que apunta a donde la
-   * pill no está es peor que ninguna. Al volver a abrirla se re-ancla y vuelve.
+   * Separado de `shown` para que la capa fundida se desmonte al TERMINAR el
+   * cierre y no al empezarlo: montada, sigue el rectángulo de la pill y vuelve
+   * a pasar el filtro cada vez que se mueve, o sea que arrastrar la pill con la
+   * consola cerrada costaría un difuminado por cuadro para no dibujar nada.
    */
-  detached = $state(false);
-  /** Duración del vuelo desde la pill, para fundir el contenido a la par. */
-  flight = $state(0);
-
-  /** Antes de este instante, los movimientos son del vuelo y no del usuario. */
-  #settledAt = 0;
-
-  /** Llegó de Rust: dónde cae, de qué lado y cuánto dura el vuelo. */
+  alive = $state(false);
+  /** Llegó de Rust: dónde cae y de qué lado le sale el cuello. */
   place(a: BubbleOpen): void {
-    const dpr = window.devicePixelRatio || 1;
     this.anchor = {
       side: a.side,
-      offset: a.offset / dpr,
-      w: a.w / dpr,
-      h: a.h / dpr,
+      offset: a.offset,
+      x: a.x,
+      y: a.y,
+      w: a.w,
+      h: a.h,
     };
-    this.detached = false;
-    // La ventana está volando desde la pill: el contenido se funde durante ese
-    // mismo tiempo, así que crecer y aparecer son un solo gesto.
-    this.flight = a.flight;
     this.shown = false;
-    // El vuelo empieza YA; ignorar los `moved` que provoca, o la burbuja se
-    // daría por arrastrada antes de terminar de abrirse.
-    this.#settledAt = Date.now() + a.flight + 120;
+    this.alive = true;
+    // Un cuadro de margen: el globo tiene que nacer replegado sobre la pill
+    // para que la transición tenga de dónde salir. Pintarlo y mostrarlo en el
+    // mismo cuadro se ve como una caja que aparece, no como algo que se derrama.
     void tick().then(() => requestAnimationFrame(() => (this.shown = true)));
   }
 
   /**
-   * La ventana se movió. Devuelve si contó como arrastre del usuario.
+   * La arrastraron.
    *
-   * Se mira el reloj y no el gesto: Windows también la mueve al acomodarla
-   * contra un borde, y eso cuenta igual; lo que no cuenta es el vuelo con el
-   * que se acaba de abrir.
+   * Ya no marca nada de «despegada»: el cuello se calcula contra los dos
+   * rectángulos en vivo, así que estira siguiendo al globo y se corta cuando de
+   * verdad están lejos. Antes hacía falta la marca porque el cuello era un
+   * dibujo fijo que, movido de sitio, apuntaba a donde la pill no estaba.
    */
-  moved(): boolean {
-    if (Date.now() < this.#settledAt) return false;
-    this.detached = true;
-    return true;
+  moveBy(dx: number, dy: number): void {
+    if (!this.anchor) return;
+    this.anchor = {
+      ...this.anchor,
+      x: this.anchor.x + dx,
+      y: this.anchor.y + dy,
+    };
   }
 
   /**
-   * El usuario la estiró: el contenido tiene que seguir a la ventana.
+   * El usuario la estiró. El borde anclado NO se mueve.
    *
-   * Lo aplica la vista y no un evento de vuelta de Rust: durante el arrastre
-   * son decenas de cambios por segundo, y esperar el ida y vuelta dejaría el
-   * contenido corriendo detrás del borde. Rust mueve la ventana; esto mueve lo
-   * que hay adentro, con el mismo número.
+   * Si el cuello sale por arriba, crecer empuja el borde de abajo; si sale por
+   * abajo, crece hacia arriba. Es lo que hace que el cuello siga tocando la
+   * pill mientras arrastrás, en vez de despegarse y tener que reacomodarlo
+   * después. La cuenta estaba en Rust, que además movía la ventana; ahora que
+   * el globo es un `div`, mover la ventana era el único motivo para ir hasta
+   * allá.
    */
-  resized(w: number, h: number): void {
-    if (!this.anchor) return;
-    this.anchor = { ...this.anchor, w, h };
+  resize(w: number, h: number): void {
+    const a = this.anchor;
+    if (!a) return;
+    w = Math.max(BUBBLE_MIN_W, Math.round(w));
+    h = Math.max(BUBBLE_MIN_H, Math.round(h));
+    this.anchor = {
+      ...a,
+      w,
+      h,
+      x: a.side === "right" ? a.x + a.w - w : a.x,
+      y: a.side === "bottom" ? a.y + a.h - h : a.y,
+    };
   }
 
-  /** Apaga el contenido. Mover y ocultar la ventana es cosa de Rust. */
+  /** Apaga el contenido y, al terminar el repliegue, desmonta la piel. */
   hide(): void {
     this.shown = false;
+    window.setTimeout(() => {
+      if (!this.shown) this.alive = false;
+    }, ms(MOTION.morphClose));
   }
 
   /**
    * De qué lados se agarra para redimensionar.
    *
-   * De los dos OPUESTOS a la punta, siempre. Arrastrar por el lado anclado
+   * De los dos OPUESTOS al cuello, siempre. Arrastrar por el lado anclado
    * despegaría el globo de la pill mientras lo estirás, que es justo lo que la
-   * geometría de Rust se encarga de evitar. Las agarraderas viven en el margen
-   * de la sombra (`--inset`), así que no pisan ni la franja de arrastre ni el
-   * botón de cerrar.
+   * geometría de Rust se encarga de evitar.
    */
   get grips(): { v: "top" | "bottom"; h: "left" | "right" } {
     switch (this.anchor?.side) {
@@ -118,11 +135,9 @@ export class Bubble {
 
   /** Lo que va en el `style` del globo. */
   get vars(): string {
-    // Los respaldos son el tamaño de la VENTANA, no el del globo: `.bub` mide
-    // `--w` con el marco de la sombra incluido. Solo se usan en el instante
-    // previo al primer ancla, cuando la burbuja todavía no se pinta.
-    return `--tail: ${this.anchor?.offset ?? 40}px; --fade: ${
-      this.flight || 200
-    }ms; --w: ${this.anchor?.w ?? 704}px; --h: ${this.anchor?.h ?? 644}px`;
+    const a = this.anchor;
+    return `--tail: ${a?.offset ?? 40}px; --x: ${a?.x ?? 0}px; --y: ${
+      a?.y ?? 0
+    }px; --w: ${a?.w ?? 580}px; --h: ${a?.h ?? 520}px`;
   }
 }

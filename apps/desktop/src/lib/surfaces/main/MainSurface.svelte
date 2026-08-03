@@ -13,6 +13,7 @@
   import { recordings } from "$domain/recordings.svelte";
   import { sessionEffect } from "$domain/session";
   import { toasts } from "$domain/toasts.svelte";
+  import AgentsTool from "$features/agents/AgentsTool.svelte";
   import CapturesTool from "$features/captures/CapturesTool.svelte";
   import ClipboardTool from "$features/clipboard/ClipboardTool.svelte";
   import DictationTool from "$features/dictation/DictationTool.svelte";
@@ -33,13 +34,14 @@
 
   const ui = provideMainUi();
 
-  /** Lo que ya está reescrito. Falta agentes, que depende de la fase 7. */
+  /** Todas. La lista queda porque el hub necesita saber qué se puede abrir. */
   const READY: ToolId[] = [
     "meetings",
     "dictation",
     "clipboard",
     "snippets",
     "captures",
+    "agents",
   ];
 
   // Una sola declaración de qué necesita esta ventana. Sin esto, cada vista
@@ -144,6 +146,8 @@
     <SnippetsTool initialTab={ui.snippetsTab} />
   {:else if ui.activeTool === "captures"}
     <CapturesTool />
+  {:else if ui.activeTool === "agents"}
+    <AgentsTool />
   {:else}
     <EmptyState title="{tool.label} todavía no está reescrita" hint={tool.blurb}>
       {#snippet action()}

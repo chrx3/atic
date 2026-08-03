@@ -12,6 +12,7 @@
 
   import AticMark from "$lib/AticMark.svelte";
   import ToolIcon from "$lib/ToolIcon.svelte";
+  import GooFilter, { preFilter } from "$lib/GooFilter.svelte";
   import { TOOLS, type ToolId } from "$lib/tools";
 
   let {
@@ -44,14 +45,42 @@
 
   const NODE_COUNT = TOOLS.length;
 
+  /**
+   * Piel líquida de la variante compacta (la pill), en px.
+   *
+   * Las seis herramientas no se dibujan sobre un disco: SON gotas que salen
+   * del núcleo. Mientras viajan siguen fundidas con él y se sueltan cuando la
+   * separación supera el alcance del filtro —1.72·σ, o sea 8.6 px con σ = 5—.
+   *
+   * Con el anillo en 70 y estos radios, el hueco final es 70 − 29 − 28 = 13,
+   * así que se sueltan con margen. Subir σ por encima de 7.5 las dejaría
+   * pegadas al núcleo para siempre.
+   */
+  const SKIN = {
+    /** Diámetro de cada gota, abierta. */
+    node: 56,
+    /** Diámetro del núcleo, abierto. */
+    core: 58,
+    /** Cerrado todo vuelve al disco de la pill en reposo (`PILL.bar`). */
+    closed: 40,
+  } as const;
+
   let host = $state<HTMLDivElement | null>(null);
   let canvas = $state<HTMLCanvasElement | null>(null);
   let width = $state(0);
   let height = $state(0);
   let nodeEls: HTMLButtonElement[] = [];
 
-  /** Radio del anillo respecto al lado menor del lienzo. */
-  const ringRatio = $derived(compact ? 0.34 : 0.27);
+  /**
+   * Radio del anillo respecto al lado menor del lienzo.
+   *
+   * En compacto era 0.34 (78.9 px sobre 232) cuando los nodos eran iconos
+   * sueltos sobre un disco. Con gotas de 56 el conjunto tiene que leerse como
+   * UNA cosa y no como seis botones desperdigados, así que el anillo se cerró
+   * a 0.30 — 69.6 px, casi los 70 con los que están calculados los radios de
+   * `SKIN`.
+   */
+  const ringRatio = $derived(compact ? 0.3 : 0.27);
   const ringRadius = $derived(Math.min(width, height) * ringRatio);
   const activeTool = $derived(
     TOOLS.find((tool) => tool.id === activeId) ?? null,
@@ -89,8 +118,14 @@
 
   /** Lado menor: escala el anillo y el núcleo (los gajos usan todo el área). */
   const side = $derived(Math.min(width, height));
-  /** Diámetro del núcleo neutro del centro (no selecciona ningún gajo). */
-  const coreSize = $derived(ringRadius * 1.2);
+  /**
+   * Diámetro del núcleo neutro del centro (no selecciona ningún gajo).
+   *
+   * En compacto se ata a la gota del núcleo: si fuera más grande, la zona
+   * clickeable saldría del líquido y un clic sobre la ventana transparente
+   * —donde no se ve nada— abriría la app.
+   */
+  const coreSize = $derived(compact ? SKIN.core : ringRadius * 1.2);
 
   /**
    * Sector angular como polígono, en PÍXELES: los gajos cubren el rectángulo
@@ -457,7 +492,36 @@
     <canvas class="pw-canvas" bind:this={canvas} aria-hidden="true"></canvas>
   {/if}
 
+  {#if compact}
+    <GooFilter id="pw-goo" />
+  {/if}
+
   {#if width > 0}
+    {#if compact}
+      <!-- Piel líquida: el núcleo y una gota por herramienta, fundidos entre
+           sí. Va aparte del contenido porque el filtro difumina y vuelve a
+           endurecer todo lo que tenga adentro: un icono acá sería una mancha. -->
+      <!-- `--d` es el tamaño ANTES del filtro: `preFilter` le descuenta lo
+           que el endurecido va a devolver, así que la silueta cerrada mide
+           exactamente los 40 del disco de la pill y el morph no salta. -->
+      <div class="pw-skin" aria-hidden="true">
+        <i
+          class="pw-blob"
+          style="--d: {preFilter(SKIN.core)}px;
+                 --sc: {preFilter(SKIN.closed) / preFilter(SKIN.core)}"
+        ></i>
+        {#each nodes as node (node.tool.id)}
+          <i
+            class="pw-blob"
+            style="left: {node.x}px; top: {node.y}px;
+                   --d: {preFilter(SKIN.node)}px;
+                   --tx: {width / 2 - node.x}px; --ty: {height / 2 - node.y}px;
+                   --sc: {preFilter(SKIN.closed) / preFilter(SKIN.node)}"
+          ></i>
+        {/each}
+      </div>
+    {/if}
+
     <!-- Gajos: cada botón cubre el cuadrado completo recortado a su sector.
          Todo el gajo es zona de clic; no dibuja líneas ni fondos. -->
     <div class="pw-nodes" role="toolbar" aria-label="Herramientas Atic">
@@ -496,8 +560,10 @@
             class="pw-node-body"
             style="left: {node.x}px; top: {node.y}px; --i: {index}"
           >
+            <!-- 21 y no 17: la gota de 56 pide más tinta que el icono suelto
+                 que había sobre el disco. -->
             <span class="pw-node-dot">
-              <ToolIcon id={node.tool.id} size={compact ? 17 : 20} />
+              <ToolIcon id={node.tool.id} size={compact ? 21 : 20} />
             </span>
             {#if !compact}
               <span class="pw-node-label">{node.tool.label}</span>
@@ -571,6 +637,38 @@
     align-items: center;
     justify-content: center;
     pointer-events: none;
+  }
+
+  /* ─── Piel líquida (solo compacto) ──────────────────────────────────── */
+  .pw-skin {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    filter: url(#pw-goo);
+  }
+  .pw-blob {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: var(--d);
+    height: var(--d);
+    margin: calc(var(--d) / -2) 0 0 calc(var(--d) / -2);
+    border-radius: 999px;
+    background: var(--skin);
+    /*
+     * Cerrado, cada gota vuelve al centro Y al tamaño del disco de la pill.
+     *
+     * `translate` a la izquierda de `scale` en la cadena significa: escalar
+     * primero sobre el propio centro, y recién después mover ese centro al del
+     * núcleo. Al revés, el desplazamiento saldría escalado y las gotas no
+     * llegarían al centro.
+     */
+    transform: translate(var(--tx, 0px), var(--ty, 0px)) scale(var(--sc));
+    transition: transform var(--morph-close-dur) var(--morph-close-ease);
+  }
+  .pw.is-revealed .pw-blob {
+    transform: none;
+    transition: transform var(--morph-open-dur) var(--morph-ease);
   }
 
   /* Cubre todo el lienzo: los gajos se reparten el rectángulo completo. */
@@ -685,8 +783,26 @@
     gap: 0.6rem;
   }
 
+  /*
+   * En compacto no hay pie de texto, y no es un descuido: no entra.
+   *
+   * Antes cabía porque el rótulo caía sobre un disco de 232 que le daba fondo.
+   * Con gotas, el centro mide 58 y "HERRAMIENTAS" pide unos 90; cualquier
+   * sobrante queda sobre la ventana TRANSPARENTE, o sea sobre el escritorio,
+   * ilegible. Debajo del anillo tampoco entra: las gotas llegan a 98 del
+   * centro y `.p-wheel` mide 232.
+   *
+   * El nombre sigue estando en el `title` de cada gajo. Para recuperarlo en
+   * pantalla habría que agrandar la ventana de la rueda (`PILL.wheel`) y
+   * colgarle una pastilla fundida abajo.
+   */
   .pw.is-compact .pw-caption {
-    color: var(--rb-text);
+    display: none;
+  }
+
+  /* Las gotas ya dividen el espacio: las fronteras solo agregan ruido. */
+  .pw.is-compact .pw-sep {
+    display: none;
   }
 
   .pw.is-compact .pw-node-dot {
@@ -826,8 +942,10 @@
     .pw-node-label,
     .pw-nodes,
     .pw-caption,
+    .pw-blob,
     .pw.is-revealed .pw-nodes,
-    .pw.is-revealed .pw-caption {
+    .pw.is-revealed .pw-caption,
+    .pw.is-revealed .pw-blob {
       animation: none !important;
       transition: none !important;
     }

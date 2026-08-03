@@ -4,7 +4,7 @@
    *
    * # Por qué vive aparte
    *
-   * `routes/agents/+page.svelte` mezclaba tres cosas que no tienen nada que ver
+   * `AgentsSurface.svelte` mezclaba tres cosas que no tienen nada que ver
    * entre sí: la geometría del globo anclado a la pill, el protocolo con el
    * backend, y esto. Sacar el render deja el archivo grande hablando de una
    * cosa menos, y sobre todo hace que dibujar una conversación **no dependa de

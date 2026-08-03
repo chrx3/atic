@@ -25,6 +25,7 @@
   import EmptyState from "$ui/EmptyState.svelte";
   import Meter from "$ui/Meter.svelte";
   import ProgressBar from "$ui/ProgressBar.svelte";
+  import LiveTranscript from "./LiveTranscript.svelte";
   import SummaryPanel from "./SummaryPanel.svelte";
   import TranscriptPanel from "./TranscriptPanel.svelte";
   import TranscriptView from "./TranscriptView.svelte";
@@ -192,6 +193,8 @@
         <Banner tone="warn" title={capture.note} />
       </div>
     {/if}
+
+    <LiveTranscript />
 
     <div class="min-h-0 flex-1">
       <ListDetail hasSelection={recordings.selected !== null} listLabel="Grabaciones">
