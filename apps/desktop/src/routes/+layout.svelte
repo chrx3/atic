@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { goto } from "$app/navigation";
   import { page } from "$app/state";
   import { applyTheme, readCachedTheme, THEME_STORAGE_KEY } from "$lib/theme";
   import "../app.css";
@@ -39,24 +40,40 @@
     };
     mq.addEventListener("change", onScheme);
 
-    // Interruptor del banco de pruebas líquido (solo dev).
-    //
-    // La ventana overlay nace `focusable(false)`, así que no recibe teclas: el
-    // atajo tiene que vivir en una ventana normal y viajar por `localStorage`,
-    // igual que el tema. Ctrl+Alt+L.
-    const onLabKey = (event: KeyboardEvent) => {
-      if (!event.ctrlKey || !event.altKey || event.key.toLowerCase() !== "l") return;
-      event.preventDefault();
-      const on = localStorage.getItem("atic-liquid-lab") === "1";
-      if (on) localStorage.removeItem("atic-liquid-lab");
-      else localStorage.setItem("atic-liquid-lab", "1");
+    /**
+     * Atajos de desarrollo. Solo en dev.
+     *
+     * Ctrl+Alt+L — banco de pruebas líquido. La ventana overlay nace
+     *   `focusable(false)`, así que no recibe teclas: el interruptor vive acá y
+     *   viaja por `localStorage`, igual que el tema.
+     * Ctrl+Alt+M — alterna entre la UI actual y la reescrita. Ninguna ventana
+     *   tiene barra de direcciones, así que sin esto la pantalla nueva no se
+     *   puede abrir donde importa, que es dentro de la app.
+     */
+    const onDevKey = (event: KeyboardEvent) => {
+      if (!event.ctrlKey || !event.altKey) return;
+      const key = event.key.toLowerCase();
+
+      if (key === "l") {
+        event.preventDefault();
+        const on = localStorage.getItem("atic-liquid-lab") === "1";
+        if (on) localStorage.removeItem("atic-liquid-lab");
+        else localStorage.setItem("atic-liquid-lab", "1");
+        return;
+      }
+
+      if (key === "m") {
+        event.preventDefault();
+        const path = window.location.pathname;
+        void goto(path.startsWith("/dev/main") ? "/" : "/dev/main");
+      }
     };
-    if (import.meta.env.DEV) window.addEventListener("keydown", onLabKey);
+    if (import.meta.env.DEV) window.addEventListener("keydown", onDevKey);
 
     return () => {
       document.removeEventListener("contextmenu", block);
       window.removeEventListener("storage", onStorage);
-      window.removeEventListener("keydown", onLabKey);
+      window.removeEventListener("keydown", onDevKey);
       mq.removeEventListener("change", onScheme);
     };
   });
