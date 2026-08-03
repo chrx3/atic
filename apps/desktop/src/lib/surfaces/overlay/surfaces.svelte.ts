@@ -11,11 +11,11 @@
  * píxeles CSS relativos al viewport, y el viewport ES el overlay.
  */
 
-import { invoke } from "@tauri-apps/api/core";
+import { setOverlayHitRects, type HitRect } from "$ipc/overlay";
 
 /** El `id` viaja a Rust: necesita distinguir la pill, que es de donde cuelga
  *  la burbuja de agentes. */
-type Rect = { id: string; x: number; y: number; w: number; h: number };
+type Rect = HitRect;
 
 class OverlaySurfaces {
   /**
@@ -106,7 +106,7 @@ class OverlaySurfaces {
     this.live = Object.fromEntries(measured.map((r) => [r.id, r]));
 
     try {
-      await invoke("set_overlay_hit_rects", { rects });
+      await setOverlayHitRects(rects);
     } catch {
       // Fuera de Tauri (dev en navegador) no hay a quién avisarle.
     }

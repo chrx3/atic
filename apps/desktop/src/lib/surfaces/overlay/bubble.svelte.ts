@@ -17,7 +17,7 @@
  * verdad lo pinta.
  */
 import { tick } from "svelte";
-import type { BubbleOpen } from "$lib/api";
+import type { BubbleOpen } from "$core/types";
 import { MOTION, ms } from "$lib/motion";
 
 /** Dónde salió la burbuja, en píxeles CSS del overlay. */

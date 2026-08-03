@@ -16,14 +16,11 @@
  * posición del puntero a Rust.
  */
 
-import { invoke } from "@tauri-apps/api/core";
+import { overlayCursor, overlayWorkAreas, type Area, type Point } from "$ipc/overlay";
 
-import { sameSize, type Pivot, type ResizeOutcome, type Size } from "$lib/pillStage";
+import { sameSize, type Pivot, type ResizeOutcome, type Size } from "./pillStage";
 
-/** Esquina superior izquierda, en px CSS del overlay. */
-export type Point = { x: number; y: number };
-
-type Area = { x: number; y: number; w: number; h: number };
+export type { Point };
 
 /** Margen contra el borde del monitor. Es el mismo `MARGIN` de `floating.rs`. */
 const MARGIN = 8;
@@ -43,9 +40,8 @@ function clampTo(areas: Area[], p: Point, size: Size): Point {
   const cx = p.x + size.w / 2;
   const cy = p.y + size.h / 2;
   const area =
-    areas.find(
-      (a) => cx >= a.x && cx <= a.x + a.w && cy >= a.y && cy <= a.y + a.h,
-    ) ?? areas[0];
+    areas.find((a) => cx >= a.x && cx <= a.x + a.w && cy >= a.y && cy <= a.y + a.h) ??
+    areas[0];
 
   // max contra el mínimo: en un monitor más chico que la superficie, el clamp
   // invertido la mandaba fuera de pantalla.
@@ -74,7 +70,7 @@ export function createCssStage() {
   /** Se refresca al arrancar y cuando cambian los monitores. */
   async function loadAreas(): Promise<void> {
     try {
-      areas = await invoke<Area[]>("overlay_work_areas");
+      areas = await overlayWorkAreas();
     } catch {
       areas = [];
     }
@@ -124,9 +120,7 @@ export function createCssStage() {
     switch (pivot) {
       case "cursor": {
         // La rueda sale donde está el puntero, centrada en él.
-        const cursor = await invoke<Point | null>("overlay_cursor").catch(
-          () => null,
-        );
+        const cursor = await overlayCursor().catch(() => null);
         const c = cursor ?? { x: origin.x, y: origin.y };
         next = { x: c.x - target.w / 2, y: c.y - target.h / 2 };
         break;

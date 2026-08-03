@@ -44,9 +44,9 @@
     windowFor,
     type Size,
     type Pivot,
-  } from "$lib/pillStage";
-  import { createCssStage } from "$lib/pillCssStage";
-  import { surfaces } from "$lib/overlaySurfaces.svelte";
+  } from "$surfaces/overlay/pillStage";
+  import { createCssStage } from "$surfaces/overlay/pillCssStage";
+  import { surfaces } from "$surfaces/overlay/surfaces.svelte";
   import { MOTION, ms, wait } from "$lib/motion";
   import {
     listPasteQueue,

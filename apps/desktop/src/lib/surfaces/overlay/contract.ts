@@ -1,0 +1,47 @@
+/**
+ * Los números que el overlay comparte con Rust.
+ *
+ * Cada uno existe dos veces —acá y en `src-tauri/`— porque las dos mitades
+ * hacen la misma cuenta desde lados distintos: el frontend coloca un `div`
+ * dentro del overlay, Rust coloca ventanas del sistema, y tienen que coincidir
+ * al píxel o la burbuja se despega de la pill.
+ *
+ * Duplicarlos no es un descuido: no hay forma de que el webview lea una `const`
+ * de Rust en tiempo de ejecución sin inventar un comando para cada número. Lo
+ * que sí se puede hacer es que la copia FALLE RUIDOSAMENTE cuando la otra
+ * cambia, y de eso se encarga `contract.test.ts`, que lee el `.rs` y compara.
+ *
+ * Si un número de acá cambia sin su gemelo, el test se pone rojo. Es la única
+ * defensa real: un comentario que dice «si cambia esto cambiá aquello» no
+ * detiene a nadie.
+ */
+
+/**
+ * Margen contra el borde útil del monitor.
+ *
+ * Gemelo de `MARGIN` en `floating.rs`. Lo usan los dos: Rust al encajar una
+ * ventana, `pillCssStage` al encajar la pill dentro del overlay. Si se separan,
+ * la pill queda pegada a un borde del que Rust cree haberla despegado.
+ */
+export const MARGIN = 8;
+
+/**
+ * Lo más chica que puede quedar la consola de agentes.
+ *
+ * Gemelos de `BUBBLE_MIN_W` / `BUBBLE_MIN_H` en `agents/bridge.rs`. Rust los
+ * aplica al redimensionar; el frontend los necesita para no ofrecer una
+ * agarradera que arrastre hacia un tamaño que Rust va a rechazar —y que dejaría
+ * el puntero separado del borde durante el resto del gesto.
+ */
+export const BUBBLE_MIN_W = 420;
+export const BUBBLE_MIN_H = 340;
+
+/**
+ * Hueco entre la pill y la consola.
+ *
+ * No tiene gemelo con nombre: en `floating.rs` viaja como el parámetro `gap` de
+ * la colocación, y quien lo elige es el frontend. Está acá porque es el número
+ * del que depende que el cuello se dibuje: por debajo del alcance de la unión
+ * las dos siluetas se funden, por encima se separan.
+ */
+export const BUBBLE_GAP = 10;

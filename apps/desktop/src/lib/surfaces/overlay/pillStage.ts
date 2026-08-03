@@ -11,7 +11,7 @@
  * de camino, el anterior se abandona sin tocar la ventana.
  */
 
-import { invoke } from "@tauri-apps/api/core";
+import { resizeFloating } from "$ipc/overlay";
 
 /** Medidas base. Todo lo demás se mide del DOM. */
 export const PILL = {
@@ -126,7 +126,7 @@ export function createStage(label: string) {
     }
     const mine = ++generation;
     try {
-      const result = await invoke<{ up: boolean }>("resize_floating", {
+      const result = await resizeFloating({
         label,
         width: target.w,
         height: target.h,

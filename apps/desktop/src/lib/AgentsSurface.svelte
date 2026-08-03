@@ -40,7 +40,7 @@
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { open as openDialog } from "@tauri-apps/plugin-dialog";
   import { agents } from "$lib/agentSessions.svelte";
-  import { Bubble } from "$lib/bubble.svelte";
+  import { Bubble } from "$surfaces/overlay/bubble.svelte";
   import {
     agentBackends,
     agentThread,
@@ -89,7 +89,7 @@
   import AgentConversation from "$lib/AgentConversation.svelte";
   import AgentIcons from "$lib/AgentIcons.svelte";
   import GooFilter, { GOO_GROW, preFilter } from "$lib/GooFilter.svelte";
-  import { surfaces } from "$lib/overlaySurfaces.svelte";
+  import { surfaces } from "$surfaces/overlay/surfaces.svelte";
   import type {
     AgentBackendInfo,
     AgentModel,
