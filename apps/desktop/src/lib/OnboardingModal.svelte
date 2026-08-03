@@ -172,7 +172,7 @@
   dismissible={false}
   onClose={() => {}}
 >
-    <div class="space-y-4 text-sm" style="color: var(--rb-text)">
+    <div class="space-y-4 text-[0.875rem]" style="color: var(--rb-text)">
       {#if step === 0}
         <p class="leading-relaxed" style="color: var(--rb-muted)">
           Graba el audio de tus reuniones, transcribe en local y genera
@@ -242,7 +242,7 @@
         <ul class="space-y-3">
           {#each recommendedModels as m (m.id)}
             <li
-              class="flex items-start justify-between gap-3 rounded-lg border px-3 py-2.5"
+              class="flex items-start justify-between gap-3 rounded-[0.5rem] border px-3 py-2.5"
               style="border-color: var(--rb-border)"
             >
               <div class="min-w-0">
@@ -276,7 +276,7 @@
         {/if}
 
         {#if downloadError}
-          <p class="text-sm" style="color: var(--rb-warn)">{downloadError}</p>
+          <p class="text-[0.875rem]" style="color: var(--rb-warn)">{downloadError}</p>
         {/if}
 
         {#if !allReady && totalBytes > 0}

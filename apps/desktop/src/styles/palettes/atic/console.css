@@ -1,0 +1,32 @@
+/**
+ * La consola de agentes, y la pill mientras cuelga de ella.
+ *
+ * No es una paleta ajena: es la tinta oscura, fijada pase lo que pase con el
+ * tema. Una terminal en claro no se lee como una terminal.
+ *
+ * Existe por la regla 2 del sistema líquido —todo lo que se funde va del mismo
+ * color— y por eso la aplica la burbuja sobre `:root`: la pill es su hermana,
+ * no su hija, y los tokens bajan por herencia. Es la ÚNICA paleta que se aplica
+ * por estado de la app y no por preferencia del usuario.
+ *
+ * Va después del claro en la cadena de imports: los dos selectores tienen la
+ * misma especificidad, así que gana el orden.
+ */
+:root[data-palette="console"] {
+  --bg: #121211;
+  --surface: #1a1a18;
+  --surface-2: #1e1e1b;
+  --elevated: #262622;
+
+  --text: #f0f0ea;
+  --muted: #a8a89e;
+  --faint: #74746c;
+
+  --line: rgb(240 240 234 / 10%);
+  --line-strong: rgb(240 240 234 / 18%);
+
+  --accent: #e8e8e0;
+  --on-accent: #121211;
+
+  --skin: #1a1a18;
+}

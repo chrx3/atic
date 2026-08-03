@@ -626,7 +626,7 @@
   onClose={onClose}
 >
   {#if !cfg || !secrets}
-    <p class="p-8 text-center text-sm rb-text-muted">Cargando…</p>
+    <p class="p-8 text-center text-[0.875rem] rb-text-muted">Cargando…</p>
   {:else}
     {#snippet general(c: AppConfig, s: SecretsStatus)}
       <div class="rb-settings-group">
@@ -754,7 +754,7 @@
           <div class="rb-settings-row-control">
             <button
               type="button"
-              class="rb-btn rb-btn-soft text-xs"
+              class="rb-btn rb-btn-soft text-[0.75rem]"
               onclick={() => void openDataDir("data")}
             >
               Abrir carpeta
@@ -773,7 +773,7 @@
           <div class="rb-settings-row-control">
             <button
               type="button"
-              class="rb-btn rb-btn-soft text-xs"
+              class="rb-btn rb-btn-soft text-[0.75rem]"
               onclick={() => void openDataDir("logs")}
             >
               Abrir carpeta
@@ -966,7 +966,7 @@
           <div class="rb-settings-actions">
             <button
               type="button"
-              class="rb-btn rb-btn-ghost text-xs"
+              class="rb-btn rb-btn-ghost text-[0.75rem]"
               onclick={refreshDevices}
               disabled={devicesLoading}
             >
@@ -974,7 +974,7 @@
             </button>
             <button
               type="button"
-              class="rb-btn rb-btn-ghost text-xs"
+              class="rb-btn rb-btn-ghost text-[0.75rem]"
               onclick={runAudioTest}
               disabled={devicesLoading || audioTestRunning || !cfg}
             >
@@ -995,7 +995,7 @@
           >
             <button
               type="button"
-              class="rb-btn rb-btn-primary text-xs"
+              class="rb-btn rb-btn-primary text-[0.75rem]"
               onclick={applyQualityProfile}
               disabled={devicesLoading || inputDevices.length === 0}
             >
@@ -1003,7 +1003,7 @@
             </button>
             <button
               type="button"
-              class="rb-btn rb-btn-soft text-xs"
+              class="rb-btn rb-btn-soft text-[0.75rem]"
               onclick={applyHeadsetProfile}
               disabled={devicesLoading || inputDevices.length === 0}
             >
@@ -1011,7 +1011,7 @@
             </button>
             <button
               type="button"
-              class="rb-btn rb-btn-soft text-xs"
+              class="rb-btn rb-btn-soft text-[0.75rem]"
               onclick={applySystemOnlyProfile}
               disabled={devicesLoading || outputDevices.length === 0}
             >
@@ -1050,7 +1050,7 @@
           >
         {:else if bluetoothMicActive && !c.speakers_mode}
           <div class="rb-banner rb-banner-warn" role="status">
-            <p class="text-xs font-medium">
+            <p class="text-[0.75rem] font-medium">
               Esta entrada puede activar Hands-Free
             </p>
             <p class="rb-hint mt-1">
@@ -1086,7 +1086,7 @@
 
         {#if audioTestError}
           <div class="rb-banner rb-banner-warn" role="alert">
-            <p class="text-xs font-medium">La prueba no pudo completarse</p>
+            <p class="text-[0.75rem] font-medium">La prueba no pudo completarse</p>
             <p class="rb-hint mt-1">{audioTestError}</p>
           </div>
         {:else if audioTest}
@@ -1097,7 +1097,7 @@
             role="status"
             aria-live="polite"
           >
-            <p class="text-xs font-medium">Resultado de la prueba</p>
+            <p class="text-[0.75rem] font-medium">Resultado de la prueba</p>
             <p class="rb-hint mt-1">
               {describeTrack("Micrófono", audioTest.mic)}
             </p>
@@ -1227,7 +1227,7 @@
           <div class="rb-settings-row-control">
             <button
               type="button"
-              class="rb-btn rb-btn-soft text-xs"
+              class="rb-btn rb-btn-soft text-[0.75rem]"
               onclick={() => void openDataDir("recordings")}
             >
               Abrir carpeta
@@ -1914,14 +1914,14 @@
         <div class="rb-settings-actions">
           <button
             type="button"
-            class="rb-btn rb-btn-soft text-xs"
+            class="rb-btn rb-btn-soft text-[0.75rem]"
             onclick={() => void openDataDir("captures")}
           >
             Abrir carpeta
           </button>
           <button
             type="button"
-            class="rb-btn rb-btn-soft text-xs"
+            class="rb-btn rb-btn-soft text-[0.75rem]"
             onclick={runCaptureCleanup}
           >
             Limpiar capturas ahora
@@ -1933,7 +1933,7 @@
       </div>
     {/snippet}
 
-    <div class="rb-settings-layout text-sm">
+    <div class="rb-settings-layout text-[0.875rem]">
       <nav class="rb-settings-sidebar" aria-label="Secciones de ajustes">
         {#each SETTINGS_SECTIONS as section (section.id)}
           <button
@@ -1997,7 +1997,7 @@
     size="md"
     onClose={() => (guideOpen = false)}
   >
-    <div class="space-y-4 text-sm" style="color: var(--rb-text)">
+    <div class="space-y-4 text-[0.875rem]" style="color: var(--rb-text)">
       <UsageGuide config={cfg} />
     </div>
 

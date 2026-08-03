@@ -43,6 +43,32 @@ export default {
     "!src/routes/dev/**",
   ],
   rules: {
+    // Las at-rules de Tailwind v4. No son CSS estándar y stylelint no las
+    // conoce, pero son justamente donde viven los tokens.
+    "at-rule-no-unknown": [
+      true,
+      {
+        ignoreAtRules: [
+          "theme",
+          "source",
+          "custom-variant",
+          "variant",
+          "utility",
+          "apply",
+          "plugin",
+          "config",
+          "reference",
+        ],
+      },
+    ],
+    // Tailwind se importa por nombre de paquete, no por URL.
+    "import-notation": "string",
+    // Los valores de `text-rendering` vienen de SVG y se escriben en camelCase.
+    // El autofix los pasaba a minúsculas: funciona, pero deja de leerse.
+    "value-keyword-case": [
+      "lower",
+      { camelCaseSvgKeywords: true, ignoreKeywords: ["optimizeLegibility"] },
+    ],
     "color-no-hex": true,
     "declaration-property-value-disallowed-list": {
       "/^(color|background|background-color|fill|stroke|border-color|outline-color)$/":
@@ -54,6 +80,9 @@ export default {
     },
     // El proyecto usa kebab-case en las custom properties, no BEM.
     "custom-property-pattern": null,
+    // Las paletas agrupan tokens con líneas en blanco —superficies, tinta,
+    // estado— y esa separación es la que hace la lista legible.
+    "custom-property-empty-line-before": null,
     "selector-class-pattern": null,
     // Svelte marca como `:global` lo que necesita salir del scope.
     "selector-pseudo-class-no-unknown": [true, { ignorePseudoClasses: ["global"] }],

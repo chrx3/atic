@@ -1,0 +1,60 @@
+/**
+ * La paleta, de cara a Tailwind.
+ *
+ * `@theme` no puede anidarse bajo un selector, así que NO puede producir el
+ * tema oscuro ni el de la consola. Por eso hay dos capas: la paleta es CSS
+ * plano redefinible en cualquier scope, y esto solo le pone nombre.
+ *
+ * `inline` no es una preferencia, es obligatorio. Sin él Tailwind emite
+ * `--color-surface: var(--surface)` en `:root` y la utilidad usa
+ * `var(--color-surface)`: la cadena queda anclada arriba y un descendiente que
+ * redefina `--surface` —la consola— es ignorado. Con `inline`, `bg-surface`
+ * compila directo a `background-color: var(--surface)` y resuelve EN EL
+ * ELEMENTO.
+ *
+ * COROLARIO que hay que tener presente al escribir CSS a mano: en un estilo
+ * scoped se usa `var(--surface)`, nunca `var(--color-surface)`. Son el mismo
+ * token con dos caras — `--color-*` mira a Tailwind, `--*` mira al CSS — y hay
+ * una sola indirección entre las dos.
+ */
+@theme inline {
+  /* Fuera la paleta por defecto de Tailwind. No hay un solo `bg-red-500` en la
+     app, y sin esto no habría forma de garantizar que todo color venga de la
+     paleta. */
+  --color-*: initial;
+
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-elevated: var(--elevated);
+
+  --color-text: var(--text);
+  --color-muted: var(--muted);
+  --color-faint: var(--faint);
+  --color-on-accent: var(--on-accent);
+
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+
+  --color-accent: var(--accent);
+
+  --color-rec: var(--rec);
+  --color-ok: var(--ok);
+  --color-ok-soft: var(--ok-soft);
+  --color-warn: var(--warn);
+  --color-warn-soft: var(--warn-soft);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+  --color-info: var(--info);
+  --color-info-soft: var(--info-soft);
+
+  --color-mic: var(--mic);
+  --color-sys: var(--sys);
+
+  --color-skin: var(--skin);
+  --color-agent: var(--agent-accent);
+
+  /* Necesario para bordes y fondos que tienen que dejar ver lo de atrás. */
+  --color-transparent: transparent;
+  --color-current: currentColor;
+}

@@ -1,4 +1,29 @@
-@import "tailwindcss";
+/**
+ * La cadena nueva. El orden no es alfabético, es de dependencia:
+ *
+ *   tailwind   → el motor, y las variantes
+ *   paletas    → los literales, redefinibles por scope. La consola DESPUÉS del
+ *                claro: misma especificidad, gana el orden
+ *   tokens     → `@theme inline` les pone nombre de cara a Tailwind
+ *   escalas    → spacing, tipografía, radios, sombras, curvas
+ *   motion     → duraciones en `:root` plano (las lee `motion.ts`)
+ *   capas      → z-index
+ *   base       → lo mínimo, bajo `.atic-root`
+ *
+ * Debajo sigue el sistema previo a la reescritura, con sus `--rb-*` y sus
+ * `.rb-*`. Los dos namespaces son disjuntos y conviven sin pisarse; el viejo
+ * se borra en la fase 9.
+ */
+@import "./styles/tailwind.css";
+@import "./styles/palettes/atic/dark.css";
+@import "./styles/palettes/atic/light.css";
+@import "./styles/palettes/atic/console.css";
+@import "./styles/palettes/atic/agents.css";
+@import "./styles/tokens.css";
+@import "./styles/scales.css";
+@import "./styles/motion.css";
+@import "./styles/layers.css";
+@import "./styles/base.css";
 
 /* Fondo transparente para la ventana pill. Feel de app nativa. */
 html,
@@ -117,6 +142,28 @@ textarea,
   --rb-hairline: color-mix(in srgb, var(--rb-text) 12%, transparent);
   --rb-hairline-strong: color-mix(in srgb, var(--rb-text) 24%, transparent);
 
+  /*
+   * Sistema líquido: dos formas se funden cuando una SALE de la otra.
+   *
+   * `--skin` es el color de toda superficie que se funde. Tiene que ser UNO
+   * solo por grupo fundido: el cuello lo pinta el difuminado, que promedia lo
+   * que tenga cerca, así que dos tonos distintos dejan una franja sucia justo
+   * en la unión. Una superficie con paleta propia lo redefine localmente —la
+   * burbuja de agentes lo apunta a su `--shell`.
+   *
+   * `--goo-grow` es lo que el endurecido del filtro le agrega a la silueta por
+   * lado. Quien dibuje una forma de tamaño exacto tiene que restarle el doble
+   * antes. La deducción y el valor en JS viven en `$lib/GooFilter.svelte`
+   * (`GOO_GROW`, `preFilter`); si cambia σ, cambian los dos.
+   */
+  --skin: color-mix(in srgb, var(--rb-surface) 97%, transparent);
+  --goo-grow: 1.4px;
+  /* Tono de la consola de agentes. Vive acá y no solo en su componente porque
+     la pill lo adopta mientras están fundidas. */
+  --console-shell: #1c1917;
+  --console-ink: #e7e2dd;
+  --console-dim: #8d827a;
+
   --rb-radius: 14px;
   --rb-radius-sm: 8px;
   --rb-radius-xs: 5px;
@@ -129,6 +176,25 @@ textarea,
   font-family: var(--rb-font);
   font-optical-sizing: auto;
   -webkit-font-smoothing: antialiased;
+}
+
+/*
+ * Con la consola de agentes desplegada, la pill toma su paleta.
+ *
+ * La regla del sistema líquido es que lo que se funde va de UN solo color: el
+ * cuello lo pinta el difuminado, que promedia lo que tenga cerca, así que dos
+ * tonos distintos dejan una franja sucia justo en la unión. La consola tiene
+ * paleta propia y fija —imita una terminal, no sigue al tema—, así que la que
+ * cede es la pill.
+ *
+ * Y cede también la tinta, no solo la piel: sobre el casi negro de la consola,
+ * la marca y las etiquetas de la pill quedarían negro sobre negro.
+ */
+:root.is-console-open {
+  --skin: var(--console-shell);
+  --rb-text: var(--console-ink);
+  --rb-muted: var(--console-dim);
+  --rb-faint: var(--console-dim);
 }
 
 :root[data-theme="dark"] {
@@ -1340,7 +1406,9 @@ textarea,
     padding: 0.875rem;
   }
 
-  .rb-settings-panel .text-xs,
+  /* La utilidad quedó fijada a su valor literal cuando entró la escala nueva:
+     `text-xs` ahora mide 11 px y estas pantallas todavía piden 12. */
+  .rb-settings-panel .text-\[0\.75rem\],
   .rb-settings-panel .rb-hint,
   .rb-modal-body .rb-hint {
     font-size: 0.8125rem;

@@ -1,0 +1,43 @@
+/**
+ * Papel y tinta — claro. Derivado del oscuro.
+ *
+ * `applyTheme` siempre escribe `data-theme` resuelto ("light" o "dark"), así
+ * que este bloque entra solo cuando el usuario pidió claro. Con el atributo
+ * ausente manda el oscuro, que es la intención.
+ *
+ * Declara el juego COMPLETO de tokens, no un subconjunto: la capa es plana y
+ * un token a medio redefinir es cómo se cuelan colores del tema equivocado.
+ */
+:root[data-theme="light"] {
+  --bg: #ecece6;
+  --surface: #f7f7f2;
+  --surface-2: #efefe8;
+  --elevated: #fff;
+
+  --text: #171714;
+  --muted: #5f5f58;
+  --faint: #8f8f86;
+
+  --line: rgb(28 28 24 / 11%);
+  --line-strong: rgb(28 28 24 / 20%);
+
+  --accent: #1a1a17;
+  --on-accent: #f7f7f2;
+
+  --rec: #d6453d;
+  --ok: #3f7355;
+  --ok-soft: #e4efe7;
+  --warn: #946718;
+  --warn-soft: #f5ecd8;
+  --danger: #d6453d;
+  --danger-soft: #f7e6e3;
+  --info: #47708a;
+  --info-soft: #e4edf2;
+
+  --mic: #3f7355;
+  --sys: #47708a;
+
+  --skin: #f7f7f2;
+
+  --agent-accent: #5f5f58;
+}

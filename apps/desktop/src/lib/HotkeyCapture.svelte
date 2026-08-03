@@ -174,7 +174,7 @@
   {#if value !== defaultValue && !capturing && !compact}
     <button
       type="button"
-      class="rb-btn rb-btn-ghost !text-xs"
+      class="rb-btn rb-btn-ghost !text-[0.75rem]"
       onclick={() => onChange(defaultValue)}
     >
       Restablecer

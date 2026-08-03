@@ -1,0 +1,21 @@
+@import "tailwindcss";
+
+/* El CSS vive en `src/styles/`, así que hay que decirle dónde mirar: sin esto
+   la detección automática toma esta carpeta como base y no encuentra ninguna
+   clase. */
+@source "../lib";
+@source "../routes";
+
+/**
+ * Las variantes.
+ *
+ * `dark:` casi no se usa, y eso es el objetivo: con una paleta semántica el
+ * tema lo resuelven los tokens. Queda para el puñado de casos donde lo que
+ * cambia no es un color sino una cantidad — la opacidad de una trama, el alfa
+ * de una sombra.
+ *
+ * `:where()` mantiene la especificidad en cero, así que la variante no le gana
+ * a nada por accidente.
+ */
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+@custom-variant console (&:where([data-palette="console"], [data-palette="console"] *));

@@ -1,0 +1,63 @@
+/**
+ * Lo mínimo que necesita una superficie nueva, y nada más.
+ *
+ * Está todo bajo `.atic-root` a propósito: el árbol previo a la reescritura
+ * tiene sus propios estilos base en `app.css`, y unos globales nuevos le
+ * cambiarían el aspecto a pantallas que todavía no toca nadie. Cuando el viejo
+ * desaparezca, esto pasa a `:root` y la clase se va.
+ */
+.atic-root {
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  line-height: 1.5;
+  color: var(--text);
+  background: var(--bg);
+
+  /* Los bordes de 1px se ven sucios sin esto en pantallas no-retina. */
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Los números no saltan de ancho al cambiar: cronómetros, tamaños, niveles. */
+.atic-root :where(time, output, [data-numeric]) {
+  font-variant-numeric: tabular-nums;
+}
+
+/**
+ * El foco se ve solo cuando se navega con teclado.
+ *
+ * `:focus-visible` y no `:focus`: un anillo tras cada clic es ruido, y
+ * quitarlo del todo deja la app inutilizable sin mouse.
+ */
+.atic-root :where(a, button, input, textarea, select, [tabindex]):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--radius-xs);
+}
+
+.atic-root ::selection {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.atic-root :where(*)::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.atic-root :where(*)::-webkit-scrollbar-thumb {
+  background: var(--line-strong);
+  border: 3px solid transparent;
+  background-clip: padding-box;
+  border-radius: var(--radius-pill);
+}
+
+.atic-root :where(*)::-webkit-scrollbar-thumb:hover {
+  background: var(--faint);
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}
+
+.atic-root :where(*)::-webkit-scrollbar-track {
+  background: transparent;
+}

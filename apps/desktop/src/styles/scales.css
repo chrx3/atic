@@ -1,0 +1,92 @@
+/**
+ * Las escalas que no existían.
+ *
+ * La app tenía tokens de color y de motion pero ninguno de espaciado ni de
+ * tipografía, y el resultado eran 850 valores `rem` sueltos: cada componente
+ * inventaba su propio ritmo. Acá no hay `inline` porque son constantes: no
+ * cambian con el tema ni con el estado.
+ */
+@theme {
+  /* ── Espaciado ────────────────────────────────────────────────────────────
+   * Escala dinámica de Tailwind v4: `p-2` son 8 px, `gap-3` son 12 px.
+   *
+   * Los valores sueltos de hoy NO se portan: `0.65rem` no existe, se redondea
+   * a la grilla. La única excepción son `lib/liquid/**` y el overlay, donde la
+   * geometría es exacta y está atada a constantes de Rust. */
+  --spacing: 4px;
+
+  /* ── Radios ─────────────────────────────────────────────────────────────── */
+  --radius-*: initial;
+  --radius-xs: 5px;
+  --radius-sm: 8px;
+  --radius-md: 14px;
+  --radius-lg: 20px;
+  --radius-pill: 999px;
+
+  /* ── Tipografía ───────────────────────────────────────────────────────────
+   * Densidad de herramienta: el cuerpo real es 13 px, no 16. La ventana mide
+   * 820×580 y la pill vive sobre el escritorio ajeno; el aire se paga caro. */
+  --font-*: initial;
+  --font-sans:
+    "Aptos", "Avenir Next", "Helvetica Neue", "Segoe UI Variable", sans-serif;
+  --font-display: "Avenir Next", "Aptos Display", "Helvetica Neue", sans-serif;
+  --font-mono: "Cascadia Mono", "SFMono-Regular", "Roboto Mono", monospace;
+
+  --text-*: initial;
+
+  /* Etiquetas en versalitas: chicas, espaciadas y en mayúsculas. */
+  --text-micro: 0.625rem;
+  --text-micro--line-height: 1.2;
+  --text-micro--letter-spacing: 0.1em;
+  --text-xs: 0.6875rem;
+  --text-xs--line-height: 1.3;
+  --text-sm: 0.75rem;
+  --text-sm--line-height: 1.45;
+  --text-base: 0.8125rem;
+  --text-base--line-height: 1.5;
+  --text-md: 0.875rem;
+  --text-md--line-height: 1.5;
+  --text-lg: 1.0625rem;
+  --text-lg--line-height: 1.3;
+  --text-lg--letter-spacing: -0.02em;
+  --text-xl: 1.375rem;
+  --text-xl--line-height: 1.2;
+  --text-xl--letter-spacing: -0.025em;
+
+  --font-weight-*: initial;
+  --font-weight-normal: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+  --font-weight-bold: 650;
+
+  --tracking-*: initial;
+  --tracking-tight: -0.02em;
+  --tracking-normal: 0;
+  --tracking-caps: 0.1em;
+
+  /* ── Sombras ──────────────────────────────────────────────────────────────
+   * Solo para lo que flota de verdad. En una lista, el separador es el
+   * hairline; una sombra ahí es decoración. */
+  --shadow-*: initial;
+  --shadow-card: 0 1px 2px rgb(0 0 0 / 20%);
+  --shadow-pop: 0 8px 24px rgb(0 0 0 / 32%);
+  --shadow-float: 0 24px 70px rgb(0 0 0 / 45%);
+
+  /* La del `drop-shadow` de la capa líquida, que va DESPUÉS de la fusión. */
+  --shadow-goo: 0 18px 30px rgb(0 0 0 / 45%);
+
+  /* ── Curvas ───────────────────────────────────────────────────────────────
+   * Namespace real de v4: genera `ease-morph` y `ease-calm`. Las duraciones
+   * NO lo son y viven en `motion.css`. */
+  --ease-*: initial;
+  --ease-morph: cubic-bezier(0.34, 1.25, 0.64, 1);
+  --ease-calm: cubic-bezier(0.22, 1, 0.36, 1);
+
+  /* ── Contenedores ─────────────────────────────────────────────────────────
+   * La app mide su ancho con container queries, no con el viewport: la misma
+   * herramienta se dibuja en una ventana de 820 y en un panel de 312. */
+  --container-*: initial;
+  --container-sm: 30rem;
+  --container-md: 37rem;
+  --container-lg: 48rem;
+}

@@ -1,0 +1,25 @@
+/**
+ * Un acento por backend de agente.
+ *
+ * Es lo único que sobrevive como color propio de la consola: los otros ~70
+ * literales que había repartidos por `AgentsSurface` y `PickerMenu` eran una
+ * paleta paralela, y se pliegan a la de la app.
+ *
+ * Se aplica en el elemento que representa la sesión, no en `:root`: puede
+ * haber varias abiertas a la vez y cada pestaña lleva la suya.
+ */
+[data-agent="claude-code"] {
+  --agent-accent: #da7756;
+}
+
+[data-agent="opencode"] {
+  --agent-accent: #7fae86;
+}
+
+[data-agent="codex"] {
+  --agent-accent: #8fa9b8;
+}
+
+[data-agent="cursor"] {
+  --agent-accent: #a88fc4;
+}

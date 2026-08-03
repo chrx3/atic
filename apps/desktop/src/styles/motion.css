@@ -1,0 +1,30 @@
+/**
+ * Duraciones. La única fuente de verdad: `$lib/motion.ts` las lee de acá con
+ * `getComputedStyle`, así que tienen que ser propiedades reales de `:root`.
+ *
+ * NO van en `@theme`: `--duration-*` no es un namespace de tema en Tailwind v4
+ * y no genera utilidades. En markup se usan con la sintaxis de variable
+ * —`duration-(--duration-morph-open)`— y en CSS a mano como siempre.
+ *
+ * El timing es asimétrico a propósito. Abrir lleva rebote porque algo aparece y
+ * tiene que sentirse elástico; cerrar es calmo y más corto porque el usuario ya
+ * decidió y esperar la salida es fricción.
+ */
+:root {
+  --duration-quick: 150ms;
+  --duration-fast: 250ms;
+  --duration-medium: 350ms;
+
+  /* El morph de una superficie que sale de otra. */
+  --duration-morph-open: 350ms;
+  --duration-morph-close: 250ms;
+  --duration-morph-fade: 200ms;
+
+  /* Cierre acelerado: la acción ya se cumplió, la animación solo estorba. */
+  --duration-morph-quick: 150ms;
+  --duration-panel: 250ms;
+
+  /* Cuánto se encoge y se desenfoca lo que entra o sale. */
+  --morph-scale: 0.97;
+  --morph-blur: 2px;
+}

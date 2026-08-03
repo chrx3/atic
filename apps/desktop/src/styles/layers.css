@@ -1,0 +1,22 @@
+/**
+ * Profundidad, en una sola lista.
+ *
+ * `--z-*` tampoco es un namespace de tema, así que va en `:root` plano y en
+ * markup se usa como `z-(--z-toast)`.
+ *
+ * Los `<dialog>` NO aparecen acá y es correcto: `showModal()` los pone en la
+ * top layer del navegador, por encima de cualquier z-index. Es lo que permite
+ * que un modal se dibuje sobre el hub sin que nadie tenga que coordinar
+ * números, y conviene no perderlo.
+ */
+:root {
+  --z-hub: 5;
+  --z-sticky: 10;
+
+  /* Las dos capas del sistema líquido: siluetas abajo, contenido encima. */
+  --z-skin: 20;
+  --z-ink: 30;
+  --z-popover: 60;
+  --z-toast: 100;
+  --z-skip: 110;
+}

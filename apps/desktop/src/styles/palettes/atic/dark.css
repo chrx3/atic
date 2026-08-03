@@ -1,0 +1,59 @@
+/**
+ * Papel y tinta — oscuro. La paleta primaria.
+ *
+ * Va en `:root` sin selector de tema: la app es una herramienta que vive sobre
+ * el escritorio del usuario y se diseña acá; el claro se deriva.
+ *
+ * REGLA DURA: esta capa es PLANA. Ningún token referencia a otro token de la
+ * paleta. Si lo hiciera, un scope anidado que redefina el token base —la
+ * consola, por ejemplo— resolvería contra el valor de `:root` y saldría mal.
+ * Un `color-mix` va sobre un literal, repetido en cada scope.
+ *
+ * El color solo comunica estado. Si algo es de color porque queda lindo, está
+ * mal puesto.
+ */
+:root {
+  /* Superficies, de más hundida a más elevada. */
+  --bg: #121211;
+  --surface: #1a1a18;
+  --surface-2: #1e1e1b;
+  --elevated: #262622;
+
+  /* Tres niveles de tinta y ninguno más. La jerarquía la hace el peso y el
+     tamaño, no el color. */
+  --text: #f0f0ea;
+  --muted: #a8a89e;
+  --faint: #74746c;
+
+  /* Separador principal. El hairline hace el trabajo que en otros sistemas
+     hace una sombra. */
+  --line: rgb(240 240 234 / 10%);
+  --line-strong: rgb(240 240 234 / 18%);
+
+  /* En una paleta monocroma el acento es la tinta invertida. */
+  --accent: #e8e8e0;
+  --on-accent: #121211;
+
+  /* Estado. Lo único que tiene derecho a color. */
+  --rec: #e85a52;
+  --ok: #6faf88;
+  --ok-soft: #1c2a22;
+  --warn: #d4a84b;
+  --warn-soft: #2b2416;
+  --danger: #e85a52;
+  --danger-soft: #2d1a19;
+  --info: #8fa9b8;
+  --info-soft: #1a2328;
+
+  /* Las dos pistas de audio. Son estado, no decoración: dicen qué se está
+     oyendo. */
+  --mic: #6faf88;
+  --sys: #8fa9b8;
+
+  /* Sistema líquido: el color único de todo lo que se funde. Opaco a
+     propósito — con transparencia, dos siluetas superpuestas se notan. */
+  --skin: #1a1a18;
+
+  /* Acento del agente en curso. Lo pisa `[data-agent]`. */
+  --agent-accent: #a8a89e;
+}

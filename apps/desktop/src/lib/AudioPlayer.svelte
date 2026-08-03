@@ -51,7 +51,7 @@
     </button>
 
     <div class="rb-player-meta min-w-0 flex-1">
-      <div class="truncate text-xs font-medium" style="color: var(--rb-text)">
+      <div class="truncate text-[0.75rem] font-medium" style="color: var(--rb-text)">
         {playback.label ?? placeholder}
       </div>
       <div class="rb-player-scrub">

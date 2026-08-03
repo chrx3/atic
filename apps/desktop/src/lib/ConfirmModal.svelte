@@ -33,7 +33,7 @@
 </script>
 
 <ModalShell {title} size="sm" onClose={onCancel}>
-  <p class="text-sm leading-relaxed rb-text-muted">{message}</p>
+  <p class="text-[0.875rem] leading-relaxed rb-text-muted">{message}</p>
 
   {#snippet actions()}
       <button class="rb-btn rb-btn-ghost" onclick={onCancel} disabled={busy}>
