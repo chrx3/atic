@@ -1,0 +1,19 @@
+.svelte-kit
+build
+node_modules
+pnpm-lock.yaml
+
+# Territorio de Tauri y de Rust: `cargo fmt` manda sobre los `.rs`, y los JSON
+# de configuración y capacidades los edita su propio tooling con su formato.
+src-tauri
+
+# El árbol previo a la reescritura.
+#
+# Formatear 25.000 líneas que se van a borrar produce un diff enorme, sin valor
+# y —peor— encima de cambios sin commitear de otra gente. La lista se achica
+# fase a fase y queda vacía en la fase 9.
+src/app.css
+src/lib/*.svelte
+src/lib/*.ts
+src/routes/**/*.svelte
+!src/routes/dev/**

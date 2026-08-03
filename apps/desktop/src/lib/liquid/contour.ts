@@ -263,7 +263,7 @@ function stitch(segs: [Pt, Pt][], cell: number): Pt[][] {
     }
   });
 
-  const used: boolean[] = new Array(segs.length).fill(false);
+  const used = new Array<boolean>(segs.length).fill(false);
   const loops: Pt[][] = [];
 
   for (let start = 0; start < segs.length; start++) {

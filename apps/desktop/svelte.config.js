@@ -12,6 +12,23 @@ const config = {
     adapter: adapter({
       fallback: "index.html",
     }),
+    // Un alias por capa de la arquitectura.
+    //
+    // No son cosmética: con ellos, la regla de "quién puede importar a quién"
+    // es una lista de prefijos en `eslint.config.js` en vez de un plugin que
+    // tenga que interpretar rutas relativas. Las carpetas van apareciendo a
+    // medida que avanza la reescritura; un alias sin carpeta no molesta.
+    alias: {
+      $core: "src/lib/core",
+      $ipc: "src/lib/ipc",
+      $tokens: "src/lib/tokens",
+      $ui: "src/lib/ui",
+      $liquid: "src/lib/liquid",
+      $patterns: "src/lib/patterns",
+      $domain: "src/lib/domain",
+      $features: "src/lib/features",
+      $surfaces: "src/lib/surfaces",
+    },
   },
 };
 

@@ -31,7 +31,10 @@
   import { Field, sminBulge, sminReach, type Shape } from "$lib/liquid/sdf";
   import { fieldToPath } from "$lib/liquid/contour";
 
-  let { standalone = false, onClose }: {
+  let {
+    standalone = false,
+    onClose,
+  }: {
     /** Fuera del overlay no hay escritorio detrás: hace falta un fondo propio. */
     standalone?: boolean;
     onClose?: () => void;
@@ -168,14 +171,6 @@
       : pillFirst
         ? p.x + p.w
         : p.x;
-    const bubEdge = vertical
-      ? pillFirst
-        ? a.y + a.h
-        : a.y
-      : pillFirst
-        ? a.x + a.w
-        : a.x;
-
     const pillLo = vertical ? p.x : p.y;
     const pillHi = vertical ? p.x + p.w : p.y + p.h;
     const bubLo = (vertical ? a.x : a.y) + BUBBLE_CORNER;
@@ -187,18 +182,10 @@
       vertical,
       gap,
       pillEdge,
-      bubEdge: vertical
-        ? pillFirst
-          ? a.y
-          : a.y + a.h
-        : pillFirst
-          ? a.x
-          : a.x + a.w,
+      bubEdge: vertical ? (pillFirst ? a.y : a.y + a.h) : pillFirst ? a.x : a.x + a.w,
       stretch: Math.min(Math.max(gap, 0) / NECK_MAX, 1),
       center:
-        lo > hi
-          ? (lo + hi) / 2
-          : Math.min(Math.max((pillLo + pillHi) / 2, lo), hi),
+        lo > hi ? (lo + hi) / 2 : Math.min(Math.max((pillLo + pillHi) / 2, lo), hi),
       overlap:
         Math.min(pillHi, vertical ? a.x + a.w : a.y + a.h) -
         Math.max(pillLo, vertical ? a.x : a.y),
@@ -227,7 +214,12 @@
   /** Encogida lo que el endurecido le va a devolver. */
   function preFiltered(r: Box): Box {
     const l = local(r);
-    return { x: l.x + GOO_GROW, y: l.y + GOO_GROW, w: preFilter(r.w), h: preFilter(r.h) };
+    return {
+      x: l.x + GOO_GROW,
+      y: l.y + GOO_GROW,
+      w: preFilter(r.w),
+      h: preFilter(r.h),
+    };
   }
 
   /** El cuello en coordenadas del overlay. El SDF lo necesita sin trasladar. */
@@ -292,8 +284,22 @@
       const r = Math.min(n.w, n.h) / 2;
       shapes.push(
         n.w > n.h
-          ? { kind: "capsule", ax: n.x + r, ay: n.y + n.h / 2, bx: n.x + n.w - r, by: n.y + n.h / 2, r }
-          : { kind: "capsule", ax: n.x + n.w / 2, ay: n.y + r, bx: n.x + n.w / 2, by: n.y + n.h - r, r },
+          ? {
+              kind: "capsule",
+              ax: n.x + r,
+              ay: n.y + n.h / 2,
+              bx: n.x + n.w - r,
+              by: n.y + n.h / 2,
+              r,
+            }
+          : {
+              kind: "capsule",
+              ax: n.x + n.w / 2,
+              ay: n.y + r,
+              bx: n.x + n.w / 2,
+              by: n.y + n.h - r,
+              r,
+            },
       );
     }
 
@@ -432,45 +438,45 @@
       </svg>
     {/if}
   {:else}
-  <!-- La piel: siluetas y nada más. Filtrada. -->
-  <div
-    class="skin"
-    style:left="{skinBox.x}px"
-    style:top="{skinBox.y}px"
-    style:width="{skinBox.w}px"
-    style:height="{skinBox.h}px"
-    style:filter={filterOn
-      ? `url(#lab-goo) drop-shadow(0 18px 30px rgba(0,0,0,.45))`
-      : "none"}
-    aria-hidden="true"
-  >
-    <i
-      class="blob"
-      style:left="{pillBlob.x}px"
-      style:top="{pillBlob.y}px"
-      style:width="{pillBlob.w}px"
-      style:height="{pillBlob.h}px"
-      style:border-radius="{pillBlob.r}px"
-    ></i>
-    {#if neck}
+    <!-- La piel: siluetas y nada más. Filtrada. -->
+    <div
+      class="skin"
+      style:left="{skinBox.x}px"
+      style:top="{skinBox.y}px"
+      style:width="{skinBox.w}px"
+      style:height="{skinBox.h}px"
+      style:filter={filterOn
+        ? `url(#lab-goo) drop-shadow(0 18px 30px rgba(0,0,0,.45))`
+        : "none"}
+      aria-hidden="true"
+    >
       <i
         class="blob"
-        style:left="{neck.x}px"
-        style:top="{neck.y}px"
-        style:width="{neck.w}px"
-        style:height="{neck.h}px"
-        style:border-radius="{Math.min(neck.w, neck.h) / 2}px"
+        style:left="{pillBlob.x}px"
+        style:top="{pillBlob.y}px"
+        style:width="{pillBlob.w}px"
+        style:height="{pillBlob.h}px"
+        style:border-radius="{pillBlob.r}px"
       ></i>
-    {/if}
-    <i
-      class="blob"
-      style:left="{bubBlob.x}px"
-      style:top="{bubBlob.y}px"
-      style:width="{bubBlob.w}px"
-      style:height="{bubBlob.h}px"
-      style:border-radius="{bubBlob.r}px"
-    ></i>
-  </div>
+      {#if neck}
+        <i
+          class="blob"
+          style:left="{neck.x}px"
+          style:top="{neck.y}px"
+          style:width="{neck.w}px"
+          style:height="{neck.h}px"
+          style:border-radius="{Math.min(neck.w, neck.h) / 2}px"
+        ></i>
+      {/if}
+      <i
+        class="blob"
+        style:left="{bubBlob.x}px"
+        style:top="{bubBlob.y}px"
+        style:width="{bubBlob.w}px"
+        style:height="{bubBlob.h}px"
+        style:border-radius="{bubBlob.r}px"
+      ></i>
+    </div>
   {/if}
 
   <!-- Contornos exactos, sin filtrar: la piel tiene que morir justo encima. -->
@@ -533,12 +539,18 @@
       <button
         type="button"
         class:on={renderer === "goo"}
-        onclick={() => { renderer = "goo"; resetMetrics(); }}>filtro goo</button
+        onclick={() => {
+          renderer = "goo";
+          resetMetrics();
+        }}>filtro goo</button
       >
       <button
         type="button"
         class:on={renderer === "sdf"}
-        onclick={() => { renderer = "sdf"; resetMetrics(); }}>sdf</button
+        onclick={() => {
+          renderer = "sdf";
+          resetMetrics();
+        }}>sdf</button
       >
     </div>
 
@@ -629,11 +641,16 @@
       {renderer === "sdf" ? "cuello explícito" : "dibujar cuello"}
     </label>
     {#if renderer === "goo"}
-      <label class="check"><input type="checkbox" bind:checked={filterOn} /> aplicar filtro</label>
+      <label class="check"
+        ><input type="checkbox" bind:checked={filterOn} /> aplicar filtro</label
+      >
     {/if}
-    <label class="check"><input type="checkbox" bind:checked={showOutline} /> contorno exacto</label>
+    <label class="check"
+      ><input type="checkbox" bind:checked={showOutline} /> contorno exacto</label
+    >
     <label class="check">
-      <input type="checkbox" bind:checked={animate} onchange={resetMetrics} /> animar (peor caso)
+      <input type="checkbox" bind:checked={animate} onchange={resetMetrics} /> animar (peor
+      caso)
     </label>
 
     {#if onClose}
@@ -667,6 +684,7 @@
   .blob {
     position: absolute;
     display: block;
+
     /* Regla 2 del sistema líquido: todo lo que se funde, del mismo color. */
     background: #1c1917;
   }
@@ -676,7 +694,23 @@
     position: absolute;
     overflow: visible;
     pointer-events: none;
-    filter: drop-shadow(0 18px 30px rgba(0, 0, 0, 0.45));
+    filter: drop-shadow(0 18px 30px rgb(0 0 0 / 45%));
+  }
+
+  /* Los botones genéricos van primero: `.seg button` es más específico, y al
+     revés el navegador aplica el general encima del particular. */
+  button {
+    font: inherit;
+    color: #e7e2dd;
+    background: rgb(255 255 255 / 8%);
+    border: 1px solid rgb(255 255 255 / 14%);
+    border-radius: 6px;
+    padding: 3px 6px;
+    cursor: pointer;
+  }
+
+  button:hover {
+    background: rgb(255 255 255 / 16%);
   }
 
   .seg {
@@ -697,7 +731,7 @@
   .outline {
     position: absolute;
     pointer-events: none;
-    border: 1px dashed rgba(255, 120, 60, 0.9);
+    border: 1px dashed rgb(255 120 60 / 90%);
     box-sizing: border-box;
   }
 
@@ -713,7 +747,7 @@
 
   .grab-hint {
     position: absolute;
-    inset: auto 0 12px 0;
+    inset: auto 0 12px;
     text-align: center;
     font-size: 11px;
     color: #6b615a;
@@ -727,8 +761,8 @@
     padding: 12px;
     display: grid;
     gap: 8px;
-    background: rgba(18, 18, 22, 0.9);
-    border: 1px solid rgba(255, 255, 255, 0.14);
+    background: rgb(18 18 22 / 90%);
+    border: 1px solid rgb(255 255 255 / 14%);
     border-radius: 12px;
     font-size: 11px;
     font-variant-numeric: tabular-nums;
@@ -785,20 +819,6 @@
   .nudges span {
     color: #8d827a;
     margin-right: 2px;
-  }
-
-  button {
-    font: inherit;
-    color: #e7e2dd;
-    background: rgba(255, 255, 255, 0.08);
-    border: 1px solid rgba(255, 255, 255, 0.14);
-    border-radius: 6px;
-    padding: 3px 6px;
-    cursor: pointer;
-  }
-
-  button:hover {
-    background: rgba(255, 255, 255, 0.16);
   }
 
   .check {

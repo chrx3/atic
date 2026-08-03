@@ -38,6 +38,29 @@ jobs:
       - name: test
         run: cargo test --workspace
 
+  # El frontend no necesita ni Rust ni LLVM, así que corre en Linux y tarda un
+  # minuto y medio. Antes su único control vivía dentro del job de abajo, que
+  # compila whisper.cpp: un error de TypeScript tardaba veinte minutos en
+  # aparecer, y solo después de descargar media toolchain.
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - name: Install
+        working-directory: apps/desktop
+        run: pnpm install --frozen-lockfile
+      # check + lint + stylelint + prettier + vitest
+      - name: Verify
+        working-directory: apps/desktop
+        run: pnpm verify
+
   build:
     name: Build app (${{ matrix.os }})
     strategy:
@@ -61,11 +84,8 @@ jobs:
       - name: Install frontend deps
         working-directory: apps/desktop
         run: pnpm install --frozen-lockfile
-      # `tauri build` corre `vite build`, que NO typechequea: sin este paso los
-      # errores de TypeScript llegan a main sin que nadie los vea.
-      - name: Check (svelte-check)
-        working-directory: apps/desktop
-        run: pnpm check
+      # El typecheck se mudó al job `frontend`, que no compila whisper.cpp y
+      # contesta en un minuto y medio en vez de veinte.
       - name: Build (sin firmar)
         working-directory: apps/desktop
         run: pnpm tauri build --no-bundle
