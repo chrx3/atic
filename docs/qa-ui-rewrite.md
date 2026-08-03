@@ -83,9 +83,18 @@ Se prueba con `onboarding_done: false` en la configuración.
 
 ## 5. Overlay
 
-> Todavía sin reescribir (fase 7). Estos pasos valen como red: son lo que **no
-> se puede romper** al portarlo, y hay que correrlos otra vez después del
-> restyle de la fase 8.
+> **La pill ya cambió por dentro.** Dejó de mantener sus copias de grabación,
+> dictado, portapapeles, textos y cola —ahora las lee de los mismos stores que
+> la ventana principal— y sus decisiones de geometría salieron a funciones
+> testeadas. La consola de agentes todavía no se tocó.
+>
+> Estos pasos son la red: lo que **no se puede romper**. Hay que correrlos otra
+> vez después del restyle de la fase 8.
+>
+> Nada de esto se puede probar en el navegador: la silueta fundida se dibuja a
+> partir de medidas que se toman en cada cuadro con `requestAnimationFrame`, y
+> el navegador de automatización lo estrangula aunque el documento se declare
+> visible. En la ventana real corre normal.
 
 | # | Paso | Qué tiene que pasar |
 |---|---|---|
@@ -101,6 +110,17 @@ Se prueba con `onboarding_done: false` en la configuración.
 | 5.10 | Entrar y salir de un campo de texto en el overlay | Acepta teclas dentro; al salir, la app de abajo recupera el foco |
 | 5.11 | Parar una grabación desde la pill sin mover el mouse antes | El botón responde. Fue un bug real: `ARMED` solo se recalculaba al mover el puntero |
 | 5.12 | Cola de pegado | Se encola y se pega en orden |
+
+**Lo que hay que mirar por el cambio de esta fase** — la pill y la ventana
+principal comparten estado, así que ahora un error se ve en las dos:
+
+| # | Paso | Qué tiene que pasar |
+|---|---|---|
+| 5.13 | Grabar desde la pill y mirar la ventana principal | El cronómetro y los medidores corren en las dos, con el mismo número |
+| 5.14 | Copiar algo con el panel del portapapeles abierto | Aparece solo, sin refrescar a mano |
+| 5.15 | Escribir en el bloc y cerrar el panel antes de un segundo | Lo último escrito **no se pierde** |
+| 5.16 | Abrir el panel del portapapeles con el atajo | Sale con el contenido ya puesto, no vacío |
+| 5.17 | Dictar y parar desde la pill | La fase se refleja en la barra y en la ventana principal |
 
 ---
 
