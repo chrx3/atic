@@ -8,7 +8,7 @@
  * Declara el juego COMPLETO de tokens, no un subconjunto: la capa es plana y
  * un token a medio redefinir es cómo se cuelan colores del tema equivocado.
  */
-:root[data-theme="light"] {
+[data-theme="light"] {
   --bg: #ecece6;
   --surface: #f7f7f2;
   --surface-2: #efefe8;

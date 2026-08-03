@@ -12,7 +12,7 @@
  * Va después del claro en la cadena de imports: los dos selectores tienen la
  * misma especificidad, así que gana el orden.
  */
-:root[data-palette="console"] {
+[data-palette="console"] {
   --bg: #121211;
   --surface: #1a1a18;
   --surface-2: #1e1e1b;

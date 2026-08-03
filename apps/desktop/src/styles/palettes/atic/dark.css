@@ -12,7 +12,13 @@
  * El color solo comunica estado. Si algo es de color porque queda lindo, está
  * mal puesto.
  */
-:root {
+
+/* Los dos selectores, no solo `:root`: así una isla dentro de una pantalla
+   clara puede pedir tinta oscura. Es lo que permite revisar las tres paletas
+   juntas en la misma página, que es donde se ve si `@theme inline` resuelve
+   donde tiene que resolver. */
+:root,
+[data-theme="dark"] {
   /* Superficies, de más hundida a más elevada. */
   --bg: #121211;
   --surface: #1a1a18;
