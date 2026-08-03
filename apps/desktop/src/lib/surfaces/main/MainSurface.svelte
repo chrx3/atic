@@ -9,6 +9,7 @@
    * esto solo decide qué se dibuja.
    */
   import { toolById, type ToolId } from "$core/tools";
+  import { config } from "$domain/config.svelte";
   import { recordings } from "$domain/recordings.svelte";
   import { sessionEffect } from "$domain/session";
   import { toasts } from "$domain/toasts.svelte";
@@ -16,6 +17,7 @@
   import ClipboardTool from "$features/clipboard/ClipboardTool.svelte";
   import DictationTool from "$features/dictation/DictationTool.svelte";
   import MeetingsTool from "$features/meetings/MeetingsTool.svelte";
+  import OnboardingModal from "$features/onboarding/OnboardingModal.svelte";
   import SearchModal from "$features/search/SearchModal.svelte";
   import SettingsPanel from "$features/settings/SettingsPanel.svelte";
   import SnippetsTool from "$features/snippets/SnippetsTool.svelte";
@@ -152,6 +154,13 @@
     </EmptyState>
   {/if}
 </WindowFrame>
+
+<!-- El primer uso tapa todo lo demás: hay un paso de consentimiento que no se
+     puede dar por leído. Se cierra solo cuando `onboarding_done` queda en la
+     configuración. -->
+{#if config.current && !config.current.onboarding_done}
+  <OnboardingModal onDone={() => toasts.push("Listo. Podés grabar cuando quieras.")} />
+{/if}
 
 {#if searchOpen}
   <SearchModal

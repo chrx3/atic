@@ -14,6 +14,7 @@
   import { models } from "$domain/models.svelte";
   import { recordings } from "$domain/recordings.svelte";
   import { toastError, toasts } from "$domain/toasts.svelte";
+  import { pickAudioFiles } from "$ipc/dialogs";
   import ListDetail from "$patterns/ListDetail.svelte";
   import ToolPage from "$patterns/ToolPage.svelte";
   import Toolbar from "$patterns/Toolbar.svelte";
@@ -33,6 +34,7 @@
 
   let toDelete = $state<Recording | null>(null);
   let deleting = $state(false);
+  let importing = $state(false);
   let transcriptFor = $state<Recording | null>(null);
   let summaryFor = $state<Recording | null>(null);
 
@@ -58,6 +60,32 @@
       await recordings.transcribe(id);
     } catch (error) {
       toastError(error);
+    }
+  }
+
+  /**
+   * Traer audio que ya existe.
+   *
+   * No se puede importar mientras se graba: Rust tiene un solo pipeline de
+   * captura y meterle archivos en el medio le cambiaría la lista debajo.
+   */
+  async function importAudio() {
+    if (capture.active) return;
+    importing = true;
+    try {
+      const paths = await pickAudioFiles();
+      if (paths.length === 0) return;
+      const imported = await recordings.importFiles(paths);
+      if (imported[0]) recordings.select(imported[0].id);
+      toasts.push(
+        imported.length === 1
+          ? `Importado: ${imported[0].title}`
+          : `Importados ${imported.length} archivos`,
+      );
+    } catch (error) {
+      toastError(error);
+    } finally {
+      importing = false;
     }
   }
 
@@ -105,6 +133,15 @@
         onclick={toggle}
       >
         {capture.active ? "Parar" : "Grabar"}
+      </Button>
+
+      <Button
+        variant="soft"
+        loading={importing}
+        disabled={capture.active}
+        onclick={() => void importAudio()}
+      >
+        Importar
       </Button>
 
       {#snippet end()}
