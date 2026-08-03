@@ -81,7 +81,15 @@ export class RectTracker {
   #tick(): void {
     this.#frame = 0;
     const origin = this.#origin;
-    if (!origin) return;
+    // Todavía sin referencia: se vuelve a mirar en el próximo cuadro en vez de
+    // abandonar. Cortar acá dejaba el seguimiento muerto hasta el siguiente
+    // `wake()`, que en el peor caso no llega nunca.
+    if (!origin) {
+      if (this.#still++ < IDLE_FRAMES) {
+        this.#frame = requestAnimationFrame(() => this.#tick());
+      }
+      return;
+    }
 
     const base = origin.getBoundingClientRect();
     const next: Record<string, Rect> = {};

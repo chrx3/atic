@@ -213,6 +213,19 @@
     tracker.origin = stackEl;
   });
 
+  /**
+   * Las tres altas, creadas UNA vez.
+   *
+   * No pueden ser flechas escritas en el markup: ahí se recrean en cada
+   * render, Svelte las trata como un adjunto distinto y desmonta y vuelve a
+   * montar el anterior. Y como la baja borra el rectángulo del que depende
+   * este mismo template, el resultado era un bucle: medir, redibujar, dar de
+   * baja, volver a medir. La pill quedaba sin piel y la pestaña colgada.
+   */
+  const trackBar = (el: HTMLElement) => tracker.track("bar", el);
+  const trackTail = (el: HTMLElement) => tracker.track("tail", el);
+  const trackPanel = (el: HTMLElement) => tracker.track("panel", el);
+
   // Cada cambio de estado arranca una animación de CSS: hay que volver a mirar.
   $effect(() => {
     void surface;
@@ -1303,12 +1316,12 @@
            derrama el panel y cómo llega la gota— y `Skin` dibuja el contorno
            a partir de lo medido. -->
       <div class="p-skin" class:is-sdf={sdf} aria-hidden="true">
-        <i class="p-skin-bar" {@attach (el) => tracker.track("bar", el)}></i>
+        <i class="p-skin-bar" {@attach trackBar}></i>
         {#if !discOnly && !panelOpen}
-          <i class="p-skin-tail" {@attach (el) => tracker.track("tail", el)}></i>
+          <i class="p-skin-tail" {@attach trackTail}></i>
         {/if}
         {#if panelOpen}
-          <i class="p-skin-panel" {@attach (el) => tracker.track("panel", el)}></i>
+          <i class="p-skin-panel" {@attach trackPanel}></i>
         {/if}
       </div>
 
@@ -1594,6 +1607,21 @@
      miden. La silueta la dibuja `Skin` a partir de sus rectángulos. */
   .p-skin.is-sdf {
     filter: none;
+
+    /*
+     * Y se anula el descuento del engorde.
+     *
+     * Todas las medidas de la piel están escritas como `40px - goo-grow * 2`
+     * porque el endurecido del filtro devolvía 2.8 px por lado. El contorno
+     * trazado NO engorda: pasa por la geometría pedida. Dejando el descuento,
+     * el disco de 40 se dibujaba de 37.2.
+     *
+     * Se apaga con la variable y no regla por regla: así vale para las tres
+     * siluetas y para el `inset` de una sola vez.
+     */
+    --goo-grow: 0px;
+
+    inset: 0;
   }
   .p-skin.is-sdf > i {
     background: transparent;
