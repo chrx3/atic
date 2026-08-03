@@ -26,3 +26,38 @@ export function toggleMaximizeWindow(): Promise<void> {
 export function closeWindow(): Promise<void> {
   return getCurrentWindow().close();
 }
+
+/**
+ * La esconde sin cerrarla.
+ *
+ * Es lo que usan las ventanas efímeras —el estante de capturas, el lanzador—:
+ * cerrarlas de verdad obligaría a recrear el webview en cada aparición, y eso
+ * se nota como un parpadeo.
+ */
+export function hideWindow(): Promise<void> {
+  return getCurrentWindow().hide();
+}
+
+/**
+ * Avisa cuando la ventana gana o pierde el foco.
+ *
+ * Las ventanas efímeras se cierran al perderlo: es lo que se espera de algo que
+ * apareció encima de lo que estabas haciendo.
+ */
+export async function onWindowFocus(
+  cb: (focused: boolean) => void,
+): Promise<() => void> {
+  return getCurrentWindow().onFocusChanged(({ payload }) => cb(payload));
+}
+
+/**
+ * Saca un archivo de la app hacia otra aplicación.
+ *
+ * Es un arrastre nativo del sistema, no HTML5: soltar en el Explorador o en un
+ * chat solo funciona si lo inicia el SO. El plugin se carga en el momento
+ * porque la mayoría de las sesiones nunca arrastra nada.
+ */
+export async function dragOut(path: string): Promise<void> {
+  const { startDrag } = await import("@crabnebula/tauri-plugin-drag");
+  await startDrag({ item: [path], icon: path });
+}

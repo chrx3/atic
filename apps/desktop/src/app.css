@@ -19,6 +19,7 @@
 @import "./styles/palettes/atic/light.css";
 @import "./styles/palettes/atic/console.css";
 @import "./styles/palettes/atic/agents.css";
+@import "./styles/palettes/atic/screen.css";
 @import "./styles/tokens.css";
 @import "./styles/scales.css";
 @import "./styles/motion.css";

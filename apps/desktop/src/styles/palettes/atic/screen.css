@@ -1,0 +1,29 @@
+/**
+ * Lo que se dibuja ENCIMA de la pantalla del usuario, no encima de Atic.
+ *
+ * El overlay de captura tapa el escritorio con una foto congelada de lo que
+ * había, y sus marcas van sobre esa foto. Por eso estos valores NO siguen al
+ * tema: con la paleta clara el velo saldría blanco sobre una captura clara y no
+ * se vería nada. Son absolutos a propósito, y son los únicos de todo el sistema
+ * que lo son.
+ *
+ * Van en `:root` sin selector: no hay variante clara ni de consola que aplicar.
+ */
+:root {
+  /* Velo sobre lo que NO está seleccionado. Suficiente para separar, no tanto
+     como para no reconocer la ventana de abajo. */
+  --screen-scrim: rgb(0 0 0 / 28%);
+
+  /* El borde de la selección. Verde y no la tinta de la app: sobre una captura
+     cualquiera tiene que leerse igual, y el gris no sobrevive a un fondo gris. */
+  --screen-select: #2f9e44;
+
+  /* Las etiquetas flotantes —medidas, ayuda—: negras y blancas fijas, porque
+     también caen sobre contenido desconocido. */
+  --screen-chip: rgb(0 0 0 / 75%);
+  --screen-ink: #fff;
+
+  /* Lo que se ve mientras la foto congelada todavía no cargó. Casi negro y no
+     transparente: la ventana tapa el escritorio a propósito. */
+  --screen-backdrop: #111;
+}

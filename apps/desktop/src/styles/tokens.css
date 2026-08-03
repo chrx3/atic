@@ -54,6 +54,12 @@
   --color-skin: var(--skin);
   --color-agent: var(--agent-accent);
 
+  /* Sobre la pantalla del usuario, no sobre Atic: no siguen al tema. */
+  --color-screen-scrim: var(--screen-scrim);
+  --color-screen-select: var(--screen-select);
+  --color-screen-chip: var(--screen-chip);
+  --color-screen-ink: var(--screen-ink);
+
   /* Necesario para bordes y fondos que tienen que dejar ver lo de atrás. */
   --color-transparent: transparent;
   --color-current: currentColor;

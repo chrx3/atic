@@ -59,6 +59,9 @@ export interface AticEvents {
   // Capturas
   "screenshot-created": CaptureItem;
   "screenshot-shelf-updated": void;
+  /** Hay una foto congelada lista y el overlay de selección puede pintarla. */
+  "overlay-session-started": void;
+  "overlay-session-ended": void;
 
   // Clipboard y fragmentos
   "clipboard-history-changed": void;
