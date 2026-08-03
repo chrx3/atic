@@ -24,10 +24,17 @@
   import EmptyState from "$ui/EmptyState.svelte";
   import Meter from "$ui/Meter.svelte";
   import ProgressBar from "$ui/ProgressBar.svelte";
+  import SummaryPanel from "./SummaryPanel.svelte";
+  import TranscriptPanel from "./TranscriptPanel.svelte";
   import TranscriptView from "./TranscriptView.svelte";
+  import { summaries } from "$domain/summaries.svelte";
+
+  let { onOpenSettings }: { onOpenSettings?: () => void } = $props();
 
   let toDelete = $state<Recording | null>(null);
   let deleting = $state(false);
+  let transcriptFor = $state<Recording | null>(null);
+  let summaryFor = $state<Recording | null>(null);
 
   const TONE = {
     recorded: "neutral",
@@ -222,6 +229,12 @@
                 >
                   Transcribir
                 </Button>
+                <Button variant="soft" size="sm" onclick={() => (transcriptFor = item)}>
+                  Ver y corregir
+                </Button>
+                <Button variant="primary" size="sm" onclick={() => (summaryFor = item)}>
+                  {summaries.byId[item.id] ? "Resumen" : "Resumir"}
+                </Button>
                 <Button variant="danger" size="sm" onclick={() => (toDelete = item)}>
                   Borrar
                 </Button>
@@ -230,9 +243,6 @@
               <div class="border-t border-line pt-3">
                 <TranscriptView recordingId={item.id} />
               </div>
-
-              <!-- El resumen y el envío por correo llegan con la fase 5. -->
-              <p class="text-xs text-faint">El resumen se ve acá cuando esté listo.</p>
             </div>
           {/if}
         {/snippet}
@@ -244,6 +254,26 @@
     </div>
   </div>
 </ToolPage>
+
+{#if transcriptFor}
+  <!-- Se fija en una constante para que el cierre de `onRetranscribe` no
+       dependa de una variable que puede volverse nula. -->
+  {@const item = transcriptFor}
+  <TranscriptPanel
+    recording={item}
+    canTranscribe={models.missing.length === 0}
+    onRetranscribe={() => transcribe(item.id)}
+    onClose={() => (transcriptFor = null)}
+  />
+{/if}
+
+{#if summaryFor}
+  <SummaryPanel
+    recording={summaryFor}
+    {onOpenSettings}
+    onClose={() => (summaryFor = null)}
+  />
+{/if}
 
 {#if toDelete}
   <ConfirmDialog

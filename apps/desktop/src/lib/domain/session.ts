@@ -24,6 +24,7 @@ import { dictation } from "./dictation.svelte";
 import { models } from "./models.svelte";
 import { recordings } from "./recordings.svelte";
 import { snippets } from "./snippets.svelte";
+import { summaries } from "./summaries.svelte";
 import { createSession, type DomainStore } from "./store";
 
 const REGISTRY = {
@@ -35,6 +36,7 @@ const REGISTRY = {
   clipboard,
   snippets,
   captures,
+  summaries,
 } satisfies Record<string, DomainStore>;
 
 export type DomainName = keyof typeof REGISTRY;

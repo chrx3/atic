@@ -24,6 +24,11 @@
   --duration-morph-quick: 150ms;
   --duration-panel: 250ms;
 
+  /* Una vuelta de indicador de espera. Es el único tiempo que se repite en
+     bucle, y por eso es mucho más largo que el resto: a menos de medio segundo
+     un giro deja de leerse como espera y empieza a leerse como nerviosismo. */
+  --duration-spin: 800ms;
+
   /* Cuánto se encoge y se desenfoca lo que entra o sale. */
   --morph-scale: 0.97;
   --morph-blur: 2px;

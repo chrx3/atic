@@ -52,6 +52,7 @@
       "clipboard",
       "snippets",
       "captures",
+      "summaries",
     ]),
   );
 
@@ -132,7 +133,7 @@
   {#if ui.view === "hub"}
     <HubView ready={READY} onOpen={(id) => ui.openTool(id)} />
   {:else if ui.activeTool === "meetings"}
-    <MeetingsTool />
+    <MeetingsTool onOpenSettings={() => (settingsOpen = true)} />
   {:else if ui.activeTool === "dictation"}
     <DictationTool />
   {:else if ui.activeTool === "clipboard"}

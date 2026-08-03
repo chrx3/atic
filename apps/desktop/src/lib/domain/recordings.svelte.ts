@@ -6,7 +6,7 @@ import {
   listRecordings,
   renameRecording,
 } from "$ipc/recordings";
-import { getTranscript, transcribeRecording } from "$ipc/transcripts";
+import { getTranscript, saveTranscript, transcribeRecording } from "$ipc/transcripts";
 import { subscribe } from "$ipc/events";
 import type { Recording, Transcript } from "$core/types";
 import { toasts } from "./toasts.svelte";
@@ -100,6 +100,19 @@ class RecordingsStore implements DomainStore {
     if (id in this.transcripts) return;
     const loaded = await getTranscript(id);
     this.transcripts = { ...this.transcripts, [id]: loaded };
+  }
+
+  /**
+   * Guarda una transcripción corregida a mano.
+   *
+   * Se relee en vez de cachear lo enviado: Rust limpia los fragmentos vacíos y
+   * marca el resumen anterior como pendiente, así que lo guardado no es
+   * exactamente lo que se mandó.
+   */
+  async saveEditedTranscript(id: string, transcript: Transcript): Promise<void> {
+    await saveTranscript(id, transcript);
+    this.transcripts = { ...this.transcripts, [id]: await getTranscript(id) };
+    await this.hydrate();
   }
 
   async importFiles(paths: string[]): Promise<Recording[]> {
