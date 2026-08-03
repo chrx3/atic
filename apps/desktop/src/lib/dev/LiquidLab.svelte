@@ -28,8 +28,10 @@
   import { onMount } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import GooFilter, { GOO_GROW, preFilter } from "$lib/GooFilter.svelte";
-  import { Field, sminBulge, sminReach, type Shape } from "$lib/liquid/sdf";
-  import { fieldToPath } from "$lib/liquid/contour";
+  import { sminBulge, sminReach, type Shape } from "$lib/liquid/sdf";
+  import type { LiquidPath } from "$lib/liquid/contour";
+  import { boxShape, pillShape } from "$lib/liquid/geometry";
+  import Skin from "$lib/liquid/Skin.svelte";
 
   let {
     standalone = false,
@@ -255,27 +257,10 @@
    * justamente una de las cosas que este banco tiene que comprobar contra el
    * contorno punteado.
    */
-  const sdf = $derived.by(() => {
+  const sdfShapes = $derived.by(() => {
     if (renderer !== "sdf") return null;
 
-    const shapes: Shape[] = [
-      {
-        kind: "box",
-        cx: pill.x + pill.w / 2,
-        cy: pill.y + pill.h / 2,
-        hw: pill.w / 2,
-        hh: pill.h / 2,
-        r: PILL_H / 2,
-      },
-      {
-        kind: "box",
-        cx: bubble.x + bubble.w / 2,
-        cy: bubble.y + bubble.h / 2,
-        hw: bubble.w / 2,
-        hh: bubble.h / 2,
-        r: BUBBLE_CORNER,
-      },
-    ];
+    const shapes: Shape[] = [pillShape(pill), boxShape(bubble, BUBBLE_CORNER)];
 
     // El cuello explícito es opcional a propósito: la pregunta interesante es
     // si `blend` solo ya cruza el hueco sin necesidad de dibujarlo.
@@ -303,10 +288,18 @@
       );
     }
 
-    const t0 = performance.now();
-    const path = fieldToPath(new Field(shapes, blend), { cell, smooth });
-    return { ...path, ms: Math.round((performance.now() - t0) * 100) / 100 };
+    return shapes;
   });
+
+  /**
+   * Lo que `Skin` acaba de trazar.
+   *
+   * Llega por callback en vez de calcularse acá: el lab tiene que medir lo que
+   * producción dibuja, y calcularlo por su cuenta duplicaría el costo por
+   * cuadro — falseando justo el número que se está tomando.
+   */
+  let sdf = $state<LiquidPath | null>(null);
+  let sdfMs = $state(0);
 
   /* ─── Medición de cuadros ───────────────────────────────────────────────── */
 
@@ -421,21 +414,20 @@
   <GooFilter id="lab-goo" {sigma} />
 
   {#if renderer === "sdf"}
-    <!-- La piel como una sola forma trazada. Sin filtro: es geometría. -->
-    {#if sdf && sdf.d}
-      <svg
-        class="sdf"
-        style:left="{sdf.minX}px"
-        style:top="{sdf.minY}px"
-        width={sdf.width}
-        height={sdf.height}
-        viewBox="{sdf.minX} {sdf.minY} {sdf.width} {sdf.height}"
-        aria-hidden="true"
-      >
-        <!-- `evenodd` porque los lazos no se orientan de forma consistente: con
-             la regla por defecto, una isla interior se rellenaría. -->
-        <path d={sdf.d} fill="#1c1917" fill-rule="evenodd" />
-      </svg>
+    <!-- La primitiva de producción, no una copia: lo que se mide acá es lo que
+         va a dibujar la app. -->
+    {#if sdfShapes}
+      <Skin
+        shapes={sdfShapes}
+        {blend}
+        {cell}
+        {smooth}
+        color="#1c1917"
+        onPath={(path, ms) => {
+          sdf = path;
+          sdfMs = ms;
+        }}
+      />
     {/if}
   {:else}
     <!-- La piel: siluetas y nada más. Filtrada. -->
@@ -607,7 +599,7 @@
         <span>celda real</span>
         <b class:bad={sdf.cell > cell}>{sdf.cell.toFixed(1)} px</b>
         <span>puntos</span><b>{sdf.points}</b>
-        <span>cálculo</span><b class:bad={sdf.ms > 8}>{sdf.ms} ms</b>
+        <span>cálculo</span><b class:bad={sdfMs > 8}>{sdfMs} ms</b>
       {/if}
       <span>grosor cuello</span>
       <b>{neck ? Math.min(neck.w, neck.h).toFixed(1) + " px" : "—"}</b>
@@ -687,14 +679,6 @@
 
     /* Regla 2 del sistema líquido: todo lo que se funde, del mismo color. */
     background: #1c1917;
-  }
-
-  /* La sombra va sobre el path ya trazado, igual que va después del goo. */
-  .sdf {
-    position: absolute;
-    overflow: visible;
-    pointer-events: none;
-    filter: drop-shadow(0 18px 30px rgb(0 0 0 / 45%));
   }
 
   /* Los botones genéricos van primero: `.seg button` es más específico, y al
