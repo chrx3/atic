@@ -6,9 +6,9 @@ import {
   listRecordings,
   renameRecording,
 } from "$ipc/recordings";
-import { transcribeRecording } from "$ipc/transcripts";
+import { getTranscript, transcribeRecording } from "$ipc/transcripts";
 import { subscribe } from "$ipc/events";
-import type { Recording } from "$core/types";
+import type { Recording, Transcript } from "$core/types";
 import { toasts } from "./toasts.svelte";
 import type { DomainStore } from "./store";
 
@@ -18,6 +18,15 @@ class RecordingsStore implements DomainStore {
 
   /** Progreso 0..1 por grabación, solo mientras se transcribe. */
   progress = $state<Record<string, number>>({});
+
+  /**
+   * Transcripciones ya leídas, por id.
+   *
+   * Se cachean porque son el dato más pesado que devuelve Rust y volver a una
+   * grabación es lo más común que se hace. `null` significa «se preguntó y no
+   * hay», que no es lo mismo que «todavía no se preguntó» (ausente).
+   */
+  transcripts = $state<Record<string, Transcript | null>>({});
 
   get selected(): Recording | null {
     return this.items.find((item) => item.id === this.selectedId) ?? null;
@@ -41,6 +50,9 @@ class RecordingsStore implements DomainStore {
       },
       "transcript-ready": (p) => {
         this.#clearProgress(p.id);
+        // La cacheada quedó vieja: se tira para que la vista vuelva a pedirla.
+        const { [p.id]: _stale, ...rest } = this.transcripts;
+        this.transcripts = rest;
         void this.hydrate();
       },
       "transcribe-error": (p) => {
@@ -80,6 +92,14 @@ class RecordingsStore implements DomainStore {
       this.#clearProgress(id);
       throw error;
     }
+  }
+
+  /** Lee la transcripción si no está cacheada. Idempotente y sin condición
+   *  de carrera: si ya está, no vuelve a preguntar. */
+  async loadTranscript(id: string): Promise<void> {
+    if (id in this.transcripts) return;
+    const loaded = await getTranscript(id);
+    this.transcripts = { ...this.transcripts, [id]: loaded };
   }
 
   async importFiles(paths: string[]): Promise<Recording[]> {

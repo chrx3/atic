@@ -24,6 +24,7 @@
   import EmptyState from "$ui/EmptyState.svelte";
   import Meter from "$ui/Meter.svelte";
   import ProgressBar from "$ui/ProgressBar.svelte";
+  import TranscriptView from "./TranscriptView.svelte";
 
   let toDelete = $state<Recording | null>(null);
   let deleting = $state(false);
@@ -226,11 +227,12 @@
                 </Button>
               </div>
 
-              <!-- El resto de la herramienta —transcripción, resumen, correo—
-                   llega con la fase 5. -->
-              <p class="text-xs text-faint">
-                La transcripción y el resumen se ven acá cuando estén listos.
-              </p>
+              <div class="border-t border-line pt-3">
+                <TranscriptView recordingId={item.id} />
+              </div>
+
+              <!-- El resumen y el envío por correo llegan con la fase 5. -->
+              <p class="text-xs text-faint">El resumen se ve acá cuando esté listo.</p>
             </div>
           {/if}
         {/snippet}
