@@ -67,6 +67,10 @@ export interface AticEvents {
   "clipboard-history-changed": void;
   "agents-composer-insert": AgentsComposerInsert;
   "snippets-changed": void;
+  "clipboard-bubble-anchor": BubbleOpen;
+  "clipboard-bubble-dismiss": void;
+  "snippets-bubble-anchor": BubbleOpen;
+  "snippets-bubble-dismiss": void;
 
   // Cola de pegado
   "paste-queue-changed": void;

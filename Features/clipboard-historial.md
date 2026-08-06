@@ -10,9 +10,11 @@ ventanas.
 
 ## Cómo se usa
 
-- Abrir historial desde la pill.
+- Abrir historial desde la pill (rueda / atajo): sale un **float independiente**
+  en el overlay (`.float-emerge`), fundido a la pill por liquid. La barra de la
+  pill **no crece**.
 - Clic para pegar (Ctrl+V al destino, o insert interno si agentes es el
-  destino sin ventana externa).
+  destino sin ventana externa). Pegar cierra el float.
 - Cola de pegado cuando no hay destino externo listo.
 - Dictado y capturas se integran con el mismo sistema de foco/destino.
 
@@ -32,18 +34,14 @@ disco del usuario. Dos cosas lo acotan:
 
 ## Código
 
-- [`apps/desktop/src-tauri/src/clipboard_history.rs`](../apps/desktop/src-tauri/src/clipboard_history.rs)
+- [`apps/desktop/src-tauri/src/clipboard_history.rs`](../apps/desktop/src-tauri/src/clipboard_history.rs) — store + `show_clipboard_window`
+- [`apps/desktop/src-tauri/src/panel_float.rs`](../apps/desktop/src-tauri/src/panel_float.rs) — ancla genérica a la pill
+- [`apps/desktop/src/lib/surfaces/overlay/clipboard/ClipboardFloat.svelte`](../apps/desktop/src/lib/surfaces/overlay/clipboard/ClipboardFloat.svelte)
 - [`apps/desktop/src-tauri/src/paste_queue.rs`](../apps/desktop/src-tauri/src/paste_queue.rs)
 - [`apps/desktop/src/lib/ClipboardHistoryList.svelte`](../apps/desktop/src/lib/ClipboardHistoryList.svelte)
 
-## Pendiente / siguiente
-
-- [ ] Revisar UX cuando agentes está abierto y el usuario quiere pegar afuera
-      (prioridad externa ya aplicada en dictado; alinear clipboard si hace falta)
-- [ ] Retención / límites de ítems si crece mucho el historial
-
 ## Relacionado
 
-- [dictado.md](dictado.md)
-- [capturas.md](capturas.md)
+- [liquid.md](liquid.md)
+- [pill-shell.md](pill-shell.md)
 - [agentes.md](agentes.md)

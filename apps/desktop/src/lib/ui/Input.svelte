@@ -21,11 +21,13 @@
   {type}
   bind:value
   aria-invalid={invalid ? "true" : undefined}
+  data-numeric={type === "number" ? "" : undefined}
   class="h-8 w-full rounded-sm border bg-surface-2 px-2 text-sm text-text
-         transition-colors duration-(--duration-quick) ease-calm
+         transition-[color,background-color,border-color]
+         duration-(--duration-quick) ease-calm
          placeholder:text-faint
          disabled:opacity-45
          {invalid ? 'border-danger' : 'border-line focus:border-line-strong'}
-         {mono ? 'font-mono' : ''}"
+         {mono || type === 'number' ? 'font-mono' : ''}"
   {...rest}
 />

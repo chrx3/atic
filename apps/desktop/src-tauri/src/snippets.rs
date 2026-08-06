@@ -200,7 +200,7 @@ pub fn paste_snippet(app: AppHandle, state: State<AppState>, id: String) -> Resu
 
     crate::paste_queue::paste_text_or_enqueue(&app, &snippet.body)?;
 
-    let _ = app.emit("pill-snippets-close", ());
+    hide_snippets_window(app.clone());
     Ok(())
 }
 
@@ -318,10 +318,34 @@ pub fn set_scratchpad(state: State<AppState>, body: String) -> Result<Scratchpad
     Ok(pad)
 }
 
-/// Atajo de fragmentos: el frontend hace toggle (cerrar si ya está abierto).
+/// Float de snippets abierto (independiente de la pill).
+static SNIPPETS_OPEN: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+const SNIP_ANCHOR: &str = "snippets-bubble-anchor";
+const SNIP_DISMISS: &str = "snippets-bubble-dismiss";
+
+/// Atajo / rueda / launcher: toggle del float de textos.
 pub fn summon_snippets_panel(app: &AppHandle) {
     clipboard_history::remember_paste_target();
-    let _ = app.emit("pill-snippets-toggle", ());
+    tracing::info!(target: "overlay", "toggle snippets float");
+    crate::panel_float::toggle(
+        app,
+        &SNIPPETS_OPEN,
+        crate::panel_float::PANEL_SHAPE,
+        SNIP_ANCHOR,
+        SNIP_DISMISS,
+    );
+}
+
+#[tauri::command]
+pub fn show_snippets_window(app: AppHandle) {
+    summon_snippets_panel(&app);
+}
+
+#[tauri::command]
+pub fn hide_snippets_window(app: AppHandle) {
+    crate::panel_float::hide(&app, &SNIPPETS_OPEN, SNIP_DISMISS);
 }
 
 /// Compacta la pill y la anima hasta el cursor antes de expandir fragmentos.

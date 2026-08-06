@@ -6,12 +6,10 @@
  * `resetPillChrome`) coordinadas por ocho banderas booleanas. Todas respondían
  * la misma pregunta —¿qué tamaño va ahora?— que es **estado derivado**.
  *
- * Acá la respuesta se deriva una vez y un reconciliador la aplica. El
- * reconciliador es idempotente y cancelable: si llega un destino nuevo a mitad
- * de camino, el anterior se abandona sin tocar la ventana.
+ * Acá la respuesta se deriva una vez y un escenario la aplica. El ejecutor
+ * vive en `pillCssStage`: escribe `left`/`top` en un div del overlay, así que
+ * mover es síncrono y no hay destinos obsoletos que descartar.
  */
-
-import { resizeFloating } from "$ipc/overlay";
 
 /** Medidas base. Todo lo demás se mide del DOM. */
 export const PILL = {
@@ -90,68 +88,3 @@ export type ResizeOutcome = {
   /** El panel abrió hacia arriba. */
   up: boolean;
 };
-
-/**
- * Aplica tamaños de ventana en serie, descartando los obsoletos.
- *
- * Un solo `invoke` hace resize + reposición: como no hay dos IPC, no existe el
- * frame intermedio con la ventana ya redimensionada pero aún mal ubicada.
- */
-export function createStage(label: string) {
-  let generation = 0;
-  let current: Size | null = null;
-
-  /** Último tamaño aplicado; permite decidir crecer-antes vs encoger-después. */
-  function applied(): Size | null {
-    return current;
-  }
-
-  /**
-   * Lleva la ventana a `target`. `ok: false` significa que otro destino la
-   * reemplazó mientras tanto y el llamador debe abandonar sin animar más.
-   */
-  async function resize(
-    target: Size,
-    pivot: Pivot = "topLeft",
-    animate = false,
-  ): Promise<ResizeOutcome> {
-    // Ya está en ese tamaño: evita IPC redundante y, sobre todo, evita que un
-    // pivote `center` recentre la ventana sin que nada haya cambiado.
-    //
-    // `cursor` se exceptúa: no es un pivote sino una posición absoluta, así que
-    // saltearlo por "mismo tamaño" dejaría la rueda donde estaba en vez de
-    // traerla al puntero.
-    if (pivot !== "cursor" && current && sameSize(current, target)) {
-      return { ok: true, up: false };
-    }
-    const mine = ++generation;
-    try {
-      const result = await resizeFloating({
-        label,
-        width: target.w,
-        height: target.h,
-        anchor: pivot,
-        animate,
-      });
-      if (generation !== mine) return { ok: false, up: false };
-      current = target;
-      return { ok: true, up: result.up };
-    } catch (err) {
-      console.warn("resize_floating", err);
-      return { ok: generation === mine, up: false };
-    }
-  }
-
-  /**
-   * Registra un tamaño aplicado por fuera (un morph que corrió en Rust).
-   *
-   * Sin esto el reconciliador vería un tamaño desactualizado, emitiría un
-   * resize redundante y ese resize cancelaría el morph a mitad de camino.
-   */
-  function adopt(size: Size) {
-    current = size;
-    generation++;
-  }
-
-  return { resize, applied, adopt };
-}

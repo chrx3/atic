@@ -24,6 +24,10 @@ export const setSecret = (kind: string, value: string) =>
 export const previewSound = (action: string, voice: string) =>
   invoke<void>("preview_sound", { action, voice });
 
+/** Reproduce una acción con el timbre guardado, si `ui_sounds` está activo. */
+export const playUiSound = (action: string) =>
+  invoke<void>("play_ui_sound", { action });
+
 export const showMainWindow = () => invoke<void>("show_main_window");
 
 // --- Audio ---

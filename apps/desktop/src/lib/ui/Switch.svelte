@@ -35,9 +35,11 @@
   />
   <label
     for={id}
-    class="mt-px inline-flex h-4 w-7 shrink-0 cursor-pointer items-center rounded-pill border
-           p-px
-           transition-colors duration-(--duration-quick) ease-calm
+    class="relative mt-px inline-flex h-4 w-7 shrink-0 cursor-pointer items-center
+           rounded-pill border p-px
+           transition-[color,background-color,border-color,transform]
+           duration-(--duration-quick) ease-calm active:scale-[0.96]
+           before:absolute before:-inset-y-2 before:-inset-x-1 before:content-['']
            peer-disabled:cursor-not-allowed peer-disabled:opacity-45
            peer-focus-visible:outline peer-focus-visible:outline-2
            peer-focus-visible:outline-offset-2 peer-focus-visible:outline-accent

@@ -15,6 +15,8 @@ compositor de agentes si no hay destino externo.
 - Con la burbuja de agentes abierta, el pegado prioriza la ventana externa
   (Chrome, Word, etc.) si había foco ahí; si no, inserta en agentes.
 - Backend: local o Groq según ajustes.
+- Con Groq, el WAV del dictado se envía a su API; con Whisper local, el audio
+  no sale del equipo.
 
 ## Código
 

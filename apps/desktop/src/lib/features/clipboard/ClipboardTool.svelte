@@ -22,6 +22,7 @@
 
 <ToolPage
   title="Clipboard"
+  icon="clipboard"
   kicker="Historial"
   blurb="Todo lo que copiaste, guardado local. El atajo lo pega desde la pill."
 >
@@ -44,6 +45,7 @@
     <div class="min-h-0 flex-1 overflow-y-auto">
       {#if clipboard.visible.length === 0}
         <EmptyState
+          icon={clipboard.query ? undefined : "clipboard"}
           title={clipboard.query ? "Nada coincide" : "El historial está vacío"}
           hint={clipboard.query
             ? "Probá con menos palabras."

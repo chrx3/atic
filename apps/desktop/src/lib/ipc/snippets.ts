@@ -11,9 +11,19 @@ export const upsertSnippet = (snippet: Snippet) =>
 export const deleteSnippet = (id: string) => invoke<void>("delete_snippet", { id });
 export const pasteSnippet = (id: string) => invoke<void>("paste_snippet", { id });
 
-/** Igual que `prepareClipboardPill`: devuelve los ms de vuelo a esperar. */
+/** Legacy: el panel ya no crece la pill. */
 export const prepareSnippetsPill = (fly: boolean) =>
   invoke<number>("prepare_snippets_pill", { fly });
+
+export const showSnippetsWindow = () => invoke<void>("show_snippets_window");
+export const hideSnippetsWindow = () => invoke<void>("hide_snippets_window");
+
+export const onSnippetsBubbleAnchor = (
+  cb: (a: import("$core/types").BubbleOpen) => void,
+): Promise<UnlistenFn> => on("snippets-bubble-anchor", cb);
+
+export const onSnippetsBubbleDismiss = (cb: () => void): Promise<UnlistenFn> =>
+  on("snippets-bubble-dismiss", cb);
 
 export const getScratchpad = () => invoke<Scratchpad>("get_scratchpad");
 export const setScratchpad = (body: string) =>

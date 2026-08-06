@@ -4,7 +4,7 @@ Asistente de reuniones/llamadas: detecta llamadas, graba el audio del PC (sistem
 
 ## Decisiones ya tomadas
 
-- **Enfoque híbrido con prioridad local**: transcripción local por defecto (el audio nunca sale del PC); resumen local si hay un modelo disponible, con la nube (Claude API) como alternativa configurable.
+- **Enfoque híbrido con prioridad local**: Whisper permite transcribir sin que el audio salga del PC. Si el usuario selecciona Groq para dictado o transcripción en vivo, ese audio sí se envía a su API. Para resumir en la nube solo se envía el transcript; Ollama mantiene también esa etapa local.
 - **Fase 1 solo escritorio** (Windows + macOS). La arquitectura queda preparada para móvil (Tauri 2 soporta iOS/Android), pero no se desarrolla aún.
 - **Un solo proyecto/repositorio** con workspace de Cargo.
 

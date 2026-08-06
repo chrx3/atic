@@ -1,0 +1,287 @@
+<!doctype html>
+<html lang="es" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Atic · fusión líquida: el laboratorio</title>
+    <link rel="stylesheet" href="liquid.css" />
+    <style>
+      .lab {
+        position: absolute;
+        inset: 0;
+      }
+
+      /* `pointer-events: auto` para revertir el `none` de `.skin`.
+         La capa de siluetas es inerte a propósito —así los clics llegan al
+         contenido, que vive encima— pero en esta demo las piezas que se
+         arrastran SON las siluetas, y sin esto no se agarraban. */
+      .piece {
+        border-radius: var(--r);
+        cursor: grab;
+        pointer-events: auto;
+        touch-action: none;
+      }
+      .piece.is-dragging {
+        cursor: grabbing;
+      }
+
+      /* La capa de contenido no se filtra: acá solo lleva el rótulo de cada
+         forma, pero en las demos siguientes lleva texto e iconos de verdad. */
+      .label {
+        position: absolute;
+        display: grid;
+        place-items: center;
+        color: var(--rb-faint);
+        font-size: 0.625rem;
+        font-weight: 600;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        pointer-events: none;
+      }
+
+      .head {
+        position: absolute;
+        top: 66px;
+        left: 50%;
+        width: min(560px, 90vw);
+        transform: translateX(-50%);
+        text-align: center;
+        color: rgba(255, 255, 255, 0.82);
+        text-shadow: 0 1px 10px rgba(0, 0, 0, 0.8);
+      }
+      .head h1 {
+        margin: 0 0 6px;
+        font-size: 19px;
+        font-weight: 600;
+        letter-spacing: -0.01em;
+        color: #fff;
+      }
+      .head p {
+        margin: 0;
+        font-size: 12.5px;
+        line-height: 1.6;
+      }
+    </style>
+  </head>
+  <body>
+    <a class="back" href="index.html">← Todas las demos</a>
+
+    <div class="head">
+      <h1>Arrastrá las piezas y acercalas</h1>
+      <p>
+        El cuello aparece solo cuando el hueco baja del alcance, y se corta solo
+        cuando lo supera. La viscosidad es lo único que mueve ese umbral.
+      </p>
+    </div>
+
+    <main class="stage">
+      <div class="lab stack">
+        <div class="skin" id="skin">
+          <i class="blob piece" id="bar" style="--r: 999px"></i>
+          <i class="blob piece" id="panel" style="--r: 26px"></i>
+          <i class="blob piece" id="dot" style="--r: 999px"></i>
+        </div>
+        <div class="ink" id="ink">
+          <span class="label" data-for="bar">Barra</span>
+          <span class="label" data-for="panel">Panel</span>
+          <span class="label" data-for="dot">Badge</span>
+        </div>
+      </div>
+    </main>
+
+    <div class="gauge">
+      <dl>
+        <dt>hueco</dt>
+        <dd id="gGap">—</dd>
+        <dt>alcance</dt>
+        <dd id="gReach">—</dd>
+        <dt>σ</dt>
+        <dd id="gSigma">—</dd>
+      </dl>
+      <div class="state" id="gState">fundido</div>
+    </div>
+
+    <div class="note">
+      <p>
+        <b>Qué es esto.</b> El truco de <i>metaballs</i> con filtros SVG:
+        difuminar el grupo entero y volver a endurecer el alfa. Entre dos formas
+        cercanas los dos halos <b>se suman</b>, pasan el umbral, y el hueco se
+        rellena. Al alejarse la suma cae y el cuello se corta.
+      </p>
+      <p>
+        <b>El alcance no es magia.</b> Sale de la cuenta:
+        <code>2·Φ(−hueco / 2σ) &gt; 7/18</code>, o sea
+        <code>hueco &lt; 1.72·σ</code>. Con la σ = 5 de la app, el cuello se
+        corta a 8.6 px — por eso las dos gotas del cuello de la burbuja
+        <b>se solapan</b> en vez de tocarse apenas.
+      </p>
+      <p>
+        <b>La estructura.</b> El filtro difumina todo lo que tenga adentro, así
+        que las siluetas van en una capa y el contenido en otra. Los rótulos de
+        acá están fuera del filtro; si estuvieran dentro, serían manchas.
+      </p>
+    </div>
+
+    <script src="liquid.js"></script>
+    <script>
+      Liquid.theme();
+      Liquid.desk();
+      Liquid.note();
+
+      // Medidas tomadas de la app: la barra compacta de la pill (40 de alto),
+      // el panel de historial (312 × 332) a escala, y el disco del badge.
+      var PIECES = {
+        bar: { w: 148, h: 40, r: 999, dx: -74, dy: -150 },
+        panel: { w: 260, h: 176, r: 26, dx: -130, dy: -66 },
+        dot: { w: 40, h: 40, r: 999, dx: 118, dy: -160 },
+      };
+
+      var skin = document.getElementById("skin");
+      var stage = document.querySelector(".lab");
+
+      // La sombra va en la cadena DESPUÉS del goo: cae sobre la silueta ya
+      // fundida, cuello incluido, en vez de que cada forma traiga la suya.
+      var fusion = Liquid.goo(skin, {
+        sigma: 5,
+        shadow: "drop-shadow(0 14px 26px rgba(0, 0, 0, 0.42))",
+      });
+
+      /** Distancia con signo al borde de un rectángulo redondeado. */
+      function sdf(px, py, hw, hh, r) {
+        r = Math.min(r, hw, hh);
+        var qx = Math.abs(px) - (hw - r);
+        var qy = Math.abs(py) - (hh - r);
+        var mx = Math.max(qx, 0);
+        var my = Math.max(qy, 0);
+        return Math.hypot(mx, my) + Math.min(Math.max(qx, qy), 0) - r;
+      }
+
+      function box(id) {
+        var node = document.getElementById(id);
+        return {
+          cx: node.offsetLeft + node.offsetWidth / 2,
+          cy: node.offsetTop + node.offsetHeight / 2,
+          hw: node.offsetWidth / 2,
+          hh: node.offsetHeight / 2,
+          r: PIECES[id].r,
+        };
+      }
+
+      /**
+       * Hueco entre dos formas, medido sobre la recta que une sus centros.
+       *
+       * Cada SDF es monótona a lo largo de ese rayo desde su propio centro, así
+       * que basta buscar por bisección dónde cada una cruza el cero y restar.
+       * Es exacto para círculos y pastillas y muy cerca para el resto.
+       */
+      function gapBetween(a, b) {
+        var dx = b.cx - a.cx;
+        var dy = b.cy - a.cy;
+        var len = Math.hypot(dx, dy);
+        if (len < 1e-6) return -Math.min(a.hw, a.hh) * 2;
+        var ux = dx / len;
+        var uy = dy / len;
+
+        var edge = function (shape, sign) {
+          var lo = 0;
+          var hi = len;
+          for (var i = 0; i < 40; i++) {
+            var mid = (lo + hi) / 2;
+            var x = shape.cx + ux * mid * sign;
+            var y = shape.cy + uy * mid * sign;
+            if (sdf(x - shape.cx, y - shape.cy, shape.hw, shape.hh, shape.r) < 0) {
+              lo = mid;
+            } else {
+              hi = mid;
+            }
+          }
+          return (lo + hi) / 2;
+        };
+
+        return len - edge(a, 1) - edge(b, -1);
+      }
+
+      var gGap = document.getElementById("gGap");
+      var gReach = document.getElementById("gReach");
+      var gSigma = document.getElementById("gSigma");
+      var gState = document.getElementById("gState");
+
+      function refresh() {
+        var gap = gapBetween(box("bar"), box("panel"));
+        var reach = fusion.reach;
+        gGap.textContent = gap.toFixed(1) + " px";
+        gReach.textContent = reach.toFixed(1) + " px";
+        gSigma.textContent = fusion.sigma.toFixed(1);
+        var joined = gap < reach;
+        gState.textContent = joined ? "fundido" : "cortado";
+        gState.classList.toggle("is-cut", !joined);
+        syncLabels();
+      }
+
+      /** Los rótulos viven en la otra capa: hay que moverlos a mano. */
+      function syncLabels() {
+        document.querySelectorAll(".label").forEach(function (label) {
+          var node = document.getElementById(label.dataset.for);
+          label.style.left = node.offsetLeft + "px";
+          label.style.top = node.offsetTop + "px";
+          label.style.width = node.offsetWidth + "px";
+          label.style.height = node.offsetHeight + "px";
+        });
+      }
+
+      function place() {
+        var w = stage.offsetWidth;
+        var h = stage.offsetHeight;
+        Object.keys(PIECES).forEach(function (id) {
+          var piece = PIECES[id];
+          var node = document.getElementById(id);
+          node.style.width = piece.w + "px";
+          node.style.height = piece.h + "px";
+          node.style.left = Math.round(w / 2 + piece.dx) + "px";
+          node.style.top = Math.round(h / 2 + piece.dy) + "px";
+        });
+        refresh();
+      }
+
+      Object.keys(PIECES).forEach(function (id) {
+        Liquid.drag(document.getElementById(id), { onMove: refresh });
+      });
+
+      place();
+      window.addEventListener("resize", place);
+
+      Liquid.controls([
+        {
+          type: "range",
+          label: "Viscosidad σ",
+          min: 0,
+          max: 20,
+          step: 0.5,
+          value: 5,
+          on: function (v) {
+            fusion.set(v);
+            refresh();
+          },
+        },
+        { type: "sep" },
+        { type: "button", label: "Reacomodar", on: place },
+        {
+          type: "toggle",
+          label: "Tema oscuro",
+          labelOn: "Tema claro",
+          on: function (dark) {
+            document.documentElement.dataset.theme = dark ? "dark" : "light";
+          },
+        },
+        {
+          type: "toggle",
+          label: "Congelar",
+          labelOn: "Mover",
+          on: function (on) {
+            document.body.classList.toggle("static", on);
+          },
+        },
+      ]);
+    </script>
+  </body>
+</html>

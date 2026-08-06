@@ -3,7 +3,7 @@
  *
  * # Por qué vive aparte
  *
- * En `AgentsSurface.svelte` convivía con el protocolo y con el render, y no
+ * Antes convivía con el protocolo y con el render del float de agentes, y no
  * tiene nada que ver con ninguno de los dos: acá no se sabe qué es un agente ni
  * qué es un turno. Es solo dónde está la burbuja, de qué lado le sale el cuello
  * y si ya se puede mostrar.
@@ -58,6 +58,10 @@ export class Bubble {
       w: a.w,
       h: a.h,
     };
+    // Si ya estaba abierta, solo reancorar: resetear `shown` apaga
+    // `pointer-events` (vía `.float-emerge`) y la ventana queda muerta un
+    // frame —o para siempre si el rAF se pierde bajo carga.
+    if (this.alive && this.shown) return;
     this.shown = false;
     this.alive = true;
     // Un cuadro de margen: el globo tiene que nacer replegado sobre la pill
@@ -76,11 +80,13 @@ export class Bubble {
    */
   moveBy(dx: number, dy: number): void {
     if (!this.anchor) return;
-    this.anchor = {
-      ...this.anchor,
-      x: this.anchor.x + dx,
-      y: this.anchor.y + dy,
-    };
+    this.moveTo(this.anchor.x + dx, this.anchor.y + dy);
+  }
+
+  /** Coloca la esquina superior izquierda (coords CSS del overlay). */
+  moveTo(x: number, y: number): void {
+    if (!this.anchor) return;
+    this.anchor = { ...this.anchor, x, y };
   }
 
   /**
@@ -112,7 +118,7 @@ export class Bubble {
     this.shown = false;
     window.setTimeout(() => {
       if (!this.shown) this.alive = false;
-    }, ms(MOTION.morphClose));
+    }, ms(MOTION.floatClose));
   }
 
   /**

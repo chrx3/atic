@@ -55,7 +55,8 @@
   const classes = $derived(
     [
       "inline-flex items-center justify-center rounded-sm font-medium",
-      "transition-colors duration-(--duration-quick) ease-calm",
+      "transition-[color,background-color,border-color,opacity,transform]",
+      "duration-(--duration-quick) ease-calm active:scale-[0.96]",
       "disabled:pointer-events-none disabled:opacity-45",
       VARIANTS[variant],
       SIZES[size],

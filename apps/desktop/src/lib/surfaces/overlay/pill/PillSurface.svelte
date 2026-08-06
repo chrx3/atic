@@ -5,7 +5,7 @@
    * Modelo: tres ejes ORTOGONALES en vez de un enum de prioridad.
    *
    *   activity  qué está haciendo la app   (idle | recording | dictating)
-   *   surface   qué hay desplegado          (none | wheel | clipboard | snippets)
+   *   surface   qué hay desplegado          (none | wheel)
    *   queue     pegados pendientes
    *
    * Antes eran un solo `mode` con prioridad clipboard > … > idle, así que abrir
@@ -20,20 +20,16 @@
   import type { UnlistenFn } from "@tauri-apps/api/event";
   import type { DictationPhase } from "$core/types";
   import { capture } from "$domain/capture.svelte";
-  import { clipboard } from "$domain/clipboard.svelte";
   import { dictation as dictationStore } from "$domain/dictation.svelte";
   import { paste } from "$domain/paste.svelte";
   import { sessionEffect } from "$domain/session";
-  import { snippets } from "$domain/snippets.svelte";
   import Waveform from "$lib/Waveform.svelte";
   import AticMark from "$lib/AticMark.svelte";
   import { liquid } from "$surfaces/overlay/group.svelte";
   import type { Rect } from "$lib/liquid/geometry";
   import { RectTracker } from "$lib/liquid/measure.svelte";
-  import { boxShape, pillShape } from "$lib/liquid/geometry";
+  import { pillShape } from "$lib/liquid/geometry";
   import ToolIcon from "$lib/ToolIcon.svelte";
-  import ClipboardHistoryList from "$lib/ClipboardHistoryList.svelte";
-  import SnippetsList from "$lib/SnippetsList.svelte";
   import { agents } from "$lib/agentSessions.svelte";
   import ParticleWheel from "$lib/ParticleWheel.svelte";
   import { TOOLS, type ToolId } from "$lib/tools";
@@ -45,29 +41,26 @@
     blocksBrowserChrome,
     contentFor,
     isDiscOnly,
-    isPanel,
     morphsInPlace,
     pivotFor,
     stepWheel as nextWheelTool,
     wheelKeyAction,
-    type PanelKind,
     type Surface,
   } from "$surfaces/overlay/pill/pillPlan";
   import { MOTION, ms, wait } from "$lib/motion";
+  import { playWheelTick } from "$core/uiSound";
   // Lo que queda son los comandos DE LA PILL: su geometría, sus atajos y las
   // ventanas que abre. El estado de la app lo traen los stores.
   import { showAgentsWindow } from "$ipc/agents";
+  import { showClipboardWindow } from "$ipc/clipboard";
   import { startCaptureSession } from "$ipc/captures";
-  import { getConfig, openDataDir, showMainWindow } from "$ipc/config";
+  import { getConfig, showMainWindow } from "$ipc/config";
+  import { showSnippetsWindow } from "$ipc/snippets";
   import {
     onOverlayDismiss,
-    onPillClipboardClose,
-    onPillClipboardToggle,
     onPillRadialPress,
     onPillRadialRelease,
     onPillReset,
-    onPillSnippetsClose,
-    onPillSnippetsToggle,
     overlayCursor,
     pillHome,
     pillTrace,
@@ -79,27 +72,18 @@
    * está testeado. Acá queda la ejecución: el estado, los efectos y los viajes
    * a Rust.
    *
-   * Nota sobre los paneles: los agentes NO son uno, y no es un olvido. Un panel
-   * de la pill sirve para «elegí y listo» —mirás una lista, tocás una cosa, se
-   * cierra—. Una sesión de agente es lo contrario, así que pide una ventana que
-   * se queda. La pill se queda con el aviso, que sí es su trabajo.
+   * Clipboard, snippets y agentes abren ventanas flotantes propias; la pill solo
+   * los invoca desde la rueda o muestra el aviso de agente en la barra.
    */
 
   /**
    * El estado de la app no es de la pill.
    *
-   * Grabación, dictado, portapapeles, textos y cola vivían acá con sus propias
-   * copias y sus propios oyentes, duplicados con la ventana principal: dos
-   * cronómetros contando lo mismo. Ahora se declara una vez qué necesita esta
-   * ventana y el resto se lee.
-   *
-   * La pill los necesita TODOS desde el arranque, aunque los paneles estén
-   * cerrados: se abren por atajo global y tienen que salir con el contenido ya
-   * puesto, no vacíos esperando un viaje a Rust.
+   * Grabación, dictado y cola vivían acá con sus propias copias y sus propios
+   * oyentes, duplicados con la ventana principal: dos cronómetros contando lo
+   * mismo. Ahora se declara una vez qué necesita esta ventana y el resto se lee.
    */
-  $effect(() =>
-    sessionEffect(["config", "capture", "dictation", "clipboard", "snippets", "paste"]),
-  );
+  $effect(() => sessionEffect(["config", "capture", "dictation", "paste"]));
 
   // ─── Eje 1: actividad ────────────────────────────────────────────────────
   const recording = $derived(capture.active);
@@ -124,10 +108,6 @@
   let wheelTool = $state<ToolId | null>(null);
   /** Cierre acelerado: al elegir herramienta la rueda ya cumplió su función. */
   let wheelQuick = $state(false);
-  /** El panel abrió hacia arriba (lo decide Rust: es quien ve los monitores). */
-  let panelUp = $state(false);
-
-  const panelOpen = $derived(isPanel(surface));
 
   /**
    * Aviso de agente en la barra compacta.
@@ -149,12 +129,6 @@
    */
   const discOnly = $derived(isDiscOnly({ surface, activity, hasQueue, agentAlert }));
 
-  // ─── Datos de los paneles ────────────────────────────────────────────────
-  // Las listas y el bloc salen de los stores; lo único local es qué pestaña se
-  // está mirando, que es estado de esta ventana y de ninguna otra.
-  let snippetsTab = $state<"list" | "scratchpad">("list");
-
-  let pasting = $state(false);
   let wheelShortcut = $state("");
 
   // ─── Geometría ───────────────────────────────────────────────────────────
@@ -188,9 +162,8 @@
    * consola también dibuja por campo, así que volver al goo dejaría la mitad
    * del grupo sin trazar. No hay a qué volver.
    *
-   * El CSS no cambia. Sigue decidiendo la geometría y las animaciones —cómo se
-   * derrama el panel, cómo llega la gota, cómo se invierte todo al abrir hacia
-   * arriba— y lo único que cambia es quién dibuja el contorno.
+   * El CSS no cambia. Sigue decidiendo la geometría y las animaciones —cómo
+   * llega la gota— y lo único que cambia es quién dibuja el contorno.
    */
   const tracker = new RectTracker();
 
@@ -199,7 +172,7 @@
   });
 
   /**
-   * Las tres altas, creadas UNA vez.
+   * Las dos altas, creadas UNA vez.
    *
    * No pueden ser flechas escritas en el markup: ahí se recrean en cada
    * render, Svelte las trata como un adjunto distinto y desmonta y vuelve a
@@ -209,15 +182,17 @@
    */
   const trackBar = (el: HTMLElement) => tracker.track("bar", el);
   const trackTail = (el: HTMLElement) => tracker.track("tail", el);
-  const trackPanel = (el: HTMLElement) => tracker.track("panel", el);
 
   // Cada cambio de estado arranca una animación de CSS: hay que volver a mirar.
+  // La posición también cuenta: un vuelo o un arrastre no tocan ninguno de los
+  // estados de arriba, y sin `at` la silueta quedaba dibujada en el sitio del
+  // que la pill se fue.
   $effect(() => {
     void surface;
-    void panelOpen;
     void discOnly;
-    void panelUp;
     void barW;
+    void at.x;
+    void at.y;
     tracker.wake();
   });
 
@@ -227,19 +202,26 @@
    * Las siluetas medidas, como formas del campo.
    *
    * Los radios se repiten acá porque el campo los necesita como número y el
-   * CSS los declara como estilo. Son los mismos tres de siempre: la barra y la
-   * gota son pastillas, el panel tiene esquina de 18.
+   * CSS los declara como estilo. Son los mismos dos de siempre: la barra y la
+   * gota son pastillas.
    */
   const skinShapes = $derived.by(() => {
+    // Con la rueda abierta la silueta la pintan las gotas de ParticleWheel.
+    // Seguir publicando la barra deja un disco fantasma arriba-izquierda del
+    // cuadrado: el stack está en opacity 0, pero Skin lee medidas, no estilos.
+    if (surface === "wheel") return [];
     const r = tracker.rects;
     // A coordenadas del overlay: el grupo mezcla las formas de la pill con las
     // de la consola, y solo son comparables en un origen común.
     const o = tracker.originAt;
-    const at = (rect: Rect): Rect => ({ ...rect, x: rect.x + o.x, y: rect.y + o.y });
+    const at = (rect: Rect): Rect => ({
+      ...rect,
+      x: rect.x + o.x,
+      y: rect.y + o.y,
+    });
     const shapes = [];
     if (r.bar) shapes.push(pillShape(at(r.bar)));
     if (r.tail) shapes.push(pillShape(at(r.tail)));
-    if (r.panel) shapes.push(boxShape(at(r.panel), 18));
     return shapes;
   });
 
@@ -253,19 +235,17 @@
   $effect(() => liquid.publish("pill", skinShapes));
 
   /**
-   * El hogar: dónde vuelve la pill cuando se cierra lo que haya abierto.
+   * El hogar: dónde queda la pill en reposo (y se persiste).
    *
-   * Era una posición guardada en Rust (`stash_pill_home` / `morph_pill_home` /
-   * `restore_pill_position`), porque la ventana la movía Rust y el frontend no
-   * tenía forma de recordar un punto en coordenadas de pantalla. Acá es una
-   * variable: la pill vive en el overlay y su posición nunca sale de CSS.
+   * Ya no “vuelve” tras la rueda: colapsa in-situ y ese punto pasa a ser el
+   * hogar. Solo el summon (`pill-reset`) y el arrastre la reubican a propósito.
    */
   let home = $state({ x: 0, y: 0 });
   /** El vuelo lo hace una transición CSS; esto la enciende solo cuando toca. */
   let flying = $state(false);
 
-  /** Duración del vuelo. Es la misma curva que usaba el tween de Rust. */
-  const FLIGHT_MS = 190;
+  /** Duración del vuelo. Token `--flight-dur` (= `--duration-fast`). */
+  const FLIGHT_MS = ms(MOTION.flight);
 
   /** Mueve la pill animando, y avisa cuánto va a tardar. */
   function flyTo(p: { x: number; y: number }): number {
@@ -279,8 +259,7 @@
       // La zona viva se mide con `getBoundingClientRect()`, que durante una
       // transición CSS devuelve la posición ANIMADA. El publish que dispara el
       // cambio de `at` sale con la pill todavía en el origen del vuelo, así que
-      // sin esto Rust se queda armando el sitio de donde la pill se fue: se
-      // veía como que después de cerrar un panel quedaba inmóvil.
+      // sin esto Rust se queda armando el sitio de donde la pill se fue.
       surfaces.schedule();
     }, FLIGHT_MS);
     return FLIGHT_MS;
@@ -320,17 +299,15 @@
    * Qué superficie se está cerrando.
    *
    * El pivote del colapso depende de **qué se cierra**, no del estado destino:
-   * para cuando el reconciliador corre, `surface` ya vale `"none"` y los dos
-   * colapsos —rueda y panel— son indistinguibles. Sin este dato ambos usaban
-   * `center`, y ese era el "punto C": el panel se encogía hacia su propio
-   * centro (~130 px arriba y ~80 a la izquierda de la barra) y recién desde
-   * ese punto arrancaba el vuelo al hogar.
+   * para cuando el reconciliador corre, `surface` ya vale `"none"` y el
+   * colapso de la rueda es indistinguible del reposo. Sin este dato el colapso
+   * usaba `center` cuando no correspondía.
    */
-  let collapsingFrom: "wheel" | "panel" | null = null;
+  let collapsingFrom: "wheel" | null = null;
 
   /** El estado del que dependen las decisiones de `pillPlan`. */
   function plan() {
-    return { surface, collapsingFrom, panelUp };
+    return { surface, collapsingFrom };
   }
 
   /**
@@ -348,15 +325,12 @@
       leavingWheel = false;
       await wait(ms(wheelQuick ? MOTION.morphQuick : MOTION.morphClose));
     }
-    // `pivotFor` lee `panelUp` (hacia dónde había abierto) y `stage.resize` lo
-    // sobrescribe con el resultado nuevo: en ese orden, no al revés.
     const outcome = await stage.resize(
       next,
       pivotFor(plan()),
       morphsInPlace({ ...plan(), from }),
     );
     if (outcome.ok) {
-      panelUp = outcome.up;
       collapsingFrom = null;
       at = stage.at();
       box = next;
@@ -400,12 +374,9 @@
 
   // Medir la barra SOLO en reposo.
   //
-  // `max-content` la hace independiente del ancho de ventana, pero
-  // `.p-root.is-panel .p-bar { width: 100% }` pisa esa regla: con un panel
-  // abierto la barra mide lo que mide la ventana. Medir ahí cierra un lazo
-  // —ventana define barra define ventana— y el colapso terminaba emitiendo
-  // tres reencuadres, oscilando entre 48 y 320 px de ancho, con un final no
-  // determinista: a veces la pill volvía al hogar convertida en barra ancha.
+  // `max-content` la hace independiente del ancho de ventana. Medir con la rueda
+  // abierta cierra un lazo —ventana define barra define ventana— y el colapso
+  // oscilaba de ancho.
   $effect(() => {
     const el = barEl;
     if (!el) return;
@@ -427,7 +398,7 @@
   // El ResizeObserver debería alcanzar, pero con `width: max-content` dentro de
   // una ventana más angosta no dispara de forma confiable: al dictar con el
   // atajo `barW` se quedaba en 40 y la pill seguía redonda, con la tira de
-  // ondas recortada adentro. Por la rueda no se notaba porque ahí `wheelHome()`
+  // ondas recortada adentro. Por la rueda no se notaba porque ahí `wheelCollapse()`
   // redimensiona explícitamente y arrastra la medición nueva.
   $effect(() => {
     const el = barEl;
@@ -495,7 +466,7 @@
 
   async function openWheelInner() {
     trace("openWheel");
-    await closePanels({ silent: true });
+    await closeWheel();
     wheelQuick = false;
     // Sin selección inicial: un toque accidental del atajo no debe disparar
     // ninguna acción al soltar.
@@ -523,49 +494,37 @@
   }
 
   /**
-   * Cierra la rueda: de (cursor, grande) a (hogar, chica) en UN movimiento.
+   * Colapsa la rueda in-situ: de (cursor, grande) a (mismo centro, barra).
    *
-   * Rust interpola el rectángulo entero, así que la rueda se achica mientras
-   * viaja. El camino viejo eran dos pasos con un salto visible entre medio:
-   * implosionaba al centro (+115 px) y desde ahí volaba al hogar.
+   * No vuela al hogar previo. El centro de la rueda se conserva (pivot
+   * center) y esa posición pasa a ser el nuevo hogar persistido.
    */
-  async function wheelHome() {
+  async function wheelCollapse() {
     const next = target;
     opening = true;
     try {
-      // Encoger y volver, en el mismo frame. El tamaño lo escribe el escenario
-      // y la posición la anima el CSS: se achica mientras viaja, que es lo que
-      // el tween de Rust conseguía interpolando el rectángulo entero.
-      await stage.resize(next, "topLeft");
-      flyTo(home);
-      trace(`wheelHome -> ${next.w}x${next.h}`);
+      await stage.resize(next, "center");
+      at = stage.at();
+      home = { ...at };
+      void savePillHome(at.x, at.y);
+      surfaces.schedule();
+      trace(`wheelCollapse -> ${next.w}x${next.h} @ ${at.x},${at.y}`);
     } finally {
       opening = false;
     }
   }
 
-  /** Cierra la rueda y devuelve la pill a su hogar. No activa nada. */
+  /** Cierra la rueda y deja la pill donde estaba. No activa nada. */
   async function closeWheel() {
     if (surface !== "wheel") return;
     trace("closeWheel");
-    // Tomar la geometría ANTES de cambiar de superficie. Si no, el
-    // reconciliador ve el estado nuevo y encoge en el acto —con el salto al
-    // centro— mientras todavía estamos esperando a que salga el contenido.
     opening = true;
     wheelShown = false;
     wheelTool = null;
     collapsingFrom = "wheel";
     surface = "none";
     leavingWheel = false;
-    // Sin espera: el morph arranca en el MISMO frame en que el contenido
-    // empieza a cambiar, igual que en la apertura.
-    //
-    // Esperar acá era la tercera posición del cierre. Durante esos 250 ms la
-    // barra de 48 px ya estaba dibujada dentro de la ventana de 290×290
-    // todavía en el cursor, y como el stack es un flex column al tope, se veía
-    // pegada arriba-izquierda del área de la rueda. Recién después la ventana
-    // se movía. Ahora encoge y viaja mientras el contenido se cruza.
-    await wheelHome();
+    await wheelCollapse();
   }
 
   /** Soltar la tecla: activa lo apuntado si la rueda llegó a mostrarse. */
@@ -585,7 +544,9 @@
       if (wheelTool) void activateTool(wheelTool);
       else void closeWheel();
     } else {
-      wheelTool = nextWheelTool(wheelTool, action === "next" ? 1 : -1, TOOLS);
+      const next = nextWheelTool(wheelTool, action === "next" ? 1 : -1, TOOLS);
+      if (next !== wheelTool) playWheelTick();
+      wheelTool = next;
     }
     return true;
   }
@@ -606,26 +567,15 @@
     else if (id === "dictation") void toggleDictate();
 
     try {
-      if (id === "clipboard" || id === "snippets") {
-        // La pill ya está en el cursor: el panel se abre acá mismo, y con el
-        // contenido ya puesto porque los stores están montados desde el
-        // arranque.
-        surface = id;
-        return;
-      }
       collapsingFrom = "wheel";
-      // Igual que en `closeWheel`: la geometría se toma antes de cambiar de
-      // superficie, para que el reconciliador no encoja por su cuenta.
       opening = true;
       surface = "none";
-      // Mismo cierre que `closeWheel`: el morph corre junto al contenido, sin
-      // espera previa. `wheelQuick` ya acelera las curvas CSS de salida.
       leavingWheel = false;
-      await wheelHome();
+      await wheelCollapse();
       if (id === "captures") await startCaptureSession();
-      // La consola es una ventana aparte: la rueda la abre y se va, igual que
-      // con la ventana principal.
       else if (id === "agents") await showAgentsWindow();
+      else if (id === "clipboard") await showClipboardWindow();
+      else if (id === "snippets") await showSnippetsWindow();
     } catch (err) {
       console.warn("acción de la rueda", err);
     } finally {
@@ -633,101 +583,9 @@
     }
   }
 
-  // ─── Paneles ─────────────────────────────────────────────────────────────
-  async function openPanel(kind: PanelKind, fly: boolean) {
-    // Guardar el hogar y, si hace falta, volar al cursor. Antes eran dos
-    // comandos de Rust (`prepare_clipboard_pill` / `prepare_snippets_pill`)
-    // que hacían exactamente esto sobre la ventana.
-    home = { ...at };
-    let flight = 0;
-    if (fly) {
-      const cursor = await cursorPoint();
-      if (cursor) {
-        const size = stage.applied() ?? windowFor({ w: PILL.bar, h: PILL.bar });
-        flight = flyTo({ x: cursor.x - size.w / 2, y: cursor.y - size.h / 2 });
-      }
-    }
-    // Esperar el aterrizaje antes de expandir. Volar y crecer a la vez eran dos
-    // escritores de la posición: el panel se anclaba donde estuviera la barra en
-    // ese frame y el vuelo seguía empujando después, así que terminaba en un
-    // punto intermedio del recorrido y no en el cursor.
-    trace(`openPanel ${kind} fly=${fly} vuelo=${flight}ms`);
-    if (flight > 0) await wait(flight);
-
-    trace(`openPanel ${kind} expande`);
-    surface = kind;
-  }
-
-  /** Cierra cualquier panel/rueda. `silent` evita el viaje de vuelta al hogar. */
-  async function closePanels({ silent = false } = {}) {
-    if (surface === "none") return;
-    // Guardar lo pendiente del bloc, NO descartarlo. El autoguardado espera
-    // tras la última tecla; cerrar el panel dentro de esa ventana —Escape, clic
-    // afuera, pegar un fragmento— tiraba lo último que escribiste sin avisar.
-    snippets.flushScratchpad();
-    trace(`closePanels desde=${surface} silent=${silent}`);
-    collapsingFrom = surface === "wheel" ? "wheel" : "panel";
-    if (surface === "wheel") leavingWheel = true;
-    surface = "none";
-    wheelShown = false;
-    pasting = false;
-    // Encoger PRIMERO, volar DESPUÉS. Al revés el vuelo salía con el tamaño
-    // del panel todavía puesto: el hogar se clampeaba contra el borde del
-    // monitor usando 312×380 en vez de 48×48, así que la pill no volvía al
-    // punto del que había salido. Además el reencuadre llegaba a mitad del
-    // vuelo y lo cancelaba, dejándola donde estuviera en ese instante.
-    await collapse();
-    if (!silent) await goHome();
-  }
-
-  /**
-   * Aplica el encogimiento pendiente y espera a que la ventana quede en su
-   * tamaño final.
-   *
-   * El `$effect` también lo dispara, pero de forma diferida: para cuando corre,
-   * el vuelo al hogar ya salió. Llamarlo en línea vuelve determinista el orden;
-   * el efecto que llega después encuentra el tamaño ya aplicado y `stage.resize`
-   * lo descarta sin IPC.
-   */
-  async function collapse() {
-    // La barra venía estirada al ancho del panel, así que su última medición no
-    // sirve para elegir el tamaño compacto: apuntaría a 320 px de ancho. Volver
-    // a la base y dejar que el observador la ensanche después si hace falta
-    // (timer de grabación, chip de la cola). Así el colapso es un solo paso.
-    if (collapsingFrom === "panel") barW = PILL.bar;
-    const next = target;
-    trace(
-      `collapse from=${collapsingFrom} panelUp=${panelUp} ` +
-        `pivot=${pivotFor(plan())} -> ${next.w}x${next.h}`,
-    );
-    await reconcile(next);
-    trace("collapse listo");
-  }
-
-  /** Devuelve la pill al hogar guardado (si el summon la había movido). */
-  async function goHome() {
-    trace("goHome");
-    flyTo(home);
-  }
-
-  /** Título de la barra con un panel abierto. */
-  function panelTitle(kind: Surface): string {
-    return kind === "clipboard" ? "Clipboard" : "Textos";
-  }
-
-  /** Atajo de panel: si ya está abierto, lo reabre en el cursor. */
-  async function onPanelHotkey(kind: PanelKind) {
-    if (surface === kind) {
-      await closePanels();
-    }
-    await openPanel(kind, true);
-  }
-
   // ─── Acciones ────────────────────────────────────────────────────────────
   async function toggleRecord() {
     if (busy || dictating) return;
-    // Detener siempre se puede; empezar no, si hay un panel ocupando la barra.
-    if (!recording && panelOpen) return;
     try {
       await capture.toggle();
     } catch (err) {
@@ -736,7 +594,7 @@
   }
 
   async function toggleDictate() {
-    if (busy || recording || panelOpen) return;
+    if (busy || recording) return;
     try {
       await dictationStore.toggle();
     } catch (err) {
@@ -761,46 +619,96 @@
    * no pasa —acá no hay ventana que arrastrar— pero el umbral sigue siendo lo
    * que distingue "clic" de "arrastre" para no abrir la rueda al soltar de un
    * movimiento.
+   *
+   * La posición se lee con `overlayCursor` (Rust), no solo con `pointermove`:
+   * cerca del borde la barra de tareas se queda con el mouse y el webview deja
+   * de recibir eventos; sin el cursor global el arrastre se cortaba a mitad.
    */
   const DRAG_THRESHOLD = 4;
-  let dragOrigin: { x: number; y: number; ox: number; oy: number } | null = null;
+  let dragOrigin: {
+    /** Null hasta el primer tick: lo siembra el cursor de Rust, no el evento. */
+    cx: number | null;
+    cy: number | null;
+    ox: number;
+    oy: number;
+    pointerId: number;
+  } | null = null;
   let dragMoved = false;
+  let dragRaf = 0;
 
   function beginDrag(event: PointerEvent) {
     const el = event.target as HTMLElement | null;
     if (!el || event.button !== 0) return;
-    if (
-      el.closest("button, a, input, textarea, [data-no-drag], .clip-item, .clip-items")
-    ) {
+    if (el.closest("button, a, input, textarea, [data-no-drag]")) {
       return;
     }
-    dragOrigin = { x: event.clientX, y: event.clientY, ox: at.x, oy: at.y };
+    // El origen NO sale del evento del DOM: `clientX` mide contra la ventana, y
+    // traducirlo obliga a confiar en dónde cree el CSS que está `.ov`, que es
+    // un dato que llega por evento desde Rust y se atrasa justo cuando la
+    // ventana se acaba de reencuadrar. Lo siembra el primer tick, con el mismo
+    // cursor con el que se sigue el resto del gesto.
+    dragOrigin = {
+      cx: null,
+      cy: null,
+      ox: at.x,
+      oy: at.y,
+      pointerId: event.pointerId,
+    };
     dragMoved = false;
-    window.addEventListener("pointermove", onDragMove);
+    // La ventana ya no se estira al escritorio entero durante el arrastre, así
+    // que el puntero puede salirse de ella. Sin capturarlo, el `pointerup` de
+    // afuera no llega y el gesto queda pegado.
+    try {
+      rootEl?.setPointerCapture(event.pointerId);
+    } catch {
+      // Puntero ya liberado: el oyente de `window` alcanza.
+    }
     window.addEventListener("pointerup", endDrag);
     window.addEventListener("pointercancel", endDrag);
+    if (!dragRaf) dragRaf = requestAnimationFrame(() => void tickDrag());
   }
 
-  function onDragMove(event: PointerEvent) {
-    if (!dragOrigin) return;
-    const dx = event.clientX - dragOrigin.x;
-    const dy = event.clientY - dragOrigin.y;
-    if (!dragMoved && Math.hypot(dx, dy) <= DRAG_THRESHOLD) return;
-    if (!dragMoved) {
-      dragMoved = true;
-      // Todo el overlay pasa a recibir el mouse mientras dura el gesto: si no,
-      // el primer movimiento rápido saca el puntero de la pill, Rust desarma la
-      // ventana y el arrastre se corta solo.
-      surfaces.dragging = true;
+  async function tickDrag() {
+    dragRaf = 0;
+    const origin = dragOrigin;
+    if (!origin) return;
+
+    const cur = await overlayCursor().catch(() => null);
+    if (cur && dragOrigin === origin) {
+      // Primer cuadro: es la semilla, no un movimiento.
+      if (origin.cx === null || origin.cy === null) {
+        origin.cx = cur.x;
+        origin.cy = cur.y;
+      } else {
+        const dx = cur.x - origin.cx;
+        const dy = cur.y - origin.cy;
+        if (!dragMoved && Math.hypot(dx, dy) > DRAG_THRESHOLD) {
+          dragMoved = true;
+          surfaces.dragging = true;
+        }
+        if (dragMoved) {
+          stage.moveTo({ x: origin.ox + dx, y: origin.oy + dy });
+          at = stage.at();
+        }
+      }
     }
-    stage.moveTo({ x: dragOrigin.ox + dx, y: dragOrigin.oy + dy });
-    at = stage.at();
+
+    if (dragOrigin) {
+      dragRaf = requestAnimationFrame(() => void tickDrag());
+    }
   }
 
   function stopDragWatch() {
+    const pointerId = dragOrigin?.pointerId;
     dragOrigin = null;
+    if (pointerId !== undefined && rootEl?.hasPointerCapture(pointerId)) {
+      rootEl.releasePointerCapture(pointerId);
+    }
+    if (dragRaf) {
+      cancelAnimationFrame(dragRaf);
+      dragRaf = 0;
+    }
     surfaces.dragging = false;
-    window.removeEventListener("pointermove", onDragMove);
     window.removeEventListener("pointerup", endDrag);
     window.removeEventListener("pointercancel", endDrag);
   }
@@ -825,9 +733,8 @@
   onMount(() => {
     const unlisteners: Promise<UnlistenFn>[] = [];
 
-    // Escuchar a los agentes desde el arranque, no al abrir el panel: una
-    // sesión que responde con la pill cerrada tiene que dejar el aviso puesto.
-    // Si empezáramos a escuchar al abrir, el aviso no existiría nunca.
+    // Escuchar a los agentes desde el arranque: una sesión que responde con la
+    // pill cerrada tiene que dejar el aviso puesto.
     // La pill es la que notifica: es la única ventana que siempre está viva, y
     // si notificaran todas habría un toast por ventana abierta.
     void agents.init({ notify: true });
@@ -853,23 +760,11 @@
     // cierran, y el clic fuera. La actividad, los datos y la cola los escuchan
     // sus stores.
     unlisteners.push(
-      onPillClipboardToggle(() => {
-        trace("RX pill-clipboard-toggle");
-        void onPanelHotkey("clipboard");
-      }),
-      onPillSnippetsToggle(() => void onPanelHotkey("snippets")),
-      onPillClipboardClose(() => void closePanels()),
-      onPillSnippetsClose(() => void closePanels()),
       onPillRadialPress(() => void openWheel()),
       onPillRadialRelease(() => onWheelRelease()),
-      // Colapsar y RECIÉN AHÍ volar al cursor. Rust emite el reset pero no
-      // mueve: solo acá se sabe cuándo la ventana terminó de encoger, y el
-      // ancla del cursor se calcula con el tamaño que tenga en ese momento.
-      // Colapsar y RECIÉN AHÍ volar al cursor: el ancla se calcula con el
-      // tamaño que la pill tenga en ese momento, no con el del panel abierto.
       onPillReset(async () => {
         trace("pill-reset (summon)");
-        await closePanels({ silent: true });
+        await closeWheel();
         const cursor = await cursorPoint();
         if (!cursor) return;
         const size = stage.applied() ?? windowFor({ w: PILL.bar, h: PILL.bar });
@@ -881,11 +776,10 @@
     );
 
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && surface !== "none") {
+      if (event.key === "Escape" && surface === "wheel") {
         event.preventDefault();
         event.stopPropagation();
-        if (surface === "wheel") void closeWheel();
-        else void closePanels();
+        void closeWheel();
         return;
       }
       if (onWheelKey(event)) {
@@ -907,15 +801,13 @@
      * Ahora lo detecta Rust —ve todos los clics por Raw Input— y avisa cuando
      * uno cae fuera de las zonas vivas.
      *
-     * Es más correcto que el blur, y se llevó puestos dos parches: el margen de
-     * 400 ms (existía solo para tragarse el blur que causaba el propio
-     * `setFocus` de la apertura) y la excepción del bloc de notas (el blur se
-     * disparaba con una notificación, que no es el usuario yéndose).
+     * Es más correcto que el blur, y se llevó puesto el margen de 400 ms que
+     * existía solo para tragarse el blur que causaba el propio `setFocus` de la
+     * apertura.
      */
     const onOutside = () => {
-      if (pasting || dragMoved) return;
+      if (dragMoved) return;
       if (surface === "wheel") void closeWheel();
-      else if (surface !== "none") void closePanels();
     };
 
     window.addEventListener("keydown", onKey, true);
@@ -931,7 +823,7 @@
 </script>
 
 <!-- Testigo de grabación: vive fuera de los modos, por eso sobrevive a que se
-     abra un panel encima. Antes desaparecía y con él el botón de detener. -->
+     abra la rueda encima. Antes desaparecía y con él el botón de detener. -->
 {#snippet recDot(label: string)}
   <button
     type="button"
@@ -970,73 +862,10 @@
   </button>
 {/snippet}
 
-{#snippet panelBody()}
-  <div class="p-panel" data-no-drag>
-    {#if surface === "clipboard"}
-      <ClipboardHistoryList
-        items={clipboard.items}
-        loading={false}
-        compact
-        onRefresh={() => void clipboard.hydrate()}
-        onPasteStart={() => (pasting = true)}
-        onPasted={() => void closePanels()}
-        onError={() => (pasting = false)}
-      />
-    {:else}
-      <!-- Las pestañas nombran el contenido, no la vista: "Lista" no decía
-           lista de qué, y era lo único que distinguía los textos reusables del
-           bloc de notas. -->
-      <div class="p-tabs" role="tablist" aria-label="Textos y notas">
-        <button
-          type="button"
-          role="tab"
-          class="p-tab"
-          class:active={snippetsTab === "list"}
-          aria-selected={snippetsTab === "list"}
-          onclick={() => (snippetsTab = "list")}
-        >
-          Textos
-        </button>
-        <button
-          type="button"
-          role="tab"
-          class="p-tab"
-          class:active={snippetsTab === "scratchpad"}
-          aria-selected={snippetsTab === "scratchpad"}
-          onclick={() => (snippetsTab = "scratchpad")}
-        >
-          Notas
-        </button>
-      </div>
-      {#if snippetsTab === "list"}
-        <SnippetsList
-          items={snippets.items}
-          loading={false}
-          compact
-          onRefresh={() => void snippets.hydrate()}
-          onPasteStart={() => (pasting = true)}
-          onPasted={() => void closePanels()}
-          onError={() => (pasting = false)}
-        />
-      {:else}
-        <textarea
-          class="p-scratch"
-          value={snippets.scratchpad?.body ?? ""}
-          oninput={(event) => snippets.editScratchpad(event.currentTarget.value)}
-          placeholder="Notas temporales…"
-          aria-label="Bloc de notas"
-          data-no-drag></textarea>
-      {/if}
-    {/if}
-  </div>
-{/snippet}
-
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
   class="p-root"
   class:is-wheel={surface === "wheel"}
-  class:is-panel={panelOpen}
-  class:is-up={panelUp && panelOpen}
   class:is-quick={wheelQuick}
   class:is-flying={flying}
   style="left: {at.x}px; top: {at.y}px; width: {box.w}px; height: {box.h}px"
@@ -1067,51 +896,17 @@
        `.p-liquid` porque ese recorta con `overflow: hidden` para contener el
        sobrepaso del morph, y el recorte se comería lo que se mide. -->
   <div class="p-stack" class:is-dim={surface === "wheel"} bind:this={stackEl}>
-    <!-- Cuerpo líquido: con panel, barra + cuerpo son DOS siluetas que se
-         funden (join tipo Liquid UI). Sin panel, es solo la barra. -->
-    <div class="p-liquid" class:is-fused={panelOpen} bind:this={liquidEl}>
-      <!-- La piel va aparte del contenido: acá no puede haber ni texto ni
-           iconos.
-
-           Con el campo de distancia estos `<i>` dejan de pintarse y quedan
-           como REFERENCIAS DE MEDIDA: el CSS sigue decidiendo la geometría y
-           las animaciones —que es donde está todo el conocimiento de cómo se
-           derrama el panel y cómo llega la gota— y `Skin` dibuja el contorno
-           a partir de lo medido. -->
+    <div class="p-liquid" bind:this={liquidEl}>
       <div class="p-skin" aria-hidden="true">
         <i class="p-skin-bar" {@attach trackBar}></i>
-        {#if !discOnly && !panelOpen}
+        {#if !discOnly}
           <i class="p-skin-tail" {@attach trackTail}></i>
-        {/if}
-        {#if panelOpen}
-          <i class="p-skin-panel" {@attach trackPanel}></i>
         {/if}
       </div>
 
       <div class="p-shell">
-        <!-- La barra se mide sola (`max-content`): no hay tabla de anchos. -->
         <div class="p-bar" class:is-disc-only={discOnly} bind:this={barEl}>
-          {#if panelOpen}
-            <span class="p-mark"><AticMark size={15} strokeWidth={1.5} /></span>
-            <span class="p-label">{panelTitle(surface)}</span>
-            {#if recording}
-              {@render recDot(`Grabando ${fmt(elapsed)} · clic para detener`)}
-            {/if}
-            {@render iconBtn(
-              "Abrir carpeta",
-              "M4 19V6h6l2 2.5h8V19H4Z",
-              () =>
-                void openDataDir(
-                  surface === "clipboard" ? "clipboard" : "snippets",
-                ).catch(console.warn),
-              16,
-            )}
-            {@render iconBtn(
-              "Cerrar (Esc)",
-              "M6 6l12 12M18 6L6 18",
-              () => void closePanels(),
-            )}
-          {:else if activity === "recording"}
+          {#if activity === "recording"}
             {@render recDot("Detener grabación")}
             <span class="p-timer">{fmt(elapsed)}</span>
             {#if liveError}
@@ -1202,9 +997,9 @@
             >
               <AticMark size={22} strokeWidth={1.4} />
             </span>
-            <!-- Aviso del agente: aparece solo si hay algo que decir, y se va al
-               abrir el panel. Es un chip junto al disco y no un reemplazo,
-               porque el disco sigue siendo la puerta a la rueda. -->
+            <!-- Aviso del agente: aparece solo si hay algo que decir. Es un chip
+               junto al disco y no un reemplazo, porque el disco sigue siendo la
+               puerta a la rueda. -->
             {#if agentAlert}
               <button
                 type="button"
@@ -1233,10 +1028,6 @@
           {/if}
         </div>
       </div>
-
-      {#if panelOpen}
-        {@render panelBody()}
-      {/if}
     </div>
   </div>
 </div>
@@ -1262,11 +1053,11 @@
 
   /* El vuelo al hogar y al cursor. Solo mientras dura: si la transición
      quedara siempre puesta, cada reencuadre de la barra compacta —el timer
-     tictaqueando, el badge de la cola— se arrastraría 190 ms. */
+     tictaqueando, el badge de la cola— se arrastraría con cada tick. */
   .p-root.is-flying {
     transition:
-      left 190ms var(--ease-calm),
-      top 190ms var(--ease-calm);
+      left var(--flight-dur) var(--ease-smooth-out),
+      top var(--flight-dur) var(--ease-smooth-out);
   }
 
   .p-root:active {
@@ -1277,14 +1068,6 @@
     padding: 0;
     cursor: default;
   }
-
-  /* El panel hacia arriba invierte barra/cuerpo dentro del blob líquido. */
-  .p-root.is-up .p-liquid.is-fused {
-    flex-direction: column-reverse;
-  }
-
-  /* Abriendo hacia arriba la piel se da vuelta sola (`flex-direction: inherit`),
-     así que acá ya no hace falta invertir nada. */
 
   /* Cierre acelerado: al elegir herramienta la rueda ya cumplió su función. */
   .p-root.is-quick {
@@ -1345,7 +1128,7 @@
      seis gotas de `ParticleWheel`, que escalan y viajan por su cuenta. La
      marca del centro sigue sin escalar — es el punto fijo del morph. */
 
-  /* ─── Cuerpo líquido (barra sola o barra+panel fusionados) ───────────── */
+  /* ─── Cuerpo líquido (barra) ─────────────────────────────────────────── */
   .p-liquid {
     /* `--goo-grow` viene de `app.css`. Sin compensarlo, el disco de reposo
        saldría de 43 en vez de 40 y se comería casi la mitad del respiro que
@@ -1358,28 +1141,12 @@
     flex-direction: column;
   }
 
-  .p-liquid.is-fused {
-    width: 100%;
-    flex: 1;
-    overflow: hidden;
-    border-radius: 18px;
-
-    /* Sin sombra: la proyecta el contorno ya trazado, no esta caja. Dejar las
-       dos dibujaba un rectángulo por detrás de una silueta redondeada. */
-    animation: p-liquid-in var(--panel-dur) var(--morph-ease);
-  }
-
   /*
    * La piel: solo REFERENCIAS DE MEDIDA.
    *
    * Estos `<i>` no se pintan. El CSS de abajo sigue decidiendo su geometría y
-   * sus animaciones —cómo se derrama el panel, cómo llega la gota, cómo se
-   * invierte todo al abrir hacia arriba—, la pill los mide, y el contorno lo
+   * sus animaciones —cómo llega la gota—, la pill los mide, y el contorno lo
    * traza el campo del overlay a partir de esos rectángulos.
-   *
-   * `flex-direction: inherit` no es un atajo: `.p-root.is-up` invierte
-   * `.p-liquid` a `column-reverse` cuando el panel abre hacia arriba, y así la
-   * piel se da vuelta con él sin repetir la regla.
    */
   .p-skin {
     /*
@@ -1390,7 +1157,7 @@
      * trazado NO engorda: pasa por la geometría pedida. Con el descuento
      * puesto, el disco de 40 se medía de 37.2.
      *
-     * Se apaga con la variable y no regla por regla: así vale para las tres
+     * Se apaga con la variable y no regla por regla: así vale para las dos
      * siluetas y para el `inset` de una sola vez.
      */
     --goo-grow: 0px;
@@ -1412,14 +1179,9 @@
      por los dos lados, así que el borde final cae exactamente en los 40. */
   .p-skin-bar {
     height: calc(40px - var(--goo-grow) * 2);
+    width: calc(40px - var(--goo-grow) * 2);
     flex-shrink: 0;
     border-radius: 999px;
-  }
-
-  /* Sin panel, el blob base es SOLO el disco: el resto del ancho lo trae la
-     gota, que es la que hace visible que la barra creció absorbiendo algo. */
-  .p-liquid:not(.is-fused) .p-skin-bar {
-    width: calc(40px - var(--goo-grow) * 2);
   }
 
   /*
@@ -1445,41 +1207,6 @@
   @keyframes p-skin-arrive {
     from {
       inset: 7px 4px 7px calc(100% - 28px);
-    }
-  }
-
-  .p-skin-panel {
-    min-height: 0;
-    flex: 1;
-    border-radius: 18px;
-
-    /*
-     * El panel se DERRAMA de la barra en vez de aparecer entero.
-     *
-     * El origen es el borde que toca la barra, así que la silueta crece desde
-     * ahí; y como el filtro las mantiene fundidas durante todo el camino, lo
-     * que se ve es líquido saliendo y no una caja apareciendo. El sobrepaso de
-     * `--morph-ease` lo recorta el `overflow: hidden` de `.p-liquid`.
-     */
-    transform-origin: 50% 0;
-    animation: p-skin-pour var(--panel-dur) var(--morph-ease);
-  }
-
-  .p-root.is-up .p-liquid.is-fused .p-skin-panel {
-    transform-origin: 50% 100%;
-  }
-
-  @keyframes p-skin-pour {
-    from {
-      transform: scale(0.34, 0.02);
-    }
-  }
-
-  @keyframes p-liquid-in {
-    from {
-      opacity: 0.88;
-      filter: blur(2px);
-      transform: scale(0.975);
     }
   }
 
@@ -1513,15 +1240,6 @@
     transition:
       border-radius var(--morph-close-dur) var(--morph-close-ease),
       transform var(--morph-close-dur) var(--morph-close-ease);
-  }
-
-  /* Fusionado: la barra es solo cabecera.
-     Sin línea divisoria: abarcaba todo el ancho, y la silueta en el hombro se
-     mete para adentro, así que los dos extremos quedaban colgando sobre la
-     ventana transparente. La división ahora la hace el filete del hombro. */
-  .p-liquid.is-fused .p-shell {
-    width: 100%;
-    border-radius: 0;
   }
 
   /* max-content: el ancho lo fija el contenido, no la ventana. Es lo que hace
@@ -1568,11 +1286,6 @@
     width: 40px;
     justify-content: center;
     padding: 0;
-  }
-
-  .p-root.is-panel .p-bar {
-    width: 100%;
-    padding-right: 8px;
   }
 
   .p-mark {
@@ -1676,8 +1389,9 @@
   }
 
   .p-icon {
-    width: 1.5rem;
-    height: 1.5rem;
+    /* 40×40: hit area de chrome denso sin pseudo que se solape con vecinos. */
+    width: 40px;
+    height: 40px;
     border-radius: 999px;
     background: transparent;
     color: var(--muted);
@@ -1690,8 +1404,8 @@
 
   .p-rec,
   .p-dict {
-    width: 26px;
-    height: 26px;
+    width: 32px;
+    height: 32px;
     border-radius: 999px;
   }
 
@@ -1726,7 +1440,7 @@
   .p-icon:active:not(:disabled),
   .p-rec:active:not(:disabled),
   .p-dict:active:not(:disabled) {
-    transform: scale(0.94);
+    transform: scale(0.96);
   }
 
   .p-icon:disabled,
@@ -1741,8 +1455,7 @@
   .p-icon:focus-visible,
   .p-rec:focus-visible,
   .p-dict:focus-visible,
-  .p-queue-btn:focus-visible,
-  .p-tab:focus-visible {
+  .p-queue-btn:focus-visible {
     outline: none;
     box-shadow: inset 0 0 0 2px var(--accent);
   }
@@ -1768,7 +1481,7 @@
 
   .p-queue-btn {
     display: inline-flex;
-    height: 1.65rem;
+    min-height: 1.65rem;
     flex-shrink: 0;
     align-items: center;
     border: 0;
@@ -1781,6 +1494,11 @@
     letter-spacing: 0.1em;
     text-transform: uppercase;
     cursor: pointer;
+    transition: transform var(--duration-quick) var(--ease-smooth-out);
+  }
+
+  .p-queue-btn:active:not(:disabled) {
+    transform: scale(0.96);
   }
 
   .p-queue-btn:disabled {
@@ -1791,7 +1509,7 @@
   /* ─── Aviso de agente ───────────────────────────────────────────────── */
   .p-agent {
     display: inline-flex;
-    height: 1.65rem;
+    min-height: 1.65rem;
     flex-shrink: 0;
     align-items: center;
     gap: 0.3rem;
@@ -1801,6 +1519,11 @@
     background: color-mix(in sRGB, var(--accent) 16%, transparent);
     color: var(--accent);
     cursor: pointer;
+    transition: transform var(--duration-quick) var(--ease-smooth-out);
+  }
+
+  .p-agent:active {
+    transform: scale(0.96);
   }
 
   /* Espera una decisión: es lo único que de verdad bloquea al agente, así que
@@ -1842,85 +1565,24 @@
     }
   }
 
-  /* ─── Panel ─────────────────────────────────────────────────────────── */
-  .p-panel {
-    /* Encima de la piel, igual que `.p-shell`. */
-    position: relative;
-    z-index: 1;
-    display: flex;
-    min-height: 0;
-    flex: 1;
-    flex-direction: column;
-    border-radius: 0;
-    padding: 0.45rem 0.5rem 0.55rem;
-    background: transparent;
-    color: var(--text);
-    overflow: hidden;
-    cursor: default;
-  }
-
-  .p-tabs {
-    display: flex;
-    flex-shrink: 0;
-    gap: 0.3rem;
-    margin-bottom: 0.35rem;
-  }
-
-  .p-tab {
-    border: 0;
-    border-radius: 999px;
-    padding: 0.2rem 0.55rem;
-    background: transparent;
-    color: var(--muted);
-    font-size: 0.6875rem;
-    font-weight: 600;
-    cursor: pointer;
-    transition:
-      color var(--duration-quick) var(--ease-smooth-out),
-      background var(--duration-quick) var(--ease-smooth-out);
-  }
-
-  .p-tab.active {
-    background: color-mix(in sRGB, var(--accent) 12%, transparent);
-    color: var(--accent);
-  }
-
-  /* La pill entera es inseleccionable: es una superficie que se arrastra, y un
-     arrastre que empieza sobre texto termina seleccionándolo en vez de mover
-     nada. El bloc es la excepción, porque ahí sí se escribe. */
+  /* La pill entera es inseleccionable: es una superficie que se arrastra. */
   .p-root,
   .p-root * {
     user-select: none !important;
   }
 
-  .p-scratch {
-    width: 100%;
-    min-height: 0;
-    flex: 1;
-    border: 0;
-    border-radius: 0.45rem;
-    padding: 0.4rem 0.5rem;
-    background: color-mix(in sRGB, var(--bg) 80%, transparent);
-    color: var(--text);
-    font-family: inherit;
-    font-size: 0.75rem;
-    resize: none;
-    outline: none;
-    user-select: text !important;
-  }
-
   @media (prefers-reduced-motion: reduce) {
+    .p-root.is-flying,
     .p-wheel,
     .p-wheel.is-open,
     .p-stack,
     .p-shell,
-    .p-liquid.is-fused,
-    .p-liquid.is-fused .p-skin-panel,
     .p-skin-tail,
     .p-icon,
     .p-rec,
     .p-dict,
-    .p-tab {
+    .p-queue-btn,
+    .p-agent {
       transition: none !important;
       animation: none !important;
     }

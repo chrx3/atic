@@ -150,31 +150,16 @@ fn bubble_shape(app: &AppHandle) -> crate::floating::BubbleShape {
     }
 }
 
-/// Dónde va el globo, **en píxeles CSS del overlay**.
-///
-/// Antes esto salía en físicos y la vista los dividía por `devicePixelRatio`.
-/// Ya no: el globo se dibuja dentro del overlay, así que la única unidad que
-/// tiene sentido al otro lado es la del viewport. La conversión pasa una vez,
-/// acá, con la escala de la ventana que de verdad lo va a pintar.
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct BubbleOpen {
-    /// Lado del globo que mira a la pill: de ahí le sale el cuello.
-    side: &'static str,
-    /// Desde la esquina del globo hasta el centro del cuello, por ese lado.
-    offset: f64,
-    x: f64,
-    y: f64,
-    w: f64,
-    h: f64,
-}
-
 /// ¿Está la consola a la vista?
 ///
 /// Antes lo contestaba `window.is_visible()`. Sin ventana propia, el estado
 /// vive acá: es lo único que queda de ella, y hace falta porque el atajo y la
-/// rueda son interruptores.
+/// rueda son interruptores. También lo lee el historial del portapapeles
+/// (`agents_open`) para insertar en el compositor.
 static OPEN: AtomicBool = AtomicBool::new(false);
+
+const AGENTS_ANCHOR: &str = "agents-bubble-anchor";
+const AGENTS_DISMISS: &str = "agents-bubble-dismiss";
 
 /// ¿La consola está desplegada? Lo pregunta el historial del portapapeles, que
 /// con ella abierta inserta en el compositor en vez de pegar afuera.
@@ -184,43 +169,16 @@ pub fn agents_open() -> bool {
 
 /// Abre o cierra la consola de agentes, que **sale de la pill**.
 ///
-/// Ya no hay ventana que mover: se calcula dónde va el globo y se le manda a la
-/// vista, que lo despliega con CSS. Con eso desaparecen el «frame cero» encima
-/// de la pill, el tween, y la rama de recuperación que existía para cuando el
-/// tween no llegaba y dejaba una ventana a medio crecer.
-///
-/// Es un interruptor. No se cierra al perder el foco: abrir el historial para
-/// copiar algo que ibas a pegarle mataba la sesión justo cuando la necesitabas.
+/// Geometría vía `panel_float` con la `BubbleShape` de agentes (tamaño
+/// guardado). Es un interruptor: no se cierra al perder el foco.
 #[tauri::command]
 pub fn show_agents_window(app: AppHandle) {
-    if OPEN.load(Ordering::Relaxed) {
-        hide_agents_window(app);
-        return;
-    }
-
-    let Some((target, anchor)) = crate::overlay::pill_rect()
-        .and_then(|origen| crate::floating::bubble_rect(&app, origen, bubble_shape(&app)))
-    else {
-        return;
-    };
-    let Some(area) = crate::overlay::to_local(&app, target) else {
-        return;
-    };
-
-    OPEN.store(true, Ordering::Relaxed);
-    // El overlay nunca se activa, así que tampoco sube solo entre las ventanas
-    // topmost: sin esto, la consola puede abrirse debajo del launcher.
-    crate::overlay::raise(&app);
-    let _ = app.emit(
-        "agents-bubble-anchor",
-        BubbleOpen {
-            side: anchor.side,
-            offset: f64::from(anchor.offset) / crate::overlay::scale(&app),
-            x: area.x,
-            y: area.y,
-            w: area.w,
-            h: area.h,
-        },
+    let _ = crate::panel_float::toggle(
+        &app,
+        &OPEN,
+        bubble_shape(&app),
+        AGENTS_ANCHOR,
+        AGENTS_DISMISS,
     );
 }
 
@@ -251,16 +209,9 @@ pub fn save_agents_bubble_size(app: AppHandle, w: i32, h: i32) {
 }
 
 /// Repliega la burbuja sobre la pill.
-///
-/// Ya no oculta ninguna ventana: avisa, y la vista se encarga del repliegue. El
-/// hilo con el `sleep` que esperaba a que terminara el vuelo antes de esconder
-/// la ventana se fue con ella.
 #[tauri::command]
 pub fn hide_agents_window(app: AppHandle) {
-    if !OPEN.swap(false, Ordering::Relaxed) {
-        return;
-    }
-    let _ = app.emit("agents-bubble-dismiss", ());
+    crate::panel_float::hide(&app, &OPEN, AGENTS_DISMISS);
 }
 
 /// Qué agentes hay y cuáles se pueden usar.
@@ -475,10 +426,13 @@ pub fn agent_stop(app: AppHandle, session: String) {
         .lock_or_recover()
         .as_mut()
         .and_then(|s| s.remove(&session));
-    // Fuera del lock: `stop` espera a que el proceso termine de vaciar, y
-    // sostener el mutex mientras tanto congelaría cualquier otra sesión.
+    // Fuera del lock Y en otro hilo: `stop` puede tardar en matar el proceso
+    // (espera corta + kill). Si el comando IPC espera, el botón "Detener" de
+    // la UI parece muerto aunque la sesión ya salió de la lista del frontend.
     if let Some(mut entry) = taken {
-        entry.session.stop();
+        std::thread::spawn(move || {
+            entry.session.stop();
+        });
     }
     with_db(&app, |db| super::store::close(db, &session));
 }
@@ -538,4 +492,22 @@ pub fn agent_thread(
 pub fn agent_thread_delete(app: AppHandle, id: String) -> Result<(), String> {
     with_db(&app, |db| super::store::delete(db, &id))
         .unwrap_or_else(|| Err("la base no está disponible".to_string()))
+}
+
+/// Sesiones del CLI de Claude Code para un `cwd` (índice local, no import).
+///
+/// Sirven para reanudar con `--resume`. Vacío si no hay carpeta o no hay
+/// transcripts en `~/.claude/projects/…`.
+#[tauri::command]
+pub fn agent_claude_sessions(cwd: String) -> Vec<super::claude_sessions::ClaudeCodeSession> {
+    super::claude_sessions::list_for_cwd(&cwd)
+}
+
+/// Transcript local del CLI, ya en turnos canónicos para pintar el chat.
+#[tauri::command]
+pub fn agent_claude_transcript(
+    cwd: String,
+    id: String,
+) -> Result<Vec<super::model::Turn>, String> {
+    super::claude_sessions::load_transcript(&cwd, &id)
 }

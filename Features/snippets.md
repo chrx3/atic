@@ -4,18 +4,21 @@
 
 ## Resumen
 
-Textos expandibles / atajos de escritura gestionados en Atic para pegar o
-disparar contenido repetitivo sin salir del flujo de trabajo.
+Textos reutilizables gestionados en Atic para pegar contenido repetitivo sin
+salir del flujo de trabajo. La expansión automática por trigger todavía no
+está implementada.
 
 ## Cómo se usa
 
-- Definir snippets en la UI de la app.
-- Invocarlos / pegarlos según el flujo de snippets (lista + pegado al destino).
+- Abrir desde la pill (rueda / atajo): float independiente en el overlay
+  (`.float-emerge`), fundido a la pill. Tabs Textos / Notas.
+- Pegar cierra el float.
 
 ## Código
 
-- [`apps/desktop/src-tauri/src/snippets.rs`](../apps/desktop/src-tauri/src/snippets.rs)
-- Persistencia vía config/DB en [`crates/core/`](../crates/core/)
+- [`apps/desktop/src-tauri/src/snippets.rs`](../apps/desktop/src-tauri/src/snippets.rs) — `show_snippets_window`
+- [`apps/desktop/src/lib/surfaces/overlay/snippets/SnippetsFloat.svelte`](../apps/desktop/src/lib/surfaces/overlay/snippets/SnippetsFloat.svelte)
+- Persistencia local en `snippets.json`, `scratchpad.json` y `notes.json`.
 
 ## Pendiente / siguiente
 

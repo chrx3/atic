@@ -96,7 +96,7 @@ describe("alcance y bulto", () => {
 
   /**
    * Con el hueco de 10 px que usa la app hoy, hasta el k por defecto alcanza —
-   * y por eso las cinco constantes del cuello dibujado de `AgentsSurface`
+   * y por eso las cinco constantes del cuello dibujado del float de agentes
    * (grosor 26→10, piso 6, corte 140, penetración 9/7) dejan de hacer falta.
    */
   it("k = 26 ya cruza el hueco de 10 px de la app", () => {

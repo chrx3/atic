@@ -6,14 +6,16 @@
    * superficies que viven acá se registran en `surfaces.svelte.ts` para que
    * Rust sepa dónde armar la ventana.
    *
-   * Hospeda la pill —con su rueda y sus paneles— y la consola de agentes. Que
+   * Hospeda la pill —con su rueda y sus paneles— y el float de agentes. Que
    * compartan documento no es un detalle de organización: es lo único que
    * permite que el cuello de la burbuja se FUNDA con la pill, porque tanto un
    * filtro SVG como el campo de distancia solo alcanzan lo que está en el mismo
    * `document`.
    */
   import { page } from "$app/state";
-  import AgentsSurface from "$lib/AgentsSurface.svelte";
+  import AgentsFloat from "./agents/AgentsFloat.svelte";
+  import ClipboardFloat from "./clipboard/ClipboardFloat.svelte";
+  import SnippetsFloat from "./snippets/SnippetsFloat.svelte";
   import PillSurface from "./pill/PillSurface.svelte";
   import { getConfig } from "$ipc/config";
   import { onPillVisibility, setOverlayTextMode } from "$ipc/overlay";
@@ -145,9 +147,15 @@
         if (!editable(document.activeElement)) void leaveTextMode();
       }, 0);
     };
+    // Si el foco salta a otra app (Alt+Tab, clic fuera), el `focusout` del DOM
+    // a veces no corre: el textarea sigue siendo `activeElement` y el modo
+    // texto queda pegado. `blur` de la ventana lo devuelve igual.
+    const onWindowBlur = () => void leaveTextMode();
     document.addEventListener("focusout", onFocusOut);
+    window.addEventListener("blur", onWindowBlur);
     return () => {
       document.removeEventListener("focusout", onFocusOut);
+      window.removeEventListener("blur", onWindowBlur);
       void leaveTextMode();
     };
   });
@@ -156,7 +164,7 @@
 <!--
   El orden importa y es al revés de como se lee.
 
-  La consola va PRIMERO para que quede debajo. Con la pill primero, el globo
+  El float va PRIMERO para que quede debajo. Con la pill primero, el globo
   —que es enorme y recibe el mouse en todo su rectángulo— la tapaba: se seguía
   viendo, porque la copia de su silueta vive en la capa fundida y esa se pinta
   encima del cuerpo, pero no se podía ni clicar ni arrastrar.
@@ -167,14 +175,20 @@
 <div class="ov" class:is-debug={debug} onpointerdowncapture={enterTextMode}>
   {#if Lab}
     <div class="lab-host" bind:this={labEl}>
-      <Lab onClose={() => localStorage.removeItem(LAB_KEY)} />
+      <Lab
+        onClose={() => {
+          // `storage` no dispara en la misma ventana: hay que bajar el lab acá.
+          localStorage.removeItem(LAB_KEY);
+          Lab = null;
+        }}
+      />
     </div>
   {:else}
     <!--
       La piel de TODO lo que se funde, trazada una sola vez.
 
       Va acá y no en cada superficie porque un campo de distancia solo funde lo
-      que comparte campo: con la pill trazando su contorno y la consola el suyo,
+      que comparte campo: con la pill trazando su contorno y el float el suyo,
       el cuello entre las dos no podía existir y había que pintarlo a mano.
 
       Primero en el orden, o sea debajo de todo: es una silueta, y el contenido
@@ -182,9 +196,10 @@
     -->
     <Skin shapes={liquid.shapes} />
 
-    <!-- Siempre montada, visible o no: es quien escucha los eventos de sesión,
-         y desmontarla dejaría la consola sorda mientras está cerrada. -->
-    <AgentsSurface />
+    <!-- Floats siempre montados: escuchan anclas/dismiss aunque estén cerrados. -->
+    <AgentsFloat />
+    <ClipboardFloat />
+    <SnippetsFloat />
     {#if shown}
       <PillSurface />
     {/if}

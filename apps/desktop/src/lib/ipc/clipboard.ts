@@ -25,11 +25,21 @@ export const readClipboardDragText = (path: string) =>
 
 /**
  * `fly`: acercar la pill al cursor (atajo global) o expandir donde está.
- * Devuelve los ms que dura el vuelo (0 si no vuela): hay que esperarlos antes
- * de expandir el panel, o el reencuadre se ancla a mitad del recorrido.
+ * Legacy: el historial ya no crece la pill; usa `showClipboardWindow`.
  */
 export const prepareClipboardPill = (fly: boolean) =>
   invoke<number>("prepare_clipboard_pill", { fly });
+
+/** Toggle del float de clipboard (sale de la pill, liquid). */
+export const showClipboardWindow = () => invoke<void>("show_clipboard_window");
+export const hideClipboardWindow = () => invoke<void>("hide_clipboard_window");
+
+export const onClipboardBubbleAnchor = (
+  cb: (a: import("$core/types").BubbleOpen) => void,
+): Promise<UnlistenFn> => on("clipboard-bubble-anchor", cb);
+
+export const onClipboardBubbleDismiss = (cb: () => void): Promise<UnlistenFn> =>
+  on("clipboard-bubble-dismiss", cb);
 
 export const onClipboardHistoryChanged = (cb: () => void): Promise<UnlistenFn> =>
   on("clipboard-history-changed", cb);

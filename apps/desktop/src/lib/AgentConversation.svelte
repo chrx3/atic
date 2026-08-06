@@ -4,7 +4,7 @@
    *
    * # Por qué vive aparte
    *
-   * `AgentsSurface.svelte` mezclaba tres cosas que no tienen nada que ver
+   * El float de agentes mezclaba tres cosas que no tienen nada que ver
    * entre sí: la geometría del globo anclado a la pill, el protocolo con el
    * backend, y esto. Sacar el render deja el archivo grande hablando de una
    * cosa menos, y sobre todo hace que dibujar una conversación **no dependa de
@@ -114,18 +114,37 @@
       {/each}
     </div>
   {:else if item.kind === "notice"}
-    <p class="warn">{item.text}</p>
+    {@const summary = item.text.startsWith("Resumen del contexto")}
+    {@const info =
+      item.text.startsWith("Compactando el contexto") ||
+      item.text.startsWith("Contexto compactado") ||
+      item.text.startsWith("Esfuerzo:") ||
+      item.text.startsWith("Modelo:") ||
+      item.text.startsWith("Plan mode") ||
+      item.text.startsWith("Permisos:") ||
+      item.text.startsWith("Limpiando la conversación") ||
+      item.text.startsWith("Consultando uso") ||
+      item.text.startsWith("Consultando costo")}
+    {#if summary}
+      <div class="summary" role="note">
+        <p class="summary-h">Resumen del contexto</p>
+        <p class="summary-b">{item.text.replace(/^Resumen del contexto\n*/, "")}</p>
+      </div>
+    {:else if info}
+      <p class="info">{item.text}</p>
+    {:else}
+      <p class="warn">{item.text}</p>
+    {/if}
   {/if}
 
   <!-- Cierre de turno: una regla con el costo al medio. Separa las respuestas
        entre sí, que sin esto se leían como una sola. -->
   {#if turnEnds.has(item.id)}
-    <p class="turn">
-      <span class="turn-t"
-        >{turnEnds.get(item.id) !== null
-          ? `$${turnEnds.get(item.id)?.toFixed(4)}`
-          : "fin del turno"}</span
-      >
+    {@const cost = turnEnds.get(item.id)}
+    <p class="turn" class:is-bare={cost == null}>
+      {#if cost != null}
+        <span class="turn-t">${cost.toFixed(4)}</span>
+      {/if}
     </p>
   {/if}
 {/each}
@@ -157,17 +176,20 @@
     }
   }
 
-  /* El turno del usuario: barra al costado, sin caja. Es la voz propia dentro
-     del registro, no una tarjeta más. */
+  /* El turno del usuario: etiqueta coral, sin caja ni franja lateral. */
   .mine {
-    border-left: 2px solid var(--coral);
-    padding-left: 0.55rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+    align-items: flex-end;
+    text-align: right;
   }
   .mine-who {
     display: block;
-    color: var(--faint);
-    font-size: 0.6875rem;
-    letter-spacing: 0.03em;
+    color: var(--coral);
+    font-size: 0.6rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
   }
 
   /* De dónde vino: dictado, captura, portapapeles. */
@@ -249,8 +271,9 @@
   }
 
   .think {
-    border-left: 2px solid var(--line);
-    padding-left: 0.55rem;
+    border-radius: 8px;
+    padding: 0.4rem 0.55rem;
+    background: color-mix(in srgb, var(--faint) 10%, transparent);
     color: var(--faint);
     font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
     font-size: 0.6875rem;
@@ -285,11 +308,11 @@
   .turn {
     display: flex;
     align-items: center;
-    gap: 0.6rem;
-    margin: 0.15rem 0;
+    gap: 0.45rem;
+    margin: 0.05rem 0;
     color: var(--faint);
     font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
-    font-size: 0.625rem;
+    font-size: 0.55rem;
   }
   .turn::before,
   .turn::after {
@@ -297,6 +320,9 @@
     flex: 1;
     background: var(--line);
     content: "";
+  }
+  .turn.is-bare::after {
+    content: none;
   }
   .turn-t {
     flex-shrink: 0;
@@ -311,5 +337,40 @@
     font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
     font-size: 0.71875rem;
     line-height: 1.5;
+  }
+
+  .info {
+    margin: 0;
+    color: var(--dim);
+    font-size: 0.62rem;
+    line-height: 1.3;
+  }
+
+  .summary {
+    display: flex;
+    flex-direction: column;
+    gap: 0.12rem;
+    margin: 0.05rem 0;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 0.3rem 0.4rem;
+    background: color-mix(in srgb, var(--coral) 6%, transparent);
+  }
+
+  .summary-h {
+    margin: 0;
+    color: var(--faint);
+    font-size: 0.55rem;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+  }
+
+  .summary-b {
+    margin: 0;
+    color: var(--dim);
+    font-size: 0.7rem;
+    line-height: 1.35;
+    white-space: pre-wrap;
   }
 </style>

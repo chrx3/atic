@@ -1,0 +1,320 @@
+<!doctype html>
+<html lang="es" data-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Atic · la rueda, líquida</title>
+    <link rel="stylesheet" href="liquid.css" />
+    <style>
+      /* ───────────────────────────────────────────────────────────────────
+         Geometría de apps/desktop/src/lib/ParticleWheel.svelte (variante
+         compacta): lado 232, anillo a 0.34 del lado, seis gajos de
+         `lib/tools.ts` en ángulos de 60° arrancando arriba.
+
+         El cambio de diseño: en la app la rueda es UN disco translúcido con
+         los iconos encima. Acá los seis son gotas que se desprenden del
+         núcleo — el mismo morph «plus → menu», pero de líquido.
+         ─────────────────────────────────────────────────────────────────── */
+
+      .scene {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        width: 320px;
+        height: 320px;
+        transform: translate(-50%, -50%);
+      }
+
+      .blob {
+        border-radius: 999px;
+      }
+
+      .ink > * {
+        position: absolute;
+        display: grid;
+        place-items: center;
+      }
+      .node-ink {
+        color: var(--rb-muted);
+        line-height: 0;
+      }
+      .node-ink.is-hot {
+        color: var(--rb-text);
+      }
+      .core-ink {
+        color: var(--rb-text);
+        line-height: 0;
+      }
+
+      /* Chip propio: el rótulo cae sobre el fondo, que cambia con el tema, y
+         un color fijo se volvería ilegible en una de las dos variantes. */
+      .caption {
+        position: absolute;
+        top: calc(50% + 116px);
+        left: 50%;
+        padding: 6px 12px;
+        transform: translateX(-50%);
+        border-radius: 999px;
+        background: rgba(10, 10, 14, 0.82);
+        border: 1px solid rgba(255, 255, 255, 0.16);
+        color: #fff;
+        font-size: 0.625rem;
+        font-weight: 600;
+        letter-spacing: 0.14em;
+        text-align: center;
+        text-transform: uppercase;
+        white-space: nowrap;
+      }
+    </style>
+  </head>
+  <body>
+    <a class="back" href="index.html">← Todas las demos</a>
+
+    <main class="stage">
+      <div class="scene stack">
+        <div class="skin" id="skin">
+          <i class="blob" id="core"></i>
+        </div>
+        <div class="ink" id="ink">
+          <span class="core-ink" id="coreInk">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="12" cy="12" r="5.5"/><path d="M17.5 6.5V17.5"/></svg>
+          </span>
+        </div>
+      </div>
+      <p class="caption" id="caption">Herramientas</p>
+    </main>
+
+    <div class="gauge">
+      <dl>
+        <dt>progreso</dt>
+        <dd id="gT">0%</dd>
+        <dt>hueco</dt>
+        <dd id="gGap">—</dd>
+        <dt>alcance</dt>
+        <dd id="gReach">—</dd>
+      </dl>
+      <div class="state" id="gState">fundido</div>
+    </div>
+
+    <div class="note">
+      <p>
+        <b>Qué es real.</b> Los seis gajos de <code>TOOLS</code> en ángulos de
+        60° arrancando arriba, el disco de 40 en reposo, y las curvas:
+        <code>350ms</code> con rebote al abrir, <code>250ms</code> calmo al
+        cerrar. El núcleo <b>no escala</b>, igual que hoy: es el punto fijo que
+        hace continua la transición con la pill cerrada.
+      </p>
+      <p>
+        <b>Qué cambia.</b> Hoy la rueda es un disco con iconos encima. Acá las
+        seis herramientas <b>salen</b> del núcleo: viajan estiradas, el cuello
+        se afina, y se cortan recién al <b>92%</b> del recorrido.
+      </p>
+      <p>
+        <b>El anillo tampoco es el de hoy.</b> La app lo pone a
+        <code>0.34</code> del lado (78.9 px); acá está en <b>70</b> —0.30— con
+        gotas de 56 en vez de 44, para que el conjunto se lea como una cosa y no
+        como seis botones sueltos.
+      </p>
+      <p>
+        Eso tiene un precio: el hueco final queda en <b>13 px</b>, y como el
+        alcance es <code>1.72·σ</code>, por encima de <b>σ = 7.5</b> las gotas
+        ya no se sueltan nunca. Subí la viscosidad y se ve.
+      </p>
+    </div>
+
+    <script src="liquid.js"></script>
+    <script>
+      Liquid.theme(true);
+      Liquid.desk();
+      Liquid.note();
+
+      // lib/tools.ts, en orden.
+      var TOOLS = [
+        { id: "meetings", label: "Reuniones", icon: '<circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="2.25" fill="currentColor" stroke="none"/>' },
+        { id: "dictation", label: "Dictado", icon: '<rect x="9.5" y="3" width="5" height="11" rx="2.5"/><path d="M6.5 12a5.5 5.5 0 0 0 11 0"/><path d="M12 17.5V20"/>' },
+        { id: "clipboard", label: "Clipboard", icon: '<path d="M4 15V4h11"/><rect x="9" y="9" width="11" height="11"/>' },
+        { id: "snippets", label: "Textos", icon: '<path d="M5 7h14"/><path d="M5 12h9"/><path d="M5 17h12"/>' },
+        { id: "agents", label: "Agentes", icon: '<rect x="3" y="4.5" width="18" height="15" rx="2"/><path d="M7 10l2.5 2.5L7 15"/><path d="M12.5 15.5H17"/>' },
+        { id: "captures", label: "Capturas", icon: '<path d="M4 9V4h5"/><path d="M15 4h5v5"/><path d="M20 15v5h-5"/><path d="M9 20H4v-5"/>' },
+      ];
+
+      var SIDE = 232;
+      // El anillo NO es el 0.34 de la app (78.9): las gotas son más grandes y
+      // se juntan más, que es lo que hace que el conjunto se lea como una cosa
+      // y no como seis botones sueltos. Equivale a 0.30 del lado.
+      //
+      // El límite de abajo lo pone la fusión: con anillo 70 y radios 29 y 28,
+      // el hueco final es 13 px — por encima de los 8.6 del alcance, así que
+      // se sueltan. Bajarlo más deja las gotas pegadas al núcleo para siempre.
+      var RING = 70;
+      var DISC = 40; // la pill en reposo
+      var CORE_OPEN = 58;
+      var NODE_OPEN = 56;
+
+      var skin = document.getElementById("skin");
+      var ink = document.getElementById("ink");
+      var core = document.getElementById("core");
+      var coreInk = document.getElementById("coreInk");
+      var caption = document.getElementById("caption");
+
+      var fusion = Liquid.goo(skin, {
+        sigma: 5,
+        shadow: "drop-shadow(0 12px 26px rgba(0, 0, 0, 0.45))",
+      });
+
+      /** Ángulo del nodo i; 0 rad = arriba, sentido horario. */
+      function nodeAngle(i) {
+        return (i / TOOLS.length) * Math.PI * 2 - Math.PI / 2;
+      }
+
+      var nodes = TOOLS.map(function (tool, i) {
+        var blob = document.createElement("i");
+        blob.className = "blob";
+        skin.appendChild(blob);
+
+        var label = document.createElement("span");
+        label.className = "node-ink";
+        label.innerHTML =
+          '<svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="butt" stroke-linejoin="miter">' +
+          tool.icon +
+          "</svg>";
+        label.title = tool.label;
+        ink.appendChild(label);
+
+        label.addEventListener("pointerenter", function () {
+          label.classList.add("is-hot");
+          caption.textContent = tool.label;
+        });
+        label.addEventListener("pointerleave", function () {
+          label.classList.remove("is-hot");
+          caption.textContent = "Herramientas";
+        });
+
+        return { tool: tool, blob: blob, label: label, angle: nodeAngle(i) };
+      });
+
+      var lerp = function (a, b, t) {
+        return a + (b - a) * t;
+      };
+
+      var gT = document.getElementById("gT");
+      var gGap = document.getElementById("gGap");
+      var gReach = document.getElementById("gReach");
+      var gState = document.getElementById("gState");
+      var progress = null;
+      var stop = null;
+      var t = 0;
+
+      function render(next) {
+        t = next;
+        var box = 320;
+        var c = box / 2;
+
+        var coreD = lerp(DISC, CORE_OPEN, t);
+        core.style.cssText =
+          "left:" + (c - coreD / 2) + "px; top:" + (c - coreD / 2) +
+          "px; width:" + coreD + "px; height:" + coreD + "px";
+        coreInk.style.cssText =
+          "left:" + (c - coreD / 2) + "px; top:" + (c - coreD / 2) +
+          "px; width:" + coreD + "px; height:" + coreD + "px";
+
+        var r = lerp(0, RING, t);
+        var nodeD = lerp(DISC, NODE_OPEN, t);
+        // Estirón: la gota se alarga en el sentido en que viaja y se afina en
+        // el otro. Es lo que hace que se lea como líquido y no como un ícono
+        // deslizándose. Máximo a mitad de camino, cero en los extremos.
+        var squash = 0.22 * Math.sin(Math.PI * t);
+
+        nodes.forEach(function (node) {
+          var x = c + Math.cos(node.angle) * r;
+          var y = c + Math.sin(node.angle) * r;
+          var deg = (node.angle * 180) / Math.PI;
+          node.blob.style.cssText =
+            "left:" + (x - nodeD / 2) + "px; top:" + (y - nodeD / 2) +
+            "px; width:" + nodeD + "px; height:" + nodeD +
+            "px; transform: rotate(" + deg + "deg) scale(" + (1 + squash) + "," +
+            (1 - squash * 0.7) + ") rotate(" + -deg + "deg)";
+          // El ícono aparece recién cuando la gota ya se soltó: antes viaja
+          // dentro del líquido y se vería flotando sobre el cuello.
+          var show = Math.max(0, (t - 0.62) / 0.38);
+          node.label.style.cssText =
+            "left:" + (x - nodeD / 2) + "px; top:" + (y - nodeD / 2) +
+            "px; width:" + nodeD + "px; height:" + nodeD +
+            "px; opacity:" + show.toFixed(3);
+        });
+
+        var gap = r - coreD / 2 - nodeD / 2;
+        var reach = fusion.reach;
+        gT.textContent = Math.round(t * 100) + "%";
+        gGap.textContent = gap.toFixed(1) + " px";
+        gReach.textContent = reach.toFixed(1) + " px";
+        var joined = gap < reach;
+        gState.textContent = joined ? "fundido" : "cortado";
+        gState.classList.toggle("is-cut", !joined);
+        caption.style.opacity = t < 0.5 ? 0 : (t - 0.5) / 0.5;
+        Liquid.setRange(progress, t);
+      }
+
+      function play(forward) {
+        if (stop) stop();
+        stop = Liquid.animate({
+          from: forward ? 0 : 1,
+          to: forward ? 1 : 0,
+          duration: forward ? 350 : 250,
+          ease: forward ? Liquid.EASE.morph : Liquid.EASE.close,
+          onFrame: render,
+        });
+      }
+
+      render(0);
+
+      var bar = Liquid.controls([
+        {
+          type: "range",
+          label: "Progreso",
+          min: 0,
+          max: 1,
+          step: 0.005,
+          value: 0,
+          on: function (v) {
+            if (stop) stop();
+            render(v);
+          },
+        },
+        {
+          type: "range",
+          label: "Viscosidad σ",
+          min: 0,
+          max: 20,
+          step: 0.5,
+          value: 5,
+          on: function (v) {
+            fusion.set(v);
+            render(t);
+          },
+        },
+        { type: "sep" },
+        { type: "button", label: "Abrir ▸", on: function () { play(true); } },
+        { type: "button", label: "◂ Cerrar", on: function () { play(false); } },
+        {
+          type: "toggle",
+          label: "Tema oscuro",
+          labelOn: "Tema claro",
+          value: true,
+          on: function (dark) {
+            document.documentElement.dataset.theme = dark ? "dark" : "light";
+          },
+        },
+        {
+          type: "toggle",
+          label: "Congelar",
+          labelOn: "Mover",
+          on: function (on) {
+            document.body.classList.toggle("static", on);
+          },
+        },
+      ]);
+      progress = bar.querySelector("input");
+    </script>
+  </body>
+</html>

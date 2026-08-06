@@ -137,6 +137,14 @@ textarea,
   --duration-quick: 150ms;
   --duration-fast: 250ms;
   --duration-medium: 350ms;
+  --duration-slow: 400ms;
+  --scale-large: 0.96;
+  --blur-small: 2px;
+  --float-open-dur: var(--duration-slow);
+  --float-close-dur: var(--duration-medium);
+  --float-ease: var(--ease-smooth-out);
+  --float-scale: var(--scale-large);
+  --float-blur: var(--blur-small);
   --ease-smooth-out: cubic-bezier(0.22, 1, 0.36, 1);
 
   /* Sistema hairline: el trazo fino es la piel de toda la UI. */
@@ -149,8 +157,7 @@ textarea,
    * `--skin` es el color de toda superficie que se funde. Tiene que ser UNO
    * solo por grupo fundido: el cuello lo pinta el difuminado, que promedia lo
    * que tenga cerca, así que dos tonos distintos dejan una franja sucia justo
-   * en la unión. Una superficie con paleta propia lo redefine localmente —la
-   * burbuja de agentes lo apunta a su `--shell`.
+   * en la unión.
    *
    * `--goo-grow` es lo que el endurecido del filtro le agrega a la silueta por
    * lado. Quien dibuje una forma de tamaño exacto tiene que restarle el doble
@@ -159,11 +166,6 @@ textarea,
    */
   --skin: color-mix(in srgb, var(--rb-surface) 97%, transparent);
   --goo-grow: 1.4px;
-  /* Tono de la consola de agentes. Vive acá y no solo en su componente porque
-     la pill lo adopta mientras están fundidas. */
-  --console-shell: #1c1917;
-  --console-ink: #e7e2dd;
-  --console-dim: #8d827a;
 
   --rb-radius: 14px;
   --rb-radius-sm: 8px;
@@ -179,23 +181,50 @@ textarea,
   -webkit-font-smoothing: antialiased;
 }
 
+
 /*
- * Con la consola de agentes desplegada, la pill toma su paleta.
- *
- * La regla del sistema líquido es que lo que se funde va de UN solo color: el
- * cuello lo pinta el difuminado, que promedia lo que tenga cerca, así que dos
- * tonos distintos dejan una franja sucia justo en la unión. La consola tiene
- * paleta propia y fija —imita una terminal, no sigue al tema—, así que la que
- * cede es la pill.
- *
- * Y cede también la tinta, no solo la piel: sobre el casi negro de la consola,
- * la marca y las etiquetas de la pill quedarían negro sobre negro.
+ * Ventana flotante que sale de la pill.
+ * Usar con `.float-emerge` + `.is-shown` + `data-side` (top|bottom|left|right).
  */
-:root.is-console-open {
-  --skin: var(--console-shell);
-  --rb-text: var(--console-ink);
-  --rb-muted: var(--console-dim);
-  --rb-faint: var(--console-dim);
+.float-emerge {
+  opacity: 0;
+  transform: scale(var(--float-scale));
+  filter: blur(var(--float-blur));
+  pointer-events: none;
+  transition:
+    opacity var(--float-close-dur) var(--float-ease),
+    transform var(--float-close-dur) var(--float-ease),
+    filter var(--float-close-dur) var(--float-ease);
+}
+.float-emerge.is-shown {
+  opacity: 1;
+  transform: none;
+  filter: blur(0);
+  pointer-events: auto;
+  transition:
+    opacity var(--float-open-dur) var(--float-ease),
+    transform var(--float-open-dur) var(--float-ease),
+    filter var(--float-open-dur) var(--float-ease);
+}
+.float-emerge[data-side="top"] {
+  transform-origin: var(--tail, 50%) 0;
+}
+.float-emerge[data-side="bottom"] {
+  transform-origin: var(--tail, 50%) 100%;
+}
+.float-emerge[data-side="left"] {
+  transform-origin: 0 var(--tail, 50%);
+}
+.float-emerge[data-side="right"] {
+  transform-origin: 100% var(--tail, 50%);
+}
+@media (prefers-reduced-motion: reduce) {
+  .float-emerge,
+  .float-emerge.is-shown {
+    transition: none;
+    filter: none;
+    transform: none;
+  }
 }
 
 :root[data-theme="dark"] {

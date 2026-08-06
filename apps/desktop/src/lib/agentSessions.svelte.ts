@@ -48,6 +48,29 @@ export interface PendingPermission {
   input: unknown;
 }
 
+/** Catálogo `/` de la última sesión, para el primer `/` en frío. */
+const CATALOG_KEY = "atic.agents.slashCatalog";
+
+function readStoredCatalog(): Record<string, SlashCommand[]> {
+  try {
+    const raw = localStorage.getItem(CATALOG_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object") return {};
+    return parsed as Record<string, SlashCommand[]>;
+  } catch {
+    return {};
+  }
+}
+
+function writeStoredCatalog(catalog: Record<string, SlashCommand[]>): void {
+  try {
+    localStorage.setItem(CATALOG_KEY, JSON.stringify(catalog));
+  } catch {
+    // Quota / modo privado: el menú sigue con fallback + skills.
+  }
+}
+
 /**
  * En qué anda una sesión.
  *
@@ -125,7 +148,7 @@ class AgentSessionStore {
    * autocompletado. Son estables para un backend dado, así que los de la última
    * sesión sirven perfectamente para el primer `/` de la siguiente.
    */
-  catalog = $state<Record<string, SlashCommand[]>>({});
+  catalog = $state<Record<string, SlashCommand[]>>(readStoredCatalog());
 
   /**
    * Skills leídas del disco, con descripción.
@@ -147,6 +170,14 @@ class AgentSessionStore {
    * es la que siempre está viva.
    */
   #notifier = false;
+  /**
+   * Si un turno no cierra (`turn.end` / `failed`), el composer queda bloqueado.
+   * Tras 45s sin deltas, liberamos la sesión.
+   */
+  static readonly WORKING_TIMEOUT_MS = 45_000;
+  #workingTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  /** Sesiones que el usuario pidió cortar: un delta tardío no las revive. */
+  #stopped = new Set<string>();
 
   /** Hay algo pendiente de leer: lo que enciende el aviso en la pill. */
   get unread(): number {
@@ -198,10 +229,36 @@ class AgentSessionStore {
     options?: AgentStartOptions,
   ): Promise<string> {
     const id = await agentStart(backendId, options);
+    this.#stopped.delete(id);
     // El primer evento la crearía igual; crearla acá evita el hueco en el que
     // la UI ya tiene el id pero todavía no tiene nada que mostrar.
     this.#ensure(id, backendId, backendId);
     return id;
+  }
+
+  /**
+   * Rellena una sesión viva con un hilo guardado (p. ej. tras `resume`).
+   * Sin esto el transcript queda vacío hasta el próximo turno.
+   */
+  hydrate(
+    id: string,
+    patch: {
+      turns?: AgentTurn[];
+      cwd?: string;
+      model?: string;
+      providerSession?: string | null;
+      costUsd?: number;
+    },
+  ): void {
+    const s = this.byId(id);
+    if (!s) return;
+    if (patch.turns) s.turns = patch.turns;
+    if (patch.cwd !== undefined) s.cwd = patch.cwd;
+    if (patch.model !== undefined) s.model = patch.model;
+    if (patch.providerSession !== undefined) {
+      s.providerSession = patch.providerSession;
+    }
+    if (patch.costUsd !== undefined) s.costUsd = patch.costUsd;
   }
 
   async send(id: string, text: string, origin?: AgentOrigin): Promise<void> {
@@ -209,16 +266,69 @@ class AgentSessionStore {
     if (session) {
       session.status = "working";
       session.error = null;
+      this.#armWorkingTimeout(id);
     }
     try {
       await agentSend(id, text, origin);
     } catch (err) {
+      this.#clearWorkingTimeout(id);
       if (session) {
         session.status = "failed";
         session.error = String(err);
       }
       throw err;
     }
+  }
+
+  /**
+   * Compacta el contexto del CLI (`/compact`), opcionalmente con instrucciones
+   * de qué conservar. El adaptador pinta aviso + resumen; acá se recorta el
+   * historial de Atic para que coincida con el contexto vivo.
+   */
+  async compact(id: string, keep?: string): Promise<void> {
+    const hint = keep?.trim();
+    const cmd = hint ? `/compact ${hint}` : "/compact";
+    await this.send(id, cmd);
+  }
+
+  /**
+   * Tras un resumen de compactación, deja solo desde el aviso de compactar.
+   * El JSONL del CLI conserva todo; la UI refleja el contexto activo.
+   */
+  collapseAfterCompact(id: string): void {
+    const s = this.byId(id);
+    if (!s || s.turns.length === 0) return;
+    let start = -1;
+    for (let i = 0; i < s.turns.length; i++) {
+      for (const it of s.turns[i].items) {
+        if (
+          it.kind === "notice" &&
+          (it.text.startsWith("Compactando el contexto") ||
+            it.text.startsWith("Contexto compactado") ||
+            it.text.startsWith("Resumen del contexto"))
+        ) {
+          if (start < 0 || it.text.startsWith("Compactando el contexto")) {
+            start = i;
+          }
+          break;
+        }
+      }
+    }
+    if (start < 0) return;
+    // El aviso “Compactando…” ya cumplió; quedan boundary + resumen.
+    s.turns = s.turns
+      .slice(start)
+      .map((t) => ({
+        ...t,
+        items: t.items.filter(
+          (it) =>
+            !(
+              it.kind === "notice" &&
+              it.text.startsWith("Compactando el contexto")
+            ),
+        ),
+      }))
+      .filter((t) => t.items.length > 0);
   }
 
   /** Cambia el modelo, el esfuerzo y (si aplica) la variante rápida. */
@@ -238,12 +348,20 @@ class AgentSessionStore {
   }
 
   async stop(id: string): Promise<void> {
-    // Sacarla de la lista antes de esperar: `stop` bloquea hasta que el proceso
-    // vacía sus buffers, y la UI no debería quedarse mostrando una sesión que
-    // el usuario ya cerró.
+    // Sacarla de la lista antes de esperar: `stop` puede tardar en matar el
+    // proceso, y la UI no debería quedarse mostrando una sesión que el usuario
+    // ya cerró. `#stopped` evita que un delta en vuelo la recree con `#ensure`.
+    this.#stopped.add(id);
+    this.#clearWorkingTimeout(id);
     this.sessions = this.sessions.filter((s) => s.id !== id);
     if (this.watching === id) this.watching = null;
-    await agentStop(id);
+    try {
+      await agentStop(id);
+    } finally {
+      // Liberar tras un rato: el id es un UUID, no se reutiliza, pero el set
+      // no tiene por qué crecer sin techo a lo largo de la sesión de la app.
+      window.setTimeout(() => this.#stopped.delete(id), 30_000);
+    }
   }
 
   byId(id: string | null): AgentSessionView | undefined {
@@ -256,6 +374,46 @@ class AgentSessionStore {
     this.watching = id;
     const session = this.byId(id);
     if (session) session.unread = 0;
+  }
+
+  /**
+   * Watch ligado a la visibilidad del float.
+   * Cerrado → `null` para que unread/avisos de la pill vuelvan a funcionar.
+   */
+  watchVisible(shown: boolean, id: string | null): void {
+    this.watch(shown ? id : null);
+  }
+
+  #armWorkingTimeout(id: string): void {
+    this.#clearWorkingTimeout(id);
+    const t = setTimeout(() => {
+      this.#workingTimers.delete(id);
+      const s = this.byId(id);
+      if (!s || s.status !== "working") return;
+      s.status = "failed";
+      s.error =
+        "El agente no respondió a tiempo. Podés reintentar o detener la sesión.";
+      const last = s.turns.at(-1);
+      if (last?.status === "running") last.status = "failed";
+    }, AgentSessionStore.WORKING_TIMEOUT_MS);
+    this.#workingTimers.set(id, t);
+  }
+
+  #clearWorkingTimeout(id: string): void {
+    const t = this.#workingTimers.get(id);
+    if (t !== undefined) {
+      clearTimeout(t);
+      this.#workingTimers.delete(id);
+    }
+  }
+
+  /** Cualquier delta de la sesión reinicia el reloj de “working”. */
+  #touchWorking(id: string, status: AgentStatus): void {
+    if (status === "working" || status === "waiting") {
+      this.#armWorkingTimeout(id);
+    } else {
+      this.#clearWorkingTimeout(id);
+    }
   }
 
   #ensure(id: string, backendId: string, backendName: string): AgentSessionView {
@@ -320,6 +478,7 @@ class AgentSessionStore {
    * delta es el mismo tipo, no una copia paralela.
    */
   #receive(payload: AgentDeltaPayload): void {
+    if (this.#stopped.has(payload.session)) return;
     const s = this.#ensure(
       payload.session,
       payload.backendId,
@@ -373,6 +532,13 @@ class AgentSessionStore {
         } else if (it.kind === "message" && it.role === "assistant" && !it.streaming) {
           s.lastText = it.text;
           if (unseen) s.unread += 1;
+        } else if (
+          it.kind === "notice" &&
+          it.text.startsWith("Resumen del contexto")
+        ) {
+          // El chat de Atic pasa a reflejar el contexto compactado.
+          this.collapseAfterCompact(s.id);
+          s.lastText = "Contexto compactado";
         }
         break;
       }
@@ -423,6 +589,7 @@ class AgentSessionStore {
         if (p.commands !== undefined) {
           s.commands = p.commands;
           this.catalog = { ...this.catalog, [s.backendId]: p.commands };
+          writeStoredCatalog(this.catalog);
         }
         break;
       }
@@ -456,6 +623,8 @@ class AgentSessionStore {
         break;
       }
     }
+
+    this.#touchWorking(s.id, s.status);
   }
 
   /**
@@ -489,7 +658,10 @@ class AgentSessionStore {
     const session = this.byId(sessionId);
     if (!session) return;
     session.pending = session.pending.filter((p) => p.id !== permissionId);
-    if (session.pending.length === 0) session.status = "working";
+    if (session.pending.length === 0) {
+      session.status = "working";
+      this.#armWorkingTimeout(sessionId);
+    }
     await agentPermission(sessionId, permissionId, decision);
   }
 

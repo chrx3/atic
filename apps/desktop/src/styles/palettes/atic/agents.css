@@ -2,7 +2,7 @@
  * Un acento por backend de agente.
  *
  * Es lo único que sobrevive como color propio de la consola: los otros ~70
- * literales que había repartidos por `AgentsSurface` y `PickerMenu` eran una
+ * literales que había repartidos por el float de agentes y `PickerMenu` eran una
  * paleta paralela, y se pliegan a la de la app.
  *
  * Se aplica en el elemento que representa la sesión, no en `:root`: puede

@@ -1,9 +1,10 @@
 # Atic
 
 Asistente de escritorio que graba el audio del PC (micrófono + sistema) durante
-llamadas y reuniones, para luego transcribirlo localmente y generar resúmenes
-que se pueden enviar por correo. Multiplataforma (Windows y macOS), liviano y no
-intrusivo: barra flotante ("pill"), atajo global y bandeja del sistema.
+llamadas y reuniones, para luego transcribirlo con Whisper local —o con Groq si
+el usuario elige ese backend— y generar resúmenes que se pueden enviar por
+correo. Multiplataforma (Windows y macOS), liviano y no intrusivo: barra
+flotante ("pill"), atajo global y bandeja del sistema.
 
 > Estado: **Fases 1–3 y 5** completas en Windows. **Fase 4** (macOS system
 > audio) en andamiaje — requiere Mac. **Fase 6** documentada en
@@ -25,7 +26,7 @@ crates/
   core/        Dominio: grabaciones, storage SQLite, config, secretos (keyring)
   audio/       Captura mic + loopback (WASAPI en Windows; stub macOS fase 4)
   capture/     Capturas de pantalla (ventana / región / monitor) en Windows
-  transcribe/  Whisper local + live + import de audio
+  transcribe/  Whisper local + Groq opcional + live + import de audio
   summarize/   Resumen BYOK: Claude, Ollama, OpenAI-compat (OpenAI, OpenRouter, Groq, MiniMax, Custom)
   mailer/      Envío SMTP (lettre) o borrador mailto:
 apps/desktop/  App Tauri 2: ventana principal + pill + tray + capturas + detección de llamadas

@@ -1,4 +1,4 @@
-//! Transcripción de audio a texto, 100% local (whisper.cpp vía whisper-rs).
+//! Transcripción de audio a texto con Whisper local y Groq opcional (BYOK).
 //!
 //! Fase 2: gestor de modelos (descarga bajo demanda), decodificación de WAV a
 //! mono 16 kHz y transcripción por pista con fusión de segmentos.

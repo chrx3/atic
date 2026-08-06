@@ -30,6 +30,7 @@
 
 <ToolPage
   title="Dictado"
+  icon="dictation"
   kicker="Voz a texto"
   blurb="Hablá y el texto se pega en la app donde estabas."
 >

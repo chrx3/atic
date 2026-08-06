@@ -22,12 +22,6 @@ describe("contentFor", () => {
     expect(contentFor("wheel", 999)).toEqual({ w: side, h: side });
   });
 
-  it("el panel ignora el ancho de la barra", () => {
-    const panel = { w: PILL.panelW, h: PILL.bar + PILL.panelH };
-    expect(contentFor("clipboard", 20)).toEqual(panel);
-    expect(contentFor("snippets", 999)).toEqual(panel);
-  });
-
   it("el destino agrega el respiro de los dos lados", () => {
     expect(targetFor("none", PILL.bar)).toEqual({
       w: PILL.bar + PILL.pad * 2,
@@ -37,30 +31,12 @@ describe("contentFor", () => {
 });
 
 describe("pivotFor", () => {
-  const base = { collapsingFrom: null, panelUp: false } as const;
+  const base = { collapsingFrom: null } as const;
 
   it("la rueda crece y se cierra desde su centro", () => {
     expect(pivotFor({ ...base, surface: "wheel" })).toBe("center");
     expect(pivotFor({ ...base, surface: "none", collapsingFrom: "wheel" })).toBe(
       "center",
-    );
-  });
-
-  it("el panel deja que Rust decida hacia dónde abre", () => {
-    expect(pivotFor({ ...base, surface: "clipboard" })).toBe("panel");
-    expect(pivotFor({ ...base, surface: "snippets" })).toBe("panel");
-  });
-
-  /**
-   * El «punto C»: sin distinguir de qué se cierra, el panel colapsaba hacia su
-   * propio centro y recién desde ahí volaba al hogar.
-   */
-  it("al cerrar un panel clava la barra donde está", () => {
-    expect(pivotFor({ surface: "none", collapsingFrom: "panel", panelUp: false })).toBe(
-      "topLeft",
-    );
-    expect(pivotFor({ surface: "none", collapsingFrom: "panel", panelUp: true })).toBe(
-      "bottomLeft",
     );
   });
 
@@ -86,9 +62,6 @@ describe("morphsInPlace", () => {
   });
 
   it("no anima los colapsos: tienen su propia coreografía", () => {
-    expect(
-      morphsInPlace({ from: size, surface: "none", collapsingFrom: "panel" }),
-    ).toBe(false);
     expect(
       morphsInPlace({ from: size, surface: "none", collapsingFrom: "wheel" }),
     ).toBe(false);
@@ -118,7 +91,6 @@ describe("isDiscOnly", () => {
     expect(isDiscOnly({ ...idle, activity: "dictating" })).toBe(false);
     expect(isDiscOnly({ ...idle, hasQueue: true })).toBe(false);
     expect(isDiscOnly({ ...idle, agentAlert: true })).toBe(false);
-    expect(isDiscOnly({ ...idle, surface: "clipboard" })).toBe(false);
   });
 
   it("la rueda no cuenta: la barra de abajo sigue siendo el disco", () => {

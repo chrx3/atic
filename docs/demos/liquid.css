@@ -1,0 +1,417 @@
+/* ───────────────────────────────────────────────────────────────────────────
+   Tokens copiados de apps/desktop/src/app.css, sin tocar.
+   Si acá se ven distintos que en la app, la demo está mintiendo.
+   ─────────────────────────────────────────────────────────────────────────── */
+:root {
+  color-scheme: light;
+  --rb-font: "Aptos", "Avenir Next", "Helvetica Neue", "Segoe UI Variable", sans-serif;
+  --rb-mono: "Cascadia Mono", "SFMono-Regular", "Roboto Mono", monospace;
+
+  --rb-bg0: #ecece6;
+  --rb-bg1: #e2e2da;
+  --rb-surface: #f7f7f2;
+  --rb-surface-2: #efefe8;
+  --rb-surface-elevated: #ffffff;
+  --rb-border: rgba(28, 28, 24, 0.11);
+  --rb-text: #171714;
+  --rb-muted: #5f5f58;
+  --rb-faint: #8f8f86;
+
+  --rb-record: #d6453d;
+  --rb-accent: #1a1a17;
+  --rb-warn: #946718;
+  --rb-ok: #3f7355;
+
+  /* transitions.dev — plus → menu morph (rueda de la pill).
+     Asimétrico a propósito: abrir es el momento expresivo (bouncy, 350ms),
+     cerrar es utilitario y debe quitarse del camino (calmo, 250ms). */
+  --morph-open-dur: 350ms;
+  --morph-close-dur: 250ms;
+  --morph-ease: cubic-bezier(0.34, 1.25, 0.64, 1);
+  --morph-close-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --morph-fade-dur: 200ms;
+  --morph-quick-dur: 150ms;
+  --morph-blur: 2px;
+  --panel-dur: 250ms;
+
+  --duration-quick: 150ms;
+  --duration-fast: 250ms;
+  --ease-smooth-out: cubic-bezier(0.22, 1, 0.36, 1);
+
+  --rb-hairline: color-mix(in srgb, var(--rb-text) 12%, transparent);
+  --rb-focus: 0 0 0 3px rgba(229, 72, 63, 0.16), 0 0 0 1px var(--rb-record);
+
+  /* El color de la piel. UN solo color para todo lo que se funde: el cuello
+     lo pinta el difuminado, que promedia lo que tenga cerca, así que dos
+     tonos distintos dejan una franja sucia justo en la unión. */
+  --skin: var(--rb-surface);
+  --skin-shadow: 0 12px 32px rgba(0, 0, 0, 0.16);
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --rb-bg0: #121211;
+  --rb-bg1: #1a1a18;
+  --rb-surface: #1e1e1b;
+  --rb-surface-2: #262622;
+  --rb-surface-elevated: #2a2a26;
+  --rb-border: rgba(246, 246, 241, 0.1);
+  --rb-text: #f0f0ea;
+  --rb-muted: #9a9a90;
+  --rb-faint: #6e6e66;
+
+  --rb-record: #e85a52;
+  --rb-accent: #f0f0ea;
+  --rb-warn: #d4a84b;
+  --rb-ok: #6faf88;
+
+  --rb-focus: 0 0 0 3px rgba(232, 90, 82, 0.22), 0 0 0 1px var(--rb-record);
+  --skin-shadow: 0 12px 34px rgba(0, 0, 0, 0.5);
+}
+
+* {
+  box-sizing: border-box;
+}
+html,
+body {
+  height: 100%;
+  margin: 0;
+}
+body {
+  font-family: var(--rb-font);
+  color: var(--rb-text);
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ─── Fondo ────────────────────────────────────────────────────────────────
+   Calmo a propósito, al revés de lo que pediría una demo de vidrio: acá lo
+   que hay que mirar es la silueta —dónde nace el cuello, cuándo se corta— y
+   un fondo con detalle solo compite con ella. */
+.desk {
+  position: fixed;
+  inset: 0;
+  background:
+    radial-gradient(900px 620px at 18% 12%, #2f3a63 0%, transparent 62%),
+    radial-gradient(820px 700px at 84% 78%, #123f46 0%, transparent 62%),
+    linear-gradient(160deg, #14161f 0%, #0d1016 60%, #090b10 100%);
+  animation: drift 34s ease-in-out infinite alternate;
+}
+@keyframes drift {
+  to {
+    transform: scale(1.05) translate3d(-1.5%, -1%, 0);
+  }
+}
+/* El fondo se invierte con el tema, y es una decisión de la DEMO, no una
+   propuesta: acá lo que hay que mirar es la silueta, y una piel oscura sobre
+   un fondo oscuro no se lee. En la app el fondo es el escritorio del usuario
+   y no se elige. */
+:root[data-theme="dark"] .desk {
+  background:
+    radial-gradient(900px 620px at 18% 12%, #dfe6f2 0%, transparent 62%),
+    radial-gradient(820px 700px at 84% 78%, #cfe4e2 0%, transparent 62%),
+    linear-gradient(160deg, #b9c2d1 0%, #aab4c4 60%, #97a2b4 100%);
+}
+:root[data-theme="dark"] .desk-grid {
+  background-image:
+    linear-gradient(rgba(0, 0, 0, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 0, 0, 0.04) 1px, transparent 1px);
+}
+
+.desk-grid {
+  position: fixed;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.032) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.032) 1px, transparent 1px);
+  background-size: 48px 48px;
+}
+body.static .desk,
+body.static [class*="anim"] {
+  animation: none;
+}
+
+/* ─── Las dos capas ────────────────────────────────────────────────────────
+   Esto es LA estructura, y no es un detalle de la demo: el filtro difumina
+   todo lo que tenga adentro, así que el texto y los iconos no pueden estar
+   ahí. Van en una capa aparte, encima, con la misma geometría.
+
+     .skin   siluetas, filtradas, sin contenido    →  se funden
+     .ink    contenido, intacto, sin fondo propio  →  se lee
+
+   Para llevar esto a la app, la piel de la pill —hoy el `background` de
+   `.p-shell`— tiene que salirse del elemento que lleva el contenido. */
+.stack {
+  position: relative;
+}
+.skin {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.ink {
+  position: absolute;
+  inset: 0;
+}
+
+/* Sin sombra propia: la sombra la lleva `.skin` entera, después del goo, para
+   que caiga sobre la silueta ya fundida. Una `box-shadow` por forma entra al
+   filtro como alfa parcial y termina alargando el cuello por su cuenta. */
+.blob {
+  position: absolute;
+  background: var(--skin);
+}
+
+/* ─── Rótulos ──────────────────────────────────────────────────────────── */
+.tag {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 10px;
+  margin: 0 0 14px 2px;
+  padding: 7px 12px;
+  border-radius: 999px;
+  background: rgba(10, 10, 14, 0.82);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: #fff;
+}
+.tag b {
+  font-weight: 700;
+}
+.tag span {
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  text-transform: none;
+  opacity: 0.72;
+}
+
+/* ─── Controles ────────────────────────────────────────────────────────── */
+/* Centrada con `margin: auto` entre `left: 0` y `right: 0`, y NO con
+   `left: 50%` + `translateX(-50%)`: con `left: 50%` el bloque contenedor
+   arranca en la mitad de la pantalla, así que el ancho disponible para
+   ajustarse al contenido es la mitad — y la barra se parte en dos filas
+   aunque sobre lugar de los dos lados. */
+.bar {
+  position: fixed;
+  right: 0;
+  bottom: 18px;
+  left: 0;
+  z-index: 30;
+  display: flex;
+  width: fit-content;
+  max-width: calc(100vw - 32px);
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  justify-content: center;
+  margin: 0 auto;
+  padding: 8px;
+  border-radius: 14px;
+  background: rgba(18, 18, 22, 0.86);
+  backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.45);
+}
+.bar button {
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 9px;
+  padding: 8px 13px;
+  background: rgba(255, 255, 255, 0.07);
+  color: #f4f4ef;
+  font-family: var(--rb-font);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.bar button:hover {
+  background: rgba(255, 255, 255, 0.15);
+}
+.bar button.on {
+  background: rgba(255, 255, 255, 0.24);
+  border-color: rgba(255, 255, 255, 0.34);
+}
+.bar .sep {
+  width: 1px;
+  height: 22px;
+  background: rgba(255, 255, 255, 0.18);
+}
+.bar .field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 2px 6px;
+}
+.bar .field-l {
+  color: #c9c9c2;
+  font-family: var(--rb-font);
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.bar .field-l b {
+  color: #fff;
+  font-variant-numeric: tabular-nums;
+}
+.bar .field input {
+  width: 116px;
+  accent-color: #56c8ff;
+}
+
+/* ─── Nota ─────────────────────────────────────────────────────────────── */
+.note {
+  position: fixed;
+  left: 20px;
+  bottom: 20px;
+  z-index: 30;
+  max-width: 340px;
+  max-height: 62vh;
+  overflow: auto;
+  padding: 12px 30px 12px 14px;
+  border-radius: 12px;
+  background: rgba(18, 18, 22, 0.86);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  color: #d8d8d2;
+  font-size: 11.5px;
+  line-height: 1.6;
+}
+.note b {
+  color: #fff;
+}
+.note code {
+  font-family: var(--rb-mono);
+  font-size: 11px;
+  color: #8fd6ff;
+}
+.note p {
+  margin: 0 0 8px;
+}
+.note p:last-child {
+  margin-bottom: 0;
+}
+
+.note-x {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: grid;
+  width: 20px;
+  height: 20px;
+  place-items: center;
+  border: 0;
+  border-radius: 999px;
+  padding: 0;
+  background: rgba(255, 255, 255, 0.12);
+  color: #e6e6e0;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+.note-x:hover {
+  background: rgba(255, 255, 255, 0.24);
+}
+/* `width` y no solo `max-width`: plegada, el único hijo que queda es el botón
+   —absoluto— así que sin ancho explícito la caja colapsa a cero. */
+.note.is-folded {
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  overflow: hidden;
+}
+.note.is-folded > :not(.note-x) {
+  display: none;
+}
+
+/* ─── Lectura en vivo ──────────────────────────────────────────────────── */
+.gauge {
+  position: fixed;
+  top: 18px;
+  right: 20px;
+  z-index: 30;
+  min-width: 178px;
+  padding: 11px 14px;
+  border-radius: 12px;
+  background: rgba(18, 18, 22, 0.86);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  color: #d8d8d2;
+  font-family: var(--rb-mono);
+  font-size: 11px;
+  line-height: 1.75;
+}
+.gauge dl {
+  display: grid;
+  grid-template-columns: auto auto;
+  gap: 0 12px;
+  margin: 0;
+}
+.gauge dt {
+  color: #8c8c86;
+}
+.gauge dd {
+  margin: 0;
+  color: #fff;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+.gauge .state {
+  margin-top: 7px;
+  padding-top: 7px;
+  border-top: 1px solid rgba(255, 255, 255, 0.14);
+  color: #7fd6a2;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.gauge .state.is-cut {
+  color: #ff9a8a;
+}
+
+.back {
+  position: fixed;
+  top: 18px;
+  left: 20px;
+  z-index: 30;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 12px;
+  border-radius: 999px;
+  background: rgba(18, 18, 22, 0.8);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  color: #e6e6e0;
+  font-size: 11.5px;
+  text-decoration: none;
+}
+.back:hover {
+  background: rgba(18, 18, 22, 0.95);
+}
+
+.stage {
+  position: relative;
+  height: 100%;
+}
+
+.hint {
+  position: absolute;
+  right: 0;
+  bottom: 104px;
+  left: 0;
+  margin: 0;
+  color: rgba(255, 255, 255, 0.66);
+  font-size: 11.5px;
+  text-align: center;
+  text-shadow: 0 1px 6px rgba(0, 0, 0, 0.7);
+}
+.hint kbd {
+  padding: 2px 6px;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  border-radius: 5px;
+  font-family: var(--rb-mono);
+  font-size: 10.5px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .desk {
+    animation: none;
+  }
+}

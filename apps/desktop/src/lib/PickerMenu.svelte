@@ -4,9 +4,9 @@
    *
    * Existe en vez de un `<select>` por dos motivos: el nativo pinta con el
    * tema del sistema y rompe el tono de la consola, y sobre todo abre hacia
-   * abajo — dentro de una burbuja anclada al borde de la pantalla eso queda
-   * fuera de la ventana. Este abre hacia ARRIBA, que es donde hay sitio cuando
-   * el control vive en el compositor.
+   * un lado fijo — dentro de una burbuja anclada al borde eso se corta. Acá
+   * se mide el espacio arriba/abajo (y a los lados) y el popover abre hacia
+   * donde cabe.
    */
   interface Option {
     id: string;
@@ -18,6 +18,7 @@
 
   import type { Snippet } from "svelte";
   import type { Attachment } from "svelte/attachments";
+  import { tick } from "svelte";
 
   let {
     label,
@@ -55,6 +56,10 @@
   } = $props();
 
   let query = $state("");
+  /** Hacia dónde abre el popover. */
+  let placement = $state<"up" | "down">("up");
+  /** Alineación horizontal respecto al chip. */
+  let align = $state<"start" | "end">("start");
 
   const showSearch = $derived(
     searchable === true || (searchable !== false && options.length >= 6),
@@ -99,6 +104,57 @@
   }
 
   let root = $state<HTMLDivElement | null>(null);
+  let popEl = $state<HTMLDivElement | null>(null);
+
+  /**
+   * Elige lado según el hueco real respecto al viewport.
+   *
+   * En el header (cerca del techo) abre hacia abajo; en el compositor (cerca
+   * del piso) hacia arriba. Si ninguno entra entero, gana el lado más largo.
+   */
+  function resolvePlacement() {
+    const el = root;
+    if (!el) return;
+    const chip = el.querySelector(".pm-chip");
+    if (!(chip instanceof HTMLElement)) return;
+    const rect = chip.getBoundingClientRect();
+    const pad = 12;
+    const spaceAbove = rect.top - pad;
+    const spaceBelow = window.innerHeight - rect.bottom - pad;
+
+    const measured = popEl?.offsetHeight ?? 0;
+    const perOpt = 34;
+    const extras = (showSearch ? 40 : 0) + (footer ? 36 : 0) + 12;
+    const estimated = Math.min(
+      extras + Math.max(filtered.length, 1) * perOpt,
+      Math.min(18 * 16, window.innerHeight * 0.5) + extras,
+    );
+    const need = measured > 0 ? measured : estimated;
+
+    if (spaceBelow >= need && spaceAbove < need) {
+      placement = "down";
+    } else if (spaceAbove >= need && spaceBelow < need) {
+      placement = "up";
+    } else {
+      placement = spaceBelow > spaceAbove ? "down" : "up";
+    }
+
+    const popW = popEl?.offsetWidth || Math.max(el.offsetWidth, 14 * 16);
+    const spaceRight = window.innerWidth - rect.left - pad;
+    align = spaceRight < popW && rect.right > popW ? "end" : "start";
+  }
+
+  // Recalcula al abrir y cuando cambia el contenido (carga de modelos, filtro).
+  $effect(() => {
+    if (!popOpen) return;
+    void filtered.length;
+    void showLoading;
+    void tick().then(() => {
+      resolvePlacement();
+      // Segundo frame: ya midió el pop real (max-height, search, etc.).
+      requestAnimationFrame(() => resolvePlacement());
+    });
+  });
 
   // Cierra al pulsar fuera. En capture + timeout 0 para no comerse el clic
   // que acaba de abrirlo.
@@ -121,9 +177,21 @@
   });
 </script>
 
-<div class="pm" bind:this={root}>
+<div
+  class="pm"
+  class:is-up={placement === "up"}
+  class:is-down={placement === "down"}
+  class:is-start={align === "start"}
+  class:is-end={align === "end"}
+  bind:this={root}
+>
   {#if popOpen}
-    <div class="pm-pop" role="listbox" aria-busy={showLoading}>
+    <div
+      class="pm-pop"
+      role="listbox"
+      aria-busy={showLoading}
+      bind:this={popEl}
+    >
       {#if showLoading && options.length === 0}
         <div class="pm-loading" role="status">
           <span class="pm-spinner" aria-hidden="true"></span>
@@ -206,15 +274,16 @@
   .pm-chip {
     display: inline-flex;
     max-width: 10rem;
+    min-height: 1.75rem;
     align-items: center;
-    gap: 0.25rem;
+    gap: 0.2rem;
     border: 1px solid var(--line, #332e2b);
     border-radius: 999px;
-    padding: 0.2rem 0.55rem;
+    padding: 0.1rem 0.45rem;
     background: transparent;
     color: var(--dim, #8d827a);
     font-family: inherit;
-    font-size: 0.6875rem;
+    font-size: 0.65rem;
     cursor: pointer;
   }
   .pm-chip.is-icon {
@@ -247,22 +316,32 @@
 
   .pm-pop {
     position: absolute;
-    bottom: calc(100% + 0.35rem);
-    left: 0;
     z-index: 20;
     display: flex;
     min-width: max(14rem, 100%);
     max-width: 20rem;
     flex-direction: column;
-    border: 1px solid var(--line, #332e2b);
-    border-radius: 0.6rem;
-    background: #262120;
-    box-shadow: 0 10px 26px rgb(0 0 0 / 45%);
-    opacity: 1;
-    transform: translateY(0);
-    transition:
-      opacity 120ms ease,
-      transform 120ms ease;
+    border: 1px solid var(--line, var(--rb-border, #332e2b));
+    border-radius: 12px;
+    background: var(--rb-surface, #262120);
+    box-shadow: 0 10px 26px color-mix(in srgb, var(--rb-text, #000) 16%, transparent);
+  }
+
+  .pm.is-up .pm-pop {
+    bottom: calc(100% + 0.35rem);
+    top: auto;
+  }
+  .pm.is-down .pm-pop {
+    top: calc(100% + 0.35rem);
+    bottom: auto;
+  }
+  .pm.is-start .pm-pop {
+    left: 0;
+    right: auto;
+  }
+  .pm.is-end .pm-pop {
+    right: 0;
+    left: auto;
   }
 
   .pm-search {
@@ -270,28 +349,29 @@
     top: 0;
     z-index: 1;
     flex-shrink: 0;
-    border-bottom: 1px solid var(--line, #332e2b);
-    padding: 0.35rem;
-    background: #262120;
+    border-bottom: 1px solid var(--line, var(--rb-border, #332e2b));
+    padding: 0.3rem;
+    background: var(--rb-surface, #262120);
+    border-radius: 12px 12px 0 0;
   }
 
   .pm-search-input {
     box-sizing: border-box;
     width: 100%;
-    border: 1px solid var(--line, #332e2b);
-    border-radius: 0.4rem;
-    padding: 0.3rem 0.45rem;
-    background: #1c1918;
-    color: var(--text, #e7e2dd);
+    border: 1px solid var(--line, var(--rb-border, #332e2b));
+    border-radius: 9px;
+    padding: 0.28rem 0.4rem;
+    background: var(--rb-surface-2, #1c1918);
+    color: var(--text, var(--rb-text, #e7e2dd));
     font-family: inherit;
     font-size: 0.6875rem;
     outline: none;
   }
   .pm-search-input::placeholder {
-    color: var(--faint, #6b615a);
+    color: var(--faint, var(--rb-faint, #6b615a));
   }
   .pm-search-input:focus-visible {
-    border-color: var(--coral, #d97757);
+    border-color: var(--coral, var(--accent, #d97757));
   }
 
   .pm-list {
@@ -307,27 +387,32 @@
     display: block;
     width: 100%;
     border: 0;
-    border-radius: 0.4rem;
-    padding: 0.3rem 0.55rem;
+    border-radius: 9px;
+    padding: 0.25rem 0.4rem;
     background: transparent;
-    color: var(--dim, #8d827a);
+    color: var(--dim, var(--rb-muted, #8d827a));
     font-family: inherit;
     font-size: 0.6875rem;
     text-align: left;
     cursor: pointer;
+    transition: background 120ms ease, color 120ms ease;
   }
   .pm-opt:hover:not(:disabled) {
-    background: #332e2b;
-    color: var(--text, #e7e2dd);
+    background: color-mix(
+      in srgb,
+      var(--coral, var(--accent, #d97757)) 10%,
+      var(--rb-surface-2, transparent)
+    );
+    color: var(--text, var(--rb-text, #e7e2dd));
   }
   .pm-opt.active .pm-opt-l {
-    color: var(--coral, #d97757);
+    color: var(--coral, var(--accent, #d97757));
   }
 
   .pm-opt-l {
     display: block;
     overflow: hidden;
-    color: var(--text, #e7e2dd);
+    color: var(--text, var(--rb-text, #e7e2dd));
     text-overflow: ellipsis;
     white-space: nowrap;
   }
@@ -336,10 +421,10 @@
      nombre cuando ya sabes cuál quieres. */
   .pm-opt-n {
     display: block;
-    margin-top: 0.05rem;
+    margin-top: 0.02rem;
     overflow: hidden;
-    color: var(--faint, #6b615a);
-    font-size: 0.625rem;
+    color: var(--faint, var(--rb-faint, #6b615a));
+    font-size: 0.6rem;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
@@ -349,17 +434,17 @@
   }
 
   .pm-empty {
-    padding: 0.55rem 0.55rem;
-    color: var(--faint, #6b615a);
+    padding: 0.45rem 0.4rem;
+    color: var(--faint, var(--rb-faint, #6b615a));
     font-size: 0.6875rem;
   }
 
   .pm-loading {
     display: flex;
     align-items: center;
-    gap: 0.55rem;
-    padding: 0.85rem 0.8rem;
-    color: var(--dim, #8d827a);
+    gap: 0.45rem;
+    padding: 0.65rem 0.65rem;
+    color: var(--dim, var(--rb-muted, #8d827a));
     font-size: 0.6875rem;
     line-height: 1.35;
   }
@@ -382,25 +467,29 @@
 
   .pm-footer {
     flex-shrink: 0;
-    border-top: 1px solid var(--line, #332e2b);
-    padding: 0.25rem;
+    border-top: 1px solid var(--line, var(--rb-border, #332e2b));
+    padding: 0.2rem;
   }
 
   .pm-footer :global(button) {
     display: block;
     width: 100%;
     border: 0;
-    border-radius: 0.4rem;
-    padding: 0.35rem 0.55rem;
+    border-radius: 9px;
+    padding: 0.28rem 0.4rem;
     background: transparent;
-    color: var(--dim, #8d827a);
+    color: var(--dim, var(--rb-muted, #8d827a));
     font-family: inherit;
     font-size: 0.6875rem;
     text-align: left;
     cursor: pointer;
   }
   .pm-footer :global(button:hover) {
-    background: #332e2b;
-    color: var(--text, #e7e2dd);
+    background: color-mix(
+      in srgb,
+      var(--coral, var(--accent, #d97757)) 10%,
+      var(--rb-surface-2, transparent)
+    );
+    color: var(--text, var(--rb-text, #e7e2dd));
   }
 </style>
