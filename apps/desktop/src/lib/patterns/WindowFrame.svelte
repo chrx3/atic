@@ -109,7 +109,7 @@
     {/if}
   </header>
 
-  <main class="min-h-0 flex-1 overflow-hidden bg-bg">
+  <main id="main-content" class="min-h-0 flex-1 overflow-hidden bg-bg">
     {@render children()}
   </main>
 </div>

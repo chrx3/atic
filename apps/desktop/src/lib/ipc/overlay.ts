@@ -56,10 +56,14 @@ export const overlayCursor = () => invoke<Point | null>("overlay_cursor");
 export const overlayWorkAreas = () => invoke<Area[]>("overlay_work_areas");
 
 /**
- * Qué partes del overlay reciben el mouse.
+ * Qué partes del overlay reciben el mouse, en px CSS del overlay.
  *
  * Sin esto la lámina sería invisible pero taparía el escritorio entero. Rust
  * arma la ventana solo cuando el cursor entra en una de estas zonas.
+ *
+ * Van en el espacio del overlay —el escritorio virtual— y no en el del
+ * viewport: Rust mueve la ventana al atender esta llamada, así que un número
+ * relativo a ella se traduce con un origen que ya cambió.
  */
 export const setOverlayHitRects = (rects: HitRect[]) =>
   invoke<void>("set_overlay_hit_rects", { rects });

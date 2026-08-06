@@ -18,23 +18,35 @@
 import type { Shape } from "$liquid/sdf";
 
 class LiquidGroup {
-  /** Por superficie, no en una sola lista: cada una reemplaza lo suyo. */
-  #parts = $state<Record<string, Shape[]>>({});
+  /**
+   * El conjunto ya aplanado. Es lo ÚNICO reactivo de acá, y a propósito.
+   *
+   * El registro por superficie es un objeto plano: si fuera `$state`, publicar
+   * lo leería y lo escribiría en el mismo paso, y como publicar ocurre dentro
+   * de un `$effect` eso es un efecto que depende de sí mismo. Svelte corta la
+   * actualización, las formas no llegan nunca al trazado y la pill —que ya no
+   * se pinta sola— desaparece. Pasó exactamente así.
+   */
+  shapes = $state<Shape[]>([]);
 
-  get shapes(): Shape[] {
-    return Object.values(this.#parts).flat();
-  }
+  /** Por superficie, no en una sola lista: cada una reemplaza lo suyo. */
+  #parts: Record<string, Shape[]> = {};
 
   /**
    * Publica las formas de una superficie. Devuelve la baja, con la forma que
    * espera el `return` de un `$effect`.
    */
   publish(id: string, shapes: Shape[]): () => void {
-    this.#parts = { ...this.#parts, [id]: shapes };
+    this.#parts[id] = shapes;
+    this.#flush();
     return () => {
-      const { [id]: _gone, ...rest } = this.#parts;
-      this.#parts = rest;
+      delete this.#parts[id];
+      this.#flush();
     };
+  }
+
+  #flush(): void {
+    this.shapes = Object.values(this.#parts).flat();
   }
 }
 

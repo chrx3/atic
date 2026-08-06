@@ -11,7 +11,9 @@ borrador por correo.
 ## Cómo se usa
 
 - Tras grabar: transcribir en la app principal.
-- Live transcription si está activada en ajustes.
+- Live transcription si está activada en ajustes, con Whisper local o Groq.
+- Si se selecciona Groq para transcripción, el audio se envía a su API. Los
+  proveedores de resumen reciben texto, no audio.
 - Resumen con Claude, Ollama, OpenAI-compat (OpenRouter, Groq, etc.).
 - Envío SMTP o `mailto:` según config.
 

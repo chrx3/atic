@@ -1291,11 +1291,20 @@ impl AgentSession for CodexSession {
                 "params": { "threadId": thread, "turnId": turn },
             }));
         }
-        // Cerrar stdin: el proceso termina solo al ver EOF, lo que le deja
-        // vaciar lo que tenga pendiente. Matarlo de entrada perdería eventos.
         if let Ok(mut slot) = self.shared.stdin.lock() {
             slot.take();
         }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(800);
+        loop {
+            match self.child.try_wait() {
+                Ok(Some(_)) => return,
+                Ok(None) if std::time::Instant::now() < deadline => {
+                    std::thread::sleep(std::time::Duration::from_millis(40));
+                }
+                _ => break,
+            }
+        }
+        let _ = self.child.kill();
         let _ = self.child.wait();
     }
 }

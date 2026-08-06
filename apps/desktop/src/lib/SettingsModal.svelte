@@ -443,6 +443,7 @@
     { key: "dictation_start", label: "Empezar a dictar", field: "sound_dictation_start" },
     { key: "dictation_done", label: "Texto pegado", field: "sound_dictation_done" },
     { key: "capture", label: "Captura de pantalla", field: "sound_capture" },
+    { key: "wheel_tick", label: "Rueda de herramientas", field: "sound_wheel_tick" },
   ] as const;
 
   type SoundKey = (typeof SOUND_ACTIONS)[number]["key"];
@@ -459,6 +460,7 @@
     { id: "campana", label: "Campana" },
     { id: "digital", label: "Digital" },
     { id: "cristal", label: "Cristal" },
+    { id: "click", label: "Click" },
     { id: "ninguno", label: "Sin sonido" },
   ] as const;
 
@@ -479,6 +481,7 @@
       cfg = await getConfig();
       if (cfg && !cfg.ui_theme) cfg.ui_theme = "system";
       if (cfg && typeof cfg.ui_sounds !== "boolean") cfg.ui_sounds = true;
+      if (cfg && typeof cfg.sound_wheel_tick !== "string") cfg.sound_wheel_tick = "";
       // Config vieja: sin estos campos los selects quedarían en `undefined` y
       // Svelte los mostraría vacíos en vez de en "Por defecto".
       if (cfg) {

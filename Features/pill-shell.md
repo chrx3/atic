@@ -20,7 +20,8 @@ ventana grande siempre al frente.
 - [`apps/desktop/src-tauri/src/floating.rs`](../apps/desktop/src-tauri/src/floating.rs) — geometría y morph de la pill
 - [`apps/desktop/src-tauri/src/tray.rs`](../apps/desktop/src-tauri/src/tray.rs) — bandeja
 - [`apps/desktop/src-tauri/src/shortcuts.rs`](../apps/desktop/src-tauri/src/shortcuts.rs) — atajos globales
-- [`apps/desktop/src/routes/pill/+page.svelte`](../apps/desktop/src/routes/pill/+page.svelte) — UI de la pill
+- [`apps/desktop/src/lib/PillSurface.svelte`](../apps/desktop/src/lib/PillSurface.svelte) — UI de la pill dentro del overlay
+- [`apps/desktop/src/routes/overlay/+page.svelte`](../apps/desktop/src/routes/overlay/+page.svelte) — composición compartida de superficies flotantes
 
 ## Pendiente / siguiente
 

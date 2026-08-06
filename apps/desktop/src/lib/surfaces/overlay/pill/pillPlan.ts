@@ -12,15 +12,8 @@
 
 import { PILL, windowFor, type Pivot, type Size } from "../pillStage";
 
-/** Qué hay desplegado. Es uno de los tres ejes ortogonales de la pill. */
-export type Surface = "none" | "wheel" | "clipboard" | "snippets";
-
-/** Superficies que se despliegan bajo la barra. La rueda no es una: crece. */
-export type PanelKind = "clipboard" | "snippets";
-
-export function isPanel(surface: Surface): surface is PanelKind {
-  return surface === "clipboard" || surface === "snippets";
-}
+/** Qué hay desplegado. Clipboard/snippets ya no crecen la pill: son floats. */
+export type Surface = "none" | "wheel";
 
 /**
  * El contenido que la pill tiene que poder mostrar, en píxeles.
@@ -34,7 +27,6 @@ export function contentFor(surface: Surface, barW: number): Size {
     const side = PILL.wheel - PILL.pad * 2;
     return { w: side, h: side };
   }
-  if (isPanel(surface)) return { w: PILL.panelW, h: PILL.bar + PILL.panelH };
   return { w: Math.max(barW, PILL.bar), h: PILL.bar };
 }
 
@@ -46,15 +38,9 @@ export function targetFor(surface: Surface, barW: number): Size {
 /**
  * Qué punto se conserva en el próximo reencuadre.
  *
- * Es la función más delicada de la pill y la razón principal de que este
- * archivo exista.
- *
- * Al abrir es simétrico al cierre. Al cerrar hay que saber **de qué** se está
- * cerrando, no adónde se va: para cuando esto corre, `surface` ya vale `"none"`
- * y los dos colapsos son indistinguibles. Sin `collapsingFrom` los dos usaban
- * `center`, y ese era el «punto C»: el panel se encogía hacia su propio centro
- * —unos 130 px arriba y 80 a la izquierda de la barra— y recién desde ahí
- * arrancaba el vuelo al hogar.
+ * Al cerrar la rueda hay que saber **de qué** se está cerrando, no adónde se
+ * va: para cuando esto corre, `surface` ya vale `"none"`. Sin `collapsingFrom`
+ * el colapso usaba `center` por defecto y la barra se corría.
  *
  * Y en reposo el pivote es `topLeft`, nunca `center`: el ancho de la barra
  * cambia solo —entra el timer, tictaquea de 0:09 a 0:10, aparece el badge de la
@@ -63,13 +49,9 @@ export function targetFor(surface: Surface, barW: number): Size {
  */
 export function pivotFor(state: {
   surface: Surface;
-  collapsingFrom: "wheel" | "panel" | null;
-  /** El panel había abierto hacia arriba. */
-  panelUp: boolean;
+  collapsingFrom: "wheel" | null;
 }): Pivot {
   if (state.surface === "wheel") return "center";
-  if (isPanel(state.surface)) return "panel";
-  if (state.collapsingFrom === "panel") return state.panelUp ? "bottomLeft" : "topLeft";
   if (state.collapsingFrom === "wheel") return "center";
   return "topLeft";
 }
@@ -78,10 +60,9 @@ export function pivotFor(state: {
  * ¿Este reencuadre se anima en el sitio?
  *
  * Solo los cambios de la barra compacta: disco ↔ dictado ↔ grabación ↔ cola,
- * donde el salto se leía como un parpadeo. Los colapsos de panel y de rueda
- * tienen su propia coreografía —encoger y después volar, o el morph continuo— y
- * animar acá largaría un tween que el vuelo siguiente cancelaría a mitad de
- * camino.
+ * donde el salto se leía como un parpadeo. El colapso de la rueda tiene su
+ * propia coreografía —encoger y después volar, o el morph continuo— y animar
+ * acá largaría un tween que el vuelo siguiente cancelaría a mitad de camino.
  *
  * El primer reencuadre tampoco: al arrancar no hay «estado anterior» desde el
  * cual transicionar, solo la ventana acomodándose.
@@ -89,7 +70,7 @@ export function pivotFor(state: {
 export function morphsInPlace(state: {
   from: Size | null;
   surface: Surface;
-  collapsingFrom: "wheel" | "panel" | null;
+  collapsingFrom: "wheel" | null;
 }): boolean {
   return (
     state.from !== null && state.collapsingFrom === null && state.surface === "none"
@@ -109,7 +90,6 @@ export function isDiscOnly(state: {
   agentAlert: boolean;
 }): boolean {
   return (
-    !isPanel(state.surface) &&
     state.activity === "idle" &&
     !state.hasQueue &&
     !state.agentAlert

@@ -27,6 +27,13 @@ pub struct MonitorInfo {
     /// Área útil (excluye la barra de tareas), para ubicar el shelf.
     pub work_area: Rect,
     pub is_primary: bool,
+    /// Escala del monitor (1.0 = 100%, 1.25 = 125%…).
+    ///
+    /// Por monitor y no por ventana: `GetDpiForWindow` da un solo número, el
+    /// del monitor donde la ventana esté en ese momento. Quien decide EN QUÉ
+    /// monitor poner algo necesita saber la escala de cada uno antes de
+    /// haberlo puesto ahí.
+    pub scale: f64,
 }
 
 /// Rectángulo del escritorio virtual completo (incluye monitores en
@@ -73,10 +80,41 @@ unsafe extern "system" fn collect_monitor(
             bounds: rect_from(info.rcMonitor),
             work_area: rect_from(info.rcWork),
             is_primary: info.dwFlags & MONITORINFOF_PRIMARY != 0,
+            scale: scale_of(monitor),
         });
     }
     // Continuar la enumeración.
     1
+}
+
+/// Escala efectiva del monitor. 96 dpi = 100%.
+///
+/// `MDT_EFFECTIVE_DPI` y no `MDT_RAW_DPI`: el que interesa es el que el usuario
+/// eligió en Configuración, que es con el que Windows escala las ventanas.
+unsafe fn scale_of(monitor: HMONITOR) -> f64 {
+    use windows_sys::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
+    let mut dpi_x: u32 = 96;
+    let mut dpi_y: u32 = 96;
+    if GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut dpi_x, &mut dpi_y) == 0 {
+        f64::from(dpi_x) / 96.0
+    } else {
+        1.0
+    }
+}
+
+/// Monitor que contiene un punto del escritorio virtual.
+///
+/// Se busca por `bounds` y no por `work_area`: un punto sobre la barra de
+/// tareas sigue perteneciendo a ese monitor, y quien pregunta suele estar
+/// resolviendo «dónde está el cursor» o «dónde está esta ventana».
+pub fn from_point(x: i32, y: i32) -> Option<MonitorInfo> {
+    let monitors = enumerate();
+    monitors
+        .iter()
+        .find(|m| m.bounds.contains(x, y))
+        .or_else(|| monitors.iter().find(|m| m.is_primary))
+        .or_else(|| monitors.first())
+        .cloned()
 }
 
 fn rect_from(r: RECT) -> Rect {

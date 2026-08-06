@@ -66,6 +66,7 @@
 
 <ToolPage
   title="Textos"
+  icon="snippets"
   kicker="Guardados a mano"
   blurb="Los textos que escribís siempre, listos para pegar. Más un bloc para notas sueltas."
 >
@@ -116,10 +117,15 @@
       </div>
 
       <div class="min-h-0 flex-1 pt-3">
-        <ListDetail hasSelection={editing !== null} listLabel="Textos guardados">
+        <ListDetail
+          hasSelection={editing !== null}
+          listLabel="Textos guardados"
+          listCount={snippets.visible.length}
+        >
           {#snippet list()}
             {#if snippets.visible.length === 0}
               <EmptyState
+                icon={snippets.query ? undefined : "snippets"}
                 title={snippets.query ? "Nada coincide" : "Todavía no hay textos"}
                 hint={snippets.query ? undefined : "Guardá el primero con «Nuevo»."}
               />
@@ -129,10 +135,11 @@
                   <li>
                     <button
                       type="button"
-                      class="flex w-full flex-col gap-0.5 border-b border-line px-3 py-2
+                      class="flex w-full flex-col gap-0.5 px-3 py-2
                              text-left transition-colors duration-(--duration-quick)
                              hover:bg-surface-2
                              {editing?.id === item.id ? 'bg-surface-2' : ''}"
+                      aria-current={editing?.id === item.id ? "true" : undefined}
                       onclick={() => (editing = { ...item })}
                     >
                       <span class="truncate text-sm text-text">{item.name}</span>
@@ -162,7 +169,11 @@
           {/snippet}
 
           {#snippet empty()}
-            <EmptyState title="Elegí un texto" hint="O creá uno nuevo." />
+            <EmptyState
+              icon="snippets"
+              title="Elegí un texto"
+              hint="O creá uno nuevo."
+            />
           {/snippet}
         </ListDetail>
       </div>

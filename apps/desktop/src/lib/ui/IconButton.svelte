@@ -48,10 +48,13 @@
   aria-pressed={pressed}
   {disabled}
   {onclick}
-  class="grid shrink-0 place-items-center rounded-sm
-         transition-colors duration-(--duration-quick) ease-calm
+  class="relative grid shrink-0 place-items-center rounded-sm
+         transition-[color,background-color,border-color,transform]
+         duration-(--duration-quick) ease-calm active:scale-[0.96]
          disabled:pointer-events-none disabled:opacity-45
          aria-pressed:bg-surface-2 aria-pressed:text-text
+         before:absolute before:content-['']
+         {size === 'sm' ? 'before:inset-[-8px]' : 'before:inset-[-4px]'}
          {VARIANTS[variant]} {SIZES[size]}"
   {...rest}
 >

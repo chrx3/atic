@@ -21,6 +21,7 @@ mod meeting_detection;
 mod mouse_bindings;
 mod ocr;
 mod overlay;
+mod panel_float;
 mod paste_queue;
 mod retention;
 mod search;
@@ -214,11 +215,14 @@ pub fn run() {
             clipboard_history::delete_clipboard_item,
             clipboard_history::clear_clipboard_history,
             clipboard_history::prepare_clipboard_pill,
+            clipboard_history::show_clipboard_window,
+            clipboard_history::hide_clipboard_window,
             clipboard_history::stash_pill_home,
             clipboard_history::morph_pill_home,
             state::summon_pill_here,
             state::pill_trace,
             beep::preview_sound,
+            beep::play_ui_sound,
             agents::bridge::show_agents_window,
             agents::bridge::hide_agents_window,
             agents::bridge::save_agents_bubble_size,
@@ -234,6 +238,8 @@ pub fn run() {
             agents::bridge::agent_threads,
             agents::bridge::agent_thread,
             agents::bridge::agent_thread_delete,
+            agents::bridge::agent_claude_sessions,
+            agents::bridge::agent_claude_transcript,
             clipboard_history::restore_pill_position,
             snippets::list_snippets,
             snippets::upsert_snippet,
@@ -245,6 +251,8 @@ pub fn run() {
             snippets::save_note,
             snippets::delete_note,
             snippets::prepare_snippets_pill,
+            snippets::show_snippets_window,
+            snippets::hide_snippets_window,
             paste_queue::list_paste_queue,
             paste_queue::enqueue_paste,
             paste_queue::dismiss_paste_queue_item,

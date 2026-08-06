@@ -23,6 +23,7 @@
 pub mod acp;
 pub mod bridge;
 pub mod claude_code;
+pub mod claude_sessions;
 pub mod codex;
 pub mod discover;
 pub mod exe;

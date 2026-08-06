@@ -17,12 +17,15 @@
   let {
     hasSelection = false,
     listLabel = "Lista",
+    listCount,
     list,
     detail,
     empty,
   }: {
     hasSelection?: boolean;
     listLabel?: string;
+    /** Cuántos ítems hay en la lista; se muestra junto al rótulo. */
+    listCount?: number;
     list: Snippet;
     detail: Snippet;
     /** Qué mostrar en el panel de detalle cuando no hay nada elegido. */
@@ -35,15 +38,41 @@
     <!-- Bajo el corte, la lista cede el sitio al detalle. -->
     <nav
       aria-label={listLabel}
-      class="min-h-0 w-full shrink-0 overflow-y-auto border-line
-             @md/split:block @md/split:w-64 @md/split:border-r
-             {hasSelection ? 'hidden @md/split:block' : 'block'}"
+      class="flex min-h-0 w-full shrink-0 flex-col overflow-hidden border-line
+             @md/split:w-64 @md/split:border-r
+             {hasSelection ? 'hidden @md/split:flex' : 'flex'}"
     >
-      {@render list()}
+      {#if listLabel}
+        <div
+          class="flex shrink-0 items-center justify-between border-b border-line
+                 px-3 py-2"
+        >
+          <span class="text-micro text-faint uppercase">{listLabel}</span>
+          {#if listCount !== undefined}
+            <span class="text-micro text-faint">{listCount}</span>
+          {/if}
+        </div>
+      {/if}
+
+      <div
+        class="min-h-0 flex-1 overflow-y-auto
+               [&_li_button]:flex [&_li_button]:w-full [&_li_button]:flex-col
+               [&_li_button]:gap-0.5 [&_li_button]:px-3 [&_li_button]:py-2
+               [&_li_button]:text-left
+               [&_li_button]:transition-colors [&_li_button]:duration-(--duration-quick)
+               [&_li_button]:ease-calm
+               [&_li_button:hover]:bg-surface-2
+               [&_li_button[aria-current=true]]:bg-surface-2
+               [&_li_button[aria-current=true]]:shadow-[inset_2px_0_0_0_var(--rb-record)]
+               [&_ul]:flex [&_ul]:flex-col [&_ul]:divide-y [&_ul]:divide-line"
+      >
+        {@render list()}
+      </div>
     </nav>
 
     <section
-      class="min-h-0 min-w-0 flex-1 overflow-y-auto
+      class="min-h-0 min-w-0 flex-1 overflow-y-auto p-4
+             [&_h3]:text-md [&_h3]:font-semibold [&_h3]:text-text
              {hasSelection ? 'block' : 'hidden @md/split:block'}"
     >
       {#if hasSelection}

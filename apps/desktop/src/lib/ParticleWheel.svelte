@@ -13,6 +13,7 @@
   import AticMark from "$lib/AticMark.svelte";
   import ToolIcon from "$lib/ToolIcon.svelte";
   import GooFilter, { preFilter } from "$lib/GooFilter.svelte";
+  import { playWheelTick } from "$core/uiSound";
   import { TOOLS, type ToolId } from "$lib/tools";
   import {
     nodeAngle as angleOf,
@@ -92,11 +93,18 @@
     TOOLS.find((tool) => tool.id === activeId) ?? null,
   );
 
+  /** Fija la herramienta activa; suena solo si el paso cambia y la rueda navega. */
+  function setActive(id: ToolId | null, { tick = false } = {}) {
+    if (id === activeId) return;
+    activeId = id;
+    if (tick && wheelNav && id) playWheelTick();
+  }
+
   /** Mueve la selección un paso; la pill lo usa desde la rueda del ratón. */
   function stepActive(direction: 1 | -1) {
     const index = TOOLS.findIndex((tool) => tool.id === activeId);
     const next = index < 0 ? 0 : (index + direction + NODE_COUNT) % NODE_COUNT;
-    activeId = TOOLS[next].id;
+    setActive(TOOLS[next].id, { tick: true });
   }
 
   function onWheel(event: WheelEvent) {
@@ -503,19 +511,22 @@
           style="clip-path: {node.clip}"
           title="{node.tool.label} — {node.tool.short}"
           bind:this={nodeEls[index]}
-          onpointerenter={() => (activeId = node.tool.id)}
+          onpointerenter={() => setActive(node.tool.id, { tick: true })}
           onpointerleave={() => {
             // La selección vive solo mientras el puntero está encima: salir
             // del gajo (o de la pill) la limpia. La rueda del ratón puede
             // volver a fijarla, pero soltar con el mouse fuera no activa nada.
-            if (activeId === node.tool.id) activeId = null;
+            if (activeId === node.tool.id) setActive(null);
           }}
-          onfocus={() => (activeId = node.tool.id)}
+          onfocus={() => setActive(node.tool.id, { tick: true })}
           onblur={() => {
-            if (activeId === node.tool.id) activeId = null;
+            if (activeId === node.tool.id) setActive(null);
           }}
           onkeydown={onNodeKeydown}
-          onclick={() => onSelect?.(node.tool.id)}
+          onclick={() => {
+            if (wheelNav) playWheelTick();
+            onSelect?.(node.tool.id);
+          }}
         >
           <span
             class="pw-node-body"
@@ -692,11 +703,17 @@
 
   .pw-core:not(.is-inert) {
     cursor: pointer;
-    transition: opacity 0.14s ease;
+    transition:
+      opacity var(--duration-quick) var(--ease-smooth-out),
+      transform var(--duration-quick) var(--ease-smooth-out);
   }
 
   .pw-core:not(.is-inert):hover {
     opacity: 0.7;
+  }
+
+  .pw-core:not(.is-inert):active {
+    transform: scale(0.96);
   }
 
   .pw-core:focus-visible {
@@ -818,19 +835,19 @@
     pointer-events: none;
     transform: translate(-50%, -50%);
     transition:
-      transform 200ms cubic-bezier(0.2, 0, 0, 1),
-      color 200ms cubic-bezier(0.2, 0, 0, 1);
+      transform var(--duration-quick) var(--ease-smooth-out),
+      color var(--duration-quick) var(--ease-smooth-out);
   }
 
   /* Entrada del hub: los gajos aparecen en abanico alrededor de la marca.
      fill backwards y no both: al terminar deben mandar las transiciones. */
   .pw:not(.is-compact) .pw-node-body {
-    animation: pw-node-in 360ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
-    animation-delay: calc(var(--i, 0) * 45ms + 40ms);
+    animation: pw-node-in var(--duration-medium) var(--ease-smooth-out) backwards;
+    animation-delay: calc(var(--i, 0) * 40ms + 40ms);
   }
 
   .pw:not(.is-compact) .pw-center {
-    animation: pw-fade-in 300ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
+    animation: pw-fade-in var(--duration-fast) var(--ease-smooth-out) backwards;
   }
 
   .pw-node-dot {
@@ -850,12 +867,12 @@
     letter-spacing: 0.1em;
     text-transform: uppercase;
     white-space: nowrap;
-    transition: color 200ms cubic-bezier(0.2, 0, 0, 1);
+    transition: color var(--duration-quick) var(--ease-smooth-out);
   }
 
   .pw-node.is-hot .pw-node-body {
     color: var(--rb-text);
-    transform: translate(-50%, -50%) scale(1.12);
+    transform: translate(-50%, -50%) scale(1.05);
   }
 
   .pw-node.is-hot .pw-node-label {
@@ -863,7 +880,7 @@
   }
 
   .pw-node:active .pw-node-body {
-    transform: translate(-50%, -50%) scale(1.04);
+    transform: translate(-50%, -50%) scale(0.96);
   }
 
   .pw-node:focus-visible {
@@ -877,8 +894,8 @@
   @keyframes pw-node-in {
     from {
       opacity: 0;
-      transform: translate(-50%, -50%) scale(0.86);
-      filter: blur(3px);
+      transform: translate(-50%, -50%) scale(var(--morph-scale));
+      filter: blur(var(--blur-medium));
     }
     to {
       opacity: 1;
@@ -897,6 +914,7 @@
   }
 
   @media (prefers-reduced-motion: reduce) {
+    .pw-core:not(.is-inert),
     .pw-node-body,
     .pw-center,
     .pw-node-dot,

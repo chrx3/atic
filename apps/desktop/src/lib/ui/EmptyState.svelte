@@ -6,6 +6,8 @@
    * usuario sin saber qué hacer para llenarla.
    */
   import type { Snippet } from "svelte";
+  import type { ToolId } from "$core/tools";
+  import ToolIcon from "$lib/ToolIcon.svelte";
 
   let {
     title,
@@ -15,14 +17,20 @@
   }: {
     title: string;
     hint?: string;
-    icon?: Snippet;
+    /** Icono de herramienta, centrado encima del título. */
+    icon?: ToolId;
     action?: Snippet;
   } = $props();
 </script>
 
 <div class="flex flex-col items-center justify-center gap-2 px-6 py-10 text-center">
   {#if icon}
-    <div class="text-faint">{@render icon()}</div>
+    <div
+      class="flex size-11 items-center justify-center rounded-md bg-surface-2
+             text-faint"
+    >
+      <ToolIcon id={icon} size={22} />
+    </div>
   {/if}
   <p class="text-sm text-muted">{title}</p>
   {#if hint}

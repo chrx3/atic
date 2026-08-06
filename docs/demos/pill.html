@@ -1,0 +1,508 @@
+<!doctype html>
+<html lang="es" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Atic · la pill, líquida</title>
+    <link rel="stylesheet" href="liquid.css" />
+    <style>
+      /* ───────────────────────────────────────────────────────────────────
+         Medidas de:
+           apps/desktop/src/routes/pill/+page.svelte
+           apps/desktop/src/lib/pillStage.ts   (PILL.bar 40, panelW 312, panelH 332)
+
+         Las curvas son las de `app.css`: 350ms con rebote al abrir, 250ms
+         calmo al cerrar. `liquid.js` las evalúa a mano porque la geometría se
+         calcula cuadro a cuadro — el cuello depende de la distancia exacta y
+         no hay propiedad CSS que lo interpole.
+         ─────────────────────────────────────────────────────────────────── */
+
+      .scenes {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        display: flex;
+        flex-direction: column;
+        gap: 30px;
+        align-items: center;
+        transform: translate(-50%, -50%);
+      }
+      .scene {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 12px;
+      }
+
+      /* La caja del escenario: alto fijo para que la escena no salte cuando la
+         silueta crece. El origen de coordenadas de cada blob es esta caja. */
+      .stack {
+        width: 360px;
+      }
+      .stack.is-grow {
+        height: 40px;
+      }
+      .stack.is-pour {
+        height: 374px;
+      }
+
+      /* El contenido del panel se recorta contra la silueta que hay en ese
+         instante. Sin esto, a mitad de la transición las filas asoman por
+         fuera del líquido y la ilusión se cae. */
+      .clip {
+        overflow: hidden;
+      }
+
+      .blob {
+        border-radius: var(--r, 999px);
+      }
+
+      /* Contenido: nunca dentro del filtro. Todo lo que se lee vive acá. */
+      .ink {
+        color: var(--rb-text);
+      }
+      .ink > * {
+        position: absolute;
+      }
+
+      .row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        height: 40px;
+        padding: 0 12px 0 10px;
+        white-space: nowrap;
+      }
+      .mark {
+        display: inline-flex;
+        flex-shrink: 0;
+        line-height: 0;
+      }
+      .timer {
+        min-width: 2.4rem;
+        font-size: 0.6875rem;
+        font-weight: 500;
+        font-variant-numeric: tabular-nums;
+        letter-spacing: 0.06em;
+      }
+      .rec {
+        display: grid;
+        width: 26px;
+        height: 26px;
+        flex-shrink: 0;
+        place-items: center;
+        border-radius: 999px;
+        background: color-mix(in srgb, var(--rb-record) 24%, transparent);
+        color: var(--rb-record);
+      }
+      .rec i {
+        width: 8px;
+        height: 8px;
+        background: currentColor;
+      }
+      .wave {
+        display: flex;
+        height: 16px;
+        align-items: center;
+        gap: 2px;
+        color: var(--rb-muted);
+      }
+      .wave i {
+        width: 2px;
+        border-radius: 1px;
+        background: currentColor;
+      }
+
+      .label {
+        flex: 1;
+        overflow: hidden;
+        font-size: 0.625rem;
+        font-weight: 500;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+      }
+      .icon {
+        display: grid;
+        width: 1.5rem;
+        height: 1.5rem;
+        flex-shrink: 0;
+        place-items: center;
+        border-radius: 999px;
+        color: var(--rb-muted);
+      }
+
+      .list {
+        margin: 0;
+        padding: 6px 8px;
+        list-style: none;
+      }
+      .item {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        border-radius: 8px;
+        padding: 7px 8px;
+      }
+      .item.is-sel {
+        background: color-mix(in srgb, var(--rb-accent) 9%, transparent);
+      }
+      .kind {
+        display: grid;
+        width: 22px;
+        height: 22px;
+        flex-shrink: 0;
+        place-items: center;
+        border-radius: 7px;
+        background: color-mix(in srgb, var(--rb-text) 7%, transparent);
+        color: var(--rb-muted);
+      }
+      .text {
+        min-width: 0;
+        flex: 1;
+        overflow: hidden;
+        font-size: 0.75rem;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .when {
+        flex-shrink: 0;
+        color: var(--rb-faint);
+        font-size: 0.625rem;
+        font-variant-numeric: tabular-nums;
+      }
+
+      /* Sombra de la barra en el momento en que todavía está separada: la
+         lleva `.skin` entera, después del goo (ver liquid.js). */
+      .head {
+        position: absolute;
+        top: 58px;
+        left: 50%;
+        width: min(620px, 90vw);
+        transform: translateX(-50%);
+        text-align: center;
+        color: rgba(255, 255, 255, 0.8);
+        text-shadow: 0 1px 10px rgba(0, 0, 0, 0.8);
+      }
+      .head h1 {
+        margin: 0 0 6px;
+        color: #fff;
+        font-size: 19px;
+        font-weight: 600;
+        letter-spacing: -0.01em;
+      }
+      .head p {
+        margin: 0;
+        font-size: 12.5px;
+        line-height: 1.6;
+      }
+    </style>
+  </head>
+  <body>
+    <a class="back" href="index.html">← Todas las demos</a>
+
+    <main class="stage">
+      <div class="scenes">
+        <!-- A · La barra crece ─────────────────────────────────────────────
+             Reposo → grabando. En la app la barra simplemente se ensancha.
+             Acá lo que entra llega como gota aparte y se funde con el disco:
+             el ancho nuevo no aparece, se incorpora. -->
+        <section class="scene">
+          <p class="tag"><b>La barra crece</b> <span>reposo → grabando</span></p>
+          <div class="stack is-grow" id="growStack">
+            <div class="skin" id="growSkin">
+              <i class="blob" id="disc"></i>
+              <i class="blob" id="tail"></i>
+            </div>
+            <div class="ink" id="growInk">
+              <span class="mark" id="growMark">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="12" cy="12" r="5.5"/><path d="M17.5 6.5V17.5"/></svg>
+              </span>
+              <span class="row" id="growRow" style="padding-left: 0">
+                <span class="rec"><i></i></span>
+                <span class="timer">1:24</span>
+                <span class="wave" id="wave"></span>
+              </span>
+            </div>
+          </div>
+        </section>
+
+        <!-- B · El panel se derrama ────────────────────────────────────────
+             La barra abre el historial. En la app hoy es una caja compartida
+             con `border-radius`; acá el panel sale DE la barra, y por eso el
+             hombro queda cóncavo en vez de en escuadra. -->
+        <section class="scene">
+          <p class="tag"><b>El panel se derrama</b> <span>barra → clipboard</span></p>
+          <div class="stack is-pour" id="pourStack">
+            <div class="skin" id="pourSkin">
+              <i class="blob" id="bar"></i>
+              <i class="blob" id="panel"></i>
+            </div>
+            <div class="ink" id="pourInk">
+              <span class="row" id="barRow">
+                <span class="mark">
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="5.5"/><path d="M17.5 6.5V17.5"/></svg>
+                </span>
+                <span class="label">Clipboard</span>
+                <span class="icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 19V6h6l2 2.5h8V19H4Z"/></svg></span>
+                <span class="icon"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M6 6l12 12M18 6L6 18"/></svg></span>
+              </span>
+              <div class="clip" id="panelClip">
+              <ul class="list" id="panelList">
+                <li class="item is-sel"><span class="kind"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M5 7h14"/><path d="M5 12h9"/><path d="M5 17h12"/></svg></span><span class="text">SELECT db_name FROM cliente WHERE…</span><span class="when">1 m</span></li>
+                <li class="item"><span class="kind"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M5 7h14"/><path d="M5 12h9"/><path d="M5 17h12"/></svg></span><span class="text">msimonovic@tsgenviro.com</span><span class="when">4 m</span></li>
+                <li class="item"><span class="kind"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 9V4h5"/><path d="M15 4h5v5"/><path d="M20 15v5h-5"/><path d="M9 20H4v-5"/></svg></span><span class="text">Captura — 1440 × 900</span><span class="when">12 m</span></li>
+                <li class="item"><span class="kind"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M5 7h14"/><path d="M5 12h9"/><path d="M5 17h12"/></svg></span><span class="text">cargo run -p atic-desktop…</span><span class="when">18 m</span></li>
+                <li class="item"><span class="kind"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M5 7h14"/><path d="M5 12h9"/><path d="M5 17h12"/></svg></span><span class="text">Reunión del martes · pendientes</span><span class="when">31 m</span></li>
+              </ul>
+              </div>
+            </div>
+          </div>
+        </section>
+      </div>
+    </main>
+
+    <div class="gauge">
+      <dl>
+        <dt>progreso</dt>
+        <dd id="gT">0%</dd>
+        <dt>hueco A</dt>
+        <dd id="gGap">—</dd>
+        <dt>alcance</dt>
+        <dd id="gReach">—</dd>
+      </dl>
+      <div class="state" id="gState">cortado</div>
+    </div>
+
+    <div class="note">
+      <p>
+        <b>Qué es real.</b> Los 40 px de la barra, los 312 × 332 del panel
+        (<code>PILL</code> en <code>pillStage.ts</code>) y las curvas:
+        <code>350ms</code> con rebote al abrir, <code>250ms</code> calmo al
+        cerrar.
+      </p>
+      <p>
+        <b>Qué cambia respecto de hoy.</b> La barra y el panel son <b>dos</b>
+        siluetas, no una caja con <code>border-radius: 18px</code>. Por eso el
+        hombro sale cóncavo: es el líquido pasando de una a la otra.
+      </p>
+      <p>
+        <b>Lo que hay que mover en la app.</b> La piel de la pill —hoy el
+        <code>background</code> de <code>.p-shell</code>— tiene que salirse del
+        elemento que lleva el contenido: el filtro difumina todo lo que tenga
+        adentro y se comería el texto. Silueta en una capa, contenido en otra.
+      </p>
+    </div>
+
+    <script src="liquid.js"></script>
+    <script>
+      Liquid.theme();
+      Liquid.desk();
+      Liquid.note();
+
+      var SHADOW = "drop-shadow(0 12px 26px rgba(0, 0, 0, 0.38))";
+      var growSkin = document.getElementById("growSkin");
+      var pourSkin = document.getElementById("pourSkin");
+      var fusions = [
+        Liquid.goo(growSkin, { sigma: 5, shadow: SHADOW }),
+        Liquid.goo(pourSkin, { sigma: 5, shadow: SHADOW }),
+      ];
+
+      // Ondas: sustituto de `Waveform.svelte`, que dibuja niveles reales del
+      // micrófono. La forma es la misma; los valores, inventados y estables
+      // para que dos capturas de la misma demo se puedan comparar.
+      var wave = document.getElementById("wave");
+      for (var i = 0; i < 10; i++) {
+        var barEl = document.createElement("i");
+        barEl.style.height = (3 + ((Math.sin(i * 2.7) + 1) / 2) * 11).toFixed(1) + "px";
+        wave.appendChild(barEl);
+      }
+
+      var lerp = function (a, b, t) {
+        return a + (b - a) * t;
+      };
+
+      // ─── Escena A ────────────────────────────────────────────────────────
+      // El disco no se mueve: es el punto fijo, igual que en el morph de la
+      // rueda. Lo que llega es la cola, que viaja y engorda hasta calzar.
+      var DISC = 40;
+      var BAR_W = 176;
+      var TRAVEL = 56;
+
+      var disc = document.getElementById("disc");
+      var tail = document.getElementById("tail");
+      var growMark = document.getElementById("growMark");
+      var growRow = document.getElementById("growRow");
+      var growStack = document.getElementById("growStack");
+
+      function layoutGrow(t) {
+        var left = (growStack.offsetWidth - BAR_W) / 2;
+
+        disc.style.cssText =
+          "left:" + left + "px; top:0; width:" + DISC + "px; height:" + DISC + "px";
+
+        // La gota que llega crece REDONDA antes de estirarse.
+        //
+        // Con el alto clavado en 40 y el ancho arrancando en 6, en reposo se
+        // veía una astilla vertical al lado del disco. El alto sube primero
+        // —en el primer tercio— y el ancho nunca queda por debajo de él, así
+        // que la forma pasa de nada a gota a pastilla, sin astillas.
+        var h = lerp(0, DISC, Math.min(1, t / 0.3));
+        var w = Math.max(h, lerp(0, BAR_W, t));
+        // Y termina TAPANDO al disco, no pegada a él: dos formas que apenas se
+        // tocan dejan un pellizco cóncavo en la unión, que está muy bien
+        // mientras la cosa se mueve pero no en el estado final — ahí la pill
+        // tiene que ser la pastilla limpia de la app.
+        var x = lerp(left + DISC + TRAVEL, left, t);
+        tail.style.cssText =
+          "left:" + x + "px; top:" + (DISC - h) / 2 + "px; width:" + w +
+          "px; height:" + h + "px";
+
+        growMark.style.cssText =
+          "left:" + (left + 9) + "px; top:9px; opacity:" + (1 - t).toFixed(3);
+        // El contenido entra recién cuando la gota ya creció, y recortado
+        // contra ella: si asomara por fuera se vería flotando sobre el hueco.
+        var ink = Math.max(0, (t - 0.55) / 0.45);
+        growRow.style.cssText =
+          "left:" + (x + 8) + "px; top:0; width:" + Math.max(0, w - 8) +
+          "px; overflow:hidden; opacity:" + ink.toFixed(3);
+
+        return { gap: x - (left + DISC) };
+      }
+
+      // ─── Escena B ────────────────────────────────────────────────────────
+      var PANEL_W = 312;
+      var PANEL_H = 332;
+
+      var bar = document.getElementById("bar");
+      var panel = document.getElementById("panel");
+      var barRow = document.getElementById("barRow");
+      var panelClip = document.getElementById("panelClip");
+      var panelList = document.getElementById("panelList");
+      var pourStack = document.getElementById("pourStack");
+
+      function layoutPour(t) {
+        var left = (pourStack.offsetWidth - PANEL_W) / 2;
+
+        bar.style.cssText =
+          "left:" + left + "px; top:0; width:" + PANEL_W + "px; height:" + DISC +
+          "px; --r: 999px";
+
+        // El panel nace DENTRO de la barra —un bulto en el borde de abajo— y
+        // baja creciendo. Nunca se separa: por eso la unión es un hombro
+        // cóncavo y no un cuello que se corta.
+        var w = lerp(96, PANEL_W, t);
+        var h = lerp(10, PANEL_H, t);
+        var y = lerp(DISC - 14, DISC, t);
+        var x = left + (PANEL_W - w) / 2;
+        // Arranca como gota —el radio es la mitad del lado menor— y termina en
+        // los 18 px del panel. Interpolar entre esos dos evita el salto de una
+        // esquina redonda a una recta a mitad de camino.
+        var r = lerp(Math.min(w, h) / 2, 18, t);
+        panel.style.cssText =
+          "left:" + x + "px; top:" + y + "px; width:" + w + "px; height:" + h +
+          "px; --r: " + r + "px";
+
+        barRow.style.cssText = "left:" + left + "px; top:0; width:" + PANEL_W + "px";
+        // El recorte sigue a la silueta, no al tamaño final.
+        var ink = Math.max(0, (t - 0.45) / 0.55);
+        panelClip.style.cssText =
+          "left:" + x + "px; top:" + y + "px; width:" + w + "px; height:" + h +
+          "px; opacity:" + ink.toFixed(3);
+        panelList.style.cssText =
+          "width:" + PANEL_W + "px; margin-left:" + ((w - PANEL_W) / 2) + "px";
+      }
+
+      // ─── Estado compartido ───────────────────────────────────────────────
+      var gT = document.getElementById("gT");
+      var gGap = document.getElementById("gGap");
+      var gReach = document.getElementById("gReach");
+      var gState = document.getElementById("gState");
+      var progress = null;
+      var stop = null;
+      var t = 0;
+
+      function render(next) {
+        t = next;
+        var a = layoutGrow(t);
+        layoutPour(t);
+
+        var r = fusions[0].reach;
+        gT.textContent = Math.round(t * 100) + "%";
+        gGap.textContent = a.gap.toFixed(1) + " px";
+        gReach.textContent = r.toFixed(1) + " px";
+        var joined = a.gap < r;
+        gState.textContent = joined ? "fundido" : "cortado";
+        gState.classList.toggle("is-cut", !joined);
+        Liquid.setRange(progress, t);
+      }
+
+      function play(forward) {
+        if (stop) stop();
+        stop = Liquid.animate({
+          from: forward ? 0 : 1,
+          to: forward ? 1 : 0,
+          // Las mismas de la app: abrir con rebote, cerrar calmo.
+          duration: forward ? 350 : 250,
+          ease: forward ? Liquid.EASE.morph : Liquid.EASE.close,
+          onFrame: render,
+        });
+      }
+
+      render(0);
+      window.addEventListener("resize", function () {
+        render(t);
+      });
+
+      var bar2 = Liquid.controls([
+        {
+          type: "range",
+          label: "Progreso",
+          min: 0,
+          max: 1,
+          step: 0.005,
+          value: 0,
+          on: function (v) {
+            if (stop) stop();
+            render(v);
+          },
+        },
+        {
+          type: "range",
+          label: "Viscosidad σ",
+          min: 0,
+          max: 20,
+          step: 0.5,
+          value: 5,
+          on: function (v) {
+            fusions.forEach(function (f) {
+              f.set(v);
+            });
+            render(t);
+          },
+        },
+        { type: "sep" },
+        { type: "button", label: "Abrir ▸", on: function () { play(true); } },
+        { type: "button", label: "◂ Cerrar", on: function () { play(false); } },
+        {
+          type: "toggle",
+          label: "Tema oscuro",
+          labelOn: "Tema claro",
+          on: function (dark) {
+            document.documentElement.dataset.theme = dark ? "dark" : "light";
+          },
+        },
+        {
+          type: "toggle",
+          label: "Congelar",
+          labelOn: "Mover",
+          on: function (on) {
+            document.body.classList.toggle("static", on);
+          },
+        },
+      ]);
+      // El primer rango de la barra es el de progreso: la reproducción lo
+      // arrastra para que la perilla no mienta sobre dónde está la transición.
+      progress = bar2.querySelector("input");
+    </script>
+  </body>
+</html>

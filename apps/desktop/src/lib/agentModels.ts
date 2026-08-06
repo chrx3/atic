@@ -42,6 +42,36 @@ const KNOWN_MODES = new Set([
   "bypassPermissions",
 ]);
 
+/** Opciones del selector de permisos (Claude Code). */
+export const PERMISSION_MODES = [
+  { id: "manual", label: "Manual", note: "Pregunta cada acción" },
+  { id: "acceptEdits", label: "Edits", note: "Acepta ediciones de archivos" },
+  { id: "plan", label: "Plan", note: "Solo lectura y planificación" },
+  {
+    id: "bypassPermissions",
+    label: "Bypass",
+    note: "Sin prompts (solo entornos aislados)",
+  },
+] as const;
+
+/** Label corta del modo para chips / avisos. */
+export function modeShortLabel(modeId: string): string {
+  switch (modeId) {
+    case "acceptEdits":
+      return "Edits";
+    case "plan":
+      return "Plan";
+    case "bypassPermissions":
+      return "Bypass";
+    case "manual":
+    case "default":
+    case "":
+      return "Manual";
+    default:
+      return modeId;
+  }
+}
+
 /** Backends cuyo catálogo de modelos se puede filtrar en el selector. */
 export const FILTERABLE_BACKENDS = ["cursor", "opencode"] as const;
 

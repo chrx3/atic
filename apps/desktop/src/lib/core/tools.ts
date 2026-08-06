@@ -9,6 +9,11 @@ export type ToolDef = {
   short: string;
   /** Una línea: para qué sirve esta herramienta. */
   blurb: string;
+  /**
+   * Verbo de la acción primaria en el picker (fallback estático).
+   * Los labels dinámicos (Grabar/Parar) viven en `toolActions`.
+   */
+  actionLabel: string;
   /** false = UI lista; true = aún en construcción. */
   comingSoon?: boolean;
 };
@@ -19,18 +24,21 @@ export const TOOLS: ToolDef[] = [
     label: "Reuniones",
     short: "Grabar y resumir",
     blurb: "Audio del PC, transcripción local y resúmenes editables.",
+    actionLabel: "Grabar",
   },
   {
     id: "dictation",
     label: "Dictado",
     short: "Voz a texto",
     blurb: "Habla y pega texto en cualquier app con un atajo.",
+    actionLabel: "Dictar",
   },
   {
     id: "clipboard",
     label: "Clipboard",
     short: "Historial",
     blurb: "Historial local de texto e imágenes; atajo para pegar desde la pill.",
+    actionLabel: "Ver historial",
   },
   {
     id: "snippets",
@@ -41,6 +49,7 @@ export const TOOLS: ToolDef[] = [
     short: "Guardados a mano",
     blurb:
       "Los textos que escribís siempre, listos para pegar. Más un bloc para notas sueltas.",
+    actionLabel: "Ver textos",
   },
   {
     id: "agents",
@@ -48,12 +57,14 @@ export const TOOLS: ToolDef[] = [
     short: "Consola con interfaz",
     blurb:
       "Conversá con agentes de consola desde una interfaz, sin perder sus herramientas.",
+    actionLabel: "Abrir consola",
   },
   {
     id: "captures",
     label: "Capturas",
     short: "Pantalla",
     blurb: "Recortes rápidos al portapapeles y al shelf flotante.",
+    actionLabel: "Tomar captura",
   },
 ];
 

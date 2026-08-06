@@ -71,6 +71,8 @@ export interface AppConfig {
   sound_dictation_start: string;
   sound_dictation_done: string;
   sound_capture: string;
+  /** Timbre al pasar de herramienta en la rueda de la pill. */
+  sound_wheel_tick: string;
   /** Servidores MCP para el agente, como JSON serializado. */
   agent_mcp_servers: string;
   /** Pistas a grabar: both | mic | system */
@@ -647,6 +649,17 @@ export interface StoredThread {
   /** Las primeras palabras del usuario: con lo que se reconoce en la lista. */
   preview: string;
   turns: AgentTurn[];
+}
+
+/**
+ * Sesión del CLI Claude Code en `~/.claude/projects/…`.
+ * Solo índice para `--resume`; el transcript no se importa a Atic.
+ */
+export interface ClaudeCodeSession {
+  id: string;
+  preview: string;
+  updatedAt: number;
+  cwd: string;
 }
 
 /**

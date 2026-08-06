@@ -114,8 +114,10 @@ impl AgentBackend for ClaudeCode {
         }
         // Sin modo explícito, se preguntan todos: es el default seguro para una
         // interfaz gráfica, donde el usuario está mirando y puede contestar.
+        // Valores inválidos (p. ej. "full" de un ResumeMode mal pasado) se
+        // normalizan a manual: el CLI aborta el proceso si no reconoce el modo.
         cmd.arg("--permission-mode")
-            .arg(options.permission_mode.as_deref().unwrap_or("manual"));
+            .arg(cli_permission_mode(options.permission_mode.as_deref()));
         if let Some(mcp) = &options.mcp_config {
             cmd.arg("--mcp-config").arg(mcp);
         }
@@ -187,8 +189,13 @@ impl AgentBackend for ClaudeCode {
             });
         }
 
+        // Tras `--resume`, el CLI a veces reinyecta historial / compactaciones
+        // por stdout. Eso no es el chat vivo de Atic: se silencia hasta el
+        // primer `send` del usuario. ThreadPatch y permisos sí pasan.
+        let mute_history = Arc::new(AtomicBool::new(options.resume.is_some()));
+
         let died = stopping.clone();
-        let mut tr = Translator::new(turns.clone(), rules.clone());
+        let mut tr = Translator::new(turns.clone(), rules.clone(), mute_history.clone());
         let emit_out = emit.clone();
         thread::spawn(move || {
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
@@ -212,6 +219,7 @@ impl AgentBackend for ClaudeCode {
             rules,
             turns,
             emit,
+            mute_history,
         };
         // Handshake del canal de control. Abre la vía por la que después llegan
         // las pedidas de permiso; sin él, el turno se bloquearía esperando una
@@ -222,9 +230,11 @@ impl AgentBackend for ClaudeCode {
         // informa el adaptador. No envejece como una lista de identificadores
         // completos porque son ALIAS: `opus` apunta siempre al último de su
         // familia, y esa indirección la mantiene Anthropic, no nosotros.
+        let mode = cli_permission_mode(options.permission_mode.as_deref()).to_string();
         session.emit.send(AgentDelta::ThreadPatch {
             patch: ThreadPatch {
                 models: Some(super::discover::claude_fallback_models()),
+                mode: Some(mode),
                 ..Default::default()
             },
         });
@@ -268,17 +278,28 @@ struct Translator {
     /// Ids que corresponden a `Task`/`Agent`, para parchear su resultado como
     /// colaboración y no como herramienta genérica.
     collab: HashSet<ItemId>,
+    /// Silenciar transcript de replay tras `--resume` hasta el primer send.
+    mute_history: Arc<AtomicBool>,
 }
 
 impl Translator {
-    fn new(turns: Arc<Mutex<Turns>>, rules: Arc<Mutex<HashMap<String, Value>>>) -> Self {
+    fn new(
+        turns: Arc<Mutex<Turns>>,
+        rules: Arc<Mutex<HashMap<String, Value>>>,
+        mute_history: Arc<AtomicBool>,
+    ) -> Self {
         Self {
             turns,
             rules,
             streaming: None,
             seq: 0,
             collab: HashSet::new(),
+            mute_history,
         }
+    }
+
+    fn history_muted(&self) -> bool {
+        self.mute_history.load(Ordering::SeqCst)
     }
 
     fn turn(&mut self, out: &mut Vec<AgentDelta>) -> TurnId {
@@ -361,24 +382,10 @@ impl Translator {
 
             // ── Catálogo de comandos (respuesta al handshake) ──────────────
             Some("control_response") => {
-                if let Some(list) = v
-                    .get("response")
-                    .and_then(|r| r.get("response"))
-                    .and_then(|r| r.get("commands"))
-                    .and_then(Value::as_array)
-                {
+                if let Some(cmds) = parse_control_commands(&v) {
                     out.push(AgentDelta::ThreadPatch {
                         patch: ThreadPatch {
-                            commands: Some(
-                                list.iter()
-                                    .map(|c| SlashCommand {
-                                        name: str_at(c, "name"),
-                                        description: str_at(c, "description"),
-                                        argument_hint: str_at(c, "argumentHint"),
-                                    })
-                                    .filter(|c| !c.name.is_empty())
-                                    .collect(),
-                            ),
+                            commands: Some(cmds),
                             ..Default::default()
                         },
                     });
@@ -393,6 +400,9 @@ impl Translator {
             // de tokens y los deltas de herramienta ya llegan resueltos en el
             // mensaje completo.
             Some("stream_event") => {
+                if self.history_muted() {
+                    return Vec::new();
+                }
                 let delta = v.get("event").and_then(|e| e.get("delta"));
                 if delta.and_then(|d| d.get("type")).and_then(Value::as_str) == Some("text_delta") {
                     if let Some(text) = delta.and_then(|d| d.get("text")).and_then(Value::as_str) {
@@ -427,6 +437,20 @@ impl Translator {
 
             // ── Arranque de la sesión ─────────────────────────────────────
             Some("system") if v.get("subtype").and_then(Value::as_str) == Some("init") => {
+                // `slash_commands` del init son solo nombres; el handshake
+                // `initialize` trae description/hint después y pisa esto.
+                let names = strings_at(&v, "slash_commands");
+                let interim = (!names.is_empty()).then(|| {
+                    names
+                        .into_iter()
+                        .filter(|n| !n.is_empty())
+                        .map(|name| SlashCommand {
+                            name,
+                            description: String::new(),
+                            argument_hint: String::new(),
+                        })
+                        .collect::<Vec<_>>()
+                });
                 out.push(AgentDelta::ThreadPatch {
                     patch: ThreadPatch {
                         provider_session: Some(str_at(&v, "session_id")),
@@ -446,6 +470,7 @@ impl Translator {
                                 })
                                 .unwrap_or_default(),
                         ),
+                        commands: interim,
                         ..Default::default()
                     },
                 });
@@ -453,6 +478,9 @@ impl Translator {
 
             // ── Mensaje del asistente ─────────────────────────────────────
             Some("assistant") => {
+                if self.history_muted() {
+                    return Vec::new();
+                }
                 let turn = self.turn(&mut out);
                 for b in blocks(&v) {
                     match b.get("type").and_then(Value::as_str) {
@@ -560,7 +588,14 @@ impl Translator {
             }
 
             // ── Resultados de herramienta (llegan como turno de usuario) ───
+            //
+            // También llega acá el resumen sintético de `/compact`
+            // (`isCompactSummary`): no es un mensaje del usuario, es el
+            // checkpoint que Claude Code usa como contexto post-compactación.
             Some("user") => {
+                if self.history_muted() {
+                    return Vec::new();
+                }
                 for b in blocks(&v) {
                     if b.get("type").and_then(Value::as_str) != Some("tool_result") {
                         continue;
@@ -585,6 +620,22 @@ impl Translator {
                             })
                         },
                     });
+                }
+                if v.get("isCompactSummary").and_then(Value::as_bool) == Some(true) {
+                    let text = user_text(&v);
+                    if !text.trim().is_empty() {
+                        let turn = self.turn(&mut out);
+                        let id = self.next_id(&turn, "n");
+                        out.push(AgentDelta::ItemAdd {
+                            turn,
+                            item: Item::new(
+                                id,
+                                ItemKind::Notice {
+                                    text: format!("Resumen del contexto\n\n{text}"),
+                                },
+                            ),
+                        });
+                    }
                 }
             }
 
@@ -612,6 +663,11 @@ impl Translator {
             Some("result") | None
                 if v.get("stop_reason").is_some() || v.get("is_error").is_some() =>
             {
+                if self.history_muted() {
+                    // Alinear el contador de turnos sin pintar nada en la UI.
+                    end_turn(&self.turns);
+                    return Vec::new();
+                }
                 // Un turno que cierra con texto a medio escribir deja el item
                 // marcado como vivo para siempre, y la vista lo dibujaría con
                 // el cursor parpadeando sin que nadie escriba.
@@ -631,6 +687,31 @@ impl Translator {
                 end_turn(&self.turns);
             }
 
+            // ── Compactación de contexto (`/compact`) ─────────────────────
+            //
+            // Marca el checkpoint: a partir de acá el CLI manda el resumen
+            // sintético y no el historial completo. Hay que pintarlo claro —
+            // no como `sistema: compact_boundary`— porque durante el compact
+            // el stream puede callarse un rato y la UI parece colgada.
+            Some("system")
+                if v.get("subtype").and_then(Value::as_str) == Some("compact_boundary") =>
+            {
+                if self.history_muted() {
+                    return Vec::new();
+                }
+                let pre = v
+                    .get("compactMetadata")
+                    .and_then(|m| m.get("preTokens"))
+                    .and_then(Value::as_u64);
+                let text = match pre {
+                    Some(n) => format!("Contexto compactado (antes ~{n} tokens)."),
+                    None => "Contexto compactado.".to_string(),
+                };
+                // `preTokens` es el tamaño *antes* del compact: solo informativo.
+                let notice = self.notice(&text);
+                out.extend(notice);
+            }
+
             // ── Telemetría del propio CLI ─────────────────────────────────
             //
             // En qué anda y cuánto lleva pensando. Llega muchas veces por turno
@@ -646,9 +727,19 @@ impl Translator {
             // Otro `system` que todavía no traducimos: se avisa que pasó, con el
             // nombre y no con la línea entera. Enterarse importa —así aparecieron
             // los dos de arriba—; leer JSON a mano, no.
-            Some("system") => return self.notice(&format!("sistema: {}", str_at(&v, "subtype"))),
+            Some("system") => {
+                if self.history_muted() {
+                    return Vec::new();
+                }
+                return self.notice(&format!("sistema: {}", str_at(&v, "subtype")));
+            }
 
-            _ => return self.notice(line),
+            _ => {
+                if self.history_muted() {
+                    return Vec::new();
+                }
+                return self.notice(line);
+            }
         }
 
         out
@@ -755,6 +846,58 @@ fn blocks(v: &Value) -> Vec<Value> {
         .unwrap_or_default()
 }
 
+/// Comandos del `control_response` del handshake `initialize`.
+///
+/// El shape ha variado: a veces van en `response.response.commands`, a veces
+/// colgados de `response.commands`. Aceptamos ambos.
+fn parse_control_commands(v: &Value) -> Option<Vec<SlashCommand>> {
+    let resp = v.get("response")?;
+    let list = resp
+        .get("response")
+        .and_then(|inner| inner.get("commands"))
+        .or_else(|| resp.get("commands"))
+        .and_then(Value::as_array)?;
+    let cmds: Vec<SlashCommand> = list
+        .iter()
+        .map(|c| {
+            let hint = str_at(c, "argumentHint");
+            SlashCommand {
+                name: str_at(c, "name"),
+                description: str_at(c, "description"),
+                argument_hint: if hint.is_empty() {
+                    str_at(c, "argument_hint")
+                } else {
+                    hint
+                },
+            }
+        })
+        .filter(|c| !c.name.is_empty())
+        .collect();
+    (!cmds.is_empty()).then_some(cmds)
+}
+
+/// Texto legible de un turno `user` (string suelto o bloques `text`).
+fn user_text(v: &Value) -> String {
+    let Some(content) = v.get("message").and_then(|m| m.get("content")) else {
+        return String::new();
+    };
+    match content {
+        Value::String(s) => s.clone(),
+        Value::Array(items) => items
+            .iter()
+            .filter_map(|b| {
+                if b.get("type").and_then(Value::as_str) == Some("text") {
+                    b.get("text").and_then(Value::as_str)
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => String::new(),
+    }
+}
+
 /// El contenido de un `tool_result` puede ser texto suelto o una lista de
 /// bloques. Se aplana a texto porque la UI lo muestra como salida.
 fn render_content(v: Option<&Value>) -> String {
@@ -793,6 +936,8 @@ struct ClaudeSession {
     turns: Arc<Mutex<Turns>>,
     /// Para anunciar el turno del usuario. La sesión emite además de leer.
     emit: Emit,
+    /// Compartido con el traductor: se apaga en el primer `send`.
+    mute_history: Arc<AtomicBool>,
 }
 
 impl ClaudeSession {
@@ -815,10 +960,162 @@ impl ClaudeSession {
             "request": request,
         }))
     }
+
+    fn emit_notice(&self, turn: &str, text: &str) {
+        self.emit.send(AgentDelta::ItemAdd {
+            turn: turn.to_string(),
+            item: Item::new(
+                format!("{turn}-n"),
+                ItemKind::Notice {
+                    text: text.to_string(),
+                },
+            ),
+        });
+    }
+}
+
+/// Cómo tratar un slash de control en `send`.
+enum ControlSlash {
+    /// Cambia el modo vía `set_permission_mode` (sin burbuja ni reenvío).
+    SetMode { mode: String, notice: String },
+    /// Solo aviso local; la UI debía haber abierto un selector.
+    NoticeOnly { text: String },
+    /// Aviso + reenviar el slash al CLI (compact / effort / model / clear…).
+    NoticeForward {
+        text: String,
+        patch: Option<ThreadPatch>,
+    },
+}
+
+fn wire_permission_mode(mode: &str) -> &str {
+    cli_permission_mode(Some(mode))
+}
+
+/// Modos que acepta `claude --permission-mode`. Cualquier otro valor tumba el CLI.
+fn cli_permission_mode(mode: Option<&str>) -> &'static str {
+    match mode {
+        Some("acceptEdits") => "acceptEdits",
+        Some("bypassPermissions") => "bypassPermissions",
+        Some("plan") => "plan",
+        Some("auto") => "auto",
+        Some("dontAsk") => "dontAsk",
+        Some("manual") | Some("default") | None => "manual",
+        Some(_) => "manual",
+    }
+}
+
+fn mode_notice(mode: &str) -> String {
+    match mode {
+        "plan" => "Plan mode activado.".to_string(),
+        "acceptEdits" => "Permisos: Edits".to_string(),
+        "bypassPermissions" => "Permisos: Bypass".to_string(),
+        "manual" | "default" => "Permisos: Manual".to_string(),
+        other => format!("Permisos: {other}"),
+    }
+}
+
+fn known_permission_mode(mode: &str) -> bool {
+    matches!(
+        mode,
+        "manual" | "default" | "acceptEdits" | "plan" | "bypassPermissions"
+    )
+}
+
+/// Clasifica slashes de control para no pintarlos como mensaje de usuario.
+fn classify_control_slash(prompt: &str) -> Option<ControlSlash> {
+    let t = prompt.trim();
+    if t == "/compact" || t.starts_with("/compact ") {
+        return Some(ControlSlash::NoticeForward {
+            text: "Compactando el contexto… Esto puede tardar un momento.".to_string(),
+            patch: None,
+        });
+    }
+    if let Some(rest) = t.strip_prefix("/effort") {
+        let rest = rest.trim();
+        if rest.is_empty() {
+            return Some(ControlSlash::NoticeOnly {
+                text: "Esfuerzo: elegí un nivel en el selector.".to_string(),
+            });
+        }
+        if !rest.contains('\n') {
+            return Some(ControlSlash::NoticeForward {
+                text: format!("Esfuerzo: {rest}"),
+                patch: Some(ThreadPatch {
+                    effort: Some(rest.to_string()),
+                    ..Default::default()
+                }),
+            });
+        }
+    }
+    if let Some(rest) = t.strip_prefix("/model") {
+        let rest = rest.trim();
+        if rest.is_empty() {
+            return Some(ControlSlash::NoticeOnly {
+                text: "Modelo: elegí uno en el selector.".to_string(),
+            });
+        }
+        if !rest.contains('\n') {
+            return Some(ControlSlash::NoticeForward {
+                text: format!("Modelo: {rest}"),
+                patch: None,
+            });
+        }
+    }
+    if t == "/plan" {
+        return Some(ControlSlash::SetMode {
+            mode: "plan".to_string(),
+            notice: mode_notice("plan"),
+        });
+    }
+    if let Some(rest) = t.strip_prefix("/permissions") {
+        let rest = rest.trim();
+        if rest.is_empty() {
+            return Some(ControlSlash::NoticeOnly {
+                text: "Permisos: elegí un modo en el selector.".to_string(),
+            });
+        }
+        if !rest.contains('\n') && known_permission_mode(rest) {
+            let mode = if rest == "default" {
+                "manual".to_string()
+            } else {
+                rest.to_string()
+            };
+            return Some(ControlSlash::SetMode {
+                notice: mode_notice(&mode),
+                mode,
+            });
+        }
+    }
+    if t == "/clear" {
+        return Some(ControlSlash::NoticeForward {
+            text: "Limpiando la conversación…".to_string(),
+            patch: None,
+        });
+    }
+    if t == "/context" {
+        return Some(ControlSlash::NoticeForward {
+            text: "Consultando uso de contexto…".to_string(),
+            patch: None,
+        });
+    }
+    if t == "/cost" || t == "/usage" {
+        return Some(ControlSlash::NoticeForward {
+            text: if t == "/cost" {
+                "Consultando costo de la sesión…".to_string()
+            } else {
+                "Consultando uso de la cuenta…".to_string()
+            },
+            patch: None,
+        });
+    }
+    None
 }
 
 impl AgentSession for ClaudeSession {
     fn send(&mut self, text: &str, origin: Option<Origin>) -> Result<(), String> {
+        // A partir de acá el chat vivo es de Atic: dejar pasar el stream.
+        self.mute_history.store(false, Ordering::SeqCst);
+
         // El turno lo abre QUIEN ESCRIBE, no quien lee: un turno es un ciclo
         // usuario → agente, así que empieza acá y no cuando el agente contesta.
         //
@@ -836,19 +1133,61 @@ impl AgentSession for ClaudeSession {
             }
         };
 
+        // Slash de control: no son chat. Se pintan como aviso, no como burbuja.
         let turn = start_turn(&self.turns, &self.emit);
-        self.emit.send(AgentDelta::ItemAdd {
-            turn: turn.clone(),
-            item: Item::new(
-                format!("{turn}-u"),
-                ItemKind::Message {
-                    role: Role::User,
-                    text: prompt.clone(),
-                    streaming: false,
-                },
-            )
-            .con_origen(origin),
-        });
+        match classify_control_slash(&prompt) {
+            Some(ControlSlash::SetMode { mode, notice }) => {
+                self.emit_notice(&turn, &notice);
+                self.emit.send(AgentDelta::ThreadPatch {
+                    patch: ThreadPatch {
+                        mode: Some(mode.clone()),
+                        ..Default::default()
+                    },
+                });
+                // Canal de control del CLI (no UI interactiva de `/permissions`).
+                self.control(json!({
+                    "subtype": "set_permission_mode",
+                    "mode": wire_permission_mode(&mode),
+                }))?;
+                end_turn(&self.turns);
+                self.emit.send(AgentDelta::TurnEnd {
+                    turn,
+                    status: TurnStatus::Done,
+                    cost_usd: None,
+                });
+                return Ok(());
+            }
+            Some(ControlSlash::NoticeOnly { text }) => {
+                self.emit_notice(&turn, &text);
+                end_turn(&self.turns);
+                self.emit.send(AgentDelta::TurnEnd {
+                    turn,
+                    status: TurnStatus::Done,
+                    cost_usd: None,
+                });
+                return Ok(());
+            }
+            Some(ControlSlash::NoticeForward { text, patch }) => {
+                self.emit_notice(&turn, &text);
+                if let Some(patch) = patch {
+                    self.emit.send(AgentDelta::ThreadPatch { patch });
+                }
+            }
+            None => {
+                self.emit.send(AgentDelta::ItemAdd {
+                    turn: turn.clone(),
+                    item: Item::new(
+                        format!("{turn}-u"),
+                        ItemKind::Message {
+                            role: Role::User,
+                            text: prompt.clone(),
+                            streaming: false,
+                        },
+                    )
+                    .con_origen(origin),
+                });
+            }
+        }
 
         // Content multimodal: imágenes primero, texto después (como Messages API).
         let mut content = Vec::new();
@@ -874,18 +1213,23 @@ impl AgentSession for ClaudeSession {
         }))
     }
 
-    /// `/model <alias>` en caliente. Comprobado contra el CLI: contesta «Set
-    /// model to … for this session only».
+    /// `/model <alias>` y `/effort <nivel>` en caliente.
     ///
-    /// El esfuerzo NO se puede cambiar así —es un flag de arranque— y por eso
-    /// se ignora acá en vez de fingir que se aplicó.
+    /// El esfuerzo también arranca con `--effort`, pero el CLI acepta
+    /// `/effort` a mitad de sesión (low|medium|high|xhigh|max|auto).
     fn set_model(
         &mut self,
         model: &str,
-        _effort: Option<&str>,
+        effort: Option<&str>,
         _fast: Option<bool>,
     ) -> Result<(), String> {
-        self.send(&format!("/model {model}"), None)
+        if !model.trim().is_empty() {
+            self.send(&format!("/model {}", model.trim()), None)?;
+        }
+        if let Some(level) = effort.map(str::trim).filter(|s| !s.is_empty()) {
+            self.send(&format!("/effort {level}"), None)?;
+        }
+        Ok(())
     }
 
     fn respond_permission(&mut self, id: &str, decision: PermissionDecision) -> Result<(), String> {
@@ -927,9 +1271,21 @@ impl AgentSession for ClaudeSession {
 
     fn stop(&mut self) {
         self.stopping.store(true, Ordering::SeqCst);
-        // Cerrar stdin primero: el CLI termina solo al ver EOF, lo que le deja
-        // vaciar lo que tenga pendiente. Matarlo de entrada perdería eventos.
+        // Cerrar stdin: el CLI suele terminar solo al ver EOF. Si no lo hace
+        // (proceso colgado sin leer), `wait` eterno congelaba `agent_stop` y
+        // cualquier otra sesión que necesitara el lock de SESSIONS.
         self.stdin.take();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(800);
+        loop {
+            match self.child.try_wait() {
+                Ok(Some(_)) => return,
+                Ok(None) if std::time::Instant::now() < deadline => {
+                    std::thread::sleep(std::time::Duration::from_millis(40));
+                }
+                _ => break,
+            }
+        }
+        let _ = self.child.kill();
         let _ = self.child.wait();
     }
 }
@@ -951,6 +1307,15 @@ mod tests {
         Translator::new(
             Arc::new(Mutex::new(Turns::default())),
             Arc::new(Mutex::new(HashMap::new())),
+            Arc::new(AtomicBool::new(false)),
+        )
+    }
+
+    fn tr_muted() -> Translator {
+        Translator::new(
+            Arc::new(Mutex::new(Turns::default())),
+            Arc::new(Mutex::new(HashMap::new())),
+            Arc::new(AtomicBool::new(true)),
         )
     }
 
@@ -975,6 +1340,31 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    #[test]
+    fn resume_muteado_ignora_historial_pero_deja_init() {
+        let mut t = tr_muted();
+        let init = t.translate(
+            r#"{"type":"system","subtype":"init","cwd":"C:\\p","session_id":"s1","tools":["Bash"],"model":"opus","slash_commands":[],"mcp_servers":[]}"#,
+        );
+        assert!(
+            init.iter()
+                .any(|d| matches!(d, AgentDelta::ThreadPatch { .. })),
+            "init debe pasar con mute: {init:?}"
+        );
+        let hist = t.translate(
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"mensaje viejo"}]}}"#,
+        );
+        assert!(hist.is_empty(), "historial muteado no debe pintar: {hist:?}");
+        t.mute_history.store(false, Ordering::SeqCst);
+        let live = t.translate(
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"mensaje nuevo"}]}}"#,
+        );
+        assert!(
+            !added(&live).is_empty(),
+            "tras unmute sí debe pintar: {live:?}"
+        );
     }
 
     #[test]
@@ -1025,7 +1415,11 @@ mod tests {
     #[test]
     fn la_regla_sugerida_queda_guardada_sin_salir_a_la_ui() {
         let rules = Arc::new(Mutex::new(HashMap::new()));
-        let mut t = Translator::new(Arc::new(Mutex::new(Turns::default())), rules.clone());
+        let mut t = Translator::new(
+            Arc::new(Mutex::new(Turns::default())),
+            rules.clone(),
+            Arc::new(AtomicBool::new(false)),
+        );
         let ds = t.translate(
             r#"{"type":"control_request","request_id":"c1","request":{"subtype":"can_use_tool","tool_name":"Write","permission_suggestions":[{"type":"setMode","mode":"acceptEdits"}]}}"#,
         );
@@ -1317,5 +1711,88 @@ mod tests {
             r#"{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"   "}]}}"#,
         );
         assert!(added(&ds).is_empty());
+    }
+
+    #[test]
+    fn compact_boundary_sale_como_aviso_legible() {
+        let ds = tr().translate(
+            r#"{"type":"system","subtype":"compact_boundary","compactMetadata":{"trigger":"manual","preTokens":37418}}"#,
+        );
+        let ItemKind::Notice { text } = &added(&ds)[0].kind else {
+            panic!("se esperaba Notice, llegó {:?}", added(&ds)[0].kind);
+        };
+        assert!(
+            text.contains("Contexto compactado") && text.contains("37418"),
+            "aviso inesperado: {text}"
+        );
+    }
+
+    #[test]
+    fn el_resumen_de_compact_no_es_mensaje_de_usuario() {
+        let ds = tr().translate(
+            r#"{"type":"user","isCompactSummary":true,"message":{"role":"user","content":[{"type":"text","text":"Se trabajó en auth.ts y quedó pendiente el middleware."}]}}"#,
+        );
+        let ItemKind::Notice { text } = &added(&ds)[0].kind else {
+            panic!("se esperaba Notice, llegó {:?}", added(&ds)[0].kind);
+        };
+        assert!(text.starts_with("Resumen del contexto"));
+        assert!(text.contains("auth.ts"));
+    }
+
+    #[test]
+    fn control_commands_acepta_commands_colgados_de_response() {
+        let ds = tr().translate(
+            r#"{"type":"control_response","response":{"subtype":"success","commands":[{"name":"compact","description":"resume","argumentHint":""}]}}"#,
+        );
+        let AgentDelta::ThreadPatch { patch } = &ds[0] else {
+            panic!("se esperaba ThreadPatch");
+        };
+        let cmds = patch.commands.as_ref().unwrap();
+        assert_eq!(cmds[0].name, "compact");
+        assert_eq!(cmds[0].description, "resume");
+    }
+
+    #[test]
+    fn init_trae_nombres_de_slash_como_catalogo_interino() {
+        let ds = tr().translate(
+            r#"{"type":"system","subtype":"init","cwd":"/p","session_id":"s","model":"opus","tools":[],"slash_commands":["compact","clear"],"mcp_servers":[]}"#,
+        );
+        let AgentDelta::ThreadPatch { patch } = &ds[0] else {
+            panic!("se esperaba ThreadPatch");
+        };
+        let cmds = patch.commands.as_ref().unwrap();
+        assert_eq!(cmds.len(), 2);
+        assert_eq!(cmds[0].name, "compact");
+    }
+
+    #[test]
+    fn slash_de_permisos_y_plan_son_control() {
+        assert!(matches!(
+            classify_control_slash("/plan"),
+            Some(ControlSlash::SetMode { mode, .. }) if mode == "plan"
+        ));
+        assert!(matches!(
+            classify_control_slash("/permissions acceptEdits"),
+            Some(ControlSlash::SetMode { mode, .. }) if mode == "acceptEdits"
+        ));
+        assert!(matches!(
+            classify_control_slash("/permissions"),
+            Some(ControlSlash::NoticeOnly { .. })
+        ));
+        assert!(matches!(
+            classify_control_slash("/effort high"),
+            Some(ControlSlash::NoticeForward { .. })
+        ));
+        assert!(classify_control_slash("hola").is_none());
+    }
+
+    #[test]
+    fn permission_mode_invalido_cae_a_manual() {
+        // "full" es un ResumeMode de la UI; nunca debe llegar al CLI.
+        assert_eq!(cli_permission_mode(Some("full")), "manual");
+        assert_eq!(cli_permission_mode(Some("summary")), "manual");
+        assert_eq!(cli_permission_mode(Some("acceptEdits")), "acceptEdits");
+        assert_eq!(cli_permission_mode(Some("plan")), "plan");
+        assert_eq!(cli_permission_mode(None), "manual");
     }
 }

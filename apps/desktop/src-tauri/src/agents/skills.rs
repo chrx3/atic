@@ -25,7 +25,7 @@ use super::AgentSkill;
 /// `CLAUDE_CONFIG_DIR` gana porque es lo que el propio CLI mira primero, y es
 /// la variable con la que se separan perfiles —una cuenta de trabajo y una
 /// personal— sin tocar `HOME`, que rompería el acceso a las credenciales.
-fn config_dir() -> Option<PathBuf> {
+pub(crate) fn config_dir() -> Option<PathBuf> {
     if let Ok(dir) = std::env::var("CLAUDE_CONFIG_DIR") {
         let dir = dir.trim();
         if !dir.is_empty() {

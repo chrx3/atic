@@ -1,0 +1,552 @@
+<!doctype html>
+<html lang="es" data-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Atic · la burbuja de agentes, líquida</title>
+    <link rel="stylesheet" href="liquid.css" />
+    <style>
+      /* ───────────────────────────────────────────────────────────────────
+         Medidas de:
+           apps/desktop/src-tauri/src/agents/bridge.rs   BUBBLE { w 704, h 644,
+                                                         gap 10, corner 26,
+                                                         inset 62 }
+           apps/desktop/src/lib/bubble.svelte.ts          --tail, --w, --h
+           apps/desktop/src/routes/agents/+page.svelte    el cuello y la paleta
+
+         Esta es la única parte de la app que YA es líquida: el cuello de la
+         burbuja son dos gotas fundidas con `bub-liquid-goo`. Acá está el
+         porqué de esas dos gotas, que en el código no está escrito.
+         ─────────────────────────────────────────────────────────────────── */
+
+      /* 570 = disco 40 + gap 10 + globo 520. La caja mide exactamente lo que
+         ocupa la silueta abierta, sin aire de más que descentre la escena. */
+      .scene {
+        position: absolute;
+        top: 48%;
+        left: 50%;
+        width: 700px;
+        height: 570px;
+        transform: translate(-50%, -50%);
+      }
+
+      /* La paleta de la burbuja NO son los tokens `--rb-*`: tiene la suya,
+         sacada de la CLI de Claude Code. Se respeta tal cual. */
+      .scene {
+        --shell: #1c1917;
+        --line: #332e2b;
+        --text: #e7e2dd;
+        --dim: #8d827a;
+        --faint: #6b615a;
+        --coral: #da7756;
+        --skin: var(--shell);
+      }
+
+      .blob {
+        border-radius: var(--r, 999px);
+      }
+
+      .ink {
+        color: var(--text);
+      }
+      .ink > * {
+        position: absolute;
+      }
+
+      .clip {
+        overflow: hidden;
+      }
+
+      .anchor-ink {
+        display: grid;
+        place-items: center;
+        color: var(--rb-text);
+      }
+
+      /* ─── Dentro de la burbuja ─────────────────────────────────────────── */
+      .body {
+        display: flex;
+        flex-direction: column;
+        width: 580px;
+        height: 520px;
+      }
+      .tabs {
+        display: flex;
+        flex-shrink: 0;
+        gap: 0.1rem;
+        border-bottom: 1px solid var(--line);
+        padding: 12px 0.7rem 0;
+      }
+      .tab {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.35rem;
+        border-bottom: 2px solid transparent;
+        padding: 0.3rem 0.5rem 0.35rem;
+        color: var(--dim);
+        font-family: var(--rb-mono);
+        font-size: 0.6875rem;
+        white-space: nowrap;
+      }
+      .tab.active {
+        border-bottom-color: var(--tv);
+        color: var(--text);
+      }
+      /* La marca lleva el acento SIEMPRE, también sin estar activa. */
+      .tab-mark {
+        display: inline-flex;
+        flex-shrink: 0;
+        color: var(--tv);
+      }
+      .log {
+        display: flex;
+        min-height: 0;
+        flex: 1;
+        flex-direction: column;
+        gap: 0.6rem;
+        padding: 1rem 0.95rem;
+      }
+      .you {
+        margin: 0;
+        border-left: 2px solid var(--coral);
+        padding-left: 0.7rem;
+        font-family: var(--rb-mono);
+        font-size: 0.78125rem;
+        line-height: 1.55;
+      }
+      .msg {
+        margin: 0;
+        font-size: 0.8125rem;
+        line-height: 1.62;
+      }
+      .msg code {
+        border-radius: 4px;
+        padding: 1px 4px;
+        background: #262120;
+        font-family: var(--rb-mono);
+        font-size: 0.72rem;
+      }
+      /* Caja con el título metido en el borde: el gesto viene de la CLI. */
+      .card {
+        position: relative;
+        margin: 0.3rem 0;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 0.55rem 0.65rem 0.5rem;
+        background: #211d1b;
+        color: var(--dim);
+        font-family: var(--rb-mono);
+        font-size: 0.71875rem;
+      }
+      .card b {
+        position: absolute;
+        top: -0.5rem;
+        left: 0.6rem;
+        padding: 0 0.35rem;
+        background: #211d1b;
+        color: var(--coral);
+        font-size: 0.625rem;
+        font-weight: 400;
+      }
+      .meta {
+        margin: 0;
+        color: var(--faint);
+        font-family: var(--rb-mono);
+        font-size: 0.6875rem;
+      }
+      .cmp {
+        flex-shrink: 0;
+        padding: 0 0.7rem 0.7rem;
+      }
+      .cmp-box {
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        padding: 0.55rem 0.6rem 0.5rem;
+        background: #211d1b;
+      }
+      .cmp-in {
+        padding: 0.1rem 0.15rem 0.5rem;
+        color: var(--faint);
+        font-family: var(--rb-mono);
+        font-size: 0.78125rem;
+      }
+      .cmp-row {
+        display: flex;
+        align-items: center;
+        gap: 0.3rem;
+      }
+      .chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.3rem;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        padding: 0.2rem 0.6rem;
+        color: var(--dim);
+        font-size: 0.6875rem;
+        white-space: nowrap;
+      }
+      .go {
+        display: inline-flex;
+        width: 1.75rem;
+        height: 1.75rem;
+        align-items: center;
+        justify-content: center;
+        margin-left: auto;
+        border-radius: 999px;
+        background: var(--coral);
+        color: #1c1917;
+      }
+    </style>
+  </head>
+  <body>
+    <a class="back" href="index.html">← Todas las demos</a>
+
+    <main class="stage">
+      <div class="scene stack">
+        <div class="skin" id="skin">
+          <i class="blob" id="anchor"></i>
+          <i class="blob" id="neckRoot"></i>
+          <i class="blob" id="neckTip"></i>
+          <i class="blob" id="bubble" style="--r: 26px"></i>
+        </div>
+        <div class="ink" id="ink">
+          <span class="anchor-ink" id="anchorInk">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="12" cy="12" r="5.5"/><path d="M17.5 6.5V17.5"/></svg>
+          </span>
+          <div class="clip" id="bodyClip">
+            <div class="body">
+              <div class="tabs" id="tabs"></div>
+              <div class="log">
+                <p class="you">
+                  Revisá por qué la pill vuelve al hogar convertida en barra
+                  ancha cuando se cierra el panel de textos.
+                </p>
+                <p class="msg">
+                  El colapso mide la barra mientras todavía está estirada al
+                  ancho del panel. <code>collapse()</code> vuelve
+                  <code>barW</code> a <code>PILL.bar</code> antes de leer
+                  <code>target</code>, pero el <code>ResizeObserver</code>
+                  alcanza a disparar una vez más.
+                </p>
+                <div class="card">
+                  <b>Read · pillStage.ts</b>
+                  157 líneas · windowFor, growsFirst, createStage
+                </div>
+                <div class="card">
+                  <b>Edit · pill/+page.svelte</b>
+                  1 archivo, +4 −1 · medir solo con surface === "none"
+                </div>
+                <p class="meta">trabajando…</p>
+              </div>
+              <div class="cmp">
+                <div class="cmp-box">
+                  <div class="cmp-in">Escribí acá…</div>
+                  <div class="cmp-row">
+                    <span class="chip">Opus ⌄</span>
+                    <span class="chip">Esfuerzo alto ⌄</span>
+                    <span class="chip">Preguntar ⌄</span>
+                    <span class="go">
+                      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <div class="gauge">
+      <dl>
+        <dt>progreso</dt>
+        <dd id="gT">0%</dd>
+        <dt>hueco</dt>
+        <dd id="gGap">—</dd>
+        <dt>alcance</dt>
+        <dd id="gReach">—</dd>
+      </dl>
+      <div class="state" id="gState">fundido</div>
+    </div>
+
+    <div class="note">
+      <p>
+        <b>Esto ya es líquido en la app.</b> El cuello son dos gotas
+        —<code>22×18</code> y <code>14×14</code>— fundidas con
+        <code>bub-liquid-goo</code>. Lo que la demo agrega es la salida: la
+        burbuja <b>nace</b> de la pill y estira el cuello al descolgarse.
+      </p>
+      <p>
+        <b>Por qué existen esas dos gotas.</b> La separación real entre la pill
+        y el globo es <code>gap: 10</code> px, y con σ = 5 el filtro solo cruza
+        <b>8.6</b>. Sin las gotas intermedias el cuello no se forma: la burbuja
+        queda suelta. Apagá <b>gotas del cuello</b> y se ve.
+      </p>
+      <p>
+        <b>Hay otra salida.</b> Con σ ≥ <b>5.8</b> el alcance supera los 10 px y
+        el cuello sale solo, sin gotas. Subí la viscosidad con las gotas
+        apagadas y aparece.
+      </p>
+    </div>
+
+    <script src="liquid.js"></script>
+    <script>
+      Liquid.theme(true);
+      Liquid.desk();
+      Liquid.note();
+
+      // agents/bridge.rs — todas en px lógicos.
+      var GAP = 10;
+      var INSET = 62;
+      var BODY_W = 580;
+      var BODY_H = 520;
+      var CORNER = 26;
+      var DISC = 40;
+
+      var skin = document.getElementById("skin");
+      var anchor = document.getElementById("anchor");
+      var anchorInk = document.getElementById("anchorInk");
+      var bubble = document.getElementById("bubble");
+      var neckRoot = document.getElementById("neckRoot");
+      var neckTip = document.getElementById("neckTip");
+      var bodyClip = document.getElementById("bodyClip");
+
+      var fusion = Liquid.goo(skin, {
+        sigma: 5,
+        shadow: "drop-shadow(0 18px 30px rgba(0, 0, 0, 0.45))",
+      });
+
+      var ACCENTS = {
+        "claude-code": "#da7756",
+        opencode: "#7fae86",
+        codex: "#8fa9b8",
+        cursor: "#a88fc4",
+      };
+      var NAMES = {
+        "claude-code": "Claude Code",
+        opencode: "OpenCode",
+        codex: "Codex",
+        cursor: "Cursor",
+      };
+      // lib/AgentMark.svelte: píxeles sobre una retícula donde cada celda es
+      // 1 de ancho por 2 de alto (medio bloque de terminal).
+      var GRIDS = {
+        "claude-code": [
+          "0011111111111100",
+          "0011011111101100",
+          "1111111111111110",
+          "0111111111111000",
+          "0001010001010000",
+        ],
+        opencode: [
+          "0110000000000000",
+          "0011000000000000",
+          "0001100000000000",
+          "0011000000000000",
+          "0110000111111110",
+        ],
+        codex: [
+          "000111100000",
+          "011000110000",
+          "110000011000",
+          "110000011000",
+          "011000110000",
+          "000111100000",
+        ],
+        cursor: ["1000000000", "1110000000", "1111100000", "1111111000", "1110110000"],
+      };
+
+      function mark(backend, size) {
+        var grid = GRIDS[backend];
+        var w = grid[0].length;
+        var h = grid.length;
+        var rects = "";
+        for (var y = 0; y < h; y++) {
+          for (var x = 0; x < w; x++) {
+            if (grid[y][x] === "1") {
+              rects +=
+                '<rect x="' + x + '" y="' + y * 2 + '" width="1" height="2" fill="currentColor"/>';
+            }
+          }
+        }
+        return (
+          '<svg width="' + size + '" height="' + (size * h * 2) / w +
+          '" viewBox="0 0 ' + w + " " + h * 2 +
+          '" shape-rendering="crispEdges" role="img" aria-label="' + NAMES[backend] +
+          '">' + rects + "</svg>"
+        );
+      }
+
+      var tabs = document.getElementById("tabs");
+      Object.keys(GRIDS).forEach(function (id, i) {
+        var tab = document.createElement("span");
+        tab.className = "tab" + (i === 0 ? " active" : "");
+        tab.style.setProperty("--tv", ACCENTS[id]);
+        tab.innerHTML = '<span class="tab-mark">' + mark(id, 13) + "</span>" + NAMES[id];
+        tabs.appendChild(tab);
+      });
+
+      var lerp = function (a, b, t) {
+        return a + (b - a) * t;
+      };
+
+      var gT = document.getElementById("gT");
+      var gGap = document.getElementById("gGap");
+      var gReach = document.getElementById("gReach");
+      var gState = document.getElementById("gState");
+      var progress = null;
+      var stop = null;
+      var t = 0;
+      var tail = 0.5; // posición del ancla a lo largo del borde, 0..1
+      var necked = true;
+
+      function render(next) {
+        t = next;
+        var box = document.querySelector(".scene");
+        var W = box.offsetWidth;
+
+        // El ancla —la pill— no se mueve: es el origen del que cuelga todo.
+        var ax = lerp(INSET, W - INSET - DISC, tail);
+        anchor.style.cssText =
+          "left:" + ax + "px; top:0; width:" + DISC + "px; height:" + DISC + "px";
+        anchorInk.style.cssText =
+          "left:" + ax + "px; top:0; width:" + DISC + "px; height:" + DISC + "px";
+
+        // El globo nace DENTRO del disco, no pegado abajo.
+        //
+        // Arrancaba en 64 × 20 apoyado en el borde de abajo, y con la fusión
+        // puesta eso no era una gota escondida: era un par de hombros que
+        // sobresalían del disco. Cerrado, la pill tiene que ser el disco y
+        // nada más, así que el globo parte de una mota adentro.
+        var w = lerp(10, BODY_W, t);
+        var h = lerp(6, BODY_H, t);
+        var y = lerp(DISC / 2 - 3, DISC + GAP, t);
+        var cx = ax + DISC / 2;
+        // El globo se centra en el ancla pero se frena contra el borde, y a
+        // partir de ahí es el cuello el que se corre por el canto. Es lo que
+        // hace `bubble_rect()`: primero acomoda el rectángulo, después calcula
+        // el `offset` de la punta contra el rectángulo ya ubicado.
+        var x = Math.max(0, Math.min(W - w, cx - w / 2));
+        var r = lerp(Math.min(w, h) / 2, CORNER, t);
+        bubble.style.cssText =
+          "left:" + x + "px; top:" + y + "px; width:" + w + "px; height:" + h +
+          "px; --r: " + r + "px";
+
+        // El cuello: las dos gotas de la app, 22×18 y 14×14 con la punta
+        // solapada 6 px. Existen porque el hueco real (10) supera el alcance
+        // del filtro (8.6) — sin ellas la burbuja se descuelga.
+        var gap = y - DISC;
+        var show = necked && gap > 0.5;
+        // La punta se clampea fuera de las esquinas, igual que en Rust: si
+        // cayera sobre la curva, el cuello nacería del aire.
+        var nx = Math.max(x + CORNER + 11, Math.min(x + w - CORNER - 11, cx));
+        neckRoot.style.cssText = show
+          ? "left:" + (nx - 11) + "px; top:" + (DISC - 9) +
+            "px; width:22px; height:18px"
+          : "display:none";
+        neckTip.style.cssText = show
+          ? "left:" + (nx - 7) + "px; top:" + (DISC + 3) +
+            "px; width:14px; height:14px"
+          : "display:none";
+
+        // El contenido se recorta contra la silueta del instante.
+        var ink = Math.max(0, (t - 0.4) / 0.6);
+        bodyClip.style.cssText =
+          "left:" + x + "px; top:" + y + "px; width:" + w + "px; height:" + h +
+          "px; opacity:" + ink.toFixed(3);
+        bodyClip.firstElementChild.style.marginLeft = (w - BODY_W) / 2 + "px";
+
+        var reach = fusion.reach;
+        gT.textContent = Math.round(t * 100) + "%";
+        gGap.textContent = gap.toFixed(1) + " px";
+        gReach.textContent = reach.toFixed(1) + " px";
+        // Con las gotas puestas el cuello siempre cruza; sin ellas manda el
+        // hueco contra el alcance.
+        var joined = necked || gap < reach;
+        gState.textContent = joined ? "fundido" : "cortado";
+        gState.classList.toggle("is-cut", !joined);
+        Liquid.setRange(progress, t);
+      }
+
+      function play(forward) {
+        if (stop) stop();
+        stop = Liquid.animate({
+          from: forward ? 0 : 1,
+          to: forward ? 1 : 0,
+          duration: forward ? 350 : 250,
+          ease: forward ? Liquid.EASE.morph : Liquid.EASE.close,
+          onFrame: render,
+        });
+      }
+
+      render(0);
+      window.addEventListener("resize", function () {
+        render(t);
+      });
+
+      var bar = Liquid.controls([
+        {
+          type: "range",
+          label: "Progreso",
+          min: 0,
+          max: 1,
+          step: 0.005,
+          value: 0,
+          on: function (v) {
+            if (stop) stop();
+            render(v);
+          },
+        },
+        {
+          type: "range",
+          label: "Viscosidad σ",
+          min: 0,
+          max: 20,
+          step: 0.1,
+          value: 5,
+          on: function (v) {
+            fusion.set(v);
+            render(t);
+          },
+        },
+        {
+          // Rust clampea el ancla entre `inset + corner` y `w - inset - corner`
+          // para que la punta no caiga sobre la curva del globo.
+          type: "range",
+          label: "Ancla",
+          min: 0,
+          max: 1,
+          step: 0.01,
+          value: 0.5,
+          on: function (v) {
+            tail = v;
+            render(t);
+          },
+        },
+        { type: "sep" },
+        { type: "button", label: "Abrir ▸", on: function () { play(true); } },
+        { type: "button", label: "◂ Cerrar", on: function () { play(false); } },
+        {
+          type: "toggle",
+          label: "Gotas del cuello",
+          labelOn: "Gotas del cuello ✓",
+          value: true,
+          on: function (on) {
+            necked = on;
+            render(t);
+          },
+        },
+        {
+          type: "toggle",
+          label: "Congelar",
+          labelOn: "Mover",
+          on: function (on) {
+            document.body.classList.toggle("static", on);
+          },
+        },
+      ]);
+      progress = bar.querySelector("input");
+    </script>
+  </body>
+</html>

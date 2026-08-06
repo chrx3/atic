@@ -1,37 +1,43 @@
 # Agentes multi-proveedor
 
-**Estado:** `parcial`
+**Estado:** `chat Claude Code` (resume del CLI + historial Atic)
 
 ## Resumen
 
-Conversaciones con Claude Code, Codex, OpenCode y Cursor dentro de Atic,
-usando el CLI ya instalado y autenticado del usuario. Modelo canónico de
-hilos/turnos/items; prefs de modelo, esfuerzo, Fast y modo de permisos
-recordadas por backend.
+UI en ventana principal y pill que spawnea **Claude Code** con las
+credenciales locales del usuario: no lee tokens; el CLI hereda el login.
 
-## Cómo se usa
+- [`AgentsDemo.svelte`](../apps/desktop/src/lib/features/agents/AgentsDemo.svelte)
+  — chat real + historial Atic + sesiones del CLI (`--resume`)
+- [`AgentConversation.svelte`](../apps/desktop/src/lib/AgentConversation.svelte)
+  — mensajes (markdown), tools, thinking, plan, collab
+- [`claude_sessions.rs`](../apps/desktop/src-tauri/src/agents/claude_sessions.rs)
+  — índice de `~/.claude/projects/<cwd>/…jsonl` (sin importar el transcript)
+- [`AgentsTool.svelte`](../apps/desktop/src/lib/features/agents/AgentsTool.svelte) /
+  [`AgentsFloat.svelte`](../apps/desktop/src/lib/surfaces/overlay/agents/AgentsFloat.svelte)
+  — hosts
 
-- Abrir agentes desde la pill (burbuja anclada).
-- Elegir pestaña de proveedor, modelo, esfuerzo, Fast (Cursor) y escudo de
-  permisos; se recuerdan al reabrir.
-- Escribir, dictar o adjuntar capturas/archivos; Enter inicia o envía.
-- Permisos de herramientas se aprueban en la UI cuando el agente pregunta.
+## Hecho
 
-## Código
+- [x] Transcript rico (`AgentConversation`)
+- [x] Historial Atic + continuar con `providerSession`
+- [x] Picker tipo `/resume`: sesiones del CLI en la carpeta
+- [x] Diálogo al importar: desde resumen (`/compact`), completa, o solo contexto
+- [x] Compactar contexto en sesión viva (aviso + resumen + recorte UI)
+- [x] Autocomplete `/`: catálogo del handshake (`name`, `description`, `argumentHint`)
+- [x] Sesión al enfocar/`/`: catálogo completo sin mandar mensaje
+- [x] Select de `/effort` en composer (low…auto)
+- [x] Misma UI en main y pill
 
-- [`apps/desktop/src-tauri/src/agents/`](../apps/desktop/src-tauri/src/agents/) — adaptadores y bridge
-- [`apps/desktop/src/routes/agents/+page.svelte`](../apps/desktop/src/routes/agents/+page.svelte)
-- [`apps/desktop/src/lib/agentModels.ts`](../apps/desktop/src/lib/agentModels.ts) — recuerdo localStorage
-- [`apps/desktop/src/lib/agentSessions.svelte.ts`](../apps/desktop/src/lib/agentSessions.svelte.ts)
+## Pendiente
 
-## Pendiente / siguiente
-
-- [ ] UI para `cursor/ask_question` y `cursor/create_plan` (hoy auto skip/accept)
-- [ ] Mover `static SESSIONS` / pendientes del plan de agentes
-- [ ] Paridad de UX entre backends (costos, modos, errores)
+- [ ] Modos de permiso en composer
+- [ ] Otros backends en UI (Codex, OpenCode, Cursor)
+- [ ] Dictado → composer
+- [ ] MCP / skills visibles
 
 ## Relacionado
 
 - [dictado.md](dictado.md)
-- [capturas.md](capturas.md)
+- [liquid.md](liquid.md)
 - [`docs/PLAN_AGENTES.md`](../docs/PLAN_AGENTES.md)

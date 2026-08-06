@@ -7,6 +7,8 @@
    * entra por el snippet `actions` como cualquier otra acción.
    */
   import type { Snippet } from "svelte";
+  import type { ToolId } from "$core/tools";
+  import ToolIcon from "$lib/ToolIcon.svelte";
 
   let {
     title,
@@ -14,6 +16,7 @@
     kicker,
     meta,
     actions,
+    icon,
     children,
   }: {
     title: string;
@@ -24,12 +27,23 @@
     /** Contadores, estado: lo que describe a la herramienta ahora mismo. */
     meta?: Snippet;
     actions?: Snippet;
+    /** Icono de la herramienta, a la izquierda del título. */
+    icon?: ToolId;
     children: Snippet;
   } = $props();
 </script>
 
 <div class="flex h-full flex-col overflow-hidden">
-  <header class="flex shrink-0 items-start gap-3 px-4 pt-3 pb-2">
+  <header class="flex shrink-0 items-start gap-3 border-b border-line px-4 pt-3 pb-3">
+    {#if icon}
+      <div
+        class="flex size-9 shrink-0 items-center justify-center rounded-md
+               bg-surface-2 text-muted"
+      >
+        <ToolIcon id={icon} size={18} />
+      </div>
+    {/if}
+
     <div class="flex min-w-0 flex-1 flex-col gap-0.5">
       {#if kicker}
         <p class="text-micro text-faint uppercase">{kicker}</p>

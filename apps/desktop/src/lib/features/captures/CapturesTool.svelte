@@ -35,6 +35,7 @@
 
 <ToolPage
   title="Capturas"
+  icon="captures"
   kicker="Pantalla"
   blurb="Recortes rápidos al portapapeles y al shelf flotante."
 >
@@ -70,6 +71,7 @@
     <div class="min-h-0 flex-1 overflow-y-auto p-4">
       {#if captures.items.length === 0}
         <EmptyState
+          icon="captures"
           title="No hay capturas recientes"
           hint={shortcut
             ? `Sacá una con ${formatShortcut(shortcut)}.`

@@ -3,9 +3,14 @@
 //! Baja frecuencia, ataque redondo y poco brillo para que se sientan como
 //! una presión satisfactoria, no como un beep de alerta.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use atic_core::MutexExt;
 use cpal::traits::{DeviceTrait, StreamTrait};
 use cpal::{SampleFormat, StreamConfig};
+
+/// Evita apilar hilos de audio si el scroll de la rueda dispara ticks seguidos.
+static WHEEL_TICK_BUSY: AtomicBool = AtomicBool::new(false);
 
 /// Grabación on: presión grave que sube un semitono (como activar ANC).
 const START_NOTES: [(f32, f32); 2] = [(58.0, 0.13), (78.0, 0.11)];
@@ -19,6 +24,9 @@ const DICTATION_DONE_NOTES: [(f32, f32); 2] = [(56.0, 0.09), (72.0, 0.12)];
 
 /// Captura: click de obturador grave (una sola pulsación).
 const CAPTURE_NOTES: [(f32, f32); 1] = [(70.0, 0.11)];
+
+/// Rueda de la pill: click seco tipo cápsula / cilindro de revólver.
+const WHEEL_TICK_NOTES: [(f32, f32); 1] = [(110.0, 0.038)];
 
 /* --- Voces -------------------------------------------------------------
  *
@@ -115,6 +123,16 @@ const CHIP_HARMONICS: [(f32, f32, f32); 3] = [(3.0, 0.33, 1.0), (5.0, 0.20, 1.0)
 const CHIP_PITCH: f32 = 14.0;
 const CHIP_DURATION: f32 = 0.5;
 
+/// Click: golpe metalico casi sin cola. Parciales no enteros = casquillo, no pitido.
+const CLICK_PEAK: f32 = 0.10;
+const CLICK_ATTACK_SECS: f32 = 0.001;
+const CLICK_RELEASE_SECS: f32 = 0.022;
+const CLICK_DECAY_RATE: f32 = 28.0;
+const CLICK_HARMONICS: [(f32, f32, f32); 3] =
+    [(1.0, 0.50, 1.0), (2.35, 0.32, 2.8), (5.15, 0.14, 4.5)];
+const CLICK_PITCH: f32 = 11.5;
+const CLICK_DURATION: f32 = 0.42;
+
 type ToneShape = (f32, f32, f32, f32, &'static [(f32, f32, f32)]);
 
 /// Timbre elegible por accion.
@@ -141,6 +159,8 @@ pub enum ToneProfile {
     Air,
     /// Onda cuadrada, tipo consola vieja.
     Chip,
+    /// Click seco metalico (rueda / capsula).
+    Click,
     /// Silencio: la accion no suena.
     Silent,
 }
@@ -158,6 +178,7 @@ impl ToneProfile {
             "cuerda" => ToneProfile::Pluck,
             "aire" => ToneProfile::Air,
             "digital" => ToneProfile::Chip,
+            "click" | "capsula" => ToneProfile::Click,
             "ninguno" => ToneProfile::Silent,
             _ => fallback,
         }
@@ -173,6 +194,7 @@ impl ToneProfile {
             ToneProfile::Pluck => PLUCK_PITCH,
             ToneProfile::Air => AIR_PITCH,
             ToneProfile::Chip => CHIP_PITCH,
+            ToneProfile::Click => CLICK_PITCH,
             _ => 1.0,
         }
     }
@@ -189,12 +211,13 @@ impl ToneProfile {
             ToneProfile::Pluck => PLUCK_DURATION,
             ToneProfile::Air => AIR_DURATION,
             ToneProfile::Chip => CHIP_DURATION,
+            ToneProfile::Click => CLICK_DURATION,
             _ => 1.0,
         }
     }
 }
 
-/// Las cinco acciones que suenan. Cada una tiene su gesto y su voz por defecto.
+/// Acciones que suenan. Cada una tiene su gesto y su voz por defecto.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum SoundAction {
     RecordingStart,
@@ -202,6 +225,8 @@ pub enum SoundAction {
     DictationStart,
     DictationDone,
     Capture,
+    /// Paso de la rueda de herramientas (pill).
+    WheelTick,
 }
 
 impl SoundAction {
@@ -212,6 +237,7 @@ impl SoundAction {
             SoundAction::DictationStart => &DICTATION_START_NOTES,
             SoundAction::DictationDone => &DICTATION_DONE_NOTES,
             SoundAction::Capture => &CAPTURE_NOTES,
+            SoundAction::WheelTick => &WHEEL_TICK_NOTES,
         }
     }
 
@@ -220,6 +246,7 @@ impl SoundAction {
             // El dictado interrumpe menos que una grabación: toque corto en vez
             // de presión grave.
             SoundAction::DictationStart | SoundAction::DictationDone => ToneProfile::Tap,
+            SoundAction::WheelTick => ToneProfile::Click,
             _ => ToneProfile::Bass,
         }
     }
@@ -231,6 +258,19 @@ impl SoundAction {
             SoundAction::DictationStart => "dictado (inicio)",
             SoundAction::DictationDone => "dictado (listo)",
             SoundAction::Capture => "captura",
+            SoundAction::WheelTick => "rueda (paso)",
+        }
+    }
+
+    fn parse(raw: &str) -> Option<Self> {
+        match raw {
+            "recording_start" => Some(SoundAction::RecordingStart),
+            "recording_stop" => Some(SoundAction::RecordingStop),
+            "dictation_start" => Some(SoundAction::DictationStart),
+            "dictation_done" => Some(SoundAction::DictationDone),
+            "capture" => Some(SoundAction::Capture),
+            "wheel_tick" => Some(SoundAction::WheelTick),
+            _ => None,
         }
     }
 }
@@ -245,7 +285,21 @@ pub fn play(action: SoundAction, voice: &str, output_device_id: &str) {
     if profile == ToneProfile::Silent {
         return;
     }
-    play_chime(output_device_id, action.notes(), profile, action.label());
+    // Un solo tick a la vez: el scroll puede disparar varios pasos por frame.
+    if action == SoundAction::WheelTick
+        && WHEEL_TICK_BUSY
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+    {
+        return;
+    }
+    play_chime(
+        output_device_id,
+        action.notes(),
+        profile,
+        action.label(),
+        action == SoundAction::WheelTick,
+    );
 }
 
 fn play_chime(
@@ -253,10 +307,15 @@ fn play_chime(
     notes: &'static [(f32, f32)],
     profile: ToneProfile,
     label: &'static str,
+    release_wheel_tick: bool,
 ) {
     let device_id = output_device_id.to_string();
     std::thread::spawn(move || {
-        if let Err(err) = play_chime_blocking(&device_id, notes, profile) {
+        let result = play_chime_blocking(&device_id, notes, profile, release_wheel_tick);
+        if release_wheel_tick {
+            WHEEL_TICK_BUSY.store(false, Ordering::Release);
+        }
+        if let Err(err) = result {
             tracing::debug!(%err, %label, "no se pudo reproducir el sonido");
         }
     });
@@ -266,6 +325,7 @@ fn play_chime_blocking(
     output_device_id: &str,
     notes: &'static [(f32, f32)],
     profile: ToneProfile,
+    snappy: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let device = atic_audio::resolve_output_device_by_id(output_device_id)?;
     let supported = device.default_output_config()?;
@@ -278,7 +338,9 @@ fn play_chime_blocking(
     // espera tiene que contarlo o el stream se cerraria a mitad de la campana.
     let total_secs: f32 = notes.iter().map(|(_, dur)| *dur).sum::<f32>() * profile.duration();
     // Silencio breve al inicio para que el dispositivo abra el stream en cero.
-    let lead_in = 0.018;
+    // La rueda usa menos lead: el click tiene que llegar al paso, no despues.
+    let lead_in = if snappy { 0.006 } else { 0.018 };
+    let tail = if snappy { 0.02 } else { 0.08 };
     let mut gen = ChimeGenerator::new(sample_rate, notes, profile, lead_in);
 
     let stream = match sample_format {
@@ -298,9 +360,7 @@ fn play_chime_blocking(
     };
 
     stream.play()?;
-    std::thread::sleep(std::time::Duration::from_secs_f32(
-        lead_in + total_secs + 0.08,
-    ));
+    std::thread::sleep(std::time::Duration::from_secs_f32(lead_in + total_secs + tail));
     Ok(())
 }
 
@@ -388,6 +448,13 @@ impl ChimeGenerator {
                 CHIP_PEAK,
                 &CHIP_HARMONICS,
             ),
+            ToneProfile::Click => (
+                CLICK_ATTACK_SECS,
+                CLICK_RELEASE_SECS,
+                CLICK_DECAY_RATE,
+                CLICK_PEAK,
+                &CLICK_HARMONICS,
+            ),
             // No se llega aca: `play` corta antes de abrir el stream.
             ToneProfile::Silent => (0.0, 0.0, 1.0, 0.0, &BASS_HARMONICS),
         }
@@ -462,15 +529,37 @@ pub fn preview_sound(
     action: String,
     voice: String,
 ) -> Result<(), String> {
-    let which = match action.as_str() {
-        "recording_start" => SoundAction::RecordingStart,
-        "recording_stop" => SoundAction::RecordingStop,
-        "dictation_start" => SoundAction::DictationStart,
-        "dictation_done" => SoundAction::DictationDone,
-        "capture" => SoundAction::Capture,
-        other => return Err(format!("acción de sonido desconocida: {other}")),
-    };
+    let which = SoundAction::parse(&action)
+        .ok_or_else(|| format!("acción de sonido desconocida: {action}"))?;
     let out = state.config.lock_or_recover().output_device_id.clone();
+    play(which, &voice, &out);
+    Ok(())
+}
+
+/// Reproduce una acción respetando `ui_sounds` y el timbre guardado en config.
+///
+/// Lo usa la UI (rueda de la pill) sin tener que leer la config en el front.
+#[tauri::command]
+pub fn play_ui_sound(
+    state: tauri::State<'_, crate::state::AppState>,
+    action: String,
+) -> Result<(), String> {
+    let which = SoundAction::parse(&action)
+        .ok_or_else(|| format!("acción de sonido desconocida: {action}"))?;
+    let cfg = state.config.lock_or_recover();
+    if !cfg.ui_sounds {
+        return Ok(());
+    }
+    let voice = match which {
+        SoundAction::RecordingStart => cfg.sound_recording_start.clone(),
+        SoundAction::RecordingStop => cfg.sound_recording_stop.clone(),
+        SoundAction::DictationStart => cfg.sound_dictation_start.clone(),
+        SoundAction::DictationDone => cfg.sound_dictation_done.clone(),
+        SoundAction::Capture => cfg.sound_capture.clone(),
+        SoundAction::WheelTick => cfg.sound_wheel_tick.clone(),
+    };
+    let out = cfg.output_device_id.clone();
+    drop(cfg);
     play(which, &voice, &out);
     Ok(())
 }

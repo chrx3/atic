@@ -43,13 +43,13 @@
     /**
      * Atajos de desarrollo. Solo en dev.
      *
-     * Ctrl+Alt+L — banco de pruebas líquido. La ventana overlay nace
-     *   `focusable(false)`, así que no recibe teclas: el interruptor vive acá y
-     *   viaja por `localStorage`, igual que el tema.
-     * Ctrl+Alt+M — vuelve a la UI anterior, que sigue en `/legacy` hasta que
-     *   la nueva pase una vuelta completa acá adentro. Ninguna ventana tiene
-     *   barra de direcciones, así que sin esto no habría forma de volver.
+     * Ctrl+Alt+L — lab del OVERLAY (pill/agentes). No confundir con el panel
+     *   de rueda+cards (botón de sliders en la titlebar / Ctrl+Alt+P / Esc).
+     * Ctrl+Alt+M — UI legacy.
      */
+    // Si quedó pegado de una sesión anterior, liberar el overlay al arrancar.
+    if (import.meta.env.DEV) localStorage.removeItem("atic-liquid-lab");
+
     const onDevKey = (event: KeyboardEvent) => {
       if (!event.ctrlKey || !event.altKey) return;
       const key = event.key.toLowerCase();
@@ -59,6 +59,12 @@
         const on = localStorage.getItem("atic-liquid-lab") === "1";
         if (on) localStorage.removeItem("atic-liquid-lab");
         else localStorage.setItem("atic-liquid-lab", "1");
+        window.dispatchEvent(
+          new StorageEvent("storage", {
+            key: "atic-liquid-lab",
+            newValue: on ? null : "1",
+          }),
+        );
         return;
       }
 

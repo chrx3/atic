@@ -9,7 +9,7 @@
    *
    * A diferencia de `docs/demos/`, que son una implementación aparte, esto usa
    * el `GooFilter` de producción y la misma geometría de cuello que
-   * `AgentsSurface`. Lo que se ve acá es lo que hace la app.
+   * el float de agentes. Lo que se ve acá es lo que hace la app.
    *
    * Qué se mide:
    *
@@ -42,7 +42,7 @@
     onClose?: () => void;
   } = $props();
 
-  /* ─── Geometría, copiada de AgentsSurface a propósito ───────────────────
+  /* ─── Geometría, copiada del float de agentes a propósito ────────────────
    *
    * Copiada y no importada: el lab tiene que poder contradecir a la app. Si un
    * día estos números se separan de los de allá, el que manda es el de allá y

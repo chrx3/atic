@@ -108,6 +108,7 @@
 
 <ToolPage
   title="Reuniones"
+  icon="meetings"
   blurb="Audio del PC, transcripción local y resúmenes editables."
   kicker="Grabar y resumir"
 >
@@ -197,10 +198,15 @@
     <LiveTranscript />
 
     <div class="min-h-0 flex-1">
-      <ListDetail hasSelection={recordings.selected !== null} listLabel="Grabaciones">
+      <ListDetail
+        hasSelection={recordings.selected !== null}
+        listLabel="Grabaciones"
+        listCount={recordings.items.length}
+      >
         {#snippet list()}
           {#if recordings.items.length === 0}
             <EmptyState
+              icon="meetings"
               title="Todavía no hay grabaciones"
               hint="Apretá Grabar, o traé archivos de audio que ya tengas."
             />
@@ -210,7 +216,7 @@
                 <li>
                   <button
                     type="button"
-                    class="flex w-full flex-col gap-0.5 border-b border-line px-3 py-2
+                    class="flex w-full flex-col gap-0.5 px-3 py-2
                            text-left transition-colors duration-(--duration-quick)
                            hover:bg-surface-2
                            {recordings.selectedId === item.id ? 'bg-surface-2' : ''}"
@@ -240,7 +246,8 @@
         {#snippet detail()}
           {@const item = recordings.selected}
           {#if item}
-            <div class="flex flex-col gap-3 p-4">
+            <!-- Sin p-4: el panel de ListDetail ya lo trae. -->
+            <div class="flex flex-col gap-3">
               <div class="flex items-start gap-2">
                 <div class="flex min-w-0 flex-1 flex-col gap-1">
                   <h3 class="truncate text-lg font-semibold text-text">{item.title}</h3>
@@ -288,7 +295,11 @@
         {/snippet}
 
         {#snippet empty()}
-          <EmptyState title="Elegí una grabación" hint="El detalle se muestra acá." />
+          <EmptyState
+            icon="meetings"
+            title="Elegí una grabación"
+            hint="El detalle se muestra acá."
+          />
         {/snippet}
       </ListDetail>
     </div>

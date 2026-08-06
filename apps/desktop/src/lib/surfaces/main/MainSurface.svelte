@@ -2,50 +2,45 @@
   /**
    * La ventana principal.
    *
-   * Reemplaza a un `routes/+page.svelte` de 1.135 líneas que tenía 25
-   * variables de estado, 22 suscripciones en un solo `onMount` y toda la
-   * lógica de negocio mezclada con el markup. Acá no hay nada de eso: el
-   * estado vive en `domain/`, las suscripciones las monta `startSession`, y
-   * esto solo decide qué se dibuja.
+   * Shell: picker líquido (rueda + cards). El detalle de cada tool y sus
+   * ajustes viven en un modal. El estado de dominio lo monta `sessionEffect`.
    */
-  import { toolById, type ToolId } from "$core/tools";
+  import { toolById } from "$core/tools";
+  import { pickerLab } from "$lib/dev/pickerLab.svelte";
   import { config } from "$domain/config.svelte";
   import { recordings } from "$domain/recordings.svelte";
   import { sessionEffect } from "$domain/session";
   import { toasts } from "$domain/toasts.svelte";
-  import AgentsTool from "$features/agents/AgentsTool.svelte";
-  import CapturesTool from "$features/captures/CapturesTool.svelte";
-  import ClipboardTool from "$features/clipboard/ClipboardTool.svelte";
-  import DictationTool from "$features/dictation/DictationTool.svelte";
-  import MeetingsTool from "$features/meetings/MeetingsTool.svelte";
   import OnboardingModal from "$features/onboarding/OnboardingModal.svelte";
   import SearchModal from "$features/search/SearchModal.svelte";
   import SettingsPanel from "$features/settings/SettingsPanel.svelte";
-  import SnippetsTool from "$features/snippets/SnippetsTool.svelte";
-  import Modal from "$ui/Modal.svelte";
   import { closeWindow, minimizeWindow, toggleMaximizeWindow } from "$ipc/windows";
   import WindowFrame from "$patterns/WindowFrame.svelte";
-  import Button from "$ui/Button.svelte";
-  import EmptyState from "$ui/EmptyState.svelte";
   import IconButton from "$ui/IconButton.svelte";
+  import Modal from "$ui/Modal.svelte";
   import ToastStack from "$ui/ToastStack.svelte";
-  import HubView from "./HubView.svelte";
+  import ToolDetailModal from "./ToolDetailModal.svelte";
+  import ToolRail from "./ToolRail.svelte";
   import { provideMainUi } from "./mainUi.svelte";
 
   const ui = provideMainUi();
+  const isDev = import.meta.env.DEV;
 
-  /** Todas. La lista queda porque el hub necesita saber qué se puede abrir. */
-  const READY: ToolId[] = [
-    "meetings",
-    "dictation",
-    "clipboard",
-    "snippets",
-    "captures",
-    "agents",
-  ];
+  // Panel estático en dev: sin dynamic import que pueda dejar la UI a medias.
+  let PickerLabPanel = $state<typeof import("$lib/dev/PickerLabPanel.svelte").default | null>(
+    null,
+  );
+  $effect(() => {
+    if (!isDev) return;
+    let cancelled = false;
+    void import("$lib/dev/PickerLabPanel.svelte").then((m) => {
+      if (!cancelled) PickerLabPanel = m.default;
+    });
+    return () => {
+      cancelled = true;
+    };
+  });
 
-  // Una sola declaración de qué necesita esta ventana. Sin esto, cada vista
-  // volvía a suscribirse por su cuenta y el estado quedaba duplicado.
   $effect(() =>
     sessionEffect([
       "config",
@@ -69,45 +64,28 @@
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
       event.preventDefault();
       searchOpen = true;
+    }
+    if (!isDev) return;
+    if (event.key === "Escape" && pickerLab.open) {
+      event.preventDefault();
+      pickerLab.close();
       return;
     }
-
-    // Esc vuelve al hub, salvo que haya un diálogo abierto —el nativo lo cierra
-    // él— o que el foco esté en un campo, donde Esc suele significar otra cosa.
-    if (event.key !== "Escape" || ui.view !== "tool") return;
-    if (document.querySelector("dialog[open]")) return;
-    const el = document.activeElement;
-    if (el instanceof HTMLElement && el.closest("input, textarea, [contenteditable]")) {
-      return;
+    if (event.ctrlKey && event.altKey && event.key.toLowerCase() === "p") {
+      event.preventDefault();
+      pickerLab.toggle();
     }
-    ui.backToHub();
   }
 </script>
 
 <svelte:window onkeydown={onKeydown} />
 
 <WindowFrame
-  title={ui.view === "hub" ? "Atic" : tool.label}
+  title={tool.label}
   onMinimize={() => void minimizeWindow()}
   onMaximize={() => void toggleMaximizeWindow()}
   onClose={() => void closeWindow()}
 >
-  {#snippet start()}
-    {#if ui.view === "tool"}
-      <IconButton label="Volver al inicio" size="sm" onclick={() => ui.backToHub()}>
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-          <path
-            d="M15 6l-6 6 6 6"
-            stroke="currentColor"
-            stroke-width="2"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-          />
-        </svg>
-      </IconButton>
-    {/if}
-  {/snippet}
-
   {#snippet actions()}
     <IconButton label="Buscar (Ctrl+K)" size="sm" onclick={() => (searchOpen = true)}>
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -132,36 +110,37 @@
         />
       </svg>
     </IconButton>
+
+    {#if isDev}
+      <IconButton
+        label={pickerLab.open ? "Cerrar ajuste picker" : "Ajustar rueda y cards"}
+        size="sm"
+        pressed={pickerLab.open}
+        onclick={() => pickerLab.toggle()}
+      >
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path
+            d="M4 8h16M4 16h10"
+            stroke="currentColor"
+            stroke-width="1.8"
+            stroke-linecap="round"
+          />
+          <circle cx="18" cy="16" r="2.5" stroke="currentColor" stroke-width="1.8" />
+          <circle cx="10" cy="8" r="2.5" stroke="currentColor" stroke-width="1.8" />
+        </svg>
+      </IconButton>
+    {/if}
   {/snippet}
 
-  {#if ui.view === "hub"}
-    <HubView ready={READY} onOpen={(id) => ui.openTool(id)} />
-  {:else if ui.activeTool === "meetings"}
-    <MeetingsTool onOpenSettings={() => (settingsOpen = true)} />
-  {:else if ui.activeTool === "dictation"}
-    <DictationTool />
-  {:else if ui.activeTool === "clipboard"}
-    <ClipboardTool />
-  {:else if ui.activeTool === "snippets"}
-    <SnippetsTool initialTab={ui.snippetsTab} />
-  {:else if ui.activeTool === "captures"}
-    <CapturesTool />
-  {:else if ui.activeTool === "agents"}
-    <AgentsTool />
-  {:else}
-    <EmptyState title="{tool.label} todavía no está reescrita" hint={tool.blurb}>
-      {#snippet action()}
-        <Button variant="soft" size="sm" onclick={() => ui.backToHub()}>
-          Volver al inicio
-        </Button>
-      {/snippet}
-    </EmptyState>
-  {/if}
+  <div class="shell">
+    <ToolRail
+      activeTool={ui.activeTool}
+      onSelect={(id) => ui.openTool(id)}
+      onOpenDetail={(id) => ui.openDetail(id)}
+    />
+  </div>
 </WindowFrame>
 
-<!-- El primer uso tapa todo lo demás: hay un paso de consentimiento que no se
-     puede dar por leído. Se cierra solo cuando `onboarding_done` queda en la
-     configuración. -->
 {#if config.current && !config.current.onboarding_done}
   <OnboardingModal onDone={() => toasts.push("Listo. Podés grabar cuando quieras.")} />
 {/if}
@@ -170,27 +149,51 @@
   <SearchModal
     onClose={() => (searchOpen = false)}
     onNavigate={(hit) => {
-      // Los resultados que son un sitio y no una acción: se abre la
-      // herramienta que los contiene y se selecciona lo elegido.
       if (hit.kind === "recording") {
         recordings.select(hit.id);
-        ui.openTool("meetings");
+        ui.openDetail("meetings");
       } else if (hit.kind === "scratchpad") {
         ui.snippetsTab = "scratchpad";
-        ui.openTool("snippets");
+        ui.openDetail("snippets");
       }
     }}
   />
 {/if}
 
+{#if ui.detailTool}
+  <ToolDetailModal
+    toolId={ui.detailTool}
+    bind:tab={ui.detailTab}
+    snippetsTab={ui.snippetsTab}
+    onClose={() => ui.closeDetail()}
+    onOpenSettings={() => (settingsOpen = true)}
+  />
+{/if}
+
 {#if settingsOpen}
-  <Modal title="Ajustes" size="lg" onClose={() => (settingsOpen = false)}>
-    <!-- Sin padding propio: el panel maneja el suyo, y la navegación va pegada
-         al borde. -->
-    <div class="-mx-4 -my-3 h-[60vh]">
+  <Modal
+    title="Ajustes"
+    size="lg"
+    fill
+    scrollBody={false}
+    onClose={() => (settingsOpen = false)}
+  >
+    <div class="-mx-4 -my-3 flex h-full min-h-0 flex-1 flex-col overflow-hidden">
       <SettingsPanel />
     </div>
   </Modal>
 {/if}
 
 <ToastStack items={toasts.items} onDismiss={(id) => toasts.dismiss(id)} />
+
+{#if isDev && pickerLab.open && PickerLabPanel}
+  <PickerLabPanel />
+{/if}
+
+<style>
+  .shell {
+    display: flex;
+    height: 100%;
+    min-height: 0;
+  }
+</style>

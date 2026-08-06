@@ -103,6 +103,11 @@ export const MOTION = {
   panel: "--panel-dur",
   quick: "--duration-quick",
   fast: "--duration-fast",
+  slow: "--duration-slow",
+  medium: "--duration-medium",
+  flight: "--flight-dur",
+  floatOpen: "--float-open-dur",
+  floatClose: "--float-close-dur",
 } as const;
 
 /** Fallbacks alineados con app.css. Solo se usan si el token no resuelve. */
@@ -114,9 +119,44 @@ export const MOTION_FALLBACK = {
   [MOTION.panel]: 250,
   [MOTION.quick]: 150,
   [MOTION.fast]: 250,
+  [MOTION.slow]: 400,
+  [MOTION.medium]: 350,
+  [MOTION.flight]: 250,
+  [MOTION.floatOpen]: 400,
+  [MOTION.floatClose]: 350,
 } as const;
 
 /** Atajo: duración efectiva de un token conocido. */
 export function ms(token: keyof typeof MOTION_FALLBACK): number {
   return motionMs(token, MOTION_FALLBACK[token]);
+}
+
+/** ease-in-out: swaps de pestaña / texto (transitions-polish). */
+function easeInOut(t: number): number {
+  return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+}
+
+/**
+ * Contenido al cambiar de pestaña.
+ *
+ * Simétrico (`--duration-fast`): no es open/close. Distancia micro + blur
+ * pequeño en la fase de entrada; el exit se apaga sin lanzar el panel.
+ */
+export function tabPanel(
+  _node: Element,
+  { duration }: { duration?: number } = {},
+): { duration: number; easing: (t: number) => number; css: (t: number) => string } {
+  if (prefersReducedMotion()) {
+    return { duration: 0, easing: (t) => t, css: () => "" };
+  }
+  const dur = duration ?? motionMs(MOTION.fast, MOTION_FALLBACK[MOTION.fast]);
+  return {
+    duration: dur,
+    easing: easeInOut,
+    css: (t) => {
+      const u = 1 - t;
+      // --distance-micro (4px) + --blur-small (2px)
+      return `opacity:${t};transform:translateY(${u * 4}px);filter:blur(${u * 2}px)`;
+    },
+  };
 }

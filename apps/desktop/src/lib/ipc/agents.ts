@@ -11,6 +11,8 @@ import type {
   AgentSkill,
   AgentStartOptions,
   BubbleOpen,
+  AgentTurn,
+  ClaudeCodeSession,
   PermissionDecision,
   StoredThread,
 } from "$core/types";
@@ -71,6 +73,14 @@ export const agentThread = (id: string) =>
   invoke<StoredThread | null>("agent_thread", { id });
 export const agentThreadDelete = (id: string) =>
   invoke<void>("agent_thread_delete", { id });
+
+/** Sesiones locales del CLI Claude Code para un cwd (reanudar con --resume). */
+export const agentClaudeSessions = (cwd: string) =>
+  invoke<ClaudeCodeSession[]>("agent_claude_sessions", { cwd });
+
+/** Transcript del CLI en turnos canónicos (para pintar al reanudar). */
+export const agentClaudeTranscript = (cwd: string, id: string) =>
+  invoke<AgentTurn[]>("agent_claude_transcript", { cwd, id });
 
 // --- La burbuja ---
 /** True si la burbuja de agentes está visible. */

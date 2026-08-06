@@ -598,7 +598,7 @@ pub fn paste_clipboard_item(
             }
         };
         let _ = app.emit("agents-composer-insert", payload);
-        let _ = app.emit("pill-clipboard-close", ());
+        hide_clipboard_window(app.clone());
         return Ok(());
     }
 
@@ -641,7 +641,7 @@ pub fn paste_clipboard_item(
         }
     };
 
-    let _ = app.emit("pill-clipboard-close", ());
+    hide_clipboard_window(app.clone());
     result
 }
 
@@ -1185,16 +1185,33 @@ fn send_paste_chord(with_shift: bool) -> Result<(), String> {
     Ok(())
 }
 
-/// Atajo del clipboard: el frontend hace toggle (cerrar si ya está abierto).
-///
-/// No reposiciona aquí: si el panel ya está expandido, centrar con ese alto
-/// deja la ventana mal anclada. El frontend, al abrir, pide
-/// [`prepare_clipboard_pill`] (compacta + cursor) y luego expande.
+/// Float de clipboard abierto (independiente de la pill).
+static CLIPBOARD_OPEN: AtomicBool = AtomicBool::new(false);
+
+const CLIP_ANCHOR: &str = "clipboard-bubble-anchor";
+const CLIP_DISMISS: &str = "clipboard-bubble-dismiss";
+
+/// Atajo / rueda / launcher: toggle del float de clipboard (sale de la pill).
 pub fn summon_clipboard_panel(app: &AppHandle) {
-    // Guardar el foco ANTES de que la pill lo robe (solo importa al abrir).
     save_foreground_hwnd();
-    tracing::info!(target: "overlay", "emit pill-clipboard-toggle");
-    let _ = app.emit("pill-clipboard-toggle", ());
+    tracing::info!(target: "overlay", "toggle clipboard float");
+    crate::panel_float::toggle(
+        app,
+        &CLIPBOARD_OPEN,
+        crate::panel_float::PANEL_SHAPE,
+        CLIP_ANCHOR,
+        CLIP_DISMISS,
+    );
+}
+
+#[tauri::command]
+pub fn show_clipboard_window(app: AppHandle) {
+    summon_clipboard_panel(&app);
+}
+
+#[tauri::command]
+pub fn hide_clipboard_window(app: AppHandle) {
+    crate::panel_float::hide(&app, &CLIPBOARD_OPEN, CLIP_DISMISS);
 }
 
 /// Prepara la pill para abrir un panel (historial o fragmentos).
