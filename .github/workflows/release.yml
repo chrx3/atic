@@ -10,6 +10,12 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag a publicar (ej. v0.3.0). Debe existir en el repo."
+        required: true
+        default: "v0.3.0"
 
 permissions:
   contents: write
@@ -62,6 +68,7 @@ jobs:
       - name: Upload a GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
           files: ${{ matrix.bundle_glob }}
           generate_release_notes: true
           fail_on_unmatched_files: true
