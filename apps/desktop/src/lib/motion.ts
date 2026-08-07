@@ -101,6 +101,7 @@ export const MOTION = {
   morphFade: "--morph-fade-dur",
   morphQuick: "--morph-quick-dur",
   panel: "--panel-dur",
+  micro: "--duration-micro",
   quick: "--duration-quick",
   fast: "--duration-fast",
   slow: "--duration-slow",
@@ -113,10 +114,11 @@ export const MOTION = {
 /** Fallbacks alineados con app.css. Solo se usan si el token no resuelve. */
 export const MOTION_FALLBACK = {
   [MOTION.morphOpen]: 350,
-  [MOTION.morphClose]: 250,
+  [MOTION.morphClose]: 350,
   [MOTION.morphFade]: 200,
   [MOTION.morphQuick]: 150,
   [MOTION.panel]: 250,
+  [MOTION.micro]: 80,
   [MOTION.quick]: 150,
   [MOTION.fast]: 250,
   [MOTION.slow]: 400,

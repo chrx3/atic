@@ -127,10 +127,11 @@
     {/if}
   {/snippet}
 
-  <div class="flex h-full flex-col">
+  <div class="flex h-full min-h-0 flex-col">
     <Toolbar label="Acciones de grabación">
       <Button
         variant={capture.active ? "danger-solid" : "primary"}
+        size="sm"
         loading={capture.busy}
         onclick={toggle}
       >
@@ -139,6 +140,7 @@
 
       <Button
         variant="soft"
+        size="sm"
         loading={importing}
         disabled={capture.active}
         onclick={() => void importAudio()}
@@ -206,9 +208,10 @@
         {#snippet list()}
           {#if recordings.items.length === 0}
             <EmptyState
+              compact
               icon="meetings"
               title="Todavía no hay grabaciones"
-              hint="Apretá Grabar, o traé archivos de audio que ya tengas."
+              hint="Apretá Grabar, o importá audio que ya tengas."
             />
           {:else}
             <ul class="flex flex-col">
@@ -216,7 +219,7 @@
                 <li>
                   <button
                     type="button"
-                    class="flex w-full flex-col gap-0.5 px-3 py-2
+                    class="flex w-full flex-col gap-0.5 px-3 py-1.5
                            text-left transition-colors duration-(--duration-quick)
                            hover:bg-surface-2
                            {recordings.selectedId === item.id ? 'bg-surface-2' : ''}"
@@ -246,11 +249,11 @@
         {#snippet detail()}
           {@const item = recordings.selected}
           {#if item}
-            <!-- Sin p-4: el panel de ListDetail ya lo trae. -->
+            <!-- Sin padding propio: el panel de ListDetail ya lo trae. -->
             <div class="flex flex-col gap-3">
               <div class="flex items-start gap-2">
                 <div class="flex min-w-0 flex-1 flex-col gap-1">
-                  <h3 class="truncate text-lg font-semibold text-text">{item.title}</h3>
+                  <h3 class="truncate text-md font-semibold text-text">{item.title}</h3>
                   <p class="font-mono text-xs text-faint" data-numeric>
                     {formatDuration(item.duration_secs)} · {formatDate(item.started_at)}
                   </p>
@@ -296,6 +299,7 @@
 
         {#snippet empty()}
           <EmptyState
+            compact
             icon="meetings"
             title="Elegí una grabación"
             hint="El detalle se muestra acá."

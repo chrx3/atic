@@ -217,6 +217,8 @@ pub fn run() {
             clipboard_history::prepare_clipboard_pill,
             clipboard_history::show_clipboard_window,
             clipboard_history::hide_clipboard_window,
+            clipboard_history::clipboard_always_on_top,
+            clipboard_history::set_clipboard_always_on_top,
             clipboard_history::stash_pill_home,
             clipboard_history::morph_pill_home,
             state::summon_pill_here,
@@ -226,6 +228,8 @@ pub fn run() {
             agents::bridge::show_agents_window,
             agents::bridge::hide_agents_window,
             agents::bridge::save_agents_bubble_size,
+            agents::bridge::agents_always_on_top,
+            agents::bridge::set_agents_always_on_top,
             agents::bridge::agent_set_model,
             agents::bridge::agent_backends,
             agents::bridge::agent_sessions,
@@ -234,12 +238,16 @@ pub fn run() {
             agents::bridge::agent_permission,
             agents::bridge::agent_skills,
             agents::bridge::agent_list_models,
+            agents::bridge::agent_interrupt,
             agents::bridge::agent_stop,
             agents::bridge::agent_threads,
             agents::bridge::agent_thread,
             agents::bridge::agent_thread_delete,
             agents::bridge::agent_claude_sessions,
             agents::bridge::agent_claude_transcript,
+            agents::bridge::agent_claude_usage,
+            agents::bridge::list_directories,
+            agents::media::agent_stage_image,
             clipboard_history::restore_pill_position,
             snippets::list_snippets,
             snippets::upsert_snippet,
@@ -253,6 +261,8 @@ pub fn run() {
             snippets::prepare_snippets_pill,
             snippets::show_snippets_window,
             snippets::hide_snippets_window,
+            snippets::snippets_always_on_top,
+            snippets::set_snippets_always_on_top,
             paste_queue::list_paste_queue,
             paste_queue::enqueue_paste,
             paste_queue::dismiss_paste_queue_item,
@@ -397,6 +407,15 @@ pub fn run() {
                 if let Some(window) = app.get_webview_window(label) {
                     let _ = window.hide();
                 }
+            }
+
+            // Preferencias de pin de floats (antes de crear el overlay).
+            {
+                let state = app.state::<AppState>();
+                let cfg = state.config.lock_or_recover();
+                agents::bridge::init_always_on_top(cfg.agents_always_on_top);
+                clipboard_history::init_always_on_top(cfg.clipboard_always_on_top);
+                snippets::init_always_on_top(cfg.snippets_always_on_top);
             }
 
             // El overlay va DESPUÉS de la pill: elige monitor mirando dónde

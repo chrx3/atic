@@ -103,17 +103,18 @@ textarea,
   /*
    * transitions.dev — plus → menu morph (rueda de la pill).
    *
-   * Asimétrico a propósito: abrir es el momento expresivo (bouncy, 350ms),
-   * cerrar es utilitario y debe quitarse del camino (calmo, 250ms). El cierre
-   * NO debe usar la curva de apertura ni una espejada con overshoot negativo:
-   * arrancar yendo hacia atrás se lee como gomoso, no como elástico.
+   * Cerrar es el espejo de abrir: misma duración y misma curva (con overshoot).
+   * Las transiciones CSS recorren el camino inverso (gotas → centro, scale
+   * 1 → 0.35) y, al compartir timing, el morph se lee como una sola ida y
+   * vuelta. `is-quick` / `--morph-quick-dur` sigue acortando al elegir
+   * herramienta, donde la rueda ya cumplió y el morph solo estorba.
    *
    * Estos ms son la única fuente de verdad; `$lib/motion.ts` los lee de acá.
    */
   --morph-open-dur: 350ms;
-  --morph-close-dur: 250ms;
+  --morph-close-dur: var(--morph-open-dur);
   --morph-ease: cubic-bezier(0.34, 1.25, 0.64, 1);
-  --morph-close-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --morph-close-ease: var(--morph-ease);
   --morph-fade-dur: 200ms;
   /* Cierre acelerado: al elegir herramienta la rueda ya cumplió su función. */
   --morph-quick-dur: 150ms;
@@ -134,18 +135,25 @@ textarea,
   --rb-overlay-select: #2f9e44;
 
   /* Escala transitions.dev, compartida por las tres ventanas flotantes. */
+  --duration-stagger: 40ms;
+  --duration-micro: 80ms;
   --duration-quick: 150ms;
   --duration-fast: 250ms;
   --duration-medium: 350ms;
   --duration-slow: 400ms;
+  --distance-micro: 4px;
+  --distance-base: 8px;
   --scale-large: 0.96;
+  --scale-small: 0.98;
   --blur-small: 2px;
+  --duration-very-slow: 500ms;
   --float-open-dur: var(--duration-slow);
   --float-close-dur: var(--duration-medium);
   --float-ease: var(--ease-smooth-out);
   --float-scale: var(--scale-large);
   --float-blur: var(--blur-small);
   --ease-smooth-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-out: ease-out;
 
   /* Sistema hairline: el trazo fino es la piel de toda la UI. */
   --rb-hairline: color-mix(in srgb, var(--rb-text) 12%, transparent);

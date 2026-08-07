@@ -38,7 +38,7 @@
     <Chip tone={PHASE[dictation.phase].tone}>{PHASE[dictation.phase].label}</Chip>
   {/snippet}
 
-  <div class="flex flex-col gap-4 p-4">
+  <div class="flex h-full min-h-0 flex-col gap-3 overflow-y-auto p-3">
     {#if dictation.message}
       <Banner
         tone={dictation.phase === "error" ? "danger" : "info"}
@@ -47,7 +47,7 @@
     {/if}
 
     <div class="flex flex-col gap-2">
-      <p class="text-sm text-muted">
+      <p class="text-sm text-muted text-pretty">
         {#if shortcut}
           Apretá <Kbd combo={formatShortcut(shortcut)} separator="+" /> en cualquier app.
           {#if pushToTalk}
@@ -63,6 +63,7 @@
       <div>
         <Button
           variant={dictation.active ? "danger-solid" : "primary"}
+          size="sm"
           onclick={() => void dictation.toggle().catch(toastError)}
         >
           {dictation.active ? "Terminar" : "Probar acá"}

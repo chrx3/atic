@@ -16,7 +16,7 @@
    * ventana, y el tamaño lo aplica Rust en un solo IPC (resize + posición). No
    * hay banderas de carrera: el reconciliador descarta destinos obsoletos.
    */
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
   import type { UnlistenFn } from "@tauri-apps/api/event";
   import type { DictationPhase } from "$core/types";
   import { capture } from "$domain/capture.svelte";
@@ -28,30 +28,44 @@
   import { liquid } from "$surfaces/overlay/group.svelte";
   import type { Rect } from "$lib/liquid/geometry";
   import { RectTracker } from "$lib/liquid/measure.svelte";
-  import { pillShape } from "$lib/liquid/geometry";
+  import { boxShape, gapBetween, pillShape } from "$lib/liquid/geometry";
+  import { REACH } from "$lib/liquid/constants";
   import ToolIcon from "$lib/ToolIcon.svelte";
   import { agents } from "$lib/agentSessions.svelte";
   import ParticleWheel from "$lib/ParticleWheel.svelte";
   import { TOOLS, type ToolId } from "$lib/tools";
   import { formatShortcut } from "$lib/format";
+  import Icon from "$ui/Icon.svelte";
+  import { X } from "$lib/icons";
+  import type { IconNode } from "morphicons/svelte";
   import { PILL, growsFirst, windowFor, type Size } from "$surfaces/overlay/pillStage";
   import { createCssStage } from "$surfaces/overlay/pillCssStage";
   import { surfaces } from "$surfaces/overlay/surfaces.svelte";
   import {
     blocksBrowserChrome,
+    consoleSideFor,
     contentFor,
+    discJoinsTail,
     isDiscOnly,
     morphsInPlace,
     pivotFor,
     stepWheel as nextWheelTool,
+    wheelChromeActive,
     wheelKeyAction,
     type Surface,
   } from "$surfaces/overlay/pill/pillPlan";
+  import AgentAuthCard from "$surfaces/overlay/pill/AgentAuthCard.svelte";
   import { MOTION, ms, wait } from "$lib/motion";
   import { playWheelTick } from "$core/uiSound";
+  import type { PermissionDecision } from "$core/types";
   // Lo que queda son los comandos DE LA PILL: su geometría, sus atajos y las
   // ventanas que abre. El estado de la app lo traen los stores.
-  import { showAgentsWindow } from "$ipc/agents";
+  import {
+    agentsWindowVisible,
+    onAgentsBubbleAnchor,
+    onAgentsBubbleDismiss,
+    showAgentsWindow,
+  } from "$ipc/agents";
   import { showClipboardWindow } from "$ipc/clipboard";
   import { startCaptureSession } from "$ipc/captures";
   import { getConfig, showMainWindow } from "$ipc/config";
@@ -108,6 +122,17 @@
   let wheelTool = $state<ToolId | null>(null);
   /** Cierre acelerado: al elegir herramienta la rueda ya cumplió su función. */
   let wheelQuick = $state(false);
+  /**
+   * Qué superficie se está cerrando.
+   *
+   * El pivote del colapso depende de **qué se cierra**, no del estado destino:
+   * para cuando el reconciliador corre, `surface` ya vale `"none"` y el
+   * colapso de la rueda es indistinguible del reposo. Es `$state` porque el
+   * markup (stack dim, `.p-wheel`, piel) también tiene que reaccionar.
+   */
+  let collapsingFrom = $state<"wheel" | null>(null);
+  /** Un solo chrome visible: rueda abierta o colapsando in-situ. */
+  const wheelChrome = $derived(wheelChromeActive({ surface, collapsingFrom }));
 
   /**
    * Aviso de agente en la barra compacta.
@@ -116,7 +141,31 @@
    * puede estar cerrada y la sesión sigue viva, así que la pill tiene que ser
    * el lugar donde te enteras de que respondió o de que te está esperando.
    */
-  const agentAlert = $derived(agents.unread > 0 || agents.working);
+  const agentAlert = $derived(
+    agents.unread > 0 || agents.working || agents.waiting > 0,
+  );
+  const agentWorking = $derived(agents.working && agents.waiting === 0);
+  const agentReady = $derived(
+    agents.unread > 0 && agents.waiting === 0 && !agents.working,
+  );
+  const agentReadyLabel = $derived(agents.readyLabel ?? "Listo");
+  const authRequest = $derived(agents.primaryPending);
+  /** Consola abierta: el permiso se decide ahí; no duplicar el diálogo. */
+  let agentsConsoleOpen = $state(false);
+  const showAuthCard = $derived(
+    authRequest !== null && !agentsConsoleOpen && surface === "none",
+  );
+  /**
+   * Vivo / mostrado: como `Bubble`, para que el cierre pueda replegarse al
+   * campo líquido en vez de desmontarse a mitad del morph.
+   */
+  let authAlive = $state(false);
+  let authShown = $state(false);
+  /** Último permiso visible: sobrevive un frame al cerrar para el repliegue. */
+  let authView = $state<NonNullable<typeof authRequest> | null>(null);
+  let authBusy = $state(false);
+  let authEl = $state<HTMLElement | null>(null);
+  const AUTH_CORNER = 12;
 
   // ─── Eje 3: cola de pegado ───────────────────────────────────────────────
   const hasQueue = $derived(paste.count > 0);
@@ -206,10 +255,11 @@
    * gota son pastillas.
    */
   const skinShapes = $derived.by(() => {
-    // Con la rueda abierta la silueta la pintan las gotas de ParticleWheel.
-    // Seguir publicando la barra deja un disco fantasma arriba-izquierda del
-    // cuadrado: el stack está en opacity 0, pero Skin lee medidas, no estilos.
-    if (surface === "wheel") return [];
+    // Con el chrome de la rueda activo (abierta o colapsando) la silueta la
+    // pintan las gotas de ParticleWheel. Publicar la barra en ese tramo deja
+    // un disco fantasma arriba-izquierda del cuadrado: el stack vive anclado
+    // al top-left del root, no al centro donde está la marca de la rueda.
+    if (wheelChrome) return [];
     const r = tracker.rects;
     // A coordenadas del overlay: el grupo mezcla las formas de la pill con las
     // de la consola, y solo son comparables en un origen común.
@@ -220,8 +270,12 @@
       y: rect.y + o.y,
     });
     const shapes = [];
-    if (r.bar) shapes.push(pillShape(at(r.bar)));
+    // La gota, si está. El disco solo mientras la gota no lo cubra: ver
+    // `discJoinsTail` — publicar ambos en reposo engordaba el lado izquierdo.
     if (r.tail) shapes.push(pillShape(at(r.tail)));
+    if (r.bar && (!r.tail || discJoinsTail(r.bar, r.tail))) {
+      shapes.push(pillShape(at(r.bar)));
+    }
     return shapes;
   });
 
@@ -280,10 +334,136 @@
 
   const target = $derived(windowFor(contentFor(surface, barW)));
 
+  /**
+   * Lado del chip de consola: opuesto al borde horizontal más cercano.
+   * Usa el centro de la caja de la pill (no solo el disco) para no saltar
+   * al expandirse el aviso.
+   */
+  const consoleSide = $derived(
+    consoleSideFor(stage.workAreas(), at, box),
+  );
+
   /** Traza al log de Rust. Fire-and-forget: no debe alterar el flujo ni fallar. */
   function trace(msg: string) {
     void pillTrace(msg).catch(() => {});
   }
+
+  async function openAgentsConsole() {
+    try {
+      await showAgentsWindow();
+      agentsConsoleOpen = true;
+    } catch (err) {
+      console.warn("abrir consola de agentes", err);
+    }
+  }
+
+  async function decideAuth(decision: PermissionDecision) {
+    const req = authRequest;
+    if (!req || authBusy) return;
+    authBusy = true;
+    try {
+      await agents.decide(req.sessionId, req.permission.id, decision);
+    } catch (err) {
+      console.warn("decidir permiso de agente", err);
+    } finally {
+      authBusy = false;
+    }
+  }
+
+  /**
+   * Ancla la tarjeta de auth debajo (o arriba) de la pastilla.
+   * Crece hacia el lado libre del monitor (misma regla que `consoleSide`):
+   * cerca del borde izquierdo → se expande a la derecha; cerca del derecho → a la izquierda.
+   */
+  const authAt = $derived.by(() => {
+    const w = 320;
+    // Hueco corto: tiene que quedar dentro de REACH para que nazca el cuello.
+    const gap = 8;
+    const areas = stage.workAreas();
+    // `consoleSide` ya es el lado libre: "right" crece a la derecha, "left" a la izquierda.
+    let x =
+      consoleSide === "right" ? at.x : at.x + box.w - w;
+    let y = at.y + box.h + gap;
+    let side: "top" | "bottom" = "top";
+    const area =
+      areas.find(
+        (a) =>
+          at.x + box.w / 2 >= a.x &&
+          at.x + box.w / 2 <= a.x + a.w &&
+          at.y + box.h / 2 >= a.y &&
+          at.y + box.h / 2 <= a.y + a.h,
+      ) ?? areas[0];
+    if (area) {
+      const maxX = Math.max(area.x + area.w - w - 8, area.x + 8);
+      x = Math.min(Math.max(x, area.x + 8), maxX);
+      // Si no cabe abajo, subir por encima de la pill.
+      // Altura estimada de la barra compacta de auth (~2 filas).
+      const authH = 88;
+      if (y + authH > area.y + area.h - 8) {
+        y = Math.max(area.y + 8, at.y - gap - authH);
+        side = "bottom";
+      }
+    }
+    // Origen del morph: el centro de la pill respecto de la tarjeta
+    // (cerca del borde de anclaje → el scale nace asimétrico hacia el lado libre).
+    const tail = Math.min(Math.max(at.x + box.w / 2 - x, 24), w - 24);
+    return { x, y, w, side, tail };
+  });
+
+  /** La tarjeta de auth también entra al campo: nace fundida a la pill. */
+  const authJoined = $derived.by(() => {
+    if (!authAlive || !authEl) return false;
+    const pill = surfaces.live["pill-skin"];
+    const auth = surfaces.live["agent-auth"];
+    if (!pill || !auth) return false;
+    return gapBetween(pill, auth) <= REACH;
+  });
+
+  $effect(() => {
+    if (!authAlive || !authEl) {
+      return liquid.publish("agent-auth", []);
+    }
+    // Depende de posición/visibilidad: al nacer el scale cambia el rectángulo
+    // medido y el blob crece con la tarjeta.
+    void authShown;
+    void authAt.x;
+    void authAt.y;
+    void at.x;
+    void at.y;
+    const r = authEl.getBoundingClientRect();
+    if (r.width <= 0 || r.height <= 0) {
+      return liquid.publish("agent-auth", []);
+    }
+    return liquid.publish("agent-auth", [
+      boxShape({ x: r.x, y: r.y, w: r.width, h: r.height }, AUTH_CORNER),
+    ]);
+  });
+
+  /** Monta / repliega la auth con el mismo ritmo que los floats. */
+  $effect(() => {
+    if (showAuthCard && authRequest) {
+      authView = authRequest;
+      // Ya abierta: solo refrescar el permiso, sin reiniciar el morph.
+      if (authAlive && authShown) return;
+      authAlive = true;
+      authShown = false;
+      void tick().then(() => {
+        requestAnimationFrame(() => {
+          if (showAuthCard) authShown = true;
+        });
+      });
+      return;
+    }
+    if (!authAlive) return;
+    authShown = false;
+    const timer = window.setTimeout(() => {
+      if (!authShown) {
+        authAlive = false;
+        authView = null;
+      }
+    }, ms(MOTION.floatClose));
+    return () => window.clearTimeout(timer);
+  });
 
   /**
    * Hay una transición dueña de la geometría corriendo (morph de la rueda).
@@ -296,15 +476,16 @@
   /** Solo el colapso de la rueda necesita que la ventana espere. */
   let leavingWheel = false;
   /**
-   * Qué superficie se está cerrando.
-   *
-   * El pivote del colapso depende de **qué se cierra**, no del estado destino:
-   * para cuando el reconciliador corre, `surface` ya vale `"none"` y el
-   * colapso de la rueda es indistinguible del reposo. Sin este dato el colapso
-   * usaba `center` cuando no correspondía.
+   * Generación del colapso en curso. Al reabrir a mitad del morph se incrementa
+   * para que el resize pendiente no encaje la ventana después del summon.
    */
-  let collapsingFrom: "wheel" | null = null;
+  let collapseEpoch = 0;
 
+  /** Invalida un encoger en vuelo y suelta el lock de geometría. */
+  function cancelPendingCollapse() {
+    collapseEpoch += 1;
+    opening = false;
+  }
   /** El estado del que dependen las decisiones de `pillPlan`. */
   function plan() {
     return { surface, collapsingFrom };
@@ -356,6 +537,11 @@
    */
   $effect(() => (liquidEl ? surfaces.add("pill-skin", liquidEl) : undefined));
 
+  /** La tarjeta de auth también tiene que armar hit-rects o queda click-through. */
+  $effect(() =>
+    authEl && authAlive ? surfaces.add("agent-auth", authEl) : undefined,
+  );
+
   /**
    * Republicar cuando la pill se MUEVE.
    *
@@ -369,6 +555,10 @@
     void at.y;
     void box.w;
     void box.h;
+    void authAt.x;
+    void authAt.y;
+    void authAlive;
+    void authShown;
     surfaces.schedule();
   });
 
@@ -409,6 +599,9 @@
     void hasQueue;
     void liveActive;
     void btWarning;
+    void agentAlert;
+    void agentReadyLabel;
+    void consoleSide;
     if (surface !== "none") return;
     // Un frame después: en este tick el DOM todavía tiene el contenido viejo.
     const frame = requestAnimationFrame(() => {
@@ -443,9 +636,10 @@
 
   // ─── Rueda ───────────────────────────────────────────────────────────────
   /**
-   * Abre la rueda EN EL CURSOR. Antes crecía donde la pill estuviera, así que
-   * con la tecla sostenida había que cruzar la pantalla con el mouse hasta
-   * donde la habías dejado. El hogar se guarda para volver al soltar.
+   * Abre la rueda in-situ desde el hogar actual (pivot center).
+   *
+   * No teletransporta al cursor: eso queda para el summon explícito
+   * (`pill-reset`). Abrir y cerrar la rueda morflean en el mismo sitio.
    */
   async function openWheel() {
     // `surface` recién vale "wheel" al final, después de tres IPC. En esa
@@ -466,6 +660,9 @@
 
   async function openWheelInner() {
     trace("openWheel");
+    // Cancela un encoger pendiente: si el morph de cierre aún corre, el resize
+    // chico no debe llegar después de que ya volvimos a crecer.
+    cancelPendingCollapse();
     await closeWheel();
     wheelQuick = false;
     // Sin selección inicial: un toque accidental del atajo no debe disparar
@@ -476,55 +673,90 @@
       // 1) Guardar el hogar ANTES de tocar la geometría. Si se guarda después,
       //    lo que queda grabado es la posición que ya movió el reencuadre.
       home = { ...at };
-      // 2) Viajar al cursor Y crecer como UN solo movimiento. Antes esto pedía
-      //    que Rust interpolara el rectángulo completo, porque eran dos
-      //    escrituras de posición y entre medio se pintaba la rueda sobre la
-      //    pill vieja — la "tercera posición". Acá el tamaño y la posición se
-      //    escriben en el mismo frame, así que el problema no puede ocurrir.
+      // 2) Apagar el stack y dejar el chrome de la rueda colapsado ANTES de
+      //    crecer. Así el único "a" (centro de ParticleWheel) se queda en el
+      //    mismo punto mientras el root se expande; no hay un segundo disco
+      //    anclado al top-left del cuadrado grande.
+      collapsingFrom = null;
+      surface = "wheel";
+      wheelShown = false;
+      // 3) Crecer in-situ con pivot center (espejo del colapso). El summon al
+      //    cursor es otro camino (`pill-reset` + `flyTo`).
       const side = PILL.wheel - PILL.pad * 2;
-      await stage.resize(windowFor({ w: side, h: side }), "cursor");
+      const next = windowFor({ w: side, h: side });
+      await stage.resize(
+        next,
+        pivotFor({ surface: "wheel", collapsingFrom: null }),
+      );
       at = stage.at();
+      box = next;
+      // 4) Con la caja ya grande, revelar el anillo desde ese mismo centro.
+      wheelShown = true;
     } catch (err) {
-      console.warn("pill wheel summon", err);
+      console.warn("pill wheel open", err);
+      surface = "none";
+      wheelShown = false;
     } finally {
       opening = false;
     }
-    surface = "wheel";
-    wheelShown = true;
   }
 
   /**
-   * Colapsa la rueda in-situ: de (cursor, grande) a (mismo centro, barra).
+   * Colapsa la rueda in-situ: de (grande) a (mismo centro, barra).
    *
-   * No vuela al hogar previo. El centro de la rueda se conserva (pivot
-   * center) y esa posición pasa a ser el nuevo hogar persistido.
+   * No vuela al hogar previo. El centro se conserva (pivot center) y esa
+   * posición pasa a ser el nuevo hogar persistido.
+   *
+   * El caller mantiene `opening` y decide cuándo llamar: hay que esperar el
+   * morph CSS antes, si no `overflow: hidden` recorta el cierre invertido.
    */
   async function wheelCollapse() {
     const next = target;
-    opening = true;
-    try {
-      await stage.resize(next, "center");
-      at = stage.at();
-      home = { ...at };
-      void savePillHome(at.x, at.y);
-      surfaces.schedule();
-      trace(`wheelCollapse -> ${next.w}x${next.h} @ ${at.x},${at.y}`);
-    } finally {
-      opening = false;
-    }
+    await stage.resize(
+      next,
+      pivotFor({ surface: "none", collapsingFrom: "wheel" }),
+    );
+    at = stage.at();
+    // El escenario ya encogió: el DOM tiene que seguirlo YA, antes de soltar
+    // `collapsingFrom`. Si `box` se queda en tamaño rueda, el handoff al stack
+    // pinta la marca compacta arriba-izquierda del cuadrado fantasma.
+    box = next;
+    home = { ...at };
+    void savePillHome(at.x, at.y);
+    surfaces.schedule();
+    trace(`wheelCollapse -> ${next.w}x${next.h} @ ${at.x},${at.y}`);
+  }
+
+  /**
+   * Deja correr el morph de cierre (espejo del open) y recién después encoge.
+   * Devuelve false si otra apertura canceló este epoch.
+   */
+  async function playCloseMorph(epoch: number): Promise<boolean> {
+    await wait(ms(wheelQuick ? MOTION.morphQuick : MOTION.morphClose));
+    if (epoch !== collapseEpoch) return false;
+    await wheelCollapse();
+    return true;
   }
 
   /** Cierra la rueda y deja la pill donde estaba. No activa nada. */
   async function closeWheel() {
     if (surface !== "wheel") return;
     trace("closeWheel");
+    const epoch = ++collapseEpoch;
     opening = true;
+    // Orden importa: `collapsingFrom` ANTES de `surface = "none"`, para que el
+    // stack y la piel líquida no asomen un frame en el top-left del root grande
+    // mientras ParticleWheel aún colapsa en el centro.
+    collapsingFrom = "wheel";
     wheelShown = false;
     wheelTool = null;
-    collapsingFrom = "wheel";
     surface = "none";
     leavingWheel = false;
-    await wheelCollapse();
+    try {
+      await playCloseMorph(epoch);
+    } finally {
+      if (epoch === collapseEpoch) opening = false;
+    }
   }
 
   /** Soltar la tecla: activa lo apuntado si la rueda llegó a mostrarse. */
@@ -560,6 +792,8 @@
   async function activateTool(id: ToolId) {
     if (surface !== "wheel") return;
     wheelQuick = true;
+    const epoch = ++collapseEpoch;
+    opening = true;
     wheelShown = false;
     wheelTool = null;
 
@@ -567,11 +801,12 @@
     else if (id === "dictation") void toggleDictate();
 
     try {
+      // Mismo orden que `closeWheel`: chrome de rueda activo hasta encoger.
       collapsingFrom = "wheel";
-      opening = true;
       surface = "none";
       leavingWheel = false;
-      await wheelCollapse();
+      const collapsed = await playCloseMorph(epoch);
+      if (!collapsed) return;
       if (id === "captures") await startCaptureSession();
       else if (id === "agents") await showAgentsWindow();
       else if (id === "clipboard") await showClipboardWindow();
@@ -579,6 +814,7 @@
     } catch (err) {
       console.warn("acción de la rueda", err);
     } finally {
+      if (epoch === collapseEpoch) opening = false;
       wheelQuick = false;
     }
   }
@@ -754,16 +990,30 @@
       } catch {
         // Sin config, el tooltip solo omite el atajo.
       }
+      try {
+        agentsConsoleOpen = await agentsWindowVisible();
+      } catch {
+        agentsConsoleOpen = false;
+      }
     })();
 
     // Lo que queda acá son los eventos DE LA PILL: los atajos que la abren y la
     // cierran, y el clic fuera. La actividad, los datos y la cola los escuchan
     // sus stores.
     unlisteners.push(
+      onAgentsBubbleAnchor(() => {
+        agentsConsoleOpen = true;
+      }),
+      onAgentsBubbleDismiss(() => {
+        agentsConsoleOpen = false;
+      }),
       onPillRadialPress(() => void openWheel()),
       onPillRadialRelease(() => onWheelRelease()),
       onPillReset(async () => {
         trace("pill-reset (summon)");
+        // Misma cancelación que al reabrir: un encoger a medias no debe
+        // reescribir la posición después del vuelo al cursor.
+        cancelPendingCollapse();
         await closeWheel();
         const cursor = await cursorPoint();
         if (!cursor) return;
@@ -838,7 +1088,7 @@
   </button>
 {/snippet}
 
-{#snippet iconBtn(label: string, path: string, onClick: () => void, size = 15)}
+{#snippet iconBtn(label: string, icon: IconNode, onClick: () => void, size = 15)}
   <button
     type="button"
     class="p-icon"
@@ -847,35 +1097,24 @@
     aria-label={label}
     title={label}
   >
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      stroke-width="1.5"
-      stroke-linecap="butt"
-      aria-hidden="true"
-    >
-      <path d={path} />
-    </svg>
+    <Icon {icon} {size} />
   </button>
 {/snippet}
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
   class="p-root"
-  class:is-wheel={surface === "wheel"}
+  class:is-wheel={wheelChrome}
   class:is-quick={wheelQuick}
   class:is-flying={flying}
   style="left: {at.x}px; top: {at.y}px; width: {box.w}px; height: {box.h}px"
   bind:this={rootEl}
   onpointerdown={beginDrag}
 >
-  <!-- La rueda vive siempre montada y se cruza en fundido con el resto del
-       chrome; montarla y desmontarla hacía que la pill reapareciera opaca
-       encima mientras la rueda aún salía. -->
-  <div class="p-wheel" class:is-open={wheelShown} data-no-drag>
+  <!-- La rueda vive siempre montada. Durante el colapso sigue opaca (aunque
+       `revealed` ya sea false) hasta que el root encoge: el handoff al stack
+       ocurre en el mismo centro, no con un fundido top-left ↔ centro. -->
+  <div class="p-wheel" class:is-open={wheelChrome} data-no-drag>
     <ParticleWheel
       compact
       wheelNav
@@ -894,18 +1133,48 @@
   <!-- El stack es la REFERENCIA de medida y nada más: la silueta ya no se
        dibuja acá, se publica al grupo del overlay. Sigue estando fuera de
        `.p-liquid` porque ese recorta con `overflow: hidden` para contener el
-       sobrepaso del morph, y el recorte se comería lo que se mide. -->
-  <div class="p-stack" class:is-dim={surface === "wheel"} bind:this={stackEl}>
-    <div class="p-liquid" bind:this={liquidEl}>
-      <div class="p-skin" aria-hidden="true">
+       sobrepaso del morph, y el recorte se comería lo que se mide.
+       Apagado (y sin marca) mientras el chrome de la rueda es la silueta
+       activa: el stack vive anclado al top-left del root, no al centro. -->
+  <div
+    class="p-stack"
+    class:is-dim={wheelChrome}
+    aria-hidden={wheelChrome}
+    inert={wheelChrome || undefined}
+    bind:this={stackEl}
+  >
+    <div
+      class="p-liquid"
+      class:is-working={agentWorking && activity === "idle" && !hasQueue}
+      bind:this={liquidEl}
+    >
+      <div
+        class="p-skin"
+        class:is-console-start={consoleSide === "left" && !discOnly}
+        aria-hidden="true"
+      >
         <i class="p-skin-bar" {@attach trackBar}></i>
         {#if !discOnly}
-          <i class="p-skin-tail" {@attach trackTail}></i>
+          <i
+            class="p-skin-tail"
+            class:is-from-start={consoleSide === "left"}
+            {@attach trackTail}
+          ></i>
         {/if}
       </div>
 
-      <div class="p-shell">
-        <div class="p-bar" class:is-disc-only={discOnly} bind:this={barEl}>
+      <div
+        class="p-shell"
+        class:is-working={agentWorking && activity === "idle" && !hasQueue}
+        class:is-ready={agentReady && activity === "idle" && !hasQueue}
+        class:is-waiting={agents.waiting > 0 && activity === "idle" && !hasQueue}
+      >
+        <div
+          class="p-bar"
+          class:is-disc-only={discOnly}
+          class:is-console-start={consoleSide === "left" && agentAlert && activity === "idle" && !hasQueue}
+          bind:this={barEl}
+        >
           {#if activity === "recording"}
             {@render recDot("Detener grabación")}
             <span class="p-timer">{fmt(elapsed)}</span>
@@ -962,7 +1231,11 @@
           {:else if hasQueue}
             <!-- La cola es un badge sobre el disco, no un reemplazo: antes borraba
                la pill entera y con ella el acceso a la rueda. -->
-            <span class="p-mark is-disc"><AticMark size={20} strokeWidth={1.4} /></span>
+            <!-- Sin marca mientras la rueda manda: el stack queda en el
+               top-left del root grande y una segunda «a» fantasma se veía ahí. -->
+            {#if !wheelChrome}
+              <span class="p-mark is-disc"><AticMark size={20} strokeWidth={1.4} /></span>
+            {/if}
             <span class="p-queue-count">{paste.count}</span>
             <span class="p-queue-text" title={paste.front?.text}>
               {paste.front?.text ?? ""}
@@ -976,50 +1249,56 @@
             >
               Pegar
             </button>
-            {@render iconBtn(
-              "Descartar",
-              "M6 6l12 12M18 6L6 18",
-              () => void paste.dismiss(),
-              13,
-            )}
+            {@render iconBtn("Descartar", X, () => void paste.dismiss(), 13)}
           {:else}
             <!-- Reposo: disco con la marca. Un clic abre la rueda; el centro de
-               la rueda abre la app. El doble clic ya no hace falta. -->
-            <span
-              class="p-mark is-disc"
-              title={[
-                wheelShortcut ? `${formatShortcut(wheelShortcut)} · herramientas` : "",
-                "Clic para las herramientas",
-                "Arrastra para mover",
-              ]
-                .filter(Boolean)
-                .join(" · ")}
-            >
-              <AticMark size={22} strokeWidth={1.4} />
-            </span>
+               la rueda abre la app. El doble clic ya no hace falta.
+               Con la rueda abierta/colapsando no se monta: el único «a» visible
+               es el de ParticleWheel (centro). El stack sigue midiendo el
+               disco vía `.p-bar.is-disc-only` (40px fijos). -->
+            {#if !wheelChrome}
+              <span
+                class="p-mark is-disc"
+                title={[
+                  wheelShortcut ? `${formatShortcut(wheelShortcut)} · herramientas` : "",
+                  "Clic para las herramientas",
+                  "Arrastra para mover",
+                ]
+                  .filter(Boolean)
+                  .join(" · ")}
+              >
+                <AticMark size={22} strokeWidth={1.4} />
+              </span>
+            {/if}
             <!-- Aviso del agente: aparece solo si hay algo que decir. Es un chip
                junto al disco y no un reemplazo, porque el disco sigue siendo la
                puerta a la rueda. -->
-            {#if agentAlert}
+            {#if agentAlert && !wheelChrome}
               <button
                 type="button"
                 class="p-agent"
                 class:is-waiting={agents.waiting > 0}
-                class:is-working={agents.waiting === 0 &&
-                  agents.working &&
-                  agents.unread === 0}
+                class:is-working={agentWorking && agents.unread === 0}
+                class:is-ready={agentReady}
+                class:is-count={!agents.waiting && !agentReady && agents.unread > 0}
                 data-no-drag
-                onclick={() => void showAgentsWindow()}
+                onclick={() => void openAgentsConsole()}
                 title={agents.waiting > 0
                   ? "El agente espera tu permiso"
-                  : agents.unread > 0
-                    ? `${agents.unread} respuesta(s) sin leer`
-                    : "El agente está trabajando"}
+                  : agentReady
+                    ? agentReadyLabel
+                    : agents.unread > 0
+                      ? `${agents.unread} sin leer`
+                      : "El agente está trabajando"}
                 aria-label="Abrir la consola de agentes"
               >
-                <ToolIcon id="agents" size={13} strokeWidth={1.6} />
+                <span class="p-agent-ico" aria-hidden="true">
+                  <ToolIcon id="agents" size={11} strokeWidth={1.7} />
+                </span>
                 {#if agents.waiting > 0}
                   <span class="p-agent-count">permiso</span>
+                {:else if agentReady}
+                  <span class="p-agent-msg">{agentReadyLabel}</span>
                 {:else if agents.unread > 0}
                   <span class="p-agent-count">{agents.unread}</span>
                 {/if}
@@ -1032,6 +1311,24 @@
   </div>
 </div>
 
+{#if authAlive && authView}
+  <div
+    class="p-auth-host float-emerge"
+    class:is-shown={authShown}
+    class:is-joined={authJoined}
+    data-side={authAt.side}
+    style="left: {authAt.x}px; top: {authAt.y}px; width: {authAt.w}px; --tail: {authAt.tail}px"
+    bind:this={authEl}
+  >
+    <AgentAuthCard
+      permission={authView.permission}
+      busy={authBusy}
+      onOpenConsole={() => void openAgentsConsole()}
+      onDecide={(d) => void decideAuth(d)}
+    />
+  </div>
+{/if}
+
 <style>
   /*
    * La pill dejó de ser una ventana: ahora es una caja dentro del overlay.
@@ -1043,6 +1340,7 @@
    */
   .p-root {
     position: absolute;
+    z-index: var(--z-overlay-pill);
     display: flex;
     box-sizing: border-box;
     flex-direction: column;
@@ -1082,21 +1380,25 @@
     height: 100%;
     min-height: 0;
     flex-direction: column;
+    visibility: visible;
     transition:
       opacity var(--morph-fade-dur) var(--morph-close-ease),
-      filter var(--morph-fade-dur) var(--morph-close-ease);
+      visibility 0s linear 0s;
   }
 
   .p-stack.is-dim {
+    /* opacity sola no basta en WebView: con filter:blur el trazo de la «a»
+       del stack seguía pintando un fantasma arriba-izquierda del root grande
+       aunque opacity fuera 0. visibility + sin blur + sin AticMark en el DOM. */
     opacity: 0;
-    filter: blur(var(--morph-blur));
+    visibility: hidden;
     pointer-events: none;
 
     /* Cada estado declara la curva de su dirección; si no, el chrome se iría
        con la del cierre y rompería el espejo. */
     transition:
       opacity var(--morph-fade-dur) var(--morph-ease),
-      filter var(--morph-fade-dur) var(--morph-ease);
+      visibility 0s linear var(--morph-fade-dur);
   }
 
   /* ─── Rueda ─────────────────────────────────────────────────────────── */
@@ -1170,6 +1472,11 @@
     pointer-events: none;
   }
 
+  /* Consola al inicio: el disco de referencia vive bajo la «a» (derecha). */
+  .p-skin.is-console-start {
+    align-items: flex-end;
+  }
+
   .p-skin > i {
     display: block;
     background: transparent;
@@ -1204,9 +1511,20 @@
     animation: p-skin-arrive var(--panel-dur) var(--morph-ease);
   }
 
+  /* Consola al inicio (cerca del borde derecho): la gota llega desde la izquierda. */
+  .p-skin-tail.is-from-start {
+    animation-name: p-skin-arrive-start;
+  }
+
   @keyframes p-skin-arrive {
     from {
       inset: 7px 4px 7px calc(100% - 28px);
+    }
+  }
+
+  @keyframes p-skin-arrive-start {
+    from {
+      inset: 7px calc(100% - 28px) 7px 4px;
     }
   }
 
@@ -1286,6 +1604,15 @@
     width: 40px;
     justify-content: center;
     padding: 0;
+  }
+
+  /*
+   * Consola al lado izquierdo del disco: invertir el flex mantiene marca y
+   * chip en el DOM (mark → agent) pero pinta agent | mark.
+   */
+  .p-bar.is-console-start {
+    flex-direction: row-reverse;
+    padding: 0 10px 0 12px;
   }
 
   .p-mark {
@@ -1508,43 +1835,134 @@
 
   /* ─── Aviso de agente ───────────────────────────────────────────────── */
   .p-agent {
+    position: relative;
     display: inline-flex;
-    min-height: 1.65rem;
+    min-height: 1.35rem;
+    max-width: 9.5rem;
     flex-shrink: 0;
     align-items: center;
-    gap: 0.3rem;
+    gap: 0.18rem;
     border: 0;
     border-radius: 999px;
-    padding: 0 0.5rem;
-    background: color-mix(in sRGB, var(--accent) 16%, transparent);
+    padding: 0 0.34rem 0 0.28rem;
+    background: color-mix(in sRGB, var(--accent) 12%, transparent);
     color: var(--accent);
     cursor: pointer;
-    transition: transform var(--duration-quick) var(--ease-smooth-out);
+    transition:
+      transform var(--duration-quick) var(--ease-smooth-out),
+      background var(--duration-quick) var(--ease-smooth-out),
+      color var(--duration-quick) var(--ease-smooth-out);
+  }
+
+  /* Hit ≥40px sin inflar la cápsula visible. */
+  .p-agent::after {
+    content: "";
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: max(40px, 100%);
+    height: 40px;
+    transform: translate(-50%, -50%);
   }
 
   .p-agent:active {
     transform: scale(0.96);
   }
 
+  .p-agent-ico {
+    display: grid;
+    place-items: center;
+    width: 0.85rem;
+    height: 0.85rem;
+    flex-shrink: 0;
+    opacity: 0.92;
+  }
+
+  /* Solo número: cápsula mínima, sin aire de “pill anidada”. */
+  .p-agent.is-count {
+    gap: 0.12rem;
+    padding: 0 0.3rem 0 0.26rem;
+    max-width: none;
+  }
+
   /* Espera una decisión: es lo único que de verdad bloquea al agente, así que
      es lo único que usa el color de alerta. */
   .p-agent.is-waiting {
-    background: color-mix(in sRGB, var(--rec) 20%, transparent);
+    background: color-mix(in sRGB, var(--rec) 16%, transparent);
     color: var(--rec);
   }
 
-  /* Trabajando sin nada nuevo que leer: presente, pero sin reclamar atención.
-     El número es la señal fuerte; esto es solo "sigue vivo". */
+  /* Trabajando: presente, pulso linear continuo (alive, no noisy). */
   .p-agent.is-working {
-    background: color-mix(in sRGB, var(--text) 8%, transparent);
+    background: color-mix(in sRGB, var(--text) 7%, transparent);
     color: var(--muted);
-    animation: p-agent-pulse 1.8s ease-in-out infinite;
+    animation: p-agent-pulse 2s linear infinite;
   }
 
-  .p-agent-count {
-    font-size: 0.6875rem;
+  /* Listo / respuesta sin leer: affordance clara, no solo un número. */
+  .p-agent.is-ready {
+    background: color-mix(in sRGB, var(--ok) 14%, transparent);
+    color: var(--ok);
+    animation: p-agent-ready-in var(--duration-very-slow, 500ms)
+      var(--ease-smooth-out) both;
+  }
+
+  .p-agent-count,
+  .p-agent-msg {
+    font-size: 0.625rem;
     font-weight: 650;
     font-variant-numeric: tabular-nums;
+    line-height: 1;
+  }
+
+  .p-agent-msg {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* Pastilla viva mientras el agente trabaja (anillo + brillo suave). */
+  .p-shell.is-working {
+    animation: p-shell-alive 2.2s linear infinite;
+  }
+
+  .p-liquid.is-working {
+    animation: p-liquid-alive 2.2s linear infinite;
+  }
+
+  .p-shell.is-ready {
+    box-shadow: inset 0 0 0 1.5px color-mix(in sRGB, var(--ok) 40%, transparent);
+  }
+
+  .p-shell.is-waiting {
+    box-shadow: inset 0 0 0 1.5px color-mix(in sRGB, var(--rec) 45%, transparent);
+  }
+
+  /*
+   * Auth: nace de la pill con el mismo sistema que clipboard/agentes
+   * (`.float-emerge` + campo líquido). Apertura más ceremonial; cierre quieto.
+   */
+  .p-auth-host {
+    --float-open-dur: var(--duration-very-slow);
+    position: absolute;
+    z-index: 6;
+  }
+
+  /* Viaje corto desde la pill además del scale del float-emerge. */
+  .p-auth-host.float-emerge:not(.is-shown) {
+    transform: translateY(calc(var(--distance-base) * -1)) scale(var(--float-scale));
+  }
+
+  .p-auth-host.float-emerge[data-side="bottom"]:not(.is-shown) {
+    transform: translateY(var(--distance-base)) scale(var(--float-scale));
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .p-auth-host.float-emerge:not(.is-shown),
+    .p-auth-host.float-emerge[data-side="bottom"]:not(.is-shown) {
+      transform: none;
+    }
   }
 
   @keyframes p-agent-pulse {
@@ -1558,10 +1976,40 @@
     }
   }
 
-  @media (prefers-reduced-motion: reduce) {
-    .p-agent.is-working {
-      animation: none;
-      opacity: 0.8;
+  @keyframes p-agent-ready-in {
+    from {
+      opacity: 0;
+      transform: translateY(var(--distance-micro, 4px));
+      filter: blur(var(--blur-small, 2px));
+    }
+
+    to {
+      opacity: 1;
+      transform: translateY(0);
+      filter: blur(0);
+    }
+  }
+
+  @keyframes p-shell-alive {
+    0%,
+    100% {
+      box-shadow: inset 0 0 0 0 transparent;
+    }
+
+    50% {
+      box-shadow: inset 0 0 0 1.5px
+        color-mix(in sRGB, var(--accent) 42%, transparent);
+    }
+  }
+
+  @keyframes p-liquid-alive {
+    0%,
+    100% {
+      filter: brightness(1);
+    }
+
+    50% {
+      filter: brightness(1.08);
     }
   }
 
@@ -1577,18 +2025,25 @@
     .p-wheel.is-open,
     .p-stack,
     .p-shell,
+    .p-liquid,
     .p-skin-tail,
     .p-icon,
     .p-rec,
     .p-dict,
     .p-queue-btn,
-    .p-agent {
+    .p-agent,
+    .p-auth-host {
       transition: none !important;
       animation: none !important;
     }
 
-    .p-stack.is-dim {
-      filter: none;
+    .p-agent.is-working {
+      opacity: 0.8;
+    }
+
+    .p-shell.is-working {
+      box-shadow: inset 0 0 0 1px
+        color-mix(in sRGB, var(--accent) 35%, transparent);
     }
   }
 </style>

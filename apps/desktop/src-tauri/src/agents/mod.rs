@@ -24,9 +24,11 @@ pub mod acp;
 pub mod bridge;
 pub mod claude_code;
 pub mod claude_sessions;
+pub mod claude_usage;
 pub mod codex;
 pub mod discover;
 pub mod exe;
+pub mod fs_browse;
 pub mod media;
 pub mod model;
 pub mod skills;
@@ -202,6 +204,15 @@ pub trait AgentSession: Send {
         _effort: Option<&str>,
         _fast: Option<bool>,
     ) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// Interrumpe el turno en curso sin cerrar la sesión.
+    ///
+    /// La conversación, el cwd, el modelo y el proceso del agente siguen vivos.
+    /// Por defecto no hace nada: un backend sin cancelación nativa no debe
+    /// tumbar la sesión solo porque la UI pidió «Detener».
+    fn interrupt(&mut self) -> Result<(), String> {
         Ok(())
     }
 

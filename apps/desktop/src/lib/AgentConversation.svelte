@@ -29,12 +29,10 @@
   }: {
     items: AgentItem[];
     /**
-     * Dónde cae el cierre de cada turno, y con cuánto costó.
+     * Dónde cae el cierre de cada turno.
      *
-     * Se indexa por el id del ÚLTIMO item del turno: la regla se dibuja
-     * después de él, que es donde se lee como separación entre respuestas.
-     * El valor es `null` cuando el backend no informa costo —Codex manda
-     * tokens y no dinero—, y ahí la regla lo dice con palabras.
+     * Se indexa por el id del ÚLTIMO item visible del turno: la regla se
+     * dibuja después de él. El costo (si existe) vive en UsageModal, no acá.
      */
     turnEnds: Map<string, number | null>;
   } = $props();
@@ -115,37 +113,19 @@
     </div>
   {:else if item.kind === "notice"}
     {@const summary = item.text.startsWith("Resumen del contexto")}
-    {@const info =
-      item.text.startsWith("Compactando el contexto") ||
-      item.text.startsWith("Contexto compactado") ||
-      item.text.startsWith("Esfuerzo:") ||
-      item.text.startsWith("Modelo:") ||
-      item.text.startsWith("Plan mode") ||
-      item.text.startsWith("Permisos:") ||
-      item.text.startsWith("Limpiando la conversación") ||
-      item.text.startsWith("Consultando uso") ||
-      item.text.startsWith("Consultando costo")}
     {#if summary}
       <div class="summary" role="note">
         <p class="summary-h">Resumen del contexto</p>
         <p class="summary-b">{item.text.replace(/^Resumen del contexto\n*/, "")}</p>
       </div>
-    {:else if info}
-      <p class="info">{item.text}</p>
     {:else}
       <p class="warn">{item.text}</p>
     {/if}
   {/if}
 
-  <!-- Cierre de turno: una regla con el costo al medio. Separa las respuestas
-       entre sí, que sin esto se leían como una sola. -->
+  <!-- Cierre de turno: regla fina sin costo (el costo va al modal Uso). -->
   {#if turnEnds.has(item.id)}
-    {@const cost = turnEnds.get(item.id)}
-    <p class="turn" class:is-bare={cost == null}>
-      {#if cost != null}
-        <span class="turn-t">${cost.toFixed(4)}</span>
-      {/if}
-    </p>
+    <p class="turn" aria-hidden="true"></p>
   {/if}
 {/each}
 
@@ -301,31 +281,17 @@
     color: var(--dim);
     line-height: 1.5;
     white-space: pre-wrap;
+    user-select: text;
+    -webkit-user-select: text;
   }
 
   /* Cierre de turno: una regla fina que corta el ancho. Sin ella, dos
      respuestas seguidas se leían como una sola. */
   .turn {
-    display: flex;
-    align-items: center;
-    gap: 0.45rem;
-    margin: 0.05rem 0;
-    color: var(--faint);
-    font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
-    font-size: 0.55rem;
-  }
-  .turn::before,
-  .turn::after {
     height: 1px;
-    flex: 1;
+    margin: 0.35rem 0;
     background: var(--line);
-    content: "";
-  }
-  .turn.is-bare::after {
-    content: none;
-  }
-  .turn-t {
-    flex-shrink: 0;
+    border: 0;
   }
 
   /* Mismo aviso que en la burbuja. Se repite acá y no se comparte porque los
@@ -337,13 +303,6 @@
     font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
     font-size: 0.71875rem;
     line-height: 1.5;
-  }
-
-  .info {
-    margin: 0;
-    color: var(--dim);
-    font-size: 0.62rem;
-    line-height: 1.3;
   }
 
   .summary {

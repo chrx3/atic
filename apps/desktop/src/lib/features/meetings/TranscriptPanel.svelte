@@ -19,12 +19,14 @@
   import Banner from "$ui/Banner.svelte";
   import Button from "$ui/Button.svelte";
   import EmptyState from "$ui/EmptyState.svelte";
+  import Icon from "$ui/Icon.svelte";
   import IconButton from "$ui/IconButton.svelte";
   import Input from "$ui/Input.svelte";
   import Modal from "$ui/Modal.svelte";
   import SegmentedControl from "$ui/SegmentedControl.svelte";
   import Select from "$ui/Select.svelte";
   import TextArea from "$ui/TextArea.svelte";
+  import { Trash2 } from "$lib/icons";
   import AudioPlayer from "./AudioPlayer.svelte";
 
   let {
@@ -341,21 +343,7 @@
               size="sm"
               onclick={() => removeSegment(segment)}
             >
-              <svg
-                width="14"
-                height="14"
-                viewBox="0 0 24 24"
-                fill="none"
-                aria-hidden="true"
-              >
-                <path
-                  d="M5 7h14M10 7V5h4v2M8 7l1 12h6l1-12"
-                  stroke="currentColor"
-                  stroke-width="1.6"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                />
-              </svg>
+              <Icon icon={Trash2} size={14} />
             </IconButton>
           </li>
         {/each}

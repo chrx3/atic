@@ -77,6 +77,15 @@ pub struct Config {
     /// Es la VENTANA, marco de sombra incluido, que es lo mismo que mide
     /// `BubbleShape`. `None` = nunca la redimensionaste y vale la de diseño.
     pub agents_bubble_size: Option<(i32, i32)>,
+    /// Consola de agentes fijada arriba (always-on-top) mientras está abierta.
+    ///
+    /// Desfijada, el overlay deja de ser topmost para que otras apps la tapen;
+    /// al cerrar la consola se restaura el topmost de la pill.
+    pub agents_always_on_top: bool,
+    /// Float de clipboard fijado arriba mientras está abierto.
+    pub clipboard_always_on_top: bool,
+    /// Float de textos/snippets fijado arriba mientras está abierto.
+    pub snippets_always_on_top: bool,
     /// Sonido grave al iniciar/detener grabación (aviso de consentimiento).
     pub beep_on_start: bool,
     /// Toques graves de interfaz (capturas, dictado). Interruptor maestro.
@@ -188,6 +197,9 @@ impl Default for Config {
             show_pill: true,
             pill_position: None,
             agents_bubble_size: None,
+            agents_always_on_top: true,
+            clipboard_always_on_top: true,
+            snippets_always_on_top: true,
             beep_on_start: false,
             ui_sounds: true,
             sound_recording_start: String::new(),
@@ -259,6 +271,9 @@ struct ConfigFile {
     show_pill: bool,
     pill_position: Option<(f64, f64)>,
     agents_bubble_size: Option<(i32, i32)>,
+    agents_always_on_top: Option<bool>,
+    clipboard_always_on_top: Option<bool>,
+    snippets_always_on_top: Option<bool>,
     beep_on_start: bool,
     ui_sounds: Option<bool>,
     sound_recording_start: Option<String>,
@@ -359,6 +374,9 @@ impl Default for ConfigFile {
             show_pill: d.show_pill,
             pill_position: d.pill_position,
             agents_bubble_size: d.agents_bubble_size,
+            agents_always_on_top: Some(d.agents_always_on_top),
+            clipboard_always_on_top: Some(d.clipboard_always_on_top),
+            snippets_always_on_top: Some(d.snippets_always_on_top),
             beep_on_start: d.beep_on_start,
             ui_sounds: None,
             sound_recording_start: None,
@@ -512,6 +530,10 @@ impl From<ConfigFile> for Config {
             show_pill: f.show_pill,
             pill_position: f.pill_position,
             agents_bubble_size: f.agents_bubble_size,
+            // Ausente en configs viejas: la consola ya vivía topmost con el overlay.
+            agents_always_on_top: f.agents_always_on_top.unwrap_or(true),
+            clipboard_always_on_top: f.clipboard_always_on_top.unwrap_or(true),
+            snippets_always_on_top: f.snippets_always_on_top.unwrap_or(true),
             beep_on_start: f.beep_on_start,
             // Configs antiguas: activar toques de UI (captura/dictado).
             ui_sounds: f.ui_sounds.unwrap_or(true),

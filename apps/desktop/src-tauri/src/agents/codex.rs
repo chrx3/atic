@@ -1271,10 +1271,7 @@ impl AgentSession for CodexSession {
         Ok(())
     }
 
-    fn stop(&mut self) {
-        self.stopping.store(true, Ordering::SeqCst);
-        // Interrumpir antes de cerrar: un turno corriendo con herramientas a
-        // medias termina más limpio si se le avisa que si se le cierra la boca.
+    fn interrupt(&mut self) -> Result<(), String> {
         let (thread, turn) = (
             self.shared.thread_id.lock().ok().and_then(|g| g.clone()),
             self.shared
@@ -1283,14 +1280,23 @@ impl AgentSession for CodexSession {
                 .ok()
                 .and_then(|g| g.clone()),
         );
-        if let (Some(thread), Some(turn)) = (thread, turn) {
-            let _ = self.shared.write(&json!({
+        match (thread, turn) {
+            (Some(thread), Some(turn)) => self.shared.write(&json!({
                 "jsonrpc": "2.0",
                 "id": self.shared.next_id(),
                 "method": "turn/interrupt",
                 "params": { "threadId": thread, "turnId": turn },
-            }));
+            })),
+            // Nada en vuelo: Detener es idempotente.
+            _ => Ok(()),
         }
+    }
+
+    fn stop(&mut self) {
+        self.stopping.store(true, Ordering::SeqCst);
+        // Interrumpir antes de cerrar: un turno corriendo con herramientas a
+        // medias termina más limpio si se le avisa que si se le cierra la boca.
+        let _ = self.interrupt();
         if let Ok(mut slot) = self.shared.stdin.lock() {
             slot.take();
         }

@@ -12,13 +12,15 @@ import type {
   AgentStartOptions,
   BubbleOpen,
   AgentTurn,
+  ClaudeAccountUsage,
   ClaudeCodeSession,
+  DirectoryListing,
   PermissionDecision,
   StoredThread,
 } from "$core/types";
 import { on } from "./events";
 
-export type { BubbleOpen };
+export type { BubbleOpen, ClaudeAccountUsage, DirectoryListing };
 
 /** Qué agentes conoce Atic y cuáles están instalados. Lanza un proceso por
  *  backend, así que conviene llamarlo al abrir la vista, no en cada render. */
@@ -38,6 +40,16 @@ export const agentListModels = (backend: string) =>
 /** `origin` dice por qué puente entró el texto. No viaja al agente. */
 export const agentSend = (session: string, text: string, origin?: AgentOrigin) =>
   invoke<void>("agent_send", { session, text, origin: origin ?? null });
+
+/**
+ * Escribe una imagen (pegada/arrastrada como bytes) en temp y devuelve la ruta
+ * absoluta para `origin.files`.
+ */
+export const agentStageImage = (dataBase64: string, mime: string) =>
+  invoke<string>("agent_stage_image", {
+    dataBase64,
+    mime,
+  });
 
 /** Cambia el modelo y el esfuerzo sin reiniciar la sesión. */
 export const agentSetModel = (
@@ -64,6 +76,11 @@ export const agentPermission = (
 export const agentSkills = (cwd?: string) =>
   invoke<AgentSkill[]>("agent_skills", { cwd: cwd ?? null });
 
+/** Interrumpe el turno en curso sin cerrar la sesión. */
+export const agentInterrupt = (session: string) =>
+  invoke<void>("agent_interrupt", { session });
+
+/** Cierra la sesión y mata el proceso del agente. */
 export const agentStop = (session: string) => invoke<void>("agent_stop", { session });
 
 /** Conversaciones guardadas, de la más reciente a la más vieja y sin turnos. */
@@ -81,6 +98,20 @@ export const agentClaudeSessions = (cwd: string) =>
 /** Transcript del CLI en turnos canónicos (para pintar al reanudar). */
 export const agentClaudeTranscript = (cwd: string, id: string) =>
   invoke<AgentTurn[]>("agent_claude_transcript", { cwd, id });
+
+/**
+ * Cupos de la cuenta Claude (ventana 5 h / semanal). Misma fuente que `/usage`.
+ * Cachea unos segundos en Rust; el modal puede pedirlo en poll.
+ */
+export const agentClaudeUsage = () =>
+  invoke<ClaudeAccountUsage>("agent_claude_usage");
+
+/**
+ * Subcarpetas de `path` (vacío/`~` → home). Solo lectura; sin abrir el picker
+ * nativo (compatible con always-on-top del float).
+ */
+export const listDirectories = (path?: string | null) =>
+  invoke<DirectoryListing>("list_directories", { path: path ?? null });
 
 // --- La burbuja ---
 /** True si la burbuja de agentes está visible. */
@@ -100,6 +131,13 @@ export const hideAgentsWindow = () => invoke<void>("hide_agents_window");
  */
 export const saveAgentsBubbleSize = (w: number, h: number) =>
   invoke<void>("save_agents_bubble_size", { w, h });
+
+/** ¿La consola de agentes queda fijada arriba de otras apps? */
+export const agentsAlwaysOnTop = () => invoke<boolean>("agents_always_on_top");
+
+/** Fija o desfija la consola (always-on-top del overlay mientras está abierta). */
+export const setAgentsAlwaysOnTop = (on: boolean) =>
+  invoke<void>("set_agents_always_on_top", { on });
 
 /** Lo decide Rust: es quien ve los monitores y la posición de la pill. */
 export const onAgentsBubbleAnchor = (

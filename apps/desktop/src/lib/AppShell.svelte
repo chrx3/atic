@@ -6,6 +6,8 @@
   import { toolById, type ToolId } from "$lib/tools";
   import { formatShortcut } from "$lib/format";
   import type { UiTheme } from "$lib/theme";
+  import Icon from "$ui/Icon.svelte";
+  import { ArrowLeft } from "$lib/icons";
 
   let {
     activeTool = $bindable("meetings"),
@@ -83,18 +85,7 @@
           onclick={() => (view = "hub")}
           title="Volver al inicio (Esc)"
         >
-          <svg
-            width="11"
-            height="11"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="1.5"
-            stroke-linecap="butt"
-            aria-hidden="true"
-          >
-            <path d="M15 5l-7 7 7 7" />
-          </svg>
+          <Icon icon={ArrowLeft} size={11} />
           Inicio
         </button>
       {/if}

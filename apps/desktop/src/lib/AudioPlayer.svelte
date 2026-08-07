@@ -1,5 +1,7 @@
 <script lang="ts">
   import { playback } from "$lib/playback.svelte";
+  import Icon from "$ui/Icon.svelte";
+  import { Pause, Play, X } from "$lib/icons";
 
   let {
     placeholder = "Selecciona una pista para escuchar",
@@ -43,10 +45,8 @@
     >
       {#if playback.loading}
         <span class="rb-player-spinner" aria-hidden="true"></span>
-      {:else if playback.playing}
-        <span class="rb-player-icon-pause" aria-hidden="true"></span>
       {:else}
-        <span class="rb-player-icon-play" aria-hidden="true"></span>
+        <Icon icon={playback.playing ? Pause : Play} size={12} />
       {/if}
     </button>
 
@@ -82,7 +82,7 @@
         onclick={() => playback.stop()}
         aria-label="Cerrar reproductor"
       >
-        <span aria-hidden="true">×</span>
+        <Icon icon={X} size={12} />
       </button>
     {/if}
   {/if}
@@ -119,22 +119,6 @@
     opacity: 0.45;
   }
 
-  .rb-player-icon-play {
-    width: 0;
-    height: 0;
-    margin-left: 2px;
-    border-style: solid;
-    border-width: 5px 0 5px 8px;
-    border-color: transparent transparent transparent currentColor;
-  }
-  .rb-player-icon-pause {
-    display: block;
-    width: 8px;
-    height: 10px;
-    background:
-      linear-gradient(currentColor, currentColor) left / 2.5px 100% no-repeat,
-      linear-gradient(currentColor, currentColor) right / 2.5px 100% no-repeat;
-  }
   .rb-player-spinner {
     width: 12px;
     height: 12px;

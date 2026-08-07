@@ -8,6 +8,9 @@
    * opciones visibles a la vez está `SegmentedControl`; para un menú con
    * contenido rico, `Menu`.
    */
+  import Icon from "$ui/Icon.svelte";
+  import { ChevronDown } from "$lib/icons";
+
   let {
     value = $bindable(),
     options,
@@ -39,20 +42,10 @@
     {/each}
   </select>
 
-  <svg
+  <Icon
+    icon={ChevronDown}
+    size={10}
     class="pointer-events-none absolute top-1/2 right-2 -translate-y-1/2 text-faint"
-    width="10"
-    height="10"
-    viewBox="0 0 24 24"
-    fill="none"
     aria-hidden="true"
-  >
-    <path
-      d="M6 9l6 6 6-6"
-      stroke="currentColor"
-      stroke-width="2"
-      stroke-linecap="round"
-      stroke-linejoin="round"
-    />
-  </svg>
+  />
 </div>

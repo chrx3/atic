@@ -39,13 +39,14 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use agent_client_protocol::schema::v1::{
-    AuthenticateRequest, ContentBlock, ContentChunk, ImageContent, InitializeRequest,
-    NewSessionRequest, PermissionOptionKind, PromptRequest, RequestPermissionOutcome,
-    RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome,
-    SessionConfigKind, SessionConfigOption, SessionConfigOptionCategory, SessionConfigSelect,
-    SessionConfigSelectOption, SessionConfigSelectOptions, SessionNotification, SessionUpdate,
-    SetSessionConfigOptionRequest, TextContent, ToolCall, ToolCallStatus as AcpToolStatus,
-    ToolCallUpdate, ToolKind as AcpToolKind, UsageUpdate,
+    AuthenticateRequest, CancelNotification, ContentBlock, ContentChunk, ImageContent,
+    InitializeRequest, NewSessionRequest, PermissionOptionKind, PromptRequest,
+    RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
+    SelectedPermissionOutcome, SessionConfigKind, SessionConfigOption,
+    SessionConfigOptionCategory, SessionConfigSelect, SessionConfigSelectOption,
+    SessionConfigSelectOptions, SessionId, SessionNotification, SessionUpdate,
+    SetSessionConfigOptionRequest, StopReason, TextContent, ToolCall,
+    ToolCallStatus as AcpToolStatus, ToolCallUpdate, ToolKind as AcpToolKind, UsageUpdate,
 };
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::{
@@ -133,6 +134,15 @@ struct CursorCreatePlanResponse {
     outcome: Value,
 }
 
+/// Conexión + id ACP para `session/cancel` desde el hilo de la UI.
+///
+/// El bucle de `Cmd` queda bloqueado dentro de `prompt_turn`, así que
+/// «Detener» no puede ir por ese canal: manda la notificación por acá.
+struct LiveConn {
+    conn: ConnectionTo<Agent>,
+    session_id: SessionId,
+}
+
 /// Estado que comparten el hilo de conexión y la sesión.
 struct Shared {
     turns: Mutex<Turns>,
@@ -171,6 +181,8 @@ struct Shared {
     /// Cursor no acepta los slugs del CLI (`cursor-grok-4.5-high`); hay que
     /// mandar el value con parámetros entre corchetes y mutar effort/fast ahí.
     model_templates: Mutex<HashMap<String, String>>,
+    /// Conexión viva para cancelar el prompt sin pasar por `Cmd`.
+    live: Mutex<Option<LiveConn>>,
 }
 
 impl AgentBackend for Acp {
@@ -210,6 +222,7 @@ impl AgentBackend for Acp {
             model_config_id: Mutex::new(None),
             effort_config_id: Mutex::new(None),
             model_templates: Mutex::new(HashMap::new()),
+            live: Mutex::new(None),
         });
 
         let (tx, rx) = mpsc::unbounded::<Cmd>();
@@ -514,6 +527,11 @@ async fn connect(
 
             emit.send(AgentDelta::ThreadPatch { patch });
 
+            *shared.live.lock_or_recover() = Some(LiveConn {
+                conn: conn.clone(),
+                session_id: session.session_id.clone(),
+            });
+
             if desired_model.is_some() || desired_effort.is_some() || desired_fast.is_some() {
                 apply_config(
                     &conn,
@@ -564,6 +582,7 @@ async fn connect(
                     }
                 }
             }
+            *shared.live.lock_or_recover() = None;
             Ok(())
         })
         .await
@@ -618,6 +637,7 @@ async fn prompt_turn(
     }
 
     let status = match &done {
+        Ok(resp) if matches!(resp.stop_reason, StopReason::Cancelled) => TurnStatus::Cancelled,
         Ok(_) => TurnStatus::Done,
         Err(_) => TurnStatus::Failed,
     };
@@ -1473,6 +1493,17 @@ impl AgentSession for AcpSession {
         }
     }
 
+    fn interrupt(&mut self) -> Result<(), String> {
+        let live = self.shared.live.lock_or_recover();
+        let Some(live) = live.as_ref() else {
+            // Todavía conectando o ya cerrada: no hay turno que cortar.
+            return Ok(());
+        };
+        live.conn
+            .send_notification(CancelNotification::new(live.session_id.clone()))
+            .map_err(|e| format!("no se pudo interrumpir: {e}"))
+    }
+
     fn stop(&mut self) {
         let _ = self.tx.unbounded_send(Cmd::Stop);
         self.tx.close_channel();
@@ -1559,6 +1590,7 @@ mod tests {
             model_config_id: Mutex::new(None),
             effort_config_id: Mutex::new(None),
             model_templates: Mutex::new(HashMap::new()),
+            live: Mutex::new(None),
         }
     }
 

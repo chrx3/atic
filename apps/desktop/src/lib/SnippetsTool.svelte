@@ -1,7 +1,8 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import HotkeyCapture from "$lib/HotkeyCapture.svelte";
-  import Trash from "reicon-svelte/icons/Trash.svelte";
+  import Icon from "$ui/Icon.svelte";
+  import { Trash2 } from "$lib/icons";
   import SnippetsList from "$lib/SnippetsList.svelte";
   import ToolPageShell from "$lib/ToolPageShell.svelte";
   import {
@@ -353,7 +354,7 @@
                     aria-label="Eliminar {note.title}"
                     onclick={() => void removeNote(note)}
                   >
-                    <Trash size={14} />
+                    <Icon icon={Trash2} size={14} />
                   </button>
                 </li>
               {/each}

@@ -16,6 +16,15 @@
   /* Las dos capas del sistema líquido: siluetas abajo, contenido encima. */
   --z-skin: 20;
   --z-ink: 30;
+
+  /*
+   * Overlay: floats debajo, pill (y su auth) encima.
+   * Sin esto, `z-index: auto` en la pill pierde contra los floats con z > 0
+   * aunque vaya después en el DOM.
+   */
+  --z-overlay-float: 2;
+  --z-overlay-pill: 3;
+
   --z-popover: 60;
   --z-toast: 100;
   --z-skip: 110;

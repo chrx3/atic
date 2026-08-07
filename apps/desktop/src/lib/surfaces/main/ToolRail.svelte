@@ -10,13 +10,15 @@
   import { runToolAction, toolAction } from "$core/toolActions";
   import { TOOLS, type ToolId } from "$core/tools";
   import { playWheelTick } from "$core/uiSound";
-  import { pickerLab } from "$lib/dev/pickerLab.svelte";
+  import { PICKER_CELL_PROD_MIN, pickerLab } from "$lib/dev/pickerLab.svelte";
   import { toastError } from "$domain/toasts.svelte";
   import ToolIcon from "$lib/ToolIcon.svelte";
+  import { SquareArrowOutUpRight } from "$lib/icons";
   import { boxShape, pillShape, type Rect } from "$liquid/geometry";
   import { RectTracker } from "$liquid/measure.svelte";
   import Skin from "$liquid/Skin.svelte";
   import Button from "$ui/Button.svelte";
+  import Icon from "$ui/Icon.svelte";
 
   let {
     activeTool,
@@ -55,9 +57,13 @@
   const REF_CONTENT_H = 560;
 
   // Perillas del picker lab (persistidas en localStorage; defaults = producción).
+  // Con el lab cerrado nunca se usa cell < PICKER_CELL_PROD_MIN: el costo SDF
+  // va con 1/cell² y con blend/cards actuales un cell de 2 congela la UI.
   const tune = $derived({
     blend: pickerLab.blend,
-    cell: pickerLab.cell,
+    cell: pickerLab.open
+      ? pickerLab.cell
+      : Math.max(pickerLab.cell, PICKER_CELL_PROD_MIN),
     cardFloat: pickerLab.cardFloat,
     pitchPad: pickerLab.pitchPad,
     heightFill: pickerLab.heightFill,
@@ -288,6 +294,9 @@
       return;
     }
     visual += diff * 0.22;
+    // Tick al cruzar el medio del paso (mismo instante que el flip hot),
+    // no al pedir el paso: evita beep desfasado del morph.
+    noteStep(visual);
     tracker.wake();
     if (Math.abs(target - visual) < 0.002) {
       visual = target;
@@ -337,7 +346,6 @@
   function goBy(delta: number) {
     if (!delta) return;
     target = Math.round(target) + delta;
-    noteStep(target);
     kick();
   }
 
@@ -567,13 +575,14 @@
         style:width="{spot.dropW}px"
         style:height="{spot.dropH}px"
         style:opacity={spot.opacity}
+        style:--p={spot.prominence}
         title={spot.tool.label}
         aria-label={spot.tool.label}
         aria-current={spot.hot ? "page" : undefined}
         {@attach trackOf(spot.key)}
       >
         <span class="glyph" class:is-hot={spot.hot}>
-          <ToolIcon id={spot.tool.id} size={spot.hot ? 20 : 17} />
+          <ToolIcon id={spot.tool.id} size={20} />
         </span>
       </button>
 
@@ -628,36 +637,7 @@
             tabindex={spot.prominence > 0.55 ? 0 : -1}
             onclick={(e) => onConfig(spot.tool.id, e)}
           >
-            <svg
-              width="16"
-              height="16"
-              viewBox="0 0 24 24"
-              fill="none"
-              aria-hidden="true"
-            >
-              <rect
-                x="4"
-                y="4"
-                width="12"
-                height="12"
-                rx="2"
-                stroke="currentColor"
-                stroke-width="1.8"
-              />
-              <path
-                d="M14 10h6v10H10v-6"
-                stroke="currentColor"
-                stroke-width="1.8"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-              />
-              <path
-                d="M20 4 14 10"
-                stroke="currentColor"
-                stroke-width="1.8"
-                stroke-linecap="round"
-              />
-            </svg>
+            <Icon icon={SquareArrowOutUpRight} size={16} />
           </button>
         </div>
       </div>
@@ -708,27 +688,24 @@
     color: inherit;
     cursor: inherit;
     touch-action: none;
-    transition:
-      width var(--duration-quick) var(--ease-smooth-out),
-      height var(--duration-quick) var(--ease-smooth-out),
-      opacity var(--duration-quick) var(--ease-smooth-out);
+    /*
+     * width/height/opacity los conduce el spring de `visual` cada frame.
+     * Una transition CSS aquí desincroniza left/top (instantáneos) del tamaño
+     * (atrasado) y se lee como salto justo al cruzar el paso / beep.
+     */
   }
 
   .glyph {
     display: grid;
     place-items: center;
-    color: var(--rb-muted);
+    color: color-mix(
+      in oklab,
+      var(--rb-muted) calc((1 - var(--p, 0)) * 100%),
+      var(--rb-text) calc(var(--p, 0) * 100%)
+    );
     pointer-events: none;
-    transition:
-      color var(--duration-quick) var(--ease-smooth-out),
-      opacity var(--duration-quick) var(--ease-smooth-out),
-      transform var(--duration-quick) var(--ease-smooth-out);
-  }
-
-  .drop.is-hot .glyph,
-  .glyph.is-hot {
-    color: var(--rb-text);
-    transform: scale(1.05);
+    /* 17/20 ≈ 0.85 → 1.05 en el centro; continuo con prominence. */
+    transform: scale(calc(0.85 + 0.2 * var(--p, 0)));
   }
 
   .tool-card {
@@ -737,27 +714,15 @@
     flex-direction: column;
     justify-content: space-between;
     gap: calc(0.35rem * var(--ls, 1));
-    padding: calc(0.75rem * var(--ls, 1)) calc(0.9rem * var(--ls, 1));
+    /* Padding continuo por --p: evita flip cold→hot de layout al beep. */
+    padding: calc((0.75rem + 0.2rem * var(--p, 0)) * var(--ls, 1))
+      calc((0.9rem + 0.15rem * var(--p, 0)) * var(--ls, 1));
     border-radius: calc(16px * var(--ls, 1));
     background: transparent;
     color: inherit;
     cursor: inherit;
     box-sizing: border-box;
-
-    /*
-     * left/top los anima el ángulo en JS; acá morph de tamaño/opacidad/blur
-     * cuando una secundaria pasa a principal (--duration-fast = state change).
-     */
-    transition:
-      width var(--duration-fast) var(--ease-smooth-out),
-      height var(--duration-fast) var(--ease-smooth-out),
-      opacity var(--duration-fast) var(--ease-smooth-out),
-      filter var(--duration-fast) var(--ease-smooth-out),
-      padding var(--duration-fast) var(--ease-smooth-out);
-  }
-
-  .tool-card.is-hot {
-    padding: calc(0.95rem * var(--ls, 1)) calc(1.05rem * var(--ls, 1));
+    /* Igual que .drop: geometría por JS; no pelear con transition de layout. */
   }
 
   .card-head,
@@ -776,12 +741,9 @@
 
   .card-chrome {
     flex-shrink: 0;
-    transition:
-      opacity var(--duration-fast) var(--ease-smooth-out),
-      filter var(--duration-fast) var(--ease-smooth-out),
-      transform var(--duration-fast) var(--ease-smooth-out);
+    /* --p cambia cada frame con el spring; sin transition de layout/filter. */
     transform: scale(calc(0.92 + 0.08 * var(--p, 0)));
-    filter: blur(calc((1 - var(--p, 0)) * 2px));
+    filter: blur(calc((1 - var(--p, 0)) * var(--blur-small, 2px)));
   }
 
   .card-title {
@@ -791,9 +753,6 @@
     color: var(--rb-text);
     line-height: 1.2;
     text-wrap: balance;
-    transition:
-      font-size var(--duration-fast) var(--ease-smooth-out),
-      opacity var(--duration-fast) var(--ease-smooth-out);
   }
 
   .card-copy {
@@ -809,7 +768,6 @@
     line-height: 1.35;
     color: var(--rb-muted);
     text-wrap: pretty;
-    transition: opacity var(--duration-fast) var(--ease-smooth-out);
   }
 
   .card-blurb.is-short {
@@ -848,8 +806,7 @@
     transition:
       color var(--duration-quick) var(--ease-smooth-out),
       background-color var(--duration-quick) var(--ease-smooth-out),
-      transform var(--duration-quick) var(--ease-smooth-out),
-      opacity var(--duration-fast) var(--ease-smooth-out);
+      transform var(--duration-quick) var(--ease-smooth-out);
   }
 
   .card-config::before {
@@ -868,14 +825,18 @@
   }
 
   @media (prefers-reduced-motion: reduce) {
-    .drop,
-    .glyph,
-    .tool-card,
-    .card-chrome,
-    .card-title,
-    .card-blurb,
     .card-config {
       transition: none;
+    }
+
+    .glyph {
+      transform: none;
+      color: var(--rb-muted);
+    }
+
+    .drop.is-hot .glyph,
+    .glyph.is-hot {
+      color: var(--rb-text);
     }
 
     .tool-card {

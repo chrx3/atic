@@ -1,10 +1,8 @@
 <script lang="ts">
   import { convertFileSrc } from "@tauri-apps/api/core";
   import { startDrag } from "@crabnebula/tauri-plugin-drag";
-  import List from "reicon-svelte/icons/List.svelte";
-  import Search from "reicon-svelte/icons/Search.svelte";
-  import Star from "reicon-svelte/icons/Star.svelte";
-  import X from "reicon-svelte/icons/X.svelte";
+  import Icon from "$ui/Icon.svelte";
+  import { List, Search, Star, X } from "$lib/icons";
   import type { ClipboardItem } from "$lib/types";
   import { clipboardItemMatches } from "$lib/clipboardSearch";
   import {
@@ -179,7 +177,7 @@
   <div class="clip-toolbar">
     <label class="clip-search-wrap">
       <span class="clip-search-icon" aria-hidden="true">
-        <Search size={14} />
+        <Icon icon={Search} size={14} />
       </span>
       <input
         class="clip-search"
@@ -210,7 +208,7 @@
           aria-label="Mostrar todos"
           title="Todos"
         >
-          <List size={14} />
+          <Icon icon={List} size={14} />
         </button>
         <button
           type="button"
@@ -220,7 +218,11 @@
           aria-label="Solo favoritos"
           title="Favoritos"
         >
-          <Star size={14} weight={favoritesOnly ? "Filled" : "Outline"} />
+          <Icon
+            icon={Star}
+            size={14}
+            fill={favoritesOnly ? "currentColor" : "none"}
+          />
         </button>
       </div>
     </div>
@@ -294,7 +296,11 @@
               aria-label={item.pinned ? "Quitar de favoritos" : "Marcar favorito"}
               title={item.pinned ? "Quitar de favoritos" : "Marcar favorito"}
             >
-              <Star size={14} weight={item.pinned ? "Filled" : "Outline"} />
+              <Icon
+                icon={Star}
+                size={14}
+                fill={item.pinned ? "currentColor" : "none"}
+              />
             </button>
             <button
               type="button"
@@ -311,7 +317,7 @@
               aria-label="Eliminar"
               title="Eliminar"
             >
-              <X size={14} />
+              <Icon icon={X} size={14} />
             </button>
           </div>
         </li>

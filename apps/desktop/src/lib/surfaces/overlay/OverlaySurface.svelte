@@ -171,6 +171,9 @@
 
   Y es el orden correcto de fondo: la pill es el control que siempre tiene que
   estar a mano. Lo que se despliega desde ella pasa por detrás.
+
+  Además de DOM: `--z-overlay-pill` > `--z-overlay-float` (layers.css). Sin
+  z-index en la pill, los floats con z > 0 la tapaban al solaparse.
 -->
 <div class="ov" class:is-debug={debug} onpointerdowncapture={enterTextMode}>
   {#if Lab}

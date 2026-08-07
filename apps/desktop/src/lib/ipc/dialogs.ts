@@ -53,3 +53,35 @@ export async function pickAudioFiles(): Promise<string[]> {
   if (!picked) return [];
   return Array.isArray(picked) ? picked : [picked];
 }
+
+/** Carpeta de trabajo. `null` si se canceló. */
+export async function pickDirectory(title = "Elegir carpeta"): Promise<string | null> {
+  const { open } = await import("@tauri-apps/plugin-dialog");
+  const picked = await open({
+    title,
+    directory: true,
+    multiple: false,
+  });
+  return typeof picked === "string" ? picked : null;
+}
+
+/** Archivos para adjuntar al mensaje del agente. Lista vacía si se canceló. */
+export async function pickAgentFiles(): Promise<string[]> {
+  const { open } = await import("@tauri-apps/plugin-dialog");
+  const picked = await open({
+    title: "Adjuntar archivos",
+    multiple: true,
+    filters: [
+      {
+        name: "Imágenes",
+        extensions: ["png", "jpg", "jpeg", "gif", "webp"],
+      },
+      {
+        name: "Documentos",
+        extensions: ["md", "txt", "pdf", "json", "csv", "ts", "js", "tsx", "jsx", "rs", "py"],
+      },
+    ],
+  });
+  if (!picked) return [];
+  return Array.isArray(picked) ? picked : [picked];
+}

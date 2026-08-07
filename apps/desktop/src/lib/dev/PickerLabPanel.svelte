@@ -4,9 +4,15 @@
    * Atajo: Ctrl+Alt+P. El lab general de líquido sigue en Ctrl+Alt+L.
    */
   import { sminReach } from "$liquid/sdf";
-  import { commitPickerLab, pickerLab, type PickerLabValues } from "./pickerLab.svelte";
+  import {
+    commitPickerLab,
+    PICKER_CELL_PROD_MIN,
+    pickerLab,
+    type PickerLabValues,
+  } from "./pickerLab.svelte";
 
   const reach = $derived(Math.round(sminReach(pickerLab.blend) * 10) / 10);
+  const cellWarn = $derived(pickerLab.cell < PICKER_CELL_PROD_MIN);
   let copied = $state(false);
 
   type Row = {
@@ -68,7 +74,12 @@
   <header class="head">
     <div>
       <strong>Picker lab</strong>
-      <p class="meta">REACH ≈ {reach}px · Esc o × cierra</p>
+      <p class="meta">
+        REACH ≈ {reach}px · Esc o × cierra
+        {#if cellWarn}
+          · cell bajo {PICKER_CELL_PROD_MIN} es caro (solo lab)
+        {/if}
+      </p>
     </div>
     <button
       type="button"

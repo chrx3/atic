@@ -1,6 +1,9 @@
 <script lang="ts">
   /**
    * Detalle de una herramienta del picker: cuerpo de la tool + ajustes propios.
+   *
+   * El chrome de identidad (título, blurb, icono) vive acá una sola vez.
+   * `ToolModalChrome` marca a las tools hijas para que `ToolPage` no lo repita.
    */
   import { toolById, type ToolId } from "$core/tools";
   import AgentsTool from "$features/agents/AgentsTool.svelte";
@@ -14,6 +17,7 @@
   import ShortcutsSection from "$features/settings/ShortcutsSection.svelte";
   import SnippetsTool from "$features/snippets/SnippetsTool.svelte";
   import { tabPanel } from "$lib/motion";
+  import ToolModalChrome from "$patterns/ToolModalChrome.svelte";
   import ToolIcon from "$lib/ToolIcon.svelte";
   import Modal from "$ui/Modal.svelte";
   import SegmentedControl from "$ui/SegmentedControl.svelte";
@@ -52,21 +56,36 @@
   const titleId = $props.id();
 </script>
 
-<Modal title={tool.label} subtitle={tool.short} size="xl" scrollBody={false} {onClose}>
+<!--
+  `fill` fija el panel al tope: sin eso, una altura en `vh` del body podía
+  superar el max-h del diálogo y el overflow:hidden del chrome recortaba
+  sin scrollbar. Agentes usa un panel más alto para el chat.
+-->
+<Modal
+  title={tool.label}
+  subtitle={tool.short}
+  size="xl"
+  scrollBody={false}
+  fill
+  panelMax={chatOnly ? "min(92dvh, 900px)" : "min(88dvh, 820px)"}
+  {onClose}
+>
   {#snippet header()}
-    <div class="flex min-w-0 flex-1 flex-col gap-3">
-      <div class="flex min-w-0 items-start gap-3">
+    <div class="flex min-w-0 flex-1 flex-col gap-2">
+      <div class="flex min-w-0 items-center gap-2">
         <div
-          class="detail-mark flex size-9 shrink-0 items-center justify-center rounded-md
+          class="detail-mark flex size-7 shrink-0 items-center justify-center rounded-md
                  bg-surface-2 text-muted"
           aria-hidden="true"
         >
-          <ToolIcon id={toolId} size={18} strokeWidth={1.4} />
+          <ToolIcon id={toolId} size={14} strokeWidth={1.4} />
         </div>
         <div class="min-w-0">
-          <h2 id={titleId} class="text-balance text-md font-semibold">{tool.label}</h2>
+          <h2 id={titleId} class="truncate text-sm font-semibold leading-tight">
+            {tool.label}
+          </h2>
           {#if !chatOnly}
-            <p class="mt-0.5 text-xs text-muted text-pretty">{tool.blurb}</p>
+            <p class="truncate text-micro text-faint">{tool.blurb}</p>
           {/if}
         </div>
       </div>
@@ -76,29 +95,32 @@
           options={TABS}
           label="Vista del detalle"
           size="sm"
+          full
         />
       {/if}
     </div>
   {/snippet}
 
-  <div class="detail-body" class:is-chat={chatOnly}>
+  <div class="detail-body">
     {#key activeTab}
       <div class="tab-pane" in:tabPanel|local out:tabPanel|local>
         {#if activeTab === "detail"}
           <div class="tool-host">
-            {#if toolId === "meetings"}
-              <MeetingsTool {onOpenSettings} />
-            {:else if toolId === "dictation"}
-              <DictationTool />
-            {:else if toolId === "clipboard"}
-              <ClipboardTool />
-            {:else if toolId === "snippets"}
-              <SnippetsTool initialTab={snippetsTab} />
-            {:else if toolId === "captures"}
-              <CapturesTool />
-            {:else if toolId === "agents"}
-              <AgentsTool />
-            {/if}
+            <ToolModalChrome>
+              {#if toolId === "meetings"}
+                <MeetingsTool {onOpenSettings} />
+              {:else if toolId === "dictation"}
+                <DictationTool />
+              {:else if toolId === "clipboard"}
+                <ClipboardTool />
+              {:else if toolId === "snippets"}
+                <SnippetsTool initialTab={snippetsTab} />
+              {:else if toolId === "captures"}
+                <CapturesTool />
+              {:else if toolId === "agents"}
+                <AgentsTool />
+              {/if}
+            </ToolModalChrome>
           </div>
         {:else}
           <div class="settings-host">
@@ -142,18 +164,20 @@
 </Modal>
 
 <style>
+  /*
+   * Cancela el padding del body del Modal y llena el alto del panel (`fill`).
+   * La altura la define el Modal — acá solo `flex:1; min-height:0` para que
+   * ListDetail / grids scrolleen dentro sin recortes.
+   */
   .detail-body {
     position: relative;
     display: flex;
-    height: min(70vh, calc(100dvh - 9rem));
+    height: 100%;
     min-height: 0;
     flex: 1;
     flex-direction: column;
     overflow: hidden;
-  }
-
-  .detail-body.is-chat {
-    height: min(78vh, calc(100dvh - 7rem));
+    margin: -0.75rem -1rem;
   }
 
   .tab-pane {
@@ -171,8 +195,10 @@
   }
 
   .tool-host {
+    display: flex;
     min-height: 0;
     flex: 1;
+    flex-direction: column;
     overflow: hidden;
   }
 
@@ -180,6 +206,6 @@
     min-height: 0;
     flex: 1;
     overflow-y: auto;
-    padding: 0.25rem 0.15rem 0.5rem;
+    padding: 0.625rem 0.75rem 0.875rem;
   }
 </style>

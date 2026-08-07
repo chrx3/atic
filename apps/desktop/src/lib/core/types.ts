@@ -61,6 +61,10 @@ export interface AppConfig {
   output_device_id: string;
   show_pill: boolean;
   pill_position: [number, number] | null;
+  /** Tamaño guardado de la burbuja de agentes [w, h], o null. */
+  agents_bubble_size: [number, number] | null;
+  /** Consola de agentes fijada arriba (always-on-top) mientras está abierta. */
+  agents_always_on_top: boolean;
   beep_on_start: boolean;
   /** Toques graves de interfaz (capturas, dictado). Interruptor maestro. */
   ui_sounds: boolean;
@@ -660,6 +664,48 @@ export interface ClaudeCodeSession {
   preview: string;
   updatedAt: number;
   cwd: string;
+}
+
+/** Ventana de cupo de la cuenta Claude (misma fuente que `/usage`). */
+export interface ClaudeUsageWindow {
+  /** Porcentaje consumido, 0..=100. */
+  utilization: number;
+  /** RFC3339 UTC, o null si la API no lo manda. */
+  resetsAt: string | null;
+}
+
+export interface ClaudeExtraUsage {
+  isEnabled: boolean;
+  monthlyLimit: number | null;
+  usedCredits: number | null;
+  utilization: number | null;
+  currency: string | null;
+}
+
+/** Snapshot de cupos Pro/Max vía OAuth usage API. */
+export interface ClaudeAccountUsage {
+  fiveHour: ClaudeUsageWindow | null;
+  sevenDay: ClaudeUsageWindow | null;
+  sevenDayOpus: ClaudeUsageWindow | null;
+  sevenDaySonnet: ClaudeUsageWindow | null;
+  extraUsage: ClaudeExtraUsage | null;
+  plan: string | null;
+  /** Epoch ms del fetch. */
+  fetchedAt: number;
+}
+
+/** Entrada de carpeta del explorador interno (solo directorios). */
+export interface DirectoryEntry {
+  name: string;
+  path: string;
+}
+
+/** Listado de subcarpetas + atajos (Inicio / Escritorio / Documentos). */
+export interface DirectoryListing {
+  path: string;
+  parent: string | null;
+  entries: DirectoryEntry[];
+  roots: DirectoryEntry[];
 }
 
 /**

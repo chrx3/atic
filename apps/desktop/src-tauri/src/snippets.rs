@@ -1,12 +1,13 @@
 //! Fragmentos de texto reutilizables y bloc de notas local.
 
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::clipboard_history;
 use crate::state::AppState;
@@ -319,11 +320,27 @@ pub fn set_scratchpad(state: State<AppState>, body: String) -> Result<Scratchpad
 }
 
 /// Float de snippets abierto (independiente de la pill).
-static SNIPPETS_OPEN: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
+static SNIPPETS_OPEN: AtomicBool = AtomicBool::new(false);
+
+/// Preferencia de pin: float fijado arriba mientras está abierto.
+static SNIPPETS_ALWAYS_ON_TOP: AtomicBool = AtomicBool::new(true);
 
 const SNIP_ANCHOR: &str = "snippets-bubble-anchor";
 const SNIP_DISMISS: &str = "snippets-bubble-dismiss";
+
+/// API simétrica a `agents_open`. El stacking del overlay ya no la consulta.
+#[allow(dead_code)]
+pub fn float_open() -> bool {
+    SNIPPETS_OPEN.load(Ordering::Relaxed)
+}
+
+pub fn float_always_on_top() -> bool {
+    SNIPPETS_ALWAYS_ON_TOP.load(Ordering::Relaxed)
+}
+
+pub fn init_always_on_top(on: bool) {
+    SNIPPETS_ALWAYS_ON_TOP.store(on, Ordering::Relaxed);
+}
 
 /// Atajo / rueda / launcher: toggle del float de textos.
 pub fn summon_snippets_panel(app: &AppHandle) {
@@ -336,6 +353,10 @@ pub fn summon_snippets_panel(app: &AppHandle) {
         SNIP_ANCHOR,
         SNIP_DISMISS,
     );
+    crate::overlay::set_topmost(
+        app,
+        crate::agents::bridge::overlay_should_be_topmost(),
+    );
 }
 
 #[tauri::command]
@@ -346,6 +367,38 @@ pub fn show_snippets_window(app: AppHandle) {
 #[tauri::command]
 pub fn hide_snippets_window(app: AppHandle) {
     crate::panel_float::hide(&app, &SNIPPETS_OPEN, SNIP_DISMISS);
+    crate::overlay::set_topmost(
+        &app,
+        crate::agents::bridge::overlay_should_be_topmost(),
+    );
+}
+
+#[tauri::command]
+pub fn snippets_always_on_top() -> bool {
+    float_always_on_top()
+}
+
+#[tauri::command]
+pub fn set_snippets_always_on_top(app: AppHandle, on: bool) {
+    SNIPPETS_ALWAYS_ON_TOP.store(on, Ordering::Relaxed);
+    if let Some(state) = app.try_state::<AppState>() {
+        let snapshot = {
+            let Ok(mut cfg) = state.config.lock() else {
+                crate::overlay::set_topmost(
+                    &app,
+                    crate::agents::bridge::overlay_should_be_topmost(),
+                );
+                return;
+            };
+            cfg.snippets_always_on_top = on;
+            cfg.clone()
+        };
+        let _ = snapshot.save(&state.dirs.config_path());
+    }
+    crate::overlay::set_topmost(
+        &app,
+        crate::agents::bridge::overlay_should_be_topmost(),
+    );
 }
 
 /// Compacta la pill y la anima hasta el cursor antes de expandir fragmentos.

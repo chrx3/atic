@@ -6,17 +6,23 @@
    * (mensajes, tools, thinking, plan). Historial vía agent_threads + resume.
    */
   import { onMount, tick } from "svelte";
-  import { open as openDialog } from "@tauri-apps/plugin-dialog";
   import { agents } from "$lib/agentSessions.svelte";
+  import { convertFileSrc } from "@tauri-apps/api/core";
   import {
     agentBackends,
     agentClaudeSessions,
     agentClaudeTranscript,
     agentListModels,
+    agentStageImage,
     agentThread,
     agentThreadDelete,
     agentThreads,
+    agentsAlwaysOnTop,
+    setAgentsAlwaysOnTop,
   } from "$ipc/agents";
+  import { onAgentsComposerInsert } from "$ipc/clipboard";
+  import { pickAgentFiles } from "$ipc/dialogs";
+  import { withAgentsDismissSuppressed } from "$surfaces/overlay/agents/dismissGuard";
   import {
     effortShortLabel,
     modeShortLabel,
@@ -32,11 +38,33 @@
   import AgentConversation from "$lib/AgentConversation.svelte";
   import PickerMenu from "$lib/PickerMenu.svelte";
   import EmptyState from "$lib/ui/EmptyState.svelte";
+  import Icon from "$ui/Icon.svelte";
+  import {
+    ArrowUp,
+    ChevronLeft,
+    Cpu,
+    Folder,
+    History,
+    Paperclip,
+    Pin,
+    Square,
+    X,
+  } from "$lib/icons";
+  import FolderBrowser from "./FolderBrowser.svelte";
   import SlashPalette from "./SlashPalette.svelte";
+  import UsageModal from "./UsageModal.svelte";
+  import {
+    isChatStatusNoise,
+    statusToastMessage,
+  } from "./chatNotifications";
   import { resolveSlashCommands, skillsAsCommands } from "./slashCatalog";
+  import { toasts } from "$domain/toasts.svelte";
+  import Modal from "$ui/Modal.svelte";
   import type {
     AgentItem,
     AgentModel,
+    AgentOrigin,
+    AgentsComposerInsert,
     AgentTurn,
     ClaudeCodeSession,
     SlashCommand,
@@ -60,6 +88,19 @@
   let busy = $state(false);
   let error = $state<string | null>(null);
   let logEl = $state<HTMLElement | null>(null);
+  let inputEl = $state<HTMLTextAreaElement | null>(null);
+  /** Imágenes listas para `origin.files` (ruta absoluta). */
+  let attaches = $state<{ path: string; name: string }[]>([]);
+  /** Etiqueta `origin.via` del próximo envío con adjuntos. */
+  let attachVia = $state("adjunto");
+  let dropActive = $state(false);
+
+  /** Sugerencias del empty state (rellenan el draft; no son prompts del CLI). */
+  const SUGGESTIONS = [
+    "Resumí los cambios recientes del repo",
+    "Explicá este error y cómo arreglarlo",
+    "Proponé un plan corto para este proyecto",
+  ] as const;
   let cwd = $state("");
   let model = $state("");
   let models = $state<AgentModel[]>([]);
@@ -98,8 +139,16 @@
   /** Diálogo de compactar contexto (sesión viva). */
   let compactOpen = $state(false);
   let compactKeep = $state("");
+  /** Modal de uso (costo / contexto / turnos). */
+  let usageOpen = $state(false);
+  /** Explorador interno de carpeta de trabajo (cwd). */
+  let folderOpen = $state(false);
   /** Índice activo del menú `/`. */
   let slashIndex = $state(0);
+  /** Pin sticky del float: Esc / clic afuera no cierran si está fijado. */
+  let pinned = $state(true);
+  /** Lightbox del adjunto en el composer. */
+  let attachPreview = $state<string | null>(null);
 
   const modelOptions = $derived(
     models.map((m) => ({
@@ -157,6 +206,20 @@
   const folderLabel = $derived(
     cwd ? (cwd.split(/[\\/]/).filter(Boolean).pop() ?? cwd) : "Carpeta",
   );
+  /**
+   * El cwd del CLI se fija al spawn. Bloquear solo mid-turno / archivo —
+   * no por tener `sessionId` (ensureSession al foco dejaba el chip muerto).
+   */
+  const folderBlocked = $derived(
+    !!archive || working || waiting || starting,
+  );
+  const folderChipTitle = $derived(
+    archive
+      ? "Salí del archivo para cambiar la carpeta"
+      : working || waiting || starting
+        ? "No se puede cambiar la carpeta mientras el agente trabaja"
+        : cwd || "Elegir carpeta de trabajo",
+  );
   const modelLabel = $derived(
     modelsLoading && models.length === 0
       ? "Modelos…"
@@ -169,15 +232,17 @@
   const viewTurns = $derived(archive ? archive.turns : liveTurns);
 
   const conversationItems = $derived.by((): AgentItem[] =>
-    viewTurns.flatMap((t) => t.items),
+    viewTurns.flatMap((t) => t.items.filter((i) => !isChatStatusNoise(i))),
   );
 
   const compacting = $derived(
     !archive &&
       working &&
-      conversationItems.some(
-        (i) =>
-          i.kind === "notice" && i.text.startsWith("Compactando el contexto"),
+      viewTurns.some((t) =>
+        t.items.some(
+          (i) =>
+            i.kind === "notice" && i.text.startsWith("Compactando el contexto"),
+        ),
       ),
   );
 
@@ -200,12 +265,32 @@
   const turnEnds = $derived.by((): Map<string, number | null> => {
     const map = new Map<string, number | null>();
     for (const turn of viewTurns) {
-      if (turn.status === "running" || turn.items.length === 0) continue;
-      const last = turn.items[turn.items.length - 1];
-      map.set(last.id, turn.costUsd);
+      if (turn.status === "running") continue;
+      // Divisor sobre el último ítem visible; turnos solo-status no marcan.
+      const visible = turn.items.filter((i) => !isChatStatusNoise(i));
+      if (visible.length === 0) continue;
+      const last = visible[visible.length - 1];
+      // El costo sigue en el store / UsageModal; el hilo no lo muestra.
+      map.set(last.id, null);
     }
     return map;
   });
+
+  /** Costo para el modal: sesión viva o suma de turnos en archivo. */
+  const usageCostUsd = $derived.by(() => {
+    if (!archive) return session?.costUsd ?? 0;
+    let sum = 0;
+    for (const turn of archive.turns) {
+      if (turn.costUsd != null) sum += turn.costUsd;
+    }
+    return sum;
+  });
+  const usageContextTokens = $derived(
+    archive ? 0 : (session?.contextTokens ?? 0),
+  );
+  const usageContextSize = $derived(
+    archive ? null : (session?.contextSize ?? null),
+  );
 
   const streamingLive = $derived(
     !archive &&
@@ -219,8 +304,169 @@
     available === false ||
       waiting ||
       !!archive ||
-      (!working && !draft.trim()),
+      (!working && !draft.trim() && attaches.length === 0),
   );
+
+  const IMAGE_EXT = /\.(png|jpe?g|gif|webp)$/i;
+
+  function fileName(path: string): string {
+    const parts = path.replace(/\\/g, "/").split("/");
+    return parts[parts.length - 1] || path;
+  }
+
+  function isImagePath(path: string): boolean {
+    return IMAGE_EXT.test(path);
+  }
+
+  function addAttachPath(path: string) {
+    const trimmed = path.trim();
+    if (!trimmed) return;
+    if (!isImagePath(trimmed)) {
+      // El puente solo embebe imágenes; el resto va como ruta en el texto.
+      draft = draft.trim() ? `${draft.trimEnd()}\n${trimmed}` : trimmed;
+      return;
+    }
+    if (attaches.some((a) => a.path === trimmed)) return;
+    attaches = [...attaches, { path: trimmed, name: fileName(trimmed) }];
+  }
+
+  function removeAttach(path: string) {
+    attaches = attaches.filter((a) => a.path !== path);
+  }
+
+  function applyComposerInsert(payload: AgentsComposerInsert) {
+    if (archive || available === false) return;
+    if (payload.kind === "image" && payload.imagePath) {
+      attachVia = "portapapeles";
+      addAttachPath(payload.imagePath);
+    } else if (payload.text) {
+      const t = payload.text;
+      draft = draft.trim() ? `${draft.trimEnd()}\n${t}` : t;
+    }
+    void tick().then(() => inputEl?.focus());
+  }
+
+  async function stageBlob(file: Blob, mimeHint?: string) {
+    const mime = (mimeHint || file.type || "image/png").toLowerCase();
+    if (!mime.startsWith("image/")) return;
+    const buf = new Uint8Array(await file.arrayBuffer());
+    let binary = "";
+    const chunk = 0x8000;
+    for (let i = 0; i < buf.length; i += chunk) {
+      binary += String.fromCharCode(...buf.subarray(i, i + chunk));
+    }
+    const b64 = btoa(binary);
+    const path = await agentStageImage(b64, mime);
+    addAttachPath(path);
+  }
+
+  async function onComposerPaste(e: ClipboardEvent) {
+    if (archive || available === false) return;
+    const items = e.clipboardData?.items;
+    if (!items?.length) return;
+    const images: DataTransferItem[] = [];
+    for (const item of items) {
+      if (item.kind === "file" && item.type.startsWith("image/")) {
+        images.push(item);
+      }
+    }
+    if (images.length === 0) return;
+    e.preventDefault();
+    try {
+      attachVia = "portapapeles";
+      for (const item of images) {
+        const file = item.getAsFile();
+        if (file) await stageBlob(file, item.type);
+      }
+    } catch (err) {
+      error = String(err);
+    }
+  }
+
+  function onComposerDragOver(e: DragEvent) {
+    if (archive || available === false) return;
+    if (!e.dataTransfer) return;
+    const types = [...e.dataTransfer.types];
+    if (
+      types.includes("Files") ||
+      types.includes("text/uri-list") ||
+      types.includes("text/plain")
+    ) {
+      e.preventDefault();
+      dropActive = true;
+      if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+    }
+  }
+
+  function onComposerDragLeave(e: DragEvent) {
+    const next = e.relatedTarget as Node | null;
+    if (next && (e.currentTarget as HTMLElement).contains(next)) return;
+    dropActive = false;
+  }
+
+  async function onComposerDrop(e: DragEvent) {
+    dropActive = false;
+    if (archive || available === false) return;
+    e.preventDefault();
+    e.stopPropagation();
+    try {
+      const dt = e.dataTransfer;
+      if (!dt) return;
+      attachVia = "archivo";
+      const files = [...(dt.files ?? [])];
+      let added = false;
+      for (const file of files) {
+        const path = (file as File & { path?: string }).path;
+        if (path) {
+          addAttachPath(path);
+          added = true;
+          continue;
+        }
+        if (file.type.startsWith("image/")) {
+          await stageBlob(file, file.type);
+          added = true;
+        }
+      }
+      if (!added) {
+        const uri = dt.getData("text/uri-list") || "";
+        for (const line of uri.split(/\r?\n/)) {
+          const t = line.trim();
+          if (!t || t.startsWith("#")) continue;
+          let local = t;
+          if (t.startsWith("file:")) {
+            local = decodeURIComponent(t.replace(/^file:\/\//, ""));
+            // `file:///C:/…` → `/C:/…` en algunos hosts; quitar el slash.
+            if (/^\/[A-Za-z]:/.test(local)) local = local.slice(1);
+          }
+          if (local) {
+            addAttachPath(local);
+            added = true;
+          }
+        }
+      }
+      if (!added) {
+        const text = dt.getData("text/plain") || dt.getData("text");
+        if (text?.trim()) {
+          draft = draft.trim() ? `${draft.trimEnd()}\n${text}` : text;
+        }
+      }
+      void tick().then(() => inputEl?.focus());
+    } catch (err) {
+      error = String(err);
+    }
+  }
+
+  async function pickAttaches() {
+    if (archive || available === false || working) return;
+    try {
+      const paths = await withAgentsDismissSuppressed(() => pickAgentFiles());
+      if (paths.length) attachVia = "adjunto";
+      for (const p of paths) addAttachPath(p);
+      void tick().then(() => inputEl?.focus());
+    } catch (err) {
+      error = String(err);
+    }
+  }
   const ctaLabel = $derived(
     working && !waiting ? "Detener" : sessionId ? "Enviar" : "Iniciar",
   );
@@ -267,8 +513,26 @@
       : Math.min(slashIndex, slashFiltered.length - 1),
   );
 
+  /** Evita toast repetido al re-renderizar el mismo notice. */
+  const toastedStatusIds = new Set<string>();
+
   $effect(() => {
     agents.watch(sessionId);
+  });
+
+  $effect(() => {
+    // Archivo: no spamear toasts al abrir historial.
+    if (archive) return;
+    const catalog = models.map((m) => ({ id: m.id, name: m.name }));
+    for (const turn of liveTurns) {
+      for (const item of turn.items) {
+        if (toastedStatusIds.has(item.id)) continue;
+        if (!isChatStatusNoise(item)) continue;
+        toastedStatusIds.add(item.id);
+        const msg = statusToastMessage(item, catalog);
+        if (msg) toasts.push(msg, 3500);
+      }
+    }
   });
 
   $effect(() => {
@@ -544,17 +808,56 @@
     }
   }
 
-  async function pickFolder() {
-    if (sessionId || archive) return;
-    try {
-      const chosen = await openDialog({ directory: true, multiple: false });
-      if (typeof chosen === "string") {
-        cwd = chosen;
-        rememberCwd(BACKEND, chosen);
-        if (historyOpen) void loadCliSessions();
+  function openFolderBrowser() {
+    if (archive) {
+      toasts.push("Salí del archivo para cambiar la carpeta.", 3500);
+      return;
+    }
+    if (working || waiting || starting) {
+      toasts.push(
+        "No se puede cambiar la carpeta mientras el agente trabaja",
+        3500,
+      );
+      return;
+    }
+    folderOpen = true;
+  }
+
+  async function applyFolder(chosen: string) {
+    const next = chosen.trim();
+    folderOpen = false;
+    if (!next) return;
+    if (working || waiting || starting) {
+      toasts.push(
+        "No se puede cambiar la carpeta mientras el agente trabaja",
+        3500,
+      );
+      return;
+    }
+    const norm = (p: string) => p.replace(/\\/g, "/").replace(/\/+$/, "");
+    if (norm(cwd) === norm(next)) return;
+
+    // El proceso del CLI ya nació con el cwd anterior: hay que cerrarlo.
+    // El próximo ensureSession/send arranca limpio en la carpeta nueva.
+    const prev = sessionId;
+    if (prev) {
+      sessionId = null;
+      try {
+        await agents.stop(prev);
+      } catch {
+        /* ignore */
       }
-    } catch (err) {
-      error = String(err);
+      cliResumed = false;
+      resumeNote = "";
+    }
+    cwd = next;
+    rememberCwd(BACKEND, next);
+    if (historyOpen) void loadCliSessions();
+    if (prev) {
+      toasts.push(
+        "Carpeta actualizada. El próximo mensaje inicia una sesión nueva.",
+        4000,
+      );
     }
   }
 
@@ -562,6 +865,13 @@
     model = next;
     rememberModel(BACKEND, next);
     modelMenuOpen = false;
+    const label =
+      modelLabelFor(
+        next,
+        models.map((m) => ({ id: m.id, name: m.name })),
+      ) || next;
+    // Sin sesión no llega notice del CLI: avisar acá.
+    if (!sessionId) toasts.push(`Modelo: ${label}`, 3500);
     if (sessionId && next) {
       try {
         await agents.setModel(sessionId, next, effort || undefined);
@@ -581,7 +891,10 @@
     effortMenuOpen = false;
     error = null;
     const id = await ensureSession();
-    if (!id || archive) return;
+    if (!id || archive) {
+      if (!archive) toasts.push(`Esfuerzo: ${effortShortLabel(level)}`, 3500);
+      return;
+    }
     try {
       // Solo effort: no pisar el modelo vivo con string vacío.
       if (model) await agents.setModel(id, model, level);
@@ -604,7 +917,10 @@
     const id = await ensureSession();
     if (!id) return;
     // Sesión nueva ya arrancó con --permission-mode; solo reenviar en caliente.
-    if (!hadSession) return;
+    if (!hadSession) {
+      toasts.push(`Permisos: ${modeShortLabel(next)}`, 3500);
+      return;
+    }
     try {
       await agents.send(id, `/permissions ${next}`);
     } catch (err) {
@@ -671,10 +987,18 @@
 
   async function send() {
     const text = draft.trim();
-    if (!text || working || available === false || archive) return;
+    const pendingFiles = attaches.map((a) => a.path);
+    if (
+      (!text && pendingFiles.length === 0) ||
+      working ||
+      available === false ||
+      archive
+    ) {
+      return;
+    }
 
     // `/effort` solo → select, no mandar el usage al chat.
-    if (/^\/effort\s*$/i.test(text)) {
+    if (text && pendingFiles.length === 0 && /^\/effort\s*$/i.test(text)) {
       draft = "";
       effortMenuOpen = true;
       modelMenuOpen = false;
@@ -682,20 +1006,20 @@
       void ensureSession();
       return;
     }
-    if (/^\/compact\s*$/i.test(text)) {
+    if (text && pendingFiles.length === 0 && /^\/compact\s*$/i.test(text)) {
       draft = "";
       openCompact();
       void ensureSession();
       return;
     }
-    if (/^\/model\s*$/i.test(text)) {
+    if (text && pendingFiles.length === 0 && /^\/model\s*$/i.test(text)) {
       draft = "";
       modelMenuOpen = true;
       effortMenuOpen = false;
       modeMenuOpen = false;
       return;
     }
-    if (/^\/permissions\s*$/i.test(text)) {
+    if (text && pendingFiles.length === 0 && /^\/permissions\s*$/i.test(text)) {
       draft = "";
       modeMenuOpen = true;
       modelMenuOpen = false;
@@ -703,7 +1027,7 @@
       void ensureSession();
       return;
     }
-    if (/^\/plan\s*$/i.test(text)) {
+    if (text && pendingFiles.length === 0 && /^\/plan\s*$/i.test(text)) {
       draft = "";
       void pickMode("plan");
       return;
@@ -716,46 +1040,61 @@
     modeMenuOpen = false;
     busy = true;
     const pending = text;
+    const pendingAttaches = attaches;
     draft = "";
+    attaches = [];
+    const viaLabel = attachVia;
+    const origin: AgentOrigin | undefined =
+      pendingFiles.length > 0
+        ? {
+            via: viaLabel,
+            file:
+              pendingAttaches.length === 1
+                ? pendingAttaches[0].name
+                : `${pendingAttaches.length} imágenes`,
+            files: pendingFiles,
+          }
+        : undefined;
     try {
       const id = await ensureSession();
       if (!id) {
         draft = pending;
+        attaches = pendingAttaches;
         return;
       }
-      await agents.send(id, pending);
+      await agents.send(id, pending, origin);
       void loadThreads();
     } catch (err) {
       error = String(err);
       draft = pending;
+      attaches = pendingAttaches;
     } finally {
       busy = false;
     }
   }
 
-  async function stop() {
+  /** Solo corta el turno en curso; la sesión sigue abierta. */
+  async function interrupt() {
     const id = sessionId;
     if (!id) return;
     error = null;
     modelMenuOpen = false;
-    sessionId = null;
     busy = false;
     try {
-      await agents.stop(id);
-      void loadThreads();
+      await agents.interrupt(id);
     } catch (err) {
       error = String(err);
     }
   }
 
-  async function approveFirst() {
-    const p = session?.pending[0];
-    if (!sessionId || !p) return;
-    try {
-      await agents.decide(sessionId, p.id, "allow");
-    } catch (err) {
-      error = String(err);
-    }
+  function applySuggestion(text: string) {
+    if (archive || available === false) return;
+    draft = text;
+    void tick().then(() => {
+      inputEl?.focus();
+      const len = draft.length;
+      inputEl?.setSelectionRange(len, len);
+    });
   }
 
   function pickSlash(cmd: SlashCommand) {
@@ -860,6 +1199,16 @@
     if (live.effort) effort = live.effort;
   }
 
+  async function togglePin() {
+    const next = !pinned;
+    pinned = next;
+    try {
+      await setAgentsAlwaysOnTop(next);
+    } catch {
+      pinned = !next;
+    }
+  }
+
   onMount(() => {
     cwd = rememberedCwd(BACKEND);
     // Si un resume previo contaminó el modo con "full", volver al recordado.
@@ -871,6 +1220,15 @@
     } catch {
       effort = "";
     }
+    if (variant === "float") {
+      void agentsAlwaysOnTop()
+        .then((on) => {
+          pinned = on;
+        })
+        .catch(() => {
+          pinned = true;
+        });
+    }
     void (async () => {
       await agents.init();
       adoptLiveSession();
@@ -881,18 +1239,37 @@
     void loadModels();
     void loadThreads();
     const onWinKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        if (modelMenuOpen || effortMenuOpen || modeMenuOpen) {
-          e.preventDefault();
-          modelMenuOpen = false;
-          effortMenuOpen = false;
-          modeMenuOpen = false;
-        }
+      if (e.key !== "Escape") return;
+      if (modelMenuOpen || effortMenuOpen || modeMenuOpen) {
+        e.preventDefault();
+        modelMenuOpen = false;
+        effortMenuOpen = false;
+        modeMenuOpen = false;
+        return;
+      }
+      // No robamos Esc a slash / modales / resume; el composer los maneja.
+      if (
+        slashOpen ||
+        usageOpen ||
+        folderOpen ||
+        compactOpen ||
+        resumePick ||
+        attachPreview
+      )
+        return;
+      if (historyOpen) {
+        e.preventDefault();
+        historyOpen = false;
       }
     };
     window.addEventListener("keydown", onWinKey);
+    let stopInsert: (() => void) | undefined;
+    void onAgentsComposerInsert(applyComposerInsert).then((un) => {
+      stopInsert = un;
+    });
     return () => {
       window.removeEventListener("keydown", onWinKey);
+      stopInsert?.();
       agents.watch(null);
     };
   });
@@ -919,43 +1296,91 @@
   class:is-menu-open={modelMenuOpen ||
     effortMenuOpen ||
     modeMenuOpen ||
-    historyOpen ||
     !!resumePick ||
     compactOpen ||
+    usageOpen ||
+    folderOpen ||
     slashOpen}
   style="--accent: {ACCENT}"
   data-demo="claude-code"
   data-agent="claude-code"
 >
+  {#snippet sessionControls()}
+    <button
+      type="button"
+      class="chip is-folder"
+      class:is-on={!!cwd}
+      class:is-locked={folderBlocked}
+      title={folderChipTitle}
+      aria-label={cwd ? `Carpeta: ${folderLabel}` : "Elegir carpeta"}
+      aria-disabled={folderBlocked}
+      onclick={openFolderBrowser}
+    >
+      <Icon icon={Folder} size={12} />
+      <span class="chip-t">{folderLabel}</span>
+    </button>
+    {#if models.length > 0 || modelsLoading}
+      <div class="model">
+        <PickerMenu
+          label={modelLabel}
+          open={modelMenuOpen}
+          options={modelOptions}
+          value={model}
+          loading={modelsLoading && models.length === 0}
+          loadingMessage="Modelos…"
+          onToggle={() => {
+            modelMenuOpen = !modelMenuOpen;
+            if (modelMenuOpen) effortMenuOpen = false;
+          }}
+          onPick={(id) => void pickModel(id)}
+        />
+      </div>
+    {/if}
+    {#if !archive && available !== false}
+      <div class="model">
+        <PickerMenu
+          label={effortLabel}
+          open={effortMenuOpen}
+          options={effortOptions}
+          value={effort || session?.effort || ""}
+          onToggle={() => {
+            effortMenuOpen = !effortMenuOpen;
+            if (effortMenuOpen) modelMenuOpen = false;
+          }}
+          onPick={(id) => void pickEffort(id)}
+        />
+      </div>
+    {/if}
+  {/snippet}
+
   <header class="top">
-    <h2
-      class="name"
+    <div
+      class="brand"
       title={archive
         ? "Archivo · solo lectura"
         : "Claude Code · login local del CLI"}
     >
-      Claude
-    </h2>
+      <img
+        class="brand-mark"
+        src="/brands/claude.svg"
+        width="18"
+        height="18"
+        alt="Claude"
+        draggable="false"
+      />
+    </div>
     <div class="top-acts" data-no-drag>
-      {#if sessionId && !archive}
+      {#if variant === "float"}
         <button
           type="button"
           class="icon-btn"
-          class:is-on={compactOpen}
-          disabled={working || available === false}
-          aria-label="Compactar contexto"
-          title="Compactar contexto (/compact)"
-          onclick={() => openCompact()}
+          class:is-on={pinned}
+          aria-label={pinned ? "Desfijar" : "Fijar arriba"}
+          aria-pressed={pinned}
+          title={pinned ? "Desfijar" : "Fijar arriba"}
+          onclick={() => void togglePin()}
         >
-          <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true">
-            <path
-              d="M4 7h16M7 12h10M9 17h6"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="1.8"
-              stroke-linecap="round"
-            />
-          </svg>
+          <Icon icon={Pin} size={13} />
         </button>
       {/if}
       <button
@@ -966,24 +1391,17 @@
         title="Historial"
         onclick={() => void toggleHistory()}
       >
-        <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true">
-          <path
-            d="M12 8v5l3 2M4.5 12a7.5 7.5 0 1 0 3-6"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="1.8"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-          />
-          <path
-            d="M4 5v4h4"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="1.8"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-          />
-        </svg>
+        <Icon icon={History} size={13} />
+      </button>
+      <button
+        type="button"
+        class="icon-btn"
+        class:is-on={usageOpen}
+        aria-label="Uso"
+        title="Uso · costo y contexto"
+        onclick={() => (usageOpen = true)}
+      >
+        <Icon icon={Cpu} size={13} />
       </button>
       {#if !archive && available !== false}
         <div class="mode-pick">
@@ -1006,9 +1424,15 @@
         </div>
       {/if}
       {#if contextChip}
-        <p class="badge is-ctx" title="Contexto usado">
+        <button
+          type="button"
+          class="badge is-ctx"
+          title="Contexto usado · ver uso"
+          aria-label="Contexto usado: {contextChip}"
+          onclick={() => (usageOpen = true)}
+        >
           {contextChip}
-        </p>
+        </button>
       {/if}
       <p
         class="badge"
@@ -1035,8 +1459,24 @@
     </div>
   </header>
 
-  {#if historyOpen}
-    <aside class="hist" aria-label="Conversaciones guardadas">
+  <div
+    class="hist-layer"
+    class:is-open={historyOpen}
+    inert={!historyOpen}
+  >
+    <button
+      type="button"
+      class="hist-scrim"
+      tabindex={historyOpen ? 0 : -1}
+      aria-label="Cerrar historial"
+      data-no-drag
+      onclick={() => (historyOpen = false)}
+    ></button>
+    <aside
+      class="hist"
+      aria-label="Conversaciones guardadas"
+      aria-hidden={!historyOpen}
+    >
       <div class="hist-h">
         <span>Historial</span>
         <button
@@ -1045,110 +1485,119 @@
           data-no-drag
           aria-label="Cerrar historial"
           title="Cerrar"
+          tabindex={historyOpen ? 0 : -1}
           onclick={() => (historyOpen = false)}
         >
-          <svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true">
-            <path
-              d="M6 6l12 12M18 6L6 18"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-            />
-          </svg>
+          <Icon icon={X} size={12} />
         </button>
       </div>
 
-      <p class="hist-sec" title="Igual que /resume en Claude Code">
-        CLI · esta carpeta
-      </p>
-      {#if !cwd.trim()}
-        <div class="hist-empty-wrap">
-          <EmptyState title="Elegí una carpeta" hint="Para ver sesiones del CLI.">
-            {#snippet action()}
-              <button
-                type="button"
-                class="chip"
-                data-no-drag
-                disabled={!!sessionId || !!archive}
-                onclick={() => void pickFolder()}
-              >
-                Carpeta
-              </button>
-            {/snippet}
-          </EmptyState>
-        </div>
-      {:else if cliLoading}
-        <p class="hist-empty">Buscando…</p>
-      {:else if cliSessions.length === 0}
-        <div class="hist-empty-wrap">
-          <EmptyState title="Sin sesiones CLI" hint="Probá otra carpeta." />
-        </div>
-      {:else}
-        <ul class="hist-list">
-          {#each cliSessions as s (s.id)}
-            <li>
-              <button
-                type="button"
-                class="hist-row"
-                data-no-drag
-                title="Elegir cómo reanudar"
-                onclick={() => askResumeMode(s)}
-              >
-                <span class="hist-prev">{s.preview || s.id}</span>
-                <span class="hist-meta">
-                  <span class="hist-ago">{ago(s.updatedAt)}</span>
-                  <span class="hist-tag">CLI</span>
-                </span>
-              </button>
-            </li>
-          {/each}
-        </ul>
-      {/if}
+      <div class="hist-body">
+        <p class="hist-sec" title="Igual que /resume en Claude Code">
+          CLI · esta carpeta
+        </p>
+        {#if !cwd.trim()}
+          <div class="hist-empty-wrap">
+            <EmptyState
+              title="Elegí una carpeta"
+              hint="Para ver sesiones del CLI."
+            >
+              {#snippet action()}
+                <button
+                  type="button"
+                  class="chip"
+                  class:is-locked={folderBlocked}
+                  data-no-drag
+                  aria-disabled={folderBlocked}
+                  title={folderChipTitle}
+                  onclick={openFolderBrowser}
+                >
+                  Carpeta
+                </button>
+              {/snippet}
+            </EmptyState>
+          </div>
+        {:else if cliLoading}
+          <p class="hist-empty">Buscando…</p>
+        {:else if cliSessions.length === 0}
+          <div class="hist-empty-wrap">
+            <EmptyState title="Sin sesiones CLI" hint="Probá otra carpeta." />
+          </div>
+        {:else}
+          <ul class="hist-list">
+            {#each cliSessions as s (s.id)}
+              <li>
+                <button
+                  type="button"
+                  class="hist-row"
+                  data-no-drag
+                  title="Elegir cómo reanudar"
+                  onclick={() => askResumeMode(s)}
+                >
+                  <span class="hist-prev">{s.preview || s.id}</span>
+                  <span class="hist-meta">
+                    <span class="hist-ago">{ago(s.updatedAt)}</span>
+                    <span class="hist-tag">CLI</span>
+                  </span>
+                </button>
+              </li>
+            {/each}
+          </ul>
+        {/if}
 
-      <p class="hist-sec">Atic</p>
-      {#if threadsLoading}
-        <p class="hist-empty">Cargando…</p>
-      {:else if threads.length === 0}
-        <div class="hist-empty-wrap">
-          <EmptyState title="Sin historial" hint="Aparece al cerrar un turno." />
-        </div>
-      {:else}
-        <ul class="hist-list">
-          {#each threads as t (t.id)}
-            <li>
-              <button
-                type="button"
-                class="hist-row"
-                data-no-drag
-                onclick={() => void openArchive(t.id)}
-              >
-                <span class="hist-prev">{t.preview || "Sin título"}</span>
-                <span class="hist-meta">
-                  <span class="hist-ago">{ago(t.updatedAt)}</span>
-                  {#if t.providerSession}
-                    <span class="hist-tag">reanudable</span>
-                  {/if}
-                </span>
-              </button>
-              <button
-                type="button"
-                class="hist-del"
-                data-no-drag
-                aria-label="Borrar conversación"
-                title="Borrar"
-                onclick={() => void deleteThread(t.id)}
-              >
-                ×
-              </button>
-            </li>
-          {/each}
-        </ul>
-      {/if}
+        <p class="hist-sec">Atic</p>
+        {#if threadsLoading}
+          <p class="hist-empty">Cargando…</p>
+        {:else if threads.length === 0}
+          <div class="hist-empty-wrap">
+            <EmptyState
+              title="Sin historial"
+              hint="Aparece al cerrar un turno."
+            />
+          </div>
+        {:else}
+          <ul class="hist-list">
+            {#each threads as t (t.id)}
+              <li>
+                <button
+                  type="button"
+                  class="hist-row"
+                  data-no-drag
+                  onclick={() => void openArchive(t.id)}
+                >
+                  <span class="hist-prev">{t.preview || "Sin título"}</span>
+                  <span class="hist-meta">
+                    <span class="hist-ago">{ago(t.updatedAt)}</span>
+                    {#if t.providerSession}
+                      <span class="hist-tag">reanudable</span>
+                    {/if}
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  class="hist-del"
+                  data-no-drag
+                  aria-label="Borrar conversación"
+                  title="Borrar"
+                  onclick={() => void deleteThread(t.id)}
+                >
+                  ×
+                </button>
+              </li>
+            {/each}
+          </ul>
+        {/if}
+      </div>
     </aside>
-  {/if}
+  </div>
 
-  <div class="log" bind:this={logEl} role="log" aria-label="Conversación">
+  <div
+    class="log"
+    bind:this={logEl}
+    role="log"
+    aria-label="Conversación"
+    data-selectable
+  >
     {#if available === false}
       <div class="empty">
         <EmptyState
@@ -1161,26 +1610,36 @@
         <EmptyState title="Abriendo…" />
       </div>
     {:else if conversationItems.length === 0 && !working}
-      <div class="empty">
-        <EmptyState
-          title={cwd.trim() ? "Escribí abajo" : "Elegí carpeta"}
-          hint={cwd.trim()
-            ? "El historial guarda cada turno."
-            : "Después, el primer mensaje."}
-        >
-          {#snippet action()}
-            {#if !cwd.trim() && !sessionId && !archive}
-              <button
-                type="button"
-                class="chip"
-                data-no-drag
-                onclick={() => void pickFolder()}
-              >
-                Carpeta
-              </button>
-            {/if}
-          {/snippet}
-        </EmptyState>
+      <div class="empty" class:is-hero={!archive}>
+        {#if archive}
+          <EmptyState title="Sin mensajes" hint="Este archivo está vacío." />
+        {:else}
+          <div class="hero" data-no-drag>
+            <p class="hero-t">
+              {cwd.trim()
+                ? "Preguntá lo que necesites"
+                : "Elegí carpeta y empezá"}
+            </p>
+            <p class="hero-h">
+              {cwd.trim()
+                ? "Claude Code · sesión local en Atic"
+                : "Primero la carpeta de trabajo, abajo."}
+            </p>
+            <div class="hero-sugs" role="group" aria-label="Sugerencias">
+              {#each SUGGESTIONS as sug, i (sug)}
+                <button
+                  type="button"
+                  class="sug"
+                  style="--i: {i}"
+                  disabled={available == null}
+                  onclick={() => applySuggestion(sug)}
+                >
+                  {sug}
+                </button>
+              {/each}
+            </div>
+          </div>
+        {/if}
       </div>
     {:else}
       <div class="thread">
@@ -1195,6 +1654,46 @@
       </p>
     {/if}
   </div>
+
+  {#if usageOpen}
+    <UsageModal
+      costUsd={usageCostUsd}
+      contextTokens={usageContextTokens}
+      contextSize={usageContextSize}
+      model={model || session?.model || archive?.model || ""}
+      effort={effort || session?.effort || null}
+      mode={mode || session?.mode || null}
+      turns={viewTurns}
+      archive={!!archive}
+      onClose={() => (usageOpen = false)}
+    />
+  {/if}
+
+  {#if attachPreview}
+    <Modal
+      title="Adjunto"
+      size="lg"
+      contained
+      panelMax="min(90dvh, 880px)"
+      onClose={() => (attachPreview = null)}
+    >
+      <div class="attach-lightbox">
+        <img
+          src={convertFileSrc(attachPreview)}
+          alt="Vista ampliada del adjunto"
+          class="attach-lightbox-img"
+        />
+      </div>
+    </Modal>
+  {/if}
+
+  {#if folderOpen}
+    <FolderBrowser
+      initialPath={cwd}
+      onPick={applyFolder}
+      onClose={() => (folderOpen = false)}
+    />
+  {/if}
 
   {#if compactOpen}
     <div
@@ -1317,15 +1816,7 @@
         title="Cerrar"
         onclick={() => (cliResumed = false)}
       >
-        <svg viewBox="0 0 24 24" width="11" height="11" aria-hidden="true">
-          <path
-            d="M6 6l12 12M18 6L6 18"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2"
-            stroke-linecap="round"
-          />
-        </svg>
+        <Icon icon={X} size={11} />
       </button>
     </p>
   {/if}
@@ -1339,16 +1830,7 @@
         title="Volver"
         onclick={leaveArchive}
       >
-        <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true">
-          <path
-            d="M15 6l-6 6 6 6"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="1.8"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-          />
-        </svg>
+        <Icon icon={ChevronLeft} size={13} />
       </button>
       <button
         type="button"
@@ -1361,180 +1843,161 @@
     </div>
   {/if}
 
-  {#each session?.pending ?? [] as p (p.id)}
-    {#if !archive}
-      <div class="perm" role="alertdialog" aria-label="Permiso pendiente">
-        <div class="perm-copy">
-          <p class="perm-t" title={p.description}>
-            <strong>{p.tool}</strong>
-            {#if p.description}
-              <span class="perm-w"> · {p.description}</span>
-            {/if}
-          </p>
-        </div>
-        <div class="perm-acts" data-no-drag>
-          <button
-            type="button"
-            class="icon-btn"
-            aria-label="Denegar"
-            title="Denegar"
-            onclick={() => void agents.decide(sessionId!, p.id, "deny")}
-          >
-            <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true">
-              <path
-                d="M6 6l12 12M18 6L6 18"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2"
-                stroke-linecap="round"
-              />
-            </svg>
-          </button>
-          <button
-            type="button"
-            class="icon-btn is-go"
-            aria-label="Permitir"
-            title="Permitir"
-            onclick={() => void approveFirst()}
-          >
-            <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true">
-              <path
-                d="M5 12.5l5 5L19 7"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-              />
-            </svg>
-          </button>
-        </div>
-      </div>
-    {/if}
-  {/each}
-
   {#if error || session?.error}
     <p class="warn" role="alert">{error ?? session?.error}</p>
   {/if}
 
-  <footer class="composer">
-    {#if slashOpen}
-      <SlashPalette
-        commands={slashFiltered}
-        activeIndex={slashActive}
-        emptyHint={slashCommands.length
-          ? "Sin coincidencias"
-          : starting
-            ? "Cargando comandos…"
-            : "Sin comandos"}
-        onPick={pickSlash}
-        onHover={(i) => (slashIndex = i)}
-      />
-    {/if}
-    <textarea
-      class="in"
-      rows="1"
-      placeholder={available === false
-        ? "Sin CLI…"
-        : archive
-          ? "Solo lectura…"
-          : "Mensaje o /…"}
-      bind:value={draft}
-      onkeydown={onKey}
-      oninput={() => (slashIndex = 0)}
-      onfocus={() => {
-        if (!archive && available === true) void ensureSession();
-      }}
-      disabled={available === false || !!archive}
-      aria-label="Mensaje"
-    ></textarea>
-    <div class="row">
-      <div class="set" data-no-drag>
-        <button
-          type="button"
-          class="chip is-folder"
-          class:is-on={!!cwd}
-          class:is-locked={!!sessionId || !!archive}
-          title={cwd || "Elegir carpeta de trabajo"}
-          aria-label={cwd ? `Carpeta: ${folderLabel}` : "Elegir carpeta"}
-          disabled={!!sessionId || !!archive}
-          onclick={() => void pickFolder()}
-        >
-          <svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true">
-            <path
-              d="M3 7.5A1.5 1.5 0 0 1 4.5 6H9l1.5 1.5H19.5A1.5 1.5 0 0 1 21 9v8.5a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5z"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="1.7"
-              stroke-linejoin="round"
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <footer
+    class="composer"
+    class:is-drop={dropActive}
+    data-no-drag
+    ondragover={onComposerDragOver}
+    ondragleave={onComposerDragLeave}
+    ondrop={(e) => void onComposerDrop(e)}
+  >
+    <div
+      class="composer-card"
+      class:is-readonly={!!archive}
+      class:is-drop={dropActive}
+      class:has-perm={!archive && (session?.pending?.length ?? 0) > 0}
+    >
+      {#if !archive && (session?.pending?.length ?? 0) > 0}
+        <div class="perm-stack" data-no-drag>
+          {#each session?.pending ?? [] as p (p.id)}
+            <div class="perm" role="alertdialog" aria-label="Permiso pendiente">
+              <p class="perm-t" title={p.description ?? p.tool}>
+                <strong>{p.tool}</strong>
+                {#if p.description}
+                  <span class="perm-w"> · {p.description}</span>
+                {/if}
+              </p>
+              <div class="perm-acts">
+                <button
+                  type="button"
+                  class="perm-btn is-danger"
+                  onclick={() => void agents.decide(sessionId!, p.id, "deny")}
+                >
+                  rechazar
+                </button>
+                <button
+                  type="button"
+                  class="perm-btn"
+                  onclick={() => void agents.decide(sessionId!, p.id, "allow")}
+                >
+                  aprobar
+                </button>
+                <button
+                  type="button"
+                  class="perm-btn is-go"
+                  onclick={() => void agents.decide(sessionId!, p.id, "allowAlways")}
+                >
+                  aprobar siempre
+                </button>
+              </div>
+            </div>
+          {/each}
+        </div>
+      {/if}
+      {#if slashOpen}
+        <SlashPalette
+          commands={slashFiltered}
+          activeIndex={slashActive}
+          emptyHint={slashCommands.length
+            ? "Sin coincidencias"
+            : starting
+              ? "Cargando comandos…"
+              : "Sin comandos"}
+          onPick={pickSlash}
+          onHover={(i) => (slashIndex = i)}
+        />
+      {/if}
+      {#if attaches.length > 0}
+        <div class="attach-row" data-no-drag>
+          {#each attaches as a (a.path)}
+            <div class="attach-chip">
+              <button
+                type="button"
+                class="attach-thumb-btn"
+                aria-label="Ampliar {a.name}"
+                title="Ampliar"
+                onclick={() => (attachPreview = a.path)}
+              >
+                <img
+                  class="attach-thumb"
+                  src={convertFileSrc(a.path)}
+                  alt=""
+                  draggable="false"
+                />
+              </button>
+              <button
+                type="button"
+                class="attach-x"
+                aria-label="Quitar {a.name}"
+                title="Quitar"
+                disabled={!!archive || working}
+                onclick={() => {
+                  if (attachPreview === a.path) attachPreview = null;
+                  removeAttach(a.path);
+                }}
+              >
+                <Icon icon={X} size={11} />
+              </button>
+            </div>
+          {/each}
+        </div>
+      {/if}
+      <textarea
+        class="in"
+        rows="1"
+        bind:this={inputEl}
+        placeholder={available === false
+          ? "Sin CLI…"
+          : archive
+            ? "Solo lectura…"
+            : dropActive
+              ? "Soltá para adjuntar…"
+              : "Mensaje, /… o pegá una imagen"}
+        bind:value={draft}
+        onkeydown={onKey}
+        onpaste={(e) => void onComposerPaste(e)}
+        oninput={() => (slashIndex = 0)}
+        onfocus={() => {
+          if (!archive && available === true) void ensureSession();
+        }}
+        disabled={available === false || !!archive}
+        aria-label="Mensaje"
+      ></textarea>
+      <div class="row">
+        <div class="set" data-no-drag>
+          {@render sessionControls()}
+        </div>
+        <div class="acts" data-no-drag>
+          <button
+            type="button"
+            class="icon-btn attach-btn"
+            aria-label="Adjuntar archivos"
+            title="Adjuntar archivos"
+            disabled={available === false || !!archive || working}
+            onclick={() => void pickAttaches()}
+          >
+            <Icon icon={Paperclip} size={14} />
+          </button>
+          <button
+            type="button"
+            class="send"
+            class:is-stop={working && !waiting}
+            disabled={ctaDisabled}
+            aria-label={ctaLabel}
+            title={ctaLabel}
+            onclick={() => (working && !waiting ? void interrupt() : void send())}
+          >
+            <Icon
+              icon={working && !waiting ? Square : ArrowUp}
+              size={14}
             />
-          </svg>
-          <span class="chip-t">{folderLabel}</span>
-        </button>
-        {#if models.length > 0 || modelsLoading}
-          <div class="model">
-            <PickerMenu
-              label={modelLabel}
-              open={modelMenuOpen}
-              options={modelOptions}
-              value={model}
-              loading={modelsLoading && models.length === 0}
-              loadingMessage="Modelos…"
-              onToggle={() => {
-                modelMenuOpen = !modelMenuOpen;
-                if (modelMenuOpen) effortMenuOpen = false;
-              }}
-              onPick={(id) => void pickModel(id)}
-            />
-          </div>
-        {/if}
-        {#if !archive && available !== false}
-          <div class="model">
-            <PickerMenu
-              label={effortLabel}
-              open={effortMenuOpen}
-              options={effortOptions}
-              value={effort || session?.effort || ""}
-              onToggle={() => {
-                effortMenuOpen = !effortMenuOpen;
-                if (effortMenuOpen) modelMenuOpen = false;
-              }}
-              onPick={(id) => void pickEffort(id)}
-            />
-          </div>
-        {/if}
-      </div>
-      <div class="acts" data-no-drag>
-        <button
-          type="button"
-          class="send"
-          class:is-stop={working && !waiting}
-          disabled={ctaDisabled}
-          aria-label={ctaLabel}
-          title={ctaLabel}
-          onclick={() => (working && !waiting ? void stop() : void send())}
-        >
-          {#if working && !waiting}
-            <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true">
-              <rect x="6" y="6" width="12" height="12" rx="1.5" fill="currentColor" />
-            </svg>
-          {:else if sessionId}
-            <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true">
-              <path
-                d="M4 12h12M12 6l6 6-6 6"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-              />
-            </svg>
-          {:else}
-            <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true">
-              <path d="M8 5.5v13l11-6.5z" fill="currentColor" />
-            </svg>
-          {/if}
-        </button>
+          </button>
+        </div>
       </div>
     </div>
   </footer>
@@ -1542,10 +2005,15 @@
 
 <style>
   .demo {
-    --pad: 0.45rem;
+    --pad: 0.55rem;
     --r-outer: 26px;
+    --r-card: 15px;
     --r-in: 10px;
     --r-chip: 999px;
+    /* Controles del header: misma altura óptica (pin, historial, Bypass, ready). */
+    --top-ctrl: 1.75rem;
+    --top-ctrl-fs: 0.625rem;
+    --top-ctrl-r: 0.4rem;
     /* Tokens que heredan AgentConversation / ToolCard / Message */
     --coral: var(--accent, #da7756);
     --text: var(--rb-text);
@@ -1587,40 +2055,48 @@
     flex-shrink: 0;
     align-items: center;
     justify-content: space-between;
-    gap: 0.45rem;
-    border-bottom: 1px solid var(--rb-hairline);
-    padding: 0.35rem 0.55rem;
+    gap: 0.4rem;
+    border-bottom: 1px solid transparent;
+    padding: 0.32rem 0.65rem 0.28rem;
   }
 
-  .name {
-    margin: 0;
-    min-width: 0;
-    font-size: 0.78rem;
-    font-weight: 650;
-    letter-spacing: -0.01em;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+  .brand {
+    display: grid;
+    place-items: center;
+    flex-shrink: 0;
+  }
+
+  .brand-mark {
+    display: block;
+    width: 1.1rem;
+    height: 1.1rem;
+    object-fit: contain;
+    pointer-events: none;
+    user-select: none;
   }
 
   .top-acts {
     display: flex;
     flex-shrink: 0;
     align-items: center;
-    gap: 0.25rem;
+    gap: 0.2rem;
+    min-height: var(--top-ctrl);
   }
 
   .icon-btn {
     display: grid;
     place-items: center;
-    width: 1.75rem;
-    height: 1.75rem;
-    border: 1px solid var(--rb-border);
-    border-radius: var(--r-chip);
+    box-sizing: border-box;
+    width: var(--top-ctrl);
+    height: var(--top-ctrl);
+    border: 1px solid transparent;
+    border-radius: var(--top-ctrl-r);
     padding: 0;
     background: transparent;
-    color: var(--rb-muted);
+    color: var(--rb-faint);
     cursor: pointer;
+    box-shadow: none;
+    filter: none;
     transition:
       color var(--duration-quick) var(--ease-smooth-out),
       background var(--duration-quick) var(--ease-smooth-out),
@@ -1631,42 +2107,54 @@
   .icon-btn:hover,
   .icon-btn.is-on {
     color: var(--rb-text);
-    background: color-mix(in srgb, var(--rb-text) 6%, transparent);
+    background: color-mix(in srgb, var(--rb-text) 8%, transparent);
+    box-shadow: none;
+    filter: none;
   }
 
   .icon-btn:active {
     transform: scale(0.96);
   }
 
-  .icon-btn.is-go {
-    border-color: transparent;
-    background: var(--accent);
-    color: #fff;
-  }
-
-  .icon-btn.is-go:hover {
-    color: #fff;
-    background: color-mix(in srgb, var(--accent) 88%, #000);
-  }
-
   .badge {
     margin: 0;
     flex-shrink: 0;
-    min-height: 1.5rem;
+    box-sizing: border-box;
+    height: var(--top-ctrl);
+    min-height: var(--top-ctrl);
     display: inline-flex;
     align-items: center;
-    gap: 0.28rem;
+    gap: 0.26rem;
+    border: 0;
     border-radius: var(--r-chip);
-    padding: 0.1rem 0.4rem 0.1rem 0.3rem;
-    font-size: 0.6rem;
-    font-weight: 600;
+    padding: 0 0.45rem 0 0.38rem;
+    font: inherit;
+    font-size: var(--top-ctrl-fs);
+    font-weight: 500;
+    line-height: 1;
     letter-spacing: 0.01em;
     font-variant-numeric: tabular-nums;
     color: var(--rb-muted);
-    background: var(--rb-surface-2);
+    background: color-mix(in srgb, var(--rb-text) 5%, transparent);
     transition:
       color var(--duration-quick) var(--ease-smooth-out),
       background var(--duration-quick) var(--ease-smooth-out);
+  }
+
+  button.badge {
+    cursor: pointer;
+  }
+
+  button.badge:hover {
+    background: color-mix(in srgb, var(--rb-text) 8%, transparent);
+  }
+
+  button.badge.is-live:hover {
+    background: color-mix(in srgb, var(--rb-ok) 20%, transparent);
+  }
+
+  button.badge:active {
+    transform: scale(0.96);
   }
 
   .badge-dot {
@@ -1720,43 +2208,103 @@
   .mode-pick {
     position: relative;
     z-index: 8;
+    display: flex;
+    align-items: center;
+    height: var(--top-ctrl);
   }
 
   .mode-pick :global(.pm-chip) {
-    min-height: 1.5rem;
+    box-sizing: border-box;
+    height: var(--top-ctrl);
+    min-height: var(--top-ctrl);
     max-width: 5.5rem;
-    border-color: var(--rb-border);
+    border-color: transparent;
+    background: color-mix(in srgb, var(--rb-text) 5%, transparent);
     color: var(--rb-muted);
-    font-size: 0.6rem;
-    padding: 0.08rem 0.4rem;
+    font-size: var(--top-ctrl-fs);
+    font-weight: 500;
+    line-height: 1;
+    letter-spacing: 0.01em;
+    padding: 0 0.45rem;
   }
 
   .mode-pick :global(.pm-chip:hover),
   .mode-pick :global(.pm-chip.is-open) {
     color: var(--rb-text);
-    background: color-mix(in srgb, var(--rb-text) 6%, transparent);
+    background: color-mix(in srgb, var(--rb-text) 8%, transparent);
+  }
+
+  .hist-layer {
+    position: absolute;
+    inset: 0;
+    z-index: 18;
+    overflow: hidden;
+    pointer-events: none;
+  }
+
+  .hist-layer.is-open {
+    pointer-events: auto;
+  }
+
+  .hist-scrim {
+    position: absolute;
+    inset: 0;
+    margin: 0;
+    padding: 0;
+    border: none;
+    cursor: default;
+    background: color-mix(in srgb, var(--rb-text) 16%, transparent);
+    opacity: 0;
+    transition: opacity 240ms ease-out;
+  }
+
+  .hist-layer.is-open .hist-scrim {
+    opacity: 1;
   }
 
   .hist {
-    flex-shrink: 0;
-    max-height: 38%;
-    overflow: auto;
-    border-bottom: 1px solid var(--rb-hairline);
-    background: color-mix(in srgb, var(--rb-surface) 92%, var(--rb-bg0));
-    padding: 0.4rem 0.55rem 0.45rem;
+    position: absolute;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    z-index: 1;
+    display: flex;
+    flex-direction: column;
+    width: min(300px, 85%);
+    max-width: 100%;
+    box-sizing: border-box;
+    background: color-mix(in srgb, var(--rb-surface) 96%, var(--rb-bg0));
+    /* Sin sombra blanda: con translateX(-100%) el glow se filtraba al panel. */
+    box-shadow: none;
+    transform: translateX(-100%);
+    transition: transform 240ms ease-out;
+  }
+
+  .hist-layer.is-open .hist {
+    transform: translateX(0);
+    /* Solo separación dura respecto al scrim; sin halo. */
+    box-shadow: 1px 0 0 color-mix(in srgb, var(--rb-text) 8%, transparent);
   }
 
   .hist-h {
     display: flex;
+    flex-shrink: 0;
     align-items: center;
     justify-content: space-between;
     gap: 0.35rem;
-    margin-bottom: 0.25rem;
+    padding: 0.55rem 0.55rem 0.35rem;
     font-size: 0.62rem;
     font-weight: 600;
     letter-spacing: 0.03em;
     text-transform: uppercase;
     color: var(--rb-faint);
+  }
+
+  .hist-body {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    padding: 0 0.55rem 0.55rem;
   }
 
   .hist-sec {
@@ -2053,8 +2601,13 @@
     flex-direction: column;
     gap: 0.4rem;
     overflow: auto;
-    padding: 0.55rem 0.65rem 0.5rem;
+    padding: 0.45rem 0.75rem 0.35rem;
     scrollbar-width: thin;
+    /* El overlay pone user-select:none / touch-action:none; acá se copia. */
+    user-select: text;
+    -webkit-user-select: text;
+    touch-action: auto;
+    cursor: text;
   }
 
   .thread {
@@ -2067,15 +2620,21 @@
     display: flex;
     flex: 1;
     flex-direction: column;
-    align-items: stretch;
+    align-items: center;
     justify-content: center;
-    max-width: 22rem;
-    padding: 0.2rem 0;
+    align-self: center;
+    width: 100%;
+    max-width: 26rem;
+    padding: 0.4rem 0.25rem 0.6rem;
+  }
+
+  .empty.is-hero {
+    max-width: 28rem;
   }
 
   .empty :global(.flex) {
-    align-items: flex-start;
-    text-align: left;
+    align-items: center;
+    text-align: center;
     padding-left: 0.05rem;
     padding-right: 0.05rem;
     gap: 0.3rem;
@@ -2087,6 +2646,76 @@
 
   .empty :global(.text-xs) {
     font-size: 0.68rem;
+  }
+
+  .hero {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.35rem;
+    width: 100%;
+    text-align: center;
+    animation: hero-in 0.32s var(--ease-smooth-out) both;
+  }
+
+  .hero-t {
+    margin: 0;
+    font-size: 0.92rem;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    color: var(--rb-text);
+    text-wrap: balance;
+  }
+
+  .hero-h {
+    margin: 0;
+    max-width: 22rem;
+    font-size: 0.72rem;
+    line-height: 1.4;
+    color: var(--rb-muted);
+    text-wrap: pretty;
+  }
+
+  .hero-sugs {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 0.35rem;
+    margin-top: 0.55rem;
+  }
+
+  .sug {
+    border: 1px solid color-mix(in srgb, var(--rb-text) 10%, transparent);
+    border-radius: var(--r-chip);
+    padding: 0.28rem 0.65rem;
+    background: color-mix(in srgb, var(--rb-text) 3.5%, transparent);
+    color: var(--rb-muted);
+    font: inherit;
+    font-size: 0.68rem;
+    line-height: 1.3;
+    cursor: pointer;
+    animation: sug-in 0.34s var(--ease-smooth-out) both;
+    animation-delay: calc(0.06s + var(--i, 0) * 0.05s);
+    transition:
+      color var(--duration-quick) var(--ease-smooth-out),
+      background var(--duration-quick) var(--ease-smooth-out),
+      border-color var(--duration-quick) var(--ease-smooth-out),
+      transform var(--duration-quick) var(--ease-smooth-out);
+  }
+
+  .sug:hover:not(:disabled) {
+    color: var(--rb-text);
+    border-color: color-mix(in srgb, var(--accent) 35%, var(--rb-border));
+    background: color-mix(in srgb, var(--rb-text) 7%, transparent);
+  }
+
+  .sug:active:not(:disabled) {
+    transform: scale(0.96);
+  }
+
+  .sug:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
   }
 
   .live {
@@ -2117,28 +2746,33 @@
     box-shadow: 0 -1px 0 var(--rb-hairline);
   }
 
-  .perm {
+  /* Permiso: una fila densa dentro del composer, no una tarjeta aparte. */
+  .perm-stack {
     display: flex;
-    flex-shrink: 0;
-    flex-direction: row;
-    align-items: center;
-    gap: 0.4rem;
-    margin: 0 0.5rem 0.35rem;
-    border-radius: calc(var(--r-in) + 2px);
-    padding: 0.3rem 0.4rem;
-    background: color-mix(in srgb, var(--rb-warn) 12%, var(--rb-surface));
-    box-shadow: 0 0 0 1px color-mix(in srgb, var(--rb-warn) 28%, transparent);
+    flex-direction: column;
+    gap: 0.2rem;
+    margin: 0 0 0.1rem;
   }
 
-  .perm-copy {
+  .perm {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.25rem 0.35rem;
     min-width: 0;
-    flex: 1;
+    border-radius: calc(var(--r-in) - 2px);
+    padding: 0.18rem 0.22rem 0.18rem 0.4rem;
+    background: color-mix(in srgb, var(--rb-text) 4.5%, transparent);
+    animation: perm-in var(--duration-fast) var(--ease-smooth-out) both;
   }
 
   .perm-t {
     margin: 0;
-    font-size: 0.68rem;
-    line-height: 1.3;
+    min-width: 0;
+    flex: 1 1 auto;
+    font-size: 0.625rem;
+    font-weight: 600;
+    line-height: 1.25;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -2152,7 +2786,84 @@
   .perm-acts {
     display: flex;
     flex-shrink: 0;
-    gap: 0.2rem;
+    flex-wrap: nowrap;
+    align-items: center;
+    gap: 0.15rem;
+  }
+
+  .perm-btn {
+    position: relative;
+    display: inline-flex;
+    min-height: 1.4rem;
+    align-items: center;
+    border: 0;
+    border-radius: 999px;
+    padding: 0 0.42rem;
+    background: color-mix(in srgb, var(--rb-text) 7%, transparent);
+    color: var(--rb-text);
+    font-size: 0.55rem;
+    font-weight: 650;
+    letter-spacing: 0.01em;
+    cursor: pointer;
+    transition:
+      transform var(--duration-quick) var(--ease-smooth-out),
+      background var(--duration-quick) var(--ease-smooth-out),
+      color var(--duration-quick) var(--ease-smooth-out);
+  }
+
+  /* Hit ≥40px en alto sin agrandar el chip visual. */
+  .perm-btn::after {
+    content: "";
+    position: absolute;
+    inset-block: 50%;
+    inset-inline: 0;
+    height: 40px;
+    transform: translateY(-50%);
+  }
+
+  .perm-btn:hover {
+    background: color-mix(in srgb, var(--rb-text) 12%, transparent);
+  }
+
+  .perm-btn:active {
+    transform: scale(0.96);
+  }
+
+  .perm-btn:focus-visible {
+    outline: none;
+    box-shadow: inset 0 0 0 1.5px var(--accent);
+  }
+
+  .perm-btn.is-danger {
+    background: transparent;
+    color: var(--rb-record);
+  }
+
+  .perm-btn.is-danger:hover {
+    background: color-mix(in srgb, var(--rb-record) 12%, transparent);
+  }
+
+  .perm-btn.is-go {
+    background: color-mix(in srgb, var(--accent) 16%, transparent);
+    color: var(--accent);
+  }
+
+  .perm-btn.is-go:hover {
+    background: color-mix(in srgb, var(--accent) 24%, transparent);
+  }
+
+  @keyframes perm-in {
+    from {
+      opacity: 0;
+      transform: translateY(var(--distance-micro, 4px));
+      filter: blur(var(--blur-small, 2px));
+    }
+
+    to {
+      opacity: 1;
+      transform: translateY(0);
+      filter: blur(0);
+    }
   }
 
   .warn {
@@ -2169,29 +2880,154 @@
     position: relative;
     z-index: 6;
     flex-shrink: 0;
-    padding: var(--pad) 0.55rem 0.5rem;
-    background: color-mix(in srgb, var(--rb-surface) 88%, var(--rb-bg0));
-    box-shadow: 0 -1px 0 var(--rb-hairline);
+    padding: 0.35rem 0.7rem 0.7rem;
+    background: transparent;
+  }
+
+  .composer-card {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    border: 1px solid color-mix(in srgb, var(--rb-text) 9%, transparent);
+    border-radius: var(--r-card);
+    padding: 0.55rem 0.6rem 0.45rem;
+    background: color-mix(in srgb, var(--rb-surface-2) 88%, var(--rb-bg0));
+    box-shadow:
+      0 1px 0 color-mix(in srgb, var(--rb-text) 4%, transparent) inset,
+      0 10px 28px color-mix(in srgb, var(--rb-text) 8%, transparent);
+    transition:
+      border-color var(--duration-quick) var(--ease-smooth-out),
+      box-shadow var(--duration-quick) var(--ease-smooth-out);
+  }
+
+  .composer-card.has-perm {
+    gap: 0.3rem;
+    padding-top: 0.4rem;
+  }
+
+  .composer-card:focus-within {
+    border-color: color-mix(in srgb, var(--accent) 42%, var(--rb-border));
+    box-shadow:
+      0 1px 0 color-mix(in srgb, var(--rb-text) 4%, transparent) inset,
+      0 10px 28px color-mix(in srgb, var(--rb-text) 8%, transparent),
+      var(--rb-focus);
+  }
+
+  .composer-card.is-readonly {
+    opacity: 0.72;
+  }
+
+  .composer-card.is-drop {
+    border-color: color-mix(in srgb, var(--accent) 55%, var(--rb-border));
+    background: color-mix(in srgb, var(--accent) 8%, var(--rb-surface-2));
+  }
+
+  .attach-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+    padding: 0 0.1rem 0.15rem;
+  }
+
+  .attach-chip {
+    position: relative;
+    display: inline-flex;
+    flex-shrink: 0;
+    border: 1px solid var(--rb-border);
+    border-radius: 8px;
+    padding: 0.15rem;
+    background: color-mix(in srgb, var(--rb-text) 4%, transparent);
+  }
+
+  .attach-thumb-btn {
+    display: block;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    border-radius: 5px;
+    background: transparent;
+    cursor: zoom-in;
+    line-height: 0;
+  }
+
+  .attach-thumb-btn:hover .attach-thumb {
+    outline-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  }
+
+  .attach-thumb {
+    display: block;
+    width: 2.25rem;
+    height: 2.25rem;
+    border-radius: 5px;
+    object-fit: cover;
+    outline: 1px solid rgba(255, 255, 255, 0.1);
+  }
+
+  .attach-x {
+    position: absolute;
+    top: -0.3rem;
+    right: -0.3rem;
+    display: grid;
+    place-items: center;
+    width: 1rem;
+    height: 1rem;
+    border: 1px solid var(--rb-border);
+    border-radius: 999px;
+    padding: 0;
+    background: var(--rb-surface);
+    color: var(--rb-faint);
+    cursor: pointer;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+  }
+
+  .attach-x:hover:not(:disabled) {
+    color: var(--rb-text);
+    background: var(--rb-surface-2);
+  }
+
+  .attach-x:disabled {
+    opacity: 0.35;
+    cursor: default;
+  }
+
+  .attach-lightbox {
+    display: flex;
+    max-height: min(70dvh, 720px);
+    align-items: center;
+    justify-content: center;
+    overflow: auto;
+    border-radius: 6px;
+    background: var(--rb-surface-2);
+    padding: 0.5rem;
+  }
+
+  .attach-lightbox-img {
+    max-width: 100%;
+    max-height: min(66dvh, 680px);
+    object-fit: contain;
+  }
+
+  .attach-btn:disabled {
+    opacity: 0.4;
+    cursor: default;
   }
 
   .in {
     width: 100%;
-    min-height: 2rem;
-    max-height: 6.5rem;
+    min-height: 2.4rem;
+    max-height: 7.5rem;
     resize: none;
-    border: 1px solid var(--rb-border);
-    border-radius: var(--r-in);
-    padding: 0.4rem 0.55rem;
-    background: var(--rb-surface);
+    border: 0;
+    border-radius: 0;
+    padding: 0.15rem 0.2rem 0.1rem;
+    background: transparent;
     color: var(--rb-text);
     font: inherit;
-    font-size: 0.8rem;
-    line-height: 1.35;
+    font-size: 0.82rem;
+    line-height: 1.4;
     outline: none;
     field-sizing: content;
-    transition:
-      border-color var(--duration-quick) var(--ease-smooth-out),
-      box-shadow var(--duration-quick) var(--ease-smooth-out);
   }
 
   .in:disabled {
@@ -2199,20 +3035,15 @@
   }
 
   .in::placeholder {
-    color: color-mix(in srgb, var(--rb-text) 42%, transparent);
-  }
-
-  .in:focus {
-    border-color: color-mix(in srgb, var(--accent) 55%, var(--rb-border));
-    box-shadow: var(--rb-focus);
+    color: color-mix(in srgb, var(--rb-text) 40%, transparent);
   }
 
   .row {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 0.4rem;
-    margin-top: 0.3rem;
+    gap: 0.45rem;
+    min-width: 0;
   }
 
   .set,
@@ -2221,22 +3052,27 @@
     min-width: 0;
     flex-wrap: wrap;
     align-items: center;
-    gap: 0.25rem;
+    gap: 0.22rem;
+  }
+
+  .acts {
+    flex-shrink: 0;
+    flex-wrap: nowrap;
   }
 
   .chip {
     display: inline-flex;
-    min-height: 1.75rem;
+    min-height: 1.55rem;
     align-items: center;
-    gap: 0.28rem;
-    border: 1px solid var(--rb-border);
+    gap: 0.24rem;
+    border: 1px solid color-mix(in srgb, var(--rb-text) 8%, transparent);
     border-radius: var(--r-chip);
-    padding: 0.15rem 0.5rem;
-    background: transparent;
+    padding: 0.1rem 0.45rem;
+    background: color-mix(in srgb, var(--rb-text) 3%, transparent);
     color: var(--rb-muted);
     font: inherit;
-    font-size: 0.65rem;
-    max-width: 7.5rem;
+    font-size: 0.62rem;
+    max-width: 7rem;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -2255,13 +3091,13 @@
   }
 
   .chip.is-folder {
-    max-width: 6.5rem;
-    padding-left: 0.4rem;
+    max-width: 6rem;
+    padding-left: 0.35rem;
   }
 
   .chip:hover:not(:disabled) {
     color: var(--rb-text);
-    background: color-mix(in srgb, var(--rb-text) 6%, transparent);
+    background: color-mix(in srgb, var(--rb-text) 7%, transparent);
   }
 
   .chip:active:not(:disabled) {
@@ -2276,7 +3112,7 @@
 
   .chip.is-on {
     color: var(--rb-text);
-    border-color: color-mix(in srgb, var(--accent) 40%, var(--rb-border));
+    border-color: color-mix(in srgb, var(--accent) 38%, transparent);
   }
 
   .chip.is-go {
@@ -2284,23 +3120,24 @@
     background: var(--accent);
     color: #fff;
     max-width: none;
-    min-height: 1.75rem;
-    padding: 0.15rem 0.65rem;
+    min-height: 1.55rem;
+    padding: 0.1rem 0.6rem;
   }
 
   .model {
     position: relative;
     z-index: 7;
-    max-width: 8rem;
+    max-width: 7.5rem;
   }
 
   .model :global(.pm-chip) {
-    min-height: 1.75rem;
-    max-width: 8rem;
-    border-color: var(--rb-border);
+    min-height: 1.55rem;
+    max-width: 7.5rem;
+    border-color: color-mix(in srgb, var(--rb-text) 8%, transparent);
+    background: color-mix(in srgb, var(--rb-text) 3%, transparent);
     color: var(--rb-muted);
-    font-size: 0.65rem;
-    padding: 0.1rem 0.45rem;
+    font-size: 0.62rem;
+    padding: 0.08rem 0.4rem;
     transition:
       color var(--duration-quick) var(--ease-smooth-out),
       background var(--duration-quick) var(--ease-smooth-out),
@@ -2311,7 +3148,7 @@
   .model :global(.pm-chip:hover),
   .model :global(.pm-chip.is-open) {
     color: var(--rb-text);
-    background: color-mix(in srgb, var(--rb-text) 6%, transparent);
+    background: color-mix(in srgb, var(--rb-text) 7%, transparent);
   }
 
   .model :global(.pm-chip:active) {
@@ -2320,10 +3157,10 @@
 
   .send {
     display: inline-flex;
-    width: 1.85rem;
-    height: 1.85rem;
-    min-height: 1.85rem;
-    min-width: 1.85rem;
+    width: 2rem;
+    height: 2rem;
+    min-height: 2rem;
+    min-width: 2rem;
     align-items: center;
     justify-content: center;
     border: 0;
@@ -2341,7 +3178,7 @@
   }
 
   .send:hover:not(:disabled) {
-    filter: brightness(1.05);
+    filter: brightness(1.06);
   }
 
   .send:active:not(:disabled) {
@@ -2349,7 +3186,7 @@
   }
 
   .send:disabled {
-    opacity: 0.4;
+    opacity: 0.38;
     cursor: not-allowed;
   }
 
@@ -2363,15 +3200,47 @@
     }
   }
 
+  @keyframes hero-in {
+    from {
+      opacity: 0;
+      transform: translateY(6px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  @keyframes sug-in {
+    from {
+      opacity: 0;
+      transform: translateY(5px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
   @media (prefers-reduced-motion: reduce) {
-    .live-dot {
+    .live-dot,
+    .hero,
+    .sug,
+    .perm {
       animation: none;
     }
+    .hist-scrim,
+    .hist,
+    .perm-btn {
+      transition: none;
+    }
     .chip:active:not(:disabled),
+    .sug:active:not(:disabled),
     .send:active:not(:disabled),
     .icon-btn:active,
     .hist-row:active,
     .hist-del:active,
+    .perm-btn:active,
     .model :global(.pm-chip:active) {
       transform: none;
     }

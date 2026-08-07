@@ -158,6 +158,13 @@ fn bubble_shape(app: &AppHandle) -> crate::floating::BubbleShape {
 /// (`agents_open`) para insertar en el compositor.
 static OPEN: AtomicBool = AtomicBool::new(false);
 
+/// Preferencia de pin sticky: Esc / clic afuera no cierran la consola.
+///
+/// Default `true`. Se hidrata desde `Config::agents_always_on_top` al arrancar.
+/// El overlay (pill incluida) queda siempre topmost; este flag no mueve el
+/// stacking.
+static ALWAYS_ON_TOP: AtomicBool = AtomicBool::new(true);
+
 const AGENTS_ANCHOR: &str = "agents-bubble-anchor";
 const AGENTS_DISMISS: &str = "agents-bubble-dismiss";
 
@@ -165,6 +172,21 @@ const AGENTS_DISMISS: &str = "agents-bubble-dismiss";
 /// con ella abierta inserta en el compositor en vez de pegar afuera.
 pub fn agents_open() -> bool {
     OPEN.load(Ordering::Relaxed)
+}
+
+/// Carga la preferencia de pin desde config (una vez, al arrancar).
+pub fn init_always_on_top(on: bool) {
+    ALWAYS_ON_TOP.store(on, Ordering::Relaxed);
+}
+
+/// ¿El overlay debe ser topmost ahora?
+///
+/// Sí, siempre. La pill y los floats comparten la misma ventana overlay: si
+/// desfijar un float quitara always-on-top, la pill también quedaría debajo
+/// de otras apps. El pin (agents / clipboard / snippets) sigue controlando el
+/// auto-cierre (Esc / clic afuera); el stacking del overlay no.
+pub fn overlay_should_be_topmost() -> bool {
+    true
 }
 
 /// Abre o cierra la consola de agentes, que **sale de la pill**.
@@ -180,6 +202,34 @@ pub fn show_agents_window(app: AppHandle) {
         AGENTS_ANCHOR,
         AGENTS_DISMISS,
     );
+    // Al cerrar por toggle, `raise` no corre: hay que restaurar el topmost de
+    // la pill. Al abrir, `raise` ya aplicó el pin; reafirmar no hace daño.
+    crate::overlay::set_topmost(&app, overlay_should_be_topmost());
+}
+
+/// ¿La consola está fijada (no se cierra sola con Esc / clic afuera)?
+#[tauri::command]
+pub fn agents_always_on_top() -> bool {
+    ALWAYS_ON_TOP.load(Ordering::Relaxed)
+}
+
+/// Fija o desfija la consola (sticky dismiss). Persiste; el overlay sigue topmost.
+#[tauri::command]
+pub fn set_agents_always_on_top(app: AppHandle, on: bool) {
+    ALWAYS_ON_TOP.store(on, Ordering::Relaxed);
+    if let Some(state) = app.try_state::<crate::AppState>() {
+        let snapshot = {
+            let Ok(mut cfg) = state.config.lock() else {
+                crate::overlay::set_topmost(&app, overlay_should_be_topmost());
+                return;
+            };
+            cfg.agents_always_on_top = on;
+            cfg.clone()
+        };
+        let _ = snapshot.save(&state.dirs.config_path());
+    }
+    // Reafirma topmost: la pill no debe hundirse al tocar el pin.
+    crate::overlay::set_topmost(&app, overlay_should_be_topmost());
 }
 
 /// Guarda a qué tamaño dejaste el globo, para la próxima apertura.
@@ -212,6 +262,8 @@ pub fn save_agents_bubble_size(app: AppHandle, w: i32, h: i32) {
 #[tauri::command]
 pub fn hide_agents_window(app: AppHandle) {
     crate::panel_float::hide(&app, &OPEN, AGENTS_DISMISS);
+    // Restaura topmost según el resto de floats abiertos / su pin.
+    crate::overlay::set_topmost(&app, overlay_should_be_topmost());
 }
 
 /// Qué agentes hay y cuáles se pueden usar.
@@ -420,6 +472,24 @@ pub async fn agent_list_models(
         .map_err(|e| format!("list_models cancelado: {e}"))?
 }
 
+/// Corta el turno en curso. La sesión sigue viva (historial, cwd, modelo).
+#[tauri::command]
+pub fn agent_interrupt(session: String) -> Result<(), String> {
+    let mut guard = SESSIONS.lock_or_recover();
+    let sessions = guard
+        .as_mut()
+        .ok_or_else(|| "no hay sesiones abiertas".to_string())?;
+    sessions
+        .get_mut(&session)
+        .ok_or_else(|| "esa sesión ya no existe".to_string())?
+        .session
+        .interrupt()
+}
+
+/// Cierra la sesión por completo y libera el proceso del agente.
+///
+/// No es «Detener» el turno: eso es [`agent_interrupt`]. Se usa al reanudar
+/// otro hilo, al salir de la app, o cuando la UI quiere terminar el chat.
 #[tauri::command]
 pub fn agent_stop(app: AppHandle, session: String) {
     let taken = SESSIONS
@@ -427,8 +497,8 @@ pub fn agent_stop(app: AppHandle, session: String) {
         .as_mut()
         .and_then(|s| s.remove(&session));
     // Fuera del lock Y en otro hilo: `stop` puede tardar en matar el proceso
-    // (espera corta + kill). Si el comando IPC espera, el botón "Detener" de
-    // la UI parece muerto aunque la sesión ya salió de la lista del frontend.
+    // (espera corta + kill). Si el comando IPC espera, el botón parece muerto
+    // aunque la sesión ya salió de la lista del frontend.
     if let Some(mut entry) = taken {
         std::thread::spawn(move || {
             entry.session.stop();
@@ -510,4 +580,24 @@ pub fn agent_claude_transcript(
     id: String,
 ) -> Result<Vec<super::model::Turn>, String> {
     super::claude_sessions::load_transcript(&cwd, &id)
+}
+
+/// Cupos de la cuenta Claude (ventana 5 h, semanal, etc.).
+///
+/// Corre en `spawn_blocking`: lee credenciales y llama a la API OAuth; no
+/// debe bloquear el hilo IPC. Cachea unos segundos en Rust para el poll
+/// del modal de Uso.
+#[tauri::command]
+pub async fn agent_claude_usage() -> Result<super::claude_usage::ClaudeAccountUsage, String> {
+    tauri::async_runtime::spawn_blocking(super::claude_usage::fetch_account_usage)
+        .await
+        .map_err(|e| format!("consulta de uso cancelada: {e}"))?
+}
+
+/// Lista subcarpetas de `path` (vacío/`~` → home). Solo lectura; sin archivos.
+#[tauri::command]
+pub fn list_directories(
+    path: Option<String>,
+) -> Result<super::fs_browse::DirectoryListing, String> {
+    super::fs_browse::list_directories(path)
 }
