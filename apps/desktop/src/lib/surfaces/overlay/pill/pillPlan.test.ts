@@ -2,12 +2,16 @@ import { describe, expect, it } from "vitest";
 import { PILL } from "../pillStage";
 import {
   blocksBrowserChrome,
+  consoleSideFor,
   contentFor,
+  discJoinsTail,
   isDiscOnly,
   morphsInPlace,
   pivotFor,
   stepWheel,
   targetFor,
+  stackMarkVisible,
+  wheelChromeActive,
   wheelKeyAction,
 } from "./pillPlan";
 
@@ -33,7 +37,8 @@ describe("contentFor", () => {
 describe("pivotFor", () => {
   const base = { collapsingFrom: null } as const;
 
-  it("la rueda crece y se cierra desde su centro", () => {
+  it("la rueda abre y cierra in-situ desde el centro (no cursor)", () => {
+    // Open/close morph en el hogar; el summon al cursor es otro camino.
     expect(pivotFor({ ...base, surface: "wheel" })).toBe("center");
     expect(pivotFor({ ...base, surface: "none", collapsingFrom: "wheel" })).toBe(
       "center",
@@ -43,6 +48,38 @@ describe("pivotFor", () => {
   it("en reposo nunca pivotea al centro", () => {
     // Con `center`, cada tic del cronómetro corría la pill media diferencia.
     expect(pivotFor({ ...base, surface: "none" })).toBe("topLeft");
+  });
+});
+
+describe("wheelChromeActive", () => {
+  it("cubre rueda abierta y colapso en curso", () => {
+    expect(wheelChromeActive({ surface: "wheel", collapsingFrom: null })).toBe(true);
+    expect(
+      wheelChromeActive({ surface: "none", collapsingFrom: "wheel" }),
+    ).toBe(true);
+  });
+
+  it("en reposo el chrome de la rueda no es la silueta", () => {
+    expect(wheelChromeActive({ surface: "none", collapsingFrom: null })).toBe(
+      false,
+    );
+  });
+});
+
+describe("stackMarkVisible", () => {
+  it("oculta la marca del stack con la rueda abierta o colapsando", () => {
+    expect(stackMarkVisible({ surface: "wheel", collapsingFrom: null })).toBe(
+      false,
+    );
+    expect(
+      stackMarkVisible({ surface: "none", collapsingFrom: "wheel" }),
+    ).toBe(false);
+  });
+
+  it("muestra la marca del stack solo en reposo", () => {
+    expect(stackMarkVisible({ surface: "none", collapsingFrom: null })).toBe(
+      true,
+    );
   });
 });
 
@@ -126,6 +163,42 @@ describe("wheelKeyAction", () => {
   it("deja pasar lo que no es de la rueda", () => {
     expect(wheelKeyAction("Escape", false)).toBeNull();
     expect(wheelKeyAction("a", false)).toBeNull();
+  });
+});
+
+describe("consoleSideFor", () => {
+  const area = { x: 0, y: 0, w: 1000, h: 800 };
+
+  it("cerca del borde izquierdo, la consola va a la derecha", () => {
+    expect(consoleSideFor([area], { x: 20, y: 100 }, { w: 48, h: 48 })).toBe(
+      "right",
+    );
+  });
+
+  it("cerca del borde derecho, la consola va a la izquierda", () => {
+    expect(consoleSideFor([area], { x: 920, y: 100 }, { w: 48, h: 48 })).toBe(
+      "left",
+    );
+  });
+
+  it("sin monitores, por defecto a la derecha", () => {
+    expect(consoleSideFor([], { x: 10, y: 10 }, { w: 40, h: 40 })).toBe("right");
+  });
+});
+
+describe("discJoinsTail", () => {
+  it("junto a una gota chica, el disco sigue en el campo", () => {
+    expect(discJoinsTail({ w: 40 }, { w: 24 })).toBe(true);
+  });
+
+  it("con la pastilla ya expandida, solo queda la gota", () => {
+    // Dos formas que comparten el borde izquierdo engordan ese lado.
+    expect(discJoinsTail({ w: 40 }, { w: 100 })).toBe(false);
+  });
+
+  it("sin una de las dos, no hay fusión que publicar", () => {
+    expect(discJoinsTail({ w: 40 }, null)).toBe(false);
+    expect(discJoinsTail(null, { w: 24 })).toBe(false);
   });
 });
 

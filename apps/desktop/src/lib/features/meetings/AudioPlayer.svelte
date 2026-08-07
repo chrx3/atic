@@ -7,6 +7,8 @@
    * sean la misma cosa sin que ninguno de los dos conozca al otro.
    */
   import { playback } from "$domain/playback.svelte";
+  import Icon from "$ui/Icon.svelte";
+  import { Pause, Play, X } from "$lib/icons";
 
   let {
     placeholder = "Elegí un fragmento para escucharlo",
@@ -46,14 +48,8 @@
     >
       {#if playback.loading}
         <span class="spinner" aria-hidden="true"></span>
-      {:else if playback.playing}
-        <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
-          <path d="M2.5 1h2.5v10H2.5zM7 1h2.5v10H7z" fill="currentColor" />
-        </svg>
       {:else}
-        <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
-          <path d="M3 1.5l7 4.5-7 4.5z" fill="currentColor" />
-        </svg>
+        <Icon icon={playback.playing ? Pause : Play} size={12} />
       {/if}
     </button>
 
@@ -94,14 +90,7 @@
         onclick={() => playback.stop()}
         aria-label="Cerrar el reproductor"
       >
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-          <path
-            d="M6 6l12 12M18 6L6 18"
-            stroke="currentColor"
-            stroke-width="2"
-            stroke-linecap="round"
-          />
-        </svg>
+        <Icon icon={X} size={12} />
       </button>
     {/if}
   </div>

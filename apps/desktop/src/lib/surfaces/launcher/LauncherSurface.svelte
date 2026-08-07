@@ -20,7 +20,9 @@
     onLauncherOpened,
   } from "$ipc/search";
   import { onWindowFocus } from "$ipc/windows";
+  import Icon from "$ui/Icon.svelte";
   import Kbd from "$ui/Kbd.svelte";
+  import { X } from "$lib/icons";
   import { tick } from "svelte";
   import LauncherIcon from "./LauncherIcon.svelte";
 
@@ -142,20 +144,7 @@
           aria-label="Limpiar la búsqueda"
           onclick={() => void reset()}
         >
-          <svg
-            width="12"
-            height="12"
-            viewBox="0 0 24 24"
-            fill="none"
-            aria-hidden="true"
-          >
-            <path
-              d="M6 6l12 12M18 6L6 18"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-            />
-          </svg>
+          <Icon icon={X} size={12} />
         </button>
       {/if}
     </div>

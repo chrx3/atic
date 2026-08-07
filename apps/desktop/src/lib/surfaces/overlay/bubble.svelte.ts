@@ -113,6 +113,24 @@ export class Bubble {
     };
   }
 
+  /**
+   * Marco libre (x, y, w, h) en coords CSS del overlay.
+   *
+   * Para estirar desde cualquier borde/esquina: el caller ya clampeó mínimos
+   * y movió la esquina opuesta. No preserva el borde del cuello.
+   */
+  setFrame(x: number, y: number, w: number, h: number): void {
+    const a = this.anchor;
+    if (!a) return;
+    this.anchor = {
+      ...a,
+      x: Math.round(x),
+      y: Math.round(y),
+      w: Math.max(BUBBLE_MIN_W, Math.round(w)),
+      h: Math.max(BUBBLE_MIN_H, Math.round(h)),
+    };
+  }
+
   /** Apaga el contenido y, al terminar el repliegue, desmonta la piel. */
   hide(): void {
     this.shown = false;

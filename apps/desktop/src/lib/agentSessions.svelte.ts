@@ -18,6 +18,7 @@
  * con `agentSessions()` al montar y después sigue el flujo de eventos.
  */
 import {
+  agentInterrupt,
   agentPermission,
   agentSend,
   agentSessions,
@@ -199,6 +200,34 @@ class AgentSessionStore {
     return this.sessions.reduce((total, s) => total + s.pending.length, 0);
   }
 
+  /** Primer permiso pendiente de cualquier sesión (el que muestra el diálogo). */
+  get primaryPending(): {
+    sessionId: string;
+    permission: PendingPermission;
+  } | null {
+    for (const s of this.sessions) {
+      const p = s.pending[0];
+      if (p) return { sessionId: s.id, permission: p };
+    }
+    return null;
+  }
+
+  /**
+   * Texto corto para el chip «listo» de la pill.
+   *
+   * Solo cuando hay unread y no hay permiso ni trabajo en curso: si no, el chip
+   * ya dice otra cosa (permiso / trabajando).
+   */
+  get readyLabel(): string | null {
+    if (this.waiting > 0 || this.working) return null;
+    const s = this.sessions.find((x) => x.unread > 0);
+    if (!s) return null;
+    const text = s.lastText?.trim();
+    if (!text) return "Listo";
+    const line = text.split("\n")[0]?.trim() || "Listo";
+    return line.length > 28 ? `${line.slice(0, 27)}…` : line;
+  }
+
   /**
    * Empieza a escuchar y adopta lo que ya estuviera corriendo. Idempotente:
    * cualquier vista puede llamarlo al montar sin coordinarse con las demás.
@@ -347,6 +376,16 @@ class AgentSessionStore {
     await agentSetModel(id, model, effort, fast);
   }
 
+  /**
+   * Corta el turno en curso. La sesión (historial, cwd, modelo) sigue viva.
+   * El estado `working` baja cuando llega `turn.end` del backend.
+   */
+  async interrupt(id: string): Promise<void> {
+    this.#clearWorkingTimeout(id);
+    await agentInterrupt(id);
+  }
+
+  /** Cierra la sesión por completo y saca el proceso del agente. */
   async stop(id: string): Promise<void> {
     // Sacarla de la lista antes de esperar: `stop` puede tardar en matar el
     // proceso, y la UI no debería quedarse mostrando una sesión que el usuario
@@ -392,7 +431,7 @@ class AgentSessionStore {
       if (!s || s.status !== "working") return;
       s.status = "failed";
       s.error =
-        "El agente no respondió a tiempo. Podés reintentar o detener la sesión.";
+        "El agente no respondió a tiempo. Podés reintentar o pulsar Detener.";
       const last = s.turns.at(-1);
       if (last?.status === "running") last.status = "failed";
     }, AgentSessionStore.WORKING_TIMEOUT_MS);

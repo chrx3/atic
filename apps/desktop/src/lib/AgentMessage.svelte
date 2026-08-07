@@ -7,12 +7,20 @@
    * cruda. Los bloques vienen ya tipados de `agentMarkdown`, así que acá no se
    * inserta HTML de nadie: cada trozo se pinta con su etiqueta.
    */
-  import { parse } from "$lib/agentMarkdown";
+  import { parse, type Inline } from "$lib/agentMarkdown";
 
   let { text }: { text: string } = $props();
 
   const blocks = $derived(parse(text));
 </script>
+
+{#snippet spans(items: Inline[])}
+  {#each items as s, j (j)}
+    {#if s.kind === "code"}<code class="md-tick">{s.text}</code
+    >{:else if s.kind === "strong"}<strong>{s.text}</strong
+    >{:else}{s.text}{/if}
+  {/each}
+{/snippet}
 
 <div class="md">
   {#each blocks as b, i (i)}
@@ -22,30 +30,39 @@
       <hr class="md-hr" />
     {:else if b.kind === "h"}
       <p class="md-h" data-level={b.level}>
-        {#each b.spans as s, j (j)}
-          {#if s.kind === "code"}<code class="md-tick">{s.text}</code
-            >{:else if s.kind === "strong"}<strong>{s.text}</strong
-            >{:else}{s.text}{/if}
-        {/each}
+        {@render spans(b.spans)}
       </p>
     {:else if b.kind === "li"}
       <p class="md-li">
         <span class="md-marker">{b.marker}</span>
         <span>
-          {#each b.spans as s, j (j)}
-            {#if s.kind === "code"}<code class="md-tick">{s.text}</code
-              >{:else if s.kind === "strong"}<strong>{s.text}</strong
-              >{:else}{s.text}{/if}
-          {/each}
+          {@render spans(b.spans)}
         </span>
       </p>
+    {:else if b.kind === "table"}
+      <div class="md-table-wrap">
+        <table class="md-table">
+          <thead>
+            <tr>
+              {#each b.headers as cell, ci (ci)}
+                <th>{@render spans(cell)}</th>
+              {/each}
+            </tr>
+          </thead>
+          <tbody>
+            {#each b.rows as row, ri (ri)}
+              <tr>
+                {#each row as cell, ci (ci)}
+                  <td>{@render spans(cell)}</td>
+                {/each}
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
     {:else}
       <p class="md-p">
-        {#each b.spans as s, j (j)}
-          {#if s.kind === "code"}<code class="md-tick">{s.text}</code
-            >{:else if s.kind === "strong"}<strong>{s.text}</strong
-            >{:else}{s.text}{/if}
-        {/each}
+        {@render spans(b.spans)}
       </p>
     {/if}
   {/each}
@@ -58,6 +75,9 @@
     gap: 0.5rem;
     font-size: 0.8125rem;
     line-height: 1.62;
+    user-select: text;
+    -webkit-user-select: text;
+    cursor: text;
   }
 
   .md-p,
@@ -118,5 +138,51 @@
     margin: 0.2rem 0;
     border: 0;
     border-top: 1px solid var(--line);
+  }
+
+  .md-table-wrap {
+    max-width: 100%;
+    margin: 0.1rem 0;
+    overflow-x: auto;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--code);
+  }
+
+  .md-table {
+    width: max-content;
+    min-width: 100%;
+    border-collapse: collapse;
+    font-size: 0.75rem;
+    line-height: 1.45;
+  }
+
+  .md-table th,
+  .md-table td {
+    padding: 0.35rem 0.55rem;
+    border-bottom: 1px solid var(--line);
+    border-right: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
+    text-align: left;
+    vertical-align: top;
+    white-space: nowrap;
+  }
+
+  .md-table th:last-child,
+  .md-table td:last-child {
+    border-right: 0;
+  }
+
+  .md-table thead th {
+    color: var(--text);
+    font-weight: 650;
+    background: color-mix(in srgb, var(--coral) 10%, transparent);
+  }
+
+  .md-table tbody tr:last-child td {
+    border-bottom: 0;
+  }
+
+  .md-table td {
+    color: var(--dim);
   }
 </style>

@@ -10,10 +10,16 @@
   import Button from "$ui/Button.svelte";
   import Chip from "$ui/Chip.svelte";
   import EmptyState from "$ui/EmptyState.svelte";
+  import Icon from "$ui/Icon.svelte";
   import IconButton from "$ui/IconButton.svelte";
   import Kbd from "$ui/Kbd.svelte";
+  import Modal from "$ui/Modal.svelte";
+  import { Copy, ScanText, Trash2 } from "$lib/icons";
+  import type { CaptureItem } from "$core/types";
 
   const shortcut = $derived(config.current?.screenshot_shortcut ?? "");
+
+  let preview = $state<CaptureItem | null>(null);
 
   async function run(action: () => Promise<unknown>, done?: string) {
     try {
@@ -46,7 +52,7 @@
     {/if}
   {/snippet}
 
-  <div class="flex h-full flex-col">
+  <div class="flex h-full min-h-0 flex-col">
     <Toolbar label="Acciones de capturas">
       {#snippet end()}
         <Button
@@ -68,9 +74,10 @@
       </span>
     </Toolbar>
 
-    <div class="min-h-0 flex-1 overflow-y-auto p-4">
+    <div class="min-h-0 flex-1 overflow-y-auto p-3">
       {#if captures.items.length === 0}
         <EmptyState
+          compact
           icon="captures"
           title="No hay capturas recientes"
           hint={shortcut
@@ -79,8 +86,8 @@
         />
       {:else}
         <div
-          class="@container/grid grid grid-cols-2 gap-2 @md/grid:grid-cols-3
-                 @lg/grid:grid-cols-4"
+          class="@container/grid grid grid-cols-3 gap-2 @md/grid:grid-cols-4
+                 @lg/grid:grid-cols-5"
         >
           {#each captures.items as item (item.id)}
             <figure
@@ -90,16 +97,15 @@
               <button
                 type="button"
                 class="block aspect-video w-full overflow-hidden bg-surface-2"
-                title="Abrir"
-                onclick={() => void run(() => captures.open(item.path))}
+                title="Ampliar"
+                onclick={() => (preview = item)}
               >
-                <!-- `loading="lazy"`: el shelf guarda cientos y pintarlas todas
-                     al entrar congela la ventana. -->
+                <!-- `object-contain`: se ve la captura entera, no un recorte zoom. -->
                 <img
                   src={captureSrc(item.path)}
                   alt="Captura de {item.label}"
                   loading="lazy"
-                  class="size-full object-cover"
+                  class="size-full object-contain"
                 />
               </button>
 
@@ -123,48 +129,14 @@
                     size="sm"
                     onclick={() => void run(() => captures.copy(item.path), "Copiada")}
                   >
-                    <svg
-                      width="12"
-                      height="12"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      aria-hidden="true"
-                    >
-                      <rect
-                        x="8"
-                        y="8"
-                        width="12"
-                        height="12"
-                        rx="2"
-                        stroke="currentColor"
-                        stroke-width="1.8"
-                      />
-                      <path
-                        d="M4 16V6a2 2 0 012-2h10"
-                        stroke="currentColor"
-                        stroke-width="1.8"
-                      />
-                    </svg>
+                    <Icon icon={Copy} size={12} />
                   </IconButton>
                   <IconButton
                     label="Copiar el texto (OCR)"
                     size="sm"
                     onclick={() => void ocr(item.path)}
                   >
-                    <svg
-                      width="12"
-                      height="12"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      aria-hidden="true"
-                    >
-                      <path
-                        d="M5 7V5h14v2M12 5v14M9 19h6"
-                        stroke="currentColor"
-                        stroke-width="1.8"
-                        stroke-linecap="round"
-                      />
-                    </svg>
+                    <Icon icon={ScanText} size={12} />
                   </IconButton>
                   <IconButton
                     label="Borrar"
@@ -172,20 +144,7 @@
                     variant="danger"
                     onclick={() => void run(() => captures.remove(item.path))}
                   >
-                    <svg
-                      width="12"
-                      height="12"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      aria-hidden="true"
-                    >
-                      <path
-                        d="M6 6l12 12M18 6L6 18"
-                        stroke="currentColor"
-                        stroke-width="2"
-                        stroke-linecap="round"
-                      />
-                    </svg>
+                    <Icon icon={Trash2} size={12} />
                   </IconButton>
                 </div>
               </figcaption>
@@ -196,3 +155,45 @@
     </div>
   </div>
 </ToolPage>
+
+{#if preview}
+  {@const item = preview}
+  <Modal
+    title="Captura"
+    subtitle={formatListWhen(Math.floor(item.createdAtMs / 1000))}
+    size="lg"
+    panelMax="min(90dvh, 880px)"
+    onClose={() => (preview = null)}
+  >
+    {#snippet actions()}
+      <Button
+        variant="soft"
+        size="sm"
+        onclick={() => void run(() => captures.copy(item.path), "Copiada")}
+      >
+        Copiar
+      </Button>
+      <Button
+        variant="soft"
+        size="sm"
+        onclick={() => void run(() => captures.open(item.path))}
+      >
+        Abrir
+      </Button>
+      <Button variant="primary" size="sm" onclick={() => (preview = null)}>
+        Cerrar
+      </Button>
+    {/snippet}
+
+    <div
+      class="flex max-h-[min(70dvh,720px)] items-center justify-center
+             overflow-auto rounded-sm bg-surface-2 p-2"
+    >
+      <img
+        src={captureSrc(item.path)}
+        alt="Captura de {item.label}"
+        class="max-h-[min(66dvh,680px)] max-w-full object-contain"
+      />
+    </div>
+  </Modal>
+{/if}

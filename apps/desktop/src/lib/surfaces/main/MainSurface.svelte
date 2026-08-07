@@ -16,9 +16,11 @@
   import SettingsPanel from "$features/settings/SettingsPanel.svelte";
   import { closeWindow, minimizeWindow, toggleMaximizeWindow } from "$ipc/windows";
   import WindowFrame from "$patterns/WindowFrame.svelte";
+  import Icon from "$ui/Icon.svelte";
   import IconButton from "$ui/IconButton.svelte";
   import Modal from "$ui/Modal.svelte";
   import ToastStack from "$ui/ToastStack.svelte";
+  import { Search, Settings, SlidersHorizontal } from "$lib/icons";
   import ToolDetailModal from "./ToolDetailModal.svelte";
   import ToolRail from "./ToolRail.svelte";
   import { provideMainUi } from "./mainUi.svelte";
@@ -88,27 +90,11 @@
 >
   {#snippet actions()}
     <IconButton label="Buscar (Ctrl+K)" size="sm" onclick={() => (searchOpen = true)}>
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-        <circle cx="11" cy="11" r="6" stroke="currentColor" stroke-width="1.8" />
-        <path
-          d="m20 20-3.5-3.5"
-          stroke="currentColor"
-          stroke-width="1.8"
-          stroke-linecap="round"
-        />
-      </svg>
+      <Icon icon={Search} size={14} />
     </IconButton>
 
     <IconButton label="Ajustes" size="sm" onclick={() => (settingsOpen = true)}>
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-        <circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="1.8" />
-        <path
-          d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6l1.4 1.4M17 17l1.4 1.4M18.4 5.6L17 7M7 17l-1.4 1.4"
-          stroke="currentColor"
-          stroke-width="1.8"
-          stroke-linecap="round"
-        />
-      </svg>
+      <Icon icon={Settings} size={14} />
     </IconButton>
 
     {#if isDev}
@@ -118,16 +104,7 @@
         pressed={pickerLab.open}
         onclick={() => pickerLab.toggle()}
       >
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-          <path
-            d="M4 8h16M4 16h10"
-            stroke="currentColor"
-            stroke-width="1.8"
-            stroke-linecap="round"
-          />
-          <circle cx="18" cy="16" r="2.5" stroke="currentColor" stroke-width="1.8" />
-          <circle cx="10" cy="8" r="2.5" stroke="currentColor" stroke-width="1.8" />
-        </svg>
+        <Icon icon={SlidersHorizontal} size={14} />
       </IconButton>
     {/if}
   {/snippet}

@@ -23,6 +23,8 @@
    * cerrar se aparta (`--duration-quick`). El unmount espera al outro.
    */
   import type { Snippet } from "svelte";
+  import Icon from "$ui/Icon.svelte";
+  import { X } from "$lib/icons";
 
   type Size = "sm" | "md" | "lg" | "xl";
 
@@ -39,6 +41,17 @@
      * (ajustes) encojan el diálogo al cambiar de sección.
      */
     fill = false,
+    /**
+     * Tope del panel (CSS length). Por defecto cabe en pantallas chicas sin
+     * empujar el chrome fuera de vista. Tools largas (agentes) pasan uno mayor.
+     */
+    panelMax = "min(85dvh, 760px)",
+    /**
+     * Overlay anclado a un ancestro `position: relative` (p.ej. agents `.demo`).
+     * No usa `showModal()` / top layer: evita cubrir toda la ventana o el
+     * overlay transparente del desktop.
+     */
+    contained = false,
     onClose,
     header,
     actions,
@@ -51,6 +64,8 @@
     dismissible?: boolean;
     scrollBody?: boolean;
     fill?: boolean;
+    panelMax?: string;
+    contained?: boolean;
     onClose: () => void;
     /** Reemplaza al encabezado por defecto, conservando el título accesible. */
     header?: Snippet;
@@ -81,13 +96,31 @@
     const el = dialog;
     if (!el) return;
     const previous = document.activeElement as HTMLElement | null;
-    el.showModal();
+    if (contained) {
+      // Sin top layer: el foco no entra solo; lo pedimos al root.
+      el.focus();
+    } else {
+      el.showModal();
+    }
     return () => {
       if (closeTimer) window.clearTimeout(closeTimer);
       // `?.` porque el elemento pudo desaparecer del DOM antes que el foco:
       // pasa cuando la ventana se cierra con el diálogo abierto.
       previous?.focus?.();
     };
+  });
+
+  // `cancel` solo existe con `showModal()`. En contained, Esc en captura.
+  $effect(() => {
+    if (!contained || !dismissible) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      requestClose();
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
   });
 
   function requestClose() {
@@ -113,31 +146,45 @@
   function onBackdrop(event: MouseEvent) {
     // Con el dialog a pantalla completa, el clic en el área vacía (fuera del
     // panel) llega con el `<dialog>` como target. El panel es un hijo.
-    if (dismissible && event.target === dialog) requestClose();
+    if (dismissible && event.target === event.currentTarget) requestClose();
   }
 </script>
 
 <!--
   `fixed inset-0 … overflow-hidden` anula el `overflow: auto` del UA. Sin eso
   el diálogo entero scrollea cuando el panel supera su max-height nativo.
+  `contained`: `absolute` + `open` (sin top layer) dentro del ancestro relative.
+  `data-no-drag`: en AgentsFloat, el pointerdown del shell arrastra el globo
+  y hace preventDefault — sin esto, el click del telón nunca llega a onBackdrop.
 -->
 <dialog
   bind:this={dialog}
   aria-labelledby={titleId}
-  class="modal-root fixed inset-0 m-0 flex h-dvh max-h-none w-screen max-w-none
-         items-center justify-center overflow-hidden border-0 bg-transparent
-         p-4 text-text open:flex"
+  aria-modal="true"
+  data-no-drag
+  open={contained ? true : undefined}
+  tabindex={contained ? -1 : undefined}
+  class="modal-root m-0 flex max-h-none max-w-none items-center justify-center
+         overflow-hidden border-0 p-4 text-text open:flex
+         {contained
+           ? 'absolute inset-0 z-20 h-full w-full'
+           : 'fixed inset-0 h-dvh w-screen bg-transparent'}"
+  class:is-contained={contained}
   class:is-closing={closing}
   oncancel={onCancel}
   onclick={onBackdrop}
 >
   <div
-    class="modal-panel flex w-full max-h-[min(85dvh,760px)] flex-col overflow-hidden
+    class="modal-panel flex w-full flex-col overflow-hidden
            rounded-md border border-line bg-elevated text-text shadow-float
-           {fill ? 'h-[min(85dvh,760px)]' : ''}
            {WIDTHS[size]}"
+    style:max-height={contained ? "100%" : panelMax}
+    style:height={fill ? (contained ? "100%" : panelMax) : undefined}
   >
-    <div class="flex shrink-0 items-start gap-3 border-b border-line px-4 py-3">
+    <div
+      class="flex shrink-0 items-start gap-3 border-b border-line px-4
+             {header ? 'py-2.5' : 'py-3'}"
+    >
       {#if header}
         {@render header()}
       {:else}
@@ -161,20 +208,7 @@
           aria-label="Cerrar"
           onclick={requestClose}
         >
-          <svg
-            width="14"
-            height="14"
-            viewBox="0 0 24 24"
-            fill="none"
-            aria-hidden="true"
-          >
-            <path
-              d="M6 6l12 12M18 6L6 18"
-              stroke="currentColor"
-              stroke-width="1.8"
-              stroke-linecap="round"
-            />
-          </svg>
+          <Icon icon={X} size={14} />
         </button>
       {/if}
     </div>
@@ -206,11 +240,21 @@
     animation: modal-backdrop-in var(--duration-fast) var(--ease-smooth-out) both;
   }
 
+  /* Telón propio: `::backdrop` solo existe con `showModal()` / top layer. */
+  .modal-root.is-contained {
+    background: var(--rb-backdrop);
+    animation: modal-backdrop-in var(--duration-fast) var(--ease-smooth-out) both;
+  }
+
   .modal-root.is-closing {
     pointer-events: none;
   }
 
   .modal-root.is-closing::backdrop {
+    animation: modal-backdrop-out var(--duration-quick) var(--ease-smooth-out) both;
+  }
+
+  .modal-root.is-contained.is-closing {
     animation: modal-backdrop-out var(--duration-quick) var(--ease-smooth-out) both;
   }
 
@@ -272,6 +316,8 @@
   @media (prefers-reduced-motion: reduce) {
     .modal-root::backdrop,
     .modal-root.is-closing::backdrop,
+    .modal-root.is-contained,
+    .modal-root.is-contained.is-closing,
     .modal-panel,
     .modal-root.is-closing .modal-panel {
       animation: none;

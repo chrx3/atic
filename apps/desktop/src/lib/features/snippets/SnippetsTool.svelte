@@ -67,23 +67,34 @@
 <ToolPage
   title="Textos"
   icon="snippets"
-  kicker="Guardados a mano"
-  blurb="Los textos que escribís siempre, listos para pegar. Más un bloc para notas sueltas."
+  kicker="Atajos reutilizables"
+  blurb="Fragmentos que guardás vos y pegás con un clic. No es el historial del portapapeles."
 >
   {#snippet meta()}
     <Chip>{snippets.items.length} textos</Chip>
   {/snippet}
 
-  <div class="flex h-full flex-col">
+  <div class="flex h-full min-h-0 flex-col">
     <Toolbar label="Vista de textos">
       <SegmentedControl
         bind:value={tab}
+        size="sm"
         label="Qué mostrar"
         options={[
           { value: "snippets", label: "Textos" },
           { value: "scratchpad", label: "Bloc" },
         ]}
       />
+      {#if tab === "snippets"}
+        <div class="min-w-0 flex-1">
+          <Input
+            type="search"
+            bind:value={snippets.query}
+            placeholder="Buscar textos…"
+            aria-label="Buscar textos guardados"
+          />
+        </div>
+      {/if}
       {#snippet end()}
         {#if tab === "snippets"}
           <Button variant="primary" size="sm" onclick={() => (editing = blank())}>
@@ -93,8 +104,15 @@
       {/snippet}
     </Toolbar>
 
+    {#if tab === "snippets"}
+      <p class="shrink-0 border-b border-line px-3 py-1.5 text-xs text-muted">
+        Atajos de texto que pegás con un clic. Guardá firmas, respuestas o frases
+        frecuentes — distinto del Clipboard, que guarda lo que copiaste.
+      </p>
+    {/if}
+
     {#if tab === "scratchpad"}
-      <div class="min-h-0 flex-1 p-4">
+      <div class="min-h-0 flex-1 overflow-y-auto p-3">
         <!-- Guarda sola con retardo; al salir de la vista se fuerza lo pendiente. -->
         <TextArea
           value={snippets.scratchpad?.body ?? ""}
@@ -107,16 +125,7 @@
         />
       </div>
     {:else}
-      <div class="px-4 pt-3">
-        <Input
-          type="search"
-          bind:value={snippets.query}
-          placeholder="Buscar…"
-          aria-label="Buscar textos"
-        />
-      </div>
-
-      <div class="min-h-0 flex-1 pt-3">
+      <div class="min-h-0 flex-1">
         <ListDetail
           hasSelection={editing !== null}
           listLabel="Textos guardados"
@@ -124,18 +133,37 @@
         >
           {#snippet list()}
             {#if snippets.visible.length === 0}
-              <EmptyState
-                icon={snippets.query ? undefined : "snippets"}
-                title={snippets.query ? "Nada coincide" : "Todavía no hay textos"}
-                hint={snippets.query ? undefined : "Guardá el primero con «Nuevo»."}
-              />
+              {#if snippets.query}
+                <EmptyState
+                  compact
+                  title="Nada coincide"
+                  hint="Probá con menos palabras."
+                />
+              {:else}
+                <EmptyState
+                  compact
+                  icon="snippets"
+                  title="Todavía no hay textos guardados"
+                  hint="Creá un atajo reutilizable (firma, respuesta, plantilla) y pegalo con un clic. No se llena solo: es distinto del Clipboard."
+                >
+                  {#snippet action()}
+                    <Button
+                      variant="primary"
+                      size="sm"
+                      onclick={() => (editing = blank())}
+                    >
+                      Nuevo texto
+                    </Button>
+                  {/snippet}
+                </EmptyState>
+              {/if}
             {:else}
               <ul class="flex flex-col">
                 {#each snippets.visible as item (item.id)}
                   <li>
                     <button
                       type="button"
-                      class="flex w-full flex-col gap-0.5 px-3 py-2
+                      class="flex w-full flex-col gap-0.5 px-3 py-1.5
                              text-left transition-colors duration-(--duration-quick)
                              hover:bg-surface-2
                              {editing?.id === item.id ? 'bg-surface-2' : ''}"
@@ -170,10 +198,17 @@
 
           {#snippet empty()}
             <EmptyState
+              compact
               icon="snippets"
               title="Elegí un texto"
-              hint="O creá uno nuevo."
-            />
+              hint="Se edita acá. Con Pegar lo insertás en la app activa."
+            >
+              {#snippet action()}
+                <Button variant="soft" size="sm" onclick={() => (editing = blank())}>
+                  Nuevo texto
+                </Button>
+              {/snippet}
+            </EmptyState>
           {/snippet}
         </ListDetail>
       </div>

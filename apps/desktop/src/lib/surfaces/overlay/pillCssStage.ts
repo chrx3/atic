@@ -117,7 +117,9 @@ export function createCssStage() {
 
     switch (pivot) {
       case "cursor": {
-        // La rueda sale donde está el puntero, centrada en él.
+        // Teleport al puntero (centrando el rectángulo). La apertura normal
+        // de la rueda ya no lo usa: morflea in-situ con `center`. El summon
+        // (`pill-reset`) va por `flyTo` + `overlayCursor` en el componente.
         const cursor = await overlayCursor().catch(() => null);
         const c = cursor ?? { x: origin.x, y: origin.y };
         next = { x: c.x - target.w / 2, y: c.y - target.h / 2 };
@@ -159,5 +161,10 @@ export function createCssStage() {
     return { ok: true, up };
   }
 
-  return { resize, applied, at, moveTo, loadAreas };
+  /** Copia de las áreas útiles (para decidir lado de consola, etc.). */
+  function workAreas(): Area[] {
+    return areas.map((a) => ({ ...a }));
+  }
+
+  return { resize, applied, at, moveTo, loadAreas, workAreas };
 }

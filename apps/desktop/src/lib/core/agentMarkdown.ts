@@ -6,9 +6,8 @@
  * guiones sueltos y bloques de código indistinguibles de la prosa.
  *
  * Es un subconjunto a propósito —bloques de código, encabezados, listas,
- * `código`, **negrita**— porque es lo que aparece. Meter una librería entera
- * traería tablas, imágenes, HTML embebido y saneamiento de todo eso; un agente
- * no manda nada de eso a una consola y el riesgo de inyectar HTML ajeno en la
+ * tablas GFM, `código`, **negrita**— porque es lo que aparece. Sin HTML
+ * embebido ni imágenes remotas: el riesgo de inyectar markup ajeno en la
  * ventana no compensa.
  *
  * Devuelve bloques ya tipados. La vista decide cómo se ven: acá no hay HTML,
@@ -25,7 +24,29 @@ export type Block =
   | { kind: "h"; level: number; spans: Inline[] }
   | { kind: "li"; spans: Inline[]; ordered: boolean; marker: string }
   | { kind: "code"; lang: string; text: string }
+  | { kind: "table"; headers: Inline[][]; rows: Inline[][][] }
   | { kind: "hr" };
+
+/** ¿Línea separadora de tabla GFM (`|---|---`)? */
+function isTableSeparator(line: string): boolean {
+  const t = line.trim();
+  if (!t.includes("-")) return false;
+  return /^\|?[\t -:|]+\|[\t -:|]*$/.test(t);
+}
+
+/** Celdas de una fila con pipes; ignora pipes vacíos de borde. */
+function tableCells(line: string): string[] {
+  let s = line.trim();
+  if (s.startsWith("|")) s = s.slice(1);
+  if (s.endsWith("|")) s = s.slice(0, -1);
+  return s.split("|").map((c) => c.trim());
+}
+
+function looksLikeTableRow(line: string): boolean {
+  const t = line.trim();
+  if (!t.includes("|")) return false;
+  return tableCells(t).length >= 2;
+}
 
 /** Divide una línea en texto, `código` y **negrita**. */
 export function inlines(line: string): Inline[] {
@@ -96,6 +117,29 @@ export function parse(source: string): Block[] {
         level: heading[1].length,
         spans: inlines(heading[2]),
       });
+      continue;
+    }
+
+    // Tabla GFM: cabecera + separador `|---|` + filas. Sin librería.
+    if (
+      looksLikeTableRow(line) &&
+      i + 1 < lines.length &&
+      isTableSeparator(lines[i + 1])
+    ) {
+      flush();
+      const headers = tableCells(line).map((c) => inlines(c));
+      i += 2; // salta separador
+      const rows: Inline[][][] = [];
+      while (i < lines.length && looksLikeTableRow(lines[i])) {
+        const cells = tableCells(lines[i]).map((c) => inlines(c));
+        // Rellena/recorta al ancho de la cabecera para no romper el grid.
+        while (cells.length < headers.length) cells.push([{ kind: "text", text: "" }]);
+        if (cells.length > headers.length) cells.length = headers.length;
+        rows.push(cells);
+        i += 1;
+      }
+      i -= 1; // el for hará +1
+      blocks.push({ kind: "table", headers, rows });
       continue;
     }
 

@@ -36,16 +36,50 @@ export function targetFor(surface: Surface, barW: number): Size {
 }
 
 /**
+ * ¿El chrome de la rueda es la silueta activa?
+ *
+ * Abierta (`surface === "wheel"`) o colapsando (`collapsingFrom === "wheel"`):
+ * en ambos casos el único "a" visible es el de ParticleWheel. El stack de la
+ * barra vive anclado al top-left del root (no al centro): si publica formas o
+ * pinta su AticMark mientras el root es el cuadrado grande, aparece una
+ * segunda «a» fantasma arriba-izquierda — también con la rueda ya abierta, no
+ * solo al cerrar. Por eso el stack se apaga (visibility + sin marca + sin
+ * publish) en todo el tramo `wheelChromeActive`.
+ */
+export function wheelChromeActive(state: {
+  surface: Surface;
+  collapsingFrom: "wheel" | null;
+}): boolean {
+  return state.surface === "wheel" || state.collapsingFrom === "wheel";
+}
+
+/**
+ * ¿Puede el stack montar su AticMark?
+ *
+ * Es el inverso de `wheelChromeActive`: con la rueda al mando la marca del
+ * stack no debe existir en el DOM. Sirve de contrato explícito para tests.
+ */
+export function stackMarkVisible(state: {
+  surface: Surface;
+  collapsingFrom: "wheel" | null;
+}): boolean {
+  return !wheelChromeActive(state);
+}
+
+/**
  * Qué punto se conserva en el próximo reencuadre.
  *
- * Al cerrar la rueda hay que saber **de qué** se está cerrando, no adónde se
- * va: para cuando esto corre, `surface` ya vale `"none"`. Sin `collapsingFrom`
- * el colapso usaba `center` por defecto y la barra se corría.
+ * Abrir y cerrar la rueda pivotean al `center` (morph in-situ desde el hogar).
+ * Al cerrar hay que saber **de qué** se está cerrando, no adónde se va: para
+ * cuando esto corre, `surface` ya vale `"none"`. Sin `collapsingFrom` el
+ * colapso caería en `topLeft` y la barra se correría.
  *
- * Y en reposo el pivote es `topLeft`, nunca `center`: el ancho de la barra
+ * En reposo el pivote es `topLeft`, nunca `center`: el ancho de la barra
  * cambia solo —entra el timer, tictaquea de 0:09 a 0:10, aparece el badge de la
  * cola— y con pivote al centro CADA cambio corría la pill media diferencia. Al
  * arrancar, el primer encogimiento la movía 53 px.
+ *
+ * El teleport al cursor no pasa por acá: es el summon (`pill-reset` + `flyTo`).
  */
 export function pivotFor(state: {
   surface: Surface;
@@ -94,6 +128,49 @@ export function isDiscOnly(state: {
     !state.hasQueue &&
     !state.agentAlert
   );
+}
+
+/**
+ * ¿Publicar el disco junto a la gota en el campo líquido?
+ *
+ * Solo mientras la gota todavía no lo cubre. Cuando ambas comparten el borde
+ * izquierdo (disco de 40 px + pastilla ya expandida), el `smin` engorda ese
+ * lado y la silueta queda con aire muerto a la izquierda del contenido.
+ */
+export function discJoinsTail(
+  bar: { w: number } | null | undefined,
+  tail: { w: number } | null | undefined,
+): boolean {
+  if (!bar || !tail) return false;
+  return tail.w < bar.w * 0.95;
+}
+
+/** Área útil de un monitor, en el mismo espacio que la pill. */
+export type WorkArea = { x: number; y: number; w: number; h: number };
+
+/**
+ * En qué lado de la pastilla va el control de consola.
+ *
+ * Regla: al lado **opuesto** al borde horizontal más cercano del monitor.
+ * Cerca del borde izquierdo → consola a la derecha (no se pega al canto);
+ * cerca del derecho → consola a la izquierda.
+ */
+export function consoleSideFor(
+  areas: readonly WorkArea[],
+  pill: { x: number; y: number },
+  size: { w: number; h: number },
+): "left" | "right" {
+  if (areas.length === 0) return "right";
+  const cx = pill.x + size.w / 2;
+  const cy = pill.y + size.h / 2;
+  const area =
+    areas.find(
+      (a) => cx >= a.x && cx <= a.x + a.w && cy >= a.y && cy <= a.y + a.h,
+    ) ?? areas[0];
+  if (!area) return "right";
+  const distLeft = cx - area.x;
+  const distRight = area.x + area.w - cx;
+  return distLeft <= distRight ? "right" : "left";
 }
 
 /**

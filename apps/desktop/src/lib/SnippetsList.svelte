@@ -1,6 +1,6 @@
 <script lang="ts">
-  import Search from "reicon-svelte/icons/Search.svelte";
-  import Trash from "reicon-svelte/icons/Trash.svelte";
+  import Icon from "$ui/Icon.svelte";
+  import { Search, Trash2 } from "$lib/icons";
   import type { Snippet as TextSnippet } from "$lib/types";
   import { emptySnippet } from "$lib/snippetsModel";
   import { deleteSnippet, pasteSnippet } from "$lib/api";
@@ -79,7 +79,7 @@
 <div class="snip-list" class:compact>
   <div class="snip-toolbar">
     <label class="snip-search">
-      <Search size={14} aria-hidden="true" />
+      <Icon icon={Search} size={14} />
       <input
         type="search"
         placeholder="Buscar por nombre o palabra…"
@@ -139,7 +139,7 @@
                 aria-label="Eliminar {item.name}"
                 onclick={(event) => void remove(item, event)}
               >
-                <Trash size={14} />
+                <Icon icon={Trash2} size={14} />
               </button>
             </div>
           {/if}

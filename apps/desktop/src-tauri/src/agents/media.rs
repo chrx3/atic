@@ -69,6 +69,45 @@ pub fn codex_image_attachment(path: &Path) -> Result<serde_json::Value, String> 
     }))
 }
 
+/// Extensión de archivo a partir del MIME de imagen soportado.
+fn mime_ext(mime: &str) -> Option<&'static str> {
+    match mime {
+        "image/png" => Some("png"),
+        "image/jpeg" => Some("jpg"),
+        "image/gif" => Some("gif"),
+        "image/webp" => Some("webp"),
+        _ => None,
+    }
+}
+
+/// Guarda bytes de una imagen pegada/arrastrada en temp y devuelve la ruta.
+///
+/// La vista no tiene `plugin-fs`; el compositor necesita una ruta absoluta para
+/// `origin.files` (el adaptador lee el archivo al armar el content multimodal).
+#[tauri::command]
+pub fn agent_stage_image(data_base64: String, mime: String) -> Result<String, String> {
+    let ext = mime_ext(mime.trim())
+        .ok_or_else(|| format!("mime de imagen no soportado: {mime}"))?;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(data_base64.trim())
+        .map_err(|e| format!("base64 inválido: {e}"))?;
+    if bytes.len() as u64 > MAX_BYTES {
+        return Err(format!(
+            "la imagen pesa más de {} MiB",
+            MAX_BYTES / (1024 * 1024)
+        ));
+    }
+    let dir = std::env::temp_dir().join("atic-agent-attach");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("no se pudo crear temp: {e}"))?;
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let path = dir.join(format!("paste-{}-{stamp}.{ext}", std::process::id()));
+    std::fs::write(&path, &bytes).map_err(|e| format!("no se pudo guardar imagen: {e}"))?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
 /// Quita del texto las rutas que ya van embebidas como imagen.
 pub fn strip_embedded_paths(text: &str, paths: &[String]) -> String {
     let mut out = text.to_string();

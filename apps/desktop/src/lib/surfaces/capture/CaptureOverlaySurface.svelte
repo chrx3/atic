@@ -14,6 +14,7 @@
    * con Escape aunque el frame no haya cargado, y el cierre si la imagen falla.
    */
   import type { OverlayCandidate } from "$core/types";
+  import { MOTION, ms } from "$lib/motion";
   import {
     cancelCaptureSession,
     captureSrc,
@@ -28,9 +29,8 @@
   /** Menos que esto y el arrastre fue un temblor: cuenta como clic. */
   const DRAG_THRESHOLD = 4;
 
-  /** Lo que tarda en desvanecerse antes de disparar. Sin esto, el overlay sale
-      en la propia captura. */
-  const FADE_MS = 120;
+  /** Cierre del overlay antes de disparar: más rápido que la entrada. */
+  const FADE_MS = () => ms(MOTION.quick);
 
   /** Si en este tiempo el frame no se reveló, se cierra la sesión. */
   const WATCHDOG_MS = 5000;
@@ -88,7 +88,7 @@
     if (done) return;
     done = true;
     revealed = false;
-    await new Promise((resolve) => setTimeout(resolve, FADE_MS));
+    await new Promise((resolve) => setTimeout(resolve, FADE_MS()));
     try {
       await action();
     } catch {
@@ -191,19 +191,24 @@
   /**
    * El frame ya está pintado: recién ahora se puede mostrar la ventana.
    *
-   * Los dos `requestAnimationFrame` no son superstición: uno solo devuelve el
-   * control antes de que el compositor haya presentado el cuadro, y mostrar la
-   * ventana en ese hueco enseña el fondo vacío durante un parpadeo.
+   * Orden: pintar a opacidad 0 → mostrar la ventana nativa → recién entonces
+   * marcar `revealed`. Si se revela antes del `show()`, la transición termina
+   * oculta y el modo captura aparece de golpe.
    */
   function onFrameLoad() {
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
         if (done) return;
-        revealed = true;
-        void showCaptureOverlay().catch(() => {
-          done = true;
-          void close();
-        });
+        void showCaptureOverlay()
+          .then(() => {
+            requestAnimationFrame(() => {
+              if (!done) revealed = true;
+            });
+          })
+          .catch(() => {
+            done = true;
+            void close();
+          });
       });
     });
   }
@@ -274,9 +279,8 @@
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
-  class="fixed inset-0 h-screen w-screen overflow-hidden opacity-0 select-none
-         transition-opacity duration-(--duration-quick) ease-calm
-         {revealed ? 'opacity-100' : ''}"
+  class="cap"
+  class:is-revealed={revealed}
   onmousemove={onMouseMove}
   onmousedown={onMouseDown}
   onmouseup={onMouseUp}
@@ -290,7 +294,7 @@
       src={frameSrc}
       alt=""
       draggable="false"
-      class="absolute inset-0 block h-full w-full"
+      class="cap-frame"
       onload={onFrameLoad}
       onerror={onFrameError}
     />
@@ -300,34 +304,26 @@
     <!-- El velo es una sombra gigante hacia afuera en vez de cuatro divs
          alrededor: así el agujero sigue al recuadro sin cuentas. -->
     <div
-      class="pointer-events-none absolute box-border border-2 border-screen-select
-             shadow-[0_0_0_100000px_var(--screen-scrim)]"
+      class="cap-hole"
       style="left:{selection.left}px; top:{selection.top}px;
              width:{selection.width}px; height:{selection.height}px;"
     ></div>
     <div
-      class="pointer-events-none absolute rounded-xs bg-screen-chip px-1.5 py-0.5
-             font-mono text-xs whitespace-nowrap text-screen-ink"
+      class="cap-size"
       data-numeric
       style="left:{selection.left}px; top:{Math.max(2, selection.top - 26)}px;"
     >
       {Math.round(selection.width)} × {Math.round(selection.height)}
     </div>
   {:else if revealed}
-    <div class="pointer-events-none absolute inset-0 bg-screen-scrim"></div>
+    <div class="cap-scrim"></div>
   {/if}
 
-  {#if revealed}
-    <!-- La ayuda sigue al cursor en horizontal: en dos monitores, fijarla al
-         centro la deja en la otra pantalla. -->
-    <div
-      class="pointer-events-none fixed bottom-8 -translate-x-1/2 rounded-sm bg-screen-chip
-             px-3.5 py-1.5 text-sm whitespace-nowrap text-screen-ink"
-      style="left:{cursor.x}px;"
-    >
-      Clic: ventana · Arrastrar: región · Espacio: pantalla · Esc cancela
-    </div>
-  {/if}
+  <!-- La ayuda sigue al cursor en horizontal: en dos monitores, fijarla al
+       centro la deja en la otra pantalla. -->
+  <div class="cap-help" style="left:{cursor.x}px;">
+    Clic: ventana · Arrastrar: región · Espacio: pantalla · Esc cancela
+  </div>
 </div>
 
 <style>
@@ -339,5 +335,114 @@
     margin: 0;
     background: var(--screen-backdrop);
     cursor: crosshair;
+  }
+
+  /*
+   * Activar captura: entrada deliberada (open lento), salida más rápida.
+   * Solo opacity en el root (un PNG a pantalla completa + blur es caro).
+   * CSS transition para poder interrumpir con Esc.
+   */
+  .cap {
+    position: fixed;
+    inset: 0;
+    width: 100vw;
+    height: 100vh;
+    overflow: hidden;
+    user-select: none;
+    opacity: 0;
+    transition: opacity var(--duration-quick, 150ms)
+      var(--ease-smooth-out, cubic-bezier(0.22, 1, 0.36, 1));
+  }
+
+  .cap.is-revealed {
+    opacity: 1;
+    transition: opacity var(--duration-slow, 400ms)
+      var(--ease-smooth-out, cubic-bezier(0.22, 1, 0.36, 1));
+  }
+
+  .cap-frame {
+    position: absolute;
+    inset: 0;
+    display: block;
+    width: 100%;
+    height: 100%;
+  }
+
+  .cap-hole {
+    pointer-events: none;
+    position: absolute;
+    box-sizing: border-box;
+    border: 2px solid var(--screen-select, #2f9e44);
+    box-shadow: 0 0 0 100000px var(--screen-scrim);
+  }
+
+  .cap-size {
+    pointer-events: none;
+    position: absolute;
+    border-radius: var(--rb-radius-xs, 5px);
+    background: var(--screen-chip);
+    padding: 2px 6px;
+    font-family: var(--rb-mono, ui-monospace, monospace);
+    font-size: 12px;
+    white-space: nowrap;
+    color: var(--screen-ink, #fff);
+  }
+
+  .cap-scrim {
+    pointer-events: none;
+    position: absolute;
+    inset: 0;
+    background: var(--screen-scrim);
+  }
+
+  .cap-help {
+    pointer-events: none;
+    position: fixed;
+    bottom: 2rem;
+    z-index: 2;
+    border-radius: var(--rb-radius-sm, 8px);
+    background: var(--screen-chip);
+    padding: 6px 14px;
+    font-size: 14px;
+    white-space: nowrap;
+    color: var(--screen-ink, #fff);
+    box-shadow: 0 8px 24px rgb(0 0 0 / 28%);
+    outline: 1px solid rgb(255 255 255 / 10%);
+    outline-offset: -1px;
+    opacity: 0;
+    transform: translateX(-50%) translateY(var(--distance-base, 8px));
+    transition:
+      opacity var(--duration-fast, 250ms) var(--ease-smooth-out, cubic-bezier(0.22, 1, 0.36, 1)),
+      transform var(--duration-fast, 250ms) var(--ease-smooth-out, cubic-bezier(0.22, 1, 0.36, 1));
+    transition-delay: 0ms;
+  }
+
+  .cap.is-revealed .cap-help {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+    transition-delay: var(--duration-micro, 80ms);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .cap,
+    .cap.is-revealed,
+    .cap-help,
+    .cap.is-revealed .cap-help {
+      transition: none !important;
+      transform: none !important;
+    }
+
+    .cap {
+      opacity: 0;
+    }
+
+    .cap.is-revealed {
+      opacity: 1;
+    }
+
+    .cap.is-revealed .cap-help {
+      opacity: 1;
+      transform: translateX(-50%);
+    }
   }
 </style>

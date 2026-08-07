@@ -193,9 +193,15 @@ impl AgentBackend for ClaudeCode {
         // por stdout. Eso no es el chat vivo de Atic: se silencia hasta el
         // primer `send` del usuario. ThreadPatch y permisos sí pasan.
         let mute_history = Arc::new(AtomicBool::new(options.resume.is_some()));
+        let interrupted = Arc::new(AtomicBool::new(false));
 
         let died = stopping.clone();
-        let mut tr = Translator::new(turns.clone(), rules.clone(), mute_history.clone());
+        let mut tr = Translator::new(
+            turns.clone(),
+            rules.clone(),
+            mute_history.clone(),
+            interrupted.clone(),
+        );
         let emit_out = emit.clone();
         thread::spawn(move || {
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
@@ -220,6 +226,7 @@ impl AgentBackend for ClaudeCode {
             turns,
             emit,
             mute_history,
+            interrupted,
         };
         // Handshake del canal de control. Abre la vía por la que después llegan
         // las pedidas de permiso; sin él, el turno se bloquearía esperando una
@@ -280,6 +287,8 @@ struct Translator {
     collab: HashSet<ItemId>,
     /// Silenciar transcript de replay tras `--resume` hasta el primer send.
     mute_history: Arc<AtomicBool>,
+    /// El usuario pidió interrumpir: el próximo `result` cierra como cancelado.
+    interrupted: Arc<AtomicBool>,
 }
 
 impl Translator {
@@ -287,6 +296,7 @@ impl Translator {
         turns: Arc<Mutex<Turns>>,
         rules: Arc<Mutex<HashMap<String, Value>>>,
         mute_history: Arc<AtomicBool>,
+        interrupted: Arc<AtomicBool>,
     ) -> Self {
         Self {
             turns,
@@ -295,6 +305,7 @@ impl Translator {
             seq: 0,
             collab: HashSet::new(),
             mute_history,
+            interrupted,
         }
     }
 
@@ -674,9 +685,12 @@ impl Translator {
                 self.close_streaming(None, &mut out);
                 let turn = self.turn(&mut out);
                 let failed = v.get("is_error").and_then(Value::as_bool).unwrap_or(false);
+                let cancelled = self.interrupted.swap(false, Ordering::SeqCst);
                 out.push(AgentDelta::TurnEnd {
                     turn,
-                    status: if failed {
+                    status: if cancelled {
+                        TurnStatus::Cancelled
+                    } else if failed {
                         TurnStatus::Failed
                     } else {
                         TurnStatus::Done
@@ -938,6 +952,8 @@ struct ClaudeSession {
     emit: Emit,
     /// Compartido con el traductor: se apaga en el primer `send`.
     mute_history: Arc<AtomicBool>,
+    /// Pedido de interrupt pendiente; el traductor lo consume al cerrar el turno.
+    interrupted: Arc<AtomicBool>,
 }
 
 impl ClaudeSession {
@@ -1232,6 +1248,14 @@ impl AgentSession for ClaudeSession {
         Ok(())
     }
 
+    fn interrupt(&mut self) -> Result<(), String> {
+        // Canal de control del CLI: aborta el turno/tool loop y deja el proceso
+        // listo para el próximo prompt. Sin esto, «Detener» tenía que matar la
+        // sesión entera.
+        self.interrupted.store(true, Ordering::SeqCst);
+        self.control(json!({ "subtype": "interrupt" }))
+    }
+
     fn respond_permission(&mut self, id: &str, decision: PermissionDecision) -> Result<(), String> {
         // El `request_id` de la respuesta tiene que ser el del pedido: es lo
         // que empareja la contestación con el turno detenido.
@@ -1308,6 +1332,7 @@ mod tests {
             Arc::new(Mutex::new(Turns::default())),
             Arc::new(Mutex::new(HashMap::new())),
             Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicBool::new(false)),
         )
     }
 
@@ -1316,6 +1341,7 @@ mod tests {
             Arc::new(Mutex::new(Turns::default())),
             Arc::new(Mutex::new(HashMap::new())),
             Arc::new(AtomicBool::new(true)),
+            Arc::new(AtomicBool::new(false)),
         )
     }
 
@@ -1418,6 +1444,7 @@ mod tests {
         let mut t = Translator::new(
             Arc::new(Mutex::new(Turns::default())),
             rules.clone(),
+            Arc::new(AtomicBool::new(false)),
             Arc::new(AtomicBool::new(false)),
         );
         let ds = t.translate(

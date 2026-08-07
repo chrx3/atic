@@ -273,6 +273,7 @@
 
   .pm-chip {
     display: inline-flex;
+    box-sizing: border-box;
     max-width: 10rem;
     min-height: 1.75rem;
     align-items: center;
@@ -284,6 +285,8 @@
     color: var(--dim, #8d827a);
     font-family: inherit;
     font-size: 0.65rem;
+    line-height: 1;
+    font-weight: 500;
     cursor: pointer;
   }
   .pm-chip.is-icon {

@@ -10,6 +10,8 @@
    * interrumpir lo que el lector de pantalla esté diciendo.
    */
   import { fly } from "svelte/transition";
+  import Icon from "$ui/Icon.svelte";
+  import { X } from "$lib/icons";
   import IconButton from "./IconButton.svelte";
 
   let {
@@ -36,20 +38,7 @@
       <p class="min-w-0 flex-1 truncate text-sm text-text">{toast.message}</p>
       {#if onDismiss}
         <IconButton label="Descartar" size="sm" onclick={() => onDismiss(toast.id)}>
-          <svg
-            width="12"
-            height="12"
-            viewBox="0 0 24 24"
-            fill="none"
-            aria-hidden="true"
-          >
-            <path
-              d="M6 6l12 12M18 6L6 18"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-            />
-          </svg>
+          <Icon icon={X} size={12} />
         </IconButton>
       {/if}
     </div>

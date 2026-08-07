@@ -95,6 +95,19 @@ pub fn set_capturing(app: &AppHandle, on: bool) {
     let _ = app;
 }
 
+/// Reafirma click-through del overlay de la pill mientras hay captura.
+///
+/// `show`/`set_always_on_top` del overlay de captura pueden dejar el de la pill
+/// otra vez encima y opaco; sin esto, el mouse sobre la ventana principal no
+/// llega a la selección hasta un clic “afuera”.
+pub fn reassert_capturing_input() {
+    if !CAPTURING.load(Ordering::Acquire) {
+        return;
+    }
+    ARMED.store(false, Ordering::Release);
+    send(Msg::Sync);
+}
+
 /// Momento de la última muestra, para el freno de `SAMPLE_MS`.
 static LAST_SAMPLE: AtomicI64 = AtomicI64::new(0);
 
@@ -265,13 +278,26 @@ pub fn place(app: &AppHandle) -> Option<OverlayRect> {
 
 /// Vuelve a poner el overlay al frente, sin activarlo.
 ///
+/// Solo Z-order (`SetWindowPos`). No llama a `set_always_on_top`: tao
+/// reescribe `GWL_EXSTYLE` entero en cada cambio de bandera, y si eso corre
+/// en el camino caliente del armado puede dejar `WS_EX_TRANSPARENT` pegado
+/// mientras el atomic ya dice lo contrario — la pill se ve encima pero el
+/// mouse atraviesa hacia las apps de abajo.
+///
 /// `SWP_NOACTIVATE` es lo importante: subir la ventana no debe robarle el foco
 /// a la app en la que estés escribiendo.
+///
+/// El overlay (pill + floats) queda siempre topmost: la pill no puede hundirse
+/// al desfijar un float porque comparten ventana. El pin solo afecta dismiss.
 pub fn raise(app: &AppHandle) {
+    if CAPTURING.load(Ordering::Acquire) {
+        return;
+    }
+    let on = crate::agents::bridge::overlay_should_be_topmost();
     #[cfg(windows)]
     {
         use windows_sys::Win32::UI::WindowsAndMessaging::{
-            SetWindowPos, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+            SetWindowPos, HWND_NOTOPMOST, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
         };
         let Some(window) = app.get_webview_window(LABEL) else {
             return;
@@ -279,11 +305,12 @@ pub fn raise(app: &AppHandle) {
         let Ok(hwnd) = window.hwnd() else {
             return;
         };
+        let insert_after = if on { HWND_TOPMOST } else { HWND_NOTOPMOST };
         // SAFETY: el HWND lo da Tauri y vive mientras viva la ventana.
         unsafe {
             SetWindowPos(
                 hwnd.0 as _,
-                HWND_TOPMOST,
+                insert_after,
                 0,
                 0,
                 0,
@@ -294,8 +321,51 @@ pub fn raise(app: &AppHandle) {
     }
     #[cfg(not(windows))]
     {
-        let _ = app;
+        let _ = (app, on);
     }
+}
+
+/// Aplica o quita always-on-top del overlay.
+///
+/// No pelea con el overlay de captura: ahí `CAPTURING` manda y tocar el
+/// stacking deja la selección sin mouse.
+///
+/// Tras `set_always_on_top` hay que reponer el click-through: ese cambio
+/// reescribe los ex-styles y puede pisar `ignore_cursor_events`.
+pub fn set_topmost(app: &AppHandle, on: bool) {
+    if CAPTURING.load(Ordering::Acquire) {
+        return;
+    }
+    let Some(window) = app.get_webview_window(LABEL) else {
+        return;
+    };
+    let _ = window.set_always_on_top(on);
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            SetWindowPos, HWND_NOTOPMOST, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+        };
+        if let Ok(hwnd) = window.hwnd() {
+            let insert_after = if on { HWND_TOPMOST } else { HWND_NOTOPMOST };
+            // SAFETY: el HWND lo da Tauri y vive mientras viva la ventana.
+            unsafe {
+                SetWindowPos(
+                    hwnd.0 as _,
+                    insert_after,
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                );
+            }
+        }
+    }
+    // Intención actual del worker de armado, no el último valor aplicado:
+    // si hubo carrera, el atomic de estilo puede mentir.
+    let through = !ARMED.load(Ordering::Acquire);
+    set_click_through(&window, through);
+    CLICK_THROUGH.store(through, Ordering::Release);
 }
 
 /// Deja pasar el mouse a lo que haya debajo, o lo intercepta.

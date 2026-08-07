@@ -17,6 +17,7 @@
   import ConfirmDialog from "$ui/ConfirmDialog.svelte";
   import EmptyState from "$ui/EmptyState.svelte";
   import Field from "$ui/Field.svelte";
+  import Icon from "$ui/Icon.svelte";
   import IconButton from "$ui/IconButton.svelte";
   import Input from "$ui/Input.svelte";
   import Kbd from "$ui/Kbd.svelte";
@@ -30,6 +31,7 @@
   import ToastStack from "$ui/ToastStack.svelte";
   import ListDetail from "$patterns/ListDetail.svelte";
   import Toolbar from "$patterns/Toolbar.svelte";
+  import { Pin, Play, Trash2, Volume2 } from "$lib/icons";
 
   const PALETTES = [
     { name: "oscuro", attrs: { "data-theme": "dark" } },
@@ -159,35 +161,16 @@
 
         <div class="flex items-center gap-1">
           <IconButton label="Reproducir">
-            <svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M8 5l11 7-11 7z" fill="currentColor" />
-            </svg>
+            <Icon icon={Play} size={14} />
           </IconButton>
           <IconButton label="Silenciar" variant="soft">
-            <svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M4 9h4l5-4v14l-5-4H4z" fill="currentColor" />
-            </svg>
+            <Icon icon={Volume2} size={14} />
           </IconButton>
           <IconButton label="Fijar" pressed={pinned} onclick={() => (pinned = !pinned)}>
-            <svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true">
-              <circle cx="12" cy="12" r="5" fill="currentColor" />
-            </svg>
+            <Icon icon={Pin} size={14} />
           </IconButton>
           <IconButton label="Borrar" variant="danger">
-            <svg
-              width="14"
-              height="14"
-              viewBox="0 0 24 24"
-              fill="none"
-              aria-hidden="true"
-            >
-              <path
-                d="M5 7h14M9 7V5h6v2M7 7l1 12h8l1-12"
-                stroke="currentColor"
-                stroke-width="1.6"
-                stroke-linecap="round"
-              />
-            </svg>
+            <Icon icon={Trash2} size={14} />
           </IconButton>
         </div>
 

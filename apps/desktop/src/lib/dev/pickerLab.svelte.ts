@@ -26,11 +26,17 @@ export type PickerLabValues = {
   cardColdH: number;
 };
 
-/** Valores afinados a mano en el picker lab (2026-08). */
+/**
+ * Valores afinados a mano en el picker lab (2026-08).
+ *
+ * `cell` manda el costo del Skin (marching squares ~ O(1/cell²)). Con blend 120
+ * y cards grandes, `cell: 2` explota el main thread; 12–16 mantiene el cuello
+ * legible sin lag. El lab puede bajar a 2 en vivo, pero producción no arranca ahí.
+ */
 export const PICKER_LAB_DEFAULTS: PickerLabValues = {
   blend: 120,
-  cell: 16,
-  cardFloat: 99,
+  cell: 14,
+  cardFloat: 200,
   pitchPad: 120,
   heightFill: 0.87,
   hotX: 40,
@@ -43,12 +49,31 @@ export const PICKER_LAB_DEFAULTS: PickerLabValues = {
   cardColdH: 64,
 };
 
+/**
+ * Piso de muestreo cuando el lab está cerrado. Por debajo el SDF del ToolRail
+ * (escena grande + blend alto) deja la ventana principal inutilizable.
+ */
+export const PICKER_CELL_PROD_MIN = 12;
+
+/** Por debajo de esto se considera un valor persistido "bomba" y se migra. */
+const CELL_PERSIST_FLOOR = 8;
+
 function load(): PickerLabValues {
   if (typeof localStorage === "undefined") return { ...PICKER_LAB_DEFAULTS };
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return { ...PICKER_LAB_DEFAULTS };
-    return { ...PICKER_LAB_DEFAULTS, ...JSON.parse(raw) };
+    const parsed = JSON.parse(raw) as Partial<PickerLabValues>;
+    // Un default temporal `cell: 2` se persistió en lab; migrar para no
+    // reabrir la app con el main window a ~50× el costo de muestreo.
+    if (parsed.cell != null && parsed.cell < CELL_PERSIST_FLOOR) {
+      parsed.cell = PICKER_LAB_DEFAULTS.cell;
+      localStorage.setItem(
+        STORAGE_KEY,
+        JSON.stringify({ ...PICKER_LAB_DEFAULTS, ...parsed }),
+      );
+    }
+    return { ...PICKER_LAB_DEFAULTS, ...parsed };
   } catch {
     return { ...PICKER_LAB_DEFAULTS };
   }

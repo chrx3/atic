@@ -1188,8 +1188,25 @@ fn send_paste_chord(with_shift: bool) -> Result<(), String> {
 /// Float de clipboard abierto (independiente de la pill).
 static CLIPBOARD_OPEN: AtomicBool = AtomicBool::new(false);
 
+/// Preferencia de pin: float fijado arriba mientras está abierto.
+static CLIPBOARD_ALWAYS_ON_TOP: AtomicBool = AtomicBool::new(true);
+
 const CLIP_ANCHOR: &str = "clipboard-bubble-anchor";
 const CLIP_DISMISS: &str = "clipboard-bubble-dismiss";
+
+/// API simétrica a `agents_open`. El stacking del overlay ya no la consulta.
+#[allow(dead_code)]
+pub fn float_open() -> bool {
+    CLIPBOARD_OPEN.load(Ordering::Relaxed)
+}
+
+pub fn float_always_on_top() -> bool {
+    CLIPBOARD_ALWAYS_ON_TOP.load(Ordering::Relaxed)
+}
+
+pub fn init_always_on_top(on: bool) {
+    CLIPBOARD_ALWAYS_ON_TOP.store(on, Ordering::Relaxed);
+}
 
 /// Atajo / rueda / launcher: toggle del float de clipboard (sale de la pill).
 pub fn summon_clipboard_panel(app: &AppHandle) {
@@ -1202,6 +1219,10 @@ pub fn summon_clipboard_panel(app: &AppHandle) {
         CLIP_ANCHOR,
         CLIP_DISMISS,
     );
+    crate::overlay::set_topmost(
+        app,
+        crate::agents::bridge::overlay_should_be_topmost(),
+    );
 }
 
 #[tauri::command]
@@ -1212,6 +1233,38 @@ pub fn show_clipboard_window(app: AppHandle) {
 #[tauri::command]
 pub fn hide_clipboard_window(app: AppHandle) {
     crate::panel_float::hide(&app, &CLIPBOARD_OPEN, CLIP_DISMISS);
+    crate::overlay::set_topmost(
+        &app,
+        crate::agents::bridge::overlay_should_be_topmost(),
+    );
+}
+
+#[tauri::command]
+pub fn clipboard_always_on_top() -> bool {
+    float_always_on_top()
+}
+
+#[tauri::command]
+pub fn set_clipboard_always_on_top(app: AppHandle, on: bool) {
+    CLIPBOARD_ALWAYS_ON_TOP.store(on, Ordering::Relaxed);
+    if let Some(state) = app.try_state::<AppState>() {
+        let snapshot = {
+            let Ok(mut cfg) = state.config.lock() else {
+                crate::overlay::set_topmost(
+                    &app,
+                    crate::agents::bridge::overlay_should_be_topmost(),
+                );
+                return;
+            };
+            cfg.clipboard_always_on_top = on;
+            cfg.clone()
+        };
+        let _ = snapshot.save(&state.dirs.config_path());
+    }
+    crate::overlay::set_topmost(
+        &app,
+        crate::agents::bridge::overlay_should_be_topmost(),
+    );
 }
 
 /// Prepara la pill para abrir un panel (historial o fragmentos).

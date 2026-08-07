@@ -144,6 +144,8 @@ fn end_session(app: &AppHandle) {
     if let Some(window) = app.get_webview_window(OVERLAY_LABEL) {
         let _ = window.hide();
     }
+    // La main dejó de robar hover al mostrar el overlay; devolver hit-testing.
+    restore_main_hit_testing(app);
     if let Some(state) = app.try_state::<crate::state::AppState>() {
         let taken = state.overlay_session.lock_or_recover().take();
         end_session_cleanup(taken);
@@ -272,6 +274,12 @@ fn ensure_overlay_hidden(app: &AppHandle) {
     }
 }
 
+fn restore_main_hit_testing(app: &AppHandle) {
+    if let Some(main) = app.get_webview_window("main") {
+        let _ = main.set_ignore_cursor_events(false);
+    }
+}
+
 #[cfg(windows)]
 fn show_overlay_window(app: &AppHandle) -> Result<(), String> {
     let state = app.state::<crate::state::AppState>();
@@ -291,13 +299,61 @@ fn show_overlay_window(app: &AppHandle) -> Result<(), String> {
     let position = tauri::PhysicalPosition::new(bounds.x, bounds.y);
     let size = tauri::PhysicalSize::new(bounds.width, bounds.height);
     let _ = window.set_decorations(false);
-    // show → size: sobre ventana oculta a veces no aplicaba el tamaño.
-    let _ = window.show();
+    // Por si una sesión anterior dejó el overlay como click-through.
+    let _ = window.set_ignore_cursor_events(false);
+    // Tamaño/posición ANTES del show: si no, el primer frame queda 800×600 y
+    // la ventana principal (bajo el cursor) sigue recibiendo el mouse.
     let _ = window.set_position(position);
     let _ = window.set_size(size);
     let _ = window.set_always_on_top(true);
-    let _ = window.set_focus();
+    let _ = window.show();
+
+    // Misma app, mismo proceso: con el cursor sobre `main`, Windows puede
+    // seguir entregándole el hover aunque el overlay sea topmost. Mientras
+    // dura la selección, `main` no debe participar del hit-testing.
+    if let Some(main) = app.get_webview_window("main") {
+        let _ = main.set_ignore_cursor_events(true);
+    }
+
+    // La pill también es always-on-top: reafirmar click-through y subir el
+    // overlay de captura al frente de la banda topmost.
+    crate::overlay::reassert_capturing_input();
+    raise_capture_overlay(&window);
+
+    // No usar `set_focus()`: si `SetForegroundWindow` falla, tao inyecta Alt y
+    // esta app también usa SendInput para pegar. `force_foreground` activa sin
+    // teclas fantasma — hace falta para Esc y para que WebView2 reciba el mouse
+    // sin un clic previo “fuera” de la main.
+    if let Ok(hwnd) = window.hwnd() {
+        let raw = hwnd.0 as isize;
+        std::thread::spawn(move || {
+            crate::clipboard_history::force_foreground(raw as _);
+        });
+    }
     Ok(())
+}
+
+/// Sube el overlay de captura al frente de las always-on-top (pill, launcher…).
+#[cfg(windows)]
+fn raise_capture_overlay(window: &tauri::WebviewWindow) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        SetWindowPos, HWND_TOPMOST, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW,
+    };
+    let Ok(hwnd) = window.hwnd() else {
+        return;
+    };
+    // SAFETY: HWND lo da Tauri y vive mientras viva la ventana.
+    unsafe {
+        SetWindowPos(
+            hwnd.0 as _,
+            HWND_TOPMOST,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
+        );
+    }
 }
 
 #[cfg(not(windows))]

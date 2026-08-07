@@ -24,10 +24,10 @@
   role="toolbar"
   aria-label={label}
   aria-orientation="horizontal"
-  class="flex shrink-0 items-center gap-1.5 border-b border-line px-4 py-2"
+  class="flex shrink-0 items-center gap-1.5 border-b border-line px-3 py-1.5"
 >
   {@render children()}
   {#if end}
-    <div class="ml-auto flex items-center gap-1.5">{@render end()}</div>
+    <div class="ml-auto flex shrink-0 items-center gap-1.5">{@render end()}</div>
   {/if}
 </div>
