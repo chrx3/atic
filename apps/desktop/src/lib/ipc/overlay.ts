@@ -68,6 +68,10 @@ export const overlayWorkAreas = () => invoke<Area[]>("overlay_work_areas");
 export const setOverlayHitRects = (rects: HitRect[]) =>
   invoke<void>("set_overlay_hit_rects", { rects });
 
+/** Click-through total mientras dura un OLE drag hacia otra app. */
+export const setOverlayItemDrag = (on: boolean) =>
+  invoke<void>("set_overlay_item_drag", { on });
+
 /** Redimensiona una ventana flotante. `up` dice si creció hacia arriba. */
 export const resizeFloating = (args: {
   label: string;
