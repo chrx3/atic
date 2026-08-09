@@ -1,4 +1,4 @@
-//! Registro de atajos globales (grabación + dictado + pill + clipboard + fragmentos + captura + launcher).
+//! Registro de atajos globales (grabación + dictado + pill + clipboard + fragmentos + agentes + captura + launcher).
 //!
 //! Teclado: `tauri-plugin-global-shortcut`.
 //! Botones laterales del mouse: Raw Input (ver `mouse_bindings`).
@@ -7,7 +7,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
 use crate::mouse_bindings::{self, MouseAction, SideButton};
-use crate::{clipboard_history, dictation, launcher, snippets, state};
+use crate::{clipboard_history, dictation, launcher, state};
 use atic_core::MutexExt;
 
 enum Binding {
@@ -32,6 +32,44 @@ fn binding_dup_key(b: &Binding) -> String {
     }
 }
 
+fn dictation_listening(app: &AppHandle) -> bool {
+    app.try_state::<state::AppState>()
+        .map(|s| s.dictation.lock_or_recover().is_some())
+        .unwrap_or(false)
+}
+
+/// Asegura overlay visible y pide al front el pipeline de slot.
+pub fn emit_tool_slot(app: &AppHandle, event: &str, tool: &str) {
+    if let Some(pill) = app.get_webview_window(crate::overlay::LABEL) {
+        let visible = app
+            .try_state::<state::AppState>()
+            .map(|s| s.config.lock_or_recover().show_pill)
+            .unwrap_or(true);
+        if visible {
+            let _ = pill.set_always_on_top(true);
+            let _ = pill.show();
+        }
+    }
+    let _ = app.emit(event, tool);
+}
+
+/// Dictado toggle: al empezar, fly+activar vía overlay; al parar, stop directo.
+pub fn dictation_toggle_via_slot(app: &AppHandle) {
+    if dictation_listening(app) {
+        dictation::toggle_dictation(app);
+    } else {
+        emit_tool_slot(app, "activate-tool-slot", "dictation");
+    }
+}
+
+/// PTT down: vuela en paralelo y arranca ya (latencia del mic).
+pub fn dictation_ptt_down_via_slot(app: &AppHandle) {
+    if !dictation_listening(app) {
+        emit_tool_slot(app, "fly-tool-slot", "dictation");
+    }
+    dictation::dictation_key_down(app);
+}
+
 /// Registra (o re-registra) los atajos globales.
 ///
 /// Los atajos globales que registra la app.
@@ -47,6 +85,7 @@ pub struct ShortcutBindings<'a> {
     pub pill_radial: &'a str,
     pub clipboard: &'a str,
     pub snippets: &'a str,
+    pub agents: &'a str,
     pub screenshot: &'a str,
     pub launcher: &'a str,
 }
@@ -66,6 +105,7 @@ pub fn register_shortcuts(app: &AppHandle, bindings: ShortcutBindings<'_>) -> Re
     let radial = parse_binding("rueda de la pill", bindings.pill_radial)?;
     let clipboard = parse_binding("clipboard", bindings.clipboard)?;
     let snippets = parse_binding("fragmentos", bindings.snippets)?;
+    let agents = parse_binding("agentes", bindings.agents)?;
     let screenshot = parse_binding("captura", bindings.screenshot)?;
     let launcher_bind = parse_binding("launcher", bindings.launcher)?;
 
@@ -76,6 +116,7 @@ pub fn register_shortcuts(app: &AppHandle, bindings: ShortcutBindings<'_>) -> Re
         ("rueda de la pill", &radial),
         ("clipboard", &clipboard),
         ("fragmentos", &snippets),
+        ("agentes", &agents),
         ("captura", &screenshot),
         ("launcher", &launcher_bind),
     ];
@@ -124,12 +165,12 @@ pub fn register_shortcuts(app: &AppHandle, bindings: ShortcutBindings<'_>) -> Re
 
                 match (mode.as_str(), event.state()) {
                     ("push_to_talk", ShortcutState::Pressed) => {
-                        dictation::dictation_key_down(&handle)
+                        dictation_ptt_down_via_slot(&handle)
                     }
                     ("push_to_talk", ShortcutState::Released) => {
                         dictation::dictation_key_up(&handle)
                     }
-                    (_, ShortcutState::Pressed) => dictation::toggle_dictation(&handle),
+                    (_, ShortcutState::Pressed) => dictation_toggle_via_slot(&handle),
                     _ => {}
                 }
             }) {
@@ -205,7 +246,9 @@ pub fn register_shortcuts(app: &AppHandle, bindings: ShortcutBindings<'_>) -> Re
             let handle = app.clone();
             if let Err(err) = gs.on_shortcut(*sc, move |_app, _sc, event| {
                 if matches!(event.state(), ShortcutState::Pressed) {
-                    clipboard_history::summon_clipboard_panel(&handle);
+                    // Pill → cursor → float (mismo pipeline que dictado/launcher).
+                    clipboard_history::remember_paste_target();
+                    emit_tool_slot(&handle, "activate-tool-slot", "clipboard");
                 }
             }) {
                 tracing::error!(%err, "no se pudo registrar el atajo de clipboard");
@@ -220,7 +263,8 @@ pub fn register_shortcuts(app: &AppHandle, bindings: ShortcutBindings<'_>) -> Re
             let handle = app.clone();
             if let Err(err) = gs.on_shortcut(*sc, move |_app, _sc, event| {
                 if matches!(event.state(), ShortcutState::Pressed) {
-                    snippets::summon_snippets_panel(&handle);
+                    clipboard_history::remember_paste_target();
+                    emit_tool_slot(&handle, "activate-tool-slot", "snippets");
                 }
             }) {
                 tracing::error!(%err, "no se pudo registrar el atajo de fragmentos");
@@ -228,6 +272,24 @@ pub fn register_shortcuts(app: &AppHandle, bindings: ShortcutBindings<'_>) -> Re
             }
         }
         Binding::Mouse(btn) => mouse.push((*btn, MouseAction::Snippets)),
+    }
+
+    match &agents {
+        Binding::Key(sc) => {
+            let handle = app.clone();
+            if let Err(err) = gs.on_shortcut(*sc, move |_app, _sc, event| {
+                if matches!(event.state(), ShortcutState::Pressed) {
+                    // `show_agents_window` ya es toggle (panel_float).
+                    crate::agents::bridge::show_agents_window(handle.clone());
+                }
+            }) {
+                tracing::error!(%err, "no se pudo registrar el atajo de agentes");
+                failed.push("agentes".to_string());
+            }
+        }
+        Binding::Mouse(_) => {
+            tracing::warn!("la consola de agentes solo admite atajo de teclado");
+        }
     }
 
     match &screenshot {
@@ -252,7 +314,7 @@ pub fn register_shortcuts(app: &AppHandle, bindings: ShortcutBindings<'_>) -> Re
             let handle = app.clone();
             if let Err(err) = gs.on_shortcut(*sc, move |_app, _sc, event| {
                 if matches!(event.state(), ShortcutState::Pressed) {
-                    launcher::toggle(&handle);
+                    launcher::toggle_via_slot(&handle);
                 }
             }) {
                 tracing::error!(%err, "no se pudo registrar el atajo del launcher");

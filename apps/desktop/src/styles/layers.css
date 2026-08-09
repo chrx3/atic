@@ -18,14 +18,16 @@
   --z-ink: 30;
 
   /*
-   * Overlay: floats debajo, pill (y su auth) encima.
-   * Sin esto, `z-index: auto` en la pill pierde contra los floats con z > 0
-   * aunque vaya después en el DOM.
+   * Overlay: float por encima de la pill. Si no, el header del float (pin /
+   * cerrar) queda bajo el hit-box de la pill junto al cuello y el clic solo
+   * “pega” en una franja mínima. La pill sigue clicable fuera del solape.
    */
-  --z-overlay-float: 2;
-  --z-overlay-pill: 3;
+  --z-overlay-pill: 2;
+  --z-overlay-float: 3;
 
   --z-popover: 60;
+  /* ToastStack usa `popover` (top layer) además de este z: si no, queda bajo
+   * cualquier `<dialog showModal()>`. */
   --z-toast: 100;
   --z-skip: 110;
 }

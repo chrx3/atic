@@ -12,23 +12,42 @@
     onAgentsBubbleDismiss,
     saveAgentsBubbleSize,
   } from "$ipc/agents";
-  import { onOverlayDismiss } from "$ipc/overlay";
+  import { onOverlayDismiss, overlayWorkAreas } from "$ipc/overlay";
+  import type { Area } from "$ipc/overlay";
+  import type { BubbleOpen } from "$core/types";
   import { applyTheme, readCachedTheme } from "$lib/theme";
-  import { boxShape } from "$lib/liquid/geometry";
   import { liquid } from "$surfaces/overlay/group.svelte";
+  import { publishEmergeSkin } from "$surfaces/overlay/floatEmergeSkin";
   import { surfaces } from "$surfaces/overlay/surfaces.svelte";
   import { Bubble, BUBBLE_MIN_H, BUBBLE_MIN_W } from "$surfaces/overlay/bubble.svelte";
   import { createBubbleDrag } from "$surfaces/overlay/bubbleDrag";
+  import { placeBesidePill } from "$surfaces/overlay/floatPlace";
   import AgentsDemo from "$features/agents/AgentsDemo.svelte";
   import {
     isAgentsDismissSuppressed,
   } from "$surfaces/overlay/agents/dismissGuard";
   import { toasts } from "$domain/toasts.svelte";
-  import Icon from "$ui/Icon.svelte";
   import ToastStack from "$ui/ToastStack.svelte";
-  import { X } from "$lib/icons";
+  import { MOTION, ms } from "$lib/motion";
 
   const BUBBLE_CORNER = 26;
+  let workAreas = $state<Area[]>([]);
+
+  function placeFromPill(a: BubbleOpen) {
+    const pill = surfaces.live["pill-skin"] ?? surfaces.live["pill"];
+    if (!pill) {
+      bubble.place(a);
+      return;
+    }
+    bubble.place({
+      ...a,
+      ...placeBesidePill(
+        pill,
+        { w: a.w, h: a.h },
+        { corner: BUBBLE_CORNER, work: workAreas },
+      ),
+    });
+  }
 
   type ResizeEdge = "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw";
 
@@ -137,26 +156,61 @@
   }
 
   $effect(() => {
-    if (!bubble.alive || !bubble.anchor) {
+    if (!bubble.alive || !bubEl) {
       liquid.publish("agents", []);
       return;
     }
-    liquid.publish("agents", [boxShape(bubble.anchor, BUBBLE_CORNER)]);
+    // Seguir el morph visual: el ancla lógica no escala al cerrar.
+    // Drag: fuera del goo (como auth). Remesh mid-drag era el cuello a 60Hz.
+    void bubble.shown;
+    void surfaces.dragging;
+    if (surfaces.dragging) {
+      liquid.publish("agents", []);
+      return;
+    }
+    void bubble.anchor;
+    return publishEmergeSkin("agents", bubEl, BUBBLE_CORNER);
   });
 
-  $effect(() =>
-    bubEl && bubble.shown ? surfaces.add("agents", bubEl) : undefined,
-  );
+  $effect(() => {
+    // Registrar en cuanto hay DOM (`alive`), no esperar `.is-shown`: sin
+    // hit-rect el overlay sigue click-through (clics al app de atrás).
+    // No depender de `shown` acá: re-add al morph reinicia el registro y
+    // puede publicar un frame sin `agents` en la lista.
+    if (!bubEl || !bubble.alive) return;
+    const stop = surfaces.add("agents", bubEl);
+    void surfaces.flush();
+    return stop;
+  });
+
+  $effect(() => {
+    if (!bubble.alive || !bubble.shown) return;
+    void bubble.anchor;
+    void surfaces.recoverHits();
+    const t = window.setTimeout(() => {
+      void surfaces.recoverHits();
+    }, ms(MOTION.floatOpen) + 48);
+    return () => window.clearTimeout(t);
+  });
 
   $effect(() => {
     void bubble.anchor;
+    void surfaces.dragging;
+    if (surfaces.dragging) return;
     surfaces.schedule();
   });
 
   onMount(() => {
     applyTheme(readCachedTheme());
+    void overlayWorkAreas()
+      .then((areas) => {
+        workAreas = areas;
+      })
+      .catch(() => {
+        workAreas = [];
+      });
     const un: Promise<() => void>[] = [
-      onAgentsBubbleAnchor((a) => bubble.place(a)),
+      onAgentsBubbleAnchor((a) => placeFromPill(a)),
       onAgentsBubbleDismiss(() => {
         bubble.hide();
       }),
@@ -169,6 +223,9 @@
       if (e.key !== "Escape" || !bubble.shown) return;
       // Esc: cierre explícito solo si no está fijada (panel sticky).
       if (isAgentsDismissSuppressed()) return;
+      // Consola PTY / xterm: AgentsDemo maneja Esc (cerrar consola); no cerrar el float.
+      const t = e.target as HTMLElement | null;
+      if (t?.closest?.(".console, .xterm")) return;
       e.preventDefault();
       void agentsAlwaysOnTop()
         .then((pinned) => {
@@ -191,27 +248,22 @@
 </script>
 
 {#if bubble.alive}
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
     class="af float-emerge"
     class:is-shown={bubble.shown}
+    data-agents-float
     data-side={bubble.anchor?.side ?? "top"}
     style={bubble.vars}
     bind:this={bubEl}
-    onpointerdown={startDrag}
   >
-    <button
-      type="button"
-      class="close"
-      data-no-drag
-      onclick={close}
-      aria-label="Cerrar"
-      title="Cerrar"
-    >
-      <Icon icon={X} size={13} />
-    </button>
-    <AgentsDemo variant="float" />
-    <ToastStack items={toasts.items} onDismiss={(id) => toasts.dismiss(id)} />
+    <AgentsDemo variant="float" onHeaderPointerDown={startDrag} onClose={close} />
+    <!-- local: sin popover/viewport; el overlay es fullscreen y el toast
+         quedaría abajo de toda la pantalla, lejos del bubble. -->
+    <ToastStack
+      placement="local"
+      items={toasts.items}
+      onDismiss={(id) => toasts.dismiss(id)}
+    />
     <!-- Agarraderas: los 4 bordes y las 4 esquinas. -->
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div class="grip grip-n" data-no-drag onpointerdown={(e) => startResize("n", e)}></div>
@@ -245,44 +297,9 @@
     overflow: visible;
   }
 
-  .close {
-    position: absolute;
-    z-index: 8;
-    /* Alineado con .top / .top-acts de AgentsDemo (padding 0.32rem + btn 1.75rem). */
-    top: 0.32rem;
-    right: 0.5rem;
-    display: grid;
-    place-items: center;
-    box-sizing: border-box;
-    width: 1.75rem;
-    height: 1.75rem;
-    border: 0;
-    border-radius: 0.4rem;
-    padding: 0;
-    background: transparent;
-    color: var(--rb-faint);
-    cursor: pointer;
-    box-shadow: none;
-    filter: none;
-    transition:
-      color var(--duration-quick) var(--ease-smooth-out),
-      background var(--duration-quick) var(--ease-smooth-out),
-      transform var(--duration-quick) var(--ease-smooth-out);
-  }
-
-  .close:hover {
-    color: var(--rb-text);
-    background: color-mix(in srgb, var(--rb-text) 8%, transparent);
-  }
-
-  .close:active {
-    transform: scale(0.96);
-  }
-
   .grip {
     position: absolute;
-    /* Por debajo del botón cerrar (z 8): en ancla inferior el corner
-       coincide con esa esquina y no debe robarle el clic. */
+    /* Bajo el header (.top-acts z 9): no robar pin/cerrar. */
     z-index: 7;
     background: transparent;
   }
@@ -305,7 +322,8 @@
 
   .grip-e,
   .grip-w {
-    top: 10px;
+    /* Debajo del header (~top-ctrl + padding): no tapar pin / Bypass / X. */
+    top: 40px;
     bottom: 10px;
     width: 6px;
     cursor: ew-resize;
@@ -323,7 +341,6 @@
   .grip-nw,
   .grip-se,
   .grip-sw {
-    /* Encima de los bordes (mismo z base) vía orden DOM; bajo el close (z 8). */
     width: 14px;
     height: 14px;
   }
@@ -350,11 +367,5 @@
     bottom: 0;
     right: 0;
     cursor: nwse-resize;
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .close:active {
-      transform: none;
-    }
   }
 </style>

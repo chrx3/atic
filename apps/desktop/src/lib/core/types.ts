@@ -51,6 +51,8 @@ export interface AppConfig {
   clipboard_shortcut: string;
   /** Atajo: traer pill + abrir panel de fragmentos. */
   snippets_shortcut: string;
+  /** Atajo: abrir/cerrar la consola de agentes. */
+  agents_shortcut: string;
   /** toggle | push_to_talk */
   dictation_mode: string;
   /** Nombre del micrófono. Vacío = por defecto del SO. */
@@ -100,6 +102,8 @@ export interface AppConfig {
   screenshot_shortcut: string;
   /** Atajo global del launcher tipo Spotlight. */
   launcher_shortcut: string;
+  /** Ids del launcher marcados como favoritos (`app:…` / `action:…`). */
+  launcher_favorites: string[];
   capture_shelf_side: string;
   capture_shelf_timeout_seconds: number;
   capture_retention_hours: number;
@@ -107,6 +111,61 @@ export interface AppConfig {
   capture_click_action: string;
   /** light | dark | system */
   ui_theme: string;
+  /** Hosts SSH para agentes remotos (sin secretos). */
+  ssh_hosts: SshHost[];
+}
+
+/** Host SSH persistido en config (passphrase/password van al keyring). */
+export interface SshHost {
+  id: string;
+  label: string;
+  /** Vacío = alias de ~/.ssh/config (User lo define el config). */
+  user: string;
+  /** Hostname, IP o alias Host de ssh_config (p.ej. contabo). */
+  host: string;
+  /** 0 = no pasar -p (usa ssh_config / default OpenSSH). */
+  port: number;
+  /** agent | key */
+  auth: string;
+  identity_file: string | null;
+  default_remote_cwd: string | null;
+  remote_agent_bin: string | null;
+  last_test_ok: boolean | null;
+  last_test_at: number | null;
+}
+
+export interface SshHostSecretFlags {
+  hostId: string;
+  hasPassphrase: boolean;
+  hasPassword: boolean;
+}
+
+export interface SshTestResult {
+  ok: boolean;
+  message: string;
+  checkedAt: number;
+  agentAvailable: boolean | null;
+}
+
+/** Destino de la consola embebida. */
+export type ConsoleKind = "local" | "ssh";
+
+export interface ConsoleOpenOptions {
+  kind: ConsoleKind;
+  hostId?: string | null;
+  cwd?: string | null;
+  cols?: number;
+  rows?: number;
+}
+
+export interface ConsoleOutputPayload {
+  session: string;
+  data: string;
+}
+
+export interface ConsoleExitPayload {
+  session: string;
+  code: number | null;
 }
 
 export interface Levels {
@@ -394,6 +453,8 @@ export interface McpServerConfig {
 /** Con qué arrancar una sesión. Todo opcional. */
 export interface AgentStartOptions {
   cwd?: string;
+  /** Id de host SSH en config; omitir = local. */
+  remoteHostId?: string;
   resume?: string;
   model?: string;
   /** Cuánto tiene que pensar. Los niveles los define cada backend. */
@@ -647,6 +708,8 @@ export interface StoredThread {
   /** Id con el que Claude Code o Codex reanudan la conversación. */
   providerSession: string | null;
   cwd: string;
+  /** Host SSH; null = local. */
+  remoteHostId: string | null;
   model: string;
   /** Segundos desde epoch. */
   updatedAt: number;

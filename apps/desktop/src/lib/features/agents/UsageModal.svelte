@@ -386,10 +386,30 @@
     display: contents;
   }
 
+  /* Header/body del Modal compartido: más bajo solo en este consumidor. */
+  .usage-root :global(.modal-panel > .flex.shrink-0) {
+    padding-block: 0.45rem;
+    gap: 0.5rem;
+  }
+
+  .usage-root :global(.modal-panel > .flex.shrink-0 h2) {
+    font-size: 0.875rem;
+    line-height: 1.25;
+  }
+
+  .usage-root :global(.modal-panel > .flex.shrink-0 p) {
+    font-size: 0.6875rem;
+    line-height: 1.25;
+  }
+
+  .usage-root :global(.modal-panel > .flex.min-h-0) {
+    padding-block: 0.55rem;
+  }
+
   .stack {
     display: flex;
     flex-direction: column;
-    gap: 1.1rem;
+    gap: 0.85rem;
   }
 
   .sec-head {
@@ -400,7 +420,7 @@
   }
 
   .sec-h {
-    margin: 0 0 0.45rem;
+    margin: 0 0 0.3rem;
     font-size: 0.65rem;
     font-weight: 550;
     letter-spacing: 0.04em;
@@ -510,30 +530,30 @@
   .session {
     display: flex;
     flex-direction: column;
-    gap: 0.75rem;
-    padding-top: 0.15rem;
+    gap: 0.5rem;
+    padding-top: 0.1rem;
     border-top: 1px solid var(--rb-hairline, var(--rb-border));
   }
 
   .hero {
     display: grid;
     grid-template-columns: 1fr 1fr;
-    gap: 0.55rem;
+    gap: 0.4rem;
   }
 
   .stat {
     display: flex;
     flex-direction: column;
-    gap: 0.15rem;
+    gap: 0.08rem;
     min-width: 0;
-    padding: 0.65rem 0.7rem;
+    padding: 0.4rem 0.55rem;
     border: 1px solid var(--rb-border);
-    border-radius: 0.55rem;
+    border-radius: 0.45rem;
     background: color-mix(in srgb, var(--rb-text) 3%, transparent);
   }
 
   .stat-l {
-    font-size: 0.65rem;
+    font-size: 0.6rem;
     font-weight: 550;
     letter-spacing: 0.04em;
     text-transform: uppercase;
@@ -542,12 +562,12 @@
 
   .stat-v {
     font-family: var(--rb-mono, ui-monospace, monospace);
-    font-size: 1.15rem;
+    font-size: 0.95rem;
     font-weight: 600;
     font-variant-numeric: tabular-nums;
     letter-spacing: -0.02em;
     color: var(--accent, #da7756);
-    line-height: 1.2;
+    line-height: 1.15;
   }
 
   .stat-v.is-muted {
@@ -555,15 +575,15 @@
   }
 
   .stat-h {
-    font-size: 0.65rem;
-    line-height: 1.35;
+    font-size: 0.6rem;
+    line-height: 1.3;
     color: var(--rb-faint);
   }
 
   .meta {
     display: flex;
     flex-direction: column;
-    gap: 0.35rem;
+    gap: 0.18rem;
     margin: 0;
   }
 
@@ -571,13 +591,13 @@
     display: flex;
     align-items: baseline;
     justify-content: space-between;
-    gap: 0.75rem;
+    gap: 0.5rem;
     min-width: 0;
   }
 
   .meta-row dt {
     flex-shrink: 0;
-    font-size: 0.75rem;
+    font-size: 0.7rem;
     color: var(--rb-faint);
   }
 
@@ -587,7 +607,7 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    font-size: 0.75rem;
+    font-size: 0.7rem;
     font-weight: 500;
     color: var(--rb-text);
     text-align: right;
@@ -601,7 +621,7 @@
   .turns {
     display: flex;
     flex-direction: column;
-    gap: 0.4rem;
+    gap: 0.25rem;
   }
 
   .turns-h {
@@ -620,16 +640,16 @@
     padding: 0;
     list-style: none;
     border: 1px solid var(--rb-border);
-    border-radius: 0.55rem;
+    border-radius: 0.45rem;
     overflow: hidden;
   }
 
   .turn {
     display: grid;
-    grid-template-columns: 1.6rem minmax(0, 1fr) auto;
+    grid-template-columns: 1.5rem minmax(0, 1fr) auto;
     align-items: center;
-    gap: 0.45rem;
-    padding: 0.4rem 0.55rem;
+    gap: 0.35rem;
+    padding: 0.26rem 0.5rem;
     border-top: 1px solid var(--rb-hairline, var(--rb-border));
   }
 
@@ -639,7 +659,7 @@
 
   .turn-n {
     font-family: var(--rb-mono, ui-monospace, monospace);
-    font-size: 0.65rem;
+    font-size: 0.62rem;
     font-variant-numeric: tabular-nums;
     color: var(--rb-faint);
   }
@@ -649,13 +669,13 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    font-size: 0.72rem;
+    font-size: 0.68rem;
     color: var(--rb-muted);
   }
 
   .turn-c {
     font-family: var(--rb-mono, ui-monospace, monospace);
-    font-size: 0.7rem;
+    font-size: 0.68rem;
     font-variant-numeric: tabular-nums;
     font-weight: 550;
     color: var(--rb-text);

@@ -67,75 +67,59 @@ impl AgentBackend for ClaudeCode {
         options: StartOptions,
         on_delta: Box<dyn Fn(AgentDelta) + Send + Sync + 'static>,
     ) -> Result<Box<dyn AgentSession>, String> {
-        let mut cmd = Command::new("claude");
-        cmd.arg("-p")
-            .arg("--input-format")
-            .arg("stream-json")
-            .arg("--output-format")
-            .arg("stream-json")
-            // stream-json no emite el detalle sin esto.
-            .arg("--verbose")
-            // Sin esto el modo `manual` NO pregunta: deniega la herramienta y
-            // la lista en `permission_denials` del resultado. Comprobado: con
-            // el flag llega `control_request/can_use_tool` y el turno espera.
-            // No aparece en `claude --help`.
-            .arg("--permission-prompt-tool")
-            .arg("stdio")
-            // Texto según se escribe. Sin esto la respuesta aparece de golpe al
-            // cerrar el turno, y en una tarea larga eso se ve como un cuelgue.
-            .arg("--include-partial-messages")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-
-        if let Some(dir) = &options.cwd {
-            cmd.current_dir(dir);
-        }
-        if let Some(id) = &options.resume {
-            cmd.arg("--resume").arg(id);
-            // Reanudar sin bifurcar reescribe el hilo original. Para volver a
-            // una conversación y probar otro camino sin perder el anterior,
-            // hace falta que el turno nuevo se grabe aparte.
-            if options.fork {
-                cmd.arg("--fork-session");
+        let claude_args = claude_cli_args(&options);
+        let remote = options.remote.clone();
+        let (mut cmd, askpass) = if let Some(remote) = &remote {
+            let bin = remote
+                .host
+                .remote_agent_bin
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .unwrap_or("claude");
+            let remote_cmdline = super::ssh::remote_shell_command(
+                options.cwd.as_deref(),
+                bin,
+                &claude_args,
+            );
+            // Con passphrase en keyring hace falta askpass (no BatchMode).
+            // Sin ella, BatchMode evita colgar la UI pidiendo password.
+            let batch = !atic_core::secrets::has_ssh_host_secret(
+                &remote.host.id,
+                "passphrase",
+            );
+            super::ssh::build_ssh_command(&remote.host, &remote_cmdline, batch).map_err(
+                |e| format!("no se pudo preparar SSH para Claude Code: {e}"),
+            )?
+        } else {
+            let mut cmd = Command::new("claude");
+            cmd.args(&claude_args)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            if let Some(dir) = &options.cwd {
+                cmd.current_dir(dir);
             }
-        } else if let Some(id) = &options.session_id {
-            cmd.arg("--session-id").arg(id);
-        }
-        if let Some(model) = &options.model {
-            cmd.arg("--model").arg(model);
-        }
-        // Cuánto piensa antes de contestar. No aparece en la vista de ningún
-        // otro backend con este nombre, pero el CLI lo acepta desde hace rato y
-        // es la diferencia entre una respuesta de tres segundos y una de dos
-        // minutos: dejarlo fuera era decidir por el usuario siempre lo mismo.
-        if let Some(effort) = &options.effort {
-            cmd.arg("--effort").arg(effort);
-        }
-        // Sin modo explícito, se preguntan todos: es el default seguro para una
-        // interfaz gráfica, donde el usuario está mirando y puede contestar.
-        // Valores inválidos (p. ej. "full" de un ResumeMode mal pasado) se
-        // normalizan a manual: el CLI aborta el proceso si no reconoce el modo.
-        cmd.arg("--permission-mode")
-            .arg(cli_permission_mode(options.permission_mode.as_deref()));
-        if let Some(mcp) = &options.mcp_config {
-            cmd.arg("--mcp-config").arg(mcp);
-        }
-        for dir in &options.add_dirs {
-            cmd.arg("--add-dir").arg(dir);
-        }
+            #[cfg(windows)]
+            {
+                // Sin esto, cada turno abre una consola negra sobre la app.
+                use std::os::windows::process::CommandExt;
+                const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+                cmd.creation_flags(CREATE_NO_WINDOW);
+            }
+            (cmd, None)
+        };
 
-        #[cfg(windows)]
-        {
-            // Sin esto, cada turno abre una consola negra sobre la app.
-            use std::os::windows::process::CommandExt;
-            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-            cmd.creation_flags(CREATE_NO_WINDOW);
-        }
-
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| format!("no se pudo iniciar Claude Code: {e}"))?;
+        let mut child = cmd.spawn().map_err(|e| {
+            if remote.is_some() {
+                format!(
+                    "no se pudo iniciar Claude Code vía SSH: {e}. \
+¿Está `ssh` en el PATH y `claude` en el host remoto?"
+                )
+            } else {
+                format!("no se pudo iniciar Claude Code: {e}")
+            }
+        })?;
 
         let stdin = child
             .stdin
@@ -227,6 +211,8 @@ impl AgentBackend for ClaudeCode {
             emit,
             mute_history,
             interrupted,
+            // El script askpass tiene que vivir hasta que SSH autentique.
+            _askpass: askpass,
         };
         // Handshake del canal de control. Abre la vía por la que después llegan
         // las pedidas de permiso; sin él, el turno se bloquearía esperando una
@@ -954,6 +940,56 @@ struct ClaudeSession {
     mute_history: Arc<AtomicBool>,
     /// Pedido de interrupt pendiente; el traductor lo consume al cerrar el turno.
     interrupted: Arc<AtomicBool>,
+    /// Mantiene el helper SSH_ASKPASS en disco mientras viva la sesión remota.
+    _askpass: Option<super::ssh::AskpassGuard>,
+}
+
+/// Flags de `claude -p …` compartidos entre spawn local y remoto.
+fn claude_cli_args(options: &StartOptions) -> Vec<String> {
+    let mut args = vec![
+        "-p".into(),
+        "--input-format".into(),
+        "stream-json".into(),
+        "--output-format".into(),
+        "stream-json".into(),
+        // stream-json no emite el detalle sin esto.
+        "--verbose".into(),
+        // Sin esto el modo `manual` NO pregunta: deniega la herramienta y
+        // la lista en `permission_denials` del resultado.
+        "--permission-prompt-tool".into(),
+        "stdio".into(),
+        // Texto según se escribe.
+        "--include-partial-messages".into(),
+    ];
+    if let Some(id) = &options.resume {
+        args.push("--resume".into());
+        args.push(id.clone());
+        if options.fork {
+            args.push("--fork-session".into());
+        }
+    } else if let Some(id) = &options.session_id {
+        args.push("--session-id".into());
+        args.push(id.clone());
+    }
+    if let Some(model) = &options.model {
+        args.push("--model".into());
+        args.push(model.clone());
+    }
+    if let Some(effort) = &options.effort {
+        args.push("--effort".into());
+        args.push(effort.clone());
+    }
+    args.push("--permission-mode".into());
+    args.push(cli_permission_mode(options.permission_mode.as_deref()).to_string());
+    if let Some(mcp) = &options.mcp_config {
+        args.push("--mcp-config".into());
+        args.push(mcp.clone());
+    }
+    for dir in &options.add_dirs {
+        args.push("--add-dir".into());
+        args.push(dir.clone());
+    }
+    args
 }
 
 impl ClaudeSession {

@@ -14,13 +14,29 @@ import type {
   AgentTurn,
   ClaudeAccountUsage,
   ClaudeCodeSession,
+  ConsoleExitPayload,
+  ConsoleOpenOptions,
+  ConsoleOutputPayload,
   DirectoryListing,
   PermissionDecision,
+  SshHost,
+  SshHostSecretFlags,
+  SshTestResult,
   StoredThread,
 } from "$core/types";
 import { on } from "./events";
 
-export type { BubbleOpen, ClaudeAccountUsage, DirectoryListing };
+export type {
+  BubbleOpen,
+  ClaudeAccountUsage,
+  ConsoleExitPayload,
+  ConsoleOpenOptions,
+  ConsoleOutputPayload,
+  DirectoryListing,
+  SshHost,
+  SshHostSecretFlags,
+  SshTestResult,
+};
 
 /** Qué agentes conoce Atic y cuáles están instalados. Lanza un proceso por
  *  backend, así que conviene llamarlo al abrir la vista, no en cada render. */
@@ -112,6 +128,49 @@ export const agentClaudeUsage = () =>
  */
 export const listDirectories = (path?: string | null) =>
   invoke<DirectoryListing>("list_directories", { path: path ?? null });
+
+/** Hosts SSH guardados en config (sin secretos). */
+export const sshListHosts = () => invoke<SshHost[]>("ssh_list_hosts");
+
+/** Flags has_passphrase / has_password por host. */
+export const sshHostSecretsStatus = () =>
+  invoke<SshHostSecretFlags[]>("ssh_host_secrets_status");
+
+/** Guarda o borra passphrase/password. Valor vacío elimina. */
+export const sshSetHostSecret = (
+  hostId: string,
+  kind: "passphrase" | "password",
+  value: string,
+) => invoke<void>("ssh_set_host_secret", { hostId, kind, value });
+
+/** Borra secretos del keyring al eliminar un host. */
+export const sshDeleteHostSecrets = (hostId: string) =>
+  invoke<void>("ssh_delete_host_secrets", { hostId });
+
+/** Prueba conexión (BatchMode). Si el id ya está en config, actualiza last_test_*. */
+export const sshTestHost = (host: SshHost) =>
+  invoke<SshTestResult>("ssh_test_host", { host });
+
+/** Abre PTY local o `ssh -t`. Reemplaza solo la sesión del mismo kind (local|ssh). */
+export const consoleOpen = (options: ConsoleOpenOptions) =>
+  invoke<string>("console_open", { options });
+
+export const consoleWrite = (session: string, data: string) =>
+  invoke<void>("console_write", { session, data });
+
+export const consoleResize = (session: string, cols: number, rows: number) =>
+  invoke<void>("console_resize", { session, cols, rows });
+
+export const consoleClose = (session: string) =>
+  invoke<void>("console_close", { session });
+
+export const onConsoleOutput = (
+  cb: (payload: ConsoleOutputPayload) => void,
+): Promise<UnlistenFn> => on("console-output", cb);
+
+export const onConsoleExit = (
+  cb: (payload: ConsoleExitPayload) => void,
+): Promise<UnlistenFn> => on("console-exit", cb);
 
 // --- La burbuja ---
 /** True si la burbuja de agentes está visible. */

@@ -2,13 +2,19 @@
  * Acción primaria de cada herramienta en el picker de la ventana principal.
  *
  * El CTA de la card no “abre” la tool: la ejecuta (grabar, dictar, capturar…).
- * Clipboard y Textos no tienen un one-shot claro: su acción abre el detalle.
+ * Clipboard / textos / agentes / Apps: abren float (vía slot si hay).
+ * Tools con slot espacial delegan en el overlay: flyTo → ejecutar.
  */
 
 import { capture } from "$domain/capture.svelte";
 import { dictation } from "$domain/dictation.svelte";
 import { showAgentsWindow } from "$ipc/agents";
 import { startCaptureSession } from "$ipc/captures";
+import { showClipboardWindow } from "$ipc/clipboard";
+import { showLauncher } from "$ipc/search";
+import { showSnippetsWindow } from "$ipc/snippets";
+import { emit } from "@tauri-apps/api/event";
+import { hasToolSlot } from "$surfaces/overlay/toolSlots";
 import type { ToolId } from "./tools";
 
 export type ToolActionKind = "run" | "openDetail";
@@ -41,14 +47,26 @@ export function toolAction(id: ToolId): ToolAction {
       return { kind: "run", label: "Tomar captura" };
     case "agents":
       return { kind: "run", label: "Abrir consola" };
+    case "launcher":
+      return { kind: "run", label: "Buscar apps" };
     case "clipboard":
-      return { kind: "openDetail", label: "Ver historial" };
+      return { kind: "run", label: "Ver historial" };
     case "snippets":
-      return { kind: "openDetail", label: "Ver textos" };
+      return { kind: "run", label: "Ver textos" };
   }
 }
 
-export async function runToolAction(id: ToolId): Promise<"openedDetail" | void> {
+/** Pedir al overlay: volar al slot y ejecutar la tool. */
+export const requestActivateAtSlot = (tool: ToolId) =>
+  emit("activate-tool-slot", tool);
+
+/**
+ * Ejecuta la acción sin pasar por el vuelo al slot.
+ * Lo usa el overlay después de `flyTo`, o tools sin slot.
+ */
+export async function executeToolAction(
+  id: ToolId,
+): Promise<"openedDetail" | void> {
   switch (id) {
     case "meetings":
       await capture.toggle();
@@ -62,8 +80,26 @@ export async function runToolAction(id: ToolId): Promise<"openedDetail" | void> 
     case "agents":
       await showAgentsWindow();
       return;
+    case "launcher":
+      await showLauncher();
+      return;
     case "clipboard":
+      await showClipboardWindow();
+      return;
     case "snippets":
-      return "openedDetail";
+      await showSnippetsWindow();
+      return;
   }
+}
+
+/**
+ * Acción primaria desde catálogo / ToolRail.
+ * Si la tool tiene slot, el overlay vuela y ejecuta; si no, corre acá.
+ */
+export async function runToolAction(id: ToolId): Promise<"openedDetail" | void> {
+  if (hasToolSlot(id)) {
+    await requestActivateAtSlot(id);
+    return;
+  }
+  return executeToolAction(id);
 }

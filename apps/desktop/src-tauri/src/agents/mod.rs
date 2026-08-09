@@ -26,12 +26,14 @@ pub mod claude_code;
 pub mod claude_sessions;
 pub mod claude_usage;
 pub mod codex;
+pub mod console;
 pub mod discover;
 pub mod exe;
 pub mod fs_browse;
 pub mod media;
 pub mod model;
 pub mod skills;
+pub mod ssh;
 pub mod store;
 pub mod turns;
 
@@ -105,7 +107,10 @@ pub struct McpServerState {
 #[derive(Debug, Clone, Default)]
 pub struct StartOptions {
     /// Directorio de trabajo. `None` = el de la app.
+    /// En remoto es un path POSIX en el host; no se canoniciza en local.
     pub cwd: Option<String>,
+    /// Destino SSH. `None` = proceso local (comportamiento histórico).
+    pub remote: Option<ssh::RemoteTarget>,
     /// Id de sesión previa a reanudar.
     pub resume: Option<String>,
     /// Id a usar para una sesión nueva, elegido por nosotros.

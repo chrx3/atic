@@ -1,16 +1,8 @@
 <script lang="ts">
   /**
-   * El lanzador: atajo global, escribir, Enter.
-   *
-   * Se cierra al perder el foco. Apareció encima de lo que estabas haciendo, así
-   * que en cuanto mirás a otro lado ya cumplió o ya no hace falta; obligar a
-   * cerrarlo a mano sería pedir un paso de más por algo que dura dos segundos.
-   *
-   * La versión anterior era vidrio —`backdrop-filter: blur(18px)` y un brillo
-   * blanco en el borde—. Acá es una superficie opaca: la dirección visual es
-   * papel y tinta, y encima el desenfoque de fondo obliga al compositor a
-   * releer lo que hay debajo en cada cuadro de una ventana que aparece y
-   * desaparece todo el tiempo.
+   * Ruta `/launcher` (ventana Tauri aparte). El path primario ya no la usa:
+   * Ctrl+Space / Apps abren `LauncherFloat` en el overlay. Se deja por si la
+   * ventana sigue definida en tauri.conf (arranca oculta).
    */
   import type { LauncherHit } from "$core/types";
   import {

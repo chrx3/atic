@@ -2,31 +2,26 @@
   /**
    * Ajustes.
    *
-   * Reemplaza a un modal de 2.012 líneas donde las siete secciones estaban una
+   * Reemplaza a un modal de 2.012 líneas donde las secciones estaban una
    * detrás de otra en el mismo archivo. Acá cada una es un componente que se
    * entiende solo, y el panel únicamente decide cuál se ve.
-   *
-   * Las siete están reescritas.
    */
+  import { untrack } from "svelte";
   import { tabPanel } from "$lib/motion";
   import SettingsNav from "$patterns/SettingsNav.svelte";
   import type { IconId } from "$lib/ToolIcon.svelte";
+  import AgentsSection from "./AgentsSection.svelte";
   import AudioSection from "./AudioSection.svelte";
   import CapturesSection from "./CapturesSection.svelte";
   import DictationSection from "./DictationSection.svelte";
   import GeneralSection from "./GeneralSection.svelte";
+  import LauncherSection from "./LauncherSection.svelte";
   import MeetingsSection from "./MeetingsSection.svelte";
   import ShortcutsSection from "./ShortcutsSection.svelte";
   import SummarySection from "./SummarySection.svelte";
+  import type { SettingsSectionId } from "./settingsSections";
 
-  type SectionId =
-    | "general"
-    | "meetings"
-    | "dictation"
-    | "captures"
-    | "shortcuts"
-    | "audio"
-    | "summary";
+  type SectionId = SettingsSectionId;
 
   const SECTIONS: { value: SectionId; label: string; icon: IconId }[] = [
     { value: "general", label: "General", icon: "general" },
@@ -34,11 +29,21 @@
     { value: "dictation", label: "Dictado", icon: "dictation" },
     { value: "captures", label: "Capturas", icon: "captures" },
     { value: "shortcuts", label: "Atajos", icon: "shortcuts" },
+    { value: "launcher", label: "Launcher", icon: "launcher" },
     { value: "audio", label: "Audio", icon: "audio" },
     { value: "summary", label: "Resúmenes", icon: "summary" },
+    { value: "agents", label: "Agentes", icon: "agents" },
   ];
 
-  let section = $state<SectionId>("general");
+  let {
+    initialSection = "general",
+  }: {
+    /** Sección inicial (p. ej. deep-link desde la consola de agentes). */
+    initialSection?: SectionId;
+  } = $props();
+
+  // Solo seed: MainSurface remonta con `{#key settingsSection}` al deep-linkear.
+  let section = $state<SectionId>(untrack(() => initialSection));
 </script>
 
 <!--
@@ -64,10 +69,14 @@
           <CapturesSection />
         {:else if section === "shortcuts"}
           <ShortcutsSection />
+        {:else if section === "launcher"}
+          <LauncherSection />
         {:else if section === "audio"}
           <AudioSection />
-        {:else}
+        {:else if section === "summary"}
           <SummarySection />
+        {:else}
+          <AgentsSection />
         {/if}
       </div>
     {/key}

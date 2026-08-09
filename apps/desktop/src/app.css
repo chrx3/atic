@@ -103,26 +103,29 @@ textarea,
   /*
    * transitions.dev — plus → menu morph (rueda de la pill).
    *
-   * Cerrar es el espejo de abrir: misma duración y misma curva (con overshoot).
-   * Las transiciones CSS recorren el camino inverso (gotas → centro, scale
-   * 1 → 0.35) y, al compartir timing, el morph se lee como una sola ida y
-   * vuelta. `is-quick` / `--morph-quick-dur` sigue acortando al elegir
-   * herramienta, donde la rueda ya cumplió y el morph solo estorba.
+   * Abrir: overshoot (`--morph-ease`). Cerrar: ease-out sin bounce
+   * (`--morph-close-ease`) y un poco más corto — Operate odia el rebote al
+   * salir. La firma visual es ParticleWheel (gotas/nodos); la caja solo es
+   * hit-box (crece/encoge al instante con pivot center).
+   * `is-quick` / `--morph-quick-dur` acorta al elegir herramienta.
    *
    * Estos ms son la única fuente de verdad; `$lib/motion.ts` los lee de acá.
    */
-  --morph-open-dur: 350ms;
-  --morph-close-dur: var(--morph-open-dur);
+  --morph-open-dur: 110ms;
+  --morph-close-dur: 100ms;
   --morph-ease: cubic-bezier(0.34, 1.25, 0.64, 1);
-  --morph-close-ease: var(--morph-ease);
-  --morph-fade-dur: 200ms;
+  --morph-close-ease: var(--ease-smooth-out);
+  --morph-fade-dur: 80ms;
   /* Cierre acelerado: al elegir herramienta la rueda ya cumplió su función. */
-  --morph-quick-dur: 150ms;
+  --morph-quick-dur: 60ms;
   --morph-scale: 0.97;
   --morph-blur: 2px;
 
   /* Paneles de la pill (historial / fragmentos). */
-  --panel-dur: 250ms;
+  --panel-dur: 110ms;
+
+  /* Vuelo de la pill al cursor (abrir rueda / summon / volver al hogar). */
+  --flight-dur: 110ms;
 
   /*
    * Overlay de captura. A propósito NO sigue el tema: se dibuja sobre el
@@ -135,23 +138,33 @@ textarea,
   --rb-overlay-select: #2f9e44;
 
   /* Escala transitions.dev, compartida por las tres ventanas flotantes. */
-  --duration-stagger: 40ms;
-  --duration-micro: 80ms;
-  --duration-quick: 150ms;
-  --duration-fast: 250ms;
-  --duration-medium: 350ms;
-  --duration-slow: 400ms;
+  --duration-stagger: 20ms;
+  --duration-micro: 40ms;
+  --duration-quick: 75ms;
+  --duration-fast: 125ms;
+  --duration-medium: 150ms;
+  --duration-slow: 200ms;
   --distance-micro: 4px;
   --distance-base: 8px;
   --scale-large: 0.96;
   --scale-small: 0.98;
   --blur-small: 2px;
-  --duration-very-slow: 500ms;
-  --float-open-dur: var(--duration-slow);
-  --float-close-dur: var(--duration-medium);
+  --duration-very-slow: 250ms;
+  /* Misma familia que el morph de la rueda (medium / close), no otro dialecto. */
+  --float-open-dur: var(--duration-medium);
+  --float-close-dur: var(--morph-close-dur);
   --float-ease: var(--ease-smooth-out);
-  --float-scale: var(--scale-large);
+  /* Nace/vuelve a la pill: más chico que `--scale-large` (modales). */
+  --float-scale: 0.55;
+  --float-travel: 18px;
   --float-blur: var(--blur-small);
+  /*
+   * Launcher Spotlight (acto 2–3): barra nace despacio de la pill; favs se
+   * ven fusionados y luego se desprenden (cuello líquido legible).
+   */
+  --launcher-bar-open-dur: 100ms;
+  --launcher-separate-dur: 90ms;
+  --launcher-fav-stagger: 90ms;
   --ease-smooth-out: cubic-bezier(0.22, 1, 0.36, 1);
   --ease-out: ease-out;
 
@@ -173,7 +186,7 @@ textarea,
    * (`GOO_GROW`, `preFilter`); si cambia σ, cambian los dos.
    */
   --skin: color-mix(in srgb, var(--rb-surface) 97%, transparent);
-  --goo-grow: 1.4px;
+  --goo-grow: 2.6px;
 
   --rb-radius: 14px;
   --rb-radius-sm: 8px;
@@ -191,28 +204,25 @@ textarea,
 
 
 /*
- * Ventana flotante que sale de la pill.
+ * Ventana flotante que nace de la pill y vuelve a ella al cerrar.
  * Usar con `.float-emerge` + `.is-shown` + `data-side` (top|bottom|left|right).
+ * `data-side` = lado del float que mira a la pill (origen del morph).
  */
 .float-emerge {
   opacity: 0;
   transform: scale(var(--float-scale));
-  filter: blur(var(--float-blur));
   pointer-events: none;
   transition:
     opacity var(--float-close-dur) var(--float-ease),
-    transform var(--float-close-dur) var(--float-ease),
-    filter var(--float-close-dur) var(--float-ease);
+    transform var(--float-close-dur) var(--float-ease);
 }
 .float-emerge.is-shown {
   opacity: 1;
   transform: none;
-  filter: blur(0);
   pointer-events: auto;
   transition:
     opacity var(--float-open-dur) var(--float-ease),
-    transform var(--float-open-dur) var(--float-ease),
-    filter var(--float-open-dur) var(--float-ease);
+    transform var(--float-open-dur) var(--float-ease);
 }
 .float-emerge[data-side="top"] {
   transform-origin: var(--tail, 50%) 0;
@@ -226,11 +236,27 @@ textarea,
 .float-emerge[data-side="right"] {
   transform-origin: 100% var(--tail, 50%);
 }
+/* Viaje hacia la pill además del scale (el cierre es el espejo). */
+.float-emerge[data-side="top"]:not(.is-shown) {
+  transform: translateY(calc(var(--float-travel) * -1)) scale(var(--float-scale));
+}
+.float-emerge[data-side="bottom"]:not(.is-shown) {
+  transform: translateY(var(--float-travel)) scale(var(--float-scale));
+}
+.float-emerge[data-side="left"]:not(.is-shown) {
+  transform: translateX(calc(var(--float-travel) * -1)) scale(var(--float-scale));
+}
+.float-emerge[data-side="right"]:not(.is-shown) {
+  transform: translateX(var(--float-travel)) scale(var(--float-scale));
+}
 @media (prefers-reduced-motion: reduce) {
   .float-emerge,
-  .float-emerge.is-shown {
+  .float-emerge.is-shown,
+  .float-emerge[data-side="top"]:not(.is-shown),
+  .float-emerge[data-side="bottom"]:not(.is-shown),
+  .float-emerge[data-side="left"]:not(.is-shown),
+  .float-emerge[data-side="right"]:not(.is-shown) {
     transition: none;
-    filter: none;
     transform: none;
   }
 }

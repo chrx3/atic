@@ -24,31 +24,42 @@ import { sameSize, type Pivot, type ResizeOutcome, type Size } from "./pillStage
 export type { Point };
 
 /**
- * Encaja un rectángulo dentro del área útil del monitor que le corresponde.
+ * Encaja un rectángulo en el monitor que le corresponde (`bounds` completos).
  *
- * Es el `clamp` de Rust, con su misma regla: el monitor se elige por el
- * **centro** del rectángulo, no por su esquina. Con la esquina, algo a caballo
- * entre dos pantallas saltaba a la otra.
- *
- * Hace falta acá porque el overlay abarca el escritorio virtual entero: su
- * propio borde no dice nada sobre dónde termina la pantalla en la que estás.
+ * Misma regla que `floating::clamp` en Rust: monitor por **centro**; si el
+ * centro cae entre pantallas, se usa la unión de todas las áreas (escritorio
+ * virtual). `MARGIN = 0` → puede solapar taskbar y pegarse al borde.
  */
 function clampTo(areas: Area[], p: Point, size: Size): Point {
   if (areas.length === 0) return p;
   const cx = p.x + size.w / 2;
   const cy = p.y + size.h / 2;
-  const area =
-    areas.find((a) => cx >= a.x && cx <= a.x + a.w && cy >= a.y && cy <= a.y + a.h) ??
-    areas[0];
+  const hit = areas.find(
+    (a) => cx >= a.x && cx <= a.x + a.w && cy >= a.y && cy <= a.y + a.h,
+  );
+  const area = hit ?? unionAreas(areas);
 
-  // max contra el mínimo: en un monitor más chico que la superficie, el clamp
-  // invertido la mandaba fuera de pantalla.
   const maxX = Math.max(area.x + area.w - size.w - MARGIN, area.x + MARGIN);
   const maxY = Math.max(area.y + area.h - size.h - MARGIN, area.y + MARGIN);
   return {
     x: Math.min(Math.max(p.x, area.x + MARGIN), maxX),
     y: Math.min(Math.max(p.y, area.y + MARGIN), maxY),
   };
+}
+
+function unionAreas(areas: Area[]): Area {
+  let x0 = areas[0].x;
+  let y0 = areas[0].y;
+  let x1 = areas[0].x + areas[0].w;
+  let y1 = areas[0].y + areas[0].h;
+  for (let i = 1; i < areas.length; i++) {
+    const a = areas[i];
+    x0 = Math.min(x0, a.x);
+    y0 = Math.min(y0, a.y);
+    x1 = Math.max(x1, a.x + a.w);
+    y1 = Math.max(y1, a.y + a.h);
+  }
+  return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
 }
 
 /** ¿Entra el panel hacia abajo desde `y`? */
@@ -117,9 +128,9 @@ export function createCssStage() {
 
     switch (pivot) {
       case "cursor": {
-        // Teleport al puntero (centrando el rectángulo). La apertura normal
-        // de la rueda ya no lo usa: morflea in-situ con `center`. El summon
-        // (`pill-reset`) va por `flyTo` + `overlayCursor` en el componente.
+        // Teleport al puntero (centrando el rectángulo). La rueda y el summon
+        // vuelan con `flyTo` + `overlayCursor` en PillSurface; este pivote
+        // queda por si un resize quiere anclarse al cursor sin transición CSS.
         const cursor = await overlayCursor().catch(() => null);
         const c = cursor ?? { x: origin.x, y: origin.y };
         next = { x: c.x - target.w / 2, y: c.y - target.h / 2 };

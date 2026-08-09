@@ -13,7 +13,7 @@ pub mod summary;
 pub mod sync;
 pub mod transcript;
 
-pub use config::Config;
+pub use config::{Config, SshHost};
 pub use db::{AgentThreadRow, Db};
 pub use error::{Error, Result};
 pub use fs_atomic::{write_atomic, write_atomic_str};

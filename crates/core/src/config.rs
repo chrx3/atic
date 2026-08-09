@@ -4,6 +4,55 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::Result;
 
+/// Host SSH para correr el agente en una VM remota.
+///
+/// No guarda secretos: passphrase/password van al keyring con clave
+/// `ssh_host_{id}_…`. `identity_file` es solo la ruta local al archivo.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct SshHost {
+    /// Id estable (uuid).
+    pub id: String,
+    /// Etiqueta visible, p.ej. `prod-api`.
+    pub label: String,
+    /// Usuario SSH. Vacío = dejar que `~/.ssh/config` lo defina (alias Host).
+    pub user: String,
+    /// Hostname, IP, o alias de `Host` en `~/.ssh/config` (p.ej. `contabo`).
+    pub host: String,
+    /// Puerto. `0` = no pasar `-p` (usa el de ssh_config o el default de OpenSSH).
+    pub port: u16,
+    /// `agent` | `key` (password queda fuera del MVP de UI).
+    pub auth: String,
+    /// Ruta local al identity file. Nunca el contenido.
+    pub identity_file: Option<String>,
+    /// cwd remoto por defecto (POSIX).
+    pub default_remote_cwd: Option<String>,
+    /// Override del binario remoto; default `claude`.
+    pub remote_agent_bin: Option<String>,
+    /// Último test de conexión (sin secretos).
+    pub last_test_ok: Option<bool>,
+    /// Epoch secs del último test.
+    pub last_test_at: Option<i64>,
+}
+
+impl Default for SshHost {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            label: String::new(),
+            user: String::new(),
+            host: String::new(),
+            port: 22,
+            auth: "agent".into(),
+            identity_file: None,
+            default_remote_cwd: None,
+            remote_agent_bin: None,
+            last_test_ok: None,
+            last_test_at: None,
+        }
+    }
+}
+
 /// Preferencias del usuario, persistidas como JSON en el directorio de datos.
 ///
 /// Los secretos (API keys, contraseña SMTP) NUNCA se guardan aquí; van al
@@ -59,6 +108,8 @@ pub struct Config {
     pub clipboard_shortcut: String,
     /// Atajo global: traer pill + abrir panel de fragmentos.
     pub snippets_shortcut: String,
+    /// Atajo global: abrir/cerrar la consola de agentes.
+    pub agents_shortcut: String,
     /// Modo de dictado: `toggle` | `push_to_talk`.
     pub dictation_mode: String,
     /// Micrófono preferido (ID WASAPI o nombre legacy). Vacío = default del SO.
@@ -136,6 +187,8 @@ pub struct Config {
     pub screenshot_shortcut: String,
     /// Atajo global para el launcher tipo Spotlight.
     pub launcher_shortcut: String,
+    /// Ids de entradas del launcher marcadas como favoritas (`app:…` / `action:…`).
+    pub launcher_favorites: Vec<String>,
     /// Lado del shelf de capturas: `right` | `left`.
     pub capture_shelf_side: String,
     /// Segundos sin interacción antes de que el shelf se retraiga.
@@ -149,6 +202,8 @@ pub struct Config {
     pub capture_click_action: String,
     /// Tema de interfaz: `light` | `dark` | `system`.
     pub ui_theme: String,
+    /// Hosts SSH para sesiones de agente remotas.
+    pub ssh_hosts: Vec<SshHost>,
 }
 
 impl Default for Config {
@@ -190,6 +245,7 @@ impl Default for Config {
             pill_radial_shortcut: "Alt+Z".to_string(),
             clipboard_shortcut: "CmdOrCtrl+Shift+V".to_string(),
             snippets_shortcut: "CmdOrCtrl+Shift+S".to_string(),
+            agents_shortcut: "CmdOrCtrl+Shift+A".to_string(),
             dictation_mode: "push_to_talk".to_string(),
             mic_device_id: String::new(),
             dictation_mic_device_id: String::new(),
@@ -197,9 +253,9 @@ impl Default for Config {
             show_pill: true,
             pill_position: None,
             agents_bubble_size: None,
-            agents_always_on_top: true,
-            clipboard_always_on_top: true,
-            snippets_always_on_top: true,
+            agents_always_on_top: false,
+            clipboard_always_on_top: false,
+            snippets_always_on_top: false,
             beep_on_start: false,
             ui_sounds: true,
             sound_recording_start: String::new(),
@@ -221,12 +277,14 @@ impl Default for Config {
             clipboard_history: true,
             screenshot_shortcut: "CmdOrCtrl+Shift+4".to_string(),
             launcher_shortcut: "CmdOrCtrl+Space".to_string(),
+            launcher_favorites: Vec::new(),
             capture_shelf_side: "right".to_string(),
             capture_shelf_timeout_seconds: 20,
             capture_retention_hours: 24,
             capture_include_cursor: false,
             capture_click_action: "preview".to_string(),
             ui_theme: "system".to_string(),
+            ssh_hosts: Vec::new(),
         }
     }
 }
@@ -264,6 +322,7 @@ struct ConfigFile {
     pill_radial_shortcut: Option<String>,
     clipboard_shortcut: Option<String>,
     snippets_shortcut: Option<String>,
+    agents_shortcut: Option<String>,
     dictation_mode: Option<String>,
     mic_device_id: Option<String>,
     dictation_mic_device_id: Option<String>,
@@ -297,12 +356,14 @@ struct ConfigFile {
     clipboard_history: Option<bool>,
     screenshot_shortcut: Option<String>,
     launcher_shortcut: Option<String>,
+    launcher_favorites: Option<Vec<String>>,
     capture_shelf_side: Option<String>,
     capture_shelf_timeout_seconds: Option<u32>,
     capture_retention_hours: Option<u32>,
     capture_include_cursor: Option<bool>,
     capture_click_action: Option<String>,
     ui_theme: Option<String>,
+    ssh_hosts: Option<Vec<SshHost>>,
 }
 
 #[derive(Deserialize)]
@@ -367,6 +428,7 @@ impl Default for ConfigFile {
             pill_radial_shortcut: None,
             clipboard_shortcut: None,
             snippets_shortcut: None,
+            agents_shortcut: None,
             dictation_mode: None,
             mic_device_id: None,
             dictation_mic_device_id: None,
@@ -398,12 +460,14 @@ impl Default for ConfigFile {
             clipboard_history: None,
             screenshot_shortcut: None,
             launcher_shortcut: None,
+            launcher_favorites: None,
             capture_shelf_side: None,
             capture_shelf_timeout_seconds: None,
             capture_retention_hours: None,
             capture_include_cursor: None,
             capture_click_action: None,
             ui_theme: None,
+            ssh_hosts: None,
         }
     }
 }
@@ -520,6 +584,10 @@ impl From<ConfigFile> for Config {
                 .snippets_shortcut
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| "CmdOrCtrl+Shift+S".into()),
+            agents_shortcut: f
+                .agents_shortcut
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "CmdOrCtrl+Shift+A".into()),
             dictation_mode: match f.dictation_mode.as_deref() {
                 Some("toggle") => "toggle".into(),
                 _ => "push_to_talk".into(),
@@ -530,10 +598,10 @@ impl From<ConfigFile> for Config {
             show_pill: f.show_pill,
             pill_position: f.pill_position,
             agents_bubble_size: f.agents_bubble_size,
-            // Ausente en configs viejas: la consola ya vivía topmost con el overlay.
-            agents_always_on_top: f.agents_always_on_top.unwrap_or(true),
-            clipboard_always_on_top: f.clipboard_always_on_top.unwrap_or(true),
-            snippets_always_on_top: f.snippets_always_on_top.unwrap_or(true),
+            // Ausente en configs viejas / nuevas: pin OFF por defecto.
+            agents_always_on_top: f.agents_always_on_top.unwrap_or(false),
+            clipboard_always_on_top: f.clipboard_always_on_top.unwrap_or(false),
+            snippets_always_on_top: f.snippets_always_on_top.unwrap_or(false),
             beep_on_start: f.beep_on_start,
             // Configs antiguas: activar toques de UI (captura/dictado).
             ui_sounds: f.ui_sounds.unwrap_or(true),
@@ -565,6 +633,7 @@ impl From<ConfigFile> for Config {
                 .launcher_shortcut
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| "CmdOrCtrl+Space".into()),
+            launcher_favorites: f.launcher_favorites.unwrap_or_default(),
             capture_shelf_side: match f.capture_shelf_side.as_deref() {
                 Some("left") => "left".into(),
                 _ => "right".into(),
@@ -581,6 +650,7 @@ impl From<ConfigFile> for Config {
                 Some("dark") => "dark".into(),
                 _ => "system".into(),
             },
+            ssh_hosts: f.ssh_hosts.unwrap_or_default(),
         }
     }
 }

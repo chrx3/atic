@@ -17,13 +17,12 @@
  */
 
 /**
- * Margen contra el borde útil del monitor.
+ * Margen contra el borde del monitor (`bounds`, pantalla completa).
  *
- * Gemelo de `MARGIN` en `floating.rs`. Lo usan los dos: Rust al encajar una
- * ventana, `pillCssStage` al encajar la pill dentro del overlay. Si se separan,
- * la pill queda pegada a un borde del que Rust cree haberla despegado.
+ * `0` = puede solapar taskbar y pegarse al canto (modo Dynamic Island).
+ * Gemelo de `MARGIN` en `floating.rs`.
  */
-export const MARGIN = 8;
+export const MARGIN = 0;
 
 /**
  * Lo más chica que puede quedar la consola de agentes.

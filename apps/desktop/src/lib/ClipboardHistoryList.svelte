@@ -1,4 +1,9 @@
 <script lang="ts">
+  /**
+   * Historial: clic = pegar; arrastrar = OLE.
+   * - Imagen: archivo (HDROP) vía tauri-plugin-drag.
+   * - Texto: CF_UNICODETEXT nativo (un .txt en HDROP inserta la ruta en Cursor).
+   */
   import { convertFileSrc } from "@tauri-apps/api/core";
   import { startDrag } from "@crabnebula/tauri-plugin-drag";
   import Icon from "$ui/Icon.svelte";
@@ -11,7 +16,11 @@
     deleteClipboardItem,
     pasteClipboardItem,
     pinClipboardItem,
+    startClipboardTextDrag,
+    tryClipboardDropOnAgents,
   } from "$lib/api";
+  import { setOverlayItemDrag } from "$ipc/overlay";
+  import { surfaces } from "$surfaces/overlay/surfaces.svelte";
 
   let {
     items = [],
@@ -34,6 +43,7 @@
   const DRAG_THRESHOLD = 6;
 
   let busyId = $state<string | null>(null);
+  let draggingId = $state<string | null>(null);
   let query = $state("");
   let favoritesOnly = $state(false);
   let press: {
@@ -41,6 +51,9 @@
     x: number;
     y: number;
     item: ClipboardItem;
+    /** Prefetch para no await-ear antes de DoDragDrop. */
+    path: string | null;
+    pathReady: boolean;
   } | null = null;
   let didDrag = false;
 
@@ -56,12 +69,64 @@
     return list;
   });
 
+  /** Ventana virtual (~fila fija): evita montar hasta 100 thumbs a la vez. */
+  const ROW_H = $derived(compact ? 44 : 52);
+  const ROW_GAP = 5; // 0.3rem
+  const OVERSCAN = 4;
+  let listEl = $state<HTMLElement | null>(null);
+  let scrollTop = $state(0);
+  let viewportH = $state(320);
+
+  const windowed = $derived.by(() => {
+    const stride = ROW_H + ROW_GAP;
+    const total = visibleItems.length;
+    if (total === 0) {
+      return { start: 0, end: 0, topPad: 0, bottomPad: 0, slice: [] as typeof visibleItems };
+    }
+    const start = Math.max(0, Math.floor(scrollTop / stride) - OVERSCAN);
+    const count = Math.ceil(viewportH / stride) + OVERSCAN * 2;
+    const end = Math.min(total, start + count);
+    return {
+      start,
+      end,
+      topPad: start * stride,
+      bottomPad: Math.max(0, (total - end) * stride),
+      slice: visibleItems.slice(start, end),
+    };
+  });
+
+  function onListScroll(e: Event) {
+    scrollTop = (e.currentTarget as HTMLElement).scrollTop;
+  }
+
+  $effect(() => {
+    const el = listEl;
+    if (!el) return;
+    const measure = () => {
+      viewportH = el.clientHeight || 320;
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  });
+
+  // Al filtrar, volver arriba para no mirar una ventana vacía.
+  $effect(() => {
+    void query;
+    void favoritesOnly;
+    if (listEl) {
+      listEl.scrollTop = 0;
+      scrollTop = 0;
+    }
+  });
+
   function report(error: unknown) {
     onError?.(String(error));
   }
 
   async function paste(item: ClipboardItem) {
-    if (busyId) return;
+    if (busyId || draggingId) return;
     busyId = item.id;
     onPasteStart?.();
     try {
@@ -75,14 +140,37 @@
   }
 
   function onItemDown(event: PointerEvent, item: ClipboardItem) {
-    if (event.button !== 0 || busyId) return;
+    if (event.button !== 0 || busyId || draggingId) return;
     const target = event.target as HTMLElement;
     if (target.closest(".clip-actions, .clip-icon-btn")) return;
-    press = { id: item.id, x: event.clientX, y: event.clientY, item };
+    const seedPath =
+      item.kind === "image" && item.imagePath ? item.imagePath : null;
+    press = {
+      id: item.id,
+      x: event.clientX,
+      y: event.clientY,
+      item,
+      path: seedPath,
+      pathReady: item.kind === "text" || !!seedPath,
+    };
     didDrag = false;
     window.addEventListener("pointermove", onItemMove);
     window.addEventListener("pointerup", onItemUp);
     window.addEventListener("pointercancel", onItemUp);
+    // Prefetch path de imagen mientras el botón sigue abajo.
+    if (item.kind === "image" && !seedPath) {
+      const id = item.id;
+      void clipboardDragPath(id)
+        .then((path) => {
+          if (press?.id === id) {
+            press.path = path;
+            press.pathReady = true;
+          }
+        })
+        .catch(() => {
+          if (press?.id === id) press.pathReady = true;
+        });
+    }
   }
 
   function onItemMove(event: PointerEvent) {
@@ -90,12 +178,11 @@
     if (Math.hypot(event.clientX - press.x, event.clientY - press.y) < DRAG_THRESHOLD) {
       return;
     }
-    // Solo imágenes: son archivos en disco y el arrastre OLE los lleva tanto a
-    // una app externa como al compositor. El texto no pasa por acá.
     didDrag = true;
-    const item = press.item;
+    const snapshot = press;
     cleanupPress();
-    void dragItem(item);
+    // OLE must start while the button is still down — no await before startDrag.
+    void beginOleDrag(snapshot.item, snapshot.path);
   }
 
   function onItemUp() {
@@ -112,36 +199,41 @@
     window.removeEventListener("pointercancel", onItemUp);
   }
 
-  async function dragItem(item: ClipboardItem) {
+  async function beginOleDrag(item: ClipboardItem, prefetched: string | null) {
+    draggingId = item.id;
     try {
-      // El texto va SIEMPRE por HTML5 (`onTextDragStart`), sin mirar si la
-      // consola está abierta.
-      //
-      // Antes se materializaba en un `.atic-drag-*.txt` y se arrastraba como
-      // archivo, porque `text/plain` no cruzaba de la ventana de la pill a la
-      // de agentes. Comparten documento: ya cruza. Y seguir con el archivo era
-      // peor que inútil — el arrastre OLE se queda el gesto, así que soltarlo
-      // sobre Word o el Explorador dejaba de pegar texto y pasaba a copiar un
-      // archivo temporal.
-      if (item.kind === "text") return;
-      const path = await clipboardDragPath(item.id);
+      await setOverlayItemDrag(true).catch(() => {});
+      // Conserva hit-rect de agentes; OLE a otras apps sigue con passthrough.
+      await surfaces.recoverHits().catch(() => {});
+      surfaces.dragging = false;
+      if (item.kind === "text") {
+        // Rust cancela OLE si soltás sobre agentes e inserta en el composer.
+        await startClipboardTextDrag(item.id);
+        return;
+      }
+      let path = prefetched;
+      if (!path) {
+        path = await clipboardDragPath(item.id);
+      }
+      if (!path) {
+        report("No se pudo preparar el arrastre");
+        return;
+      }
       await startDrag({ item: [path], icon: path, mode: "copy" });
+      // Imagen: si el cursor quedó sobre agentes, insertar (sin depender del HTML5 drop).
+      await tryClipboardDropOnAgents(item.id).catch(() => false);
     } catch (error) {
-      report(error);
+      const msg = String(error);
+      if (/cancel|abort|dismiss|interrupted|Dropped|Cancelled/i.test(msg)) {
+        /* cancel / normal end */
+      } else {
+        report(error);
+      }
+    } finally {
+      draggingId = null;
+      await setOverlayItemDrag(false).catch(() => {});
+      await surfaces.recoverHits().catch(() => {});
     }
-  }
-
-  function onTextDragStart(event: DragEvent, item: ClipboardItem) {
-    const text = item.text ?? item.preview ?? "";
-    if (!text) {
-      event.preventDefault();
-      return;
-    }
-    didDrag = true;
-    cleanupPress();
-    event.dataTransfer?.setData("text/plain", text);
-    event.dataTransfer?.setData("text", text);
-    if (event.dataTransfer) event.dataTransfer.effectAllowed = "copy";
   }
 
   async function togglePin(item: ClipboardItem, event: MouseEvent) {
@@ -170,7 +262,6 @@
       report(error);
     }
   }
-
 </script>
 
 <div class="clip-list" class:is-compact={compact}>
@@ -239,26 +330,27 @@
       {/if}
     </p>
   {:else}
-    <ul class="clip-items" role="listbox" aria-label="Historial del portapapeles">
-      {#each visibleItems as item (item.id)}
-        <li>
-          <!-- Texto: draggable HTML5 para soltar text/plain. Imagen: startDrag por umbral. -->
+    <ul
+      class="clip-items"
+      role="listbox"
+      aria-label="Historial del portapapeles"
+      bind:this={listEl}
+      onscroll={onListScroll}
+    >
+      {#if windowed.topPad > 0}
+        <li class="clip-pad" style:height="{windowed.topPad}px" aria-hidden="true"></li>
+      {/if}
+      {#each windowed.slice as item (item.id)}
+        <li class="clip-row">
           <div
             class="clip-item"
             class:is-busy={busyId === item.id}
-            class:is-text={item.kind === "text"}
+            class:is-dragging={draggingId === item.id}
             role="option"
-            aria-selected="false"
+            aria-selected={busyId === item.id || draggingId === item.id}
             tabindex="0"
-            title={item.kind === "text"
-              ? "Clic: pegar · Arrastra: soltar texto"
-              : "Clic: pegar · Arrastra: soltar imagen"}
-            draggable={item.kind === "text"}
+            title="Clic: pegar · Arrastra a otra app o al composer"
             onpointerdown={(e) => onItemDown(e, item)}
-            ondragstart={(e) => {
-              if (item.kind === "text") onTextDragStart(e, item);
-              else e.preventDefault();
-            }}
             onkeydown={(e) => {
               if (e.key === "Enter" || e.key === " ") {
                 e.preventDefault();
@@ -268,7 +360,13 @@
           >
             <span class="clip-thumb" aria-hidden="true">
               {#if item.kind === "image" && item.imagePath}
-                <img src={convertFileSrc(item.imagePath)} alt="" draggable="false" />
+                <img
+                  src={convertFileSrc(item.imagePath)}
+                  alt=""
+                  draggable="false"
+                  loading="lazy"
+                  decoding="async"
+                />
               {:else}
                 <span class="clip-text-icon">Aa</span>
               {/if}
@@ -322,6 +420,9 @@
           </div>
         </li>
       {/each}
+      {#if windowed.bottomPad > 0}
+        <li class="clip-pad" style:height="{windowed.bottomPad}px" aria-hidden="true"></li>
+      {/if}
     </ul>
   {/if}
 </div>
@@ -436,17 +537,35 @@
     min-height: 0;
     flex: 1;
     flex-direction: column;
-    gap: 0.3rem;
+    gap: 0;
     margin: 0;
     padding: 0;
     overflow: auto;
     list-style: none;
   }
 
-  .clip-items > li {
+  .clip-pad {
+    flex: none;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    pointer-events: none;
+  }
+
+  .clip-items > .clip-row {
     display: flex;
+    flex: none;
     align-items: stretch;
     gap: 0.2rem;
+    height: 52px;
+    min-height: 52px;
+    margin: 0 0 5px;
+    overflow: hidden;
+  }
+
+  .is-compact .clip-items > .clip-row {
+    height: 44px;
+    min-height: 44px;
   }
 
   .clip-item {
@@ -463,8 +582,11 @@
     color: var(--rb-text);
     cursor: grab;
     text-align: left;
+    touch-action: none;
+    user-select: none;
   }
-  .clip-item:active {
+  .clip-item:active,
+  .clip-item.is-dragging {
     cursor: grabbing;
   }
   .clip-item:hover {
@@ -474,8 +596,13 @@
   .clip-item.is-busy {
     opacity: 0.65;
   }
-  .clip-item.is-text {
-    cursor: grab;
+  .clip-item.is-dragging {
+    opacity: 0.72;
+    border-color: color-mix(in srgb, var(--rb-accent) 45%, transparent);
+  }
+  .clip-item:focus-visible {
+    outline: none;
+    box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--rb-accent) 70%, transparent);
   }
 
   .clip-thumb {
@@ -550,6 +677,9 @@
   }
   .clip-icon-btn.is-on {
     color: var(--rb-accent);
+  }
+  .clip-icon-btn :global(svg) {
+    pointer-events: none;
   }
 
   .is-compact .clip-thumb {

@@ -5,6 +5,7 @@ import {
   consoleSideFor,
   contentFor,
   discJoinsTail,
+  FLIGHT_SKIP_PX,
   isDiscOnly,
   morphsInPlace,
   pivotFor,
@@ -14,6 +15,12 @@ import {
   wheelChromeActive,
   wheelKeyAction,
 } from "./pillPlan";
+
+describe("FLIGHT_SKIP_PX", () => {
+  it("omite vuelos menores que ~un disco", () => {
+    expect(FLIGHT_SKIP_PX).toBe(48);
+  });
+});
 
 describe("contentFor", () => {
   it("en reposo mide la barra, nunca menos que el disco", () => {
@@ -37,8 +44,8 @@ describe("contentFor", () => {
 describe("pivotFor", () => {
   const base = { collapsingFrom: null } as const;
 
-  it("la rueda abre y cierra in-situ desde el centro (no cursor)", () => {
-    // Open/close morph en el hogar; el summon al cursor es otro camino.
+  it("la rueda morflea desde el centro (el vuelo al cursor es aparte)", () => {
+    // pivotFor solo el morph de tamaño; el flyTo al cursor vive en PillSurface.
     expect(pivotFor({ ...base, surface: "wheel" })).toBe("center");
     expect(pivotFor({ ...base, surface: "none", collapsingFrom: "wheel" })).toBe(
       "center",

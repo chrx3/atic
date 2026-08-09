@@ -81,6 +81,7 @@ pub fn set_config(app: AppHandle, state: State<AppState>, config: Config) -> Res
     let pill_radial_shortcut = config.pill_radial_shortcut.clone();
     let clipboard_shortcut = config.clipboard_shortcut.clone();
     let snippets_shortcut = config.snippets_shortcut.clone();
+    let agents_shortcut = config.agents_shortcut.clone();
     let screenshot_shortcut = config.screenshot_shortcut.clone();
     let launcher_shortcut = config.launcher_shortcut.clone();
     let prev = state.config.lock_or_recover().clone();
@@ -93,6 +94,7 @@ pub fn set_config(app: AppHandle, state: State<AppState>, config: Config) -> Res
         || pill_radial_shortcut != prev.pill_radial_shortcut
         || clipboard_shortcut != prev.clipboard_shortcut
         || snippets_shortcut != prev.snippets_shortcut
+        || agents_shortcut != prev.agents_shortcut
         || screenshot_shortcut != prev.screenshot_shortcut
         || launcher_shortcut != prev.launcher_shortcut
     {
@@ -105,6 +107,7 @@ pub fn set_config(app: AppHandle, state: State<AppState>, config: Config) -> Res
                 pill_radial: &pill_radial_shortcut,
                 clipboard: &clipboard_shortcut,
                 snippets: &snippets_shortcut,
+                agents: &agents_shortcut,
                 screenshot: &screenshot_shortcut,
                 launcher: &launcher_shortcut,
             },

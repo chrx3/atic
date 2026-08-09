@@ -1,6 +1,6 @@
 # Launcher tipo Spotlight
 
-**Estado:** `parcial`
+**Estado:** `hecho` (float desde la pill; ventana Tauri dormida)
 
 ## Resumen
 
@@ -22,23 +22,34 @@ Fuentes actuales:
 
 ## Código
 
-- [`apps/desktop/src-tauri/src/launcher.rs`](../apps/desktop/src-tauri/src/launcher.rs) — índice, búsqueda, abrir
-- [`apps/desktop/src/routes/launcher/+page.svelte`](../apps/desktop/src/routes/launcher/+page.svelte) — UI overlay
+- [`apps/desktop/src-tauri/src/launcher.rs`](../apps/desktop/src-tauri/src/launcher.rs) — índice, búsqueda, abrir; float vía `panel_float`
+- [`apps/desktop/src/lib/surfaces/overlay/launcher/LauncherFloat.svelte`](../apps/desktop/src/lib/surfaces/overlay/launcher/LauncherFloat.svelte) — UI en el overlay
 - Atajo: `launcher_shortcut` en config + [`shortcuts.rs`](../apps/desktop/src-tauri/src/shortcuts.rs)
 
 ## Pendiente / siguiente
 
+- [ ] Overrides de slot en Ajustes (API: `setSlotOverrides` en toolSlots.ts)
+
 - [x] Atajo por defecto que no choque con el menú de ventana del SO
 - [x] Indexar `.lnk` del menú Inicio + cache en RAM
-- [x] Overlay Tauri + match simple
-- [x] Acciones Atic como resultados de primera clase
+- [x] Match simple + acciones Atic
+- [x] Float en overlay (crece desde la pill; path primario ya no usa
+      la ventana Tauri `launcher`)
+- [x] Apertura tipo dictado→Spotlight: barra crece a la derecha → se
+      separa → favs de a uno; cierre = reverse (tuck → fuse → shrink);
+      tokens `--launcher-bar-open-dur` /
+      `--launcher-separate-dur` / `--launcher-fav-stagger`
+      (patrón documentado en [pill-liquid-emerge.md](pill-liquid-emerge.md))
 - [ ] Preferencias (raíces extra, exclusiones, favoritos) en Ajustes
 - [ ] Ranking por uso / fuzzy más fino
 - [ ] Apps Store/UWP
+- [ ] Retirar ventana Tauri `launcher` (dormida; UI vive en overlay)
 
 ## Relacionado
 
+- [pill-liquid-emerge.md](pill-liquid-emerge.md) — **referencia de implementación** del acto fused grow → separate → peels
 - [pill-shell.md](pill-shell.md)
+- [liquid.md](liquid.md)
 - [ajustes-onboarding.md](ajustes-onboarding.md)
 - [snippets.md](snippets.md)
 - [agentes.md](agentes.md)

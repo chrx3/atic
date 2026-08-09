@@ -68,9 +68,13 @@ export const overlayWorkAreas = () => invoke<Area[]>("overlay_work_areas");
 export const setOverlayHitRects = (rects: HitRect[]) =>
   invoke<void>("set_overlay_hit_rects", { rects });
 
-/** Click-through total mientras dura un OLE drag hacia otra app. */
+/** Click-through fuera de drop-targets (agentes) durante un OLE out-drag. */
 export const setOverlayItemDrag = (on: boolean) =>
   invoke<void>("set_overlay_item_drag", { on });
+
+/** ¿El cursor está sobre el hit-rect `id` del overlay? */
+export const overlayCursorOverHit = (id: string) =>
+  invoke<boolean>("overlay_cursor_over_hit", { id });
 
 /** Redimensiona una ventana flotante. `up` dice si creció hacia arriba. */
 export const resizeFloating = (args: {

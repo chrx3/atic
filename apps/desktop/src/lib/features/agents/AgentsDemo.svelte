@@ -19,8 +19,10 @@
     agentThreads,
     agentsAlwaysOnTop,
     setAgentsAlwaysOnTop,
+    sshListHosts,
   } from "$ipc/agents";
-  import { onAgentsComposerInsert } from "$ipc/clipboard";
+  import { getConfig } from "$ipc/config";
+  import { onAgentsComposerInsert, readClipboardDragText } from "$ipc/clipboard";
   import { pickAgentFiles } from "$ipc/dialogs";
   import { withAgentsDismissSuppressed } from "$surfaces/overlay/agents/dismissGuard";
   import {
@@ -48,17 +50,20 @@
     Paperclip,
     Pin,
     Square,
+    SquareTerminal,
     X,
   } from "$lib/icons";
   import FolderBrowser from "./FolderBrowser.svelte";
   import SlashPalette from "./SlashPalette.svelte";
-  import UsageModal from "./UsageModal.svelte";
+  import SshHostsPanel from "./SshHostsPanel.svelte";
   import {
     isChatStatusNoise,
     statusToastMessage,
   } from "./chatNotifications";
   import { resolveSlashCommands, skillsAsCommands } from "./slashCatalog";
+  import { config } from "$domain/config.svelte";
   import { toasts } from "$domain/toasts.svelte";
+  import { tryMainUi } from "$surfaces/main/mainUi.svelte";
   import Modal from "$ui/Modal.svelte";
   import type {
     AgentItem,
@@ -66,16 +71,27 @@
     AgentOrigin,
     AgentsComposerInsert,
     AgentTurn,
+    AppConfig,
     ClaudeCodeSession,
     SlashCommand,
+    SshHost,
     StoredThread,
   } from "$lib/types";
 
   let {
     variant = "panel",
+    onHeaderPointerDown,
+    onClose,
   }: {
     variant?: "panel" | "float";
+    /** Arrastre del float (header), mismo patrón que clipboard/snippets. */
+    onHeaderPointerDown?: (event: PointerEvent) => void;
+    /** Cerrar el float (botón X en el header). */
+    onClose?: () => void;
   } = $props();
+
+  /** Ventana principal: deep-link a Ajustes. En el float es null. */
+  const mainUi = tryMainUi();
 
   const BACKEND = "claude-code";
   const ACCENT = "#da7756";
@@ -102,6 +118,15 @@
     "Proponé un plan corto para este proyecto",
   ] as const;
   let cwd = $state("");
+  /** `null` = local; id de host en config = remoto. */
+  let remoteHostId = $state<string | null>(null);
+  let sshHosts = $state<SshHost[]>([]);
+  /** Selector Local | Remoto en el header. */
+  let destMenuOpen = $state(false);
+  let destRoot = $state<HTMLDivElement | null>(null);
+  /** Panel inline de hosts (float / sin MainUi). */
+  let hostsPanelOpen = $state(false);
+  let hostsPanelCfg = $state<AppConfig | null>(null);
   let model = $state("");
   let models = $state<AgentModel[]>([]);
   let modelsLoading = $state(false);
@@ -146,9 +171,11 @@
   /** Índice activo del menú `/`. */
   let slashIndex = $state(0);
   /** Pin sticky del float: Esc / clic afuera no cierran si está fijado. */
-  let pinned = $state(true);
+  let pinned = $state(false);
   /** Lightbox del adjunto en el composer. */
   let attachPreview = $state<string | null>(null);
+  /** Panel inferior de consola (PTY local / SSH). */
+  let consoleOpen = $state(false);
 
   const modelOptions = $derived(
     models.map((m) => ({
@@ -203,8 +230,25 @@
     return used;
   });
   const waiting = $derived((session?.pending.length ?? 0) > 0);
+  const selectedHost = $derived(
+    remoteHostId
+      ? (sshHosts.find((h) => h.id === remoteHostId) ?? null)
+      : null,
+  );
+  /** Remoto no depende del `claude` local en PATH. */
+  const agentOk = $derived(!!remoteHostId || available === true);
+  const agentMissing = $derived(!remoteHostId && available === false);
+  const destLabel = $derived(
+    selectedHost?.label || (remoteHostId ? "Remoto" : "Local"),
+  );
   const folderLabel = $derived(
-    cwd ? (cwd.split(/[\\/]/).filter(Boolean).pop() ?? cwd) : "Carpeta",
+    cwd
+      ? remoteHostId
+        ? cwd
+        : (cwd.split(/[\\/]/).filter(Boolean).pop() ?? cwd)
+      : remoteHostId
+        ? "cwd remoto"
+        : "Carpeta",
   );
   /**
    * El cwd del CLI se fija al spawn. Bloquear solo mid-turno / archivo —
@@ -301,7 +345,7 @@
   );
 
   const ctaDisabled = $derived(
-    available === false ||
+    agentMissing ||
       waiting ||
       !!archive ||
       (!working && !draft.trim() && attaches.length === 0),
@@ -335,7 +379,7 @@
   }
 
   function applyComposerInsert(payload: AgentsComposerInsert) {
-    if (archive || available === false) return;
+    if (archive || available === false || consoleOpen) return;
     if (payload.kind === "image" && payload.imagePath) {
       attachVia = "portapapeles";
       addAttachPath(payload.imagePath);
@@ -344,6 +388,18 @@
       draft = draft.trim() ? `${draft.trimEnd()}\n${t}` : t;
     }
     void tick().then(() => inputEl?.focus());
+  }
+
+  function toggleConsole() {
+    const next = !consoleOpen;
+    consoleOpen = next;
+    if (next) {
+      inputEl?.blur();
+      destMenuOpen = false;
+      modelMenuOpen = false;
+      effortMenuOpen = false;
+      modeMenuOpen = false;
+    }
   }
 
   async function stageBlob(file: Blob, mimeHint?: string) {
@@ -404,6 +460,25 @@
     dropActive = false;
   }
 
+  function isAticDragTextPath(path: string): boolean {
+    const name = path.split(/[/\\]/).pop() ?? "";
+    return name.startsWith(".atic-drag-") && name.endsWith(".txt");
+  }
+
+  function appendDraftText(text: string) {
+    const t = text.trimEnd();
+    if (!t) return;
+    draft = draft.trim() ? `${draft.trimEnd()}\n${t}` : t;
+  }
+
+  async function tryInsertAticDragText(path: string): Promise<boolean> {
+    if (!isAticDragTextPath(path)) return false;
+    const text = await readClipboardDragText(path);
+    if (!text?.trim()) return false;
+    appendDraftText(text);
+    return true;
+  }
+
   async function onComposerDrop(e: DragEvent) {
     dropActive = false;
     if (archive || available === false) return;
@@ -418,6 +493,10 @@
       for (const file of files) {
         const path = (file as File & { path?: string }).path;
         if (path) {
+          if (await tryInsertAticDragText(path)) {
+            added = true;
+            continue;
+          }
           addAttachPath(path);
           added = true;
           continue;
@@ -438,17 +517,18 @@
             // `file:///C:/…` → `/C:/…` en algunos hosts; quitar el slash.
             if (/^\/[A-Za-z]:/.test(local)) local = local.slice(1);
           }
-          if (local) {
-            addAttachPath(local);
+          if (!local) continue;
+          if (await tryInsertAticDragText(local)) {
             added = true;
+            continue;
           }
+          addAttachPath(local);
+          added = true;
         }
       }
       if (!added) {
         const text = dt.getData("text/plain") || dt.getData("text");
-        if (text?.trim()) {
-          draft = draft.trim() ? `${draft.trimEnd()}\n${text}` : text;
-        }
+        if (text?.trim()) appendDraftText(text);
       }
       void tick().then(() => inputEl?.focus());
     } catch (err) {
@@ -622,7 +702,8 @@
   }
 
   async function loadCliSessions() {
-    if (!cwd.trim()) {
+    // El índice `~/.claude/projects` es local; no aplica a sesiones remotas.
+    if (remoteHostId || !cwd.trim()) {
       cliSessions = [];
       return;
     }
@@ -634,6 +715,96 @@
       cliSessions = [];
     } finally {
       cliLoading = false;
+    }
+  }
+
+  async function loadSshHosts() {
+    try {
+      sshHosts = await sshListHosts();
+    } catch {
+      try {
+        const cfg = await getConfig();
+        sshHosts = cfg.ssh_hosts ?? [];
+      } catch {
+        sshHosts = [];
+      }
+    }
+  }
+
+  /** Abre Ajustes → Agentes, o un panel inline si estamos en el float. */
+  async function openManageHosts() {
+    destMenuOpen = false;
+    if (mainUi) {
+      mainUi.openSettings("agents");
+      return;
+    }
+    try {
+      hostsPanelCfg = config.current ?? (await getConfig());
+    } catch (e) {
+      toasts.push(String(e));
+      return;
+    }
+    hostsPanelOpen = true;
+  }
+
+  function closeHostsPanel() {
+    hostsPanelOpen = false;
+    void loadSshHosts();
+  }
+
+  function startOptionsBase(): {
+    cwd?: string;
+    remoteHostId?: string;
+    model?: string;
+    effort?: string;
+    permissionMode: string;
+  } {
+    return {
+      cwd: cwd || undefined,
+      remoteHostId: remoteHostId || undefined,
+      model: model || undefined,
+      effort: effort || undefined,
+      permissionMode: PERMISSION_MODES.some((m) => m.id === mode)
+        ? mode
+        : rememberedMode(BACKEND),
+    };
+  }
+
+  async function setDestination(nextHostId: string | null) {
+    if (remoteHostId === nextHostId) {
+      destMenuOpen = false;
+      return;
+    }
+    if (working || waiting || starting) {
+      destMenuOpen = false;
+      toasts.push("No se puede cambiar el destino mientras el agente trabaja", 3500);
+      return;
+    }
+    const prev = sessionId;
+    if (prev) {
+      sessionId = null;
+      try {
+        await agents.stop(prev);
+      } catch {
+        /* ignore */
+      }
+      cliResumed = false;
+      resumeNote = "";
+    }
+    remoteHostId = nextHostId;
+    destMenuOpen = false;
+    if (nextHostId) {
+      const host = sshHosts.find((h) => h.id === nextHostId);
+      if (host?.default_remote_cwd) cwd = host.default_remote_cwd;
+      cliSessions = [];
+    } else {
+      cwd = rememberedCwd(BACKEND);
+    }
+    if (prev) {
+      toasts.push(
+        "Destino actualizado. El próximo mensaje inicia una sesión nueva.",
+        4000,
+      );
     }
   }
 
@@ -695,6 +866,10 @@
           ? mode
           : rememberedMode(BACKEND);
 
+      if (remoteHostId) {
+        error = "Reanudar sesiones del CLI solo está disponible en Local.";
+        return;
+      }
       const id = await agents.start(BACKEND, {
         resume: s.id,
         cwd: cwd || undefined,
@@ -767,8 +942,9 @@
       if (sessionId) await agents.stop(sessionId);
       if (thread.cwd) {
         cwd = thread.cwd;
-        rememberCwd(BACKEND, thread.cwd);
+        if (!thread.remoteHostId) rememberCwd(BACKEND, thread.cwd);
       }
+      remoteHostId = thread.remoteHostId ?? null;
       if (thread.model) {
         model = thread.model;
         rememberModel(BACKEND, thread.model);
@@ -776,6 +952,7 @@
       const id = await agents.start(BACKEND, {
         resume: thread.providerSession,
         cwd: thread.cwd || undefined,
+        remoteHostId: thread.remoteHostId || undefined,
         model: thread.model || undefined,
         permissionMode: PERMISSION_MODES.some((m) => m.id === mode)
           ? mode
@@ -820,6 +997,14 @@
       );
       return;
     }
+    if (remoteHostId) {
+      const next = window.prompt(
+        "Carpeta de trabajo remota (path POSIX)",
+        cwd || selectedHost?.default_remote_cwd || "",
+      );
+      if (next != null) void applyFolder(next);
+      return;
+    }
     folderOpen = true;
   }
 
@@ -851,7 +1036,7 @@
       resumeNote = "";
     }
     cwd = next;
-    rememberCwd(BACKEND, next);
+    if (!remoteHostId) rememberCwd(BACKEND, next);
     if (historyOpen) void loadCliSessions();
     if (prev) {
       toasts.push(
@@ -934,18 +1119,15 @@
    */
   async function ensureSession(): Promise<string | null> {
     if (sessionId) return sessionId;
-    if (archive || available === false || starting) return sessionId;
+    if (archive || agentMissing || starting) return sessionId;
+    if (remoteHostId && !cwd.trim()) {
+      error = "Indicá un cwd remoto (path POSIX) antes de iniciar.";
+      return null;
+    }
     starting = true;
     error = null;
     try {
-      const id = await agents.start(BACKEND, {
-        cwd: cwd || undefined,
-        model: model || undefined,
-        effort: effort || undefined,
-        permissionMode: PERMISSION_MODES.some((m) => m.id === mode)
-          ? mode
-          : rememberedMode(BACKEND),
-      });
+      const id = await agents.start(BACKEND, startOptionsBase());
       sessionId = id;
       agents.watch(id);
       return id;
@@ -991,7 +1173,7 @@
     if (
       (!text && pendingFiles.length === 0) ||
       working ||
-      available === false ||
+      agentMissing ||
       archive
     ) {
       return;
@@ -1226,7 +1408,7 @@
           pinned = on;
         })
         .catch(() => {
-          pinned = true;
+          pinned = false;
         });
     }
     void (async () => {
@@ -1238,13 +1420,24 @@
     void refreshAvailability();
     void loadModels();
     void loadThreads();
+    void loadSshHosts();
     const onWinKey = (e: KeyboardEvent) => {
+      // Consola a pantalla: no interceptar teclas del PTY (salvo Esc para cerrar).
+      if (consoleOpen) {
+        if (e.key === "Escape") {
+          e.preventDefault();
+          e.stopPropagation();
+          consoleOpen = false;
+        }
+        return;
+      }
       if (e.key !== "Escape") return;
-      if (modelMenuOpen || effortMenuOpen || modeMenuOpen) {
+      if (modelMenuOpen || effortMenuOpen || modeMenuOpen || destMenuOpen) {
         e.preventDefault();
         modelMenuOpen = false;
         effortMenuOpen = false;
         modeMenuOpen = false;
+        destMenuOpen = false;
         return;
       }
       // No robamos Esc a slash / modales / resume; el composer los maneja.
@@ -1252,6 +1445,7 @@
         slashOpen ||
         usageOpen ||
         folderOpen ||
+        hostsPanelOpen ||
         compactOpen ||
         resumePick ||
         attachPreview
@@ -1262,13 +1456,14 @@
         historyOpen = false;
       }
     };
-    window.addEventListener("keydown", onWinKey);
+    // Capture: Esc cierra la consola antes de que el float se cierre.
+    window.addEventListener("keydown", onWinKey, true);
     let stopInsert: (() => void) | undefined;
     void onAgentsComposerInsert(applyComposerInsert).then((un) => {
       stopInsert = un;
     });
     return () => {
-      window.removeEventListener("keydown", onWinKey);
+      window.removeEventListener("keydown", onWinKey, true);
       stopInsert?.();
       agents.watch(null);
     };
@@ -1283,9 +1478,28 @@
 
   // Al escribir `/`, calentar el CLI para traer el catálogo completo del handshake.
   $effect(() => {
-    if (slashQuery !== null && !sessionId && !archive && available === true) {
+    if (slashQuery !== null && !sessionId && !archive && agentOk) {
       void ensureSession();
     }
+  });
+
+  // Cierra el menú de destino al pulsar fuera (mismo patrón que PickerMenu).
+  $effect(() => {
+    if (!destMenuOpen) return;
+    const onPointerDown = (event: PointerEvent) => {
+      const el = destRoot;
+      const target = event.target;
+      if (!(target instanceof Node) || !el) return;
+      if (el.contains(target)) return;
+      destMenuOpen = false;
+    };
+    const id = window.setTimeout(() => {
+      window.addEventListener("pointerdown", onPointerDown, true);
+    }, 0);
+    return () => {
+      window.clearTimeout(id);
+      window.removeEventListener("pointerdown", onPointerDown, true);
+    };
   });
 </script>
 
@@ -1296,22 +1510,91 @@
   class:is-menu-open={modelMenuOpen ||
     effortMenuOpen ||
     modeMenuOpen ||
+    destMenuOpen ||
     !!resumePick ||
     compactOpen ||
     usageOpen ||
     folderOpen ||
+    hostsPanelOpen ||
     slashOpen}
   style="--accent: {ACCENT}"
   data-demo="claude-code"
   data-agent="claude-code"
 >
   {#snippet sessionControls()}
+    <div class="dest" bind:this={destRoot}>
+      <button
+        type="button"
+        class="chip is-dest"
+        class:is-on={!!remoteHostId}
+        class:is-locked={folderBlocked}
+        title={remoteHostId
+          ? `Remoto: ${destLabel}`
+          : "Local (este equipo)"}
+        aria-label={`Destino: ${destLabel}`}
+        aria-expanded={destMenuOpen}
+        aria-disabled={folderBlocked}
+        disabled={folderBlocked}
+        onclick={() => {
+          if (folderBlocked) return;
+          destMenuOpen = !destMenuOpen;
+          if (destMenuOpen) {
+            modelMenuOpen = false;
+            effortMenuOpen = false;
+            modeMenuOpen = false;
+            void loadSshHosts();
+          }
+        }}
+      >
+        <Icon icon={Cpu} size={12} />
+        <span class="chip-t">{destLabel}</span>
+      </button>
+      {#if destMenuOpen}
+        <div class="dest-menu" role="listbox" aria-label="Destino de sesión">
+          <button
+            type="button"
+            class="dest-opt"
+            class:is-active={!remoteHostId}
+            role="option"
+            aria-selected={!remoteHostId}
+            onclick={() => void setDestination(null)}
+          >
+            Local
+          </button>
+          {#if sshHosts.length === 0}
+            <p class="dest-hint">Sin hosts. Agregalos en Ajustes → Agentes.</p>
+          {:else}
+            {#each sshHosts as h (h.id)}
+              <button
+                type="button"
+                class="dest-opt"
+                class:is-active={remoteHostId === h.id}
+                role="option"
+                aria-selected={remoteHostId === h.id}
+                onclick={() => void setDestination(h.id)}
+              >
+                {h.label || (h.user ? `${h.user}@${h.host}` : h.host)}
+              </button>
+            {/each}
+          {/if}
+          <button
+            type="button"
+            class="dest-opt dest-manage"
+            onclick={() => void openManageHosts()}
+          >
+            Gestionar hosts…
+          </button>
+        </div>
+      {/if}
+    </div>
     <button
       type="button"
       class="chip is-folder"
       class:is-on={!!cwd}
       class:is-locked={folderBlocked}
-      title={folderChipTitle}
+      title={remoteHostId
+        ? "cwd remoto (path POSIX)"
+        : folderChipTitle}
       aria-label={cwd ? `Carpeta: ${folderLabel}` : "Elegir carpeta"}
       aria-disabled={folderBlocked}
       onclick={openFolderBrowser}
@@ -1353,6 +1636,7 @@
     {/if}
   {/snippet}
 
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
   <header class="top">
     <div
       class="brand"
@@ -1369,6 +1653,19 @@
         draggable="false"
       />
     </div>
+    {#if variant === "float" && onHeaderPointerDown}
+      <!-- Solo el hueco central arrastra: si el drag vive en todo el header,
+           pin / historial / Bypass / X pierden el clic (sobre todo con otra
+           app detrás del overlay). -->
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <div
+        class="top-drag"
+        aria-hidden="true"
+        onpointerdown={onHeaderPointerDown}
+      ></div>
+    {:else if variant === "float"}
+      <div class="top-drag" aria-hidden="true"></div>
+    {/if}
     <div class="top-acts" data-no-drag>
       {#if variant === "float"}
         <button
@@ -1392,6 +1689,16 @@
         onclick={() => void toggleHistory()}
       >
         <Icon icon={History} size={13} />
+      </button>
+      <button
+        type="button"
+        class="icon-btn"
+        class:is-on={consoleOpen}
+        aria-label={consoleOpen ? "Volver al chat" : "Consola"}
+        title={consoleOpen ? "Volver al chat" : "Consola"}
+        onclick={toggleConsole}
+      >
+        <Icon icon={SquareTerminal} size={13} />
       </button>
       <button
         type="button"
@@ -1456,6 +1763,17 @@
           {/if}
         </span>
       </p>
+      {#if variant === "float" && onClose}
+        <button
+          type="button"
+          class="icon-btn"
+          aria-label="Cerrar"
+          title="Cerrar"
+          onclick={onClose}
+        >
+          <Icon icon={X} size={13} />
+        </button>
+      {/if}
     </div>
   </header>
 
@@ -1493,56 +1811,66 @@
       </div>
 
       <div class="hist-body">
-        <p class="hist-sec" title="Igual que /resume en Claude Code">
-          CLI · esta carpeta
-        </p>
-        {#if !cwd.trim()}
+        {#if remoteHostId}
+          <p class="hist-sec">CLI remoto</p>
           <div class="hist-empty-wrap">
             <EmptyState
-              title="Elegí una carpeta"
-              hint="Para ver sesiones del CLI."
-            >
-              {#snippet action()}
-                <button
-                  type="button"
-                  class="chip"
-                  class:is-locked={folderBlocked}
-                  data-no-drag
-                  aria-disabled={folderBlocked}
-                  title={folderChipTitle}
-                  onclick={openFolderBrowser}
-                >
-                  Carpeta
-                </button>
-              {/snippet}
-            </EmptyState>
-          </div>
-        {:else if cliLoading}
-          <p class="hist-empty">Buscando…</p>
-        {:else if cliSessions.length === 0}
-          <div class="hist-empty-wrap">
-            <EmptyState title="Sin sesiones CLI" hint="Probá otra carpeta." />
+              title="No disponible en remoto"
+              hint="El índice de sesiones del CLI es local. Usá el historial Atic."
+            />
           </div>
         {:else}
-          <ul class="hist-list">
-            {#each cliSessions as s (s.id)}
-              <li>
-                <button
-                  type="button"
-                  class="hist-row"
-                  data-no-drag
-                  title="Elegir cómo reanudar"
-                  onclick={() => askResumeMode(s)}
-                >
-                  <span class="hist-prev">{s.preview || s.id}</span>
-                  <span class="hist-meta">
-                    <span class="hist-ago">{ago(s.updatedAt)}</span>
-                    <span class="hist-tag">CLI</span>
-                  </span>
-                </button>
-              </li>
-            {/each}
-          </ul>
+          <p class="hist-sec" title="Igual que /resume en Claude Code">
+            CLI · esta carpeta
+          </p>
+          {#if !cwd.trim()}
+            <div class="hist-empty-wrap">
+              <EmptyState
+                title="Elegí una carpeta"
+                hint="Para ver sesiones del CLI."
+              >
+                {#snippet action()}
+                  <button
+                    type="button"
+                    class="chip"
+                    class:is-locked={folderBlocked}
+                    data-no-drag
+                    aria-disabled={folderBlocked}
+                    title={folderChipTitle}
+                    onclick={openFolderBrowser}
+                  >
+                    Carpeta
+                  </button>
+                {/snippet}
+              </EmptyState>
+            </div>
+          {:else if cliLoading}
+            <p class="hist-empty">Buscando…</p>
+          {:else if cliSessions.length === 0}
+            <div class="hist-empty-wrap">
+              <EmptyState title="Sin sesiones CLI" hint="Probá otra carpeta." />
+            </div>
+          {:else}
+            <ul class="hist-list">
+              {#each cliSessions as s (s.id)}
+                <li>
+                  <button
+                    type="button"
+                    class="hist-row"
+                    data-no-drag
+                    title="Elegir cómo reanudar"
+                    onclick={() => askResumeMode(s)}
+                  >
+                    <span class="hist-prev">{s.preview || s.id}</span>
+                    <span class="hist-meta">
+                      <span class="hist-ago">{ago(s.updatedAt)}</span>
+                      <span class="hist-tag">CLI</span>
+                    </span>
+                  </button>
+                </li>
+              {/each}
+            </ul>
+          {/if}
         {/if}
 
         <p class="hist-sec">Atic</p>
@@ -1568,6 +1896,9 @@
                   <span class="hist-prev">{t.preview || "Sin título"}</span>
                   <span class="hist-meta">
                     <span class="hist-ago">{ago(t.updatedAt)}</span>
+                    {#if t.remoteHostId}
+                      <span class="hist-tag">SSH</span>
+                    {/if}
                     {#if t.providerSession}
                       <span class="hist-tag">reanudable</span>
                     {/if}
@@ -1591,82 +1922,95 @@
     </aside>
   </div>
 
-  <div
-    class="log"
-    bind:this={logEl}
-    role="log"
-    aria-label="Conversación"
-    data-selectable
-  >
-    {#if available === false}
-      <div class="empty">
-        <EmptyState
-          title="Sin CLI"
-          hint="Instalá Claude Code y ejecutá claude auth login."
-        />
-      </div>
-    {:else if archiveLoading}
-      <div class="empty">
-        <EmptyState title="Abriendo…" />
-      </div>
-    {:else if conversationItems.length === 0 && !working}
-      <div class="empty" class:is-hero={!archive}>
-        {#if archive}
-          <EmptyState title="Sin mensajes" hint="Este archivo está vacío." />
-        {:else}
-          <div class="hero" data-no-drag>
-            <p class="hero-t">
-              {cwd.trim()
-                ? "Preguntá lo que necesites"
-                : "Elegí carpeta y empezá"}
-            </p>
-            <p class="hero-h">
-              {cwd.trim()
-                ? "Claude Code · sesión local en Atic"
-                : "Primero la carpeta de trabajo, abajo."}
-            </p>
-            <div class="hero-sugs" role="group" aria-label="Sugerencias">
-              {#each SUGGESTIONS as sug, i (sug)}
-                <button
-                  type="button"
-                  class="sug"
-                  style="--i: {i}"
-                  disabled={available == null}
-                  onclick={() => applySuggestion(sug)}
-                >
-                  {sug}
-                </button>
-              {/each}
+  {#if consoleOpen}
+    {#await import("./ConsolePanel.svelte") then { default: ConsolePanel }}
+      <ConsolePanel
+        remoteHost={selectedHost}
+        localCwd={remoteHostId ? "" : cwd}
+        initialKind={remoteHostId ? "ssh" : "local"}
+        onClose={() => (consoleOpen = false)}
+      />
+    {/await}
+  {:else}
+    <div
+      class="log"
+      bind:this={logEl}
+      role="log"
+      aria-label="Conversación"
+      data-selectable
+    >
+      {#if agentMissing}
+        <div class="empty">
+          <EmptyState
+            title="Sin CLI"
+            hint="Instalá Claude Code y ejecutá claude auth login. O elegí un host SSH remoto."
+          />
+        </div>
+      {:else if archiveLoading}
+        <div class="empty">
+          <EmptyState title="Abriendo…" />
+        </div>
+      {:else if conversationItems.length === 0 && !working}
+        <div class="empty" class:is-hero={!archive}>
+          {#if archive}
+            <EmptyState title="Sin mensajes" hint="Este archivo está vacío." />
+          {:else}
+            <div class="hero" data-no-drag>
+              <p class="hero-t">
+                {cwd.trim()
+                  ? "Preguntá lo que necesites"
+                  : "Elegí carpeta y empezá"}
+              </p>
+              <p class="hero-h">
+                {cwd.trim()
+                  ? "Claude Code · sesión local en Atic"
+                  : "Primero la carpeta de trabajo, abajo."}
+              </p>
+              <div class="hero-sugs" role="group" aria-label="Sugerencias">
+                {#each SUGGESTIONS as sug, i (sug)}
+                  <button
+                    type="button"
+                    class="sug"
+                    style="--i: {i}"
+                    disabled={available == null}
+                    onclick={() => applySuggestion(sug)}
+                  >
+                    {sug}
+                  </button>
+                {/each}
+              </div>
             </div>
-          </div>
-        {/if}
-      </div>
-    {:else}
-      <div class="thread">
-        <AgentConversation items={conversationItems} {turnEnds} />
-      </div>
-    {/if}
+          {/if}
+        </div>
+      {:else}
+        <div class="thread">
+          <AgentConversation items={conversationItems} {turnEnds} />
+        </div>
+      {/if}
 
-    {#if working && !waiting && !streamingLive && !archive}
-      <p class="live" aria-live="polite">
-        <span class="live-dot" aria-hidden="true"></span>
-        {compacting ? "compactando…" : "…"}
-      </p>
-    {/if}
-  </div>
+      {#if working && !waiting && !streamingLive && !archive}
+        <p class="live" aria-live="polite">
+          <span class="live-dot" aria-hidden="true"></span>
+          {compacting ? "compactando…" : "…"}
+        </p>
+      {/if}
+    </div>
+  {/if}
 
   {#if usageOpen}
-    <UsageModal
-      costUsd={usageCostUsd}
-      contextTokens={usageContextTokens}
-      contextSize={usageContextSize}
-      model={model || session?.model || archive?.model || ""}
-      effort={effort || session?.effort || null}
-      mode={mode || session?.mode || null}
-      turns={viewTurns}
-      archive={!!archive}
-      onClose={() => (usageOpen = false)}
-    />
+    {#await import("./UsageModal.svelte") then { default: UsageModal }}
+      <UsageModal
+        costUsd={usageCostUsd}
+        contextTokens={usageContextTokens}
+        contextSize={usageContextSize}
+        model={model || session?.model || archive?.model || ""}
+        effort={effort || session?.effort || null}
+        mode={mode || session?.mode || null}
+        turns={viewTurns}
+        archive={!!archive}
+        onClose={() => (usageOpen = false)}
+      />
+    {/await}
   {/if}
 
   {#if attachPreview}
@@ -1693,6 +2037,21 @@
       onPick={applyFolder}
       onClose={() => (folderOpen = false)}
     />
+  {/if}
+
+  {#if hostsPanelOpen && hostsPanelCfg}
+    <Modal
+      title="Hosts SSH"
+      size="md"
+      contained
+      panelMax="min(90dvh, 640px)"
+      onClose={closeHostsPanel}
+    >
+      <SshHostsPanel
+        bind:config={hostsPanelCfg}
+        onToast={(msg) => toasts.push(msg)}
+      />
+    </Modal>
   {/if}
 
   {#if compactOpen}
@@ -1805,7 +2164,7 @@
     </div>
   {/if}
 
-  {#if cliResumed && !archive}
+  {#if cliResumed && !archive && !consoleOpen}
     <p class="cli-note" role="status">
       <span class="cli-note-t">{resumeNote || "Sesión reanudada."}</span>
       <button
@@ -1821,7 +2180,7 @@
     </p>
   {/if}
 
-  {#if archive}
+  {#if archive && !consoleOpen}
     <div class="archive-bar" data-no-drag>
       <button
         type="button"
@@ -1835,7 +2194,7 @@
       <button
         type="button"
         class="chip is-go"
-        disabled={!archive.providerSession || available === false}
+        disabled={!archive.providerSession || (!archive.remoteHostId && available === false)}
         onclick={() => void resumeArchive()}
       >
         Continuar
@@ -1843,164 +2202,168 @@
     </div>
   {/if}
 
-  {#if error || session?.error}
+  {#if !consoleOpen && (error || session?.error)}
     <p class="warn" role="alert">{error ?? session?.error}</p>
   {/if}
 
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <footer
-    class="composer"
-    class:is-drop={dropActive}
-    data-no-drag
-    ondragover={onComposerDragOver}
-    ondragleave={onComposerDragLeave}
-    ondrop={(e) => void onComposerDrop(e)}
-  >
-    <div
-      class="composer-card"
-      class:is-readonly={!!archive}
+  {#if !consoleOpen}
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <footer
+      class="composer"
       class:is-drop={dropActive}
-      class:has-perm={!archive && (session?.pending?.length ?? 0) > 0}
+      data-no-drag
+      ondragover={onComposerDragOver}
+      ondragleave={onComposerDragLeave}
+      ondrop={(e) => void onComposerDrop(e)}
     >
-      {#if !archive && (session?.pending?.length ?? 0) > 0}
-        <div class="perm-stack" data-no-drag>
-          {#each session?.pending ?? [] as p (p.id)}
-            <div class="perm" role="alertdialog" aria-label="Permiso pendiente">
-              <p class="perm-t" title={p.description ?? p.tool}>
-                <strong>{p.tool}</strong>
-                {#if p.description}
-                  <span class="perm-w"> · {p.description}</span>
-                {/if}
-              </p>
-              <div class="perm-acts">
+      <div
+        class="composer-card"
+        class:is-readonly={!!archive}
+        class:is-drop={dropActive}
+        class:has-perm={!archive && (session?.pending?.length ?? 0) > 0}
+      >
+        {#if !archive && (session?.pending?.length ?? 0) > 0}
+          <div class="perm-stack" data-no-drag>
+            {#each session?.pending ?? [] as p (p.id)}
+              <div class="perm" role="alertdialog" aria-label="Permiso pendiente">
+                <p class="perm-t" title={p.description ?? p.tool}>
+                  <strong>{p.tool}</strong>
+                  {#if p.description}
+                    <span class="perm-w"> · {p.description}</span>
+                  {/if}
+                </p>
+                <div class="perm-acts">
+                  <button
+                    type="button"
+                    class="perm-btn is-danger"
+                    onclick={() => void agents.decide(sessionId!, p.id, "deny")}
+                  >
+                    rechazar
+                  </button>
+                  <button
+                    type="button"
+                    class="perm-btn"
+                    onclick={() => void agents.decide(sessionId!, p.id, "allow")}
+                  >
+                    aprobar
+                  </button>
+                  <button
+                    type="button"
+                    class="perm-btn is-go"
+                    onclick={() => void agents.decide(sessionId!, p.id, "allowAlways")}
+                  >
+                    aprobar siempre
+                  </button>
+                </div>
+              </div>
+            {/each}
+          </div>
+        {/if}
+        {#if slashOpen}
+          <SlashPalette
+            commands={slashFiltered}
+            activeIndex={slashActive}
+            emptyHint={slashCommands.length
+              ? "Sin coincidencias"
+              : starting
+                ? "Cargando comandos…"
+                : "Sin comandos"}
+            onPick={pickSlash}
+            onHover={(i) => (slashIndex = i)}
+          />
+        {/if}
+        {#if attaches.length > 0}
+          <div class="attach-row" data-no-drag>
+            {#each attaches as a (a.path)}
+              <div class="attach-chip">
                 <button
                   type="button"
-                  class="perm-btn is-danger"
-                  onclick={() => void agents.decide(sessionId!, p.id, "deny")}
+                  class="attach-thumb-btn"
+                  aria-label="Ampliar {a.name}"
+                  title="Ampliar"
+                  onclick={() => (attachPreview = a.path)}
                 >
-                  rechazar
+                  <img
+                    class="attach-thumb"
+                    src={convertFileSrc(a.path)}
+                    alt=""
+                    draggable="false"
+                  />
                 </button>
                 <button
                   type="button"
-                  class="perm-btn"
-                  onclick={() => void agents.decide(sessionId!, p.id, "allow")}
+                  class="attach-x"
+                  aria-label="Quitar {a.name}"
+                  title="Quitar"
+                  disabled={!!archive || working}
+                  onclick={() => {
+                    if (attachPreview === a.path) attachPreview = null;
+                    removeAttach(a.path);
+                  }}
                 >
-                  aprobar
-                </button>
-                <button
-                  type="button"
-                  class="perm-btn is-go"
-                  onclick={() => void agents.decide(sessionId!, p.id, "allowAlways")}
-                >
-                  aprobar siempre
+                  <Icon icon={X} size={11} />
                 </button>
               </div>
-            </div>
-          {/each}
-        </div>
-      {/if}
-      {#if slashOpen}
-        <SlashPalette
-          commands={slashFiltered}
-          activeIndex={slashActive}
-          emptyHint={slashCommands.length
-            ? "Sin coincidencias"
-            : starting
-              ? "Cargando comandos…"
-              : "Sin comandos"}
-          onPick={pickSlash}
-          onHover={(i) => (slashIndex = i)}
-        />
-      {/if}
-      {#if attaches.length > 0}
-        <div class="attach-row" data-no-drag>
-          {#each attaches as a (a.path)}
-            <div class="attach-chip">
-              <button
-                type="button"
-                class="attach-thumb-btn"
-                aria-label="Ampliar {a.name}"
-                title="Ampliar"
-                onclick={() => (attachPreview = a.path)}
-              >
-                <img
-                  class="attach-thumb"
-                  src={convertFileSrc(a.path)}
-                  alt=""
-                  draggable="false"
-                />
-              </button>
-              <button
-                type="button"
-                class="attach-x"
-                aria-label="Quitar {a.name}"
-                title="Quitar"
-                disabled={!!archive || working}
-                onclick={() => {
-                  if (attachPreview === a.path) attachPreview = null;
-                  removeAttach(a.path);
-                }}
-              >
-                <Icon icon={X} size={11} />
-              </button>
-            </div>
-          {/each}
-        </div>
-      {/if}
-      <textarea
-        class="in"
-        rows="1"
-        bind:this={inputEl}
-        placeholder={available === false
-          ? "Sin CLI…"
-          : archive
-            ? "Solo lectura…"
-            : dropActive
-              ? "Soltá para adjuntar…"
-              : "Mensaje, /… o pegá una imagen"}
-        bind:value={draft}
-        onkeydown={onKey}
-        onpaste={(e) => void onComposerPaste(e)}
-        oninput={() => (slashIndex = 0)}
-        onfocus={() => {
-          if (!archive && available === true) void ensureSession();
-        }}
-        disabled={available === false || !!archive}
-        aria-label="Mensaje"
-      ></textarea>
-      <div class="row">
-        <div class="set" data-no-drag>
-          {@render sessionControls()}
-        </div>
-        <div class="acts" data-no-drag>
-          <button
-            type="button"
-            class="icon-btn attach-btn"
-            aria-label="Adjuntar archivos"
-            title="Adjuntar archivos"
-            disabled={available === false || !!archive || working}
-            onclick={() => void pickAttaches()}
-          >
-            <Icon icon={Paperclip} size={14} />
-          </button>
-          <button
-            type="button"
-            class="send"
-            class:is-stop={working && !waiting}
-            disabled={ctaDisabled}
-            aria-label={ctaLabel}
-            title={ctaLabel}
-            onclick={() => (working && !waiting ? void interrupt() : void send())}
-          >
-            <Icon
-              icon={working && !waiting ? Square : ArrowUp}
-              size={14}
-            />
-          </button>
+            {/each}
+          </div>
+        {/if}
+        <textarea
+          class="in"
+          rows="1"
+          bind:this={inputEl}
+          placeholder={agentMissing
+            ? "Sin CLI…"
+            : archive
+              ? "Solo lectura…"
+              : dropActive
+                ? "Soltá para adjuntar…"
+                : remoteHostId
+                  ? "Mensaje al agente remoto…"
+                  : "Mensaje, /… o pegá una imagen"}
+          bind:value={draft}
+          onkeydown={onKey}
+          onpaste={(e) => void onComposerPaste(e)}
+          oninput={() => (slashIndex = 0)}
+          onfocus={() => {
+            if (!archive && agentOk) void ensureSession();
+          }}
+          disabled={agentMissing || !!archive}
+          aria-label="Mensaje"
+        ></textarea>
+        <div class="row">
+          <div class="set" data-no-drag>
+            {@render sessionControls()}
+          </div>
+          <div class="acts" data-no-drag>
+            <button
+              type="button"
+              class="icon-btn attach-btn"
+              aria-label="Adjuntar archivos"
+              title="Adjuntar archivos"
+              disabled={agentMissing || !!archive || working}
+              onclick={() => void pickAttaches()}
+            >
+              <Icon icon={Paperclip} size={14} />
+            </button>
+            <button
+              type="button"
+              class="send"
+              class:is-stop={working && !waiting}
+              disabled={ctaDisabled}
+              aria-label={ctaLabel}
+              title={ctaLabel}
+              onclick={() => (working && !waiting ? void interrupt() : void send())}
+            >
+              <Icon
+                icon={working && !waiting ? Square : ArrowUp}
+                size={14}
+              />
+            </button>
+          </div>
         </div>
       </div>
-    </div>
-  </footer>
+    </footer>
+  {/if}
 </div>
 
 <style>
@@ -2042,10 +2405,6 @@
     border-radius: var(--r-outer);
   }
 
-  .demo.is-float .top {
-    padding-right: 2.5rem;
-  }
-
   .demo.is-menu-open {
     overflow: visible;
   }
@@ -2058,6 +2417,20 @@
     gap: 0.4rem;
     border-bottom: 1px solid transparent;
     padding: 0.32rem 0.65rem 0.28rem;
+  }
+
+  .top-drag {
+    flex: 1;
+    min-width: 0.75rem;
+    align-self: stretch;
+    /* Zona de arrastre dedicada (solo float). */
+    cursor: grab;
+    touch-action: none;
+    user-select: none;
+  }
+
+  .top-drag:active {
+    cursor: grabbing;
   }
 
   .brand {
@@ -2076,6 +2449,9 @@
   }
 
   .top-acts {
+    position: relative;
+    /* Encima de grips de AgentsFloat (z 7): pin/X no deben quedar bajo el resize. */
+    z-index: 9;
     display: flex;
     flex-shrink: 0;
     align-items: center;
@@ -2102,6 +2478,11 @@
       background var(--duration-quick) var(--ease-smooth-out),
       border-color var(--duration-quick) var(--ease-smooth-out),
       transform var(--duration-quick) var(--ease-smooth-out);
+  }
+
+  /* El SVG (fill none) solo hit-testeaba el trazo: zona mínima. */
+  .icon-btn :global(svg) {
+    pointer-events: none;
   }
 
   .icon-btn:hover,
@@ -2878,7 +3259,8 @@
 
   .composer {
     position: relative;
-    z-index: 6;
+    /* Encima de grips de AgentsFloat (z 7): Local / carpeta / modelo. */
+    z-index: 8;
     flex-shrink: 0;
     padding: 0.35rem 0.7rem 0.7rem;
     background: transparent;
@@ -3084,6 +3466,11 @@
       transform var(--duration-quick) var(--ease-smooth-out);
   }
 
+  .chip :global(svg) {
+    pointer-events: none;
+    flex-shrink: 0;
+  }
+
   .chip-t {
     min-width: 0;
     overflow: hidden;
@@ -3093,6 +3480,63 @@
   .chip.is-folder {
     max-width: 6rem;
     padding-left: 0.35rem;
+  }
+
+  .chip.is-dest {
+    max-width: 7.5rem;
+  }
+
+  .dest {
+    position: relative;
+  }
+
+  .dest-menu {
+    position: absolute;
+    z-index: 40;
+    bottom: calc(100% + 0.35rem);
+    left: 0;
+    min-width: 10rem;
+    max-width: 16rem;
+    padding: 0.35rem;
+    border: 1px solid var(--rb-border);
+    border-radius: 10px;
+    background: var(--rb-surface-2, var(--rb-surface));
+    box-shadow: 0 10px 28px color-mix(in srgb, var(--rb-text) 12%, transparent);
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+  }
+
+  .dest-opt {
+    border: 0;
+    border-radius: 7px;
+    padding: 0.4rem 0.55rem;
+    background: transparent;
+    color: var(--rb-text);
+    font: inherit;
+    font-size: 0.75rem;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .dest-opt:hover,
+  .dest-opt.is-active {
+    background: color-mix(in srgb, var(--accent) 14%, transparent);
+  }
+
+  .dest-hint {
+    margin: 0;
+    padding: 0.35rem 0.45rem;
+    font-size: 0.68rem;
+    color: var(--rb-muted);
+  }
+
+  .dest-manage {
+    margin-top: 0.2rem;
+    border-top: 1px solid var(--rb-border);
+    border-radius: 0 0 7px 7px;
+    color: var(--rb-muted);
+    font-size: 0.7rem;
   }
 
   .chip:hover:not(:disabled) {

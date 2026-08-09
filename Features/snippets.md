@@ -10,8 +10,10 @@ está implementada.
 
 ## Cómo se usa
 
-- Abrir desde la pill (rueda / atajo): float independiente en el overlay
-  (`.float-emerge`), fundido a la pill. Tabs Textos / Notas.
+- Abrir desde la pill (rueda / atajo): float independiente en el overlay con el
+  morph fused grow → separate + reverse close
+  ([pill-liquid-emerge.md](pill-liquid-emerge.md)).
+  Tabs Textos / Notas.
 - Pegar cierra el float.
 
 ## Código
@@ -29,3 +31,4 @@ está implementada.
 
 - [clipboard-historial.md](clipboard-historial.md)
 - [launcher-spotlight.md](launcher-spotlight.md)
+- [pill-liquid-emerge.md](pill-liquid-emerge.md)

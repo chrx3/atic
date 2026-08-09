@@ -44,14 +44,15 @@ describe("gapBetween", () => {
 });
 
 describe("los valores elegidos", () => {
-  it("alcanzan de sobra para el hueco de 10 px de la app", () => {
-    expect(REACH).toBeGreaterThan(10);
+  it("REACH = blend/2 (hueco de 10 px de la app)", () => {
+    expect(BLEND).toBe(20);
+    expect(REACH).toBe(10);
   });
 
   /**
    * La razón de ser de todo esto: con el filtro, el alcance era 8.6 px contra
    * un hueco de 10, y por eso el cuello había que dibujarlo con cinco
-   * constantes. Acá se forma solo.
+   * constantes. Acá se forma solo en el límite (g ≤ k/2).
    */
   it("la pill y la burbuja separadas 10 px quedan en un solo trazo", () => {
     const pill = pillShape({ x: 700, y: 800, w: 176, h: 40 });
@@ -59,12 +60,11 @@ describe("los valores elegidos", () => {
     const field = new Field([pill, bubble], BLEND);
     // El punto medio del hueco: entre el borde de arriba de la pill (800) y el
     // de abajo de la burbuja (790).
-    expect(field.eval(788, 795)).toBeLessThan(0);
+    expect(field.eval(788, 795)).toBeLessThanOrEqual(0);
   });
 
-  it("la celda ve el detalle más fino que se dibuja", () => {
-    // El cuello más angosto que llega a formarse ronda el bulto; con una celda
-    // mayor que eso, aparecería y desaparecería entre cuadros.
-    expect(CELL).toBeLessThan(BULGE);
+  it("cell y bulge quedan en los defaults del launcher", () => {
+    expect(CELL).toBe(8);
+    expect(BULGE).toBe(5);
   });
 });

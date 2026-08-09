@@ -14,6 +14,8 @@
    *     franja sucia justo en la junta.
    *   - **La sombra va después de la fusión.** Va sobre el path ya trazado, no
    *     por forma; una sombra por silueta se vería por dentro de la unión.
+   *     Tiene que ser `drop-shadow` (sigue el alpha del path): un `box-shadow`
+   *     del bounding box deja un rectángulo gris encima de los floats.
    *
    * Lo que NO va acá: contenido. El texto y los iconos viven en `Ink`, encima y
    * con la misma geometría.

@@ -13,6 +13,7 @@ mod export;
 mod floating;
 mod import;
 mod launcher;
+mod launcher_icons;
 mod live;
 #[cfg(target_os = "macos")]
 mod macos_notes;
@@ -20,6 +21,8 @@ mod mail;
 mod meeting_detection;
 mod mouse_bindings;
 mod ocr;
+#[cfg(windows)]
+mod ole_text_drag;
 mod overlay;
 mod panel_float;
 mod paste_queue;
@@ -161,6 +164,8 @@ pub fn run() {
             overlay::save_pill_home,
             overlay::pill_home,
             overlay::set_overlay_hit_rects,
+            overlay::set_overlay_item_drag,
+            overlay::overlay_cursor_over_hit,
             overlay::set_overlay_text_mode,
             commands::open_data_dir,
             commands::recording_track_path,
@@ -208,8 +213,11 @@ pub fn run() {
             capture_session::cancel_capture_session,
             clipboard_history::list_clipboard_history,
             clipboard_history::paste_clipboard_item,
+            clipboard_history::insert_clipboard_into_agents,
+            clipboard_history::try_clipboard_drop_on_agents,
             clipboard_history::agents_window_visible,
             clipboard_history::clipboard_drag_path,
+            clipboard_history::start_clipboard_text_drag,
             clipboard_history::read_clipboard_drag_text,
             clipboard_history::pin_clipboard_item,
             clipboard_history::delete_clipboard_item,
@@ -247,6 +255,15 @@ pub fn run() {
             agents::bridge::agent_claude_transcript,
             agents::bridge::agent_claude_usage,
             agents::bridge::list_directories,
+            agents::bridge::ssh_host_secrets_status,
+            agents::bridge::ssh_set_host_secret,
+            agents::bridge::ssh_delete_host_secrets,
+            agents::bridge::ssh_test_host,
+            agents::bridge::ssh_list_hosts,
+            agents::console::console_open,
+            agents::console::console_write,
+            agents::console::console_resize,
+            agents::console::console_close,
             agents::media::agent_stage_image,
             clipboard_history::restore_pill_position,
             snippets::list_snippets,
@@ -274,10 +291,14 @@ pub fn run() {
             ocr::read_capture_ocr_cache,
             search::search_local,
             launcher::toggle_launcher,
+            launcher::show_launcher,
             launcher::hide_launcher,
             launcher::launcher_reindex,
             launcher::launcher_search,
             launcher::launcher_run,
+            launcher::launcher_list_favorites,
+            launcher::launcher_toggle_favorite,
+            launcher::launcher_icon,
         ])
         .setup(move |app| {
             // El estado ya está registrado por el Builder: acá solo se lee.
@@ -308,6 +329,7 @@ pub fn run() {
                 pill_radial_shortcut,
                 clipboard_shortcut,
                 snippets_shortcut,
+                agents_shortcut,
                 screenshot_shortcut,
                 launcher_shortcut,
                 want_autostart,
@@ -321,6 +343,7 @@ pub fn run() {
                     cfg.pill_radial_shortcut.clone(),
                     cfg.clipboard_shortcut.clone(),
                     cfg.snippets_shortcut.clone(),
+                    cfg.agents_shortcut.clone(),
                     cfg.screenshot_shortcut.clone(),
                     cfg.launcher_shortcut.clone(),
                     cfg.autostart,
@@ -377,7 +400,7 @@ pub fn run() {
             // Mouse lateral: Raw Input (pasivo; no puede congelar el ratón del SO).
             mouse_bindings::init(app.handle());
 
-            // Atajos globales: grabación + dictado + pill + clipboard + captura + launcher.
+            // Atajos globales: grabación + dictado + pill + clipboard + agentes + captura + launcher.
             if let Err(err) = shortcuts::register_shortcuts(
                 app.handle(),
                 shortcuts::ShortcutBindings {
@@ -387,6 +410,7 @@ pub fn run() {
                     pill_radial: &pill_radial_shortcut,
                     clipboard: &clipboard_shortcut,
                     snippets: &snippets_shortcut,
+                    agents: &agents_shortcut,
                     screenshot: &screenshot_shortcut,
                     launcher: &launcher_shortcut,
                 },

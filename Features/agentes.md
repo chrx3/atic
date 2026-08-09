@@ -28,6 +28,8 @@ credenciales locales del usuario: no lee tokens; el CLI hereda el login.
 - [x] Sesión al enfocar/`/`: catálogo completo sin mandar mensaje
 - [x] Select de `/effort` en composer (low…auto)
 - [x] Misma UI en main y pill
+- [x] Atajo global para abrir/cerrar la consola (`agents_shortcut`, default
+  `CmdOrCtrl+Shift+A`; Ajustes → Atajos)
 
 ## Pendiente
 
@@ -35,9 +37,11 @@ credenciales locales del usuario: no lee tokens; el CLI hereda el login.
 - [ ] Otros backends en UI (Codex, OpenCode, Cursor)
 - [ ] Dictado → composer
 - [ ] MCP / skills visibles
+- [x] Hosts SSH / agente remoto MVP (Claude Code vía `ssh`; plan: [ssh-remote-hosts.md](ssh-remote-hosts.md))
 
 ## Relacionado
 
 - [dictado.md](dictado.md)
 - [liquid.md](liquid.md)
+- [ssh-remote-hosts.md](ssh-remote-hosts.md)
 - [`docs/PLAN_AGENTES.md`](../docs/PLAN_AGENTES.md)

@@ -15,16 +15,23 @@
   import { page } from "$app/state";
   import AgentsFloat from "./agents/AgentsFloat.svelte";
   import ClipboardFloat from "./clipboard/ClipboardFloat.svelte";
+  import LauncherFloat from "./launcher/LauncherFloat.svelte";
   import SnippetsFloat from "./snippets/SnippetsFloat.svelte";
   import PillSurface from "./pill/PillSurface.svelte";
   import { getConfig } from "$ipc/config";
   import { onPillVisibility, setOverlayTextMode } from "$ipc/overlay";
-  import { liveArea } from "./surfaces.svelte";
+  import { liveArea, surfaces } from "./surfaces.svelte";
   import { liquid } from "./group.svelte";
   import Skin from "$liquid/Skin.svelte";
+  import { BLEND, CELL } from "$liquid/constants";
+  import {
+    LAUNCHER_LAB_OPEN_KEY,
+    launcherLab,
+  } from "$lib/dev/launcherLab.svelte";
   import type { Component } from "svelte";
 
   const debug = $derived(page.url.searchParams.has("debug"));
+  const isDev = import.meta.env.DEV;
 
   /**
    * Banco de pruebas del sistema líquido, solo en dev.
@@ -42,14 +49,46 @@
     null,
   );
 
+  /** Panel compacto de perillas (launcher + blend/cell). Solo DEV. */
+  let LauncherLabPanel = $state<
+    typeof import("$lib/dev/LauncherLabPanel.svelte").default | null
+  >(null);
+  let launcherLabEl = $state<HTMLElement | null>(null);
+
+  const skinBlend = $derived(isDev && launcherLab.open ? launcherLab.blend : BLEND);
+  const skinCell = $derived(isDev && launcherLab.open ? launcherLab.cell : CELL);
+
   async function syncLab() {
-    if (!import.meta.env.DEV) return;
+    if (!isDev) return;
     if (localStorage.getItem(LAB_KEY) === "1") {
       Lab ??= (await import("$lib/dev/LiquidLab.svelte")).default;
     } else {
       Lab = null;
     }
   }
+
+  async function syncLauncherLab() {
+    if (!isDev) return;
+    const want = localStorage.getItem(LAUNCHER_LAB_OPEN_KEY) === "1";
+    if (!want) {
+      launcherLab.close();
+      return;
+    }
+    LauncherLabPanel ??= (await import("$lib/dev/LauncherLabPanel.svelte")).default;
+    launcherLab.open = true;
+  }
+
+  $effect(() => {
+    if (!isDev || !launcherLab.open) {
+      document.documentElement.style.removeProperty("--goo-grow");
+      return;
+    }
+    document.documentElement.style.setProperty(
+      "--goo-grow",
+      `${launcherLab.gooGrow}px`,
+    );
+    return () => document.documentElement.style.removeProperty("--goo-grow");
+  });
 
   /**
    * El lab necesita el mouse entero.
@@ -61,6 +100,11 @@
    */
   let labEl = $state<HTMLElement | null>(null);
   $effect(() => (labEl && Lab ? liveArea("lab", labEl) : undefined));
+  $effect(() =>
+    launcherLabEl && launcherLab.open && LauncherLabPanel
+      ? liveArea("launcher-lab", launcherLabEl)
+      : undefined,
+  );
 
   /**
    * Montar y desmontar, no esconder.
@@ -85,12 +129,26 @@
 
   $effect(() => {
     void syncLab();
+    void syncLauncherLab();
     const onStorage = (event: StorageEvent) => {
       if (event.key === LAB_KEY || event.key === null) void syncLab();
+      if (event.key === LAUNCHER_LAB_OPEN_KEY || event.key === null) {
+        void syncLauncherLab();
+      }
     };
     window.addEventListener("storage", onStorage);
     return () => window.removeEventListener("storage", onStorage);
   });
+
+  function onOverlayDevKey(event: KeyboardEvent) {
+    if (!isDev) return;
+    if (event.key === "Escape" && launcherLab.open) {
+      // Launcher vivo (aunque mid-morph): Esc lo cierra LauncherFloat; lab queda.
+      if (document.querySelector(".lf")) return;
+      event.preventDefault();
+      launcherLab.close();
+    }
+  }
 
   /**
    * El teclado.
@@ -109,22 +167,42 @@
 
   function editable(node: EventTarget | null): HTMLElement | null {
     if (!(node instanceof HTMLElement)) return null;
-    const el = node.closest("input, textarea, [contenteditable='true']");
+    // Incluye xterm: el clic cae en el viewport/canvas, no en el textarea helper.
+    const el = node.closest(
+      "input, textarea, [contenteditable='true'], [data-console-term], .xterm",
+    );
     return el instanceof HTMLElement ? el : null;
+  }
+
+  function focusEditable(el: HTMLElement) {
+    if (el.matches("input, textarea, [contenteditable='true']")) {
+      el.focus();
+      return;
+    }
+    const root = el.closest(".xterm, [data-console-term]") ?? el;
+    const helper = root.querySelector("textarea.xterm-helper-textarea");
+    if (helper instanceof HTMLTextAreaElement) {
+      helper.focus();
+      return;
+    }
+    el.focus();
   }
 
   async function enterTextMode(event: PointerEvent) {
     const el = editable(event.target);
-    if (!el || textMode) return;
-    textMode = true;
-    try {
-      await setOverlayTextMode(true);
-    } catch {
-      // Fuera de Tauri no hay ventana a la que pedirle el foco.
+    if (!el) return;
+    // Re-enfocar aunque ya estemos en modo texto (p. ej. salto del composer → xterm).
+    if (!textMode) {
+      textMode = true;
+      try {
+        await setOverlayTextMode(true);
+      } catch {
+        // Fuera de Tauri no hay ventana a la que pedirle el foco.
+      }
     }
     // Después del viaje a Rust: hasta que la ventana no es activable, el
     // webview no acepta el foco y el clic no deja el cursor en el campo.
-    el.focus();
+    focusEditable(el);
   }
 
   async function leaveTextMode() {
@@ -147,13 +225,22 @@
         if (!editable(document.activeElement)) void leaveTextMode();
       }, 0);
     };
+    // Foco programático (launcher al abrir, etc.): el hijo pide
+    // `set_overlay_text_mode` y luego `input.focus()`. Sin este sync,
+    // `textMode` seguiría en false y `leaveTextMode` no devolvería el teclado.
+    const onFocusIn = () => {
+      if (!editable(document.activeElement) || textMode) return;
+      textMode = true;
+    };
     // Si el foco salta a otra app (Alt+Tab, clic fuera), el `focusout` del DOM
     // a veces no corre: el textarea sigue siendo `activeElement` y el modo
     // texto queda pegado. `blur` de la ventana lo devuelve igual.
     const onWindowBlur = () => void leaveTextMode();
+    document.addEventListener("focusin", onFocusIn);
     document.addEventListener("focusout", onFocusOut);
     window.addEventListener("blur", onWindowBlur);
     return () => {
+      document.removeEventListener("focusin", onFocusIn);
       document.removeEventListener("focusout", onFocusOut);
       window.removeEventListener("blur", onWindowBlur);
       void leaveTextMode();
@@ -161,21 +248,24 @@
   });
 </script>
 
+<svelte:window onkeydown={onOverlayDevKey} />
+
 <!--
   El orden importa y es al revés de como se lee.
 
-  El float va PRIMERO para que quede debajo. Con la pill primero, el globo
-  —que es enorme y recibe el mouse en todo su rectángulo— la tapaba: se seguía
-  viendo, porque la copia de su silueta vive en la capa fundida y esa se pinta
-  encima del cuerpo, pero no se podía ni clicar ni arrastrar.
+  El float va PRIMERO (debajo en DOM). El z-index del float es mayor que el de
+  la pill (`layers.css`): así el header del float (pin, cerrar) gana el clic
+  cuando se solapa con el hit-box de la pill junto al cuello. La silueta de la
+  pill sigue en la capa fundida (Skin) por encima del cuerpo.
 
-  Y es el orden correcto de fondo: la pill es el control que siempre tiene que
-  estar a mano. Lo que se despliega desde ella pasa por detrás.
-
-  Además de DOM: `--z-overlay-pill` > `--z-overlay-float` (layers.css). Sin
-  z-index en la pill, los floats con z > 0 la tapaban al solaparse.
+  Además de DOM: `--z-overlay-float` > `--z-overlay-pill`.
 -->
-<div class="ov" class:is-debug={debug} onpointerdowncapture={enterTextMode}>
+<div
+  class="ov"
+  class:is-debug={debug}
+  class:is-dragging={surfaces.dragging}
+  onpointerdowncapture={enterTextMode}
+>
   {#if Lab}
     <div class="lab-host" bind:this={labEl}>
       <Lab
@@ -197,14 +287,21 @@
       Primero en el orden, o sea debajo de todo: es una silueta, y el contenido
       —texto, iconos, controles— vive encima con la misma geometría.
     -->
-    <Skin shapes={liquid.shapes} />
+    <Skin shapes={liquid.shapes} blend={skinBlend} cell={skinCell} />
 
     <!-- Floats siempre montados: escuchan anclas/dismiss aunque estén cerrados. -->
     <AgentsFloat />
     <ClipboardFloat />
     <SnippetsFloat />
+    <LauncherFloat />
     {#if shown}
       <PillSurface />
+    {/if}
+
+    {#if isDev && launcherLab.open && LauncherLabPanel}
+      <div class="launcher-lab-host" bind:this={launcherLabEl}>
+        <LauncherLabPanel />
+      </div>
     {/if}
   {/if}
 </div>
@@ -235,9 +332,26 @@
     inset: 0;
   }
 
+  .launcher-lab-host {
+    position: fixed;
+    top: 3.25rem;
+    left: 0.75rem;
+    z-index: 90;
+    width: min(19rem, calc(100vw - 1.5rem));
+    max-height: min(70vh, 34rem);
+    pointer-events: auto;
+  }
+
   /* `?debug` en la URL: marca el borde de la lámina, que si no es invisible. */
   .ov.is-debug {
     box-sizing: border-box;
     border: 2px dashed var(--warn);
+  }
+
+  /*
+   * Durante drag: sin transition de emerge en floats (left/top cada frame).
+   */
+  .ov.is-dragging :global(.float-emerge) {
+    transition: none !important;
   }
 </style>

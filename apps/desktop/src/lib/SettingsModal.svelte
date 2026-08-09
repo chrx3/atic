@@ -37,6 +37,7 @@
     openDataDir,
   } from "$lib/api";
   import { looksLikeHeadset } from "$lib/audioHeadset";
+  import SshHostsPanel from "$lib/features/agents/SshHostsPanel.svelte";
 
   /** Modelos STT oficiales de Groq (mismo catálogo que el backend). */
   const GROQ_WHISPER_OPTIONS = [
@@ -101,7 +102,8 @@
     | "meetings"
     | "dictation"
     | "summary"
-    | "captures";
+    | "captures"
+    | "agents";
 
   let activeSection = $state<SettingsSectionId>("general");
 
@@ -129,6 +131,7 @@
     { id: "dictation", label: "Dictado" },
     { id: "summary", label: "Resúmenes" },
     { id: "captures", label: "Capturas" },
+    { id: "agents", label: "Agentes" },
   ];
 
   const activeSectionLabel = $derived(
@@ -958,6 +961,19 @@
             }}
           />
           <p class="rb-hint">Abre plantillas y el bloc de notas.</p>
+        </div>
+
+        <div class="rb-settings-hotkey">
+          <p class="rb-settings-hotkey-label">Consola de agentes</p>
+          <HotkeyCapture
+            value={c.agents_shortcut}
+            defaultValue="CmdOrCtrl+Shift+A"
+            ariaLabel="Cambiar atajo de la consola de agentes"
+            onChange={(sc) => {
+              c.agents_shortcut = sc;
+            }}
+          />
+          <p class="rb-hint">Abre o cierra el chat de agentes. Esc también cierra.</p>
         </div>
       </div>
     {/snippet}
@@ -1854,6 +1870,12 @@
       </div>
     {/snippet}
 
+    {#snippet agents(_c: AppConfig, _s: SecretsStatus)}
+      {#if cfg}
+        <SshHostsPanel bind:config={cfg} onToast={onToast} />
+      {/if}
+    {/snippet}
+
     {#snippet captures(c: AppConfig, s: SecretsStatus)}
       <div class="rb-settings-group">
         <h4 class="rb-settings-group-title">Atajo</h4>
@@ -1971,6 +1993,8 @@
             {@render summary(cfg, secrets)}
           {:else if activeSection === "captures"}
             {@render captures(cfg, secrets)}
+          {:else if activeSection === "agents"}
+            {@render agents(cfg, secrets)}
           {/if}
         </div>
       </div>

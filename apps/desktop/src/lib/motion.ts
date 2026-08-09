@@ -109,23 +109,29 @@ export const MOTION = {
   flight: "--flight-dur",
   floatOpen: "--float-open-dur",
   floatClose: "--float-close-dur",
+  launcherBar: "--launcher-bar-open-dur",
+  launcherSeparate: "--launcher-separate-dur",
+  launcherFavStagger: "--launcher-fav-stagger",
 } as const;
 
 /** Fallbacks alineados con app.css. Solo se usan si el token no resuelve. */
 export const MOTION_FALLBACK = {
-  [MOTION.morphOpen]: 350,
-  [MOTION.morphClose]: 350,
-  [MOTION.morphFade]: 200,
-  [MOTION.morphQuick]: 150,
-  [MOTION.panel]: 250,
-  [MOTION.micro]: 80,
-  [MOTION.quick]: 150,
-  [MOTION.fast]: 250,
-  [MOTION.slow]: 400,
-  [MOTION.medium]: 350,
-  [MOTION.flight]: 250,
-  [MOTION.floatOpen]: 400,
-  [MOTION.floatClose]: 350,
+  [MOTION.morphOpen]: 110,
+  [MOTION.morphClose]: 100,
+  [MOTION.morphFade]: 80,
+  [MOTION.morphQuick]: 60,
+  [MOTION.panel]: 110,
+  [MOTION.micro]: 40,
+  [MOTION.quick]: 75,
+  [MOTION.fast]: 125,
+  [MOTION.slow]: 200,
+  [MOTION.medium]: 150,
+  [MOTION.flight]: 110,
+  [MOTION.floatOpen]: 110,
+  [MOTION.floatClose]: 100,
+  [MOTION.launcherBar]: 100,
+  [MOTION.launcherSeparate]: 90,
+  [MOTION.launcherFavStagger]: 90,
 } as const;
 
 /** Atajo: duración efectiva de un token conocido. */
@@ -141,8 +147,8 @@ function easeInOut(t: number): number {
 /**
  * Contenido al cambiar de pestaña.
  *
- * Simétrico (`--duration-fast`): no es open/close. Distancia micro + blur
- * pequeño en la fase de entrada; el exit se apaga sin lanzar el panel.
+ * Simétrico (`--duration-fast`): no es open/close. Solo opacity + micro
+ * translate (sin blur: carísimo en paneles grandes).
  */
 export function tabPanel(
   _node: Element,
@@ -157,8 +163,8 @@ export function tabPanel(
     easing: easeInOut,
     css: (t) => {
       const u = 1 - t;
-      // --distance-micro (4px) + --blur-small (2px)
-      return `opacity:${t};transform:translateY(${u * 4}px);filter:blur(${u * 2}px)`;
+      // --distance-micro (4px)
+      return `opacity:${t};transform:translateY(${u * 4}px)`;
     },
   };
 }

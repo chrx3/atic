@@ -502,11 +502,10 @@ pub fn agents_window_visible(app: AppHandle) -> bool {
     agents_visible(&app)
 }
 
-/// Ruta de archivo para arrastrar un ítem del clipboard (OLE / startDrag).
+/// Ruta de archivo para arrastrar un ítem **imagen** (OLE / startDrag).
 ///
-/// Las imágenes ya tienen PNG en disco. El texto se materializa como
-/// `.atic-drag-{id}.txt` bajo el dir de clipboard para poder cruzar ventanas
-/// Tauri (HTML5 `text/plain` no llega al webview de agentes).
+/// El texto ya no usa archivo: ver `start_clipboard_text_drag` (`CF_UNICODETEXT`).
+/// Se mantiene para imágenes y para quien aún lea `.atic-drag-*.txt`.
 #[tauri::command]
 pub fn clipboard_drag_path(state: State<AppState>, id: String) -> Result<String, String> {
     let item = find_item(&state, &id).ok_or_else(|| "Ítem no encontrado".to_string())?;
@@ -528,6 +527,59 @@ pub fn clipboard_drag_path(state: State<AppState>, id: String) -> Result<String,
                 .map_err(|e| format!("no se pudo preparar el arrastre: {e}"))?;
             Ok(path.to_string_lossy().into_owned())
         }
+    }
+}
+
+/// Arrastra texto como `CF_UNICODETEXT` (no como archivo).
+///
+/// En Windows, `tauri-plugin-drag` solo hace HDROP: soltar un `.txt` en Cursor
+/// inserta la ruta. Este comando hace OLE de texto plano.
+#[tauri::command]
+pub async fn start_clipboard_text_drag(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<(), String> {
+    let item = find_item(&state, &id).ok_or_else(|| "Ítem no encontrado".to_string())?;
+    let text = match item.kind {
+        ClipboardKind::Text => item
+            .text
+            .filter(|t| !t.is_empty())
+            .unwrap_or_else(|| item.preview.clone()),
+        ClipboardKind::Image => return Err("usa arrastre de archivo para imágenes".into()),
+    };
+    if text.is_empty() {
+        return Err("Ítem de texto vacío".into());
+    }
+
+    #[cfg(windows)]
+    {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let drag_text = text.clone();
+        app.run_on_main_thread(move || {
+            let r = crate::ole_text_drag::drag_unicode_text(&drag_text);
+            let _ = tx.send(r);
+        })
+        .map_err(|e| e.to_string())?;
+        let effect = rx.recv().map_err(|e| e.to_string())??;
+        // CANCEL sobre agentes (QueryContinueDrag) o NONE: insertar en composer.
+        if agents_visible(&app) && crate::overlay::cursor_over_hit_id("agents") {
+            let _ = app.emit(
+                "agents-composer-insert",
+                AgentsComposerInsert {
+                    kind: ClipboardKind::Text,
+                    text: Some(text),
+                    image_path: None,
+                },
+            );
+            let _ = effect;
+        }
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (app, text);
+        Err("arrastre de texto solo en Windows".into())
     }
 }
 
@@ -643,6 +695,62 @@ pub fn paste_clipboard_item(
 
     hide_clipboard_window(app.clone());
     result
+}
+
+/// Inserta un ítem del historial en el composer de agentes (sin ocultar clipboard).
+#[tauri::command]
+pub fn insert_clipboard_into_agents(
+    app: AppHandle,
+    state: State<AppState>,
+    id: String,
+) -> Result<(), String> {
+    if !agents_visible(&app) {
+        return Err("agentes no está abierto".into());
+    }
+    let item = find_item(&state, &id).ok_or_else(|| "Ítem no encontrado".to_string())?;
+    let payload = match item.kind {
+        ClipboardKind::Text => {
+            let text = item
+                .text
+                .filter(|t| !t.is_empty())
+                .unwrap_or_else(|| item.preview.clone());
+            if text.is_empty() {
+                return Err("Ítem de texto vacío".into());
+            }
+            AgentsComposerInsert {
+                kind: ClipboardKind::Text,
+                text: Some(text),
+                image_path: None,
+            }
+        }
+        ClipboardKind::Image => {
+            let path = item
+                .image_path
+                .ok_or_else(|| "imagen sin ruta".to_string())?;
+            AgentsComposerInsert {
+                kind: ClipboardKind::Image,
+                text: None,
+                image_path: Some(path),
+            }
+        }
+    };
+    let _ = app.emit("agents-composer-insert", payload);
+    Ok(())
+}
+
+/// Tras OLE de imagen: si el cursor quedó sobre agentes, insertar en el composer
+/// (misma webview: HDROP a menudo no dispara el HTML5 drop).
+#[tauri::command]
+pub fn try_clipboard_drop_on_agents(
+    app: AppHandle,
+    state: State<AppState>,
+    id: String,
+) -> Result<bool, String> {
+    if !agents_visible(&app) || !crate::overlay::cursor_over_hit_id("agents") {
+        return Ok(false);
+    }
+    insert_clipboard_into_agents(app, state, id)?;
+    Ok(true)
 }
 
 #[tauri::command]
@@ -1089,6 +1197,7 @@ fn reregister_shortcuts_from_config(app: &AppHandle) {
             pill_radial: &cfg.pill_radial_shortcut,
             clipboard: &cfg.clipboard_shortcut,
             snippets: &cfg.snippets_shortcut,
+            agents: &cfg.agents_shortcut,
             screenshot: &cfg.screenshot_shortcut,
             launcher: &cfg.launcher_shortcut,
         },
@@ -1189,7 +1298,7 @@ fn send_paste_chord(with_shift: bool) -> Result<(), String> {
 static CLIPBOARD_OPEN: AtomicBool = AtomicBool::new(false);
 
 /// Preferencia de pin: float fijado arriba mientras está abierto.
-static CLIPBOARD_ALWAYS_ON_TOP: AtomicBool = AtomicBool::new(true);
+static CLIPBOARD_ALWAYS_ON_TOP: AtomicBool = AtomicBool::new(false);
 
 const CLIP_ANCHOR: &str = "clipboard-bubble-anchor";
 const CLIP_DISMISS: &str = "clipboard-bubble-dismiss";

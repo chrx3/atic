@@ -23,8 +23,14 @@ const OVERLAY_LABEL: &str = "capture-overlay";
 /// Sin esto, un segundo atajo rápido abre otra captura en paralelo y un
 /// `show()` tardío deja la ventana gris tapando el escritorio sin sesión.
 static STARTING: AtomicBool = AtomicBool::new(false);
+/// Tick (ms) en que empezó el arranque actual. Sirve para no cancelar por un
+/// segundo Pressed rebotado mientras el primero todavía congela.
+static START_TICK_MS: AtomicU64 = AtomicU64::new(0);
 /// Sube en cada cancelación. El arranque en curso aborta si su token no coincide.
 static GENERATION: AtomicU64 = AtomicU64::new(0);
+/// Ventana en la que un segundo atajo durante `STARTING` solo reafirma input
+/// en vez de cancelar (tap rápido / evento duplicado). Después sí cancela.
+const START_GRACE_MS: u64 = 400;
 
 #[cfg(windows)]
 pub struct OverlaySession {
@@ -71,13 +77,43 @@ pub fn start_capture_session(app: AppHandle) -> Result<(), String> {
 }
 
 /// Disparador para el atajo global y el tray (no pasa por `invoke`).
-/// Segunda pulsación con sesión abierta o arranque en curso: cancela (toggle).
+///
+/// - Sesión ya abierta → cancela (toggle).
+/// - Arranque en curso dentro de la gracia → no cancela: reafirma click-through.
+///   Un tap muy corto no debe tumbar el freeze del primer Pressed.
+/// - Arranque colgado pasado la gracia → cancela.
+/// - Idle → arranca.
 pub fn trigger(app: &AppHandle) -> Result<(), String> {
-    if session_is_active(app) || STARTING.load(Ordering::SeqCst) {
+    if session_is_active(app) {
         end_session(app);
-        Ok(())
-    } else {
-        start_impl(app)
+        return Ok(());
+    }
+    if STARTING.load(Ordering::SeqCst) {
+        let started = START_TICK_MS.load(Ordering::SeqCst);
+        let now = now_ms();
+        if now.saturating_sub(started) < START_GRACE_MS {
+            crate::overlay::reassert_capturing_input(app);
+            return Ok(());
+        }
+        end_session(app);
+        return Ok(());
+    }
+    start_impl(app)
+}
+
+fn now_ms() -> u64 {
+    #[cfg(windows)]
+    {
+        // SAFETY: GetTickCount64 no tiene precondiciones.
+        unsafe { windows_sys::Win32::System::SystemInformation::GetTickCount64() }
+    }
+    #[cfg(not(windows))]
+    {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0)
     }
 }
 
@@ -137,6 +173,7 @@ fn end_session(app: &AppHandle) {
     // Invalida cualquier `start_impl` en vuelo antes de ocultar/limpiar.
     GENERATION.fetch_add(1, Ordering::SeqCst);
     STARTING.store(false, Ordering::SeqCst);
+    START_TICK_MS.store(0, Ordering::SeqCst);
 
     // Ocultar (no cerrar): destruir la ventana provoca un crash de wry cuando
     // recibe WM_SETFOCUS durante su destrucción. Se reutiliza en la próxima
@@ -168,16 +205,24 @@ fn end_session_cleanup(_session: Option<OverlaySession>) {}
 // Implementación Windows
 // ---------------------------------------------------------------------------
 
+/// Suelta `STARTING`/`CAPTURING` si el arranque abortó sin llegar a sesión.
+fn abandon_start(app: &AppHandle) {
+    STARTING.store(false, Ordering::SeqCst);
+    START_TICK_MS.store(0, Ordering::SeqCst);
+    if !session_is_active(app) {
+        crate::overlay::set_capturing(app, false);
+    }
+}
+
 #[cfg(windows)]
 fn start_impl(app: &AppHandle) -> Result<(), String> {
-    use atic_capture::{engine, monitors, windows as capwin};
-
     // Solo una sesión: si ya hay overlay, cancelar (mismo criterio que el atajo).
     if session_is_active(app) {
         end_session(app);
         return Ok(());
     }
     // Otro arranque en curso: cancelar ese (toggle), no apilar otro.
+    // (El atajo usa gracia en `trigger`; este camino es el comando IPC.)
     if STARTING
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
         .is_err()
@@ -185,8 +230,36 @@ fn start_impl(app: &AppHandle) -> Result<(), String> {
         end_session(app);
         return Ok(());
     }
+    START_TICK_MS.store(now_ms(), Ordering::SeqCst);
 
     let token = GENERATION.load(Ordering::SeqCst);
+
+    // Click-through YA, en el hilo del atajo, ANTES del freeze. Si el freeze
+    // corre en este mismo hilo, cualquier PostMessage/estilo en cola no aplica
+    // hasta terminar — y un tap no espera. Hold solo daba tiempo de sobra.
+    crate::overlay::set_capturing(app, true);
+
+    let app_bg = app.clone();
+    if std::thread::Builder::new()
+        .name("atic-capture-start".into())
+        .spawn(move || {
+            if let Err(error) = start_freeze(&app_bg, token) {
+                tracing::warn!(%error, "no se pudo abrir el overlay de captura");
+                abandon_start(&app_bg);
+            }
+        })
+        .is_err()
+    {
+        abandon_start(app);
+        return Err("no se pudo iniciar la captura en segundo plano".into());
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn start_freeze(app: &AppHandle, token: u64) -> Result<(), String> {
+    use atic_capture::{engine, monitors, windows as capwin};
+
     let state = app.state::<crate::state::AppState>();
     let include_cursor = state.config.lock_or_recover().capture_include_cursor;
 
@@ -195,7 +268,7 @@ fn start_impl(app: &AppHandle) -> Result<(), String> {
     ensure_overlay_hidden(app);
     std::thread::sleep(std::time::Duration::from_millis(32));
     if abort_requested(token) {
-        STARTING.store(false, Ordering::SeqCst);
+        abandon_start(app);
         return Ok(());
     }
 
@@ -203,30 +276,30 @@ fn start_impl(app: &AppHandle) -> Result<(), String> {
     let frame = match engine::capture_rect(virtual_screen, include_cursor) {
         Ok(frame) => frame,
         Err(error) => {
-            STARTING.store(false, Ordering::SeqCst);
+            abandon_start(app);
             return Err(error.to_string());
         }
     };
     if abort_requested(token) {
-        STARTING.store(false, Ordering::SeqCst);
+        abandon_start(app);
         return Ok(());
     }
 
     let png = match frame.to_png() {
         Ok(png) => png,
         Err(error) => {
-            STARTING.store(false, Ordering::SeqCst);
+            abandon_start(app);
             return Err(error.to_string());
         }
     };
     if abort_requested(token) {
-        STARTING.store(false, Ordering::SeqCst);
+        abandon_start(app);
         return Ok(());
     }
 
     let frame_path = state.dirs.overlay_frames_dir().join("overlay.png");
     if let Err(error) = std::fs::write(&frame_path, &png) {
-        STARTING.store(false, Ordering::SeqCst);
+        abandon_start(app);
         return Err(error.to_string());
     }
 
@@ -236,7 +309,7 @@ fn start_impl(app: &AppHandle) -> Result<(), String> {
     {
         let mut guard = state.overlay_session.lock_or_recover();
         if abort_requested(token) {
-            STARTING.store(false, Ordering::SeqCst);
+            abandon_start(app);
             drop(guard);
             let _ = std::fs::remove_file(&frame_path);
             return Ok(());
@@ -248,6 +321,7 @@ fn start_impl(app: &AppHandle) -> Result<(), String> {
             frame_path,
         });
         STARTING.store(false, Ordering::SeqCst);
+        START_TICK_MS.store(0, Ordering::SeqCst);
     }
 
     if abort_requested(token) {
@@ -257,7 +331,9 @@ fn start_impl(app: &AppHandle) -> Result<(), String> {
 
     // No mostrar aún: el webview carga el PNG oculto y llama a
     // `show_capture_overlay` cuando el frame ya está pintado. Así no hay telón gris.
-    crate::overlay::set_capturing(app, true);
+    // CAPTURING ya está activo desde el primer Pressed; reafirmar por si el
+    // freeze/blur pisó el ex-style mientras tanto.
+    crate::overlay::reassert_capturing_input(app);
     let _ = app.emit("overlay-session-started", ());
     Ok(())
 }
@@ -316,8 +392,9 @@ fn show_overlay_window(app: &AppHandle) -> Result<(), String> {
     }
 
     // La pill también es always-on-top: reafirmar click-through y subir el
-    // overlay de captura al frente de la banda topmost.
-    crate::overlay::reassert_capturing_input();
+    // overlay de captura al frente de la banda topmost. Con retry: el freeze
+    // ya consumió los timers del primer Pressed.
+    crate::overlay::reassert_capturing_input_with_retry(app);
     raise_capture_overlay(&window);
 
     // No usar `set_focus()`: si `SetForegroundWindow` falla, tao inyecta Alt y
@@ -326,8 +403,13 @@ fn show_overlay_window(app: &AppHandle) -> Result<(), String> {
     // sin un clic previo “fuera” de la main.
     if let Ok(hwnd) = window.hwnd() {
         let raw = hwnd.0 as isize;
+        let app_bg = app.clone();
         std::thread::spawn(move || {
             crate::clipboard_history::force_foreground(raw as _);
+            // El blur del overlay (salida del modo texto) llega DESPUÉS y
+            // `set_focusable(false)` puede haber pisado el click-through otra
+            // vez; reafirmar cuando el primer plano ya cambió.
+            crate::overlay::reassert_capturing_input(&app_bg);
         });
     }
     Ok(())

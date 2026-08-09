@@ -45,6 +45,9 @@ CREATE INDEX agent_threads_updated ON agent_threads (updated_at DESC);
 
 const MIGRATION_3: &str = "ALTER TABLE agent_threads ADD COLUMN preview TEXT NOT NULL DEFAULT '';";
 
+const MIGRATION_4: &str =
+    "ALTER TABLE agent_threads ADD COLUMN remote_host_id TEXT;";
+
 /// Un hilo de agente tal como se guarda.
 #[derive(Debug, Clone)]
 pub struct AgentThreadRow {
@@ -54,6 +57,8 @@ pub struct AgentThreadRow {
     /// Id con el que el CLI reanuda la conversación. Distinto de `id`.
     pub provider_session: Option<String>,
     pub cwd: String,
+    /// Host SSH de destino; `None` = local.
+    pub remote_host_id: Option<String>,
     pub model: String,
     /// Segundos desde epoch.
     pub updated_at: i64,
@@ -92,7 +97,12 @@ impl Db {
             |row| row.get(0),
         )?;
 
-        for (version, sql) in [(1, MIGRATION_1), (2, MIGRATION_2), (3, MIGRATION_3)] {
+        for (version, sql) in [
+            (1, MIGRATION_1),
+            (2, MIGRATION_2),
+            (3, MIGRATION_3),
+            (4, MIGRATION_4),
+        ] {
             if current < version {
                 self.apply_migration(version, sql)?;
             }
@@ -128,12 +138,14 @@ impl Db {
     pub fn save_agent_thread(&self, t: &AgentThreadRow) -> Result<()> {
         self.conn.execute(
             "INSERT INTO agent_threads
-               (id, backend_id, backend_name, provider_session, cwd, model, updated_at, preview, turns)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+               (id, backend_id, backend_name, provider_session, cwd, remote_host_id,
+                model, updated_at, preview, turns)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
              ON CONFLICT(id) DO UPDATE SET
                backend_name     = excluded.backend_name,
                provider_session = excluded.provider_session,
                cwd              = excluded.cwd,
+               remote_host_id   = excluded.remote_host_id,
                model            = excluded.model,
                updated_at       = excluded.updated_at,
                preview          = excluded.preview,
@@ -144,6 +156,7 @@ impl Db {
                 t.backend_name,
                 t.provider_session,
                 t.cwd,
+                t.remote_host_id,
                 t.model,
                 t.updated_at,
                 t.preview,
@@ -160,8 +173,8 @@ impl Db {
     /// para mostrar diez líneas.
     pub fn list_agent_threads(&self, limit: u32) -> Result<Vec<AgentThreadRow>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, backend_id, backend_name, provider_session, cwd, model,
-                    updated_at, preview, '' AS turns
+            "SELECT id, backend_id, backend_name, provider_session, cwd, remote_host_id,
+                    model, updated_at, preview, '' AS turns
              FROM agent_threads ORDER BY updated_at DESC LIMIT ?1",
         )?;
         let rows = stmt
@@ -172,8 +185,8 @@ impl Db {
 
     pub fn get_agent_thread(&self, id: &str) -> Result<Option<AgentThreadRow>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, backend_id, backend_name, provider_session, cwd, model,
-                    updated_at, preview, turns
+            "SELECT id, backend_id, backend_name, provider_session, cwd, remote_host_id,
+                    model, updated_at, preview, turns
              FROM agent_threads WHERE id = ?1",
         )?;
         Ok(stmt.query_row([id], agent_thread_from_row).optional()?)
@@ -286,6 +299,7 @@ fn agent_thread_from_row(row: &Row<'_>) -> rusqlite::Result<AgentThreadRow> {
         backend_name: row.get("backend_name")?,
         provider_session: row.get("provider_session")?,
         cwd: row.get("cwd")?,
+        remote_host_id: row.get("remote_host_id")?,
         model: row.get("model")?,
         updated_at: row.get("updated_at")?,
         preview: row.get("preview")?,
@@ -319,6 +333,7 @@ mod agent_thread_tests {
             backend_name: "Claude Code".into(),
             provider_session: Some("s1".into()),
             cwd: "C:/p".into(),
+            remote_host_id: None,
             model: "opus".into(),
             updated_at: at,
             preview: format!("Vista previa de {id}"),
@@ -471,12 +486,41 @@ mod agent_thread_tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(version, 3, "la versión no tendría que haber subido");
+        assert_eq!(version, 4, "la versión no tendría que haber subido");
 
         // Y la base sigue usable: reabrirla no explota.
         drop(db);
         let db = Db::open(&path).unwrap();
         db.save_agent_thread(&row("h1", 1)).unwrap();
         assert_eq!(db.list_agent_threads(10).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn la_migracion_4_agrega_remote_host_id() {
+        let path = temp_db_path();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_version (version INTEGER NOT NULL);
+             INSERT INTO schema_version (version) VALUES (3);",
+        )
+        .unwrap();
+        conn.execute_batch(MIGRATION_1).unwrap();
+        conn.execute_batch(MIGRATION_2).unwrap();
+        conn.execute_batch(MIGRATION_3).unwrap();
+        drop(conn);
+
+        let db = Db::open(&path).unwrap();
+        let mut r = row("h1", 1);
+        r.remote_host_id = Some("host-abc".into());
+        db.save_agent_thread(&r).unwrap();
+        assert_eq!(
+            db.get_agent_thread("h1")
+                .unwrap()
+                .unwrap()
+                .remote_host_id
+                .as_deref(),
+            Some("host-abc")
+        );
     }
 }
