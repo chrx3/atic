@@ -323,7 +323,7 @@ pub fn set_scratchpad(state: State<AppState>, body: String) -> Result<Scratchpad
 static SNIPPETS_OPEN: AtomicBool = AtomicBool::new(false);
 
 /// Preferencia de pin: float fijado arriba mientras está abierto.
-static SNIPPETS_ALWAYS_ON_TOP: AtomicBool = AtomicBool::new(true);
+static SNIPPETS_ALWAYS_ON_TOP: AtomicBool = AtomicBool::new(false);
 
 const SNIP_ANCHOR: &str = "snippets-bubble-anchor";
 const SNIP_DISMISS: &str = "snippets-bubble-dismiss";

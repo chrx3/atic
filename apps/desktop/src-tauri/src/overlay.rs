@@ -58,11 +58,27 @@ const ARM_MARGIN: f64 = 6.0;
 /// por segundo para nada.
 const SAMPLE_MS: i64 = 4;
 
-/// Zonas que SÍ deben recibir el mouse, en físicos del escritorio virtual.
-static HIT_RECTS: Mutex<Vec<PhysRect>> = Mutex::new(Vec::new());
+/// Zonas que SÍ deben recibir el mouse, en **CSS del overlay** (no físicos).
+///
+/// Se comparan contra el cursor pasado por `ScreenToClient` + escala: así el
+/// hit-test usa el mismo espacio que el webview, también en el 2º monitor /
+/// DPI mixto. Mapear CSS→físicos con `outer_position` fallaba cuando el origen
+/// cliente no coincidía con el outer.
+static HIT_RECTS: Mutex<Vec<HitCss>> = Mutex::new(Vec::new());
+
+/// HWND del overlay (para `ScreenToClient` en el camino caliente).
+static OVERLAY_HWND: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
+
+/// Última escala conocida del overlay (`f64` en bits).
+static OVERLAY_SCALE_BITS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(f64::to_bits(1.0));
 
 /// ¿Debería el overlay estar recibiendo el mouse ahora mismo?
 static ARMED: AtomicBool = AtomicBool::new(false);
+
+/// Arrastre OLE de un ítem (clipboard → otra app): forzar click-through total
+/// para que la ventana always-on-top no se coma el drop en Cursor / Explorador.
+static ITEM_DRAG_PASSTHROUGH: AtomicBool = AtomicBool::new(false);
 
 /// Lo último que se le APLICÓ de verdad a la ventana. `true` = deja pasar.
 ///
@@ -86,26 +102,102 @@ static CAPTURING: AtomicBool = AtomicBool::new(false);
 /// Entra o sale del modo captura.
 pub fn set_capturing(app: &AppHandle, on: bool) {
     if CAPTURING.swap(on, Ordering::AcqRel) == on {
+        // Ya estábamos en captura: igual reafirmar. Un segundo Pressed o un
+        // reassert programado no debe ser no-op si el ex-style se pisó.
+        if on {
+            yield_to_capture(app);
+        }
         return;
     }
     if on {
-        ARMED.store(false, Ordering::Release);
+        // Aplicar YA: no basta con `send(Sync)`. El canal del worker descarta
+        // cuando está lleno, y sin un movimiento de mouse el camino de reparación
+        // de `reevaluate_arm` no corre. Resultado: con el cursor sobre pill/float
+        // (overlay armado) la captura subía pero el mouse seguía en Atic hasta
+        // un clic o un segundo atajo. Fuera de Atic el overlay ya era
+        // click-through y el fallo no se notaba.
+        yield_to_capture(app);
+        // `set_ignore_cursor_events` / `set_focusable` van al hilo del event
+        // loop. Si el atajo congela el escritorio en ese mismo hilo, el estilo
+        // puede quedar en cola; y `set_focusable`/`show` posteriores lo pisan.
+        // Hold “arreglaba” esto por tiempo. Los timers lo hacen sin depender
+        // de key-repeat (`MOD_NOREPEAT` en global-hotkey).
+        schedule_capturing_reassert(app);
+    } else {
+        send(Msg::Sync);
+        // Sin esto, al cancelar con el cursor quieto sobre la pill `ARMED`
+        // queda en falso hasta el próximo movimiento.
+        #[cfg(windows)]
+        reevaluate_arm();
     }
-    send(Msg::Sync);
-    let _ = app;
 }
 
 /// Reafirma click-through del overlay de la pill mientras hay captura.
 ///
-/// `show`/`set_always_on_top` del overlay de captura pueden dejar el de la pill
-/// otra vez encima y opaco; sin esto, el mouse sobre la ventana principal no
-/// llega a la selección hasta un clic “afuera”.
-pub fn reassert_capturing_input() {
+/// `show`/`set_always_on_top` del overlay de captura —y `set_focusable` al
+/// salir del modo texto— reescriben el ex-style y pueden dejar la pill opaca
+/// otra vez; sin esto, el mouse no llega a la selección hasta un clic
+/// “afuera”. Fuerza el estilo aunque el atomic ya diga click-through.
+pub fn reassert_capturing_input(app: &AppHandle) {
     if !CAPTURING.load(Ordering::Acquire) {
         return;
     }
+    yield_to_capture(app);
+}
+
+/// Como [`reassert_capturing_input`], más reintentos a 0/16/50 ms.
+///
+/// Usar tras `show` del overlay de captura: el freeze suele durar más que los
+/// timers del arranque, y `set_always_on_top`/`set_focusable` pueden pisar el
+/// estilo justo al revelar la selección.
+pub fn reassert_capturing_input_with_retry(app: &AppHandle) {
+    reassert_capturing_input(app);
+    if CAPTURING.load(Ordering::Acquire) {
+        schedule_capturing_reassert(app);
+    }
+}
+
+/// Reafirma click-through a 0 / 16 / 50 ms sin esperar key-repeat ni hold.
+///
+/// Cada disparo comprueba `CAPTURING`: si el usuario canceló, no vuelve a
+/// apartar el overlay (así no rompe el modo texto de consola/composer).
+fn schedule_capturing_reassert(app: &AppHandle) {
+    let app = app.clone();
+    let _ = std::thread::Builder::new()
+        .name("atic-capture-yield".into())
+        .spawn(move || {
+            let start = std::time::Instant::now();
+            for delay_ms in [0u64, 16, 50] {
+                let target = std::time::Duration::from_millis(delay_ms);
+                if let Some(wait) = target.checked_sub(start.elapsed()) {
+                    std::thread::sleep(wait);
+                }
+                if !CAPTURING.load(Ordering::Acquire) {
+                    return;
+                }
+                reassert_capturing_input(&app);
+            }
+        });
+}
+
+/// Aparta el overlay de la pill del hit-testing para que gane el de captura.
+///
+/// Mismo proceso, dos always-on-top: Windows puede seguir entregando el hover a
+/// la ventana que lo tenía aunque la de captura esté encima, hasta que la de
+/// abajo sea click-through o haya un clic.
+fn yield_to_capture(app: &AppHandle) {
     ARMED.store(false, Ordering::Release);
-    send(Msg::Sync);
+    let Some(window) = app.get_webview_window(LABEL) else {
+        return;
+    };
+    // Salir del modo texto ANTES del click-through: `set_focusable` reescribe
+    // `GWL_EXSTYLE` entero y borraría `ignore_cursor_events` si fuera después.
+    #[cfg(windows)]
+    {
+        let _ = window.set_focusable(false);
+    }
+    set_click_through(&window, true);
+    CLICK_THROUGH.store(true, Ordering::Release);
 }
 
 /// Momento de la última muestra, para el freno de `SAMPLE_MS`.
@@ -124,21 +216,27 @@ enum Msg {
     Outside,
 }
 
-#[derive(Debug, Clone, Copy)]
-struct PhysRect {
+#[derive(Debug, Clone)]
+struct HitCss {
+    id: String,
     x: f64,
     y: f64,
     w: f64,
     h: f64,
 }
 
-impl PhysRect {
+impl HitCss {
     fn contains(&self, x: f64, y: f64, margin: f64) -> bool {
         x >= self.x - margin
             && y >= self.y - margin
             && x <= self.x + self.w + margin
             && y <= self.y + self.h + margin
     }
+}
+
+/// Floats del mismo overlay que pueden recibir un drop OLE (p. ej. composer).
+fn is_ole_drop_target(id: &str) -> bool {
+    id == "agents"
 }
 
 /// Rectángulo en píxeles CSS, relativo a la esquina del overlay.
@@ -255,6 +353,10 @@ pub fn place(app: &AppHandle) -> Option<OverlayRect> {
         let _ = window.set_size(tauri::PhysicalSize::new(rect.w as u32, rect.h as u32));
         let _ = window.set_always_on_top(true);
         let _ = window.show();
+        if let Ok(hwnd) = window.hwnd() {
+            OVERLAY_HWND.store(hwnd.0 as isize, Ordering::SeqCst);
+        }
+        OVERLAY_SCALE_BITS.store(rect.scale.to_bits(), Ordering::SeqCst);
         // Al final y no antes: `show()` y `set_always_on_top()` son cambios de
         // bandera, y cada uno reescribe el ex-style entero. El orden solo es
         // seguro porque este bit también es de `tao` — si algún día se escribe
@@ -456,9 +558,8 @@ fn start_toggle_worker(app: AppHandle) {
 
 /// Publica las zonas que deben recibir el mouse.
 ///
-/// Las manda el frontend en píxeles CSS relativos al overlay, y se guardan ya
-/// convertidas a físicos del escritorio: el camino caliente tiene que ser una
-/// comparación y nada más.
+/// Las manda el frontend en píxeles CSS relativos al overlay y se guardan así:
+/// el armado compara contra el cursor en el mismo espacio (`ScreenToClient`).
 ///
 /// Mientras se arrastra una superficie, el frontend publica un rectángulo que
 /// cubre todo: así el puntero puede salirse de la forma sin que el overlay se
@@ -469,22 +570,35 @@ pub fn set_overlay_hit_rects(app: AppHandle, rects: Vec<HitRect>) {
         return;
     };
     let scale = window.scale_factor().unwrap_or(1.0);
-    let origin = window
-        .outer_position()
-        .map(|p| (f64::from(p.x), f64::from(p.y)))
-        .unwrap_or((0.0, 0.0));
+    OVERLAY_SCALE_BITS.store(scale.to_bits(), Ordering::Release);
+    if let Ok(hwnd) = window.hwnd() {
+        OVERLAY_HWND.store(hwnd.0 as isize, Ordering::Release);
+    }
+    // Origen del cliente (no outer): alinea PILL_RECT con ScreenToClient.
+    let origin = client_origin_physical().unwrap_or_else(|| {
+        window
+            .outer_position()
+            .map(|p| (f64::from(p.x), f64::from(p.y)))
+            .unwrap_or((0.0, 0.0))
+    });
 
-    let mapped: Vec<PhysRect> = rects
+    // Durante OLE out-drag: solo drop-targets del overlay (agentes). El resto
+    // sigue en click-through para soltar en Cursor/Explorador.
+    let mapped: Vec<HitCss> = rects
         .iter()
-        .map(|r| PhysRect {
-            x: origin.0 + r.x * scale,
-            y: origin.1 + r.y * scale,
-            w: r.w * scale,
-            h: r.h * scale,
+        .filter(|r| {
+            !ITEM_DRAG_PASSTHROUGH.load(Ordering::Acquire) || is_ole_drop_target(&r.id)
+        })
+        .map(|r| HitCss {
+            id: r.id.clone(),
+            x: r.x,
+            y: r.y,
+            w: r.w,
+            h: r.h,
         })
         .collect();
 
-    // Guardar aparte el de la pill: es el origen del que cuelga la burbuja.
+    // Guardar aparte el de la pill en físicos: bubble_rect / panel_float.
     // Durante un arrastre se publica un rectángulo de pantalla completa sin id,
     // así que solo se pisa cuando viene el de verdad.
     //
@@ -496,13 +610,13 @@ pub fn set_overlay_hit_rects(app: AppHandle, rects: Vec<HitRect>) {
         .position(|r| r.id == "pill-skin")
         .or_else(|| rects.iter().position(|r| r.id == "pill"))
     {
-        let p = &mapped[i];
+        let p = &rects[i];
         if let Ok(mut guard) = PILL_RECT.lock() {
             *guard = Some(crate::floating::Rect {
-                x: p.x.round() as i32,
-                y: p.y.round() as i32,
-                w: p.w.round() as i32,
-                h: p.h.round() as i32,
+                x: (origin.0 + p.x * scale).round() as i32,
+                y: (origin.1 + p.y * scale).round() as i32,
+                w: (p.w * scale).round() as i32,
+                h: (p.h * scale).round() as i32,
             });
         }
     }
@@ -523,6 +637,65 @@ pub fn set_overlay_hit_rects(app: AppHandle, rects: Vec<HitRect>) {
     reevaluate_arm();
 }
 
+/// Durante un arrastre OLE hacia otra app: click-through fuera de los
+/// drop-targets del overlay. Sin vaciar `agents`, el drop al composer caía
+/// atrás (misma webview + WS_EX_TRANSPARENT).
+#[tauri::command]
+pub fn set_overlay_item_drag(app: AppHandle, on: bool) {
+    ITEM_DRAG_PASSTHROUGH.store(on, Ordering::SeqCst);
+    if on {
+        if let Ok(mut guard) = HIT_RECTS.lock() {
+            guard.retain(|r| is_ole_drop_target(&r.id));
+        }
+        ARMED.store(false, Ordering::SeqCst);
+        if let Some(window) = app.get_webview_window(LABEL) {
+            set_click_through(&window, true);
+            CLICK_THROUGH.store(true, Ordering::SeqCst);
+        }
+        #[cfg(windows)]
+        reevaluate_arm();
+    } else {
+        #[cfg(windows)]
+        reevaluate_arm();
+    }
+}
+
+/// Relee el cursor y rearma agentes durante el loop modal de `DoDragDrop`.
+pub fn nudge_item_drag_arm() {
+    if !ITEM_DRAG_PASSTHROUGH.load(Ordering::Acquire) {
+        return;
+    }
+    #[cfg(windows)]
+    reevaluate_arm();
+}
+
+/// ¿El cursor CSS del overlay está sobre el hit-rect `id`?
+#[tauri::command]
+pub fn overlay_cursor_over_hit(id: String) -> bool {
+    cursor_over_hit_id(&id)
+}
+
+/// Crate-interno: cursor sobre un hit-rect publicado.
+pub fn cursor_over_hit_id(id: &str) -> bool {
+    #[cfg(windows)]
+    {
+        let Some((x, y)) = cursor_overlay_css() else {
+            return false;
+        };
+        let Ok(rects) = HIT_RECTS.lock() else {
+            return false;
+        };
+        rects
+            .iter()
+            .any(|r| r.id == id && r.contains(x, y, ARM_MARGIN))
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = id;
+        false
+    }
+}
+
 /// Llamado desde el hilo de Raw Input en cada paquete de movimiento.
 ///
 /// Contrato de esa wndproc: solo atomics y `try_send`. Nada acá bloquea — el
@@ -539,6 +712,51 @@ pub fn on_cursor_sample() {
     reevaluate_arm();
 }
 
+/// Cursor en CSS del overlay (`ScreenToClient` + escala).
+#[cfg(windows)]
+fn cursor_overlay_css() -> Option<(f64, f64)> {
+    use windows_sys::Win32::Foundation::POINT;
+    use windows_sys::Win32::Graphics::Gdi::ScreenToClient;
+
+    let hwnd = OVERLAY_HWND.load(Ordering::Acquire);
+    if hwnd == 0 {
+        return None;
+    }
+    let (cx, cy) = crate::floating::cursor_position()?;
+    let mut pt = POINT { x: cx, y: cy };
+    // SAFETY: HWND del overlay vivo; ScreenToClient solo escribe el POINT.
+    let ok = unsafe { ScreenToClient(hwnd as _, &mut pt) };
+    if ok == 0 {
+        return None;
+    }
+    let scale = f64::from_bits(OVERLAY_SCALE_BITS.load(Ordering::Acquire)).max(0.01);
+    Some((f64::from(pt.x) / scale, f64::from(pt.y) / scale))
+}
+
+/// Esquina (0,0) del cliente del overlay en físicos de pantalla.
+#[cfg(windows)]
+fn client_origin_physical() -> Option<(f64, f64)> {
+    use windows_sys::Win32::Foundation::POINT;
+    use windows_sys::Win32::Graphics::Gdi::ClientToScreen;
+
+    let hwnd = OVERLAY_HWND.load(Ordering::Acquire);
+    if hwnd == 0 {
+        return None;
+    }
+    let mut pt = POINT { x: 0, y: 0 };
+    // SAFETY: HWND del overlay; ClientToScreen escribe el POINT.
+    let ok = unsafe { ClientToScreen(hwnd as _, &mut pt) };
+    if ok == 0 {
+        return None;
+    }
+    Some((f64::from(pt.x), f64::from(pt.y)))
+}
+
+#[cfg(not(windows))]
+fn client_origin_physical() -> Option<(f64, f64)> {
+    None
+}
+
 /// Decide si el overlay tiene que estar armado, ya, contra el cursor de ahora.
 ///
 /// Separado del muestreo porque hay dos motivos para replantearse la respuesta
@@ -549,16 +767,15 @@ pub fn on_cursor_sample() {
 /// que es peor que no tenerlo.
 #[cfg(windows)]
 fn reevaluate_arm() {
-    let Some((cx, cy)) = crate::floating::cursor_position() else {
+    let Some((x, y)) = cursor_overlay_css() else {
         return;
     };
-    let (x, y) = (f64::from(cx), f64::from(cy));
 
     let Ok(rects) = HIT_RECTS.try_lock() else {
         return;
     };
-    let over =
-        !CAPTURING.load(Ordering::Acquire) && rects.iter().any(|r| r.contains(x, y, ARM_MARGIN));
+    let over = !CAPTURING.load(Ordering::Acquire)
+        && rects.iter().any(|r| r.contains(x, y, ARM_MARGIN));
     drop(rects);
 
     // Solo en los flancos: aplicar el estilo en cada muestra sería cientos de
@@ -693,6 +910,15 @@ pub fn set_overlay_text_mode(app: AppHandle, on: bool) {
             tracing::warn!(target: "overlay", ?err, "no se pudo cambiar el modo texto");
             return;
         }
+        // `set_focusable` reescribe el ex-style y pisa `ignore_cursor_events`.
+        // Si hay captura en curso, no reclamar foco (le robaría la selección) y
+        // reponer el click-through que acabamos de borrar.
+        if CAPTURING.load(Ordering::Acquire) {
+            ARMED.store(false, Ordering::Release);
+            set_click_through(&window, true);
+            CLICK_THROUGH.store(true, Ordering::Release);
+            return;
+        }
         if on {
             // El agarre del primer plano va en un HILO APARTE.
             //
@@ -725,9 +951,18 @@ pub fn set_overlay_text_mode(app: AppHandle, on: bool) {
 #[cfg(windows)]
 fn frame(app: &AppHandle) -> Option<(f64, f64, f64)> {
     let window = app.get_webview_window(LABEL)?;
-    let pos = window.outer_position().ok()?;
     let scale = window.scale_factor().unwrap_or(1.0);
-    Some((f64::from(pos.x), f64::from(pos.y), scale))
+    OVERLAY_SCALE_BITS.store(scale.to_bits(), Ordering::Release);
+    if let Ok(hwnd) = window.hwnd() {
+        OVERLAY_HWND.store(hwnd.0 as isize, Ordering::Release);
+    }
+    let (ox, oy) = client_origin_physical().or_else(|| {
+        window
+            .outer_position()
+            .ok()
+            .map(|p| (f64::from(p.x), f64::from(p.y)))
+    })?;
+    Some((ox, oy, scale))
 }
 
 /// Dónde está el cursor, en coordenadas del overlay.
@@ -754,7 +989,7 @@ pub fn overlay_cursor(app: AppHandle) -> Option<OverlayPoint> {
     }
 }
 
-/// Áreas útiles de cada monitor, en coordenadas del overlay.
+/// Áreas de cada monitor en coordenadas del overlay.
 ///
 /// El overlay abarca el escritorio virtual entero, así que su propio rectángulo
 /// no sirve para decidir si algo entra: una superficie pegada al borde derecho
@@ -762,8 +997,10 @@ pub fn overlay_cursor(app: AppHandle) -> Option<OverlayPoint> {
 /// pantalla. Quien decide hacia dónde abrir un panel necesita los monitores, no
 /// el overlay.
 ///
-/// Es `work_area` y no `bounds` porque un panel no debe quedar debajo de la
-/// barra de tareas.
+/// Se usa **`bounds`** (pantalla completa), no `work_area`: la pill puede
+/// solapar la barra de tareas y el borde — prerrequisito de un modo tipo
+/// Dynamic Island. El shelf de capturas sigue anclándose a `work_area` en
+/// `floating::Anchor::BottomCorner`.
 #[tauri::command]
 pub fn overlay_work_areas(app: AppHandle) -> Vec<OverlayArea> {
     #[cfg(windows)]
@@ -774,10 +1011,10 @@ pub fn overlay_work_areas(app: AppHandle) -> Vec<OverlayArea> {
         atic_capture::monitors::enumerate()
             .iter()
             .map(|m| OverlayArea {
-                x: (f64::from(m.work_area.x) - ox) / scale,
-                y: (f64::from(m.work_area.y) - oy) / scale,
-                w: f64::from(m.work_area.width) / scale,
-                h: f64::from(m.work_area.height) / scale,
+                x: (f64::from(m.bounds.x) - ox) / scale,
+                y: (f64::from(m.bounds.y) - oy) / scale,
+                w: f64::from(m.bounds.width) / scale,
+                h: f64::from(m.bounds.height) / scale,
             })
             .collect()
     }

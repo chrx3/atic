@@ -466,6 +466,9 @@ pub struct Thread {
     pub backend_name: String,
     pub provider_session: Option<String>,
     pub cwd: String,
+    /// Host SSH; `None` = sesión local.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_host_id: Option<String>,
     pub model: String,
     pub mode: String,
     pub turns: Vec<Turn>,
@@ -662,6 +665,7 @@ mod tests {
             backend_name: "Claude Code".into(),
             provider_session: None,
             cwd: String::new(),
+            remote_host_id: None,
             model: String::new(),
             mode: String::new(),
             turns: Vec::new(),

@@ -12,6 +12,7 @@
 
 import { getContext, setContext } from "svelte";
 import type { ToolId } from "$core/tools";
+import type { SettingsSectionId } from "$features/settings/settingsSections";
 
 export type DetailTab = "detail" | "settings";
 
@@ -21,6 +22,13 @@ export class MainUi {
   snippetsTab = $state<"snippets" | "scratchpad">("snippets");
   detailTool = $state<ToolId | null>(null);
   detailTab = $state<DetailTab>("detail");
+
+  /** Modal de búsqueda global (SearchModal / Ctrl+K). */
+  searchOpen = $state(false);
+
+  /** Modal de Ajustes generales (SettingsPanel). */
+  settingsOpen = $state(false);
+  settingsSection = $state<SettingsSectionId>("general");
 
   openTool(tool: ToolId): void {
     this.activeTool = tool;
@@ -36,6 +44,25 @@ export class MainUi {
     this.detailTool = null;
     this.detailTab = "detail";
   }
+
+  /** Buscador in-app (Ctrl+K). No es el launcher de apps del sistema. */
+  openSearch(): void {
+    this.detailTool = null;
+    this.searchOpen = true;
+  }
+
+  closeSearch(): void {
+    this.searchOpen = false;
+  }
+
+  openSettings(section: SettingsSectionId = "general"): void {
+    this.settingsSection = section;
+    this.settingsOpen = true;
+  }
+
+  closeSettings(): void {
+    this.settingsOpen = false;
+  }
 }
 
 const KEY = Symbol("atic:main-ui");
@@ -48,4 +75,9 @@ export function useMainUi(): MainUi {
   const ui = getContext<MainUi | undefined>(KEY);
   if (!ui) throw new Error("useMainUi() fuera de MainSurface");
   return ui;
+}
+
+/** Como `useMainUi`, pero `null` fuera de la ventana principal (p. ej. float). */
+export function tryMainUi(): MainUi | null {
+  return getContext<MainUi | undefined>(KEY) ?? null;
 }

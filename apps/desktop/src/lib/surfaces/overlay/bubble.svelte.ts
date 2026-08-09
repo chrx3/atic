@@ -50,6 +50,22 @@ export class Bubble {
   alive = $state(false);
   /** Llegó de Rust: dónde cae y de qué lado le sale el cuello. */
   place(a: BubbleOpen): void {
+    // Idempotente con la misma geometría (abierta o a mitad de abrir):
+    // reasignar reinicia `$effect`s de skin / hit-rect y, si aún no hay
+    // `.is-shown`, vuelve a apagar el morph → blob pegado sin barra usable.
+    const cur = this.anchor;
+    if (
+      this.alive &&
+      cur &&
+      cur.side === a.side &&
+      cur.offset === a.offset &&
+      cur.x === a.x &&
+      cur.y === a.y &&
+      cur.w === a.w &&
+      cur.h === a.h
+    ) {
+      return;
+    }
     this.anchor = {
       side: a.side,
       offset: a.offset,
@@ -64,9 +80,8 @@ export class Bubble {
     if (this.alive && this.shown) return;
     this.shown = false;
     this.alive = true;
-    // Un cuadro de margen: el globo tiene que nacer replegado sobre la pill
-    // para que la transición tenga de dónde salir. Pintarlo y mostrarlo en el
-    // mismo cuadro se ve como una caja que aparece, no como algo que se derrama.
+    // Un cuadro replegado (`.float-emerge` sin `.is-shown`): scale + viaje
+    // hacia la pill. Sin ese frame, aparece de golpe en vez de nacer.
     void tick().then(() => requestAnimationFrame(() => (this.shown = true)));
   }
 

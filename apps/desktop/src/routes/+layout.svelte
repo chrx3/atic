@@ -43,12 +43,16 @@
     /**
      * Atajos de desarrollo. Solo en dev.
      *
-     * Ctrl+Alt+L — lab del OVERLAY (pill/agentes). No confundir con el panel
-     *   de rueda+cards (botón de sliders en la titlebar / Ctrl+Alt+P / Esc).
+     * Ctrl+Alt+L — lab del OVERLAY (pill/agentes sandbox).
+     * Ctrl+Alt+F — launcher lab (sliders en vivo sobre el overlay).
+     * Ctrl+Alt+P — picker lab (rueda+cards; titlebar / Esc).
      * Ctrl+Alt+M — UI legacy.
      */
     // Si quedó pegado de una sesión anterior, liberar el overlay al arrancar.
-    if (import.meta.env.DEV) localStorage.removeItem("atic-liquid-lab");
+    if (import.meta.env.DEV) {
+      localStorage.removeItem("atic-liquid-lab");
+      localStorage.removeItem("atic-launcher-lab-open");
+    }
 
     const onDevKey = (event: KeyboardEvent) => {
       if (!event.ctrlKey || !event.altKey) return;
@@ -62,6 +66,20 @@
         window.dispatchEvent(
           new StorageEvent("storage", {
             key: "atic-liquid-lab",
+            newValue: on ? null : "1",
+          }),
+        );
+        return;
+      }
+
+      if (key === "f") {
+        event.preventDefault();
+        const on = localStorage.getItem("atic-launcher-lab-open") === "1";
+        if (on) localStorage.removeItem("atic-launcher-lab-open");
+        else localStorage.setItem("atic-launcher-lab-open", "1");
+        window.dispatchEvent(
+          new StorageEvent("storage", {
+            key: "atic-launcher-lab-open",
             newValue: on ? null : "1",
           }),
         );

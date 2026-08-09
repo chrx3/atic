@@ -79,7 +79,8 @@ export function stackMarkVisible(state: {
  * cola— y con pivote al centro CADA cambio corría la pill media diferencia. Al
  * arrancar, el primer encogimiento la movía 53 px.
  *
- * El teleport al cursor no pasa por acá: es el summon (`pill-reset` + `flyTo`).
+ * El vuelo al cursor (abrir rueda / summon) no pasa por acá: usa `flyTo` en
+ * la superficie; este pivote solo decide el morph de tamaño in-situ.
  */
 export function pivotFor(state: {
   surface: Surface;
@@ -95,8 +96,8 @@ export function pivotFor(state: {
  *
  * Solo los cambios de la barra compacta: disco ↔ dictado ↔ grabación ↔ cola,
  * donde el salto se leía como un parpadeo. El colapso de la rueda tiene su
- * propia coreografía —encoger y después volar, o el morph continuo— y animar
- * acá largaría un tween que el vuelo siguiente cancelaría a mitad de camino.
+ * propia coreografía —caja + gotas con `.is-sizing`— y animar acá largaría un
+ * tween que el vuelo siguiente cancelaría a mitad de camino.
  *
  * El primer reencuadre tampoco: al arrancar no hay «estado anterior» desde el
  * cual transicionar, solo la ventana acomodándose.
@@ -110,6 +111,12 @@ export function morphsInPlace(state: {
     state.from !== null && state.collapsingFrom === null && state.surface === "none"
   );
 }
+
+/**
+ * Si el cursor ya está casi sobre la pill, el vuelo de apertura no aporta
+ * significado —solo latencia. Umbral ≈ diámetro del disco.
+ */
+export const FLIGHT_SKIP_PX = 48;
 
 /**
  * La pill está en reposo: la barra es SOLO el disco.

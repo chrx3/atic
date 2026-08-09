@@ -10,9 +10,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter, Manager, State};
 
-use atic_core::MutexExt;
+use atic_core::secrets;
+use atic_core::{MutexExt, SshHost};
+
+use crate::state::AppState;
 
 use super::{
     claude_code::ClaudeCode, AgentBackend, AgentDelta, AgentSession, AgentSkill,
@@ -160,10 +163,10 @@ static OPEN: AtomicBool = AtomicBool::new(false);
 
 /// Preferencia de pin sticky: Esc / clic afuera no cierran la consola.
 ///
-/// Default `true`. Se hidrata desde `Config::agents_always_on_top` al arrancar.
+/// Default `false`. Se hidrata desde `Config::agents_always_on_top` al arrancar.
 /// El overlay (pill incluida) queda siempre topmost; este flag no mueve el
 /// stacking.
-static ALWAYS_ON_TOP: AtomicBool = AtomicBool::new(true);
+static ALWAYS_ON_TOP: AtomicBool = AtomicBool::new(false);
 
 const AGENTS_ANCHOR: &str = "agents-bubble-anchor";
 const AGENTS_DISMISS: &str = "agents-bubble-dismiss";
@@ -288,6 +291,8 @@ pub fn agent_backends() -> Vec<BackendInfo> {
 #[serde(rename_all = "camelCase")]
 pub struct StartRequest {
     pub cwd: Option<String>,
+    /// Id de host SSH en config. `None` = local.
+    pub remote_host_id: Option<String>,
     pub resume: Option<String>,
     pub model: Option<String>,
     /// Cuánto tiene que pensar. Los nombres los define cada backend.
@@ -308,12 +313,14 @@ pub struct StartRequest {
 #[tauri::command]
 pub fn agent_start(
     app: AppHandle,
+    state: State<AppState>,
     backend: String,
     options: Option<StartRequest>,
 ) -> Result<String, String> {
     let options = options.unwrap_or_default();
     let StartRequest {
         cwd,
+        remote_host_id,
         resume,
         model,
         effort,
@@ -327,9 +334,35 @@ pub fn agent_start(
     let key = uuid::Uuid::new_v4().to_string();
     let display_name = agent.display_name().to_string();
 
+    let remote = if let Some(id) = remote_host_id.as_deref().map(str::trim).filter(|s| !s.is_empty())
+    {
+        if backend != "claude-code" {
+            return Err(
+                "Por ahora solo Claude Code admite sesión remota por SSH.".into(),
+            );
+        }
+        let host = state
+            .config
+            .lock_or_recover()
+            .ssh_hosts
+            .iter()
+            .find(|h| h.id == id)
+            .cloned()
+            .ok_or_else(|| format!("Host SSH desconocido: {id}"))?;
+        Some(super::ssh::RemoteTarget { host })
+    } else {
+        None
+    };
+
     // Seguir el hilo desde ANTES de arrancar: el primer delta puede llegar
     // mientras `start` todavía no volvió, y sin el hilo abierto se perdería.
-    super::store::open(&key, &backend, &display_name, cwd.as_deref().unwrap_or(""));
+    super::store::open(
+        &key,
+        &backend,
+        &display_name,
+        cwd.as_deref().unwrap_or(""),
+        remote_host_id.as_deref(),
+    );
 
     let emit_key = key.clone();
     let emit_backend = backend.clone();
@@ -337,6 +370,7 @@ pub fn agent_start(
     let session = agent.start(
         StartOptions {
             cwd,
+            remote,
             // La clave local se usa también como id de la conversación en el
             // CLI. Son dos identidades que no tienen por qué coincidir, y
             // hacerlas coincidir vale la pena: el id que la interfaz muestra es
@@ -526,6 +560,7 @@ pub fn stop_all(app: &AppHandle) {
     for mut entry in taken {
         entry.session.stop();
     }
+    super::console::close_all();
 }
 
 /// Corre algo con la base, si la app ya la tiene montada.
@@ -600,4 +635,72 @@ pub fn list_directories(
     path: Option<String>,
 ) -> Result<super::fs_browse::DirectoryListing, String> {
     super::fs_browse::list_directories(path)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SshHostSecretFlags {
+    pub host_id: String,
+    pub has_passphrase: bool,
+    pub has_password: bool,
+}
+
+/// Flags de secretos SSH por host (sin valores).
+#[tauri::command]
+pub fn ssh_host_secrets_status(state: State<AppState>) -> Vec<SshHostSecretFlags> {
+    state
+        .config
+        .lock_or_recover()
+        .ssh_hosts
+        .iter()
+        .map(|h| SshHostSecretFlags {
+            host_id: h.id.clone(),
+            has_passphrase: secrets::has_ssh_host_secret(&h.id, "passphrase"),
+            has_password: secrets::has_ssh_host_secret(&h.id, "password"),
+        })
+        .collect()
+}
+
+/// Guarda o borra passphrase/password de un host. Valor vacío = borrar.
+#[tauri::command]
+pub fn ssh_set_host_secret(
+    host_id: String,
+    kind: String,
+    value: String,
+) -> Result<(), String> {
+    secrets::set_ssh_host_secret(&host_id, &kind, &value).map_err(|e| e.to_string())
+}
+
+/// Borra todos los secretos de un host (al eliminar el registro).
+#[tauri::command]
+pub fn ssh_delete_host_secrets(host_id: String) -> Result<(), String> {
+    secrets::delete_all_ssh_host_secrets(&host_id).map_err(|e| e.to_string())
+}
+
+/// Prueba la conexión SSH con el registro que manda la UI (puede ser draft).
+/// Si el id ya está en config, actualiza `last_test_*` en disco.
+#[tauri::command]
+pub fn ssh_test_host(
+    state: State<AppState>,
+    host: SshHost,
+) -> Result<super::ssh::SshTestResult, String> {
+    let result = super::ssh::test_host(&host);
+    {
+        let mut cfg = state.config.lock_or_recover();
+        if let Some(h) = cfg.ssh_hosts.iter_mut().find(|h| h.id == host.id) {
+            h.last_test_ok = Some(result.ok);
+            h.last_test_at = Some(result.checked_at);
+            let path = state.dirs.config_path();
+            if let Err(e) = cfg.save(&path) {
+                tracing::warn!("no se pudo guardar resultado del test SSH: {e}");
+            }
+        }
+    }
+    Ok(result)
+}
+
+/// Lista hosts SSH desde config (sin secretos; son los mismos registros).
+#[tauri::command]
+pub fn ssh_list_hosts(state: State<AppState>) -> Vec<SshHost> {
+    state.config.lock_or_recover().ssh_hosts.clone()
 }

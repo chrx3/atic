@@ -14,6 +14,7 @@ import {
   FileText,
   Folder,
   Globe,
+  GripVertical,
   History,
   Keyboard,
   Lightbulb,
@@ -80,6 +81,7 @@ export const TOOL_ICONS: Record<AppIconId, IconNode> = {
   clipboard: Clipboard,
   snippets: AlignLeft,
   captures: Crop,
+  launcher: Search,
   general: Settings,
   settings: Settings,
   shortcuts: Keyboard,
@@ -159,4 +161,7 @@ export {
   Cpu,
   House,
   Paperclip,
+  SquareTerminal,
+  AppWindow,
+  GripVertical,
 };

@@ -12,11 +12,14 @@
  */
 
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import type { ToolId } from "$core/tools";
 import type {
   AgentDeltaPayload,
   AgentsComposerInsert,
   BubbleOpen,
   CaptureItem,
+  ConsoleExitPayload,
+  ConsoleOutputPayload,
   DictationStatusPayload,
   DownloadProgress,
   Levels,
@@ -91,10 +94,29 @@ export interface AticEvents {
   "agents-bubble-anchor": BubbleOpen;
   "agents-bubble-dismiss": void;
   "agent-event": AgentDeltaPayload;
+  "console-output": ConsoleOutputPayload;
+  "console-exit": ConsoleExitPayload;
 
   // Sistema
   "shortcuts-failed": string[];
+  /** Float launcher: ancla / dismiss (sale de la pill). */
+  "launcher-bubble-anchor": BubbleOpen;
+  "launcher-bubble-dismiss": void;
+  /** Launcher abierto (reset UI / foco). */
   "launcher-opened": void;
+  /** Launcher oculto (Esc, exclusive, run). */
+  "launcher-closed": void;
+  /** Abrir el buscador de la ventana principal (puede emitirlo el frontend). */
+  "open-search": void;
+  /**
+   * Catálogo / ToolRail / atajo: el overlay vuela al slot y ejecuta la tool.
+   * También lo emite Rust (p.ej. dictado toggle al empezar).
+   */
+  "activate-tool-slot": ToolId;
+  /**
+   * Solo vuelo al slot (sin ejecutar). PTT: vuela en paralelo al start.
+   */
+  "fly-tool-slot": ToolId;
 }
 
 export type AticEvent = keyof AticEvents;

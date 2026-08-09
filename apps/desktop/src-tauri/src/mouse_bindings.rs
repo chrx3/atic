@@ -17,9 +17,9 @@ use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
 
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
-use crate::{clipboard_history, dictation, snippets, state};
+use crate::{clipboard_history, dictation, state};
 use atic_core::MutexExt;
 
 /// Botón lateral del mouse.
@@ -450,16 +450,24 @@ fn dispatch(app: &AppHandle, action: MouseAction, edge: Edge) {
                 .map(|s| s.config.lock_or_recover().dictation_mode.clone())
                 .unwrap_or_else(|| "push_to_talk".into());
             match (mode.as_str(), edge) {
-                ("push_to_talk", Edge::Down) => dictation::dictation_key_down(app),
+                ("push_to_talk", Edge::Down) => {
+                    crate::shortcuts::dictation_ptt_down_via_slot(app)
+                }
                 ("push_to_talk", Edge::Up) => dictation::dictation_key_up(app),
-                (_, Edge::Down) => dictation::toggle_dictation(app),
+                (_, Edge::Down) => crate::shortcuts::dictation_toggle_via_slot(app),
                 _ => {}
             }
         }
         (MouseAction::Recording, Edge::Down) => state::toggle_recording(app),
         (MouseAction::SummonPill, Edge::Down) => state::summon_pill_to_cursor(app),
-        (MouseAction::Clipboard, Edge::Down) => clipboard_history::summon_clipboard_panel(app),
-        (MouseAction::Snippets, Edge::Down) => snippets::summon_snippets_panel(app),
+        (MouseAction::Clipboard, Edge::Down) => {
+            clipboard_history::remember_paste_target();
+            crate::shortcuts::emit_tool_slot(app, "activate-tool-slot", "clipboard");
+        }
+        (MouseAction::Snippets, Edge::Down) => {
+            clipboard_history::remember_paste_target();
+            crate::shortcuts::emit_tool_slot(app, "activate-tool-slot", "snippets");
+        }
         (MouseAction::Screenshot, Edge::Down) => {
             if let Err(error) = crate::capture_session::trigger(app) {
                 tracing::warn!(%error, "no se pudo abrir el overlay de captura (mouse)");

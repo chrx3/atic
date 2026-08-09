@@ -1,17 +1,34 @@
 //! Launcher tipo Spotlight: programas del menú Inicio + acciones de Atic.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::thread;
 
 use atic_core::MutexExt;
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_opener::OpenerExt;
 
-const WINDOW_LABEL: &str = "launcher";
-const EMPTY_RESULT_LIMIT: usize = 12;
+use crate::floating::BubbleShape;
+use crate::state::AppState;
+
 const SEARCH_LIMIT: usize = 24;
+const FAVORITES_LIMIT: usize = 8;
+
+/// Float Spotlight compacto (una línea); el frontend crece al buscar.
+const LAUNCHER_SHAPE: BubbleShape = BubbleShape {
+    w: 292,
+    h: 40,
+    gap: 10,
+    corner: 18,
+};
+
+const LAUNCHER_ANCHOR: &str = "launcher-bubble-anchor";
+const LAUNCHER_DISMISS: &str = "launcher-bubble-dismiss";
+
+/// Float del launcher abierto (en el overlay, no ventana aparte).
+static LAUNCHER_OPEN: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -395,91 +412,82 @@ fn ensure_index_populated() {
     }
 }
 
-/// Centra el launcher en el monitor donde está el cursor (pantalla activa).
+/// ¿El float del launcher está abierto?
+pub fn float_open() -> bool {
+    LAUNCHER_OPEN.load(Ordering::Relaxed)
+}
+
+/// Abre el float del launcher (sale de la pill vía `panel_float`).
 ///
-/// Antes usaba `current_monitor()` de la ventana, que era la última donde se
-/// abrió —en multi-monitor quedaba en la pantalla equivocada.
-fn position_on_active_monitor(window: &WebviewWindow) {
-    let win_size = window
-        .outer_size()
-        .unwrap_or(tauri::PhysicalSize::new(560, 420));
-    let w = win_size.width as i32;
-    let h = win_size.height as i32;
-
-    if let Some((x, y)) = active_monitor_origin(window, w, h) {
-        let _ = window.set_position(tauri::PhysicalPosition::new(x, y));
-    }
-}
-
-#[cfg(windows)]
-fn active_monitor_origin(window: &WebviewWindow, w: i32, h: i32) -> Option<(i32, i32)> {
-    let _ = window;
-    let monitors = atic_capture::monitors::enumerate();
-    if monitors.is_empty() {
-        return None;
-    }
-    let cursor = crate::floating::cursor_position();
-    let work = cursor
-        .and_then(|(cx, cy)| {
-            monitors
-                .iter()
-                .find(|m| m.bounds.contains(cx, cy))
-                .map(|m| m.work_area)
-        })
-        .or_else(|| monitors.iter().find(|m| m.is_primary).map(|m| m.work_area))
-        .or_else(|| monitors.first().map(|m| m.work_area))?;
-
-    let x = work.x + (work.width as i32 - w) / 2;
-    // Un poco por encima del centro vertical, estilo Spotlight.
-    let y = work.y + (work.height as i32 - h) / 3;
-    Some(crate::floating::clamp(x, y, w, h))
-}
-
-#[cfg(not(windows))]
-fn active_monitor_origin(window: &WebviewWindow, w: i32, h: i32) -> Option<(i32, i32)> {
-    let monitor = window.current_monitor().ok().flatten()?;
-    let size = monitor.size();
-    let pos = monitor.position();
-    let x = pos.x + (size.width as i32 - w) / 2;
-    let y = pos.y + (size.height as i32 - h) / 3;
-    Some((x, y))
-}
-
+/// La ventana Tauri `launcher` queda sin uso en el path primario: el UI vive
+/// en el overlay con `.float-emerge`, como clipboard/snippets/agentes.
 pub fn show(app: &AppHandle) {
-    let Some(window) = app.get_webview_window(WINDOW_LABEL) else {
-        tracing::warn!("ventana launcher inexistente");
+    if LAUNCHER_OPEN.load(Ordering::Relaxed) {
         return;
-    };
+    }
     ensure_index_populated();
-    let _ = window.set_size(tauri::LogicalSize::new(560.0, 420.0));
-    // Posicionar ANTES de show: si no, parpadea un frame en el monitor viejo.
-    position_on_active_monitor(&window);
-    let _ = window.set_always_on_top(true);
-    let _ = window.show();
-    let _ = window.set_focus();
-    let _ = window.emit("launcher-opened", ());
+    let opened = crate::panel_float::show(
+        app,
+        &LAUNCHER_OPEN,
+        LAUNCHER_SHAPE,
+        LAUNCHER_ANCHOR,
+    );
+    if opened {
+        crate::overlay::set_topmost(
+            app,
+            crate::agents::bridge::overlay_should_be_topmost(),
+        );
+        let _ = app.emit("launcher-opened", ());
+    }
 }
 
 pub fn hide(app: &AppHandle) {
-    if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
-        let _ = window.hide();
+    if !LAUNCHER_OPEN.load(Ordering::Relaxed) {
+        return;
     }
+    crate::panel_float::hide(app, &LAUNCHER_OPEN, LAUNCHER_DISMISS);
+    crate::overlay::set_topmost(
+        app,
+        crate::agents::bridge::overlay_should_be_topmost(),
+    );
+    let _ = app.emit("launcher-closed", ());
 }
 
 pub fn toggle(app: &AppHandle) {
-    let Some(window) = app.get_webview_window(WINDOW_LABEL) else {
-        return;
-    };
-    if window.is_visible().unwrap_or(false) {
-        let _ = window.hide();
+    if LAUNCHER_OPEN.load(Ordering::Relaxed) {
+        hide(app);
     } else {
         show(app);
     }
 }
 
+/// Atajo Ctrl+Space: al abrir, la pill vuela al centro y recién ahí se muestra.
+pub fn toggle_via_slot(app: &AppHandle) {
+    if LAUNCHER_OPEN.load(Ordering::Relaxed) {
+        hide(app);
+        return;
+    }
+    if let Some(pill) = app.get_webview_window(crate::overlay::LABEL) {
+        let visible = app
+            .try_state::<crate::state::AppState>()
+            .map(|s| s.config.lock_or_recover().show_pill)
+            .unwrap_or(true);
+        if visible {
+            let _ = pill.set_always_on_top(true);
+            let _ = pill.show();
+        }
+    }
+    let _ = app.emit("activate-tool-slot", "launcher");
+}
+
 #[tauri::command]
 pub fn toggle_launcher(app: AppHandle) {
     toggle(&app);
+}
+
+#[tauri::command]
+pub fn show_launcher(app: AppHandle) {
+    show(&app);
 }
 
 #[tauri::command]
@@ -501,31 +509,9 @@ pub fn launcher_search(query: String) -> Result<Vec<LauncherHit>, String> {
     let guard = index().lock_or_recover();
     let q = query.trim();
 
+    // Query vacía: el UI muestra solo la barra + favoritos; sin lista.
     if q.is_empty() {
-        let mut hits: Vec<LauncherHit> = Vec::new();
-        for entry in guard.iter().filter(|e| e.kind == LauncherKind::Action) {
-            hits.push(LauncherHit {
-                id: entry.id.clone(),
-                kind: entry.kind,
-                title: entry.title.clone(),
-                subtitle: entry.subtitle.clone(),
-                score: None,
-            });
-        }
-        for entry in guard
-            .iter()
-            .filter(|e| e.kind == LauncherKind::App)
-            .take(EMPTY_RESULT_LIMIT.saturating_sub(hits.len()))
-        {
-            hits.push(LauncherHit {
-                id: entry.id.clone(),
-                kind: entry.kind,
-                title: entry.title.clone(),
-                subtitle: entry.subtitle.clone(),
-                score: None,
-            });
-        }
-        return Ok(hits);
+        return Ok(Vec::new());
     }
 
     let mut scored: Vec<(u32, &LauncherEntry)> = Vec::new();
@@ -550,6 +536,82 @@ pub fn launcher_search(query: String) -> Result<Vec<LauncherHit>, String> {
             score: Some(score),
         })
         .collect())
+}
+
+fn hit_from_entry(entry: &LauncherEntry) -> LauncherHit {
+    LauncherHit {
+        id: entry.id.clone(),
+        kind: entry.kind,
+        title: entry.title.clone(),
+        subtitle: entry.subtitle.clone(),
+        score: None,
+    }
+}
+
+/// Resuelve los favoritos persistidos contra el índice (omite ids huérfanos).
+#[tauri::command]
+pub fn launcher_list_favorites(state: State<AppState>) -> Result<Vec<LauncherHit>, String> {
+    ensure_index_populated();
+    let ids = state.config.lock_or_recover().launcher_favorites.clone();
+    let guard = index().lock_or_recover();
+    let mut out = Vec::new();
+    for id in ids.into_iter().take(FAVORITES_LIMIT) {
+        if let Some(entry) = guard.iter().find(|e| e.id == id) {
+            out.push(hit_from_entry(entry));
+        }
+    }
+    Ok(out)
+}
+
+/// Alterna un id en `launcher_favorites` y persiste la config.
+#[tauri::command]
+pub fn launcher_toggle_favorite(
+    state: State<AppState>,
+    id: String,
+) -> Result<Vec<String>, String> {
+    if id.trim().is_empty() {
+        return Err("id vacío".into());
+    }
+    ensure_index_populated();
+    {
+        let guard = index().lock_or_recover();
+        if !guard.iter().any(|e| e.id == id) {
+            return Err("resultado no encontrado".into());
+        }
+    }
+
+    let mut cfg = state.config.lock_or_recover();
+    if let Some(pos) = cfg.launcher_favorites.iter().position(|f| f == &id) {
+        cfg.launcher_favorites.remove(pos);
+    } else {
+        cfg.launcher_favorites.retain(|f| f != &id);
+        cfg.launcher_favorites.push(id);
+        if cfg.launcher_favorites.len() > FAVORITES_LIMIT {
+            let drop_n = cfg.launcher_favorites.len() - FAVORITES_LIMIT;
+            cfg.launcher_favorites.drain(0..drop_n);
+        }
+    }
+    let next = cfg.launcher_favorites.clone();
+    cfg.save(&state.dirs.config_path())
+        .map_err(|e| e.to_string())?;
+    Ok(next)
+}
+
+/// Icono de una entrada `app:…` como data URL PNG (cacheado en RAM).
+#[tauri::command]
+pub fn launcher_icon(id: String) -> Result<Option<String>, String> {
+    ensure_index_populated();
+    let path = {
+        let guard = index().lock_or_recover();
+        guard
+            .iter()
+            .find(|e| e.id == id)
+            .and_then(|e| match &e.target {
+                EntryTarget::Path(p) => Some(p.clone()),
+                EntryTarget::Action(_) => None,
+            })
+    };
+    Ok(path.and_then(|p| crate::launcher_icons::icon_data_url(&p)))
 }
 
 fn run_action(app: &AppHandle, action: &str) -> Result<(), String> {

@@ -65,6 +65,16 @@ export async function pickDirectory(title = "Elegir carpeta"): Promise<string | 
   return typeof picked === "string" ? picked : null;
 }
 
+/** Identity file SSH (.pem / clave privada). `null` si se canceló. */
+export async function pickSshIdentityFile(): Promise<string | null> {
+  const { open } = await import("@tauri-apps/plugin-dialog");
+  const picked = await open({
+    title: "Elegir identity file SSH",
+    multiple: false,
+  });
+  return typeof picked === "string" ? picked : null;
+}
+
 /** Archivos para adjuntar al mensaje del agente. Lista vacía si se canceló. */
 export async function pickAgentFiles(): Promise<string[]> {
   const { open } = await import("@tauri-apps/plugin-dialog");

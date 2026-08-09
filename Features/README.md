@@ -226,10 +226,12 @@ Detalle completo en el [README del repo](../README.md#dónde-se-guardan-los-dato
 | hecho | Snippets | [snippets.md](snippets.md) |
 | parcial | Agentes multi-proveedor | [agentes.md](agentes.md) |
 | en curso | Sistema líquido (transversal) | [liquid.md](liquid.md) |
+| hecho | Emergencia fused grow → separate (patrón) | [pill-liquid-emerge.md](pill-liquid-emerge.md) |
 | hecho | Ajustes y onboarding | [ajustes-onboarding.md](ajustes-onboarding.md) |
 | parcial | Audio del sistema en macOS | [macos-audio-sistema.md](macos-audio-sistema.md) |
-| parcial | Launcher tipo Spotlight | [launcher-spotlight.md](launcher-spotlight.md) |
+| hecho | Launcher tipo Spotlight | [launcher-spotlight.md](launcher-spotlight.md) |
 | idea | Companion móvil | [companion-movil.md](companion-movil.md) |
+| idea | Hosts SSH para agentes remotos | [ssh-remote-hosts.md](ssh-remote-hosts.md) |
 
 ## Cómo mantener esto
 

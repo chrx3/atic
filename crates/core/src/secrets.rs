@@ -128,3 +128,85 @@ pub fn delete_secret(kind: SecretKind) -> Result<()> {
         Err(err) => Err(Error::Secret(err.to_string())),
     }
 }
+
+/// Secretos parametrizados (p.ej. passphrase SSH por host).
+///
+/// El enum fijo no escala a N hosts; estas claves van como
+/// `ssh_host_{id}_passphrase` / `ssh_host_{id}_password`.
+
+fn named_entry(name: &str) -> Result<Entry> {
+    Entry::new(SERVICE, name).map_err(|err| Error::Secret(err.to_string()))
+}
+
+/// Valida el id de host antes de armar la clave del llavero.
+pub fn validate_ssh_host_id(host_id: &str) -> Result<()> {
+    let ok = !host_id.is_empty()
+        && host_id.len() <= 64
+        && host_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    if ok {
+        Ok(())
+    } else {
+        Err(Error::InvalidValue {
+            field: "ssh_host_id",
+            value: host_id.to_string(),
+        })
+    }
+}
+
+fn ssh_host_secret_name(host_id: &str, kind: &str) -> Result<String> {
+    validate_ssh_host_id(host_id)?;
+    match kind {
+        "passphrase" | "password" => Ok(format!("ssh_host_{host_id}_{kind}")),
+        other => Err(Error::InvalidValue {
+            field: "ssh_secret_kind",
+            value: other.to_string(),
+        }),
+    }
+}
+
+/// Guarda (o borra si vacío) un secreto SSH por host. Nunca se expone al frontend.
+pub fn set_ssh_host_secret(host_id: &str, kind: &str, value: &str) -> Result<()> {
+    let name = ssh_host_secret_name(host_id, kind)?;
+    let value = value.trim();
+    if value.is_empty() {
+        return delete_named_secret(&name);
+    }
+    named_entry(&name)?
+        .set_password(value)
+        .map_err(|err| Error::Secret(err.to_string()))
+}
+
+pub fn get_ssh_host_secret(host_id: &str, kind: &str) -> Result<Option<String>> {
+    let name = ssh_host_secret_name(host_id, kind)?;
+    match named_entry(&name)?.get_password() {
+        Ok(value) => Ok(Some(value)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(err) => Err(Error::Secret(err.to_string())),
+    }
+}
+
+pub fn has_ssh_host_secret(host_id: &str, kind: &str) -> bool {
+    matches!(get_ssh_host_secret(host_id, kind), Ok(Some(v)) if !v.is_empty())
+}
+
+pub fn delete_ssh_host_secret(host_id: &str, kind: &str) -> Result<()> {
+    let name = ssh_host_secret_name(host_id, kind)?;
+    delete_named_secret(&name)
+}
+
+/// Borra passphrase y password de un host (p.ej. al eliminar el registro).
+pub fn delete_all_ssh_host_secrets(host_id: &str) -> Result<()> {
+    let _ = delete_ssh_host_secret(host_id, "passphrase");
+    let _ = delete_ssh_host_secret(host_id, "password");
+    Ok(())
+}
+
+fn delete_named_secret(name: &str) -> Result<()> {
+    match named_entry(name)?.delete_credential() {
+        Ok(()) => Ok(()),
+        Err(keyring::Error::NoEntry) => Ok(()),
+        Err(err) => Err(Error::Secret(err.to_string())),
+    }
+}

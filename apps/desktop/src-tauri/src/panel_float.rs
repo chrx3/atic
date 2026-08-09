@@ -1,4 +1,4 @@
-//! Floats de panel anclados a la pill (clipboard, snippets, agentes).
+//! Floats de panel anclados a la pill (clipboard, snippets, agentes, launcher).
 //!
 //! Misma geometría: `pill_rect` + `bubble_rect`, evento CSS al overlay.
 //! Cada panel tiene su propio `AtomicBool` OPEN y su `BubbleShape`.

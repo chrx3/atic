@@ -13,20 +13,18 @@ import { sminBulge, sminReach } from "./sdf";
 /**
  * Cuánto se mezclan las formas. Es la perilla que manda.
  *
- * Con 59 el alcance son 29.5 px: la burbuja sigue colgando de la pill hasta
- * casi treinta píxeles de distancia y el cuello se forma solo. El hueco de 10
- * que usa la app queda holgado.
+ * Con 20 el alcance son 10 px (`sminReach` = k/2): el cuello corta pasado ese
+ * hueco. Alineado al launcher lab (favGap/dotGap 15 → fusión al acercarse).
  */
-export const BLEND = 59;
+export const BLEND = 20;
 
 /**
  * Lado de la celda de muestreo, en px.
  *
  * Marching squares no ve nada más fino que su celda, y el costo va con el
- * cuadrado. Seis es donde la silueta se lee limpia sin que el cálculo pase de
- * unos pocos milisegundos por cuadro en la ventana real.
+ * cuadrado. Ocho equilibra silueta limpia y costo en el overlay.
  */
-export const CELL = 6;
+export const CELL = 8;
 
 /** Pasadas de suavizado sobre el contorno ya trazado. */
 export const SMOOTH = 2;

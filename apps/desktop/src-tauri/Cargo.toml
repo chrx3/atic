@@ -52,6 +52,7 @@ base64 = "0.22"
 zip = { version = "4.6.1", default-features = false, features = ["deflate"] }
 # Mismo cliente HTTP que summarize/transcribe: cupos OAuth de Claude Code.
 reqwest = { version = "0.12", features = ["blocking", "json"] }
+portable-pty = "0.9"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
@@ -59,8 +60,12 @@ windows-sys = { version = "0.59", features = [
     "Win32_UI_Input",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Shell",
+    "Win32_Graphics_Gdi",
+    "Win32_Storage_FileSystem",
     "Win32_System_LibraryLoader",
     "Win32_System_Threading",
+    "Win32_System_SystemInformation",
     # Formatos del portapapeles: saber si lo copiado pide no ser archivado.
     "Win32_System_DataExchange",
     "Win32_System_Memory",
@@ -75,6 +80,13 @@ windows = { version = "0.61", features = [
   "Media_Ocr",
   "Storage",
   "Storage_Streams",
+  "Win32_Foundation",
+  "Win32_Graphics_Gdi",
+  "Win32_System_Com",
+  "Win32_System_Com_StructuredStorage",
+  "Win32_System_Memory",
+  "Win32_System_Ole",
+  "Win32_System_SystemServices",
 ] }
 
 [features]

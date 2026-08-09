@@ -1,7 +1,13 @@
 /** Herramientas del shell de Atic (caja de utilidades local-first). */
 
 export type ToolId =
-  "meetings" | "dictation" | "clipboard" | "snippets" | "captures" | "agents";
+  | "meetings"
+  | "dictation"
+  | "clipboard"
+  | "snippets"
+  | "captures"
+  | "agents"
+  | "launcher";
 
 export type ToolDef = {
   id: ToolId;
@@ -65,6 +71,14 @@ export const TOOLS: ToolDef[] = [
     short: "Pantalla",
     blurb: "Recortes rápidos al portapapeles y al shelf flotante.",
     actionLabel: "Tomar captura",
+  },
+  {
+    id: "launcher",
+    label: "Apps",
+    short: "Programas del sistema",
+    blurb:
+      "Abrí apps y acciones del PC. Mismo launcher que Ctrl+Space (tipo Spotlight).",
+    actionLabel: "Buscar apps",
   },
 ];
 

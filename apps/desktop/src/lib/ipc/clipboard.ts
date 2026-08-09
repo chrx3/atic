@@ -16,9 +16,12 @@ export const pinClipboardItem = (id: string, pinned: boolean) =>
 export const deleteClipboardItem = (id: string) =>
   invoke<void>("delete_clipboard_item", { id });
 
-/** Ruta de archivo para `startDrag` (imagen o .atic-drag-*.txt). */
+/** Ruta de archivo para `startDrag` (imagen; texto usa `startClipboardTextDrag`). */
 export const clipboardDragPath = (id: string) =>
   invoke<string>("clipboard_drag_path", { id });
+/** OLE de texto plano (`CF_UNICODETEXT`) — no inserta rutas de archivo. */
+export const startClipboardTextDrag = (id: string) =>
+  invoke<void>("start_clipboard_text_drag", { id });
 /** Contenido de un `.atic-drag-*.txt` del historial. */
 export const readClipboardDragText = (path: string) =>
   invoke<string>("read_clipboard_drag_text", { path });
@@ -56,3 +59,11 @@ export const onClipboardHistoryChanged = (cb: () => void): Promise<UnlistenFn> =
 export const onAgentsComposerInsert = (
   cb: (payload: AgentsComposerInsert) => void,
 ): Promise<UnlistenFn> => on("agents-composer-insert", cb);
+
+/** Inserta un ítem del historial en el composer (agentes abierto; no cierra clipboard). */
+export const insertClipboardIntoAgents = (id: string) =>
+  invoke<void>("insert_clipboard_into_agents", { id });
+
+/** Tras OLE: si el cursor quedó sobre agentes, inserta en el composer. */
+export const tryClipboardDropOnAgents = (id: string) =>
+  invoke<boolean>("try_clipboard_drop_on_agents", { id });

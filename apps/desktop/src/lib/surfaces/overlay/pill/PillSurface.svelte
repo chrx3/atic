@@ -26,6 +26,7 @@
   import Waveform from "$lib/Waveform.svelte";
   import AticMark from "$lib/AticMark.svelte";
   import { liquid } from "$surfaces/overlay/group.svelte";
+  import { publishEmergeSkin } from "$surfaces/overlay/floatEmergeSkin";
   import type { Rect } from "$lib/liquid/geometry";
   import { RectTracker } from "$lib/liquid/measure.svelte";
   import { boxShape, gapBetween, pillShape } from "$lib/liquid/geometry";
@@ -38,7 +39,7 @@
   import Icon from "$ui/Icon.svelte";
   import { X } from "$lib/icons";
   import type { IconNode } from "morphicons/svelte";
-  import { PILL, growsFirst, windowFor, type Size } from "$surfaces/overlay/pillStage";
+  import { PILL, windowFor, type Size } from "$surfaces/overlay/pillStage";
   import { createCssStage } from "$surfaces/overlay/pillCssStage";
   import { surfaces } from "$surfaces/overlay/surfaces.svelte";
   import {
@@ -46,6 +47,7 @@
     consoleSideFor,
     contentFor,
     discJoinsTail,
+    FLIGHT_SKIP_PX,
     isDiscOnly,
     morphsInPlace,
     pivotFor,
@@ -55,21 +57,39 @@
     type Surface,
   } from "$surfaces/overlay/pill/pillPlan";
   import AgentAuthCard from "$surfaces/overlay/pill/AgentAuthCard.svelte";
-  import { MOTION, ms, wait } from "$lib/motion";
+  import { afterTransition, MOTION, ms, wait } from "$lib/motion";
   import { playWheelTick } from "$core/uiSound";
   import type { PermissionDecision } from "$core/types";
   // Lo que queda son los comandos DE LA PILL: su geometría, sus atajos y las
   // ventanas que abre. El estado de la app lo traen los stores.
   import {
+    agentsAlwaysOnTop,
     agentsWindowVisible,
+    hideAgentsWindow,
     onAgentsBubbleAnchor,
     onAgentsBubbleDismiss,
     showAgentsWindow,
   } from "$ipc/agents";
-  import { showClipboardWindow } from "$ipc/clipboard";
+  import {
+    clipboardAlwaysOnTop,
+    hideClipboardWindow,
+    onClipboardBubbleDismiss,
+  } from "$ipc/clipboard";
   import { startCaptureSession } from "$ipc/captures";
   import { getConfig, showMainWindow } from "$ipc/config";
-  import { showSnippetsWindow } from "$ipc/snippets";
+  import { on } from "$ipc/events";
+  import { hideLauncher, onLauncherBubbleDismiss } from "$ipc/search";
+  import {
+    hideSnippetsWindow,
+    onSnippetsBubbleDismiss,
+    snippetsAlwaysOnTop,
+  } from "$ipc/snippets";
+  import { executeToolAction } from "$core/toolActions";
+  import {
+    isSpatialTool,
+    resolveSlot,
+    slotForTool,
+  } from "$surfaces/overlay/toolSlots";
   import {
     onOverlayDismiss,
     onPillRadialPress,
@@ -233,15 +253,17 @@
   const trackTail = (el: HTMLElement) => tracker.track("tail", el);
 
   // Cada cambio de estado arranca una animación de CSS: hay que volver a mirar.
-  // La posición también cuenta: un vuelo o un arrastre no tocan ninguno de los
-  // estados de arriba, y sin `at` la silueta quedaba dibujada en el sitio del
-  // que la pill se fue.
+  // La posición también cuenta: un vuelo no toca los estados de arriba, y sin
+  // `at` la silueta quedaba en el sitio del que la pill se fue. Durante drag
+  // la pill sale del goo (abajo): no remedir ni remeshear a 60Hz.
   $effect(() => {
     void surface;
     void discOnly;
     void barW;
     void at.x;
     void at.y;
+    void surfaces.dragging;
+    if (surfaces.dragging) return;
     tracker.wake();
   });
 
@@ -286,37 +308,78 @@
    * que hace que el cuello hacia la consola exista sin dibujarlo: dos campos
    * separados no se pueden fundir por definición.
    */
-  $effect(() => liquid.publish("pill", skinShapes));
+  $effect(() => {
+    void surfaces.dragging;
+    if (surfaces.dragging) {
+      liquid.publish("pill", []);
+      return;
+    }
+    liquid.publish("pill", skinShapes);
+  });
 
   /**
-   * El hogar: dónde queda la pill en reposo (y se persiste).
-   *
-   * Ya no “vuelve” tras la rueda: colapsa in-situ y ese punto pasa a ser el
-   * hogar. Solo el summon (`pill-reset`) y el arrastre la reubican a propósito.
+   * El hogar: reposo persistido. Abrir la rueda vuela al cursor; al cerrar
+   * (Esc / fuera / soltar sin tool) vuelve acá. Summon y arrastre sí lo
+   * reescriben a propósito.
    */
   let home = $state({ x: 0, y: 0 });
   /** El vuelo lo hace una transición CSS; esto la enciende solo cuando toca. */
   let flying = $state(false);
+  /** Generación del vuelo: Esc/reabrir invalidan un `flyTo` en curso. */
+  let flightEpoch = 0;
 
-  /** Duración del vuelo. Token `--flight-dur` (= `--duration-fast`). */
-  const FLIGHT_MS = ms(MOTION.flight);
+  function cancelFlight() {
+    flightEpoch += 1;
+    flying = false;
+  }
 
-  /** Mueve la pill animando, y avisa cuánto va a tardar. */
-  function flyTo(p: { x: number; y: number }): number {
+  /**
+   * Mueve la pill con transición CSS hasta `p`.
+   *
+   * Hay que pintar `.is-flying` *antes* de cambiar left/top: si clase y
+   * destino llegan en el mismo frame, el navegador salta sin animar.
+   * Devuelve la duración usada, o `-1` si el vuelo fue cancelado.
+   */
+  async function flyTo(
+    p: { x: number; y: number },
+    opts: { skipIfNear?: number } = {},
+  ): Promise<number> {
+    const epoch = ++flightEpoch;
+    const from = stage.at();
+    const dist = Math.hypot(p.x - from.x, p.y - from.y);
+    const skip = opts.skipIfNear ?? 0;
+    const dur = ms(MOTION.flight);
+
+    if (dist < skip || dur <= 0) {
+      stage.moveTo(p);
+      at = stage.at();
+      surfaces.schedule();
+      return 0;
+    }
+
     flying = true;
+    await tick();
+    if (epoch !== flightEpoch) {
+      flying = false;
+      return -1;
+    }
+    // Fuerza layout con la transición ya activa y la posición vieja.
+    void rootEl?.offsetWidth;
+
     stage.moveTo(p);
     at = stage.at();
-    window.setTimeout(() => {
+    await wait(dur);
+
+    if (epoch !== flightEpoch) {
       flying = false;
-      // Republicar al aterrizar, y no solo al despegar.
-      //
-      // La zona viva se mide con `getBoundingClientRect()`, que durante una
-      // transición CSS devuelve la posición ANIMADA. El publish que dispara el
-      // cambio de `at` sale con la pill todavía en el origen del vuelo, así que
-      // sin esto Rust se queda armando el sitio de donde la pill se fue.
-      surfaces.schedule();
-    }, FLIGHT_MS);
-    return FLIGHT_MS;
+      return -1;
+    }
+
+    flying = false;
+    // Republicar al aterrizar: durante el vuelo getBoundingClientRect()
+    // reporta la posición animada; sin esto Rust arma el sitio de origen.
+    surfaces.schedule();
+    return dur;
   }
 
   /** Dónde está el puntero, en coordenadas del overlay. */
@@ -421,22 +484,21 @@
 
   $effect(() => {
     if (!authAlive || !authEl) {
+      liquid.publish("agent-auth", []);
+      return;
+    }
+    // Seguir el morph visual de `.float-emerge` (misma causa que clipboard).
+    // Durante drag: fuera del goo (evita remuestrear al mover la pill).
+    void authShown;
+    void surfaces.dragging;
+    if (surfaces.dragging) {
       return liquid.publish("agent-auth", []);
     }
-    // Depende de posición/visibilidad: al nacer el scale cambia el rectángulo
-    // medido y el blob crece con la tarjeta.
-    void authShown;
     void authAt.x;
     void authAt.y;
     void at.x;
     void at.y;
-    const r = authEl.getBoundingClientRect();
-    if (r.width <= 0 || r.height <= 0) {
-      return liquid.publish("agent-auth", []);
-    }
-    return liquid.publish("agent-auth", [
-      boxShape({ x: r.x, y: r.y, w: r.width, h: r.height }, AUTH_CORNER),
-    ]);
+    return publishEmergeSkin("agent-auth", authEl, AUTH_CORNER);
   });
 
   /** Monta / repliega la auth con el mismo ritmo que los floats. */
@@ -473,17 +535,16 @@
   let opening = $state(false);
   /** Una apertura de rueda ya está en vuelo. Corta el auto-repeat del atajo. */
   let openingWheel = false;
-  /** Solo el colapso de la rueda necesita que la ventana espere. */
-  let leavingWheel = false;
   /**
    * Generación del colapso en curso. Al reabrir a mitad del morph se incrementa
    * para que el resize pendiente no encaje la ventana después del summon.
    */
   let collapseEpoch = 0;
 
-  /** Invalida un encoger en vuelo y suelta el lock de geometría. */
+  /** Invalida un encoger/vuelo en curso. */
   function cancelPendingCollapse() {
     collapseEpoch += 1;
+    cancelFlight();
     opening = false;
   }
   /** El estado del que dependen las decisiones de `pillPlan`. */
@@ -499,13 +560,6 @@
   async function reconcile(next: Size) {
     if (opening) return;
     const from = stage.applied();
-    if (from && !growsFirst(from, next) && leavingWheel) {
-      // La rueda se colapsa hacia el centro: la ventana tiene que seguir
-      // grande hasta que termine. El resto de los estados no anima tamaño,
-      // así que esperar ahí solo dejaba la barra estirada en pantalla.
-      leavingWheel = false;
-      await wait(ms(wheelQuick ? MOTION.morphQuick : MOTION.morphClose));
-    }
     const outcome = await stage.resize(
       next,
       pivotFor(plan()),
@@ -516,6 +570,29 @@
       at = stage.at();
       box = next;
     }
+  }
+
+  /**
+   * Espera el morph visual de la rueda (transform de nodos/gotas).
+   * No animar width/height del root: con pivot center left/top saltan y el
+   * centro deriva — eso empeoró el morph anterior.
+   */
+  async function awaitWheelMorph(
+    token:
+      | typeof MOTION.morphOpen
+      | typeof MOTION.morphClose
+      | typeof MOTION.morphQuick,
+  ) {
+    const el =
+      rootEl?.querySelector<HTMLElement>(".pw-nodes") ??
+      rootEl?.querySelector<HTMLElement>(".pw-blob") ??
+      null;
+    await afterTransition(el, "transform", ms(token));
+  }
+
+  function focusWheelToolbar() {
+    const toolbar = rootEl?.querySelector<HTMLElement>(".pw-nodes");
+    toolbar?.focus({ preventScroll: true });
   }
 
   $effect(() => {
@@ -549,6 +626,8 @@
    * con `left`/`top` no es uno. Sin esto, Rust arma el overlay donde la pill
    * estaba en el primer frame —(0,0), antes de leer su hogar— y la pill queda
    * dibujada en su sitio pero sin recibir un solo evento.
+   *
+   * Durante el drag `surfaces` ya publicó pantalla completa: no reprogramar.
    */
   $effect(() => {
     void at.x;
@@ -559,6 +638,8 @@
     void authAt.y;
     void authAlive;
     void authShown;
+    void surfaces.dragging;
+    if (surfaces.dragging) return;
     surfaces.schedule();
   });
 
@@ -636,17 +717,16 @@
 
   // ─── Rueda ───────────────────────────────────────────────────────────────
   /**
-   * Abre la rueda in-situ desde el hogar actual (pivot center).
+   * Abre la rueda: vuela al cursor si aporta distancia, crece la caja (hit-box)
+   * y morflea el anillo. Esc cancela el vuelo y vuelve al hogar.
    *
-   * No teletransporta al cursor: eso queda para el summon explícito
-   * (`pill-reset`). Abrir y cerrar la rueda morflean en el mismo sitio.
+   * La firma visual es ParticleWheel (gotas/nodos), no un tween de width del
+   * root: animar la caja con pivot center hacía derivar el centro.
    */
   async function openWheel() {
-    // `surface` recién vale "wheel" al final, después de tres IPC. En esa
-    // ventana el auto-repeat del atajo (Windows reenvía `Pressed` mientras la
-    // tecla está sostenida) podía reentrar acá: el segundo pase cancelaba el
-    // tween del primero y lo reiniciaba desde donde hubiera llegado, así que
-    // sostener la tecla dejaba la rueda creciendo a los tirones.
+    // `surface` recién vale "wheel" al final. En esa ventana el auto-repeat del
+    // atajo (Windows reenvía `Pressed` mientras la tecla está sostenida) podía
+    // reentrar acá: el segundo pase cancelaba el tween del primero.
     if (surface === "wheel" || openingWheel) return;
     openingWheel = true;
     try {
@@ -669,19 +749,36 @@
     // ninguna acción al soltar.
     wheelTool = null;
     opening = true;
+    const openEpoch = collapseEpoch;
     try {
-      // 1) Guardar el hogar ANTES de tocar la geometría. Si se guarda después,
-      //    lo que queda grabado es la posición que ya movió el reencuadre.
+      // 1) Guardar el hogar ANTES de tocar la geometría.
       home = { ...at };
-      // 2) Apagar el stack y dejar el chrome de la rueda colapsado ANTES de
-      //    crecer. Así el único "a" (centro de ParticleWheel) se queda en el
-      //    mismo punto mientras el root se expande; no hay un segundo disco
-      //    anclado al top-left del cuadrado grande.
+      // 2) Volar al cursor; cerca de la pill se omite (solo latencia).
+      const cursor = await cursorPoint();
+      if (cursor) {
+        const size = stage.applied() ?? windowFor({ w: PILL.bar, h: PILL.bar });
+        const flew = await flyTo(
+          {
+            x: cursor.x - size.w / 2,
+            y: cursor.y - size.h / 2,
+          },
+          { skipIfNear: FLIGHT_SKIP_PX },
+        );
+        if (flew < 0 || openEpoch !== collapseEpoch) {
+          surface = "none";
+          wheelShown = false;
+          await flyTo(home, { skipIfNear: 2 });
+          return;
+        }
+      }
+      if (openEpoch !== collapseEpoch) return;
+
+      // 3) Stack apagado + chrome de rueda colapsado ANTES de crecer: un solo
+      //    "a" (ParticleWheel) fijo en el centro.
       collapsingFrom = null;
       surface = "wheel";
       wheelShown = false;
-      // 3) Crecer in-situ con pivot center (espejo del colapso). El summon al
-      //    cursor es otro camino (`pill-reset` + `flyTo`).
+      // 4) Crecer hit-box al instante (pivot center). El morph visual es el anillo.
       const side = PILL.wheel - PILL.pad * 2;
       const next = windowFor({ w: side, h: side });
       await stage.resize(
@@ -690,25 +787,26 @@
       );
       at = stage.at();
       box = next;
-      // 4) Con la caja ya grande, revelar el anillo desde ese mismo centro.
+      await tick();
+      void rootEl?.offsetWidth;
+      // 5) Revelar anillo; soltar `opening` ya — las tools son usables al morph.
       wheelShown = true;
+      opening = false;
+      focusWheelToolbar();
     } catch (err) {
       console.warn("pill wheel open", err);
       surface = "none";
       wheelShown = false;
-    } finally {
       opening = false;
+    } finally {
+      // Abort por Esc: soltar locks aunque el epoch haya cambiado.
+      if (opening) opening = false;
     }
   }
 
   /**
-   * Colapsa la rueda in-situ: de (grande) a (mismo centro, barra).
-   *
-   * No vuela al hogar previo. El centro se conserva (pivot center) y esa
-   * posición pasa a ser el nuevo hogar persistido.
-   *
-   * El caller mantiene `opening` y decide cuándo llamar: hay que esperar el
-   * morph CSS antes, si no `overflow: hidden` recorta el cierre invertido.
+   * Encoge la caja al tamaño compacto (pivot center). No redefine el hogar:
+   * el caller decide si vuelve a `home` o vuela a un slot.
    */
   async function wheelCollapse() {
     const next = target;
@@ -721,24 +819,33 @@
     // `collapsingFrom`. Si `box` se queda en tamaño rueda, el handoff al stack
     // pinta la marca compacta arriba-izquierda del cuadrado fantasma.
     box = next;
-    home = { ...at };
-    void savePillHome(at.x, at.y);
+    collapsingFrom = null;
     surfaces.schedule();
     trace(`wheelCollapse -> ${next.w}x${next.h} @ ${at.x},${at.y}`);
   }
 
   /**
-   * Deja correr el morph de cierre (espejo del open) y recién después encoge.
-   * Devuelve false si otra apertura canceló este epoch.
+   * Cierre: primero el morph de gotas (sin recortar), después encoge la caja.
+   * Opcionalmente vuelve al hogar. Devuelve false si cancelaron el epoch.
    */
-  async function playCloseMorph(epoch: number): Promise<boolean> {
-    await wait(ms(wheelQuick ? MOTION.morphQuick : MOTION.morphClose));
+  async function playCloseMorph(
+    epoch: number,
+    opts: { returnHome?: boolean } = {},
+  ): Promise<boolean> {
+    const returnHome = opts.returnHome ?? false;
+    wheelShown = false;
+    await awaitWheelMorph(wheelQuick ? MOTION.morphQuick : MOTION.morphClose);
     if (epoch !== collapseEpoch) return false;
     await wheelCollapse();
+    if (epoch !== collapseEpoch) return false;
+    if (returnHome && !returnHomeSuppressed) {
+      const flew = await flyTo(home, { skipIfNear: FLIGHT_SKIP_PX });
+      if (flew < 0 || epoch !== collapseEpoch) return false;
+    }
     return true;
   }
 
-  /** Cierra la rueda y deja la pill donde estaba. No activa nada. */
+  /** Cierra la rueda y vuelve al hogar previo al open. No activa nada. */
   async function closeWheel() {
     if (surface !== "wheel") return;
     trace("closeWheel");
@@ -748,12 +855,10 @@
     // stack y la piel líquida no asomen un frame en el top-left del root grande
     // mientras ParticleWheel aún colapsa en el centro.
     collapsingFrom = "wheel";
-    wheelShown = false;
     wheelTool = null;
     surface = "none";
-    leavingWheel = false;
     try {
-      await playCloseMorph(epoch);
+      await playCloseMorph(epoch, { returnHome: true });
     } finally {
       if (epoch === collapseEpoch) opening = false;
     }
@@ -786,36 +891,232 @@
   /**
    * La rueda ejecuta la herramienta, no navega la app.
    *
-   * Grabar y dictar no dependen de la ventana: arrancan ya, en paralelo al
-   * cierre del morph, así que la respuesta se percibe inmediata.
+   * Grabar arranca en paralelo al cierre (sin slot). Tools con slot vuelan
+   * y recién ahí se ejecutan (dictado, Apps, clipboard, textos, agentes).
    */
   async function activateTool(id: ToolId) {
     if (surface !== "wheel") return;
     wheelQuick = true;
     const epoch = ++collapseEpoch;
     opening = true;
-    wheelShown = false;
     wheelTool = null;
 
     if (id === "meetings") void toggleRecord();
-    else if (id === "dictation") void toggleDictate();
 
     try {
       // Mismo orden que `closeWheel`: chrome de rueda activo hasta encoger.
       collapsingFrom = "wheel";
       surface = "none";
-      leavingWheel = false;
       const collapsed = await playCloseMorph(epoch);
       if (!collapsed) return;
+      // Hit-rect fresco: sin esto el float ancla contra la geometría de la rueda.
+      await surfaces.flush();
+
+      if (slotForTool(id)) {
+        returnHomeSuppressed = true;
+        try {
+          // Solo launcher / agentes / dictado vuelan al slot.
+          // Clipboard/textos desde la rueda abren junto a la pill (ya en el cursor).
+          await flyToToolSlot(id);
+          await surfaces.flush();
+          await executeToolAction(id);
+        } finally {
+          returnHomeSuppressed = false;
+        }
+        return;
+      }
+
+      if (isSpatialTool(id)) {
+        returnHomeSuppressed = true;
+        try {
+          await dismissSpatialTools();
+          await surfaces.flush();
+          await executeToolAction(id);
+        } finally {
+          returnHomeSuppressed = false;
+        }
+        return;
+      }
+
       if (id === "captures") await startCaptureSession();
-      else if (id === "agents") await showAgentsWindow();
-      else if (id === "clipboard") await showClipboardWindow();
-      else if (id === "snippets") await showSnippetsWindow();
     } catch (err) {
       console.warn("acción de la rueda", err);
     } finally {
       if (epoch === collapseEpoch) opening = false;
       wheelQuick = false;
+    }
+  }
+
+  /**
+   * Exclusive espacial: al abrir otra tool, cierra los floats no fijados
+   * (clipboard / textos / agentes / launcher). El pin (“siempre arriba”)
+   * mantiene el panel abierto — p. ej. agentes fijado + clipboard para pegar.
+   * `returnHomeSuppressed` evita que los dismiss disparen flyTo(home).
+   */
+  let returnHomeSuppressed = false;
+  async function dismissSpatialTools() {
+    returnHomeSuppressed = true;
+    const [clipPinned, snipPinned, agentsPinned] = await Promise.all([
+      clipboardAlwaysOnTop().catch(() => false),
+      snippetsAlwaysOnTop().catch(() => false),
+      agentsAlwaysOnTop().catch(() => false),
+    ]);
+    await Promise.all([
+      clipPinned ? Promise.resolve() : hideClipboardWindow().catch(() => {}),
+      snipPinned ? Promise.resolve() : hideSnippetsWindow().catch(() => {}),
+      agentsPinned ? Promise.resolve() : hideAgentsWindow().catch(() => {}),
+      hideLauncher().catch(() => {}),
+    ]);
+  }
+
+  async function dismissSpatialTool(id: ToolId) {
+    switch (id) {
+      case "launcher":
+        await hideLauncher();
+        return;
+      case "clipboard":
+        await hideClipboardWindow();
+        return;
+      case "snippets":
+        await hideSnippetsWindow();
+        return;
+      case "agents":
+        await hideAgentsWindow();
+        return;
+      default:
+        return;
+    }
+  }
+
+  /** Float espacial ya visible (hit-rect registrado). */
+  function spatialToolOpen(id: ToolId): boolean {
+    return isSpatialTool(id) && surfaces.live[id] != null;
+  }
+
+  /**
+   * Espera a que el float espacial suelte su hit-rect.
+   * El close reverse (fuse→shrink) mantiene `shown` hasta el final; si
+   * volvemos a casa al dismiss IPC, la pill se va mientras el blob aún
+   * se funde. Agentes (`.float-emerge`) no usan este wait.
+   */
+  function waitSpatialSurfaceGone(id: string, timeoutMs = 2500): Promise<void> {
+    return new Promise((resolve) => {
+      const start = performance.now();
+      const tick = () => {
+        if (surfaces.live[id] == null || performance.now() - start > timeoutMs) {
+          resolve();
+          return;
+        }
+        requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+    });
+  }
+
+  /** Vuelve al hogar si la pill quedó en un slot de acción. */
+  async function maybeReturnHome() {
+    if (returnHomeSuppressed || slotBusy) return;
+    if (Math.hypot(home.x - at.x, home.y - at.y) < 2) return;
+    try {
+      await flyTo(home);
+    } catch (err) {
+      console.warn("return-to-home", err);
+    }
+  }
+
+  /** Dismiss de tool con reverse liquid: esperar a que el float se funda. */
+  async function maybeReturnHomeAfterFloat(id: "launcher" | "clipboard" | "snippets") {
+    await waitSpatialSurfaceGone(id);
+    await maybeReturnHome();
+  }
+
+  /**
+   * Vuela la pill al slot de la tool (work area del monitor actual).
+   * Clipboard / textos no tienen slot fijo: vuelan al cursor (atajo / catálogo).
+   * No redefine `home`: el destino es posición de acción, no reposo.
+   */
+  async function flyToToolSlot(id: ToolId): Promise<void> {
+    // Al terminar dictado no hace falta volar.
+    if (id === "dictation" && dictationStore.active) return;
+
+    if (isSpatialTool(id) || id === "dictation") await dismissSpatialTools();
+
+    const size = stage.applied() ?? windowFor({ w: PILL.bar, h: PILL.bar });
+    const slot = slotForTool(id);
+
+    if (slot) {
+      const areas = stage.workAreas();
+      const anchor = { x: at.x + size.w / 2, y: at.y + size.h / 2 };
+      const target = resolveSlot(slot, areas, size, anchor);
+      if (Math.hypot(target.x - at.x, target.y - at.y) < 2) return;
+      await flyTo(target);
+      return;
+    }
+
+    // Clipboard / textos: el atajo trae la pill al mouse y abre desde ahí.
+    if (id === "clipboard" || id === "snippets") {
+      const cursor = await cursorPoint();
+      if (!cursor) return;
+      const target = {
+        x: cursor.x - size.w / 2,
+        y: cursor.y - size.h / 2,
+      };
+      if (Math.hypot(target.x - at.x, target.y - at.y) < 2) return;
+      await flyTo(target);
+    }
+  }
+
+  /**
+   * Catálogo / ToolRail / atajo: fly → ejecutar.
+   * Si el float espacial ya está abierto, segunda activación = cerrar (toggle).
+   */
+  let slotBusy = false;
+  async function activateAtSlot(id: ToolId) {
+    if (slotBusy) return;
+    slotBusy = true;
+    returnHomeSuppressed = true;
+    try {
+      cancelPendingCollapse();
+      await closeWheel();
+      surfaces.resetInteraction();
+
+      if (spatialToolOpen(id)) {
+        await dismissSpatialTool(id).catch(() => {});
+        // Liberar locks antes del vuelo: `maybeReturnHome` respeta `slotBusy`
+        // (y los dismiss IPC pueden haber intentado volver a casa en vano).
+        returnHomeSuppressed = false;
+        slotBusy = false;
+        // Launcher / clipboard / snippets cierran con reverse liquid: esperar
+        // a que el hit-rect se vaya antes de volar a casa.
+        if (id === "launcher" || id === "clipboard" || id === "snippets") {
+          await waitSpatialSurfaceGone(id);
+        }
+        await maybeReturnHome();
+        return;
+      }
+
+      await flyToToolSlot(id);
+      await surfaces.flush();
+      await executeToolAction(id);
+    } catch (err) {
+      console.warn("activate-tool-slot", err);
+    } finally {
+      slotBusy = false;
+      returnHomeSuppressed = false;
+    }
+  }
+
+  /** Solo vuelo (PTT: en paralelo al start de Rust). */
+  async function flySlotOnly(id: ToolId) {
+    returnHomeSuppressed = true;
+    try {
+      cancelPendingCollapse();
+      await closeWheel();
+      await flyToToolSlot(id);
+    } catch (err) {
+      console.warn("fly-tool-slot", err);
+    } finally {
+      returnHomeSuppressed = false;
     }
   }
 
@@ -1006,7 +1307,13 @@
       }),
       onAgentsBubbleDismiss(() => {
         agentsConsoleOpen = false;
+        void maybeReturnHome();
       }),
+      onClipboardBubbleDismiss(() => void maybeReturnHomeAfterFloat("clipboard")),
+      onSnippetsBubbleDismiss(() => void maybeReturnHomeAfterFloat("snippets")),
+      onLauncherBubbleDismiss(() => void maybeReturnHomeAfterFloat("launcher")),
+      on("activate-tool-slot", (tool) => void activateAtSlot(tool)),
+      on("fly-tool-slot", (tool) => void flySlotOnly(tool)),
       onPillRadialPress(() => void openWheel()),
       onPillRadialRelease(() => onWheelRelease()),
       onPillReset(async () => {
@@ -1018,7 +1325,7 @@
         const cursor = await cursorPoint();
         if (!cursor) return;
         const size = stage.applied() ?? windowFor({ w: PILL.bar, h: PILL.bar });
-        flyTo({ x: cursor.x - size.w / 2, y: cursor.y - size.h / 2 });
+        await flyTo({ x: cursor.x - size.w / 2, y: cursor.y - size.h / 2 });
         // El summon fija un hogar nuevo: la pill se queda donde la llamaste.
         home = { ...at };
         void savePillHome(at.x, at.y);
@@ -1026,9 +1333,15 @@
     );
 
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && surface === "wheel") {
+      if (event.key === "Escape" && (surface === "wheel" || openingWheel)) {
         event.preventDefault();
         event.stopPropagation();
+        if (openingWheel && surface !== "wheel") {
+          // Aborta el vuelo; `openWheelInner` vuelve al hogar al ver el epoch.
+          cancelFlight();
+          collapseEpoch += 1;
+          return;
+        }
         void closeWheel();
         return;
       }
@@ -1037,6 +1350,9 @@
         event.stopPropagation();
         return;
       }
+      // Consola PTY / xterm: no comer Ctrl+U, Ctrl+R, etc.
+      const t = event.target as HTMLElement | null;
+      if (t?.closest?.(".console, .xterm")) return;
       if (blocksBrowserChrome(event)) {
         event.preventDefault();
         event.stopPropagation();
@@ -1056,7 +1372,13 @@
      * apertura.
      */
     const onOutside = () => {
+      surfaces.resetInteraction();
       if (dragMoved) return;
+      if (openingWheel && surface !== "wheel") {
+        cancelFlight();
+        collapseEpoch += 1;
+        return;
+      }
       if (surface === "wheel") void closeWheel();
     };
 
@@ -1940,29 +2262,13 @@
   }
 
   /*
-   * Auth: nace de la pill con el mismo sistema que clipboard/agentes
-   * (`.float-emerge` + campo líquido). Apertura más ceremonial; cierre quieto.
+   * Auth: mismo `.float-emerge` que clipboard/agentes (nace/vuelve a la pill).
+   * Solo alarga la apertura; el viaje y el scale viven en `app.css`.
    */
   .p-auth-host {
-    --float-open-dur: var(--duration-very-slow);
+    --float-open-dur: 150ms;
     position: absolute;
     z-index: 6;
-  }
-
-  /* Viaje corto desde la pill además del scale del float-emerge. */
-  .p-auth-host.float-emerge:not(.is-shown) {
-    transform: translateY(calc(var(--distance-base) * -1)) scale(var(--float-scale));
-  }
-
-  .p-auth-host.float-emerge[data-side="bottom"]:not(.is-shown) {
-    transform: translateY(var(--distance-base)) scale(var(--float-scale));
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .p-auth-host.float-emerge:not(.is-shown),
-    .p-auth-host.float-emerge[data-side="bottom"]:not(.is-shown) {
-      transform: none;
-    }
   }
 
   @keyframes p-agent-pulse {

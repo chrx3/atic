@@ -16,7 +16,7 @@ use atic_core::MutexExt;
 use tauri::{AppHandle, Manager, PhysicalPosition};
 
 /// Margen mínimo contra el borde del área útil.
-const MARGIN: i32 = 8;
+const MARGIN: i32 = 0;
 
 /// Duración del vuelo de la pill.
 pub const GLIDE_MS: u64 = 190;
@@ -95,10 +95,12 @@ pub fn cursor_position() -> Option<(i32, i32)> {
     None
 }
 
-/// Encaja `(x, y)` dentro del área útil del monitor que corresponde.
+/// Encaja `(x, y)` dentro del monitor (o del escritorio virtual).
 ///
-/// El monitor se elige por el **centro** de la ventana, no por su esquina: con
-/// la esquina, una ventana a caballo entre dos pantallas saltaba a la otra.
+/// Usa **`bounds`** (pantalla completa), no `work_area`: la pill y los floats
+/// pueden solapar la barra de tareas y pegarse al borde — hace falta para un
+/// modo tipo Dynamic Island. El monitor se elige por el **centro**; si el
+/// centro cae en el hueco entre pantallas, se clampea al escritorio virtual.
 pub fn clamp(x: i32, y: i32, w: i32, h: i32) -> (i32, i32) {
     #[cfg(windows)]
     {
@@ -110,23 +112,19 @@ pub fn clamp(x: i32, y: i32, w: i32, h: i32) -> (i32, i32) {
         let hh = h.max(1);
         let (cx, cy) = (x + ww / 2, y + hh / 2);
 
-        let target = monitors
+        let rect = monitors
             .iter()
-            .find(|m| m.work_area.contains(cx, cy))
-            .or_else(|| monitors.iter().find(|m| m.is_primary))
-            .or_else(|| monitors.first());
+            .find(|m| m.bounds.contains(cx, cy))
+            .map(|m| m.bounds)
+            .unwrap_or_else(atic_capture::monitors::virtual_screen);
 
-        let Some(m) = target else {
-            return (x, y);
-        };
-        let work = m.work_area;
         // max() contra el mínimo: en un monitor más chico que la ventana, el
         // clamp invertido la mandaba fuera de pantalla.
-        let max_x = (work.right() - ww - MARGIN).max(work.x + MARGIN);
-        let max_y = (work.bottom() - hh - MARGIN).max(work.y + MARGIN);
+        let max_x = (rect.right() - ww - MARGIN).max(rect.x + MARGIN);
+        let max_y = (rect.bottom() - hh - MARGIN).max(rect.y + MARGIN);
         (
-            x.clamp(work.x + MARGIN, max_x),
-            y.clamp(work.y + MARGIN, max_y),
+            x.clamp(rect.x + MARGIN, max_x),
+            y.clamp(rect.y + MARGIN, max_y),
         )
     }
     #[cfg(not(windows))]
@@ -655,6 +653,10 @@ pub struct BubbleShape {
 /// vivir en la mitad superior y arrastrarse poco, así que abajo acierta casi
 /// siempre; probar primero el lado con más espacio haría que la burbuja
 /// cambiara de lado por unos pocos píxeles de diferencia entre aperturas.
+///
+/// En el lado elegido se ancla por **esquina**, no al centro: el panel no debe
+/// quedar debajo/al lado centrado tapando la pill, sino salir de ella y
+/// tocarse solo por el cuello en una esquina.
 #[cfg(windows)]
 /// El origen llega como RECTÁNGULO y ya no como etiqueta de ventana.
 ///
@@ -695,18 +697,72 @@ pub fn bubble_rect(
     let fits_above = ay - gap - bh - MARGIN >= work.y;
     let fits_right = ax + aw + gap + bw + MARGIN <= work.right();
 
-    // (x, y del globo, lado del globo que mira al origen)
-    let (x, y, side) = if fits_below {
-        (acx - bw / 2, ay + ah + gap, "top")
-    } else if fits_above {
-        (acx - bw / 2, ay - gap - bh, "bottom")
-    } else if fits_right {
-        (ax + aw + gap, acy - bh / 2, "left")
-    } else {
-        (ax - gap - bw, acy - bh / 2, "right")
+    // Ancla por el BORDE de la pill, no por su centro: el panel crece hacia
+    // un lado y solo se tocan en una esquina (cuello líquido). Centrar hacía
+    // que la pill quedara encima del panel.
+    // `near` = pill en la esquina “de inicio” del lado; `far` = espejo.
+    let along_axis = |near: i32, far: i32, size: i32, lo: i32, hi: i32| -> i32 {
+        if near >= lo + MARGIN && near + size + MARGIN <= hi {
+            near
+        } else if far >= lo + MARGIN && far + size + MARGIN <= hi {
+            far
+        } else {
+            near
+        }
     };
 
-    let (x, y) = clamp(x, y, bw, bh);
+    // (x, y del globo, lado del globo que mira al origen)
+    let (mut x, mut y, side) = if fits_below {
+        // Pill arriba-izquierda del panel (crece a la derecha); si no, arriba-derecha.
+        let x = along_axis(
+            ax + aw - corner,
+            ax - bw + corner,
+            bw,
+            work.x,
+            work.right(),
+        );
+        (x, ay + ah + gap, "top")
+    } else if fits_above {
+        let x = along_axis(
+            ax + aw - corner,
+            ax - bw + corner,
+            bw,
+            work.x,
+            work.right(),
+        );
+        (x, ay - gap - bh, "bottom")
+    } else if fits_right {
+        // Pill izquierda-arriba del panel (crece hacia abajo).
+        let y = along_axis(
+            ay + ah - corner,
+            ay - bh + corner,
+            bh,
+            work.y,
+            work.bottom(),
+        );
+        (ax + aw + gap, y, "left")
+    } else {
+        let y = along_axis(
+            ay + ah - corner,
+            ay - bh + corner,
+            bh,
+            work.y,
+            work.bottom(),
+        );
+        (ax - gap - bw, y, "right")
+    };
+
+    // Clamp solo en el eje cruzado: si también corriéramos el eje del cuello,
+    // el panel se alejaba metros de la pill o se le montaba encima.
+    let (cx, cy) = clamp(x, y, bw, bh);
+    match side {
+        "top" | "bottom" => x = cx,
+        "left" | "right" => y = cy,
+        _ => {
+            x = cx;
+            y = cy;
+        }
+    }
 
     // La punta no puede caer sobre una esquina redondeada: se vería despegada
     // del borde. `corner` es el radio, y se le suma el ancho de la propia punta.

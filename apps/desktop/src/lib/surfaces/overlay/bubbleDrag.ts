@@ -24,6 +24,21 @@ export type BubbleDrag = {
   endDrag: () => void;
 };
 
+function unionAreas(areas: Area[]): Area {
+  let x0 = areas[0].x;
+  let y0 = areas[0].y;
+  let x1 = areas[0].x + areas[0].w;
+  let y1 = areas[0].y + areas[0].h;
+  for (let i = 1; i < areas.length; i++) {
+    const a = areas[i];
+    x0 = Math.min(x0, a.x);
+    y0 = Math.min(y0, a.y);
+    x1 = Math.max(x1, a.x + a.w);
+    y1 = Math.max(y1, a.y + a.h);
+  }
+  return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+}
+
 function clampToWork(
   workAreas: Area[],
   x: number,
@@ -34,17 +49,27 @@ function clampToWork(
   if (workAreas.length === 0) return { x, y };
   const cx = x + w / 2;
   const cy = y + h / 2;
-  const area =
-    workAreas.find(
-      (a) => cx >= a.x && cx <= a.x + a.w && cy >= a.y && cy <= a.y + a.h,
-    ) ?? workAreas[0];
-  if (!area) return { x, y };
+  const hit = workAreas.find(
+    (a) => cx >= a.x && cx <= a.x + a.w && cy >= a.y && cy <= a.y + a.h,
+  );
+  const area = hit ?? unionAreas(workAreas);
   const maxX = Math.max(area.x + area.w - w - MARGIN, area.x + MARGIN);
   const maxY = Math.max(area.y + area.h - h - MARGIN, area.y + MARGIN);
   return {
     x: Math.min(Math.max(x, area.x + MARGIN), maxX),
     y: Math.min(Math.max(y, area.y + MARGIN), maxY),
   };
+}
+
+function shouldSkip(event: PointerEvent, skip: string): boolean {
+  // `closest` basta en el caso normal; `composedPath` cubre SVG/shadow por si
+  // el target no sube al `button` / `[data-no-drag]` como esperamos.
+  const path = event.composedPath();
+  for (const node of path) {
+    if (node instanceof Element && node.matches(skip)) return true;
+  }
+  const t = event.target;
+  return t instanceof Element && !!t.closest(skip);
 }
 
 export function createBubbleDrag(
@@ -122,7 +147,7 @@ export function createBubbleDrag(
 
   function startDrag(event: PointerEvent) {
     if (event.button !== 0 || !bubble.anchor) return;
-    if ((event.target as HTMLElement).closest(skip)) return;
+    if (shouldSkip(event, skip)) return;
     event.preventDefault();
     const a = bubble.anchor;
     // El origen NO sale del evento del DOM. `clientX` mide contra la ventana, y

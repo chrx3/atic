@@ -1,12 +1,22 @@
 <script lang="ts">
   /**
    * Float de textos / notas: hermano de la pill, fundido al liquid.
+   *
+   * Apertura (pill-liquid-emerge): nace fused chico → crece w/h → se separa
+   * hasta cortar el cuello. Cierre = reverse: approach → shrink → dismiss.
    */
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
   import SnippetsList from "$lib/SnippetsList.svelte";
   import { snippets } from "$domain/snippets.svelte";
   import { sessionEffect } from "$domain/session";
-  import { tabPanel } from "$lib/motion";
+  import {
+    afterTransition,
+    MOTION,
+    ms,
+    prefersReducedMotion,
+    tabPanel,
+    wait,
+  } from "$lib/motion";
   import {
     hideSnippetsWindow,
     onSnippetsBubbleAnchor,
@@ -14,23 +24,227 @@
     setSnippetsAlwaysOnTop,
     snippetsAlwaysOnTop,
   } from "$ipc/snippets";
-  import { onOverlayDismiss } from "$ipc/overlay";
+  import { onOverlayDismiss, overlayWorkAreas } from "$ipc/overlay";
+  import type { Area } from "$ipc/overlay";
+  import type { BubbleOpen } from "$core/types";
   import { Bubble } from "$surfaces/overlay/bubble.svelte";
   import { createBubbleDrag } from "$surfaces/overlay/bubbleDrag";
-  import { boxShape, gapBetween } from "$lib/liquid/geometry";
+  import {
+    FUSED_GAP_PX,
+    expandPanelFromSeed,
+    placePanelFusedFull,
+    placePanelFusedSeed,
+    placePanelResting,
+  } from "$surfaces/overlay/floatPlace";
+  import { gapBetween } from "$lib/liquid/geometry";
   import { REACH } from "$lib/liquid/constants";
   import { liquid } from "$surfaces/overlay/group.svelte";
+  import {
+    publishEmergeSkin,
+    publishFollowSkin,
+  } from "$surfaces/overlay/floatEmergeSkin";
+  import {
+    separateAxisProp,
+    waitFrames,
+  } from "$surfaces/overlay/floatReveal";
   import { surfaces } from "$surfaces/overlay/surfaces.svelte";
   import Icon from "$ui/Icon.svelte";
   import { Pin, X } from "$lib/icons";
 
-  const CORNER = 18;
+  const CORNER = 20;
+  const SEED_HOLD_MS = 60;
   const bubble = new Bubble();
   let el = $state<HTMLElement | null>(null);
   const { startDrag, endDrag } = createBubbleDrag(bubble, () => el);
   let tab = $state<"list" | "scratchpad">("list");
   /** Pin always-on-top (misma semántica que agentes). */
-  let pinned = $state(true);
+  let pinned = $state(false);
+  let workAreas = $state<Area[]>([]);
+  let lastOpen: BubbleOpen | null = null;
+
+  type RevealPhase =
+    | "hidden"
+    | "expand"
+    | "separate"
+    | "ready"
+    | "approach"
+    | "shrink";
+  let revealPhase = $state<RevealPhase>("hidden");
+  let revealEpoch = 0;
+  let closing = false;
+  let ignoreIpcDismiss = false;
+  const expanding = $derived(
+    revealPhase === "expand" || revealPhase === "shrink",
+  );
+  const separating = $derived(
+    revealPhase === "separate" || revealPhase === "approach",
+  );
+  const motionPhase = $derived(expanding || separating);
+
+  let openDur = $state(100);
+  let separateDur = $state(90);
+  let closeDur = $state(100);
+
+  function armOpenDur() {
+    openDur = ms(MOTION.launcherBar);
+    separateDur = ms(MOTION.launcherSeparate);
+  }
+
+  function armCloseDur() {
+    closeDur = ms(MOTION.floatClose);
+  }
+
+  function cancelReveal() {
+    revealEpoch += 1;
+  }
+
+  function applyRestingPlace(a: BubbleOpen) {
+    const pill = surfaces.live["pill-skin"] ?? surfaces.live["pill"];
+    if (!pill) {
+      bubble.place(a);
+      return;
+    }
+    bubble.place({
+      ...a,
+      ...placePanelResting(
+        pill,
+        { w: a.w, h: a.h },
+        { corner: CORNER, work: workAreas },
+      ),
+    });
+  }
+
+  function placeFusedToPill(a: BubbleOpen) {
+    const pill = surfaces.live["pill-skin"] ?? surfaces.live["pill"];
+    if (!pill) {
+      bubble.place(a);
+      return;
+    }
+    bubble.place({
+      ...a,
+      ...placePanelFusedSeed(
+        pill,
+        { w: a.w, h: a.h },
+        { corner: CORNER, work: workAreas },
+      ),
+    });
+  }
+
+  async function placeFromPill(a: BubbleOpen) {
+    lastOpen = a;
+    const fresh = !bubble.alive || !bubble.shown;
+    if (fresh) armOpenDur();
+    if (workAreas.length === 0) {
+      try {
+        workAreas = await overlayWorkAreas();
+      } catch {
+        workAreas = [];
+      }
+    }
+    if (lastOpen !== a) return;
+    // No reposo durante birth/close: un re-anchor hacía snap separado.
+    if (fresh || revealPhase === "hidden") {
+      placeFusedToPill(a);
+      return;
+    }
+    if (revealPhase === "ready" && !closing) {
+      applyRestingPlace(a);
+    }
+  }
+
+  async function runOpenReveal() {
+    const epoch = ++revealEpoch;
+    if (prefersReducedMotion()) {
+      if (lastOpen) applyRestingPlace(lastOpen);
+      revealPhase = "ready";
+      return;
+    }
+
+    revealPhase = "expand";
+    await tick();
+    await waitFrames(2);
+    await wait(SEED_HOLD_MS);
+    if (epoch !== revealEpoch) return;
+
+    const full = lastOpen;
+    if (full && bubble.anchor) {
+      // Crece desde la semilla solapada (borde clavado). No re-place fused
+      // full: eso saltaba a gap+2 y se leía como panel externo.
+      bubble.place({
+        ...full,
+        ...expandPanelFromSeed(
+          {
+            side: bubble.anchor.side as BubbleOpen["side"],
+            offset: bubble.anchor.offset,
+            x: bubble.anchor.x,
+            y: bubble.anchor.y,
+            w: bubble.anchor.w,
+            h: bubble.anchor.h,
+          },
+          { w: full.w, h: full.h },
+        ),
+      });
+    }
+    await afterTransition(el, "width", openDur);
+    if (epoch !== revealEpoch) return;
+
+    revealPhase = "separate";
+    await tick();
+    await waitFrames(2);
+    if (epoch !== revealEpoch) return;
+    const separateProp = separateAxisProp(bubble.anchor?.side);
+    if (lastOpen) applyRestingPlace(lastOpen);
+    await afterTransition(el, separateProp, separateDur);
+    if (epoch !== revealEpoch) return;
+    revealPhase = "ready";
+  }
+
+  /** Close = reverse: approach (fuse) → shrink (seed solapada) → dismiss. */
+  async function runCloseReveal(epoch: number): Promise<void> {
+    if (prefersReducedMotion()) return;
+
+    const full = lastOpen;
+    const pill = surfaces.live["pill-skin"] ?? surfaces.live["pill"];
+    const side = (bubble.anchor?.side ?? full?.side ?? "top") as BubbleOpen["side"];
+
+    revealPhase = "approach";
+    await tick();
+    await waitFrames(2);
+    if (epoch !== revealEpoch) return;
+    if (full && pill) {
+      bubble.place({
+        ...full,
+        ...placePanelFusedFull(
+          pill,
+          { w: full.w, h: full.h },
+          side,
+          { corner: CORNER, work: workAreas, fusedGap: FUSED_GAP_PX },
+        ),
+      });
+    } else if (full) {
+      applyRestingPlace(full);
+    }
+    await afterTransition(el, separateAxisProp(side), separateDur);
+    if (epoch !== revealEpoch) return;
+
+    revealPhase = "shrink";
+    await tick();
+    await waitFrames(2);
+    if (epoch !== revealEpoch) return;
+    if (full) placeFusedToPill(full);
+    await afterTransition(el, "width", openDur);
+  }
+
+  $effect(() => {
+    if (!bubble.alive) {
+      if (revealPhase !== "hidden") revealPhase = "hidden";
+      closing = false;
+      return;
+    }
+    if (bubble.shown && revealPhase === "hidden" && !closing) {
+      void runOpenReveal();
+    }
+  });
 
   const pillSkin = $derived(surfaces.live["pill-skin"]);
   const joined = $derived.by(() => {
@@ -41,18 +255,44 @@
   });
 
   $effect(() => {
-    if (!bubble.alive || !bubble.anchor) {
+    if (!bubble.alive || !el) {
       liquid.publish("snippets", []);
       return;
     }
-    liquid.publish("snippets", [boxShape(bubble.anchor, CORNER)]);
+    void bubble.shown;
+    void surfaces.dragging;
+    void revealPhase;
+    // Drag: fuera del goo (panel opaco). Remesh mid-drag era el cuello a 60Hz.
+    if (surfaces.dragging) {
+      liquid.publish("snippets", []);
+      return;
+    }
+    void bubble.anchor;
+    if (motionPhase) {
+      return publishFollowSkin("snippets", el, CORNER);
+    }
+    return publishEmergeSkin("snippets", el, CORNER);
   });
 
-  $effect(() =>
-    el && bubble.shown ? surfaces.add("snippets", el) : undefined,
-  );
+  $effect(() => {
+    if (!el || !bubble.alive) return;
+    const stop = surfaces.add("snippets", el);
+    void surfaces.flush();
+    return stop;
+  });
+  $effect(() => {
+    if (!bubble.alive || !bubble.shown) return;
+    void bubble.anchor;
+    void surfaces.recoverHits();
+    const t = window.setTimeout(() => {
+      void surfaces.recoverHits();
+    }, ms(MOTION.floatOpen) + 48);
+    return () => window.clearTimeout(t);
+  });
   $effect(() => {
     void bubble.anchor;
+    void surfaces.dragging;
+    if (surfaces.dragging) return;
     surfaces.schedule();
   });
 
@@ -68,12 +308,49 @@
     }
   }
 
-  function close() {
-    if (!bubble.shown) return;
+  function finishDismiss(
+    wasShown: boolean,
+    opts: { skipHideWindow?: boolean } = {},
+  ) {
+    lastOpen = null;
+    revealPhase = "hidden";
     endDrag();
+    surfaces.resetInteraction();
     snippets.flushScratchpad();
+    armCloseDur();
     bubble.hide();
-    void hideSnippetsWindow();
+    if (!wasShown) bubble.alive = false;
+    if (!opts.skipHideWindow) {
+      ignoreIpcDismiss = true;
+      void hideSnippetsWindow().finally(() => {
+        window.setTimeout(() => {
+          ignoreIpcDismiss = false;
+        }, 320);
+      });
+    }
+    closing = false;
+  }
+
+  async function close(opts: { fromIpcDismiss?: boolean } = {}) {
+    if (!bubble.shown && !bubble.alive) return;
+    if (closing) {
+      if (opts.fromIpcDismiss) return;
+      cancelReveal();
+      finishDismiss(bubble.shown, { skipHideWindow: opts.fromIpcDismiss });
+      return;
+    }
+    closing = true;
+    const wasShown = bubble.shown;
+    endDrag();
+    surfaces.resetInteraction();
+    const epoch = ++revealEpoch;
+    await runCloseReveal(epoch);
+    if (!closing) return;
+    if (epoch !== revealEpoch) {
+      closing = false;
+      return;
+    }
+    finishDismiss(wasShown, { skipHideWindow: opts.fromIpcDismiss });
   }
 
   function tryAutoClose() {
@@ -94,24 +371,46 @@
         pinned = on;
       })
       .catch(() => {
-        pinned = true;
+        pinned = false;
+      });
+    void overlayWorkAreas()
+      .then((areas) => {
+        workAreas = areas;
+        if (lastOpen && bubble.alive && revealPhase === "ready") {
+          applyRestingPlace(lastOpen);
+        } else if (
+          lastOpen &&
+          bubble.alive &&
+          (revealPhase === "hidden" || revealPhase === "expand") &&
+          !bubble.shown
+        ) {
+          placeFusedToPill(lastOpen);
+        }
+      })
+      .catch(() => {
+        workAreas = [];
       });
     const un: Promise<() => void>[] = [
-      onSnippetsBubbleAnchor((a) => bubble.place(a)),
+      onSnippetsBubbleAnchor((a) => {
+        void placeFromPill(a);
+      }),
       onSnippetsBubbleDismiss(() => {
-        snippets.flushScratchpad();
-        bubble.hide();
+        if (ignoreIpcDismiss) return;
+        void close({ fromIpcDismiss: true });
       }),
       onOverlayDismiss(() => {
+        surfaces.resetInteraction();
         tryAutoClose();
       }),
     ];
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "Escape" || !bubble.shown) return;
+      if (e.key !== "Escape") return;
       e.preventDefault();
+      surfaces.resetInteraction();
+      if (!bubble.shown && !bubble.alive) return;
       void snippetsAlwaysOnTop()
         .then((on) => {
-          if (!on && bubble.shown) close();
+          if (!on && (bubble.shown || bubble.alive)) void close();
         })
         .catch(() => {
           /* sin pin, no cerrar */
@@ -121,6 +420,7 @@
     return () => {
       window.removeEventListener("keydown", onKey);
       endDrag();
+      surfaces.resetInteraction();
       for (const p of un) void p.then((fn) => fn());
       liquid.publish("snippets", []);
     };
@@ -129,12 +429,19 @@
 
 {#if bubble.alive}
   <div
-    class="sf float-emerge"
+    class="sf"
     class:is-shown={bubble.shown}
     class:is-joined={joined}
+    class:is-expanding={expanding}
+    class:is-separating={separating}
     data-side={bubble.anchor?.side ?? "top"}
     style={bubble.vars}
+    style:--launcher-bar-open-dur="{openDur}ms"
+    style:--launcher-separate-dur="{separateDur}ms"
+    style:--float-close-dur="{closeDur}ms"
     bind:this={el}
+    role="dialog"
+    aria-label="Textos y notas"
   >
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <header class="sf-head" onpointerdown={startDrag}>
@@ -162,7 +469,8 @@
       </div>
       <!-- Zona de arrastre entre tabs y acciones. -->
       <div class="sf-drag" aria-hidden="true"></div>
-      <div class="sf-acts" data-no-drag>
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <div class="sf-acts" data-no-drag onpointerdown={(e) => e.stopPropagation()}>
         <button
           type="button"
           class="sf-icon"
@@ -177,7 +485,7 @@
         <button
           type="button"
           class="sf-icon"
-          onclick={close}
+          onclick={() => void close()}
           aria-label="Cerrar"
           title="Cerrar"
         >
@@ -193,7 +501,7 @@
             loading={false}
             compact
             onRefresh={() => void snippets.hydrate()}
-            onPasted={close}
+            onPasted={() => void close()}
           />
         </div>
       {:else}
@@ -212,7 +520,14 @@
 {/if}
 
 <style>
+  /*
+   * Fused grow → separate: nace seed pegado a la pill, crece w/h con borde
+   * clavado, luego se aleja (gap > REACH) y corta el cuello.
+   */
   .sf {
+    --launcher-bar-open-dur: 100ms;
+    --launcher-separate-dur: 90ms;
+    --float-close-dur: var(--morph-close-dur);
     position: absolute;
     z-index: var(--z-overlay-float);
     display: flex;
@@ -223,8 +538,45 @@
     height: var(--h);
     box-sizing: border-box;
     padding: 0.45rem 0.5rem 0.55rem;
+    border-radius: 18px;
+    /* Opaco debajo del skin (mismo patrón que AgentsDemo): el fondo no
+       desaparece si el goo va un frame atras al mover. */
+    background: var(--rb-surface);
     color: var(--rb-text);
     overflow: hidden;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity var(--float-close-dur) var(--ease-smooth-out);
+  }
+
+  .sf.is-shown {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .sf.is-expanding {
+    transition:
+      width var(--launcher-bar-open-dur) var(--ease-smooth-out),
+      height var(--launcher-bar-open-dur) var(--ease-smooth-out),
+      left var(--launcher-bar-open-dur) var(--ease-smooth-out),
+      top var(--launcher-bar-open-dur) var(--ease-smooth-out),
+      opacity var(--float-close-dur) var(--ease-smooth-out);
+  }
+
+  /* Semilla = silueta líquida; chrome visible solo fuera del grow/shrink. */
+  .sf.is-expanding .sf-head,
+  .sf.is-expanding .sf-body {
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  .sf.is-separating {
+    transition:
+      left var(--launcher-separate-dur) var(--ease-smooth-out),
+      top var(--launcher-separate-dur) var(--ease-smooth-out),
+      width var(--duration-quick) var(--ease-smooth-out),
+      height var(--duration-quick) var(--ease-smooth-out),
+      opacity var(--float-close-dur) var(--ease-smooth-out);
   }
 
   .sf-head {
@@ -281,6 +633,8 @@
   }
 
   .sf-acts {
+    position: relative;
+    z-index: 2;
     display: flex;
     flex-shrink: 0;
     align-items: center;
@@ -306,6 +660,10 @@
       background var(--duration-quick) var(--ease-smooth-out),
       border-color var(--duration-quick) var(--ease-smooth-out),
       transform var(--duration-quick) var(--ease-smooth-out);
+  }
+
+  .sf-icon :global(svg) {
+    pointer-events: none;
   }
 
   .sf-icon:hover,
@@ -348,6 +706,12 @@
   }
 
   @media (prefers-reduced-motion: reduce) {
+    .sf,
+    .sf.is-expanding,
+    .sf.is-separating {
+      transition: none;
+    }
+
     .sf-icon:active,
     .sf-tab:active {
       transform: none;

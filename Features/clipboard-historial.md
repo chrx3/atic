@@ -5,16 +5,21 @@
 ## Resumen
 
 Historial de texto e imágenes del clipboard, con pegado a la app que tenía
-foco, inserción en agentes, cola “pegar después” y arrastre hacia otras
-ventanas.
+foco, inserción en agentes, cola “pegar después” y arrastre OLE hacia otras
+ventanas (texto e imagen).
 
 ## Cómo se usa
 
 - Abrir historial desde la pill (rueda / atajo): sale un **float independiente**
-  en el overlay (`.float-emerge`), fundido a la pill por liquid. La barra de la
-  pill **no crece**.
-- Clic para pegar (Ctrl+V al destino, o insert interno si agentes es el
-  destino sin ventana externa). Pegar cierra el float.
+  en el overlay con el morph fused grow → separate + reverse close
+  ([pill-liquid-emerge.md](pill-liquid-emerge.md)). La barra de la pill
+  **no crece**.
+- **Clic** para pegar (Ctrl+V al destino, o insert interno si agentes está
+  abierto). El float **no se cierra** solo: podés pegar / arrastrar varias
+  veces; cerrá con X, Esc o clic afuera (salvo pin).
+- **Arrastrar** un ítem (texto o imagen) a otra app o al composer de agentes:
+  OLE file-drag vía `clipboard_drag_path` + `tauri-plugin-drag`. El texto se
+  materializa como `.atic-drag-{id}.txt`; las imágenes usan el PNG en disco.
 - Cola de pegado cuando no hay destino externo listo.
 - Dictado y capturas se integran con el mismo sistema de foco/destino.
 
@@ -34,7 +39,7 @@ disco del usuario. Dos cosas lo acotan:
 
 ## Código
 
-- [`apps/desktop/src-tauri/src/clipboard_history.rs`](../apps/desktop/src-tauri/src/clipboard_history.rs) — store + `show_clipboard_window`
+- [`apps/desktop/src-tauri/src/clipboard_history.rs`](../apps/desktop/src-tauri/src/clipboard_history.rs) — store + `show_clipboard_window` + `clipboard_drag_path`
 - [`apps/desktop/src-tauri/src/panel_float.rs`](../apps/desktop/src-tauri/src/panel_float.rs) — ancla genérica a la pill
 - [`apps/desktop/src/lib/surfaces/overlay/clipboard/ClipboardFloat.svelte`](../apps/desktop/src/lib/surfaces/overlay/clipboard/ClipboardFloat.svelte)
 - [`apps/desktop/src-tauri/src/paste_queue.rs`](../apps/desktop/src-tauri/src/paste_queue.rs)
@@ -44,4 +49,5 @@ disco del usuario. Dos cosas lo acotan:
 
 - [liquid.md](liquid.md)
 - [pill-shell.md](pill-shell.md)
+- [pill-liquid-emerge.md](pill-liquid-emerge.md)
 - [agentes.md](agentes.md)

@@ -493,7 +493,12 @@
 
     <!-- Gajos: cada botón cubre el cuadrado completo recortado a su sector.
          Todo el gajo es zona de clic; no dibuja líneas ni fondos. -->
-    <div class="pw-nodes" role="toolbar" aria-label="Herramientas Atic">
+    <div
+      class="pw-nodes"
+      role="toolbar"
+      tabindex="-1"
+      aria-label="Herramientas Atic"
+    >
       {#each separators as sep (sep.deg)}
         <span
           class="pw-sep"
@@ -647,6 +652,7 @@
   .pw-nodes {
     position: absolute;
     inset: 0;
+    outline: none;
   }
 
   /* Morph: el anillo sale del centro y vuelve a él. La marca del centro no

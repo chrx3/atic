@@ -16,14 +16,14 @@ Eso alcanza para decidir qué se toca y qué no, sin caso por caso:
 
 | Superficie | ¿Se funde? | Con qué |
 | --- | --- | --- |
-| Float clipboard / textos | sí | hermanos de la pill en el overlay (salen de ella) |
+| Float clipboard / textos | sí | fused grow → separate + reverse close — [pill-liquid-emerge.md](pill-liquid-emerge.md) |
 | Rueda de herramientas (compacta) | sí | las seis gotas salen del núcleo |
 | Float de agentes | sí | cuelga de la pill, por el cuello |
 | Barra al crecer (grabando, cola, aviso) | sí (pendiente) | lo que llega se incorpora al disco |
 | Rail / picker de la ventana principal | sí | las gotas salen del arco, entre sí |
 | Cards del picker (derecha de la rueda) | sí* | mismo material; flotan aparte (hueco > REACH), no se pegan al arco |
 | Modal de detalle de herramienta | **no** | aparece encima; no sale del rail |
-| Launcher | **no** | aparece en el cursor, no sale de nada |
+| Launcher | sí | crece desde la pill; se separa; favs; cierra en reverse (tuck→fuse→shrink) — [pill-liquid-emerge.md](pill-liquid-emerge.md) |
 | Shelf de capturas | **no** | idem |
 
 Si algo no sale de nada, fundirlo es ruido.
@@ -134,5 +134,7 @@ probar ideas, no se mantienen sincronizadas.
 
 ## Relacionado
 
+- [pill-liquid-emerge.md](pill-liquid-emerge.md) — patrón fused grow → separate (referencia: launcher)
 - [pill-shell.md](pill-shell.md)
 - [agentes.md](agentes.md)
+- [launcher-spotlight.md](launcher-spotlight.md)

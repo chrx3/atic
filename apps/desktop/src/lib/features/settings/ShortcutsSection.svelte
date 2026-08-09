@@ -53,12 +53,18 @@
     {
       key: "snippets_shortcut",
       label: "Textos guardados",
-      fallback: "CmdOrCtrl+Shift+T",
+      fallback: "CmdOrCtrl+Shift+S",
+    },
+    {
+      key: "agents_shortcut",
+      label: "Consola de agentes",
+      hint: "Abre o cierra el chat de agentes junto a la pill.",
+      fallback: "CmdOrCtrl+Shift+A",
     },
     {
       key: "screenshot_shortcut",
       label: "Captura de pantalla",
-      fallback: "CmdOrCtrl+Shift+S",
+      fallback: "CmdOrCtrl+Shift+4",
     },
     {
       key: "launcher_shortcut",

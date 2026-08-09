@@ -1,6 +1,6 @@
 {
   "name": "atic-desktop",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Atic desktop app",
   "type": "module",
   "scripts": {
@@ -28,6 +28,8 @@
     "@tauri-apps/plugin-opener": "^2",
     "@tauri-apps/plugin-process": "^2",
     "@tauri-apps/plugin-updater": "^2",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
     "lucide": "^1.29.0",
     "morphicons": "^1.4.2"
   },

@@ -6,27 +6,30 @@
  * y no genera utilidades. En markup se usan con la sintaxis de variable
  * —`duration-(--duration-morph-open)`— y en CSS a mano como siempre.
  *
- * El morph de la rueda es simétrico: cerrar espeja abrir (misma duración y
- * curva). El cierre rápido (`--duration-morph-quick`) es la excepción, cuando
- * la acción ya se cumplió y el morph solo estorba.
+ * Abrir morflea con overshoot; cerrar es más corto y sin bounce. El cierre
+ * rápido (`--duration-morph-quick`) acorta aún más cuando la acción ya se
+ * cumplió y el morph solo estorba.
  */
 :root {
-  --duration-stagger: 40ms;
-  --duration-micro: 80ms;
-  --duration-quick: 150ms;
-  --duration-fast: 250ms;
-  --duration-medium: 350ms;
-  --duration-slow: 400ms;
-  --duration-very-slow: 500ms;
+  --duration-stagger: 20ms;
+  --duration-micro: 40ms;
+  --duration-quick: 75ms;
+  --duration-fast: 125ms;
+  --duration-medium: 150ms;
+  --duration-slow: 200ms;
+  --duration-very-slow: 250ms;
 
   /* El morph de una superficie que sale de otra. */
-  --duration-morph-open: 350ms;
-  --duration-morph-close: 350ms;
-  --duration-morph-fade: 200ms;
+  --duration-morph-open: 110ms;
+  --duration-morph-close: 100ms;
+  --duration-morph-fade: 80ms;
 
   /* Cierre acelerado: la acción ya se cumplió, la animación solo estorba. */
-  --duration-morph-quick: 150ms;
-  --duration-panel: 250ms;
+  --duration-morph-quick: 60ms;
+  --duration-panel: 110ms;
+
+  /* Vuelo de la pill al cursor (abrir rueda / summon / volver al hogar). */
+  --flight-dur: 110ms;
 
   /* Una vuelta de indicador de espera. Es el único tiempo que se repite en
      bucle, y por eso es mucho más largo que el resto: a menos de medio segundo

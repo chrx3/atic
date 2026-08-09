@@ -6,6 +6,7 @@
    * ajustes viven en un modal. El estado de dominio lo monta `sessionEffect`.
    */
   import { toolById } from "$core/tools";
+  import { LAUNCHER_LAB_OPEN_KEY } from "$lib/dev/launcherLab.svelte";
   import { pickerLab } from "$lib/dev/pickerLab.svelte";
   import { config } from "$domain/config.svelte";
   import { recordings } from "$domain/recordings.svelte";
@@ -13,20 +14,21 @@
   import { toasts } from "$domain/toasts.svelte";
   import OnboardingModal from "$features/onboarding/OnboardingModal.svelte";
   import SearchModal from "$features/search/SearchModal.svelte";
-  import SettingsPanel from "$features/settings/SettingsPanel.svelte";
+  import { onOpenSearchRequested } from "$ipc/search";
   import { closeWindow, minimizeWindow, toggleMaximizeWindow } from "$ipc/windows";
   import WindowFrame from "$patterns/WindowFrame.svelte";
   import Icon from "$ui/Icon.svelte";
   import IconButton from "$ui/IconButton.svelte";
   import Modal from "$ui/Modal.svelte";
   import ToastStack from "$ui/ToastStack.svelte";
-  import { Search, Settings, SlidersHorizontal } from "$lib/icons";
+  import { AppWindow, Search, Settings, SlidersHorizontal } from "$lib/icons";
   import ToolDetailModal from "./ToolDetailModal.svelte";
   import ToolRail from "./ToolRail.svelte";
   import { provideMainUi } from "./mainUi.svelte";
 
   const ui = provideMainUi();
   const isDev = import.meta.env.DEV;
+  let launcherLabOpen = $state(false);
 
   // Panel estático en dev: sin dynamic import que pueda dejar la UI a medias.
   let PickerLabPanel = $state<typeof import("$lib/dev/PickerLabPanel.svelte").default | null>(
@@ -43,6 +45,30 @@
     };
   });
 
+  $effect(() => {
+    if (!isDev) return;
+    const sync = () => {
+      launcherLabOpen = localStorage.getItem(LAUNCHER_LAB_OPEN_KEY) === "1";
+    };
+    sync();
+    window.addEventListener("storage", sync);
+    return () => window.removeEventListener("storage", sync);
+  });
+
+  function toggleLauncherLab() {
+    if (!isDev) return;
+    const on = localStorage.getItem(LAUNCHER_LAB_OPEN_KEY) === "1";
+    if (on) localStorage.removeItem(LAUNCHER_LAB_OPEN_KEY);
+    else localStorage.setItem(LAUNCHER_LAB_OPEN_KEY, "1");
+    launcherLabOpen = !on;
+    window.dispatchEvent(
+      new StorageEvent("storage", {
+        key: LAUNCHER_LAB_OPEN_KEY,
+        newValue: on ? null : "1",
+      }),
+    );
+  }
+
   $effect(() =>
     sessionEffect([
       "config",
@@ -57,15 +83,21 @@
     ]),
   );
 
-  const tool = $derived(toolById(ui.activeTool));
+  // Ctrl+K / titlebar: buscador in-app. El tool Apps usa el launcher de sistema.
+  $effect(() => {
+    let stop: (() => void) | undefined;
+    void onOpenSearchRequested(() => ui.openSearch()).then((un) => {
+      stop = un;
+    });
+    return () => stop?.();
+  });
 
-  let settingsOpen = $state(false);
-  let searchOpen = $state(false);
+  const tool = $derived(toolById(ui.activeTool));
 
   function onKeydown(event: KeyboardEvent) {
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
       event.preventDefault();
-      searchOpen = true;
+      ui.openSearch();
     }
     if (!isDev) return;
     if (event.key === "Escape" && pickerLab.open) {
@@ -89,15 +121,23 @@
   onClose={() => void closeWindow()}
 >
   {#snippet actions()}
-    <IconButton label="Buscar (Ctrl+K)" size="sm" onclick={() => (searchOpen = true)}>
+    <IconButton label="Buscar (Ctrl+K)" size="sm" onclick={() => ui.openSearch()}>
       <Icon icon={Search} size={14} />
     </IconButton>
 
-    <IconButton label="Ajustes" size="sm" onclick={() => (settingsOpen = true)}>
+    <IconButton label="Ajustes" size="sm" onclick={() => ui.openSettings()}>
       <Icon icon={Settings} size={14} />
     </IconButton>
 
     {#if isDev}
+      <IconButton
+        label={launcherLabOpen ? "Cerrar launcher lab (Ctrl+Alt+F)" : "Launcher lab (Ctrl+Alt+F)"}
+        size="sm"
+        pressed={launcherLabOpen}
+        onclick={() => toggleLauncherLab()}
+      >
+        <Icon icon={AppWindow} size={14} />
+      </IconButton>
       <IconButton
         label={pickerLab.open ? "Cerrar ajuste picker" : "Ajustar rueda y cards"}
         size="sm"
@@ -122,9 +162,9 @@
   <OnboardingModal onDone={() => toasts.push("Listo. Podés grabar cuando quieras.")} />
 {/if}
 
-{#if searchOpen}
+{#if ui.searchOpen}
   <SearchModal
-    onClose={() => (searchOpen = false)}
+    onClose={() => ui.closeSearch()}
     onNavigate={(hit) => {
       if (hit.kind === "recording") {
         recordings.select(hit.id);
@@ -143,20 +183,24 @@
     bind:tab={ui.detailTab}
     snippetsTab={ui.snippetsTab}
     onClose={() => ui.closeDetail()}
-    onOpenSettings={() => (settingsOpen = true)}
+    onOpenSettings={() => ui.openSettings()}
   />
 {/if}
 
-{#if settingsOpen}
+{#if ui.settingsOpen}
   <Modal
     title="Ajustes"
     size="lg"
     fill
     scrollBody={false}
-    onClose={() => (settingsOpen = false)}
+    onClose={() => ui.closeSettings()}
   >
     <div class="-mx-4 -my-3 flex h-full min-h-0 flex-1 flex-col overflow-hidden">
-      <SettingsPanel />
+      {#await import("$features/settings/SettingsPanel.svelte") then { default: SettingsPanel }}
+        {#key ui.settingsSection}
+          <SettingsPanel initialSection={ui.settingsSection} />
+        {/key}
+      {/await}
     </div>
   </Modal>
 {/if}
