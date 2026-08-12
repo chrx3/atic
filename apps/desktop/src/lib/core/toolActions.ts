@@ -15,7 +15,7 @@ import { showLauncher } from "$ipc/search";
 import { showSnippetsWindow } from "$ipc/snippets";
 import { emit } from "@tauri-apps/api/event";
 import { hasToolSlot } from "$surfaces/overlay/toolSlots";
-import type { ToolId } from "./tools";
+import { AGENTS_ENABLED, type ToolId } from "./tools";
 
 export type ToolActionKind = "run" | "openDetail";
 
@@ -78,7 +78,7 @@ export async function executeToolAction(
       await startCaptureSession();
       return;
     case "agents":
-      await showAgentsWindow();
+      if (AGENTS_ENABLED) await showAgentsWindow();
       return;
     case "launcher":
       await showLauncher();

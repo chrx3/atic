@@ -37,6 +37,7 @@
     openDataDir,
   } from "$lib/api";
   import { looksLikeHeadset } from "$lib/audioHeadset";
+  import { AGENTS_ENABLED } from "$core/tools";
   import SshHostsPanel from "$lib/features/agents/SshHostsPanel.svelte";
 
   /** Modelos STT oficiales de Groq (mismo catálogo que el backend). */
@@ -123,16 +124,20 @@
     }
   }
 
-  const SETTINGS_SECTIONS: { id: SettingsSectionId; label: string }[] = [
-    { id: "general", label: "General" },
-    { id: "shortcuts", label: "Atajos" },
-    { id: "audio", label: "Audio" },
-    { id: "meetings", label: "Reuniones" },
-    { id: "dictation", label: "Dictado" },
-    { id: "summary", label: "Resúmenes" },
-    { id: "captures", label: "Capturas" },
-    { id: "agents", label: "Agentes" },
-  ];
+  const SETTINGS_SECTIONS: { id: SettingsSectionId; label: string }[] = (
+    [
+      { id: "general", label: "General" },
+      { id: "shortcuts", label: "Atajos" },
+      { id: "audio", label: "Audio" },
+      { id: "meetings", label: "Reuniones" },
+      { id: "dictation", label: "Dictado" },
+      { id: "summary", label: "Resúmenes" },
+      { id: "captures", label: "Capturas" },
+      { id: "agents", label: "Agentes" },
+    ] as const
+  ).filter((s): s is { id: SettingsSectionId; label: string } =>
+    AGENTS_ENABLED ? true : s.id !== "agents",
+  );
 
   const activeSectionLabel = $derived(
     SETTINGS_SECTIONS.find((s) => s.id === activeSection)?.label ?? "Ajustes",

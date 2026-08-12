@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { boxShape, gapBetween, pillShape } from "./geometry";
-import { BLEND, BULGE, CELL, REACH } from "./constants";
+import { BLEND, BULGE, CELL, CELL_DRAG, REACH } from "./constants";
 import { Field, shapeSD } from "./sdf";
 
 describe("boxShape", () => {
@@ -65,6 +65,7 @@ describe("los valores elegidos", () => {
 
   it("cell y bulge quedan en los defaults del launcher", () => {
     expect(CELL).toBe(8);
+    expect(CELL_DRAG).toBe(12);
     expect(BULGE).toBe(5);
   });
 });

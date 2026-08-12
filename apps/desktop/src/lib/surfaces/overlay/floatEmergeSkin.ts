@@ -10,11 +10,12 @@
  * Uso dentro de un `$effect`: devolver el cleanup. El caller debe depender de
  * `shown` / ancla para despertar el seguimiento al abrir, cerrar o mover.
  *
- * Durante drag: el caller debe `liquid.publish(id, [])` (como auth). El panel
- * opaco cubre; seguir el goo mid-drag remeshea el grupo entero a 60Hz.
+ * Durante drag el goo sigue publicado: el Skin traslada el path si el
+ * grupo se mueve rígido, y remeshea más grueso solo si el cuello se estira.
  *
  * Idle abierto: **no** debe quedar un rAF eterno. Tope duro por si el
- * subpíxel (WebView2) nunca se quieta y satura el remesh del Skin.
+ * subpíxel (WebView2) nunca se quieta y satura el remesh del Skin — salvo
+ * a mitad de un drag, que puede durar más de dos segundos.
  */
 import { boxShape } from "$lib/liquid/geometry";
 import type { Shape } from "$lib/liquid/sdf";
@@ -73,12 +74,12 @@ export function publishEmergeSkin(
         still = 0;
         // Morph no dispara ResizeObserver: hits solo cuando el rect cambió
         // (layoutRect usa `--x/--y`, no el bounding escalado).
-        surfaces.schedule();
+        if (!surfaces.dragging) surfaces.schedule();
       } else {
         still += 1;
       }
     }
-    if (still < IDLE_FRAMES && frames < MAX_TRACK_FRAMES) {
+    if (still < IDLE_FRAMES && (surfaces.dragging || frames < MAX_TRACK_FRAMES)) {
       raf = requestAnimationFrame(tick);
     }
   };
@@ -120,7 +121,7 @@ export function publishFollowSkin(
         still += 1;
       }
     }
-    if (still < IDLE_FRAMES && frames < MAX_TRACK_FRAMES) {
+    if (still < IDLE_FRAMES && (surfaces.dragging || frames < MAX_TRACK_FRAMES)) {
       raf = requestAnimationFrame(tick);
     }
   };
@@ -152,7 +153,7 @@ export function publishMeasuredSkin(
     } else {
       still += 1;
     }
-    if (still < IDLE_FRAMES && frames < MAX_TRACK_FRAMES) {
+    if (still < IDLE_FRAMES && (surfaces.dragging || frames < MAX_TRACK_FRAMES)) {
       raf = requestAnimationFrame(tick);
     }
   };

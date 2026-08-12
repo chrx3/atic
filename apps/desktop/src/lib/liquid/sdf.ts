@@ -136,6 +136,31 @@ export function shapeSD(s: Shape, px: number, py: number): number {
 
 export type Bounds = { minX: number; minY: number; maxX: number; maxY: number };
 
+/**
+ * Distancia con signo al AABB de la forma (caja sin redondear / cápsula
+ * envuelta). Es un piso de `shapeSD` desde fuera: la silueta real vive
+ * dentro del AABB, así que si esto ya queda más lejos que `d + k`, el
+ * `smin` no puede cambiar el campo.
+ */
+export function aabbSD(s: Shape, px: number, py: number): number {
+  if (s.kind === "box") {
+    const qx = Math.abs(px - s.cx) - s.hw;
+    const qy = Math.abs(py - s.cy) - s.hh;
+    const ax = Math.max(qx, 0);
+    const ay = Math.max(qy, 0);
+    return Math.hypot(ax, ay) + Math.min(Math.max(qx, qy), 0);
+  }
+  const minX = Math.min(s.ax, s.bx) - s.r;
+  const minY = Math.min(s.ay, s.by) - s.r;
+  const maxX = Math.max(s.ax, s.bx) + s.r;
+  const maxY = Math.max(s.ay, s.by) + s.r;
+  const qx = Math.abs(px - (minX + maxX) / 2) - (maxX - minX) / 2;
+  const qy = Math.abs(py - (minY + maxY) / 2) - (maxY - minY) / 2;
+  const ax = Math.max(qx, 0);
+  const ay = Math.max(qy, 0);
+  return Math.hypot(ax, ay) + Math.min(Math.max(qx, qy), 0);
+}
+
 /** El grupo entero como un solo campo: la unión suave de todas las formas. */
 export class Field {
   constructor(
@@ -148,7 +173,9 @@ export class Field {
     if (shapes.length === 0) return Infinity;
     let d = shapeSD(shapes[0], x, y);
     for (let i = 1; i < shapes.length; i++) {
-      d = smin(d, shapeSD(shapes[i], x, y), k);
+      const s = shapes[i];
+      if (aabbSD(s, x, y) > d + k) continue;
+      d = smin(d, shapeSD(s, x, y), k);
     }
     return d;
   }

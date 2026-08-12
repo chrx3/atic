@@ -261,13 +261,7 @@
       return;
     }
     void bubble.shown;
-    void surfaces.dragging;
     void revealPhase;
-    // Drag: fuera del goo (panel opaco). Remesh mid-drag era el cuello a 60Hz.
-    if (surfaces.dragging) {
-      liquid.publish("clipboard", []);
-      return;
-    }
     void bubble.anchor;
     if (motionPhase) {
       return publishFollowSkin("clipboard", el, CORNER);

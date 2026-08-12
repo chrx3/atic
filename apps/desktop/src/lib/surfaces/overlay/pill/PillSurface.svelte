@@ -34,7 +34,7 @@
   import ToolIcon from "$lib/ToolIcon.svelte";
   import { agents } from "$lib/agentSessions.svelte";
   import ParticleWheel from "$lib/ParticleWheel.svelte";
-  import { TOOLS, type ToolId } from "$lib/tools";
+  import { TOOLS, AGENTS_ENABLED, type ToolId } from "$lib/tools";
   import { formatShortcut } from "$lib/format";
   import Icon from "$ui/Icon.svelte";
   import { X } from "$lib/icons";
@@ -162,7 +162,8 @@
    * el lugar donde te enteras de que respondió o de que te está esperando.
    */
   const agentAlert = $derived(
-    agents.unread > 0 || agents.working || agents.waiting > 0,
+    AGENTS_ENABLED &&
+      (agents.unread > 0 || agents.working || agents.waiting > 0),
   );
   const agentWorking = $derived(agents.working && agents.waiting === 0);
   const agentReady = $derived(
@@ -254,16 +255,13 @@
 
   // Cada cambio de estado arranca una animación de CSS: hay que volver a mirar.
   // La posición también cuenta: un vuelo no toca los estados de arriba, y sin
-  // `at` la silueta quedaba en el sitio del que la pill se fue. Durante drag
-  // la pill sale del goo (abajo): no remedir ni remeshear a 60Hz.
+  // `at` la silueta quedaba en el sitio del que la pill se fue.
   $effect(() => {
     void surface;
     void discOnly;
     void barW;
     void at.x;
     void at.y;
-    void surfaces.dragging;
-    if (surfaces.dragging) return;
     tracker.wake();
   });
 
@@ -309,11 +307,6 @@
    * separados no se pueden fundir por definición.
    */
   $effect(() => {
-    void surfaces.dragging;
-    if (surfaces.dragging) {
-      liquid.publish("pill", []);
-      return;
-    }
     liquid.publish("pill", skinShapes);
   });
 
@@ -488,12 +481,7 @@
       return;
     }
     // Seguir el morph visual de `.float-emerge` (misma causa que clipboard).
-    // Durante drag: fuera del goo (evita remuestrear al mover la pill).
     void authShown;
-    void surfaces.dragging;
-    if (surfaces.dragging) {
-      return liquid.publish("agent-auth", []);
-    }
     void authAt.x;
     void authAt.y;
     void at.x;
@@ -895,6 +883,7 @@
    * y recién ahí se ejecutan (dictado, Apps, clipboard, textos, agentes).
    */
   async function activateTool(id: ToolId) {
+    if (id === "agents" && !AGENTS_ENABLED) return;
     if (surface !== "wheel") return;
     wheelQuick = true;
     const epoch = ++collapseEpoch;
@@ -1633,7 +1622,7 @@
   </div>
 </div>
 
-{#if authAlive && authView}
+{#if AGENTS_ENABLED && authAlive && authView}
   <div
     class="p-auth-host float-emerge"
     class:is-shown={authShown}

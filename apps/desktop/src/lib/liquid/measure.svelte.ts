@@ -80,7 +80,9 @@ export class RectTracker {
   wake(): void {
     this.#still = 0;
     if (this.#frame) return;
-    this.#frame = requestAnimationFrame(() => this.#tick());
+    // Medir ya: si esperamos al próximo rAF, el skin del drag va un cuadro
+    // detrás de `left`/`top` (el DOM ya se actualizó en este flush).
+    this.#tick();
   }
 
   stop(): void {

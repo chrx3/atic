@@ -487,18 +487,12 @@
       return;
     }
     void bubble.shown;
-    void surfaces.dragging;
     void favorites.length;
     void showResults;
     void revealPhase;
     void favRevealCount;
     void favGap;
     void dotGap;
-    // Drag: fuera del goo (panel opaco). Remesh mid-drag era el cuello a 60Hz.
-    if (surfaces.dragging) {
-      liquid.publish("launcher", []);
-      return;
-    }
     void bubble.anchor;
     // Panel de resultados: chrome opaco (`.is-expanded`); no remeshear SDF
     // en cada tecla / transición de alto — era el trancazo al buscar.

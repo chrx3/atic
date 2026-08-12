@@ -13,6 +13,7 @@
    * `document`.
    */
   import { page } from "$app/state";
+  import { AGENTS_ENABLED } from "$core/tools";
   import AgentsFloat from "./agents/AgentsFloat.svelte";
   import ClipboardFloat from "./clipboard/ClipboardFloat.svelte";
   import LauncherFloat from "./launcher/LauncherFloat.svelte";
@@ -23,7 +24,7 @@
   import { liveArea, surfaces } from "./surfaces.svelte";
   import { liquid } from "./group.svelte";
   import Skin from "$liquid/Skin.svelte";
-  import { BLEND, CELL } from "$liquid/constants";
+  import { BLEND, CELL, CELL_DRAG, SMOOTH } from "$liquid/constants";
   import {
     LAUNCHER_LAB_OPEN_KEY,
     launcherLab,
@@ -56,7 +57,14 @@
   let launcherLabEl = $state<HTMLElement | null>(null);
 
   const skinBlend = $derived(isDev && launcherLab.open ? launcherLab.blend : BLEND);
-  const skinCell = $derived(isDev && launcherLab.open ? launcherLab.cell : CELL);
+  const skinCell = $derived(
+    isDev && launcherLab.open
+      ? launcherLab.cell
+      : surfaces.dragging
+        ? CELL_DRAG
+        : CELL,
+  );
+  const skinSmooth = $derived(surfaces.dragging ? 0 : SMOOTH);
 
   async function syncLab() {
     if (!isDev) return;
@@ -278,19 +286,26 @@
     </div>
   {:else}
     <!--
-      La piel de TODO lo que se funde, trazada una sola vez.
+      La piel de lo que se funde, por isla.
 
-      Va acá y no en cada superficie porque un campo de distancia solo funde lo
-      que comparte campo: con la pill trazando su contorno y el float el suyo,
-      el cuello entre las dos no podía existir y había que pintarlo a mano.
-
-      Primero en el orden, o sea debajo de todo: es una silueta, y el contenido
-      —texto, iconos, controles— vive encima con la misma geometría.
+      Un campo de distancia solo funde lo que comparte campo. Superficies más
+      lejos que REACH van en islas distintas: arrastrar una no remuestrea la
+      otra. Primero en el orden, o sea debajo de todo: es una silueta, y el
+      contenido —texto, iconos, controles— vive encima con la misma geometría.
     -->
-    <Skin shapes={liquid.shapes} blend={skinBlend} cell={skinCell} />
+    {#each liquid.islands as island (island.id)}
+      <Skin
+        shapes={island.shapes}
+        blend={skinBlend}
+        cell={skinCell}
+        smooth={skinSmooth}
+      />
+    {/each}
 
     <!-- Floats siempre montados: escuchan anclas/dismiss aunque estén cerrados. -->
-    <AgentsFloat />
+    {#if AGENTS_ENABLED}
+      <AgentsFloat />
+    {/if}
     <ClipboardFloat />
     <SnippetsFloat />
     <LauncherFloat />
@@ -353,5 +368,9 @@
    */
   .ov.is-dragging :global(.float-emerge) {
     transition: none !important;
+  }
+
+  .ov.is-dragging :global(.skin) {
+    will-change: transform;
   }
 </style>

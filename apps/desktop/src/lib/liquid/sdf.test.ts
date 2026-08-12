@@ -3,6 +3,7 @@ import {
   Field,
   sdCapsule,
   sdRoundBox,
+  shapeSD,
   smin,
   sminBulge,
   sminReach,
@@ -133,5 +134,29 @@ describe("Field.bounds", () => {
       maxX: 0,
       maxY: 0,
     });
+  });
+});
+
+describe("Field.eval AABB", () => {
+  it("el descarte de formas lejanas no cambia el campo", () => {
+    const shapes: Shape[] = [
+      { kind: "box", cx: 0, cy: 0, hw: 20, hh: 20, r: 8 },
+      { kind: "box", cx: 400, cy: 0, hw: 30, hh: 10, r: 4 },
+      { kind: "capsule", ax: 80, ay: 40, bx: 120, by: 40, r: 6 },
+    ];
+    const k = 20;
+    const field = new Field(shapes, k);
+    const naive = (x: number, y: number) => {
+      let d = shapeSD(shapes[0]!, x, y);
+      for (let i = 1; i < shapes.length; i++) {
+        d = smin(d, shapeSD(shapes[i]!, x, y), k);
+      }
+      return d;
+    };
+    for (const x of [0, 50, 200, 400, 80]) {
+      for (const y of [0, 20, 40, -30]) {
+        expect(field.eval(x, y)).toBeCloseTo(naive(x, y), 10);
+      }
+    }
   });
 });

@@ -12,6 +12,7 @@
   import SettingsRow from "$patterns/SettingsRow.svelte";
   import Banner from "$ui/Banner.svelte";
   import HotkeyCapture from "$ui/HotkeyCapture.svelte";
+  import { AGENTS_ENABLED } from "$core/tools";
 
   const cfg = $derived(config.current);
 
@@ -20,7 +21,7 @@
   }
 
   /** Los valores de fábrica, para el botón de restablecer. */
-  const SHORTCUTS = [
+  const ALL_SHORTCUTS = [
     {
       key: "global_shortcut",
       label: "Grabar / parar",
@@ -73,6 +74,10 @@
       fallback: "CmdOrCtrl+Space",
     },
   ] as const;
+
+  const SHORTCUTS = AGENTS_ENABLED
+    ? ALL_SHORTCUTS
+    : ALL_SHORTCUTS.filter((item) => item.key !== "agents_shortcut");
 
   /** Rust manda los nombres tal como los registró. */
   const conflicts = $derived(new Set(config.conflicts));
