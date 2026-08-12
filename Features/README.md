@@ -3,6 +3,9 @@
 Inventario de capacidades de producto: qué hay, qué está a medias y qué
 queremos. Cada ficha se actualiza cuando la feature cambia.
 
+En el instalador actual la herramienta de **agentes** está oculta en la UI;
+el código y su ficha siguen en el repo.
+
 Los planes técnicos largos siguen en [`docs/`](../docs/). Acá no se duplica
 implementación: se resume, se apunta al código y al plan si existe.
 
@@ -209,7 +212,7 @@ Todo local, bajo `%APPDATA%\ciat\atic\data\` (Windows) o
 transcripciones, resúmenes, capturas, historial de clipboard, logs de 7 días y
 el índice SQLite. Los secretos van aparte, al llavero del sistema.
 
-Detalle completo en el [README del repo](../README.md#dónde-se-guardan-los-datos).
+Detalle completo en el [README del repo](../README.md#privacidad).
 
 ---
 

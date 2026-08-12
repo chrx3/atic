@@ -1,0 +1,60 @@
+name: Bug
+description: Algo no funciona como debería
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Gracias. Si es un tema de seguridad, no lo describas acá:
+        usá [Security Advisories](https://github.com/chrx3/atic/security/advisories/new).
+  - type: textarea
+    id: what
+    attributes:
+      label: Qué pasó
+      placeholder: La pill no llega al cursor al pulsar el atajo de traerla.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Qué esperabas
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Cómo reproducirlo
+      placeholder: |
+        1. Abrir Atic
+        2. …
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Versión
+      description: Tag de release (p. ej. v0.3.2) o commit.
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Sistema
+      options:
+        - Windows 11
+        - Windows 10
+        - macOS
+        - Otro
+    validations:
+      required: true
+  - type: input
+    id: scale
+    attributes:
+      label: Escala de pantalla (Windows)
+      description: Configuración → Sistema → Pantalla → Escala. Ej. 100 %, 125 %, 150 %. Si hay dos monitores, indicá ambos.
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: En Ajustes hay un botón para abrir la carpeta de logs (`atic.YYYY-MM-DD.log`). Pegá el tramo relevante; no incluyas API keys.
+      render: text

@@ -1,0 +1,33 @@
+name: Idea / mejora
+description: Una capacidad o un cambio de producto
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Qué problema resolvés
+      placeholder: Hoy tengo que… y Atic no me deja…
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Propuesta
+      description: Cómo te lo imaginás en la pill, un atajo o Ajustes.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Área
+      options:
+        - Pill / overlay
+        - Reuniones (grabar / transcribir / resumir)
+        - Dictado
+        - Clipboard
+        - Textos
+        - Capturas
+        - Launcher
+        - Ajustes / atajos
+        - Build / empaquetado
+        - Otra

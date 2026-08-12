@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "Atic — grabación, transcripción y resumen de llamadas"
-authors = ["CIAT"]
+authors = ["chrx3"]
 
 [lib]
 # El sufijo _lib evita conflicto de nombre con el binario en Windows.

@@ -1,0 +1,27 @@
+name: Pregunta
+description: Duda de uso o de cómo compilar
+labels: ["question"]
+body:
+  - type: textarea
+    id: question
+    attributes:
+      label: Pregunta
+      placeholder: ¿Cómo…?
+    validations:
+      required: true
+  - type: dropdown
+    id: context
+    attributes:
+      label: Contexto
+      options:
+        - Uso de la app
+        - Compilar desde el source
+        - Instalador / actualizaciones
+        - Otro
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Versión (si aplica)
+      description: Tag de release (p. ej. v0.3.2) o rama.

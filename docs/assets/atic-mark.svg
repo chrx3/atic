@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Atic">
+  <rect width="128" height="128" rx="28" fill="#111110"/>
+  <g fill="none" stroke="#F4F1EA" stroke-width="6.5" stroke-linecap="butt">
+    <circle cx="64" cy="64" r="29"/>
+    <path d="M93 35v58"/>
+  </g>
+</svg>
