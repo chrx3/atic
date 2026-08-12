@@ -39,8 +39,8 @@ importers:
         specifier: ^1.29.0
         version: 1.29.0
       morphicons:
-        specifier: ^1.4.2
-        version: 1.4.2(svelte@5.56.4(@typescript-eslint/types@8.65.0))
+        specifier: ^1.6.0
+        version: 1.6.0(svelte@5.56.4(@typescript-eslint/types@8.65.0))
     devDependencies:
       '@eslint/js':
         specifier: ^10.0.1
@@ -1529,8 +1529,8 @@ packages:
     resolution: {integrity: sha512-vpLQEs+VLCr1nU0BXS07maYoFwlDAH0gngQuuttxIwutDFEMHq2blX+8vpgxDdK3J1PwjCJiep77OitTZ4Ll1A==}
     engines: {node: 18 || 20 || >=22}
 
-  morphicons@1.4.2:
-    resolution: {integrity: sha512-kw7JF+2PcDCo12XhHRq0Yumv2o7QNY88kHIpfm93W21lnhIALpI7vxAnbbGfjaK1Wanzo1+Q3NQJETjXTxO2dg==}
+  morphicons@1.6.0:
+    resolution: {integrity: sha512-Sq1110Tzm53D07V6T2smlU6aXVb3XACdF7MSred76ttuhpVj6Rvt4i4D5N7m/GYEJ5GaK89XBTJRBm8SQvGWGA==}
     peerDependencies:
       react: '>=18'
       react-native: '>=0.71'
@@ -3222,7 +3222,7 @@ snapshots:
     dependencies:
       brace-expansion: 5.0.9
 
-  morphicons@1.4.2(svelte@5.56.4(@typescript-eslint/types@8.65.0)):
+  morphicons@1.6.0(svelte@5.56.4(@typescript-eslint/types@8.65.0)):
     optionalDependencies:
       svelte: 5.56.4(@typescript-eslint/types@8.65.0)
 
