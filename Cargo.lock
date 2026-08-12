@@ -321,7 +321,7 @@ name = "atic-capture"
 version = "0.3.2"
 dependencies = [
  "chrono",
- "png 0.17.16",
+ "png 0.18.1",
  "serde",
  "thiserror 2.0.18",
  "tracing",

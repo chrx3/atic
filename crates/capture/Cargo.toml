@@ -11,7 +11,7 @@ thiserror.workspace = true
 tracing.workspace = true
 # Codificación PNG. Ya presente en el árbol vía `image`, así que no añade
 # costo de compilación real.
-png = "0.17"
+png = "0.18"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
