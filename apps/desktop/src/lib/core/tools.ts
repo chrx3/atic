@@ -9,6 +9,12 @@ export type ToolId =
   | "agents"
   | "launcher";
 
+/**
+ * La consola de agentes no se ofrece en la UI (rueda, ajustes, atajo, launcher).
+ * El código sigue en el repo; volver a `true` cuando se reabra la feature.
+ */
+export const AGENTS_ENABLED = false;
+
 export type ToolDef = {
   id: ToolId;
   label: string;
@@ -24,7 +30,7 @@ export type ToolDef = {
   comingSoon?: boolean;
 };
 
-export const TOOLS: ToolDef[] = [
+const ALL_TOOLS: ToolDef[] = [
   {
     id: "meetings",
     label: "Reuniones",
@@ -81,6 +87,10 @@ export const TOOLS: ToolDef[] = [
     actionLabel: "Buscar apps",
   },
 ];
+
+export const TOOLS: ToolDef[] = AGENTS_ENABLED
+  ? ALL_TOOLS
+  : ALL_TOOLS.filter((tool) => tool.id !== "agents");
 
 export function toolById(id: ToolId): ToolDef {
   return TOOLS.find((tool) => tool.id === id) ?? TOOLS[0];

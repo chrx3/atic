@@ -105,21 +105,27 @@ pub fn register_shortcuts(app: &AppHandle, bindings: ShortcutBindings<'_>) -> Re
     let radial = parse_binding("rueda de la pill", bindings.pill_radial)?;
     let clipboard = parse_binding("clipboard", bindings.clipboard)?;
     let snippets = parse_binding("fragmentos", bindings.snippets)?;
-    let agents = parse_binding("agentes", bindings.agents)?;
+    let agents = if crate::agents::UI_ENABLED {
+        Some(parse_binding("agentes", bindings.agents)?)
+    } else {
+        None
+    };
     let screenshot = parse_binding("captura", bindings.screenshot)?;
     let launcher_bind = parse_binding("launcher", bindings.launcher)?;
 
-    let named = [
+    let mut named: Vec<(&str, &Binding)> = vec![
         ("grabación", &recording),
         ("dictado", &dictation),
         ("traer pill", &summon),
         ("rueda de la pill", &radial),
         ("clipboard", &clipboard),
         ("fragmentos", &snippets),
-        ("agentes", &agents),
         ("captura", &screenshot),
         ("launcher", &launcher_bind),
     ];
+    if let Some(ref agents) = agents {
+        named.push(("agentes", agents));
+    }
     for i in 0..named.len() {
         for j in (i + 1)..named.len() {
             if binding_dup_key(named[i].1) == binding_dup_key(named[j].1) {
@@ -274,21 +280,22 @@ pub fn register_shortcuts(app: &AppHandle, bindings: ShortcutBindings<'_>) -> Re
         Binding::Mouse(btn) => mouse.push((*btn, MouseAction::Snippets)),
     }
 
-    match &agents {
-        Binding::Key(sc) => {
-            let handle = app.clone();
-            if let Err(err) = gs.on_shortcut(*sc, move |_app, _sc, event| {
-                if matches!(event.state(), ShortcutState::Pressed) {
-                    // `show_agents_window` ya es toggle (panel_float).
-                    crate::agents::bridge::show_agents_window(handle.clone());
+    if let Some(agents) = &agents {
+        match agents {
+            Binding::Key(sc) => {
+                let handle = app.clone();
+                if let Err(err) = gs.on_shortcut(*sc, move |_app, _sc, event| {
+                    if matches!(event.state(), ShortcutState::Pressed) {
+                        crate::agents::bridge::show_agents_window(handle.clone());
+                    }
+                }) {
+                    tracing::error!(%err, "no se pudo registrar el atajo de agentes");
+                    failed.push("agentes".to_string());
                 }
-            }) {
-                tracing::error!(%err, "no se pudo registrar el atajo de agentes");
-                failed.push("agentes".to_string());
             }
-        }
-        Binding::Mouse(_) => {
-            tracing::warn!("la consola de agentes solo admite atajo de teclado");
+            Binding::Mouse(_) => {
+                tracing::warn!("la consola de agentes solo admite atajo de teclado");
+            }
         }
     }
 

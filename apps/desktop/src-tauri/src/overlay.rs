@@ -341,22 +341,28 @@ pub fn place(app: &AppHandle) -> Option<OverlayRect> {
         }
 
         let vs = atic_capture::monitors::virtual_screen();
-        let rect = OverlayRect {
+        let mut rect = OverlayRect {
             x: vs.x,
             y: vs.y,
             w: vs.width as i32,
             h: vs.height as i32,
-            scale: monitors.first().map(|m| m.scale).unwrap_or(1.0),
+            scale: 1.0,
         };
 
         let _ = window.set_position(tauri::PhysicalPosition::new(rect.x, rect.y));
         let _ = window.set_size(tauri::PhysicalSize::new(rect.w as u32, rect.h as u32));
         let _ = window.set_always_on_top(true);
         let _ = window.show();
+        // WebView2 a veces se queda con el `inner_size` del create (480×320)
+        // y el overlay cubre la pantalla pero el CSS sigue en un recuadro:
+        // la pill vuela "a medio camino" y los floats nacen corridos.
+        let _ = window.set_size(tauri::PhysicalSize::new(rect.w as u32, rect.h as u32));
         if let Ok(hwnd) = window.hwnd() {
             OVERLAY_HWND.store(hwnd.0 as isize, Ordering::SeqCst);
         }
-        OVERLAY_SCALE_BITS.store(rect.scale.to_bits(), Ordering::SeqCst);
+        let scale = window.scale_factor().unwrap_or(1.0).max(0.01);
+        rect.scale = scale;
+        OVERLAY_SCALE_BITS.store(scale.to_bits(), Ordering::SeqCst);
         // Al final y no antes: `show()` y `set_always_on_top()` son cambios de
         // bandera, y cada uno reescribe el ex-style entero. El orden solo es
         // seguro porque este bit también es de `tao` — si algún día se escribe
@@ -975,12 +981,13 @@ fn frame(app: &AppHandle) -> Option<(f64, f64, f64)> {
 pub fn overlay_cursor(app: AppHandle) -> Option<OverlayPoint> {
     #[cfg(windows)]
     {
-        let (ox, oy, scale) = frame(&app)?;
-        let (cx, cy) = crate::floating::cursor_position()?;
-        Some(OverlayPoint {
-            x: (f64::from(cx) - ox) / scale,
-            y: (f64::from(cy) - oy) / scale,
-        })
+        // Misma conversión que el hit-test (`ScreenToClient` + escala).
+        // Restar `outer_position` fallaba cuando el origen del cliente no
+        // coincidía con el outer: la pill se detenía a medio camino del cursor
+        // y los floats nacían corridos.
+        let _ = frame(&app)?;
+        let (x, y) = cursor_overlay_css()?;
+        Some(OverlayPoint { x, y })
     }
     #[cfg(not(windows))]
     {

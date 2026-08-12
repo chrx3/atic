@@ -20,6 +20,7 @@
   import ShortcutsSection from "./ShortcutsSection.svelte";
   import SummarySection from "./SummarySection.svelte";
   import type { SettingsSectionId } from "./settingsSections";
+  import { AGENTS_ENABLED } from "$core/tools";
 
   type SectionId = SettingsSectionId;
 
@@ -32,7 +33,9 @@
     { value: "launcher", label: "Launcher", icon: "launcher" },
     { value: "audio", label: "Audio", icon: "audio" },
     { value: "summary", label: "Resúmenes", icon: "summary" },
-    { value: "agents", label: "Agentes", icon: "agents" },
+    ...(AGENTS_ENABLED
+      ? [{ value: "agents" as const, label: "Agentes", icon: "agents" as IconId }]
+      : []),
   ];
 
   let {
@@ -43,7 +46,11 @@
   } = $props();
 
   // Solo seed: MainSurface remonta con `{#key settingsSection}` al deep-linkear.
-  let section = $state<SectionId>(untrack(() => initialSection));
+  let section = $state<SectionId>(
+    untrack(() =>
+      !AGENTS_ENABLED && initialSection === "agents" ? "general" : initialSection,
+    ),
+  );
 </script>
 
 <!--
@@ -75,7 +82,7 @@
           <AudioSection />
         {:else if section === "summary"}
           <SummarySection />
-        {:else}
+        {:else if AGENTS_ENABLED && section === "agents"}
           <AgentsSection />
         {/if}
       </div>

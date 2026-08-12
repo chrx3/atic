@@ -161,13 +161,7 @@
       return;
     }
     // Seguir el morph visual: el ancla lógica no escala al cerrar.
-    // Drag: fuera del goo (como auth). Remesh mid-drag era el cuello a 60Hz.
     void bubble.shown;
-    void surfaces.dragging;
-    if (surfaces.dragging) {
-      liquid.publish("agents", []);
-      return;
-    }
     void bubble.anchor;
     return publishEmergeSkin("agents", bubEl, BUBBLE_CORNER);
   });

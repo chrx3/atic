@@ -608,13 +608,8 @@ mod tests {
 
     #[test]
     fn encode_windows_atic_path() {
-        let key = encode_project_key(
-            r"C:\Users\Christian\OneDrive - The Synergy Group SPA\Documentos\atic",
-        );
-        assert_eq!(
-            key,
-            "C--Users-Christian-OneDrive---The-Synergy-Group-SPA-Documentos-atic"
-        );
+        let key = encode_project_key(r"C:\Users\alice\Documents\atic");
+        assert_eq!(key, "C--Users-alice-Documents-atic");
     }
 
     #[test]

@@ -6,15 +6,17 @@
  * suyo, no había forma de que se unieran: eran dos dibujos separados, y el
  * cuello entre ambas había que pintarlo a mano.
  *
- * Cada superficie publica sus formas y se olvida. `OverlaySurface` traza el
- * conjunto una sola vez y la unión —el cuello, el corte cuando se alejan— sale
- * de la mezcla, no de un dibujo.
+ * Cada superficie publica sus formas y se olvida. `OverlaySurface` traza
+ * cada isla; la unión —el cuello, el corte cuando se alejan— sale de la
+ * mezcla, no de un dibujo.
  *
  * Las formas van en **coordenadas del overlay**, que es el viewport de esta
  * ventana. Es lo único que hace comparables dos superficies que no comparten
  * ni padre ni sistema de posicionamiento.
  */
 
+import { REACH } from "$liquid/constants";
+import { clusterParts, type Island } from "$liquid/motion";
 import type { Shape } from "$liquid/sdf";
 
 function shapeFinger(s: Shape): string {
@@ -33,15 +35,20 @@ function partsFinger(parts: Record<string, Shape[]>): string {
 
 class LiquidGroup {
   /**
-   * El conjunto ya aplanado. Es lo ÚNICO reactivo de acá, y a propósito.
+   * Islas que no se funden entre sí (hueco > REACH). Cada una es un Skin:
+   * arrastrar la pill no remuestrea el launcher del otro lado de la pantalla.
    *
-   * El registro por superficie es un objeto plano: si fuera `$state`, publicar
-   * lo leería y lo escribiría en el mismo paso, y como publicar ocurre dentro
-   * de un `$effect` eso es un efecto que depende de sí mismo. Svelte corta la
-   * actualización, las formas no llegan nunca al trazado y la pill —que ya no
-   * se pinta sola— desaparece. Pasó exactamente así.
+   * El registro por superficie (`#parts`) NO es `$state`: publicar ocurre
+   * dentro de un `$effect`, y si el registro fuera reactivo el efecto se
+   * leería y escribiría a sí mismo. Svelte corta esa actualización y la pill
+   * desaparece. Pasó exactamente así.
+   *
+   * `$state.raw` en la salida: se reemplaza el array entero, no se muta por
+   * dentro. El proxy profundo de `$state` era costo de más a 60 Hz.
    */
-  shapes = $state<Shape[]>([]);
+  islands = $state.raw<Island[]>([]);
+  /** Plano, para quien no necesita islas. Misma regla: raw. */
+  shapes = $state.raw<Shape[]>([]);
 
   /** Por superficie, no en una sola lista: cada una reemplaza lo suyo. */
   #parts: Record<string, Shape[]> = {};
@@ -65,7 +72,9 @@ class LiquidGroup {
     const finger = partsFinger(this.#parts);
     if (finger === this.#finger) return;
     this.#finger = finger;
-    this.shapes = Object.values(this.#parts).flat();
+    const islands = clusterParts(this.#parts, REACH);
+    this.islands = islands;
+    this.shapes = islands.flatMap((island) => island.shapes);
   }
 }
 

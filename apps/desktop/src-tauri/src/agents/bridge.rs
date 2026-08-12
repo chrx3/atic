@@ -198,6 +198,9 @@ pub fn overlay_should_be_topmost() -> bool {
 /// guardado). Es un interruptor: no se cierra al perder el foco.
 #[tauri::command]
 pub fn show_agents_window(app: AppHandle) {
+    if !crate::agents::UI_ENABLED {
+        return;
+    }
     let _ = crate::panel_float::toggle(
         &app,
         &OPEN,

@@ -26,6 +26,12 @@ export const BLEND = 20;
  */
 export const CELL = 8;
 
+/**
+ * Celda más gruesa si hay que remeshear a 60 Hz (cuello que se estira
+ * durante un drag). El traslado rígido no la usa: conserva el path fino.
+ */
+export const CELL_DRAG = 12;
+
 /** Pasadas de suavizado sobre el contorno ya trazado. */
 export const SMOOTH = 2;
 

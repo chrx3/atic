@@ -239,6 +239,7 @@ fn builtin_actions() -> Vec<LauncherEntry> {
         ),
     ]
     .into_iter()
+    .filter(|(_, _, _, action)| crate::agents::UI_ENABLED || *action != "agents")
     .map(|(id, title, subtitle, action)| LauncherEntry {
         id: id.into(),
         kind: LauncherKind::Action,
@@ -630,7 +631,9 @@ fn run_action(app: &AppHandle, action: &str) -> Result<(), String> {
             Ok(())
         }
         "agents" => {
-            crate::agents::bridge::show_agents_window(app.clone());
+            if crate::agents::UI_ENABLED {
+                crate::agents::bridge::show_agents_window(app.clone());
+            }
             Ok(())
         }
         "settings" => {

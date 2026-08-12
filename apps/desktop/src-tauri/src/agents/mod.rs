@@ -41,6 +41,12 @@ use serde::Serialize;
 
 pub use model::AgentDelta;
 
+/// La consola de agentes no se ofrece en la UI ni se registra su atajo.
+/// Volver a `true` cuando se reabra la feature. Gemelo de `AGENTS_ENABLED` en
+/// `apps/desktop/src/lib/core/tools.ts`.
+pub const UI_ENABLED: bool = false;
+
+
 /// Qué se contesta a un item [`model::ItemKind::Permission`].
 ///
 /// «Siempre» no es «sí» repetido: el agente manda, junto al pedido, la regla

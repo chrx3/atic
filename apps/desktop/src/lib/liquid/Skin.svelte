@@ -20,9 +20,10 @@
    * Lo que NO va acá: contenido. El texto y los iconos viven en `Ink`, encima y
    * con la misma geometría.
    */
-  import { fieldToPath, type LiquidPath } from "./contour";
-  import { Field, type Shape } from "./sdf";
+  import type { LiquidPath } from "./contour";
+  import type { Shape } from "./sdf";
   import { BLEND, CELL, SMOOTH } from "./constants";
+  import { PathTracer } from "./trace";
 
   let {
     shapes,
@@ -51,12 +52,8 @@
     onPath?: (path: LiquidPath, ms: number) => void;
   } = $props();
 
-  const traced = $derived.by(() => {
-    const t0 = performance.now();
-    const path = fieldToPath(new Field(shapes, blend), { cell, smooth });
-    return { path, ms: Math.round((performance.now() - t0) * 100) / 100 };
-  });
-
+  const tracer = new PathTracer();
+  const traced = $derived.by(() => tracer.next(shapes, { blend, cell, smooth }));
   const path = $derived(traced.path);
 
   // El par de `performance.now()` cuesta menos que un solo muestreo del campo,
@@ -69,6 +66,7 @@
     class="skin"
     style:left="{path.minX}px"
     style:top="{path.minY}px"
+    style:transform="translate3d({traced.tx}px, {traced.ty}px, 0)"
     style:filter="drop-shadow({shadow})"
     width={path.width}
     height={path.height}
@@ -86,6 +84,7 @@
   .skin {
     position: absolute;
     overflow: visible;
+    contain: layout;
 
     /* La piel no recibe el mouse: quien lo recibe es la tinta de encima, que
        es donde están los controles de verdad. */
