@@ -72,7 +72,7 @@ windows-sys = { version = "0.59", features = [
 ] }
 # Misma versión que trae Tauri/wry (desactivar Ctrl+P / atajos del navegador).
 webview2-com = "0.38"
-windows-core = "0.61"
+windows-core = "0.62"
 windows = { version = "0.61", features = [
   "Foundation",
   "Globalization",
