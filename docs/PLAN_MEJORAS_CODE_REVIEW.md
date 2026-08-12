@@ -26,7 +26,7 @@ que exponerlos por entorno en cada invocación de cargo (PowerShell):
 
 ```powershell
 $env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
-$env:Path = "C:\Users\Christian\AppData\Local\atic-tools\cmake-3.31.6-windows-x86_64\bin;$env:USERPROFILE\.cargo\bin;$env:Path"
+$env:Path = "$env:USERPROFILE\AppData\Local\atic-tools\cmake-3.31.6-windows-x86_64\bin;$env:USERPROFILE\.cargo\bin;$env:Path"
 $cargo = "$env:USERPROFILE\.cargo\bin\cargo.exe"
 ```
 

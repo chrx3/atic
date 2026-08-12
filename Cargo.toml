@@ -14,7 +14,7 @@ members = [
 version = "0.3.2"
 edition = "2021"
 license = "MIT"
-authors = ["CIAT"]
+authors = ["chrx3"]
 repository = "https://github.com/chrx3/atic"
 
 [workspace.dependencies]

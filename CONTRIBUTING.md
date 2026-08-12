@@ -1,0 +1,60 @@
+# Contribuir a Atic
+
+Gracias por interesarte en el proyecto. Este documento resume cómo montar el entorno, validar cambios y abrir un PR.
+
+Al participar, aceptas el [Código de Conducta](CODE_OF_CONDUCT.md).
+
+## Flujo
+
+1. Haz fork (si no tienes acceso de escritura) o clona el repo.
+2. Crea una rama desde `dev` (ahí vive el desarrollo activo; `main` es la rama por defecto del remoto).
+3. Haz commits pequeños y claros.
+4. Abre un pull request hacia `dev`.
+
+Antes de pedir revisión, asegúrate de que CI y las comprobaciones locales pasen.
+
+## Requisitos
+
+Los detalles de toolchain están en [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md)
+(Windows) y en [`docs/MACOS.md`](docs/MACOS.md) (macOS). Resumen:
+
+- Rust stable
+- Node.js 22+ y pnpm 10+
+- CMake y LLVM/libclang (los necesita `whisper-rs` / whisper.cpp)
+- En Windows: Visual Studio Build Tools (C++) y WebView2
+
+## Desarrollo
+
+```bash
+cd apps/desktop
+pnpm install
+pnpm tauri dev
+```
+
+## Validación local
+
+Rust (desde la raíz del repo):
+
+```bash
+cargo fmt --all --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+```
+
+Frontend:
+
+```bash
+cd apps/desktop
+pnpm verify
+```
+
+## PRs
+
+- Describe el problema y la solución en pocas líneas.
+- Incluye capturas o pasos de reproducción si el cambio es de UI.
+- No subas secretos, claves, `.env`, ni artefactos de build.
+- No hace falta regenerar lockfiles salvo que el cambio lo requiera.
+
+## Licencia
+
+Al contribuir, aceptas que tus aportes se licencien bajo la [MIT License](LICENSE) del proyecto (copyright chrx3).

@@ -80,7 +80,7 @@
     "active": true,
     "targets": ["nsis", "dmg"],
     "createUpdaterArtifacts": false,
-    "publisher": "CIAT",
+    "publisher": "chrx3",
     "category": "Productivity",
     "shortDescription": "Graba llamadas, transcribe y resume en tu PC",
     "longDescription": "Atic graba el audio del micrófono y del sistema durante llamadas y reuniones, lo transcribe localmente con Whisper y genera resúmenes que puedes editar y enviar por correo.",
