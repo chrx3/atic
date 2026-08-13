@@ -6,6 +6,7 @@
  * Abrir/cerrar: Ctrl+Alt+F (dev). Esc o × cierra el panel.
  */
 
+import { GOO_GROW } from "$lib/GooFilter.svelte";
 import { BLEND, CELL } from "$liquid/constants";
 import { sminReach } from "$liquid/sdf";
 
@@ -37,14 +38,14 @@ export type LauncherLabValues = {
 export const LAUNCHER_LAB_DEFAULTS: LauncherLabValues = {
   blend: BLEND,
   cell: CELL,
-  /** Idle: 15 > REACH (10) → sin cuello; al acercarse (emerge) sí fusionan. */
+  /** Idle: 15 > REACH (12) → sin cuello; al acercarse (emerge) sí fusionan. */
   favGap: 15,
   dotGap: 15,
   openDur: 100,
   closeDur: 90,
   barW: 292,
   barH: 40,
-  gooGrow: 2.6,
+  gooGrow: GOO_GROW,
 };
 
 function load(): LauncherLabValues {

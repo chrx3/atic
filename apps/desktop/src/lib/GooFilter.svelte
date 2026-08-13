@@ -3,17 +3,18 @@
    * Viscosidad por defecto de todo el sistema líquido, en px.
    *
    * El alcance —el hueco máximo que el cuello todavía cruza— es `1.72·σ`, o
-   * sea 8.6 px. De ahí sale, por ejemplo, que el cuello de la burbuja necesite
-   * dos gotas intermedias: la separación real entre la pill y el globo es 10.
+   * sea ~10.3 px. De ahí sale, por ejemplo, que el cuello de la burbuja
+   * necesite dos gotas intermedias: la separación real entre la pill y el
+   * globo es 10, y con σ = 5 el filtro se quedaba corto.
    */
-  export const GOO_SIGMA = 5;
+  export const GOO_SIGMA = 6;
 
   /**
    * Cuánto engorda la silueta el endurecido del filtro, por lado.
    *
    * El umbral es 7/18 ≈ 0.389, y el alfa difuminado vale eso a 0.28σ POR FUERA
    * del borde original. Quien dibuje una forma de tamaño exacto tiene que
-   * restarle `GOO_GROW * 2` antes, o saldrá 2.8 px más grande de lo que pide
+   * restarle `GOO_GROW * 2` antes, o saldrá ~3.4 px más grande de lo que pide
    * su geometría.
    *
    * El mismo número está en `app.css` como `--goo-grow`, porque desde CSS no
@@ -46,8 +47,8 @@
    *     difuminado, que promedia lo que tenga cerca.
    *
    * El alcance —el hueco máximo que el cuello todavía cruza— sale de
-   * `2·Φ(−hueco/2σ) > 7/18`, o sea **1.72·σ**. Con σ = 5 son 8.6 px, y por eso
-   * el cuello de la burbuja de agentes necesita dos gotas intermedias: la
+   * `2·Φ(−hueco/2σ) > 7/18`, o sea **1.72·σ**. Con σ = 6 son ~10.3 px, y por
+   * eso el cuello de la burbuja de agentes necesita dos gotas intermedias: la
    * separación real ahí es de 10.
    */
 

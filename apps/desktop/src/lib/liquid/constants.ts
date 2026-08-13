@@ -13,18 +13,19 @@ import { sminBulge, sminReach } from "./sdf";
 /**
  * Cuánto se mezclan las formas. Es la perilla que manda.
  *
- * Con 20 el alcance son 10 px (`sminReach` = k/2): el cuello corta pasado ese
- * hueco. Alineado al launcher lab (favGap/dotGap 15 → fusión al acercarse).
+ * Con 24 el alcance son 12 px (`sminReach` = k/2): el cuello corta pasado ese
+ * hueco. Idle favs/launcher (15–16) siguen sueltos; grow/approach se lee más
+ * viscoso.
  */
-export const BLEND = 20;
+export const BLEND = 24;
 
 /**
  * Lado de la celda de muestreo, en px.
  *
  * Marching squares no ve nada más fino que su celda, y el costo va con el
- * cuadrado. Ocho equilibra silueta limpia y costo en el overlay.
+ * cuadrado. Seis equilibra silueta limpia y costo en el overlay.
  */
-export const CELL = 8;
+export const CELL = 6;
 
 /**
  * Celda más gruesa si hay que remeshear a 60 Hz (cuello que se estira
@@ -33,7 +34,7 @@ export const CELL = 8;
 export const CELL_DRAG = 12;
 
 /** Pasadas de suavizado sobre el contorno ya trazado. */
-export const SMOOTH = 2;
+export const SMOOTH = 3;
 
 /** El hueco más grande que el cuello todavía cruza, con `BLEND`. */
 export const REACH = sminReach(BLEND);

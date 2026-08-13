@@ -73,13 +73,13 @@
   --shadow-float: 0 24px 70px rgb(0 0 0 / 45%);
 
   /* La del `drop-shadow` de la capa líquida, que va DESPUÉS de la fusión. */
-  --shadow-goo: 0 18px 30px rgb(0 0 0 / 45%);
+  --shadow-goo: 0 8px 18px rgb(0 0 0 / 28%);
 
   /* ── Curvas ───────────────────────────────────────────────────────────────
    * Namespace real de v4: genera `ease-morph` y `ease-calm`. Las duraciones
    * NO lo son y viven en `motion.css`. */
   --ease-*: initial;
-  --ease-morph: cubic-bezier(0.34, 1.25, 0.64, 1);
+  --ease-morph: cubic-bezier(0.22, 1, 0.36, 1);
   --ease-calm: cubic-bezier(0.22, 1, 0.36, 1);
 
   /* ── Contenedores ─────────────────────────────────────────────────────────

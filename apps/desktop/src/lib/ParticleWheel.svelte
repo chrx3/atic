@@ -56,12 +56,11 @@
    * Piel líquida de la variante compacta (la pill), en px.
    *
    * Las seis herramientas no se dibujan sobre un disco: SON gotas que salen
-   * del núcleo. Mientras viajan siguen fundidas con él y se sueltan cuando la
-   * separación supera el alcance del filtro —1.72·σ, o sea 8.6 px con σ = 5—.
+   * del núcleo. El anillo queda lo bastante cerca para que, abiertas, el
+   * hueco (~8 px) quede bajo el alcance del filtro (~10.3 px con σ = 6) y se
+   * lean como lóbulos de un blob, no como botones sueltos.
    *
-   * Con el anillo en 70 y estos radios, el hueco final es 70 − 29 − 28 = 13,
-   * así que se sueltan con margen. Subir σ por encima de 7.5 las dejaría
-   * pegadas al núcleo para siempre.
+   * Subir σ por encima de ~9 con este anillo las dejaría pegadas sin filete.
    */
   const SKIN = {
     /** Diámetro de cada gota, abierta. */
@@ -81,13 +80,10 @@
   /**
    * Radio del anillo respecto al lado menor del lienzo.
    *
-   * En compacto era 0.34 (78.9 px sobre 232) cuando los nodos eran iconos
-   * sueltos sobre un disco. Con gotas de 56 el conjunto tiene que leerse como
-   * UNA cosa y no como seis botones desperdigados, así que el anillo se cerró
-   * a 0.30 — 69.6 px, casi los 70 con los que están calculados los radios de
-   * `SKIN`.
+   * En compacto era 0.34, luego 0.30 (hueco ~13 > alcance → gotas sueltas).
+   * 0.28 sobre 232 da ~65 px: hueco 65 − 29 − 28 ≈ 8, bajo el alcance ~10.3.
    */
-  const ringRatio = $derived(compact ? 0.3 : 0.27);
+  const ringRatio = $derived(compact ? 0.28 : 0.27);
   const ringRadius = $derived(Math.min(width, height) * ringRatio);
   const activeTool = $derived(
     TOOLS.find((tool) => tool.id === activeId) ?? null,
@@ -479,13 +475,14 @@
           style="--d: {preFilter(SKIN.core)}px;
                  --sc: {preFilter(SKIN.closed) / preFilter(SKIN.core)}"
         ></i>
-        {#each nodes as node (node.tool.id)}
+        {#each nodes as node, index (node.tool.id)}
           <i
             class="pw-blob"
             style="left: {node.x}px; top: {node.y}px;
                    --d: {preFilter(SKIN.node)}px;
                    --tx: {width / 2 - node.x}px; --ty: {height / 2 - node.y}px;
-                   --sc: {preFilter(SKIN.closed) / preFilter(SKIN.node)}"
+                   --sc: {preFilter(SKIN.closed) / preFilter(SKIN.node)};
+                   --delay: calc({index} * var(--duration-micro))"
           ></i>
         {/each}
       </div>
@@ -645,7 +642,7 @@
   }
   .pw.is-revealed .pw-blob {
     transform: none;
-    transition: transform var(--morph-open-dur) var(--morph-ease);
+    transition: transform var(--morph-open-dur) var(--morph-ease) var(--delay, 0ms);
   }
 
   /* Cubre todo el lienzo: los gajos se reparten el rectángulo completo. */

@@ -21,11 +21,9 @@ export const PILL = {
    * Lado del escenario cuadrado de la rueda: el disco (232 px, fijado en
    * `.p-wheel` del CSS) más 10 px de aire por lado.
    *
-   * El aire no es decorativo. La apertura anima el disco con `--morph-ease`
-   * —cubic-bezier(.34, 1.25, .64, 1)—, que SOBREPASA ~6% antes de asentar: el
-   * disco llega a ~246 px. Con la ventana justo a 232 ese pico se recortaba
-   * contra los bordes y se veían los cuatro costados del círculo achatados
-   * durante el rebote.
+   * El aire no es decorativo. Las gotas de la rueda se funden con cuellos que
+   * viven FUERA del disco de 232; sin pad, el goo se recorta contra el borde
+   * de la ventana.
    */
   wheel: 252,
   /** Ancho del panel de historial / fragmentos. */

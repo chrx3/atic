@@ -44,15 +44,14 @@ describe("gapBetween", () => {
 });
 
 describe("los valores elegidos", () => {
-  it("REACH = blend/2 (hueco de 10 px de la app)", () => {
-    expect(BLEND).toBe(20);
-    expect(REACH).toBe(10);
+  it("REACH = blend/2 (hueco de 12 px de la app)", () => {
+    expect(BLEND).toBe(24);
+    expect(REACH).toBe(12);
   });
 
   /**
-   * La razón de ser de todo esto: con el filtro, el alcance era 8.6 px contra
-   * un hueco de 10, y por eso el cuello había que dibujarlo con cinco
-   * constantes. Acá se forma solo en el límite (g ≤ k/2).
+   * La razón de ser de todo esto: el SDF forma el cuello solo (g ≤ k/2),
+   * sin las cinco constantes que el filtro SVG necesitaba para un hueco de 10.
    */
   it("la pill y la burbuja separadas 10 px quedan en un solo trazo", () => {
     const pill = pillShape({ x: 700, y: 800, w: 176, h: 40 });
@@ -64,8 +63,8 @@ describe("los valores elegidos", () => {
   });
 
   it("cell y bulge quedan en los defaults del launcher", () => {
-    expect(CELL).toBe(8);
+    expect(CELL).toBe(6);
     expect(CELL_DRAG).toBe(12);
-    expect(BULGE).toBe(5);
+    expect(BULGE).toBe(6);
   });
 });
