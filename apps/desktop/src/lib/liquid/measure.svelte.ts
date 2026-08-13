@@ -76,13 +76,22 @@ export class RectTracker {
     };
   }
 
-  /** Algo va a moverse: volver a mirar. Idempotente. */
-  wake(): void {
+  /**
+   * Algo va a moverse: volver a mirar. Idempotente.
+   *
+   * Por defecto espera al próximo cuadro: medir y remeshear el SDF en el
+   * mismo flush que un `pointerdown` congela el picker (el gesto se corta y
+   * la rueda “parpadea”). `sync` es para el overlay, donde el path se
+   * traslada con el drag y un cuadro de retraso se nota.
+   */
+  wake(sync = false): void {
     this.#still = 0;
     if (this.#frame) return;
-    // Medir ya: si esperamos al próximo rAF, el skin del drag va un cuadro
-    // detrás de `left`/`top` (el DOM ya se actualizó en este flush).
-    this.#tick();
+    if (sync) {
+      this.#tick();
+      return;
+    }
+    this.#frame = requestAnimationFrame(() => this.#tick());
   }
 
   stop(): void {

@@ -92,10 +92,12 @@
   } from "$surfaces/overlay/toolSlots";
   import {
     onOverlayDismiss,
+    onOverlayYieldMain,
     onPillRadialPress,
     onPillRadialRelease,
     onPillReset,
     overlayCursor,
+    overlayActiveAnchor,
     pillHome,
     pillTrace,
     savePillHome,
@@ -262,7 +264,7 @@
     void barW;
     void at.x;
     void at.y;
-    tracker.wake();
+    tracker.wake(true);
   });
 
   onMount(() => () => tracker.stop());
@@ -381,6 +383,15 @@
       return await overlayCursor();
     } catch {
       return null;
+    }
+  }
+
+  /** Monitor activo: mouse, o la ventana con foco si está en otra pantalla. */
+  async function activeAnchorPoint(): Promise<{ x: number; y: number } | null> {
+    try {
+      return await overlayActiveAnchor();
+    } catch {
+      return cursorPoint();
     }
   }
   /** Ancho real de la barra, medido del DOM. Sin esto habría que mantener una
@@ -1034,8 +1045,10 @@
     const slot = slotForTool(id);
 
     if (slot) {
+      await stage.loadAreas();
       const areas = stage.workAreas();
-      const anchor = { x: at.x + size.w / 2, y: at.y + size.h / 2 };
+      const cursor = await activeAnchorPoint();
+      const anchor = cursor ?? { x: at.x + size.w / 2, y: at.y + size.h / 2 };
       const target = resolveSlot(slot, areas, size, anchor);
       if (Math.hypot(target.x - at.x, target.y - at.y) < 2) return;
       await flyTo(target);
@@ -1189,8 +1202,11 @@
     } catch {
       // Puntero ya liberado: el oyente de `window` alcanza.
     }
-    window.addEventListener("pointerup", endDrag);
-    window.addEventListener("pointercancel", endDrag);
+    window.addEventListener("pointerup", endDrag, true);
+    window.addEventListener("pointercancel", endDrag, true);
+    // Armar el overlay YA: esperar el umbral de 4px dejaba un hueco donde
+    // Rust desarma y el pointerup se pierde.
+    surfaces.dragging = true;
     if (!dragRaf) dragRaf = requestAnimationFrame(() => void tickDrag());
   }
 
@@ -1210,7 +1226,6 @@
         const dy = cur.y - origin.cy;
         if (!dragMoved && Math.hypot(dx, dy) > DRAG_THRESHOLD) {
           dragMoved = true;
-          surfaces.dragging = true;
         }
         if (dragMoved) {
           stage.moveTo({ x: origin.ox + dx, y: origin.oy + dy });
@@ -1235,8 +1250,8 @@
       dragRaf = 0;
     }
     surfaces.dragging = false;
-    window.removeEventListener("pointerup", endDrag);
-    window.removeEventListener("pointercancel", endDrag);
+    window.removeEventListener("pointerup", endDrag, true);
+    window.removeEventListener("pointercancel", endDrag, true);
   }
 
   /** Soltar sin haber movido = clic. En reposo, abre la rueda. */
@@ -1373,6 +1388,11 @@
 
     window.addEventListener("keydown", onKey, true);
     unlisteners.push(onOverlayDismiss(onOutside));
+    unlisteners.push(
+      onOverlayYieldMain(() => {
+        if (dragOrigin) stopDragWatch();
+      }),
+    );
     trace(`listeners registrados n=${unlisteners.length}`);
 
     return () => {
@@ -1806,7 +1826,8 @@
    * La barra crece absorbiendo lo que llega.
    *
    * La gota aparece chica contra el borde derecho —ya separada del disco, el
-   * hueco supera los 8.6 px de alcance— y se expande hacia él hasta fundirse.
+   * hueco supera los ~10.3 px de alcance del filtro— y se expande hacia él
+   * hasta fundirse.
    * Se anima con `left/right/top/bottom` y no con `transform`: escalar una
    * pastilla le achata los remates, y justo al principio, que es cuando se ve
    * sola, quedaría una astilla en vez de una gota.

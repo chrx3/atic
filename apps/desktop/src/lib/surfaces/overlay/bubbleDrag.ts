@@ -109,8 +109,8 @@ export function createBubbleDrag(
     } catch {
       /* ignore */
     }
-    window.removeEventListener("pointerup", endDrag);
-    window.removeEventListener("pointercancel", endDrag);
+    window.removeEventListener("pointerup", endDrag, true);
+    window.removeEventListener("pointercancel", endDrag, true);
   }
 
   async function tickDrag() {
@@ -130,8 +130,6 @@ export function createBubbleDrag(
         const dy = cur.y - d.cy;
         if (!dragMoved && Math.hypot(dx, dy) > DRAG_THRESHOLD) {
           dragMoved = true;
-          // Arma el overlay entero al tiro (flush), antes del siguiente move.
-          surfaces.dragging = true;
         }
         if (dragMoved) {
           const next = clampToWork(workAreas, d.ax + dx, d.ay + dy, a.w, a.h);
@@ -172,8 +170,9 @@ export function createBubbleDrag(
     } catch {
       /* ignore */
     }
-    window.addEventListener("pointerup", endDrag);
-    window.addEventListener("pointercancel", endDrag);
+    window.addEventListener("pointerup", endDrag, true);
+    window.addEventListener("pointercancel", endDrag, true);
+    surfaces.dragging = true;
     void overlayWorkAreas()
       .then((areas) => {
         workAreas = areas;

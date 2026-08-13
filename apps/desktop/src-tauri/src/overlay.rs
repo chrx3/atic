@@ -33,7 +33,7 @@ use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::mpsc::{sync_channel, SyncSender, TrySendError};
 use std::sync::{Mutex, OnceLock};
 
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 pub const LABEL: &str = "overlay";
 
@@ -69,9 +69,26 @@ static HIT_RECTS: Mutex<Vec<HitCss>> = Mutex::new(Vec::new());
 /// HWND del overlay (para `ScreenToClient` en el camino caliente).
 static OVERLAY_HWND: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
 
+/// HWND de `main`. El overlay cubre el escritorio virtual y, si se arma encima
+/// de esta ventana, se ve Atic pero el mouse se lo queda la lámina.
+static MAIN_HWND: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
+
+/// Ya pedimos al frontend que suelte un drag pegado sobre `main`.
+/// Evita un `YieldMain` por cada muestra del cursor.
+#[cfg(windows)]
+static YIELDED_MAIN: AtomicBool = AtomicBool::new(false);
+
 /// Última escala conocida del overlay (`f64` en bits).
 static OVERLAY_SCALE_BITS: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(f64::to_bits(1.0));
+
+/// Viewport CSS real del webview (`window.innerWidth/Height`).
+///
+/// Con DPI mixto o un webview que no llenó la ventana, `client/scale_factor`
+/// no coincide con el CSS: el fly-to se queda corto y los hit-rects no
+/// contienen el cursor. 0 = todavía no avisó el frontend.
+static CSS_VIEW_W_BITS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static CSS_VIEW_H_BITS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// ¿Debería el overlay estar recibiendo el mouse ahora mismo?
 static ARMED: AtomicBool = AtomicBool::new(false);
@@ -79,6 +96,11 @@ static ARMED: AtomicBool = AtomicBool::new(false);
 /// Arrastre OLE de un ítem (clipboard → otra app): forzar click-through total
 /// para que la ventana always-on-top no se coma el drop en Cursor / Explorador.
 static ITEM_DRAG_PASSTHROUGH: AtomicBool = AtomicBool::new(false);
+
+/// Gesto de puntero en curso (pill / float). El overlay se queda armado aunque
+/// el cursor salga del hit-rect o cruce `main`: si se desarma a mitad, Windows
+/// no entrega el `pointerup` y el arrastre queda pegado para siempre.
+static POINTER_GESTURE: AtomicBool = AtomicBool::new(false);
 
 /// Lo último que se le APLICÓ de verdad a la ventana. `true` = deja pasar.
 ///
@@ -186,6 +208,7 @@ fn schedule_capturing_reassert(app: &AppHandle) {
 /// la ventana que lo tenía aunque la de captura esté encima, hasta que la de
 /// abajo sea click-through o haya un clic.
 fn yield_to_capture(app: &AppHandle) {
+    POINTER_GESTURE.store(false, Ordering::Release);
     ARMED.store(false, Ordering::Release);
     let Some(window) = app.get_webview_window(LABEL) else {
         return;
@@ -214,6 +237,10 @@ enum Msg {
     Sync,
     /// Clic fuera de todas las zonas: para el frontend es «cerrá lo que tengas».
     Outside,
+    /// El cursor está sobre `main` con un hit-rect de drag a pantalla completa.
+    /// El frontend tiene que soltar el gesto; si no, el overlay sigue armado
+    /// en todo el escritorio.
+    YieldMain,
 }
 
 #[derive(Debug, Clone)]
@@ -302,9 +329,21 @@ fn create(app: &AppHandle) -> Option<tauri::WebviewWindow> {
     if let Some(existing) = app.get_webview_window(LABEL) {
         return Some(existing);
     }
+    // Tamaño real desde el create: WebView2 se queda con el `inner_size`
+    // inicial aunque después se haga `set_size` al escritorio virtual. Con
+    // 480×320 el CSS vive en un recuadro, el fly-to no llega al mouse y los
+    // hit-rects no coinciden con el cursor.
+    let vs = atic_capture::monitors::virtual_screen();
+    let scale = atic_capture::monitors::enumerate()
+        .first()
+        .map(|m| m.scale)
+        .unwrap_or(1.0)
+        .max(0.01);
+    let lw = (f64::from(vs.width) / scale).max(1.0);
+    let lh = (f64::from(vs.height) / scale).max(1.0);
     tauri::WebviewWindowBuilder::new(app, LABEL, tauri::WebviewUrl::App("overlay".into()))
         .title("Atic")
-        .inner_size(480.0, 320.0)
+        .inner_size(lw, lh)
         .resizable(false)
         .decorations(false)
         .transparent(true)
@@ -357,6 +396,18 @@ pub fn place(app: &AppHandle) -> Option<OverlayRect> {
         // y el overlay cubre la pantalla pero el CSS sigue en un recuadro:
         // la pill vuela "a medio camino" y los floats nacen corridos.
         let _ = window.set_size(tauri::PhysicalSize::new(rect.w as u32, rect.h as u32));
+        crate::webview_tweaks::sync_controller_bounds(&window);
+        // El webview termina de nacer después de `show`: repetir o se queda
+        // con el recuadro del create (fly-to corto, pill sin clics).
+        {
+            let delayed = window.clone();
+            std::thread::spawn(move || {
+                for ms in [16u64, 50, 200, 500] {
+                    std::thread::sleep(std::time::Duration::from_millis(ms));
+                    crate::webview_tweaks::sync_controller_bounds(&delayed);
+                }
+            });
+        }
         if let Ok(hwnd) = window.hwnd() {
             OVERLAY_HWND.store(hwnd.0 as isize, Ordering::SeqCst);
         }
@@ -487,10 +538,56 @@ pub fn set_click_through(window: &tauri::WebviewWindow, on: bool) {
 
 /// Arranque: colocar, mostrar y dejar el worker escuchando.
 pub fn setup(app: &AppHandle) {
+    remember_main(app);
     if place(app).is_none() {
         tracing::warn!(target: "overlay", "no se pudo colocar el overlay");
     }
     start_toggle_worker(app.clone());
+}
+
+/// Guarda el HWND de `main` para el hit-test del camino caliente.
+pub fn remember_main(app: &AppHandle) {
+    let Some(main) = app.get_webview_window("main") else {
+        return;
+    };
+    if let Ok(hwnd) = main.hwnd() {
+        MAIN_HWND.store(hwnd.0 as isize, Ordering::Release);
+    }
+}
+
+/// `main` está al frente: soltar un drag pegado (hit-rect fullscreen).
+pub fn yield_to_main(app: &AppHandle) {
+    remember_main(app);
+    POINTER_GESTURE.store(false, Ordering::Release);
+    #[cfg(windows)]
+    reevaluate_arm();
+    let _ = app.emit("overlay-yield-main", ());
+}
+
+/// ¿Armar el overlay?
+///
+/// La pill y los floats tienen que recibir el mouse aunque se solapen con
+/// `main`. Lo que no puede armarse encima de `main` es el hit-rect a pantalla
+/// completa de un drag ya muerto: esa lámina deja Atic pintada y sin input.
+/// Durante un gesto de puntero hay que seguir armado: si se vuelve
+/// click-through a mitad, se pierde el `pointerup`.
+fn should_arm(
+    capturing: bool,
+    over_main: bool,
+    over_hit: bool,
+    has_drag: bool,
+    gesture: bool,
+) -> bool {
+    if capturing {
+        return false;
+    }
+    if gesture {
+        return true;
+    }
+    if over_main && has_drag {
+        return false;
+    }
+    over_hit
 }
 
 /// Hilo que aplica el click-through.
@@ -556,6 +653,9 @@ fn start_toggle_worker(app: AppHandle) {
                     Msg::Outside => {
                         let _ = app.emit("overlay-dismiss", ());
                     }
+                    Msg::YieldMain => {
+                        let _ = app.emit("overlay-yield-main", ());
+                    }
                 }
             }
         })
@@ -618,11 +718,13 @@ pub fn set_overlay_hit_rects(app: AppHandle, rects: Vec<HitRect>) {
     {
         let p = &rects[i];
         if let Ok(mut guard) = PILL_RECT.lock() {
+            let (px, py) = css_to_physical_client(p.x, p.y);
+            let (pw, ph) = css_to_physical_client(p.w, p.h);
             *guard = Some(crate::floating::Rect {
-                x: (origin.0 + p.x * scale).round() as i32,
-                y: (origin.1 + p.y * scale).round() as i32,
-                w: (p.w * scale).round() as i32,
-                h: (p.h * scale).round() as i32,
+                x: (origin.0 + px).round() as i32,
+                y: (origin.1 + py).round() as i32,
+                w: pw.round() as i32,
+                h: ph.round() as i32,
             });
         }
     }
@@ -641,6 +743,23 @@ pub fn set_overlay_hit_rects(app: AppHandle, rects: Vec<HitRect>) {
     // burbuja de agentes cuando se abre debajo del cursor.
     #[cfg(windows)]
     reevaluate_arm();
+}
+
+/// Gesto de puntero: armar YA, sin esperar el hit-rect fullscreen por IPC.
+///
+/// El camino de `set_overlay_hit_rects` llega un rAF más tarde. En ese hueco
+/// el cursor ya salió de la pill, el overlay se desarma y el `pointerup` se
+/// lo queda otra ventana.
+#[tauri::command]
+pub fn set_overlay_pointer_gesture(_app: AppHandle, on: bool) {
+    POINTER_GESTURE.store(on, Ordering::SeqCst);
+    if on {
+        ARMED.store(true, Ordering::SeqCst);
+        send(Msg::Sync);
+    } else {
+        #[cfg(windows)]
+        reevaluate_arm();
+    }
 }
 
 /// Durante un arrastre OLE hacia otra app: click-through fuera de los
@@ -735,8 +854,7 @@ fn cursor_overlay_css() -> Option<(f64, f64)> {
     if ok == 0 {
         return None;
     }
-    let scale = f64::from_bits(OVERLAY_SCALE_BITS.load(Ordering::Acquire)).max(0.01);
-    Some((f64::from(pt.x) / scale, f64::from(pt.y) / scale))
+    Some(physical_client_to_css(f64::from(pt.x), f64::from(pt.y)))
 }
 
 /// Esquina (0,0) del cliente del overlay en físicos de pantalla.
@@ -763,6 +881,140 @@ fn client_origin_physical() -> Option<(f64, f64)> {
     None
 }
 
+/// Mapeo lineal cliente-físico → CSS del webview.
+///
+/// Si el frontend ya mandó `innerWidth/Height`, se usa eso. Si no, `client/scale`.
+fn map_client_to_css(x: f64, y: f64, client_w: f64, client_h: f64, css_w: f64, css_h: f64) -> (f64, f64) {
+    (
+        x * css_w / client_w.max(1.0),
+        y * css_h / client_h.max(1.0),
+    )
+}
+
+fn map_css_to_client(x: f64, y: f64, client_w: f64, client_h: f64, css_w: f64, css_h: f64) -> (f64, f64) {
+    (
+        x * client_w / css_w.max(1.0),
+        y * client_h / css_h.max(1.0),
+    )
+}
+
+#[cfg(windows)]
+fn client_size_physical() -> Option<(f64, f64)> {
+    use windows_sys::Win32::Foundation::RECT;
+    use windows_sys::Win32::UI::WindowsAndMessaging::GetClientRect;
+
+    let hwnd = OVERLAY_HWND.load(Ordering::Acquire);
+    if hwnd == 0 {
+        return None;
+    }
+    let mut rc = RECT {
+        left: 0,
+        top: 0,
+        right: 0,
+        bottom: 0,
+    };
+    // SAFETY: HWND del overlay vivo; GetClientRect solo escribe el RECT.
+    let ok = unsafe { GetClientRect(hwnd as _, &mut rc) };
+    if ok == 0 || rc.right <= 0 || rc.bottom <= 0 {
+        return None;
+    }
+    Some((f64::from(rc.right), f64::from(rc.bottom)))
+}
+
+fn css_viewport_size(client_w: f64, client_h: f64) -> (f64, f64) {
+    let w = f64::from_bits(CSS_VIEW_W_BITS.load(Ordering::Acquire));
+    let h = f64::from_bits(CSS_VIEW_H_BITS.load(Ordering::Acquire));
+    if w > 1.0 && h > 1.0 {
+        return (w, h);
+    }
+    let scale = f64::from_bits(OVERLAY_SCALE_BITS.load(Ordering::Acquire)).max(0.01);
+    (client_w / scale, client_h / scale)
+}
+
+#[cfg(windows)]
+fn physical_client_to_css(x: f64, y: f64) -> (f64, f64) {
+    let (cw, ch) = client_size_physical().unwrap_or((1.0, 1.0));
+    let (vw, vh) = css_viewport_size(cw, ch);
+    map_client_to_css(x, y, cw, ch, vw, vh)
+}
+
+#[cfg(windows)]
+fn css_to_physical_client(x: f64, y: f64) -> (f64, f64) {
+    let (cw, ch) = client_size_physical().unwrap_or((1.0, 1.0));
+    let (vw, vh) = css_viewport_size(cw, ch);
+    map_css_to_client(x, y, cw, ch, vw, vh)
+}
+
+#[cfg(not(windows))]
+fn physical_client_to_css(x: f64, y: f64) -> (f64, f64) {
+    let scale = f64::from_bits(OVERLAY_SCALE_BITS.load(Ordering::Acquire)).max(0.01);
+    (x / scale, y / scale)
+}
+
+#[cfg(not(windows))]
+fn css_to_physical_client(x: f64, y: f64) -> (f64, f64) {
+    let scale = f64::from_bits(OVERLAY_SCALE_BITS.load(Ordering::Acquire)).max(0.01);
+    (x * scale, y * scale)
+}
+
+/// El frontend avisa su `innerWidth/Height` real.
+///
+/// Con DPI mixto, `client/scale_factor` no coincide con lo que pinta WebView2.
+/// Hit-test y fly-to tienen que usar el mismo espacio que `getBoundingClientRect`.
+#[tauri::command]
+pub fn set_overlay_css_viewport(w: f64, h: f64) {
+    if w <= 1.0 || h <= 1.0 {
+        return;
+    }
+    let prev_w = f64::from_bits(CSS_VIEW_W_BITS.load(Ordering::Acquire));
+    let prev_h = f64::from_bits(CSS_VIEW_H_BITS.load(Ordering::Acquire));
+    if (prev_w - w).abs() < 0.5 && (prev_h - h).abs() < 0.5 {
+        return;
+    }
+    CSS_VIEW_W_BITS.store(w.to_bits(), Ordering::Release);
+    CSS_VIEW_H_BITS.store(h.to_bits(), Ordering::Release);
+    tracing::info!(target: "overlay", css_w = w, css_h = h, "viewport CSS del overlay");
+    #[cfg(windows)]
+    reevaluate_arm();
+}
+
+/// ¿El cursor está sobre la ventana principal visible (no minimizada)?
+///
+/// `GetWindowRect` + `GetCursorPos` son aptos para el hilo de Raw Input:
+/// nada de APIs de Tauri acá.
+#[cfg(windows)]
+fn cursor_over_visible_main() -> bool {
+    use windows_sys::Win32::Foundation::RECT;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetWindowRect, IsIconic, IsWindowVisible,
+    };
+
+    let hwnd = MAIN_HWND.load(Ordering::Acquire);
+    if hwnd == 0 {
+        return false;
+    }
+    let hwnd = hwnd as _;
+    // SAFETY: HWND de `main` vivo mientras la app corre; estas APIs solo leen.
+    unsafe {
+        if IsWindowVisible(hwnd) == 0 || IsIconic(hwnd) != 0 {
+            return false;
+        }
+        let mut rc = RECT {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+        };
+        if GetWindowRect(hwnd, &mut rc) == 0 {
+            return false;
+        }
+        let Some((cx, cy)) = crate::floating::cursor_position() else {
+            return false;
+        };
+        cx >= rc.left && cx < rc.right && cy >= rc.top && cy < rc.bottom
+    }
+}
+
 /// Decide si el overlay tiene que estar armado, ya, contra el cursor de ahora.
 ///
 /// Separado del muestreo porque hay dos motivos para replantearse la respuesta
@@ -780,9 +1032,27 @@ fn reevaluate_arm() {
     let Ok(rects) = HIT_RECTS.try_lock() else {
         return;
     };
-    let over = !CAPTURING.load(Ordering::Acquire)
-        && rects.iter().any(|r| r.contains(x, y, ARM_MARGIN));
+    let over_hit = rects.iter().any(|r| r.contains(x, y, ARM_MARGIN));
+    let has_drag = rects.iter().any(|r| r.id == "drag");
     drop(rects);
+
+    let over_main = cursor_over_visible_main();
+    let gesture = POINTER_GESTURE.load(Ordering::Acquire);
+    if over_main && has_drag && !gesture {
+        if !YIELDED_MAIN.swap(true, Ordering::AcqRel) {
+            send(Msg::YieldMain);
+        }
+    } else if !over_main {
+        YIELDED_MAIN.store(false, Ordering::Release);
+    }
+
+    let over = should_arm(
+        CAPTURING.load(Ordering::Acquire),
+        over_main,
+        over_hit,
+        has_drag,
+        gesture,
+    );
 
     // Solo en los flancos: aplicar el estilo en cada muestra sería cientos de
     // `SetWindowPos` por segundo para no cambiar nada.
@@ -875,13 +1145,10 @@ pub fn scale(app: &AppHandle) -> f64 {
 pub fn to_local(app: &AppHandle, r: crate::floating::Rect) -> Option<OverlayArea> {
     #[cfg(windows)]
     {
-        let (ox, oy, scale) = frame(app)?;
-        Some(OverlayArea {
-            x: (f64::from(r.x) - ox) / scale,
-            y: (f64::from(r.y) - oy) / scale,
-            w: f64::from(r.w) / scale,
-            h: f64::from(r.h) / scale,
-        })
+        let (ox, oy, _scale) = frame(app)?;
+        let (x, y) = physical_client_to_css(f64::from(r.x) - ox, f64::from(r.y) - oy);
+        let (w, h) = physical_client_to_css(f64::from(r.w), f64::from(r.h));
+        Some(OverlayArea { x, y, w, h })
     }
     #[cfg(not(windows))]
     {
@@ -996,6 +1263,109 @@ pub fn overlay_cursor(app: AppHandle) -> Option<OverlayPoint> {
     }
 }
 
+/// Monitor en el que abrir el launcher: mouse, o el de la ventana con foco.
+///
+/// Atajo global mientras escribes → pantalla de esa app. Clic en la pill →
+/// pantalla del cursor, aunque el foco siga en el otro monitor.
+#[tauri::command]
+pub fn overlay_active_anchor(app: AppHandle) -> Option<OverlayPoint> {
+    #[cfg(windows)]
+    {
+        let _ = frame(&app)?;
+        let (sx, sy) = active_desktop_point()?;
+        let (ox, oy) = client_origin_physical()?;
+        let (x, y) = physical_client_to_css(f64::from(sx) - ox, f64::from(sy) - oy);
+        Some(OverlayPoint { x, y })
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = app;
+        None
+    }
+}
+
+#[cfg(windows)]
+fn hwnd_is_ours(hwnd: windows_sys::Win32::Foundation::HWND) -> bool {
+    use windows_sys::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId;
+
+    if hwnd.is_null() {
+        return false;
+    }
+    let overlay = OVERLAY_HWND.load(Ordering::Acquire);
+    let main = MAIN_HWND.load(Ordering::Acquire);
+    let raw = hwnd as isize;
+    if (overlay != 0 && raw == overlay) || (main != 0 && raw == main) {
+        return true;
+    }
+    let mut pid = 0u32;
+    // SAFETY: HWND vivo; GetWindowThreadProcessId solo escribe el pid.
+    unsafe { GetWindowThreadProcessId(hwnd, &mut pid) };
+    pid == std::process::id()
+}
+
+#[cfg(windows)]
+fn foreground_point() -> Option<(i32, i32)> {
+    use windows_sys::Win32::Foundation::RECT;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowRect, IsIconic};
+
+    // SAFETY: GetForegroundWindow no tiene precondiciones.
+    let hwnd = unsafe { GetForegroundWindow() };
+    if hwnd.is_null() || hwnd_is_ours(hwnd) {
+        return None;
+    }
+    // SAFETY: HWND del primer plano; IsIconic / GetWindowRect solo leen.
+    unsafe {
+        if IsIconic(hwnd) != 0 {
+            return None;
+        }
+        let mut rc = RECT {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+        };
+        if GetWindowRect(hwnd, &mut rc) == 0 {
+            return None;
+        }
+        Some(((rc.left + rc.right) / 2, (rc.top + rc.bottom) / 2))
+    }
+}
+
+#[cfg(windows)]
+fn cursor_over_overlay_chrome() -> bool {
+    let Some((x, y)) = cursor_overlay_css() else {
+        return false;
+    };
+    let Ok(rects) = HIT_RECTS.try_lock() else {
+        return false;
+    };
+    rects.iter().any(|r| r.contains(x, y, ARM_MARGIN))
+}
+
+#[cfg(windows)]
+fn active_desktop_point() -> Option<(i32, i32)> {
+    let cursor = crate::floating::cursor_position();
+    // Clic en la pill / chrome de Atic: esa pantalla, no la del foco ajeno.
+    if cursor.is_some() && cursor_over_overlay_chrome() {
+        return cursor;
+    }
+    let focus = foreground_point();
+    match (cursor, focus) {
+        (Some(c), Some(f)) => {
+            let cm = atic_capture::monitors::from_point(c.0, c.1);
+            let fm = atic_capture::monitors::from_point(f.0, f.1);
+            if cm.as_ref().map(|m| m.id.as_str()) != fm.as_ref().map(|m| m.id.as_str()) {
+                Some(f)
+            } else {
+                Some(c)
+            }
+        }
+        (Some(c), None) => Some(c),
+        (None, Some(f)) => Some(f),
+        (None, None) => None,
+    }
+}
+
 /// Áreas de cada monitor en coordenadas del overlay.
 ///
 /// El overlay abarca el escritorio virtual entero, así que su propio rectángulo
@@ -1012,16 +1382,21 @@ pub fn overlay_cursor(app: AppHandle) -> Option<OverlayPoint> {
 pub fn overlay_work_areas(app: AppHandle) -> Vec<OverlayArea> {
     #[cfg(windows)]
     {
-        let Some((ox, oy, scale)) = frame(&app) else {
+        let Some((ox, oy, _scale)) = frame(&app) else {
             return Vec::new();
         };
         atic_capture::monitors::enumerate()
             .iter()
-            .map(|m| OverlayArea {
-                x: (f64::from(m.bounds.x) - ox) / scale,
-                y: (f64::from(m.bounds.y) - oy) / scale,
-                w: f64::from(m.bounds.width) / scale,
-                h: f64::from(m.bounds.height) / scale,
+            .map(|m| {
+                let (x, y) = physical_client_to_css(
+                    f64::from(m.bounds.x) - ox,
+                    f64::from(m.bounds.y) - oy,
+                );
+                let (w, h) = physical_client_to_css(
+                    f64::from(m.bounds.width),
+                    f64::from(m.bounds.height),
+                );
+                OverlayArea { x, y, w, h }
             })
             .collect()
     }
@@ -1046,7 +1421,7 @@ pub fn save_pill_home(app: AppHandle, x: f64, y: f64) {
     {
         use atic_core::sync::MutexExt;
 
-        let Some((ox, oy, scale)) = frame(&app) else {
+        let Some((ox, oy, _scale)) = frame(&app) else {
             return;
         };
         let Some(state) = app.try_state::<crate::state::AppState>() else {
@@ -1057,7 +1432,8 @@ pub fn save_pill_home(app: AppHandle, x: f64, y: f64) {
         if state.pre_clipboard_position.lock_or_recover().is_some() {
             return;
         }
-        state.config.lock_or_recover().pill_position = Some((ox + x * scale, oy + y * scale));
+        let (px, py) = css_to_physical_client(x, y);
+        state.config.lock_or_recover().pill_position = Some((ox + px, oy + py));
     }
     #[cfg(not(windows))]
     {
@@ -1076,13 +1452,11 @@ pub fn pill_home(app: AppHandle) -> Option<OverlayPoint> {
     {
         use atic_core::sync::MutexExt;
 
-        let (ox, oy, scale) = frame(&app)?;
+        let (ox, oy, _scale) = frame(&app)?;
         let state = app.try_state::<crate::state::AppState>()?;
         let (px, py) = state.config.lock_or_recover().pill_position?;
-        Some(OverlayPoint {
-            x: (px - ox) / scale,
-            y: (py - oy) / scale,
-        })
+        let (x, y) = physical_client_to_css(px - ox, py - oy);
+        Some(OverlayPoint { x, y })
     }
     #[cfg(not(windows))]
     {
@@ -1112,5 +1486,40 @@ pub fn overlay_rect(app: AppHandle) -> Option<OverlayRect> {
     {
         let _ = app;
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{map_client_to_css, map_css_to_client, should_arm};
+
+    #[test]
+    fn client_to_css_follows_inner_width() {
+        // DPI 1.25: cliente 1920×1080, CSS 1536×864. Centro → 768,432.
+        let (x, y) = map_client_to_css(960.0, 540.0, 1920.0, 1080.0, 1536.0, 864.0);
+        assert!((x - 768.0).abs() < 0.01);
+        assert!((y - 432.0).abs() < 0.01);
+        let (bx, by) = map_css_to_client(x, y, 1920.0, 1080.0, 1536.0, 864.0);
+        assert!((bx - 960.0).abs() < 0.01);
+        assert!((by - 540.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn overlay_arms_pill_even_over_main() {
+        assert!(!should_arm(false, false, false, false, false));
+        assert!(should_arm(false, false, true, false, false));
+        // Pill / float encima de `main`: tiene que recibir el mouse.
+        assert!(should_arm(false, true, true, false, false));
+        // Hit-rect fullscreen muerto encima de `main`: ceder el input.
+        assert!(!should_arm(false, true, true, true, false));
+        assert!(!should_arm(true, false, true, false, false));
+        assert!(!should_arm(true, true, true, false, false));
+    }
+
+    #[test]
+    fn overlay_stays_armed_during_pointer_gesture() {
+        assert!(should_arm(false, true, false, true, true));
+        assert!(should_arm(false, true, true, true, true));
+        assert!(!should_arm(true, true, true, true, true));
     }
 }

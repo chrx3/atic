@@ -104,6 +104,13 @@
     }
     return () => {
       if (closeTimer) window.clearTimeout(closeTimer);
+      if (!contained && el.open) {
+        try {
+          el.close();
+        } catch {
+          /* ya fuera del DOM */
+        }
+      }
       // `?.` porque el elemento pudo desaparecer del DOM antes que el foco:
       // pasa cuando la ventana se cierra con el diálogo abierto.
       previous?.focus?.();
@@ -167,8 +174,8 @@
   class="modal-root m-0 flex max-h-none max-w-none items-center justify-center
          overflow-hidden border-0 p-4 text-text open:flex
          {contained
-           ? 'absolute inset-0 z-20 h-full w-full'
-           : 'fixed inset-0 h-dvh w-screen bg-transparent'}"
+    ? 'absolute inset-0 z-20 h-full w-full'
+    : 'fixed inset-0 h-dvh w-screen bg-transparent'}"
   class:is-contained={contained}
   class:is-closing={closing}
   oncancel={onCancel}

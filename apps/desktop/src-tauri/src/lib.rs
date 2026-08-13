@@ -160,11 +160,14 @@ pub fn run() {
             floating::resize_floating,
             overlay::overlay_rect,
             overlay::overlay_cursor,
+            overlay::overlay_active_anchor,
             overlay::overlay_work_areas,
             overlay::save_pill_home,
             overlay::pill_home,
             overlay::set_overlay_hit_rects,
+            overlay::set_overlay_css_viewport,
             overlay::set_overlay_item_drag,
+            overlay::set_overlay_pointer_gesture,
             overlay::overlay_cursor_over_hit,
             overlay::set_overlay_text_mode,
             commands::open_data_dir,
@@ -421,9 +424,6 @@ pub fn run() {
             launcher::start_indexing();
             clipboard_history::start_watcher(app.handle());
 
-            // Sin Ctrl+P / Find / DevTools del WebView2 en ventanas flotantes.
-            webview_tweaks::apply_to_overlay_windows(app.handle());
-
             // Las ventanas de captura se declaran `visible: true` (para que las
             // decoraciones/transparencia se apliquen igual que en la pill) y se
             // ocultan aquí hasta que se usan.
@@ -446,6 +446,13 @@ pub fn run() {
             // quedó ella.
             overlay::setup(app.handle());
 
+            // Sin Ctrl+P / Find / zoom del WebView2, también en `main`.
+            // Después de crear el overlay: si no, esa ventana no existe aún.
+            webview_tweaks::apply_to_all_windows(app.handle());
+            if let Some(main) = app.get_webview_window("main") {
+                let _ = main.set_ignore_cursor_events(false);
+            }
+
             Ok(())
         })
         .on_window_event(|window, event| match event {
@@ -455,6 +462,16 @@ pub fn run() {
             {
                 api.prevent_close();
                 let _ = window.hide();
+            }
+            // Tras una captura, `main` puede quedar click-through. Al enfocarla
+            // se restaura el mouse. Reaplica atajos de WebView2 por si el
+            // webview no estaba listo en el setup.
+            WindowEvent::Focused(true) if window.label() == "main" => {
+                if let Some(main) = window.app_handle().get_webview_window("main") {
+                    let _ = main.set_ignore_cursor_events(false);
+                    webview_tweaks::disable_browser_accelerator_keys(&main);
+                }
+                overlay::yield_to_main(window.app_handle());
             }
             // La pill ya no es una ventana, así que nadie avisa cuando se mueve:
             // la persiste `save_pill_home` al soltar el arrastre.

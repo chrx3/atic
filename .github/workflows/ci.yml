@@ -2,48 +2,27 @@ name: CI
 
 # whisper-rs compila whisper.cpp: requiere CMake (preinstalado en los runners
 # de GitHub) y LLVM/libclang (lo instalamos con la acción de abajo).
+#
+# Cupo: macOS se factura ×10 y Windows ×2. El matrix Win+Mac en cada PR
+# (incluido Dependabot) agotó los 2.000 min/mes. Por eso:
+#   - PRs: frontend + rustfmt (baratos, Linux ×1).
+#   - Push a main/dev: clippy+test en Windows.
+#   - Build de la app: solo push a main, Windows.
+#   - macOS: solo el workflow Release (instaladores).
 
 on:
   push:
     branches: [main, dev]
   pull_request:
 
-jobs:
-  rust:
-    name: Rust (${{ matrix.os }})
-    # Las dos plataformas, porque buena parte del código está detrás de `cfg`:
-    # con solo Windows, todo lo `#[cfg(not(windows))]` —los stubs de macOS, la
-    # fase 4— no lo compila ni lo revisa nadie hasta que alguien abre un Mac.
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [windows-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-      - uses: KyleMayes/install-llvm-action@v2
-        with:
-          version: "18"
-      - uses: Swatinem/rust-cache@v2
-      # El formato no depende del sistema: correrlo dos veces solo duplica el
-      # tiempo y el ruido cuando falla.
-      - name: fmt
-        if: matrix.os == 'windows-latest'
-        run: cargo fmt --all --check
-      - name: clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
-      - name: test
-        run: cargo test --workspace
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
-  # El frontend no necesita ni Rust ni LLVM, así que corre en Linux y tarda un
-  # minuto y medio. Antes su único control vivía dentro del job de abajo, que
-  # compila whisper.cpp: un error de TypeScript tardaba veinte minutos en
-  # aparecer, y solo después de descargar media toolchain.
+jobs:
   frontend:
     name: Frontend
+    if: github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -61,13 +40,40 @@ jobs:
         working-directory: apps/desktop
         run: pnpm verify
 
+  rustfmt:
+    name: rustfmt
+    if: github.actor != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: fmt
+        run: cargo fmt --all --check
+
+  rust:
+    name: Rust (windows)
+    if: github.event_name == 'push' && github.actor != 'dependabot[bot]'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: KyleMayes/install-llvm-action@v2
+        with:
+          version: "18"
+      - uses: Swatinem/rust-cache@v2
+      - name: clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: test
+        run: cargo test --workspace
+
   build:
-    name: Build app (${{ matrix.os }})
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [windows-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
+    name: Build app (windows)
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.actor != 'dependabot[bot]'
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -84,8 +90,6 @@ jobs:
       - name: Install frontend deps
         working-directory: apps/desktop
         run: pnpm install --frozen-lockfile
-      # El typecheck se mudó al job `frontend`, que no compila whisper.cpp y
-      # contesta en un minuto y medio en vez de veinte.
       - name: Build (sin firmar)
         working-directory: apps/desktop
         run: pnpm tauri build --no-bundle

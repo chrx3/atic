@@ -135,7 +135,7 @@ function resolveInArea(slot: SlotId, area: Area, size: Size): Point {
 /**
  * Esquina superior-izquierda de `size` en el slot pedido.
  *
- * `anchor` elige el monitor (centro actual de la pill o cursor).
+ * `anchor` elige el monitor (mouse / ventana con foco, no la pill).
  */
 export function resolveSlot(
   slot: SlotId,

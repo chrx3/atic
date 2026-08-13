@@ -370,8 +370,13 @@
     return false;
   }
 
+  /** Solo un `<dialog showModal()>`. `dialog[open]` también pilla contained. */
+  function modalBlocksPicker(): boolean {
+    return Boolean(document.querySelector("dialog:modal"));
+  }
+
   function onWindowWheel(event: WheelEvent) {
-    if (document.querySelector("dialog[open]")) return;
+    if (modalBlocksPicker()) return;
     const el = document.activeElement;
     if (el instanceof HTMLElement && el.closest("input, textarea, [contenteditable]")) {
       return;
@@ -399,34 +404,27 @@
     return x < geometry.railHitW;
   }
 
-  function onPointerDown(event: PointerEvent) {
-    if (event.button !== 0) return;
-    const t = event.target as Element | null;
-    if (t?.closest?.("[data-card-action], button.card-config")) return;
+  let dragRoot: HTMLElement | null = null;
 
-    const hit = t?.closest?.("button.drop") ?? t?.closest?.("[data-delta].tool-card");
-    pendingClickDelta = hit ? Number((hit as HTMLElement).dataset.delta) : null;
-
-    dragging = true;
-    dragMoved = false;
-    dragPointerId = event.pointerId;
-    dragOriginY = event.clientY;
-    dragOriginVisual = visual;
-    stopAnim();
-    target = visual;
-    (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+  function bindDragListeners() {
+    window.addEventListener("pointermove", onWinPointerMove);
+    window.addEventListener("pointerup", onWinPointerUp);
+    window.addEventListener("pointercancel", onWinPointerUp);
+    window.addEventListener("blur", onWinBlur);
   }
 
-  function onPointerMove(event: PointerEvent) {
-    const root = event.currentTarget as HTMLElement;
-    if (!dragging) {
-      const next = overRail(event, root);
-      if (next !== expanded) {
-        expanded = next;
-        kickExpand();
-      }
-    }
+  function unbindDragListeners() {
+    window.removeEventListener("pointermove", onWinPointerMove);
+    window.removeEventListener("pointerup", onWinPointerUp);
+    window.removeEventListener("pointercancel", onWinPointerUp);
+    window.removeEventListener("blur", onWinBlur);
+  }
 
+  function onWinBlur() {
+    if (dragging) finishDrag(null);
+  }
+
+  function onWinPointerMove(event: PointerEvent) {
     if (!dragging || event.pointerId !== dragPointerId) return;
     const dy = event.clientY - dragOriginY;
     if (!dragMoved && Math.abs(dy) < CLICK_SLOP) return;
@@ -440,20 +438,35 @@
     tracker.wake();
   }
 
-  function onPointerUp(event: PointerEvent) {
+  function onWinPointerUp(event: PointerEvent) {
     if (!dragging || event.pointerId !== dragPointerId) return;
+    finishDrag(event);
+  }
+
+  function finishDrag(event: PointerEvent | null) {
+    if (!dragging) return;
     dragging = false;
+    const pointerId = dragPointerId;
     dragPointerId = -1;
-    try {
-      (event.currentTarget as HTMLElement).releasePointerCapture(event.pointerId);
-    } catch {
-      /* ya liberado */
+    unbindDragListeners();
+    const root = dragRoot;
+    dragRoot = null;
+    if (root && pointerId >= 0) {
+      try {
+        if (root.hasPointerCapture(pointerId)) root.releasePointerCapture(pointerId);
+      } catch {
+        /* ignore */
+      }
     }
 
-    const root = event.currentTarget as HTMLElement;
-    const next = root.matches(":hover") && overRail(event, root);
-    if (next !== expanded) {
-      expanded = next;
+    if (root && event) {
+      const next = root.matches(":hover") && overRail(event, root);
+      if (next !== expanded) {
+        expanded = next;
+        kickExpand();
+      }
+    } else if (expanded) {
+      expanded = false;
       kickExpand();
     }
 
@@ -467,10 +480,63 @@
     kick();
   }
 
-  function onPointerLeave() {
+  function onPointerDown(event: PointerEvent) {
+    if (event.button !== 0) return;
+    const t = event.target as Element | null;
+    if (t?.closest?.("[data-card-action], button.card-config")) return;
+
+    const hit = t?.closest?.("button.drop") ?? t?.closest?.("[data-delta].tool-card");
+    pendingClickDelta = hit ? Number((hit as HTMLElement).dataset.delta) : null;
+
+    if (dragging) finishDrag(null);
+    dragging = true;
+    dragMoved = false;
+    dragPointerId = event.pointerId;
+    dragOriginY = event.clientY;
+    dragOriginVisual = visual;
+    dragRoot = event.currentTarget as HTMLElement;
+    try {
+      dragRoot.setPointerCapture(event.pointerId);
+    } catch {
+      /* pointer ya liberado: quedan los oyentes de window */
+    }
+    stopAnim();
+    target = visual;
+    bindDragListeners();
+  }
+
+  function onPointerMove(event: PointerEvent) {
+    if (dragging) return;
+    const root = event.currentTarget as HTMLElement;
+    const next = overRail(event, root);
+    if (next !== expanded) {
+      expanded = next;
+      kickExpand();
+    }
+  }
+
+  function onPointerLeave(event: PointerEvent) {
+    const root = event.currentTarget as HTMLElement;
+    const to = event.relatedTarget;
+    if (to instanceof Node && root.contains(to)) return;
     if (!dragging && expanded) {
       expanded = false;
       kickExpand();
+    }
+  }
+
+  function onNavKey(event: KeyboardEvent) {
+    if (modalBlocksPicker()) return;
+    const el = document.activeElement;
+    if (el instanceof HTMLElement && el.closest("input, textarea, [contenteditable]")) {
+      return;
+    }
+    if (event.key === "ArrowDown" || event.key === "PageDown") {
+      event.preventDefault();
+      goBy(1);
+    } else if (event.key === "ArrowUp" || event.key === "PageUp") {
+      event.preventDefault();
+      goBy(-1);
     }
   }
 
@@ -514,19 +580,24 @@
     });
     ro.observe(el);
     height = el.clientHeight || 560;
-    const start = toolIndex(activeTool);
-    target = start;
-    visual = start;
-    soundedIndex = start;
-    soundReady = true;
+    // `{@attach}` re-ejecuta si el callback lee estado. `activeTool` acá
+    // reseteaba visual/target y cortaba el gesto en cada syncSelect.
+    if (!soundReady) {
+      const start = untrack(() => toolIndex(activeTool));
+      target = start;
+      visual = start;
+      soundedIndex = start;
+      soundReady = true;
+    }
     tracker.wake();
 
-    window.addEventListener("wheel", onWindowWheel, { passive: false });
+    window.addEventListener("wheel", onWindowWheel, { passive: false, capture: true });
     return () => {
-      soundReady = false;
       ro.disconnect();
       tracker.stop();
-      window.removeEventListener("wheel", onWindowWheel);
+      window.removeEventListener("wheel", onWindowWheel, { capture: true });
+      if (dragging) finishDrag(null);
+      unbindDragListeners();
       stopAnim();
       stopExpandAnim();
     };
@@ -539,16 +610,18 @@
   });
 </script>
 
+<svelte:window onkeydown={onNavKey} />
+
 <nav
   class="wheel"
   class:is-dragging={dragging}
   aria-label="Herramientas"
+  data-no-drag
   {@attach bindRoot}
   onpointerdown={onPointerDown}
   onpointermove={onPointerMove}
-  onpointerup={onPointerUp}
-  onpointercancel={onPointerUp}
   onpointerleave={onPointerLeave}
+  onwheel={onWindowWheel}
 >
   <div
     class="wheel-body"
@@ -560,7 +633,7 @@
     aria-hidden="true"
   ></div>
 
-  <Skin {shapes} blend={tune.blend} cell={tune.cell} />
+  <Skin {shapes} blend={tune.blend} cell={tune.cell} smooth={2} />
 
   <div class="ink-layer">
     {#each spots as spot (spot.key)}
@@ -675,6 +748,12 @@
     position: absolute;
     inset: 0;
     z-index: 1;
+    pointer-events: none;
+  }
+
+  .drop,
+  .tool-card {
+    pointer-events: auto;
   }
 
   .drop {

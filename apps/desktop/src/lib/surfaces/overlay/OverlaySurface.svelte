@@ -20,7 +20,12 @@
   import SnippetsFloat from "./snippets/SnippetsFloat.svelte";
   import PillSurface from "./pill/PillSurface.svelte";
   import { getConfig } from "$ipc/config";
-  import { onPillVisibility, setOverlayTextMode } from "$ipc/overlay";
+  import {
+    onOverlayYieldMain,
+    onPillVisibility,
+    setOverlayCssViewport,
+    setOverlayTextMode,
+  } from "$ipc/overlay";
   import { liveArea, surfaces } from "./surfaces.svelte";
   import { liquid } from "./group.svelte";
   import Skin from "$liquid/Skin.svelte";
@@ -132,6 +137,25 @@
       .then((cfg) => (shown = cfg.show_pill))
       .catch(() => (shown = true));
     const pending = onPillVisibility((visible) => (shown = visible));
+    return () => void pending.then((off) => off());
+  });
+
+  /** Espacio CSS real: fly-to y hit-test tienen que usar el mismo, no `client/DPI`. */
+  let cssWidth = $state(0);
+  let cssHeight = $state(0);
+  $effect(() => {
+    const w = cssWidth;
+    const h = cssHeight;
+    if (w <= 1 || h <= 1) return;
+    void setOverlayCssViewport(w, h).catch(() => {
+      // Fuera de Tauri no hay a quién avisarle.
+    });
+  });
+
+  $effect(() => {
+    const pending = onOverlayYieldMain(() => {
+      if (surfaces.dragging) surfaces.resetInteraction();
+    });
     return () => void pending.then((off) => off());
   });
 
@@ -256,7 +280,11 @@
   });
 </script>
 
-<svelte:window onkeydown={onOverlayDevKey} />
+<svelte:window
+  onkeydown={onOverlayDevKey}
+  bind:innerWidth={cssWidth}
+  bind:innerHeight={cssHeight}
+/>
 
 <!--
   El orden importa y es al revés de como se lee.
