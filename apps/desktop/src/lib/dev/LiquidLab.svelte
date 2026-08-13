@@ -75,7 +75,7 @@
    */
   let renderer = $state<"goo" | "sdf">("goo");
 
-  let sigma = $state(5);
+  let sigma = $state(6);
   let drawNeck = $state(true);
   let filterOn = $state(true);
   let showOutline = $state(true);

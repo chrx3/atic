@@ -103,17 +103,18 @@ textarea,
   /*
    * transitions.dev — plus → menu morph (rueda de la pill).
    *
-   * Abrir: overshoot (`--morph-ease`). Cerrar: ease-out sin bounce
-   * (`--morph-close-ease`) y un poco más corto — Operate odia el rebote al
-   * salir. La firma visual es ParticleWheel (gotas/nodos); la caja solo es
-   * hit-box (crece/encoge al instante con pivot center).
+   * Abrir y cerrar: ease-out (`--morph-ease` = `--ease-smooth-out`). Sin
+   * overshoot: el rebote recortaba la rueda contra el borde y se leía jelly,
+   * no herramienta. `--morph-close-ease` es la misma curva, un poco más corta.
+   * La firma visual es ParticleWheel (gotas/nodos); la caja solo es hit-box
+   * (crece/encoge al instante con pivot center).
    * `is-quick` / `--morph-quick-dur` acorta al elegir herramienta.
    *
    * Estos ms son la única fuente de verdad; `$lib/motion.ts` los lee de acá.
    */
   --morph-open-dur: 110ms;
   --morph-close-dur: 100ms;
-  --morph-ease: cubic-bezier(0.34, 1.25, 0.64, 1);
+  --morph-ease: cubic-bezier(0.22, 1, 0.36, 1);
   --morph-close-ease: var(--ease-smooth-out);
   --morph-fade-dur: 80ms;
   /* Cierre acelerado: al elegir herramienta la rueda ya cumplió su función. */
@@ -186,7 +187,7 @@ textarea,
    * (`GOO_GROW`, `preFilter`); si cambia σ, cambian los dos.
    */
   --skin: color-mix(in srgb, var(--rb-surface) 97%, transparent);
-  --goo-grow: 2.6px;
+  --goo-grow: 1.68px;
 
   --rb-radius: 14px;
   --rb-radius-sm: 8px;
