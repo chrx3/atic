@@ -87,4 +87,15 @@ describe("toolSlots", () => {
     expect(p.x).toBe(1000 + (1200 - 48) / 2);
     expect(p.y).toBe((900 - 48) / 2);
   });
+
+  it("centra la barra en el monitor del mouse, no en el de la pill", () => {
+    const areas = [
+      { x: 0, y: 0, w: 1536, h: 864 },
+      { x: 1536, y: 0, w: 1536, h: 864 },
+    ];
+    const bar = { w: LAUNCHER_BAR_W, h: 40 };
+    const p = resolveSlot("center", areas, bar, { x: 2000, y: 400 });
+    expect(p.x).toBe(1536 + (1536 - LAUNCHER_BAR_W) / 2);
+    expect(p.y).toBe((864 - 40) / 2);
+  });
 });

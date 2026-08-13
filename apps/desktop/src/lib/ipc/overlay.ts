@@ -52,6 +52,13 @@ export const pillTrace = (msg: string) => invoke<void>("pill_trace", { msg });
  */
 export const overlayCursor = () => invoke<Point | null>("overlay_cursor");
 
+/**
+ * Punto en el monitor activo (mouse, o la ventana con foco si está en otra
+ * pantalla). El launcher y los slots lo usan para centrarse ahí, no en la pill.
+ */
+export const overlayActiveAnchor = () =>
+  invoke<Point | null>("overlay_active_anchor");
+
 /** Las áreas útiles de cada monitor, en px CSS del overlay. */
 export const overlayWorkAreas = () => invoke<Area[]>("overlay_work_areas");
 
@@ -68,9 +75,22 @@ export const overlayWorkAreas = () => invoke<Area[]>("overlay_work_areas");
 export const setOverlayHitRects = (rects: HitRect[]) =>
   invoke<void>("set_overlay_hit_rects", { rects });
 
+/**
+ * `innerWidth/Height` real del overlay.
+ *
+ * Rust mapea el cursor (físicos de Win32) a este espacio. Sin esto, con DPI
+ * mixto el fly-to y el hit-test no coinciden con lo que pinta el webview.
+ */
+export const setOverlayCssViewport = (w: number, h: number) =>
+  invoke<void>("set_overlay_css_viewport", { w, h });
+
 /** Click-through fuera de drop-targets (agentes) durante un OLE out-drag. */
 export const setOverlayItemDrag = (on: boolean) =>
   invoke<void>("set_overlay_item_drag", { on });
+
+/** Armar el overlay al empezar un arrastre, sin esperar el hit-rect. */
+export const setOverlayPointerGesture = (on: boolean) =>
+  invoke<void>("set_overlay_pointer_gesture", { on });
 
 /** ¿El cursor está sobre el hit-rect `id` del overlay? */
 export const overlayCursorOverHit = (id: string) =>
@@ -116,6 +136,10 @@ export const onPillVisibility = (cb: (visible: boolean) => void): Promise<Unlist
  */
 export const onOverlayDismiss = (cb: () => void): Promise<UnlistenFn> =>
   on("overlay-dismiss", cb);
+
+/** El overlay cede el mouse a `main` (drag pegado / hit-rect fullscreen). */
+export const onOverlayYieldMain = (cb: () => void): Promise<UnlistenFn> =>
+  on("overlay-yield-main", cb);
 
 export const onPillClipboardToggle = (cb: () => void): Promise<UnlistenFn> =>
   on("pill-clipboard-toggle", cb);

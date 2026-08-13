@@ -1,0 +1,21 @@
+# Dependabot en este repo compilaba whisper.cpp en Windows y macOS por cada
+# bump. macOS se factura ×10: una tanda de PRs se come el cupo mensual.
+# Los updates se revisan a mano; este archivo deja el bot conectado pero
+# sin abrir PRs.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /apps/desktop
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 0
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 0
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 0

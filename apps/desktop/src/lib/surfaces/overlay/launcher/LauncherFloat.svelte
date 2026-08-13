@@ -26,6 +26,7 @@
   import {
     onOverlayDismiss,
     overlayWorkAreas,
+    overlayActiveAnchor,
     setOverlayTextMode,
   } from "$ipc/overlay";
   import type { Area } from "$ipc/overlay";
@@ -179,7 +180,7 @@
   async function runOpenReveal() {
     const epoch = ++revealEpoch;
     if (prefersReducedMotion()) {
-      if (lastOpen) applyCenterPlace(lastOpen);
+      if (lastOpen) await applyCenterPlace(lastOpen);
       if (favorites.length === 0) await loadFavorites();
       favRevealCount = favorites.length;
       revealPhase = "ready";
@@ -210,7 +211,7 @@
     await tick();
     await waitFrames(2);
     if (epoch !== revealEpoch) return;
-    if (lastOpen) applyCenterPlace({ ...lastOpen, w: fullW, h: compactH });
+    if (lastOpen) await applyCenterPlace({ ...lastOpen, w: fullW, h: compactH });
     await afterTransition(el, "left", separateDur);
     if (epoch !== revealEpoch) return;
 
@@ -302,18 +303,36 @@
   }
 
   /**
-   * Centra la barra stadium (ancho `a.w`) en el work area. Los favs van fuera
-   * del float (CSS absolute a la derecha); no desplazan el centro de la barra.
+   * Centra la barra stadium (ancho `a.w`) en el monitor del mouse / foco.
+   * Los favs van fuera del float (CSS absolute a la derecha); no desplazan
+   * el centro de la barra.
    */
-  function applyCenterPlace(a: BubbleOpen) {
+  async function applyCenterPlace(a: BubbleOpen) {
+    try {
+      workAreas = await overlayWorkAreas();
+    } catch {
+      // Fuera de Tauri o IPC fallido: se usa lo último que haya.
+    }
     const pill = surfaces.live["pill-skin"] ?? surfaces.live["pill"];
     const labCompact = isDev && launcherLab.open && !showResults;
     const w = labCompact ? launcherLab.barW : a.w;
     const h = labCompact ? compactH : a.h;
     const size = { w, h };
-    const anchor = pill
-      ? { x: pill.x + pill.w / 2, y: pill.y + pill.h / 2 }
-      : { x: a.x + a.w / 2, y: a.y + a.h / 2 };
+    let anchor: { x: number; y: number };
+    try {
+      const active = await overlayActiveAnchor();
+      if (active) {
+        anchor = active;
+      } else if (pill) {
+        anchor = { x: pill.x + pill.w / 2, y: pill.y + pill.h / 2 };
+      } else {
+        anchor = { x: a.x + a.w / 2, y: a.y + a.h / 2 };
+      }
+    } catch {
+      anchor = pill
+        ? { x: pill.x + pill.w / 2, y: pill.y + pill.h / 2 }
+        : { x: a.x + a.w / 2, y: a.y + a.h / 2 };
+    }
     const pos = resolveSlot("center", workAreas, size, anchor);
     bubble.place({
       ...a,
@@ -402,7 +421,7 @@
       return;
     }
     if (revealPhase === "ready" && !closing) {
-      applyCenterPlace(a);
+      await applyCenterPlace(a);
     }
   }
 
@@ -576,9 +595,9 @@
     void compactH;
     const a = lastOpen;
     if (!a) return;
-    untrack(() =>
-      applyCenterPlace({ ...a, w: launcherLab.barW, h: compactH }),
-    );
+    untrack(() => {
+      void applyCenterPlace({ ...a, w: launcherLab.barW, h: compactH });
+    });
   });
 
   async function loadFavorites() {
@@ -835,7 +854,7 @@
         // virtual entero → el float quedaba corrido. No recentrar durante
         // expand/separate: eso mataría el grow desde la pill.
         if (lastOpen && bubble.alive && revealPhase === "ready") {
-          applyCenterPlace(lastOpen);
+          void applyCenterPlace(lastOpen);
         } else if (
           lastOpen &&
           bubble.alive &&

@@ -392,6 +392,7 @@ pub fn show_main(app: &AppHandle) {
         let _ = window.unminimize();
         let _ = window.set_focus();
     }
+    crate::overlay::yield_to_main(app);
 }
 
 /// Aplica la visibilidad de la pill y persiste la preferencia.

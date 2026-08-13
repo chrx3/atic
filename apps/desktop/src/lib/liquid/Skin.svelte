@@ -62,22 +62,33 @@
 </script>
 
 {#if path.d}
-  <svg
+  <!--
+    Transform y filter en nodos distintos: en WebView2, `drop-shadow` +
+    `translate3d` en el mismo elemento infla el hit-test y se come el mouse
+    aunque `pointer-events` sea none.
+  -->
+  <div
     class="skin"
     style:left="{path.minX}px"
     style:top="{path.minY}px"
+    style:width="{path.width}px"
+    style:height="{path.height}px"
     style:transform="translate3d({traced.tx}px, {traced.ty}px, 0)"
-    style:filter="drop-shadow({shadow})"
-    width={path.width}
-    height={path.height}
-    viewBox="{path.minX} {path.minY} {path.width} {path.height}"
     aria-hidden="true"
   >
-    <!-- `evenodd` porque los lazos del contorno no salen orientados de forma
-         consistente: con la regla por defecto, una isla interior se rellenaría
-         en vez de quedar hueca. -->
-    <path d={path.d} fill={color} fill-rule="evenodd" />
-  </svg>
+    <svg
+      class="skin-path"
+      style:filter="drop-shadow({shadow})"
+      width={path.width}
+      height={path.height}
+      viewBox="{path.minX} {path.minY} {path.width} {path.height}"
+    >
+      <!-- `evenodd` porque los lazos del contorno no salen orientados de forma
+           consistente: con la regla por defecto, una isla interior se rellenaría
+           en vez de quedar hueca. -->
+      <path d={path.d} fill={color} fill-rule="evenodd" />
+    </svg>
+  </div>
 {/if}
 
 <style>
@@ -85,9 +96,12 @@
     position: absolute;
     overflow: visible;
     contain: layout;
+    pointer-events: none;
+  }
 
-    /* La piel no recibe el mouse: quien lo recibe es la tinta de encima, que
-       es donde están los controles de verdad. */
+  .skin-path {
+    display: block;
+    overflow: visible;
     pointer-events: none;
   }
 </style>

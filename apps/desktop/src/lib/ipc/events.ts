@@ -89,6 +89,8 @@ export interface AticEvents {
   "pill-radial-press": void;
   "pill-radial-release": void;
   "overlay-dismiss": void;
+  /** `main` está debajo del cursor: soltar drag fullscreen del overlay. */
+  "overlay-yield-main": void;
 
   // Agentes
   "agents-bubble-anchor": BubbleOpen;

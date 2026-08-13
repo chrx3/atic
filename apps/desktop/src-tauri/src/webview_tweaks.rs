@@ -1,8 +1,8 @@
-//! Ajustes de WebView2 para ventanas flotantes (pill, capturas).
+//! Ajustes de WebView2: la app no es un navegador.
 
 use tauri::{Manager, WebviewWindow};
 
-/// Desactiva atajos del navegador (Ctrl+P imprimir, Ctrl+F buscar, F12, etc.).
+/// Desactiva atajos y chrome de Chromium (Ctrl+P, Ctrl+F, zoom, menú Inspect).
 #[cfg(windows)]
 pub fn disable_browser_accelerator_keys(window: &WebviewWindow) {
     use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Settings3;
@@ -20,6 +20,15 @@ pub fn disable_browser_accelerator_keys(window: &WebviewWindow) {
                 tracing::warn!(label = %label_for_cb, "WebView2: sin Settings");
                 return;
             };
+            if let Err(err) = settings.SetAreDefaultContextMenusEnabled(false) {
+                tracing::warn!(label = %label_for_cb, %err, "no se pudo desactivar el menú contextual");
+            }
+            if let Err(err) = settings.SetIsZoomControlEnabled(false) {
+                tracing::warn!(label = %label_for_cb, %err, "no se pudo desactivar el zoom");
+            }
+            if let Err(err) = settings.SetAreDevToolsEnabled(cfg!(debug_assertions)) {
+                tracing::warn!(label = %label_for_cb, %err, "no se pudo ajustar DevTools");
+            }
             let Ok(settings3) = settings.cast::<ICoreWebView2Settings3>() else {
                 tracing::warn!(label = %label_for_cb, "WebView2: Settings3 no disponible");
                 return;
@@ -36,11 +45,77 @@ pub fn disable_browser_accelerator_keys(window: &WebviewWindow) {
 #[cfg(not(windows))]
 pub fn disable_browser_accelerator_keys(_window: &WebviewWindow) {}
 
-/// Aplica los tweaks a pill + ventanas de captura.
-pub fn apply_to_overlay_windows(app: &tauri::AppHandle) {
-    for label in ["overlay", "capture-shelf", "capture-overlay", "launcher"] {
-        if let Some(window) = app.get_webview_window(label) {
-            disable_browser_accelerator_keys(&window);
+/// Ajusta el bounds del controlador WebView2 al cliente de la ventana.
+///
+/// wry crea un HWND hijo `WRY_WEBVIEW`. `SetBounds` solo no basta: hay que
+/// redimensionar ese hijo. Si queda chico, el CSS no cubre el overlay, la pill
+/// no llega al mouse y los hit-rects no coinciden con el cursor.
+#[cfg(windows)]
+pub fn sync_controller_bounds(window: &WebviewWindow) {
+    use windows::Win32::Foundation::RECT;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        FindWindowExW, SetWindowPos, SWP_NOACTIVATE, SWP_NOZORDER,
+    };
+
+    let Ok(hwnd) = window.hwnd() else {
+        return;
+    };
+    let mut rc = windows_sys::Win32::Foundation::RECT {
+        left: 0,
+        top: 0,
+        right: 0,
+        bottom: 0,
+    };
+    // SAFETY: HWND de Tauri vivo; GetClientRect solo escribe el RECT.
+    let ok = unsafe {
+        windows_sys::Win32::UI::WindowsAndMessaging::GetClientRect(hwnd.0 as _, &mut rc)
+    };
+    if ok == 0 || rc.right <= 0 || rc.bottom <= 0 {
+        return;
+    }
+    let width = rc.right - rc.left;
+    let height = rc.bottom - rc.top;
+
+    // SAFETY: el overlay vive; FindWindowEx / SetWindowPos solo tocan su hijo.
+    unsafe {
+        let mut class: Vec<u16> = "WRY_WEBVIEW".encode_utf16().collect();
+        class.push(0);
+        let child = FindWindowExW(hwnd.0 as _, std::ptr::null_mut(), class.as_ptr(), std::ptr::null());
+        if !child.is_null() {
+            SetWindowPos(
+                child,
+                std::ptr::null_mut(),
+                0,
+                0,
+                width,
+                height,
+                SWP_NOZORDER | SWP_NOACTIVATE,
+            );
         }
+    }
+
+    let bounds = RECT {
+        left: 0,
+        top: 0,
+        right: width,
+        bottom: height,
+    };
+    let label = window.label().to_string();
+    if let Err(err) = window.with_webview(move |webview| unsafe {
+        if let Err(err) = webview.controller().SetBounds(bounds) {
+            tracing::warn!(label = %label, %err, "WebView2: no se pudo sincronizar Bounds");
+        }
+    }) {
+        tracing::warn!(label = %window.label(), %err, "with_webview falló al sincronizar Bounds");
+    }
+}
+
+#[cfg(not(windows))]
+pub fn sync_controller_bounds(_window: &WebviewWindow) {}
+
+/// Todas las ventanas, incluida `main`. Llamar después de crear el overlay.
+pub fn apply_to_all_windows(app: &tauri::AppHandle) {
+    for (_, window) in app.webview_windows() {
+        disable_browser_accelerator_keys(&window);
     }
 }

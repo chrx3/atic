@@ -16,7 +16,7 @@
  * “pasan de largo” al app de atrás).
  */
 
-import { setOverlayHitRects, setOverlayItemDrag, type HitRect } from "$ipc/overlay";
+import { setOverlayHitRects, setOverlayItemDrag, setOverlayPointerGesture, type HitRect } from "$ipc/overlay";
 
 /** El `id` viaja a Rust: necesita distinguir la pill, que es de donde cuelga
  *  la burbuja de agentes. */
@@ -114,6 +114,8 @@ class OverlaySurfaces {
    * `$effect` no se enteraría al soltar.
    */
   #dragging = $state(false);
+  /** Si el pointerup se pierde, el hit-rect fullscreen no puede quedar eterno. */
+  #dragWatchdog = 0;
   /** Último envío, para no repetir el mismo IPC en cada frame. */
   #sent = "";
 
@@ -144,10 +146,24 @@ class OverlaySurfaces {
   set dragging(value: boolean) {
     if (this.#dragging === value) return;
     this.#dragging = value;
+    this.#armDragWatchdog(value);
     // Al soltar hay que volver a medir: durante el drag `#publish` deja de
     // actualizar `live` y el hit-rect queda en pantalla completa.
     if (!value) this.#sent = "";
-    this.schedule();
+    // Atomic en Rust YA: el hit-rect fullscreen viaja por rAF+IPC y llega
+    // tarde. En ese hueco el overlay se desarma y se pierde el pointerup.
+    void setOverlayPointerGesture(value).catch(() => {});
+    if (value) void this.flush();
+    else this.schedule();
+  }
+
+  #armDragWatchdog(on: boolean) {
+    if (this.#dragWatchdog) {
+      clearTimeout(this.#dragWatchdog);
+      this.#dragWatchdog = 0;
+    }
+    if (!on || typeof window === "undefined") return;
+    this.#dragWatchdog = window.setTimeout(() => this.resetInteraction(), 15_000);
   }
 
   get dragging(): boolean {
@@ -165,6 +181,7 @@ class OverlaySurfaces {
     this.#sent = "";
     this.schedule();
     void setOverlayItemDrag(false).catch(() => {});
+    void setOverlayPointerGesture(false).catch(() => {});
   }
 
   /**

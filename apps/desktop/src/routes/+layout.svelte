@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import { goto } from "$app/navigation";
   import { page } from "$app/state";
+  import { installDesktopChromeGuards } from "$lib/desktopChrome";
   import { applyTheme, readCachedTheme, THEME_STORAGE_KEY } from "$lib/theme";
   import "../app.css";
 
@@ -18,6 +19,7 @@
     // Evita el menú contextual de Chromium (Inspect, Imprimir, etc.).
     const block = (e: Event) => e.preventDefault();
     document.addEventListener("contextmenu", block);
+    const stopChrome = installDesktopChromeGuards();
 
     // Cada ventana es un WebView con su propio document: `data-theme` hay que
     // ponerlo en todas. Sin esto, pill / shelf / overlay se quedaban siempre
@@ -95,6 +97,7 @@
     if (import.meta.env.DEV) window.addEventListener("keydown", onDevKey);
 
     return () => {
+      stopChrome();
       document.removeEventListener("contextmenu", block);
       window.removeEventListener("storage", onStorage);
       window.removeEventListener("keydown", onDevKey);

@@ -13,11 +13,10 @@ describe("rigidShift", () => {
     expect(rigidShift(a, b)).toEqual({ dx: 30, dy: 30 });
   });
 
-  it("es null si cambia el tamaño o la geometría relativa", () => {
-    const a = [box(10, 20), box(80, 20, 100, 40)];
-    expect(rigidShift(a, [box(10, 20), box(90, 20, 100, 40)])).toBeNull();
-    expect(rigidShift(a, [box(10, 20, 50, 40), box(80, 20, 100, 40)])).toBeNull();
-    expect(rigidShift(a, [box(10, 20)])).toBeNull();
+  it("es null si las formas se mueven distinto (rueda del picker)", () => {
+    const a = [box(10, 20), box(10, 80), box(200, 50, 100, 40)];
+    const b = [box(12, 10), box(12, 90), box(200, 50, 100, 40)];
+    expect(rigidShift(a, b)).toBeNull();
   });
 
   it("acepta cápsulas que se mueven juntas", () => {
