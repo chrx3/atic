@@ -273,13 +273,44 @@ fn start_freeze(app: &AppHandle, token: u64) -> Result<(), String> {
     }
 
     let virtual_screen = monitors::virtual_screen();
-    let frame = match engine::capture_rect(virtual_screen, include_cursor) {
+    let mut frame = match engine::capture_rect(virtual_screen, include_cursor) {
         Ok(frame) => frame,
         Err(error) => {
             abandon_start(app);
             return Err(error.to_string());
         }
     };
+    // BitBlt no ve el overlay layered (pill, launcher). Recortes de Windows sí
+    // porque usa Graphics Capture. Pedirle el bitmap a WebView2 y blendear.
+    let mut composed = false;
+    if let Some(mut overlay) = crate::overlay::capture_layer(app) {
+        if overlay.prepare_overlay_layer() {
+            frame.blend_over(&overlay);
+            composed = true;
+            tracing::info!(target: "overlay", "pill/launcher compuestos en la captura");
+        }
+    }
+    if !composed {
+        if let Some(hwnd) = crate::overlay::hwnd() {
+            match engine::print_window_tree(hwnd) {
+                Ok(Some(mut overlay)) => {
+                    if overlay.prepare_overlay_layer() {
+                        frame.blend_over(&overlay);
+                        tracing::info!(target: "overlay", "overlay compuesto vía PrintWindow");
+                    }
+                }
+                Ok(None) => {
+                    tracing::warn!(
+                        target: "overlay",
+                        "la captura no incluye la pill: WebView2 y PrintWindow salieron vacíos"
+                    );
+                }
+                Err(err) => {
+                    tracing::warn!(%err, "no se pudo imprimir el overlay en la captura");
+                }
+            }
+        }
+    }
     if abort_requested(token) {
         abandon_start(app);
         return Ok(());

@@ -27,7 +27,7 @@
     <span class="ug-key-copy">
       <strong>Rueda de herramientas.</strong>
       Mantén la tecla y aparece en el cursor. Elige con la rueda del ratón y
-      suelta para activar.
+      suelta para activar. Un clic en la pill también abre la rueda.
     </span>
   </li>
   <li>

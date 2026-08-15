@@ -113,6 +113,103 @@ pub fn sync_controller_bounds(window: &WebviewWindow) {
 #[cfg(not(windows))]
 pub fn sync_controller_bounds(_window: &WebviewWindow) {}
 
+/// Pide a WebView2 un PNG de lo que está mostrando (pill, launcher, goo).
+///
+/// `BitBlt` / `PrintWindow` no ven esta ventana layered. Chromium sí puede
+/// rasterizarla. El PNG suele traer alpha de verdad; si no, el freeze hace
+/// knockout del negro vacío.
+#[cfg(windows)]
+pub fn capture_preview_png(window: &WebviewWindow) -> Result<Vec<u8>, String> {
+    use std::time::Duration;
+    use webview2_com::CapturePreviewCompletedHandler;
+    use webview2_com::Microsoft::Web::WebView2::Win32::COREWEBVIEW2_CAPTURE_PREVIEW_IMAGE_FORMAT_PNG;
+    use windows::Win32::Foundation::HGLOBAL;
+    use windows::Win32::System::Com::StructuredStorage::CreateStreamOnHGlobal;
+    use windows::Win32::System::Com::{
+        ISequentialStream, IStream, STATFLAG, STATSTG, STREAM_SEEK_SET,
+    };
+
+    fn read_istream(stream: &IStream) -> Result<Vec<u8>, String> {
+        unsafe {
+            stream
+                .Seek(0, STREAM_SEEK_SET, None)
+                .map_err(|err| err.to_string())?;
+            let mut stat = STATSTG::default();
+            stream
+                .Stat(&mut stat, STATFLAG(1))
+                .map_err(|err| err.to_string())?;
+            let size = stat.cbSize as usize;
+            if size == 0 {
+                return Err("CapturePreview devolvió un stream vacío".into());
+            }
+            let mut buf = vec![0u8; size];
+            let mut read = 0u32;
+            ISequentialStream::Read(
+                stream,
+                buf.as_mut_ptr() as *mut std::ffi::c_void,
+                size as u32,
+                Some(&mut read),
+            )
+            .ok()
+            .map_err(|err| err.to_string())?;
+            buf.truncate(read as usize);
+            Ok(buf)
+        }
+    }
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    window
+        .with_webview(move |webview| {
+            unsafe {
+                let send = |msg: Result<Vec<u8>, String>| {
+                    let _ = tx.send(msg);
+                };
+                let Ok(core) = webview.controller().CoreWebView2() else {
+                    send(Err("WebView2: sin CoreWebView2".into()));
+                    return;
+                };
+                let Ok(stream) = CreateStreamOnHGlobal(HGLOBAL::default(), true) else {
+                    send(Err("no se pudo crear el IStream de CapturePreview".into()));
+                    return;
+                };
+                let stream_done = stream.clone();
+                let tx_done = tx.clone();
+                let handler = CapturePreviewCompletedHandler::create(Box::new(move |result| {
+                    match result {
+                        Ok(()) => match read_istream(&stream_done) {
+                            Ok(bytes) => {
+                                let _ = tx_done.send(Ok(bytes));
+                            }
+                            Err(err) => {
+                                let _ = tx_done.send(Err(err));
+                            }
+                        },
+                        Err(err) => {
+                            let _ = tx_done.send(Err(err.to_string()));
+                        }
+                    }
+                    Ok(())
+                }));
+                if let Err(err) = core.CapturePreview(
+                    COREWEBVIEW2_CAPTURE_PREVIEW_IMAGE_FORMAT_PNG,
+                    &stream,
+                    &handler,
+                ) {
+                    send(Err(err.to_string()));
+                }
+            }
+        })
+        .map_err(|err| err.to_string())?;
+
+    rx.recv_timeout(Duration::from_secs(5))
+        .map_err(|_| "CapturePreview tardó demasiado".to_string())?
+}
+
+#[cfg(not(windows))]
+pub fn capture_preview_png(_window: &WebviewWindow) -> Result<Vec<u8>, String> {
+    Err("CapturePreview solo existe en Windows".into())
+}
+
 /// Todas las ventanas, incluida `main`. Llamar después de crear el overlay.
 pub fn apply_to_all_windows(app: &tauri::AppHandle) {
     for (_, window) in app.webview_windows() {

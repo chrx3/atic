@@ -29,11 +29,13 @@
   import { toasts } from "$domain/toasts.svelte";
   import ToastStack from "$ui/ToastStack.svelte";
   import { MOTION, ms } from "$lib/motion";
+  import { armOpenDismissGrace, isOpenDismissGrace } from "$surfaces/overlay/openDismissGrace";
 
   const BUBBLE_CORNER = 26;
   let workAreas = $state<Area[]>([]);
 
   function placeFromPill(a: BubbleOpen) {
+    if (!bubble.alive || !bubble.shown) armOpenDismissGrace();
     const pill = surfaces.live["pill-skin"] ?? surfaces.live["pill"];
     if (!pill) {
       bubble.place(a);
@@ -144,7 +146,7 @@
 
   /** Cierre por intención (clic afuera / Esc). Respeta pin y diálogos nativos. */
   function tryAutoClose() {
-    if (!bubble.shown || isAgentsDismissSuppressed()) return;
+    if (!bubble.shown || isAgentsDismissSuppressed() || isOpenDismissGrace()) return;
     void agentsAlwaysOnTop()
       .then((pinned) => {
         if (pinned || isAgentsDismissSuppressed() || !bubble.shown) return;

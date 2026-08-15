@@ -92,6 +92,12 @@ export const TOOLS: ToolDef[] = AGENTS_ENABLED
   ? ALL_TOOLS
   : ALL_TOOLS.filter((tool) => tool.id !== "agents");
 
+/**
+ * La rueda de la pill: mismas tools menos el launcher.
+ * Spotlight vive en Ctrl+Space y en la ventana principal, no en el anillo.
+ */
+export const WHEEL_TOOLS: ToolDef[] = TOOLS.filter((tool) => tool.id !== "launcher");
+
 export function toolById(id: ToolId): ToolDef {
   return TOOLS.find((tool) => tool.id === id) ?? TOOLS[0];
 }

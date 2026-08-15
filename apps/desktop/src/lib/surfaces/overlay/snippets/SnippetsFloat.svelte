@@ -48,6 +48,10 @@
     waitFrames,
   } from "$surfaces/overlay/floatReveal";
   import { surfaces } from "$surfaces/overlay/surfaces.svelte";
+  import {
+    armOpenDismissGrace,
+    isOpenDismissGrace,
+  } from "$surfaces/overlay/openDismissGrace";
   import Icon from "$ui/Icon.svelte";
   import { Pin, X } from "$lib/icons";
 
@@ -133,7 +137,10 @@
   async function placeFromPill(a: BubbleOpen) {
     lastOpen = a;
     const fresh = !bubble.alive || !bubble.shown;
-    if (fresh) armOpenDur();
+    if (fresh) {
+      armOpenDur();
+      armOpenDismissGrace();
+    }
     if (workAreas.length === 0) {
       try {
         workAreas = await overlayWorkAreas();
@@ -394,6 +401,7 @@
       }),
       onOverlayDismiss(() => {
         surfaces.resetInteraction();
+        if (isOpenDismissGrace()) return;
         tryAutoClose();
       }),
     ];

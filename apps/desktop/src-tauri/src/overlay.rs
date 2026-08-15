@@ -69,6 +69,40 @@ static HIT_RECTS: Mutex<Vec<HitCss>> = Mutex::new(Vec::new());
 /// HWND del overlay (para `ScreenToClient` en el camino caliente).
 static OVERLAY_HWND: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
 
+/// HWND del overlay, o `None` si todavía no nació.
+///
+/// Lo usa la captura: `BitBlt` no ve ventanas layered/transparentes.
+pub fn hwnd() -> Option<isize> {
+    let h = OVERLAY_HWND.load(Ordering::Acquire);
+    (h != 0).then_some(h)
+}
+
+/// Rasteriza pill/launcher/goo vía WebView2 y lo devuelve como frame físico.
+#[cfg(windows)]
+pub fn capture_layer(app: &AppHandle) -> Option<atic_capture::Frame> {
+    let window = app.get_webview_window(LABEL)?;
+    let png = match crate::webview_tweaks::capture_preview_png(&window) {
+        Ok(png) => png,
+        Err(err) => {
+            tracing::warn!(target: "overlay", %err, "CapturePreview del overlay falló");
+            return None;
+        }
+    };
+    let (x, y) = window
+        .hwnd()
+        .ok()
+        .and_then(|hwnd| atic_capture::windows::window_bounds(hwnd.0 as isize))
+        .map(|r| (r.x, r.y))
+        .unwrap_or((0, 0));
+    match atic_capture::Frame::from_png(x, y, &png) {
+        Ok(frame) => Some(frame),
+        Err(err) => {
+            tracing::warn!(target: "overlay", %err, "no se pudo decodificar el PNG del overlay");
+            None
+        }
+    }
+}
+
 /// HWND de `main`. El overlay cubre el escritorio virtual y, si se arma encima
 /// de esta ventana, se ve Atic pero el mouse se lo queda la lámina.
 static MAIN_HWND: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
@@ -132,6 +166,10 @@ pub fn set_capturing(app: &AppHandle, on: bool) {
         return;
     }
     if on {
+        // Cerrar rueda / floats MIENTRAS el overlay sigue armado: si emitimos
+        // después del click-through, WebView2 puede no procesar el evento hasta
+        // el próximo clic (el síntoma de “el pantallazo se queda pegado”).
+        let _ = app.emit("overlay-dismiss", ());
         // Aplicar YA: no basta con `send(Sync)`. El canal del worker descarta
         // cuando está lleno, y sin un movimiento de mouse el camino de reparación
         // de `reevaluate_arm` no corre. Resultado: con el cursor sobre pill/float
@@ -146,6 +184,7 @@ pub fn set_capturing(app: &AppHandle, on: bool) {
         // de key-repeat (`MOD_NOREPEAT` en global-hotkey).
         schedule_capturing_reassert(app);
     } else {
+        set_topmost(app, crate::agents::bridge::overlay_should_be_topmost());
         send(Msg::Sync);
         // Sin esto, al cancelar con el cursor quieto sobre la pill `ARMED`
         // queda en falso hasta el próximo movimiento.
@@ -189,7 +228,7 @@ fn schedule_capturing_reassert(app: &AppHandle) {
         .name("atic-capture-yield".into())
         .spawn(move || {
             let start = std::time::Instant::now();
-            for delay_ms in [0u64, 16, 50] {
+            for delay_ms in [0u64, 16, 50, 120, 250, 500] {
                 let target = std::time::Duration::from_millis(delay_ms);
                 if let Some(wait) = target.checked_sub(start.elapsed()) {
                     std::thread::sleep(wait);
@@ -213,14 +252,24 @@ fn yield_to_capture(app: &AppHandle) {
     let Some(window) = app.get_webview_window(LABEL) else {
         return;
     };
-    // Salir del modo texto ANTES del click-through: `set_focusable` reescribe
-    // `GWL_EXSTYLE` entero y borraría `ignore_cursor_events` si fuera después.
+    // Salir del modo texto y de la banda topmost ANTES del click-through:
+    // `set_focusable` / `set_always_on_top` reescriben `GWL_EXSTYLE` entero y
+    // borrarían `ignore_cursor_events` si fueran después. Sin bajar el
+    // topmost, Windows sigue entregando el hover a esta ventana aunque la de
+    // captura esté encima — hasta un clic “afuera”.
     #[cfg(windows)]
     {
         let _ = window.set_focusable(false);
+        let _ = window.set_always_on_top(false);
     }
     set_click_through(&window, true);
     CLICK_THROUGH.store(true, Ordering::Release);
+}
+
+/// Click-through efectivo: durante captura el overlay nunca arma, aunque
+/// `ARMED` o un gesto de puntero digan lo contrario.
+fn desired_click_through(capturing: bool, armed: bool) -> bool {
+    capturing || !armed
 }
 
 /// Momento de la última muestra, para el freno de `SAMPLE_MS`.
@@ -341,18 +390,31 @@ fn create(app: &AppHandle) -> Option<tauri::WebviewWindow> {
         .max(0.01);
     let lw = (f64::from(vs.width) / scale).max(1.0);
     let lh = (f64::from(vs.height) / scale).max(1.0);
-    tauri::WebviewWindowBuilder::new(app, LABEL, tauri::WebviewUrl::App("overlay".into()))
-        .title("Atic")
-        .inner_size(lw, lh)
-        .resizable(false)
-        .decorations(false)
-        .transparent(true)
-        .always_on_top(true)
-        .skip_taskbar(true)
-        .shadow(false)
-        .focusable(false)
-        .visible(false)
-        .build()
+    let mut builder = tauri::WebviewWindowBuilder::new(
+        app,
+        LABEL,
+        tauri::WebviewUrl::App("overlay".into()),
+    )
+    .title("Atic")
+    .inner_size(lw, lh)
+    .resizable(false)
+    .decorations(false)
+    .transparent(true)
+    .always_on_top(true)
+    .skip_taskbar(true)
+    .shadow(false)
+    .focusable(false)
+    .visible(false);
+    // Click-through + NOACTIVATE: Chromium cree la ventana ocluida y duerme
+    // timers/rAF/IPC hasta el próximo clic. Los atajos sobre la rueda/floats
+    // quedaban “pegados” hasta tocar otra cosa.
+    #[cfg(windows)]
+    {
+        builder = builder.additional_browser_args(
+            "--disable-backgrounding-occluded-windows --disable-renderer-backgrounding --disable-background-timer-throttling --disable-features=CalculateNativeWinOcclusion",
+        );
+    }
+    builder.build()
         .map_err(|err| tracing::error!(target: "overlay", ?err, "no se pudo crear la ventana"))
         .ok()
 }
@@ -626,29 +688,26 @@ fn start_toggle_worker(app: AppHandle) {
                     // estado actual, un aviso perdido no cuesta nada: el
                     // siguiente pone las cosas en su sitio.
                     Msg::Sync => loop {
+                        let capturing = CAPTURING.load(Ordering::Acquire);
                         let armed = ARMED.load(Ordering::Acquire);
-                        if CLICK_THROUGH.load(Ordering::Acquire) != armed {
+                        let through = desired_click_through(capturing, armed);
+                        if CLICK_THROUGH.load(Ordering::Acquire) == through {
                             break;
                         }
-                        // Volver a reclamar el frente antes de armar.
-                        //
-                        // Entre las ventanas always-on-top el orden lo decide la
-                        // activación, y esta nunca se activa (`focusable: false`,
-                        // o sea `WS_EX_NOACTIVATE`): nunca sube sola. Alcanzaba
-                        // con abrir la ventana principal una vez para que el
-                        // overlay quedara debajo y los clics sobre la pill se los
-                        // llevara la de atrás.
-                        if armed {
+                        // Durante captura nunca reclamar el frente: le roba el
+                        // mouse al overlay de selección.
+                        if armed && !capturing {
                             raise(&app);
                         }
                         let Some(window) = app.get_webview_window(LABEL) else {
                             break;
                         };
-                        // `armed` = el cursor está sobre una zona viva, así que
-                        // el click-through se APAGA.
-                        set_click_through(&window, !armed);
-                        CLICK_THROUGH.store(!armed, Ordering::Release);
-                        // Y otra vuelta: pudo cambiar mientras se aplicaba.
+                        if capturing {
+                            ARMED.store(false, Ordering::Release);
+                            POINTER_GESTURE.store(false, Ordering::Release);
+                        }
+                        set_click_through(&window, through);
+                        CLICK_THROUGH.store(through, Ordering::Release);
                     },
                     Msg::Outside => {
                         let _ = app.emit("overlay-dismiss", ());
@@ -752,6 +811,9 @@ pub fn set_overlay_hit_rects(app: AppHandle, rects: Vec<HitRect>) {
 /// lo queda otra ventana.
 #[tauri::command]
 pub fn set_overlay_pointer_gesture(_app: AppHandle, on: bool) {
+    if on && CAPTURING.load(Ordering::Acquire) {
+        return;
+    }
     POINTER_GESTURE.store(on, Ordering::SeqCst);
     if on {
         ARMED.store(true, Ordering::SeqCst);
@@ -1491,7 +1553,9 @@ pub fn overlay_rect(app: AppHandle) -> Option<OverlayRect> {
 
 #[cfg(test)]
 mod tests {
-    use super::{map_client_to_css, map_css_to_client, should_arm};
+    use super::{
+        desired_click_through, map_client_to_css, map_css_to_client, should_arm,
+    };
 
     #[test]
     fn client_to_css_follows_inner_width() {
@@ -1521,5 +1585,13 @@ mod tests {
         assert!(should_arm(false, true, false, true, true));
         assert!(should_arm(false, true, true, true, true));
         assert!(!should_arm(true, true, true, true, true));
+    }
+
+    #[test]
+    fn capture_forces_click_through_even_if_armed() {
+        assert!(desired_click_through(true, true));
+        assert!(desired_click_through(true, false));
+        assert!(!desired_click_through(false, true));
+        assert!(desired_click_through(false, false));
     }
 }

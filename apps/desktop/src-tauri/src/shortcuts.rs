@@ -3,12 +3,26 @@
 //! Teclado: `tauri-plugin-global-shortcut`.
 //! Botones laterales del mouse: Raw Input (ver `mouse_bindings`).
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
 use crate::mouse_bindings::{self, MouseAction, SideButton};
 use crate::{clipboard_history, dictation, launcher, state};
 use atic_core::MutexExt;
+
+/// Primer `Pressed` de un chord. El auto-repeat de Windows reenvía Pressed
+/// mientras se sostiene: sin esto, clipboard/launcher abren y se cierran solos.
+fn take_key_press(held: &AtomicBool, state: ShortcutState) -> bool {
+    match state {
+        ShortcutState::Pressed => !held.swap(true, Ordering::SeqCst),
+        ShortcutState::Released => {
+            held.store(false, Ordering::Release);
+            false
+        }
+    }
+}
 
 enum Binding {
     Key(Shortcut),
@@ -148,8 +162,9 @@ pub fn register_shortcuts(app: &AppHandle, bindings: ShortcutBindings<'_>) -> Re
     match &recording {
         Binding::Key(sc) => {
             let handle = app.clone();
+            let held = AtomicBool::new(false);
             if let Err(err) = gs.on_shortcut(*sc, move |_app, _sc, event| {
-                if matches!(event.state(), ShortcutState::Pressed) {
+                if take_key_press(&held, event.state()) {
                     state::toggle_recording(&handle);
                 }
             }) {
@@ -163,6 +178,7 @@ pub fn register_shortcuts(app: &AppHandle, bindings: ShortcutBindings<'_>) -> Re
     match &dictation {
         Binding::Key(sc) => {
             let handle = app.clone();
+            let held = AtomicBool::new(false);
             if let Err(err) = gs.on_shortcut(*sc, move |app, _sc, event| {
                 let mode = app
                     .try_state::<state::AppState>()
@@ -171,13 +187,22 @@ pub fn register_shortcuts(app: &AppHandle, bindings: ShortcutBindings<'_>) -> Re
 
                 match (mode.as_str(), event.state()) {
                     ("push_to_talk", ShortcutState::Pressed) => {
-                        dictation_ptt_down_via_slot(&handle)
+                        if take_key_press(&held, ShortcutState::Pressed) {
+                            dictation_ptt_down_via_slot(&handle);
+                        }
                     }
                     ("push_to_talk", ShortcutState::Released) => {
-                        dictation::dictation_key_up(&handle)
+                        let _ = take_key_press(&held, ShortcutState::Released);
+                        dictation::dictation_key_up(&handle);
                     }
-                    (_, ShortcutState::Pressed) => dictation_toggle_via_slot(&handle),
-                    _ => {}
+                    (_, ShortcutState::Pressed) => {
+                        if take_key_press(&held, ShortcutState::Pressed) {
+                            dictation_toggle_via_slot(&handle);
+                        }
+                    }
+                    (_, ShortcutState::Released) => {
+                        let _ = take_key_press(&held, ShortcutState::Released);
+                    }
                 }
             }) {
                 tracing::error!(%err, "no se pudo registrar el atajo de dictado");
@@ -190,8 +215,9 @@ pub fn register_shortcuts(app: &AppHandle, bindings: ShortcutBindings<'_>) -> Re
     match &summon {
         Binding::Key(sc) => {
             let handle = app.clone();
+            let held = AtomicBool::new(false);
             if let Err(err) = gs.on_shortcut(*sc, move |_app, _sc, event| {
-                if matches!(event.state(), ShortcutState::Pressed) {
+                if take_key_press(&held, event.state()) {
                     state::summon_pill_to_cursor(&handle);
                 }
             }) {
@@ -250,9 +276,9 @@ pub fn register_shortcuts(app: &AppHandle, bindings: ShortcutBindings<'_>) -> Re
     match &clipboard {
         Binding::Key(sc) => {
             let handle = app.clone();
+            let held = AtomicBool::new(false);
             if let Err(err) = gs.on_shortcut(*sc, move |_app, _sc, event| {
-                if matches!(event.state(), ShortcutState::Pressed) {
-                    // Pill → cursor → float (mismo pipeline que dictado/launcher).
+                if take_key_press(&held, event.state()) {
                     clipboard_history::remember_paste_target();
                     emit_tool_slot(&handle, "activate-tool-slot", "clipboard");
                 }
@@ -267,8 +293,9 @@ pub fn register_shortcuts(app: &AppHandle, bindings: ShortcutBindings<'_>) -> Re
     match &snippets {
         Binding::Key(sc) => {
             let handle = app.clone();
+            let held = AtomicBool::new(false);
             if let Err(err) = gs.on_shortcut(*sc, move |_app, _sc, event| {
-                if matches!(event.state(), ShortcutState::Pressed) {
+                if take_key_press(&held, event.state()) {
                     clipboard_history::remember_paste_target();
                     emit_tool_slot(&handle, "activate-tool-slot", "snippets");
                 }
@@ -284,8 +311,9 @@ pub fn register_shortcuts(app: &AppHandle, bindings: ShortcutBindings<'_>) -> Re
         match agents {
             Binding::Key(sc) => {
                 let handle = app.clone();
+                let held = AtomicBool::new(false);
                 if let Err(err) = gs.on_shortcut(*sc, move |_app, _sc, event| {
-                    if matches!(event.state(), ShortcutState::Pressed) {
+                    if take_key_press(&held, event.state()) {
                         crate::agents::bridge::show_agents_window(handle.clone());
                     }
                 }) {
@@ -302,8 +330,9 @@ pub fn register_shortcuts(app: &AppHandle, bindings: ShortcutBindings<'_>) -> Re
     match &screenshot {
         Binding::Key(sc) => {
             let handle = app.clone();
+            let held = AtomicBool::new(false);
             if let Err(err) = gs.on_shortcut(*sc, move |_app, _sc, event| {
-                if matches!(event.state(), ShortcutState::Pressed) {
+                if take_key_press(&held, event.state()) {
                     if let Err(error) = crate::capture_session::trigger(&handle) {
                         tracing::warn!(%error, "no se pudo abrir el overlay de captura");
                     }
@@ -319,8 +348,9 @@ pub fn register_shortcuts(app: &AppHandle, bindings: ShortcutBindings<'_>) -> Re
     match &launcher_bind {
         Binding::Key(sc) => {
             let handle = app.clone();
+            let held = AtomicBool::new(false);
             if let Err(err) = gs.on_shortcut(*sc, move |_app, _sc, event| {
-                if matches!(event.state(), ShortcutState::Pressed) {
+                if take_key_press(&held, event.state()) {
                     launcher::toggle_via_slot(&handle);
                 }
             }) {
@@ -349,4 +379,19 @@ pub fn register_shortcuts(app: &AppHandle, bindings: ShortcutBindings<'_>) -> Re
 #[tauri::command]
 pub fn failed_shortcuts(state: tauri::State<state::AppState>) -> Vec<String> {
     state.shortcut_failures.lock_or_recover().clone()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn take_key_press_ignores_repeat_until_release() {
+        let held = AtomicBool::new(false);
+        assert!(take_key_press(&held, ShortcutState::Pressed));
+        assert!(!take_key_press(&held, ShortcutState::Pressed));
+        assert!(!take_key_press(&held, ShortcutState::Pressed));
+        assert!(!take_key_press(&held, ShortcutState::Released));
+        assert!(take_key_press(&held, ShortcutState::Pressed));
+    }
 }

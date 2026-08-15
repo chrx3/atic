@@ -22,9 +22,9 @@ import { setOverlayHitRects, setOverlayItemDrag, setOverlayPointerGesture, type 
  *  la burbuja de agentes. */
 type Rect = HitRect;
 
-/** Lee un custom property en px (`12px` → 12). */
-function cssPx(cs: CSSStyleDeclaration, prop: string): number | null {
-  const raw = cs.getPropertyValue(prop).trim();
+/** Lee un custom property **inline** en px (`12px` → 12). */
+function inlinePx(el: HTMLElement, prop: string): number | null {
+  const raw = el.style.getPropertyValue(prop).trim();
   if (!raw) return null;
   const n = Number.parseFloat(raw);
   return Number.isFinite(n) ? n : null;
@@ -38,9 +38,11 @@ function cssPx(cs: CSSStyleDeclaration, prop: string): number | null {
  * (tras `pointer-events: auto`), así que el hit-rect tiene que coincidir con
  * esa caja, no con la silueta escalada.
  *
- * Los floats de bubble publican `--x/--y/--w/--h` (mismo espacio que el
- * overlay). Preferirlos evita depender de `getBoundingClientRect` a mitad
- * del morph — y de un hit-rect congelado si `ResizeObserver` no dispara.
+ * Los floats de bubble publican `--x/--y/--w/--h` **en el root** (mismo
+ * espacio que el overlay). Hay que leerlos del `style` inline, no de
+ * `getComputedStyle`: las custom properties se heredan, y un hijo (p. ej.
+ * las bolitas de favoritos a la derecha de la barra) publicaría la caja del
+ * padre — clics “pasan de largo” justo donde está el control.
  */
 export function layoutRect(el: HTMLElement): {
   x: number;
@@ -49,10 +51,10 @@ export function layoutRect(el: HTMLElement): {
   h: number;
 } {
   const cs = getComputedStyle(el);
-  const varX = cssPx(cs, "--x");
-  const varY = cssPx(cs, "--y");
-  const varW = cssPx(cs, "--w");
-  const varH = cssPx(cs, "--h");
+  const varX = inlinePx(el, "--x");
+  const varY = inlinePx(el, "--y");
+  const varW = inlinePx(el, "--w");
+  const varH = inlinePx(el, "--h");
   const ow = (varW && varW > 0 ? varW : el.offsetWidth) || 0;
   const oh = (varH && varH > 0 ? varH : el.offsetHeight) || 0;
 

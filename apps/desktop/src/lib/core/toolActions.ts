@@ -63,6 +63,7 @@ export const requestActivateAtSlot = (tool: ToolId) =>
 /**
  * Ejecuta la acción sin pasar por el vuelo al slot.
  * Lo usa el overlay después de `flyTo`, o tools sin slot.
+ * Clipboard / textos / Apps: abrir (idempotente), no toggle.
  */
 export async function executeToolAction(
   id: ToolId,

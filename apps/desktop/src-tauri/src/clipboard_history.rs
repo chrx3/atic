@@ -1317,16 +1317,15 @@ pub fn init_always_on_top(on: bool) {
     CLIPBOARD_ALWAYS_ON_TOP.store(on, Ordering::Relaxed);
 }
 
-/// Atajo / rueda / launcher: toggle del float de clipboard (sale de la pill).
+/// Abrir el float de clipboard (idempotente). El cierre lo decide el overlay.
 pub fn summon_clipboard_panel(app: &AppHandle) {
     save_foreground_hwnd();
-    tracing::info!(target: "overlay", "toggle clipboard float");
-    crate::panel_float::toggle(
+    tracing::info!(target: "overlay", "show clipboard float");
+    crate::panel_float::show(
         app,
         &CLIPBOARD_OPEN,
         crate::panel_float::PANEL_SHAPE,
         CLIP_ANCHOR,
-        CLIP_DISMISS,
     );
     crate::overlay::set_topmost(
         app,
