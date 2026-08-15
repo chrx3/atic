@@ -24,7 +24,7 @@
           {
             combo: cfg.pill_radial_shortcut,
             title: "Rueda de herramientas",
-            body: "Mantené la tecla y aparece en el cursor. Elegís con la rueda del mouse y soltás para activar.",
+            body: "Mantené la tecla y aparece en el cursor. Elegís con la rueda del mouse y soltás para activar. Un clic en la pill también abre la rueda.",
           },
           {
             combo: cfg.dictation_shortcut,

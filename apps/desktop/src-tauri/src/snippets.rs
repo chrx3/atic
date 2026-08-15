@@ -342,16 +342,15 @@ pub fn init_always_on_top(on: bool) {
     SNIPPETS_ALWAYS_ON_TOP.store(on, Ordering::Relaxed);
 }
 
-/// Atajo / rueda / launcher: toggle del float de textos.
+/// Abrir el float de textos (idempotente). El cierre lo decide el overlay.
 pub fn summon_snippets_panel(app: &AppHandle) {
     clipboard_history::remember_paste_target();
-    tracing::info!(target: "overlay", "toggle snippets float");
-    crate::panel_float::toggle(
+    tracing::info!(target: "overlay", "show snippets float");
+    crate::panel_float::show(
         app,
         &SNIPPETS_OPEN,
         crate::panel_float::PANEL_SHAPE,
         SNIP_ANCHOR,
-        SNIP_DISMISS,
     );
     crate::overlay::set_topmost(
         app,

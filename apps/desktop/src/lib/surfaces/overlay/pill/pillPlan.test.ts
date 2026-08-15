@@ -14,6 +14,7 @@ import {
   stackMarkVisible,
   wheelChromeActive,
   wheelKeyAction,
+  wheelOpenFlight,
 } from "./pillPlan";
 
 describe("FLIGHT_SKIP_PX", () => {
@@ -190,6 +191,45 @@ describe("consoleSideFor", () => {
 
   it("sin monitores, por defecto a la derecha", () => {
     expect(consoleSideFor([], { x: 10, y: 10 }, { w: 40, h: 40 })).toBe("right");
+  });
+});
+
+describe("wheelOpenFlight", () => {
+  const area = { x: 0, y: 0, w: 1000, h: 800 };
+  const wheel = { w: 252, h: 252 };
+  const pill = { x: 0, y: 0, w: 48, h: 48 };
+
+  it("con el clic sobre la pill, encaja la rueda en el monitor", () => {
+    const dest = wheelOpenFlight({
+      cursor: { x: 24, y: 24 },
+      pill,
+      wheel,
+      areas: [area],
+      skipIfNear: FLIGHT_SKIP_PX,
+    });
+    expect(dest).toEqual({ x: 102, y: 102 });
+  });
+
+  it("con el atajo lejos, centra en el cursor si cabe", () => {
+    const dest = wheelOpenFlight({
+      cursor: { x: 500, y: 400 },
+      pill,
+      wheel,
+      areas: [area],
+      skipIfNear: FLIGHT_SKIP_PX,
+    });
+    expect(dest).toEqual({ x: 500 - 24, y: 400 - 24 });
+  });
+
+  it("con el atajo pegado al borde, recorre la rueda hacia adentro", () => {
+    const dest = wheelOpenFlight({
+      cursor: { x: 10, y: 10 },
+      pill: { x: 400, y: 300, w: 48, h: 48 },
+      wheel,
+      areas: [area],
+      skipIfNear: FLIGHT_SKIP_PX,
+    });
+    expect(dest).toEqual({ x: 102, y: 102 });
   });
 });
 

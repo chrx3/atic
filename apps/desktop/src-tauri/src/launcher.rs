@@ -623,11 +623,13 @@ fn run_action(app: &AppHandle, action: &str) -> Result<(), String> {
         }
         "capture" => crate::capture_session::trigger(app),
         "clipboard" => {
-            crate::clipboard_history::summon_clipboard_panel(app);
+            crate::clipboard_history::remember_paste_target();
+            crate::shortcuts::emit_tool_slot(app, "activate-tool-slot", "clipboard");
             Ok(())
         }
         "snippets" => {
-            crate::snippets::summon_snippets_panel(app);
+            crate::clipboard_history::remember_paste_target();
+            crate::shortcuts::emit_tool_slot(app, "activate-tool-slot", "snippets");
             Ok(())
         }
         "agents" => {

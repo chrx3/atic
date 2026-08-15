@@ -3,14 +3,14 @@
 
 use std::ptr::null_mut;
 
-use windows_sys::Win32::Foundation::HWND;
+use windows_sys::Win32::Foundation::{HWND, LPARAM};
 use windows_sys::Win32::Graphics::Gdi::{
     BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDC, GetDIBits,
-    ReleaseDC, SelectObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, CAPTUREBLT, DIB_RGB_COLORS, HDC,
-    HGDIOBJ, SRCCOPY,
+    GetWindowDC, ReleaseDC, SelectObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, CAPTUREBLT,
+    DIB_RGB_COLORS, HDC, HGDIOBJ, SRCCOPY,
 };
 use windows_sys::Win32::Storage::Xps::PrintWindow;
-use windows_sys::Win32::UI::WindowsAndMessaging::PW_RENDERFULLCONTENT;
+use windows_sys::Win32::UI::WindowsAndMessaging::{EnumChildWindows, PW_RENDERFULLCONTENT};
 
 use crate::error::{Error, Result};
 use crate::frame::Frame;
@@ -169,6 +169,82 @@ pub fn print_window(hwnd: isize) -> Result<Option<Frame>> {
             Ok(None)
         }
     }
+}
+
+/// Como `print_window`, y si el HWND (layered/WebView2) sale negro, prueba
+/// los hijos y un `BitBlt` del DC de la ventana.
+pub fn print_window_tree(hwnd: isize) -> Result<Option<Frame>> {
+    if let Some(frame) = print_window(hwnd)? {
+        return Ok(Some(frame));
+    }
+    let mut found: Option<Frame> = None;
+    // SAFETY: `found` vive durante EnumChildWindows; el callback no retiene el puntero.
+    unsafe {
+        EnumChildWindows(
+            hwnd as HWND,
+            Some(print_child),
+            &mut found as *mut Option<Frame> as LPARAM,
+        );
+    }
+    if found.is_some() {
+        return Ok(found);
+    }
+    blit_from_window(hwnd)
+}
+
+/// `BitBlt` desde `GetWindowDC`. A veces ve contenido que `PrintWindow` no
+/// (ventanas layered). `None` si sale negro o falla.
+fn blit_from_window(hwnd: isize) -> Result<Option<Frame>> {
+    let Some(bounds) = crate::windows::window_bounds(hwnd) else {
+        return Ok(None);
+    };
+    // SAFETY: `hdc` se libera con ReleaseDC; `canvas` es RAII.
+    unsafe {
+        let hdc = GetWindowDC(hwnd as HWND);
+        if hdc.is_null() {
+            return Ok(None);
+        }
+        let canvas = match MemCanvas::new(bounds.width, bounds.height) {
+            Ok(canvas) => canvas,
+            Err(_) => {
+                ReleaseDC(hwnd as HWND, hdc);
+                return Ok(None);
+            }
+        };
+        let ok = BitBlt(
+            canvas.mem_dc,
+            0,
+            0,
+            bounds.width as i32,
+            bounds.height as i32,
+            hdc,
+            0,
+            0,
+            SRCCOPY,
+        );
+        ReleaseDC(hwnd as HWND, hdc);
+        if ok == 0 {
+            return Ok(None);
+        }
+        let bgra = canvas.read_bgra()?;
+        if is_black(&bgra) {
+            Ok(None)
+        } else {
+            Ok(Some(Frame::new(bounds, bgra)))
+        }
+    }
+}
+
+unsafe extern "system" fn print_child(child: HWND, param: LPARAM) -> i32 {
+    let slot = &mut *(param as *mut Option<Frame>);
+    if slot.is_some() {
+        return 0;
+    }
+    if let Ok(Some(frame)) = print_window(child as isize) {
+        *slot = Some(frame);
+        return 0;
+    }
+    1
 }
 
 /// Captura una ventana por su `HWND` (como entero) con `PrintWindow`.

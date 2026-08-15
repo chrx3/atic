@@ -14,7 +14,7 @@
   import ToolIcon from "$lib/ToolIcon.svelte";
   import GooFilter, { preFilter } from "$lib/GooFilter.svelte";
   import { playWheelTick } from "$core/uiSound";
-  import { TOOLS, type ToolId } from "$lib/tools";
+  import { TOOLS, type ToolDef, type ToolId } from "$lib/tools";
   import {
     nodeAngle as angleOf,
     nodePosition,
@@ -32,8 +32,12 @@
     particles = true,
     /** false = anillo colapsado en el centro (estado cerrado del morph). */
     revealed = true,
+    /** Lista de gajos. La pill pasa `WHEEL_TOOLS` (sin launcher). */
+    tools = TOOLS,
     activeId = $bindable<ToolId | null>(null),
     hint = "",
+    /** Texto del núcleo cuando es botón. La pill pasa "Cerrar". */
+    centerLabel = "Abrir Atic",
     onSelect,
     onCenter,
   }: {
@@ -42,20 +46,22 @@
     wheelNav?: boolean;
     particles?: boolean;
     revealed?: boolean;
+    tools?: readonly ToolDef[];
     activeId?: ToolId | null;
     /** Pie discreto: enseña que la rueda también vive en la pill. */
     hint?: string;
+    centerLabel?: string;
     onSelect?: (id: ToolId) => void;
-    /** Si está, la marca central es un botón (la pill abre la app). */
+    /** Si está, la marca central es un botón (cerrar en la pill). */
     onCenter?: () => void;
   } = $props();
 
-  const NODE_COUNT = TOOLS.length;
+  const NODE_COUNT = $derived(tools.length);
 
   /**
    * Piel líquida de la variante compacta (la pill), en px.
    *
-   * Las seis herramientas no se dibujan sobre un disco: SON gotas que salen
+   * Las herramientas no se dibujan sobre un disco: SON gotas que salen
    * del núcleo. El anillo queda lo bastante cerca para que, abiertas, el
    * hueco (~8 px) quede bajo el alcance del filtro (~10.3 px con σ = 6) y se
    * lean como lóbulos de un blob, no como botones sueltos.
@@ -86,7 +92,7 @@
   const ringRatio = $derived(compact ? 0.28 : 0.27);
   const ringRadius = $derived(Math.min(width, height) * ringRatio);
   const activeTool = $derived(
-    TOOLS.find((tool) => tool.id === activeId) ?? null,
+    tools.find((tool) => tool.id === activeId) ?? null,
   );
 
   /** Fija la herramienta activa; suena solo si el paso cambia y la rueda navega. */
@@ -98,9 +104,9 @@
 
   /** Mueve la selección un paso; la pill lo usa desde la rueda del ratón. */
   function stepActive(direction: 1 | -1) {
-    const index = TOOLS.findIndex((tool) => tool.id === activeId);
+    const index = tools.findIndex((tool) => tool.id === activeId);
     const next = index < 0 ? 0 : (index + direction + NODE_COUNT) % NODE_COUNT;
-    setActive(TOOLS[next].id, { tick: true });
+    setActive(tools[next].id, { tick: true });
   }
 
   function onWheel(event: WheelEvent) {
@@ -116,7 +122,7 @@
     else if (event.key === "ArrowLeft" || event.key === "ArrowUp") dir = -1;
     else return;
     event.preventDefault();
-    const index = TOOLS.findIndex((tool) => tool.id === activeId);
+    const index = tools.findIndex((tool) => tool.id === activeId);
     const next = ((index < 0 ? 0 : index + dir) + NODE_COUNT) % NODE_COUNT;
     nodeEls[next]?.focus();
   }
@@ -133,12 +139,12 @@
    *
    * En compacto se ata a la gota del núcleo: si fuera más grande, la zona
    * clickeable saldría del líquido y un clic sobre la ventana transparente
-   * —donde no se ve nada— abriría la app.
+   * —donde no se ve nada— cerraría la rueda.
    */
   const coreSize = $derived(compact ? SKIN.core : ringRadius * 1.2);
 
   const nodes = $derived(
-    TOOLS.map((tool, index) => ({
+    tools.map((tool, index) => ({
       tool,
       ...nodePosition(index, NODE_COUNT, { width, height }, ringRadius),
       clip: wedgeClip(index, NODE_COUNT, { width, height }),
@@ -320,7 +326,7 @@
     /** Nodo seleccionado: las partículas cercanas suben de brillo. */
     function activeNodePos(): { x: number; y: number } | null {
       if (!activeId) return null;
-      const index = TOOLS.findIndex((tool) => tool.id === activeId);
+      const index = tools.findIndex((tool) => tool.id === activeId);
       if (index < 0) return null;
       const angle = nodeAngle(index);
       const ring = Math.min(cssW, cssH) * ringRatio;
@@ -512,6 +518,7 @@
           class:is-hot={activeId === node.tool.id}
           style="clip-path: {node.clip}"
           title="{node.tool.label} — {node.tool.short}"
+          aria-label="{node.tool.label}. {node.tool.short}"
           bind:this={nodeEls[index]}
           onpointerenter={() => setActive(node.tool.id, { tick: true })}
           onpointerleave={() => {
@@ -548,16 +555,16 @@
     </div>
 
     <div class="pw-center">
-      <!-- Núcleo neutro: evita que el centro salte entre gajos y, en la
-           pill, es el botón que abre la app. -->
+      <!-- Núcleo neutro: evita que el centro salte entre gajos. En la pill
+           cierra la rueda; no abre la ventana principal. -->
       {#if onCenter}
         <button
           type="button"
           class="pw-core"
           style="width: {coreSize}px; height: {coreSize}px"
           onclick={onCenter}
-          aria-label="Abrir Atic"
-          title="Abrir Atic"
+          aria-label={centerLabel}
+          title={centerLabel}
         >
           <span class="pw-mark">
             <AticMark size={compact ? 22 : 30} />

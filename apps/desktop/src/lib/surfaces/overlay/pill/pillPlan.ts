@@ -156,6 +156,67 @@ export function discJoinsTail(
 export type WorkArea = { x: number; y: number; w: number; h: number };
 
 /**
+ * Encaja un rectángulo en el monitor cuyo centro lo contiene.
+ * Sin áreas, deja `p` igual.
+ */
+export function clampRect(
+  areas: readonly WorkArea[],
+  p: { x: number; y: number },
+  size: Size,
+): { x: number; y: number } {
+  if (areas.length === 0) return p;
+  const cx = p.x + size.w / 2;
+  const cy = p.y + size.h / 2;
+  const hit = areas.find(
+    (a) => cx >= a.x && cx <= a.x + a.w && cy >= a.y && cy <= a.y + a.h,
+  );
+  const area = hit ?? areas[0];
+  if (!area) return p;
+  const maxX = Math.max(area.x + area.w - size.w, area.x);
+  const maxY = Math.max(area.y + area.h - size.h, area.y);
+  return {
+    x: Math.min(Math.max(p.x, area.x), maxX),
+    y: Math.min(Math.max(p.y, area.y), maxY),
+  };
+}
+
+/**
+ * A dónde volar la pastilla compacta ANTES de revelar la rueda.
+ *
+ * El cursor manda si está lejos (atajo radial). Si el clic es sobre la pill,
+ * el destino es el centro actual, clampeado para que el cuadrado de la rueda
+ * quepa entero — si no, el morph in-situ en un rincón recorta las gotas.
+ *
+ * Devuelve el top-left de la caja CHICA cuyo centro coincide con el de la
+ * rueda ya clampeada, para que el resize con pivot `center` no la desplace.
+ */
+export function wheelOpenFlight(opts: {
+  cursor: { x: number; y: number } | null;
+  pill: { x: number; y: number; w: number; h: number };
+  wheel: Size;
+  areas: readonly WorkArea[];
+  skipIfNear: number;
+}): { x: number; y: number } {
+  const pillCx = opts.pill.x + opts.pill.w / 2;
+  const pillCy = opts.pill.y + opts.pill.h / 2;
+  let cx = pillCx;
+  let cy = pillCy;
+  if (opts.cursor) {
+    const dist = Math.hypot(opts.cursor.x - pillCx, opts.cursor.y - pillCy);
+    if (dist >= opts.skipIfNear) {
+      cx = opts.cursor.x;
+      cy = opts.cursor.y;
+    }
+  }
+  const desired = { x: cx - opts.wheel.w / 2, y: cy - opts.wheel.h / 2 };
+  const clamped = clampRect(opts.areas, desired, opts.wheel);
+  return {
+    x: clamped.x + opts.wheel.w / 2 - opts.pill.w / 2,
+    y: clamped.y + opts.wheel.h / 2 - opts.pill.h / 2,
+  };
+}
+
+/**
  * En qué lado de la pastilla va el control de consola.
  *
  * Regla: al lado **opuesto** al borde horizontal más cercano del monitor.

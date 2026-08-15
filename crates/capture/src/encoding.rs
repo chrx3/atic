@@ -66,6 +66,56 @@ pub fn png_to_rgba(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>)> {
     Ok((info.width, info.height, buffer))
 }
 
+/// Decodifica un PNG a BGRA conservando el alpha (capa del overlay).
+pub fn png_to_bgra(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>)> {
+    let mut decoder = png::Decoder::new(bytes);
+    decoder.set_transformations(png::Transformations::EXPAND);
+    let mut reader = decoder
+        .read_info()
+        .map_err(|e| Error::Encode(e.to_string()))?;
+    let mut buffer = vec![0u8; reader.output_buffer_size()];
+    let info = reader
+        .next_frame(&mut buffer)
+        .map_err(|e| Error::Encode(e.to_string()))?;
+    buffer.truncate(info.buffer_size());
+    let (width, height) = (info.width, info.height);
+    let bgra = match info.color_type {
+        png::ColorType::Rgba => {
+            for px in buffer.chunks_exact_mut(4) {
+                px.swap(0, 2);
+            }
+            buffer
+        }
+        png::ColorType::Rgb => {
+            let mut out = Vec::with_capacity(width as usize * height as usize * 4);
+            for px in buffer.chunks_exact(3) {
+                out.extend_from_slice(&[px[2], px[1], px[0], 255]);
+            }
+            out
+        }
+        png::ColorType::GrayscaleAlpha => {
+            let mut out = Vec::with_capacity(width as usize * height as usize * 4);
+            for px in buffer.chunks_exact(2) {
+                out.extend_from_slice(&[px[0], px[0], px[0], px[1]]);
+            }
+            out
+        }
+        png::ColorType::Grayscale => {
+            let mut out = Vec::with_capacity(width as usize * height as usize * 4);
+            for &g in &buffer {
+                out.extend_from_slice(&[g, g, g, 255]);
+            }
+            out
+        }
+        other => {
+            return Err(Error::Encode(format!(
+                "PNG con color no soportado: {other:?}"
+            )));
+        }
+    };
+    Ok((width, height, bgra))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -124,5 +174,22 @@ mod tests {
         assert_eq!((width, height), (2, 1));
         assert_eq!(&rgba[0..4], &[0, 0, 255, 255]);
         assert_eq!(&rgba[4..8], &[255, 0, 0, 255]);
+    }
+
+    #[test]
+    fn png_to_bgra_keeps_alpha() {
+        let rgba = vec![10, 20, 30, 40, 0, 0, 0, 0];
+        let mut out = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut out, 2, 1);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            let mut writer = encoder.write_header().unwrap();
+            writer.write_image_data(&rgba).unwrap();
+        }
+        let (width, height, bgra) = png_to_bgra(&out).unwrap();
+        assert_eq!((width, height), (2, 1));
+        assert_eq!(&bgra[0..4], &[30, 20, 10, 40]);
+        assert_eq!(&bgra[4..8], &[0, 0, 0, 0]);
     }
 }

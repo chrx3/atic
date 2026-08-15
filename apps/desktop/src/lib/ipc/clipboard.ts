@@ -33,7 +33,7 @@ export const readClipboardDragText = (path: string) =>
 export const prepareClipboardPill = (fly: boolean) =>
   invoke<number>("prepare_clipboard_pill", { fly });
 
-/** Toggle del float de clipboard (sale de la pill, liquid). */
+/** Abre el float de clipboard (idempotente; el overlay decide el cierre). */
 export const showClipboardWindow = () => invoke<void>("show_clipboard_window");
 export const hideClipboardWindow = () => invoke<void>("hide_clipboard_window");
 

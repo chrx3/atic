@@ -49,6 +49,10 @@
     waitFrames,
   } from "$surfaces/overlay/floatReveal";
   import { surfaces } from "$surfaces/overlay/surfaces.svelte";
+  import {
+    armOpenDismissGrace,
+    isOpenDismissGrace,
+  } from "$surfaces/overlay/openDismissGrace";
   import { afterTransition, MOTION, ms, prefersReducedMotion, wait } from "$lib/motion";
   import LauncherIcon from "$surfaces/launcher/LauncherIcon.svelte";
   import Icon from "$ui/Icon.svelte";
@@ -405,7 +409,10 @@
   async function placeFromPill(a: BubbleOpen) {
     lastOpen = a;
     const fresh = !bubble.alive || !bubble.shown;
-    if (fresh) armOpenDur();
+    if (fresh) {
+      armOpenDur();
+      armOpenDismissGrace();
+    }
     if (workAreas.length === 0) {
       try {
         workAreas = await overlayWorkAreas();
@@ -756,12 +763,18 @@
 
   async function toggleFavorite(id: string, event?: Event) {
     event?.stopPropagation();
-    event?.preventDefault();
     try {
       favoriteIds = await launcherToggleFavorite(id);
       await loadFavorites();
+      // Sin esto las bolitas existen en el DOM pero con opacity 0 (`is-out`
+      // exige i < favRevealCount). Había que cerrar y reabrir para verlas.
+      favRevealCount = favorites.length;
+      await tick();
+      surfaces.schedule();
     } catch (failure) {
       error = failure instanceof Error ? failure.message : String(failure);
+      await loadFavorites();
+      favRevealCount = favorites.length;
     }
   }
 
@@ -883,6 +896,7 @@
       onLauncherOpened(() => void reset(true)),
       onOverlayDismiss(() => {
         surfaces.resetInteraction();
+        if (isOpenDismissGrace()) return;
         if (bubble.shown || bubble.alive) void close();
       }),
     ];
@@ -1016,13 +1030,19 @@
                 type="button"
                 class="lf-star"
                 class:is-on={isFavorite(hit.id)}
+                data-no-drag
                 aria-label={isFavorite(hit.id)
                   ? `Quitar ${hit.title} de favoritos`
                   : `Agregar ${hit.title} a favoritos`}
                 aria-pressed={isFavorite(hit.id)}
+                onpointerdown={(e) => e.stopPropagation()}
                 onclick={(e) => void toggleFavorite(hit.id, e)}
               >
-                <Icon icon={Star} size={14} />
+                <Icon
+                  icon={Star}
+                  size={14}
+                  fill={isFavorite(hit.id) ? "currentColor" : "none"}
+                />
               </button>
             </div>
           </li>
@@ -1038,7 +1058,7 @@
       </ul>
 
       <footer class="lf-foot">
-        <span class="lf-hint"><Kbd combo="↑+↓" /> navegar</span>
+        <span class="lf-hint"><Kbd combo="↑↓" /> navegar</span>
         <span class="lf-hint"><Kbd combo="Enter" /> abrir</span>
         <span class="lf-hint"><Kbd combo="Esc" /> cerrar</span>
       </footer>
@@ -1194,7 +1214,7 @@
   .lf-favs {
     position: absolute;
     left: calc(100% + var(--lf-fav-gap, 15px));
-    top: 50%;
+    top: 0;
     z-index: 2;
     display: flex;
     flex-shrink: 0;
@@ -1203,7 +1223,6 @@
     max-width: none;
     overflow: visible;
     pointer-events: none;
-    transform: translateY(-50%);
   }
 
   .lf.is-favs-seq .lf-favs {
@@ -1397,10 +1416,12 @@
   .lf-star {
     display: grid;
     place-items: center;
-    width: 1.85rem;
-    height: 1.85rem;
+    position: relative;
+    z-index: 2;
+    width: 2.5rem;
+    height: 2.5rem;
     flex-shrink: 0;
-    margin-right: 0.25rem;
+    margin-right: 0.15rem;
     border: none;
     border-radius: 0.4rem;
     padding: 0;
@@ -1413,6 +1434,10 @@
       background var(--duration-quick) var(--ease-smooth-out),
       opacity var(--duration-quick) var(--ease-smooth-out),
       transform var(--duration-quick) var(--ease-smooth-out);
+  }
+
+  .lf-star :global(svg) {
+    pointer-events: none;
   }
 
   .lf-hit.is-sel .lf-star,
@@ -1447,17 +1472,24 @@
   .lf-foot {
     display: flex;
     flex-shrink: 0;
-    gap: 0.85rem;
-    padding: 0.4rem 0.75rem 0.55rem;
+    justify-content: space-between;
+    gap: 0.4rem;
+    min-width: 0;
+    padding: 0.35rem 0.5rem 0.5rem;
+    overflow: hidden;
     border-top: 1px solid color-mix(in srgb, var(--rb-text) 10%, transparent);
     color: var(--rb-faint, var(--rb-muted));
-    font-size: 0.65rem;
+    font-size: 0.6rem;
   }
 
   .lf-hint {
     display: inline-flex;
+    flex-shrink: 1;
+    min-width: 0;
     align-items: center;
-    gap: 0.35rem;
+    gap: 0.25rem;
+    overflow: hidden;
+    white-space: nowrap;
   }
 
   @media (prefers-reduced-motion: reduce) {
@@ -1470,7 +1502,7 @@
     }
 
     .lf:not(.is-shown) .lf-favs {
-      transform: translateY(-50%);
+      transform: none;
     }
 
     .lf:not(.is-shown) .lf-dot {

@@ -50,6 +50,9 @@ pub fn show(
     shape: BubbleShape,
     anchor_event: &str,
 ) -> bool {
+    if open.load(Ordering::Relaxed) {
+        return true;
+    }
     let Some((target, anchor)) = crate::overlay::pill_rect()
         .and_then(|origen| crate::floating::bubble_rect(app, origen, shape))
     else {

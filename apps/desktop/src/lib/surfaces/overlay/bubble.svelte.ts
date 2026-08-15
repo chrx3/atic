@@ -82,7 +82,16 @@ export class Bubble {
     this.alive = true;
     // Un cuadro replegado (`.float-emerge` sin `.is-shown`): scale + viaje
     // hacia la pill. Sin ese frame, aparece de golpe en vez de nacer.
-    void tick().then(() => requestAnimationFrame(() => (this.shown = true)));
+    // El timeout cubre WebView2 dormido: con el overlay click-through el rAF
+    // a veces no corre hasta el próximo clic.
+    void tick().then(() => {
+      requestAnimationFrame(() => {
+        if (this.alive) this.shown = true;
+      });
+      window.setTimeout(() => {
+        if (this.alive && !this.shown) this.shown = true;
+      }, 50);
+    });
   }
 
   /**

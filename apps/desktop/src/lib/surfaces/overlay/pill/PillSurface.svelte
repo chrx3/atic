@@ -34,7 +34,7 @@
   import ToolIcon from "$lib/ToolIcon.svelte";
   import { agents } from "$lib/agentSessions.svelte";
   import ParticleWheel from "$lib/ParticleWheel.svelte";
-  import { TOOLS, AGENTS_ENABLED, type ToolId } from "$lib/tools";
+  import { WHEEL_TOOLS, AGENTS_ENABLED, type ToolId } from "$lib/tools";
   import { formatShortcut } from "$lib/format";
   import Icon from "$ui/Icon.svelte";
   import { X } from "$lib/icons";
@@ -54,6 +54,7 @@
     stepWheel as nextWheelTool,
     wheelChromeActive,
     wheelKeyAction,
+    wheelOpenFlight,
     type Surface,
   } from "$surfaces/overlay/pill/pillPlan";
   import AgentAuthCard from "$surfaces/overlay/pill/AgentAuthCard.svelte";
@@ -76,7 +77,7 @@
     onClipboardBubbleDismiss,
   } from "$ipc/clipboard";
   import { startCaptureSession } from "$ipc/captures";
-  import { getConfig, showMainWindow } from "$ipc/config";
+  import { getConfig } from "$ipc/config";
   import { on } from "$ipc/events";
   import { hideLauncher, onLauncherBubbleDismiss } from "$ipc/search";
   import {
@@ -91,6 +92,16 @@
     slotForTool,
   } from "$surfaces/overlay/toolSlots";
   import {
+    enqueueActivate,
+    isCursorAnchored,
+    pillToCursorMovePx,
+    shouldCommitShow,
+    shouldReturnHomeAfterClose,
+    slotIntent,
+    spatialDismissTargets,
+  } from "$surfaces/overlay/slotIntent";
+  import { armOpenDismissGrace } from "$surfaces/overlay/openDismissGrace";
+  import {
     onOverlayDismiss,
     onOverlayYieldMain,
     onPillRadialPress,
@@ -101,6 +112,7 @@
     pillHome,
     pillTrace,
     savePillHome,
+    setOverlayPointerGesture,
   } from "$ipc/overlay";
 
   /*
@@ -752,23 +764,27 @@
     try {
       // 1) Guardar el hogar ANTES de tocar la geometría.
       home = { ...at };
-      // 2) Volar al cursor; cerca de la pill se omite (solo latencia).
-      const cursor = await cursorPoint();
-      if (cursor) {
-        const size = stage.applied() ?? windowFor({ w: PILL.bar, h: PILL.bar });
-        const flew = await flyTo(
-          {
-            x: cursor.x - size.w / 2,
-            y: cursor.y - size.h / 2,
-          },
-          { skipIfNear: FLIGHT_SKIP_PX },
-        );
-        if (flew < 0 || openEpoch !== collapseEpoch) {
-          surface = "none";
-          wheelShown = false;
-          await flyTo(home, { skipIfNear: 2 });
-          return;
-        }
+      // 2) Volar al sitio donde la rueda cabe: cursor si está lejos (atajo),
+      //    o el centro actual clampeado si el clic es sobre la pill.
+      await stage.loadAreas();
+      const size = stage.applied() ?? windowFor({ w: PILL.bar, h: PILL.bar });
+      const wheel = windowFor({
+        w: PILL.wheel - PILL.pad * 2,
+        h: PILL.wheel - PILL.pad * 2,
+      });
+      const dest = wheelOpenFlight({
+        cursor: await cursorPoint(),
+        pill: { x: at.x, y: at.y, w: size.w, h: size.h },
+        wheel,
+        areas: stage.workAreas(),
+        skipIfNear: FLIGHT_SKIP_PX,
+      });
+      const flew = await flyTo(dest, { skipIfNear: 2 });
+      if (flew < 0 || openEpoch !== collapseEpoch) {
+        surface = "none";
+        wheelShown = false;
+        await flyTo(home, { skipIfNear: 2 });
+        return;
       }
       if (openEpoch !== collapseEpoch) return;
 
@@ -844,8 +860,8 @@
     return true;
   }
 
-  /** Cierra la rueda y vuelve al hogar previo al open. No activa nada. */
-  async function closeWheel() {
+  /** Cierra la rueda. Por defecto vuelve al hogar; un atajo de tool no debe. */
+  async function closeWheel(opts: { returnHome?: boolean } = {}) {
     if (surface !== "wheel") return;
     trace("closeWheel");
     const epoch = ++collapseEpoch;
@@ -857,7 +873,7 @@
     wheelTool = null;
     surface = "none";
     try {
-      await playCloseMorph(epoch, { returnHome: true });
+      await playCloseMorph(epoch, { returnHome: opts.returnHome ?? true });
     } finally {
       if (epoch === collapseEpoch) opening = false;
     }
@@ -880,7 +896,7 @@
       if (wheelTool) void activateTool(wheelTool);
       else void closeWheel();
     } else {
-      const next = nextWheelTool(wheelTool, action === "next" ? 1 : -1, TOOLS);
+      const next = nextWheelTool(wheelTool, action === "next" ? 1 : -1, WHEEL_TOOLS);
       if (next !== wheelTool) playWheelTick();
       wheelTool = next;
     }
@@ -903,6 +919,8 @@
 
     if (id === "meetings") void toggleRecord();
 
+    armOpenDismissGrace();
+    await setOverlayPointerGesture(true).catch(() => {});
     try {
       // Mismo orden que `closeWheel`: chrome de rueda activo hasta encoger.
       collapsingFrom = "wheel";
@@ -914,6 +932,7 @@
 
       if (slotForTool(id)) {
         returnHomeSuppressed = true;
+        if (isSpatialTool(id)) spatialIntent = id;
         try {
           // Solo launcher / agentes / dictado vuelan al slot.
           // Clipboard/textos desde la rueda abren junto a la pill (ya en el cursor).
@@ -928,8 +947,9 @@
 
       if (isSpatialTool(id)) {
         returnHomeSuppressed = true;
+        spatialIntent = id;
         try {
-          await dismissSpatialTools();
+          await dismissSpatialTools(id);
           await surfaces.flush();
           await executeToolAction(id);
         } finally {
@@ -942,31 +962,39 @@
     } catch (err) {
       console.warn("acción de la rueda", err);
     } finally {
+      void setOverlayPointerGesture(false).catch(() => {});
       if (epoch === collapseEpoch) opening = false;
       wheelQuick = false;
     }
   }
 
   /**
-   * Exclusive espacial: al abrir otra tool, cierra los floats no fijados
-   * (clipboard / textos / agentes / launcher). El pin (“siempre arriba”)
-   * mantiene el panel abierto — p. ej. agentes fijado + clipboard para pegar.
-   * `returnHomeSuppressed` evita que los dismiss disparen flyTo(home).
+   * Exclusive espacial: al abrir `keep`, cierra los floats no fijados.
+   * El pin (“siempre arriba”) mantiene el panel — p. ej. agentes fijado +
+   * clipboard para pegar. `returnHomeSuppressed` evita que esos dismiss
+   * disparen flyTo(home) a mitad del switch.
    */
   let returnHomeSuppressed = false;
-  async function dismissSpatialTools() {
+  /** Destino espacial del acto en curso: bloquea volver a casa si B aún nace. */
+  let spatialIntent: ToolId | null = null;
+  let slotBusy = false;
+  let slotPending: ToolId | null = null;
+  let slotGen = 0;
+  async function dismissSpatialTools(keep?: ToolId) {
     returnHomeSuppressed = true;
     const [clipPinned, snipPinned, agentsPinned] = await Promise.all([
       clipboardAlwaysOnTop().catch(() => false),
       snippetsAlwaysOnTop().catch(() => false),
       agentsAlwaysOnTop().catch(() => false),
     ]);
-    await Promise.all([
-      clipPinned ? Promise.resolve() : hideClipboardWindow().catch(() => {}),
-      snipPinned ? Promise.resolve() : hideSnippetsWindow().catch(() => {}),
-      agentsPinned ? Promise.resolve() : hideAgentsWindow().catch(() => {}),
-      hideLauncher().catch(() => {}),
-    ]);
+    const targets = spatialDismissTargets(keep, {
+      clipboard: clipPinned,
+      snippets: snipPinned,
+      agents: agentsPinned,
+    });
+    await Promise.all(
+      targets.map((id) => dismissSpatialTool(id).catch(() => {})),
+    );
   }
 
   async function dismissSpatialTool(id: ToolId) {
@@ -1013,9 +1041,29 @@
     });
   }
 
+  function anySpatialOpen(): boolean {
+    return (
+      spatialToolOpen("clipboard") ||
+      spatialToolOpen("snippets") ||
+      spatialToolOpen("launcher") ||
+      spatialToolOpen("agents")
+    );
+  }
+
+  /** El cursor está sobre UI de Atic: hay que no desarmar el overlay a mitad. */
+  function overlayUiBusy(): boolean {
+    return (
+      surface === "wheel" ||
+      collapsingFrom === "wheel" ||
+      openingWheel ||
+      anySpatialOpen()
+    );
+  }
+
   /** Vuelve al hogar si la pill quedó en un slot de acción. */
   async function maybeReturnHome() {
-    if (returnHomeSuppressed || slotBusy) return;
+    if (returnHomeSuppressed || slotBusy || spatialIntent) return;
+    if (anySpatialOpen()) return;
     if (Math.hypot(home.x - at.x, home.y - at.y) < 2) return;
     try {
       await flyTo(home);
@@ -1026,7 +1074,14 @@
 
   /** Dismiss de tool con reverse liquid: esperar a que el float se funda. */
   async function maybeReturnHomeAfterFloat(id: "launcher" | "clipboard" | "snippets") {
+    // El acto de la pill ya espera el cierre (close / relocate). Si
+    // también esperamos acá, un reabrir pisa el wait y se queda colgado
+    // del float nuevo.
+    if (slotBusy || returnHomeSuppressed) return;
+    const gen = slotGen;
     await waitSpatialSurfaceGone(id);
+    if (gen !== slotGen) return;
+    if (spatialIntent === id) spatialIntent = null;
     await maybeReturnHome();
   }
 
@@ -1039,7 +1094,7 @@
     // Al terminar dictado no hace falta volar.
     if (id === "dictation" && dictationStore.active) return;
 
-    if (isSpatialTool(id) || id === "dictation") await dismissSpatialTools();
+    if (isSpatialTool(id) || id === "dictation") await dismissSpatialTools(id);
 
     const size = stage.applied() ?? windowFor({ w: PILL.bar, h: PILL.bar });
     const slot = slotForTool(id);
@@ -1069,42 +1124,90 @@
   }
 
   /**
-   * Catálogo / ToolRail / atajo: fly → ejecutar.
-   * Si el float espacial ya está abierto, segunda activación = cerrar (toggle).
+   * Catálogo / ToolRail / atajo: el atajo nombra el destino.
+   * Misma tool abierta y cursor ahí → cerrar. Clipboard/textos con el
+   * cursor lejos → reubicar. Otra (o ninguna) → mostrar.
+   * Si hay un acto en curso, el último pedido gana (no se tira).
    */
-  let slotBusy = false;
-  async function activateAtSlot(id: ToolId) {
-    if (slotBusy) return;
+  function requestActivateAtSlot(id: ToolId) {
+    const queued = enqueueActivate(slotBusy, id);
+    if (!queued.start) {
+      slotPending = queued.pending;
+      cancelFlight();
+      return;
+    }
+    void runActivateAtSlot(id);
+  }
+
+  /** Cuánto tendría que volar la pill para centrarse en el cursor. */
+  async function cursorMovePx(id: ToolId): Promise<number> {
+    if (!isCursorAnchored(id) || !spatialToolOpen(id)) return 0;
+    const cursor = await cursorPoint();
+    const size = stage.applied() ?? windowFor({ w: PILL.bar, h: PILL.bar });
+    return pillToCursorMovePx(at, size, cursor);
+  }
+
+  async function runActivateAtSlot(id: ToolId) {
     slotBusy = true;
     returnHomeSuppressed = true;
+    const gen = ++slotGen;
+    const hold = overlayUiBusy();
+    if (hold) {
+      armOpenDismissGrace();
+      await setOverlayPointerGesture(true).catch(() => {});
+    }
     try {
       cancelPendingCollapse();
-      await closeWheel();
+      await closeWheel({ returnHome: false });
       surfaces.resetInteraction();
 
-      if (spatialToolOpen(id)) {
+      const intent = slotIntent(
+        id,
+        spatialToolOpen(id),
+        await cursorMovePx(id),
+        FLIGHT_SKIP_PX,
+      );
+
+      if (intent === "close") {
+        if (spatialIntent === id) spatialIntent = null;
         await dismissSpatialTool(id).catch(() => {});
-        // Liberar locks antes del vuelo: `maybeReturnHome` respeta `slotBusy`
-        // (y los dismiss IPC pueden haber intentado volver a casa en vano).
-        returnHomeSuppressed = false;
-        slotBusy = false;
-        // Launcher / clipboard / snippets cierran con reverse liquid: esperar
-        // a que el hit-rect se vaya antes de volar a casa.
+        if (slotPending) return;
         if (id === "launcher" || id === "clipboard" || id === "snippets") {
           await waitSpatialSurfaceGone(id);
         }
+        if (gen !== slotGen) return;
+        if (!shouldReturnHomeAfterClose(slotPending)) return;
+        returnHomeSuppressed = false;
         await maybeReturnHome();
         return;
       }
 
+      if (intent === "relocate") {
+        if (spatialIntent === id) spatialIntent = null;
+        await dismissSpatialTool(id).catch(() => {});
+        if (slotPending) return;
+        await waitSpatialSurfaceGone(id);
+        if (gen !== slotGen) return;
+        if (!shouldCommitShow(slotPending)) return;
+      }
+
+      if (isSpatialTool(id)) spatialIntent = id;
+      else if (id === "dictation") spatialIntent = null;
+
       await flyToToolSlot(id);
+      if (gen !== slotGen) return;
+      if (!shouldCommitShow(slotPending)) return;
       await surfaces.flush();
       await executeToolAction(id);
     } catch (err) {
       console.warn("activate-tool-slot", err);
     } finally {
+      if (hold) void setOverlayPointerGesture(false).catch(() => {});
       slotBusy = false;
       returnHomeSuppressed = false;
+      const next = slotPending;
+      slotPending = null;
+      if (next && gen === slotGen) void runActivateAtSlot(next);
     }
   }
 
@@ -1113,7 +1216,7 @@
     returnHomeSuppressed = true;
     try {
       cancelPendingCollapse();
-      await closeWheel();
+      await closeWheel({ returnHome: false });
       await flyToToolSlot(id);
     } catch (err) {
       console.warn("fly-tool-slot", err);
@@ -1138,14 +1241,6 @@
       await dictationStore.toggle();
     } catch (err) {
       console.warn("dictado", err);
-    }
-  }
-
-  async function openMain() {
-    try {
-      await showMainWindow();
-    } catch {
-      // best-effort
     }
   }
 
@@ -1254,7 +1349,7 @@
     window.removeEventListener("pointercancel", endDrag, true);
   }
 
-  /** Soltar sin haber movido = clic. En reposo, abre la rueda. */
+  /** Soltar sin haber movido = clic. Abre la rueda aunque haya cola o grabación. */
   function endDrag() {
     const wasClick = dragOrigin !== null && !dragMoved;
     const moved = dragMoved;
@@ -1265,7 +1360,7 @@
       void savePillHome(at.x, at.y);
       return;
     }
-    if (wasClick && activity === "idle" && surface === "none" && !hasQueue) {
+    if (wasClick && surface === "none") {
       void openWheel();
     }
   }
@@ -1316,7 +1411,11 @@
       onClipboardBubbleDismiss(() => void maybeReturnHomeAfterFloat("clipboard")),
       onSnippetsBubbleDismiss(() => void maybeReturnHomeAfterFloat("snippets")),
       onLauncherBubbleDismiss(() => void maybeReturnHomeAfterFloat("launcher")),
-      on("activate-tool-slot", (tool) => void activateAtSlot(tool)),
+      on("activate-tool-slot", (tool) => requestActivateAtSlot(tool)),
+      on("overlay-session-started", () => {
+        surfaces.resetInteraction();
+        void closeWheel({ returnHome: false });
+      }),
       on("fly-tool-slot", (tool) => void flySlotOnly(tool)),
       onPillRadialPress(() => void openWheel()),
       onPillRadialRelease(() => onWheelRelease()),
@@ -1403,8 +1502,8 @@
   });
 </script>
 
-<!-- Testigo de grabación: vive fuera de los modos, por eso sobrevive a que se
-     abra la rueda encima. Antes desaparecía y con él el botón de detener. -->
+<!-- Testigo de grabación. Con la rueda abierta el stack queda inert: el
+     stop visible es `.p-wheel-stop`, una copia fuera del stack. -->
 {#snippet recDot(label: string)}
   <button
     type="button"
@@ -1451,15 +1550,32 @@
       wheelNav
       particles={false}
       revealed={wheelShown}
+      tools={WHEEL_TOOLS}
       bind:activeId={wheelTool}
       caption="Herramientas"
+      centerLabel="Cerrar"
       onSelect={(id) => void activateTool(id)}
-      onCenter={() => {
-        void closeWheel();
-        void openMain();
-      }}
+      onCenter={() => void closeWheel()}
     />
   </div>
+
+  {#if wheelChrome && activity === "recording"}
+    <div class="p-wheel-stop">
+      {@render recDot("Detener grabación")}
+    </div>
+  {:else if wheelChrome && dictation === "listening"}
+    <button
+      type="button"
+      class="p-rec p-wheel-stop"
+      data-no-drag
+      onclick={toggleDictate}
+      disabled={busy}
+      aria-label="Detener dictado"
+      title="Dictando · clic para detener"
+    >
+      <ToolIcon id="dictation" size={16} strokeWidth={1.5} />
+    </button>
+  {/if}
 
   <!-- El stack es la REFERENCIA de medida y nada más: la silueta ya no se
        dibuja acá, se publica al grupo del overlay. Sigue estando fuera de
@@ -1512,7 +1628,7 @@
             {#if liveError}
               <span class="p-chip is-error" role="status">Error</span>
             {:else if btWarning}
-              <span class="p-chip is-warn" role="status" title={btWarning}>BT</span>
+              <span class="p-chip is-warn" role="status" title={btWarning} aria-label={btWarning}>BT</span>
             {:else if liveActive}
               <span class="p-chip" role="status">En vivo</span>
             {/if}
@@ -1583,7 +1699,7 @@
             {@render iconBtn("Descartar", X, () => void paste.dismiss(), 13)}
           {:else}
             <!-- Reposo: disco con la marca. Un clic abre la rueda; el centro de
-               la rueda abre la app. El doble clic ya no hace falta.
+               la rueda la cierra. El doble clic ya no hace falta.
                Con la rueda abierta/colapsando no se monta: el único «a» visible
                es el de ParticleWheel (centro). El stack sigue midiendo el
                disco vía `.p-bar.is-disc-only` (40px fijos). -->
@@ -1757,8 +1873,17 @@
     transition: opacity var(--morph-fade-dur) var(--morph-ease);
   }
 
+  /* Stop de grabación/dictado: el stack queda inert con la rueda abierta. */
+  .p-wheel-stop {
+    position: absolute;
+    z-index: 3;
+    left: 50%;
+    bottom: 8px;
+    transform: translateX(-50%);
+  }
+
   /* El disco de fondo se fue: ahora la superficie la ponen el núcleo y las
-     seis gotas de `ParticleWheel`, que escalan y viajan por su cuenta. La
+     gotas de `ParticleWheel`, que escalan y viajan por su cuenta. La
      marca del centro sigue sin escalar — es el punto fijo del morph. */
 
   /* ─── Cuerpo líquido (barra) ─────────────────────────────────────────── */

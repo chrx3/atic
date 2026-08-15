@@ -15,6 +15,7 @@ export const pasteSnippet = (id: string) => invoke<void>("paste_snippet", { id }
 export const prepareSnippetsPill = (fly: boolean) =>
   invoke<number>("prepare_snippets_pill", { fly });
 
+/** Abre el float de textos (idempotente; el overlay decide el cierre). */
 export const showSnippetsWindow = () => invoke<void>("show_snippets_window");
 export const hideSnippetsWindow = () => invoke<void>("hide_snippets_window");
 
