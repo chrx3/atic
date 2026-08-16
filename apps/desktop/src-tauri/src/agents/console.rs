@@ -79,8 +79,7 @@ fn resolve_local_shell() -> CommandBuilder {
     #[cfg(windows)]
     {
         let sysroot = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
-        let ps = PathBuf::from(&sysroot)
-            .join(r"System32\WindowsPowerShell\v1.0\powershell.exe");
+        let ps = PathBuf::from(&sysroot).join(r"System32\WindowsPowerShell\v1.0\powershell.exe");
         if ps.is_file() {
             let mut cmd = CommandBuilder::new(&ps);
             cmd.arg("-NoLogo");
@@ -119,8 +118,7 @@ fn build_ssh_builder(host: &SshHost) -> Result<(CommandBuilder, Option<AskpassGu
         cmd.env("SSH_ASKPASS", &script);
         cmd.env("SSH_ASKPASS_REQUIRE", "force");
         cmd.env("ATIC_SSH_PASSPHRASE", &pass);
-        if std::env::var_os("DISPLAY").is_none() && std::env::var_os("WAYLAND_DISPLAY").is_none()
-        {
+        if std::env::var_os("DISPLAY").is_none() && std::env::var_os("WAYLAND_DISPLAY").is_none() {
             cmd.env("DISPLAY", ":0");
         }
     }
@@ -185,13 +183,7 @@ fn spawn_wait(
             with_map(|map| {
                 map.remove(&session);
             });
-            let _ = app.emit(
-                "console-exit",
-                ConsoleExitPayload {
-                    session,
-                    code,
-                },
-            );
+            let _ = app.emit("console-exit", ConsoleExitPayload { session, code });
         })
         .ok();
 }

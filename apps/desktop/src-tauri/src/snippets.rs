@@ -352,10 +352,7 @@ pub fn summon_snippets_panel(app: &AppHandle) {
         crate::panel_float::PANEL_SHAPE,
         SNIP_ANCHOR,
     );
-    crate::overlay::set_topmost(
-        app,
-        crate::agents::bridge::overlay_should_be_topmost(),
-    );
+    crate::overlay::set_topmost(app, crate::agents::bridge::overlay_should_be_topmost());
 }
 
 #[tauri::command]
@@ -366,10 +363,7 @@ pub fn show_snippets_window(app: AppHandle) {
 #[tauri::command]
 pub fn hide_snippets_window(app: AppHandle) {
     crate::panel_float::hide(&app, &SNIPPETS_OPEN, SNIP_DISMISS);
-    crate::overlay::set_topmost(
-        &app,
-        crate::agents::bridge::overlay_should_be_topmost(),
-    );
+    crate::overlay::set_topmost(&app, crate::agents::bridge::overlay_should_be_topmost());
 }
 
 #[tauri::command]
@@ -394,10 +388,7 @@ pub fn set_snippets_always_on_top(app: AppHandle, on: bool) {
         };
         let _ = snapshot.save(&state.dirs.config_path());
     }
-    crate::overlay::set_topmost(
-        &app,
-        crate::agents::bridge::overlay_should_be_topmost(),
-    );
+    crate::overlay::set_topmost(&app, crate::agents::bridge::overlay_should_be_topmost());
 }
 
 /// Compacta la pill y la anima hasta el cursor antes de expandir fragmentos.

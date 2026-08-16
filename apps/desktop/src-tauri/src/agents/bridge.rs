@@ -337,12 +337,13 @@ pub fn agent_start(
     let key = uuid::Uuid::new_v4().to_string();
     let display_name = agent.display_name().to_string();
 
-    let remote = if let Some(id) = remote_host_id.as_deref().map(str::trim).filter(|s| !s.is_empty())
+    let remote = if let Some(id) = remote_host_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
     {
         if backend != "claude-code" {
-            return Err(
-                "Por ahora solo Claude Code admite sesión remota por SSH.".into(),
-            );
+            return Err("Por ahora solo Claude Code admite sesión remota por SSH.".into());
         }
         let host = state
             .config
@@ -613,10 +614,7 @@ pub fn agent_claude_sessions(cwd: String) -> Vec<super::claude_sessions::ClaudeC
 
 /// Transcript local del CLI, ya en turnos canónicos para pintar el chat.
 #[tauri::command]
-pub fn agent_claude_transcript(
-    cwd: String,
-    id: String,
-) -> Result<Vec<super::model::Turn>, String> {
+pub fn agent_claude_transcript(cwd: String, id: String) -> Result<Vec<super::model::Turn>, String> {
     super::claude_sessions::load_transcript(&cwd, &id)
 }
 
@@ -666,11 +664,7 @@ pub fn ssh_host_secrets_status(state: State<AppState>) -> Vec<SshHostSecretFlags
 
 /// Guarda o borra passphrase/password de un host. Valor vacío = borrar.
 #[tauri::command]
-pub fn ssh_set_host_secret(
-    host_id: String,
-    kind: String,
-    value: String,
-) -> Result<(), String> {
+pub fn ssh_set_host_secret(host_id: String, kind: String, value: String) -> Result<(), String> {
     secrets::set_ssh_host_secret(&host_id, &kind, &value).map_err(|e| e.to_string())
 }
 

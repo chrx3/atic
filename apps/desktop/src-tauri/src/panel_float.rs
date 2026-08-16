@@ -44,12 +44,7 @@ pub fn toggle(
     show(app, open, shape, anchor_event)
 }
 
-pub fn show(
-    app: &AppHandle,
-    open: &AtomicBool,
-    shape: BubbleShape,
-    anchor_event: &str,
-) -> bool {
+pub fn show(app: &AppHandle, open: &AtomicBool, shape: BubbleShape, anchor_event: &str) -> bool {
     if open.load(Ordering::Relaxed) {
         return true;
     }

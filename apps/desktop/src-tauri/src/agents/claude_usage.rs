@@ -14,7 +14,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime};
 
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use super::skills::config_dir;
 
@@ -142,7 +142,10 @@ impl UsageErr {
     }
 }
 
-fn call_usage(client: &reqwest::blocking::Client, token: &str) -> Result<ClaudeAccountUsage, UsageErr> {
+fn call_usage(
+    client: &reqwest::blocking::Client,
+    token: &str,
+) -> Result<ClaudeAccountUsage, UsageErr> {
     let resp = client
         .get(USAGE_URL)
         .header(reqwest::header::USER_AGENT, user_agent())
@@ -277,12 +280,10 @@ fn load_access_token(
         .map_err(|e| format!("no se pudieron leer las credenciales de Claude: {e}"))?;
     let root: Value = serde_json::from_str(&text)
         .map_err(|_| "credenciales de Claude ilegibles (JSON inválido)".to_string())?;
-    let oauth = root
-        .get("claudeAiOauth")
-        .ok_or_else(|| {
-            "Claude está en modo API key (sin OAuth). El uso de cupo Pro/Max no está disponible."
-                .to_string()
-        })?;
+    let oauth = root.get("claudeAiOauth").ok_or_else(|| {
+        "Claude está en modo API key (sin OAuth). El uso de cupo Pro/Max no está disponible."
+            .to_string()
+    })?;
 
     let tier_field = |key: &str| -> Option<String> {
         oauth.get(key).and_then(|v| {
@@ -362,9 +363,7 @@ fn refresh_and_persist(client: &reqwest::blocking::Client, path: &Path) -> Resul
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| {
-            "no hay refresh token. Ejecutá `claude auth login`.".to_string()
-        })?
+        .ok_or_else(|| "no hay refresh token. Ejecutá `claude auth login`.".to_string())?
         .to_string();
 
     let scopes: Vec<String> = oauth
@@ -414,9 +413,7 @@ fn refresh_and_persist(client: &reqwest::blocking::Client, path: &Path) -> Resul
             continue;
         }
         if status.as_u16() == 400 || status.as_u16() == 401 {
-            return Err(
-                "la sesión de Claude expiró. Ejecutá `claude auth login`.".to_string(),
-            );
+            return Err("la sesión de Claude expiró. Ejecutá `claude auth login`.".to_string());
         }
         return Err(last_err);
     }
@@ -490,10 +487,7 @@ fn atomic_write_json(path: &Path, value: &Value) -> Result<(), String> {
     let parent = path
         .parent()
         .ok_or_else(|| "ruta de credenciales sin directorio".to_string())?;
-    let tmp = parent.join(format!(
-        ".credentials.{}.tmp",
-        std::process::id()
-    ));
+    let tmp = parent.join(format!(".credentials.{}.tmp", std::process::id()));
     let body =
         serde_json::to_string_pretty(value).map_err(|e| format!("serializar credenciales: {e}"))?;
     fs::write(&tmp, body.as_bytes()).map_err(|e| format!("escribir temp credenciales: {e}"))?;

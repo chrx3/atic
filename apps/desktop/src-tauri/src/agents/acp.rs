@@ -42,11 +42,11 @@ use agent_client_protocol::schema::v1::{
     AuthenticateRequest, CancelNotification, ContentBlock, ContentChunk, ImageContent,
     InitializeRequest, NewSessionRequest, PermissionOptionKind, PromptRequest,
     RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
-    SelectedPermissionOutcome, SessionConfigKind, SessionConfigOption,
-    SessionConfigOptionCategory, SessionConfigSelect, SessionConfigSelectOption,
-    SessionConfigSelectOptions, SessionId, SessionNotification, SessionUpdate,
-    SetSessionConfigOptionRequest, StopReason, TextContent, ToolCall,
-    ToolCallStatus as AcpToolStatus, ToolCallUpdate, ToolKind as AcpToolKind, UsageUpdate,
+    SelectedPermissionOutcome, SessionConfigKind, SessionConfigOption, SessionConfigOptionCategory,
+    SessionConfigSelect, SessionConfigSelectOption, SessionConfigSelectOptions, SessionId,
+    SessionNotification, SessionUpdate, SetSessionConfigOptionRequest, StopReason, TextContent,
+    ToolCall, ToolCallStatus as AcpToolStatus, ToolCallUpdate, ToolKind as AcpToolKind,
+    UsageUpdate,
 };
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::{

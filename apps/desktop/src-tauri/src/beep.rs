@@ -360,7 +360,9 @@ fn play_chime_blocking(
     };
 
     stream.play()?;
-    std::thread::sleep(std::time::Duration::from_secs_f32(lead_in + total_secs + tail));
+    std::thread::sleep(std::time::Duration::from_secs_f32(
+        lead_in + total_secs + tail,
+    ));
     Ok(())
 }
 

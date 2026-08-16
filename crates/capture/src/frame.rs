@@ -209,10 +209,7 @@ mod tests {
     #[test]
     fn blend_over_copies_opaque_pixels() {
         // Destino azul; overlay rojo de 1px desplazado a x=1.
-        let mut dst = Frame::new(
-            Rect::new(0, 0, 2, 1),
-            vec![255, 0, 0, 255, 255, 0, 0, 255],
-        );
+        let mut dst = Frame::new(Rect::new(0, 0, 2, 1), vec![255, 0, 0, 255, 255, 0, 0, 255]);
         let src = Frame::new(Rect::new(1, 0, 1, 1), vec![0, 0, 255, 255]);
         dst.blend_over(&src);
         assert_eq!(&dst.bgra[0..4], &[255, 0, 0, 255]);
@@ -229,10 +226,7 @@ mod tests {
 
     #[test]
     fn prepare_overlay_knockouts_near_black_when_alpha_missing() {
-        let mut frame = Frame::new(
-            Rect::new(0, 0, 2, 1),
-            vec![0, 0, 0, 0, 40, 40, 40, 0],
-        );
+        let mut frame = Frame::new(Rect::new(0, 0, 2, 1), vec![0, 0, 0, 0, 40, 40, 40, 0]);
         assert!(frame.prepare_overlay_layer());
         assert_eq!(frame.bgra[3], 0);
         assert_eq!(frame.bgra[7], 255);

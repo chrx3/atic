@@ -19,9 +19,7 @@ use std::time::UNIX_EPOCH;
 use serde::Serialize;
 use serde_json::Value;
 
-use super::model::{
-    Item, ItemKind, Role, ToolKind, ToolStatus, Turn, TurnStatus,
-};
+use super::model::{Item, ItemKind, Role, ToolKind, ToolStatus, Turn, TurnStatus};
 use super::skills::config_dir;
 
 /// Una sesión del CLI, lista para `--resume`.
@@ -42,13 +40,7 @@ pub struct ClaudeCodeSession {
 /// queda `C--Users-…-atic`.
 pub fn encode_project_key(cwd: &str) -> String {
     cwd.chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() {
-                c
-            } else {
-                '-'
-            }
-        })
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
         .collect()
 }
 
@@ -188,9 +180,8 @@ fn session_jsonl(cwd: &str, session_id: &str) -> Option<PathBuf> {
 /// Best-effort: ignora attachments/meta y sidechains. Tope de turnos para no
 /// congelar la UI con sesiones enormes.
 pub fn load_transcript(cwd: &str, session_id: &str) -> Result<Vec<Turn>, String> {
-    let path = session_jsonl(cwd, session_id).ok_or_else(|| {
-        format!("no hay transcript local para {session_id} en esa carpeta")
-    })?;
+    let path = session_jsonl(cwd, session_id)
+        .ok_or_else(|| format!("no hay transcript local para {session_id} en esa carpeta"))?;
     let file = fs::File::open(&path).map_err(|e| format!("no se pudo leer {path:?}: {e}"))?;
     let reader = BufReader::new(file);
 
@@ -211,9 +202,7 @@ pub fn load_transcript(cwd: &str, session_id: &str) -> Result<Vec<Turn>, String>
             continue;
         }
         match v.get("type").and_then(Value::as_str) {
-            Some("user")
-                if v.get("isCompactSummary").and_then(Value::as_bool) == Some(true) =>
-            {
+            Some("user") if v.get("isCompactSummary").and_then(Value::as_bool) == Some(true) => {
                 // Resumen sintético post-/compact: no es diálogo del usuario.
                 apply_compact_summary(&v, &mut turns, &mut seq);
             }
@@ -268,10 +257,8 @@ fn push_notice(turns: &mut Vec<Turn>, seq: &mut u64, text: String) {
     }
     let turn = turns.last_mut().expect("turn");
     *seq += 1;
-    turn.items.push(Item::new(
-        format!("cli-n{seq}"),
-        ItemKind::Notice { text },
-    ));
+    turn.items
+        .push(Item::new(format!("cli-n{seq}"), ItemKind::Notice { text }));
 }
 
 fn apply_compact_boundary(v: &Value, turns: &mut Vec<Turn>, seq: &mut u64) {
@@ -302,11 +289,7 @@ fn apply_compact_summary(v: &Value, turns: &mut Vec<Turn>, seq: &mut u64) {
     if text.is_empty() {
         return;
     }
-    push_notice(
-        turns,
-        seq,
-        format!("Resumen del contexto\n\n{text}"),
-    );
+    push_notice(turns, seq, format!("Resumen del contexto\n\n{text}"));
 }
 
 fn apply_user_line(
@@ -337,7 +320,9 @@ fn apply_user_line(
                 if let Some(item) = turns.get_mut(ti).and_then(|t| t.items.get_mut(ii)) {
                     match &mut item.kind {
                         ItemKind::Tool {
-                            status, output: out, ..
+                            status,
+                            output: out,
+                            ..
                         } => {
                             *status = if is_error {
                                 ToolStatus::Failed

@@ -714,22 +714,10 @@ pub fn bubble_rect(
     // (x, y del globo, lado del globo que mira al origen)
     let (mut x, mut y, side) = if fits_below {
         // Pill arriba-izquierda del panel (crece a la derecha); si no, arriba-derecha.
-        let x = along_axis(
-            ax + aw - corner,
-            ax - bw + corner,
-            bw,
-            work.x,
-            work.right(),
-        );
+        let x = along_axis(ax + aw - corner, ax - bw + corner, bw, work.x, work.right());
         (x, ay + ah + gap, "top")
     } else if fits_above {
-        let x = along_axis(
-            ax + aw - corner,
-            ax - bw + corner,
-            bw,
-            work.x,
-            work.right(),
-        );
+        let x = along_axis(ax + aw - corner, ax - bw + corner, bw, work.x, work.right());
         (x, ay - gap - bh, "bottom")
     } else if fits_right {
         // Pill izquierda-arriba del panel (crece hacia abajo).
