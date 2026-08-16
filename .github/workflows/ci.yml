@@ -3,7 +3,7 @@ name: CI
 # Cupo de Actions: Frontend + rustfmt + Windows en cada PR/push agotó los
 # minutos (Windows ×2, macOS ×10). Este workflow NO corre en push ni en
 # pull_request. Disparalo a mano desde Actions → CI → Run workflow.
-# Instaladores: solo tags, ver release.yml.
+# Instaladores: solo workflow_dispatch, ver release.yml (los tags no disparan build).
 
 on:
   workflow_dispatch:

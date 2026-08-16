@@ -2,7 +2,12 @@
 
 export type UiTheme = "light" | "dark" | "system";
 
-/** Clave compartida entre ventanas: el evento `storage` sincroniza las flotantes. */
+/**
+ * Cache por webview. El overlay de Tauri usa un `data_directory` propio
+ * (WebView2 no puede compartir perfil con main), así que este valor NO cruza
+ * ventanas. La fuente de verdad es `config.ui_theme`; el evento `ui-theme`
+ * avisa a las flotantes. El cache solo evita un destello en la misma ventana.
+ */
 export const THEME_STORAGE_KEY = "atic-theme";
 const STORAGE_KEY = THEME_STORAGE_KEY;
 
@@ -32,6 +37,11 @@ export function applyTheme(theme: UiTheme): "light" | "dark" {
     // ignore
   }
   return resolved;
+}
+
+/** Aplica el tema persistido en config. Es el que ven todos los webviews. */
+export function applyConfigTheme(uiTheme: string | null | undefined): "light" | "dark" {
+  return applyTheme(normalizeTheme(uiTheme));
 }
 
 export function readCachedTheme(): UiTheme {

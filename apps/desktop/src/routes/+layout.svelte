@@ -3,7 +3,13 @@
   import { goto } from "$app/navigation";
   import { page } from "$app/state";
   import { installDesktopChromeGuards } from "$lib/desktopChrome";
-  import { applyTheme, readCachedTheme, THEME_STORAGE_KEY } from "$lib/theme";
+  import { getConfig, onUiTheme } from "$ipc/config";
+  import {
+    applyConfigTheme,
+    applyTheme,
+    readCachedTheme,
+    THEME_STORAGE_KEY,
+  } from "$lib/theme";
   import "../app.css";
 
   let { children } = $props();
@@ -22,12 +28,30 @@
     const stopChrome = installDesktopChromeGuards();
 
     // Cada ventana es un WebView con su propio document: `data-theme` hay que
-    // ponerlo en todas. Sin esto, pill / shelf / overlay se quedaban siempre
-    // en los tokens claros aunque la app estuviera en oscuro.
+    // ponerlo en todas. El overlay además tiene un perfil WebView2 propio
+    // (`overlay-webview`): localStorage no cruza desde main, así que el
+    // cache solo evita un destello acá. La fuente de verdad es la config.
     applyTheme(readCachedTheme());
 
-    // localStorage es compartido entre ventanas del mismo origen: `storage`
-    // avisa a las flotantes cuando la principal cambia el tema.
+    // Suscribirse antes de leer: si el tema cambia mientras llega `get_config`,
+    // una respuesta vieja no debe pintar encima del evento.
+    let themeFromEvent = false;
+    const pendingTheme = onUiTheme((theme) => {
+      themeFromEvent = true;
+      applyConfigTheme(theme);
+    });
+    void pendingTheme
+      .catch(() => {})
+      .then(() => getConfig())
+      .then((cfg) => {
+        if (themeFromEvent) return;
+        applyConfigTheme(cfg.ui_theme);
+      })
+      .catch(() => {
+        // Fuera de Tauri, o el webview nació antes del manage.
+      });
+
+    // Por si alguna ventana sí comparte origen (labs en el browser).
     const onStorage = (event: StorageEvent) => {
       if (event.key === null || event.key === THEME_STORAGE_KEY) {
         applyTheme(readCachedTheme());
@@ -102,6 +126,7 @@
       window.removeEventListener("storage", onStorage);
       window.removeEventListener("keydown", onDevKey);
       mq.removeEventListener("change", onScheme);
+      void pendingTheme.then((off) => off()).catch(() => {});
     };
   });
 </script>

@@ -103,6 +103,13 @@ export interface AticEvents {
 
   // Sistema
   "shortcuts-failed": string[];
+  /**
+   * Tema de UI persistido (`light` | `dark` | `system`).
+   *
+   * El overlay no comparte localStorage con main (perfil WebView2 propio),
+   * así que el cache `atic-theme` no alcanza: hay que avisarle por IPC.
+   */
+  "ui-theme": string;
   /** Float launcher: ancla / dismiss (sale de la pill). */
   "launcher-bubble-anchor": BubbleOpen;
   "launcher-bubble-dismiss": void;

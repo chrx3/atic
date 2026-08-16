@@ -16,6 +16,10 @@ import { on } from "./events";
 export const getConfig = () => invoke<AppConfig>("get_config");
 export const setConfig = (config: AppConfig) => invoke<void>("set_config", { config });
 
+/** Tema persistido. Cruza webviews; `storage` no llega al overlay aislado. */
+export const onUiTheme = (cb: (theme: string) => void): Promise<UnlistenFn> =>
+  on("ui-theme", cb);
+
 export const secretsStatus = () => invoke<SecretsStatus>("secrets_status");
 export const setSecret = (kind: string, value: string) =>
   invoke<void>("set_secret", { kind, value });
