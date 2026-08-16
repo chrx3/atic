@@ -23,28 +23,66 @@ import { sameSize, type Pivot, type ResizeOutcome, type Size } from "./pillStage
 
 export type { Point };
 
-/**
- * Encaja un rectángulo en el monitor que le corresponde (`bounds` completos).
- *
- * Misma regla que `floating::clamp` en Rust: monitor por **centro**; si el
- * centro cae entre pantallas, se usa la unión de todas las áreas (escritorio
- * virtual). `MARGIN = 0` → puede solapar taskbar y pegarse al borde.
- */
-function clampTo(areas: Area[], p: Point, size: Size): Point {
-  if (areas.length === 0) return p;
-  const cx = p.x + size.w / 2;
-  const cy = p.y + size.h / 2;
-  const hit = areas.find(
-    (a) => cx >= a.x && cx <= a.x + a.w && cy >= a.y && cy <= a.y + a.h,
-  );
-  const area = hit ?? unionAreas(areas);
+/** Viewport CSS del overlay (`innerWidth/Height`), si el DOM ya existe. */
+function visibleView(): Size | null {
+  if (typeof window === "undefined") return null;
+  const w = window.innerWidth;
+  const h = window.innerHeight;
+  if (!(w > 1 && h > 1)) return null;
+  return { w, h };
+}
 
+function clampRect(area: Area, p: Point, size: Size): Point {
   const maxX = Math.max(area.x + area.w - size.w - MARGIN, area.x + MARGIN);
   const maxY = Math.max(area.y + area.h - size.h - MARGIN, area.y + MARGIN);
   return {
     x: Math.min(Math.max(p.x, area.x + MARGIN), maxX),
     y: Math.min(Math.max(p.y, area.y + MARGIN), maxY),
   };
+}
+
+function intersect(a: Area, b: Area): Area | null {
+  const x0 = Math.max(a.x, b.x);
+  const y0 = Math.max(a.y, b.y);
+  const x1 = Math.min(a.x + a.w, b.x + b.w);
+  const y1 = Math.min(a.y + a.h, b.y + b.h);
+  if (x1 <= x0 || y1 <= y0) return null;
+  return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+}
+
+/**
+ * Encaja un rectángulo en el monitor que le corresponde (`bounds` completos).
+ *
+ * Misma regla que `floating::clamp` en Rust: monitor por **centro**; si el
+ * centro cae entre pantallas, se usa la unión de todas las áreas (escritorio
+ * virtual). `MARGIN = 0` → puede solapar taskbar y pegarse al borde.
+ *
+ * Además se corta contra el viewport CSS (`view`, o `[0, ∞)` si no hay). El
+ * overlay pinta desde (0,0) y `html { overflow: hidden }` recorta lo negativo:
+ * si el origen del cliente queda más abajo que el monitor, clampear solo a
+ * `bounds` deja la pill a y < 0 y desaparece antes del borde de la pantalla.
+ */
+export function clampTo(
+  areas: Area[],
+  p: Point,
+  size: Size,
+  view?: Size | null,
+): Point {
+  const paint: Area =
+    view && view.w > 1 && view.h > 1
+      ? { x: 0, y: 0, w: view.w, h: view.h }
+      : { x: 0, y: 0, w: Number.POSITIVE_INFINITY, h: Number.POSITIVE_INFINITY };
+
+  if (areas.length === 0) {
+    return clampRect(paint, p, size);
+  }
+  const cx = p.x + size.w / 2;
+  const cy = p.y + size.h / 2;
+  const hit = areas.find(
+    (a) => cx >= a.x && cx <= a.x + a.w && cy >= a.y && cy <= a.y + a.h,
+  );
+  const area = intersect(hit ?? unionAreas(areas), paint) ?? paint;
+  return clampRect(area, p, size);
 }
 
 function unionAreas(areas: Area[]): Area {
@@ -103,7 +141,7 @@ export function createCssStage() {
 
   /** Coloca la esquina sin tocar el tamaño (arrastre, hogar). */
   function moveTo(p: Point): void {
-    origin = current ? clampTo(areas, p, current) : p;
+    origin = current ? clampTo(areas, p, current, visibleView()) : p;
   }
 
   /**
@@ -196,7 +234,7 @@ export function createCssStage() {
         break;
     }
 
-    origin = clampTo(areas, next, target);
+    origin = clampTo(areas, next, target, visibleView());
     current = target;
     return { ok: true, up };
   }

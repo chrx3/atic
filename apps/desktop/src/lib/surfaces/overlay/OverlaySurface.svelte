@@ -373,9 +373,10 @@
   }
 
   .ov {
-    position: relative;
-    width: 100vw;
-    height: 100vh;
+    /* `100vw/100vh` en WebView2 a veces es un recuadro más chico que la
+       ventana: html overflow:hidden recorta la pill antes del borde real. */
+    position: fixed;
+    inset: 0;
 
     /* Sin `touch-action` el navegador se queda el gesto para hacer pan y los
        `pointermove` dejan de llegar apenas arranca un arrastre. */

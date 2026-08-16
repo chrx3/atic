@@ -476,6 +476,10 @@ pub fn place(app: &AppHandle) -> Option<OverlayRect> {
         // y el overlay cubre la pantalla pero el CSS sigue en un recuadro:
         // la pill vuela "a medio camino" y los floats nacen corridos.
         let _ = window.set_size(tauri::PhysicalSize::new(rect.w as u32, rect.h as u32));
+        // `set_position` mueve el marco. Si queda caption/borde DWM, el (0,0)
+        // del cliente —y por tanto el CSS— nace más abajo que el borde real:
+        // la pill se recorta con overflow:hidden a mitad de camino.
+        cover_virtual_screen(&window);
         crate::webview_tweaks::sync_controller_bounds(&window);
         // El webview termina de nacer después de `show`: repetir o se queda
         // con el recuadro del create (fly-to corto, pill sin clics).
@@ -484,6 +488,7 @@ pub fn place(app: &AppHandle) -> Option<OverlayRect> {
             std::thread::spawn(move || {
                 for ms in [16u64, 50, 200, 500, 1000, 2000] {
                     std::thread::sleep(std::time::Duration::from_millis(ms));
+                    cover_virtual_screen(&delayed);
                     crate::webview_tweaks::sync_controller_bounds(&delayed);
                 }
             });
@@ -519,6 +524,66 @@ pub fn place(app: &AppHandle) -> Option<OverlayRect> {
     {
         let _ = app;
         None
+    }
+}
+
+/// Desplaza el marco para que el (0,0) del cliente coincida con el escritorio
+/// virtual. El tamaño interior ya lo puso `set_size`; acá solo se corrige el
+/// desfase de no-cliente (caption residual, borde DWM).
+#[cfg(windows)]
+fn cover_virtual_screen(window: &tauri::WebviewWindow) {
+    use windows_sys::Win32::Foundation::POINT;
+    use windows_sys::Win32::Graphics::Gdi::ClientToScreen;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetWindowRect, SetWindowPos, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER,
+    };
+
+    let Ok(hwnd) = window.hwnd() else {
+        return;
+    };
+    let hwnd = hwnd.0 as _;
+    let vs = atic_capture::monitors::virtual_screen();
+
+    let mut origin = POINT { x: 0, y: 0 };
+    let mut outer = windows_sys::Win32::Foundation::RECT {
+        left: 0,
+        top: 0,
+        right: 0,
+        bottom: 0,
+    };
+    // SAFETY: HWND de Tauri vivo; ClientToScreen / GetWindowRect solo leen.
+    let ok = unsafe { ClientToScreen(hwnd, &mut origin) != 0 && GetWindowRect(hwnd, &mut outer) != 0 };
+    if !ok {
+        return;
+    }
+    let dx = vs.x - origin.x;
+    let dy = vs.y - origin.y;
+    if dx == 0 && dy == 0 {
+        return;
+    }
+
+    tracing::info!(
+        target: "overlay",
+        dx,
+        dy,
+        origin_x = origin.x,
+        origin_y = origin.y,
+        vs_x = vs.x,
+        vs_y = vs.y,
+        "cliente del overlay desfasado del escritorio virtual; se corrige"
+    );
+
+    // SAFETY: mismo HWND; SWP_NOSIZE conserva el inner_size ya aplicado.
+    unsafe {
+        SetWindowPos(
+            hwnd,
+            std::ptr::null_mut(),
+            outer.left + dx,
+            outer.top + dy,
+            0,
+            0,
+            SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+        );
     }
 }
 
