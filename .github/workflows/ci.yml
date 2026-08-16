@@ -6,13 +6,13 @@ name: CI
 # Cupo: macOS se factura ×10 y Windows ×2. El matrix Win+Mac en cada PR
 # (incluido Dependabot) agotó los 2.000 min/mes. Por eso:
 #   - PRs: frontend + rustfmt (baratos, Linux ×1).
-#   - Push a main/dev: clippy+test en Windows.
+#   - Push a main: clippy+test en Windows.
 #   - Build de la app: solo push a main, Windows.
 #   - macOS: solo el workflow Release (instaladores).
 
 on:
   push:
-    branches: [main, dev]
+    branches: [main]
   pull_request:
 
 concurrency:

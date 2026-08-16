@@ -6,12 +6,16 @@ Al participar, aceptas el [Código de Conducta](CODE_OF_CONDUCT.md).
 
 ## Flujo
 
+El desarrollo activo está en `main`. Las versiones publicadas son tags `v*`.
+
 1. Haz fork (si no tienes acceso de escritura) o clona el repo.
-2. Crea una rama desde `dev` (ahí vive el desarrollo activo; `main` es la rama por defecto del remoto).
+2. Crea una rama desde `main` (`feat/…`, `fix/…`, `docs/…`).
 3. Haz commits pequeños y claros.
-4. Abre un pull request hacia `dev`.
+4. Abre un pull request hacia `main`.
 
 Antes de pedir revisión, asegúrate de que CI y las comprobaciones locales pasen.
+En PRs, CI corre frontend + rustfmt (Linux). Clippy, tests de Rust y el
+instalador se disparan en push a `main` cuando hay cupo de Actions.
 
 ## Requisitos
 
@@ -51,6 +55,7 @@ pnpm verify
 ## PRs
 
 - Describe el problema y la solución en pocas líneas.
+- Si el cambio es grande, abre un issue primero.
 - Incluye capturas o pasos de reproducción si el cambio es de UI.
 - No subas secretos, claves, `.env`, ni artefactos de build.
 - No hace falta regenerar lockfiles salvo que el cambio lo requiera.

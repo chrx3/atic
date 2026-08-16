@@ -105,12 +105,16 @@ pnpm tauri build -- --features gpu-cuda     # NVIDIA
 pnpm tauri build -- --features gpu-vulkan   # AMD/Intel
 ```
 
-Un tag `v*` dispara [`.github/workflows/release.yml`](../.github/workflows/release.yml):
+PRs hacia `main`. Un tag `v*` dispara
+[`.github/workflows/release.yml`](../.github/workflows/release.yml):
 
 ```bash
-git tag v0.3.3
-git push origin v0.3.3
+git tag v0.4.1
+git push origin v0.4.1
 ```
+
+Sin cupo de Actions, el instalador de Windows se genera en local
+(`pnpm tauri build --bundles nsis`) y se sube al Release a mano.
 
 Sin firma Authenticode / notarization de Apple, Windows puede mostrar
 SmartScreen y macOS Gatekeeper pedirá Abrir desde Ajustes. Los modelos Whisper

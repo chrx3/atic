@@ -10,7 +10,7 @@
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-yellow.svg" alt="MIT"></a>
   <a href="https://github.com/chrx3/atic/releases/latest"><img src="https://img.shields.io/github/v/release/chrx3/atic?include_prereleases" alt="Release"></a>
-  <a href="https://github.com/chrx3/atic/actions/workflows/ci.yml"><img src="https://github.com/chrx3/atic/actions/workflows/ci.yml/badge.svg?branch=dev" alt="CI"></a>
+  <a href="https://github.com/chrx3/atic/actions/workflows/ci.yml"><img src="https://github.com/chrx3/atic/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
   <img src="https://img.shields.io/badge/Windows-11-0078D4?logo=windows&logoColor=white" alt="Windows">
   <img src="https://img.shields.io/badge/macOS-11%2B-000000?logo=apple&logoColor=white" alt="macOS">
   <img src="https://img.shields.io/badge/Tauri-2-FFC131?logo=tauri&logoColor=black" alt="Tauri 2">
@@ -24,7 +24,8 @@ solo viaja el texto, con la clave en el llavero del sistema.
 **Windows** es la plataforma completa (mic + audio del sistema). En **macOS**
 hoy se graba solo el micrófono.
 
-El desarrollo activo está en la rama [`dev`](https://github.com/chrx3/atic/tree/dev).
+Atic es **open source** ([MIT](LICENSE)). El desarrollo vive en
+[`main`](https://github.com/chrx3/atic). Issues y PRs son bienvenidos.
 
 ## Qué hace
 
@@ -44,11 +45,11 @@ Catálogo vivo (hechas, a medias e ideas): [`Features/`](Features/).
 Descargá el último instalador en
 [Releases](https://github.com/chrx3/atic/releases/latest):
 
-- Windows: `*-setup.exe` (NSIS)
-- macOS: `.dmg`
+- Windows: `*-setup.exe` (NSIS) — es lo que hay en el release actual
+- macOS: compilá desde el source ([`docs/MACOS.md`](docs/MACOS.md)); el DMG
+  sale cuando hay cupo de CI
 
-Windows puede mostrar SmartScreen y macOS Gatekeeper puede pedir *Abrir* desde
-Ajustes: la app todavía no lleva firma Authenticode / notarization de Apple.
+Windows puede mostrar SmartScreen: la app todavía no lleva firma Authenticode.
 Los modelos de Whisper se bajan en el primer uso; no van dentro del instalador.
 
 ## Uso
@@ -93,16 +94,17 @@ Compilar desde el source: [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md)
 ```bash
 git clone https://github.com/chrx3/atic.git
 cd atic
-git checkout dev
 cd apps/desktop
 pnpm install
 pnpm tauri dev
 ```
 
-PRs hacia `dev`. Cómo contribuir: [`CONTRIBUTING.md`](CONTRIBUTING.md).
+Ramas desde `main`, PRs hacia `main`. Cómo contribuir:
+[`CONTRIBUTING.md`](CONTRIBUTING.md).
 Vulnerabilidades: [`SECURITY.md`](SECURITY.md).
 Comunidad: [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md).
 
 ## Licencia
 
 [MIT](LICENSE) · copyright [chrx3](https://github.com/chrx3).
+Contribuir implica aceptar esa licencia.
