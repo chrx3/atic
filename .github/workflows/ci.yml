@@ -1,19 +1,17 @@
 name: CI
 
-# whisper-rs compila whisper.cpp: requiere CMake (preinstalado en los runners
-# de GitHub) y LLVM/libclang (lo instalamos con la acción de abajo).
-#
-# Cupo: macOS se factura ×10 y Windows ×2. El matrix Win+Mac en cada PR
-# (incluido Dependabot) agotó los 2.000 min/mes. Por eso:
-#   - PRs: frontend + rustfmt (baratos, Linux ×1).
-#   - Push a main: clippy+test en Windows.
-#   - Build de la app: solo push a main, Windows.
-#   - macOS: solo el workflow Release (instaladores).
+# Cupo de Actions: Frontend + rustfmt + Windows en cada PR/push agotó los
+# minutos (Windows ×2, macOS ×10). Este workflow NO corre en push ni en
+# pull_request. Disparalo a mano desde Actions → CI → Run workflow.
+# Instaladores: solo tags, ver release.yml.
 
 on:
-  push:
-    branches: [main]
-  pull_request:
+  workflow_dispatch:
+    inputs:
+      windows:
+        description: "Correr clippy/test y build en Windows (caro, se factura ×2)"
+        type: boolean
+        default: false
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -22,7 +20,6 @@ concurrency:
 jobs:
   frontend:
     name: Frontend
-    if: github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -42,7 +39,6 @@ jobs:
 
   rustfmt:
     name: rustfmt
-    if: github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -54,7 +50,7 @@ jobs:
 
   rust:
     name: Rust (windows)
-    if: github.event_name == 'push' && github.actor != 'dependabot[bot]'
+    if: ${{ inputs.windows }}
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -72,7 +68,7 @@ jobs:
 
   build:
     name: Build app (windows)
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.actor != 'dependabot[bot]'
+    if: ${{ inputs.windows }}
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4

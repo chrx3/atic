@@ -69,6 +69,9 @@ pnpm tauri build    # instalador de producción
 
 ## Validación
 
+El workflow `.github/workflows/ci.yml` no corre en push ni en PRs (cupo de
+Actions). Disparalo a mano desde la pestaña Actions cuando haga falta.
+
 ```bash
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
