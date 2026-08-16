@@ -12,7 +12,19 @@ import type { UnlistenFn } from "@tauri-apps/api/event";
 import { on } from "./events";
 
 export type Point = { x: number; y: number };
-export type Area = { x: number; y: number; w: number; h: number };
+export type Rect = { x: number; y: number; w: number; h: number };
+/**
+ * Un monitor, en px CSS del overlay.
+ *
+ * `work` es la pantalla menos lo que el SO ya reservó —barra de tareas en
+ * Windows, barra de menú y Dock en macOS—. Opcional porque los tests y el
+ * fallback sin Tauri construyen áreas a mano; usar `workAreaOf` en vez de
+ * leerla directo, que cae a los bounds cuando no viene.
+ */
+export type Area = Rect & { work?: Rect };
+
+/** El área útil del monitor, o sus bounds si el SO no la reportó. */
+export const workAreaOf = (area: Area): Rect => area.work ?? area;
 /** Una zona del overlay que sí recibe el mouse. El `id` viaja a Rust. */
 export type HitRect = { id: string; x: number; y: number; w: number; h: number };
 
@@ -91,6 +103,15 @@ export const setOverlayItemDrag = (on: boolean) =>
 /** Armar el overlay al empezar un arrastre, sin esperar el hit-rect. */
 export const setOverlayPointerGesture = (on: boolean) =>
   invoke<void>("set_overlay_pointer_gesture", { on });
+
+/**
+ * ¿El botón principal sigue apretado?
+ *
+ * El `pointerup` no llega cuando el puntero se va a otra ventana —soltar sobre
+ * la barra de tareas—, y el arrastre quedaba colgado. El movimiento ya se lee
+ * de Win32 por lo mismo; esto cierra el final del gesto.
+ */
+export const overlayPrimaryDown = () => invoke<boolean>("overlay_primary_down");
 
 /** ¿El cursor está sobre el hit-rect `id` del overlay? */
 export const overlayCursorOverHit = (id: string) =>

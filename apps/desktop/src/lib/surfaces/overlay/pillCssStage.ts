@@ -152,6 +152,35 @@ export function createCssStage() {
         if (from) next = { x: origin.x, y: origin.y + (from.h - target.h) };
         break;
       }
+      // Acoplada a un borde: el lado pegado no se mueve y el eje libre se
+      // recentra. Crecer hacia afuera la sacaría de la pantalla, y crecer
+      // desde una esquina la haría deslizarse a lo largo del canto.
+      case "dockLeft": {
+        if (from) next = { x: origin.x, y: origin.y + (from.h - target.h) / 2 };
+        break;
+      }
+      case "dockRight": {
+        if (from) {
+          next = {
+            x: origin.x + (from.w - target.w),
+            y: origin.y + (from.h - target.h) / 2,
+          };
+        }
+        break;
+      }
+      case "dockTop": {
+        if (from) next = { x: origin.x + (from.w - target.w) / 2, y: origin.y };
+        break;
+      }
+      case "dockBottom": {
+        if (from) {
+          next = {
+            x: origin.x + (from.w - target.w) / 2,
+            y: origin.y + (from.h - target.h),
+          };
+        }
+        break;
+      }
       case "panel": {
         // Abrir el panel: la barra no se mueve si cae hacia abajo, y si no
         // entra, el panel sale hacia arriba y la barra queda abajo.

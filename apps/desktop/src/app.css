@@ -166,6 +166,48 @@ textarea,
   --launcher-bar-open-dur: 100ms;
   --launcher-separate-dur: 90ms;
   --launcher-fav-stagger: 90ms;
+
+  /*
+   * Isla acoplada: los iconos brotan del canto, uno detrás de otro.
+   *
+   * El escalonado es corto a propósito. El del launcher (90 ms) acompaña un
+   * gesto que el usuario pidió con un atajo y mira de frente; este se dispara
+   * con solo apoyar el mouse en un borde, así que si el último icono tardara
+   * 5×90 ms la tira se sentiría perezosa justo cuando ya querés hacer clic.
+   * Con 26 ms los cinco entran dentro de la propia apertura de la caja: se lee
+   * como un despliegue, no como una lista cargando.
+   */
+  --island-stagger: 26ms;
+  /* Cuánto asoman desde el borde antes de asentarse. */
+  --island-rise: 7px;
+  /*
+   * Más largo que `--morph-open-dur` (110 ms) a propósito.
+   *
+   * Esos 110 están bien para que una caja cambie de tamaño, pero acá lo que se
+   * mira es el CUELLO entre gotas estirándose y adelgazando hasta la cintura
+   * final. A 110 ms no se llega a leer y el efecto se pierde: parecen iconos
+   * que aparecen, que es justo lo que no queremos.
+   */
+  --island-open-dur: 190ms;
+  /*
+   * Arranque lento, salida larga: la gota se resiste antes de separarse.
+   *
+   * Sin rebote — los dos puntos de control quedan dentro de 0..1 en Y. El
+   * rebote se sacó del proyecto a propósito y una isla que rebota contra el
+   * canto se vería como un error, no como líquido.
+   */
+  --ease-liquid: cubic-bezier(0.5, 0, 0.2, 1);
+  /*
+   * Cuánto se encogen y se juntan las gotas con la isla cerrada.
+   *
+   * El apretón NO es total a propósito. Si convergieran al mismo punto, el
+   * cuerpo fundido sería un botón redondo, y al terminar el cierre —cuando la
+   * silueta pasa a ser la pestaña— se vería el relevo. Repartidas en un tramo
+   * corto, ese cuerpo queda con la proporción de la pestaña y el cambio no se
+   * nota.
+   */
+  --island-shut-scale: 0.34;
+  --island-shut-squeeze: 0.22;
   --ease-smooth-out: cubic-bezier(0.22, 1, 0.36, 1);
   --ease-out: ease-out;
 

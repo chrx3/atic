@@ -55,8 +55,15 @@
     wheelChromeActive,
     wheelKeyAction,
     wheelOpenFlight,
+    type Dock,
     type Surface,
   } from "$surfaces/overlay/pill/pillPlan";
+  import {
+    dockAxis,
+    dockCandidate,
+    dockedEdgeAt,
+    shouldUndock,
+  } from "$surfaces/overlay/edgeDock";
   import AgentAuthCard from "$surfaces/overlay/pill/AgentAuthCard.svelte";
   import { afterTransition, MOTION, ms, wait } from "$lib/motion";
   import { playWheelTick } from "$core/uiSound";
@@ -108,6 +115,8 @@
     onPillRadialRelease,
     onPillReset,
     overlayCursor,
+    overlayCursorOverHit,
+    overlayPrimaryDown,
     overlayActiveAnchor,
     pillHome,
     pillTrace,
@@ -266,6 +275,60 @@
    */
   const trackBar = (el: HTMLElement) => tracker.track("bar", el);
   const trackTail = (el: HTMLElement) => tracker.track("tail", el);
+  /** La isla acoplada: llena la caja, así que se anima con ella. */
+  const trackIsland = (el: HTMLElement) => tracker.track("island", el);
+  /**
+   * Cada herramienta se mide aparte, aunque hoy la silueta no las use.
+   *
+   * El intento de que cada icono fuera una GOTA del campo —para que la tira se
+   * abriera separándose en vez de crecer— quedó parado: la silueta salía a
+   * medias, con las primeras gotas ausentes del registro. Se sigue midiendo
+   * para poder ver en el log si llegan las cinco; sin ese dato no tiene sentido
+   * volver a intentarlo.
+   *
+   * Las funciones se crean UNA vez, una por índice: un `@attach` se desmonta y
+   * se vuelve a montar cuando cambia la identidad de su función, y la baja de
+   * `track()` borra el rect. Con una closure nueva por render las gotas se
+   * daban de baja y volvían un cuadro después.
+   */
+  const islandAttachers = WHEEL_TOOLS.map(
+    (_, i) => (el: HTMLElement) => tracker.track(`island-${i}`, el),
+  );
+
+  /** Margen tras la coreografía, por si el último cuadro llega tarde. */
+  const ISLAND_SETTLE_MS = 120;
+
+  /**
+   * Mantener despierto al tracker durante TODA la transición de la isla.
+   *
+   * `RectTracker` deja de mirar tras 3 cuadros sin cambios, y su propio
+   * comentario avisa del riesgo: «una transición puede tener un cuadro sin
+   * cambio visible en el medio». La de la isla tiene muchos más que uno —el
+   * escalonado mete hasta 52 ms de `transition-delay`, que a 60 Hz son 3
+   * cuadros enteros en los que nada se mueve—, así que se dormía a mitad de
+   * camino y la silueta quedaba congelada donde la hubiera agarrado: un cuerpo
+   * chico bajo unos iconos ya desplegados, hasta que otra cosa lo despertaba.
+   *
+   * `wake()` es idempotente y solo reinicia el contador de quietud, así que
+   * bombearlo por cuadro durante el tramo cuesta nada y garantiza que la
+   * silueta siga la animación hasta el final.
+   */
+  $effect(() => {
+    void dock;
+    void surface;
+    if (surface !== "edge" && !beadsAlive) return;
+    let raf = 0;
+    const until =
+      performance.now() + ms(MOTION.islandOpen) + ISLAND_SETTLE_MS;
+    const pump = () => {
+      tracker.wake();
+      raf = performance.now() < until ? requestAnimationFrame(pump) : 0;
+    };
+    pump();
+    return () => {
+      if (raf) cancelAnimationFrame(raf);
+    };
+  });
 
   // Cada cambio de estado arranca una animación de CSS: hay que volver a mirar.
   // La posición también cuenta: un vuelo no toca los estados de arriba, y sin
@@ -276,6 +339,12 @@
     void barW;
     void at.x;
     void at.y;
+    // Abrir y cerrar la isla no toca `surface`: cambia `dock`, y de ahí sale la
+    // transición más larga de todas. Sin declararlo, que el tracker despertara
+    // dependía de que el reencuadre moviera `at` en el mismo tick —cierto hoy,
+    // pero por casualidad—.
+    void dock;
+    void beadsAlive;
     tracker.wake(true);
   });
 
@@ -303,7 +372,23 @@
       x: rect.x + o.x,
       y: rect.y + o.y,
     });
+    // Acoplada: la silueta es la isla, en los dos estados.
+    //
+    // Se mide un elemento propio que llena la caja, así que sigue la
+    // transición de tamaño en vez de saltar. Y deja fuera la barra normal:
+    // publicarla dibujaba el disco de 40 px sobre una zona viva de 48×18 —la
+    // pill se veía sin cambiar y no respondía, porque lo que recibe el puntero
+    // es la caja y no lo dibujado—.
+    if (surface === "edge") {
+      return r.island ? [pillShape(at(r.island))] : [];
+    }
+
     const shapes = [];
+    // Recién despegada del canto: el cuerpo de la isla sigue publicado unos
+    // cuadros y para entonces ya encogió al tamaño de la pill, así que se funde
+    // con el disco en vez de desaparecer de golpe. Las dos formas en el mismo
+    // campo es lo que hace que se FUNDAN y no que una reemplace a la otra.
+    if (beadsAlive && r.island) shapes.push(pillShape(at(r.island)));
     // La gota, si está. El disco solo mientras la gota no lo cubra: ver
     // `discJoinsTail` — publicar ambos en reposo engordaba el lado izquierdo.
     if (r.tail) shapes.push(pillShape(at(r.tail)));
@@ -411,7 +496,51 @@
   let barW = $state<number>(PILL.bar);
   let barEl = $state<HTMLElement | null>(null);
 
-  const target = $derived(windowFor(contentFor(surface, barW)));
+  /**
+   * Acoplada a un borde. `null` = flotando, que es el estado de siempre.
+   *
+   * No se persiste aparte: `pill_home` guarda un punto y al arrancar se deduce
+   * con `dockedEdgeAt` si ese punto estaba a ras de un borde exterior. Evita
+   * migrar el formato por un booleano.
+   */
+  let dock = $state<Dock | null>(null);
+
+  const target = $derived(windowFor(contentFor(surface, barW, dock)));
+
+  /**
+   * Contra qué eje se aplana la isla, o `null` si no está acoplada.
+   *
+   * `"x"` (izquierda/derecha) despliega las herramientas en columna; `"y"`
+   * (arriba/abajo), en fila. Siempre a lo largo del borde: es el único eje
+   * donde crecer no le tapa la pantalla al usuario.
+   */
+  const peekEdgeAxis = $derived(
+    surface === "edge" && dock ? dockAxis(dock.edge) : null,
+  );
+
+  /** La tira está desplegada (o se está desplegando). */
+  const islandOpen = $derived(surface === "edge" && dock?.expanded === true);
+
+  /**
+   * Las gotas siguen siendo la silueta un rato DESPUÉS de que el estado cambió.
+   *
+   * Sin esto no hay cierre ni despegue que animar: al bajar `expanded` —o al
+   * soltarse del canto— el estado salta y las gotas dejarían de publicarse en
+   * el mismo cuadro, o sea un corte. Manteniéndolas vivas lo que dura la
+   * coreografía, se las ve juntarse: al cerrar, hacia la pestaña; al despegar,
+   * fundiéndose con el disco de la pill, que para entonces ya está publicado en
+   * el mismo sitio.
+   */
+  let beadsAlive = $state(false);
+  $effect(() => {
+    if (islandOpen) {
+      beadsAlive = true;
+      return;
+    }
+    if (!beadsAlive) return;
+    const timer = setTimeout(() => (beadsAlive = false), ms(MOTION.islandOpen));
+    return () => clearTimeout(timer);
+  });
 
   /**
    * Lado del chip de consola: opuesto al borde horizontal más cercano.
@@ -560,7 +689,7 @@
   }
   /** El estado del que dependen las decisiones de `pillPlan`. */
   function plan() {
-    return { surface, collapsingFrom };
+    return { surface, collapsingFrom, dock };
   }
 
   /**
@@ -623,7 +752,17 @@
    * la zona, el globo quedaría a `gap` más ese respiro de distancia y el
    * cuello no llegaría a cruzarlo.
    */
-  $effect(() => (liquidEl ? surfaces.add("pill-skin", liquidEl) : undefined));
+  /*
+   * Acoplada no se publica: el stack sigue midiendo la barra de 40 px aunque
+   * esté oculto —`overflow: hidden` recorta lo que se ve, no lo que mide—, así
+   * que dejaba una zona viva fantasma más grande que la isla. Ahí el overlay se
+   * armaba sobre pantalla que la isla no ocupa y se comía clics ajenos.
+   */
+  $effect(() =>
+    liquidEl && surface !== "edge"
+      ? surfaces.add("pill-skin", liquidEl)
+      : undefined,
+  );
 
   /** La tarjeta de auth también tiene que armar hit-rects o queda click-through. */
   $effect(() =>
@@ -724,6 +863,135 @@
       default:
         return "Dictar";
     }
+  }
+
+  // ─── Isla de borde ───────────────────────────────────────────────────────
+  /**
+   * Suelta el arrastre: si quedó contra un canto exterior, se acopla.
+   *
+   * El acople no es solo mover: cambia `surface` a `"edge"`, y a partir de ahí
+   * `contentFor` devuelve la pestaña y `pivotFor` clava el lado pegado. Se
+   * llama con la posición YA final, después de que `moveTo` clampeó.
+   */
+  function settleDock(): boolean {
+    // La rueda manda: mientras esté abierta o colapsando, la pill no es una
+    // isla aunque esté parada sobre el canto.
+    if (surface === "wheel" || collapsingFrom === "wheel") return false;
+    const size = stage.applied() ?? windowFor({ w: PILL.bar, h: PILL.bar });
+    const rect = { x: at.x, y: at.y, w: size.w, h: size.h };
+    const found = dockCandidate(rect, stage.workAreas());
+    if (!found) {
+      dock = null;
+      if (surface === "edge") surface = "none";
+      return false;
+    }
+    dock = { edge: found.edge, expanded: false };
+    surface = "edge";
+    // Pegada al canto, sin transición: el vuelo ya terminó y esto es el
+    // último ajuste de milímetros.
+    stage.moveTo(found.at);
+    at = stage.at();
+    surfaces.schedule();
+    return true;
+  }
+
+  /**
+   * ¿El arrastre ya se alejó lo suficiente como para soltarla del borde?
+   *
+   * Si se suelta, hay que **re-anclarla al cursor**. Es el único momento en que
+   * la caja cambia de tamaño a mitad de un arrastre: la tira de herramientas
+   * mide ~194 px de largo y el disco 40. El pivote de reposo es `topLeft`, así
+   * que conservaría la esquina y el disco aparecería en el extremo de donde
+   * estaba la tira —a más de 150 px de la mano si la habías agarrado del otro
+   * lado—. Recentrarla bajo el puntero es lo que hace que se sienta como que
+   * seguís sosteniendo la misma cosa.
+   */
+  function releaseDockIfFar(cursor: { x: number; y: number } | null): void {
+    if (!dock) return;
+    const size = stage.applied() ?? windowFor({ w: PILL.bar, h: PILL.bar });
+    const rect = { x: at.x, y: at.y, w: size.w, h: size.h };
+    if (!shouldUndock(rect, dock.edge, stage.workAreas())) return;
+    dock = null;
+    surface = "none";
+    if (!cursor || !dragOrigin) return;
+    // `target` ya refleja el estado nuevo: los derivados se recalculan al
+    // leerlos, no al final del tick.
+    const next = target;
+    // Re-sembrar el origen del gesto, no solo mover: los cuadros siguientes
+    // calculan la posición como `origen + (cursor − semilla)`, y con la semilla
+    // vieja el disco volvería a saltar al primer movimiento.
+    dragOrigin.cx = cursor.x;
+    dragOrigin.cy = cursor.y;
+    dragOrigin.ox = cursor.x - next.w / 2;
+    dragOrigin.oy = cursor.y - next.h / 2;
+    stage.moveTo({ x: dragOrigin.ox, y: dragOrigin.oy });
+    at = stage.at();
+  }
+
+  /**
+   * Abre o cierra la isla. El puntero es el único que la maneja.
+   *
+   * Idempotente: `reevaluate_arm` puede mandar varios `pointerenter` seguidos
+   * mientras el overlay se arma, y cada uno no debe relanzar el morph.
+   */
+  function setIslandExpanded(open: boolean): void {
+    if (!dock || dock.expanded === open) return;
+    dock = { ...dock, expanded: open };
+  }
+
+  /**
+   * Cada cuánto se le pregunta a Rust si el cursor está sobre la isla.
+   *
+   * No hay evento que sustituya al sondeo: el armado ya ocurre por movimiento
+   * del mouse, pero lo que hace falta saber es si el cursor SIGUE encima, y eso
+   * solo lo sabe quien lo ve siempre. 100 ms se siente inmediato y son ~10
+   * llamadas por segundo, contra las 60 que ya hace el arrastre.
+   */
+  const ISLAND_HOVER_MS = 100;
+
+  /**
+   * Abrir y cerrar la isla lo decide Rust, no el DOM.
+   *
+   * `pointerenter` no sirve acá y no es un detalle de implementación: mientras
+   * el overlay es click-through el webview NO ve el mouse. Cuando Rust lo arma
+   * —porque el cursor ya entró en la zona— hace falta otro `mousemove` para que
+   * el DOM emita el `pointerenter`, y contra un canto uno tira el mouse y lo
+   * deja quieto. Sin ese movimiento extra el evento no llega nunca y la isla no
+   * abre. Es el mismo problema que `reevaluate_arm` resuelve del lado del
+   * armado cuando una superficie nace debajo del puntero.
+   *
+   * Rust es la única fuente: mezclar esto con `pointerenter`/`pointerleave`
+   * daría dos verdades que se contradicen a mitad de una transición.
+   */
+  $effect(() => {
+    if (surface !== "edge") return;
+    let alive = true;
+    const look = async () => {
+      // Arrastrando no: agrandar la caja a mitad del gesto mueve el suelo bajo
+      // el puntero, y encima el destino de acople se calcula con ese tamaño.
+      if (dragOrigin) return;
+      const over = await overlayCursorOverHit("pill").catch(() => null);
+      if (alive && !dragOrigin && over !== null) setIslandExpanded(over);
+    };
+    void look();
+    const timer = setInterval(() => void look(), ISLAND_HOVER_MS);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+    };
+  });
+
+  /**
+   * Elegir una herramienta desde la isla.
+   *
+   * Mismo camino único que la rueda y los atajos, con `force`: apuntar un
+   * icono es pedir «abrí esto». No cierra la isla a mano — al alejarse el
+   * puntero, `pointerleave` la deja como pestaña.
+   */
+  function activateFromIsland(id: ToolId): void {
+    if (surface !== "edge") return;
+    if (id === "agents" && !AGENTS_ENABLED) return;
+    requestActivateAtSlot(id, { force: true });
   }
 
   // ─── Rueda ───────────────────────────────────────────────────────────────
@@ -856,6 +1124,10 @@
     if (returnHome && !returnHomeSuppressed) {
       const flew = await flyTo(home, { skipIfNear: FLIGHT_SKIP_PX });
       if (flew < 0 || epoch !== collapseEpoch) return false;
+      // Si el hogar estaba en un canto, volver a él es volver a ser isla. Sin
+      // esto la rueda "desacoplaba" la pill: volvía al borde con forma de
+      // barra y no se recuperaba hasta arrastrarla de nuevo.
+      settleDock();
     }
     return true;
   }
@@ -1024,6 +1296,9 @@
     if (Math.hypot(home.x - at.x, home.y - at.y) < 2) return;
     try {
       await flyTo(home);
+      // Mismo motivo que en `playCloseMorph`: si el hogar es un canto, al
+      // llegar vuelve a ser isla.
+      settleDock();
     } catch (err) {
       console.warn("return-to-home", err);
     }
@@ -1172,6 +1447,18 @@
       if (isSpatialTool(id)) spatialIntent = id;
       else if (id === "dictation") spatialIntent = null;
 
+      // Volar a un slot la SACA del canto.
+      //
+      // Allá tiene que poder mostrar su barra —las ondas del dictado, el
+      // cronómetro—, y acoplada no puede: la caja tiene forma de isla y el
+      // stack está oculto. El síntoma era dictar y ver la pill viajar abajo
+      // sin abrirse nunca. Al terminar, `maybeReturnHome` vuelve al hogar y
+      // `settleDock` la vuelve a acoplar si ese hogar era un borde.
+      if (slotForTool(id) && surface === "edge") {
+        dock = null;
+        surface = "none";
+      }
+
       await flyToToolSlot(id, { anchored: force });
       if (gen !== slotGen) return;
       if (!shouldCommitShow(slotPending)) return;
@@ -1249,11 +1536,23 @@
   } | null = null;
   let dragMoved = false;
   let dragRaf = 0;
+  /** Ya se vio el botón apretado: recién ahí un `false` significa "soltó". */
+  let dragSawDown = false;
+  /** Icono de la isla donde arrancó el gesto, si arrancó en uno. */
+  let islandPressTool: ToolId | null = null;
 
   function beginDrag(event: PointerEvent) {
     const el = event.target as HTMLElement | null;
     if (!el || event.button !== 0) return;
-    if (el.closest("button, a, input, textarea, [data-no-drag]")) {
+    // La isla se agarra desde CUALQUIER parte, iconos incluidos.
+    //
+    // Es casi toda botones —cinco de 34 px con 6 de hueco—, así que excluirlos
+    // como en la barra dejaba una isla imposible de mover: habría que apuntar a
+    // los huecos. Lo que separa arrastrar de elegir es el umbral de siempre, y
+    // la herramienta se dispara al soltar sin haber movido (ver `endDrag`),
+    // igual que hace la rueda.
+    const onIsland = el.closest(".p-island") !== null;
+    if (!onIsland && el.closest("button, a, input, textarea, [data-no-drag]")) {
       return;
     }
     // El origen NO sale del evento del DOM: `clientX` mide contra la ventana, y
@@ -1269,6 +1568,7 @@
       pointerId: event.pointerId,
     };
     dragMoved = false;
+    dragSawDown = false;
     // La ventana ya no se estira al escritorio entero durante el arrastre, así
     // que el puntero puede salirse de ella. Sin capturarlo, el `pointerup` de
     // afuera no llega y el gesto queda pegado.
@@ -1290,7 +1590,19 @@
     const origin = dragOrigin;
     if (!origin) return;
 
-    const cur = await overlayCursor().catch(() => null);
+    const [cur, down] = await Promise.all([
+      overlayCursor().catch(() => null),
+      overlayPrimaryDown().catch(() => null),
+    ]);
+    // Fin del gesto por Win32 y no por el DOM: soltar sobre la barra de tareas
+    // no manda `pointerup` acá, y el arrastre quedaba colgado con el hit-rect
+    // a pantalla completa. Se exige haberlo visto apretado antes, para que un
+    // cuadro madrugador no aborte el arrastre apenas empieza.
+    if (down === true) dragSawDown = true;
+    if (dragSawDown && down === false) {
+      endDrag();
+      return;
+    }
     if (cur && dragOrigin === origin) {
       // Primer cuadro: es la semilla, no un movimiento.
       if (origin.cx === null || origin.cy === null) {
@@ -1305,6 +1617,9 @@
         if (dragMoved) {
           stage.moveTo({ x: origin.ox + dx, y: origin.oy + dy });
           at = stage.at();
+          // Despegar en cuanto se aleja de verdad: si esperáramos a soltar, la
+          // isla arrastraría su forma de pestaña por toda la pantalla.
+          releaseDockIfFar(cur);
         }
       }
     }
@@ -1333,14 +1648,26 @@
   function endDrag() {
     const wasClick = dragOrigin !== null && !dragMoved;
     const moved = dragMoved;
+    const pressedTool = islandPressTool;
+    islandPressTool = null;
     stopDragWatch();
     if (moved) {
-      // Arrastrar redefine el hogar: la pill se queda donde la dejaste.
+      // Arrastrar redefine el hogar: la pill se queda donde la dejaste —o
+      // pegada al canto, si la soltaste cerca de uno. Si el gesto arrancó sobre
+      // un icono, mover cancela la elección: querías moverla, no abrirla.
+      settleDock();
       home = { ...at };
       void savePillHome(at.x, at.y);
       return;
     }
-    if (wasClick && surface === "none") {
+    // Soltar sobre un icono sin haber movido: eso sí era elegirlo.
+    if (wasClick && pressedTool) {
+      activateFromIsland(pressedTool);
+      return;
+    }
+    // Acoplada, el clic abre la rueda igual: la isla es la pill, no otro
+    // control. Sale del canto a volar como siempre y vuelve al soltar.
+    if (wasClick && (surface === "none" || surface === "edge")) {
       void openWheel();
     }
   }
@@ -1364,6 +1691,18 @@
         home = saved;
         stage.moveTo(saved);
         at = stage.at();
+        // El hogar guardado es solo un punto: si quedó a ras de un borde
+        // exterior, es que estaba acoplada ahí. Se deduce en vez de guardarse
+        // para no migrar el formato de `pill_home`.
+        const size = stage.applied() ?? windowFor({ w: PILL.bar, h: PILL.bar });
+        const edge = dockedEdgeAt(
+          { x: at.x, y: at.y, w: size.w, h: size.h },
+          stage.workAreas(),
+        );
+        if (edge) {
+          dock = { edge, expanded: false };
+          surface = "edge";
+        }
       }
       try {
         wheelShortcut = (await getConfig()).pill_radial_shortcut;
@@ -1517,10 +1856,46 @@
   class:is-wheel={wheelChrome}
   class:is-quick={wheelQuick}
   class:is-flying={flying}
-  style="left: {at.x}px; top: {at.y}px; width: {box.w}px; height: {box.h}px"
+  class:is-docked={surface === "edge"}
+  class:is-dragging={surfaces.dragging}
+  data-edge={surface === "edge" ? dock?.edge : undefined}
+  style="left: {at.x}px; top: {at.y}px; width: {box.w}px; height: {box.h}px; --island-tool: {PILL.islandTool}px; --island-gap: {PILL.islandGap}px"
   bind:this={rootEl}
   onpointerdown={beginDrag}
 >
+  <!-- Acoplada al borde. `.p-island-skin` llena la caja y es lo que se mide:
+       la silueta líquida sale de ahí, así que sigue la transición de tamaño.
+       Los botones solo existen abierta; en reposo es una pestaña muda. -->
+  <!-- Montada mientras haya isla O gotas vivas. Las gotas NO se montan con la
+       apertura: si nacieran ya abiertas no habría estado inicial desde el cual
+       transicionar y el CSS pintaría el final directo. Existen desde que la
+       pill se acopla, cerradas, y la clase las abre. -->
+  {#if surface === "edge" || beadsAlive}
+    <div class="p-island" class:is-open={islandOpen}>
+      <i class="p-island-skin" {@attach trackIsland} aria-hidden="true"></i>
+      <div
+        class="p-island-tools"
+        class:is-open={islandOpen}
+        class:is-column={peekEdgeAxis === "x"}
+        style="--n: {WHEEL_TOOLS.length}"
+      >
+        {#each WHEEL_TOOLS as tool, i (tool.id)}
+          <button
+            type="button"
+            class="p-island-tool"
+            style="--i: {i}; --s: {Math.abs((WHEEL_TOOLS.length - 1) / 2 - i)}"
+            title="{tool.label} — {tool.short}"
+            aria-label="{tool.label}. {tool.short}"
+            {@attach islandAttachers[i]}
+            onpointerdown={() => (islandPressTool = tool.id)}
+          >
+            <ToolIcon id={tool.id} size={18} strokeWidth={1.6} />
+          </button>
+        {/each}
+      </div>
+    </div>
+  {/if}
+
   <!-- La rueda vive siempre montada. Durante el colapso sigue opaca (aunque
        `revealed` ya sea false) hasta que el root encoge: el handoff al stack
        ocurre en el mismo centro, no con un fundido top-left ↔ centro. -->
@@ -1793,6 +2168,169 @@
     padding: 0;
     cursor: default;
   }
+
+  /*
+   * Acoplada, la caja cambia de tamaño Y DE POSICIÓN, y las dos hay que
+   * animarlas.
+   *
+   * El pivote `dock*` clava el lado pegado al canto, así que al abrirse de 40 a
+   * 194 px de largo el `left` se corre ~77 px. Ese valor lo escribe el
+   * escenario de una vez, mientras el ancho iba animado: se veía el cuerpo
+   * desplazarse de golpe hacia un lado y recién después crecer. Al cerrar,
+   * igual pero al revés — que es el "se mueve a la derecha y después se cierra
+   * de golpe".
+   *
+   * Misma duración y curva que las gotas (`--island-open-dur` / `--ease-liquid`)
+   * y no las del morph: si la caja termina antes, el contenido queda quieto
+   * mientras las gotas siguen viaje y se lee como dos animaciones distintas.
+   */
+  .p-root.is-docked {
+    transition:
+      width var(--island-open-dur) var(--ease-liquid),
+      height var(--island-open-dur) var(--ease-liquid),
+      left var(--island-open-dur) var(--ease-liquid),
+      top var(--island-open-dur) var(--ease-liquid);
+  }
+
+  /* Arrastrando no: la posición tiene que seguir al dedo sin inercia. */
+  .p-root.is-docked.is-dragging {
+    transition: none;
+  }
+
+  /* Acoplada, la barra normal no se muestra: la isla la reemplaza entera.
+     `opacity` y no `display` para que el stack siga existiendo y midiéndose
+     —el resto del componente cuenta con sus rects—. */
+  .p-root.is-docked .p-stack {
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  /* La isla llena la caja. Como la caja es la que cambia de tamaño y esto la
+     sigue, medir esto da una silueta que se estira con la transición en vez
+     de saltar de pestaña a tira. */
+  .p-island {
+    position: absolute;
+    z-index: 1;
+    inset: 4px;
+    display: grid;
+    place-items: center;
+  }
+
+  .p-island-skin {
+    position: absolute;
+    inset: 0;
+    display: block;
+    border-radius: 999px;
+  }
+
+  .p-island-tools {
+    display: flex;
+    z-index: 1;
+    flex-direction: row;
+    gap: var(--island-gap);
+  }
+
+  .p-island-tools.is-column {
+    flex-direction: column;
+  }
+
+  .p-island-tools.is-column .p-island-tool {
+    --island-bx: 0px;
+    --island-by: var(--island-bunch);
+  }
+
+  /*
+   * La tira no aparece: se SEPARA. Y al cerrarse, se junta.
+   *
+   * Es una TRANSICIÓN y no una animación justamente por eso: una animación
+   * corre en un solo sentido, y el cierre quedaba de golpe. Con el estado de
+   * reposo puesto acá y el abierto en `.is-open`, el mismo tramo se recorre en
+   * los dos sentidos sin describirlo dos veces.
+   *
+   * Cerradas, las gotas se amontonan hacia el centro y encogen: a esa distancia
+   * el `smin` las funde y se leen como un solo cuerpo. Abiertas quedan a
+   * `--island-gap` (6 px), todavía muy por debajo de REACH, así que siguen
+   * fundidas pero con una cintura entre iconos. Lo que se ve moverse es ese
+   * cuello estirándose y adelgazando.
+   *
+   * Nada de esto se dibuja. Las gotas son estos mismos botones, y el `tracker`
+   * los mide **con su transform**, así que el campo sigue la transición cuadro
+   * a cuadro. La opacidad solo afecta al glifo: la forma sale del rect, y el
+   * rect no la mira.
+   *
+   * El escalonado va por `--s` (distancia al centro, no el índice): saliendo
+   * todas del medio, un barrido de punta a punta se leería al revés del
+   * movimiento. Se calcula en JS porque `abs()` en CSS no está garantizado en
+   * el WebView2 que nos toque.
+   */
+  .p-island-tool {
+    /* Distancia de esta gota al centro de la tira: hacia ahí se amontona. */
+    --island-slot: calc(var(--island-tool) + var(--island-gap));
+    --island-bunch: calc(((var(--n) - 1) / 2 - var(--i)) * var(--island-slot));
+    --island-bx: var(--island-bunch);
+    --island-by: 0px;
+
+    display: grid;
+    width: var(--island-tool);
+    height: var(--island-tool);
+    border: 0;
+    border-radius: 999px;
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+    opacity: 0;
+    place-items: center;
+
+    /* Reposo = cerrada. El apretón no es total: dejándolas repartidas en un
+       tramo corto, el cuerpo fundido queda parecido a la pestaña y el relevo
+       entre gotas y silueta de pestaña no se nota. */
+    transform: translate(
+        calc(
+          var(--island-bx) * var(--island-shut-squeeze) +
+            var(--island-from-x, 0px)
+        ),
+        calc(
+          var(--island-by) * var(--island-shut-squeeze) +
+            var(--island-from-y, 0px)
+        )
+      )
+      scale(var(--island-shut-scale));
+    transition:
+      transform var(--island-open-dur) var(--ease-liquid),
+      opacity var(--island-open-dur) var(--ease-liquid),
+      background var(--duration-quick) var(--ease-smooth-out),
+      color var(--duration-quick) var(--ease-smooth-out);
+    transition-delay: calc(var(--s, 0) * var(--island-stagger));
+  }
+
+  .p-island-tools.is-open .p-island-tool {
+    opacity: 1;
+    transform: none;
+  }
+
+  .p-island-tool:hover,
+  .p-island-tool:focus-visible {
+    background: color-mix(in sRGB, var(--text) 14%, transparent);
+    color: var(--text);
+  }
+
+  /* De dónde nace cada uno: siempre desde el lado por el que está acoplada. */
+  .p-root[data-edge="bottom"] .p-island-tool {
+    --island-from-y: var(--island-rise);
+  }
+
+  .p-root[data-edge="top"] .p-island-tool {
+    --island-from-y: calc(var(--island-rise) * -1);
+  }
+
+  .p-root[data-edge="right"] .p-island-tool {
+    --island-from-x: var(--island-rise);
+  }
+
+  .p-root[data-edge="left"] .p-island-tool {
+    --island-from-x: calc(var(--island-rise) * -1);
+  }
+
 
   /* Cierre acelerado: al elegir herramienta la rueda ya cumplió su función. */
   .p-root.is-quick {
@@ -2453,10 +2991,15 @@
     .p-dict,
     .p-queue-btn,
     .p-agent,
-    .p-auth-host {
+    .p-auth-host,
+    .p-island-tool {
       transition: none !important;
       animation: none !important;
     }
+
+    /* La isla salta entre cerrada y abierta sin recorrido. No se fuerza el
+       estado abierto: las reglas de `.is-open` siguen mandando, y forzarlo
+       dejaría las gotas separadas también con la isla cerrada. */
 
     .p-agent.is-working {
       opacity: 0.8;

@@ -112,6 +112,7 @@ export const MOTION = {
   launcherBar: "--launcher-bar-open-dur",
   launcherSeparate: "--launcher-separate-dur",
   launcherFavStagger: "--launcher-fav-stagger",
+  islandOpen: "--island-open-dur",
 } as const;
 
 /** Fallbacks alineados con app.css. Solo se usan si el token no resuelve. */
@@ -132,6 +133,7 @@ export const MOTION_FALLBACK = {
   [MOTION.launcherBar]: 100,
   [MOTION.launcherSeparate]: 90,
   [MOTION.launcherFavStagger]: 90,
+  [MOTION.islandOpen]: 190,
 } as const;
 
 /** Atajo: duración efectiva de un token conocido. */
