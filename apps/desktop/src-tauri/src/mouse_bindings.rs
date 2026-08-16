@@ -450,9 +450,7 @@ fn dispatch(app: &AppHandle, action: MouseAction, edge: Edge) {
                 .map(|s| s.config.lock_or_recover().dictation_mode.clone())
                 .unwrap_or_else(|| "push_to_talk".into());
             match (mode.as_str(), edge) {
-                ("push_to_talk", Edge::Down) => {
-                    crate::shortcuts::dictation_ptt_down_via_slot(app)
-                }
+                ("push_to_talk", Edge::Down) => crate::shortcuts::dictation_ptt_down_via_slot(app),
                 ("push_to_talk", Edge::Up) => dictation::dictation_key_up(app),
                 (_, Edge::Down) => crate::shortcuts::dictation_toggle_via_slot(app),
                 _ => {}

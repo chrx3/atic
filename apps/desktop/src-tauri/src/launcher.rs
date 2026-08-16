@@ -433,17 +433,9 @@ pub fn show(app: &AppHandle) {
         return;
     }
     ensure_index_populated();
-    let opened = crate::panel_float::show(
-        app,
-        &LAUNCHER_OPEN,
-        LAUNCHER_SHAPE,
-        LAUNCHER_ANCHOR,
-    );
+    let opened = crate::panel_float::show(app, &LAUNCHER_OPEN, LAUNCHER_SHAPE, LAUNCHER_ANCHOR);
     if opened {
-        crate::overlay::set_topmost(
-            app,
-            crate::agents::bridge::overlay_should_be_topmost(),
-        );
+        crate::overlay::set_topmost(app, crate::agents::bridge::overlay_should_be_topmost());
         let _ = app.emit("launcher-opened", ());
     }
 }
@@ -453,10 +445,7 @@ pub fn hide(app: &AppHandle) {
         return;
     }
     crate::panel_float::hide(app, &LAUNCHER_OPEN, LAUNCHER_DISMISS);
-    crate::overlay::set_topmost(
-        app,
-        crate::agents::bridge::overlay_should_be_topmost(),
-    );
+    crate::overlay::set_topmost(app, crate::agents::bridge::overlay_should_be_topmost());
     let _ = app.emit("launcher-closed", ());
 }
 
@@ -572,10 +561,7 @@ pub fn launcher_list_favorites(state: State<AppState>) -> Result<Vec<LauncherHit
 
 /// Alterna un id en `launcher_favorites` y persiste la config.
 #[tauri::command]
-pub fn launcher_toggle_favorite(
-    state: State<AppState>,
-    id: String,
-) -> Result<Vec<String>, String> {
+pub fn launcher_toggle_favorite(state: State<AppState>, id: String) -> Result<Vec<String>, String> {
     if id.trim().is_empty() {
         return Err("id vacío".into());
     }

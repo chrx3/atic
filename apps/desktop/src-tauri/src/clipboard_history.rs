@@ -930,7 +930,8 @@ pub fn delete_clipboard_item(
         // próximo listado. `set_pinned` ya tenía esta rama; el borrado no, y
         // por eso la X de una captura devolvía «Ítem no encontrado».
         if let Some(cap_id) = id.strip_prefix("capture-") {
-            hist.deleted_fingerprints.insert(format!("capture:{cap_id}"));
+            hist.deleted_fingerprints
+                .insert(format!("capture:{cap_id}"));
             hist.suppress_until = Some(SystemTime::now() + Duration::from_millis(1200));
             save_dismissed_captures(&dir, &hist.deleted_fingerprints);
             drop(hist);
@@ -1496,10 +1497,7 @@ pub fn summon_clipboard_panel(app: &AppHandle) {
         crate::panel_float::PANEL_SHAPE,
         CLIP_ANCHOR,
     );
-    crate::overlay::set_topmost(
-        app,
-        crate::agents::bridge::overlay_should_be_topmost(),
-    );
+    crate::overlay::set_topmost(app, crate::agents::bridge::overlay_should_be_topmost());
 }
 
 #[tauri::command]
@@ -1510,10 +1508,7 @@ pub fn show_clipboard_window(app: AppHandle) {
 #[tauri::command]
 pub fn hide_clipboard_window(app: AppHandle) {
     crate::panel_float::hide(&app, &CLIPBOARD_OPEN, CLIP_DISMISS);
-    crate::overlay::set_topmost(
-        &app,
-        crate::agents::bridge::overlay_should_be_topmost(),
-    );
+    crate::overlay::set_topmost(&app, crate::agents::bridge::overlay_should_be_topmost());
 }
 
 #[tauri::command]
@@ -1538,10 +1533,7 @@ pub fn set_clipboard_always_on_top(app: AppHandle, on: bool) {
         };
         let _ = snapshot.save(&state.dirs.config_path());
     }
-    crate::overlay::set_topmost(
-        &app,
-        crate::agents::bridge::overlay_should_be_topmost(),
-    );
+    crate::overlay::set_topmost(&app, crate::agents::bridge::overlay_should_be_topmost());
 }
 
 /// Prepara la pill para abrir un panel (historial o fragmentos).

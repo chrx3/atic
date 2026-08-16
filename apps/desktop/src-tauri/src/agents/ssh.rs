@@ -96,8 +96,7 @@ pub fn ssh_destination(host: &SshHost) -> Result<String, String> {
     } else {
         if user.contains('@') || user.contains(' ') {
             return Err(
-                "Usuario inválido. Si usás un alias de ssh_config, dejá Usuario vacío."
-                    .into(),
+                "Usuario inválido. Si usás un alias de ssh_config, dejá Usuario vacío.".into(),
             );
         }
         Ok(format!("{user}@{hostname}"))
@@ -121,10 +120,7 @@ pub fn ssh_interactive_args(host: &SshHost) -> Result<Vec<String>, String> {
 /// Argumentos del cliente `ssh` hasta (sin incluir) el comando remoto.
 pub fn ssh_base_args(host: &SshHost, batch_mode: bool) -> Result<Vec<String>, String> {
     let destination = ssh_destination(host)?;
-    let mut args = vec![
-        "-o".into(),
-        "ConnectTimeout=15".into(),
-    ];
+    let mut args = vec!["-o".into(), "ConnectTimeout=15".into()];
     // port == 0 → no pasar `-p` (alias / default de OpenSSH o Port en ssh_config).
     if host.port > 0 {
         args.push("-p".into());
@@ -142,9 +138,7 @@ pub fn ssh_base_args(host: &SshHost, batch_mode: bool) -> Result<Vec<String>, St
                 .as_deref()
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
-                .ok_or_else(|| {
-                    "Auth por clave: falta la ruta al identity file.".to_string()
-                })?;
+                .ok_or_else(|| "Auth por clave: falta la ruta al identity file.".to_string())?;
             if !Path::new(path).is_file() {
                 return Err(format!("No se encontró el identity file: {path}"));
             }
@@ -155,9 +149,7 @@ pub fn ssh_base_args(host: &SshHost, batch_mode: bool) -> Result<Vec<String>, St
         }
         "agent" | "password" => {}
         other => {
-            return Err(format!(
-                "Auth SSH desconocida: {other}. Usá agent o key."
-            ));
+            return Err(format!("Auth SSH desconocida: {other}. Usá agent o key."));
         }
     }
     args.push(destination);
@@ -222,9 +214,7 @@ fn ssh_program_missing_message(program: &Path) -> String {
     }
     #[cfg(not(windows))]
     {
-        format!(
-            "No se encontró `ssh` (`{shown}`). Instalalo (openssh-client) o agregalo al PATH."
-        )
+        format!("No se encontró `ssh` (`{shown}`). Instalalo (openssh-client) o agregalo al PATH.")
     }
 }
 
@@ -252,12 +242,16 @@ pub fn ensure_ssh_program() -> Result<PathBuf, String> {
 
 fn write_askpass_script(passphrase: &str) -> Result<(AskpassGuard, String), String> {
     let dir = std::env::temp_dir();
-    let name = format!("atic-ssh-askpass-{}.{}", uuid::Uuid::new_v4(), askpass_ext());
+    let name = format!(
+        "atic-ssh-askpass-{}.{}",
+        uuid::Uuid::new_v4(),
+        askpass_ext()
+    );
     let path = dir.join(&name);
     #[cfg(windows)]
     {
-        let mut f = std::fs::File::create(&path)
-            .map_err(|e| format!("no se pudo crear askpass: {e}"))?;
+        let mut f =
+            std::fs::File::create(&path).map_err(|e| format!("no se pudo crear askpass: {e}"))?;
         // El passphrase viaja solo en el entorno del hijo, no en el script.
         writeln!(f, "@echo off").map_err(|e| e.to_string())?;
         writeln!(f, "@echo %ATIC_SSH_PASSPHRASE%").map_err(|e| e.to_string())?;
@@ -384,9 +378,7 @@ fn map_ssh_error(stderr: &str, status_ok: bool, exit_code: Option<i32>) -> Strin
         || lower.contains("authentication failed")
         || lower.contains("publickey")
     {
-        return format!(
-            "Autenticación SSH fallida. Revisá ssh-agent o el identity file.\n{s}"
-        );
+        return format!("Autenticación SSH fallida. Revisá ssh-agent o el identity file.\n{s}");
     }
     if lower.contains("timed out") || lower.contains("connection timed out") {
         return format!("Timeout al conectar por SSH.\n{s}");
@@ -454,10 +446,7 @@ pub fn test_host(host: &SshHost) -> SshTestResult {
             let message = if not_found {
                 ssh_program_missing_message(&program)
             } else {
-                format!(
-                    "No se pudo ejecutar `{}`: {e}.",
-                    program.display()
-                )
+                format!("No se pudo ejecutar `{}`: {e}.", program.display())
             };
             return SshTestResult {
                 ok: false,
@@ -481,9 +470,7 @@ pub fn test_host(host: &SshHost) -> SshTestResult {
     if ok {
         message = match agent_available {
             Some(true) => format!("Conexión OK. `{bin}` disponible en el remoto."),
-            Some(false) => format!(
-                "Conexión OK, pero no se encontró `{bin}` en el PATH remoto."
-            ),
+            Some(false) => format!("Conexión OK, pero no se encontró `{bin}` en el PATH remoto."),
             None => "Conexión OK.".into(),
         };
     }

@@ -402,21 +402,18 @@ fn create(app: &AppHandle) -> Option<tauri::WebviewWindow> {
         .max(0.01);
     let lw = (f64::from(vs.width) / scale).max(1.0);
     let lh = (f64::from(vs.height) / scale).max(1.0);
-    let mut builder = tauri::WebviewWindowBuilder::new(
-        app,
-        LABEL,
-        tauri::WebviewUrl::App("overlay".into()),
-    )
-    .title("Atic")
-    .inner_size(lw, lh)
-    .resizable(false)
-    .decorations(false)
-    .transparent(true)
-    .always_on_top(true)
-    .skip_taskbar(true)
-    .shadow(false)
-    .focusable(false)
-    .visible(false);
+    let mut builder =
+        tauri::WebviewWindowBuilder::new(app, LABEL, tauri::WebviewUrl::App("overlay".into()))
+            .title("Atic")
+            .inner_size(lw, lh)
+            .resizable(false)
+            .decorations(false)
+            .transparent(true)
+            .always_on_top(true)
+            .skip_taskbar(true)
+            .shadow(false)
+            .focusable(false)
+            .visible(false);
     // Perfil propio: main/launcher/captura y la app instalada comparten
     // `com.ciat.atic`. Cinco controladores WebView2 sobre el mismo user-data
     // es el HRESULT 0x8007139F (estado inválido) y un HWND sin Chromium.
@@ -432,7 +429,8 @@ fn create(app: &AppHandle) -> Option<tauri::WebviewWindow> {
             "--disable-backgrounding-occluded-windows --disable-renderer-backgrounding --disable-background-timer-throttling --disable-features=CalculateNativeWinOcclusion",
         );
     }
-    builder.build()
+    builder
+        .build()
         .map_err(|err| tracing::error!(target: "overlay", ?err, "no se pudo crear la ventana"))
         .ok()
 }
@@ -552,7 +550,8 @@ fn cover_virtual_screen(window: &tauri::WebviewWindow) {
         bottom: 0,
     };
     // SAFETY: HWND de Tauri vivo; ClientToScreen / GetWindowRect solo leen.
-    let ok = unsafe { ClientToScreen(hwnd, &mut origin) != 0 && GetWindowRect(hwnd, &mut outer) != 0 };
+    let ok =
+        unsafe { ClientToScreen(hwnd, &mut origin) != 0 && GetWindowRect(hwnd, &mut outer) != 0 };
     if !ok {
         return;
     }
@@ -990,9 +989,7 @@ pub fn set_overlay_hit_rects(app: AppHandle, rects: Vec<HitRect>) {
     // sigue en click-through para soltar en Cursor/Explorador.
     let mapped: Vec<HitCss> = rects
         .iter()
-        .filter(|r| {
-            !ITEM_DRAG_PASSTHROUGH.load(Ordering::Acquire) || is_ole_drop_target(&r.id)
-        })
+        .filter(|r| !ITEM_DRAG_PASSTHROUGH.load(Ordering::Acquire) || is_ole_drop_target(&r.id))
         .map(|r| HitCss {
             id: r.id.clone(),
             x: r.x,
@@ -1127,7 +1124,10 @@ fn cursor_overlay_css() -> Option<(f64, f64)> {
     }
     let (cx, cy) = crate::floating::cursor_position()?;
     let (ox, oy) = client_origin_physical()?;
-    Some(physical_client_to_css(f64::from(cx) - ox, f64::from(cy) - oy))
+    Some(physical_client_to_css(
+        f64::from(cx) - ox,
+        f64::from(cy) - oy,
+    ))
 }
 
 /// Esquina (0,0) del cliente del overlay en físicos de pantalla.
@@ -1157,18 +1157,26 @@ fn client_origin_physical() -> Option<(f64, f64)> {
 /// Mapeo lineal cliente-físico → CSS del webview.
 ///
 /// Si el frontend ya mandó `innerWidth/Height`, se usa eso. Si no, `client/scale`.
-fn map_client_to_css(x: f64, y: f64, client_w: f64, client_h: f64, css_w: f64, css_h: f64) -> (f64, f64) {
-    (
-        x * css_w / client_w.max(1.0),
-        y * css_h / client_h.max(1.0),
-    )
+fn map_client_to_css(
+    x: f64,
+    y: f64,
+    client_w: f64,
+    client_h: f64,
+    css_w: f64,
+    css_h: f64,
+) -> (f64, f64) {
+    (x * css_w / client_w.max(1.0), y * css_h / client_h.max(1.0))
 }
 
-fn map_css_to_client(x: f64, y: f64, client_w: f64, client_h: f64, css_w: f64, css_h: f64) -> (f64, f64) {
-    (
-        x * client_w / css_w.max(1.0),
-        y * client_h / css_h.max(1.0),
-    )
+fn map_css_to_client(
+    x: f64,
+    y: f64,
+    client_w: f64,
+    client_h: f64,
+    css_w: f64,
+    css_h: f64,
+) -> (f64, f64) {
+    (x * client_w / css_w.max(1.0), y * client_h / css_h.max(1.0))
 }
 
 #[cfg(windows)]
@@ -1299,9 +1307,7 @@ pub fn set_overlay_css_viewport(w: f64, h: f64) {
 #[cfg(windows)]
 fn cursor_over_visible_main() -> bool {
     use windows_sys::Win32::Foundation::RECT;
-    use windows_sys::Win32::UI::WindowsAndMessaging::{
-        GetWindowRect, IsIconic, IsWindowVisible,
-    };
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GetWindowRect, IsIconic, IsWindowVisible};
 
     let hwnd = MAIN_HWND.load(Ordering::Acquire);
     if hwnd == 0 {
@@ -1640,7 +1646,9 @@ fn hwnd_is_ours(hwnd: windows_sys::Win32::Foundation::HWND) -> bool {
 #[cfg(windows)]
 fn foreground_point() -> Option<(i32, i32)> {
     use windows_sys::Win32::Foundation::RECT;
-    use windows_sys::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowRect, IsIconic};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetForegroundWindow, GetWindowRect, IsIconic,
+    };
 
     // SAFETY: GetForegroundWindow no tiene precondiciones.
     let hwnd = unsafe { GetForegroundWindow() };
@@ -1723,10 +1731,8 @@ pub fn overlay_work_areas(app: AppHandle) -> Vec<OverlayArea> {
             .iter()
             .map(|m| {
                 let to_css = |r: &atic_capture::Rect| {
-                    let (x, y) =
-                        physical_client_to_css(f64::from(r.x) - ox, f64::from(r.y) - oy);
-                    let (w, h) =
-                        physical_client_to_css(f64::from(r.width), f64::from(r.height));
+                    let (x, y) = physical_client_to_css(f64::from(r.x) - ox, f64::from(r.y) - oy);
+                    let (w, h) = physical_client_to_css(f64::from(r.width), f64::from(r.height));
                     OverlayRectCss { x, y, w, h }
                 };
                 let bounds = to_css(&m.bounds);
@@ -1868,8 +1874,8 @@ pub fn overlay_rect(app: AppHandle) -> Option<OverlayRect> {
 #[cfg(test)]
 mod tests {
     use super::{
-        desired_click_through, map_client_to_css, map_css_to_client,
-        resolve_physical_extent, should_arm,
+        desired_click_through, map_client_to_css, map_css_to_client, resolve_physical_extent,
+        should_arm,
     };
 
     #[test]
@@ -1886,9 +1892,7 @@ mod tests {
     #[test]
     fn physical_extent_prefers_placed_size_when_client_is_dip() {
         // Escritorio 3840×1080, GetClientRect ya en DIP 3072×864, escala 1.25.
-        let (pw, ph) = resolve_physical_extent(
-            3840.0, 1080.0, 3072.0, 864.0, 3072.0, 864.0, 1.25,
-        );
+        let (pw, ph) = resolve_physical_extent(3840.0, 1080.0, 3072.0, 864.0, 3072.0, 864.0, 1.25);
         assert!((pw - 3840.0).abs() < 0.01);
         assert!((ph - 1080.0).abs() < 0.01);
         // Cursor físico sobre la pill (193,292) en el monitor primario:
@@ -1905,8 +1909,7 @@ mod tests {
 
     #[test]
     fn physical_extent_reconstructs_when_client_matches_css() {
-        let (pw, ph) =
-            resolve_physical_extent(0.0, 0.0, 3072.0, 864.0, 3072.0, 864.0, 1.25);
+        let (pw, ph) = resolve_physical_extent(0.0, 0.0, 3072.0, 864.0, 3072.0, 864.0, 1.25);
         assert!((pw - 3840.0).abs() < 0.01);
         assert!((ph - 1080.0).abs() < 0.01);
     }

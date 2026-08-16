@@ -67,9 +67,8 @@ pub fn sync_controller_bounds(window: &WebviewWindow) {
         bottom: 0,
     };
     // SAFETY: HWND de Tauri vivo; GetClientRect solo escribe el RECT.
-    let ok = unsafe {
-        windows_sys::Win32::UI::WindowsAndMessaging::GetClientRect(hwnd.0 as _, &mut rc)
-    };
+    let ok =
+        unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetClientRect(hwnd.0 as _, &mut rc) };
     if ok == 0 || rc.right <= 0 || rc.bottom <= 0 {
         return;
     }
@@ -80,7 +79,12 @@ pub fn sync_controller_bounds(window: &WebviewWindow) {
     unsafe {
         let mut class: Vec<u16> = "WRY_WEBVIEW".encode_utf16().collect();
         class.push(0);
-        let child = FindWindowExW(hwnd.0 as _, std::ptr::null_mut(), class.as_ptr(), std::ptr::null());
+        let child = FindWindowExW(
+            hwnd.0 as _,
+            std::ptr::null_mut(),
+            class.as_ptr(),
+            std::ptr::null(),
+        );
         if child.is_null() {
             tracing::warn!(
                 target: "overlay",
@@ -183,44 +187,42 @@ pub fn capture_preview_png(window: &WebviewWindow) -> Result<Vec<u8>, String> {
 
     let (tx, rx) = std::sync::mpsc::channel();
     window
-        .with_webview(move |webview| {
-            unsafe {
-                let send = |msg: Result<Vec<u8>, String>| {
-                    let _ = tx.send(msg);
-                };
-                let Ok(core) = webview.controller().CoreWebView2() else {
-                    send(Err("WebView2: sin CoreWebView2".into()));
-                    return;
-                };
-                let Ok(stream) = CreateStreamOnHGlobal(HGLOBAL::default(), true) else {
-                    send(Err("no se pudo crear el IStream de CapturePreview".into()));
-                    return;
-                };
-                let stream_done = stream.clone();
-                let tx_done = tx.clone();
-                let handler = CapturePreviewCompletedHandler::create(Box::new(move |result| {
-                    match result {
-                        Ok(()) => match read_istream(&stream_done) {
-                            Ok(bytes) => {
-                                let _ = tx_done.send(Ok(bytes));
-                            }
-                            Err(err) => {
-                                let _ = tx_done.send(Err(err));
-                            }
-                        },
-                        Err(err) => {
-                            let _ = tx_done.send(Err(err.to_string()));
+        .with_webview(move |webview| unsafe {
+            let send = |msg: Result<Vec<u8>, String>| {
+                let _ = tx.send(msg);
+            };
+            let Ok(core) = webview.controller().CoreWebView2() else {
+                send(Err("WebView2: sin CoreWebView2".into()));
+                return;
+            };
+            let Ok(stream) = CreateStreamOnHGlobal(HGLOBAL::default(), true) else {
+                send(Err("no se pudo crear el IStream de CapturePreview".into()));
+                return;
+            };
+            let stream_done = stream.clone();
+            let tx_done = tx.clone();
+            let handler = CapturePreviewCompletedHandler::create(Box::new(move |result| {
+                match result {
+                    Ok(()) => match read_istream(&stream_done) {
+                        Ok(bytes) => {
+                            let _ = tx_done.send(Ok(bytes));
                         }
+                        Err(err) => {
+                            let _ = tx_done.send(Err(err));
+                        }
+                    },
+                    Err(err) => {
+                        let _ = tx_done.send(Err(err.to_string()));
                     }
-                    Ok(())
-                }));
-                if let Err(err) = core.CapturePreview(
-                    COREWEBVIEW2_CAPTURE_PREVIEW_IMAGE_FORMAT_PNG,
-                    &stream,
-                    &handler,
-                ) {
-                    send(Err(err.to_string()));
                 }
+                Ok(())
+            }));
+            if let Err(err) = core.CapturePreview(
+                COREWEBVIEW2_CAPTURE_PREVIEW_IMAGE_FORMAT_PNG,
+                &stream,
+                &handler,
+            ) {
+                send(Err(err.to_string()));
             }
         })
         .map_err(|err| err.to_string())?;

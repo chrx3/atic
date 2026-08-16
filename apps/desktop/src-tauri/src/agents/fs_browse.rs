@@ -131,7 +131,8 @@ pub fn list_directories(path: Option<String>) -> Result<DirectoryListing, String
     let dir = expand_input(path.as_deref())?;
     let mut entries = Vec::new();
 
-    let read = fs::read_dir(&dir).map_err(|e| format!("no se pudo leer {}: {e}", display_path(&dir)))?;
+    let read =
+        fs::read_dir(&dir).map_err(|e| format!("no se pudo leer {}: {e}", display_path(&dir)))?;
     for item in read.flatten() {
         let meta = match item.file_type() {
             Ok(t) => t,

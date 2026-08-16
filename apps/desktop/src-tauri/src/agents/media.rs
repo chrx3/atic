@@ -86,8 +86,8 @@ fn mime_ext(mime: &str) -> Option<&'static str> {
 /// `origin.files` (el adaptador lee el archivo al armar el content multimodal).
 #[tauri::command]
 pub fn agent_stage_image(data_base64: String, mime: String) -> Result<String, String> {
-    let ext = mime_ext(mime.trim())
-        .ok_or_else(|| format!("mime de imagen no soportado: {mime}"))?;
+    let ext =
+        mime_ext(mime.trim()).ok_or_else(|| format!("mime de imagen no soportado: {mime}"))?;
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(data_base64.trim())
         .map_err(|e| format!("base64 inválido: {e}"))?;

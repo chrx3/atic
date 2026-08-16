@@ -46,7 +46,6 @@ pub use model::AgentDelta;
 /// `apps/desktop/src/lib/core/tools.ts`.
 pub const UI_ENABLED: bool = false;
 
-
 /// Qué se contesta a un item [`model::ItemKind::Permission`].
 ///
 /// «Siempre» no es «sí» repetido: el agente manda, junto al pedido, la regla

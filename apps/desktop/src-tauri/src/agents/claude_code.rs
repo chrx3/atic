@@ -77,20 +77,13 @@ impl AgentBackend for ClaudeCode {
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
                 .unwrap_or("claude");
-            let remote_cmdline = super::ssh::remote_shell_command(
-                options.cwd.as_deref(),
-                bin,
-                &claude_args,
-            );
+            let remote_cmdline =
+                super::ssh::remote_shell_command(options.cwd.as_deref(), bin, &claude_args);
             // Con passphrase en keyring hace falta askpass (no BatchMode).
             // Sin ella, BatchMode evita colgar la UI pidiendo password.
-            let batch = !atic_core::secrets::has_ssh_host_secret(
-                &remote.host.id,
-                "passphrase",
-            );
-            super::ssh::build_ssh_command(&remote.host, &remote_cmdline, batch).map_err(
-                |e| format!("no se pudo preparar SSH para Claude Code: {e}"),
-            )?
+            let batch = !atic_core::secrets::has_ssh_host_secret(&remote.host.id, "passphrase");
+            super::ssh::build_ssh_command(&remote.host, &remote_cmdline, batch)
+                .map_err(|e| format!("no se pudo preparar SSH para Claude Code: {e}"))?
         } else {
             let mut cmd = Command::new("claude");
             cmd.args(&claude_args)
@@ -1418,7 +1411,10 @@ mod tests {
         let hist = t.translate(
             r#"{"type":"assistant","message":{"content":[{"type":"text","text":"mensaje viejo"}]}}"#,
         );
-        assert!(hist.is_empty(), "historial muteado no debe pintar: {hist:?}");
+        assert!(
+            hist.is_empty(),
+            "historial muteado no debe pintar: {hist:?}"
+        );
         t.mute_history.store(false, Ordering::SeqCst);
         let live = t.translate(
             r#"{"type":"assistant","message":{"content":[{"type":"text","text":"mensaje nuevo"}]}}"#,

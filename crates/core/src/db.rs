@@ -45,8 +45,7 @@ CREATE INDEX agent_threads_updated ON agent_threads (updated_at DESC);
 
 const MIGRATION_3: &str = "ALTER TABLE agent_threads ADD COLUMN preview TEXT NOT NULL DEFAULT '';";
 
-const MIGRATION_4: &str =
-    "ALTER TABLE agent_threads ADD COLUMN remote_host_id TEXT;";
+const MIGRATION_4: &str = "ALTER TABLE agent_threads ADD COLUMN remote_host_id TEXT;";
 
 /// Un hilo de agente tal como se guarda.
 #[derive(Debug, Clone)]
