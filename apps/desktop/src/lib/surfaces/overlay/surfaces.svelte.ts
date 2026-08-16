@@ -244,7 +244,6 @@ class OverlaySurfaces {
     // floats además se sacan del goo mientras dura el gesto.
     if (this.#dragging) {
       if (this.#sent === "drag!") return;
-      this.#sent = "drag!";
       try {
         await setOverlayHitRects([
           {
@@ -255,8 +254,10 @@ class OverlaySurfaces {
             h: window.innerHeight,
           },
         ]);
+        this.#sent = "drag!";
       } catch {
         // Fuera de Tauri (dev en navegador) no hay a quién avisarle.
+        this.#sent = "";
       }
       return;
     }
@@ -271,13 +272,14 @@ class OverlaySurfaces {
     // mucho más seguido de lo que la geometría cambia de verdad.
     const key = JSON.stringify(measured);
     if (key === this.#sent) return;
-    this.#sent = key;
     this.live = Object.fromEntries(measured.map((r) => [r.id, r]));
 
     try {
       await setOverlayHitRects(measured);
+      this.#sent = key;
     } catch {
       // Fuera de Tauri (dev en navegador) no hay a quién avisarle.
+      this.#sent = "";
     }
   }
 }

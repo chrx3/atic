@@ -71,6 +71,24 @@ pub struct ClipboardItem {
     pub source: String,
 }
 
+/// Una captura recién copiada al portapapeles, esperando que el watcher la vea.
+///
+/// No se puede resolver esto con `suppress_until`: la imagen se queda en el
+/// portapapeles indefinidamente, así que una ventana de tiempo solo retrasa el
+/// duplicado hasta que expira. Y tampoco sirve precalcular el fingerprint de
+/// contenido: el round-trip por el DIB de Windows no garantiza los mismos
+/// bytes. Lo que sí sabemos con certeza son las dimensiones.
+struct PendingCapture {
+    /// `capture:<id>` — la identidad que ya quedó en el historial.
+    fingerprint: String,
+    width: usize,
+    height: usize,
+    at: SystemTime,
+}
+
+/// Cuánto vale la pena esperar a que el watcher vea nuestra propia captura.
+const PENDING_CAPTURE_TTL: Duration = Duration::from_secs(10);
+
 #[derive(Default)]
 struct HistoryState {
     items: Vec<ClipboardItem>,
@@ -80,6 +98,9 @@ struct HistoryState {
     /// Ítems borrados a mano: el SO puede seguir teniendo el mismo contenido
     /// en el portapapeles; sin esto el watcher los re-ingiere al instante.
     deleted_fingerprints: HashSet<String>,
+    /// La captura que acabamos de poner en el portapapeles, para que el watcher
+    /// la reconozca como tal en vez de grabar una copia paralela.
+    pending_capture: Option<PendingCapture>,
 }
 
 static HISTORY: Mutex<Option<Arc<Mutex<HistoryState>>>> = Mutex::new(None);
@@ -133,6 +154,33 @@ fn save_history(dir: &Path, items: &[ClipboardItem]) {
     }
 }
 
+fn dismissed_path(dir: &Path) -> PathBuf {
+    dir.join("dismissed-captures.json")
+}
+
+/// Capturas que el usuario sacó del historial, entre arranques.
+///
+/// Va aparte de `history.json` porque no es una lista de ítems sino de
+/// ausencias: el PNG sigue existiendo en la carpeta de capturas —es del gestor
+/// de capturas, el clipboard no debe borrarlo— y el backfill lo encontraría de
+/// nuevo en cada listado.
+fn load_dismissed_captures(dir: &Path) -> HashSet<String> {
+    std::fs::read_to_string(dismissed_path(dir))
+        .ok()
+        .and_then(|raw| serde_json::from_str::<HashSet<String>>(&raw).ok())
+        .unwrap_or_default()
+}
+
+fn save_dismissed_captures(dir: &Path, fingerprints: &HashSet<String>) {
+    let captures: HashSet<&String> = fingerprints
+        .iter()
+        .filter(|f| f.starts_with("capture:"))
+        .collect();
+    if let Ok(raw) = serde_json::to_string(&captures) {
+        let _ = atic_core::write_atomic_str(&dismissed_path(dir), &raw);
+    }
+}
+
 fn encode_png_rgba(rgba: &[u8], width: usize, height: usize) -> Result<Vec<u8>, String> {
     let mut out = Vec::new();
     let encoder = image::codecs::png::PngEncoder::new(&mut out);
@@ -160,7 +208,15 @@ fn push_item(state: &mut HistoryState, dir: &Path, mut item: ClipboardItem) {
     }
     // Contenido nuevo distinto al borrado: ya se puede volver a capturar
     // el mismo fingerprint si el usuario lo copia otra vez más adelante.
-    state.deleted_fingerprints.clear();
+    //
+    // Las capturas se salvan de la limpieza. El razonamiento de arriba es «el
+    // usuario lo volvió a copiar a propósito», y para una captura eso no
+    // aplica: nadie la vuelve a copiar, la relee `collect_clipboard_items` del
+    // directorio. Sin esta excepción, borrar una captura duraba hasta la
+    // siguiente copia de cualquier cosa y después reaparecía sola.
+    state
+        .deleted_fingerprints
+        .retain(|f| f.starts_with("capture:"));
     if let Some(idx) = state
         .items
         .iter()
@@ -288,7 +344,11 @@ pub fn start_watcher(app: &AppHandle) {
         items,
         last_fingerprint: last,
         suppress_until: None,
-        deleted_fingerprints: HashSet::new(),
+        // Las capturas descartadas sí sobreviven al reinicio: el PNG sigue en
+        // la carpeta de capturas, así que sin esto el backfill de
+        // `collect_clipboard_items` las resucita en cada arranque.
+        deleted_fingerprints: load_dismissed_captures(&dir),
+        pending_capture: None,
     }));
     *guard = Some(shared.clone());
     drop(guard);
@@ -383,12 +443,36 @@ fn ingest_image(
     }
     let fp = fingerprint_image(bytes, w, h);
     {
-        let hist = shared.lock_or_recover();
+        let mut hist = shared.lock_or_recover();
         if hist.deleted_fingerprints.contains(&fp) {
             return Ok(false);
         }
         if hist.last_fingerprint.as_ref() == Some(&fp) {
             return Ok(false);
+        }
+        // ¿Es la captura que acabamos de copiar nosotros? Ya está en el
+        // historial con su identidad `capture:<id>`; grabarla acá otra vez es
+        // el duplicado «Imagen 631×638» + «Captura 15:36». Se sella su
+        // fingerprint de contenido en `last_fingerprint` para que no vuelva a
+        // entrar mientras siga en el portapapeles.
+        if let Some(pending) = hist.pending_capture.take() {
+            let fresh = pending
+                .at
+                .elapsed()
+                .is_ok_and(|age| age < PENDING_CAPTURE_TTL);
+            if fresh && pending.width == w && pending.height == h {
+                tracing::debug!(
+                    target: "clipboard",
+                    fingerprint = %pending.fingerprint,
+                    "imagen del portapapeles reconocida como captura propia"
+                );
+                hist.last_fingerprint = Some(fp);
+                return Ok(false);
+            }
+            // Sigue vigente pero todavía no es esta imagen: devolverla.
+            if fresh {
+                hist.pending_capture = Some(pending);
+            }
         }
     }
     let png = encode_png_rgba(bytes, w, h)?;
@@ -840,11 +924,27 @@ pub fn delete_clipboard_item(
     let shared = shared_history()?;
     let mut hist = shared.lock_or_recover();
     let Some(idx) = hist.items.iter().position(|i| i.id == id) else {
+        // Captura que todavía viene del backfill del directorio: no está en
+        // `items`, así que no hay nada que remover — pero sí hay que anotar el
+        // fingerprint, o `collect_clipboard_items` la vuelve a inyectar en el
+        // próximo listado. `set_pinned` ya tenía esta rama; el borrado no, y
+        // por eso la X de una captura devolvía «Ítem no encontrado».
+        if let Some(cap_id) = id.strip_prefix("capture-") {
+            hist.deleted_fingerprints.insert(format!("capture:{cap_id}"));
+            hist.suppress_until = Some(SystemTime::now() + Duration::from_millis(1200));
+            save_dismissed_captures(&dir, &hist.deleted_fingerprints);
+            drop(hist);
+            let _ = app.emit("clipboard-history-changed", ());
+            return Ok(());
+        }
         return Err("Ítem no encontrado".into());
     };
     let removed = hist.items.remove(idx);
     hist.deleted_fingerprints
         .insert(removed.fingerprint.clone());
+    if removed.fingerprint.starts_with("capture:") {
+        save_dismissed_captures(&dir, &hist.deleted_fingerprints);
+    }
     // Evita carrera con el poll inmediato del watcher.
     hist.suppress_until = Some(SystemTime::now() + Duration::from_millis(1200));
     if let Some(path) = removed.image_path {
@@ -872,6 +972,7 @@ pub fn clear_clipboard_history(app: AppHandle, state: State<AppState>) -> Result
     for item in &rest {
         hist.deleted_fingerprints.insert(item.fingerprint.clone());
     }
+    save_dismissed_captures(&dir, &hist.deleted_fingerprints);
     hist.suppress_until = Some(SystemTime::now() + Duration::from_millis(1200));
     for item in rest {
         if let Some(path) = item.image_path {
@@ -939,14 +1040,82 @@ pub(crate) fn has_live_external_foreground() -> bool {
     }
 }
 
+/// Graba una captura recién tomada como ítem REAL del historial.
+///
+/// Antes las capturas no existían en `items`: `collect_clipboard_items` las
+/// sintetizaba en cada listado leyendo el directorio. De ahí salían tres cosas:
+///
+/// 1. Duplicado garantizado. `notify_capture_ready` copia el PNG al
+///    portapapeles y el watcher lo graba como «Imagen 488×540», con su propio
+///    archivo en el dir de clipboard y un fingerprint de contenido. El dedup
+///    del merge compara contra `capture:<id>` y contra la ruta del dir de
+///    capturas: ninguna de las dos claves puede empatar con eso, nunca.
+/// 2. Imposible de borrar. `delete_clipboard_item` busca por id dentro de
+///    `items`, y el ítem virtual no estaba ahí.
+/// 3. El PNG quedaba guardado dos veces en disco.
+///
+/// Se llama ANTES de copiar al portapapeles y suprime al watcher, para que la
+/// identidad que quede sea esta y no la que él improvisaría.
+pub(crate) fn record_capture(app: &AppHandle, cap: &crate::capture::CaptureItem) {
+    let Some(state) = app.try_state::<AppState>() else {
+        return;
+    };
+    let Ok(shared) = shared_history() else {
+        return;
+    };
+    let dir = state.dirs.clipboard_dir();
+    let item = ClipboardItem {
+        id: format!("capture-{}", cap.id),
+        kind: ClipboardKind::Image,
+        preview: if cap.label.is_empty() {
+            "Captura".into()
+        } else {
+            format!("Captura {}", cap.label)
+        },
+        text: None,
+        image_path: Some(cap.path.clone()),
+        created_at_ms: cap.created_at_ms,
+        pinned: false,
+        fingerprint: format!("capture:{}", cap.id),
+        source: "capture".into(),
+    };
+    {
+        let mut hist = shared.lock_or_recover();
+        // El PNG está por entrar al portapapeles. Se anuncia por dimensiones
+        // —lo único que sobrevive seguro al round-trip por el DIB— para que
+        // `ingest_image` la reconozca en vez de grabar su propia copia.
+        hist.pending_capture = Some(PendingCapture {
+            fingerprint: item.fingerprint.clone(),
+            width: cap.width as usize,
+            height: cap.height as usize,
+            at: SystemTime::now(),
+        });
+        push_item(&mut hist, &dir, item);
+    }
+    let _ = app.emit("clipboard-history-changed", ());
+}
+
 /// Ítems del historial para búsqueda u otros agregadores.
+///
+/// El merge del directorio de capturas quedó solo como **backfill**: capturas
+/// viejas, o tomadas antes de que existiera [`record_capture`]. Las nuevas ya
+/// llegan como ítems reales.
 pub(crate) fn collect_clipboard_items(state: &AppState) -> Result<Vec<ClipboardItem>, String> {
     let shared = shared_history()?;
-    let mut items = shared.lock_or_recover().items.clone();
+    let (mut items, deleted) = {
+        let hist = shared.lock_or_recover();
+        (hist.items.clone(), hist.deleted_fingerprints.clone())
+    };
 
     let captures = crate::capture::recent_captures_limited(&state.dirs.captures_dir(), 20);
     for cap in captures {
         let fp = format!("capture:{}", cap.id);
+        // Sin esto el backfill resucita lo borrado en cada listado: `push_item`
+        // y `record_image` respetan `deleted_fingerprints`, este camino no lo
+        // miraba.
+        if deleted.contains(&fp) {
+            continue;
+        }
         if items
             .iter()
             .any(|i| i.fingerprint == fp || i.image_path.as_deref() == Some(&cap.path))

@@ -91,6 +91,8 @@ export interface AticEvents {
   "overlay-dismiss": void;
   /** `main` está debajo del cursor: soltar drag fullscreen del overlay. */
   "overlay-yield-main": void;
+  /** El overlay ya está colocado: republicar viewport CSS y hit-rects. */
+  "overlay-ready": void;
 
   // Agentes
   "agents-bubble-anchor": BubbleOpen;

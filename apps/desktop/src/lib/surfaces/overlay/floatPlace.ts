@@ -29,7 +29,15 @@ export const FUSED_GAP_PX = 2;
  * overlap negativo hace que parezca un solo disco que se estira.
  */
 export const SEED_OVERLAP_PX = 20;
-/** Idle tras separate: > REACH (10) → el cuello corta. */
+/**
+ * Idle tras separate: 16 px.
+ *
+ * Por encima de `REACH` (12) → el cuello corta, quedan dos siluetas. Pero por
+ * debajo de `INFLUENCE` (24), así que siguen compartiendo campo y se estiran
+ * ~0.7 px una hacia la otra: se leen como dos gotas que se saben cerca, no como
+ * dos cajas. Acercándolas, ese estiramiento crece hasta 1.5 px y recién ahí
+ * nace el cuello, desde ancho cero.
+ */
 export const PANEL_RESTING_GAP_PX = 16;
 /** Semilla = disco ~pill (40px), no stadium truncado. */
 export const PANEL_GROW_SEED = 40;

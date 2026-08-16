@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { boxShape, gapBetween, pillShape } from "./geometry";
-import { BLEND, BULGE, CELL, CELL_DRAG, REACH } from "./constants";
+import { BLEND, BULGE, CELL, CELL_DRAG, INFLUENCE, REACH } from "./constants";
+import { smin } from "./sdf";
 import { Field, shapeSD } from "./sdf";
 
 describe("boxShape", () => {
@@ -47,6 +48,27 @@ describe("los valores elegidos", () => {
   it("REACH = blend/2 (hueco de 12 px de la app)", () => {
     expect(BLEND).toBe(24);
     expect(REACH).toBe(12);
+  });
+
+  /**
+   * Los dos umbrales miden cosas distintas y el doble no es casual: entre
+   * INFLUENCE y REACH las siluetas ya se deforman una hacia la otra. Agrupar
+   * islas por REACH se saltea ese tramo y la junta aparece de golpe.
+   */
+  it("INFLUENCE = blend, el doble de REACH", () => {
+    expect(INFLUENCE).toBe(24);
+    expect(INFLUENCE).toBe(REACH * 2);
+  });
+
+  it("el smin ya mueve la superficie antes de que cierre el cuello", () => {
+    // Cara de una forma (d=0) frente a otra a distancia g.
+    const face = (g: number) => smin(0, g, BLEND);
+    // En INFLUENCE todavía no pasa nada; entrando, se estira progresivamente.
+    expect(face(INFLUENCE)).toBeCloseTo(0, 6);
+    expect(face(18)).toBeLessThan(0);
+    expect(face(REACH)).toBeLessThan(face(18));
+    // Ese salto de 1.5 px es lo que antes entraba en un solo frame.
+    expect(face(REACH)).toBeCloseTo(-1.5, 6);
   });
 
   /**

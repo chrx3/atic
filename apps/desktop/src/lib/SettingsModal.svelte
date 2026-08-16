@@ -124,19 +124,26 @@
     }
   }
 
-  const SETTINGS_SECTIONS: { id: SettingsSectionId; label: string }[] = (
-    [
-      { id: "general", label: "General" },
-      { id: "shortcuts", label: "Atajos" },
-      { id: "audio", label: "Audio" },
-      { id: "meetings", label: "Reuniones" },
-      { id: "dictation", label: "Dictado" },
-      { id: "summary", label: "Resúmenes" },
-      { id: "captures", label: "Capturas" },
-      { id: "agents", label: "Agentes" },
-    ] as const
-  ).filter((s): s is { id: SettingsSectionId; label: string } =>
-    AGENTS_ENABLED ? true : s.id !== "agents",
+  // Declarar y después filtrar, como `ALL_TOOLS`/`TOOLS` en `core/tools`.
+  //
+  // Antes esto era un `as const` con un type predicate en el `.filter`, y no
+  // compilaba: el predicado ensanchaba `id` de literales a `SettingsSectionId`,
+  // y TS exige que el tipo del predicado sea asignable al del elemento, no al
+  // revés. Además el predicado no hacía falta —acá no se narrowea nada, se
+  // saca una sección—. Era el único error de `pnpm check`, así que `verify`
+  // no podía pasar.
+  const ALL_SETTINGS_SECTIONS: { id: SettingsSectionId; label: string }[] = [
+    { id: "general", label: "General" },
+    { id: "shortcuts", label: "Atajos" },
+    { id: "audio", label: "Audio" },
+    { id: "meetings", label: "Reuniones" },
+    { id: "dictation", label: "Dictado" },
+    { id: "summary", label: "Resúmenes" },
+    { id: "captures", label: "Capturas" },
+    { id: "agents", label: "Agentes" },
+  ];
+  const SETTINGS_SECTIONS = ALL_SETTINGS_SECTIONS.filter(
+    (s) => AGENTS_ENABLED || s.id !== "agents",
   );
 
   const activeSectionLabel = $derived(
