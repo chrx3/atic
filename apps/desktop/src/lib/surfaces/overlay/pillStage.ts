@@ -30,6 +30,32 @@ export const PILL = {
   panelW: 312,
   /** Alto del panel (sin la barra). */
   panelH: 332,
+  /**
+   * Isla acoplada en reposo: grosor contra el borde y largo a lo largo de él.
+   *
+   * Fina a propósito: acoplada deja de ser un botón y pasa a ser una pestaña.
+   * El largo es lo que la vuelve agarrable —10×10 sería imposible de apuntar—
+   * y lo que le da al líquido con qué formar el cuello cuando abre un float.
+   */
+  islandThick: 10,
+  /**
+   * **Tiene que valer lo mismo que `bar`.** No es estética: es lo que impide
+   * un bucle.
+   *
+   * La isla se abre con el puntero encima y se cierra al salir. Si al abrirse
+   * encogiera en el eje largo (56 → 40), un cursor apoyado en el extremo
+   * quedaría fuera de la caja nueva: saldría, cerraría, la caja volvería a
+   * crecer bajo el cursor, entraría, abriría… a 60 Hz.
+   *
+   * Igualándolo a `bar`, el rectángulo abierto **contiene** siempre al
+   * cerrado: en el eje del borde solo crece y en el perpendicular no cambia.
+   * `pillPlan.test.ts` lo fija.
+   */
+  islandLong: 40,
+  /** Lado del botón de herramienta dentro de la isla abierta. */
+  islandTool: 34,
+  /** Hueco entre botones de la tira. */
+  islandGap: 6,
 } as const;
 
 export type Size = { w: number; h: number };
@@ -78,7 +104,23 @@ export function growsFirst(from: Size, to: Size): boolean {
  * - `cursor`: no conserva nada. Centra la ventana ya redimensionada en el
  *   puntero. Es el único absoluto: crecer e ir al cursor en una escritura.
  */
-export type Pivot = "topLeft" | "center" | "panel" | "bottomLeft" | "cursor";
+/**
+ * `dock*` clava el lado que toca el borde y centra el eje perpendicular.
+ *
+ * Hacen falta los cuatro y no alcanza con `topLeft`: acoplada a la derecha, al
+ * expandirse tiene que crecer **hacia adentro**, o sea conservando `x + w`. Con
+ * `topLeft` crecería hacia afuera y se saldría de la pantalla.
+ */
+export type Pivot =
+  | "topLeft"
+  | "center"
+  | "panel"
+  | "bottomLeft"
+  | "cursor"
+  | "dockLeft"
+  | "dockRight"
+  | "dockTop"
+  | "dockBottom";
 
 export type ResizeOutcome = {
   /** Cambió el tamaño (false = descartado por uno más nuevo). */

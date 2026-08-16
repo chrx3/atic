@@ -1373,11 +1373,31 @@ pub struct OverlayPoint {
 
 /// Rectángulo en píxeles CSS relativos al overlay.
 #[derive(Debug, Clone, Copy, serde::Serialize)]
+pub struct OverlayRectCss {
+    pub x: f64,
+    pub y: f64,
+    pub w: f64,
+    pub h: f64,
+}
+
+/// Un monitor en píxeles CSS relativos al overlay.
+#[derive(Debug, Clone, Copy, serde::Serialize)]
 pub struct OverlayArea {
     pub x: f64,
     pub y: f64,
     pub w: f64,
     pub h: f64,
+    /// Área útil del monitor: la pantalla menos lo que el SO ya reservó.
+    ///
+    /// No es lo mismo que los bounds y la diferencia solo importa **en los
+    /// bordes**, que es justo donde antes no se usaba nada: acoplar la pill al
+    /// canto de abajo con los bounds la mete debajo de la barra de tareas. En
+    /// Windows sale de `rcWork`, que `MonitorInfo` ya traía calculada; en macOS
+    /// será la pantalla menos la barra de menú y el Dock.
+    ///
+    /// Es también lo que vuelve innecesario el `BOTTOM_SLOT_INSET` a ojo del
+    /// frontend, que existía exactamente porque acá se devolvían bounds.
+    pub work: OverlayRectCss,
 }
 
 /// Escala del overlay. Es el puente entre los físicos de Win32 y los CSS.
@@ -1391,13 +1411,16 @@ pub fn scale(app: &AppHandle) -> f64 {
 ///
 /// Lo usa la burbuja de agentes: su sitio se calcula contra los monitores, que
 /// Win32 informa en físicos, y se dibuja con CSS, que trabaja en lógicos.
-pub fn to_local(app: &AppHandle, r: crate::floating::Rect) -> Option<OverlayArea> {
+///
+/// Devuelve un rectángulo pelado y no un `OverlayArea`: esto traduce una caja
+/// cualquiera, no un monitor, y no hay ningún área útil que informar.
+pub fn to_local(app: &AppHandle, r: crate::floating::Rect) -> Option<OverlayRectCss> {
     #[cfg(windows)]
     {
         let (ox, oy, _scale) = frame(app)?;
         let (x, y) = physical_client_to_css(f64::from(r.x) - ox, f64::from(r.y) - oy);
         let (w, h) = physical_client_to_css(f64::from(r.w), f64::from(r.h));
-        Some(OverlayArea { x, y, w, h })
+        Some(OverlayRectCss { x, y, w, h })
     }
     #[cfg(not(windows))]
     {
@@ -1634,15 +1657,21 @@ pub fn overlay_work_areas(app: AppHandle) -> Vec<OverlayArea> {
         atic_capture::monitors::enumerate()
             .iter()
             .map(|m| {
-                let (x, y) = physical_client_to_css(
-                    f64::from(m.bounds.x) - ox,
-                    f64::from(m.bounds.y) - oy,
-                );
-                let (w, h) = physical_client_to_css(
-                    f64::from(m.bounds.width),
-                    f64::from(m.bounds.height),
-                );
-                OverlayArea { x, y, w, h }
+                let to_css = |r: &atic_capture::Rect| {
+                    let (x, y) =
+                        physical_client_to_css(f64::from(r.x) - ox, f64::from(r.y) - oy);
+                    let (w, h) =
+                        physical_client_to_css(f64::from(r.width), f64::from(r.height));
+                    OverlayRectCss { x, y, w, h }
+                };
+                let bounds = to_css(&m.bounds);
+                OverlayArea {
+                    x: bounds.x,
+                    y: bounds.y,
+                    w: bounds.w,
+                    h: bounds.h,
+                    work: to_css(&m.work_area),
+                }
             })
             .collect()
     }
@@ -1650,6 +1679,42 @@ pub fn overlay_work_areas(app: AppHandle) -> Vec<OverlayArea> {
     {
         let _ = app;
         Vec::new()
+    }
+}
+
+/// ¿El botón principal del mouse está apretado ahora mismo?
+///
+/// El arrastre de la pill termina con `pointerup`, y ese evento **se pierde**
+/// cuando el puntero se va a una ventana de otro proceso. La barra de tareas es
+/// el caso claro: al soltar ahí, el gesto quedaba colgado para siempre, con el
+/// hit-rect a pantalla completa puesto y el overlay armado sobre todo el
+/// escritorio.
+///
+/// El movimiento ya se le pregunta a Win32 (`overlay_cursor`) exactamente por
+/// este motivo —el comentario de `beginDrag` lo dice—, pero el final del gesto
+/// seguía dependiendo del DOM. Esto cierra el otro extremo por la misma vía.
+#[tauri::command]
+pub fn overlay_primary_down() -> bool {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_SWAPBUTTON};
+        // SAFETY: ninguna de las dos tiene precondiciones ni toca memoria nuestra.
+        unsafe {
+            // Con los botones invertidos el "principal" es el físico derecho.
+            let vk = if GetSystemMetrics(SM_SWAPBUTTON) != 0 {
+                0x02 // VK_RBUTTON
+            } else {
+                0x01 // VK_LBUTTON
+            };
+            (GetAsyncKeyState(vk) as u16 & 0x8000) != 0
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        // `true` = "seguí como estabas". Devolver `false` cortaría todos los
+        // arrastres al primer cuadro donde el overlay no está implementado.
+        true
     }
 }
 

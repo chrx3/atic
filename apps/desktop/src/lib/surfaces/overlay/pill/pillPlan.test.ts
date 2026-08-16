@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { PILL } from "../pillStage";
+import { WHEEL_TOOLS } from "$core/tools";
 import {
   blocksBrowserChrome,
   consoleSideFor,
@@ -7,6 +8,7 @@ import {
   discJoinsTail,
   FLIGHT_SKIP_PX,
   isDiscOnly,
+  islandStripLong,
   morphsInPlace,
   pivotFor,
   stepWheel,
@@ -40,6 +42,66 @@ describe("contentFor", () => {
       h: PILL.bar + PILL.pad * 2,
     });
   });
+
+  it("acoplada en reposo es una pestaña, fina contra su borde", () => {
+    // Izquierda/derecha aplastan en x; arriba/abajo en y.
+    expect(contentFor("edge", 180, { edge: "left", expanded: false })).toEqual({
+      w: PILL.islandThick,
+      h: PILL.islandLong,
+    });
+    expect(contentFor("edge", 180, { edge: "bottom", expanded: false })).toEqual({
+      w: PILL.islandLong,
+      h: PILL.islandThick,
+    });
+  });
+
+  it("acoplada y abierta es la tira de herramientas, a lo largo del borde", () => {
+    // Acoplada la pill deja de ser un indicador y pasa a ser el acceso. Y se
+    // despliega a lo largo del canto, que es donde crecer no tapa pantalla.
+    const long = islandStripLong(WHEEL_TOOLS.length);
+    expect(contentFor("edge", 180, { edge: "left", expanded: true })).toEqual({
+      w: PILL.islandTool,
+      h: long,
+    });
+    expect(contentFor("edge", 180, { edge: "bottom", expanded: true })).toEqual({
+      w: long,
+      h: PILL.islandTool,
+    });
+  });
+
+  it("la tira mide los botones más los huecos entre ellos", () => {
+    expect(islandStripLong(1)).toBe(PILL.islandTool);
+    expect(islandStripLong(3)).toBe(PILL.islandTool * 3 + PILL.islandGap * 2);
+    // Sin herramientas no colapsa a cero: quedaría una isla invisible.
+    expect(islandStripLong(0)).toBe(PILL.bar);
+  });
+
+  it("el ancho de la barra no influye en la isla", () => {
+    // La barra mide del DOM y crece con el timer; la tira no.
+    expect(contentFor("edge", 999, { edge: "left", expanded: true })).toEqual(
+      contentFor("edge", 40, { edge: "left", expanded: true }),
+    );
+  });
+
+  it("sin dock, `edge` no puede decidir nada y cae a la barra", () => {
+    expect(contentFor("edge", 180)).toEqual(contentFor("none", 180));
+  });
+
+  /**
+   * La invariante que impide el bucle abrir/cerrar: la isla se abre con el
+   * puntero encima, así que la caja abierta no puede ser más chica en ningún
+   * eje que la cerrada. Si lo fuera, un cursor en el extremo quedaría afuera
+   * al abrirse y el ciclo se realimentaría a 60 Hz.
+   */
+  it("abrir la isla nunca encoge la caja en ningún eje", () => {
+    expect(PILL.islandLong).toBe(PILL.bar);
+    for (const edge of ["left", "right", "top", "bottom"] as const) {
+      const shut = contentFor("edge", 180, { edge, expanded: false });
+      const open = contentFor("edge", 180, { edge, expanded: true });
+      expect(open.w).toBeGreaterThanOrEqual(shut.w);
+      expect(open.h).toBeGreaterThanOrEqual(shut.h);
+    }
+  });
 });
 
 describe("pivotFor", () => {
@@ -56,6 +118,30 @@ describe("pivotFor", () => {
   it("en reposo nunca pivotea al centro", () => {
     // Con `center`, cada tic del cronómetro corría la pill media diferencia.
     expect(pivotFor({ ...base, surface: "none" })).toBe("topLeft");
+  });
+
+  it("acoplada clava el lado pegado al canto", () => {
+    // Es lo que hace que crezca HACIA ADENTRO: con `topLeft`, abrir la isla
+    // de la derecha la empujaría fuera de la pantalla.
+    const dock = (edge: "left" | "right" | "top" | "bottom") => ({
+      ...base,
+      surface: "edge" as const,
+      dock: { edge, expanded: false },
+    });
+    expect(pivotFor(dock("left"))).toBe("dockLeft");
+    expect(pivotFor(dock("right"))).toBe("dockRight");
+    expect(pivotFor(dock("top"))).toBe("dockTop");
+    expect(pivotFor(dock("bottom"))).toBe("dockBottom");
+  });
+
+  it("la rueda manda sobre el acople: sale del canto a volar", () => {
+    expect(
+      pivotFor({
+        ...base,
+        surface: "wheel",
+        dock: { edge: "right", expanded: true },
+      }),
+    ).toBe("center");
   });
 });
 

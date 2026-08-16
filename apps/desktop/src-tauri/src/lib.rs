@@ -169,6 +169,7 @@ pub fn run() {
             overlay::set_overlay_item_drag,
             overlay::set_overlay_pointer_gesture,
             overlay::overlay_cursor_over_hit,
+            overlay::overlay_primary_down,
             overlay::set_overlay_text_mode,
             commands::open_data_dir,
             commands::recording_track_path,

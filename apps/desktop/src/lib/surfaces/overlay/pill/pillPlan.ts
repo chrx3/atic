@@ -11,9 +11,31 @@
  */
 
 import { PILL, windowFor, type Pivot, type Size } from "../pillStage";
+import { dockAxis, type DockEdge } from "../edgeDock";
+import { WHEEL_TOOLS } from "$core/tools";
+
+/**
+ * Largo de la tira de herramientas para `n` botones.
+ *
+ * `n` es parámetro y no `WHEEL_TOOLS.length` directo para poder fijar la
+ * cuenta en un test sin atarlo a cuántas herramientas haya hoy.
+ */
+export function islandStripLong(n: number): number {
+  if (n <= 0) return PILL.bar;
+  return n * PILL.islandTool + (n - 1) * PILL.islandGap;
+}
 
 /** Qué hay desplegado. Clipboard/snippets ya no crecen la pill: son floats. */
-export type Surface = "none" | "wheel";
+export type Surface = "none" | "wheel" | "edge";
+
+/**
+ * Acoplada a un borde, y si el puntero la tiene abierta.
+ *
+ * Va aparte de `Surface` en vez de multiplicar los estados (`edge-left`,
+ * `edge-left-open`, …): el borde no cambia lo que la pill *es*, solo contra
+ * qué lado se aplana y hacia dónde crece.
+ */
+export type Dock = { edge: DockEdge; expanded: boolean };
 
 /**
  * El contenido que la pill tiene que poder mostrar, en píxeles.
@@ -22,17 +44,40 @@ export type Surface = "none" | "wheel";
  * estado: esa tabla fue el origen del desajuste original, porque el ancho real
  * depende de la fuente, del texto del timer y de si entró un chip.
  */
-export function contentFor(surface: Surface, barW: number): Size {
+export function contentFor(
+  surface: Surface,
+  barW: number,
+  dock: Dock | null = null,
+): Size {
   if (surface === "wheel") {
     const side = PILL.wheel - PILL.pad * 2;
     return { w: side, h: side };
+  }
+  if (surface === "edge" && dock) {
+    // Abierta es la tira de herramientas: acoplada, la pill deja de ser un
+    // indicador y pasa a ser el acceso. Se despliega A LO LARGO del borde, que
+    // es el único eje donde hay lugar sin taparle la pantalla al usuario.
+    if (dock.expanded) {
+      const long = islandStripLong(WHEEL_TOOLS.length);
+      return dockAxis(dock.edge) === "x"
+        ? { w: PILL.islandTool, h: long }
+        : { w: long, h: PILL.islandTool };
+    }
+    // En reposo, una pestaña: fina contra el borde y larga a lo largo de él.
+    return dockAxis(dock.edge) === "x"
+      ? { w: PILL.islandThick, h: PILL.islandLong }
+      : { w: PILL.islandLong, h: PILL.islandThick };
   }
   return { w: Math.max(barW, PILL.bar), h: PILL.bar };
 }
 
 /** El tamaño de la caja para un estado dado. */
-export function targetFor(surface: Surface, barW: number): Size {
-  return windowFor(contentFor(surface, barW));
+export function targetFor(
+  surface: Surface,
+  barW: number,
+  dock: Dock | null = null,
+): Size {
+  return windowFor(contentFor(surface, barW, dock));
 }
 
 /**
@@ -85,9 +130,24 @@ export function stackMarkVisible(state: {
 export function pivotFor(state: {
   surface: Surface;
   collapsingFrom: "wheel" | null;
+  dock?: Dock | null;
 }): Pivot {
   if (state.surface === "wheel") return "center";
   if (state.collapsingFrom === "wheel") return "center";
+  // Acoplada: el lado pegado al canto es el punto fijo. Con `topLeft`, abrir
+  // la isla de la derecha la empujaría fuera de la pantalla.
+  if (state.surface === "edge" && state.dock) {
+    switch (state.dock.edge) {
+      case "left":
+        return "dockLeft";
+      case "right":
+        return "dockRight";
+      case "top":
+        return "dockTop";
+      case "bottom":
+        return "dockBottom";
+    }
+  }
   return "topLeft";
 }
 
@@ -107,8 +167,13 @@ export function morphsInPlace(state: {
   surface: Surface;
   collapsingFrom: "wheel" | null;
 }): boolean {
+  // También la isla: abrirse y cerrarse contra el canto ES un cambio de la
+  // barra compacta, y sin animar el salto de pestaña a barra se lee como un
+  // parpadeo. La rueda sigue afuera: tiene su propia coreografía.
   return (
-    state.from !== null && state.collapsingFrom === null && state.surface === "none"
+    state.from !== null &&
+    state.collapsingFrom === null &&
+    (state.surface === "none" || state.surface === "edge")
   );
 }
 

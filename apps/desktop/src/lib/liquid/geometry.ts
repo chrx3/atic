@@ -39,6 +39,26 @@ export function pillShape(rect: Rect): Shape {
  * leen como una —comparándola contra `REACH`— sin tener que saber de qué lado
  * está una de la otra.
  */
+/**
+ * El lomo que cose varias gotas en un solo cuerpo.
+ *
+ * Una fila de círculos unida solo por el `smin` se lee como una oruga: cada
+ * gota aporta su arco entero y el contorno sube y baja tanto como el radio.
+ * Metiendo una cápsula más fina que las gotas por el eje que las alinea, el
+ * cuerpo pasa a ser una tira con ondulaciones suaves —el bulto de cada gota
+ * asomando sobre el lomo— en vez de una cadena de bolas.
+ *
+ * El radio se pasa medido, no fijo: cuando las gotas encogen, el lomo tiene que
+ * encoger con ellas o al cerrarse quedaría más gordo que lo que une.
+ */
+export function capsuleShape(
+  from: { x: number; y: number },
+  to: { x: number; y: number },
+  radius: number,
+): Shape {
+  return { kind: "capsule", ax: from.x, ay: from.y, bx: to.x, by: to.y, r: radius };
+}
+
 export function gapBetween(a: Rect, b: Rect): number {
   const gapX = Math.max(b.x - (a.x + a.w), a.x - (b.x + b.w));
   const gapY = Math.max(b.y - (a.y + a.h), a.y - (b.y + b.h));
