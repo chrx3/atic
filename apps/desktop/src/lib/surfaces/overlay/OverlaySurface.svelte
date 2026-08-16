@@ -22,6 +22,7 @@
   import { getConfig } from "$ipc/config";
   import {
     onOverlayYieldMain,
+    onOverlayReady,
     onPillVisibility,
     setOverlayCssViewport,
     setOverlayTextMode,
@@ -150,6 +151,18 @@
     void setOverlayCssViewport(w, h).catch(() => {
       // Fuera de Tauri no hay a quién avisarle.
     });
+  });
+
+  $effect(() => {
+    const pending = onOverlayReady(() => {
+      const w = window.innerWidth;
+      const h = window.innerHeight;
+      if (w > 1 && h > 1) {
+        void setOverlayCssViewport(w, h).catch(() => {});
+      }
+      void surfaces.recoverHits();
+    });
+    return () => void pending.then((off) => off());
   });
 
   $effect(() => {

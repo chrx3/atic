@@ -41,20 +41,6 @@
         "visible": true
       },
       {
-        "label": "capture-overlay",
-        "url": "/capture-overlay",
-        "title": "Seleccionar captura",
-        "width": 800,
-        "height": 600,
-        "resizable": false,
-        "decorations": false,
-        "alwaysOnTop": true,
-        "skipTaskbar": true,
-        "shadow": false,
-        "visible": true,
-        "additionalBrowserArgs": "--disable-backgrounding-occluded-windows --disable-renderer-backgrounding --disable-background-timer-throttling --disable-features=CalculateNativeWinOcclusion"
-      },
-      {
         "label": "launcher",
         "url": "/launcher",
         "title": "Buscar",

@@ -108,6 +108,26 @@ export function sminReach(k: number): number {
   return k / 2;
 }
 
+/**
+ * Hasta dónde el `smin` **toca** el campo: **k**.
+ *
+ * No es lo mismo que `sminReach`, y confundirlos es lo que hacía que la fusión
+ * se sintiera de golpe. `k/2` es dónde el cuello llega a cerrarse; pero el
+ * `smin` empieza a deformar las dos superficies mucho antes, en cuanto
+ * `|a − b| < k` —es la misma condición del corte `aabbSD(s) > d + k` de
+ * `Field.eval`—.
+ *
+ * O sea que entre `k` y `k/2` las siluetas ya se están estirando una hacia la
+ * otra: es toda la fase de aproximación, la que hace que se lea como líquido y
+ * no como dos formas que se pegan. Con `BLEND = 24`, la cara de la pill se
+ * corre 1.5 px hacia el panel justo antes de que nazca el cuello. Agrupar las
+ * islas por `sminReach` descartaba ese tramo entero y hacía aparecer esos
+ * 1.5 px de un frame al otro; hay que agrupar por esto.
+ */
+export function sminInfluence(k: number): number {
+  return k;
+}
+
 export interface RoundBox {
   kind: "box";
   cx: number;

@@ -141,6 +141,10 @@ export const onOverlayDismiss = (cb: () => void): Promise<UnlistenFn> =>
 export const onOverlayYieldMain = (cb: () => void): Promise<UnlistenFn> =>
   on("overlay-yield-main", cb);
 
+/** La ventana overlay ya cubre el escritorio: hay que republicar hits/viewport. */
+export const onOverlayReady = (cb: () => void): Promise<UnlistenFn> =>
+  on("overlay-ready", cb);
+
 export const onPillClipboardToggle = (cb: () => void): Promise<UnlistenFn> =>
   on("pill-clipboard-toggle", cb);
 export const onPillClipboardClose = (cb: () => void): Promise<UnlistenFn> =>

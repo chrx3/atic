@@ -29,7 +29,7 @@
 //! (el de cursor y el de foco) y re-aplicarlos tras cada cambio de bandera:
 //! mezclarlos rompe en las dos direcciones.
 
-use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, Ordering};
 use std::sync::mpsc::{sync_channel, SyncSender, TrySendError};
 use std::sync::{Mutex, OnceLock};
 
@@ -123,6 +123,14 @@ static OVERLAY_SCALE_BITS: std::sync::atomic::AtomicU64 =
 /// contienen el cursor. 0 = todavía no avisó el frontend.
 static CSS_VIEW_W_BITS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static CSS_VIEW_H_BITS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Tamaño físico del overlay según `place()` (escritorio virtual).
+///
+/// `GetClientRect` a veces ya viene en DIP (igual que `innerWidth`). Si el
+/// hit-test usa ese rect como si fueran físicos, al llegar el viewport CSS
+/// el mapeo cambia y la pill se ve pero el mouse la atraviesa.
+static OVERLAY_PHYS_W: AtomicU32 = AtomicU32::new(0);
+static OVERLAY_PHYS_H: AtomicU32 = AtomicU32::new(0);
 
 /// ¿Debería el overlay estar recibiendo el mouse ahora mismo?
 static ARMED: AtomicBool = AtomicBool::new(false);
@@ -248,6 +256,10 @@ fn schedule_capturing_reassert(app: &AppHandle) {
 /// abajo sea click-through o haya un clic.
 fn yield_to_capture(app: &AppHandle) {
     POINTER_GESTURE.store(false, Ordering::Release);
+    // Su gemelo: también lo pone el front y también lo baja el front. Si el
+    // webview se recarga (o muere) a mitad de un arrastre de ítem, nadie lo
+    // bajaba nunca y el hit-testing quedaba en passthrough para siempre.
+    ITEM_DRAG_PASSTHROUGH.store(false, Ordering::Release);
     ARMED.store(false, Ordering::Release);
     let Some(window) = app.get_webview_window(LABEL) else {
         return;
@@ -384,9 +396,9 @@ fn create(app: &AppHandle) -> Option<tauri::WebviewWindow> {
     // hit-rects no coinciden con el cursor.
     let vs = atic_capture::monitors::virtual_screen();
     let scale = atic_capture::monitors::enumerate()
-        .first()
+        .iter()
         .map(|m| m.scale)
-        .unwrap_or(1.0)
+        .fold(1.0_f64, f64::max)
         .max(0.01);
     let lw = (f64::from(vs.width) / scale).max(1.0);
     let lh = (f64::from(vs.height) / scale).max(1.0);
@@ -405,6 +417,12 @@ fn create(app: &AppHandle) -> Option<tauri::WebviewWindow> {
     .shadow(false)
     .focusable(false)
     .visible(false);
+    // Perfil propio: main/launcher/captura y la app instalada comparten
+    // `com.ciat.atic`. Cinco controladores WebView2 sobre el mismo user-data
+    // es el HRESULT 0x8007139F (estado inválido) y un HWND sin Chromium.
+    if let Ok(dir) = app.path().app_local_data_dir() {
+        builder = builder.data_directory(dir.join("overlay-webview"));
+    }
     // Click-through + NOACTIVATE: Chromium cree la ventana ocluida y duerme
     // timers/rAF/IPC hasta el próximo clic. Los atajos sobre la rueda/floats
     // quedaban “pegados” hasta tocar otra cosa.
@@ -464,7 +482,7 @@ pub fn place(app: &AppHandle) -> Option<OverlayRect> {
         {
             let delayed = window.clone();
             std::thread::spawn(move || {
-                for ms in [16u64, 50, 200, 500] {
+                for ms in [16u64, 50, 200, 500, 1000, 2000] {
                     std::thread::sleep(std::time::Duration::from_millis(ms));
                     crate::webview_tweaks::sync_controller_bounds(&delayed);
                 }
@@ -473,6 +491,8 @@ pub fn place(app: &AppHandle) -> Option<OverlayRect> {
         if let Ok(hwnd) = window.hwnd() {
             OVERLAY_HWND.store(hwnd.0 as isize, Ordering::SeqCst);
         }
+        OVERLAY_PHYS_W.store(rect.w.max(0) as u32, Ordering::SeqCst);
+        OVERLAY_PHYS_H.store(rect.h.max(0) as u32, Ordering::SeqCst);
         let scale = window.scale_factor().unwrap_or(1.0).max(0.01);
         rect.scale = scale;
         OVERLAY_SCALE_BITS.store(scale.to_bits(), Ordering::SeqCst);
@@ -481,13 +501,18 @@ pub fn place(app: &AppHandle) -> Option<OverlayRect> {
         // seguro porque este bit también es de `tao` — si algún día se escribe
         // a mano, hay que re-aplicarlo después de cada uno de ellos.
         set_click_through(&window, true);
+        keep_non_occluding(&window);
 
         tracing::info!(
             target: "overlay",
             monitores = monitors.len(),
             escalas_mixtas = mixed,
+            scale,
             "overlay en {},{} {}x{}", rect.x, rect.y, rect.w, rect.h
         );
+        let _ = app.emit("overlay-ready", ());
+        #[cfg(windows)]
+        reevaluate_arm();
         Some(rect)
     }
     #[cfg(not(windows))]
@@ -561,6 +586,10 @@ pub fn set_topmost(app: &AppHandle, on: bool) {
         return;
     };
     let _ = window.set_always_on_top(on);
+    // `set_always_on_top` reescribe el ex-style entero y puede llevarse puesto
+    // el alfa uniforme; sin reponerlo el overlay vuelve a tapar al de atrás
+    // (ver `keep_non_occluding`).
+    keep_non_occluding(&window);
     #[cfg(windows)]
     {
         use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -598,13 +627,124 @@ pub fn set_click_through(window: &tauri::WebviewWindow, on: bool) {
     }
 }
 
+/// Alfa uniforme del overlay: 254, un punto por debajo del máximo.
+const OVERLAY_ALPHA: u8 = 254;
+
+/// Que el overlay nunca cuente como ventana *tapadora* para el resto del SO.
+///
+/// Al armar hay que sacarle `WS_EX_TRANSPARENT`, y en ese instante el overlay
+/// pasa a ser, para cualquier otra app, una ventana visible, topmost y del
+/// tamaño del escritorio entero. El detector de oclusión de Chromium
+/// (`NativeWindowOcclusionTrackerWin`) marca ocluida a la ventana de atrás y
+/// esa deja de componer: **el video se congela apenas el mouse toca la pill, y
+/// el audio sigue**, porque van por caminos separados.
+///
+/// Es el mismo mecanismo que ya nos pega al revés —por eso el overlay nace con
+/// `--disable-features=CalculateNativeWinOcclusion`—, pero esa bandera solo
+/// vale para nuestro webview; el navegador del usuario tiene el suyo activo.
+///
+/// El detector descarta como oclusor toda ventana `WS_EX_LAYERED` cuyo alfa
+/// uniforme no sea exactamente 255. Medido en vivo, esta ventana ya es layered
+/// con `LWA_ALPHA` y alfa 255: alcanza con bajarlo a 254. A ojo es indistinguible
+/// (0,4 %) y no toca el alfa por píxel del webview, que es de donde sale la
+/// transparencia real.
+///
+/// Hay que reponerlo después de CADA cambio de banderas: `set_ignore_cursor_events`
+/// reescribe `GWL_EXSTYLE` entero, y si en el camino quita y repone
+/// `WS_EX_LAYERED` el alfa vuelve al default.
+pub fn keep_non_occluding(window: &tauri::WebviewWindow) {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            GetWindowLongPtrW, SetLayeredWindowAttributes, SetWindowLongPtrW, GWL_EXSTYLE,
+            LWA_ALPHA, WS_EX_LAYERED,
+        };
+        let Ok(hwnd) = window.hwnd() else {
+            return;
+        };
+        let hwnd = hwnd.0 as _;
+        // SAFETY: el HWND lo da Tauri y vive mientras viva la ventana. Solo se
+        // AÑADE `WS_EX_LAYERED` si falta —nunca se toca `WS_EX_TRANSPARENT`,
+        // que es de `CLICK_THROUGH` y desincronizarlo deja el escritorio entero
+        // sin recibir clics.
+        unsafe {
+            let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+            if ex & (WS_EX_LAYERED as isize) == 0 {
+                SetWindowLongPtrW(hwnd, GWL_EXSTYLE, ex | WS_EX_LAYERED as isize);
+            }
+            SetLayeredWindowAttributes(hwnd, 0, OVERLAY_ALPHA, LWA_ALPHA);
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = window;
+    }
+}
+
 /// Arranque: colocar, mostrar y dejar el worker escuchando.
+///
+/// Las otras ventanas WebView2 se crean en el mismo instante (main, shelf,
+/// captura, launcher). Si el overlay entra en esa carrera, wry a veces
+/// devuelve un HWND sin Chromium: la pill no pinta y nunca llega
+/// `viewport CSS del overlay`. Esperamos a que esa carrera termine, y si
+/// a los 2 s el frontend no avisó, destruimos y volvemos a crear.
 pub fn setup(app: &AppHandle) {
     remember_main(app);
-    if place(app).is_none() {
-        tracing::warn!(target: "overlay", "no se pudo colocar el overlay");
-    }
     start_toggle_worker(app.clone());
+    let handle = app.clone();
+    std::thread::Builder::new()
+        .name("atic-overlay-boot".into())
+        .spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(1200));
+            let boot = handle.clone();
+            let (placed_tx, placed_rx) = std::sync::mpsc::channel();
+            let _ = handle.run_on_main_thread(move || {
+                if place(&boot).is_none() {
+                    tracing::warn!(target: "overlay", "no se pudo colocar el overlay");
+                }
+                crate::webview_tweaks::apply_to_all_windows(&boot);
+                let _ = placed_tx.send(());
+            });
+            let _ = placed_rx.recv_timeout(std::time::Duration::from_secs(5));
+            for _ in 0..80 {
+                let css_w = f64::from_bits(CSS_VIEW_W_BITS.load(Ordering::Acquire));
+                if css_w > 1.0 {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            tracing::warn!(
+                target: "overlay",
+                "el overlay no reportó viewport CSS; recreando la ventana"
+            );
+            let drop = handle.clone();
+            let _ = handle.run_on_main_thread(move || drop_overlay(&drop));
+            std::thread::sleep(std::time::Duration::from_millis(400));
+            let retry = handle.clone();
+            let _ = handle.run_on_main_thread(move || {
+                if retry.get_webview_window(LABEL).is_some() {
+                    drop_overlay(&retry);
+                }
+                if place(&retry).is_none() {
+                    tracing::error!(target: "overlay", "no se pudo recrear el overlay");
+                }
+                crate::webview_tweaks::apply_to_all_windows(&retry);
+            });
+        })
+        .ok();
+}
+
+fn drop_overlay(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window(LABEL) {
+        let _ = window.destroy();
+    }
+    OVERLAY_HWND.store(0, Ordering::Release);
+    OVERLAY_PHYS_W.store(0, Ordering::Release);
+    OVERLAY_PHYS_H.store(0, Ordering::Release);
+    CSS_VIEW_W_BITS.store(0, Ordering::Release);
+    CSS_VIEW_H_BITS.store(0, Ordering::Release);
+    ARMED.store(false, Ordering::Release);
+    CLICK_THROUGH.store(true, Ordering::Release);
 }
 
 /// Guarda el HWND de `main` para el hit-test del camino caliente.
@@ -621,6 +761,9 @@ pub fn remember_main(app: &AppHandle) {
 pub fn yield_to_main(app: &AppHandle) {
     remember_main(app);
     POINTER_GESTURE.store(false, Ordering::Release);
+    // El drag de ítem muere con el gesto: si `main` pasó al frente, ya no hay
+    // arrastre que sostener y el front podría no llegar a bajarlo.
+    ITEM_DRAG_PASSTHROUGH.store(false, Ordering::Release);
     #[cfg(windows)]
     reevaluate_arm();
     let _ = app.emit("overlay-yield-main", ());
@@ -707,6 +850,10 @@ fn start_toggle_worker(app: AppHandle) {
                             POINTER_GESTURE.store(false, Ordering::Release);
                         }
                         set_click_through(&window, through);
+                        // Inmediatamente después del cambio de banderas: es el
+                        // único punto que aplica el click-through, así que es
+                        // el único donde el alfa se puede haber perdido.
+                        keep_non_occluding(&window);
                         CLICK_THROUGH.store(through, Ordering::Release);
                     },
                     Msg::Outside => {
@@ -731,21 +878,48 @@ fn start_toggle_worker(app: AppHandle) {
 /// desarme a mitad del arrastre. No hace falta una API aparte para eso.
 #[tauri::command]
 pub fn set_overlay_hit_rects(app: AppHandle, rects: Vec<HitRect>) {
-    let Some(window) = app.get_webview_window(LABEL) else {
-        return;
-    };
-    let scale = window.scale_factor().unwrap_or(1.0);
-    OVERLAY_SCALE_BITS.store(scale.to_bits(), Ordering::Release);
-    if let Ok(hwnd) = window.hwnd() {
-        OVERLAY_HWND.store(hwnd.0 as isize, Ordering::Release);
+    // Guardar las zonas aunque el HWND todavía no exista: el overlay arranca
+    // con retraso y, si se descartan, el frontend no vuelve a mandarlas
+    // (`#sent` ya las dio por publicadas) y la pill queda inalcanzable.
+    if let Some(window) = app.get_webview_window(LABEL) {
+        let scale = window.scale_factor().unwrap_or(1.0);
+        OVERLAY_SCALE_BITS.store(scale.to_bits(), Ordering::Release);
+        if let Ok(hwnd) = window.hwnd() {
+            OVERLAY_HWND.store(hwnd.0 as isize, Ordering::Release);
+        }
+        // Origen del cliente (no outer): alinea PILL_RECT con el cursor.
+        let origin = client_origin_physical().unwrap_or_else(|| {
+            window
+                .outer_position()
+                .map(|p| (f64::from(p.x), f64::from(p.y)))
+                .unwrap_or((0.0, 0.0))
+        });
+
+        // Guardar aparte el de la pill en físicos: bubble_rect / panel_float.
+        // Durante un arrastre se publica un rectángulo de pantalla completa sin id,
+        // así que solo se pisa cuando viene el de verdad.
+        //
+        // Y es la SILUETA, no la zona viva: la zona incluye el respiro que la pill
+        // deja alrededor para la rueda, así que anclando ahí el globo quedaría a
+        // `gap` + ese respiro de distancia y el cuello no llegaría a cruzarlo.
+        if let Some(i) = rects
+            .iter()
+            .position(|r| r.id == "pill-skin")
+            .or_else(|| rects.iter().position(|r| r.id == "pill"))
+        {
+            let p = &rects[i];
+            if let Ok(mut guard) = PILL_RECT.lock() {
+                let (px, py) = css_to_physical_client(p.x, p.y);
+                let (pw, ph) = css_to_physical_client(p.w, p.h);
+                *guard = Some(crate::floating::Rect {
+                    x: (origin.0 + px).round() as i32,
+                    y: (origin.1 + py).round() as i32,
+                    w: pw.round() as i32,
+                    h: ph.round() as i32,
+                });
+            }
+        }
     }
-    // Origen del cliente (no outer): alinea PILL_RECT con ScreenToClient.
-    let origin = client_origin_physical().unwrap_or_else(|| {
-        window
-            .outer_position()
-            .map(|p| (f64::from(p.x), f64::from(p.y)))
-            .unwrap_or((0.0, 0.0))
-    });
 
     // Durante OLE out-drag: solo drop-targets del overlay (agentes). El resto
     // sigue en click-through para soltar en Cursor/Explorador.
@@ -762,31 +936,6 @@ pub fn set_overlay_hit_rects(app: AppHandle, rects: Vec<HitRect>) {
             h: r.h,
         })
         .collect();
-
-    // Guardar aparte el de la pill en físicos: bubble_rect / panel_float.
-    // Durante un arrastre se publica un rectángulo de pantalla completa sin id,
-    // así que solo se pisa cuando viene el de verdad.
-    //
-    // Y es la SILUETA, no la zona viva: la zona incluye el respiro que la pill
-    // deja alrededor para la rueda, así que anclando ahí el globo quedaría a
-    // `gap` + ese respiro de distancia y el cuello no llegaría a cruzarlo.
-    if let Some(i) = rects
-        .iter()
-        .position(|r| r.id == "pill-skin")
-        .or_else(|| rects.iter().position(|r| r.id == "pill"))
-    {
-        let p = &rects[i];
-        if let Ok(mut guard) = PILL_RECT.lock() {
-            let (px, py) = css_to_physical_client(p.x, p.y);
-            let (pw, ph) = css_to_physical_client(p.w, p.h);
-            *guard = Some(crate::floating::Rect {
-                x: (origin.0 + px).round() as i32,
-                y: (origin.1 + py).round() as i32,
-                w: pw.round() as i32,
-                h: ph.round() as i32,
-            });
-        }
-    }
 
     if let Ok(mut guard) = HIT_RECTS.lock() {
         *guard = mapped;
@@ -899,24 +1048,21 @@ pub fn on_cursor_sample() {
     reevaluate_arm();
 }
 
-/// Cursor en CSS del overlay (`ScreenToClient` + escala).
+/// Cursor en CSS del overlay.
+///
+/// Misma conversión que `pill_home`: `GetCursorPos` menos el origen del
+/// cliente, luego físicos → CSS. `ScreenToClient` a veces no comparte unidad
+/// con `GetClientRect` (físico vs DIP) y el hit-test se iba a un lado de la
+/// pill pintada.
 #[cfg(windows)]
 fn cursor_overlay_css() -> Option<(f64, f64)> {
-    use windows_sys::Win32::Foundation::POINT;
-    use windows_sys::Win32::Graphics::Gdi::ScreenToClient;
-
     let hwnd = OVERLAY_HWND.load(Ordering::Acquire);
     if hwnd == 0 {
         return None;
     }
     let (cx, cy) = crate::floating::cursor_position()?;
-    let mut pt = POINT { x: cx, y: cy };
-    // SAFETY: HWND del overlay vivo; ScreenToClient solo escribe el POINT.
-    let ok = unsafe { ScreenToClient(hwnd as _, &mut pt) };
-    if ok == 0 {
-        return None;
-    }
-    Some(physical_client_to_css(f64::from(pt.x), f64::from(pt.y)))
+    let (ox, oy) = client_origin_physical()?;
+    Some(physical_client_to_css(f64::from(cx) - ox, f64::from(cy) - oy))
 }
 
 /// Esquina (0,0) del cliente del overlay en físicos de pantalla.
@@ -983,28 +1129,62 @@ fn client_size_physical() -> Option<(f64, f64)> {
     Some((f64::from(rc.right), f64::from(rc.bottom)))
 }
 
-fn css_viewport_size(client_w: f64, client_h: f64) -> (f64, f64) {
+fn css_viewport_size(phys_w: f64, phys_h: f64) -> (f64, f64) {
     let w = f64::from_bits(CSS_VIEW_W_BITS.load(Ordering::Acquire));
     let h = f64::from_bits(CSS_VIEW_H_BITS.load(Ordering::Acquire));
     if w > 1.0 && h > 1.0 {
         return (w, h);
     }
     let scale = f64::from_bits(OVERLAY_SCALE_BITS.load(Ordering::Acquire)).max(0.01);
-    (client_w / scale, client_h / scale)
+    (phys_w / scale, phys_h / scale)
+}
+
+/// Extensión física del overlay para mapear cursor / hogar / monitores.
+///
+/// Prefiere el tamaño que `place()` guardó. Si `GetClientRect` ya coincide
+/// con el CSS, no es físico: se reconstruye con la escala.
+fn resolve_physical_extent(
+    stored_w: f64,
+    stored_h: f64,
+    client_w: f64,
+    client_h: f64,
+    css_w: f64,
+    css_h: f64,
+    scale: f64,
+) -> (f64, f64) {
+    if stored_w > 1.0 && stored_h > 1.0 {
+        return (stored_w, stored_h);
+    }
+    if css_w > 1.0 && (client_w - css_w).abs() < 4.0 && (client_h - css_h).abs() < 4.0 {
+        let s = scale.max(0.01);
+        return (client_w * s, client_h * s);
+    }
+    (client_w, client_h)
+}
+
+#[cfg(windows)]
+fn physical_extent() -> (f64, f64) {
+    let stored_w = f64::from(OVERLAY_PHYS_W.load(Ordering::Acquire));
+    let stored_h = f64::from(OVERLAY_PHYS_H.load(Ordering::Acquire));
+    let (cw, ch) = client_size_physical().unwrap_or((1.0, 1.0));
+    let scale = f64::from_bits(OVERLAY_SCALE_BITS.load(Ordering::Acquire)).max(0.01);
+    let css_w = f64::from_bits(CSS_VIEW_W_BITS.load(Ordering::Acquire));
+    let css_h = f64::from_bits(CSS_VIEW_H_BITS.load(Ordering::Acquire));
+    resolve_physical_extent(stored_w, stored_h, cw, ch, css_w, css_h, scale)
 }
 
 #[cfg(windows)]
 fn physical_client_to_css(x: f64, y: f64) -> (f64, f64) {
-    let (cw, ch) = client_size_physical().unwrap_or((1.0, 1.0));
-    let (vw, vh) = css_viewport_size(cw, ch);
-    map_client_to_css(x, y, cw, ch, vw, vh)
+    let (pw, ph) = physical_extent();
+    let (vw, vh) = css_viewport_size(pw, ph);
+    map_client_to_css(x, y, pw, ph, vw, vh)
 }
 
 #[cfg(windows)]
 fn css_to_physical_client(x: f64, y: f64) -> (f64, f64) {
-    let (cw, ch) = client_size_physical().unwrap_or((1.0, 1.0));
-    let (vw, vh) = css_viewport_size(cw, ch);
-    map_css_to_client(x, y, cw, ch, vw, vh)
+    let (pw, ph) = physical_extent();
+    let (vw, vh) = css_viewport_size(pw, ph);
+    map_css_to_client(x, y, pw, ph, vw, vh)
 }
 
 #[cfg(not(windows))]
@@ -1035,7 +1215,14 @@ pub fn set_overlay_css_viewport(w: f64, h: f64) {
     }
     CSS_VIEW_W_BITS.store(w.to_bits(), Ordering::Release);
     CSS_VIEW_H_BITS.store(h.to_bits(), Ordering::Release);
-    tracing::info!(target: "overlay", css_w = w, css_h = h, "viewport CSS del overlay");
+    tracing::info!(
+        target: "overlay",
+        css_w = w,
+        css_h = h,
+        phys_w = OVERLAY_PHYS_W.load(Ordering::Acquire),
+        phys_h = OVERLAY_PHYS_H.load(Ordering::Acquire),
+        "viewport CSS del overlay"
+    );
     #[cfg(windows)]
     reevaluate_arm();
 }
@@ -1310,10 +1497,7 @@ fn frame(app: &AppHandle) -> Option<(f64, f64, f64)> {
 pub fn overlay_cursor(app: AppHandle) -> Option<OverlayPoint> {
     #[cfg(windows)]
     {
-        // Misma conversión que el hit-test (`ScreenToClient` + escala).
-        // Restar `outer_position` fallaba cuando el origen del cliente no
-        // coincidía con el outer: la pill se detenía a medio camino del cursor
-        // y los floats nacían corridos.
+        // Misma conversión que el hit-test y `pill_home` (físicos − origen).
         let _ = frame(&app)?;
         let (x, y) = cursor_overlay_css()?;
         Some(OverlayPoint { x, y })
@@ -1554,7 +1738,8 @@ pub fn overlay_rect(app: AppHandle) -> Option<OverlayRect> {
 #[cfg(test)]
 mod tests {
     use super::{
-        desired_click_through, map_client_to_css, map_css_to_client, should_arm,
+        desired_click_through, map_client_to_css, map_css_to_client,
+        resolve_physical_extent, should_arm,
     };
 
     #[test]
@@ -1566,6 +1751,34 @@ mod tests {
         let (bx, by) = map_css_to_client(x, y, 1920.0, 1080.0, 1536.0, 864.0);
         assert!((bx - 960.0).abs() < 0.01);
         assert!((by - 540.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn physical_extent_prefers_placed_size_when_client_is_dip() {
+        // Escritorio 3840×1080, GetClientRect ya en DIP 3072×864, escala 1.25.
+        let (pw, ph) = resolve_physical_extent(
+            3840.0, 1080.0, 3072.0, 864.0, 3072.0, 864.0, 1.25,
+        );
+        assert!((pw - 3840.0).abs() < 0.01);
+        assert!((ph - 1080.0).abs() < 0.01);
+        // Cursor físico sobre la pill (193,292) en el monitor primario:
+        // cliente 2113 → CSS 1690, estable antes y después del viewport.
+        let (x, y) = map_client_to_css(2113.0, 292.0, pw, ph, 3072.0, 864.0);
+        assert!((x - 1690.4).abs() < 0.1);
+        assert!((y - 233.6).abs() < 0.1);
+        let fallback_css_w = pw / 1.25;
+        let fallback_css_h = ph / 1.25;
+        let (x0, y0) = map_client_to_css(2113.0, 292.0, pw, ph, fallback_css_w, fallback_css_h);
+        assert!((x - x0).abs() < 0.1);
+        assert!((y - y0).abs() < 0.1);
+    }
+
+    #[test]
+    fn physical_extent_reconstructs_when_client_matches_css() {
+        let (pw, ph) =
+            resolve_physical_extent(0.0, 0.0, 3072.0, 864.0, 3072.0, 864.0, 1.25);
+        assert!((pw - 3840.0).abs() < 0.01);
+        assert!((ph - 1080.0).abs() < 0.01);
     }
 
     #[test]

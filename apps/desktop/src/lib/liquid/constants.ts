@@ -8,7 +8,7 @@
  * contorno pasa por la geometría pedida sin engordar.
  */
 
-import { sminBulge, sminReach } from "./sdf";
+import { sminBulge, sminInfluence, sminReach } from "./sdf";
 
 /**
  * Cuánto se mezclan las formas. Es la perilla que manda.
@@ -38,6 +38,15 @@ export const SMOOTH = 3;
 
 /** El hueco más grande que el cuello todavía cruza, con `BLEND`. */
 export const REACH = sminReach(BLEND);
+
+/**
+ * Desde qué hueco las siluetas ya se deforman una hacia la otra, con `BLEND`.
+ *
+ * El doble de `REACH`. Es el que decide qué formas comparten campo: agrupar por
+ * `REACH` dejaba fuera toda la aproximación y la junta aparecía de golpe (ver
+ * `sminInfluence`). `REACH` sigue siendo el que responde «¿hay cuello?».
+ */
+export const INFLUENCE = sminInfluence(BLEND);
 
 /** Cuánto engorda la silueta cerca de una junta, con `BLEND`. */
 export const BULGE = sminBulge(BLEND);

@@ -29,7 +29,7 @@
   import { publishEmergeSkin } from "$surfaces/overlay/floatEmergeSkin";
   import type { Rect } from "$lib/liquid/geometry";
   import { RectTracker } from "$lib/liquid/measure.svelte";
-  import { boxShape, gapBetween, pillShape } from "$lib/liquid/geometry";
+  import { gapBetween, pillShape } from "$lib/liquid/geometry";
   import { REACH } from "$lib/liquid/constants";
   import ToolIcon from "$lib/ToolIcon.svelte";
   import { agents } from "$lib/agentSessions.svelte";
@@ -76,7 +76,6 @@
     hideClipboardWindow,
     onClipboardBubbleDismiss,
   } from "$ipc/clipboard";
-  import { startCaptureSession } from "$ipc/captures";
   import { getConfig } from "$ipc/config";
   import { on } from "$ipc/events";
   import { hideLauncher, onLauncherBubbleDismiss } from "$ipc/search";
@@ -99,6 +98,7 @@
     shouldReturnHomeAfterClose,
     slotIntent,
     spatialDismissTargets,
+    type SlotRequest,
   } from "$surfaces/overlay/slotIntent";
   import { armOpenDismissGrace } from "$surfaces/overlay/openDismissGrace";
   import {
@@ -882,7 +882,7 @@
   /** Soltar la tecla: activa lo apuntado si la rueda llegó a mostrarse. */
   function onWheelRelease() {
     if (surface !== "wheel") return;
-    if (wheelShown && wheelTool) void activateTool(wheelTool);
+    if (wheelShown && wheelTool) activateTool(wheelTool);
     else void closeWheel();
   }
 
@@ -893,7 +893,7 @@
     const action = wheelKeyAction(event.key, event.shiftKey);
     if (!action) return false;
     if (action === "activate") {
-      if (wheelTool) void activateTool(wheelTool);
+      if (wheelTool) activateTool(wheelTool);
       else void closeWheel();
     } else {
       const next = nextWheelTool(wheelTool, action === "next" ? 1 : -1, WHEEL_TOOLS);
@@ -906,66 +906,23 @@
   /**
    * La rueda ejecuta la herramienta, no navega la app.
    *
-   * Grabar arranca en paralelo al cierre (sin slot). Tools con slot vuelan
-   * y recién ahí se ejecutan (dictado, Apps, clipboard, textos, agentes).
+   * No tiene despacho propio: encola por el MISMO camino que los atajos, con
+   * `force` para que apuntar un gajo siempre abra (nunca alterne).
+   *
+   * Antes esto reimplementaba `runActivateAtSlot` —cerrar rueda, volar al
+   * slot, ejecutar— con su propio contador de generación (`collapseEpoch`) y
+   * sin cola. Los dos caminos compartían `returnHomeSuppressed` y
+   * `spatialIntent` sin verse entre sí: soltar la rueda y apretar un atajo en
+   * el acto los dejaba corriendo en paralelo, cada uno llamando a `flyTo`, y
+   * el `finally` del primero soltaba el lock del segundo a mitad del vuelo.
    */
-  async function activateTool(id: ToolId) {
+  function activateTool(id: ToolId) {
     if (id === "agents" && !AGENTS_ENABLED) return;
     if (surface !== "wheel") return;
+    // El cierre lo hace `runActivateAtSlot` con su propio epoch; acá solo se
+    // pide la curva acelerada (la rueda ya cumplió su función).
     wheelQuick = true;
-    const epoch = ++collapseEpoch;
-    opening = true;
-    wheelTool = null;
-
-    if (id === "meetings") void toggleRecord();
-
-    armOpenDismissGrace();
-    await setOverlayPointerGesture(true).catch(() => {});
-    try {
-      // Mismo orden que `closeWheel`: chrome de rueda activo hasta encoger.
-      collapsingFrom = "wheel";
-      surface = "none";
-      const collapsed = await playCloseMorph(epoch);
-      if (!collapsed) return;
-      // Hit-rect fresco: sin esto el float ancla contra la geometría de la rueda.
-      await surfaces.flush();
-
-      if (slotForTool(id)) {
-        returnHomeSuppressed = true;
-        if (isSpatialTool(id)) spatialIntent = id;
-        try {
-          // Solo launcher / agentes / dictado vuelan al slot.
-          // Clipboard/textos desde la rueda abren junto a la pill (ya en el cursor).
-          await flyToToolSlot(id);
-          await surfaces.flush();
-          await executeToolAction(id);
-        } finally {
-          returnHomeSuppressed = false;
-        }
-        return;
-      }
-
-      if (isSpatialTool(id)) {
-        returnHomeSuppressed = true;
-        spatialIntent = id;
-        try {
-          await dismissSpatialTools(id);
-          await surfaces.flush();
-          await executeToolAction(id);
-        } finally {
-          returnHomeSuppressed = false;
-        }
-        return;
-      }
-
-      if (id === "captures") await startCaptureSession();
-    } catch (err) {
-      console.warn("acción de la rueda", err);
-    } finally {
-      void setOverlayPointerGesture(false).catch(() => {});
-      if (epoch === collapseEpoch) opening = false;
-      wheelQuick = false;
-    }
+    requestActivateAtSlot(id, { force: true });
   }
 
   /**
@@ -978,7 +935,7 @@
   /** Destino espacial del acto en curso: bloquea volver a casa si B aún nace. */
   let spatialIntent: ToolId | null = null;
   let slotBusy = false;
-  let slotPending: ToolId | null = null;
+  let slotPending: SlotRequest | null = null;
   let slotGen = 0;
   async function dismissSpatialTools(keep?: ToolId) {
     returnHomeSuppressed = true;
@@ -1089,8 +1046,18 @@
    * Vuela la pill al slot de la tool (work area del monitor actual).
    * Clipboard / textos no tienen slot fijo: vuelan al cursor (atajo / catálogo).
    * No redefine `home`: el destino es posición de acción, no reposo.
+   *
+   * `anchored` = el pedido viene de la rueda. Los slots fijos igual se vuelan
+   * (dictado abajo, Apps al costado), pero el vuelo al cursor se saltea: la
+   * rueda YA se abrió centrada en el cursor, y el punto que toca el puntero al
+   * elegir está sobre el anillo, no en el centro. Sin esto, elegir Clipboard
+   * mandaba la pill los ~56 px del radio hasta el gajo, que es ruido: el ancla
+   * natural de un menú radial es su centro, no dónde cayó el dedo.
    */
-  async function flyToToolSlot(id: ToolId): Promise<void> {
+  async function flyToToolSlot(
+    id: ToolId,
+    opts: { anchored?: boolean } = {},
+  ): Promise<void> {
     // Al terminar dictado no hace falta volar.
     if (id === "dictation" && dictationStore.active) return;
 
@@ -1110,6 +1077,8 @@
       return;
     }
 
+    if (opts.anchored) return;
+
     // Clipboard / textos: el atajo trae la pill al mouse y abre desde ahí.
     if (id === "clipboard" || id === "snippets") {
       const cursor = await cursorPoint();
@@ -1124,19 +1093,22 @@
   }
 
   /**
-   * Catálogo / ToolRail / atajo: el atajo nombra el destino.
-   * Misma tool abierta y cursor ahí → cerrar. Clipboard/textos con el
-   * cursor lejos → reubicar. Otra (o ninguna) → mostrar.
+   * Camino ÚNICO de activación: catálogo, ToolRail, atajo global y rueda.
+   *
+   * El atajo nombra el destino: misma tool abierta y cursor ahí → cerrar;
+   * clipboard/textos con el cursor lejos → reubicar; otra (o ninguna) →
+   * mostrar. La rueda pasa `force` y se salta esa decisión (ver `slotIntent`).
    * Si hay un acto en curso, el último pedido gana (no se tira).
    */
-  function requestActivateAtSlot(id: ToolId) {
-    const queued = enqueueActivate(slotBusy, id);
+  function requestActivateAtSlot(id: ToolId, opts: { force?: boolean } = {}) {
+    const req: SlotRequest = { id, force: opts.force ?? false };
+    const queued = enqueueActivate(slotBusy, req);
     if (!queued.start) {
       slotPending = queued.pending;
       cancelFlight();
       return;
     }
-    void runActivateAtSlot(id);
+    void runActivateAtSlot(req);
   }
 
   /** Cuánto tendría que volar la pill para centrarse en el cursor. */
@@ -1147,7 +1119,8 @@
     return pillToCursorMovePx(at, size, cursor);
   }
 
-  async function runActivateAtSlot(id: ToolId) {
+  async function runActivateAtSlot(req: SlotRequest) {
+    const { id, force = false } = req;
     slotBusy = true;
     returnHomeSuppressed = true;
     const gen = ++slotGen;
@@ -1159,13 +1132,18 @@
     try {
       cancelPendingCollapse();
       await closeWheel({ returnHome: false });
+      // El cierre acelerado ya se consumió; el resto del acto usa las curvas
+      // normales. Dejarlo puesto no rompe nada, pero miente sobre el estado.
+      wheelQuick = false;
       surfaces.resetInteraction();
 
       const intent = slotIntent(
         id,
         spatialToolOpen(id),
-        await cursorMovePx(id),
+        // Con `force` la distancia no decide nada: ahorrarse el IPC del cursor.
+        force ? 0 : await cursorMovePx(id),
         FLIGHT_SKIP_PX,
+        { force },
       );
 
       if (intent === "close") {
@@ -1194,9 +1172,11 @@
       if (isSpatialTool(id)) spatialIntent = id;
       else if (id === "dictation") spatialIntent = null;
 
-      await flyToToolSlot(id);
+      await flyToToolSlot(id, { anchored: force });
       if (gen !== slotGen) return;
       if (!shouldCommitShow(slotPending)) return;
+      // Hit-rect fresco: sin esto el float ancla contra la geometría vieja
+      // (la caja de la rueda, o la posición previa al vuelo).
       await surfaces.flush();
       await executeToolAction(id);
     } catch (err) {
@@ -1554,7 +1534,7 @@
       bind:activeId={wheelTool}
       caption="Herramientas"
       centerLabel="Cerrar"
-      onSelect={(id) => void activateTool(id)}
+      onSelect={(id) => activateTool(id)}
       onCenter={() => void closeWheel()}
     />
   </div>

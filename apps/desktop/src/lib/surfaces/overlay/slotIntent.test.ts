@@ -33,6 +33,20 @@ describe("slotIntent", () => {
     expect(slotIntent("meetings", true)).toBe("show");
     expect(slotIntent("captures", true)).toBe("show");
   });
+
+  it("force (rueda): apuntar un gajo abre, nunca cierra ni reubica", () => {
+    const force = { force: true };
+    // Los tres casos que SÍ cambian de intención sin el flag.
+    expect(slotIntent("clipboard", true, 0, 48, force)).toBe("show");
+    expect(slotIntent("clipboard", true, 200, 48, force)).toBe("show");
+    expect(slotIntent("launcher", true, 0, 48, force)).toBe("show");
+    expect(slotIntent("snippets", true, 120, 48, force)).toBe("show");
+  });
+
+  it("force: false explícito se comporta como el atajo", () => {
+    expect(slotIntent("clipboard", true, 0, 48, { force: false })).toBe("close");
+    expect(slotIntent("clipboard", true, 90, 48, { force: false })).toBe("relocate");
+  });
 });
 
 describe("isCursorAnchored / pillToCursorMovePx", () => {
@@ -96,6 +110,19 @@ describe("enqueueActivate", () => {
       pending: "snippets",
     });
   });
+
+  // El payload es el pedido entero, no el id: un pedido de la rueda encolado
+  // detrás de un atajo tiene que conservar su `force` al desencolarse.
+  it("la cola guarda el pedido completo, force incluido", () => {
+    expect(enqueueActivate(true, { id: "clipboard", force: true })).toEqual({
+      start: false,
+      pending: { id: "clipboard", force: true },
+    });
+    expect(enqueueActivate(false, { id: "snippets", force: false })).toEqual({
+      start: true,
+      pending: null,
+    });
+  });
 });
 
 describe("commit / return-home", () => {
@@ -107,5 +134,10 @@ describe("commit / return-home", () => {
   it("no vuelve a casa si hay un switch pendiente", () => {
     expect(shouldReturnHomeAfterClose(null)).toBe(true);
     expect(shouldReturnHomeAfterClose("clipboard")).toBe(false);
+  });
+
+  it("también con pedidos completos en la cola", () => {
+    expect(shouldCommitShow({ id: "clipboard", force: true })).toBe(false);
+    expect(shouldReturnHomeAfterClose({ id: "snippets", force: false })).toBe(false);
   });
 });

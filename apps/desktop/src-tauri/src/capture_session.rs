@@ -28,6 +28,12 @@ static STARTING: AtomicBool = AtomicBool::new(false);
 static START_TICK_MS: AtomicU64 = AtomicU64::new(0);
 /// Sube en cada cancelación. El arranque en curso aborta si su token no coincide.
 static GENERATION: AtomicU64 = AtomicU64::new(0);
+/// La mira confirmó estar pintada y usable (ack del webview de captura).
+///
+/// Es el único hecho que distingue «la selección está en pantalla» de «la
+/// ventana está visible pero el webview quedó en blanco». `is_visible()` no
+/// sirve para eso: la pone en `true` este mismo módulo al llamar `show()`.
+static REVEALED: AtomicBool = AtomicBool::new(false);
 /// Ventana en la que un segundo atajo durante `STARTING` solo reafirma input
 /// en vez de cancelar (tap rápido / evento duplicado). Después sí cancela.
 const START_GRACE_MS: u64 = 400;
@@ -174,6 +180,7 @@ fn end_session(app: &AppHandle) {
     GENERATION.fetch_add(1, Ordering::SeqCst);
     STARTING.store(false, Ordering::SeqCst);
     START_TICK_MS.store(0, Ordering::SeqCst);
+    REVEALED.store(false, Ordering::SeqCst);
 
     // Ocultar (no cerrar): destruir la ventana provoca un crash de wry cuando
     // recibe WM_SETFOCUS durante su destrucción. Se reutiliza en la próxima
@@ -231,6 +238,8 @@ fn start_impl(app: &AppHandle) -> Result<(), String> {
         return Ok(());
     }
     START_TICK_MS.store(now_ms(), Ordering::SeqCst);
+    // Arranca sin ack: el de la sesión anterior no vale para esta.
+    REVEALED.store(false, Ordering::SeqCst);
 
     let token = GENERATION.load(Ordering::SeqCst);
 
@@ -267,6 +276,15 @@ fn start_freeze(app: &AppHandle, token: u64) -> Result<(), String> {
     // congela como “escritorio” gris. Ocultar y dar un frame a DWM.
     ensure_overlay_hidden(app);
     std::thread::sleep(std::time::Duration::from_millis(32));
+    if abort_requested(token) {
+        abandon_start(app);
+        return Ok(());
+    }
+
+    if let Err(err) = ensure_capture_overlay(app) {
+        abandon_start(app);
+        return Err(err);
+    }
     if abort_requested(token) {
         abandon_start(app);
         return Ok(());
@@ -360,13 +378,72 @@ fn start_freeze(app: &AppHandle, token: u64) -> Result<(), String> {
         return Ok(());
     }
 
-    // No mostrar aún: el webview carga el PNG oculto y llama a
-    // `show_capture_overlay` cuando el frame ya está pintado. Así no hay telón gris.
     // CAPTURING ya está activo desde el primer Pressed; reafirmar por si el
     // freeze/blur pisó el ex-style mientras tanto.
     crate::overlay::reassert_capturing_input(app);
+    // Mostrar YA: el webview de captura nace oculto y Chromium se duerme.
+    // Si esperamos a que el frontend reciba el evento y llame a `show`,
+    // a veces no llega nunca: la mira no aparece y la pill queda click-through.
+    let app_show = app.clone();
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.run_on_main_thread(move || {
+        let _ = tx.send(show_overlay_window(&app_show));
+    })
+    .map_err(|err| err.to_string())?;
+    match rx.recv_timeout(std::time::Duration::from_secs(3)) {
+        Ok(Ok(())) => {}
+        Ok(Err(err)) => {
+            tracing::warn!(%err, "no se pudo mostrar el overlay de captura");
+            end_session(app);
+            return Err(err);
+        }
+        Err(_) => {
+            end_session(app);
+            return Err("timeout mostrando capture-overlay".into());
+        }
+    }
     let _ = app.emit("overlay-session-started", ());
+    schedule_show_watchdog(app.clone(), token);
     Ok(())
+}
+
+/// Si la mira no confirma que está en pantalla, soltar el mouse.
+///
+/// Antes esto preguntaba `window.is_visible()`, que no puede fallar que sí:
+/// `start_freeze` llama `show()` sobre esa misma ventana unas líneas más
+/// arriba, así que siempre daba `true` y el watchdog no cancelaba nunca. El
+/// caso a atrapar es justamente el otro —ventana visible con el webview en
+/// blanco—: la mira no aparece, nadie completa ni cancela, la sesión queda
+/// abierta y la pill se queda click-through porque `CAPTURING` sigue puesto.
+/// El síntoma es «la captura no hace nada y la pill deja de responder hasta
+/// apretar el atajo de nuevo» (el segundo disparo entra por el toggle de
+/// `start_impl` y cierra la sesión).
+///
+/// Corre 1 s DESPUÉS del watchdog del propio overlay (`WATCHDOG_MS` = 5 s en
+/// `CaptureOverlaySurface`): si ese webview está vivo se cancela solo y con
+/// mejor contexto. Este es el backstop para cuando ni siquiera llegó a
+/// escuchar `overlay-session-started`, que es precisamente cuando el de allá
+/// no existe.
+const SHOW_WATCHDOG_SECS: u64 = 6;
+
+fn schedule_show_watchdog(app: AppHandle, token: u64) {
+    std::thread::Builder::new()
+        .name("atic-capture-watch".into())
+        .spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(SHOW_WATCHDOG_SECS));
+            if abort_requested(token) || !session_is_active(&app) {
+                return;
+            }
+            if REVEALED.load(Ordering::SeqCst) {
+                return;
+            }
+            tracing::warn!(
+                "captura: la mira nunca confirmó estar visible; cancelando para \
+                 devolver el mouse a la pill"
+            );
+            end_session(&app);
+        })
+        .ok();
 }
 
 /// Muestra el overlay solo cuando el frontend ya tiene el frame listo.
@@ -375,10 +452,153 @@ pub fn show_capture_overlay(app: AppHandle) -> Result<(), String> {
     show_overlay_window(&app)
 }
 
+/// El webview de captura avisa que la mira ya está visible y usable.
+///
+/// Sin este ack, Rust no tiene forma de saber que la selección arrancó: es lo
+/// que apaga el watchdog de [`schedule_show_watchdog`].
+#[tauri::command]
+pub fn capture_overlay_revealed() {
+    REVEALED.store(true, Ordering::SeqCst);
+}
+
 fn ensure_overlay_hidden(app: &AppHandle) {
     if let Some(window) = app.get_webview_window(OVERLAY_LABEL) {
         let _ = window.hide();
     }
+}
+
+/// ¿Esta ventana tiene un WebView2 vivo detrás?
+///
+/// `eval` no sirve como sondeo: encola el script y devuelve `Ok` aunque la
+/// creación del webview haya fallado, así que decía «vivo» sobre una ventana
+/// hueca. Por eso el camino de recrear de abajo nunca corría: en los logs
+/// `"sin Chromium"` aparecía 0 veces mientras la captura fallaba en TODOS los
+/// arranques.
+///
+/// Se piden dos hechos en vez de uno: que Tauri tenga el webview registrado
+/// (`with_webview` falla si no) y que exista el hijo `WRY_WEBVIEW`, que es el
+/// HWND que hospeda al controller. Un falso «muerto» solo cuesta recrear la
+/// ventana, y queda escrito en el log de quien llama.
+fn capture_webview_alive(window: &tauri::WebviewWindow) -> bool {
+    if window.with_webview(|_| {}).is_err() {
+        return false;
+    }
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::UI::WindowsAndMessaging::FindWindowExW;
+        let Ok(hwnd) = window.hwnd() else {
+            return false;
+        };
+        let mut class: Vec<u16> = "WRY_WEBVIEW".encode_utf16().collect();
+        class.push(0);
+        // SAFETY: el HWND lo da Tauri y vive mientras viva la ventana;
+        // FindWindowEx solo consulta la jerarquía.
+        let child = unsafe {
+            FindWindowExW(
+                hwnd.0 as _,
+                std::ptr::null_mut(),
+                class.as_ptr(),
+                std::ptr::null(),
+            )
+        };
+        if child.is_null() {
+            return false;
+        }
+    }
+    true
+}
+
+fn create_capture_overlay(app: &AppHandle) -> Result<tauri::WebviewWindow, String> {
+    let mut builder = tauri::WebviewWindowBuilder::new(
+        app,
+        OVERLAY_LABEL,
+        tauri::WebviewUrl::App("capture-overlay".into()),
+    )
+    .title("Seleccionar captura")
+    .inner_size(800.0, 600.0)
+    .resizable(false)
+    .decorations(false)
+    .always_on_top(true)
+    .skip_taskbar(true)
+    .shadow(false)
+    .visible(false);
+    if let Ok(dir) = app.path().app_local_data_dir() {
+        builder = builder.data_directory(dir.join("capture-overlay-webview"));
+    }
+    #[cfg(windows)]
+    {
+        builder = builder.additional_browser_args(
+            "--disable-backgrounding-occluded-windows --disable-renderer-backgrounding --disable-background-timer-throttling --disable-features=CalculateNativeWinOcclusion",
+        );
+    }
+    builder
+        .build()
+        .map_err(|err| format!("no se pudo crear capture-overlay: {err}"))
+}
+
+/// Garantiza una ventana de captura con webview usable, creándola si hace falta.
+///
+/// **Por qué no se declara en `tauri.conf.json`.** Estaba ahí, y era la única
+/// de las cuatro ventanas con `additionalBrowserArgs`. WebView2 tiene un solo
+/// environment por carpeta de user-data y sus opciones las fija quien lo crea
+/// primero —`main`, sin esos flags—, así que al llegarle el turno rechazaba las
+/// opciones distintas:
+///
+/// ```text
+/// ERROR tauri_runtime_wry: failed to create webview: HRESULT(0x8007139F)
+/// "The group or resource is not in the correct state to perform the requested operation."
+/// ```
+///
+/// Pasaba en el 100% de los arranques. La ventana existía pero hueca: sin JS no
+/// escuchaba `overlay-session-started`, la mira no aparecía, nadie completaba ni
+/// cancelaba, y como `CAPTURING` seguía puesto la pill se quedaba
+/// click-through hasta apretar el atajo otra vez (que entra por el toggle de
+/// `start_impl` y recién ahí cierra la sesión).
+///
+/// Creándola acá, `create_capture_overlay` le da su propio `data_directory`:
+/// environment aparte, los flags anti-throttling sí se aplican, y la primera
+/// captura paga el costo de crearla.
+fn ensure_capture_overlay(app: &AppHandle) -> Result<(), String> {
+    let app_probe = app.clone();
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.run_on_main_thread(move || {
+        let verdict = match app_probe.get_webview_window(OVERLAY_LABEL) {
+            Some(window) if capture_webview_alive(&window) => 0u8,
+            Some(window) => {
+                tracing::warn!(
+                    target: "overlay",
+                    "capture-overlay sin Chromium; recreando"
+                );
+                let _ = window.destroy();
+                1u8
+            }
+            None => 2u8,
+        };
+        let _ = tx.send(verdict);
+    })
+    .map_err(|err| err.to_string())?;
+    let verdict = rx
+        .recv_timeout(std::time::Duration::from_secs(3))
+        .unwrap_or(2);
+    if verdict == 0 {
+        return Ok(());
+    }
+    if verdict == 1 {
+        std::thread::sleep(std::time::Duration::from_millis(400));
+    }
+    let app_create = app.clone();
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.run_on_main_thread(move || {
+        let result = if app_create.get_webview_window(OVERLAY_LABEL).is_some() {
+            Ok(())
+        } else {
+            create_capture_overlay(&app_create).map(|_| ())
+        };
+        let _ = tx.send(result);
+    })
+    .map_err(|err| err.to_string())?;
+    rx.recv_timeout(std::time::Duration::from_secs(8))
+        .map_err(|_| "timeout creando capture-overlay".to_string())?
 }
 
 fn restore_main_hit_testing(app: &AppHandle) {

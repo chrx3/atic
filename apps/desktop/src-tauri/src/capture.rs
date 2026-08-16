@@ -47,11 +47,18 @@ pub fn capture_and_show(app: &AppHandle) -> Result<String, String> {
 ///
 /// `shelf_anchor` (coords físicas) elige en qué monitor aparece el shelf.
 pub fn notify_capture_ready(app: &AppHandle, path: &str, shelf_anchor: Option<(i32, i32)>) {
+    let item = capture_item(Path::new(path));
+    // Antes de copiar, no después: el historial tiene que quedarse con ESTA
+    // identidad (`capture:<id>`, apuntando al PNG del dir de capturas) y no con
+    // la que el watcher improvisaría al ver la imagen en el portapapeles.
+    if let Some(item) = item.as_ref() {
+        crate::clipboard_history::record_capture(app, item);
+    }
     if let Err(error) = copy_png_to_clipboard(Path::new(path)) {
         tracing::warn!(%error, "no se pudo copiar la captura al portapapeles");
     }
     let _ = crate::capture_shelf::show_shelf(app, shelf_anchor);
-    if let Some(item) = capture_item(Path::new(path)) {
+    if let Some(item) = item {
         let _ = app.emit("screenshot-created", item);
     }
 

@@ -210,6 +210,7 @@ pub fn run() {
             capture_session::start_capture_session,
             capture_session::overlay_info,
             capture_session::show_capture_overlay,
+            capture_session::capture_overlay_revealed,
             capture_session::complete_window_capture,
             capture_session::complete_region_capture,
             capture_session::complete_monitor_capture,
@@ -424,10 +425,14 @@ pub fn run() {
             launcher::start_indexing();
             clipboard_history::start_watcher(app.handle());
 
-            // Las ventanas de captura se declaran `visible: true` (para que las
+            // Estas ventanas se declaran `visible: true` (para que las
             // decoraciones/transparencia se apliquen igual que en la pill) y se
             // ocultan aquí hasta que se usan.
-            for label in ["capture-shelf", "capture-overlay", "launcher"] {
+            //
+            // `capture-overlay` NO está en la lista a propósito: ya no se
+            // declara en la config, la crea `ensure_capture_overlay` al primer
+            // uso (ver el porqué allá).
+            for label in ["capture-shelf", "launcher"] {
                 if let Some(window) = app.get_webview_window(label) {
                     let _ = window.hide();
                 }

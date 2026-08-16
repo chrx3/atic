@@ -15,7 +15,7 @@
  * ni padre ni sistema de posicionamiento.
  */
 
-import { REACH } from "$liquid/constants";
+import { INFLUENCE } from "$liquid/constants";
 import { clusterParts, type Island } from "$liquid/motion";
 import type { Shape } from "$liquid/sdf";
 
@@ -35,8 +35,15 @@ function partsFinger(parts: Record<string, Shape[]>): string {
 
 class LiquidGroup {
   /**
-   * Islas que no se funden entre sí (hueco > REACH). Cada una es un Skin:
+   * Islas que ya no pueden influirse (hueco > INFLUENCE). Cada una es un Skin:
    * arrastrar la pill no remuestrea el launcher del otro lado de la pantalla.
+   *
+   * El umbral es `INFLUENCE` (= BLEND) y no `REACH` (= BLEND/2). Con `REACH`
+   * las dos formas se ignoraban por completo hasta el hueco exacto en que el
+   * cuello ya cerraba, así que la fusión entraba de un frame al otro —incluido
+   * el bulto de 1.5 px que el `smin` ya tenía acumulado ahí—. Compartiendo
+   * campo desde `INFLUENCE`, las siluetas se estiran una hacia la otra durante
+   * todo el acercamiento y el cuello nace desde cero.
    *
    * El registro por superficie (`#parts`) NO es `$state`: publicar ocurre
    * dentro de un `$effect`, y si el registro fuera reactivo el efecto se
@@ -72,7 +79,7 @@ class LiquidGroup {
     const finger = partsFinger(this.#parts);
     if (finger === this.#finger) return;
     this.#finger = finger;
-    const islands = clusterParts(this.#parts, REACH);
+    const islands = clusterParts(this.#parts, INFLUENCE);
     this.islands = islands;
     this.shapes = islands.flatMap((island) => island.shapes);
   }

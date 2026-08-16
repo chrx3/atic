@@ -23,7 +23,9 @@
     completeWindowCapture,
     overlayInfo,
     showCaptureOverlay,
+    captureOverlayRevealed,
   } from "$ipc/captures";
+  import { getCurrentWindow } from "@tauri-apps/api/window";
   import { on } from "$ipc/events";
 
   /** Menos que esto y el arrastre fue un temblor: cuenta como clic. */
@@ -202,7 +204,12 @@
         void showCaptureOverlay()
           .then(() => {
             requestAnimationFrame(() => {
-              if (!done) revealed = true;
+              if (done) return;
+              revealed = true;
+              // Recién acá la selección es usable: avisarle a Rust para que
+              // no cancele por watchdog. Si el ack se pierde, lo peor que
+              // pasa es que la sesión se cierre sola a los 6 s.
+              void captureOverlayRevealed().catch(() => {});
             });
           })
           .catch(() => {
@@ -261,6 +268,14 @@
         // Un «ended» de la sesión anterior puede llegar tarde, después de que
         // ya arrancó otra. Se pregunta antes de tumbar nada.
         void overlayInfo().catch(() => reset());
+      }),
+      getCurrentWindow().onFocusChanged(({ payload }) => {
+        if (!payload || revealed || frameSrc) return;
+        void overlayInfo()
+          .then(() => start())
+          .catch(() => {
+            // Sin sesión: el foco llegó por otra razón.
+          });
       }),
     ]);
 

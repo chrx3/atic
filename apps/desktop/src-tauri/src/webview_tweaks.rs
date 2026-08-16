@@ -81,7 +81,15 @@ pub fn sync_controller_bounds(window: &WebviewWindow) {
         let mut class: Vec<u16> = "WRY_WEBVIEW".encode_utf16().collect();
         class.push(0);
         let child = FindWindowExW(hwnd.0 as _, std::ptr::null_mut(), class.as_ptr(), std::ptr::null());
-        if !child.is_null() {
+        if child.is_null() {
+            tracing::warn!(
+                target: "overlay",
+                label = %window.label(),
+                width,
+                height,
+                "sin HWND WRY_WEBVIEW: el webview todavía no nació"
+            );
+        } else {
             SetWindowPos(
                 child,
                 std::ptr::null_mut(),
@@ -152,7 +160,23 @@ pub fn capture_preview_png(window: &WebviewWindow) -> Result<Vec<u8>, String> {
             )
             .ok()
             .map_err(|err| err.to_string())?;
-            buf.truncate(read as usize);
+            let mut total = read as usize;
+            while total < size {
+                let mut chunk = 0u32;
+                ISequentialStream::Read(
+                    stream,
+                    buf[total..].as_mut_ptr() as *mut std::ffi::c_void,
+                    (size - total) as u32,
+                    Some(&mut chunk),
+                )
+                .ok()
+                .map_err(|err| err.to_string())?;
+                if chunk == 0 {
+                    break;
+                }
+                total += chunk as usize;
+            }
+            buf.truncate(total);
             Ok(buf)
         }
     }
@@ -201,7 +225,7 @@ pub fn capture_preview_png(window: &WebviewWindow) -> Result<Vec<u8>, String> {
         })
         .map_err(|err| err.to_string())?;
 
-    rx.recv_timeout(Duration::from_secs(5))
+    rx.recv_timeout(Duration::from_millis(800))
         .map_err(|_| "CapturePreview tardó demasiado".to_string())?
 }
 

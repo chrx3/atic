@@ -49,6 +49,15 @@ export const completeMonitorCapture = (x: number, y: number) =>
 export const cancelCaptureSession = () => invoke<void>("cancel_capture_session");
 /** Muestra el overlay cuando el frame congelado ya cargó (evita telón gris). */
 export const showCaptureOverlay = () => invoke<void>("show_capture_overlay");
+/**
+ * Avisa que la mira ya está en pantalla y usable.
+ *
+ * Apaga el watchdog de Rust. Sin este ack, Rust no puede distinguir «la
+ * selección arrancó» de «la ventana se mostró pero el webview quedó en
+ * blanco», y en el segundo caso la pill se queda sin recibir clics.
+ */
+export const captureOverlayRevealed = () =>
+  invoke<void>("capture_overlay_revealed");
 
 export const onScreenshotCreated = (
   cb: (item: CaptureItem) => void,

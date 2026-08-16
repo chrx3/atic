@@ -414,6 +414,12 @@ fn ensure_index_populated() {
 }
 
 /// ¿El float del launcher está abierto?
+///
+/// Sin usar hoy, igual que sus gemelas en `clipboard_history` y `snippets`.
+/// Se conserva por simetría: los tres módulos de float exponen la misma API, y
+/// borrar solo esta —la única que el compilador ve muerta, porque su módulo no
+/// es `pub`— dejaría el trío desparejo.
+#[allow(dead_code)]
 pub fn float_open() -> bool {
     LAUNCHER_OPEN.load(Ordering::Relaxed)
 }
