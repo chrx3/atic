@@ -82,7 +82,9 @@
       "nsis": {
         "installMode": "currentUser",
         "languages": ["Spanish", "English"],
-        "displayLanguageSelector": false
+        "displayLanguageSelector": false,
+        "installerIcon": "icons/icon.ico",
+        "uninstallerIcon": "icons/icon.ico"
       }
     },
     "macOS": {
