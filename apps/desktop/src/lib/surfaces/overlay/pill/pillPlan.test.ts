@@ -13,6 +13,7 @@ import {
   pivotFor,
   stepWheel,
   targetFor,
+  undockForSummon,
   stackMarkVisible,
   wheelChromeActive,
   wheelKeyAction,
@@ -85,6 +86,25 @@ describe("contentFor", () => {
 
   it("sin dock, `edge` no puede decidir nada y cae a la barra", () => {
     expect(contentFor("edge", 180)).toEqual(contentFor("none", 180));
+  });
+
+  it("desacoplar para summon restaura la barra, no la pestaña", () => {
+    const docked = { surface: "edge" as const, dock: { edge: "top" as const, expanded: false } };
+    const next = undockForSummon(docked);
+    expect(next).toEqual({ surface: "none", dock: null });
+    expect(contentFor(next.surface, 180, next.dock).h).toBe(PILL.bar);
+    expect(contentFor(docked.surface, 180, docked.dock).h).toBe(PILL.islandThick);
+  });
+
+  it("summon ya flotando no toca el estado", () => {
+    expect(undockForSummon({ surface: "none", dock: null })).toEqual({
+      surface: "none",
+      dock: null,
+    });
+    expect(undockForSummon({ surface: "wheel", dock: null })).toEqual({
+      surface: "wheel",
+      dock: null,
+    });
   });
 
   /**

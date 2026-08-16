@@ -81,6 +81,23 @@ export function targetFor(
 }
 
 /**
+ * Traer la pill al cursor la saca del canto.
+ *
+ * Acoplada, `contentFor` mide la pestaña (~10 px). Si el summon vuela sin
+ * desacoplar, llega al puntero con forma de isla y se queda así: el vuelo
+ * solo mueve, no cambia `surface`.
+ */
+export function undockForSummon(state: {
+  surface: Surface;
+  dock: Dock | null;
+}): { surface: Surface; dock: Dock | null } {
+  if (state.surface === "edge") {
+    return { surface: "none", dock: null };
+  }
+  return { surface: state.surface, dock: state.dock };
+}
+
+/**
  * ¿El chrome de la rueda es la silueta activa?
  *
  * Abierta (`surface === "wheel"`) o colapsando (`collapsingFrom === "wheel"`):

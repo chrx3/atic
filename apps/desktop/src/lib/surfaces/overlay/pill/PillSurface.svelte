@@ -52,6 +52,7 @@
     morphsInPlace,
     pivotFor,
     stepWheel as nextWheelTool,
+    undockForSummon,
     wheelChromeActive,
     wheelKeyAction,
     wheelOpenFlight,
@@ -1746,7 +1747,12 @@
         await closeWheel();
         const cursor = await cursorPoint();
         if (!cursor) return;
-        const size = stage.applied() ?? windowFor({ w: PILL.bar, h: PILL.bar });
+        // Traer al cursor la saca del canto. Si sigue `surface === "edge"`,
+        // contentFor mide la pestaña y vuela una isla de ~10 px.
+        const undocked = undockForSummon({ surface, dock });
+        surface = undocked.surface;
+        dock = undocked.dock;
+        const size = target;
         await flyTo({ x: cursor.x - size.w / 2, y: cursor.y - size.h / 2 });
         // El summon fija un hogar nuevo: la pill se queda donde la llamaste.
         home = { ...at };

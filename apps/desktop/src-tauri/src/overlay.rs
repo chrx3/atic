@@ -417,6 +417,10 @@ fn create(app: &AppHandle) -> Option<tauri::WebviewWindow> {
     // Perfil propio: main/launcher/captura y la app instalada comparten
     // `com.ciat.atic`. Cinco controladores WebView2 sobre el mismo user-data
     // es el HRESULT 0x8007139F (estado inválido) y un HWND sin Chromium.
+    //
+    // Consecuencia: localStorage no se comparte con main. El tema de esta
+    // ventana sale de `get_config` / evento `ui-theme`, no del cache
+    // `atic-theme`.
     if let Ok(dir) = app.path().app_local_data_dir() {
         builder = builder.data_directory(dir.join("overlay-webview"));
     }

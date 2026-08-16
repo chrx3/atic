@@ -13,9 +13,9 @@ El desarrollo activo está en `main`. Las versiones publicadas son tags `v*`.
 3. Haz commits pequeños y claros.
 4. Abre un pull request hacia `main`.
 
-Antes de pedir revisión, asegúrate de que CI y las comprobaciones locales pasen.
-En PRs, CI corre frontend + rustfmt (Linux). Clippy, tests de Rust y el
-instalador se disparan en push a `main` cuando hay cupo de Actions.
+Antes de pedir revisión, asegúrate de que las comprobaciones locales pasen.
+CI y el workflow de instaladores son solo `workflow_dispatch` (los tags y
+los push a `main` no disparan builds).
 
 ## Requisitos
 

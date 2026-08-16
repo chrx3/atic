@@ -108,16 +108,17 @@ pnpm tauri build -- --features gpu-cuda     # NVIDIA
 pnpm tauri build -- --features gpu-vulkan   # AMD/Intel
 ```
 
-PRs hacia `main`. Un tag `v*` dispara
-[`.github/workflows/release.yml`](../.github/workflows/release.yml):
-
-```bash
-git tag v0.4.1
-git push origin v0.4.1
-```
+PRs hacia `main`. Un tag `v*` **ya no** dispara
+[`.github/workflows/release.yml`](../.github/workflows/release.yml)
+(Windows + macOS agotan el cupo). El workflow es solo `workflow_dispatch`
+(Actions → Release → Run workflow).
 
 Sin cupo de Actions, el instalador de Windows se genera en local
-(`pnpm tauri build --bundles nsis`) y se sube al Release a mano.
+(`pnpm tauri build --bundles nsis`) y se sube al Release a mano:
+
+```bash
+gh release create v0.4.1 path/al/Atic_0.4.1_x64-setup.exe --title v0.4.1 --latest
+```
 
 Sin firma Authenticode / notarization de Apple, Windows puede mostrar
 SmartScreen y macOS Gatekeeper pedirá Abrir desde Ajustes. Los modelos Whisper

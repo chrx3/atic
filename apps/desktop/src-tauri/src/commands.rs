@@ -1,7 +1,7 @@
 //! Comandos invocables desde el frontend.
 
 use serde::Serialize;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 use atic_core::{Config, Recording};
 
@@ -74,6 +74,7 @@ pub fn get_config(state: State<AppState>) -> Config {
 #[tauri::command]
 pub fn set_config(app: AppHandle, state: State<AppState>, config: Config) -> Result<(), String> {
     let show_pill = config.show_pill;
+    let ui_theme = config.ui_theme.clone();
     let want_autostart = config.autostart;
     let shortcut = config.global_shortcut.clone();
     let dictation_shortcut = config.dictation_shortcut.clone();
@@ -128,6 +129,8 @@ pub fn set_config(app: AppHandle, state: State<AppState>, config: Config) -> Res
     }
     state::set_pill_visible(&app, show_pill);
     sync_autostart(&app, want_autostart);
+    // El overlay tiene `data_directory` propio: localStorage no cruza.
+    let _ = app.emit("ui-theme", ui_theme);
 
     Ok(())
 }
