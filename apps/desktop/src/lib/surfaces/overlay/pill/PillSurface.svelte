@@ -1339,7 +1339,7 @@
 
     if (isSpatialTool(id) || id === "dictation") await dismissSpatialTools(id);
 
-    const size = stage.applied() ?? windowFor({ w: PILL.bar, h: PILL.bar });
+    const size = target;
     const slot = slotForTool(id);
 
     if (slot) {
@@ -1347,9 +1347,9 @@
       const areas = stage.workAreas();
       const cursor = await activeAnchorPoint();
       const anchor = cursor ?? { x: at.x + size.w / 2, y: at.y + size.h / 2 };
-      const target = resolveSlot(slot, areas, size, anchor);
-      if (Math.hypot(target.x - at.x, target.y - at.y) < 2) return;
-      await flyTo(target);
+      const dest = resolveSlot(slot, areas, size, anchor);
+      if (Math.hypot(dest.x - at.x, dest.y - at.y) < 2) return;
+      await flyTo(dest);
       return;
     }
 
@@ -1357,14 +1357,15 @@
 
     // Clipboard / textos: el atajo trae la pill al mouse y abre desde ahí.
     if (id === "clipboard" || id === "snippets") {
-      const cursor = await cursorPoint();
+      await stage.loadAreas();
+      const cursor = (await cursorPoint()) ?? (await activeAnchorPoint());
       if (!cursor) return;
-      const target = {
+      const dest = {
         x: cursor.x - size.w / 2,
         y: cursor.y - size.h / 2,
       };
-      if (Math.hypot(target.x - at.x, target.y - at.y) < 2) return;
-      await flyTo(target);
+      if (Math.hypot(dest.x - at.x, dest.y - at.y) < 2) return;
+      await flyTo(dest);
     }
   }
 
@@ -1400,7 +1401,10 @@
     slotBusy = true;
     returnHomeSuppressed = true;
     const gen = ++slotGen;
-    const hold = overlayUiBusy();
+    // Atajo en frío: el overlay está click-through. Sin armar gesto + gracia
+    // de dismiss, el primer toque dejaba la pill inalcanzable o cerraba el
+    // float al nacer (Raw Input ve el key-up / un clic fantasma).
+    const hold = overlayUiBusy() || isSpatialTool(id) || id === "dictation";
     if (hold) {
       armOpenDismissGrace();
       await setOverlayPointerGesture(true).catch(() => {});
@@ -1448,16 +1452,15 @@
       if (isSpatialTool(id)) spatialIntent = id;
       else if (id === "dictation") spatialIntent = null;
 
-      // Volar a un slot la SACA del canto.
-      //
-      // Allá tiene que poder mostrar su barra —las ondas del dictado, el
-      // cronómetro—, y acoplada no puede: la caja tiene forma de isla y el
-      // stack está oculto. El síntoma era dictar y ver la pill viajar abajo
-      // sin abrirse nunca. Al terminar, `maybeReturnHome` vuelve al hogar y
-      // `settleDock` la vuelve a acoplar si ese hogar era un borde.
-      if (slotForTool(id) && surface === "edge") {
-        dock = null;
-        surface = "none";
+      // Desacoplar SIEMPRE, no solo tools con slot. Clipboard/textos no
+      // tienen slot fijo: sin esto la pestaña (~10 px) se queda, el morph a
+      // barra no corre y el float ancla contra esa geometría (o no abre).
+      if (surface === "edge") {
+        const undocked = undockForSummon({ surface, dock });
+        surface = undocked.surface;
+        dock = undocked.dock;
+        await tick();
+        await reconcile(target);
       }
 
       await flyToToolSlot(id, { anchored: force });
@@ -1467,6 +1470,9 @@
       // (la caja de la rueda, o la posición previa al vuelo).
       await surfaces.flush();
       await executeToolAction(id);
+      // El float publica su zona un tick después del evento de ancla.
+      await tick();
+      await surfaces.flush();
     } catch (err) {
       console.warn("activate-tool-slot", err);
     } finally {
