@@ -40,6 +40,9 @@
   type Rect = { left: number; top: number; width: number; height: number };
 
   let frameSrc = $state("");
+  let frameW = $state(1);
+  let frameH = $state(1);
+  let frameEl: HTMLImageElement | undefined = $state();
   let candidates = $state<OverlayCandidate[]>([]);
   let revealed = $state(false);
   let hovered = $state<OverlayCandidate | null>(null);
@@ -47,7 +50,8 @@
   let cursor = $state({ x: 0, y: 0 });
 
   let dragging = false;
-  let dragStart = { x: 0, y: 0 };
+  let dragStartClient = { x: 0, y: 0 };
+  let dragStartFrame = { x: 0, y: 0 };
   let done = false;
 
   /** Sube con cada sesión: descarta lo que quedó en vuelo de la anterior. */
@@ -65,6 +69,43 @@
         : null),
   );
 
+  const holeStyle = $derived(
+    selection
+      ? `left:${pct(selection.left, frameW)}%; top:${pct(selection.top, frameH)}%;
+         width:${pct(selection.width, frameW)}%; height:${pct(selection.height, frameH)}%;`
+      : "",
+  );
+
+  const sizeStyle = $derived(
+    selection
+      ? `left:${pct(selection.left, frameW)}%; top:${pct(selection.top, frameH)}%;`
+      : "",
+  );
+
+  function pct(value: number, total: number): number {
+    return total > 0 ? (value / total) * 100 : 0;
+  }
+
+  /**
+   * Mouse CSS → píxel del PNG. El recuadro se dibuja en % de la imagen, así
+   * que queda pegado al contenido congelado aunque WebView2 y el DPI no
+   * coincidan con `scale_factor`.
+   */
+  function toFrame(clientX: number, clientY: number): { x: number; y: number } {
+    const el = frameEl;
+    const nw = el && el.naturalWidth > 0 ? el.naturalWidth : frameW;
+    const nh = el && el.naturalHeight > 0 ? el.naturalHeight : frameH;
+    const r = el?.getBoundingClientRect();
+    const w = r && r.width > 0 ? r.width : window.innerWidth;
+    const h = r && r.height > 0 ? r.height : window.innerHeight;
+    const left = r?.left ?? 0;
+    const top = r?.top ?? 0;
+    return {
+      x: ((clientX - left) * nw) / w,
+      y: ((clientY - top) * nh) / h,
+    };
+  }
+
   function reset() {
     token += 1;
     done = true;
@@ -73,6 +114,8 @@
     hovered = null;
     dragging = false;
     frameSrc = "";
+    frameW = 1;
+    frameH = 1;
     candidates = [];
   }
 
@@ -115,18 +158,19 @@
 
   function onMouseMove(event: MouseEvent) {
     cursor = { x: event.clientX, y: event.clientY };
+    const point = toFrame(event.clientX, event.clientY);
     if (!dragging) {
-      hovered = hitTest(event.clientX, event.clientY);
+      hovered = hitTest(point.x, point.y);
       return;
     }
-    const width = Math.abs(event.clientX - dragStart.x);
-    const height = Math.abs(event.clientY - dragStart.y);
-    if (width > DRAG_THRESHOLD || height > DRAG_THRESHOLD) {
+    const cssW = Math.abs(event.clientX - dragStartClient.x);
+    const cssH = Math.abs(event.clientY - dragStartClient.y);
+    if (cssW > DRAG_THRESHOLD || cssH > DRAG_THRESHOLD) {
       region = {
-        left: Math.min(dragStart.x, event.clientX),
-        top: Math.min(dragStart.y, event.clientY),
-        width,
-        height,
+        left: Math.min(dragStartFrame.x, point.x),
+        top: Math.min(dragStartFrame.y, point.y),
+        width: Math.abs(point.x - dragStartFrame.x),
+        height: Math.abs(point.y - dragStartFrame.y),
       };
       hovered = null;
     }
@@ -135,7 +179,8 @@
   function onMouseDown(event: MouseEvent) {
     if (!revealed || event.button !== 0) return;
     dragging = true;
-    dragStart = { x: event.clientX, y: event.clientY };
+    dragStartClient = { x: event.clientX, y: event.clientY };
+    dragStartFrame = toFrame(event.clientX, event.clientY);
     region = null;
   }
 
@@ -145,11 +190,7 @@
     const rect = region;
     dragging = false;
 
-    if (
-      wasDragging &&
-      rect &&
-      (rect.width > DRAG_THRESHOLD || rect.height > DRAG_THRESHOLD)
-    ) {
+    if (wasDragging && rect) {
       void shoot(() =>
         completeRegionCapture(rect.left, rect.top, rect.width, rect.height),
       );
@@ -157,7 +198,8 @@
     }
 
     region = null;
-    const target = hitTest(event.clientX, event.clientY);
+    const point = toFrame(event.clientX, event.clientY);
+    const target = hitTest(point.x, point.y);
     // Un clic en el vacío cancela: no hay ventana ahí y arrastrar nada tampoco
     // significa nada.
     void shoot(() => (target ? completeWindowCapture(target.hwnd) : close()));
@@ -176,7 +218,8 @@
 
     if (event.key === " ") {
       event.preventDefault();
-      void shoot(() => completeMonitorCapture(cursor.x, cursor.y));
+      const point = toFrame(cursor.x, cursor.y);
+      void shoot(() => completeMonitorCapture(point.x, point.y));
     } else if (event.key === "Enter") {
       const rect = region;
       const target = hovered;
@@ -241,11 +284,15 @@
     hovered = null;
     dragging = false;
     frameSrc = "";
+    frameW = 1;
+    frameH = 1;
 
     try {
       const info = await overlayInfo();
       if (mine !== token) return;
       candidates = info.candidates;
+      frameW = Math.max(1, info.width);
+      frameH = Math.max(1, info.height);
       // El sufijo evita que el webview sirva el frame de la sesión anterior.
       frameSrc = `${captureSrc(info.framePath)}?t=${Date.now()}`;
 
@@ -306,6 +353,7 @@
 >
   {#if frameSrc}
     <img
+      bind:this={frameEl}
       src={frameSrc}
       alt=""
       draggable="false"
@@ -317,17 +365,11 @@
 
   {#if selection}
     <!-- El velo es una sombra gigante hacia afuera en vez de cuatro divs
-         alrededor: así el agujero sigue al recuadro sin cuentas. -->
-    <div
-      class="cap-hole"
-      style="left:{selection.left}px; top:{selection.top}px;
-             width:{selection.width}px; height:{selection.height}px;"
-    ></div>
-    <div
-      class="cap-size"
-      data-numeric
-      style="left:{selection.left}px; top:{Math.max(2, selection.top - 26)}px;"
-    >
+         alrededor: así el agujero sigue al recuadro sin cuentas. Posición en
+         % del PNG: queda alineado al contenido congelado, no al CSS del
+         webview. -->
+    <div class="cap-hole" style={holeStyle}></div>
+    <div class="cap-size" data-numeric style={sizeStyle}>
       {Math.round(selection.width)} × {Math.round(selection.height)}
     </div>
   {:else if revealed}
@@ -381,6 +423,7 @@
     display: block;
     width: 100%;
     height: 100%;
+    object-fit: fill;
   }
 
   .cap-hole {
@@ -394,6 +437,7 @@
   .cap-size {
     pointer-events: none;
     position: absolute;
+    transform: translateY(calc(-100% - 4px));
     border-radius: var(--rb-radius-xs, 5px);
     background: var(--screen-chip);
     padding: 2px 6px;

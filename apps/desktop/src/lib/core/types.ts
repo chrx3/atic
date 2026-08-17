@@ -400,6 +400,7 @@ export interface LauncherHit {
 export interface OverlayCandidate {
   hwnd: number;
   title: string;
+  /** Píxeles del PNG congelado, origen en la esquina del escritorio virtual. */
   left: number;
   top: number;
   width: number;
@@ -408,6 +409,7 @@ export interface OverlayCandidate {
 
 export interface OverlayInfo {
   framePath: string;
+  /** Tamaño físico del PNG congelado. */
   width: number;
   height: number;
   candidates: OverlayCandidate[];

@@ -59,7 +59,9 @@ pub struct OverlayCandidate {
     /// `HWND` como entero (cabe en el rango seguro de JS).
     pub hwnd: i64,
     pub title: String,
-    // Coordenadas LÓGICAS locales al overlay (px CSS).
+    /// Coordenadas en píxeles del PNG congelado (origen = esquina del
+    /// escritorio virtual). No son CSS: el frontend las mapea al recuadro
+    /// real de la imagen para no desfasar con DPI o varios monitores.
     pub left: f64,
     pub top: f64,
     pub width: f64,
@@ -71,7 +73,7 @@ pub struct OverlayCandidate {
 pub struct OverlayInfo {
     /// Ruta absoluta del PNG congelado (el frontend la pasa por convertFileSrc).
     pub frame_path: String,
-    /// Tamaño lógico del overlay (px CSS).
+    /// Tamaño del PNG congelado en píxeles físicos.
     pub width: f64,
     pub height: f64,
     pub candidates: Vec<OverlayCandidate>,
@@ -943,7 +945,6 @@ fn overlay_info_impl(app: &AppHandle) -> Result<OverlayInfo, String> {
     let guard = state.overlay_session.lock_or_recover();
     let session = guard.as_ref().ok_or("sin sesión de captura activa")?;
 
-    let scale = overlay_scale(app);
     let bounds = session.frame.bounds;
 
     let candidates = session
@@ -954,18 +955,18 @@ fn overlay_info_impl(app: &AppHandle) -> Result<OverlayInfo, String> {
             OverlayCandidate {
                 hwnd: candidate.hwnd as i64,
                 title: candidate.title.clone(),
-                left: f64::from(visual.x - bounds.x) / scale,
-                top: f64::from(visual.y - bounds.y) / scale,
-                width: f64::from(visual.width) / scale,
-                height: f64::from(visual.height) / scale,
+                left: f64::from(visual.x - bounds.x),
+                top: f64::from(visual.y - bounds.y),
+                width: f64::from(visual.width),
+                height: f64::from(visual.height),
             }
         })
         .collect();
 
     Ok(OverlayInfo {
         frame_path: session.frame_path.to_string_lossy().into_owned(),
-        width: f64::from(bounds.width) / scale,
-        height: f64::from(bounds.height) / scale,
+        width: f64::from(bounds.width),
+        height: f64::from(bounds.height),
         candidates,
     })
 }
@@ -1004,17 +1005,16 @@ fn region_capture_impl(
 ) -> Result<(String, (i32, i32)), String> {
     use atic_capture::Rect;
 
-    let scale = overlay_scale(app);
     let state = app.state::<crate::state::AppState>();
     let guard = state.overlay_session.lock_or_recover();
     let session = guard.as_ref().ok_or("sin sesión de captura activa")?;
     let bounds = session.frame.bounds;
 
     let region = Rect::new(
-        bounds.x + (left * scale).round() as i32,
-        bounds.y + (top * scale).round() as i32,
-        (width * scale).round().max(1.0) as u32,
-        (height * scale).round().max(1.0) as u32,
+        bounds.x + left.round() as i32,
+        bounds.y + top.round() as i32,
+        width.round().max(1.0) as u32,
+        height.round().max(1.0) as u32,
     );
     let frame = session
         .frame
@@ -1026,14 +1026,13 @@ fn region_capture_impl(
 
 #[cfg(windows)]
 fn monitor_capture_impl(app: &AppHandle, x: f64, y: f64) -> Result<(String, (i32, i32)), String> {
-    let scale = overlay_scale(app);
     let state = app.state::<crate::state::AppState>();
     let guard = state.overlay_session.lock_or_recover();
     let session = guard.as_ref().ok_or("sin sesión de captura activa")?;
     let bounds = session.frame.bounds;
 
-    let point_x = bounds.x + (x * scale).round() as i32;
-    let point_y = bounds.y + (y * scale).round() as i32;
+    let point_x = bounds.x + x.round() as i32;
+    let point_y = bounds.y + y.round() as i32;
     let monitor = session
         .monitors
         .iter()
@@ -1065,13 +1064,6 @@ fn save_capture(
         frame.bounds.y + frame.bounds.height as i32 / 2,
     );
     Ok((path.to_string_lossy().into_owned(), anchor))
-}
-
-#[cfg(windows)]
-fn overlay_scale(app: &AppHandle) -> f64 {
-    app.get_webview_window(OVERLAY_LABEL)
-        .and_then(|window| window.scale_factor().ok())
-        .unwrap_or(1.0)
 }
 
 // ---------------------------------------------------------------------------
