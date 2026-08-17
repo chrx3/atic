@@ -4,7 +4,7 @@
    *
    * Apertura (como expandir al dictar + Spotlight):
    * 1) La pill vuela al slot (PillSurface).
-   * 2) Disco-semilla solapado en la pill; se estira a la derecha (width).
+   * 2) Disco-semilla coincidente con la pill; se estira a la derecha (width).
    * 3) Se separa al centro (cuello líquido).
    * 4) Cada favorito se desprende de a uno.
    *
@@ -44,10 +44,7 @@
     publishMeasuredSkin,
   } from "$surfaces/overlay/floatEmergeSkin";
   import { rectKey } from "$surfaces/overlay/floatEmergeSkinMath";
-  import {
-    separateAxisProp,
-    waitFrames,
-  } from "$surfaces/overlay/floatReveal";
+  import { separateAxisProp, waitFrames } from "$surfaces/overlay/floatReveal";
   import { surfaces } from "$surfaces/overlay/surfaces.svelte";
   import {
     armOpenDismissGrace,
@@ -71,17 +68,15 @@
    * Hueco entre dots. > REACH en idle → bolitas individuales, no óvalo.
    */
   const DOT_GAP_PX = 15;
-  /** Semilla = disco de la pill (40×40). No stadium truncado. */
-  const GROW_START_W = 40;
   /**
-   * Cuánto solapa la semilla sobre la pill. Sin esto nace “al lado” y se lee
-   * como elemento externo; con overlap parece un solo blob que se estira.
+   * Semilla = disco de la pill (40×40). El overlap es el diámetro: dos
+   * círculos desfasados 20 px se leían como óvalo desde el primer frame.
    */
-  const SEED_OVERLAP_PX = 20;
+  const GROW_START_W = 40;
   /** Approach/close: gap bajo REACH para re-fundir el cuello. */
   const FUSED_GAP_PX = 2;
   /** Hold en disco fused antes de estirar (ms). */
-  const SEED_HOLD_MS = 60;
+  const SEED_HOLD_MS = 100;
   /** Alto ancla compacto (= pill 40px; alineado a `LAUNCHER_SHAPE` en launcher.rs). */
   const COMPACT_H = 40;
   const EXPANDED_H = 360;
@@ -129,20 +124,12 @@
   let ignoreIpcDismiss = false;
   /** Cuántos favs ya salieron (0 = ninguno; N = primeros N visibles). */
   let favRevealCount = $state(0);
-  const expanding = $derived(
-    revealPhase === "expand" || revealPhase === "shrink",
-  );
-  const separating = $derived(
-    revealPhase === "separate" || revealPhase === "approach",
-  );
+  const expanding = $derived(revealPhase === "expand" || revealPhase === "shrink");
+  const separating = $derived(revealPhase === "separate" || revealPhase === "approach");
   const favsSequencing = $derived(
-    revealPhase === "favs" ||
-      revealPhase === "ready" ||
-      revealPhase === "tuck",
+    revealPhase === "favs" || revealPhase === "ready" || revealPhase === "tuck",
   );
-  const motionPhase = $derived(
-    expanding || separating || revealPhase === "tuck",
-  );
+  const motionPhase = $derived(expanding || separating || revealPhase === "tuck");
 
   const hasQuery = $derived(query.trim().length > 0);
   const showResults = $derived(hasQuery);
@@ -350,30 +337,27 @@
   }
 
   /**
-   * Disco-semilla solapado sobre el borde derecho de la pill (un blob).
-   * Luego `runOpenReveal` estira el ancho a la derecha.
+   * Disco-semilla coincidente con la pill (un círculo). Luego `runOpenReveal`
+   * estira el ancho a la derecha. w y h van iguales: si el alto compacto
+   * cambia en el lab, no nacer como óvalo.
    */
   function placeFusedToPill(a: BubbleOpen) {
     const pill = surfaces.live["pill-skin"] ?? surfaces.live["pill"];
-    const h = Math.min(
-      isDev && launcherLab.open ? compactH : a.h,
-      GROW_START_W,
-    );
-    const w0 = GROW_START_W;
+    const d = Math.min(isDev && launcherLab.open ? compactH : a.h, GROW_START_W);
     let x = a.x;
     let y = a.y;
     if (pill) {
-      x = pill.x + pill.w - SEED_OVERLAP_PX;
-      y = pill.y + (pill.h - h) / 2;
+      x = pill.x + pill.w - d;
+      y = pill.y + (pill.h - d) / 2;
     }
     bubble.place({
       ...a,
-      w: w0,
-      h,
+      w: d,
+      h: d,
       x,
       y,
       side: "left",
-      offset: h / 2,
+      offset: d / 2,
     });
   }
 
@@ -442,11 +426,7 @@
       closing = false;
       return;
     }
-    if (
-      bubble.shown &&
-      revealPhase === "hidden" &&
-      !closing
-    ) {
+    if (bubble.shown && revealPhase === "hidden" && !closing) {
       void runOpenReveal();
     }
   });
@@ -564,9 +544,12 @@
     if (!bubble.alive || !bubble.shown) return;
     void bubble.anchor;
     void surfaces.recoverHits();
-    const t = window.setTimeout(() => {
-      void surfaces.recoverHits();
-    }, ms(MOTION.floatOpen) + 48);
+    const t = window.setTimeout(
+      () => {
+        void surfaces.recoverHits();
+      },
+      ms(MOTION.floatOpen) + 48,
+    );
     return () => window.clearTimeout(t);
   });
   $effect(() => {
@@ -683,11 +666,7 @@
       return true;
     }
     const active = document.activeElement;
-    if (
-      active instanceof HTMLElement &&
-      el?.contains(active) &&
-      active !== node
-    ) {
+    if (active instanceof HTMLElement && el?.contains(active) && active !== node) {
       return false;
     }
     try {
@@ -782,10 +761,7 @@
     return favoriteIds.includes(id);
   }
 
-  function finishDismiss(
-    wasShown: boolean,
-    opts: { skipHideLauncher?: boolean } = {},
-  ) {
+  function finishDismiss(wasShown: boolean, opts: { skipHideLauncher?: boolean } = {}) {
     clearSearchTimer();
     lastOpen = null;
     favRevealCount = 0;
@@ -1068,8 +1044,8 @@
 
 <style>
   /*
-   * Nace como disco solapado en la pill; el width crece a stadium; luego
-   * separate + favs. El chrome (icono/texto) se apaga durante `.is-expanding`.
+   * Nace como disco coincidente con la pill; el width crece a stadium; luego
+   * separate + favs. El chrome se apaga durante `.is-expanding`.
    */
   .lf {
     --launcher-bar-open-dur: 100ms;
@@ -1084,6 +1060,8 @@
     top: var(--y);
     width: var(--w);
     height: var(--h);
+    min-width: 0;
+    min-height: 0;
     box-sizing: border-box;
     border-radius: 999px;
     background: transparent;
@@ -1104,18 +1082,18 @@
     transition:
       width var(--launcher-bar-open-dur) var(--ease-smooth-out),
       height var(--launcher-bar-open-dur) var(--ease-smooth-out);
+    overflow: hidden;
   }
 
   /*
-   * Durante el grow la silueta la pinta el líquido: ocultar icono/texto para
-   * que no se lea “barra de búsqueda truncada” al nacer el disco.
+   * Durante el grow la silueta la pinta el líquido. El float está por encima
+   * de la pill: un head opaco taparía la «a» y, si el input impone min-width,
+   * se leería stadium desde el primer frame.
    */
-  .lf.is-expanding .lf-search-icon,
-  .lf.is-expanding .lf-input,
-  .lf.is-expanding .lf-busy,
-  .lf.is-expanding .lf-icon {
+  .lf.is-expanding .lf-head {
     opacity: 0;
     pointer-events: none;
+    background: transparent;
   }
 
   .lf.is-separating {
@@ -1135,6 +1113,9 @@
 
   .lf:not(.is-expanded) {
     justify-content: center;
+  }
+
+  .lf:not(.is-expanded):not(.is-expanding) {
     overflow: visible;
   }
 
@@ -1494,6 +1475,8 @@
 
   @media (prefers-reduced-motion: reduce) {
     .lf,
+    .lf.is-expanding,
+    .lf.is-separating,
     .lf-favs,
     .lf:not(.is-shown) .lf-favs,
     .lf-dot {
