@@ -4,9 +4,11 @@ import {
   PANEL_RESTING_GAP_PX,
   expandPanelFromSeed,
   placeBesidePill,
+  placeOnSide,
   placePanelFusedSeed,
   placePanelResting,
 } from "./floatPlace";
+import { BOTTOM_SLOT_INSET } from "./toolSlots";
 
 const work = [{ x: 0, y: 0, w: 1400, h: 900 }];
 
@@ -48,6 +50,82 @@ describe("placeBesidePill", () => {
     });
     const centered = pill.x + pill.w / 2 - 312 / 2;
     expect(placed.x).not.toBeCloseTo(centered, 0);
+  });
+
+  it("cerca del borde inferior abre arriba, con aire de taskbar", () => {
+    // En bounds de 864 cabe abajo (860 <= 864) pero se montaría sobre la
+    // taskbar. El inset obliga el flip.
+    const screen = [{ x: 0, y: 0, w: 1536, h: 864 }];
+    const pill = { x: 200, y: 430, w: 48, h: 48 };
+    const placed = placeBesidePill(pill, { w: 312, h: 372 }, {
+      corner: 18,
+      gap: 10,
+      work: screen,
+    });
+    expect(placed.side).toBe("bottom");
+    expect(placed.y + placed.h).toBeLessThanOrEqual(864 - BOTTOM_SLOT_INSET);
+    expect(placed.y).toBeGreaterThanOrEqual(0);
+  });
+
+  it("usa rcWork si vino: no hace falta el inset a ojo", () => {
+    const screen = [
+      {
+        x: 0,
+        y: 0,
+        w: 1536,
+        h: 864,
+        work: { x: 0, y: 0, w: 1536, h: 808 },
+      },
+    ];
+    const pill = { x: 200, y: 760, w: 48, h: 48 };
+    const placed = placeBesidePill(pill, { w: 312, h: 372 }, {
+      corner: 18,
+      gap: 10,
+      work: screen,
+    });
+    expect(placed.side).toBe("bottom");
+    expect(placed.y + placed.h).toBeLessThanOrEqual(808);
+  });
+
+  it("cerca del canto derecho no recorta el panel", () => {
+    const screen = [{ x: 0, y: 0, w: 1536, h: 864 }];
+    const pill = { x: 1480, y: 80, w: 48, h: 48 };
+    const placed = placeBesidePill(pill, { w: 312, h: 372 }, {
+      corner: 18,
+      gap: 10,
+      work: screen,
+    });
+    expect(placed.x).toBeGreaterThanOrEqual(0);
+    expect(placed.x + placed.w).toBeLessThanOrEqual(1536);
+  });
+
+  it("en dual monitor no se cruza al vecino", () => {
+    const screens = [
+      { x: 0, y: 0, w: 1536, h: 864 },
+      { x: 1536, y: 0, w: 1536, h: 864 },
+    ];
+    const pill = { x: 1480, y: 80, w: 48, h: 48 };
+    const placed = placeBesidePill(pill, { w: 312, h: 372 }, {
+      corner: 18,
+      gap: 10,
+      work: screens,
+    });
+    expect(placed.x).toBeGreaterThanOrEqual(0);
+    expect(placed.x + placed.w).toBeLessThanOrEqual(1536);
+  });
+});
+
+describe("placeOnSide", () => {
+  it("clampea el eje hacia afuera si el lado no entra", () => {
+    const screen = [{ x: 0, y: 0, w: 1400, h: 900 }];
+    const pill = { x: 200, y: 700, w: 48, h: 48 };
+    const placed = placeOnSide(pill, "top", { w: 312, h: 372 }, {
+      corner: 18,
+      gap: 10,
+      work: screen,
+    });
+    expect(placed.y).toBeGreaterThanOrEqual(0);
+    expect(placed.y + placed.h).toBeLessThanOrEqual(900 - BOTTOM_SLOT_INSET);
   });
 });
 

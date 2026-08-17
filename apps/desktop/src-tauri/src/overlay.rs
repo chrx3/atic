@@ -174,10 +174,12 @@ pub fn set_capturing(app: &AppHandle, on: bool) {
         return;
     }
     if on {
-        // Cerrar rueda / floats MIENTRAS el overlay sigue armado: si emitimos
-        // después del click-through, WebView2 puede no procesar el evento hasta
-        // el próximo clic (el síntoma de “el pantallazo se queda pegado”).
-        let _ = app.emit("overlay-dismiss", ());
+        // No emitir `overlay-dismiss`: ese evento es “clic afuera” y cierra
+        // clipboard / textos / launcher (y manda la pill a casa). El atajo
+        // de captura no es un clic afuera. La rueda ya ignora el dismiss
+        // por `openDismissGrace`; sin gracia, el atajo dejaba las tools
+        // cerradas. El mouse llega igual: `CAPTURING` pone click-through.
+        // La rueda se cierra en `overlay-session-started`, no acá.
         // Aplicar YA: no basta con `send(Sync)`. El canal del worker descarta
         // cuando está lleno, y sin un movimiento de mouse el camino de reparación
         // de `reevaluate_arm` no corre. Resultado: con el cursor sobre pill/float

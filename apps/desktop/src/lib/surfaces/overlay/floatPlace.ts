@@ -11,8 +11,9 @@
  */
 
 import type { BubbleOpen } from "$core/types";
-import type { Area } from "$ipc/overlay";
+import { workAreaOf, type Area } from "$ipc/overlay";
 import { BUBBLE_GAP, MARGIN } from "./contract";
+import { BOTTOM_SLOT_INSET } from "./toolSlots";
 
 export type PillRect = { x: number; y: number; w: number; h: number };
 
@@ -42,10 +43,42 @@ export const PANEL_RESTING_GAP_PX = 16;
 /** Semilla = disco ~pill (40px), no stadium truncado. */
 export const PANEL_GROW_SEED = 40;
 
+/**
+ * Aire del panel contra el área útil. `MARGIN` de la pill es 0 (puede
+ * solapar taskbar); el float no: el título se recorta si se pega al canto.
+ */
+const PANEL_MARGIN = 8;
+
+function viewportBox(): Area | null {
+  if (typeof window === "undefined") return null;
+  const w = window.innerWidth;
+  const h = window.innerHeight;
+  if (!(w > 1 && h > 1)) return null;
+  return { x: 0, y: 0, w, h };
+}
+
+function intersectAreas(a: Area, b: Area): Area | null {
+  const x0 = Math.max(a.x, b.x);
+  const y0 = Math.max(a.y, b.y);
+  const x1 = Math.min(a.x + a.w, b.x + b.w);
+  const y1 = Math.min(a.y + a.h, b.y + b.h);
+  if (x1 <= x0 || y1 <= y0) return null;
+  return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+}
+
+/**
+ * Monitor de la pill: `work` (rcWork) si vino, si no bounds. Recorta contra
+ * el viewport CSS — el overlay pinta desde (0,0) y `overflow: hidden` recorta
+ * lo que se salga, aunque Win32 diga que hay más pantalla.
+ *
+ * Si `work` no excluye la taskbar (ausente o igual a bounds), aplica el mismo
+ * espíritu que `BOTTOM_SLOT_INSET` y un margen lateral, para no montar el
+ * panel sobre la barra ni recortar el título en el canto.
+ */
 function resolveWork(pill: PillRect, panel: { w: number; h: number }, work?: Area[]): Area {
   const acx = pill.x + pill.w / 2;
   const acy = pill.y + pill.h / 2;
-  return (
+  const area =
     work?.find(
       (a) =>
         acx >= a.x &&
@@ -59,8 +92,38 @@ function resolveWork(pill: PillRect, panel: { w: number; h: number }, work?: Are
       y: 0,
       w: typeof window !== "undefined" ? window.innerWidth : panel.w,
       h: typeof window !== "undefined" ? window.innerHeight : panel.h,
-    } satisfies Area)
-  );
+    } satisfies Area);
+
+  const usable = workAreaOf(area);
+  const bottomEx = Math.max(0, area.y + area.h - (usable.y + usable.h));
+  const extraBottom = Math.max(0, BOTTOM_SLOT_INSET - bottomEx);
+
+  let box: Area = {
+    x: usable.x + PANEL_MARGIN,
+    y: usable.y + PANEL_MARGIN,
+    w: Math.max(0, usable.w - PANEL_MARGIN * 2),
+    h: Math.max(0, usable.h - PANEL_MARGIN - extraBottom),
+  };
+  const view = viewportBox();
+  if (view) {
+    box = intersectAreas(box, view) ?? box;
+  }
+  return box;
+}
+
+function clampToWork(
+  x: number,
+  y: number,
+  bw: number,
+  bh: number,
+  work: Area,
+): { x: number; y: number } {
+  const maxX = Math.max(work.x + work.w - bw, work.x);
+  const maxY = Math.max(work.y + work.h - bh, work.y);
+  return {
+    x: Math.min(Math.max(x, work.x), maxX),
+    y: Math.min(Math.max(y, work.y), maxY),
+  };
 }
 
 function alongAxis(
@@ -72,7 +135,7 @@ function alongAxis(
 ): number {
   if (near >= lo + MARGIN && near + size + MARGIN <= hi) return near;
   if (far >= lo + MARGIN && far + size + MARGIN <= hi) return far;
-  return near;
+  return Math.min(Math.max(near, lo + MARGIN), Math.max(hi - size - MARGIN, lo + MARGIN));
 }
 
 /**
@@ -112,13 +175,12 @@ export function placeOnSide(
     x = ax - gap - bw;
   }
 
-  const maxX = Math.max(workRight - bw - MARGIN, work.x + MARGIN);
-  const maxY = Math.max(workBottom - bh - MARGIN, work.y + MARGIN);
-  if (side === "top" || side === "bottom") {
-    x = Math.min(Math.max(x, work.x + MARGIN), maxX);
-  } else {
-    y = Math.min(Math.max(y, work.y + MARGIN), maxY);
-  }
+  // Los dos ejes: el paralelo ya lo intenta `alongAxis`, pero el “hacia
+  // afuera” (y si top/bottom, x si left/right) se iba del monitor — recorte
+  // contra la taskbar o el canto. Flip en `placeBesidePill`; esto es la red.
+  const clamped = clampToWork(x, y, bw, bh, work);
+  x = clamped.x;
+  y = clamped.y;
 
   const along =
     side === "top" || side === "bottom"
@@ -150,14 +212,29 @@ export function placeBesidePill(
   const fitsBelow = ay + ah + gap + bh + MARGIN <= workBottom;
   const fitsAbove = ay - gap - bh - MARGIN >= work.y;
   const fitsRight = ax + aw + gap + bw + MARGIN <= workRight;
+  const fitsLeft = ax - gap - bw - MARGIN >= work.x;
 
-  const side: BubbleOpen["side"] = fitsBelow
-    ? "top"
-    : fitsAbove
-      ? "bottom"
-      : fitsRight
-        ? "left"
-        : "right";
+  let side: BubbleOpen["side"];
+  if (fitsBelow) side = "top";
+  else if (fitsAbove) side = "bottom";
+  else if (fitsRight) side = "left";
+  else if (fitsLeft) side = "right";
+  else {
+    // Ningún lado entra entero: el de más hueco, y `placeOnSide` clampea.
+    const spaceBelow = workBottom - (ay + ah + gap);
+    const spaceAbove = ay - gap - work.y;
+    const spaceRight = workRight - (ax + aw + gap);
+    const spaceLeft = ax - gap - work.x;
+    const best = Math.max(spaceBelow, spaceAbove, spaceRight, spaceLeft);
+    side =
+      best === spaceBelow
+        ? "top"
+        : best === spaceAbove
+          ? "bottom"
+          : best === spaceRight
+            ? "left"
+            : "right";
+  }
 
   return placeOnSide(pill, side, panel, { ...opts, gap });
 }
