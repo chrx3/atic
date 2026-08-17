@@ -117,7 +117,7 @@ Sin cupo de Actions, el instalador de Windows se genera en local
 (`pnpm tauri build --bundles nsis`) y se sube al Release a mano:
 
 ```bash
-gh release create v0.4.2 path/al/Atic_0.4.2_x64-setup.exe --title v0.4.2 --latest
+gh release create v0.4.3 path/al/Atic_0.4.3_x64-setup.exe --title v0.4.3 --latest
 ```
 
 Sin firma Authenticode / notarization de Apple, Windows puede mostrar
