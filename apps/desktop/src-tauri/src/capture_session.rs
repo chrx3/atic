@@ -508,14 +508,225 @@ fn capture_webview_alive(window: &tauri::WebviewWindow) -> bool {
     true
 }
 
+/// Tamaño/origen lógicos del escritorio virtual.
+///
+/// Misma cuenta que el overlay de la pill: WebView2 se queda con el
+/// `inner_size` del create. Si nace a 800×600, en dos monitores la mira queda
+/// como una sola pantalla, a menudo centrada entre las dos.
+#[cfg(windows)]
+fn virtual_screen_logical() -> (f64, f64, f64, f64) {
+    let vs = atic_capture::monitors::virtual_screen();
+    let scale = atic_capture::monitors::enumerate()
+        .iter()
+        .map(|m| m.scale)
+        .fold(1.0_f64, f64::max)
+        .max(0.01);
+    (
+        f64::from(vs.x) / scale,
+        f64::from(vs.y) / scale,
+        (f64::from(vs.width) / scale).max(1.0),
+        (f64::from(vs.height) / scale).max(1.0),
+    )
+}
+
+/// WndProc anterior del overlay de captura (la de tao). Encadenamos para no
+/// comerse el resto de mensajes.
+#[cfg(windows)]
+static CAPTURE_OVERLAY_WNDPROC: std::sync::atomic::AtomicIsize =
+    std::sync::atomic::AtomicIsize::new(0);
+
+#[cfg(windows)]
+type WndProcFn = unsafe extern "system" fn(
+    windows_sys::Win32::Foundation::HWND,
+    u32,
+    windows_sys::Win32::Foundation::WPARAM,
+    windows_sys::Win32::Foundation::LPARAM,
+) -> windows_sys::Win32::Foundation::LRESULT;
+
+#[cfg(windows)]
+fn orig_capture_wndproc() -> Option<WndProcFn> {
+    let orig = CAPTURE_OVERLAY_WNDPROC.load(Ordering::SeqCst);
+    if orig == 0 {
+        None
+    } else {
+        // SAFETY: el valor lo guardó `SetWindowLongPtrW` como WndProc de tao.
+        Some(unsafe { std::mem::transmute::<isize, WndProcFn>(orig) })
+    }
+}
+
+/// Windows limita `SetWindowPos` al monitor actual vía `WM_GETMINMAXINFO`.
+/// Sin esto, un overlay que pretende cubrir el escritorio virtual se recorta
+/// a una sola pantalla y DWM lo recentra entre los dos monitores.
+#[cfg(windows)]
+unsafe extern "system" fn capture_overlay_wndproc(
+    hwnd: windows_sys::Win32::Foundation::HWND,
+    msg: u32,
+    wparam: windows_sys::Win32::Foundation::WPARAM,
+    lparam: windows_sys::Win32::Foundation::LPARAM,
+) -> windows_sys::Win32::Foundation::LRESULT {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        CallWindowProcW, MINMAXINFO, WM_GETMINMAXINFO,
+    };
+
+    if msg == WM_GETMINMAXINFO && lparam != 0 {
+        if let Some(orig_fn) = orig_capture_wndproc() {
+            let _ = CallWindowProcW(Some(orig_fn), hwnd, msg, wparam, lparam);
+        }
+        let mmi = lparam as *mut MINMAXINFO;
+        let vs = atic_capture::monitors::virtual_screen();
+        // Margen para el no-cliente (borde DWM) al hacer coincidir el cliente
+        // con el escritorio virtual.
+        let max_w = vs.width as i32 + 64;
+        let max_h = vs.height as i32 + 64;
+        (*mmi).ptMaxSize.x = max_w;
+        (*mmi).ptMaxSize.y = max_h;
+        (*mmi).ptMaxPosition.x = vs.x;
+        (*mmi).ptMaxPosition.y = vs.y;
+        (*mmi).ptMaxTrackSize.x = max_w;
+        (*mmi).ptMaxTrackSize.y = max_h;
+        return 0;
+    }
+
+    match orig_capture_wndproc() {
+        Some(orig_fn) => CallWindowProcW(Some(orig_fn), hwnd, msg, wparam, lparam),
+        None => 0,
+    }
+}
+
+#[cfg(windows)]
+fn install_virtual_screen_limit(window: &tauri::WebviewWindow) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetWindowLongPtrW, SetWindowLongPtrW, GWLP_WNDPROC,
+    };
+
+    let Ok(hwnd) = window.hwnd() else {
+        return;
+    };
+    let hwnd = hwnd.0 as windows_sys::Win32::Foundation::HWND;
+    let ours = capture_overlay_wndproc as *const () as isize;
+    // SAFETY: HWND de Tauri vivo; Get/SetWindowLongPtr solo leen/escriben el
+    // puntero a WndProc. Encadenamos la de tao para no romper el resto.
+    unsafe {
+        let current = GetWindowLongPtrW(hwnd, GWLP_WNDPROC);
+        if current == ours {
+            return;
+        }
+        CAPTURE_OVERLAY_WNDPROC.store(current, Ordering::SeqCst);
+        SetWindowLongPtrW(hwnd, GWLP_WNDPROC, ours);
+    }
+}
+
+/// Coloca el cliente del overlay sobre TODO el escritorio virtual.
+///
+/// Un `set_position` + `set_size` son dos `SetWindowPos`: DWM puede recortar
+/// el tamaño a un monitor y recentrar la ventana entre medio. Acá va posición
+/// y tamaño juntos, y después se corrige el desfase de no-cliente (borde DWM)
+/// para que el (0,0) del CSS coincida con el del PNG congelado.
+#[cfg(windows)]
+fn cover_virtual_desktop(window: &tauri::WebviewWindow) {
+    use windows_sys::Win32::Foundation::POINT;
+    use windows_sys::Win32::Graphics::Gdi::ClientToScreen;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetClientRect, GetWindowRect, SetWindowPos, SWP_NOACTIVATE, SWP_NOOWNERZORDER, SWP_NOZORDER,
+    };
+
+    install_virtual_screen_limit(window);
+
+    let vs = atic_capture::monitors::virtual_screen();
+    // Más que cualquier escritorio virtual razonable. Si se iguala al monitor
+    // actual, Windows vuelve a recortar la ventana a una sola pantalla.
+    let _ = window.set_max_size(Some(tauri::Size::Physical(tauri::PhysicalSize::new(
+        16384, 16384,
+    ))));
+
+    let Ok(hwnd) = window.hwnd() else {
+        return;
+    };
+    let hwnd = hwnd.0 as windows_sys::Win32::Foundation::HWND;
+
+    // SAFETY: HWND de Tauri vivo; SetWindowPos/GetWindowRect/ClientToScreen
+    // no retienen el handle.
+    unsafe {
+        SetWindowPos(
+            hwnd,
+            std::ptr::null_mut(),
+            vs.x,
+            vs.y,
+            vs.width as i32,
+            vs.height as i32,
+            SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOOWNERZORDER,
+        );
+
+        let mut origin = POINT { x: 0, y: 0 };
+        let mut client = windows_sys::Win32::Foundation::RECT {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+        };
+        let mut outer = windows_sys::Win32::Foundation::RECT {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+        };
+        if ClientToScreen(hwnd, &mut origin) == 0
+            || GetClientRect(hwnd, &mut client) == 0
+            || GetWindowRect(hwnd, &mut outer) == 0
+        {
+            crate::webview_tweaks::sync_controller_bounds(window);
+            return;
+        }
+
+        let client_w = client.right - client.left;
+        let client_h = client.bottom - client.top;
+        let dx = vs.x - origin.x;
+        let dy = vs.y - origin.y;
+        let dw = vs.width as i32 - client_w;
+        let dh = vs.height as i32 - client_h;
+        if dx != 0 || dy != 0 || dw != 0 || dh != 0 {
+            tracing::info!(
+                target: "overlay",
+                dx,
+                dy,
+                dw,
+                dh,
+                vs_x = vs.x,
+                vs_y = vs.y,
+                vs_w = vs.width,
+                vs_h = vs.height,
+                "capture-overlay desfasado del escritorio virtual; se corrige"
+            );
+            SetWindowPos(
+                hwnd,
+                std::ptr::null_mut(),
+                outer.left + dx,
+                outer.top + dy,
+                (outer.right - outer.left) + dw,
+                (outer.bottom - outer.top) + dh,
+                SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOOWNERZORDER,
+            );
+        }
+    }
+
+    crate::webview_tweaks::sync_controller_bounds(window);
+}
+
 fn create_capture_overlay(app: &AppHandle) -> Result<tauri::WebviewWindow, String> {
+    #[cfg(windows)]
+    let (lx, ly, lw, lh) = virtual_screen_logical();
+    #[cfg(not(windows))]
+    let (lx, ly, lw, lh) = (0.0, 0.0, 800.0, 600.0);
+
     let mut builder = tauri::WebviewWindowBuilder::new(
         app,
         OVERLAY_LABEL,
         tauri::WebviewUrl::App("capture-overlay".into()),
     )
     .title("Seleccionar captura")
-    .inner_size(800.0, 600.0)
+    .inner_size(lw, lh)
+    .max_inner_size(16384.0, 16384.0)
+    .position(lx, ly)
     .resizable(false)
     .decorations(false)
     .always_on_top(true)
@@ -531,9 +742,16 @@ fn create_capture_overlay(app: &AppHandle) -> Result<tauri::WebviewWindow, Strin
             "--disable-backgrounding-occluded-windows --disable-renderer-backgrounding --disable-background-timer-throttling --disable-features=CalculateNativeWinOcclusion",
         );
     }
-    builder
+    let window = builder
         .build()
-        .map_err(|err| format!("no se pudo crear capture-overlay: {err}"))
+        .map_err(|err| format!("no se pudo crear capture-overlay: {err}"))?;
+    #[cfg(windows)]
+    {
+        install_virtual_screen_limit(&window);
+        crate::webview_tweaks::disable_browser_accelerator_keys(&window);
+        cover_virtual_desktop(&window);
+    }
+    Ok(window)
 }
 
 /// Garantiza una ventana de captura con webview usable, creándola si hace falta.
@@ -610,30 +828,26 @@ fn restore_main_hit_testing(app: &AppHandle) {
 #[cfg(windows)]
 fn show_overlay_window(app: &AppHandle) -> Result<(), String> {
     let state = app.state::<crate::state::AppState>();
-    let bounds = {
+    {
         let guard = state.overlay_session.lock_or_recover();
-        let session = match guard.as_ref() {
-            Some(session) => session,
+        if guard.as_ref().is_none() {
             // Cancelaron mientras el PNG cargaba: no mostrar el telón.
-            None => return Ok(()),
-        };
-        session.frame.bounds
-    };
+            return Ok(());
+        }
+    }
 
     let window = app
         .get_webview_window(OVERLAY_LABEL)
         .ok_or("la ventana del overlay no existe")?;
-    let position = tauri::PhysicalPosition::new(bounds.x, bounds.y);
-    let size = tauri::PhysicalSize::new(bounds.width, bounds.height);
     let _ = window.set_decorations(false);
     // Por si una sesión anterior dejó el overlay como click-through.
     let _ = window.set_ignore_cursor_events(false);
-    // Tamaño/posición ANTES del show: si no, el primer frame queda 800×600 y
-    // la ventana principal (bajo el cursor) sigue recibiendo el mouse.
-    let _ = window.set_position(position);
-    let _ = window.set_size(size);
+    // Tamaño/posición ANTES del show, en un solo SetWindowPos: si no, Windows
+    // recorta a un monitor y DWM centra la ventana entre las dos pantallas.
+    cover_virtual_desktop(&window);
     let _ = window.set_always_on_top(true);
     let _ = window.show();
+    cover_virtual_desktop(&window);
 
     // Misma app, mismo proceso: con el cursor sobre `main`, Windows puede
     // seguir entregándole el hover aunque el overlay sea topmost. Mientras
@@ -647,6 +861,8 @@ fn show_overlay_window(app: &AppHandle) -> Result<(), String> {
     // ya consumió los timers del primer Pressed.
     crate::overlay::reassert_capturing_input_with_retry(app);
     raise_capture_overlay(&window);
+    cover_virtual_desktop(&window);
+    schedule_cover_retries(app);
 
     // No usar `set_focus()`: si `SetForegroundWindow` falla, tao inyecta Alt y
     // esta app también usa SendInput para pegar. `force_foreground` activa sin
@@ -664,6 +880,33 @@ fn show_overlay_window(app: &AppHandle) -> Result<(), String> {
         });
     }
     Ok(())
+}
+
+/// WebView2 termina de nacer después del `show`: sin repetir, se queda en el
+/// recuadro del create (una pantalla, centrada).
+#[cfg(windows)]
+fn schedule_cover_retries(app: &AppHandle) {
+    let app = app.clone();
+    std::thread::Builder::new()
+        .name("atic-capture-cover".into())
+        .spawn(move || {
+            for ms in [16u64, 50, 200, 500] {
+                std::thread::sleep(std::time::Duration::from_millis(ms));
+                if !session_is_active(&app) {
+                    return;
+                }
+                let app_cover = app.clone();
+                let _ = app.run_on_main_thread(move || {
+                    if !session_is_active(&app_cover) {
+                        return;
+                    }
+                    if let Some(window) = app_cover.get_webview_window(OVERLAY_LABEL) {
+                        cover_virtual_desktop(&window);
+                    }
+                });
+            }
+        })
+        .ok();
 }
 
 /// Sube el overlay de captura al frente de las always-on-top (pill, launcher…).
