@@ -185,6 +185,8 @@ pub struct Config {
     pub clipboard_history: bool,
     /// Atajo global para abrir el overlay de selección de captura.
     pub screenshot_shortcut: String,
+    /// Atajo global para la pizarra: dibujar sobre la pantalla congelada.
+    pub board_shortcut: String,
     /// Atajo global para el launcher tipo Spotlight.
     pub launcher_shortcut: String,
     /// Ids de entradas del launcher marcadas como favoritas (`app:…` / `action:…`).
@@ -276,6 +278,7 @@ impl Default for Config {
             detect_meetings: false,
             clipboard_history: true,
             screenshot_shortcut: "CmdOrCtrl+Shift+4".to_string(),
+            board_shortcut: "CmdOrCtrl+Shift+X".to_string(),
             launcher_shortcut: "CmdOrCtrl+Space".to_string(),
             launcher_favorites: Vec::new(),
             capture_shelf_side: "right".to_string(),
@@ -355,6 +358,7 @@ struct ConfigFile {
     detect_meetings: Option<bool>,
     clipboard_history: Option<bool>,
     screenshot_shortcut: Option<String>,
+    board_shortcut: Option<String>,
     launcher_shortcut: Option<String>,
     launcher_favorites: Option<Vec<String>>,
     capture_shelf_side: Option<String>,
@@ -459,6 +463,7 @@ impl Default for ConfigFile {
             detect_meetings: None,
             clipboard_history: None,
             screenshot_shortcut: None,
+            board_shortcut: None,
             launcher_shortcut: None,
             launcher_favorites: None,
             capture_shelf_side: None,
@@ -629,6 +634,10 @@ impl From<ConfigFile> for Config {
                 .screenshot_shortcut
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| "CmdOrCtrl+Shift+4".into()),
+            board_shortcut: f
+                .board_shortcut
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "CmdOrCtrl+Shift+X".into()),
             launcher_shortcut: f
                 .launcher_shortcut
                 .filter(|s| !s.is_empty())

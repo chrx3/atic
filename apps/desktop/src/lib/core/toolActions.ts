@@ -9,6 +9,7 @@
 import { capture } from "$domain/capture.svelte";
 import { dictation } from "$domain/dictation.svelte";
 import { showAgentsWindow } from "$ipc/agents";
+import { startBoard } from "$ipc/annotate";
 import { startCaptureSession } from "$ipc/captures";
 import { showClipboardWindow } from "$ipc/clipboard";
 import { showLauncher } from "$ipc/search";
@@ -45,6 +46,8 @@ export function toolAction(id: ToolId): ToolAction {
       };
     case "captures":
       return { kind: "run", label: "Tomar captura" };
+    case "board":
+      return { kind: "run", label: "Dibujar" };
     case "agents":
       return { kind: "run", label: "Abrir consola" };
     case "launcher":
@@ -77,6 +80,9 @@ export async function executeToolAction(
       return;
     case "captures":
       await startCaptureSession();
+      return;
+    case "board":
+      await startBoard();
       return;
     case "agents":
       if (AGENTS_ENABLED) await showAgentsWindow();

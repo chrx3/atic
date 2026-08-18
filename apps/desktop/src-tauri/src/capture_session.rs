@@ -267,6 +267,49 @@ fn start_impl(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// Dibuja la pill y el lanzador encima del frame recién congelado.
+///
+/// BitBlt no ve el overlay layered; los recortes de Windows sí, porque usan
+/// Graphics Capture. Se le pide el bitmap a WebView2 y, si no lo da, se cae a
+/// `PrintWindow`. Sin esto la pill desaparece de lo congelado.
+///
+/// Está aparte porque lo usan la selección de captura y la pizarra: las dos
+/// congelan la misma pantalla y las dos tienen que incluir el overlay.
+#[cfg(windows)]
+pub(crate) fn compose_overlay(app: &AppHandle, frame: &mut atic_capture::Frame) {
+    let mut composed = false;
+    if let Some(mut overlay) = crate::overlay::capture_layer(app) {
+        if overlay.prepare_overlay_layer() {
+            frame.blend_over(&overlay);
+            composed = true;
+            tracing::info!(target: "overlay", "pill/launcher compuestos en la captura");
+        }
+    }
+    if composed {
+        return;
+    }
+    let Some(hwnd) = crate::overlay::hwnd() else {
+        return;
+    };
+    match atic_capture::engine::print_window_tree(hwnd) {
+        Ok(Some(mut overlay)) => {
+            if overlay.prepare_overlay_layer() {
+                frame.blend_over(&overlay);
+                tracing::info!(target: "overlay", "overlay compuesto vía PrintWindow");
+            }
+        }
+        Ok(None) => {
+            tracing::warn!(
+                target: "overlay",
+                "la captura no incluye la pill: WebView2 y PrintWindow salieron vacíos"
+            );
+        }
+        Err(err) => {
+            tracing::warn!(%err, "no se pudo imprimir el overlay en la captura");
+        }
+    }
+}
+
 #[cfg(windows)]
 fn start_freeze(app: &AppHandle, token: u64) -> Result<(), String> {
     use atic_capture::{engine, monitors, windows as capwin};
@@ -300,37 +343,7 @@ fn start_freeze(app: &AppHandle, token: u64) -> Result<(), String> {
             return Err(error.to_string());
         }
     };
-    // BitBlt no ve el overlay layered (pill, launcher). Recortes de Windows sí
-    // porque usa Graphics Capture. Pedirle el bitmap a WebView2 y blendear.
-    let mut composed = false;
-    if let Some(mut overlay) = crate::overlay::capture_layer(app) {
-        if overlay.prepare_overlay_layer() {
-            frame.blend_over(&overlay);
-            composed = true;
-            tracing::info!(target: "overlay", "pill/launcher compuestos en la captura");
-        }
-    }
-    if !composed {
-        if let Some(hwnd) = crate::overlay::hwnd() {
-            match engine::print_window_tree(hwnd) {
-                Ok(Some(mut overlay)) => {
-                    if overlay.prepare_overlay_layer() {
-                        frame.blend_over(&overlay);
-                        tracing::info!(target: "overlay", "overlay compuesto vía PrintWindow");
-                    }
-                }
-                Ok(None) => {
-                    tracing::warn!(
-                        target: "overlay",
-                        "la captura no incluye la pill: WebView2 y PrintWindow salieron vacíos"
-                    );
-                }
-                Err(err) => {
-                    tracing::warn!(%err, "no se pudo imprimir el overlay en la captura");
-                }
-            }
-        }
-    }
+    compose_overlay(app, &mut frame);
     if abort_requested(token) {
         abandon_start(app);
         return Ok(());
@@ -613,6 +626,20 @@ fn install_virtual_screen_limit(window: &tauri::WebviewWindow) {
         if current == ours {
             return;
         }
+        // El proc original se guarda en UN solo static, y lo comparten las dos
+        // ventanas que cubren el escritorio virtual (la mira de captura y la
+        // pizarra). Vale porque todas las ventanas de tao son de la misma
+        // clase y traen el mismo proc; si algún día no lo fueran, encadenar al
+        // de otra ventana rompería la que llegó primero, así que en ese caso se
+        // deja sin enganchar: lo peor es que no pueda abarcar dos monitores.
+        let saved = CAPTURE_OVERLAY_WNDPROC.load(Ordering::SeqCst);
+        if saved != 0 && saved != current {
+            tracing::warn!(
+                target: "overlay",
+                "otra ventana tiene un WndProc distinto; no se limita al escritorio virtual"
+            );
+            return;
+        }
         CAPTURE_OVERLAY_WNDPROC.store(current, Ordering::SeqCst);
         SetWindowLongPtrW(hwnd, GWLP_WNDPROC, ours);
     }
@@ -625,7 +652,7 @@ fn install_virtual_screen_limit(window: &tauri::WebviewWindow) {
 /// y tamaño juntos, y después se corrige el desfase de no-cliente (borde DWM)
 /// para que el (0,0) del CSS coincida con el del PNG congelado.
 #[cfg(windows)]
-fn cover_virtual_desktop(window: &tauri::WebviewWindow) {
+pub(crate) fn cover_virtual_desktop(window: &tauri::WebviewWindow) {
     use windows_sys::Win32::Foundation::POINT;
     use windows_sys::Win32::Graphics::Gdi::ClientToScreen;
     use windows_sys::Win32::UI::WindowsAndMessaging::{

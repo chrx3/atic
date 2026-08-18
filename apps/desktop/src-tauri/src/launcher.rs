@@ -214,6 +214,12 @@ fn builtin_actions() -> Vec<LauncherEntry> {
             "capture",
         ),
         (
+            "action:board",
+            "Dibujar en pantalla",
+            "Congelar la pantalla y marcarla",
+            "board",
+        ),
+        (
             "action:clipboard",
             "Historial de clipboard",
             "Abrir el historial junto a la pill",
@@ -614,6 +620,7 @@ fn run_action(app: &AppHandle, action: &str) -> Result<(), String> {
             Ok(())
         }
         "capture" => crate::capture_session::trigger(app),
+        "board" => crate::annotate::toggle_board(app),
         "clipboard" => {
             crate::clipboard_history::remember_paste_target();
             crate::shortcuts::emit_tool_slot(app, "activate-tool-slot", "clipboard");

@@ -28,6 +28,9 @@ export const pendingAnnotation = () =>
 export const annotationImage = (path: string) =>
   invoke<string>("annotation_image", { path });
 
+/** Abre la pizarra: congela la pantalla y dibuja encima, donde está. */
+export const startBoard = () => invoke<void>("start_board");
+
 export const closeAnnotator = () => invoke<void>("close_annotator");
 
 /**

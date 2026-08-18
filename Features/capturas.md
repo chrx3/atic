@@ -31,6 +31,17 @@ Capturas está elegido «Dibujar encima» en vez de la vista previa.
 - Guardar **no pisa el original**: escribe una captura nueva y la muestra en el
   estante, igual que cualquier captura recién tomada.
 
+### Pizarra: dibujar sobre la pantalla
+
+`Ctrl+Shift+X` (configurable en Ajustes → Atajos) **congela la pantalla** y
+deja marcarla encima con las mismas herramientas. El atajo otra vez, o `Esc`,
+la saca. Enter copia lo marcado; `Ctrl+Enter` lo guarda como captura.
+
+Sobre la pantalla **congelada**, no sobre la viva: con el escritorio en
+movimiento —un video, un cursor que parpadea— lo de abajo se corre y la marca
+deja de señalar lo que señalaba. El congelado es el mismo mecanismo que usa la
+selección de captura, con la pill compuesta encima para que no desaparezca.
+
 ## Código
 
 - [`crates/capture/`](../crates/capture/) — motor de captura (Windows)
@@ -45,8 +56,7 @@ Capturas está elegido «Dibujar encima» en vez de la vista previa.
 
 ## Pendiente / siguiente
 
-- [ ] Pizarra sobre la pantalla (dibujar fuera de una captura), fase 2:
-      mismo motor sobre el congelado de pantalla completa
+- [ ] Pizarra sobre la pantalla **viva** (hoy es sobre la congelada)
 - [ ] Texto y desenfoque (tapar datos) en el editor
 - [ ] Upgrade futuro a Windows Graphics Capture (ver plan §23)
 - [ ] Paridad / stub macOS si se prioriza

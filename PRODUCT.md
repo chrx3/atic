@@ -20,14 +20,14 @@ No es “otra ventana de chat” ni un índice Everything del disco. Su diferenc
 
 ## Operating Context
 
-- Overlay flotante (pill → rueda de seis tools → floats: launcher, clipboard, snippets, agentes, capturas).
+- Overlay flotante (pill → rueda de siete tools → floats: launcher, clipboard, snippets, agentes, capturas, pizarra).
 - Atajos globales configurables; bandeja para mostrar/ocultar y salir.
 - Windows primario en desarrollo; macOS en progreso (system audio fase 4).
 - Datos locales (`atic.db3`, Whisper on-demand); BYOK para resumen; consent onboarding.
 
 ## Capabilities and Constraints
 
-- Seis tools en la rueda + launcher (no en la rueda).
+- Siete tools en la rueda + launcher (no en la rueda).
 - Local-first con excepciones explícitas (Groq si el usuario elige; proveedores de resumen reciben texto).
 - Atic no autentica agentes: se cuelga del CLI ya logueado.
 - Morph pill → chrome launcher aún incompleto (vuelo + `.float-emerge`).
