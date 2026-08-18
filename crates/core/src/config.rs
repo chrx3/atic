@@ -198,7 +198,7 @@ pub struct Config {
     /// Incluir el cursor del sistema en las capturas.
     pub capture_include_cursor: bool,
     /// Acción al hacer clic en la miniatura: `preview` (abrir imagen) |
-    /// `location` (abrir carpeta).
+    /// `location` (abrir carpeta) | `annotate` (dibujar encima).
     pub capture_click_action: String,
     /// Tema de interfaz: `light` | `dark` | `system`.
     pub ui_theme: String,
@@ -643,6 +643,7 @@ impl From<ConfigFile> for Config {
             capture_include_cursor: f.capture_include_cursor.unwrap_or(false),
             capture_click_action: match f.capture_click_action.as_deref() {
                 Some("location") => "location".into(),
+                Some("annotate") => "annotate".into(),
                 _ => "preview".into(),
             },
             ui_theme: match f.ui_theme.as_deref() {

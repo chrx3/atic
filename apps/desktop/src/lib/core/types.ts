@@ -335,6 +335,19 @@ export interface CaptureItem {
   height: number;
 }
 
+/**
+ * Con qué imagen arranca el editor de anotaciones.
+ *
+ * Las medidas vienen de Rust (leídas del IHDR) y no del `<img>`: la ventana ya
+ * nació con el tamaño calculado a partir de ellas, y esperar a que la imagen
+ * cargue para saberlo dejaría el lienzo con la escala equivocada un instante.
+ */
+export interface AnnotateOpen {
+  path: string;
+  width: number;
+  height: number;
+}
+
 export type ClipboardKind = "text" | "image";
 
 export interface ClipboardItem {

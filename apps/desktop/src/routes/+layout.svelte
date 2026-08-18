@@ -16,9 +16,14 @@
 
   // Ventanas flotantes: sin chrome de app (fondo transparente).
   const isFloating = $derived(
-    ["/pill", "/capture-shelf", "/capture-overlay", "/launcher", "/overlay"].includes(
-      page.url.pathname,
-    ),
+    [
+      "/pill",
+      "/capture-shelf",
+      "/capture-overlay",
+      "/capture-annotate",
+      "/launcher",
+      "/overlay",
+    ].includes(page.url.pathname),
   );
 
   onMount(() => {
