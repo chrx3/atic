@@ -714,6 +714,30 @@ export type AgentDeltaPayload = AgentDelta & {
   backendName: string;
 };
 
+/** Un agente corriendo en SU terminal. Atic solo mira. */
+export type PresenceStatus = "working" | "waiting" | "ready" | "idle";
+
+export type PresenceSource = "jsonl" | "hook" | "process";
+
+export type PresenceWindow = {
+  pid: number;
+  hwnd: number;
+};
+
+export type AgentPresence = {
+  id: string;
+  backendId: string;
+  backendName: string;
+  cwd: string;
+  status: PresenceStatus;
+  preview: string | null;
+  updatedAt: number;
+  window: PresenceWindow | null;
+  source: PresenceSource;
+};
+
+export type PresenceFocusResult = { kind: "focused" | "console" | "none" };
+
 /** Un turno: un ciclo usuario → agente. */
 export interface AgentTurn {
   id: string;

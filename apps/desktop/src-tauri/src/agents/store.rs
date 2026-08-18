@@ -19,7 +19,7 @@
 //! la sesión. El caso que esto no cubre es una caída dura de Atic con un turno a
 //! medio correr — ahí se pierde ese turno, no la conversación.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 
 use atic_core::{AgentThreadRow, Db};
@@ -141,6 +141,25 @@ pub fn close(db: &Db, id: &str) {
             map.remove(id);
         }
     }
+}
+
+/// Ids de sesión del CLI que el chat de Atic ya está siguiendo.
+///
+/// El watcher del pager los ignora: `claude --resume` escribe el mismo JSONL
+/// y sin este filtro una conversación aparecería dos veces en la pill.
+pub fn live_provider_sessions() -> HashSet<String> {
+    THREADS
+        .lock()
+        .ok()
+        .and_then(|g| {
+            g.as_ref().map(|m| {
+                m.values()
+                    .filter_map(|t| t.provider_session.clone())
+                    .filter(|s| !s.is_empty())
+                    .collect()
+            })
+        })
+        .unwrap_or_default()
 }
 
 /// Las claves de todas las sesiones seguidas. Para el cierre de la app.

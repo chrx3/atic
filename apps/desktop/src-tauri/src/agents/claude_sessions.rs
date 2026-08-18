@@ -69,7 +69,7 @@ fn strip_verbatim(path: PathBuf) -> PathBuf {
     }
 }
 
-fn projects_root() -> Option<PathBuf> {
+pub(crate) fn projects_root() -> Option<PathBuf> {
     Some(config_dir()?.join("projects"))
 }
 
@@ -97,7 +97,7 @@ fn project_dir_for(cwd: &Path) -> Option<PathBuf> {
     None
 }
 
-fn mtime_secs(path: &Path) -> u64 {
+pub(crate) fn mtime_secs(path: &Path) -> u64 {
     fs::metadata(path)
         .and_then(|m| m.modified())
         .ok()

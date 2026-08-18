@@ -33,8 +33,14 @@
   import { REACH } from "$lib/liquid/constants";
   import ToolIcon from "$lib/ToolIcon.svelte";
   import { agents } from "$lib/agentSessions.svelte";
+  import { presence } from "$lib/agentPresence.svelte";
   import ParticleWheel from "$lib/ParticleWheel.svelte";
-  import { WHEEL_TOOLS, AGENTS_ENABLED, type ToolId } from "$lib/tools";
+  import {
+    WHEEL_TOOLS,
+    AGENTS_ENABLED,
+    AGENT_PAGER_ENABLED,
+    type ToolId,
+  } from "$lib/tools";
   import { formatShortcut } from "$lib/format";
   import Icon from "$ui/Icon.svelte";
   import { X } from "$lib/icons";
@@ -59,6 +65,7 @@
     type Dock,
     type Surface,
   } from "$surfaces/overlay/pill/pillPlan";
+  import { agentChip } from "$surfaces/overlay/pill/pillAgentChip";
   import {
     dockAxis,
     dockCandidate,
@@ -78,6 +85,8 @@
     onAgentsBubbleAnchor,
     onAgentsBubbleDismiss,
     showAgentsWindow,
+    agentPresenceFocus,
+    agentPresenceBind,
   } from "$ipc/agents";
   import {
     clipboardAlwaysOnTop,
@@ -93,11 +102,7 @@
     snippetsAlwaysOnTop,
   } from "$ipc/snippets";
   import { executeToolAction } from "$core/toolActions";
-  import {
-    isSpatialTool,
-    resolveSlot,
-    slotForTool,
-  } from "$surfaces/overlay/toolSlots";
+  import { isSpatialTool, resolveSlot, slotForTool } from "$surfaces/overlay/toolSlots";
   import {
     enqueueActivate,
     isCursorAnchored,
@@ -181,19 +186,59 @@
   /**
    * Aviso de agente en la barra compacta.
    *
-   * Es lo que hace que «corre en segundo plano» signifique algo: la consola
-   * puede estar cerrada y la sesión sigue viva, así que la pill tiene que ser
-   * el lugar donde te enteras de que respondió o de que te está esperando.
+   * Une el chat de Atic (si está habilitado) con las TUI que el pager mira.
+   * La decisión es pura (`agentChip`); acá solo se ejecuta.
    */
-  const agentAlert = $derived(
-    AGENTS_ENABLED &&
-      (agents.unread > 0 || agents.working || agents.waiting > 0),
+  const chip = $derived(
+    agentChip({
+      chat: {
+        unread: agents.unread,
+        working: agents.working,
+        waiting: agents.waiting,
+        readyLabel: agents.readyLabel,
+        providerSessions: agents.sessions.map((s) => s.providerSession),
+      },
+      presence: presence.view,
+      chatEnabled: AGENTS_ENABLED,
+      pagerEnabled: AGENT_PAGER_ENABLED,
+    }),
   );
-  const agentWorking = $derived(agents.working && agents.waiting === 0);
-  const agentReady = $derived(
-    agents.unread > 0 && agents.waiting === 0 && !agents.working,
-  );
-  const agentReadyLabel = $derived(agents.readyLabel ?? "Listo");
+  const agentAlert = $derived(chip.tone !== "off");
+  const agentWorking = $derived(chip.tone === "working" || chip.tone === "count");
+  const agentReady = $derived(chip.tone === "ready");
+  const agentReadyLabel = $derived(chip.label ?? "Listo");
+  const agentChipAria = $derived.by(() => {
+    const target = chip.target;
+    if (target.kind === "focus") {
+      const name =
+        presence.list.find((p) => p.id === target.presenceId)?.backendName ??
+        "el agente";
+      return `Ir a ${name} en su terminal`;
+    }
+    if (target.kind === "console") return "Abrir la consola de agentes";
+    if (target.kind === "none") {
+      return "Sin terminal atada. Clic vincula la última ventana";
+    }
+    if (chip.tone === "working") return "El agente está trabajando";
+    return agentReadyLabel;
+  });
+  const agentChipTitle = $derived.by(() => {
+    if (chip.target.kind === "none") {
+      return "Sin terminal atada. Clic vincula la última ventana · Ctrl+clic para elegir otra";
+    }
+    const base =
+      chip.tone === "waiting"
+        ? "El agente espera tu permiso"
+        : chip.tone === "ready"
+          ? agentReadyLabel
+          : chip.tone === "count"
+            ? `${chip.label} sin leer`
+            : "El agente está trabajando";
+    if (chip.target.kind === "focus") {
+      return `${base} · Ctrl+clic para vincular otra ventana`;
+    }
+    return base;
+  });
   const authRequest = $derived(agents.primaryPending);
   /** Consola abierta: el permiso se decide ahí; no duplicar el diálogo. */
   let agentsConsoleOpen = $state(false);
@@ -319,8 +364,7 @@
     void surface;
     if (surface !== "edge" && !beadsAlive) return;
     let raf = 0;
-    const until =
-      performance.now() + ms(MOTION.islandOpen) + ISLAND_SETTLE_MS;
+    const until = performance.now() + ms(MOTION.islandOpen) + ISLAND_SETTLE_MS;
     const pump = () => {
       tracker.wake();
       raf = performance.now() < until ? requestAnimationFrame(pump) : 0;
@@ -548,9 +592,7 @@
    * Usa el centro de la caja de la pill (no solo el disco) para no saltar
    * al expandirse el aviso.
    */
-  const consoleSide = $derived(
-    consoleSideFor(stage.workAreas(), at, box),
-  );
+  const consoleSide = $derived(consoleSideFor(stage.workAreas(), at, box));
 
   /** Traza al log de Rust. Fire-and-forget: no debe alterar el flujo ni fallar. */
   function trace(msg: string) {
@@ -564,6 +606,31 @@
     } catch (err) {
       console.warn("abrir consola de agentes", err);
     }
+  }
+
+  function onAgentChipClick(event: MouseEvent) {
+    const target = chip.target;
+    if (target.kind === "console") {
+      void openAgentsConsole();
+      return;
+    }
+    const id = target.presenceId;
+    if (!id) return;
+    const preferBind = event.ctrlKey || event.metaKey || target.kind === "none";
+    void (async () => {
+      try {
+        let result = preferBind
+          ? await agentPresenceBind(id)
+          : await agentPresenceFocus(id);
+        if (result.kind === "none" && !preferBind) {
+          result = await agentPresenceBind(id);
+        }
+        if (result.kind === "focused") presence.markSeen(id);
+        else if (result.kind === "console") await openAgentsConsole();
+      } catch (err) {
+        console.warn("enfocar terminal del agente", err);
+      }
+    })();
   }
 
   async function decideAuth(decision: PermissionDecision) {
@@ -590,8 +657,7 @@
     const gap = 8;
     const areas = stage.workAreas();
     // `consoleSide` ya es el lado libre: "right" crece a la derecha, "left" a la izquierda.
-    let x =
-      consoleSide === "right" ? at.x : at.x + box.w - w;
+    let x = consoleSide === "right" ? at.x : at.x + box.w - w;
     let y = at.y + box.h + gap;
     let side: "top" | "bottom" = "top";
     const area =
@@ -720,9 +786,7 @@
    */
   async function awaitWheelMorph(
     token:
-      | typeof MOTION.morphOpen
-      | typeof MOTION.morphClose
-      | typeof MOTION.morphQuick,
+      typeof MOTION.morphOpen | typeof MOTION.morphClose | typeof MOTION.morphQuick,
   ) {
     const el =
       rootEl?.querySelector<HTMLElement>(".pw-nodes") ??
@@ -760,15 +824,11 @@
    * armaba sobre pantalla que la isla no ocupa y se comía clics ajenos.
    */
   $effect(() =>
-    liquidEl && surface !== "edge"
-      ? surfaces.add("pill-skin", liquidEl)
-      : undefined,
+    liquidEl && surface !== "edge" ? surfaces.add("pill-skin", liquidEl) : undefined,
   );
 
   /** La tarjeta de auth también tiene que armar hit-rects o queda click-through. */
-  $effect(() =>
-    authEl && authAlive ? surfaces.add("agent-auth", authEl) : undefined,
-  );
+  $effect(() => (authEl && authAlive ? surfaces.add("agent-auth", authEl) : undefined));
 
   /**
    * Republicar cuando la pill se MUEVE.
@@ -1065,10 +1125,7 @@
       // 4) Crecer hit-box al instante (pivot center). El morph visual es el anillo.
       const side = PILL.wheel - PILL.pad * 2;
       const next = windowFor({ w: side, h: side });
-      await stage.resize(
-        next,
-        pivotFor({ surface: "wheel", collapsingFrom: null }),
-      );
+      await stage.resize(next, pivotFor({ surface: "wheel", collapsingFrom: null }));
       at = stage.at();
       box = next;
       await tick();
@@ -1094,10 +1151,7 @@
    */
   async function wheelCollapse() {
     const next = target;
-    await stage.resize(
-      next,
-      pivotFor({ surface: "none", collapsingFrom: "wheel" }),
-    );
+    await stage.resize(next, pivotFor({ surface: "none", collapsingFrom: "wheel" }));
     at = stage.at();
     // El escenario ya encogió: el DOM tiene que seguirlo YA, antes de soltar
     // `collapsingFrom`. Si `box` se queda en tamaño rueda, el handoff al stack
@@ -1222,9 +1276,7 @@
       snippets: snipPinned,
       agents: agentsPinned,
     });
-    await Promise.all(
-      targets.map((id) => dismissSpatialTool(id).catch(() => {})),
-    );
+    await Promise.all(targets.map((id) => dismissSpatialTool(id).catch(() => {})));
   }
 
   async function dismissSpatialTool(id: ToolId) {
@@ -1688,6 +1740,7 @@
     // La pill es la que notifica: es la única ventana que siempre está viva, y
     // si notificaran todas habría un toast por ventana abierta.
     void agents.init({ notify: true });
+    if (AGENT_PAGER_ENABLED) void presence.init();
 
     (async () => {
       // Los monitores y el hogar, antes de nada: el primer reencuadre ya los
@@ -1986,7 +2039,10 @@
         <div
           class="p-bar"
           class:is-disc-only={discOnly}
-          class:is-console-start={consoleSide === "left" && agentAlert && activity === "idle" && !hasQueue}
+          class:is-console-start={consoleSide === "left" &&
+            agentAlert &&
+            activity === "idle" &&
+            !hasQueue}
           bind:this={barEl}
         >
           {#if activity === "recording"}
@@ -1995,7 +2051,12 @@
             {#if liveError}
               <span class="p-chip is-error" role="status">Error</span>
             {:else if btWarning}
-              <span class="p-chip is-warn" role="status" title={btWarning} aria-label={btWarning}>BT</span>
+              <span
+                class="p-chip is-warn"
+                role="status"
+                title={btWarning}
+                aria-label={btWarning}>BT</span
+              >
             {:else if liveActive}
               <span class="p-chip" role="status">En vivo</span>
             {/if}
@@ -2048,7 +2109,9 @@
             <!-- Sin marca mientras la rueda manda: el stack queda en el
                top-left del root grande y una segunda «a» fantasma se veía ahí. -->
             {#if !wheelChrome}
-              <span class="p-mark is-disc"><AticMark size={20} strokeWidth={1.4} /></span>
+              <span class="p-mark is-disc"
+                ><AticMark size={20} strokeWidth={1.4} /></span
+              >
             {/if}
             <span class="p-queue-count">{paste.count}</span>
             <span class="p-queue-text" title={paste.front?.text}>
@@ -2074,7 +2137,9 @@
               <span
                 class="p-mark is-disc"
                 title={[
-                  wheelShortcut ? `${formatShortcut(wheelShortcut)} · herramientas` : "",
+                  wheelShortcut
+                    ? `${formatShortcut(wheelShortcut)} · herramientas`
+                    : "",
                   "Clic para las herramientas",
                   "Arrastra para mover",
                 ]
@@ -2091,30 +2156,24 @@
               <button
                 type="button"
                 class="p-agent"
-                class:is-waiting={agents.waiting > 0}
-                class:is-working={agentWorking && agents.unread === 0}
-                class:is-ready={agentReady}
-                class:is-count={!agents.waiting && !agentReady && agents.unread > 0}
+                class:is-waiting={chip.tone === "waiting"}
+                class:is-working={chip.tone === "working"}
+                class:is-ready={chip.tone === "ready"}
+                class:is-count={chip.tone === "count"}
                 data-no-drag
-                onclick={() => void openAgentsConsole()}
-                title={agents.waiting > 0
-                  ? "El agente espera tu permiso"
-                  : agentReady
-                    ? agentReadyLabel
-                    : agents.unread > 0
-                      ? `${agents.unread} sin leer`
-                      : "El agente está trabajando"}
-                aria-label="Abrir la consola de agentes"
+                onclick={(e) => onAgentChipClick(e)}
+                title={agentChipTitle}
+                aria-label={agentChipAria}
               >
                 <span class="p-agent-ico" aria-hidden="true">
                   <ToolIcon id="agents" size={11} strokeWidth={1.7} />
                 </span>
-                {#if agents.waiting > 0}
+                {#if chip.tone === "waiting"}
                   <span class="p-agent-count">permiso</span>
-                {:else if agentReady}
+                {:else if chip.tone === "ready"}
                   <span class="p-agent-msg">{agentReadyLabel}</span>
-                {:else if agents.unread > 0}
-                  <span class="p-agent-count">{agents.unread}</span>
+                {:else if chip.tone === "count"}
+                  <span class="p-agent-count">{chip.label}</span>
                 {/if}
               </button>
             {/if}
@@ -2297,14 +2356,8 @@
        tramo corto, el cuerpo fundido queda parecido a la pestaña y el relevo
        entre gotas y silueta de pestaña no se nota. */
     transform: translate(
-        calc(
-          var(--island-bx) * var(--island-shut-squeeze) +
-            var(--island-from-x, 0px)
-        ),
-        calc(
-          var(--island-by) * var(--island-shut-squeeze) +
-            var(--island-from-y, 0px)
-        )
+        calc(var(--island-bx) * var(--island-shut-squeeze) + var(--island-from-x, 0px)),
+        calc(var(--island-by) * var(--island-shut-squeeze) + var(--island-from-y, 0px))
       )
       scale(var(--island-shut-scale));
     transition:
@@ -2342,7 +2395,6 @@
   .p-root[data-edge="left"] .p-island-tool {
     --island-from-x: calc(var(--island-rise) * -1);
   }
-
 
   /* Cierre acelerado: al elegir herramienta la rueda ya cumplió su función. */
   .p-root.is-quick {
@@ -2890,8 +2942,8 @@
   .p-agent.is-ready {
     background: color-mix(in sRGB, var(--ok) 14%, transparent);
     color: var(--ok);
-    animation: p-agent-ready-in var(--duration-very-slow, 500ms)
-      var(--ease-smooth-out) both;
+    animation: p-agent-ready-in var(--duration-very-slow, 500ms) var(--ease-smooth-out)
+      both;
   }
 
   .p-agent-count,
@@ -2968,8 +3020,7 @@
     }
 
     50% {
-      box-shadow: inset 0 0 0 1.5px
-        color-mix(in sRGB, var(--accent) 42%, transparent);
+      box-shadow: inset 0 0 0 1.5px color-mix(in sRGB, var(--accent) 42%, transparent);
     }
   }
 
@@ -3018,8 +3069,7 @@
     }
 
     .p-shell.is-working {
-      box-shadow: inset 0 0 0 1px
-        color-mix(in sRGB, var(--accent) 35%, transparent);
+      box-shadow: inset 0 0 0 1px color-mix(in sRGB, var(--accent) 35%, transparent);
     }
   }
 </style>

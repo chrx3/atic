@@ -29,13 +29,20 @@ pub mod codex;
 pub mod console;
 pub mod discover;
 pub mod exe;
+pub mod focus;
 pub mod fs_browse;
 pub mod media;
 pub mod model;
+pub mod ping;
+pub mod presence;
 pub mod skills;
 pub mod ssh;
 pub mod store;
 pub mod turns;
+pub mod watch_claude;
+pub mod watch_codex;
+pub mod watch_cursor;
+pub mod watch_opencode;
 
 use serde::Serialize;
 
@@ -45,6 +52,10 @@ pub use model::AgentDelta;
 /// Volver a `true` cuando se reabra la feature. Gemelo de `AGENTS_ENABLED` en
 /// `apps/desktop/src/lib/core/tools.ts`.
 pub const UI_ENABLED: bool = false;
+
+/// Semáforo de la pill para agentes que corren en su TUI (no el chat de Atic).
+/// Gemelo de `AGENT_PAGER_ENABLED` en `apps/desktop/src/lib/core/tools.ts`.
+pub const PAGER_ENABLED: bool = true;
 
 /// Qué se contesta a un item [`model::ItemKind::Permission`].
 ///

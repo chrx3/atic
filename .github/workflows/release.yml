@@ -6,18 +6,18 @@ name: Release
 # de Actions; publicar un tag no debe gastar minutos.
 #
 # Para generar instaladores en CI, disparalo a mano:
-#   Actions → Release → Run workflow → tag (ej. v0.4.4; debe existir).
+#   Actions → Release → Run workflow → tag (ej. v0.4.5; debe existir).
 # En local (Windows):
 #   cd apps/desktop && pnpm tauri build --bundles nsis
-#   gh release create v0.4.4 target/release/bundle/nsis/Atic_*_x64-setup.exe
+#   gh release create v0.4.5 target/release/bundle/nsis/Atic_*_x64-setup.exe
 
 on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Tag a publicar (ej. v0.4.4). Debe existir en el repo."
+        description: "Tag a publicar (ej. v0.4.5). Debe existir en el repo."
         required: true
-        default: "v0.4.4"
+        default: "v0.4.5"
 
 permissions:
   contents: write

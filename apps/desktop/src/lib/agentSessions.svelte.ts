@@ -40,6 +40,7 @@ import type {
   PermissionDecision,
   SlashCommand,
 } from "$lib/types";
+import { clipChipPreview } from "$core/agentChipPreview";
 
 /** Un permiso pendiente: el agente está detenido esperando la respuesta. */
 export interface PendingPermission {
@@ -224,8 +225,7 @@ class AgentSessionStore {
     if (!s) return null;
     const text = s.lastText?.trim();
     if (!text) return "Listo";
-    const line = text.split("\n")[0]?.trim() || "Listo";
-    return line.length > 28 ? `${line.slice(0, 27)}…` : line;
+    return clipChipPreview(text);
   }
 
   /**

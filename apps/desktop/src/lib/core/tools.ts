@@ -16,6 +16,12 @@ export type ToolId =
  */
 export const AGENTS_ENABLED = false;
 
+/**
+ * Semáforo de la pill para agentes que corren en su TUI (Claude Code, etc.).
+ * Independiente de `AGENTS_ENABLED`: el pager no abre el chat de Atic.
+ */
+export const AGENT_PAGER_ENABLED = true;
+
 export type ToolDef = {
   id: ToolId;
   label: string;
