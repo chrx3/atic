@@ -41,6 +41,22 @@
         "visible": true
       },
       {
+        "label": "capture-annotate",
+        "url": "/capture-annotate",
+        "title": "Dibujar sobre la captura",
+        "width": 880,
+        "height": 620,
+        "minWidth": 420,
+        "minHeight": 260,
+        "resizable": true,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "shadow": false,
+        "visible": true
+      },
+      {
         "label": "launcher",
         "url": "/launcher",
         "title": "Buscar",

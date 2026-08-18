@@ -16,6 +16,7 @@ import type { ToolId } from "$core/tools";
 import type {
   AgentDeltaPayload,
   AgentsComposerInsert,
+  AnnotateOpen,
   BubbleOpen,
   CaptureItem,
   ConsoleExitPayload,
@@ -62,6 +63,8 @@ export interface AticEvents {
   // Capturas
   "screenshot-created": CaptureItem;
   "screenshot-shelf-updated": void;
+  /** Con qué imagen tiene que abrirse el editor de anotaciones. */
+  "annotate-open": AnnotateOpen;
   /** Hay una foto congelada lista y el overlay de selección puede pintarla. */
   "overlay-session-started": void;
   "overlay-session-ended": void;

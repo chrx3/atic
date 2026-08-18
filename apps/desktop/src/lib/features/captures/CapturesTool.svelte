@@ -4,6 +4,7 @@
   import { captures } from "$domain/captures.svelte";
   import { config } from "$domain/config.svelte";
   import { toastError, toasts } from "$domain/toasts.svelte";
+  import { openAnnotator } from "$ipc/annotate";
   import { captureSrc } from "$ipc/captures";
   import ToolPage from "$patterns/ToolPage.svelte";
   import Toolbar from "$patterns/Toolbar.svelte";
@@ -36,6 +37,15 @@
     if (typeof text === "string") {
       toasts.push(text.trim() ? "Texto copiado" : "No se encontró texto");
     }
+  }
+
+  /**
+   * El editor abre en su propia ventana flotante, y por eso la vista previa se
+   * cierra: dejarla debajo mostraría dos copias de la misma imagen.
+   */
+  async function annotate(path: string) {
+    await run(() => openAnnotator(path));
+    preview = null;
   }
 </script>
 
@@ -172,6 +182,9 @@
         onclick={() => void run(() => captures.copy(item.path), "Copiada")}
       >
         Copiar
+      </Button>
+      <Button variant="soft" size="sm" onclick={() => void annotate(item.path)}>
+        Dibujar
       </Button>
       <Button
         variant="soft"

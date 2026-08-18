@@ -1,6 +1,7 @@
 //! Punto de entrada de la aplicación de escritorio Atic.
 
 pub mod agents;
+mod annotate;
 mod beep;
 mod capture;
 mod capture_session;
@@ -216,6 +217,12 @@ pub fn run() {
             capture_session::complete_region_capture,
             capture_session::complete_monitor_capture,
             capture_session::cancel_capture_session,
+            annotate::open_annotator,
+            annotate::pending_annotation,
+            annotate::annotation_image,
+            annotate::close_annotator,
+            annotate::save_annotation,
+            annotate::copy_annotation,
             clipboard_history::list_clipboard_history,
             clipboard_history::paste_clipboard_item,
             clipboard_history::insert_clipboard_into_agents,
@@ -433,7 +440,7 @@ pub fn run() {
             // `capture-overlay` NO está en la lista a propósito: ya no se
             // declara en la config, la crea `ensure_capture_overlay` al primer
             // uso (ver el porqué allá).
-            for label in ["capture-shelf", "launcher"] {
+            for label in ["capture-shelf", "launcher", annotate::ANNOTATE_LABEL] {
                 if let Some(window) = app.get_webview_window(label) {
                     let _ = window.hide();
                 }
@@ -464,7 +471,9 @@ pub fn run() {
         .on_window_event(|window, event| match event {
             // Cerrar oculta, no destruye.
             WindowEvent::CloseRequested { api, .. }
-                if window.label() == "main" || window.label() == "launcher" =>
+                if window.label() == "main"
+                    || window.label() == "launcher"
+                    || window.label() == annotate::ANNOTATE_LABEL =>
             {
                 api.prevent_close();
                 let _ = window.hide();

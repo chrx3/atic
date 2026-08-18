@@ -109,8 +109,13 @@ pub fn copy_capture_image(state: State<AppState>, path: String) -> Result<(), St
 /// Copia el PNG al portapapeles del sistema (imagen, no la ruta).
 pub fn copy_png_to_clipboard(path: &Path) -> Result<(), String> {
     let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
+    copy_png_bytes(&bytes)
+}
+
+/// Igual, pero desde memoria: lo anotado todavía no es un archivo.
+pub fn copy_png_bytes(bytes: &[u8]) -> Result<(), String> {
     let (width, height, rgba) =
-        atic_capture::encoding::png_to_rgba(&bytes).map_err(|error| error.to_string())?;
+        atic_capture::encoding::png_to_rgba(bytes).map_err(|error| error.to_string())?;
     let mut clipboard = arboard::Clipboard::new().map_err(|error| error.to_string())?;
     clipboard
         .set_image(arboard::ImageData {
@@ -130,8 +135,8 @@ pub fn reveal_capture(app: AppHandle, state: State<AppState>, path: String) -> R
         .map_err(|error| error.to_string())
 }
 
-/// Acción al hacer clic en la miniatura: abre la vista previa (imagen) o la
-/// ubicación (carpeta), según `capture_click_action`.
+/// Acción al hacer clic en la miniatura: abre el editor de anotaciones, la
+/// vista previa (imagen) o la ubicación (carpeta), según `capture_click_action`.
 #[tauri::command]
 pub fn activate_capture(
     app: AppHandle,
@@ -141,14 +146,20 @@ pub fn activate_capture(
     use tauri_plugin_opener::OpenerExt;
     let target = ensure_in_dir(&state.dirs.captures_dir(), Path::new(&path))?;
     let action = state.config.lock_or_recover().capture_click_action.clone();
-    if action == "location" {
-        app.opener()
+    match action.as_str() {
+        "location" => app
+            .opener()
             .reveal_item_in_dir(target)
-            .map_err(|error| error.to_string())
-    } else {
-        app.opener()
+            .map_err(|error| error.to_string()),
+        "annotate" => crate::annotate::open_annotator_path(
+            &app,
+            &state.dirs.captures_dir(),
+            &target.to_string_lossy(),
+        ),
+        _ => app
+            .opener()
             .open_path(target.to_string_lossy().into_owned(), None::<&str>)
-            .map_err(|error| error.to_string())
+            .map_err(|error| error.to_string()),
     }
 }
 

@@ -39,6 +39,20 @@ export function hideWindow(): Promise<void> {
 }
 
 /**
+ * Empieza a redimensionar desde un borde o una esquina.
+ *
+ * Hace falta cuando la ventana no tiene decoraciones: el borde nativo de
+ * Windows queda debajo del webview y es de unos pocos píxeles, así que un tirón
+ * desde el contenido no lo agarra. Con esto, un asa dibujada en la esquina
+ * redimensiona igual que el marco del sistema.
+ */
+export async function startResizeDragging(
+  direction: "SouthEast" | "South" | "East",
+): Promise<void> {
+  await getCurrentWindow().startResizeDragging(direction);
+}
+
+/**
  * Avisa cuando la ventana gana o pierde el foco.
  *
  * Las ventanas efímeras se cierran al perderlo: es lo que se espera de algo que

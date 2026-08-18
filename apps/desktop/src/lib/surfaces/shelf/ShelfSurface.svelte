@@ -23,6 +23,7 @@
     ocrCaptureAndCopy,
     onScreenshotCreated,
   } from "$ipc/captures";
+  import { openAnnotator } from "$ipc/annotate";
   import { openDataDir } from "$ipc/config";
   import { dragOut, hideWindow } from "$ipc/windows";
   import { tick } from "svelte";
@@ -157,6 +158,23 @@
     }
   }
 
+  /** Abre el editor de anotaciones sin depender de la config del clic. */
+  async function annotate(event: MouseEvent) {
+    event.stopPropagation();
+    if (!current || busy) return;
+    busy = true;
+    clearTimer();
+    try {
+      await openAnnotator(current.path);
+      hide();
+    } catch {
+      note = "No se pudo abrir el editor";
+      scheduleDismiss();
+    } finally {
+      busy = false;
+    }
+  }
+
   function openFolder(event: MouseEvent) {
     event.stopPropagation();
     clearTimer();
@@ -229,6 +247,9 @@
           onclick={(e) => void ocr(e)}
         >
           {ocrBusy ? "…" : "Texto"}
+        </button>
+        <button type="button" class="shelf-action" onclick={(e) => void annotate(e)}>
+          Dibujar
         </button>
         <button type="button" class="shelf-action" onclick={openFolder}>Carpeta</button>
       </div>

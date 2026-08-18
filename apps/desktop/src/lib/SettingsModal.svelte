@@ -1944,6 +1944,7 @@
           Al hacer clic en la miniatura
           <select class="rb-field" bind:value={c.capture_click_action}>
             <option value="preview">Abrir vista previa</option>
+            <option value="annotate">Dibujar encima</option>
             <option value="location">Abrir ubicación</option>
           </select>
         </label>

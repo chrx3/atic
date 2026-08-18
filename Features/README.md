@@ -103,6 +103,9 @@ El flujo completo del producto original: graba, transcribe local y resume.
 
 - **Región, ventana o monitor**, con overlay para delimitar.
 - Van al portapapeles y a un **shelf flotante**.
+- **Dibujar encima**: flechas, círculos, trazo libre y resaltador sobre la
+  captura recién tomada, y de ahí al portapapeles con Enter. Guardar deja una
+  captura nueva; el original no se toca.
 - Se pueden adjuntar directo al compositor de agentes.
 
 → [capturas.md](capturas.md)

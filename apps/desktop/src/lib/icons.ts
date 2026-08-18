@@ -62,6 +62,12 @@ import {
   Cpu,
   House,
   Paperclip,
+  Circle,
+  MoveUpRight,
+  Undo2,
+  Redo2,
+  Highlighter,
+  Save,
 } from "lucide";
 import type { ToolId } from "$lib/tools";
 
@@ -164,4 +170,11 @@ export {
   SquareTerminal,
   AppWindow,
   GripVertical,
+  Pencil,
+  Circle,
+  MoveUpRight,
+  Undo2,
+  Redo2,
+  Highlighter,
+  Save,
 };
