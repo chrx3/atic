@@ -1203,6 +1203,11 @@ fn saved_paste_target_hwnd() -> Option<windows_sys::Win32::Foundation::HWND> {
 /// HWND externo para pegar: guardado al abrir historial/dictado, o primer plano
 /// actual si no es una ventana de Atic (la pill roba foco al interactuar).
 #[cfg(windows)]
+pub(crate) fn last_external_hwnd() -> Option<windows_sys::Win32::Foundation::HWND> {
+    resolve_paste_target_hwnd()
+}
+
+#[cfg(windows)]
 fn resolve_paste_target_hwnd() -> Option<windows_sys::Win32::Foundation::HWND> {
     use windows_sys::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, IsWindow};
 
@@ -1220,7 +1225,7 @@ fn resolve_paste_target_hwnd() -> Option<windows_sys::Win32::Foundation::HWND> {
 }
 
 #[cfg(windows)]
-fn is_own_app_hwnd(hwnd: windows_sys::Win32::Foundation::HWND) -> bool {
+pub fn is_own_app_hwnd(hwnd: windows_sys::Win32::Foundation::HWND) -> bool {
     use windows_sys::Win32::System::Threading::GetCurrentProcessId;
     use windows_sys::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId;
 

@@ -15,6 +15,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { ToolId } from "$core/tools";
 import type {
   AgentDeltaPayload,
+  AgentPresence,
   AgentsComposerInsert,
   AnnotateOpen,
   BubbleOpen,
@@ -101,6 +102,7 @@ export interface AticEvents {
   "agents-bubble-anchor": BubbleOpen;
   "agents-bubble-dismiss": void;
   "agent-event": AgentDeltaPayload;
+  "agent-presence": AgentPresence[];
   "console-output": ConsoleOutputPayload;
   "console-exit": ConsoleExitPayload;
 

@@ -267,6 +267,10 @@ pub fn run() {
             agents::bridge::agent_claude_sessions,
             agents::bridge::agent_claude_transcript,
             agents::bridge::agent_claude_usage,
+            agents::presence::agent_presences,
+            agents::presence::agent_presence_focus,
+            agents::presence::agent_presence_bind,
+            agents::presence::agent_presence_hook_snippet,
             agents::bridge::list_directories,
             agents::bridge::ssh_host_secrets_status,
             agents::bridge::ssh_set_host_secret,
@@ -436,6 +440,10 @@ pub fn run() {
 
             launcher::start_indexing();
             clipboard_history::start_watcher(app.handle());
+            agents::watch_claude::start(app.handle());
+            agents::watch_codex::start(app.handle());
+            agents::watch_cursor::start(app.handle());
+            agents::watch_opencode::start(app.handle());
 
             // Estas ventanas se declaran `visible: true` (para que las
             // decoraciones/transparencia se apliquen igual que en la pill) y se

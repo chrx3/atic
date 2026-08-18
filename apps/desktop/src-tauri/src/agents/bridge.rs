@@ -5,7 +5,7 @@
 //! produjo: la app puede tener varias abiertas a la vez y la UI necesita saber
 //! a cuál pertenece cada línea.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
@@ -36,6 +36,20 @@ struct Entry {
 /// recién en el primer evento, y para entonces la UI ya necesita algo con qué
 /// referirse a la conversación.
 static SESSIONS: Mutex<Option<HashMap<String, Entry>>> = Mutex::new(None);
+
+/// Ids que el watcher del pager tiene que ignorar.
+///
+/// Incluye la clave local y el `provider_session` del CLI: `claude --resume`
+/// escribe el mismo JSONL que una TUI, y sin este filtro el chip contaría dos veces.
+pub(crate) fn live_session_ids() -> HashSet<String> {
+    let mut ids = super::store::live_provider_sessions();
+    if let Ok(guard) = SESSIONS.lock() {
+        if let Some(map) = guard.as_ref() {
+            ids.extend(map.keys().cloned());
+        }
+    }
+    ids
+}
 
 /// Backends conocidos. Sumar uno es agregarlo a esta lista.
 ///

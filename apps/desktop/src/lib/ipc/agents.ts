@@ -9,6 +9,8 @@ import type {
   AgentOrigin,
   AgentSessionInfo,
   AgentSkill,
+  AgentPresence,
+  PresenceFocusResult,
   AgentStartOptions,
   BubbleOpen,
   AgentTurn,
@@ -44,6 +46,21 @@ export const agentBackends = () => invoke<AgentBackendInfo[]>("agent_backends");
 
 /** Sesiones vivas: para que una vista recién montada adopte lo que ya corre. */
 export const agentSessions = () => invoke<AgentSessionInfo[]>("agent_sessions");
+
+/** Presencias de TUI (pager). Snapshot completo, no deltas. */
+export const agentPresences = () => invoke<AgentPresence[]>("agent_presences");
+
+/** Enfoca la TUI de esa presencia. `none` si no hay ventana; no abre el chat. */
+export const agentPresenceFocus = (id: string) =>
+  invoke<PresenceFocusResult>("agent_presence_focus", { id });
+
+/** Ata la última ventana externa a esa presencia y la enfoca. */
+export const agentPresenceBind = (id: string) =>
+  invoke<PresenceFocusResult>("agent_presence_bind", { id });
+
+/** Fragmento de hooks para pegar en ~/.claude/settings.json. No se escribe solo. */
+export const agentPresenceHookSnippet = () =>
+  invoke<string>("agent_presence_hook_snippet");
 
 /** Arranca una sesión y devuelve su clave local. */
 export const agentStart = (backend: string, options?: AgentStartOptions) =>
@@ -119,8 +136,7 @@ export const agentClaudeTranscript = (cwd: string, id: string) =>
  * Cupos de la cuenta Claude (ventana 5 h / semanal). Misma fuente que `/usage`.
  * Cachea unos segundos en Rust; el modal puede pedirlo en poll.
  */
-export const agentClaudeUsage = () =>
-  invoke<ClaudeAccountUsage>("agent_claude_usage");
+export const agentClaudeUsage = () => invoke<ClaudeAccountUsage>("agent_claude_usage");
 
 /**
  * Subcarpetas de `path` (vacío/`~` → home). Solo lectura; sin abrir el picker
@@ -211,3 +227,8 @@ export const onAgentsBubbleDismiss = (cb: () => void): Promise<UnlistenFn> =>
 export const onAgentDelta = (
   cb: (payload: AgentDeltaPayload) => void,
 ): Promise<UnlistenFn> => on("agent-event", cb);
+
+/** Snapshot completo de agentes que corren en su TUI. */
+export const onAgentPresence = (
+  cb: (payload: AgentPresence[]) => void,
+): Promise<UnlistenFn> => on("agent-presence", cb);
