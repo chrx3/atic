@@ -218,6 +218,7 @@ pub fn run() {
             capture_session::complete_monitor_capture,
             capture_session::cancel_capture_session,
             annotate::open_annotator,
+            annotate::start_board,
             annotate::pending_annotation,
             annotate::annotation_image,
             annotate::close_annotator,
@@ -343,6 +344,7 @@ pub fn run() {
                 snippets_shortcut,
                 agents_shortcut,
                 screenshot_shortcut,
+                board_shortcut,
                 launcher_shortcut,
                 want_autostart,
             ) = {
@@ -357,6 +359,7 @@ pub fn run() {
                     cfg.snippets_shortcut.clone(),
                     cfg.agents_shortcut.clone(),
                     cfg.screenshot_shortcut.clone(),
+                    cfg.board_shortcut.clone(),
                     cfg.launcher_shortcut.clone(),
                     cfg.autostart,
                 )
@@ -424,6 +427,7 @@ pub fn run() {
                     snippets: &snippets_shortcut,
                     agents: &agents_shortcut,
                     screenshot: &screenshot_shortcut,
+                    board: &board_shortcut,
                     launcher: &launcher_shortcut,
                 },
             ) {

@@ -100,6 +100,8 @@ export interface AppConfig {
   /** Guardar en disco lo que pasa por el portapapeles. */
   clipboard_history: boolean;
   screenshot_shortcut: string;
+  /** Atajo global de la pizarra: dibujar sobre la pantalla congelada. */
+  board_shortcut: string;
   /** Atajo global del launcher tipo Spotlight. */
   launcher_shortcut: string;
   /** Ids del launcher marcados como favoritos (`app:…` / `action:…`). */
@@ -342,10 +344,29 @@ export interface CaptureItem {
  * nació con el tamaño calculado a partir de ellas, y esperar a que la imagen
  * cargue para saberlo dejaría el lienzo con la escala equivocada un instante.
  */
+/** Panel del tamaño de la captura, o pizarra sobre la pantalla congelada. */
+export type AnnotateMode = "panel" | "board";
+
+/** Un rectángulo dentro de la imagen, en sus mismos píxeles. */
+export interface FocusRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
 export interface AnnotateOpen {
   path: string;
   width: number;
   height: number;
+  mode: AnnotateMode;
+  /**
+   * Dónde poner los controles, en píxeles de la imagen.
+   *
+   * Con dos monitores, el centro del escritorio virtual es la costura entre
+   * las dos pantallas y una barra centrada ahí queda partida al medio.
+   */
+  focus: FocusRect | null;
 }
 
 export type ClipboardKind = "text" | "image";

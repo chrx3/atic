@@ -54,6 +54,26 @@ const MIN_H: f64 = 260.0;
 /// esto deja aire de sobra y sigue cortando un archivo que no tiene sentido.
 const MAX_IMAGE_BYTES: u64 = 64 * 1024 * 1024;
 
+/// Cómo se presenta el editor.
+#[derive(Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AnnotateMode {
+    /// Panel del tamaño de la captura, sobre lo que haya debajo.
+    Panel,
+    /// Pizarra: cubre el escritorio virtual sobre la pantalla congelada.
+    Board,
+}
+
+/// Un rectángulo dentro de la imagen, en sus mismos píxeles.
+#[derive(Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FocusRect {
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+}
+
 /// Lo que necesita el editor para arrancar.
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -61,6 +81,14 @@ pub struct AnnotateOpen {
     pub path: String,
     pub width: u32,
     pub height: u32,
+    pub mode: AnnotateMode,
+    /// Dónde poner los controles, en píxeles de la imagen.
+    ///
+    /// Con dos monitores, el centro del escritorio virtual es la costura entre
+    /// las dos pantallas: una barra centrada ahí queda partida al medio. Esto
+    /// es el área útil del monitor donde está el cursor, que es donde el
+    /// usuario está mirando.
+    pub focus: Option<FocusRect>,
 }
 
 /// Tamaño y posición de la ventana, en píxeles físicos.
@@ -166,6 +194,8 @@ pub fn open_annotator_path(
         path: target.to_string_lossy().into_owned(),
         width,
         height,
+        mode: AnnotateMode::Panel,
+        focus: None,
     };
     // Primero el destino, después mostrar, y el evento al final —con el webview
     // ya despierto—, que es el mismo orden que usa el estante en
@@ -190,6 +220,141 @@ pub fn pending_annotation() -> Option<AnnotateOpen> {
     PENDING.lock_or_recover().clone()
 }
 
+/// Abre la pizarra: dibujar sobre la pantalla, ahí donde está.
+///
+/// **Sobre la pantalla congelada, no sobre la viva.** Congelar es lo que hace
+/// que el trazo caiga donde el ojo lo puso: con el escritorio en movimiento
+/// —un video, un cursor que parpadea— lo de abajo se corre y la marca deja de
+/// señalar lo que señalaba. Dibujar sobre lo vivo es otra herramienta y otra
+/// discusión.
+#[tauri::command]
+pub fn start_board(app: AppHandle) -> Result<(), String> {
+    start_board_impl(&app)
+}
+
+/// El atajo global abre y cierra: pulsarlo con la pizarra puesta la saca.
+///
+/// Es la misma regla que la mira de captura (`capture_session::trigger`), y no
+/// es cosmética: una ventana que cubre el escritorio entero tiene que poder
+/// irse por donde vino, sin buscar el botón.
+pub fn toggle_board(app: &AppHandle) -> Result<(), String> {
+    let showing = app
+        .get_webview_window(ANNOTATE_LABEL)
+        .is_some_and(|w| w.is_visible().unwrap_or(false));
+    let is_board = PENDING
+        .lock_or_recover()
+        .as_ref()
+        .is_some_and(|open| open.mode == AnnotateMode::Board);
+    if showing && is_board {
+        close_annotator(app.clone());
+        return Ok(());
+    }
+    start_board_impl(app)
+}
+
+fn start_board_impl(app: &AppHandle) -> Result<(), String> {
+    // Esconder ANTES de congelar, y darle un frame a DWM. Es la misma lección
+    // que dejó escrita `start_freeze`: si el editor quedó visible de una vuelta
+    // anterior, BitBlt lo congela como si fuera el escritorio y la pizarra
+    // nace con una foto de sí misma.
+    if let Some(window) = app.get_webview_window(ANNOTATE_LABEL) {
+        if window.is_visible().unwrap_or(false) {
+            let _ = window.hide();
+            std::thread::sleep(std::time::Duration::from_millis(32));
+        }
+    }
+
+    let state = app.state::<AppState>();
+    let (path, width, height) = freeze_screen(app, &state)?;
+
+    let Some(window) = app.get_webview_window(ANNOTATE_LABEL) else {
+        return Err("la ventana del editor no existe".into());
+    };
+
+    let pending = AnnotateOpen {
+        path: path.to_string_lossy().into_owned(),
+        width,
+        height,
+        mode: AnnotateMode::Board,
+        focus: focus_monitor(),
+    };
+    *PENDING.lock_or_recover() = Some(pending.clone());
+
+    let _ = window.unminimize();
+    let _ = window.set_decorations(false);
+    let _ = window.set_skip_taskbar(true);
+    #[cfg(windows)]
+    crate::capture_session::cover_virtual_desktop(&window);
+
+    window.show().map_err(|e| e.to_string())?;
+    let _ = window.set_always_on_top(true);
+    let _ = window.set_focus();
+
+    let _ = app.emit("annotate-open", pending);
+    Ok(())
+}
+
+/// Área útil del monitor donde está el cursor, en píxeles de la imagen.
+///
+/// El origen de la imagen es la esquina del escritorio virtual, que puede tener
+/// coordenadas negativas: por eso se le resta, y no se usa el rect tal cual.
+#[cfg(windows)]
+fn focus_monitor() -> Option<FocusRect> {
+    let vs = atic_capture::monitors::virtual_screen();
+    let monitors = atic_capture::monitors::enumerate();
+    let cursor = crate::floating::cursor_position();
+    let target = cursor
+        .and_then(|(x, y)| monitors.iter().find(|m| m.bounds.contains(x, y)))
+        .or_else(|| monitors.iter().find(|m| m.is_primary))
+        .or_else(|| monitors.first())?;
+    // El área útil y no los bounds: los controles no deben caer bajo la barra
+    // de tareas.
+    let area = target.work_area;
+    Some(FocusRect {
+        x: area.x - vs.x,
+        y: area.y - vs.y,
+        width: area.width,
+        height: area.height,
+    })
+}
+
+#[cfg(not(windows))]
+fn focus_monitor() -> Option<FocusRect> {
+    None
+}
+
+/// Congela el escritorio virtual a un PNG y devuelve ruta y tamaño físico.
+#[cfg(windows)]
+fn freeze_screen(
+    app: &AppHandle,
+    state: &State<AppState>,
+) -> Result<(std::path::PathBuf, u32, u32), String> {
+    use atic_capture::{engine, monitors};
+
+    let vs = monitors::virtual_screen();
+    // Sin cursor, al revés que en una captura: en la pizarra el puntero es la
+    // herramienta, y dejarlo dibujado sería un puntero de más en la pantalla.
+    let mut frame = engine::capture_rect(vs, false).map_err(|e| e.to_string())?;
+    crate::capture_session::compose_overlay(app, &mut frame);
+    let png = frame.to_png().map_err(|e| e.to_string())?;
+
+    let dir = state.dirs.overlay_frames_dir();
+    std::fs::create_dir_all(&dir).map_err(|e| format!("no se pudo crear la carpeta: {e}"))?;
+    // Archivo propio y no el `overlay.png` de la mira de captura: esa sesión lo
+    // borra al terminar, y borrarle el suyo a la pizarra la dejaría en blanco.
+    let path = dir.join("board.png");
+    std::fs::write(&path, &png).map_err(|e| format!("no se pudo congelar: {e}"))?;
+    Ok((path, vs.width, vs.height))
+}
+
+#[cfg(not(windows))]
+fn freeze_screen(
+    _app: &AppHandle,
+    _state: &State<AppState>,
+) -> Result<(std::path::PathBuf, u32, u32), String> {
+    Err("la pizarra todavía no existe en esta plataforma".into())
+}
+
 /// La captura como data URL, para el lienzo.
 ///
 /// **No se sirve por el protocolo de assets** aunque el estante lo haga. Un
@@ -199,8 +364,7 @@ pub fn pending_annotation() -> Option<AnnotateOpen> {
 /// definición, y el costo es una copia en base64 al abrir.
 #[tauri::command]
 pub fn annotation_image(state: State<AppState>, path: String) -> Result<String, String> {
-    let target =
-        crate::capture::ensure_capture_in_dir(&state.dirs.captures_dir(), Path::new(&path))?;
+    let target = resolve_source(&state, &path)?;
     let meta = std::fs::metadata(&target).map_err(|e| format!("no se pudo leer: {e}"))?;
     if meta.len() > MAX_IMAGE_BYTES {
         return Err(format!(
@@ -213,12 +377,30 @@ pub fn annotation_image(state: State<AppState>, path: String) -> Result<String, 
     Ok(format!("data:image/png;base64,{data}"))
 }
 
+/// Deja pasar solo las dos carpetas de las que el editor puede leer: las
+/// capturas del usuario y los frames congelados de la pizarra.
+fn resolve_source(state: &State<AppState>, path: &str) -> Result<std::path::PathBuf, String> {
+    let target = Path::new(path);
+    if let Ok(ok) = crate::capture::ensure_capture_in_dir(&state.dirs.captures_dir(), target) {
+        return Ok(ok);
+    }
+    crate::capture::ensure_capture_in_dir(&state.dirs.overlay_frames_dir(), target)
+        .map_err(|_| "Ruta fuera de las carpetas del editor.".to_string())
+}
+
 #[tauri::command]
 pub fn close_annotator(app: AppHandle) {
     // Se limpia el destino al cerrar, no al leerlo: si se consumiera en la
     // lectura, la ventana que se pide dos veces (evento + al hacerse visible)
     // se quedaría sin imagen en la segunda.
-    *PENDING.lock_or_recover() = None;
+    let previous = PENDING.lock_or_recover().take();
+    // El congelado de la pizarra es una pantalla entera en disco y no le sirve
+    // a nadie después. Lo guardado, si el usuario guardó, ya es otro archivo.
+    if let Some(open) = previous {
+        if open.mode == AnnotateMode::Board {
+            let _ = std::fs::remove_file(&open.path);
+        }
+    }
     if let Some(window) = app.get_webview_window(ANNOTATE_LABEL) {
         let _ = window.hide();
     }

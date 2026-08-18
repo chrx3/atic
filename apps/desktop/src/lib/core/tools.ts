@@ -6,6 +6,7 @@ export type ToolId =
   | "clipboard"
   | "snippets"
   | "captures"
+  | "board"
   | "agents"
   | "launcher";
 
@@ -77,6 +78,13 @@ const ALL_TOOLS: ToolDef[] = [
     short: "Pantalla",
     blurb: "Recortes rápidos al portapapeles y al shelf flotante.",
     actionLabel: "Tomar captura",
+  },
+  {
+    id: "board",
+    label: "Pizarra",
+    short: "Marcar la pantalla",
+    blurb: "Congela la pantalla y la marcás con flechas y círculos, ahí donde está.",
+    actionLabel: "Dibujar",
   },
   {
     id: "launcher",

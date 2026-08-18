@@ -906,6 +906,22 @@
         </div>
 
         <div class="rb-settings-hotkey">
+          <p class="rb-settings-hotkey-label">Dibujar en pantalla</p>
+          <HotkeyCapture
+            value={c.board_shortcut}
+            defaultValue="CmdOrCtrl+Shift+X"
+            ariaLabel="Cambiar atajo para dibujar sobre la pantalla"
+            onChange={(sc) => {
+              c.board_shortcut = sc;
+            }}
+          />
+          <p class="rb-hint">
+            Congela la pantalla y deja marcarla con flechas y círculos. Esc la
+            saca.
+          </p>
+        </div>
+
+        <div class="rb-settings-hotkey">
           <p class="rb-settings-hotkey-label">Buscador (launcher)</p>
           <HotkeyCapture
             value={c.launcher_shortcut}

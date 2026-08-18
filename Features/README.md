@@ -21,9 +21,9 @@ a Groq; los proveedores de resumen reciben únicamente el texto transcrito.
 No tiene una ventana grande que haya que ir a buscar. Vive en tres lugares:
 
 - **La pill** — barra flotante siempre encima, movible, que se expande según lo
-  que esté pasando y despliega una rueda con las seis herramientas.
+  que esté pasando y despliega una rueda con las siete herramientas.
 - **La bandeja del sistema** — mostrar/ocultar y salir.
-- **Ocho atajos globales** — cubren los flujos principales y permiten abrir el
+- **Nueve atajos globales** — cubren los flujos principales y permiten abrir el
   resto de herramientas mediante la rueda o el launcher, sin buscar la ventana
   principal.
 
@@ -32,7 +32,7 @@ resumen, ajustes) para el trabajo que no cabe en la pill.
 
 ---
 
-## Las seis herramientas
+## Las siete herramientas
 
 Las que ve el usuario en la rueda, en el orden de [`tools.ts`](../apps/desktop/src/lib/tools.ts).
 
@@ -106,7 +106,19 @@ El flujo completo del producto original: graba, transcribe local y resume.
 - **Dibujar encima**: flechas, círculos, trazo libre y resaltador sobre la
   captura recién tomada, y de ahí al portapapeles con Enter. Guardar deja una
   captura nueva; el original no se toca.
+- **Pizarra**: `Ctrl+Shift+X` congela la pantalla y deja marcarla ahí donde
+  está, con las mismas herramientas. Esc la saca.
 - Se pueden adjuntar directo al compositor de agentes.
+
+→ [capturas.md](capturas.md)
+
+### 7. Pizarra — marcar la pantalla
+
+- `Ctrl/Cmd+Shift+X` **congela la pantalla** y la marcás ahí donde está, con
+  las mismas herramientas del editor de capturas.
+- Sobre la congelada y no sobre la viva: con el escritorio en movimiento, lo de
+  abajo se corre y la marca deja de señalar lo que señalaba.
+- Enter copia lo marcado; `Ctrl+Enter` lo guarda como captura. Esc la saca.
 
 → [capturas.md](capturas.md)
 
@@ -134,6 +146,7 @@ Todos configurables en Ajustes. Valores de [`config.rs`](../crates/core/src/conf
 | `Ctrl/Cmd+Shift+V` | Historial de portapapeles |
 | `Ctrl/Cmd+Shift+S` | Textos |
 | `Ctrl/Cmd+Shift+4` | Captura de pantalla |
+| `Ctrl/Cmd+Shift+X` | Dibujar sobre la pantalla |
 | `Ctrl/Cmd+Shift+P` | Traer la pill al cursor |
 | `Ctrl/Cmd+Space` | Launcher |
 | `Alt+Z` | Rueda radial de la pill |

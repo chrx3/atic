@@ -68,6 +68,12 @@
       fallback: "CmdOrCtrl+Shift+4",
     },
     {
+      key: "board_shortcut",
+      label: "Dibujar en pantalla",
+      hint: "Congela la pantalla y deja marcarla. Esc la saca.",
+      fallback: "CmdOrCtrl+Shift+X",
+    },
+    {
       key: "launcher_shortcut",
       label: "Launcher",
       hint: "Buscar y abrir apps, como Spotlight.",

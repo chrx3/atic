@@ -101,6 +101,7 @@ pub struct ShortcutBindings<'a> {
     pub snippets: &'a str,
     pub agents: &'a str,
     pub screenshot: &'a str,
+    pub board: &'a str,
     pub launcher: &'a str,
 }
 
@@ -125,6 +126,7 @@ pub fn register_shortcuts(app: &AppHandle, bindings: ShortcutBindings<'_>) -> Re
         None
     };
     let screenshot = parse_binding("captura", bindings.screenshot)?;
+    let board = parse_binding("pizarra", bindings.board)?;
     let launcher_bind = parse_binding("launcher", bindings.launcher)?;
 
     let mut named: Vec<(&str, &Binding)> = vec![
@@ -135,6 +137,7 @@ pub fn register_shortcuts(app: &AppHandle, bindings: ShortcutBindings<'_>) -> Re
         ("clipboard", &clipboard),
         ("fragmentos", &snippets),
         ("captura", &screenshot),
+        ("pizarra", &board),
         ("launcher", &launcher_bind),
     ];
     if let Some(ref agents) = agents {
@@ -343,6 +346,26 @@ pub fn register_shortcuts(app: &AppHandle, bindings: ShortcutBindings<'_>) -> Re
             }
         }
         Binding::Mouse(btn) => mouse.push((*btn, MouseAction::Screenshot)),
+    }
+
+    match &board {
+        Binding::Key(sc) => {
+            let handle = app.clone();
+            let held = AtomicBool::new(false);
+            if let Err(err) = gs.on_shortcut(*sc, move |_app, _sc, event| {
+                if take_key_press(&held, event.state()) {
+                    if let Err(error) = crate::annotate::toggle_board(&handle) {
+                        tracing::warn!(%error, "no se pudo abrir la pizarra");
+                    }
+                }
+            }) {
+                tracing::error!(%err, "no se pudo registrar el atajo de la pizarra");
+                failed.push("pizarra".to_string());
+            }
+        }
+        Binding::Mouse(_) => {
+            tracing::warn!("la pizarra solo admite atajo de teclado");
+        }
     }
 
     match &launcher_bind {

@@ -36,6 +36,7 @@
     pendingAnnotation,
     saveAnnotation,
   } from "$ipc/annotate";
+  import type { AnnotateMode, FocusRect } from "$core/types";
   import { captureSrc } from "$ipc/captures";
   import { startResizeDragging } from "$ipc/windows";
   import { drawShape, drawShapes } from "./annotateDraw";
@@ -70,6 +71,9 @@
   /** Cuánto queda el aviso antes de cerrar. Da tiempo a leerlo, no a esperar. */
   const NOTE_MS = 900;
 
+  /** Más que esto y mover la barra fue a propósito, no un temblor al hacer clic. */
+  const BAR_DRAG_THRESHOLD = 4;
+
   let doc = $state<AnnotateState>(emptyState());
   /** La forma que se está arrastrando ahora. Fuera de `doc` hasta soltarla. */
   let live = $state<Shape | null>(null);
@@ -77,6 +81,19 @@
   let tool = $state<AnnotateTool>("arrow");
   let color = $state<string>(COLORS[0]);
   let level = $state<WidthLevel>(2);
+
+  /**
+   * Panel o pizarra.
+   *
+   * Es lo unico que cambia entre las dos: la pizarra cubre el escritorio sobre
+   * la pantalla congelada, el panel es una ventana del tamano de la captura. El
+   * motor de dibujo no distingue, y ese era el punto de la fase 1.
+   */
+  let mode = $state<AnnotateMode>("panel");
+  /** Monitor donde van los controles, en pixeles de la imagen. */
+  let focus = $state<FocusRect | null>(null);
+  /** Cuanto movio el usuario la barra desde su sitio, en pixeles CSS. */
+  let barShift = $state({ x: 0, y: 0 });
 
   let canvas = $state<HTMLCanvasElement | null>(null);
   let natural = $state({ width: 0, height: 0 });
@@ -103,6 +120,79 @@
   /** Sube con cada apertura: descarta la carga de la captura anterior. */
   let token = 0;
   let noteTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /*
+   * Donde van los controles en la pizarra, en porcentaje de la imagen.
+   *
+   * En porcentaje y no en pixeles medidos: el lienzo cubre la ventana entera,
+   * asi que un % de la imagen es el mismo % de la pantalla, sin importar el DPI
+   * ni tener que esperar a que el DOM mida nada.
+   */
+  const anchorX = $derived(
+    focus && natural.width ? ((focus.x + focus.width / 2) / natural.width) * 100 : 50,
+  );
+  const anchorTop = $derived(
+    focus && natural.height ? (focus.y / natural.height) * 100 : 0,
+  );
+  const anchorBottom = $derived(
+    focus && natural.height ? ((focus.y + focus.height) / natural.height) * 100 : 100,
+  );
+  const boardBarStyle = $derived(
+    `left: ${anchorX}%; top: ${anchorTop}%; --shift-x: ${barShift.x}px; --shift-y: ${barShift.y}px;`,
+  );
+  const boardStatusStyle = $derived(`left: ${anchorX}%; top: ${anchorBottom}%;`);
+
+  /**
+   * Arrastrar la barra la mueve A ELLA, no a la ventana.
+   *
+   * En la pizarra la ventana ES la pantalla congelada: dejarle el
+   * `data-tauri-drag-region` hacia que arrastrar la barra corriera el pantallazo
+   * entero. Acá se mueve solo la barra, y el congelado queda donde estaba.
+   */
+  function onBarDown(event: PointerEvent) {
+    if (mode !== "board") return;
+    // Se agarra desde cualquier parte, botones incluidos: el umbral de abajo es
+    // el que separa un clic de un arrastre, así que no hace falta reservar
+    // zonas muertas en una barra que ya es angosta.
+    const el = event.currentTarget as HTMLElement;
+    const start = { x: event.clientX, y: event.clientY };
+    const from = { ...barShift };
+    /*
+     * La captura del puntero se pide recién cuando el puntero SE MOVIÓ.
+     *
+     * Capturarla en el `pointerdown` se comía el clic: con la captura puesta,
+     * el `click` se dispara contra quien capturó —la barra— y nunca contra el
+     * botón, así que elegir herramienta no hacía nada. Es la misma regla que
+     * usa el estante para distinguir clic de arrastre: si se soltó donde
+     * empezó, fue un clic.
+     */
+    let dragging = false;
+    const move = (e: PointerEvent) => {
+      const dx = e.clientX - start.x;
+      const dy = e.clientY - start.y;
+      if (!dragging) {
+        if (Math.hypot(dx, dy) < BAR_DRAG_THRESHOLD) return;
+        dragging = true;
+        try {
+          el.setPointerCapture(e.pointerId);
+        } catch {
+          // Sin captura se sigue: el arrastre se corta al salir de la barra.
+        }
+      }
+      barShift = { x: from.x + dx, y: from.y + dy };
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", up);
+    };
+    // En `window` y no en la barra: hasta que se pide la captura, un movimiento
+    // rápido que ya salió de la barra no le llegaría, y el arrastre no
+    // arrancaría nunca.
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", up);
+  }
 
   const width = $derived(strokeWidth(level, natural.width || 1280));
   const canUndo = $derived(doc.shapes.length > 0);
@@ -145,17 +235,27 @@
     try {
       const target = await pendingAnnotation();
       if (!target || target.path === loadedPath) return;
-      await load(target.path, { width: target.width, height: target.height });
+      await load(target.path, target);
     } catch (err) {
       error = String(err);
     }
   }
 
-  async function load(path: string, size: { width: number; height: number }) {
+  async function load(
+    path: string,
+    open: {
+      width: number;
+      height: number;
+      mode: AnnotateMode;
+      focus: FocusRect | null;
+    },
+  ) {
     const mine = ++token;
     reset();
     loadedPath = path;
-    natural = size;
+    natural = { width: open.width, height: open.height };
+    mode = open.mode;
+    focus = open.focus;
 
     /*
      * Camino rápido: el PNG por el protocolo de assets, el mismo que usa el
@@ -215,6 +315,9 @@
     note = null;
     confirmDiscard = false;
     loadedPath = null;
+    mode = "panel";
+    focus = null;
+    barShift = { x: 0, y: 0 };
     if (noteTimer) clearTimeout(noteTimer);
     noteTimer = null;
   }
@@ -222,7 +325,7 @@
   $effect(() => {
     const pending = onAnnotateOpen((payload) => {
       if (payload.path === loadedPath) return;
-      void load(payload.path, { width: payload.width, height: payload.height });
+      void load(payload.path, payload);
     });
 
     // `visibilitychange` es del propio documento, sin IPC de por medio: es lo
@@ -358,8 +461,18 @@
     close();
   }
 
+  /**
+   * ¿El evento salió de un botón?
+   *
+   * `Element` y no `HTMLElement`: el ícono de cada herramienta es un `<svg>`, y
+   * un SVGElement **no** es un HTMLElement. Con el chequeo estrecho, hacer clic
+   * justo sobre el dibujo del ícono —y no sobre el aire del botón— decía «esto
+   * no es un botón», la barra se quedaba con el puntero y el clic no llegaba
+   * nunca a cambiar de herramienta. De ahí que funcionara «a veces»: dependía
+   * de un par de píxeles.
+   */
   function isButton(target: EventTarget | null): boolean {
-    return target instanceof HTMLElement && target.closest("button") !== null;
+    return target instanceof Element && target.closest("button") !== null;
   }
 
   function onKeydown(event: KeyboardEvent) {
@@ -415,8 +528,14 @@
 
 <svelte:window onkeydown={onKeydown} />
 
-<div class="editor">
-  <div class="bar" data-tauri-drag-region>
+<div class="editor" class:is-board={mode === "board"}>
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div
+    class="bar"
+    data-tauri-drag-region={mode === "panel" ? "" : undefined}
+    style={mode === "board" ? boardBarStyle : undefined}
+    onpointerdown={onBarDown}
+  >
     <div class="group" role="radiogroup" aria-label="Herramienta">
       {#each TOOLS as item (item.id)}
         <button
@@ -546,7 +665,8 @@
     class="status"
     class:is-note={Boolean(note)}
     class:is-error={Boolean(error)}
-    data-tauri-drag-region
+    style={mode === "board" ? boardStatusStyle : undefined}
+    data-tauri-drag-region={mode === "panel" ? "" : undefined}
   >
     <!-- Sin lienzo listo NO se muestra la ayuda de dibujo: decir «arrastrá para
          dibujar» sobre un editor que todavía no acepta el puntero es lo que
@@ -563,15 +683,17 @@
     nativo queda debajo del webview: sin esto, agrandar el editor no es posible
     desde el contenido.
   -->
-  <button
-    type="button"
-    class="grip"
-    aria-label="Redimensionar"
-    onpointerdown={(event) => {
-      event.preventDefault();
-      void startResizeDragging("SouthEast").catch(() => {});
-    }}
-  ></button>
+  {#if mode === "panel"}
+    <button
+      type="button"
+      class="grip"
+      aria-label="Redimensionar"
+      onpointerdown={(event) => {
+        event.preventDefault();
+        void startResizeDragging("SouthEast").catch(() => {});
+      }}
+    ></button>
+  {/if}
 </div>
 
 <style>
@@ -785,6 +907,72 @@
     color: var(--muted);
     font-size: 11px;
     text-align: center;
+  }
+
+  /*
+   * Pizarra: la ventana ES la pantalla.
+   *
+   * Se va todo lo que hace de «panel» —relleno, esquinas, sombra, borde— para
+   * que el congelado quede pegado píxel a píxel con lo que había debajo. Si el
+   * lienzo se corriera aunque sea un poco, la marca dejaría de señalar lo que
+   * señala, que es lo único que la pizarra tiene que hacer bien.
+   */
+  .editor.is-board {
+    padding: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+    gap: 0;
+    outline: none;
+  }
+
+  .editor.is-board .stage {
+    border-radius: 0;
+    background: transparent;
+  }
+
+  .editor.is-board .canvas {
+    width: 100%;
+    height: 100%;
+    border-radius: 0;
+  }
+
+  /*
+   * La barra flota sobre la pantalla, anclada al monitor donde está el cursor.
+   *
+   * `left` / `top` los escribe el componente en % de la imagen —el centro del
+   * escritorio virtual cae en la costura entre dos pantallas— y el `transform`
+   * suma el desplazamiento del arrastre.
+   */
+  .editor.is-board .bar {
+    position: absolute;
+    z-index: 2;
+    padding: 8px 10px;
+    border-radius: var(--radius-md);
+    background: var(--surface-2);
+    box-shadow: var(--shadow-float);
+    cursor: grab;
+    transform: translate(
+      calc(-50% + var(--shift-x, 0px)),
+      calc(14px + var(--shift-y, 0px))
+    );
+    outline: 1px solid var(--line);
+    outline-offset: -1px;
+  }
+
+  .editor.is-board .bar:active {
+    cursor: grabbing;
+  }
+
+  .editor.is-board .status {
+    position: absolute;
+    z-index: 2;
+    padding: 5px 10px;
+    border-radius: var(--radius-pill);
+    background: var(--surface-2);
+    transform: translate(-50%, calc(-100% - 14px));
+    outline: 1px solid var(--line);
+    outline-offset: -1px;
   }
 
   /* Diagonal de dos rayas, como el asa de cualquier ventana redimensionable. */

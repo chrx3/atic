@@ -87,6 +87,7 @@ export const TOOL_ICONS: Record<AppIconId, IconNode> = {
   clipboard: Clipboard,
   snippets: AlignLeft,
   captures: Crop,
+  board: Pencil,
   launcher: Search,
   general: Settings,
   settings: Settings,
@@ -98,6 +99,7 @@ export const TOOL_ICONS: Record<AppIconId, IconNode> = {
 export const LAUNCHER_ICONS: Record<string, IconNode> = {
   dictation: Mic,
   capture: Crop,
+  board: Pencil,
   clipboard: Clipboard,
   snippets: FileText,
   agents: SquareTerminal,
