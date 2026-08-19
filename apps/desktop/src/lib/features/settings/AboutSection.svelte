@@ -16,7 +16,7 @@
 
   let version = $state("");
 
-  const busy = $derived(appUpdate.checking || appUpdate.downloading);
+  const busy = $derived(appUpdate.busy);
   const buildLabel = $derived(
     version
       ? `${navigator.userAgent.includes("Mac") ? "macOS" : "Windows"} · v${version}`
@@ -76,9 +76,18 @@
     </SettingsRow>
   </SettingsGroup>
 
-  {#if appUpdate.pending && !appUpdate.downloading}
+  {#if appUpdate.installing}
+    <Banner tone="info" title="Instalando {appUpdate.version}">
+      El instalador corre en silencio. Si Windows muestra SmartScreen, dale a
+      Ejecutar. Atic se cierra y vuelve a abrir.
+    </Banner>
+  {:else if appUpdate.downloaded && !appUpdate.downloading}
+    <Banner tone="info" title="Descarga lista: {appUpdate.version}">
+      Ahora sí: instalá y Atic se reinicia. El 100% de antes era solo el archivo.
+    </Banner>
+  {:else if appUpdate.pending && !appUpdate.downloading}
     <Banner tone="info" title="Hay una versión nueva: {appUpdate.version}">
-      Se descarga el instalador, se aplica y Atic vuelve a abrir.
+      Primero se descarga el instalador. Después aparece Instalar y reiniciar.
     </Banner>
   {:else if appUpdate.error}
     <Banner tone="warn" title="No se pudo consultar">
@@ -90,20 +99,30 @@
 
   <SettingsGroup
     title="Actualizaciones"
-    hint="Mira el último release de GitHub. Si hay uno más nuevo, aparece el botón para instalarlo y reiniciar."
+    hint="Mira el último release de GitHub. Primero se descarga, después hay que instalar y reiniciar."
   >
     <SettingsRow bare>
       {#snippet control()}
         <div class="flex flex-col gap-2">
-          {#if appUpdate.pending && !appUpdate.downloading}
+          {#if appUpdate.downloaded && !appUpdate.installing}
             <Button
               variant="primary"
               size="sm"
               full
               disabled={busy}
-              onclick={() => void appUpdate.install()}
+              onclick={() => void appUpdate.apply()}
             >
-              Actualizar a {appUpdate.version}
+              Instalar {appUpdate.version} y reiniciar
+            </Button>
+          {:else if appUpdate.pending && !appUpdate.downloading && !appUpdate.installing}
+            <Button
+              variant="primary"
+              size="sm"
+              full
+              disabled={busy}
+              onclick={() => void appUpdate.download()}
+            >
+              Descargar {appUpdate.version}
             </Button>
           {/if}
           <Button
@@ -135,6 +154,17 @@
             value={(appUpdate.percent ?? 0) / 100}
             indeterminate={appUpdate.percent === null}
             label="Descargando {appUpdate.version}"
+            tone="ok"
+          />
+        {/snippet}
+      </SettingsRow>
+    {:else if appUpdate.installing}
+      <SettingsRow bare>
+        {#snippet control()}
+          <ProgressBar
+            value={1}
+            indeterminate
+            label="Instalando {appUpdate.version}"
             tone="ok"
           />
         {/snippet}
