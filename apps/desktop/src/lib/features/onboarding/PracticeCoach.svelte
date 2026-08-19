@@ -160,13 +160,16 @@
       </p>
     {/if}
 
-    {#if canSkip}
-      <div class="flex justify-end">
+    <div class="flex justify-end gap-2">
+      <Button variant="ghost" size="sm" onclick={() => void finish()}>
+        Cerrar
+      </Button>
+      {#if canSkip}
         <Button variant="ghost" size="sm" onclick={() => advance()}>
           {stepIndex >= PRACTICE_STEPS.length - 1 ? "Listo" : "Saltar este paso"}
         </Button>
-      </div>
-    {/if}
+      {/if}
+    </div>
   </div>
 {/if}
 

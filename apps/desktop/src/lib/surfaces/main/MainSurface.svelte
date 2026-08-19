@@ -187,7 +187,13 @@
 
 {#if config.current && !config.current.onboarding_done}
   {#key ui.onboardingReplay}
-    <OnboardingModal onDone={() => toasts.push("Ahora practiquemos junto a la pill.")} />
+    <OnboardingModal
+      replay={ui.replayingOnboarding}
+      onDone={() => {
+        ui.replayingOnboarding = false;
+        toasts.push("Ahora practiquemos junto a la pill.");
+      }}
+    />
   {/key}
 {/if}
 

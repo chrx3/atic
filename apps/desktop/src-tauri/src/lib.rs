@@ -323,6 +323,16 @@ pub fn run() {
             // El estado ya está registrado por el Builder: acá solo se lee.
             let dirs = app.state::<AppState>().dirs.clone();
 
+            // Ocultar YA las ventanas auxiliares: nacen con el Builder, antes
+            // de este `setup`, y si quedan visibles un instante se ve el
+            // lienzo de anotar / el shelf / el launcher. `visible: false` en
+            // la config es la barrera; esto cubre si algún runtime la ignora.
+            for label in ["capture-shelf", "launcher", annotate::ANNOTATE_LABEL] {
+                if let Some(window) = app.get_webview_window(label) {
+                    let _ = window.hide();
+                }
+            }
+
             // Permite reproducir los WAV grabados vía el protocolo asset://.
             let _ = app
                 .asset_protocol_scope()
@@ -446,19 +456,6 @@ pub fn run() {
             agents::watch_codex::start(app.handle());
             agents::watch_cursor::start(app.handle());
             agents::watch_opencode::start(app.handle());
-
-            // Estas ventanas se declaran `visible: true` (para que las
-            // decoraciones/transparencia se apliquen igual que en la pill) y se
-            // ocultan aquí hasta que se usan.
-            //
-            // `capture-overlay` NO está en la lista a propósito: ya no se
-            // declara en la config, la crea `ensure_capture_overlay` al primer
-            // uso (ver el porqué allá).
-            for label in ["capture-shelf", "launcher", annotate::ANNOTATE_LABEL] {
-                if let Some(window) = app.get_webview_window(label) {
-                    let _ = window.hide();
-                }
-            }
 
             // Preferencias de pin de floats (antes de crear el overlay).
             {

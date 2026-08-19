@@ -2,8 +2,8 @@
   /**
    * El primer uso: consentimiento, Groq o local, modelos, atajos y práctica.
    *
-   * No se puede cerrar. El consentimiento no es decorativo: en muchas
-   * jurisdicciones grabar una llamada sin avisar es ilegal.
+   * El primer uso no se cierra: el consentimiento no es decorativo. Si se
+   * pidió repetir el tutorial (birrete o Ajustes), sí: Esc, la X o «Cerrar».
    *
    * La práctica no vive acá. Esta ventana atrapa el foco; los atajos reales
    * corren en el escritorio, junto a la pill. Al terminar el setup se cierra
@@ -28,7 +28,14 @@
   import Select from "$ui/Select.svelte";
   import Switch from "$ui/Switch.svelte";
 
-  let { onDone }: { onDone: () => void } = $props();
+  let {
+    onDone,
+    replay = false,
+  }: {
+    onDone: () => void;
+    /** Pedido a propósito después del primer uso: se puede abandonar. */
+    replay?: boolean;
+  } = $props();
 
   const STEPS = [
     "Bienvenida",
@@ -128,15 +135,27 @@
       saving = false;
     }
   }
+
+  async function dismissReplay() {
+    if (!replay || saving) return;
+    saving = true;
+    try {
+      await config.patch({ onboarding_done: true, onboarding_practice_done: true });
+    } catch {
+      /* el modal sigue abierto si no se pudo persistir */
+    } finally {
+      saving = false;
+    }
+  }
 </script>
 
 {#if cfg}
   <Modal
     title="Atic"
-    subtitle="Primer uso · {STEPS[step]}"
+    subtitle="{replay ? 'Tutorial' : 'Primer uso'} · {STEPS[step]}"
     size="md"
-    dismissible={false}
-    onClose={() => {}}
+    dismissible={replay}
+    onClose={() => void dismissReplay()}
   >
     <div class="flex flex-col gap-4">
       {#if step === 0}
@@ -334,6 +353,15 @@
         </div>
 
         <div class="flex gap-2">
+          {#if replay}
+            <Button
+              variant="ghost"
+              disabled={Boolean(downloadingId) || saving}
+              onclick={() => void dismissReplay()}
+            >
+              Cerrar
+            </Button>
+          {/if}
           {#if step > 0}
             <Button
               variant="ghost"
