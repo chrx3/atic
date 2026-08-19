@@ -7,7 +7,7 @@
    * un botón redondo.
    */
   import { appUpdate } from "$domain/appUpdate.svelte";
-  import { Download } from "$lib/icons";
+  import { Check, Download } from "$lib/icons";
   import { pillShape } from "$liquid/geometry";
   import Skin from "$liquid/Skin.svelte";
   import Icon from "$ui/Icon.svelte";
@@ -21,9 +21,13 @@
   ];
 
   const label = $derived(
-    appUpdate.downloading
-      ? `Descargando ${appUpdate.version ?? ""}`
-      : `Actualizar a ${appUpdate.version ?? ""}`,
+    appUpdate.installing
+      ? `Instalando ${appUpdate.version ?? ""}`
+      : appUpdate.downloading
+        ? `Descargando ${appUpdate.version ?? ""}`
+        : appUpdate.downloaded
+          ? `Instalar ${appUpdate.version ?? ""} y reiniciar`
+          : `Descargar ${appUpdate.version ?? ""}`,
   );
 </script>
 
@@ -35,13 +39,17 @@
       class="hit"
       aria-label={label}
       title={label}
-      disabled={appUpdate.downloading}
-      onclick={() => void appUpdate.install()}
+      disabled={appUpdate.downloading || appUpdate.installing}
+      onclick={() => void appUpdate.advance()}
     >
       {#if appUpdate.downloading}
         <span class="pct" data-numeric>
           {appUpdate.percent == null ? "…" : `${appUpdate.percent}%`}
         </span>
+      {:else if appUpdate.installing}
+        <span class="pct">…</span>
+      {:else if appUpdate.downloaded}
+        <Icon icon={Check} size={22} strokeWidth={2.4} />
       {:else}
         <Icon icon={Download} size={22} strokeWidth={2} />
       {/if}
