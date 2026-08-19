@@ -15,7 +15,7 @@
   import OnboardingModal from "$features/onboarding/OnboardingModal.svelte";
   import SearchModal from "$features/search/SearchModal.svelte";
   import { onOpenSearchRequested } from "$ipc/search";
-  import { checkAppUpdate } from "$ipc/updates";
+  import { appUpdate } from "$domain/appUpdate.svelte";
   import { closeWindow, minimizeWindow, toggleMaximizeWindow } from "$ipc/windows";
   import WindowFrame from "$patterns/WindowFrame.svelte";
   import Icon from "$ui/Icon.svelte";
@@ -25,12 +25,12 @@
   import { AppWindow, GraduationCap, Search, Settings, SlidersHorizontal } from "$lib/icons";
   import ToolDetailModal from "./ToolDetailModal.svelte";
   import ToolRail from "./ToolRail.svelte";
+  import UpdateBubble from "./UpdateBubble.svelte";
   import { provideMainUi } from "./mainUi.svelte";
 
   const ui = provideMainUi();
   const isDev = import.meta.env.DEV;
   let launcherLabOpen = $state(false);
-  let updateCheckStarted = false;
 
   // Panel estático en dev: sin dynamic import que pueda dejar la UI a medias.
   let PickerLabPanel = $state<typeof import("$lib/dev/PickerLabPanel.svelte").default | null>(
@@ -95,19 +95,10 @@
   });
 
   $effect(() => {
-    if (isDev || updateCheckStarted) return;
+    if (isDev) return;
     const cfg = config.current;
     if (!cfg?.onboarding_done) return;
-    updateCheckStarted = true;
-    void checkAppUpdate()
-      .then((update) => {
-        if (!update) return;
-        toasts.push(
-          `Hay una versión nueva (${update.version}). Instalála en Ajustes → Información.`,
-          8000,
-        );
-      })
-      .catch(() => {});
+    return appUpdate.startPolling();
   });
 
   const tool = $derived(toolById(ui.activeTool));
@@ -182,6 +173,7 @@
       onSelect={(id) => ui.openTool(id)}
       onOpenDetail={(id) => ui.openDetail(id)}
     />
+    <UpdateBubble />
   </div>
 </WindowFrame>
 
@@ -248,6 +240,7 @@
 
 <style>
   .shell {
+    position: relative;
     display: flex;
     height: 100%;
     min-height: 0;

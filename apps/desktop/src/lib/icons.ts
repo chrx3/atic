@@ -70,6 +70,7 @@ import {
   Redo2,
   Highlighter,
   Save,
+  Download,
 } from "lucide";
 import type { ToolId } from "$lib/tools";
 
@@ -184,4 +185,5 @@ export {
   Redo2,
   Highlighter,
   Save,
+  Download,
 };

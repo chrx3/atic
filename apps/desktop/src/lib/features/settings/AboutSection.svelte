@@ -3,15 +3,9 @@
    * Quiénes somos, qué versión corre y si hay un instalador nuevo en GitHub.
    */
   import { getVersion } from "@tauri-apps/api/app";
+  import { appUpdate } from "$domain/appUpdate.svelte";
   import { toastError } from "$domain/toasts.svelte";
-  import {
-    checkAppUpdate,
-    friendlyUpdateError,
-    GITHUB_RELEASES_URL,
-    GITHUB_REPO_URL,
-    installAppUpdateAndRelaunch,
-    type AppUpdate,
-  } from "$ipc/updates";
+  import { GITHUB_RELEASES_URL, GITHUB_REPO_URL } from "$ipc/updates";
   import { openExternalUrl } from "$ipc/config";
   import SettingsGroup from "$patterns/SettingsGroup.svelte";
   import SettingsRow from "$patterns/SettingsRow.svelte";
@@ -20,19 +14,9 @@
   import Chip from "$ui/Chip.svelte";
   import ProgressBar from "$ui/ProgressBar.svelte";
 
-  type UpdateUi =
-    | { kind: "idle" }
-    | { kind: "checking" }
-    | { kind: "up_to_date" }
-    | { kind: "available"; update: AppUpdate }
-    | { kind: "downloading"; version: string; percent: number | null }
-    | { kind: "error"; message: string };
-
   let version = $state("");
-  let updateUi = $state<UpdateUi>({ kind: "idle" });
-  let pending = $state<AppUpdate | null>(null);
 
-  const busy = $derived(updateUi.kind === "checking" || updateUi.kind === "downloading");
+  const busy = $derived(appUpdate.checking || appUpdate.downloading);
   const buildLabel = $derived(
     version
       ? `${navigator.userAgent.includes("Mac") ? "macOS" : "Windows"} · v${version}`
@@ -46,50 +30,6 @@
       })
       .catch(toastError);
   });
-
-  async function searchUpdates() {
-    if (busy) return;
-    updateUi = { kind: "checking" };
-    pending = null;
-    try {
-      const update = await checkAppUpdate();
-      if (!update) {
-        updateUi = { kind: "up_to_date" };
-        return;
-      }
-      pending = update;
-      updateUi = { kind: "available", update };
-    } catch (error) {
-      updateUi = { kind: "error", message: friendlyUpdateError(error) };
-    }
-  }
-
-  async function installPending() {
-    const update = pending;
-    if (!update || updateUi.kind === "downloading") return;
-    let downloaded = 0;
-    let contentLength: number | null = null;
-    updateUi = { kind: "downloading", version: update.version, percent: null };
-    try {
-      await installAppUpdateAndRelaunch(update, (event) => {
-        if (event.event === "Started") {
-          contentLength = event.data.contentLength ?? null;
-          updateUi = { kind: "downloading", version: update.version, percent: 0 };
-        } else if (event.event === "Progress") {
-          downloaded += event.data.chunkLength;
-          const percent =
-            contentLength && contentLength > 0
-              ? Math.round((downloaded / contentLength) * 100)
-              : null;
-          updateUi = { kind: "downloading", version: update.version, percent };
-        } else if (event.event === "Finished") {
-          updateUi = { kind: "downloading", version: update.version, percent: 100 };
-        }
-      });
-    } catch (error) {
-      updateUi = { kind: "error", message: friendlyUpdateError(error) };
-    }
-  }
 </script>
 
 <div class="flex flex-col gap-5">
@@ -136,16 +76,16 @@
     </SettingsRow>
   </SettingsGroup>
 
-  {#if updateUi.kind === "available"}
-    <Banner tone="info" title="Hay una versión nueva: {updateUi.update.version}">
+  {#if appUpdate.pending && !appUpdate.downloading}
+    <Banner tone="info" title="Hay una versión nueva: {appUpdate.version}">
       Se descarga el instalador, se aplica y Atic vuelve a abrir.
     </Banner>
-  {:else if updateUi.kind === "up_to_date"}
-    <Banner tone="info" title="Estás al día" />
-  {:else if updateUi.kind === "error"}
+  {:else if appUpdate.error}
     <Banner tone="warn" title="No se pudo consultar">
-      {updateUi.message}
+      {appUpdate.error}
     </Banner>
+  {:else if appUpdate.checked && !appUpdate.checking && !appUpdate.pending}
+    <Banner tone="info" title="Estás al día" />
   {/if}
 
   <SettingsGroup
@@ -155,26 +95,26 @@
     <SettingsRow bare>
       {#snippet control()}
         <div class="flex flex-col gap-2">
-          {#if updateUi.kind === "available"}
+          {#if appUpdate.pending && !appUpdate.downloading}
             <Button
               variant="primary"
               size="sm"
               full
               disabled={busy}
-              onclick={() => void installPending()}
+              onclick={() => void appUpdate.install()}
             >
-              Actualizar a {updateUi.update.version}
+              Actualizar a {appUpdate.version}
             </Button>
           {/if}
           <Button
-            variant={updateUi.kind === "available" ? "soft" : "primary"}
+            variant={appUpdate.pending ? "soft" : "primary"}
             size="sm"
             full
-            loading={updateUi.kind === "checking"}
+            loading={appUpdate.checking}
             disabled={busy}
-            onclick={() => void searchUpdates()}
+            onclick={() => void appUpdate.check()}
           >
-            {updateUi.kind === "checking" ? "Buscando…" : "Buscar actualizaciones"}
+            {appUpdate.checking ? "Buscando…" : "Buscar actualizaciones"}
           </Button>
           <Button
             variant="ghost"
@@ -188,13 +128,13 @@
       {/snippet}
     </SettingsRow>
 
-    {#if updateUi.kind === "downloading"}
+    {#if appUpdate.downloading}
       <SettingsRow bare>
         {#snippet control()}
           <ProgressBar
-            value={(updateUi.percent ?? 0) / 100}
-            indeterminate={updateUi.percent === null}
-            label="Descargando {updateUi.version}"
+            value={(appUpdate.percent ?? 0) / 100}
+            indeterminate={appUpdate.percent === null}
+            label="Descargando {appUpdate.version}"
             tone="ok"
           />
         {/snippet}

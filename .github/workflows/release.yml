@@ -6,12 +6,16 @@ name: Release
 # de Actions; publicar un tag no debe gastar minutos.
 #
 # Para generar instaladores en CI, disparalo a mano:
-#   Actions → Release → Run workflow → tag (ej. v0.4.8; debe existir).
-# En local (Windows), con la clave de firma del updater:
+#   Actions → Release → Run workflow → tag (ej. v0.4.9; debe existir).
+# El camino normal (sin gastar minutos de Actions) es local:
+#   powershell -File scripts/release-windows.ps1
+#   powershell -File scripts/release-windows.ps1 -Publish
+#
+# En local, a mano:
 #   cd apps/desktop && pnpm tauri build --bundles nsis
-#   gh release create v0.4.5 --latest ^
-#     target/release/bundle/nsis/Atic_*_x64-setup.exe ^
-#     target/release/bundle/nsis/Atic_*_x64-setup.exe.sig ^
+#   gh release create v0.4.9 --latest --
+#     target/release/bundle/nsis/Atic_*_x64-setup.exe
+#     target/release/bundle/nsis/Atic_*_x64-setup.exe.sig
 #     target/release/bundle/nsis/latest.json
 #
 # El auto-updater lee latest.json del release marcado como Latest.
@@ -22,7 +26,7 @@ on:
       tag:
         description: "Tag a publicar (ej. v0.4.6). Debe existir en el repo."
         required: true
-        default: "v0.4.8"
+        default: "v0.4.9"
 
 permissions:
   contents: write
