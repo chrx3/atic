@@ -108,23 +108,24 @@ pnpm tauri build -- --features gpu-cuda     # NVIDIA
 pnpm tauri build -- --features gpu-vulkan   # AMD/Intel
 ```
 
-PRs hacia `main`. Un tag `v*` **ya no** dispara
-[`.github/workflows/release.yml`](../.github/workflows/release.yml)
-(Windows + macOS agotan el cupo). El workflow es solo `workflow_dispatch`
-(Actions → Release → Run workflow).
+PRs hacia `main`. **El release de Windows se firma en local.** El workflow
+[`.github/workflows/release.yml`](../.github/workflows/release.yml) existe por
+si hay minutos de Actions, pero no hay que usarlo: Windows + macOS agotan el
+cupo. Un tag `v*` no lo dispara.
 
-Sin cupo de Actions, el instalador de Windows se genera en local
-(`pnpm tauri build --bundles nsis`) y se sube al Release a mano:
+Desde la raíz del repo:
 
-```bash
-gh release create v0.4.6 --title v0.4.6 --latest ^
-  path/al/Atic_0.4.6_x64-setup.exe ^
-  path/al/Atic_0.4.6_x64-setup.exe.sig ^
-  path/al/latest.json
+```powershell
+powershell -File scripts/release-windows.ps1
+powershell -File scripts/release-windows.ps1 -Publish
 ```
 
-El `.exe` solo no alcanza: el updater necesita también `.sig` y `latest.json`
-(los genera `tauri build` con `createUpdaterArtifacts`).
+El script carga la clave de `%USERPROFILE%\.tauri\atic-updater.key` y la
+contraseña de `atic-updater.password`, corre `pnpm tauri build --bundles nsis`,
+escribe `latest.json` y, con `-Publish`, sube exe + `.sig` + `latest.json` al
+release Latest.
+
+El `.exe` solo no alcanza: el updater necesita `.sig` y `latest.json`.
 
 Sin firma Authenticode / notarization de Apple, Windows puede mostrar
 SmartScreen y macOS Gatekeeper pedirá Abrir desde Ajustes. Los modelos Whisper
@@ -135,12 +136,16 @@ se descargan en el primer uso; no van en el instalador.
 La app busca updates en GitHub Releases (`latest.json`). Hace falta un par
 minisign; la clave privada **nunca** va al repo.
 
-1. `cd apps/desktop && pnpm tauri signer generate`
-2. Pegar la clave **pública** en
-   `apps/desktop/src-tauri/tauri.conf.json` → `plugins.updater.pubkey`
-3. Secrets de Actions: `TAURI_SIGNING_PRIVATE_KEY` y
-   `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
-4. En local, las mismas variables de entorno antes de `pnpm tauri build --bundles nsis`
+La clave privada y la contraseña viven solo en disco, no en git:
+
+- `%USERPROFILE%\.tauri\atic-updater.key`
+- `%USERPROFILE%\.tauri\atic-updater.password`
+
+`scripts/release-windows.ps1` las exporta a `TAURI_SIGNING_*` durante el build.
+Si se pierden, hay que generar un par nuevo (`pnpm tauri signer generate`),
+pegar la **pública** en `tauri.conf.json` → `plugins.updater.pubkey`, y la
+versión anterior **no** va a poder actualizarse sola (hay que instalar el
+`.exe` a mano una vez).
 
 Endpoint: `https://github.com/chrx3/atic/releases/latest/download/latest.json`
 
