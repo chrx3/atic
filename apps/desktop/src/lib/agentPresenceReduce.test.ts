@@ -29,6 +29,19 @@ describe("applyPresenceSnapshot", () => {
     expect(second.unread.s1).toBe(1);
   });
 
+  it("un ready ya cerrado al arrancar no enciende el chip", () => {
+    const first = applyPresenceSnapshot(
+      { list: [], unread: {}, watching: false },
+      [presence({ id: "s1", status: "ready", preview: "commit `0545fca3`" })],
+    );
+    expect(first.unread).toEqual({});
+    const again = applyPresenceSnapshot(
+      { ...first, watching: false },
+      [presence({ id: "s1", status: "ready", preview: "commit `0545fca3`" })],
+    );
+    expect(again.unread).toEqual({});
+  });
+
   it("no sube unread si se está mirando", () => {
     const next = applyPresenceSnapshot(
       { list: [presence({ id: "s1", status: "working" })], unread: {}, watching: true },

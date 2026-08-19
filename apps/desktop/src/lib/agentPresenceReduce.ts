@@ -10,7 +10,15 @@ export function applyPresenceSnapshot(
   const unread: Record<string, number> = { ...prev.unread };
   for (const next of snapshot) {
     const old = prevById.get(next.id);
-    if (next.status === "ready" && old?.status !== "ready" && !prev.watching) {
+    // Solo el paso working/waiting → ready cuenta. Un `ready` que ya estaba
+    // así al adoptar (sesión vieja en el JSONL, primer snapshot al arrancar)
+    // no es un aviso: el usuario no acaba de recibir nada.
+    if (
+      next.status === "ready" &&
+      old != null &&
+      old.status !== "ready" &&
+      !prev.watching
+    ) {
       unread[next.id] = (unread[next.id] ?? 0) + 1;
     }
   }

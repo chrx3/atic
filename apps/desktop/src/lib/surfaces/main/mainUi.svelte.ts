@@ -32,6 +32,11 @@ export class MainUi {
   settingsSection = $state<SettingsSectionId>("general");
   /** Remonta el tutorial si ya estaba a mitad. */
   onboardingReplay = $state(0);
+  /**
+   * El birrete o Ajustes pidieron repetirlo: se puede cerrar. El primer uso
+   * no: el consentimiento no es opcional.
+   */
+  replayingOnboarding = $state(false);
 
   openTool(tool: ToolId): void {
     this.activeTool = tool;
@@ -69,6 +74,7 @@ export class MainUi {
 
   /** Vuelve a mostrar el tutorial de primer uso, desde el principio. */
   async replayOnboarding(): Promise<void> {
+    this.replayingOnboarding = true;
     await config.patch({ onboarding_done: false, onboarding_practice_done: false });
     this.closeSearch();
     this.closeSettings();

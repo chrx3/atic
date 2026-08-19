@@ -29,7 +29,7 @@
 //! (el de cursor y el de foco) y re-aplicarlos tras cada cambio de bandera:
 //! mezclarlos rompe en las dos direcciones.
 
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicIsize, AtomicU32, Ordering};
 use std::sync::mpsc::{sync_channel, SyncSender, TrySendError};
 use std::sync::{Mutex, OnceLock};
 
@@ -131,6 +131,26 @@ static CSS_VIEW_H_BITS: std::sync::atomic::AtomicU64 = std::sync::atomic::Atomic
 /// el mapeo cambia y la pill se ve pero el mouse la atraviesa.
 static OVERLAY_PHYS_W: AtomicU32 = AtomicU32::new(0);
 static OVERLAY_PHYS_H: AtomicU32 = AtomicU32::new(0);
+
+/// Topología aplicada al overlay. Si al login Windows aún no enumeró el
+/// segundo monitor, esto queda en 1 pantalla y hay que reaplicar después.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct DisplayTopo {
+    x: i32,
+    y: i32,
+    w: u32,
+    h: u32,
+    n: u32,
+}
+
+static APPLIED_TOPO: Mutex<Option<DisplayTopo>> = Mutex::new(None);
+
+/// Avisos de `WM_DISPLAYCHANGE` (capacidad 1: varios seguidos son el mismo).
+static DISPLAY_TX: OnceLock<SyncSender<()>> = OnceLock::new();
+
+/// WndProc original de tao, para encadenar `WM_GETMINMAXINFO` / display.
+#[cfg(windows)]
+static OVERLAY_WNDPROC: AtomicIsize = AtomicIsize::new(0);
 
 /// ¿Debería el overlay estar recibiendo el mouse ahora mismo?
 static ARMED: AtomicBool = AtomicBool::new(false);
@@ -445,11 +465,14 @@ pub fn place(app: &AppHandle) -> Option<OverlayRect> {
     #[cfg(windows)]
     {
         let window = create(app)?;
+        install_overlay_hooks(&window);
 
         let monitors = atic_capture::monitors::enumerate();
-        let mixed = monitors
-            .iter()
-            .any(|m| (m.scale - monitors[0].scale).abs() > f64::EPSILON);
+        let mixed = monitors.first().is_some_and(|first| {
+            monitors
+                .iter()
+                .any(|m| (m.scale - first.scale).abs() > f64::EPSILON)
+        });
         if mixed {
             let escalas: Vec<String> = monitors
                 .iter()
@@ -463,45 +486,38 @@ pub fn place(app: &AppHandle) -> Option<OverlayRect> {
             );
         }
 
-        let vs = atic_capture::monitors::virtual_screen();
-        let mut rect = OverlayRect {
-            x: vs.x,
-            y: vs.y,
-            w: vs.width as i32,
-            h: vs.height as i32,
-            scale: 1.0,
-        };
-
-        let _ = window.set_position(tauri::PhysicalPosition::new(rect.x, rect.y));
-        let _ = window.set_size(tauri::PhysicalSize::new(rect.w as u32, rect.h as u32));
         let _ = window.set_always_on_top(true);
         let _ = window.show();
         // WebView2 a veces se queda con el `inner_size` del create (480×320)
         // y el overlay cubre la pantalla pero el CSS sigue en un recuadro:
         // la pill vuela "a medio camino" y los floats nacen corridos.
-        let _ = window.set_size(tauri::PhysicalSize::new(rect.w as u32, rect.h as u32));
-        // `set_position` mueve el marco. Si queda caption/borde DWM, el (0,0)
-        // del cliente —y por tanto el CSS— nace más abajo que el borde real:
-        // la pill se recorta con overflow:hidden a mitad de camino.
-        cover_virtual_screen(&window);
-        crate::webview_tweaks::sync_controller_bounds(&window);
+        let mut rect = apply_overlay_geometry(&window);
         // El webview termina de nacer después de `show`: repetir o se queda
         // con el recuadro del create (fly-to corto, pill sin clics).
+        //
+        // Tras un login, el segundo monitor a veces aparece segundos después:
+        // hay que volver a medir el escritorio virtual, no solo corregir el
+        // desfase del cliente.
         {
-            let delayed = window.clone();
+            let boot = app.clone();
             std::thread::spawn(move || {
-                for ms in [16u64, 50, 200, 500, 1000, 2000] {
-                    std::thread::sleep(std::time::Duration::from_millis(ms));
-                    cover_virtual_screen(&delayed);
-                    crate::webview_tweaks::sync_controller_bounds(&delayed);
+                let marks = [16u64, 50, 200, 500, 1000, 2000, 5000, 15000, 30000];
+                let start = std::time::Instant::now();
+                for mark in marks {
+                    let target = std::time::Duration::from_millis(mark);
+                    if let Some(left) = target.checked_sub(start.elapsed()) {
+                        std::thread::sleep(left);
+                    }
+                    let again = boot.clone();
+                    let _ = boot.run_on_main_thread(move || {
+                        sync_overlay_to_displays(&again);
+                    });
                 }
             });
         }
         if let Ok(hwnd) = window.hwnd() {
             OVERLAY_HWND.store(hwnd.0 as isize, Ordering::SeqCst);
         }
-        OVERLAY_PHYS_W.store(rect.w.max(0) as u32, Ordering::SeqCst);
-        OVERLAY_PHYS_H.store(rect.h.max(0) as u32, Ordering::SeqCst);
         let scale = window.scale_factor().unwrap_or(1.0).max(0.01);
         rect.scale = scale;
         OVERLAY_SCALE_BITS.store(scale.to_bits(), Ordering::SeqCst);
@@ -529,6 +545,200 @@ pub fn place(app: &AppHandle) -> Option<OverlayRect> {
         let _ = app;
         None
     }
+}
+
+#[cfg(windows)]
+fn display_topo() -> DisplayTopo {
+    let vs = atic_capture::monitors::virtual_screen();
+    DisplayTopo {
+        x: vs.x,
+        y: vs.y,
+        w: vs.width,
+        h: vs.height,
+        n: atic_capture::monitors::enumerate().len() as u32,
+    }
+}
+
+/// Encaja el overlay al escritorio virtual actual y anota la topología.
+#[cfg(windows)]
+fn apply_overlay_geometry(window: &tauri::WebviewWindow) -> OverlayRect {
+    let vs = atic_capture::monitors::virtual_screen();
+    let rect = OverlayRect {
+        x: vs.x,
+        y: vs.y,
+        w: vs.width as i32,
+        h: vs.height as i32,
+        scale: 1.0,
+    };
+    let _ = window.set_max_size(Some(tauri::Size::Physical(tauri::PhysicalSize::new(
+        16384, 16384,
+    ))));
+    let _ = window.set_position(tauri::PhysicalPosition::new(rect.x, rect.y));
+    let _ = window.set_size(tauri::PhysicalSize::new(rect.w as u32, rect.h as u32));
+    cover_virtual_screen(window);
+    crate::webview_tweaks::sync_controller_bounds(window);
+    OVERLAY_PHYS_W.store(rect.w.max(0) as u32, Ordering::SeqCst);
+    OVERLAY_PHYS_H.store(rect.h.max(0) as u32, Ordering::SeqCst);
+    if let Ok(mut g) = APPLIED_TOPO.lock() {
+        *g = Some(display_topo());
+    }
+    rect
+}
+
+/// Si Windows acaba de sumar/quitar un monitor, reajusta el overlay.
+#[cfg(windows)]
+fn sync_overlay_to_displays(app: &AppHandle) {
+    let Some(window) = app.get_webview_window(LABEL) else {
+        return;
+    };
+    install_overlay_hooks(&window);
+    let topo = display_topo();
+    let same = APPLIED_TOPO
+        .lock()
+        .ok()
+        .and_then(|g| *g)
+        .is_some_and(|prev| prev == topo);
+    if same {
+        cover_virtual_screen(&window);
+        crate::webview_tweaks::sync_controller_bounds(&window);
+        return;
+    }
+    tracing::info!(
+        target: "overlay",
+        monitores = topo.n,
+        "escritorio virtual cambió; overlay a {},{} {}x{}",
+        topo.x,
+        topo.y,
+        topo.w,
+        topo.h
+    );
+    let _ = apply_overlay_geometry(&window);
+    let scale = window.scale_factor().unwrap_or(1.0).max(0.01);
+    OVERLAY_SCALE_BITS.store(scale.to_bits(), Ordering::SeqCst);
+    keep_non_occluding(&window);
+    let _ = app.emit("overlay-ready", ());
+    reevaluate_arm();
+}
+
+#[cfg(windows)]
+fn orig_overlay_wndproc() -> Option<unsafe extern "system" fn(
+    windows_sys::Win32::Foundation::HWND,
+    u32,
+    windows_sys::Win32::Foundation::WPARAM,
+    windows_sys::Win32::Foundation::LPARAM,
+) -> windows_sys::Win32::Foundation::LRESULT> {
+    type WndProcFn = unsafe extern "system" fn(
+        windows_sys::Win32::Foundation::HWND,
+        u32,
+        windows_sys::Win32::Foundation::WPARAM,
+        windows_sys::Win32::Foundation::LPARAM,
+    ) -> windows_sys::Win32::Foundation::LRESULT;
+    let orig = OVERLAY_WNDPROC.load(Ordering::SeqCst);
+    if orig == 0 {
+        None
+    } else {
+        // SAFETY: el valor lo guardó `SetWindowLongPtrW` como WndProc de tao.
+        Some(unsafe { std::mem::transmute::<isize, WndProcFn>(orig) })
+    }
+}
+
+/// Windows recorta `SetWindowPos` al monitor actual vía `WM_GETMINMAXINFO`.
+/// Sin esto, el overlay del login (cuando aún hay una sola pantalla) no puede
+/// crecer al aparecer la segunda. `WM_DISPLAYCHANGE` avisa en caliente.
+#[cfg(windows)]
+unsafe extern "system" fn overlay_wndproc(
+    hwnd: windows_sys::Win32::Foundation::HWND,
+    msg: u32,
+    wparam: windows_sys::Win32::Foundation::WPARAM,
+    lparam: windows_sys::Win32::Foundation::LPARAM,
+) -> windows_sys::Win32::Foundation::LRESULT {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        CallWindowProcW, MINMAXINFO, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_GETMINMAXINFO,
+    };
+
+    if msg == WM_GETMINMAXINFO && lparam != 0 {
+        if let Some(orig_fn) = orig_overlay_wndproc() {
+            let _ = CallWindowProcW(Some(orig_fn), hwnd, msg, wparam, lparam);
+        }
+        let mmi = lparam as *mut MINMAXINFO;
+        let vs = atic_capture::monitors::virtual_screen();
+        let max_w = vs.width as i32 + 64;
+        let max_h = vs.height as i32 + 64;
+        (*mmi).ptMaxSize.x = max_w;
+        (*mmi).ptMaxSize.y = max_h;
+        (*mmi).ptMaxPosition.x = vs.x;
+        (*mmi).ptMaxPosition.y = vs.y;
+        (*mmi).ptMaxTrackSize.x = max_w;
+        (*mmi).ptMaxTrackSize.y = max_h;
+        return 0;
+    }
+
+    if msg == WM_DISPLAYCHANGE || msg == WM_DPICHANGED {
+        if let Some(tx) = DISPLAY_TX.get() {
+            let _ = tx.try_send(());
+        }
+    }
+
+    match orig_overlay_wndproc() {
+        Some(orig_fn) => CallWindowProcW(Some(orig_fn), hwnd, msg, wparam, lparam),
+        None => 0,
+    }
+}
+
+#[cfg(windows)]
+fn install_overlay_hooks(window: &tauri::WebviewWindow) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetWindowLongPtrW, SetWindowLongPtrW, GWLP_WNDPROC,
+    };
+
+    let Ok(hwnd) = window.hwnd() else {
+        return;
+    };
+    let hwnd = hwnd.0 as windows_sys::Win32::Foundation::HWND;
+    let ours = overlay_wndproc as *const () as isize;
+    // SAFETY: HWND de Tauri vivo; Get/SetWindowLongPtr solo leen/escriben el
+    // puntero a WndProc. Encadenamos la de tao.
+    unsafe {
+        let current = GetWindowLongPtrW(hwnd, GWLP_WNDPROC);
+        if current == ours {
+            return;
+        }
+        let saved = OVERLAY_WNDPROC.load(Ordering::SeqCst);
+        if saved != 0 && saved != current && current != ours {
+            tracing::warn!(
+                target: "overlay",
+                "el overlay tiene un WndProc distinto al guardado; no se reengancha"
+            );
+            return;
+        }
+        if saved == 0 {
+            OVERLAY_WNDPROC.store(current, Ordering::SeqCst);
+        }
+        SetWindowLongPtrW(hwnd, GWLP_WNDPROC, ours);
+    }
+}
+
+fn start_display_watch(app: AppHandle) {
+    let (tx, rx) = sync_channel::<()>(1);
+    if DISPLAY_TX.set(tx).is_err() {
+        return;
+    }
+    std::thread::Builder::new()
+        .name("atic-display-sync".into())
+        .spawn(move || {
+            while let Ok(()) = rx.recv() {
+                std::thread::sleep(std::time::Duration::from_millis(400));
+                while rx.try_recv().is_ok() {}
+                let again = app.clone();
+                let _ = app.run_on_main_thread(move || {
+                    #[cfg(windows)]
+                    sync_overlay_to_displays(&again);
+                    #[cfg(not(windows))]
+                    let _ = again;
+                });
+            }
+        })
+        .ok();
 }
 
 /// Desplaza el marco para que el (0,0) del cliente coincida con el escritorio
@@ -761,6 +971,7 @@ pub fn keep_non_occluding(window: &tauri::WebviewWindow) {
 pub fn setup(app: &AppHandle) {
     remember_main(app);
     start_toggle_worker(app.clone());
+    start_display_watch(app.clone());
     let handle = app.clone();
     std::thread::Builder::new()
         .name("atic-overlay-boot".into())
@@ -815,6 +1026,11 @@ fn drop_overlay(app: &AppHandle) {
     CSS_VIEW_H_BITS.store(0, Ordering::Release);
     ARMED.store(false, Ordering::Release);
     CLICK_THROUGH.store(true, Ordering::Release);
+    #[cfg(windows)]
+    OVERLAY_WNDPROC.store(0, Ordering::Release);
+    if let Ok(mut g) = APPLIED_TOPO.lock() {
+        *g = None;
+    }
 }
 
 /// Guarda el HWND de `main` para el hit-test del camino caliente.
