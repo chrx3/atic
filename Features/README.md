@@ -46,7 +46,8 @@ El flujo completo del producto original: graba, transcribe local y resume.
   procesos conocidos, mic en uso por otra app. Nunca graba solo.
 - **Modo parlantes** para cuando no hay auriculares.
 - Transcripción con **Whisper local** (modelos descargados bajo demanda, no van
-  en el instalador), con opción de transcripción **en vivo**.
+  en el instalador) o **Groq** (misma API key que el dictado; el audio sale del
+  PC), con opción de transcripción **en vivo**.
 - También transcribe **audio importado**, no solo lo que grabó.
 - Resumen **BYOK** con plantillas editables: Claude, Ollama, o cualquier
   endpoint OpenAI-compatible (OpenAI, OpenRouter, Groq, MiniMax, Custom).

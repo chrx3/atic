@@ -12,7 +12,6 @@
   import { clipboardItemMatches } from "$lib/clipboardSearch";
   import {
     clipboardDragPath,
-    deleteCapture,
     deleteClipboardItem,
     pasteClipboardItem,
     pinClipboardItem,
@@ -251,12 +250,10 @@
     event.stopPropagation();
     event.preventDefault();
     try {
-      if (item.id.startsWith("capture-")) {
-        if (!item.imagePath) return;
-        await deleteCapture(item.imagePath);
-      } else {
-        await deleteClipboardItem(item.id);
-      }
+      // Siempre `delete_clipboard_item`: las capturas viven en otra carpeta
+      // y el PNG no es del historial. `deleteCapture` borraba el archivo, el
+      // ítem seguía en `history.json` y el reintento explotaba con os error 2.
+      await deleteClipboardItem(item.id);
       await onRefresh();
     } catch (error) {
       report(error);

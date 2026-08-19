@@ -30,6 +30,10 @@ export const exportRecording = (
   path: string,
 ) => invoke<ExportResult>("export_recording", { id, format, path });
 
+/** Abre en el explorador la carpeta de esa grabación. */
+export const openRecordingDir = (id: string) =>
+  invoke<void>("open_recording_dir", { id });
+
 const trackPath = (id: string, track: "mic" | "system") =>
   invoke<string>("recording_track_path", { id, track });
 

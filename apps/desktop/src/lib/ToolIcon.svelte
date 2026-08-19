@@ -10,7 +10,8 @@
     | "shortcuts"
     | "audio"
     | "summary"
-    | "settings";
+    | "settings"
+    | "about";
 
   export type IconId = AppIconId;
 

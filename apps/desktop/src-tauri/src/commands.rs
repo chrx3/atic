@@ -134,6 +134,11 @@ pub fn set_config(app: AppHandle, state: State<AppState>, config: Config) -> Res
     sync_autostart(&app, want_autostart);
     // El overlay tiene `data_directory` propio: localStorage no cruza.
     let _ = app.emit("ui-theme", ui_theme);
+    if config.onboarding_done != prev.onboarding_done
+        || config.onboarding_practice_done != prev.onboarding_practice_done
+    {
+        let _ = app.emit("onboarding-practice", ());
+    }
 
     Ok(())
 }
@@ -351,4 +356,31 @@ pub(crate) fn open_data_dir_kind(
 #[tauri::command]
 pub fn open_data_dir(app: AppHandle, state: State<AppState>, kind: String) -> Result<(), String> {
     open_data_dir_kind(&app, &state.dirs, &kind)
+}
+
+/// Abre en el explorador los archivos de una grabación (WAV y JSON).
+///
+/// No abre el listado de ids: eso no se puede reconocer a ojo.
+#[tauri::command]
+pub fn open_recording_dir(
+    app: AppHandle,
+    state: State<AppState>,
+    id: String,
+) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+
+    let rec = state
+        .db
+        .lock_or_recover()
+        .get_recording(&id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "Grabación no encontrada.".to_string())?;
+    let dir = state.dirs.recording_dir(&id);
+    if !dir.is_dir() {
+        return Err("Esta grabación no tiene archivos en disco.".into());
+    }
+    let _ = std::fs::write(dir.join("titulo.txt"), rec.title.as_bytes());
+    app.opener()
+        .open_path(dir.to_string_lossy().into_owned(), None::<&str>)
+        .map_err(|error| error.to_string())
 }

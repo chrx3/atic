@@ -8,4 +8,5 @@ export type SettingsSectionId =
   | "launcher"
   | "audio"
   | "summary"
-  | "agents";
+  | "agents"
+  | "about";

@@ -1,10 +1,11 @@
 <script lang="ts">
-  /** Tema, arranque y retención. */
+  /** Tema, arranque, tutorial y retención. */
   import { config } from "$domain/config.svelte";
   import { toastError } from "$domain/toasts.svelte";
   import { openDataDir } from "$ipc/config";
   import SettingsGroup from "$patterns/SettingsGroup.svelte";
   import SettingsRow from "$patterns/SettingsRow.svelte";
+  import { useMainUi } from "$surfaces/main/mainUi.svelte";
   import Button from "$ui/Button.svelte";
   import Input from "$ui/Input.svelte";
   import SegmentedControl from "$ui/SegmentedControl.svelte";
@@ -12,6 +13,7 @@
   import { applyTheme, type UiTheme } from "$lib/theme";
 
   const cfg = $derived(config.current);
+  const ui = useMainUi();
 
   function patch(changes: Parameters<typeof config.patch>[0]) {
     void config.patch(changes).catch(toastError);
@@ -65,6 +67,24 @@
             hint="La superficie flotante desde donde se graba y se pega."
             onchange={(v) => patch({ show_pill: v })}
           />
+        {/snippet}
+      </SettingsRow>
+    </SettingsGroup>
+
+    <SettingsGroup
+      title="Tutorial"
+      hint="Consentimiento, Groq o local, atajos y práctica junto a la pill."
+    >
+      <SettingsRow label="Primer uso">
+        {#snippet control()}
+          <Button
+            variant="soft"
+            size="sm"
+            full
+            onclick={() => void ui.replayOnboarding().catch(toastError)}
+          >
+            Repetir tutorial
+          </Button>
         {/snippet}
       </SettingsRow>
     </SettingsGroup>

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { nodeAngle, nodePosition, separators, wedgeClip } from "./wheelGeometry";
+import { liveDropPosition, nodeAngle, nodePosition, separators, wedgeClip } from "./wheelGeometry";
 
 const SQUARE = { width: 240, height: 240 };
 
@@ -97,5 +97,17 @@ describe("separators", () => {
     for (const sep of separators(2, SQUARE, 0)) {
       expect(Number.isFinite(sep.len)).toBe(true);
     }
+  });
+});
+
+describe("liveDropPosition", () => {
+  it("cuelga bajo el anillo, con un cuello que el goo todavía cruza", () => {
+    const p = liveDropPosition(SQUARE, 80, 56, 36, 8);
+    expect(p.x).toBeCloseTo(120);
+    // centro + radio anillo + radio nodo + hueco + radio gota
+    expect(p.y).toBeCloseTo(120 + 80 + 28 + 8 + 18);
+    const nodeBottom = 120 + 80 + 28;
+    const dropTop = p.y - 18;
+    expect(dropTop - nodeBottom).toBeCloseTo(8);
   });
 });

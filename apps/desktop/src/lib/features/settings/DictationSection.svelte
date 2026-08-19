@@ -6,6 +6,7 @@
   import { formatMegabytes } from "$core/format";
   import SettingsGroup from "$patterns/SettingsGroup.svelte";
   import SettingsRow from "$patterns/SettingsRow.svelte";
+  import GroqKeyField from "./GroqKeyField.svelte";
   import SegmentedControl from "$ui/SegmentedControl.svelte";
   import Select from "$ui/Select.svelte";
 
@@ -49,7 +50,7 @@
 
     <SettingsGroup
       title="Motor"
-      hint="Local no sale de la máquina. Groq es más rápido pero manda el audio a su servidor."
+      hint="Sin gráfica, Groq es más rápido. Local no sale de la máquina."
     >
       <SettingsRow label="Dónde transcribe">
         {#snippet control()}
@@ -57,10 +58,14 @@
             value={cfg.dictation_backend}
             label="Motor de dictado"
             options={[
-              { value: "local", label: "Local" },
               { value: "groq", label: "Groq" },
+              { value: "local", label: "Local" },
             ]}
-            onchange={(v) => patch({ dictation_backend: v })}
+            onchange={(v) =>
+              patch({
+                dictation_backend: v,
+                live_engine: v === "groq" ? "groq" : "local",
+              })}
             full
           />
         {/snippet}
@@ -85,5 +90,9 @@
         </SettingsRow>
       {/if}
     </SettingsGroup>
+
+    {#if cfg.dictation_backend === "groq"}
+      <GroqKeyField />
+    {/if}
   </div>
 {/if}

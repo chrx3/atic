@@ -3,6 +3,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import type {
+  LiveSummaryModels,
   SendMailResult,
   Summary,
   SummaryProvider,
@@ -14,6 +15,8 @@ export const listSummaryTemplates = () =>
   invoke<TemplateInfo[]>("list_summary_templates");
 export const listSummaryProviders = () =>
   invoke<SummaryProvider[]>("list_summary_providers");
+export const listLiveSummaryModels = () =>
+  invoke<LiveSummaryModels>("list_live_summary_models");
 export const ollamaAvailable = () => invoke<boolean>("ollama_available");
 export const summarizeRecording = (id: string, template: string) =>
   invoke<void>("summarize_recording", { id, template });

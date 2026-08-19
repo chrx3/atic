@@ -46,7 +46,13 @@ fn now_secs() -> i64 {
 pub fn db_path() -> Option<PathBuf> {
     std::env::var_os("USERPROFILE")
         .or_else(|| std::env::var_os("HOME"))
-        .map(|h| PathBuf::from(h).join(".local").join("share").join("opencode").join("opencode.db"))
+        .map(|h| {
+            PathBuf::from(h)
+                .join(".local")
+                .join("share")
+                .join("opencode")
+                .join("opencode.db")
+        })
 }
 
 fn first_line(text: &str) -> Option<String> {
@@ -77,10 +83,7 @@ pub fn hint_from_part(data: &Value) -> PartHint {
             .pointer("/state/status")
             .and_then(Value::as_str)
             .map(str::to_string),
-        text: data
-            .get("text")
-            .and_then(Value::as_str)
-            .map(str::to_string),
+        text: data.get("text").and_then(Value::as_str).map(str::to_string),
     }
 }
 
@@ -155,9 +158,9 @@ fn last_role(conn: &Connection, id: &str) -> Option<String> {
 }
 
 fn last_parts(conn: &Connection, id: &str) -> Vec<PartHint> {
-    let Ok(mut stmt) = conn.prepare(
-        "SELECT data FROM part WHERE session_id = ? ORDER BY time_created DESC LIMIT 12",
-    ) else {
+    let Ok(mut stmt) = conn
+        .prepare("SELECT data FROM part WHERE session_id = ? ORDER BY time_created DESC LIMIT 12")
+    else {
         return Vec::new();
     };
     let rows = stmt.query_map([id], |row| row.get::<_, String>(0));
@@ -250,10 +253,7 @@ mod tests {
 
     #[test]
     fn user_abre_trabajo() {
-        assert_eq!(
-            classify_parts(Some("user"), &[]),
-            OcStatus::Working
-        );
+        assert_eq!(classify_parts(Some("user"), &[]), OcStatus::Working);
     }
 
     #[test]
@@ -273,19 +273,13 @@ mod tests {
     #[test]
     fn tool_calls_sigue_trabajando() {
         let parts = vec![part("step-finish", Some("tool-calls"), None, None)];
-        assert_eq!(
-            classify_parts(Some("assistant"), &parts),
-            OcStatus::Working
-        );
+        assert_eq!(classify_parts(Some("assistant"), &parts), OcStatus::Working);
     }
 
     #[test]
     fn tool_pendiente_es_working() {
         let parts = vec![part("tool", None, Some("running"), None)];
-        assert_eq!(
-            classify_parts(Some("assistant"), &parts),
-            OcStatus::Working
-        );
+        assert_eq!(classify_parts(Some("assistant"), &parts), OcStatus::Working);
     }
 
     #[test]
@@ -318,26 +312,17 @@ mod tests {
         .unwrap();
         conn.execute(
             "INSERT INTO message VALUES ('m1', 'ses_live', ?, ?)",
-            rusqlite::params![
-                now_ms,
-                r#"{"role":"assistant"}"#
-            ],
+            rusqlite::params![now_ms, r#"{"role":"assistant"}"#],
         )
         .unwrap();
         conn.execute(
             "INSERT INTO part VALUES ('p1', 'ses_live', ?, ?)",
-            rusqlite::params![
-                now_ms,
-                r#"{"type":"step-finish","reason":"stop"}"#
-            ],
+            rusqlite::params![now_ms, r#"{"type":"step-finish","reason":"stop"}"#],
         )
         .unwrap();
         conn.execute(
             "INSERT INTO part VALUES ('p0', 'ses_live', ?, ?)",
-            rusqlite::params![
-                now_ms - 1,
-                r#"{"type":"text","text":"hecho"}"#
-            ],
+            rusqlite::params![now_ms - 1, r#"{"type":"text","text":"hecho"}"#],
         )
         .unwrap();
         drop(conn);

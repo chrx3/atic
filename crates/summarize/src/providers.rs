@@ -78,18 +78,14 @@ pub const PROVIDERS: &[ProviderInfo] = &[
         display_name: "Groq",
         kind: ProviderKind::OpenAiCompat,
         default_base_url: "https://api.groq.com/openai/v1",
-        default_model: "llama-3.3-70b-versatile",
+        default_model: "openai/gpt-oss-120b",
         needs_api_key: true,
         base_url_editable: false,
         secret_kind: Some("groq_api_key"),
         suggested_models: &[
-            "llama-3.3-70b-versatile",
-            "llama-3.1-8b-instant",
             "openai/gpt-oss-120b",
             "openai/gpt-oss-20b",
-            "meta-llama/llama-4-scout-17b-16e-instruct",
-            "meta-llama/llama-4-maverick-17b-128e-instruct",
-            "qwen/qwen3-32b",
+            "qwen/qwen3.6-27b",
         ],
     },
     ProviderInfo {
@@ -129,6 +125,11 @@ mod tests {
         assert!(find("minimax").is_some());
         assert!(find("custom").unwrap().base_url_editable);
         assert_eq!(find("claude").unwrap().kind, ProviderKind::Claude);
-        assert!(!find("groq").unwrap().suggested_models.is_empty());
+        let groq = find("groq").unwrap();
+        assert_eq!(groq.default_model, "openai/gpt-oss-120b");
+        assert!(groq.suggested_models.contains(&"openai/gpt-oss-120b"));
+        assert!(!groq
+            .suggested_models
+            .contains(&"meta-llama/llama-4-maverick-17b-128e-instruct"));
     }
 }

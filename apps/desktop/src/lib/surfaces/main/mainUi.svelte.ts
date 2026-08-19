@@ -11,6 +11,7 @@
  */
 
 import { getContext, setContext } from "svelte";
+import { config } from "$domain/config.svelte";
 import type { ToolId } from "$core/tools";
 import type { SettingsSectionId } from "$features/settings/settingsSections";
 
@@ -29,6 +30,8 @@ export class MainUi {
   /** Modal de Ajustes generales (SettingsPanel). */
   settingsOpen = $state(false);
   settingsSection = $state<SettingsSectionId>("general");
+  /** Remonta el tutorial si ya estaba a mitad. */
+  onboardingReplay = $state(0);
 
   openTool(tool: ToolId): void {
     this.activeTool = tool;
@@ -62,6 +65,15 @@ export class MainUi {
 
   closeSettings(): void {
     this.settingsOpen = false;
+  }
+
+  /** Vuelve a mostrar el tutorial de primer uso, desde el principio. */
+  async replayOnboarding(): Promise<void> {
+    await config.patch({ onboarding_done: false, onboarding_practice_done: false });
+    this.closeSearch();
+    this.closeSettings();
+    this.closeDetail();
+    this.onboardingReplay += 1;
   }
 }
 

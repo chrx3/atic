@@ -84,6 +84,87 @@ fn is_silence_marker(text: &str) -> bool {
         || compact.starts_with("[blank")
 }
 
+fn tokenize_words(text: &str) -> Vec<String> {
+    let mut word = String::new();
+    let mut words = Vec::new();
+    for ch in text.chars() {
+        if ch.is_alphanumeric() || ch == '\'' {
+            word.extend(ch.to_lowercase());
+        } else if !word.is_empty() {
+            words.push(std::mem::take(&mut word));
+        }
+    }
+    if !word.is_empty() {
+        words.push(word);
+    }
+    words
+}
+
+/// Whisper, ante estática, se traba y repite la misma palabra o frase.
+fn is_repetition_hallucination(text: &str) -> bool {
+    let words = tokenize_words(text);
+    if words.len() < 6 {
+        return false;
+    }
+
+    let mut run = 1usize;
+    for pair in words.windows(2) {
+        if pair[0] == pair[1] {
+            run += 1;
+            if run >= 6 {
+                return true;
+            }
+        } else {
+            run = 1;
+        }
+    }
+
+    let mut counts = std::collections::HashMap::<&str, usize>::new();
+    for word in &words {
+        *counts.entry(word.as_str()).or_insert(0) += 1;
+    }
+    let unique = counts.len();
+    let total = words.len();
+    if total >= 12 && (unique as f32 / total as f32) <= 0.28 {
+        return true;
+    }
+    if counts
+        .values()
+        .any(|&n| n >= 8 && n as f32 / total as f32 >= 0.35)
+    {
+        return true;
+    }
+
+    for n in 2..=4 {
+        if max_consecutive_ngram_repeats(&words, n) >= 4 {
+            return true;
+        }
+    }
+    false
+}
+
+fn max_consecutive_ngram_repeats(words: &[String], n: usize) -> usize {
+    if n == 0 || words.len() < n * 2 {
+        return 1;
+    }
+    let mut best = 1usize;
+    let mut i = 0usize;
+    while i + n * 2 <= words.len() {
+        let first = &words[i..i + n];
+        let mut repeats = 1usize;
+        let mut j = i + n;
+        while j + n <= words.len() && words[j..j + n] == first[..] {
+            repeats += 1;
+            j += n;
+        }
+        if repeats > best {
+            best = repeats;
+        }
+        i += 1;
+    }
+    best
+}
+
 /// Modelo de Whisper cargado en memoria, reutilizable entre pistas.
 pub struct WhisperModel {
     ctx: WhisperContext,
@@ -191,6 +272,15 @@ impl WhisperModel {
         offset_ms: i64,
         on_progress: Arc<Mutex<impl FnMut(i32) + Send + 'static>>,
     ) -> Result<Vec<Segment>> {
+        if mode == TranscribeMode::Meeting && !crate::decode::has_speech_activity(samples) {
+            tracing::debug!(
+                samples = samples.len(),
+                offset_ms,
+                "trozo sin actividad de voz, se omite"
+            );
+            return Ok(Vec::new());
+        }
+
         let mut state = self.ctx.create_state()?;
 
         let mut params = match mode {
@@ -283,7 +373,7 @@ impl WhisperModel {
                 continue;
             }
             let text = seg.to_str()?.trim().to_string();
-            if is_silence_marker(&text) {
+            if is_silence_marker(&text) || is_repetition_hallucination(&text) {
                 continue;
             }
             // Las marcas de tiempo vienen en centisegundos.
@@ -326,6 +416,23 @@ mod tests {
         assert!(is_silence_marker("[blank_audio]"));
         assert!(is_silence_marker(""));
         assert!(!is_silence_marker("Hola mundo"));
+    }
+
+    #[test]
+    fn filters_static_hallucination_loops() {
+        let looping = "y y y y y los dos de los dos de los dos, y los dos de los dos, \
+             y los dos de los dos, y los dos de los dos, y los dos de los dos, \
+             y los dos de los dos, y los dos de los dos. \
+             ¡Adiós! ¡Adiós! ¡Adiós! ¡Adiós! ¡Adiós! ¡Adiós! ¡Adiós! ¡Adiós! \
+             ¡Adiós! ¡Adiós! ¡Adiós! ¡Adiós! ¡Adiós! ¡Adiós!";
+        assert!(is_repetition_hallucination(looping));
+        assert!(is_repetition_hallucination(
+            "¡Adiós! ¡Adiós! ¡Adiós! ¡Adiós! ¡Adiós! ¡Adiós! ¡Adiós!"
+        ));
+        assert!(!is_repetition_hallucination(
+            "Hola, cómo estás, bien y vos, todo bien gracias."
+        ));
+        assert!(!is_repetition_hallucination("vale vale, entonces seguimos"));
     }
 
     #[test]

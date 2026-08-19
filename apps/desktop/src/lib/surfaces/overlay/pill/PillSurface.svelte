@@ -55,6 +55,7 @@
     discJoinsTail,
     FLIGHT_SKIP_PX,
     isDiscOnly,
+    islandLiveSlots,
     morphsInPlace,
     pivotFor,
     stepWheel as nextWheelTool,
@@ -323,6 +324,7 @@
   const trackTail = (el: HTMLElement) => tracker.track("tail", el);
   /** La isla acoplada: llena la caja, así que se anima con ella. */
   const trackIsland = (el: HTMLElement) => tracker.track("island", el);
+  const trackLive = (el: HTMLElement) => tracker.track("live", el);
   /**
    * Cada herramienta se mide aparte, aunque hoy la silueta no las use.
    *
@@ -362,6 +364,7 @@
   $effect(() => {
     void dock;
     void surface;
+    void recording;
     if (surface !== "edge" && !beadsAlive) return;
     let raf = 0;
     const until = performance.now() + ms(MOTION.islandOpen) + ISLAND_SETTLE_MS;
@@ -390,6 +393,7 @@
     // pero por casualidad—.
     void dock;
     void beadsAlive;
+    void recording;
     tracker.wake(true);
   });
 
@@ -425,7 +429,10 @@
     // pill se veía sin cambiar y no respondía, porque lo que recibe el puntero
     // es la caja y no lo dibujado—.
     if (surface === "edge") {
-      return r.island ? [pillShape(at(r.island))] : [];
+      const shapes = [];
+      if (r.island) shapes.push(pillShape(at(r.island)));
+      if (r.live) shapes.push(pillShape(at(r.live)));
+      return shapes;
     }
 
     const shapes = [];
@@ -550,7 +557,8 @@
    */
   let dock = $state<Dock | null>(null);
 
-  const target = $derived(windowFor(contentFor(surface, barW, dock)));
+  const target = $derived(windowFor(contentFor(surface, barW, dock, activity)));
+  const islandSlots = $derived(WHEEL_TOOLS.length + islandLiveSlots(activity));
 
   /**
    * Contra qué eje se aplana la isla, o `null` si no está acoplada.
@@ -1886,8 +1894,8 @@
   });
 </script>
 
-<!-- Testigo de grabación. Con la rueda abierta el stack queda inert: el
-     stop visible es `.p-wheel-stop`, una copia fuera del stack. -->
+<!-- Testigo de grabación (barra flotante). En la rueda y la isla acoplada
+     la parada es una gota líquida colgada, no este botón. -->
 {#snippet recDot(label: string)}
   <button
     type="button"
@@ -1924,40 +1932,58 @@
   class:is-docked={surface === "edge"}
   class:is-dragging={surfaces.dragging}
   data-edge={surface === "edge" ? dock?.edge : undefined}
-  style="left: {at.x}px; top: {at.y}px; width: {box.w}px; height: {box.h}px; --island-tool: {PILL.islandTool}px; --island-gap: {PILL.islandGap}px"
+  style="left: {at.x}px; top: {at.y}px; width: {box.w}px; height: {box.h}px; --island-tool: {PILL.islandTool}px; --island-gap: {PILL.islandGap}px; --rec-drop: {PILL.recDrop}px; --rec-drop-gap: {PILL.recDropGap}px"
   bind:this={rootEl}
   onpointerdown={beginDrag}
 >
-  <!-- Acoplada al borde. `.p-island-skin` llena la caja y es lo que se mide:
-       la silueta líquida sale de ahí, así que sigue la transición de tamaño.
-       Los botones solo existen abierta; en reposo es una pestaña muda. -->
+  <!-- Acoplada al borde. `.p-island-skin` llena el cuerpo de la tira y es
+       lo que se mide: la silueta líquida sale de ahí. Si hay grabación, una
+       gota cuelga hacia adentro, fundida, con el stop encima. -->
   <!-- Montada mientras haya isla O gotas vivas. Las gotas NO se montan con la
        apertura: si nacieran ya abiertas no habría estado inicial desde el cual
        transicionar y el CSS pintaría el final directo. Existen desde que la
        pill se acopla, cerradas, y la clase las abre. -->
   {#if surface === "edge" || beadsAlive}
     <div class="p-island" class:is-open={islandOpen}>
-      <i class="p-island-skin" {@attach trackIsland} aria-hidden="true"></i>
-      <div
-        class="p-island-tools"
-        class:is-open={islandOpen}
-        class:is-column={peekEdgeAxis === "x"}
-        style="--n: {WHEEL_TOOLS.length}"
-      >
-        {#each WHEEL_TOOLS as tool, i (tool.id)}
-          <button
-            type="button"
-            class="p-island-tool"
-            style="--i: {i}; --s: {Math.abs((WHEEL_TOOLS.length - 1) / 2 - i)}"
-            title="{tool.label} — {tool.short}"
-            aria-label="{tool.label}. {tool.short}"
-            {@attach islandAttachers[i]}
-            onpointerdown={() => (islandPressTool = tool.id)}
-          >
-            <ToolIcon id={tool.id} size={18} strokeWidth={1.6} />
-          </button>
-        {/each}
+      <div class="p-island-body">
+        <i class="p-island-skin" {@attach trackIsland} aria-hidden="true"></i>
+        <div
+          class="p-island-tools"
+          class:is-open={islandOpen}
+          class:is-column={peekEdgeAxis === "x"}
+          style="--n: {islandSlots}"
+        >
+          {#each WHEEL_TOOLS as tool, i (tool.id)}
+            {@const slot = i + islandLiveSlots(activity)}
+            <button
+              type="button"
+              class="p-island-tool"
+              style="--i: {slot}; --s: {Math.abs((islandSlots - 1) / 2 - slot)}"
+              title="{tool.label} — {tool.short}"
+              aria-label="{tool.label}. {tool.short}"
+              {@attach islandAttachers[i]}
+              onpointerdown={() => (islandPressTool = tool.id)}
+            >
+              <ToolIcon id={tool.id} size={18} strokeWidth={1.6} />
+            </button>
+          {/each}
+        </div>
       </div>
+      {#if recording}
+        <button
+          type="button"
+          class="p-live-drop"
+          {@attach trackLive}
+          data-no-drag
+          title={btWarning ?? "Detener grabación"}
+          aria-label="Detener grabación"
+          disabled={busy}
+          onpointerdown={(e) => e.stopPropagation()}
+          onclick={toggleRecord}
+        >
+          <span class="p-rec-square" aria-hidden="true"></span>
+        </button>
+      {/if}
     </div>
   {/if}
 
@@ -1974,28 +2000,20 @@
       bind:activeId={wheelTool}
       caption="Herramientas"
       centerLabel="Cerrar"
+      live={activity === "recording"
+        ? "recording"
+        : dictation === "listening"
+          ? "dictating"
+          : "off"}
+      liveBusy={busy}
+      onLive={() => {
+        if (activity === "recording") toggleRecord();
+        else void toggleDictate();
+      }}
       onSelect={(id) => activateTool(id)}
       onCenter={() => void closeWheel()}
     />
   </div>
-
-  {#if wheelChrome && activity === "recording"}
-    <div class="p-wheel-stop">
-      {@render recDot("Detener grabación")}
-    </div>
-  {:else if wheelChrome && dictation === "listening"}
-    <button
-      type="button"
-      class="p-rec p-wheel-stop"
-      data-no-drag
-      onclick={toggleDictate}
-      disabled={busy}
-      aria-label="Detener dictado"
-      title="Dictando · clic para detener"
-    >
-      <ToolIcon id="dictation" size={16} strokeWidth={1.5} />
-    </button>
-  {/if}
 
   <!-- El stack es la REFERENCIA de medida y nada más: la silueta ya no se
        dibuja acá, se publica al grupo del overlay. Sigue estando fuera de
@@ -2283,7 +2301,35 @@
     position: absolute;
     z-index: 1;
     inset: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--rec-drop-gap);
+  }
+
+  .p-root[data-edge="top"] .p-island {
+    flex-direction: column;
+  }
+
+  .p-root[data-edge="bottom"] .p-island {
+    flex-direction: column-reverse;
+  }
+
+  .p-root[data-edge="left"] .p-island {
+    flex-direction: row;
+  }
+
+  .p-root[data-edge="right"] .p-island {
+    flex-direction: row-reverse;
+  }
+
+  .p-island-body {
+    position: relative;
     display: grid;
+    flex: 1 1 auto;
+    align-self: stretch;
+    min-width: 0;
+    min-height: 0;
     place-items: center;
   }
 
@@ -2292,6 +2338,57 @@
     inset: 0;
     display: block;
     border-radius: 999px;
+  }
+
+  .p-live-drop {
+    display: grid;
+    flex: 0 0 auto;
+    width: var(--rec-drop);
+    height: var(--rec-drop);
+    border: 0;
+    margin: 0;
+    padding: 0;
+    border-radius: 999px;
+    background: transparent;
+    color: var(--rec);
+    cursor: pointer;
+    place-items: center;
+    transition: transform var(--duration-quick) var(--ease-smooth-out);
+  }
+
+  .p-live-drop .p-rec-square {
+    width: 10px;
+    height: 10px;
+    animation: p-island-rec-pulse 1.6s linear infinite;
+  }
+
+  .p-live-drop:hover:not(:disabled),
+  .p-live-drop:focus-visible {
+    transform: scale(1.04);
+  }
+
+  .p-live-drop:active:not(:disabled) {
+    transform: scale(0.96);
+  }
+
+  .p-live-drop:focus-visible {
+    outline: none;
+    box-shadow: var(--rb-focus);
+  }
+
+  .p-live-drop:disabled {
+    cursor: default;
+    opacity: 0.55;
+  }
+
+  @keyframes p-island-rec-pulse {
+    0%,
+    100% {
+      opacity: 0.55;
+    }
+    50% {
+      opacity: 1;
+    }
   }
 
   .p-island-tools {
@@ -2444,6 +2541,7 @@
     height: 232px;
     margin: -116px 0 0 -116px;
     place-items: center;
+    overflow: visible;
     opacity: 0;
     pointer-events: none;
     transition: opacity var(--morph-fade-dur) var(--morph-close-ease);
@@ -2453,15 +2551,6 @@
     opacity: 1;
     pointer-events: auto;
     transition: opacity var(--morph-fade-dur) var(--morph-ease);
-  }
-
-  /* Stop de grabación/dictado: el stack queda inert con la rueda abierta. */
-  .p-wheel-stop {
-    position: absolute;
-    z-index: 3;
-    left: 50%;
-    bottom: 8px;
-    transform: translateX(-50%);
   }
 
   /* El disco de fondo se fue: ahora la superficie la ponen el núcleo y las
@@ -3055,7 +3144,8 @@
     .p-queue-btn,
     .p-agent,
     .p-auth-host,
-    .p-island-tool {
+    .p-island-tool,
+    .p-live-drop {
       transition: none !important;
       animation: none !important;
     }

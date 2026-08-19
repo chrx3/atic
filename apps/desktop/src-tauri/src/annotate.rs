@@ -147,7 +147,12 @@ fn target_work_area() -> ((i32, i32, u32, u32), f64) {
         .or_else(|| monitors.first());
     match target {
         Some(m) => (
-            (m.work_area.x, m.work_area.y, m.work_area.width, m.work_area.height),
+            (
+                m.work_area.x,
+                m.work_area.y,
+                m.work_area.width,
+                m.work_area.height,
+            ),
             m.scale,
         ),
         None => ((0, 0, 1280, 720), 1.0),
@@ -170,11 +175,7 @@ pub fn open_annotator(app: AppHandle, state: State<AppState>, path: String) -> R
 /// La usa `activate_capture` cuando el clic en la miniatura está configurado
 /// para dibujar: pasar por el comando obligaría a resolver un `State` que el
 /// llamador ya tiene en la mano.
-pub fn open_annotator_path(
-    app: &AppHandle,
-    captures_dir: &Path,
-    path: &str,
-) -> Result<(), String> {
+pub fn open_annotator_path(app: &AppHandle, captures_dir: &Path, path: &str) -> Result<(), String> {
     let target = crate::capture::ensure_capture_in_dir(captures_dir, Path::new(path))?;
     let (width, height) = png_size(&target)?;
 

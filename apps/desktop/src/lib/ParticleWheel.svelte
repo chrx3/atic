@@ -18,6 +18,7 @@
   import {
     nodeAngle as angleOf,
     nodePosition,
+    liveDropPosition,
     separators as wedgeSeparators,
     wedgeClip,
   } from "$surfaces/overlay/pill/wheelGeometry";
@@ -38,6 +39,10 @@
     hint = "",
     /** Texto del núcleo cuando es botón. La pill pasa "Cerrar". */
     centerLabel = "Abrir Atic",
+    /** Gota viva colgada del anillo: grabación o dictado. */
+    live = "off" as "off" | "recording" | "dictating",
+    liveBusy = false,
+    onLive,
     onSelect,
     onCenter,
   }: {
@@ -54,6 +59,9 @@
     onSelect?: (id: ToolId) => void;
     /** Si está, la marca central es un botón (cerrar en la pill). */
     onCenter?: () => void;
+    live?: "off" | "recording" | "dictating";
+    liveBusy?: boolean;
+    onLive?: () => void;
   } = $props();
 
   const NODE_COUNT = $derived(tools.length);
@@ -75,6 +83,10 @@
     core: 58,
     /** Cerrado todo vuelve al disco de la pill en reposo (`PILL.bar`). */
     closed: 40,
+    /** Gota de grabación/dictado que cuelga bajo el anillo. */
+    live: 36,
+    /** Hueco entre la gota de las 6 y la gota viva (bajo el alcance ~10 px). */
+    liveGap: 8,
   } as const;
 
   let host = $state<HTMLDivElement | null>(null);
@@ -91,6 +103,16 @@
    */
   const ringRatio = $derived(compact ? 0.28 : 0.27);
   const ringRadius = $derived(Math.min(width, height) * ringRatio);
+  const livePos = $derived(
+    liveDropPosition(
+      { width, height },
+      ringRadius,
+      SKIN.node,
+      SKIN.live,
+      SKIN.liveGap,
+    ),
+  );
+  const liveOut = $derived(compact && revealed && live !== "off");
   const activeTool = $derived(
     tools.find((tool) => tool.id === activeId) ?? null,
   );
@@ -456,6 +478,7 @@
   class="pw"
   class:is-compact={compact}
   class:is-revealed={revealed}
+  class:is-live={liveOut}
   bind:this={host}
   onwheel={onWheel}
 >
@@ -491,6 +514,13 @@
                    --delay: calc({index} * var(--duration-micro))"
           ></i>
         {/each}
+        <i
+          class="pw-blob is-live"
+          class:is-out={liveOut}
+          style="left: {livePos.x}px; top: {livePos.y}px;
+                 --d: {preFilter(SKIN.live)}px;
+                 --tx: {width / 2 - livePos.x}px; --ty: {height / 2 - livePos.y}px"
+        ></i>
       </div>
     {/if}
 
@@ -554,6 +584,36 @@
       {/each}
     </div>
 
+    {#if compact}
+      <button
+        type="button"
+        class="pw-live"
+        class:is-on={liveOut}
+        class:is-rec={live === "recording"}
+        style="left: {livePos.x}px; top: {livePos.y}px; width: {SKIN.live}px; height: {SKIN.live}px"
+        data-no-drag
+        disabled={liveBusy || live === "off"}
+        aria-label={live === "recording"
+          ? "Detener grabación"
+          : live === "dictating"
+            ? "Detener dictado"
+            : "Inactivo"}
+        title={live === "recording"
+          ? "Detener grabación"
+          : live === "dictating"
+            ? "Dictando · clic para detener"
+            : undefined}
+        onpointerdown={(e) => e.stopPropagation()}
+        onclick={() => onLive?.()}
+      >
+        {#if live === "recording"}
+          <span class="pw-live-square" aria-hidden="true"></span>
+        {:else if live === "dictating"}
+          <ToolIcon id="dictation" size={16} strokeWidth={1.5} />
+        {/if}
+      </button>
+    {/if}
+
     <div class="pw-center">
       <!-- Núcleo neutro: evita que el centro salte entre gajos. En la pill
            cierra la rueda; no abre la ventana principal. -->
@@ -605,6 +665,10 @@
     user-select: none;
   }
 
+  .pw.is-revealed.is-live {
+    overflow: visible;
+  }
+
   .pw-canvas {
     position: absolute;
     inset: 0;
@@ -647,9 +711,86 @@
     transform: translate(var(--tx, 0px), var(--ty, 0px)) scale(var(--sc));
     transition: transform var(--morph-close-dur) var(--morph-close-ease);
   }
-  .pw.is-revealed .pw-blob {
+  .pw.is-revealed .pw-blob:not(.is-live) {
     transform: none;
     transition: transform var(--morph-open-dur) var(--morph-ease) var(--delay, 0ms);
+  }
+
+  .pw-blob.is-live {
+    /* Fuera, escala 0 en el núcleo: si quedara al tamaño cerrado, el centro
+       se engordaría con una gota fantasma aunque no hubiera grabación. */
+    transform: translate(var(--tx, 0px), var(--ty, 0px)) scale(0);
+    transition: transform 220ms cubic-bezier(0.25, 1, 0.5, 1);
+  }
+
+  .pw-blob.is-live.is-out {
+    transform: none;
+  }
+
+  .pw-live {
+    position: absolute;
+    z-index: 4;
+    display: grid;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    border-radius: 999px;
+    background: transparent;
+    color: var(--rec);
+    cursor: pointer;
+    place-items: center;
+    transform: translate(-50%, -50%);
+    opacity: 0;
+    pointer-events: none;
+    transition:
+      opacity 160ms cubic-bezier(0.25, 1, 0.5, 1),
+      transform 120ms cubic-bezier(0.25, 1, 0.5, 1);
+  }
+
+  .pw-live.is-on {
+    opacity: 1;
+    pointer-events: auto;
+    transition-delay: 80ms;
+  }
+
+  .pw-live:not(.is-rec) {
+    color: var(--text);
+  }
+
+  .pw-live:hover:not(:disabled) {
+    transform: translate(-50%, -50%) scale(1.04);
+  }
+
+  .pw-live:active:not(:disabled) {
+    transform: translate(-50%, -50%) scale(0.96);
+  }
+
+  .pw-live:focus-visible {
+    outline: none;
+    box-shadow: var(--rb-focus);
+  }
+
+  .pw-live-square {
+    width: 10px;
+    height: 10px;
+    background: currentColor;
+    animation: pw-live-pulse 1.6s linear infinite;
+  }
+
+  @keyframes pw-live-pulse {
+    0%,
+    100% {
+      opacity: 0.55;
+    }
+    50% {
+      opacity: 1;
+    }
+  }
+
+  .pw:not(.is-revealed) .pw-live {
+    opacity: 0;
+    pointer-events: none;
+    transition-delay: 0ms;
   }
 
   /* Cubre todo el lienzo: los gajos se reparten el rectángulo completo. */
@@ -932,6 +1073,8 @@
     .pw-nodes,
     .pw-caption,
     .pw-blob,
+    .pw-live,
+    .pw-live-square,
     .pw.is-revealed .pw-nodes,
     .pw.is-revealed .pw-caption,
     .pw.is-revealed .pw-blob {

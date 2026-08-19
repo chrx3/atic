@@ -115,6 +115,13 @@ export interface AticEvents {
    * así que el cache `atic-theme` no alcanza: hay que avisarle por IPC.
    */
   "ui-theme": string;
+  /**
+   * El setup o la práctica de primer uso cambió.
+   *
+   * El overlay no comparte el store de `main`: tiene que volver a leer config
+   * para mostrar u ocultar el coach junto a la pill.
+   */
+  "onboarding-practice": void;
   /** Float launcher: ancla / dismiss (sale de la pill). */
   "launcher-bubble-anchor": BubbleOpen;
   "launcher-bubble-dismiss": void;

@@ -11,17 +11,18 @@
   import { config } from "$domain/config.svelte";
   import { recordings } from "$domain/recordings.svelte";
   import { sessionEffect } from "$domain/session";
-  import { toasts } from "$domain/toasts.svelte";
+  import { toastError, toasts } from "$domain/toasts.svelte";
   import OnboardingModal from "$features/onboarding/OnboardingModal.svelte";
   import SearchModal from "$features/search/SearchModal.svelte";
   import { onOpenSearchRequested } from "$ipc/search";
+  import { checkAppUpdate } from "$ipc/updates";
   import { closeWindow, minimizeWindow, toggleMaximizeWindow } from "$ipc/windows";
   import WindowFrame from "$patterns/WindowFrame.svelte";
   import Icon from "$ui/Icon.svelte";
   import IconButton from "$ui/IconButton.svelte";
   import Modal from "$ui/Modal.svelte";
   import ToastStack from "$ui/ToastStack.svelte";
-  import { AppWindow, Search, Settings, SlidersHorizontal } from "$lib/icons";
+  import { AppWindow, GraduationCap, Search, Settings, SlidersHorizontal } from "$lib/icons";
   import ToolDetailModal from "./ToolDetailModal.svelte";
   import ToolRail from "./ToolRail.svelte";
   import { provideMainUi } from "./mainUi.svelte";
@@ -29,6 +30,7 @@
   const ui = provideMainUi();
   const isDev = import.meta.env.DEV;
   let launcherLabOpen = $state(false);
+  let updateCheckStarted = false;
 
   // Panel estático en dev: sin dynamic import que pueda dejar la UI a medias.
   let PickerLabPanel = $state<typeof import("$lib/dev/PickerLabPanel.svelte").default | null>(
@@ -92,6 +94,22 @@
     return () => stop?.();
   });
 
+  $effect(() => {
+    if (isDev || updateCheckStarted) return;
+    const cfg = config.current;
+    if (!cfg?.onboarding_done) return;
+    updateCheckStarted = true;
+    void checkAppUpdate()
+      .then((update) => {
+        if (!update) return;
+        toasts.push(
+          `Hay una versión nueva (${update.version}). Instalála en Ajustes → Información.`,
+          8000,
+        );
+      })
+      .catch(() => {});
+  });
+
   const tool = $derived(toolById(ui.activeTool));
 
   function onKeydown(event: KeyboardEvent) {
@@ -129,6 +147,15 @@
       <Icon icon={Settings} size={14} />
     </IconButton>
 
+    <IconButton
+      label="Repetir el tutorial"
+      size="sm"
+      pressed={Boolean(config.current && !config.current.onboarding_done)}
+      onclick={() => void ui.replayOnboarding().catch(toastError)}
+    >
+      <Icon icon={GraduationCap} size={14} />
+    </IconButton>
+
     {#if isDev}
       <IconButton
         label={launcherLabOpen ? "Cerrar launcher lab (Ctrl+Alt+F)" : "Launcher lab (Ctrl+Alt+F)"}
@@ -159,7 +186,9 @@
 </WindowFrame>
 
 {#if config.current && !config.current.onboarding_done}
-  <OnboardingModal onDone={() => toasts.push("Listo. Podés grabar cuando quieras.")} />
+  {#key ui.onboardingReplay}
+    <OnboardingModal onDone={() => toasts.push("Ahora practiquemos junto a la pill.")} />
+  {/key}
 {/if}
 
 {#if ui.searchOpen}

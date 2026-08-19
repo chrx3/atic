@@ -117,8 +117,14 @@ Sin cupo de Actions, el instalador de Windows se genera en local
 (`pnpm tauri build --bundles nsis`) y se sube al Release a mano:
 
 ```bash
-gh release create v0.4.5 path/al/Atic_0.4.5_x64-setup.exe --title v0.4.5 --latest
+gh release create v0.4.6 --title v0.4.6 --latest ^
+  path/al/Atic_0.4.6_x64-setup.exe ^
+  path/al/Atic_0.4.6_x64-setup.exe.sig ^
+  path/al/latest.json
 ```
+
+El `.exe` solo no alcanza: el updater necesita también `.sig` y `latest.json`
+(los genera `tauri build` con `createUpdaterArtifacts`).
 
 Sin firma Authenticode / notarization de Apple, Windows puede mostrar
 SmartScreen y macOS Gatekeeper pedirá Abrir desde Ajustes. Los modelos Whisper
@@ -134,8 +140,12 @@ minisign; la clave privada **nunca** va al repo.
    `apps/desktop/src-tauri/tauri.conf.json` → `plugins.updater.pubkey`
 3. Secrets de Actions: `TAURI_SIGNING_PRIVATE_KEY` y
    `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
+4. En local, las mismas variables de entorno antes de `pnpm tauri build --bundles nsis`
 
 Endpoint: `https://github.com/chrx3/atic/releases/latest/download/latest.json`
+
+En la app: Ajustes → Información → Buscar actualizaciones. Si el `version` del
+manifest es más nuevo, aparece **Actualizar**.
 
 ## Depurar la pill y el pegado
 

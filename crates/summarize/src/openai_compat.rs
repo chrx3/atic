@@ -108,10 +108,7 @@ impl Summarizer for OpenAiCompatSummarizer {
         let status = response.status().as_u16();
         if !(200..300).contains(&status) {
             let text = response.text().unwrap_or_default();
-            return Err(SummarizeError::Api {
-                status,
-                body: text.chars().take(500).collect(),
-            });
+            return Err(SummarizeError::from_http(status, &text, &self.model));
         }
 
         let mut raw = String::new();

@@ -13,9 +13,11 @@ import {
   Crop,
   FileText,
   Folder,
+  GraduationCap,
   Globe,
   GripVertical,
   History,
+  Info,
   Keyboard,
   Lightbulb,
   List,
@@ -76,7 +78,8 @@ export type SettingsIconId =
   | "shortcuts"
   | "audio"
   | "summary"
-  | "settings";
+  | "settings"
+  | "about";
 
 export type AppIconId = ToolId | SettingsIconId;
 
@@ -94,6 +97,7 @@ export const TOOL_ICONS: Record<AppIconId, IconNode> = {
   shortcuts: Keyboard,
   audio: AudioLines,
   summary: FileText,
+  about: Info,
 };
 
 export const LAUNCHER_ICONS: Record<string, IconNode> = {
@@ -166,6 +170,7 @@ export {
   ArrowUp,
   ChevronLeft,
   Folder,
+  GraduationCap,
   Cpu,
   House,
   Paperclip,

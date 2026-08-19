@@ -963,6 +963,33 @@ pub fn delete_clipboard_item(
     Ok(())
 }
 
+/// Saca una captura del historial sin tocar el PNG.
+///
+/// El archivo es del gestor de capturas; si se borra desde allá, el historial
+/// tiene que olvidarlo o deja un ítem con ruta muerta.
+pub(crate) fn dismiss_capture(app: &AppHandle, cap_id: &str) {
+    let Ok(shared) = shared_history() else {
+        return;
+    };
+    let Some(state) = app.try_state::<AppState>() else {
+        return;
+    };
+    let dir = state.dirs.clipboard_dir();
+    let id = format!("capture-{cap_id}");
+    let fp = format!("capture:{cap_id}");
+    let mut hist = shared.lock_or_recover();
+    hist.items
+        .retain(|item| item.id != id && item.fingerprint != fp);
+    if hist.last_fingerprint.as_deref() == Some(fp.as_str()) {
+        hist.last_fingerprint = hist.items.first().map(|i| i.fingerprint.clone());
+    }
+    hist.deleted_fingerprints.insert(fp);
+    save_dismissed_captures(&dir, &hist.deleted_fingerprints);
+    save_history(&dir, &hist.items);
+    drop(hist);
+    let _ = app.emit("clipboard-history-changed", ());
+}
+
 /// Vacía el historial conservando los pines.
 #[tauri::command]
 pub fn clear_clipboard_history(app: AppHandle, state: State<AppState>) -> Result<(), String> {

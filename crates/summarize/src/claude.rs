@@ -84,10 +84,7 @@ impl Summarizer for ClaudeSummarizer {
         let status = response.status().as_u16();
         if !(200..300).contains(&status) {
             let text = response.text().unwrap_or_default();
-            return Err(SummarizeError::Api {
-                status,
-                body: truncate(&text, 500),
-            });
+            return Err(SummarizeError::from_http(status, &text, &self.model));
         }
 
         let mut raw = String::new();
@@ -155,15 +152,6 @@ pub(crate) fn build_summary(
         subject,
         backend: backend.to_string(),
         created_at: Utc::now(),
-    }
-}
-
-fn truncate(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        s.to_string()
-    } else {
-        let t: String = s.chars().take(max).collect();
-        format!("{t}…")
     }
 }
 
