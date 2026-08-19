@@ -37,6 +37,28 @@ export type Surface = "none" | "wheel" | "edge";
  */
 export type Dock = { edge: DockEdge; expanded: boolean };
 
+export type Activity = "idle" | "recording" | "dictating";
+
+/**
+ * Hueco extra en la tira acoplada.
+ *
+ * La grabación ya no roba un slot: cuelga como gota bajo el cuerpo, fundida
+ * al líquido. Se deja la función para no reescribir a los tests de geometría
+ * de la tira: el extra ahora es `liveHang`, no un botón más.
+ */
+export function islandLiveSlots(_activity: Activity): number {
+  return 0;
+}
+
+/** Extra de caja para la gota viva (diámetro + cuello). */
+export function liveHang(activity: Activity, surface: Surface = "none"): number {
+  if (activity === "recording") return PILL.recDrop + PILL.recDropGap;
+  if (activity === "dictating" && surface === "wheel") {
+    return PILL.recDrop + PILL.recDropGap;
+  }
+  return 0;
+}
+
 /**
  * El contenido que la pill tiene que poder mostrar, en píxeles.
  *
@@ -48,25 +70,29 @@ export function contentFor(
   surface: Surface,
   barW: number,
   dock: Dock | null = null,
+  activity: Activity = "idle",
 ): Size {
   if (surface === "wheel") {
     const side = PILL.wheel - PILL.pad * 2;
-    return { w: side, h: side };
+    const hang = liveHang(activity, "wheel") > 0 ? PILL.wheelLiveHang : 0;
+    return { w: side, h: side + hang };
   }
   if (surface === "edge" && dock) {
     // Abierta es la tira de herramientas: acoplada, la pill deja de ser un
     // indicador y pasa a ser el acceso. Se despliega A LO LARGO del borde, que
     // es el único eje donde hay lugar sin taparle la pantalla al usuario.
+    const hang = liveHang(activity, "edge");
     if (dock.expanded) {
-      const long = islandStripLong(WHEEL_TOOLS.length);
+      const long = islandStripLong(WHEEL_TOOLS.length + islandLiveSlots(activity));
       return dockAxis(dock.edge) === "x"
-        ? { w: PILL.islandTool, h: long }
-        : { w: long, h: PILL.islandTool };
+        ? { w: PILL.islandTool + hang, h: long }
+        : { w: long, h: PILL.islandTool + hang };
     }
     // En reposo, una pestaña: fina contra el borde y larga a lo largo de él.
+    // Grabando, la gota cuelga hacia adentro (el pivote `dock*` clava el canto).
     return dockAxis(dock.edge) === "x"
-      ? { w: PILL.islandThick, h: PILL.islandLong }
-      : { w: PILL.islandLong, h: PILL.islandThick };
+      ? { w: PILL.islandThick + hang, h: PILL.islandLong }
+      : { w: PILL.islandLong, h: PILL.islandThick + hang };
   }
   return { w: Math.max(barW, PILL.bar), h: PILL.bar };
 }
@@ -76,8 +102,9 @@ export function targetFor(
   surface: Surface,
   barW: number,
   dock: Dock | null = null,
+  activity: Activity = "idle",
 ): Size {
-  return windowFor(contentFor(surface, barW, dock));
+  return windowFor(contentFor(surface, barW, dock, activity));
 }
 
 /**
@@ -208,7 +235,7 @@ export const FLIGHT_SKIP_PX = 48;
  */
 export function isDiscOnly(state: {
   surface: Surface;
-  activity: "idle" | "recording" | "dictating";
+  activity: Activity;
   hasQueue: boolean;
   agentAlert: boolean;
 }): boolean {

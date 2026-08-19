@@ -11,6 +11,7 @@
    * también—, y sin copia cada tecla ya habría tocado el store.
    */
   import type { Recording, Segment, Speaker, Transcript } from "$core/types";
+  import { isJunkTranscriptText } from "$core/transcriptText";
   import { playback } from "$domain/playback.svelte";
   import { recordings } from "$domain/recordings.svelte";
   import { toastError, toasts } from "$domain/toasts.svelte";
@@ -27,7 +28,9 @@
   import Select from "$ui/Select.svelte";
   import TextArea from "$ui/TextArea.svelte";
   import { Trash2 } from "$lib/icons";
-  import AudioPlayer from "./AudioPlayer.svelte";
+  import RecordingPlayer from "./RecordingPlayer.svelte";
+  import TranscribeModelSelect from "./TranscribeModelSelect.svelte";
+  import { models } from "$domain/models.svelte";
 
   let {
     recording,
@@ -63,19 +66,14 @@
   const editing = $derived(draft !== null);
 
   /**
-   * Los marcadores de silencio no se muestran.
+   * Silencio y bucles de estática no se muestran.
    *
-   * Whisper emite `[silence]` en los huecos y en una reunión de una hora son
-   * cientos de filas vacías entre las que sí tienen texto.
+   * Whisper emite `[silence]` en los huecos, y sobre ruido plano inventa
+   * la misma frase una y otra vez. En una reunión larga ensucian la lectura.
    */
-  function isSilence(text: string): boolean {
-    const compact = text.trim().replace(/\s+/g, "").toLowerCase();
-    return !compact || /^[[(]?silence/.test(compact);
-  }
-
   const segments = $derived(
     (draft?.segments ?? stored?.segments ?? []).filter(
-      (segment) => !isSilence(segment.text),
+      (segment) => !isJunkTranscriptText(segment.text),
     ),
   );
 
@@ -386,11 +384,7 @@
 
   {#snippet actions()}
     <div class="flex w-full flex-col gap-3">
-      <AudioPlayer
-        alwaysVisible
-        dismissible={false}
-        placeholder="Elegí un fragmento para escucharlo"
-      />
+      <RecordingPlayer {recording} />
 
       <div class="flex flex-wrap items-center gap-2">
         <div class="w-40">
@@ -415,14 +409,31 @@
         </Button>
 
         {#if onRetranscribe}
-          <Button
-            variant="ghost"
-            loading={retranscribing}
-            disabled={!canTranscribe || editing}
-            onclick={() => void retranscribe()}
-          >
-            Re-transcribir
-          </Button>
+          <div class="min-w-52 max-w-72 flex-1">
+            <TranscribeModelSelect disabled={retranscribing || editing} />
+          </div>
+          {#if !models.meetingCanTranscribe}
+            <Button
+              variant="soft"
+              loading={models.downloading !== null}
+              disabled={editing}
+              onclick={() => {
+                const id = models.meetingModel?.id;
+                if (id) void models.download(id).catch(toastError);
+              }}
+            >
+              Descargar modelo
+            </Button>
+          {:else}
+            <Button
+              variant="ghost"
+              loading={retranscribing}
+              disabled={!canTranscribe || editing}
+              onclick={() => void retranscribe()}
+            >
+              Re-transcribir
+            </Button>
+          {/if}
         {/if}
       </div>
 

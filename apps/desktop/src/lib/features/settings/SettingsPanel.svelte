@@ -12,6 +12,7 @@
   import type { IconId } from "$lib/ToolIcon.svelte";
   import AgentsSection from "./AgentsSection.svelte";
   import AudioSection from "./AudioSection.svelte";
+  import AboutSection from "./AboutSection.svelte";
   import CapturesSection from "./CapturesSection.svelte";
   import DictationSection from "./DictationSection.svelte";
   import GeneralSection from "./GeneralSection.svelte";
@@ -38,6 +39,7 @@
     ...(SHOW_AGENTS
       ? [{ value: "agents" as const, label: "Agentes", icon: "agents" as IconId }]
       : []),
+    { value: "about", label: "Información", icon: "about" },
   ];
 
   let {
@@ -86,6 +88,8 @@
           <SummarySection />
         {:else if SHOW_AGENTS && section === "agents"}
           <AgentsSection />
+        {:else if section === "about"}
+          <AboutSection />
         {/if}
       </div>
     {/key}

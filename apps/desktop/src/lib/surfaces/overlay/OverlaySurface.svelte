@@ -19,6 +19,7 @@
   import LauncherFloat from "./launcher/LauncherFloat.svelte";
   import SnippetsFloat from "./snippets/SnippetsFloat.svelte";
   import PillSurface from "./pill/PillSurface.svelte";
+  import PracticeCoach from "$features/onboarding/PracticeCoach.svelte";
   import { getConfig } from "$ipc/config";
   import {
     onOverlayYieldMain,
@@ -353,6 +354,7 @@
     {#if shown}
       <PillSurface />
     {/if}
+    <PracticeCoach />
 
     {#if isDev && launcherLab.open && LauncherLabPanel}
       <div class="launcher-lab-host" bind:this={launcherLabEl}>

@@ -9,6 +9,7 @@ import {
   onModelDownloadProgress,
 } from "$ipc/models";
 import { subscribe } from "$ipc/events";
+import { groqWhisperLabel } from "$core/groqWhisper";
 import type { ModelStatus } from "$core/types";
 import { config } from "./config.svelte";
 import { toasts } from "./toasts.svelte";
@@ -25,6 +26,29 @@ class ModelsStore implements DomainStore {
     return d && d.total > 0 ? Math.round((d.downloaded / d.total) * 100) : 0;
   }
 
+  /** El modelo local de reuniones elegido ahora. */
+  get meetingModel(): ModelStatus | undefined {
+    const id = config.current?.whisper_model ?? "base";
+    return this.items.find((m) => m.id === id);
+  }
+
+  get meetingUsesGroq(): boolean {
+    return config.current?.meeting_backend === "groq";
+  }
+
+  /** Hay motor listo: Groq (key se valida al transcribir) o modelo local en disco. */
+  get meetingCanTranscribe(): boolean {
+    if (this.meetingUsesGroq) return true;
+    return this.meetingModel?.downloaded === true;
+  }
+
+  get meetingProgressLabel(): string {
+    if (this.meetingUsesGroq) {
+      return groqWhisperLabel(config.current?.meeting_groq_model ?? "whisper-large-v3-turbo");
+    }
+    return this.meetingModel?.display_name ?? "Whisper";
+  }
+
   /**
    * Los modelos que la configuración pide y no están descargados.
    *
@@ -36,8 +60,10 @@ class ModelsStore implements DomainStore {
     const cfg = config.current;
     const find = (id: string) => this.items.find((m) => m.id === id);
     const wanted = [
-      find(cfg?.dictation_whisper_model ?? "base"),
-      find(cfg?.whisper_model ?? "base"),
+      ...(cfg?.dictation_backend === "groq"
+        ? []
+        : [find(cfg?.dictation_whisper_model ?? "base")]),
+      ...(cfg?.meeting_backend === "groq" ? [] : [find(cfg?.whisper_model ?? "base")]),
       ...(cfg?.live_transcription ? [find(cfg.live_whisper_model ?? "small")] : []),
     ];
 

@@ -1,30 +1,32 @@
 <script lang="ts">
   /**
-   * El primer uso: consentimiento, preferencias, modelos y cómo se usa.
+   * El primer uso: consentimiento, Groq o local, modelos, atajos y práctica.
    *
-   * No se puede cerrar. Es lo único de la app que bloquea, y bloquea porque el
-   * paso de consentimiento no es decorativo: en muchas jurisdicciones grabar
-   * una llamada sin avisar es ilegal, y Atic no puede dar por leído algo que el
-   * usuario nunca vio.
+   * No se puede cerrar. El consentimiento no es decorativo: en muchas
+   * jurisdicciones grabar una llamada sin avisar es ilegal.
    *
-   * El tutorial va ÚLTIMO a propósito. Antes esto terminaba en «Modelos»:
-   * salías configurado pero sin que nadie te hubiera mostrado la pill ni un
-   * solo atajo, y toda la interfaz real de Atic vive fuera de esta ventana.
+   * La práctica no vive acá. Esta ventana atrapa el foco; los atajos reales
+   * corren en el escritorio, junto a la pill. Al terminar el setup se cierra
+   * el modal y el overlay toma el coach.
    */
   import { formatMegabytes } from "$core/format";
   import type { ModelStatus } from "$core/types";
   import { config } from "$domain/config.svelte";
   import { models } from "$domain/models.svelte";
   import { downloadModelAndWait } from "$ipc/models";
+  import { minimizeWindow } from "$ipc/windows";
+  import GroqKeyField from "$features/settings/GroqKeyField.svelte";
+  import { SETUP_SHORTCUTS } from "./practice";
   import Banner from "$ui/Banner.svelte";
   import Button from "$ui/Button.svelte";
   import Chip from "$ui/Chip.svelte";
   import Field from "$ui/Field.svelte";
+  import HotkeyCapture from "$ui/HotkeyCapture.svelte";
   import Modal from "$ui/Modal.svelte";
   import ProgressBar from "$ui/ProgressBar.svelte";
+  import SegmentedControl from "$ui/SegmentedControl.svelte";
   import Select from "$ui/Select.svelte";
   import Switch from "$ui/Switch.svelte";
-  import UsageGuide from "./UsageGuide.svelte";
 
   let { onDone }: { onDone: () => void } = $props();
 
@@ -32,12 +34,14 @@
     "Bienvenida",
     "Consentimiento",
     "Preferencias",
+    "Dictado",
     "Modelos",
-    "Cómo se usa",
+    "Atajos",
   ];
 
-  /** Índice del paso de modelos; el tutorial va justo después. */
-  const MODELS_STEP = 3;
+  const DICTATION_STEP = 3;
+  const MODELS_STEP = 4;
+  const SHORTCUTS_STEP = 5;
 
   const cfg = $derived(config.current);
 
@@ -46,10 +50,6 @@
   let downloadingId = $state<string | null>(null);
   let downloadError = $state<string | null>(null);
 
-  /**
-   * Los dos modelos que el onboarding ofrece: el de dictado y el de reuniones.
-   * Pueden ser el mismo, y entonces se muestra una sola fila.
-   */
   const recommended = $derived.by(() => {
     if (!cfg) return [] as ModelStatus[];
     const ids = [cfg.dictation_whisper_model, cfg.whisper_model].filter(
@@ -68,6 +68,12 @@
     recommended.reduce((sum, m) => sum + (m.downloaded ? 0 : m.approx_size_bytes), 0),
   );
 
+  const coreConflicts = $derived(
+    SETUP_SHORTCUTS.filter((item) => config.conflicts.includes(item.conflict)).map(
+      (item) => item.label,
+    ),
+  );
+
   function useLabel(id: string): string {
     const uses: string[] = [];
     if (id === cfg?.dictation_whisper_model) uses.push("Dictado");
@@ -76,10 +82,14 @@
   }
 
   function patch(changes: Parameters<typeof config.patch>[0]) {
-    // Se guarda paso a paso en vez de al final: si la app se cierra a mitad
-    // del onboarding, lo elegido hasta ahí no se pierde. Lo único que espera
-    // hasta el final es `onboarding_done`.
     void config.patch(changes).catch(() => {});
+  }
+
+  function setDictationBackend(value: string) {
+    patch({
+      dictation_backend: value,
+      live_engine: value === "groq" ? "groq" : "local",
+    });
   }
 
   async function downloadMissing(): Promise<boolean> {
@@ -99,27 +109,20 @@
     return true;
   }
 
-  /**
-   * Sale del paso de modelos hacia el tutorial, descargando si se pidió.
-   *
-   * La descarga ya no termina el onboarding: bajar un modelo y quedar frente a
-   * una app cuyos atajos nadie explicó era justamente el problema.
-   */
   async function leaveModels(download: boolean) {
     if (downloadingId) return;
-    // Si la descarga falló, quedarse acá: el error ya está en pantalla.
     if (download && !allReady && !(await downloadMissing())) return;
     step += 1;
   }
 
-  async function finish() {
+  async function startPractice() {
+    if (coreConflicts.length > 0) return;
     saving = true;
     try {
-      await config.patch({ onboarding_done: true });
+      await config.patch({ onboarding_done: true, onboarding_practice_done: false });
       onDone();
+      void minimizeWindow().catch(() => {});
     } catch {
-      // Sin poder marcarlo, el onboarding volvería a salir al reabrir. Es
-      // molesto pero no destructivo, así que igual se deja pasar.
       onDone();
     } finally {
       saving = false;
@@ -142,7 +145,7 @@
           IA que vos configures.
         </p>
         <ul class="flex list-none flex-col gap-2">
-          {#each ["Nunca graba sola: siempre decidís vos.", "El audio no sale del PC al transcribir.", "Podés borrar cualquier grabación cuando quieras."] as claim, i (i)}
+          {#each ["Nunca graba sola: siempre decidís vos.", "El audio no sale del PC al transcribir en local.", "Podés borrar cualquier grabación cuando quieras."] as claim, i (i)}
             <li class="flex items-baseline gap-2 text-sm text-muted">
               <Chip tone="ok">{i + 1}</Chip>
               {claim}
@@ -198,10 +201,40 @@
           cierra la app ni corta una grabación en curso. Para salir del todo, usá
           «Salir» en el menú de la bandeja.
         </p>
+      {:else if step === DICTATION_STEP}
+        <p class="max-w-[60ch] text-sm leading-relaxed text-muted">
+          Si no tenés gráfica, Groq dicta casi al instante. El audio de esa frase corta
+          sale de tu PC. Las reuniones se transcriben en tu máquina por defecto; en
+          Reuniones o Ajustes podés pasarlas a Groq.
+        </p>
+
+        <SegmentedControl
+          value={cfg.dictation_backend === "groq" ? "groq" : "local"}
+          label="Motor de dictado"
+          options={[
+            { value: "groq", label: "Groq" },
+            { value: "local", label: "Local" },
+          ]}
+          onchange={setDictationBackend}
+          full
+        />
+
+        {#if cfg.dictation_backend === "groq"}
+          <GroqKeyField />
+        {:else}
+          <p class="max-w-[60ch] text-xs leading-relaxed text-faint">
+            Whisper corre en el CPU. En el paso siguiente se baja un modelo chico.
+          </p>
+        {/if}
       {:else if step === MODELS_STEP}
         <p class="max-w-[60ch] text-sm leading-relaxed text-muted">
-          La transcripción corre en tu PC. Por defecto se baja un solo modelo rápido que
-          sirve para dictado y para reuniones.
+          {#if cfg.dictation_backend === "groq"}
+            Las reuniones se transcriben en tu PC por defecto. Este modelo también sirve
+            de reserva si Groq no responde.
+          {:else}
+            La transcripción corre en tu PC. Por defecto se baja un solo modelo rápido
+            que sirve para dictado y para reuniones.
+          {/if}
         </p>
 
         <ul class="flex list-none flex-col gap-1.5">
@@ -245,8 +278,43 @@
             desde Ajustes.
           </p>
         {/if}
-      {:else}
-        <UsageGuide />
+      {:else if step === SHORTCUTS_STEP}
+        <p class="max-w-[60ch] text-sm leading-relaxed text-muted">
+          Tres atajos, no diez. Confirmalos o cambialos ahora: después vas a tener que
+          usarlos.
+        </p>
+
+        {#if coreConflicts.length > 0}
+          <Banner
+            tone="warn"
+            title={coreConflicts.length === 1
+              ? "Un atajo ya lo tenía tomado otra app"
+              : `${coreConflicts.length} atajos ya los tenía tomados otra app`}
+          >
+            Elegí otra combinación para {coreConflicts.join(", ")}.
+          </Banner>
+        {/if}
+
+        <ul class="flex list-none flex-col gap-3">
+          {#each SETUP_SHORTCUTS as item (item.key)}
+            <li class="flex items-start justify-between gap-3">
+              <div class="flex min-w-0 flex-col gap-0.5">
+                <span class="text-sm font-medium text-text">{item.label}</span>
+                <span class="text-xs text-faint">{item.hint}</span>
+              </div>
+              <HotkeyCapture
+                value={cfg[item.key]}
+                defaultValue={item.fallback}
+                ariaLabel="Cambiar el atajo de {item.label}"
+                onChange={(sc) => patch({ [item.key]: sc })}
+              />
+            </li>
+          {/each}
+        </ul>
+
+        <p class="text-xs text-faint">
+          El resto está en Ajustes → Atajos.
+        </p>
       {/if}
     </div>
 
@@ -300,8 +368,13 @@
               </Button>
             {/if}
           {:else}
-            <Button variant="primary" loading={saving} onclick={() => void finish()}>
-              Empezar
+            <Button
+              variant="primary"
+              loading={saving}
+              disabled={coreConflicts.length > 0}
+              onclick={() => void startPractice()}
+            >
+              Practicar
             </Button>
           {/if}
         </div>

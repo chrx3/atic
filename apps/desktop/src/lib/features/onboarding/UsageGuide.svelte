@@ -67,6 +67,6 @@
 
   <p class="text-xs text-faint">
     Se cambian en Ajustes → Atajos. Si alguno ya lo usa otra app, Atic te avisa para que
-    elijas otro.
+    elijas otro. Sin gráfica, el dictado va más rápido con Groq (Ajustes → Dictado).
   </p>
 </div>

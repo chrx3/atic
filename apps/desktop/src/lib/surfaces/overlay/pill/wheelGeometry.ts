@@ -25,6 +25,27 @@ export function nodeAngle(index: number, count: number): number {
   return (index / count) * Math.PI * 2 - Math.PI / 2;
 }
 
+/**
+ * Centro de la gota viva que cuelga bajo el anillo.
+ *
+ * El hueco hasta la gota de las 6 (radio del nodo + `gap` + radio de la
+ * gota) tiene que quedar bajo el alcance del filtro (~10 px con σ = 6) para
+ * que se lea como un lóbulo, no como un botón suelto.
+ */
+export function liveDropPosition(
+  size: { width: number; height: number },
+  ringRadius: number,
+  nodeDiameter: number,
+  dropDiameter: number,
+  gap: number,
+): Point {
+  const dropR = dropDiameter / 2;
+  return {
+    x: size.width / 2,
+    y: size.height / 2 + ringRadius + nodeDiameter / 2 + gap + dropR,
+  };
+}
+
 /** Dónde se dibuja el icono del nodo `index`. */
 export function nodePosition(
   index: number,

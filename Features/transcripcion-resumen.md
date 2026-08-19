@@ -4,16 +4,17 @@
 
 ## Resumen
 
-Transcribe grabaciones (y audio importado) con Whisper local, opcionalmente
-en vivo. Genera resúmenes con proveedores BYOK y permite enviar o abrir
-borrador por correo.
+Transcribe grabaciones (y audio importado) con Whisper local o Groq (BYOK),
+opcionalmente en vivo. Genera resúmenes con proveedores BYOK y permite enviar
+o abrir borrador por correo.
 
 ## Cómo se usa
 
-- Tras grabar: transcribir en la app principal.
+- Tras grabar: transcribir en la app principal (Local o Groq).
+- Local no sale del PC. Groq trocea el audio (~10 min) y pide marcas de tiempo.
 - Live transcription si está activada en ajustes, con Whisper local o Groq.
-- Si se selecciona Groq para transcripción, el audio se envía a su API. Los
-  proveedores de resumen reciben texto, no audio.
+- Si se selecciona Groq, el audio se envía a su API. Los proveedores de resumen
+  reciben texto, no audio.
 - Resumen con Claude, Ollama, OpenAI-compat (OpenRouter, Groq, etc.).
 - Envío SMTP o `mailto:` según config.
 

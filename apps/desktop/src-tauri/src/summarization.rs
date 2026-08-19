@@ -87,6 +87,27 @@ pub fn list_summary_providers() -> Vec<ProviderDto> {
     summarize::PROVIDERS.iter().map(ProviderDto::from).collect()
 }
 
+#[derive(Clone, Serialize)]
+pub struct LiveModelsDto {
+    pub models: Vec<String>,
+    /// True si la lista salió del proveedor ahora; false = catálogo estático.
+    pub live: bool,
+    pub selected: String,
+}
+
+/// Modelos que el proveedor ofrece ahora (`GET /models`). Si el ID guardado
+/// ya no está, lo cambia y persiste.
+#[tauri::command]
+pub async fn list_live_summary_models(app: AppHandle) -> LiveModelsDto {
+    tauri::async_runtime::spawn_blocking(move || resolve_and_persist_models(&app))
+        .await
+        .unwrap_or_else(|_| LiveModelsDto {
+            models: Vec::new(),
+            live: false,
+            selected: String::new(),
+        })
+}
+
 /// ¿Ollama responde en la URL configurada?
 #[tauri::command]
 pub fn ollama_available(state: State<AppState>) -> bool {
@@ -97,6 +118,102 @@ pub fn ollama_available(state: State<AppState>) -> bool {
         url
     };
     summarize::ollama_available(&url)
+}
+
+fn catalog_models(info: &ProviderInfo) -> Vec<String> {
+    info.suggested_models
+        .iter()
+        .map(|m| (*m).to_string())
+        .collect()
+}
+
+struct ResolvedModels {
+    models: Vec<String>,
+    live: bool,
+    selected: String,
+}
+
+fn resolve_models(cfg: &SummarizerConfig) -> ResolvedModels {
+    let Some(info) = summarize::find_provider(&cfg.backend) else {
+        return ResolvedModels {
+            models: Vec::new(),
+            live: false,
+            selected: cfg.model.clone(),
+        };
+    };
+    let fallback = summarize::order_models(catalog_models(info), info.default_model);
+    let base = if cfg.base_url.trim().is_empty() {
+        info.default_base_url
+    } else {
+        cfg.base_url.as_str()
+    };
+    let live = summarize::list_remote_models(info.kind, info.id, base, cfg.api_key.as_deref())
+        .ok()
+        .filter(|m| !m.is_empty())
+        .map(|m| summarize::order_models(m, info.default_model));
+    let live_ok = live.is_some();
+    let models = live.unwrap_or(fallback);
+    let selected = summarize::pick_available_model(&cfg.model, &models, info.default_model);
+    ResolvedModels {
+        models,
+        live: live_ok,
+        selected,
+    }
+}
+
+fn persist_summary_model(app: &AppHandle, model: &str) {
+    let Some(state) = app.try_state::<AppState>() else {
+        return;
+    };
+    let snapshot = {
+        let mut cfg = state.config.lock_or_recover();
+        if cfg.summary_model == model {
+            return;
+        }
+        tracing::info!(
+            from = %cfg.summary_model,
+            to = %model,
+            "modelo de resumen actualizado (el proveedor ya no lo ofrece)"
+        );
+        cfg.summary_model = model.to_string();
+        cfg.clone()
+    };
+    let _ = snapshot.save(&state.dirs.config_path());
+}
+
+fn resolve_and_persist_models(app: &AppHandle) -> LiveModelsDto {
+    let Some(state) = app.try_state::<AppState>() else {
+        return LiveModelsDto {
+            models: Vec::new(),
+            live: false,
+            selected: String::new(),
+        };
+    };
+    let cfg = state.config.lock_or_recover().clone();
+    let summarizer_cfg = match summarizer_config_from_app(&cfg) {
+        Ok(c) => c,
+        Err(_) => SummarizerConfig {
+            backend: cfg.summary_backend.clone(),
+            api_key: None,
+            model: cfg.summary_model.clone(),
+            base_url: cfg.summary_base_url.clone(),
+        },
+    };
+    let resolved = resolve_models(&summarizer_cfg);
+    persist_summary_model(app, &resolved.selected);
+    LiveModelsDto {
+        models: resolved.models,
+        live: resolved.live,
+        selected: resolved.selected,
+    }
+}
+
+fn heal_summarizer_model(app: &AppHandle, cfg: &mut SummarizerConfig) {
+    let resolved = resolve_models(cfg);
+    if resolved.selected != cfg.model {
+        persist_summary_model(app, &resolved.selected);
+        cfg.model = resolved.selected;
+    }
 }
 
 fn summarizer_config_from_app(cfg: &atic_core::Config) -> Result<SummarizerConfig, String> {
@@ -168,12 +285,13 @@ fn run_summarize(
     title: String,
     transcript: Transcript,
     template: SummaryTemplate,
-    summarizer_cfg: SummarizerConfig,
+    mut summarizer_cfg: SummarizerConfig,
     summary_path: std::path::PathBuf,
 ) {
     let app_delta = app.clone();
     let id_delta = id.clone();
     let result = (|| {
+        heal_summarizer_model(&app, &mut summarizer_cfg);
         let summarizer = summarize::build_summarizer(&summarizer_cfg)?;
         let mut on_delta = |delta: &str| {
             let _ = app_delta.emit(

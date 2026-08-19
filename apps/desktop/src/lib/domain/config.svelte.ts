@@ -7,6 +7,7 @@ import {
   onShortcutsFailed,
   secretsStatus,
 } from "$ipc/config";
+import { on } from "$ipc/events";
 import { ollamaAvailable } from "$ipc/summaries";
 import type { AppConfig } from "$core/types";
 import type { DomainStore } from "./store";
@@ -32,8 +33,14 @@ class ConfigStore implements DomainStore {
 
   async listen(): Promise<() => void> {
     // Se emite en cada registro, también vacío, para poder limpiar el aviso.
-    const un = await onShortcutsFailed((names) => (this.conflicts = names));
-    return un;
+    const unConflicts = await onShortcutsFailed((names) => (this.conflicts = names));
+    const unPractice = await on("onboarding-practice", () => {
+      void this.hydrate().catch(() => {});
+    });
+    return () => {
+      unConflicts();
+      unPractice();
+    };
   }
 
   /**

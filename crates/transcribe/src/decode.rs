@@ -129,6 +129,35 @@ pub(crate) fn trim_dictation_silence(samples: &[f32]) -> Vec<f32> {
     samples[start..end].to_vec()
 }
 
+/// ¿Hay picos de voz, o el audio es silencio / estática plana?
+///
+/// Whisper inventa frases en bucle sobre ruido estacionario. Si todos los
+/// frames de 20 ms tienen casi el mismo nivel, no vale la pena transcribir.
+pub(crate) fn has_speech_activity(samples: &[f32]) -> bool {
+    const FRAME: usize = (WHISPER_RATE as usize) / 50;
+    if samples.len() < FRAME * 10 {
+        return samples.iter().any(|sample| sample.abs() >= 0.008);
+    }
+
+    let mut levels: Vec<f32> = samples
+        .chunks(FRAME)
+        .map(|frame| {
+            let energy = frame.iter().map(|sample| sample * sample).sum::<f32>();
+            (energy / frame.len() as f32).sqrt()
+        })
+        .collect();
+    if levels.is_empty() {
+        return false;
+    }
+    levels.sort_by(|a, b| a.total_cmp(b));
+    let p10 = levels[levels.len() / 10];
+    let p50 = levels[levels.len() / 2];
+    let peak = levels[levels.len() - 1];
+    let dynamic = peak / (p50 + 1e-6);
+    let spread = p50 / (p10 + 1e-6);
+    dynamic >= 2.4 || spread >= 3.0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -172,5 +201,21 @@ mod tests {
         // Soplido constante (ventilador) sin picos de voz.
         let samples = vec![0.003; WHISPER_RATE as usize * 2];
         assert!(trim_dictation_silence(&samples).is_empty());
+    }
+
+    #[test]
+    fn speech_activity_rejects_silence_and_static() {
+        let silence = vec![0.0; WHISPER_RATE as usize];
+        assert!(!has_speech_activity(&silence));
+        let stationary = vec![0.04; WHISPER_RATE as usize];
+        assert!(!has_speech_activity(&stationary));
+    }
+
+    #[test]
+    fn speech_activity_keeps_a_voice_burst() {
+        let mut samples = vec![0.0; WHISPER_RATE as usize];
+        samples.extend(vec![0.08; WHISPER_RATE as usize / 2]);
+        samples.extend(vec![0.0; WHISPER_RATE as usize / 2]);
+        assert!(has_speech_activity(&samples));
     }
 }

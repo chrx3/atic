@@ -6,18 +6,23 @@ name: Release
 # de Actions; publicar un tag no debe gastar minutos.
 #
 # Para generar instaladores en CI, disparalo a mano:
-#   Actions → Release → Run workflow → tag (ej. v0.4.5; debe existir).
-# En local (Windows):
+#   Actions → Release → Run workflow → tag (ej. v0.4.6; debe existir).
+# En local (Windows), con la clave de firma del updater:
 #   cd apps/desktop && pnpm tauri build --bundles nsis
-#   gh release create v0.4.5 target/release/bundle/nsis/Atic_*_x64-setup.exe
+#   gh release create v0.4.5 --latest ^
+#     target/release/bundle/nsis/Atic_*_x64-setup.exe ^
+#     target/release/bundle/nsis/Atic_*_x64-setup.exe.sig ^
+#     target/release/bundle/nsis/latest.json
+#
+# El auto-updater lee latest.json del release marcado como Latest.
 
 on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Tag a publicar (ej. v0.4.5). Debe existir en el repo."
+        description: "Tag a publicar (ej. v0.4.6). Debe existir en el repo."
         required: true
-        default: "v0.4.5"
+        default: "v0.4.6"
 
 permissions:
   contents: write
@@ -33,6 +38,8 @@ jobs:
             bundle_targets: nsis
             bundle_glob: |
               target/release/bundle/nsis/*-setup.exe
+              target/release/bundle/nsis/*-setup.exe.sig
+              target/release/bundle/nsis/latest.json
           - os: macos-latest
             bundle_targets: app,dmg
             bundle_glob: |
@@ -65,7 +72,41 @@ jobs:
 
       - name: Build instaladores
         working-directory: apps/desktop
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: pnpm tauri build --bundles ${{ matrix.bundle_targets }}
+
+      - name: Write latest.json (Windows updater)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+        run: |
+          $tag = $env:RELEASE_TAG
+          if (-not $tag) { throw "Falta el tag del release." }
+          $ver = $tag.TrimStart('v')
+          $dir = "target/release/bundle/nsis"
+          $exe = Get-ChildItem -Path $dir -Filter "*-setup.exe" | Select-Object -First 1
+          if (-not $exe) { throw "No encontré el instalador NSIS." }
+          $sigPath = "$($exe.FullName).sig"
+          if (-not (Test-Path $sigPath)) { throw "No encontré $($exe.Name).sig. ¿TAURI_SIGNING_PRIVATE_KEY está en los secrets?" }
+          $sig = (Get-Content -Raw -Path $sigPath).Trim()
+          $url = "https://github.com/chrx3/atic/releases/download/$tag/$($exe.Name)"
+          $manifest = [ordered]@{
+            version = $ver
+            notes = "Atic $tag"
+            pub_date = [DateTime]::UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ")
+            platforms = [ordered]@{
+              "windows-x86_64" = [ordered]@{
+                signature = $sig
+                url = $url
+              }
+            }
+          }
+          $out = Join-Path ((Resolve-Path $dir).Path) "latest.json"
+          [System.IO.File]::WriteAllText($out, ($manifest | ConvertTo-Json -Depth 6))
+          Write-Host "Wrote $out -> $url"
 
       - name: Upload a GitHub Release
         uses: softprops/action-gh-release@v2

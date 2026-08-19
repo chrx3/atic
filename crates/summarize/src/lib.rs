@@ -2,6 +2,7 @@
 
 mod claude;
 mod error;
+mod models;
 mod ollama;
 mod openai_compat;
 mod prompts;
@@ -10,6 +11,7 @@ mod thinking;
 
 pub use claude::ClaudeSummarizer;
 pub use error::{Result, SummarizeError};
+pub use models::{list_remote_models, order_models, pick_available_model};
 pub use ollama::OllamaSummarizer;
 pub use openai_compat::OpenAiCompatSummarizer;
 pub use prompts::SummaryTemplate;
@@ -137,5 +139,20 @@ mod tests {
             build_summarizer(&cfg),
             Err(SummarizeError::MissingApiKey)
         ));
+    }
+
+    #[test]
+    fn model_404_is_a_clear_unknown_model() {
+        let err = SummarizeError::from_http(
+            404,
+            r#"{"error":{"message":"The model `x` does not exist","code":"model_not_found"}}"#,
+            "meta-llama/llama-4-maverick-17b-128e-instruct",
+        );
+        match err {
+            SummarizeError::UnknownModel { model } => {
+                assert!(model.contains("maverick"));
+            }
+            other => panic!("unexpected {other}"),
+        }
     }
 }

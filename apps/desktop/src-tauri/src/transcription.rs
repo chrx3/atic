@@ -7,7 +7,7 @@ use std::sync::Arc;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
-use atic_core::{RecordingStatus, Speaker, Transcript};
+use atic_core::{secrets, RecordingStatus, SecretKind, Speaker, Transcript};
 use atic_transcribe::{self as transcribe, TrackInput};
 
 use crate::state::AppState;
@@ -65,7 +65,11 @@ pub fn list_models(state: State<AppState>) -> Vec<ModelStatus> {
 pub fn current_model_ready(state: State<AppState>) -> bool {
     let cfg = state.config.lock_or_recover().clone();
     let dir = state.dirs.models_dir();
-    let meeting_ok = transcribe::models::require_downloaded(&dir, &cfg.whisper_model).is_ok();
+    let meeting_ok = if cfg.meeting_backend == "groq" {
+        true
+    } else {
+        transcribe::models::require_downloaded(&dir, &cfg.whisper_model).is_ok()
+    };
     // Groq: key del llavero; no bloquea el arranque.
     let dictation_ok = if cfg.dictation_backend == "groq" {
         true
@@ -162,9 +166,20 @@ pub fn transcribe_recording(app: AppHandle, id: String) -> Result<(), String> {
         .ok_or_else(|| "Grabación no encontrada.".to_string())?;
 
     let cfg = state.config.lock_or_recover().clone();
-    let model_path =
-        transcribe::models::require_downloaded(&state.dirs.models_dir(), &cfg.whisper_model)
-            .map_err(|e| e.to_string())?;
+    let engine = if cfg.meeting_backend == "groq" {
+        let api_key = resolve_groq_api_key().ok_or_else(|| {
+            "Configurá tu API key de Groq en Ajustes, o pasá la transcripción a Local.".to_string()
+        })?;
+        MeetingEngine::Groq {
+            api_key,
+            model: cfg.meeting_groq_model.clone(),
+        }
+    } else {
+        let model_path =
+            transcribe::models::require_downloaded(&state.dirs.models_dir(), &cfg.whisper_model)
+                .map_err(|e| e.to_string())?;
+        MeetingEngine::Local(model_path)
+    };
 
     let want = cfg.effective_transcribe_tracks();
     let want_mic = want == "both" || want == "mic";
@@ -204,16 +219,29 @@ pub fn transcribe_recording(app: AppHandle, id: String) -> Result<(), String> {
 
     let app2 = app.clone();
     std::thread::spawn(move || {
-        run_transcription(app2, id, model_path, mic, system, language, transcript_path);
+        run_transcription(app2, id, engine, mic, system, language, transcript_path);
     });
     Ok(())
+}
+
+fn resolve_groq_api_key() -> Option<String> {
+    secrets::get_secret(SecretKind::GroqApiKey)
+        .ok()
+        .flatten()
+        .map(|k| k.trim().to_string())
+        .filter(|k| !k.is_empty())
+}
+
+enum MeetingEngine {
+    Local(PathBuf),
+    Groq { api_key: String, model: String },
 }
 
 #[allow(clippy::too_many_arguments)]
 fn run_transcription(
     app: AppHandle,
     id: String,
-    model_path: PathBuf,
+    engine: MeetingEngine,
     mic: Option<PathBuf>,
     system: Option<PathBuf>,
     language: Option<String>,
@@ -233,53 +261,64 @@ fn run_transcription(
         });
     }
 
-    let state = app.state::<AppState>();
-    let loaded = match crate::state::get_or_load_whisper(&state, &model_path) {
-        Ok(m) => m,
-        Err(message) => {
-            let _ = state
-                .db
-                .lock_or_recover()
-                .update_status(&id, RecordingStatus::Error);
-            let _ = app.emit(
-                "transcribe-error",
-                ErrorIdPayload {
-                    id: id.clone(),
-                    message,
-                },
-            );
-            let _ = app.emit("recordings-changed", ());
-            return;
-        }
-    };
-
     let last = Arc::new(AtomicI32::new(-1));
     let app_prog = app.clone();
     let id_prog = id.clone();
-    let result = transcribe::transcribe_with_model(
-        &loaded.model,
-        &tracks,
-        language.as_deref(),
-        transcribe::TranscribeMode::Meeting,
-        move |progress| {
-            let pct = (progress * 100.0) as i32;
-            if pct != last.load(Ordering::Relaxed) {
-                last.store(pct, Ordering::Relaxed);
-                let _ = app_prog.emit(
-                    "transcribe-progress",
-                    TranscribeProgress {
-                        id: id_prog.clone(),
-                        progress,
-                    },
-                );
+    let on_progress = move |progress: f32| {
+        let pct = (progress * 100.0) as i32;
+        if pct != last.load(Ordering::Relaxed) {
+            last.store(pct, Ordering::Relaxed);
+            let _ = app_prog.emit(
+                "transcribe-progress",
+                TranscribeProgress {
+                    id: id_prog.clone(),
+                    progress,
+                },
+            );
+        }
+    };
+
+    let result = match engine {
+        MeetingEngine::Local(model_path) => {
+            let state = app.state::<AppState>();
+            match crate::state::get_or_load_whisper(&state, &model_path) {
+                Ok(loaded) => transcribe::transcribe_with_model(
+                    &loaded.model,
+                    &tracks,
+                    language.as_deref(),
+                    transcribe::TranscribeMode::Meeting,
+                    on_progress,
+                ),
+                Err(message) => {
+                    let _ = state
+                        .db
+                        .lock_or_recover()
+                        .update_status(&id, RecordingStatus::Error);
+                    let _ = app.emit(
+                        "transcribe-error",
+                        ErrorIdPayload {
+                            id: id.clone(),
+                            message,
+                        },
+                    );
+                    let _ = app.emit("recordings-changed", ());
+                    return;
+                }
             }
-        },
-    );
+        }
+        MeetingEngine::Groq { api_key, model } => transcribe::transcribe_groq_recording(
+            &api_key,
+            &tracks,
+            language.as_deref(),
+            &model,
+            on_progress,
+        ),
+    };
 
     let state = app.state::<AppState>();
     match result {
         Ok(transcript) if transcript.segments.is_empty() => {
-            tracing::warn!(%id, "Whisper terminó sin segmentos de texto");
+            tracing::warn!(%id, "la transcripción terminó sin segmentos de texto");
             let _ = state
                 .db
                 .lock_or_recover()
@@ -289,7 +328,7 @@ fn run_transcription(
                 ErrorIdPayload {
                     id: id.clone(),
                     message:
-                        "Whisper no produjo texto; prueba re-transcribir o revisa la pista/idioma."
+                        "No se produjo texto; prueba re-transcribir o revisá la pista y el idioma."
                             .into(),
                 },
             );

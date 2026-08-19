@@ -213,14 +213,12 @@ mod tests {
 
     #[test]
     fn notification_irrelevante_se_ignora() {
-        assert!(
-            classify_hook(&json!({
-                "session_id": "s1",
-                "hook_event_name": "Notification",
-                "notification_type": "auth_success"
-            }))
-            .is_none()
-        );
+        assert!(classify_hook(&json!({
+            "session_id": "s1",
+            "hook_event_name": "Notification",
+            "notification_type": "auth_success"
+        }))
+        .is_none());
     }
 
     #[test]

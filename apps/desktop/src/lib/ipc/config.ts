@@ -62,3 +62,12 @@ export const failedShortcuts = () => invoke<string[]>("failed_shortcuts");
 /** Se emite en cada registro, también vacío (permite limpiar el aviso). */
 export const onShortcutsFailed = (cb: (names: string[]) => void): Promise<UnlistenFn> =>
   on("shortcuts-failed", cb);
+
+/** Claves de Groq: cuenta gratis, suficiente para dictar. */
+export const GROQ_KEYS_URL = "https://console.groq.com/keys";
+
+/** Abre una URL en el navegador del sistema. */
+export async function openExternalUrl(url: string): Promise<void> {
+  const { openUrl } = await import("@tauri-apps/plugin-opener");
+  await openUrl(url);
+}

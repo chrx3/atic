@@ -14,7 +14,7 @@
   import { config } from "$domain/config.svelte";
   import { toastError, toasts } from "$domain/toasts.svelte";
   import { secretsStatus, setSecret } from "$ipc/config";
-  import { listSummaryProviders, ollamaAvailable } from "$ipc/summaries";
+  import { listLiveSummaryModels, listSummaryProviders, ollamaAvailable } from "$ipc/summaries";
   import SettingsGroup from "$patterns/SettingsGroup.svelte";
   import SettingsRow from "$patterns/SettingsRow.svelte";
   import Banner from "$ui/Banner.svelte";
@@ -27,6 +27,8 @@
   let providers = $state<SummaryProvider[]>([]);
   let hasKey = $state<Record<string, boolean>>({});
   let ollamaUp = $state<boolean | null>(null);
+  let liveModels = $state<string[]>([]);
+  let liveOk = $state(false);
   let key = $state("");
   let savingKey = $state(false);
 
@@ -61,6 +63,43 @@
   });
 
   const provider = $derived(providers.find((p) => p.id === cfg?.summary_backend));
+
+  // Pedir al proveedor su lista actual. Si el ID guardado ya no existe,
+  // Rust lo cambia y lo persiste; acá solo sincronizamos la UI.
+  $effect(() => {
+    const backend = cfg?.summary_backend;
+    const url = cfg?.summary_base_url;
+    const keyed = backend ? Boolean(hasKey[backend]) : false;
+    if (!backend) return;
+    void url;
+    void keyed;
+    let cancelled = false;
+    void listLiveSummaryModels()
+      .then((result) => {
+        if (cancelled) return;
+        liveModels = result.models;
+        liveOk = result.live;
+        const current = config.current;
+        if (current && result.selected && result.selected !== current.summary_model) {
+          current.summary_model = result.selected;
+          toasts.push(`Modelo actualizado: ${result.selected}`);
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) toastError(error);
+      });
+    return () => {
+      cancelled = true;
+    };
+  });
+
+  const modelOptions = $derived.by(() => {
+    const suggested = provider?.suggested_models ?? [];
+    const list = liveModels.length > 0 ? liveModels : suggested;
+    const current = cfg?.summary_model;
+    if (current && !list.includes(current)) return [current, ...list];
+    return list;
+  });
 
   function patch(changes: Parameters<typeof config.patch>[0]) {
     void config.patch(changes).catch(toastError);
@@ -120,13 +159,16 @@
         {/snippet}
       </SettingsRow>
 
-      <SettingsRow label="Modelo">
+      <SettingsRow
+        label="Modelo"
+        hint={liveOk ? "Lista actual del proveedor." : undefined}
+      >
         {#snippet control({ id })}
-          {#if provider && provider.suggested_models.length > 0}
+          {#if modelOptions.length > 0}
             <Select
               {id}
               value={cfg.summary_model}
-              options={provider.suggested_models.map((m) => ({ value: m, label: m }))}
+              options={modelOptions.map((m) => ({ value: m, label: m }))}
               onchange={(e: Event) =>
                 patch({ summary_model: (e.currentTarget as HTMLSelectElement).value })}
             />

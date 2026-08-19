@@ -9,7 +9,9 @@
    */
   import { recordings } from "$domain/recordings.svelte";
   import { toastError } from "$domain/toasts.svelte";
-  import type { Segment } from "$core/types";
+  import type { Segment, Speaker } from "$core/types";
+  import { isJunkTranscriptText } from "$core/transcriptText";
+  import { playback } from "$domain/playback.svelte";
   import EmptyState from "$ui/EmptyState.svelte";
 
   let { recordingId }: { recordingId: string } = $props();
@@ -23,18 +25,26 @@
   const transcript = $derived(recordings.transcripts[recordingId]);
   const loading = $derived(!(recordingId in recordings.transcripts));
 
+  const recording = $derived(
+    recordings.items.find((item) => item.id === recordingId) ?? null,
+  );
+
   /** Segmentos consecutivos del mismo hablante, en un bloque. */
   const blocks = $derived.by(() => {
-    const segments = transcript?.segments ?? [];
-    const out: { speaker: string; startMs: number; text: string }[] = [];
+    const segments = (transcript?.segments ?? []).filter(
+      (segment) => !isJunkTranscriptText(segment.text),
+    );
+    const out: { speaker: Speaker; label: string; startMs: number; text: string }[] =
+      [];
     for (const segment of segments) {
-      const who = speakerName(segment);
+      const label = speakerName(segment);
       const last = out.at(-1);
-      if (last && last.speaker === who) {
+      if (last && last.label === label) {
         last.text += ` ${segment.text.trim()}`;
       } else {
         out.push({
-          speaker: who,
+          speaker: segment.speaker,
+          label,
           startMs: segment.start_ms,
           text: segment.text.trim(),
         });
@@ -65,7 +75,17 @@
 {:else}
   <div class="flex flex-col gap-3">
     {#each blocks as block, i (i)}
-      <div class="flex gap-2">
+      <button
+        type="button"
+        class="flex gap-2 rounded-xs px-1 py-0.5 text-left
+               transition-colors duration-(--duration-quick) ease-calm
+               hover:bg-surface-2"
+        aria-label="Escuchar desde {stamp(block.startMs)}"
+        onclick={() => {
+          if (!recording) return;
+          void playback.playSpeaker(recording, block.speaker, block.startMs / 1000);
+        }}
+      >
         <span
           class="w-10 shrink-0 pt-px text-right font-mono text-xs text-faint"
           data-numeric
@@ -73,10 +93,10 @@
           {stamp(block.startMs)}
         </span>
         <div class="flex min-w-0 flex-col gap-0.5">
-          <span class="text-micro text-faint uppercase">{block.speaker}</span>
-          <p class="text-sm text-text">{block.text}</p>
+          <span class="text-micro text-faint uppercase">{block.label}</span>
+          <span class="text-sm text-text">{block.text}</span>
         </div>
-      </div>
+      </button>
     {/each}
   </div>
 {/if}

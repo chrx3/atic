@@ -56,6 +56,18 @@ export const PILL = {
   islandTool: 34,
   /** Hueco entre botones de la tira. */
   islandGap: 6,
+  /** Diámetro de la gota de grabación/dictado que cuelga del chrome. */
+  recDrop: 36,
+  /** Hueco entre el cuerpo y la gota: bajo el alcance del goo (~10 px). */
+  recDropGap: 8,
+  /**
+   * Extra de alto de la rueda cuando hay gota viva.
+   *
+   * El pivote es el centro, así que el extra se parte arriba y abajo. 28 px
+   * dejan ~24 px bajo el disco de 232, que es lo que pide la gota de 36 con
+   * cuello de 8 sin recortar el filtro.
+   */
+  wheelLiveHang: 28,
 } as const;
 
 export type Size = { w: number; h: number };

@@ -237,7 +237,7 @@ impl WindowFocus for Win32Focus {
 
     fn flash(&self, hwnd: isize) {
         use windows_sys::Win32::Foundation::HWND;
-        use windows_sys::Win32::UI::WindowsAndMessaging::{FLASHW_TRAY, FLASHWINFO, FlashWindowEx};
+        use windows_sys::Win32::UI::WindowsAndMessaging::{FlashWindowEx, FLASHWINFO, FLASHW_TRAY};
         let mut info = FLASHWINFO {
             cbSize: std::mem::size_of::<FLASHWINFO>() as u32,
             hwnd: hwnd as HWND,
@@ -322,7 +322,7 @@ fn process_snapshot() -> Vec<(u32, u32, String)> {
     use std::mem::{size_of, zeroed};
     use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
     use windows_sys::Win32::System::Diagnostics::ToolHelp::{
-        CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
         TH32CS_SNAPPROCESS,
     };
 
@@ -363,7 +363,7 @@ fn hwnd_for_agent(pid: u32) -> Option<PresenceWindow> {
     use std::collections::{HashMap, HashSet};
     use windows_sys::Win32::Foundation::HWND;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        EnumWindows, GW_OWNER, GetWindow, GetWindowThreadProcessId, IsWindowVisible,
+        EnumWindows, GetWindow, GetWindowThreadProcessId, IsWindowVisible, GW_OWNER,
     };
 
     let tree: HashMap<u32, u32> = process_snapshot()

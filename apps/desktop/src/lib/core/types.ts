@@ -15,6 +15,10 @@ export interface AppConfig {
   language: string;
   /** Modelo Whisper para reuniones / grabaciones. */
   whisper_model: string;
+  /** Motor de transcripción de reuniones: local | groq */
+  meeting_backend: string;
+  /** Modelo Groq Whisper para reuniones. */
+  meeting_groq_model: string;
   /** Modelo Whisper para dictado (latencia). */
   dictation_whisper_model: string;
   /** Motor de dictado: local | groq */
@@ -93,6 +97,8 @@ export interface AppConfig {
   autostart: boolean;
   /** Onboarding de primer uso completado. */
   onboarding_done: boolean;
+  /** Práctica guiada de atajos (rueda, dictado, portapapeles) completada. */
+  onboarding_practice_done: boolean;
   /** Días de conservación; 0 = para siempre. */
   retention_days: number;
   retention_auto_cleanup: boolean;
@@ -314,6 +320,13 @@ export interface SummaryProvider {
   secret_kind: string | null;
   /** Si hay elementos, la UI muestra un dropdown; si no, input libre. */
   suggested_models: string[];
+}
+
+export interface LiveSummaryModels {
+  models: string[];
+  /** True si la lista salió del proveedor ahora; false = catálogo estático. */
+  live: boolean;
+  selected: string;
 }
 
 export interface SecretsStatus {

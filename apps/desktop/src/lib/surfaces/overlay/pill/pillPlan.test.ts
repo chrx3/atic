@@ -1,13 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { PILL } from "../pillStage";
 import { WHEEL_TOOLS } from "$core/tools";
-import {
+  import {
   blocksBrowserChrome,
   consoleSideFor,
   contentFor,
   discJoinsTail,
   FLIGHT_SKIP_PX,
   isDiscOnly,
+  islandLiveSlots,
   islandStripLong,
   morphsInPlace,
   pivotFor,
@@ -35,6 +36,14 @@ describe("contentFor", () => {
   it("la rueda es cuadrada y deja el aire del sobrepaso", () => {
     const side = PILL.wheel - PILL.pad * 2;
     expect(contentFor("wheel", 999)).toEqual({ w: side, h: side });
+  });
+
+  it("grabando, la rueda deja alto para la gota colgada", () => {
+    const idle = contentFor("wheel", 999);
+    const rec = contentFor("wheel", 999, null, "recording");
+    expect(rec.w).toBe(idle.w);
+    expect(rec.h).toBe(idle.h + PILL.wheelLiveHang);
+    expect(contentFor("wheel", 999, null, "dictating").h).toBe(rec.h);
   });
 
   it("el destino agrega el respiro de los dos lados", () => {
@@ -107,6 +116,25 @@ describe("contentFor", () => {
     });
   });
 
+  it("grabando, la tira no roba un slot: la gota cuelga del cuerpo", () => {
+    expect(islandLiveSlots("idle")).toBe(0);
+    expect(islandLiveSlots("recording")).toBe(0);
+    expect(islandLiveSlots("dictating")).toBe(0);
+    const idle = contentFor("edge", 180, { edge: "bottom", expanded: true });
+    const rec = contentFor("edge", 180, { edge: "bottom", expanded: true }, "recording");
+    expect(rec.w).toBe(idle.w);
+    expect(rec.h).toBe(idle.h + PILL.recDrop + PILL.recDropGap);
+    const shutRec = contentFor(
+      "edge",
+      180,
+      { edge: "bottom", expanded: false },
+      "recording",
+    );
+    const shutIdle = contentFor("edge", 180, { edge: "bottom", expanded: false });
+    expect(shutRec.h).toBe(shutIdle.h + PILL.recDrop + PILL.recDropGap);
+    expect(shutRec.w).toBe(shutIdle.w);
+  });
+
   /**
    * La invariante que impide el bucle abrir/cerrar: la isla se abre con el
    * puntero encima, así que la caja abierta no puede ser más chica en ningún
@@ -115,11 +143,13 @@ describe("contentFor", () => {
    */
   it("abrir la isla nunca encoge la caja en ningún eje", () => {
     expect(PILL.islandLong).toBe(PILL.bar);
-    for (const edge of ["left", "right", "top", "bottom"] as const) {
-      const shut = contentFor("edge", 180, { edge, expanded: false });
-      const open = contentFor("edge", 180, { edge, expanded: true });
-      expect(open.w).toBeGreaterThanOrEqual(shut.w);
-      expect(open.h).toBeGreaterThanOrEqual(shut.h);
+    for (const activity of ["idle", "recording"] as const) {
+      for (const edge of ["left", "right", "top", "bottom"] as const) {
+        const shut = contentFor("edge", 180, { edge, expanded: false }, activity);
+        const open = contentFor("edge", 180, { edge, expanded: true }, activity);
+        expect(open.w).toBeGreaterThanOrEqual(shut.w);
+        expect(open.h).toBeGreaterThanOrEqual(shut.h);
+      }
     }
   });
 });

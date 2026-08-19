@@ -15,6 +15,7 @@
   import { recordings } from "$domain/recordings.svelte";
   import { toastError, toasts } from "$domain/toasts.svelte";
   import { pickAudioFiles } from "$ipc/dialogs";
+  import { openRecordingDir } from "$ipc/recordings";
   import ListDetail from "$patterns/ListDetail.svelte";
   import ToolPage from "$patterns/ToolPage.svelte";
   import Toolbar from "$patterns/Toolbar.svelte";
@@ -26,7 +27,9 @@
   import Meter from "$ui/Meter.svelte";
   import ProgressBar from "$ui/ProgressBar.svelte";
   import LiveTranscript from "./LiveTranscript.svelte";
+  import RecordingPlayer from "./RecordingPlayer.svelte";
   import SummaryPanel from "./SummaryPanel.svelte";
+  import TranscribeModelSelect from "./TranscribeModelSelect.svelte";
   import TranscriptPanel from "./TranscriptPanel.svelte";
   import TranscriptView from "./TranscriptView.svelte";
   import { summaries } from "$domain/summaries.svelte";
@@ -38,6 +41,7 @@
   let importing = $state(false);
   let transcriptFor = $state<Recording | null>(null);
   let summaryFor = $state<Recording | null>(null);
+  let openingFolder = $state(false);
 
   const TONE = {
     recorded: "neutral",
@@ -61,6 +65,18 @@
       await recordings.transcribe(id);
     } catch (error) {
       toastError(error);
+    }
+  }
+
+  async function openThisRecording(id: string) {
+    if (openingFolder) return;
+    openingFolder = true;
+    try {
+      await openRecordingDir(id);
+    } catch (error) {
+      toastError(error);
+    } finally {
+      openingFolder = false;
     }
   }
 
@@ -146,6 +162,19 @@
         onclick={() => void importAudio()}
       >
         Importar
+      </Button>
+
+      <Button
+        variant="ghost"
+        size="sm"
+        loading={openingFolder}
+        disabled={!recordings.selected}
+        onclick={() => {
+          const id = recordings.selectedId;
+          if (id) void openThisRecording(id);
+        }}
+      >
+        Carpeta
       </Button>
 
       {#snippet end()}
@@ -261,24 +290,48 @@
                 <Chip tone={TONE[item.status]}>{statusLabel(item.status)}</Chip>
               </div>
 
+              {#if item.mic_path || item.system_path}
+                <RecordingPlayer recording={item} />
+              {/if}
+
               {#if recordings.progress[item.id] !== undefined}
                 <ProgressBar
                   value={recordings.progress[item.id]}
-                  label="Transcribiendo"
+                  label={`Transcribiendo · ${models.meetingProgressLabel}`}
                   tone="ok"
                 />
               {/if}
 
-              <div class="flex flex-wrap gap-1.5">
-                <Button
-                  variant="soft"
-                  size="sm"
-                  disabled={recordings.progress[item.id] !== undefined ||
-                    models.missing.length > 0}
-                  onclick={() => void transcribe(item.id)}
-                >
-                  Transcribir
-                </Button>
+              <div class="flex flex-wrap items-center gap-1.5">
+                <div class="min-w-52 max-w-72 flex-1">
+                  <TranscribeModelSelect
+                    disabled={recordings.progress[item.id] !== undefined}
+                  />
+                </div>
+                {#if !models.meetingCanTranscribe}
+                  <Button
+                    variant="soft"
+                    size="sm"
+                    loading={models.downloading !== null}
+                    onclick={() => {
+                      const id = models.meetingModel?.id;
+                      if (id) void models.download(id).catch(toastError);
+                    }}
+                  >
+                    Descargar
+                  </Button>
+                {:else}
+                  <Button
+                    variant="soft"
+                    size="sm"
+                    disabled={recordings.progress[item.id] !== undefined}
+                    onclick={() => void transcribe(item.id)}
+                  >
+                    {item.status === "recorded" || item.status === "error"
+                      ? "Transcribir"
+                      : "Re-transcribir"}
+                  </Button>
+                {/if}
                 <Button variant="soft" size="sm" onclick={() => (transcriptFor = item)}>
                   Ver y corregir
                 </Button>
@@ -287,6 +340,14 @@
                 </Button>
                 <Button variant="danger" size="sm" onclick={() => (toDelete = item)}>
                   Borrar
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  loading={openingFolder}
+                  onclick={() => void openThisRecording(item.id)}
+                >
+                  Carpeta
                 </Button>
               </div>
 
@@ -316,7 +377,7 @@
   {@const item = transcriptFor}
   <TranscriptPanel
     recording={item}
-    canTranscribe={models.missing.length === 0}
+    canTranscribe={models.meetingCanTranscribe}
     onRetranscribe={() => transcribe(item.id)}
     onClose={() => (transcriptFor = null)}
   />

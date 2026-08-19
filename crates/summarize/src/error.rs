@@ -23,8 +23,32 @@ pub enum SummarizeError {
     #[error("respuesta inválida del modelo: {0}")]
     BadResponse(String),
 
+    #[error("el modelo `{model}` no existe en este proveedor. Elegí otro en Ajustes")]
+    UnknownModel { model: String },
+
     #[error("API rechazó la petición ({status}): {body}")]
     Api { status: u16, body: String },
+}
+
+impl SummarizeError {
+    /// 404 de modelo inexistente vs. el JSON crudo que tapaba el toast.
+    pub fn from_http(status: u16, body: &str, model: &str) -> Self {
+        let missing_model = status == 404
+            && !model.trim().is_empty()
+            && (body.contains("The model")
+                || body.contains("model_not_found")
+                || body.contains("does not exist")
+                || body.contains("not_found_error"));
+        if missing_model {
+            return Self::UnknownModel {
+                model: model.to_string(),
+            };
+        }
+        Self::Api {
+            status,
+            body: body.chars().take(500).collect(),
+        }
+    }
 }
 
 pub type Result<T> = std::result::Result<T, SummarizeError>;

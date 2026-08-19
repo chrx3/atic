@@ -89,8 +89,10 @@ pub fn list_recent_captures(state: State<AppState>) -> Vec<CaptureItem> {
 pub fn delete_capture(app: AppHandle, state: State<AppState>, path: String) -> Result<(), String> {
     let target = ensure_in_dir(&state.dirs.captures_dir(), Path::new(&path))?;
     std::fs::remove_file(&target).map_err(|error| error.to_string())?;
+    if let Some(name) = target.file_name().and_then(|n| n.to_str()) {
+        crate::clipboard_history::dismiss_capture(&app, name);
+    }
     let _ = app.emit("screenshot-shelf-updated", ());
-    let _ = app.emit("clipboard-history-changed", ());
     Ok(())
 }
 

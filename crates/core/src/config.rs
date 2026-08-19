@@ -64,6 +64,10 @@ pub struct Config {
     pub language: String,
     /// Modelo Whisper para reuniones / transcripción de grabaciones.
     pub whisper_model: String,
+    /// Motor de transcripción de reuniones: `local` | `groq`.
+    pub meeting_backend: String,
+    /// Modelo Groq Whisper para reuniones (`whisper-large-v3-turbo`, …).
+    pub meeting_groq_model: String,
     /// Modelo Whisper para dictado (latencia; suele ser más pequeño).
     pub dictation_whisper_model: String,
     /// Motor de dictado: `local` | `groq`.
@@ -169,6 +173,8 @@ pub struct Config {
     pub autostart: bool,
     /// El usuario ya completó el onboarding de primer uso.
     pub onboarding_done: bool,
+    /// Ya practicó rueda, dictado y portapapeles en el tutorial de primer uso.
+    pub onboarding_practice_done: bool,
     /// Días que se conservan las grabaciones. `0` = sin vencimiento.
     pub retention_days: u32,
     /// Ejecutar la limpieza configurada al iniciar la aplicación.
@@ -219,6 +225,10 @@ impl Default for Config {
             // Small/Medium siguen disponibles desde Ajustes si se privilegia
             // precisión por sobre velocidad y memoria.
             whisper_model: "base".to_string(),
+            // Local por defecto: la reunión entera no sale del PC hasta que
+            // el usuario elige Groq a propósito.
+            meeting_backend: "local".to_string(),
+            meeting_groq_model: "whisper-large-v3-turbo".to_string(),
             // Dictado: Base prioriza latencia en frases cortas.
             dictation_whisper_model: "base".to_string(),
             // Groq por defecto cuando hay clave BYOK (más rápido en notebook).
@@ -273,6 +283,7 @@ impl Default for Config {
             noise_suppression: "off".to_string(),
             autostart: false,
             onboarding_done: false,
+            onboarding_practice_done: false,
             retention_days: 0,
             retention_auto_cleanup: false,
             detect_meetings: false,
@@ -298,6 +309,8 @@ impl Default for Config {
 struct ConfigFile {
     language: String,
     whisper_model: String,
+    meeting_backend: Option<String>,
+    meeting_groq_model: Option<String>,
     dictation_whisper_model: Option<String>,
     dictation_backend: Option<String>,
     dictation_groq_model: Option<String>,
@@ -353,6 +366,7 @@ struct ConfigFile {
     noise_suppression: Option<String>,
     autostart: Option<bool>,
     onboarding_done: Option<bool>,
+    onboarding_practice_done: Option<bool>,
     retention_days: Option<u32>,
     retention_auto_cleanup: Option<bool>,
     detect_meetings: Option<bool>,
@@ -406,6 +420,8 @@ impl Default for ConfigFile {
         Self {
             language: d.language,
             whisper_model: d.whisper_model,
+            meeting_backend: None,
+            meeting_groq_model: None,
             dictation_whisper_model: None,
             dictation_backend: None,
             dictation_groq_model: None,
@@ -458,6 +474,7 @@ impl Default for ConfigFile {
             noise_suppression: None,
             autostart: None,
             onboarding_done: None,
+            onboarding_practice_done: None,
             retention_days: None,
             retention_auto_cleanup: None,
             detect_meetings: None,
@@ -474,6 +491,21 @@ impl Default for ConfigFile {
             ui_theme: None,
             ssh_hosts: None,
         }
+    }
+}
+
+/// Groq apaga modelos con 404 (`The model \`x\` does not exist`).
+///
+/// El catálogo de Ajustes se actualiza aparte; esto reescribe configs ya
+/// guardadas para que el resumen no muera en silencio al próximo deprecado.
+fn migrate_retired_groq_model(model: &str) -> String {
+    match model {
+        "llama-3.1-8b-instant" => "openai/gpt-oss-20b".into(),
+        "llama-3.3-70b-versatile"
+        | "qwen/qwen3-32b"
+        | "meta-llama/llama-4-scout-17b-16e-instruct"
+        | "meta-llama/llama-4-maverick-17b-128e-instruct" => "openai/gpt-oss-120b".into(),
+        other => other.to_string(),
     }
 }
 
@@ -494,7 +526,7 @@ impl From<ConfigFile> for Config {
                     .unwrap_or_else(|| "llama3.2".into()),
                 "openai" => "gpt-4.1-mini".into(),
                 "openrouter" => "openai/gpt-4.1-mini".into(),
-                "groq" => "llama-3.3-70b-versatile".into(),
+                "groq" => "openai/gpt-oss-120b".into(),
                 "minimax" => "MiniMax-M3".into(),
                 "custom" => String::new(),
                 _ => f
@@ -502,6 +534,11 @@ impl From<ConfigFile> for Config {
                     .filter(|s| !s.is_empty())
                     .unwrap_or_else(|| "claude-opus-4-8".into()),
             });
+        let summary_model = if backend == "groq" {
+            migrate_retired_groq_model(&summary_model)
+        } else {
+            summary_model
+        };
         let summary_base_url = f
             .summary_base_url
             .filter(|s| !s.is_empty())
@@ -524,6 +561,14 @@ impl From<ConfigFile> for Config {
         Config {
             language: f.language,
             whisper_model: f.whisper_model,
+            meeting_backend: match f.meeting_backend.as_deref() {
+                Some("groq") => "groq".into(),
+                _ => "local".into(),
+            },
+            meeting_groq_model: f
+                .meeting_groq_model
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "whisper-large-v3-turbo".into()),
             // Configs antiguas sin el campo: dictado usa Base (rápido).
             dictation_whisper_model: f
                 .dictation_whisper_model
@@ -624,6 +669,8 @@ impl From<ConfigFile> for Config {
             autostart: f.autostart.unwrap_or(false),
             // Configs antiguas: no volver a mostrar el wizard.
             onboarding_done: f.onboarding_done.unwrap_or(true),
+            // Quien ya usaba la app no tiene que repetir la práctica.
+            onboarding_practice_done: f.onboarding_practice_done.unwrap_or(true),
             retention_days: f.retention_days.unwrap_or(0).min(3_650),
             retention_auto_cleanup: f.retention_auto_cleanup.unwrap_or(false),
             detect_meetings: f.detect_meetings.unwrap_or(false),
@@ -786,6 +833,7 @@ mod tests {
         assert_eq!(cfg.whisper_model, "base");
         assert_eq!(cfg.dictation_whisper_model, "base");
         assert_eq!(cfg.dictation_backend, "groq");
+        assert_eq!(cfg.meeting_backend, "local");
     }
 
     #[test]
@@ -851,6 +899,22 @@ mod tests {
     }
 
     #[test]
+    fn meeting_transcription_stays_local_when_the_field_is_missing() {
+        let json = r#"{ "whisper_model": "small" }"#;
+        let cfg: Config = serde_json::from_str::<ConfigFile>(json).unwrap().into();
+        assert_eq!(cfg.meeting_backend, "local");
+        assert_eq!(cfg.meeting_groq_model, "whisper-large-v3-turbo");
+    }
+
+    #[test]
+    fn keeps_an_explicit_groq_meeting_backend() {
+        let json = r#"{ "meeting_backend": "groq", "meeting_groq_model": "whisper-large-v3" }"#;
+        let cfg: Config = serde_json::from_str::<ConfigFile>(json).unwrap().into();
+        assert_eq!(cfg.meeting_backend, "groq");
+        assert_eq!(cfg.meeting_groq_model, "whisper-large-v3");
+    }
+
+    #[test]
     fn disables_the_old_live_default_during_batch_migration() {
         let json = r#"{ "live_transcription": true }"#;
         let cfg: Config = serde_json::from_str::<ConfigFile>(json).unwrap().into();
@@ -869,6 +933,21 @@ mod tests {
     }
 
     #[test]
+    fn existing_configs_skip_onboarding_practice() {
+        let json = r#"{ "language": "es" }"#;
+        let cfg: Config = serde_json::from_str::<ConfigFile>(json).unwrap().into();
+        assert!(cfg.onboarding_done);
+        assert!(cfg.onboarding_practice_done);
+    }
+
+    #[test]
+    fn new_install_starts_onboarding_and_practice() {
+        let cfg = Config::default();
+        assert!(!cfg.onboarding_done);
+        assert!(!cfg.onboarding_practice_done);
+    }
+
+    #[test]
     fn migrates_legacy_ollama_fields() {
         let json = r#"{
             "summary_backend": "ollama",
@@ -878,5 +957,29 @@ mod tests {
         let cfg: Config = serde_json::from_str::<ConfigFile>(json).unwrap().into();
         assert_eq!(cfg.summary_model, "mistral");
         assert_eq!(cfg.summary_base_url, "http://localhost:11434");
+    }
+
+    #[test]
+    fn migrates_retired_groq_summary_models() {
+        let json = r#"{
+            "summary_backend": "groq",
+            "summary_model": "meta-llama/llama-4-maverick-17b-128e-instruct"
+        }"#;
+        let cfg: Config = serde_json::from_str::<ConfigFile>(json).unwrap().into();
+        assert_eq!(cfg.summary_model, "openai/gpt-oss-120b");
+
+        let json = r#"{
+            "summary_backend": "groq",
+            "summary_model": "llama-3.1-8b-instant"
+        }"#;
+        let cfg: Config = serde_json::from_str::<ConfigFile>(json).unwrap().into();
+        assert_eq!(cfg.summary_model, "openai/gpt-oss-20b");
+
+        let json = r#"{
+            "summary_backend": "groq",
+            "summary_model": "openai/gpt-oss-120b"
+        }"#;
+        let cfg: Config = serde_json::from_str::<ConfigFile>(json).unwrap().into();
+        assert_eq!(cfg.summary_model, "openai/gpt-oss-120b");
     }
 }

@@ -14,11 +14,14 @@
     placeholder = "Elegí un fragmento para escucharlo",
     alwaysVisible = false,
     dismissible = true,
+    onEmptyPlay,
   }: {
     placeholder?: string;
     /** Ocupa su lugar aunque no haya nada cargado. Para barras fijas. */
     alwaysVisible?: boolean;
     dismissible?: boolean;
+    /** Si todavía no hay pista cargada, el play arranca por acá. */
+    onEmptyPlay?: () => void | Promise<void>;
   } = $props();
 
   function stamp(seconds: number): string {
@@ -42,8 +45,11 @@
       class="grid size-8 shrink-0 place-items-center rounded-pill bg-surface-2 text-text
              transition-colors duration-(--duration-quick) ease-calm
              hover:bg-elevated disabled:opacity-45"
-      onclick={() => void playback.toggle()}
-      disabled={!playback.label || playback.loading}
+      onclick={() => {
+        if (playback.label) void playback.toggle();
+        else void onEmptyPlay?.();
+      }}
+      disabled={(!playback.label && !onEmptyPlay) || playback.loading}
       aria-label={playback.playing ? "Pausar" : "Reproducir"}
     >
       {#if playback.loading}
