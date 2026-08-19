@@ -85,4 +85,4 @@ git tag $tag
 git push origin HEAD
 git push origin $tag
 gh release create $tag --title $tag --latest --generate-notes -- $exe.FullName $sigPath $latest
-Write-Host "Release $tag: https://github.com/chrx3/atic/releases/tag/$tag"
+Write-Host "Release ${tag}: https://github.com/chrx3/atic/releases/tag/${tag}"
