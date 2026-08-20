@@ -43,6 +43,7 @@ pub struct SummarizerConfig {
     pub api_key: Option<String>,
     pub model: String,
     pub base_url: String,
+    pub english: bool,
 }
 
 /// Construye el backend configurado según el catálogo de proveedores.
@@ -70,9 +71,13 @@ pub fn build_summarizer(cfg: &SummarizerConfig) -> Result<Box<dyn Summarizer>> {
                 .map(|k| k.trim().to_string())
                 .filter(|k| !k.is_empty())
                 .ok_or(SummarizeError::MissingApiKey)?;
-            Ok(Box::new(ClaudeSummarizer::new(key, model)))
+            Ok(Box::new(ClaudeSummarizer::new(key, model, cfg.english)))
         }
-        ProviderKind::Ollama => Ok(Box::new(OllamaSummarizer::new(base_url, model))),
+        ProviderKind::Ollama => Ok(Box::new(OllamaSummarizer::new(
+            base_url,
+            model,
+            cfg.english,
+        ))),
         ProviderKind::OpenAiCompat => {
             let key = cfg
                 .api_key
@@ -81,7 +86,11 @@ pub fn build_summarizer(cfg: &SummarizerConfig) -> Result<Box<dyn Summarizer>> {
                 .filter(|k| !k.is_empty())
                 .ok_or(SummarizeError::MissingApiKey)?;
             Ok(Box::new(OpenAiCompatSummarizer::new(
-                info.id, key, base_url, model,
+                info.id,
+                key,
+                base_url,
+                model,
+                cfg.english,
             )))
         }
     }
@@ -119,6 +128,7 @@ mod tests {
             api_key: None,
             model: String::new(),
             base_url: String::new(),
+            english: false,
         };
         match build_summarizer(&cfg) {
             Err(SummarizeError::UnknownBackend(_)) => {}
@@ -134,6 +144,7 @@ mod tests {
             api_key: None,
             model: "MiniMax-M3".into(),
             base_url: "https://api.minimax.io/v1".into(),
+            english: false,
         };
         assert!(matches!(
             build_summarizer(&cfg),

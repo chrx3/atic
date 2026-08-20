@@ -197,6 +197,7 @@ fn resolve_and_persist_models(app: &AppHandle) -> LiveModelsDto {
             api_key: None,
             model: cfg.summary_model.clone(),
             base_url: cfg.summary_base_url.clone(),
+            english: cfg.ui_language == "en",
         },
     };
     let resolved = resolve_models(&summarizer_cfg);
@@ -229,6 +230,7 @@ fn summarizer_config_from_app(cfg: &atic_core::Config) -> Result<SummarizerConfi
         api_key,
         model: cfg.summary_model.clone(),
         base_url: cfg.summary_base_url.clone(),
+        english: cfg.ui_language == "en",
     })
 }
 
@@ -242,11 +244,16 @@ pub fn summarize_recording(app: AppHandle, id: String, template: String) -> Resu
         .lock_or_recover()
         .get_recording(&id)
         .map_err(|e| e.to_string())?
-        .ok_or_else(|| "Grabación no encontrada.".to_string())?;
+        .ok_or_else(crate::ui_lang::rec_missing)?;
 
     let transcript = Transcript::load(&state.dirs.transcript_path(&id))
         .map_err(|e| e.to_string())?
-        .ok_or_else(|| "No hay transcripción. Transcribe primero.".to_string())?;
+        .ok_or_else(|| {
+            crate::ui_lang::msg(
+                "No hay transcripción. Transcribe primero.",
+                "There is no transcript. Transcribe first.",
+            )
+        })?;
 
     let template = SummaryTemplate::parse(&template).map_err(|e| e.to_string())?;
     let cfg = state.config.lock_or_recover().clone();
@@ -255,7 +262,8 @@ pub fn summarize_recording(app: AppHandle, id: String, template: String) -> Resu
 
     let summarizer_cfg = summarizer_config_from_app(&cfg)?;
     // Validar backend antes de marcar el estado.
-    let _ = summarize::build_summarizer(&summarizer_cfg).map_err(|e| e.to_string())?;
+    let _ = summarize::build_summarizer(&summarizer_cfg)
+        .map_err(|e| e.to_ui(summarizer_cfg.english))?;
 
     state
         .db
@@ -338,7 +346,7 @@ fn run_summarize(
                 "summarize-error",
                 ErrorIdPayload {
                     id: id.clone(),
-                    message: err.to_string(),
+                    message: err.to_ui(summarizer_cfg.english),
                 },
             );
         }
@@ -365,7 +373,7 @@ pub fn save_summary(
         .lock_or_recover()
         .get_recording(&id)
         .map_err(|e| e.to_string())?
-        .ok_or_else(|| "Grabación no encontrada.".to_string())?;
+        .ok_or_else(crate::ui_lang::rec_missing)?;
 
     summary
         .save(&state.dirs.summary_path(&id))

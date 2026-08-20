@@ -8,12 +8,13 @@
    * acá solo se lee. Lo único local es lo que no sale de la ventana — qué
    * confirmación está abierta.
    */
-  import { formatDate, formatDuration, statusLabel } from "$core/format";
+  import { formatDate, formatDuration } from "$core/format";
   import type { Recording } from "$core/types";
   import { capture } from "$domain/capture.svelte";
   import { models } from "$domain/models.svelte";
   import { recordings } from "$domain/recordings.svelte";
   import { toastError, toasts } from "$domain/toasts.svelte";
+  import { t, whisperModelLabel } from "$domain/i18n.svelte";
   import { pickAudioFiles } from "$ipc/dialogs";
   import { openRecordingDir } from "$ipc/recordings";
   import ListDetail from "$patterns/ListDetail.svelte";
@@ -96,8 +97,8 @@
       if (imported[0]) recordings.select(imported[0].id);
       toasts.push(
         imported.length === 1
-          ? `Importado: ${imported[0].title}`
-          : `Importados ${imported.length} archivos`,
+          ? t("toast.importedOne", { title: imported[0].title })
+          : t("toast.importedMany", { count: imported.length }),
       );
     } catch (error) {
       toastError(error);
@@ -112,7 +113,7 @@
     deleting = true;
     try {
       await recordings.remove(target.id);
-      toasts.push(`Borrada: ${target.title}`);
+      toasts.push(t("toast.deleted", { title: target.title }));
       toDelete = null;
     } catch (error) {
       toastError(error);
@@ -123,20 +124,20 @@
 </script>
 
 <ToolPage
-  title="Reuniones"
+  title={t("tools.meetings.label")}
   icon="meetings"
-  blurb="Audio del PC, transcripción local y resúmenes editables."
-  kicker="Grabar y resumir"
+  blurb={t("tools.meetings.blurb")}
+  kicker={t("tools.meetings.short")}
 >
   {#snippet meta()}
     {#if capture.active}
-      <Chip tone="rec">grabando · {formatDuration(capture.elapsed)}</Chip>
+      <Chip tone="rec">{t("page.meetings.recordingChip", { elapsed: formatDuration(capture.elapsed) })}</Chip>
     {:else}
-      <Chip>{recordings.items.length} grabaciones</Chip>
+      <Chip>{t("page.meetings.count", { count: recordings.items.length })}</Chip>
     {/if}
     {#if capture.meeting?.active}
       <Chip tone="info">
-        reunión detectada{capture.meeting.provider
+        {t("page.meetings.meetingDetected")}{capture.meeting.provider
           ? ` · ${capture.meeting.provider}`
           : ""}
       </Chip>
@@ -144,14 +145,14 @@
   {/snippet}
 
   <div class="flex h-full min-h-0 flex-col">
-    <Toolbar label="Acciones de grabación">
+    <Toolbar label={t("page.meetings.actions")}>
       <Button
         variant={capture.active ? "danger-solid" : "primary"}
         size="sm"
         loading={capture.busy}
         onclick={toggle}
       >
-        {capture.active ? "Parar" : "Grabar"}
+        {capture.active ? t("tools.meetings.stop") : t("tools.meetings.record")}
       </Button>
 
       <Button
@@ -161,7 +162,7 @@
         disabled={capture.active}
         onclick={() => void importAudio()}
       >
-        Importar
+        {t("page.meetings.import")}
       </Button>
 
       <Button
@@ -174,15 +175,15 @@
           if (id) void openThisRecording(id);
         }}
       >
-        Carpeta
+        {t("page.meetings.folder")}
       </Button>
 
       {#snippet end()}
         {#if capture.active}
           <!-- Los niveles solo tienen sentido mientras entra audio. -->
           <div class="flex w-40 flex-col gap-0.5">
-            <Meter value={capture.levels.mic} tone="mic" label="mic" />
-            <Meter value={capture.levels.system} tone="sys" label="sis" />
+            <Meter value={capture.levels.mic} tone="mic" label={t("page.meetings.me")} />
+            <Meter value={capture.levels.system} tone="sys" label={t("page.meetings.others")} />
           </div>
         {/if}
       {/snippet}
@@ -193,8 +194,8 @@
         <Banner
           tone="warn"
           title={models.missing.length === 1
-            ? `Falta descargar ${models.missing[0].display_name}`
-            : `Faltan ${models.missing.length} modelos`}
+            ? t("page.meetings.missingOne", { name: whisperModelLabel(models.missing[0].id) })
+            : t("page.meetings.missingMany", { count: models.missing.length })}
         >
           {#snippet action()}
             <Button
@@ -203,10 +204,10 @@
               loading={models.downloading !== null}
               onclick={() => void models.download(models.missing[0].id)}
             >
-              Descargar
+              {t("page.common.download")}
             </Button>
           {/snippet}
-          Sin ellos no se puede transcribir.
+          {t("page.meetings.missingBody")}
         </Banner>
       </div>
     {/if}
@@ -215,7 +216,7 @@
       <div class="px-4 pt-3">
         <ProgressBar
           value={models.downloading.downloaded / Math.max(models.downloading.total, 1)}
-          label="Descargando modelo"
+          label={t("page.meetings.downloading")}
         />
       </div>
     {/if}
@@ -231,7 +232,7 @@
     <div class="min-h-0 flex-1">
       <ListDetail
         hasSelection={recordings.selected !== null}
-        listLabel="Grabaciones"
+        listLabel={t("page.meetings.list")}
         listCount={recordings.items.length}
       >
         {#snippet list()}
@@ -239,8 +240,8 @@
             <EmptyState
               compact
               icon="meetings"
-              title="Todavía no hay grabaciones"
-              hint="Apretá Grabar, o importá audio que ya tengas."
+              title={t("page.meetings.empty")}
+              hint={t("page.meetings.emptyHint")}
             />
           {:else}
             <ul class="flex flex-col">
@@ -287,7 +288,7 @@
                     {formatDuration(item.duration_secs)} · {formatDate(item.started_at)}
                   </p>
                 </div>
-                <Chip tone={TONE[item.status]}>{statusLabel(item.status)}</Chip>
+                <Chip tone={TONE[item.status]}>{t(`page.meetings.status.${item.status}`)}</Chip>
               </div>
 
               {#if item.mic_path || item.system_path}
@@ -297,7 +298,9 @@
               {#if recordings.progress[item.id] !== undefined}
                 <ProgressBar
                   value={recordings.progress[item.id]}
-                  label={`Transcribiendo · ${models.meetingProgressLabel}`}
+                  label={t("page.meetings.transcribing", {
+                    label: models.meetingProgressLabel,
+                  })}
                   tone="ok"
                 />
               {/if}
@@ -318,7 +321,7 @@
                       if (id) void models.download(id).catch(toastError);
                     }}
                   >
-                    Descargar
+                    {t("page.common.download")}
                   </Button>
                 {:else}
                   <Button
@@ -328,18 +331,18 @@
                     onclick={() => void transcribe(item.id)}
                   >
                     {item.status === "recorded" || item.status === "error"
-                      ? "Transcribir"
-                      : "Re-transcribir"}
+                      ? t("page.meetings.transcribe")
+                      : t("page.meetings.retranscribe")}
                   </Button>
                 {/if}
                 <Button variant="soft" size="sm" onclick={() => (transcriptFor = item)}>
-                  Ver y corregir
+                  {t("page.meetings.viewFix")}
                 </Button>
                 <Button variant="primary" size="sm" onclick={() => (summaryFor = item)}>
-                  {summaries.byId[item.id] ? "Resumen" : "Resumir"}
+                  {summaries.byId[item.id] ? t("page.meetings.summary") : t("page.meetings.summarize")}
                 </Button>
                 <Button variant="danger" size="sm" onclick={() => (toDelete = item)}>
-                  Borrar
+                  {t("page.common.delete")}
                 </Button>
                 <Button
                   variant="ghost"
@@ -347,7 +350,7 @@
                   loading={openingFolder}
                   onclick={() => void openThisRecording(item.id)}
                 >
-                  Carpeta
+                  {t("page.meetings.folder")}
                 </Button>
               </div>
 
@@ -362,8 +365,8 @@
           <EmptyState
             compact
             icon="meetings"
-            title="Elegí una grabación"
-            hint="El detalle se muestra acá."
+            title={t("page.common.pickOne")}
+            hint={t("page.common.pickOneHint")}
           />
         {/snippet}
       </ListDetail>
@@ -393,9 +396,9 @@
 
 {#if toDelete}
   <ConfirmDialog
-    title="Borrar «{toDelete.title}»"
-    body="Se borran el audio, la transcripción y el resumen. No se puede deshacer."
-    confirmLabel="Borrar"
+    title={t("page.meetings.deleteTitle", { title: toDelete.title })}
+    body={t("page.meetings.deleteBody")}
+    confirmLabel={t("page.common.delete")}
     tone="danger"
     busy={deleting}
     onConfirm={() => void confirmDelete()}

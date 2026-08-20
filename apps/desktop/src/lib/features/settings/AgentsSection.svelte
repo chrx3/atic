@@ -14,6 +14,7 @@
   import SettingsGroup from "$patterns/SettingsGroup.svelte";
   import SettingsRow from "$patterns/SettingsRow.svelte";
   import Button from "$ui/Button.svelte";
+  import { t } from "$domain/i18n.svelte";
 
   let snippet = $state("");
   let copied = $state(false);
@@ -36,7 +37,7 @@
     try {
       await navigator.clipboard.writeText(snippet);
       copied = true;
-      toasts.push("Copiado. Fusiona la clave hooks en ~/.claude/settings.json");
+      toasts.push(t("settings.agents.copiedToast"));
     } catch (err) {
       toastError(err);
     }
@@ -50,12 +51,12 @@
 <div class="flex flex-col gap-5">
   {#if AGENT_PAGER_ENABLED}
     <SettingsGroup
-      title="Claude Code"
-      hint="La pill no escribe el settings ajeno. Fusiona la clave hooks; no reemplaces el archivo entero."
+      title={t("settings.agents.title")}
+      hint={t("settings.agents.hint")}
     >
       <SettingsRow
-        label="Hooks"
-        hint="Sin esto, el chip no puede decir «permiso». Pegalo en ~/.claude/settings.json."
+        label={t("settings.agents.hooks")}
+        hint={t("settings.agents.hooksHint")}
       >
         {#snippet control()}
           <Button
@@ -65,7 +66,7 @@
             disabled={!snippet}
             onclick={() => void copySnippet()}
           >
-            {copied ? "Copiado" : "Copiar"}
+            {copied ? t("settings.agents.copied") : t("settings.agents.copy")}
           </Button>
         {/snippet}
       </SettingsRow>

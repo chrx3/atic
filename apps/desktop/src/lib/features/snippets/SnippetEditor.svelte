@@ -13,6 +13,7 @@
   import Field from "$ui/Field.svelte";
   import Input from "$ui/Input.svelte";
   import TextArea from "$ui/TextArea.svelte";
+  import { t } from "$domain/i18n.svelte";
 
   let {
     item = $bindable(),
@@ -32,13 +33,13 @@
 </script>
 
 <div class="flex flex-col gap-3 p-4">
-  <Field label="Nombre" required>
+  <Field label={t("page.snippets.name")} required>
     {#snippet children({ id })}
-      <Input {id} bind:value={item.name} placeholder="Firma de correo" />
+      <Input {id} bind:value={item.name} placeholder={t("page.snippets.namePlaceholder")} />
     {/snippet}
   </Field>
 
-  <Field label="Texto">
+  <Field label={t("page.snippets.body")}>
     {#snippet children({ id })}
       <TextArea {id} bind:value={item.body} rows={8} />
     {/snippet}
@@ -52,16 +53,20 @@
       disabled={!item.name.trim()}
       onclick={onSave}
     >
-      Guardar
+      {t("page.snippets.save")}
     </Button>
 
     <!-- Solo si ya existe en disco: pegar o borrar algo sin guardar no
          significa nada. -->
     {#if item.id}
-      <Button variant="soft" size="sm" onclick={() => onPaste(item.id)}>Pegar</Button>
-      <Button variant="danger" size="sm" onclick={onDelete}>Borrar</Button>
+      <Button variant="soft" size="sm" onclick={() => onPaste(item.id)}
+        >{t("pill.paste")}</Button
+      >
+      <Button variant="danger" size="sm" onclick={onDelete}
+        >{t("page.common.delete")}</Button
+      >
     {/if}
 
-    <Button variant="ghost" size="sm" onclick={onClose}>Cerrar</Button>
+    <Button variant="ghost" size="sm" onclick={onClose}>{t("page.common.close")}</Button>
   </div>
 </div>

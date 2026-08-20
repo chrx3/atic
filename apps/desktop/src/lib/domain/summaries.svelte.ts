@@ -19,6 +19,7 @@ import {
   summarizeRecording,
 } from "$ipc/summaries";
 import { toasts } from "./toasts.svelte";
+import { t } from "./i18n.svelte";
 import type { DomainStore } from "./store";
 
 /** Un fallo que se arregla en Ajustes, no reintentando. */
@@ -128,7 +129,7 @@ class SummariesStore implements DomainStore {
     const previous = this.byId[id] ?? null;
     const next: Summary = {
       template: this.template,
-      title: previous?.title ?? `Resumen — ${recordingTitle}`,
+      title: previous?.title ?? t("page.summary.namedTitle", { title: recordingTitle }),
       body: this.draft,
       subject: this.subject.trim() || null,
       // `manual` distingue lo escrito a mano de lo que generó un proveedor.

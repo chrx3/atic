@@ -15,24 +15,25 @@
   import Button from "$ui/Button.svelte";
   import Chip from "$ui/Chip.svelte";
   import Kbd from "$ui/Kbd.svelte";
+  import { t } from "$domain/i18n.svelte";
 
-  const PHASE = {
-    idle: { label: "En reposo", tone: "neutral" },
-    listening: { label: "Escuchando", tone: "rec" },
-    transcribing: { label: "Transcribiendo", tone: "info" },
-    pasted: { label: "Pegado", tone: "ok" },
-    error: { label: "Error", tone: "danger" },
-  } as const;
+  const PHASE = $derived({
+    idle: { label: t("page.dictation.idle"), tone: "neutral" as const },
+    listening: { label: t("page.dictation.listening"), tone: "rec" as const },
+    transcribing: { label: t("page.dictation.transcribing"), tone: "info" as const },
+    pasted: { label: t("page.dictation.pasted"), tone: "ok" as const },
+    error: { label: t("page.dictation.error"), tone: "danger" as const },
+  });
 
   const shortcut = $derived(config.current?.dictation_shortcut ?? "");
   const pushToTalk = $derived(config.current?.dictation_mode === "push_to_talk");
 </script>
 
 <ToolPage
-  title="Dictado"
+  title={t("tools.dictation.label")}
   icon="dictation"
-  kicker="Voz a texto"
-  blurb="Hablá y el texto se pega en la app donde estabas."
+  kicker={t("tools.dictation.short")}
+  blurb={t("tools.dictation.blurb")}
 >
   {#snippet meta()}
     <Chip tone={PHASE[dictation.phase].tone}>{PHASE[dictation.phase].label}</Chip>
@@ -49,14 +50,14 @@
     <div class="flex flex-col gap-2">
       <p class="text-sm text-muted text-pretty">
         {#if shortcut}
-          Apretá <Kbd combo={formatShortcut(shortcut)} separator="+" /> en cualquier app.
+          {t("page.dictation.press")} <Kbd combo={formatShortcut(shortcut)} separator="+" />
           {#if pushToTalk}
-            Mantenelo apretado mientras hablás y soltá para pegar.
+            {t("page.dictation.hold")}
           {:else}
-            Una vez para empezar, otra para terminar.
+            {t("page.dictation.toggle")}
           {/if}
         {:else}
-          No hay atajo de dictado configurado. Se define en Ajustes.
+          {t("page.dictation.noShortcut")}
         {/if}
       </p>
 
@@ -66,11 +67,11 @@
           size="sm"
           onclick={() => void dictation.toggle().catch(toastError)}
         >
-          {dictation.active ? "Terminar" : "Probar acá"}
+          {dictation.active ? t("tools.dictation.stop") : t("page.dictation.tryHere")}
         </Button>
       </div>
       <p class="text-xs text-faint">
-        Desde acá el texto se pega en esta ventana, no en otra app.
+        {t("page.dictation.hereNote")}
       </p>
     </div>
   </div>

@@ -238,7 +238,9 @@ pub(crate) fn capture_item(path: &Path) -> Option<CaptureItem> {
         .timestamp_millis_opt(created_at_ms as i64)
         .single()
         .map(|dt| atic_capture::naming::shelf_label(&dt.naive_local()))
-        .unwrap_or_else(|| "Captura".into());
+        .unwrap_or_else(|| {
+            crate::ui_lang::pick(crate::ui_lang::english(), "Captura", "Capture").to_string()
+        });
     Some(CaptureItem {
         id: path.file_name()?.to_string_lossy().into_owned(),
         label,
@@ -271,7 +273,10 @@ fn ensure_in_dir(dir: &Path, path: &Path) -> Result<PathBuf, String> {
     if resolved.parent() == Some(canonical_dir.as_path()) {
         Ok(resolved)
     } else {
-        Err("Ruta fuera del directorio de capturas.".into())
+        Err(crate::ui_lang::msg(
+            "Ruta fuera del directorio de capturas.",
+            "Path is outside the captures folder.",
+        ))
     }
 }
 
@@ -287,7 +292,9 @@ fn capture_primary(app: &AppHandle) -> Result<(String, (i32, i32)), String> {
         .iter()
         .find(|monitor| monitor.is_primary)
         .or_else(|| monitors.first())
-        .ok_or_else(|| "No se detectaron monitores.".to_string())?;
+        .ok_or_else(|| {
+            crate::ui_lang::msg("No se detectaron monitores.", "No monitors were detected.")
+        })?;
 
     let frame = engine::capture_rect(target.bounds, false).map_err(|error| error.to_string())?;
     let png = frame.to_png().map_err(|error| error.to_string())?;
@@ -308,5 +315,5 @@ fn rect_center(bounds: atic_capture::Rect) -> (i32, i32) {
 
 #[cfg(not(windows))]
 fn capture_primary(_app: &AppHandle) -> Result<(String, (i32, i32)), String> {
-    Err("La captura de pantalla solo está disponible en Windows.".into())
+    Err(crate::ui_lang::capture_windows_only())
 }

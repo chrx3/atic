@@ -6,11 +6,15 @@
    * porque el camino seguro es no hacer nada. Lo que no se puede es confirmar
    * sin apuntar al botón.
    */
+  import Button from "./Button.svelte";
+  import Modal from "./Modal.svelte";
+  import { t } from "$domain/i18n.svelte";
+
   let {
     title,
     body,
-    confirmLabel = "Confirmar",
-    cancelLabel = "Cancelar",
+    confirmLabel,
+    cancelLabel,
     tone = "default",
     busy = false,
     onConfirm,
@@ -27,19 +31,19 @@
     onCancel: () => void;
   } = $props();
 
-  import Button from "./Button.svelte";
-  import Modal from "./Modal.svelte";
+  const confirmText = $derived(confirmLabel ?? t("chrome.confirm"));
+  const cancelText = $derived(cancelLabel ?? t("chrome.cancel"));
 </script>
 
 <Modal {title} size="sm" onClose={onCancel} dismissible={!busy}>
   {#snippet actions()}
-    <Button variant="ghost" disabled={busy} onclick={onCancel}>{cancelLabel}</Button>
+    <Button variant="ghost" disabled={busy} onclick={onCancel}>{cancelText}</Button>
     <Button
       variant={tone === "danger" ? "danger-solid" : "primary"}
       loading={busy}
       onclick={onConfirm}
     >
-      {confirmLabel}
+      {confirmText}
     </Button>
   {/snippet}
   <p class="text-sm text-muted">{body}</p>

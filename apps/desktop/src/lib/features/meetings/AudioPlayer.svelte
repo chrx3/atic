@@ -9,9 +9,10 @@
   import { playback } from "$domain/playback.svelte";
   import Icon from "$ui/Icon.svelte";
   import { Pause, Play, X } from "$lib/icons";
+  import { t } from "$domain/i18n.svelte";
 
   let {
-    placeholder = "Elegí un fragmento para escucharlo",
+    placeholder,
     alwaysVisible = false,
     dismissible = true,
     onEmptyPlay,
@@ -36,10 +37,11 @@
       ? Math.min(100, (playback.currentTime / playback.duration) * 100)
       : 0,
   );
+  const idleLabel = $derived(placeholder ?? t("page.meetings.playPlaceholder"));
 </script>
 
 {#if alwaysVisible || playback.label}
-  <div class="flex w-full items-center gap-3" aria-label="Reproductor de audio">
+  <div class="flex w-full items-center gap-3" aria-label={t("page.meetings.player")}>
     <button
       type="button"
       class="grid size-8 shrink-0 place-items-center rounded-pill bg-surface-2 text-text
@@ -50,7 +52,7 @@
         else void onEmptyPlay?.();
       }}
       disabled={(!playback.label && !onEmptyPlay) || playback.loading}
-      aria-label={playback.playing ? "Pausar" : "Reproducir"}
+      aria-label={playback.playing ? t("overlay.pause") : t("overlay.play")}
     >
       {#if playback.loading}
         <span class="spinner" aria-hidden="true"></span>
@@ -61,7 +63,7 @@
 
     <div class="flex min-w-0 flex-1 flex-col gap-1">
       <p class="truncate text-xs font-medium text-text">
-        {playback.label ?? placeholder}
+        {playback.label ?? idleLabel}
       </p>
 
       <input
@@ -73,7 +75,7 @@
         value={playback.currentTime}
         oninput={(event) => playback.seek(Number(event.currentTarget.value))}
         style="--played: {percent}%"
-        aria-label="Posición"
+        aria-label={t("page.meetings.position")}
         disabled={!playback.label}
       />
 
@@ -94,7 +96,7 @@
                transition-colors duration-(--duration-quick) ease-calm
                hover:bg-surface-2 hover:text-text"
         onclick={() => playback.stop()}
-        aria-label="Cerrar el reproductor"
+        aria-label={t("page.meetings.closePlayer")}
       >
         <Icon icon={X} size={12} />
       </button>

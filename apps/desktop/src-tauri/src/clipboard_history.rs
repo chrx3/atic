@@ -21,6 +21,27 @@ use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut};
 use crate::state::AppState;
 use atic_core::MutexExt;
 
+fn capture_preview_label(label: &str) -> String {
+    let word = crate::ui_lang::pick(crate::ui_lang::english(), "Captura", "Capture");
+    if label.is_empty() {
+        word.to_string()
+    } else {
+        format!("{word} {label}")
+    }
+}
+
+fn image_preview_label(w: usize, h: usize) -> String {
+    crate::ui_lang::msg(&format!("Imagen {w}×{h}"), &format!("Image {w}×{h}"))
+}
+
+fn item_missing() -> String {
+    crate::ui_lang::msg("Ítem no encontrado", "Item not found")
+}
+
+fn item_empty_text() -> String {
+    crate::ui_lang::msg("Ítem de texto vacío", "Text item is empty")
+}
+
 /// Ventana en primer plano antes de abrir el panel (para pegar ahí).
 static PREV_FOREGROUND: AtomicIsize = AtomicIsize::new(0);
 
@@ -439,7 +460,10 @@ fn ingest_image(
     let h = img.height;
     let bytes = img.bytes.as_ref();
     if bytes.len() > MAX_IMAGE_BYTES * 4 {
-        return Err("imagen demasiado grande".into());
+        return Err(crate::ui_lang::msg(
+            "Imagen demasiado grande",
+            "Image is too large",
+        ));
     }
     let fp = fingerprint_image(bytes, w, h);
     {
@@ -477,7 +501,10 @@ fn ingest_image(
     }
     let png = encode_png_rgba(bytes, w, h)?;
     if png.len() > MAX_IMAGE_BYTES {
-        return Err("png demasiado grande".into());
+        return Err(crate::ui_lang::msg(
+            "PNG demasiado grande",
+            "PNG is too large",
+        ));
     }
     let id = uuid::Uuid::new_v4().to_string();
     let filename = format!("img-{id}.png");
@@ -486,7 +513,7 @@ fn ingest_image(
     let item = ClipboardItem {
         id,
         kind: ClipboardKind::Image,
-        preview: format!("Imagen {w}×{h}"),
+        preview: image_preview_label(w, h),
         text: None,
         image_path: Some(path.to_string_lossy().into_owned()),
         created_at_ms: now_ms(),
@@ -506,7 +533,12 @@ fn shared_history() -> Result<Arc<Mutex<HistoryState>>, String> {
         .lock_or_recover()
         .as_ref()
         .cloned()
-        .ok_or_else(|| "historial de clipboard no iniciado".into())
+        .ok_or_else(|| {
+            crate::ui_lang::msg(
+                "El historial del portapapeles no está iniciado.",
+                "Clipboard history is not started.",
+            )
+        })
 }
 
 fn find_item(state: &AppState, id: &str) -> Option<ClipboardItem> {
@@ -522,11 +554,7 @@ fn find_item(state: &AppState, id: &str) -> Option<ClipboardItem> {
         .map(|cap| ClipboardItem {
             id: id.to_string(),
             kind: ClipboardKind::Image,
-            preview: if cap.label.is_empty() {
-                "Captura".into()
-            } else {
-                format!("Captura {}", cap.label)
-            },
+            preview: capture_preview_label(&cap.label),
             text: None,
             image_path: Some(cap.path),
             created_at_ms: cap.created_at_ms,
@@ -565,7 +593,7 @@ pub(crate) fn agents_visible(_app: &AppHandle) -> bool {
 /// Evita Ctrl+V externo: ese camino saca el foco y tapa/oculta la burbuja.
 pub(crate) fn insert_text_into_agents(app: &AppHandle, text: &str) -> Result<(), String> {
     if text.is_empty() {
-        return Err("texto vacío".into());
+        return Err(crate::ui_lang::msg("Texto vacío", "Empty text"));
     }
     let _ = app.emit(
         "agents-composer-insert",
@@ -592,16 +620,18 @@ pub fn agents_window_visible(app: AppHandle) -> bool {
 /// Se mantiene para imágenes y para quien aún lea `.atic-drag-*.txt`.
 #[tauri::command]
 pub fn clipboard_drag_path(state: State<AppState>, id: String) -> Result<String, String> {
-    let item = find_item(&state, &id).ok_or_else(|| "Ítem no encontrado".to_string())?;
+    let item = find_item(&state, &id).ok_or_else(item_missing)?;
     match item.kind {
-        ClipboardKind::Image => item.image_path.ok_or_else(|| "imagen sin ruta".to_string()),
+        ClipboardKind::Image => item.image_path.ok_or_else(|| {
+            crate::ui_lang::msg("Imagen sin ruta", "Image has no path")
+        }),
         ClipboardKind::Text => {
             let text = item
                 .text
                 .filter(|t| !t.is_empty())
                 .unwrap_or_else(|| item.preview.clone());
             if text.is_empty() {
-                return Err("Ítem de texto vacío".into());
+                return Err(item_empty_text());
             }
             let path = state
                 .dirs
@@ -624,16 +654,21 @@ pub async fn start_clipboard_text_drag(
     state: State<'_, AppState>,
     id: String,
 ) -> Result<(), String> {
-    let item = find_item(&state, &id).ok_or_else(|| "Ítem no encontrado".to_string())?;
+    let item = find_item(&state, &id).ok_or_else(item_missing)?;
     let text = match item.kind {
         ClipboardKind::Text => item
             .text
             .filter(|t| !t.is_empty())
             .unwrap_or_else(|| item.preview.clone()),
-        ClipboardKind::Image => return Err("usa arrastre de archivo para imágenes".into()),
+        ClipboardKind::Image => {
+            return Err(crate::ui_lang::msg(
+                "Usá arrastre de archivo para imágenes.",
+                "Use file drag for images.",
+            ))
+        }
     };
     if text.is_empty() {
-        return Err("Ítem de texto vacío".into());
+        return Err(item_empty_text());
     }
 
     #[cfg(windows)]
@@ -663,7 +698,10 @@ pub async fn start_clipboard_text_drag(
     #[cfg(not(windows))]
     {
         let _ = (app, text);
-        Err("arrastre de texto solo en Windows".into())
+        Err(crate::ui_lang::msg(
+            "El arrastre de texto solo está en Windows.",
+            "Text drag is only available on Windows.",
+        ))
     }
 }
 
@@ -673,7 +711,10 @@ pub fn read_clipboard_drag_text(state: State<AppState>, path: String) -> Result<
     let path = PathBuf::from(&path);
     let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
     if !name.starts_with(".atic-drag-") || !name.ends_with(".txt") {
-        return Err("ruta no permitida".into());
+        return Err(crate::ui_lang::msg(
+            "Ruta no permitida.",
+            "Path is not allowed.",
+        ));
     }
     let dir = state.dirs.clipboard_dir();
     let dir_ok = path
@@ -683,7 +724,10 @@ pub fn read_clipboard_drag_text(state: State<AppState>, path: String) -> Result<
         .map(|(p, d)| p.starts_with(d))
         .unwrap_or_else(|| path.starts_with(&dir));
     if !dir_ok {
-        return Err("ruta fuera del historial".into());
+        return Err(crate::ui_lang::msg(
+            "Ruta fuera del historial.",
+            "Path is outside clipboard history.",
+        ));
     }
     std::fs::read_to_string(&path).map_err(|e| e.to_string())
 }
@@ -699,7 +743,7 @@ pub fn paste_clipboard_item(
     state: State<AppState>,
     id: String,
 ) -> Result<(), String> {
-    let item = find_item(&state, &id).ok_or_else(|| "Ítem no encontrado".to_string())?;
+    let item = find_item(&state, &id).ok_or_else(item_missing)?;
 
     if let Ok(shared) = shared_history() {
         let mut hist = shared.lock_or_recover();
@@ -714,7 +758,7 @@ pub fn paste_clipboard_item(
                     .filter(|t| !t.is_empty())
                     .unwrap_or_else(|| item.preview.clone());
                 if text.is_empty() {
-                    return Err("Ítem de texto vacío".into());
+                    return Err(item_empty_text());
                 }
                 AgentsComposerInsert {
                     kind: ClipboardKind::Text,
@@ -725,7 +769,7 @@ pub fn paste_clipboard_item(
             ClipboardKind::Image => {
                 let path = item
                     .image_path
-                    .ok_or_else(|| "imagen sin ruta".to_string())?;
+                    .ok_or_else(|| crate::ui_lang::msg("Imagen sin ruta", "Image has no path"))?;
                 AgentsComposerInsert {
                     kind: ClipboardKind::Image,
                     text: None,
@@ -758,7 +802,7 @@ pub fn paste_clipboard_item(
                 .filter(|t| !t.is_empty())
                 .unwrap_or_else(|| item.preview.clone());
             if text.is_empty() {
-                return Err("Ítem de texto vacío".into());
+                return Err(item_empty_text());
             }
             {
                 let mut clipboard = Clipboard::new().map_err(|e| e.to_string())?;
@@ -770,7 +814,7 @@ pub fn paste_clipboard_item(
         ClipboardKind::Image => {
             let path = item
                 .image_path
-                .ok_or_else(|| "imagen sin ruta".to_string())?;
+                .ok_or_else(|| crate::ui_lang::msg("Imagen sin ruta", "Image has no path"))?;
             crate::capture::copy_png_to_clipboard(Path::new(&path))?;
             thread::sleep(Duration::from_millis(80));
             paste_text_hotkey_for(&app, target)
@@ -791,7 +835,7 @@ pub fn insert_clipboard_into_agents(
     if !agents_visible(&app) {
         return Err("agentes no está abierto".into());
     }
-    let item = find_item(&state, &id).ok_or_else(|| "Ítem no encontrado".to_string())?;
+    let item = find_item(&state, &id).ok_or_else(item_missing)?;
     let payload = match item.kind {
         ClipboardKind::Text => {
             let text = item
@@ -799,7 +843,7 @@ pub fn insert_clipboard_into_agents(
                 .filter(|t| !t.is_empty())
                 .unwrap_or_else(|| item.preview.clone());
             if text.is_empty() {
-                return Err("Ítem de texto vacío".into());
+                return Err(item_empty_text());
             }
             AgentsComposerInsert {
                 kind: ClipboardKind::Text,
@@ -810,7 +854,7 @@ pub fn insert_clipboard_into_agents(
         ClipboardKind::Image => {
             let path = item
                 .image_path
-                .ok_or_else(|| "imagen sin ruta".to_string())?;
+                .ok_or_else(|| crate::ui_lang::msg("Imagen sin ruta", "Image has no path"))?;
             AgentsComposerInsert {
                 kind: ClipboardKind::Image,
                 text: None,
@@ -861,18 +905,21 @@ pub fn pin_clipboard_item(state: State<AppState>, id: String, pinned: bool) -> R
     }
 
     if !pinned {
-        return Err("Ítem no encontrado".into());
+        return Err(item_missing());
     }
 
     // Favoritar captura: copiar PNG al dir de clipboard y persistir en history.json
-    let virtual_item = find_item(&state, &id).ok_or_else(|| "Ítem no encontrado".to_string())?;
+    let virtual_item = find_item(&state, &id).ok_or_else(item_missing)?;
     let src_path = virtual_item
         .image_path
         .as_deref()
-        .ok_or_else(|| "imagen sin ruta".to_string())?;
+        .ok_or_else(|| crate::ui_lang::msg("Imagen sin ruta", "Image has no path"))?;
     let src = Path::new(src_path);
     if !src.is_file() {
-        return Err("archivo de imagen no encontrado".into());
+        return Err(crate::ui_lang::msg(
+            "Archivo de imagen no encontrado.",
+            "Image file was not found.",
+        ));
     }
 
     let new_id = uuid::Uuid::new_v4().to_string();
@@ -938,7 +985,7 @@ pub fn delete_clipboard_item(
             let _ = app.emit("clipboard-history-changed", ());
             return Ok(());
         }
-        return Err("Ítem no encontrado".into());
+        return Err(item_missing());
     };
     let removed = hist.items.remove(idx);
     hist.deleted_fingerprints
@@ -1095,11 +1142,7 @@ pub(crate) fn record_capture(app: &AppHandle, cap: &crate::capture::CaptureItem)
     let item = ClipboardItem {
         id: format!("capture-{}", cap.id),
         kind: ClipboardKind::Image,
-        preview: if cap.label.is_empty() {
-            "Captura".into()
-        } else {
-            format!("Captura {}", cap.label)
-        },
+        preview: capture_preview_label(&cap.label),
         text: None,
         image_path: Some(cap.path.clone()),
         created_at_ms: cap.created_at_ms,
@@ -1153,11 +1196,7 @@ pub(crate) fn collect_clipboard_items(state: &AppState) -> Result<Vec<ClipboardI
         items.push(ClipboardItem {
             id: format!("capture-{}", cap.id),
             kind: ClipboardKind::Image,
-            preview: if cap.label.is_empty() {
-                "Captura".into()
-            } else {
-                format!("Captura {}", cap.label)
-            },
+            preview: capture_preview_label(&cap.label),
             text: None,
             image_path: Some(cap.path),
             created_at_ms: cap.created_at_ms,
@@ -1204,7 +1243,10 @@ fn paste_text_hotkey_for(
     #[cfg(not(windows))]
     {
         let _ = (app, _target);
-        Err("Pega con Ctrl/Cmd+V; el contenido ya está en el portapapeles.".into())
+        Err(crate::ui_lang::msg(
+            "Pega con Ctrl/Cmd+V; el contenido ya está en el portapapeles.",
+            "Paste with Ctrl/Cmd+V; the content is already on the clipboard.",
+        ))
     }
 }
 
@@ -1334,7 +1376,10 @@ fn paste_ctrl_v() -> Result<(), String> {
     }
     #[cfg(not(windows))]
     {
-        Err("Pega con Ctrl/Cmd+V; el contenido ya está en el portapapeles.".into())
+        Err(crate::ui_lang::msg(
+            "Pega con Ctrl/Cmd+V; el contenido ya está en el portapapeles.",
+            "Paste with Ctrl/Cmd+V; the content is already on the clipboard.",
+        ))
     }
 }
 
@@ -1488,10 +1533,10 @@ fn send_paste_chord(with_shift: bool) -> Result<(), String> {
             std::mem::size_of::<INPUT>() as i32,
         );
         if sent == 0 {
-            return Err(
-                "No se pudo pegar. El contenido quedó en el portapapeles (Ctrl+V / Ctrl+Shift+V)."
-                    .into(),
-            );
+            return Err(crate::ui_lang::msg(
+                "No se pudo pegar. El contenido quedó en el portapapeles (Ctrl+V / Ctrl+Shift+V).",
+                "Could not paste. The content stayed on the clipboard (Ctrl+V / Ctrl+Shift+V).",
+            ));
         }
     }
     Ok(())
@@ -1590,7 +1635,12 @@ pub fn prepare_clipboard_pill(app: AppHandle, fly: bool) -> Result<u64, String> 
         return Ok(0);
     }
     let flight = crate::state::animate_pill_to_cursor(&app)
-        .ok_or_else(|| "No se pudo colocar la pill en el cursor".to_string())?;
+        .ok_or_else(|| {
+            crate::ui_lang::msg(
+                "No se pudo colocar la pill en el cursor.",
+                "Could not move the pill to the cursor.",
+            )
+        })?;
     Ok(flight.ms)
 }
 
@@ -1605,7 +1655,12 @@ pub fn prepare_clipboard_pill(app: AppHandle, fly: bool) -> Result<u64, String> 
 #[tauri::command]
 pub fn stash_pill_home(app: AppHandle) -> Result<(), String> {
     app.get_webview_window("pill")
-        .ok_or_else(|| "no existe la ventana pill".to_string())?;
+        .ok_or_else(|| {
+            crate::ui_lang::msg(
+                "No existe la ventana pill.",
+                "The pill window does not exist.",
+            )
+        })?;
     stash_pre_clipboard_position(&app);
     tracing::info!(target: "pill_geo", "CMD        stash_pill_home");
     crate::state::set_pill_visible(&app, true);
@@ -1651,7 +1706,12 @@ pub fn restore_pill_position(app: AppHandle) -> Result<bool, String> {
 pub fn morph_pill_home(app: AppHandle, width: f64, height: f64) -> Result<bool, String> {
     let window = app
         .get_webview_window("pill")
-        .ok_or_else(|| "no existe la ventana pill".to_string())?;
+        .ok_or_else(|| {
+            crate::ui_lang::msg(
+                "No existe la ventana pill.",
+                "The pill window does not exist.",
+            )
+        })?;
     let scale = window.scale_factor().unwrap_or(1.0);
     let w = (width * scale).round() as i32;
     let h = (height * scale).round() as i32;

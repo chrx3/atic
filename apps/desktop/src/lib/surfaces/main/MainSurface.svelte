@@ -6,6 +6,7 @@
    * ajustes viven en un modal. El estado de dominio lo monta `sessionEffect`.
    */
   import { toolById } from "$core/tools";
+  import { localizeTool, t } from "$domain/i18n.svelte";
   import { LAUNCHER_LAB_OPEN_KEY } from "$lib/dev/launcherLab.svelte";
   import { pickerLab } from "$lib/dev/pickerLab.svelte";
   import { config } from "$domain/config.svelte";
@@ -101,7 +102,7 @@
     return appUpdate.startPolling();
   });
 
-  const tool = $derived(toolById(ui.activeTool));
+  const tool = $derived(localizeTool(toolById(ui.activeTool)));
 
   function onKeydown(event: KeyboardEvent) {
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
@@ -125,21 +126,24 @@
 
 <WindowFrame
   title={tool.label}
+  minimizeLabel={t("chrome.minimize")}
+  maximizeLabel={t("chrome.maximize")}
+  closeLabel={t("chrome.close")}
   onMinimize={() => void minimizeWindow()}
   onMaximize={() => void toggleMaximizeWindow()}
   onClose={() => void closeWindow()}
 >
   {#snippet actions()}
-    <IconButton label="Buscar (Ctrl+K)" size="sm" onclick={() => ui.openSearch()}>
+    <IconButton label={t("chrome.search")} size="sm" onclick={() => ui.openSearch()}>
       <Icon icon={Search} size={14} />
     </IconButton>
 
-    <IconButton label="Ajustes" size="sm" onclick={() => ui.openSettings()}>
+    <IconButton label={t("chrome.settings")} size="sm" onclick={() => ui.openSettings()}>
       <Icon icon={Settings} size={14} />
     </IconButton>
 
     <IconButton
-      label="Repetir el tutorial"
+      label={t("chrome.replayTutorial")}
       size="sm"
       pressed={Boolean(config.current && !config.current.onboarding_done)}
       onclick={() => void ui.replayOnboarding().catch(toastError)}
@@ -149,7 +153,7 @@
 
     {#if isDev}
       <IconButton
-        label={launcherLabOpen ? "Cerrar launcher lab (Ctrl+Alt+F)" : "Launcher lab (Ctrl+Alt+F)"}
+        label={launcherLabOpen ? t("chrome.launcherLabClose") : t("chrome.launcherLab")}
         size="sm"
         pressed={launcherLabOpen}
         onclick={() => toggleLauncherLab()}
@@ -157,7 +161,7 @@
         <Icon icon={AppWindow} size={14} />
       </IconButton>
       <IconButton
-        label={pickerLab.open ? "Cerrar ajuste picker" : "Ajustar rueda y cards"}
+        label={pickerLab.open ? t("chrome.pickerLabClose") : t("chrome.pickerLab")}
         size="sm"
         pressed={pickerLab.open}
         onclick={() => pickerLab.toggle()}
@@ -183,7 +187,7 @@
       replay={ui.replayingOnboarding}
       onDone={() => {
         ui.replayingOnboarding = false;
-        toasts.push("Ahora practiquemos junto a la pill.");
+        toasts.push(t("onboarding.nowPractice"));
       }}
     />
   {/key}
@@ -216,7 +220,7 @@
 
 {#if ui.settingsOpen}
   <Modal
-    title="Ajustes"
+    title={t("chrome.settings")}
     size="lg"
     fill
     scrollBody={false}

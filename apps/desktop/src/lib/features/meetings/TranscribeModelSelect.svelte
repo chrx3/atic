@@ -7,6 +7,7 @@
   import { toastError } from "$domain/toasts.svelte";
   import SegmentedControl from "$ui/SegmentedControl.svelte";
   import Select from "$ui/Select.svelte";
+  import { t, whisperModelLabel } from "$domain/i18n.svelte";
 
   let { disabled = false }: { disabled?: boolean } = $props();
 
@@ -16,16 +17,18 @@
   const localOptions = $derived(
     models.items.map((m) => ({
       value: m.id,
-      label: `${m.display_name} · ${formatMegabytes(m.approx_size_bytes)}${
-        m.downloaded ? "" : " · sin descargar"
+      label: `${whisperModelLabel(m.id)} · ${formatMegabytes(m.approx_size_bytes)}${
+        m.downloaded ? "" : ` · ${t("settings.meetings.notDownloaded")}`
       }`,
     })),
   );
 
-  const groqOptions = GROQ_WHISPER_MODELS.map((m) => ({
-    value: m.value,
-    label: m.label,
-  }));
+  const groqOptions = $derived(
+    GROQ_WHISPER_MODELS.map((m) => ({
+      value: m.value,
+      label: t(`models.groq.${m.value}`),
+    })),
+  );
 
   function setBackend(value: string) {
     void config.patch({ meeting_backend: value }).catch(toastError);
@@ -40,16 +43,18 @@
     const id = (event.currentTarget as HTMLSelectElement).value;
     void config.patch({ meeting_groq_model: id }).catch(toastError);
   }
+
+  const engineOptions = $derived([
+    { value: "local", label: t("settings.meetings.local"), disabled },
+    { value: "groq", label: t("settings.meetings.groq"), disabled },
+  ]);
 </script>
 
 <div class="flex flex-col gap-1">
   <SegmentedControl
     value={backend}
-    label="Motor de transcripción"
-    options={[
-      { value: "local", label: "Local", disabled },
-      { value: "groq", label: "Groq", disabled },
-    ]}
+    label={t("settings.meetings.whereAria")}
+    options={engineOptions}
     onchange={setBackend}
     size="sm"
     full
@@ -60,7 +65,7 @@
       options={groqOptions}
       {disabled}
       onchange={onGroqModel}
-      aria-label="Modelo Groq"
+      aria-label={t("page.meetings.groqModel")}
     />
   {:else}
     <Select
@@ -68,7 +73,7 @@
       options={localOptions}
       {disabled}
       onchange={onLocalModel}
-      aria-label="Modelo de transcripción"
+      aria-label={t("page.meetings.localModel")}
     />
   {/if}
 </div>

@@ -28,6 +28,7 @@
     X,
   } from "$lib/icons";
   import Icon from "$ui/Icon.svelte";
+  import { t } from "$domain/i18n.svelte";
   import {
     annotationImage,
     closeAnnotator,
@@ -59,14 +60,15 @@
     type WidthLevel,
   } from "./annotateModel";
 
-  const TOOLS: { id: AnnotateTool; icon: typeof Pencil; label: string; key: string }[] =
+  const TOOLS = $derived(
     [
-      { id: "pen", icon: Pencil, label: "Lápiz", key: "1" },
-      { id: "arrow", icon: MoveUpRight, label: "Flecha", key: "2" },
-      { id: "ellipse", icon: Circle, label: "Círculo", key: "3" },
-      { id: "rect", icon: Square, label: "Rectángulo", key: "4" },
-      { id: "highlight", icon: Highlighter, label: "Resaltador", key: "5" },
-    ];
+      { id: "pen" as const, icon: Pencil, label: t("page.annotate.pen"), key: "1" },
+      { id: "arrow" as const, icon: MoveUpRight, label: t("page.annotate.arrow"), key: "2" },
+      { id: "ellipse" as const, icon: Circle, label: t("page.annotate.ellipse"), key: "3" },
+      { id: "rect" as const, icon: Square, label: t("page.annotate.rect"), key: "4" },
+      { id: "highlight" as const, icon: Highlighter, label: t("page.annotate.highlight"), key: "5" },
+    ],
+  );
 
   /** Cuánto queda el aviso antes de cerrar. Da tiempo a leerlo, no a esperar. */
   const NOTE_MS = 900;
@@ -277,7 +279,7 @@
       const data = await annotationImage(path);
       if (mine !== token) return;
       if (!(await paint(mine, data, false))) {
-        if (mine === token) error = "No se pudo abrir la captura";
+        if (mine === token) error = t("page.annotate.openFail");
       }
     } catch (err) {
       if (mine !== token) return;
@@ -417,13 +419,13 @@
     if (!ready || busy) return;
     const png = exportPng();
     if (!png) {
-      error = "No se pudo leer el lienzo";
+      error = t("page.annotate.canvasFail");
       return;
     }
     busy = true;
     try {
       await copyAnnotation(png);
-      finish("Copiada al portapapeles");
+      finish(t("page.annotate.copiedClip"));
     } catch (err) {
       error = String(err);
       busy = false;
@@ -434,13 +436,13 @@
     if (!ready || busy) return;
     const png = exportPng();
     if (!png) {
-      error = "No se pudo leer el lienzo";
+      error = t("page.annotate.canvasFail");
       return;
     }
     busy = true;
     try {
       await saveAnnotation(png);
-      finish("Guardada como captura nueva");
+      finish(t("page.annotate.savedNew"));
     } catch (err) {
       error = String(err);
       busy = false;
@@ -536,7 +538,7 @@
     style={mode === "board" ? boardBarStyle : undefined}
     onpointerdown={onBarDown}
   >
-    <div class="group" role="radiogroup" aria-label="Herramienta">
+    <div class="group" role="radiogroup" aria-label={t("page.annotate.tools")}>
       {#each TOOLS as item (item.id)}
         <button
           type="button"
@@ -553,7 +555,7 @@
       {/each}
     </div>
 
-    <div class="group" role="radiogroup" aria-label="Color">
+    <div class="group" role="radiogroup" aria-label={t("page.annotate.color")}>
       {#each COLORS as swatch (swatch)}
         <button
           type="button"
@@ -562,13 +564,13 @@
           style="--swatch: {swatch}"
           role="radio"
           aria-checked={color === swatch}
-          aria-label="Color {swatch}"
+          aria-label={t("page.annotate.colorSwatch", { swatch })}
           onclick={() => (color = swatch)}
         ></button>
       {/each}
     </div>
 
-    <div class="group" role="radiogroup" aria-label="Grosor">
+    <div class="group" role="radiogroup" aria-label={t("page.annotate.width")}>
       {#each WIDTH_LEVELS as value (value)}
         <button
           type="button"
@@ -576,7 +578,7 @@
           class:is-on={level === value}
           role="radio"
           aria-checked={level === value}
-          aria-label="Grosor {value}"
+          aria-label={t("page.annotate.widthValue", { value })}
           onclick={() => (level = value)}
         >
           <span class="width-dot" style="--dot: {2 + value * 2}px"></span>
@@ -589,8 +591,8 @@
         type="button"
         class="tool"
         disabled={!canUndo}
-        title="Deshacer (Ctrl+Z)"
-        aria-label="Deshacer"
+        title={t("page.annotate.undoTitle")}
+        aria-label={t("page.annotate.undo")}
         onclick={() => (doc = undo(doc))}
       >
         <Icon icon={Undo2} size={15} />
@@ -599,8 +601,8 @@
         type="button"
         class="tool"
         disabled={!canRedo}
-        title="Rehacer (Ctrl+Shift+Z)"
-        aria-label="Rehacer"
+        title={t("page.annotate.redoTitle")}
+        aria-label={t("page.annotate.redo")}
         onclick={() => (doc = redo(doc))}
       >
         <Icon icon={Redo2} size={15} />
@@ -614,32 +616,32 @@
         type="button"
         class="action is-primary"
         disabled={!ready || busy}
-        title="Copiar al portapapeles (Enter)"
+        title={t("page.annotate.copyTitle")}
         onclick={() => void copy()}
       >
         <Icon icon={Copy} size={14} />
-        <span>Copiar</span>
+        <span>{t("page.annotate.copy")}</span>
       </button>
       <button
         type="button"
         class="action"
         disabled={!ready || busy}
-        title="Guardar como captura nueva; aparece en el estante (Ctrl+Enter)"
+        title={t("page.annotate.saveTitle")}
         onclick={() => void save()}
       >
         <Icon icon={Save} size={14} />
-        <span>Guardar</span>
+        <span>{t("page.annotate.save")}</span>
       </button>
       <button
         type="button"
         class="action"
         class:is-danger={confirmDiscard}
-        title="Cerrar sin guardar (Esc)"
-        aria-label={confirmDiscard ? "Descartar el dibujo" : "Cerrar"}
+        title={t("page.annotate.closeTitle")}
+        aria-label={confirmDiscard ? t("page.annotate.discard") : t("page.common.close")}
         onclick={requestClose}
       >
         {#if confirmDiscard}
-          <span>¿Descartar?</span>
+          <span>{t("page.annotate.discardQ")}</span>
         {:else}
           <Icon icon={X} size={14} />
         {/if}
@@ -674,8 +676,8 @@
     {error ??
       note ??
       (ready
-        ? "Arrastrá para dibujar · Enter copia · Ctrl+Enter guarda · Esc cierra"
-        : "Cargando la captura…")}
+        ? t("page.annotate.help")
+        : t("page.annotate.loading"))}
   </p>
 
   <!--
@@ -687,7 +689,7 @@
     <button
       type="button"
       class="grip"
-      aria-label="Redimensionar"
+      aria-label={t("page.annotate.resize")}
       onpointerdown={(event) => {
         event.preventDefault();
         void startResizeDragging("SouthEast").catch(() => {});

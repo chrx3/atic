@@ -15,6 +15,7 @@
   import { playback } from "$domain/playback.svelte";
   import { recordings } from "$domain/recordings.svelte";
   import { toastError, toasts } from "$domain/toasts.svelte";
+  import { t } from "$domain/i18n.svelte";
   import { pickExportPath, safeFileName } from "$ipc/dialogs";
   import { exportRecording } from "$ipc/recordings";
   import Banner from "$ui/Banner.svelte";
@@ -102,7 +103,10 @@
   }
 
   function speakerLabel(segment: Segment): string {
-    return segment.speaker_name?.trim() || (segment.speaker === "me" ? "Yo" : "Otros");
+    return (
+      segment.speaker_name?.trim() ||
+      (segment.speaker === "me" ? t("page.meetings.me") : t("page.meetings.others"))
+    );
   }
 
   async function copyVisible() {
@@ -111,7 +115,7 @@
       .map((segment) => `${speakerLabel(segment)}: ${segment.text.trim()}`)
       .join("\n");
     await navigator.clipboard.writeText(text);
-    toasts.push(`Copiados ${visible.length} fragmentos`);
+    toasts.push(t("toast.copiedFragments", { count: visible.length }));
   }
 
   function beginEditing() {
@@ -137,9 +141,9 @@
       }
       await recordings.saveEditedTranscript(recording.id, draft);
       draft = null;
-      toasts.push("Transcripción guardada");
+      toasts.push(t("toast.transcriptSaved"));
     } catch (error) {
-      saveError = `No se pudieron guardar los cambios: ${error}`;
+      saveError = t("page.meetings.saveFail", { error: String(error) });
     } finally {
       saving = false;
     }
@@ -155,14 +159,14 @@
     exportStatus = null;
     try {
       const destination = await pickExportPath(
-        safeFileName(recording.title, "transcripcion"),
+        safeFileName(recording.title, t("page.meetings.exportSlug")),
         format,
       );
       if (!destination) return;
       await exportRecording(recording.id, format, destination);
-      exportStatus = `Exportado en ${destination}`;
+      exportStatus = t("page.meetings.exportOk", { path: destination });
     } catch (error) {
-      exportStatus = `No se pudo exportar: ${error}`;
+      exportStatus = t("page.meetings.exportFail", { error: String(error) });
     } finally {
       exporting = false;
     }
@@ -177,10 +181,21 @@
       retranscribing = false;
     }
   }
+
+  const speakerFilterOptions = $derived([
+    { value: "all" as const, label: t("page.meetings.all") },
+    { value: "me" as const, label: t("page.meetings.me") },
+    { value: "others" as const, label: t("page.meetings.others") },
+  ]);
+
+  const speakerEditOptions = $derived([
+    { value: "me", label: t("page.meetings.me") },
+    { value: "others", label: t("page.meetings.participant") },
+  ]);
 </script>
 
 <Modal
-  title="Transcripción"
+  title={t("page.meetings.transcriptTitle")}
   subtitle={recording.title}
   size="xl"
   {onClose}
@@ -188,12 +203,12 @@
 >
   {#if loading}
     <p class="py-12 text-center text-sm text-muted" role="status">
-      Cargando transcripción…
+      {t("page.meetings.loadingTranscript")}
     </p>
   {:else if segments.length === 0}
     <EmptyState
-      title="Sin transcripción"
-      hint="Apretá Transcribir para generarla. Corre local, así que tarda un rato."
+      title={t("page.meetings.noTranscript")}
+      hint={t("page.meetings.noTranscriptHint")}
     />
   {:else}
     <!-- Las herramientas quedan fijas: en una reunión larga la lista es de
@@ -204,8 +219,7 @@
     >
       {#if editing}
         <p class="flex-1 text-xs text-muted">
-          Guardar borra los fragmentos vacíos y deja el resumen anterior marcado como
-          pendiente.
+          {t("page.meetings.editHint")}
         </p>
         <Button
           variant="ghost"
@@ -213,7 +227,7 @@
           disabled={saving}
           onclick={() => (draft = null)}
         >
-          Descartar
+          {t("page.meetings.discard")}
         </Button>
         <Button
           variant="primary"
@@ -221,28 +235,24 @@
           loading={saving}
           onclick={() => void saveEdits()}
         >
-          Guardar cambios
+          {t("page.meetings.saveChanges")}
         </Button>
       {:else}
         <div class="min-w-48 flex-1">
           <Input
             type="search"
             bind:value={query}
-            placeholder="Buscar en la transcripción…"
-            aria-label="Buscar en la transcripción"
+            placeholder={t("page.meetings.searchTranscript")}
+            aria-label={t("page.meetings.searchTranscriptAria")}
             autocomplete="off"
           />
         </div>
 
         <SegmentedControl
           bind:value={speakerFilter}
-          options={[
-            { value: "all" as const, label: "Todos" },
-            { value: "me" as const, label: "Yo" },
-            { value: "others" as const, label: "Otros" },
-          ]}
+          options={speakerFilterOptions}
           size="sm"
-          label="Filtrar por hablante"
+          label={t("page.meetings.filterSpeaker")}
         />
 
         <Button
@@ -251,16 +261,19 @@
           disabled={visible.length === 0}
           onclick={() => void copyVisible()}
         >
-          Copiar
+          {t("page.common.copy")}
         </Button>
-        <Button variant="soft" size="sm" onclick={beginEditing}>Editar</Button>
+        <Button variant="soft" size="sm" onclick={beginEditing}>{t("page.meetings.edit")}</Button>
 
         <span
           class="w-full font-mono text-micro text-faint"
           data-numeric
           aria-live="polite"
         >
-          {visible.length} de {segments.length} fragmentos
+          {t("page.meetings.fragmentsCount", {
+            visible: visible.length,
+            total: segments.length,
+          })}
         </span>
       {/if}
     </div>
@@ -273,8 +286,8 @@
 
     {#if visible.length === 0}
       <EmptyState
-        title="Nada coincide"
-        hint="Probá con menos palabras o sacá el filtro."
+        title={t("page.common.nothing")}
+        hint={t("page.meetings.nothingFilterHint")}
       />
     {:else if editing}
       <ul class="flex flex-col gap-2">
@@ -295,18 +308,17 @@
                   segment.speaker,
                   segment.start_ms / 1000,
                 )}
-              aria-label="Escuchar desde {stamp(segment.start_ms)}"
+              aria-label={t("page.meetings.listenFrom", {
+                time: stamp(segment.start_ms),
+              })}
             >
               ▶ {stamp(segment.start_ms)}
             </button>
 
             <Select
               value={segment.speaker}
-              options={[
-                { value: "me", label: "Yo" },
-                { value: "others", label: "Participante" },
-              ]}
-              aria-label="Quién habla"
+              options={speakerEditOptions}
+              aria-label={t("page.meetings.whoSpeaks")}
               onchange={(event: Event) => {
                 segment.speaker = (event.currentTarget as HTMLSelectElement)
                   .value as Speaker;
@@ -321,8 +333,10 @@
                 value={segment.speaker_name ?? ""}
                 disabled={segment.speaker === "me"}
                 maxlength={80}
-                placeholder={segment.speaker === "me" ? "Yo" : "Nombre (opcional)"}
-                aria-label="Nombre del participante"
+                placeholder={segment.speaker === "me"
+                  ? t("page.meetings.me")
+                  : t("page.meetings.nameOptional")}
+                aria-label={t("page.meetings.participantName")}
                 oninput={(event: Event) => {
                   segment.speaker_name =
                     (event.currentTarget as HTMLInputElement).value || null;
@@ -332,12 +346,16 @@
                 bind:value={segment.text}
                 rows={2}
                 maxlength={20000}
-                aria-label="Texto en {stamp(segment.start_ms)}"
+                aria-label={t("page.meetings.segmentText", {
+                  time: stamp(segment.start_ms),
+                })}
               />
             </div>
 
             <IconButton
-              label="Eliminar el fragmento de {stamp(segment.start_ms)}"
+              label={t("page.meetings.deleteFragment", {
+                time: stamp(segment.start_ms),
+              })}
               size="sm"
               onclick={() => removeSegment(segment)}
             >
@@ -396,7 +414,7 @@
               { value: "md" as const, label: "Markdown (.md)" },
             ]}
             disabled={exporting || editing}
-            aria-label="Formato de exportación"
+            aria-label={t("page.meetings.exportFormat")}
           />
         </div>
         <Button
@@ -405,7 +423,7 @@
           disabled={editing}
           onclick={() => void exportFile()}
         >
-          Exportar
+          {t("page.meetings.export")}
         </Button>
 
         {#if onRetranscribe}
@@ -422,7 +440,7 @@
                 if (id) void models.download(id).catch(toastError);
               }}
             >
-              Descargar modelo
+              {t("page.meetings.downloadModel")}
             </Button>
           {:else}
             <Button
@@ -431,7 +449,7 @@
               disabled={!canTranscribe || editing}
               onclick={() => void retranscribe()}
             >
-              Re-transcribir
+              {t("page.meetings.retranscribe")}
             </Button>
           {/if}
         {/if}

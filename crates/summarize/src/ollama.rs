@@ -16,10 +16,11 @@ pub struct OllamaSummarizer {
     base_url: String,
     model: String,
     client: Client,
+    english: bool,
 }
 
 impl OllamaSummarizer {
-    pub fn new(base_url: impl Into<String>, model: impl Into<String>) -> Self {
+    pub fn new(base_url: impl Into<String>, model: impl Into<String>, english: bool) -> Self {
         let base = base_url.into().trim_end_matches('/').to_string();
         Self {
             base_url: base,
@@ -28,6 +29,7 @@ impl OllamaSummarizer {
                 .timeout(std::time::Duration::from_secs(300))
                 .build()
                 .expect("cliente HTTP"),
+            english,
         }
     }
 }
@@ -60,11 +62,11 @@ impl Summarizer for OllamaSummarizer {
             messages: vec![
                 ChatMessage {
                     role: "system",
-                    content: prompts::system_prompt().to_string(),
+                    content: prompts::system_prompt_for(self.english).to_string(),
                 },
                 ChatMessage {
                     role: "user",
-                    content: prompts::user_prompt(template, meeting_title, &plain),
+                    content: prompts::user_prompt_for(template, meeting_title, &plain, self.english),
                 },
             ],
         };
@@ -112,11 +114,21 @@ impl Summarizer for OllamaSummarizer {
         let raw = strip_thinking_blocks(&raw);
         if raw.is_empty() {
             return Err(SummarizeError::BadResponse(
-                "Ollama no devolvió texto".into(),
+                if self.english {
+                    "Ollama returned no text".into()
+                } else {
+                    "Ollama no devolvió texto".into()
+                },
             ));
         }
 
-        Ok(build_summary(template, meeting_title, "ollama", &raw))
+        Ok(build_summary(
+            template,
+            meeting_title,
+            "ollama",
+            &raw,
+            self.english,
+        ))
     }
 }
 

@@ -6,6 +6,7 @@
    * `ToolModalChrome` marca a las tools hijas para que `ToolPage` no lo repita.
    */
   import { toolById, type ToolId } from "$core/tools";
+  import { localizeTool, t } from "$domain/i18n.svelte";
   import AgentsTool from "$features/agents/AgentsTool.svelte";
   import CapturesTool from "$features/captures/CapturesTool.svelte";
   import ClipboardTool from "$features/clipboard/ClipboardTool.svelte";
@@ -38,16 +39,12 @@
     onOpenSettings?: () => void;
   } = $props();
 
-  const tool = $derived(toolById(toolId));
+  const tool = $derived(localizeTool(toolById(toolId)));
 
   const TABS = $derived([
-    { value: "detail" as const, label: "Detalle", icon: toolId },
-    { value: "settings" as const, label: "Ajustes", icon: "settings" as const },
+    { value: "detail" as const, label: t("tools.detailTab"), icon: toolId },
+    { value: "settings" as const, label: t("chrome.settings"), icon: "settings" as const },
   ]);
-
-  const hasOwnSettings = $derived(
-    toolId === "meetings" || toolId === "dictation" || toolId === "captures",
-  );
 
   /** Agentes es chat a pantalla: sin Detalle/Ajustes ni blurb duplicado. */
   const chatOnly = $derived(toolId === "agents");
@@ -93,7 +90,7 @@
         <SegmentedControl
           bind:value={tab}
           options={TABS}
-          label="Vista del detalle"
+          label={t("tools.detailView")}
           size="sm"
           full
         />
@@ -133,12 +130,7 @@
             {:else}
               <div class="flex flex-col gap-3">
                 <p class="text-sm text-muted">
-                  {#if hasOwnSettings}
-                    Ajustes de {tool.label}.
-                  {:else}
-                    {tool.label} no tiene una sección propia. Acá están los atajos del
-                    sistema; el resto vive en Ajustes generales.
-                  {/if}
+                  {t("tools.noOwnSettings", { label: tool.label })}
                 </p>
                 <ShortcutsSection />
                 {#if onOpenSettings}
@@ -151,7 +143,7 @@
                       onOpenSettings();
                     }}
                   >
-                    Abrir todos los ajustes
+                    {t("tools.openAllSettings")}
                   </button>
                 {/if}
               </div>

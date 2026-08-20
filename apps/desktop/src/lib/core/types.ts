@@ -119,6 +119,8 @@ export interface AppConfig {
   capture_click_action: string;
   /** light | dark | system */
   ui_theme: string;
+  /** es | en — idioma de la interfaz, no el de Whisper. */
+  ui_language: string;
   /** Hosts SSH para agentes remotos (sin secretos). */
   ssh_hosts: SshHost[];
 }

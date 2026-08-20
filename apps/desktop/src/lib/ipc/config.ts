@@ -20,6 +20,18 @@ export const setConfig = (config: AppConfig) => invoke<void>("set_config", { con
 export const onUiTheme = (cb: (theme: string) => void): Promise<UnlistenFn> =>
   on("ui-theme", cb);
 
+/** Idioma de UI persistido. Cruza webviews igual que el tema. */
+export const onUiLanguage = (cb: (language: string) => void): Promise<UnlistenFn> =>
+  on("ui-language", cb);
+
+export const setTrayMenu = (labels: {
+  show: string;
+  capture: string;
+  togglePill: string;
+  summonPill: string;
+  quit: string;
+}) => invoke<void>("set_tray_menu", { labels });
+
 export const secretsStatus = () => invoke<SecretsStatus>("secrets_status");
 export const setSecret = (kind: string, value: string) =>
   invoke<void>("set_secret", { kind, value });

@@ -29,13 +29,19 @@ enum Binding {
     Mouse(SideButton),
 }
 
-fn parse_binding(name: &str, raw: &str) -> Result<Binding, String> {
+fn parse_binding(en: bool, name: &str, raw: &str) -> Result<Binding, String> {
     if let Some(btn) = mouse_bindings::parse_side_button(raw) {
         return Ok(Binding::Mouse(btn));
     }
     raw.parse::<Shortcut>()
         .map(Binding::Key)
-        .map_err(|e| format!("Atajo de {name} inválido ({raw}): {e}"))
+        .map_err(|e| {
+            if en {
+                format!("Invalid {name} shortcut ({raw}): {e}")
+            } else {
+                format!("Atajo de {name} inválido ({raw}): {e}")
+            }
+        })
 }
 
 fn binding_dup_key(b: &Binding) -> String {
@@ -114,41 +120,49 @@ pub struct ShortcutBindings<'a> {
 /// `shortcuts-failed`, para que el usuario pueda reasignarlos: un atajo que el
 /// SO rechazó es indistinguible de uno roto si solo queda en el log.
 pub fn register_shortcuts(app: &AppHandle, bindings: ShortcutBindings<'_>) -> Result<(), String> {
-    let recording = parse_binding("grabación", bindings.recording)?;
-    let dictation = parse_binding("dictado", bindings.dictation)?;
-    let summon = parse_binding("traer pill", bindings.summon_pill)?;
-    let radial = parse_binding("rueda de la pill", bindings.pill_radial)?;
-    let clipboard = parse_binding("clipboard", bindings.clipboard)?;
-    let snippets = parse_binding("fragmentos", bindings.snippets)?;
+    let en = crate::ui_lang::english();
+    let n = |es, english| crate::ui_lang::pick(en, es, english);
+    let recording = parse_binding(en, n("grabación", "recording"), bindings.recording)?;
+    let dictation = parse_binding(en, n("dictado", "dictation"), bindings.dictation)?;
+    let summon = parse_binding(en, n("traer pill", "bring pill"), bindings.summon_pill)?;
+    let radial = parse_binding(en, n("rueda de la pill", "pill wheel"), bindings.pill_radial)?;
+    let clipboard = parse_binding(en, "clipboard", bindings.clipboard)?;
+    let snippets = parse_binding(en, n("fragmentos", "snippets"), bindings.snippets)?;
     let agents = if crate::agents::UI_ENABLED {
-        Some(parse_binding("agentes", bindings.agents)?)
+        Some(parse_binding(en, n("agentes", "agents"), bindings.agents)?)
     } else {
         None
     };
-    let screenshot = parse_binding("captura", bindings.screenshot)?;
-    let board = parse_binding("pizarra", bindings.board)?;
-    let launcher_bind = parse_binding("launcher", bindings.launcher)?;
+    let screenshot = parse_binding(en, n("captura", "capture"), bindings.screenshot)?;
+    let board = parse_binding(en, n("pizarra", "board"), bindings.board)?;
+    let launcher_bind = parse_binding(en, "launcher", bindings.launcher)?;
 
     let mut named: Vec<(&str, &Binding)> = vec![
-        ("grabación", &recording),
-        ("dictado", &dictation),
-        ("traer pill", &summon),
-        ("rueda de la pill", &radial),
+        (n("grabación", "recording"), &recording),
+        (n("dictado", "dictation"), &dictation),
+        (n("traer pill", "bring pill"), &summon),
+        (n("rueda de la pill", "pill wheel"), &radial),
         ("clipboard", &clipboard),
-        ("fragmentos", &snippets),
-        ("captura", &screenshot),
-        ("pizarra", &board),
+        (n("fragmentos", "snippets"), &snippets),
+        (n("captura", "capture"), &screenshot),
+        (n("pizarra", "board"), &board),
         ("launcher", &launcher_bind),
     ];
     if let Some(ref agents) = agents {
-        named.push(("agentes", agents));
+        named.push((n("agentes", "agents"), agents));
     }
     for i in 0..named.len() {
         for j in (i + 1)..named.len() {
             if binding_dup_key(named[i].1) == binding_dup_key(named[j].1) {
-                return Err(format!(
-                    "Los atajos de {} y {} no pueden coincidir.",
-                    named[i].0, named[j].0
+                return Err(crate::ui_lang::msg(
+                    &format!(
+                        "Los atajos de {} y {} no pueden coincidir.",
+                        named[i].0, named[j].0
+                    ),
+                    &format!(
+                        "The {} and {} shortcuts cannot be the same.",
+                        named[i].0, named[j].0
+                    ),
                 ));
             }
         }

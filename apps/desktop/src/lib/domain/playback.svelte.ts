@@ -8,13 +8,13 @@
  * «Yo» y «Otros» aíslan una pista.
  */
 
+import { t } from "$domain/i18n.svelte";
 import { trackSrc } from "$ipc/recordings";
 import type { Recording, Speaker } from "$core/types";
 import {
   defaultTrack,
   kindsFor,
   resolveTrack,
-  trackLabel,
   type AudioTrack,
 } from "./playbackTracks";
 
@@ -57,7 +57,7 @@ class PlaybackController {
     audio.addEventListener("error", () => {
       this.loading = false;
       this.playing = false;
-      this.error = "No se pudo reproducir esta pista.";
+      this.error = t("page.meetings.playError");
     });
     return audio;
   }
@@ -171,7 +171,7 @@ class PlaybackController {
       };
       const onError = () => {
         cleanup();
-        reject(new Error("No se pudo cargar el audio."));
+        reject(new Error(t("page.meetings.loadError")));
       };
       audio.addEventListener("loadedmetadata", onLoaded, { once: true });
       audio.addEventListener("error", onError, { once: true });
@@ -232,7 +232,13 @@ class PlaybackController {
 
       this.recordingId = recording.id;
       this.track = track;
-      this.label = `${recording.title} · ${trackLabel(track)}`;
+      this.label = `${recording.title} · ${
+        track === "mix"
+          ? t("page.meetings.all")
+          : track === "mic"
+            ? t("page.meetings.me")
+            : t("page.meetings.others")
+      }`;
       this.#syncDuration();
       this.#seekEls(kinds, Math.max(0, keepTime));
       this.#pauseUnused(kinds);
@@ -244,7 +250,7 @@ class PlaybackController {
       if (request !== this.#request) return;
       const message = String(error);
       if (!message.includes("AbortError")) {
-        this.error = message || "No se pudo reproducir esta pista.";
+        this.error = message || t("page.meetings.playError");
       }
     }
   }

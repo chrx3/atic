@@ -25,6 +25,7 @@
   import type { Snippet } from "svelte";
   import Icon from "$ui/Icon.svelte";
   import { X } from "$lib/icons";
+  import { t } from "$domain/i18n.svelte";
 
   type Size = "sm" | "md" | "lg" | "xl";
 
@@ -212,7 +213,7 @@
                  duration-(--duration-quick) ease-calm
                  hover:bg-surface-2 hover:text-text active:scale-[0.96]
                  before:absolute before:inset-[-4px] before:content-['']"
-          aria-label="Cerrar"
+          aria-label={t("chrome.close")}
           onclick={requestClose}
         >
           <Icon icon={X} size={14} />

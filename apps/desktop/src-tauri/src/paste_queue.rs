@@ -136,7 +136,7 @@ fn ensure_poller(app: &AppHandle) {
 pub(crate) fn enqueue(app: &AppHandle, text: &str) -> Result<PasteQueueItem, String> {
     let trimmed = text.trim();
     if trimmed.is_empty() {
-        return Err("Texto vacío".into());
+        return Err(crate::ui_lang::msg("Texto vacío", "Empty text"));
     }
     let state = app.state::<AppState>();
     let preview: String = trimmed.chars().take(120).collect();
@@ -269,7 +269,7 @@ pub fn dismiss_paste_queue_item(
         Some(items.remove(idx))
     });
     if removed.is_none() {
-        return Err("Ítem no encontrado".into());
+        return Err(crate::ui_lang::msg("Ítem no encontrado", "Item not found"));
     }
     emit_changed(&app);
     Ok(())
@@ -291,7 +291,7 @@ pub fn paste_queue_item_now(
     let text = with_queue(&state, |items| {
         items.iter().find(|i| i.id == id).map(|i| i.text.clone())
     })
-    .ok_or_else(|| "Ítem no encontrado".to_string())?;
+    .ok_or_else(|| crate::ui_lang::msg("Ítem no encontrado", "Item not found"))?;
 
     prepare_external_paste(&app);
     let paste_result = clipboard_history::paste_text(&app, &text);

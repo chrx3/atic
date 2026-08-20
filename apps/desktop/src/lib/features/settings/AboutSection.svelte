@@ -11,6 +11,7 @@
   import SettingsRow from "$patterns/SettingsRow.svelte";
   import Banner from "$ui/Banner.svelte";
   import Button from "$ui/Button.svelte";
+  import { t } from "$domain/i18n.svelte";
   import Chip from "$ui/Chip.svelte";
   import ProgressBar from "$ui/ProgressBar.svelte";
 
@@ -39,30 +40,30 @@
   >
     <p class="text-lg font-semibold text-text">Atic</p>
     <p class="max-w-[40ch] text-xs leading-relaxed text-muted">
-      Grabá llamadas, transcribí y resumí en tu PC.
+      {t("about.tagline")}
     </p>
     {#if version}
       <Chip tone="neutral">v{version}</Chip>
     {/if}
   </div>
 
-  <SettingsGroup title="Detalles">
-    <SettingsRow label="Compilación">
+  <SettingsGroup title={t("about.details")}>
+    <SettingsRow label={t("about.build")}>
       {#snippet control()}
         <p class="font-mono text-sm text-text" data-numeric>{buildLabel}</p>
       {/snippet}
     </SettingsRow>
-    <SettingsRow label="Identificador">
+    <SettingsRow label={t("about.id")}>
       {#snippet control()}
         <p class="font-mono text-sm text-text">com.ciat.atic</p>
       {/snippet}
     </SettingsRow>
-    <SettingsRow label="Licencia">
+    <SettingsRow label={t("about.license")}>
       {#snippet control()}
         <p class="text-sm text-text">MIT</p>
       {/snippet}
     </SettingsRow>
-    <SettingsRow label="Código" hint="El instalador nuevo también vive en Releases.">
+    <SettingsRow label={t("about.code")} hint={t("about.codeHint")}>
       {#snippet control()}
         <Button
           variant="soft"
@@ -70,37 +71,33 @@
           full
           onclick={() => void openExternalUrl(GITHUB_REPO_URL).catch(toastError)}
         >
-          GitHub
+          {t("about.github")}
         </Button>
       {/snippet}
     </SettingsRow>
   </SettingsGroup>
 
   {#if appUpdate.installing}
-    <Banner tone="info" title="Instalando {appUpdate.version}">
-      El instalador corre en silencio. Si Windows muestra SmartScreen, dale a
-      Ejecutar. Atic se cierra y vuelve a abrir.
+    <Banner tone="info" title={t("about.installingTitle", { version: appUpdate.version ?? "" })}>
+      {t("about.installingBody")}
     </Banner>
   {:else if appUpdate.downloaded && !appUpdate.downloading}
-    <Banner tone="info" title="Descarga lista: {appUpdate.version}">
-      Ahora sí: instalá y Atic se reinicia. El 100% de antes era solo el archivo.
+    <Banner tone="info" title={t("about.readyTitle", { version: appUpdate.version ?? "" })}>
+      {t("about.readyBody")}
     </Banner>
   {:else if appUpdate.pending && !appUpdate.downloading}
-    <Banner tone="info" title="Hay una versión nueva: {appUpdate.version}">
-      Primero se descarga el instalador. Después aparece Instalar y reiniciar.
+    <Banner tone="info" title={t("about.availableTitle", { version: appUpdate.version ?? "" })}>
+      {t("about.availableBody")}
     </Banner>
   {:else if appUpdate.error}
-    <Banner tone="warn" title="No se pudo consultar">
+    <Banner tone="warn" title={t("about.checkFailed")}>
       {appUpdate.error}
     </Banner>
   {:else if appUpdate.checked && !appUpdate.checking && !appUpdate.pending}
-    <Banner tone="info" title="Estás al día" />
+    <Banner tone="info" title={t("about.upToDate")} />
   {/if}
 
-  <SettingsGroup
-    title="Actualizaciones"
-    hint="Mira el último release de GitHub. Primero se descarga, después hay que instalar y reiniciar."
-  >
+  <SettingsGroup title={t("about.updates")} hint={t("about.updatesHint")}>
     <SettingsRow bare>
       {#snippet control()}
         <div class="flex flex-col gap-2">
@@ -112,7 +109,7 @@
               disabled={busy}
               onclick={() => void appUpdate.apply()}
             >
-              Instalar {appUpdate.version} y reiniciar
+              {t("about.install", { version: appUpdate.version ?? "" })}
             </Button>
           {:else if appUpdate.pending && !appUpdate.downloading && !appUpdate.installing}
             <Button
@@ -122,7 +119,7 @@
               disabled={busy}
               onclick={() => void appUpdate.download()}
             >
-              Descargar {appUpdate.version}
+              {t("about.download", { version: appUpdate.version ?? "" })}
             </Button>
           {/if}
           <Button
@@ -133,7 +130,7 @@
             disabled={busy}
             onclick={() => void appUpdate.check()}
           >
-            {appUpdate.checking ? "Buscando…" : "Buscar actualizaciones"}
+            {appUpdate.checking ? t("about.checking") : t("about.check")}
           </Button>
           <Button
             variant="ghost"
@@ -141,7 +138,7 @@
             full
             onclick={() => void openExternalUrl(GITHUB_RELEASES_URL).catch(toastError)}
           >
-            Ver releases
+            {t("about.releases")}
           </Button>
         </div>
       {/snippet}
@@ -153,7 +150,7 @@
           <ProgressBar
             value={(appUpdate.percent ?? 0) / 100}
             indeterminate={appUpdate.percent === null}
-            label="Descargando {appUpdate.version}"
+            label={t("about.downloading", { version: appUpdate.version ?? "" })}
             tone="ok"
           />
         {/snippet}
@@ -164,7 +161,7 @@
           <ProgressBar
             value={1}
             indeterminate
-            label="Instalando {appUpdate.version}"
+            label={t("about.installing", { version: appUpdate.version ?? "" })}
             tone="ok"
           />
         {/snippet}

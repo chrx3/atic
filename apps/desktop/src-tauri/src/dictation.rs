@@ -26,8 +26,28 @@ fn resolve_groq_api_key() -> Option<String> {
     None
 }
 
-const GROQ_KEY_REQUIRED_MSG: &str =
-    "Configura tu API key de Groq en Ajustes para usar el dictado en la nube.";
+fn groq_key_required() -> String {
+    crate::ui_lang::msg(
+        "Configurá tu API key de Groq en Ajustes para usar el dictado en la nube.",
+        "Set your Groq API key in Settings to use cloud dictation.",
+    )
+}
+
+fn dictation_need_local(err: &atic_transcribe::TranscribeError, groq_fallback: bool) -> String {
+    let en = crate::ui_lang::english();
+    if groq_fallback {
+        format!(
+            "{} {}",
+            groq_key_required(),
+            crate::ui_lang::msg(
+                &format!("Mientras tanto, descargá un modelo local: {}", err.to_ui(false)),
+                &format!("In the meantime, download a local model: {}", err.to_ui(true)),
+            )
+        )
+    } else {
+        err.to_ui(en)
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -96,10 +116,16 @@ fn start_dictation(app: &AppHandle) -> Result<(), String> {
     let state = app.state::<AppState>();
 
     if state.active.lock_or_recover().is_some() {
-        return Err("Hay una grabación de reunión en curso. Deténla antes de dictar.".into());
+        return Err(crate::ui_lang::msg(
+            "Hay una grabación de reunión en curso. Deténla antes de dictar.",
+            "A meeting recording is in progress. Stop it before dictating.",
+        ));
     }
     if state.dictation.lock_or_recover().is_some() {
-        return Err("Ya estás dictando.".into());
+        return Err(crate::ui_lang::msg(
+            "Ya estás dictando.",
+            "You are already dictating.",
+        ));
     }
 
     // Guardar destino de pegado YA: antes de que la pill/UI robe el foco.
@@ -113,20 +139,14 @@ fn start_dictation(app: &AppHandle) -> Result<(), String> {
         if cfg.dictation_backend == "groq" {
             tracing::warn!(
                 "dictado Groq sin API key; se usará Whisper local. {}",
-                GROQ_KEY_REQUIRED_MSG
+                groq_key_required()
             );
         }
         let _ = transcribe::models::require_downloaded(
             &state.dirs.models_dir(),
             &cfg.dictation_whisper_model,
         )
-        .map_err(|e| {
-            if cfg.dictation_backend == "groq" {
-                format!("{GROQ_KEY_REQUIRED_MSG} Mientras tanto, descarga un modelo local: {e}")
-            } else {
-                e.to_string()
-            }
-        })?;
+        .map_err(|e| dictation_need_local(&e, cfg.dictation_backend == "groq"))?;
     }
 
     let temp_dir = state
@@ -158,10 +178,11 @@ fn start_dictation(app: &AppHandle) -> Result<(), String> {
             mic_device_id,
             output_device_id,
             stt_tap: None,
+            english: crate::ui_lang::english(),
         },
         tx,
     )
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| e.to_ui(crate::ui_lang::english()))?;
 
     let app_fwd = app.clone();
     thread::spawn(move || {
@@ -220,10 +241,16 @@ fn stop_and_paste(app: &AppHandle) {
 
         let result = (|| -> Result<(String, crate::paste_queue::PasteOutcome), String> {
             if !summary.mic_written || !active.wav_path.exists() {
-                return Err("No se capturó audio. Intenta de nuevo.".into());
+                return Err(crate::ui_lang::msg(
+                    "No se capturó audio. Intenta de nuevo.",
+                    "No audio was captured. Try again.",
+                ));
             }
             if summary.duration_secs < 0.4 {
-                return Err("Dictado demasiado corto.".into());
+                return Err(crate::ui_lang::msg(
+                    "Dictado demasiado corto.",
+                    "Dictation was too short.",
+                ));
             }
 
             let state = app2.state::<AppState>();
@@ -247,7 +274,7 @@ fn stop_and_paste(app: &AppHandle) {
                     language,
                     &cfg.dictation_groq_model,
                 )
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| e.to_ui(crate::ui_lang::english()))?;
                 tracing::info!(
                     audio_secs = summary.duration_secs,
                     whisper_ms = whisper_started.elapsed().as_millis(),
@@ -260,22 +287,14 @@ fn stop_and_paste(app: &AppHandle) {
                 if cfg.dictation_backend == "groq" {
                     tracing::warn!(
                         "dictado Groq sin API key; fallback a Whisper local. {}",
-                        GROQ_KEY_REQUIRED_MSG
+                        groq_key_required()
                     );
                 }
                 let model_path = transcribe::models::require_downloaded(
                     &state.dirs.models_dir(),
                     &cfg.dictation_whisper_model,
                 )
-                .map_err(|e| {
-                    if cfg.dictation_backend == "groq" {
-                        format!(
-                            "{GROQ_KEY_REQUIRED_MSG} Mientras tanto, descarga un modelo local: {e}"
-                        )
-                    } else {
-                        e.to_string()
-                    }
-                })?;
+                .map_err(|e| dictation_need_local(&e, cfg.dictation_backend == "groq"))?;
                 let loaded = crate::state::get_or_load_whisper(&state, &model_path)?;
                 let tracks = [TrackInput {
                     wav: &active.wav_path,
@@ -288,7 +307,7 @@ fn stop_and_paste(app: &AppHandle) {
                     transcribe::TranscribeMode::Dictation,
                     |_| {},
                 )
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| e.to_ui(crate::ui_lang::english()))?;
                 tracing::info!(
                     audio_secs = summary.duration_secs,
                     whisper_ms = whisper_started.elapsed().as_millis(),
@@ -307,7 +326,10 @@ fn stop_and_paste(app: &AppHandle) {
             };
 
             if text.is_empty() {
-                return Err("No se detectó habla. Prueba otra vez.".into());
+                return Err(crate::ui_lang::msg(
+                    "No se detectó habla. Prueba otra vez.",
+                    "No speech was detected. Try again.",
+                ));
             }
 
             // Congelar el destino: de acá en más el foco lo movemos nosotros.

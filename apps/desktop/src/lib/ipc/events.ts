@@ -116,6 +116,12 @@ export interface AticEvents {
    */
   "ui-theme": string;
   /**
+   * Idioma de UI persistido (`es` | `en`).
+   *
+   * El overlay no hidrata el store de config de `main`: hay que avisarle.
+   */
+  "ui-language": string;
+  /**
    * El setup o la práctica de primer uso cambió.
    *
    * El overlay no comparte el store de `main`: tiene que volver a leer config

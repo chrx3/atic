@@ -9,7 +9,7 @@ import {
   onModelDownloadProgress,
 } from "$ipc/models";
 import { subscribe } from "$ipc/events";
-import { groqWhisperLabel } from "$core/groqWhisper";
+import { groqModelLabel, whisperModelLabel } from "$domain/i18n.svelte";
 import type { ModelStatus } from "$core/types";
 import { config } from "./config.svelte";
 import { toasts } from "./toasts.svelte";
@@ -44,9 +44,9 @@ class ModelsStore implements DomainStore {
 
   get meetingProgressLabel(): string {
     if (this.meetingUsesGroq) {
-      return groqWhisperLabel(config.current?.meeting_groq_model ?? "whisper-large-v3-turbo");
+      return groqModelLabel(config.current?.meeting_groq_model ?? "whisper-large-v3-turbo");
     }
-    return this.meetingModel?.display_name ?? "Whisper";
+    return this.meetingModel ? whisperModelLabel(this.meetingModel.id) : "Whisper";
   }
 
   /**

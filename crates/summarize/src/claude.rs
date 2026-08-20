@@ -19,10 +19,11 @@ pub struct ClaudeSummarizer {
     api_key: String,
     model: String,
     client: Client,
+    english: bool,
 }
 
 impl ClaudeSummarizer {
-    pub fn new(api_key: impl Into<String>, model: impl Into<String>) -> Self {
+    pub fn new(api_key: impl Into<String>, model: impl Into<String>, english: bool) -> Self {
         Self {
             api_key: api_key.into(),
             model: model.into(),
@@ -30,6 +31,7 @@ impl ClaudeSummarizer {
                 .timeout(std::time::Duration::from_secs(180))
                 .build()
                 .expect("cliente HTTP"),
+            english,
         }
     }
 }
@@ -67,10 +69,10 @@ impl Summarizer for ClaudeSummarizer {
             model: &self.model,
             max_tokens: 4096,
             stream: true,
-            system: prompts::system_prompt(),
+            system: prompts::system_prompt_for(self.english),
             messages: vec![Message {
                 role: "user",
-                content: prompts::user_prompt(template, meeting_title, &plain),
+                content: prompts::user_prompt_for(template, meeting_title, &plain, self.english),
             }],
         };
 
@@ -116,7 +118,13 @@ impl Summarizer for ClaudeSummarizer {
                 let msg = event
                     .error
                     .and_then(|e| e.message)
-                    .unwrap_or_else(|| "error SSE de Claude".into());
+                    .unwrap_or_else(|| {
+                    if self.english {
+                        "Claude SSE error".into()
+                    } else {
+                        "error SSE de Claude".into()
+                    }
+                });
                 return Err(SummarizeError::BadResponse(msg));
             }
         }
@@ -124,11 +132,21 @@ impl Summarizer for ClaudeSummarizer {
         let raw = raw.trim().to_string();
         if raw.is_empty() {
             return Err(SummarizeError::BadResponse(
-                "el modelo no devolvió texto".into(),
+                if self.english {
+                    "the model returned no text".into()
+                } else {
+                    "el modelo no devolvió texto".into()
+                },
             ));
         }
 
-        Ok(build_summary(template, meeting_title, "claude", &raw))
+        Ok(build_summary(
+            template,
+            meeting_title,
+            "claude",
+            &raw,
+            self.english,
+        ))
     }
 }
 
@@ -137,6 +155,7 @@ pub(crate) fn build_summary(
     meeting_title: &str,
     backend: &str,
     raw: &str,
+    english: bool,
 ) -> Summary {
     let (subject, body) = if template == SummaryTemplate::FollowupEmail {
         let (subj, body) = prompts::split_followup_email(raw);
@@ -147,7 +166,7 @@ pub(crate) fn build_summary(
 
     Summary {
         template: template.as_str().to_string(),
-        title: format!("{} — {}", template.label(), meeting_title),
+        title: format!("{} — {}", template.label_for(english), meeting_title),
         body,
         subject,
         backend: backend.to_string(),

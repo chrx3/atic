@@ -36,13 +36,17 @@ fn ocr_image_at(path: &Path) -> Result<String, String> {
     // No usar StorageFile::GetFileFromPathAsync: falla con rutas `\\?\…`
     // (canonicalize) y produce UNABLE_TO_MASK_PATH / 0x800700A1.
     let bytes = std::fs::read(path).map_err(|e| {
-        format!(
-            "No se pudo leer la captura ({}): {e}",
-            strip_verbatim_prefix(path).display()
+        let shown = strip_verbatim_prefix(path);
+        crate::ui_lang::msg(
+            &format!("No se pudo leer la captura ({}): {e}", shown.display()),
+            &format!("Could not read the capture ({}): {e}", shown.display()),
         )
     })?;
     if bytes.is_empty() {
-        return Err("La captura está vacía.".into());
+        return Err(crate::ui_lang::msg(
+            "La captura está vacía.",
+            "The capture is empty.",
+        ));
     }
 
     let stream = InMemoryRandomAccessStream::new().map_err(|e| e.to_string())?;
@@ -85,7 +89,10 @@ fn ocr_image_at(path: &Path) -> Result<String, String> {
 
 #[cfg(not(windows))]
 fn ocr_image_at(_path: &Path) -> Result<String, String> {
-    Err("OCR solo disponible en Windows.".into())
+    Err(crate::ui_lang::msg(
+        "OCR solo disponible en Windows.",
+        "OCR is only available on Windows.",
+    ))
 }
 
 fn write_sidecar(capture_path: &Path, text: &str) -> Result<(), String> {
@@ -108,7 +115,10 @@ pub fn ocr_capture_and_copy(state: State<AppState>, path: String) -> Result<Stri
     let resolved = ensure_capture_path(&state, &path)?;
     let text = ocr_image_at(&resolved)?;
     if text.is_empty() {
-        return Err("No se detectó texto en la captura.".into());
+        return Err(crate::ui_lang::msg(
+            "No se detectó texto en la captura.",
+            "No text was found in the capture.",
+        ));
     }
     write_sidecar(&resolved, &text)?;
     let mut clipboard = arboard::Clipboard::new().map_err(|e| e.to_string())?;

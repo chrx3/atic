@@ -1,4 +1,6 @@
 import type { Recording } from "$core/types";
+import { formatLocale } from "$core/format";
+import { translate } from "$core/i18n/translate";
 
 export type AudioTrack = "mic" | "system" | "mix";
 
@@ -33,9 +35,9 @@ export function resolveTrack(
 }
 
 export function trackLabel(track: AudioTrack): string {
-  if (track === "mic") return "Yo";
-  if (track === "system") return "Otros";
-  return "Todos";
+  if (track === "mic") return translate(formatLocale(), "page.meetings.me");
+  if (track === "system") return translate(formatLocale(), "page.meetings.others");
+  return translate(formatLocale(), "page.meetings.all");
 }
 
 export function kindsFor(track: AudioTrack): Array<"mic" | "system"> {
@@ -47,9 +49,22 @@ export function listenOptions(
 ): { value: AudioTrack; label: string }[] {
   const options: { value: AudioTrack; label: string }[] = [];
   if (recording.mic_path && recording.system_path) {
-    options.push({ value: "mix", label: "Todos" });
+    options.push({
+      value: "mix",
+      label: translate(formatLocale(), "page.meetings.all"),
+    });
   }
-  if (recording.mic_path) options.push({ value: "mic", label: "Yo" });
-  if (recording.system_path) options.push({ value: "system", label: "Otros" });
+  if (recording.mic_path) {
+    options.push({
+      value: "mic",
+      label: translate(formatLocale(), "page.meetings.me"),
+    });
+  }
+  if (recording.system_path) {
+    options.push({
+      value: "system",
+      label: translate(formatLocale(), "page.meetings.others"),
+    });
+  }
   return options;
 }

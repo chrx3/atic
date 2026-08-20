@@ -8,6 +8,7 @@
    */
   import ToolIcon, { type IconId } from "$lib/ToolIcon.svelte";
   import SegmentedControl from "$ui/SegmentedControl.svelte";
+  import { t } from "$domain/i18n.svelte";
 
   let {
     value = $bindable(),
@@ -20,12 +21,12 @@
 
 <!-- Angosto: una fila de pestañas. -->
 <div class="p-3 pb-0 @md/settings:hidden">
-  <SegmentedControl bind:value options={sections} label="Sección de ajustes" full />
+  <SegmentedControl bind:value options={sections} label={t("settings.nav.sectionAria")} full />
 </div>
 
 <!-- Ancho: una columna. -->
 <nav
-  aria-label="Secciones de ajustes"
+  aria-label={t("settings.nav.aria")}
   class="hidden w-44 shrink-0 flex-col gap-0.5 border-r border-line p-2
          @md/settings:flex"
 >

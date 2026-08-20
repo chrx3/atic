@@ -49,6 +49,62 @@ impl SummarizeError {
             body: body.chars().take(500).collect(),
         }
     }
+
+    pub fn to_ui(&self, en: bool) -> String {
+        match self {
+            Self::UnknownBackend(id) => {
+                if en {
+                    format!("Unknown summary backend: {id}")
+                } else {
+                    self.to_string()
+                }
+            }
+            Self::MissingApiKey => {
+                if en {
+                    "The provider API key is missing (save it in Settings)".into()
+                } else {
+                    self.to_string()
+                }
+            }
+            Self::UnknownTemplate(id) => {
+                if en {
+                    format!("Unknown template: {id}")
+                } else {
+                    self.to_string()
+                }
+            }
+            Self::EmptyTranscript => {
+                if en {
+                    "The transcript is empty".into()
+                } else {
+                    self.to_string()
+                }
+            }
+            Self::OllamaUnavailable(url) => {
+                if en {
+                    format!("Ollama is not available at {url}")
+                } else {
+                    self.to_string()
+                }
+            }
+            Self::Http(err) => format!("{err}"),
+            Self::BadResponse(msg) => msg.clone(),
+            Self::UnknownModel { model } => {
+                if en {
+                    format!("Model `{model}` does not exist for this provider. Pick another in Settings")
+                } else {
+                    self.to_string()
+                }
+            }
+            Self::Api { status, body } => {
+                if en {
+                    format!("The API rejected the request ({status}): {body}")
+                } else {
+                    self.to_string()
+                }
+            }
+        }
+    }
 }
 
 pub type Result<T> = std::result::Result<T, SummarizeError>;

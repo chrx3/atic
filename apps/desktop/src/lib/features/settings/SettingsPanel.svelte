@@ -22,25 +22,26 @@
   import SummarySection from "./SummarySection.svelte";
   import type { SettingsSectionId } from "./settingsSections";
   import { AGENTS_ENABLED, AGENT_PAGER_ENABLED } from "$core/tools";
+  import { t } from "$domain/i18n.svelte";
 
   type SectionId = SettingsSectionId;
 
   const SHOW_AGENTS = AGENTS_ENABLED || AGENT_PAGER_ENABLED;
 
-  const SECTIONS: { value: SectionId; label: string; icon: IconId }[] = [
-    { value: "general", label: "General", icon: "general" },
-    { value: "meetings", label: "Reuniones", icon: "meetings" },
-    { value: "dictation", label: "Dictado", icon: "dictation" },
-    { value: "captures", label: "Capturas", icon: "captures" },
-    { value: "shortcuts", label: "Atajos", icon: "shortcuts" },
-    { value: "launcher", label: "Launcher", icon: "launcher" },
-    { value: "audio", label: "Audio", icon: "audio" },
-    { value: "summary", label: "Resúmenes", icon: "summary" },
+  const sections = $derived([
+    { value: "general" as const, label: t("settings.nav.general"), icon: "general" as IconId },
+    { value: "meetings" as const, label: t("settings.nav.meetings"), icon: "meetings" as IconId },
+    { value: "dictation" as const, label: t("settings.nav.dictation"), icon: "dictation" as IconId },
+    { value: "captures" as const, label: t("settings.nav.captures"), icon: "captures" as IconId },
+    { value: "shortcuts" as const, label: t("settings.nav.shortcuts"), icon: "shortcuts" as IconId },
+    { value: "launcher" as const, label: t("settings.nav.launcher"), icon: "launcher" as IconId },
+    { value: "audio" as const, label: t("settings.nav.audio"), icon: "audio" as IconId },
+    { value: "summary" as const, label: t("settings.nav.summary"), icon: "summary" as IconId },
     ...(SHOW_AGENTS
-      ? [{ value: "agents" as const, label: "Agentes", icon: "agents" as IconId }]
+      ? [{ value: "agents" as const, label: t("settings.nav.agents"), icon: "agents" as IconId }]
       : []),
-    { value: "about", label: "Información", icon: "about" },
-  ];
+    { value: "about" as const, label: t("settings.nav.about"), icon: "about" as IconId },
+  ]);
 
   let {
     initialSection = "general",
@@ -65,7 +66,7 @@
   a sí mismo.
 -->
 <div class="@container/settings flex h-full min-h-0 overflow-hidden">
-  <SettingsNav bind:value={section} sections={SECTIONS} />
+  <SettingsNav bind:value={section} sections={sections} />
 
   <div class="settings-stage min-h-0 flex-1 overflow-y-auto p-4">
     {#key section}

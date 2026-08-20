@@ -13,6 +13,7 @@
   import { isJunkTranscriptText } from "$core/transcriptText";
   import { playback } from "$domain/playback.svelte";
   import EmptyState from "$ui/EmptyState.svelte";
+  import { t } from "$domain/i18n.svelte";
 
   let { recordingId }: { recordingId: string } = $props();
 
@@ -54,7 +55,10 @@
   });
 
   function speakerName(segment: Segment): string {
-    return segment.speaker_name ?? (segment.speaker === "me" ? "Yo" : "Otros");
+    return (
+      segment.speaker_name ??
+      (segment.speaker === "me" ? t("page.meetings.me") : t("page.meetings.others"))
+    );
   }
 
   function stamp(ms: number): string {
@@ -66,11 +70,11 @@
 </script>
 
 {#if loading}
-  <p class="px-1 py-3 text-xs text-faint">Cargando transcripción…</p>
+  <p class="px-1 py-3 text-xs text-faint">{t("page.meetings.loadingTranscript")}</p>
 {:else if !transcript || blocks.length === 0}
   <EmptyState
-    title="Sin transcripción"
-    hint="Apretá Transcribir para generarla. Corre local, así que tarda un rato."
+    title={t("page.meetings.noTranscript")}
+    hint={t("page.meetings.noTranscriptHint")}
   />
 {:else}
   <div class="flex flex-col gap-3">
@@ -80,7 +84,7 @@
         class="flex gap-2 rounded-xs px-1 py-0.5 text-left
                transition-colors duration-(--duration-quick) ease-calm
                hover:bg-surface-2"
-        aria-label="Escuchar desde {stamp(block.startMs)}"
+        aria-label={t("page.meetings.listenFrom", { time: stamp(block.startMs) })}
         onclick={() => {
           if (!recording) return;
           void playback.playSpeaker(recording, block.speaker, block.startMs / 1000);

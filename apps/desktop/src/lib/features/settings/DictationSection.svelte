@@ -9,6 +9,7 @@
   import GroqKeyField from "./GroqKeyField.svelte";
   import SegmentedControl from "$ui/SegmentedControl.svelte";
   import Select from "$ui/Select.svelte";
+  import { t, whisperModelLabel } from "$domain/i18n.svelte";
 
   const cfg = $derived(config.current);
 
@@ -19,8 +20,8 @@
   const modelOptions = $derived(
     models.items.map((m) => ({
       value: m.id,
-      label: `${m.display_name} · ${formatMegabytes(m.approx_size_bytes)}${
-        m.downloaded ? "" : " · sin descargar"
+      label: `${whisperModelLabel(m.id)} · ${formatMegabytes(m.approx_size_bytes)}${
+        m.downloaded ? "" : ` · ${t("settings.meetings.notDownloaded")}`
       }`,
     })),
   );
@@ -28,18 +29,18 @@
 
 {#if cfg}
   <div class="flex flex-col gap-5">
-    <SettingsGroup title="Cómo se activa">
+    <SettingsGroup title={t("settings.dictation.how")}>
       <SettingsRow
-        label="Modo"
-        hint="Alternar es una tecla para empezar y otra para terminar; mantener dicta mientras la tengas apretada."
+        label={t("settings.dictation.mode")}
+        hint={t("settings.dictation.modeHint")}
       >
         {#snippet control()}
           <SegmentedControl
             value={cfg.dictation_mode}
-            label="Modo de dictado"
+            label={t("settings.dictation.modeAria")}
             options={[
-              { value: "toggle", label: "Alternar" },
-              { value: "push_to_talk", label: "Mantener" },
+              { value: "toggle", label: t("settings.dictation.toggle") },
+              { value: "push_to_talk", label: t("settings.dictation.hold") },
             ]}
             onchange={(v) => patch({ dictation_mode: v })}
             full
@@ -49,17 +50,17 @@
     </SettingsGroup>
 
     <SettingsGroup
-      title="Motor"
-      hint="Sin gráfica, Groq es más rápido. Local no sale de la máquina."
+      title={t("settings.dictation.engine")}
+      hint={t("settings.dictation.engineHint")}
     >
-      <SettingsRow label="Dónde transcribe">
+      <SettingsRow label={t("settings.dictation.where")}>
         {#snippet control()}
           <SegmentedControl
             value={cfg.dictation_backend}
-            label="Motor de dictado"
+            label={t("settings.dictation.whereAria")}
             options={[
-              { value: "groq", label: "Groq" },
-              { value: "local", label: "Local" },
+              { value: "groq", label: t("settings.meetings.groq") },
+              { value: "local", label: t("settings.meetings.local") },
             ]}
             onchange={(v) =>
               patch({
@@ -73,8 +74,8 @@
 
       {#if cfg.dictation_backend !== "groq"}
         <SettingsRow
-          label="Modelo"
-          hint="Para dictado conviene uno chico: se nota la espera."
+          label={t("settings.dictation.model")}
+          hint={t("settings.dictation.modelHint")}
         >
           {#snippet control({ id })}
             <Select
@@ -92,7 +93,7 @@
     </SettingsGroup>
 
     {#if cfg.dictation_backend === "groq"}
-      <GroqKeyField />
+      <GroqKeyField missingHint={t("settings.dictation.groqKeyHint")} />
     {/if}
   </div>
 {/if}

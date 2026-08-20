@@ -27,6 +27,7 @@
   } from "$ipc/captures";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { on } from "$ipc/events";
+  import { t } from "$domain/i18n.svelte";
 
   /** Menos que esto y el arrastre fue un temblor: cuenta como clic. */
   const DRAG_THRESHOLD = 4;
@@ -379,7 +380,7 @@
   <!-- La ayuda sigue al cursor en horizontal: en dos monitores, fijarla al
        centro la deja en la otra pantalla. -->
   <div class="cap-help" style="left:{cursor.x}px;">
-    Clic: ventana · Arrastrar: región · Espacio: pantalla · Esc cancela
+    {t("page.captureHud.help")}
   </div>
 </div>
 

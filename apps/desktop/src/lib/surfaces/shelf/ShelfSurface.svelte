@@ -16,6 +16,7 @@
    * repliegue, si no el outro nunca se ve.
    */
   import type { CaptureItem } from "$core/types";
+  import { t } from "$domain/i18n.svelte";
   import { MOTION, ms } from "$lib/motion";
   import {
     activateCapture,
@@ -147,10 +148,10 @@
     try {
       const text = await ocrCaptureAndCopy(current.path);
       note = text.trim()
-        ? "Texto copiado al portapapeles"
-        : "No se encontró texto en la captura";
+        ? t("page.captures.ocrCopied")
+        : t("page.captures.ocrEmpty");
     } catch {
-      note = "No se pudo extraer el texto";
+      note = t("page.captures.ocrFail");
     } finally {
       ocrBusy = false;
       // Deja leer el resultado en vez de cerrar de golpe.
@@ -168,7 +169,7 @@
       await openAnnotator(current.path);
       hide();
     } catch {
-      note = "No se pudo abrir el editor";
+      note = t("page.captures.editorFail");
       scheduleDismiss();
     } finally {
       busy = false;
@@ -225,13 +226,13 @@
     onmouseenter={() => (hovering = true)}
     onmouseleave={() => (hovering = false)}
     role="group"
-    aria-label="Captura reciente"
+    aria-label={t("shelf.recent")}
   >
     <button
       type="button"
       class="shelf-thumb"
       onmousedown={onDown}
-      aria-label="Abrir la captura {current.label || current.id}"
+      aria-label={t("shelf.open", { label: current.label || current.id })}
       aria-describedby="shelf-tip"
     >
       <img {src} alt="" draggable="false" class="shelf-thumb-img" />
@@ -246,12 +247,12 @@
           aria-busy={ocrBusy}
           onclick={(e) => void ocr(e)}
         >
-          {ocrBusy ? "…" : "Texto"}
+          {ocrBusy ? "…" : t("shelf.text")}
         </button>
         <button type="button" class="shelf-action" onclick={(e) => void annotate(e)}>
-          Dibujar
+          {t("shelf.draw")}
         </button>
-        <button type="button" class="shelf-action" onclick={openFolder}>Carpeta</button>
+        <button type="button" class="shelf-action" onclick={openFolder}>{t("shelf.folder")}</button>
       </div>
 
       <p
@@ -265,7 +266,7 @@
     </div>
 
     <span id="shelf-tip" class="shelf-tip" role="tooltip">
-      Clic: abrir · Arrastrar: sacar
+      {t("shelf.tip")}
     </span>
   </div>
 {/if}

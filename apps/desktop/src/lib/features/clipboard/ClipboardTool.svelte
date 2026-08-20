@@ -12,6 +12,7 @@
   import IconButton from "$ui/IconButton.svelte";
   import Input from "$ui/Input.svelte";
   import { Pin, Trash2 } from "$lib/icons";
+  import { t } from "$domain/i18n.svelte";
 
   async function run(action: () => Promise<void>, done?: string) {
     try {
@@ -24,23 +25,23 @@
 </script>
 
 <ToolPage
-  title="Clipboard"
+  title={t("tools.clipboard.label")}
   icon="clipboard"
-  kicker="Historial"
-  blurb="Todo lo que copiaste, guardado local. El atajo lo pega desde la pill."
+  kicker={t("tools.clipboard.short")}
+  blurb={t("tools.clipboard.blurb")}
 >
   {#snippet meta()}
-    <Chip>{clipboard.items.length} elementos</Chip>
+    <Chip>{t("page.clipboard.count", { count: clipboard.items.length })}</Chip>
   {/snippet}
 
   <div class="flex h-full min-h-0 flex-col">
-    <Toolbar label="Buscar en el historial">
+    <Toolbar label={t("page.clipboard.search")}>
       <div class="w-full">
         <Input
           type="search"
           bind:value={clipboard.query}
-          placeholder="Buscar…"
-          aria-label="Buscar en el historial"
+          placeholder={t("page.clipboard.searchPlaceholder")}
+          aria-label={t("page.clipboard.search")}
         />
       </div>
     </Toolbar>
@@ -50,10 +51,10 @@
         <EmptyState
           compact
           icon={clipboard.query ? undefined : "clipboard"}
-          title={clipboard.query ? "Nada coincide" : "El historial está vacío"}
+          title={clipboard.query ? t("page.common.nothing") : t("page.clipboard.empty")}
           hint={clipboard.query
-            ? "Probá con menos palabras."
-            : "Copiá algo y aparece acá."}
+            ? t("page.common.fewerWords")
+            : t("page.clipboard.emptyHint")}
         />
       {:else}
         <ul class="flex flex-col">
@@ -65,8 +66,8 @@
               <button
                 type="button"
                 class="flex min-w-0 flex-1 items-start gap-2.5 text-left"
-                onclick={() => void run(() => clipboard.paste(item.id), "Pegado")}
-                title="Pegar en la app activa"
+                onclick={() => void run(() => clipboard.paste(item.id), t("toast.pasted"))}
+                title={t("page.clipboard.pasteActive")}
               >
                 <span
                   class="mt-0.5 grid size-10 shrink-0 place-items-center overflow-hidden
@@ -89,13 +90,13 @@
                 <span class="flex min-w-0 flex-1 flex-col gap-0.5">
                   <span class="line-clamp-2 text-sm text-text">
                     {#if item.kind === "image"}
-                      {item.preview || "Imagen"}
+                      {item.preview || t("page.clipboard.image")}
                     {:else}
-                      {item.preview || "(vacío)"}
+                      {item.preview || t("page.clipboard.emptyPreview")}
                     {/if}
                   </span>
                   <span class="font-mono text-xs text-faint" data-numeric>
-                    {item.kind === "image" ? "imagen · " : "texto · "}{formatListWhen(
+                    {item.kind === "image" ? t("page.clipboard.kindImage") : t("page.clipboard.kindText")}{formatListWhen(
                       Math.floor(item.createdAtMs / 1000),
                     )}
                   </span>
@@ -111,7 +112,7 @@
                        {item.pinned ? 'opacity-100' : ''}"
               >
                 <IconButton
-                  label={item.pinned ? "Dejar de fijar" : "Fijar"}
+                  label={item.pinned ? t("page.clipboard.unpin") : t("page.clipboard.pin")}
                   size="sm"
                   pressed={item.pinned}
                   onclick={() => void run(() => clipboard.pin(item.id, !item.pinned))}
@@ -119,7 +120,7 @@
                   <Icon icon={Pin} size={12} />
                 </IconButton>
                 <IconButton
-                  label="Borrar"
+                  label={t("page.common.delete")}
                   size="sm"
                   variant="danger"
                   onclick={() => void run(() => clipboard.remove(item.id))}

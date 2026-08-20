@@ -19,6 +19,7 @@ pub struct OpenAiCompatSummarizer {
     base_url: String,
     model: String,
     client: Client,
+    english: bool,
 }
 
 impl OpenAiCompatSummarizer {
@@ -27,6 +28,7 @@ impl OpenAiCompatSummarizer {
         api_key: impl Into<String>,
         base_url: impl Into<String>,
         model: impl Into<String>,
+        english: bool,
     ) -> Self {
         Self {
             provider_id: provider_id.into(),
@@ -37,6 +39,7 @@ impl OpenAiCompatSummarizer {
                 .timeout(std::time::Duration::from_secs(180))
                 .build()
                 .expect("cliente HTTP"),
+            english,
         }
     }
 }
@@ -94,11 +97,11 @@ impl Summarizer for OpenAiCompatSummarizer {
             messages: vec![
                 ChatMessage {
                     role: "system",
-                    content: prompts::system_prompt().to_string(),
+                    content: prompts::system_prompt_for(self.english).to_string(),
                 },
                 ChatMessage {
                     role: "user",
-                    content: prompts::user_prompt(template, meeting_title, &plain),
+                    content: prompts::user_prompt_for(template, meeting_title, &plain, self.english),
                 },
             ],
         };
@@ -157,7 +160,11 @@ impl Summarizer for OpenAiCompatSummarizer {
         let raw = strip_thinking_blocks(&raw);
         if raw.is_empty() {
             return Err(SummarizeError::BadResponse(
-                "el modelo no devolvió texto (solo razonamiento interno)".into(),
+                if self.english {
+                    "the model returned no text (only internal reasoning)".into()
+                } else {
+                    "el modelo no devolvió texto (solo razonamiento interno)".into()
+                },
             ));
         }
 
@@ -166,6 +173,7 @@ impl Summarizer for OpenAiCompatSummarizer {
             meeting_title,
             &self.provider_id,
             &raw,
+            self.english,
         ))
     }
 }

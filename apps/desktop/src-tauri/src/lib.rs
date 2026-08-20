@@ -35,6 +35,7 @@ mod state;
 mod summarization;
 mod transcription;
 mod tray;
+mod ui_lang;
 mod webview_tweaks;
 
 use std::sync::Mutex;
@@ -155,6 +156,7 @@ pub fn run() {
             commands::rename_recording,
             commands::get_config,
             commands::set_config,
+            tray::set_tray_menu,
             commands::set_pill_visible,
             commands::show_main_window,
             shortcuts::failed_shortcuts,
@@ -363,6 +365,7 @@ pub fn run() {
                 board_shortcut,
                 launcher_shortcut,
                 want_autostart,
+                ui_language,
             ) = {
                 let cfg = app.state::<AppState>();
                 let cfg = cfg.config.lock_or_recover();
@@ -378,6 +381,7 @@ pub fn run() {
                     cfg.board_shortcut.clone(),
                     cfg.launcher_shortcut.clone(),
                     cfg.autostart,
+                    cfg.ui_language.clone(),
                 )
             };
             // `pill_position` y `show_pill` ya no se aplican desde acá: la pill
@@ -397,6 +401,9 @@ pub fn run() {
             // Precarga catálogos de modelos de agentes (Cursor, Claude, …)
             // para que el selector no espere al abrir la consola.
             agents::discover::preload_models_async();
+
+            crate::ui_lang::set_english(ui_language == "en");
+            crate::ui_lang::apply_window_titles(app.handle());
 
             tray::build_tray(app.handle())?;
 
@@ -450,7 +457,7 @@ pub fn run() {
                 tracing::error!(%err, "no se pudieron registrar los atajos globales");
             }
 
-            launcher::start_indexing();
+            launcher::start_indexing(ui_language == "en");
             clipboard_history::start_watcher(app.handle());
             agents::watch_claude::start(app.handle());
             agents::watch_codex::start(app.handle());

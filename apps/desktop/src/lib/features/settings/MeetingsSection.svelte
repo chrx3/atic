@@ -15,6 +15,7 @@
   import Select from "$ui/Select.svelte";
   import Switch from "$ui/Switch.svelte";
   import GroqKeyField from "./GroqKeyField.svelte";
+  import { t, whisperModelLabel } from "$domain/i18n.svelte";
 
   const cfg = $derived(config.current);
 
@@ -26,24 +27,26 @@
   const modelOptions = $derived(
     models.items.map((m) => ({
       value: m.id,
-      label: `${m.display_name} · ${formatMegabytes(m.approx_size_bytes)}${
-        m.downloaded ? "" : " · sin descargar"
+      label: `${whisperModelLabel(m.id)} · ${formatMegabytes(m.approx_size_bytes)}${
+        m.downloaded ? "" : ` · ${t("settings.meetings.notDownloaded")}`
       }`,
     })),
   );
 
   const chosen = $derived(models.items.find((m) => m.id === cfg?.whisper_model));
   const groq = $derived(cfg?.meeting_backend === "groq");
-  const groqOptions = GROQ_WHISPER_MODELS.map((m) => ({
-    value: m.value,
-    label: m.label,
-  }));
+  const groqOptions = $derived(
+    GROQ_WHISPER_MODELS.map((m) => ({
+      value: m.value,
+      label: t(`models.groq.${m.value}`),
+    })),
+  );
 </script>
 
 {#if cfg}
   <div class="flex flex-col gap-5">
     {#if !groq && chosen && !chosen.downloaded}
-      <Banner tone="warn" title="El modelo elegido no está descargado">
+      <Banner tone="warn" title={t("settings.meetings.missingModel")}>
         {#snippet action()}
           <Button
             variant="soft"
@@ -51,32 +54,32 @@
             loading={models.downloading !== null}
             onclick={() => void models.download(chosen.id).catch(toastError)}
           >
-            Descargar
+            {t("settings.meetings.download")}
           </Button>
         {/snippet}
-        Sin él no se puede transcribir.
+        {t("settings.meetings.missingModelBody")}
       </Banner>
     {/if}
 
     {#if models.downloading}
       <ProgressBar
         value={models.downloading.downloaded / Math.max(models.downloading.total, 1)}
-        label="Descargando"
+        label={t("settings.meetings.downloading")}
       />
     {/if}
 
     <SettingsGroup
-      title="Transcripción"
-      hint="Local no sale de la máquina. Groq es más rápido y manda el audio a su API."
+      title={t("settings.meetings.transcription")}
+      hint={t("settings.meetings.transcriptionHint")}
     >
-      <SettingsRow label="Dónde transcribe">
+      <SettingsRow label={t("settings.meetings.where")}>
         {#snippet control()}
           <SegmentedControl
             value={cfg.meeting_backend === "groq" ? "groq" : "local"}
-            label="Motor de transcripción de reuniones"
+            label={t("settings.meetings.whereAria")}
             options={[
-              { value: "local", label: "Local" },
-              { value: "groq", label: "Groq" },
+              { value: "local", label: t("settings.meetings.local") },
+              { value: "groq", label: t("settings.meetings.groq") },
             ]}
             onchange={(v) => patch({ meeting_backend: v })}
             full
@@ -86,8 +89,8 @@
 
       {#if groq}
         <SettingsRow
-          label="Modelo Groq"
-          hint="Turbo llega antes; Large v3 acierta un poco más."
+          label={t("settings.meetings.groqModel")}
+          hint={t("settings.meetings.groqModelHint")}
         >
           {#snippet control({ id })}
             <Select
@@ -102,7 +105,7 @@
           {/snippet}
         </SettingsRow>
       {:else}
-        <SettingsRow label="Modelo" hint="Más grande transcribe mejor y tarda más.">
+        <SettingsRow label={t("settings.meetings.model")} hint={t("settings.meetings.modelHint")}>
           {#snippet control({ id })}
             <Select
               {id}
@@ -119,10 +122,10 @@
         {#snippet control()}
           <Switch
             checked={cfg.auto_transcribe_after_recording}
-            label="Transcribir al terminar de grabar"
+            label={t("settings.meetings.autoTranscribe")}
             hint={groq
-              ? "Al terminar se envía el audio a Groq."
-              : "Corre local. En una reunión larga puede tardar."}
+              ? t("settings.meetings.autoTranscribeGroq")
+              : t("settings.meetings.autoTranscribeLocal")}
             onchange={(v) => patch({ auto_transcribe_after_recording: v })}
           />
         {/snippet}
@@ -132,8 +135,8 @@
         {#snippet control()}
           <Switch
             checked={cfg.live_transcription}
-            label="Vista en vivo mientras grabás"
-            hint="Experimental. Consume bastante más CPU."
+            label={t("settings.meetings.live")}
+            hint={t("settings.meetings.liveHint")}
             onchange={(v) => patch({ live_transcription: v })}
           />
         {/snippet}
@@ -141,22 +144,22 @@
     </SettingsGroup>
 
     {#if groq}
-      <GroqKeyField missingHint="Sin ella no se puede transcribir la reunión en Groq." />
+      <GroqKeyField missingHint={t("settings.meetings.groqKeyHint")} />
     {/if}
 
-    <SettingsGroup title="Qué se graba">
+    <SettingsGroup title={t("settings.meetings.what")}>
       <SettingsRow
-        label="Pistas"
-        hint="El micrófono, lo que suena en el PC, o las dos."
+        label={t("settings.meetings.tracks")}
+        hint={t("settings.meetings.tracksHint")}
       >
         {#snippet control()}
           <SegmentedControl
             value={cfg.record_tracks}
-            label="Pistas a grabar"
+            label={t("settings.meetings.tracksAria")}
             options={[
-              { value: "both", label: "Ambas" },
-              { value: "mic", label: "Mic" },
-              { value: "system", label: "PC" },
+              { value: "both", label: t("settings.meetings.both") },
+              { value: "mic", label: t("settings.meetings.mic") },
+              { value: "system", label: t("settings.meetings.pc") },
             ]}
             onchange={(v) => patch({ record_tracks: v })}
             full
@@ -165,8 +168,8 @@
       </SettingsRow>
 
       <SettingsRow
-        label="En disco"
-        hint="WAV y transcripciones. Para una reunión concreta, usá Carpeta en Reuniones."
+        label={t("settings.meetings.onDisk")}
+        hint={t("settings.meetings.onDiskHint")}
       >
         {#snippet control()}
           <Button
@@ -175,7 +178,7 @@
             full
             onclick={() => void openDataDir("recordings").catch(toastError)}
           >
-            Abrir carpeta
+            {t("settings.data.openFolder")}
           </Button>
         {/snippet}
       </SettingsRow>

@@ -11,13 +11,14 @@
    * error.
    */
   import { parseSummaryDocument, type SummarySectionKind } from "$core/summary-format";
+  import { t } from "$domain/i18n.svelte";
 
   let {
     content,
-    defaultTitle = "Resumen",
+    defaultTitle,
     compact = false,
     streaming = false,
-    emptyMessage = "El resumen aparece acá.",
+    emptyMessage,
   }: {
     content: string;
     defaultTitle?: string;
@@ -36,16 +37,18 @@
     general: "bg-faint",
   };
 
-  const sections = $derived(parseSummaryDocument(content, defaultTitle));
+  const fallbackTitle = $derived(defaultTitle ?? t("page.summary.docSummary"));
+  const idleEmpty = $derived(emptyMessage ?? t("page.summary.emptyPlaceholder"));
+  const sections = $derived(parseSummaryDocument(content, fallbackTitle));
 </script>
 
 <article
   class="overflow-hidden rounded-sm bg-surface-2 text-text"
-  aria-label="Contenido del resumen"
+  aria-label={t("page.summary.documentAria")}
   aria-busy={streaming}
 >
   {#if sections.length === 0}
-    <p class="p-4 text-sm text-muted">{emptyMessage}</p>
+    <p class="p-4 text-sm text-muted">{idleEmpty}</p>
   {:else}
     {#each sections as section, index (section.id)}
       {@const lead = index === 0 && section.kind === "summary"}
@@ -72,7 +75,7 @@
 
         {#if section.blocks.length === 0}
           <p class="pl-3.5 text-xs text-faint">
-            {streaming ? "Completando sección…" : "Sin contenido"}
+            {streaming ? t("page.summary.completing") : t("page.summary.emptySection")}
           </p>
         {:else}
           <div class="flex max-w-[72ch] flex-col gap-2 {compact ? 'pl-3.5' : 'pl-4'}">
@@ -114,7 +117,7 @@
                             ? 'bg-accent text-on-accent'
                             : 'bg-line-strong text-transparent'}"
                           role="img"
-                          aria-label={item.checked ? "Hecho" : "Pendiente"}
+                          aria-label={item.checked ? t("page.summary.done") : t("page.summary.pending")}
                         >
                           ✓
                         </span>

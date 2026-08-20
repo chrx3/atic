@@ -9,6 +9,7 @@
   import { untrack } from "svelte";
   import { runToolAction, toolAction } from "$core/toolActions";
   import { TOOLS, type ToolId } from "$core/tools";
+  import { localizeTool, t } from "$domain/i18n.svelte";
   import { playWheelTick } from "$core/uiSound";
   import { PICKER_CELL_PROD_MIN, pickerLab } from "$lib/dev/pickerLab.svelte";
   import { toastError } from "$domain/toasts.svelte";
@@ -30,6 +31,7 @@
     onOpenDetail: (tool: ToolId) => void;
   } = $props();
 
+  const tools = $derived(TOOLS.map(localizeTool));
   const N = TOOLS.length;
   const SPAN_IDLE = 1;
   const SPAN_HOVER = 2;
@@ -218,7 +220,7 @@
         key: `d${delta}`,
         cardKey: `c${delta}`,
         delta,
-        tool: TOOLS[mod(base + delta)],
+        tool: tools[mod(base + delta)],
         x,
         y,
         hot,
@@ -615,7 +617,7 @@
 <nav
   class="wheel"
   class:is-dragging={dragging}
-  aria-label="Herramientas"
+  aria-label={t("tools.wheelCaption")}
   data-no-drag
   {@attach bindRoot}
   onpointerdown={onPointerDown}
@@ -705,8 +707,8 @@
             class="card-config"
             style:opacity={spot.prominence}
             style:pointer-events={spot.prominence > 0.55 ? "auto" : "none"}
-            aria-label="Detalle y ajustes de {spot.tool.label}"
-            title="Detalle y ajustes"
+            aria-label={t("tools.detailAria", { label: spot.tool.label })}
+            title={t("tools.detailTitle")}
             tabindex={spot.prominence > 0.55 ? 0 : -1}
             onclick={(e) => onConfig(spot.tool.id, e)}
           >

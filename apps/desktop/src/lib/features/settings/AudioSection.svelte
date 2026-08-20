@@ -17,6 +17,7 @@
   import SegmentedControl from "$ui/SegmentedControl.svelte";
   import Select from "$ui/Select.svelte";
   import Switch from "$ui/Switch.svelte";
+  import { t } from "$domain/i18n.svelte";
 
   const cfg = $derived(config.current);
 
@@ -51,33 +52,35 @@
   /** "" = el que decida el sistema. Es la opción sana por defecto. */
   function options(devices: InputDeviceInfo[]) {
     return [
-      { value: "", label: "El del sistema" },
+      { value: "", label: t("settings.audio.systemDevice") },
       ...devices.map((d) => ({
         value: d.id,
         // Los que cpal no supo describir pueden fallar al abrirse: mejor
         // saberlo antes de elegirlo que a mitad de una reunión.
-        label: d.may_not_open ? `${d.name} · puede fallar` : d.name,
+        label: d.may_not_open ? `${d.name} · ${t("settings.audio.mayFail")}` : d.name,
       })),
     ];
   }
+
+  const micOptions = $derived(options(mics));
+  const outputOptions = $derived(options(outputs));
 </script>
 
 {#if cfg}
   <div class="flex flex-col gap-5">
     {#if preflight?.risk === "bluetooth_hands_free" && preflight.message}
       <Banner tone="warn" title={preflight.message}>
-        Los auriculares Bluetooth bajan la calidad del audio al usar su micrófono.
-        Conviene grabar con otro.
+        {t("settings.audio.bluetooth")}
       </Banner>
     {/if}
 
-    <SettingsGroup title="Dispositivos">
-      <SettingsRow label="Micrófono" hint="Para grabar reuniones.">
+    <SettingsGroup title={t("settings.audio.devices")}>
+      <SettingsRow label={t("settings.audio.mic")} hint={t("settings.audio.micHint")}>
         {#snippet control({ id })}
           <Select
             {id}
             value={cfg.mic_device_id}
-            options={options(mics)}
+            options={micOptions}
             disabled={loading}
             onchange={(e: Event) =>
               patch({ mic_device_id: (e.currentTarget as HTMLSelectElement).value })}
@@ -85,12 +88,12 @@
         {/snippet}
       </SettingsRow>
 
-      <SettingsRow label="Micrófono de dictado" hint="Vacío reutiliza el de arriba.">
+      <SettingsRow label={t("settings.audio.dictationMic")} hint={t("settings.audio.dictationMicHint")}>
         {#snippet control({ id })}
           <Select
             {id}
             value={cfg.dictation_mic_device_id}
-            options={options(mics)}
+            options={micOptions}
             disabled={loading}
             onchange={(e: Event) =>
               patch({
@@ -100,12 +103,12 @@
         {/snippet}
       </SettingsRow>
 
-      <SettingsRow label="Salida" hint="De dónde se toma el audio del PC.">
+      <SettingsRow label={t("settings.audio.output")} hint={t("settings.audio.outputHint")}>
         {#snippet control({ id })}
           <Select
             {id}
             value={cfg.output_device_id}
-            options={options(outputs)}
+            options={outputOptions}
             disabled={loading}
             onchange={(e: Event) =>
               patch({ output_device_id: (e.currentTarget as HTMLSelectElement).value })}
@@ -113,26 +116,26 @@
         {/snippet}
       </SettingsRow>
 
-      <SettingsRow label="Volver a mirar" hint="Si enchufaste algo recién.">
+      <SettingsRow label={t("settings.audio.refresh")} hint={t("settings.audio.refreshHint")}>
         {#snippet control()}
           <Button variant="soft" size="sm" full {loading} onclick={() => void load()}>
-            Recargar
+            {t("settings.audio.refreshBtn")}
           </Button>
         {/snippet}
       </SettingsRow>
     </SettingsGroup>
 
-    <SettingsGroup title="Tratamiento">
-      <SettingsRow label="Supresión de ruido" hint="Sobre el micrófono.">
+    <SettingsGroup title={t("settings.audio.treatment")}>
+      <SettingsRow label={t("settings.audio.noise")} hint={t("settings.audio.noiseHint")}>
         {#snippet control()}
           <SegmentedControl
             value={cfg.noise_suppression || "off"}
-            label="Supresión de ruido"
+            label={t("settings.audio.noiseAria")}
             options={[
-              { value: "off", label: "No" },
-              { value: "low", label: "Baja" },
-              { value: "medium", label: "Media" },
-              { value: "high", label: "Alta" },
+              { value: "off", label: t("settings.audio.off") },
+              { value: "low", label: t("settings.audio.low") },
+              { value: "medium", label: t("settings.audio.medium") },
+              { value: "high", label: t("settings.audio.high") },
             ]}
             onchange={(v) => patch({ noise_suppression: v })}
             full
@@ -144,8 +147,8 @@
         {#snippet control()}
           <Switch
             checked={cfg.speakers_mode}
-            label="Estoy con parlantes"
-            hint="Prioriza el audio del PC para que el micrófono no capte el eco."
+            label={t("settings.audio.speakers")}
+            hint={t("settings.audio.speakersHint")}
             onchange={(v) => patch({ speakers_mode: v })}
           />
         {/snippet}

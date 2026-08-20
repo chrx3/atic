@@ -108,7 +108,7 @@ pub fn search_local(state: State<AppState>, query: String) -> Result<Vec<SearchH
                 hits.push(SearchHit {
                     id: "scratchpad".into(),
                     kind: SearchHitKind::Scratchpad,
-                    title: "Bloc de notas".into(),
+                    title: crate::ui_lang::msg("Bloc de notas", "Scratchpad"),
                     preview,
                     score: Some(score),
                 });
@@ -129,9 +129,9 @@ pub fn search_local(state: State<AppState>, query: String) -> Result<Vec<SearchH
                     id: item.id.clone(),
                     kind: SearchHitKind::Clipboard,
                     title: if is_image {
-                        "Imagen del portapapeles".into()
+                        crate::ui_lang::msg("Imagen del portapapeles", "Clipboard image")
                     } else {
-                        "Portapapeles".into()
+                        crate::ui_lang::msg("Portapapeles", "Clipboard")
                     },
                     preview: item.preview.clone(),
                     score: Some(score),
@@ -153,10 +153,13 @@ pub fn search_local(state: State<AppState>, query: String) -> Result<Vec<SearchH
             hits.push(SearchHit {
                 id: cap.path.clone(),
                 kind: SearchHitKind::Capture,
-                title: if cap.label.is_empty() {
-                    "Captura".into()
-                } else {
-                    format!("Captura {}", cap.label)
+                title: {
+                    let word = crate::ui_lang::pick(crate::ui_lang::english(), "Captura", "Capture");
+                    if cap.label.is_empty() {
+                        word.to_string()
+                    } else {
+                        format!("{word} {}", cap.label)
+                    }
                 },
                 preview: if ocr_text.is_empty() {
                     filename.to_string()

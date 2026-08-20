@@ -14,6 +14,7 @@
   import { config } from "$domain/config.svelte";
   import { summaries } from "$domain/summaries.svelte";
   import { toastError, toasts } from "$domain/toasts.svelte";
+  import { t } from "$domain/i18n.svelte";
   import { sendSummaryEmail } from "$ipc/summaries";
   import Banner from "$ui/Banner.svelte";
   import Button from "$ui/Button.svelte";
@@ -59,7 +60,7 @@
         // Si ya había un resumen guardado, el paso útil es revisarlo.
         if (summaries.byId[id]) phase = "review";
       })
-      .catch((error) => (loadError = `No se pudo abrir el resumen: ${error}`))
+      .catch((error) => (loadError = t("page.summary.openFail", { error: String(error) })))
       .finally(() => (loading = false));
   });
 
@@ -70,24 +71,21 @@
   const canSend = $derived(hasText && !generating);
   const mailBackend = $derived(config.current?.mail_backend ?? "mailto");
 
-  const templateLabel = $derived(
-    summaries.templates.find((t) => t.id === summaries.template)?.label ??
-      summaries.template,
-  );
+  const templateLabel = $derived(t(`page.summary.tpl.${summaries.template}`));
 
   /** El título que se le pone al documento cuando el texto no trae ninguno. */
   const documentTitle = $derived(
-    summaries.template === "followup_email"
-      ? "Mensaje"
-      : summaries.template === "action_items"
-        ? "Acuerdos"
-        : "Resumen",
+      summaries.template === "followup_email"
+        ? t("page.summary.docMessage")
+        : summaries.template === "action_items"
+          ? t("page.summary.docActions")
+          : t("page.summary.docSummary"),
   );
 
   const STEPS = $derived([
-    { value: "generate" as const, label: "1 · Generar" },
-    { value: "review" as const, label: "2 · Revisar", disabled: !canReview },
-    { value: "send" as const, label: "3 · Enviar", disabled: !canSend },
+    { value: "generate" as const, label: t("page.summary.stepGenerate") },
+    { value: "review" as const, label: t("page.summary.stepReview"), disabled: !canReview },
+    { value: "send" as const, label: t("page.summary.stepSend"), disabled: !canSend },
   ]);
 
   async function generate() {
@@ -109,7 +107,7 @@
     saving = true;
     try {
       const result = await summaries.save(recording.id, recording.title);
-      if (result) toasts.push("Resumen guardado");
+      if (result) toasts.push(t("toast.summarySaved"));
       return result !== null;
     } catch (error) {
       toastError(error);
@@ -126,11 +124,11 @@
       .filter(Boolean);
 
     if (to.length === 0) {
-      toasts.push("Escribí al menos un destinatario.");
+      toasts.push(t("toast.needRecipient"));
       return;
     }
     if (!summaries.subject.trim()) {
-      toasts.push("Escribí el asunto del correo.");
+      toasts.push(t("toast.needSubject"));
       return;
     }
 
@@ -147,7 +145,7 @@
       );
       toasts.push(
         result.backend === "mailto"
-          ? "Se abrió un borrador en tu cliente de correo."
+          ? t("page.summary.mailtoOpened")
           : result.message,
       );
     } catch (error) {
@@ -163,9 +161,9 @@
   }
 </script>
 
-<Modal title="Resumen" subtitle={recording.title} size="lg" onClose={requestClose}>
+<Modal title={t("page.summary.title")} subtitle={recording.title} size="lg" onClose={requestClose}>
   {#if loading}
-    <p class="py-12 text-center text-sm text-muted" role="status">Cargando resumen…</p>
+    <p class="py-12 text-center text-sm text-muted" role="status">{t("page.summary.loading")}</p>
   {:else if loadError}
     <p class="py-12 text-center text-sm text-danger" role="alert">{loadError}</p>
   {:else}
@@ -173,35 +171,36 @@
       <SegmentedControl
         bind:value={phase}
         options={STEPS}
-        label="Etapas del resumen"
+        label={t("page.summary.stepsAria")}
         full
       />
 
       {#if summaries.needsSetup}
-        <Banner tone="warn" title="El proveedor de resúmenes no está listo">
+        <Banner tone="warn" title={t("page.summary.notReady")}>
           {#snippet action()}
             {#if onOpenSettings}
-              <Button variant="soft" size="sm" onclick={onOpenSettings}>Ajustes</Button>
+              <Button variant="soft" size="sm" onclick={onOpenSettings}
+                >{t("chrome.settings")}</Button
+              >
             {/if}
           {/snippet}
-          Falta la clave, o el servidor local no responde.
+          {t("page.summary.notReadyBody")}
         </Banner>
       {/if}
 
       {#if phase === "generate"}
         <p class="max-w-[65ch] text-sm leading-relaxed text-muted">
-          Se procesa la transcripción con el proveedor configurado. Podés revisar y
-          editar el resultado antes de mandarlo.
+          {t("page.summary.generateBlurb")}
         </p>
 
-        <Field label="Formato">
+        <Field label={t("page.summary.format")}>
           {#snippet children({ id })}
             <Select
               {id}
               bind:value={summaries.template}
-              options={summaries.templates.map((t) => ({
-                value: t.id,
-                label: t.label,
+              options={summaries.templates.map((tpl) => ({
+                value: tpl.id,
+                label: t(`page.summary.tpl.${tpl.id}`),
               }))}
               disabled={generating}
             />
@@ -211,39 +210,42 @@
         {#if generating}
           <div class="flex flex-col gap-2" role="status">
             <p class="text-xs text-muted">
-              Generando {templateLabel} · se ordena mientras llega.
+              {t("page.summary.generating", { label: templateLabel })}
             </p>
             <div class="max-h-72 overflow-y-auto">
               <SummaryDocument
                 content={summaries.draft}
                 defaultTitle={documentTitle}
                 streaming
-                emptyMessage="Preparando la estructura…"
+                emptyMessage={t("page.summary.preparing")}
               />
             </div>
           </div>
         {:else if saved}
-          <Banner tone="info" title="Ya hay un resumen guardado">
-            {templateLabel} · generado con {saved.backend}
+          <Banner tone="info" title={t("page.summary.alreadySaved")}>
+            {t("page.summary.alreadySavedBody", {
+              label: templateLabel,
+              backend: saved.backend,
+            })}
           </Banner>
         {/if}
       {:else if phase === "review"}
         <div class="flex items-center justify-between gap-3">
           <span class="text-xs {summaries.dirty ? 'text-warn' : 'text-faint'}">
-            {summaries.dirty ? "Cambios sin guardar" : "Guardado"}
+            {summaries.dirty ? t("page.summary.unsaved") : t("page.summary.saved")}
           </span>
           <SegmentedControl
             bind:value={reviewMode}
             options={[
-              { value: "preview" as const, label: "Vista" },
-              { value: "edit" as const, label: "Editar" },
+              { value: "preview" as const, label: t("page.summary.preview") },
+              { value: "edit" as const, label: t("page.summary.edit") },
             ]}
             size="sm"
-            label="Modo de revisión"
+            label={t("page.summary.reviewMode")}
           />
         </div>
 
-        <Field label="Asunto">
+        <Field label={t("page.summary.subject")}>
           {#snippet children({ id })}
             <Input
               {id}
@@ -263,8 +265,8 @@
           />
         {:else}
           <Field
-            label="Contenido en Markdown"
-            hint="Los encabezados con ## y los guiones son lo que arma las secciones de la vista."
+            label={t("page.summary.markdown")}
+            hint={t("page.summary.markdownHint")}
           >
             {#snippet children({ id, describedBy })}
               <TextArea
@@ -282,17 +284,17 @@
       {:else}
         <p class="max-w-[65ch] text-sm leading-relaxed text-muted">
           {mailBackend === "smtp"
-            ? "El correo sale directo por SMTP."
-            : "Se abre un borrador en tu cliente de correo."}
+            ? t("page.summary.smtpBlurb")
+            : t("page.summary.mailtoBlurb")}
         </p>
 
-        <Field label="Destinatarios" hint="Separá varias direcciones con coma.">
+        <Field label={t("page.summary.recipients")} hint={t("page.summary.recipientsHint")}>
           {#snippet children({ id, describedBy })}
             <Input
               {id}
               aria-describedby={describedBy}
               bind:value={recipients}
-              placeholder="ana@empresa.com, luis@empresa.com…"
+              placeholder={t("page.summary.recipientsPlaceholder")}
               autocomplete="off"
               spellcheck="false"
             />
@@ -300,14 +302,14 @@
         </Field>
 
         <div class="flex flex-col gap-1.5">
-          <span class="text-xs font-medium text-muted">Asunto</span>
+          <span class="text-xs font-medium text-muted">{t("page.summary.subject")}</span>
           <p class="truncate text-sm text-text">
-            {summaries.subject || "Sin asunto"}
+            {summaries.subject || t("page.summary.noSubject")}
           </p>
         </div>
 
         <div class="flex flex-col gap-1.5">
-          <span class="text-xs font-medium text-muted">Contenido</span>
+          <span class="text-xs font-medium text-muted">{t("page.summary.content")}</span>
           <div class="max-h-56 overflow-y-auto">
             <SummaryDocument
               content={summaries.draft}
@@ -324,10 +326,10 @@
     {#if !loading && !loadError}
       {#if phase === "generate"}
         {#if canReview}
-          <Button variant="soft" onclick={() => (phase = "review")}>Revisar</Button>
+          <Button variant="soft" onclick={() => (phase = "review")}>{t("page.summary.review")}</Button>
         {/if}
         <Button variant="primary" loading={generating} onclick={requestGeneration}>
-          {saved ? "Regenerar" : "Generar resumen"}
+          {saved ? t("page.summary.regenerate") : t("page.summary.generate")}
         </Button>
       {:else if phase === "review"}
         <Button
@@ -336,20 +338,20 @@
           disabled={generating || !summaries.dirty}
           onclick={() => void save()}
         >
-          Guardar
+          {t("page.snippets.save")}
         </Button>
         <Button variant="primary" disabled={!canSend} onclick={() => (phase = "send")}>
-          Continuar
+          {t("page.summary.continue")}
         </Button>
       {:else}
-        <Button variant="ghost" onclick={() => (phase = "review")}>Volver</Button>
+        <Button variant="ghost" onclick={() => (phase = "review")}>{t("page.summary.back")}</Button>
         <Button
           variant="primary"
           loading={sending}
           disabled={!canSend}
           onclick={() => void send()}
         >
-          {mailBackend === "smtp" ? "Enviar correo" : "Abrir borrador"}
+          {mailBackend === "smtp" ? t("page.summary.sendMail") : t("page.summary.openDraft")}
         </Button>
       {/if}
     {/if}
@@ -358,18 +360,18 @@
 
 {#if confirm === "discard"}
   <ConfirmDialog
-    title="Descartar cambios"
-    body="Hay cambios sin guardar. Si cerrás ahora, se pierden."
-    confirmLabel="Descartar"
+    title={t("page.summary.discardTitle")}
+    body={t("page.summary.discardBody")}
+    confirmLabel={t("page.summary.discard")}
     tone="danger"
     onConfirm={onClose}
     onCancel={() => (confirm = null)}
   />
 {:else if confirm === "regenerate"}
   <ConfirmDialog
-    title="Regenerar el resumen"
-    body="Se reemplaza el borrador actual por una generación nueva."
-    confirmLabel="Regenerar"
+    title={t("page.summary.regenTitle")}
+    body={t("page.summary.regenBody")}
+    confirmLabel={t("page.summary.regenerate")}
     onConfirm={() => void generate()}
     onCancel={() => (confirm = null)}
   />

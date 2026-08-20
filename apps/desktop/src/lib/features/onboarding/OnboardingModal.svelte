@@ -27,6 +27,7 @@
   import SegmentedControl from "$ui/SegmentedControl.svelte";
   import Select from "$ui/Select.svelte";
   import Switch from "$ui/Switch.svelte";
+  import { t, whisperModelLabel } from "$domain/i18n.svelte";
 
   let {
     onDone,
@@ -37,14 +38,14 @@
     replay?: boolean;
   } = $props();
 
-  const STEPS = [
-    "Bienvenida",
-    "Consentimiento",
-    "Preferencias",
-    "Dictado",
-    "Modelos",
-    "Atajos",
-  ];
+  const STEPS = $derived([
+    t("onboarding.steps.welcome"),
+    t("onboarding.steps.consent"),
+    t("onboarding.steps.prefs"),
+    t("onboarding.steps.dictation"),
+    t("onboarding.steps.models"),
+    t("onboarding.steps.shortcuts"),
+  ]);
 
   const DICTATION_STEP = 3;
   const MODELS_STEP = 4;
@@ -77,15 +78,15 @@
 
   const coreConflicts = $derived(
     SETUP_SHORTCUTS.filter((item) => config.conflicts.includes(item.conflict)).map(
-      (item) => item.label,
+      (item) => t(`onboarding.setup.${item.id}.label`),
     ),
   );
 
   function useLabel(id: string): string {
     const uses: string[] = [];
-    if (id === cfg?.dictation_whisper_model) uses.push("Dictado");
-    if (id === cfg?.whisper_model) uses.push("Reuniones");
-    return uses.join(" y ");
+    if (id === cfg?.dictation_whisper_model) uses.push(t("onboarding.useDictation"));
+    if (id === cfg?.whisper_model) uses.push(t("onboarding.useMeetings"));
+    return uses.join(t("onboarding.useJoin"));
   }
 
   function patch(changes: Parameters<typeof config.patch>[0]) {
@@ -151,8 +152,11 @@
 
 {#if cfg}
   <Modal
-    title="Atic"
-    subtitle="{replay ? 'Tutorial' : 'Primer uso'} · {STEPS[step]}"
+    title={t("onboarding.title")}
+    subtitle={t("onboarding.subtitle", {
+      kind: replay ? t("onboarding.replay") : t("onboarding.firstUse"),
+      step: STEPS[step],
+    })}
     size="md"
     dismissible={replay}
     onClose={() => void dismissReplay()}
@@ -160,11 +164,10 @@
     <div class="flex flex-col gap-4">
       {#if step === 0}
         <p class="max-w-[60ch] text-sm leading-relaxed text-muted">
-          Grabá el audio de tus reuniones, transcribí en local y generá resúmenes con la
-          IA que vos configures.
+          {t("onboarding.welcomeBody")}
         </p>
         <ul class="flex list-none flex-col gap-2">
-          {#each ["Nunca graba sola: siempre decidís vos.", "El audio no sale del PC al transcribir en local.", "Podés borrar cualquier grabación cuando quieras."] as claim, i (i)}
+          {#each [t("onboarding.claim1"), t("onboarding.claim2"), t("onboarding.claim3")] as claim, i (i)}
             <li class="flex items-baseline gap-2 text-sm text-muted">
               <Chip tone="ok">{i + 1}</Chip>
               {claim}
@@ -173,27 +176,25 @@
         </ul>
       {:else if step === 1}
         <p class="max-w-[60ch] text-sm leading-relaxed text-muted">
-          En muchas jurisdicciones —Chile incluido— grabar una llamada requiere el
-          consentimiento de los participantes. Usá Atic solo cuando esté permitido y, si
-          hace falta, avisale a los demás.
+          {t("onboarding.consentBody")}
         </p>
         <Switch
           checked={cfg.beep_on_start}
-          label="Beep al empezar a grabar"
-          hint="Un aviso audible para los demás."
+          label={t("onboarding.beep")}
+          hint={t("onboarding.beepHint")}
           onchange={(checked) => patch({ beep_on_start: checked })}
         />
       {:else if step === 2}
-        <Field label="Idioma de transcripción">
+        <Field label={t("onboarding.transcribeLang")}>
           {#snippet children({ id })}
             <Select
               {id}
               value={cfg.language}
               options={[
-                { value: "es", label: "Español (recomendado)" },
-                { value: "auto", label: "Autodetectar (puede fallar con ruido)" },
-                { value: "en", label: "Inglés" },
-                { value: "pt", label: "Portugués" },
+                { value: "es", label: t("onboarding.langEs") },
+                { value: "auto", label: t("onboarding.langAuto") },
+                { value: "en", label: t("onboarding.langEn") },
+                { value: "pt", label: t("onboarding.langPt") },
               ]}
               onchange={(event: Event) =>
                 patch({ language: (event.currentTarget as HTMLSelectElement).value })}
@@ -203,36 +204,32 @@
 
         <Switch
           checked={cfg.speakers_mode}
-          label="Modo parlantes"
-          hint="Sin auriculares: graba solo «otros» para evitar el eco."
+          label={t("onboarding.speakers")}
+          hint={t("onboarding.speakersHint")}
           onchange={(checked) => patch({ speakers_mode: checked })}
         />
 
         <Switch
           checked={cfg.autostart}
-          label="Arrancar con el sistema"
-          hint="Queda en la bandeja, sin abrir esta ventana."
+          label={t("onboarding.autostart")}
+          hint={t("onboarding.autostartHint")}
           onchange={(checked) => patch({ autostart: checked })}
         />
 
         <p class="max-w-[60ch] text-xs leading-relaxed text-faint">
-          Atic vive en la bandeja del sistema: cerrar la ventana con la X la esconde, no
-          cierra la app ni corta una grabación en curso. Para salir del todo, usá
-          «Salir» en el menú de la bandeja.
+          {t("onboarding.trayNote")}
         </p>
       {:else if step === DICTATION_STEP}
         <p class="max-w-[60ch] text-sm leading-relaxed text-muted">
-          Si no tenés gráfica, Groq dicta casi al instante. El audio de esa frase corta
-          sale de tu PC. Las reuniones se transcriben en tu máquina por defecto; en
-          Reuniones o Ajustes podés pasarlas a Groq.
+          {t("onboarding.dictationBody")}
         </p>
 
         <SegmentedControl
           value={cfg.dictation_backend === "groq" ? "groq" : "local"}
-          label="Motor de dictado"
+          label={t("onboarding.dictationEngine")}
           options={[
-            { value: "groq", label: "Groq" },
-            { value: "local", label: "Local" },
+            { value: "groq", label: t("settings.meetings.groq") },
+            { value: "local", label: t("settings.meetings.local") },
           ]}
           onchange={setDictationBackend}
           full
@@ -242,17 +239,15 @@
           <GroqKeyField />
         {:else}
           <p class="max-w-[60ch] text-xs leading-relaxed text-faint">
-            Whisper corre en el CPU. En el paso siguiente se baja un modelo chico.
+            {t("onboarding.whisperNote")}
           </p>
         {/if}
       {:else if step === MODELS_STEP}
         <p class="max-w-[60ch] text-sm leading-relaxed text-muted">
           {#if cfg.dictation_backend === "groq"}
-            Las reuniones se transcriben en tu PC por defecto. Este modelo también sirve
-            de reserva si Groq no responde.
+            {t("onboarding.modelsGroq")}
           {:else}
-            La transcripción corre en tu PC. Por defecto se baja un solo modelo rápido
-            que sirve para dictado y para reuniones.
+            {t("onboarding.modelsLocal")}
           {/if}
         </p>
 
@@ -264,12 +259,12 @@
             >
               <div class="flex min-w-0 flex-col gap-0.5">
                 <span class="text-sm font-medium text-text">{useLabel(model.id)}</span>
-                <span class="truncate text-xs text-faint">{model.display_name}</span>
+                <span class="truncate text-xs text-faint">{whisperModelLabel(model.id)}</span>
               </div>
               {#if model.downloaded}
-                <Chip tone="ok">Listo</Chip>
+                <Chip tone="ok">{t("onboarding.ready")}</Chip>
               {:else if downloadingId === model.id}
-                <Chip tone="warn">Bajando</Chip>
+                <Chip tone="warn">{t("onboarding.downloadingChip")}</Chip>
               {:else}
                 <span class="font-mono text-xs text-faint" data-numeric>
                   {formatMegabytes(model.approx_size_bytes)}
@@ -282,35 +277,33 @@
         {#if downloadingId}
           <ProgressBar
             value={models.percent / 100}
-            label="Descargando el modelo"
+            label={t("onboarding.downloadingModel")}
             tone="ok"
           />
         {/if}
 
         {#if downloadError}
-          <Banner tone="danger" title="No se pudo bajar el modelo">
+          <Banner tone="danger" title={t("onboarding.downloadFailed")}>
             {downloadError}
           </Banner>
         {:else if !allReady && pendingBytes > 0}
           <p class="text-xs text-faint">
-            Falta bajar ~{formatMegabytes(pendingBytes)}. Podés seguir y hacerlo después
-            desde Ajustes.
+            {t("onboarding.pendingBytes", { size: formatMegabytes(pendingBytes) })}
           </p>
         {/if}
       {:else if step === SHORTCUTS_STEP}
         <p class="max-w-[60ch] text-sm leading-relaxed text-muted">
-          Tres atajos, no diez. Confirmalos o cambialos ahora: después vas a tener que
-          usarlos.
+          {t("onboarding.shortcutsBody")}
         </p>
 
         {#if coreConflicts.length > 0}
           <Banner
             tone="warn"
             title={coreConflicts.length === 1
-              ? "Un atajo ya lo tenía tomado otra app"
-              : `${coreConflicts.length} atajos ya los tenía tomados otra app`}
+              ? t("settings.shortcuts.conflictOne")
+              : t("settings.shortcuts.conflictMany", { count: coreConflicts.length })}
           >
-            Elegí otra combinación para {coreConflicts.join(", ")}.
+            {t("onboarding.conflictBody", { names: coreConflicts.join(", ") })}
           </Banner>
         {/if}
 
@@ -318,13 +311,15 @@
           {#each SETUP_SHORTCUTS as item (item.key)}
             <li class="flex items-start justify-between gap-3">
               <div class="flex min-w-0 flex-col gap-0.5">
-                <span class="text-sm font-medium text-text">{item.label}</span>
-                <span class="text-xs text-faint">{item.hint}</span>
+                <span class="text-sm font-medium text-text">{t(`onboarding.setup.${item.id}.label`)}</span>
+                <span class="text-xs text-faint">{t(`onboarding.setup.${item.id}.hint`)}</span>
               </div>
               <HotkeyCapture
                 value={cfg[item.key]}
                 defaultValue={item.fallback}
-                ariaLabel="Cambiar el atajo de {item.label}"
+                ariaLabel={t("settings.shortcuts.changeAria", {
+                  label: t(`onboarding.setup.${item.id}.label`),
+                })}
                 onChange={(sc) => patch({ [item.key]: sc })}
               />
             </li>
@@ -332,14 +327,14 @@
         </ul>
 
         <p class="text-xs text-faint">
-          El resto está en Ajustes → Atajos.
+          {t("onboarding.restInSettings")}
         </p>
       {/if}
     </div>
 
     {#snippet actions()}
       <div class="flex w-full items-center justify-between gap-4">
-        <div class="flex gap-1" aria-label="Paso {step + 1} de {STEPS.length}">
+        <div class="flex gap-1" aria-label={t("onboarding.stepAria", { current: step + 1, total: STEPS.length })}>
           {#each STEPS as _, i (i)}
             <span
               class="h-1 w-6 rounded-pill transition-colors duration-(--duration-quick)
@@ -359,7 +354,7 @@
               disabled={Boolean(downloadingId) || saving}
               onclick={() => void dismissReplay()}
             >
-              Cerrar
+              {t("onboarding.close")}
             </Button>
           {/if}
           {#if step > 0}
@@ -368,16 +363,16 @@
               disabled={Boolean(downloadingId) || saving}
               onclick={() => (step -= 1)}
             >
-              Atrás
+              {t("onboarding.back")}
             </Button>
           {/if}
 
           {#if step < MODELS_STEP}
-            <Button variant="primary" onclick={() => (step += 1)}>Siguiente</Button>
+            <Button variant="primary" onclick={() => (step += 1)}>{t("onboarding.next")}</Button>
           {:else if step === MODELS_STEP}
             {#if allReady}
               <Button variant="primary" onclick={() => void leaveModels(false)}>
-                Siguiente
+                {t("onboarding.next")}
               </Button>
             {:else}
               <Button
@@ -385,14 +380,14 @@
                 disabled={Boolean(downloadingId)}
                 onclick={() => void leaveModels(false)}
               >
-                Más tarde
+                {t("onboarding.later")}
               </Button>
               <Button
                 variant="primary"
                 loading={Boolean(downloadingId)}
                 onclick={() => void leaveModels(true)}
               >
-                Descargar y seguir
+                {t("onboarding.downloadNext")}
               </Button>
             {/if}
           {:else}
@@ -402,7 +397,7 @@
               disabled={coreConflicts.length > 0}
               onclick={() => void startPractice()}
             >
-              Practicar
+              {t("onboarding.practice")}
             </Button>
           {/if}
         </div>

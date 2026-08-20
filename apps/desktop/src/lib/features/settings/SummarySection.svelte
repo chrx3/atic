@@ -21,6 +21,7 @@
   import Button from "$ui/Button.svelte";
   import Input from "$ui/Input.svelte";
   import Select from "$ui/Select.svelte";
+  import { t } from "$domain/i18n.svelte";
 
   const cfg = $derived(config.current);
 
@@ -82,7 +83,7 @@
         const current = config.current;
         if (current && result.selected && result.selected !== current.summary_model) {
           current.summary_model = result.selected;
-          toasts.push(`Modelo actualizado: ${result.selected}`);
+          toasts.push(t("settings.summary.modelUpdated", { model: result.selected }));
         }
       })
       .catch((error) => {
@@ -112,7 +113,7 @@
     try {
       await setSecret(kind, key.trim());
       key = "";
-      toasts.push("Clave guardada en el llavero del sistema");
+      toasts.push(t("settings.summary.keySaved"));
       await load();
     } catch (error) {
       toastError(error);
@@ -125,18 +126,18 @@
 {#if cfg}
   <div class="flex flex-col gap-5">
     {#if provider?.needs_api_key && !hasKey[provider.id]}
-      <Banner tone="warn" title="Falta la clave de {provider.display_name}" />
+      <Banner tone="warn" title={t("settings.summary.missingKey", { name: provider.display_name })} />
     {:else if ollamaUp === false}
-      <Banner tone="warn" title="Ollama no está respondiendo">
-        Arrancalo o elegí otro proveedor.
+      <Banner tone="warn" title={t("settings.summary.ollamaDown")}>
+        {t("settings.summary.ollamaBody")}
       </Banner>
     {/if}
 
     <SettingsGroup
-      title="Proveedor"
-      hint="El resumen es lo único que sale de tu máquina. Ollama corre local."
+      title={t("settings.summary.provider")}
+      hint={t("settings.summary.providerHint")}
     >
-      <SettingsRow label="Quién resume">
+      <SettingsRow label={t("settings.summary.who")}>
         {#snippet control({ id })}
           <Select
             {id}
@@ -160,8 +161,8 @@
       </SettingsRow>
 
       <SettingsRow
-        label="Modelo"
-        hint={liveOk ? "Lista actual del proveedor." : undefined}
+        label={t("settings.summary.model")}
+        hint={liveOk ? t("settings.summary.liveModels") : undefined}
       >
         {#snippet control({ id })}
           {#if modelOptions.length > 0}
@@ -185,7 +186,7 @@
       </SettingsRow>
 
       {#if provider?.base_url_editable}
-        <SettingsRow label="URL" hint="Dónde escucha el proveedor.">
+        <SettingsRow label={t("settings.summary.url")} hint={t("settings.summary.urlHint")}>
           {#snippet control({ id })}
             <Input
               {id}
@@ -203,14 +204,12 @@
 
     {#if provider?.needs_api_key}
       <SettingsGroup
-        title="Clave"
-        hint="Se guarda en el llavero del sistema, no en un archivo de la app."
+        title={t("settings.summary.key")}
+        hint={t("settings.summary.keyHint")}
       >
         <SettingsRow
-          label={hasKey[provider.id] ? "Reemplazar la clave" : "Poner la clave"}
-          hint={hasKey[provider.id]
-            ? "Hay una guardada. No se puede leer, solo cambiar."
-            : undefined}
+          label={hasKey[provider.id] ? t("settings.summary.replaceKey") : t("settings.summary.setKey")}
+          hint={hasKey[provider.id] ? t("settings.summary.keyStoredHint") : undefined}
         >
           {#snippet control({ id })}
             <div class="flex gap-1.5">
@@ -229,7 +228,7 @@
                 disabled={!key.trim()}
                 onclick={() => void saveKey()}
               >
-                Guardar
+                {t("settings.summary.save")}
               </Button>
             </div>
           {/snippet}

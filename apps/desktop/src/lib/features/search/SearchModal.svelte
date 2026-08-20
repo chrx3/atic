@@ -7,6 +7,7 @@
    */
   import type { SearchHit } from "$core/types";
   import { toastError, toasts } from "$domain/toasts.svelte";
+  import { t } from "$domain/i18n.svelte";
   import { pasteClipboardItem } from "$ipc/clipboard";
   import { activateCapture } from "$ipc/captures";
   import { searchLocal } from "$ipc/search";
@@ -23,13 +24,13 @@
     onNavigate: (hit: SearchHit) => void;
   } = $props();
 
-  const KIND_LABEL: Record<SearchHit["kind"], string> = {
-    recording: "Grabación",
-    snippet: "Texto",
-    clipboard: "Portapapeles",
-    capture: "Captura",
-    scratchpad: "Bloc",
-  };
+  const KIND_LABEL = $derived({
+    recording: t("page.search.recording"),
+    snippet: t("page.search.snippet"),
+    clipboard: t("page.search.clipboard"),
+    capture: t("page.search.capture"),
+    scratchpad: t("page.search.scratchpad"),
+  } as const);
 
   let query = $state("");
   let hits = $state<SearchHit[]>([]);
@@ -79,11 +80,11 @@
       switch (hit.kind) {
         case "snippet":
           await pasteSnippet(hit.id);
-          toasts.push(`Pegado: ${hit.title}`);
+          toasts.push(t("toast.pastedNamed", { title: hit.title }));
           break;
         case "clipboard":
           await pasteClipboardItem(hit.id);
-          toasts.push("Pegado desde el portapapeles");
+          toasts.push(t("toast.pastedClipboard"));
           break;
         case "capture":
           await activateCapture(hit.id);
@@ -111,7 +112,7 @@
   }
 </script>
 
-<Modal title="Buscar" size="md" {onClose}>
+<Modal title={t("page.search.title")} size="md" {onClose}>
   {#snippet header()}
     <!-- El campo ES el encabezado: un título encima solo aleja el cursor de lo
          único que hay que hacer acá. -->
@@ -120,17 +121,17 @@
       bind:value={query}
       onkeydown={onKey}
       type="search"
-      placeholder="Buscar en grabaciones, textos, portapapeles…"
-      aria-label="Buscar"
+      placeholder={t("page.search.placeholder")}
+      aria-label={t("page.search.title")}
       class="h-8 w-full bg-transparent text-md text-text outline-none
              placeholder:text-faint"
     />
   {/snippet}
 
   {#if !query.trim()}
-    <EmptyState title="Escribí para buscar" hint="Enter elige, las flechas navegan." />
+    <EmptyState title={t("page.search.typeToSearch")} hint={t("page.search.typeHint")} />
   {:else if hits.length === 0}
-    <EmptyState title="Nada coincide" hint="Probá con menos palabras." />
+    <EmptyState title={t("page.common.nothing")} hint={t("page.common.fewerWords")} />
   {:else}
     <ul class="-mx-2 flex flex-col">
       {#each hits as hit, i (hit.kind + hit.id)}

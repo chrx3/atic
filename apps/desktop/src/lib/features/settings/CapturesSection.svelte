@@ -9,6 +9,7 @@
   import Input from "$ui/Input.svelte";
   import SegmentedControl from "$ui/SegmentedControl.svelte";
   import Switch from "$ui/Switch.svelte";
+  import { t } from "$domain/i18n.svelte";
 
   const cfg = $derived(config.current);
 
@@ -19,15 +20,15 @@
 
 {#if cfg}
   <div class="flex flex-col gap-5">
-    <SettingsGroup title="El shelf" hint="La tarjeta que aparece tras cada captura.">
-      <SettingsRow label="De qué lado">
+    <SettingsGroup title={t("settings.captures.shelf")} hint={t("settings.captures.shelfHint")}>
+      <SettingsRow label={t("settings.captures.side")}>
         {#snippet control()}
           <SegmentedControl
             value={cfg.capture_shelf_side}
-            label="Lado del shelf"
+            label={t("settings.captures.sideAria")}
             options={[
-              { value: "left", label: "Izq." },
-              { value: "right", label: "Der." },
+              { value: "left", label: t("settings.captures.left") },
+              { value: "right", label: t("settings.captures.right") },
             ]}
             onchange={(v) => patch({ capture_shelf_side: v })}
             full
@@ -35,7 +36,7 @@
         {/snippet}
       </SettingsRow>
 
-      <SettingsRow label="Se va a los" hint="Segundos. 0 la deja hasta que la cierres.">
+      <SettingsRow label={t("settings.captures.timeout")} hint={t("settings.captures.timeoutHint")}>
         {#snippet control({ id })}
           <Input
             {id}
@@ -52,18 +53,18 @@
       </SettingsRow>
     </SettingsGroup>
 
-    <SettingsGroup title="La imagen">
+    <SettingsGroup title={t("settings.captures.image")}>
       <SettingsRow bare>
         {#snippet control()}
           <Switch
             checked={cfg.capture_include_cursor}
-            label="Incluir el puntero"
+            label={t("settings.captures.cursor")}
             onchange={(v) => patch({ capture_include_cursor: v })}
           />
         {/snippet}
       </SettingsRow>
 
-      <SettingsRow label="Conservar" hint="En horas. 0 las guarda para siempre.">
+      <SettingsRow label={t("settings.captures.keep")} hint={t("settings.captures.keepHint")}>
         {#snippet control({ id })}
           <Input
             {id}
@@ -79,7 +80,7 @@
         {/snippet}
       </SettingsRow>
 
-      <SettingsRow label="Limpiar ahora" hint="Borra las que ya vencieron.">
+      <SettingsRow label={t("settings.captures.cleanup")} hint={t("settings.captures.cleanupHint")}>
         {#snippet control()}
           <Button
             variant="soft"
@@ -89,11 +90,15 @@
               void captures
                 .cleanup()
                 .then((n) =>
-                  toasts.push(n > 0 ? `Se borraron ${n}` : "No había nada vencido"),
+                  toasts.push(
+                    n > 0
+                      ? t("settings.captures.cleaned", { count: n })
+                      : t("settings.captures.nothingExpired"),
+                  ),
                 )
                 .catch(toastError)}
           >
-            Limpiar
+            {t("settings.captures.cleanupBtn")}
           </Button>
         {/snippet}
       </SettingsRow>
