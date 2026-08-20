@@ -152,6 +152,10 @@ static COVER_TRIES: AtomicU32 = AtomicU32::new(0);
 /// Avisos de `WM_DISPLAYCHANGE` (capacidad 1: varios seguidos son el mismo).
 static DISPLAY_TX: OnceLock<SyncSender<()>> = OnceLock::new();
 
+/// Handle de la app para la wndproc: no llega por parámetro (es un callback
+/// crudo de Win32), así que se guarda acá una sola vez en `setup()`.
+static APP_HANDLE: OnceLock<AppHandle> = OnceLock::new();
+
 /// WndProc original de tao, para encadenar `WM_GETMINMAXINFO` / display.
 #[cfg(windows)]
 static OVERLAY_WNDPROC: AtomicIsize = AtomicIsize::new(0);
@@ -762,9 +766,9 @@ unsafe extern "system" fn overlay_wndproc(
     lparam: windows_sys::Win32::Foundation::LPARAM,
 ) -> windows_sys::Win32::Foundation::LRESULT {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        CallWindowProcW, PostMessageW, HTCLIENT, HTTRANSPARENT, MINMAXINFO, WM_DEVICECHANGE,
-        WM_DISPLAYCHANGE, WM_DPICHANGED, WM_GETMINMAXINFO, WM_MOUSEHWHEEL, WM_MOUSEWHEEL,
-        WM_NCHITTEST, WM_POWERBROADCAST,
+        CallWindowProcW, HTCLIENT, HTTRANSPARENT, MINMAXINFO, WM_DEVICECHANGE, WM_DISPLAYCHANGE,
+        WM_DPICHANGED, WM_GETMINMAXINFO, WM_MOUSEHWHEEL, WM_MOUSEWHEEL, WM_NCHITTEST,
+        WM_POWERBROADCAST,
     };
 
     if msg == WM_NCHITTEST {
@@ -778,15 +782,8 @@ unsafe extern "system" fn overlay_wndproc(
     if msg == WM_MOUSEWHEEL || msg == WM_MOUSEHWHEEL {
         let (sx, sy) = lparam_screen_point(lparam);
         if !overlay_eats_physical(sx, sy) {
-            let main = MAIN_HWND.load(Ordering::Acquire);
-            if main != 0 {
-                let parent = main as windows_sys::Win32::Foundation::HWND;
-                let child = wry_webview_child(parent);
-                let dest = if child.is_null() { parent } else { child };
-                // No bloquear esta wndproc: el input del SO no puede esperar.
-                let _ = PostMessageW(dest, msg, wparam, lparam);
-                return 0;
-            }
+            dispatch_wheel_to_main(msg, wparam);
+            return 0;
         }
     }
 
@@ -823,6 +820,38 @@ unsafe extern "system" fn overlay_wndproc(
         Some(orig_fn) => CallWindowProcW(Some(orig_fn), hwnd, msg, wparam, lparam),
         None => 0,
     }
+}
+
+/// Le hace creer a `main` que giró la rueda, sin pasar por Win32.
+///
+/// Reenviar `WM_MOUSEWHEEL`/`WM_MOUSEHWHEEL` con `PostMessageW` no sirve:
+/// WebView2/Chromium ignora ese mensaje inyectado, así que la rueda sonaba
+/// pero `ToolRail` nunca se enteraba. En cambio, disparar un `WheelEvent` de
+/// verdad en el DOM de `main` es indistinguible de un scroll real para
+/// `onWindowWheel` — no lee posición, solo `deltaY`/`deltaX` y `event.target`
+/// (que acá es `window`, así que `regionStillScrolls` no lo confunde con una
+/// lista con scroll propio).
+#[cfg(windows)]
+fn dispatch_wheel_to_main(msg: u32, wparam: windows_sys::Win32::Foundation::WPARAM) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::WM_MOUSEWHEEL;
+
+    let Some(app) = APP_HANDLE.get() else {
+        return;
+    };
+    let Some(main) = app.get_webview_window("main") else {
+        return;
+    };
+    // HIWORD(wParam), con signo: notch positivo = aleja al usuario.
+    let notches = (wparam >> 16) as u16 as i16 as f64 / 120.0;
+    let (delta_y, delta_x) = if msg == WM_MOUSEWHEEL {
+        (-notches * 100.0, 0.0)
+    } else {
+        (0.0, notches * 100.0)
+    };
+    let script = format!(
+        "window.dispatchEvent(new WheelEvent('wheel',{{deltaY:{delta_y},deltaX:{delta_x},bubbles:true,cancelable:true}}))"
+    );
+    let _ = main.eval(&script);
 }
 
 #[cfg(windows)]
@@ -1127,6 +1156,7 @@ pub fn keep_non_occluding(window: &tauri::WebviewWindow) {
 /// `viewport CSS del overlay`. Esperamos a que esa carrera termine, y si
 /// a los 2 s el frontend no avisó, destruimos y volvemos a crear.
 pub fn setup(app: &AppHandle) {
+    let _ = APP_HANDLE.set(app.clone());
     remember_main(app);
     start_toggle_worker(app.clone());
     start_display_watch(app.clone());
