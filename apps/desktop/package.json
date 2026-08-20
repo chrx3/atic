@@ -1,6 +1,6 @@
 {
   "name": "atic-desktop",
-  "version": "0.4.16",
+  "version": "0.4.17",
   "description": "Atic desktop app",
   "type": "module",
   "scripts": {
