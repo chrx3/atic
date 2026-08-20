@@ -1541,7 +1541,18 @@ fn overlay_eats_physical(cx: i32, cy: i32) -> bool {
     let Ok(rects) = HIT_RECTS.try_lock() else {
         return false;
     };
-    rects.iter().any(|r| r.contains(x, y, ARM_MARGIN))
+    let over_hit = rects.iter().any(|r| r.contains(x, y, ARM_MARGIN));
+    let has_drag = rects.iter().any(|r| r.id == "drag");
+    drop(rects);
+    // Mismo caso especial que `should_arm`: el rect "drag" cubre toda la
+    // pantalla mientras dura un arrastre. Si se lo comiera igual sobre
+    // `main`, `main` nunca recibiría el movimiento que dispara
+    // `yield_to_main` y el arrastre quedaría pegado para siempre — junto con
+    // el resto de la ventana, porque a partir de acá decide el hit-test.
+    if has_drag && cursor_over_visible_main() {
+        return false;
+    }
+    over_hit
 }
 
 /// Esquina (0,0) del cliente del overlay en físicos de pantalla.
