@@ -6,7 +6,7 @@
    * cards flotan aparte (hueco > REACH). El hover que muestra ±2 solo cuenta
    * cuando el mouse está sobre la rueda, no sobre las cards.
    */
-  import { untrack } from "svelte";
+  import { onDestroy, untrack } from "svelte";
   import { runToolAction, toolAction } from "$core/toolActions";
   import { TOOLS, type ToolId } from "$core/tools";
   import { localizeTool, t } from "$domain/i18n.svelte";
@@ -572,43 +572,49 @@
   });
 
   function bindRoot(el: HTMLElement) {
-    tracker.origin = el;
-    const ro = new ResizeObserver((entries) => {
-      const h = entries[0]?.contentRect.height;
-      if (h && h > 0) {
-        height = h;
-        tracker.wake();
+    // `{@attach}` se re-ejecuta si esta función lee estado al montar.
+    // Sin `untrack`, un cambio de `activeTool`/`rects` desmontaba el attach
+    // y el cleanup cortaba el rAF: la rueda del mouse sonaba y nada giraba.
+    return untrack(() => {
+      tracker.origin = el;
+      const ro = new ResizeObserver((entries) => {
+        const h = entries[0]?.contentRect.height;
+        if (h && h > 0) {
+          height = h;
+          tracker.wake();
+        }
+      });
+      ro.observe(el);
+      height = el.clientHeight || 560;
+      if (!soundReady) {
+        const start = toolIndex(activeTool);
+        target = start;
+        visual = start;
+        soundedIndex = start;
+        soundReady = true;
       }
-    });
-    ro.observe(el);
-    height = el.clientHeight || 560;
-    // `{@attach}` re-ejecuta si el callback lee estado. `activeTool` acá
-    // reseteaba visual/target y cortaba el gesto en cada syncSelect.
-    if (!soundReady) {
-      const start = untrack(() => toolIndex(activeTool));
-      target = start;
-      visual = start;
-      soundedIndex = start;
-      soundReady = true;
-    }
-    tracker.wake();
+      tracker.wake();
 
-    window.addEventListener("wheel", onWindowWheel, { passive: false, capture: true });
-    return () => {
-      ro.disconnect();
-      tracker.stop();
-      window.removeEventListener("wheel", onWindowWheel, { capture: true });
-      if (dragging) finishDrag(null);
-      unbindDragListeners();
-      stopAnim();
-      stopExpandAnim();
-    };
+      window.addEventListener("wheel", onWindowWheel, { passive: false, capture: true });
+      return () => {
+        ro.disconnect();
+        tracker.stop();
+        window.removeEventListener("wheel", onWindowWheel, { capture: true });
+        if (dragging) finishDrag(null);
+        unbindDragListeners();
+      };
+    });
   }
 
   $effect(() => {
     void spots;
     void expandT;
     tracker.wake();
+  });
+
+  onDestroy(() => {
+    stopAnim();
+    stopExpandAnim();
   });
 </script>
 
