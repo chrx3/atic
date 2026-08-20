@@ -762,9 +762,33 @@ unsafe extern "system" fn overlay_wndproc(
     lparam: windows_sys::Win32::Foundation::LPARAM,
 ) -> windows_sys::Win32::Foundation::LRESULT {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        CallWindowProcW, MINMAXINFO, WM_DEVICECHANGE, WM_DISPLAYCHANGE, WM_DPICHANGED,
-        WM_GETMINMAXINFO, WM_POWERBROADCAST,
+        CallWindowProcW, PostMessageW, HTCLIENT, HTTRANSPARENT, MINMAXINFO, WM_DEVICECHANGE,
+        WM_DISPLAYCHANGE, WM_DPICHANGED, WM_GETMINMAXINFO, WM_MOUSEHWHEEL, WM_MOUSEWHEEL,
+        WM_NCHITTEST, WM_POWERBROADCAST,
     };
+
+    if msg == WM_NCHITTEST {
+        let (sx, sy) = lparam_screen_point(lparam);
+        if overlay_eats_physical(sx, sy) {
+            return HTCLIENT as isize;
+        }
+        return HTTRANSPARENT as isize;
+    }
+
+    if msg == WM_MOUSEWHEEL || msg == WM_MOUSEHWHEEL {
+        let (sx, sy) = lparam_screen_point(lparam);
+        if !overlay_eats_physical(sx, sy) {
+            let main = MAIN_HWND.load(Ordering::Acquire);
+            if main != 0 {
+                let parent = main as windows_sys::Win32::Foundation::HWND;
+                let child = wry_webview_child(parent);
+                let dest = if child.is_null() { parent } else { child };
+                // No bloquear esta wndproc: el input del SO no puede esperar.
+                let _ = PostMessageW(dest, msg, wparam, lparam);
+                return 0;
+            }
+        }
+    }
 
     if msg == WM_GETMINMAXINFO && lparam != 0 {
         if let Some(orig_fn) = orig_overlay_wndproc() {
@@ -998,6 +1022,47 @@ pub fn set_click_through(window: &tauri::WebviewWindow, on: bool) {
     if let Err(err) = window.set_ignore_cursor_events(on) {
         tracing::warn!(target: "overlay", ?err, "no se pudo cambiar el click-through");
     }
+    // `ignore_cursor_events` pone `WS_EX_TRANSPARENT` en el HWND de tao. El
+    // hijo `WRY_WEBVIEW` no lo hereda: la rueda del mouse sigue yendo a
+    // Chromium (lámina a pantalla completa) y la ventana de Reuniones nunca
+    // ve el evento. En Chrome/`pnpm dev` esa lámina no existe.
+    #[cfg(windows)]
+    sync_webview_child_transparent(window, on);
+}
+
+/// `WS_EX_TRANSPARENT` del hijo WebView2, alineado al click-through del padre.
+#[cfg(windows)]
+fn sync_webview_child_transparent(window: &tauri::WebviewWindow, on: bool) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetWindowLongPtrW, SetWindowLongPtrW, GWL_EXSTYLE, WS_EX_TRANSPARENT,
+    };
+    let Ok(hwnd) = window.hwnd() else {
+        return;
+    };
+    let child = wry_webview_child(hwnd.0 as _);
+    if child.is_null() {
+        return;
+    }
+    // SAFETY: hijo `WRY_WEBVIEW` del overlay; solo se toca el bit transparente.
+    unsafe {
+        let ex = GetWindowLongPtrW(child, GWL_EXSTYLE);
+        let bit = WS_EX_TRANSPARENT as isize;
+        let next = if on { ex | bit } else { ex & !bit };
+        if next != ex {
+            SetWindowLongPtrW(child, GWL_EXSTYLE, next);
+        }
+    }
+}
+
+#[cfg(windows)]
+fn wry_webview_child(
+    parent: windows_sys::Win32::Foundation::HWND,
+) -> windows_sys::Win32::Foundation::HWND {
+    use windows_sys::Win32::UI::WindowsAndMessaging::FindWindowExW;
+    let mut class: Vec<u16> = "WRY_WEBVIEW".encode_utf16().collect();
+    class.push(0);
+    // SAFETY: parent es un HWND de Tauri; FindWindowEx solo busca el hijo.
+    unsafe { FindWindowExW(parent, std::ptr::null_mut(), class.as_ptr(), std::ptr::null()) }
 }
 
 /// Alfa uniforme del overlay: 254, un punto por debajo del máximo.
@@ -1438,11 +1503,45 @@ fn cursor_overlay_css() -> Option<(f64, f64)> {
         return None;
     }
     let (cx, cy) = crate::floating::cursor_position()?;
+    overlay_css_from_physical(cx, cy)
+}
+
+/// Punto de pantalla (p. ej. `lParam` de `WM_NCHITTEST`) → CSS del overlay.
+#[cfg(windows)]
+fn overlay_css_from_physical(cx: i32, cy: i32) -> Option<(f64, f64)> {
     let (ox, oy) = client_origin_physical()?;
     Some(physical_client_to_css(
         f64::from(cx) - ox,
         f64::from(cy) - oy,
     ))
+}
+
+/// Coordenadas de pantalla empaquetadas en `lParam` (signed 16-bit).
+pub(crate) fn lparam_screen_point(lparam: isize) -> (i32, i32) {
+    let x = lparam as i16 as i32;
+    let y = (lparam >> 16) as i16 as i32;
+    (x, y)
+}
+
+/// ¿Este punto tiene que quedárselo el overlay (pill / float / gesto)?
+///
+/// Fuera de esas zonas la lámina es a pantalla completa: si come el hit, la
+/// rueda no llega a `main` aunque Atic se vea debajo.
+#[cfg(windows)]
+fn overlay_eats_physical(cx: i32, cy: i32) -> bool {
+    if CAPTURING.load(Ordering::Acquire) {
+        return false;
+    }
+    if POINTER_GESTURE.load(Ordering::Acquire) {
+        return true;
+    }
+    let Some((x, y)) = overlay_css_from_physical(cx, cy) else {
+        return false;
+    };
+    let Ok(rects) = HIT_RECTS.try_lock() else {
+        return false;
+    };
+    rects.iter().any(|r| r.contains(x, y, ARM_MARGIN))
 }
 
 /// Esquina (0,0) del cliente del overlay en físicos de pantalla.
@@ -2189,9 +2288,18 @@ pub fn overlay_rect(app: AppHandle) -> Option<OverlayRect> {
 #[cfg(test)]
 mod tests {
     use super::{
-        desired_click_through, extent_matches, map_client_to_css, map_css_to_client,
-        resolve_physical_extent, should_arm,
+        desired_click_through, extent_matches, lparam_screen_point, map_client_to_css,
+        map_css_to_client, resolve_physical_extent, should_arm,
     };
+
+    #[test]
+    fn lparam_packs_negative_virtual_screen() {
+        // Monitor a la izquierda: x = -1920, y = 540.
+        let lparam = ((540i32 as u16 as isize) << 16) | ((-1920i32 as i16 as u16 as isize) & 0xFFFF);
+        let (x, y) = lparam_screen_point(lparam);
+        assert_eq!(x, -1920);
+        assert_eq!(y, 540);
+    }
 
     #[test]
     fn client_to_css_follows_inner_width() {
