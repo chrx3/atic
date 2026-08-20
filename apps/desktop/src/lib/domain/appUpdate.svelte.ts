@@ -6,7 +6,11 @@
  *
  * Descarga e instalación van aparte: el evento Finished del plugin es
  * «archivo en disco», no «ya quedó instalado».
+ *
+ * Consultar no debe bloquear Descargar: un `check()` lento o colgado dejaba
+ * `checking` en true y el clic de la gota / el botón no hacía nada.
  */
+import { t } from "./i18n.svelte";
 import {
   applyAppUpdateAndRelaunch,
   checkAppUpdate,
@@ -31,32 +35,57 @@ class AppUpdateStore {
   checked = $state(false);
 
   #lastCheck = 0;
+  #checkGen = 0;
 
   get version(): string | null {
     return this.pending?.version ?? null;
   }
 
+  /** Solo mientras se escribe el instalador. Consultar GitHub no cuenta. */
   get busy(): boolean {
-    return this.checking || this.downloading || this.installing;
+    return this.downloading || this.installing;
   }
 
-  async check(): Promise<void> {
-    if (this.busy || this.downloaded) return;
+  async check(opts?: { force?: boolean }): Promise<void> {
+    if (this.busy || this.checking) return;
+    if (!opts?.force) {
+      if (this.pending) return;
+      if (this.checked && Date.now() - this.#lastCheck < FOCUS_GAP_MS) return;
+    }
+
+    const gen = ++this.#checkGen;
     this.checking = true;
     this.error = null;
     try {
       const update = await checkAppUpdate();
+      if (gen !== this.#checkGen) {
+        void update?.close();
+        return;
+      }
       this.#lastCheck = Date.now();
+      this.checked = true;
+      if (this.busy || this.downloaded) {
+        void update?.close();
+        return;
+      }
+      if (update?.version && update.version === this.pending?.version) {
+        void update.close();
+        return;
+      }
       const previous = this.pending;
       this.pending = update;
       this.downloaded = false;
-      this.checked = true;
       void previous?.close();
     } catch (err) {
-      this.error = friendlyUpdateError(err);
+      if (gen !== this.#checkGen) return;
       this.checked = true;
+      this.#lastCheck = Date.now();
+      this.error = friendlyUpdateError(err, {
+        timeout: t("about.checkTimeout"),
+        fetch: t("about.checkFetch"),
+      });
     } finally {
-      this.checking = false;
+      if (gen === this.#checkGen) this.checking = false;
     }
   }
 
@@ -94,7 +123,10 @@ class AppUpdateStore {
       });
       this.downloaded = true;
     } catch (err) {
-      this.error = friendlyUpdateError(err);
+      this.error = friendlyUpdateError(err, {
+        timeout: t("about.checkTimeout"),
+        fetch: t("about.checkFetch"),
+      });
       this.downloaded = false;
     } finally {
       this.downloading = false;
@@ -109,7 +141,10 @@ class AppUpdateStore {
     try {
       await applyAppUpdateAndRelaunch(update);
     } catch (err) {
-      this.error = friendlyUpdateError(err);
+      this.error = friendlyUpdateError(err, {
+        timeout: t("about.checkTimeout"),
+        fetch: t("about.checkFetch"),
+      });
       this.installing = false;
     }
   }
@@ -124,6 +159,8 @@ class AppUpdateStore {
     };
     window.addEventListener("focus", onFocus);
     return () => {
+      this.#checkGen += 1;
+      this.checking = false;
       window.clearInterval(tick);
       window.removeEventListener("focus", onFocus);
     };

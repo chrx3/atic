@@ -95,14 +95,14 @@
     return () => stop?.();
   });
 
+  const tool = $derived(localizeTool(toolById(ui.activeTool)));
+  const onboardingDone = $derived(config.current?.onboarding_done === true);
+
   $effect(() => {
     if (isDev) return;
-    const cfg = config.current;
-    if (!cfg?.onboarding_done) return;
+    if (!onboardingDone) return;
     return appUpdate.startPolling();
   });
-
-  const tool = $derived(localizeTool(toolById(ui.activeTool)));
 
   function onKeydown(event: KeyboardEvent) {
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
