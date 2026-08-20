@@ -32,7 +32,7 @@ fn tray_menu(app: &AppHandle, labels: &TrayLabels) -> tauri::Result<tauri::menu:
 pub fn build_tray(app: &AppHandle) -> tauri::Result<()> {
     let en = app
         .try_state::<AppState>()
-        .map(|s| s.config.lock_or_recover().ui_language == "en")
+        .map(|s| s.config.lock_or_recover().resolved_ui_language() == "en")
         .unwrap_or(false);
     let labels = if en {
         TrayLabels {

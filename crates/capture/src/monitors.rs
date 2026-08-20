@@ -38,7 +38,18 @@ pub struct MonitorInfo {
 
 /// Rectángulo del escritorio virtual completo (incluye monitores en
 /// coordenadas negativas).
+///
+/// Se arma con la unión de `EnumDisplayMonitors`, no con `GetSystemMetrics`:
+/// tras hibernar, las métricas del escritorio virtual a veces siguen en una
+/// sola pantalla mientras los monitores ya volvieron.
 pub fn virtual_screen() -> Rect {
+    if let Some(union) = Rect::union_all(enumerate().into_iter().map(|m| m.bounds)) {
+        return union;
+    }
+    metrics_virtual_screen()
+}
+
+fn metrics_virtual_screen() -> Rect {
     // SAFETY: GetSystemMetrics no tiene precondiciones y no toca memoria nuestra.
     unsafe {
         let x = GetSystemMetrics(SM_XVIRTUALSCREEN);

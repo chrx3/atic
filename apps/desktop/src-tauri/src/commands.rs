@@ -75,7 +75,7 @@ pub fn get_config(state: State<AppState>) -> Config {
 pub fn set_config(app: AppHandle, state: State<AppState>, config: Config) -> Result<(), String> {
     let show_pill = config.show_pill;
     let ui_theme = config.ui_theme.clone();
-    let ui_language = config.ui_language.clone();
+    let ui_resolved = config.resolved_ui_language();
     let want_autostart = config.autostart;
     let shortcut = config.global_shortcut.clone();
     let dictation_shortcut = config.dictation_shortcut.clone();
@@ -135,10 +135,10 @@ pub fn set_config(app: AppHandle, state: State<AppState>, config: Config) -> Res
     sync_autostart(&app, want_autostart);
     // El overlay tiene `data_directory` propio: localStorage no cruza.
     let _ = app.emit("ui-theme", ui_theme);
-    let _ = app.emit("ui-language", ui_language.clone());
-    crate::ui_lang::set_english(ui_language == "en");
+    let _ = app.emit("ui-language", ui_resolved.clone());
+    crate::ui_lang::set_english(ui_resolved == "en");
     crate::ui_lang::apply_window_titles(&app);
-    crate::launcher::refresh_language(ui_language == "en");
+    crate::launcher::refresh_language(ui_resolved == "en");
     if config.onboarding_done != prev.onboarding_done
         || config.onboarding_practice_done != prev.onboarding_practice_done
     {

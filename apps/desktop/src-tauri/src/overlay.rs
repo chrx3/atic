@@ -598,7 +598,8 @@ fn sync_overlay_to_displays(app: &AppHandle) {
         .ok()
         .and_then(|g| *g)
         .is_some_and(|prev| prev == topo);
-    if same {
+    let covers = overlay_covers_topo(&window, &topo);
+    if same && covers {
         cover_virtual_screen(&window);
         crate::webview_tweaks::sync_controller_bounds(&window);
         return;
@@ -606,6 +607,8 @@ fn sync_overlay_to_displays(app: &AppHandle) {
     tracing::info!(
         target: "overlay",
         monitores = topo.n,
+        same,
+        covers,
         "escritorio virtual cambió; overlay a {},{} {}x{}",
         topo.x,
         topo.y,
@@ -618,6 +621,64 @@ fn sync_overlay_to_displays(app: &AppHandle) {
     keep_non_occluding(&window);
     let _ = app.emit("overlay-ready", ());
     reevaluate_arm();
+}
+
+/// `SetWindowPos` a veces se recorta al monitor actual aunque la topología
+/// ya sea de dos pantallas. Hay que comparar el HWND, no el último apply.
+#[cfg(windows)]
+fn overlay_covers_topo(window: &tauri::WebviewWindow, topo: &DisplayTopo) -> bool {
+    use windows_sys::Win32::UI::WindowsAndMessaging::GetWindowRect;
+
+    let Ok(hwnd) = window.hwnd() else {
+        return false;
+    };
+    let mut outer = windows_sys::Win32::Foundation::RECT {
+        left: 0,
+        top: 0,
+        right: 0,
+        bottom: 0,
+    };
+    // SAFETY: HWND de Tauri vivo; GetWindowRect solo lee.
+    if unsafe { GetWindowRect(hwnd.0 as _, &mut outer) } == 0 {
+        return false;
+    }
+    const SLACK: i32 = 16;
+    (outer.left - topo.x).abs() <= SLACK
+        && (outer.top - topo.y).abs() <= SLACK
+        && ((outer.right - outer.left) - topo.w as i32).abs() <= SLACK
+        && ((outer.bottom - outer.top) - topo.h as i32).abs() <= SLACK
+}
+
+fn start_display_watch(app: AppHandle) {
+    let (tx, rx) = sync_channel::<()>(1);
+    if DISPLAY_TX.set(tx.clone()).is_err() {
+        return;
+    }
+    std::thread::Builder::new()
+        .name("atic-display-sync".into())
+        .spawn(move || {
+            while let Ok(()) = rx.recv() {
+                std::thread::sleep(std::time::Duration::from_millis(400));
+                while rx.try_recv().is_ok() {}
+                let again = app.clone();
+                let _ = app.run_on_main_thread(move || {
+                    #[cfg(windows)]
+                    sync_overlay_to_displays(&again);
+                    #[cfg(not(windows))]
+                    let _ = again;
+                });
+            }
+        })
+        .ok();
+    // Tras hibernar el segundo monitor suele aparecer segundos después, sin
+    // otro `WM_DISPLAYCHANGE`. Comparar topología es barato.
+    std::thread::Builder::new()
+        .name("atic-display-poll".into())
+        .spawn(move || loop {
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            let _ = tx.try_send(());
+        })
+        .ok();
 }
 
 #[cfg(windows)]
@@ -653,7 +714,8 @@ unsafe extern "system" fn overlay_wndproc(
     lparam: windows_sys::Win32::Foundation::LPARAM,
 ) -> windows_sys::Win32::Foundation::LRESULT {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        CallWindowProcW, MINMAXINFO, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_GETMINMAXINFO,
+        CallWindowProcW, MINMAXINFO, WM_DEVICECHANGE, WM_DISPLAYCHANGE, WM_DPICHANGED,
+        WM_GETMINMAXINFO, WM_POWERBROADCAST,
     };
 
     if msg == WM_GETMINMAXINFO && lparam != 0 {
@@ -673,7 +735,13 @@ unsafe extern "system" fn overlay_wndproc(
         return 0;
     }
 
-    if msg == WM_DISPLAYCHANGE || msg == WM_DPICHANGED {
+    // Hibernar / desbloquear: a veces no hay `WM_DISPLAYCHANGE` cuando el
+    // segundo monitor reaparece. El poll periódico cubre el resto.
+    if msg == WM_DISPLAYCHANGE
+        || msg == WM_DPICHANGED
+        || msg == WM_POWERBROADCAST
+        || msg == WM_DEVICECHANGE
+    {
         if let Some(tx) = DISPLAY_TX.get() {
             let _ = tx.try_send(());
         }
@@ -716,29 +784,6 @@ fn install_overlay_hooks(window: &tauri::WebviewWindow) {
         }
         SetWindowLongPtrW(hwnd, GWLP_WNDPROC, ours);
     }
-}
-
-fn start_display_watch(app: AppHandle) {
-    let (tx, rx) = sync_channel::<()>(1);
-    if DISPLAY_TX.set(tx).is_err() {
-        return;
-    }
-    std::thread::Builder::new()
-        .name("atic-display-sync".into())
-        .spawn(move || {
-            while let Ok(()) = rx.recv() {
-                std::thread::sleep(std::time::Duration::from_millis(400));
-                while rx.try_recv().is_ok() {}
-                let again = app.clone();
-                let _ = app.run_on_main_thread(move || {
-                    #[cfg(windows)]
-                    sync_overlay_to_displays(&again);
-                    #[cfg(not(windows))]
-                    let _ = again;
-                });
-            }
-        })
-        .ok();
 }
 
 /// Desplaza el marco para que el (0,0) del cliente coincida con el escritorio

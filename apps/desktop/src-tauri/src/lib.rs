@@ -381,7 +381,7 @@ pub fn run() {
                     cfg.board_shortcut.clone(),
                     cfg.launcher_shortcut.clone(),
                     cfg.autostart,
-                    cfg.ui_language.clone(),
+                    cfg.resolved_ui_language(),
                 )
             };
             // `pill_position` y `show_pill` ya no se aplican desde acá: la pill

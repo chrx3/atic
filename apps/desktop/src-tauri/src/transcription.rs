@@ -213,11 +213,7 @@ pub fn transcribe_recording(app: AppHandle, id: String) -> Result<(), String> {
         ));
     }
 
-    let language = if cfg.language == "auto" {
-        None
-    } else {
-        Some(cfg.language.clone())
-    };
+    let language = cfg.whisper_language();
 
     state
         .db

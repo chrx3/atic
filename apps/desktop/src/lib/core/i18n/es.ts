@@ -135,10 +135,14 @@ export const es = {
     },
     language: {
       label: "Idioma",
-      hint: "Solo la interfaz. El idioma de transcripción se elige aparte.",
+      hint: "La interfaz. Sistema sigue el idioma de Windows o macOS.",
       aria: "Idioma de la interfaz",
+      system: "Sistema",
       es: "Español",
       en: "English",
+      speech: "Transcripción",
+      speechHint: "Lo que Whisper asume al transcribir. Sistema usa el idioma del SO.",
+      speechAria: "Idioma de transcripción",
     },
     appearance: {
       title: "Apariencia",
@@ -399,6 +403,7 @@ export const es = {
     beep: "Beep al empezar a grabar",
     beepHint: "Un aviso audible para los demás.",
     transcribeLang: "Idioma de transcripción",
+    langSystem: "Sistema (Windows o macOS)",
     langEs: "Español (recomendado)",
     langAuto: "Autodetectar (puede fallar con ruido)",
     langEn: "Inglés",

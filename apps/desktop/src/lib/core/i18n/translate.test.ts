@@ -10,6 +10,15 @@ describe("translate", () => {
     expect(parseLocale("en")).toBe("en");
   });
 
+  it("system sigue el idioma del navegador", () => {
+    const expected = (globalThis.navigator?.language ?? "")
+      .toLowerCase()
+      .startsWith("en")
+      ? "en"
+      : "es";
+    expect(parseLocale("system")).toBe(expected);
+  });
+
   it("interpola variables", () => {
     expect(translate("es", "about.availableTitle", { version: "1.2" })).toContain("1.2");
     expect(translate("en", "about.availableTitle", { version: "1.2" })).toContain("1.2");

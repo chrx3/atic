@@ -255,11 +255,8 @@ fn stop_and_paste(app: &AppHandle) {
 
             let state = app2.state::<AppState>();
             let cfg = state.config.lock_or_recover().clone();
-            let language = if cfg.language == "auto" {
-                None
-            } else {
-                Some(cfg.language.as_str())
-            };
+            let language = cfg.whisper_language();
+            let language = language.as_deref();
 
             let whisper_started = Instant::now();
             let groq_key = if cfg.dictation_backend == "groq" {

@@ -191,11 +191,7 @@ pub fn start_capture(
 
     let mut live = None;
     if let Some(tap_rx) = live_rx {
-        let language = if cfg_snapshot.language == "auto" {
-            None
-        } else {
-            Some(cfg_snapshot.language.clone())
-        };
+        let language = cfg_snapshot.whisper_language();
         match crate::live::spawn_live_worker(
             app.clone(),
             tap_rx,

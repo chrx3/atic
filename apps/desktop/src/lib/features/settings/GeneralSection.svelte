@@ -8,6 +8,7 @@
   import { useMainUi } from "$surfaces/main/mainUi.svelte";
   import Button from "$ui/Button.svelte";
   import Input from "$ui/Input.svelte";
+  import Select from "$ui/Select.svelte";
   import SegmentedControl from "$ui/SegmentedControl.svelte";
   import Switch from "$ui/Switch.svelte";
   import { applyTheme, type UiTheme } from "$lib/theme";
@@ -38,14 +39,32 @@
       <SettingsRow label={t("settings.language.label")} hint={t("settings.language.hint")}>
         {#snippet control()}
           <SegmentedControl
-            value={cfg.ui_language === "en" ? "en" : "es"}
+            value={["system", "en", "es"].includes(cfg.ui_language) ? cfg.ui_language : "system"}
             label={t("settings.language.aria")}
             options={[
+              { value: "system", label: t("settings.language.system") },
               { value: "es", label: t("settings.language.es") },
               { value: "en", label: t("settings.language.en") },
             ]}
             onchange={setLanguage}
             full
+          />
+        {/snippet}
+      </SettingsRow>
+      <SettingsRow label={t("settings.language.speech")} hint={t("settings.language.speechHint")}>
+        {#snippet control()}
+          <Select
+            value={cfg.language}
+            aria-label={t("settings.language.speechAria")}
+            options={[
+              { value: "system", label: t("onboarding.langSystem") },
+              { value: "es", label: t("onboarding.langEs") },
+              { value: "en", label: t("onboarding.langEn") },
+              { value: "pt", label: t("onboarding.langPt") },
+              { value: "auto", label: t("onboarding.langAuto") },
+            ]}
+            onchange={(event: Event) =>
+              patch({ language: (event.currentTarget as HTMLSelectElement).value })}
           />
         {/snippet}
       </SettingsRow>
