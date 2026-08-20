@@ -354,6 +354,9 @@ export const en = {
     availableTitle: "A new version is out: {version}",
     availableBody: "The installer downloads first. Then Install and restart appears.",
     checkFailed: "Couldn't check",
+    checkTimeout: "GitHub didn't respond in time. You can still download, or try again.",
+    checkFetch:
+      "There's no update package on GitHub. latest.json needs to sit next to the .exe on the release.",
     upToDate: "You're up to date",
     updates: "Updates",
     updatesHint:

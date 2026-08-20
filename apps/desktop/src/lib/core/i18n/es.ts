@@ -356,6 +356,9 @@ export const es = {
     availableTitle: "Hay una versión nueva: {version}",
     availableBody: "Primero se descarga el instalador. Después aparece Instalar y reiniciar.",
     checkFailed: "No se pudo consultar",
+    checkTimeout: "GitHub no respondió a tiempo. Podés descargar igual, o reintentar.",
+    checkFetch:
+      "No hay un paquete de actualización en GitHub. Falta latest.json junto al .exe del release.",
     upToDate: "Estás al día",
     updates: "Actualizaciones",
     updatesHint:

@@ -8,8 +8,27 @@ export type { Update as AppUpdate, DownloadEvent as UpdateDownloadEvent };
 export const GITHUB_REPO_URL = "https://github.com/chrx3/atic";
 export const GITHUB_RELEASES_URL = "https://github.com/chrx3/atic/releases";
 
+const CHECK_TIMEOUT_MS = 20_000;
+
 /** Comprueba si hay una actualización en GitHub Releases (`latest.json`). */
-export const checkAppUpdate = (): Promise<Update | null> => check();
+export async function checkAppUpdate(): Promise<Update | null> {
+  const pending = check();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error("check-timeout")), CHECK_TIMEOUT_MS);
+  });
+  try {
+    return await Promise.race([pending, timeout]);
+  } catch (error) {
+    void pending.then(
+      (update) => void update?.close(),
+      () => {},
+    );
+    throw error;
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
 
 /** Baja el instalador. En Windows el 100% es solo la descarga, no la instalación. */
 export async function downloadAppUpdate(
@@ -37,10 +56,14 @@ export async function installAppUpdateAndRelaunch(
   await applyAppUpdateAndRelaunch(update);
 }
 
-export function friendlyUpdateError(error: unknown): string {
+export function friendlyUpdateError(
+  error: unknown,
+  messages: { timeout: string; fetch: string },
+): string {
   const raw = error instanceof Error ? error.message : String(error);
+  if (/check-timeout/i.test(raw)) return messages.timeout;
   if (/404|not found|failed to fetch|error sending request|Could not fetch/i.test(raw)) {
-    return "No hay un paquete de actualización en GitHub. Subí latest.json junto al .exe del release.";
+    return messages.fetch;
   }
   return raw;
 }

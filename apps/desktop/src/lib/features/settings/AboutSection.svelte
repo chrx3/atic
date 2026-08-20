@@ -127,8 +127,8 @@
             size="sm"
             full
             loading={appUpdate.checking}
-            disabled={busy}
-            onclick={() => void appUpdate.check()}
+            disabled={busy || appUpdate.checking}
+            onclick={() => void appUpdate.check({ force: true })}
           >
             {appUpdate.checking ? t("about.checking") : t("about.check")}
           </Button>
