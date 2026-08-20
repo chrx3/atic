@@ -145,6 +145,10 @@ struct DisplayTopo {
 
 static APPLIED_TOPO: Mutex<Option<DisplayTopo>> = Mutex::new(None);
 
+/// El último apply no llegó a cubrir el escritorio: hay que reintentar.
+static COVER_RETRY: AtomicBool = AtomicBool::new(false);
+static COVER_TRIES: AtomicU32 = AtomicU32::new(0);
+
 /// Avisos de `WM_DISPLAYCHANGE` (capacidad 1: varios seguidos son el mismo).
 static DISPLAY_TX: OnceLock<SyncSender<()>> = OnceLock::new();
 
@@ -593,16 +597,22 @@ fn sync_overlay_to_displays(app: &AppHandle) {
     };
     install_overlay_hooks(&window);
     let topo = display_topo();
+    let scale = window.scale_factor().unwrap_or(1.0).max(0.01);
     let same = APPLIED_TOPO
         .lock()
         .ok()
         .and_then(|g| *g)
         .is_some_and(|prev| prev == topo);
-    let covers = overlay_covers_topo(&window, &topo);
+    let covers = overlay_covers_topo(&window, &topo, scale);
     if same && covers {
+        COVER_RETRY.store(false, Ordering::Relaxed);
+        COVER_TRIES.store(0, Ordering::Relaxed);
         cover_virtual_screen(&window);
         crate::webview_tweaks::sync_controller_bounds(&window);
         return;
+    }
+    if !same {
+        COVER_TRIES.store(0, Ordering::Relaxed);
     }
     tracing::info!(
         target: "overlay",
@@ -618,15 +628,41 @@ fn sync_overlay_to_displays(app: &AppHandle) {
     let _ = apply_overlay_geometry(&window);
     let scale = window.scale_factor().unwrap_or(1.0).max(0.01);
     OVERLAY_SCALE_BITS.store(scale.to_bits(), Ordering::SeqCst);
-    keep_non_occluding(&window);
-    let _ = app.emit("overlay-ready", ());
-    reevaluate_arm();
+    let covers_now = overlay_covers_topo(&window, &topo, scale);
+    if covers_now {
+        COVER_RETRY.store(false, Ordering::Relaxed);
+        COVER_TRIES.store(0, Ordering::Relaxed);
+    } else {
+        let tries = COVER_TRIES.fetch_add(1, Ordering::Relaxed) + 1;
+        COVER_RETRY.store(tries < 8, Ordering::Relaxed);
+    }
+    // Reaplicar un HWND recortado no debe emitir `overlay-ready` ni subir el
+    // overlay: en DPI mixto eso dejaba la lámina encima de `main` cada 2 s.
+    if !same || covers_now {
+        keep_non_occluding(&window);
+        let _ = app.emit("overlay-ready", ());
+        reevaluate_arm();
+    }
+}
+
+/// `SetWindowRect` a veces viene en DIP y `topo` en físicos. Aceptar ambos.
+fn extent_matches(got: i32, want: i32, scale: f64) -> bool {
+    const SLACK: i32 = 32;
+    if (got - want).abs() <= SLACK {
+        return true;
+    }
+    if scale <= 1.01 {
+        return false;
+    }
+    let scaled = (f64::from(got) * scale).round() as i32;
+    let unscaled = (f64::from(got) / scale).round() as i32;
+    (scaled - want).abs() <= SLACK || (unscaled - want).abs() <= SLACK
 }
 
 /// `SetWindowPos` a veces se recorta al monitor actual aunque la topología
 /// ya sea de dos pantallas. Hay que comparar el HWND, no el último apply.
 #[cfg(windows)]
-fn overlay_covers_topo(window: &tauri::WebviewWindow, topo: &DisplayTopo) -> bool {
+fn overlay_covers_topo(window: &tauri::WebviewWindow, topo: &DisplayTopo, scale: f64) -> bool {
     use windows_sys::Win32::UI::WindowsAndMessaging::GetWindowRect;
 
     let Ok(hwnd) = window.hwnd() else {
@@ -642,11 +678,12 @@ fn overlay_covers_topo(window: &tauri::WebviewWindow, topo: &DisplayTopo) -> boo
     if unsafe { GetWindowRect(hwnd.0 as _, &mut outer) } == 0 {
         return false;
     }
-    const SLACK: i32 = 16;
-    (outer.left - topo.x).abs() <= SLACK
-        && (outer.top - topo.y).abs() <= SLACK
-        && ((outer.right - outer.left) - topo.w as i32).abs() <= SLACK
-        && ((outer.bottom - outer.top) - topo.h as i32).abs() <= SLACK
+    let w = outer.right - outer.left;
+    let h = outer.bottom - outer.top;
+    extent_matches(outer.left, topo.x, scale)
+        && extent_matches(outer.top, topo.y, scale)
+        && extent_matches(w, topo.w as i32, scale)
+        && extent_matches(h, topo.h as i32, scale)
 }
 
 fn start_display_watch(app: AppHandle) {
@@ -676,7 +713,18 @@ fn start_display_watch(app: AppHandle) {
         .name("atic-display-poll".into())
         .spawn(move || loop {
             std::thread::sleep(std::time::Duration::from_secs(2));
-            let _ = tx.try_send(());
+            #[cfg(windows)]
+            {
+                let topo = display_topo();
+                let recorded = APPLIED_TOPO.lock().ok().and_then(|g| *g);
+                if recorded != Some(topo) || COVER_RETRY.load(Ordering::Relaxed) {
+                    let _ = tx.try_send(());
+                }
+            }
+            #[cfg(not(windows))]
+            {
+                let _ = &tx;
+            }
         })
         .ok();
 }
@@ -2141,8 +2189,8 @@ pub fn overlay_rect(app: AppHandle) -> Option<OverlayRect> {
 #[cfg(test)]
 mod tests {
     use super::{
-        desired_click_through, map_client_to_css, map_css_to_client, resolve_physical_extent,
-        should_arm,
+        desired_click_through, extent_matches, map_client_to_css, map_css_to_client,
+        resolve_physical_extent, should_arm,
     };
 
     #[test]
@@ -2206,5 +2254,14 @@ mod tests {
         assert!(desired_click_through(true, false));
         assert!(!desired_click_through(false, true));
         assert!(desired_click_through(false, false));
+    }
+
+    #[test]
+    fn extent_matches_physical_or_dip() {
+        assert!(extent_matches(3840, 3840, 1.25));
+        assert!(extent_matches(3072, 3840, 1.25));
+        assert!(extent_matches(-1536, -1920, 1.25));
+        assert!(!extent_matches(1920, 3840, 1.25));
+        assert!(!extent_matches(0, 3840, 1.0));
     }
 }

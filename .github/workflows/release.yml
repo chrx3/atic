@@ -26,7 +26,7 @@ on:
       tag:
         description: "Tag a publicar (ej. v0.4.6). Debe existir en el repo."
         required: true
-        default: "v0.4.13"
+        default: "v0.4.14"
 
 permissions:
   contents: write
