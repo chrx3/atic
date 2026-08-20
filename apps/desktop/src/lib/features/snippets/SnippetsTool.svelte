@@ -8,6 +8,7 @@
   import type { Snippet as SnippetItem } from "$core/types";
   import { snippets } from "$domain/snippets.svelte";
   import { toastError, toasts } from "$domain/toasts.svelte";
+  import { t } from "$domain/i18n.svelte";
   import ListDetail from "$patterns/ListDetail.svelte";
   import ToolPage from "$patterns/ToolPage.svelte";
   import Toolbar from "$patterns/Toolbar.svelte";
@@ -42,7 +43,7 @@
     saving = true;
     try {
       await snippets.save(item);
-      toasts.push(`Guardado: ${item.name}`);
+      toasts.push(t("toast.savedNamed", { name: item.name }));
       editing = null;
     } catch (error) {
       toastError(error);
@@ -65,24 +66,24 @@
 </script>
 
 <ToolPage
-  title="Textos"
+  title={t("tools.snippets.label")}
   icon="snippets"
-  kicker="Atajos reutilizables"
-  blurb="Fragmentos que guardás vos y pegás con un clic. No es el historial del portapapeles."
+  kicker={t("page.snippets.kicker")}
+  blurb={t("page.snippets.blurb")}
 >
   {#snippet meta()}
-    <Chip>{snippets.items.length} textos</Chip>
+    <Chip>{t("page.snippets.count", { count: snippets.items.length })}</Chip>
   {/snippet}
 
   <div class="flex h-full min-h-0 flex-col">
-    <Toolbar label="Vista de textos">
+    <Toolbar label={t("page.snippets.view")}>
       <SegmentedControl
         bind:value={tab}
         size="sm"
-        label="Qué mostrar"
+        label={t("page.snippets.what")}
         options={[
-          { value: "snippets", label: "Textos" },
-          { value: "scratchpad", label: "Bloc" },
+          { value: "snippets", label: t("page.snippets.texts") },
+          { value: "scratchpad", label: t("page.snippets.pad") },
         ]}
       />
       {#if tab === "snippets"}
@@ -90,15 +91,15 @@
           <Input
             type="search"
             bind:value={snippets.query}
-            placeholder="Buscar textos…"
-            aria-label="Buscar textos guardados"
+            placeholder={t("page.snippets.searchPlaceholder")}
+            aria-label={t("page.snippets.searchAria")}
           />
         </div>
       {/if}
       {#snippet end()}
         {#if tab === "snippets"}
           <Button variant="primary" size="sm" onclick={() => (editing = blank())}>
-            Nuevo
+            {t("page.snippets.new")}
           </Button>
         {/if}
       {/snippet}
@@ -106,8 +107,7 @@
 
     {#if tab === "snippets"}
       <p class="shrink-0 border-b border-line px-3 py-1.5 text-xs text-muted">
-        Atajos de texto que pegás con un clic. Guardá firmas, respuestas o frases
-        frecuentes — distinto del Clipboard, que guarda lo que copiaste.
+        {t("page.snippets.intro")}
       </p>
     {/if}
 
@@ -120,15 +120,15 @@
             snippets.editScratchpad((e.currentTarget as HTMLTextAreaElement).value)}
           onblur={() => snippets.flushScratchpad()}
           rows={16}
-          aria-label="Bloc de notas"
-          placeholder="Notas sueltas. Se guardan solas."
+          aria-label={t("page.snippets.padAria")}
+          placeholder={t("page.snippets.padPlaceholder")}
         />
       </div>
     {:else}
       <div class="min-h-0 flex-1">
         <ListDetail
           hasSelection={editing !== null}
-          listLabel="Textos guardados"
+          listLabel={t("page.snippets.list")}
           listCount={snippets.visible.length}
         >
           {#snippet list()}
@@ -136,15 +136,15 @@
               {#if snippets.query}
                 <EmptyState
                   compact
-                  title="Nada coincide"
-                  hint="Probá con menos palabras."
+                  title={t("page.common.nothing")}
+                  hint={t("page.common.fewerWords")}
                 />
               {:else}
                 <EmptyState
                   compact
                   icon="snippets"
-                  title="Todavía no hay textos guardados"
-                  hint="Creá un atajo reutilizable (firma, respuesta, plantilla) y pegalo con un clic. No se llena solo: es distinto del Clipboard."
+                  title={t("page.snippets.empty")}
+                  hint={t("page.snippets.emptyHint")}
                 >
                   {#snippet action()}
                     <Button
@@ -152,7 +152,7 @@
                       size="sm"
                       onclick={() => (editing = blank())}
                     >
-                      Nuevo texto
+                      {t("page.snippets.newText")}
                     </Button>
                   {/snippet}
                 </EmptyState>
@@ -188,7 +188,7 @@
                 onPaste={(id) =>
                   void snippets
                     .paste(id)
-                    .then(() => toasts.push("Pegado"))
+                    .then(() => toasts.push(t("toast.pasted")))
                     .catch(toastError)}
                 onDelete={() => (toDelete = editing)}
                 onClose={() => (editing = null)}
@@ -200,12 +200,12 @@
             <EmptyState
               compact
               icon="snippets"
-              title="Elegí un texto"
-              hint="Se edita acá. Con Pegar lo insertás en la app activa."
+              title={t("page.snippets.pick")}
+              hint={t("page.snippets.pickHint")}
             >
               {#snippet action()}
                 <Button variant="soft" size="sm" onclick={() => (editing = blank())}>
-                  Nuevo texto
+                      {t("page.snippets.newText")}
                 </Button>
               {/snippet}
             </EmptyState>
@@ -218,9 +218,9 @@
 
 {#if toDelete}
   <ConfirmDialog
-    title="Borrar «{toDelete.name}»"
-    body="Se borra el texto guardado. No se puede deshacer."
-    confirmLabel="Borrar"
+    title={t("page.snippets.deleteTitle", { name: toDelete.name })}
+    body={t("page.snippets.deleteBody")}
+    confirmLabel={t("page.common.delete")}
     tone="danger"
     onConfirm={() => void confirmDelete()}
     onCancel={() => (toDelete = null)}

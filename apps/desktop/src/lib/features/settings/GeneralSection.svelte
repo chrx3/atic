@@ -11,12 +11,17 @@
   import SegmentedControl from "$ui/SegmentedControl.svelte";
   import Switch from "$ui/Switch.svelte";
   import { applyTheme, type UiTheme } from "$lib/theme";
+  import { t } from "$domain/i18n.svelte";
 
   const cfg = $derived(config.current);
   const ui = useMainUi();
 
   function patch(changes: Parameters<typeof config.patch>[0]) {
     void config.patch(changes).catch(toastError);
+  }
+
+  function setLanguage(language: string) {
+    patch({ ui_language: language });
   }
 
   function setTheme(theme: UiTheme) {
@@ -29,16 +34,30 @@
 
 {#if cfg}
   <div class="flex flex-col gap-5">
-    <SettingsGroup title="Apariencia">
-      <SettingsRow label="Tema" hint="El claro se deriva del oscuro.">
+    <SettingsGroup title={t("settings.appearance.title")}>
+      <SettingsRow label={t("settings.language.label")} hint={t("settings.language.hint")}>
+        {#snippet control()}
+          <SegmentedControl
+            value={cfg.ui_language === "en" ? "en" : "es"}
+            label={t("settings.language.aria")}
+            options={[
+              { value: "es", label: t("settings.language.es") },
+              { value: "en", label: t("settings.language.en") },
+            ]}
+            onchange={setLanguage}
+            full
+          />
+        {/snippet}
+      </SettingsRow>
+      <SettingsRow label={t("settings.appearance.theme")} hint={t("settings.appearance.themeHint")}>
         {#snippet control()}
           <SegmentedControl
             value={(cfg.ui_theme || "system") as UiTheme}
-            label="Tema de la interfaz"
+            label={t("settings.appearance.themeAria")}
             options={[
-              { value: "system" as UiTheme, label: "Sistema" },
-              { value: "light" as UiTheme, label: "Claro" },
-              { value: "dark" as UiTheme, label: "Oscuro" },
+              { value: "system" as UiTheme, label: t("settings.appearance.system") },
+              { value: "light" as UiTheme, label: t("settings.appearance.light") },
+              { value: "dark" as UiTheme, label: t("settings.appearance.dark") },
             ]}
             onchange={setTheme}
             full
@@ -47,13 +66,13 @@
       </SettingsRow>
     </SettingsGroup>
 
-    <SettingsGroup title="Arranque">
+    <SettingsGroup title={t("settings.startup.title")}>
       <SettingsRow bare>
         {#snippet control()}
           <Switch
             checked={cfg.autostart}
-            label="Arrancar con el sistema"
-            hint="Atic queda en la bandeja, listo para los atajos."
+            label={t("settings.startup.autostart")}
+            hint={t("settings.startup.autostartHint")}
             onchange={(v) => patch({ autostart: v })}
           />
         {/snippet}
@@ -63,19 +82,16 @@
         {#snippet control()}
           <Switch
             checked={cfg.show_pill}
-            label="Mostrar la pill"
-            hint="La superficie flotante desde donde se graba y se pega."
+            label={t("settings.startup.showPill")}
+            hint={t("settings.startup.showPillHint")}
             onchange={(v) => patch({ show_pill: v })}
           />
         {/snippet}
       </SettingsRow>
     </SettingsGroup>
 
-    <SettingsGroup
-      title="Tutorial"
-      hint="Consentimiento, Groq o local, atajos y práctica junto a la pill."
-    >
-      <SettingsRow label="Primer uso">
+    <SettingsGroup title={t("settings.tutorial.title")} hint={t("settings.tutorial.hint")}>
+      <SettingsRow label={t("settings.tutorial.firstUse")}>
         {#snippet control()}
           <Button
             variant="soft"
@@ -83,19 +99,16 @@
             full
             onclick={() => void ui.replayOnboarding().catch(toastError)}
           >
-            Repetir tutorial
+            {t("settings.tutorial.replay")}
           </Button>
         {/snippet}
       </SettingsRow>
     </SettingsGroup>
 
-    <SettingsGroup
-      title="Datos"
-      hint="Todo se guarda en tu disco. Nada sale de la máquina salvo el resumen, si lo configuraste."
-    >
+    <SettingsGroup title={t("settings.data.title")} hint={t("settings.data.hint")}>
       <SettingsRow
-        label="Conservar grabaciones"
-        hint="En días. 0 las guarda para siempre."
+        label={t("settings.data.keep")}
+        hint={t("settings.data.keepHint")}
       >
         {#snippet control({ id })}
           <Input
@@ -116,13 +129,13 @@
         {#snippet control()}
           <Switch
             checked={cfg.retention_auto_cleanup}
-            label="Borrar las vencidas solas"
+            label={t("settings.data.autoCleanup")}
             onchange={(v) => patch({ retention_auto_cleanup: v })}
           />
         {/snippet}
       </SettingsRow>
 
-      <SettingsRow label="Carpeta de datos" hint="Grabaciones, textos y capturas.">
+      <SettingsRow label={t("settings.data.folder")} hint={t("settings.data.folderHint")}>
         {#snippet control()}
           <Button
             variant="soft"
@@ -130,7 +143,7 @@
             full
             onclick={() => void openDataDir("data").catch(toastError)}
           >
-            Abrir carpeta
+            {t("settings.data.openFolder")}
           </Button>
         {/snippet}
       </SettingsRow>

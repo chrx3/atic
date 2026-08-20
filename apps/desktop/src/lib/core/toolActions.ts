@@ -16,6 +16,7 @@ import { showLauncher } from "$ipc/search";
 import { showSnippetsWindow } from "$ipc/snippets";
 import { emit } from "@tauri-apps/api/event";
 import { hasToolSlot } from "$surfaces/overlay/toolSlots";
+import { t } from "$domain/i18n.svelte";
 import { AGENTS_ENABLED, type ToolId } from "./tools";
 
 export type ToolActionKind = "run" | "openDetail";
@@ -34,28 +35,28 @@ export function toolAction(id: ToolId): ToolAction {
     case "meetings":
       return {
         kind: "run",
-        label: capture.active ? "Parar" : "Grabar",
+        label: capture.active ? t("tools.meetings.stop") : t("tools.meetings.record"),
         danger: capture.active,
         busy: capture.busy,
       };
     case "dictation":
       return {
         kind: "run",
-        label: dictation.active ? "Terminar" : "Dictar",
+        label: dictation.active ? t("tools.dictation.stop") : t("tools.dictation.start"),
         danger: dictation.active,
       };
     case "captures":
-      return { kind: "run", label: "Tomar captura" };
+      return { kind: "run", label: t("tools.captures.actionLabel") };
     case "board":
-      return { kind: "run", label: "Dibujar" };
+      return { kind: "run", label: t("tools.board.actionLabel") };
     case "agents":
-      return { kind: "run", label: "Abrir consola" };
+      return { kind: "run", label: t("tools.agents.actionLabel") };
     case "launcher":
-      return { kind: "run", label: "Buscar apps" };
+      return { kind: "run", label: t("tools.launcher.actionLabel") };
     case "clipboard":
-      return { kind: "run", label: "Ver historial" };
+      return { kind: "run", label: t("tools.clipboard.actionLabel") };
     case "snippets":
-      return { kind: "run", label: "Ver textos" };
+      return { kind: "run", label: t("tools.snippets.actionLabel") };
   }
 }
 

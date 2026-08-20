@@ -143,7 +143,10 @@ pub fn upsert_snippet(
 ) -> Result<Snippet, String> {
     let name = snippet.name.trim();
     if name.is_empty() {
-        return Err("El nombre no puede estar vacío".into());
+        return Err(crate::ui_lang::msg(
+            "El nombre no puede estar vacío",
+            "The name cannot be empty",
+        ));
     }
     snippet.name = name.to_string();
     snippet.body = snippet.body.trim_end().to_string();
@@ -182,7 +185,10 @@ pub fn delete_snippet(app: AppHandle, state: State<AppState>, id: String) -> Res
         Some(items.remove(idx))
     });
     if removed.is_none() {
-        return Err("Fragmento no encontrado".into());
+        return Err(crate::ui_lang::msg(
+            "Fragmento no encontrado",
+            "Snippet not found",
+        ));
     }
     let _ = app.emit("snippets-changed", ());
     Ok(())
@@ -191,9 +197,14 @@ pub fn delete_snippet(app: AppHandle, state: State<AppState>, id: String) -> Res
 /// Pega el cuerpo del fragmento en la app que tenía el foco.
 #[tauri::command]
 pub fn paste_snippet(app: AppHandle, state: State<AppState>, id: String) -> Result<(), String> {
-    let snippet = find_snippet(&state, &id).ok_or_else(|| "Fragmento no encontrado".to_string())?;
+    let snippet = find_snippet(&state, &id).ok_or_else(|| {
+        crate::ui_lang::msg("Fragmento no encontrado", "Snippet not found")
+    })?;
     if snippet.body.is_empty() {
-        return Err("El fragmento está vacío".into());
+        return Err(crate::ui_lang::msg(
+            "El fragmento está vacío",
+            "The snippet is empty",
+        ));
     }
 
     clipboard_history::focus_paste_target();
@@ -222,7 +233,7 @@ fn notes_path(dir: &Path) -> std::path::PathBuf {
 fn derive_title(body: &str) -> String {
     let line = body.lines().map(str::trim).find(|l| !l.is_empty());
     match line {
-        None => "Nota sin título".to_string(),
+        None => crate::ui_lang::msg("Nota sin título", "Untitled note"),
         Some(l) if l.chars().count() <= TITLE_MAX => l.to_string(),
         Some(l) => {
             let cut: String = l.chars().take(TITLE_MAX - 1).collect();

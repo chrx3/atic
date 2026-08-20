@@ -180,7 +180,10 @@ pub fn open_annotator_path(app: &AppHandle, captures_dir: &Path, path: &str) -> 
     let (width, height) = png_size(&target)?;
 
     let Some(window) = app.get_webview_window(ANNOTATE_LABEL) else {
-        return Err("la ventana del editor no existe".into());
+        return Err(crate::ui_lang::msg(
+            "La ventana del editor no existe.",
+            "The editor window does not exist.",
+        ));
     };
 
     let (work, scale) = target_work_area();
@@ -269,7 +272,10 @@ fn start_board_impl(app: &AppHandle) -> Result<(), String> {
     let (path, width, height) = freeze_screen(app, &state)?;
 
     let Some(window) = app.get_webview_window(ANNOTATE_LABEL) else {
-        return Err("la ventana del editor no existe".into());
+        return Err(crate::ui_lang::msg(
+            "La ventana del editor no existe.",
+            "The editor window does not exist.",
+        ));
     };
 
     let pending = AnnotateOpen {
@@ -340,11 +346,21 @@ fn freeze_screen(
     let png = frame.to_png().map_err(|e| e.to_string())?;
 
     let dir = state.dirs.overlay_frames_dir();
-    std::fs::create_dir_all(&dir).map_err(|e| format!("no se pudo crear la carpeta: {e}"))?;
+    std::fs::create_dir_all(&dir).map_err(|e| {
+        crate::ui_lang::msg(
+            &format!("No se pudo crear la carpeta: {e}"),
+            &format!("Could not create the folder: {e}"),
+        )
+    })?;
     // Archivo propio y no el `overlay.png` de la mira de captura: esa sesión lo
     // borra al terminar, y borrarle el suyo a la pizarra la dejaría en blanco.
     let path = dir.join("board.png");
-    std::fs::write(&path, &png).map_err(|e| format!("no se pudo congelar: {e}"))?;
+    std::fs::write(&path, &png).map_err(|e| {
+        crate::ui_lang::msg(
+            &format!("No se pudo congelar: {e}"),
+            &format!("Could not freeze the frame: {e}"),
+        )
+    })?;
     Ok((path, vs.width, vs.height))
 }
 
@@ -353,7 +369,10 @@ fn freeze_screen(
     _app: &AppHandle,
     _state: &State<AppState>,
 ) -> Result<(std::path::PathBuf, u32, u32), String> {
-    Err("la pizarra todavía no existe en esta plataforma".into())
+    Err(crate::ui_lang::msg(
+        "La pizarra todavía no existe en esta plataforma.",
+        "The whiteboard is not available on this platform yet.",
+    ))
 }
 
 /// La captura como data URL, para el lienzo.
@@ -366,14 +385,30 @@ fn freeze_screen(
 #[tauri::command]
 pub fn annotation_image(state: State<AppState>, path: String) -> Result<String, String> {
     let target = resolve_source(&state, &path)?;
-    let meta = std::fs::metadata(&target).map_err(|e| format!("no se pudo leer: {e}"))?;
+    let meta = std::fs::metadata(&target).map_err(|e| {
+        crate::ui_lang::msg(
+            &format!("No se pudo leer: {e}"),
+            &format!("Could not read: {e}"),
+        )
+    })?;
     if meta.len() > MAX_IMAGE_BYTES {
-        return Err(format!(
-            "la captura pesa más de {} MiB",
-            MAX_IMAGE_BYTES / (1024 * 1024)
+        return Err(crate::ui_lang::msg(
+            &format!(
+                "La captura pesa más de {} MiB",
+                MAX_IMAGE_BYTES / (1024 * 1024)
+            ),
+            &format!(
+                "The capture is larger than {} MiB",
+                MAX_IMAGE_BYTES / (1024 * 1024)
+            ),
         ));
     }
-    let bytes = std::fs::read(&target).map_err(|e| format!("no se pudo leer: {e}"))?;
+    let bytes = std::fs::read(&target).map_err(|e| {
+        crate::ui_lang::msg(
+            &format!("No se pudo leer: {e}"),
+            &format!("Could not read: {e}"),
+        )
+    })?;
     let data = base64::engine::general_purpose::STANDARD.encode(bytes);
     Ok(format!("data:image/png;base64,{data}"))
 }
@@ -386,7 +421,12 @@ fn resolve_source(state: &State<AppState>, path: &str) -> Result<std::path::Path
         return Ok(ok);
     }
     crate::capture::ensure_capture_in_dir(&state.dirs.overlay_frames_dir(), target)
-        .map_err(|_| "Ruta fuera de las carpetas del editor.".to_string())
+        .map_err(|_| {
+            crate::ui_lang::msg(
+                "Ruta fuera de las carpetas del editor.",
+                "Path is outside the editor folders.",
+            )
+        })
 }
 
 #[tauri::command]
@@ -420,10 +460,20 @@ pub fn save_annotation(
 ) -> Result<String, String> {
     let bytes = decode_png(&data)?;
     let dir = state.dirs.captures_dir();
-    std::fs::create_dir_all(&dir).map_err(|e| format!("no se pudo crear la carpeta: {e}"))?;
+    std::fs::create_dir_all(&dir).map_err(|e| {
+        crate::ui_lang::msg(
+            &format!("No se pudo crear la carpeta: {e}"),
+            &format!("Could not create the folder: {e}"),
+        )
+    })?;
     let name = atic_capture::naming::unique_capture_filename(&dir);
     let path = dir.join(name);
-    std::fs::write(&path, &bytes).map_err(|e| format!("no se pudo guardar: {e}"))?;
+    std::fs::write(&path, &bytes).map_err(|e| {
+        crate::ui_lang::msg(
+            &format!("No se pudo guardar: {e}"),
+            &format!("Could not save: {e}"),
+        )
+    })?;
 
     // Lo anotado sale por la misma puerta que cualquier captura: el estante.
     // Antes esto solo refrescaba listas, y el archivo quedaba guardado en un

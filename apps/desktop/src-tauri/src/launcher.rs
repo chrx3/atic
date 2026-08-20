@@ -29,6 +29,8 @@ const LAUNCHER_DISMISS: &str = "launcher-bubble-dismiss";
 
 /// Float del launcher abierto (en el overlay, no ventana aparte).
 static LAUNCHER_OPEN: AtomicBool = AtomicBool::new(false);
+/// Acciones builtin indexadas en inglés.
+static INDEX_EN: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -199,48 +201,72 @@ fn best_score(query: &str, parts: &[&str]) -> Option<u32> {
         .max()
 }
 
-fn builtin_actions() -> Vec<LauncherEntry> {
+fn pick<'a>(en: bool, es: &'a str, english: &'a str) -> &'a str {
+    if en { english } else { es }
+}
+
+fn builtin_actions(en: bool) -> Vec<LauncherEntry> {
     [
         (
             "action:dictation",
-            "Dictar",
-            "Iniciar o detener dictado",
+            pick(en, "Dictar", "Dictate"),
+            pick(en, "Iniciar o detener dictado", "Start or stop dictation"),
             "dictation",
         ),
         (
             "action:capture",
-            "Capturar pantalla",
-            "Seleccionar ventana, región o monitor",
+            pick(en, "Capturar pantalla", "Capture screen"),
+            pick(
+                en,
+                "Seleccionar ventana, región o monitor",
+                "Pick a window, region, or monitor",
+            ),
             "capture",
         ),
         (
             "action:board",
-            "Dibujar en pantalla",
-            "Congelar la pantalla y marcarla",
+            pick(en, "Dibujar en pantalla", "Draw on screen"),
+            pick(
+                en,
+                "Congelar la pantalla y marcarla",
+                "Freeze the screen and mark it",
+            ),
             "board",
         ),
         (
             "action:clipboard",
-            "Historial de clipboard",
-            "Abrir el historial junto a la pill",
+            pick(en, "Historial de clipboard", "Clipboard history"),
+            pick(
+                en,
+                "Abrir el historial junto a la pill",
+                "Open history next to the pill",
+            ),
             "clipboard",
         ),
         (
             "action:snippets",
-            "Textos guardados",
-            "Abrir fragmentos y bloc",
+            pick(en, "Textos guardados", "Saved texts"),
+            pick(en, "Abrir fragmentos y bloc", "Open snippets and the pad"),
             "snippets",
         ),
         (
             "action:agents",
-            "Agentes",
-            "Abrir la consola de agentes",
+            pick(en, "Agentes", "Agents"),
+            pick(
+                en,
+                "Abrir la consola de agentes",
+                "Open the agents console",
+            ),
             "agents",
         ),
         (
             "action:settings",
-            "Ajustes",
-            "Abrir la ventana principal de Atic",
+            pick(en, "Ajustes", "Settings"),
+            pick(
+                en,
+                "Abrir la ventana principal de Atic",
+                "Open the main Atic window",
+            ),
             "settings",
         ),
     ]
@@ -397,19 +423,27 @@ fn collect_start_menu_apps() -> Vec<LauncherEntry> {
 }
 
 fn rebuild_index() -> Vec<LauncherEntry> {
-    let mut entries = builtin_actions();
+    let en = INDEX_EN.load(Ordering::Relaxed);
+    let mut entries = builtin_actions(en);
     entries.extend(collect_start_menu_apps());
     entries
 }
 
 /// Indexa en background al arrancar la app.
-pub fn start_indexing() {
-    thread::spawn(|| {
+pub fn start_indexing(en: bool) {
+    INDEX_EN.store(en, Ordering::Relaxed);
+    thread::spawn(move || {
         let entries = rebuild_index();
         let count = entries.len();
         *index().lock_or_recover() = entries;
         tracing::info!(count, "índice del launcher listo");
     });
+}
+
+pub fn refresh_language(en: bool) {
+    INDEX_EN.store(en, Ordering::Relaxed);
+    let entries = rebuild_index();
+    *index().lock_or_recover() = entries;
 }
 
 fn ensure_index_populated() {
@@ -534,18 +568,27 @@ pub fn launcher_search(query: String) -> Result<Vec<LauncherHit>, String> {
             id: entry.id.clone(),
             kind: entry.kind,
             title: entry.title.clone(),
-            subtitle: entry.subtitle.clone(),
+            subtitle: if entry.kind == LauncherKind::App {
+                pick(INDEX_EN.load(Ordering::Relaxed), "Aplicación", "Application").to_string()
+            } else {
+                entry.subtitle.clone()
+            },
             score: Some(score),
         })
         .collect())
 }
 
 fn hit_from_entry(entry: &LauncherEntry) -> LauncherHit {
+    let en = INDEX_EN.load(Ordering::Relaxed);
     LauncherHit {
         id: entry.id.clone(),
         kind: entry.kind,
         title: entry.title.clone(),
-        subtitle: entry.subtitle.clone(),
+        subtitle: if entry.kind == LauncherKind::App {
+            pick(en, "Aplicación", "Application").to_string()
+        } else {
+            entry.subtitle.clone()
+        },
         score: None,
     }
 }

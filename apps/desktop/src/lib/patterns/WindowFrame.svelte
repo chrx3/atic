@@ -15,12 +15,16 @@
   import Icon from "$ui/Icon.svelte";
   import IconButton from "$ui/IconButton.svelte";
   import { Minus, Square, X } from "$lib/icons";
+  import { t } from "$domain/i18n.svelte";
 
   let {
     title,
     onMinimize,
     onMaximize,
     onClose,
+    minimizeLabel,
+    maximizeLabel,
+    closeLabel,
     start,
     actions,
     children,
@@ -29,12 +33,19 @@
     onMinimize?: () => void;
     onMaximize?: () => void;
     onClose?: () => void;
+    minimizeLabel?: string;
+    maximizeLabel?: string;
+    closeLabel?: string;
     /** A la izquierda del título: marca, volver, lo que sea. */
     start?: Snippet;
     /** A la derecha, antes de los controles de ventana. */
     actions?: Snippet;
     children: Snippet;
   } = $props();
+
+  const minLabel = $derived(minimizeLabel ?? t("chrome.minimize"));
+  const maxLabel = $derived(maximizeLabel ?? t("chrome.maximize"));
+  const xLabel = $derived(closeLabel ?? t("chrome.close"));
 </script>
 
 <div class="atic-root flex h-screen flex-col overflow-hidden">
@@ -63,17 +74,17 @@
     {#if onMinimize || onMaximize || onClose}
       <div data-no-drag class="flex shrink-0 items-center">
         {#if onMinimize}
-          <IconButton label="Minimizar" size="sm" onclick={onMinimize}>
+          <IconButton label={minLabel} size="sm" onclick={onMinimize}>
             <Icon icon={Minus} size={12} />
           </IconButton>
         {/if}
         {#if onMaximize}
-          <IconButton label="Maximizar" size="sm" onclick={onMaximize}>
+          <IconButton label={maxLabel} size="sm" onclick={onMaximize}>
             <Icon icon={Square} size={12} />
           </IconButton>
         {/if}
         {#if onClose}
-          <IconButton label="Cerrar" size="sm" variant="danger" onclick={onClose}>
+          <IconButton label={xLabel} size="sm" variant="danger" onclick={onClose}>
             <Icon icon={X} size={12} />
           </IconButton>
         {/if}

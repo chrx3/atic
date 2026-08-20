@@ -81,16 +81,25 @@ pub fn start_capture(
     let state = app.state::<AppState>();
 
     if *state.audio_test_running.lock_or_recover() {
-        return Err("Hay una prueba de audio en curso.".into());
+        return Err(crate::ui_lang::msg(
+            "Hay una prueba de audio en curso.",
+            "An audio test is already running.",
+        ));
     }
 
     if state.dictation.lock_or_recover().is_some() {
-        return Err("Hay un dictado en curso. Termínalo antes de grabar.".into());
+        return Err(crate::ui_lang::msg(
+            "Hay un dictado en curso. Termínalo antes de grabar.",
+            "Dictation is in progress. Finish it before recording.",
+        ));
     }
 
     let mut active = state.active.lock_or_recover();
     if active.is_some() {
-        return Err("Ya hay una grabación en curso.".into());
+        return Err(crate::ui_lang::msg(
+            "Ya hay una grabación en curso.",
+            "A recording is already in progress.",
+        ));
     }
 
     let tracks = state
@@ -111,10 +120,14 @@ pub fn start_capture(
             capture_system,
             &mic_device_id,
             &output_device_id,
+            crate::ui_lang::english(),
         ) {
             if preflight.risk == "bluetooth_hands_free" {
                 let message = preflight.message.unwrap_or_else(|| {
-                    "El micrófono Bluetooth activará el perfil Hands-Free.".into()
+                    crate::ui_lang::msg(
+                        "El micrófono Bluetooth activará el perfil Hands-Free.",
+                        "The Bluetooth microphone will switch to the Hands-Free profile.",
+                    )
                 });
                 let _ = app.emit(
                     "capture-warn",
@@ -154,10 +167,11 @@ pub fn start_capture(
             mic_device_id: mic_device_id.clone(),
             output_device_id: output_device_id.clone(),
             stt_tap,
+            english: crate::ui_lang::english(),
         },
         tx,
     )
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| e.to_ui(crate::ui_lang::english()))?;
 
     // Reenvía los eventos de captura a la UI hasta que el canal se cierra.
     let app_fwd = app.clone();
@@ -235,6 +249,7 @@ pub fn start_capture(
         capture_system,
         &mic_device_id,
         &output_device_id,
+        crate::ui_lang::english(),
     ) {
         let message = match &advisory.suggestion {
             Some(suggestion) => format!("{} {}", advisory.message, suggestion),
@@ -263,7 +278,10 @@ pub fn stop_capture(app: &AppHandle) -> Result<Recording, String> {
 
     let taken = state.active.lock_or_recover().take();
     let Some(active) = taken else {
-        return Err("No hay ninguna grabación en curso.".into());
+        return Err(crate::ui_lang::msg(
+            "No hay ninguna grabación en curso.",
+            "There is no recording in progress.",
+        ));
     };
 
     // 1) Detener solo la captura de audio (no el STT live).
@@ -282,7 +300,10 @@ pub fn stop_capture(app: &AppHandle) -> Result<Recording, String> {
             let _ = app.emit(
                 "capture-warn",
                 ErrorPayload {
-                    message: "La pista del micrófono quedó prácticamente en silencio. Revisa el dispositivo y ejecuta la prueba de audio.".into(),
+                    message: crate::ui_lang::msg(
+                        "La pista del micrófono quedó prácticamente en silencio. Revisa el dispositivo y ejecuta la prueba de audio.",
+                        "The microphone track was essentially silent. Check the device and run the audio test.",
+                    ),
                 },
             );
         }
@@ -290,7 +311,10 @@ pub fn stop_capture(app: &AppHandle) -> Result<Recording, String> {
             let _ = app.emit(
                 "capture-warn",
                 ErrorPayload {
-                    message: "La pista «Otros» quedó prácticamente en silencio. Revisa la salida seleccionada y ejecuta la prueba de audio.".into(),
+                    message: crate::ui_lang::msg(
+                        "La pista «Otros» quedó prácticamente en silencio. Revisa la salida seleccionada y ejecuta la prueba de audio.",
+                        "The “Others” track was essentially silent. Check the selected output and run the audio test.",
+                    ),
                 },
             );
         }
@@ -341,8 +365,13 @@ pub fn stop_capture(app: &AppHandle) -> Result<Recording, String> {
             let _ = app_bg.emit(
                 "capture-warn",
                 ErrorPayload {
-                    message: format!(
-                        "La grabación quedó guardada, pero no pudo iniciar la transcripción automática: {err}"
+                    message: crate::ui_lang::msg(
+                        &format!(
+                            "La grabación quedó guardada, pero no pudo iniciar la transcripción automática: {err}"
+                        ),
+                        &format!(
+                            "The recording was saved, but automatic transcription could not start: {err}"
+                        ),
                     ),
                 },
             );
@@ -368,7 +397,10 @@ pub fn toggle_recording(app: &AppHandle) {
         .lock_or_recover()
         .is_some()
     {
-        let message = "Hay un dictado en curso. Termínalo antes de grabar.".to_string();
+        let message = crate::ui_lang::msg(
+            "Hay un dictado en curso. Termínalo antes de grabar.",
+            "Dictation is in progress. Finish it before recording.",
+        );
         tracing::warn!(%message, "atajo de grabación bloqueado");
         let _ = app.emit("capture-error", ErrorPayload { message });
         return;
@@ -506,7 +538,12 @@ pub fn summon_pill_to_cursor(app: &AppHandle) {
 pub fn summon_pill_here(app: AppHandle) -> Result<(), String> {
     tracing::info!(target: "pill_geo", "CMD        summon_pill_here");
     let flight = crate::floating::glide(&app, "pill", crate::floating::Anchor::Cursor)
-        .ok_or_else(|| "no se pudo colocar la pill en el cursor".to_string())?;
+        .ok_or_else(|| {
+            crate::ui_lang::msg(
+                "No se pudo colocar la pill en el cursor.",
+                "Could not move the pill to the cursor.",
+            )
+        })?;
     remember_pill_home(&app, flight.x, flight.y);
     Ok(())
 }
@@ -535,7 +572,9 @@ pub fn get_or_load_whisper(
 
     // Carga con el mutex retenido: evita dos hilos leyendo el mismo GGML a la vez.
     tracing::info!(path = %model_path.display(), "cargando modelo Whisper en memoria");
-    let loaded = Arc::new(LoadedModel::load(model_path).map_err(|e| e.to_string())?);
+    let loaded = Arc::new(
+        LoadedModel::load(model_path).map_err(|e| e.to_ui(crate::ui_lang::english()))?,
+    );
     guard.insert(model_path.to_path_buf(), Arc::clone(&loaded));
     Ok(loaded)
 }

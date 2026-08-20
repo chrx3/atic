@@ -17,6 +17,7 @@
   import { X } from "$lib/icons";
   import { tick } from "svelte";
   import LauncherIcon from "./LauncherIcon.svelte";
+  import { t } from "$domain/i18n.svelte";
 
   let query = $state("");
   let hits = $state<LauncherHit[]>([]);
@@ -101,7 +102,7 @@
 
 <svelte:window onkeydown={onKeydown} />
 
-<div class="h-screen w-screen p-3" role="dialog" aria-label="Buscar">
+<div class="h-screen w-screen p-3" role="dialog" aria-label={t("page.launcherWin.search")}>
   <div
     class="flex h-full flex-col overflow-hidden rounded-lg border border-line
            bg-elevated text-text shadow-float"
@@ -116,8 +117,8 @@
         bind:value={query}
         oninput={() => void search(query)}
         type="text"
-        placeholder="Buscar apps y acciones…"
-        aria-label="Buscar apps y acciones"
+        placeholder={t("page.launcherWin.placeholder")}
+        aria-label={t("page.launcherWin.aria")}
         autocomplete="off"
         spellcheck="false"
         class="min-w-0 flex-1 bg-transparent text-lg text-text outline-none
@@ -133,7 +134,7 @@
           type="button"
           class="grid size-6 shrink-0 place-items-center rounded-xs bg-surface-2 text-muted
                  transition-colors duration-(--duration-quick) ease-calm hover:text-text"
-          aria-label="Limpiar la búsqueda"
+          aria-label={t("overlay.clearSearch")}
           onclick={() => void reset()}
         >
           <Icon icon={X} size={12} />
@@ -148,7 +149,7 @@
     <ul
       class="flex-1 list-none overflow-auto p-2"
       role="listbox"
-      aria-label="Resultados"
+      aria-label={t("overlay.results")}
     >
       {#each hits as hit, i (hit.id)}
         <li>
@@ -195,7 +196,7 @@
           >
             <LauncherIcon id="" kind="" />
           </span>
-          Sin resultados
+          {t("overlay.noResults")}
         </li>
       {/each}
     </ul>
@@ -203,9 +204,9 @@
     <footer
       class="flex gap-3.5 border-t border-line px-4 pt-2 pb-2.5 text-micro text-faint"
     >
-      <span class="inline-flex items-center gap-1.5"><Kbd combo="↑+↓" /> navegar</span>
-      <span class="inline-flex items-center gap-1.5"><Kbd combo="Enter" /> abrir</span>
-      <span class="inline-flex items-center gap-1.5"><Kbd combo="Esc" /> cerrar</span>
+      <span class="inline-flex items-center gap-1.5"><Kbd combo="↑+↓" /> {t("overlay.navHint")}</span>
+      <span class="inline-flex items-center gap-1.5"><Kbd combo="Enter" /> {t("overlay.openHint")}</span>
+      <span class="inline-flex items-center gap-1.5"><Kbd combo="Esc" /> {t("overlay.closeHint")}</span>
     </footer>
   </div>
 </div>

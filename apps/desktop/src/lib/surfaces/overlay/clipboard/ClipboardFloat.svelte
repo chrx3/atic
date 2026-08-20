@@ -52,6 +52,7 @@
     wait,
   } from "$lib/motion";
   import Icon from "$ui/Icon.svelte";
+  import { t } from "$domain/i18n.svelte";
   import ToastStack from "$ui/ToastStack.svelte";
   import { toasts } from "$domain/toasts.svelte";
   import { Pin, X } from "$lib/icons";
@@ -443,13 +444,13 @@
     style:--float-close-dur="{closeDur}ms"
     bind:this={el}
     role="dialog"
-    aria-label="Clipboard"
+    aria-label={t("tools.clipboard.label")}
   >
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <header class="cf-head" onpointerdown={startDrag}>
       <div class="cf-titles">
-        <h2 class="cf-title">Clipboard</h2>
-        <p class="cf-hint">Clic para pegar · Arrastra a otra app</p>
+        <h2 class="cf-title">{t("tools.clipboard.label")}</h2>
+        <p class="cf-hint">{t("overlay.clipboardHint")}</p>
       </div>
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <div class="cf-acts" data-no-drag onpointerdown={(e) => e.stopPropagation()}>
@@ -457,9 +458,9 @@
           type="button"
           class="cf-icon"
           class:is-on={pinned}
-          aria-label={pinned ? "Desfijar" : "Fijar arriba"}
+          aria-label={pinned ? t("overlay.unpin") : t("overlay.pin")}
           aria-pressed={pinned}
-          title={pinned ? "Desfijar" : "Fijar arriba"}
+          title={pinned ? t("overlay.unpin") : t("overlay.pin")}
           onclick={() => void togglePin()}
         >
           <Icon icon={Pin} size={13} />
@@ -468,8 +469,8 @@
           type="button"
           class="cf-icon"
           onclick={() => void close()}
-          aria-label="Cerrar"
-          title="Cerrar"
+          aria-label={t("overlay.close")}
+          title={t("overlay.close")}
         >
           <Icon icon={X} size={14} />
         </button>

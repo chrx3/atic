@@ -15,8 +15,10 @@ use atic_transcribe::{LiveEngine, LivePcmChunk, LiveSttBackend, LiveUpdate};
 use crate::state::{get_or_load_whisper, AppState};
 use atic_core::MutexExt;
 
-const GROQ_LIVE_KEY_REQUIRED_MSG: &str =
+const GROQ_LIVE_KEY_REQUIRED_MSG_ES: &str =
     "Configura tu API key de Groq en Ajustes para usar el motor en la nube.";
+const GROQ_LIVE_KEY_REQUIRED_MSG_EN: &str =
+    "Set your Groq API key in Settings to use the cloud engine.";
 
 #[derive(Clone, Serialize)]
 pub struct LiveSegmentPayload {
@@ -123,7 +125,10 @@ pub fn spawn_live_worker(
             let _ = app.emit(
                 "live-transcript-error",
                 LiveErrorPayload {
-                    message: GROQ_LIVE_KEY_REQUIRED_MSG.into(),
+                    message: crate::ui_lang::msg(
+                        GROQ_LIVE_KEY_REQUIRED_MSG_ES,
+                        GROQ_LIVE_KEY_REQUIRED_MSG_EN,
+                    ),
                 },
             );
         }
@@ -132,7 +137,14 @@ pub fn spawn_live_worker(
             atic_transcribe::models::require_downloaded(&state.dirs.models_dir(), model_id)
                 .map_err(|e| {
                     if want_groq {
-                        format!("{GROQ_LIVE_KEY_REQUIRED_MSG} (fallback local no disponible: {e})")
+                        crate::ui_lang::msg(
+                            &format!(
+                                "{GROQ_LIVE_KEY_REQUIRED_MSG_ES} (fallback local no disponible: {e})"
+                            ),
+                            &format!(
+                                "{GROQ_LIVE_KEY_REQUIRED_MSG_EN} (local fallback unavailable: {e})"
+                            ),
+                        )
                     } else {
                         format!("Modelo live «{model_id}» no disponible: {e}")
                     }
@@ -176,7 +188,7 @@ fn run_live_worker(
                 let _ = app.emit(
                     "live-transcript-error",
                     LiveErrorPayload {
-                        message: err.to_string(),
+                        message: err.to_ui(crate::ui_lang::english()),
                     },
                 );
             }
@@ -194,7 +206,7 @@ fn run_live_worker(
                 let _ = app.emit(
                     "live-transcript-error",
                     LiveErrorPayload {
-                        message: err.to_string(),
+                        message: err.to_ui(crate::ui_lang::english()),
                     },
                 );
             }

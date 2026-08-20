@@ -21,7 +21,10 @@ pub fn import_audio(
     paths: Vec<String>,
 ) -> Result<Vec<Recording>, String> {
     if paths.is_empty() {
-        return Err("No se seleccionó ningún archivo.".into());
+        return Err(crate::ui_lang::msg(
+            "No se seleccionó ningún archivo.",
+            "No file was selected.",
+        ));
     }
 
     let mut imported = Vec::with_capacity(paths.len());
@@ -29,7 +32,10 @@ pub fn import_audio(
     for path_str in paths {
         let src = Path::new(&path_str);
         if !src.is_file() {
-            return Err(format!("Archivo no encontrado: {path_str}"));
+            return Err(crate::ui_lang::msg(
+                &format!("Archivo no encontrado: {path_str}"),
+                &format!("File not found: {path_str}"),
+            ));
         }
 
         let mut rec = Recording::new(Utc::now());
@@ -66,7 +72,10 @@ pub fn import_audio(
                     .file_name()
                     .and_then(|n| n.to_str())
                     .unwrap_or(&path_str);
-                return Err(format!("No se pudo importar «{name}»: {err}"));
+                return Err(crate::ui_lang::msg(
+                    &format!("No se pudo importar «{name}»: {err}"),
+                    &format!("Could not import “{name}”: {err}"),
+                ));
             }
         }
     }

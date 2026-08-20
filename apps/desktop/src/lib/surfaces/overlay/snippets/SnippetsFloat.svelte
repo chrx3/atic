@@ -53,6 +53,7 @@
     isOpenDismissGrace,
   } from "$surfaces/overlay/openDismissGrace";
   import Icon from "$ui/Icon.svelte";
+  import { t } from "$domain/i18n.svelte";
   import { Pin, X } from "$lib/icons";
 
   const CORNER = 20;
@@ -443,11 +444,11 @@
     style:--float-close-dur="{closeDur}ms"
     bind:this={el}
     role="dialog"
-    aria-label="Textos y notas"
+    aria-label={t("overlay.snippets")}
   >
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <header class="sf-head" onpointerdown={startDrag}>
-      <div class="sf-tabs" role="tablist" aria-label="Textos y notas" data-no-drag>
+      <div class="sf-tabs" role="tablist" aria-label={t("overlay.snippets")} data-no-drag>
         <button
           type="button"
           role="tab"
@@ -456,7 +457,7 @@
           aria-selected={tab === "list"}
           onclick={() => (tab = "list")}
         >
-          Textos
+          {t("overlay.texts")}
         </button>
         <button
           type="button"
@@ -466,7 +467,7 @@
           aria-selected={tab === "scratchpad"}
           onclick={() => (tab = "scratchpad")}
         >
-          Notas
+          {t("overlay.notes")}
         </button>
       </div>
       <!-- Zona de arrastre entre tabs y acciones. -->
@@ -477,9 +478,9 @@
           type="button"
           class="sf-icon"
           class:is-on={pinned}
-          aria-label={pinned ? "Desfijar" : "Fijar arriba"}
+          aria-label={pinned ? t("overlay.unpin") : t("overlay.pin")}
           aria-pressed={pinned}
-          title={pinned ? "Desfijar" : "Fijar arriba"}
+          title={pinned ? t("overlay.unpin") : t("overlay.pin")}
           onclick={() => void togglePin()}
         >
           <Icon icon={Pin} size={13} />
@@ -488,8 +489,8 @@
           type="button"
           class="sf-icon"
           onclick={() => void close()}
-          aria-label="Cerrar"
-          title="Cerrar"
+          aria-label={t("overlay.close")}
+          title={t("overlay.close")}
         >
           <Icon icon={X} size={14} />
         </button>
@@ -512,8 +513,8 @@
             class="sf-scratch"
             value={snippets.scratchpad?.body ?? ""}
             oninput={(e) => snippets.editScratchpad(e.currentTarget.value)}
-            placeholder="Notas temporales…"
-            aria-label="Bloc de notas"
+            placeholder={t("overlay.scratchPlaceholder")}
+            aria-label={t("overlay.scratchAria")}
           ></textarea>
         </div>
       {/if}

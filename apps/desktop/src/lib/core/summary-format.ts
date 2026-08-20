@@ -18,7 +18,7 @@ export interface SummarySection {
 }
 
 const KNOWN_SECTION =
-  /^(resumen|temas tratados|temas|decisiones|acuerdos|pr[oó]ximos pasos|tareas|acciones|conclusiones|cierre)\s*:?\s*$/i;
+  /^(resumen|summary|temas tratados|topics covered|temas|topics|key points|puntos clave|decisiones|decisions|acuerdos|agreements|pr[oó]ximos pasos|next steps|tareas|tasks|acciones|actions|conclusiones|cierre)\s*:?\s*$/i;
 
 function cleanInline(value: string): string {
   return value
@@ -32,17 +32,31 @@ function cleanInline(value: string): string {
 
 function classifySection(title: string): SummarySectionKind {
   const normalized = title.toLocaleLowerCase("es");
-  if (normalized.includes("resumen") || normalized.includes("contexto")) {
+  if (
+    normalized.includes("resumen") ||
+    normalized.includes("summary") ||
+    normalized.includes("contexto") ||
+    normalized.includes("key point") ||
+    normalized.includes("punto clave")
+  ) {
     return "summary";
   }
-  if (normalized.includes("tema")) return "topics";
-  if (normalized.includes("decisi") || normalized.includes("acuerdo")) {
+  if (normalized.includes("tema") || normalized.includes("topic")) return "topics";
+  if (
+    normalized.includes("decisi") ||
+    normalized.includes("decision") ||
+    normalized.includes("acuerdo") ||
+    normalized.includes("agreement")
+  ) {
     return "decisions";
   }
   if (
     normalized.includes("tarea") ||
+    normalized.includes("task") ||
     normalized.includes("paso") ||
-    normalized.includes("acci")
+    normalized.includes("next step") ||
+    normalized.includes("acci") ||
+    normalized.includes("action")
   ) {
     return "tasks";
   }

@@ -53,6 +53,7 @@
   import { afterTransition, MOTION, ms, prefersReducedMotion, wait } from "$lib/motion";
   import LauncherIcon from "$surfaces/launcher/LauncherIcon.svelte";
   import Icon from "$ui/Icon.svelte";
+  import { t } from "$domain/i18n.svelte";
   import Kbd from "$ui/Kbd.svelte";
   import { Star, X } from "$lib/icons";
 
@@ -907,7 +908,7 @@
     style:--float-close-dur="{closeDur}ms"
     bind:this={el}
     role="dialog"
-    aria-label="Buscar apps"
+    aria-label={t("overlay.searchApps")}
   >
     <div class="lf-bar" class:has-favs={favorites.length > 0}>
       <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -921,8 +922,8 @@
           oninput={() => scheduleSearch(query)}
           onpointerdown={(e) => e.stopPropagation()}
           type="text"
-          placeholder="Buscar apps…"
-          aria-label="Buscar apps"
+          placeholder={t("overlay.searchPlaceholder")}
+          aria-label={t("overlay.searchApps")}
           autocomplete="off"
           spellcheck="false"
           class="lf-input"
@@ -934,7 +935,7 @@
           <button
             type="button"
             class="lf-icon"
-            aria-label="Limpiar la búsqueda"
+            aria-label={t("overlay.clearSearch")}
             data-no-drag
             onclick={() => void reset()}
           >
@@ -946,7 +947,7 @@
         <div
           class="lf-favs"
           role="toolbar"
-          aria-label="Favoritos"
+          aria-label={t("overlay.favorites")}
           data-no-drag
           bind:this={favsEl}
         >
@@ -958,7 +959,7 @@
               class:is-out={i < favRevealCount}
               style:--lf-i={i}
               title={fav.title}
-              aria-label={`Abrir ${fav.title}`}
+              aria-label={t("overlay.openApp", { title: fav.title })}
               tabindex={i < favRevealCount ? 0 : -1}
               onpointerdown={(e) => e.stopPropagation()}
               onclick={() => void run(fav.id)}
@@ -975,7 +976,7 @@
     {/if}
 
     {#if showResults}
-      <ul class="lf-list" role="listbox" aria-label="Resultados">
+      <ul class="lf-list" role="listbox" aria-label={t("overlay.results")}>
         {#each hits as hit, i (hit.id)}
           <li>
             <div class="lf-hit" class:is-sel={i === selected}>
@@ -1008,8 +1009,8 @@
                 class:is-on={isFavorite(hit.id)}
                 data-no-drag
                 aria-label={isFavorite(hit.id)
-                  ? `Quitar ${hit.title} de favoritos`
-                  : `Agregar ${hit.title} a favoritos`}
+                  ? t("overlay.favRemove", { title: hit.title })
+                  : t("overlay.favAdd", { title: hit.title })}
                 aria-pressed={isFavorite(hit.id)}
                 onpointerdown={(e) => e.stopPropagation()}
                 onclick={(e) => void toggleFavorite(hit.id, e)}
@@ -1025,18 +1026,18 @@
         {:else}
           <li class="lf-empty">
             {#if searching}
-              Buscando…
+              {t("overlay.searching")}
             {:else}
-              Sin resultados
+              {t("overlay.noResults")}
             {/if}
           </li>
         {/each}
       </ul>
 
       <footer class="lf-foot">
-        <span class="lf-hint"><Kbd combo="↑↓" /> navegar</span>
-        <span class="lf-hint"><Kbd combo="Enter" /> abrir</span>
-        <span class="lf-hint"><Kbd combo="Esc" /> cerrar</span>
+        <span class="lf-hint"><Kbd combo="↑↓" /> {t("overlay.navHint")}</span>
+        <span class="lf-hint"><Kbd combo="Enter" /> {t("overlay.openHint")}</span>
+        <span class="lf-hint"><Kbd combo="Esc" /> {t("overlay.closeHint")}</span>
       </footer>
     {/if}
   </div>

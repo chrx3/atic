@@ -3,7 +3,8 @@
   import { goto } from "$app/navigation";
   import { page } from "$app/state";
   import { installDesktopChromeGuards } from "$lib/desktopChrome";
-  import { getConfig, onUiTheme } from "$ipc/config";
+  import { getConfig, onUiLanguage, onUiTheme } from "$ipc/config";
+  import { applyUiLocale, t } from "$domain/i18n.svelte";
   import {
     applyConfigTheme,
     applyTheme,
@@ -38,19 +39,22 @@
     // cache solo evita un destello acá. La fuente de verdad es la config.
     applyTheme(readCachedTheme());
 
-    // Suscribirse antes de leer: si el tema cambia mientras llega `get_config`,
-    // una respuesta vieja no debe pintar encima del evento.
     let themeFromEvent = false;
+    let localeFromEvent = false;
     const pendingTheme = onUiTheme((theme) => {
       themeFromEvent = true;
       applyConfigTheme(theme);
+    });
+    const pendingLocale = onUiLanguage((language) => {
+      localeFromEvent = true;
+      applyUiLocale(language);
     });
     void pendingTheme
       .catch(() => {})
       .then(() => getConfig())
       .then((cfg) => {
-        if (themeFromEvent) return;
-        applyConfigTheme(cfg.ui_theme);
+        if (!themeFromEvent) applyConfigTheme(cfg.ui_theme);
+        if (!localeFromEvent) applyUiLocale(cfg.ui_language);
       })
       .catch(() => {
         // Fuera de Tauri, o el webview nació antes del manage.
@@ -132,6 +136,7 @@
       window.removeEventListener("keydown", onDevKey);
       mq.removeEventListener("change", onScheme);
       void pendingTheme.then((off) => off()).catch(() => {});
+      void pendingLocale.then((off) => off()).catch(() => {});
     };
   });
 </script>
@@ -139,6 +144,6 @@
 {#if isFloating}
   {@render children()}
 {:else}
-  <a class="rb-skip-link" href="#main-content">Ir al contenido</a>
+  <a class="rb-skip-link" href="#main-content">{t("skipToContent")}</a>
   {@render children()}
 {/if}

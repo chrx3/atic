@@ -41,6 +41,7 @@
     AGENT_PAGER_ENABLED,
     type ToolId,
   } from "$lib/tools";
+  import { localizeTool, t } from "$domain/i18n.svelte";
   import { formatShortcut } from "$lib/format";
   import Icon from "$ui/Icon.svelte";
   import { X } from "$lib/icons";
@@ -207,36 +208,36 @@
   const agentAlert = $derived(chip.tone !== "off");
   const agentWorking = $derived(chip.tone === "working" || chip.tone === "count");
   const agentReady = $derived(chip.tone === "ready");
-  const agentReadyLabel = $derived(chip.label ?? "Listo");
+  const agentReadyLabel = $derived(chip.label ?? t("pill.ready"));
   const agentChipAria = $derived.by(() => {
     const target = chip.target;
     if (target.kind === "focus") {
       const name =
         presence.list.find((p) => p.id === target.presenceId)?.backendName ??
-        "el agente";
-      return `Ir a ${name} en su terminal`;
+        t("pill.agentFallback");
+      return t("pill.goToAgent", { name });
     }
-    if (target.kind === "console") return "Abrir la consola de agentes";
+    if (target.kind === "console") return t("pill.openConsole");
     if (target.kind === "none") {
-      return "Sin terminal atada. Clic vincula la última ventana";
+      return t("pill.unbound");
     }
-    if (chip.tone === "working") return "El agente está trabajando";
+    if (chip.tone === "working") return t("pill.working");
     return agentReadyLabel;
   });
   const agentChipTitle = $derived.by(() => {
     if (chip.target.kind === "none") {
-      return "Sin terminal atada. Clic vincula la última ventana · Ctrl+clic para elegir otra";
+      return t("pill.unboundTitle");
     }
     const base =
       chip.tone === "waiting"
-        ? "El agente espera tu permiso"
+        ? t("pill.waiting")
         : chip.tone === "ready"
           ? agentReadyLabel
           : chip.tone === "count"
-            ? `${chip.label} sin leer`
-            : "El agente está trabajando";
+            ? t("pill.unread", { label: chip.label ?? "" })
+            : t("pill.working");
     if (chip.target.kind === "focus") {
-      return `${base} · Ctrl+clic para vincular otra ventana`;
+      return t("pill.rebind", { base });
     }
     return base;
   });
@@ -339,6 +340,7 @@
    * `track()` borra el rect. Con una closure nueva por render las gotas se
    * daban de baja y volvían un cuadro después.
    */
+  const wheelTools = $derived(WHEEL_TOOLS.map(localizeTool));
   const islandAttachers = WHEEL_TOOLS.map(
     (_, i) => (el: HTMLElement) => tracker.track(`island-${i}`, el),
   );
@@ -922,15 +924,15 @@
   function dictationLabel(phase: DictationPhase): string {
     switch (phase) {
       case "listening":
-        return "Dictando…";
+        return t("pill.listening");
       case "transcribing":
-        return "Transcribiendo…";
+        return t("pill.transcribing");
       case "pasted":
-        return dictationMessage ?? "Pegado";
+        return dictationMessage ?? t("pill.pasted");
       case "error":
-        return dictationMessage ?? "Error";
+        return dictationMessage ?? t("pill.error");
       default:
-        return "Dictar";
+        return t("pill.start");
     }
   }
 
@@ -1903,7 +1905,7 @@
     data-no-drag
     onclick={toggleRecord}
     disabled={busy}
-    aria-label="Detener grabación"
+    aria-label={label}
     title={btWarning ?? label}
   >
     <span class="p-rec-square" aria-hidden="true"></span>
@@ -1953,7 +1955,7 @@
           class:is-column={peekEdgeAxis === "x"}
           style="--n: {islandSlots}"
         >
-          {#each WHEEL_TOOLS as tool, i (tool.id)}
+          {#each wheelTools as tool, i (tool.id)}
             {@const slot = i + islandLiveSlots(activity)}
             <button
               type="button"
@@ -1975,8 +1977,8 @@
           class="p-live-drop"
           {@attach trackLive}
           data-no-drag
-          title={btWarning ?? "Detener grabación"}
-          aria-label="Detener grabación"
+          title={btWarning ?? t("pill.stopRecord")}
+          aria-label={t("pill.stopRecord")}
           disabled={busy}
           onpointerdown={(e) => e.stopPropagation()}
           onclick={toggleRecord}
@@ -1996,10 +1998,10 @@
       wheelNav
       particles={false}
       revealed={wheelShown}
-      tools={WHEEL_TOOLS}
+      tools={wheelTools}
       bind:activeId={wheelTool}
-      caption="Herramientas"
-      centerLabel="Cerrar"
+      caption={t("tools.wheelCaption")}
+      centerLabel={t("tools.wheelClose")}
       live={activity === "recording"
         ? "recording"
         : dictation === "listening"
@@ -2064,10 +2066,10 @@
           bind:this={barEl}
         >
           {#if activity === "recording"}
-            {@render recDot("Detener grabación")}
+            {@render recDot(t("pill.stopRecord"))}
             <span class="p-timer">{fmt(elapsed)}</span>
             {#if liveError}
-              <span class="p-chip is-error" role="status">Error</span>
+              <span class="p-chip is-error" role="status">{t("pill.error")}</span>
             {:else if btWarning}
               <span
                 class="p-chip is-warn"
@@ -2076,7 +2078,7 @@
                 aria-label={btWarning}>BT</span
               >
             {:else if liveActive}
-              <span class="p-chip" role="status">En vivo</span>
+              <span class="p-chip" role="status">{t("pill.live")}</span>
             {/if}
             <div class="p-wave">
               <Waveform
@@ -2099,8 +2101,8 @@
               data-no-drag
               onclick={toggleDictate}
               disabled={busy}
-              aria-label="Detener dictado"
-              title="Dictando · clic para detener"
+              aria-label={t("pill.stopDictate")}
+              title={t("pill.dictatingHint")}
             >
               <ToolIcon id="dictation" size={16} strokeWidth={1.5} />
               <Waveform mic={levels.mic} bars={18} variant="voice" live />
@@ -2115,7 +2117,7 @@
               data-no-drag
               onclick={toggleDictate}
               disabled={busy || dictation === "transcribing"}
-              aria-label="Dictado"
+              aria-label={t("pill.dictation")}
               title={dictationLabel(dictation)}
             >
               <ToolIcon id="dictation" size={16} strokeWidth={1.5} />
@@ -2142,9 +2144,9 @@
               disabled={paste.busy}
               onclick={() => void paste.paste()}
             >
-              Pegar
+              {t("pill.paste")}
             </button>
-            {@render iconBtn("Descartar", X, () => void paste.dismiss(), 13)}
+            {@render iconBtn(t("pill.dismiss"), X, () => void paste.dismiss(), 13)}
           {:else}
             <!-- Reposo: disco con la marca. Un clic abre la rueda; el centro de
                la rueda la cierra. El doble clic ya no hace falta.
@@ -2156,10 +2158,12 @@
                 class="p-mark is-disc"
                 title={[
                   wheelShortcut
-                    ? `${formatShortcut(wheelShortcut)} · herramientas`
+                    ? t("pill.toolsWithShortcut", {
+                        shortcut: formatShortcut(wheelShortcut),
+                      })
                     : "",
-                  "Clic para las herramientas",
-                  "Arrastra para mover",
+                  t("pill.clickTools"),
+                  t("pill.dragMove"),
                 ]
                   .filter(Boolean)
                   .join(" · ")}
@@ -2187,7 +2191,7 @@
                   <ToolIcon id="agents" size={11} strokeWidth={1.7} />
                 </span>
                 {#if chip.tone === "waiting"}
-                  <span class="p-agent-count">permiso</span>
+                  <span class="p-agent-count">{t("pill.permission")}</span>
                 {:else if chip.tone === "ready"}
                   <span class="p-agent-msg">{agentReadyLabel}</span>
                 {:else if chip.tone === "count"}

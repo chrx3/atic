@@ -4,6 +4,7 @@
   import { captures } from "$domain/captures.svelte";
   import { config } from "$domain/config.svelte";
   import { toastError, toasts } from "$domain/toasts.svelte";
+  import { t } from "$domain/i18n.svelte";
   import { openAnnotator } from "$ipc/annotate";
   import { captureSrc } from "$ipc/captures";
   import ToolPage from "$patterns/ToolPage.svelte";
@@ -35,7 +36,7 @@
   async function ocr(path: string) {
     const text = await run(() => captures.ocr(path));
     if (typeof text === "string") {
-      toasts.push(text.trim() ? "Texto copiado" : "No se encontró texto");
+      toasts.push(text.trim() ? t("toast.textCopied") : t("toast.noText"));
     }
   }
 
@@ -50,20 +51,20 @@
 </script>
 
 <ToolPage
-  title="Capturas"
+  title={t("tools.captures.label")}
   icon="captures"
-  kicker="Pantalla"
-  blurb="Recortes rápidos al portapapeles y al shelf flotante."
+  kicker={t("tools.captures.short")}
+  blurb={t("tools.captures.blurb")}
 >
   {#snippet meta()}
-    <Chip>{captures.items.length} recientes</Chip>
+    <Chip>{t("page.captures.count", { count: captures.items.length })}</Chip>
     {#if shortcut}
       <Kbd combo={formatShortcut(shortcut)} separator="+" />
     {/if}
   {/snippet}
 
   <div class="flex h-full min-h-0 flex-col">
-    <Toolbar label="Acciones de capturas">
+    <Toolbar label={t("page.captures.actions")}>
       {#snippet end()}
         <Button
           variant="soft"
@@ -72,15 +73,17 @@
             void run(async () => {
               const removed = await captures.cleanup();
               toasts.push(
-                removed > 0 ? `Se borraron ${removed}` : "No había nada que borrar",
+                removed > 0
+                  ? t("settings.captures.cleaned", { count: removed })
+                  : t("toast.nothingToClean"),
               );
             })}
         >
-          Limpiar vencidas
+          {t("page.captures.cleanup")}
         </Button>
       {/snippet}
       <span class="text-xs text-muted">
-        Se borran solas según la retención de Ajustes.
+        {t("page.captures.retention")}
       </span>
     </Toolbar>
 
@@ -89,10 +92,10 @@
         <EmptyState
           compact
           icon="captures"
-          title="No hay capturas recientes"
+          title={t("page.captures.empty")}
           hint={shortcut
-            ? `Sacá una con ${formatShortcut(shortcut)}.`
-            : "Configurá el atajo en Ajustes."}
+            ? t("page.captures.emptyHint", { shortcut: formatShortcut(shortcut) })
+            : t("page.captures.emptyNoShortcut")}
         />
       {:else}
         <div
@@ -107,13 +110,13 @@
               <button
                 type="button"
                 class="block aspect-video w-full overflow-hidden bg-surface-2"
-                title="Ampliar"
+                title={t("page.captures.zoom")}
                 onclick={() => (preview = item)}
               >
                 <!-- `object-contain`: se ve la captura entera, no un recorte zoom. -->
                 <img
                   src={captureSrc(item.path)}
-                  alt="Captura de {item.label}"
+                  alt={t("page.captures.alt", { label: item.label })}
                   loading="lazy"
                   class="size-full object-contain"
                 />
@@ -135,21 +138,21 @@
                          group-hover:opacity-100 focus-within:opacity-100"
                 >
                   <IconButton
-                    label="Copiar imagen"
+                    label={t("page.captures.copyImage")}
                     size="sm"
-                    onclick={() => void run(() => captures.copy(item.path), "Copiada")}
+                    onclick={() => void run(() => captures.copy(item.path), t("toast.copiedImage"))}
                   >
                     <Icon icon={Copy} size={12} />
                   </IconButton>
                   <IconButton
-                    label="Copiar el texto (OCR)"
+                    label={t("page.captures.copyOcr")}
                     size="sm"
                     onclick={() => void ocr(item.path)}
                   >
                     <Icon icon={ScanText} size={12} />
                   </IconButton>
                   <IconButton
-                    label="Borrar"
+                    label={t("page.common.delete")}
                     size="sm"
                     variant="danger"
                     onclick={() => void run(() => captures.remove(item.path))}
@@ -169,7 +172,7 @@
 {#if preview}
   {@const item = preview}
   <Modal
-    title="Captura"
+    title={t("page.captures.preview")}
     subtitle={formatListWhen(Math.floor(item.createdAtMs / 1000))}
     size="lg"
     panelMax="min(90dvh, 880px)"
@@ -179,22 +182,22 @@
       <Button
         variant="soft"
         size="sm"
-        onclick={() => void run(() => captures.copy(item.path), "Copiada")}
+        onclick={() => void run(() => captures.copy(item.path), t("toast.copiedImage"))}
       >
-        Copiar
+        {t("page.common.copy")}
       </Button>
       <Button variant="soft" size="sm" onclick={() => void annotate(item.path)}>
-        Dibujar
+        {t("page.captures.draw")}
       </Button>
       <Button
         variant="soft"
         size="sm"
         onclick={() => void run(() => captures.open(item.path))}
       >
-        Abrir
+        {t("page.common.open")}
       </Button>
       <Button variant="primary" size="sm" onclick={() => (preview = null)}>
-        Cerrar
+        {t("page.common.close")}
       </Button>
     {/snippet}
 
@@ -204,7 +207,7 @@
     >
       <img
         src={captureSrc(item.path)}
-        alt="Captura de {item.label}"
+        alt={t("page.captures.alt", { label: item.label })}
         class="max-h-[min(66dvh,680px)] max-w-full object-contain"
       />
     </div>

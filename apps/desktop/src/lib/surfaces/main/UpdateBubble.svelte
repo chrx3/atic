@@ -7,6 +7,7 @@
    * un botón redondo.
    */
   import { appUpdate } from "$domain/appUpdate.svelte";
+  import { t } from "$domain/i18n.svelte";
   import { Check, Download } from "$lib/icons";
   import { pillShape } from "$liquid/geometry";
   import Skin from "$liquid/Skin.svelte";
@@ -22,12 +23,12 @@
 
   const label = $derived(
     appUpdate.installing
-      ? `Instalando ${appUpdate.version ?? ""}`
+      ? t("about.bubbleInstalling", { version: appUpdate.version ?? "" })
       : appUpdate.downloading
-        ? `Descargando ${appUpdate.version ?? ""}`
+        ? t("about.bubbleDownloading", { version: appUpdate.version ?? "" })
         : appUpdate.downloaded
-          ? `Instalar ${appUpdate.version ?? ""} y reiniciar`
-          : `Descargar ${appUpdate.version ?? ""}`,
+          ? t("about.bubbleInstall", { version: appUpdate.version ?? "" })
+          : t("about.bubbleDownload", { version: appUpdate.version ?? "" }),
   );
 </script>
 

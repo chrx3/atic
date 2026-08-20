@@ -752,7 +752,11 @@ fn create_capture_overlay(app: &AppHandle) -> Result<tauri::WebviewWindow, Strin
         OVERLAY_LABEL,
         tauri::WebviewUrl::App("capture-overlay".into()),
     )
-    .title("Seleccionar captura")
+    .title(crate::ui_lang::pick(
+        crate::ui_lang::english(),
+        "Seleccionar captura",
+        "Select capture",
+    ))
     .inner_size(lw, lh)
     .max_inner_size(16384.0, 16384.0)
     .position(lx, ly)
@@ -845,7 +849,12 @@ fn ensure_capture_overlay(app: &AppHandle) -> Result<(), String> {
     })
     .map_err(|err| err.to_string())?;
     rx.recv_timeout(std::time::Duration::from_secs(8))
-        .map_err(|_| "timeout creando capture-overlay".to_string())?
+        .map_err(|_| {
+            crate::ui_lang::msg(
+                "Se agotó el tiempo al crear la captura.",
+                "Timed out creating the capture overlay.",
+            )
+        })?
 }
 
 fn restore_main_hit_testing(app: &AppHandle) {
@@ -963,7 +972,7 @@ fn raise_capture_overlay(window: &tauri::WebviewWindow) {
 
 #[cfg(not(windows))]
 fn show_overlay_window(_app: &AppHandle) -> Result<(), String> {
-    Err("La captura de pantalla solo está disponible en Windows.".into())
+    Err(crate::ui_lang::capture_windows_only())
 }
 
 #[cfg(windows)]
@@ -1099,17 +1108,17 @@ fn save_capture(
 
 #[cfg(not(windows))]
 fn start_impl(_app: &AppHandle) -> Result<(), String> {
-    Err("La captura de pantalla solo está disponible en Windows.".into())
+    Err(crate::ui_lang::capture_windows_only())
 }
 
 #[cfg(not(windows))]
 fn overlay_info_impl(_app: &AppHandle) -> Result<OverlayInfo, String> {
-    Err("La captura de pantalla solo está disponible en Windows.".into())
+    Err(crate::ui_lang::capture_windows_only())
 }
 
 #[cfg(not(windows))]
 fn window_capture_impl(_app: &AppHandle, _hwnd: i64) -> Result<(String, (i32, i32)), String> {
-    Err("La captura de pantalla solo está disponible en Windows.".into())
+    Err(crate::ui_lang::capture_windows_only())
 }
 
 #[cfg(not(windows))]
@@ -1120,7 +1129,7 @@ fn region_capture_impl(
     _width: f64,
     _height: f64,
 ) -> Result<(String, (i32, i32)), String> {
-    Err("La captura de pantalla solo está disponible en Windows.".into())
+    Err(crate::ui_lang::capture_windows_only())
 }
 
 #[cfg(not(windows))]
@@ -1129,5 +1138,5 @@ fn monitor_capture_impl(
     _x: f64,
     _y: f64,
 ) -> Result<(String, (i32, i32)), String> {
-    Err("La captura de pantalla solo está disponible en Windows.".into())
+    Err(crate::ui_lang::capture_windows_only())
 }

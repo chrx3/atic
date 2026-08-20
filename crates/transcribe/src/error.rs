@@ -24,4 +24,75 @@ pub enum TranscribeError {
     BadResponse(String),
 }
 
+impl TranscribeError {
+    pub fn to_ui(&self, en: bool) -> String {
+        match self {
+            Self::InvalidPath => {
+                if en {
+                    "Invalid model path (not UTF-8)".into()
+                } else {
+                    self.to_string()
+                }
+            }
+            Self::UnknownModel(id) => {
+                if en {
+                    format!("Unknown model: {id}")
+                } else {
+                    self.to_string()
+                }
+            }
+            Self::ModelNotDownloaded(id) => {
+                if en {
+                    format!("Model '{id}' is not downloaded")
+                } else {
+                    self.to_string()
+                }
+            }
+            Self::Http(err) => {
+                if en {
+                    format!("Network error: {err}")
+                } else {
+                    self.to_string()
+                }
+            }
+            Self::Io(err) => {
+                if en {
+                    format!("I/O error: {err}")
+                } else {
+                    self.to_string()
+                }
+            }
+            Self::Wav(err) => {
+                if en {
+                    format!("Error reading WAV: {err}")
+                } else {
+                    self.to_string()
+                }
+            }
+            Self::AudioDecode(err) => {
+                if en {
+                    format!("Error decoding audio: {err}")
+                } else {
+                    self.to_string()
+                }
+            }
+            Self::Whisper(err) => {
+                if en {
+                    format!("Whisper error: {err}")
+                } else {
+                    self.to_string()
+                }
+            }
+            Self::MissingApiKey(provider) => {
+                if en {
+                    format!("Missing {provider} API key")
+                } else {
+                    self.to_string()
+                }
+            }
+            Self::BadResponse(msg) => msg.clone(),
+        }
+    }
+}
+
 pub type Result<T> = std::result::Result<T, TranscribeError>;

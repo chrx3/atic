@@ -9,6 +9,7 @@
    */
   import { capture } from "$domain/capture.svelte";
   import Chip from "$ui/Chip.svelte";
+  import { t } from "$domain/i18n.svelte";
 
   /**
    * Sigue al último renglón.
@@ -28,7 +29,7 @@
   }
 
   function who(speaker: "me" | "others"): string {
-    return speaker === "me" ? "Yo" : "Otros";
+    return speaker === "me" ? t("page.meetings.me") : t("page.meetings.others");
   }
 </script>
 
@@ -36,13 +37,13 @@
   <!-- El espaciado va acá y no en un envoltorio: la herramienta no tiene forma
        de saber si esto dibuja algo, y un `<div>` con padding y nada adentro deja
        un hueco sin explicación. -->
-  <section class="flex flex-col gap-1.5 px-4 pt-3" aria-label="Transcripción en vivo">
+  <section class="flex flex-col gap-1.5 px-4 pt-3" aria-label={t("page.meetings.live")}>
     <div class="flex items-center gap-2">
-      <span class="text-micro text-faint uppercase">En vivo</span>
+      <span class="text-micro text-faint uppercase">{t("page.meetings.liveChip")}</span>
       {#if capture.liveError}
-        <Chip tone="warn">falló</Chip>
+        <Chip tone="warn">{t("page.meetings.liveFail")}</Chip>
       {:else}
-        <Chip tone="ok">transcribiendo</Chip>
+        <Chip tone="ok">{t("page.meetings.liveOk")}</Chip>
       {/if}
     </div>
 

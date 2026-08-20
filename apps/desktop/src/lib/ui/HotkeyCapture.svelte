@@ -8,11 +8,12 @@
    * ser el mismo que dispare el guardado.
    */
   import Kbd from "./Kbd.svelte";
+  import { t } from "$domain/i18n.svelte";
 
   let {
     value = "",
     defaultValue = "",
-    ariaLabel = "Cambiar atajo",
+    ariaLabel,
     onChange,
   }: {
     value?: string;
@@ -21,6 +22,8 @@
     ariaLabel?: string;
     onChange: (shortcut: string) => void | Promise<void>;
   } = $props();
+
+  const captureAria = $derived(ariaLabel ?? t("hotkey.change"));
 
   let capturing = $state(false);
   /** Aviso breve, p. ej. una tecla que el SO no deja tomar. */
@@ -38,8 +41,8 @@
 
   /** Cómo se muestra. Los botones del mouse no son teclas y se nombran. */
   function displayParts(raw: string): string[] {
-    if (raw === "MouseX1") return ["Mouse atrás"];
-    if (raw === "MouseX2") return ["Mouse adelante"];
+    if (raw === "MouseX1") return [t("hotkey.mouseBack")];
+    if (raw === "MouseX2") return [t("hotkey.mouseForward")];
     return raw
       .replace(/CmdOrCtrl/gi, "Ctrl")
       .replace(/CommandOrControl/gi, "Ctrl")
@@ -58,7 +61,7 @@
     const isWindows =
       typeof navigator !== "undefined" && /Win/i.test(navigator.userAgent);
     if (isWindows && e.metaKey) {
-      showReject("Win la usa Windows. Probá con Ctrl, Alt o un botón lateral.");
+      showReject(t("hotkey.winReject"));
       return null;
     }
 
@@ -149,7 +152,7 @@
   <div class="flex flex-wrap items-center gap-1.5">
     <button
       type="button"
-      aria-label={ariaLabel}
+      aria-label={captureAria}
       onclick={() => (capturing = !capturing)}
       class="inline-flex h-8 min-w-0 flex-1 items-center justify-center gap-1 rounded-sm
              border px-2
@@ -159,9 +162,9 @@
         : 'border-line bg-surface-2 hover:bg-elevated'}"
     >
       {#if capturing}
-        <span class="text-xs text-muted">Apretá la combinación…</span>
+        <span class="text-xs text-muted">{t("hotkey.press")}</span>
       {:else if parts.length === 0}
-        <span class="text-xs text-faint">Sin asignar</span>
+        <span class="text-xs text-faint">{t("hotkey.unassigned")}</span>
       {:else}
         <Kbd combo={parts.join("+")} />
       {/if}
@@ -173,14 +176,14 @@
         class="text-xs text-muted underline-offset-2 hover:text-text hover:underline"
         onclick={() => void onChange(defaultValue)}
       >
-        Restablecer
+        {t("hotkey.reset")}
       </button>
     {/if}
   </div>
 
   {#if capturing}
     <p class="text-xs text-faint">
-      Esc cancela. También sirve un botón lateral del mouse.
+      {t("hotkey.hint")}
     </p>
   {/if}
   {#if rejected}

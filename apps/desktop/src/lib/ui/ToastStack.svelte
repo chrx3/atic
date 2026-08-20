@@ -22,6 +22,7 @@
   import Icon from "$ui/Icon.svelte";
   import { X } from "$lib/icons";
   import IconButton from "./IconButton.svelte";
+  import { t } from "$domain/i18n.svelte";
 
   let {
     items,
@@ -75,7 +76,7 @@
     >
       <p class="min-w-0 flex-1 truncate text-sm text-text">{toast.message}</p>
       {#if onDismiss}
-        <IconButton label="Descartar" size="sm" onclick={() => onDismiss(toast.id)}>
+        <IconButton label={t("chrome.dismiss")} size="sm" onclick={() => onDismiss(toast.id)}>
           <Icon icon={X} size={12} />
         </IconButton>
       {/if}

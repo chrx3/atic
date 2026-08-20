@@ -64,7 +64,7 @@ pub fn send_summary_email(
         .lock_or_recover()
         .get_recording(&id)
         .map_err(|e| e.to_string())?
-        .ok_or_else(|| "Grabación no encontrada.".to_string())?;
+        .ok_or_else(crate::ui_lang::rec_missing)?;
 
     let cfg = state.config.lock_or_recover().clone();
     let mail = OutgoingMail {
@@ -97,8 +97,20 @@ pub fn send_summary_email(
         None
     };
 
-    let backend = mailer::build_mailer(&cfg.mail_backend, smtp).map_err(|e| e.to_string())?;
-    let message = backend.send(&mail).map_err(|e| e.to_string())?;
+    let backend = mailer::build_mailer(&cfg.mail_backend, smtp)
+        .map_err(|e| e.to_ui(crate::ui_lang::english()))?;
+    let sent = backend
+        .send(&mail)
+        .map_err(|e| e.to_ui(crate::ui_lang::english()))?;
+    let message = if backend.name() == "smtp" {
+        let to = mail.to.join(", ");
+        crate::ui_lang::msg(
+            &format!("Correo enviado a {to}"),
+            &format!("Email sent to {to}"),
+        )
+    } else {
+        sent
+    };
 
     let mailto_url = if backend.name() == "mailto" {
         app.opener()

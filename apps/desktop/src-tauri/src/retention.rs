@@ -50,10 +50,16 @@ pub fn cleanup_retention(
     days: Option<u32>,
 ) -> Result<RetentionCleanupResult, String> {
     if !confirm {
-        return Err("La limpieza requiere confirmación explícita.".into());
+        return Err(crate::ui_lang::msg(
+            "La limpieza requiere confirmación explícita.",
+            "Cleanup requires explicit confirmation.",
+        ));
     }
     if state.active.lock_or_recover().is_some() || state.dictation.lock_or_recover().is_some() {
-        return Err("Termina la grabación o el dictado antes de limpiar datos.".into());
+        return Err(crate::ui_lang::msg(
+            "Termina la grabación o el dictado antes de limpiar datos.",
+            "Finish recording or dictation before cleaning data.",
+        ));
     }
     let result = cleanup(&state, days)?;
     let _ = app.emit("recordings-changed", ());

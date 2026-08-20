@@ -15,6 +15,7 @@
   import SettingsRow from "$patterns/SettingsRow.svelte";
   import Button from "$ui/Button.svelte";
   import LauncherIcon from "$surfaces/launcher/LauncherIcon.svelte";
+  import { t } from "$domain/i18n.svelte";
 
   const cfg = $derived(config.current);
   let favorites = $state<LauncherHit[]>([]);
@@ -55,19 +56,19 @@
 {#if cfg}
   <div class="flex flex-col gap-5">
     <SettingsGroup
-      title="Favoritos"
-      hint="Aparecen como pelotitas al final de la barra del launcher. Máximo 8."
+      title={t("settings.launcher.favorites")}
+      hint={t("settings.launcher.favoritesHint")}
     >
       {#if loading}
-        <SettingsRow label="Cargando…">
+        <SettingsRow label={t("settings.launcher.loading")}>
           {#snippet control()}
             <span></span>
           {/snippet}
         </SettingsRow>
       {:else if favorites.length === 0}
         <SettingsRow
-          label="Sin favoritos"
-          hint="Abrí el launcher (Ctrl+Space), buscá una app y tocá la estrella."
+          label={t("settings.launcher.empty")}
+          hint={t("settings.launcher.emptyHint")}
         >
           {#snippet control()}
             <span></span>
@@ -86,7 +87,7 @@
                   size="sm"
                   onclick={() => void remove(fav.id)}
                 >
-                  Quitar
+                  {t("settings.launcher.remove")}
                 </Button>
               </div>
             {/snippet}

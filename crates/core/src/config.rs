@@ -210,6 +210,8 @@ pub struct Config {
     pub capture_click_action: String,
     /// Tema de interfaz: `light` | `dark` | `system`.
     pub ui_theme: String,
+    /// Idioma de la UI: `es` | `en`. Independiente del idioma de Whisper.
+    pub ui_language: String,
     /// Hosts SSH para sesiones de agente remotas.
     pub ssh_hosts: Vec<SshHost>,
 }
@@ -298,6 +300,7 @@ impl Default for Config {
             capture_include_cursor: false,
             capture_click_action: "preview".to_string(),
             ui_theme: "system".to_string(),
+            ui_language: "es".to_string(),
             ssh_hosts: Vec::new(),
         }
     }
@@ -381,6 +384,7 @@ struct ConfigFile {
     capture_include_cursor: Option<bool>,
     capture_click_action: Option<String>,
     ui_theme: Option<String>,
+    ui_language: Option<String>,
     ssh_hosts: Option<Vec<SshHost>>,
 }
 
@@ -489,6 +493,7 @@ impl Default for ConfigFile {
             capture_include_cursor: None,
             capture_click_action: None,
             ui_theme: None,
+            ui_language: None,
             ssh_hosts: None,
         }
     }
@@ -707,6 +712,10 @@ impl From<ConfigFile> for Config {
                 Some("dark") => "dark".into(),
                 _ => "system".into(),
             },
+            ui_language: match f.ui_language.as_deref() {
+                Some("en") => "en".into(),
+                _ => "es".into(),
+            },
             ssh_hosts: f.ssh_hosts.unwrap_or_default(),
         }
     }
@@ -809,6 +818,25 @@ mod tests {
     #[test]
     fn default_language_is_spanish() {
         assert_eq!(Config::default().language, "es");
+    }
+
+    #[test]
+    fn default_ui_language_is_spanish() {
+        assert_eq!(Config::default().ui_language, "es");
+    }
+
+    #[test]
+    fn missing_ui_language_stays_spanish() {
+        let json = r#"{ "language": "es" }"#;
+        let cfg: Config = serde_json::from_str::<ConfigFile>(json).unwrap().into();
+        assert_eq!(cfg.ui_language, "es");
+    }
+
+    #[test]
+    fn accepts_english_ui_language() {
+        let json = r#"{ "ui_language": "en" }"#;
+        let cfg: Config = serde_json::from_str::<ConfigFile>(json).unwrap().into();
+        assert_eq!(cfg.ui_language, "en");
     }
 
     #[test]

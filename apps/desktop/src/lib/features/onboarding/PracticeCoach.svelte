@@ -17,6 +17,7 @@
   import Button from "$ui/Button.svelte";
   import Kbd from "$ui/Kbd.svelte";
   import { PRACTICE_SKIP_AFTER_MS, PRACTICE_STEPS } from "./practice";
+  import { t } from "$domain/i18n.svelte";
 
   const cfg = $derived(config.current);
   const active = $derived(
@@ -27,6 +28,7 @@
   let stepIndex = $state(0);
   let canSkip = $state(false);
   let statusText = $state<string | null>(null);
+  let statusError = $state(false);
   let fallbackPlace = $state({ x: 24, y: 24 });
 
   const step = $derived(PRACTICE_STEPS[stepIndex] ?? PRACTICE_STEPS[0]);
@@ -69,6 +71,7 @@
     void stepIndex;
     canSkip = false;
     statusText = null;
+    statusError = false;
     const timer = setTimeout(() => (canSkip = true), PRACTICE_SKIP_AFTER_MS);
     return () => clearTimeout(timer);
   });
@@ -87,15 +90,18 @@
       "dictation-status": (payload) => {
         if (current !== "dictation") return;
         if (payload.phase === "listening") {
-          statusText = "Escuchando…";
+          statusText = t("onboarding.coach.listening");
+          statusError = false;
           return;
         }
         if (payload.phase === "transcribing") {
-          statusText = "Transcribiendo…";
+          statusText = t("onboarding.coach.transcribing");
+          statusError = false;
           return;
         }
         if (payload.phase === "error") {
-          statusText = payload.message ?? "El dictado falló.";
+          statusText = payload.message ?? t("onboarding.coach.failed");
+          statusError = true;
           canSkip = true;
           return;
         }
@@ -146,27 +152,34 @@
     aria-live="polite"
   >
     <p class="text-micro text-faint uppercase">
-      Práctica {stepIndex + 1} de {PRACTICE_STEPS.length}
+      {t("onboarding.coach.progress", {
+        current: stepIndex + 1,
+        total: PRACTICE_STEPS.length,
+      })}
     </p>
     <h2 id="onboarding-coach-title" class="text-sm font-medium text-text">
-      {step.title}
+      {t(`onboarding.coach.${step.id}Title`)}
     </h2>
-    <p class="max-w-[36ch] text-sm leading-relaxed text-muted">{step.body}</p>
+    <p class="max-w-[36ch] text-sm leading-relaxed text-muted">
+      {t(`onboarding.coach.${step.id}Body`)}
+    </p>
     <Kbd combo={shortcut} separator="+" />
 
     {#if statusText}
-      <p class="text-xs {statusText.includes('falló') ? 'text-danger' : 'text-faint'}">
+      <p class="text-xs {statusError ? 'text-danger' : 'text-faint'}">
         {statusText}
       </p>
     {/if}
 
     <div class="flex justify-end gap-2">
       <Button variant="ghost" size="sm" onclick={() => void finish()}>
-        Cerrar
+        {t("onboarding.coach.close")}
       </Button>
       {#if canSkip}
         <Button variant="ghost" size="sm" onclick={() => advance()}>
-          {stepIndex >= PRACTICE_STEPS.length - 1 ? "Listo" : "Saltar este paso"}
+          {stepIndex >= PRACTICE_STEPS.length - 1
+            ? t("onboarding.coach.done")
+            : t("onboarding.coach.skip")}
         </Button>
       {/if}
     </div>

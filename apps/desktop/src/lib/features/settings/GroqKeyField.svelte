@@ -10,10 +10,12 @@
   import Banner from "$ui/Banner.svelte";
   import Button from "$ui/Button.svelte";
   import Input from "$ui/Input.svelte";
+  import { t } from "$domain/i18n.svelte";
 
   let {
-    missingHint = "Sin ella el dictado cae a Whisper local.",
+    missingHint,
   }: { missingHint?: string } = $props();
+  const hint = $derived(missingHint ?? t("settings.dictation.groqKeyHint"));
   let hasKey = $state(false);
   let key = $state("");
   let saving = $state(false);
@@ -38,7 +40,7 @@
       await setSecret("groq_api_key", key.trim());
       key = "";
       hasKey = true;
-      toasts.push("Clave de Groq guardada en el llavero");
+      toasts.push(t("settings.groq.saved"));
     } catch (error) {
       toastError(error);
     } finally {
@@ -49,10 +51,10 @@
 
 <div class="flex flex-col gap-2">
   {#if hasKey}
-    <Banner tone="info" title="Hay una clave de Groq en el llavero" />
+    <Banner tone="info" title={t("settings.groq.hasKey")} />
   {:else}
-    <Banner tone="warn" title="Falta la clave de Groq">
-      {missingHint}
+    <Banner tone="warn" title={t("settings.groq.missingKey")}>
+      {hint}
     </Banner>
   {/if}
 
@@ -63,7 +65,7 @@
       bind:value={key}
       placeholder={hasKey ? "••••••••" : "gsk_…"}
       autocomplete="off"
-      aria-label={hasKey ? "Reemplazar la clave de Groq" : "Clave de Groq"}
+      aria-label={hasKey ? t("settings.groq.replaceAria") : t("settings.groq.keyAria")}
     />
     <Button
       variant="soft"
@@ -72,12 +74,12 @@
       disabled={!key.trim()}
       onclick={() => void save()}
     >
-      Guardar
+      {t("settings.groq.save")}
     </Button>
   </div>
 
   <p class="text-xs leading-relaxed text-faint">
-    Gratis. Creá una cuenta y copiá la clave en
+    {t("settings.groq.freeBefore")}
     <a
       href={GROQ_KEYS_URL}
       class="text-accent underline-offset-2 hover:underline"

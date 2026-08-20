@@ -11,6 +11,7 @@ import { on } from "$ipc/events";
 import { ollamaAvailable } from "$ipc/summaries";
 import type { AppConfig } from "$core/types";
 import type { DomainStore } from "./store";
+import { applyUiLocale } from "./i18n.svelte";
 
 class ConfigStore implements DomainStore {
   current = $state<AppConfig | null>(null);
@@ -23,6 +24,7 @@ class ConfigStore implements DomainStore {
 
   async hydrate(): Promise<void> {
     this.current = await getConfig();
+    applyUiLocale(this.current.ui_language);
     // El llavero puede estar bloqueado y el proveedor caído: ninguna de las
     // dos cosas debe impedir que el usuario vea sus grabaciones.
     void this.#refreshSummarySetup().catch(() => {});
@@ -55,10 +57,14 @@ class ConfigStore implements DomainStore {
     if (!before) return;
     const next = { ...before, ...changes };
     this.current = next;
+    if (changes.ui_language !== undefined) {
+      applyUiLocale(changes.ui_language);
+    }
     try {
       await setConfig(next);
     } catch (error) {
       this.current = before;
+      applyUiLocale(before.ui_language);
       throw error;
     }
     void this.#refreshSummarySetup().catch(() => {});

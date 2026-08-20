@@ -51,6 +51,88 @@ pub enum AudioError {
     CaptureThreadGone,
 }
 
+impl AudioError {
+    pub fn to_ui(&self, en: bool) -> String {
+        match self {
+            Self::NoInputDevice => {
+                if en {
+                    "No microphone device was found".into()
+                } else {
+                    self.to_string()
+                }
+            }
+            Self::InputDeviceNotFound(name) => {
+                if en {
+                    format!("Microphone “{name}” was not found")
+                } else {
+                    self.to_string()
+                }
+            }
+            Self::NoOutputDevice => {
+                if en {
+                    "No output device was found (PC audio)".into()
+                } else {
+                    self.to_string()
+                }
+            }
+            Self::OutputDeviceNotFound(name) => {
+                if en {
+                    format!("Output “{name}” was not found")
+                } else {
+                    self.to_string()
+                }
+            }
+            Self::UnsupportedFormat(fmt) => {
+                if en {
+                    format!("Unsupported sample format: {fmt}")
+                } else {
+                    self.to_string()
+                }
+            }
+            Self::Config(msg) => {
+                if en && msg == "debes habilitar al menos una pista (mic o sistema)" {
+                    "Enable at least one track (mic or system)".into()
+                } else if en && msg == "no se pudo abrir ninguna pista de audio" {
+                    "Could not open any audio track".into()
+                } else if en {
+                    format!("Audio configuration error: {msg}")
+                } else {
+                    self.to_string()
+                }
+            }
+            Self::BuildStream(err) => {
+                if en {
+                    format!("Could not build the audio stream: {err}")
+                } else {
+                    self.to_string()
+                }
+            }
+            Self::PlayStream(err) => {
+                if en {
+                    format!("Could not start the audio stream: {err}")
+                } else {
+                    self.to_string()
+                }
+            }
+            Self::Io(err) => format!("{err}"),
+            Self::Wav(err) => {
+                if en {
+                    format!("Error writing WAV: {err}")
+                } else {
+                    self.to_string()
+                }
+            }
+            Self::CaptureThreadGone => {
+                if en {
+                    "The capture thread ended unexpectedly".into()
+                } else {
+                    self.to_string()
+                }
+            }
+        }
+    }
+}
+
 /// Dispositivo de entrada (micrófono) visible para la UI.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct InputDeviceInfo {
@@ -93,6 +175,8 @@ pub struct CaptureConfig {
     /// Tap opcional de PCM para STT en vivo. `try_send`: si el consumidor se
     /// atrasa, se dropean chunks (nunca bloquea la captura ni el WAV).
     pub stt_tap: Option<SyncSender<AudioTapChunk>>,
+    /// Copy de avisos hacia la UI.
+    pub english: bool,
 }
 
 /// Pista de origen de un bloque de audio del tap.
@@ -304,6 +388,7 @@ pub fn bluetooth_recording_advisory(
     capture_system: bool,
     mic_device_id: &str,
     output_device_id: &str,
+    english: bool,
 ) -> Option<BluetoothRecordingAdvisory> {
     let inputs = list_input_devices().ok()?;
     let outputs = list_output_devices().ok()?;
@@ -314,6 +399,7 @@ pub fn bluetooth_recording_advisory(
         output_device_id,
         &inputs,
         &outputs,
+        english,
     )
 }
 
@@ -324,6 +410,7 @@ pub fn bluetooth_recording_advisory_for_devices(
     output_device_id: &str,
     inputs: &[InputDeviceInfo],
     outputs: &[InputDeviceInfo],
+    en: bool,
 ) -> Option<BluetoothRecordingAdvisory> {
     if !capture_mic {
         return None;
@@ -337,18 +424,30 @@ pub fn bluetooth_recording_advisory_for_devices(
     let out_bt = resolve_listed_device_name(output_device_id, outputs)
         .is_some_and(|name| looks_like_bluetooth(&name));
 
-    let message = "En Bluetooth, Windows suele bajar la calidad del audio mientras \
-                   usas el micrófono del auricular."
-        .to_string();
-
     let suggestion = if out_bt && capture_system {
-        Some(
+        Some(if en {
+            "Try the built-in mic (e.g. Realtek) + Bluetooth output, or turn on Speaker mode to record only “others”."
+                .into()
+        } else {
             "Prueba micrófono interno (p. ej. Realtek) + salida Bluetooth, o activa \
              Modo parlantes para grabar solo «otros»."
-                .into(),
-        )
+                .into()
+        })
     } else {
-        Some("Al detener la grabación, el audio debería volver a la calidad normal.".into())
+        Some(if en {
+            "When you stop recording, audio quality should return to normal.".into()
+        } else {
+            "Al detener la grabación, el audio debería volver a la calidad normal.".into()
+        })
+    };
+
+    let message = if en {
+        "On Bluetooth, Windows often drops audio quality while you use the headset microphone."
+            .to_string()
+    } else {
+        "En Bluetooth, Windows suele bajar la calidad del audio mientras \
+         usas el micrófono del auricular."
+            .to_string()
     };
 
     Some(BluetoothRecordingAdvisory {
@@ -457,6 +556,7 @@ pub fn audio_preflight(
     capture_system: bool,
     mic_device_id: &str,
     output_device_id: &str,
+    english: bool,
 ) -> Result<AudioPreflight, AudioError> {
     let inputs = list_input_devices()?;
     let outputs = list_output_devices()?;
@@ -469,6 +569,7 @@ pub fn audio_preflight(
         output_device_id,
         &inputs,
         &outputs,
+        english,
     );
     let recommended_mic_id = advisory.as_ref().and_then(|_| {
         inputs
@@ -827,9 +928,11 @@ fn control_loop(
                     return CaptureSummary::default();
                 }
                 tracing::warn!(%err, "micrófono no disponible; continuando solo con sistema");
-                let _ = events.send(CaptureEvent::Error(format!(
-                    "Micrófono no disponible: {err}"
-                )));
+                let _ = events.send(CaptureEvent::Error(if config.english {
+                    format!("Microphone unavailable: {}", err.to_ui(true))
+                } else {
+                    format!("Micrófono no disponible: {err}")
+                }));
             }
         }
     }
@@ -854,9 +957,11 @@ fn control_loop(
                     return CaptureSummary::default();
                 }
                 tracing::warn!(%err, "audio del sistema no disponible; grabando solo micrófono");
-                let _ = events.send(CaptureEvent::Error(format!(
-                    "Audio del sistema no disponible: {err}"
-                )));
+                let _ = events.send(CaptureEvent::Error(if config.english {
+                    format!("System audio unavailable: {}", err.to_ui(true))
+                } else {
+                    format!("Audio del sistema no disponible: {err}")
+                }));
             }
         }
     }
@@ -1267,6 +1372,7 @@ mod tests {
                 mic_device_id: String::new(),
                 output_device_id: String::new(),
                 stt_tap: None,
+                english: false,
             },
             mpsc::channel().0,
         );
@@ -1291,6 +1397,7 @@ mod tests {
             "Headphones (WH-1000XM4 Stereo)",
             &inputs,
             &outputs,
+            false,
         );
         assert!(advisory.is_some());
         let a = advisory.unwrap();
@@ -1309,6 +1416,7 @@ mod tests {
             "Headphones (Stereo)",
             &inputs,
             &outputs,
+            false,
         )
         .is_none());
     }
@@ -1324,6 +1432,7 @@ mod tests {
             "Speakers (Realtek Audio)",
             &inputs,
             &outputs,
+            false,
         )
         .is_none());
     }

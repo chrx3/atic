@@ -95,7 +95,12 @@ pub fn current_model_ready(state: State<AppState>) -> bool {
 #[tauri::command]
 pub fn download_model(app: AppHandle, id: String) -> Result<(), String> {
     let state = app.state::<AppState>();
-    let info = *transcribe::models::find(&id).ok_or_else(|| format!("Modelo desconocido: {id}"))?;
+    let info = *transcribe::models::find(&id).ok_or_else(|| {
+        crate::ui_lang::msg(
+            &format!("Modelo desconocido: {id}"),
+            &format!("Unknown model: {id}"),
+        )
+    })?;
     let models_dir = state.dirs.models_dir();
 
     if transcribe::models::is_downloaded(&models_dir, &info) {
@@ -144,7 +149,7 @@ pub fn download_model(app: AppHandle, id: String) -> Result<(), String> {
                     "model-download-error",
                     ErrorIdPayload {
                         id: info.id.to_string(),
-                        message: err.to_string(),
+                        message: err.to_ui(crate::ui_lang::english()),
                     },
                 );
             }
@@ -162,13 +167,16 @@ pub fn transcribe_recording(app: AppHandle, id: String) -> Result<(), String> {
         .db
         .lock_or_recover()
         .get_recording(&id)
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| "Grabación no encontrada.".to_string())?;
+        .map_err(|e| e.to_ui(crate::ui_lang::english()))?
+        .ok_or_else(crate::ui_lang::rec_missing)?;
 
     let cfg = state.config.lock_or_recover().clone();
     let engine = if cfg.meeting_backend == "groq" {
         let api_key = resolve_groq_api_key().ok_or_else(|| {
-            "Configurá tu API key de Groq en Ajustes, o pasá la transcripción a Local.".to_string()
+            crate::ui_lang::msg(
+                "Configurá tu API key de Groq en Ajustes, o pasá la transcripción a Local.",
+                "Set your Groq API key in Settings, or switch transcription to Local.",
+            )
         })?;
         MeetingEngine::Groq {
             api_key,
@@ -177,7 +185,7 @@ pub fn transcribe_recording(app: AppHandle, id: String) -> Result<(), String> {
     } else {
         let model_path =
             transcribe::models::require_downloaded(&state.dirs.models_dir(), &cfg.whisper_model)
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| e.to_ui(crate::ui_lang::english()))?;
         MeetingEngine::Local(model_path)
     };
 
@@ -199,9 +207,10 @@ pub fn transcribe_recording(app: AppHandle, id: String) -> Result<(), String> {
     };
 
     if mic.is_none() && system.is_none() {
-        return Err(
-            "No hay pistas para transcribir con la configuración actual (yo / otros).".into(),
-        );
+        return Err(crate::ui_lang::msg(
+            "No hay pistas para transcribir con la configuración actual (yo / otros).",
+            "There are no tracks to transcribe with the current settings (me / others).",
+        ));
     }
 
     let language = if cfg.language == "auto" {
@@ -327,9 +336,10 @@ fn run_transcription(
                 "transcribe-error",
                 ErrorIdPayload {
                     id: id.clone(),
-                    message:
-                        "No se produjo texto; prueba re-transcribir o revisá la pista y el idioma."
-                            .into(),
+                    message: crate::ui_lang::msg(
+                        "No se produjo texto; prueba re-transcribir o revisá la pista y el idioma.",
+                        "No text was produced; try transcribing again or check the track and language.",
+                    ),
                 },
             );
         }
@@ -344,7 +354,10 @@ fn run_transcription(
                     "transcribe-error",
                     ErrorIdPayload {
                         id: id.clone(),
-                        message: format!("No se pudo guardar la transcripción: {err}"),
+                        message: crate::ui_lang::msg(
+                            &format!("No se pudo guardar la transcripción: {err}"),
+                            &format!("Could not save the transcript: {err}"),
+                        ),
                     },
                 );
             } else {
@@ -364,7 +377,7 @@ fn run_transcription(
                 "transcribe-error",
                 ErrorIdPayload {
                     id: id.clone(),
-                    message: err.to_string(),
+                    message: err.to_ui(crate::ui_lang::english()),
                 },
             );
         }
@@ -391,17 +404,23 @@ pub fn save_transcript(
         .lock_or_recover()
         .get_recording(&id)
         .map_err(|error| error.to_string())?
-        .ok_or_else(|| "Grabación no encontrada.".to_string())?;
+        .ok_or_else(crate::ui_lang::rec_missing)?;
 
     if transcript.segments.len() > 50_000 {
-        return Err("La transcripción supera el máximo de 50.000 fragmentos.".into());
+        return Err(crate::ui_lang::msg(
+            "La transcripción supera el máximo de 50.000 fragmentos.",
+            "The transcript exceeds the 50,000-segment limit.",
+        ));
     }
     if transcript
         .language
         .as_ref()
         .is_some_and(|value| value.len() > 16)
     {
-        return Err("El código de idioma es demasiado largo.".into());
+        return Err(crate::ui_lang::msg(
+            "El código de idioma es demasiado largo.",
+            "The language code is too long.",
+        ));
     }
 
     let mut total_chars = 0usize;
@@ -421,7 +440,10 @@ pub fn save_transcript(
         true
     });
     if total_chars > 5_000_000 {
-        return Err("La transcripción supera el máximo de cinco millones de caracteres.".into());
+        return Err(crate::ui_lang::msg(
+            "La transcripción supera el máximo de cinco millones de caracteres.",
+            "The transcript exceeds the five-million-character limit.",
+        ));
     }
     transcript.sort();
     transcript

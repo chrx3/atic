@@ -7,10 +7,53 @@ use serde::Serialize;
 use tauri::State;
 use zip::write::SimpleFileOptions;
 
-use atic_core::{Recording, Summary, Transcript};
+use atic_core::{Recording, Segment, Speaker, Summary, Transcript};
 
 use crate::state::AppState;
 use atic_core::MutexExt;
+
+struct ExportCopy {
+    date: &'static str,
+    duration: &'static str,
+    summary: &'static str,
+    transcript: &'static str,
+    me: &'static str,
+    others: &'static str,
+}
+
+fn export_copy(en: bool) -> ExportCopy {
+    if en {
+        ExportCopy {
+            date: "Date",
+            duration: "Duration",
+            summary: "Summary",
+            transcript: "Transcript",
+            me: "Me",
+            others: "Others",
+        }
+    } else {
+        ExportCopy {
+            date: "Fecha",
+            duration: "Duración",
+            summary: "Resumen",
+            transcript: "Transcripción",
+            me: "Yo",
+            others: "Los demás",
+        }
+    }
+}
+
+fn speaker_line(segment: &Segment, copy: &ExportCopy) -> String {
+    segment
+        .speaker_name
+        .as_deref()
+        .filter(|name| !name.trim().is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| match segment.speaker {
+            Speaker::Me => copy.me.to_string(),
+            Speaker::Others => copy.others.to_string(),
+        })
+}
 
 #[derive(Serialize)]
 pub struct ExportResult {
@@ -25,20 +68,29 @@ pub fn export_recording(
     format: String,
     path: String,
 ) -> Result<ExportResult, String> {
+    let copy = export_copy(state.config.lock_or_recover().ui_language == "en");
     let recording = state
         .db
         .lock_or_recover()
         .get_recording(&id)
         .map_err(|error| error.to_string())?
-        .ok_or_else(|| "Grabación no encontrada.".to_string())?;
+        .ok_or_else(crate::ui_lang::rec_missing)?;
     let transcript = Transcript::load(&state.dirs.transcript_path(&id))
         .map_err(|error| error.to_string())?
-        .ok_or_else(|| "La grabación todavía no tiene transcripción.".to_string())?;
+        .ok_or_else(|| {
+            crate::ui_lang::msg(
+                "La grabación todavía no tiene transcripción.",
+                "This recording does not have a transcript yet.",
+            )
+        })?;
     let summary =
         Summary::load(&state.dirs.summary_path(&id)).map_err(|error| error.to_string())?;
     let destination = PathBuf::from(path.trim());
     if destination.as_os_str().is_empty() {
-        return Err("Elige un archivo de destino.".into());
+        return Err(crate::ui_lang::msg(
+            "Elige un archivo de destino.",
+            "Choose a destination file.",
+        ));
     }
     if let Some(parent) = destination.parent() {
         std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
@@ -47,12 +99,17 @@ pub fn export_recording(
     match format.as_str() {
         "md" => std::fs::write(
             &destination,
-            render_markdown(&recording, &transcript, summary.as_ref()),
+            render_markdown(&recording, &transcript, summary.as_ref(), &copy),
         )
         .map_err(|error| error.to_string())?,
-        "docx" => write_docx(&destination, &recording, &transcript, summary.as_ref())?,
-        "pdf" => write_pdf(&destination, &recording, &transcript, summary.as_ref())?,
-        _ => return Err("Formato de exportación inválido.".into()),
+        "docx" => write_docx(&destination, &recording, &transcript, summary.as_ref(), &copy)?,
+        "pdf" => write_pdf(&destination, &recording, &transcript, summary.as_ref(), &copy)?,
+        _ => {
+            return Err(crate::ui_lang::msg(
+                "Formato de exportación inválido.",
+                "Invalid export format.",
+            ))
+        }
     }
 
     Ok(ExportResult {
@@ -65,25 +122,26 @@ fn document_lines(
     recording: &Recording,
     transcript: &Transcript,
     summary: Option<&Summary>,
+    copy: &ExportCopy,
 ) -> Vec<String> {
     let mut lines = vec![
         recording.title.replace(['\r', '\n'], " "),
-        format!("Fecha: {}", recording.started_at.format("%Y-%m-%d %H:%M")),
-        format!("Duración: {} s", recording.duration_secs),
+        format!("{}: {}", copy.date, recording.started_at.format("%Y-%m-%d %H:%M")),
+        format!("{}: {} s", copy.duration, recording.duration_secs),
         String::new(),
     ];
     if let Some(summary) = summary {
-        lines.push("Resumen".into());
+        lines.push(copy.summary.into());
         lines.extend(summary.body.lines().map(str::to_string));
         lines.push(String::new());
     }
-    lines.push("Transcripción".into());
+    lines.push(copy.transcript.into());
     for segment in &transcript.segments {
         let minutes = segment.start_ms.max(0) / 60_000;
         let seconds = segment.start_ms.max(0) / 1_000 % 60;
         lines.push(format!(
             "[{minutes}:{seconds:02}] {}: {}",
-            segment.speaker_label(),
+            speaker_line(segment, copy),
             segment.text.trim()
         ));
     }
@@ -94,25 +152,28 @@ fn render_markdown(
     recording: &Recording,
     transcript: &Transcript,
     summary: Option<&Summary>,
+    copy: &ExportCopy,
 ) -> String {
     let mut out = format!(
-        "# {}\n\n- Fecha: {}\n- Duración: {} s\n\n",
+        "# {}\n\n- {}: {}\n- {}: {} s\n\n",
         recording.title.replace(['\r', '\n'], " "),
+        copy.date,
         recording.started_at.format("%Y-%m-%d %H:%M"),
+        copy.duration,
         recording.duration_secs
     );
     if let Some(summary) = summary {
-        out.push_str("## Resumen\n\n");
+        out.push_str(&format!("## {}\n\n", copy.summary));
         out.push_str(summary.body.trim());
         out.push_str("\n\n");
     }
-    out.push_str("## Transcripción\n\n");
+    out.push_str(&format!("## {}\n\n", copy.transcript));
     for segment in &transcript.segments {
         let minutes = segment.start_ms.max(0) / 60_000;
         let seconds = segment.start_ms.max(0) / 1_000 % 60;
         out.push_str(&format!(
             "**[{minutes}:{seconds:02}] {}:** {}\n\n",
-            segment.speaker_label(),
+            speaker_line(segment, copy),
             segment.text.trim()
         ));
     }
@@ -124,6 +185,7 @@ fn write_docx(
     recording: &Recording,
     transcript: &Transcript,
     summary: Option<&Summary>,
+    copy: &ExportCopy,
 ) -> Result<(), String> {
     let file = std::fs::File::create(path).map_err(|error| error.to_string())?;
     let mut archive = zip::ZipWriter::new(file);
@@ -146,7 +208,7 @@ fn write_docx(
     let mut document = String::from(
         r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>"#,
     );
-    for (index, line) in document_lines(recording, transcript, summary)
+    for (index, line) in document_lines(recording, transcript, summary, copy)
         .iter()
         .enumerate()
     {
@@ -182,8 +244,9 @@ fn write_pdf(
     recording: &Recording,
     transcript: &Transcript,
     summary: Option<&Summary>,
+    copy: &ExportCopy,
 ) -> Result<(), String> {
-    let wrapped: Vec<String> = document_lines(recording, transcript, summary)
+    let wrapped: Vec<String> = document_lines(recording, transcript, summary, copy)
         .into_iter()
         .flat_map(|line| wrap_line(&line, 92))
         .collect();

@@ -1154,7 +1154,7 @@ textarea,
 }
 
 .rb-wave-bar-quiet {
-  background: color-mix(in srgb, var(--rb-text) 45%, transparent);
+  background: color-mix(in srgb, var(--text) 50%, transparent);
   opacity: 0.85;
 }
 
@@ -1162,10 +1162,14 @@ textarea,
    Monocromo a propósito: Atic es una utilidad neutra y cálida, y un acento de
    color saturado la convertía en otra app. La amplitud se lee en ALTURA y
    OPACIDAD, no en tono, así que la tira sigue siendo información y no adorno.
-   Líneas finas y muy separadas: de reojo se lee el movimiento, que es el dato
-   ("te estoy escuchando"), sin que la pill pese sobre lo que estás mirando. */
+   La tinta es `--text`, no `--rb-text`: en `:root` el legado `--rb-*` sigue
+   siendo el del tema claro, y la pill flota sobre `--skin` oscuro. Con
+   `--rb-text` las barras eran tinta oscura sobre piel oscura.
+   `srgb` y no `oklab`: si el mix en oklab no aplica, el fondo queda inválido
+   y la tira desaparece entera. */
 .rb-wave-voice {
-  --voice-ink: var(--rb-text);
+  --voice-ink: var(--text);
+  color: var(--text);
   width: 5.75rem;
   min-width: 5.75rem;
   height: 1.4rem;
@@ -1175,11 +1179,13 @@ textarea,
 }
 
 .rb-wave-bar-voice {
-  min-width: 1.5px;
-  max-width: 2.5px;
+  min-width: 2px;
+  max-width: 3px;
+  /* Si `color-mix` no aplica, igual hay tinta. */
+  background: currentColor;
   background: color-mix(
-    in oklab,
-    var(--voice-ink) calc(38% + var(--rb-wave-amp, 0) * 62%),
+    in srgb,
+    var(--voice-ink) calc(55% + var(--rb-wave-amp, 0) * 45%),
     transparent
   );
   /* La altura la escribe el motor por reloj (60 fps): una transición acá

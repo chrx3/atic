@@ -13,6 +13,7 @@
   import AticMark from "$lib/AticMark.svelte";
   import ToolIcon from "$lib/ToolIcon.svelte";
   import GooFilter, { preFilter } from "$lib/GooFilter.svelte";
+  import { t } from "$domain/i18n.svelte";
   import { playWheelTick } from "$core/uiSound";
   import { TOOLS, type ToolDef, type ToolId } from "$lib/tools";
   import {
@@ -24,7 +25,7 @@
   } from "$surfaces/overlay/pill/wheelGeometry";
 
   let {
-    caption = "Elige una herramienta",
+    caption,
     /** Variante para la pill: anillo más abierto, sin etiquetas sueltas. */
     compact = false,
     /** Navegación con la rueda del ratón (la pill la usa como selector). */
@@ -38,7 +39,7 @@
     activeId = $bindable<ToolId | null>(null),
     hint = "",
     /** Texto del núcleo cuando es botón. La pill pasa "Cerrar". */
-    centerLabel = "Abrir Atic",
+    centerLabel,
     /** Gota viva colgada del anillo: grabación o dictado. */
     live = "off" as "off" | "recording" | "dictating",
     liveBusy = false,
@@ -63,6 +64,16 @@
     liveBusy?: boolean;
     onLive?: () => void;
   } = $props();
+
+  const shownCaption = $derived(caption ?? t("tools.pickHint"));
+  const shownCenter = $derived(centerLabel ?? t("tray.show"));
+  const liveLabel = $derived(
+    live === "recording"
+      ? t("pill.stopRecord")
+      : live === "dictating"
+        ? t("pill.stopDictate")
+        : t("tools.liveIdle"),
+  );
 
   const NODE_COUNT = $derived(tools.length);
 
@@ -530,7 +541,7 @@
       class="pw-nodes"
       role="toolbar"
       tabindex="-1"
-      aria-label="Herramientas Atic"
+      aria-label={t("tools.wheelAria")}
     >
       {#each separators as sep (sep.deg)}
         <span
@@ -593,15 +604,11 @@
         style="left: {livePos.x}px; top: {livePos.y}px; width: {SKIN.live}px; height: {SKIN.live}px"
         data-no-drag
         disabled={liveBusy || live === "off"}
-        aria-label={live === "recording"
-          ? "Detener grabación"
-          : live === "dictating"
-            ? "Detener dictado"
-            : "Inactivo"}
+        aria-label={liveLabel}
         title={live === "recording"
-          ? "Detener grabación"
+          ? t("pill.stopRecord")
           : live === "dictating"
-            ? "Dictando · clic para detener"
+            ? t("pill.dictatingHint")
             : undefined}
         onpointerdown={(e) => e.stopPropagation()}
         onclick={() => onLive?.()}
@@ -623,16 +630,16 @@
           class="pw-core"
           style="width: {coreSize}px; height: {coreSize}px"
           onclick={onCenter}
-          aria-label={centerLabel}
-          title={centerLabel}
+          aria-label={shownCenter}
+          title={shownCenter}
         >
           <span class="pw-mark">
             <AticMark size={compact ? 22 : 30} />
           </span>
           <span class="pw-caption">
             {compact
-              ? (activeTool?.label ?? caption)
-              : (activeTool?.short ?? caption)}
+              ? (activeTool?.label ?? shownCaption)
+              : (activeTool?.short ?? shownCaption)}
           </span>
         </button>
       {:else}
@@ -643,8 +650,8 @@
           <!-- En compacto el centro nombra la selección; en grande, la acción. -->
           <span class="pw-caption">
             {compact
-              ? (activeTool?.label ?? caption)
-              : (activeTool?.short ?? caption)}
+              ? (activeTool?.label ?? shownCaption)
+              : (activeTool?.short ?? shownCaption)}
           </span>
         </div>
       {/if}

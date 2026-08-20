@@ -1,4 +1,19 @@
+import { parseLocale, translate, type Locale } from "./i18n/translate";
 import type { RecordingStatus } from "./types";
+
+let locale: Locale = "es";
+
+export function setFormatLocale(raw: string | undefined | null): void {
+  locale = parseLocale(raw);
+}
+
+export function formatLocale(): Locale {
+  return locale;
+}
+
+function intlTag(): string {
+  return locale === "en" ? "en-US" : "es-CL";
+}
 
 export function formatDuration(seconds: number): string {
   const safeSeconds = Math.max(0, Math.floor(seconds));
@@ -10,7 +25,7 @@ export function formatDuration(seconds: number): string {
 export function formatDate(iso: string): string {
   const value = new Date(iso);
   if (Number.isNaN(value.getTime())) return iso;
-  return new Intl.DateTimeFormat("es-CL", {
+  return new Intl.DateTimeFormat(intlTag(), {
     dateStyle: "medium",
     timeStyle: "short",
   }).format(value);
@@ -27,19 +42,19 @@ export function formatListWhen(epochSecs: number): string {
   const startToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const startThat = new Date(value.getFullYear(), value.getMonth(), value.getDate());
   const dayDiff = Math.round((startToday.getTime() - startThat.getTime()) / 86_400_000);
-  const time = new Intl.DateTimeFormat("es-CL", {
+  const time = new Intl.DateTimeFormat(intlTag(), {
     hour: "2-digit",
     minute: "2-digit",
   }).format(value);
   if (dayDiff === 0) return time;
-  if (dayDiff === 1) return `Ayer · ${time}`;
+  if (dayDiff === 1) return translate(locale, "format.yesterday", { time });
   if (dayDiff > 1 && dayDiff < 7) {
-    const weekday = new Intl.DateTimeFormat("es-CL", { weekday: "short" }).format(
+    const weekday = new Intl.DateTimeFormat(intlTag(), { weekday: "short" }).format(
       value,
     );
     return `${weekday} · ${time}`;
   }
-  return new Intl.DateTimeFormat("es-CL", {
+  return new Intl.DateTimeFormat(intlTag(), {
     day: "numeric",
     month: "short",
     hour: "2-digit",
@@ -59,19 +74,12 @@ export function formatShortcut(raw: string): string {
 
 export function formatMegabytes(bytes: number): string {
   return (
-    new Intl.NumberFormat("es-CL", {
+    new Intl.NumberFormat(intlTag(), {
       maximumFractionDigits: 0,
     }).format(bytes / 1_000_000) + " MB"
   );
 }
 
 export function statusLabel(status: RecordingStatus): string {
-  return {
-    recorded: "Lista",
-    transcribing: "Transcribiendo",
-    transcribed: "Transcrita",
-    summarizing: "Generando resumen",
-    summarized: "Resumida",
-    error: "Requiere atención",
-  }[status];
+  return translate(locale, `page.meetings.status.${status}`);
 }

@@ -25,4 +25,54 @@ pub enum Error {
     Secret(String),
 }
 
+impl Error {
+    pub fn to_ui(&self, en: bool) -> String {
+        match self {
+            Self::NoDataDir => {
+                if en {
+                    "Could not determine the app data directory".into()
+                } else {
+                    self.to_string()
+                }
+            }
+            Self::Db(err) => {
+                if en {
+                    format!("Database error: {err}")
+                } else {
+                    self.to_string()
+                }
+            }
+            Self::Io(err) => format!("{err}"),
+            Self::Json(err) => {
+                if en {
+                    format!("Serialization error: {err}")
+                } else {
+                    self.to_string()
+                }
+            }
+            Self::InvalidValue { field, value } => {
+                if en {
+                    format!("Invalid value for '{field}': {value}")
+                } else {
+                    self.to_string()
+                }
+            }
+            Self::RecordingNotFound(_) => {
+                if en {
+                    "Recording not found.".into()
+                } else {
+                    "Grabación no encontrada.".into()
+                }
+            }
+            Self::Secret(err) => {
+                if en {
+                    format!("Keychain error: {err}")
+                } else {
+                    self.to_string()
+                }
+            }
+        }
+    }
+}
+
 pub type Result<T> = std::result::Result<T, Error>;

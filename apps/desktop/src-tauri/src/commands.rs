@@ -44,7 +44,7 @@ pub fn delete_recording(state: State<AppState>, id: String) -> Result<(), String
         .lock_or_recover()
         .get_recording(&id)
         .map_err(|e| e.to_string())?
-        .ok_or_else(|| "Grabación no encontrada.".to_string())?;
+        .ok_or_else(crate::ui_lang::rec_missing)?;
     let dir = state.dirs.recording_dir(&recording.id);
     if dir.exists() {
         std::fs::remove_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -75,6 +75,7 @@ pub fn get_config(state: State<AppState>) -> Config {
 pub fn set_config(app: AppHandle, state: State<AppState>, config: Config) -> Result<(), String> {
     let show_pill = config.show_pill;
     let ui_theme = config.ui_theme.clone();
+    let ui_language = config.ui_language.clone();
     let want_autostart = config.autostart;
     let shortcut = config.global_shortcut.clone();
     let dictation_shortcut = config.dictation_shortcut.clone();
@@ -134,6 +135,10 @@ pub fn set_config(app: AppHandle, state: State<AppState>, config: Config) -> Res
     sync_autostart(&app, want_autostart);
     // El overlay tiene `data_directory` propio: localStorage no cruza.
     let _ = app.emit("ui-theme", ui_theme);
+    let _ = app.emit("ui-language", ui_language.clone());
+    crate::ui_lang::set_english(ui_language == "en");
+    crate::ui_lang::apply_window_titles(&app);
+    crate::launcher::refresh_language(ui_language == "en");
     if config.onboarding_done != prev.onboarding_done
         || config.onboarding_practice_done != prev.onboarding_practice_done
     {
@@ -177,25 +182,31 @@ pub fn recording_track_path(
     let file = match track.as_str() {
         "mic" => "mic.wav",
         "system" => "system.wav",
-        _ => return Err("Pista inválida.".into()),
+        _ => return Err(crate::ui_lang::msg("Pista inválida.", "Invalid track.").into()),
     };
     let recording = state
         .db
         .lock_or_recover()
         .get_recording(&id)
         .map_err(|e| e.to_string())?
-        .ok_or_else(|| "Grabación no encontrada.".to_string())?;
+        .ok_or_else(crate::ui_lang::rec_missing)?;
     let track_exists = match track.as_str() {
         "mic" => recording.mic_path.is_some(),
         "system" => recording.system_path.is_some(),
         _ => false,
     };
     if !track_exists {
-        return Err("El archivo de audio no existe.".into());
+        return Err(crate::ui_lang::msg(
+            "El archivo de audio no existe.",
+            "The audio file does not exist.",
+        ));
     }
     let path = state.dirs.recording_dir(&recording.id).join(file);
     if !path.exists() {
-        return Err("El archivo de audio no existe.".into());
+        return Err(crate::ui_lang::msg(
+            "El archivo de audio no existe.",
+            "The audio file does not exist.",
+        ));
     }
     Ok(path.to_string_lossy().into_owned())
 }
@@ -216,17 +227,17 @@ pub fn dictation_phase(state: State<AppState>) -> crate::dictation::DictationPha
 
 #[tauri::command]
 pub fn list_input_devices() -> Result<Vec<atic_audio::InputDeviceInfo>, String> {
-    atic_audio::list_input_devices().map_err(|e| e.to_string())
+    atic_audio::list_input_devices().map_err(|e| e.to_ui(crate::ui_lang::english()))
 }
 
 #[tauri::command]
 pub fn list_output_devices() -> Result<Vec<atic_audio::InputDeviceInfo>, String> {
-    atic_audio::list_output_devices().map_err(|e| e.to_string())
+    atic_audio::list_output_devices().map_err(|e| e.to_ui(crate::ui_lang::english()))
 }
 
 #[tauri::command]
 pub fn debug_list_audio_devices() -> Result<String, String> {
-    atic_audio::debug_list_audio_devices().map_err(|e| e.to_string())
+    atic_audio::debug_list_audio_devices().map_err(|e| e.to_ui(crate::ui_lang::english()))
 }
 
 #[tauri::command]
@@ -238,8 +249,9 @@ pub fn audio_preflight(state: State<AppState>) -> Result<atic_audio::AudioPrefli
         tracks == "both" || tracks == "system",
         &config.mic_device_id,
         &config.output_device_id,
+        crate::ui_lang::english(),
     )
-    .map_err(|error| error.to_string())
+    .map_err(|error| error.to_ui(crate::ui_lang::english()))
 }
 
 #[derive(Serialize)]
@@ -256,13 +268,22 @@ pub async fn test_audio(app: AppHandle, config: Config) -> Result<AudioTestResul
         let state = app.state::<AppState>();
         let mut running = state.audio_test_running.lock_or_recover();
         if *running {
-            return Err("Ya hay una prueba de audio en curso.".into());
+            return Err(crate::ui_lang::msg(
+                "Ya hay una prueba de audio en curso.",
+                "An audio test is already running.",
+            ));
         }
         if state.active.lock_or_recover().is_some() {
-            return Err("Detén la grabación antes de probar el audio.".into());
+            return Err(crate::ui_lang::msg(
+                "Detén la grabación antes de probar el audio.",
+                "Stop the recording before testing audio.",
+            ));
         }
         if state.dictation.lock_or_recover().is_some() {
-            return Err("Termina el dictado antes de probar el audio.".into());
+            return Err(crate::ui_lang::msg(
+                "Termina el dictado antes de probar el audio.",
+                "Finish dictation before testing audio.",
+            ));
         }
         *running = true;
     }
@@ -276,8 +297,9 @@ pub async fn test_audio(app: AppHandle, config: Config) -> Result<AudioTestResul
             capture_system,
             &config.mic_device_id,
             &config.output_device_id,
+            crate::ui_lang::english(),
         )
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| error.to_ui(crate::ui_lang::english()))?;
         let nonce = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_err(|error| error.to_string())?
@@ -297,22 +319,23 @@ pub async fn test_audio(app: AppHandle, config: Config) -> Result<AudioTestResul
                 mic_device_id: config.mic_device_id,
                 output_device_id: config.output_device_id,
                 stt_tap: None,
+                english: crate::ui_lang::english(),
             },
             events,
         )
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| error.to_ui(crate::ui_lang::english()))?;
         std::thread::sleep(std::time::Duration::from_secs(5));
         let summary = handle.stop();
         let mic = summary
             .mic_written
             .then(|| atic_audio::analyze_wav(&mic_path))
             .transpose()
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| error.to_ui(crate::ui_lang::english()))?;
         let system = summary
             .system_written
             .then(|| atic_audio::analyze_wav(&system_path))
             .transpose()
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| error.to_ui(crate::ui_lang::english()))?;
         let _ = std::fs::remove_dir_all(&dir);
         Ok(AudioTestResult {
             mic,
@@ -344,7 +367,10 @@ pub(crate) fn open_data_dir_kind(
         "logs" => dirs.logs_dir(),
         "data" => dirs.data_dir(),
         other => {
-            return Err(format!("Carpeta de datos desconocida: {other}"));
+            return Err(crate::ui_lang::msg(
+                &format!("Carpeta de datos desconocida: {other}"),
+                &format!("Unknown data folder: {other}"),
+            ));
         }
     };
     let _ = std::fs::create_dir_all(&dir);
@@ -374,10 +400,13 @@ pub fn open_recording_dir(
         .lock_or_recover()
         .get_recording(&id)
         .map_err(|e| e.to_string())?
-        .ok_or_else(|| "Grabación no encontrada.".to_string())?;
+        .ok_or_else(crate::ui_lang::rec_missing)?;
     let dir = state.dirs.recording_dir(&id);
     if !dir.is_dir() {
-        return Err("Esta grabación no tiene archivos en disco.".into());
+        return Err(crate::ui_lang::msg(
+            "Esta grabación no tiene archivos en disco.",
+            "This recording has no files on disk.",
+        ));
     }
     let _ = std::fs::write(dir.join("titulo.txt"), rec.title.as_bytes());
     app.opener()
