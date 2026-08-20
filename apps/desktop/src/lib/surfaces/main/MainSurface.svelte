@@ -5,6 +5,7 @@
    * Shell: picker líquido (rueda + cards). El detalle de cada tool y sus
    * ajustes viven en un modal. El estado de dominio lo monta `sessionEffect`.
    */
+  import { untrack } from "svelte";
   import { toolById } from "$core/tools";
   import { localizeTool, t } from "$domain/i18n.svelte";
   import { LAUNCHER_LAB_OPEN_KEY } from "$lib/dev/launcherLab.svelte";
@@ -101,7 +102,13 @@
   $effect(() => {
     if (isDev) return;
     if (!onboardingDone) return;
-    return appUpdate.startPolling();
+    // `startPolling` consulta en el acto, y ese `check()` lee y escribe
+    // `checking`/`error` del store. Sin `untrack` el efecto se invalida a sí
+    // mismo —escribe lo que acaba de leer, y el teardown lo vuelve a
+    // escribir—, así que Svelte aborta el árbol de efectos entero con
+    // `effect_update_depth_exceeded`. No se cae solo el aviso de update: se
+    // queda sin reactividad TODA la ventana (picker, modales, layout).
+    return untrack(() => appUpdate.startPolling());
   });
 
   function onKeydown(event: KeyboardEvent) {

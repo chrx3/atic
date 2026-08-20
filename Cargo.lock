@@ -305,7 +305,7 @@ dependencies = [
 
 [[package]]
 name = "atic-audio"
-version = "0.4.18"
+version = "0.4.19"
 dependencies = [
  "cpal",
  "hound",
@@ -318,7 +318,7 @@ dependencies = [
 
 [[package]]
 name = "atic-capture"
-version = "0.4.18"
+version = "0.4.19"
 dependencies = [
  "chrono",
  "png 0.17.16",
@@ -330,7 +330,7 @@ dependencies = [
 
 [[package]]
 name = "atic-core"
-version = "0.4.18"
+version = "0.4.19"
 dependencies = [
  "chrono",
  "directories",
@@ -346,7 +346,7 @@ dependencies = [
 
 [[package]]
 name = "atic-desktop"
-version = "0.4.18"
+version = "0.4.19"
 dependencies = [
  "agent-client-protocol",
  "arboard",
@@ -390,7 +390,7 @@ dependencies = [
 
 [[package]]
 name = "atic-mailer"
-version = "0.4.18"
+version = "0.4.19"
 dependencies = [
  "lettre",
  "thiserror 2.0.18",
@@ -400,7 +400,7 @@ dependencies = [
 
 [[package]]
 name = "atic-summarize"
-version = "0.4.18"
+version = "0.4.19"
 dependencies = [
  "atic-core",
  "chrono",
@@ -413,7 +413,7 @@ dependencies = [
 
 [[package]]
 name = "atic-transcribe"
-version = "0.4.18"
+version = "0.4.19"
 dependencies = [
  "atic-core",
  "hound",
