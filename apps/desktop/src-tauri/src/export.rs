@@ -68,7 +68,7 @@ pub fn export_recording(
     format: String,
     path: String,
 ) -> Result<ExportResult, String> {
-    let copy = export_copy(state.config.lock_or_recover().ui_language == "en");
+    let copy = export_copy(state.config.lock_or_recover().resolved_ui_language() == "en");
     let recording = state
         .db
         .lock_or_recover()

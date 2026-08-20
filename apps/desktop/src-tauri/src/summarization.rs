@@ -197,7 +197,7 @@ fn resolve_and_persist_models(app: &AppHandle) -> LiveModelsDto {
             api_key: None,
             model: cfg.summary_model.clone(),
             base_url: cfg.summary_base_url.clone(),
-            english: cfg.ui_language == "en",
+            english: cfg.resolved_ui_language() == "en",
         },
     };
     let resolved = resolve_models(&summarizer_cfg);
@@ -230,7 +230,7 @@ fn summarizer_config_from_app(cfg: &atic_core::Config) -> Result<SummarizerConfi
         api_key,
         model: cfg.summary_model.clone(),
         base_url: cfg.summary_base_url.clone(),
-        english: cfg.ui_language == "en",
+        english: cfg.resolved_ui_language() == "en",
     })
 }
 

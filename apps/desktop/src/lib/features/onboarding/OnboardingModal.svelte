@@ -185,12 +185,29 @@
           onchange={(checked) => patch({ beep_on_start: checked })}
         />
       {:else if step === 2}
-        <Field label={t("onboarding.transcribeLang")}>
+        <Field label={t("settings.language.label")} hint={t("settings.language.hint")}>
+          {#snippet children()}
+            <SegmentedControl
+              value={["system", "en", "es"].includes(cfg.ui_language) ? cfg.ui_language : "system"}
+              label={t("settings.language.aria")}
+              options={[
+                { value: "system", label: t("settings.language.system") },
+                { value: "es", label: t("settings.language.es") },
+                { value: "en", label: t("settings.language.en") },
+              ]}
+              onchange={(language) => patch({ ui_language: language })}
+              full
+            />
+          {/snippet}
+        </Field>
+
+        <Field label={t("onboarding.transcribeLang")} hint={t("settings.language.speechHint")}>
           {#snippet children({ id })}
             <Select
               {id}
               value={cfg.language}
               options={[
+                { value: "system", label: t("onboarding.langSystem") },
                 { value: "es", label: t("onboarding.langEs") },
                 { value: "auto", label: t("onboarding.langAuto") },
                 { value: "en", label: t("onboarding.langEn") },

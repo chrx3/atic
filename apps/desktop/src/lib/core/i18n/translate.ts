@@ -7,7 +7,17 @@ export type Locale = "es" | "en";
 export type Dict = { readonly [key: string]: string | Dict };
 
 export function parseLocale(raw: string | undefined | null): Locale {
-  return raw === "en" ? "en" : "es";
+  if (raw === "en" || raw === "es") return raw;
+  if (raw === "system") return localeFromNavigator();
+  return "es";
+}
+
+function localeFromNavigator(): Locale {
+  const tag =
+    typeof globalThis.navigator === "object" && globalThis.navigator
+      ? globalThis.navigator.language
+      : "";
+  return tag.toLowerCase().startsWith("en") ? "en" : "es";
 }
 
 function lookup(tree: Dict, path: string): string | undefined {

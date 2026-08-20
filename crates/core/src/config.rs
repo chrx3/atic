@@ -60,7 +60,7 @@ impl Default for SshHost {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
-    /// Idioma de transcripción: "auto" o un código ISO ("es", "en", ...).
+    /// Idioma de transcripción: `system` (SO), `auto` (Whisper), o ISO (`es`, `en`, …).
     pub language: String,
     /// Modelo Whisper para reuniones / transcripción de grabaciones.
     pub whisper_model: String,
@@ -210,7 +210,7 @@ pub struct Config {
     pub capture_click_action: String,
     /// Tema de interfaz: `light` | `dark` | `system`.
     pub ui_theme: String,
-    /// Idioma de la UI: `es` | `en`. Independiente del idioma de Whisper.
+    /// Idioma de la UI: `system` | `es` | `en`. Independiente de Whisper.
     pub ui_language: String,
     /// Hosts SSH para sesiones de agente remotas.
     pub ssh_hosts: Vec<SshHost>,
@@ -219,9 +219,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            // Español por defecto: con "auto", Whisper suele confundir audio
-            // ruidoso/corto y inventar inglés basura.
-            language: "es".to_string(),
+            language: "system".to_string(),
             // Base permite que la primera instalación sea local, rápida y
             // liviana: dictado y reuniones comparten una sola descarga.
             // Small/Medium siguen disponibles desde Ajustes si se privilegia
@@ -300,7 +298,7 @@ impl Default for Config {
             capture_include_cursor: false,
             capture_click_action: "preview".to_string(),
             ui_theme: "system".to_string(),
-            ui_language: "es".to_string(),
+            ui_language: "system".to_string(),
             ssh_hosts: Vec::new(),
         }
     }
@@ -564,7 +562,10 @@ impl From<ConfigFile> for Config {
             });
 
         Config {
-            language: f.language,
+            language: match f.language.as_str() {
+                "en" | "es" | "pt" | "fr" | "auto" | "system" => f.language,
+                _ => "system".into(),
+            },
             whisper_model: f.whisper_model,
             meeting_backend: match f.meeting_backend.as_deref() {
                 Some("groq") => "groq".into(),
@@ -714,7 +715,8 @@ impl From<ConfigFile> for Config {
             },
             ui_language: match f.ui_language.as_deref() {
                 Some("en") => "en".into(),
-                _ => "es".into(),
+                Some("es") => "es".into(),
+                _ => "system".into(),
             },
             ssh_hosts: f.ssh_hosts.unwrap_or_default(),
         }
@@ -722,6 +724,16 @@ impl From<ConfigFile> for Config {
 }
 
 impl Config {
+    /// Idioma de interfaz efectivo (`es` o `en`).
+    pub fn resolved_ui_language(&self) -> String {
+        crate::locale::resolve_ui_language(&self.ui_language)
+    }
+
+    /// Idioma para Whisper. `None` = que detecte el audio.
+    pub fn whisper_language(&self) -> Option<String> {
+        crate::locale::resolve_whisper_language(&self.language)
+    }
+
     /// Qué pistas grabar tras aplicar `speakers_mode`.
     pub fn effective_record_tracks(&self) -> &str {
         if self.speakers_mode {
@@ -816,20 +828,22 @@ mod tests {
     }
 
     #[test]
-    fn default_language_is_spanish() {
-        assert_eq!(Config::default().language, "es");
+    fn default_languages_follow_system() {
+        let cfg = Config::default();
+        assert_eq!(cfg.ui_language, "system");
+        assert_eq!(cfg.language, "system");
+        assert_eq!(
+            cfg.resolved_ui_language(),
+            crate::locale::ui_language_from_tag(crate::locale::os_locale_tag().as_deref())
+        );
     }
 
     #[test]
-    fn default_ui_language_is_spanish() {
-        assert_eq!(Config::default().ui_language, "es");
-    }
-
-    #[test]
-    fn missing_ui_language_stays_spanish() {
+    fn missing_ui_language_follows_system() {
         let json = r#"{ "language": "es" }"#;
         let cfg: Config = serde_json::from_str::<ConfigFile>(json).unwrap().into();
-        assert_eq!(cfg.ui_language, "es");
+        assert_eq!(cfg.ui_language, "system");
+        assert_eq!(cfg.language, "es");
     }
 
     #[test]

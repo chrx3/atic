@@ -60,6 +60,23 @@ impl Rect {
         px >= self.x && px < self.right() && py >= self.y && py < self.bottom()
     }
 
+    /// Unión de rectángulos. Ignora vacíos; `None` si no hay ninguno útil.
+    pub fn union_all(rects: impl IntoIterator<Item = Self>) -> Option<Self> {
+        let mut iter = rects.into_iter().filter(|r| !r.is_empty());
+        let first = iter.next()?;
+        let mut left = first.x;
+        let mut top = first.y;
+        let mut right = first.right();
+        let mut bottom = first.bottom();
+        for rect in iter {
+            left = left.min(rect.x);
+            top = top.min(rect.y);
+            right = right.max(rect.right());
+            bottom = bottom.max(rect.bottom());
+        }
+        Some(Self::from_ltrb(left, top, right, bottom))
+    }
+
     /// Intersección con otro rectángulo, o `None` si no se solapan.
     pub fn intersection(&self, other: &Rect) -> Option<Rect> {
         let left = self.x.max(other.x);
@@ -121,6 +138,17 @@ mod tests {
         assert!(!r.contains(100, 49));
         assert!(!r.contains(50, 50));
         assert!(!r.contains(-1, 10));
+    }
+
+    #[test]
+    fn union_all_covers_two_monitors() {
+        let left = Rect::new(0, 0, 1920, 1080);
+        let right = Rect::new(1920, 0, 1920, 1080);
+        assert_eq!(
+            Rect::union_all([left, right]),
+            Some(Rect::new(0, 0, 3840, 1080))
+        );
+        assert_eq!(Rect::union_all([Rect::new(0, 0, 0, 10)]), None);
     }
 
     #[test]
