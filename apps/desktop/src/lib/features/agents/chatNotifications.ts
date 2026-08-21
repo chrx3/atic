@@ -40,12 +40,12 @@ export function statusToastMessage(
 
   if (item.text.startsWith("Modelo:")) {
     const rest = item.text.slice("Modelo:".length).trim();
-    if (!rest || /elegí/i.test(rest)) return item.text;
+    if (!rest || /eleg[ií]/i.test(rest)) return item.text;
     return `Modelo: ${modelLabelFor(rest, models)}`;
   }
   if (item.text.startsWith("Esfuerzo:")) {
     const rest = item.text.slice("Esfuerzo:".length).trim();
-    if (!rest || /elegí/i.test(rest)) return item.text;
+    if (!rest || /eleg[ií]/i.test(rest)) return item.text;
     return `Esfuerzo: ${effortShortLabel(rest)}`;
   }
   if (

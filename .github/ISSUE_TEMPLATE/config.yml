@@ -2,4 +2,4 @@ blank_issues_enabled: false
 contact_links:
   - name: Vulnerabilidad de seguridad
     url: https://github.com/chrx3/atic/security/advisories/new
-    about: No abras un issue público con exploits. Usá un advisory privado.
+    about: No abras un issue público con exploits. Usa un advisory privado.

@@ -4,6 +4,13 @@ Gracias por interesarte en el proyecto. Este documento resume cómo montar el en
 
 Al participar, aceptas el [Código de Conducta](CODE_OF_CONDUCT.md).
 
+## Español
+
+El producto y el equipo son de **Chile**. UI, docs, errores, comentarios y
+prompts van en español de Chile (**tuteo**: tú, tienes, graba, elige).
+
+No uses voseo rioplatense (`vos`, `tenés`, `podés`, `grabá`, `elegí`, `usá`).
+
 ## Flujo
 
 El desarrollo activo está en `main`. Las versiones publicadas son tags `v*`.

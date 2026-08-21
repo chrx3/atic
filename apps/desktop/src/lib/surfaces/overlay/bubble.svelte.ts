@@ -167,7 +167,7 @@ export class Bubble {
    * De qué lados se agarra para redimensionar.
    *
    * De los dos OPUESTOS al cuello, siempre. Arrastrar por el lado anclado
-   * despegaría el globo de la pill mientras lo estirás, que es justo lo que la
+   * despegaría el globo de la pill mientras lo estiras, que es justo lo que la
    * geometría de Rust se encarga de evitar.
    */
   get grips(): { v: "top" | "bottom"; h: "left" | "right" } {

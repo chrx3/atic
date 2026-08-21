@@ -185,7 +185,7 @@
     error = null;
     if (tab === "ssh" && !activeHost) {
       error =
-        "Elegí un host SSH en la consola (o agregalo en Ajustes → Agentes).";
+        "Elige un host SSH en la consola (o agrégalo en Ajustes → Agentes).";
       return;
     }
     connecting = true;
@@ -510,7 +510,7 @@
         <EmptyState
           compact
           title="Sin host remoto"
-          hint="Agregá un host en Ajustes → Agentes y volvé a abrir la consola."
+          hint="Agrega un host en Ajustes → Agentes y vuelve a abrir la consola."
         />
       </div>
     {:else if !connected && !connecting}

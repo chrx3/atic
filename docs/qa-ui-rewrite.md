@@ -10,8 +10,8 @@ una lista corta, versionada, que se corre a mano.
 La anterior sigue en `/legacy` y se llega con **Ctrl+Alt+M**, que es la vía de
 escape si algo de acá falla.
 
-Marcá lo que falle con la fecha y qué pasó. Un paso que falla no invalida el
-resto: seguí y anotá.
+Marca lo que falle con la fecha y qué pasó. Un paso que falla no invalida el
+resto: sigue y anota.
 
 ---
 

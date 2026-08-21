@@ -1,0 +1,20 @@
+---
+description: Español de Chile en UI, docs y comentarios. Sin voseo rioplatense.
+alwaysApply: true
+---
+
+# Español de Chile
+
+Atic es un producto chileno. Todo el español del repo (UI, README, Features,
+errores, comentarios, prompts de IA) usa **tuteo** (`tú` / imperativo en -a/-e).
+
+No uses voseo rioplatense ni léxico argentino.
+
+```text
+Mal:  Grabá, tenés, podés, elegí, vos, usá, escribís, guardás
+Bien: Graba, tienes, puedes, elige, tú, usa, escribes, guardas
+```
+
+- Copy de UI: `apps/desktop/src/lib/core/i18n/es.ts` (tuteo).
+- Prompts de resumen: español de Chile, nunca `vos` / `tenés` / `podés`.
+- No imites el acento argentino aunque el modelo lo sugiera por defecto.

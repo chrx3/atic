@@ -3,7 +3,7 @@
    * Textos guardados a mano, y el bloc.
    *
    * Son dos cosas distintas bajo una pestaña porque comparten el mismo origen:
-   * lo que vos decidís guardar, frente al historial que se llena solo.
+   * lo que decides guardar, frente al historial que se llena solo.
    */
   import type { Snippet as SnippetItem } from "$core/types";
   import { snippets } from "$domain/snippets.svelte";

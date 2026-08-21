@@ -9,7 +9,7 @@ sin worktrees, sin revisión de diffs — eso queda documentado al final como
 > Code, OpenCode, Codex y Cursor están cableados. Resume expuesto para Claude y
 > Codex. Subagentes nativos se ven como items `collab`. Worktrees/checkpoints
 > siguen fuera de alcance. Roadmap de adopción Synara/T3: composer UX, resume,
-> collab visible, approvals/listados ligeros. Si venís a retomar, arrancá por
+> collab visible, approvals/listados ligeros. Si vienes a retomar, arranca por
 > [Traspaso](#traspaso-para-quien-siga).
 
 ## El hallazgo que ordena todo
@@ -113,7 +113,7 @@ todos los demás:
 static SESSIONS: Mutex<Option<HashMap<String, Entry>>> = Mutex::new(None);
 ```
 
-Cerrás Atic y la conversación se evapora. El CLI sí la guardó en su propio
+Cierras Atic y la conversación se evapora. El CLI sí la guardó en su propio
 disco, pero Atic no tiene con qué encontrarla.
 
 **3. `backends()` devuelve una lista fija de uno** (`bridge.rs:35-37`).

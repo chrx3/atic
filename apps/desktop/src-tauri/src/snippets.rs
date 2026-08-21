@@ -42,7 +42,7 @@ pub struct Scratchpad {
 /// Una nota guardada.
 ///
 /// El título no se pide: sale de la primera línea del cuerpo. Obligar a nombrar
-/// algo antes de escribirlo es fricción justo en el momento en que querés
+/// algo antes de escribirlo es fricción justo en el momento en que quieres
 /// anotar rápido, que es para lo que existe el bloc.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

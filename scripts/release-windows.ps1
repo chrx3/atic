@@ -27,7 +27,7 @@ if (-not (Test-Path $keyPath)) {
     throw "Falta $keyPath. Es la clave privada del updater; no está en git."
 }
 if (-not (Test-Path $passPath)) {
-    throw "Falta $passPath. Guardá ahí la contraseña de la clave, una sola línea."
+    throw "Falta $passPath. Guarda ahí la contraseña de la clave, una sola línea."
 }
 
 $conf = Get-Content -Raw (Join-Path $repo "apps\desktop\src-tauri\tauri.conf.json") | ConvertFrom-Json
@@ -52,7 +52,7 @@ $exe = Get-ChildItem -Path $nsis -Filter "Atic_${ver}_x64-setup.exe" | Select-Ob
 if (-not $exe) { throw "No encontré Atic_${ver}_x64-setup.exe en $nsis" }
 $sigPath = "$($exe.FullName).sig"
 if (-not (Test-Path $sigPath)) {
-    throw "No se generó $($exe.Name).sig. Revisá la clave y la contraseña."
+    throw "No se generó $($exe.Name).sig. Revisa la clave y la contraseña."
 }
 
 $sig = (Get-Content -Raw $sigPath).Trim()

@@ -215,7 +215,7 @@ pub fn console_open(
         "local" | "ssh" => options.kind.clone(),
         other => {
             return Err(format!(
-                "Tipo de consola desconocido: {other}. Usá local o ssh."
+                "Tipo de consola desconocido: {other}. Usa local o ssh."
             ));
         }
     };

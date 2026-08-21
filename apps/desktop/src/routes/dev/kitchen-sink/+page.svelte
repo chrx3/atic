@@ -190,7 +190,7 @@
               aria-describedby={describedBy}
               bind:value={note}
               autogrow
-              placeholder="Escribí una nota…"
+              placeholder="Escribe una nota…"
             />
           {/snippet}
         </Field>
@@ -222,7 +222,7 @@
         <div class="rounded-sm border border-line">
           <EmptyState
             title="Todavía no hay grabaciones"
-            hint="Empezá una desde la pill."
+            hint="Empieza una desde la pill."
           >
             {#snippet action()}
               <Button variant="soft" size="sm">Grabar ahora</Button>
@@ -293,7 +293,7 @@
             {/snippet}
 
             {#snippet empty()}
-              <EmptyState title="Elegí una grabación" hint="Se muestra acá al lado." />
+              <EmptyState title="Elige una grabación" hint="Se muestra aquí al lado." />
             {/snippet}
           </ListDetail>
         </div>

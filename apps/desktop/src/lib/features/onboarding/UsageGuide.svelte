@@ -24,12 +24,12 @@
           {
             combo: cfg.pill_radial_shortcut,
             title: "Rueda de herramientas",
-            body: "Mantené la tecla y aparece en el cursor. Elegís con la rueda del mouse y soltás para activar. Un clic en la pill también abre la rueda.",
+            body: "Mantén la tecla y aparece en el cursor. Eliges con la rueda del mouse y sueltas para activar. Un clic en la pill también abre la rueda.",
           },
           {
             combo: cfg.dictation_shortcut,
             title: "Dictar",
-            body: "Hablás y el texto se pega donde tengas el cursor, en cualquier app.",
+            body: "Hablas y el texto se pega donde tengas el cursor, en cualquier app.",
           },
           {
             combo: cfg.clipboard_shortcut,
@@ -47,7 +47,7 @@
     <p class="max-w-[60ch] text-sm leading-relaxed text-muted">
       Esta ventana es para revisar lo que grabaste. El día a día pasa en la
       <strong class="font-medium text-text">pill</strong>: una pastilla flotante que
-      queda sobre lo que estés haciendo, y que podés arrastrar adonde te sirva.
+      queda sobre lo que estés haciendo, y que puedes arrastrar adonde te sirva.
     </p>
   </div>
 

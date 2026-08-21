@@ -11,7 +11,7 @@ buscador de Windows. **No** es un índice Everything de todo el disco.
 ## Cómo se usa
 
 1. Atajo global (por defecto `Ctrl+Space` / `Cmd+Space`; configurable en Ajustes).
-2. Escribís; resultados al vuelo (prefix/contains).
+2. Escribes; resultados al vuelo (prefix/contains).
 3. Enter abre el ítem (acceso directo o acción interna). Esc o perder el foco cierra.
 
 Fuentes actuales:

@@ -415,7 +415,7 @@ unsafe extern "system" fn rawinput_wnd_proc(
                 }
             }
 
-            // Clic fuera de las zonas del overlay = «cerrá lo que tengas
+            // Clic fuera de las zonas del overlay = «cierra lo que tengas
             // abierto». Reemplaza al `blur` de la pill, que dentro del overlay
             // dejó de significar eso.
             const MAIN_DOWN: u32 = RI_MOUSE_LEFT_BUTTON_DOWN

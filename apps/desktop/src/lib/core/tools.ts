@@ -63,11 +63,11 @@ const ALL_TOOLS: ToolDef[] = [
     id: "snippets",
     // "Fragmentos" describía la forma, no el uso, y no decía en qué se
     // diferencia de Clipboard. La distinción real es el origen: el historial se
-    // llena solo con lo que copiás, esto lo guardás vos a propósito.
+    // llena solo con lo que copias, esto lo guardas tú a propósito.
     label: "Textos",
     short: "Guardados a mano",
     blurb:
-      "Los textos que escribís siempre, listos para pegar. Más un bloc para notas sueltas.",
+      "Los textos que escribes siempre, listos para pegar. Más un bloc para notas sueltas.",
     actionLabel: "Ver textos",
   },
   {
@@ -75,7 +75,7 @@ const ALL_TOOLS: ToolDef[] = [
     label: "Agentes",
     short: "Consola con interfaz",
     blurb:
-      "Conversá con agentes de consola desde una interfaz, sin perder sus herramientas.",
+      "Conversa con agentes de consola desde una interfaz, sin perder sus herramientas.",
     actionLabel: "Abrir consola",
   },
   {
@@ -89,7 +89,7 @@ const ALL_TOOLS: ToolDef[] = [
     id: "board",
     label: "Pizarra",
     short: "Marcar la pantalla",
-    blurb: "Congela la pantalla y la marcás con flechas y círculos, ahí donde está.",
+    blurb: "Congela la pantalla y la marcas con flechas y círculos, ahí donde está.",
     actionLabel: "Dibujar",
   },
   {
@@ -97,7 +97,7 @@ const ALL_TOOLS: ToolDef[] = [
     label: "Apps",
     short: "Programas del sistema",
     blurb:
-      "Abrí apps y acciones del PC. Mismo launcher que Ctrl+Space (tipo Spotlight).",
+      "Abre apps y acciones del PC. Mismo launcher que Ctrl+Space (tipo Spotlight).",
     actionLabel: "Buscar apps",
   },
 ];

@@ -28,7 +28,7 @@ fn resolve_groq_api_key() -> Option<String> {
 
 fn groq_key_required() -> String {
     crate::ui_lang::msg(
-        "Configurá tu API key de Groq en Ajustes para usar el dictado en la nube.",
+        "Configura tu API key de Groq en Ajustes para usar el dictado en la nube.",
         "Set your Groq API key in Settings to use cloud dictation.",
     )
 }
@@ -40,7 +40,7 @@ fn dictation_need_local(err: &atic_transcribe::TranscribeError, groq_fallback: b
             "{} {}",
             groq_key_required(),
             crate::ui_lang::msg(
-                &format!("Mientras tanto, descargá un modelo local: {}", err.to_ui(false)),
+                &format!("Mientras tanto, descarga un modelo local: {}", err.to_ui(false)),
                 &format!("In the meantime, download a local model: {}", err.to_ui(true)),
             )
         )
@@ -217,7 +217,7 @@ fn start_dictation(app: &AppHandle) -> Result<(), String> {
         crate::beep::play(crate::beep::SoundAction::DictationStart, &voice, &out);
     }
 
-    // Seguir el foco mientras dictás: si hacés clic en otro input antes de que
+    // Seguir el foco mientras dictas: si haces clic en otro input antes de que
     // el texto esté listo, ese pasa a ser el destino.
     crate::clipboard_history::start_foreground_tracking();
 
@@ -332,7 +332,7 @@ fn stop_and_paste(app: &AppHandle) {
             // Congelar el destino: de acá en más el foco lo movemos nosotros.
             crate::clipboard_history::stop_foreground_tracking();
 
-            // Si ya estás en una ventana externa, ESA es la que querés: no
+            // Si ya estás en una ventana externa, ESA es la que quieres: no
             // tocar el foco. Si no, restaurar el destino guardado al arrancar
             // (o el último clic externo durante el dictado). Agentes abierto
             // no corta este camino: try_paste_or_enqueue pega afuera primero

@@ -6,7 +6,7 @@ body:
     attributes:
       value: |
         Gracias. Si es un tema de seguridad, no lo describas acá:
-        usá [Security Advisories](https://github.com/chrx3/atic/security/advisories/new).
+        usa [Security Advisories](https://github.com/chrx3/atic/security/advisories/new).
   - type: textarea
     id: what
     attributes:
@@ -51,10 +51,10 @@ body:
     id: scale
     attributes:
       label: Escala de pantalla (Windows)
-      description: Configuración → Sistema → Pantalla → Escala. Ej. 100 %, 125 %, 150 %. Si hay dos monitores, indicá ambos.
+      description: Configuración → Sistema → Pantalla → Escala. Ej. 100 %, 125 %, 150 %. Si hay dos monitores, indica ambos.
   - type: textarea
     id: logs
     attributes:
       label: Logs
-      description: En Ajustes hay un botón para abrir la carpeta de logs (`atic.YYYY-MM-DD.log`). Pegá el tramo relevante; no incluyas API keys.
+      description: En Ajustes hay un botón para abrir la carpeta de logs (`atic.YYYY-MM-DD.log`). Pega el tramo relevante; no incluyas API keys.
       render: text

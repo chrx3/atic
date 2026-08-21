@@ -326,7 +326,7 @@ enum Msg {
     /// `ARMED`, porque este canal descarta cuando está lleno y aplicar un valor
     /// viejo es exactamente cómo la ventana se quedaba opaca para siempre.
     Sync,
-    /// Clic fuera de todas las zonas: para el frontend es «cerrá lo que tengas».
+    /// Clic fuera de todas las zonas: para el frontend es «cierra lo que tengas».
     Outside,
     /// El cursor está sobre `main` con un hit-rect de drag a pantalla completa.
     /// El frontend tiene que soltar el gesto; si no, el overlay sigue armado
@@ -2238,7 +2238,7 @@ pub fn overlay_primary_down() -> bool {
     }
     #[cfg(not(windows))]
     {
-        // `true` = "seguí como estabas". Devolver `false` cortaría todos los
+        // `true` = "sigue como estabas". Devolver `false` cortaría todos los
         // arrastres al primer cuadro donde el overlay no está implementado.
         true
     }

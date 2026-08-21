@@ -173,7 +173,7 @@ textarea,
    * El escalonado es corto a propósito. El del launcher (90 ms) acompaña un
    * gesto que el usuario pidió con un atajo y mira de frente; este se dispara
    * con solo apoyar el mouse en un borde, así que si el último icono tardara
-   * 5×90 ms la tira se sentiría perezosa justo cuando ya querés hacer clic.
+   * 5×90 ms la tira se sentiría perezosa justo cuando ya quieres hacer clic.
    * Con 26 ms los cinco entran dentro de la propia apertura de la caja: se lee
    * como un despliegue, no como una lista cargando.
    */

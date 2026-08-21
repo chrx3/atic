@@ -8,7 +8,7 @@ Se abren con doble clic: no hay build, ni servidor, ni dependencias.
 
 | Archivo | Qué muestra |
 | --- | --- |
-| `index.html` | Índice. Empezá acá. |
+| `index.html` | Índice. Empieza aquí. |
 | `fusion.html` | El laboratorio: tres piezas que se arrastran y la cuenta del alcance en vivo. |
 | `pill.html` | La barra que crece absorbiendo lo que llega, y el panel que se derrama de ella. |
 | `rueda.html` | Las seis herramientas saliendo del núcleo como gotas estiradas. |

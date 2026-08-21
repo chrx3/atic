@@ -134,18 +134,18 @@
     // host:22 pegado por error (permitir IPv6 con varios ':').
     if (/^[^:]+:\d+$/.test(host)) {
       onToast(
-        "No pongas el puerto en Host. Usá el campo Puerto, o vacío con alias de ssh_config.",
+        "No pongas el puerto en Host. Usa el campo Puerto, o vacío con alias de ssh_config.",
       );
       return;
     }
     if (user.includes("@") || /\s/.test(user)) {
-      onToast("Usuario inválido. Con un alias de ssh_config, dejalo vacío.");
+      onToast("Usuario inválido. Con un alias de ssh_config, déjalo vacío.");
       return;
     }
     const label =
       draft.label.trim() || (user ? `${user}@${host}` : host);
     if (draft.auth === "key" && !draft.identity_file?.trim()) {
-      onToast("Auth por clave: elegí un identity file.");
+      onToast("Auth por clave: elige un identity file.");
       return;
     }
     const next: SshHost = {
@@ -237,11 +237,11 @@
 
 <SettingsGroup
   title="Hosts SSH"
-  hint="Podés usar un alias de ~/.ssh/config (Host = contabo, Usuario/Puerto vacíos). Preferí ssh-agent. Hace falta el cliente OpenSSH."
+  hint="Puedes usar un alias de ~/.ssh/config (Host = contabo, Usuario/Puerto vacíos). Prefiere ssh-agent. Hace falta el cliente OpenSSH."
 >
   {#if hosts.length === 0 && !draft}
     <p class="py-2 text-xs text-faint">
-      Todavía no hay hosts. Agregá uno para empezar.
+      Todavía no hay hosts. Agrega uno para empezar.
     </p>
   {/if}
 
@@ -395,7 +395,7 @@
     <SettingsRow
       label="Passphrase"
       hint={flagsFor(d.id)?.hasPassphrase
-        ? "Guardada en el llavero; dejá vacío para no cambiar."
+        ? "Guardada en el llavero; deja vacío para no cambiar."
         : "Opcional; va al llavero."}
     >
       {#snippet control({ id })}

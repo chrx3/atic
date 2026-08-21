@@ -619,7 +619,7 @@ Cuatro. Todo lo demás está decidido arriba con su porqué.
    Fase 2 entera y la atadura exacta pid→sesión.* No se puede resolver desde el
    árbol: hay que ir a docs/CLI.
 
-2. **Granularidad del foco** — ¿alcanza «enfoca la ventana, vos cambiás de
+2. **Granularidad del foco** — ¿alcanza «enfoca la ventana, tú cambias de
    pestaña» para el MVP, o la vinculación manual (§7.2) tiene que entrar desde
    el día uno? *Cambia el tamaño de la Fase 1b.* Mi recomendación: aceptar el
    nivel ventana y meter la vinculación manual solo como fallback.

@@ -101,7 +101,7 @@ Extender el patrón de [`crates/core/src/secrets.rs`](../crates/core/src/secrets
 | Preferir ssh-agent | Auth default: agent del SO (`SSH_AUTH_SOCK` / Pageant / OpenSSH Agent). Sin secretos en Atic. |
 | Keyring solo auxiliares | Passphrase o password; no private keys. |
 | Identity file = path | La UI elige archivo; Rust pasa `-i path` a `ssh`. El contenido no cruza IPC. |
-| known_hosts | Usar el de OpenSSH del usuario. No `StrictHostKeyChecking=no`. Primer contacto: mensaje claro (fingerprint / “aceptá en terminal una vez” o `accept-new` documentado). |
+| known_hosts | Usar el de OpenSSH del usuario. No `StrictHostKeyChecking=no`. Primer contacto: mensaje claro (fingerprint / “acepta en terminal una vez” o `accept-new` documentado). |
 | Frontend ciego | Comandos Tauri no devuelven material secreto; listados de hosts omiten secretos. |
 | BatchMode en test | `ssh -o BatchMode=yes …` para no colgar UI pidiendo password interactivo; si falta auth, error accionable. |
 | Windows | Requiere cliente OpenSSH (`ssh` en PATH). Documentar dependencia. |
