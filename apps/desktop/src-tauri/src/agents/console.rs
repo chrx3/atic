@@ -48,6 +48,9 @@ pub struct ConsoleOpenOptions {
     pub cwd: Option<String>,
     pub cols: Option<u16>,
     pub rows: Option<u16>,
+    /// Comando a ejecutar en la PTY local (`claude`, `opencode…`).
+    /// Vacío/ausente = shell del sistema, como siempre.
+    pub command: Option<String>,
 }
 
 struct LiveConsole {
@@ -110,6 +113,26 @@ fn apply_cwd(cmd: &mut CommandBuilder, cwd: Option<&str>) {
     if Path::new(dir).is_dir() {
         cmd.cwd(dir);
     }
+}
+
+/// Comando de agente CLI (`claude`, `opencode`…) resuelto a ejecutable.
+///
+/// Reusa `exe::launcher`: resuelve el nombre en el PATH y enruta los shims de
+/// npm (`.cmd`/`.bat`) por `cmd /C`, que es justo lo que `CreateProcess` no
+/// sabe hacer solo. El primer token es el programa; el resto, argumentos.
+/// Cuando el agente sale, la PTY termina — la pestaña queda con su
+/// `[sesión terminada]`, igual que una shell cerrada.
+fn build_local_command(command: &str) -> Result<CommandBuilder, String> {
+    let mut parts = command.split_whitespace();
+    let program = parts
+        .next()
+        .ok_or_else(|| "Comando de consola vacío.".to_string())?;
+    let (exe, prefix) = super::exe::launcher(program)
+        .ok_or_else(|| format!("No se encontró `{program}` en el PATH."))?;
+    let mut cmd = CommandBuilder::new(exe);
+    cmd.args(&prefix);
+    cmd.args(parts);
+    Ok(cmd)
 }
 
 fn build_ssh_builder(host: &SshHost) -> Result<(CommandBuilder, Option<AskpassGuard>), String> {
@@ -237,7 +260,10 @@ pub fn console_open(
     let size = pty_size(options.cols, options.rows);
     let (cmd, askpass) = match kind.as_str() {
         "local" => {
-            let mut cmd = resolve_local_shell();
+            let mut cmd = match options.command.as_deref().map(str::trim) {
+                Some(c) if !c.is_empty() => build_local_command(c)?,
+                _ => resolve_local_shell(),
+            };
             apply_cwd(&mut cmd, options.cwd.as_deref());
             (cmd, None)
         }

@@ -73,6 +73,7 @@
     dockCandidate,
     dockedEdgeAt,
     shouldUndock,
+    type DockEdge,
   } from "$surfaces/overlay/edgeDock";
   import AgentAuthCard from "$surfaces/overlay/pill/AgentAuthCard.svelte";
   import { afterTransition, MOTION, ms, wait } from "$lib/motion";
@@ -598,11 +599,22 @@
   });
 
   /**
+   * Las work areas viven en una closure del escenario (TS puro, sin `$state`):
+   * leerlas dentro de un `$derived` no crea dependencia reactiva. La época
+   * sube cada vez que `loadAreas()` recarga y despierta los deriveds de abajo.
+   */
+  let areasEpoch = $state(0);
+  $effect(() => stage.onAreasChanged(() => (areasEpoch += 1)));
+
+  /**
    * Lado del chip de consola: opuesto al borde horizontal más cercano.
    * Usa el centro de la caja de la pill (no solo el disco) para no saltar
    * al expandirse el aviso.
    */
-  const consoleSide = $derived(consoleSideFor(stage.workAreas(), at, box));
+  const consoleSide = $derived.by(() => {
+    void areasEpoch;
+    return consoleSideFor(stage.workAreas(), at, box);
+  });
 
   /** Traza al log de Rust. Fire-and-forget: no debe alterar el flujo ni fallar. */
   function trace(msg: string) {
@@ -662,6 +674,7 @@
    * cerca del borde izquierdo → se expande a la derecha; cerca del derecho → a la izquierda.
    */
   const authAt = $derived.by(() => {
+    void areasEpoch;
     const w = 320;
     // Hueco corto: tiene que quedar dentro de REACH para que nazca el cuello.
     const gap = 8;
@@ -812,6 +825,11 @@
 
   $effect(() => {
     const next = target;
+    // `opening` va en la traza a propósito: si `target` cambió durante un
+    // morph (y no volvió a cambiar), el efecto no se re-dispararía solo y la
+    // ventana quedaría con el tamaño viejo. Cuando la coreografía suelta la
+    // bandera, acá se reconcilia el destino que quedó pendiente.
+    void opening;
     void reconcile(next);
   });
 
@@ -1050,6 +1068,33 @@
       alive = false;
       clearInterval(timer);
     };
+  });
+
+  /**
+   * Dictar acoplada DESACOP.LA la pill mientras dura el dictado.
+   *
+   * Acoplada, la barra con las ondas está oculta (`.p-root.is-docked .p-stack`)
+   * y la pestaña no tiene dónde mostrarlas: sin esto, dictar en un borde no
+   * muestra señal alguna. La pill vuelve a ser la barra normal —mic + ondas— y
+   * al terminar intenta volver a su canto: `settleDock` re-evalúa el candidato,
+   * así que si el usuario la arrastró lejos durante el dictado no se acopla de
+   * golpe en un sitio que ya no le corresponde.
+   */
+  let dictDockedEdge: DockEdge | null = null;
+  $effect(() => {
+    if (dictating) {
+      if (surface === "edge" && !dragOrigin) {
+        dictDockedEdge = dock?.edge ?? null;
+        surface = "none";
+        dock = null;
+      }
+      return;
+    }
+    if (dictDockedEdge === null) return;
+    dictDockedEdge = null;
+    // Solo tiene sentido re-acoplar si sigue flotando libre cerca del canto:
+    // la rueda o un arrastre mandan sobre este regreso.
+    if (surface === "none") settleDock();
   });
 
   /**
@@ -1813,7 +1858,9 @@
         // Misma cancelación que al reabrir: un encoger a medias no debe
         // reescribir la posición después del vuelo al cursor.
         cancelPendingCollapse();
-        await closeWheel();
+        // Sin `returnHome` el pill volaba al hogar y recién después al cursor:
+        // un detour visible. Acá el vuelo al cursor ES el destino.
+        await closeWheel({ returnHome: false });
         const cursor = await cursorPoint();
         if (!cursor) return;
         // Traer al cursor la saca del canto. Si sigue `surface === "edge"`,
@@ -3149,7 +3196,11 @@
     .p-agent,
     .p-auth-host,
     .p-island-tool,
-    .p-live-drop {
+    .p-live-drop,
+    /* La animación vive en los hijos, no en la gota: sin ellos acá el
+       pulso seguiría con reduce activo. */
+    .p-live-drop .p-rec-square,
+    .p-live-drop .p-dict-glyph {
       transition: none !important;
       animation: none !important;
     }

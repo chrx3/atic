@@ -48,10 +48,11 @@ use serde::Serialize;
 
 pub use model::AgentDelta;
 
-/// La consola de agentes no se ofrece en la UI ni se registra su atajo.
-/// Volver a `true` cuando se reabra la feature. Gemelo de `AGENTS_ENABLED` en
-/// `apps/desktop/src/lib/core/tools.ts`.
-pub const UI_ENABLED: bool = false;
+/// La consola de agentes se ofrece en la UI y registra su atajo.
+/// Gemelo de `AGENTS_ENABLED` en `apps/desktop/src/lib/core/tools.ts`:
+/// mantener los dos al mismo valor o la pill ofrecerá una tool que Rust
+/// ignora en silencio (pasó: JS `true` + Rust `false` = clic sin efecto).
+pub const UI_ENABLED: bool = true;
 
 /// Semáforo de la pill para agentes que corren en su TUI (no el chat de Atic).
 /// Gemelo de `AGENT_PAGER_ENABLED` en `apps/desktop/src/lib/core/tools.ts`.

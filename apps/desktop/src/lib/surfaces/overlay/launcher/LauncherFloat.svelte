@@ -1049,10 +1049,11 @@
    * separate + favs. El chrome se apaga durante `.is-expanding`.
    */
   .lf {
-    --launcher-bar-open-dur: 100ms;
-    --launcher-separate-dur: 90ms;
+    /* bar-open/separate heredan de :root (app.css). fav-stagger y float-close
+       quedan como overrides locales a propósito: difieren del root. */
     --launcher-fav-stagger: 150ms;
     --float-close-dur: var(--duration-quick);
+
     position: absolute;
     z-index: var(--z-overlay-float);
     display: flex;

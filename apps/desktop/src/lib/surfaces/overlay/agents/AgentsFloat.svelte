@@ -22,7 +22,7 @@
   import { Bubble, BUBBLE_MIN_H, BUBBLE_MIN_W } from "$surfaces/overlay/bubble.svelte";
   import { createBubbleDrag } from "$surfaces/overlay/bubbleDrag";
   import { placeBesidePill } from "$surfaces/overlay/floatPlace";
-  import AgentsDemo from "$features/agents/AgentsDemo.svelte";
+  import AgentLauncher from "$features/agents/AgentLauncher.svelte";
   import {
     isAgentsDismissSuppressed,
   } from "$surfaces/overlay/agents/dismissGuard";
@@ -144,6 +144,18 @@
     agents.watch(null);
   }
 
+  /**
+   * El contenido NO se desmonta al cerrar el float: las PTYs viven en Rust y
+   * el xterm conserva su scrollback mientras el componente exista. Cerrar la
+   * ventana solo la oculta (`is-off`); reabrir desde la pill muestra las
+   * consolas tal como estaban. Se pierden al cerrar cada pestaña o al apagar
+   * la app — no al esconder la ventana.
+   */
+  let everAlive = $state(false);
+  $effect(() => {
+    if (bubble.alive) everAlive = true;
+  });
+
   /** Cierre por intención (clic afuera / Esc). Respeta pin y diálogos nativos. */
   function tryAutoClose() {
     if (!bubble.shown || isAgentsDismissSuppressed() || isOpenDismissGrace()) return;
@@ -243,16 +255,17 @@
   });
 </script>
 
-{#if bubble.alive}
+{#if bubble.alive || everAlive}
   <div
     class="af float-emerge"
     class:is-shown={bubble.shown}
+    class:is-off={!bubble.alive}
     data-agents-float
     data-side={bubble.anchor?.side ?? "top"}
     style={bubble.vars}
     bind:this={bubEl}
   >
-    <AgentsDemo variant="float" onHeaderPointerDown={startDrag} onClose={close} />
+    <AgentLauncher onHeaderPointerDown={startDrag} onClose={close} />
     <!-- local: sin popover/viewport; el overlay es fullscreen y el toast
          quedaría abajo de toda la pantalla, lejos del bubble. -->
     <ToastStack
@@ -289,8 +302,19 @@
     width: var(--w);
     height: var(--h);
     box-sizing: border-box;
+    /* Columna: el contenido (launcher / consola) llena con flex:1. Sin esto
+       la consola colapsa a la altura de su barra (~34px). */
+    display: flex;
+    flex-direction: column;
     /* visible: el PickerMenu del composer abre hacia arriba */
     overflow: visible;
+  }
+
+  /* Oculto pero vivo: las PTYs siguen corriendo. Sin pointer-events ni
+     visibilidad, el overlay no arma clics sobre una ventana que no está. */
+  .af.is-off {
+    visibility: hidden;
+    pointer-events: none;
   }
 
   .grip {

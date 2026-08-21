@@ -499,9 +499,7 @@
    * clavado, luego se aleja (gap > REACH) y corta el cuello.
    */
   .cf {
-    --launcher-bar-open-dur: 100ms;
-    --launcher-separate-dur: 90ms;
-    --float-close-dur: var(--morph-close-dur);
+    /* Duraciones heredadas de :root (app.css); sin overrides locales. */
     position: absolute;
     z-index: var(--z-overlay-float);
     display: flex;
