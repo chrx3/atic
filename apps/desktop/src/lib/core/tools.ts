@@ -11,10 +11,14 @@ export type ToolId =
   | "launcher";
 
 /**
- * La consola de agentes no se ofrece en la UI (rueda, ajustes, atajo, launcher).
- * El código sigue en el repo; volver a `true` cuando se reabra la feature.
+ * La consola de agentes: chat con Claude Code / Codex / ACP más consolas
+ * embebidas, ofrecida en la rueda, ajustes, atajo y launcher.
+ *
+ * Estuvo cerrada mientras la consola solo aguantaba dos sesiones fijas (una
+ * local y una ssh, y abrir otra mataba a la anterior). Se reabre ahora que las
+ * consolas son N pestañas independientes.
  */
-export const AGENTS_ENABLED = false;
+export const AGENTS_ENABLED = true;
 
 /**
  * Semáforo de la pill para agentes que corren en su TUI (Claude Code, etc.).

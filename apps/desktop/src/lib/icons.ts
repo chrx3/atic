@@ -144,6 +144,7 @@ export {
   X,
   SlidersHorizontal,
   Minus,
+  Plus,
   Play,
   Pause,
   Volume2,

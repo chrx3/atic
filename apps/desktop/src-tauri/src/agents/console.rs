@@ -1,8 +1,9 @@
 //! Consola embebida: PTY local (PowerShell/cmd) o SSH interactivo (`ssh -t`).
 //!
 //! I/O bidireccional vía eventos Tauri (`console-output` / `console-exit`).
-//! Hasta dos sesiones concurrentes (una `local` + una `ssh`); reconectar el
-//! mismo kind reemplaza solo esa sesión.
+//! N sesiones concurrentes, cada una con su propio PTY y su id: abrir otra
+//! `local` ya no reemplaza a la anterior. El tope es defensivo, no de diseño
+//! (cada sesión es un proceso vivo); quien las presenta decide cómo agruparlas.
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -50,13 +51,17 @@ pub struct ConsoleOpenOptions {
 }
 
 struct LiveConsole {
-    kind: String,
     writer: Mutex<Box<dyn Write + Send>>,
     master: Box<dyn MasterPty + Send>,
     killer: Box<dyn ChildKiller + Send + Sync>,
     stop: Arc<AtomicBool>,
     _askpass: Option<AskpassGuard>,
 }
+
+/// Tope defensivo de sesiones vivas. No es una regla de producto: es que cada
+/// una es un PTY con su proceso, y un bug de la vista no debería poder
+/// spawnear shells sin freno.
+const MAX_CONSOLES: usize = 12;
 
 static CONSOLES: Mutex<Option<HashMap<String, LiveConsole>>> = Mutex::new(None);
 
@@ -220,15 +225,13 @@ pub fn console_open(
         }
     };
 
-    // Reconectar el mismo kind reemplaza solo esa sesión; la otra (local/ssh) vive.
-    let stale: Vec<String> = with_map(|map| {
-        map.iter()
-            .filter(|(_, live)| live.kind == kind)
-            .map(|(id, _)| id.clone())
-            .collect()
-    });
-    for id in stale {
-        close_session(&id);
+    // Antes se cerraba la sesión que compartiera `kind`: abrir una segunda
+    // consola local mataba la primera. Ahora conviven; cerrar es explícito.
+    let live_count = with_map(|map| map.len());
+    if live_count >= MAX_CONSOLES {
+        return Err(format!(
+            "Ya hay {MAX_CONSOLES} consolas abiertas. Cerrá alguna para abrir otra."
+        ));
     }
 
     let size = pty_size(options.cols, options.rows);
@@ -291,7 +294,6 @@ pub fn console_open(
         map.insert(
             session.clone(),
             LiveConsole {
-                kind,
                 writer: Mutex::new(writer),
                 master: pair.master,
                 killer,

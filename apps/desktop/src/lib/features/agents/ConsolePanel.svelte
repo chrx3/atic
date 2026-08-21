@@ -1,9 +1,14 @@
 <script lang="ts">
   /**
-   * Consola embebida (xterm + PTY): Local (PowerShell) o SSH (`ssh -t`).
-   * Dos sesiones concurrentes (local + ssh); cambiar de tab no mata el PTY.
+   * Consola embebida (xterm + PTY): N pestañas, cada una Local (PowerShell) o
+   * SSH (`ssh -t`).
+   *
+   * Antes eran exactamente dos —una local y una ssh— y reconectar mataba a la
+   * del mismo tipo. Ahora la unidad es la pestaña: cada una tiene su PTY, su id
+   * y su ciclo de vida, y abrir o cerrar una no toca a las demás. El tope real
+   * lo pone Rust (`MAX_CONSOLES`), porque cada sesión es un proceso vivo.
    */
-  import { onDestroy, onMount } from "svelte";
+  import { onDestroy, onMount, untrack } from "svelte";
   import { Terminal } from "@xterm/xterm";
   import { FitAddon } from "@xterm/addon-fit";
   import "@xterm/xterm/css/xterm.css";
@@ -20,7 +25,7 @@
   import type { ConsoleKind, SshHost } from "$lib/types";
   import EmptyState from "$lib/ui/EmptyState.svelte";
   import Icon from "$ui/Icon.svelte";
-  import { SquareTerminal, X } from "$lib/icons";
+  import { Plus, SquareTerminal, X } from "$lib/icons";
 
   let {
     remoteHost = null,
@@ -28,56 +33,58 @@
     initialKind = "local",
     onClose,
   }: {
-    /** Host SSH del destino actual de agentes (tab SSH); default del picker. */
+    /** Host SSH del destino actual de agentes; default de una pestaña nueva. */
     remoteHost?: SshHost | null;
     /** cwd local opcional al abrir PowerShell. */
     localCwd?: string;
-    /** Tab inicial al montar el panel. */
+    /** Tipo de la primera pestaña al montar. */
     initialKind?: ConsoleKind;
     onClose?: () => void;
   } = $props();
 
-  let tab = $state<ConsoleKind>("local");
+  /**
+   * Espejo de `MAX_CONSOLES` en `console.rs`. Rust es quien manda; esto solo
+   * evita abrir una pestaña que ya sabemos que va a fallar al conectar.
+   */
+  const MAX_TABS = 12;
+
+  /**
+   * Lo que la vista necesita de una pestaña.
+   *
+   * Sin el `Terminal` adentro a propósito: `$state` proxya en profundidad y
+   * envolver un xterm en un Proxy lo rompe. Lo pesado vive en `boxes`.
+   */
+  type Tab = {
+    /** Estable aunque el PTY se reconecte; clave del `{#each}` y de `boxes`. */
+    key: string;
+    kind: ConsoleKind;
+    /** PTY vivo. `null` = sin conectar todavía, o ya terminó. */
+    sessionId: string | null;
+    /** Host SSH de ESTA pestaña (solo `kind === "ssh"`). */
+    hostId: string | null;
+  };
+
+  type Box = { term: Terminal; fit: FitAddon; el: HTMLElement };
+
+  let tabs = $state<Tab[]>([]);
+  let activeKey = $state("");
   let connecting = $state(false);
   let error = $state<string | null>(null);
   let sshHosts = $state<SshHost[]>([]);
-  /** Host elegido en la consola (independiente del destino del chat). */
-  let pickedHostId = $state<string | null>(null);
-  let ctxMenu = $state<{ x: number; y: number; kind: ConsoleKind } | null>(
-    null,
-  );
+  let ctxMenu = $state<{ x: number; y: number; key: string } | null>(null);
 
-  let localHostEl = $state<HTMLElement | null>(null);
-  let sshHostEl = $state<HTMLElement | null>(null);
-  let localSessionId = $state<string | null>(null);
-  let sshSessionId = $state<string | null>(null);
-
-  let localTerm: Terminal | null = null;
-  let sshTerm: Terminal | null = null;
-  let localFit: FitAddon | null = null;
-  let sshFit: FitAddon | null = null;
-
+  /** xterm por pestaña. Fuera de `$state` (ver `Tab`). */
+  const boxes = new Map<string, Box>();
   let stopListen: (() => void) | null = null;
+  let seq = 0;
 
-  const sessionId = $derived(tab === "local" ? localSessionId : sshSessionId);
+  const active = $derived(tabs.find((t) => t.key === activeKey) ?? null);
+  const sessionId = $derived(active?.sessionId ?? null);
   const connected = $derived(!!sessionId);
-  const activeHost = $derived.by(() => {
-    if (pickedHostId) {
-      return (
-        sshHosts.find((h) => h.id === pickedHostId) ??
-        (remoteHost?.id === pickedHostId ? remoteHost : null)
-      );
-    }
-    return remoteHost ?? sshHosts[0] ?? null;
-  });
-  const sshLabel = $derived(
-    activeHost
-      ? activeHost.label ||
-          (activeHost.user
-            ? `${activeHost.user}@${activeHost.host}`
-            : activeHost.host)
-      : null,
-  );
+
+  function hostLabel(h: SshHost): string {
+    return h.label?.trim() || (h.user?.trim() ? `${h.user}@${h.host}` : h.host);
+  }
 
   function hostOptionLabel(h: SshHost): string {
     const name = h.label?.trim() || h.host;
@@ -85,31 +92,58 @@
     return name;
   }
 
-  function termOf(kind: ConsoleKind): Terminal | null {
-    return kind === "local" ? localTerm : sshTerm;
+  function hostById(id: string | null): SshHost | null {
+    if (!id) return null;
+    return (
+      sshHosts.find((h) => h.id === id) ??
+      (remoteHost?.id === id ? remoteHost : null)
+    );
   }
 
-  function fitOf(kind: ConsoleKind): FitAddon | null {
-    return kind === "local" ? localFit : sshFit;
+  const activeHost = $derived(active ? hostById(active.hostId) : null);
+  const sshLabel = $derived(activeHost ? hostLabel(activeHost) : null);
+
+  function baseLabel(t: Tab): string {
+    if (t.kind === "local") return "Local";
+    const h = hostById(t.hostId);
+    return h ? hostLabel(h) : "SSH";
   }
 
-  function hostOf(kind: ConsoleKind): HTMLElement | null {
-    return kind === "local" ? localHostEl : sshHostEl;
+  /** Numera solo cuando el nombre se repite: "Local", "Local 2", "Local 3". */
+  const tabLabels = $derived.by(() => {
+    const total = new Map<string, number>();
+    for (const t of tabs) {
+      const b = baseLabel(t);
+      total.set(b, (total.get(b) ?? 0) + 1);
+    }
+    const seen = new Map<string, number>();
+    return tabs.map((t) => {
+      const b = baseLabel(t);
+      const n = (seen.get(b) ?? 0) + 1;
+      seen.set(b, n);
+      return (total.get(b) ?? 0) > 1 ? `${b} ${n}` : b;
+    });
+  });
+
+  function tabOf(key: string): Tab | undefined {
+    return tabs.find((t) => t.key === key);
   }
 
-  function sessionOf(kind: ConsoleKind): string | null {
-    return kind === "local" ? localSessionId : sshSessionId;
+  function termOf(key: string): Terminal | null {
+    return boxes.get(key)?.term ?? null;
   }
 
-  function setSession(kind: ConsoleKind, id: string | null) {
-    if (kind === "local") localSessionId = id;
-    else sshSessionId = id;
+  function sessionOf(key: string): string | null {
+    return tabOf(key)?.sessionId ?? null;
   }
 
-  function kindForSession(id: string): ConsoleKind | null {
-    if (localSessionId === id) return "local";
-    if (sshSessionId === id) return "ssh";
-    return null;
+  function setSession(key: string, id: string | null) {
+    const t = tabOf(key);
+    if (t) t.sessionId = id;
+  }
+
+  function tabForSession(id: string): Tab | undefined {
+    return tabs.find((t) => t.sessionId === id);
   }
 
   async function loadSshHosts() {
@@ -123,31 +157,28 @@
         sshHosts = [];
       }
     }
-    if (
-      pickedHostId &&
-      !sshHosts.some((h) => h.id === pickedHostId) &&
-      remoteHost?.id !== pickedHostId
-    ) {
-      pickedHostId = remoteHost?.id ?? sshHosts[0]?.id ?? null;
-    }
-    if (!pickedHostId) {
-      pickedHostId = remoteHost?.id ?? sshHosts[0]?.id ?? null;
+    // Una pestaña ssh abierta antes de que llegara la lista se queda sin
+    // destino: al llegar se le asigna uno en vez de dejarla muerta.
+    for (const t of tabs) {
+      if (t.kind === "ssh" && !hostById(t.hostId)) {
+        t.hostId = remoteHost?.id ?? sshHosts[0]?.id ?? null;
+      }
     }
   }
 
   /** Solo enfoca xterm (el overlay text-mode lo pide OverlaySurface al clic). */
-  function focusTerm(kind: ConsoleKind = tab) {
-    termOf(kind)?.focus();
+  function focusTerm(key = activeKey) {
+    termOf(key)?.focus();
   }
 
   /**
    * Tras Conectar / switch: dispara el mismo camino que un clic en el term
    * para que OverlaySurface active set_overlay_text_mode.
    */
-  function requestOverlayKeyboard(kind: ConsoleKind = tab) {
-    const host = hostOf(kind);
+  function requestOverlayKeyboard(key = activeKey) {
+    const host = boxes.get(key)?.el ?? null;
     if (!host) {
-      focusTerm(kind);
+      focusTerm(key);
       return;
     }
     host.dispatchEvent(
@@ -155,8 +186,8 @@
     );
     // Tras el await de text-mode en OverlaySurface.
     requestAnimationFrame(() => {
-      focusTerm(kind);
-      setTimeout(() => focusTerm(kind), 40);
+      focusTerm(key);
+      setTimeout(() => focusTerm(key), 40);
     });
   }
 
@@ -164,9 +195,9 @@
     ctxMenu = null;
   }
 
-  async function disconnect(kind: ConsoleKind = tab) {
-    const id = sessionOf(kind);
-    setSession(kind, null);
+  async function disconnect(key = activeKey) {
+    const id = sessionOf(key);
+    setSession(key, null);
     if (id) {
       try {
         await consoleClose(id);
@@ -177,75 +208,105 @@
   }
 
   async function disconnectAll() {
-    await Promise.all([disconnect("local"), disconnect("ssh")]);
+    await Promise.all(tabs.map((t) => disconnect(t.key)));
   }
 
-  async function connect() {
-    if (connecting) return;
+  async function connect(key = activeKey) {
+    const tab = tabOf(key);
+    if (!tab || connecting) return;
     error = null;
-    if (tab === "ssh" && !activeHost) {
+    if (tab.kind === "ssh" && !hostById(tab.hostId)) {
       error =
         "Elige un host SSH en la consola (o agrégalo en Ajustes → Agentes).";
       return;
     }
     connecting = true;
-    const kind = tab;
-    await disconnect(kind);
-    termOf(kind)?.reset();
+    await disconnect(key);
+    termOf(key)?.reset();
     try {
-      const term = termOf(kind);
-      const cols = term?.cols ?? 80;
-      const rows = term?.rows ?? 24;
+      const term = termOf(key);
       const id = await consoleOpen({
-        kind,
-        hostId: kind === "ssh" ? activeHost?.id : null,
-        cwd: kind === "local" && localCwd.trim() ? localCwd.trim() : null,
-        cols,
-        rows,
+        kind: tab.kind,
+        hostId: tab.kind === "ssh" ? tab.hostId : null,
+        cwd: tab.kind === "local" && localCwd.trim() ? localCwd.trim() : null,
+        cols: term?.cols ?? 80,
+        rows: term?.rows ?? 24,
       });
-      setSession(kind, id);
+      setSession(key, id);
       requestAnimationFrame(() => {
-        fitAndResize(kind);
-        requestOverlayKeyboard(kind);
+        fitAndResize(key);
+        requestOverlayKeyboard(key);
       });
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
-      setSession(kind, null);
+      setSession(key, null);
     } finally {
       connecting = false;
     }
   }
 
-  function switchTab(next: ConsoleKind) {
-    if (tab === next) return;
+  /** Abre una pestaña y, si ya tiene destino, la conecta sola. */
+  function newTab(kind: ConsoleKind) {
+    if (tabs.length >= MAX_TABS) {
+      error = `Ya hay ${MAX_TABS} consolas abiertas. Cerrá alguna para abrir otra.`;
+      return;
+    }
     closeCtx();
-    tab = next;
+    const key = `t${++seq}`;
+    const hostId =
+      kind === "ssh" ? (remoteHost?.id ?? sshHosts[0]?.id ?? null) : null;
+    tabs = [...tabs, { key, kind, sessionId: null, hostId }];
+    activeKey = key;
     error = null;
-    if (next === "ssh") void loadSshHosts();
-    // No disconnect: la otra sesión sigue viva.
+    if (kind === "ssh") void loadSshHosts();
+    // Un cuadro después el `{@attach}` ya creó el xterm, así que `fit()` mide
+    // sobre el contenedor real y el PTY nace con el tamaño correcto.
     requestAnimationFrame(() => {
-      fitAndResize(next);
-      if (sessionOf(next)) requestOverlayKeyboard(next);
+      if (kind === "local" || hostById(tabOf(key)?.hostId ?? null)) {
+        void connect(key);
+      }
     });
   }
 
-  function fitAndResize(kind: ConsoleKind = tab) {
-    const fit = fitOf(kind);
-    const term = termOf(kind);
-    const host = hostOf(kind);
-    if (!fit || !term || !host) return;
-    try {
-      fit.fit();
-    } catch {
-      return;
-    }
-    const id = sessionOf(kind);
-    if (id) {
-      void consoleResize(id, term.cols, term.rows).catch(() => {});
+  async function closeTab(key: string) {
+    const idx = tabs.findIndex((t) => t.key === key);
+    if (idx < 0) return;
+    closeCtx();
+    await disconnect(key);
+    tabs = tabs.filter((t) => t.key !== key);
+    // El xterm lo dispone el teardown del `{@attach}` al salir del DOM.
+    if (activeKey === key) {
+      activeKey = tabs[Math.min(idx, tabs.length - 1)]?.key ?? "";
     }
   }
 
-  function makeTerm(kind: ConsoleKind): { term: Terminal; fit: FitAddon } {
+  function switchTab(key: string) {
+    if (activeKey === key) return;
+    closeCtx();
+    activeKey = key;
+    error = null;
+    // No se desconecta nada: las otras pestañas siguen vivas.
+    requestAnimationFrame(() => {
+      fitAndResize(key);
+      if (sessionOf(key)) requestOverlayKeyboard(key);
+    });
+  }
+
+  function fitAndResize(key = activeKey) {
+    const box = boxes.get(key);
+    if (!box) return;
+    try {
+      box.fit.fit();
+    } catch {
+      return;
+    }
+    const id = sessionOf(key);
+    if (id) {
+      void consoleResize(id, box.term.cols, box.term.rows).catch(() => {});
+    }
+  }
+
+  function makeTerm(key: string): { term: Terminal; fit: FitAddon } {
     const term = new Terminal({
       cursorBlink: true,
       fontSize: 12,
@@ -262,7 +323,7 @@
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.onData((data) => {
-      const id = sessionOf(kind);
+      const id = sessionOf(key);
       if (!id) return;
       void consoleWrite(id, data).catch(() => {});
     });
@@ -271,11 +332,11 @@
       if (ev.type !== "keydown") return true;
       const mod = ev.ctrlKey || ev.metaKey;
       if (mod && (ev.key === "v" || ev.key === "V")) {
-        void pasteInto(kind);
+        void pasteInto(key);
         return false;
       }
       if (mod && (ev.key === "c" || ev.key === "C") && term.hasSelection()) {
-        void copyFrom(kind);
+        void copyFrom(key);
         return false;
       }
       return true;
@@ -283,29 +344,32 @@
     return { term, fit };
   }
 
-  function ensureTerm(kind: ConsoleKind, host: HTMLElement) {
-    if (kind === "local") {
-      if (localTerm) return;
-      const { term, fit } = makeTerm("local");
-      localTerm = term;
-      localFit = fit;
-      term.open(host);
-    } else {
-      if (sshTerm) return;
-      const { term, fit } = makeTerm("ssh");
-      sshTerm = term;
-      sshFit = fit;
-      term.open(host);
-    }
-    try {
-      fitOf(kind)?.fit();
-    } catch {
-      /* layout aún no listo */
-    }
+  /**
+   * Crea el xterm de una pestaña cuando su contenedor entra al DOM.
+   *
+   * `untrack` porque un `{@attach}` que lee estado reactivo se vuelve a montar
+   * cuando ese estado cambia, y acá remontar significa destruir el terminal y
+   * perder el scrollback cada vez que se abre o cierra otra pestaña.
+   */
+  function mountTerm(key: string) {
+    return (el: HTMLElement) =>
+      untrack(() => {
+        const { term, fit } = makeTerm(key);
+        term.open(el);
+        boxes.set(key, { term, fit, el });
+        const observer = new ResizeObserver(() => fitAndResize(key));
+        observer.observe(el);
+        requestAnimationFrame(() => fitAndResize(key));
+        return () => {
+          observer.disconnect();
+          term.dispose();
+          boxes.delete(key);
+        };
+      });
   }
 
-  async function copyFrom(kind: ConsoleKind = tab) {
-    const text = termOf(kind)?.getSelection() ?? "";
+  async function copyFrom(key = activeKey) {
+    const text = termOf(key)?.getSelection() ?? "";
     if (!text) return;
     try {
       await navigator.clipboard.writeText(text);
@@ -314,9 +378,9 @@
     }
   }
 
-  async function pasteInto(kind: ConsoleKind = tab) {
-    const term = termOf(kind);
-    if (!term || !sessionOf(kind)) return;
+  async function pasteInto(key = activeKey) {
+    const term = termOf(key);
+    if (!term || !sessionOf(key)) return;
     try {
       const text = await navigator.clipboard.readText();
       if (text) term.paste(text);
@@ -325,39 +389,38 @@
     }
   }
 
-  function onTermContextMenu(kind: ConsoleKind, e: MouseEvent) {
+  function onTermContextMenu(key: string, e: MouseEvent) {
     e.preventDefault();
     e.stopPropagation();
-    focusTerm(kind);
-    ctxMenu = { x: e.clientX, y: e.clientY, kind };
+    focusTerm(key);
+    ctxMenu = { x: e.clientX, y: e.clientY, key };
   }
 
-  function onTermPointerDown(kind: ConsoleKind) {
+  function onTermPointerDown(key: string) {
     closeCtx();
     // OverlaySurface (capture) ya pidió text-mode; reforzar foco tras el await.
     requestAnimationFrame(() => {
-      focusTerm(kind);
-      setTimeout(() => focusTerm(kind), 40);
+      focusTerm(key);
+      setTimeout(() => focusTerm(key), 40);
     });
   }
 
   onMount(() => {
-    tab = initialKind === "ssh" ? "ssh" : "local";
-    pickedHostId = remoteHost?.id ?? null;
     void loadSshHosts();
+    newTab(initialKind === "ssh" ? "ssh" : "local");
 
     void Promise.all([
       onConsoleOutput((p) => {
-        const kind = kindForSession(p.session);
-        if (!kind) return;
-        termOf(kind)?.write(p.data);
+        const t = tabForSession(p.session);
+        if (t) termOf(t.key)?.write(p.data);
       }),
       onConsoleExit((p) => {
-        const kind = kindForSession(p.session);
-        if (!kind) return;
-        setSession(kind, null);
+        const t = tabForSession(p.session);
+        if (!t) return;
+        const key = t.key;
+        setSession(key, null);
         const code = p.code == null ? "?" : String(p.code);
-        termOf(kind)?.writeln(`\r\n[sesión terminada · exit ${code}]`);
+        termOf(key)?.writeln(`\r\n[sesión terminada · exit ${code}]`);
       }),
     ]).then((uns) => {
       stopListen = () => {
@@ -384,71 +447,70 @@
   onDestroy(() => {
     stopListen?.();
     void disconnectAll();
-    localTerm?.dispose();
-    sshTerm?.dispose();
-    localTerm = null;
-    sshTerm = null;
-    localFit = null;
-    sshFit = null;
-  });
-
-  $effect(() => {
-    const kind = tab;
-    const localEl = localHostEl;
-    const sshEl = sshHostEl;
-    if (localEl) ensureTerm("local", localEl);
-    if (sshEl) ensureTerm("ssh", sshEl);
-    const observer = new ResizeObserver(() => fitAndResize(kind));
-    if (localEl) observer.observe(localEl);
-    if (sshEl) observer.observe(sshEl);
-    requestAnimationFrame(() => fitAndResize(kind));
-    return () => observer.disconnect();
+    // Los xterm los dispone el teardown de cada `{@attach}`.
   });
 </script>
 
 <section class="console" aria-label="Consola">
   <header class="bar" data-no-drag>
-    <div class="tabs" role="tablist" aria-label="Destino de consola">
+    <div class="tabs" role="group" aria-label="Consolas abiertas">
+      {#each tabs as t, i (t.key)}
+        <span class="tab-slot">
+          <button
+            type="button"
+            class="tab"
+            class:is-on={t.key === activeKey}
+            aria-current={t.key === activeKey ? "true" : undefined}
+            title={tabLabels[i]}
+            onclick={() => switchTab(t.key)}
+          >
+            {tabLabels[i]}
+            {#if t.sessionId}
+              <span class="live" title="Sesión activa" aria-hidden="true"></span>
+            {/if}
+          </button>
+          <button
+            type="button"
+            class="tab-x"
+            aria-label="Cerrar {tabLabels[i]}"
+            title="Cerrar pestaña"
+            onclick={() => void closeTab(t.key)}
+          >
+            <Icon icon={X} size={10} />
+          </button>
+        </span>
+      {/each}
       <button
         type="button"
-        class="tab"
-        class:is-on={tab === "local"}
-        role="tab"
-        aria-selected={tab === "local"}
-        disabled={connecting}
-        onclick={() => switchTab("local")}
+        class="tab-add"
+        aria-label="Nueva consola local"
+        title="Nueva consola local"
+        disabled={connecting || tabs.length >= MAX_TABS}
+        onclick={() => newTab("local")}
       >
-        Local
-        {#if localSessionId}
-          <span class="live" title="Sesión activa" aria-hidden="true"></span>
-        {/if}
+        <Icon icon={Plus} size={12} />
       </button>
       <button
         type="button"
-        class="tab"
-        class:is-on={tab === "ssh"}
-        role="tab"
-        aria-selected={tab === "ssh"}
-        disabled={connecting}
-        title={sshLabel ? `SSH · ${sshLabel}` : "SSH"}
-        onclick={() => switchTab("ssh")}
+        class="tab-add"
+        aria-label="Nueva consola SSH"
+        title="Nueva consola SSH"
+        disabled={connecting || tabs.length >= MAX_TABS}
+        onclick={() => newTab("ssh")}
       >
-        SSH
-        {#if sshSessionId}
-          <span class="live" title="Sesión activa" aria-hidden="true"></span>
-        {/if}
+        + SSH
       </button>
-      {#if tab === "ssh"}
+      {#if active?.kind === "ssh"}
         <label class="host-pick">
           <span class="sr">Host SSH</span>
           <select
             class="host-select"
             aria-label="Host SSH"
-            disabled={connecting || !!sshSessionId || sshHosts.length === 0}
-            value={pickedHostId ?? ""}
+            disabled={connecting || !!active.sessionId || sshHosts.length === 0}
+            value={active.hostId ?? ""}
             onchange={(e) => {
               const v = (e.currentTarget as HTMLSelectElement).value;
-              pickedHostId = v || null;
+              if (active) active.hostId = v || null;
               error = null;
             }}
           >
@@ -464,24 +526,26 @@
       {/if}
     </div>
     <div class="acts">
-      {#if connected}
-        <button
-          type="button"
-          class="chip"
-          disabled={connecting}
-          onclick={() => void disconnect()}
-        >
-          Desconectar
-        </button>
-      {:else}
-        <button
-          type="button"
-          class="chip is-go"
-          disabled={connecting || (tab === "ssh" && !activeHost)}
-          onclick={() => void connect()}
-        >
-          {connecting ? "Conectando…" : "Conectar"}
-        </button>
+      {#if active}
+        {#if connected}
+          <button
+            type="button"
+            class="chip"
+            disabled={connecting}
+            onclick={() => void disconnect()}
+          >
+            Desconectar
+          </button>
+        {:else}
+          <button
+            type="button"
+            class="chip is-go"
+            disabled={connecting || (active.kind === "ssh" && !activeHost)}
+            onclick={() => void connect()}
+          >
+            {connecting ? "Conectando…" : "Conectar"}
+          </button>
+        {/if}
       {/if}
       {#if onClose}
         <button
@@ -505,7 +569,26 @@
   {/if}
 
   <div class="body">
-    {#if tab === "ssh" && !activeHost && !connected}
+    {#if tabs.length === 0}
+      <div class="empty">
+        <EmptyState
+          compact
+          title="Sin consolas"
+          hint="Abre una consola local (PowerShell) o una sesión SSH."
+        >
+          {#snippet action()}
+            <button
+              type="button"
+              class="chip is-go"
+              onclick={() => newTab("local")}
+            >
+              <Icon icon={SquareTerminal} size={12} />
+              Nueva consola
+            </button>
+          {/snippet}
+        </EmptyState>
+      </div>
+    {:else if active?.kind === "ssh" && !activeHost && !connected}
       <div class="empty">
         <EmptyState
           compact
@@ -517,8 +600,10 @@
       <div class="empty">
         <EmptyState
           compact
-          title={tab === "local" ? "Consola local" : `SSH · ${sshLabel ?? "remoto"}`}
-          hint={tab === "local"
+          title={active?.kind === "local"
+            ? "Consola local"
+            : `SSH · ${sshLabel ?? "remoto"}`}
+          hint={active?.kind === "local"
             ? "PowerShell en este equipo (fallback cmd)."
             : "Abre ssh -t al host seleccionado."}
         >
@@ -536,28 +621,19 @@
       </div>
     {/if}
 
-    <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <div
-      class="term"
-      class:is-hidden={tab !== "local" || (!localSessionId && !connecting)}
-      bind:this={localHostEl}
-      data-no-drag
-      data-selectable
-      data-console-term
-      onpointerdown={() => onTermPointerDown("local")}
-      oncontextmenu={(e) => onTermContextMenu("local", e)}
-    ></div>
-    <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <div
-      class="term"
-      class:is-hidden={tab !== "ssh" || (!sshSessionId && !connecting)}
-      bind:this={sshHostEl}
-      data-no-drag
-      data-selectable
-      data-console-term
-      onpointerdown={() => onTermPointerDown("ssh")}
-      oncontextmenu={(e) => onTermContextMenu("ssh", e)}
-    ></div>
+    {#each tabs as t (t.key)}
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <div
+        class="term"
+        class:is-hidden={t.key !== activeKey || (!t.sessionId && !connecting)}
+        {@attach mountTerm(t.key)}
+        data-no-drag
+        data-selectable
+        data-console-term
+        onpointerdown={() => onTermPointerDown(t.key)}
+        oncontextmenu={(e) => onTermContextMenu(t.key, e)}
+      ></div>
+    {/each}
 
     {#if ctxMenu}
       <div
@@ -573,9 +649,9 @@
           type="button"
           class="ctx-item"
           role="menuitem"
-          disabled={!termOf(ctxMenu.kind)?.hasSelection()}
+          disabled={!termOf(ctxMenu.key)?.hasSelection()}
           onclick={() => {
-            const k = ctxMenu!.kind;
+            const k = ctxMenu!.key;
             closeCtx();
             void copyFrom(k);
           }}
@@ -586,9 +662,9 @@
           type="button"
           class="ctx-item"
           role="menuitem"
-          disabled={!sessionOf(ctxMenu.kind)}
+          disabled={!sessionOf(ctxMenu.key)}
           onclick={() => {
-            const k = ctxMenu!.kind;
+            const k = ctxMenu!.key;
             closeCtx();
             void pasteInto(k);
           }}
@@ -628,6 +704,8 @@
     min-width: 0;
     align-items: center;
     gap: 0.2rem;
+    overflow-x: auto;
+    scrollbar-width: thin;
   }
 
   .tab {
@@ -848,6 +926,53 @@
 
   .ctx-item:disabled {
     opacity: 0.4;
+    cursor: default;
+  }
+
+  .tab-slot {
+    display: inline-flex;
+    flex-shrink: 0;
+    align-items: center;
+    border-radius: 0.35rem;
+  }
+
+  .tab-x,
+  .tab-add {
+    display: inline-flex;
+    flex-shrink: 0;
+    align-items: center;
+    justify-content: center;
+    border: 0;
+    border-radius: 0.35rem;
+    padding: 0.2rem 0.3rem;
+    background: transparent;
+    color: var(--rb-muted);
+    font: inherit;
+    font-size: 0.62rem;
+    font-weight: 560;
+    cursor: pointer;
+  }
+
+  /* Se revela al pasar por encima: con varias pestañas, una X siempre visible
+     en cada una convierte la barra en ruido. */
+  .tab-x {
+    margin-left: -0.22rem;
+    opacity: 0;
+  }
+
+  .tab-slot:hover .tab-x,
+  .tab-x:focus-visible {
+    opacity: 1;
+  }
+
+  .tab-x:hover,
+  .tab-add:hover:not(:disabled) {
+    color: var(--rb-text);
+    background: color-mix(in srgb, var(--rb-text) 8%, transparent);
+  }
+
+  .tab-add:disabled {
+    opacity: 0.5;
     cursor: default;
   }
 </style>
