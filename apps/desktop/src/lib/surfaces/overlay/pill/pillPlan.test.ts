@@ -143,7 +143,7 @@ describe("contentFor", () => {
    */
   it("abrir la isla nunca encoge la caja en ningún eje", () => {
     expect(PILL.islandLong).toBe(PILL.bar);
-    for (const activity of ["idle", "recording"] as const) {
+    for (const activity of ["idle", "recording", "dictating"] as const) {
       for (const edge of ["left", "right", "top", "bottom"] as const) {
         const shut = contentFor("edge", 180, { edge, expanded: false }, activity);
         const open = contentFor("edge", 180, { edge, expanded: true }, activity);

@@ -166,6 +166,8 @@ export interface ConsoleOpenOptions {
   cwd?: string | null;
   cols?: number;
   rows?: number;
+  /** Comando a ejecutar en la PTY local (CLI de un agente). Vacío = shell. */
+  command?: string | null;
 }
 
 export interface ConsoleOutputPayload {

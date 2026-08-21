@@ -13,34 +13,58 @@
   import { FitAddon } from "@xterm/addon-fit";
   import "@xterm/xterm/css/xterm.css";
   import {
+    agentsAlwaysOnTop,
     consoleClose,
     consoleOpen,
     consoleResize,
     consoleWrite,
     onConsoleExit,
     onConsoleOutput,
+    setAgentsAlwaysOnTop,
     sshListHosts,
   } from "$ipc/agents";
   import { getConfig } from "$ipc/config";
   import type { ConsoleKind, SshHost } from "$lib/types";
   import EmptyState from "$lib/ui/EmptyState.svelte";
   import Icon from "$ui/Icon.svelte";
-  import { Plus, SquareTerminal, X } from "$lib/icons";
+  import { ArrowLeft, Pin, Plus, SquareTerminal, X } from "$lib/icons";
 
   let {
     remoteHost = null,
     localCwd = "",
     initialKind = "local",
+    initialTabs = null,
     onClose,
+    onBack,
+    onBarPointerDown,
   }: {
     /** Host SSH del destino actual de agentes; default de una pestaña nueva. */
     remoteHost?: SshHost | null;
     /** cwd local opcional al abrir PowerShell. */
     localCwd?: string;
-    /** Tipo de la primera pestaña al montar. */
+    /** Tipo de la primera pestaña al montar (si no hay `initialTabs`). */
     initialKind?: ConsoleKind;
+    /**
+     * Pestañas sembradas al montar (lanzador de agentes): cada una spawnea
+     * su CLI directo en vez de la shell. Vacío = una pestaña del tipo inicial.
+     */
+    initialTabs?: ConsoleSeed[] | null;
     onClose?: () => void;
+    /** Vuelve al lanzador sin cerrar las PTYs que siguen vivas. */
+    onBack?: () => void;
+    /**
+     * Arrastre del float desde la barra (fondo, no controles). La barra NO
+     * lleva `data-no-drag` justamente para que este handler pueda tomarla.
+     */
+    onBarPointerDown?: (e: PointerEvent) => void;
   } = $props();
+
+  /** Semilla de pestaña del lanzador: consola local corriendo un agente. */
+  type ConsoleSeed = {
+    kind: ConsoleKind;
+    label?: string;
+    command?: string;
+  };
 
   /**
    * Espejo de `MAX_CONSOLES` en `console.rs`. Rust es quien manda; esto solo
@@ -62,6 +86,10 @@
     sessionId: string | null;
     /** Host SSH de ESTA pestaña (solo `kind === "ssh"`). */
     hostId: string | null;
+    /** Etiqueta fija (nombre del agente) que tapa el default Local/SSH. */
+    label: string | null;
+    /** CLI a spawnear en la PTY local; `null` = shell del sistema. */
+    command: string | null;
   };
 
   type Box = { term: Terminal; fit: FitAddon; el: HTMLElement };
@@ -72,8 +100,16 @@
   let error = $state<string | null>(null);
   let sshHosts = $state<SshHost[]>([]);
   let ctxMenu = $state<{ x: number; y: number; key: string } | null>(null);
+  /**
+   * `tabs` = una consola a la vez. `split` = todas visibles en cuadrícula,
+   * para correr varios agentes en paralelo y verlos juntos.
+   */
+  let split = $state(false);
+  let pinned = $state(false);
+  let consoleEl = $state<HTMLElement | null>(null);
 
   /** xterm por pestaña. Fuera de `$state` (ver `Tab`). */
+  // eslint-disable-next-line svelte/prefer-svelte-reactivity -- xterm instances are imperative, not UI state.
   const boxes = new Map<string, Box>();
   let stopListen: (() => void) | null = null;
   let seq = 0;
@@ -81,6 +117,47 @@
   const active = $derived(tabs.find((t) => t.key === activeKey) ?? null);
   const sessionId = $derived(active?.sessionId ?? null);
   const connected = $derived(!!sessionId);
+
+  function toggleSplit() {
+    if (tabs.length < 2) return;
+    split = !split;
+    requestAnimationFrame(() => {
+      for (const key of boxes.keys()) fitAndResize(key);
+    });
+  }
+
+  function isInsideConsole(target: EventTarget | null): boolean {
+    if (!consoleEl) return false;
+    if (target instanceof Node && consoleEl.contains(target)) return true;
+    return (
+      document.activeElement instanceof Node &&
+      consoleEl.contains(document.activeElement)
+    );
+  }
+
+  function onGlobalKey(event: KeyboardEvent) {
+    if (event.isComposing || !isInsideConsole(event.target)) return;
+    const key = event.key.toLowerCase();
+    const mod = event.ctrlKey || event.metaKey;
+
+    // WebView2/xterm puede convertir Ctrl+D en EOF antes de que un handler
+    // de Svelte lo vea. Captura aquí, antes del PTY, y limita el atajo a esta
+    // superficie para no secuestrar el teclado de las otras herramientas.
+    if (mod && !event.shiftKey && !event.altKey && key === "d") {
+      event.preventDefault();
+      event.stopPropagation();
+      toggleSplit();
+    }
+  }
+
+  // Al alternar pestañas ↔ paralelo, cada xterm cambia de contenedor: hay
+  // que re-medirlos todos (el ResizeObserver de cada uno cubre el resto).
+  $effect(() => {
+    void split;
+    requestAnimationFrame(() => {
+      for (const key of boxes.keys()) fitAndResize(key);
+    });
+  });
 
   function hostLabel(h: SshHost): string {
     return h.label?.trim() || (h.user?.trim() ? `${h.user}@${h.host}` : h.host);
@@ -95,8 +172,7 @@
   function hostById(id: string | null): SshHost | null {
     if (!id) return null;
     return (
-      sshHosts.find((h) => h.id === id) ??
-      (remoteHost?.id === id ? remoteHost : null)
+      sshHosts.find((h) => h.id === id) ?? (remoteHost?.id === id ? remoteHost : null)
     );
   }
 
@@ -104,6 +180,7 @@
   const sshLabel = $derived(activeHost ? hostLabel(activeHost) : null);
 
   function baseLabel(t: Tab): string {
+    if (t.label?.trim()) return t.label.trim();
     if (t.kind === "local") return "Local";
     const h = hostById(t.hostId);
     return h ? hostLabel(h) : "SSH";
@@ -111,11 +188,13 @@
 
   /** Numera solo cuando el nombre se repite: "Local", "Local 2", "Local 3". */
   const tabLabels = $derived.by(() => {
+    // eslint-disable-next-line svelte/prefer-svelte-reactivity -- temporary reducer map.
     const total = new Map<string, number>();
     for (const t of tabs) {
       const b = baseLabel(t);
       total.set(b, (total.get(b) ?? 0) + 1);
     }
+    // eslint-disable-next-line svelte/prefer-svelte-reactivity -- temporary reducer map.
     const seen = new Map<string, number>();
     return tabs.map((t) => {
       const b = baseLabel(t);
@@ -124,6 +203,17 @@
       return (total.get(b) ?? 0) > 1 ? `${b} ${n}` : b;
     });
   });
+
+  /** Monograma del rail: iniciales del agente ("Claude Code" → CC, "OpenCode 2" → O2). */
+  function monogram(label: string): string {
+    const parts = label.trim().split(/\s+/).filter(Boolean);
+    if (parts.length >= 2) {
+      return (parts[0][0] + parts[1][0]).toUpperCase();
+    }
+    return (parts[0]?.slice(0, 2) ?? "?").toUpperCase();
+  }
+
+  const monograms = $derived(tabs.map((_, i) => monogram(tabLabels[i])));
 
   function tabOf(key: string): Tab | undefined {
     return tabs.find((t) => t.key === key);
@@ -216,8 +306,7 @@
     if (!tab || connecting) return;
     error = null;
     if (tab.kind === "ssh" && !hostById(tab.hostId)) {
-      error =
-        "Elige un host SSH en la consola (o agrégalo en Ajustes → Agentes).";
+      error = "Elige un host SSH en la consola (o agrégalo en Ajustes → Agentes).";
       return;
     }
     connecting = true;
@@ -225,10 +314,15 @@
     termOf(key)?.reset();
     try {
       const term = termOf(key);
+      // Medir AHORA, no confiar en el último fit: al sembrar desde el
+      // lanzador la PTY se abre mientras el float aún emerge (escala 0.55)
+      // y el tamaño de ese momento queda chico para siempre.
+      fitTermOnly(key);
       const id = await consoleOpen({
         kind: tab.kind,
         hostId: tab.kind === "ssh" ? tab.hostId : null,
         cwd: tab.kind === "local" && localCwd.trim() ? localCwd.trim() : null,
+        command: tab.kind === "local" ? tab.command : null,
         cols: term?.cols ?? 80,
         rows: term?.rows ?? 24,
       });
@@ -237,6 +331,12 @@
         fitAndResize(key);
         requestOverlayKeyboard(key);
       });
+      // La animación del float dura ~300ms: cuando termina, el contenedor
+      // cambia de tamaño por última vez y puede que el ResizeObserver ya
+      // haya disparado su último evento ANTES de que hubiera sesión. Estos
+      // re-ajustes tardíos son la red: le mandan al PTY el tamaño real.
+      setTimeout(() => fitAndResize(key), 350);
+      setTimeout(() => fitAndResize(key), 800);
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
       setSession(key, null);
@@ -245,17 +345,34 @@
     }
   }
 
-  /** Abre una pestaña y, si ya tiene destino, la conecta sola. */
-  function newTab(kind: ConsoleKind) {
+  /**
+   * Abre una pestaña y, si ya tiene destino, la conecta sola.
+   *
+   * La conexión va en COLA y no en paralelo: `connect` guarda un `connecting`
+   * global, y sembrar N pestañas del lanzador con N llamadas simultáneas
+   * dejaría solo la primera conectada — el resto caía en el guard.
+   */
+  let openChain: Promise<void> = Promise.resolve();
+
+  function newTab(kind: ConsoleKind, opts: { label?: string; command?: string } = {}) {
     if (tabs.length >= MAX_TABS) {
       error = `Ya hay ${MAX_TABS} consolas abiertas. Cerrá alguna para abrir otra.`;
       return;
     }
     closeCtx();
     const key = `t${++seq}`;
-    const hostId =
-      kind === "ssh" ? (remoteHost?.id ?? sshHosts[0]?.id ?? null) : null;
-    tabs = [...tabs, { key, kind, sessionId: null, hostId }];
+    const hostId = kind === "ssh" ? (remoteHost?.id ?? sshHosts[0]?.id ?? null) : null;
+    tabs = [
+      ...tabs,
+      {
+        key,
+        kind,
+        sessionId: null,
+        hostId,
+        label: opts.label?.trim() || null,
+        command: opts.command?.trim() || null,
+      },
+    ];
     activeKey = key;
     error = null;
     if (kind === "ssh") void loadSshHosts();
@@ -263,7 +380,7 @@
     // sobre el contenedor real y el PTY nace con el tamaño correcto.
     requestAnimationFrame(() => {
       if (kind === "local" || hostById(tabOf(key)?.hostId ?? null)) {
-        void connect(key);
+        openChain = openChain.then(() => connect(key)).catch(() => {});
       }
     });
   }
@@ -306,17 +423,51 @@
     }
   }
 
+  /** Re-mide el xterm sin tocar el PTY (antes de que exista sesión). */
+  function fitTermOnly(key = activeKey) {
+    const box = boxes.get(key);
+    if (!box) return;
+    try {
+      box.fit.fit();
+    } catch {
+      /* contenedor sin tamaño todavía: queda el default */
+    }
+  }
+
+  /**
+   * Paleta del xterm según el tema resuelto (`data-theme` en :root).
+   * La consola sigue el tema de la app; los TUI que pintan su propio fondo
+   * (opencode claro) siguen siendo cosa del agente, no del terminal.
+   */
+  function termTheme(): Record<string, string> {
+    const light = document.documentElement.dataset.theme === "light";
+    return light
+      ? {
+          background: "#f7f7f2",
+          foreground: "#26231e",
+          cursor: "#da7756",
+          selectionBackground: "rgba(218, 119, 86, 0.3)",
+        }
+      : {
+          background: "#16181d",
+          foreground: "#e6e8ec",
+          cursor: "#da7756",
+          selectionBackground: "rgba(218, 119, 86, 0.35)",
+        };
+  }
+
+  /** Re-aplica la paleta a todos los terminales vivos. */
+  function applyThemeToTerms() {
+    const theme = termTheme();
+    for (const box of boxes.values()) box.term.options.theme = theme;
+  }
+
   function makeTerm(key: string): { term: Terminal; fit: FitAddon } {
     const term = new Terminal({
       cursorBlink: true,
       fontSize: 12,
       fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
-      theme: {
-        background: "#0f1115",
-        foreground: "#e6e8ec",
-        cursor: "#da7756",
-        selectionBackground: "rgba(218, 119, 86, 0.35)",
-      },
+      theme: termTheme(),
       allowProposedApi: false,
       rightClickSelectsWord: false,
     });
@@ -407,7 +558,19 @@
 
   onMount(() => {
     void loadSshHosts();
-    newTab(initialKind === "ssh" ? "ssh" : "local");
+    void agentsAlwaysOnTop()
+      .then((on) => (pinned = on))
+      .catch(() => (pinned = false));
+    window.addEventListener("keydown", onGlobalKey, true);
+    // Lanzador: N pestañas de agentes. Sin semilla: la pestaña de siempre.
+    const seeds = (initialTabs ?? []).slice(0, MAX_TABS);
+    if (seeds.length > 0) {
+      for (const seed of seeds) {
+        newTab(seed.kind === "ssh" ? "ssh" : "local", seed);
+      }
+    } else {
+      newTab(initialKind === "ssh" ? "ssh" : "local");
+    }
 
     void Promise.all([
       onConsoleOutput((p) => {
@@ -438,9 +601,19 @@
     };
     document.addEventListener("pointerdown", onDocPointer, true);
     window.addEventListener("blur", closeCtx);
+
+    // Tema en vivo: al cambiar `data-theme` en :root, repintar terminales.
+    const themeObs = new MutationObserver(() => applyThemeToTerms());
+    themeObs.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["data-theme"],
+    });
+
     return () => {
+      window.removeEventListener("keydown", onGlobalKey, true);
       document.removeEventListener("pointerdown", onDocPointer, true);
       window.removeEventListener("blur", closeCtx);
+      themeObs.disconnect();
     };
   });
 
@@ -451,20 +624,39 @@
   });
 </script>
 
-<section class="console" aria-label="Consola">
-  <header class="bar" data-no-drag>
-    <div class="tabs" role="group" aria-label="Consolas abiertas">
+<section class="console console-desk" bind:this={consoleEl} aria-label="Consola">
+  <aside
+    class="rail"
+    onpointerdown={(e) => {
+      // Zona muerta del rail también arrastra el float.
+      if ((e.target as HTMLElement).closest("button, select, label")) return;
+      if (!onBarPointerDown) return;
+      e.preventDefault();
+      onBarPointerDown(e);
+    }}
+  >
+    <div class="rail-tabs" role="group" aria-label="Consolas abiertas">
       {#each tabs as t, i (t.key)}
-        <span class="tab-slot">
+        <span class="rail-slot">
           <button
             type="button"
-            class="tab"
+            class="rail-tab"
             class:is-on={t.key === activeKey}
             aria-current={t.key === activeKey ? "true" : undefined}
             title={tabLabels[i]}
             onclick={() => switchTab(t.key)}
           >
-            {tabLabels[i]}
+            <span class="mono" aria-hidden="true">{monograms[i]}</span>
+            <span class="rail-copy">
+              <span class="rail-name">{tabLabels[i]}</span>
+              <span class="rail-status">
+                {t.sessionId
+                  ? "Activa"
+                  : connecting && t.key === activeKey
+                    ? "Preparando"
+                    : "Pausada"}
+              </span>
+            </span>
             {#if t.sessionId}
               <span class="live" title="Sesión activa" aria-hidden="true"></span>
             {/if}
@@ -476,15 +668,17 @@
             title="Cerrar pestaña"
             onclick={() => void closeTab(t.key)}
           >
-            <Icon icon={X} size={10} />
+            <Icon icon={X} size={9} />
           </button>
         </span>
       {/each}
+    </div>
+    <div class="rail-add">
       <button
         type="button"
         class="tab-add"
         aria-label="Nueva consola local"
-        title="Nueva consola local"
+        title="Nueva consola local (shell)"
         disabled={connecting || tabs.length >= MAX_TABS}
         onclick={() => newTab("local")}
       >
@@ -492,14 +686,55 @@
       </button>
       <button
         type="button"
-        class="tab-add"
+        class="tab-add is-ssh"
         aria-label="Nueva consola SSH"
         title="Nueva consola SSH"
         disabled={connecting || tabs.length >= MAX_TABS}
         onclick={() => newTab("ssh")}
       >
-        + SSH
+        SSH
       </button>
+    </div>
+  </aside>
+
+  <div class="col">
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <header
+      class="bar"
+      onpointerdown={(e) => {
+        // Los controles quedan excluidos acá; el resto de la barra arrastra.
+        if ((e.target as HTMLElement).closest("button, select, label")) return;
+        if (!onBarPointerDown) return;
+        e.preventDefault();
+        onBarPointerDown(e);
+      }}
+    >
+      <div class="bar-start">
+        {#if onBack}
+          <button
+            type="button"
+            class="back-btn"
+            aria-label="Volver al lanzador"
+            title="Volver al lanzador"
+            onclick={onBack}
+          >
+            <Icon icon={ArrowLeft} size={13} />
+            <span>Agentes</span>
+          </button>
+        {/if}
+        <div class="where-block">
+          <p class="where" title={active ? tabLabels[tabs.indexOf(active)] : ""}>
+            {active ? tabLabels[tabs.indexOf(active)] : "Sin consolas"}
+          </p>
+          <span class="session-state" class:is-live={!!active?.sessionId}>
+            {active?.sessionId
+              ? "En ejecución"
+              : connecting
+                ? "Preparando"
+                : "Sin conexión"}
+          </span>
+        </div>
+      </div>
       {#if active?.kind === "ssh"}
         <label class="host-pick">
           <span class="sr">Host SSH</span>
@@ -524,155 +759,176 @@
           </select>
         </label>
       {/if}
-    </div>
-    <div class="acts">
-      {#if active}
-        {#if connected}
+      <div class="acts">
+        {#if tabs.length > 1}
           <button
             type="button"
-            class="chip"
-            disabled={connecting}
-            onclick={() => void disconnect()}
+            class="layout-toggle"
+            class:is-on={split}
+            aria-pressed={split}
+            title="Ctrl+D alterna entre una consola y la cuadrícula"
+            onclick={toggleSplit}
           >
-            Desconectar
-          </button>
-        {:else}
-          <button
-            type="button"
-            class="chip is-go"
-            disabled={connecting || (active.kind === "ssh" && !activeHost)}
-            onclick={() => void connect()}
-          >
-            {connecting ? "Conectando…" : "Conectar"}
+            <span>{split ? "Cuadrícula" : "Una consola"}</span>
+            <kbd>Ctrl+D</kbd>
           </button>
         {/if}
-      {/if}
-      {#if onClose}
-        <button
-          type="button"
-          class="icon-btn"
-          aria-label="Cerrar consola"
-          title="Cerrar consola"
-          onclick={() => {
-            void disconnectAll();
-            onClose();
-          }}
-        >
-          <Icon icon={X} size={12} />
-        </button>
-      {/if}
-    </div>
-  </header>
-
-  {#if error}
-    <p class="err" role="alert">{error}</p>
-  {/if}
-
-  <div class="body">
-    {#if tabs.length === 0}
-      <div class="empty">
-        <EmptyState
-          compact
-          title="Sin consolas"
-          hint="Abre una consola local (PowerShell) o una sesión SSH."
-        >
-          {#snippet action()}
+        {#if active}
+          {#if connected}
             <button
               type="button"
-              class="chip is-go"
-              onclick={() => newTab("local")}
+              class="chip"
+              disabled={connecting}
+              onclick={() => void disconnect()}
             >
-              <Icon icon={SquareTerminal} size={12} />
-              Nueva consola
+              Desconectar
             </button>
-          {/snippet}
-        </EmptyState>
-      </div>
-    {:else if active?.kind === "ssh" && !activeHost && !connected}
-      <div class="empty">
-        <EmptyState
-          compact
-          title="Sin host remoto"
-          hint="Agrega un host en Ajustes → Agentes y vuelve a abrir la consola."
-        />
-      </div>
-    {:else if !connected && !connecting}
-      <div class="empty">
-        <EmptyState
-          compact
-          title={active?.kind === "local"
-            ? "Consola local"
-            : `SSH · ${sshLabel ?? "remoto"}`}
-          hint={active?.kind === "local"
-            ? "PowerShell en este equipo (fallback cmd)."
-            : "Abre ssh -t al host seleccionado."}
-        >
-          {#snippet action()}
+          {:else}
             <button
               type="button"
               class="chip is-go"
+              disabled={connecting || (active.kind === "ssh" && !activeHost)}
               onclick={() => void connect()}
             >
-              <Icon icon={SquareTerminal} size={12} />
-              Conectar
+              {connecting ? "Conectando…" : "Conectar"}
             </button>
-          {/snippet}
-        </EmptyState>
-      </div>
-    {/if}
-
-    {#each tabs as t (t.key)}
-      <!-- svelte-ignore a11y_no_static_element_interactions -->
-      <div
-        class="term"
-        class:is-hidden={t.key !== activeKey || (!t.sessionId && !connecting)}
-        {@attach mountTerm(t.key)}
-        data-no-drag
-        data-selectable
-        data-console-term
-        onpointerdown={() => onTermPointerDown(t.key)}
-        oncontextmenu={(e) => onTermContextMenu(t.key, e)}
-      ></div>
-    {/each}
-
-    {#if ctxMenu}
-      <div
-        class="ctx"
-        style:left="{ctxMenu.x}px"
-        style:top="{ctxMenu.y}px"
-        role="menu"
-        tabindex="-1"
-        data-no-drag
-        onpointerdown={(e) => e.stopPropagation()}
-      >
+          {/if}
+        {/if}
         <button
           type="button"
-          class="ctx-item"
-          role="menuitem"
-          disabled={!termOf(ctxMenu.key)?.hasSelection()}
+          class="icon-btn pin-btn"
+          class:is-on={pinned}
+          aria-label={pinned ? "Desfijar ventana" : "Fijar ventana arriba"}
+          aria-pressed={pinned}
+          title={pinned ? "Desfijar ventana" : "Fijar ventana arriba"}
           onclick={() => {
-            const k = ctxMenu!.key;
-            closeCtx();
-            void copyFrom(k);
+            const next = !pinned;
+            pinned = next;
+            void setAgentsAlwaysOnTop(next).catch(() => (pinned = !next));
           }}
         >
-          Copiar
+          <Icon icon={Pin} size={12} />
         </button>
-        <button
-          type="button"
-          class="ctx-item"
-          role="menuitem"
-          disabled={!sessionOf(ctxMenu.key)}
-          onclick={() => {
-            const k = ctxMenu!.key;
-            closeCtx();
-            void pasteInto(k);
-          }}
-        >
-          Pegar
-        </button>
+        {#if onClose}
+          <button
+            type="button"
+            class="icon-btn"
+            aria-label="Cerrar consola"
+            title="Cerrar consola"
+            onclick={() => {
+              void disconnectAll();
+              onClose();
+            }}
+          >
+            <Icon icon={X} size={12} />
+          </button>
+        {/if}
       </div>
+    </header>
+
+    {#if error}
+      <p class="err" role="alert">{error}</p>
     {/if}
+
+    <div class="body" class:is-split={split}>
+      {#if tabs.length === 0 && !split}
+        <div class="empty">
+          <EmptyState
+            compact
+            title="Sin consolas"
+            hint="Abre una consola local (PowerShell) o una sesión SSH."
+          >
+            {#snippet action()}
+              <button type="button" class="chip is-go" onclick={() => newTab("local")}>
+                <Icon icon={SquareTerminal} size={12} />
+                Nueva consola
+              </button>
+            {/snippet}
+          </EmptyState>
+        </div>
+      {:else if !split && active?.kind === "ssh" && !activeHost && !connected}
+        <div class="empty">
+          <EmptyState
+            compact
+            title="Sin host remoto"
+            hint="Agrega un host en Ajustes → Agentes y vuelve a abrir la consola."
+          />
+        </div>
+      {:else if !split && !connected && !connecting}
+        <div class="empty">
+          <EmptyState
+            compact
+            title={active?.kind === "local"
+              ? "Consola local"
+              : `SSH · ${sshLabel ?? "remoto"}`}
+            hint={active?.kind === "local"
+              ? "PowerShell en este equipo (fallback cmd)."
+              : "Abre ssh -t al host seleccionado."}
+          >
+            {#snippet action()}
+              <button type="button" class="chip is-go" onclick={() => void connect()}>
+                <Icon icon={SquareTerminal} size={12} />
+                Conectar
+              </button>
+            {/snippet}
+          </EmptyState>
+        </div>
+      {/if}
+
+      {#each tabs as t (t.key)}
+        <!-- svelte-ignore a11y_no_static_element_interactions -->
+        <div
+          class="term"
+          class:is-hidden={!split &&
+            (t.key !== activeKey || (!t.sessionId && !connecting))}
+          {@attach mountTerm(t.key)}
+          data-no-drag
+          data-selectable
+          data-console-term
+          onpointerdown={() => onTermPointerDown(t.key)}
+          oncontextmenu={(e) => onTermContextMenu(t.key, e)}
+        ></div>
+      {/each}
+
+      {#if ctxMenu}
+        <div
+          class="ctx"
+          style:left="{ctxMenu.x}px"
+          style:top="{ctxMenu.y}px"
+          role="menu"
+          tabindex="-1"
+          data-no-drag
+          onpointerdown={(e) => e.stopPropagation()}
+        >
+          <button
+            type="button"
+            class="ctx-item"
+            role="menuitem"
+            disabled={!termOf(ctxMenu.key)?.hasSelection()}
+            onclick={() => {
+              const k = ctxMenu!.key;
+              closeCtx();
+              void copyFrom(k);
+            }}
+          >
+            Copiar
+          </button>
+          <button
+            type="button"
+            class="ctx-item"
+            role="menuitem"
+            disabled={!sessionOf(ctxMenu.key)}
+            onclick={() => {
+              const k = ctxMenu!.key;
+              closeCtx();
+              void pasteInto(k);
+            }}
+          >
+            Pegar
+          </button>
+        </div>
+      {/if}
+    </div>
   </div>
 </section>
 
@@ -680,13 +936,125 @@
   .console {
     display: flex;
     flex: 1;
-    flex-direction: column;
+    flex-direction: row;
     min-height: 0;
-    background: color-mix(in srgb, var(--rb-surface) 88%, #0f1115);
+    background: color-mix(in srgb, var(--rb-surface) 88%, var(--rb-bg0, #0f1115));
+
     /* Overlay: user-select/touch-action none; xterm necesita interactuar. */
     user-select: text;
     -webkit-user-select: text;
     touch-action: auto;
+  }
+
+  /* ─── Rail izquierdo: una ficha por consola ───────────────────────────── */
+  .rail {
+    display: flex;
+    flex-shrink: 0;
+    flex-direction: column;
+    align-items: center;
+    width: 2.9rem;
+    padding: 0.35rem 0.25rem;
+    border-right: 1px solid color-mix(in srgb, var(--rb-border) 70%, transparent);
+  }
+
+  .rail-tabs {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.3rem;
+    width: 100%;
+    min-height: 0;
+    overflow-y: auto;
+    scrollbar-width: none;
+  }
+
+  .rail-slot {
+    position: relative;
+    display: inline-flex;
+    flex-shrink: 0;
+  }
+
+  .rail-tab {
+    position: relative;
+    display: grid;
+    place-items: center;
+    width: 2.4rem;
+    height: 2.4rem;
+    border: 1px solid transparent;
+    border-radius: 0.6rem;
+    background: transparent;
+    color: var(--rb-muted);
+    cursor: pointer;
+    transition:
+      background-color var(--duration-quick, 75ms) ease,
+      color var(--duration-quick, 75ms) ease,
+      border-color var(--duration-quick, 75ms) ease;
+  }
+
+  .rail-tab:hover:not(:disabled) {
+    color: var(--rb-text);
+    background: color-mix(in srgb, var(--rb-text) 7%, transparent);
+  }
+
+  .rail-tab.is-on {
+    color: var(--rb-text);
+    border-color: color-mix(in srgb, var(--accent, #da7756) 42%, transparent);
+    background: color-mix(in srgb, var(--accent, #da7756) 17%, transparent);
+  }
+
+  .rail-tab:focus-visible {
+    outline: none;
+    border-color: color-mix(in srgb, var(--accent, #da7756) 60%, transparent);
+  }
+
+  .mono {
+    font-size: 0.66rem;
+    font-weight: 750;
+    letter-spacing: 0.04em;
+  }
+
+  /* Punto de sesión vivo: esquina de la ficha. */
+  .rail-tab .live {
+    position: absolute;
+    top: 0.24rem;
+    right: 0.24rem;
+  }
+
+  .live {
+    display: inline-block;
+    width: 0.32rem;
+    height: 0.32rem;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--accent, #da7756) 90%, #fff);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent, #da7756) 22%, transparent);
+  }
+
+  .rail-add {
+    display: flex;
+    margin-top: auto;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.25rem;
+    padding-top: 0.3rem;
+  }
+
+  /* Columna derecha: barra fina + cuerpo */
+  .col {
+    display: flex;
+    flex: 1;
+    min-width: 0;
+    flex-direction: column;
+  }
+
+  .where {
+    margin: 0;
+    min-width: 0;
+    overflow: hidden;
+    color: var(--rb-muted);
+    font-size: 0.68rem;
+    font-weight: 620;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .bar {
@@ -695,60 +1063,9 @@
     align-items: center;
     justify-content: space-between;
     gap: 0.4rem;
-    padding: 0.28rem 0.55rem;
+    padding: 0.28rem 0.5rem 0.28rem 0.6rem;
     border-bottom: 1px solid color-mix(in srgb, var(--rb-border) 70%, transparent);
-  }
-
-  .tabs {
-    display: flex;
-    min-width: 0;
-    align-items: center;
-    gap: 0.2rem;
-    overflow-x: auto;
-    scrollbar-width: thin;
-  }
-
-  .tab {
-    display: inline-flex;
-    max-width: 11rem;
-    align-items: center;
-    gap: 0.35rem;
-    overflow: hidden;
-    border: 0;
-    border-radius: 0.35rem;
-    padding: 0.22rem 0.45rem;
-    background: transparent;
-    color: var(--rb-muted);
-    font: inherit;
-    font-size: 0.68rem;
-    font-weight: 560;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    cursor: pointer;
-  }
-
-  .tab:hover:not(:disabled) {
-    color: var(--rb-text);
-    background: color-mix(in srgb, var(--rb-text) 6%, transparent);
-  }
-
-  .tab.is-on {
-    color: var(--rb-text);
-    background: color-mix(in srgb, var(--accent, #da7756) 18%, transparent);
-  }
-
-  .tab:disabled {
-    opacity: 0.55;
     cursor: default;
-  }
-
-  .live {
-    width: 0.35rem;
-    height: 0.35rem;
-    border-radius: 999px;
-    background: color-mix(in srgb, var(--accent, #da7756) 85%, #fff);
-    box-shadow: 0 0 0 1px
-      color-mix(in srgb, var(--accent, #da7756) 40%, transparent);
   }
 
   .host-pick {
@@ -799,21 +1116,32 @@
   .chip {
     display: inline-flex;
     align-items: center;
-    gap: 0.28rem;
+    gap: 0.3rem;
     border: 1px solid color-mix(in srgb, var(--rb-border) 80%, transparent);
     border-radius: 999px;
-    padding: 0.18rem 0.55rem;
-    background: color-mix(in srgb, var(--rb-surface-2) 80%, transparent);
-    color: var(--rb-text);
+    padding: 0.24rem 0.65rem;
+    background: color-mix(in srgb, var(--rb-surface-2) 70%, transparent);
+    color: var(--rb-muted);
     font: inherit;
-    font-size: 0.62rem;
+    font-size: 0.66rem;
     font-weight: 600;
+    letter-spacing: 0.01em;
     cursor: pointer;
+    transition:
+      background-color var(--duration-quick, 75ms) ease,
+      color var(--duration-quick, 75ms) ease,
+      border-color var(--duration-quick, 75ms) ease;
+  }
+
+  .chip:hover:not(:disabled) {
+    color: var(--rb-text);
+    border-color: color-mix(in srgb, var(--rb-text) 22%, transparent);
   }
 
   .chip.is-go {
     border-color: color-mix(in srgb, var(--accent, #da7756) 45%, transparent);
     background: color-mix(in srgb, var(--accent, #da7756) 22%, transparent);
+    color: var(--rb-text);
   }
 
   .chip:disabled {
@@ -824,18 +1152,21 @@
   .icon-btn {
     display: grid;
     place-items: center;
-    width: 1.5rem;
-    height: 1.5rem;
+    width: 1.6rem;
+    height: 1.6rem;
     border: 0;
-    border-radius: 0.35rem;
+    border-radius: 0.45rem;
     background: transparent;
     color: var(--rb-muted);
     cursor: pointer;
+    transition:
+      background-color var(--duration-quick, 75ms) ease,
+      color var(--duration-quick, 75ms) ease;
   }
 
   .icon-btn:hover {
     color: var(--rb-text);
-    background: color-mix(in srgb, var(--rb-text) 6%, transparent);
+    background: color-mix(in srgb, var(--rb-record) 16%, transparent);
   }
 
   .err {
@@ -853,6 +1184,31 @@
     flex: 1;
     min-height: 0;
     flex-direction: column;
+    background: color-mix(in srgb, var(--rb-surface) 88%, var(--rb-bg0, #0f1115));
+  }
+
+  /* Paralelo: todas las consolas visibles, en cuadrícula. Cada pane mide lo
+     suyo; el FitAddon de cada xterm ya observa su propio contenedor. */
+  .body.is-split {
+    flex-flow: row wrap;
+    align-items: stretch;
+    gap: 0.35rem;
+    padding: 0.35rem;
+  }
+
+  .body.is-split .term {
+    position: relative;
+    inset: auto;
+    flex: 1 1 15rem;
+    min-width: 12rem;
+    min-height: 8rem;
+    border: 1px solid color-mix(in srgb, var(--rb-border) 65%, transparent);
+    border-radius: 0.55rem;
+    overflow: hidden;
+  }
+
+  .body.is-split .term:hover {
+    border-color: color-mix(in srgb, var(--accent, #da7756) 35%, transparent);
   }
 
   .empty {
@@ -929,50 +1285,320 @@
     cursor: default;
   }
 
-  .tab-slot {
-    display: inline-flex;
-    flex-shrink: 0;
-    align-items: center;
-    border-radius: 0.35rem;
-  }
-
   .tab-x,
   .tab-add {
     display: inline-flex;
     flex-shrink: 0;
     align-items: center;
     justify-content: center;
-    border: 0;
-    border-radius: 0.35rem;
-    padding: 0.2rem 0.3rem;
+    border: 1px solid transparent;
+    border-radius: 0.45rem;
+    padding: 0.24rem;
     background: transparent;
     color: var(--rb-muted);
     font: inherit;
-    font-size: 0.62rem;
-    font-weight: 560;
+    font-size: 0.6rem;
+    font-weight: 650;
     cursor: pointer;
+    transition:
+      background-color var(--duration-quick, 75ms) ease,
+      color var(--duration-quick, 75ms) ease,
+      opacity var(--duration-quick, 75ms) ease;
   }
 
-  /* Se revela al pasar por encima: con varias pestañas, una X siempre visible
-     en cada una convierte la barra en ruido. */
+  /* Se revela al pasar por encima de la ficha: una X siempre visible en cada
+     una convierte el rail en ruido. */
   .tab-x {
-    margin-left: -0.22rem;
+    position: absolute;
+    right: -0.3rem;
+    bottom: -0.3rem;
+    padding: 0.14rem;
     opacity: 0;
+    background: var(--rb-surface);
+    box-shadow: 0 1px 4px color-mix(in srgb, #000 25%, transparent);
   }
 
-  .tab-slot:hover .tab-x,
+  .rail-slot:hover .tab-x,
+  .rail-slot:focus-within .tab-x,
   .tab-x:focus-visible {
     opacity: 1;
   }
 
-  .tab-x:hover,
-  .tab-add:hover:not(:disabled) {
+  .tab-x:hover {
+    color: var(--rb-record);
+    background: color-mix(in srgb, var(--rb-record) 14%, var(--rb-surface));
+  }
+
+  .tab-add.is-ssh {
+    font-size: 0.5rem;
+    letter-spacing: 0.03em;
+  }
+
+  .tab-add:hover:not(:disabled),
+  .tab-add:focus-visible {
     color: var(--rb-text);
-    background: color-mix(in srgb, var(--rb-text) 8%, transparent);
+    background: color-mix(in srgb, var(--accent, #da7756) 18%, transparent);
   }
 
   .tab-add:disabled {
     opacity: 0.5;
     cursor: default;
+  }
+
+  /* ─── Console desk: navegación legible y estados con contraste ─── */
+  .console-desk {
+    --agent-accent: var(--rb-record);
+
+    background: var(--rb-bg0);
+  }
+
+  .console-desk .rail {
+    width: 9.4rem;
+    padding: 0.55rem 0.45rem;
+    background: color-mix(
+      in sRGB,
+      var(--rb-sidebar, var(--rb-surface-2)) 88%,
+      transparent
+    );
+  }
+
+  .console-desk .rail-tabs {
+    align-items: stretch;
+    gap: 0.28rem;
+  }
+
+  .console-desk .rail-slot {
+    width: 100%;
+  }
+
+  .console-desk .rail-tab {
+    grid-template-columns: 2rem minmax(0, 1fr);
+    width: 100%;
+    height: 3.15rem;
+    justify-items: start;
+    gap: 0.55rem;
+    padding: 0.45rem 0.5rem;
+    border-radius: 0.7rem;
+    text-align: left;
+  }
+
+  .console-desk .rail-tab.is-on {
+    border-color: color-mix(in sRGB, var(--agent-accent) 48%, transparent);
+    background: color-mix(in sRGB, var(--agent-accent) 13%, var(--rb-surface));
+  }
+
+  .console-desk .rail-tab .mono {
+    display: grid;
+    place-items: center;
+    width: 2rem;
+    height: 2rem;
+    border-radius: 0.55rem;
+    background: color-mix(in sRGB, var(--rb-text) 8%, transparent);
+    color: var(--rb-text);
+    font-size: 0.62rem;
+  }
+
+  .console-desk .rail-tab.is-on .mono {
+    background: color-mix(in sRGB, var(--agent-accent) 22%, transparent);
+  }
+
+  .console-desk .rail-copy {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 0.12rem;
+  }
+
+  .console-desk .rail-name,
+  .console-desk .rail-status {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .rail-name {
+    color: var(--rb-text);
+    font-size: 0.7rem;
+    font-weight: 680;
+  }
+
+  .rail-status {
+    color: var(--rb-faint);
+    font-size: 0.58rem;
+    font-weight: 540;
+  }
+
+  .console-desk .rail-tab .live {
+    top: 0.42rem;
+    right: 0.42rem;
+    background: var(--rb-ok);
+    box-shadow: 0 0 0 2px color-mix(in sRGB, var(--rb-ok) 18%, transparent);
+  }
+
+  .console-desk .tab-x {
+    right: 0.1rem;
+    bottom: 0.2rem;
+    width: 1.25rem;
+    height: 1.25rem;
+    padding: 0.2rem;
+    border-radius: 0.35rem;
+  }
+
+  .console-desk .bar {
+    min-height: 3.15rem;
+    padding: 0.45rem 0.7rem;
+    background: var(--rb-surface);
+  }
+
+  .console-desk .bar-start,
+  .console-desk .where-block {
+    display: flex;
+    min-width: 0;
+    align-items: center;
+  }
+
+  .console-desk .bar-start {
+    flex: 1;
+    gap: 0.65rem;
+  }
+
+  .console-desk .where-block {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.08rem;
+  }
+
+  .console-desk .back-btn,
+  .console-desk .layout-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    min-height: 2rem;
+    border: 1px solid transparent;
+    border-radius: 0.5rem;
+    background: transparent;
+    color: var(--rb-muted);
+    font: inherit;
+    font-size: 0.68rem;
+    font-weight: 650;
+    cursor: pointer;
+    transition:
+      color var(--duration-quick, 75ms) ease,
+      background-color var(--duration-quick, 75ms) ease,
+      border-color var(--duration-quick, 75ms) ease;
+  }
+
+  .console-desk .back-btn {
+    padding: 0.2rem 0.45rem 0.2rem 0.3rem;
+  }
+
+  .console-desk .back-btn:hover,
+  .layout-toggle:hover,
+  .layout-toggle.is-on {
+    border-color: color-mix(in sRGB, var(--agent-accent) 35%, transparent);
+    background: color-mix(in sRGB, var(--agent-accent) 10%, transparent);
+    color: var(--rb-text);
+  }
+
+  .console-desk .where {
+    color: var(--rb-text);
+    font-size: 0.76rem;
+    font-weight: 700;
+  }
+
+  .console-desk .session-state {
+    color: var(--rb-muted);
+    font-size: 0.58rem;
+    font-weight: 540;
+  }
+
+  .console-desk .session-state.is-live {
+    color: var(--rb-ok);
+  }
+
+  .console-desk .layout-toggle {
+    padding: 0.2rem 0.45rem;
+  }
+
+  .console-desk .layout-toggle kbd {
+    border: 1px solid color-mix(in sRGB, var(--rb-border) 90%, transparent);
+    border-radius: 0.3rem;
+    padding: 0.08rem 0.25rem;
+    background: color-mix(in sRGB, var(--rb-text) 5%, transparent);
+    color: var(--rb-faint);
+    font-family: var(--rb-mono, ui-monospace, monospace);
+    font-size: 0.54rem;
+    font-weight: 600;
+  }
+
+  .console-desk .icon-btn {
+    width: 2rem;
+    height: 2rem;
+  }
+
+  .console-desk .icon-btn.is-on {
+    color: var(--agent-accent);
+    background: color-mix(in sRGB, var(--agent-accent) 13%, transparent);
+  }
+
+  .console-desk .body {
+    background: var(--rb-bg0);
+  }
+
+  .console-desk .body.is-split {
+    background: color-mix(in sRGB, var(--rb-bg0) 84%, var(--rb-text));
+  }
+
+  .console-desk .empty {
+    background: var(--rb-bg0);
+  }
+
+  .empty :global(.text-muted) {
+    color: var(--rb-text) !important;
+  }
+
+  .empty :global(.text-faint) {
+    color: var(--rb-muted) !important;
+  }
+
+  @media (width <= 40rem) {
+    .console-desk .rail {
+      width: 3.35rem;
+      padding-inline: 0.25rem;
+    }
+
+    .console-desk .rail-tab {
+      grid-template-columns: 1fr;
+      justify-items: center;
+      height: 2.65rem;
+      padding: 0.3rem;
+    }
+
+    .console-desk .rail-copy {
+      display: none;
+    }
+
+    .console-desk .bar {
+      gap: 0.2rem;
+      padding-inline: 0.45rem;
+    }
+
+    .console-desk .back-btn span,
+    .console-desk .layout-toggle span {
+      display: none;
+    }
+
+    .console-desk .layout-toggle {
+      padding-inline: 0.35rem;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .console-desk .back-btn,
+    .layout-toggle,
+    .icon-btn,
+    .console-desk .rail-tab {
+      transition: none;
+    }
   }
 </style>

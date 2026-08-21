@@ -114,6 +114,20 @@ export function createCssStage() {
   let origin: Point = { x: 0, y: 0 };
   let areas: Area[] = [];
 
+  /**
+   * Avisos cuando `areas` cambia. Las áreas viven en una closure (no en
+   * `$state`: este módulo es TS puro para que vitest lo compile sin plugin),
+   * así que quien las lea dentro de un `$derived` no crea dependencia
+   * reactiva y necesita suscribirse para refrescarse.
+   */
+  const areaListeners = new Set<() => void>();
+
+  /** Suscripción a cambios de áreas. Devuelve la función de limpieza. */
+  function onAreasChanged(listener: () => void): () => void {
+    areaListeners.add(listener);
+    return () => areaListeners.delete(listener);
+  }
+
   /** Se refresca al arrancar y cuando cambian los monitores. */
   async function loadAreas(): Promise<void> {
     try {
@@ -121,6 +135,7 @@ export function createCssStage() {
     } catch {
       areas = [];
     }
+    for (const listener of areaListeners) listener();
   }
 
   function applied(): Size | null {
@@ -244,5 +259,5 @@ export function createCssStage() {
     return areas.map((a) => ({ ...a }));
   }
 
-  return { resize, applied, at, moveTo, loadAreas, workAreas };
+  return { resize, applied, at, moveTo, loadAreas, workAreas, onAreasChanged };
 }
