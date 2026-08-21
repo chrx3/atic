@@ -5,7 +5,7 @@ body:
   - type: textarea
     id: problem
     attributes:
-      label: Qué problema resolvés
+      label: Qué problema resuelves
       placeholder: Hoy tengo que… y Atic no me deja…
     validations:
       required: true
@@ -13,7 +13,7 @@ body:
     id: proposal
     attributes:
       label: Propuesta
-      description: Cómo te lo imaginás en la pill, un atajo o Ajustes.
+      description: Cómo te lo imaginas en la pill, un atajo o Ajustes.
     validations:
       required: true
   - type: dropdown

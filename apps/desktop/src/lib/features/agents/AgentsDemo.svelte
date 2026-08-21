@@ -113,9 +113,9 @@
 
   /** Sugerencias del empty state (rellenan el draft; no son prompts del CLI). */
   const SUGGESTIONS = [
-    "Resumí los cambios recientes del repo",
-    "Explicá este error y cómo arreglarlo",
-    "Proponé un plan corto para este proyecto",
+    "Resume los cambios recientes del repo",
+    "Explica este error y cómo arreglarlo",
+    "Propón un plan corto para este proyecto",
   ] as const;
   let cwd = $state("");
   /** `null` = local; id de host en config = remoto. */
@@ -259,7 +259,7 @@
   );
   const folderChipTitle = $derived(
     archive
-      ? "Salí del archivo para cambiar la carpeta"
+      ? "Sal del archivo para cambiar la carpeta"
       : working || waiting || starting
         ? "No se puede cambiar la carpeta mientras el agente trabaja"
         : cwd || "Elegir carpeta de trabajo",
@@ -987,7 +987,7 @@
 
   function openFolderBrowser() {
     if (archive) {
-      toasts.push("Salí del archivo para cambiar la carpeta.", 3500);
+      toasts.push("Sal del archivo para cambiar la carpeta.", 3500);
       return;
     }
     if (working || waiting || starting) {
@@ -1121,7 +1121,7 @@
     if (sessionId) return sessionId;
     if (archive || agentMissing || starting) return sessionId;
     if (remoteHostId && !cwd.trim()) {
-      error = "Indicá un cwd remoto (path POSIX) antes de iniciar.";
+      error = "Indica un cwd remoto (path POSIX) antes de iniciar.";
       return null;
     }
     starting = true;
@@ -1816,7 +1816,7 @@
           <div class="hist-empty-wrap">
             <EmptyState
               title="No disponible en remoto"
-              hint="El índice de sesiones del CLI es local. Usá el historial Atic."
+              hint="El índice de sesiones del CLI es local. Usa el historial Atic."
             />
           </div>
         {:else}
@@ -1826,7 +1826,7 @@
           {#if !cwd.trim()}
             <div class="hist-empty-wrap">
               <EmptyState
-                title="Elegí una carpeta"
+                title="Elige una carpeta"
                 hint="Para ver sesiones del CLI."
               >
                 {#snippet action()}
@@ -1848,7 +1848,7 @@
             <p class="hist-empty">Buscando…</p>
           {:else if cliSessions.length === 0}
             <div class="hist-empty-wrap">
-              <EmptyState title="Sin sesiones CLI" hint="Probá otra carpeta." />
+              <EmptyState title="Sin sesiones CLI" hint="Prueba otra carpeta." />
             </div>
           {:else}
             <ul class="hist-list">
@@ -1943,7 +1943,7 @@
         <div class="empty">
           <EmptyState
             title="Sin CLI"
-            hint="Instalá Claude Code y ejecutá claude auth login. O elegí un host SSH remoto."
+            hint="Instala Claude Code y ejecuta claude auth login. O elige un host SSH remoto."
           />
         </div>
       {:else if archiveLoading}
@@ -1958,8 +1958,8 @@
             <div class="hero" data-no-drag>
               <p class="hero-t">
                 {cwd.trim()
-                  ? "Preguntá lo que necesites"
-                  : "Elegí carpeta y empezá"}
+                  ? "Pregunta lo que necesites"
+                  : "Elige carpeta y empieza"}
               </p>
               <p class="hero-h">
                 {cwd.trim()
@@ -2316,10 +2316,10 @@
             : archive
               ? "Solo lectura…"
               : dropActive
-                ? "Soltá para adjuntar…"
+                ? "Suelta para adjuntar…"
                 : remoteHostId
                   ? "Mensaje al agente remoto…"
-                  : "Mensaje, /… o pegá una imagen"}
+                  : "Mensaje, /… o pega una imagen"}
           bind:value={draft}
           onkeydown={onKey}
           onpaste={(e) => void onComposerPaste(e)}

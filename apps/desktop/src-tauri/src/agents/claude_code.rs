@@ -249,7 +249,7 @@ struct Translator {
     /// Reglas sugeridas por pedido de permiso, para poder contestar «siempre».
     ///
     /// Se guardan acá y no viajan a la interfaz a propósito: son la forma
-    /// interna del CLI para «grabá esta regla», y hacerlas ir y volver
+    /// interna del CLI para «graba esta regla», y hacerlas ir y volver
     /// obligaría a las vistas a entender un detalle del protocolo para dibujar
     /// un botón.
     rules: Arc<Mutex<HashMap<String, Value>>>,
@@ -1079,7 +1079,7 @@ fn classify_control_slash(prompt: &str) -> Option<ControlSlash> {
         let rest = rest.trim();
         if rest.is_empty() {
             return Some(ControlSlash::NoticeOnly {
-                text: "Esfuerzo: elegí un nivel en el selector.".to_string(),
+                text: "Esfuerzo: elige un nivel en el selector.".to_string(),
             });
         }
         if !rest.contains('\n') {
@@ -1096,7 +1096,7 @@ fn classify_control_slash(prompt: &str) -> Option<ControlSlash> {
         let rest = rest.trim();
         if rest.is_empty() {
             return Some(ControlSlash::NoticeOnly {
-                text: "Modelo: elegí uno en el selector.".to_string(),
+                text: "Modelo: elige uno en el selector.".to_string(),
             });
         }
         if !rest.contains('\n') {
@@ -1116,7 +1116,7 @@ fn classify_control_slash(prompt: &str) -> Option<ControlSlash> {
         let rest = rest.trim();
         if rest.is_empty() {
             return Some(ControlSlash::NoticeOnly {
-                text: "Permisos: elegí un modo en el selector.".to_string(),
+                text: "Permisos: elige un modo en el selector.".to_string(),
             });
         }
         if !rest.contains('\n') && known_permission_mode(rest) {
@@ -1469,7 +1469,7 @@ mod tests {
     }
 
     /// Las sugerencias se guardan de paso y NO viajan a la interfaz: son la
-    /// forma interna del CLI para «grabá esta regla».
+    /// forma interna del CLI para «graba esta regla».
     #[test]
     fn la_regla_sugerida_queda_guardada_sin_salir_a_la_ui() {
         let rules = Arc::new(Mutex::new(HashMap::new()));

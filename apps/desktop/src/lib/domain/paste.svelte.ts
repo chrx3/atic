@@ -2,8 +2,8 @@
  * La cola de pegado: lo que quedó esperando a que haya dónde pegarlo.
  *
  * Existe porque pegar necesita un destino con foco, y muchas veces no lo hay —
- * dictás mirando otra cosa, copiás algo desde la consola de agentes—. En vez de
- * perder el texto, se encola y la pill lo ofrece cuando volvés.
+ * dictas mirando otra cosa, copias algo desde la consola de agentes—. En vez de
+ * perder el texto, se encola y la pill lo ofrece cuando vuelves.
  *
  * Solo se muestra el primero. Es una cola, no una bandeja: si se acumulan tres,
  * lo útil es despachar el de adelante, no elegir entre ellos.

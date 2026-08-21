@@ -23,7 +23,7 @@ pub enum SummarizeError {
     #[error("respuesta inválida del modelo: {0}")]
     BadResponse(String),
 
-    #[error("el modelo `{model}` no existe en este proveedor. Elegí otro en Ajustes")]
+    #[error("el modelo `{model}` no existe en este proveedor. Elige otro en Ajustes")]
     UnknownModel { model: String },
 
     #[error("API rechazó la petición ({status}): {body}")]

@@ -41,7 +41,7 @@ if [[ ! -f "$key_path" ]]; then
   exit 1
 fi
 if [[ ! -f "$pass_path" ]]; then
-  echo "Falta $pass_path. Guardá ahí la contraseña de la clave, una sola línea." >&2
+  echo "Falta $pass_path. Guarda ahí la contraseña de la clave, una sola línea." >&2
   exit 1
 fi
 
@@ -80,7 +80,7 @@ if [[ -z "$app_tar" ]]; then
 fi
 app_sig="${app_tar}.sig"
 if [[ ! -f "$app_sig" ]]; then
-  echo "No se generó $(basename "$app_tar").sig. Revisá la clave y la contraseña." >&2
+  echo "No se generó $(basename "$app_tar").sig. Revisa la clave y la contraseña." >&2
   exit 1
 fi
 

@@ -206,7 +206,7 @@
       await surfaces.recoverHits().catch(() => {});
       surfaces.dragging = false;
       if (item.kind === "text") {
-        // Rust cancela OLE si soltás sobre agentes e inserta en el composer.
+        // Rust cancela OLE si sueltas sobre agentes e inserta en el composer.
         await startClipboardTextDrag(item.id);
         return;
       }

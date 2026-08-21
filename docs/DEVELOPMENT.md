@@ -1,7 +1,7 @@
 # Desarrollo
 
 Cómo clonar, compilar y empaquetar Atic. La cara de producto está en el
-[README](../README.md). En Mac, empezá por [`MACOS.md`](MACOS.md).
+[README](../README.md). En Mac, empieza por [`MACOS.md`](MACOS.md).
 
 ## Arquitectura
 
@@ -25,8 +25,8 @@ apps/desktop/  App Tauri 2: ventana principal + overlay (pill) + tray
 - Rust (`stable-x86_64-pc-windows-msvc`)
 - Visual Studio Build Tools con el workload "Desktop development with C++"
 - **CMake** y **LLVM/libclang** — los necesita `whisper-rs` / whisper.cpp.
-  Si `libclang.dll` no está en el PATH, exportá `LIBCLANG_PATH` a `…\LLVM\bin`.
-- **`CPATH` con las cabeceras de clang Y las de MSVC** si compilás fuera del
+  Si `libclang.dll` no está en el PATH, exporta `LIBCLANG_PATH` a `…\LLVM\bin`.
+- **`CPATH` con las cabeceras de clang Y las de MSVC** si compilas fuera del
   Developer PowerShell for VS. `libclang` **no** lee `INCLUDE`. El síntoma
   engaña: `fatal error: 'stdio.h' file not found`, seguido de un
   `attempt to compute 12_usize - 16_usize` en bindings de Linux que
@@ -34,7 +34,7 @@ apps/desktop/  App Tauri 2: ventana principal + overlay (pill) + tray
 
   Desde LLVM 19 hace falta el directorio de cabeceras propias de clang
   (`lib\clang\<mayor>\include`). Sin él el error pasa a `'stdbool.h' file not
-  found`. Ajustá el número de versión al de tu instalación.
+  found`. Ajusta el número de versión al de tu instalación.
 
   ```powershell
   $vc = "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
@@ -44,7 +44,7 @@ apps/desktop/  App Tauri 2: ventana principal + overlay (pill) + tray
   $env:CPATH = "C:\Program Files\LLVM\lib\clang\22\include;" + $env:INCLUDE
   ```
 
-  Si ya hubo un intento fallido, cargo cachea los bindings malos. Borrá el
+  Si ya hubo un intento fallido, cargo cachea los bindings malos. Borra el
   directorio del build script:
 
   ```powershell

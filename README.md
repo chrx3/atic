@@ -4,7 +4,7 @@
 
 <p align="center">
   Asistente de escritorio local-first.<br>
-  Grabá reuniones, dictá, capturá y pegá — sin ir a buscar una ventana.
+  Graba reuniones, dicta, captura y pega — sin ir a buscar una ventana.
 </p>
 
 <p align="center">
@@ -17,7 +17,7 @@
 </p>
 
 Atic vive en una **barra flotante** (la pill), la bandeja del sistema y atajos
-globales. El audio se graba en tu PC; Whisper transcribe en local. Si elegís
+globales. El audio se graba en tu PC; Whisper transcribe en local. Si eliges
 Groq para dictado o live, ese audio sí sale a su API. Los resúmenes son BYOK:
 solo viaja el texto, con la clave en el llavero del sistema.
 
@@ -34,7 +34,7 @@ Atic es **open source** ([MIT](LICENSE)). El desarrollo vive en
 | **Reuniones** | Mic + sistema en pistas separadas, transcripción local, resumen editable, envío por correo. La detección de llamadas solo *sugiere* grabar. |
 | **Dictado** | Atajo global (toggle o push-to-talk). Transcribe y pega donde estabas escribiendo. |
 | **Clipboard** | Historial local de texto e imágenes. No archiva lo que un gestor de contraseñas marcó como efímero. |
-| **Textos** | Snippets a propósito, más un bloc de notas. Distinto del historial: esto lo guardás vos. |
+| **Textos** | Snippets a propósito, más un bloc de notas. Distinto del historial: esto lo guardas tú. |
 | **Capturas** | Ventana, región o monitor, al portapapeles y a un shelf flotante. |
 | **Apps** | Launcher tipo Spotlight (mismo atajo que Ctrl+Space). |
 
@@ -42,11 +42,11 @@ Catálogo vivo (hechas, a medias e ideas): [`Features/`](Features/).
 
 ## Instalar
 
-Descargá el último instalador en
+Descarga el último instalador en
 [Releases](https://github.com/chrx3/atic/releases/latest):
 
 - Windows: `*-setup.exe` (NSIS) — es lo que hay en el release actual
-- macOS: compilá desde el source ([`docs/MACOS.md`](docs/MACOS.md)); el DMG
+- macOS: compila desde el source ([`docs/MACOS.md`](docs/MACOS.md)); el DMG
   sale cuando hay cupo de CI
 
 Windows puede mostrar SmartScreen: la app todavía no lleva firma Authenticode.

@@ -662,7 +662,7 @@ pub async fn start_clipboard_text_drag(
             .unwrap_or_else(|| item.preview.clone()),
         ClipboardKind::Image => {
             return Err(crate::ui_lang::msg(
-                "Usá arrastre de archivo para imágenes.",
+                "Usa arrastre de archivo para imágenes.",
                 "Use file drag for images.",
             ))
         }
@@ -1812,9 +1812,9 @@ fn save_foreground_hwnd() {
 
 /// Sigue la ventana externa en foco mientras dura un dictado.
 ///
-/// Un solo snapshot al arrancar no alcanza: entre que empezás a hablar y que el
+/// Un solo snapshot al arrancar no alcanza: entre que empiezas a hablar y que el
 /// texto está listo pasan segundos, y en ese rato es normal hacer clic en el
-/// input donde realmente lo querés. El destino tiene que ser la última ventana
+/// input donde realmente lo quieres. El destino tiene que ser la última ventana
 /// que tocaste, no la que estaba cuando apretaste el atajo.
 pub(crate) fn start_foreground_tracking() {
     if TRACKING.swap(true, Ordering::SeqCst) {

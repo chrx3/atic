@@ -63,7 +63,7 @@ Gaps del launcher (referencia):
 | `LAUNCHER_PILL_GAP` (slot idle) | **16** | > 10 | Pill y barra en reposo **no** se pegan ([`toolSlots.ts`](../apps/desktop/src/lib/surfaces/overlay/toolSlots.ts)). |
 | `FAVS_GAP_PX` / `DOT_GAP_PX` | **15** | > 10 | Idle: bolitas sueltas, no óvalo. Al salir, el transform arranca más cerca → un instante bajo REACH → cuello legible. |
 
-Si portás el patrón: elegí **un** fused gap (~2 px) y **un** resting gap
+Si portas el patrón: elige **un** fused gap (~2 px) y **un** resting gap
 claramente > `REACH` (15–16 px está bien con `BLEND = 20`). No uses el gap de
 reposo durante el grow.
 
@@ -82,7 +82,7 @@ type RevealPhase = "hidden" | "expand" | "separate" | "favs" | "ready";
 | Fase | Qué hacer | Criterio de “listo” |
 | --- | --- | --- |
 | `hidden` | Float no mostrado / cerrado. | — |
-| *(previo)* | Pill **vuela al slot** ([`toolSlots.ts`](../apps/desktop/src/lib/surfaces/overlay/toolSlots.ts) + `PillSurface`). | Pill ya en sitio; recién ahí montás el float. |
+| *(previo)* | Pill **vuela al slot** ([`toolSlots.ts`](../apps/desktop/src/lib/surfaces/overlay/toolSlots.ts) + `PillSurface`). | Pill ya en sitio; recién ahí montas el float. |
 | `expand` | `placeFusedToPill` (ancho inicial angosto) → animar **width** a tamaño final. Borde de origen **clavado**. | `afterTransition(el, "width", openDur)` |
 | `separate` | Armar clase CSS de transición de `left`/`top` **un frame antes** de mover el ancla; luego `applyCenterPlace` (o resting gap). | `afterTransition(el, "left", separateDur)` |
 | `favs` (opcional) | `favRevealCount = 1…N` secuencial; cada hijo `.is-out`. | Por hijo: `afterTransition(dot, "transform", favStaggerDur)` |
@@ -209,7 +209,7 @@ Mismos tokens de grow/separate que el launcher (reusan `--launcher-*`).
 | Morph close rueda | 150 |
 | Morph quick (elegir tool) | 75 |
 
-Si cambiás un timing: tocá el token en `app.css`, el fallback en `MOTION_FALLBACK`,
+Si cambias un timing: toca el token en `app.css`, el fallback en `MOTION_FALLBACK`,
 y esta tabla. Lab del launcher puede override solo `openDur` en DEV.
 
 Checklist mínimo al cerrar:
@@ -307,7 +307,7 @@ Easing de referencia: `--ease-smooth-out` (`cubic-bezier(0.22, 1, 0.36, 1)`).
 En JS: `ms(MOTION.launcherBar)` etc., y esperar con
 `afterTransition(el, "width" | "left" | "transform", dur)`.
 
-Al portar a otra tool: podés reutilizar estos tokens o añadir
+Al portar a otra tool: puedes reutilizar estos tokens o añadir
 `--clipboard-bar-open-dur` etc. en el mismo estilo; no hardcodear ms sueltos en
 CSS y JS sin alinearlos.
 
@@ -378,9 +378,9 @@ Referencia completa: `LauncherFloat.svelte` (comentario de cabecera +
 | Remeshear SDF en panel de resultados | Mismo thrash; chrome opaco basta. |
 | Separar con gap **≤ REACH** en idle | Nunca corta el cuello; parecen pegados para siempre. |
 | **Semilla con gap ≥ 0** (al lado de la pill) | Aunque `FUSED_GAP_PX = 2` una el goo, se ve un **segundo disco externo** desde el primer frame. Open y close deben **solapar** (`SEED_OVERLAP_PX`, gap negativo). |
-| Grow con **`placePanelFusedFull`** desde la semilla | Reclava a gap+2 y salta el overlap → “apareció un panel”. Usá `expandPanelFromSeed` (borde clavado). |
+| Grow con **`placePanelFusedFull`** desde la semilla | Reclava a gap+2 y salta el overlap → “apareció un panel”. Usa `expandPanelFromSeed` (borde clavado). |
 | Chrome (título, lista, icono, input) **visible en expand/shrink** | Se lee control UI truncado, no blob. Ocultalo hasta separate / tras shrink. |
-| Hold **0** en la semilla | Si estirás en el primer frame, no se registra el nacimiento. ~150 ms basta. |
+| Hold **0** en la semilla | Si estiras en el primer frame, no se registra el nacimiento. ~150 ms basta. |
 | Re-anchor a **resting** mientras `revealPhase !== ready` | Un segundo IPC/workAreas hace snap a elemento separado a mitad del morph. |
 | Fused gap **≥ REACH** al nacer | No hay blob único; el grow no se lee como un cuerpo. |
 | Cambiar `left` en separate/approach **sin** clase de transition armada | Snap visible. |

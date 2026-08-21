@@ -76,10 +76,10 @@ El flujo completo del producto original: graba, transcribe local y resume.
 
 → [clipboard-historial.md](clipboard-historial.md)
 
-### 4. Textos — los que escribís siempre
+### 4. Textos — los que escribes siempre
 
 - Textos guardados **a mano y a propósito** — esa es la diferencia con
-  Clipboard, que se llena solo con lo que copiás.
+  Clipboard, que se llena solo con lo que copias.
 - Más un **bloc para notas sueltas** (varias notas, no un único bloque).
 - Pegado al destino con el mismo sistema de foco que dictado y clipboard.
 
@@ -115,7 +115,7 @@ El flujo completo del producto original: graba, transcribe local y resume.
 
 ### 7. Pizarra — marcar la pantalla
 
-- `Ctrl/Cmd+Shift+X` **congela la pantalla** y la marcás ahí donde está, con
+- `Ctrl/Cmd+Shift+X` **congela la pantalla** y la marcas ahí donde está, con
   las mismas herramientas del editor de capturas.
 - Sobre la congelada y no sobre la viva: con el escritorio en movimiento, lo de
   abajo se corre y la marca deja de señalar lo que señalaba.
@@ -255,8 +255,8 @@ Detalle completo en el [README del repo](../README.md#privacidad).
 
 ## Cómo mantener esto
 
-1. Feature nueva → copiá [`_template.md`](_template.md) a `<slug>.md` y
-   rellená.
-2. Cambió el comportamiento → editá la ficha, esta tabla y —si el usuario lo
+1. Feature nueva → copia [`_template.md`](_template.md) a `<slug>.md` y
+   rellena.
+2. Cambió el comportamiento → edita la ficha, esta tabla y —si el usuario lo
    nota— la sección de arriba que corresponda.
 3. Estados: `hecho` | `parcial` | `en curso` | `idea`.

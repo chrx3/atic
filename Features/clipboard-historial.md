@@ -15,8 +15,8 @@ ventanas (texto e imagen).
   ([pill-liquid-emerge.md](pill-liquid-emerge.md)). La barra de la pill
   **no crece**.
 - **Clic** para pegar (Ctrl+V al destino, o insert interno si agentes está
-  abierto). El float **no se cierra** solo: podés pegar / arrastrar varias
-  veces; cerrá con X, Esc o clic afuera (salvo pin).
+  abierto). El float **no se cierra** solo: puedes pegar / arrastrar varias
+  veces; cierra con X, Esc o clic afuera (salvo pin).
 - **Arrastrar** un ítem (texto o imagen) a otra app o al composer de agentes:
   OLE file-drag vía `clipboard_drag_path` + `tauri-plugin-drag`. El texto se
   materializa como `.atic-drag-{id}.txt`; las imágenes usan el PNG en disco.

@@ -683,7 +683,7 @@
           <div class="rb-settings-group snd-group">
             <p class="rb-hint snd-intro">
               Cada acción suena distinto para reconocerla sin mirar. El timbre lo
-              elegís vos; el gesto —sube al empezar, baja al terminar— no cambia.
+              lo eliges tú; el gesto —sube al empezar, baja al terminar— no cambia.
             </p>
             {#each SOUND_ACTIONS as action (action.key)}
               <div class="rb-settings-row snd-row">
@@ -1355,7 +1355,7 @@
           <span class="rb-settings-row-copy">
             <span class="rb-settings-row-label">Guardar historial del portapapeles</span>
             <span class="rb-hint">
-              Conserva en disco lo que copiás, para volver a pegarlo. Nunca
+              Conserva en disco lo que copias, para volver a pegarlo. Nunca
               guarda lo que un gestor de contraseñas marcó como efímero.
             </span>
           </span>

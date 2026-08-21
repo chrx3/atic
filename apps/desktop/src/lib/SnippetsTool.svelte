@@ -230,7 +230,7 @@
     </div>
   {/snippet}
 
-  <!-- Dos cosas distintas conviven acá: textos que guardás para reusar y un
+  <!-- Dos cosas distintas conviven acá: textos que guardas para reusar y un
        bloc de notas libre. Las pestañas son lo único que las separa, así que
        tienen que nombrar el CONTENIDO, no la vista. -->
   <div class="snip-tabs" role="tablist" aria-label="Textos y notas">
@@ -271,7 +271,7 @@
             <input class="rb-field" type="text" bind:value={editing.name} required />
           </label>
           <label class="snip-field">
-            <!-- Decía "Alias", que promete expansión automática: escribís
+            <!-- Decía "Alias", que promete expansión automática: escribes
                  "firma" en cualquier app y se reemplaza sola. Eso NO existe;
                  estas palabras solo sirven para encontrar el fragmento en el
                  buscador de la lista. El nombre ahora dice lo que hace. -->
@@ -327,7 +327,7 @@
             class="snip-scratch-area rb-field"
             bind:value={scratchBody}
             oninput={scheduleScratchSave}
-            placeholder="Escribí lo que sea. Se guarda solo, acá en tu equipo."
+            placeholder="Escribe lo que sea. Se guarda solo, aquí en tu equipo."
             aria-label="Nota"
           ></textarea>
           <p class="snip-scratch-meta">
@@ -335,7 +335,7 @@
           </p>
 
           <!-- La lista vive debajo del área de escritura, no en otra pestaña:
-               consultar una nota vieja mientras escribís es el caso normal. -->
+               consultar una nota vieja mientras escribes es el caso normal. -->
           {#if notes.length > 0}
             <ul class="snip-notes" role="list">
               {#each notes as note (note.id)}

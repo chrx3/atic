@@ -114,7 +114,7 @@ fn fetch_account_usage_uncached() -> Result<ClaudeAccountUsage, String> {
         }
         Err(UsageErr::Unauthorized) => {
             let path = creds_path.ok_or_else(|| {
-                "no hay credenciales OAuth de Claude. Abrí Claude Code y ejecutá `claude auth login`."
+                "no hay credenciales OAuth de Claude. Abre Claude Code y ejecuta `claude auth login`."
                     .to_string()
             })?;
             token = refresh_and_persist(&client, &path)?;
@@ -135,7 +135,7 @@ impl UsageErr {
     fn to_string(self) -> String {
         match self {
             UsageErr::Unauthorized => {
-                "sesión Claude vencida. Ejecutá `claude auth login`.".to_string()
+                "sesión Claude vencida. Ejecuta `claude auth login`.".to_string()
             }
             UsageErr::Other(m) => m,
         }
@@ -163,7 +163,7 @@ fn call_usage(
     }
     if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
         return Err(UsageErr::Other(
-            "la API de uso está limitando consultas. Probá de nuevo en un minuto.".to_string(),
+            "la API de uso está limitando consultas. Prueba de nuevo en un minuto.".to_string(),
         ));
     }
     if !status.is_success() {
@@ -271,7 +271,7 @@ fn load_access_token(
     })?;
     if !path.is_file() {
         return Err(
-            "no hay credenciales OAuth de Claude. Ejecutá `claude auth login` en una terminal."
+            "no hay credenciales OAuth de Claude. Ejecuta `claude auth login` en una terminal."
                 .to_string(),
         );
     }
@@ -363,7 +363,7 @@ fn refresh_and_persist(client: &reqwest::blocking::Client, path: &Path) -> Resul
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| "no hay refresh token. Ejecutá `claude auth login`.".to_string())?
+        .ok_or_else(|| "no hay refresh token. Ejecuta `claude auth login`.".to_string())?
         .to_string();
 
     let scopes: Vec<String> = oauth
@@ -413,7 +413,7 @@ fn refresh_and_persist(client: &reqwest::blocking::Client, path: &Path) -> Resul
             continue;
         }
         if status.as_u16() == 400 || status.as_u16() == 401 {
-            return Err("la sesión de Claude expiró. Ejecutá `claude auth login`.".to_string());
+            return Err("la sesión de Claude expiró. Ejecuta `claude auth login`.".to_string());
         }
         return Err(last_err);
     }

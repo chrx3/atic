@@ -431,7 +431,7 @@ class AgentSessionStore {
       if (!s || s.status !== "working") return;
       s.status = "failed";
       s.error =
-        "El agente no respondió a tiempo. Podés reintentar o pulsar Detener.";
+        "El agente no respondió a tiempo. Puedes reintentar o pulsar Detener.";
       const last = s.turns.at(-1);
       if (last?.status === "running") last.status = "failed";
     }, AgentSessionStore.WORKING_TIMEOUT_MS);

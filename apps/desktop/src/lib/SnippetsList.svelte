@@ -103,7 +103,7 @@
     <p class="snip-empty">
       {query.trim()
         ? "Sin coincidencias."
-        : "Guardá los textos que escribís seguido —tu firma, un saludo, una plantilla— y pegalos desde la pill sin volver a tipearlos."}
+        : "Guarda los textos que escribes seguido —tu firma, un saludo, una plantilla— y pégalos desde la pill sin volver a tipearlos."}
     </p>
   {:else}
     <ul class="snip-items" role="list">

@@ -31,11 +31,11 @@
       <p class="font-medium">Aún no hay grabaciones</p>
       {#if recordShortcut}
         <p>
-          Apretá <strong>{formatShortcut(recordShortcut)}</strong> desde
-          cualquier app, o usá el botón de grabar en la pill.
+          Aprieta <strong>{formatShortcut(recordShortcut)}</strong> desde
+          cualquier app, o usa el botón de grabar en la pill.
         </p>
       {:else}
-        <p>Usá el botón de grabar en la pill flotante para empezar.</p>
+        <p>Usa el botón de grabar en la pill flotante para empezar.</p>
       {/if}
     </div>
   {:else}

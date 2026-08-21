@@ -174,7 +174,7 @@ pub fn transcribe_recording(app: AppHandle, id: String) -> Result<(), String> {
     let engine = if cfg.meeting_backend == "groq" {
         let api_key = resolve_groq_api_key().ok_or_else(|| {
             crate::ui_lang::msg(
-                "Configurá tu API key de Groq en Ajustes, o pasá la transcripción a Local.",
+                "Configura tu API key de Groq en Ajustes, o pasa la transcripción a Local.",
                 "Set your Groq API key in Settings, or switch transcription to Local.",
             )
         })?;
@@ -333,7 +333,7 @@ fn run_transcription(
                 ErrorIdPayload {
                     id: id.clone(),
                     message: crate::ui_lang::msg(
-                        "No se produjo texto; prueba re-transcribir o revisá la pista y el idioma.",
+                        "No se produjo texto; prueba re-transcribir o revisa la pista y el idioma.",
                         "No text was produced; try transcribing again or check the track and language.",
                     ),
                 },

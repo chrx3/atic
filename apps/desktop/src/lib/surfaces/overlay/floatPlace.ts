@@ -263,7 +263,7 @@ export function placePanelFusedSeed(
     corner?: number;
     work?: Area[];
     seed?: number;
-    /** @deprecated usá `overlap`; gap positivo nace “al lado”. */
+    /** @deprecated usa `overlap`; gap positivo nace “al lado”. */
     fusedGap?: number;
     overlap?: number;
     restingGap?: number;

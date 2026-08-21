@@ -85,8 +85,8 @@ pub fn ssh_destination(host: &SshHost) -> Result<String, String> {
         && hostname.matches(':').count() == 1
     {
         return Err(
-            "No pongas el puerto en Host (ej. `host:22`). Usá el campo Puerto, \
-             o dejalo vacío si el Port viene de ~/.ssh/config."
+            "No pongas el puerto en Host (ej. `host:22`). Usa el campo Puerto, \
+             o déjalo vacío si el Port viene de ~/.ssh/config."
                 .into(),
         );
     }
@@ -96,7 +96,7 @@ pub fn ssh_destination(host: &SshHost) -> Result<String, String> {
     } else {
         if user.contains('@') || user.contains(' ') {
             return Err(
-                "Usuario inválido. Si usás un alias de ssh_config, dejá Usuario vacío.".into(),
+                "Usuario inválido. Si usas un alias de ssh_config, deja Usuario vacío.".into(),
             );
         }
         Ok(format!("{user}@{hostname}"))
@@ -149,7 +149,7 @@ pub fn ssh_base_args(host: &SshHost, batch_mode: bool) -> Result<Vec<String>, St
         }
         "agent" | "password" => {}
         other => {
-            return Err(format!("Auth SSH desconocida: {other}. Usá agent o key."));
+            return Err(format!("Auth SSH desconocida: {other}. Usa agent o key."));
         }
     }
     args.push(destination);
@@ -207,14 +207,14 @@ fn ssh_program_missing_message(program: &Path) -> String {
     {
         return format!(
             "No se encontró el cliente OpenSSH (`{shown}`). \
-             Instalalo (Configuración → Aplicaciones opcionales → OpenSSH Client) \
-             o asegurate de que exista `C:\\Windows\\System32\\OpenSSH\\ssh.exe`. \
+             Instálalo (Configuración → Aplicaciones opcionales → OpenSSH Client) \
+             o asegúrate de que exista `C:\\Windows\\System32\\OpenSSH\\ssh.exe`. \
              Las apps de escritorio a veces no ven el PATH de tu terminal."
         );
     }
     #[cfg(not(windows))]
     {
-        format!("No se encontró `ssh` (`{shown}`). Instalalo (openssh-client) o agregalo al PATH.")
+        format!("No se encontró `ssh` (`{shown}`). Instálalo (openssh-client) o agrégalo al PATH.")
     }
 }
 
@@ -370,7 +370,7 @@ fn map_ssh_error(stderr: &str, status_ok: bool, exit_code: Option<i32>) -> Strin
     if lower.contains("host key verification failed")
         || lower.contains("not in the list of known hosts")
     {
-        return "Host key desconocida. Aceptá la fingerprint una vez en una terminal \
+        return "Host key desconocida. Acepta la fingerprint una vez en una terminal \
 (`ssh user@host` o `ssh <alias>`) o con `ssh -o StrictHostKeyChecking=accept-new`, y reintentá."
             .into();
     }
@@ -378,7 +378,7 @@ fn map_ssh_error(stderr: &str, status_ok: bool, exit_code: Option<i32>) -> Strin
         || lower.contains("authentication failed")
         || lower.contains("publickey")
     {
-        return format!("Autenticación SSH fallida. Revisá ssh-agent o el identity file.\n{s}");
+        return format!("Autenticación SSH fallida. Revisa ssh-agent o el identity file.\n{s}");
     }
     if lower.contains("timed out") || lower.contains("connection timed out") {
         return format!("Timeout al conectar por SSH.\n{s}");
@@ -399,8 +399,8 @@ fn map_ssh_error(stderr: &str, status_ok: bool, exit_code: Option<i32>) -> Strin
             }
             format!(
                 "La conexión SSH falló (código de salida {code}, sin detalle en stderr). \
-                 Si usás un Host alias de ~/.ssh/config, poné solo el alias en Host y dejá \
-                 Usuario/Puerto vacíos. Probá el mismo destino en una terminal con `ssh`."
+                 Si usas un Host alias de ~/.ssh/config, pon solo el alias en Host y deja \
+                 Usuario/Puerto vacíos. Prueba el mismo destino en una terminal con `ssh`."
             )
         }
     } else {
