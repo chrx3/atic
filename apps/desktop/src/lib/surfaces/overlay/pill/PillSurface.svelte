@@ -630,7 +630,7 @@
     }
   }
 
-  function onAgentChipClick(event: MouseEvent) {
+  function activateAgentChip(preferBindFromGesture = false) {
     const target = chip.target;
     if (target.kind === "console") {
       void openAgentsConsole();
@@ -638,7 +638,7 @@
     }
     const id = target.presenceId;
     if (!id) return;
-    const preferBind = event.ctrlKey || event.metaKey || target.kind === "none";
+    const preferBind = preferBindFromGesture || target.kind === "none";
     void (async () => {
       try {
         let result = preferBind
@@ -653,6 +653,15 @@
         console.warn("enfocar terminal del agente", err);
       }
     })();
+  }
+
+  function onAgentChipClick(event: MouseEvent) {
+    if (suppressAgentChipClick && event.detail > 0) {
+      event.preventDefault();
+      suppressAgentChipClick = false;
+      return;
+    }
+    activateAgentChip(event.ctrlKey || event.metaKey);
   }
 
   async function decideAuth(decision: PermissionDecision) {
@@ -1654,6 +1663,12 @@
   let dragSawDown = false;
   /** Icono de la isla donde arrancó el gesto, si arrancó en uno. */
   let islandPressTool: ToolId | null = null;
+  /** El gesto arrancó sobre el aviso/botón de consola de agentes. */
+  let agentChipPressed = false;
+  let agentChipPreferBind = false;
+  /** Un drag sobre el chip no debe terminar convertido en click. */
+  let suppressAgentChipClick = false;
+  let suppressAgentChipClickTimer = 0;
 
   function beginDrag(event: PointerEvent) {
     const el = event.target as HTMLElement | null;
@@ -1666,9 +1681,16 @@
     // la herramienta se dispara al soltar sin haber movido (ver `endDrag`),
     // igual que hace la rueda.
     const onIsland = el.closest(".p-island") !== null;
-    if (!onIsland && el.closest("button, a, input, textarea, [data-no-drag]")) {
+    const onAgentChip = el.closest(".p-agent") !== null;
+    if (
+      !onIsland &&
+      !onAgentChip &&
+      el.closest("button, a, input, textarea, [data-no-drag]")
+    ) {
       return;
     }
+    agentChipPressed = onAgentChip;
+    agentChipPreferBind = onAgentChip && (event.ctrlKey || event.metaKey);
     // El origen NO sale del evento del DOM: `clientX` mide contra la ventana, y
     // traducirlo obliga a confiar en dónde cree el CSS que está `.ov`, que es
     // un dato que llega por evento desde Rust y se atrasa justo cuando la
@@ -1763,9 +1785,20 @@
     const wasClick = dragOrigin !== null && !dragMoved;
     const moved = dragMoved;
     const pressedTool = islandPressTool;
+    const pressedAgentChip = agentChipPressed;
+    const preferAgentBind = agentChipPreferBind;
     islandPressTool = null;
+    agentChipPressed = false;
+    agentChipPreferBind = false;
     stopDragWatch();
     if (moved) {
+      if (pressedAgentChip) {
+        suppressAgentChipClick = true;
+        window.clearTimeout(suppressAgentChipClickTimer);
+        suppressAgentChipClickTimer = window.setTimeout(() => {
+          suppressAgentChipClick = false;
+        }, 250);
+      }
       // Arrastrar redefine el hogar: la pill se queda donde la dejaste —o
       // pegada al canto, si la soltaste cerca de uno. Si el gesto arrancó sobre
       // un icono, mover cancela la elección: querías moverla, no abrirla.
@@ -1775,6 +1808,16 @@
       return;
     }
     // Soltar sobre un icono sin haber movido: eso sí era elegirlo.
+    // El click nativo del botón abre la consola; no abrir también la rueda.
+    if (wasClick && pressedAgentChip) {
+      suppressAgentChipClick = true;
+      window.clearTimeout(suppressAgentChipClickTimer);
+      suppressAgentChipClickTimer = window.setTimeout(() => {
+        suppressAgentChipClick = false;
+      }, 250);
+      activateAgentChip(preferAgentBind);
+      return;
+    }
     if (wasClick && pressedTool) {
       activateFromIsland(pressedTool);
       return;
@@ -1937,6 +1980,7 @@
 
     return () => {
       stopDragWatch();
+      window.clearTimeout(suppressAgentChipClickTimer);
       window.removeEventListener("keydown", onKey, true);
       unlisteners.forEach((u) => u.then((fn) => fn()));
     };
@@ -2229,7 +2273,6 @@
                 class:is-working={chip.tone === "working"}
                 class:is-ready={chip.tone === "ready"}
                 class:is-count={chip.tone === "count"}
-                data-no-drag
                 onclick={(e) => onAgentChipClick(e)}
                 title={agentChipTitle}
                 aria-label={agentChipAria}
