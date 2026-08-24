@@ -268,6 +268,20 @@
     return false;
   }
 
+  /**
+   * WebView2 omite algunos `keydown` sin Shift dentro del textarea de xterm,
+   * pero xterm sí los traduce a sus bytes de control. Consumirlos acá evita
+   * que Ctrl+D llegue como EOF al shell y que Ctrl+N llegue como `next`.
+   */
+  function consumeTerminalControlData(key: string, data: string): boolean {
+    if (data !== "\x04" && data !== "\x0e") return false;
+    activeKey = key;
+    error = null;
+    if (data === "\x04") splitPane("right");
+    else newTab("local");
+    return true;
+  }
+
   function clampRailWidth(width: number): number {
     return Math.min(RAIL_MAX, Math.max(RAIL_MIN, width));
   }
@@ -699,6 +713,7 @@
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.onData((data) => {
+      if (consumeTerminalControlData(key, data)) return;
       const id = sessionOf(key);
       if (!id) return;
       void consoleWrite(id, data).catch(() => {});
