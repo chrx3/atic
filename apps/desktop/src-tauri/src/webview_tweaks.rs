@@ -7,11 +7,16 @@ use tauri::{Manager, WebviewWindow};
 pub fn disable_browser_accelerator_keys(window: &WebviewWindow) {
     use std::collections::HashMap;
     use std::sync::{Mutex, OnceLock};
+    use tauri::Emitter;
     use webview2_com::AcceleratorKeyPressedEventHandler;
     use webview2_com::Microsoft::Web::WebView2::Win32::{
         ICoreWebView2AcceleratorKeyPressedEventArgs2, ICoreWebView2Settings3,
+        COREWEBVIEW2_KEY_EVENT_KIND_KEY_DOWN,
     };
     use windows_core::Interface;
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+        GetKeyState, VK_CONTROL, VK_MENU, VK_SHIFT,
+    };
 
     // `SetAreBrowserAcceleratorKeysEnabled(false)` solo entra en vigor tras la
     // próxima navegación. La pill ya está cargada cuando Tauri nos entrega el
@@ -22,6 +27,7 @@ pub fn disable_browser_accelerator_keys(window: &WebviewWindow) {
 
     let label = window.label().to_string();
     let label_for_cb = label.clone();
+    let window_for_keys = window.clone();
     if let Err(err) = window.with_webview(move |webview| {
         unsafe {
             let controller = webview.controller();
@@ -76,6 +82,52 @@ pub fn disable_browser_accelerator_keys(window: &WebviewWindow) {
                     let mut browser_enabled = windows_core::BOOL::default();
                     let _ = args2.IsBrowserAcceleratorKeyEnabled(&mut browser_enabled);
                     args2.SetIsBrowserAcceleratorKeyEnabled(false)?;
+
+                    // Este runtime confirma `browser_enabled=false`, pero aun
+                    // así no entrega Ctrl+D/Ctrl+N al DOM. Enviar los acordes
+                    // del workspace como acciones nativas evita depender de
+                    // esa propagación rota.
+                    let mut event_kind = Default::default();
+                    let _ = args.KeyEventKind(&mut event_kind);
+                    let ctrl_down = GetKeyState(i32::from(VK_CONTROL)) < 0;
+                    let shift_down = GetKeyState(i32::from(VK_SHIFT)) < 0;
+                    let alt_down = GetKeyState(i32::from(VK_MENU)) < 0;
+                    let action = if label_for_key == "overlay"
+                        && event_kind == COREWEBVIEW2_KEY_EVENT_KIND_KEY_DOWN
+                        && ctrl_down
+                        && !alt_down
+                    {
+                        match virtual_key {
+                            0x44 if shift_down => Some("split-down"),
+                            0x44 => Some("split-right"),
+                            0x4e if !shift_down => Some("new-console"),
+                            0x57 if !shift_down => Some("close-console"),
+                            _ => None,
+                        }
+                    } else {
+                        None
+                    };
+
+                    if let Some(action) = action {
+                        match window_for_keys.emit("agents-workspace-shortcut", action) {
+                            Ok(()) => {
+                                args.SetHandled(true)?;
+                                tracing::info!(
+                                    target: "keyboard",
+                                    label = %label_for_key,
+                                    %action,
+                                    "atajo de agentes enviado directamente al frontend"
+                                );
+                            }
+                            Err(err) => tracing::warn!(
+                                target: "keyboard",
+                                label = %label_for_key,
+                                %action,
+                                %err,
+                                "no se pudo enviar el atajo de agentes"
+                            ),
+                        }
+                    }
 
                     // Diagnóstico deliberadamente acotado a los atajos del
                     // workspace para no ensuciar el log con cada pulsación.

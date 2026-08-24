@@ -18,6 +18,7 @@
     consoleOpen,
     consoleResize,
     consoleWrite,
+    onAgentsWorkspaceShortcut,
     onConsoleExit,
     onConsoleOutput,
     setAgentsAlwaysOnTop,
@@ -28,7 +29,15 @@
   import type { ConsoleKind, SshHost } from "$lib/types";
   import EmptyState from "$lib/ui/EmptyState.svelte";
   import Icon from "$ui/Icon.svelte";
-  import { ArrowLeft, Pin, Plus, SquareTerminal, X } from "$lib/icons";
+  import {
+    ArrowLeft,
+    PanelBottomOpen,
+    PanelRightOpen,
+    Pin,
+    Plus,
+    SquareTerminal,
+    X,
+  } from "$lib/icons";
 
   let {
     remoteHost = null,
@@ -238,7 +247,7 @@
   }
 
   function traceWorkspaceShortcut(
-    source: "window" | "xterm" | "xterm-data",
+    source: "window" | "xterm" | "xterm-data" | "native",
     action: "split-right" | "split-down" | "new-console" | "close-console",
     event?: KeyboardEvent,
   ) {
@@ -375,6 +384,16 @@
     // Captura antes del PTY. El handler de xterm repite esta defensa porque
     // WebView2 no siempre entrega los acordes Ctrl al `window` del overlay.
     consumeWorkspaceShortcut(event, "window");
+  }
+
+  function consumeNativeWorkspaceShortcut(
+    action: "split-right" | "split-down" | "new-console" | "close-console",
+  ) {
+    traceWorkspaceShortcut("native", action);
+    if (action === "split-right") splitPane("right");
+    else if (action === "split-down") splitPane("down");
+    else if (action === "new-console") newTab("local");
+    else if (activeKey) void closeTab(activeKey);
   }
 
   // Al sumar/quitar paneles o cambiar el rail, cada xterm cambia de tamaño.
@@ -685,6 +704,11 @@
   function fitAndResize(key = activeKey) {
     const box = boxes.get(key);
     if (!box) return;
+    const nextFontSize =
+      box.el.clientWidth < 280 ? 10 : box.el.clientWidth < 420 ? 11 : 12;
+    if (box.term.options.fontSize !== nextFontSize) {
+      box.term.options.fontSize = nextFontSize;
+    }
     try {
       box.fit.fit();
     } catch {
@@ -716,16 +740,50 @@
     const light = document.documentElement.dataset.theme === "light";
     return light
       ? {
-          background: "#f7f7f2",
-          foreground: "#26231e",
-          cursor: "#da7756",
+          background: "#fbfbf8",
+          foreground: "#24241f",
+          cursor: "#d35f45",
+          cursorAccent: "#fbfbf8",
           selectionBackground: "rgba(218, 119, 86, 0.3)",
+          black: "#31312c",
+          red: "#b43d3d",
+          green: "#2f774d",
+          yellow: "#806000",
+          blue: "#3569a3",
+          magenta: "#7d50a1",
+          cyan: "#267580",
+          white: "#d8d8d0",
+          brightBlack: "#74746b",
+          brightRed: "#d5544f",
+          brightGreen: "#3b9360",
+          brightYellow: "#a57a00",
+          brightBlue: "#4b83c4",
+          brightMagenta: "#9a68bf",
+          brightCyan: "#3693a0",
+          brightWhite: "#ffffff",
         }
       : {
-          background: "#16181d",
-          foreground: "#e6e8ec",
-          cursor: "#da7756",
+          background: "#151715",
+          foreground: "#e8e8e1",
+          cursor: "#e36f52",
+          cursorAccent: "#151715",
           selectionBackground: "rgba(218, 119, 86, 0.35)",
+          black: "#22241f",
+          red: "#e0675f",
+          green: "#73b98d",
+          yellow: "#d4ad58",
+          blue: "#78a9d4",
+          magenta: "#b18bd0",
+          cyan: "#69b5bd",
+          white: "#d9d9d2",
+          brightBlack: "#777970",
+          brightRed: "#f17b71",
+          brightGreen: "#8ed0a4",
+          brightYellow: "#e8c572",
+          brightBlue: "#94c0e5",
+          brightMagenta: "#c9a4e3",
+          brightCyan: "#83cbd2",
+          brightWhite: "#ffffff",
         };
   }
 
@@ -739,7 +797,12 @@
     const term = new Terminal({
       cursorBlink: true,
       fontSize: 12,
-      fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+      fontFamily: "Cascadia Mono, SFMono-Regular, Menlo, Consolas, monospace",
+      fontWeight: "400",
+      fontWeightBold: "700",
+      lineHeight: 1.12,
+      minimumContrastRatio: 4.5,
+      drawBoldTextInBrightColors: true,
       theme: termTheme(),
       allowProposedApi: false,
       rightClickSelectsWord: false,
@@ -859,6 +922,7 @@
     }
 
     void Promise.all([
+      onAgentsWorkspaceShortcut(consumeNativeWorkspaceShortcut),
       onConsoleOutput((p) => {
         const t = tabForSession(p.session);
         if (t) termOf(t.key)?.write(p.data);
@@ -1036,56 +1100,60 @@
           </span>
         </div>
       </div>
-      {#if active?.kind === "ssh"}
-        <label class="host-pick">
-          <span class="sr">Host SSH</span>
-          <select
-            class="host-select"
-            aria-label="Host SSH"
-            disabled={connecting || !!active.sessionId || sshHosts.length === 0}
-            value={active.hostId ?? ""}
-            onchange={(e) => {
-              const v = (e.currentTarget as HTMLSelectElement).value;
-              if (active) active.hostId = v || null;
-              error = null;
-            }}
-          >
-            {#if sshHosts.length === 0}
-              <option value="">Sin hosts</option>
-            {:else}
-              {#each sshHosts as h (h.id)}
-                <option value={h.id}>{hostOptionLabel(h)}</option>
-              {/each}
-            {/if}
-          </select>
-        </label>
-      {/if}
-      <div class="acts">
-        {#if active}
-          <button
-            type="button"
-            class="layout-toggle"
-            aria-label="Abrir otro panel a la derecha"
-            title="Abrir otro panel a la derecha · Ctrl+D"
-            disabled={tabs.length >= MAX_TABS && visiblePaneKeys.length >= tabs.length}
-            onclick={() => splitPane("right")}
-          >
-            <span>Derecha</span>
-            <kbd>Ctrl+D</kbd>
-          </button>
-          <button
-            type="button"
-            class="layout-toggle"
-            aria-label="Abrir otro panel abajo"
-            title="Abrir otro panel abajo · Ctrl+Shift+D"
-            disabled={tabs.length >= MAX_TABS && visiblePaneKeys.length >= tabs.length}
-            onclick={() => splitPane("down")}
-          >
-            <span>Abajo</span>
-            <kbd>Ctrl+⇧D</kbd>
-          </button>
+      <div class="bar-tools">
+        {#if active?.kind === "ssh"}
+          <label class="host-pick">
+            <span class="sr">Host SSH</span>
+            <select
+              class="host-select"
+              aria-label="Host SSH"
+              disabled={connecting || !!active.sessionId || sshHosts.length === 0}
+              value={active.hostId ?? ""}
+              onchange={(e) => {
+                const v = (e.currentTarget as HTMLSelectElement).value;
+                if (active) active.hostId = v || null;
+                error = null;
+              }}
+            >
+              {#if sshHosts.length === 0}
+                <option value="">Sin hosts</option>
+              {:else}
+                {#each sshHosts as h (h.id)}
+                  <option value={h.id}>{hostOptionLabel(h)}</option>
+                {/each}
+              {/if}
+            </select>
+          </label>
         {/if}
         {#if active}
+          <div class="split-actions" aria-label="Dividir terminal">
+            <button
+              type="button"
+              class="layout-toggle"
+              aria-label="Abrir otro panel a la derecha"
+              title="Abrir otro panel a la derecha · Ctrl+D"
+              disabled={tabs.length >= MAX_TABS &&
+                visiblePaneKeys.length >= tabs.length}
+              onclick={() => splitPane("right")}
+            >
+              <Icon icon={PanelRightOpen} size={12} />
+              <span>Derecha</span>
+              <kbd>Ctrl+D</kbd>
+            </button>
+            <button
+              type="button"
+              class="layout-toggle"
+              aria-label="Abrir otro panel abajo"
+              title="Abrir otro panel abajo · Ctrl+Shift+D"
+              disabled={tabs.length >= MAX_TABS &&
+                visiblePaneKeys.length >= tabs.length}
+              onclick={() => splitPane("down")}
+            >
+              <Icon icon={PanelBottomOpen} size={12} />
+              <span>Abajo</span>
+              <kbd>Ctrl+⇧D</kbd>
+            </button>
+          </div>
           {#if connected}
             <button
               type="button"
@@ -1106,6 +1174,8 @@
             </button>
           {/if}
         {/if}
+      </div>
+      <div class="window-actions">
         <button
           type="button"
           class="icon-btn pin-btn"
@@ -1412,10 +1482,9 @@
   }
 
   .bar {
-    display: flex;
+    display: grid;
     flex-shrink: 0;
     align-items: center;
-    justify-content: space-between;
     gap: 0.4rem;
     padding: 0.28rem 0.5rem 0.28rem 0.6rem;
     border-bottom: 1px solid color-mix(in srgb, var(--rb-border) 70%, transparent);
@@ -1460,11 +1529,22 @@
     cursor: default;
   }
 
-  .acts {
+  .bar-tools,
+  .split-actions,
+  .window-actions {
     display: flex;
+    min-width: 0;
     flex-shrink: 0;
     align-items: center;
     gap: 0.2rem;
+  }
+
+  .bar-tools {
+    justify-content: flex-end;
+  }
+
+  .window-actions {
+    justify-content: flex-end;
   }
 
   .chip {
@@ -1693,6 +1773,8 @@
   .console-desk {
     --agent-accent: var(--rb-record);
 
+    container-name: agents-console;
+    container-type: inline-size;
     border: 1px solid color-mix(in sRGB, var(--rb-border-strong) 72%, transparent);
     border-radius: 0.82rem;
     overflow: hidden;
@@ -1794,6 +1876,8 @@
   }
 
   .console-desk .bar {
+    grid-template-areas: "start tools window";
+    grid-template-columns: minmax(7rem, 1fr) auto auto;
     min-height: 2.7rem;
     padding: 0.32rem 0.52rem;
     background: var(--rb-surface);
@@ -1807,8 +1891,20 @@
   }
 
   .console-desk .bar-start {
-    flex: 1;
+    grid-area: start;
     gap: 0.48rem;
+  }
+
+  .console-desk .bar-tools {
+    grid-area: tools;
+  }
+
+  .console-desk .window-actions {
+    grid-area: window;
+  }
+
+  .console-desk .host-pick {
+    flex: 1 1 8rem;
   }
 
   .console-desk .where-block {
@@ -1928,7 +2024,31 @@
     color: var(--rb-muted) !important;
   }
 
-  @media (width <= 40rem) {
+  @container agents-console (width <= 40rem) {
+    .console-desk .bar {
+      grid-template-areas:
+        "start window"
+        "tools tools";
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 0.28rem 0.38rem;
+      padding: 0.28rem 0.42rem 0.34rem;
+    }
+
+    .console-desk .bar-tools {
+      width: 100%;
+      justify-content: flex-end;
+      border-top: 1px solid color-mix(in sRGB, var(--rb-border) 58%, transparent);
+      padding-top: 0.28rem;
+    }
+
+    .console-desk .host-pick {
+      max-width: none;
+      margin-right: auto;
+      margin-left: 0;
+    }
+  }
+
+  @container agents-console (width <= 34rem) {
     .console-desk .rail {
       width: 3.35rem;
       padding-inline: 0.25rem;
@@ -1945,18 +2065,44 @@
       display: none;
     }
 
-    .console-desk .bar {
-      gap: 0.2rem;
-      padding-inline: 0.45rem;
-    }
-
     .console-desk .back-btn span,
-    .console-desk .layout-toggle span {
+    .console-desk .layout-toggle span,
+    .console-desk .layout-toggle kbd {
       display: none;
     }
 
     .console-desk .layout-toggle {
-      padding-inline: 0.35rem;
+      width: 1.78rem;
+      justify-content: center;
+      padding-inline: 0;
+    }
+
+    .console-desk .where-block {
+      max-width: 9rem;
+    }
+  }
+
+  @container agents-console (width <= 28rem) {
+    .console-desk .rail {
+      width: 3rem;
+      min-width: 3rem;
+      padding-inline: 0.2rem;
+    }
+
+    .console-desk .rail-tab {
+      height: 2.45rem;
+    }
+
+    .console-desk .bar {
+      padding-inline: 0.34rem;
+    }
+
+    .console-desk .host-pick {
+      flex-basis: 5.5rem;
+    }
+
+    .console-desk .chip {
+      padding-inline: 0.42rem;
     }
   }
 

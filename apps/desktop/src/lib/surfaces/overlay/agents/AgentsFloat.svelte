@@ -12,7 +12,7 @@
     onAgentsBubbleDismiss,
     saveAgentsBubbleSize,
   } from "$ipc/agents";
-  import { onOverlayDismiss, overlayWorkAreas } from "$ipc/overlay";
+  import { onOverlayDismiss, overlayWorkAreas, workAreaOf } from "$ipc/overlay";
   import type { Area } from "$ipc/overlay";
   import type { BubbleOpen } from "$core/types";
   import { applyTheme, readCachedTheme } from "$lib/theme";
@@ -32,22 +32,99 @@
   import { armOpenDismissGrace, isOpenDismissGrace } from "$surfaces/overlay/openDismissGrace";
 
   const BUBBLE_CORNER = 26;
+  const POSITION_STORAGE_KEY = "atic.agents.consolePosition";
+  const POSITION_MARGIN = 12;
   let workAreas = $state<Area[]>([]);
+
+  type SavedPosition = { x: number; y: number };
+
+  function readSavedPosition(): SavedPosition | null {
+    try {
+      const value = JSON.parse(
+        localStorage.getItem(POSITION_STORAGE_KEY) ?? "null",
+      ) as Partial<SavedPosition> | null;
+      if (!value || !Number.isFinite(value.x) || !Number.isFinite(value.y)) return null;
+      return { x: value.x!, y: value.y! };
+    } catch {
+      return null;
+    }
+  }
+
+  function savePosition() {
+    const a = bubble.anchor;
+    if (!a) return;
+    try {
+      localStorage.setItem(
+        POSITION_STORAGE_KEY,
+        JSON.stringify({ x: Math.round(a.x), y: Math.round(a.y) }),
+      );
+    } catch {
+      /* El float sigue funcionando aunque el storage esté bloqueado. */
+    }
+  }
+
+  function positionInWorkspace(
+    pill: { x: number; y: number; w: number; h: number },
+    panel: { w: number; h: number },
+    preferred: SavedPosition | null,
+  ): SavedPosition {
+    const point = preferred
+      ? { x: preferred.x + panel.w / 2, y: preferred.y + panel.h / 2 }
+      : { x: pill.x + pill.w / 2, y: pill.y + pill.h / 2 };
+    const pillPoint = { x: pill.x + pill.w / 2, y: pill.y + pill.h / 2 };
+    const contains = (area: Area, p: { x: number; y: number }) =>
+      p.x >= area.x &&
+      p.x <= area.x + area.w &&
+      p.y >= area.y &&
+      p.y <= area.y + area.h;
+    const area =
+      workAreas.find((candidate) => contains(candidate, point)) ??
+      workAreas.find((candidate) => contains(candidate, pillPoint)) ??
+      workAreas[0] ??
+      ({ x: 0, y: 0, w: window.innerWidth, h: window.innerHeight } satisfies Area);
+    const work = workAreaOf(area);
+    const centered = {
+      x: work.x + (work.w - panel.w) / 2,
+      y: work.y + (work.h - panel.h) / 2,
+    };
+    const wanted = preferred ?? centered;
+    const minX = work.x + POSITION_MARGIN;
+    const minY = work.y + POSITION_MARGIN;
+    const maxX = Math.max(minX, work.x + work.w - panel.w - POSITION_MARGIN);
+    const maxY = Math.max(minY, work.y + work.h - panel.h - POSITION_MARGIN);
+    return {
+      x: Math.round(Math.min(Math.max(wanted.x, minX), maxX)),
+      y: Math.round(Math.min(Math.max(wanted.y, minY), maxY)),
+    };
+  }
 
   function placeFromPill(a: BubbleOpen) {
     if (!bubble.alive || !bubble.shown) armOpenDismissGrace();
     const pill = surfaces.live["pill-skin"] ?? surfaces.live["pill"];
     if (!pill) {
-      bubble.place(a);
+      bubble.place({
+        ...a,
+        ...positionInWorkspace(
+          { x: a.x, y: a.y, w: 1, h: 1 },
+          { w: a.w, h: a.h },
+          readSavedPosition(),
+        ),
+      });
       return;
     }
+    const beside = placeBesidePill(
+      pill,
+      { w: a.w, h: a.h },
+      { corner: BUBBLE_CORNER, work: workAreas },
+    );
+    const current =
+      bubble.shown && bubble.anchor
+        ? { x: bubble.anchor.x, y: bubble.anchor.y }
+        : readSavedPosition();
     bubble.place({
       ...a,
-      ...placeBesidePill(
-        pill,
-        { w: a.w, h: a.h },
-        { corner: BUBBLE_CORNER, work: workAreas },
-      ),
+      ...beside,
+      ...positionInWorkspace(pill, { w: a.w, h: a.h }, current),
     });
   }
 
@@ -56,7 +133,9 @@
   const bubble = new Bubble();
 
   let bubEl = $state<HTMLElement | null>(null);
-  const { startDrag, endDrag } = createBubbleDrag(bubble, () => bubEl);
+  const { startDrag, endDrag } = createBubbleDrag(bubble, () => bubEl, {
+    onEnd: savePosition,
+  });
 
   /** Estirar el globo desde cualquier borde o esquina. */
   let resize: {
@@ -132,7 +211,10 @@
     window.removeEventListener("pointerup", endResize);
     window.removeEventListener("pointercancel", endResize);
     const a = bubble.anchor;
-    if (a) void saveAgentsBubbleSize(a.w, a.h);
+    if (a) {
+      void saveAgentsBubbleSize(a.w, a.h);
+      savePosition();
+    }
   }
 
   function close() {

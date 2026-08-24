@@ -31,6 +31,9 @@ import type {
   TranscribeProgress,
 } from "$core/types";
 
+export type AgentsWorkspaceShortcut =
+  "split-right" | "split-down" | "new-console" | "close-console";
+
 export interface AticEvents {
   // Grabación
   "audio-levels": Levels;
@@ -105,6 +108,7 @@ export interface AticEvents {
   "agent-presence": AgentPresence[];
   "console-output": ConsoleOutputPayload;
   "console-exit": ConsoleExitPayload;
+  "agents-workspace-shortcut": AgentsWorkspaceShortcut;
 
   // Sistema
   "shortcuts-failed": string[];

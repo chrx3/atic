@@ -26,7 +26,7 @@ import type {
   SshTestResult,
   StoredThread,
 } from "$core/types";
-import { on } from "./events";
+import { on, type AgentsWorkspaceShortcut } from "./events";
 
 export type {
   BubbleOpen,
@@ -187,6 +187,11 @@ export const onConsoleOutput = (
 export const onConsoleExit = (
   cb: (payload: ConsoleExitPayload) => void,
 ): Promise<UnlistenFn> => on("console-exit", cb);
+
+/** Atajos que WebView2 reserva y Rust reenvía directamente a la consola. */
+export const onAgentsWorkspaceShortcut = (
+  cb: (shortcut: AgentsWorkspaceShortcut) => void,
+): Promise<UnlistenFn> => on("agents-workspace-shortcut", cb);
 
 // --- La burbuja ---
 /** True si la burbuja de agentes está visible. */

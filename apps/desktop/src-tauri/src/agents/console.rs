@@ -115,6 +115,18 @@ fn apply_cwd(cmd: &mut CommandBuilder, cwd: Option<&str>) {
     }
 }
 
+/// La consola embebida sí entiende ANSI/truecolor aunque Atic haya sido
+/// lanzado desde un proceso que exporta `TERM=dumb` o `NO_COLOR=1`.
+/// Limitar el override al hijo PTY: no alterar el entorno global de la app.
+fn apply_terminal_color_env(cmd: &mut CommandBuilder) {
+    cmd.env_remove("NO_COLOR");
+    cmd.env("TERM", "xterm-256color");
+    cmd.env("COLORTERM", "truecolor");
+    cmd.env("CLICOLOR", "1");
+    cmd.env("CLICOLOR_FORCE", "1");
+    cmd.env("FORCE_COLOR", "1");
+}
+
 /// Comando de agente CLI (`claude`, `opencode`…) resuelto a ejecutable.
 ///
 /// Reusa `exe::launcher`: resuelve el nombre en el PATH y enruta los shims de
@@ -258,7 +270,7 @@ pub fn console_open(
     }
 
     let size = pty_size(options.cols, options.rows);
-    let (cmd, askpass) = match kind.as_str() {
+    let (mut cmd, askpass) = match kind.as_str() {
         "local" => {
             let mut cmd = match options.command.as_deref().map(str::trim) {
                 Some(c) if !c.is_empty() => build_local_command(c)?,
@@ -286,6 +298,7 @@ pub fn console_open(
         }
         _ => unreachable!("kind ya validado"),
     };
+    apply_terminal_color_env(&mut cmd);
 
     let pty_system = native_pty_system();
     let pair = pty_system

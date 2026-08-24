@@ -75,7 +75,7 @@ function shouldSkip(event: PointerEvent, skip: string): boolean {
 export function createBubbleDrag(
   bubble: Bubble,
   getEl: () => HTMLElement | null,
-  options?: { skip?: string },
+  options?: { skip?: string; onEnd?: () => void },
 ): BubbleDrag {
   const skip = options?.skip ?? DEFAULT_SKIP;
 
@@ -94,6 +94,7 @@ export function createBubbleDrag(
   function endDrag() {
     if (!drag) return;
     const pointerId = drag.pointerId;
+    const didMove = dragMoved;
     drag = null;
     dragMoved = false;
     if (dragRaf) {
@@ -111,6 +112,7 @@ export function createBubbleDrag(
     }
     window.removeEventListener("pointerup", endDrag, true);
     window.removeEventListener("pointercancel", endDrag, true);
+    if (didMove) options?.onEnd?.();
   }
 
   async function tickDrag() {
