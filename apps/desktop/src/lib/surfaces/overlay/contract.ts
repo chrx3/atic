@@ -31,7 +31,7 @@ export const MARGIN = 0;
  * aplica al persistir; la vista sube el mínimo de altura cuando muestra una
  * consola para conservar un terminal útil.
  */
-export const BUBBLE_MIN_W = 420;
+export const BUBBLE_MIN_W = 336;
 export const BUBBLE_MIN_H = 176;
 
 /**

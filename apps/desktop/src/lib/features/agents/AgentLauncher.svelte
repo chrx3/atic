@@ -2,6 +2,7 @@
   /** Lanzador compacto y shell persistente de las consolas locales. */
   import ConsolePanel from "./ConsolePanel.svelte";
   import FolderBrowser from "./FolderBrowser.svelte";
+  import AgentLogo from "./AgentLogo.svelte";
   import Icon from "$ui/Icon.svelte";
   import { Folder, SquareTerminal, X } from "$lib/icons";
 
@@ -19,18 +20,13 @@
     onBrowserChange?: (open: boolean) => void;
   } = $props();
 
-  type AgentDef = {
-    cli: string;
-    name: string;
-    icon: string;
-    colored?: boolean;
-  };
+  type AgentDef = { cli: string; name: string };
 
   const AGENTS: AgentDef[] = [
-    { cli: "claude", name: "Claude Code", icon: "/agents/claude.svg", colored: true },
-    { cli: "opencode", name: "OpenCode", icon: "/agents/opencode.svg" },
-    { cli: "codex", name: "Codex", icon: "/agents/openai.svg" },
-    { cli: "cursor-agent", name: "Cursor", icon: "/agents/cursor.svg" },
+    { cli: "claude", name: "Claude Code" },
+    { cli: "opencode", name: "OpenCode" },
+    { cli: "codex", name: "Codex" },
+    { cli: "cursor-agent", name: "Cursor" },
   ];
 
   /** El tope duro lo pone Rust (MAX_CONSOLES). */
@@ -131,16 +127,7 @@
             title={agent.name}
             onclick={() => (selected = agent.cli)}
           >
-            <span class="agent-logo" aria-hidden="true">
-              {#if agent.colored}
-                <img src={agent.icon} alt="" draggable="false" />
-              {:else}
-                <span
-                  class="agent-logo-mask"
-                  style={`--agent-logo: url("${agent.icon}")`}
-                ></span>
-              {/if}
-            </span>
+            <span class="agent-logo"><AgentLogo agent={agent.cli} size={22} /></span>
           </button>
         {/each}
       </div>
@@ -384,18 +371,6 @@
 
   .agent-option:hover .agent-logo {
     transform: scale(1.06);
-  }
-
-  .agent-logo img,
-  .agent-logo-mask {
-    display: block;
-    width: 100%;
-    height: 100%;
-  }
-
-  .agent-logo-mask {
-    background: currentColor;
-    mask: var(--agent-logo) center / contain no-repeat;
   }
 
   .launch-row {

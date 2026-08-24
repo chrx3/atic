@@ -138,8 +138,8 @@ pub fn agent_sessions() -> Vec<SessionInfo> {
 /// repliega sobre la pill; midiéndola, la segunda apertura crecía hasta el
 /// tamaño de la pill.
 const BUBBLE: crate::floating::BubbleShape = crate::floating::BubbleShape {
-    w: 680,
-    h: 176,
+    w: 360,
+    h: 196,
     gap: 10,
     corner: 26,
 };
@@ -148,7 +148,7 @@ const BUBBLE: crate::floating::BubbleShape = crate::floating::BubbleShape {
 ///
 /// El lanzador usa este mínimo compacto; al entrar a las consolas el frontend
 /// aplica un mínimo mayor para que el terminal conserve un área útil.
-const BUBBLE_MIN_W: i32 = 420;
+const BUBBLE_MIN_W: i32 = 336;
 const BUBBLE_MIN_H: i32 = 176;
 
 /// La forma del globo, con el tamaño al que lo haya dejado el usuario.
@@ -639,6 +639,14 @@ pub fn agent_claude_transcript(cwd: String, id: String) -> Result<Vec<super::mod
 #[tauri::command]
 pub async fn agent_claude_usage() -> Result<super::claude_usage::ClaudeAccountUsage, String> {
     tauri::async_runtime::spawn_blocking(super::claude_usage::fetch_account_usage)
+        .await
+        .map_err(|e| format!("consulta de uso cancelada: {e}"))?
+}
+
+/// Cupos de la cuenta Codex mediante `account/rateLimits/read` del app-server.
+#[tauri::command]
+pub async fn agent_codex_usage() -> Result<super::codex_usage::CodexAccountUsage, String> {
+    tauri::async_runtime::spawn_blocking(super::codex_usage::fetch_account_usage)
         .await
         .map_err(|e| format!("consulta de uso cancelada: {e}"))?
 }

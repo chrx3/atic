@@ -15,6 +15,7 @@ import type {
   BubbleOpen,
   AgentTurn,
   ClaudeAccountUsage,
+  CodexAccountUsage,
   ClaudeCodeSession,
   ConsoleExitPayload,
   ConsoleOpenOptions,
@@ -31,6 +32,7 @@ import { on, type AgentsWorkspaceShortcut } from "./events";
 export type {
   BubbleOpen,
   ClaudeAccountUsage,
+  CodexAccountUsage,
   ConsoleExitPayload,
   ConsoleOpenOptions,
   ConsoleOutputPayload,
@@ -43,6 +45,9 @@ export type {
 /** Qué agentes conoce Atic y cuáles están instalados. Lanza un proceso por
  *  backend, así que conviene llamarlo al abrir la vista, no en cada render. */
 export const agentBackends = () => invoke<AgentBackendInfo[]>("agent_backends");
+
+/** Cupos de ChatGPT/Codex mediante el app-server del CLI ya autenticado. */
+export const agentCodexUsage = () => invoke<CodexAccountUsage>("agent_codex_usage");
 
 /** Sesiones vivas: para que una vista recién montada adopte lo que ya corre. */
 export const agentSessions = () => invoke<AgentSessionInfo[]>("agent_sessions");
