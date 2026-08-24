@@ -71,6 +71,8 @@ import {
   Highlighter,
   Save,
   Download,
+  PanelRightOpen,
+  PanelBottomOpen,
 } from "lucide";
 import type { ToolId } from "$lib/tools";
 
@@ -187,4 +189,6 @@ export {
   Highlighter,
   Save,
   Download,
+  PanelRightOpen,
+  PanelBottomOpen,
 };
