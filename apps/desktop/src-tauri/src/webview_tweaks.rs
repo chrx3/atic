@@ -5,14 +5,28 @@ use tauri::{Manager, WebviewWindow};
 /// Desactiva atajos y chrome de Chromium (Ctrl+P, Ctrl+F, zoom, menú Inspect).
 #[cfg(windows)]
 pub fn disable_browser_accelerator_keys(window: &WebviewWindow) {
-    use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Settings3;
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    use webview2_com::AcceleratorKeyPressedEventHandler;
+    use webview2_com::Microsoft::Web::WebView2::Win32::{
+        ICoreWebView2AcceleratorKeyPressedEventArgs2, ICoreWebView2Settings3,
+    };
     use windows_core::Interface;
+
+    // `SetAreBrowserAcceleratorKeysEnabled(false)` solo entra en vigor tras la
+    // próxima navegación. La pill ya está cargada cuando Tauri nos entrega el
+    // WebView, así que además filtramos cada acelerador en el controlador. Eso
+    // evita que WebView2 se quede con Ctrl+D/Ctrl+N y deja que el evento siga
+    // hacia el DOM (SetHandled(true) NO serviría: también cortaría el DOM).
+    static FILTERS: OnceLock<Mutex<HashMap<String, usize>>> = OnceLock::new();
 
     let label = window.label().to_string();
     let label_for_cb = label.clone();
     if let Err(err) = window.with_webview(move |webview| {
         unsafe {
-            let Ok(core) = webview.controller().CoreWebView2() else {
+            let controller = webview.controller();
+            let controller_id = Interface::as_raw(&controller) as usize;
+            let Ok(core) = controller.CoreWebView2() else {
                 tracing::warn!(label = %label_for_cb, "WebView2: sin CoreWebView2");
                 return;
             };
@@ -35,6 +49,67 @@ pub fn disable_browser_accelerator_keys(window: &WebviewWindow) {
             };
             if let Err(err) = settings3.SetAreBrowserAcceleratorKeysEnabled(false) {
                 tracing::warn!(label = %label_for_cb, %err, "no se pudo desactivar atajos del navegador");
+            }
+
+            let filters = FILTERS.get_or_init(|| Mutex::new(HashMap::new()));
+            let already_installed = filters
+                .lock()
+                .map(|installed| installed.get(&label_for_cb) == Some(&controller_id))
+                .unwrap_or(false);
+            if already_installed {
+                return;
+            }
+
+            let label_for_key = label_for_cb.clone();
+            let handler = AcceleratorKeyPressedEventHandler::create(Box::new(
+                move |_controller, args| {
+                    let Some(args) = args else {
+                        return Ok(());
+                    };
+                    let mut virtual_key = 0u32;
+                    let _ = args.VirtualKey(&mut virtual_key);
+                    let Ok(args2) = args.cast::<ICoreWebView2AcceleratorKeyPressedEventArgs2>()
+                    else {
+                        return Ok(());
+                    };
+
+                    let mut browser_enabled = windows_core::BOOL::default();
+                    let _ = args2.IsBrowserAcceleratorKeyEnabled(&mut browser_enabled);
+                    args2.SetIsBrowserAcceleratorKeyEnabled(false)?;
+
+                    // Diagnóstico deliberadamente acotado a los atajos del
+                    // workspace para no ensuciar el log con cada pulsación.
+                    if matches!(virtual_key, 0x44 | 0x4e | 0x57) {
+                        tracing::info!(
+                            target: "keyboard",
+                            label = %label_for_key,
+                            key = virtual_key,
+                            browser_enabled = browser_enabled.as_bool(),
+                            "WebView2 dejó pasar el acelerador hacia el DOM"
+                        );
+                    }
+                    Ok(())
+                },
+            ));
+            let mut token = 0i64;
+            match controller.add_AcceleratorKeyPressed(&handler, &mut token) {
+                Ok(()) => {
+                    if let Ok(mut installed) = filters.lock() {
+                        installed.insert(label_for_cb.clone(), controller_id);
+                    }
+                    tracing::info!(
+                        target: "keyboard",
+                        label = %label_for_cb,
+                        token,
+                        "filtro nativo de aceleradores instalado"
+                    );
+                }
+                Err(err) => tracing::warn!(
+                    target: "keyboard",
+                    label = %label_for_cb,
+                    %err,
+                    "no se pudo instalar el filtro nativo de aceleradores"
+                ),
             }
         }
     }) {

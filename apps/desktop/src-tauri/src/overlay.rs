@@ -1981,6 +1981,10 @@ pub fn set_overlay_text_mode(app: AppHandle, on: bool) {
             tracing::warn!(target: "overlay", ?err, "no se pudo cambiar el modo texto");
             return;
         }
+        // El overlay nace sin foco y puede haber recibido el ajuste de WebView2
+        // antes de que su controlador estuviera listo. Reintentar aquí cubre el
+        // instante real en que la consola flotante empieza a recibir teclado.
+        crate::webview_tweaks::disable_browser_accelerator_keys(&window);
         // `set_focusable` reescribe el ex-style y pisa `ignore_cursor_events`.
         // Si hay captura en curso, no reclamar foco (le robaría la selección) y
         // reponer el click-through que acabamos de borrar.
