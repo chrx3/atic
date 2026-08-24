@@ -7,6 +7,7 @@ import {
   AlignLeft,
   AppWindow,
   AudioLines,
+  Activity,
   Camera,
   CircleDot,
   Clipboard,
@@ -139,6 +140,7 @@ export const AGENT_ICONS = {
 } as const satisfies Record<string, IconNode>;
 
 export {
+  Activity,
   Search,
   Trash2,
   List,

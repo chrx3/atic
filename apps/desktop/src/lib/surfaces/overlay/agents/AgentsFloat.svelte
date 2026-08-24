@@ -43,7 +43,9 @@
   const BUBBLE_CORNER = 26;
   const BIRTH_SEED_HOLD_MS = 36;
   const POSITION_STORAGE_KEY = "atic.agents.consolePosition";
+  const SETUP_WIDTH_STORAGE_KEY = "atic.agents.setupWidth";
   const POSITION_MARGIN = 12;
+  const SETUP_DEFAULT_W = 360;
   const SETUP_WIDE_H = 176;
   const SETUP_NARROW_H = 196;
   const SETUP_NARROW_W = 560;
@@ -58,7 +60,7 @@
 
   type LauncherView = "setup" | "console";
   let launcherView = $state<LauncherView>("setup");
-  let setupWidth = CONSOLE_DEFAULT_W;
+  let setupWidth = SETUP_DEFAULT_W;
   let consoleSize = { w: CONSOLE_DEFAULT_W, h: CONSOLE_DEFAULT_H };
   let browserOpen = $state(false);
   let browserSize = { w: BROWSER_DEFAULT_W, h: BROWSER_DEFAULT_H };
@@ -75,6 +77,19 @@
   const settleDur = ms(MOTION.medium);
 
   type SavedPosition = { x: number; y: number };
+
+  function readSetupWidth(): number {
+    const saved = Number(localStorage.getItem(SETUP_WIDTH_STORAGE_KEY));
+    return Number.isFinite(saved) ? Math.max(BUBBLE_MIN_W, saved) : SETUP_DEFAULT_W;
+  }
+
+  function saveSetupWidth() {
+    try {
+      localStorage.setItem(SETUP_WIDTH_STORAGE_KEY, String(Math.round(setupWidth)));
+    } catch {
+      /* El tamaño compacto sigue funcionando aunque el storage esté bloqueado. */
+    }
+  }
 
   function readSavedPosition(): SavedPosition | null {
     try {
@@ -182,7 +197,6 @@
         h: Math.max(BROWSER_MIN_H, browserSize.h),
       };
     }
-    setupWidth = Math.max(BUBBLE_MIN_W, a.w);
     return { ...a, w: setupWidth, h: setupHeight(setupWidth) };
   }
 
@@ -229,6 +243,7 @@
 
     if (next === "console") {
       setupWidth = current.w;
+      saveSetupWidth();
     } else {
       consoleSize = { w: current.w, h: current.h };
     }
@@ -267,8 +282,10 @@
     browserOpen = open;
     if (!current) return;
 
-    if (open) setupWidth = current.w;
-    else browserSize = { w: current.w, h: current.h };
+    if (open) {
+      setupWidth = current.w;
+      saveSetupWidth();
+    } else browserSize = { w: current.w, h: current.h };
 
     const width = open
       ? Math.max(BUBBLE_MIN_W, browserSize.w, current.w)
@@ -431,7 +448,10 @@
     if (a) {
       if (launcherView === "console") consoleSize = { w: a.w, h: a.h };
       else if (browserOpen) browserSize = { w: a.w, h: a.h };
-      else setupWidth = a.w;
+      else {
+        setupWidth = a.w;
+        saveSetupWidth();
+      }
       if (!browserOpen) void saveAgentsBubbleSize(a.w, a.h);
       savePosition();
     }
@@ -531,6 +551,7 @@
 
   onMount(() => {
     applyTheme(readCachedTheme());
+    setupWidth = readSetupWidth();
     void overlayWorkAreas()
       .then((areas) => {
         workAreas = areas;

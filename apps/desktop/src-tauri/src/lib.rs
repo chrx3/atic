@@ -271,6 +271,7 @@ pub fn run() {
             agents::bridge::agent_claude_sessions,
             agents::bridge::agent_claude_transcript,
             agents::bridge::agent_claude_usage,
+            agents::bridge::agent_codex_usage,
             agents::presence::agent_presences,
             agents::presence::agent_presence_focus,
             agents::presence::agent_presence_bind,

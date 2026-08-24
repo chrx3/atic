@@ -28,9 +28,12 @@
   import { pillTrace } from "$ipc/overlay";
   import type { ConsoleKind, SshHost } from "$lib/types";
   import EmptyState from "$lib/ui/EmptyState.svelte";
+  import AccountUsageModal from "./AccountUsageModal.svelte";
+  import AgentLogo from "./AgentLogo.svelte";
   import Icon from "$ui/Icon.svelte";
   import {
     ArrowLeft,
+    Activity,
     PanelBottomOpen,
     PanelRightOpen,
     Pin,
@@ -119,6 +122,7 @@
   const RAIL_DEFAULT = 128;
   const RAIL_MAX = 224;
   const RAIL_STORAGE_KEY = "atic.agents.consoleRailWidth";
+  const USAGE_AGENTS = new Set(["claude", "codex", "opencode", "cursor-agent"]);
 
   function leaf(key: string): PaneNode {
     return { kind: "leaf", key };
@@ -185,6 +189,7 @@
   let paneTree = $state<PaneNode | null>(null);
   let railWidth = $state(RAIL_DEFAULT);
   let pinned = $state(false);
+  let usageOpen = $state(false);
   let consoleEl = $state<HTMLElement | null>(null);
 
   /** xterm por pestaña. Fuera de `$state` (ver `Tab`). */
@@ -194,6 +199,9 @@
   let seq = 0;
 
   const active = $derived(tabs.find((t) => t.key === activeKey) ?? null);
+  const usageAgent = $derived(
+    active?.command && USAGE_AGENTS.has(active.command) ? active.command : null,
+  );
   const sessionId = $derived(active?.sessionId ?? null);
   const connected = $derived(!!sessionId);
   const paneRects = $derived(collectPaneRects(paneTree));
@@ -449,17 +457,6 @@
       return (total.get(b) ?? 0) > 1 ? `${b} ${n}` : b;
     });
   });
-
-  /** Monograma del rail: iniciales del agente ("Claude Code" → CC, "OpenCode 2" → O2). */
-  function monogram(label: string): string {
-    const parts = label.trim().split(/\s+/).filter(Boolean);
-    if (parts.length >= 2) {
-      return (parts[0][0] + parts[1][0]).toUpperCase();
-    }
-    return (parts[0]?.slice(0, 2) ?? "?").toUpperCase();
-  }
-
-  const monograms = $derived(tabs.map((_, i) => monogram(tabLabels[i])));
 
   function tabOf(key: string): Tab | undefined {
     return tabs.find((t) => t.key === key);
@@ -1001,7 +998,7 @@
             title={tabLabels[i]}
             onclick={() => switchTab(t.key)}
           >
-            <span class="mono" aria-hidden="true">{monograms[i]}</span>
+            <span class="rail-logo"><AgentLogo agent={t.command} size={18} /></span>
             <span class="rail-copy">
               <span class="rail-name">{tabLabels[i]}</span>
               <span class="rail-status">
@@ -1087,6 +1084,11 @@
             <span>Agentes</span>
           </button>
         {/if}
+        {#if active?.command}
+          <span class="active-agent-logo">
+            <AgentLogo agent={active.command} size={18} />
+          </span>
+        {/if}
         <div class="where-block">
           <p class="where" title={active ? tabLabels[tabs.indexOf(active)] : ""}>
             {active ? tabLabels[tabs.indexOf(active)] : "Sin consolas"}
@@ -1154,28 +1156,34 @@
               <kbd>Ctrl+⇧D</kbd>
             </button>
           </div>
-          {#if connected}
-            <button
-              type="button"
-              class="chip"
-              disabled={connecting}
-              onclick={() => void disconnect()}
-            >
-              Desconectar
-            </button>
-          {:else}
+          {#if !connected}
             <button
               type="button"
               class="chip is-go"
               disabled={connecting || (active.kind === "ssh" && !activeHost)}
               onclick={() => void connect()}
             >
-              {connecting ? "Conectando…" : "Conectar"}
+              {connecting
+                ? "Preparando…"
+                : active.kind === "ssh"
+                  ? "Conectar"
+                  : "Reabrir"}
             </button>
           {/if}
         {/if}
       </div>
       <div class="window-actions">
+        {#if usageAgent}
+          <button
+            type="button"
+            class="icon-btn"
+            aria-label="Ver uso restante"
+            title="Ver uso restante"
+            onclick={() => (usageOpen = true)}
+          >
+            <Icon icon={Activity} size={13} />
+          </button>
+        {/if}
         <button
           type="button"
           class="icon-btn pin-btn"
@@ -1316,10 +1324,17 @@
       {/if}
     </div>
   </div>
+
+  {#if usageOpen && usageAgent}
+    {#key usageAgent}
+      <AccountUsageModal agent={usageAgent} onClose={() => (usageOpen = false)} />
+    {/key}
+  {/if}
 </section>
 
 <style>
   .console {
+    position: relative;
     display: flex;
     flex: 1;
     min-width: 0;
@@ -1395,10 +1410,12 @@
     border-color: color-mix(in srgb, var(--accent, #da7756) 60%, transparent);
   }
 
-  .mono {
-    font-size: 0.66rem;
-    font-weight: 750;
-    letter-spacing: 0.04em;
+  .rail-logo,
+  .active-agent-logo {
+    display: grid;
+    flex: 0 0 auto;
+    place-items: center;
+    color: var(--rb-text);
   }
 
   /* Punto de sesión vivo: esquina de la ficha. */
@@ -1818,7 +1835,7 @@
     background: color-mix(in sRGB, var(--agent-accent) 13%, var(--rb-surface));
   }
 
-  .console-desk .rail-tab .mono {
+  .console-desk .rail-tab .rail-logo {
     display: grid;
     place-items: center;
     width: 1.72rem;
@@ -1826,10 +1843,9 @@
     border-radius: 0.48rem;
     background: color-mix(in sRGB, var(--rb-text) 8%, transparent);
     color: var(--rb-text);
-    font-size: 0.58rem;
   }
 
-  .console-desk .rail-tab.is-on .mono {
+  .console-desk .rail-tab.is-on .rail-logo {
     background: color-mix(in sRGB, var(--agent-accent) 22%, transparent);
   }
 

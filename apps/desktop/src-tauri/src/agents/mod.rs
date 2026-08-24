@@ -26,6 +26,7 @@ pub mod claude_code;
 pub mod claude_sessions;
 pub mod claude_usage;
 pub mod codex;
+pub mod codex_usage;
 pub mod console;
 pub mod discover;
 pub mod exe;

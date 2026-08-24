@@ -834,6 +834,23 @@ export interface ClaudeAccountUsage {
   fetchedAt: number;
 }
 
+/** Ventana de cupo reportada por el app-server oficial de Codex. */
+export interface CodexUsageWindow {
+  usedPercent: number;
+  windowDurationMins: number;
+  /** Segundos Unix. */
+  resetsAt: number | null;
+}
+
+export interface CodexAccountUsage {
+  primary: CodexUsageWindow | null;
+  secondary: CodexUsageWindow | null;
+  plan: string | null;
+  limitName: string | null;
+  /** Epoch ms del fetch. */
+  fetchedAt: number;
+}
+
 /** Entrada de carpeta del explorador interno (solo directorios). */
 export interface DirectoryEntry {
   name: string;
