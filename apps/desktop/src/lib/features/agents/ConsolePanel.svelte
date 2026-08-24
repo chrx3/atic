@@ -24,6 +24,7 @@
     sshListHosts,
   } from "$ipc/agents";
   import { getConfig } from "$ipc/config";
+  import { pillTrace } from "$ipc/overlay";
   import type { ConsoleKind, SshHost } from "$lib/types";
   import EmptyState from "$lib/ui/EmptyState.svelte";
   import Icon from "$ui/Icon.svelte";
@@ -236,7 +237,21 @@
     });
   }
 
-  function consumeWorkspaceShortcut(event: KeyboardEvent): boolean {
+  function traceWorkspaceShortcut(
+    source: "window" | "xterm" | "xterm-data",
+    action: "split-right" | "split-down" | "new-console" | "close-console",
+    event?: KeyboardEvent,
+  ) {
+    const details = event
+      ? ` code=${event.code || "-"} key=${JSON.stringify(event.key)} repeat=${event.repeat}`
+      : "";
+    void pillTrace(`[agents-key] dom source=${source} action=${action}${details}`);
+  }
+
+  function consumeWorkspaceShortcut(
+    event: KeyboardEvent,
+    source: "window" | "xterm",
+  ): boolean {
     if (event.isComposing) return false;
     const key = event.key.toLowerCase();
     const code = event.code;
@@ -247,21 +262,35 @@
     if (mod && !event.altKey && (code === "KeyD" || key === "d")) {
       event.preventDefault();
       event.stopPropagation();
-      if (!event.repeat) splitPane(event.shiftKey ? "down" : "right");
+      if (!event.repeat) {
+        const direction = event.shiftKey ? "down" : "right";
+        traceWorkspaceShortcut(
+          source,
+          direction === "down" ? "split-down" : "split-right",
+          event,
+        );
+        splitPane(direction);
+      }
       return true;
     }
 
     if (mod && !event.shiftKey && !event.altKey && (code === "KeyN" || key === "n")) {
       event.preventDefault();
       event.stopPropagation();
-      if (!event.repeat) newTab("local");
+      if (!event.repeat) {
+        traceWorkspaceShortcut(source, "new-console", event);
+        newTab("local");
+      }
       return true;
     }
 
     if (mod && !event.shiftKey && !event.altKey && (code === "KeyW" || key === "w")) {
       event.preventDefault();
       event.stopPropagation();
-      if (!event.repeat && activeKey) void closeTab(activeKey);
+      if (!event.repeat && activeKey) {
+        traceWorkspaceShortcut(source, "close-console", event);
+        void closeTab(activeKey);
+      }
       return true;
     }
 
@@ -277,8 +306,13 @@
     if (data !== "\x04" && data !== "\x0e") return false;
     activeKey = key;
     error = null;
-    if (data === "\x04") splitPane("right");
-    else newTab("local");
+    if (data === "\x04") {
+      traceWorkspaceShortcut("xterm-data", "split-right");
+      splitPane("right");
+    } else {
+      traceWorkspaceShortcut("xterm-data", "new-console");
+      newTab("local");
+    }
     return true;
   }
 
@@ -340,7 +374,7 @@
     if (event.isComposing || !isInsideConsole(event.target)) return;
     // Captura antes del PTY. El handler de xterm repite esta defensa porque
     // WebView2 no siempre entrega los acordes Ctrl al `window` del overlay.
-    consumeWorkspaceShortcut(event);
+    consumeWorkspaceShortcut(event, "window");
   }
 
   // Al sumar/quitar paneles o cambiar el rail, cada xterm cambia de tamaño.
@@ -721,7 +755,7 @@
     // Ctrl/Cmd+V y Ctrl/Cmd+C (con selección): clipboard API explícita.
     term.attachCustomKeyEventHandler((ev) => {
       if (ev.type !== "keydown") return true;
-      if (consumeWorkspaceShortcut(ev)) return false;
+      if (consumeWorkspaceShortcut(ev, "xterm")) return false;
       const mod = ev.ctrlKey || ev.metaKey;
       if (mod && (ev.key === "v" || ev.key === "V")) {
         void pasteInto(key);
