@@ -37,7 +37,7 @@ export const LAUNCHER_PILL_GAP = 16;
  * Hueco bajo slots `bottom-*` respecto al borde de pantalla.
  *
  * `overlay_work_areas` devuelve **bounds** (pantalla completa, modo DI), no el
- * `work_area` de Win32. Sin este inset, dictado/agentes quedan montados sobre
+ * `work_area` de Win32. Sin este inset, dictado queda montado sobre
  * la taskbar. ~48px barra + 8px de aire (mismo espíritu que `CORNER_MARGIN`
  * del shelf en `floating.rs`).
  */
@@ -47,7 +47,6 @@ export const BOTTOM_SLOT_INSET = 56;
 const DEFAULT_SLOTS: Partial<Record<ToolId, SlotId>> = {
   launcher: "center-left-of-launcher",
   dictation: "bottom-center",
-  agents: "bottom-right",
 };
 
 /** Overrides opcionales (Ajustes / tests). Vacío = solo defaults. */

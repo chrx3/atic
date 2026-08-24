@@ -20,10 +20,10 @@ afterEach(() => {
 });
 
 describe("toolSlots", () => {
-  it("asigna slots solo a launcher, dictado y agentes", () => {
+  it("asigna slots solo a launcher y dictado", () => {
     expect(slotForTool("launcher")).toBe("center-left-of-launcher");
     expect(slotForTool("dictation")).toBe("bottom-center");
-    expect(slotForTool("agents")).toBe("bottom-right");
+    expect(slotForTool("agents")).toBeNull();
     expect(slotForTool("clipboard")).toBeNull();
     expect(slotForTool("snippets")).toBeNull();
     expect(hasToolSlot("meetings")).toBe(false);
