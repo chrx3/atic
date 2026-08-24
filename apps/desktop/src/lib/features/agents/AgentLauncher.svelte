@@ -19,13 +19,18 @@
     onBrowserChange?: (open: boolean) => void;
   } = $props();
 
-  type AgentDef = { cli: string; name: string };
+  type AgentDef = {
+    cli: string;
+    name: string;
+    icon: string;
+    colored?: boolean;
+  };
 
   const AGENTS: AgentDef[] = [
-    { cli: "claude", name: "Claude Code" },
-    { cli: "opencode", name: "OpenCode" },
-    { cli: "codex", name: "Codex" },
-    { cli: "cursor-agent", name: "Cursor" },
+    { cli: "claude", name: "Claude Code", icon: "/agents/claude.svg", colored: true },
+    { cli: "opencode", name: "OpenCode", icon: "/agents/opencode.svg" },
+    { cli: "codex", name: "Codex", icon: "/agents/openai.svg" },
+    { cli: "cursor-agent", name: "Cursor", icon: "/agents/cursor.svg" },
   ];
 
   /** El tope duro lo pone Rust (MAX_CONSOLES). */
@@ -49,15 +54,6 @@
   const launchLabel = $derived(
     hasConsole ? "Volver a consolas" : `Abrir ${chosen.name}`,
   );
-
-  function initials(name: string): string {
-    return name
-      .split(/\s+/)
-      .map((part) => part[0])
-      .join("")
-      .slice(0, 2)
-      .toUpperCase();
-  }
 
   function showView(next: LauncherView) {
     view = next;
@@ -131,11 +127,20 @@
             class:is-on={selected === agent.cli}
             role="radio"
             aria-checked={selected === agent.cli}
+            aria-label={agent.name}
             title={agent.name}
             onclick={() => (selected = agent.cli)}
           >
-            <span class="agent-mark">{initials(agent.name)}</span>
-            <span class="agent-name">{agent.name}</span>
+            <span class="agent-logo" aria-hidden="true">
+              {#if agent.colored}
+                <img src={agent.icon} alt="" draggable="false" />
+              {:else}
+                <span
+                  class="agent-logo-mask"
+                  style={`--agent-logo: url("${agent.icon}")`}
+                ></span>
+              {/if}
+            </span>
           </button>
         {/each}
       </div>
@@ -325,7 +330,10 @@
 
   .agent-picker {
     display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    width: max-content;
+    max-width: 100%;
+    grid-template-columns: repeat(4, 2.75rem);
+    align-self: center;
     overflow: hidden;
     border: 1px solid color-mix(in sRGB, var(--rb-border) 82%, transparent);
     border-radius: 0.72rem;
@@ -333,18 +341,17 @@
   }
 
   .agent-option {
-    display: flex;
-    min-width: 0;
-    min-height: 3rem;
-    align-items: center;
-    gap: 0.5rem;
+    display: grid;
+    width: 2.75rem;
+    min-width: 2.75rem;
+    min-height: 2.75rem;
+    place-items: center;
     border: 0;
     border-right: 1px solid color-mix(in sRGB, var(--rb-border) 76%, transparent);
-    padding: 0.42rem 0.55rem;
+    padding: 0;
     background: transparent;
     color: var(--rb-text);
     font: inherit;
-    text-align: left;
     cursor: pointer;
     transition:
       background-color 140ms ease,
@@ -366,32 +373,29 @@
     box-shadow: inset 0 0 0 1px var(--agent-accent);
   }
 
-  .agent-mark {
+  .agent-logo {
     display: grid;
-    width: 1.75rem;
-    height: 1.75rem;
-    flex: 0 0 auto;
+    width: 1.4rem;
+    height: 1.4rem;
     place-items: center;
-    border-radius: 0.48rem;
-    background: color-mix(in sRGB, var(--rb-text) 7%, transparent);
-    color: var(--rb-muted);
-    font-family: var(--rb-mono, ui-monospace, monospace);
-    font-size: 0.6rem;
-    font-weight: 760;
+    color: var(--rb-text);
+    transition: transform 140ms ease;
   }
 
-  .agent-option.is-on .agent-mark {
-    background: color-mix(in sRGB, var(--agent-accent) 17%, transparent);
-    color: var(--agent-accent);
+  .agent-option:hover .agent-logo {
+    transform: scale(1.06);
   }
 
-  .agent-name {
-    min-width: 0;
-    overflow: hidden;
-    font-size: 0.72rem;
-    font-weight: 660;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+  .agent-logo img,
+  .agent-logo-mask {
+    display: block;
+    width: 100%;
+    height: 100%;
+  }
+
+  .agent-logo-mask {
+    background: currentColor;
+    mask: var(--agent-logo) center / contain no-repeat;
   }
 
   .launch-row {
@@ -524,30 +528,6 @@
       padding: 0.55rem;
     }
 
-    .agent-picker {
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-    }
-
-    .agent-option {
-      min-height: 2.25rem;
-      padding: 0.25rem 0.42rem;
-    }
-
-    .agent-option:nth-child(2) {
-      border-right: 0;
-    }
-
-    .agent-option:nth-child(-n + 2) {
-      border-bottom: 1px solid color-mix(in sRGB, var(--rb-border) 76%, transparent);
-    }
-
-    .agent-mark {
-      width: 1.45rem;
-      height: 1.45rem;
-      border-radius: 0.38rem;
-      font-size: 0.54rem;
-    }
-
     .launch-row {
       grid-template-columns: minmax(0, 1fr) auto auto;
       gap: 0.4rem;
@@ -577,7 +557,6 @@
       flex-basis: 1.8rem;
     }
 
-    .agent-name,
     .folder > span:not(.chevron),
     .launch {
       font-size: 0.66rem;
@@ -597,6 +576,7 @@
     .launcher-view,
     .console-view,
     .agent-option,
+    .agent-logo,
     .launch {
       transition: none;
     }
