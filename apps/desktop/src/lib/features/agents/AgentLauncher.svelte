@@ -1,35 +1,29 @@
 <script lang="ts">
-  /**
-   * Lanzador de agentes y shell persistente del float.
-   *
-   * El lanzador y las consolas son dos vistas de la misma superficie. Volver
-   * atrás no mata las PTYs: solo las deja detrás del configurador. Para crear
-   * una tanda nueva hay una acción explícita que sí cierra esas sesiones.
-   */
+  /** Lanzador compacto y shell persistente de las consolas locales. */
   import ConsolePanel from "./ConsolePanel.svelte";
   import FolderBrowser from "./FolderBrowser.svelte";
   import Icon from "$ui/Icon.svelte";
   import { Folder, SquareTerminal, X } from "$lib/icons";
 
+  type LauncherView = "setup" | "console";
+
   let {
     onHeaderPointerDown,
     onClose,
+    onViewChange,
   }: {
     onHeaderPointerDown?: (e: PointerEvent) => void;
     onClose?: () => void;
+    onViewChange?: (view: LauncherView) => void;
   } = $props();
 
-  type AgentDef = {
-    cli: string;
-    name: string;
-    hint: string;
-  };
+  type AgentDef = { cli: string; name: string };
 
   const AGENTS: AgentDef[] = [
-    { cli: "claude", name: "Claude Code", hint: "claude" },
-    { cli: "opencode", name: "OpenCode", hint: "opencode" },
-    { cli: "codex", name: "Codex", hint: "codex" },
-    { cli: "cursor-agent", name: "Cursor", hint: "cursor-agent" },
+    { cli: "claude", name: "Claude Code" },
+    { cli: "opencode", name: "OpenCode" },
+    { cli: "codex", name: "Codex" },
+    { cli: "cursor-agent", name: "Cursor" },
   ];
 
   /** El tope duro lo pone Rust (MAX_CONSOLES). */
@@ -39,16 +33,19 @@
   let count = $state(1);
   let cwd = $state("");
   let browsing = $state(false);
-  let view = $state<"setup" | "console">("setup");
+  let view = $state<LauncherView>("setup");
   let hasConsole = $state(false);
 
-  const chosen = $derived(AGENTS.find((a) => a.cli === selected) ?? AGENTS[0]);
+  const chosen = $derived(AGENTS.find((agent) => agent.cli === selected) ?? AGENTS[0]);
   const seeds = $derived(
     Array.from({ length: Math.max(1, Math.min(count, MAX_INSTANCES)) }, () => ({
       kind: "local" as const,
       label: chosen.name,
       command: chosen.cli,
     })),
+  );
+  const launchLabel = $derived(
+    hasConsole ? "Volver a consolas" : `Abrir ${chosen.name}`,
   );
 
   function initials(name: string): string {
@@ -60,25 +57,24 @@
       .toUpperCase();
   }
 
+  function showView(next: LauncherView) {
+    view = next;
+    onViewChange?.(next);
+  }
+
   function launch() {
-    // Una configuración existente vuelve a su consola viva; no crea otra
-    // tanda accidentalmente ni deja procesos duplicados.
-    if (hasConsole) {
-      view = "console";
-      return;
-    }
-    hasConsole = true;
-    view = "console";
+    if (!hasConsole) hasConsole = true;
+    showView("console");
   }
 
   function backToSetup() {
-    view = "setup";
+    showView("setup");
   }
 
   function resetSessions() {
     // Al desmontar ConsolePanel su onDestroy cierra todas las PTYs.
     hasConsole = false;
-    view = "setup";
+    showView("setup");
   }
 </script>
 
@@ -88,25 +84,23 @@
     class:is-hidden={view !== "setup"}
     aria-hidden={view !== "setup" ? "true" : undefined}
     inert={view !== "setup"}
-    aria-label="Lanzador de agentes"
+    aria-label="Abrir agentes"
   >
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <header
-      class="head"
-      onpointerdown={(e) => {
-        if (onHeaderPointerDown && !(e.target as HTMLElement).closest("button"))
-          onHeaderPointerDown(e);
+      class="drag-rail"
+      aria-label="Mover ventana"
+      onpointerdown={(event) => {
+        if (onHeaderPointerDown && !(event.target as HTMLElement).closest("button")) {
+          onHeaderPointerDown(event);
+        }
       }}
     >
-      <div class="brand">
-        <span class="brand-mark"><Icon icon={SquareTerminal} size={14} /></span>
-        <span class="brand-copy">
-          <span class="title">Agentes</span>
-          <span class="subtitle">Terminales locales</span>
-        </span>
-      </div>
       {#if hasConsole}
-        <span class="live-badge"><span class="live-dot"></span>Sesiones activas</span>
+        <span class="live-status" role="status">
+          <span class="live-dot" aria-hidden="true"></span>
+          Consolas activas
+        </span>
       {/if}
       {#if onClose}
         <button
@@ -116,126 +110,80 @@
           title="Cerrar"
           onclick={onClose}
         >
-          <Icon icon={X} size={14} />
+          <Icon icon={X} size={13} />
         </button>
       {/if}
     </header>
 
-    <div class="launcher-body">
-      <div class="intro">
-        <p class="eyebrow">ATic · agentes CLI</p>
-        <h1>Levanta tu equipo</h1>
-        <p>
-          Elige un agente, define cuántas consolas quieres y abre el proyecto en su
-          carpeta de trabajo.
-        </p>
+    <div class="setup">
+      <div class="agent-picker" role="radiogroup" aria-label="Agente">
+        {#each AGENTS as agent (agent.cli)}
+          <button
+            type="button"
+            class="agent-option"
+            class:is-on={selected === agent.cli}
+            role="radio"
+            aria-checked={selected === agent.cli}
+            title={agent.name}
+            onclick={() => (selected = agent.cli)}
+          >
+            <span class="agent-mark">{initials(agent.name)}</span>
+            <span class="agent-name">{agent.name}</span>
+          </button>
+        {/each}
       </div>
 
-      {#if hasConsole}
-        <p class="session-note" role="status">
-          Las consolas siguen ejecutándose. Puedes volver a ellas cuando quieras.
-        </p>
-      {/if}
+      <div class="launch-row">
+        <button
+          type="button"
+          class="folder"
+          title={cwd || "Carpeta de inicio del usuario"}
+          onclick={() => (browsing = true)}
+        >
+          <Icon icon={Folder} size={15} />
+          <span>{cwd.trim() || "Carpeta de inicio"}</span>
+          <span class="chevron" aria-hidden="true">›</span>
+        </button>
 
-      <div class="setup-grid">
-        <div class="agent-section">
-          <div class="section-heading">
-            <span class="section-label">Agente</span>
-            <span class="section-meta">{chosen.hint}</span>
-          </div>
-          <div class="grid" role="radiogroup" aria-label="Agentes disponibles">
-            {#each AGENTS as a (a.cli)}
-              <button
-                type="button"
-                class="card"
-                class:is-on={selected === a.cli}
-                role="radio"
-                aria-checked={selected === a.cli}
-                onclick={() => (selected = a.cli)}
-              >
-                <span class="agent-mark">{initials(a.name)}</span>
-                <span class="card-copy">
-                  <span class="name">{a.name}</span>
-                  <span class="cli">{a.hint}</span>
-                </span>
-                <span class="check" aria-hidden="true">✓</span>
-              </button>
-            {/each}
-          </div>
+        <div class="stepper" role="group" aria-label="Cantidad de consolas">
+          <button
+            type="button"
+            aria-label="Menos consolas"
+            disabled={count <= 1}
+            onclick={() => (count = Math.max(1, count - 1))}
+          >
+            −
+          </button>
+          <span class="count">{count} {count === 1 ? "consola" : "consolas"}</span>
+          <button
+            type="button"
+            aria-label="Más consolas"
+            disabled={count >= MAX_INSTANCES}
+            onclick={() => (count = Math.min(MAX_INSTANCES, count + 1))}
+          >
+            +
+          </button>
         </div>
 
-        <aside class="summary" aria-label="Configuración de la sesión">
-          <div class="summary-top">
-            <span class="section-label">Sesión nueva</span>
-            <span class="summary-count">{count}</span>
-          </div>
+        {#if hasConsole}
+          <button
+            type="button"
+            class="reset"
+            aria-label="Cerrar sesiones activas"
+            title="Cerrar sesiones activas"
+            onclick={resetSessions}
+          >
+            <Icon icon={X} size={13} />
+          </button>
+        {/if}
 
-          <div class="count-row">
-            <div>
-              <strong>{count === 1 ? "Una consola" : `${count} consolas`}</strong>
-              <span>del mismo agente</span>
-            </div>
-            <div class="stepper" role="group" aria-label="Cuántas instancias">
-              <button
-                type="button"
-                aria-label="Menos instancias"
-                disabled={count <= 1}
-                onclick={() => (count = Math.max(1, count - 1))}
-              >
-                −
-              </button>
-              <span class="n">{count}</span>
-              <button
-                type="button"
-                aria-label="Más instancias"
-                disabled={count >= MAX_INSTANCES}
-                onclick={() => (count = Math.min(MAX_INSTANCES, count + 1))}
-              >
-                +
-              </button>
-            </div>
-          </div>
-
-          <div class="folder-block">
-            <span class="section-label">Carpeta de trabajo</span>
-            <button
-              type="button"
-              class="pick"
-              title={cwd || "Carpeta de inicio del usuario"}
-              onclick={() => (browsing = true)}
-            >
-              <Icon icon={Folder} size={14} />
-              <span class="pick-p">{cwd.trim() || "Carpeta de inicio"}</span>
-              <span class="pick-arrow">›</span>
-            </button>
-          </div>
-
-          <div class="summary-foot">
-            <span class="summary-key">PTY local</span>
-            <span class="summary-hint">Cada consola conserva su propia sesión</span>
-          </div>
-        </aside>
+        <button type="button" class="launch" onclick={launch}>
+          {#if hasConsole}<Icon icon={SquareTerminal} size={14} />{/if}
+          <span>{launchLabel}</span>
+          <span class="arrow" aria-hidden="true">→</span>
+        </button>
       </div>
     </div>
-
-    <footer class="foot">
-      {#if hasConsole}
-        <button type="button" class="secondary" onclick={() => (view = "console")}>
-          <Icon icon={SquareTerminal} size={13} />
-          Volver a las consolas
-        </button>
-        <button type="button" class="reset" onclick={resetSessions}>
-          Cerrar sesiones
-        </button>
-      {:else}
-        <button type="button" class="go" onclick={launch}>
-          Levantar {count}
-          {count === 1 ? "consola" : "consolas"}
-          <span>de {chosen.name}</span>
-          <span class="go-arrow">→</span>
-        </button>
-      {/if}
-    </footer>
   </section>
 
   {#if hasConsole}
@@ -259,8 +207,8 @@
 {#if browsing}
   <FolderBrowser
     initialPath={cwd}
-    onPick={(p) => {
-      cwd = p;
+    onPick={(path) => {
+      cwd = path;
       browsing = false;
     }}
     onClose={() => (browsing = false)}
@@ -273,10 +221,10 @@
 
     position: relative;
     display: flex;
-    flex: 1;
     min-height: 0;
-    border-radius: inherit;
+    flex: 1;
     overflow: hidden;
+    border-radius: inherit;
     background: var(--rb-surface);
     container-name: agents-launcher;
     container-type: inline-size;
@@ -292,339 +240,219 @@
     opacity: 1;
     transform: translateY(0);
     transition:
-      opacity 180ms ease,
-      transform 180ms ease,
-      visibility 180ms ease;
+      opacity 160ms ease,
+      transform 160ms ease,
+      visibility 160ms ease;
   }
 
   .is-hidden {
     visibility: hidden;
     pointer-events: none;
     opacity: 0;
-    transform: translateY(6px);
+    transform: translateY(4px);
   }
 
-  .head {
+  .drag-rail {
     display: flex;
-    flex-shrink: 0;
+    min-height: 2rem;
+    flex: 0 0 2rem;
     align-items: center;
-    gap: 0.65rem;
-    min-height: 3.15rem;
-    padding: 0.45rem 0.7rem;
-    border-bottom: 1px solid color-mix(in sRGB, var(--rb-border) 75%, transparent);
+    justify-content: flex-end;
+    padding: 0.2rem 0.42rem 0.15rem 0.7rem;
+    border-bottom: 1px solid color-mix(in sRGB, var(--rb-border) 72%, transparent);
     background: var(--rb-surface);
+    cursor: move;
   }
 
-  .brand {
-    display: flex;
-    min-width: 0;
-    flex: 1;
-    align-items: center;
-    gap: 0.55rem;
-  }
-
-  .brand-mark {
-    display: grid;
-    place-items: center;
-    width: 2rem;
-    height: 2rem;
-    border-radius: 0.6rem;
-    background: color-mix(in sRGB, var(--agent-accent) 18%, transparent);
-    color: var(--agent-accent);
-  }
-
-  .brand-copy {
-    display: flex;
-    min-width: 0;
-    flex-direction: column;
-    gap: 0.08rem;
-  }
-
-  .title {
-    color: var(--rb-text);
-    font-size: 0.78rem;
-    font-weight: 700;
-  }
-
-  .subtitle,
-  .eyebrow,
-  .section-label,
-  .section-meta,
-  .summary-foot,
-  .summary-hint,
-  .cli {
-    font-size: 0.6rem;
-  }
-
-  .subtitle,
-  .section-meta,
-  .summary-hint {
-    color: var(--rb-faint);
-  }
-
-  .live-badge {
+  .live-status {
     display: inline-flex;
+    min-width: 0;
     align-items: center;
     gap: 0.35rem;
-    color: var(--rb-ok);
-    font-size: 0.62rem;
-    font-weight: 650;
+    margin-right: auto;
+    color: var(--rb-muted);
+    font-size: 0.625rem;
+    font-weight: 600;
   }
 
   .live-dot {
-    width: 0.4rem;
-    height: 0.4rem;
+    width: 0.35rem;
+    height: 0.35rem;
+    flex: 0 0 auto;
     border-radius: 999px;
     background: var(--rb-ok);
   }
 
-  .close {
+  .close,
+  .reset {
     display: grid;
+    flex: 0 0 auto;
     place-items: center;
-    width: 2rem;
-    height: 2rem;
     border: 0;
-    border-radius: 0.5rem;
     background: transparent;
     color: var(--rb-muted);
     cursor: pointer;
   }
 
-  .close:hover {
-    background: color-mix(in sRGB, var(--rb-record) 12%, transparent);
-    color: var(--rb-record);
+  .close {
+    width: 1.6rem;
+    height: 1.6rem;
+    border-radius: 0.45rem;
   }
 
-  .launcher-body {
+  .close:hover,
+  .reset:hover {
+    background: color-mix(in sRGB, var(--rb-text) 7%, transparent);
+    color: var(--rb-text);
+  }
+
+  .setup {
     display: flex;
-    flex: 1;
     min-height: 0;
+    flex: 1;
     flex-direction: column;
-    gap: 1.05rem;
-    padding: 1.35rem 1.45rem;
-    overflow-y: auto;
-  }
-
-  .intro {
-    max-width: 34rem;
-  }
-
-  .eyebrow {
-    margin: 0 0 0.38rem;
-    color: var(--agent-accent);
-    font-family: var(--rb-mono, ui-monospace, monospace);
-    font-weight: 700;
-    letter-spacing: 0.05em;
-    text-transform: uppercase;
-  }
-
-  h1 {
-    margin: 0;
-    color: var(--rb-text);
-    font-size: 1.35rem;
-    font-weight: 760;
-    letter-spacing: -0.025em;
-    text-wrap: balance;
-  }
-
-  .intro > p:last-child {
-    max-width: 42rem;
-    margin: 0.42rem 0 0;
-    color: var(--rb-muted);
-    font-size: 0.76rem;
-    line-height: 1.45;
-  }
-
-  .session-note {
-    margin: -0.2rem 0 0;
-    color: var(--rb-ok);
-    font-size: 0.68rem;
-  }
-
-  .setup-grid {
-    display: grid;
-    grid-template-columns: minmax(0, 1.2fr) minmax(15rem, 0.8fr);
-    gap: 1rem;
-    align-items: stretch;
-  }
-
-  .agent-section,
-  .summary {
-    min-width: 0;
-  }
-
-  .section-heading,
-  .summary-top {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 0.5rem;
-    margin-bottom: 0.45rem;
-  }
-
-  .section-label {
-    color: var(--rb-text);
-    font-weight: 700;
-  }
-
-  .section-meta {
-    font-family: var(--rb-mono, ui-monospace, monospace);
-  }
-
-  .grid {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 0.5rem;
-  }
-
-  .card {
-    position: relative;
-    display: flex;
-    min-height: 4.35rem;
-    align-items: center;
     gap: 0.65rem;
+    padding: 0.75rem;
+    overflow: auto;
+  }
+
+  .agent-picker {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    overflow: hidden;
     border: 1px solid color-mix(in sRGB, var(--rb-border) 82%, transparent);
-    border-radius: 0.7rem;
-    padding: 0.65rem;
-    background: color-mix(in sRGB, var(--rb-surface-2) 70%, transparent);
+    border-radius: 0.72rem;
+    background: color-mix(in sRGB, var(--rb-surface-2) 54%, transparent);
+  }
+
+  .agent-option {
+    display: flex;
+    min-width: 0;
+    min-height: 3rem;
+    align-items: center;
+    gap: 0.5rem;
+    border: 0;
+    border-right: 1px solid color-mix(in sRGB, var(--rb-border) 76%, transparent);
+    padding: 0.42rem 0.55rem;
+    background: transparent;
     color: var(--rb-text);
+    font: inherit;
     text-align: left;
     cursor: pointer;
     transition:
-      border-color 150ms ease,
-      background-color 150ms ease,
-      transform 150ms ease;
+      background-color 140ms ease,
+      box-shadow 140ms ease;
   }
 
-  .card:hover {
-    border-color: color-mix(in sRGB, var(--agent-accent) 42%, var(--rb-border));
-    transform: translateY(-1px);
+  .agent-option:last-child {
+    border-right: 0;
   }
 
-  .card.is-on {
-    border-color: color-mix(in sRGB, var(--agent-accent) 62%, transparent);
-    background: color-mix(in sRGB, var(--agent-accent) 13%, var(--rb-surface));
+  .agent-option:hover {
+    background: color-mix(in sRGB, var(--rb-text) 4%, transparent);
+  }
+
+  .agent-option.is-on {
+    position: relative;
+    z-index: 1;
+    background: color-mix(in sRGB, var(--agent-accent) 10%, var(--rb-surface));
+    box-shadow: inset 0 0 0 1px var(--agent-accent);
   }
 
   .agent-mark {
     display: grid;
-    flex-shrink: 0;
+    width: 1.75rem;
+    height: 1.75rem;
+    flex: 0 0 auto;
     place-items: center;
-    width: 2.1rem;
-    height: 2.1rem;
-    border-radius: 0.55rem;
-    background: color-mix(in sRGB, var(--rb-text) 8%, transparent);
-    color: var(--rb-text);
+    border-radius: 0.48rem;
+    background: color-mix(in sRGB, var(--rb-text) 7%, transparent);
+    color: var(--rb-muted);
     font-family: var(--rb-mono, ui-monospace, monospace);
-    font-size: 0.62rem;
+    font-size: 0.6rem;
     font-weight: 760;
   }
 
-  .card.is-on .agent-mark {
-    background: color-mix(in sRGB, var(--agent-accent) 22%, transparent);
+  .agent-option.is-on .agent-mark {
+    background: color-mix(in sRGB, var(--agent-accent) 17%, transparent);
     color: var(--agent-accent);
   }
 
-  .card-copy {
+  .agent-name {
+    min-width: 0;
+    overflow: hidden;
+    font-size: 0.72rem;
+    font-weight: 660;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .launch-row {
+    display: grid;
+    grid-template-columns: minmax(9rem, 1fr) auto auto auto;
+    gap: 0.55rem;
+    align-items: stretch;
+  }
+
+  .folder,
+  .stepper,
+  .launch {
+    min-height: 2.45rem;
+    border: 1px solid color-mix(in sRGB, var(--rb-border) 84%, transparent);
+    border-radius: 0.62rem;
+    font: inherit;
+  }
+
+  .folder {
     display: flex;
     min-width: 0;
-    flex-direction: column;
-    gap: 0.15rem;
-  }
-
-  .name {
-    overflow: hidden;
-    font-size: 0.74rem;
-    font-weight: 700;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .cli {
-    overflow: hidden;
-    color: var(--rb-faint);
-    font-family: var(--rb-mono, ui-monospace, monospace);
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .check {
-    display: grid;
-    place-items: center;
-    width: 1.1rem;
-    height: 1.1rem;
-    margin-left: auto;
-    border: 1px solid color-mix(in sRGB, var(--rb-border) 80%, transparent);
-    border-radius: 999px;
-    color: transparent;
-    font-size: 0.65rem;
-  }
-
-  .card.is-on .check {
-    border-color: var(--agent-accent);
-    background: var(--agent-accent);
-    color: var(--rb-on-accent);
-  }
-
-  .summary {
-    display: flex;
-    flex-direction: column;
-    border-left: 1px solid color-mix(in sRGB, var(--rb-border) 70%, transparent);
-    padding: 0.1rem 0 0.1rem 1rem;
-  }
-
-  .summary-count {
-    color: var(--agent-accent);
-    font-family: var(--rb-mono, ui-monospace, monospace);
-    font-size: 1rem;
-    font-weight: 760;
-    font-variant-numeric: tabular-nums;
-  }
-
-  .count-row {
-    display: flex;
     align-items: center;
-    justify-content: space-between;
-    gap: 0.6rem;
-    padding: 0.55rem 0;
-  }
-
-  .count-row strong,
-  .count-row span {
-    display: block;
-  }
-
-  .count-row strong {
-    color: var(--rb-text);
-    font-size: 0.72rem;
-  }
-
-  .count-row span {
-    margin-top: 0.15rem;
+    gap: 0.48rem;
+    padding: 0.4rem 0.62rem;
+    background: color-mix(in sRGB, var(--rb-surface-2) 55%, transparent);
     color: var(--rb-muted);
-    font-size: 0.62rem;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .folder:hover {
+    border-color: color-mix(in sRGB, var(--agent-accent) 42%, var(--rb-border));
+    color: var(--rb-text);
+  }
+
+  .folder > span:not(.chevron) {
+    min-width: 0;
+    flex: 1;
+    overflow: hidden;
+    font-size: 0.7rem;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .chevron {
+    color: var(--rb-faint);
+    font-size: 1rem;
+    line-height: 1;
   }
 
   .stepper {
-    display: inline-flex;
-    align-items: center;
-    border: 1px solid color-mix(in sRGB, var(--rb-border) 85%, transparent);
-    border-radius: 0.55rem;
+    display: grid;
+    grid-template-columns: 2rem minmax(4.7rem, auto) 2rem;
+    align-items: stretch;
     overflow: hidden;
+    background: transparent;
   }
 
   .stepper button {
-    width: 2rem;
-    height: 2rem;
     border: 0;
     background: transparent;
     color: var(--rb-text);
-    font-size: 1rem;
+    font-size: 0.95rem;
     cursor: pointer;
   }
 
   .stepper button:hover:not(:disabled) {
-    background: color-mix(in sRGB, var(--agent-accent) 12%, transparent);
+    background: color-mix(in sRGB, var(--agent-accent) 9%, transparent);
   }
 
   .stepper button:disabled {
@@ -633,234 +461,136 @@
     opacity: 0.45;
   }
 
-  .n {
-    min-width: 1.7rem;
+  .count {
+    display: grid;
+    place-items: center;
     color: var(--rb-text);
-    font-size: 0.76rem;
-    font-weight: 760;
-    text-align: center;
-    font-variant-numeric: tabular-nums;
-  }
-
-  .folder-block {
-    display: flex;
-    flex-direction: column;
-    gap: 0.42rem;
-    margin-top: 0.55rem;
-  }
-
-  .pick {
-    display: flex;
-    min-width: 0;
-    align-items: center;
-    gap: 0.45rem;
-    border: 1px solid color-mix(in sRGB, var(--rb-border) 82%, transparent);
-    border-radius: 0.55rem;
-    padding: 0.48rem 0.55rem;
-    background: color-mix(in sRGB, var(--rb-surface-2) 72%, transparent);
-    color: var(--rb-muted);
-    font: inherit;
     font-size: 0.68rem;
-    text-align: left;
-    cursor: pointer;
-  }
-
-  .pick:hover {
-    border-color: color-mix(in sRGB, var(--agent-accent) 42%, transparent);
-    color: var(--rb-text);
-  }
-
-  .pick-p {
-    min-width: 0;
-    flex: 1;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    font-weight: 650;
+    font-variant-numeric: tabular-nums;
     white-space: nowrap;
   }
 
-  .pick-arrow {
-    color: var(--rb-faint);
-    font-size: 1.1rem;
-    line-height: 0.8;
-  }
-
-  .summary-foot {
-    display: flex;
-    flex-direction: column;
-    gap: 0.15rem;
-    margin-top: auto;
-    padding-top: 0.8rem;
-  }
-
-  .summary-key {
-    color: var(--rb-text);
-    font-family: var(--rb-mono, ui-monospace, monospace);
-    font-size: 0.58rem;
-    font-weight: 650;
-  }
-
-  .foot {
-    display: flex;
-    flex-shrink: 0;
-    align-items: center;
-    justify-content: flex-end;
-    gap: 0.55rem;
-    padding: 0.7rem 1.45rem 1rem;
-    border-top: 1px solid color-mix(in sRGB, var(--rb-border) 70%, transparent);
-    background: var(--rb-surface);
-  }
-
-  .go,
-  .secondary,
   .reset {
+    width: 2.45rem;
+    min-height: 2.45rem;
+    border: 1px solid color-mix(in sRGB, var(--rb-border) 84%, transparent);
+    border-radius: 0.62rem;
+  }
+
+  .launch {
     display: inline-flex;
-    min-height: 2.35rem;
+    min-width: 10rem;
     align-items: center;
-    gap: 0.4rem;
-    border-radius: 0.6rem;
-    padding: 0.45rem 0.75rem;
-    font: inherit;
+    justify-content: center;
+    gap: 0.42rem;
+    padding: 0.42rem 0.75rem;
+    border-color: var(--agent-accent);
+    background: var(--agent-accent);
+    color: var(--rb-on-accent);
     font-size: 0.7rem;
     font-weight: 700;
     cursor: pointer;
     transition:
-      background-color 150ms ease,
-      border-color 150ms ease,
-      color 150ms ease,
-      transform 150ms ease;
+      background-color 140ms ease,
+      transform 140ms ease;
   }
 
-  .go {
-    border: 1px solid var(--agent-accent);
-    background: var(--agent-accent);
-    color: var(--rb-on-accent);
-  }
-
-  .go span:not(.go-arrow) {
-    font-weight: 560;
-    opacity: 0.84;
-  }
-
-  .go-arrow {
-    margin-left: 0.25rem;
-    font-size: 1rem;
-  }
-
-  .go:hover,
-  .secondary:hover,
-  .reset:hover {
+  .launch:hover {
+    background: color-mix(in sRGB, var(--agent-accent) 87%, var(--rb-text));
     transform: translateY(-1px);
   }
 
-  .go:hover {
-    background: color-mix(in sRGB, var(--agent-accent) 86%, var(--rb-text));
+  .launch .arrow {
+    margin-left: 0.12rem;
+    font-size: 0.9rem;
   }
 
-  .secondary,
-  .reset {
-    border: 1px solid color-mix(in sRGB, var(--rb-border) 88%, transparent);
-    background: transparent;
-    color: var(--rb-text);
+  button:focus-visible {
+    outline: none;
+    box-shadow: var(--rb-focus);
   }
 
-  .secondary:hover {
-    border-color: color-mix(in sRGB, var(--agent-accent) 42%, transparent);
-    background: color-mix(in sRGB, var(--agent-accent) 10%, transparent);
-  }
-
-  .reset {
-    color: var(--rb-muted);
-    font-size: 0.64rem;
-    font-weight: 600;
-  }
-
-  .reset:hover {
-    border-color: color-mix(in sRGB, var(--rb-record) 45%, transparent);
-    color: var(--rb-record);
-  }
-
-  @container agents-launcher (width <= 42rem) {
-    .launcher-body {
-      padding-inline: 1rem;
+  @container agents-launcher (width <= 35rem) {
+    .setup {
+      gap: 0.48rem;
+      padding: 0.55rem;
     }
 
-    .setup-grid {
-      grid-template-columns: 1fr;
+    .agent-picker {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
     }
 
-    .summary {
-      border-top: 1px solid color-mix(in sRGB, var(--rb-border) 70%, transparent);
-      border-left: 0;
-      padding: 0.9rem 0 0;
+    .agent-option {
+      min-height: 2.25rem;
+      padding: 0.25rem 0.42rem;
     }
 
-    .summary-foot {
-      margin-top: 0.25rem;
+    .agent-option:nth-child(2) {
+      border-right: 0;
     }
 
-    .foot {
-      padding-inline: 1rem;
+    .agent-option:nth-child(-n + 2) {
+      border-bottom: 1px solid color-mix(in sRGB, var(--rb-border) 76%, transparent);
+    }
+
+    .agent-mark {
+      width: 1.45rem;
+      height: 1.45rem;
+      border-radius: 0.38rem;
+      font-size: 0.54rem;
+    }
+
+    .launch-row {
+      grid-template-columns: minmax(0, 1fr) auto auto;
+      gap: 0.4rem;
+    }
+
+    .folder {
+      grid-column: 1 / -1;
+    }
+
+    .stepper {
+      grid-column: 1;
+    }
+
+    .launch {
+      grid-column: 3;
+      min-width: 8.75rem;
+    }
+
+    .reset {
+      grid-column: 2;
     }
   }
 
   @container agents-launcher (width <= 28rem) {
-    .subtitle,
-    .live-badge {
-      display: none;
+    .drag-rail {
+      min-height: 1.8rem;
+      flex-basis: 1.8rem;
     }
 
-    .head {
-      min-height: 2.85rem;
+    .agent-name,
+    .folder > span:not(.chevron),
+    .launch {
+      font-size: 0.66rem;
+    }
+
+    .stepper {
+      grid-template-columns: 1.75rem minmax(4.3rem, auto) 1.75rem;
+    }
+
+    .launch {
+      min-width: 7.8rem;
       padding-inline: 0.55rem;
-    }
-
-    .launcher-body {
-      gap: 0.85rem;
-      padding: 1rem 0.9rem;
-    }
-
-    .intro > p:last-child {
-      font-size: 0.72rem;
-    }
-
-    .card {
-      min-height: 3.65rem;
-      gap: 0.45rem;
-      padding: 0.5rem;
-    }
-
-    .agent-mark {
-      width: 1.85rem;
-      height: 1.85rem;
-    }
-
-    .cli {
-      display: none;
-    }
-
-    .foot {
-      align-items: stretch;
-      padding: 0.65rem 0.9rem 0.8rem;
-    }
-
-    .go {
-      width: 100%;
-      justify-content: center;
-    }
-
-    .secondary {
-      flex: 1;
-      justify-content: center;
     }
   }
 
   @media (prefers-reduced-motion: reduce) {
     .launcher-view,
     .console-view,
-    .card,
-    .go,
-    .secondary,
-    .reset {
+    .agent-option,
+    .launch {
       transition: none;
     }
   }

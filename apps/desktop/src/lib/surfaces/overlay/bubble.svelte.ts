@@ -187,6 +187,6 @@ export class Bubble {
     const a = this.anchor;
     return `--tail: ${a?.offset ?? 40}px; --x: ${a?.x ?? 0}px; --y: ${
       a?.y ?? 0
-    }px; --w: ${a?.w ?? 580}px; --h: ${a?.h ?? 520}px`;
+    }px; --w: ${a?.w ?? 680}px; --h: ${a?.h ?? 176}px`;
   }
 }

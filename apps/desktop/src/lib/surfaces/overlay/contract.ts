@@ -25,15 +25,14 @@
 export const MARGIN = 0;
 
 /**
- * Lo más chica que puede quedar la consola de agentes.
+ * Lo más chico que puede quedar el lanzador de agentes.
  *
  * Gemelos de `BUBBLE_MIN_W` / `BUBBLE_MIN_H` en `agents/bridge.rs`. Rust los
- * aplica al redimensionar; el frontend los necesita para no ofrecer una
- * agarradera que arrastre hacia un tamaño que Rust va a rechazar —y que dejaría
- * el puntero separado del borde durante el resto del gesto.
+ * aplica al persistir; la vista sube el mínimo de altura cuando muestra una
+ * consola para conservar un terminal útil.
  */
 export const BUBBLE_MIN_W = 420;
-export const BUBBLE_MIN_H = 340;
+export const BUBBLE_MIN_H = 176;
 
 /**
  * Hueco entre la pill y la consola.
