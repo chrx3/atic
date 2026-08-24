@@ -47,6 +47,9 @@
   const SETUP_WIDE_H = 176;
   const SETUP_NARROW_H = 220;
   const SETUP_NARROW_W = 560;
+  const BROWSER_DEFAULT_W = 520;
+  const BROWSER_DEFAULT_H = 420;
+  const BROWSER_MIN_H = 360;
   const CONSOLE_DEFAULT_W = 680;
   const CONSOLE_DEFAULT_H = 520;
   const CONSOLE_MIN_H = 340;
@@ -57,6 +60,8 @@
   let launcherView = $state<LauncherView>("setup");
   let setupWidth = CONSOLE_DEFAULT_W;
   let consoleSize = { w: CONSOLE_DEFAULT_W, h: CONSOLE_DEFAULT_H };
+  let browserOpen = $state(false);
+  let browserSize = { w: BROWSER_DEFAULT_W, h: BROWSER_DEFAULT_H };
   let modeResizing = $state(false);
   let modeResizeEpoch = 0;
 
@@ -170,6 +175,13 @@
         h: Math.max(CONSOLE_MIN_H, consoleSize.h, a.h),
       };
     }
+    if (browserOpen) {
+      return {
+        ...a,
+        w: Math.max(BUBBLE_MIN_W, browserSize.w, a.w),
+        h: Math.max(BROWSER_MIN_H, browserSize.h),
+      };
+    }
     setupWidth = Math.max(BUBBLE_MIN_W, a.w);
     return { ...a, w: setupWidth, h: setupHeight(setupWidth) };
   }
@@ -212,6 +224,7 @@
     if (launcherView === next) return;
     const current = bubble.anchor;
     launcherView = next;
+    if (next === "console") browserOpen = false;
     if (!current) return;
 
     if (next === "console") {
@@ -230,6 +243,39 @@
             w: Math.max(BUBBLE_MIN_W, setupWidth),
             h: setupHeight(Math.max(BUBBLE_MIN_W, setupWidth)),
           };
+    const pill = surfaces.live["pill-skin"] ?? surfaces.live["pill"] ?? current;
+    const position = positionInWorkspace(pill, size, { x: current.x, y: current.y });
+    const target: BubbleOpen = {
+      ...current,
+      side: current.side as BubbleOpen["side"],
+      ...position,
+      ...size,
+    };
+
+    const epoch = ++modeResizeEpoch;
+    modeResizing = true;
+    await tick();
+    bubble.setFrame(target.x, target.y, target.w, target.h);
+    restingOpen = target;
+    await wait(ms(MOTION.medium));
+    if (epoch === modeResizeEpoch) modeResizing = false;
+  }
+
+  async function changeBrowser(open: boolean) {
+    if (browserOpen === open) return;
+    const current = bubble.anchor;
+    browserOpen = open;
+    if (!current) return;
+
+    if (open) setupWidth = current.w;
+    else browserSize = { w: current.w, h: current.h };
+
+    const width = open
+      ? Math.max(BUBBLE_MIN_W, browserSize.w, current.w)
+      : Math.max(BUBBLE_MIN_W, setupWidth);
+    const size = open
+      ? { w: width, h: Math.max(BROWSER_MIN_H, browserSize.h) }
+      : { w: width, h: setupHeight(width) };
     const pill = surfaces.live["pill-skin"] ?? surfaces.live["pill"] ?? current;
     const position = positionInWorkspace(pill, size, { x: current.x, y: current.y });
     const target: BubbleOpen = {
@@ -358,7 +404,12 @@
       w = Math.max(BUBBLE_MIN_W, r.ow - dx);
       x = r.ax + r.ow - w;
     }
-    const minHeight = launcherView === "console" ? CONSOLE_MIN_H : setupHeight(w);
+    const minHeight =
+      launcherView === "console"
+        ? CONSOLE_MIN_H
+        : browserOpen
+          ? BROWSER_MIN_H
+          : setupHeight(w);
     if (south) h = Math.max(minHeight, r.oh + dy);
     if (north) {
       h = Math.max(minHeight, r.oh - dy);
@@ -379,8 +430,9 @@
     const a = bubble.anchor;
     if (a) {
       if (launcherView === "console") consoleSize = { w: a.w, h: a.h };
+      else if (browserOpen) browserSize = { w: a.w, h: a.h };
       else setupWidth = a.w;
-      void saveAgentsBubbleSize(a.w, a.h);
+      if (!browserOpen) void saveAgentsBubbleSize(a.w, a.h);
       savePosition();
     }
   }
@@ -544,6 +596,7 @@
         onHeaderPointerDown={startDrag}
         onClose={close}
         onViewChange={(view) => void changeLauncherView(view)}
+        onBrowserChange={(open) => void changeBrowser(open)}
       />
       <!-- local: sin popover/viewport; el overlay es fullscreen y el toast
          quedaría abajo de toda la pantalla, lejos del bubble. -->

@@ -11,10 +11,12 @@
     onHeaderPointerDown,
     onClose,
     onViewChange,
+    onBrowserChange,
   }: {
     onHeaderPointerDown?: (e: PointerEvent) => void;
     onClose?: () => void;
     onViewChange?: (view: LauncherView) => void;
+    onBrowserChange?: (open: boolean) => void;
   } = $props();
 
   type AgentDef = { cli: string; name: string };
@@ -75,6 +77,11 @@
     // Al desmontar ConsolePanel su onDestroy cierra todas las PTYs.
     hasConsole = false;
     showView("setup");
+  }
+
+  function setBrowsing(open: boolean) {
+    browsing = open;
+    onBrowserChange?.(open);
   }
 </script>
 
@@ -138,7 +145,7 @@
           type="button"
           class="folder"
           title={cwd || "Carpeta de inicio del usuario"}
-          onclick={() => (browsing = true)}
+          onclick={() => setBrowsing(true)}
         >
           <Icon icon={Folder} size={15} />
           <span>{cwd.trim() || "Carpeta de inicio"}</span>
@@ -209,9 +216,9 @@
     initialPath={cwd}
     onPick={(path) => {
       cwd = path;
-      browsing = false;
+      setBrowsing(false);
     }}
-    onClose={() => (browsing = false)}
+    onClose={() => setBrowsing(false)}
   />
 {/if}
 
