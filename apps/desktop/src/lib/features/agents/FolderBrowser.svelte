@@ -1,8 +1,5 @@
 <script lang="ts">
-  /**
-   * Explorador de carpetas interno (cwd de agentes).
-   * Contained en `.demo` para no pelear con always-on-top / overlay-dismiss.
-   */
+  /** Explorador contenido para elegir el cwd de una consola de agentes. */
   import { onMount } from "svelte";
   import { listDirectories } from "$ipc/agents";
   import type { DirectoryEntry, DirectoryListing } from "$lib/types";
@@ -21,8 +18,6 @@
     onClose: () => void;
   } = $props();
 
-  const ACCENT = "#da7756";
-
   let listing = $state<DirectoryListing | null>(null);
   let loading = $state(true);
   let error = $state<string | null>(null);
@@ -37,13 +32,13 @@
       const next = await listDirectories(path?.trim() || null);
       listing = next;
       browsePath = next.path;
-    } catch (e) {
+    } catch (cause) {
       error =
-        typeof e === "string"
-          ? e
-          : e instanceof Error
-            ? e.message
-            : String(e);
+        typeof cause === "string"
+          ? cause
+          : cause instanceof Error
+            ? cause.message
+            : String(cause);
     } finally {
       loading = false;
     }
@@ -63,15 +58,9 @@
     void load(entry.path);
   }
 
-  function jumpRoot(entry: DirectoryEntry) {
-    if (loading) return;
-    void load(entry.path);
-  }
-
   function confirm() {
     const path = listing?.path?.trim() || browsePath.trim();
-    if (!path) return;
-    onPick(path);
+    if (path) onPick(path);
   }
 
   function rootIcon(name: string) {
@@ -79,63 +68,71 @@
   }
 </script>
 
-<div class="folder-root" style="--accent: {ACCENT}">
+<div class="folder-root">
   <Modal
     title="Elegir carpeta"
     subtitle={listing?.path || initialPath || undefined}
-    size="sm"
+    size="md"
     contained
     scrollBody={false}
-    onClose={onClose}
+    {onClose}
   >
-    <div class="body">
+    <div class="browser" class:is-loading={loading}>
       {#if listing && listing.roots.length > 0}
-        <div class="roots" role="group" aria-label="Carpetas frecuentes">
+        <nav class="roots" aria-label="Ubicaciones frecuentes">
           {#each listing.roots as root (root.path)}
             <button
               type="button"
-              class="root-chip"
+              class="root"
               class:is-on={listing.path === root.path}
+              aria-current={listing.path === root.path ? "location" : undefined}
               title={root.path}
               disabled={loading}
-              onclick={() => jumpRoot(root)}
+              onclick={() => load(root.path)}
             >
-              <Icon icon={rootIcon(root.name)} size={12} />
+              <Icon icon={rootIcon(root.name)} size={13} />
               <span>{root.name}</span>
             </button>
           {/each}
-        </div>
+        </nav>
       {/if}
 
-      <div class="nav">
+      <div class="location">
         <button
           type="button"
           class="up"
           disabled={!canGoUp || loading}
           title="Subir un nivel"
-          aria-label="Subir"
+          aria-label="Subir un nivel"
           onclick={goUp}
         >
           <Icon icon={ChevronUp} size={14} />
           <span>Subir</span>
         </button>
         <p class="path" title={listing?.path || ""}>
-          {listing?.path || (loading ? "…" : "")}
+          {listing?.path || (loading ? "Cargando…" : "")}
         </p>
       </div>
 
       <div class="list" aria-label="Subcarpetas" aria-busy={loading}>
         {#if loading && !listing}
-          <p class="empty">Cargando…</p>
+          <p class="state">Cargando carpetas…</p>
         {:else if error && !listing}
-          <div class="err">
-            <p class="empty is-err">{error}</p>
-            <button type="button" class="retry" onclick={() => load(initialPath || null)}>
+          <div class="error">
+            <p>{error}</p>
+            <button
+              type="button"
+              class="retry"
+              onclick={() => load(initialPath || null)}
+            >
               Reintentar
             </button>
           </div>
         {:else if listing && listing.entries.length === 0}
-          <p class="empty">Sin subcarpetas</p>
+          <div class="empty">
+            <Icon icon={Folder} size={18} />
+            <span>Esta carpeta no tiene subcarpetas</span>
+          </div>
         {:else if listing}
           <ul class="entries">
             {#each listing.entries as entry (entry.path)}
@@ -147,28 +144,32 @@
                   disabled={loading}
                   onclick={() => enter(entry)}
                 >
-                  <Icon icon={Folder} size={14} />
-                  <span class="entry-t">{entry.name}</span>
+                  <span class="folder-icon"><Icon icon={Folder} size={14} /></span>
+                  <span>{entry.name}</span>
                 </button>
               </li>
             {/each}
           </ul>
         {/if}
+
         {#if error && listing}
-          <p class="soft-err" role="status">{error}</p>
+          <p class="soft-error" role="status">{error}</p>
         {/if}
       </div>
     </div>
 
     {#snippet actions()}
-      <Button variant="ghost" onclick={onClose}>Cancelar</Button>
-      <Button
-        variant="primary"
-        disabled={!listing?.path || loading}
-        onclick={confirm}
-      >
-        Usar esta carpeta
-      </Button>
+      <div class="actions">
+        <Button variant="ghost" full onclick={onClose}>Cancelar</Button>
+        <Button
+          variant="primary"
+          full
+          disabled={!listing?.path || loading}
+          onclick={confirm}
+        >
+          Usar esta carpeta
+        </Button>
+      </div>
     {/snippet}
   </Modal>
 </div>
@@ -178,179 +179,260 @@
     display: contents;
   }
 
-  .body {
+  .browser {
     display: flex;
-    flex-direction: column;
-    gap: 0.65rem;
+    height: min(54dvh, 20rem);
     min-height: 0;
-    height: min(52dvh, 320px);
+    flex-direction: column;
+    gap: 0.6rem;
+    container: folder-browser / inline-size;
   }
 
   .roots {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.35rem;
-    flex-shrink: 0;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(6rem, 100%), 1fr));
+    flex: 0 0 auto;
+    gap: 0.4rem;
   }
 
-  .root-chip {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.3rem;
-    padding: 0.22rem 0.55rem;
+  .root,
+  .up,
+  .retry {
     border: 1px solid var(--rb-border);
-    border-radius: 999px;
     background: transparent;
     color: var(--rb-muted);
-    font-size: 0.68rem;
+    font: inherit;
     cursor: pointer;
     transition:
-      color var(--duration-quick, 150ms) ease,
-      border-color var(--duration-quick, 150ms) ease,
-      background-color var(--duration-quick, 150ms) ease;
+      color var(--duration-quick) var(--ease-smooth-out),
+      border-color var(--duration-quick) var(--ease-smooth-out),
+      background-color var(--duration-quick) var(--ease-smooth-out),
+      transform var(--duration-quick) var(--ease-smooth-out);
   }
 
-  .root-chip:hover:not(:disabled) {
-    color: var(--rb-text);
-    background: color-mix(in srgb, var(--rb-text) 5%, transparent);
-  }
-
-  .root-chip.is-on {
-    color: var(--accent, #da7756);
-    border-color: color-mix(in srgb, var(--accent, #da7756) 45%, var(--rb-border));
-    background: color-mix(in srgb, var(--accent, #da7756) 12%, transparent);
-  }
-
-  .root-chip:disabled {
-    opacity: 0.5;
-    cursor: default;
-  }
-
-  .nav {
+  .root {
     display: flex;
+    min-width: 0;
+    min-height: 2rem;
+    align-items: center;
+    justify-content: center;
+    gap: 0.35rem;
+    border-radius: var(--rb-radius-xs);
+    padding: 0.32rem 0.5rem;
+    font-size: 0.68rem;
+  }
+
+  .root span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .root:hover:not(:disabled),
+  .up:hover:not(:disabled),
+  .retry:hover:not(:disabled) {
+    background: color-mix(in sRGB, var(--rb-text) 5%, transparent);
+    color: var(--rb-text);
+  }
+
+  .root.is-on {
+    border-color: color-mix(in sRGB, var(--rb-record) 45%, var(--rb-border));
+    background: var(--rb-record-soft);
+    color: var(--rb-record);
+  }
+
+  .location {
+    display: flex;
+    min-width: 0;
+    flex: 0 0 auto;
     align-items: center;
     gap: 0.45rem;
-    min-width: 0;
-    flex-shrink: 0;
   }
 
   .up {
     display: inline-flex;
+    min-height: 2rem;
+    flex: 0 0 auto;
     align-items: center;
-    gap: 0.25rem;
-    flex-shrink: 0;
-    padding: 0.28rem 0.5rem;
-    border: 1px solid var(--rb-border);
-    border-radius: 0.4rem;
-    background: transparent;
+    gap: 0.28rem;
+    border-radius: var(--rb-radius-xs);
+    padding: 0.3rem 0.55rem;
     color: var(--rb-text);
-    font-size: 0.72rem;
-    cursor: pointer;
-  }
-
-  .up:hover:not(:disabled) {
-    background: color-mix(in srgb, var(--rb-text) 5%, transparent);
-  }
-
-  .up:disabled {
-    opacity: 0.4;
-    cursor: default;
+    font-size: 0.7rem;
   }
 
   .path {
-    margin: 0;
     min-width: 0;
     flex: 1;
     overflow: hidden;
+    margin: 0;
+    color: var(--rb-muted);
+    direction: rtl;
+    font-family: var(--rb-mono, ui-monospace, monospace);
+    font-size: 0.64rem;
+    text-align: left;
     text-overflow: ellipsis;
     white-space: nowrap;
-    font-family: var(--rb-mono, ui-monospace, monospace);
-    font-size: 0.65rem;
-    color: var(--rb-faint);
-    direction: rtl;
-    text-align: left;
   }
 
   .list {
-    flex: 1;
     min-height: 0;
-    overflow-y: auto;
+    flex: 1;
+    overflow: auto;
     border: 1px solid var(--rb-border);
-    border-radius: 0.5rem;
-    background: color-mix(in srgb, var(--rb-surface-2, transparent) 55%, transparent);
+    border-radius: var(--rb-radius-sm);
+    background: color-mix(in sRGB, var(--rb-surface-2) 58%, transparent);
+    overscroll-behavior: contain;
   }
 
   .entries {
-    list-style: none;
     margin: 0;
-    padding: 0.25rem;
+    padding: 0.3rem;
+    list-style: none;
   }
 
   .entry {
     display: flex;
     width: 100%;
+    min-width: 0;
+    min-height: 2.2rem;
     align-items: center;
-    gap: 0.45rem;
-    padding: 0.4rem 0.5rem;
+    gap: 0.5rem;
     border: 0;
-    border-radius: 0.35rem;
+    border-radius: var(--rb-radius-xs);
+    padding: 0.36rem 0.5rem;
     background: transparent;
     color: var(--rb-text);
-    font-size: 0.8rem;
+    font: inherit;
+    font-size: 0.76rem;
     text-align: left;
     cursor: pointer;
   }
 
   .entry:hover:not(:disabled) {
-    background: color-mix(in srgb, var(--rb-text) 6%, transparent);
+    background: color-mix(in sRGB, var(--rb-text) 6%, transparent);
   }
 
-  .entry:disabled {
-    opacity: 0.55;
-    cursor: default;
-  }
-
-  .entry-t {
+  .entry span:last-child {
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  .empty {
-    margin: 0;
-    padding: 1.25rem 0.75rem;
-    text-align: center;
-    font-size: 0.78rem;
-    color: var(--rb-faint);
+  .folder-icon {
+    display: grid;
+    width: 1.55rem;
+    height: 1.55rem;
+    flex: 0 0 auto;
+    place-items: center;
+    border-radius: 0.38rem;
+    background: color-mix(in sRGB, var(--rb-text) 6%, transparent);
+    color: var(--rb-muted);
   }
 
-  .empty.is-err {
+  .state,
+  .soft-error {
+    margin: 0;
+    padding: 1rem 0.75rem;
+    color: var(--rb-faint);
+    font-size: 0.72rem;
+    text-align: center;
+  }
+
+  .empty,
+  .error {
+    display: flex;
+    min-height: 100%;
+    align-items: center;
+    justify-content: center;
+    gap: 0.45rem;
+    padding: 1rem;
+    color: var(--rb-faint);
+    font-size: 0.72rem;
+    text-align: center;
+  }
+
+  .error {
+    flex-direction: column;
     color: var(--rb-text);
   }
 
-  .err {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 0.4rem;
-    padding: 0.5rem;
+  .error p {
+    max-width: 32ch;
+    margin: 0;
   }
 
   .retry {
-    padding: 0.28rem 0.55rem;
-    border: 1px solid var(--rb-border);
-    border-radius: 0.4rem;
-    background: transparent;
-    font-size: 0.72rem;
+    min-height: 2rem;
+    border-radius: var(--rb-radius-xs);
+    padding: 0.3rem 0.6rem;
     color: var(--rb-text);
-    cursor: pointer;
+    font-size: 0.7rem;
   }
 
-  .soft-err {
-    margin: 0;
-    padding: 0.35rem 0.55rem 0.5rem;
-    font-size: 0.68rem;
-    color: var(--rb-faint);
+  .soft-error {
+    padding-block: 0.45rem;
+  }
+
+  .actions {
+    display: grid;
+    width: min(100%, 21rem);
+    grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr);
+    gap: 0.5rem;
+  }
+
+  button:focus-visible {
+    outline: none;
+    box-shadow: var(--rb-focus);
+  }
+
+  button:disabled,
+  .browser.is-loading .entry {
+    cursor: default;
+    opacity: 0.5;
+  }
+
+  @container folder-browser (width <= 22rem) {
+    .browser {
+      gap: 0.45rem;
+    }
+
+    .roots {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 0.3rem;
+    }
+
+    .root {
+      padding-inline: 0.35rem;
+    }
+
+    .up span {
+      display: none;
+    }
+
+    .up {
+      width: 2rem;
+      justify-content: center;
+      padding: 0;
+    }
+  }
+
+  @media (pointer: coarse) {
+    .root,
+    .up,
+    .retry,
+    .entry {
+      min-height: 2.75rem;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .root,
+    .up,
+    .retry {
+      transition: none;
+    }
   }
 </style>
