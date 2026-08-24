@@ -45,7 +45,7 @@
   const POSITION_STORAGE_KEY = "atic.agents.consolePosition";
   const POSITION_MARGIN = 12;
   const SETUP_WIDE_H = 176;
-  const SETUP_NARROW_H = 220;
+  const SETUP_NARROW_H = 196;
   const SETUP_NARROW_W = 560;
   const BROWSER_DEFAULT_W = 520;
   const BROWSER_DEFAULT_H = 420;
