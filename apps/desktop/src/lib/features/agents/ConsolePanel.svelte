@@ -101,10 +101,10 @@
   let sshHosts = $state<SshHost[]>([]);
   let ctxMenu = $state<{ x: number; y: number; key: string } | null>(null);
   /**
-   * `tabs` = una consola a la vez. `split` = todas visibles en cuadrícula,
-   * para correr varios agentes en paralelo y verlos juntos.
+   * Paneles visibles, de izquierda a derecha. Las pestañas que no están acá
+   * siguen vivas en el rail, pero no ocupan espacio en el workspace.
    */
-  let split = $state(false);
+  let paneKeys = $state<string[]>([]);
   let pinned = $state(false);
   let consoleEl = $state<HTMLElement | null>(null);
 
@@ -117,13 +117,69 @@
   const active = $derived(tabs.find((t) => t.key === activeKey) ?? null);
   const sessionId = $derived(active?.sessionId ?? null);
   const connected = $derived(!!sessionId);
+  const visiblePaneKeys = $derived(
+    paneKeys.filter((key) => tabs.some((tab) => tab.key === key)),
+  );
+  const paneMode = $derived(visiblePaneKeys.length > 1);
 
-  function toggleSplit() {
-    if (tabs.length < 2) return;
-    split = !split;
+  function focusVisiblePane(key: string) {
     requestAnimationFrame(() => {
-      for (const key of boxes.keys()) fitAndResize(key);
+      boxes.get(key)?.el.scrollIntoView({ block: "nearest", inline: "nearest" });
+      fitAndResize(key);
+      if (sessionOf(key)) requestOverlayKeyboard(key);
     });
+  }
+
+  /**
+   * Terax-style, pero con una sola dirección: revela el siguiente agente a la
+   * derecha. Si ya no hay pestañas ocultas, duplica el destino activo.
+   */
+  function openPaneRight() {
+    const base = visiblePaneKeys.length
+      ? visiblePaneKeys
+      : activeKey
+        ? [activeKey]
+        : [];
+    const hidden = tabs.find((tab) => !base.includes(tab.key));
+    if (hidden) {
+      paneKeys = [...base, hidden.key];
+      activeKey = hidden.key;
+      error = null;
+      focusVisiblePane(hidden.key);
+      return;
+    }
+
+    const source = active;
+    newTab(source?.kind ?? "local", {
+      label: source?.label ?? undefined,
+      command: source?.command ?? undefined,
+      hostId: source?.hostId ?? undefined,
+      appendPane: true,
+    });
+  }
+
+  function consumeWorkspaceShortcut(event: KeyboardEvent): boolean {
+    if (event.isComposing) return false;
+    const key = event.key.toLowerCase();
+    const mod = event.ctrlKey || event.metaKey;
+
+    // Ctrl+Shift+D abre igualmente a la derecha: Atic mantiene una sola regla
+    // espacial y nunca manda una consola a una fila inferior.
+    if (mod && !event.altKey && key === "d") {
+      event.preventDefault();
+      event.stopPropagation();
+      if (!event.repeat) openPaneRight();
+      return true;
+    }
+
+    if (mod && !event.shiftKey && !event.altKey && key === "w") {
+      event.preventDefault();
+      event.stopPropagation();
+      if (!event.repeat && activeKey) void closeTab(activeKey);
+      return true;
+    }
+
+    return false;
   }
 
   function isInsideConsole(target: EventTarget | null): boolean {
@@ -137,25 +193,16 @@
 
   function onGlobalKey(event: KeyboardEvent) {
     if (event.isComposing || !isInsideConsole(event.target)) return;
-    const key = event.key.toLowerCase();
-    const mod = event.ctrlKey || event.metaKey;
-
-    // WebView2/xterm puede convertir Ctrl+D en EOF antes de que un handler
-    // de Svelte lo vea. Captura aquí, antes del PTY, y limita el atajo a esta
-    // superficie para no secuestrar el teclado de las otras herramientas.
-    if (mod && !event.shiftKey && !event.altKey && key === "d") {
-      event.preventDefault();
-      event.stopPropagation();
-      toggleSplit();
-    }
+    // Captura antes del PTY. El handler de xterm repite esta defensa porque
+    // WebView2 no siempre entrega los acordes Ctrl al `window` del overlay.
+    consumeWorkspaceShortcut(event);
   }
 
-  // Al alternar pestañas ↔ paralelo, cada xterm cambia de contenedor: hay
-  // que re-medirlos todos (el ResizeObserver de cada uno cubre el resto).
+  // Al sumar/quitar paneles cada xterm cambia de ancho: re-medir los visibles.
   $effect(() => {
-    void split;
+    void visiblePaneKeys;
     requestAnimationFrame(() => {
-      for (const key of boxes.keys()) fitAndResize(key);
+      for (const key of visiblePaneKeys) fitAndResize(key);
     });
   });
 
@@ -329,7 +376,7 @@
       setSession(key, id);
       requestAnimationFrame(() => {
         fitAndResize(key);
-        requestOverlayKeyboard(key);
+        if (key === activeKey) requestOverlayKeyboard(key);
       });
       // La animación del float dura ~300ms: cuando termina, el contenedor
       // cambia de tamaño por última vez y puede que el ResizeObserver ya
@@ -354,14 +401,28 @@
    */
   let openChain: Promise<void> = Promise.resolve();
 
-  function newTab(kind: ConsoleKind, opts: { label?: string; command?: string } = {}) {
+  function newTab(
+    kind: ConsoleKind,
+    opts: {
+      label?: string;
+      command?: string;
+      hostId?: string;
+      appendPane?: boolean;
+    } = {},
+  ) {
     if (tabs.length >= MAX_TABS) {
       error = `Ya hay ${MAX_TABS} consolas abiertas. Cerrá alguna para abrir otra.`;
       return;
     }
     closeCtx();
+    const panesBefore = paneKeys.filter((paneKey) =>
+      tabs.some((tab) => tab.key === paneKey),
+    );
     const key = `t${++seq}`;
-    const hostId = kind === "ssh" ? (remoteHost?.id ?? sshHosts[0]?.id ?? null) : null;
+    const hostId =
+      kind === "ssh"
+        ? (opts.hostId ?? remoteHost?.id ?? sshHosts[0]?.id ?? null)
+        : null;
     tabs = [
       ...tabs,
       {
@@ -374,6 +435,8 @@
       },
     ];
     activeKey = key;
+    paneKeys =
+      opts.appendPane || panesBefore.length > 1 ? [...panesBefore, key] : [key];
     error = null;
     if (kind === "ssh") void loadSshHosts();
     // Un cuadro después el `{@attach}` ya creó el xterm, así que `fit()` mide
@@ -388,25 +451,36 @@
   async function closeTab(key: string) {
     const idx = tabs.findIndex((t) => t.key === key);
     if (idx < 0) return;
+    const paneIdx = visiblePaneKeys.indexOf(key);
     closeCtx();
     await disconnect(key);
     tabs = tabs.filter((t) => t.key !== key);
+    const nextPaneKeys = visiblePaneKeys.filter((paneKey) => paneKey !== key);
     // El xterm lo dispone el teardown del `{@attach}` al salir del DOM.
     if (activeKey === key) {
-      activeKey = tabs[Math.min(idx, tabs.length - 1)]?.key ?? "";
+      activeKey =
+        nextPaneKeys[Math.min(Math.max(paneIdx, 0), nextPaneKeys.length - 1)] ??
+        tabs[Math.min(idx, tabs.length - 1)]?.key ??
+        "";
     }
+    paneKeys = nextPaneKeys.length ? nextPaneKeys : activeKey ? [activeKey] : [];
+    if (activeKey) focusVisiblePane(activeKey);
   }
 
   function switchTab(key: string) {
-    if (activeKey === key) return;
     closeCtx();
+    if (paneMode && !visiblePaneKeys.includes(key)) {
+      const activePaneIndex = visiblePaneKeys.indexOf(activeKey);
+      paneKeys = visiblePaneKeys.map((paneKey, index) =>
+        index === Math.max(activePaneIndex, 0) ? key : paneKey,
+      );
+    } else if (!paneMode) {
+      paneKeys = [key];
+    }
     activeKey = key;
     error = null;
     // No se desconecta nada: las otras pestañas siguen vivas.
-    requestAnimationFrame(() => {
-      fitAndResize(key);
-      if (sessionOf(key)) requestOverlayKeyboard(key);
-    });
+    focusVisiblePane(key);
   }
 
   function fitAndResize(key = activeKey) {
@@ -481,6 +555,7 @@
     // Ctrl/Cmd+V y Ctrl/Cmd+C (con selección): clipboard API explícita.
     term.attachCustomKeyEventHandler((ev) => {
       if (ev.type !== "keydown") return true;
+      if (consumeWorkspaceShortcut(ev)) return false;
       const mod = ev.ctrlKey || ev.metaKey;
       if (mod && (ev.key === "v" || ev.key === "V")) {
         void pasteInto(key);
@@ -549,6 +624,8 @@
 
   function onTermPointerDown(key: string) {
     closeCtx();
+    activeKey = key;
+    error = null;
     // OverlaySurface (capture) ya pidió text-mode; reforzar foco tras el await.
     requestAnimationFrame(() => {
       focusTerm(key);
@@ -567,6 +644,11 @@
     if (seeds.length > 0) {
       for (const seed of seeds) {
         newTab(seed.kind === "ssh" ? "ssh" : "local", seed);
+      }
+      const firstKey = tabs[0]?.key;
+      if (firstKey) {
+        activeKey = firstKey;
+        paneKeys = [firstKey];
       }
     } else {
       newTab(initialKind === "ssh" ? "ssh" : "local");
@@ -760,16 +842,18 @@
         </label>
       {/if}
       <div class="acts">
-        {#if tabs.length > 1}
+        {#if active}
           <button
             type="button"
             class="layout-toggle"
-            class:is-on={split}
-            aria-pressed={split}
-            title="Ctrl+D alterna entre una consola y la cuadrícula"
-            onclick={toggleSplit}
+            class:is-on={paneMode}
+            aria-pressed={paneMode}
+            aria-label="Abrir otro panel a la derecha"
+            title="Abrir otro panel a la derecha · Ctrl+D"
+            disabled={tabs.length >= MAX_TABS && visiblePaneKeys.length >= tabs.length}
+            onclick={openPaneRight}
           >
-            <span>{split ? "Cuadrícula" : "Una consola"}</span>
+            <span>Panel derecho</span>
             <kbd>Ctrl+D</kbd>
           </button>
         {/if}
@@ -830,8 +914,8 @@
       <p class="err" role="alert">{error}</p>
     {/if}
 
-    <div class="body" class:is-split={split}>
-      {#if tabs.length === 0 && !split}
+    <div class="body" class:is-split={paneMode}>
+      {#if tabs.length === 0 && !paneMode}
         <div class="empty">
           <EmptyState
             compact
@@ -846,7 +930,7 @@
             {/snippet}
           </EmptyState>
         </div>
-      {:else if !split && active?.kind === "ssh" && !activeHost && !connected}
+      {:else if !paneMode && active?.kind === "ssh" && !activeHost && !connected}
         <div class="empty">
           <EmptyState
             compact
@@ -854,7 +938,7 @@
             hint="Agrega un host en Ajustes → Agentes y vuelve a abrir la consola."
           />
         </div>
-      {:else if !split && !connected && !connecting}
+      {:else if !paneMode && !connected && !connecting}
         <div class="empty">
           <EmptyState
             compact
@@ -879,8 +963,11 @@
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <div
           class="term"
-          class:is-hidden={!split &&
-            (t.key !== activeKey || (!t.sessionId && !connecting))}
+          class:is-active={t.key === activeKey}
+          class:has-pane-before={paneMode && visiblePaneKeys.indexOf(t.key) > 0}
+          class:is-hidden={!visiblePaneKeys.includes(t.key) ||
+            (!paneMode && !t.sessionId && !connecting)}
+          style:order={paneMode ? visiblePaneKeys.indexOf(t.key) : 0}
           {@attach mountTerm(t.key)}
           data-no-drag
           data-selectable
@@ -1180,6 +1267,7 @@
 
   .body {
     position: relative;
+    isolation: isolate;
     display: flex;
     flex: 1;
     min-height: 0;
@@ -1187,28 +1275,33 @@
     background: color-mix(in srgb, var(--rb-surface) 88%, var(--rb-bg0, #0f1115));
   }
 
-  /* Paralelo: todas las consolas visibles, en cuadrícula. Cada pane mide lo
-     suyo; el FitAddon de cada xterm ya observa su propio contenedor. */
+  /* Paneles tipo terminal: una sola fila, siempre hacia la derecha. */
   .body.is-split {
-    flex-flow: row wrap;
+    flex-flow: row nowrap;
     align-items: stretch;
-    gap: 0.35rem;
-    padding: 0.35rem;
+    gap: 0;
+    padding: 0;
+    overflow: auto hidden;
+    scrollbar-width: thin;
   }
 
   .body.is-split .term {
     position: relative;
     inset: auto;
-    flex: 1 1 15rem;
-    min-width: 12rem;
-    min-height: 8rem;
-    border: 1px solid color-mix(in srgb, var(--rb-border) 65%, transparent);
-    border-radius: 0.55rem;
+    flex: 1 1 0;
+    min-width: 10rem;
+    min-height: 0;
+    border: 0;
+    border-radius: 0;
     overflow: hidden;
   }
 
-  .body.is-split .term:hover {
-    border-color: color-mix(in srgb, var(--accent, #da7756) 35%, transparent);
+  .body.is-split .term.has-pane-before {
+    border-inline-start: 1px solid color-mix(in sRGB, var(--rb-border) 78%, transparent);
+  }
+
+  .body.is-split .term.is-active {
+    box-shadow: inset 0 2px 0 color-mix(in sRGB, var(--agent-accent) 72%, transparent);
   }
 
   .empty {
@@ -1226,7 +1319,7 @@
     position: absolute;
     inset: 0;
     z-index: 0;
-    padding: 0.2rem 0.35rem 0.35rem;
+    padding: 0.25rem 0.5rem 0.5rem;
     overflow: hidden;
     cursor: text;
   }
@@ -1251,7 +1344,7 @@
 
   .ctx {
     position: fixed;
-    z-index: 40;
+    z-index: var(--z-popover, 60);
     display: flex;
     min-width: 7.5rem;
     flex-direction: column;
@@ -1518,6 +1611,11 @@
 
   .console-desk .layout-toggle {
     padding: 0.2rem 0.45rem;
+  }
+
+  .console-desk .layout-toggle:disabled {
+    opacity: 0.45;
+    cursor: default;
   }
 
   .console-desk .layout-toggle kbd {
