@@ -388,6 +388,7 @@
        la consola colapsa a la altura de su barra (~34px). */
     display: flex;
     flex-direction: column;
+    border-radius: 1.625rem;
     /* visible: el PickerMenu del composer abre hacia arriba */
     overflow: visible;
   }
