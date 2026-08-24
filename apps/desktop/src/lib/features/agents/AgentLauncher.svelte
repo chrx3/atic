@@ -275,8 +275,11 @@
     display: flex;
     flex: 1;
     min-height: 0;
+    border-radius: inherit;
     overflow: hidden;
     background: var(--rb-surface);
+    container-name: agents-launcher;
+    container-type: inline-size;
   }
 
   .launcher-view,
@@ -776,7 +779,7 @@
     color: var(--rb-record);
   }
 
-  @media (width <= 42rem) {
+  @container agents-launcher (width <= 42rem) {
     .launcher-body {
       padding-inline: 1rem;
     }
@@ -800,24 +803,53 @@
     }
   }
 
-  @media (width <= 28rem) {
-    .grid {
-      grid-template-columns: 1fr;
-    }
-
+  @container agents-launcher (width <= 28rem) {
     .subtitle,
     .live-badge {
       display: none;
     }
 
-    .foot {
-      align-items: stretch;
-      flex-direction: column;
+    .head {
+      min-height: 2.85rem;
+      padding-inline: 0.55rem;
     }
 
-    .go,
-    .secondary,
-    .reset {
+    .launcher-body {
+      gap: 0.85rem;
+      padding: 1rem 0.9rem;
+    }
+
+    .intro > p:last-child {
+      font-size: 0.72rem;
+    }
+
+    .card {
+      min-height: 3.65rem;
+      gap: 0.45rem;
+      padding: 0.5rem;
+    }
+
+    .agent-mark {
+      width: 1.85rem;
+      height: 1.85rem;
+    }
+
+    .cli {
+      display: none;
+    }
+
+    .foot {
+      align-items: stretch;
+      padding: 0.65rem 0.9rem 0.8rem;
+    }
+
+    .go {
+      width: 100%;
+      justify-content: center;
+    }
+
+    .secondary {
+      flex: 1;
       justify-content: center;
     }
   }
