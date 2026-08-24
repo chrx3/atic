@@ -94,17 +94,86 @@
 
   type Box = { term: Terminal; fit: FitAddon; el: HTMLElement };
 
+  type SplitDirection = "right" | "down";
+  type PaneNode =
+    | { kind: "leaf"; key: string }
+    | {
+        kind: "split";
+        direction: SplitDirection;
+        first: PaneNode;
+        second: PaneNode;
+      };
+  type PaneRect = { key: string; x: number; y: number; width: number; height: number };
+
+  const RAIL_MIN = 54;
+  const RAIL_DEFAULT = 128;
+  const RAIL_MAX = 224;
+  const RAIL_STORAGE_KEY = "atic.agents.consoleRailWidth";
+
+  function leaf(key: string): PaneNode {
+    return { kind: "leaf", key };
+  }
+
+  function paneLeafKeys(node: PaneNode | null): string[] {
+    if (!node) return [];
+    if (node.kind === "leaf") return [node.key];
+    return [...paneLeafKeys(node.first), ...paneLeafKeys(node.second)];
+  }
+
+  function replacePaneLeaf(
+    node: PaneNode,
+    key: string,
+    replacement: PaneNode,
+  ): PaneNode {
+    if (node.kind === "leaf") return node.key === key ? replacement : node;
+    return {
+      ...node,
+      first: replacePaneLeaf(node.first, key, replacement),
+      second: replacePaneLeaf(node.second, key, replacement),
+    };
+  }
+
+  function removePaneLeaf(node: PaneNode, key: string): PaneNode | null {
+    if (node.kind === "leaf") return node.key === key ? null : node;
+    const first = removePaneLeaf(node.first, key);
+    const second = removePaneLeaf(node.second, key);
+    if (!first) return second;
+    if (!second) return first;
+    return { ...node, first, second };
+  }
+
+  function collectPaneRects(
+    node: PaneNode | null,
+    x = 0,
+    y = 0,
+    width = 100,
+    height = 100,
+  ): PaneRect[] {
+    if (!node) return [];
+    if (node.kind === "leaf") return [{ key: node.key, x, y, width, height }];
+    if (node.direction === "right") {
+      const half = width / 2;
+      return [
+        ...collectPaneRects(node.first, x, y, half, height),
+        ...collectPaneRects(node.second, x + half, y, half, height),
+      ];
+    }
+    const half = height / 2;
+    return [
+      ...collectPaneRects(node.first, x, y, width, half),
+      ...collectPaneRects(node.second, x, y + half, width, half),
+    ];
+  }
+
   let tabs = $state<Tab[]>([]);
   let activeKey = $state("");
   let connecting = $state(false);
   let error = $state<string | null>(null);
   let sshHosts = $state<SshHost[]>([]);
   let ctxMenu = $state<{ x: number; y: number; key: string } | null>(null);
-  /**
-   * Paneles visibles, de izquierda a derecha. Las pestañas que no están acá
-   * siguen vivas en el rail, pero no ocupan espacio en el workspace.
-   */
-  let paneKeys = $state<string[]>([]);
+  /** Árbol de splits. Las pestañas fuera del árbol siguen vivas en el rail. */
+  let paneTree = $state<PaneNode | null>(null);
+  let railWidth = $state(RAIL_DEFAULT);
   let pinned = $state(false);
   let consoleEl = $state<HTMLElement | null>(null);
 
@@ -117,32 +186,40 @@
   const active = $derived(tabs.find((t) => t.key === activeKey) ?? null);
   const sessionId = $derived(active?.sessionId ?? null);
   const connected = $derived(!!sessionId);
+  const paneRects = $derived(collectPaneRects(paneTree));
   const visiblePaneKeys = $derived(
-    paneKeys.filter((key) => tabs.some((tab) => tab.key === key)),
+    paneRects
+      .map((pane) => pane.key)
+      .filter((key) => tabs.some((tab) => tab.key === key)),
   );
   const paneMode = $derived(visiblePaneKeys.length > 1);
+  const railCompact = $derived(railWidth < 92);
 
   function focusVisiblePane(key: string) {
     requestAnimationFrame(() => {
-      boxes.get(key)?.el.scrollIntoView({ block: "nearest", inline: "nearest" });
       fitAndResize(key);
       if (sessionOf(key)) requestOverlayKeyboard(key);
     });
   }
 
-  /**
-   * Terax-style, pero con una sola dirección: revela el siguiente agente a la
-   * derecha. Si ya no hay pestañas ocultas, duplica el destino activo.
-   */
-  function openPaneRight() {
-    const base = visiblePaneKeys.length
-      ? visiblePaneKeys
-      : activeKey
-        ? [activeKey]
-        : [];
-    const hidden = tabs.find((tab) => !base.includes(tab.key));
+  function splitPane(direction: SplitDirection) {
+    const sourceKey = visiblePaneKeys.includes(activeKey)
+      ? activeKey
+      : (visiblePaneKeys[0] ?? activeKey);
+    if (!sourceKey) {
+      newTab("local");
+      return;
+    }
+
+    const hidden = tabs.find((tab) => !visiblePaneKeys.includes(tab.key));
     if (hidden) {
-      paneKeys = [...base, hidden.key];
+      const base = paneTree ?? leaf(sourceKey);
+      paneTree = replacePaneLeaf(base, sourceKey, {
+        kind: "split",
+        direction,
+        first: leaf(sourceKey),
+        second: leaf(hidden.key),
+      });
       activeKey = hidden.key;
       error = null;
       focusVisiblePane(hidden.key);
@@ -154,25 +231,34 @@
       label: source?.label ?? undefined,
       command: source?.command ?? undefined,
       hostId: source?.hostId ?? undefined,
-      appendPane: true,
+      splitDirection: direction,
+      splitSourceKey: sourceKey,
     });
   }
 
   function consumeWorkspaceShortcut(event: KeyboardEvent): boolean {
     if (event.isComposing) return false;
     const key = event.key.toLowerCase();
+    const code = event.code;
     const mod = event.ctrlKey || event.metaKey;
 
-    // Ctrl+Shift+D abre igualmente a la derecha: Atic mantiene una sola regla
-    // espacial y nunca manda una consola a una fila inferior.
-    if (mod && !event.altKey && key === "d") {
+    // `code` cubre WebView2/xterm cuando Ctrl transforma `event.key` en un
+    // carácter de control antes de que Svelte reciba el acorde.
+    if (mod && !event.altKey && (code === "KeyD" || key === "d")) {
       event.preventDefault();
       event.stopPropagation();
-      if (!event.repeat) openPaneRight();
+      if (!event.repeat) splitPane(event.shiftKey ? "down" : "right");
       return true;
     }
 
-    if (mod && !event.shiftKey && !event.altKey && key === "w") {
+    if (mod && !event.shiftKey && !event.altKey && (code === "KeyN" || key === "n")) {
+      event.preventDefault();
+      event.stopPropagation();
+      if (!event.repeat) newTab("local");
+      return true;
+    }
+
+    if (mod && !event.shiftKey && !event.altKey && (code === "KeyW" || key === "w")) {
       event.preventDefault();
       event.stopPropagation();
       if (!event.repeat && activeKey) void closeTab(activeKey);
@@ -180,6 +266,51 @@
     }
 
     return false;
+  }
+
+  function clampRailWidth(width: number): number {
+    return Math.min(RAIL_MAX, Math.max(RAIL_MIN, width));
+  }
+
+  function setRailWidth(width: number) {
+    railWidth = clampRailWidth(width);
+    localStorage.setItem(RAIL_STORAGE_KEY, String(Math.round(railWidth)));
+  }
+
+  function startRailResize(event: PointerEvent) {
+    event.preventDefault();
+    event.stopPropagation();
+    const handle = event.currentTarget as HTMLElement;
+    const pointerId = event.pointerId;
+    const startX = event.clientX;
+    const startWidth = railWidth;
+    handle.setPointerCapture(pointerId);
+
+    const onMove = (moveEvent: PointerEvent) => {
+      railWidth = clampRailWidth(startWidth + moveEvent.clientX - startX);
+    };
+    const onEnd = () => {
+      localStorage.setItem(RAIL_STORAGE_KEY, String(Math.round(railWidth)));
+      handle.removeEventListener("pointermove", onMove);
+      handle.removeEventListener("pointerup", onEnd);
+      handle.removeEventListener("pointercancel", onEnd);
+      if (handle.hasPointerCapture(pointerId)) handle.releasePointerCapture(pointerId);
+    };
+
+    handle.addEventListener("pointermove", onMove);
+    handle.addEventListener("pointerup", onEnd);
+    handle.addEventListener("pointercancel", onEnd);
+  }
+
+  function onRailResizeKey(event: KeyboardEvent) {
+    const step = event.shiftKey ? 24 : 8;
+    if (event.key === "ArrowLeft") setRailWidth(railWidth - step);
+    else if (event.key === "ArrowRight") setRailWidth(railWidth + step);
+    else if (event.key === "Home") setRailWidth(RAIL_MIN);
+    else if (event.key === "End") setRailWidth(RAIL_MAX);
+    else return;
+    event.preventDefault();
+    event.stopPropagation();
   }
 
   function isInsideConsole(target: EventTarget | null): boolean {
@@ -198,9 +329,10 @@
     consumeWorkspaceShortcut(event);
   }
 
-  // Al sumar/quitar paneles cada xterm cambia de ancho: re-medir los visibles.
+  // Al sumar/quitar paneles o cambiar el rail, cada xterm cambia de tamaño.
   $effect(() => {
-    void visiblePaneKeys;
+    void paneRects;
+    void railWidth;
     requestAnimationFrame(() => {
       for (const key of visiblePaneKeys) fitAndResize(key);
     });
@@ -407,7 +539,8 @@
       label?: string;
       command?: string;
       hostId?: string;
-      appendPane?: boolean;
+      splitDirection?: SplitDirection;
+      splitSourceKey?: string;
     } = {},
   ) {
     if (tabs.length >= MAX_TABS) {
@@ -415,9 +548,8 @@
       return;
     }
     closeCtx();
-    const panesBefore = paneKeys.filter((paneKey) =>
-      tabs.some((tab) => tab.key === paneKey),
-    );
+    const treeBefore = paneTree;
+    const previousActiveKey = activeKey;
     const key = `t${++seq}`;
     const hostId =
       kind === "ssh"
@@ -435,8 +567,21 @@
       },
     ];
     activeKey = key;
-    paneKeys =
-      opts.appendPane || panesBefore.length > 1 ? [...panesBefore, key] : [key];
+    if (opts.splitDirection && opts.splitSourceKey) {
+      const sourceKey = opts.splitSourceKey;
+      const base = treeBefore ?? leaf(sourceKey);
+      paneTree = replacePaneLeaf(base, sourceKey, {
+        kind: "split",
+        direction: opts.splitDirection,
+        first: leaf(sourceKey),
+        second: leaf(key),
+      });
+    } else if (treeBefore && paneLeafKeys(treeBefore).includes(previousActiveKey)) {
+      // Nueva consola/pestaña: ocupa el panel activo y conserva los otros splits.
+      paneTree = replacePaneLeaf(treeBefore, previousActiveKey, leaf(key));
+    } else {
+      paneTree = leaf(key);
+    }
     error = null;
     if (kind === "ssh") void loadSshHosts();
     // Un cuadro después el `{@attach}` ya creó el xterm, así que `fit()` mide
@@ -452,10 +597,13 @@
     const idx = tabs.findIndex((t) => t.key === key);
     if (idx < 0) return;
     const paneIdx = visiblePaneKeys.indexOf(key);
+    const nextTree = paneTree ? removePaneLeaf(paneTree, key) : null;
     closeCtx();
     await disconnect(key);
     tabs = tabs.filter((t) => t.key !== key);
-    const nextPaneKeys = visiblePaneKeys.filter((paneKey) => paneKey !== key);
+    const nextPaneKeys = paneLeafKeys(nextTree).filter((paneKey) =>
+      tabs.some((tab) => tab.key === paneKey),
+    );
     // El xterm lo dispone el teardown del `{@attach}` al salir del DOM.
     if (activeKey === key) {
       activeKey =
@@ -463,19 +611,22 @@
         tabs[Math.min(idx, tabs.length - 1)]?.key ??
         "";
     }
-    paneKeys = nextPaneKeys.length ? nextPaneKeys : activeKey ? [activeKey] : [];
+    paneTree = nextTree ?? (activeKey ? leaf(activeKey) : null);
     if (activeKey) focusVisiblePane(activeKey);
   }
 
   function switchTab(key: string) {
     closeCtx();
     if (paneMode && !visiblePaneKeys.includes(key)) {
-      const activePaneIndex = visiblePaneKeys.indexOf(activeKey);
-      paneKeys = visiblePaneKeys.map((paneKey, index) =>
-        index === Math.max(activePaneIndex, 0) ? key : paneKey,
-      );
+      const sourceKey = visiblePaneKeys.includes(activeKey)
+        ? activeKey
+        : visiblePaneKeys[0];
+      paneTree =
+        paneTree && sourceKey
+          ? replacePaneLeaf(paneTree, sourceKey, leaf(key))
+          : leaf(key);
     } else if (!paneMode) {
-      paneKeys = [key];
+      paneTree = leaf(key);
     }
     activeKey = key;
     error = null;
@@ -634,6 +785,10 @@
   }
 
   onMount(() => {
+    const savedRailWidth = Number(localStorage.getItem(RAIL_STORAGE_KEY));
+    if (Number.isFinite(savedRailWidth) && savedRailWidth > 0) {
+      railWidth = clampRailWidth(savedRailWidth);
+    }
     void loadSshHosts();
     void agentsAlwaysOnTop()
       .then((on) => (pinned = on))
@@ -648,7 +803,7 @@
       const firstKey = tabs[0]?.key;
       if (firstKey) {
         activeKey = firstKey;
-        paneKeys = [firstKey];
+        paneTree = leaf(firstKey);
       }
     } else {
       newTab(initialKind === "ssh" ? "ssh" : "local");
@@ -709,9 +864,14 @@
 <section class="console console-desk" bind:this={consoleEl} aria-label="Consola">
   <aside
     class="rail"
+    class:is-compact={railCompact}
+    style={`--rail-width: ${railWidth}px`}
     onpointerdown={(e) => {
       // Zona muerta del rail también arrastra el float.
-      if ((e.target as HTMLElement).closest("button, select, label")) return;
+      if (
+        (e.target as HTMLElement).closest("button, select, label, [data-rail-resizer]")
+      )
+        return;
       if (!onBarPointerDown) return;
       e.preventDefault();
       onBarPointerDown(e);
@@ -760,7 +920,7 @@
         type="button"
         class="tab-add"
         aria-label="Nueva consola local"
-        title="Nueva consola local (shell)"
+        title="Nueva consola local · Ctrl+N"
         disabled={connecting || tabs.length >= MAX_TABS}
         onclick={() => newTab("local")}
       >
@@ -777,6 +937,16 @@
         SSH
       </button>
     </div>
+    <button
+      type="button"
+      class="rail-resizer"
+      aria-label={`Cambiar ancho de la barra lateral, ${Math.round(railWidth)} píxeles`}
+      title="Arrastra para cambiar el ancho · Doble clic para contraer"
+      data-rail-resizer
+      onpointerdown={startRailResize}
+      onkeydown={onRailResizeKey}
+      ondblclick={() => setRailWidth(railCompact ? RAIL_DEFAULT : RAIL_MIN)}
+    ></button>
   </aside>
 
   <div class="col">
@@ -846,15 +1016,24 @@
           <button
             type="button"
             class="layout-toggle"
-            class:is-on={paneMode}
-            aria-pressed={paneMode}
             aria-label="Abrir otro panel a la derecha"
             title="Abrir otro panel a la derecha · Ctrl+D"
             disabled={tabs.length >= MAX_TABS && visiblePaneKeys.length >= tabs.length}
-            onclick={openPaneRight}
+            onclick={() => splitPane("right")}
           >
-            <span>Panel derecho</span>
+            <span>Derecha</span>
             <kbd>Ctrl+D</kbd>
+          </button>
+          <button
+            type="button"
+            class="layout-toggle"
+            aria-label="Abrir otro panel abajo"
+            title="Abrir otro panel abajo · Ctrl+Shift+D"
+            disabled={tabs.length >= MAX_TABS && visiblePaneKeys.length >= tabs.length}
+            onclick={() => splitPane("down")}
+          >
+            <span>Abajo</span>
+            <kbd>Ctrl+⇧D</kbd>
           </button>
         {/if}
         {#if active}
@@ -960,14 +1139,15 @@
       {/if}
 
       {#each tabs as t (t.key)}
+        {@const paneRect = paneRects.find((pane) => pane.key === t.key)}
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <div
           class="term"
           class:is-active={t.key === activeKey}
-          class:has-pane-before={paneMode && visiblePaneKeys.indexOf(t.key) > 0}
-          class:is-hidden={!visiblePaneKeys.includes(t.key) ||
-            (!paneMode && !t.sessionId && !connecting)}
-          style:order={paneMode ? visiblePaneKeys.indexOf(t.key) : 0}
+          class:is-hidden={!paneRect || (!paneMode && !t.sessionId && !connecting)}
+          style={paneRect
+            ? `--pane-x: ${paneRect.x}%; --pane-y: ${paneRect.y}%; --pane-width: ${paneRect.width}%; --pane-height: ${paneRect.height}%`
+            : undefined}
           {@attach mountTerm(t.key)}
           data-no-drag
           data-selectable
@@ -1023,6 +1203,7 @@
   .console {
     display: flex;
     flex: 1;
+    min-width: 0;
     flex-direction: row;
     min-height: 0;
     background: color-mix(in srgb, var(--rb-surface) 88%, var(--rb-bg0, #0f1115));
@@ -1035,11 +1216,12 @@
 
   /* ─── Rail izquierdo: una ficha por consola ───────────────────────────── */
   .rail {
+    position: relative;
     display: flex;
     flex-shrink: 0;
     flex-direction: column;
     align-items: center;
-    width: 2.9rem;
+    width: var(--rail-width, 2.9rem);
     padding: 0.35rem 0.25rem;
     border-right: 1px solid color-mix(in srgb, var(--rb-border) 70%, transparent);
   }
@@ -1125,6 +1307,42 @@
     padding-top: 0.3rem;
   }
 
+  .rail-resizer {
+    position: absolute;
+    top: 0;
+    right: -0.28rem;
+    z-index: 3;
+    width: 0.56rem;
+    height: 100%;
+    border: 0;
+    padding: 0;
+    background: transparent;
+    cursor: ew-resize;
+    touch-action: none;
+  }
+
+  .rail-resizer::after {
+    position: absolute;
+    top: 0.45rem;
+    right: 0.25rem;
+    bottom: 0.45rem;
+    width: 1px;
+    border-radius: 999px;
+    background: color-mix(in sRGB, var(--rb-border-strong) 72%, transparent);
+    content: "";
+    opacity: 0;
+    transition: opacity var(--duration-fast, 150ms) ease;
+  }
+
+  .rail-resizer:hover::after,
+  .rail-resizer:focus-visible::after {
+    opacity: 1;
+  }
+
+  .rail-resizer:focus-visible {
+    outline: none;
+  }
+
   /* Columna derecha: barra fina + cuerpo */
   .col {
     display: flex;
@@ -1197,20 +1415,20 @@
     display: flex;
     flex-shrink: 0;
     align-items: center;
-    gap: 0.28rem;
+    gap: 0.2rem;
   }
 
   .chip {
     display: inline-flex;
     align-items: center;
-    gap: 0.3rem;
+    gap: 0.24rem;
     border: 1px solid color-mix(in srgb, var(--rb-border) 80%, transparent);
     border-radius: 999px;
-    padding: 0.24rem 0.65rem;
+    padding: 0.18rem 0.52rem;
     background: color-mix(in srgb, var(--rb-surface-2) 70%, transparent);
     color: var(--rb-muted);
     font: inherit;
-    font-size: 0.66rem;
+    font-size: 0.62rem;
     font-weight: 600;
     letter-spacing: 0.01em;
     cursor: pointer;
@@ -1271,37 +1489,8 @@
     display: flex;
     flex: 1;
     min-height: 0;
-    flex-direction: column;
-    background: color-mix(in srgb, var(--rb-surface) 88%, var(--rb-bg0, #0f1115));
-  }
-
-  /* Paneles tipo terminal: una sola fila, siempre hacia la derecha. */
-  .body.is-split {
-    flex-flow: row nowrap;
-    align-items: stretch;
-    gap: 0;
-    padding: 0;
-    overflow: auto hidden;
-    scrollbar-width: thin;
-  }
-
-  .body.is-split .term {
-    position: relative;
-    inset: auto;
-    flex: 1 1 0;
-    min-width: 10rem;
-    min-height: 0;
-    border: 0;
-    border-radius: 0;
     overflow: hidden;
-  }
-
-  .body.is-split .term.has-pane-before {
-    border-inline-start: 1px solid color-mix(in sRGB, var(--rb-border) 78%, transparent);
-  }
-
-  .body.is-split .term.is-active {
-    box-shadow: inset 0 2px 0 color-mix(in sRGB, var(--agent-accent) 72%, transparent);
+    background: color-mix(in srgb, var(--rb-surface) 88%, var(--rb-bg0, #0f1115));
   }
 
   .empty {
@@ -1317,11 +1506,24 @@
 
   .term {
     position: absolute;
-    inset: 0;
+    top: calc(var(--pane-y, 0%) + 0.18rem);
+    left: calc(var(--pane-x, 0%) + 0.18rem);
     z-index: 0;
-    padding: 0.25rem 0.5rem 0.5rem;
+    width: calc(var(--pane-width, 100%) - 0.36rem);
+    height: calc(var(--pane-height, 100%) - 0.36rem);
+    box-sizing: border-box;
+    border: 1px solid color-mix(in sRGB, var(--rb-border) 78%, transparent);
+    border-radius: 0.58rem;
+    padding: 0.22rem 0.42rem 0.42rem;
     overflow: hidden;
+    background: var(--rb-bg0);
     cursor: text;
+    transition: border-color var(--duration-fast, 150ms) ease;
+  }
+
+  .term.is-active {
+    z-index: 1;
+    border-color: color-mix(in sRGB, var(--agent-accent) 58%, var(--rb-border));
   }
 
   .term.is-hidden {
@@ -1442,12 +1644,17 @@
   .console-desk {
     --agent-accent: var(--rb-record);
 
+    border: 1px solid color-mix(in sRGB, var(--rb-border-strong) 72%, transparent);
+    border-radius: 0.82rem;
+    overflow: hidden;
     background: var(--rb-bg0);
   }
 
   .console-desk .rail {
-    width: 9.4rem;
-    padding: 0.55rem 0.45rem;
+    width: var(--rail-width, 8rem);
+    min-width: 3.375rem;
+    max-width: 14rem;
+    padding: 0.4rem 0.34rem;
     background: color-mix(
       in sRGB,
       var(--rb-sidebar, var(--rb-surface-2)) 88%,
@@ -1457,7 +1664,7 @@
 
   .console-desk .rail-tabs {
     align-items: stretch;
-    gap: 0.28rem;
+    gap: 0.22rem;
   }
 
   .console-desk .rail-slot {
@@ -1465,13 +1672,13 @@
   }
 
   .console-desk .rail-tab {
-    grid-template-columns: 2rem minmax(0, 1fr);
+    grid-template-columns: 1.72rem minmax(0, 1fr);
     width: 100%;
-    height: 3.15rem;
+    height: 2.7rem;
     justify-items: start;
-    gap: 0.55rem;
-    padding: 0.45rem 0.5rem;
-    border-radius: 0.7rem;
+    gap: 0.42rem;
+    padding: 0.35rem 0.4rem;
+    border-radius: 0.6rem;
     text-align: left;
   }
 
@@ -1483,12 +1690,12 @@
   .console-desk .rail-tab .mono {
     display: grid;
     place-items: center;
-    width: 2rem;
-    height: 2rem;
-    border-radius: 0.55rem;
+    width: 1.72rem;
+    height: 1.72rem;
+    border-radius: 0.48rem;
     background: color-mix(in sRGB, var(--rb-text) 8%, transparent);
     color: var(--rb-text);
-    font-size: 0.62rem;
+    font-size: 0.58rem;
   }
 
   .console-desk .rail-tab.is-on .mono {
@@ -1499,7 +1706,7 @@
     display: flex;
     min-width: 0;
     flex-direction: column;
-    gap: 0.12rem;
+    gap: 0.06rem;
   }
 
   .console-desk .rail-name,
@@ -1511,35 +1718,35 @@
 
   .rail-name {
     color: var(--rb-text);
-    font-size: 0.7rem;
+    font-size: 0.66rem;
     font-weight: 680;
   }
 
   .rail-status {
     color: var(--rb-faint);
-    font-size: 0.58rem;
+    font-size: 0.54rem;
     font-weight: 540;
   }
 
   .console-desk .rail-tab .live {
-    top: 0.42rem;
-    right: 0.42rem;
+    top: 0.34rem;
+    right: 0.34rem;
     background: var(--rb-ok);
     box-shadow: 0 0 0 2px color-mix(in sRGB, var(--rb-ok) 18%, transparent);
   }
 
   .console-desk .tab-x {
     right: 0.1rem;
-    bottom: 0.2rem;
-    width: 1.25rem;
-    height: 1.25rem;
+    bottom: 0.12rem;
+    width: 1.15rem;
+    height: 1.15rem;
     padding: 0.2rem;
     border-radius: 0.35rem;
   }
 
   .console-desk .bar {
-    min-height: 3.15rem;
-    padding: 0.45rem 0.7rem;
+    min-height: 2.7rem;
+    padding: 0.32rem 0.52rem;
     background: var(--rb-surface);
   }
 
@@ -1552,7 +1759,7 @@
 
   .console-desk .bar-start {
     flex: 1;
-    gap: 0.65rem;
+    gap: 0.48rem;
   }
 
   .console-desk .where-block {
@@ -1565,14 +1772,14 @@
   .console-desk .layout-toggle {
     display: inline-flex;
     align-items: center;
-    gap: 0.35rem;
-    min-height: 2rem;
+    gap: 0.28rem;
+    min-height: 1.7rem;
     border: 1px solid transparent;
     border-radius: 0.5rem;
     background: transparent;
     color: var(--rb-muted);
     font: inherit;
-    font-size: 0.68rem;
+    font-size: 0.62rem;
     font-weight: 650;
     cursor: pointer;
     transition:
@@ -1582,12 +1789,11 @@
   }
 
   .console-desk .back-btn {
-    padding: 0.2rem 0.45rem 0.2rem 0.3rem;
+    padding: 0.14rem 0.34rem 0.14rem 0.24rem;
   }
 
   .console-desk .back-btn:hover,
-  .layout-toggle:hover,
-  .layout-toggle.is-on {
+  .layout-toggle:hover {
     border-color: color-mix(in sRGB, var(--agent-accent) 35%, transparent);
     background: color-mix(in sRGB, var(--agent-accent) 10%, transparent);
     color: var(--rb-text);
@@ -1595,13 +1801,13 @@
 
   .console-desk .where {
     color: var(--rb-text);
-    font-size: 0.76rem;
+    font-size: 0.7rem;
     font-weight: 700;
   }
 
   .console-desk .session-state {
     color: var(--rb-muted);
-    font-size: 0.58rem;
+    font-size: 0.54rem;
     font-weight: 540;
   }
 
@@ -1610,7 +1816,7 @@
   }
 
   .console-desk .layout-toggle {
-    padding: 0.2rem 0.45rem;
+    padding: 0.14rem 0.34rem;
   }
 
   .console-desk .layout-toggle:disabled {
@@ -1621,17 +1827,17 @@
   .console-desk .layout-toggle kbd {
     border: 1px solid color-mix(in sRGB, var(--rb-border) 90%, transparent);
     border-radius: 0.3rem;
-    padding: 0.08rem 0.25rem;
+    padding: 0.05rem 0.2rem;
     background: color-mix(in sRGB, var(--rb-text) 5%, transparent);
     color: var(--rb-faint);
     font-family: var(--rb-mono, ui-monospace, monospace);
-    font-size: 0.54rem;
+    font-size: 0.49rem;
     font-weight: 600;
   }
 
   .console-desk .icon-btn {
-    width: 2rem;
-    height: 2rem;
+    width: 1.7rem;
+    height: 1.7rem;
   }
 
   .console-desk .icon-btn.is-on {
@@ -1644,7 +1850,21 @@
   }
 
   .console-desk .body.is-split {
-    background: color-mix(in sRGB, var(--rb-bg0) 84%, var(--rb-text));
+    background: color-mix(in sRGB, var(--rb-bg0) 92%, var(--rb-text));
+  }
+
+  .console-desk .rail.is-compact {
+    padding-inline: 0.24rem;
+  }
+
+  .console-desk .rail.is-compact .rail-tab {
+    grid-template-columns: 1fr;
+    justify-items: center;
+    padding-inline: 0.25rem;
+  }
+
+  .console-desk .rail.is-compact .rail-copy {
+    display: none;
   }
 
   .console-desk .empty {
