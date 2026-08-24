@@ -22,7 +22,7 @@
     publishFollowSkin,
   } from "$surfaces/overlay/floatEmergeSkin";
   import { surfaces } from "$surfaces/overlay/surfaces.svelte";
-  import { Bubble, BUBBLE_MIN_H, BUBBLE_MIN_W } from "$surfaces/overlay/bubble.svelte";
+  import { Bubble, BUBBLE_MIN_W } from "$surfaces/overlay/bubble.svelte";
   import { createBubbleDrag } from "$surfaces/overlay/bubbleDrag";
   import {
     expandPanelFromSeed,
@@ -44,8 +44,21 @@
   const BIRTH_SEED_HOLD_MS = 36;
   const POSITION_STORAGE_KEY = "atic.agents.consolePosition";
   const POSITION_MARGIN = 12;
+  const SETUP_WIDE_H = 176;
+  const SETUP_NARROW_H = 220;
+  const SETUP_NARROW_W = 560;
+  const CONSOLE_DEFAULT_W = 680;
+  const CONSOLE_DEFAULT_H = 520;
+  const CONSOLE_MIN_H = 340;
   let workAreas = $state<Area[]>([]);
   let restingOpen = $state<BubbleOpen | null>(null);
+
+  type LauncherView = "setup" | "console";
+  let launcherView = $state<LauncherView>("setup");
+  let setupWidth = CONSOLE_DEFAULT_W;
+  let consoleSize = { w: CONSOLE_DEFAULT_W, h: CONSOLE_DEFAULT_H };
+  let modeResizing = $state(false);
+  let modeResizeEpoch = 0;
 
   type RevealPhase = "hidden" | "expand" | "settle" | "ready";
   let revealPhase = $state<RevealPhase>("hidden");
@@ -145,6 +158,22 @@
     };
   }
 
+  function setupHeight(width: number): number {
+    return width <= SETUP_NARROW_W ? SETUP_NARROW_H : SETUP_WIDE_H;
+  }
+
+  function frameForView(a: BubbleOpen): BubbleOpen {
+    if (launcherView === "console") {
+      return {
+        ...a,
+        w: Math.max(BUBBLE_MIN_W, consoleSize.w, a.w),
+        h: Math.max(CONSOLE_MIN_H, consoleSize.h, a.h),
+      };
+    }
+    setupWidth = Math.max(BUBBLE_MIN_W, a.w);
+    return { ...a, w: setupWidth, h: setupHeight(setupWidth) };
+  }
+
   function placeBirthSeed(a: BubbleOpen) {
     const pill = surfaces.live["pill-skin"] ?? surfaces.live["pill"];
     if (!pill) {
@@ -162,6 +191,7 @@
   }
 
   function placeFromPill(a: BubbleOpen) {
+    a = frameForView(a);
     const fresh = !bubble.alive || !bubble.shown;
     if (fresh) armOpenDismissGrace();
 
@@ -176,6 +206,46 @@
       return;
     }
     if (revealPhase === "ready") bubble.place(restingOpen);
+  }
+
+  async function changeLauncherView(next: LauncherView) {
+    if (launcherView === next) return;
+    const current = bubble.anchor;
+    launcherView = next;
+    if (!current) return;
+
+    if (next === "console") {
+      setupWidth = current.w;
+    } else {
+      consoleSize = { w: current.w, h: current.h };
+    }
+
+    const size =
+      next === "console"
+        ? {
+            w: Math.max(BUBBLE_MIN_W, consoleSize.w, current.w),
+            h: Math.max(CONSOLE_MIN_H, consoleSize.h),
+          }
+        : {
+            w: Math.max(BUBBLE_MIN_W, setupWidth),
+            h: setupHeight(Math.max(BUBBLE_MIN_W, setupWidth)),
+          };
+    const pill = surfaces.live["pill-skin"] ?? surfaces.live["pill"] ?? current;
+    const position = positionInWorkspace(pill, size, { x: current.x, y: current.y });
+    const target: BubbleOpen = {
+      ...current,
+      side: current.side as BubbleOpen["side"],
+      ...position,
+      ...size,
+    };
+
+    const epoch = ++modeResizeEpoch;
+    modeResizing = true;
+    await tick();
+    bubble.setFrame(target.x, target.y, target.w, target.h);
+    restingOpen = target;
+    await wait(ms(MOTION.medium));
+    if (epoch === modeResizeEpoch) modeResizing = false;
   }
 
   async function runOpenReveal() {
@@ -288,11 +358,13 @@
       w = Math.max(BUBBLE_MIN_W, r.ow - dx);
       x = r.ax + r.ow - w;
     }
-    if (south) h = Math.max(BUBBLE_MIN_H, r.oh + dy);
+    const minHeight = launcherView === "console" ? CONSOLE_MIN_H : setupHeight(w);
+    if (south) h = Math.max(minHeight, r.oh + dy);
     if (north) {
-      h = Math.max(BUBBLE_MIN_H, r.oh - dy);
+      h = Math.max(minHeight, r.oh - dy);
       y = r.ay + r.oh - h;
     }
+    if (launcherView === "setup") h = Math.max(h, minHeight);
 
     bubble.setFrame(x, y, w, h);
   }
@@ -306,6 +378,8 @@
     window.removeEventListener("pointercancel", endResize);
     const a = bubble.anchor;
     if (a) {
+      if (launcherView === "console") consoleSize = { w: a.w, h: a.h };
+      else setupWidth = a.w;
       void saveAgentsBubbleSize(a.w, a.h);
       savePosition();
     }
@@ -314,6 +388,8 @@
   function close() {
     if (!bubble.shown) return;
     revealEpoch += 1;
+    modeResizeEpoch += 1;
+    modeResizing = false;
     revealPhase = "ready";
     endDrag();
     endResize();
@@ -455,6 +531,7 @@
     class:is-off={!bubble.alive}
     class:is-expanding={expanding}
     class:is-settling={settling}
+    class:is-mode-resizing={modeResizing}
     data-agents-float
     data-side={bubble.anchor?.side ?? "top"}
     style={bubble.vars}
@@ -463,7 +540,11 @@
     bind:this={bubEl}
   >
     <div class="af-stage">
-      <AgentLauncher onHeaderPointerDown={startDrag} onClose={close} />
+      <AgentLauncher
+        onHeaderPointerDown={startDrag}
+        onClose={close}
+        onViewChange={(view) => void changeLauncherView(view)}
+      />
       <!-- local: sin popover/viewport; el overlay es fullscreen y el toast
          quedaría abajo de toda la pantalla, lejos del bubble. -->
       <ToastStack
@@ -474,21 +555,53 @@
     </div>
     <!-- Agarraderas: los 4 bordes y las 4 esquinas. -->
     <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <div class="grip grip-n" data-no-drag onpointerdown={(e) => startResize("n", e)}></div>
+    <div
+      class="grip grip-n"
+      data-no-drag
+      onpointerdown={(e) => startResize("n", e)}
+    ></div>
     <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <div class="grip grip-s" data-no-drag onpointerdown={(e) => startResize("s", e)}></div>
+    <div
+      class="grip grip-s"
+      data-no-drag
+      onpointerdown={(e) => startResize("s", e)}
+    ></div>
     <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <div class="grip grip-e" data-no-drag onpointerdown={(e) => startResize("e", e)}></div>
+    <div
+      class="grip grip-e"
+      data-no-drag
+      onpointerdown={(e) => startResize("e", e)}
+    ></div>
     <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <div class="grip grip-w" data-no-drag onpointerdown={(e) => startResize("w", e)}></div>
+    <div
+      class="grip grip-w"
+      data-no-drag
+      onpointerdown={(e) => startResize("w", e)}
+    ></div>
     <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <div class="grip grip-ne" data-no-drag onpointerdown={(e) => startResize("ne", e)}></div>
+    <div
+      class="grip grip-ne"
+      data-no-drag
+      onpointerdown={(e) => startResize("ne", e)}
+    ></div>
     <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <div class="grip grip-nw" data-no-drag onpointerdown={(e) => startResize("nw", e)}></div>
+    <div
+      class="grip grip-nw"
+      data-no-drag
+      onpointerdown={(e) => startResize("nw", e)}
+    ></div>
     <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <div class="grip grip-se" data-no-drag onpointerdown={(e) => startResize("se", e)}></div>
+    <div
+      class="grip grip-se"
+      data-no-drag
+      onpointerdown={(e) => startResize("se", e)}
+    ></div>
     <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <div class="grip grip-sw" data-no-drag onpointerdown={(e) => startResize("sw", e)}></div>
+    <div
+      class="grip grip-sw"
+      data-no-drag
+      onpointerdown={(e) => startResize("sw", e)}
+    ></div>
   </div>
 {/if}
 
@@ -537,6 +650,15 @@
       opacity var(--duration-quick) var(--ease-smooth-out);
   }
 
+  .af.is-mode-resizing {
+    transition:
+      left var(--duration-medium) var(--ease-smooth-out),
+      top var(--duration-medium) var(--ease-smooth-out),
+      width var(--duration-medium) var(--ease-smooth-out),
+      height var(--duration-medium) var(--ease-smooth-out),
+      opacity var(--duration-quick) var(--ease-smooth-out);
+  }
+
   .af.is-shown:not(.is-expanding, .is-settling) {
     /* El PickerMenu del composer abre hacia arriba una vez terminado el morph. */
     overflow: visible;
@@ -576,6 +698,7 @@
     .af,
     .af.is-expanding,
     .af.is-settling,
+    .af.is-mode-resizing,
     .af-stage,
     .af.is-shown:not(.is-expanding) .af-stage {
       transition: none;

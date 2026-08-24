@@ -138,19 +138,18 @@ pub fn agent_sessions() -> Vec<SessionInfo> {
 /// repliega sobre la pill; midiéndola, la segunda apertura crecía hasta el
 /// tamaño de la pill.
 const BUBBLE: crate::floating::BubbleShape = crate::floating::BubbleShape {
-    w: 580,
-    h: 520,
+    w: 680,
+    h: 176,
     gap: 10,
     corner: 26,
 };
 
 /// Lo más chico que puede quedar el globo sin que el compositor se rompa.
 ///
-/// Por debajo de esto los dos grupos de la fila de abajo dejan de caber en una
-/// línea y el botón de enviar se sale del panel. Son los de antes menos el
-/// marco de la sombra, que ya no existe: 544−124 y 464−124.
+/// El lanzador usa este mínimo compacto; al entrar a las consolas el frontend
+/// aplica un mínimo mayor para que el terminal conserve un área útil.
 const BUBBLE_MIN_W: i32 = 420;
-const BUBBLE_MIN_H: i32 = 340;
+const BUBBLE_MIN_H: i32 = 176;
 
 /// La forma del globo, con el tamaño al que lo haya dejado el usuario.
 fn bubble_shape(app: &AppHandle) -> crate::floating::BubbleShape {
