@@ -37,6 +37,9 @@
   /** El tope duro lo pone Rust (MAX_CONSOLES). */
   const MAX_INSTANCES = 6;
 
+  /** La carpeta elegida sobrevive a cerrar el float y a reiniciar la app. */
+  const CWD_STORAGE_KEY = "atic.agents.startFolder";
+
   let selected = $state<string>(AGENTS[0].cli);
   let count = $state(1);
   let cwd = $state("");
@@ -93,10 +96,48 @@
 
   function setBrowsing(open: boolean) {
     browsing = open;
-    onBrowserChange?.(open);
+    // Solo en el lanzador: en la consola el float ya es grande y su tamaño lo
+    // maneja la otra rama, así que reencuadrar acá lo encogería al cerrar.
+    if (view === "setup") onBrowserChange?.(open);
+  }
+
+  function saveCwd() {
+    try {
+      localStorage.setItem(CWD_STORAGE_KEY, cwd);
+    } catch {
+      /* la carpeta sigue en memoria aunque el storage esté bloqueado */
+    }
+  }
+
+  /** Pendiente de `requestFolder`, resuelta al elegir carpeta o al cancelar. */
+  let folderResolve: ((path: string | null) => void) | null = null;
+
+  function settleFolder(path: string | null) {
+    const resolve = folderResolve;
+    folderResolve = null;
+    setBrowsing(false);
+    resolve?.(path);
+  }
+
+  /**
+   * Abre el explorador y avisa qué se eligió. La consola lo usa para retomar
+   * el hilo donde estaba (volver al menú "+" con la carpeta ya cambiada).
+   */
+  function requestFolder(): Promise<string | null> {
+    // Un explorador a la vez: si quedaba uno pendiente, se cancela.
+    folderResolve?.(null);
+    setBrowsing(true);
+    return new Promise((resolve) => {
+      folderResolve = resolve;
+    });
   }
 
   onMount(() => {
+    try {
+      cwd = localStorage.getItem(CWD_STORAGE_KEY) ?? "";
+    } catch {
+      /* sin storage: arranca en la carpeta de inicio del usuario */
+    }
     void Promise.all(
       AGENTS.map(async (agent) => {
         try {
@@ -184,7 +225,7 @@
           type="button"
           class="folder"
           title={cwd || "Carpeta de inicio del usuario"}
-          onclick={() => setBrowsing(true)}
+          onclick={() => void requestFolder()}
         >
           <Icon icon={Folder} size={15} />
           <span>{cwd.trim() || "Carpeta de inicio"}</span>
@@ -243,6 +284,8 @@
         initialTabs={seeds}
         localCwd={cwd}
         onBack={backToSetup}
+        onEmpty={resetSessions}
+        onPickFolder={requestFolder}
         {onClose}
         {onToggleMaximize}
         {onToggleMinimize}
@@ -259,9 +302,10 @@
     initialPath={cwd}
     onPick={(path) => {
       cwd = path;
-      setBrowsing(false);
+      saveCwd();
+      settleFolder(path);
     }}
-    onClose={() => setBrowsing(false)}
+    onClose={() => settleFolder(null)}
   />
 {/if}
 
@@ -295,6 +339,7 @@
     overflow: hidden;
     border-radius: inherit;
     background: var(--skin);
+    transition: opacity var(--duration-fast, 125ms) var(--ease-smooth-out, ease);
   }
 
   .console-view {
@@ -305,10 +350,16 @@
     pointer-events: none;
   }
 
+  /* Crossfade real: el lanzador se disuelve ENCIMA de la consola (que nunca
+     deja de pintar) en vez de un corte seco. `visibility` espera al fade para
+     no cortarlo; al volver, el default (sin delay) lo muestra al instante.
+     Mantiene z-index 1: con visibility:hidden ya no pinta ni recibe clics. */
   .launcher-view.is-hidden {
     visibility: hidden;
     opacity: 0;
-    z-index: 0;
+    transition:
+      opacity var(--duration-fast, 125ms) var(--ease-smooth-out, ease),
+      visibility 0s linear var(--duration-fast, 125ms);
   }
 
   /* No opacity 0, visibility:hidden ni transform: en WebView2 el canvas
@@ -355,6 +406,15 @@
     background: transparent;
     color: var(--rb-muted);
     cursor: pointer;
+    transition:
+      background-color var(--duration-fast, 125ms) var(--ease-smooth-out, ease),
+      color var(--duration-fast, 125ms) var(--ease-smooth-out, ease),
+      transform var(--duration-quick, 75ms) ease;
+  }
+
+  .close:active,
+  .reset:active {
+    transform: scale(0.96);
   }
 
   .close {
@@ -531,7 +591,9 @@
 
   .stepper button:active:not(:disabled) {
     background: color-mix(in sRGB, var(--rb-text) 12%, transparent);
-    transform: scale(0.92);
+
+    /* 0.96: bajo 0.95 el encogimiento se siente exagerado. */
+    transform: scale(0.96);
   }
 
   .stepper button:disabled {
@@ -559,7 +621,8 @@
     background: color-mix(in sRGB, var(--rb-surface-2) 62%, transparent);
     transition:
       background-color var(--duration-fast, 125ms) var(--ease-smooth-out, ease),
-      color var(--duration-fast, 125ms) var(--ease-smooth-out, ease);
+      color var(--duration-fast, 125ms) var(--ease-smooth-out, ease),
+      transform var(--duration-quick, 75ms) ease;
   }
 
   .reset:hover {
@@ -596,7 +659,7 @@
   }
 
   .launch:active:not(:disabled) {
-    transform: translateY(0) scale(0.99);
+    transform: translateY(0) scale(0.96);
   }
 
   .launch .arrow {
@@ -666,9 +729,17 @@
     .agent-logo,
     .folder,
     .stepper button,
+    .close,
     .reset,
     .launch {
       transition: none;
+      transform: none;
+    }
+
+    .stepper button:active:not(:disabled),
+    .close:active,
+    .reset:active,
+    .launch:active:not(:disabled) {
       transform: none;
     }
   }

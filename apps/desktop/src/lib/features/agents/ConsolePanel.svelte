@@ -9,6 +9,8 @@
    * lo pone Rust (`MAX_CONSOLES`), porque cada sesión es un proceso vivo.
    */
   import { onDestroy, onMount, untrack } from "svelte";
+  import { fade } from "svelte/transition";
+  import { ms, MOTION } from "$lib/motion";
   import { Terminal } from "@xterm/xterm";
   import { FitAddon } from "@xterm/addon-fit";
   import "@xterm/xterm/css/xterm.css";
@@ -46,6 +48,7 @@
   import {
     ArrowLeft,
     Activity,
+    Folder,
     Minus,
     Pin,
     Plus,
@@ -64,6 +67,8 @@
     initialTabs = null,
     onClose,
     onBack,
+    onEmpty,
+    onPickFolder,
     onBarPointerDown,
     onToggleMaximize,
     onToggleMinimize,
@@ -84,6 +89,17 @@
     onClose?: () => void;
     /** Vuelve al lanzador sin cerrar las PTYs que siguen vivas. */
     onBack?: () => void;
+    /**
+     * Se cerró la última pestaña: ya no queda nada que mostrar acá. El
+     * lanzador decide qué hacer (volver al inicio de agentes).
+     */
+    onEmpty?: () => void;
+    /**
+     * Pide al lanzador que abra el explorador de carpetas (vive allá: es un
+     * modal del float entero). Resuelve con la ruta elegida, o `null` si se
+     * canceló, así quien lo pide puede seguir el hilo donde lo dejó.
+     */
+    onPickFolder?: () => Promise<string | null>;
     /**
      * Arrastre del float desde la barra (fondo, no controles). La barra NO
      * lleva `data-no-drag` justamente para que este handler pueda tomarla.
@@ -128,6 +144,12 @@
     label: string | null;
     /** CLI a spawnear en la PTY local; `null` = shell del sistema. */
     command: string | null;
+    /**
+     * Carpeta con la que nació ESTA pestaña. Se congela al crearla: cambiar
+     * la carpeta de inicio después apunta a las consolas nuevas, y reconectar
+     * una vieja la devuelve a donde estaba, no a la carpeta de moda.
+     */
+    cwd: string | null;
   };
 
   type Box = { term: Terminal; fit: FitAddon; el: HTMLElement };
@@ -266,6 +288,32 @@
     tabs.some((t) => !t.sessionId && !pendingKeys[t.key]),
   );
   const canAddTab = $derived(tabs.length < MAX_TABS || hasIdleTab);
+
+  /**
+   * Carpeta con la que nacen las consolas nuevas. La fuente de verdad vive en
+   * el lanzador (que la persiste); acá solo se lee y se pide cambiarla.
+   */
+  const startFolder = $derived(localCwd.trim() || null);
+
+  /** Última carpeta de la ruta: en la barra no cabe el path entero. */
+  function folderName(path: string | null): string {
+    if (!path) return "Carpeta de inicio";
+    const parts = path.split(/[/\\]/).filter(Boolean);
+    return parts.at(-1) || path;
+  }
+
+  /**
+   * Abre el explorador del lanzador. `reopenAddMenu` devuelve al menú "+"
+   * después de elegir, que es de donde venía el usuario al crear un agente.
+   */
+  async function pickStartFolder(reopenAddMenu = false) {
+    if (!onPickFolder) return;
+    addMenuOpen = false;
+    cmdPromptOpen = false;
+    moreOpen = false;
+    const picked = await onPickFolder();
+    if (reopenAddMenu && picked) addMenuOpen = true;
+  }
 
   function focusVisiblePane(key: string) {
     scheduleFitVisible();
@@ -445,7 +493,23 @@
   }
 
   function onGlobalKey(event: KeyboardEvent) {
-    if (event.isComposing || !isInsideConsole(event.target)) return;
+    if (event.isComposing) return;
+    // Esc con un menú abierto lo cierra a él, no a la ventana entera: es lo
+    // que hace cualquier menú nativo. stopPropagation frena el Esc del float.
+    if (
+      event.key === "Escape" &&
+      (ctxMenu || addMenuOpen || moreOpen || shortcutsOpen)
+    ) {
+      event.preventDefault();
+      event.stopPropagation();
+      closeCtx();
+      addMenuOpen = false;
+      moreOpen = false;
+      shortcutsOpen = false;
+      cmdPromptOpen = false;
+      return;
+    }
+    if (!isInsideConsole(event.target)) return;
     // Captura antes del PTY. El handler de xterm repite esta defensa porque
     // WebView2 no siempre entrega los acordes Ctrl al `window` del overlay.
     consumeWorkspaceShortcut(event, "window");
@@ -793,7 +857,7 @@
       const openOpts = {
         kind: live.kind,
         hostId: live.kind === "ssh" ? live.hostId : null,
-        cwd: live.kind === "local" && localCwd.trim() ? localCwd.trim() : null,
+        cwd: live.kind === "local" ? live.cwd : null,
         command: live.kind === "local" ? live.command : null,
         // Piso 80×24: si el float todavía es el del lanzador, xterm cabe en
         // 5×2 y el TUI de Cursor nace muerto. SIGWINCH no lo recobra.
@@ -864,6 +928,7 @@
         : null;
     tab.label = opts.label?.trim() || null;
     tab.command = kind === "local" ? (opts.command?.trim() || null) : null;
+    tab.cwd = kind === "local" ? startFolder : null;
   }
 
   function layoutTab(
@@ -933,6 +998,7 @@
           hostId,
           label: opts.label?.trim() || null,
           command: opts.command?.trim() || null,
+          cwd: kind === "local" ? startFolder : null,
         },
       ];
     }
@@ -964,6 +1030,9 @@
     }
     paneTree = nextTree ?? (activeKey ? leaf(activeKey) : null);
     if (activeKey) focusVisiblePane(activeKey);
+    // Última pestaña cerrada: el panel vacío no ofrece nada que el inicio de
+    // agentes no haga mejor. Al final, con el estado ya asentado.
+    if (tabs.length === 0) onEmpty?.();
   }
 
   /* ─── Arrastrar una ficha del rail al área de terminales ────────────────
@@ -1771,6 +1840,20 @@
             tabindex="-1"
             onpointerdown={(e) => e.stopPropagation()}
           >
+            {#if onPickFolder}
+              <p class="add-group" aria-hidden="true">Se abre en</p>
+              <button
+                type="button"
+                class="add-item is-folder"
+                role="menuitem"
+                title={startFolder ?? "Carpeta de inicio del usuario"}
+                onclick={() => void pickStartFolder(true)}
+              >
+                <span class="add-glyph"><Icon icon={Folder} size={13} /></span>
+                <span class="add-ellipsis">{folderName(startFolder)}</span>
+                <span class="add-chevron" aria-hidden="true">›</span>
+              </button>
+            {/if}
             <p class="add-group" aria-hidden="true">Agentes</p>
             {#each AGENTS as agent (agent.cli)}
               <button
@@ -1969,6 +2052,18 @@
             {active ? tabLabels[tabs.indexOf(active)] : "Sin consolas"}
           </p>
         </div>
+        {#if onPickFolder}
+          <button
+            type="button"
+            class="folder-chip"
+            title={`Carpeta de inicio: ${startFolder ?? "carpeta del usuario"}. Las consolas nuevas se abren acá.`}
+            aria-label={`Cambiar carpeta de inicio. Actual: ${startFolder ?? "carpeta del usuario"}`}
+            onclick={() => void pickStartFolder()}
+          >
+            <Icon icon={Folder} size={12} />
+            <span>{folderName(startFolder)}</span>
+          </button>
+        {/if}
       </div>
       <div class="window-actions">
         {#if active?.kind === "ssh"}
@@ -2202,16 +2297,18 @@
         </div>
       {/if}
 
-      {#each tabs as t (t.key)}
-        {@const paneRect = paneRects.find((pane) => pane.key === t.key)}
+      <!-- `tab`, no `t`: el nombre corto sombreaba la función i18n `t` y el
+           overlay de arranque reventaba el render de todos los paneles. -->
+      {#each tabs as tab (tab.key)}
+        {@const paneRect = paneRects.find((pane) => pane.key === tab.key)}
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <div
           class="term"
-          class:is-active={t.key === activeKey}
+          class:is-active={tab.key === activeKey}
           class:is-hidden={!paneRect}
           class:is-drop={
-            clipDropKey === t.key ||
-            (!!tabDrag && tabDrag.key !== t.key && dropHint?.key === t.key)
+            clipDropKey === tab.key ||
+            (!!tabDrag && tabDrag.key !== tab.key && dropHint?.key === tab.key)
           }
           class:drop-right={!clipDropKey && dropHint?.zone === "right"}
           class:drop-down={!clipDropKey && dropHint?.zone === "down"}
@@ -2223,18 +2320,20 @@
           data-no-drag
           data-selectable
           data-console-term
-          onpointerdown={() => onTermPointerDown(t.key)}
-          oncontextmenu={(e) => onTermContextMenu(t.key, e)}
+          onpointerdown={() => onTermPointerDown(tab.key)}
+          oncontextmenu={(e) => onTermContextMenu(tab.key, e)}
           ondragover={onClipDragOver}
           ondrop={(e) => void onClipDrop(e)}
         >
-          <div class="term-host" {@attach mountTerm(t.key)}></div>
-          {#if paneLoading(t.key)}
-            {@const tabName = t.label || tabLabels[tabs.indexOf(t)] || ""}
-            <div class="term-boot" role="status">
-              {#if t.command}
+          <div class="term-host" {@attach mountTerm(tab.key)}></div>
+          {#if paneLoading(tab.key)}
+            {@const tabName = tab.label || tabLabels[tabs.indexOf(tab)] || ""}
+            <!-- Salida suave: el primer output del CLI aparece debajo mientras
+                 el velo se disuelve, en vez de un corte seco. -->
+            <div class="term-boot" role="status" out:fade={{ duration: ms(MOTION.fast) }}>
+              {#if tab.command}
                 <span class="term-boot-logo">
-                  <AgentLogo agent={t.command} size={28} />
+                  <AgentLogo agent={tab.command} size={28} />
                 </span>
               {/if}
               <p class="term-boot-title">
@@ -2378,7 +2477,12 @@
     cursor: pointer;
     transition:
       background-color var(--duration-quick, 75ms) ease,
-      color var(--duration-quick, 75ms) ease;
+      color var(--duration-quick, 75ms) ease,
+      transform var(--duration-quick, 75ms) ease;
+  }
+
+  .rail-tab:active {
+    transform: scale(0.96);
   }
 
   .rail-tab:hover:not(:disabled) {
@@ -2485,6 +2589,46 @@
     white-space: nowrap;
   }
 
+  /* Carpeta de inicio a la vista y editable sin volver al lanzador. Solo el
+     último tramo de la ruta: el path entero vive en el `title`. */
+  .folder-chip {
+    display: inline-flex;
+    min-width: 0;
+    max-width: 12rem;
+    flex: 0 1 auto;
+    align-items: center;
+    gap: 0.3rem;
+    border: 0;
+    border-radius: 0.5rem;
+    padding: 0.2rem 0.42rem;
+    background: color-mix(in sRGB, var(--rb-text) 5%, transparent);
+    color: var(--rb-muted);
+    font: inherit;
+    font-size: 0.62rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition:
+      background-color var(--duration-quick, 75ms) ease,
+      color var(--duration-quick, 75ms) ease,
+      transform var(--duration-quick, 75ms) ease;
+  }
+
+  .folder-chip span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .folder-chip:hover {
+    background: color-mix(in sRGB, var(--rb-text) 10%, transparent);
+    color: var(--rb-text);
+  }
+
+  .folder-chip:active {
+    transform: scale(0.96);
+  }
+
   .bar {
     display: grid;
     flex-shrink: 0;
@@ -2568,6 +2712,28 @@
     padding: 0.32rem;
     background: color-mix(in srgb, var(--rb-surface) 96%, var(--rb-bg0, #0f1115));
     box-shadow: 0 8px 22px color-mix(in srgb, #000 32%, transparent);
+  }
+
+  /* Menús: nacen del gatillo con un beat corto. La salida es instantánea,
+     igual que un menú nativo. */
+  .more-pop,
+  .shortcuts-pop {
+    transform-origin: 100% 0;
+    animation: pop-in-down var(--duration-fast) var(--ease-smooth-out);
+  }
+
+  @keyframes pop-in-down {
+    from {
+      opacity: 0;
+      transform: translateY(-4px) scale(0.98);
+    }
+  }
+
+  @keyframes pop-in-up {
+    from {
+      opacity: 0;
+      transform: translateY(4px) scale(0.98);
+    }
   }
 
   .more-item {
@@ -2674,12 +2840,17 @@
     transition:
       background-color var(--duration-quick, 75ms) ease,
       color var(--duration-quick, 75ms) ease,
-      border-color var(--duration-quick, 75ms) ease;
+      border-color var(--duration-quick, 75ms) ease,
+      transform var(--duration-quick, 75ms) ease;
   }
 
   .chip:hover:not(:disabled) {
     color: var(--rb-text);
     border-color: color-mix(in srgb, var(--rb-text) 22%, transparent);
+  }
+
+  .chip:active:not(:disabled) {
+    transform: scale(0.96);
   }
 
   .chip.is-go {
@@ -2705,12 +2876,17 @@
     cursor: pointer;
     transition:
       background-color var(--duration-quick, 75ms) ease,
-      color var(--duration-quick, 75ms) ease;
+      color var(--duration-quick, 75ms) ease,
+      transform var(--duration-quick, 75ms) ease;
   }
 
   .icon-btn:hover {
     color: var(--rb-text);
     background: color-mix(in srgb, var(--rb-record) 16%, transparent);
+  }
+
+  .icon-btn:active {
+    transform: scale(0.96);
   }
 
   .err {
@@ -2723,6 +2899,7 @@
     color: var(--rb-record);
     font-size: 0.68rem;
     line-height: 1.35;
+    animation: pop-in-down var(--duration-fast) var(--ease-smooth-out);
   }
 
   .err-text {
@@ -2850,6 +3027,13 @@
     padding: 1rem;
     background: color-mix(in srgb, var(--rb-bg0) 92%, transparent);
     pointer-events: none;
+    animation: term-boot-in var(--duration-fast) var(--ease-smooth-out);
+  }
+
+  @keyframes term-boot-in {
+    from {
+      opacity: 0;
+    }
   }
 
   .term-boot-logo {
@@ -2899,6 +3083,24 @@
       border-top-color: color-mix(in srgb, var(--rb-muted) 32%, transparent);
       opacity: 0.7;
     }
+
+    .more-pop,
+    .shortcuts-pop,
+    .add-pop,
+    .ctx,
+    .err,
+    .term-boot {
+      animation: none;
+    }
+
+    .icon-btn:active,
+    .rail-tab:active,
+    .tab-add:active,
+    .chip:active,
+    .folder-chip:active,
+    .console-desk .back-btn:active {
+      transform: none;
+    }
   }
 
   .rail-tab.is-dragging {
@@ -2945,6 +3147,10 @@
     padding: 0.2rem;
     background: color-mix(in srgb, var(--rb-surface) 94%, #0f1115);
     box-shadow: 0 8px 24px color-mix(in srgb, #000 35%, transparent);
+
+    /* Más corto que los popovers: un menú contextual tiene que sentirse ya. */
+    transform-origin: 0 0;
+    animation: pop-in-down var(--duration-quick) var(--ease-smooth-out);
   }
 
   .ctx-item {
@@ -2987,7 +3193,12 @@
     transition:
       background-color var(--duration-quick, 75ms) ease,
       color var(--duration-quick, 75ms) ease,
-      opacity var(--duration-quick, 75ms) ease;
+      opacity var(--duration-quick, 75ms) ease,
+      transform var(--duration-quick, 75ms) ease;
+  }
+
+  .tab-add:active:not(:disabled) {
+    transform: scale(0.96);
   }
 
   /* Se revela al pasar por encima de la ficha: una X siempre visible en cada
@@ -3000,6 +3211,14 @@
     opacity: 0;
     background: var(--rb-surface);
     box-shadow: 0 1px 4px color-mix(in srgb, #000 25%, transparent);
+    transition: opacity var(--duration-quick, 75ms) ease;
+  }
+
+  /* La X visible es diminuta; el área de clic no tiene por qué serlo. */
+  .tab-x::before {
+    position: absolute;
+    inset: -0.3rem;
+    content: "";
   }
 
   .rail-slot:hover .tab-x,
@@ -3040,6 +3259,10 @@
     overflow-y: auto;
     background: color-mix(in sRGB, var(--rb-surface) 96%, var(--rb-bg0));
     box-shadow: 0 8px 22px color-mix(in sRGB, rgb(0 0 0) 32%, transparent);
+
+    /* Abre hacia arriba: emerge desde el botón "+". */
+    transform-origin: 0 100%;
+    animation: pop-in-up var(--duration-fast) var(--ease-smooth-out);
   }
 
   .add-item {
@@ -3082,6 +3305,18 @@
     font-size: 0.48rem;
     font-weight: 700;
     letter-spacing: 0.04em;
+  }
+
+  .add-item.is-folder {
+    color: var(--rb-muted);
+  }
+
+  .add-chevron {
+    margin-left: auto;
+    padding-left: 0.3rem;
+    color: var(--rb-faint);
+    font-size: 0.85rem;
+    line-height: 1;
   }
 
   .add-group {
@@ -3314,7 +3549,12 @@
     transition:
       color var(--duration-quick, 75ms) ease,
       background-color var(--duration-quick, 75ms) ease,
-      border-color var(--duration-quick, 75ms) ease;
+      border-color var(--duration-quick, 75ms) ease,
+      transform var(--duration-quick, 75ms) ease;
+  }
+
+  .console-desk .back-btn:active {
+    transform: scale(0.96);
   }
 
   .console-desk .back-btn {
