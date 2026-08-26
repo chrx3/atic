@@ -72,6 +72,7 @@ import {
   Highlighter,
   Save,
   Download,
+  EllipsisVertical,
   PanelRightOpen,
   PanelBottomOpen,
 } from "lucide";
@@ -191,6 +192,8 @@ export {
   Highlighter,
   Save,
   Download,
+  EllipsisVertical,
   PanelRightOpen,
   PanelBottomOpen,
+  Keyboard,
 };

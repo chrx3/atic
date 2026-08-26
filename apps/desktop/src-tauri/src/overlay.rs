@@ -615,14 +615,31 @@ fn sync_overlay_to_displays(app: &AppHandle) {
         crate::webview_tweaks::sync_controller_bounds(&window);
         return;
     }
+    // DPI mixto: `GetWindowRect` en DIP nunca iguala `topo` físico con
+    // `scale_factor=1`. Cada `SetWindowPos` dispara `WM_DISPLAYCHANGE` y el
+    // overlay se reencuadra encima de `main` hasta dejar el escritorio muerto.
+    if same && COVER_TRIES.load(Ordering::Relaxed) >= 8 {
+        COVER_RETRY.store(false, Ordering::Relaxed);
+        cover_virtual_screen(&window);
+        crate::webview_tweaks::sync_controller_bounds(&window);
+        return;
+    }
     if !same {
         COVER_TRIES.store(0, Ordering::Relaxed);
     }
+    let outer = window
+        .outer_position()
+        .ok()
+        .zip(window.outer_size().ok())
+        .map(|(p, s)| format!("{},{} {}x{}", p.x, p.y, s.width, s.height))
+        .unwrap_or_else(|| "?".into());
     tracing::info!(
         target: "overlay",
         monitores = topo.n,
         same,
         covers,
+        scale,
+        hwnd_rect = %outer,
         "escritorio virtual cambió; overlay a {},{} {}x{}",
         topo.x,
         topo.y,
@@ -684,8 +701,34 @@ fn overlay_covers_topo(window: &tauri::WebviewWindow, topo: &DisplayTopo, scale:
     }
     let w = outer.right - outer.left;
     let h = outer.bottom - outer.top;
-    extent_matches(outer.left, topo.x, scale)
-        && extent_matches(outer.top, topo.y, scale)
+    if rect_matches_topo(outer.left, outer.top, w, h, topo, scale) {
+        return true;
+    }
+    // `scale_factor` del HWND que cubre dos monitores suele ser 1.0, y
+    // `GetWindowRect` viene en DIP del monitor al 125%. Probar el factor
+    // real (físico/CSS) y la escala más alta de los monitores.
+    let css_w = f64::from_bits(CSS_VIEW_W_BITS.load(Ordering::Acquire));
+    let phys_w = f64::from(OVERLAY_PHYS_W.load(Ordering::Acquire));
+    if css_w > 1.0 && phys_w > 1.0 {
+        let inferred = phys_w / css_w;
+        if rect_matches_topo(outer.left, outer.top, w, h, topo, inferred) {
+            return true;
+        }
+    }
+    let max_mon = atic_capture::monitors::enumerate()
+        .into_iter()
+        .map(|m| m.scale)
+        .fold(1.0_f64, f64::max);
+    if (max_mon - scale).abs() > 0.02 {
+        return rect_matches_topo(outer.left, outer.top, w, h, topo, max_mon);
+    }
+    false
+}
+
+#[cfg(windows)]
+fn rect_matches_topo(x: i32, y: i32, w: i32, h: i32, topo: &DisplayTopo, scale: f64) -> bool {
+    extent_matches(x, topo.x, scale)
+        && extent_matches(y, topo.y, scale)
         && extent_matches(w, topo.w as i32, scale)
         && extent_matches(h, topo.h as i32, scale)
 }
@@ -1175,12 +1218,21 @@ pub fn setup(app: &AppHandle) {
                 let _ = placed_tx.send(());
             });
             let _ = placed_rx.recv_timeout(std::time::Duration::from_secs(5));
-            for _ in 0..80 {
+            // 30 s y no 8: con `vite dev` el frontend tarda ~8 s en reportar y
+            // el timeout corto destruía una ventana SANA. La recreada salía
+            // recortada (covers=false) con los hit-rects corridos: pill y
+            // escritorio muertos a los segundos de abrir.
+            for _ in 0..300 {
                 let css_w = f64::from_bits(CSS_VIEW_W_BITS.load(Ordering::Acquire));
                 if css_w > 1.0 {
                     return;
                 }
                 std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            // Último chequeo antes de destruir: el reporte pudo llegar entre
+            // la última muestra y este punto (así se perdía por 78 ms).
+            if f64::from_bits(CSS_VIEW_W_BITS.load(Ordering::Acquire)) > 1.0 {
+                return;
             }
             tracing::warn!(
                 target: "overlay",
@@ -1534,6 +1586,18 @@ fn cursor_overlay_css() -> Option<(f64, f64)> {
     }
     let (cx, cy) = crate::floating::cursor_position()?;
     overlay_css_from_physical(cx, cy)
+}
+
+/// Cursor en CSS del overlay, o `None` fuera de Windows / sin HWND.
+pub fn cursor_css_point() -> Option<(f64, f64)> {
+    #[cfg(windows)]
+    {
+        cursor_overlay_css()
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
 }
 
 /// Punto de pantalla (p. ej. `lParam` de `WM_NCHITTEST`) → CSS del overlay.
@@ -1967,9 +2031,8 @@ pub fn to_local(app: &AppHandle, r: crate::floating::Rect) -> Option<OverlayRect
 /// `VK_LMENU` con `SendInput`, y esta app también usa `SendInput` para el
 /// Ctrl+V del pegado. Con `force_foreground` no se inyecta ninguna tecla.
 ///
-/// El bit de click-through no hace falta reponerlo: `set_focusable` reescribe
-/// el ex-style entero desde las banderas de `tao`, y el de cursor es una de
-/// ellas.
+/// `set_focusable` reescribe el ex-style y pisa `ignore_cursor_events`.
+/// Después hay que rearmar: si no, el overlay queda opaco a pantalla completa.
 #[tauri::command]
 pub fn set_overlay_text_mode(app: AppHandle, on: bool) {
     #[cfg(windows)]
@@ -2015,6 +2078,10 @@ pub fn set_overlay_text_mode(app: AppHandle, on: bool) {
             // Volver a ser inactivable pierde el sitio en la pila de topmost.
             raise(&app);
         }
+        // `set_focusable` reescribe el ex-style; reconciliar el armado con el
+        // cursor real. Arma solo si está sobre un hit-rect, y si no, repone el
+        // click-through — sin forzar estados que rompan el clic siguiente.
+        reevaluate_arm();
     }
     #[cfg(not(windows))]
     {

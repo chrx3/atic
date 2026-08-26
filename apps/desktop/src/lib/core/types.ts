@@ -880,10 +880,13 @@ export interface BubbleOpen {
   h: number;
 }
 
-/** Lo que se inserta en el compositor cuando el clipboard pega con la consola
- *  de agentes abierta. */
+/** Lo que se inserta en el compositor o la consola cuando el clipboard
+ *  pega con agentes abierto. */
 export interface AgentsComposerInsert {
   kind: ClipboardKind;
   text?: string | null;
   imagePath?: string | null;
+  /** Cursor en CSS del overlay al soltar; la consola elige el panel de debajo. */
+  x?: number | null;
+  y?: number | null;
 }

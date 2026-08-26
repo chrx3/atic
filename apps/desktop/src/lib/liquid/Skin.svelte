@@ -85,8 +85,17 @@
     >
       <!-- `evenodd` porque los lazos del contorno no salen orientados de forma
            consistente: con la regla por defecto, una isla interior se rellenaría
-           en vez de quedar hueca. -->
-      <path d={path.d} fill={color} fill-rule="evenodd" />
+           en vez de quedar hueca. El stroke del mismo color no es un borde:
+           redondea el aliasing de marching squares (~celda de 6 px). -->
+      <path
+        d={path.d}
+        fill={color}
+        fill-rule="evenodd"
+        stroke={color}
+        stroke-width="1.25"
+        stroke-linejoin="round"
+        stroke-linecap="round"
+      />
     </svg>
   </div>
 {/if}

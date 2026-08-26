@@ -30,7 +30,7 @@
   import type { Rect } from "$lib/liquid/geometry";
   import { RectTracker } from "$lib/liquid/measure.svelte";
   import { gapBetween, pillShape } from "$lib/liquid/geometry";
-  import { REACH } from "$lib/liquid/constants";
+  import { INFLUENCE, REACH } from "$lib/liquid/constants";
   import ToolIcon from "$lib/ToolIcon.svelte";
   import { agents } from "$lib/agentSessions.svelte";
   import { presence } from "$lib/agentPresence.svelte";
@@ -72,6 +72,7 @@
     dockAxis,
     dockCandidate,
     dockedEdgeAt,
+    edgeWallsFor,
     shouldUndock,
     type DockEdge,
   } from "$surfaces/overlay/edgeDock";
@@ -90,6 +91,7 @@
     showAgentsWindow,
     agentPresenceFocus,
     agentPresenceBind,
+    revealAgentsConsole,
   } from "$ipc/agents";
   import {
     clipboardAlwaysOnTop,
@@ -403,6 +405,14 @@
   onMount(() => () => tracker.stop());
 
   /**
+   * Las work areas viven en una closure del escenario (TS puro, sin `$state`):
+   * leerlas dentro de un `$derived` no crea dependencia reactiva. La época
+   * sube cada vez que `loadAreas()` recarga y despierta los deriveds de abajo.
+   */
+  let areasEpoch = $state(0);
+  $effect(() => stage.onAreasChanged(() => (areasEpoch += 1)));
+
+  /**
    * Las siluetas medidas, como formas del campo.
    *
    * Los radios se repiten acá porque el campo los necesita como número y el
@@ -424,6 +434,22 @@
       x: rect.x + o.x,
       y: rect.y + o.y,
     });
+    // Las work areas pueden llegar después del primer paint.
+    void areasEpoch;
+    const wallFor = (blob?: Rect) => {
+      if (!blob) return [];
+      const pill = at(blob);
+      const areas = stage.workAreas();
+      if (areas.length === 0) return [];
+      // Acoplada: el canto del dock manda. Si hay otro canto cerca (esquina),
+      // `edgeWallsFor` emite las dos paredes y el dintel llega al vértice.
+      // Sin acople, el techo gana el empate para que el menisco no tire a un
+      // costado cuando está igual de pegada arriba que a la derecha.
+      return edgeWallsFor(pill, areas, {
+        maxGap: INFLUENCE,
+        prefer: surface === "edge" && dock ? dock.edge : null,
+      }).map(pillShape);
+    };
     // Acoplada: la silueta es la isla, en los dos estados.
     //
     // Se mide un elemento propio que llena la caja, así que sigue la
@@ -435,6 +461,7 @@
       const shapes = [];
       if (r.island) shapes.push(pillShape(at(r.island)));
       if (r.live) shapes.push(pillShape(at(r.live)));
+      shapes.push(...wallFor(r.island));
       return shapes;
     }
 
@@ -450,6 +477,7 @@
     if (r.bar && (!r.tail || discJoinsTail(r.bar, r.tail))) {
       shapes.push(pillShape(at(r.bar)));
     }
+    shapes.push(...wallFor(r.island ?? r.bar));
     return shapes;
   });
 
@@ -599,14 +627,6 @@
   });
 
   /**
-   * Las work areas viven en una closure del escenario (TS puro, sin `$state`):
-   * leerlas dentro de un `$derived` no crea dependencia reactiva. La época
-   * sube cada vez que `loadAreas()` recarga y despierta los deriveds de abajo.
-   */
-  let areasEpoch = $state(0);
-  $effect(() => stage.onAreasChanged(() => (areasEpoch += 1)));
-
-  /**
    * Lado del chip de consola: opuesto al borde horizontal más cercano.
    * Usa el centro de la caja de la pill (no solo el disco) para no saltar
    * al expandirse el aviso.
@@ -623,7 +643,11 @@
 
   async function openAgentsConsole() {
     try {
-      await showAgentsWindow();
+      const visible = await agentsWindowVisible();
+      // `show_agents_window` es un toggle: si el lanzador ya está a la vista,
+      // no cerrarlo. Pedir la consola viva y, si hacía falta, abrir el float.
+      revealAgentsConsole();
+      if (!visible) await showAgentsWindow();
       agentsConsoleOpen = true;
     } catch (err) {
       console.warn("abrir consola de agentes", err);
@@ -1461,8 +1485,11 @@
     if (slot) {
       await stage.loadAreas();
       const areas = stage.workAreas();
-      const cursor = await activeAnchorPoint();
-      const anchor = cursor ?? { x: at.x + size.w / 2, y: at.y + size.h / 2 };
+      const pillCenter = { x: at.x + size.w / 2, y: at.y + size.h / 2 };
+      // Clic en la rueda/pill: quedarse en ESTA pantalla. El atajo sí vuela
+      // al mouse/foco (otra app puede estar en el otro monitor).
+      const cursor = opts.anchored ? null : await activeAnchorPoint();
+      const anchor = cursor ?? pillCenter;
       const dest = resolveSlot(slot, areas, size, anchor);
       if (Math.hypot(dest.x - at.x, dest.y - at.y) < 2) return;
       await flyTo(dest);
@@ -2143,9 +2170,6 @@
 
       <div
         class="p-shell"
-        class:is-working={agentWorking && activity === "idle" && !hasQueue}
-        class:is-ready={agentReady && activity === "idle" && !hasQueue}
-        class:is-waiting={agents.waiting > 0 && activity === "idle" && !hasQueue}
       >
         <div
           class="p-bar"
@@ -3144,21 +3168,10 @@
     white-space: nowrap;
   }
 
-  /* Pastilla viva mientras el agente trabaja (anillo + brillo suave). */
-  .p-shell.is-working {
-    animation: p-shell-alive 2.2s linear infinite;
-  }
-
+  /* Pastilla viva mientras el agente trabaja: brillo del fill, no anillo.
+     Un inset se leía como borde y cortaba el cuello fundido con el float. */
   .p-liquid.is-working {
     animation: p-liquid-alive 2.2s linear infinite;
-  }
-
-  .p-shell.is-ready {
-    box-shadow: inset 0 0 0 1.5px color-mix(in sRGB, var(--ok) 40%, transparent);
-  }
-
-  .p-shell.is-waiting {
-    box-shadow: inset 0 0 0 1.5px color-mix(in sRGB, var(--rec) 45%, transparent);
   }
 
   /*
@@ -3193,17 +3206,6 @@
       opacity: 1;
       transform: translateY(0);
       filter: blur(0);
-    }
-  }
-
-  @keyframes p-shell-alive {
-    0%,
-    100% {
-      box-shadow: inset 0 0 0 0 transparent;
-    }
-
-    50% {
-      box-shadow: inset 0 0 0 1.5px color-mix(in sRGB, var(--accent) 42%, transparent);
     }
   }
 
@@ -3254,10 +3256,6 @@
 
     .p-agent.is-working {
       opacity: 0.8;
-    }
-
-    .p-shell.is-working {
-      box-shadow: inset 0 0 0 1px color-mix(in sRGB, var(--accent) 35%, transparent);
     }
   }
 </style>

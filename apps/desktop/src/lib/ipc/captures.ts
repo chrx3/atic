@@ -23,6 +23,9 @@ export const copyCaptureImage = (path: string) =>
 export const revealCapture = (path: string) => invoke<void>("reveal_capture", { path });
 export const activateCapture = (path: string) =>
   invoke<void>("activate_capture", { path });
+/** Abre un PNG de capturas o del historial con el visor del sistema. */
+export const openManagedImage = (path: string) =>
+  invoke<void>("open_managed_image", { path });
 export const cleanupCapturesNow = () => invoke<number>("cleanup_captures_now");
 
 // --- OCR ---

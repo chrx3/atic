@@ -164,10 +164,12 @@ fn target_work_area() -> ((i32, i32, u32, u32), f64) {
     ((0, 0, 1280, 720), 1.0)
 }
 
-/// Abre el editor sobre una captura del directorio de capturas.
+/// Abre el editor sobre una captura, una imagen del portapapeles o un frame
+/// de la pizarra.
 #[tauri::command]
 pub fn open_annotator(app: AppHandle, state: State<AppState>, path: String) -> Result<(), String> {
-    open_annotator_path(&app, &state.dirs.captures_dir(), &path)
+    let target = resolve_source(&state, &path)?;
+    open_annotator_file(&app, &target)
 }
 
 /// La misma apertura, para quien ya tiene el `AppHandle` y el directorio.
@@ -177,6 +179,10 @@ pub fn open_annotator(app: AppHandle, state: State<AppState>, path: String) -> R
 /// llamador ya tiene en la mano.
 pub fn open_annotator_path(app: &AppHandle, captures_dir: &Path, path: &str) -> Result<(), String> {
     let target = crate::capture::ensure_capture_in_dir(captures_dir, Path::new(path))?;
+    open_annotator_file(app, &target)
+}
+
+fn open_annotator_file(app: &AppHandle, target: &Path) -> Result<(), String> {
     let (width, height) = png_size(&target)?;
 
     let Some(window) = app.get_webview_window(ANNOTATE_LABEL) else {
@@ -413,11 +419,14 @@ pub fn annotation_image(state: State<AppState>, path: String) -> Result<String, 
     Ok(format!("data:image/png;base64,{data}"))
 }
 
-/// Deja pasar solo las dos carpetas de las que el editor puede leer: las
-/// capturas del usuario y los frames congelados de la pizarra.
+/// Deja pasar las carpetas de las que el editor puede leer: capturas, frames
+/// de la pizarra e imágenes del historial de portapapeles.
 fn resolve_source(state: &State<AppState>, path: &str) -> Result<std::path::PathBuf, String> {
     let target = Path::new(path);
     if let Ok(ok) = crate::capture::ensure_capture_in_dir(&state.dirs.captures_dir(), target) {
+        return Ok(ok);
+    }
+    if let Ok(ok) = crate::capture::ensure_capture_in_dir(&state.dirs.clipboard_dir(), target) {
         return Ok(ok);
     }
     crate::capture::ensure_capture_in_dir(&state.dirs.overlay_frames_dir(), target)

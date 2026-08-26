@@ -5,7 +5,7 @@
 //! `local` ya no reemplaza a la anterior. El tope es defensivo, no de diseño
 //! (cada sesión es un proceso vivo); quien las presenta decide cómo agruparlas.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -127,24 +127,90 @@ fn apply_terminal_color_env(cmd: &mut CommandBuilder) {
     cmd.env("FORCE_COLOR", "1");
 }
 
-/// Comando de agente CLI (`claude`, `opencode`…) resuelto a ejecutable.
+fn quote_cmd(s: &str) -> String {
+    if s.bytes()
+        .any(|b| b.is_ascii_whitespace() || matches!(b, b'"' | b'&' | b'^' | b'%'))
+    {
+        format!("\"{}\"", s.replace('"', "\\\""))
+    } else {
+        s.to_string()
+    }
+}
+
+/// Comando de agente CLI (`claude`, `opencode`…) dentro de una shell que
+/// sobrevive.
 ///
-/// Reusa `exe::launcher`: resuelve el nombre en el PATH y enruta los shims de
-/// npm (`.cmd`/`.bat`) por `cmd /C`, que es justo lo que `CreateProcess` no
-/// sabe hacer solo. El primer token es el programa; el resto, argumentos.
-/// Cuando el agente sale, la PTY termina — la pestaña queda con su
-/// `[sesión terminada]`, igual que una shell cerrada.
+/// Si el PTY *es* el CLI, al salir —o si el shim de npm arranca y se despega—
+/// la pestaña muere y parece que “se cerró”. `cmd /K` espera al TUI y, si el
+/// proceso termina, deja el prompt.
 fn build_local_command(command: &str) -> Result<CommandBuilder, String> {
     let mut parts = command.split_whitespace();
     let program = parts
         .next()
         .ok_or_else(|| "Comando de consola vacío.".to_string())?;
-    let (exe, prefix) = super::exe::launcher(program)
-        .ok_or_else(|| format!("No se encontró `{program}` en el PATH."))?;
-    let mut cmd = CommandBuilder::new(exe);
-    cmd.args(&prefix);
-    cmd.args(parts);
-    Ok(cmd)
+    let extra: Vec<&str> = parts.collect();
+    let Some((exe, prefix)) = super::exe::launcher(program) else {
+        // No está en el PATH: puede ser una función o alias del perfil del
+        // usuario (p. ej. `dashboard`). La línea completa corre dentro de su
+        // shell, que es quien la conoce.
+        return Ok(build_shell_line(command));
+    };
+
+    #[cfg(windows)]
+    {
+        let invoked = if prefix.len() >= 2 && prefix[0].eq_ignore_ascii_case("/C") {
+            prefix[1].clone()
+        } else {
+            exe.display().to_string()
+        };
+        let mut line = quote_cmd(&invoked);
+        for arg in extra {
+            line.push(' ');
+            line.push_str(&quote_cmd(arg));
+        }
+        let mut cmd = CommandBuilder::new("cmd.exe");
+        cmd.arg("/K");
+        cmd.arg(line);
+        Ok(cmd)
+    }
+
+    #[cfg(not(windows))]
+    {
+        let mut cmd = CommandBuilder::new(exe);
+        cmd.args(&prefix);
+        cmd.args(extra);
+        Ok(cmd)
+    }
+}
+
+/// Línea arbitraria dentro de la shell del usuario, con el prompt vivo al
+/// terminar (PowerShell carga el perfil, así los alias/funciones existen).
+fn build_shell_line(line: &str) -> CommandBuilder {
+    #[cfg(windows)]
+    {
+        let sysroot = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
+        let ps = PathBuf::from(&sysroot).join(r"System32\WindowsPowerShell\v1.0\powershell.exe");
+        if ps.is_file() {
+            let mut cmd = CommandBuilder::new(&ps);
+            cmd.arg("-NoLogo");
+            cmd.arg("-NoExit");
+            cmd.arg("-Command");
+            cmd.arg(line);
+            return cmd;
+        }
+        let mut cmd = CommandBuilder::new("cmd.exe");
+        cmd.arg("/K");
+        cmd.arg(line);
+        cmd
+    }
+    #[cfg(not(windows))]
+    {
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".into());
+        let mut cmd = CommandBuilder::new(shell);
+        cmd.arg("-ic");
+        cmd.arg(line);
+        cmd
+    }
 }
 
 fn build_ssh_builder(host: &SshHost) -> Result<(CommandBuilder, Option<AskpassGuard>), String> {
@@ -265,7 +331,7 @@ pub fn console_open(
     let live_count = with_map(|map| map.len());
     if live_count >= MAX_CONSOLES {
         return Err(format!(
-            "Ya hay {MAX_CONSOLES} consolas abiertas. Cerrá alguna para abrir otra."
+            "Ya hay {MAX_CONSOLES} consolas abiertas. Cierra alguna para abrir otra."
         ));
     }
 
@@ -383,4 +449,21 @@ pub fn console_resize(session: String, cols: u16, rows: u16) -> Result<(), Strin
 pub fn console_close(session: String) -> Result<(), String> {
     close_session(&session);
     Ok(())
+}
+
+/// Mata PTYs cuyo id la vista ya no reconoce (pestaña cerrada a mitad de
+/// `console_open`, `onDestroy` que no alcanzó a esperar, etc.).
+#[tauri::command]
+pub fn console_gc(keep: Vec<String>) -> Result<u32, String> {
+    let keep: HashSet<String> = keep.into_iter().collect();
+    let stale: Vec<String> = with_map(|map| {
+        map.keys()
+            .filter(|id| !keep.contains(*id))
+            .cloned()
+            .collect()
+    });
+    for id in &stale {
+        close_session(id);
+    }
+    Ok(stale.len() as u32)
 }

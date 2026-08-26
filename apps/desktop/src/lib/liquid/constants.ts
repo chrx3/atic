@@ -27,14 +27,8 @@ export const BLEND = 24;
  */
 export const CELL = 6;
 
-/**
- * Celda más gruesa si hay que remeshear a 60 Hz (cuello que se estira
- * durante un drag). El traslado rígido no la usa: conserva el path fino.
- */
-export const CELL_DRAG = 12;
-
 /** Pasadas de suavizado sobre el contorno ya trazado. */
-export const SMOOTH = 3;
+export const SMOOTH = 4;
 
 /** El hueco más grande que el cuello todavía cruza, con `BLEND`. */
 export const REACH = sminReach(BLEND);

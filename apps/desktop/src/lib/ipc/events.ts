@@ -32,7 +32,10 @@ import type {
 } from "$core/types";
 
 export type AgentsWorkspaceShortcut =
-  "split-right" | "split-down" | "new-console" | "close-console";
+  | "split-right"
+  | "split-down"
+  | "new-console"
+  | "close-console";
 
 export interface AticEvents {
   // Grabación

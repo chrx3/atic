@@ -221,14 +221,15 @@ textarea,
    * `--skin` es el color de toda superficie que se funde. Tiene que ser UNO
    * solo por grupo fundido: el cuello lo pinta el difuminado, que promedia lo
    * que tenga cerca, así que dos tonos distintos dejan una franja sucia justo
-   * en la unión.
+   * en la unión. Opaco: un mix al 97% dejaba un hairline donde el chrome
+   * rectangular se sentaba sobre el blob.
    *
    * `--goo-grow` es lo que el endurecido del filtro le agrega a la silueta por
    * lado. Quien dibuje una forma de tamaño exacto tiene que restarle el doble
    * antes. La deducción y el valor en JS viven en `$lib/GooFilter.svelte`
    * (`GOO_GROW`, `preFilter`); si cambia σ, cambian los dos.
    */
-  --skin: color-mix(in srgb, var(--rb-surface) 97%, transparent);
+  --skin: var(--rb-surface);
   --goo-grow: 1.68px;
 
   --rb-radius: 14px;
