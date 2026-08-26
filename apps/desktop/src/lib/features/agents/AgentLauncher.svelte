@@ -5,6 +5,9 @@
   import AgentLogo from "./AgentLogo.svelte";
   import Icon from "$ui/Icon.svelte";
   import { Folder, SquareTerminal, X } from "$lib/icons";
+  import { onMount } from "svelte";
+  import { AGENTS_REVEAL_CONSOLE, cliOnPath } from "$ipc/agents";
+  import { AGENTS } from "./agentCatalog";
 
   type LauncherView = "setup" | "console";
 
@@ -13,21 +16,23 @@
     onClose,
     onViewChange,
     onBrowserChange,
+    onToggleMaximize,
+    onToggleMinimize,
+    maximized = false,
+    minimized = false,
+    shown = false,
   }: {
     onHeaderPointerDown?: (e: PointerEvent) => void;
     onClose?: () => void;
     onViewChange?: (view: LauncherView) => void;
     onBrowserChange?: (open: boolean) => void;
+    onToggleMaximize?: () => void;
+    onToggleMinimize?: () => void;
+    maximized?: boolean;
+    minimized?: boolean;
+    /** El float está a la vista: si hay consolas vivas, mostrarlas. */
+    shown?: boolean;
   } = $props();
-
-  type AgentDef = { cli: string; name: string };
-
-  const AGENTS: AgentDef[] = [
-    { cli: "claude", name: "Claude Code" },
-    { cli: "opencode", name: "OpenCode" },
-    { cli: "codex", name: "Codex" },
-    { cli: "cursor-agent", name: "Cursor" },
-  ];
 
   /** El tope duro lo pone Rust (MAX_CONSOLES). */
   const MAX_INSTANCES = 6;
@@ -38,8 +43,11 @@
   let browsing = $state(false);
   let view = $state<LauncherView>("setup");
   let hasConsole = $state(false);
+  let onPath = $state<Record<string, boolean>>({});
+  let pathReady = $state(false);
 
   const chosen = $derived(AGENTS.find((agent) => agent.cli === selected) ?? AGENTS[0]);
+  const missingCli = $derived(pathReady && onPath[selected] === false);
   const seeds = $derived(
     Array.from({ length: Math.max(1, Math.min(count, MAX_INSTANCES)) }, () => ({
       kind: "local" as const,
@@ -56,7 +64,19 @@
     onViewChange?.(next);
   }
 
+  function revealLiveConsole() {
+    if (hasConsole) showView("console");
+  }
+
+  let wasShown = false;
+  $effect(() => {
+    const justOpened = shown && !wasShown;
+    wasShown = shown;
+    if (justOpened) revealLiveConsole();
+  });
+
   function launch() {
+    if (missingCli) return;
     if (!hasConsole) hasConsole = true;
     showView("console");
   }
@@ -75,6 +95,24 @@
     browsing = open;
     onBrowserChange?.(open);
   }
+
+  onMount(() => {
+    void Promise.all(
+      AGENTS.map(async (agent) => {
+        try {
+          return [agent.cli, await cliOnPath(agent.cli)] as const;
+        } catch {
+          return [agent.cli, true] as const;
+        }
+      }),
+    ).then((rows) => {
+      onPath = Object.fromEntries(rows);
+      pathReady = true;
+    });
+    const onReveal = () => revealLiveConsole();
+    window.addEventListener(AGENTS_REVEAL_CONSOLE, onReveal);
+    return () => window.removeEventListener(AGENTS_REVEAL_CONSOLE, onReveal);
+  });
 </script>
 
 <div class="agent-views">
@@ -105,8 +143,8 @@
         <button
           type="button"
           class="close"
-          aria-label="Cerrar"
-          title="Cerrar"
+          aria-label="Esconder ventana"
+          title="Esconder ventana. Las consolas siguen corriendo."
           onclick={onClose}
         >
           <Icon icon={X} size={13} />
@@ -121,10 +159,19 @@
             type="button"
             class="agent-option"
             class:is-on={selected === agent.cli}
+            class:is-missing={pathReady && onPath[agent.cli] === false}
             role="radio"
             aria-checked={selected === agent.cli}
-            aria-label={agent.name}
-            title={agent.name}
+            aria-label={
+              pathReady && onPath[agent.cli] === false
+                ? `${agent.name} (no está en el PATH)`
+                : agent.name
+            }
+            title={
+              pathReady && onPath[agent.cli] === false
+                ? `${agent.name} no está en el PATH`
+                : agent.name
+            }
             onclick={() => (selected = agent.cli)}
           >
             <span class="agent-logo"><AgentLogo agent={agent.cli} size={22} /></span>
@@ -168,17 +215,17 @@
           <button
             type="button"
             class="reset"
-            aria-label="Cerrar sesiones activas"
-            title="Cerrar sesiones activas"
+            aria-label="Cerrar y matar las consolas"
+            title="Cierra las consolas y mata los procesos"
             onclick={resetSessions}
           >
             <Icon icon={X} size={13} />
           </button>
         {/if}
 
-        <button type="button" class="launch" onclick={launch}>
-          {#if hasConsole}<Icon icon={SquareTerminal} size={14} />{/if}
-          <span>{launchLabel}</span>
+          <button type="button" class="launch" disabled={missingCli} onclick={launch}>
+            {#if hasConsole}<Icon icon={SquareTerminal} size={14} />{/if}
+            <span>{missingCli ? `${chosen.name} no está instalado` : launchLabel}</span>
           <span class="arrow" aria-hidden="true">→</span>
         </button>
       </div>
@@ -197,6 +244,10 @@
         localCwd={cwd}
         onBack={backToSetup}
         {onClose}
+        {onToggleMaximize}
+        {onToggleMinimize}
+        {maximized}
+        {minimized}
         onBarPointerDown={onHeaderPointerDown}
       />
     </div>
@@ -216,7 +267,7 @@
 
 <style>
   .agent-views {
-    --agent-accent: var(--rb-record);
+    --agent-accent: var(--accent, var(--rb-accent, var(--rb-text)));
 
     position: relative;
     display: flex;
@@ -224,7 +275,7 @@
     flex: 1;
     overflow: hidden;
     border-radius: inherit;
-    background: var(--rb-surface);
+    background: transparent;
     container-name: agents-launcher;
     container-type: inline-size;
   }
@@ -237,19 +288,32 @@
     min-height: 0;
     flex-direction: column;
     opacity: 1;
-    transform: translateY(0);
-    transition:
-      opacity 160ms ease,
-      transform 160ms ease,
-      visibility 160ms ease;
+  }
+
+  .launcher-view {
+    z-index: 1;
+    overflow: hidden;
+    border-radius: inherit;
+    background: var(--skin);
+  }
+
+  .console-view {
+    z-index: 0;
   }
 
   .is-hidden {
-    visibility: hidden;
     pointer-events: none;
-    opacity: 0;
-    transform: translateY(4px);
   }
+
+  .launcher-view.is-hidden {
+    visibility: hidden;
+    opacity: 0;
+    z-index: 0;
+  }
+
+  /* No opacity 0, visibility:hidden ni transform: en WebView2 el canvas
+     de xterm se congela y la consola queda en beige vacío. Se queda detrás
+     del lanzador (fondo --skin) para que el renderer siga vivo. */
 
   .drag-rail {
     display: flex;
@@ -258,8 +322,8 @@
     align-items: center;
     justify-content: flex-end;
     padding: 0.2rem 0.42rem 0.15rem 0.7rem;
-    border-bottom: 1px solid color-mix(in sRGB, var(--rb-border) 72%, transparent);
-    background: var(--rb-surface);
+    border-bottom: 0;
+    background: transparent;
     cursor: move;
   }
 
@@ -294,8 +358,8 @@
   }
 
   .close {
-    width: 1.6rem;
-    height: 1.6rem;
+    width: 2.25rem;
+    height: 2.25rem;
     border-radius: 0.45rem;
   }
 
@@ -315,49 +379,53 @@
     overflow: auto;
   }
 
+  /* Sin marco ni separadores: en las esquinas redondeadas del contenedor los
+     bordes se perdían y ensuciaban. El único color es el acento del elegido;
+     el resto se lee por hover. Las celdas se reparten TODO el ancho. */
   .agent-picker {
     display: grid;
-    width: max-content;
-    max-width: 100%;
-    grid-template-columns: repeat(4, 2.75rem);
-    align-self: center;
-    overflow: hidden;
-    border: 1px solid color-mix(in sRGB, var(--rb-border) 82%, transparent);
-    border-radius: 0.72rem;
-    background: color-mix(in sRGB, var(--rb-surface-2) 54%, transparent);
+    width: 100%;
+    grid-template-columns: repeat(auto-fit, minmax(2.5rem, 1fr));
+    gap: 0.35rem;
+    align-self: stretch;
   }
 
   .agent-option {
     display: grid;
-    width: 2.75rem;
-    min-width: 2.75rem;
     min-height: 2.75rem;
     place-items: center;
     border: 0;
-    border-right: 1px solid color-mix(in sRGB, var(--rb-border) 76%, transparent);
+    border-radius: 0.6rem;
     padding: 0;
     background: transparent;
     color: var(--rb-text);
     font: inherit;
     cursor: pointer;
     transition:
-      background-color 140ms ease,
-      box-shadow 140ms ease;
-  }
-
-  .agent-option:last-child {
-    border-right: 0;
+      background-color var(--duration-fast, 125ms) var(--ease-smooth-out, ease),
+      box-shadow var(--duration-fast, 125ms) var(--ease-smooth-out, ease),
+      opacity var(--duration-fast, 125ms) var(--ease-smooth-out, ease);
   }
 
   .agent-option:hover {
-    background: color-mix(in sRGB, var(--rb-text) 4%, transparent);
+    background: color-mix(in sRGB, var(--rb-text) 6%, transparent);
+  }
+
+  .agent-option:active {
+    background: color-mix(in sRGB, var(--rb-text) 10%, transparent);
   }
 
   .agent-option.is-on {
-    position: relative;
-    z-index: 1;
-    background: color-mix(in sRGB, var(--agent-accent) 10%, var(--rb-surface));
-    box-shadow: inset 0 0 0 1px var(--agent-accent);
+    background: color-mix(in sRGB, var(--agent-accent) 12%, transparent);
+    box-shadow: inset 0 0 0 1px color-mix(in sRGB, var(--agent-accent) 72%, transparent);
+  }
+
+  .agent-option.is-missing {
+    opacity: 0.42;
+  }
+
+  .agent-option.is-missing.is-on {
+    opacity: 0.72;
   }
 
   .agent-logo {
@@ -366,11 +434,16 @@
     height: 1.4rem;
     place-items: center;
     color: var(--rb-text);
-    transition: transform 140ms ease;
+    transition: transform var(--duration-fast, 125ms) var(--ease-smooth-out, ease);
   }
 
-  .agent-option:hover .agent-logo {
-    transform: scale(1.06);
+  .agent-option:hover .agent-logo,
+  .agent-option.is-on .agent-logo {
+    transform: scale(1.08);
+  }
+
+  .agent-option:active .agent-logo {
+    transform: scale(0.96);
   }
 
   .launch-row {
@@ -384,7 +457,7 @@
   .stepper,
   .launch {
     min-height: 2.45rem;
-    border: 1px solid color-mix(in sRGB, var(--rb-border) 84%, transparent);
+    border: 0; /* mismo lenguaje que el selector de agentes: sin bordes, fondos suaves */
     border-radius: 0.62rem;
     font: inherit;
   }
@@ -395,14 +468,17 @@
     align-items: center;
     gap: 0.48rem;
     padding: 0.4rem 0.62rem;
-    background: color-mix(in sRGB, var(--rb-surface-2) 55%, transparent);
+    background: color-mix(in sRGB, var(--rb-surface-2) 62%, transparent);
     color: var(--rb-muted);
     text-align: left;
     cursor: pointer;
+    transition:
+      background-color var(--duration-fast, 125ms) var(--ease-smooth-out, ease),
+      color var(--duration-fast, 125ms) var(--ease-smooth-out, ease);
   }
 
   .folder:hover {
-    border-color: color-mix(in sRGB, var(--agent-accent) 42%, var(--rb-border));
+    background: color-mix(in sRGB, var(--rb-text) 8%, transparent);
     color: var(--rb-text);
   }
 
@@ -423,33 +499,51 @@
 
   .stepper {
     display: grid;
-    grid-template-columns: 2rem minmax(4.7rem, auto) 2rem;
+    grid-template-columns: 1.9rem max-content 1.9rem;
+    flex: none;
     align-items: stretch;
-    overflow: hidden;
-    background: transparent;
+    gap: 0.2rem;
+    min-width: max-content;
+    padding: 0.25rem;
+    background: color-mix(in sRGB, var(--rb-surface-2) 62%, transparent);
   }
 
   .stepper button {
+    display: grid;
+    width: 1.9rem;
+    place-items: center;
     border: 0;
+    border-radius: 0.42rem;
     background: transparent;
     color: var(--rb-text);
     font-size: 0.95rem;
+    line-height: 1;
     cursor: pointer;
+    transition:
+      background-color var(--duration-fast, 125ms) var(--ease-smooth-out, ease),
+      transform var(--duration-fast, 125ms) var(--ease-smooth-out, ease),
+      opacity var(--duration-fast, 125ms) var(--ease-smooth-out, ease);
   }
 
   .stepper button:hover:not(:disabled) {
-    background: color-mix(in sRGB, var(--agent-accent) 9%, transparent);
+    background: color-mix(in sRGB, var(--rb-text) 8%, transparent);
+  }
+
+  .stepper button:active:not(:disabled) {
+    background: color-mix(in sRGB, var(--rb-text) 12%, transparent);
+    transform: scale(0.92);
   }
 
   .stepper button:disabled {
     color: var(--rb-faint);
     cursor: default;
-    opacity: 0.45;
+    opacity: 0.4;
   }
 
   .count {
     display: grid;
     place-items: center;
+    padding-inline: 0.5rem;
     color: var(--rb-text);
     font-size: 0.68rem;
     font-weight: 650;
@@ -460,8 +554,17 @@
   .reset {
     width: 2.45rem;
     min-height: 2.45rem;
-    border: 1px solid color-mix(in sRGB, var(--rb-border) 84%, transparent);
+    border: 0;
     border-radius: 0.62rem;
+    background: color-mix(in sRGB, var(--rb-surface-2) 62%, transparent);
+    transition:
+      background-color var(--duration-fast, 125ms) var(--ease-smooth-out, ease),
+      color var(--duration-fast, 125ms) var(--ease-smooth-out, ease);
+  }
+
+  .reset:hover {
+    background: color-mix(in sRGB, var(--rb-record) 14%, transparent);
+    color: var(--rb-record);
   }
 
   .launch {
@@ -471,20 +574,29 @@
     justify-content: center;
     gap: 0.42rem;
     padding: 0.42rem 0.75rem;
-    border-color: var(--agent-accent);
     background: var(--agent-accent);
     color: var(--rb-on-accent);
     font-size: 0.7rem;
     font-weight: 700;
     cursor: pointer;
     transition:
-      background-color 140ms ease,
-      transform 140ms ease;
+      background-color var(--duration-fast, 125ms) var(--ease-smooth-out, ease),
+      transform var(--duration-fast, 125ms) var(--ease-smooth-out, ease);
   }
 
-  .launch:hover {
+  .launch:disabled {
+    cursor: not-allowed;
+    opacity: 0.55;
+    transform: none;
+  }
+
+  .launch:hover:not(:disabled) {
     background: color-mix(in sRGB, var(--agent-accent) 87%, var(--rb-text));
     transform: translateY(-1px);
+  }
+
+  .launch:active:not(:disabled) {
+    transform: translateY(0) scale(0.99);
   }
 
   .launch .arrow {
@@ -504,7 +616,7 @@
     }
 
     .launch-row {
-      grid-template-columns: minmax(0, 1fr) auto auto;
+      grid-template-columns: max-content auto minmax(0, 1fr);
       gap: 0.4rem;
     }
 
@@ -537,8 +649,8 @@
       font-size: 0.66rem;
     }
 
-    .stepper {
-      grid-template-columns: 1.75rem minmax(4.3rem, auto) 1.75rem;
+    .stepper button {
+      width: 1.65rem;
     }
 
     .launch {
@@ -552,8 +664,12 @@
     .console-view,
     .agent-option,
     .agent-logo,
+    .folder,
+    .stepper button,
+    .reset,
     .launch {
       transition: none;
+      transform: none;
     }
   }
 </style>

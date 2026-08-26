@@ -46,6 +46,9 @@ export type {
  *  backend, así que conviene llamarlo al abrir la vista, no en cada render. */
 export const agentBackends = () => invoke<AgentBackendInfo[]>("agent_backends");
 
+/** True si el binario está en el PATH (misma regla que al abrir la PTY). */
+export const cliOnPath = (name: string) => invoke<boolean>("cli_on_path", { name });
+
 /** Cupos de ChatGPT/Codex mediante el app-server del CLI ya autenticado. */
 export const agentCodexUsage = () => invoke<CodexAccountUsage>("agent_codex_usage");
 
@@ -153,6 +156,9 @@ export const listDirectories = (path?: string | null) =>
 /** Hosts SSH guardados en config (sin secretos). */
 export const sshListHosts = () => invoke<SshHost[]>("ssh_list_hosts");
 
+/** Aliases `Host` de ~/.ssh/config (los mismos que muestran VS Code/Cursor). */
+export const sshConfigAliases = () => invoke<string[]>("ssh_config_aliases");
+
 /** Flags has_passphrase / has_password por host. */
 export const sshHostSecretsStatus = () =>
   invoke<SshHostSecretFlags[]>("ssh_host_secrets_status");
@@ -185,6 +191,10 @@ export const consoleResize = (session: string, cols: number, rows: number) =>
 export const consoleClose = (session: string) =>
   invoke<void>("console_close", { session });
 
+/** Cierra en Rust las PTYs cuyo id no está en `keep`. */
+export const consoleGc = (keep: string[]) =>
+  invoke<number>("console_gc", { keep });
+
 export const onConsoleOutput = (
   cb: (payload: ConsoleOutputPayload) => void,
 ): Promise<UnlistenFn> => on("console-output", cb);
@@ -204,6 +214,18 @@ export const agentsWindowVisible = () => invoke<boolean>("agents_window_visible"
 
 /** Abre (o repliega) la consola de agentes: sale de la pill y vuelve a ella. */
 export const showAgentsWindow = () => invoke<void>("show_agents_window");
+
+/**
+ * Pide al lanzador que muestre las consolas ya vivas, sin toggle.
+ *
+ * El chip de la pill lo dispara antes de abrir el float: si hay PTY,
+ * se ve la consola y no el setup.
+ */
+export const AGENTS_REVEAL_CONSOLE = "atic-agents-reveal-console";
+
+export function revealAgentsConsole() {
+  window.dispatchEvent(new Event(AGENTS_REVEAL_CONSOLE));
+}
 
 /** Repliega la burbuja sobre la pill. */
 export const hideAgentsWindow = () => invoke<void>("hide_agents_window");

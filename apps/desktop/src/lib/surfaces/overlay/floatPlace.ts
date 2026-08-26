@@ -71,22 +71,39 @@ function intersectAreas(a: Area, b: Area): Area | null {
  * el viewport CSS — el overlay pinta desde (0,0) y `overflow: hidden` recorta
  * lo que se salga, aunque Win32 diga que hay más pantalla.
  *
+ * Nunca cae a `work[0]` a ciegas: en dual-head eso es el primario, no donde
+ * está la pill, y el clamp mandaba el float al otro monitor.
+ *
  * Si `work` no excluye la taskbar (ausente o igual a bounds), aplica el mismo
  * espíritu que `BOTTOM_SLOT_INSET` y un margen lateral, para no montar el
  * panel sobre la barra ni recortar el título en el canto.
  */
-function resolveWork(pill: PillRect, panel: { w: number; h: number }, work?: Area[]): Area {
+function areaAroundPill(pill: PillRect, work?: Area[]): Area | undefined {
+  if (!work?.length) return undefined;
   const acx = pill.x + pill.w / 2;
   const acy = pill.y + pill.h / 2;
+  const hit = work.find(
+    (a) =>
+      acx >= a.x && acx <= a.x + a.w && acy >= a.y && acy <= a.y + a.h,
+  );
+  if (hit) return hit;
+  let best = work[0];
+  let bestD = Number.POSITIVE_INFINITY;
+  for (const a of work) {
+    const dx = acx - (a.x + a.w / 2);
+    const dy = acy - (a.y + a.h / 2);
+    const d = dx * dx + dy * dy;
+    if (d < bestD) {
+      bestD = d;
+      best = a;
+    }
+  }
+  return best;
+}
+
+function resolveWork(pill: PillRect, panel: { w: number; h: number }, work?: Area[]): Area {
   const area =
-    work?.find(
-      (a) =>
-        acx >= a.x &&
-        acx <= a.x + a.w &&
-        acy >= a.y &&
-        acy <= a.y + a.h,
-    ) ??
-    work?.[0] ??
+    areaAroundPill(pill, work) ??
     ({
       x: 0,
       y: 0,

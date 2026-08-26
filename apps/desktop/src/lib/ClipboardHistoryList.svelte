@@ -7,12 +7,16 @@
   import { convertFileSrc } from "@tauri-apps/api/core";
   import { startDrag } from "@crabnebula/tauri-plugin-drag";
   import Icon from "$ui/Icon.svelte";
-  import { List, Search, Star, X } from "$lib/icons";
+  import { ExternalLink, List, Pencil, ScanText, Search, Star, X } from "$lib/icons";
   import type { ClipboardItem } from "$lib/types";
   import { clipboardItemMatches } from "$lib/clipboardSearch";
+  import { t } from "$domain/i18n.svelte";
+  import { openAnnotator } from "$ipc/annotate";
+  import { ocrCaptureAndCopy, openManagedImage } from "$ipc/captures";
   import {
     clipboardDragPath,
     deleteClipboardItem,
+    dispatchClipboardOle,
     pasteClipboardItem,
     pinClipboardItem,
     startClipboardTextDrag,
@@ -43,6 +47,7 @@
 
   let busyId = $state<string | null>(null);
   let draggingId = $state<string | null>(null);
+  let ocrBusyId = $state<string | null>(null);
   let query = $state("");
   let favoritesOnly = $state(false);
   let press: {
@@ -69,7 +74,7 @@
   });
 
   /** Ventana virtual (~fila fija): evita montar hasta 100 thumbs a la vez. */
-  const ROW_H = $derived(compact ? 44 : 52);
+  const ROW_H = $derived(compact ? 62 : 72);
   const ROW_GAP = 5; // 0.3rem
   const OVERSCAN = 4;
   let listEl = $state<HTMLElement | null>(null);
@@ -124,6 +129,51 @@
     onError?.(String(error));
   }
 
+  async function drawImage(item: ClipboardItem, event: MouseEvent) {
+    event.stopPropagation();
+    event.preventDefault();
+    const path = item.imagePath;
+    if (!path || busyId) return;
+    try {
+      await openAnnotator(path);
+    } catch (error) {
+      report(error);
+    }
+  }
+
+  async function openImage(item: ClipboardItem, event: MouseEvent) {
+    event.stopPropagation();
+    event.preventDefault();
+    const path = item.imagePath;
+    if (!path) return;
+    try {
+      await openManagedImage(path);
+    } catch (error) {
+      report(error);
+    }
+  }
+
+  async function ocrImage(item: ClipboardItem, event: MouseEvent) {
+    event.stopPropagation();
+    event.preventDefault();
+    const path = item.imagePath;
+    if (!path || ocrBusyId) return;
+    ocrBusyId = item.id;
+    try {
+      const text = await ocrCaptureAndCopy(path);
+      onError?.(
+        text.trim() ? t("page.captures.ocrCopied") : t("page.captures.ocrEmpty"),
+      );
+    } catch (error) {
+      const msg = String(error);
+      onError?.(
+        /no se detectó|no text/i.test(msg) ? t("page.captures.ocrEmpty") : t("page.captures.ocrFail"),
+      );
+    } finally {
+      ocrBusyId = null;
+    }
+  }
+
   async function paste(item: ClipboardItem) {
     if (busyId || draggingId) return;
     busyId = item.id;
@@ -141,7 +191,7 @@
   function onItemDown(event: PointerEvent, item: ClipboardItem) {
     if (event.button !== 0 || busyId || draggingId) return;
     const target = event.target as HTMLElement;
-    if (target.closest(".clip-actions, .clip-icon-btn")) return;
+    if (target.closest(".clip-actions, .clip-icon-btn, .clip-quick")) return;
     const seedPath =
       item.kind === "image" && item.imagePath ? item.imagePath : null;
     press = {
@@ -200,13 +250,14 @@
 
   async function beginOleDrag(item: ClipboardItem, prefetched: string | null) {
     draggingId = item.id;
+    dispatchClipboardOle(true);
     try {
       await setOverlayItemDrag(true).catch(() => {});
       // Conserva hit-rect de agentes; OLE a otras apps sigue con passthrough.
       await surfaces.recoverHits().catch(() => {});
       surfaces.dragging = false;
       if (item.kind === "text") {
-        // Rust cancela OLE si sueltas sobre agentes e inserta en el composer.
+        // Rust cancela OLE si sueltas sobre agentes e inserta en composer/consola.
         await startClipboardTextDrag(item.id);
         return;
       }
@@ -229,6 +280,7 @@
         report(error);
       }
     } finally {
+      dispatchClipboardOle(false);
       draggingId = null;
       await setOverlayItemDrag(false).catch(() => {});
       await surfaces.recoverHits().catch(() => {});
@@ -370,15 +422,49 @@
             </span>
             <span class="clip-body">
               <span class="clip-preview">{item.preview || "(vacío)"}</span>
-              <span class="clip-meta">
-                {item.kind === "image" ? "Imagen" : "Texto"}
-                {#if item.pinned}
-                  · Fav
-                {/if}
-                {#if item.source === "capture"}
-                  · Captura
-                {/if}
-              </span>
+              {#if item.kind === "image" && item.imagePath}
+                <span class="clip-quick">
+                  <button
+                    type="button"
+                    class="clip-chip"
+                    onpointerdown={(e) => e.stopPropagation()}
+                    onclick={(e) => void drawImage(item, e)}
+                  >
+                    <Icon icon={Pencil} size={11} />
+                    {t("page.clipboard.draw")}
+                  </button>
+                  <button
+                    type="button"
+                    class="clip-chip"
+                    onpointerdown={(e) => e.stopPropagation()}
+                    onclick={(e) => void openImage(item, e)}
+                  >
+                    <Icon icon={ExternalLink} size={11} />
+                    {t("page.clipboard.openLarge")}
+                  </button>
+                  <button
+                    type="button"
+                    class="clip-chip"
+                    disabled={ocrBusyId === item.id}
+                    aria-busy={ocrBusyId === item.id}
+                    onpointerdown={(e) => e.stopPropagation()}
+                    onclick={(e) => void ocrImage(item, e)}
+                  >
+                    <Icon icon={ScanText} size={11} />
+                    {ocrBusyId === item.id ? "…" : t("page.clipboard.ocr")}
+                  </button>
+                </span>
+              {:else}
+                <span class="clip-meta">
+                  {item.kind === "image" ? "Imagen" : "Texto"}
+                  {#if item.pinned}
+                    · Fav
+                  {/if}
+                  {#if item.source === "capture"}
+                    · Captura
+                  {/if}
+                </span>
+              {/if}
             </span>
           </div>
           <div class="clip-actions">
@@ -554,15 +640,15 @@
     flex: none;
     align-items: stretch;
     gap: 0.2rem;
-    height: 52px;
-    min-height: 52px;
+    height: 72px;
+    min-height: 72px;
     margin: 0 0 5px;
     overflow: hidden;
   }
 
   .is-compact .clip-items > .clip-row {
-    height: 44px;
-    min-height: 44px;
+    height: 62px;
+    min-height: 62px;
   }
 
   .clip-item {
@@ -645,6 +731,44 @@
   .clip-meta {
     color: var(--rb-muted);
     font-size: 0.625rem;
+  }
+
+  .clip-quick {
+    display: flex;
+    min-width: 0;
+    flex-wrap: wrap;
+    gap: 0.2rem;
+    pointer-events: auto;
+  }
+
+  .clip-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.18rem;
+    height: 1.25rem;
+    border: 0;
+    border-radius: 0.35rem;
+    padding: 0 0.32rem;
+    background: color-mix(in sRGB, var(--rb-text) 8%, transparent);
+    color: var(--rb-muted);
+    font-size: 0.58rem;
+    font-weight: 650;
+    line-height: 1;
+    cursor: pointer;
+  }
+
+  .clip-chip:hover:not(:disabled) {
+    background: color-mix(in sRGB, var(--rb-text) 14%, transparent);
+    color: var(--rb-text);
+  }
+
+  .clip-chip:disabled {
+    cursor: default;
+    opacity: 0.55;
+  }
+
+  .clip-chip :global(svg) {
+    pointer-events: none;
   }
 
   .clip-actions {

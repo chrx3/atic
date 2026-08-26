@@ -114,6 +114,26 @@ export function edgeGaps(
 }
 
 /**
+ * ¿Este canto del área útil deja un recorte de SO (barra de tareas, Dock,
+ * menú)? Ahí la pared SDF queda DENTRO del overlay y se lee como un segundo
+ * blob. El truco del techo funciona porque `work.y === area.y` y la pared
+ * cae fuera de la ventana.
+ */
+export function edgeHasReservedInset(edge: DockEdge, area: Area, eps = 2): boolean {
+  const work = workAreaOf(area);
+  switch (edge) {
+    case "top":
+      return work.y - area.y > eps;
+    case "bottom":
+      return area.y + area.h - (work.y + work.h) > eps;
+    case "left":
+      return work.x - area.x > eps;
+    case "right":
+      return area.x + area.w - (work.x + work.w) > eps;
+  }
+}
+
+/**
  * Dónde queda la pill al acoplarse: pegada al borde, sin moverla a lo largo.
  *
  * Solo se fija el eje perpendicular. Corregir también el otro haría que la
@@ -220,4 +240,207 @@ export function dockedEdgeAt(
 /** El eje contra el que la isla se aplana. */
 export function dockAxis(edge: DockEdge): "x" | "y" {
   return edge === "left" || edge === "right" ? "x" : "y";
+}
+
+/**
+ * Pared SDF local en un canto, para que la pill se funda con el borde.
+ *
+ * Vive casi toda fuera del viewport: el clip recorta y se lee como gota
+ * pegada (menisco / Dynamic Island). No es una tira a lo ancho de la
+ * pantalla — solo un tramo cerca de la pill.
+ *
+ * `DEPTH` es hacia afuera. `OVERLAP` es cuánto asoma al viewport (0 = a ras
+ * por fuera). `FLARE` es el filete simétrico a cada lado del dintel.
+ */
+export const EDGE_WALL_DEPTH = 40;
+export const EDGE_WALL_OVERLAP = 0;
+/**
+ * Filete a cada lado de la pill, a lo largo del canto.
+ *
+ * 8 px era tan corto que el `smin` se enrollaba en las esquinas vivas de la
+ * pared y un lado (casi siempre el que mira al canto cercano) se leía más
+ * largo. 28 deja un dintel simétrico tipo Dynamic Island.
+ */
+export const EDGE_WALL_FLARE = 28;
+/**
+ * Si el otro canto está a menos de esto, es una esquina: se emite también
+ * esa pared y el dintel llega hasta el vértice.
+ */
+export const EDGE_CORNER_PX = 48;
+
+/** Empate de distancias: techo/suelo antes que un costado. */
+function preferTiedHit<T extends { edge: DockEdge; gap: number }>(a: T, b: T): T {
+  if (a.gap < b.gap) return a;
+  if (b.gap < a.gap) return b;
+  const horiz = (e: DockEdge) => e === "top" || e === "bottom";
+  if (horiz(a.edge) !== horiz(b.edge)) return horiz(a.edge) ? a : b;
+  return a;
+}
+
+/** El borde exterior más cercano, si está a menos de `maxGap`. */
+export function nearestOuterWorkEdge(
+  rect: Rect,
+  areas: readonly Area[],
+  maxGap: number,
+): { edge: DockEdge; area: Area; work: Rect; gap: number } | null {
+  const nearby = nearbyOuterWorkEdges(rect, areas, maxGap);
+  if (nearby.length === 0) return null;
+  return nearby.reduce(preferTiedHit);
+}
+
+/** Todos los cantos exteriores a menos de `maxGap` (esquinas: dos). */
+export function nearbyOuterWorkEdges(
+  rect: Rect,
+  areas: readonly Area[],
+  maxGap: number,
+): { edge: DockEdge; area: Area; work: Rect; gap: number }[] {
+  const area = areaFor(rect, areas);
+  if (!area) return [];
+  const work = workAreaOf(area);
+  const gaps = edgeGaps(rect, work);
+  const out: { edge: DockEdge; area: Area; work: Rect; gap: number }[] = [];
+  for (const edge of DOCK_EDGES) {
+    if (!isOuterEdge(edge, area, areas)) continue;
+    if (edgeHasReservedInset(edge, area)) continue;
+    const dist = Math.max(gaps[edge], 0);
+    if (dist <= maxGap) out.push({ edge, area, work, gap: dist });
+  }
+  return out;
+}
+
+/** Rectángulo de la pared, en las mismas coordenadas que `pill` y `work`. */
+export function edgeWallRect(
+  edge: DockEdge,
+  pill: Rect,
+  work: Rect,
+  opts?: {
+    depth?: number;
+    overlap?: number;
+    flare?: number;
+    /** Filete “antes” (izquierda en top/bottom, arriba en left/right). */
+    flareBefore?: number;
+    /** Filete “después” (derecha / abajo). */
+    flareAfter?: number;
+  },
+): Rect {
+  const depth = opts?.depth ?? EDGE_WALL_DEPTH;
+  const overlap = opts?.overlap ?? EDGE_WALL_OVERLAP;
+  const flare = opts?.flare ?? EDGE_WALL_FLARE;
+  const before = opts?.flareBefore ?? flare;
+  const after = opts?.flareAfter ?? flare;
+  switch (edge) {
+    case "top":
+      return {
+        x: pill.x - before,
+        y: work.y - depth + overlap,
+        w: pill.w + before + after,
+        h: depth,
+      };
+    case "bottom":
+      return {
+        x: pill.x - before,
+        y: work.y + work.h - overlap,
+        w: pill.w + before + after,
+        h: depth,
+      };
+    case "left":
+      return {
+        x: work.x - depth + overlap,
+        y: pill.y - before,
+        w: depth,
+        h: pill.h + before + after,
+      };
+    case "right":
+      return {
+        x: work.x + work.w - overlap,
+        y: pill.y - before,
+        w: depth,
+        h: pill.h + before + after,
+      };
+  }
+}
+
+function roomAlong(
+  edge: DockEdge,
+  pill: Rect,
+  work: Rect,
+): { before: number; after: number } {
+  if (edge === "top" || edge === "bottom") {
+    return {
+      before: pill.x - work.x,
+      after: work.x + work.w - (pill.x + pill.w),
+    };
+  }
+  return {
+    before: pill.y - work.y,
+    after: work.y + work.h - (pill.y + pill.h),
+  };
+}
+
+function flaresAlong(
+  edge: DockEdge,
+  pill: Rect,
+  work: Rect,
+  nearby: ReadonlySet<DockEdge>,
+): { flareBefore: number; flareAfter: number } {
+  const room = roomAlong(edge, pill, work);
+  const f = EDGE_WALL_FLARE;
+  const cornerBefore =
+    edge === "top" || edge === "bottom"
+      ? nearby.has("left") || room.before <= EDGE_CORNER_PX
+      : nearby.has("top") || room.before <= EDGE_CORNER_PX;
+  const cornerAfter =
+    edge === "top" || edge === "bottom"
+      ? nearby.has("right") || room.after <= EDGE_CORNER_PX
+      : nearby.has("bottom") || room.after <= EDGE_CORNER_PX;
+  if (!cornerBefore && !cornerAfter) {
+    const eq = Math.max(0, Math.min(f, room.before, room.after));
+    return { flareBefore: eq, flareAfter: eq };
+  }
+  return {
+    flareBefore: Math.max(0, cornerBefore ? room.before : Math.min(f, room.before)),
+    flareAfter: Math.max(0, cornerAfter ? room.after : Math.min(f, room.after)),
+  };
+}
+
+/**
+ * Paredes SDF para fundirse con el canto (y con la esquina, si aplica).
+ *
+ * A lo largo de un solo borde el dintel es simétrico: el mismo filete a
+ * ambos lados, recortado al área útil para no dejar masa fuera que tire
+ * del blob. En una esquina se emiten las dos paredes y el dintel llega
+ * al vértice.
+ */
+export function edgeWallsFor(
+  pill: Rect,
+  areas: readonly Area[],
+  opts?: { maxGap?: number; prefer?: DockEdge | null; cornerPx?: number },
+): Rect[] {
+  const area = areaFor(pill, areas);
+  if (!area) return [];
+  const work = workAreaOf(area);
+  const maxGap = opts?.maxGap ?? 24;
+  const cornerPx = opts?.cornerPx ?? EDGE_CORNER_PX;
+  const nearby = nearbyOuterWorkEdges(pill, areas, Math.max(maxGap, cornerPx));
+  const edges: DockEdge[] = [];
+  if (
+    opts?.prefer &&
+    isOuterEdge(opts.prefer, area, areas) &&
+    !edgeHasReservedInset(opts.prefer, area)
+  ) {
+    edges.push(opts.prefer);
+  } else {
+    const close = nearby.filter((h) => h.gap <= maxGap);
+    if (close.length > 0) {
+      edges.push(close.reduce(preferTiedHit).edge);
+    }
+  }
+  for (const hit of nearby) {
+    if (hit.gap <= cornerPx && !edges.includes(hit.edge)) edges.push(hit.edge);
+  }
+  if (edges.length === 0) return [];
+  const set = new Set(edges);
+  return edges.map((edge) =>
+    edgeWallRect(edge, pill, work, flaresAlong(edge, pill, work, set)),
+  );
 }

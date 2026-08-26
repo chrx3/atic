@@ -2,16 +2,26 @@ import { describe, expect, it } from "vitest";
 import {
   DOCK_RELEASE_PX,
   DOCK_SNAP_PX,
+  EDGE_CORNER_PX,
+  EDGE_WALL_DEPTH,
+  EDGE_WALL_FLARE,
+  EDGE_WALL_OVERLAP,
   dockAxis,
   dockCandidate,
   dockedEdgeAt,
   dockedPoint,
   desktopBounds,
   edgeGaps,
+  edgeWallRect,
+  edgeWallsFor,
   isOuterEdge,
+  nearestOuterWorkEdge,
   shouldUndock,
 } from "./edgeDock";
 import type { Area } from "$ipc/overlay";
+import { pillShape } from "../../liquid/geometry";
+import { BLEND } from "../../liquid/constants";
+import { Field, shapeSD } from "../../liquid/sdf";
 
 /** Un monitor 1000×800 sin nada reservado. */
 const SOLO: Area[] = [{ x: 0, y: 0, w: 1000, h: 800 }];
@@ -156,5 +166,125 @@ describe("dockAxis", () => {
     expect(dockAxis("right")).toBe("x");
     expect(dockAxis("top")).toBe("y");
     expect(dockAxis("bottom")).toBe("y");
+  });
+});
+
+describe("nearestOuterWorkEdge", () => {
+  it("encuentra el canto cuando la pill está cerca", () => {
+    const hit = nearestOuterWorkEdge(at(400, 8), SOLO, 24);
+    expect(hit?.edge).toBe("top");
+    expect(hit?.gap).toBe(8);
+  });
+
+  it("en el medio no hay pared", () => {
+    expect(nearestOuterWorkEdge(at(400, 400), SOLO, 24)).toBeNull();
+  });
+
+  it("el canto interior entre dos pantallas no cuenta", () => {
+    expect(nearestOuterWorkEdge(at(960, 400), DUAL, 24)).toBeNull();
+  });
+
+  it("el borde de la barra de tareas no genera pared", () => {
+    expect(nearestOuterWorkEdge(at(400, 720), SOLO_TASKBAR, 24)).toBeNull();
+  });
+});
+
+describe("edgeWallRect", () => {
+  const work = { x: 0, y: 0, w: 1000, h: 800 };
+  const pill = { x: 200, y: 0, w: 80, h: 40 };
+
+  it("la cara interior queda a ras del área útil, hacia afuera", () => {
+    const wall = edgeWallRect("top", pill, work);
+    expect(wall.y + wall.h).toBe(work.y + EDGE_WALL_OVERLAP);
+    expect(wall.h).toBe(EDGE_WALL_DEPTH);
+    expect(wall.w).toBe(pill.w + EDGE_WALL_FLARE * 2);
+    expect(wall.x).toBe(pill.x - EDGE_WALL_FLARE);
+  });
+
+  it("abajo y a los lados también viven fuera", () => {
+    const bottom = edgeWallRect("bottom", { ...pill, y: 760 }, work);
+    expect(bottom.y).toBe(work.y + work.h - EDGE_WALL_OVERLAP);
+    const left = edgeWallRect("left", { ...pill, x: 0, y: 300 }, work);
+    expect(left.x + left.w).toBe(work.x + EDGE_WALL_OVERLAP);
+    const right = edgeWallRect("right", { ...pill, x: 960, y: 300 }, work);
+    expect(right.x).toBe(work.x + work.w - EDGE_WALL_OVERLAP);
+  });
+
+  it("se funde con la pill en el mordisco y no pinta un ala al lado", () => {
+    const rect = { x: 200, y: 0, w: 80, h: 40 };
+    const pill = pillShape(rect);
+    const wall = pillShape(edgeWallRect("top", rect, work));
+    const field = new Field([pill, wall], BLEND);
+    expect(shapeSD(pill, 201, 6)).toBeGreaterThan(0);
+    expect(field.eval(201, 6)).toBeLessThan(0);
+    // Fuera del flare: no hay mancha de líquido al costado.
+    expect(field.eval(rect.x - EDGE_WALL_FLARE - 12, 6)).toBeGreaterThan(0);
+    expect(field.eval(500, 8)).toBeGreaterThan(0);
+  });
+});
+
+describe("edgeWallsFor", () => {
+  const work = { x: 0, y: 0, w: 1000, h: 800 };
+
+  it("en el techo, lejos de los costados, el dintel es simétrico", () => {
+    const pill = { x: 400, y: 0, w: 80, h: 40 };
+    const walls = edgeWallsFor(pill, SOLO, { maxGap: 24, prefer: "top" });
+    expect(walls).toHaveLength(1);
+    const wall = walls[0];
+    expect(wall.x).toBe(pill.x - EDGE_WALL_FLARE);
+    expect(wall.w).toBe(pill.w + EDGE_WALL_FLARE * 2);
+    const left = pill.x - wall.x;
+    const right = wall.x + wall.w - (pill.x + pill.w);
+    expect(left).toBe(right);
+  });
+
+  it("el menisco del techo no tira a un costado aunque el gap derecho empate", () => {
+    const pill = { x: 960, y: 0, w: 40, h: 40 };
+    const walls = edgeWallsFor(pill, SOLO, { maxGap: 24 });
+    expect(walls).toHaveLength(2);
+    const top = walls.find((w) => w.y < work.y);
+    expect(top).toBeDefined();
+    expect(top!.x + top!.w).toBe(work.x + work.w);
+  });
+
+  it("en una esquina emite las dos paredes y el dintel llega al vértice", () => {
+    const pill = { x: 960, y: 0, w: 40, h: 40 };
+    const walls = edgeWallsFor(pill, SOLO, { maxGap: 24, prefer: "top" });
+    expect(walls).toHaveLength(2);
+    const top = walls.find((w) => w.y < work.y);
+    const right = walls.find((w) => w.x >= work.x + work.w - 1);
+    expect(top).toBeDefined();
+    expect(right).toBeDefined();
+    expect(top!.x + top!.w).toBe(work.x + work.w);
+    expect(right!.x).toBe(work.x + work.w);
+    expect(right!.y).toBe(pill.y);
+  });
+
+  it("a más de EDGE_CORNER_PX del costado no inventa una pared lateral", () => {
+    const pill = { x: 400, y: 0, w: 80, h: 40 };
+    expect(pill.x + pill.w).toBeLessThan(work.w - EDGE_CORNER_PX);
+    const walls = edgeWallsFor(pill, SOLO, { maxGap: 24, prefer: "top" });
+    expect(walls).toHaveLength(1);
+  });
+
+  it("no pinta un blob sobre la barra de tareas", () => {
+    const pill = { x: 400, y: 720, w: 80, h: 40 };
+    const walls = edgeWallsFor(pill, SOLO_TASKBAR, {
+      maxGap: 24,
+      prefer: "bottom",
+    });
+    expect(walls).toHaveLength(0);
+  });
+
+  it("el campo del techo es espejo a izquierda y derecha", () => {
+    const rect = { x: 400, y: 0, w: 80, h: 40 };
+    const walls = edgeWallsFor(rect, SOLO, { maxGap: 24, prefer: "top" });
+    const field = new Field([pillShape(rect), ...walls.map(pillShape)], BLEND);
+    const y = 10;
+    const d = 20;
+    expect(field.eval(rect.x - d, y)).toBeCloseTo(
+      field.eval(rect.x + rect.w + d, y),
+      5,
+    );
   });
 });

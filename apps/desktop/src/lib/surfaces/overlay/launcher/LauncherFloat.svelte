@@ -310,20 +310,20 @@
     const w = labCompact ? launcherLab.barW : a.w;
     const h = labCompact ? compactH : a.h;
     const size = { w, h };
+    // La pill ya está en el monitor correcto (vuelo del atajo, o clic local).
+    // overlayActiveAnchor prefería el foco de otra app y saltaba de pantalla.
     let anchor: { x: number; y: number };
-    try {
-      const active = await overlayActiveAnchor();
-      if (active) {
-        anchor = active;
-      } else if (pill) {
-        anchor = { x: pill.x + pill.w / 2, y: pill.y + pill.h / 2 };
-      } else {
+    if (pill) {
+      anchor = { x: pill.x + pill.w / 2, y: pill.y + pill.h / 2 };
+    } else {
+      try {
+        anchor = (await overlayActiveAnchor()) ?? {
+          x: a.x + a.w / 2,
+          y: a.y + a.h / 2,
+        };
+      } catch {
         anchor = { x: a.x + a.w / 2, y: a.y + a.h / 2 };
       }
-    } catch {
-      anchor = pill
-        ? { x: pill.x + pill.w / 2, y: pill.y + pill.h / 2 }
-        : { x: a.x + a.w / 2, y: a.y + a.h / 2 };
     }
     const pos = resolveSlot("center", workAreas, size, anchor);
     bubble.place({
@@ -1108,7 +1108,7 @@
   /* Expandido: panel único con surface. Compacto: chrome transparente.
    * overflow visible: los favs viven fuera (absolute a la der. del stadium). */
   .lf.is-expanded {
-    background: var(--rb-surface);
+    background: var(--skin);
     overflow: visible;
     border-radius: 18px;
   }
@@ -1156,7 +1156,7 @@
     height: 100%;
     padding: 0 0.35rem 0 0.5rem;
     border-radius: 999px;
-    background: var(--rb-surface);
+    background: var(--skin);
     cursor: grab;
     touch-action: none;
     user-select: none;
@@ -1220,10 +1220,10 @@
     width: 40px;
     height: 40px;
     flex-shrink: 0;
-    border: 1px solid color-mix(in srgb, var(--rb-text) 12%, transparent);
+    border: 0;
     border-radius: 999px;
     padding: 0;
-    background: var(--rb-surface);
+    background: var(--skin);
     color: var(--rb-muted);
     cursor: pointer;
     pointer-events: none;
@@ -1236,8 +1236,7 @@
       color var(--duration-quick) var(--ease-smooth-out),
       background var(--duration-quick) var(--ease-smooth-out),
       transform var(--launcher-fav-stagger) var(--ease-smooth-out),
-      opacity var(--launcher-fav-stagger) var(--ease-smooth-out),
-      border-color var(--duration-quick) var(--ease-smooth-out);
+      opacity var(--launcher-fav-stagger) var(--ease-smooth-out);
   }
 
   .lf-dot.is-out {
@@ -1248,19 +1247,17 @@
 
   .lf-dot.is-out:hover {
     color: var(--rb-text);
-    background: color-mix(in srgb, var(--rb-text) 12%, var(--rb-surface));
-    border-color: color-mix(in srgb, var(--rb-text) 22%, transparent);
+    background: color-mix(in srgb, var(--rb-text) 12%, var(--skin));
     transform: scale(1.06);
   }
 
   .lf-dot.is-out:active {
-    transform: scale(0.94);
+    transform: scale(0.96);
   }
 
   .lf-dot.is-action {
-    background: color-mix(in srgb, var(--ok, #3a8) 16%, var(--rb-surface));
+    background: color-mix(in srgb, var(--ok, #3a8) 16%, var(--skin));
     color: var(--ok, #3a8);
-    border-color: color-mix(in srgb, var(--ok, #3a8) 28%, transparent);
   }
 
   .lf-dot :global(img) {

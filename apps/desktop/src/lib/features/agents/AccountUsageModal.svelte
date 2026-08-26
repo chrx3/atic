@@ -10,7 +10,16 @@
   import ProgressBar from "$ui/ProgressBar.svelte";
   import AgentLogo from "./AgentLogo.svelte";
 
-  let { agent, onClose }: { agent: string; onClose: () => void } = $props();
+  let {
+    agent,
+    onClose,
+    onRunUsageCommand,
+  }: {
+    agent: string;
+    onClose: () => void;
+    /** Escribe `/usage` en la consola activa del agente (si hay sesión viva). */
+    onRunUsageCommand?: () => void;
+  } = $props();
 
   type UsageRow = {
     key: string;
@@ -197,11 +206,22 @@
         </div>
       {:else if agent === "cursor-agent"}
         <div class="usage-state">
-          <strong>Cursor no expone el cupo en su CLI</strong>
+          <strong>Cursor muestra su cupo dentro de la consola</strong>
           <span>
-            <code>cursor-agent status</code> solo informa autenticación. El uso y desglose
-            de tokens están disponibles en el dashboard de Cursor.
+            Escribe <code>/usage</code> en la sesión de Cursor para ver el uso y los
+            límites de tu plan. El desglose completo sigue en el dashboard de Cursor.
           </span>
+          {#if onRunUsageCommand}
+            <button
+              type="button"
+              onclick={() => {
+                onRunUsageCommand();
+                onClose();
+              }}
+            >
+              Escribir /usage en la consola
+            </button>
+          {/if}
         </div>
       {:else}
         <div class="usage-state">

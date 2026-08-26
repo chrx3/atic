@@ -55,15 +55,28 @@ export const onClipboardBubbleDismiss = (cb: () => void): Promise<UnlistenFn> =>
 export const onClipboardHistoryChanged = (cb: () => void): Promise<UnlistenFn> =>
   on("clipboard-history-changed", cb);
 
-/** Insertar en el compositor cuando el clipboard pega con agentes abierto. */
+/** Insertar en el compositor o la consola cuando el clipboard pega con agentes abierto. */
 export const onAgentsComposerInsert = (
   cb: (payload: AgentsComposerInsert) => void,
 ): Promise<UnlistenFn> => on("agents-composer-insert", cb);
 
-/** Inserta un ítem del historial en el composer (agentes abierto; no cierra clipboard). */
+/** Inserta un ítem del historial en agentes (abierto; no cierra clipboard). */
 export const insertClipboardIntoAgents = (id: string) =>
   invoke<void>("insert_clipboard_into_agents", { id });
 
-/** Tras OLE: si el cursor quedó sobre agentes, inserta en el composer. */
+/** Tras OLE: si el cursor quedó sobre agentes, inserta en composer/consola. */
 export const tryClipboardDropOnAgents = (id: string) =>
   invoke<boolean>("try_clipboard_drop_on_agents", { id });
+
+/** Mismo webview: avisa a las consolas que hay un OLE de clipboard en curso. */
+export const CLIPBOARD_OLE_EVENT = "atic-clipboard-ole";
+
+export type ClipboardOleDetail = { active: boolean };
+
+export function dispatchClipboardOle(active: boolean) {
+  window.dispatchEvent(
+    new CustomEvent<ClipboardOleDetail>(CLIPBOARD_OLE_EVENT, {
+      detail: { active },
+    }),
+  );
+}

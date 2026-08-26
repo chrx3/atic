@@ -722,3 +722,36 @@ pub fn ssh_test_host(
 pub fn ssh_list_hosts(state: State<AppState>) -> Vec<SshHost> {
     state.config.lock_or_recover().ssh_hosts.clone()
 }
+
+/// Aliases `Host` de `~/.ssh/config`: los mismos destinos que muestran
+/// VS Code / Cursor en Remote-SSH. Solo nombres concretos (sin comodines).
+#[tauri::command]
+pub fn ssh_config_aliases() -> Vec<String> {
+    let home = std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .map(std::path::PathBuf::from);
+    let Some(home) = home else {
+        return Vec::new();
+    };
+    let Ok(text) = std::fs::read_to_string(home.join(".ssh").join("config")) else {
+        return Vec::new();
+    };
+    let mut out: Vec<String> = Vec::new();
+    for line in text.lines() {
+        let mut it = line.split_whitespace();
+        let Some(key) = it.next() else { continue };
+        // `Host` define patrones; `HostName` es otra directiva y no cuenta.
+        if !key.eq_ignore_ascii_case("host") {
+            continue;
+        }
+        for name in it {
+            if name.contains(['*', '?', '!']) {
+                continue;
+            }
+            if !out.iter().any(|n| n == name) {
+                out.push(name.to_string());
+            }
+        }
+    }
+    out
+}

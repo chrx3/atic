@@ -569,7 +569,7 @@ pub fn list_clipboard_history(state: State<AppState>) -> Result<Vec<ClipboardIte
     collect_clipboard_items(&state)
 }
 
-/// Payload para insertar un ítem del clipboard en el compositor de agentes.
+/// Payload para insertar un ítem del clipboard en agentes (composer o consola).
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentsComposerInsert {
@@ -578,6 +578,51 @@ pub struct AgentsComposerInsert {
     pub text: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub image_path: Option<String>,
+    /// Cursor en CSS del overlay al soltar; la consola elige el panel de debajo.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub x: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub y: Option<f64>,
+}
+
+impl AgentsComposerInsert {
+    fn at(
+        kind: ClipboardKind,
+        text: Option<String>,
+        image_path: Option<String>,
+        locate: bool,
+    ) -> Self {
+        let (x, y) = if locate {
+            crate::overlay::cursor_css_point()
+                .map(|(x, y)| (Some(x), Some(y)))
+                .unwrap_or((None, None))
+        } else {
+            (None, None)
+        };
+        Self {
+            kind,
+            text,
+            image_path,
+            x,
+            y,
+        }
+    }
+
+    fn text(text: String) -> Self {
+        Self::at(ClipboardKind::Text, Some(text), None, false)
+    }
+
+    fn image(path: String) -> Self {
+        Self::at(ClipboardKind::Image, None, Some(path), false)
+    }
+
+    fn text_drop(text: String) -> Self {
+        Self::at(ClipboardKind::Text, Some(text), None, true)
+    }
+
+    fn image_drop(path: String) -> Self {
+        Self::at(ClipboardKind::Image, None, Some(path), true)
+    }
 }
 
 /// True si la burbuja de agentes está a la vista (crate-interno).
@@ -597,11 +642,7 @@ pub(crate) fn insert_text_into_agents(app: &AppHandle, text: &str) -> Result<(),
     }
     let _ = app.emit(
         "agents-composer-insert",
-        AgentsComposerInsert {
-            kind: ClipboardKind::Text,
-            text: Some(text.to_string()),
-            image_path: None,
-        },
+        AgentsComposerInsert::text(text.to_string()),
     );
     // Sin `set_focus`: la consola ya no es una ventana, y el foco del overlay lo
     // pide el propio campo al recibir el clic (`set_overlay_text_mode`).
@@ -681,16 +722,9 @@ pub async fn start_clipboard_text_drag(
         })
         .map_err(|e| e.to_string())?;
         let effect = rx.recv().map_err(|e| e.to_string())??;
-        // CANCEL sobre agentes (QueryContinueDrag) o NONE: insertar en composer.
+        // CANCEL sobre agentes (QueryContinueDrag) o NONE: insertar en composer/consola.
         if agents_visible(&app) && crate::overlay::cursor_over_hit_id("agents") {
-            let _ = app.emit(
-                "agents-composer-insert",
-                AgentsComposerInsert {
-                    kind: ClipboardKind::Text,
-                    text: Some(text),
-                    image_path: None,
-                },
-            );
+            let _ = app.emit("agents-composer-insert", AgentsComposerInsert::text_drop(text));
             let _ = effect;
         }
         Ok(())
@@ -760,21 +794,13 @@ pub fn paste_clipboard_item(
                 if text.is_empty() {
                     return Err(item_empty_text());
                 }
-                AgentsComposerInsert {
-                    kind: ClipboardKind::Text,
-                    text: Some(text),
-                    image_path: None,
-                }
+                AgentsComposerInsert::text(text)
             }
             ClipboardKind::Image => {
                 let path = item
                     .image_path
                     .ok_or_else(|| crate::ui_lang::msg("Imagen sin ruta", "Image has no path"))?;
-                AgentsComposerInsert {
-                    kind: ClipboardKind::Image,
-                    text: None,
-                    image_path: Some(path),
-                }
+                AgentsComposerInsert::image(path)
             }
         };
         let _ = app.emit("agents-composer-insert", payload);
@@ -845,28 +871,20 @@ pub fn insert_clipboard_into_agents(
             if text.is_empty() {
                 return Err(item_empty_text());
             }
-            AgentsComposerInsert {
-                kind: ClipboardKind::Text,
-                text: Some(text),
-                image_path: None,
-            }
+            AgentsComposerInsert::text_drop(text)
         }
         ClipboardKind::Image => {
             let path = item
                 .image_path
                 .ok_or_else(|| crate::ui_lang::msg("Imagen sin ruta", "Image has no path"))?;
-            AgentsComposerInsert {
-                kind: ClipboardKind::Image,
-                text: None,
-                image_path: Some(path),
-            }
+            AgentsComposerInsert::image_drop(path)
         }
     };
     let _ = app.emit("agents-composer-insert", payload);
     Ok(())
 }
 
-/// Tras OLE de imagen: si el cursor quedó sobre agentes, insertar en el composer
+/// Tras OLE de imagen: si el cursor quedó sobre agentes, insertar en composer/consola
 /// (misma webview: HDROP a menudo no dispara el HTML5 drop).
 #[tauri::command]
 pub fn try_clipboard_drop_on_agents(

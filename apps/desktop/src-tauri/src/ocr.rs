@@ -24,7 +24,68 @@ fn strip_verbatim_prefix(path: &Path) -> PathBuf {
 }
 
 fn ensure_capture_path(state: &AppState, path: &str) -> Result<PathBuf, String> {
-    capture::ensure_capture_in_dir(&state.dirs.captures_dir(), Path::new(path))
+    capture::ensure_app_image(state, Path::new(path))
+}
+
+/// Windows.Media.Ocr falla en recortes de una línea o de pocos píxeles de
+/// alto: el motor espera texto ~12 px y margen alrededor. Agranda y rellena
+/// con el color del borde; si el decode falla, se manda el PNG original.
+fn prepare_ocr_png(bytes: &[u8]) -> Vec<u8> {
+    use image::imageops::{self, FilterType};
+    use image::{DynamicImage, GenericImageView, ImageFormat, RgbImage};
+    use std::io::Cursor;
+
+    let Ok(img) = image::load_from_memory(bytes) else {
+        return bytes.to_vec();
+    };
+    let (w, h) = img.dimensions();
+    if w == 0 || h == 0 {
+        return bytes.to_vec();
+    }
+
+    const TARGET_MIN: u32 = 160;
+    const TARGET_H: u32 = 72;
+    const MAX_DIM: u32 = 2400;
+    const PAD: u32 = 24;
+
+    let mut scale = 1.0_f32;
+    if w.min(h) < TARGET_MIN {
+        scale = scale.max(TARGET_MIN as f32 / w.min(h) as f32);
+    }
+    if h < TARGET_H {
+        scale = scale.max(TARGET_H as f32 / h as f32);
+    }
+    scale = scale.clamp(1.0, 4.0);
+
+    let mut nw = ((w as f32) * scale).round().max(1.0) as u32;
+    let mut nh = ((h as f32) * scale).round().max(1.0) as u32;
+    let longest = nw.max(nh);
+    if longest > MAX_DIM {
+        let cap = MAX_DIM as f32 / longest as f32;
+        nw = ((nw as f32) * cap).round().max(1.0) as u32;
+        nh = ((nh as f32) * cap).round().max(1.0) as u32;
+    }
+
+    let scaled = if nw != w || nh != h {
+        img.resize_exact(nw, nh, FilterType::Lanczos3)
+    } else {
+        img
+    };
+
+    let rgb = scaled.to_rgb8();
+    let fill = *rgb.get_pixel(0, 0);
+    let mut canvas: RgbImage =
+        image::ImageBuffer::from_pixel(rgb.width() + PAD * 2, rgb.height() + PAD * 2, fill);
+    imageops::replace(&mut canvas, &rgb, i64::from(PAD), i64::from(PAD));
+
+    let mut out = Cursor::new(Vec::new());
+    if DynamicImage::ImageRgb8(canvas)
+        .write_to(&mut out, ImageFormat::Png)
+        .is_err()
+    {
+        return bytes.to_vec();
+    }
+    out.into_inner()
 }
 
 #[cfg(windows)]
@@ -48,6 +109,7 @@ fn ocr_image_at(path: &Path) -> Result<String, String> {
             "The capture is empty.",
         ));
     }
+    let bytes = prepare_ocr_png(&bytes);
 
     let stream = InMemoryRandomAccessStream::new().map_err(|e| e.to_string())?;
     {

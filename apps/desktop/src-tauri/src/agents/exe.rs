@@ -102,6 +102,12 @@ pub fn launcher(program: &str) -> Option<(PathBuf, Vec<String>)> {
     Some((path, Vec::new()))
 }
 
+/// ¿Este binario está en el PATH (con la misma regla que al spawnear)?
+#[tauri::command]
+pub fn cli_on_path(name: String) -> bool {
+    resolve(name.trim()).is_some()
+}
+
 /// El núcleo, con el entorno inyectado.
 ///
 /// Separado de [`resolve`] para poder probarlo: la versión pública depende del

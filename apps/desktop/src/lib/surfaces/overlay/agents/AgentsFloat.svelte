@@ -26,8 +26,8 @@
   import { createBubbleDrag } from "$surfaces/overlay/bubbleDrag";
   import {
     expandPanelFromSeed,
-    placeBesidePill,
     placePanelFusedSeed,
+    placePanelResting,
   } from "$surfaces/overlay/floatPlace";
   import { separateAxisProp, waitFrames } from "$surfaces/overlay/floatReveal";
   import AgentLauncher from "$features/agents/AgentLauncher.svelte";
@@ -41,7 +41,8 @@
   } from "$surfaces/overlay/openDismissGrace";
 
   const BUBBLE_CORNER = 26;
-  const BIRTH_SEED_HOLD_MS = 36;
+  /* Un beat visible en la pill antes de crecer: así se LEE que nace de ahí. */
+  const BIRTH_SEED_HOLD_MS = 60;
   const POSITION_STORAGE_KEY = "atic.agents.consolePosition";
   const SETUP_WIDTH_STORAGE_KEY = "atic.agents.setupWidth";
   const POSITION_MARGIN = 12;
@@ -91,18 +92,6 @@
     }
   }
 
-  function readSavedPosition(): SavedPosition | null {
-    try {
-      const value = JSON.parse(
-        localStorage.getItem(POSITION_STORAGE_KEY) ?? "null",
-      ) as Partial<SavedPosition> | null;
-      if (!value || !Number.isFinite(value.x) || !Number.isFinite(value.y)) return null;
-      return { x: value.x!, y: value.y! };
-    } catch {
-      return null;
-    }
-  }
-
   function savePosition() {
     const a = bubble.anchor;
     if (!a) return;
@@ -119,11 +108,9 @@
   function positionInWorkspace(
     pill: { x: number; y: number; w: number; h: number },
     panel: { w: number; h: number },
-    preferred: SavedPosition | null,
+    preferred: SavedPosition,
   ): SavedPosition {
-    const point = preferred
-      ? { x: preferred.x + panel.w / 2, y: preferred.y + panel.h / 2 }
-      : { x: pill.x + pill.w / 2, y: pill.y + pill.h / 2 };
+    const point = { x: preferred.x + panel.w / 2, y: preferred.y + panel.h / 2 };
     const pillPoint = { x: pill.x + pill.w / 2, y: pill.y + pill.h / 2 };
     const contains = (area: Area, p: { x: number; y: number }) =>
       p.x >= area.x &&
@@ -131,51 +118,68 @@
       p.y >= area.y &&
       p.y <= area.y + area.h;
     const area =
-      workAreas.find((candidate) => contains(candidate, point)) ??
       workAreas.find((candidate) => contains(candidate, pillPoint)) ??
+      workAreas.find((candidate) => contains(candidate, point)) ??
       workAreas[0] ??
       ({ x: 0, y: 0, w: window.innerWidth, h: window.innerHeight } satisfies Area);
     const work = workAreaOf(area);
-    const centered = {
-      x: work.x + (work.w - panel.w) / 2,
-      y: work.y + (work.h - panel.h) / 2,
-    };
-    const wanted = preferred ?? centered;
     const minX = work.x + POSITION_MARGIN;
     const minY = work.y + POSITION_MARGIN;
     const maxX = Math.max(minX, work.x + work.w - panel.w - POSITION_MARGIN);
     const maxY = Math.max(minY, work.y + work.h - panel.h - POSITION_MARGIN);
     return {
-      x: Math.round(Math.min(Math.max(wanted.x, minX), maxX)),
-      y: Math.round(Math.min(Math.max(wanted.y, minY), maxY)),
+      x: Math.round(Math.min(Math.max(preferred.x, minX), maxX)),
+      y: Math.round(Math.min(Math.max(preferred.y, minY), maxY)),
     };
   }
 
-  function resolveRestingOpen(
-    a: BubbleOpen,
-    preferred: SavedPosition | null,
-  ): BubbleOpen {
+  function placeNearPill(a: BubbleOpen, size: { w: number; h: number }): BubbleOpen {
     const pill = surfaces.live["pill-skin"] ?? surfaces.live["pill"];
     if (!pill) {
       return {
         ...a,
         ...positionInWorkspace(
           { x: a.x, y: a.y, w: 1, h: 1 },
-          { w: a.w, h: a.h },
-          preferred,
+          size,
+          { x: a.x, y: a.y },
         ),
+        ...size,
       };
     }
-    const beside = placeBesidePill(
-      pill,
-      { w: a.w, h: a.h },
-      { corner: BUBBLE_CORNER, work: workAreas },
-    );
     return {
       ...a,
-      ...beside,
-      ...positionInWorkspace(pill, { w: a.w, h: a.h }, preferred),
+      ...placePanelResting(pill, size, {
+        corner: BUBBLE_CORNER,
+        work: workAreas,
+      }),
+      ...size,
     };
+  }
+
+  function resolveRestingOpen(
+    a: BubbleOpen,
+    keep: SavedPosition | null,
+  ): BubbleOpen {
+    const panel = { w: a.w, h: a.h };
+    if (keep) {
+      const pill = surfaces.live["pill-skin"] ?? surfaces.live["pill"] ?? {
+        x: a.x,
+        y: a.y,
+        w: 1,
+        h: 1,
+      };
+      return { ...a, ...positionInWorkspace(pill, panel, keep) };
+    }
+    return placeNearPill(a, panel);
+  }
+
+  async function ensureWorkAreas() {
+    if (workAreas.length > 0) return;
+    try {
+      workAreas = await overlayWorkAreas();
+    } catch {
+      workAreas = [];
+    }
   }
 
   function setupHeight(width: number): number {
@@ -186,8 +190,8 @@
     if (launcherView === "console") {
       return {
         ...a,
-        w: Math.max(BUBBLE_MIN_W, consoleSize.w, a.w),
-        h: Math.max(CONSOLE_MIN_H, consoleSize.h, a.h),
+        w: Math.max(CONSOLE_DEFAULT_W, consoleSize.w),
+        h: Math.max(CONSOLE_DEFAULT_H, consoleSize.h),
       };
     }
     if (browserOpen) {
@@ -216,16 +220,23 @@
     });
   }
 
-  function placeFromPill(a: BubbleOpen) {
+  let placeEpoch = 0;
+
+  async function placeFromPill(a: BubbleOpen) {
+    const epoch = ++placeEpoch;
+    clearSizeToggles();
     a = frameForView(a);
     const fresh = !bubble.alive || !bubble.shown;
     if (fresh) armOpenDismissGrace();
 
-    const preferred =
+    await ensureWorkAreas();
+    if (epoch !== placeEpoch) return;
+
+    const keep =
       !fresh && bubble.anchor
         ? { x: bubble.anchor.x, y: bubble.anchor.y }
-        : readSavedPosition();
-    restingOpen = resolveRestingOpen(a, preferred);
+        : null;
+    restingOpen = resolveRestingOpen(a, keep);
 
     if (fresh || revealPhase === "hidden") {
       placeBirthSeed(a);
@@ -234,39 +245,9 @@
     if (revealPhase === "ready") bubble.place(restingOpen);
   }
 
-  async function changeLauncherView(next: LauncherView) {
-    if (launcherView === next) return;
-    const current = bubble.anchor;
-    launcherView = next;
-    if (next === "console") browserOpen = false;
-    if (!current) return;
-
-    if (next === "console") {
-      setupWidth = current.w;
-      saveSetupWidth();
-    } else {
-      consoleSize = { w: current.w, h: current.h };
-    }
-
-    const size =
-      next === "console"
-        ? {
-            w: Math.max(BUBBLE_MIN_W, consoleSize.w, current.w),
-            h: Math.max(CONSOLE_MIN_H, consoleSize.h),
-          }
-        : {
-            w: Math.max(BUBBLE_MIN_W, setupWidth),
-            h: setupHeight(Math.max(BUBBLE_MIN_W, setupWidth)),
-          };
-    const pill = surfaces.live["pill-skin"] ?? surfaces.live["pill"] ?? current;
-    const position = positionInWorkspace(pill, size, { x: current.x, y: current.y });
-    const target: BubbleOpen = {
-      ...current,
-      side: current.side as BubbleOpen["side"],
-      ...position,
-      ...size,
-    };
-
+  async function animateToSize(current: BubbleOpen, size: { w: number; h: number }) {
+    await ensureWorkAreas();
+    const target = placeNearPill(current, size);
     const epoch = ++modeResizeEpoch;
     modeResizing = true;
     await tick();
@@ -276,8 +257,40 @@
     if (epoch === modeResizeEpoch) modeResizing = false;
   }
 
+  async function changeLauncherView(next: LauncherView) {
+    if (launcherView === next) return;
+    clearSizeToggles();
+    const current = bubble.anchor;
+    launcherView = next;
+    if (next === "console") browserOpen = false;
+    if (!current) return;
+
+    if (next === "console") {
+      setupWidth = current.w;
+      saveSetupWidth();
+    } else if (current.h >= CONSOLE_MIN_H) {
+      consoleSize = {
+        w: Math.max(CONSOLE_DEFAULT_W, current.w),
+        h: Math.max(CONSOLE_DEFAULT_H, current.h),
+      };
+    }
+
+    const size =
+      next === "console"
+        ? {
+            w: Math.max(CONSOLE_DEFAULT_W, consoleSize.w, current.w),
+            h: Math.max(CONSOLE_DEFAULT_H, consoleSize.h),
+          }
+        : {
+            w: Math.max(BUBBLE_MIN_W, setupWidth),
+            h: setupHeight(Math.max(BUBBLE_MIN_W, setupWidth)),
+          };
+    await animateToSize(current, size);
+  }
+
   async function changeBrowser(open: boolean) {
     if (browserOpen === open) return;
+    clearSizeToggles();
     const current = bubble.anchor;
     browserOpen = open;
     if (!current) return;
@@ -293,22 +306,7 @@
     const size = open
       ? { w: width, h: Math.max(BROWSER_MIN_H, browserSize.h) }
       : { w: width, h: setupHeight(width) };
-    const pill = surfaces.live["pill-skin"] ?? surfaces.live["pill"] ?? current;
-    const position = positionInWorkspace(pill, size, { x: current.x, y: current.y });
-    const target: BubbleOpen = {
-      ...current,
-      side: current.side as BubbleOpen["side"],
-      ...position,
-      ...size,
-    };
-
-    const epoch = ++modeResizeEpoch;
-    modeResizing = true;
-    await tick();
-    bubble.setFrame(target.x, target.y, target.w, target.h);
-    restingOpen = target;
-    await wait(ms(MOTION.medium));
-    if (epoch === modeResizeEpoch) modeResizing = false;
+    await animateToSize(current, size);
   }
 
   async function runOpenReveal() {
@@ -355,6 +353,78 @@
     revealPhase = "ready";
   }
 
+  /* ─── Agrandar / minimizar ──────────────────────────────────────────────
+     Agrandar llena el área de trabajo del monitor actual (toggle restaura el
+     marco previo). Minimizar colapsa a solo la barra vía CSS: el ancla lógica
+     no baja de `BUBBLE_MIN_H`, así que el marco queda intacto y restaurar es
+     quitar la clase. Redimensionar a mano o reabrir desde la pill los limpia. */
+  type Frame = { x: number; y: number; w: number; h: number };
+  let maximized = $state(false);
+  let minimized = $state(false);
+  let frameBeforeMax: Frame | null = null;
+
+  async function animateFrame(target: Frame) {
+    const epoch = ++modeResizeEpoch;
+    modeResizing = true;
+    await tick();
+    bubble.setFrame(target.x, target.y, target.w, target.h);
+    const a = bubble.anchor;
+    if (a) restingOpen = { ...a, ...target, side: a.side as BubbleOpen["side"] };
+    await wait(ms(MOTION.medium));
+    if (epoch === modeResizeEpoch) modeResizing = false;
+  }
+
+  function workAreaAround(frame: Frame) {
+    const cx = frame.x + frame.w / 2;
+    const cy = frame.y + frame.h / 2;
+    const area =
+      workAreas.find(
+        (a) => cx >= a.x && cx <= a.x + a.w && cy >= a.y && cy <= a.y + a.h,
+      ) ??
+      workAreas[0] ??
+      ({ x: 0, y: 0, w: window.innerWidth, h: window.innerHeight } satisfies Area);
+    return workAreaOf(area);
+  }
+
+  function clearSizeToggles() {
+    maximized = false;
+    minimized = false;
+    frameBeforeMax = null;
+  }
+
+  function toggleMaximize() {
+    const a = bubble.anchor;
+    if (!a) return;
+    if (minimized) minimized = false;
+    if (maximized && frameBeforeMax) {
+      const prev = frameBeforeMax;
+      maximized = false;
+      frameBeforeMax = null;
+      void animateFrame(prev);
+      return;
+    }
+    frameBeforeMax = { x: a.x, y: a.y, w: a.w, h: a.h };
+    maximized = true;
+    const work = workAreaAround(frameBeforeMax);
+    void animateFrame({
+      x: work.x + POSITION_MARGIN,
+      y: work.y + POSITION_MARGIN,
+      w: work.w - POSITION_MARGIN * 2,
+      h: work.h - POSITION_MARGIN * 2,
+    });
+  }
+
+  async function toggleMinimize() {
+    if (!bubble.anchor) return;
+    const epoch = ++modeResizeEpoch;
+    // `is-mode-resizing` antes del flip de clase: así la altura transiciona.
+    modeResizing = true;
+    minimized = !minimized;
+    await tick();
+    await wait(ms(MOTION.medium));
+    if (epoch === modeResizeEpoch) modeResizing = false;
+  }
+
   type ResizeEdge = "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw";
 
   const bubble = new Bubble();
@@ -380,6 +450,8 @@
     if (event.button !== 0 || !bubble.anchor) return;
     event.preventDefault();
     event.stopPropagation();
+    // Estirar a mano toma el control: el tamaño ya no es "maximizado".
+    clearSizeToggles();
     const a = bubble.anchor;
     resize = {
       edge,
@@ -457,14 +529,23 @@
     }
   }
 
+  function releaseOverlayKeyboard() {
+    const ae = document.activeElement;
+    if (ae instanceof HTMLElement && bubEl?.contains(ae)) ae.blur();
+    surfaces.resetInteraction();
+    window.dispatchEvent(new Event("atic-overlay-leave-text"));
+  }
+
   function close() {
     if (!bubble.shown) return;
     revealEpoch += 1;
     modeResizeEpoch += 1;
     modeResizing = false;
     revealPhase = "ready";
+    clearSizeToggles();
     endDrag();
     endResize();
+    releaseOverlayKeyboard();
     bubble.hide();
     void hideAgentsWindow();
     agents.watch(null);
@@ -519,11 +600,10 @@
   });
 
   $effect(() => {
-    // Registrar en cuanto hay DOM (`alive`), no esperar `.is-shown`: sin
-    // hit-rect el overlay sigue click-through (clics al app de atrás).
-    // No depender de `shown` acá: re-add al morph reinicia el registro y
-    // puede publicar un frame sin `agents` en la lista.
-    if (!bubEl || !bubble.alive) return;
+    // Solo con el globo visible. Si queda `alive` al esconder (PTYs vivas),
+    // publicar el rect de 680×520 arma el overlay sobre un hueco invisible
+    // y la pill deja de recibir el mouse.
+    if (!bubEl || !bubble.alive || !bubble.shown) return;
     const stop = surfaces.add("agents", bubEl);
     void surfaces.flush();
     return stop;
@@ -560,9 +640,9 @@
         workAreas = [];
       });
     const un: Promise<() => void>[] = [
-      onAgentsBubbleAnchor((a) => placeFromPill(a)),
+      onAgentsBubbleAnchor((a) => void placeFromPill(a)),
       onAgentsBubbleDismiss(() => {
-        bubble.hide();
+        close();
       }),
       // Clic afuera (Raw Input → overlay-dismiss). Pin / diálogo nativo → no.
       onOverlayDismiss(() => {
@@ -605,6 +685,7 @@
     class:is-expanding={expanding}
     class:is-settling={settling}
     class:is-mode-resizing={modeResizing}
+    class:is-minimized={minimized}
     data-agents-float
     data-side={bubble.anchor?.side ?? "top"}
     style={bubble.vars}
@@ -618,6 +699,11 @@
         onClose={close}
         onViewChange={(view) => void changeLauncherView(view)}
         onBrowserChange={(open) => void changeBrowser(open)}
+        onToggleMaximize={toggleMaximize}
+        onToggleMinimize={() => void toggleMinimize()}
+        {maximized}
+        {minimized}
+        shown={bubble.shown}
       />
       <!-- local: sin popover/viewport; el overlay es fullscreen y el toast
          quedaría abajo de toda la pantalla, lejos del bubble. -->
@@ -681,8 +767,15 @@
 
 <style>
   .af {
+    /* Sobreimpulso sutil solo en el tamaño: el panel "respira" al abrirse.
+       La posición va en smooth-out para que la trayectoria no serpentee. */
+    --ease-emerge: cubic-bezier(0.3, 1.18, 0.36, 1);
+
     position: absolute;
-    z-index: var(--z-overlay-float);
+
+    /* Bajo la pill (a diferencia de los otros floats): esta ventana es grande
+       y puede taparla entera; la pill y sus elementos siempre quedan visibles. */
+    z-index: calc(var(--z-overlay-pill) - 1);
     left: var(--x);
     top: var(--y);
     width: var(--w);
@@ -694,7 +787,9 @@
     display: flex;
     flex-direction: column;
     border-radius: 1.625rem;
-    background: var(--rb-surface);
+    /* Transparente: un fill opaco tapa la sombra de la piel y deja un
+       hairline en el cuello fundido con la pill. */
+    background: transparent;
     overflow: hidden;
     opacity: 0;
     pointer-events: none;
@@ -708,8 +803,8 @@
 
   .af.is-expanding {
     transition:
-      width var(--agents-grow-dur) var(--ease-smooth-out),
-      height var(--agents-grow-dur) var(--ease-smooth-out),
+      width var(--agents-grow-dur) var(--ease-emerge),
+      height var(--agents-grow-dur) var(--ease-emerge),
       left var(--agents-grow-dur) var(--ease-smooth-out),
       top var(--agents-grow-dur) var(--ease-smooth-out),
       opacity var(--duration-quick) var(--ease-smooth-out);
@@ -733,9 +828,14 @@
       opacity var(--duration-quick) var(--ease-smooth-out);
   }
 
-  .af.is-shown:not(.is-expanding, .is-settling) {
-    /* El PickerMenu del composer abre hacia arriba una vez terminado el morph. */
-    overflow: visible;
+  /* Colapsado a solo la barra. La altura se pisa por CSS (el ancla lógica no
+     baja de BUBBLE_MIN_H); el contenido bajo la barra queda recortado. */
+  .af.is-minimized {
+    height: 52px;
+  }
+
+  .af.is-shown.is-minimized {
+    overflow: hidden;
   }
 
   .af-stage {
@@ -752,6 +852,23 @@
     transition:
       opacity var(--duration-quick) var(--ease-smooth-out),
       transform var(--duration-fast) var(--ease-smooth-out);
+  }
+
+  /* El contenido entra DESDE la pill: `side` dice en qué borde quedó el
+     cuello (top = pill arriba del panel), y el origen sigue a --tail. */
+  .af[data-side="bottom"] .af-stage {
+    transform: translateY(8px) scale(0.985);
+    transform-origin: var(--tail, 50%) 100%;
+  }
+
+  .af[data-side="left"] .af-stage {
+    transform: translateX(-8px) scale(0.985);
+    transform-origin: 0 var(--tail, 50%);
+  }
+
+  .af[data-side="right"] .af-stage {
+    transform: translateX(8px) scale(0.985);
+    transform-origin: 100% var(--tail, 50%);
   }
 
   .af.is-shown:not(.is-expanding) .af-stage {

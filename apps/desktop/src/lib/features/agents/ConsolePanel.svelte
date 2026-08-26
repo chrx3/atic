@@ -13,20 +13,32 @@
   import { FitAddon } from "@xterm/addon-fit";
   import "@xterm/xterm/css/xterm.css";
   import {
+    agentStageImage,
     agentsAlwaysOnTop,
     consoleClose,
+    consoleGc,
     consoleOpen,
     consoleResize,
     consoleWrite,
+    cliOnPath,
     onAgentsWorkspaceShortcut,
     onConsoleExit,
     onConsoleOutput,
     setAgentsAlwaysOnTop,
+    sshConfigAliases,
     sshListHosts,
   } from "$ipc/agents";
+  import { AGENTS } from "./agentCatalog";
   import { getConfig } from "$ipc/config";
-  import { pillTrace } from "$ipc/overlay";
-  import type { ConsoleKind, SshHost } from "$lib/types";
+  import {
+    CLIPBOARD_OLE_EVENT,
+    onAgentsComposerInsert,
+    readClipboardDragText,
+    type ClipboardOleDetail,
+  } from "$ipc/clipboard";
+  import { overlayCursor, pillTrace, setOverlayTextMode } from "$ipc/overlay";
+  import type { AgentsWorkspaceShortcut } from "$ipc/events";
+  import type { AgentsComposerInsert, ConsoleKind, SshHost } from "$lib/types";
   import EmptyState from "$lib/ui/EmptyState.svelte";
   import AccountUsageModal from "./AccountUsageModal.svelte";
   import AgentLogo from "./AgentLogo.svelte";
@@ -34,13 +46,16 @@
   import {
     ArrowLeft,
     Activity,
-    PanelBottomOpen,
-    PanelRightOpen,
+    Minus,
     Pin,
     Plus,
+    Square,
     SquareTerminal,
     X,
+    Keyboard,
+    EllipsisVertical,
   } from "$lib/icons";
+  import { t } from "$lib/domain/i18n.svelte";
 
   let {
     remoteHost = null,
@@ -50,6 +65,10 @@
     onClose,
     onBack,
     onBarPointerDown,
+    onToggleMaximize,
+    onToggleMinimize,
+    maximized = false,
+    minimized = false,
   }: {
     /** Host SSH del destino actual de agentes; default de una pestaña nueva. */
     remoteHost?: SshHost | null;
@@ -70,6 +89,12 @@
      * lleva `data-no-drag` justamente para que este handler pueda tomarla.
      */
     onBarPointerDown?: (e: PointerEvent) => void;
+    /** Agrandar al área de trabajo del monitor (toggle restaura). */
+    onToggleMaximize?: () => void;
+    /** Colapsar el float a solo la barra (toggle restaura). */
+    onToggleMinimize?: () => void;
+    maximized?: boolean;
+    minimized?: boolean;
   } = $props();
 
   /** Semilla de pestaña del lanzador: consola local corriendo un agente. */
@@ -190,6 +215,18 @@
   let railWidth = $state(RAIL_DEFAULT);
   let pinned = $state(false);
   let usageOpen = $state(false);
+  let shortcutsOpen = $state(false);
+  let moreOpen = $state(false);
+  let addMenuOpen = $state(false);
+  /** `cli → en PATH`. Se llena al abrir el menú "+" por primera vez. */
+  let agentOnPath = $state<Record<string, boolean>>({});
+  let agentPathChecked = false;
+  /** Aliases `Host` de ~/.ssh/config (VS Code / Cursor los usan igual). */
+  let sshAliases = $state<string[]>([]);
+  /** Comandos que el usuario guardó desde "Comando…" (`ssh root@ip`, `dashboard`). */
+  let savedCmds = $state<string[]>([]);
+  let cmdPromptOpen = $state(false);
+  let cmdText = $state("");
   let consoleEl = $state<HTMLElement | null>(null);
 
   /** xterm por pestaña. Fuera de `$state` (ver `Tab`). */
@@ -197,6 +234,19 @@
   const boxes = new Map<string, Box>();
   let stopListen: (() => void) | null = null;
   let seq = 0;
+  /** Output que llegó antes de mapear la sesión o de abrir el xterm. */
+  const outputBuf = new Map<string, string>();
+  const OUTPUT_BUF_MAX = 256_000;
+  let resolveListen: () => void = () => {};
+  const listenReady = new Promise<void>((resolve) => {
+    resolveListen = resolve;
+  });
+  /** El TUI de Cursor/Claude no se recobra si el PTY nace en un panel de 40 px. */
+  const MIN_TERM_W = 280;
+  const MIN_TERM_H = 160;
+  let pendingKeys = $state<Record<string, true>>({});
+  let bootedKeys = $state<Record<string, true>>({});
+  const bootTimers = new Map<string, number>();
 
   const active = $derived(tabs.find((t) => t.key === activeKey) ?? null);
   const usageAgent = $derived(
@@ -212,10 +262,14 @@
   );
   const paneMode = $derived(visiblePaneKeys.length > 1);
   const railCompact = $derived(railWidth < 92);
+  const hasIdleTab = $derived(
+    tabs.some((t) => !t.sessionId && !pendingKeys[t.key]),
+  );
+  const canAddTab = $derived(tabs.length < MAX_TABS || hasIdleTab);
 
   function focusVisiblePane(key: string) {
+    scheduleFitVisible();
     requestAnimationFrame(() => {
-      fitAndResize(key);
       if (sessionOf(key)) requestOverlayKeyboard(key);
     });
   }
@@ -317,18 +371,21 @@
   /**
    * WebView2 omite algunos `keydown` sin Shift dentro del textarea de xterm,
    * pero xterm sí los traduce a sus bytes de control. Consumirlos acá evita
-   * que Ctrl+D llegue como EOF al shell y que Ctrl+N llegue como `next`.
+   * que Ctrl+D llegue como EOF al CLI y que Ctrl+W borre una palabra.
    */
   function consumeTerminalControlData(key: string, data: string): boolean {
-    if (data !== "\x04" && data !== "\x0e") return false;
+    if (data !== "\x04" && data !== "\x0e" && data !== "\x17") return false;
     activeKey = key;
     error = null;
     if (data === "\x04") {
       traceWorkspaceShortcut("xterm-data", "split-right");
       splitPane("right");
-    } else {
+    } else if (data === "\x0e") {
       traceWorkspaceShortcut("xterm-data", "new-console");
       newTab("local");
+    } else if (activeKey) {
+      traceWorkspaceShortcut("xterm-data", "close-console");
+      void closeTab(key);
     }
     return true;
   }
@@ -394,23 +451,19 @@
     consumeWorkspaceShortcut(event, "window");
   }
 
-  function consumeNativeWorkspaceShortcut(
-    action: "split-right" | "split-down" | "new-console" | "close-console",
-  ) {
+  function consumeNativeWorkspaceShortcut(action: AgentsWorkspaceShortcut) {
     traceWorkspaceShortcut("native", action);
     if (action === "split-right") splitPane("right");
     else if (action === "split-down") splitPane("down");
     else if (action === "new-console") newTab("local");
-    else if (activeKey) void closeTab(activeKey);
+    else if (action === "close-console" && activeKey) void closeTab(activeKey);
   }
 
   // Al sumar/quitar paneles o cambiar el rail, cada xterm cambia de tamaño.
   $effect(() => {
     void paneRects;
     void railWidth;
-    requestAnimationFrame(() => {
-      for (const key of visiblePaneKeys) fitAndResize(key);
-    });
+    scheduleFitVisible();
   });
 
   function hostLabel(h: SshHost): string {
@@ -479,6 +532,75 @@
     return tabs.find((t) => t.sessionId === id);
   }
 
+  function pushOutput(session: string, data: string) {
+    const t = tabForSession(session);
+    const term = t ? termOf(t.key) : null;
+    if (term) {
+      term.write(data);
+      if (t) markBooted(t.key);
+      return;
+    }
+    const prev = outputBuf.get(session) ?? "";
+    const next =
+      prev.length + data.length > OUTPUT_BUF_MAX
+        ? (prev + data).slice(-OUTPUT_BUF_MAX)
+        : prev + data;
+    outputBuf.set(session, next);
+  }
+
+  function flushOutput(session: string, key: string) {
+    const pending = outputBuf.get(session);
+    if (!pending) return;
+    outputBuf.delete(session);
+    termOf(key)?.write(pending);
+    markBooted(key);
+  }
+
+  function markPending(key: string, on: boolean) {
+    if (on) {
+      pendingKeys = { ...pendingKeys, [key]: true };
+      return;
+    }
+    if (!pendingKeys[key]) return;
+    const next = { ...pendingKeys };
+    delete next[key];
+    pendingKeys = next;
+  }
+
+  function markBooted(key: string) {
+    const timer = bootTimers.get(key);
+    if (timer) {
+      window.clearTimeout(timer);
+      bootTimers.delete(key);
+    }
+    if (bootedKeys[key]) return;
+    bootedKeys = { ...bootedKeys, [key]: true };
+    markPending(key, false);
+  }
+
+  function armBootTimeout(key: string) {
+    const prev = bootTimers.get(key);
+    if (prev) window.clearTimeout(prev);
+    bootTimers.set(
+      key,
+      window.setTimeout(() => markBooted(key), 2500),
+    );
+  }
+
+  function paneLoading(key: string): boolean {
+    const tab = tabOf(key);
+    if (!tab || bootedKeys[key]) return false;
+    if (pendingKeys[key]) return true;
+    return !!tab.sessionId && !!tab.command;
+  }
+
+  const CONSOLE_SHORTCUTS = [
+    { keys: "Ctrl+D", labelKey: "page.agents.shortcutSplitRight" },
+    { keys: "Ctrl+Shift+D", labelKey: "page.agents.shortcutSplitDown" },
+    { keys: "Ctrl+N", labelKey: "page.agents.shortcutNew" },
+    { keys: "Ctrl+W", labelKey: "page.agents.shortcutClose" },
+  ] as const;
+
   async function loadSshHosts() {
     try {
       sshHosts = await sshListHosts();
@@ -505,33 +627,92 @@
   }
 
   /**
-   * Tras Conectar / switch: dispara el mismo camino que un clic en el term
-   * para que OverlaySurface active set_overlay_text_mode.
+   * Pedir teclado al overlay sin un pointerdown sintético: ese clic disparaba
+   * `set_focusable` y dejaba la lámina opaca a pantalla completa (pill y main
+   * muertos). El modo texto lo activa OverlaySurface con un clic real, o Rust
+   * reponiendo click-through después de `set_overlay_text_mode`.
    */
   function requestOverlayKeyboard(key = activeKey) {
-    const host = boxes.get(key)?.el ?? null;
-    if (!host) {
-      focusTerm(key);
-      return;
-    }
-    host.dispatchEvent(
-      new PointerEvent("pointerdown", { bubbles: true, cancelable: true }),
-    );
-    // Tras el await de text-mode en OverlaySurface.
-    requestAnimationFrame(() => {
-      focusTerm(key);
-      setTimeout(() => focusTerm(key), 40);
-    });
+    void setOverlayTextMode(true).catch(() => {});
+    focusTerm(key);
   }
 
   function closeCtx() {
     ctxMenu = null;
   }
 
+  const SAVED_CMDS_KEY = "atic.agents.savedCommands";
+  const SAVED_CMDS_MAX = 8;
+
+  function toggleAddMenu() {
+    addMenuOpen = !addMenuOpen;
+    cmdPromptOpen = false;
+    if (!addMenuOpen || agentPathChecked) return;
+    agentPathChecked = true;
+    void Promise.all(
+      AGENTS.map(async (agent) => {
+        try {
+          return [agent.cli, await cliOnPath(agent.cli)] as const;
+        } catch {
+          return [agent.cli, true] as const;
+        }
+      }),
+    ).then((rows) => {
+      agentOnPath = Object.fromEntries(rows);
+    });
+    void sshConfigAliases()
+      .then((aliases) => {
+        sshAliases = aliases;
+      })
+      .catch(() => {
+        sshAliases = [];
+      });
+  }
+
+  function addFromMenu(seed: { kind: ConsoleKind; label?: string; command?: string }) {
+    addMenuOpen = false;
+    cmdPromptOpen = false;
+    newTab(seed.kind, { label: seed.label, command: seed.command });
+  }
+
+  function persistSavedCmds() {
+    try {
+      localStorage.setItem(SAVED_CMDS_KEY, JSON.stringify(savedCmds));
+    } catch {
+      /* la lista sigue en memoria aunque el storage esté bloqueado */
+    }
+  }
+
+  function runCmdPrompt() {
+    const cmd = cmdText.trim();
+    if (!cmd) return;
+    savedCmds = [cmd, ...savedCmds.filter((c) => c !== cmd)].slice(0, SAVED_CMDS_MAX);
+    persistSavedCmds();
+    cmdText = "";
+    addFromMenu({ kind: "local", label: cmd, command: cmd });
+  }
+
+  function removeSavedCmd(cmd: string) {
+    savedCmds = savedCmds.filter((c) => c !== cmd);
+    persistSavedCmds();
+  }
+
   async function disconnect(key = activeKey) {
     const id = sessionOf(key);
     setSession(key, null);
+    markPending(key, false);
+    const timer = bootTimers.get(key);
+    if (timer) {
+      window.clearTimeout(timer);
+      bootTimers.delete(key);
+    }
+    if (bootedKeys[key]) {
+      const next = { ...bootedKeys };
+      delete next[key];
+      bootedKeys = next;
+    }
     if (id) {
+      outputBuf.delete(id);
       try {
         await consoleClose(id);
       } catch {
@@ -544,40 +725,102 @@
     await Promise.all(tabs.map((t) => disconnect(t.key)));
   }
 
+  function knownSessionIds(): string[] {
+    return tabs
+      .map((t) => t.sessionId)
+      .filter((id): id is string => !!id);
+  }
+
+  async function reapOrphanConsoles() {
+    try {
+      await consoleGc(knownSessionIds());
+    } catch {
+      /* backend viejo o mapa ya vacío */
+    }
+  }
+
+  function termBoxSize(key: string): { w: number; h: number } | null {
+    const box = boxes.get(key);
+    if (!box) return null;
+    const w = box.el.clientWidth;
+    const h = box.el.clientHeight;
+    if (w < 24 || h < 24) return null;
+    return { w, h };
+  }
+
+  async function waitForTermReady(key: string, timeoutMs = 2800): Promise<void> {
+    const start = performance.now();
+    while (performance.now() - start < timeoutMs) {
+      const size = termBoxSize(key);
+      const hostH = consoleEl?.clientHeight ?? 0;
+      if (size && size.w >= MIN_TERM_W && size.h >= MIN_TERM_H && hostH >= 280) {
+        fitTermOnly(key);
+        return;
+      }
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    }
+    fitTermOnly(key);
+  }
+
   async function connect(key = activeKey) {
     const tab = tabOf(key);
-    if (!tab || connecting) return;
+    if (!tab) return;
     error = null;
     if (tab.kind === "ssh" && !hostById(tab.hostId)) {
       error = "Elige un host SSH en la consola (o agrégalo en Ajustes → Agentes).";
       return;
     }
     connecting = true;
+    markPending(key, true);
+    await listenReady.catch(() => {});
+    await waitForTermReady(key);
+    if (!tabOf(key)) {
+      connecting = false;
+      markPending(key, false);
+      return;
+    }
     await disconnect(key);
+    markPending(key, true);
     termOf(key)?.reset();
     try {
+      const live = tabOf(key);
+      if (!live) return;
       const term = termOf(key);
-      // Medir AHORA, no confiar en el último fit: al sembrar desde el
-      // lanzador la PTY se abre mientras el float aún emerge (escala 0.55)
-      // y el tamaño de ese momento queda chico para siempre.
+      // Medir AHORA: el float acaba de crecer. Si spawneamos en el seed
+      // (40 px) el TUI del agente nace en 2×1 y no se recobra.
       fitTermOnly(key);
-      const id = await consoleOpen({
-        kind: tab.kind,
-        hostId: tab.kind === "ssh" ? tab.hostId : null,
-        cwd: tab.kind === "local" && localCwd.trim() ? localCwd.trim() : null,
-        command: tab.kind === "local" ? tab.command : null,
-        cols: term?.cols ?? 80,
-        rows: term?.rows ?? 24,
-      });
+      await reapOrphanConsoles();
+      const openOpts = {
+        kind: live.kind,
+        hostId: live.kind === "ssh" ? live.hostId : null,
+        cwd: live.kind === "local" && localCwd.trim() ? localCwd.trim() : null,
+        command: live.kind === "local" ? live.command : null,
+        // Piso 80×24: si el float todavía es el del lanzador, xterm cabe en
+        // 5×2 y el TUI de Cursor nace muerto. SIGWINCH no lo recobra.
+        cols: Math.max(80, term && term.cols > 8 ? term.cols : 80),
+        rows: Math.max(24, term && term.rows > 8 ? term.rows : 24),
+      };
+      let id: string;
+      try {
+        id = await consoleOpen(openOpts);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        if (!msg.includes(`${MAX_TABS} consolas`)) throw e;
+        await reapOrphanConsoles();
+        id = await consoleOpen(openOpts);
+      }
+      if (!tabOf(key)) {
+        await consoleClose(id).catch(() => {});
+        return;
+      }
       setSession(key, id);
+      flushOutput(id, key);
+      if (live.command && !bootedKeys[key]) armBootTimeout(key);
+      else if (!live.command) markBooted(key);
       requestAnimationFrame(() => {
         fitAndResize(key);
         if (key === activeKey) requestOverlayKeyboard(key);
       });
-      // La animación del float dura ~300ms: cuando termina, el contenedor
-      // cambia de tamaño por última vez y puede que el ResizeObserver ya
-      // haya disparado su último evento ANTES de que hubiera sesión. Estos
-      // re-ajustes tardíos son la red: le mandan al PTY el tamaño real.
       setTimeout(() => fitAndResize(key), 350);
       setTimeout(() => fitAndResize(key), 800);
     } catch (e) {
@@ -585,6 +828,7 @@
       setSession(key, null);
     } finally {
       connecting = false;
+      markPending(key, false);
     }
   }
 
@@ -597,64 +841,107 @@
    */
   let openChain: Promise<void> = Promise.resolve();
 
-  function newTab(
-    kind: ConsoleKind,
-    opts: {
-      label?: string;
-      command?: string;
-      hostId?: string;
-      splitDirection?: SplitDirection;
-      splitSourceKey?: string;
-    } = {},
-  ) {
-    if (tabs.length >= MAX_TABS) {
-      error = `Ya hay ${MAX_TABS} consolas abiertas. Cerrá alguna para abrir otra.`;
-      return;
-    }
-    closeCtx();
-    const treeBefore = paneTree;
-    const previousActiveKey = activeKey;
-    const key = `t${++seq}`;
-    const hostId =
+  function idleTabKey(): string | null {
+    const idle = (t: Tab) => !t.sessionId && !pendingKeys[t.key];
+    const current = tabOf(activeKey);
+    if (current && idle(current)) return current.key;
+    return tabs.find(idle)?.key ?? null;
+  }
+
+  type NewTabOpts = {
+    label?: string;
+    command?: string;
+    hostId?: string;
+    splitDirection?: SplitDirection;
+    splitSourceKey?: string;
+  };
+
+  function applyTabSeed(tab: Tab, kind: ConsoleKind, opts: NewTabOpts) {
+    tab.kind = kind;
+    tab.hostId =
       kind === "ssh"
         ? (opts.hostId ?? remoteHost?.id ?? sshHosts[0]?.id ?? null)
         : null;
-    tabs = [
-      ...tabs,
-      {
-        key,
-        kind,
-        sessionId: null,
-        hostId,
-        label: opts.label?.trim() || null,
-        command: opts.command?.trim() || null,
-      },
-    ];
+    tab.label = opts.label?.trim() || null;
+    tab.command = kind === "local" ? (opts.command?.trim() || null) : null;
+  }
+
+  function layoutTab(
+    key: string,
+    opts: NewTabOpts,
+    treeBefore: PaneNode | null,
+    previousActiveKey: string,
+  ) {
     activeKey = key;
+    const treeKeys = treeBefore ? paneLeafKeys(treeBefore) : [];
     if (opts.splitDirection && opts.splitSourceKey) {
-      const sourceKey = opts.splitSourceKey;
-      const base = treeBefore ?? leaf(sourceKey);
-      paneTree = replacePaneLeaf(base, sourceKey, {
-        kind: "split",
-        direction: opts.splitDirection,
-        first: leaf(sourceKey),
-        second: leaf(key),
-      });
-    } else if (treeBefore && paneLeafKeys(treeBefore).includes(previousActiveKey)) {
-      // Nueva consola/pestaña: ocupa el panel activo y conserva los otros splits.
+      if (!treeKeys.includes(key)) {
+        const sourceKey = opts.splitSourceKey;
+        const base = treeBefore ?? leaf(sourceKey);
+        paneTree = replacePaneLeaf(base, sourceKey, {
+          kind: "split",
+          direction: opts.splitDirection,
+          first: leaf(sourceKey),
+          second: leaf(key),
+        });
+      }
+      return;
+    }
+    if (treeKeys.includes(key)) return;
+    if (treeBefore && treeKeys.includes(previousActiveKey)) {
       paneTree = replacePaneLeaf(treeBefore, previousActiveKey, leaf(key));
     } else {
       paneTree = leaf(key);
     }
+  }
+
+  function queueConnect(key: string, kind: ConsoleKind) {
+    if (kind === "local" || hostById(tabOf(key)?.hostId ?? null)) {
+      connecting = true;
+      markPending(key, true);
+      openChain = openChain.then(() => connect(key)).catch(() => {});
+    }
+  }
+
+  function newTab(kind: ConsoleKind, opts: NewTabOpts = {}) {
+    closeCtx();
+    const treeBefore = paneTree;
+    const previousActiveKey = activeKey;
+    let key: string;
+    if (tabs.length >= MAX_TABS) {
+      const idle = idleTabKey();
+      if (!idle) {
+        error = `Ya hay ${MAX_TABS} consolas abiertas. Cierra alguna para abrir otra.`;
+        return;
+      }
+      const tab = tabOf(idle);
+      if (!tab) return;
+      applyTabSeed(tab, kind, opts);
+      key = idle;
+    } else {
+      key = `t${++seq}`;
+      const hostId =
+        kind === "ssh"
+          ? (opts.hostId ?? remoteHost?.id ?? sshHosts[0]?.id ?? null)
+          : null;
+      tabs = [
+        ...tabs,
+        {
+          key,
+          kind,
+          sessionId: null,
+          hostId,
+          label: opts.label?.trim() || null,
+          command: opts.command?.trim() || null,
+        },
+      ];
+    }
+    layoutTab(key, opts, treeBefore, previousActiveKey);
     error = null;
     if (kind === "ssh") void loadSshHosts();
-    // Un cuadro después el `{@attach}` ya creó el xterm, así que `fit()` mide
-    // sobre el contenedor real y el PTY nace con el tamaño correcto.
-    requestAnimationFrame(() => {
-      if (kind === "local" || hostById(tabOf(key)?.hostId ?? null)) {
-        openChain = openChain.then(() => connect(key)).catch(() => {});
-      }
-    });
+    // Un cuadro después el `{@attach}` ya creó el xterm. `connect` espera
+    // tamaño real + listener; no spawnea en el frame del seed de 40 px.
+    queueConnect(key, kind);
   }
 
   async function closeTab(key: string) {
@@ -679,6 +966,117 @@
     if (activeKey) focusVisiblePane(activeKey);
   }
 
+  /* ─── Arrastrar una ficha del rail al área de terminales ────────────────
+     Soltar en el borde derecho/inferior de un panel lo divide; soltar al
+     centro muestra esa consola ahí (o intercambia si ya estaba visible). */
+  type DropZone = "center" | "right" | "down";
+  const TAB_DRAG_THRESHOLD = 6;
+  let tabDrag = $state<{ key: string; x: number; y: number } | null>(null);
+  let dropHint = $state<{ key: string; zone: DropZone } | null>(null);
+  /** Panel bajo el cursor al arrastrar desde el clipboard (OLE o HTML5). */
+  let clipDropKey = $state<string | null>(null);
+  let bodyEl = $state<HTMLElement | null>(null);
+  let dragConsumedClick = false;
+
+  function swapPaneLeaf(node: PaneNode, a: string, b: string): PaneNode {
+    if (node.kind === "leaf") {
+      if (node.key === a) return leaf(b);
+      if (node.key === b) return leaf(a);
+      return node;
+    }
+    return {
+      ...node,
+      first: swapPaneLeaf(node.first, a, b),
+      second: swapPaneLeaf(node.second, a, b),
+    };
+  }
+
+  function dropHintAt(x: number, y: number): { key: string; zone: DropZone } | null {
+    if (!bodyEl) return null;
+    const r = bodyEl.getBoundingClientRect();
+    if (r.width <= 0 || x < r.left || x > r.right || y < r.top || y > r.bottom) {
+      return null;
+    }
+    const rx = ((x - r.left) / r.width) * 100;
+    const ry = ((y - r.top) / r.height) * 100;
+    const pane = paneRects.find(
+      (p) =>
+        visiblePaneKeys.includes(p.key) &&
+        rx >= p.x &&
+        rx <= p.x + p.width &&
+        ry >= p.y &&
+        ry <= p.y + p.height,
+    );
+    if (!pane) return null;
+    const lx = (rx - pane.x) / pane.width;
+    const ly = (ry - pane.y) / pane.height;
+    const zone: DropZone = lx > 0.6 ? "right" : ly > 0.6 ? "down" : "center";
+    return { key: pane.key, zone };
+  }
+
+  function applyTabDrop(dragKey: string, hint: { key: string; zone: DropZone }) {
+    const targetKey = hint.key;
+    if (dragKey === targetKey) return;
+    const dragVisible = visiblePaneKeys.includes(dragKey);
+    let base = paneTree ?? leaf(targetKey);
+    if (hint.zone === "center") {
+      paneTree = dragVisible
+        ? swapPaneLeaf(base, dragKey, targetKey)
+        : replacePaneLeaf(base, targetKey, leaf(dragKey));
+    } else {
+      if (dragVisible) base = removePaneLeaf(base, dragKey) ?? leaf(targetKey);
+      paneTree = replacePaneLeaf(base, targetKey, {
+        kind: "split",
+        direction: hint.zone,
+        first: leaf(targetKey),
+        second: leaf(dragKey),
+      });
+    }
+    activeKey = dragKey;
+    error = null;
+    focusVisiblePane(dragKey);
+  }
+
+  function beginTabDrag(key: string, event: PointerEvent) {
+    if (event.button !== 0 || tabs.length < 2) return;
+    dragConsumedClick = false;
+    const el = event.currentTarget as HTMLElement;
+    const sx = event.clientX;
+    const sy = event.clientY;
+    const pointerId = event.pointerId;
+    let engaged = false;
+
+    const onMove = (e: PointerEvent) => {
+      if (!engaged) {
+        if (Math.hypot(e.clientX - sx, e.clientY - sy) < TAB_DRAG_THRESHOLD) return;
+        engaged = true;
+        try {
+          el.setPointerCapture(pointerId);
+        } catch {
+          /* sin captura el drag igual funciona mientras el cursor siga encima */
+        }
+      }
+      e.preventDefault();
+      tabDrag = { key, x: e.clientX, y: e.clientY };
+      dropHint = dropHintAt(e.clientX, e.clientY);
+    };
+    const onEnd = (e: PointerEvent) => {
+      el.removeEventListener("pointermove", onMove);
+      el.removeEventListener("pointerup", onEnd);
+      el.removeEventListener("pointercancel", onEnd);
+      if (el.hasPointerCapture?.(pointerId)) el.releasePointerCapture(pointerId);
+      if (engaged) {
+        dragConsumedClick = true;
+        if (e.type === "pointerup" && dropHint) applyTabDrop(key, dropHint);
+      }
+      tabDrag = null;
+      dropHint = null;
+    };
+    el.addEventListener("pointermove", onMove);
+    el.addEventListener("pointerup", onEnd);
+    el.addEventListener("pointercancel", onEnd);
+  }
+
   function switchTab(key: string) {
     closeCtx();
     if (paneMode && !visiblePaneKeys.includes(key)) {
@@ -696,35 +1094,104 @@
     error = null;
     // No se desconecta nada: las otras pestañas siguen vivas.
     focusVisiblePane(key);
+    requestAnimationFrame(() => {
+      fitAndResize(key);
+      const term = termOf(key);
+      if (term) term.refresh(0, Math.max(0, term.rows - 1));
+    });
+  }
+
+  /**
+   * FitAddon lee `parseInt(getComputedStyle(parent).width)`. Con anchos tipo
+   * `calc(50% - 0.36rem)` WebView2 a veces no resuelve a px: el fit no-opea y
+   * el TUI del agente se queda del tamaño viejo (o en blanco). Medimos con
+   * `clientWidth` y fijamos px solo durante la medición.
+   *
+   * Tampoco se manda un resize al PTY si el panel no está a la vista: un
+   * xterm `visibility:hidden` o de 0 px deja al agente en 2×1 y no se recobra.
+   */
+  let fitSeq = 0;
+  let fitting = false;
+  let fitQueued: string | null = null;
+
+  function scheduleFitVisible() {
+    const pass = ++fitSeq;
+    const run = () => {
+      if (pass !== fitSeq) return;
+      for (const key of visiblePaneKeys) fitAndResize(key);
+    };
+    requestAnimationFrame(() => {
+      requestAnimationFrame(run);
+    });
+    window.setTimeout(run, 48);
   }
 
   function fitAndResize(key = activeKey) {
     const box = boxes.get(key);
     if (!box) return;
-    const nextFontSize =
-      box.el.clientWidth < 280 ? 10 : box.el.clientWidth < 420 ? 11 : 12;
+    if (!visiblePaneKeys.includes(key)) return;
+    if (fitting) {
+      fitQueued = key;
+      return;
+    }
+    const w = box.el.clientWidth;
+    const h = box.el.clientHeight;
+    if (w < 24 || h < 24) return;
+
+    const nextFontSize = w < 280 ? 10 : w < 420 ? 11 : 12;
     if (box.term.options.fontSize !== nextFontSize) {
       box.term.options.fontSize = nextFontSize;
     }
+
+    fitting = true;
+    const prevWidth = box.el.style.width;
+    const prevHeight = box.el.style.height;
+    box.el.style.width = `${w}px`;
+    box.el.style.height = `${h}px`;
     try {
       box.fit.fit();
     } catch {
-      return;
+      /* contenedor sin tamaño todavía */
+    } finally {
+      box.el.style.width = prevWidth;
+      box.el.style.height = prevHeight;
+      fitting = false;
     }
+    try {
+      box.term.refresh(0, Math.max(0, box.term.rows - 1));
+    } catch {
+      /* renderer aún no listo */
+    }
+
     const id = sessionOf(key);
-    if (id) {
+    if (id && box.term.cols >= 2 && box.term.rows >= 2) {
       void consoleResize(id, box.term.cols, box.term.rows).catch(() => {});
     }
+    const queued = fitQueued;
+    fitQueued = null;
+    if (queued && queued !== key) fitAndResize(queued);
   }
 
   /** Re-mide el xterm sin tocar el PTY (antes de que exista sesión). */
   function fitTermOnly(key = activeKey) {
     const box = boxes.get(key);
     if (!box) return;
+    const w = box.el.clientWidth;
+    const h = box.el.clientHeight;
+    if (w < 24 || h < 24) return;
+    fitting = true;
+    const prevWidth = box.el.style.width;
+    const prevHeight = box.el.style.height;
+    box.el.style.width = `${w}px`;
+    box.el.style.height = `${h}px`;
     try {
       box.fit.fit();
     } catch {
       /* contenedor sin tamaño todavía: queda el default */
+    } finally {
+      box.el.style.width = prevWidth;
+      box.el.style.height = prevHeight;
+      fitting = false;
     }
   }
 
@@ -843,9 +1310,17 @@
         const { term, fit } = makeTerm(key);
         term.open(el);
         boxes.set(key, { term, fit, el });
-        const observer = new ResizeObserver(() => fitAndResize(key));
+        const id = sessionOf(key);
+        if (id) flushOutput(id, key);
+        const observer = new ResizeObserver(() => {
+          if (!visiblePaneKeys.includes(key)) return;
+          fitAndResize(key);
+        });
         observer.observe(el);
-        requestAnimationFrame(() => fitAndResize(key));
+        requestAnimationFrame(() => {
+          fitAndResize(key);
+          term.refresh(0, Math.max(0, term.rows - 1));
+        });
         return () => {
           observer.disconnect();
           term.dispose();
@@ -875,6 +1350,224 @@
     }
   }
 
+  const IMAGE_EXT = /\.(png|jpe?g|gif|webp)$/i;
+  let lastPasted = { text: "", at: 0 };
+  let oleWatch: number | null = null;
+
+  function panelIsLive(): boolean {
+    const el = consoleEl;
+    if (!el) return false;
+    if (el.closest("[inert]")) return false;
+    if (el.closest(".is-hidden")) return false;
+    return true;
+  }
+
+  function quotePtyPath(path: string): string {
+    const trimmed = path.trim();
+    if (!trimmed) return trimmed;
+    if (!/[\s"<>|&^()]/.test(trimmed)) return trimmed;
+    return `"${trimmed.replace(/"/g, '\\"')}"`;
+  }
+
+  function isAticDragTextPath(path: string): boolean {
+    const name = path.split(/[/\\]/).pop() ?? "";
+    return name.startsWith(".atic-drag-") && name.endsWith(".txt");
+  }
+
+  function termKeyHit(x: number, y: number): string | null {
+    if (!panelIsLive()) return null;
+    for (const key of visiblePaneKeys) {
+      const box = boxes.get(key);
+      if (!box || !sessionOf(key)) continue;
+      const r = box.el.getBoundingClientRect();
+      if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) return key;
+    }
+    return null;
+  }
+
+  function termKeyAt(x: number, y: number): string | null {
+    return (
+      termKeyHit(x, y) ??
+      (sessionOf(activeKey) && visiblePaneKeys.includes(activeKey) ? activeKey : null) ??
+      visiblePaneKeys.find((key) => sessionOf(key)) ??
+      null
+    );
+  }
+
+  function pasteIntoTerm(key: string, text: string): boolean {
+    const trimmed = text;
+    if (!trimmed) return false;
+    const term = termOf(key);
+    if (!term || !sessionOf(key)) return false;
+    const now = Date.now();
+    if (trimmed === lastPasted.text && now - lastPasted.at < 450) return true;
+    lastPasted = { text: trimmed, at: now };
+    activeKey = key;
+    requestOverlayKeyboard(key);
+    term.paste(trimmed);
+    return true;
+  }
+
+  async function stageBlobPath(file: Blob, mimeHint?: string): Promise<string | null> {
+    const mime = (mimeHint || file.type || "image/png").toLowerCase();
+    if (!mime.startsWith("image/")) return null;
+    const buf = new Uint8Array(await file.arrayBuffer());
+    let binary = "";
+    const chunk = 0x8000;
+    for (let i = 0; i < buf.length; i += chunk) {
+      binary += String.fromCharCode(...buf.subarray(i, i + chunk));
+    }
+    return agentStageImage(btoa(binary), mime);
+  }
+
+  async function applyClipboardInsert(payload: AgentsComposerInsert) {
+    if (!panelIsLive()) return;
+    const x = payload.x;
+    const y = payload.y;
+    const key =
+      typeof x === "number" && typeof y === "number"
+        ? (termKeyHit(x, y) ??
+            (pointInEl(consoleEl, x, y) || pointInEl(bodyEl, x, y)
+              ? termKeyAt(-1, -1)
+              : null))
+        : termKeyAt(-1, -1);
+    if (!key) return;
+    if (payload.kind === "image" && payload.imagePath) {
+      pasteIntoTerm(key, quotePtyPath(payload.imagePath));
+      return;
+    }
+    if (payload.text) pasteIntoTerm(key, payload.text);
+  }
+
+  function clipDragTypes(dt: DataTransfer | null): boolean {
+    if (!dt) return false;
+    const types = [...dt.types];
+    return (
+      types.includes("Files") ||
+      types.includes("text/uri-list") ||
+      types.includes("text/plain")
+    );
+  }
+
+  function onClipDragOver(e: DragEvent) {
+    if (tabDrag || !panelIsLive() || !clipDragTypes(e.dataTransfer)) return;
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+    clipDropKey = termKeyAt(e.clientX, e.clientY);
+  }
+
+  function onClipDragLeave(e: DragEvent) {
+    const next = e.relatedTarget as Node | null;
+    if (next && (e.currentTarget as HTMLElement).contains(next)) return;
+    clipDropKey = null;
+  }
+
+  function filePathOf(file: File): string | null {
+    const path = (file as File & { path?: string }).path;
+    return path?.trim() ? path : null;
+  }
+
+  function localFromUri(line: string): string | null {
+    const t = line.trim();
+    if (!t || t.startsWith("#")) return null;
+    if (!t.startsWith("file:")) return t;
+    let local = decodeURIComponent(t.replace(/^file:\/\//, ""));
+    if (/^\/[A-Za-z]:/.test(local)) local = local.slice(1);
+    return local || null;
+  }
+
+  async function insertDroppedPath(key: string, path: string): Promise<boolean> {
+    if (isAticDragTextPath(path)) {
+      const text = await readClipboardDragText(path);
+      if (!text?.trim()) return false;
+      return pasteIntoTerm(key, text);
+    }
+    return pasteIntoTerm(key, quotePtyPath(path));
+  }
+
+  async function onClipDrop(e: DragEvent) {
+    clipDropKey = null;
+    if (tabDrag || !panelIsLive()) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const dt = e.dataTransfer;
+    if (!dt) return;
+    const key = termKeyAt(e.clientX, e.clientY);
+    if (!key) return;
+    try {
+      const files = [...(dt.files ?? [])];
+      let added = false;
+      for (const file of files) {
+        const path = filePathOf(file);
+        if (path) {
+          added = (await insertDroppedPath(key, path)) || added;
+          continue;
+        }
+        if (file.type.startsWith("image/") || IMAGE_EXT.test(file.name)) {
+          const staged = await stageBlobPath(file, file.type);
+          if (staged) added = pasteIntoTerm(key, quotePtyPath(staged)) || added;
+        }
+      }
+      if (!added) {
+        const uri = dt.getData("text/uri-list") || "";
+        for (const line of uri.split(/\r?\n/)) {
+          const local = localFromUri(line);
+          if (!local) continue;
+          added = (await insertDroppedPath(key, local)) || added;
+        }
+      }
+      if (!added) {
+        const text = dt.getData("text/plain") || dt.getData("text");
+        if (text?.trim()) pasteIntoTerm(key, text);
+      }
+    } catch (err) {
+      error = String(err);
+    }
+  }
+
+  function stopOleWatch() {
+    if (oleWatch != null) {
+      clearInterval(oleWatch);
+      oleWatch = null;
+    }
+    clipDropKey = null;
+  }
+
+  function pointInEl(el: HTMLElement | null, x: number, y: number): boolean {
+    if (!el) return false;
+    const r = el.getBoundingClientRect();
+    return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+  }
+
+  function startOleWatch() {
+    if (oleWatch != null) return;
+    oleWatch = window.setInterval(() => {
+      if (!panelIsLive()) {
+        clipDropKey = null;
+        return;
+      }
+      void overlayCursor()
+        .then((pt) => {
+          if (!pt) {
+            clipDropKey = null;
+            return;
+          }
+          clipDropKey =
+            termKeyHit(pt.x, pt.y) ??
+            (pointInEl(bodyEl, pt.x, pt.y) ? termKeyAt(-1, -1) : null);
+        })
+        .catch(() => {
+          clipDropKey = null;
+        });
+    }, 50);
+  }
+
+  function onClipboardOle(e: Event) {
+    const active = (e as CustomEvent<ClipboardOleDetail>).detail?.active;
+    if (active) startOleWatch();
+    else stopOleWatch();
+  }
+
   function onTermContextMenu(key: string, e: MouseEvent) {
     e.preventDefault();
     e.stopPropagation();
@@ -898,11 +1591,20 @@
     if (Number.isFinite(savedRailWidth) && savedRailWidth > 0) {
       railWidth = clampRailWidth(savedRailWidth);
     }
+    try {
+      const saved = JSON.parse(localStorage.getItem(SAVED_CMDS_KEY) ?? "[]") as unknown;
+      if (Array.isArray(saved)) {
+        savedCmds = saved.filter((c): c is string => typeof c === "string");
+      }
+    } catch {
+      /* lista vacía */
+    }
     void loadSshHosts();
     void agentsAlwaysOnTop()
       .then((on) => (pinned = on))
       .catch(() => (pinned = false));
     window.addEventListener("keydown", onGlobalKey, true);
+    window.addEventListener(CLIPBOARD_OLE_EVENT, onClipboardOle);
     // Lanzador: N pestañas de agentes. Sin semilla: la pestaña de siempre.
     const seeds = (initialTabs ?? []).slice(0, MAX_TABS);
     if (seeds.length > 0) {
@@ -921,8 +1623,7 @@
     void Promise.all([
       onAgentsWorkspaceShortcut(consumeNativeWorkspaceShortcut),
       onConsoleOutput((p) => {
-        const t = tabForSession(p.session);
-        if (t) termOf(t.key)?.write(p.data);
+        pushOutput(p.session, p.data);
       }),
       onConsoleExit((p) => {
         const t = tabForSession(p.session);
@@ -932,10 +1633,14 @@
         const code = p.code == null ? "?" : String(p.code);
         termOf(key)?.writeln(`\r\n[sesión terminada · exit ${code}]`);
       }),
+      onAgentsComposerInsert((payload) => void applyClipboardInsert(payload)),
     ]).then((uns) => {
       stopListen = () => {
         for (const u of uns) u();
       };
+      resolveListen();
+    }).catch(() => {
+      resolveListen();
     });
 
     const onDocPointer = (e: PointerEvent) => {
@@ -943,8 +1648,13 @@
       if (e.target instanceof Node) {
         const menu = document.querySelector(".console .ctx");
         if (menu?.contains(e.target)) return;
+        if ((e.target as HTMLElement).closest?.(".more-menu")) return;
+        if ((e.target as HTMLElement).closest?.(".add-menu")) return;
       }
       closeCtx();
+      shortcutsOpen = false;
+      moreOpen = false;
+      addMenuOpen = false;
     };
     document.addEventListener("pointerdown", onDocPointer, true);
     window.addEventListener("blur", closeCtx);
@@ -958,14 +1668,20 @@
 
     return () => {
       window.removeEventListener("keydown", onGlobalKey, true);
+      window.removeEventListener(CLIPBOARD_OLE_EVENT, onClipboardOle);
       document.removeEventListener("pointerdown", onDocPointer, true);
       window.removeEventListener("blur", closeCtx);
+      stopOleWatch();
       themeObs.disconnect();
     };
   });
 
   onDestroy(() => {
     stopListen?.();
+    for (const timer of bootTimers.values()) window.clearTimeout(timer);
+    bootTimers.clear();
+    const ids = knownSessionIds();
+    for (const id of ids) void consoleClose(id).catch(() => {});
     void disconnectAll();
     // Los xterm los dispone el teardown de cada `{@attach}`.
   });
@@ -994,9 +1710,17 @@
             type="button"
             class="rail-tab"
             class:is-on={t.key === activeKey}
+            class:is-dragging={tabDrag?.key === t.key}
             aria-current={t.key === activeKey ? "true" : undefined}
             title={tabLabels[i]}
-            onclick={() => switchTab(t.key)}
+            onpointerdown={(e) => beginTabDrag(t.key, e)}
+            onclick={() => {
+              if (dragConsumedClick) {
+                dragConsumedClick = false;
+                return;
+              }
+              switchTab(t.key);
+            }}
           >
             <span class="rail-logo"><AgentLogo agent={t.command} size={18} /></span>
             <span class="rail-copy">
@@ -1026,22 +1750,157 @@
       {/each}
     </div>
     <div class="rail-add">
-      <button
-        type="button"
-        class="tab-add"
-        aria-label="Nueva consola local"
-        title="Nueva consola local · Ctrl+N"
-        disabled={connecting || tabs.length >= MAX_TABS}
-        onclick={() => newTab("local")}
-      >
-        <Icon icon={Plus} size={12} />
-      </button>
+      <div class="add-menu">
+        <button
+          type="button"
+          class="tab-add"
+          aria-label="Nueva consola o agente"
+          aria-haspopup="menu"
+          aria-expanded={addMenuOpen}
+          title="Nueva consola o agente"
+          disabled={connecting || !canAddTab}
+          onclick={toggleAddMenu}
+        >
+          <Icon icon={Plus} size={12} />
+        </button>
+        {#if addMenuOpen}
+          <div
+            class="add-pop"
+            role="menu"
+            aria-label="Abrir nueva consola"
+            tabindex="-1"
+            onpointerdown={(e) => e.stopPropagation()}
+          >
+            <p class="add-group" aria-hidden="true">Agentes</p>
+            {#each AGENTS as agent (agent.cli)}
+              <button
+                type="button"
+                class="add-item"
+                role="menuitem"
+                disabled={agentOnPath[agent.cli] === false}
+                title={agentOnPath[agent.cli] === false
+                  ? `${agent.name} no está en el PATH`
+                  : `Abrir ${agent.name}`}
+                onclick={() =>
+                  addFromMenu({
+                    kind: "local",
+                    label: agent.name,
+                    command: agent.cli,
+                  })
+                }
+              >
+                <span class="add-glyph"><AgentLogo agent={agent.cli} size={14} /></span>
+                {agent.name}
+              </button>
+            {/each}
+            <button
+              type="button"
+              class="add-item"
+              role="menuitem"
+              onclick={() => addFromMenu({ kind: "local" })}
+            >
+              <span class="add-glyph"><Icon icon={SquareTerminal} size={13} /></span>
+              Consola local
+            </button>
+            <button
+              type="button"
+              class="add-item"
+              role="menuitem"
+              onclick={() => addFromMenu({ kind: "ssh" })}
+            >
+              <span class="add-glyph is-ssh-glyph">SSH</span>
+              Consola SSH
+            </button>
+            <button
+              type="button"
+              class="add-item"
+              role="menuitem"
+              aria-expanded={cmdPromptOpen}
+              onclick={() => (cmdPromptOpen = !cmdPromptOpen)}
+            >
+              <span class="add-glyph is-ssh-glyph">›_</span>
+              Comando…
+            </button>
+            {#if cmdPromptOpen}
+              <input
+                class="add-cmd"
+                type="text"
+                placeholder="ssh root@1.2.3.4 · dashboard"
+                aria-label="Comando a ejecutar en una consola nueva"
+                bind:value={cmdText}
+                {@attach (el) => {
+                  void setOverlayTextMode(true).catch(() => {});
+                  el.focus();
+                }}
+                onkeydown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    runCmdPrompt();
+                  } else if (e.key === "Escape") {
+                    e.stopPropagation();
+                    cmdPromptOpen = false;
+                  }
+                }}
+              />
+            {/if}
+            {#if savedCmds.length > 0}
+              <p class="add-group" aria-hidden="true">Guardados</p>
+              {#each savedCmds as cmd (cmd)}
+                <span class="add-saved">
+                  <button
+                    type="button"
+                    class="add-item"
+                    role="menuitem"
+                    title={`Abrir consola con «${cmd}»`}
+                    onclick={() =>
+                      addFromMenu({ kind: "local", label: cmd, command: cmd })}
+                  >
+                    <span class="add-glyph"
+                      ><Icon icon={SquareTerminal} size={13} /></span
+                    >
+                    <span class="add-ellipsis">{cmd}</span>
+                  </button>
+                  <button
+                    type="button"
+                    class="add-forget"
+                    aria-label={`Olvidar «${cmd}»`}
+                    title="Olvidar comando"
+                    onclick={() => removeSavedCmd(cmd)}
+                  >
+                    <Icon icon={X} size={9} />
+                  </button>
+                </span>
+              {/each}
+            {/if}
+            {#if sshAliases.length > 0}
+              <p class="add-group" aria-hidden="true">~/.ssh/config</p>
+              {#each sshAliases as alias (alias)}
+                <button
+                  type="button"
+                  class="add-item"
+                  role="menuitem"
+                  title={`ssh ${alias}`}
+                  onclick={() =>
+                    addFromMenu({
+                      kind: "local",
+                      label: alias,
+                      command: `ssh ${alias}`,
+                    })}
+                >
+                  <span class="add-glyph is-ssh-glyph">SSH</span>
+                  <span class="add-ellipsis">{alias}</span>
+                </button>
+              {/each}
+            {/if}
+          </div>
+        {/if}
+      </div>
       <button
         type="button"
         class="tab-add is-ssh"
         aria-label="Nueva consola SSH"
         title="Nueva consola SSH"
-        disabled={connecting || tabs.length >= MAX_TABS}
+        disabled={connecting || !canAddTab}
         onclick={() => newTab("ssh")}
       >
         SSH
@@ -1087,22 +1946,31 @@
         {#if active?.command}
           <span class="active-agent-logo">
             <AgentLogo agent={active.command} size={18} />
+            <span
+              class="live session-dot"
+              class:is-live={!!active?.sessionId}
+              class:is-prep={connecting && !active?.sessionId}
+              role="status"
+              title={active?.sessionId
+                ? t("page.agents.runningAria")
+                : connecting
+                  ? t("page.agents.preparingAria")
+                  : t("page.agents.offlineAria")}
+              aria-label={active?.sessionId
+                ? t("page.agents.runningAria")
+                : connecting
+                  ? t("page.agents.preparingAria")
+                  : t("page.agents.offlineAria")}
+            ></span>
           </span>
         {/if}
         <div class="where-block">
           <p class="where" title={active ? tabLabels[tabs.indexOf(active)] : ""}>
             {active ? tabLabels[tabs.indexOf(active)] : "Sin consolas"}
           </p>
-          <span class="session-state" class:is-live={!!active?.sessionId}>
-            {active?.sessionId
-              ? "En ejecución"
-              : connecting
-                ? "Preparando"
-                : "Sin conexión"}
-          </span>
         </div>
       </div>
-      <div class="bar-tools">
+      <div class="window-actions">
         {#if active?.kind === "ssh"}
           <label class="host-pick">
             <span class="sr">Host SSH</span>
@@ -1128,60 +1996,113 @@
           </label>
         {/if}
         {#if active}
-          <div class="split-actions" aria-label="Dividir terminal">
+          <div class="more-menu">
             <button
               type="button"
-              class="layout-toggle"
-              aria-label="Abrir otro panel a la derecha"
-              title="Abrir otro panel a la derecha · Ctrl+D"
-              disabled={tabs.length >= MAX_TABS &&
-                visiblePaneKeys.length >= tabs.length}
-              onclick={() => splitPane("right")}
+              class="icon-btn"
+              aria-label={t("page.agents.moreAria")}
+              aria-haspopup="menu"
+              aria-expanded={moreOpen}
+              title={t("page.agents.more")}
+              onclick={() => {
+                moreOpen = !moreOpen;
+                shortcutsOpen = false;
+              }}
             >
-              <Icon icon={PanelRightOpen} size={12} />
-              <span>Derecha</span>
-              <kbd>Ctrl+D</kbd>
+              <Icon icon={EllipsisVertical} size={13} />
             </button>
-            <button
-              type="button"
-              class="layout-toggle"
-              aria-label="Abrir otro panel abajo"
-              title="Abrir otro panel abajo · Ctrl+Shift+D"
-              disabled={tabs.length >= MAX_TABS &&
-                visiblePaneKeys.length >= tabs.length}
-              onclick={() => splitPane("down")}
-            >
-              <Icon icon={PanelBottomOpen} size={12} />
-              <span>Abajo</span>
-              <kbd>Ctrl+⇧D</kbd>
-            </button>
+            {#if moreOpen}
+              <div class="more-pop" role="menu" aria-label={t("page.agents.moreAria")}>
+                <button
+                  type="button"
+                  class="more-item"
+                  role="menuitem"
+                  onclick={() => {
+                    shortcutsOpen = true;
+                    moreOpen = false;
+                  }}
+                >
+                  <Icon icon={Keyboard} size={13} />
+                  {t("page.agents.shortcuts")}
+                </button>
+                {#if usageAgent}
+                  <button
+                    type="button"
+                    class="more-item"
+                    role="menuitem"
+                    onclick={() => {
+                      usageOpen = true;
+                      moreOpen = false;
+                    }}
+                  >
+                    <Icon icon={Activity} size={13} />
+                    {t("page.agents.usage")}
+                  </button>
+                {/if}
+                {#if !connected}
+                  <button
+                    type="button"
+                    class="more-item"
+                    role="menuitem"
+                    disabled={connecting || (active.kind === "ssh" && !activeHost)}
+                    onclick={() => {
+                      moreOpen = false;
+                      void connect();
+                    }}
+                  >
+                    <Icon icon={SquareTerminal} size={13} />
+                    {connecting
+                      ? t("page.agents.preparingAria")
+                      : active.kind === "ssh"
+                        ? t("page.agents.connect")
+                        : t("page.agents.reconnect")}
+                  </button>
+                {/if}
+              </div>
+            {/if}
+            {#if shortcutsOpen}
+              <div
+                class="shortcuts-pop"
+                role="dialog"
+                aria-label={t("page.agents.shortcutsTitle")}
+              >
+                <p class="shortcuts-title">{t("page.agents.shortcutsTitle")}</p>
+                <p class="shortcuts-hint">{t("page.agents.shortcutsHint")}</p>
+                <ul class="shortcuts-list">
+                  {#each CONSOLE_SHORTCUTS as item (item.keys)}
+                    <li>
+                      <span>{t(item.labelKey)}</span>
+                      <kbd>{item.keys}</kbd>
+                    </li>
+                  {/each}
+                </ul>
+              </div>
+            {/if}
           </div>
-          {#if !connected}
-            <button
-              type="button"
-              class="chip is-go"
-              disabled={connecting || (active.kind === "ssh" && !activeHost)}
-              onclick={() => void connect()}
-            >
-              {connecting
-                ? "Preparando…"
-                : active.kind === "ssh"
-                  ? "Conectar"
-                  : "Reabrir"}
-            </button>
-          {/if}
         {/if}
-      </div>
-      <div class="window-actions">
-        {#if usageAgent}
+        {#if onToggleMinimize}
           <button
             type="button"
             class="icon-btn"
-            aria-label="Ver uso restante"
-            title="Ver uso restante"
-            onclick={() => (usageOpen = true)}
+            aria-label={minimized ? "Restaurar ventana" : "Minimizar a la barra"}
+            aria-pressed={minimized}
+            title={minimized ? "Restaurar ventana" : "Minimizar a la barra"}
+            onclick={onToggleMinimize}
           >
-            <Icon icon={Activity} size={13} />
+            <Icon icon={Minus} size={12} />
+          </button>
+        {/if}
+        {#if onToggleMaximize}
+          <button
+            type="button"
+            class="icon-btn"
+            class:is-on={maximized}
+            aria-label={maximized ? "Restaurar tamaño" : "Agrandar al monitor"}
+            aria-pressed={maximized}
+            title={maximized ? "Restaurar tamaño" : "Agrandar al monitor"}
+            onclick={onToggleMaximize}
+          >
+            <Icon icon={Square} size={11} />
           </button>
         {/if}
         <button
@@ -1203,12 +2124,9 @@
           <button
             type="button"
             class="icon-btn"
-            aria-label="Cerrar consola"
-            title="Cerrar consola"
-            onclick={() => {
-              void disconnectAll();
-              onClose();
-            }}
+            aria-label="Esconder ventana"
+            title="Esconder ventana. Las consolas siguen corriendo."
+            onclick={() => onClose()}
           >
             <Icon icon={X} size={12} />
           </button>
@@ -1217,10 +2135,29 @@
     </header>
 
     {#if error}
-      <p class="err" role="alert">{error}</p>
+      <p class="err" role="alert">
+        <span class="err-text">{error}</span>
+        <button
+          type="button"
+          class="err-x"
+          aria-label="Descartar aviso"
+          title="Descartar aviso"
+          onclick={() => (error = null)}
+        >
+          <Icon icon={X} size={11} />
+        </button>
+      </p>
     {/if}
 
-    <div class="body" class:is-split={paneMode}>
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div
+      class="body"
+      class:is-split={paneMode}
+      bind:this={bodyEl}
+      ondragover={onClipDragOver}
+      ondragleave={onClipDragLeave}
+      ondrop={(e) => void onClipDrop(e)}
+    >
       {#if tabs.length === 0 && !paneMode}
         <div class="empty">
           <EmptyState
@@ -1271,17 +2208,45 @@
         <div
           class="term"
           class:is-active={t.key === activeKey}
-          class:is-hidden={!paneRect || (!paneMode && !t.sessionId && !connecting)}
+          class:is-hidden={!paneRect}
+          class:is-drop={
+            clipDropKey === t.key ||
+            (!!tabDrag && tabDrag.key !== t.key && dropHint?.key === t.key)
+          }
+          class:drop-right={!clipDropKey && dropHint?.zone === "right"}
+          class:drop-down={!clipDropKey && dropHint?.zone === "down"}
+          class:is-join-left={!!paneRect && paneRect.x > 0.01}
+          class:is-join-top={!!paneRect && paneRect.y > 0.01}
           style={paneRect
             ? `--pane-x: ${paneRect.x}%; --pane-y: ${paneRect.y}%; --pane-width: ${paneRect.width}%; --pane-height: ${paneRect.height}%`
             : undefined}
-          {@attach mountTerm(t.key)}
           data-no-drag
           data-selectable
           data-console-term
           onpointerdown={() => onTermPointerDown(t.key)}
           oncontextmenu={(e) => onTermContextMenu(t.key, e)}
-        ></div>
+          ondragover={onClipDragOver}
+          ondrop={(e) => void onClipDrop(e)}
+        >
+          <div class="term-host" {@attach mountTerm(t.key)}></div>
+          {#if paneLoading(t.key)}
+            {@const tabName = t.label || tabLabels[tabs.indexOf(t)] || ""}
+            <div class="term-boot" role="status">
+              {#if t.command}
+                <span class="term-boot-logo">
+                  <AgentLogo agent={t.command} size={28} />
+                </span>
+              {/if}
+              <p class="term-boot-title">
+                {tabName
+                  ? t("page.agents.booting", { name: tabName })
+                  : t("page.agents.bootingGeneric")}
+              </p>
+              <p class="term-boot-hint">{t("page.agents.bootingHint")}</p>
+              <span class="term-boot-spin" aria-hidden="true"></span>
+            </div>
+          {/if}
+        </div>
       {/each}
 
       {#if ctxMenu}
@@ -1325,9 +2290,31 @@
     </div>
   </div>
 
+  {#if tabDrag}
+    {@const dragTab = tabOf(tabDrag.key)}
+    <div
+      class="tab-ghost"
+      style:left="{tabDrag.x}px"
+      style:top="{tabDrag.y}px"
+      aria-hidden="true"
+    >
+      <AgentLogo agent={dragTab?.command ?? null} size={16} />
+    </div>
+  {/if}
+
   {#if usageOpen && usageAgent}
     {#key usageAgent}
-      <AccountUsageModal agent={usageAgent} onClose={() => (usageOpen = false)} />
+      <AccountUsageModal
+        agent={usageAgent}
+        onClose={() => (usageOpen = false)}
+        onRunUsageCommand={sessionId
+          ? () => {
+              const id = sessionId;
+              void consoleWrite(id, "/usage\r").catch(() => {});
+              requestOverlayKeyboard();
+            }
+          : undefined}
+      />
     {/key}
   {/if}
 </section>
@@ -1340,7 +2327,7 @@
     min-width: 0;
     flex-direction: row;
     min-height: 0;
-    background: color-mix(in srgb, var(--rb-surface) 88%, var(--rb-bg0, #0f1115));
+    background: transparent;
 
     /* Overlay: user-select/touch-action none; xterm necesita interactuar. */
     user-select: text;
@@ -1351,13 +2338,14 @@
   /* ─── Rail izquierdo: una ficha por consola ───────────────────────────── */
   .rail {
     position: relative;
+    z-index: 2;
     display: flex;
     flex-shrink: 0;
     flex-direction: column;
     align-items: center;
     width: var(--rail-width, 2.9rem);
     padding: 0.35rem 0.25rem;
-    border-right: 1px solid color-mix(in srgb, var(--rb-border) 70%, transparent);
+    border-right: 0;
   }
 
   .rail-tabs {
@@ -1383,15 +2371,14 @@
     place-items: center;
     width: 2.4rem;
     height: 2.4rem;
-    border: 1px solid transparent;
+    border: 0;
     border-radius: 0.6rem;
     background: transparent;
     color: var(--rb-muted);
     cursor: pointer;
     transition:
       background-color var(--duration-quick, 75ms) ease,
-      color var(--duration-quick, 75ms) ease,
-      border-color var(--duration-quick, 75ms) ease;
+      color var(--duration-quick, 75ms) ease;
   }
 
   .rail-tab:hover:not(:disabled) {
@@ -1401,17 +2388,17 @@
 
   .rail-tab.is-on {
     color: var(--rb-text);
-    border-color: color-mix(in srgb, var(--accent, #da7756) 42%, transparent);
     background: color-mix(in srgb, var(--accent, #da7756) 17%, transparent);
   }
 
   .rail-tab:focus-visible {
     outline: none;
-    border-color: color-mix(in srgb, var(--accent, #da7756) 60%, transparent);
+    box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--accent, #da7756) 55%, transparent);
   }
 
   .rail-logo,
   .active-agent-logo {
+    position: relative;
     display: grid;
     flex: 0 0 auto;
     place-items: center;
@@ -1504,7 +2491,8 @@
     align-items: center;
     gap: 0.4rem;
     padding: 0.28rem 0.5rem 0.28rem 0.6rem;
-    border-bottom: 1px solid color-mix(in srgb, var(--rb-border) 70%, transparent);
+    border-bottom: 0;
+    background: transparent;
     cursor: default;
   }
 
@@ -1546,18 +2534,123 @@
     cursor: default;
   }
 
-  .bar-tools,
-  .split-actions,
   .window-actions {
     display: flex;
     min-width: 0;
     flex-shrink: 0;
+    flex-wrap: nowrap;
     align-items: center;
     gap: 0.2rem;
   }
 
-  .bar-tools {
-    justify-content: flex-end;
+  .more-menu {
+    position: relative;
+    flex: 0 0 auto;
+  }
+
+  .more-pop,
+  .shortcuts-pop {
+    position: absolute;
+    top: calc(100% + 0.28rem);
+    right: 0;
+    left: auto;
+    z-index: 20;
+    max-width: min(16.5rem, calc(100cqi - 5rem));
+  }
+
+  .more-pop {
+    display: flex;
+    min-width: 11.5rem;
+    flex-direction: column;
+    gap: 0.08rem;
+    border: 1px solid color-mix(in srgb, var(--rb-border) 80%, transparent);
+    border-radius: 0.65rem;
+    padding: 0.32rem;
+    background: color-mix(in srgb, var(--rb-surface) 96%, var(--rb-bg0, #0f1115));
+    box-shadow: 0 8px 22px color-mix(in srgb, #000 32%, transparent);
+  }
+
+  .more-item {
+    display: flex;
+    width: 100%;
+    align-items: center;
+    gap: 0.5rem;
+    border: 0;
+    border-radius: 0.42rem;
+    padding: 0.38rem 0.48rem;
+    background: transparent;
+    color: var(--rb-text);
+    font: inherit;
+    font-size: 0.7rem;
+    font-weight: 540;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .more-item:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--rb-text) 8%, transparent);
+  }
+
+  .more-item:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+
+  .shortcuts-pop {
+    display: flex;
+    width: 16.5rem;
+    flex-direction: column;
+    gap: 0.35rem;
+    border: 1px solid color-mix(in srgb, var(--rb-border) 80%, transparent);
+    border-radius: 0.65rem;
+    padding: 0.55rem 0.6rem 0.5rem;
+    background: color-mix(in srgb, var(--rb-surface) 96%, var(--rb-bg0, #0f1115));
+    box-shadow: 0 8px 22px color-mix(in srgb, #000 32%, transparent);
+  }
+
+  .shortcuts-title {
+    margin: 0;
+    color: var(--rb-text);
+    font-size: 0.72rem;
+    font-weight: 650;
+    text-wrap: balance;
+  }
+
+  .shortcuts-hint {
+    margin: 0;
+    color: var(--rb-muted);
+    font-size: 0.62rem;
+    line-height: 1.35;
+  }
+
+  .shortcuts-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.12rem;
+    margin: 0.12rem 0 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .shortcuts-list li {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.22rem 0;
+    color: var(--rb-text);
+    font-size: 0.7rem;
+    font-weight: 520;
+  }
+
+  .shortcuts-list kbd {
+    margin-left: auto;
+    border: 1px solid color-mix(in srgb, var(--rb-border) 80%, transparent);
+    border-radius: 0.28rem;
+    padding: 0.08rem 0.32rem;
+    color: var(--rb-muted);
+    font-size: 0.58rem;
+    font-weight: 650;
+    font-variant-numeric: tabular-nums;
   }
 
   .window-actions {
@@ -1603,8 +2696,8 @@
   .icon-btn {
     display: grid;
     place-items: center;
-    width: 1.6rem;
-    height: 1.6rem;
+    width: 2.25rem;
+    height: 2.25rem;
     border: 0;
     border-radius: 0.45rem;
     background: transparent;
@@ -1621,12 +2714,39 @@
   }
 
   .err {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
     margin: 0;
     padding: 0.25rem 0.65rem;
     border-bottom: 1px solid color-mix(in srgb, var(--rb-record) 35%, transparent);
     color: var(--rb-record);
     font-size: 0.68rem;
     line-height: 1.35;
+  }
+
+  .err-text {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .err-x {
+    display: grid;
+    flex: none;
+    place-items: center;
+    width: 1.15rem;
+    height: 1.15rem;
+    padding: 0;
+    border: 0;
+    border-radius: 0.35rem;
+    background: transparent;
+    color: inherit;
+    cursor: pointer;
+    transition: background var(--duration-fast) var(--ease-smooth-out);
+  }
+
+  .err-x:hover {
+    background: color-mix(in sRGB, var(--rb-record) 14%, transparent);
   }
 
   .body {
@@ -1651,33 +2771,156 @@
   }
 
   .term {
+    /* A ras del cuerpo, solo o dividido: el terminal ocupa el pane entero. */
     position: absolute;
-    top: calc(var(--pane-y, 0%) + 0.18rem);
-    left: calc(var(--pane-x, 0%) + 0.18rem);
+    top: var(--pane-y, 0%);
+    left: var(--pane-x, 0%);
     z-index: 0;
-    width: calc(var(--pane-width, 100%) - 0.36rem);
-    height: calc(var(--pane-height, 100%) - 0.36rem);
+    width: var(--pane-width, 100%);
+    height: var(--pane-height, 100%);
     box-sizing: border-box;
-    border: 1px solid color-mix(in sRGB, var(--rb-border) 78%, transparent);
-    border-radius: 0.58rem;
-    padding: 0.22rem 0.42rem 0.42rem;
+    border: 0;
+    padding: 0;
     overflow: hidden;
     background: var(--rb-bg0);
     cursor: text;
-    transition: border-color var(--duration-fast, 150ms) ease;
+  }
+
+  .term-host {
+    width: 100%;
+    height: 100%;
+  }
+
+  /* Línea entre paneles, sin inset ni marco exterior. */
+  .body.is-split .term.is-join-left {
+    box-shadow: -1px 0 0 color-mix(in sRGB, var(--rb-border) 70%, transparent);
+  }
+
+  .body.is-split .term.is-join-top {
+    box-shadow: 0 -1px 0 color-mix(in sRGB, var(--rb-border) 70%, transparent);
+  }
+
+  .body.is-split .term.is-join-left.is-join-top {
+    box-shadow:
+      -1px 0 0 color-mix(in sRGB, var(--rb-border) 70%, transparent),
+      0 -1px 0 color-mix(in sRGB, var(--rb-border) 70%, transparent);
   }
 
   .term.is-active {
     z-index: 1;
-    border-color: color-mix(in sRGB, var(--agent-accent) 58%, var(--rb-border));
   }
 
+  /* No usar `visibility: hidden`, `opacity: 0` ni sacarlo de pantalla: el
+     canvas de xterm en WebView2 deja de pintar y al volver queda en blanco.
+     Se queda en su sitio, detrás del pane activo, para que el renderer siga. */
   .term.is-hidden {
-    visibility: hidden;
+    z-index: -1;
+    pointer-events: none;
+  }
+
+  /* Vista previa del drop: la mitad que va a ocupar la consola arrastrada. */
+  .term.is-drop::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: 10;
+    border: 1px dashed color-mix(in sRGB, var(--agent-accent) 72%, transparent);
+    border-radius: 0;
+    background: color-mix(in sRGB, var(--agent-accent) 13%, transparent);
+    pointer-events: none;
+  }
+
+  .term.is-drop.drop-right::after {
+    left: 50%;
+  }
+
+  .term.is-drop.drop-down::after {
+    top: 50%;
+  }
+
+  .term-boot {
+    position: absolute;
+    inset: 0;
+    z-index: 4;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.42rem;
+    padding: 1rem;
+    background: color-mix(in srgb, var(--rb-bg0) 92%, transparent);
+    pointer-events: none;
+  }
+
+  .term-boot-logo {
+    display: grid;
+    margin-bottom: 0.15rem;
+    place-items: center;
+  }
+
+  .term-boot-title {
+    margin: 0;
+    color: var(--rb-text);
+    font-size: 0.82rem;
+    font-weight: 650;
+    text-align: center;
+    text-wrap: balance;
+  }
+
+  .term-boot-hint {
+    max-width: 16rem;
+    margin: 0;
+    color: var(--rb-muted);
+    font-size: 0.66rem;
+    line-height: 1.4;
+    text-align: center;
+    text-wrap: pretty;
+  }
+
+  .term-boot-spin {
+    width: 1.05rem;
+    height: 1.05rem;
+    margin-top: 0.35rem;
+    border: 1.5px solid color-mix(in srgb, var(--rb-muted) 32%, transparent);
+    border-top-color: var(--accent, var(--rb-text));
+    border-radius: 999px;
+    animation: term-boot-spin 0.7s linear infinite;
+  }
+
+  @keyframes term-boot-spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .term-boot-spin {
+      animation: none;
+      border-top-color: color-mix(in srgb, var(--rb-muted) 32%, transparent);
+      opacity: 0.7;
+    }
+  }
+
+  .rail-tab.is-dragging {
+    opacity: 0.55;
+  }
+
+  .tab-ghost {
+    position: fixed;
+    z-index: var(--z-popover, 60);
+    display: grid;
+    width: 1.9rem;
+    height: 1.9rem;
+    place-items: center;
+    border-radius: 0.5rem;
+    background: color-mix(in sRGB, var(--rb-surface) 94%, var(--rb-bg0));
+    box-shadow: 0 6px 18px color-mix(in sRGB, rgb(0 0 0) 30%, transparent);
+    transform: translate(-50%, -130%);
     pointer-events: none;
   }
 
   .term :global(.xterm) {
+    width: 100%;
     height: 100%;
   }
 
@@ -1775,6 +3018,141 @@
     letter-spacing: 0.03em;
   }
 
+  .add-menu {
+    position: relative;
+    display: inline-flex;
+  }
+
+  /* Ancla en el rail y abre hacia arriba-derecha, sobre los terminales. */
+  .add-pop {
+    position: absolute;
+    bottom: calc(100% + 0.3rem);
+    left: 0;
+    z-index: 9;
+    display: flex;
+    min-width: 10.5rem;
+    max-height: 20rem;
+    flex-direction: column;
+    gap: 0.08rem;
+    border: 1px solid color-mix(in sRGB, var(--rb-border) 80%, transparent);
+    border-radius: 0.5rem;
+    padding: 0.22rem;
+    overflow-y: auto;
+    background: color-mix(in sRGB, var(--rb-surface) 96%, var(--rb-bg0));
+    box-shadow: 0 8px 22px color-mix(in sRGB, rgb(0 0 0) 32%, transparent);
+  }
+
+  .add-item {
+    display: flex;
+    width: 100%;
+    align-items: center;
+    gap: 0.42rem;
+    border: 0;
+    border-radius: 0.35rem;
+    padding: 0.34rem 0.44rem;
+    background: transparent;
+    color: var(--rb-text);
+    font: inherit;
+    font-size: 0.7rem;
+    font-weight: 560;
+    text-align: left;
+    white-space: nowrap;
+    cursor: pointer;
+  }
+
+  .add-item:hover:not(:disabled) {
+    background: color-mix(in sRGB, var(--rb-text) 8%, transparent);
+  }
+
+  .add-item:disabled {
+    opacity: 0.4;
+    cursor: default;
+  }
+
+  .add-glyph {
+    display: grid;
+    width: 1.15rem;
+    height: 1.15rem;
+    flex: 0 0 auto;
+    place-items: center;
+    color: var(--rb-muted);
+  }
+
+  .add-glyph.is-ssh-glyph {
+    font-size: 0.48rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+  }
+
+  .add-group {
+    margin: 0.18rem 0 0;
+    padding: 0.14rem 0.44rem;
+    border-top: 1px solid color-mix(in sRGB, var(--rb-border) 62%, transparent);
+    color: var(--rb-faint);
+    font-size: 0.54rem;
+    font-weight: 680;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+  }
+
+  .add-pop > .add-group:first-child {
+    margin-top: 0;
+    border-top: 0;
+  }
+
+  .add-cmd {
+    margin: 0.08rem 0.2rem 0.14rem;
+    border: 1px solid color-mix(in sRGB, var(--rb-border) 84%, transparent);
+    border-radius: 0.35rem;
+    padding: 0.3rem 0.4rem;
+    background: color-mix(in sRGB, var(--rb-surface-2) 70%, transparent);
+    color: var(--rb-text);
+    font: inherit;
+    font-size: 0.66rem;
+  }
+
+  .add-cmd:focus-visible {
+    outline: none;
+    border-color: color-mix(in sRGB, var(--accent, var(--rb-text)) 55%, transparent);
+  }
+
+  .add-saved {
+    position: relative;
+    display: flex;
+    align-items: center;
+  }
+
+  .add-saved .add-item {
+    padding-right: 1.4rem;
+  }
+
+  .add-forget {
+    position: absolute;
+    right: 0.2rem;
+    display: grid;
+    width: 1.05rem;
+    height: 1.05rem;
+    place-items: center;
+    border: 0;
+    border-radius: 0.28rem;
+    background: transparent;
+    color: var(--rb-faint);
+    cursor: pointer;
+  }
+
+  .add-forget:hover {
+    color: var(--rb-record);
+    background: color-mix(in sRGB, var(--rb-record) 12%, transparent);
+  }
+
+  .add-ellipsis {
+    min-width: 0;
+    max-width: 11rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
   .tab-add:hover:not(:disabled),
   .tab-add:focus-visible {
     color: var(--rb-text);
@@ -1792,10 +3170,10 @@
 
     container-name: agents-console;
     container-type: inline-size;
-    border: 1px solid color-mix(in sRGB, var(--rb-border-strong) 72%, transparent);
-    border-radius: 0.82rem;
+    border: 0;
+    border-radius: inherit;
     overflow: hidden;
-    background: var(--rb-bg0);
+    background: transparent;
   }
 
   .console-desk .rail {
@@ -1831,22 +3209,17 @@
   }
 
   .console-desk .rail-tab.is-on {
-    border-color: color-mix(in sRGB, var(--agent-accent) 48%, transparent);
-    background: color-mix(in sRGB, var(--agent-accent) 13%, var(--rb-surface));
+    background: color-mix(in sRGB, var(--agent-accent) 13%, var(--skin));
   }
 
+  /* Sin chip de fondo detrás del logo: se veía un cuadrado dentro de otro.
+     La ficha es la única forma; el estado lo pinta la ficha completa. */
   .console-desk .rail-tab .rail-logo {
     display: grid;
     place-items: center;
     width: 1.72rem;
     height: 1.72rem;
-    border-radius: 0.48rem;
-    background: color-mix(in sRGB, var(--rb-text) 8%, transparent);
     color: var(--rb-text);
-  }
-
-  .console-desk .rail-tab.is-on .rail-logo {
-    background: color-mix(in sRGB, var(--agent-accent) 22%, transparent);
   }
 
   .console-desk .rail-copy {
@@ -1892,11 +3265,11 @@
   }
 
   .console-desk .bar {
-    grid-template-areas: "start tools window";
-    grid-template-columns: minmax(7rem, 1fr) auto auto;
+    grid-template-areas: "start window";
+    grid-template-columns: minmax(0, 1fr) auto;
     min-height: 2.7rem;
     padding: 0.32rem 0.52rem;
-    background: var(--rb-surface);
+    background: transparent;
   }
 
   .console-desk .bar-start,
@@ -1911,10 +3284,6 @@
     gap: 0.48rem;
   }
 
-  .console-desk .bar-tools {
-    grid-area: tools;
-  }
-
   .console-desk .window-actions {
     grid-area: window;
   }
@@ -1924,13 +3293,12 @@
   }
 
   .console-desk .where-block {
-    flex-direction: column;
-    align-items: flex-start;
+    flex-direction: row;
+    align-items: center;
     gap: 0.08rem;
   }
 
-  .console-desk .back-btn,
-  .console-desk .layout-toggle {
+  .console-desk .back-btn {
     display: inline-flex;
     align-items: center;
     gap: 0.28rem;
@@ -1953,8 +3321,7 @@
     padding: 0.14rem 0.34rem 0.14rem 0.24rem;
   }
 
-  .console-desk .back-btn:hover,
-  .layout-toggle:hover {
+  .console-desk .back-btn:hover {
     border-color: color-mix(in sRGB, var(--agent-accent) 35%, transparent);
     background: color-mix(in sRGB, var(--agent-accent) 10%, transparent);
     color: var(--rb-text);
@@ -1966,34 +3333,23 @@
     font-weight: 700;
   }
 
-  .console-desk .session-state {
-    color: var(--rb-muted);
-    font-size: 0.54rem;
-    font-weight: 540;
+  .console-desk .session-dot {
+    position: absolute;
+    top: -0.12rem;
+    right: -0.12rem;
+    width: 0.42rem;
+    height: 0.42rem;
+    background: var(--rb-muted);
+    box-shadow: 0 0 0 2px color-mix(in sRGB, var(--skin, var(--rb-surface)) 88%, transparent);
   }
 
-  .console-desk .session-state.is-live {
-    color: var(--rb-ok);
+  .console-desk .session-dot.is-live {
+    background: var(--rb-ok);
+    box-shadow: 0 0 0 2px color-mix(in sRGB, var(--rb-ok) 22%, transparent);
   }
 
-  .console-desk .layout-toggle {
-    padding: 0.14rem 0.34rem;
-  }
-
-  .console-desk .layout-toggle:disabled {
-    opacity: 0.45;
-    cursor: default;
-  }
-
-  .console-desk .layout-toggle kbd {
-    border: 1px solid color-mix(in sRGB, var(--rb-border) 90%, transparent);
-    border-radius: 0.3rem;
-    padding: 0.05rem 0.2rem;
-    background: color-mix(in sRGB, var(--rb-text) 5%, transparent);
-    color: var(--rb-faint);
-    font-family: var(--rb-mono, ui-monospace, monospace);
-    font-size: 0.49rem;
-    font-weight: 600;
+  .console-desk .session-dot.is-prep {
+    background: color-mix(in sRGB, var(--rb-ok) 55%, var(--rb-muted));
   }
 
   .console-desk .icon-btn {
@@ -2008,10 +3364,6 @@
 
   .console-desk .body {
     background: var(--rb-bg0);
-  }
-
-  .console-desk .body.is-split {
-    background: color-mix(in sRGB, var(--rb-bg0) 92%, var(--rb-text));
   }
 
   .console-desk .rail.is-compact {
@@ -2041,25 +3393,9 @@
   }
 
   @container agents-console (width <= 40rem) {
-    .console-desk .bar {
-      grid-template-areas:
-        "start window"
-        "tools tools";
-      grid-template-columns: minmax(0, 1fr) auto;
-      gap: 0.28rem 0.38rem;
-      padding: 0.28rem 0.42rem 0.34rem;
-    }
-
-    .console-desk .bar-tools {
-      width: 100%;
-      justify-content: flex-end;
-      border-top: 1px solid color-mix(in sRGB, var(--rb-border) 58%, transparent);
-      padding-top: 0.28rem;
-    }
-
     .console-desk .host-pick {
-      max-width: none;
-      margin-right: auto;
+      max-width: 7.5rem;
+      margin-right: 0.15rem;
       margin-left: 0;
     }
   }
@@ -2081,16 +3417,8 @@
       display: none;
     }
 
-    .console-desk .back-btn span,
-    .console-desk .layout-toggle span,
-    .console-desk .layout-toggle kbd {
+    .console-desk .back-btn span {
       display: none;
-    }
-
-    .console-desk .layout-toggle {
-      width: 1.78rem;
-      justify-content: center;
-      padding-inline: 0;
     }
 
     .console-desk .where-block {
@@ -2124,7 +3452,6 @@
 
   @media (prefers-reduced-motion: reduce) {
     .console-desk .back-btn,
-    .layout-toggle,
     .icon-btn,
     .console-desk .rail-tab {
       transition: none;

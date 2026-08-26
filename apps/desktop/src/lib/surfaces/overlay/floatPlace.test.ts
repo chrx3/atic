@@ -113,6 +113,21 @@ describe("placeBesidePill", () => {
     expect(placed.x).toBeGreaterThanOrEqual(0);
     expect(placed.x + placed.w).toBeLessThanOrEqual(1536);
   });
+
+  it("pill en el monitor derecho no clampa al izquierdo", () => {
+    const screens = [
+      { x: 0, y: 0, w: 1536, h: 864 },
+      { x: 1536, y: 0, w: 1536, h: 864 },
+    ];
+    const pill = { x: 2000, y: 80, w: 48, h: 48 };
+    const placed = placeBesidePill(pill, { w: 312, h: 372 }, {
+      corner: 18,
+      gap: 10,
+      work: screens,
+    });
+    expect(placed.x).toBeGreaterThanOrEqual(1536);
+    expect(placed.x + placed.w).toBeLessThanOrEqual(3072);
+  });
 });
 
 describe("placeOnSide", () => {

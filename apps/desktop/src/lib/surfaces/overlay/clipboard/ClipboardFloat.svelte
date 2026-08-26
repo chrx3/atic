@@ -511,9 +511,8 @@
     box-sizing: border-box;
     padding: 0.45rem 0.5rem 0.55rem;
     border-radius: 18px;
-    /* Opaco debajo del skin (mismo patrón que AgentsDemo): el fondo no
-       desaparece si el goo va un frame atras al mover. */
-    background: var(--rb-surface);
+    /* Transparente: un fill opaco corta la sombra de la piel en el cuello. */
+    background: transparent;
     color: var(--rb-text);
     overflow: hidden;
     opacity: 0;

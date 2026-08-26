@@ -265,6 +265,34 @@ pub(crate) fn ensure_capture_in_dir(dir: &Path, path: &Path) -> Result<PathBuf, 
     ensure_in_dir(dir, path)
 }
 
+/// PNG de capturas o del historial de portapapeles — las dos carpetas de las
+/// que la app escribe imágenes.
+pub(crate) fn ensure_app_image(state: &AppState, path: &Path) -> Result<PathBuf, String> {
+    if let Ok(ok) = ensure_in_dir(&state.dirs.captures_dir(), path) {
+        return Ok(ok);
+    }
+    ensure_in_dir(&state.dirs.clipboard_dir(), path).map_err(|_| {
+        crate::ui_lang::msg(
+            "Ruta fuera de capturas o portapapeles.",
+            "Path is outside the captures or clipboard folders.",
+        )
+    })
+}
+
+/// Abre la imagen con el visor del sistema (el “en grande” del historial).
+#[tauri::command]
+pub fn open_managed_image(
+    app: AppHandle,
+    state: State<AppState>,
+    path: String,
+) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    let target = ensure_app_image(&state, Path::new(&path))?;
+    app.opener()
+        .open_path(target.to_string_lossy().into_owned(), None::<&str>)
+        .map_err(|error| error.to_string())
+}
+
 /// Verifica que `path` esté directamente dentro de `dir` (evita leer o borrar
 /// archivos arbitrarios vía comando) y devuelve la ruta canónica.
 fn ensure_in_dir(dir: &Path, path: &Path) -> Result<PathBuf, String> {

@@ -31,7 +31,7 @@
   import { liveArea, surfaces } from "./surfaces.svelte";
   import { liquid } from "./group.svelte";
   import Skin from "$liquid/Skin.svelte";
-  import { BLEND, CELL, CELL_DRAG, SMOOTH } from "$liquid/constants";
+  import { BLEND, CELL, SMOOTH } from "$liquid/constants";
   import {
     LAUNCHER_LAB_OPEN_KEY,
     launcherLab,
@@ -64,14 +64,12 @@
   let launcherLabEl = $state<HTMLElement | null>(null);
 
   const skinBlend = $derived(isDev && launcherLab.open ? launcherLab.blend : BLEND);
-  const skinCell = $derived(
-    isDev && launcherLab.open
-      ? launcherLab.cell
-      : surfaces.dragging
-        ? CELL_DRAG
-        : CELL,
-  );
-  const skinSmooth = $derived(surfaces.dragging ? 0 : SMOOTH);
+  // Misma calidad quieto y en movimiento. Antes el drag bajaba a celda 12 y
+  // suavizado 0 "por costo", y la pill se veía poligonal al moverse; el campo
+  // real es chico (pill ~350 muestras, float grande ~10k) y remeshear fino a
+  // 60 Hz cuesta menos que un cuadro. El traslado rígido ni siquiera remeshea.
+  const skinCell = $derived(isDev && launcherLab.open ? launcherLab.cell : CELL);
+  const skinSmooth = SMOOTH;
 
   async function syncLab() {
     if (!isDev) return;
@@ -220,6 +218,14 @@
     return el instanceof HTMLElement ? el : null;
   }
 
+  /** xterm sigue montado al esconder el float; no puede dejar el overlay en modo texto. */
+  function hiddenAgentsHost(node: EventTarget | null): boolean {
+    if (!(node instanceof Element)) return false;
+    const host = node.closest(".af");
+    if (!(host instanceof HTMLElement)) return false;
+    return host.classList.contains("is-off") || !host.classList.contains("is-shown");
+  }
+
   function focusEditable(el: HTMLElement) {
     if (el.matches("input, textarea, [contenteditable='true']")) {
       el.focus();
@@ -236,7 +242,7 @@
 
   async function enterTextMode(event: PointerEvent) {
     const el = editable(event.target);
-    if (!el) return;
+    if (!el || hiddenAgentsHost(el)) return;
     // Re-enfocar aunque ya estemos en modo texto (p. ej. salto del composer → xterm).
     if (!textMode) {
       textMode = true;
@@ -268,27 +274,32 @@
     // pedir el foco en el medio.
     const onFocusOut = () => {
       setTimeout(() => {
-        if (!editable(document.activeElement)) void leaveTextMode();
+        const ae = document.activeElement;
+        if (!editable(ae) || hiddenAgentsHost(ae)) void leaveTextMode();
       }, 0);
     };
     // Foco programático (launcher al abrir, etc.): el hijo pide
     // `set_overlay_text_mode` y luego `input.focus()`. Sin este sync,
     // `textMode` seguiría en false y `leaveTextMode` no devolvería el teclado.
     const onFocusIn = () => {
-      if (!editable(document.activeElement) || textMode) return;
+      const ae = document.activeElement;
+      if (!editable(ae) || hiddenAgentsHost(ae) || textMode) return;
       textMode = true;
     };
     // Si el foco salta a otra app (Alt+Tab, clic fuera), el `focusout` del DOM
     // a veces no corre: el textarea sigue siendo `activeElement` y el modo
     // texto queda pegado. `blur` de la ventana lo devuelve igual.
     const onWindowBlur = () => void leaveTextMode();
+    const onLeave = () => void leaveTextMode();
     document.addEventListener("focusin", onFocusIn);
     document.addEventListener("focusout", onFocusOut);
     window.addEventListener("blur", onWindowBlur);
+    window.addEventListener("atic-overlay-leave-text", onLeave);
     return () => {
       document.removeEventListener("focusin", onFocusIn);
       document.removeEventListener("focusout", onFocusOut);
       window.removeEventListener("blur", onWindowBlur);
+      window.removeEventListener("atic-overlay-leave-text", onLeave);
       void leaveTextMode();
     };
   });
