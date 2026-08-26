@@ -459,9 +459,14 @@ fn create(app: &AppHandle) -> Option<tauri::WebviewWindow> {
     // quedaban “pegados” hasta tocar otra cosa.
     #[cfg(windows)]
     {
-        builder = builder.additional_browser_args(
-            "--disable-backgrounding-occluded-windows --disable-renderer-backgrounding --disable-background-timer-throttling --disable-features=CalculateNativeWinOcclusion",
-        );
+        // Dev: puerto CDP propio. El perfil compartido (main/launcher) toma
+        // el de WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS; este webview usa otro
+        // user-data-dir y sin puerto propio queda indepurable.
+        #[cfg(debug_assertions)]
+        let args = "--disable-backgrounding-occluded-windows --disable-renderer-backgrounding --disable-background-timer-throttling --disable-features=CalculateNativeWinOcclusion --remote-debugging-port=9223";
+        #[cfg(not(debug_assertions))]
+        let args = "--disable-backgrounding-occluded-windows --disable-renderer-backgrounding --disable-background-timer-throttling --disable-features=CalculateNativeWinOcclusion";
+        builder = builder.additional_browser_args(args);
     }
     builder
         .build()
