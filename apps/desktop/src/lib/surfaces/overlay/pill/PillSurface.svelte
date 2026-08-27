@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "$surfaces/overlay/tip.svelte";
   /**
    * La pill: barra flotante siempre visible con la rueda de herramientas.
    *
@@ -22,6 +23,7 @@
   import { capture } from "$domain/capture.svelte";
   import { dictation as dictationStore } from "$domain/dictation.svelte";
   import { paste } from "$domain/paste.svelte";
+  import { appUpdate } from "$domain/appUpdate.svelte";
   import { sessionEffect } from "$domain/session";
   import Waveform from "$lib/Waveform.svelte";
   import AticMark from "$lib/AticMark.svelte";
@@ -44,7 +46,7 @@
   import { localizeTool, t } from "$domain/i18n.svelte";
   import { formatShortcut } from "$lib/format";
   import Icon from "$ui/Icon.svelte";
-  import { X } from "$lib/icons";
+  import { Check, Download, X } from "$lib/icons";
   import type { IconNode } from "morphicons/svelte";
   import { PILL, windowFor, type Size } from "$surfaces/overlay/pillStage";
   import { createCssStage } from "$surfaces/overlay/pillCssStage";
@@ -122,6 +124,7 @@
   import {
     onOverlayDismiss,
     onOverlayYieldMain,
+    onOverlayReady,
     onPillRadialPress,
     onPillRadialRelease,
     onPillReset,
@@ -212,6 +215,50 @@
   const agentWorking = $derived(chip.tone === "working" || chip.tone === "count");
   const agentReady = $derived(chip.tone === "ready");
   const agentReadyLabel = $derived(chip.label ?? t("pill.ready"));
+  /**
+   * Aviso de actualización: qué muestra el chip y qué dice al pasar el mouse.
+   *
+   * Un solo botón para las cuatro fases porque `appUpdate.advance()` ya es un
+   * solo camino: si no está descargada, baja; si ya está, instala y reinicia.
+   * Los textos son los mismos que la gota de la ventana principal — es el
+   * mismo aviso, no otro dialecto.
+   */
+  const updateChip = $derived.by(() => {
+    if (!appUpdate.pending) return null;
+    const version = appUpdate.version ?? "";
+    if (appUpdate.installing) {
+      return {
+        tone: "busy" as const,
+        icon: Download,
+        text: "…",
+        label: t("about.bubbleInstalling", { version }),
+      };
+    }
+    if (appUpdate.downloading) {
+      return {
+        tone: "busy" as const,
+        icon: Download,
+        // Sin `contentLength` no hay porcentaje: GitHub no siempre lo manda.
+        text: appUpdate.percent == null ? "…" : `${appUpdate.percent}%`,
+        label: t("about.bubbleDownloading", { version }),
+      };
+    }
+    if (appUpdate.downloaded) {
+      return {
+        tone: "ready" as const,
+        icon: Check,
+        text: version,
+        label: t("about.bubbleInstall", { version }),
+      };
+    }
+    return {
+      tone: "new" as const,
+      icon: Download,
+      text: version,
+      label: t("about.bubbleDownload", { version }),
+    };
+  });
+
   const agentChipAria = $derived.by(() => {
     const target = chip.target;
     if (target.kind === "focus") {
@@ -1029,6 +1076,10 @@
    * seguís sosteniendo la misma cosa.
    */
   function releaseDockIfFar(cursor: { x: number; y: number } | null): void {
+    // Con la rueda abierta el canto no se toca: desacoplar pone
+    // `surface = "none"` y la cerraría a mitad del arrastre. El canto se
+    // re-evalúa al cerrar, en `settleDock`, ya con la posición nueva.
+    if (surface === "wheel") return;
     if (!dock) return;
     const size = stage.applied() ?? windowFor({ w: PILL.bar, h: PILL.bar });
     const rect = { x: at.x, y: at.y, w: size.w, h: size.h };
@@ -1430,6 +1481,59 @@
     );
   }
 
+  /**
+   * Re-asienta la pill cuando la geometría del overlay cambió bajo sus pies.
+   *
+   * Tras un reinicio o al despertar de hibernación, el viewport CSS pasa unos
+   * segundos en el recuadro chico del create (visto: 1551×864 con monitores de
+   * 3840×1080) mientras Windows asienta las pantallas, y `pill_home` se
+   * restaura clampeado contra ESE espacio: la pill quedaba a mitad del
+   * escritorio cuando el viewport llegaba al tamaño real, hasta que alguna
+   * interacción la volvía a volar. Lo mismo si la topología flapea (2→1→2
+   * monitores) con la app abierta. Rust ya reencuadra la ventana solo; esta es
+   * la mitad del frontend: recargar áreas y devolver la pill a su hogar, solo
+   * si está en reposo.
+   */
+  let resettleTimer = 0;
+  let homeRestored = false;
+  /** Corta el sondeo de actualizaciones al desmontar. */
+  let stopUpdatePolling: (() => void) | null = null;
+
+  function queueResettle() {
+    if (!homeRestored) return;
+    window.clearTimeout(resettleTimer);
+    // Los resize del boot llegan en ráfaga (1551→3072→3840): coalescer.
+    resettleTimer = window.setTimeout(() => void resettleAfterGeometry(), 150);
+  }
+
+  async function resettleAfterGeometry() {
+    await stage.loadAreas();
+    if (flying || openingWheel || slotBusy || returnHomeSuppressed) return;
+    if (surfaces.dragging || dragOrigin || anySpatialOpen()) return;
+    if (surface !== "none" && surface !== "edge") return;
+    if (dock?.expanded) return;
+    const before = { ...at };
+    stage.moveTo(home);
+    at = stage.at();
+    if (Math.hypot(before.x - at.x, before.y - at.y) >= 2) {
+      // Mismo criterio que al restaurar el hogar en el arranque: si el punto
+      // queda a ras de un borde exterior, estaba acoplada ahí.
+      const size = stage.applied() ?? windowFor({ w: PILL.bar, h: PILL.bar });
+      const edge = dockedEdgeAt(
+        { x: at.x, y: at.y, w: size.w, h: size.h },
+        stage.workAreas(),
+      );
+      if (edge) {
+        dock = { edge, expanded: false };
+        surface = "edge";
+      } else if (surface === "edge") {
+        dock = null;
+        surface = "none";
+      }
+    }
+    surfaces.schedule();
+  }
+
   /** Vuelve al hogar si la pill quedó en un slot de acción. */
   async function maybeReturnHome() {
     if (returnHomeSuppressed || slotBusy || spatialIntent) return;
@@ -1696,6 +1800,11 @@
   /** Un drag sobre el chip no debe terminar convertido en click. */
   let suppressAgentChipClick = false;
   let suppressAgentChipClickTimer = 0;
+  /** El gesto arrancó sobre el núcleo de la rueda: su asa mientras está abierta. */
+  let wheelCorePressed = false;
+  /** Un drag desde el núcleo no debe terminar cerrando la rueda. */
+  let suppressWheelCoreClick = false;
+  let suppressWheelCoreClickTimer = 0;
 
   function beginDrag(event: PointerEvent) {
     const el = event.target as HTMLElement | null;
@@ -1709,15 +1818,26 @@
     // igual que hace la rueda.
     const onIsland = el.closest(".p-island") !== null;
     const onAgentChip = el.closest(".p-agent") !== null;
+    // Abierta, la rueda se agarra por el núcleo y SOLO por ahí.
+    //
+    // Al revés que la isla: ahí todo es asa porque no queda hueco donde
+    // apuntar, pero acá cada gajo es una elección, y un umbral de 4 px sobre
+    // un menú radial convertiría cualquier clic con pulso en un arrastre. El
+    // núcleo mide 58 px y es donde ya está el puntero cuando la rueda acaba de
+    // abrirse, así que no hay que ir a buscarlo. El trato es el del disco en
+    // reposo: clic cierra, arrastre mueve.
+    const onWheelCore = el.closest(".pw-core") !== null;
     if (
       !onIsland &&
       !onAgentChip &&
+      !onWheelCore &&
       el.closest("button, a, input, textarea, [data-no-drag]")
     ) {
       return;
     }
     agentChipPressed = onAgentChip;
     agentChipPreferBind = onAgentChip && (event.ctrlKey || event.metaKey);
+    wheelCorePressed = onWheelCore;
     // El origen NO sale del evento del DOM: `clientX` mide contra la ventana, y
     // traducirlo obliga a confiar en dónde cree el CSS que está `.ov`, que es
     // un dato que llega por evento desde Rust y se atrasa justo cuando la
@@ -1807,6 +1927,27 @@
     window.removeEventListener("pointercancel", endDrag, true);
   }
 
+  /**
+   * Hogar nuevo después de arrastrar la rueda abierta.
+   *
+   * `at` es la esquina del cuadrado de la rueda, no la del disco. Al cerrar,
+   * `wheelCollapse` encoge con pivote al centro, así que la pill queda
+   * centrada donde estaba el núcleo: ese es el hogar. Guardar `at` tal cual
+   * mandaría el disco ~100 px arriba y a la izquierda al volver a casa —y el
+   * cierre, que vuela al hogar, desharía el arrastre a la vista.
+   */
+  function rehomeFromWheel(): void {
+    const size = stage.applied() ?? box;
+    // El mismo tamaño que va a pedir `wheelCollapse`: `barW` no se re-mide
+    // mientras la rueda manda, así que ambos leen la barra en reposo.
+    const rest = windowFor(contentFor("none", barW));
+    home = {
+      x: Math.round(at.x + (size.w - rest.w) / 2),
+      y: Math.round(at.y + (size.h - rest.h) / 2),
+    };
+    void savePillHome(home.x, home.y);
+  }
+
   /** Soltar sin haber movido = clic. Abre la rueda aunque haya cola o grabación. */
   function endDrag() {
     const wasClick = dragOrigin !== null && !dragMoved;
@@ -1814,9 +1955,11 @@
     const pressedTool = islandPressTool;
     const pressedAgentChip = agentChipPressed;
     const preferAgentBind = agentChipPreferBind;
+    const pressedWheelCore = wheelCorePressed;
     islandPressTool = null;
     agentChipPressed = false;
     agentChipPreferBind = false;
+    wheelCorePressed = false;
     stopDragWatch();
     if (moved) {
       if (pressedAgentChip) {
@@ -1825,6 +1968,19 @@
         suppressAgentChipClickTimer = window.setTimeout(() => {
           suppressAgentChipClick = false;
         }, 250);
+      }
+      if (pressedWheelCore) {
+        suppressWheelCoreClick = true;
+        window.clearTimeout(suppressWheelCoreClickTimer);
+        suppressWheelCoreClickTimer = window.setTimeout(() => {
+          suppressWheelCoreClick = false;
+        }, 250);
+      }
+      // La rueda abierta se mueve y se queda abierta: ni se acopla (no es una
+      // isla mientras manda) ni cambia de sitio al cerrar.
+      if (surface === "wheel") {
+        rehomeFromWheel();
+        return;
       }
       // Arrastrar redefine el hogar: la pill se queda donde la dejaste —o
       // pegada al canto, si la soltaste cerca de uno. Si el gesto arrancó sobre
@@ -1843,6 +1999,14 @@
         suppressAgentChipClick = false;
       }, 250);
       activateAgentChip(preferAgentBind);
+      return;
+    }
+    // Soltar el núcleo sin haber movido sigue siendo cerrar. Se decide acá y
+    // no por el click nativo del botón porque el arrastre captura el puntero:
+    // dejarlo en manos del click sería confiar en cómo cada motor lo re-apunta.
+    // Un segundo cierre no molesta: `closeWheel` sale de una si ya no está.
+    if (wasClick && pressedWheelCore) {
+      void closeWheel();
       return;
     }
     if (wasClick && pressedTool) {
@@ -1889,8 +2053,26 @@
           surface = "edge";
         }
       }
+      // Recién ahora hay hogar de verdad: antes de esto, un resize temprano
+      // re-asentaría la pill sobre el {0,0} inicial.
+      homeRestored = true;
       try {
-        wheelShortcut = (await getConfig()).pill_radial_shortcut;
+        const cfg = await getConfig();
+        wheelShortcut = cfg.pill_radial_shortcut;
+        // El sondeo de updates arranca ACÁ y no en un `$effect`.
+        //
+        // `startPolling()` consulta en el acto, y ese `check()` escribe el
+        // mismo estado del store que el efecto tendría que leer: el efecto se
+        // invalida a sí mismo y Svelte aborta el árbol entero con
+        // `effect_update_depth_exceeded`, dejando la VENTANA COMPLETA sin
+        // reactividad. `MainSurface` lo resuelve con `untrack`; acá no hace
+        // falta efecto ninguno, porque la condición se lee una sola vez.
+        //
+        // En dev no se sondea, igual que en la ventana principal: el
+        // instalador que responde GitHub no es el que estás corriendo.
+        if (!import.meta.env.DEV && cfg.onboarding_done === true) {
+          stopUpdatePolling = appUpdate.startPolling();
+        }
       } catch {
         // Sin config, el tooltip solo omite el atajo.
       }
@@ -1987,7 +2169,13 @@
      */
     const onOutside = () => {
       surfaces.resetInteraction();
-      if (dragMoved) return;
+      if (dragMoved) {
+        // Solo el clic que terminó el arrastre. La bandera vive hasta el
+        // próximo `beginDrag`, y sin consumirla acá un arrastre de la rueda
+        // dejaba sordo el cierre por clic afuera de ahí en adelante.
+        dragMoved = false;
+        return;
+      }
       if (openingWheel && surface !== "wheel") {
         cancelFlight();
         collapseEpoch += 1;
@@ -1997,6 +2185,10 @@
     };
 
     window.addEventListener("keydown", onKey, true);
+    // El viewport que crece tarde (boot tras hibernar) y el reencuadre de
+    // Rust tras un cambio de monitores: ambos re-asientan el hogar.
+    window.addEventListener("resize", queueResettle);
+    unlisteners.push(onOverlayReady(() => queueResettle()));
     unlisteners.push(onOverlayDismiss(onOutside));
     unlisteners.push(
       onOverlayYieldMain(() => {
@@ -2007,8 +2199,12 @@
 
     return () => {
       stopDragWatch();
+      stopUpdatePolling?.();
       window.clearTimeout(suppressAgentChipClickTimer);
+      window.clearTimeout(suppressWheelCoreClickTimer);
+      window.clearTimeout(resettleTimer);
       window.removeEventListener("keydown", onKey, true);
+      window.removeEventListener("resize", queueResettle);
       unlisteners.forEach((u) => u.then((fn) => fn()));
     };
   });
@@ -2024,7 +2220,7 @@
     onclick={toggleRecord}
     disabled={busy}
     aria-label={label}
-    title={btWarning ?? label}
+    use:tip={btWarning ?? label}
   >
     <span class="p-rec-square" aria-hidden="true"></span>
   </button>
@@ -2037,7 +2233,7 @@
     data-no-drag
     onclick={onClick}
     aria-label={label}
-    title={label}
+    use:tip={label}
   >
     <Icon {icon} {size} />
   </button>
@@ -2079,7 +2275,7 @@
               type="button"
               class="p-island-tool"
               style="--i: {slot}; --s: {Math.abs((islandSlots - 1) / 2 - slot)}"
-              title="{tool.label} — {tool.short}"
+              use:tip={`${tool.label} — ${tool.short}`}
               aria-label="{tool.label}. {tool.short}"
               {@attach islandAttachers[i]}
               onpointerdown={() => (islandPressTool = tool.id)}
@@ -2095,7 +2291,7 @@
           class="p-live-drop"
           {@attach trackLive}
           data-no-drag
-          title={btWarning ?? t("pill.stopRecord")}
+          use:tip={btWarning ?? t("pill.stopRecord")}
           aria-label={t("pill.stopRecord")}
           disabled={busy}
           onpointerdown={(e) => e.stopPropagation()}
@@ -2131,7 +2327,12 @@
         else void toggleDictate();
       }}
       onSelect={(id) => activateTool(id)}
-      onCenter={() => void closeWheel()}
+      onCenter={() => {
+        // Arrastrarla por el núcleo no debe además cerrarla: el click nativo
+        // llega igual después del pointerup.
+        if (suppressWheelCoreClick) return;
+        void closeWheel();
+      }}
     />
   </div>
 
@@ -2189,7 +2390,7 @@
               <span
                 class="p-chip is-warn"
                 role="status"
-                title={btWarning}
+                use:tip={btWarning}
                 aria-label={btWarning}>BT</span
               >
             {:else if liveActive}
@@ -2217,7 +2418,7 @@
               onclick={toggleDictate}
               disabled={busy}
               aria-label={t("pill.stopDictate")}
-              title={t("pill.dictatingHint")}
+              use:tip={t("pill.dictatingHint")}
             >
               <ToolIcon id="dictation" size={16} strokeWidth={1.5} />
               <Waveform mic={levels.mic} bars={18} variant="voice" live />
@@ -2233,7 +2434,7 @@
               onclick={toggleDictate}
               disabled={busy || dictation === "transcribing"}
               aria-label={t("pill.dictation")}
-              title={dictationLabel(dictation)}
+              use:tip={dictationLabel(dictation)}
             >
               <ToolIcon id="dictation" size={16} strokeWidth={1.5} />
             </button>
@@ -2249,7 +2450,7 @@
               >
             {/if}
             <span class="p-queue-count">{paste.count}</span>
-            <span class="p-queue-text" title={paste.front?.text}>
+            <span class="p-queue-text" use:tip={paste.front?.text}>
               {paste.front?.text ?? ""}
             </span>
             <button
@@ -2271,7 +2472,7 @@
             {#if !wheelChrome}
               <span
                 class="p-mark is-disc"
-                title={[
+                use:tip={[
                   wheelShortcut
                     ? t("pill.toolsWithShortcut", {
                         shortcut: formatShortcut(wheelShortcut),
@@ -2298,7 +2499,7 @@
                 class:is-ready={chip.tone === "ready"}
                 class:is-count={chip.tone === "count"}
                 onclick={(e) => onAgentChipClick(e)}
-                title={agentChipTitle}
+                use:tip={agentChipTitle}
                 aria-label={agentChipAria}
               >
                 <span class="p-agent-ico" aria-hidden="true">
@@ -2311,6 +2512,26 @@
                 {:else if chip.tone === "count"}
                   <span class="p-agent-count">{chip.label}</span>
                 {/if}
+              </button>
+            {/if}
+            <!-- Hay versión nueva. Mismo sitio y misma cápsula que el aviso de
+               agentes: el disco sigue siendo la puerta a la rueda, y esto es
+               algo que la pill cuenta, no algo que la reemplace. -->
+            {#if updateChip && !wheelChrome}
+              <button
+                type="button"
+                class="p-update"
+                class:is-ready={updateChip.tone === "ready"}
+                class:is-busy={updateChip.tone === "busy"}
+                disabled={appUpdate.busy}
+                onclick={() => void appUpdate.advance()}
+                use:tip={updateChip.label}
+                aria-label={updateChip.label}
+              >
+                <span class="p-update-ico" aria-hidden="true">
+                  <Icon icon={updateChip.icon} size={11} strokeWidth={1.9} />
+                </span>
+                <span class="p-update-text">{updateChip.text}</span>
               </button>
             {/if}
           {/if}
@@ -3168,6 +3389,77 @@
     white-space: nowrap;
   }
 
+  /* Aviso de actualización: la misma cápsula que el chip de agentes, en el
+     color de información. Comparte forma a propósito — son los dos avisos que
+     la pill sabe dar, y leerlos como la misma cosa es lo correcto. */
+  .p-update {
+    position: relative;
+    display: inline-flex;
+    min-height: 1.35rem;
+    flex-shrink: 0;
+    align-items: center;
+    gap: 0.18rem;
+    border: 0;
+    border-radius: 999px;
+    padding: 0 0.34rem 0 0.28rem;
+    background: color-mix(in sRGB, var(--info) 14%, transparent);
+    color: var(--info);
+    cursor: pointer;
+    transition:
+      transform var(--duration-quick) var(--ease-smooth-out),
+      background var(--duration-quick) var(--ease-smooth-out),
+      color var(--duration-quick) var(--ease-smooth-out);
+  }
+
+  /* Mismo blanco de clic que `.p-agent`: la cápsula mide menos que un dedo,
+     así que el área viva se estira sin mover el dibujo. */
+  .p-update::after {
+    content: "";
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: max(40px, 100%);
+    height: 40px;
+    transform: translate(-50%, -50%);
+  }
+
+  .p-update:active {
+    transform: scale(0.96);
+  }
+
+  /* Bajando o instalando: no se puede volver a apretar, y el cursor lo dice. */
+  .p-update:disabled {
+    cursor: progress;
+  }
+
+  /* Ya está en disco: el próximo clic instala y reinicia. */
+  .p-update.is-ready {
+    background: color-mix(in sRGB, var(--ok) 14%, transparent);
+    color: var(--ok);
+  }
+
+  .p-update.is-busy {
+    background: color-mix(in sRGB, var(--text) 7%, transparent);
+    color: var(--muted);
+  }
+
+  .p-update-ico {
+    display: grid;
+    place-items: center;
+    width: 0.85rem;
+    height: 0.85rem;
+    flex-shrink: 0;
+    opacity: 0.92;
+  }
+
+  /* Tabular: el porcentaje cuenta de 9% a 10% sin que la cápsula tironee. */
+  .p-update-text {
+    font-size: 0.625rem;
+    font-weight: 650;
+    font-variant-numeric: tabular-nums;
+    line-height: 1;
+  }
+
   /* Pastilla viva mientras el agente trabaja: brillo del fill, no anillo.
      Un inset se leía como borde y cortaba el cuello fundido con el float. */
   .p-liquid.is-working {
@@ -3239,6 +3531,7 @@
     .p-dict,
     .p-queue-btn,
     .p-agent,
+    .p-update,
     .p-auth-host,
     .p-island-tool,
     .p-live-drop,

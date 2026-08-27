@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "$surfaces/overlay/tip.svelte";
   /**
    * Rueda de herramientas con campo de partículas en canvas 2D.
    *
@@ -558,7 +559,7 @@
           class="pw-node"
           class:is-hot={activeId === node.tool.id}
           style="clip-path: {node.clip}"
-          title="{node.tool.label} — {node.tool.short}"
+          use:tip={`${node.tool.label} — ${node.tool.short}`}
           aria-label="{node.tool.label}. {node.tool.short}"
           bind:this={nodeEls[index]}
           onpointerenter={() => setActive(node.tool.id, { tick: true })}
@@ -605,7 +606,7 @@
         data-no-drag
         disabled={liveBusy || live === "off"}
         aria-label={liveLabel}
-        title={live === "recording"
+        use:tip={live === "recording"
           ? t("pill.stopRecord")
           : live === "dictating"
             ? t("pill.dictatingHint")
@@ -631,7 +632,7 @@
           style="width: {coreSize}px; height: {coreSize}px"
           onclick={onCenter}
           aria-label={shownCenter}
-          title={shownCenter}
+          use:tip={shownCenter}
         >
           <span class="pw-mark">
             <AticMark size={compact ? 22 : 30} />
@@ -872,6 +873,16 @@
 
   .pw-core:not(.is-inert):active {
     transform: scale(0.96);
+  }
+
+  /* En la pill el núcleo es también el asa de la rueda: clic cierra, arrastre
+     mueve la pill entera. El cursor es lo único que lo anuncia. */
+  .pw.is-compact .pw-core:not(.is-inert) {
+    cursor: grab;
+  }
+
+  .pw.is-compact .pw-core:not(.is-inert):active {
+    cursor: grabbing;
   }
 
   .pw-core:focus-visible {

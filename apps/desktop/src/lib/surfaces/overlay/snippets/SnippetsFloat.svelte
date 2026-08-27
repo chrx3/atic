@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "$surfaces/overlay/tip.svelte";
   /**
    * Float de textos / notas: hermano de la pill, fundido al liquid.
    *
@@ -480,7 +481,7 @@
           class:is-on={pinned}
           aria-label={pinned ? t("overlay.unpin") : t("overlay.pin")}
           aria-pressed={pinned}
-          title={pinned ? t("overlay.unpin") : t("overlay.pin")}
+          use:tip={pinned ? t("overlay.unpin") : t("overlay.pin")}
           onclick={() => void togglePin()}
         >
           <Icon icon={Pin} size={13} />
@@ -490,7 +491,7 @@
           class="sf-icon"
           onclick={() => void close()}
           aria-label={t("overlay.close")}
-          title={t("overlay.close")}
+          use:tip={t("overlay.close")}
         >
           <Icon icon={X} size={14} />
         </button>

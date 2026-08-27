@@ -721,11 +721,18 @@ pub async fn start_clipboard_text_drag(
             let _ = tx.send(r);
         })
         .map_err(|e| e.to_string())?;
-        let effect = rx.recv().map_err(|e| e.to_string())??;
-        // CANCEL sobre agentes (QueryContinueDrag) o NONE: insertar en composer/consola.
+        let outcome = rx.recv().map_err(|e| e.to_string())??;
+        // CANCEL sobre agentes (QueryContinueDrag): insertar en composer/consola.
         if agents_visible(&app) && crate::overlay::cursor_over_hit_id("agents") {
             let _ = app.emit("agents-composer-insert", AgentsComposerInsert::text_drop(text));
-            let _ = effect;
+            return Ok(());
+        }
+        // Soltado sobre algo que no acepta texto OLE: el drop vuelve con efecto
+        // 0 y no pasa nada. Es lo que hacen las consolas y los terminales
+        // Electron —donde vive Claude Code—, que solo registran drop-target de
+        // archivos. Ahí caemos al mismo camino que el clic, que ahí sí anda.
+        if outcome.dropped && outcome.effect == 0 {
+            paste_into_window_under_cursor(&app, &text)?;
         }
         Ok(())
     }
@@ -1292,6 +1299,61 @@ fn saved_paste_target_hwnd() -> Option<windows_sys::Win32::Foundation::HWND> {
 #[cfg(windows)]
 pub(crate) fn last_external_hwnd() -> Option<windows_sys::Win32::Foundation::HWND> {
     resolve_paste_target_hwnd()
+}
+
+/// Plan B del arrastre de texto: pegar en la ventana que está bajo el cursor.
+///
+/// Hay targets que no registran drop-target de TEXTO: las consolas clásicas y
+/// los terminales Electron (Terax, Hyper, Tabby…) solo aceptan archivos, así
+/// que el drop se rechaza en silencio y el usuario ve que "no pasa nada".
+/// Pero apuntó a una ventana bien clara, así que se le da lo que pidió por el
+/// camino que sí funciona en todas partes: el mismo del clic —portapapeles más
+/// el chord correcto, que `paste_text_hotkey_for` ya elige por exe.
+///
+/// Solo se llama tras un drop REAL: un Esc no llega acá (ver `DragOutcome`).
+#[cfg(windows)]
+fn paste_into_window_under_cursor(app: &AppHandle, text: &str) -> Result<(), String> {
+    use windows_sys::Win32::Foundation::POINT;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetAncestor, GetCursorPos, IsWindow, WindowFromPoint, GA_ROOT,
+    };
+
+    let hwnd = unsafe {
+        let mut pt = POINT { x: 0, y: 0 };
+        if GetCursorPos(&mut pt) == 0 {
+            return Ok(());
+        }
+        let under = WindowFromPoint(pt);
+        if under.is_null() {
+            return Ok(());
+        }
+        // La ventana RAÍZ, no el control bajo el puntero: tanto el foco como la
+        // elección del chord razonan sobre el top-level.
+        GetAncestor(under, GA_ROOT)
+    };
+    // Soltar sobre el escritorio —o sobre nosotros mismos— no pega nada.
+    if hwnd.is_null() || unsafe { IsWindow(hwnd) } == 0 || is_own_app_hwnd(hwnd) {
+        return Ok(());
+    }
+
+    // Nuestro propio pegado no debe volver a entrar al historial.
+    if let Ok(shared) = shared_history() {
+        let mut hist = shared.lock_or_recover();
+        hist.suppress_until = Some(SystemTime::now() + Duration::from_millis(1600));
+    }
+
+    force_foreground(hwnd);
+    // Mismo respiro que el clic: WebView2/Electron tardan en asentar el foco del
+    // hijo Chromium, y sin esto el chord se pierde.
+    thread::sleep(Duration::from_millis(220));
+    {
+        let mut clipboard = Clipboard::new().map_err(|e| e.to_string())?;
+        clipboard
+            .set_text(text.to_string())
+            .map_err(|e| e.to_string())?;
+    }
+    thread::sleep(Duration::from_millis(80));
+    paste_text_hotkey_for(app, Some(hwnd))
 }
 
 #[cfg(windows)]

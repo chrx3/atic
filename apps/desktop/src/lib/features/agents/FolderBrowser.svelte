@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "$surfaces/overlay/tip.svelte";
   /** Explorador contenido para elegir el cwd de una consola de agentes. */
   import { onMount } from "svelte";
   import { listDirectories } from "$ipc/agents";
@@ -86,7 +87,7 @@
               class="root"
               class:is-on={listing.path === root.path}
               aria-current={listing.path === root.path ? "location" : undefined}
-              title={root.path}
+              use:tip={root.path}
               disabled={loading}
               onclick={() => load(root.path)}
             >
@@ -102,14 +103,14 @@
           type="button"
           class="up"
           disabled={!canGoUp || loading}
-          title="Subir un nivel"
+          use:tip={"Subir un nivel"}
           aria-label="Subir un nivel"
           onclick={goUp}
         >
           <Icon icon={ChevronUp} size={14} />
           <span>Subir</span>
         </button>
-        <p class="path" title={listing?.path || ""}>
+        <p class="path" use:tip={listing?.path || ""}>
           {listing?.path || (loading ? "Cargando…" : "")}
         </p>
       </div>
@@ -140,7 +141,7 @@
                 <button
                   type="button"
                   class="entry"
-                  title={entry.path}
+                  use:tip={entry.path}
                   disabled={loading}
                   onclick={() => enter(entry)}
                 >
