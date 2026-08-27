@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "$surfaces/overlay/tip.svelte";
   /** Lanzador compacto y shell persistente de las consolas locales. */
   import ConsolePanel from "./ConsolePanel.svelte";
   import FolderBrowser from "./FolderBrowser.svelte";
@@ -185,7 +186,7 @@
           type="button"
           class="close"
           aria-label="Esconder ventana"
-          title="Esconder ventana. Las consolas siguen corriendo."
+          use:tip={"Esconder ventana. Las consolas siguen corriendo."}
           onclick={onClose}
         >
           <Icon icon={X} size={13} />
@@ -208,7 +209,7 @@
                 ? `${agent.name} (no está en el PATH)`
                 : agent.name
             }
-            title={
+            use:tip={
               pathReady && onPath[agent.cli] === false
                 ? `${agent.name} no está en el PATH`
                 : agent.name
@@ -224,7 +225,7 @@
         <button
           type="button"
           class="folder"
-          title={cwd || "Carpeta de inicio del usuario"}
+          use:tip={cwd || "Carpeta de inicio del usuario"}
           onclick={() => void requestFolder()}
         >
           <Icon icon={Folder} size={15} />
@@ -257,7 +258,7 @@
             type="button"
             class="reset"
             aria-label="Cerrar y matar las consolas"
-            title="Cierra las consolas y mata los procesos"
+            use:tip={"Cierra las consolas y mata los procesos"}
             onclick={resetSessions}
           >
             <Icon icon={X} size={13} />

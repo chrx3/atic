@@ -718,6 +718,8 @@ export const es = {
       shortcutSplitDown: "Dividir hacia abajo",
       shortcutNew: "Nueva consola",
       shortcutClose: "Cerrar pestaña",
+      shortcutZoom: "Zoom del texto (también Ctrl+rueda)",
+      shortcutZoomReset: "Restablecer zoom",
       more: "Más",
       moreAria: "Más acciones",
       runningAria: "En ejecución",

@@ -12,7 +12,12 @@
     onAgentsBubbleDismiss,
     saveAgentsBubbleSize,
   } from "$ipc/agents";
-  import { onOverlayDismiss, overlayWorkAreas, workAreaOf } from "$ipc/overlay";
+  import {
+    onOverlayDismiss,
+    onOverlayReady,
+    overlayWorkAreas,
+    workAreaOf,
+  } from "$ipc/overlay";
   import type { Area } from "$ipc/overlay";
   import type { BubbleOpen } from "$core/types";
   import { applyTheme, readCachedTheme } from "$lib/theme";
@@ -640,6 +645,16 @@
         workAreas = [];
       });
     const un: Promise<() => void>[] = [
+      // Cambió la geometría del overlay (monitores, hibernación): el caché de
+      // áreas quedó en el espacio viejo y `ensureWorkAreas` no recarga si ya
+      // hay algo. Refrescar acá deja la próxima colocación en el espacio real.
+      onOverlayReady(() => {
+        void overlayWorkAreas()
+          .then((areas) => {
+            workAreas = areas;
+          })
+          .catch(() => {});
+      }),
       onAgentsBubbleAnchor((a) => void placeFromPill(a)),
       onAgentsBubbleDismiss(() => {
         close();

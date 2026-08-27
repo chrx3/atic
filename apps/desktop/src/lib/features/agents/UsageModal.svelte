@@ -7,6 +7,7 @@
   import { onMount } from "svelte";
   import type { AgentItem, AgentTurn, ClaudeAccountUsage } from "$lib/types";
   import { agentClaudeUsage } from "$ipc/agents";
+  import { tip } from "$surfaces/overlay/tip.svelte";
   import Modal from "$ui/Modal.svelte";
   import ProgressBar from "$ui/ProgressBar.svelte";
 
@@ -363,7 +364,7 @@
               {#each turnRows as row (row.id)}
                 <li class="turn">
                   <span class="turn-n" data-numeric>#{row.index}</span>
-                  <span class="turn-p" title={row.preview}>{row.preview}</span>
+                  <span class="turn-p" use:tip={row.preview}>{row.preview}</span>
                   <span
                     class="turn-c"
                     class:is-bare={row.cost == null}

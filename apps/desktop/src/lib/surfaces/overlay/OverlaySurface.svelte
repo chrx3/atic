@@ -243,14 +243,20 @@
   async function enterTextMode(event: PointerEvent) {
     const el = editable(event.target);
     if (!el || hiddenAgentsHost(el)) return;
-    // Re-enfocar aunque ya estemos en modo texto (p. ej. salto del composer → xterm).
-    if (!textMode) {
-      textMode = true;
-      try {
-        await setOverlayTextMode(true);
-      } catch {
-        // Fuera de Tauri no hay ventana a la que pedirle el foco.
-      }
+    // SIEMPRE se re-pide a Rust, sin mirar `textMode` ni `document.hasFocus()`:
+    // los dos mienten en esta ventana. Al clicar otra app Windows nos quita el
+    // teclado sin que el flag se entere (`onFocusIn` lo repone sin pasar por
+    // Rust, `yield_to_capture` baja `focusable` a espaldas del front), y
+    // Chromium sigue contestando `hasFocus() === true` porque su foco interno
+    // nunca se movió aunque el HWND ya no sea el primero. Confiar en
+    // cualquiera de los dos dejaba la consola muda hasta tocar un botón —de
+    // los que llaman a `set_overlay_text_mode` sin condición, y por eso
+    // funcionaban—. El costo es un IPC por clic en un campo: nada.
+    textMode = true;
+    try {
+      await setOverlayTextMode(true);
+    } catch {
+      // Fuera de Tauri no hay ventana a la que pedirle el foco.
     }
     // Después del viaje a Rust: hasta que la ventana no es activable, el
     // webview no acepta el foco y el clic no deja el cursor en el campo.

@@ -715,6 +715,8 @@ export const en = {
       shortcutSplitDown: "Split down",
       shortcutNew: "New console",
       shortcutClose: "Close tab",
+      shortcutZoom: "Text zoom (also Ctrl+wheel)",
+      shortcutZoomReset: "Reset zoom",
       more: "More",
       moreAria: "More actions",
       runningAria: "Running",

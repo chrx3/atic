@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "$surfaces/overlay/tip.svelte";
   /**
    * Consola embebida (xterm + PTY): N pestañas, cada una Local (PowerShell) o
    * SSH (`ssh -t`).
@@ -162,13 +163,32 @@
         direction: SplitDirection;
         first: PaneNode;
         second: PaneNode;
+        /** Fracción del espacio para `first` (0..1). Ausente = mitad. */
+        ratio?: number;
       };
   type PaneRect = { key: string; x: number; y: number; width: number; height: number };
+  /** Un divisor arrastrable entre los dos hijos de un split. Todo en % del body. */
+  type PaneDivider = {
+    /** Camino al split en el árbol: "f"/"s" por nivel. Estable mientras no cambie la forma. */
+    path: string;
+    direction: SplitDirection;
+    /** Rect completo del split (para traducir el puntero a ratio). */
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    /** La costura: coordenada x si es `right`, y si es `down`. */
+    seam: number;
+  };
 
   const RAIL_MIN = 54;
   const RAIL_DEFAULT = 128;
   const RAIL_MAX = 224;
   const RAIL_STORAGE_KEY = "atic.agents.consoleRailWidth";
+  /** Zoom del texto: offset en px sobre el tamaño base que decide el ancho. */
+  const FONT_ZOOM_KEY = "atic.agents.consoleFontZoom";
+  const FONT_ZOOM_MIN = -5;
+  const FONT_ZOOM_MAX = 12;
   const USAGE_AGENTS = new Set(["claude", "codex", "opencode", "cursor-agent"]);
 
   function leaf(key: string): PaneNode {
@@ -212,17 +232,45 @@
   ): PaneRect[] {
     if (!node) return [];
     if (node.kind === "leaf") return [{ key: node.key, x, y, width, height }];
+    const ratio = node.ratio ?? 0.5;
     if (node.direction === "right") {
-      const half = width / 2;
+      const first = width * ratio;
       return [
-        ...collectPaneRects(node.first, x, y, half, height),
-        ...collectPaneRects(node.second, x + half, y, half, height),
+        ...collectPaneRects(node.first, x, y, first, height),
+        ...collectPaneRects(node.second, x + first, y, width - first, height),
       ];
     }
-    const half = height / 2;
+    const first = height * ratio;
     return [
-      ...collectPaneRects(node.first, x, y, width, half),
-      ...collectPaneRects(node.second, x, y + half, width, half),
+      ...collectPaneRects(node.first, x, y, width, first),
+      ...collectPaneRects(node.second, x, y + first, width, height - first),
+    ];
+  }
+
+  /** Un divisor por split, sobre la costura entre sus dos hijos. */
+  function collectPaneDividers(
+    node: PaneNode | null,
+    path = "",
+    x = 0,
+    y = 0,
+    width = 100,
+    height = 100,
+  ): PaneDivider[] {
+    if (!node || node.kind === "leaf") return [];
+    const ratio = node.ratio ?? 0.5;
+    if (node.direction === "right") {
+      const first = width * ratio;
+      return [
+        { path, direction: "right", x, y, width, height, seam: x + first },
+        ...collectPaneDividers(node.first, path + "f", x, y, first, height),
+        ...collectPaneDividers(node.second, path + "s", x + first, y, width - first, height),
+      ];
+    }
+    const first = height * ratio;
+    return [
+      { path, direction: "down", x, y, width, height, seam: y + first },
+      ...collectPaneDividers(node.first, path + "f", x, y, width, first),
+      ...collectPaneDividers(node.second, path + "s", x, y + first, width, height - first),
     ];
   }
 
@@ -231,10 +279,26 @@
   let connecting = $state(false);
   let error = $state<string | null>(null);
   let sshHosts = $state<SshHost[]>([]);
-  let ctxMenu = $state<{ x: number; y: number; key: string } | null>(null);
+  /** `group: true` = menú de una ficha de grupo del rail; `key` es su ancla. */
+  let ctxMenu = $state<{ x: number; y: number; key: string; group?: boolean } | null>(
+    null,
+  );
   /** Árbol de splits. Las pestañas fuera del árbol siguen vivas en el rail. */
   let paneTree = $state<PaneNode | null>(null);
+  /**
+   * Los grupos: cada división con más de un pane, visible o no.
+   *
+   * Un split es una unidad — las consolas se dividieron para verse juntas—
+   * y en el rail se presenta como UNA ficha. Abrir otra consola no desaloja
+   * a nadie: la división queda guardada acá y su ficha la restaura entera.
+   * Puede haber varios a la vez; una consola pertenece a lo más a uno. Los
+   * mantiene al día el `$effect` de abajo; un grupo muere cuando le queda
+   * menos de dos consolas vivas (o al separarlo a mano).
+   */
+  let groups = $state<PaneNode[]>([]);
   let railWidth = $state(RAIL_DEFAULT);
+  /** Un solo zoom para todas las consolas, como el zoom de una app. */
+  let fontZoom = $state(0);
   let pinned = $state(false);
   let usageOpen = $state(false);
   let shortcutsOpen = $state(false);
@@ -277,12 +341,70 @@
   const sessionId = $derived(active?.sessionId ?? null);
   const connected = $derived(!!sessionId);
   const paneRects = $derived(collectPaneRects(paneTree));
+  const paneDividers = $derived(collectPaneDividers(paneTree));
   const visiblePaneKeys = $derived(
     paneRects
       .map((pane) => pane.key)
       .filter((key) => tabs.some((tab) => tab.key === key)),
   );
   const paneMode = $derived(visiblePaneKeys.length > 1);
+
+  /** Un árbol sin sus pestañas muertas; `null` si no reúne dos vivas. */
+  function prunedTree(tree: PaneNode): PaneNode | null {
+    let node: PaneNode | null = tree;
+    for (const paneKey of paneLeafKeys(tree)) {
+      if (tabs.some((t) => t.key === paneKey)) continue;
+      node = node ? removePaneLeaf(node, paneKey) : null;
+    }
+    return node && paneLeafKeys(node).length > 1 ? node : null;
+  }
+
+  /** El grupo (podado) al que pertenece `key`, o `null` si va suelta. */
+  function groupWith(key: string): PaneNode | null {
+    for (const g of groups) {
+      const pruned = prunedTree(g);
+      if (pruned && paneLeafKeys(pruned).includes(key)) return pruned;
+    }
+    return null;
+  }
+
+  // Toda división visible ES un grupo: así el rail la funde en una ficha
+  // apenas nace (split, drop de arrastre) sin repartir la escritura por
+  // cada camino que arma un split. Upsert: reemplaza al grupo que comparta
+  // consolas con la vista, le roba miembros a cualquier otro (una consola
+  // pertenece a lo más a un grupo) y entierra al que quede con menos de dos.
+  $effect(() => {
+    if (visiblePaneKeys.length <= 1 || !paneTree) return;
+    const visible = paneTree;
+    const visibleKeys = paneLeafKeys(visible);
+    untrack(() => {
+      const next: PaneNode[] = [];
+      let replaced = false;
+      for (const g of groups) {
+        const shares = paneLeafKeys(g).some((k) => visibleKeys.includes(k));
+        if (!shares) {
+          next.push(g);
+        } else if (!replaced) {
+          next.push(visible);
+          replaced = true;
+        } else {
+          let rest: PaneNode | null = g;
+          for (const k of visibleKeys) {
+            rest = rest ? removePaneLeaf(rest, k) : null;
+          }
+          if (rest && paneLeafKeys(rest).length > 1) next.push(rest);
+        }
+      }
+      if (!replaced) next.push(visible);
+      // Solo escribir si cambió algo: el efecto relee `paneTree` a fondo
+      // (también en el arrastre de la costura) y reescribir en cada frame
+      // despertaría a todo el rail sin motivo.
+      const shape = (list: PaneNode[]) =>
+        list.map((g) => paneLeafKeys(g).join(",")).join("|");
+      if (shape(groups) !== shape(next)) groups = next;
+    });
+  });
+
   const railCompact = $derived(railWidth < 92);
   const hasIdleTab = $derived(
     tabs.some((t) => !t.sessionId && !pendingKeys[t.key]),
@@ -312,7 +434,36 @@
     cmdPromptOpen = false;
     moreOpen = false;
     const picked = await onPickFolder();
+    if (picked) followStartFolder(picked);
     if (reopenAddMenu && picked) addMenuOpen = true;
+  }
+
+  /** Ruta como literal de shell: PowerShell dobla la comilla, sh la escapa. */
+  function quotePath(path: string): string {
+    const windows =
+      typeof navigator !== "undefined" && /Win/i.test(navigator.userAgent);
+    return windows
+      ? `'${path.replace(/'/g, "''")}'`
+      : `'${path.replace(/'/g, "'\\''")}'`;
+  }
+
+  /**
+   * Muda las consolas vivas a la carpeta recién elegida.
+   *
+   * Solo las shells locales: una pestaña con un agente adentro está en su TUI,
+   * y escribirle un `cd` no cambiaría de carpeta — le mandaría texto al agente
+   * y cortaría la sesión. Esas se quedan donde nacieron.
+   */
+  function followStartFolder(folder: string) {
+    const dir = folder.trim();
+    if (!dir) return;
+    for (const tab of tabs) {
+      if (tab.kind !== "local" || tab.command) continue;
+      const id = tab.sessionId;
+      if (!id) continue;
+      tab.cwd = dir;
+      void consoleWrite(id, `cd ${quotePath(dir)}\r`).catch(() => {});
+    }
   }
 
   function focusVisiblePane(key: string) {
@@ -413,6 +564,29 @@
       return true;
     }
 
+    // Zoom. Por `key` y no por `code`: "+"/"-" viven en teclas distintas
+    // según el layout (en latam "+" va sin Shift), y el numpad se suma por
+    // `code` porque ahí `key` depende de Bloq Num. Sin filtrar `repeat`:
+    // mantener apretado sigue acercando, como en un navegador.
+    if (mod && !event.altKey && (key === "+" || key === "=" || code === "NumpadAdd")) {
+      event.preventDefault();
+      event.stopPropagation();
+      setFontZoom(fontZoom + 1);
+      return true;
+    }
+    if (mod && !event.altKey && (key === "-" || code === "NumpadSubtract")) {
+      event.preventDefault();
+      event.stopPropagation();
+      setFontZoom(fontZoom - 1);
+      return true;
+    }
+    if (mod && !event.shiftKey && !event.altKey && (key === "0" || code === "Numpad0")) {
+      event.preventDefault();
+      event.stopPropagation();
+      setFontZoom(0);
+      return true;
+    }
+
     return false;
   }
 
@@ -422,7 +596,20 @@
    * que Ctrl+D llegue como EOF al CLI y que Ctrl+W borre una palabra.
    */
   function consumeTerminalControlData(key: string, data: string): boolean {
-    if (data !== "\x04" && data !== "\x0e" && data !== "\x17") return false;
+    if (
+      data !== "\x04" &&
+      data !== "\x0e" &&
+      data !== "\x17" &&
+      data !== "\x1f"
+    ) {
+      return false;
+    }
+    // Ctrl+- llega como 0x1F (Ctrl+_) cuando el keydown no aparece. El precio
+    // es que el undo de readline (Ctrl+_) queda detrás del zoom.
+    if (data === "\x1f") {
+      setFontZoom(fontZoom - 1);
+      return true;
+    }
     activeKey = key;
     error = null;
     if (data === "\x04") {
@@ -438,6 +625,29 @@
     return true;
   }
 
+  function clampFontZoom(zoom: number): number {
+    return Math.min(FONT_ZOOM_MAX, Math.max(FONT_ZOOM_MIN, Math.round(zoom)));
+  }
+
+  function setFontZoom(zoom: number) {
+    const next = clampFontZoom(zoom);
+    if (next === fontZoom) return;
+    fontZoom = next;
+    localStorage.setItem(FONT_ZOOM_KEY, String(next));
+    // El refit aplica el tamaño nuevo y re-dimensiona el PTY a los cols/rows
+    // resultantes; las pestañas ocultas lo reciben al volver a la vista.
+    scheduleFitVisible();
+  }
+
+  /** Ctrl+rueda sobre la consola: zoom, como en un navegador o editor. */
+  function onConsoleWheel(event: WheelEvent) {
+    if (!event.ctrlKey) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.deltaY === 0) return;
+    setFontZoom(fontZoom + (event.deltaY < 0 ? 1 : -1));
+  }
+
   function clampRailWidth(width: number): number {
     return Math.min(RAIL_MAX, Math.max(RAIL_MIN, width));
   }
@@ -445,6 +655,70 @@
   function setRailWidth(width: number) {
     railWidth = clampRailWidth(width);
     localStorage.setItem(RAIL_STORAGE_KEY, String(Math.round(railWidth)));
+  }
+
+  /** Límite del arrastre: ningún hijo baja de esta fracción del split. */
+  const SPLIT_RATIO_MIN = 0.15;
+
+  /** El split al que llega `path` ("f"/"s" por nivel desde la raíz). */
+  function splitAtPath(path: string): Extract<PaneNode, { kind: "split" }> | null {
+    let node: PaneNode | null = paneTree;
+    for (const step of path) {
+      if (!node || node.kind !== "split") return null;
+      node = step === "f" ? node.first : node.second;
+    }
+    return node && node.kind === "split" ? node : null;
+  }
+
+  function resetDividerRatio(path: string) {
+    const split = splitAtPath(path);
+    if (!split) return;
+    split.ratio = 0.5;
+    scheduleFitVisible();
+  }
+
+  /**
+   * Arrastra la costura de un split. El rect del split capturado no cambia
+   * durante el gesto (solo depende de los ratios de sus ancestros), así que
+   * el puntero se traduce a ratio con una regla de tres contra el body.
+   */
+  function startDividerDrag(divider: PaneDivider, event: PointerEvent) {
+    event.preventDefault();
+    event.stopPropagation();
+    const body = bodyEl;
+    const split = splitAtPath(divider.path);
+    if (!body || !split) return;
+    const handle = event.currentTarget as HTMLElement;
+    const pointerId = event.pointerId;
+    handle.setPointerCapture(pointerId);
+    const rect = body.getBoundingClientRect();
+    const horizontal = divider.direction === "right";
+    const originPx = horizontal
+      ? rect.left + (divider.x / 100) * rect.width
+      : rect.top + (divider.y / 100) * rect.height;
+    const sizePx = horizontal
+      ? (divider.width / 100) * rect.width
+      : (divider.height / 100) * rect.height;
+
+    const onMove = (moveEvent: PointerEvent) => {
+      if (sizePx <= 0) return;
+      const pos = horizontal ? moveEvent.clientX : moveEvent.clientY;
+      split.ratio = Math.min(
+        1 - SPLIT_RATIO_MIN,
+        Math.max(SPLIT_RATIO_MIN, (pos - originPx) / sizePx),
+      );
+    };
+    const onEnd = () => {
+      handle.removeEventListener("pointermove", onMove);
+      handle.removeEventListener("pointerup", onEnd);
+      handle.removeEventListener("pointercancel", onEnd);
+      if (handle.hasPointerCapture(pointerId)) handle.releasePointerCapture(pointerId);
+      // El fit corre en vivo por los ResizeObserver; este es el asentamiento.
+      scheduleFitVisible();
+    };
+    handle.addEventListener("pointermove", onMove);
+    handle.addEventListener("pointerup", onEnd);
+    handle.addEventListener("pointercancel", onEnd);
   }
 
   function startRailResize(event: PointerEvent) {
@@ -575,6 +849,45 @@
     });
   });
 
+  type RailGroup = { anchorKey: string; keys: string[]; tabs: Tab[]; label: string };
+
+  /**
+   * Las fichas de grupo del rail, una por división. La vista partida entra
+   * directo (el `$effect` que la guarda corre después del render: sin esto,
+   * un split recién nacido parpadearía un frame como fichas sueltas).
+   */
+  const railGroups = $derived.by(() => {
+    const trees: PaneNode[] = [];
+    const visible = visiblePaneKeys.length > 1 ? paneTree : null;
+    const visibleKeys = visible ? paneLeafKeys(visible) : [];
+    if (visible) trees.push(visible);
+    for (const g of groups) {
+      if (visible && paneLeafKeys(g).some((k) => visibleKeys.includes(k))) continue;
+      trees.push(g);
+    }
+    const out: RailGroup[] = [];
+    for (const tree of trees) {
+      const pruned = prunedTree(tree);
+      if (!pruned) continue;
+      const keys = paneLeafKeys(pruned);
+      const members = keys
+        .map((key) => tabs.find((tab) => tab.key === key))
+        .filter((tab): tab is Tab => !!tab);
+      const anchor = tabs.find((tab) => keys.includes(tab.key));
+      if (members.length < 2 || !anchor) continue;
+      out.push({
+        anchorKey: anchor.key,
+        keys,
+        tabs: members,
+        label: members
+          .map((tab) => tabLabels[tabs.indexOf(tab)] ?? "")
+          .filter(Boolean)
+          .join(" · "),
+      });
+    }
+    return out;
+  });
+
   function tabOf(key: string): Tab | undefined {
     return tabs.find((t) => t.key === key);
   }
@@ -663,6 +976,8 @@
     { keys: "Ctrl+Shift+D", labelKey: "page.agents.shortcutSplitDown" },
     { keys: "Ctrl+N", labelKey: "page.agents.shortcutNew" },
     { keys: "Ctrl+W", labelKey: "page.agents.shortcutClose" },
+    { keys: "Ctrl + / −", labelKey: "page.agents.shortcutZoom" },
+    { keys: "Ctrl+0", labelKey: "page.agents.shortcutZoomReset" },
   ] as const;
 
   async function loadSshHosts() {
@@ -737,6 +1052,20 @@
     addMenuOpen = false;
     cmdPromptOpen = false;
     newTab(seed.kind, { label: seed.label, command: seed.command });
+  }
+
+  /**
+   * Corre el instalador oficial del agente en una consola nueva: se ve el
+   * progreso y cualquier error, sin ventanas aparte. Al reabrir el menú "+"
+   * se reverifica el PATH, así el agente aparece habilitado si terminó bien.
+   */
+  function installAgent(agent: (typeof AGENTS)[number]) {
+    addFromMenu({
+      kind: "local",
+      label: `Instalar ${agent.name}`,
+      command: agent.install,
+    });
+    agentPathChecked = false;
   }
 
   function persistSavedCmds() {
@@ -953,6 +1282,12 @@
       return;
     }
     if (treeKeys.includes(key)) return;
+    // Con la vista dividida, injertar acá echaba a una consola del grupo. El
+    // grupo ya quedó guardado (el $effect lo mantiene): la nueva va sola.
+    if (treeBefore && treeKeys.length > 1) {
+      paneTree = leaf(key);
+      return;
+    }
     if (treeBefore && treeKeys.includes(previousActiveKey)) {
       paneTree = replacePaneLeaf(treeBefore, previousActiveKey, leaf(key));
     } else {
@@ -1028,7 +1363,11 @@
         tabs[Math.min(idx, tabs.length - 1)]?.key ??
         "";
     }
-    paneTree = nextTree ?? (activeKey ? leaf(activeKey) : null);
+    // Si lo cerrado era la vista entera y la consola que hereda el foco
+    // pertenece a un grupo, se restaura la división completa — no el miembro
+    // solo, que dejaba al grupo "de a uno" hasta clicar su ficha.
+    paneTree =
+      nextTree ?? (activeKey ? (groupWith(activeKey) ?? leaf(activeKey)) : null);
     if (activeKey) focusVisiblePane(activeKey);
     // Última pestaña cerrada: el panel vacío no ofrece nada que el inicio de
     // agentes no haga mejor. Al final, con el estado ya asentado.
@@ -1146,28 +1485,78 @@
     el.addEventListener("pointercancel", onEnd);
   }
 
+  /**
+   * Muestra una consola (o su grupo). El grupo es una unidad: clicar su ficha
+   * restaura la división entera, y clicar otra ficha muestra esa consola sola
+   * sin desalojar a nadie —el swap por clic se fue; componer una división es
+   * el gesto explícito de arrastrar una ficha sobre un pane—.
+   */
   function switchTab(key: string) {
     closeCtx();
-    if (paneMode && !visiblePaneKeys.includes(key)) {
-      const sourceKey = visiblePaneKeys.includes(activeKey)
-        ? activeKey
-        : visiblePaneKeys[0];
-      paneTree =
-        paneTree && sourceKey
-          ? replacePaneLeaf(paneTree, sourceKey, leaf(key))
-          : leaf(key);
-    } else if (!paneMode) {
-      paneTree = leaf(key);
-    }
+    paneTree = groupWith(key) ?? leaf(key);
     activeKey = key;
     error = null;
     // No se desconecta nada: las otras pestañas siguen vivas.
     focusVisiblePane(key);
     requestAnimationFrame(() => {
-      fitAndResize(key);
-      const term = termOf(key);
-      if (term) term.refresh(0, Math.max(0, term.rows - 1));
+      for (const paneKey of visiblePaneKeys) {
+        fitAndResize(paneKey);
+        termOf(paneKey)?.refresh(0, Math.max(0, (termOf(paneKey)?.rows ?? 1) - 1));
+      }
     });
+  }
+
+  /** La ficha de un grupo: vuelve a su división, con la consola activa de antes. */
+  function switchToGroup(entry: RailGroup) {
+    if (entry.keys.length === 0) return;
+    switchTab(entry.keys.includes(activeKey) ? activeKey : entry.keys[0]);
+  }
+
+  /** Cerrar la ficha de un grupo cierra todas sus consolas. */
+  async function closeGroup(entry: RailGroup) {
+    for (const key of [...entry.keys]) {
+      await closeTab(key);
+    }
+  }
+
+  /**
+   * Deshace un grupo sin cerrar nada: sus consolas vuelven como fichas
+   * sueltas. Si era la división visible hay que colapsar la vista también —
+   * con el split en pantalla, el `$effect` lo volvería a guardar al instante.
+   */
+  function detachGroup(entry: RailGroup) {
+    const visible =
+      visiblePaneKeys.length > 1 &&
+      visiblePaneKeys.some((k) => entry.keys.includes(k));
+    groups = groups.filter(
+      (g) => !paneLeafKeys(g).some((k) => entry.keys.includes(k)),
+    );
+    if (visible) {
+      const key = entry.keys.includes(activeKey) ? activeKey : entry.keys[0];
+      paneTree = leaf(key);
+      activeKey = key;
+      focusVisiblePane(key);
+    }
+  }
+
+  /**
+   * Saca UNA consola de la división visible; sigue viva como ficha suelta.
+   * El grupo guardado se achica acá mismo: si la vista queda en un solo pane
+   * el `$effect` ya no corre y el grupo viejo quedaría zombi en el rail.
+   */
+  function removeFromGroup(key: string) {
+    if (visiblePaneKeys.length <= 1 || !paneTree) return;
+    const rest = removePaneLeaf(paneTree, key);
+    if (!rest) return;
+    groups = groups
+      .map((g) => (paneLeafKeys(g).includes(key) ? removePaneLeaf(g, key) : g))
+      .filter((g): g is PaneNode => !!g && paneLeafKeys(g).length > 1);
+    paneTree = rest;
+    if (activeKey === key) {
+      const next = paneLeafKeys(rest).find((k) => tabs.some((t) => t.key === k));
+      if (next) activeKey = next;
+    }
+    focusVisiblePane(activeKey);
   }
 
   /**
@@ -1207,7 +1596,8 @@
     const h = box.el.clientHeight;
     if (w < 24 || h < 24) return;
 
-    const nextFontSize = w < 280 ? 10 : w < 420 ? 11 : 12;
+    const baseFontSize = w < 280 ? 10 : w < 420 ? 11 : 12;
+    const nextFontSize = Math.max(7, baseFontSize + fontZoom);
     if (box.term.options.fontSize !== nextFontSize) {
       box.term.options.fontSize = nextFontSize;
     }
@@ -1649,9 +2039,14 @@
     activeKey = key;
     error = null;
     // OverlaySurface (capture) ya pidió text-mode; reforzar foco tras el await.
+    // Los reintentos re-piden el modo texto SIEMPRE: `force_foreground` corre
+    // en un hilo aparte y devuelve antes de agarrar el primer plano, y
+    // `document.hasFocus()` contesta true aunque el HWND no sea el primero,
+    // así que no hay señal fiable de que el primer pedido haya prendido.
     requestAnimationFrame(() => {
       focusTerm(key);
-      setTimeout(() => focusTerm(key), 40);
+      setTimeout(() => requestOverlayKeyboard(key), 40);
+      setTimeout(() => requestOverlayKeyboard(key), 120);
     });
   }
 
@@ -1659,6 +2054,10 @@
     const savedRailWidth = Number(localStorage.getItem(RAIL_STORAGE_KEY));
     if (Number.isFinite(savedRailWidth) && savedRailWidth > 0) {
       railWidth = clampRailWidth(savedRailWidth);
+    }
+    const savedZoom = Number(localStorage.getItem(FONT_ZOOM_KEY));
+    if (Number.isFinite(savedZoom) && savedZoom !== 0) {
+      fontZoom = clampFontZoom(savedZoom);
     }
     try {
       const saved = JSON.parse(localStorage.getItem(SAVED_CMDS_KEY) ?? "[]") as unknown;
@@ -1756,7 +2155,13 @@
   });
 </script>
 
-<section class="console console-desk" bind:this={consoleEl} aria-label="Consola">
+<!-- Captura: la rueda con Ctrl es zoom aunque caiga sobre el scroll del xterm. -->
+<section
+  class="console console-desk"
+  bind:this={consoleEl}
+  aria-label="Consola"
+  onwheelcapture={onConsoleWheel}
+>
   <aside
     class="rail"
     class:is-compact={railCompact}
@@ -1774,48 +2179,95 @@
   >
     <div class="rail-tabs" role="group" aria-label="Consolas abiertas">
       {#each tabs as t, i (t.key)}
-        <span class="rail-slot">
-          <button
-            type="button"
-            class="rail-tab"
-            class:is-on={t.key === activeKey}
-            class:is-dragging={tabDrag?.key === t.key}
-            aria-current={t.key === activeKey ? "true" : undefined}
-            title={tabLabels[i]}
-            onpointerdown={(e) => beginTabDrag(t.key, e)}
-            onclick={() => {
-              if (dragConsumedClick) {
-                dragConsumedClick = false;
-                return;
-              }
-              switchTab(t.key);
-            }}
-          >
-            <span class="rail-logo"><AgentLogo agent={t.command} size={18} /></span>
-            <span class="rail-copy">
-              <span class="rail-name">{tabLabels[i]}</span>
-              <span class="rail-status">
-                {t.sessionId
-                  ? "Activa"
-                  : connecting && t.key === activeKey
-                    ? "Preparando"
-                    : "Pausada"}
+        {@const railGroup = railGroups.find((g) => g.anchorKey === t.key)}
+        {#if railGroup}
+          <!-- El grupo entero es UNA ficha: clicarla restaura la división. -->
+          <span class="rail-slot">
+            <button
+              type="button"
+              class="rail-tab is-group"
+              class:is-on={railGroup.keys.includes(activeKey)}
+              aria-current={railGroup.keys.includes(activeKey) ? "true" : undefined}
+              use:tip={railGroup.label}
+              onclick={() => switchToGroup(railGroup)}
+              oncontextmenu={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                ctxMenu = {
+                  x: e.clientX,
+                  y: e.clientY,
+                  key: railGroup.anchorKey,
+                  group: true,
+                };
+              }}
+            >
+              <span class="rail-logo is-stack">
+                {#each railGroup.tabs.slice(0, 2) as gt (gt.key)}
+                  <AgentLogo agent={gt.command} size={14} />
+                {/each}
               </span>
-            </span>
-            {#if t.sessionId}
-              <span class="live" title="Sesión activa" aria-hidden="true"></span>
-            {/if}
-          </button>
-          <button
-            type="button"
-            class="tab-x"
-            aria-label="Cerrar {tabLabels[i]}"
-            title="Cerrar pestaña"
-            onclick={() => void closeTab(t.key)}
-          >
-            <Icon icon={X} size={9} />
-          </button>
-        </span>
+              <span class="rail-copy">
+                <span class="rail-name">{railGroup.label}</span>
+                <span class="rail-status">{railGroup.tabs.length} consolas</span>
+              </span>
+              {#if railGroup.tabs.some((gt) => gt.sessionId)}
+                <span class="live" use:tip={"Sesión activa"} aria-hidden="true"></span>
+              {/if}
+            </button>
+            <button
+              type="button"
+              class="tab-x"
+              aria-label="Cerrar grupo {railGroup.label}"
+              use:tip={"Cerrar el grupo y todas sus consolas"}
+              onclick={() => void closeGroup(railGroup)}
+            >
+              <Icon icon={X} size={9} />
+            </button>
+          </span>
+        {:else if !railGroups.some((g) => g.keys.includes(t.key))}
+          <span class="rail-slot">
+            <button
+              type="button"
+              class="rail-tab"
+              class:is-on={t.key === activeKey}
+              class:is-dragging={tabDrag?.key === t.key}
+              aria-current={t.key === activeKey ? "true" : undefined}
+              use:tip={tabLabels[i]}
+              onpointerdown={(e) => beginTabDrag(t.key, e)}
+              onclick={() => {
+                if (dragConsumedClick) {
+                  dragConsumedClick = false;
+                  return;
+                }
+                switchTab(t.key);
+              }}
+            >
+              <span class="rail-logo"><AgentLogo agent={t.command} size={18} /></span>
+              <span class="rail-copy">
+                <span class="rail-name">{tabLabels[i]}</span>
+                <span class="rail-status">
+                  {t.sessionId
+                    ? "Activa"
+                    : connecting && t.key === activeKey
+                      ? "Preparando"
+                      : "Pausada"}
+                </span>
+              </span>
+              {#if t.sessionId}
+                <span class="live" use:tip={"Sesión activa"} aria-hidden="true"></span>
+              {/if}
+            </button>
+            <button
+              type="button"
+              class="tab-x"
+              aria-label="Cerrar {tabLabels[i]}"
+              use:tip={"Cerrar pestaña"}
+              onclick={() => void closeTab(t.key)}
+            >
+              <Icon icon={X} size={9} />
+            </button>
+          </span>
+        {/if}
       {/each}
     </div>
     <div class="rail-add">
@@ -1826,7 +2278,7 @@
           aria-label="Nueva consola o agente"
           aria-haspopup="menu"
           aria-expanded={addMenuOpen}
-          title="Nueva consola o agente"
+          use:tip={"Nueva consola o agente"}
           disabled={connecting || !canAddTab}
           onclick={toggleAddMenu}
         >
@@ -1846,7 +2298,7 @@
                 type="button"
                 class="add-item is-folder"
                 role="menuitem"
-                title={startFolder ?? "Carpeta de inicio del usuario"}
+                use:tip={startFolder ?? "Carpeta de inicio del usuario"}
                 onclick={() => void pickStartFolder(true)}
               >
                 <span class="add-glyph"><Icon icon={Folder} size={13} /></span>
@@ -1856,25 +2308,36 @@
             {/if}
             <p class="add-group" aria-hidden="true">Agentes</p>
             {#each AGENTS as agent (agent.cli)}
-              <button
-                type="button"
-                class="add-item"
-                role="menuitem"
-                disabled={agentOnPath[agent.cli] === false}
-                title={agentOnPath[agent.cli] === false
-                  ? `${agent.name} no está en el PATH`
-                  : `Abrir ${agent.name}`}
-                onclick={() =>
-                  addFromMenu({
-                    kind: "local",
-                    label: agent.name,
-                    command: agent.cli,
-                  })
-                }
-              >
-                <span class="add-glyph"><AgentLogo agent={agent.cli} size={14} /></span>
-                {agent.name}
-              </button>
+              {#if agentOnPath[agent.cli] === false}
+                <button
+                  type="button"
+                  class="add-item"
+                  role="menuitem"
+                  use:tip={`${agent.name} no está instalado. Abre una consola y ejecuta el instalador oficial.`}
+                  onclick={() => installAgent(agent)}
+                >
+                  <span class="add-glyph"><AgentLogo agent={agent.cli} size={14} /></span>
+                  <span class="add-ellipsis">{agent.name}</span>
+                  <span class="add-install">Instalar</span>
+                </button>
+              {:else}
+                <button
+                  type="button"
+                  class="add-item"
+                  role="menuitem"
+                  use:tip={`Abrir ${agent.name}`}
+                  onclick={() =>
+                    addFromMenu({
+                      kind: "local",
+                      label: agent.name,
+                      command: agent.cli,
+                    })
+                  }
+                >
+                  <span class="add-glyph"><AgentLogo agent={agent.cli} size={14} /></span>
+                  {agent.name}
+                </button>
+              {/if}
             {/each}
             <button
               type="button"
@@ -1934,7 +2397,7 @@
                     type="button"
                     class="add-item"
                     role="menuitem"
-                    title={`Abrir consola con «${cmd}»`}
+                    use:tip={`Abrir consola con «${cmd}»`}
                     onclick={() =>
                       addFromMenu({ kind: "local", label: cmd, command: cmd })}
                   >
@@ -1947,7 +2410,7 @@
                     type="button"
                     class="add-forget"
                     aria-label={`Olvidar «${cmd}»`}
-                    title="Olvidar comando"
+                    use:tip={"Olvidar comando"}
                     onclick={() => removeSavedCmd(cmd)}
                   >
                     <Icon icon={X} size={9} />
@@ -1962,7 +2425,7 @@
                   type="button"
                   class="add-item"
                   role="menuitem"
-                  title={`ssh ${alias}`}
+                  use:tip={`ssh ${alias}`}
                   onclick={() =>
                     addFromMenu({
                       kind: "local",
@@ -1978,22 +2441,12 @@
           </div>
         {/if}
       </div>
-      <button
-        type="button"
-        class="tab-add is-ssh"
-        aria-label="Nueva consola SSH"
-        title="Nueva consola SSH"
-        disabled={connecting || !canAddTab}
-        onclick={() => newTab("ssh")}
-      >
-        SSH
-      </button>
     </div>
     <button
       type="button"
       class="rail-resizer"
       aria-label={`Cambiar ancho de la barra lateral, ${Math.round(railWidth)} píxeles`}
-      title="Arrastra para cambiar el ancho · Doble clic para contraer"
+      use:tip={"Arrastra para cambiar el ancho · Doble clic para contraer"}
       data-rail-resizer
       onpointerdown={startRailResize}
       onkeydown={onRailResizeKey}
@@ -2019,7 +2472,7 @@
             type="button"
             class="back-btn"
             aria-label="Volver al lanzador"
-            title="Volver al lanzador"
+            use:tip={"Volver al lanzador"}
             onclick={onBack}
           >
             <Icon icon={ArrowLeft} size={13} />
@@ -2034,7 +2487,7 @@
               class:is-live={!!active?.sessionId}
               class:is-prep={connecting && !active?.sessionId}
               role="status"
-              title={active?.sessionId
+              use:tip={active?.sessionId
                 ? t("page.agents.runningAria")
                 : connecting
                   ? t("page.agents.preparingAria")
@@ -2048,7 +2501,7 @@
           </span>
         {/if}
         <div class="where-block">
-          <p class="where" title={active ? tabLabels[tabs.indexOf(active)] : ""}>
+          <p class="where" use:tip={active ? tabLabels[tabs.indexOf(active)] : ""}>
             {active ? tabLabels[tabs.indexOf(active)] : "Sin consolas"}
           </p>
         </div>
@@ -2056,7 +2509,7 @@
           <button
             type="button"
             class="folder-chip"
-            title={`Carpeta de inicio: ${startFolder ?? "carpeta del usuario"}. Las consolas nuevas se abren acá.`}
+            use:tip={`Carpeta de inicio: ${startFolder ?? "carpeta del usuario"}. Las consolas nuevas se abren acá y las shells vivas se mudan; los agentes se quedan.`}
             aria-label={`Cambiar carpeta de inicio. Actual: ${startFolder ?? "carpeta del usuario"}`}
             onclick={() => void pickStartFolder()}
           >
@@ -2098,7 +2551,7 @@
               aria-label={t("page.agents.moreAria")}
               aria-haspopup="menu"
               aria-expanded={moreOpen}
-              title={t("page.agents.more")}
+              use:tip={t("page.agents.more")}
               onclick={() => {
                 moreOpen = !moreOpen;
                 shortcutsOpen = false;
@@ -2181,7 +2634,7 @@
             class="icon-btn"
             aria-label={minimized ? "Restaurar ventana" : "Minimizar a la barra"}
             aria-pressed={minimized}
-            title={minimized ? "Restaurar ventana" : "Minimizar a la barra"}
+            use:tip={minimized ? "Restaurar ventana" : "Minimizar a la barra"}
             onclick={onToggleMinimize}
           >
             <Icon icon={Minus} size={12} />
@@ -2194,7 +2647,7 @@
             class:is-on={maximized}
             aria-label={maximized ? "Restaurar tamaño" : "Agrandar al monitor"}
             aria-pressed={maximized}
-            title={maximized ? "Restaurar tamaño" : "Agrandar al monitor"}
+            use:tip={maximized ? "Restaurar tamaño" : "Agrandar al monitor"}
             onclick={onToggleMaximize}
           >
             <Icon icon={Square} size={11} />
@@ -2206,7 +2659,7 @@
           class:is-on={pinned}
           aria-label={pinned ? "Desfijar ventana" : "Fijar ventana arriba"}
           aria-pressed={pinned}
-          title={pinned ? "Desfijar ventana" : "Fijar ventana arriba"}
+          use:tip={pinned ? "Desfijar ventana" : "Fijar ventana arriba"}
           onclick={() => {
             const next = !pinned;
             pinned = next;
@@ -2220,7 +2673,7 @@
             type="button"
             class="icon-btn"
             aria-label="Esconder ventana"
-            title="Esconder ventana. Las consolas siguen corriendo."
+            use:tip={"Esconder ventana. Las consolas siguen corriendo."}
             onclick={() => onClose()}
           >
             <Icon icon={X} size={12} />
@@ -2236,7 +2689,7 @@
           type="button"
           class="err-x"
           aria-label="Descartar aviso"
-          title="Descartar aviso"
+          use:tip={"Descartar aviso"}
           onclick={() => (error = null)}
         >
           <Icon icon={X} size={11} />
@@ -2348,6 +2801,23 @@
         </div>
       {/each}
 
+      <!-- Costuras de los splits: arrastrar reparte el espacio; doble clic, 50/50. -->
+      {#each paneDividers as divider (divider.path)}
+        <div
+          class="pane-divider"
+          class:is-vertical={divider.direction === "right"}
+          role="separator"
+          aria-orientation={divider.direction === "right" ? "vertical" : "horizontal"}
+          use:tip={"Arrastra para repartir el espacio · doble clic: mitades"}
+          style={divider.direction === "right"
+            ? `left: ${divider.seam}%; top: ${divider.y}%; height: ${divider.height}%;`
+            : `top: ${divider.seam}%; left: ${divider.x}%; width: ${divider.width}%;`}
+          data-no-drag
+          onpointerdown={(e) => startDividerDrag(divider, e)}
+          ondblclick={() => resetDividerRatio(divider.path)}
+        ></div>
+      {/each}
+
       {#if ctxMenu}
         <div
           class="ctx"
@@ -2358,32 +2828,86 @@
           data-no-drag
           onpointerdown={(e) => e.stopPropagation()}
         >
-          <button
-            type="button"
-            class="ctx-item"
-            role="menuitem"
-            disabled={!termOf(ctxMenu.key)?.hasSelection()}
-            onclick={() => {
-              const k = ctxMenu!.key;
-              closeCtx();
-              void copyFrom(k);
-            }}
-          >
-            Copiar
-          </button>
-          <button
-            type="button"
-            class="ctx-item"
-            role="menuitem"
-            disabled={!sessionOf(ctxMenu.key)}
-            onclick={() => {
-              const k = ctxMenu!.key;
-              closeCtx();
-              void pasteInto(k);
-            }}
-          >
-            Pegar
-          </button>
+          {#if ctxMenu.group}
+            {@const entry = railGroups.find((g) => g.anchorKey === ctxMenu!.key)}
+            <button
+              type="button"
+              class="ctx-item"
+              role="menuitem"
+              disabled={!entry}
+              onclick={() => {
+                closeCtx();
+                if (entry) detachGroup(entry);
+              }}
+            >
+              Separar grupo
+            </button>
+            <button
+              type="button"
+              class="ctx-item"
+              role="menuitem"
+              disabled={!entry}
+              onclick={() => {
+                closeCtx();
+                if (entry) void closeGroup(entry);
+              }}
+            >
+              Cerrar grupo
+            </button>
+          {:else}
+            <button
+              type="button"
+              class="ctx-item"
+              role="menuitem"
+              disabled={!termOf(ctxMenu.key)?.hasSelection()}
+              onclick={() => {
+                const k = ctxMenu!.key;
+                closeCtx();
+                void copyFrom(k);
+              }}
+            >
+              Copiar
+            </button>
+            <button
+              type="button"
+              class="ctx-item"
+              role="menuitem"
+              disabled={!sessionOf(ctxMenu.key)}
+              onclick={() => {
+                const k = ctxMenu!.key;
+                closeCtx();
+                void pasteInto(k);
+              }}
+            >
+              Pegar
+            </button>
+            {#if visiblePaneKeys.length > 1 && visiblePaneKeys.includes(ctxMenu.key)}
+              <button
+                type="button"
+                class="ctx-item"
+                role="menuitem"
+                onclick={() => {
+                  const k = ctxMenu!.key;
+                  closeCtx();
+                  removeFromGroup(k);
+                }}
+              >
+                Sacar del grupo
+              </button>
+            {/if}
+            <button
+              type="button"
+              class="ctx-item"
+              role="menuitem"
+              onclick={() => {
+                const k = ctxMenu!.key;
+                closeCtx();
+                void closeTab(k);
+              }}
+            >
+              Cerrar consola
+            </button>
+          {/if}
         </div>
       {/if}
     </div>
@@ -2963,6 +3487,49 @@
     cursor: text;
   }
 
+  /* La costura entre dos panes: zona de agarre ancha, línea fina al hover. */
+  .pane-divider {
+    position: absolute;
+    z-index: 2;
+    background: transparent;
+    touch-action: none;
+  }
+
+  .pane-divider.is-vertical {
+    width: 9px;
+    transform: translateX(-50%);
+    cursor: col-resize;
+  }
+
+  .pane-divider:not(.is-vertical) {
+    height: 9px;
+    transform: translateY(-50%);
+    cursor: row-resize;
+  }
+
+  .pane-divider::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    margin: auto;
+    background: color-mix(in sRGB, var(--rb-text) 26%, transparent);
+    opacity: 0;
+    transition: opacity var(--duration-fast, 120ms);
+  }
+
+  .pane-divider.is-vertical::after {
+    width: 2px;
+  }
+
+  .pane-divider:not(.is-vertical)::after {
+    height: 2px;
+  }
+
+  .pane-divider:hover::after,
+  .pane-divider:active::after {
+    opacity: 1;
+  }
+
   .term-host {
     width: 100%;
     height: 100%;
@@ -3232,11 +3799,6 @@
     background: color-mix(in srgb, var(--rb-record) 14%, var(--rb-surface));
   }
 
-  .tab-add.is-ssh {
-    font-size: 0.5rem;
-    letter-spacing: 0.03em;
-  }
-
   .add-menu {
     position: relative;
     display: inline-flex;
@@ -3309,6 +3871,23 @@
 
   .add-item.is-folder {
     color: var(--rb-muted);
+  }
+
+  /* Chip «Instalar» de un agente que no está en el PATH. */
+  .add-install {
+    margin-left: auto;
+    flex: 0 0 auto;
+    border-radius: 0.3rem;
+    padding: 0.1rem 0.34rem;
+    background: color-mix(in sRGB, var(--accent, #da7756) 16%, transparent);
+    color: var(--accent, #da7756);
+    font-size: 0.62rem;
+    font-weight: 640;
+    letter-spacing: 0.02em;
+  }
+
+  .add-item:hover .add-install {
+    background: color-mix(in sRGB, var(--accent, #da7756) 26%, transparent);
   }
 
   .add-chevron {
@@ -3455,6 +4034,22 @@
     width: 1.72rem;
     height: 1.72rem;
     color: var(--rb-text);
+  }
+
+  /* Ficha del grupo: los logos de sus consolas, solapados en diagonal. */
+  .console-desk .rail-tab .rail-logo.is-stack {
+    display: block;
+    position: relative;
+  }
+
+  .console-desk .rail-tab .rail-logo.is-stack > :global(*) {
+    position: absolute;
+    top: 0;
+    left: 0;
+  }
+
+  .console-desk .rail-tab .rail-logo.is-stack > :global(*:nth-child(2)) {
+    inset: auto 0 0 auto;
   }
 
   .console-desk .rail-copy {

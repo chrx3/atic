@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "$surfaces/overlay/tip.svelte";
   /**
    * Diálogo compacto de autorización junto a la pill.
    *
@@ -44,7 +45,7 @@
   data-no-drag
 >
   <div class="auth-row">
-    <p id="agent-auth-title" class="auth-tool" title={title}>
+    <p id="agent-auth-title" class="auth-tool" use:tip={title}>
       <strong>{permission.tool}</strong>
       {#if permission.description?.trim()}
         <span class="auth-w"> · {permission.description.trim()}</span>

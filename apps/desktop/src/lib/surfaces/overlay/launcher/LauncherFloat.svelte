@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "$surfaces/overlay/tip.svelte";
   /**
    * Float del launcher Spotlight.
    *
@@ -958,7 +959,7 @@
               class:is-action={fav.kind === "action"}
               class:is-out={i < favRevealCount}
               style:--lf-i={i}
-              title={fav.title}
+              use:tip={fav.title}
               aria-label={t("overlay.openApp", { title: fav.title })}
               tabindex={i < favRevealCount ? 0 : -1}
               onpointerdown={(e) => e.stopPropagation()}

@@ -3,6 +3,8 @@
   import { goto } from "$app/navigation";
   import { page } from "$app/state";
   import { installDesktopChromeGuards } from "$lib/desktopChrome";
+  import TipHost from "$surfaces/overlay/TipHost.svelte";
+  import ClipPreviewHost from "$surfaces/overlay/ClipPreviewHost.svelte";
   import { getConfig, onUiLanguage, onUiTheme } from "$ipc/config";
   import { applyUiLocale, t } from "$domain/i18n.svelte";
   import {
@@ -147,3 +149,12 @@
   <a class="rb-skip-link" href="#main-content">{t("skipToContent")}</a>
   {@render children()}
 {/if}
+
+<!--
+  Anfitrión de los tooltips propios (`use:tip`), uno por ventana y al final
+  del árbol para que quede por encima de todo. Va acá y no en `OverlaySurface`
+  porque la rueda y la consola de agentes se renderizan también en `main`: con
+  el anfitrión solo en el overlay, se quedarían sin tooltip en la otra ventana.
+-->
+<TipHost />
+<ClipPreviewHost />

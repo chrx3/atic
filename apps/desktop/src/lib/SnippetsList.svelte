@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "$surfaces/overlay/tip.svelte";
   import Icon from "$ui/Icon.svelte";
   import { Search, Trash2 } from "$lib/icons";
   import type { Snippet as TextSnippet } from "$lib/types";
@@ -115,7 +116,7 @@
             class:is-busy={busyId === item.id}
             onclick={() => void paste(item)}
             ondblclick={() => onEdit?.(item)}
-            title={item.body}
+            use:tip={item.body}
           >
             <span class="snip-name">{item.name}</span>
             {#if item.aliases.length > 0}

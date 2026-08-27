@@ -1,4 +1,9 @@
 <script lang="ts">
+  import { tip } from "$surfaces/overlay/tip.svelte";
+  import {
+    clipPreview,
+    type ClipPreviewInput,
+  } from "$surfaces/overlay/clipPreview.svelte";
   /**
    * Historial: clic = pegar; arrastrar = OLE.
    * - Imagen: archivo (HDROP) vía tauri-plugin-drag.
@@ -188,6 +193,37 @@
     }
   }
 
+  /**
+   * Lo que muestra el panel al detenerse sobre una fila.
+   *
+   * Antes esto era un `title` con la pista de uso, y nada más. La pista sigue
+   * —abajo, separada— pero lo que se viene a ver es el CONTENIDO: la fila
+   * recorta el texto a una línea y la miniatura mide 28 px, así que ni se lee
+   * lo que dice ni se distingue qué foto es.
+   *
+   * Para texto va `item.text`, el completo. Los ítems que no lo traen (alguno
+   * viejo) caen al `preview` recortado: no aporta, pero deja la pista puesta en
+   * vez de dejar la fila muda.
+   */
+  const PREVIEW_HINT = "Clic: pegar · Arrastra a otra app o al composer";
+
+  function previewFor(item: ClipboardItem): ClipPreviewInput {
+    if (item.kind === "image") {
+      if (!item.imagePath) return null;
+      return {
+        kind: "image",
+        src: convertFileSrc(item.imagePath),
+        label: item.preview,
+        hint: PREVIEW_HINT,
+      };
+    }
+    return {
+      kind: "text",
+      text: item.text || item.preview,
+      hint: PREVIEW_HINT,
+    };
+  }
+
   function onItemDown(event: PointerEvent, item: ClipboardItem) {
     if (event.button !== 0 || busyId || draggingId) return;
     const target = event.target as HTMLElement;
@@ -346,7 +382,7 @@
           class:is-on={!favoritesOnly}
           onclick={() => (favoritesOnly = false)}
           aria-label="Mostrar todos"
-          title="Todos"
+          use:tip={"Todos"}
         >
           <Icon icon={List} size={14} />
         </button>
@@ -356,7 +392,7 @@
           class:is-on={favoritesOnly}
           onclick={() => (favoritesOnly = true)}
           aria-label="Solo favoritos"
-          title="Favoritos"
+          use:tip={"Favoritos"}
         >
           <Icon
             icon={Star}
@@ -398,7 +434,7 @@
             role="option"
             aria-selected={busyId === item.id || draggingId === item.id}
             tabindex="0"
-            title="Clic: pegar · Arrastra a otra app o al composer"
+            use:clipPreview={previewFor(item)}
             onpointerdown={(e) => onItemDown(e, item)}
             onkeydown={(e) => {
               if (e.key === "Enter" || e.key === " ") {
@@ -475,7 +511,7 @@
               onpointerdown={(e) => e.stopPropagation()}
               onclick={(e) => void togglePin(item, e)}
               aria-label={item.pinned ? "Quitar de favoritos" : "Marcar favorito"}
-              title={item.pinned ? "Quitar de favoritos" : "Marcar favorito"}
+              use:tip={item.pinned ? "Quitar de favoritos" : "Marcar favorito"}
             >
               <Icon
                 icon={Star}
@@ -496,7 +532,7 @@
                 void remove(item, e);
               }}
               aria-label="Eliminar"
-              title="Eliminar"
+              use:tip={"Eliminar"}
             >
               <Icon icon={X} size={14} />
             </button>
