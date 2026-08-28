@@ -11,6 +11,9 @@ export const listClipboardHistory = () =>
   invoke<ClipboardItem[]>("list_clipboard_history");
 export const pasteClipboardItem = (id: string) =>
   invoke<void>("paste_clipboard_item", { id });
+/** Solo al portapapeles: sin devolver el foco ni mandar Ctrl+V a nadie. */
+export const copyClipboardItem = (id: string) =>
+  invoke<void>("copy_clipboard_item", { id });
 export const pinClipboardItem = (id: string, pinned: boolean) =>
   invoke<void>("pin_clipboard_item", { id, pinned });
 export const deleteClipboardItem = (id: string) =>

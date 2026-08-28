@@ -2,8 +2,9 @@
  * La cadena nueva. El orden no es alfabético, es de dependencia:
  *
  *   tailwind   → el motor, y las variantes
- *   paletas    → los literales, redefinibles por scope. La consola DESPUÉS del
- *                claro: misma especificidad, gana el orden
+ *   paletas    → los literales, redefinibles por scope. Los temas extra van
+ *                después de claro/oscuro, y la consola DESPUÉS de todos ellos:
+ *                misma especificidad, gana el orden
  *   tokens     → `@theme inline` les pone nombre de cara a Tailwind
  *   escalas    → spacing, tipografía, radios, sombras, curvas
  *   motion     → duraciones en `:root` plano (las lee `motion.ts`)
@@ -17,6 +18,12 @@
 @import "./styles/tailwind.css";
 @import "./styles/palettes/atic/dark.css";
 @import "./styles/palettes/atic/light.css";
+@import "./styles/palettes/atic/graphite.css";
+@import "./styles/palettes/atic/midnight.css";
+@import "./styles/palettes/atic/sepia.css";
+@import "./styles/palettes/atic/mist.css";
+@import "./styles/palettes/atic/claude.css";
+@import "./styles/palettes/atic/claude-dark.css";
 @import "./styles/palettes/atic/console.css";
 @import "./styles/palettes/atic/agents.css";
 @import "./styles/palettes/atic/screen.css";
@@ -218,18 +225,16 @@ textarea,
   /*
    * Sistema líquido: dos formas se funden cuando una SALE de la otra.
    *
-   * `--skin` es el color de toda superficie que se funde. Tiene que ser UNO
-   * solo por grupo fundido: el cuello lo pinta el difuminado, que promedia lo
-   * que tenga cerca, así que dos tonos distintos dejan una franja sucia justo
-   * en la unión. Opaco: un mix al 97% dejaba un hairline donde el chrome
-   * rectangular se sentaba sobre el blob.
+   * `--skin` —el color de toda superficie que se funde— lo declara la paleta,
+   * un valor por tema. Acá NO se redefine: este bloque es `:root` y va después
+   * de los `@import`, así que a igual especificidad le ganaría a la paleta y la
+   * pill se quedaría con los dos temas que tiene el namespace viejo.
    *
    * `--goo-grow` es lo que el endurecido del filtro le agrega a la silueta por
    * lado. Quien dibuje una forma de tamaño exacto tiene que restarle el doble
    * antes. La deducción y el valor en JS viven en `$lib/GooFilter.svelte`
    * (`GOO_GROW`, `preFilter`); si cambia σ, cambian los dos.
    */
-  --skin: var(--rb-surface);
   --goo-grow: 1.68px;
 
   --rb-radius: 14px;
@@ -305,7 +310,9 @@ textarea,
   }
 }
 
-:root[data-theme="dark"] {
+/* Los `--rb-*` viejos solo tienen dos variantes. Con `data-theme-base`, los
+   temas nuevos oscuros caen en esta y no en la clara. */
+:root[data-theme-base="dark"] {
   color-scheme: dark;
   --rb-bg0: #121211;
   --rb-bg1: #1a1a18;

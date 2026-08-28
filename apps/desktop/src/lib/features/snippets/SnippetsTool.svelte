@@ -5,6 +5,7 @@
    * Son dos cosas distintas bajo una pestaña porque comparten el mismo origen:
    * lo que decides guardar, frente al historial que se llena solo.
    */
+  import { nextIndex } from "$core/listNav";
   import type { Snippet as SnippetItem } from "$core/types";
   import { snippets } from "$domain/snippets.svelte";
   import { toastError, toasts } from "$domain/toasts.svelte";
@@ -32,6 +33,38 @@
   let editing = $state<SnippetItem | null>(null);
   let toDelete = $state<SnippetItem | null>(null);
   let saving = $state(false);
+  let listEl = $state<HTMLDivElement | null>(null);
+
+  const flatIndex = $derived(
+    new Map(snippets.visible.map((item, index) => [item.id, index])),
+  );
+  const editingIndex = $derived(editing?.id ? (flatIndex.get(editing.id) ?? -1) : -1);
+
+  /**
+   * Elegir con el teclado abre el texto en el editor, igual que el clic: acá
+   * «seleccionado» y «abierto» son lo mismo, no hay un paso intermedio.
+   */
+  function selectAt(index: number) {
+    const item = snippets.visible[index];
+    if (!item) return;
+    editing = { ...item };
+    const row = listEl?.querySelector<HTMLElement>(`[data-row="${index}"]`);
+    row?.focus();
+    row?.scrollIntoView({ block: "nearest" });
+  }
+
+  function onListKeydown(event: KeyboardEvent, item: SnippetItem) {
+    const moved = nextIndex(event.key, editingIndex, snippets.visible.length);
+    if (moved !== null) {
+      event.preventDefault();
+      selectAt(moved);
+      return;
+    }
+    if (event.key === "Delete") {
+      event.preventDefault();
+      toDelete = item;
+    }
+  }
 
   function blank(): SnippetItem {
     return { id: "", name: "", body: "", aliases: [], updatedAtMs: Date.now() };
@@ -86,16 +119,6 @@
           { value: "scratchpad", label: t("page.snippets.pad") },
         ]}
       />
-      {#if tab === "snippets"}
-        <div class="min-w-0 flex-1">
-          <Input
-            type="search"
-            bind:value={snippets.query}
-            placeholder={t("page.snippets.searchPlaceholder")}
-            aria-label={t("page.snippets.searchAria")}
-          />
-        </div>
-      {/if}
       {#snippet end()}
         {#if tab === "snippets"}
           <Button variant="primary" size="sm" onclick={() => (editing = blank())}>
@@ -131,6 +154,15 @@
           listLabel={t("page.snippets.list")}
           listCount={snippets.visible.length}
         >
+          {#snippet listHeader()}
+            <Input
+              type="search"
+              bind:value={snippets.query}
+              placeholder={t("page.snippets.searchPlaceholder")}
+              aria-label={t("page.snippets.searchAria")}
+            />
+          {/snippet}
+
           {#snippet list()}
             {#if snippets.visible.length === 0}
               {#if snippets.query}
@@ -158,24 +190,32 @@
                 </EmptyState>
               {/if}
             {:else}
-              <ul class="flex flex-col">
-                {#each snippets.visible as item (item.id)}
-                  <li>
-                    <button
-                      type="button"
-                      class="flex w-full flex-col gap-0.5 px-3 py-1.5
-                             text-left transition-colors duration-(--duration-quick)
-                             hover:bg-surface-2
-                             {editing?.id === item.id ? 'bg-surface-2' : ''}"
-                      aria-current={editing?.id === item.id ? "true" : undefined}
-                      onclick={() => (editing = { ...item })}
-                    >
-                      <span class="truncate text-sm text-text">{item.name}</span>
-                      <span class="line-clamp-1 text-xs text-faint">{item.body}</span>
-                    </button>
-                  </li>
-                {/each}
-              </ul>
+              <div bind:this={listEl}>
+                <ul class="flex flex-col">
+                  {#each snippets.visible as item (item.id)}
+                    {@const index = flatIndex.get(item.id) ?? 0}
+                    <li>
+                      <button
+                        type="button"
+                        data-row={index}
+                        aria-current={editing?.id === item.id ? "true" : undefined}
+                        onkeydown={(event) => onListKeydown(event, item)}
+                        onclick={() => (editing = { ...item })}
+                      >
+                        <span class="truncate text-sm text-text">{item.name}</span>
+                        <span class="line-clamp-1 text-xs text-faint">{item.body}</span>
+                        {#if item.aliases.length > 0}
+                          <!-- Los alias son con lo que se lo llama al pegarlo:
+                               sin verlos hay que abrir el texto para saberlo. -->
+                          <span class="truncate text-micro text-muted">
+                            {item.aliases.join(" · ")}
+                          </span>
+                        {/if}
+                      </button>
+                    </li>
+                  {/each}
+                </ul>
+              </div>
             {/if}
           {/snippet}
 
@@ -205,7 +245,7 @@
             >
               {#snippet action()}
                 <Button variant="soft" size="sm" onclick={() => (editing = blank())}>
-                      {t("page.snippets.newText")}
+                  {t("page.snippets.newText")}
                 </Button>
               {/snippet}
             </EmptyState>

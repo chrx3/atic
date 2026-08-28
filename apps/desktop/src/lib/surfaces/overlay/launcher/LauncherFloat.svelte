@@ -1068,7 +1068,7 @@
     box-sizing: border-box;
     border-radius: 999px;
     background: transparent;
-    color: var(--rb-text);
+    color: var(--text);
     overflow: hidden;
     opacity: 0;
     pointer-events: none;
@@ -1144,7 +1144,7 @@
     min-height: 40px;
     height: 40px;
     padding: 0;
-    border-bottom: 1px solid color-mix(in srgb, var(--rb-text) 10%, transparent);
+    border-bottom: 1px solid color-mix(in srgb, var(--text) 10%, transparent);
   }
 
   .lf-head {
@@ -1171,7 +1171,7 @@
     display: grid;
     place-items: center;
     flex-shrink: 0;
-    color: var(--rb-muted);
+    color: var(--muted);
   }
 
   .lf-input {
@@ -1179,7 +1179,7 @@
     flex: 1;
     border: none;
     background: transparent;
-    color: var(--rb-text);
+    color: var(--text);
     font-size: 0.8125rem;
     line-height: 1.2;
     outline: none;
@@ -1187,7 +1187,7 @@
   }
 
   .lf-input::placeholder {
-    color: var(--rb-faint, var(--rb-muted));
+    color: var(--faint);
   }
 
   /*
@@ -1225,7 +1225,7 @@
     border-radius: 999px;
     padding: 0;
     background: var(--skin);
-    color: var(--rb-muted);
+    color: var(--muted);
     cursor: pointer;
     pointer-events: none;
     position: relative;
@@ -1247,8 +1247,8 @@
   }
 
   .lf-dot.is-out:hover {
-    color: var(--rb-text);
-    background: color-mix(in srgb, var(--rb-text) 12%, var(--skin));
+    color: var(--text);
+    background: color-mix(in srgb, var(--text) 12%, var(--skin));
     transform: scale(1.06);
   }
 
@@ -1268,7 +1268,7 @@
   .lf-busy {
     font-family: var(--font-mono, ui-monospace, monospace);
     font-size: 0.7rem;
-    color: var(--rb-faint, var(--rb-muted));
+    color: var(--faint);
   }
 
   .lf-icon {
@@ -1282,7 +1282,7 @@
     border-radius: 0.4rem;
     padding: 0;
     background: transparent;
-    color: var(--rb-faint, var(--rb-muted));
+    color: var(--faint);
     cursor: pointer;
     transition:
       color var(--duration-quick) var(--ease-smooth-out),
@@ -1291,8 +1291,8 @@
   }
 
   .lf-icon:hover {
-    color: var(--rb-text);
-    background: color-mix(in srgb, var(--rb-text) 8%, transparent);
+    color: var(--text);
+    background: color-mix(in srgb, var(--text) 8%, transparent);
   }
 
   .lf-icon:active {
@@ -1332,7 +1332,7 @@
   }
 
   .lf-hit.is-sel {
-    background: color-mix(in srgb, var(--rb-text) 5%, transparent);
+    background: color-mix(in srgb, var(--text) 5%, transparent);
   }
 
   .lf-hit-main {
@@ -1361,8 +1361,8 @@
     height: 2rem;
     flex-shrink: 0;
     border-radius: 0.4rem;
-    background: color-mix(in srgb, var(--rb-text) 6%, transparent);
-    color: var(--rb-muted);
+    background: color-mix(in srgb, var(--text) 6%, transparent);
+    color: var(--muted);
   }
 
   .lf-hit-ico.is-action {
@@ -1389,7 +1389,7 @@
   .lf-hit-sub {
     overflow: hidden;
     font-size: 0.7rem;
-    color: var(--rb-muted);
+    color: var(--muted);
     text-overflow: ellipsis;
     white-space: nowrap;
   }
@@ -1407,7 +1407,7 @@
     border-radius: 0.4rem;
     padding: 0;
     background: transparent;
-    color: var(--rb-faint, var(--rb-muted));
+    color: var(--faint);
     cursor: pointer;
     opacity: 0.55;
     transition:
@@ -1428,8 +1428,8 @@
   }
 
   .lf-star:hover {
-    background: color-mix(in srgb, var(--rb-text) 8%, transparent);
-    color: var(--rb-text);
+    background: color-mix(in srgb, var(--text) 8%, transparent);
+    color: var(--text);
   }
 
   .lf-star.is-on {
@@ -1445,7 +1445,7 @@
     align-items: center;
     justify-content: center;
     padding: 1.5rem 0.75rem;
-    color: var(--rb-faint, var(--rb-muted));
+    color: var(--faint);
     font-size: 0.85rem;
     text-align: center;
   }
@@ -1458,8 +1458,8 @@
     min-width: 0;
     padding: 0.35rem 0.5rem 0.5rem;
     overflow: hidden;
-    border-top: 1px solid color-mix(in srgb, var(--rb-text) 10%, transparent);
-    color: var(--rb-faint, var(--rb-muted));
+    border-top: 1px solid color-mix(in srgb, var(--text) 10%, transparent);
+    color: var(--faint);
     font-size: 0.6rem;
   }
 

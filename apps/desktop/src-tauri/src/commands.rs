@@ -144,6 +144,12 @@ pub fn set_config(app: AppHandle, state: State<AppState>, config: Config) -> Res
     {
         let _ = app.emit("onboarding-practice", ());
     }
+    // La pill vive en el overlay, con su propia copia de la config, y solo la
+    // relee cuando se le avisa. Sin este evento la rueda seguiría repartiendo
+    // los gajos viejos hasta el próximo arranque.
+    if config.pill_tools != prev.pill_tools || config.pill_more_tools != prev.pill_more_tools {
+        let _ = app.emit("pill-tools", ());
+    }
 
     Ok(())
 }

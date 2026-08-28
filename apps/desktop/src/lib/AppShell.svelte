@@ -3,7 +3,7 @@
   import { fade } from "svelte/transition";
   import Titlebar from "$lib/Titlebar.svelte";
   import ParticleWheel from "$lib/ParticleWheel.svelte";
-  import { toolById, type ToolId } from "$lib/tools";
+  import { TOOLS, toolById, type ToolId } from "$lib/tools";
   import { formatShortcut } from "$lib/format";
   import type { UiTheme } from "$lib/theme";
   import Icon from "$ui/Icon.svelte";
@@ -95,6 +95,7 @@
     {#if view === "hub"}
       <div class="atic-hub" transition:fade={{ duration: hubFade }}>
         <ParticleWheel
+          tools={TOOLS}
           bind:activeId={hubActive}
           hint={radialShortcut
             ? `Mantén ${formatShortcut(radialShortcut)} para esta rueda sobre cualquier app`

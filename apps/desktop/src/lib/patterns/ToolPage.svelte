@@ -37,7 +37,7 @@
     icon?: ToolId;
     /**
      * Sin título/blurb/icono propios. También activo si el ancestro provee
-     * chrome `modal` (p.ej. ToolDetailModal).
+     * chrome `modal` (p.ej. ToolWorkspace).
      */
     embedded?: boolean;
     children: Snippet;

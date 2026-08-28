@@ -39,9 +39,15 @@ class ConfigStore implements DomainStore {
     const unPractice = await on("onboarding-practice", () => {
       void this.hydrate().catch(() => {});
     });
+    // Lo emite `set_config` al cambiar las listas de la pill: el overlay no
+    // comparte este store con la ventana principal y hay que avisarle.
+    const unPillTools = await on("pill-tools", () => {
+      void this.hydrate().catch(() => {});
+    });
     return () => {
       unConflicts();
       unPractice();
+      unPillTools();
     };
   }
 

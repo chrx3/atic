@@ -1,0 +1,42 @@
+/**
+ * Claude — oscuro. El mismo tema, del otro lado.
+ *
+ * La terracota #c15f3c no cambia: es la marca, y tiene contraste suficiente
+ * contra los dos papeles. El gris cálido #b1ada1 de la paleta original, que en
+ * claro sería ilegible como texto, acá es la tinta secundaria.
+ *
+ * Declara el juego COMPLETO de tokens, como manda la regla plana de `dark.css`.
+ */
+[data-theme="claude-dark"] {
+  --bg: #1f1e1c;
+  --surface: #2a2825;
+  --surface-2: #302e2a;
+  --elevated: #3a3733;
+
+  --text: #f4f3ee;
+  --muted: #b1ada1;
+  --faint: #817d73;
+
+  --line: rgb(244 243 238 / 11%);
+  --line-strong: rgb(244 243 238 / 19%);
+
+  --accent: #c15f3c;
+  --on-accent: #fff;
+
+  --rec: #e2645c;
+  --ok: #6faf88;
+  --ok-soft: #22332a;
+  --warn: #d4a84b;
+  --warn-soft: #332b19;
+  --danger: #e2645c;
+  --danger-soft: #3a2422;
+  --info: #8fa9b8;
+  --info-soft: #1f2a30;
+
+  --mic: #6faf88;
+  --sys: #8fa9b8;
+
+  --skin: #2a2825;
+
+  --agent-accent: #b1ada1;
+}

@@ -543,7 +543,7 @@
     border-radius: 18px;
     /* Transparente: un fill opaco corta la sombra de la piel en el cuello. */
     background: transparent;
-    color: var(--rb-text);
+    color: var(--text);
     overflow: hidden;
     opacity: 0;
     pointer-events: none;
@@ -614,7 +614,7 @@
     border-radius: 999px;
     padding: 0.2rem 0.55rem;
     background: transparent;
-    color: var(--rb-muted);
+    color: var(--muted);
     font-size: 0.6875rem;
     font-weight: 600;
     cursor: pointer;
@@ -629,8 +629,8 @@
   }
 
   .sf-tab.active {
-    background: color-mix(in sRGB, var(--rb-accent, var(--accent)) 12%, transparent);
-    color: var(--rb-accent, var(--accent));
+    background: color-mix(in sRGB, var(--accent) 12%, transparent);
+    color: var(--accent);
   }
 
   .sf-acts {
@@ -652,7 +652,7 @@
     border-radius: 0.4rem;
     padding: 0;
     background: transparent;
-    color: var(--rb-faint, var(--rb-muted));
+    color: var(--faint);
     cursor: pointer;
     box-shadow: none;
     filter: none;
@@ -669,8 +669,8 @@
 
   .sf-icon:hover,
   .sf-icon.is-on {
-    color: var(--rb-text);
-    background: color-mix(in srgb, var(--rb-text) 8%, transparent);
+    color: var(--text);
+    background: color-mix(in srgb, var(--text) 8%, transparent);
   }
 
   .sf-icon:active {
@@ -698,8 +698,8 @@
     border: 0;
     border-radius: 0.45rem;
     padding: 0.4rem 0.5rem;
-    background: color-mix(in sRGB, var(--rb-bg0, var(--bg)) 80%, transparent);
-    color: var(--rb-text);
+    background: color-mix(in sRGB, var(--bg) 80%, transparent);
+    color: var(--text);
     font-family: inherit;
     font-size: 0.75rem;
     resize: none;

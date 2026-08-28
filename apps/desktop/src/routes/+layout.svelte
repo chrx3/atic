@@ -45,7 +45,16 @@
     let localeFromEvent = false;
     const pendingTheme = onUiTheme((theme) => {
       themeFromEvent = true;
-      applyConfigTheme(theme);
+      // El evento solo trae el nombre del tema. El personalizado además tiene
+      // perillas, que viven en la config: se relee y se aplica lo que diga
+      // ella —no lo que traía el evento—, que es el valor más fresco.
+      if (theme === "custom") {
+        void getConfig()
+          .then((cfg) => applyConfigTheme(cfg.ui_theme, cfg.ui_theme_custom))
+          .catch(() => applyConfigTheme(theme));
+      } else {
+        applyConfigTheme(theme);
+      }
     });
     const pendingLocale = onUiLanguage((language) => {
       localeFromEvent = true;
@@ -55,7 +64,7 @@
       .catch(() => {})
       .then(() => getConfig())
       .then((cfg) => {
-        if (!themeFromEvent) applyConfigTheme(cfg.ui_theme);
+        if (!themeFromEvent) applyConfigTheme(cfg.ui_theme, cfg.ui_theme_custom);
         if (!localeFromEvent) applyUiLocale(cfg.ui_language);
       })
       .catch(() => {

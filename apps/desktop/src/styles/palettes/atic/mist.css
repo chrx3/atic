@@ -1,0 +1,42 @@
+/**
+ * Papel y tinta — niebla. El claro, frío.
+ *
+ * Misma idea que sepia —papel por debajo del blanco para tener silueta contra
+ * las ventanas del sistema— pero en gris azulado, que es lo que se separa de
+ * un escritorio cálido o de un fondo de pantalla con color.
+ *
+ * Declara el juego COMPLETO de tokens, como manda la regla plana de `dark.css`.
+ */
+[data-theme="mist"] {
+  --bg: #d6dade;
+  --surface: #e3e7ea;
+  --surface-2: #dce0e5;
+  --elevated: #f0f3f5;
+
+  --text: #1c2026;
+  --muted: #5a616b;
+  --faint: #888f99;
+
+  --line: rgb(28 32 38 / 13%);
+  --line-strong: rgb(28 32 38 / 22%);
+
+  --accent: #21262e;
+  --on-accent: #f0f3f5;
+
+  --rec: #c0413c;
+  --ok: #3a6b53;
+  --ok-soft: #d8e5dd;
+  --warn: #8a6415;
+  --warn-soft: #ece2cb;
+  --danger: #c0413c;
+  --danger-soft: #f0dcd8;
+  --info: #3d6b8a;
+  --info-soft: #d9e4ec;
+
+  --mic: #3a6b53;
+  --sys: #3d6b8a;
+
+  --skin: #e3e7ea;
+
+  --agent-accent: #5a616b;
+}

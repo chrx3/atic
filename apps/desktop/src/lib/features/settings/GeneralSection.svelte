@@ -11,11 +11,53 @@
   import Select from "$ui/Select.svelte";
   import SegmentedControl from "$ui/SegmentedControl.svelte";
   import Switch from "$ui/Switch.svelte";
-  import { applyTheme, type UiTheme } from "$lib/theme";
+  import ThemePicker from "./ThemePicker.svelte";
+  import ThemeEditor from "./ThemeEditor.svelte";
+  import {
+    applyTheme,
+    customKnobs,
+    derivePalette,
+    normalizeTheme,
+    readPalette,
+    UI_THEMES,
+    type ThemeKnobs,
+    type UiTheme,
+  } from "$lib/theme";
   import { t } from "$domain/i18n.svelte";
 
   const cfg = $derived(config.current);
   const ui = useMainUi();
+
+  const theme = $derived(normalizeTheme(cfg?.ui_theme));
+
+  // Las perillas persistidas mandan; `customKnobs()` es el cache del webview y
+  // cubre el primer render, antes de que llegue la config.
+  const knobs = $derived<ThemeKnobs>(cfg?.ui_theme_custom ?? customKnobs());
+
+  /** La muestra del personalizado: sus tokens, no los de una paleta del CSS. */
+  const customColors = $derived.by(() => {
+    if (typeof document === "undefined") return undefined;
+    const palette = derivePalette(
+      readPalette(knobs.base),
+      { light: readPalette("light"), dark: readPalette("dark") },
+      knobs,
+    );
+    return {
+      bg: palette.bg,
+      "surface-2": palette["surface-2"],
+      accent: palette.accent,
+      muted: palette.muted,
+      line: palette.line,
+    };
+  });
+
+  const themeOptions = $derived(
+    UI_THEMES.map((value) => ({
+      value,
+      label: t(`settings.appearance.${value}`),
+      colors: value === "custom" ? customColors : undefined,
+    })),
+  );
 
   function patch(changes: Parameters<typeof config.patch>[0]) {
     void config.patch(changes).catch(toastError);
@@ -68,19 +110,23 @@
           />
         {/snippet}
       </SettingsRow>
-      <SettingsRow label={t("settings.appearance.theme")} hint={t("settings.appearance.themeHint")}>
+      <SettingsRow bare>
         {#snippet control()}
-          <SegmentedControl
-            value={(cfg.ui_theme || "system") as UiTheme}
-            label={t("settings.appearance.themeAria")}
-            options={[
-              { value: "system" as UiTheme, label: t("settings.appearance.system") },
-              { value: "light" as UiTheme, label: t("settings.appearance.light") },
-              { value: "dark" as UiTheme, label: t("settings.appearance.dark") },
-            ]}
-            onchange={setTheme}
-            full
-          />
+          <div class="flex flex-col gap-2 py-0.5">
+            <div class="flex flex-col gap-0.5">
+              <span class="text-sm text-text">{t("settings.appearance.theme")}</span>
+              <p class="text-xs text-faint">{t("settings.appearance.themeHint")}</p>
+            </div>
+            <ThemePicker
+              value={theme}
+              label={t("settings.appearance.themeAria")}
+              options={themeOptions}
+              onchange={setTheme}
+            />
+            {#if theme === "custom"}
+              <ThemeEditor {knobs} onchange={(next) => patch({ ui_theme_custom: next })} />
+            {/if}
+          </div>
         {/snippet}
       </SettingsRow>
     </SettingsGroup>

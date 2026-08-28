@@ -658,7 +658,14 @@
           <div class="rb-settings-row-control">
             <select class="rb-field" bind:value={c.ui_theme}>
               <option value="light">Claro</option>
+              <option value="sepia">Sepia</option>
+              <option value="mist">Niebla</option>
+              <option value="graphite">Grafito</option>
+              <option value="midnight">Nocturno</option>
               <option value="dark">Oscuro</option>
+              <option value="claude">Claude</option>
+              <option value="claude-dark">Claude oscuro</option>
+              <option value="custom">Personalizado</option>
               <option value="system">Sistema</option>
             </select>
           </div>

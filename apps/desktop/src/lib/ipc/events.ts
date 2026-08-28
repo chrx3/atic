@@ -135,6 +135,13 @@ export interface AticEvents {
    * para mostrar u ocultar el coach junto a la pill.
    */
   "onboarding-practice": void;
+  /**
+   * Cambió qué herramientas muestra la pill (Ajustes → Pill).
+   *
+   * Mismo motivo que los de arriba: el overlay tiene su propia copia de la
+   * config y no se entera de que `main` la guardó.
+   */
+  "pill-tools": void;
   /** Float launcher: ancla / dismiss (sale de la pill). */
   "launcher-bubble-anchor": BubbleOpen;
   "launcher-bubble-dismiss": void;

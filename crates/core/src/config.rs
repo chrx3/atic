@@ -53,6 +53,111 @@ impl Default for SshHost {
     }
 }
 
+/// Paletas de interfaz. Espejo de `UI_THEMES` en `apps/desktop/src/lib/theme.ts`;
+/// un valor que no esté acá se guarda como `system`.
+const UI_THEMES: [&str; 9] = [
+    "light",
+    "sepia",
+    "mist",
+    "graphite",
+    "midnight",
+    "dark",
+    "claude",
+    "claude-dark",
+    "custom",
+];
+
+/// Herramientas que pueden vivir en la pill. Espejo de `WHEEL_TOOLS` en
+/// `apps/desktop/src/lib/core/tools.ts` — el launcher queda fuera a propósito:
+/// Spotlight vive en su atajo, no en la rueda.
+const PILL_TOOLS: [&str; 7] = [
+    "meetings",
+    "dictation",
+    "clipboard",
+    "snippets",
+    "agents",
+    "captures",
+    "board",
+];
+
+/// Ids válidos, sin repetidos y en el orden recibido.
+///
+/// No se completa con lo que falte: una lista corta es justamente lo que el
+/// usuario pidió. Vacía significa «sin configurar», y de eso se encarga el
+/// front, que es quien sabe qué herramientas existen hoy.
+fn sanitize_pill_tools(ids: Vec<String>) -> Vec<String> {
+    let mut seen: Vec<String> = Vec::new();
+    for id in ids {
+        if PILL_TOOLS.contains(&id.as_str()) && !seen.contains(&id) {
+            seen.push(id);
+        }
+    }
+    seen
+}
+
+/// Las perillas del tema personalizado.
+///
+/// Se guardan las PERILLAS y no los colores derivados: la derivación vive en
+/// `themeDerive.ts` y si algún día mejora, los temas ya guardados mejoran con
+/// ella. Rust no deriva nada, solo valida rangos.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CustomTheme {
+    /// Tema del que hereda estructura y colores de estado.
+    pub base: String,
+    /// Luminosidad del papel respecto del base. -100..100
+    pub paper: i32,
+    /// Distancia de la tinta al papel. 0..100
+    pub ink: i32,
+    /// Frío ↔ cálido. -100..100
+    pub warmth: i32,
+    /// Acento, `#rrggbb`.
+    pub accent: String,
+}
+
+impl Default for CustomTheme {
+    fn default() -> Self {
+        Self {
+            base: "dark".to_string(),
+            paper: 0,
+            ink: 100,
+            warmth: 0,
+            accent: "#e8e8e0".to_string(),
+        }
+    }
+}
+
+impl CustomTheme {
+    /// Rangos y base validados. Un valor fuera de lugar cae al del tema por
+    /// defecto en vez de tumbar la config entera.
+    fn sanitized(self) -> Self {
+        let fallback = Self::default();
+        let base = if UI_THEMES.contains(&self.base.as_str()) && self.base != "custom" {
+            self.base
+        } else {
+            fallback.base
+        };
+        let accent = if is_hex_color(&self.accent) {
+            self.accent
+        } else {
+            fallback.accent
+        };
+        Self {
+            base,
+            paper: self.paper.clamp(-100, 100),
+            ink: self.ink.clamp(0, 100),
+            warmth: self.warmth.clamp(-100, 100),
+            accent,
+        }
+    }
+}
+
+fn is_hex_color(value: &str) -> bool {
+    let Some(digits) = value.strip_prefix('#') else {
+        return false;
+    };
+    matches!(digits.len(), 3 | 6) && digits.chars().all(|c| c.is_ascii_hexdigit())
+}
+
 /// Preferencias del usuario, persistidas como JSON en el directorio de datos.
 ///
 /// Los secretos (API keys, contraseña SMTP) NUNCA se guardan aquí; van al
@@ -208,10 +313,19 @@ pub struct Config {
     /// Acción al hacer clic en la miniatura: `preview` (abrir imagen) |
     /// `location` (abrir carpeta) | `annotate` (dibujar encima).
     pub capture_click_action: String,
-    /// Tema de interfaz: `light` | `dark` | `system`.
+    /// Tema de interfaz. Uno de [`UI_THEMES`], o `system`.
     pub ui_theme: String,
+    /// Perillas del tema `custom`. Se guardan aunque el tema activo sea otro.
+    pub ui_theme_custom: CustomTheme,
     /// Idioma de la UI: `system` | `es` | `en`. Independiente de Whisper.
     pub ui_language: String,
+    /// Herramientas en el anillo de la pill, en orden. Vacío = todas.
+    ///
+    /// Manda también en la tira acoplada al borde: es la misma pill, y lo que
+    /// el usuario sacó de la rueda no tiene por qué reaparecer en el canto.
+    pub pill_tools: Vec<String>,
+    /// Herramientas detrás del gajo «Más», en orden. Vacío = no hay submenú.
+    pub pill_more_tools: Vec<String>,
     /// Hosts SSH para sesiones de agente remotas.
     pub ssh_hosts: Vec<SshHost>,
 }
@@ -298,7 +412,10 @@ impl Default for Config {
             capture_include_cursor: false,
             capture_click_action: "preview".to_string(),
             ui_theme: "system".to_string(),
+            ui_theme_custom: CustomTheme::default(),
             ui_language: "system".to_string(),
+            pill_tools: Vec::new(),
+            pill_more_tools: Vec::new(),
             ssh_hosts: Vec::new(),
         }
     }
@@ -382,7 +499,10 @@ struct ConfigFile {
     capture_include_cursor: Option<bool>,
     capture_click_action: Option<String>,
     ui_theme: Option<String>,
+    ui_theme_custom: Option<CustomTheme>,
     ui_language: Option<String>,
+    pill_tools: Option<Vec<String>>,
+    pill_more_tools: Option<Vec<String>>,
     ssh_hosts: Option<Vec<SshHost>>,
 }
 
@@ -491,7 +611,10 @@ impl Default for ConfigFile {
             capture_include_cursor: None,
             capture_click_action: None,
             ui_theme: None,
+            ui_theme_custom: None,
             ui_language: None,
+            pill_tools: None,
+            pill_more_tools: None,
             ssh_hosts: None,
         }
     }
@@ -518,6 +641,15 @@ impl From<ConfigFile> for Config {
         // y transcript final. Las configs anteriores podían tener live=true por
         // defecto, así que se apaga una vez hasta que el usuario lo vuelva a elegir.
         let migrating_to_batch_default = f.auto_transcribe_after_recording.is_none();
+        // Las dos listas de la pill se resuelven juntas: lo que ya está en el
+        // anillo no puede repetirse en el submenú, y un mismo gajo dos veces en
+        // la misma rueda no es un estado que exista.
+        let pill_ring = sanitize_pill_tools(f.pill_tools.clone().unwrap_or_default());
+        let pill_more: Vec<String> =
+            sanitize_pill_tools(f.pill_more_tools.clone().unwrap_or_default())
+                .into_iter()
+                .filter(|id| !pill_ring.contains(id))
+                .collect();
         let backend = f.summary_backend;
         let summary_model = f
             .summary_model
@@ -709,15 +841,20 @@ impl From<ConfigFile> for Config {
                 _ => "preview".into(),
             },
             ui_theme: match f.ui_theme.as_deref() {
-                Some("light") => "light".into(),
-                Some("dark") => "dark".into(),
+                Some(theme) if UI_THEMES.contains(&theme) => theme.into(),
                 _ => "system".into(),
             },
+            ui_theme_custom: f
+                .ui_theme_custom
+                .map(CustomTheme::sanitized)
+                .unwrap_or_default(),
             ui_language: match f.ui_language.as_deref() {
                 Some("en") => "en".into(),
                 Some("es") => "es".into(),
                 _ => "system".into(),
             },
+            pill_tools: pill_ring,
+            pill_more_tools: pill_more,
             ssh_hosts: f.ssh_hosts.unwrap_or_default(),
         }
     }
@@ -815,6 +952,38 @@ mod tests {
         assert!(cfg.output_device_id.is_empty());
         assert_eq!(cfg.record_tracks, "both");
         assert!(cfg.ui_sounds);
+    }
+
+    #[test]
+    fn pill_tools_drop_unknown_ids_and_duplicates() {
+        let json = r#"{
+            "language": "es",
+            "whisper_model": "base",
+            "summary_backend": "claude",
+            "mail_backend": "mailto",
+            "smtp_host": "",
+            "smtp_port": 587,
+            "smtp_username": "",
+            "smtp_from": "",
+            "smtp_use_tls": true,
+            "global_shortcut": "CmdOrCtrl+Shift+R",
+            "show_pill": true,
+            "beep_on_start": false,
+            "pill_tools": ["captures", "launcher", "captures", "dictation"],
+            "pill_more_tools": ["board", "dictation", "nope"]
+        }"#;
+        let cfg: Config = serde_json::from_str::<ConfigFile>(json).unwrap().into();
+        // `launcher` no vive en la pill, y el repetido se queda con su primer sitio.
+        assert_eq!(cfg.pill_tools, vec!["captures", "dictation"]);
+        // `dictation` ya está en el anillo: no puede volver a salir en el submenú.
+        assert_eq!(cfg.pill_more_tools, vec!["board"]);
+    }
+
+    #[test]
+    fn pill_tools_default_to_empty_meaning_unconfigured() {
+        let cfg = Config::default();
+        assert!(cfg.pill_tools.is_empty());
+        assert!(cfg.pill_more_tools.is_empty());
     }
 
     #[test]

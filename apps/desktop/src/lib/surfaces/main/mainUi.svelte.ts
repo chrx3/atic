@@ -6,8 +6,9 @@
  * en caliente —dejando la vista anterior pegada tras cada guardado— y haría
  * imposible montar dos veces la superficie en un test.
  *
- * El picker (rueda + cards) es la vista permanente. `openTool` centra la
- * herramienta; el detalle/config vive en un modal.
+ * El picker (rueda + cards) es la portada. `openTool` centra la herramienta;
+ * `openDetail` abre su contenido en el workspace, encima del picker y a
+ * ventana completa.
  */
 
 import { getContext, setContext } from "svelte";
@@ -53,9 +54,14 @@ export class MainUi {
     this.detailTab = "detail";
   }
 
-  /** Buscador in-app (Ctrl+K). No es el launcher de apps del sistema. */
+  /**
+   * Buscador in-app (Ctrl+K). No es el launcher de apps del sistema.
+   *
+   * Ya no cierra la herramienta abierta: eso hacía falta cuando el detalle era
+   * otro modal y se tapaban entre sí. Con el workspace debajo, un resultado
+   * puede navegar sin haber perdido antes el sitio donde se estaba.
+   */
   openSearch(): void {
-    this.detailTool = null;
     this.searchOpen = true;
   }
 

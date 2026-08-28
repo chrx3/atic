@@ -7,14 +7,16 @@
    * cuando el mouse está sobre la rueda, no sobre las cards.
    */
   import { onDestroy, untrack } from "svelte";
+  import { pillLayout } from "$core/pillTools";
   import { runToolAction, toolAction } from "$core/toolActions";
-  import { TOOLS, type ToolId } from "$core/tools";
+  import { TOOLS, WHEEL_TOOLS, type ToolId } from "$core/tools";
+  import { config } from "$domain/config.svelte";
   import { localizeTool, t } from "$domain/i18n.svelte";
   import { playWheelTick } from "$core/uiSound";
   import { PICKER_CELL_PROD_MIN, pickerLab } from "$lib/dev/pickerLab.svelte";
   import { toastError } from "$domain/toasts.svelte";
   import ToolIcon from "$lib/ToolIcon.svelte";
-  import { SquareArrowOutUpRight } from "$lib/icons";
+  import { Pin, SquareArrowOutUpRight } from "$lib/icons";
   import { boxShape, pillShape, type Rect } from "$liquid/geometry";
   import { RectTracker } from "$liquid/measure.svelte";
   import Skin from "$liquid/Skin.svelte";
@@ -557,6 +559,50 @@
     onOpenDetail(id);
   }
 
+  /**
+   * El chinche de la card: si esta herramienta tiene gajo propio en la pill.
+   *
+   * Es la misma preferencia que edita Ajustes → Pill, pero puesta donde se
+   * decide: mirando la herramienta y acordándote de que la usas siempre. Lo
+   * contrario de fijada no es «escondida» sino «detrás de Más» — esconder algo
+   * del todo es una decisión más grande y se queda en Ajustes.
+   */
+  const pill = $derived(
+    pillLayout(config.current?.pill_tools, config.current?.pill_more_tools),
+  );
+  const pinned = $derived(new Set(pill.ring.map((tool) => tool.id)));
+  /** Apps/Spotlight no vive en la rueda de la pill: no tiene chinche. */
+  const inPill = (id: ToolId) => WHEEL_TOOLS.some((tool) => tool.id === id);
+  /** La rueda no puede quedar vacía: al último gajo se le traba el chinche. */
+  const pinLocked = $derived(pill.ring.length <= 1);
+
+  function pinLabel(id: ToolId): string {
+    if (!pinned.has(id)) return t("tools.pinAdd");
+    return pinLocked ? t("tools.pinLocked") : t("tools.pinRemove");
+  }
+
+  async function togglePin(id: ToolId, event: MouseEvent) {
+    event.stopPropagation();
+    const ring = pill.ring.map((tool) => tool.id);
+    const more = pill.more.map((tool) => tool.id);
+    try {
+      if (pinned.has(id)) {
+        if (pinLocked) return;
+        await config.patch({
+          pill_tools: ring.filter((value) => value !== id),
+          pill_more_tools: [...more, id],
+        });
+      } else {
+        await config.patch({
+          pill_tools: [...ring, id],
+          pill_more_tools: more.filter((value) => value !== id),
+        });
+      }
+    } catch (error) {
+      toastError(error);
+    }
+  }
+
   $effect(() => {
     const want = toolIndex(activeTool);
     untrack(() => {
@@ -708,6 +754,24 @@
               {spot.tool.blurb}
             </p>
           </div>
+          {#if inPill(spot.tool.id)}
+            <button
+              type="button"
+              class="card-pin"
+              class:is-on={pinned.has(spot.tool.id)}
+              data-card-action=""
+              style:opacity={spot.prominence}
+              style:pointer-events={spot.prominence > 0.55 ? "auto" : "none"}
+              aria-pressed={pinned.has(spot.tool.id)}
+              aria-label={pinLabel(spot.tool.id)}
+              title={pinLabel(spot.tool.id)}
+              tabindex={spot.prominence > 0.55 ? 0 : -1}
+              disabled={pinned.has(spot.tool.id) && pinLocked}
+              onclick={(e) => void togglePin(spot.tool.id, e)}
+            >
+              <Icon icon={Pin} size={15} />
+            </button>
+          {/if}
           <button
             type="button"
             class="card-config"
@@ -876,7 +940,8 @@
     overflow: hidden;
   }
 
-  .card-config {
+  .card-config,
+  .card-pin {
     position: relative;
     display: grid;
     place-items: center;
@@ -896,23 +961,50 @@
       transform var(--duration-quick) var(--ease-smooth-out);
   }
 
-  .card-config::before {
+  .card-config::before,
+  .card-pin::before {
     content: "";
     position: absolute;
     inset: -6px;
   }
 
-  .card-config:hover {
+  .card-config:hover,
+  .card-pin:hover:not(:disabled) {
     color: var(--rb-text);
     background: color-mix(in oklab, var(--rb-text) 8%, transparent);
   }
 
-  .card-config:active {
+  .card-config:active,
+  .card-pin:active:not(:disabled) {
     transform: scale(0.96);
   }
 
+  /* Fijada: el chinche queda encendido y derecho. Suelto va inclinado, que es
+     como se lee «todavía no está clavado». */
+  .card-pin :global(svg) {
+    rotate: 35deg;
+    transition: rotate var(--duration-quick) var(--ease-smooth-out);
+  }
+
+  .card-pin.is-on {
+    color: var(--rb-text);
+  }
+
+  .card-pin.is-on :global(svg) {
+    rotate: 0deg;
+  }
+
+  /* Apagado por color y no por `opacity`: el opacity de la card lo escribe el
+     morph en línea, y una regla de CSS no le gana a un estilo inline. */
+  .card-pin:disabled {
+    cursor: default;
+    color: var(--rb-faint);
+  }
+
   @media (prefers-reduced-motion: reduce) {
-    .card-config {
+    .card-config,
+    .card-pin,
+    .card-pin :global(svg) {
       transition: none;
     }
 

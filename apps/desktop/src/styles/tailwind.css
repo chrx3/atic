@@ -16,6 +16,10 @@
  *
  * `:where()` mantiene la especificidad en cero, así que la variante no le gana
  * a nada por accidente.
+ *
+ * Mira `data-theme-base` y no `data-theme`: los temas son varios —grafito y
+ * nocturno también son oscuros— y lo que la variante pregunta es de qué lado
+ * está la tinta, no cuál de las paletas está puesta.
  */
-@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+@custom-variant dark (&:where([data-theme-base="dark"], [data-theme-base="dark"] *));
 @custom-variant console (&:where([data-palette="console"], [data-palette="console"] *));

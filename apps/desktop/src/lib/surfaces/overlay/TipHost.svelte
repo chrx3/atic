@@ -72,12 +72,12 @@
     position: fixed;
     z-index: var(--z-toast, 100);
     max-width: 22rem;
-    border: 1px solid color-mix(in sRGB, var(--rb-border) 80%, transparent);
+    border: 1px solid color-mix(in sRGB, var(--line) 80%, transparent);
     border-radius: 0.4rem;
     padding: 0.26rem 0.46rem;
-    background: color-mix(in sRGB, var(--rb-surface) 96%, var(--rb-bg0));
+    background: color-mix(in sRGB, var(--surface) 96%, var(--bg));
     box-shadow: 0 8px 22px color-mix(in sRGB, rgb(0 0 0) 32%, transparent);
-    color: var(--rb-text);
+    color: var(--text);
     font-size: 0.72rem;
     font-weight: 500;
     line-height: 1.3;

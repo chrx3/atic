@@ -1,0 +1,43 @@
+/**
+ * Papel y tinta — grafito. Un oscuro que no es negro.
+ *
+ * Existe porque el oscuro base (#121211) se funde con un escritorio oscuro:
+ * la ventana deja de tener silueta contra lo que hay detrás. Grafito sube el
+ * papel dos escalones y recupera el borde sin cambiar de familia — es la misma
+ * tinta clara sobre el mismo gris cálido, solo que más arriba.
+ *
+ * Declara el juego COMPLETO de tokens, como manda la regla plana de `dark.css`.
+ */
+[data-theme="graphite"] {
+  --bg: #2a2a27;
+  --surface: #323230;
+  --surface-2: #383835;
+  --elevated: #434340;
+
+  --text: #f2f2ec;
+  --muted: #b5b5ab;
+  --faint: #85857b;
+
+  --line: rgb(242 242 236 / 12%);
+  --line-strong: rgb(242 242 236 / 20%);
+
+  --accent: #ebebe3;
+  --on-accent: #2a2a27;
+
+  --rec: #ef6a61;
+  --ok: #7cbb94;
+  --ok-soft: #2a3a31;
+  --warn: #dfb257;
+  --warn-soft: #3b3324;
+  --danger: #ef6a61;
+  --danger-soft: #3c2a28;
+  --info: #9ab5c4;
+  --info-soft: #2b353b;
+
+  --mic: #7cbb94;
+  --sys: #9ab5c4;
+
+  --skin: #323230;
+
+  --agent-accent: #b5b5ab;
+}
