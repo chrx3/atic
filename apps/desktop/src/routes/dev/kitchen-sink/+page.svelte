@@ -1,12 +1,12 @@
 <script lang="ts">
   /**
-   * Todas las primitivas, en las tres paletas, en la misma página.
+   * Todas las primitivas, en todas las paletas, en la misma página.
    *
    * No es una galería: es la prueba de que la capa de tokens funciona. Tailwind
    * genera utilidades bajo demanda, así que hasta que algo no escribe
    * `bg-surface` no hay forma de saber si `@theme inline` resuelve donde tiene
    * que resolver. Y el modo más difícil —una isla con paleta propia dentro de
-   * otra— solo se ve poniendo las tres juntas.
+   * otra— solo se ve poniendo todas juntas.
    *
    * Si una columna se ve con los colores de otra, el `inline` no está haciendo
    * su trabajo y la cadena quedó anclada a `:root`.
@@ -37,6 +37,12 @@
     { name: "oscuro", attrs: { "data-theme": "dark" } },
     { name: "claro", attrs: { "data-theme": "light" } },
     { name: "consola", attrs: { "data-palette": "console" } },
+    { name: "grafito", attrs: { "data-theme": "graphite" } },
+    { name: "nocturno", attrs: { "data-theme": "midnight" } },
+    { name: "sepia", attrs: { "data-theme": "sepia" } },
+    { name: "niebla", attrs: { "data-theme": "mist" } },
+    { name: "claude", attrs: { "data-theme": "claude" } },
+    { name: "claude oscuro", attrs: { "data-theme": "claude-dark" } },
   ];
 
   let text = $state("Reunión de equipo");
@@ -67,7 +73,7 @@
   <header class="mb-6 flex items-baseline gap-3">
     <h1 class="text-xl font-semibold">kitchen sink</h1>
     <p class="text-xs text-faint">
-      las tres paletas, lado a lado. si una columna se ve con los colores de otra, el
+      las paletas, lado a lado. si una columna se ve con los colores de otra, el
       <code class="font-mono">@theme inline</code> no está resolviendo en el elemento.
     </p>
   </header>

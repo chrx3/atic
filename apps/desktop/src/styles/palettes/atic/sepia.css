@@ -1,0 +1,43 @@
+/**
+ * Papel y tinta — sepia. El claro, bajado de brillo.
+ *
+ * El claro base (#ecece6) es casi papel blanco: sobre una pantalla llena de
+ * ventanas blancas no se distingue dónde termina Atic, y de noche encandila.
+ * Sepia baja el papel y lo calienta; la tinta sigue siendo la misma tinta
+ * oscura, así que el contraste de lectura no se pierde.
+ *
+ * Declara el juego COMPLETO de tokens, como manda la regla plana de `dark.css`.
+ */
+[data-theme="sepia"] {
+  --bg: #ded4c1;
+  --surface: #e9e1d2;
+  --surface-2: #e3dac8;
+  --elevated: #f2ece1;
+
+  --text: #2b2419;
+  --muted: #6c6252;
+  --faint: #978d7b;
+
+  --line: rgb(43 36 25 / 13%);
+  --line-strong: rgb(43 36 25 / 22%);
+
+  --accent: #302818;
+  --on-accent: #f2ece1;
+
+  --rec: #b8443c;
+  --ok: #3d6b4e;
+  --ok-soft: #dbe4d3;
+  --warn: #8a6114;
+  --warn-soft: #eee0c0;
+  --danger: #b8443c;
+  --danger-soft: #f0dbd2;
+  --info: #3f6a85;
+  --info-soft: #dae4e8;
+
+  --mic: #3d6b4e;
+  --sys: #3f6a85;
+
+  --skin: #e9e1d2;
+
+  --agent-accent: #6c6252;
+}

@@ -8,6 +8,8 @@ import {
   deleteCapture,
   listRecentCaptures,
   ocrCaptureAndCopy,
+  ocrCaptureText,
+  readCaptureOcrCache,
   revealCapture,
 } from "$ipc/captures";
 import { subscribe } from "$ipc/events";
@@ -44,6 +46,22 @@ class CapturesStore implements DomainStore {
   /** Lee el texto de la imagen y lo deja en el portapapeles. Devuelve lo leído. */
   ocr(path: string): Promise<string> {
     return ocrCaptureAndCopy(path);
+  }
+
+  /** Lo mismo, sin tocar el portapapeles: para mostrarlo en pantalla. */
+  ocrText(path: string): Promise<string> {
+    return ocrCaptureText(path);
+  }
+
+  /**
+   * El texto que Rust ya leyó de esta captura, si lo tiene.
+   *
+   * `null` es «no está leída», no «no tiene texto»: el OCR tarda segundos y
+   * la vista previa se abre en un cuadro, así que primero se pregunta por lo
+   * cacheado y recién después se ofrece leerla.
+   */
+  ocrCached(path: string): Promise<string | null> {
+    return readCaptureOcrCache(path);
   }
 
   async remove(path: string): Promise<void> {

@@ -71,6 +71,12 @@ export function contentFor(
   barW: number,
   dock: Dock | null = null,
   activity: Activity = "idle",
+  /**
+   * Cuántas herramientas muestra la tira. Por defecto, todas: el usuario puede
+   * esconder gajos desde Ajustes y la caja tiene que encoger con ellos, pero
+   * un llamador que no sepa de esa preferencia sigue midiendo lo de siempre.
+   */
+  toolCount: number = WHEEL_TOOLS.length,
 ): Size {
   if (surface === "wheel") {
     const side = PILL.wheel - PILL.pad * 2;
@@ -83,7 +89,7 @@ export function contentFor(
     // es el único eje donde hay lugar sin taparle la pantalla al usuario.
     const hang = liveHang(activity, "edge");
     if (dock.expanded) {
-      const long = islandStripLong(WHEEL_TOOLS.length + islandLiveSlots(activity));
+      const long = islandStripLong(toolCount + islandLiveSlots(activity));
       return dockAxis(dock.edge) === "x"
         ? { w: PILL.islandTool + hang, h: long }
         : { w: long, h: PILL.islandTool + hang };
@@ -103,8 +109,9 @@ export function targetFor(
   barW: number,
   dock: Dock | null = null,
   activity: Activity = "idle",
+  toolCount: number = WHEEL_TOOLS.length,
 ): Size {
-  return windowFor(contentFor(surface, barW, dock, activity));
+  return windowFor(contentFor(surface, barW, dock, activity, toolCount));
 }
 
 /**

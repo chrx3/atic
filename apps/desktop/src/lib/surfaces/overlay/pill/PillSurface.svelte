@@ -33,7 +33,7 @@
   import { RectTracker } from "$lib/liquid/measure.svelte";
   import { gapBetween, pillShape } from "$lib/liquid/geometry";
   import { INFLUENCE, REACH } from "$lib/liquid/constants";
-  import ToolIcon from "$lib/ToolIcon.svelte";
+  import ToolIcon, { type IconId } from "$lib/ToolIcon.svelte";
   import { agents } from "$lib/agentSessions.svelte";
   import { presence } from "$lib/agentPresence.svelte";
   import ParticleWheel from "$lib/ParticleWheel.svelte";
@@ -41,8 +41,18 @@
     WHEEL_TOOLS,
     AGENTS_ENABLED,
     AGENT_PAGER_ENABLED,
+    toolById,
     type ToolId,
   } from "$lib/tools";
+  import {
+    PILL_BACK_ID,
+    PILL_MORE_ID,
+    pillLayout,
+    pillStripPage,
+    type PillStripId,
+    type PillWheelId,
+  } from "$core/pillTools";
+  import { config } from "$domain/config.svelte";
   import { localizeTool, t } from "$domain/i18n.svelte";
   import { formatShortcut } from "$lib/format";
   import Icon from "$ui/Icon.svelte";
@@ -176,7 +186,11 @@
   /** Visual, separado del lógico: la rueda se revela recién con la ventana ya
    *  reencuadrada, para que el morph nunca se pinte a mitad del resize. */
   let wheelShown = $state(false);
-  let wheelTool = $state<ToolId | null>(null);
+  let wheelTool = $state<PillWheelId | null>(null);
+  /** Qué anillo se está mirando. `more` es el submenú detrás del gajo «Más». */
+  let wheelPage = $state<"ring" | "more">("ring");
+  /** Lo mismo para la tira acoplada: comparten preferencia y comparten paso. */
+  let stripPage = $state<"ring" | "more">("ring");
   /** Cierre acelerado: al elegir herramienta la rueda ya cumplió su función. */
   let wheelQuick = $state(false);
   /**
@@ -390,8 +404,62 @@
    * `track()` borra el rect. Con una closure nueva por render las gotas se
    * daban de baja y volvían un cuadro después.
    */
-  const wheelTools = $derived(WHEEL_TOOLS.map(localizeTool));
-  const islandAttachers = WHEEL_TOOLS.map(
+  /**
+   * Lo que el usuario dejó en la pill (Ajustes → Pill).
+   *
+   * Es una sola preferencia para las dos siluetas: el anillo y la tira del
+   * canto muestran lo mismo, porque son la misma pill en dos formas. Lo único
+   * que no viaja al canto es el submenú: una tira es lineal y no tiene ángulo
+   * que ahorrar, así que ahí «Más» se despliega sin gajo intermedio.
+   */
+  const layout = $derived(
+    pillLayout(config.current?.pill_tools, config.current?.pill_more_tools),
+  );
+  /**
+   * La tira, resuelta a lo que hace falta para dibujar cada botón.
+   *
+   * `Más` y `atrás` no son herramientas —no tienen acción ni slot al que
+   * volar—, así que el `id` es el que decide qué hace el toque, no un
+   * `ToolDef` que habría que inventar.
+   */
+  const stripNodes: { id: PillStripId; label: string; short: string; icon: IconId }[] =
+    $derived(
+      pillStripPage(layout, stripPage).map((id) => {
+        if (id === PILL_MORE_ID) {
+          return { id, label: t("pill.more"), short: t("pill.moreHint"), icon: "more" };
+        }
+        if (id === PILL_BACK_ID) {
+          return { id, label: t("pill.wheelBack"), short: t("pill.backHint"), icon: "back" };
+        }
+        const tool = localizeTool(toolById(id));
+        return { id, label: tool.label, short: tool.short, icon: id };
+      }),
+    );
+
+  type WheelNode = { id: PillWheelId; label: string; short: string; icon?: IconId };
+
+  const moreNode: WheelNode = $derived({
+    id: PILL_MORE_ID,
+    label: t("pill.more"),
+    short: t("pill.moreHint"),
+    icon: "more",
+  });
+  const ringNodes: WheelNode[] = $derived([
+    ...layout.ring.map(localizeTool),
+    ...(layout.more.length > 0 ? [moreNode] : []),
+  ]);
+  const wheelNodes: WheelNode[] = $derived(
+    wheelPage === "more" ? layout.more.map(localizeTool) : ringNodes,
+  );
+
+  // Los adjuntadores se crean UNA vez sobre el catálogo completo y se indexan
+  // por posición: la tira muestra un subconjunto, así que el índice siempre
+  // cae dentro. Derivarlos de la lista visible les cambiaría la identidad con
+  // cada preferencia, y un `@attach` que cambia de función se desmonta y da de
+  // baja su rect —justo lo que el comentario de arriba está evitando.
+  const islandAttachers = Array.from(
+    // Uno más que herramientas: la tira suma «Más» o «atrás» según el paso.
+    { length: WHEEL_TOOLS.length + 1 },
     (_, i) => (el: HTMLElement) => tracker.track(`island-${i}`, el),
   );
 
@@ -635,8 +703,10 @@
    */
   let dock = $state<Dock | null>(null);
 
-  const target = $derived(windowFor(contentFor(surface, barW, dock, activity)));
-  const islandSlots = $derived(WHEEL_TOOLS.length + islandLiveSlots(activity));
+  const target = $derived(
+    windowFor(contentFor(surface, barW, dock, activity, stripNodes.length)),
+  );
+  const islandSlots = $derived(stripNodes.length + islandLiveSlots(activity));
 
   /**
    * Contra qué eje se aplana la isla, o `null` si no está acoplada.
@@ -651,6 +721,12 @@
 
   /** La tira está desplegada (o se está desplegando). */
   const islandOpen = $derived(surface === "edge" && dock?.expanded === true);
+
+  // Cerrada la tira, vuelve al primer paso: reabrirla en el submenú dejaría al
+  // usuario frente a media lista sin saber por qué.
+  $effect(() => {
+    if (!islandOpen) stripPage = "ring";
+  });
 
   /**
    * Las gotas siguen siendo la silueta un rato DESPUÉS de que el estado cambió.
@@ -1224,6 +1300,7 @@
     cancelPendingCollapse();
     await closeWheel();
     wheelQuick = false;
+    wheelPage = "ring";
     // Sin selección inicial: un toque accidental del atajo no debe disparar
     // ninguna acción al soltar.
     wheelTool = null;
@@ -1337,6 +1414,7 @@
     // mientras ParticleWheel aún colapsa en el centro.
     collapsingFrom = "wheel";
     wheelTool = null;
+    wheelPage = "ring";
     surface = "none";
     try {
       await playCloseMorph(epoch, { returnHome: opts.returnHome ?? true });
@@ -1348,7 +1426,7 @@
   /** Soltar la tecla: activa lo apuntado si la rueda llegó a mostrarse. */
   function onWheelRelease() {
     if (surface !== "wheel") return;
-    if (wheelShown && wheelTool) activateTool(wheelTool);
+    if (wheelShown && wheelTool) pickWheelNode(wheelTool);
     else void closeWheel();
   }
 
@@ -1359,14 +1437,41 @@
     const action = wheelKeyAction(event.key, event.shiftKey);
     if (!action) return false;
     if (action === "activate") {
-      if (wheelTool) activateTool(wheelTool);
+      if (wheelTool) pickWheelNode(wheelTool);
+      else if (wheelPage === "more") backToRing();
       else void closeWheel();
     } else {
-      const next = nextWheelTool(wheelTool, action === "next" ? 1 : -1, WHEEL_TOOLS);
+      // Sobre los gajos que hay AHORA: dentro del submenú las flechas no
+      // pueden pasearse por herramientas que no están en pantalla.
+      const next = nextWheelTool(wheelTool, action === "next" ? 1 : -1, wheelNodes);
       if (next !== wheelTool) playWheelTick();
       wheelTool = next;
     }
     return true;
+  }
+
+  /**
+   * Elegir un gajo: ejecutar la herramienta, o bajar al segundo anillo.
+   *
+   * «Más» no es una herramienta y por eso no pasa por `activateTool`: no tiene
+   * acción que encolar ni slot al que volar — solo cambia qué se está mirando,
+   * con la rueda abierta y en el sitio.
+   */
+  function pickWheelNode(id: PillWheelId) {
+    if (id === PILL_MORE_ID) {
+      wheelPage = "more";
+      wheelTool = null;
+      playWheelTick();
+      return;
+    }
+    activateTool(id);
+  }
+
+  /** Volver del submenú al primer anillo. El núcleo hace de «atrás». */
+  function backToRing() {
+    wheelPage = "ring";
+    wheelTool = null;
+    playWheelTick();
   }
 
   /**
@@ -1793,7 +1898,7 @@
   /** Ya se vio el botón apretado: recién ahí un `false` significa "soltó". */
   let dragSawDown = false;
   /** Icono de la isla donde arrancó el gesto, si arrancó en uno. */
-  let islandPressTool: ToolId | null = null;
+  let islandPressTool: PillStripId | null = null;
   /** El gesto arrancó sobre el aviso/botón de consola de agentes. */
   let agentChipPressed = false;
   let agentChipPreferBind = false;
@@ -2010,6 +2115,18 @@
       return;
     }
     if (wasClick && pressedTool) {
+      // Los dos controles de la tira no ejecutan nada: solo cambian de paso, y
+      // por eso no pasan por `activateFromIsland` ni cierran la isla.
+      if (pressedTool === PILL_MORE_ID) {
+        stripPage = "more";
+        playWheelTick();
+        return;
+      }
+      if (pressedTool === PILL_BACK_ID) {
+        stripPage = "ring";
+        playWheelTick();
+        return;
+      }
       activateFromIsland(pressedTool);
       return;
     }
@@ -2136,6 +2253,12 @@
           // Aborta el vuelo; `openWheelInner` vuelve al hogar al ver el epoch.
           cancelFlight();
           collapseEpoch += 1;
+          return;
+        }
+        // Dentro del submenú, Esc deshace un nivel: cerrar de una obligaría a
+        // reabrir la rueda para corregir una entrada equivocada.
+        if (wheelPage === "more") {
+          backToRing();
           return;
         }
         void closeWheel();
@@ -2269,18 +2392,18 @@
           class:is-column={peekEdgeAxis === "x"}
           style="--n: {islandSlots}"
         >
-          {#each wheelTools as tool, i (tool.id)}
+          {#each stripNodes as node, i (node.id)}
             {@const slot = i + islandLiveSlots(activity)}
             <button
               type="button"
               class="p-island-tool"
               style="--i: {slot}; --s: {Math.abs((islandSlots - 1) / 2 - slot)}"
-              use:tip={`${tool.label} — ${tool.short}`}
-              aria-label="{tool.label}. {tool.short}"
+              use:tip={`${node.label} — ${node.short}`}
+              aria-label="{node.label}. {node.short}"
               {@attach islandAttachers[i]}
-              onpointerdown={() => (islandPressTool = tool.id)}
+              onpointerdown={() => (islandPressTool = node.id)}
             >
-              <ToolIcon id={tool.id} size={18} strokeWidth={1.6} />
+              <ToolIcon id={node.icon} size={18} strokeWidth={1.6} />
             </button>
           {/each}
         </div>
@@ -2312,10 +2435,10 @@
       wheelNav
       particles={false}
       revealed={wheelShown}
-      tools={wheelTools}
+      tools={wheelNodes}
       bind:activeId={wheelTool}
-      caption={t("tools.wheelCaption")}
-      centerLabel={t("tools.wheelClose")}
+      caption={wheelPage === "more" ? t("pill.more") : t("tools.wheelCaption")}
+      centerLabel={wheelPage === "more" ? t("pill.wheelBack") : t("tools.wheelClose")}
       live={activity === "recording"
         ? "recording"
         : dictation === "listening"
@@ -2326,11 +2449,17 @@
         if (activity === "recording") toggleRecord();
         else void toggleDictate();
       }}
-      onSelect={(id) => activateTool(id)}
+      onSelect={(id) => pickWheelNode(id)}
       onCenter={() => {
         // Arrastrarla por el núcleo no debe además cerrarla: el click nativo
         // llega igual después del pointerup.
         if (suppressWheelCoreClick) return;
+        // En el submenú el núcleo es «atrás»: cerrar de un salto obligaría a
+        // reabrir la rueda para corregir un gajo mal apuntado.
+        if (wheelPage === "more") {
+          backToRing();
+          return;
+        }
         void closeWheel();
       }}
     />

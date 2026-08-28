@@ -773,6 +773,46 @@ pub fn read_clipboard_drag_text(state: State<AppState>, path: String) -> Result<
     std::fs::read_to_string(&path).map_err(|e| e.to_string())
 }
 
+/// Deja el ítem en el portapapeles, y nada más.
+///
+/// `paste_clipboard_item` devuelve el foco a la app anterior y le manda
+/// Ctrl+V. Eso es lo correcto desde la pill, que flota sobre la app en la que
+/// se estaba escribiendo. Desde la ventana principal no lo es: ahí «la app
+/// anterior» es cualquier cosa que estuviera abierta, y pegar le mete texto a
+/// un tercero que nadie está mirando. Copiar es lo que esa ventana puede
+/// prometer sin adivinar el destino.
+#[tauri::command]
+pub fn copy_clipboard_item(state: State<AppState>, id: String) -> Result<(), String> {
+    let item = find_item(&state, &id).ok_or_else(item_missing)?;
+
+    // El watcher ve cambiar el portapapeles y encolaría lo mismo arriba de
+    // todo, duplicado. Se le avisa antes de escribir, como hace el pegado.
+    if let Ok(shared) = shared_history() {
+        let mut hist = shared.lock_or_recover();
+        hist.suppress_until = Some(SystemTime::now() + Duration::from_millis(1200));
+    }
+
+    match item.kind {
+        ClipboardKind::Text => {
+            let text = item
+                .text
+                .filter(|t| !t.is_empty())
+                .unwrap_or_else(|| item.preview.clone());
+            if text.is_empty() {
+                return Err(item_empty_text());
+            }
+            let mut clipboard = Clipboard::new().map_err(|e| e.to_string())?;
+            clipboard.set_text(text).map_err(|e| e.to_string())
+        }
+        ClipboardKind::Image => {
+            let path = item
+                .image_path
+                .ok_or_else(|| crate::ui_lang::msg("Imagen sin ruta", "Image has no path"))?;
+            crate::capture::copy_png_to_clipboard(Path::new(&path))
+        }
+    }
+}
+
 /// Pone el ítem en el clipboard y envía Ctrl+V a la app que tenía el foco.
 ///
 /// Si la burbuja de agentes está abierta, inserta ahí (evento interno) en vez

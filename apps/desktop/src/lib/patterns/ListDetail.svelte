@@ -18,6 +18,7 @@
     hasSelection = false,
     listLabel = "Lista",
     listCount,
+    listHeader,
     list,
     detail,
     empty,
@@ -26,6 +27,11 @@
     listLabel?: string;
     /** Cuántos ítems hay en la lista; se muestra junto al rótulo. */
     listCount?: number;
+    /**
+     * Fijo sobre la lista y fuera de su scroll: buscar y filtrar tiene que
+     * seguir a mano después de bajar cien elementos.
+     */
+    listHeader?: Snippet;
     list: Snippet;
     detail: Snippet;
     /** Qué mostrar en el panel de detalle cuando no hay nada elegido. */
@@ -39,7 +45,7 @@
     <nav
       aria-label={listLabel}
       class="flex min-h-0 w-full shrink-0 flex-col overflow-hidden border-line
-             @md/split:w-56 @md/split:border-r
+             @md/split:w-56 @md/split:border-r @3xl/split:w-64
              {hasSelection ? 'hidden @md/split:flex' : 'flex'}"
     >
       {#if listLabel}
@@ -51,6 +57,12 @@
           {#if listCount !== undefined}
             <span class="text-micro text-muted tabular-nums">{listCount}</span>
           {/if}
+        </div>
+      {/if}
+
+      {#if listHeader}
+        <div class="shrink-0 border-b border-line px-2 py-1.5">
+          {@render listHeader()}
         </div>
       {/if}
 

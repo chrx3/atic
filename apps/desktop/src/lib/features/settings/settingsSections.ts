@@ -5,6 +5,7 @@ export type SettingsSectionId =
   | "dictation"
   | "captures"
   | "shortcuts"
+  | "pill"
   | "launcher"
   | "audio"
   | "summary"

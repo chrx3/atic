@@ -4,6 +4,7 @@ import { clipboardItemMatches } from "$core/clipboardSearch";
 import type { ClipboardItem } from "$core/types";
 import { subscribe } from "$ipc/events";
 import {
+  copyClipboardItem,
   deleteClipboardItem,
   listClipboardHistory,
   pasteClipboardItem,
@@ -37,6 +38,17 @@ class ClipboardStore implements DomainStore {
   /** Pega en la app que tenga el foco. Rust se encarga del resto. */
   paste(id: string): Promise<void> {
     return pasteClipboardItem(id);
+  }
+
+  /**
+   * Deja el ítem en el portapapeles y ya.
+   *
+   * Es lo que corresponde en la ventana principal: `paste` devuelve el foco a
+   * la app anterior antes de mandar Ctrl+V, y desde acá esa app es cualquiera
+   * — la ventana está al frente justamente porque el usuario la miró.
+   */
+  copy(id: string): Promise<void> {
+    return copyClipboardItem(id);
   }
 
   async pin(id: string, pinned: boolean): Promise<void> {

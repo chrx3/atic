@@ -1,4 +1,4 @@
-<script lang="ts">
+<script lang="ts" generics="Id extends string">
   import { tip } from "$surfaces/overlay/tip.svelte";
   /**
    * Rueda de herramientas con campo de partículas en canvas 2D.
@@ -12,11 +12,19 @@
    */
 
   import AticMark from "$lib/AticMark.svelte";
-  import ToolIcon from "$lib/ToolIcon.svelte";
+  import ToolIcon, { type IconId } from "$lib/ToolIcon.svelte";
   import GooFilter, { preFilter } from "$lib/GooFilter.svelte";
   import { t } from "$domain/i18n.svelte";
   import { playWheelTick } from "$core/uiSound";
-  import { TOOLS, type ToolDef, type ToolId } from "$lib/tools";
+
+  /**
+   * Un gajo de la rueda.
+   *
+   * No es `ToolDef`: la pill mete además un gajo «Más» que abre un segundo
+   * anillo, y eso no es una herramienta —no tiene acción, no vive en `TOOLS`—.
+   * Por eso el id es genérico y el icono puede venir aparte.
+   */
+  type WheelItem = { id: Id; label: string; short: string; icon?: IconId };
   import {
     nodeAngle as angleOf,
     nodePosition,
@@ -35,9 +43,9 @@
     particles = true,
     /** false = anillo colapsado en el centro (estado cerrado del morph). */
     revealed = true,
-    /** Lista de gajos. La pill pasa `WHEEL_TOOLS` (sin launcher). */
-    tools = TOOLS,
-    activeId = $bindable<ToolId | null>(null),
+    /** Lista de gajos, ya en el orden en que se dibujan. */
+    tools,
+    activeId = $bindable<Id | null>(null),
     hint = "",
     /** Texto del núcleo cuando es botón. La pill pasa "Cerrar". */
     centerLabel,
@@ -53,12 +61,12 @@
     wheelNav?: boolean;
     particles?: boolean;
     revealed?: boolean;
-    tools?: readonly ToolDef[];
-    activeId?: ToolId | null;
+    tools: readonly WheelItem[];
+    activeId?: Id | null;
     /** Pie discreto: enseña que la rueda también vive en la pill. */
     hint?: string;
     centerLabel?: string;
-    onSelect?: (id: ToolId) => void;
+    onSelect?: (id: Id) => void;
     /** Si está, la marca central es un botón (cerrar en la pill). */
     onCenter?: () => void;
     live?: "off" | "recording" | "dictating";
@@ -129,8 +137,19 @@
     tools.find((tool) => tool.id === activeId) ?? null,
   );
 
+  /**
+   * El icono del gajo.
+   *
+   * Por convención el id de una herramienta ES su id de icono, así que casi
+   * ningún llamador necesita pasarlo; el gajo «Más» sí, porque su id no está
+   * en el catálogo de herramientas.
+   */
+  function iconOf(item: WheelItem): IconId {
+    return item.icon ?? (item.id as IconId);
+  }
+
   /** Fija la herramienta activa; suena solo si el paso cambia y la rueda navega. */
-  function setActive(id: ToolId | null, { tick = false } = {}) {
+  function setActive(id: Id | null, { tick = false } = {}) {
     if (id === activeId) return;
     activeId = id;
     if (tick && wheelNav && id) playWheelTick();
@@ -304,7 +323,7 @@
 
     function readPalette() {
       const styles = getComputedStyle(hostEl);
-      const next = resolveRgb(styles.getPropertyValue("--rb-accent"), ink);
+      const next = resolveRgb(styles.getPropertyValue("--accent"), ink);
       if (
         sprite &&
         next[0] === ink[0] &&
@@ -586,7 +605,7 @@
             <!-- 21 y no 17: la gota de 56 pide más tinta que el icono suelto
                  que había sobre el disco. -->
             <span class="pw-node-dot">
-              <ToolIcon id={node.tool.id} size={compact ? 21 : 20} />
+              <ToolIcon id={iconOf(node.tool)} size={compact ? 21 : 20} />
             </span>
             {#if !compact}
               <span class="pw-node-label">{node.tool.label}</span>
@@ -840,7 +859,7 @@
   }
 
   .pw-mark {
-    color: var(--rb-text);
+    color: var(--text);
     line-height: 0;
   }
 
@@ -905,7 +924,7 @@
     bottom: 0.9rem;
     left: 0;
     margin: 0;
-    color: var(--rb-faint);
+    color: var(--faint);
     font-size: 0.5625rem;
     font-weight: 500;
     letter-spacing: 0.1em;
@@ -918,7 +937,7 @@
 
   .pw-caption {
     max-width: 18ch;
-    color: var(--rb-faint);
+    color: var(--faint);
     font-size: 0.625rem;
     font-weight: 500;
     letter-spacing: 0.1em;
@@ -968,8 +987,8 @@
     background: linear-gradient(
       to bottom,
       transparent,
-      color-mix(in srgb, var(--rb-text) 10%, transparent) 18%,
-      color-mix(in srgb, var(--rb-text) 10%, transparent) 45%,
+      color-mix(in srgb, var(--text) 10%, transparent) 18%,
+      color-mix(in srgb, var(--text) 10%, transparent) 45%,
       transparent 96%
     );
     pointer-events: none;
@@ -1000,7 +1019,7 @@
     flex-direction: column;
     align-items: center;
     gap: 0.3rem;
-    color: var(--rb-muted);
+    color: var(--muted);
     pointer-events: none;
     transform: translate(-50%, -50%);
     transition:
@@ -1030,7 +1049,7 @@
   }
 
   .pw-node-label {
-    color: var(--rb-faint);
+    color: var(--faint);
     font-size: 0.625rem;
     font-weight: 500;
     letter-spacing: 0.1em;
@@ -1040,12 +1059,12 @@
   }
 
   .pw-node.is-hot .pw-node-body {
-    color: var(--rb-text);
+    color: var(--text);
     transform: translate(-50%, -50%) scale(1.05);
   }
 
   .pw-node.is-hot .pw-node-label {
-    color: var(--rb-text);
+    color: var(--text);
   }
 
   .pw-node:active .pw-node-body {

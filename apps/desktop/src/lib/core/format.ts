@@ -11,7 +11,7 @@ export function formatLocale(): Locale {
   return locale;
 }
 
-function intlTag(): string {
+export function intlTag(): string {
   return locale === "en" ? "en-US" : "es-CL";
 }
 

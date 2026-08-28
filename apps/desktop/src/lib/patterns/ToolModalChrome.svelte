@@ -1,6 +1,6 @@
 <script lang="ts">
   /**
-   * Proveedor de chrome `modal` para tools embebidas en ToolDetailModal.
+   * Proveedor de chrome `modal` para tools embebidas en ToolWorkspace.
    *
    * Vive como componente propio (no solo setContext en el modal) porque el
    * body del Modal se renderiza vía snippet: el contexto tiene que colgar de

@@ -18,6 +18,7 @@
   import GeneralSection from "./GeneralSection.svelte";
   import LauncherSection from "./LauncherSection.svelte";
   import MeetingsSection from "./MeetingsSection.svelte";
+  import PillSection from "./PillSection.svelte";
   import ShortcutsSection from "./ShortcutsSection.svelte";
   import SummarySection from "./SummarySection.svelte";
   import type { SettingsSectionId } from "./settingsSections";
@@ -34,6 +35,7 @@
     { value: "dictation" as const, label: t("settings.nav.dictation"), icon: "dictation" as IconId },
     { value: "captures" as const, label: t("settings.nav.captures"), icon: "captures" as IconId },
     { value: "shortcuts" as const, label: t("settings.nav.shortcuts"), icon: "shortcuts" as IconId },
+    { value: "pill" as const, label: t("settings.nav.pill"), icon: "pill" as IconId },
     { value: "launcher" as const, label: t("settings.nav.launcher"), icon: "launcher" as IconId },
     { value: "audio" as const, label: t("settings.nav.audio"), icon: "audio" as IconId },
     { value: "summary" as const, label: t("settings.nav.summary"), icon: "summary" as IconId },
@@ -81,6 +83,8 @@
           <CapturesSection />
         {:else if section === "shortcuts"}
           <ShortcutsSection />
+        {:else if section === "pill"}
+          <PillSection />
         {:else if section === "launcher"}
           <LauncherSection />
         {:else if section === "audio"}

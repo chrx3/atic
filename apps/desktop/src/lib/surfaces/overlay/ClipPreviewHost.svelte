@@ -86,16 +86,16 @@
     max-width: 26rem;
     flex-direction: column;
     gap: 0.4rem;
-    border: 1px solid color-mix(in sRGB, var(--rb-border) 80%, transparent);
+    border: 1px solid color-mix(in sRGB, var(--line) 80%, transparent);
     border-radius: 0.6rem;
     padding: 0.5rem 0.6rem;
 
     /* Traslúcido con desenfoque detrás: es un apoyo momentáneo, no una
        ventana. Deja ver que abajo sigue estando la lista. */
-    background: color-mix(in sRGB, var(--rb-surface) 88%, transparent);
+    background: color-mix(in sRGB, var(--surface) 88%, transparent);
     backdrop-filter: blur(10px);
     box-shadow: 0 12px 32px color-mix(in sRGB, rgb(0 0 0) 38%, transparent);
-    color: var(--rb-text);
+    color: var(--text);
     opacity: 0;
 
     /* Duro: el overlay es click-through salvo en sus hit-rects, y un panel que
@@ -142,7 +142,7 @@
     /* El damero se ve por debajo de un PNG con transparencia; sin esto una
        captura con fondo alfa se lee como un recorte roto. */
     background: repeating-conic-gradient(
-        color-mix(in sRGB, var(--rb-text) 8%, transparent) 0% 25%,
+        color-mix(in sRGB, var(--text) 8%, transparent) 0% 25%,
         transparent 0% 50%
       )
       50% / 12px 12px;
@@ -152,14 +152,14 @@
   .cp-label,
   .cp-hint {
     margin: 0;
-    color: var(--rb-faint, var(--rb-muted));
+    color: var(--faint);
     font-size: 0.625rem;
     font-weight: 500;
     line-height: 1.2;
   }
 
   .cp-hint {
-    border-top: 1px solid color-mix(in sRGB, var(--rb-border) 55%, transparent);
+    border-top: 1px solid color-mix(in sRGB, var(--line) 55%, transparent);
     padding-top: 0.36rem;
   }
 

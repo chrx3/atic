@@ -117,12 +117,30 @@ export interface AppConfig {
   capture_retention_hours: number;
   capture_include_cursor: boolean;
   capture_click_action: string;
-  /** light | dark | system */
+  /** Uno de `UI_THEMES` (`theme.ts`), o `system`. */
   ui_theme: string;
+  /** Perillas del tema `custom`. Se guardan aunque el tema activo sea otro. */
+  ui_theme_custom: CustomTheme;
   /** es | en — idioma de la interfaz, no el de Whisper. */
   ui_language: string;
+  /**
+   * Herramientas del anillo de la pill, en orden. Vacío = sin configurar.
+   * Manda también en la tira acoplada al borde.
+   */
+  pill_tools: string[];
+  /** Herramientas detrás del gajo «Más». Vacío = no hay submenú. */
+  pill_more_tools: string[];
   /** Hosts SSH para agentes remotos (sin secretos). */
   ssh_hosts: SshHost[];
+}
+
+/** Perillas del tema personalizado. Espejo de `CustomTheme` en Rust. */
+export interface CustomTheme {
+  base: string;
+  paper: number;
+  ink: number;
+  warmth: number;
+  accent: string;
 }
 
 /** Host SSH persistido en config (passphrase/password van al keyring). */

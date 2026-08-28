@@ -79,6 +79,21 @@ describe("contentFor", () => {
     });
   });
 
+  it("la tira encoge cuando se esconden herramientas de la pill", () => {
+    const dock = { edge: "left" as const, expanded: true };
+    const todas = contentFor("edge", 180, dock, "idle");
+    const tres = contentFor("edge", 180, dock, "idle", 3);
+    expect(tres.h).toBe(islandStripLong(3));
+    expect(tres.h).toBeLessThan(todas.h);
+  });
+
+  it("sin decir cuántas, mide el catálogo entero", () => {
+    const dock = { edge: "bottom" as const, expanded: true };
+    expect(contentFor("edge", 180, dock, "idle").w).toBe(
+      islandStripLong(WHEEL_TOOLS.length),
+    );
+  });
+
   it("la tira mide los botones más los huecos entre ellos", () => {
     expect(islandStripLong(1)).toBe(PILL.islandTool);
     expect(islandStripLong(3)).toBe(PILL.islandTool * 3 + PILL.islandGap * 2);

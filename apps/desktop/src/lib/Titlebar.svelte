@@ -4,6 +4,7 @@
   import AticMark from "$lib/AticMark.svelte";
   import type { ToolDef } from "$lib/tools";
   import {
+    themeBase,
     themeLabel,
     type UiTheme,
   } from "$lib/theme";
@@ -115,7 +116,7 @@
         onclick={onToggleTheme}
       >
         <Icon
-          icon={theme === "dark" ? Moon : theme === "light" ? Sun : Monitor}
+          icon={theme === "system" ? Monitor : themeBase(theme) === "dark" ? Moon : Sun}
           size={14}
         />
       </button>

@@ -230,6 +230,7 @@ pub fn run() {
             annotate::save_annotation,
             annotate::copy_annotation,
             clipboard_history::list_clipboard_history,
+            clipboard_history::copy_clipboard_item,
             clipboard_history::paste_clipboard_item,
             clipboard_history::insert_clipboard_into_agents,
             clipboard_history::try_clipboard_drop_on_agents,

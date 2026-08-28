@@ -2,7 +2,7 @@
  * Cómo se presenta el marco de una herramienta.
  *
  * En la ventana / rutas standalone, `ToolPage` muestra título, blurb e icono.
- * Dentro de `ToolDetailModal` ese chrome ya vive en el modal: el contexto
+ * Dentro de `ToolWorkspace` ese chrome ya vive en la barra: el contexto
  * `modal` evita repetirlo sin que cada feature pase props a mano.
  */
 import { getContext, setContext } from "svelte";

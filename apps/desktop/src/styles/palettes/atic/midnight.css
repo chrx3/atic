@@ -1,0 +1,42 @@
+/**
+ * Papel y tinta — nocturno. El oscuro, frío.
+ *
+ * Mismo nivel de papel que grafito y la misma razón de ser —separarse del
+ * escritorio—, pero girado al azul. Sobre fondos cálidos (madera, fotos, IDEs
+ * de tema oscuro cálido) un gris neutro se camufla y uno frío no.
+ *
+ * Declara el juego COMPLETO de tokens, como manda la regla plana de `dark.css`.
+ */
+[data-theme="midnight"] {
+  --bg: #1a1e26;
+  --surface: #222732;
+  --surface-2: #272d38;
+  --elevated: #313846;
+
+  --text: #e9edf5;
+  --muted: #a3adbd;
+  --faint: #737e8f;
+
+  --line: rgb(233 237 245 / 11%);
+  --line-strong: rgb(233 237 245 / 19%);
+
+  --accent: #dde4f0;
+  --on-accent: #1a1e26;
+
+  --rec: #ee6d64;
+  --ok: #74bd97;
+  --ok-soft: #1c3630;
+  --warn: #d9ae57;
+  --warn-soft: #37301c;
+  --danger: #ee6d64;
+  --danger-soft: #3a2624;
+  --info: #85b6d6;
+  --info-soft: #1d2c37;
+
+  --mic: #74bd97;
+  --sys: #85b6d6;
+
+  --skin: #222732;
+
+  --agent-accent: #a3adbd;
+}

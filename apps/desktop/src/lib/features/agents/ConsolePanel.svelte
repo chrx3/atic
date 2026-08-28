@@ -60,6 +60,7 @@
     EllipsisVertical,
   } from "$lib/icons";
   import { t } from "$lib/domain/i18n.svelte";
+  import { themeBase } from "$lib/theme";
 
   let {
     remoteHost = null,
@@ -1658,9 +1659,12 @@
    * Paleta del xterm según el tema resuelto (`data-theme` en :root).
    * La consola sigue el tema de la app; los TUI que pintan su propio fondo
    * (opencode claro) siguen siendo cosa del agente, no del terminal.
+   *
+   * Mira el lado de la tinta y no la paleta exacta: hay varios temas claros y
+   * varios oscuros, y un terminal solo tiene estas dos versiones.
    */
   function termTheme(): Record<string, string> {
-    const light = document.documentElement.dataset.theme === "light";
+    const light = themeBase(document.documentElement.dataset.theme) === "light";
     return light
       ? {
           background: "#fbfbf8",

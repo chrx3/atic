@@ -514,7 +514,7 @@
     border-radius: 18px;
     /* Transparente: un fill opaco corta la sombra de la piel en el cuello. */
     background: transparent;
-    color: var(--rb-text);
+    color: var(--text);
     overflow: hidden;
     opacity: 0;
     pointer-events: none;
@@ -583,7 +583,7 @@
     font-weight: 650;
     letter-spacing: 0.04em;
     text-transform: uppercase;
-    color: var(--rb-muted);
+    color: var(--muted);
     text-wrap: balance;
   }
 
@@ -594,7 +594,7 @@
     font-size: 0.625rem;
     font-weight: 500;
     line-height: 1.2;
-    color: var(--rb-faint, var(--rb-muted));
+    color: var(--faint);
     white-space: nowrap;
     text-overflow: ellipsis;
   }
@@ -618,7 +618,7 @@
     border-radius: 0.4rem;
     padding: 0;
     background: transparent;
-    color: var(--rb-faint, var(--rb-muted));
+    color: var(--faint);
     cursor: pointer;
     box-shadow: none;
     filter: none;
@@ -635,8 +635,8 @@
 
   .cf-icon:hover,
   .cf-icon.is-on {
-    color: var(--rb-text);
-    background: color-mix(in srgb, var(--rb-text) 8%, transparent);
+    color: var(--text);
+    background: color-mix(in srgb, var(--text) 8%, transparent);
   }
 
   .cf-icon:active {

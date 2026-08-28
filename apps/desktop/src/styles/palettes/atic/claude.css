@@ -1,0 +1,48 @@
+/**
+ * Claude — claro. La paleta de Claude Code sobre papel y tinta.
+ *
+ * Es el único tema donde el acento tiene color propio: la terracota #c15f3c es
+ * la marca, y acá se la deja hacer de acento —botón primario, foco, selección—
+ * en vez de la tinta invertida del resto. Por eso el rojo de estado se corre a
+ * un tono más frío (#a8322c): con la terracota al lado, un rojo naranja no se
+ * leería como alarma.
+ *
+ * El crema #f4f3ee es la superficie y el blanco #ffffff lo elevado, los dos de
+ * la paleta original; el papel de fondo baja un escalón para que la elevación
+ * exista.
+ *
+ * Declara el juego COMPLETO de tokens, como manda la regla plana de `dark.css`.
+ */
+[data-theme="claude"] {
+  --bg: #eae8e0;
+  --surface: #f4f3ee;
+  --surface-2: #edebe3;
+  --elevated: #fff;
+
+  --text: #26241f;
+  --muted: #625e54;
+  --faint: #948f82;
+
+  --line: rgb(38 36 31 / 12%);
+  --line-strong: rgb(38 36 31 / 20%);
+
+  --accent: #c15f3c;
+  --on-accent: #fff;
+
+  --rec: #a8322c;
+  --ok: #3f7355;
+  --ok-soft: #e2ebe3;
+  --warn: #8a6114;
+  --warn-soft: #f2e7cd;
+  --danger: #a8322c;
+  --danger-soft: #f4dcd7;
+  --info: #47708a;
+  --info-soft: #e2eaf0;
+
+  --mic: #3f7355;
+  --sys: #47708a;
+
+  --skin: #f4f3ee;
+
+  --agent-accent: #625e54;
+}

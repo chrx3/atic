@@ -2,8 +2,9 @@
   /**
    * La ventana principal.
    *
-   * Shell: picker líquido (rueda + cards). El detalle de cada tool y sus
-   * ajustes viven en un modal. El estado de dominio lo monta `sessionEffect`.
+   * Shell: picker líquido (rueda + cards). El contenido de cada tool y sus
+   * ajustes viven en el workspace, encima del picker y a ventana completa. El
+   * estado de dominio lo monta `sessionEffect`.
    */
   import { untrack } from "svelte";
   import { toolById } from "$core/tools";
@@ -25,7 +26,7 @@
   import Modal from "$ui/Modal.svelte";
   import ToastStack from "$ui/ToastStack.svelte";
   import { AppWindow, GraduationCap, Search, Settings, SlidersHorizontal } from "$lib/icons";
-  import ToolDetailModal from "./ToolDetailModal.svelte";
+  import ToolWorkspace from "./ToolWorkspace.svelte";
   import ToolRail from "./ToolRail.svelte";
   import UpdateBubble from "./UpdateBubble.svelte";
   import { provideMainUi } from "./mainUi.svelte";
@@ -179,11 +180,35 @@
   {/snippet}
 
   <div class="shell">
-    <ToolRail
-      activeTool={ui.activeTool}
-      onSelect={(id) => ui.openTool(id)}
-      onOpenDetail={(id) => ui.openDetail(id)}
-    />
+    <!--
+      El picker no se desmonta al abrir una herramienta: la rueda conserva su
+      giro y volver no la re-anima. `inert` la saca del tabulador y de los
+      lectores de pantalla mientras está tapada, que es lo que `hidden` daría
+      pero sin perder el estado.
+    -->
+    <div
+      class="rail"
+      class:rail--away={ui.detailTool !== null}
+      inert={ui.detailTool !== null}
+    >
+      <ToolRail
+        activeTool={ui.activeTool}
+        onSelect={(id) => ui.openTool(id)}
+        onOpenDetail={(id) => ui.openDetail(id)}
+      />
+    </div>
+
+    {#if ui.detailTool}
+      <ToolWorkspace
+        toolId={ui.detailTool}
+        bind:tab={ui.detailTab}
+        snippetsTab={ui.snippetsTab}
+        onClose={() => ui.closeDetail()}
+        onSelectTool={(id) => ui.openDetail(id)}
+        onOpenSettings={() => ui.openSettings()}
+      />
+    {/if}
+
     <UpdateBubble />
   </div>
 </WindowFrame>
@@ -212,16 +237,6 @@
         ui.openDetail("snippets");
       }
     }}
-  />
-{/if}
-
-{#if ui.detailTool}
-  <ToolDetailModal
-    toolId={ui.detailTool}
-    bind:tab={ui.detailTab}
-    snippetsTab={ui.snippetsTab}
-    onClose={() => ui.closeDetail()}
-    onOpenSettings={() => ui.openSettings()}
   />
 {/if}
 
@@ -255,5 +270,17 @@
     display: flex;
     height: 100%;
     min-height: 0;
+  }
+
+  .rail {
+    display: flex;
+    min-width: 0;
+    min-height: 0;
+    flex: 1;
+  }
+
+  /* Tapada por el workspace: sin pintar, pero montada. */
+  .rail--away {
+    visibility: hidden;
   }
 </style>
