@@ -25,6 +25,13 @@ export function islandStripLong(n: number): number {
   return n * PILL.islandTool + (n - 1) * PILL.islandGap;
 }
 
+/** Largo de la pestaña con `n` logos. Un solo icono cabe en `islandLong`. */
+export function islandCueLong(n: number): number {
+  const marks = Math.max(1, Math.floor(n) || 1);
+  const inner = marks * 10 + (marks - 1) * 3 + 10;
+  return Math.max(PILL.islandLong, inner);
+}
+
 /** Qué hay desplegado. Clipboard/snippets ya no crecen la pill: son floats. */
 export type Surface = "none" | "wheel" | "edge";
 
@@ -77,6 +84,13 @@ export function contentFor(
    * un llamador que no sepa de esa preferencia sigue midiendo lo de siempre.
    */
   toolCount: number = WHEEL_TOOLS.length,
+  /**
+   * Aviso de agente o dock achicado: la pestaña cerrada engorda un poco para
+   * pintar logos. No aplica a la tira abierta (ya mide `islandTool`).
+   */
+  islandCue: boolean = false,
+  /** Cuántas marcas hay que alinear en la pestaña. 0 o 1 no alarga. */
+  islandCueCount: number = 0,
 ): Size {
   if (surface === "wheel") {
     const side = PILL.wheel - PILL.pad * 2;
@@ -96,9 +110,13 @@ export function contentFor(
     }
     // En reposo, una pestaña: fina contra el borde y larga a lo largo de él.
     // Grabando, la gota cuelga hacia adentro (el pivote `dock*` clava el canto).
+    const thick = islandCue ? PILL.islandCueThick : PILL.islandThick;
+    const long = islandCue
+      ? islandCueLong(islandCueCount)
+      : PILL.islandLong;
     return dockAxis(dock.edge) === "x"
-      ? { w: PILL.islandThick + hang, h: PILL.islandLong }
-      : { w: PILL.islandLong, h: PILL.islandThick + hang };
+      ? { w: thick + hang, h: long }
+      : { w: long, h: thick + hang };
   }
   return { w: Math.max(barW, PILL.bar), h: PILL.bar };
 }
@@ -110,8 +128,12 @@ export function targetFor(
   dock: Dock | null = null,
   activity: Activity = "idle",
   toolCount: number = WHEEL_TOOLS.length,
+  islandCue: boolean = false,
+  islandCueCount: number = 0,
 ): Size {
-  return windowFor(contentFor(surface, barW, dock, activity, toolCount));
+  return windowFor(
+    contentFor(surface, barW, dock, activity, toolCount, islandCue, islandCueCount),
+  );
 }
 
 /**
@@ -129,6 +151,52 @@ export function undockForSummon(state: {
     return { surface: "none", dock: null };
   }
   return { surface: state.surface, dock: state.dock };
+}
+
+/**
+ * Abrir una tool desde el canto no desacopla.
+ *
+ * El summon al cursor (`undockForSummon`) sí: tiene que volar. Activar
+ * clipboard/agentes/etc. ancla el float a la isla, no convierte la pestaña
+ * en el disco flotante.
+ */
+export function shouldStayDockedOnActivate(surface: Surface): boolean {
+  return surface === "edge";
+}
+
+/**
+ * ¿Hay que volver a un canto al abrir una tool?
+ *
+ * Solo si ya estaba acoplada. Flotando se queda donde está: la rueda no borra
+ * `dock`, así que si sigue puesto es que se abrió desde un borde.
+ */
+export function shouldReturnToEdgeOnActivate(
+  surface: Surface,
+  dock: Dock | null,
+): boolean {
+  return surface === "edge" || dock != null;
+}
+
+/** Tras salir del hit, la isla espera esto antes de volverse pestaña. */
+export const ISLAND_COLLAPSE_MS = 400;
+/** En «Más» el morph cambia el hit: hace falta un poco más. */
+export const ISLAND_COLLAPSE_MORE_MS = 700;
+
+/**
+ * ¿La isla sigue abierta con este sondeo?
+ *
+ * `over` es el hit de Rust. Un false un cuadro no cierra: durante el morph
+ * y el tooltip el cursor “sale” un instante. `leftAt` marca cuándo se fue.
+ */
+export function islandHoverStay(input: {
+  over: boolean;
+  now: number;
+  leftAt: number | null;
+  lingerMs: number;
+}): { open: boolean; leftAt: number | null } {
+  if (input.over) return { open: true, leftAt: null };
+  const leftAt = input.leftAt ?? input.now;
+  return { open: input.now - leftAt < input.lingerMs, leftAt };
 }
 
 /**

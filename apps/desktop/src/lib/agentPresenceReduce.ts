@@ -16,8 +16,9 @@ export function applyPresenceSnapshot(
     if (
       next.status === "ready" &&
       old != null &&
-      old.status !== "ready" &&
-      !prev.watching
+      !prev.watching &&
+      (old.status !== "ready" ||
+        (Boolean(next.preview) && next.preview !== old.preview))
     ) {
       unread[next.id] = (unread[next.id] ?? 0) + 1;
     }

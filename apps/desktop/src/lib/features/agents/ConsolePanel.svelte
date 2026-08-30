@@ -32,6 +32,8 @@
     sshListHosts,
   } from "$ipc/agents";
   import { AGENTS } from "./agentCatalog";
+  import { agentLogoKey } from "$surfaces/overlay/pill/pillAgentChip";
+  import { consoleCue } from "$surfaces/overlay/agents/consoleCue.svelte";
   import { getConfig } from "$ipc/config";
   import {
     CLIPBOARD_OLE_EVENT,
@@ -88,6 +90,7 @@
      * su CLI directo en vez de la shell. Vacío = una pestaña del tipo inicial.
      */
     initialTabs?: ConsoleSeed[] | null;
+    /** Cerrar la ventana. Si no viene, no se pinta la X del chrome (overlay). */
     onClose?: () => void;
     /** Vuelve al lanzador sin cerrar las PTYs que siguen vivas. */
     onBack?: () => void;
@@ -276,6 +279,15 @@
   }
 
   let tabs = $state<Tab[]>([]);
+  const cueOwner = {};
+  $effect(() => {
+    const clis: string[] = [];
+    for (const tab of tabs) {
+      const key = agentLogoKey(tab.command);
+      if (key && !clis.includes(key)) clis.push(key);
+    }
+    consoleCue.publish(cueOwner, clis);
+  });
   let activeKey = $state("");
   let connecting = $state(false);
   let error = $state<string | null>(null);
@@ -2173,6 +2185,7 @@
     const ids = knownSessionIds();
     for (const id of ids) void consoleClose(id).catch(() => {});
     void disconnectAll();
+    consoleCue.clear(cueOwner);
     // Los xterm los dispone el teardown de cada `{@attach}`.
   });
 </script>

@@ -11,4 +11,9 @@ describe("clipChipPreview", () => {
     expect(clipChipPreview("a".repeat(28))).toBe("a".repeat(28));
     expect(clipChipPreview("a".repeat(29))).toBe(`${"a".repeat(27)}…`);
   });
+
+  it("quita markdown para no mostrar asteriscos crudos", () => {
+    expect(clipChipPreview("Soy **Muse Spark 1.2.0**")).toBe("Soy Muse Spark 1.2.0");
+    expect(clipChipPreview("ok `0545fca3` listo")).toBe("ok 0545fca3 listo");
+  });
 });

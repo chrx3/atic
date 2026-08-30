@@ -21,7 +21,7 @@ export type Rect = { x: number; y: number; w: number; h: number };
  * fallback sin Tauri construyen áreas a mano; usar `workAreaOf` en vez de
  * leerla directo, que cae a los bounds cuando no viene.
  */
-export type Area = Rect & { work?: Rect };
+export type Area = Rect & { work?: Rect; primary?: boolean };
 
 /** El área útil del monitor, o sus bounds si el SO no la reportó. */
 export const workAreaOf = (area: Area): Rect => area.work ?? area;

@@ -39,6 +39,15 @@ export const PILL = {
    */
   islandThick: 10,
   /**
+   * Pestaña con aviso de agente o dock achicado: cabe un icono de 11 px
+   * dentro del padding (4+4) del root y de la isla. Sigue siendo pestaña,
+   * menor que `islandTool`.
+   *
+   * Tiene que ser menor que `islandTool`: si la cerrada fuera más gorda que
+   * la tira abierta, el hover de abrir encogería un eje y rearmaría el bucle.
+   */
+  islandCueThick: 22,
+  /**
    * **Tiene que valer lo mismo que `bar`.** No es estética: es lo que impide
    * un bucle.
    *

@@ -7,7 +7,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
@@ -75,6 +75,16 @@ impl VisibleKey {
             hwnd: p.window.as_ref().map(|w| w.hwnd),
         }
     }
+}
+
+/// Sin HWND/PID ni actividad reciente en JSONL/SQLite, no demover de golpe (PTY Codex).
+const ORPHAN_GRACE_SECS: i64 = 90;
+
+fn now_secs() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 /// Máximo un emit cada 400 ms, y solo si cambió algo que se ve.
@@ -158,6 +168,42 @@ impl Registry {
         list.sort_by(|a, b| a.id.cmp(&b.id));
         list
     }
+
+    /// Sin proceso ni HWND del agente, el JSONL/SQLite no debe seguir avisando.
+    /// Presencias recién actualizadas se conservan (Codex en PTY no expone codex.exe).
+    fn demote_orphans(&mut self) {
+        let now = now_secs();
+        let backends: Vec<String> = self
+            .items
+            .values()
+            .map(|p| p.backend_id.clone())
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect();
+        let live: HashMap<String, Vec<u32>> = backends
+            .into_iter()
+            .map(|b| (b.clone(), super::focus::agent_tui_pids(&b)))
+            .collect();
+        for p in self.items.values_mut() {
+            let pids = live.get(&p.backend_id).map(Vec::as_slice).unwrap_or(&[]);
+            let hwnd_ok = p.window.as_ref().is_some_and(|w| {
+                super::focus::hwnd_alive(w.hwnd) && pids.contains(&w.pid)
+            });
+            if hwnd_ok {
+                continue;
+            }
+            if pids.is_empty()
+                && matches!(
+                    p.status,
+                    PresenceStatus::Ready | PresenceStatus::Working | PresenceStatus::Waiting
+                )
+                && now.saturating_sub(p.updated_at) >= ORPHAN_GRACE_SECS
+            {
+                p.status = PresenceStatus::Idle;
+                p.window = None;
+            }
+        }
+    }
 }
 
 static REGISTRY: Mutex<Option<Registry>> = Mutex::new(None);
@@ -174,7 +220,8 @@ pub fn upsert(presence: AgentPresence) {
         if let Some(old) = reg.items.get(&presence.id) {
             if presence.window.is_none() {
                 if let Some(w) = old.window.clone() {
-                    if super::focus::hwnd_alive(w.hwnd) {
+                    let pids = super::focus::agent_tui_pids(&presence.backend_id);
+                    if super::focus::hwnd_alive(w.hwnd) && pids.contains(&w.pid) {
                         presence.window = Some(w);
                     }
                 }
@@ -213,12 +260,17 @@ pub fn retain_backend(backend_id: &str, ids: &HashSet<String>) {
 }
 
 pub fn snapshot() -> Vec<AgentPresence> {
-    with_registry(|reg| reg.snapshot()).unwrap_or_default()
+    with_registry(|reg| {
+        reg.demote_orphans();
+        reg.snapshot()
+    })
+    .unwrap_or_default()
 }
 
 /// Emite `agent-presence` si el coalescer lo permite.
 pub fn publish(app: &AppHandle) {
     let Some(should) = with_registry(|reg| {
+        reg.demote_orphans();
         let snap = reg.snapshot();
         reg.coalescer.note(&snap);
         let due = reg.coalescer.take_emit(Instant::now());

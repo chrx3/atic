@@ -58,14 +58,46 @@ describe("pillStripPage", () => {
     expect(pillStripPage(layout)).toEqual(["meetings", "captures", "more"]);
   });
 
-  it("sin submenú no hay puerta que abrir", () => {
+  it("sin herramientas en «Más» la puerta sigue: Ventana vive detrás", () => {
     const layout = pillLayout(["meetings", "captures"], []);
-    expect(pillStripPage(layout)).toEqual(["meetings", "captures"]);
+    expect(pillStripPage(layout)).toEqual(["meetings", "captures", "more"]);
+  });
+
+  it("en el canto Ventana va en el primer paso, y sin «Más» si no hay submenú", () => {
+    const layout = pillLayout(["meetings", "captures"], []);
+    expect(pillStripPage(layout, "ring", { windowOnFirst: true })).toEqual([
+      "meetings",
+      "captures",
+      "window",
+    ]);
+  });
+
+  it("en el canto «Más» queda si hay submenú; Ventana no se duplica detrás", () => {
+    const layout = pillLayout(["meetings"], ["board"]);
+    expect(pillStripPage(layout, "ring", { windowOnFirst: true })).toEqual([
+      "meetings",
+      "more",
+      "window",
+    ]);
+    expect(pillStripPage(layout, "more", { windowOnFirst: true })).toEqual([
+      "back",
+      "board",
+    ]);
   });
 
   it("el segundo paso arranca con la vuelta, porque la tira no tiene núcleo", () => {
     const layout = pillLayout(["meetings"], ["board", "clipboard"]);
-    expect(pillStripPage(layout, "more")).toEqual(["back", "board", "clipboard"]);
+    expect(pillStripPage(layout, "more")).toEqual([
+      "back",
+      "board",
+      "clipboard",
+      "window",
+    ]);
+  });
+
+  it("Ventana es el último del segundo paso aunque «Más» esté vacío", () => {
+    const layout = pillLayout(["meetings"], []);
+    expect(pillStripPage(layout, "more")).toEqual(["back", "window"]);
   });
 
   it("lo oculto tampoco aparece en la tira", () => {

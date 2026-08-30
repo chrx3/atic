@@ -6,6 +6,7 @@ import {
   EDGE_WALL_DEPTH,
   EDGE_WALL_FLARE,
   EDGE_WALL_OVERLAP,
+  defaultPillHome,
   dockAxis,
   dockCandidate,
   dockedEdgeAt,
@@ -17,6 +18,7 @@ import {
   isOuterEdge,
   nearestOuterWorkEdge,
   shouldUndock,
+  snapMagnet,
 } from "./edgeDock";
 import type { Area } from "$ipc/overlay";
 import { pillShape } from "../../liquid/geometry";
@@ -286,5 +288,53 @@ describe("edgeWallsFor", () => {
       field.eval(rect.x + rect.w + d, y),
       5,
     );
+  });
+});
+
+describe("defaultPillHome", () => {
+  it("queda arriba al centro del monitor principal", () => {
+    const areas: Area[] = [
+      { x: 0, y: 0, w: 1000, h: 800 },
+      { x: 1000, y: 0, w: 1200, h: 800, primary: true },
+    ];
+    expect(defaultPillHome({ w: 40, h: 40 }, areas)).toEqual({
+      at: { x: 1000 + (1200 - 40) / 2, y: 0 },
+      edge: "top",
+    });
+  });
+
+  it("sin marca primary usa el primer monitor", () => {
+    expect(defaultPillHome({ w: 40, h: 40 }, SOLO)?.at).toEqual({
+      x: (1000 - 40) / 2,
+      y: 0,
+    });
+  });
+});
+
+describe("snapMagnet", () => {
+  it("cerca del centro de la pantalla queda flotante", () => {
+    const hit = snapMagnet(at(480, 380), SOLO);
+    expect(hit?.edge).toBeNull();
+    expect(hit?.at).toEqual({ x: (1000 - 40) / 2, y: (800 - 40) / 2 });
+  });
+
+  it("cerca de un canto va al centro de ese canto", () => {
+    expect(snapMagnet(at(10, 100), SOLO)).toEqual({
+      at: { x: 0, y: (800 - 40) / 2 },
+      edge: "left",
+    });
+    expect(snapMagnet(at(400, 8), SOLO)?.edge).toBe("top");
+    expect(snapMagnet(at(400, 8), SOLO)?.at).toEqual({
+      x: (1000 - 40) / 2,
+      y: 0,
+    });
+  });
+
+  it("en el medio, lejos de imanes, no arrastra", () => {
+    expect(snapMagnet(at(200, 200), SOLO, 48)).toBeNull();
+  });
+
+  it("el canto interior entre monitores no es un imán", () => {
+    expect(snapMagnet(at(960, 380), DUAL)).toBeNull();
   });
 });

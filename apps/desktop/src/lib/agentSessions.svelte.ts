@@ -73,6 +73,18 @@ function writeStoredCatalog(catalog: Record<string, SlashCommand[]>): void {
   }
 }
 
+function lastAssistantText(s: AgentSessionView): string | null {
+  for (let i = s.turns.length - 1; i >= 0; i--) {
+    const items = s.turns[i].items;
+    for (let j = items.length - 1; j >= 0; j--) {
+      const it = items[j];
+      if (it.kind !== "message" || it.role !== "assistant") continue;
+      if (it.text.trim()) return it.text;
+    }
+  }
+  return null;
+}
+
 /**
  * En qué anda una sesión.
  *
@@ -99,6 +111,8 @@ export interface AgentSessionView {
   unread: number;
   /** Última línea del agente: el resumen que cabe en la pill. */
   lastText: string | null;
+  /** Epoch secs de `lastText`, para no perderle a una TUI más nueva. */
+  lastTextAt: number;
   error: string | null;
   /** Permisos esperando respuesta. Mientras haya uno, el agente no avanza. */
   pending: PendingPermission[];
@@ -214,18 +228,34 @@ class AgentSessionStore {
   }
 
   /**
-   * Texto corto para el chip «listo» de la pill.
+   * Texto corto para el chip de la pill.
    *
-   * Solo cuando hay unread y no hay permiso ni trabajo en curso: si no, el chip
-   * ya dice otra cosa (permiso / trabajando).
+   * En «listo» es el último mensaje sin leer. Mientras escribe, el mismo
+   * recorte: si no, el chip se queda en el saludo y no sigue la respuesta.
    */
+  get #chipSession(): AgentSessionView | undefined {
+    const busy = this.sessions.find((x) => x.status === "working");
+    if (busy) return busy;
+    const unread = this.sessions.filter((x) => x.unread > 0);
+    if (unread.length === 0) return undefined;
+    return unread.reduce((a, b) => (a.lastTextAt >= b.lastTextAt ? a : b));
+  }
+
   get readyLabel(): string | null {
-    if (this.waiting > 0 || this.working) return null;
-    const s = this.sessions.find((x) => x.unread > 0);
+    if (this.waiting > 0) return null;
+    const s = this.#chipSession;
     if (!s) return null;
     const text = s.lastText?.trim();
-    if (!text) return "Listo";
+    if (!text) return this.working ? null : "Listo";
     return clipChipPreview(text);
+  }
+
+  get readyBackendId(): string | null {
+    return this.#chipSession?.backendId ?? null;
+  }
+
+  get readyUpdatedAt(): number {
+    return this.#chipSession?.lastTextAt ?? 0;
   }
 
   /**
@@ -466,6 +496,7 @@ class AgentSessionStore {
       turns: [],
       unread: 0,
       lastText: null,
+      lastTextAt: 0,
       error: null,
       pending: [],
       contextTokens: 0,
@@ -568,16 +599,16 @@ class AgentSessionStore {
             `${s.backendName} pide permiso`,
             `${it.tool}${it.description ? `: ${it.description}` : ""}`,
           );
-        } else if (it.kind === "message" && it.role === "assistant" && !it.streaming) {
-          s.lastText = it.text;
-          if (unseen) s.unread += 1;
+        } else if (it.kind === "message" && it.role === "assistant") {
+          this.#rememberAssistant(s, it);
+          if (!it.streaming && unseen) s.unread += 1;
         } else if (
           it.kind === "notice" &&
           it.text.startsWith("Resumen del contexto")
         ) {
           // El chat de Atic pasa a reflejar el contexto compactado.
           this.collapseAfterCompact(s.id);
-          s.lastText = "Contexto compactado";
+          this.#setLastText(s, "Contexto compactado");
         }
         break;
       }
@@ -586,6 +617,7 @@ class AgentSessionStore {
         const it = this.#item(s, payload.item);
         if (it && (it.kind === "message" || it.kind === "reasoning")) {
           it.text += payload.text;
+          this.#rememberAssistant(s, it);
         }
         break;
       }
@@ -602,7 +634,7 @@ class AgentSessionStore {
           // la señal, sin repetir la respuesta entera. Colgando el aviso del
           // texto, la pill se quedaba muda en OpenCode y Cursor.
           if (payload.patch.text !== undefined || payload.patch.streaming === false) {
-            s.lastText = it.text;
+            this.#setLastText(s, it.text);
           }
           if (unseen && payload.patch.streaming === false) s.unread += 1;
         }
@@ -641,6 +673,8 @@ class AgentSessionStore {
         }
         if (payload.costUsd !== null) s.costUsd += payload.costUsd;
         s.status = payload.status === "failed" ? "failed" : "ready";
+        const closing = lastAssistantText(s);
+        if (closing) this.#setLastText(s, closing);
         // Solo si no lo estás mirando: avisar de algo que está en pantalla es
         // ruido, y el fin de turno es el evento más frecuente de todos.
         if (unseen) {
@@ -664,6 +698,17 @@ class AgentSessionStore {
     }
 
     this.#touchWorking(s.id, s.status);
+  }
+
+  #setLastText(s: AgentSessionView, text: string): void {
+    s.lastText = text;
+    s.lastTextAt = Math.floor(Date.now() / 1000);
+  }
+
+  #rememberAssistant(s: AgentSessionView, it: AgentItem): void {
+    if (it.kind === "message" && it.role === "assistant" && it.text.trim()) {
+      this.#setLastText(s, it.text);
+    }
   }
 
   /**

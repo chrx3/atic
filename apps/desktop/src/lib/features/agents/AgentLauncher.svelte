@@ -5,7 +5,7 @@
   import FolderBrowser from "./FolderBrowser.svelte";
   import AgentLogo from "./AgentLogo.svelte";
   import Icon from "$ui/Icon.svelte";
-  import { Folder, Minus, Square, SquareTerminal, X } from "$lib/icons";
+  import { Folder, SquareTerminal, X } from "$lib/icons";
   import { onMount } from "svelte";
   import { AGENTS_REVEAL_CONSOLE, cliOnPath } from "$ipc/agents";
   import { AGENTS } from "./agentCatalog";
@@ -25,6 +25,7 @@
     shown = false,
   }: {
     onHeaderPointerDown?: (e: PointerEvent) => void;
+    /** Cerrar el float. El overlay no lo pasa: ahí solo se minimiza o agranda. */
     onClose?: () => void;
     onViewChange?: (view: LauncherView) => void;
     onBrowserChange?: (open: boolean) => void;
@@ -175,7 +176,6 @@
           onHeaderPointerDown(event);
         }
       }}
-      ondblclick={() => onToggleMaximize?.()}
     >
       {#if hasConsole}
         <span class="live-status" role="status">
@@ -184,29 +184,6 @@
         </span>
       {/if}
       <div class="chrome">
-        {#if onToggleMinimize}
-          <button
-            type="button"
-            class="chrome-btn"
-            aria-label={minimized ? t("chrome.restore") : t("chrome.minimize")}
-            use:tip={minimized ? t("chrome.restore") : t("chrome.minimize")}
-            onclick={() => onToggleMinimize()}
-          >
-            <Icon icon={Minus} size={12} />
-          </button>
-        {/if}
-        {#if onToggleMaximize}
-          <button
-            type="button"
-            class="chrome-btn"
-            class:is-on={maximized}
-            aria-label={maximized ? t("chrome.restore") : t("chrome.maximize")}
-            use:tip={maximized ? t("chrome.restore") : t("chrome.maximize")}
-            onclick={() => onToggleMaximize()}
-          >
-            <Icon icon={Square} size={11} />
-          </button>
-        {/if}
         {#if onClose}
           <button
             type="button"
@@ -314,7 +291,6 @@
         onBack={backToSetup}
         onEmpty={resetSessions}
         onPickFolder={requestFolder}
-        {onClose}
         {onToggleMaximize}
         {onToggleMinimize}
         {maximized}

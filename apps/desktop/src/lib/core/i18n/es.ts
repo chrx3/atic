@@ -526,6 +526,8 @@ export const es = {
     moreHint: "Las que dejaste en el segundo anillo",
     wheelBack: "Volver",
     backHint: "Al primer grupo",
+    openMain: "Ventana principal",
+    openMainHint: "Abrir la app",
     stopRecord: "Detener grabación",
     stopDictate: "Detener dictado",
     dictatingHint: "Dictando · clic para detener",

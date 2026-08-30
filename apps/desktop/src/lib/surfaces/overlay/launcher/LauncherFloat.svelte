@@ -47,6 +47,12 @@
   import { rectKey } from "$surfaces/overlay/floatEmergeSkinMath";
   import { separateAxisProp, waitFrames } from "$surfaces/overlay/floatReveal";
   import { surfaces } from "$surfaces/overlay/surfaces.svelte";
+  import { dockedEdgeAt } from "$surfaces/overlay/edgeDock";
+  import {
+    placePanelFusedFull,
+    placePanelFusedSeed,
+    placePanelResting,
+  } from "$surfaces/overlay/floatPlace";
   import {
     armOpenDismissGrace,
     isOpenDismissGrace,
@@ -295,10 +301,20 @@
     await afterTransition(el, "width", openDur);
   }
 
+  function livePillRect() {
+    return surfaces.live["pill-skin"] ?? surfaces.live["pill"];
+  }
+
+  function islandDocked(
+    pill: { x: number; y: number; w: number; h: number } | undefined,
+  ): boolean {
+    return pill != null && dockedEdgeAt(pill, workAreas) != null;
+  }
+
   /**
    * Centra la barra stadium (ancho `a.w`) en el monitor del mouse / foco.
    * Los favs van fuera del float (CSS absolute a la derecha); no desplazan
-   * el centro de la barra.
+   * el centro de la barra. En el canto, reposo junto a la isla.
    */
   async function applyCenterPlace(a: BubbleOpen) {
     try {
@@ -306,11 +322,20 @@
     } catch {
       // Fuera de Tauri o IPC fallido: se usa lo último que haya.
     }
-    const pill = surfaces.live["pill-skin"] ?? surfaces.live["pill"];
+    const pill = livePillRect();
     const labCompact = isDev && launcherLab.open && !showResults;
     const w = labCompact ? launcherLab.barW : a.w;
     const h = labCompact ? compactH : a.h;
     const size = { w, h };
+    // Isla en el canto: reposo junto a ella, no centro de pantalla (la pill
+    // ya no vuela al slot).
+    if (pill && islandDocked(pill)) {
+      bubble.place({
+        ...a,
+        ...placePanelResting(pill, size, { corner: CORNER, work: workAreas }),
+      });
+      return;
+    }
     // La pill ya está en el monitor correcto (vuelo del atajo, o clic local).
     // overlayActiveAnchor prefería el foco de otra app y saltaba de pantalla.
     let anchor: { x: number; y: number };
@@ -344,8 +369,20 @@
    * cambia en el lab, no nacer como óvalo.
    */
   function placeFusedToPill(a: BubbleOpen) {
-    const pill = surfaces.live["pill-skin"] ?? surfaces.live["pill"];
+    const pill = livePillRect();
     const d = Math.min(isDev && launcherLab.open ? compactH : a.h, GROW_START_W);
+    const fullH = isDev && launcherLab.open ? compactH : a.h;
+    if (pill && islandDocked(pill)) {
+      bubble.place({
+        ...a,
+        ...placePanelFusedSeed(pill, { w: a.w, h: fullH }, {
+          corner: CORNER,
+          work: workAreas,
+          seed: d,
+        }),
+      });
+      return;
+    }
     let x = a.x;
     let y = a.y;
     if (pill) {
@@ -365,10 +402,31 @@
 
   /** Ancho completo aún fused (reverse de separate / previa al shrink). */
   function placeFusedFullToPill(fullW: number) {
-    const pill = surfaces.live["pill-skin"] ?? surfaces.live["pill"];
+    const pill = livePillRect();
     const h = compactH;
     let x = bubble.anchor?.x ?? 0;
     let y = bubble.anchor?.y ?? 0;
+    if (pill && islandDocked(pill)) {
+      const side = (bubble.anchor?.side ?? lastOpen?.side ?? "left") as BubbleOpen["side"];
+      const base = lastOpen ?? {
+        side,
+        offset: h / 2,
+        x,
+        y,
+        w: fullW,
+        h,
+      };
+      bubble.place({
+        ...base,
+        ...placePanelFusedFull(
+          pill,
+          { w: fullW, h },
+          side,
+          { corner: CORNER, work: workAreas, fusedGap: FUSED_GAP_PX },
+        ),
+      });
+      return;
+    }
     if (pill) {
       x = pill.x + pill.w + FUSED_GAP_PX;
       y = pill.y + (pill.h - h) / 2;

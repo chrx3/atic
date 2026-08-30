@@ -19,8 +19,17 @@ export const PILL_MORE_ID = "more";
 /** La vuelta al primer paso. En la rueda la hace el núcleo; la tira no tiene. */
 export const PILL_BACK_ID = "back";
 
-/** Lo que puede ocupar un gajo: una herramienta, o la puerta al submenú. */
-export type PillWheelId = ToolId | typeof PILL_MORE_ID;
+/**
+ * Abre la ventana principal. Tampoco es una herramienta: no tiene slot ni
+ * acción en `toolActions`. Vive siempre al final de «Más».
+ */
+export const PILL_WINDOW_ID = "window";
+
+/** Lo que puede ocupar un gajo: una herramienta, la puerta al submenú, o Ventana. */
+export type PillWheelId =
+  | ToolId
+  | typeof PILL_MORE_ID
+  | typeof PILL_WINDOW_ID;
 
 /** Lo mismo, más el «atrás» que la tira necesita y la rueda no. */
 export type PillStripId = PillWheelId | typeof PILL_BACK_ID;
@@ -28,7 +37,7 @@ export type PillStripId = PillWheelId | typeof PILL_BACK_ID;
 export type PillLayout = {
   /** Primer anillo, sin contar el gajo «Más». */
   ring: ToolDef[];
-  /** Segundo anillo. Vacío = no hay «Más» que mostrar. */
+  /** Segundo anillo de herramientas. «Más» y Ventana se muestran igual. */
   more: ToolDef[];
   /** Fuera de la pill. Siguen en la ventana principal y en sus atajos. */
   hidden: ToolDef[];
@@ -79,20 +88,27 @@ function hiddenFrom(shown: readonly ToolDef[]): ToolDef[] {
 /**
  * Qué muestra la tira acoplada al borde, paso por paso.
  *
- * Repite el mismo escalón que la rueda en vez de aplanar las dos listas. No es
- * por ahorrar largo —contra un canto de pantalla sobra sitio—: es que si «Más»
- * existe en una silueta y no en la otra, el usuario tiene que aprender dos
- * mapas para la misma preferencia. La diferencia es de dónde sale la vuelta:
- * la rueda tiene núcleo y la tira no, así que acá el «atrás» es un botón más.
+ * Las herramientas siguen el mismo escalón que la rueda. Ventana no: en el
+ * canto (`windowOnFirst`) va en el primer paso, porque la isla vive del hover
+ * y el segundo anillo no se alcanza a pulsar. La rueda no pasa esa opción y
+ * Ventana sigue detrás de «Más».
  */
 export function pillStripPage(
   layout: PillLayout,
   page: "ring" | "more" = "ring",
+  opts: { windowOnFirst?: boolean } = {},
 ): PillStripId[] {
+  const onFirst = opts.windowOnFirst === true;
   if (page === "more") {
-    return [PILL_BACK_ID, ...layout.more.map((tool) => tool.id)];
+    const ids: PillStripId[] = [
+      PILL_BACK_ID,
+      ...layout.more.map((tool) => tool.id),
+    ];
+    if (!onFirst) ids.push(PILL_WINDOW_ID);
+    return ids;
   }
   const ids: PillStripId[] = layout.ring.map((tool) => tool.id);
-  if (layout.more.length > 0) ids.push(PILL_MORE_ID);
+  if (layout.more.length > 0 || !onFirst) ids.push(PILL_MORE_ID);
+  if (onFirst) ids.push(PILL_WINDOW_ID);
   return ids;
 }

@@ -524,6 +524,8 @@ export const en = {
     moreHint: "The ones you left in the second ring",
     wheelBack: "Back",
     backHint: "To the first group",
+    openMain: "Main window",
+    openMainHint: "Open the app",
     stopRecord: "Stop recording",
     stopDictate: "Stop dictation",
     dictatingHint: "Dictating · click to stop",
