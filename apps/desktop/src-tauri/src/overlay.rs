@@ -2168,6 +2168,8 @@ pub struct OverlayArea {
     /// Es también lo que vuelve innecesario el `BOTTOM_SLOT_INSET` a ojo del
     /// frontend, que existía exactamente porque acá se devolvían bounds.
     pub work: OverlayRectCss,
+    /// Monitor principal de Windows. La pill arranca en su canto de arriba.
+    pub primary: bool,
 }
 
 /// Escala del overlay. Es el puente entre los físicos de Win32 y los CSS.
@@ -2448,6 +2450,7 @@ pub fn overlay_work_areas(app: AppHandle) -> Vec<OverlayArea> {
                     w: bounds.w,
                     h: bounds.h,
                     work: to_css(&m.work_area),
+                    primary: m.is_primary,
                 }
             })
             .collect()

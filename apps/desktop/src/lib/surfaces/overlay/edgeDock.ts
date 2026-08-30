@@ -242,6 +242,114 @@ export function dockAxis(edge: DockEdge): "x" | "y" {
   return edge === "left" || edge === "right" ? "x" : "y";
 }
 
+/** Hueco (px) al que el arrastre engancha un imán (centro o centro de un canto). */
+export const MAGNET_SNAP_PX = 96;
+
+/** Monitor principal, o el primero si el SO no lo marcó. */
+export function primaryArea(areas: readonly Area[]): Area | null {
+  if (areas.length === 0) return null;
+  return areas.find((a) => a.primary) ?? areas[0];
+}
+
+/** Punto de la pill pegada al centro de un canto del área útil. */
+export function edgeCenterPoint(
+  edge: DockEdge,
+  size: { w: number; h: number },
+  work: Rect,
+): { x: number; y: number } {
+  const x = Math.round(work.x + (work.w - size.w) / 2);
+  const y = Math.round(work.y + (work.h - size.h) / 2);
+  switch (edge) {
+    case "left":
+      return { x: work.x, y };
+    case "right":
+      return { x: work.x + work.w - size.w, y };
+    case "top":
+      return { x, y: work.y };
+    case "bottom":
+      return { x, y: work.y + work.h - size.h };
+  }
+}
+
+/** Centro geométrico del área útil (flotante, no acoplada). */
+export function screenCenterPoint(
+  size: { w: number; h: number },
+  work: Rect,
+): { x: number; y: number } {
+  return {
+    x: Math.round(work.x + (work.w - size.w) / 2),
+    y: Math.round(work.y + (work.h - size.h) / 2),
+  };
+}
+
+/**
+ * Hogar de la pill: canto de arriba, en el medio del monitor principal.
+ */
+export function defaultPillHome(
+  size: { w: number; h: number },
+  areas: readonly Area[],
+): { at: { x: number; y: number }; edge: "top" } | null {
+  const area = primaryArea(areas);
+  if (!area) return null;
+  return {
+    at: edgeCenterPoint("top", size, workAreaOf(area)),
+    edge: "top",
+  };
+}
+
+export type MagnetHit = {
+  at: { x: number; y: number };
+  /** `null` = centro de la pantalla, flotante. */
+  edge: DockEdge | null;
+};
+
+/**
+ * Imanes de reposo: centro de la pantalla y centro de cada canto exterior.
+ *
+ * Si está cerca de un canto pero no de su centro, igual se va al centro de
+ * ese canto (no se queda a una altura arbitraria).
+ */
+export function snapMagnet(
+  rect: Rect,
+  areas: readonly Area[],
+  snapPx = MAGNET_SNAP_PX,
+): MagnetHit | null {
+  const area = areaFor(rect, areas);
+  if (!area) return null;
+  const work = workAreaOf(area);
+  const size = { w: rect.w, h: rect.h };
+  const cx = rect.x + rect.w / 2;
+  const cy = rect.y + rect.h / 2;
+  const magnets: MagnetHit[] = [{ at: screenCenterPoint(size, work), edge: null }];
+  for (const edge of DOCK_EDGES) {
+    if (!isOuterEdge(edge, area, areas)) continue;
+    magnets.push({
+      at: edgeCenterPoint(edge, size, work),
+      edge,
+    });
+  }
+
+  let best: MagnetHit | null = null;
+  let bestD = Infinity;
+  for (const m of magnets) {
+    const mx = m.at.x + size.w / 2;
+    const my = m.at.y + size.h / 2;
+    const d = Math.hypot(cx - mx, cy - my);
+    if (d < bestD) {
+      bestD = d;
+      best = m;
+    }
+  }
+  if (best && bestD <= snapPx) return best;
+
+  const dock = dockCandidate(rect, areas);
+  if (!dock) return null;
+  return {
+    at: edgeCenterPoint(dock.edge, size, workAreaOf(dock.area)),
+    edge: dock.edge,
+  };
+}
+
 /**
  * Pared SDF local en un canto, para que la pill se funda con el borde.
  *

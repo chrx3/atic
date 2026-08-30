@@ -8,6 +8,7 @@ import { WHEEL_TOOLS } from "$core/tools";
   discJoinsTail,
   FLIGHT_SKIP_PX,
   isDiscOnly,
+  islandCueLong,
   islandLiveSlots,
   islandStripLong,
   morphsInPlace,
@@ -15,6 +16,10 @@ import { WHEEL_TOOLS } from "$core/tools";
   stepWheel,
   targetFor,
   undockForSummon,
+  shouldStayDockedOnActivate,
+  shouldReturnToEdgeOnActivate,
+  islandHoverStay,
+  ISLAND_COLLAPSE_MS,
   stackMarkVisible,
   wheelChromeActive,
   wheelKeyAction,
@@ -63,6 +68,49 @@ describe("contentFor", () => {
       w: PILL.islandLong,
       h: PILL.islandThick,
     });
+  });
+
+  it("con aviso de agente, la pestaña cerrada engorda y sigue siendo pestaña", () => {
+    expect(PILL.islandCueThick).toBeGreaterThan(PILL.islandThick);
+    expect(PILL.islandCueThick).toBeLessThan(PILL.islandTool);
+    expect(
+      contentFor("edge", 180, { edge: "left", expanded: false }, "idle", 5, true),
+    ).toEqual({
+      w: PILL.islandCueThick,
+      h: PILL.islandLong,
+    });
+    expect(
+      contentFor(
+        "edge",
+        180,
+        { edge: "bottom", expanded: false },
+        "idle",
+        5,
+        true,
+      ),
+    ).toEqual({
+      w: PILL.islandLong,
+      h: PILL.islandCueThick,
+    });
+    expect(
+      contentFor(
+        "edge",
+        180,
+        { edge: "bottom", expanded: false },
+        "idle",
+        5,
+        true,
+        3,
+      ).w,
+    ).toBe(islandCueLong(3));
+    expect(islandCueLong(1)).toBe(PILL.islandLong);
+    expect(islandCueLong(3)).toBeGreaterThan(PILL.islandLong);
+    // Abierta no crece: el aviso vive en el botón, no en la caja.
+    expect(
+      contentFor("edge", 180, { edge: "left", expanded: true }, "idle", 5, true),
+    ).toEqual(
+      contentFor("edge", 180, { edge: "left", expanded: true }, "idle", 5, false),
+    );
   });
 
   it("acoplada y abierta es la tira de herramientas, a lo largo del borde", () => {
@@ -131,6 +179,61 @@ describe("contentFor", () => {
     });
   });
 
+  it("activar desde el canto se queda acoplada; el summon no", () => {
+    expect(shouldStayDockedOnActivate("edge")).toBe(true);
+    expect(shouldStayDockedOnActivate("none")).toBe(false);
+    expect(shouldStayDockedOnActivate("wheel")).toBe(false);
+    const docked = {
+      surface: "edge" as const,
+      dock: { edge: "left" as const, expanded: false },
+    };
+    expect(undockForSummon(docked).surface).toBe("none");
+    expect(shouldStayDockedOnActivate(docked.surface)).toBe(true);
+  });
+
+  it("abrir una tool solo vuelve al canto si ya estaba acoplada", () => {
+    const dock = { edge: "top" as const, expanded: false };
+    expect(shouldReturnToEdgeOnActivate("edge", dock)).toBe(true);
+    expect(shouldReturnToEdgeOnActivate("wheel", dock)).toBe(true);
+    expect(shouldReturnToEdgeOnActivate("none", null)).toBe(false);
+    expect(shouldReturnToEdgeOnActivate("wheel", null)).toBe(false);
+  });
+
+  it("un frame fuera del hit no cierra la isla; el linger sí", () => {
+    const stay = islandHoverStay({
+      over: false,
+      now: 1000,
+      leftAt: null,
+      lingerMs: ISLAND_COLLAPSE_MS,
+    });
+    expect(stay.open).toBe(true);
+    expect(stay.leftAt).toBe(1000);
+    expect(
+      islandHoverStay({
+        over: false,
+        now: 1000 + ISLAND_COLLAPSE_MS - 1,
+        leftAt: stay.leftAt,
+        lingerMs: ISLAND_COLLAPSE_MS,
+      }).open,
+    ).toBe(true);
+    expect(
+      islandHoverStay({
+        over: false,
+        now: 1000 + ISLAND_COLLAPSE_MS,
+        leftAt: stay.leftAt,
+        lingerMs: ISLAND_COLLAPSE_MS,
+      }).open,
+    ).toBe(false);
+    expect(
+      islandHoverStay({
+        over: true,
+        now: 2000,
+        leftAt: 1000,
+        lingerMs: ISLAND_COLLAPSE_MS,
+      }),
+    ).toEqual({ open: true, leftAt: null });
+  });
+
   it("grabando, la tira no roba un slot: la gota cuelga del cuerpo", () => {
     expect(islandLiveSlots("idle")).toBe(0);
     expect(islandLiveSlots("recording")).toBe(0);
@@ -158,12 +261,28 @@ describe("contentFor", () => {
    */
   it("abrir la isla nunca encoge la caja en ningún eje", () => {
     expect(PILL.islandLong).toBe(PILL.bar);
-    for (const activity of ["idle", "recording", "dictating"] as const) {
-      for (const edge of ["left", "right", "top", "bottom"] as const) {
-        const shut = contentFor("edge", 180, { edge, expanded: false }, activity);
-        const open = contentFor("edge", 180, { edge, expanded: true }, activity);
-        expect(open.w).toBeGreaterThanOrEqual(shut.w);
-        expect(open.h).toBeGreaterThanOrEqual(shut.h);
+    for (const cue of [false, true]) {
+      for (const activity of ["idle", "recording", "dictating"] as const) {
+        for (const edge of ["left", "right", "top", "bottom"] as const) {
+          const shut = contentFor(
+            "edge",
+            180,
+            { edge, expanded: false },
+            activity,
+            WHEEL_TOOLS.length,
+            cue,
+          );
+          const open = contentFor(
+            "edge",
+            180,
+            { edge, expanded: true },
+            activity,
+            WHEEL_TOOLS.length,
+            cue,
+          );
+          expect(open.w).toBeGreaterThanOrEqual(shut.w);
+          expect(open.h).toBeGreaterThanOrEqual(shut.h);
+        }
       }
     }
   });

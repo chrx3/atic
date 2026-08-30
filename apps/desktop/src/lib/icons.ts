@@ -92,11 +92,12 @@ export type SettingsIconId =
  * Iconos que no son ni una herramienta ni una sección de ajustes.
  *
  * `more` es el gajo que abre el segundo anillo de la pill; `pill` la nombra en
- * la navegación de Ajustes. Van aparte para que `ToolId` siga siendo la lista
- * de herramientas y nada más: sumarle «more» haría que el `switch` exhaustivo
- * de `toolActions` pidiera una acción para algo que no la tiene.
+ * la navegación de Ajustes; `window` abre la ventana principal desde «Más».
+ * Van aparte para que `ToolId` siga siendo la lista de herramientas y nada más:
+ * sumarle «more» o «window» haría que el `switch` exhaustivo de `toolActions`
+ * pidiera una acción para algo que no la tiene.
  */
-export type ExtraIconId = "more" | "pill" | "back";
+export type ExtraIconId = "more" | "pill" | "back" | "window";
 
 export type AppIconId = ToolId | SettingsIconId | ExtraIconId;
 
@@ -118,6 +119,7 @@ export const TOOL_ICONS: Record<AppIconId, IconNode> = {
   more: Ellipsis,
   pill: Pill,
   back: ArrowLeft,
+  window: AppWindow,
 };
 
 export const LAUNCHER_ICONS: Record<string, IconNode> = {

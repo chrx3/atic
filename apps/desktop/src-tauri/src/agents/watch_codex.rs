@@ -84,6 +84,19 @@ pub fn session_id_from_stem(stem: &str) -> Option<&str> {
     }
 }
 
+fn item_text(v: &Value) -> Option<&str> {
+    v.pointer("/payload/item/content")
+        .and_then(Value::as_array)?
+        .iter()
+        .find_map(|c| {
+            if c.get("type").and_then(Value::as_str) == Some("Text") {
+                c.get("text").and_then(Value::as_str)
+            } else {
+                None
+            }
+        })
+}
+
 fn first_line(text: &str) -> Option<String> {
     let line = text
         .lines()
@@ -106,6 +119,21 @@ pub fn classify(v: &Value) -> LineKind {
                     .pointer("/payload/last_agent_message")
                     .and_then(Value::as_str)
                     .and_then(first_line),
+            },
+            Some("item_completed") => match v.pointer("/payload/item/type").and_then(Value::as_str) {
+                Some("UserMessage") => LineKind::Prompt,
+                Some("AgentMessage") => {
+                    if v.pointer("/payload/item/phase").and_then(Value::as_str)
+                        == Some("final_answer")
+                    {
+                        LineKind::EndTurn {
+                            preview: item_text(v).and_then(first_line),
+                        }
+                    } else {
+                        LineKind::Ignore
+                    }
+                }
+                _ => LineKind::Ignore,
             },
             _ => LineKind::Ignore,
         },
@@ -478,6 +506,40 @@ mod tests {
             LineKind::EndTurn {
                 preview: Some("listo".into())
             }
+        );
+    }
+
+    #[test]
+    fn item_completed_final_answer_cierra_con_preview() {
+        assert_eq!(
+            classify(&json!({
+                "type": "event_msg",
+                "payload": {
+                    "type": "item_completed",
+                    "item": {
+                        "type": "AgentMessage",
+                        "content": [{ "type": "Text", "text": "chiste\nsegunda" }],
+                        "phase": "final_answer"
+                    }
+                }
+            })),
+            LineKind::EndTurn {
+                preview: Some("chiste".into())
+            }
+        );
+    }
+
+    #[test]
+    fn item_completed_user_message_abre_turno() {
+        assert_eq!(
+            classify(&json!({
+                "type": "event_msg",
+                "payload": {
+                    "type": "item_completed",
+                    "item": { "type": "UserMessage", "content": [{ "type": "Text", "text": "hola" }] }
+                }
+            })),
+            LineKind::Prompt
         );
     }
 

@@ -29,6 +29,19 @@ describe("applyPresenceSnapshot", () => {
     expect(second.unread.s1).toBe(1);
   });
 
+  it("un preview nuevo en ready también enciende el chip", () => {
+    const first = applyPresenceSnapshot(
+      { list: [], unread: {}, watching: false },
+      [presence({ id: "s1", status: "ready", preview: "hola" })],
+    );
+    expect(first.unread).toEqual({});
+    const next = applyPresenceSnapshot(
+      { ...first, watching: false },
+      [presence({ id: "s1", status: "ready", preview: "Soy Codex" })],
+    );
+    expect(next.unread.s1).toBe(1);
+  });
+
   it("un ready ya cerrado al arrancar no enciende el chip", () => {
     const first = applyPresenceSnapshot(
       { list: [], unread: {}, watching: false },

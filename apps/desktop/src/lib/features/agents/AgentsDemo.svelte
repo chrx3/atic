@@ -86,7 +86,7 @@
     variant?: "panel" | "float";
     /** Arrastre del float (header), mismo patrón que clipboard/snippets. */
     onHeaderPointerDown?: (event: PointerEvent) => void;
-    /** Cerrar el float (botón X en el header). */
+    /** Cerrar el float (X en el header). El overlay no lo pasa. */
     onClose?: () => void;
   } = $props();
 

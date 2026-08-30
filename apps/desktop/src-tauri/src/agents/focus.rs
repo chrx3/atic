@@ -69,7 +69,12 @@ pub fn focus_id(id: &str) -> PresenceFocusResult {
             kind: FocusKind::None,
         };
     };
-    if presence.window.as_ref().is_none_or(|w| !hwnd_alive(w.hwnd)) {
+    let live = agent_tui_pids(&presence.backend_id);
+    let window_ok = presence.window.as_ref().is_some_and(|w| {
+        hwnd_alive(w.hwnd) && live.contains(&w.pid)
+    });
+    if !window_ok {
+        presence.window = None;
         if let Some(win) = resolve_unique_for(&presence.backend_id, id) {
             presence::set_window(id, win.clone());
             presence.window = Some(win);

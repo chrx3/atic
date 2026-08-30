@@ -34,6 +34,7 @@
   import { gapBetween, pillShape } from "$lib/liquid/geometry";
   import { INFLUENCE, REACH } from "$lib/liquid/constants";
   import ToolIcon, { type IconId } from "$lib/ToolIcon.svelte";
+  import AgentLogo from "$features/agents/AgentLogo.svelte";
   import { agents } from "$lib/agentSessions.svelte";
   import { presence } from "$lib/agentPresence.svelte";
   import ParticleWheel from "$lib/ParticleWheel.svelte";
@@ -47,6 +48,7 @@
   import {
     PILL_BACK_ID,
     PILL_MORE_ID,
+    PILL_WINDOW_ID,
     pillLayout,
     pillStripPage,
     type PillStripId,
@@ -73,13 +75,18 @@
     pivotFor,
     stepWheel as nextWheelTool,
     undockForSummon,
+    shouldReturnToEdgeOnActivate,
+    islandHoverStay,
+    ISLAND_COLLAPSE_MS,
+    ISLAND_COLLAPSE_MORE_MS,
     wheelChromeActive,
     wheelKeyAction,
     wheelOpenFlight,
     type Dock,
     type Surface,
   } from "$surfaces/overlay/pill/pillPlan";
-  import { agentChip } from "$surfaces/overlay/pill/pillAgentChip";
+  import { agentChip, cueAgentIds } from "$surfaces/overlay/pill/pillAgentChip";
+  import { consoleCue } from "$surfaces/overlay/agents/consoleCue.svelte";
   import { agentsDock } from "$surfaces/overlay/agents/agentsDock.svelte";
   import {
     quotaHover,
@@ -87,9 +94,9 @@
   } from "$surfaces/overlay/pill/quotaHover.svelte";
   import {
     dockAxis,
-    dockCandidate,
-    dockedEdgeAt,
+    defaultPillHome,
     edgeWallsFor,
+    snapMagnet,
     shouldUndock,
     type DockEdge,
   } from "$surfaces/overlay/edgeDock";
@@ -115,7 +122,7 @@
     hideClipboardWindow,
     onClipboardBubbleDismiss,
   } from "$ipc/clipboard";
-  import { getConfig } from "$ipc/config";
+  import { getConfig, showMainWindow } from "$ipc/config";
   import { on } from "$ipc/events";
   import { hideLauncher, onLauncherBubbleDismiss } from "$ipc/search";
   import {
@@ -124,7 +131,7 @@
     snippetsAlwaysOnTop,
   } from "$ipc/snippets";
   import { executeToolAction } from "$core/toolActions";
-  import { isSpatialTool, resolveSlot, slotForTool } from "$surfaces/overlay/toolSlots";
+  import { isSpatialTool } from "$surfaces/overlay/toolSlots";
   import {
     enqueueActivate,
     isCursorAnchored,
@@ -146,8 +153,6 @@
     overlayCursor,
     overlayCursorOverHit,
     overlayPrimaryDown,
-    overlayActiveAnchor,
-    pillHome,
     pillTrace,
     savePillHome,
     setOverlayPointerGesture,
@@ -223,11 +228,14 @@
         working: agents.working,
         waiting: agents.waiting,
         readyLabel: agents.readyLabel,
+        readyBackendId: agents.readyBackendId,
+        updatedAt: agents.readyUpdatedAt,
         providerSessions: agents.sessions.map((s) => s.providerSession),
       },
       presence: presence.view,
       chatEnabled: AGENTS_ENABLED,
       pagerEnabled: AGENT_PAGER_ENABLED,
+      consoles: consoleCue.clis,
     }),
   );
   const agentAlert = $derived(chip.tone !== "off");
@@ -240,6 +248,20 @@
   );
   const showAgentTab = $derived(
     !wheelChrome && (agentsDock.minimized || (agentAlert && !agentsExpanded)),
+  );
+  /**
+   * Pestaña acoplada más gruesa + chrome de estado. En 10 px no cabe un punto
+   * legible. Misma condición que el chip flotante (aviso o dock achicado).
+   */
+  const islandCue = $derived(surface === "edge" && showAgentTab);
+  /** Logos en la pestaña / chip: ocupados + CLIs de consola. */
+  const islandCueAgents = $derived(
+    cueAgentIds({
+      sessions: agents.sessions,
+      presence: presence.view,
+      consoles: consoleCue.clis,
+      chipLogoId: chip.logoId,
+    }),
   );
   /**
    * Aviso de actualización: qué muestra el chip y qué dice al pasar el mouse.
@@ -306,7 +328,7 @@
       if (chip.tone === "waiting") return t("pill.waiting");
       if (chip.tone === "ready") return agentReadyLabel;
       if (chip.tone === "count") return t("pill.unread", { label: chip.label ?? "" });
-      if (chip.tone === "working") return t("pill.working");
+      if (chip.tone === "working") return chip.label ?? t("pill.working");
       return t("page.agents.dockExpand");
     }
     if (chip.target.kind === "none") {
@@ -319,7 +341,7 @@
           ? agentReadyLabel
           : chip.tone === "count"
             ? t("pill.unread", { label: chip.label ?? "" })
-            : t("pill.working");
+            : chip.label ?? t("pill.working");
     if (chip.target.kind === "focus") {
       return t("pill.rebind", { base });
     }
@@ -442,6 +464,8 @@
   let rootEl = $state<HTMLElement | null>(null);
   /** El cuerpo líquido: la silueta de verdad, sin el respiro de la rueda. */
   let liquidEl = $state<HTMLElement | null>(null);
+  /** Piel de la isla acoplada: ancla de los floats (no la barra oculta). */
+  let islandSkinEl = $state<HTMLElement | null>(null);
   /** El stack: contra él se miden las siluetas, porque no recorta. */
   let stackEl = $state<HTMLElement | null>(null);
 
@@ -508,7 +532,7 @@
    */
   const stripNodes: { id: PillStripId; label: string; short: string; icon: IconId }[] =
     $derived(
-      pillStripPage(layout, stripPage).map((id) => {
+      pillStripPage(layout, stripPage, { windowOnFirst: true }).map((id) => {
         if (id === PILL_MORE_ID) {
           return { id, label: t("pill.more"), short: t("pill.moreHint"), icon: "more" };
         }
@@ -518,6 +542,14 @@
             label: t("pill.wheelBack"),
             short: t("pill.backHint"),
             icon: "back",
+          };
+        }
+        if (id === PILL_WINDOW_ID) {
+          return {
+            id,
+            label: t("pill.openMain"),
+            short: t("pill.openMainHint"),
+            icon: "window",
           };
         }
         const tool = localizeTool(toolById(id));
@@ -533,12 +565,20 @@
     short: t("pill.moreHint"),
     icon: "more",
   });
+  const windowNode: WheelNode = $derived({
+    id: PILL_WINDOW_ID,
+    label: t("pill.openMain"),
+    short: t("pill.openMainHint"),
+    icon: "window",
+  });
   const ringNodes: WheelNode[] = $derived([
     ...layout.ring.map(localizeTool),
-    ...(layout.more.length > 0 ? [moreNode] : []),
+    moreNode,
   ]);
   const wheelNodes: WheelNode[] = $derived(
-    wheelPage === "more" ? layout.more.map(localizeTool) : ringNodes,
+    wheelPage === "more"
+      ? [...layout.more.map(localizeTool), windowNode]
+      : ringNodes,
   );
 
   // Los adjuntadores se crean UNA vez sobre el catálogo completo y se indexan
@@ -547,8 +587,8 @@
   // cada preferencia, y un `@attach` que cambia de función se desmonta y da de
   // baja su rect —justo lo que el comentario de arriba está evitando.
   const islandAttachers = Array.from(
-    // Uno más que herramientas: la tira suma «Más» o «atrás» según el paso.
-    { length: WHEEL_TOOLS.length + 1 },
+    // Dos más: «Más»/«atrás» y Ventana, que en el canto va en el primer paso.
+    { length: WHEEL_TOOLS.length + 2 },
     (_, i) => (el: HTMLElement) => tracker.track(`island-${i}`, el),
   );
 
@@ -697,11 +737,37 @@
   });
 
   /**
-   * El hogar: reposo persistido. Abrir la rueda vuela al cursor; al cerrar
-   * (Esc / fuera / soltar sin tool) vuelve acá. Summon y arrastre sí lo
-   * reescriben a propósito.
+   * El hogar: centro de arriba del monitor principal. Arrastrar la acerca a
+   * un imán, pero abrir una herramienta o cerrar un float la devuelve acá.
    */
   let home = $state({ x: 0, y: 0 });
+
+  function restSize() {
+    return windowFor({ w: PILL.bar, h: PILL.bar });
+  }
+
+  function refreshDefaultHome() {
+    const dest = defaultPillHome(restSize(), stage.workAreas());
+    if (dest) home = dest.at;
+  }
+
+  function atDefaultHome(px = 8): boolean {
+    return Math.hypot(home.x - at.x, home.y - at.y) < px;
+  }
+
+  async function goDefaultHome(): Promise<void> {
+    refreshDefaultHome();
+    if (atDefaultHome(2) && surface === "edge" && dock?.edge === "top") return;
+    if (Math.hypot(home.x - at.x, home.y - at.y) >= 2) {
+      await flyTo(home);
+    } else {
+      stage.moveTo(home);
+      at = stage.at();
+    }
+    dock = { edge: "top", expanded: false };
+    surface = "edge";
+    settleDock();
+  }
   /** El vuelo lo hace una transición CSS; esto la enciende solo cuando toca. */
   let flying = $state(false);
   /** Generación del vuelo: Esc/reabrir invalidan un `flyTo` en curso. */
@@ -770,14 +836,6 @@
     }
   }
 
-  /** Monitor activo: mouse, o la ventana con foco si está en otra pantalla. */
-  async function activeAnchorPoint(): Promise<{ x: number; y: number } | null> {
-    try {
-      return await overlayActiveAnchor();
-    } catch {
-      return cursorPoint();
-    }
-  }
   /** Ancho real de la barra, medido del DOM. Sin esto habría que mantener una
    *  tabla de anchos mágicos por estado — la fuente original del desajuste. */
   let barW = $state<number>(PILL.bar);
@@ -785,16 +843,25 @@
   let agentDockEl = $state<HTMLButtonElement | null>(null);
 
   /**
-   * Acoplada a un borde. `null` = flotando, que es el estado de siempre.
+   * Acoplada a un borde. `null` = flotando (centro de pantalla u otro imán).
    *
-   * No se persiste aparte: `pill_home` guarda un punto y al arrancar se deduce
-   * con `dockedEdgeAt` si ese punto estaba a ras de un borde exterior. Evita
-   * migrar el formato por un booleano.
+   * El hogar canónico es el canto de arriba del monitor principal; no se
+   * restaura desde `pill_home`. Los imanes de `snapMagnet` deciden el resto.
    */
   let dock = $state<Dock | null>(null);
 
   const target = $derived(
-    windowFor(contentFor(surface, barW, dock, activity, stripNodes.length)),
+    windowFor(
+      contentFor(
+        surface,
+        barW,
+        dock,
+        activity,
+        stripNodes.length,
+        islandCue,
+        islandCueAgents.length,
+      ),
+    ),
   );
   const islandSlots = $derived(stripNodes.length + islandLiveSlots(activity));
 
@@ -808,6 +875,17 @@
   const peekEdgeAxis = $derived(
     surface === "edge" && dock ? dockAxis(dock.edge) : null,
   );
+
+  /**
+   * Cifra corta en el badge de la tira. En cantos laterales no cabe texto:
+   * solo el punto. Arriba/abajo (eje y) sí entra un número; waiting usa «!».
+   */
+  const islandAgentBadgeLabel = $derived.by(() => {
+    if (!islandCue) return null;
+    if (chip.tone === "count") return chip.label;
+    if (peekEdgeAxis === "y" && chip.tone === "waiting") return "!";
+    return null;
+  });
 
   /** La tira está desplegada (o se está desplegando). */
   const islandOpen = $derived(surface === "edge" && dock?.expanded === true);
@@ -871,23 +949,25 @@
       return;
     }
     const target = chip.target;
+    const preferBind = preferBindFromGesture;
     if (target.kind === "console") {
       void openAgentsConsole();
       return;
     }
     const id = target.presenceId;
     if (!id) return;
-    const preferBind = preferBindFromGesture || target.kind === "none";
     void (async () => {
       try {
         let result = preferBind
           ? await agentPresenceBind(id)
           : await agentPresenceFocus(id);
-        if (result.kind === "none" && !preferBind) {
+        if (result.kind === "none" && preferBind) {
           result = await agentPresenceBind(id);
         }
         if (result.kind === "focused") presence.markSeen(id);
-        else if (result.kind === "console") await openAgentsConsole();
+        else if (result.kind === "console" || result.kind === "none") {
+          await openAgentsConsole();
+        }
       } catch (err) {
         console.warn("enfocar terminal del agente", err);
       }
@@ -1094,14 +1174,15 @@
    * cuello no llegaría a cruzarlo.
    */
   /*
-   * Acoplada no se publica: el stack sigue midiendo la barra de 40 px aunque
-   * esté oculto —`overflow: hidden` recorta lo que se ve, no lo que mide—, así
-   * que dejaba una zona viva fantasma más grande que la isla. Ahí el overlay se
-   * armaba sobre pantalla que la isla no ocupa y se comía clics ajenos.
+   * Acoplada se publica la isla, no el stack: `liquidEl` sigue midiendo la
+   * barra de 40 px aunque esté oculta —`overflow: hidden` recorta lo que se
+   * ve, no lo que mide— y eso dejaba una zona viva más grande que la pestaña.
+   * Los floats anclan contra esta silueta, no contra el respiro de `pill`.
    */
-  $effect(() =>
-    liquidEl && surface !== "edge" ? surfaces.add("pill-skin", liquidEl) : undefined,
-  );
+  $effect(() => {
+    const el = surface === "edge" ? islandSkinEl : liquidEl;
+    return el ? surfaces.add("pill-skin", el) : undefined;
+  });
 
   /** La tarjeta de auth también tiene que armar hit-rects o queda click-through. */
   $effect(() => (authEl && authAlive ? surfaces.add("agent-auth", authEl) : undefined));
@@ -1223,16 +1304,19 @@
     if (surface === "wheel" || collapsingFrom === "wheel") return false;
     const size = stage.applied() ?? windowFor({ w: PILL.bar, h: PILL.bar });
     const rect = { x: at.x, y: at.y, w: size.w, h: size.h };
-    const found = dockCandidate(rect, stage.workAreas());
+    const found = snapMagnet(rect, stage.workAreas());
     if (!found) {
       dock = null;
       if (surface === "edge") surface = "none";
       return false;
     }
-    dock = { edge: found.edge, expanded: false };
-    surface = "edge";
-    // Pegada al canto, sin transición: el vuelo ya terminó y esto es el
-    // último ajuste de milímetros.
+    if (found.edge) {
+      dock = { edge: found.edge, expanded: false };
+      surface = "edge";
+    } else {
+      dock = null;
+      if (surface === "edge") surface = "none";
+    }
     stage.moveTo(found.at);
     at = stage.at();
     surfaces.schedule();
@@ -1313,13 +1397,25 @@
    */
   $effect(() => {
     if (surface !== "edge") return;
+    void stripPage;
     let alive = true;
+    let leftAt: number | null = null;
     const look = async () => {
       // Arrastrando no: agrandar la caja a mitad del gesto mueve el suelo bajo
       // el puntero, y encima el destino de acople se calcula con ese tamaño.
       if (dragOrigin) return;
       const over = await overlayCursorOverHit("pill").catch(() => null);
-      if (alive && !dragOrigin && over !== null) setIslandExpanded(over);
+      if (!alive || dragOrigin || over === null) return;
+      const lingerMs =
+        stripPage === "more" ? ISLAND_COLLAPSE_MORE_MS : ISLAND_COLLAPSE_MS;
+      const next = islandHoverStay({
+        over,
+        now: performance.now(),
+        leftAt,
+        lingerMs,
+      });
+      leftAt = next.leftAt;
+      setIslandExpanded(next.open);
     };
     void look();
     const timer = setInterval(() => void look(), ISLAND_HOVER_MS);
@@ -1563,6 +1659,11 @@
       playWheelTick();
       return;
     }
+    if (id === PILL_WINDOW_ID) {
+      void showMainWindow();
+      void closeWheel();
+      return;
+    }
     activateTool(id);
   }
 
@@ -1691,13 +1792,11 @@
    *
    * Tras un reinicio o al despertar de hibernación, el viewport CSS pasa unos
    * segundos en el recuadro chico del create (visto: 1551×864 con monitores de
-   * 3840×1080) mientras Windows asienta las pantallas, y `pill_home` se
-   * restaura clampeado contra ESE espacio: la pill quedaba a mitad del
-   * escritorio cuando el viewport llegaba al tamaño real, hasta que alguna
-   * interacción la volvía a volar. Lo mismo si la topología flapea (2→1→2
+   * 3840×1080) mientras Windows asienta las pantallas: el hogar se recalcula
+   * contra el monitor principal. Lo mismo si la topología flapea (2→1→2
    * monitores) con la app abierta. Rust ya reencuadra la ventana solo; esta es
-   * la mitad del frontend: recargar áreas y devolver la pill a su hogar, solo
-   * si está en reposo.
+   * la mitad del frontend: recargar áreas y devolver la pill al canto de
+   * arriba, solo si está en reposo.
    */
   let resettleTimer = 0;
   let homeRestored = false;
@@ -1718,40 +1817,25 @@
     if (surface !== "none" && surface !== "edge") return;
     if (dock?.expanded) return;
     const before = { ...at };
+    refreshDefaultHome();
     stage.moveTo(home);
     at = stage.at();
     if (Math.hypot(before.x - at.x, before.y - at.y) >= 2) {
-      // Mismo criterio que al restaurar el hogar en el arranque: si el punto
-      // queda a ras de un borde exterior, estaba acoplada ahí.
-      const size = stage.applied() ?? windowFor({ w: PILL.bar, h: PILL.bar });
-      const edge = dockedEdgeAt(
-        { x: at.x, y: at.y, w: size.w, h: size.h },
-        stage.workAreas(),
-      );
-      if (edge) {
-        dock = { edge, expanded: false };
-        surface = "edge";
-      } else if (surface === "edge") {
-        dock = null;
-        surface = "none";
-      }
+      settleDock();
     }
     surfaces.schedule();
   }
 
-  /** Vuelve al hogar si la pill quedó en un slot de acción. */
+  /**
+   * Tras cerrar un float: re-acopla solo si ya está en un canto o justo en el
+   * hogar default. Flotando en otro sitio se queda: no la arrastra al borde.
+   */
   async function maybeReturnHome() {
     if (returnHomeSuppressed || slotBusy || spatialIntent) return;
     if (anySpatialOpen()) return;
-    if (Math.hypot(home.x - at.x, home.y - at.y) < 2) return;
-    try {
-      await flyTo(home);
-      // Mismo motivo que en `playCloseMorph`: si el hogar es un canto, al
-      // llegar vuelve a ser isla.
-      settleDock();
-    } catch (err) {
-      console.warn("return-to-home", err);
-    }
+    if (surface === "edge") return;
+    refreshDefaultHome();
+    if (atDefaultHome(2)) settleDock();
   }
 
   /** Dismiss de tool con reverse liquid: esperar a que el float se funda. */
@@ -1768,56 +1852,25 @@
   }
 
   /**
-   * Vuela la pill al slot de la tool (work area del monitor actual).
-   * Clipboard / textos no tienen slot fijo: vuelan al cursor (atajo / catálogo).
-   * No redefine `home`: el destino es posición de acción, no reposo.
-   *
-   * `anchored` = el pedido viene de la rueda. Los slots fijos igual se vuelan
-   * (dictado abajo, Apps al costado), pero el vuelo al cursor se saltea: la
-   * rueda YA se abrió centrada en el cursor, y el punto que toca el puntero al
-   * elegir está sobre el anillo, no en el centro. Sin esto, elegir Clipboard
-   * mandaba la pill los ~56 px del radio hasta el gajo, que es ruido: el ancla
-   * natural de un menú radial es su centro, no dónde cayó el dedo.
+   * Tras abrir una tool: si venía de un canto, re-acopla (y expande la isla).
+   * Si venía flotando, vuelve a ese sitio y no se pega al borde.
    */
-  async function flyToToolSlot(
-    id: ToolId,
-    opts: { anchored?: boolean } = {},
-  ): Promise<void> {
-    // Al terminar dictado no hace falta volar.
-    if (id === "dictation" && dictationStore.active) return;
-
-    if (isSpatialTool(id) || id === "dictation") await dismissSpatialTools(id);
-
-    const size = target;
-    const slot = slotForTool(id);
-
-    if (slot) {
-      await stage.loadAreas();
-      const areas = stage.workAreas();
-      const pillCenter = { x: at.x + size.w / 2, y: at.y + size.h / 2 };
-      // Clic en la rueda/pill: quedarse en ESTA pantalla. El atajo sí vuela
-      // al mouse/foco (otra app puede estar en el otro monitor).
-      const cursor = opts.anchored ? null : await activeAnchorPoint();
-      const anchor = cursor ?? pillCenter;
-      const dest = resolveSlot(slot, areas, size, anchor);
-      if (Math.hypot(dest.x - at.x, dest.y - at.y) < 2) return;
-      await flyTo(dest);
-      return;
+  async function restAfterToolOpen(opts: {
+    returnToEdge: boolean;
+    fromWheel: boolean;
+  }): Promise<void> {
+    if (opts.fromWheel) {
+      if (Math.hypot(home.x - at.x, home.y - at.y) >= 2) {
+        await flyTo(home);
+      }
+      settleDock();
     }
-
-    if (opts.anchored) return;
-
-    // Clipboard / textos: el atajo trae la pill al mouse y abre desde ahí.
-    if (id === "clipboard" || id === "snippets") {
-      await stage.loadAreas();
-      const cursor = (await cursorPoint()) ?? (await activeAnchorPoint());
-      if (!cursor) return;
-      const dest = {
-        x: cursor.x - size.w / 2,
-        y: cursor.y - size.h / 2,
-      };
-      if (Math.hypot(dest.x - at.x, dest.y - at.y) < 2) return;
-      await flyTo(dest);
+    if (!opts.returnToEdge) return;
+    if (surface !== "edge") await goDefaultHome();
+    if (dock && !dock.expanded) {
+      dock = { ...dock, expanded: true };
+      await tick();
+      await reconcile(target);
     }
   }
 
@@ -1862,6 +1915,8 @@
       await setOverlayPointerGesture(true).catch(() => {});
     }
     try {
+      const fromWheel = surface === "wheel";
+      const returnToEdge = shouldReturnToEdgeOnActivate(surface, dock);
       cancelPendingCollapse();
       await closeWheel({ returnHome: false });
       // El cierre acelerado ya se consumió; el resto del acto usa las curvas
@@ -1901,21 +1956,13 @@
         if (!shouldCommitShow(slotPending)) return;
       }
 
+      if (isSpatialTool(id) || id === "dictation") await dismissSpatialTools(id);
       if (isSpatialTool(id)) spatialIntent = id;
       else if (id === "dictation") spatialIntent = null;
 
-      // Desacoplar SIEMPRE, no solo tools con slot. Clipboard/textos no
-      // tienen slot fijo: sin esto la pestaña (~10 px) se queda, el morph a
-      // barra no corre y el float ancla contra esa geometría (o no abre).
-      if (surface === "edge") {
-        const undocked = undockForSummon({ surface, dock });
-        surface = undocked.surface;
-        dock = undocked.dock;
-        await tick();
-        await reconcile(target);
-      }
-
-      await flyToToolSlot(id, { anchored: force });
+      // Flotando se queda. Acoplada (o rueda abierta desde un canto) vuelve
+      // a ese borde; el float ancla a la isla.
+      await restAfterToolOpen({ returnToEdge, fromWheel });
       if (gen !== slotGen) return;
       if (!shouldCommitShow(slotPending)) return;
       // Hit-rect fresco: sin esto el float ancla contra la geometría vieja
@@ -1941,9 +1988,12 @@
   async function flySlotOnly(id: ToolId) {
     returnHomeSuppressed = true;
     try {
+      const fromWheel = surface === "wheel";
+      const returnToEdge = shouldReturnToEdgeOnActivate(surface, dock);
       cancelPendingCollapse();
       await closeWheel({ returnHome: false });
-      await flyToToolSlot(id);
+      if (isSpatialTool(id) || id === "dictation") await dismissSpatialTools(id);
+      await restAfterToolOpen({ returnToEdge, fromWheel });
     } catch (err) {
       console.warn("fly-tool-slot", err);
     } finally {
@@ -2132,27 +2182,6 @@
     window.removeEventListener("pointercancel", endDrag, true);
   }
 
-  /**
-   * Hogar nuevo después de arrastrar la rueda abierta.
-   *
-   * `at` es la esquina del cuadrado de la rueda, no la del disco. Al cerrar,
-   * `wheelCollapse` encoge con pivote al centro, así que la pill queda
-   * centrada donde estaba el núcleo: ese es el hogar. Guardar `at` tal cual
-   * mandaría el disco ~100 px arriba y a la izquierda al volver a casa —y el
-   * cierre, que vuela al hogar, desharía el arrastre a la vista.
-   */
-  function rehomeFromWheel(): void {
-    const size = stage.applied() ?? box;
-    // El mismo tamaño que va a pedir `wheelCollapse`: `barW` no se re-mide
-    // mientras la rueda manda, así que ambos leen la barra en reposo.
-    const rest = windowFor(contentFor("none", barW));
-    home = {
-      x: Math.round(at.x + (size.w - rest.w) / 2),
-      y: Math.round(at.y + (size.h - rest.h) / 2),
-    };
-    void savePillHome(home.x, home.y);
-  }
-
   /** Soltar sin haber movido = clic. Abre la rueda aunque haya cola o grabación. */
   function endDrag() {
     const wasClick = dragOrigin !== null && !dragMoved;
@@ -2184,15 +2213,11 @@
       // La rueda abierta se mueve y se queda abierta: ni se acopla (no es una
       // isla mientras manda) ni cambia de sitio al cerrar.
       if (surface === "wheel") {
-        rehomeFromWheel();
         return;
       }
-      // Arrastrar redefine el hogar: la pill se queda donde la dejaste —o
-      // pegada al canto, si la soltaste cerca de uno. Si el gesto arrancó sobre
-      // un icono, mover cancela la elección: querías moverla, no abrirla.
+      // Arrastrar no redefine el hogar: engancha a un imán (centro o
+      // centro de un canto) y se queda ahí hasta abrir una tool.
       settleDock();
-      home = { ...at };
-      void savePillHome(at.x, at.y);
       return;
     }
     // Soltar sobre un icono sin haber movido: eso sí era elegirlo.
@@ -2215,8 +2240,8 @@
       return;
     }
     if (wasClick && pressedTool) {
-      // Los dos controles de la tira no ejecutan nada: solo cambian de paso, y
-      // por eso no pasan por `activateFromIsland` ni cierran la isla.
+      // «Más», «atrás» y Ventana no ejecutan una herramienta: no pasan por
+      // `activateFromIsland` ni cierran la isla.
       if (pressedTool === PILL_MORE_ID) {
         stripPage = "more";
         playWheelTick();
@@ -2225,6 +2250,10 @@
       if (pressedTool === PILL_BACK_ID) {
         stripPage = "ring";
         playWheelTick();
+        return;
+      }
+      if (pressedTool === PILL_WINDOW_ID) {
+        void showMainWindow();
         return;
       }
       activateFromIsland(pressedTool);
@@ -2252,24 +2281,13 @@
       // Los monitores y el hogar, antes de nada: el primer reencuadre ya los
       // necesita para clampear, y sin hogar la pill arrancaría en 0,0.
       await stage.loadAreas();
-      const saved = await pillHome().catch(() => null);
-      if (saved) {
-        home = saved;
-        stage.moveTo(saved);
-        at = stage.at();
-        // El hogar guardado es solo un punto: si quedó a ras de un borde
-        // exterior, es que estaba acoplada ahí. Se deduce en vez de guardarse
-        // para no migrar el formato de `pill_home`.
-        const size = stage.applied() ?? windowFor({ w: PILL.bar, h: PILL.bar });
-        const edge = dockedEdgeAt(
-          { x: at.x, y: at.y, w: size.w, h: size.h },
-          stage.workAreas(),
-        );
-        if (edge) {
-          dock = { edge, expanded: false };
-          surface = "edge";
-        }
-      }
+      refreshDefaultHome();
+      stage.moveTo(home);
+      at = stage.at();
+      dock = { edge: "top", expanded: false };
+      surface = "edge";
+      settleDock();
+      void savePillHome(home.x, home.y);
       // Recién ahora hay hogar de verdad: antes de esto, un resize temprano
       // re-asentaría la pill sobre el {0,0} inicial.
       homeRestored = true;
@@ -2339,9 +2357,6 @@
         dock = undocked.dock;
         const size = target;
         await flyTo({ x: cursor.x - size.w / 2, y: cursor.y - size.h / 2 });
-        // El summon fija un hogar nuevo: la pill se queda donde la llamaste.
-        home = { ...at };
-        void savePillHome(at.x, at.y);
       }),
     );
 
@@ -2485,7 +2500,12 @@
   {#if surface === "edge" || beadsAlive}
     <div class="p-island" class:is-open={islandOpen}>
       <div class="p-island-body">
-        <i class="p-island-skin" {@attach trackIsland} aria-hidden="true"></i>
+        <i
+          class="p-island-skin"
+          bind:this={islandSkinEl}
+          {@attach trackIsland}
+          aria-hidden="true"
+        ></i>
         <div
           class="p-island-tools"
           class:is-open={islandOpen}
@@ -2504,14 +2524,56 @@
               style="--i: {slot}; --s: {Math.abs((islandSlots - 1) / 2 - slot)}"
               use:tip={node.id === "agents" ? "" : help}
               use:quotaHover={node.id === "agents" ? help : ""}
-              aria-label="{node.label}. {node.short}"
+              aria-label={node.id === "agents" && islandCue
+                ? agentChipAria
+                : `${node.label}. ${node.short}`}
               {@attach islandAttachers[i]}
               onpointerdown={() => (islandPressTool = node.id)}
             >
               <ToolIcon id={node.icon} size={18} strokeWidth={1.6} />
+              {#if node.id === "agents" && islandCue}
+                <span
+                  class="p-island-agent-badge"
+                  class:is-dock={agentsDock.minimized}
+                  class:is-waiting={chip.tone === "waiting"}
+                  class:is-working={chip.tone === "working"}
+                  class:is-ready={chip.tone === "ready"}
+                  class:is-count={chip.tone === "count"}
+                  class:is-label={islandAgentBadgeLabel != null}
+                  aria-hidden="true"
+                >{islandAgentBadgeLabel ?? ""}</span>
+              {/if}
             </button>
           {/each}
         </div>
+        {#if islandCue && !islandOpen}
+          <button
+            type="button"
+            class="p-agent p-island-cue"
+            class:is-dock={agentsDock.minimized}
+            class:is-waiting={chip.tone === "waiting"}
+            class:is-working={chip.tone === "working"}
+            class:is-ready={chip.tone === "ready"}
+            class:is-count={chip.tone === "count"}
+            onclick={onAgentChipClick}
+            use:tip={agentChipTitle}
+            aria-label={agentChipAria}
+          >
+            {#if chip.tone === "count"}
+              <span class="p-island-cue-mark">{chip.label}</span>
+            {:else if islandCueAgents.length > 0}
+              <span class="p-island-cue-logos" aria-hidden="true">
+                {#each islandCueAgents as id (id)}
+                  <AgentLogo agent={id} size={9} />
+                {/each}
+              </span>
+            {:else}
+              <span class="p-island-cue-logo" aria-hidden="true">
+                <AgentLogo agent={null} size={9} />
+              </span>
+            {/if}
+          </button>
+        {/if}
       </div>
       {#if recording}
         <button
@@ -2724,21 +2786,26 @@
                 use:tip={agentChipTitle}
                 aria-label={agentChipAria}
               >
-                <span class="p-agent-ico" aria-hidden="true">
-                  <ToolIcon
-                    id="agents"
-                    size={agentsDock.minimized ? 13 : 11}
-                    strokeWidth={1.7}
-                  />
+                <span class="p-agent-ico" class:is-row={islandCueAgents.length > 1} aria-hidden="true">
+                  {#if islandCueAgents.length > 0}
+                    {#each islandCueAgents as id (id)}
+                      <AgentLogo agent={id} size={agentsDock.minimized ? 13 : 11} />
+                    {/each}
+                  {:else}
+                    <AgentLogo
+                      agent={null}
+                      size={agentsDock.minimized ? 13 : 11}
+                    />
+                  {/if}
                 </span>
                 {#if chip.tone === "waiting"}
                   <span class="p-agent-count">{t("pill.permission")}</span>
                 {:else if chip.tone === "ready"}
                   <span class="p-agent-msg">{agentReadyLabel}</span>
+                {:else if chip.tone === "working" && chip.label}
+                  <span class="p-agent-msg">{chip.label}</span>
                 {:else if chip.tone === "count"}
                   <span class="p-agent-count">{chip.label}</span>
-                {:else if agentsDock.minimized}
-                  <span class="p-agent-msg">{t("page.agents.dockIdle")}</span>
                 {/if}
               </button>
             {/if}
@@ -3006,6 +3073,7 @@
     --island-by: 0px;
 
     display: grid;
+    position: relative;
     width: var(--island-tool);
     height: var(--island-tool);
     border: 0;
@@ -3035,6 +3103,150 @@
   .p-island-tools.is-open .p-island-tool {
     opacity: 1;
     transform: none;
+  }
+
+  /* Cerrada, las gotas no deben robar el clic: lo toma la pestaña o el aviso. */
+  .p-island-tools:not(.is-open) {
+    pointer-events: none;
+  }
+
+  /*
+   * Aviso pintado EN la pestaña. El stack flotante sigue apagado acoplado;
+   * este botón cubre el cuerpo y reusa `.p-agent` para el clic (activar /
+   * expandir dock) y los tonos waiting/working/ready/count.
+   */
+  .p-island-cue.p-agent,
+  .p-island-cue.p-agent.is-waiting,
+  .p-island-cue.p-agent.is-working,
+  .p-island-cue.p-agent.is-ready,
+  .p-island-cue.p-agent.is-count,
+  .p-island-cue.p-agent.is-dock {
+    position: absolute;
+    inset: 0;
+    z-index: 2;
+    display: grid;
+    min-height: 0;
+    max-height: 100%;
+    max-width: none;
+    overflow: hidden;
+    padding: 0;
+    place-items: center;
+    background: transparent;
+    border-radius: 999px;
+  }
+
+  .p-root[data-edge="top"] .p-island-cue.p-agent {
+    align-items: start;
+    padding-top: 2px;
+  }
+
+  .p-root[data-edge="bottom"] .p-island-cue.p-agent {
+    align-items: end;
+    padding-bottom: 2px;
+  }
+
+  .p-island-cue.p-agent::after {
+    content: none;
+  }
+
+  .p-island-cue.is-working {
+    animation: none;
+  }
+
+  .p-island-cue-logo {
+    display: grid;
+    width: 9px;
+    height: 9px;
+    overflow: hidden;
+    place-items: center;
+    color: currentColor;
+  }
+
+  .p-island-cue-logos {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
+    max-width: 100%;
+    max-height: 100%;
+    overflow: hidden;
+  }
+
+  .p-root[data-edge="left"] .p-island-cue-logos,
+  .p-root[data-edge="right"] .p-island-cue-logos {
+    flex-direction: column;
+  }
+
+  .p-island-cue.is-working .p-island-cue-logo {
+    animation: p-agent-pulse 2s linear infinite;
+  }
+
+  .p-island-cue.is-dock:not(.is-waiting):not(.is-working):not(.is-ready):not(
+      .is-count
+    ) {
+    color: var(--muted);
+  }
+
+  .p-island-cue-mark {
+    font-size: 0.5625rem;
+    font-weight: 650;
+    font-variant-numeric: tabular-nums;
+    line-height: 1;
+  }
+
+  .p-island-agent-badge {
+    position: absolute;
+    top: 2px;
+    right: 2px;
+    width: 7px;
+    height: 7px;
+    border-radius: 999px;
+    pointer-events: none;
+    background: currentColor;
+    color: var(--accent);
+  }
+
+  .p-island-agent-badge.is-waiting {
+    color: var(--rec);
+  }
+
+  .p-island-agent-badge.is-working {
+    color: var(--muted);
+    animation: p-agent-pulse 2s linear infinite;
+  }
+
+  .p-island-agent-badge.is-ready {
+    color: var(--ok);
+  }
+
+  .p-island-agent-badge.is-dock:not(.is-waiting):not(.is-working):not(.is-ready):not(
+      .is-count
+    ) {
+    color: var(--muted);
+  }
+
+  .p-island-agent-badge.is-label,
+  .p-island-agent-badge.is-count {
+    display: grid;
+    width: auto;
+    min-width: 11px;
+    height: 11px;
+    padding: 0 3px;
+    place-items: center;
+    background: color-mix(in sRGB, currentColor 22%, transparent);
+    color: inherit;
+    font-size: 8px;
+    font-weight: 650;
+    font-variant-numeric: tabular-nums;
+    line-height: 1;
+  }
+
+  .p-island-agent-badge.is-waiting.is-label {
+    color: var(--rec);
+  }
+
+  .p-island-agent-badge.is-count {
+    color: var(--accent);
   }
 
   .p-island-tool:hover,
@@ -3573,6 +3785,13 @@
     opacity: 0.92;
   }
 
+  .p-agent-ico.is-row {
+    display: flex;
+    width: auto;
+    height: auto;
+    gap: 0.2rem;
+  }
+
   /*
    * Pestaña achicada: texto de la barra, no una cápsula dentro de otra.
    * El estadio de la piel ya es la silueta; un fondo propio se leía como
@@ -3584,6 +3803,12 @@
     gap: 0.34rem;
     background: transparent;
     font-family: var(--font-sans);
+  }
+
+  .p-island-cue.p-agent.is-dock {
+    min-height: 0;
+    padding: 0;
+    gap: 0;
   }
 
   .p-agent.is-dock .p-agent-msg {
@@ -3785,6 +4010,9 @@
     .p-update,
     .p-auth-host,
     .p-island-tool,
+    .p-island-cue,
+    .p-island-cue-logo,
+    .p-island-agent-badge,
     .p-live-drop,
     /* La animación vive en los hijos, no en la gota: sin ellos acá el
        pulso seguiría con reduce activo. */

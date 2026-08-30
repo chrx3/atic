@@ -385,7 +385,8 @@
   /* ─── Agrandar / minimizar ──────────────────────────────────────────────
      Agrandar llena el área de trabajo. Minimizar esconde el panel y deja
      una pestaña en la pill (no una gota suelta: esa se fundía con el
-     launcher). Cerrar esconde, no mata las PTYs. */
+     launcher). No hay X: Esc, clic afuera y hide_agents_window también
+     dockean. Las PTYs siguen vivas. */
   type Frame = { x: number; y: number; w: number; h: number };
   let maximized = $state(false);
   let minimized = $state(false);
@@ -421,13 +422,32 @@
     agentsDock.setMinimized(false);
   }
 
+  /** Vacía la piel líquida y republica hits: sin esto queda el blob fantasma. */
+  function clearAgentsOverlaySkin() {
+    liquid.publish("agents", []);
+    void tick().then(() => {
+      void surfaces.flush();
+      void surfaces.recoverHits();
+    });
+  }
+
   function dockToPill() {
-    if (!bubble.anchor || !bubble.shown) return;
     revealEpoch += 1;
     revealPhase = "ready";
     minimized = true;
     agentsDock.setMinimized(true);
     bubble.shown = false;
+    releaseOverlayKeyboard();
+    clearAgentsOverlaySkin();
+  }
+
+  /** El lanzador (antes de abrir una consola): X cierra, no achica. */
+  function dismissSetup() {
+    if (agents.sessions.length > 0) {
+      dockToPill();
+      return;
+    }
+    close();
   }
 
   /** Agranda si hay globo vivo. Si no, el ancla de Rust tiene que nacerlo. */
@@ -595,6 +615,10 @@
     window.dispatchEvent(new Event("atic-overlay-leave-text"));
   }
 
+  /**
+   * Solo desmontaje / apagado. La UI no llama esto: Esc y clic afuera
+   * dockean. hide() deja `everAlive` y unpublish incompleto pintaba el ghost.
+   */
   function close() {
     if (!bubble.shown && !minimized && !bubble.alive) return;
     revealEpoch += 1;
@@ -605,17 +629,17 @@
     endDrag();
     endResize();
     releaseOverlayKeyboard();
+    liquid.publish("agents", []);
     bubble.hide();
     void hideAgentsWindow();
     agents.watch(null);
   }
 
   /**
-   * El contenido NO se desmonta al cerrar el float: las PTYs viven en Rust y
-   * el xterm conserva su scrollback mientras el componente exista. Cerrar la
-   * ventana solo la oculta (`is-off`); reabrir desde la pill muestra las
-   * consolas tal como estaban. Se pierden al cerrar cada pestaña o al apagar
-   * la app — no al esconder la ventana.
+   * El contenido NO se desmonta al achicar el float: las PTYs viven en Rust y
+   * el xterm conserva su scrollback mientras el componente exista. Achicar
+   * solo oculta el panel (`shown=false`); el chip de la pill lo restaura.
+   * Se pierden al cerrar cada pestaña o al apagar la app — no al dockear.
    */
   let everAlive = $state(false);
   $effect(() => {
@@ -630,16 +654,17 @@
     if (bubble.shown && revealPhase === "hidden") void runOpenReveal();
   });
 
-  /** Cierre por intención (clic afuera / Esc). Respeta pin y diálogos nativos. */
+  /** Clic afuera: en el lanzador cierra; en la consola achica. Respeta pin. */
   function tryAutoClose() {
     if (!bubble.shown || minimized || isAgentsDismissSuppressed() || isOpenDismissGrace()) return;
     void agentsAlwaysOnTop()
       .then((pinned) => {
         if (pinned || isAgentsDismissSuppressed() || !bubble.shown) return;
-        close();
+        if (launcherView === "setup") dismissSetup();
+        else dockToPill();
       })
       .catch(() => {
-        /* sin lectura del pin, no cerrar */
+        /* sin lectura del pin, no achicar */
       });
   }
 
@@ -716,7 +741,8 @@
       }),
       onAgentsBubbleAnchor((a) => void placeFromPill(a)),
       onAgentsBubbleDismiss(() => {
-        close();
+        if (launcherView === "setup") dismissSetup();
+        else dockToPill();
       }),
       onAgentsBubbleExpand(() => {
         expandFromDock();
@@ -728,18 +754,21 @@
     ];
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape" || !bubble.shown || minimized) return;
-      // Esc: cierre explícito solo si no está fijada (panel sticky).
+      // Esc: achica a la pill solo si no está fijada (panel sticky).
       if (isAgentsDismissSuppressed()) return;
-      // Consola PTY / xterm: AgentsDemo maneja Esc (cerrar consola); no cerrar el float.
+      // Consola PTY / xterm: AgentsDemo maneja Esc (cerrar consola); no achicar el float.
       const t = e.target as HTMLElement | null;
       if (t?.closest?.(".console, .xterm")) return;
       e.preventDefault();
       void agentsAlwaysOnTop()
         .then((pinned) => {
-          if (!pinned && bubble.shown) close();
+          if (!pinned && bubble.shown) {
+            if (launcherView === "setup") dismissSetup();
+            else dockToPill();
+          }
         })
         .catch(() => {
-          /* sin pin, no cerrar */
+          /* sin pin, no achicar */
         });
     };
     window.addEventListener("keydown", onKey);
@@ -750,6 +779,7 @@
       endDrag();
       endResize();
       for (const p of un) void p.then((fn) => fn());
+      close();
       liquid.publish("agents", []);
       agents.watch(null);
     };
@@ -765,6 +795,7 @@
     class:is-settling={settling}
     class:is-mode-resizing={modeResizing}
     class:is-joined={joined}
+    class:is-docked={minimized}
     data-float="agents"
     data-agents-float
     data-side={bubble.anchor?.side ?? "top"}
@@ -777,7 +808,7 @@
     <div class="af-stage">
       <AgentLauncher
         onHeaderPointerDown={startDrag}
-        onClose={close}
+        onClose={dismissSetup}
         onViewChange={(view) => void changeLauncherView(view)}
         onBrowserChange={(open) => void changeBrowser(open)}
         onToggleMaximize={toggleMaximize}
@@ -954,9 +985,11 @@
 
   /* Oculto pero vivo: las PTYs siguen corriendo. Sin pointer-events ni
      visibilidad, el overlay no arma clics sobre una ventana que no está. */
-  .af.is-off {
+  .af.is-off,
+  .af.is-docked {
     visibility: hidden;
     pointer-events: none;
+    opacity: 0;
   }
 
   @media (prefers-reduced-motion: reduce) {
@@ -974,7 +1007,7 @@
   .grip {
     position: absolute;
 
-    /* Bajo el header (.top-acts z 9): no robar pin/cerrar. */
+    /* Bajo el header (.top-acts z 9): no robar pin / minimizar. */
     z-index: 7;
     background: transparent;
   }
@@ -997,7 +1030,7 @@
 
   .grip-e,
   .grip-w {
-    /* Debajo del header (~top-ctrl + padding): no tapar pin / Bypass / X. */
+    /* Debajo del header (~top-ctrl + padding): no tapar pin / minimizar. */
     top: 40px;
     bottom: 10px;
     width: 6px;
