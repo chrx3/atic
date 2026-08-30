@@ -97,6 +97,7 @@ export const en = {
     replayTutorial: "Replay the tutorial",
     minimize: "Minimize",
     maximize: "Maximize",
+    restore: "Restore",
     close: "Close",
     confirm: "Confirm",
     cancel: "Cancel",
@@ -550,6 +551,33 @@ export const en = {
     waiting: "The agent is waiting for your permission",
     unread: "{label} unread",
     rebind: "{base} · Ctrl+click to bind another window",
+    /**
+     * Agent quotas, on the disc hover.
+     *
+     * `window.*` are the windows with a name of their own; the rest are built
+     * from their length with `unit.*`. Cursor is not here because it publishes
+     * no quota: it carries `spend`, which says spent, not left.
+     */
+    quota: {
+      window: {
+        now: "Now",
+        "5h": "5 h",
+        week: "Week",
+        month: "Month",
+        opus: "Opus wk.",
+        sonnet: "Sonnet wk.",
+        unknown: "Window",
+      },
+      unit: {
+        min: "min",
+        h: "h",
+        d: "d",
+      },
+      spend: "US$ {amount} this period",
+      periodEnds: "resets in {when}",
+      stale: "{when} ago",
+      loading: "Reading quotas…",
+    },
   },
   overlay: {
     pin: "Pin on top",
@@ -793,6 +821,9 @@ export const en = {
       usage: "Account usage",
       reconnect: "Reopen",
       connect: "Connect",
+      dockIdle: "Agents",
+      dockExpand: "Expand again",
+      hideHint: "Hide. The consoles keep running.",
     },
     captures: {
       count: "{count} recent",

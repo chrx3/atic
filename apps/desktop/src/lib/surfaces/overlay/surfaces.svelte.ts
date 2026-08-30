@@ -16,7 +16,10 @@
  * “pasan de largo” al app de atrás).
  */
 
+import { untrack } from "svelte";
+
 import { setOverlayHitRects, setOverlayItemDrag, setOverlayPointerGesture, type HitRect } from "$ipc/overlay";
+import { releaseOwned } from "./releaseOwned";
 
 /** El `id` viaja a Rust: necesita distinguir la pill, que es de donde cuelga
  *  la burbuja de agentes. */
@@ -107,6 +110,12 @@ class OverlaySurfaces {
    */
   live = $state<Record<string, Rect>>({});
 
+  /**
+   * Orden de interacción: el último float tocado queda al frente.
+   * Reactivo: los templates leen `stack(id)` y tienen que enterarse.
+   */
+  #front = $state.raw<string[]>([]);
+
   #els = new Map<string, HTMLElement>();
   #observer: ResizeObserver | null = null;
   #frame = 0;
@@ -122,6 +131,28 @@ class OverlaySurfaces {
   #sent = "";
 
   /**
+   * Trae un float al frente de los demás (mismo HWND: solo z-index CSS).
+   *
+   * La lectura va en `untrack` porque a esto lo llaman los `$effect` de los
+   * floats: si leyeran `#front`, cada uno quedaría suscrito a la pila que el
+   * otro escribe. Con dos floats abiertos se re-disparaban en cadena hasta
+   * `effect_update_depth_exceeded`, y ahí muere el runtime de Svelte del
+   * overlay —los floats se quedan pegados—. `stack()` sí es reactivo: esa
+   * lectura la hacen los templates, que tienen que enterarse.
+   */
+  bringToFront(id: string): void {
+    const front = untrack(() => this.#front);
+    if (front[front.length - 1] === id) return;
+    this.#front = [...front.filter((item) => item !== id), id];
+  }
+
+  /** 0 si nunca se tocó; si no, posición 1..n en la pila. */
+  stack(id: string): number {
+    const i = this.#front.indexOf(id);
+    return i < 0 ? 0 : i + 1;
+  }
+
+  /**
    * Registra una superficie. Devuelve la función para darla de baja, con la
    * forma que espera el `return` de un `$effect`.
    */
@@ -130,7 +161,7 @@ class OverlaySurfaces {
     this.#observe(el);
     this.schedule();
     return () => {
-      this.#els.delete(id);
+      releaseOwned(this.#els, id, el);
       this.#observer?.unobserve(el);
       el.removeEventListener("transitionend", this.#onTransitionEnd);
       this.schedule();

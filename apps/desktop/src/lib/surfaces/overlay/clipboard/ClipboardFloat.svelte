@@ -31,7 +31,7 @@
   } from "$surfaces/overlay/floatPlace";
   import { gapBetween } from "$lib/liquid/geometry";
   import { REACH } from "$lib/liquid/constants";
-  import { liquid } from "$surfaces/overlay/group.svelte";
+  import { liquid, LIQUID_HUB } from "$surfaces/overlay/group.svelte";
   import {
     publishEmergeSkin,
     publishFollowSkin,
@@ -272,10 +272,15 @@
     void bubble.shown;
     void revealPhase;
     void bubble.anchor;
+    const group = motionPhase || joined ? LIQUID_HUB : undefined;
     if (motionPhase) {
-      return publishFollowSkin("clipboard", el, CORNER);
+      return publishFollowSkin("clipboard", el, CORNER, group);
     }
-    return publishEmergeSkin("clipboard", el, CORNER);
+    return publishEmergeSkin("clipboard", el, CORNER, group);
+  });
+
+  $effect(() => {
+    if (bubble.shown) surfaces.bringToFront("clipboard");
   });
 
   $effect(() => {
@@ -438,8 +443,10 @@
     class:is-joined={joined}
     class:is-expanding={expanding}
     class:is-separating={separating}
+    data-float="clipboard"
     data-side={bubble.anchor?.side ?? "top"}
     style={bubble.vars}
+    style:--float-stack={surfaces.stack("clipboard")}
     style:--launcher-bar-open-dur="{openDur}ms"
     style:--launcher-separate-dur="{separateDur}ms"
     style:--float-close-dur="{closeDur}ms"
@@ -502,7 +509,7 @@
   .cf {
     /* Duraciones heredadas de :root (app.css); sin overrides locales. */
     position: absolute;
-    z-index: var(--z-overlay-float);
+    z-index: calc(var(--z-overlay-float) + var(--float-stack, 0));
     display: flex;
     flex-direction: column;
     left: var(--x);

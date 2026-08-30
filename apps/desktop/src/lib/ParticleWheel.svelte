@@ -45,6 +45,12 @@
     revealed = true,
     /** Lista de gajos, ya en el orden en que se dibujan. */
     tools,
+    /**
+     * Gajos que NO llevan tooltip propio porque el contenedor abre el suyo.
+     * La pill lo usa en «Agentes»: ahí el hover muestra los cupos, y dos
+     * globos sobre el mismo gajo se taparían.
+     */
+    tipSilent = [] as readonly string[],
     activeId = $bindable<Id | null>(null),
     hint = "",
     /** Texto del núcleo cuando es botón. La pill pasa "Cerrar". */
@@ -62,6 +68,7 @@
     particles?: boolean;
     revealed?: boolean;
     tools: readonly WheelItem[];
+    tipSilent?: readonly string[];
     activeId?: Id | null;
     /** Pie discreto: enseña que la rueda también vive en la pill. */
     hint?: string;
@@ -578,7 +585,9 @@
           class="pw-node"
           class:is-hot={activeId === node.tool.id}
           style="clip-path: {node.clip}"
-          use:tip={`${node.tool.label} — ${node.tool.short}`}
+          use:tip={tipSilent.includes(node.tool.id)
+            ? ""
+            : `${node.tool.label} — ${node.tool.short}`}
           aria-label="{node.tool.label}. {node.tool.short}"
           bind:this={nodeEls[index]}
           onpointerenter={() => setActive(node.tool.id, { tick: true })}

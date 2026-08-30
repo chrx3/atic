@@ -6,7 +6,15 @@
  * no sabe que existe Tauri.
  */
 
+import { LogicalSize } from "@tauri-apps/api/dpi";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { invoke } from "@tauri-apps/api/core";
+
+export type WindowCursor = { x: number; y: number };
+
+export function currentWindowLabel(): string {
+  return getCurrentWindow().label;
+}
 
 export function minimizeWindow(): Promise<void> {
   return getCurrentWindow().minimize();
@@ -15,6 +23,52 @@ export function minimizeWindow(): Promise<void> {
 /** Alterna: si está maximizada la restaura. */
 export function toggleMaximizeWindow(): Promise<void> {
   return getCurrentWindow().toggleMaximize();
+}
+
+export function startDragging(): Promise<void> {
+  return getCurrentWindow().startDragging();
+}
+
+export async function setWindowLogicalSize(w: number, h: number): Promise<void> {
+  await getCurrentWindow().setSize(new LogicalSize(w, h));
+}
+
+export async function setWindowMinLogicalSize(w: number, h: number): Promise<void> {
+  await getCurrentWindow().setMinSize(new LogicalSize(w, h));
+}
+
+export async function windowLogicalInnerSize(): Promise<{ w: number; h: number }> {
+  const win = getCurrentWindow();
+  const size = await win.innerSize();
+  const scale = await win.scaleFactor();
+  return { w: size.width / scale, h: size.height / scale };
+}
+
+export async function windowIsMaximized(): Promise<boolean> {
+  return getCurrentWindow().isMaximized();
+}
+
+export async function windowIsVisible(): Promise<boolean> {
+  const win = getCurrentWindow();
+  const visible = await win.isVisible();
+  const minimized = await win.isMinimized();
+  return visible && !minimized;
+}
+
+/** Cursor en CSS de esta ventana (no del overlay). */
+export const windowCursor = () => invoke<WindowCursor | null>("window_cursor");
+
+export async function onWindowMaximizeChange(
+  cb: (maximized: boolean) => void,
+): Promise<() => void> {
+  const win = getCurrentWindow();
+  return win.onResized(async () => {
+    cb(await win.isMaximized());
+  });
+}
+
+export async function onWindowResized(cb: () => void): Promise<() => void> {
+  return getCurrentWindow().onResized(() => cb());
 }
 
 /**
@@ -47,7 +101,15 @@ export function hideWindow(): Promise<void> {
  * redimensiona igual que el marco del sistema.
  */
 export async function startResizeDragging(
-  direction: "SouthEast" | "South" | "East",
+  direction:
+    | "North"
+    | "South"
+    | "East"
+    | "West"
+    | "NorthEast"
+    | "NorthWest"
+    | "SouthEast"
+    | "SouthWest",
 ): Promise<void> {
   await getCurrentWindow().startResizeDragging(direction);
 }
@@ -64,14 +126,3 @@ export async function onWindowFocus(
   return getCurrentWindow().onFocusChanged(({ payload }) => cb(payload));
 }
 
-/**
- * Saca un archivo de la app hacia otra aplicación.
- *
- * Es un arrastre nativo del sistema, no HTML5: soltar en el Explorador o en un
- * chat solo funciona si lo inicia el SO. El plugin se carga en el momento
- * porque la mayoría de las sesiones nunca arrastra nada.
- */
-export async function dragOut(path: string): Promise<void> {
-  const { startDrag } = await import("@crabnebula/tauri-plugin-drag");
-  await startDrag({ item: [path], icon: path });
-}

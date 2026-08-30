@@ -52,6 +52,29 @@ describe("clusterParts", () => {
       { id: "pill", shapes: [box(0, 0)] },
     ]);
   });
+
+  it("no funde floats de distinto grupo aunque se solapen", () => {
+    const clipboard = [box(0, 0, 200, 300)];
+    const agents = [box(20, 20, 200, 300)];
+    const islands = clusterParts(
+      { clipboard, agents },
+      10,
+      { clipboard: "clipboard", agents: "agents" },
+    );
+    expect(islands.map((i) => i.id).sort()).toEqual(["agents", "clipboard"]);
+  });
+
+  it("sí funde un float con la pill si ambos van al hub", () => {
+    const pill = [box(0, 0)];
+    const clipboard = [box(20, 0)];
+    const islands = clusterParts(
+      { pill, clipboard },
+      10,
+      { pill: "hub", clipboard: "hub" },
+    );
+    expect(islands).toHaveLength(1);
+    expect(islands[0]?.id).toBe("clipboard+pill");
+  });
 });
 
 describe("unionAabb", () => {

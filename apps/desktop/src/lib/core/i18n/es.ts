@@ -99,6 +99,7 @@ export const es = {
     replayTutorial: "Repetir el tutorial",
     minimize: "Minimizar",
     maximize: "Maximizar",
+    restore: "Restaurar",
     close: "Cerrar",
     confirm: "Confirmar",
     cancel: "Cancelar",
@@ -552,6 +553,33 @@ export const es = {
     waiting: "El agente espera tu permiso",
     unread: "{label} sin leer",
     rebind: "{base} · Ctrl+clic para vincular otra ventana",
+    /**
+     * Cupos de los agentes, en el hover del disco.
+     *
+     * `window.*` son las ventanas con nombre propio; las que no lo tienen se
+     * arman con `unit.*` a partir de su largo. Cursor no aparece acá porque no
+     * publica cupo: lleva `spend`, que dice consumo y no cuánto queda.
+     */
+    quota: {
+      window: {
+        now: "Ahora",
+        "5h": "5 h",
+        week: "Semana",
+        month: "Mes",
+        opus: "Opus sem.",
+        sonnet: "Sonnet sem.",
+        unknown: "Ventana",
+      },
+      unit: {
+        min: "min",
+        h: "h",
+        d: "d",
+      },
+      spend: "US$ {amount} este período",
+      periodEnds: "corta en {when}",
+      stale: "hace {when}",
+      loading: "Leyendo cupos…",
+    },
   },
   overlay: {
     pin: "Fijar arriba",
@@ -796,6 +824,9 @@ export const es = {
       usage: "Uso restante",
       reconnect: "Reabrir",
       connect: "Conectar",
+      dockIdle: "Agentes",
+      dockExpand: "Volver a agrandar",
+      hideHint: "Esconder. Las consolas siguen corriendo.",
     },
     captures: {
       count: "{count} recientes",

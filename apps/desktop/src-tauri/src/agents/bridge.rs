@@ -126,17 +126,10 @@ pub fn agent_sessions() -> Vec<SessionInfo> {
         .unwrap_or_default()
 }
 
-/// La forma del globo de agentes, en píxeles lógicos.
+/// La forma inicial del globo, en píxeles lógicos.
 ///
-/// Antes estos números eran los de la VENTANA: incluían un marco transparente
-/// de 62 px por lado donde cabía la sombra, porque una ventana recorta la suya.
-/// El globo visible medía 580×520 y toda la geometría tenía que descontar el
-/// marco. Dentro del overlay no hay ventana que recorte nada, así que esto es
-/// el globo y se acabó el `inset`.
-///
-/// El tamaño vive acá y no se mide del DOM porque al cerrarse la burbuja se
-/// repliega sobre la pill; midiéndola, la segunda apertura crecía hasta el
-/// tamaño de la pill.
+/// El tamaño vive acá y no se mide del DOM porque al cerrarse no hay silueta
+/// que medir; la próxima apertura usaría el tamaño de la pill.
 const BUBBLE: crate::floating::BubbleShape = crate::floating::BubbleShape {
     w: 360,
     h: 196,
@@ -166,23 +159,22 @@ fn bubble_shape(app: &AppHandle) -> crate::floating::BubbleShape {
     }
 }
 
-/// ¿Está la consola a la vista?
+/// ¿El usuario la dejó abierta (el float está a la vista, también achicado)?
 ///
-/// Antes lo contestaba `window.is_visible()`. Sin ventana propia, el estado
-/// vive acá: es lo único que queda de ella, y hace falta porque el atajo y la
-/// rueda son interruptores. También lo lee el historial del portapapeles
-/// (`agents_open`) para insertar en el compositor.
+/// El atajo es un interruptor. El historial del portapapeles pregunta
+/// [`agents_open`] para saber si puede insertar.
 static OPEN: AtomicBool = AtomicBool::new(false);
 
-/// Preferencia de pin sticky: Esc / clic afuera no cierran la consola.
+/// Preferencia de pin sticky: Esc no cierra la consola.
 ///
 /// Default `false`. Se hidrata desde `Config::agents_always_on_top` al arrancar.
-/// El overlay (pill incluida) queda siempre topmost; este flag no mueve el
-/// stacking.
+/// El pin no mueve el stacking del overlay: la pill y los floats comparten
+/// ventana, y desfijar no puede hundir la pill bajo otras apps.
 static ALWAYS_ON_TOP: AtomicBool = AtomicBool::new(false);
 
 const AGENTS_ANCHOR: &str = "agents-bubble-anchor";
 const AGENTS_DISMISS: &str = "agents-bubble-dismiss";
+const AGENTS_EXPAND: &str = "agents-bubble-expand";
 
 /// ¿La consola está desplegada? Lo pregunta el historial del portapapeles, que
 /// con ella abierta inserta en el compositor en vez de pegar afuera.
@@ -197,10 +189,9 @@ pub fn init_always_on_top(on: bool) {
 
 /// ¿El overlay debe ser topmost ahora?
 ///
-/// Sí, siempre. La pill y los floats comparten la misma ventana overlay: si
+/// Sí, siempre. La pill y los floats del overlay comparten esa ventana: si
 /// desfijar un float quitara always-on-top, la pill también quedaría debajo
-/// de otras apps. El pin (agents / clipboard / snippets) sigue controlando el
-/// auto-cierre (Esc / clic afuera); el stacking del overlay no.
+/// de otras apps. El pin de agentes solo evita el cierre con Esc.
 pub fn overlay_should_be_topmost() -> bool {
     true
 }
@@ -221,18 +212,36 @@ pub fn show_agents_window(app: AppHandle) {
         AGENTS_ANCHOR,
         AGENTS_DISMISS,
     );
-    // Al cerrar por toggle, `raise` no corre: hay que restaurar el topmost de
-    // la pill. Al abrir, `raise` ya aplicó el pin; reafirmar no hace daño.
     crate::overlay::set_topmost(&app, overlay_should_be_topmost());
 }
 
-/// ¿La consola está fijada (no se cierra sola con Esc / clic afuera)?
+/// Muestra o agranda. Nunca esconde: la rueda y el chip de la pill piden
+/// «abrí esto», no un interruptor. Si ya está achicada junto a la pill,
+/// el frontend la vuelve a agrandar.
+#[tauri::command]
+pub fn present_agents_window(app: AppHandle) {
+    if !crate::agents::UI_ENABLED {
+        return;
+    }
+    if OPEN.load(Ordering::Relaxed) {
+        let _ = app.emit(AGENTS_EXPAND, ());
+        // OPEN true no basta: el globo puede estar achicado o haber perdido el
+        // DOM (HMR). Sin ancla, el frontend no tiene de dónde nacer.
+        let _ = crate::panel_float::reanchor(&app, bubble_shape(&app), AGENTS_ANCHOR);
+        crate::overlay::set_topmost(&app, overlay_should_be_topmost());
+        return;
+    }
+    let _ = crate::panel_float::show(&app, &OPEN, bubble_shape(&app), AGENTS_ANCHOR);
+    crate::overlay::set_topmost(&app, overlay_should_be_topmost());
+}
+
+/// ¿La consola está fijada (no se cierra sola con Esc)?
 #[tauri::command]
 pub fn agents_always_on_top() -> bool {
     ALWAYS_ON_TOP.load(Ordering::Relaxed)
 }
 
-/// Fija o desfija la consola (sticky dismiss). Persiste; el overlay sigue topmost.
+/// Fija o desfija la consola (sticky Esc). Persiste; el overlay sigue topmost.
 #[tauri::command]
 pub fn set_agents_always_on_top(app: AppHandle, on: bool) {
     ALWAYS_ON_TOP.store(on, Ordering::Relaxed);
@@ -247,7 +256,6 @@ pub fn set_agents_always_on_top(app: AppHandle, on: bool) {
         };
         let _ = snapshot.save(&state.dirs.config_path());
     }
-    // Reafirma topmost: la pill no debe hundirse al tocar el pin.
     crate::overlay::set_topmost(&app, overlay_should_be_topmost());
 }
 
@@ -277,11 +285,10 @@ pub fn save_agents_bubble_size(app: AppHandle, w: i32, h: i32) {
     }
 }
 
-/// Repliega la burbuja sobre la pill.
+/// Esconde el float. Las consolas siguen corriendo.
 #[tauri::command]
 pub fn hide_agents_window(app: AppHandle) {
     crate::panel_float::hide(&app, &OPEN, AGENTS_DISMISS);
-    // Restaura topmost según el resto de floats abiertos / su pin.
     crate::overlay::set_topmost(&app, overlay_should_be_topmost());
 }
 
@@ -649,6 +656,22 @@ pub async fn agent_codex_usage() -> Result<super::codex_usage::CodexAccountUsage
     tauri::async_runtime::spawn_blocking(super::codex_usage::fetch_account_usage)
         .await
         .map_err(|e| format!("consulta de uso cancelada: {e}"))?
+}
+
+/// Cupos de todos los agentes detectados, en una forma sola.
+///
+/// Es lo que consume el hover de la pill, así que corre entero en
+/// `spawn_blocking` y cachea un minuto: el puntero entra y sale del disco
+/// varias veces por minuto y no puede disparar cuatro consultas cada vez.
+/// `force` es para el refresco a mano.
+#[tauri::command]
+pub async fn agent_quota_overview(
+    force: Option<bool>,
+) -> Result<super::quota::QuotaOverview, String> {
+    let force = force.unwrap_or(false);
+    tauri::async_runtime::spawn_blocking(move || super::quota::fetch_overview(force))
+        .await
+        .map_err(|e| format!("consulta de cupos cancelada: {e}"))
 }
 
 /// Lista subcarpetas de `path` (vacío/`~` → home). Solo lectura; sin archivos.

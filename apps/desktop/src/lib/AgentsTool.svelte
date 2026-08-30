@@ -6,7 +6,7 @@
    * lado de lo que estés haciendo. Duplicarla acá daría dos vistas del mismo
    * proceso compitiendo por ser «la» sesión.
    */
-  import { showAgentsWindow } from "$lib/api";
+  import { presentAgentsWindow } from "$lib/api";
   import { agents } from "$lib/agentSessions.svelte";
   import { onMount } from "svelte";
 
@@ -46,7 +46,7 @@
   <button
     type="button"
     class="rb-btn rb-btn-primary"
-    onclick={() => void showAgentsWindow()}
+    onclick={() => void presentAgentsWindow()}
   >
     Abrir la consola
   </button>

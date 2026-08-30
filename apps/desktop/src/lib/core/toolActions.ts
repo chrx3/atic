@@ -8,7 +8,7 @@
 
 import { capture } from "$domain/capture.svelte";
 import { dictation } from "$domain/dictation.svelte";
-import { showAgentsWindow } from "$ipc/agents";
+import { presentAgentsWindow } from "$ipc/agents";
 import { startBoard } from "$ipc/annotate";
 import { startCaptureSession } from "$ipc/captures";
 import { showClipboardWindow } from "$ipc/clipboard";
@@ -86,7 +86,7 @@ export async function executeToolAction(
       await startBoard();
       return;
     case "agents":
-      if (AGENTS_ENABLED) await showAgentsWindow();
+      if (AGENTS_ENABLED) await presentAgentsWindow();
       return;
     case "launcher":
       await showLauncher();

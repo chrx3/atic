@@ -1,8 +1,11 @@
-//! Arrastre OLE de texto plano.
+//! Arrastre OLE propio: texto plano y archivos.
 //!
 //! El plugin `tauri-plugin-drag` en Windows solo implementa `CF_HDROP` (archivo).
 //! Arrastrar un `.atic-drag-*.txt` a Cursor/Notepad inserta la **ruta**, no el
 //! contenido. Acá hacemos `DoDragDrop` con texto de verdad.
+//!
+//! Los archivos también pasaron a este camino, aunque el plugin sí sabía
+//! hacerlos: lo que el plugin no da es **cancelar** el arrastre. Ver `Payload`.
 //!
 //! # Por qué no alcanza con `CF_UNICODETEXT`
 //!
@@ -21,6 +24,8 @@
 
 use std::sync::Once;
 
+use windows_sys::Win32::{Foundation::POINT as SysPoint, UI::Shell::DROPFILES as DropFiles};
+
 use windows::{
     core::*,
     Win32::{
@@ -34,8 +39,8 @@ use windows::{
             },
             Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE},
             Ole::{
-                DoDragDrop, IDropSource, IDropSource_Impl, OleInitialize, CF_LOCALE, CF_OEMTEXT,
-                CF_TEXT, CF_UNICODETEXT, DROPEFFECT, DROPEFFECT_COPY,
+                DoDragDrop, IDropSource, IDropSource_Impl, OleInitialize, CF_HDROP, CF_LOCALE,
+                CF_OEMTEXT, CF_TEXT, CF_UNICODETEXT, DROPEFFECT, DROPEFFECT_COPY,
             },
             SystemServices::{MK_LBUTTON, MODIFIERKEYS_FLAGS},
         },
@@ -53,12 +58,38 @@ fn ensure_ole() {
     });
 }
 
-/// Lo que ofrecemos, EN ORDEN DE PREFERENCIA.
+/// Qué se está arrastrando.
 ///
-/// `EnumFormatEtc` los enumera en este orden y un target que recorre la lista
-/// se queda con el primero que entiende: Unicode antes que ANSI, siempre.
-fn offered_formats() -> [u16; 4] {
-    [CF_UNICODETEXT.0, CF_TEXT.0, CF_OEMTEXT.0, CF_LOCALE.0]
+/// El archivo también pasa por acá —y no por `tauri-plugin-drag`— por el
+/// `QueryContinueDrag` de abajo: soltar sobre agentes tiene que CANCELAR el
+/// OLE. Con el plugin no hay forma de cancelar, y como el overlay es
+/// click-through durante el arrastre, el `CF_HDROP` caía además en la app de
+/// atrás: la misma imagen entraba dos veces.
+enum Payload {
+    Text(String),
+    Files(Vec<String>),
+}
+
+impl Payload {
+    /// Lo que ofrecemos, EN ORDEN DE PREFERENCIA.
+    ///
+    /// `EnumFormatEtc` los enumera en este orden y un target que recorre la
+    /// lista se queda con el primero que entiende: Unicode antes que ANSI,
+    /// siempre.
+    fn formats(&self) -> Vec<u16> {
+        match self {
+            Payload::Text(_) => vec![CF_UNICODETEXT.0, CF_TEXT.0, CF_OEMTEXT.0, CF_LOCALE.0],
+            Payload::Files(_) => vec![CF_HDROP.0],
+        }
+    }
+
+    /// El bloque de memoria que le toca a cada formato.
+    fn hglobal(&self, cf: u16) -> Result<HGLOBAL> {
+        match self {
+            Payload::Text(text) => hglobal_for(text, cf),
+            Payload::Files(paths) => bytes_to_hglobal(&hdrop_bytes(paths)),
+        }
+    }
 }
 
 fn format_etc(cf: u16) -> FORMATETC {
@@ -72,13 +103,13 @@ fn format_etc(cf: u16) -> FORMATETC {
 }
 
 /// Cuál de los formatos que ofrecemos está pidiendo el target, si alguno.
-fn requested_format(pformatetc: *const FORMATETC) -> Option<u16> {
+fn requested_format(pformatetc: *const FORMATETC, formats: &[u16]) -> Option<u16> {
     // SAFETY: puntero del caller; `as_ref` ya cubre el nulo.
     let fe = unsafe { pformatetc.as_ref() }?;
     if (fe.tymed & (TYMED_HGLOBAL.0 as u32)) == 0 || fe.dwAspect != DVASPECT_CONTENT.0 {
         return None;
     }
-    offered_formats().into_iter().find(|cf| *cf == fe.cfFormat)
+    formats.iter().copied().find(|cf| *cf == fe.cfFormat)
 }
 
 fn bytes_to_hglobal(bytes: &[u8]) -> Result<HGLOBAL> {
@@ -120,7 +151,7 @@ fn wide_to_codepage(wide: &[u16], codepage: u32) -> Vec<u8> {
     out
 }
 
-/// El bloque de memoria que le toca a cada formato.
+/// El bloque de memoria que le toca a cada formato de texto.
 fn hglobal_for(text: &str, cf: u16) -> Result<HGLOBAL> {
     if cf == CF_LOCALE.0 {
         // SAFETY: sin parámetros ni punteros.
@@ -140,6 +171,39 @@ fn hglobal_for(text: &str, cf: u16) -> Result<HGLOBAL> {
 
     let codepage = if cf == CF_OEMTEXT.0 { CP_OEMCP } else { CP_ACP };
     bytes_to_hglobal(&wide_to_codepage(&wide, codepage))
+}
+
+/// `CF_HDROP`: cabecera `DROPFILES` y detrás las rutas en UTF-16, cada una con
+/// su NUL y un NUL extra que cierra la lista.
+///
+/// La cabecera sale de `windows-sys` (que ya trae `Win32_UI_Shell`) en vez de
+/// `windows`, para no sumarle ese módulo entero al build por una struct de
+/// datos: acá solo se necesita su layout.
+fn hdrop_bytes(paths: &[String]) -> Vec<u8> {
+    let mut list: Vec<u16> = Vec::new();
+    for path in paths {
+        list.extend(path.encode_utf16());
+        list.push(0);
+    }
+    list.push(0);
+
+    let header = DropFiles {
+        pFiles: std::mem::size_of::<DropFiles>() as u32,
+        pt: SysPoint { x: 0, y: 0 },
+        fNC: 0,
+        fWide: 1,
+    };
+    let head = std::mem::size_of::<DropFiles>();
+    let mut bytes = Vec::with_capacity(head + list.len() * 2);
+    // SAFETY: `header` es POD `#[repr(C)]`; se relee como bytes para copiarlo.
+    bytes.extend_from_slice(unsafe {
+        std::slice::from_raw_parts((&header as *const DropFiles) as *const u8, head)
+    });
+    // SAFETY: `list` sigue viva y se relee como bytes.
+    bytes.extend_from_slice(unsafe {
+        std::slice::from_raw_parts(list.as_ptr() as *const u8, list.len() * 2)
+    });
+    bytes
 }
 
 fn hresult_err(code: HRESULT) -> Error {
@@ -175,6 +239,7 @@ impl IDropSource_Impl for DropSource_Impl {
 
 #[implement(IEnumFORMATETC)]
 struct FormatEnum {
+    formats: Vec<u16>,
     index: std::cell::Cell<u32>,
 }
 
@@ -184,7 +249,7 @@ impl IEnumFORMATETC_Impl for FormatEnum_Impl {
         if rgelt.is_null() {
             return E_POINTER;
         }
-        let formats = offered_formats();
+        let formats = &self.formats;
         let mut fetched = 0u32;
         while fetched < celt {
             let i = self.index.get() as usize;
@@ -208,7 +273,7 @@ impl IEnumFORMATETC_Impl for FormatEnum_Impl {
     }
 
     fn Skip(&self, celt: u32) -> Result<()> {
-        let total = offered_formats().len() as u32;
+        let total = self.formats.len() as u32;
         self.index
             .set(self.index.get().saturating_add(celt).min(total));
         Ok(())
@@ -221,6 +286,7 @@ impl IEnumFORMATETC_Impl for FormatEnum_Impl {
 
     fn Clone(&self) -> Result<IEnumFORMATETC> {
         Ok(FormatEnum {
+            formats: self.formats.clone(),
             index: std::cell::Cell::new(self.index.get()),
         }
         .into())
@@ -228,17 +294,17 @@ impl IEnumFORMATETC_Impl for FormatEnum_Impl {
 }
 
 #[implement(IDataObject)]
-struct TextDataObject {
-    text: String,
+struct DragDataObject {
+    payload: Payload,
 }
 
 #[allow(non_snake_case)]
-impl IDataObject_Impl for TextDataObject_Impl {
+impl IDataObject_Impl for DragDataObject_Impl {
     fn GetData(&self, pformatetcin: *const FORMATETC) -> Result<STGMEDIUM> {
-        let Some(cf) = requested_format(pformatetcin) else {
+        let Some(cf) = requested_format(pformatetcin, &self.payload.formats()) else {
             return Err(hresult_err(DV_E_FORMATETC));
         };
-        let handle = hglobal_for(&self.text, cf)?;
+        let handle = self.payload.hglobal(cf)?;
         Ok(STGMEDIUM {
             tymed: TYMED_HGLOBAL.0 as u32,
             u: STGMEDIUM_0 { hGlobal: handle },
@@ -251,7 +317,7 @@ impl IDataObject_Impl for TextDataObject_Impl {
     }
 
     fn QueryGetData(&self, pformatetc: *const FORMATETC) -> HRESULT {
-        if requested_format(pformatetc).is_some() {
+        if requested_format(pformatetc, &self.payload.formats()).is_some() {
             S_OK
         } else {
             DV_E_FORMATETC
@@ -283,6 +349,7 @@ impl IDataObject_Impl for TextDataObject_Impl {
             return Err(hresult_err(E_NOTIMPL));
         }
         Ok(FormatEnum {
+            formats: self.payload.formats(),
             index: std::cell::Cell::new(0),
         }
         .into())
@@ -325,12 +392,21 @@ pub fn drag_unicode_text(text: &str) -> std::result::Result<DragOutcome, String>
     if text.is_empty() {
         return Err("texto vacío".into());
     }
+    run_drag(Payload::Text(text.to_string()))
+}
+
+/// Arrastra archivos como `CF_HDROP`. Bloquea el hilo hasta soltar.
+pub fn drag_files(paths: &[String]) -> std::result::Result<DragOutcome, String> {
+    if paths.is_empty() {
+        return Err("sin archivos que arrastrar".into());
+    }
+    run_drag(Payload::Files(paths.to_vec()))
+}
+
+fn run_drag(payload: Payload) -> std::result::Result<DragOutcome, String> {
     ensure_ole();
 
-    let data: IDataObject = TextDataObject {
-        text: text.to_string(),
-    }
-    .into();
+    let data: IDataObject = DragDataObject { payload }.into();
     let source: IDropSource = DropSource.into();
     let mut effect = DROPEFFECT::default();
 

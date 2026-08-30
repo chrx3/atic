@@ -399,8 +399,9 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let docx = dir.join("test.docx");
         let pdf = dir.join("test.pdf");
-        write_docx(&docx, &recording, &transcript, None).unwrap();
-        write_pdf(&pdf, &recording, &transcript, None).unwrap();
+        let copy = export_copy(false);
+        write_docx(&docx, &recording, &transcript, None, &copy).unwrap();
+        write_pdf(&pdf, &recording, &transcript, None, &copy).unwrap();
         assert!(std::fs::read(&docx).unwrap().starts_with(b"PK"));
         assert!(std::fs::read(&pdf).unwrap().starts_with(b"%PDF-1.4"));
         std::fs::remove_dir_all(dir).ok();

@@ -66,6 +66,9 @@ const SAMPLE_MS: i64 = 4;
 /// cliente no coincidía con el outer.
 static HIT_RECTS: Mutex<Vec<HitCss>> = Mutex::new(Vec::new());
 
+/// Los hit-rects que poda un arrastre de ítem, para devolverlos al terminar.
+static ITEM_DRAG_SAVED_RECTS: Mutex<Vec<HitCss>> = Mutex::new(Vec::new());
+
 /// HWND del overlay (para `ScreenToClient` en el camino caliente).
 static OVERLAY_HWND: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
 
@@ -598,6 +601,44 @@ fn apply_overlay_geometry(window: &tauri::WebviewWindow) -> OverlayRect {
     rect
 }
 
+/// Tras una suspensión larga con cambio de topología, Windows puede dejar el
+/// overlay minimizado: `GetWindowRect` devuelve la posición icónica
+/// (-32000,-32000) y ni `set_position` ni `SetWindowPos` lo sacan de ahí, así
+/// que `overlay_covers_topo` no se cumple nunca. Restaurar sin activar para no
+/// robarle el foco a la ventana de adelante.
+#[cfg(windows)]
+fn restore_overlay_if_minimized(window: &tauri::WebviewWindow) -> bool {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{IsIconic, ShowWindow, SW_SHOWNOACTIVATE};
+
+    let Ok(hwnd) = window.hwnd() else {
+        return false;
+    };
+    // SAFETY: HWND de Tauri vivo; `IsIconic` solo lee y `ShowWindow` cambia el
+    // estado de esa ventana.
+    unsafe {
+        if IsIconic(hwnd.0 as _) == 0 {
+            return false;
+        }
+        ShowWindow(hwnd.0 as _, SW_SHOWNOACTIVATE);
+    }
+    tracing::info!(
+        target: "overlay",
+        "overlay minimizado por Windows; restaurado sin activar"
+    );
+    true
+}
+
+/// ¿El overlay quedó icónico? `IsIconic` sobre el HWND guardado: apto para el
+/// hilo de poll, que no puede tocar APIs de Tauri fuera del hilo principal.
+#[cfg(windows)]
+fn overlay_is_iconic() -> bool {
+    use windows_sys::Win32::UI::WindowsAndMessaging::IsIconic;
+
+    let hwnd = OVERLAY_HWND.load(Ordering::Acquire);
+    // SAFETY: HWND del overlay vivo mientras la app corre; `IsIconic` solo lee.
+    hwnd != 0 && unsafe { IsIconic(hwnd as _) != 0 }
+}
+
 /// Si Windows acaba de sumar/quitar un monitor, reajusta el overlay.
 #[cfg(windows)]
 fn sync_overlay_to_displays(app: &AppHandle) {
@@ -605,6 +646,11 @@ fn sync_overlay_to_displays(app: &AppHandle) {
         return;
     };
     install_overlay_hooks(&window);
+    if restore_overlay_if_minimized(&window) {
+        // Los reintentos gastados mientras estaba icónico no cuentan: sin
+        // presupuesto nuevo, la rama de rendición deja la pill invisible.
+        COVER_TRIES.store(0, Ordering::Relaxed);
+    }
     let topo = display_topo();
     let scale = window.scale_factor().unwrap_or(1.0).max(0.01);
     let same = APPLIED_TOPO
@@ -761,6 +807,10 @@ fn start_display_watch(app: AppHandle) {
         .ok();
     // Tras hibernar el segundo monitor suele aparecer segundos después, sin
     // otro `WM_DISPLAYCHANGE`. Comparar topología es barato.
+    //
+    // Un overlay icónico también entra acá: si Windows lo minimiza con la
+    // topología ya asentada no llega ningún mensaje y el resto de la condición
+    // nunca se cumple, así que la restauración no se dispararía sola.
     std::thread::Builder::new()
         .name("atic-display-poll".into())
         .spawn(move || loop {
@@ -769,7 +819,10 @@ fn start_display_watch(app: AppHandle) {
             {
                 let topo = display_topo();
                 let recorded = APPLIED_TOPO.lock().ok().and_then(|g| *g);
-                if recorded != Some(topo) || COVER_RETRY.load(Ordering::Relaxed) {
+                if recorded != Some(topo)
+                    || COVER_RETRY.load(Ordering::Relaxed)
+                    || overlay_is_iconic()
+                {
                     let _ = tx.try_send(());
                 }
             }
@@ -1010,6 +1063,30 @@ fn cover_virtual_screen(window: &tauri::WebviewWindow) {
 /// El overlay (pill + floats) queda siempre topmost: la pill no puede hundirse
 /// al desfijar un float porque comparten ventana. El pin solo afecta dismiss.
 pub fn raise(app: &AppHandle) {
+    restack(app, Restack::Front);
+}
+
+/// Al armar por hover: topmost respecto de otras apps, pero debajo de las
+/// ventanas de trabajo (anotar). Si no, pasar cerca de la pill sube TODAS las
+/// flotantes encima del editor aunque no las estés tocando.
+fn raise_for_pointer(app: &AppHandle) {
+    restack(app, Restack::BelowWork);
+}
+
+/// El editor de anotaciones acaba de mostrarse: el overlay no debe taparlo.
+pub fn yield_to_work_windows(app: &AppHandle) {
+    if CAPTURING.load(Ordering::Acquire) {
+        return;
+    }
+    tuck_below_work_windows(app);
+}
+
+enum Restack {
+    Front,
+    BelowWork,
+}
+
+fn restack(app: &AppHandle, _how: Restack) {
     if CAPTURING.load(Ordering::Acquire) {
         return;
     }
@@ -1038,10 +1115,61 @@ pub fn raise(app: &AppHandle) {
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
             );
         }
+        if on {
+            tuck_below_work_windows(app);
+        }
     }
     #[cfg(not(windows))]
     {
-        let _ = (app, on);
+        let _ = (app, on, _how);
+    }
+}
+
+/// Ventanas que tienen que quedar encima del overlay (lámina a pantalla completa).
+fn work_windows_above_overlay() -> &'static [&'static str] {
+    &[crate::annotate::ANNOTATE_LABEL]
+}
+
+fn tuck_below_work_windows(app: &AppHandle) {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            SetWindowPos, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+        };
+        let Some(overlay) = app.get_webview_window(LABEL) else {
+            return;
+        };
+        let Ok(overlay_hwnd) = overlay.hwnd() else {
+            return;
+        };
+        for label in work_windows_above_overlay() {
+            let Some(window) = app.get_webview_window(*label) else {
+                continue;
+            };
+            if !window.is_visible().unwrap_or(false) {
+                continue;
+            }
+            let Ok(above) = window.hwnd() else {
+                continue;
+            };
+            // SAFETY: ambos HWND los da Tauri y viven mientras vivan las ventanas.
+            // `hWndInsertAfter` = la ventana que queda ENCIMA del overlay.
+            unsafe {
+                SetWindowPos(
+                    overlay_hwnd.0 as _,
+                    above.0 as _,
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                );
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = app;
     }
 }
 
@@ -1371,7 +1499,11 @@ fn start_toggle_worker(app: AppHandle) {
                         // Durante captura nunca reclamar el frente: le roba el
                         // mouse al overlay de selección.
                         if armed && !capturing {
-                            raise(&app);
+                            if POINTER_GESTURE.load(Ordering::Acquire) {
+                                raise(&app);
+                            } else {
+                                raise_for_pointer(&app);
+                            }
                         }
                         let Some(window) = app.get_webview_window(LABEL) else {
                             break;
@@ -1509,8 +1641,14 @@ pub fn set_overlay_pointer_gesture(_app: AppHandle, on: bool) {
 pub fn set_overlay_item_drag(app: AppHandle, on: bool) {
     ITEM_DRAG_PASSTHROUGH.store(on, Ordering::SeqCst);
     if on {
-        if let Ok(mut guard) = HIT_RECTS.lock() {
-            guard.retain(|r| is_ole_drop_target(&r.id));
+        // Guardar antes de podar: quien arrastra desde el propio overlay los
+        // republica al soltar, pero el estante es otra ventana y no puede, y
+        // sin ellos el overlay queda muerto al mouse.
+        if let Ok(mut saved) = ITEM_DRAG_SAVED_RECTS.lock() {
+            if let Ok(mut guard) = HIT_RECTS.lock() {
+                saved.clone_from(&guard);
+                guard.retain(|r| is_ole_drop_target(&r.id));
+            }
         }
         ARMED.store(false, Ordering::SeqCst);
         if let Some(window) = app.get_webview_window(LABEL) {
@@ -1520,6 +1658,15 @@ pub fn set_overlay_item_drag(app: AppHandle, on: bool) {
         #[cfg(windows)]
         reevaluate_arm();
     } else {
+        // Devolver lo podado. Si el overlay ya republicó por su cuenta, su
+        // envío es más nuevo que esta copia y pisa a esta enseguida.
+        if let Ok(mut saved) = ITEM_DRAG_SAVED_RECTS.lock() {
+            if !saved.is_empty() {
+                if let Ok(mut guard) = HIT_RECTS.lock() {
+                    *guard = std::mem::take(&mut *saved);
+                }
+            }
+        }
         #[cfg(windows)]
         reevaluate_arm();
     }
@@ -1676,6 +1823,34 @@ fn client_origin_physical() -> Option<(f64, f64)> {
 #[cfg(not(windows))]
 fn client_origin_physical() -> Option<(f64, f64)> {
     None
+}
+
+/// Dónde está el cursor, en CSS de la ventana que pregunta.
+#[tauri::command]
+pub fn window_cursor(window: tauri::WebviewWindow) -> Option<OverlayPoint> {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::POINT;
+        use windows_sys::Win32::Graphics::Gdi::ScreenToClient;
+
+        let (sx, sy) = crate::floating::cursor_position()?;
+        let hwnd = window.hwnd().ok()?;
+        let mut pt = POINT { x: sx, y: sy };
+        // SAFETY: HWND de esta webview; ScreenToClient solo escribe `pt`.
+        if unsafe { ScreenToClient(hwnd.0 as _, &mut pt) } == 0 {
+            return None;
+        }
+        let scale = window.scale_factor().unwrap_or(1.0).max(0.1);
+        Some(OverlayPoint {
+            x: f64::from(pt.x) / scale,
+            y: f64::from(pt.y) / scale,
+        })
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = window;
+        None
+    }
 }
 
 /// Mapeo lineal cliente-físico → CSS del webview.
