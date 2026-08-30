@@ -39,7 +39,7 @@
     readClipboardDragText,
     type ClipboardOleDetail,
   } from "$ipc/clipboard";
-  import { overlayCursor, pillTrace, setOverlayTextMode } from "$ipc/overlay";
+  import { pillTrace, overlayCursor, setOverlayTextMode } from "$ipc/overlay";
   import type { AgentsWorkspaceShortcut } from "$ipc/events";
   import type { AgentsComposerInsert, ConsoleKind, SshHost } from "$lib/types";
   import EmptyState from "$lib/ui/EmptyState.svelte";
@@ -1470,20 +1470,28 @@
       dropHint = dropHintAt(e.clientX, e.clientY);
     };
     const onEnd = (e: PointerEvent) => {
-      el.removeEventListener("pointermove", onMove);
-      el.removeEventListener("pointerup", onEnd);
-      el.removeEventListener("pointercancel", onEnd);
+      window.removeEventListener("pointermove", onMove, true);
+      window.removeEventListener("pointerup", onEnd, true);
+      window.removeEventListener("pointercancel", onEnd, true);
       if (el.hasPointerCapture?.(pointerId)) el.releasePointerCapture(pointerId);
-      if (engaged) {
-        dragConsumedClick = true;
-        if (e.type === "pointerup" && dropHint) applyTabDrop(key, dropHint);
+      try {
+        if (engaged) {
+          dragConsumedClick = true;
+          if (e.type === "pointerup" && dropHint) applyTabDrop(key, dropHint);
+        }
+      } finally {
+        // Pase lo que pase al soltar, la ficha fantasma se apaga.
+        tabDrag = null;
+        dropHint = null;
       }
-      tabDrag = null;
-      dropHint = null;
     };
-    el.addEventListener("pointermove", onMove);
-    el.addEventListener("pointerup", onEnd);
-    el.addEventListener("pointercancel", onEnd);
+    // En `window` y en captura: la captura de puntero no siempre prende, y sin
+    // ella el `pointerup` cae en la terminal —el drop no se aplicaba y el
+    // fantasma quedaba pegado, resucitando al volver a pasar por la ficha—.
+    // La fase de captura además gana a cualquier `stopPropagation` de xterm.
+    window.addEventListener("pointermove", onMove, true);
+    window.addEventListener("pointerup", onEnd, true);
+    window.addEventListener("pointercancel", onEnd, true);
   }
 
   /**
@@ -1816,6 +1824,8 @@
   const IMAGE_EXT = /\.(png|jpe?g|gif|webp)$/i;
   let lastPasted = { text: "", at: 0 };
   let oleWatch: number | null = null;
+  /** Descarta sondeos de cursor que llegan después de terminar el arrastre. */
+  let oleWatchGen = 0;
 
   function panelIsLive(): boolean {
     const el = consoleEl;
@@ -1989,6 +1999,11 @@
   }
 
   function stopOleWatch() {
+    // La generación sube primero: `overlayCursor()` es un IPC más lento que el
+    // intervalo, así que al soltar quedan sondeos en vuelo que volvían a
+    // encender `clipDropKey` después de apagarlo —y el borde de drop se
+    // quedaba pintado para siempre—.
+    oleWatchGen++;
     if (oleWatch != null) {
       clearInterval(oleWatch);
       oleWatch = null;
@@ -2004,13 +2019,16 @@
 
   function startOleWatch() {
     if (oleWatch != null) return;
+    const gen = ++oleWatchGen;
     oleWatch = window.setInterval(() => {
+      if (gen !== oleWatchGen) return;
       if (!panelIsLive()) {
         clipDropKey = null;
         return;
       }
       void overlayCursor()
         .then((pt) => {
+          if (gen !== oleWatchGen) return;
           if (!pt) {
             clipDropKey = null;
             return;
@@ -2020,7 +2038,7 @@
             (pointInEl(bodyEl, pt.x, pt.y) ? termKeyAt(-1, -1) : null);
         })
         .catch(() => {
-          clipDropKey = null;
+          if (gen === oleWatchGen) clipDropKey = null;
         });
     }, 50);
   }
@@ -2636,9 +2654,9 @@
           <button
             type="button"
             class="icon-btn"
-            aria-label={minimized ? "Restaurar ventana" : "Minimizar a la barra"}
+            aria-label={minimized ? t("chrome.restore") : t("chrome.minimize")}
             aria-pressed={minimized}
-            use:tip={minimized ? "Restaurar ventana" : "Minimizar a la barra"}
+            use:tip={minimized ? t("chrome.restore") : t("chrome.minimize")}
             onclick={onToggleMinimize}
           >
             <Icon icon={Minus} size={12} />
@@ -2649,9 +2667,9 @@
             type="button"
             class="icon-btn"
             class:is-on={maximized}
-            aria-label={maximized ? "Restaurar tamaño" : "Agrandar al monitor"}
+            aria-label={maximized ? t("chrome.restore") : t("chrome.maximize")}
             aria-pressed={maximized}
-            use:tip={maximized ? "Restaurar tamaño" : "Agrandar al monitor"}
+            use:tip={maximized ? t("chrome.restore") : t("chrome.maximize")}
             onclick={onToggleMaximize}
           >
             <Icon icon={Square} size={11} />
@@ -2676,8 +2694,8 @@
           <button
             type="button"
             class="icon-btn"
-            aria-label="Esconder ventana"
-            use:tip={"Esconder ventana. Las consolas siguen corriendo."}
+            aria-label={t("chrome.close")}
+            use:tip={t("page.agents.hideHint")}
             onclick={() => onClose()}
           >
             <Icon icon={X} size={12} />

@@ -746,6 +746,42 @@ pub async fn start_clipboard_text_drag(
     }
 }
 
+/// Arrastra archivos como `CF_HDROP` con nuestro propio drag source.
+///
+/// Reemplaza a `tauri-plugin-drag` para imágenes y capturas. El plugin no deja
+/// cancelar, y como el overlay queda click-through durante el arrastre, soltar
+/// sobre la consola dejaba caer el archivo TAMBIÉN en la app de atrás. Nuestro
+/// `QueryContinueDrag` cancela sobre agentes; el caller inserta después con
+/// `try_clipboard_drop_on_agents`, igual que ya hacía.
+#[tauri::command]
+pub async fn start_file_drag(app: AppHandle, paths: Vec<String>) -> Result<(), String> {
+    if paths.is_empty() {
+        return Err(crate::ui_lang::msg(
+            "Nada que arrastrar.",
+            "Nothing to drag.",
+        ));
+    }
+
+    #[cfg(windows)]
+    {
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.run_on_main_thread(move || {
+            let _ = tx.send(crate::ole_text_drag::drag_files(&paths));
+        })
+        .map_err(|e| e.to_string())?;
+        rx.recv().map_err(|e| e.to_string())??;
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (app, paths);
+        Err(crate::ui_lang::msg(
+            "El arrastre de archivos solo está en Windows.",
+            "File drag is only available on Windows.",
+        ))
+    }
+}
+
 /// Lee un `.atic-drag-*.txt` del dir de clipboard (solo esas rutas).
 #[tauri::command]
 pub fn read_clipboard_drag_text(state: State<AppState>, path: String) -> Result<String, String> {

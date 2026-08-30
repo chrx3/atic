@@ -41,12 +41,13 @@ function publishFromEl(
   el: HTMLElement,
   corner: number,
   r: DOMRect,
+  group?: string,
 ): SkinRect {
   const layoutW = el.offsetWidth || r.width;
   const layoutH = el.offsetHeight || r.height;
   const k = Math.min(r.width / layoutW, r.height / layoutH, 1);
   const rect = { x: r.x, y: r.y, w: r.width, h: r.height };
-  liquid.publish(id, [boxShape(rect, corner * k)]);
+  liquid.publish(id, [boxShape(rect, corner * k)], group);
   return rect;
 }
 
@@ -54,6 +55,7 @@ export function publishEmergeSkin(
   id: string,
   el: HTMLElement,
   corner: number,
+  group?: string,
 ): () => void {
   let raf = 0;
   let still = 0;
@@ -70,7 +72,7 @@ export function publishEmergeSkin(
     } else {
       const cur = { x: r.x, y: r.y, w: r.width, h: r.height };
       if (last === null || !sameRect(last, cur)) {
-        last = publishFromEl(id, el, corner, r);
+        last = publishFromEl(id, el, corner, r, group);
         still = 0;
         // Morph no dispara ResizeObserver: hits solo cuando el rect cambió
         // (layoutRect usa `--x/--y`, no el bounding escalado).
@@ -97,6 +99,7 @@ export function publishFollowSkin(
   id: string,
   el: HTMLElement,
   corner: number,
+  group?: string,
 ): () => void {
   let raf = 0;
   let still = 0;
@@ -115,7 +118,7 @@ export function publishFollowSkin(
     } else {
       const cur = { x: r.x, y: r.y, w: r.width, h: r.height };
       if (last === null || !sameRect(last, cur)) {
-        last = publishFromEl(id, el, corner, r);
+        last = publishFromEl(id, el, corner, r, group);
         still = 0;
       } else {
         still += 1;
@@ -137,6 +140,7 @@ export function publishFollowSkin(
 export function publishMeasuredSkin(
   id: string,
   measure: () => { key: string; shapes: Shape[] },
+  group?: string,
 ): () => void {
   let raf = 0;
   let still = 0;
@@ -149,7 +153,7 @@ export function publishMeasuredSkin(
     if (key !== lastKey) {
       lastKey = key;
       still = 0;
-      liquid.publish(id, shapes);
+      liquid.publish(id, shapes, group);
     } else {
       still += 1;
     }

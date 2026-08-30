@@ -99,10 +99,15 @@ export function rigidShift(prev: Shape[], next: Shape[]): Shift | null {
  *
  * El `id` es estable entre cuadros: las mismas partes, ordenadas, unidas con
  * `+`. Así el Skin de cada isla sobrevive al drag y puede trasladar el path.
+ *
+ * `affinity` es el grupo de fusión: dos partes solo se unen si lo comparten.
+ * Sin eso el clipboard pegado a la consola se volvía un solo charco — y la
+ * regla del sistema es fundir solo cuando una forma **sale** de la otra (la pill).
  */
 export function clusterParts(
   parts: Record<string, Shape[]>,
   reach: number,
+  affinity?: Record<string, string>,
 ): Island[] {
   const ids = Object.keys(parts)
     .filter((id) => (parts[id]?.length ?? 0) > 0)
@@ -125,6 +130,11 @@ export function clusterParts(
 
   for (let i = 0; i < ids.length; i++) {
     for (let j = i + 1; j < ids.length; j++) {
+      if (affinity) {
+        const a = affinity[ids[i]!] ?? ids[i]!;
+        const b = affinity[ids[j]!] ?? ids[j]!;
+        if (a !== b) continue;
+      }
       if (aabbGap(bounds[i]!, bounds[j]!) <= reach) unite(i, j);
     }
   }

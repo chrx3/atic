@@ -22,6 +22,7 @@ import type {
   ConsoleOutputPayload,
   DirectoryListing,
   PermissionDecision,
+  QuotaOverview,
   SshHost,
   SshHostSecretFlags,
   SshTestResult,
@@ -37,6 +38,7 @@ export type {
   ConsoleOpenOptions,
   ConsoleOutputPayload,
   DirectoryListing,
+  QuotaOverview,
   SshHost,
   SshHostSecretFlags,
   SshTestResult,
@@ -147,6 +149,16 @@ export const agentClaudeTranscript = (cwd: string, id: string) =>
 export const agentClaudeUsage = () => invoke<ClaudeAccountUsage>("agent_claude_usage");
 
 /**
+ * Cupos de todos los agentes detectados, ya normalizados a una sola forma.
+ *
+ * Es lo que pinta el hover de la pill. Rust cachea un minuto, así que pedirlo
+ * en cada apertura del panel no golpea las APIs; `force` es para el refresco a
+ * mano.
+ */
+export const agentQuotaOverview = (force = false) =>
+  invoke<QuotaOverview>("agent_quota_overview", { force });
+
+/**
  * Subcarpetas de `path` (vacío/`~` → home). Solo lectura; sin abrir el picker
  * nativo (compatible con always-on-top del float).
  */
@@ -215,6 +227,9 @@ export const agentsWindowVisible = () => invoke<boolean>("agents_window_visible"
 /** Abre (o repliega) la consola de agentes: sale de la pill y vuelve a ella. */
 export const showAgentsWindow = () => invoke<void>("show_agents_window");
 
+/** Muestra o enfoca. No cierra si ya está a la vista. */
+export const presentAgentsWindow = () => invoke<void>("present_agents_window");
+
 /**
  * Pide al lanzador que muestre las consolas ya vivas, sin toggle.
  *
@@ -239,10 +254,10 @@ export const hideAgentsWindow = () => invoke<void>("hide_agents_window");
 export const saveAgentsBubbleSize = (w: number, h: number) =>
   invoke<void>("save_agents_bubble_size", { w, h });
 
-/** ¿La consola de agentes queda fijada arriba de otras apps? */
+/** ¿La consola de agentes queda fijada (Esc no la cierra)? */
 export const agentsAlwaysOnTop = () => invoke<boolean>("agents_always_on_top");
 
-/** Fija o desfija la consola (always-on-top del overlay mientras está abierta). */
+/** Fija o desfija la consola (sticky Esc). */
 export const setAgentsAlwaysOnTop = (on: boolean) =>
   invoke<void>("set_agents_always_on_top", { on });
 
@@ -254,6 +269,10 @@ export const onAgentsBubbleAnchor = (
 /** La burbuja se está replegando: el contenido tiene que apagarse ya. */
 export const onAgentsBubbleDismiss = (cb: () => void): Promise<UnlistenFn> =>
   on("agents-bubble-dismiss", cb);
+
+/** Ya abierta: agrandar si estaba achicada junto a la pill. */
+export const onAgentsBubbleExpand = (cb: () => void): Promise<UnlistenFn> =>
+  on("agents-bubble-expand", cb);
 
 /** Todos los eventos de todas las sesiones. Filtrar por `session`. */
 export const onAgentDelta = (

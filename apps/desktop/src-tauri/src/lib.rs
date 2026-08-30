@@ -163,6 +163,7 @@ pub fn run() {
             floating::resize_floating,
             overlay::overlay_rect,
             overlay::overlay_cursor,
+            overlay::window_cursor,
             overlay::overlay_active_anchor,
             overlay::overlay_work_areas,
             overlay::save_pill_home,
@@ -237,6 +238,7 @@ pub fn run() {
             clipboard_history::agents_window_visible,
             clipboard_history::clipboard_drag_path,
             clipboard_history::start_clipboard_text_drag,
+            clipboard_history::start_file_drag,
             clipboard_history::read_clipboard_drag_text,
             clipboard_history::pin_clipboard_item,
             clipboard_history::delete_clipboard_item,
@@ -253,6 +255,7 @@ pub fn run() {
             beep::preview_sound,
             beep::play_ui_sound,
             agents::bridge::show_agents_window,
+            agents::bridge::present_agents_window,
             agents::bridge::hide_agents_window,
             agents::bridge::save_agents_bubble_size,
             agents::bridge::agents_always_on_top,
@@ -274,6 +277,7 @@ pub fn run() {
             agents::bridge::agent_claude_transcript,
             agents::bridge::agent_claude_usage,
             agents::bridge::agent_codex_usage,
+            agents::bridge::agent_quota_overview,
             agents::presence::agent_presences,
             agents::presence::agent_presence_focus,
             agents::presence::agent_presence_bind,
@@ -335,7 +339,11 @@ pub fn run() {
             // de este `setup`, y si quedan visibles un instante se ve el
             // lienzo de anotar / el shelf / el launcher. `visible: false` en
             // la config es la barrera; esto cubre si algún runtime la ignora.
-            for label in ["capture-shelf", "launcher", annotate::ANNOTATE_LABEL] {
+            for label in [
+                "capture-shelf",
+                "launcher",
+                annotate::ANNOTATE_LABEL,
+            ] {
                 if let Some(window) = app.get_webview_window(label) {
                     let _ = window.hide();
                 }

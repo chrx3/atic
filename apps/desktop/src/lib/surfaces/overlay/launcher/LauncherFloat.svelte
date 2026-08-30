@@ -38,7 +38,7 @@
   import { REACH } from "$lib/liquid/constants";
   import { sminReach, type Shape } from "$lib/liquid/sdf";
   import { launcherLab } from "$lib/dev/launcherLab.svelte";
-  import { liquid } from "$surfaces/overlay/group.svelte";
+  import { liquid, LIQUID_HUB } from "$surfaces/overlay/group.svelte";
   import {
     publishEmergeSkin,
     publishFollowSkin,
@@ -463,7 +463,7 @@
    * Idle: no rAF eterno (epsilon + tope en `publishMeasuredSkin`). Solo se
    * despierta al abrir/cerrar/mover gaps o ancla.
    */
-  function publishCompactPills(root: HTMLElement): () => void {
+  function publishCompactPills(root: HTMLElement, group?: string): () => void {
     return publishMeasuredSkin("launcher", () => {
       const shapes: Shape[] = [];
       const parts: string[] = [];
@@ -502,6 +502,7 @@
     void favGap;
     void dotGap;
     void bubble.anchor;
+    const group = motionPhase || joined ? LIQUID_HUB : undefined;
     // Panel de resultados: chrome opaco (`.is-expanded`); no remeshear SDF
     // en cada tecla / transición de alto — era el trancazo al buscar.
     if (showResults) {
@@ -510,12 +511,16 @@
     }
     // Durante grow/separate/close reverse el ancho/left se mueve: seguir frame a frame.
     if (motionPhase) {
-      return publishFollowSkin("launcher", el, CORNER);
+      return publishFollowSkin("launcher", el, CORNER, group);
     }
     if (favorites.length > 0 && favRevealCount > 0) {
-      return publishCompactPills(el);
+      return publishCompactPills(el, group);
     }
-    return publishEmergeSkin("launcher", el, CORNER);
+    return publishEmergeSkin("launcher", el, CORNER, group);
+  });
+
+  $effect(() => {
+    if (bubble.shown) surfaces.bringToFront("launcher");
   });
 
   $effect(() => {
@@ -899,8 +904,10 @@
     class:is-expanding={expanding}
     class:is-separating={separating}
     class:is-favs-seq={favsSequencing}
+    data-float="launcher"
     data-side={bubble.anchor?.side ?? "left"}
     style={bubble.vars}
+    style:--float-stack={surfaces.stack("launcher")}
     style:--lf-fav-gap="{favGap}px"
     style:--lf-dot-gap="{dotGap}px"
     style:--launcher-bar-open-dur="{openDur}ms"
@@ -1056,7 +1063,7 @@
     --float-close-dur: var(--duration-quick);
 
     position: absolute;
-    z-index: var(--z-overlay-float);
+    z-index: calc(var(--z-overlay-float) + var(--float-stack, 0));
     display: flex;
     flex-direction: column;
     left: var(--x);

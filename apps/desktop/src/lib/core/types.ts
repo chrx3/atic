@@ -869,6 +869,47 @@ export interface CodexAccountUsage {
   fetchedAt: number;
 }
 
+/**
+ * Ventana de cupo ya normalizada por Rust (`agents::quota`).
+ *
+ * Los tipos de arriba son el formato crudo de cada proveedor y siguen vivos
+ * para el modal de Uso. Estos son la forma única que consume la pill: mismas
+ * unidades para los cuatro, para que la vista no aprenda cuatro dialectos.
+ */
+export interface QuotaWindow {
+  /** Id crudo de la ventana: `5h`, `7d`, `primary`, `weekly`, … */
+  kind: string;
+  /** Largo en minutos, si el proveedor lo dice. */
+  minutes: number | null;
+  usedPercent: number;
+  /** Epoch ms (no segundos: Rust ya normalizó). */
+  resetsAt: number | null;
+}
+
+/** Consumo sin techo conocido. Hoy solo Cursor. */
+export interface QuotaSpend {
+  cents: number;
+  periodEnd: number | null;
+}
+
+export interface AgentQuota {
+  /** `claude` | `codex` | `opencode` | `cursor-agent`. */
+  agent: string;
+  plan: string | null;
+  /** Vacío = el proveedor no publica cupo (se pinta sin barra). */
+  windows: QuotaWindow[];
+  spend: QuotaSpend | null;
+  /** Epoch ms del dato. Puede ser viejo: Codex se lee del disco. */
+  fetchedAt: number | null;
+  /** Motivo por el que la fila viene vacía. Se muestra, no se esconde. */
+  error: string | null;
+}
+
+export interface QuotaOverview {
+  agents: AgentQuota[];
+  fetchedAt: number;
+}
+
 /** Entrada de carpeta del explorador interno (solo directorios). */
 export interface DirectoryEntry {
   name: string;

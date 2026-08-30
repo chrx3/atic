@@ -717,6 +717,7 @@
     padding: 10px;
     border-radius: var(--radius-md);
     background: var(--surface-2);
+    isolation: isolate;
     box-shadow: var(--shadow-float);
     color: var(--text);
     gap: 8px;

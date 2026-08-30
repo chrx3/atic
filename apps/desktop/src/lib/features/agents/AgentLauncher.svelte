@@ -5,10 +5,11 @@
   import FolderBrowser from "./FolderBrowser.svelte";
   import AgentLogo from "./AgentLogo.svelte";
   import Icon from "$ui/Icon.svelte";
-  import { Folder, SquareTerminal, X } from "$lib/icons";
+  import { Folder, Minus, Square, SquareTerminal, X } from "$lib/icons";
   import { onMount } from "svelte";
   import { AGENTS_REVEAL_CONSOLE, cliOnPath } from "$ipc/agents";
   import { AGENTS } from "./agentCatalog";
+  import { t } from "$domain/i18n.svelte";
 
   type LauncherView = "setup" | "console";
 
@@ -174,6 +175,7 @@
           onHeaderPointerDown(event);
         }
       }}
+      ondblclick={() => onToggleMaximize?.()}
     >
       {#if hasConsole}
         <span class="live-status" role="status">
@@ -181,17 +183,42 @@
           Consolas activas
         </span>
       {/if}
-      {#if onClose}
-        <button
-          type="button"
-          class="close"
-          aria-label="Esconder ventana"
-          use:tip={"Esconder ventana. Las consolas siguen corriendo."}
-          onclick={onClose}
-        >
-          <Icon icon={X} size={13} />
-        </button>
-      {/if}
+      <div class="chrome">
+        {#if onToggleMinimize}
+          <button
+            type="button"
+            class="chrome-btn"
+            aria-label={minimized ? t("chrome.restore") : t("chrome.minimize")}
+            use:tip={minimized ? t("chrome.restore") : t("chrome.minimize")}
+            onclick={() => onToggleMinimize()}
+          >
+            <Icon icon={Minus} size={12} />
+          </button>
+        {/if}
+        {#if onToggleMaximize}
+          <button
+            type="button"
+            class="chrome-btn"
+            class:is-on={maximized}
+            aria-label={maximized ? t("chrome.restore") : t("chrome.maximize")}
+            use:tip={maximized ? t("chrome.restore") : t("chrome.maximize")}
+            onclick={() => onToggleMaximize()}
+          >
+            <Icon icon={Square} size={11} />
+          </button>
+        {/if}
+        {#if onClose}
+          <button
+            type="button"
+            class="close"
+            aria-label={t("chrome.close")}
+            use:tip={t("page.agents.hideHint")}
+            onclick={onClose}
+          >
+            <Icon icon={X} size={13} />
+          </button>
+        {/if}
+      </div>
     </header>
 
     <div class="setup">
@@ -416,6 +443,32 @@
   .close:active,
   .reset:active {
     transform: scale(0.96);
+  }
+
+  .chrome {
+    display: flex;
+    flex-shrink: 0;
+    align-items: center;
+    gap: 0.1rem;
+    margin-left: auto;
+  }
+
+  .chrome-btn {
+    display: grid;
+    width: 1.85rem;
+    height: 1.85rem;
+    place-items: center;
+    border: 0;
+    border-radius: 0.45rem;
+    background: transparent;
+    color: var(--rb-muted);
+    cursor: pointer;
+  }
+
+  .chrome-btn:hover,
+  .chrome-btn.is-on {
+    background: color-mix(in sRGB, var(--rb-text) 7%, transparent);
+    color: var(--rb-text);
   }
 
   .close {

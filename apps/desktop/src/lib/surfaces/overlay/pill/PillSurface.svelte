@@ -80,6 +80,11 @@
     type Surface,
   } from "$surfaces/overlay/pill/pillPlan";
   import { agentChip } from "$surfaces/overlay/pill/pillAgentChip";
+  import { agentsDock } from "$surfaces/overlay/agents/agentsDock.svelte";
+  import {
+    quotaHover,
+    quotaHoverState,
+  } from "$surfaces/overlay/pill/quotaHover.svelte";
   import {
     dockAxis,
     dockCandidate,
@@ -100,7 +105,7 @@
     hideAgentsWindow,
     onAgentsBubbleAnchor,
     onAgentsBubbleDismiss,
-    showAgentsWindow,
+    presentAgentsWindow,
     agentPresenceFocus,
     agentPresenceBind,
     revealAgentsConsole,
@@ -229,6 +234,13 @@
   const agentWorking = $derived(chip.tone === "working" || chip.tone === "count");
   const agentReady = $derived(chip.tone === "ready");
   const agentReadyLabel = $derived(chip.label ?? t("pill.ready"));
+  /** El panel desplegado ya cubre el aviso; achicado, la pestaña vive en la pill. */
+  const agentsExpanded = $derived(
+    !agentsDock.minimized && surfaces.live["agents"] != null,
+  );
+  const showAgentTab = $derived(
+    !wheelChrome && (agentsDock.minimized || (agentAlert && !agentsExpanded)),
+  );
   /**
    * Aviso de actualización: qué muestra el chip y qué dice al pasar el mouse.
    *
@@ -274,6 +286,7 @@
   });
 
   const agentChipAria = $derived.by(() => {
+    if (agentsDock.minimized) return t("page.agents.dockExpand");
     const target = chip.target;
     if (target.kind === "focus") {
       const name =
@@ -289,6 +302,13 @@
     return agentReadyLabel;
   });
   const agentChipTitle = $derived.by(() => {
+    if (agentsDock.minimized) {
+      if (chip.tone === "waiting") return t("pill.waiting");
+      if (chip.tone === "ready") return agentReadyLabel;
+      if (chip.tone === "count") return t("pill.unread", { label: chip.label ?? "" });
+      if (chip.tone === "working") return t("pill.working");
+      return t("page.agents.dockExpand");
+    }
     if (chip.target.kind === "none") {
       return t("pill.unboundTitle");
     }
@@ -332,9 +352,73 @@
    * Estaba escrito en línea en la clase de `.p-bar`; ahora lo mira también la
    * piel, que monta la gota que llega justo cuando esto deja de valer.
    */
-  const discOnly = $derived(isDiscOnly({ surface, activity, hasQueue, agentAlert }));
+  const discOnly = $derived(
+    isDiscOnly({
+      surface,
+      activity,
+      hasQueue,
+      agentAlert: agentAlert || agentsDock.minimized,
+    }),
+  );
 
   let wheelShortcut = $state("");
+
+  /**
+   * La ayuda del disco: atajo, qué hace el clic y que se puede arrastrar.
+   *
+   * Antes vivía inline en el `use:tip`. Ahora la leen dos consumidores —el
+   * `aria-label` del disco y el pie del panel de cupos—, y repetirla dejaría
+   * que se separaran sin que nadie lo note.
+   */
+  /**
+   * Qué herramienta abre el panel de cupos. Es una lista porque
+   * `ParticleWheel.tipSilent` recibe varias, no porque vaya a haber otra.
+   */
+  const QUOTA_TOOL = ["agents"] as const;
+
+  let wheelEl = $state<HTMLElement | null>(null);
+
+  /** Lo que dice el panel si no hay ningún cupo: lo que diría el tooltip. */
+  const agentsHelp = $derived.by(() => {
+    const tool = localizeTool(toolById("agents"));
+    return `${tool.label} — ${tool.short}`;
+  });
+
+  /**
+   * El gajo «Agentes» de la rueda abre el mismo panel que el botón de la isla.
+   *
+   * Va por `wheelTool` y no por un `use:quotaHover` porque los gajos los pinta
+   * `ParticleWheel`, que es compartido: la pill sabe cuál está activo por el
+   * `bind:activeId` que ya existía, y con eso alcanza.
+   *
+   * Cierra desde el cleanup y solo si fue esta rama la que abrió. Llamar a
+   * `hide()` en cada render con el gajo inactivo también cerraría el panel que
+   * abrió la isla, que es el otro camino.
+   */
+  let wheelOwnsQuota = false;
+  $effect(() => {
+    if (!wheelShown || wheelTool !== "agents" || !wheelEl) return;
+    const r = wheelEl.getBoundingClientRect();
+    quotaHoverState.show({ x: r.left, y: r.top, w: r.width, h: r.height }, agentsHelp);
+    wheelOwnsQuota = true;
+    return () => {
+      if (!wheelOwnsQuota) return;
+      wheelOwnsQuota = false;
+      quotaHoverState.hide();
+    };
+  });
+
+  const discHint = $derived(
+    [
+      wheelShortcut
+        ? t("pill.toolsWithShortcut", { shortcut: formatShortcut(wheelShortcut) })
+        : "",
+      t("pill.clickTools"),
+      t("pill.dragMove"),
+    ]
+      .filter(Boolean)
+      .join(" · "),
+  );
 
   // ─── Geometría ───────────────────────────────────────────────────────────
   /**
@@ -429,7 +513,12 @@
           return { id, label: t("pill.more"), short: t("pill.moreHint"), icon: "more" };
         }
         if (id === PILL_BACK_ID) {
-          return { id, label: t("pill.wheelBack"), short: t("pill.backHint"), icon: "back" };
+          return {
+            id,
+            label: t("pill.wheelBack"),
+            short: t("pill.backHint"),
+            icon: "back",
+          };
         }
         const tool = localizeTool(toolById(id));
         return { id, label: tool.label, short: tool.short, icon: id };
@@ -693,6 +782,7 @@
    *  tabla de anchos mágicos por estado — la fuente original del desajuste. */
   let barW = $state<number>(PILL.bar);
   let barEl = $state<HTMLElement | null>(null);
+  let agentDockEl = $state<HTMLButtonElement | null>(null);
 
   /**
    * Acoplada a un borde. `null` = flotando, que es el estado de siempre.
@@ -766,11 +856,8 @@
 
   async function openAgentsConsole() {
     try {
-      const visible = await agentsWindowVisible();
-      // `show_agents_window` es un toggle: si el lanzador ya está a la vista,
-      // no cerrarlo. Pedir la consola viva y, si hacía falta, abrir el float.
       revealAgentsConsole();
-      if (!visible) await showAgentsWindow();
+      await presentAgentsWindow();
       agentsConsoleOpen = true;
     } catch (err) {
       console.warn("abrir consola de agentes", err);
@@ -778,6 +865,11 @@
   }
 
   function activateAgentChip(preferBindFromGesture = false) {
+    if (agentsDock.minimized) {
+      agentsDock.expand();
+      void presentAgentsWindow();
+      return;
+    }
     const target = chip.target;
     if (target.kind === "console") {
       void openAgentsConsole();
@@ -1014,6 +1106,12 @@
   /** La tarjeta de auth también tiene que armar hit-rects o queda click-through. */
   $effect(() => (authEl && authAlive ? surfaces.add("agent-auth", authEl) : undefined));
 
+  $effect(() =>
+    agentsDock.minimized && agentDockEl
+      ? surfaces.add("agents", agentDockEl)
+      : undefined,
+  );
+
   /**
    * Republicar cuando la pill se MUEVE.
    *
@@ -1076,6 +1174,7 @@
     void liveActive;
     void btWarning;
     void agentAlert;
+    void agentsDock.minimized;
     void agentReadyLabel;
     void consoleSide;
     if (surface !== "none") return;
@@ -1544,6 +1643,7 @@
 
   /** Float espacial ya visible (hit-rect registrado). */
   function spatialToolOpen(id: ToolId): boolean {
+    if (id === "agents") return agentsConsoleOpen;
     return isSpatialTool(id) && surfaces.live[id] != null;
   }
 
@@ -2394,11 +2494,16 @@
         >
           {#each stripNodes as node, i (node.id)}
             {@const slot = i + islandLiveSlots(activity)}
+            {@const help = `${node.label} — ${node.short}`}
+            <!-- Agentes no lleva `use:tip`: su hover abre el panel de cupos, y
+               dos globos sobre el mismo botón se taparían. Sin cupos que
+               mostrar, el panel dice lo mismo que habría dicho el tooltip. -->
             <button
               type="button"
               class="p-island-tool"
               style="--i: {slot}; --s: {Math.abs((islandSlots - 1) / 2 - slot)}"
-              use:tip={`${node.label} — ${node.short}`}
+              use:tip={node.id === "agents" ? "" : help}
+              use:quotaHover={node.id === "agents" ? help : ""}
               aria-label="{node.label}. {node.short}"
               {@attach islandAttachers[i]}
               onpointerdown={() => (islandPressTool = node.id)}
@@ -2429,13 +2534,14 @@
   <!-- La rueda vive siempre montada. Durante el colapso sigue opaca (aunque
        `revealed` ya sea false) hasta que el root encoge: el handoff al stack
        ocurre en el mismo centro, no con un fundido top-left ↔ centro. -->
-  <div class="p-wheel" class:is-open={wheelChrome} data-no-drag>
+  <div class="p-wheel" class:is-open={wheelChrome} data-no-drag bind:this={wheelEl}>
     <ParticleWheel
       compact
       wheelNav
       particles={false}
       revealed={wheelShown}
       tools={wheelNodes}
+      tipSilent={QUOTA_TOOL}
       bind:activeId={wheelTool}
       caption={wheelPage === "more" ? t("pill.more") : t("tools.wheelCaption")}
       centerLabel={wheelPage === "more" ? t("pill.wheelBack") : t("tools.wheelClose")}
@@ -2498,14 +2604,12 @@
         {/if}
       </div>
 
-      <div
-        class="p-shell"
-      >
+      <div class="p-shell">
         <div
           class="p-bar"
           class:is-disc-only={discOnly}
           class:is-console-start={consoleSide === "left" &&
-            agentAlert &&
+            (agentAlert || agentsDock.minimized) &&
             activity === "idle" &&
             !hasQueue}
           bind:this={barEl}
@@ -2599,40 +2703,33 @@
                es el de ParticleWheel (centro). El stack sigue midiendo el
                disco vía `.p-bar.is-disc-only` (40px fijos). -->
             {#if !wheelChrome}
-              <span
-                class="p-mark is-disc"
-                use:tip={[
-                  wheelShortcut
-                    ? t("pill.toolsWithShortcut", {
-                        shortcut: formatShortcut(wheelShortcut),
-                      })
-                    : "",
-                  t("pill.clickTools"),
-                  t("pill.dragMove"),
-                ]
-                  .filter(Boolean)
-                  .join(" · ")}
-              >
+              <span class="p-mark is-disc" use:tip={discHint}>
                 <AticMark size={22} strokeWidth={1.4} />
               </span>
             {/if}
             <!-- Aviso del agente: aparece solo si hay algo que decir. Es un chip
                junto al disco y no un reemplazo, porque el disco sigue siendo la
                puerta a la rueda. -->
-            {#if agentAlert && !wheelChrome}
+            {#if showAgentTab}
               <button
                 type="button"
                 class="p-agent"
+                class:is-dock={agentsDock.minimized}
                 class:is-waiting={chip.tone === "waiting"}
                 class:is-working={chip.tone === "working"}
                 class:is-ready={chip.tone === "ready"}
                 class:is-count={chip.tone === "count"}
+                bind:this={agentDockEl}
                 onclick={(e) => onAgentChipClick(e)}
                 use:tip={agentChipTitle}
                 aria-label={agentChipAria}
               >
                 <span class="p-agent-ico" aria-hidden="true">
-                  <ToolIcon id="agents" size={11} strokeWidth={1.7} />
+                  <ToolIcon
+                    id="agents"
+                    size={agentsDock.minimized ? 13 : 11}
+                    strokeWidth={1.7}
+                  />
                 </span>
                 {#if chip.tone === "waiting"}
                   <span class="p-agent-count">{t("pill.permission")}</span>
@@ -2640,6 +2737,8 @@
                   <span class="p-agent-msg">{agentReadyLabel}</span>
                 {:else if chip.tone === "count"}
                   <span class="p-agent-count">{chip.label}</span>
+                {:else if agentsDock.minimized}
+                  <span class="p-agent-msg">{t("page.agents.dockIdle")}</span>
                 {/if}
               </button>
             {/if}
@@ -3472,6 +3571,29 @@
     height: 0.85rem;
     flex-shrink: 0;
     opacity: 0.92;
+  }
+
+  /*
+   * Pestaña achicada: texto de la barra, no una cápsula dentro de otra.
+   * El estadio de la piel ya es la silueta; un fondo propio se leía como
+   * gota colgando. Espera / listo / conteo sí pintan cápsula (aviso).
+   */
+  .p-agent.is-dock {
+    min-height: 1.5rem;
+    padding: 0 0.08rem 0 0;
+    gap: 0.34rem;
+    background: transparent;
+    font-family: var(--font-sans);
+  }
+
+  .p-agent.is-dock .p-agent-msg {
+    max-width: 8rem;
+    font-size: 0.6875rem;
+    letter-spacing: 0.02em;
+  }
+
+  .p-agent.is-dock.is-working {
+    background: transparent;
   }
 
   /* Solo número: cápsula mínima, sin aire de “pill anidada”. */

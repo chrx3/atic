@@ -19,6 +19,7 @@
   import LauncherFloat from "./launcher/LauncherFloat.svelte";
   import SnippetsFloat from "./snippets/SnippetsFloat.svelte";
   import PillSurface from "./pill/PillSurface.svelte";
+  import PillQuotaHost from "./pill/PillQuotaHost.svelte";
   import PracticeCoach from "$features/onboarding/PracticeCoach.svelte";
   import { getConfig } from "$ipc/config";
   import {
@@ -32,10 +33,7 @@
   import { liquid } from "./group.svelte";
   import Skin from "$liquid/Skin.svelte";
   import { BLEND, CELL, SMOOTH } from "$liquid/constants";
-  import {
-    LAUNCHER_LAB_OPEN_KEY,
-    launcherLab,
-  } from "$lib/dev/launcherLab.svelte";
+  import { LAUNCHER_LAB_OPEN_KEY, launcherLab } from "$lib/dev/launcherLab.svelte";
   import type { Component } from "svelte";
 
   const debug = $derived(page.url.searchParams.has("debug"));
@@ -240,6 +238,14 @@
     el.focus();
   }
 
+  function onOverlayPointerDown(event: PointerEvent) {
+    const host =
+      event.target instanceof Element ? event.target.closest("[data-float]") : null;
+    const id = host instanceof HTMLElement ? host.dataset.float : undefined;
+    if (id) surfaces.bringToFront(id);
+    void enterTextMode(event);
+  }
+
   async function enterTextMode(event: PointerEvent) {
     const el = editable(event.target);
     if (!el || hiddenAgentsHost(el)) return;
@@ -331,7 +337,7 @@
   class="ov"
   class:is-debug={debug}
   class:is-dragging={surfaces.dragging}
-  onpointerdowncapture={enterTextMode}
+  onpointerdowncapture={onOverlayPointerDown}
 >
   {#if Lab}
     <div class="lab-host" bind:this={labEl}>
@@ -370,6 +376,9 @@
     <LauncherFloat />
     {#if shown}
       <PillSurface />
+      <!-- Después de la pill: publica su gota en el mismo grupo líquido y su
+           contenido tiene que quedar por encima de la piel fundida. -->
+      <PillQuotaHost />
     {/if}
     <PracticeCoach />
 
@@ -433,5 +442,15 @@
 
   .ov.is-dragging :global(.skin) {
     will-change: transform;
+  }
+
+  /*
+   * En reposo cada float es una ventana, no un charco: fondo opaco para no
+   * ver otra interfaz a través, e isolation para el stacking. En `.is-joined`
+   * sigue transparente o el cuello con la pill deja un hairline.
+   */
+  .ov :global([data-float].is-shown:not(.is-joined):not(.is-expanding):not(.is-separating):not(.is-settling)) {
+    background: var(--skin);
+    isolation: isolate;
   }
 </style>

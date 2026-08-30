@@ -13,11 +13,25 @@
  * Las formas van en **coordenadas del overlay**, que es el viewport de esta
  * ventana. Es lo único que hace comparables dos superficies que no comparten
  * ni padre ni sistema de posicionamiento.
+ *
+ * Afinidad: solo se funden superficies del mismo grupo. La pill, la gota de
+ * cupos y la tarjeta de auth viven en `LIQUID_HUB`. Un float entra al hub
+ * mientras nace o vuelve a la pill; en reposo es una isla propia, aunque
+ * esté pegado a otra ventana flotante.
  */
 
 import { INFLUENCE } from "$liquid/constants";
 import { clusterParts, type Island } from "$liquid/motion";
 import type { Shape } from "$liquid/sdf";
+
+/** Grupo de la pill: lo que sale de ella se funde acá. */
+export const LIQUID_HUB = "hub";
+
+const HUB_IDS = new Set(["pill", "quota", "agent-auth"]);
+
+function defaultGroup(id: string): string {
+  return HUB_IDS.has(id) ? LIQUID_HUB : id;
+}
 
 function shapeFinger(s: Shape): string {
   if (s.kind === "box") {
@@ -26,10 +40,16 @@ function shapeFinger(s: Shape): string {
   return `c:${s.ax.toFixed(1)},${s.ay.toFixed(1)},${s.bx.toFixed(1)},${s.by.toFixed(1)},${s.r.toFixed(1)}`;
 }
 
-function partsFinger(parts: Record<string, Shape[]>): string {
+function partsFinger(
+  parts: Record<string, Shape[]>,
+  groups: Record<string, string>,
+): string {
   return Object.keys(parts)
     .sort()
-    .map((id) => `${id}=${(parts[id] ?? []).map(shapeFinger).join(";")}`)
+    .map(
+      (id) =>
+        `${id}:${groups[id] ?? defaultGroup(id)}=${(parts[id] ?? []).map(shapeFinger).join(";")}`,
+    )
     .join("|");
 }
 
@@ -59,27 +79,38 @@ class LiquidGroup {
 
   /** Por superficie, no en una sola lista: cada una reemplaza lo suyo. */
   #parts: Record<string, Shape[]> = {};
+  /** Afinidad de fusión. Ausente = `defaultGroup(id)`. */
+  #groups: Record<string, string> = {};
   /** Evita remesh del Skin cuando el SDF no cambió de verdad. */
   #finger = "";
 
   /**
    * Publica las formas de una superficie. Devuelve la baja, con la forma que
    * espera el `return` de un `$effect`.
+   *
+   * `group` opcional: `LIQUID_HUB` para fundirse con la pill. Omitido, un
+   * float queda en su propio grupo y no se mezcla con otras ventanas.
    */
-  publish(id: string, shapes: Shape[]): () => void {
+  publish(id: string, shapes: Shape[], group?: string): () => void {
     this.#parts[id] = shapes;
+    if (shapes.length === 0) {
+      delete this.#groups[id];
+    } else {
+      this.#groups[id] = group ?? defaultGroup(id);
+    }
     this.#flush();
     return () => {
       delete this.#parts[id];
+      delete this.#groups[id];
       this.#flush();
     };
   }
 
   #flush(): void {
-    const finger = partsFinger(this.#parts);
+    const finger = partsFinger(this.#parts, this.#groups);
     if (finger === this.#finger) return;
     this.#finger = finger;
-    const islands = clusterParts(this.#parts, INFLUENCE);
+    const islands = clusterParts(this.#parts, INFLUENCE, this.#groups);
     this.islands = islands;
     this.shapes = islands.flatMap((island) => island.shapes);
   }

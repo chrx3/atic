@@ -155,6 +155,25 @@ export class Bubble {
     };
   }
 
+  /**
+   * Marco sin el mínimo del globo usable.
+   *
+   * El dock junto a la pill es más chico que el compositor: clampear a
+   * `BUBBLE_MIN_*` dejaría un rectángulo enorme y un recorte CSS, que es
+   * justo lo que impedía fundirse con la pill.
+   */
+  setFrameFree(x: number, y: number, w: number, h: number): void {
+    const a = this.anchor;
+    if (!a) return;
+    this.anchor = {
+      ...a,
+      x: Math.round(x),
+      y: Math.round(y),
+      w: Math.max(1, Math.round(w)),
+      h: Math.max(1, Math.round(h)),
+    };
+  }
+
   /** Apaga el contenido y, al terminar el repliegue, desmonta la piel. */
   hide(): void {
     this.shown = false;

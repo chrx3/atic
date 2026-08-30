@@ -216,6 +216,7 @@ fn open_annotator_file(app: &AppHandle, target: &Path) -> Result<(), String> {
     window.show().map_err(|e| e.to_string())?;
     let _ = window.set_always_on_top(true);
     let _ = window.set_focus();
+    crate::overlay::yield_to_work_windows(app);
 
     let _ = app.emit("annotate-open", pending);
     Ok(())
@@ -302,6 +303,7 @@ fn start_board_impl(app: &AppHandle) -> Result<(), String> {
     window.show().map_err(|e| e.to_string())?;
     let _ = window.set_always_on_top(true);
     let _ = window.set_focus();
+    crate::overlay::yield_to_work_windows(app);
 
     let _ = app.emit("annotate-open", pending);
     Ok(())

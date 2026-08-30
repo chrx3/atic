@@ -6,11 +6,10 @@
   } from "$surfaces/overlay/clipPreview.svelte";
   /**
    * Historial: clic = pegar; arrastrar = OLE.
-   * - Imagen: archivo (HDROP) vía tauri-plugin-drag.
+   * - Imagen: archivo (HDROP) con nuestro drag source, que cancela sobre agentes.
    * - Texto: CF_UNICODETEXT nativo (un .txt en HDROP inserta la ruta en Cursor).
    */
   import { convertFileSrc } from "@tauri-apps/api/core";
-  import { startDrag } from "@crabnebula/tauri-plugin-drag";
   import Icon from "$ui/Icon.svelte";
   import { ExternalLink, List, Pencil, ScanText, Search, Star, X } from "$lib/icons";
   import type { ClipboardItem } from "$lib/types";
@@ -25,6 +24,7 @@
     pasteClipboardItem,
     pinClipboardItem,
     startClipboardTextDrag,
+    startFileDrag,
     tryClipboardDropOnAgents,
   } from "$lib/api";
   import { setOverlayItemDrag } from "$ipc/overlay";
@@ -305,7 +305,7 @@
         report("No se pudo preparar el arrastre");
         return;
       }
-      await startDrag({ item: [path], icon: path, mode: "copy" });
+      await startFileDrag([path]);
       // Imagen: si el cursor quedó sobre agentes, insertar (sin depender del HTML5 drop).
       await tryClipboardDropOnAgents(item.id).catch(() => false);
     } catch (error) {

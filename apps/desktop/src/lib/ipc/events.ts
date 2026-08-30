@@ -107,6 +107,8 @@ export interface AticEvents {
   // Agentes
   "agents-bubble-anchor": BubbleOpen;
   "agents-bubble-dismiss": void;
+  /** El float ya está abierto: agrandar si estaba achicado junto a la pill. */
+  "agents-bubble-expand": void;
   "agent-event": AgentDeltaPayload;
   "agent-presence": AgentPresence[];
   "console-output": ConsoleOutputPayload;

@@ -10,6 +10,7 @@
     hideAgentsWindow,
     onAgentsBubbleAnchor,
     onAgentsBubbleDismiss,
+    onAgentsBubbleExpand,
     saveAgentsBubbleSize,
   } from "$ipc/agents";
   import {
@@ -21,7 +22,7 @@
   import type { Area } from "$ipc/overlay";
   import type { BubbleOpen } from "$core/types";
   import { applyTheme, readCachedTheme } from "$lib/theme";
-  import { liquid } from "$surfaces/overlay/group.svelte";
+  import { liquid, LIQUID_HUB } from "$surfaces/overlay/group.svelte";
   import {
     publishEmergeSkin,
     publishFollowSkin,
@@ -35,8 +36,12 @@
     placePanelResting,
   } from "$surfaces/overlay/floatPlace";
   import { separateAxisProp, waitFrames } from "$surfaces/overlay/floatReveal";
+  import { gapBetween } from "$lib/liquid/geometry";
+  import { REACH } from "$lib/liquid/constants";
   import AgentLauncher from "$features/agents/AgentLauncher.svelte";
   import { isAgentsDismissSuppressed } from "$surfaces/overlay/agents/dismissGuard";
+  import { agentsDock } from "$surfaces/overlay/agents/agentsDock.svelte";
+  import { reuseDockedFrame } from "$surfaces/overlay/agents/dockExpand";
   import { toasts } from "$domain/toasts.svelte";
   import ToastStack from "$ui/ToastStack.svelte";
   import { afterTransition, MOTION, ms, prefersReducedMotion, wait } from "$lib/motion";
@@ -99,7 +104,7 @@
 
   function savePosition() {
     const a = bubble.anchor;
-    if (!a) return;
+    if (!a || minimized) return;
     try {
       localStorage.setItem(
         POSITION_STORAGE_KEY,
@@ -228,6 +233,16 @@
   let placeEpoch = 0;
 
   async function placeFromPill(a: BubbleOpen) {
+    if (
+      reuseDockedFrame({
+        minimized,
+        alive: bubble.alive,
+        hasAnchor: bubble.anchor != null,
+      })
+    ) {
+      showAgentsPanel();
+      return;
+    }
     const epoch = ++placeEpoch;
     clearSizeToggles();
     a = frameForView(a);
@@ -250,9 +265,18 @@
     if (revealPhase === "ready") bubble.place(restingOpen);
   }
 
-  async function animateToSize(current: BubbleOpen, size: { w: number; h: number }) {
+  function asOpen(a: { side: string; offset: number; x: number; y: number; w: number; h: number }): BubbleOpen {
+    const side: BubbleOpen["side"] =
+      a.side === "bottom" || a.side === "left" || a.side === "right" ? a.side : "top";
+    return { ...a, side };
+  }
+
+  async function animateToSize(
+    current: { side: string; offset: number; x: number; y: number; w: number; h: number },
+    size: { w: number; h: number },
+  ) {
     await ensureWorkAreas();
-    const target = placeNearPill(current, size);
+    const target = placeNearPill(asOpen(current), size);
     const epoch = ++modeResizeEpoch;
     modeResizing = true;
     await tick();
@@ -359,10 +383,9 @@
   }
 
   /* ─── Agrandar / minimizar ──────────────────────────────────────────────
-     Agrandar llena el área de trabajo del monitor actual (toggle restaura el
-     marco previo). Minimizar colapsa a solo la barra vía CSS: el ancla lógica
-     no baja de `BUBBLE_MIN_H`, así que el marco queda intacto y restaurar es
-     quitar la clase. Redimensionar a mano o reabrir desde la pill los limpia. */
+     Agrandar llena el área de trabajo. Minimizar esconde el panel y deja
+     una pestaña en la pill (no una gota suelta: esa se fundía con el
+     launcher). Cerrar esconde, no mata las PTYs. */
   type Frame = { x: number; y: number; w: number; h: number };
   let maximized = $state(false);
   let minimized = $state(false);
@@ -395,12 +418,40 @@
     maximized = false;
     minimized = false;
     frameBeforeMax = null;
+    agentsDock.setMinimized(false);
+  }
+
+  function dockToPill() {
+    if (!bubble.anchor || !bubble.shown) return;
+    revealEpoch += 1;
+    revealPhase = "ready";
+    minimized = true;
+    agentsDock.setMinimized(true);
+    bubble.shown = false;
+  }
+
+  /** Agranda si hay globo vivo. Si no, el ancla de Rust tiene que nacerlo. */
+  function showAgentsPanel() {
+    minimized = false;
+    agentsDock.setMinimized(false);
+    if (!bubble.alive || !bubble.anchor) return;
+    revealEpoch += 1;
+    revealPhase = "ready";
+    bubble.shown = true;
+    void tick().then(() => {
+      void surfaces.flush();
+      void surfaces.recoverHits();
+    });
+  }
+
+  function expandFromDock() {
+    showAgentsPanel();
   }
 
   function toggleMaximize() {
     const a = bubble.anchor;
     if (!a) return;
-    if (minimized) minimized = false;
+    if (minimized) expandFromDock();
     if (maximized && frameBeforeMax) {
       const prev = frameBeforeMax;
       maximized = false;
@@ -419,15 +470,10 @@
     });
   }
 
-  async function toggleMinimize() {
+  function toggleMinimize() {
     if (!bubble.anchor) return;
-    const epoch = ++modeResizeEpoch;
-    // `is-mode-resizing` antes del flip de clase: así la altura transiciona.
-    modeResizing = true;
-    minimized = !minimized;
-    await tick();
-    await wait(ms(MOTION.medium));
-    if (epoch === modeResizeEpoch) modeResizing = false;
+    if (minimized) expandFromDock();
+    else dockToPill();
   }
 
   type ResizeEdge = "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw";
@@ -437,6 +483,14 @@
   let bubEl = $state<HTMLElement | null>(null);
   const { startDrag, endDrag } = createBubbleDrag(bubble, () => bubEl, {
     onEnd: savePosition,
+  });
+
+  const pillSkin = $derived(surfaces.live["pill-skin"]);
+  const joined = $derived.by(() => {
+    const a = bubble.anchor;
+    const p = pillSkin;
+    if (!a || !p || !bubble.alive) return false;
+    return gapBetween(p, a) <= REACH;
   });
 
   /** Estirar el globo desde cualquier borde o esquina. */
@@ -452,7 +506,7 @@
   } | null = null;
 
   function startResize(edge: ResizeEdge, event: PointerEvent) {
-    if (event.button !== 0 || !bubble.anchor) return;
+    if (event.button !== 0 || !bubble.anchor || minimized) return;
     event.preventDefault();
     event.stopPropagation();
     // Estirar a mano toma el control: el tamaño ya no es "maximizado".
@@ -542,7 +596,7 @@
   }
 
   function close() {
-    if (!bubble.shown) return;
+    if (!bubble.shown && !minimized && !bubble.alive) return;
     revealEpoch += 1;
     modeResizeEpoch += 1;
     modeResizing = false;
@@ -578,7 +632,7 @@
 
   /** Cierre por intención (clic afuera / Esc). Respeta pin y diálogos nativos. */
   function tryAutoClose() {
-    if (!bubble.shown || isAgentsDismissSuppressed() || isOpenDismissGrace()) return;
+    if (!bubble.shown || minimized || isAgentsDismissSuppressed() || isOpenDismissGrace()) return;
     void agentsAlwaysOnTop()
       .then((pinned) => {
         if (pinned || isAgentsDismissSuppressed() || !bubble.shown) return;
@@ -590,7 +644,7 @@
   }
 
   $effect(() => {
-    if (!bubble.alive || !bubEl) {
+    if (!bubble.alive || !bubEl || !bubble.shown) {
       liquid.publish("agents", []);
       return;
     }
@@ -598,10 +652,15 @@
     void bubble.shown;
     void revealPhase;
     void bubble.anchor;
+    const group = motionPhase || joined ? LIQUID_HUB : undefined;
     if (motionPhase) {
-      return publishFollowSkin("agents", bubEl, BUBBLE_CORNER);
+      return publishFollowSkin("agents", bubEl, BUBBLE_CORNER, group);
     }
-    return publishEmergeSkin("agents", bubEl, BUBBLE_CORNER);
+    return publishEmergeSkin("agents", bubEl, BUBBLE_CORNER, group);
+  });
+
+  $effect(() => {
+    if (bubble.shown) surfaces.bringToFront("agents");
   });
 
   $effect(() => {
@@ -659,13 +718,16 @@
       onAgentsBubbleDismiss(() => {
         close();
       }),
+      onAgentsBubbleExpand(() => {
+        expandFromDock();
+      }),
       // Clic afuera (Raw Input → overlay-dismiss). Pin / diálogo nativo → no.
       onOverlayDismiss(() => {
         tryAutoClose();
       }),
     ];
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "Escape" || !bubble.shown) return;
+      if (e.key !== "Escape" || !bubble.shown || minimized) return;
       // Esc: cierre explícito solo si no está fijada (panel sticky).
       if (isAgentsDismissSuppressed()) return;
       // Consola PTY / xterm: AgentsDemo maneja Esc (cerrar consola); no cerrar el float.
@@ -681,7 +743,9 @@
         });
     };
     window.addEventListener("keydown", onKey);
+    const unbindDock = agentsDock.bind(expandFromDock);
     return () => {
+      unbindDock();
       window.removeEventListener("keydown", onKey);
       endDrag();
       endResize();
@@ -700,10 +764,12 @@
     class:is-expanding={expanding}
     class:is-settling={settling}
     class:is-mode-resizing={modeResizing}
-    class:is-minimized={minimized}
+    class:is-joined={joined}
+    data-float="agents"
     data-agents-float
     data-side={bubble.anchor?.side ?? "top"}
     style={bubble.vars}
+    style:--float-stack={surfaces.stack("agents")}
     style:--agents-grow-dur="{growDur}ms"
     style:--agents-settle-dur="{settleDur}ms"
     bind:this={bubEl}
@@ -715,7 +781,7 @@
         onViewChange={(view) => void changeLauncherView(view)}
         onBrowserChange={(open) => void changeBrowser(open)}
         onToggleMaximize={toggleMaximize}
-        onToggleMinimize={() => void toggleMinimize()}
+        onToggleMinimize={toggleMinimize}
         {maximized}
         {minimized}
         shown={bubble.shown}
@@ -728,7 +794,6 @@
         onDismiss={(id) => toasts.dismiss(id)}
       />
     </div>
-    <!-- Agarraderas: los 4 bordes y las 4 esquinas. -->
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div
       class="grip grip-n"
@@ -788,9 +853,9 @@
 
     position: absolute;
 
-    /* Bajo la pill (a diferencia de los otros floats): esta ventana es grande
-       y puede taparla entera; la pill y sus elementos siempre quedan visibles. */
-    z-index: calc(var(--z-overlay-pill) - 1);
+    /* En reposo, el stack de floats: el último tocado gana. Junto a la pill
+       queda bajo ella para no taparla entera (esta ventana es grande). */
+    z-index: calc(var(--z-overlay-float) + var(--float-stack, 0));
     left: var(--x);
     top: var(--y);
     width: var(--w);
@@ -814,6 +879,10 @@
   .af.is-shown {
     opacity: 1;
     pointer-events: auto;
+  }
+
+  .af.is-joined {
+    z-index: calc(var(--z-overlay-pill) - 1);
   }
 
   .af.is-expanding {
@@ -841,16 +910,6 @@
       width var(--duration-medium) var(--ease-smooth-out),
       height var(--duration-medium) var(--ease-smooth-out),
       opacity var(--duration-quick) var(--ease-smooth-out);
-  }
-
-  /* Colapsado a solo la barra. La altura se pisa por CSS (el ancla lógica no
-     baja de BUBBLE_MIN_H); el contenido bajo la barra queda recortado. */
-  .af.is-minimized {
-    height: 52px;
-  }
-
-  .af.is-shown.is-minimized {
-    overflow: hidden;
   }
 
   .af-stage {

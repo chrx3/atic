@@ -19,12 +19,16 @@ export const pinClipboardItem = (id: string, pinned: boolean) =>
 export const deleteClipboardItem = (id: string) =>
   invoke<void>("delete_clipboard_item", { id });
 
-/** Ruta de archivo para `startDrag` (imagen; texto usa `startClipboardTextDrag`). */
+/** Ruta de archivo para `startFileDrag` (imagen; texto usa `startClipboardTextDrag`). */
 export const clipboardDragPath = (id: string) =>
   invoke<string>("clipboard_drag_path", { id });
 /** OLE de texto plano (`CF_UNICODETEXT`) — no inserta rutas de archivo. */
 export const startClipboardTextDrag = (id: string) =>
   invoke<void>("start_clipboard_text_drag", { id });
+/** OLE de archivos (`CF_HDROP`). Cancela al soltar sobre agentes: sin él, el
+ *  archivo caía además en la app de atrás. */
+export const startFileDrag = (paths: string[]) =>
+  invoke<void>("start_file_drag", { paths });
 /** Contenido de un `.atic-drag-*.txt` del historial. */
 export const readClipboardDragText = (path: string) =>
   invoke<string>("read_clipboard_drag_text", { path });

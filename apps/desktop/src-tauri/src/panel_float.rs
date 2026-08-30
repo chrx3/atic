@@ -44,10 +44,26 @@ pub fn toggle(
     show(app, open, shape, anchor_event)
 }
 
+/// Emite el ancla aunque el panel ya figure abierto.
+///
+/// `show` no reenvía si `OPEN` ya es true. Eso deja al frontend sordo cuando
+/// Rust cree que el globo está a la vista y la vista lo escondió (dock, HMR).
+pub fn reanchor(app: &AppHandle, shape: BubbleShape, anchor_event: &str) -> bool {
+    emit_anchor(app, shape, anchor_event)
+}
+
 pub fn show(app: &AppHandle, open: &AtomicBool, shape: BubbleShape, anchor_event: &str) -> bool {
     if open.load(Ordering::Relaxed) {
         return true;
     }
+    if !emit_anchor(app, shape, anchor_event) {
+        return false;
+    }
+    open.store(true, Ordering::Relaxed);
+    true
+}
+
+fn emit_anchor(app: &AppHandle, shape: BubbleShape, anchor_event: &str) -> bool {
     let Some((target, anchor)) = crate::overlay::pill_rect()
         .and_then(|origen| crate::floating::bubble_rect(app, origen, shape))
     else {
@@ -58,7 +74,6 @@ pub fn show(app: &AppHandle, open: &AtomicBool, shape: BubbleShape, anchor_event
         return false;
     };
 
-    open.store(true, Ordering::Relaxed);
     crate::overlay::raise(app);
     let _ = app.emit(
         anchor_event,

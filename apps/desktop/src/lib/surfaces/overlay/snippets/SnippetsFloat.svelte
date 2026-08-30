@@ -39,7 +39,7 @@
   } from "$surfaces/overlay/floatPlace";
   import { gapBetween } from "$lib/liquid/geometry";
   import { REACH } from "$lib/liquid/constants";
-  import { liquid } from "$surfaces/overlay/group.svelte";
+  import { liquid, LIQUID_HUB } from "$surfaces/overlay/group.svelte";
   import {
     publishEmergeSkin,
     publishFollowSkin,
@@ -271,10 +271,15 @@
     void bubble.shown;
     void revealPhase;
     void bubble.anchor;
+    const group = motionPhase || joined ? LIQUID_HUB : undefined;
     if (motionPhase) {
-      return publishFollowSkin("snippets", el, CORNER);
+      return publishFollowSkin("snippets", el, CORNER, group);
     }
-    return publishEmergeSkin("snippets", el, CORNER);
+    return publishEmergeSkin("snippets", el, CORNER, group);
+  });
+
+  $effect(() => {
+    if (bubble.shown) surfaces.bringToFront("snippets");
   });
 
   $effect(() => {
@@ -438,8 +443,10 @@
     class:is-joined={joined}
     class:is-expanding={expanding}
     class:is-separating={separating}
+    data-float="snippets"
     data-side={bubble.anchor?.side ?? "top"}
     style={bubble.vars}
+    style:--float-stack={surfaces.stack("snippets")}
     style:--launcher-bar-open-dur="{openDur}ms"
     style:--launcher-separate-dur="{separateDur}ms"
     style:--float-close-dur="{closeDur}ms"
@@ -531,7 +538,7 @@
   .sf {
     /* Duraciones heredadas de :root (app.css); sin overrides locales. */
     position: absolute;
-    z-index: var(--z-overlay-float);
+    z-index: calc(var(--z-overlay-float) + var(--float-stack, 0));
     display: flex;
     flex-direction: column;
     left: var(--x);

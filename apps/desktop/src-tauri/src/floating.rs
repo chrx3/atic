@@ -213,7 +213,7 @@ fn snapshot(app: &AppHandle, label: &str) -> ((i32, i32), (i32, i32)) {
 ///
 /// Devuelve `false` si no se pudo aplicar; el llamador cae al camino portable.
 #[cfg(windows)]
-fn set_bounds(window: &tauri::WebviewWindow, x: i32, y: i32, w: i32, h: i32) -> bool {
+pub(crate) fn set_bounds(window: &tauri::WebviewWindow, x: i32, y: i32, w: i32, h: i32) -> bool {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         SetWindowPos, SWP_NOACTIVATE, SWP_NOOWNERZORDER, SWP_NOZORDER,
     };

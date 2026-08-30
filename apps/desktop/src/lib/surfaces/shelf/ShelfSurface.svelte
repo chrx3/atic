@@ -25,8 +25,10 @@
     onScreenshotCreated,
   } from "$ipc/captures";
   import { openAnnotator } from "$ipc/annotate";
+  import { startFileDrag, tryClipboardDropOnAgents } from "$ipc/clipboard";
   import { openDataDir } from "$ipc/config";
-  import { dragOut, hideWindow } from "$ipc/windows";
+  import { setOverlayItemDrag } from "$ipc/overlay";
+  import { hideWindow } from "$ipc/windows";
   import { tick } from "svelte";
 
   const DISMISS_MS = 6000;
@@ -119,11 +121,21 @@
 
   async function drag() {
     if (!current) return;
+    const item = current;
     busy = true;
     clearTimer();
     try {
-      await dragOut(current.path);
+      // Mismo camino que el historial del clipboard: el overlay se vuelve
+      // click-through para que el arrastre llegue a otras apps, y el drag
+      // source propio CANCELA al soltar sobre agentes —si no, el HDROP cae
+      // además en la app de atrás y la captura entra dos veces—. Como ese
+      // HDROP tampoco dispara el drop HTML5 dentro de la propia app, la
+      // inserción en la consola la resuelve Rust por la posición del cursor.
+      await setOverlayItemDrag(true).catch(() => {});
+      await startFileDrag([item.path]).catch(() => {});
+      await tryClipboardDropOnAgents(`capture-${item.id}`).catch(() => false);
     } finally {
+      await setOverlayItemDrag(false).catch(() => {});
       busy = false;
       hide();
     }
