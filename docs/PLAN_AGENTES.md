@@ -504,8 +504,11 @@ anda en los dos.
 4. **Interrupt de turno** sin matar la sesión (hoy el CTA en streaming solo
    bloquea envíos; no hay cancel suave).
 5. **Puentes de Atic** (dictado, OCR, captura como tools MCP del harness).
-6. **Fuera todavía**: worktrees, checkpoints, diff review, orquestador propio
-   tipo Synara `create_threads`, committee/advisor.
+6. **Fuera todavía**: worktrees, checkpoints, diff review, committee/advisor.
+   El orquestador *chico* (MCP para delegar entre agentes, no Synara) tiene
+   plan propio: [PLAN_ORQUESTACION_MCP.md](PLAN_ORQUESTACION_MCP.md). Las
+   preguntas de revisión están **cerradas**; la primera línea de código es el
+   grafo (fase 0 de ese plan), no extraer `agents/` ni un spawn sin UI.
 
 ## Trampas que ya pagamos, para no repetirlas
 

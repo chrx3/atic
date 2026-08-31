@@ -45,3 +45,4 @@ credenciales locales del usuario: no lee tokens; el CLI hereda el login.
 - [liquid.md](liquid.md)
 - [ssh-remote-hosts.md](ssh-remote-hosts.md)
 - [`docs/PLAN_AGENTES.md`](../docs/PLAN_AGENTES.md)
+- Orquestación entre agentes (idea): [orquestacion-agentes.md](orquestacion-agentes.md) · [`docs/PLAN_ORQUESTACION_MCP.md`](../docs/PLAN_ORQUESTACION_MCP.md)
