@@ -219,6 +219,7 @@ Consolidado de los pendientes de cada ficha que el usuario llegaría a notar.
 | Expansión de textos por trigger tipado | [snippets.md](snippets.md) |
 | Capturas en macOS | [capturas.md](capturas.md) |
 | Companion móvil | [companion-movil.md](companion-movil.md) |
+| Delegar trabajo entre Claude / Codex / Cursor / OpenCode (MCP) | [orquestacion-agentes.md](orquestacion-agentes.md) |
 
 ---
 
@@ -252,6 +253,7 @@ Detalle completo en el [README del repo](../README.md#privacidad).
 | hecho | Launcher tipo Spotlight | [launcher-spotlight.md](launcher-spotlight.md) |
 | idea | Companion móvil | [companion-movil.md](companion-movil.md) |
 | idea | Hosts SSH para agentes remotos | [ssh-remote-hosts.md](ssh-remote-hosts.md) |
+| idea | Orquestación de agentes (MCP) | [orquestacion-agentes.md](orquestacion-agentes.md) |
 
 ## Cómo mantener esto
 
