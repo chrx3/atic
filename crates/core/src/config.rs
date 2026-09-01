@@ -80,6 +80,20 @@ const PILL_TOOLS: [&str; 7] = [
     "board",
 ];
 
+/// Tamaño de la pill y los paneles, relativo a 1 px CSS = 1 px de pantalla.
+pub const OVERLAY_SCALE_MIN: f64 = 0.75;
+pub const OVERLAY_SCALE_MAX: f64 = 1.5;
+pub const OVERLAY_SCALE_DEFAULT: f64 = 1.0;
+
+/// Acota y redondea a 5% para que el slider no deje basura en el JSON.
+pub fn sanitize_overlay_scale(v: f64) -> f64 {
+    if !v.is_finite() {
+        return OVERLAY_SCALE_DEFAULT;
+    }
+    let snapped = (v * 20.0).round() / 20.0;
+    snapped.clamp(OVERLAY_SCALE_MIN, OVERLAY_SCALE_MAX)
+}
+
 /// Ids válidos, sin repetidos y en el orden recibido.
 ///
 /// No se completa con lo que falte: una lista corta es justamente lo que el
@@ -336,6 +350,8 @@ pub struct Config {
     pub ui_theme_custom: CustomTheme,
     /// Idioma de la UI: `system` | `es` | `en`. Independiente de Whisper.
     pub ui_language: String,
+    /// Tamaño de la pill y los paneles. `1.0` = 1 CSS px por px de pantalla.
+    pub overlay_scale: f64,
     /// Herramientas en el anillo de la pill, en orden. Vacío = todas.
     ///
     /// Manda también en la tira acoplada al borde: es la misma pill, y lo que
@@ -436,6 +452,7 @@ impl Default for Config {
             ui_theme: "system".to_string(),
             ui_theme_custom: CustomTheme::default(),
             ui_language: "system".to_string(),
+            overlay_scale: OVERLAY_SCALE_DEFAULT,
             agents_shown: Vec::new(),
             pill_tools: Vec::new(),
             pill_more_tools: Vec::new(),
@@ -524,6 +541,7 @@ struct ConfigFile {
     ui_theme: Option<String>,
     ui_theme_custom: Option<CustomTheme>,
     ui_language: Option<String>,
+    overlay_scale: Option<f64>,
     agents_shown: Option<Vec<String>>,
     pill_tools: Option<Vec<String>>,
     pill_more_tools: Option<Vec<String>>,
@@ -637,6 +655,7 @@ impl Default for ConfigFile {
             ui_theme: None,
             ui_theme_custom: None,
             ui_language: None,
+            overlay_scale: None,
             agents_shown: None,
             pill_tools: None,
             pill_more_tools: None,
@@ -889,6 +908,9 @@ impl From<ConfigFile> for Config {
                 Some("es") => "es".into(),
                 _ => "system".into(),
             },
+            overlay_scale: sanitize_overlay_scale(
+                f.overlay_scale.unwrap_or(OVERLAY_SCALE_DEFAULT),
+            ),
             agents_shown: sanitize_agents(
                 f.agents_shown
                     .clone()
@@ -996,6 +1018,7 @@ mod tests {
         assert!(cfg.output_device_id.is_empty());
         assert_eq!(cfg.record_tracks, "both");
         assert!(cfg.ui_sounds);
+        assert!((cfg.overlay_scale - 1.0).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -1028,6 +1051,15 @@ mod tests {
         let cfg = Config::default();
         assert!(cfg.pill_tools.is_empty());
         assert!(cfg.pill_more_tools.is_empty());
+    }
+
+    #[test]
+    fn overlay_scale_clamps_and_snaps() {
+        assert!((sanitize_overlay_scale(1.0) - 1.0).abs() < f64::EPSILON);
+        assert!((sanitize_overlay_scale(1.25) - 1.25).abs() < f64::EPSILON);
+        assert!((sanitize_overlay_scale(0.1) - OVERLAY_SCALE_MIN).abs() < f64::EPSILON);
+        assert!((sanitize_overlay_scale(9.0) - OVERLAY_SCALE_MAX).abs() < f64::EPSILON);
+        assert!((sanitize_overlay_scale(f64::NAN) - OVERLAY_SCALE_DEFAULT).abs() < f64::EPSILON);
     }
 
     #[test]

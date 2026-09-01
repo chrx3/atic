@@ -178,7 +178,11 @@ fn try_clipboard_read<R>(f: impl FnOnce() -> R) -> Option<R> {
 
 enum ClipPoll {
     Sensitive,
-    Image { width: usize, height: usize, bytes: Vec<u8> },
+    Image {
+        width: usize,
+        height: usize,
+        bytes: Vec<u8>,
+    },
     Text(String),
     Empty,
 }
@@ -617,16 +621,12 @@ fn ingest_image(
 }
 
 fn shared_history() -> Result<Arc<Mutex<HistoryState>>, String> {
-    HISTORY
-        .lock_or_recover()
-        .as_ref()
-        .cloned()
-        .ok_or_else(|| {
-            crate::ui_lang::msg(
-                "El historial del portapapeles no está iniciado.",
-                "Clipboard history is not started.",
-            )
-        })
+    HISTORY.lock_or_recover().as_ref().cloned().ok_or_else(|| {
+        crate::ui_lang::msg(
+            "El historial del portapapeles no está iniciado.",
+            "Clipboard history is not started.",
+        )
+    })
 }
 
 fn find_item(state: &AppState, id: &str) -> Option<ClipboardItem> {
@@ -751,9 +751,9 @@ pub fn agents_window_visible(app: AppHandle) -> bool {
 pub fn clipboard_drag_path(state: State<AppState>, id: String) -> Result<String, String> {
     let item = find_item(&state, &id).ok_or_else(item_missing)?;
     match item.kind {
-        ClipboardKind::Image => item.image_path.ok_or_else(|| {
-            crate::ui_lang::msg("Imagen sin ruta", "Image has no path")
-        }),
+        ClipboardKind::Image => item
+            .image_path
+            .ok_or_else(|| crate::ui_lang::msg("Imagen sin ruta", "Image has no path")),
         ClipboardKind::Text => {
             let text = item
                 .text
@@ -812,7 +812,10 @@ pub async fn start_clipboard_text_drag(
         let outcome = rx.recv().map_err(|e| e.to_string())??;
         // CANCEL sobre agentes (QueryContinueDrag): insertar en composer/consola.
         if agents_visible(&app) && crate::overlay::cursor_over_hit_id("agents") {
-            let _ = app.emit("agents-composer-insert", AgentsComposerInsert::text_drop(text));
+            let _ = app.emit(
+                "agents-composer-insert",
+                AgentsComposerInsert::text_drop(text),
+            );
             return Ok(());
         }
         // Soltado sobre algo que no acepta texto OLE: el drop vuelve con efecto
@@ -1933,13 +1936,12 @@ pub fn prepare_clipboard_pill(app: AppHandle, fly: bool) -> Result<u64, String> 
     if !fly {
         return Ok(0);
     }
-    let flight = crate::state::animate_pill_to_cursor(&app)
-        .ok_or_else(|| {
-            crate::ui_lang::msg(
-                "No se pudo colocar la pill en el cursor.",
-                "Could not move the pill to the cursor.",
-            )
-        })?;
+    let flight = crate::state::animate_pill_to_cursor(&app).ok_or_else(|| {
+        crate::ui_lang::msg(
+            "No se pudo colocar la pill en el cursor.",
+            "Could not move the pill to the cursor.",
+        )
+    })?;
     Ok(flight.ms)
 }
 
@@ -1953,13 +1955,12 @@ pub fn prepare_clipboard_pill(app: AppHandle, fly: bool) -> Result<u64, String> 
 /// la deriva era exactamente medio crecimiento de la rueda, por ciclo.
 #[tauri::command]
 pub fn stash_pill_home(app: AppHandle) -> Result<(), String> {
-    app.get_webview_window("pill")
-        .ok_or_else(|| {
-            crate::ui_lang::msg(
-                "No existe la ventana pill.",
-                "The pill window does not exist.",
-            )
-        })?;
+    app.get_webview_window("pill").ok_or_else(|| {
+        crate::ui_lang::msg(
+            "No existe la ventana pill.",
+            "The pill window does not exist.",
+        )
+    })?;
     stash_pre_clipboard_position(&app);
     tracing::info!(target: "pill_geo", "CMD        stash_pill_home");
     crate::state::set_pill_visible(&app, true);
@@ -2003,14 +2004,12 @@ pub fn restore_pill_position(app: AppHandle) -> Result<bool, String> {
 /// lugar por el camino normal.
 #[tauri::command]
 pub fn morph_pill_home(app: AppHandle, width: f64, height: f64) -> Result<bool, String> {
-    let window = app
-        .get_webview_window("pill")
-        .ok_or_else(|| {
-            crate::ui_lang::msg(
-                "No existe la ventana pill.",
-                "The pill window does not exist.",
-            )
-        })?;
+    let window = app.get_webview_window("pill").ok_or_else(|| {
+        crate::ui_lang::msg(
+            "No existe la ventana pill.",
+            "The pill window does not exist.",
+        )
+    })?;
     let scale = window.scale_factor().unwrap_or(1.0);
     let w = (width * scale).round() as i32;
     let h = (height * scale).round() as i32;

@@ -516,7 +516,7 @@ pub fn place(app: &AppHandle) -> Option<OverlayRect> {
         // WebView2 a veces se queda con el `inner_size` del create (480×320)
         // y el overlay cubre la pantalla pero el CSS sigue en un recuadro:
         // la pill vuela "a medio camino" y los floats nacen corridos.
-        let mut rect = apply_overlay_geometry(&window);
+        let rect = apply_overlay_geometry(&window);
         // El webview termina de nacer después de `show`: repetir o se queda
         // con el recuadro del create (fly-to corto, pill sin clics).
         //
@@ -543,9 +543,6 @@ pub fn place(app: &AppHandle) -> Option<OverlayRect> {
         if let Ok(hwnd) = window.hwnd() {
             OVERLAY_HWND.store(hwnd.0 as isize, Ordering::SeqCst);
         }
-        let scale = window.scale_factor().unwrap_or(1.0).max(0.01);
-        rect.scale = scale;
-        OVERLAY_SCALE_BITS.store(scale.to_bits(), Ordering::SeqCst);
         // Al final y no antes: `show()` y `set_always_on_top()` son cambios de
         // bandera, y cada uno reescribe el ex-style entero. El orden solo es
         // seguro porque este bit también es de `tao` — si algún día se escribe
@@ -557,7 +554,7 @@ pub fn place(app: &AppHandle) -> Option<OverlayRect> {
             target: "overlay",
             monitores = monitors.len(),
             escalas_mixtas = mixed,
-            scale,
+            scale = rect.scale,
             "overlay en {},{} {}x{}", rect.x, rect.y, rect.w, rect.h
         );
         let _ = app.emit("overlay-ready", ());
@@ -601,14 +598,37 @@ fn apply_overlay_geometry(window: &tauri::WebviewWindow) -> OverlayRect {
     let _ = window.set_position(tauri::PhysicalPosition::new(rect.x, rect.y));
     let _ = window.set_size(tauri::PhysicalSize::new(rect.w as u32, rect.h as u32));
     cover_virtual_screen(window);
-    crate::webview_tweaks::sync_controller_bounds(window);
+    let scale = crate::webview_tweaks::sync_controller_bounds(window)
+        .unwrap_or_else(|| window.scale_factor().unwrap_or(1.0).max(0.01));
+    OVERLAY_SCALE_BITS.store(scale.to_bits(), Ordering::SeqCst);
     OVERLAY_PHYS_W.store(rect.w.max(0) as u32, Ordering::SeqCst);
     OVERLAY_PHYS_H.store(rect.h.max(0) as u32, Ordering::SeqCst);
     note_overlay_apply();
     if let Ok(mut g) = APPLIED_TOPO.lock() {
         *g = Some(display_topo());
     }
-    rect
+    OverlayRect { scale, ..rect }
+}
+
+/// Reaplica el tamaño de Ajustes sin reencuadrar el HWND.
+pub fn refresh_overlay_scale(app: &AppHandle) {
+    #[cfg(windows)]
+    {
+        CSS_VIEW_W_BITS.store(0, Ordering::Release);
+        CSS_VIEW_H_BITS.store(0, Ordering::Release);
+        if let Some(window) = app.get_webview_window(LABEL) {
+            if let Some(scale) = crate::webview_tweaks::sync_controller_bounds(&window) {
+                OVERLAY_SCALE_BITS.store(scale.to_bits(), Ordering::SeqCst);
+            }
+        }
+        if let Some(window) = app.get_webview_window("capture-overlay") {
+            let _ = crate::webview_tweaks::sync_controller_bounds(&window);
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = app;
+    }
 }
 
 #[cfg(windows)]
@@ -684,7 +704,9 @@ fn sync_overlay_to_displays(app: &AppHandle) {
         COVER_TRIES.store(0, Ordering::Relaxed);
     }
     let topo = display_topo();
-    let scale = window.scale_factor().unwrap_or(1.0).max(0.01);
+    let scale = f64::from_bits(OVERLAY_SCALE_BITS.load(Ordering::Acquire))
+        .max(window.scale_factor().unwrap_or(1.0))
+        .max(0.01);
     let same = APPLIED_TOPO
         .lock()
         .ok()
@@ -695,7 +717,9 @@ fn sync_overlay_to_displays(app: &AppHandle) {
         COVER_RETRY.store(false, Ordering::Relaxed);
         COVER_TRIES.store(0, Ordering::Relaxed);
         cover_virtual_screen(&window);
-        crate::webview_tweaks::sync_controller_bounds(&window);
+        if let Some(scale) = crate::webview_tweaks::sync_controller_bounds(&window) {
+            OVERLAY_SCALE_BITS.store(scale.to_bits(), Ordering::SeqCst);
+        }
         return;
     }
     // DPI mixto: `GetWindowRect` en DIP nunca iguala `topo` físico con
@@ -704,7 +728,9 @@ fn sync_overlay_to_displays(app: &AppHandle) {
     if same && COVER_TRIES.load(Ordering::Relaxed) >= 8 {
         COVER_RETRY.store(false, Ordering::Relaxed);
         cover_virtual_screen(&window);
-        crate::webview_tweaks::sync_controller_bounds(&window);
+        if let Some(scale) = crate::webview_tweaks::sync_controller_bounds(&window) {
+            OVERLAY_SCALE_BITS.store(scale.to_bits(), Ordering::SeqCst);
+        }
         return;
     }
     if !same {
@@ -732,9 +758,8 @@ fn sync_overlay_to_displays(app: &AppHandle) {
         topo.w,
         topo.h
     );
-    let _ = apply_overlay_geometry(&window);
-    let scale = window.scale_factor().unwrap_or(1.0).max(0.01);
-    OVERLAY_SCALE_BITS.store(scale.to_bits(), Ordering::SeqCst);
+    let rect = apply_overlay_geometry(&window);
+    let scale = rect.scale.max(0.01);
     let covers_now = overlay_covers_topo(&window, &topo, scale);
     if covers_now {
         COVER_RETRY.store(false, Ordering::Relaxed);
@@ -913,12 +938,14 @@ fn start_display_watch(app: AppHandle) {
 }
 
 #[cfg(windows)]
-fn orig_overlay_wndproc() -> Option<unsafe extern "system" fn(
-    windows_sys::Win32::Foundation::HWND,
-    u32,
-    windows_sys::Win32::Foundation::WPARAM,
-    windows_sys::Win32::Foundation::LPARAM,
-) -> windows_sys::Win32::Foundation::LRESULT> {
+fn orig_overlay_wndproc() -> Option<
+    unsafe extern "system" fn(
+        windows_sys::Win32::Foundation::HWND,
+        u32,
+        windows_sys::Win32::Foundation::WPARAM,
+        windows_sys::Win32::Foundation::LPARAM,
+    ) -> windows_sys::Win32::Foundation::LRESULT,
+> {
     type WndProcFn = unsafe extern "system" fn(
         windows_sys::Win32::Foundation::HWND,
         u32,
@@ -1350,7 +1377,14 @@ fn wry_webview_child(
     let mut class: Vec<u16> = "WRY_WEBVIEW".encode_utf16().collect();
     class.push(0);
     // SAFETY: parent es un HWND de Tauri; FindWindowEx solo busca el hijo.
-    unsafe { FindWindowExW(parent, std::ptr::null_mut(), class.as_ptr(), std::ptr::null()) }
+    unsafe {
+        FindWindowExW(
+            parent,
+            std::ptr::null_mut(),
+            class.as_ptr(),
+            std::ptr::null(),
+        )
+    }
 }
 
 /// Alfa uniforme del overlay: 254, un punto por debajo del máximo.
@@ -1628,8 +1662,6 @@ pub fn set_overlay_hit_rects(app: AppHandle, rects: Vec<HitRect>) {
     // con retraso y, si se descartan, el frontend no vuelve a mandarlas
     // (`#sent` ya las dio por publicadas) y la pill queda inalcanzable.
     if let Some(window) = app.get_webview_window(LABEL) {
-        let scale = window.scale_factor().unwrap_or(1.0);
-        OVERLAY_SCALE_BITS.store(scale.to_bits(), Ordering::Release);
         if let Ok(hwnd) = window.hwnd() {
             OVERLAY_HWND.store(hwnd.0 as isize, Ordering::Release);
         }
@@ -2412,8 +2444,12 @@ pub fn set_overlay_text_mode(app: AppHandle, on: bool) {
 #[cfg(windows)]
 fn frame(app: &AppHandle) -> Option<(f64, f64, f64)> {
     let window = app.get_webview_window(LABEL)?;
-    let scale = window.scale_factor().unwrap_or(1.0);
-    OVERLAY_SCALE_BITS.store(scale.to_bits(), Ordering::Release);
+    let stored = f64::from_bits(OVERLAY_SCALE_BITS.load(Ordering::Acquire));
+    let scale = if stored > 1.001 {
+        stored
+    } else {
+        window.scale_factor().unwrap_or(1.0)
+    };
     if let Ok(hwnd) = window.hwnd() {
         OVERLAY_HWND.store(hwnd.0 as isize, Ordering::Release);
     }
@@ -2701,7 +2737,8 @@ pub fn overlay_rect(app: AppHandle) -> Option<OverlayRect> {
         let window = app.get_webview_window(LABEL)?;
         let pos = window.outer_position().ok()?;
         let size = window.outer_size().ok()?;
-        let scale = window.scale_factor().unwrap_or(1.0);
+        let stored = f64::from_bits(OVERLAY_SCALE_BITS.load(Ordering::Acquire));
+        let scale = stored.max(window.scale_factor().unwrap_or(1.0));
         Some(OverlayRect {
             x: pos.x,
             y: pos.y,
@@ -2728,7 +2765,8 @@ mod tests {
     #[test]
     fn lparam_packs_negative_virtual_screen() {
         // Monitor a la izquierda: x = -1920, y = 540.
-        let lparam = ((540i32 as u16 as isize) << 16) | ((-1920i32 as i16 as u16 as isize) & 0xFFFF);
+        let lparam =
+            ((540i32 as u16 as isize) << 16) | ((-1920i32 as i16 as u16 as isize) & 0xFFFF);
         let (x, y) = lparam_screen_point(lparam);
         assert_eq!(x, -1920);
         assert_eq!(y, 540);

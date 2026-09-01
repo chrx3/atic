@@ -2443,12 +2443,7 @@
         //
         // En dev no se sondea, igual que en la ventana principal: el
         // instalador que responde GitHub no es el que estás corriendo.
-        // Sí se pinta un aviso de mentira para revisar el chip (Ctrl+Alt+U).
-        if (import.meta.env.DEV) {
-          appUpdate.simulate(
-            localStorage.getItem("atic-fake-update") === "0" ? null : "0.4.25",
-          );
-        } else if (cfg.onboarding_done === true) {
+        if (!import.meta.env.DEV && cfg.onboarding_done === true) {
           stopUpdatePolling = appUpdate.startPolling();
         }
       } catch {

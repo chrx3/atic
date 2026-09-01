@@ -102,8 +102,20 @@ pub fn export_recording(
             render_markdown(&recording, &transcript, summary.as_ref(), &copy),
         )
         .map_err(|error| error.to_string())?,
-        "docx" => write_docx(&destination, &recording, &transcript, summary.as_ref(), &copy)?,
-        "pdf" => write_pdf(&destination, &recording, &transcript, summary.as_ref(), &copy)?,
+        "docx" => write_docx(
+            &destination,
+            &recording,
+            &transcript,
+            summary.as_ref(),
+            &copy,
+        )?,
+        "pdf" => write_pdf(
+            &destination,
+            &recording,
+            &transcript,
+            summary.as_ref(),
+            &copy,
+        )?,
         _ => {
             return Err(crate::ui_lang::msg(
                 "Formato de exportación inválido.",
@@ -126,7 +138,11 @@ fn document_lines(
 ) -> Vec<String> {
     let mut lines = vec![
         recording.title.replace(['\r', '\n'], " "),
-        format!("{}: {}", copy.date, recording.started_at.format("%Y-%m-%d %H:%M")),
+        format!(
+            "{}: {}",
+            copy.date,
+            recording.started_at.format("%Y-%m-%d %H:%M")
+        ),
         format!("{}: {} s", copy.duration, recording.duration_secs),
         String::new(),
     ];

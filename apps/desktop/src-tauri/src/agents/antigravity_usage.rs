@@ -106,12 +106,9 @@ fn access_token_from_blob(blob: &str) -> Result<String, String> {
         .ok_or_else(|| "credencial de Antigravity sin access token".to_string())?;
     if let Some(expiry) = root.pointer("/token/expiry").and_then(Value::as_str) {
         if let Ok(when) = DateTime::parse_from_rfc3339(expiry) {
-            let left = when.with_timezone(&Utc).timestamp_millis()
-                - Utc::now().timestamp_millis();
+            let left = when.with_timezone(&Utc).timestamp_millis() - Utc::now().timestamp_millis();
             if left < EXPIRY_SKEW_MS {
-                return Err(
-                    "la sesión de Antigravity venció; abre agy para renovarla".to_string(),
-                );
+                return Err("la sesión de Antigravity venció; abre agy para renovarla".to_string());
             }
         }
     }

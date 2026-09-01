@@ -186,9 +186,10 @@ impl Registry {
             .collect();
         for p in self.items.values_mut() {
             let pids = live.get(&p.backend_id).map(Vec::as_slice).unwrap_or(&[]);
-            let hwnd_ok = p.window.as_ref().is_some_and(|w| {
-                super::focus::hwnd_alive(w.hwnd) && pids.contains(&w.pid)
-            });
+            let hwnd_ok = p
+                .window
+                .as_ref()
+                .is_some_and(|w| super::focus::hwnd_alive(w.hwnd) && pids.contains(&w.pid));
             if hwnd_ok {
                 continue;
             }

@@ -15,7 +15,11 @@ pub fn english() -> bool {
 }
 
 pub fn pick<'a>(en: bool, es: &'a str, english: &'a str) -> &'a str {
-    if en { english } else { es }
+    if en {
+        english
+    } else {
+        es
+    }
 }
 
 pub fn msg(es: &str, en: &str) -> String {

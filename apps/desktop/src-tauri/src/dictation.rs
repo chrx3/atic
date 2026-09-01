@@ -40,8 +40,14 @@ fn dictation_need_local(err: &atic_transcribe::TranscribeError, groq_fallback: b
             "{} {}",
             groq_key_required(),
             crate::ui_lang::msg(
-                &format!("Mientras tanto, descarga un modelo local: {}", err.to_ui(false)),
-                &format!("In the meantime, download a local model: {}", err.to_ui(true)),
+                &format!(
+                    "Mientras tanto, descarga un modelo local: {}",
+                    err.to_ui(false)
+                ),
+                &format!(
+                    "In the meantime, download a local model: {}",
+                    err.to_ui(true)
+                ),
             )
         )
     } else {

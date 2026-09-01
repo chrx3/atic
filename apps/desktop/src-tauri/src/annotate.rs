@@ -458,13 +458,12 @@ fn resolve_source(state: &State<AppState>, path: &str) -> Result<std::path::Path
     if let Ok(ok) = crate::capture::ensure_capture_in_dir(&state.dirs.clipboard_dir(), target) {
         return Ok(ok);
     }
-    crate::capture::ensure_capture_in_dir(&state.dirs.overlay_frames_dir(), target)
-        .map_err(|_| {
-            crate::ui_lang::msg(
-                "Ruta fuera de las carpetas del editor.",
-                "Path is outside the editor folders.",
-            )
-        })
+    crate::capture::ensure_capture_in_dir(&state.dirs.overlay_frames_dir(), target).map_err(|_| {
+        crate::ui_lang::msg(
+            "Ruta fuera de las carpetas del editor.",
+            "Path is outside the editor folders.",
+        )
+    })
 }
 
 #[tauri::command]

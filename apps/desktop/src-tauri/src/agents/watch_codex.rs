@@ -120,7 +120,8 @@ pub fn classify(v: &Value) -> LineKind {
                     .and_then(Value::as_str)
                     .and_then(first_line),
             },
-            Some("item_completed") => match v.pointer("/payload/item/type").and_then(Value::as_str) {
+            Some("item_completed") => match v.pointer("/payload/item/type").and_then(Value::as_str)
+            {
                 Some("UserMessage") => LineKind::Prompt,
                 Some("AgentMessage") => {
                     if v.pointer("/payload/item/phase").and_then(Value::as_str)
