@@ -197,9 +197,8 @@ pub fn delete_snippet(app: AppHandle, state: State<AppState>, id: String) -> Res
 /// Pega el cuerpo del fragmento en la app que tenía el foco.
 #[tauri::command]
 pub fn paste_snippet(app: AppHandle, state: State<AppState>, id: String) -> Result<(), String> {
-    let snippet = find_snippet(&state, &id).ok_or_else(|| {
-        crate::ui_lang::msg("Fragmento no encontrado", "Snippet not found")
-    })?;
+    let snippet = find_snippet(&state, &id)
+        .ok_or_else(|| crate::ui_lang::msg("Fragmento no encontrado", "Snippet not found"))?;
     if snippet.body.is_empty() {
         return Err(crate::ui_lang::msg(
             "El fragmento está vacío",

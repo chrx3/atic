@@ -161,6 +161,10 @@ export const es = {
       theme: "Tema",
       themeHint: "Claro y oscuro son los extremos; los del medio se separan mejor de lo que hay detrás.",
       themeAria: "Tema de la interfaz",
+      overlayScale: "Tamaño",
+      overlayScaleHint:
+        "Pill, clipboard y paneles. 100% es un píxel de interfaz por píxel de pantalla.",
+      overlayScaleAria: "Tamaño de la pill y los paneles",
       system: "Sistema",
       light: "Claro",
       sepia: "Sepia",

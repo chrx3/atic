@@ -123,6 +123,8 @@ export interface AppConfig {
   ui_theme_custom: CustomTheme;
   /** es | en — idioma de la interfaz, no el de Whisper. */
   ui_language: string;
+  /** Tamaño de la pill y los paneles. 1 = 1 CSS px por px de pantalla. */
+  overlay_scale: number;
   /**
    * Herramientas del anillo de la pill, en orden. Vacío = sin configurar.
    * Manda también en la tira acoplada al borde.

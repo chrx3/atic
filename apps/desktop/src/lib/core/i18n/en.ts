@@ -159,6 +159,10 @@ export const en = {
       theme: "Theme",
       themeHint: "Light and dark are the extremes; the ones in between stand out better from what is behind.",
       themeAria: "Interface theme",
+      overlayScale: "Size",
+      overlayScaleHint:
+        "Pill, clipboard and floating panels. 100% is one UI pixel per screen pixel.",
+      overlayScaleAria: "Size of the pill and panels",
       system: "System",
       light: "Light",
       sepia: "Sepia",

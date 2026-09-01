@@ -33,15 +33,13 @@ fn parse_binding(en: bool, name: &str, raw: &str) -> Result<Binding, String> {
     if let Some(btn) = mouse_bindings::parse_side_button(raw) {
         return Ok(Binding::Mouse(btn));
     }
-    raw.parse::<Shortcut>()
-        .map(Binding::Key)
-        .map_err(|e| {
-            if en {
-                format!("Invalid {name} shortcut ({raw}): {e}")
-            } else {
-                format!("Atajo de {name} inválido ({raw}): {e}")
-            }
-        })
+    raw.parse::<Shortcut>().map(Binding::Key).map_err(|e| {
+        if en {
+            format!("Invalid {name} shortcut ({raw}): {e}")
+        } else {
+            format!("Atajo de {name} inválido ({raw}): {e}")
+        }
+    })
 }
 
 fn binding_dup_key(b: &Binding) -> String {
@@ -125,7 +123,11 @@ pub fn register_shortcuts(app: &AppHandle, bindings: ShortcutBindings<'_>) -> Re
     let recording = parse_binding(en, n("grabación", "recording"), bindings.recording)?;
     let dictation = parse_binding(en, n("dictado", "dictation"), bindings.dictation)?;
     let summon = parse_binding(en, n("traer pill", "bring pill"), bindings.summon_pill)?;
-    let radial = parse_binding(en, n("rueda de la pill", "pill wheel"), bindings.pill_radial)?;
+    let radial = parse_binding(
+        en,
+        n("rueda de la pill", "pill wheel"),
+        bindings.pill_radial,
+    )?;
     let clipboard = parse_binding(en, "clipboard", bindings.clipboard)?;
     let snippets = parse_binding(en, n("fragmentos", "snippets"), bindings.snippets)?;
     let agents = if crate::agents::UI_ENABLED {

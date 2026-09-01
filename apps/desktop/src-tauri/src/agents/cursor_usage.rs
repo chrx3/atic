@@ -260,11 +260,7 @@ fn post_json(
         .map_err(|e| format!("respuesta de Cursor ilegible: {e}"))
 }
 
-fn get_text(
-    client: &reqwest::blocking::Client,
-    cookie: &str,
-    url: &str,
-) -> Result<String, String> {
+fn get_text(client: &reqwest::blocking::Client, cookie: &str, url: &str) -> Result<String, String> {
     let resp = client
         .get(url)
         .header(reqwest::header::COOKIE, cookie)
@@ -285,10 +281,7 @@ fn get_text(
 fn parse_epoch_ms(value: Option<&Value>) -> Option<i64> {
     match value? {
         Value::Number(n) => n.as_i64().or_else(|| n.as_f64().map(|f| f as i64)),
-        Value::String(s) => s
-            .parse::<i64>()
-            .ok()
-            .or_else(|| rfc3339_millis(s)),
+        Value::String(s) => s.parse::<i64>().ok().or_else(|| rfc3339_millis(s)),
         _ => None,
     }
 }
@@ -316,8 +309,16 @@ fn windows_from_plan(plan: &Value) -> Vec<CursorUsageWindow> {
             });
         }
     };
-    push("auto", plan.get("autoPercentUsed").and_then(Value::as_f64), &mut windows);
-    push("api", plan.get("apiPercentUsed").and_then(Value::as_f64), &mut windows);
+    push(
+        "auto",
+        plan.get("autoPercentUsed").and_then(Value::as_f64),
+        &mut windows,
+    );
+    push(
+        "api",
+        plan.get("apiPercentUsed").and_then(Value::as_f64),
+        &mut windows,
+    );
     if windows.is_empty() {
         let included = plan
             .get("includedSpend")
@@ -341,17 +342,27 @@ fn windows_from_plan(plan: &Value) -> Vec<CursorUsageWindow> {
 }
 
 fn on_demand_cents(root: &Value, plan: &Value) -> f64 {
-    if let Some(od) = root
-        .get("individualUsage")
-        .and_then(|u| u.get("onDemand"))
-    {
+    if let Some(od) = root.get("individualUsage").and_then(|u| u.get("onDemand")) {
         if od.get("enabled").and_then(Value::as_bool) == Some(true) {
-            return od.get("used").and_then(Value::as_f64).unwrap_or(0.0).max(0.0);
+            return od
+                .get("used")
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0)
+                .max(0.0);
         }
     }
-    let included = plan.get("includedSpend").and_then(Value::as_f64).unwrap_or(0.0);
-    let bonus = plan.get("bonusSpend").and_then(Value::as_f64).unwrap_or(0.0);
-    let total = plan.get("totalSpend").and_then(Value::as_f64).unwrap_or(0.0);
+    let included = plan
+        .get("includedSpend")
+        .and_then(Value::as_f64)
+        .unwrap_or(0.0);
+    let bonus = plan
+        .get("bonusSpend")
+        .and_then(Value::as_f64)
+        .unwrap_or(0.0);
+    let total = plan
+        .get("totalSpend")
+        .and_then(Value::as_f64)
+        .unwrap_or(0.0);
     (total - included - bonus).max(0.0)
 }
 
@@ -507,13 +518,11 @@ mod tests {
         assert!((parsed.windows[1].used_percent - 87.8).abs() < 1e-6);
         // included + bonus = total → on-demand cero. El 106357 no es un cupo.
         assert_eq!(parsed.spend_cents, 0.0);
-        assert!(
-            parsed
-                .period_end
-                .as_deref()
-                .unwrap()
-                .starts_with("2026-09-01T18:44:34")
-        );
+        assert!(parsed
+            .period_end
+            .as_deref()
+            .unwrap()
+            .starts_with("2026-09-01T18:44:34"));
     }
 
     #[test]
@@ -541,6 +550,9 @@ mod tests {
         let parsed = parse_summary_body(body).expect("cupo");
         assert_eq!(parsed.spend_cents, 1234.0);
         assert_eq!(parsed.windows[0].kind, "auto");
-        assert_eq!(parsed.period_end.as_deref(), Some("2026-09-01T18:44:34.000Z"));
+        assert_eq!(
+            parsed.period_end.as_deref(),
+            Some("2026-09-01T18:44:34.000Z")
+        );
     }
 }

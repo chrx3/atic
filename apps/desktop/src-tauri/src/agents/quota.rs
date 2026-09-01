@@ -204,7 +204,11 @@ fn claude_quota() -> AgentQuota {
         // vengan): viajan con el nombre adentro del `kind` para que la vista no
         // necesite una etiqueta nueva por cada una.
         for extra in &u.seven_day_models {
-            push(&format!("7d:{}", extra.model), 10_080, &Some(extra.window.clone()));
+            push(
+                &format!("7d:{}", extra.model),
+                10_080,
+                &Some(extra.window.clone()),
+            );
         }
 
         AgentQuota {
@@ -446,7 +450,10 @@ mod tests {
         assert_eq!(quota.windows[0].kind, "auto");
         assert!((quota.windows[0].used_percent - 80.5825).abs() < 1e-6);
         assert_eq!(quota.windows[1].kind, "api");
-        assert!(quota.spend.is_none(), "on-demand cero no se pinta como gasto");
+        assert!(
+            quota.spend.is_none(),
+            "on-demand cero no se pinta como gasto"
+        );
         assert_eq!(quota.windows[0].resets_at, Some(1788288274000));
     }
 

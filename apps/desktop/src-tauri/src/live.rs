@@ -138,13 +138,9 @@ pub fn spawn_live_worker(
                 .map_err(|e| {
                     if want_groq {
                         crate::ui_lang::msg(
-                            &format!(
-                                "{GROQ_LIVE_KEY_REQUIRED_MSG_ES} (fallback local no disponible: {e})"
-                            ),
-                            &format!(
-                                "{GROQ_LIVE_KEY_REQUIRED_MSG_EN} (local fallback unavailable: {e})"
-                            ),
-                        )
+                    &format!("{GROQ_LIVE_KEY_REQUIRED_MSG_ES} (fallback local no disponible: {e})"),
+                    &format!("{GROQ_LIVE_KEY_REQUIRED_MSG_EN} (local fallback unavailable: {e})"),
+                )
                     } else {
                         format!("Modelo live «{model_id}» no disponible: {e}")
                     }

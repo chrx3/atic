@@ -154,7 +154,8 @@ pub fn search_local(state: State<AppState>, query: String) -> Result<Vec<SearchH
                 id: cap.path.clone(),
                 kind: SearchHitKind::Capture,
                 title: {
-                    let word = crate::ui_lang::pick(crate::ui_lang::english(), "Captura", "Capture");
+                    let word =
+                        crate::ui_lang::pick(crate::ui_lang::english(), "Captura", "Capture");
                     if cap.label.is_empty() {
                         word.to_string()
                     } else {

@@ -148,7 +148,9 @@ fn set_clipboard_image_arboard(width: u32, height: u32, rgba: &[u8]) -> Result<(
             Ok(()) => return Ok(()),
             Err(error) => last = error,
         }
-        std::thread::sleep(std::time::Duration::from_millis(10 + 15 * u64::from(attempt)));
+        std::thread::sleep(std::time::Duration::from_millis(
+            10 + 15 * u64::from(attempt),
+        ));
     }
     Err(last)
 }
@@ -248,12 +250,7 @@ fn encode_dibv5(width: u32, height: u32, rgba: &[u8]) -> Result<Vec<u8>, String>
 }
 
 #[cfg(windows)]
-fn set_clipboard_image_win(
-    png: &[u8],
-    width: u32,
-    height: u32,
-    rgba: &[u8],
-) -> Result<(), String> {
+fn set_clipboard_image_win(png: &[u8], width: u32, height: u32, rgba: &[u8]) -> Result<(), String> {
     let dib = encode_dibv5(width, height, rgba)?;
     let mut last = String::new();
     for attempt in 0..8u32 {
@@ -292,7 +289,9 @@ fn set_clipboard_image_win_once(png: &[u8], dib: &[u8]) -> Result<(), String> {
         format!("{prefix}: {}", std::io::Error::from_raw_os_error(code))
     }
 
-    unsafe fn alloc_hglobal(bytes: &[u8]) -> Result<windows_sys::Win32::Foundation::HGLOBAL, String> {
+    unsafe fn alloc_hglobal(
+        bytes: &[u8],
+    ) -> Result<windows_sys::Win32::Foundation::HGLOBAL, String> {
         let handle = GlobalAlloc(GMEM_MOVEABLE, bytes.len());
         if handle.is_null() {
             return Err(os_err("GlobalAlloc failed"));

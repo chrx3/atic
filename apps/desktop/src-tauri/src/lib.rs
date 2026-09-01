@@ -339,11 +339,7 @@ pub fn run() {
             // de este `setup`, y si quedan visibles un instante se ve el
             // lienzo de anotar / el shelf / el launcher. `visible: false` en
             // la config es la barrera; esto cubre si algún runtime la ignora.
-            for label in [
-                "capture-shelf",
-                "launcher",
-                annotate::ANNOTATE_LABEL,
-            ] {
+            for label in ["capture-shelf", "launcher", annotate::ANNOTATE_LABEL] {
                 if let Some(window) = app.get_webview_window(label) {
                     let _ = window.hide();
                 }

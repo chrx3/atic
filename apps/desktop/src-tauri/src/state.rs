@@ -533,8 +533,8 @@ pub fn summon_pill_to_cursor(app: &AppHandle) {
 #[tauri::command]
 pub fn summon_pill_here(app: AppHandle) -> Result<(), String> {
     tracing::info!(target: "pill_geo", "CMD        summon_pill_here");
-    let flight = crate::floating::glide(&app, "pill", crate::floating::Anchor::Cursor)
-        .ok_or_else(|| {
+    let flight =
+        crate::floating::glide(&app, "pill", crate::floating::Anchor::Cursor).ok_or_else(|| {
             crate::ui_lang::msg(
                 "No se pudo colocar la pill en el cursor.",
                 "Could not move the pill to the cursor.",
@@ -568,9 +568,8 @@ pub fn get_or_load_whisper(
 
     // Carga con el mutex retenido: evita dos hilos leyendo el mismo GGML a la vez.
     tracing::info!(path = %model_path.display(), "cargando modelo Whisper en memoria");
-    let loaded = Arc::new(
-        LoadedModel::load(model_path).map_err(|e| e.to_ui(crate::ui_lang::english()))?,
-    );
+    let loaded =
+        Arc::new(LoadedModel::load(model_path).map_err(|e| e.to_ui(crate::ui_lang::english()))?);
     guard.insert(model_path.to_path_buf(), Arc::clone(&loaded));
     Ok(loaded)
 }

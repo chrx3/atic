@@ -59,6 +59,21 @@
     })),
   );
 
+  const OVERLAY_SCALE_OPTIONS = [
+    { value: "0.75", label: "75%" },
+    { value: "1", label: "100%" },
+    { value: "1.25", label: "125%" },
+    { value: "1.5", label: "150%" },
+  ];
+
+  function overlayScaleKey(n: number): string {
+    const snapped = Math.round(n * 20) / 20;
+    if (snapped <= 0.8) return "0.75";
+    if (snapped <= 1.12) return "1";
+    if (snapped <= 1.37) return "1.25";
+    return "1.5";
+  }
+
   function patch(changes: Parameters<typeof config.patch>[0]) {
     void config.patch(changes).catch(toastError);
   }
@@ -126,6 +141,23 @@
             {#if theme === "custom"}
               <ThemeEditor {knobs} onchange={(next) => patch({ ui_theme_custom: next })} />
             {/if}
+          </div>
+        {/snippet}
+      </SettingsRow>
+      <SettingsRow bare>
+        {#snippet control()}
+          <div class="flex flex-col gap-2 py-0.5">
+            <div class="flex flex-col gap-0.5">
+              <span class="text-sm text-text">{t("settings.appearance.overlayScale")}</span>
+              <p class="text-xs text-faint">{t("settings.appearance.overlayScaleHint")}</p>
+            </div>
+            <SegmentedControl
+              value={overlayScaleKey(cfg.overlay_scale ?? 1)}
+              label={t("settings.appearance.overlayScaleAria")}
+              options={OVERLAY_SCALE_OPTIONS}
+              onchange={(value) => patch({ overlay_scale: Number(value) })}
+              full
+            />
           </div>
         {/snippet}
       </SettingsRow>

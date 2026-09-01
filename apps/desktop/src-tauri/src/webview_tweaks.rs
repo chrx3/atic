@@ -176,42 +176,153 @@ pub fn disable_browser_accelerator_keys(window: &WebviewWindow) {
 #[cfg(not(windows))]
 pub fn disable_browser_accelerator_keys(_window: &WebviewWindow) {}
 
+/// Píxeles DIP que WebView2 espera en `SetBounds` para un cliente físico.
+pub(crate) fn controller_dip_size(physical: i32, scale: f64) -> i32 {
+    ((physical as f64) / scale.max(0.01))
+        .round()
+        .clamp(1.0, 16384.0) as i32
+}
+
+/// Cliente físico del HWND. `GetClientRect` a veces ya viene en DIP.
+pub(crate) fn physical_client_px(
+    client_w: i32,
+    client_h: i32,
+    outer_w: i32,
+    outer_h: i32,
+    scale: f64,
+) -> (i32, i32) {
+    if client_w <= 0 || client_h <= 0 {
+        return (outer_w.max(1), outer_h.max(1));
+    }
+    if scale > 1.01 {
+        let scaled_w = (f64::from(client_w) * scale).round() as i32;
+        if (scaled_w - outer_w).abs() <= 32 {
+            return (outer_w.max(1), outer_h.max(1));
+        }
+        return (client_w, client_h);
+    }
+    (client_w, client_h)
+}
+
+/// Rasterización de un HWND que cubre el escritorio virtual.
+///
+/// `user_scale` es el tamaño de Ajustes (1.0 = 1 CSS px por px físico).
+/// Si el HWND ya está en DIP, se ignora para no hacer doble zoom.
+pub(crate) fn overlay_raster_scale(
+    hwnd_dpi: u32,
+    tauri_scale: f64,
+    max_monitor_scale: f64,
+    window_w: i32,
+    virtual_physical_w: u32,
+    user_scale: f64,
+) -> f64 {
+    let from_hwnd = f64::from(hwnd_dpi.max(96)) / 96.0;
+    let user = atic_core::config::sanitize_overlay_scale(user_scale);
+    // HWND ya en DIP (proceso unaware): rasterizar al máximo haría doble zoom.
+    if virtual_physical_w > 0 && max_monitor_scale > 1.01 {
+        let dip_w = (f64::from(virtual_physical_w) / max_monitor_scale).round() as i32;
+        if (window_w - dip_w).abs() <= 32 {
+            return from_hwnd.max(tauri_scale).max(1.0);
+        }
+    }
+    user
+}
+
 /// Ajusta el bounds del controlador WebView2 al cliente de la ventana.
 ///
-/// wry crea un HWND hijo `WRY_WEBVIEW`. `SetBounds` solo no basta: hay que
-/// redimensionar ese hijo. Si queda chico, el CSS no cubre el overlay, la pill
-/// no llega al mouse y los hit-rects no coinciden con el cursor.
+/// wry crea un HWND hijo `WRY_WEBVIEW`. El modo por defecto de WebView2 es
+/// `USE_RAW_PIXELS`: `SetBounds` y el hijo van en píxeles físicos, y
+/// `RasterizationScale` define cuántos CSS px caben ahí. Si `SetBounds` recibe
+/// DIP, el bitmap queda chico, Windows lo estira y `innerWidth` se divide otra
+/// vez por la escala (zoom + blur).
+///
+/// Devuelve la escala de rasterización aplicada, para que el overlay no
+/// siga usando `scale_factor=1` en el mapeo CSS.
 #[cfg(windows)]
-pub fn sync_controller_bounds(window: &WebviewWindow) {
+pub fn sync_controller_bounds(window: &WebviewWindow) -> Option<f64> {
+    use webview2_com::Microsoft::Web::WebView2::Win32::{
+        ICoreWebView2Controller3, COREWEBVIEW2_BOUNDS_MODE_USE_RAW_PIXELS,
+    };
     use windows::Win32::Foundation::RECT;
+    use windows_core::Interface;
+    use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        FindWindowExW, SetWindowPos, SWP_NOACTIVATE, SWP_NOZORDER,
+        FindWindowExW, GetClientRect, GetWindowRect, SetWindowPos, SWP_NOACTIVATE, SWP_NOZORDER,
     };
 
     let Ok(hwnd) = window.hwnd() else {
-        return;
+        return None;
     };
-    let mut rc = windows_sys::Win32::Foundation::RECT {
+    let hwnd_sys = hwnd.0 as windows_sys::Win32::Foundation::HWND;
+    let mut client = windows_sys::Win32::Foundation::RECT {
         left: 0,
         top: 0,
         right: 0,
         bottom: 0,
     };
-    // SAFETY: HWND de Tauri vivo; GetClientRect solo escribe el RECT.
-    let ok =
-        unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetClientRect(hwnd.0 as _, &mut rc) };
-    if ok == 0 || rc.right <= 0 || rc.bottom <= 0 {
-        return;
+    let mut outer = windows_sys::Win32::Foundation::RECT {
+        left: 0,
+        top: 0,
+        right: 0,
+        bottom: 0,
+    };
+    // SAFETY: HWND de Tauri vivo; estas APIs solo leen el rectángulo.
+    let ok_client = unsafe { GetClientRect(hwnd_sys, &mut client) };
+    let ok_outer = unsafe { GetWindowRect(hwnd_sys, &mut outer) };
+    if ok_client == 0 || client.right <= 0 || client.bottom <= 0 {
+        return None;
     }
-    let width = rc.right - rc.left;
-    let height = rc.bottom - rc.top;
+    let client_w = client.right - client.left;
+    let client_h = client.bottom - client.top;
+    let outer_w = if ok_outer == 0 {
+        client_w
+    } else {
+        outer.right - outer.left
+    };
+    let outer_h = if ok_outer == 0 {
+        client_h
+    } else {
+        outer.bottom - outer.top
+    };
+
+    let hwnd_dpi = unsafe { GetDpiForWindow(hwnd_sys) };
+    let tauri_scale = window.scale_factor().unwrap_or(1.0);
+    let spanning = window.label() == "overlay" || window.label() == "capture-overlay";
+    let (max_mon, vs_w) = if spanning {
+        let max_mon = atic_capture::monitors::enumerate()
+            .iter()
+            .map(|m| m.scale)
+            .fold(1.0_f64, f64::max);
+        (max_mon, atic_capture::monitors::virtual_screen().width)
+    } else {
+        (1.0, 0)
+    };
+    let user_scale = window
+        .app_handle()
+        .try_state::<crate::state::AppState>()
+        .map(|s| {
+            use atic_core::MutexExt;
+            atic_core::config::sanitize_overlay_scale(s.config.lock_or_recover().overlay_scale)
+        })
+        .unwrap_or(1.0);
+    let scale = overlay_raster_scale(
+        hwnd_dpi,
+        tauri_scale,
+        max_mon,
+        outer_w,
+        vs_w,
+        user_scale,
+    );
+    let (phys_w, phys_h) = physical_client_px(client_w, client_h, outer_w, outer_h, scale);
+    let dip_w = controller_dip_size(phys_w, scale);
+    let dip_h = controller_dip_size(phys_h, scale);
 
     // SAFETY: el overlay vive; FindWindowEx / SetWindowPos solo tocan su hijo.
     unsafe {
         let mut class: Vec<u16> = "WRY_WEBVIEW".encode_utf16().collect();
         class.push(0);
         let child = FindWindowExW(
-            hwnd.0 as _,
+            hwnd_sys,
             std::ptr::null_mut(),
             class.as_ptr(),
             std::ptr::null(),
@@ -220,8 +331,8 @@ pub fn sync_controller_bounds(window: &WebviewWindow) {
             tracing::warn!(
                 target: "overlay",
                 label = %window.label(),
-                width,
-                height,
+                phys_w,
+                phys_h,
                 "sin HWND WRY_WEBVIEW: el webview todavía no nació"
             );
         } else {
@@ -230,8 +341,8 @@ pub fn sync_controller_bounds(window: &WebviewWindow) {
                 std::ptr::null_mut(),
                 0,
                 0,
-                width,
-                height,
+                phys_w,
+                phys_h,
                 SWP_NOZORDER | SWP_NOACTIVATE,
             );
         }
@@ -240,21 +351,55 @@ pub fn sync_controller_bounds(window: &WebviewWindow) {
     let bounds = RECT {
         left: 0,
         top: 0,
-        right: width,
-        bottom: height,
+        right: phys_w,
+        bottom: phys_h,
     };
     let label = window.label().to_string();
     if let Err(err) = window.with_webview(move |webview| unsafe {
-        if let Err(err) = webview.controller().SetBounds(bounds) {
+        let controller = webview.controller();
+        if let Err(err) = controller.SetZoomFactor(1.0) {
+            tracing::warn!(label = %label, %err, "WebView2: no se pudo fijar ZoomFactor");
+        }
+        if let Ok(c3) = controller.cast::<ICoreWebView2Controller3>() {
+            if let Err(err) = c3.SetShouldDetectMonitorScaleChanges(false) {
+                tracing::warn!(
+                    label = %label,
+                    %err,
+                    "WebView2: no se pudo fijar ShouldDetectMonitorScaleChanges"
+                );
+            }
+            if let Err(err) = c3.SetBoundsMode(COREWEBVIEW2_BOUNDS_MODE_USE_RAW_PIXELS) {
+                tracing::warn!(label = %label, %err, "WebView2: no se pudo fijar BoundsMode");
+            }
+            if let Err(err) = c3.SetRasterizationScale(scale) {
+                tracing::warn!(label = %label, %err, "WebView2: no se pudo fijar RasterizationScale");
+            }
+        }
+        if let Err(err) = controller.SetBounds(bounds) {
             tracing::warn!(label = %label, %err, "WebView2: no se pudo sincronizar Bounds");
         }
     }) {
         tracing::warn!(label = %window.label(), %err, "with_webview falló al sincronizar Bounds");
     }
+    tracing::debug!(
+        target: "overlay",
+        label = %window.label(),
+        phys_w,
+        phys_h,
+        dip_w,
+        dip_h,
+        scale,
+        hwnd_dpi,
+        tauri_scale,
+        "WebView2 bounds sincronizados"
+    );
+    Some(scale)
 }
 
 #[cfg(not(windows))]
-pub fn sync_controller_bounds(_window: &WebviewWindow) {}
+pub fn sync_controller_bounds(_window: &WebviewWindow) -> Option<f64> {
+    None
+}
 
 /// Pide a WebView2 un PNG de lo que está mostrando (pill, launcher, goo).
 ///
@@ -371,5 +516,59 @@ pub fn capture_preview_png(_window: &WebviewWindow) -> Result<Vec<u8>, String> {
 pub fn apply_to_all_windows(app: &tauri::AppHandle) {
     for (_, window) in app.webview_windows() {
         disable_browser_accelerator_keys(&window);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{controller_dip_size, overlay_raster_scale, physical_client_px};
+
+    #[test]
+    fn dip_from_physical_125() {
+        assert_eq!(controller_dip_size(1920, 1.25), 1536);
+    }
+
+    #[test]
+    fn dip_from_physical_150() {
+        assert_eq!(controller_dip_size(3840, 1.5), 2560);
+    }
+
+    #[test]
+    fn dip_at_100_is_identity() {
+        assert_eq!(controller_dip_size(1920, 1.0), 1920);
+    }
+
+    #[test]
+    fn client_physical_when_rects_match() {
+        assert_eq!(
+            physical_client_px(3840, 1080, 3840, 1080, 1.5),
+            (3840, 1080)
+        );
+    }
+
+    #[test]
+    fn client_dip_uses_outer_physical() {
+        assert_eq!(physical_client_px(2560, 720, 3840, 1080, 1.5), (3840, 1080));
+    }
+
+    #[test]
+    fn mixed_dpi_default_is_compact() {
+        assert!((overlay_raster_scale(96, 1.0, 1.5, 3840, 3840, 1.0) - 1.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn user_scale_is_the_raster() {
+        assert!((overlay_raster_scale(96, 1.0, 1.5, 3840, 3840, 1.25) - 1.25).abs() < 0.001);
+    }
+
+    #[test]
+    fn unaware_hwnd_does_not_double_zoom() {
+        // Outer ya en DIP (2560) con escritorio físico 3840 @ 150%.
+        assert!((overlay_raster_scale(96, 1.0, 1.5, 2560, 3840, 1.25) - 1.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn single_monitor_still_honors_user_scale() {
+        assert!((overlay_raster_scale(120, 1.25, 1.25, 1920, 1920, 1.0) - 1.0).abs() < 0.001);
     }
 }

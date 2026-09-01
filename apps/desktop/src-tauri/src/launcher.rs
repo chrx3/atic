@@ -216,7 +216,11 @@ fn entry_score(query: &str, entry: &LauncherEntry) -> Option<u32> {
 }
 
 fn pick<'a>(en: bool, es: &'a str, english: &'a str) -> &'a str {
-    if en { english } else { es }
+    if en {
+        english
+    } else {
+        es
+    }
 }
 
 fn builtin_actions(en: bool) -> Vec<LauncherEntry> {
@@ -266,11 +270,7 @@ fn builtin_actions(en: bool) -> Vec<LauncherEntry> {
         (
             "action:agents",
             pick(en, "Agentes", "Agents"),
-            pick(
-                en,
-                "Abrir la consola de agentes",
-                "Open the agents console",
-            ),
+            pick(en, "Abrir la consola de agentes", "Open the agents console"),
             "agents",
         ),
         (
@@ -449,8 +449,8 @@ fn collect_apps_folder_inner() -> Option<Vec<LauncherEntry>> {
     use windows::Win32::Storage::EnhancedStorage::PKEY_AppUserModel_ID;
     use windows::Win32::System::Com::IBindCtx;
     use windows::Win32::UI::Shell::{
-        IEnumShellItems, IShellItem, IShellItem2, SHGetKnownFolderItem, BHID_EnumItems,
-        FOLDERID_AppsFolder, KF_FLAG_DEFAULT, SIGDN_NORMALDISPLAY,
+        BHID_EnumItems, FOLDERID_AppsFolder, IEnumShellItems, IShellItem, IShellItem2,
+        SHGetKnownFolderItem, KF_FLAG_DEFAULT, SIGDN_NORMALDISPLAY,
     };
 
     let mut out = Vec::new();
@@ -794,7 +794,12 @@ pub async fn launcher_search(query: String) -> Result<Vec<LauncherHit>, String> 
                 kind: entry.kind,
                 title: entry.title.clone(),
                 subtitle: if entry.kind == LauncherKind::App {
-                    pick(INDEX_EN.load(Ordering::Relaxed), "Aplicación", "Application").to_string()
+                    pick(
+                        INDEX_EN.load(Ordering::Relaxed),
+                        "Aplicación",
+                        "Application",
+                    )
+                    .to_string()
                 } else {
                     entry.subtitle.clone()
                 },
@@ -988,7 +993,11 @@ fn run_action(app: &AppHandle, action: &str) -> Result<(), String> {
 pub async fn launcher_run(app: AppHandle, id: String) -> Result<(), String> {
     let entry = tauri::async_runtime::spawn_blocking(move || {
         ensure_index_populated();
-        index().lock_or_recover().iter().find(|e| e.id == id).cloned()
+        index()
+            .lock_or_recover()
+            .iter()
+            .find(|e| e.id == id)
+            .cloned()
     })
     .await
     .map_err(|e| e.to_string())?;
@@ -1081,7 +1090,10 @@ mod tests {
         };
         let mut apps = vec![lnk("Terminal"), lnk("Outlook (classic)")];
         // "Términal" normaliza igual que "Terminal": mismo título, se descarta.
-        merge_unique_apps(&mut apps, vec![uwp("Términal"), uwp("Outlook"), uwp("WhatsApp")]);
+        merge_unique_apps(
+            &mut apps,
+            vec![uwp("Términal"), uwp("Outlook"), uwp("WhatsApp")],
+        );
         let ids: Vec<&str> = apps.iter().map(|e| e.id.as_str()).collect();
         assert_eq!(
             ids,
