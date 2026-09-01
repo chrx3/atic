@@ -17,6 +17,29 @@ import { BOTTOM_SLOT_INSET } from "./toolSlots";
 
 export type PillRect = { x: number; y: number; w: number; h: number };
 
+/** Caja que abraza todas las que vienen. Ignora nulos y tamaños vacíos. */
+export function unionRects(
+  rects: readonly (PillRect | null | undefined)[],
+): PillRect | null {
+  let acc: PillRect | null = null;
+  for (const r of rects) {
+    if (!r || r.w <= 0 || r.h <= 0) continue;
+    if (!acc) {
+      acc = { x: r.x, y: r.y, w: r.w, h: r.h };
+      continue;
+    }
+    const x = Math.min(acc.x, r.x);
+    const y = Math.min(acc.y, r.y);
+    acc = {
+      x,
+      y,
+      w: Math.max(acc.x + acc.w, r.x + r.w) - x,
+      h: Math.max(acc.y + acc.h, r.y + r.h) - y,
+    };
+  }
+  return acc;
+}
+
 export type PlaceResult = Pick<
   BubbleOpen,
   "side" | "offset" | "x" | "y" | "w" | "h"

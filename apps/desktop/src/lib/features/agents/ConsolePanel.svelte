@@ -319,7 +319,9 @@
   let addMenuOpen = $state(false);
   /** `cli → en PATH`. Se llena al abrir el menú "+" por primera vez. */
   let agentOnPath = $state<Record<string, boolean>>({});
-  let agentPathChecked = false;
+  /** Ya hubo al menos un veredicto del PATH: hasta entonces no se decide
+   *  instalar-vs-abrir (clicar un CLI ausente lo ejecutaría). */
+  let agentPathReady = $state(false);
   /** Aliases `Host` de ~/.ssh/config (VS Code / Cursor los usan igual). */
   let sshAliases = $state<string[]>([]);
   /** Comandos que el usuario guardó desde "Comando…" (`ssh root@ip`, `dashboard`). */
@@ -1036,11 +1038,13 @@
   const SAVED_CMDS_KEY = "atic.agents.savedCommands";
   const SAVED_CMDS_MAX = 8;
 
-  function toggleAddMenu() {
-    addMenuOpen = !addMenuOpen;
-    cmdPromptOpen = false;
-    if (!addMenuOpen || agentPathChecked) return;
-    agentPathChecked = true;
+  /**
+   * Reverifica qué CLIs están en el PATH. Es barato (Rust solo hace stats de
+   * archivo), así que corre en cada apertura del menú "+" y al terminar un
+   * proceso; el estado previo se conserva hasta que llega la respuesta para
+   * que el menú no parpadee.
+   */
+  function refreshAgentPath() {
     void Promise.all(
       AGENTS.map(async (agent) => {
         try {
@@ -1051,7 +1055,15 @@
       }),
     ).then((rows) => {
       agentOnPath = Object.fromEntries(rows);
+      agentPathReady = true;
     });
+  }
+
+  function toggleAddMenu() {
+    addMenuOpen = !addMenuOpen;
+    cmdPromptOpen = false;
+    if (!addMenuOpen) return;
+    refreshAgentPath();
     void sshConfigAliases()
       .then((aliases) => {
         sshAliases = aliases;
@@ -1069,16 +1081,17 @@
 
   /**
    * Corre el instalador oficial del agente en una consola nueva: se ve el
-   * progreso y cualquier error, sin ventanas aparte. Al reabrir el menú "+"
-   * se reverifica el PATH, así el agente aparece habilitado si terminó bien.
+   * progreso y cualquier error, sin ventanas aparte. El PATH se reverifica al
+   * terminar el proceso y en cada apertura del menú "+", así el agente
+   * aparece habilitado si terminó bien.
+   * Exportada: el lanzador la usa cuando el CLI elegido no está instalado.
    */
-  function installAgent(agent: (typeof AGENTS)[number]) {
+  export function installAgent(agent: (typeof AGENTS)[number]) {
     addFromMenu({
       kind: "local",
-      label: `Instalar ${agent.name}`,
+      label: t("page.agents.installNamed", { name: agent.name }),
       command: agent.install,
     });
-    agentPathChecked = false;
   }
 
   function persistSavedCmds() {
@@ -2134,6 +2147,8 @@
         setSession(key, null);
         const code = p.code == null ? "?" : String(p.code);
         termOf(key)?.writeln(`\r\n[sesión terminada · exit ${code}]`);
+        // Si la pestaña era un instalador, el CLI puede haber aparecido.
+        refreshAgentPath();
       }),
       onAgentsComposerInsert((payload) => void applyClipboardInsert(payload)),
     ]).then((uns) => {
@@ -2343,7 +2358,18 @@
             {/if}
             <p class="add-group" aria-hidden="true">Agentes</p>
             {#each AGENTS as agent (agent.cli)}
-              {#if agentOnPath[agent.cli] === false}
+              {#if !agentPathReady}
+                <button
+                  type="button"
+                  class="add-item"
+                  role="menuitem"
+                  disabled
+                  aria-busy="true"
+                >
+                  <span class="add-glyph"><AgentLogo agent={agent.cli} size={14} /></span>
+                  {agent.name}
+                </button>
+              {:else if agentOnPath[agent.cli] === false}
                 <button
                   type="button"
                   class="add-item"
@@ -2353,14 +2379,14 @@
                 >
                   <span class="add-glyph"><AgentLogo agent={agent.cli} size={14} /></span>
                   <span class="add-ellipsis">{agent.name}</span>
-                  <span class="add-install">Instalar</span>
+                  <span class="add-install">{t("page.agents.install")}</span>
                 </button>
               {:else}
                 <button
                   type="button"
                   class="add-item"
                   role="menuitem"
-                  use:tip={`Abrir ${agent.name}`}
+                  use:tip={t("page.agents.openNamed", { name: agent.name })}
                   onclick={() =>
                     addFromMenu({
                       kind: "local",

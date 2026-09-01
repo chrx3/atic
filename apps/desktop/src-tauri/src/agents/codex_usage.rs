@@ -8,6 +8,7 @@ use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
@@ -38,14 +39,29 @@ pub struct CodexAccountUsage {
 
 pub fn fetch_account_usage() -> Result<CodexAccountUsage, String> {
     let (tx, rx) = std::sync::mpsc::channel();
+    let child_slot: std::sync::Arc<Mutex<Option<Child>>> = Default::default();
+    let slot = child_slot.clone();
     std::thread::spawn(move || {
-        let _ = tx.send(fetch_inner());
+        let _ = tx.send(fetch_inner(&slot));
     });
-    rx.recv_timeout(REQUEST_TIMEOUT)
-        .map_err(|_| "Codex tardó más de 15 segundos en leer el uso".to_string())?
+    match rx.recv_timeout(REQUEST_TIMEOUT) {
+        Ok(result) => result,
+        Err(_) => {
+            // El hilo sigue clavado en read_line: matar el proceso lo
+            // desbloquea y no queda un app-server huérfano por cada timeout.
+            if let Some(child) = lock_slot(&child_slot).as_mut() {
+                kill_child(child);
+            }
+            Err("Codex tardó más de 15 segundos en leer el uso".to_string())
+        }
+    }
 }
 
-fn fetch_inner() -> Result<CodexAccountUsage, String> {
+fn lock_slot(slot: &Mutex<Option<Child>>) -> std::sync::MutexGuard<'_, Option<Child>> {
+    slot.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn fetch_inner(slot: &Mutex<Option<Child>>) -> Result<CodexAccountUsage, String> {
     let (program, prefix) = super::exe::launcher("codex")
         .ok_or_else(|| "no se encontró «codex» en el PATH".to_string())?;
 
@@ -61,13 +77,7 @@ fn fetch_inner() -> Result<CodexAccountUsage, String> {
     let mut child = cmd
         .spawn()
         .map_err(|e| format!("no se pudo iniciar Codex: {e}"))?;
-    let result = exchange(&mut child);
-    kill_child(&mut child);
-    result
-}
-
-fn exchange(child: &mut Child) -> Result<CodexAccountUsage, String> {
-    let mut stdin = child
+    let stdin = child
         .stdin
         .take()
         .ok_or_else(|| "Codex no expuso stdin".to_string())?;
@@ -75,6 +85,20 @@ fn exchange(child: &mut Child) -> Result<CodexAccountUsage, String> {
         .stdout
         .take()
         .ok_or_else(|| "Codex no expuso stdout".to_string())?;
+    // Los pipes se sacan ANTES de compartir el handle: así el que espera el
+    // timeout puede matar el proceso sin pelearse por el Child.
+    *lock_slot(slot) = Some(child);
+    let result = exchange(stdin, stdout);
+    if let Some(mut child) = lock_slot(slot).take() {
+        kill_child(&mut child);
+    }
+    result
+}
+
+fn exchange(
+    mut stdin: std::process::ChildStdin,
+    stdout: std::process::ChildStdout,
+) -> Result<CodexAccountUsage, String> {
     let mut reader = BufReader::new(stdout);
 
     send(

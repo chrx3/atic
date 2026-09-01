@@ -15,7 +15,16 @@ import type { AgentQuota, QuotaOverview } from "$core/types";
 
 /** Etiqueta de ventana ya decidida. `custom` = usar `minutes`. */
 export type WindowLabel =
-  "now" | "5h" | "week" | "month" | "opus" | "sonnet" | "custom";
+  | "now"
+  | "5h"
+  | "week"
+  | "month"
+  | "opus"
+  | "sonnet"
+  | "auto"
+  | "api"
+  | "model"
+  | "custom";
 
 /**
  * Tres tonos y no un degradado continuo: el color acá no mide, avisa. Lo que
@@ -28,6 +37,14 @@ export type QuotaBar = {
   window: WindowLabel;
   /** Solo se usa con `window === "custom"`. */
   minutes: number | null;
+  /**
+   * Solo con `window === "model"`: el modelo de esa semanal.
+   *
+   * La API de Claude suma una ventana por modelo nuevo —Opus, Sonnet, ahora
+   * Fable—. Traer el nombre en el dato, y no una etiqueta por modelo, es lo
+   * que hace que el proximo aparezca sin tocar nada.
+   */
+  model: string | null;
   /** 0..=100, ya recortado. */
   percent: number;
   tone: QuotaTone;
@@ -40,7 +57,7 @@ export type QuotaRow = {
   /** Nombre de marca. No se traduce: «Claude Code» es «Claude Code». */
   name: string;
   bars: QuotaBar[];
-  /** Presente solo cuando el proveedor no publica cupo (Cursor). */
+  /** Presente solo cuando hay on-demand (Cursor) o el fallback sin cupo. */
   spend: { cents: number; periodEnd: number | null } | null;
   plan: string | null;
   error: string | null;
@@ -58,15 +75,16 @@ export type QuotaRow = {
  *
  * Ordenarlas por cuál va más apretado haría que salten de lugar entre un
  * hover y el siguiente, y entonces habría que leer los nombres en vez de
- * apuntar a una posición aprendida. Cursor va última porque es la única sin
- * barra: agrupar lo comparable arriba deja la excepción donde no interrumpe.
+ * apuntar a una posición aprendida. Cursor va última: sus barras (Auto / API)
+ * no coinciden con las ventanas de tiempo de los otros tres.
  */
-const ORDER = ["claude", "codex", "opencode", "cursor-agent"] as const;
+const ORDER = ["claude", "codex", "opencode", "agy", "cursor-agent"] as const;
 
 const NAMES: Record<string, string> = {
   claude: "Claude Code",
   codex: "Codex",
   opencode: "OpenCode",
+  agy: "Antigravity",
   "cursor-agent": "Cursor",
 };
 
@@ -93,6 +111,8 @@ const KNOWN_KINDS: Record<string, WindowLabel> = {
   rolling: "now",
   weekly: "week",
   monthly: "month",
+  auto: "auto",
+  api: "api",
 };
 
 export function toneFor(percent: number): QuotaTone {
@@ -112,8 +132,21 @@ export function toneFor(percent: number): QuotaTone {
 export function windowLabel(kind: string, minutes: number | null): WindowLabel {
   const known = KNOWN_KINDS[kind];
   if (known) return known;
+  if (modelOf(kind)) return "model";
   if (minutes != null && KNOWN_MINUTES[minutes]) return KNOWN_MINUTES[minutes];
   return "custom";
+}
+
+/**
+ * El modelo de una semanal `7d:<modelo>`, presentable. `null` si no es una.
+ *
+ * La API manda la clave en minusculas (`fable`); la vista lo pone al lado de
+ * «Opus» y «Sonnet», que van con mayuscula.
+ */
+export function modelOf(kind: string): string | null {
+  const raw = kind.startsWith("7d:") ? kind.slice(3).trim() : "";
+  if (!raw) return null;
+  return raw.charAt(0).toUpperCase() + raw.slice(1);
 }
 
 function rowFor(quota: AgentQuota, now: number): QuotaRow {
@@ -137,6 +170,7 @@ function rowFor(quota: AgentQuota, now: number): QuotaRow {
         return {
           window: windowLabel(win.kind, win.minutes),
           minutes: win.minutes,
+          model: modelOf(win.kind),
           percent,
           tone: toneFor(percent),
           resetsAt: win.resetsAt,

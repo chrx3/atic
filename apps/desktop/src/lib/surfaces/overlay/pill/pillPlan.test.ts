@@ -8,6 +8,7 @@ import { WHEEL_TOOLS } from "$core/tools";
   discJoinsTail,
   FLIGHT_SKIP_PX,
   isDiscOnly,
+  shouldMeasureBar,
   islandCueLong,
   islandLiveSlots,
   islandStripLong,
@@ -19,11 +20,15 @@ import { WHEEL_TOOLS } from "$core/tools";
   shouldStayDockedOnActivate,
   shouldReturnToEdgeOnActivate,
   islandHoverStay,
+  islandHoverOpens,
   ISLAND_COLLAPSE_MS,
   stackMarkVisible,
   wheelChromeActive,
+  dragClosesWheel,
   wheelKeyAction,
   wheelOpenFlight,
+  updateHang,
+  UPDATE_ISLAND_OPEN_DELAY_MS,
 } from "./pillPlan";
 
 describe("FLIGHT_SKIP_PX", () => {
@@ -234,6 +239,25 @@ describe("contentFor", () => {
     ).toEqual({ open: true, leftAt: null });
   });
 
+  it("con aviso de update, la tira espera un toque antes de abrir", () => {
+    const closed = {
+      over: true,
+      expanded: false,
+      hasUpdate: true,
+      hoveredMs: 0,
+    };
+    expect(islandHoverOpens(closed)).toBe(false);
+    expect(
+      islandHoverOpens({ ...closed, hoveredMs: UPDATE_ISLAND_OPEN_DELAY_MS - 1 }),
+    ).toBe(false);
+    expect(
+      islandHoverOpens({ ...closed, hoveredMs: UPDATE_ISLAND_OPEN_DELAY_MS }),
+    ).toBe(true);
+    expect(islandHoverOpens({ ...closed, hasUpdate: false })).toBe(true);
+    expect(islandHoverOpens({ ...closed, expanded: true })).toBe(true);
+    expect(islandHoverOpens({ ...closed, over: false })).toBe(false);
+  });
+
   it("grabando, la tira no roba un slot: la gota cuelga del cuerpo", () => {
     expect(islandLiveSlots("idle")).toBe(0);
     expect(islandLiveSlots("recording")).toBe(0);
@@ -253,6 +277,43 @@ describe("contentFor", () => {
     expect(shutRec.w).toBe(shutIdle.w);
   });
 
+  it("con aviso de update, la tira abierta deja hueco para la gota", () => {
+    expect(updateHang("edge", true, true)).toBe(PILL.recDrop + PILL.recDropGap);
+    expect(updateHang("edge", false, true)).toBe(0);
+    expect(updateHang("edge", true, false)).toBe(0);
+    expect(updateHang("none", true, true)).toBe(0);
+    const dockOpen = { edge: "bottom" as const, expanded: true };
+    const idle = contentFor("edge", 180, dockOpen, "idle", 5);
+    const upd = contentFor("edge", 180, dockOpen, "idle", 5, false, 0, true);
+    expect(upd.w).toBe(idle.w);
+    expect(upd.h).toBe(idle.h + PILL.recDrop + PILL.recDropGap);
+    const recAndUpd = contentFor("edge", 180, dockOpen, "recording", 5, false, 0, true);
+    const rec = contentFor("edge", 180, dockOpen, "recording", 5);
+    expect(recAndUpd.h).toBe(rec.h + PILL.recDrop + PILL.recDropGap);
+    // Cerrada no cuelga: el icono vive en la pestaña.
+    const shutCue = contentFor(
+      "edge",
+      180,
+      { edge: "bottom", expanded: false },
+      "idle",
+      5,
+      true,
+      1,
+      true,
+    );
+    const shutCueNoUpd = contentFor(
+      "edge",
+      180,
+      { edge: "bottom", expanded: false },
+      "idle",
+      5,
+      true,
+      1,
+      false,
+    );
+    expect(shutCue).toEqual(shutCueNoUpd);
+  });
+
   /**
    * La invariante que impide el bucle abrir/cerrar: la isla se abre con el
    * puntero encima, así que la caja abierta no puede ser más chica en ningún
@@ -262,26 +323,32 @@ describe("contentFor", () => {
   it("abrir la isla nunca encoge la caja en ningún eje", () => {
     expect(PILL.islandLong).toBe(PILL.bar);
     for (const cue of [false, true]) {
-      for (const activity of ["idle", "recording", "dictating"] as const) {
-        for (const edge of ["left", "right", "top", "bottom"] as const) {
-          const shut = contentFor(
-            "edge",
-            180,
-            { edge, expanded: false },
-            activity,
-            WHEEL_TOOLS.length,
-            cue,
-          );
-          const open = contentFor(
-            "edge",
-            180,
-            { edge, expanded: true },
-            activity,
-            WHEEL_TOOLS.length,
-            cue,
-          );
-          expect(open.w).toBeGreaterThanOrEqual(shut.w);
-          expect(open.h).toBeGreaterThanOrEqual(shut.h);
+      for (const hasUpdate of [false, true]) {
+        for (const activity of ["idle", "recording", "dictating"] as const) {
+          for (const edge of ["left", "right", "top", "bottom"] as const) {
+            const shut = contentFor(
+              "edge",
+              180,
+              { edge, expanded: false },
+              activity,
+              WHEEL_TOOLS.length,
+              cue,
+              0,
+              hasUpdate,
+            );
+            const open = contentFor(
+              "edge",
+              180,
+              { edge, expanded: true },
+              activity,
+              WHEEL_TOOLS.length,
+              cue,
+              0,
+              hasUpdate,
+            );
+            expect(open.w).toBeGreaterThanOrEqual(shut.w);
+            expect(open.h).toBeGreaterThanOrEqual(shut.h);
+          }
         }
       }
     }
@@ -341,6 +408,14 @@ describe("wheelChromeActive", () => {
     expect(wheelChromeActive({ surface: "none", collapsingFrom: null })).toBe(
       false,
     );
+  });
+});
+
+describe("dragClosesWheel", () => {
+  it("solo la rueda abierta se cierra al arrastrar", () => {
+    expect(dragClosesWheel("wheel")).toBe(true);
+    expect(dragClosesWheel("none")).toBe(false);
+    expect(dragClosesWheel("edge")).toBe(false);
   });
 });
 
@@ -406,10 +481,26 @@ describe("isDiscOnly", () => {
     expect(isDiscOnly({ ...idle, activity: "dictating" })).toBe(false);
     expect(isDiscOnly({ ...idle, hasQueue: true })).toBe(false);
     expect(isDiscOnly({ ...idle, agentAlert: true })).toBe(false);
+    expect(isDiscOnly({ ...idle, hasUpdate: true })).toBe(false);
   });
 
   it("la rueda no cuenta: la barra de abajo sigue siendo el disco", () => {
     expect(isDiscOnly({ ...idle, surface: "wheel" })).toBe(true);
+  });
+});
+
+describe("shouldMeasureBar", () => {
+  it("en la barra flotante, en reposo", () => {
+    expect(shouldMeasureBar("none", false)).toBe(true);
+  });
+
+  it("no durante un arrastre: el timer pelearía con el gesto", () => {
+    expect(shouldMeasureBar("none", true)).toBe(false);
+  });
+
+  it("acoplada o en rueda no mide la barra compacta", () => {
+    expect(shouldMeasureBar("edge", false)).toBe(false);
+    expect(shouldMeasureBar("wheel", false)).toBe(false);
   });
 });
 

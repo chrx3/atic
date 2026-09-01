@@ -98,8 +98,7 @@ pub fn delete_capture(app: AppHandle, state: State<AppState>, path: String) -> R
 
 #[tauri::command]
 pub fn copy_capture_path(path: String) -> Result<(), String> {
-    let mut clipboard = arboard::Clipboard::new().map_err(|error| error.to_string())?;
-    clipboard.set_text(path).map_err(|error| error.to_string())
+    crate::clipboard_history::set_system_text(path)
 }
 
 #[tauri::command]
@@ -118,14 +117,250 @@ pub fn copy_png_to_clipboard(path: &Path) -> Result<(), String> {
 pub fn copy_png_bytes(bytes: &[u8]) -> Result<(), String> {
     let (width, height, rgba) =
         atic_capture::encoding::png_to_rgba(bytes).map_err(|error| error.to_string())?;
-    let mut clipboard = arboard::Clipboard::new().map_err(|error| error.to_string())?;
-    clipboard
-        .set_image(arboard::ImageData {
-            width: width as usize,
-            height: height as usize,
-            bytes: std::borrow::Cow::Owned(rgba),
-        })
-        .map_err(|error| error.to_string())
+    crate::clipboard_history::with_clipboard_write(|| {
+        #[cfg(windows)]
+        {
+            set_clipboard_image_win(bytes, width, height, &rgba)
+        }
+        #[cfg(not(windows))]
+        {
+            set_clipboard_image_arboard(width, height, &rgba)
+        }
+    })
+}
+
+#[cfg(not(windows))]
+fn set_clipboard_image_arboard(width: u32, height: u32, rgba: &[u8]) -> Result<(), String> {
+    let mut last = String::new();
+    for attempt in 0..8u32 {
+        let result = arboard::Clipboard::new()
+            .map_err(|error| error.to_string())
+            .and_then(|mut clipboard| {
+                clipboard
+                    .set_image(arboard::ImageData {
+                        width: width as usize,
+                        height: height as usize,
+                        bytes: std::borrow::Cow::Borrowed(rgba),
+                    })
+                    .map_err(|error| error.to_string())
+            });
+        match result {
+            Ok(()) => return Ok(()),
+            Err(error) => last = error,
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10 + 15 * u64::from(attempt)));
+    }
+    Err(last)
+}
+
+/// Encabezado DIBV5 + píxeles BGRA bottom-up. Se arma ANTES de abrir el
+/// portapapeles: arboard encodea el PNG con el clipboard ya abierto, y en
+/// una pizarra de escritorio entero esa ventana es suficiente para que
+/// otro hilo (nuestro watcher, o el historial de Windows) cierre el
+/// clipboard y `SetClipboardData` falle con 1418.
+#[repr(C)]
+struct DibV5Header {
+    size: u32,
+    width: i32,
+    height: i32,
+    planes: u16,
+    bit_count: u16,
+    compression: u32,
+    size_image: u32,
+    x_pels: i32,
+    y_pels: i32,
+    clr_used: u32,
+    clr_important: u32,
+    red_mask: u32,
+    green_mask: u32,
+    blue_mask: u32,
+    alpha_mask: u32,
+    cs_type: u32,
+    endpoints: [u8; 36],
+    gamma_red: u32,
+    gamma_green: u32,
+    gamma_blue: u32,
+    intent: u32,
+    profile_data: u32,
+    profile_size: u32,
+    reserved: u32,
+}
+
+fn encode_dibv5(width: u32, height: u32, rgba: &[u8]) -> Result<Vec<u8>, String> {
+    let w = width as usize;
+    let h = height as usize;
+    let pixel_bytes = w
+        .checked_mul(h)
+        .and_then(|n| n.checked_mul(4))
+        .ok_or_else(|| crate::ui_lang::msg("Imagen demasiado grande", "Image is too large"))?;
+    if rgba.len() != pixel_bytes {
+        return Err(crate::ui_lang::msg(
+            "El PNG no tiene el tamaño esperado.",
+            "The PNG is not the expected size.",
+        ));
+    }
+    let header_size = std::mem::size_of::<DibV5Header>();
+    let mut out = vec![0u8; header_size + pixel_bytes];
+    let header = DibV5Header {
+        size: header_size as u32,
+        width: width as i32,
+        height: height as i32,
+        planes: 1,
+        bit_count: 32,
+        compression: 3, // BI_BITFIELDS
+        size_image: pixel_bytes as u32,
+        x_pels: 0,
+        y_pels: 0,
+        clr_used: 0,
+        clr_important: 0,
+        red_mask: 0x00ff_0000,
+        green_mask: 0x0000_ff00,
+        blue_mask: 0x0000_00ff,
+        alpha_mask: 0xff00_0000,
+        cs_type: 0x7352_4742, // LCS_sRGB
+        endpoints: [0; 36],
+        gamma_red: 0,
+        gamma_green: 0,
+        gamma_blue: 0,
+        intent: 4, // LCS_GM_IMAGES
+        profile_data: 0,
+        profile_size: 0,
+        reserved: 0,
+    };
+    // SAFETY: `DibV5Header` es repr(C) de campos POD; el slice cubre exactamente
+    // `header_size` bytes.
+    out[..header_size].copy_from_slice(unsafe {
+        std::slice::from_raw_parts((&header as *const DibV5Header).cast(), header_size)
+    });
+    let row = w * 4;
+    for y in 0..h {
+        let src_y = h - 1 - y;
+        let src = &rgba[src_y * row..src_y * row + row];
+        let dst = &mut out[header_size + y * row..header_size + y * row + row];
+        for (s, d) in src.chunks_exact(4).zip(dst.chunks_exact_mut(4)) {
+            d[0] = s[2];
+            d[1] = s[1];
+            d[2] = s[0];
+            d[3] = s[3];
+        }
+    }
+    Ok(out)
+}
+
+#[cfg(windows)]
+fn set_clipboard_image_win(
+    png: &[u8],
+    width: u32,
+    height: u32,
+    rgba: &[u8],
+) -> Result<(), String> {
+    let dib = encode_dibv5(width, height, rgba)?;
+    let mut last = String::new();
+    for attempt in 0..8u32 {
+        match set_clipboard_image_win_once(png, &dib) {
+            Ok(()) => return Ok(()),
+            Err(error) => last = error,
+        }
+        std::thread::sleep(std::time::Duration::from_millis(
+            10 + 15 * u64::from(attempt),
+        ));
+    }
+    Err(last)
+}
+
+#[cfg(windows)]
+fn set_clipboard_image_win_once(png: &[u8], dib: &[u8]) -> Result<(), String> {
+    use windows_sys::Win32::Foundation::GetLastError;
+    use windows_sys::Win32::System::DataExchange::{
+        CloseClipboard, EmptyClipboard, OpenClipboard, RegisterClipboardFormatW, SetClipboardData,
+    };
+    use windows_sys::Win32::System::Memory::{
+        GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE,
+    };
+
+    const CF_DIBV5: u32 = 17;
+
+    // windows-sys 0.59 exporta GlobalAlloc/Lock/Unlock pero no GlobalFree.
+    extern "system" {
+        fn GlobalFree(
+            hmem: windows_sys::Win32::Foundation::HGLOBAL,
+        ) -> windows_sys::Win32::Foundation::HGLOBAL;
+    }
+
+    fn os_err(prefix: &str) -> String {
+        let code = unsafe { GetLastError() } as i32;
+        format!("{prefix}: {}", std::io::Error::from_raw_os_error(code))
+    }
+
+    unsafe fn alloc_hglobal(bytes: &[u8]) -> Result<windows_sys::Win32::Foundation::HGLOBAL, String> {
+        let handle = GlobalAlloc(GMEM_MOVEABLE, bytes.len());
+        if handle.is_null() {
+            return Err(os_err("GlobalAlloc failed"));
+        }
+        let ptr = GlobalLock(handle);
+        if ptr.is_null() {
+            let err = os_err("GlobalLock failed");
+            GlobalFree(handle);
+            return Err(err);
+        }
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), ptr.cast(), bytes.len());
+        GlobalUnlock(handle);
+        Ok(handle)
+    }
+
+    let mut opened = false;
+    for _ in 0..8 {
+        if unsafe { OpenClipboard(std::ptr::null_mut()) } != 0 {
+            opened = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    if !opened {
+        return Err(os_err("OpenClipboard failed"));
+    }
+
+    struct ClipboardGuard;
+    impl Drop for ClipboardGuard {
+        fn drop(&mut self) {
+            unsafe {
+                CloseClipboard();
+            }
+        }
+    }
+    let _guard = ClipboardGuard;
+
+    if unsafe { EmptyClipboard() } == 0 {
+        return Err(os_err("EmptyClipboard failed"));
+    }
+
+    let png_fmt = {
+        let wide: Vec<u16> = "PNG".encode_utf16().chain(std::iter::once(0)).collect();
+        unsafe { RegisterClipboardFormatW(wide.as_ptr()) }
+    };
+    if png_fmt == 0 {
+        return Err(os_err("RegisterClipboardFormatW(PNG) failed"));
+    }
+
+    let png_handle = unsafe { alloc_hglobal(png)? };
+    if unsafe { SetClipboardData(png_fmt, png_handle) }.is_null() {
+        let err = os_err("SetClipboardData failed with error");
+        unsafe {
+            GlobalFree(png_handle);
+        }
+        return Err(err);
+    }
+
+    let dib_handle = unsafe { alloc_hglobal(dib)? };
+    if unsafe { SetClipboardData(CF_DIBV5, dib_handle) }.is_null() {
+        let err = os_err("SetClipboardData failed with error");
+        unsafe {
+            GlobalFree(dib_handle);
+        }
+        return Err(err);
+    }
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -344,4 +579,37 @@ fn rect_center(bounds: atic_capture::Rect) -> (i32, i32) {
 #[cfg(not(windows))]
 fn capture_primary(_app: &AppHandle) -> Result<(String, (i32, i32)), String> {
     Err(crate::ui_lang::capture_windows_only())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dibv5_header_pesa_124_bytes() {
+        assert_eq!(std::mem::size_of::<DibV5Header>(), 124);
+    }
+
+    #[test]
+    fn dibv5_de_un_pixel_pasa_rgba_a_bgra() {
+        let rgba = [10u8, 20, 30, 255];
+        let dib = encode_dibv5(1, 1, &rgba).expect("dib");
+        assert_eq!(dib.len(), 124 + 4);
+        assert_eq!(&dib[124..], &[30, 20, 10, 255]);
+    }
+
+    #[test]
+    fn dibv5_voltea_filas() {
+        // Arriba rojo, abajo azul. El DIB es bottom-up: primero el azul.
+        let rgba = [255u8, 0, 0, 255, 0, 0, 255, 255];
+        let dib = encode_dibv5(1, 2, &rgba).expect("dib");
+        let pixels = &dib[124..];
+        assert_eq!(&pixels[0..4], &[255, 0, 0, 255]);
+        assert_eq!(&pixels[4..8], &[0, 0, 255, 255]);
+    }
+
+    #[test]
+    fn dibv5_rechaza_buffer_corto() {
+        assert!(encode_dibv5(2, 2, &[0; 4]).is_err());
+    }
 }

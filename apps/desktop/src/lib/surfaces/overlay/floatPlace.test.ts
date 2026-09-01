@@ -7,8 +7,26 @@ import {
   placeOnSide,
   placePanelFusedSeed,
   placePanelResting,
+  unionRects,
 } from "./floatPlace";
 import { BOTTOM_SLOT_INSET } from "./toolSlots";
+
+describe("unionRects", () => {
+  it("abraza dos cajas y ignora vacías", () => {
+    const a = { x: 10, y: 20, w: 40, h: 40 };
+    const b = { x: 30, y: 10, w: 40, h: 50 };
+    expect(unionRects([a, null, b, { x: 0, y: 0, w: 0, h: 10 }])).toEqual({
+      x: 10,
+      y: 10,
+      w: 60,
+      h: 50,
+    });
+  });
+
+  it("null si no hay nada usable", () => {
+    expect(unionRects([null, { x: 1, y: 1, w: 0, h: 10 }])).toBeNull();
+  });
+});
 
 const work = [{ x: 0, y: 0, w: 1400, h: 900 }];
 
@@ -152,6 +170,25 @@ describe("panel fused grow helpers", () => {
     const placed = placePanelResting(pill, full, { corner: 18, work });
     expect(placed.side).toBe("top");
     expect(placed.y).toBe(pill.y + pill.h + PANEL_RESTING_GAP_PX);
+  });
+
+  it("junto a la rueda no cubre el anillo", () => {
+    const disc = { x: 490, y: 390, w: 40, h: 40 };
+    const wheel = { x: 400, y: 300, w: 220, h: 220 };
+    const face = unionRects([disc, wheel]);
+    expect(face).toEqual(wheel);
+    const placed = placeBesidePill(face!, { w: 208, h: 280 }, {
+      gap: 16,
+      corner: 20,
+      work,
+    });
+    const overlap = !(
+      placed.x + placed.w <= face!.x ||
+      placed.x >= face!.x + face!.w ||
+      placed.y + placed.h <= face!.y ||
+      placed.y >= face!.y + face!.h
+    );
+    expect(overlap).toBe(false);
   });
 
   it("placePanelFusedSeed nace disco solapado (no al lado)", () => {

@@ -1,9 +1,15 @@
 <script lang="ts">
   /**
-   * Dibujar encima de una captura: flechas, círculos, trazo libre, resaltador.
+   * Dibujar encima de una captura: flechas, círculos, trazo libre, resaltador,
+   * texto y recorte.
    *
    * La ventana la abre Rust ya con el tamaño de la imagen (`annotate.rs`), así
    * que acá no hay geometría de ventana: solo el lienzo y la barra.
+   *
+   * Las dos últimas no son formas como las otras. El texto se escribe en un
+   * cuadro que flota sobre el lienzo y recién al confirmar deja una forma. El
+   * recorte no deja ninguna: mueve el encuadre por el que se mira la imagen
+   * —ver `crop`—, y por eso se puede quitar sin haber perdido nada.
    *
    * **Un solo canvas, a resolución natural.** La imagen y las formas se pintan
    * en el mismo sitio, y por eso exportar es `toDataURL` y nada más: lo que se
@@ -18,12 +24,14 @@
   import {
     Circle,
     Copy,
+    Crop,
     Highlighter,
     MoveUpRight,
     Pencil,
     Redo2,
     Save,
     Square,
+    Type,
     Undo2,
     X,
   } from "$lib/icons";
@@ -40,22 +48,27 @@
   import type { AnnotateMode, FocusRect } from "$core/types";
   import { captureSrc } from "$ipc/captures";
   import { startResizeDragging } from "$ipc/windows";
-  import { drawShape, drawShapes } from "./annotateDraw";
+  import { drawCropMask, drawShape, drawShapes, fontFor, haloFor } from "./annotateDraw";
   import {
     beginShape,
-    clampToImage,
     COLORS,
     commit,
+    cropRect,
     emptyState,
     extendShape,
+    isDragTool,
+    LINE_HEIGHT,
     redo,
     strokeWidth,
+    textSize,
     toImagePoint,
     toolForKey,
     undo,
     WIDTH_LEVELS,
     type AnnotateState,
     type AnnotateTool,
+    type Point,
+    type Rect,
     type Shape,
     type WidthLevel,
   } from "./annotateModel";
@@ -67,6 +80,8 @@
       { id: "ellipse" as const, icon: Circle, label: t("page.annotate.ellipse"), key: "3" },
       { id: "rect" as const, icon: Square, label: t("page.annotate.rect"), key: "4" },
       { id: "highlight" as const, icon: Highlighter, label: t("page.annotate.highlight"), key: "5" },
+      { id: "text" as const, icon: Type, label: t("page.annotate.text"), key: "6" },
+      { id: "crop" as const, icon: Crop, label: t("page.annotate.crop"), key: "7" },
     ],
   );
 
@@ -96,6 +111,24 @@
   let focus = $state<FocusRect | null>(null);
   /** Cuanto movio el usuario la barra desde su sitio, en pixeles CSS. */
   let barShift = $state({ x: 0, y: 0 });
+
+  /**
+   * El recorte, como encuadre y no como tijera.
+   *
+   * Recortar no toca ni la imagen ni los trazos: mueve la ventana por la que se
+   * los mira. El lienzo pasa a medir el recorte y todo se dibuja corrido, así
+   * que lo exportado ya sale recortado —es el canvas de siempre— y quitar el
+   * recorte devuelve lo que había, incluido lo dibujado afuera.
+   */
+  let crop = $state<Rect | null>(null);
+  /** El recuadro mientras se arrastra. Se ve como velo, todavía no recorta. */
+  let pendingCrop = $state<Rect | null>(null);
+  /** Esquina donde arrancó el arrastre del recorte. No reactivo: no se pinta. */
+  let cropFrom: Point | null = null;
+
+  /** El cuadro de texto abierto, si hay uno. `at` en píxeles de la imagen. */
+  let editing = $state<{ at: Point; text: string } | null>(null);
+  let textEl = $state<HTMLElement | null>(null);
 
   let canvas = $state<HTMLCanvasElement | null>(null);
   let natural = $state({ width: 0, height: 0 });
@@ -197,16 +230,29 @@
   }
 
   const width = $derived(strokeWidth(level, natural.width || 1280));
+  /** El cuerpo del texto, en píxeles de la imagen. */
+  const fontSize = $derived(textSize(level, natural.width || 1280));
   const canUndo = $derived(doc.shapes.length > 0);
   const canRedo = $derived(doc.undone.length > 0);
+
+  /** Lo que se ve: el recorte, o la imagen entera. En píxeles de la imagen. */
+  const view = $derived<Rect>(
+    crop ?? { x: 0, y: 0, w: natural.width, h: natural.height },
+  );
 
   function redraw() {
     const ctx = canvas?.getContext("2d");
     if (!ctx || !image) return;
-    ctx.clearRect(0, 0, natural.width, natural.height);
+    // El recorte se aplica corriendo el origen y no recortando cada forma: así
+    // el resto del dibujo no sabe que existe, y lo que quedó afuera sigue ahí
+    // para cuando se lo quite.
+    ctx.setTransform(1, 0, 0, 1, -view.x, -view.y);
+    ctx.clearRect(view.x, view.y, view.w, view.h);
     ctx.drawImage(image, 0, 0, natural.width, natural.height);
     drawShapes(ctx, doc.shapes);
     if (live) drawShape(ctx, live);
+    if (pendingCrop) drawCropMask(ctx, pendingCrop, view);
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
   }
 
   $effect(() => {
@@ -223,6 +269,8 @@
     void live;
     void natural;
     void image;
+    void view;
+    void pendingCrop;
     redraw();
   });
 
@@ -310,6 +358,10 @@
   function reset() {
     doc = emptyState();
     live = null;
+    crop = null;
+    pendingCrop = null;
+    cropFrom = null;
+    editing = null;
     image = null;
     ready = false;
     busy = false;
@@ -348,23 +400,31 @@
 
   // --- Dibujo ---
 
-  function pointFor(event: PointerEvent) {
+  /**
+   * Punto del ratón → píxel de la imagen, pasando por el encuadre.
+   *
+   * El lienzo mide el recorte, así que `toImagePoint` devuelve coordenadas
+   * DENTRO del recorte: sumarle su origen es lo que mantiene a las formas en
+   * píxeles de la imagen, que es donde viven aunque el encuadre cambie.
+   */
+  function pointFor(event: PointerEvent): Point {
     const rect = canvas?.getBoundingClientRect();
     if (!rect) return { x: 0, y: 0 };
-    return clampToImage(
-      toImagePoint({ x: event.clientX, y: event.clientY }, rect, natural),
-      natural,
-    );
+    const local = toImagePoint({ x: event.clientX, y: event.clientY }, rect, {
+      width: view.w,
+      height: view.h,
+    });
+    return {
+      x: Math.min(Math.max(local.x + view.x, view.x), view.x + view.w),
+      y: Math.min(Math.max(local.y + view.y, view.y), view.y + view.h),
+    };
   }
 
-  function onPointerDown(event: PointerEvent) {
-    if (!ready || busy || event.button !== 0) return;
-    confirmDiscard = false;
-    live = beginShape(tool, color, width, pointFor(event));
-    // La captura del puntero —para que soltar fuera del lienzo cierre la forma
-    // igual— va DESPUÉS de abrir el trazo y dentro de un `try`: si fallara,
-    // antes se llevaba puesto el `beginShape` de la línea de arriba y no se
-    // dibujaba nada. Sin captura solo se pierde el arrastre fuera del borde.
+  function capturePointer(event: PointerEvent) {
+    // La captura del puntero —para que soltar fuera del lienzo cierre el gesto
+    // igual— va DESPUÉS de abrirlo y dentro de un `try`: si fallara, antes se
+    // llevaba puesto el `beginShape` y no se dibujaba nada. Sin captura solo se
+    // pierde el arrastre fuera del borde.
     try {
       canvas?.setPointerCapture(event.pointerId);
     } catch {
@@ -372,21 +432,132 @@
     }
   }
 
+  function onPointerDown(event: PointerEvent) {
+    if (!ready || busy || event.button !== 0) return;
+    confirmDiscard = false;
+    const at = pointFor(event);
+
+    // Con un cuadro abierto, el primer clic afuera lo cierra y no abre otro:
+    // es lo que hace cualquier editor, y sin eso escribir dos textos seguidos
+    // dejaba el primero a medias.
+    if (editing) {
+      commitText();
+      if (tool === "text") return;
+    }
+
+    if (tool === "text") {
+      startText(at);
+      return;
+    }
+
+    if (tool === "crop") {
+      cropFrom = at;
+      pendingCrop = null;
+      capturePointer(event);
+      return;
+    }
+
+    if (!isDragTool(tool)) return;
+    live = beginShape(tool, color, width, at);
+    capturePointer(event);
+  }
+
   function onPointerMove(event: PointerEvent) {
+    if (cropFrom) {
+      pendingCrop = cropRect(cropFrom, pointFor(event), view);
+      return;
+    }
     if (!live) return;
     live = extendShape(live, pointFor(event));
   }
 
   function onPointerUp(event: PointerEvent) {
-    if (!live) return;
+    if (!live && !cropFrom) return;
     // `pointercancel` llega con la captura ya soltada por el navegador, y
     // liberarla dos veces lanza. Preguntar es más barato que un try/catch.
     if (canvas?.hasPointerCapture(event.pointerId)) {
       canvas.releasePointerCapture(event.pointerId);
     }
+    if (cropFrom) {
+      const next = cropRect(cropFrom, pointFor(event), view);
+      cropFrom = null;
+      pendingCrop = null;
+      if (next) crop = next;
+      return;
+    }
+    if (!live) return;
     doc = commit(doc, live);
     live = null;
   }
+
+  // --- Texto ---
+
+  function startText(at: Point) {
+    editing = { at, text: "" };
+    // El cuadro todavía no existe: enfocarlo en el mismo tick no haría nada.
+    requestAnimationFrame(() => textEl?.focus());
+  }
+
+  function commitText() {
+    const draft = editing;
+    editing = null;
+    if (!draft) return;
+    // `commit` descarta lo vacío, así que colocar y arrepentirse no deja nada.
+    doc = commit(doc, {
+      kind: "text",
+      color,
+      width,
+      at: draft.at,
+      text: draft.text,
+      size: fontSize,
+    });
+  }
+
+  function onTextInput(event: Event) {
+    if (!editing) return;
+    const el = event.currentTarget as HTMLElement;
+    // `innerText` y no `textContent`: el primero devuelve los saltos de línea
+    // como `\n`, que es lo que después dibuja el lienzo.
+    editing = { ...editing, text: el.innerText };
+  }
+
+  function onTextKey(event: KeyboardEvent) {
+    // El cuadro se queda con sus teclas: si subieran a la ventana, escribir
+    // «1» cambiaría de herramienta y Escape cerraría el editor entero.
+    event.stopPropagation();
+    if (event.key === "Escape") {
+      event.preventDefault();
+      editing = null;
+      return;
+    }
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      commitText();
+    }
+  }
+
+  /**
+   * Dónde y con qué letra se ve el cuadro de edición.
+   *
+   * Se calcula contra el rect del lienzo —igual que `pointFor`, y por el mismo
+   * motivo— para que lo que se escribe caiga exactamente donde va a quedar
+   * dibujado: mismo cuerpo, misma familia, mismo color.
+   */
+  const textStyle = $derived.by(() => {
+    if (!editing || !canvas) return "";
+    const rect = canvas.getBoundingClientRect();
+    const scale = view.w > 0 ? rect.width / view.w : 1;
+    const left = rect.left + (editing.at.x - view.x) * scale;
+    const top = rect.top + (editing.at.y - view.y) * scale;
+    return [
+      `left: ${left}px`,
+      `top: ${top}px`,
+      `font: ${fontFor(Math.max(8, fontSize * scale))}`,
+      `line-height: ${LINE_HEIGHT}`,
+      `color: ${color}`,
+      `--halo: ${haloFor(color)}`,
+    ].join("; ");
+  });
 
   // --- Salidas ---
 
@@ -478,6 +649,9 @@
   }
 
   function onKeydown(event: KeyboardEvent) {
+    // Escribiendo, el teclado es del cuadro de texto. Sus propias teclas las
+    // ataja `onTextKey`, que corta la propagación antes de llegar acá.
+    if (editing) return;
     if (event.key === "Escape") {
       event.preventDefault();
       requestClose();
@@ -607,6 +781,19 @@
       >
         <Icon icon={Redo2} size={15} />
       </button>
+      <!-- Solo con un recorte puesto: es la única forma de volver a la imagen
+           entera, y un botón muerto al lado de deshacer confundiría. -->
+      {#if crop}
+        <button
+          type="button"
+          class="tool is-reset"
+          title={t("page.annotate.cropResetTitle")}
+          aria-label={t("page.annotate.cropReset")}
+          onclick={() => (crop = null)}
+        >
+          <Icon icon={Crop} size={15} />
+        </button>
+      {/if}
     </div>
 
     <div class="spacer" data-tauri-drag-region></div>
@@ -652,8 +839,8 @@
   <div class="stage">
     <canvas
       bind:this={canvas}
-      width={natural.width || 1}
-      height={natural.height || 1}
+      width={view.w || 1}
+      height={view.h || 1}
       class="canvas"
       class:is-ready={ready}
       onpointerdown={onPointerDown}
@@ -662,6 +849,27 @@
       onpointercancel={onPointerUp}
     ></canvas>
   </div>
+
+  <!--
+    El cuadro de texto vive sobre el lienzo, no dentro de él.
+    `contenteditable` y no un `<textarea>`: crece solo a lo ancho y a lo alto
+    con lo que se escribe, que es lo que hace que el cuadro y lo que se va a
+    dibujar ocupen el mismo sitio. `plaintext-only` deja pegar sin formato.
+  -->
+  {#if editing}
+    <div
+      bind:this={textEl}
+      class="text-input"
+      style={textStyle}
+      contenteditable="plaintext-only"
+      role="textbox"
+      tabindex="0"
+      aria-label={t("page.annotate.text")}
+      oninput={onTextInput}
+      onkeydown={onTextKey}
+      onblur={commitText}
+    ></div>
+  {/if}
 
   <p
     class="status"
@@ -885,6 +1093,31 @@
       )
       50% / 16px 16px;
     overflow: hidden;
+  }
+
+  /*
+   * El cuadro de texto, encima de todo y anclado al viewport.
+   *
+   * `fixed` porque su posición sale del rect del lienzo, que ya está en
+   * coordenadas del viewport: cualquier otro contenedor obligaría a restarle su
+   * propio origen. `pre` para que los saltos de línea del cuadro sean los
+   * mismos que dibuja el lienzo, y el halo del `text-shadow` es el gemelo del
+   * contorno que `annotateDraw` le pinta al confirmar.
+   */
+  .text-input {
+    position: fixed;
+    z-index: 3;
+    min-width: 1ch;
+    padding: 0;
+    border: 0;
+    margin: 0;
+    background: transparent;
+    caret-color: currentColor;
+    outline: none;
+    text-shadow:
+      0 0 2px var(--halo),
+      0 0 2px var(--halo);
+    white-space: pre;
   }
 
   .canvas {

@@ -370,6 +370,8 @@ export const en = {
       modelUpdated: "Model updated: {model}",
     },
     agents: {
+      shown: "Agents in view",
+      shownHint: "The ones offered when opening a console and in the usage panel.",
       title: "Claude Code",
       hint: "The pill does not write someone else's settings. Merge the hooks key; don't replace the whole file.",
       hooks: "Hooks",
@@ -554,11 +556,11 @@ export const en = {
     unread: "{label} unread",
     rebind: "{base} · Ctrl+click to bind another window",
     /**
-     * Agent quotas, on the disc hover.
+     * Agent quotas, on the disc hover or pinned as a droplet.
      *
      * `window.*` are the windows with a name of their own; the rest are built
-     * from their length with `unit.*`. Cursor is not here because it publishes
-     * no quota: it carries `spend`, which says spent, not left.
+     * from their length with `unit.*`. Cursor uses `auto` and `api`, the same
+     * percentages as its dashboard. `spend` only appears for on-demand.
      */
     quota: {
       window: {
@@ -568,6 +570,9 @@ export const en = {
         month: "Month",
         opus: "Opus wk.",
         sonnet: "Sonnet wk.",
+        auto: "Auto",
+        api: "API",
+        modelWeek: "{model} wk",
         unknown: "Window",
       },
       unit: {
@@ -826,6 +831,12 @@ export const en = {
       dockIdle: "Agents",
       dockExpand: "Expand again",
       hideHint: "Hide. The consoles keep running.",
+      installNamed: "Install {name}",
+      openNamed: "Open {name}",
+      backToConsoles: "Back to consoles",
+      consoleSingular: "console",
+      consolePlural: "consoles",
+      install: "Install",
     },
     captures: {
       count: "{count} recent",
@@ -882,6 +893,10 @@ export const en = {
       ellipse: "Circle",
       rect: "Rectangle",
       highlight: "Highlighter",
+      text: "Text",
+      crop: "Crop",
+      cropReset: "Remove the crop",
+      cropResetTitle: "Back to the whole image",
       color: "Color",
       colorSwatch: "Color {swatch}",
       width: "Width",

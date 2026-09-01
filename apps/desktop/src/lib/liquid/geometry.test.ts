@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { boxShape, gapBetween, pillShape } from "./geometry";
+import { boxShape, gapBetween, pillShape, stemBetween } from "./geometry";
 import { BLEND, BULGE, CELL, INFLUENCE, REACH } from "./constants";
 import { smin } from "./sdf";
 import { Field, shapeSD } from "./sdf";
@@ -22,6 +22,51 @@ describe("pillShape", () => {
   it("redondea hasta la mitad del lado corto", () => {
     expect(pillShape({ x: 0, y: 0, w: 176, h: 40 }).r).toBe(20);
     expect(pillShape({ x: 0, y: 0, w: 40, h: 176 }).r).toBe(20);
+  });
+});
+
+describe("stemBetween", () => {
+  const pill = { x: 100, y: 0, w: 34, h: 34 };
+  const below = { x: 40, y: 50, w: 160, h: 200 };
+
+  it("cuelga del centro del ancla hacia el panel de abajo", () => {
+    const stem = stemBetween(pill, below, "top", 4);
+    expect(stem).toEqual({
+      kind: "capsule",
+      ax: 117,
+      ay: 28,
+      bx: 117,
+      by: 56,
+      r: 4,
+    });
+  });
+
+  it("no dibuja hilo si las dos formas ya se tocan", () => {
+    expect(stemBetween(pill, { x: 40, y: 24, w: 160, h: 20 }, "top", 4)).toBeNull();
+  });
+
+  it("conecta en horizontal cuando el panel queda a la derecha", () => {
+    const stem = stemBetween(pill, { x: 150, y: 0, w: 100, h: 80 }, "left", 4);
+    expect(stem?.kind).toBe("capsule");
+    if (stem?.kind !== "capsule") return;
+    expect(stem.ay).toBe(stem.by);
+    expect(stem.ay).toBe(17);
+    expect(stem.bx).toBeGreaterThan(stem.ax);
+  });
+
+  it("colgado de una esquina, el hilo cae sobre el panel y no al lado", () => {
+    // El panel nace del canto derecho de la isla: se solapan 20 px.
+    const corner = { x: 114, y: 50, w: 200, h: 160 };
+    const stem = stemBetween(pill, corner, "top", 4);
+    expect(stem?.kind).toBe("capsule");
+    if (stem?.kind !== "capsule") return;
+    expect(stem.ax).toBe(stem.bx);
+    expect(stem.ax).toBeGreaterThanOrEqual(corner.x);
+    expect(stem.ax).toBeLessThanOrEqual(pill.x + pill.w);
+  });
+
+  it("sin solape no hay hilo posible: mejor ninguno que uno en el aire", () => {
+    expect(stemBetween(pill, { x: 300, y: 50, w: 200, h: 160 }, "top", 4)).toBeNull();
   });
 });
 

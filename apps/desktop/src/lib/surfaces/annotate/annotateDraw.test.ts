@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { drawShape, type DrawTarget } from "./annotateDraw";
+import {
+  drawCropMask,
+  drawShape,
+  haloFor,
+  type DrawTarget,
+} from "./annotateDraw";
 import { HIGHLIGHT_FACTOR, type Shape } from "./annotateModel";
 
 /**
@@ -29,8 +34,13 @@ function fakeCtx(): DrawTarget & { ops: string[] } {
     rect: record("rect"),
     stroke: record("stroke"),
     fill: record("fill"),
+    fillRect: record("fillRect"),
+    fillText: record("fillText"),
+    strokeText: record("strokeText"),
     strokeStyle: "",
     fillStyle: "",
+    font: "",
+    textBaseline: "alphabetic",
     lineWidth: 0,
     lineCap: "butt",
     lineJoin: "miter",
@@ -106,5 +116,73 @@ describe("drawShape", () => {
       to: { x: 110, y: 220 },
     });
     expect(ctx.ops.some((op) => op.startsWith("ellipse(60,120,50,100"))).toBe(true);
+  });
+});
+
+describe("texto", () => {
+  const text = {
+    kind: "text" as const,
+    color: "#ffffff",
+    width: 4,
+    at: { x: 10, y: 20 },
+    text: "hola\nmundo",
+    size: 20,
+  };
+
+  it("una llamada por renglon, bajando por el interlineado", () => {
+    const ctx = fakeCtx();
+    drawShape(ctx, text);
+    expect(ctx.ops).toContain("fillText(hola,10,20)");
+    expect(ctx.ops).toContain("fillText(mundo,10,45)");
+  });
+
+  it("el contorno se pinta ANTES del relleno, o lo taparia", () => {
+    const ctx = fakeCtx();
+    drawShape(ctx, text);
+    expect(ctx.ops.indexOf("strokeText(hola,10,20)")).toBeLessThan(
+      ctx.ops.indexOf("fillText(hola,10,20)"),
+    );
+  });
+
+  it("la letra sale del tamano de la forma", () => {
+    const ctx = fakeCtx();
+    drawShape(ctx, text);
+    expect(ctx.font).toContain("20px");
+    expect(ctx.textBaseline).toBe("top");
+  });
+
+  it("un renglon vacio no se dibuja", () => {
+    const ctx = fakeCtx();
+    drawShape(ctx, { ...text, text: "a\n\nb" });
+    expect(ctx.ops.filter((op) => op.startsWith("fillText"))).toHaveLength(2);
+  });
+});
+
+describe("haloFor", () => {
+  it("el halo es el contrario del color: sirve sobre cualquier captura", () => {
+    expect(haloFor("#ffffff")).toContain("000000");
+    expect(haloFor("#1c1c1e")).toContain("ffffff");
+  });
+});
+
+describe("drawCropMask", () => {
+  it("vela las cuatro franjas de afuera y enmarca lo que queda", () => {
+    const ctx = fakeCtx();
+    drawCropMask(
+      ctx,
+      { x: 100, y: 50, w: 200, h: 100 },
+      { x: 0, y: 0, w: 1000, h: 800 },
+    );
+    expect(ctx.ops.filter((op) => op.startsWith("fillRect"))).toHaveLength(4);
+    expect(ctx.ops).toContain("rect(100,50,200,100)");
+    expect(ctx.ops).toContain("stroke()");
+  });
+
+  it("sin recorte que velar no pinta franjas de ancho negativo", () => {
+    const ctx = fakeCtx();
+    const full = { x: 0, y: 0, w: 100, h: 100 };
+    drawCropMask(ctx, full, full);
+    const rects = ctx.ops.filter((op) => op.startsWith("fillRect("));
+    expect(rects.every((op) => !op.includes("-"))).toBe(true);
   });
 });

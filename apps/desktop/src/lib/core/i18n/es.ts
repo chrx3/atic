@@ -372,6 +372,8 @@ export const es = {
       modelUpdated: "Modelo actualizado: {model}",
     },
     agents: {
+      shown: "Agentes a la vista",
+      shownHint: "Los que aparecen al abrir una consola y en el panel de cupos.",
       title: "Claude Code",
       hint: "La pill no escribe el settings ajeno. Fusiona la clave hooks; no reemplaces el archivo entero.",
       hooks: "Hooks",
@@ -556,11 +558,11 @@ export const es = {
     unread: "{label} sin leer",
     rebind: "{base} · Ctrl+clic para vincular otra ventana",
     /**
-     * Cupos de los agentes, en el hover del disco.
+     * Cupos de los agentes, en el hover del disco o fijados como gota.
      *
      * `window.*` son las ventanas con nombre propio; las que no lo tienen se
-     * arman con `unit.*` a partir de su largo. Cursor no aparece acá porque no
-     * publica cupo: lleva `spend`, que dice consumo y no cuánto queda.
+     * arman con `unit.*` a partir de su largo. Cursor usa `auto` y `api`, los
+     * mismos % que su dashboard. `spend` solo aparece si hay on-demand.
      */
     quota: {
       window: {
@@ -570,6 +572,9 @@ export const es = {
         month: "Mes",
         opus: "Opus sem.",
         sonnet: "Sonnet sem.",
+        auto: "Auto",
+        api: "API",
+        modelWeek: "{model} sem.",
         unknown: "Ventana",
       },
       unit: {
@@ -829,6 +834,12 @@ export const es = {
       dockIdle: "Agentes",
       dockExpand: "Volver a agrandar",
       hideHint: "Esconder. Las consolas siguen corriendo.",
+      installNamed: "Instalar {name}",
+      openNamed: "Abrir {name}",
+      backToConsoles: "Volver a consolas",
+      consoleSingular: "consola",
+      consolePlural: "consolas",
+      install: "Instalar",
     },
     captures: {
       count: "{count} recientes",
@@ -885,6 +896,10 @@ export const es = {
       ellipse: "Círculo",
       rect: "Rectángulo",
       highlight: "Resaltador",
+      text: "Texto",
+      crop: "Recortar",
+      cropReset: "Quitar el recorte",
+      cropResetTitle: "Volver a la imagen entera",
       color: "Color",
       colorSwatch: "Color {swatch}",
       width: "Grosor",

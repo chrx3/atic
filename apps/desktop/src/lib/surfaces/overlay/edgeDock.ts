@@ -297,6 +297,61 @@ export function defaultPillHome(
   };
 }
 
+/**
+ * Monitor donde recentrar una isla acoplada tras un cambio de viewport.
+ *
+ * El recuadro chico de WebView2 deja la pill en coordenadas que, contra las
+ * áreas reales, ya no caen en el canto. Si el monitor bajo la posición actual
+ * no tiene ese borde exterior, se busca uno que sí: p.ej. `right` va al
+ * monitor más a la derecha, no al hogar de arriba.
+ */
+function areaWithOuterEdge(
+  edge: DockEdge,
+  current: Rect,
+  areas: readonly Area[],
+): Area | null {
+  const containing = areaFor(current, areas);
+  if (containing && isOuterEdge(edge, containing, areas)) return containing;
+  const primary = primaryArea(areas);
+  if (primary && isOuterEdge(edge, primary, areas)) return primary;
+  return areas.find((a) => isOuterEdge(edge, a, areas)) ?? primary;
+}
+
+/**
+ * Dónde debe quedar la pill cuando el viewport CSS acaba de agrandarse.
+ *
+ * Al boot WebView2 pinta un recuadro chico: los imanes se calculan contra
+ * ese recuadro y la isla queda en una esquina. Recalcular contra las áreas
+ * reales: acoplada, el centro de ESE canto; si no, el hogar de arriba.
+ */
+export function geometryReseat(
+  state: {
+    docked: DockEdge | null;
+    size: { w: number; h: number };
+    current: Rect;
+  },
+  areas: readonly Area[],
+): { at: { x: number; y: number }; edge: DockEdge | null } | null {
+  if (state.docked) {
+    const current = {
+      x: state.current.x,
+      y: state.current.y,
+      w: state.size.w,
+      h: state.size.h,
+    };
+    const area = areaWithOuterEdge(state.docked, current, areas);
+    if (!area) return null;
+    if (!isOuterEdge(state.docked, area, areas)) {
+      return defaultPillHome(state.size, areas);
+    }
+    return {
+      at: edgeCenterPoint(state.docked, state.size, workAreaOf(area)),
+      edge: state.docked,
+    };
+  }
+  return defaultPillHome(state.size, areas);
+}
+
 export type MagnetHit = {
   at: { x: number; y: number };
   /** `null` = centro de la pantalla, flotante. */

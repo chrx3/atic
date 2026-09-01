@@ -33,16 +33,28 @@ class AppUpdateStore {
   error = $state<string | null>(null);
   /** Ya se preguntó al menos una vez (para no decir «al día» al abrir). */
   checked = $state(false);
+  /**
+   * Versión de mentira (solo DEV). En `tauri dev` no se sondea GitHub: el
+   * instalador de un release no es el binario que estás corriendo. Esto pinta
+   * el chip / la gota para revisar layout, sin tocar el updater.
+   */
+  previewVersion = $state<string | null>(null);
 
   #lastCheck = 0;
   #checkGen = 0;
 
   get version(): string | null {
-    return this.pending?.version ?? null;
+    return this.pending?.version ?? this.previewVersion;
+  }
+
+  /** Hay aviso que pintar: update real o simulación de DEV. */
+  get visible(): boolean {
+    return this.pending != null || this.previewVersion != null;
   }
 
   /** Solo mientras se escribe el instalador. Consultar GitHub no cuenta. */
   get busy(): boolean {
+    if (this.previewVersion && !this.pending) return false;
     return this.downloading || this.installing;
   }
 
@@ -91,11 +103,49 @@ class AppUpdateStore {
 
   /** Un clic: primero baja, después instala. */
   async advance(): Promise<void> {
+    if (this.previewVersion && !this.pending) {
+      this.#previewAdvance();
+      return;
+    }
     if (this.downloaded) {
       await this.apply();
       return;
     }
     await this.download();
+  }
+
+  /**
+   * Pinta (o apaga) un aviso de update ficticio. En DEV: Ctrl+Alt+U.
+   * El clic recorre las fases (bajar → listo → instalar) sin llamar a GitHub.
+   */
+  simulate(version: string | null): void {
+    this.previewVersion = version;
+    this.downloading = false;
+    this.downloaded = false;
+    this.installing = false;
+    this.percent = null;
+    this.error = null;
+  }
+
+  #previewAdvance(): void {
+    if (this.installing) {
+      this.installing = false;
+      this.downloaded = false;
+      this.percent = null;
+      return;
+    }
+    if (this.downloaded) {
+      this.installing = true;
+      return;
+    }
+    if (this.downloading) {
+      this.downloading = false;
+      this.downloaded = true;
+      this.percent = 100;
+      return;
+    }
+    this.downloading = true;
+    this.percent = 42;
   }
 
   async download(): Promise<void> {
@@ -168,3 +218,9 @@ class AppUpdateStore {
 }
 
 export const appUpdate = new AppUpdateStore();
+
+if (import.meta.env.DEV && typeof localStorage !== "undefined") {
+  if (localStorage.getItem("atic-fake-update") !== "0") {
+    appUpdate.simulate("0.4.25");
+  }
+}

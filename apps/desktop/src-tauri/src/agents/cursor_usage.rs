@@ -1,15 +1,16 @@
-//! Consumo del período en Cursor.
+//! Cupo del período en Cursor.
 //!
-//! # Por qué esto no es un porcentaje
+//! # De dónde sale el porcentaje
 //!
-//! Los otros tres agentes publican «llevas X% de tu ventana». Cursor no: en los
-//! planes Pro/Pro+ el freno son *rate limits* que no expone ningún endpoint. Lo
-//! que sí se puede leer es cuánto valor consumiste en el período —los eventos
-//! vienen marcados `USAGE_EVENT_KIND_INCLUDED_IN_PRO_PLUS`, o sea incluidos— y
-//! contra qué plan. Medido en la máquina de desarrollo: US$1213 de consumo en
-//! un plan de US$60, que es la prueba de que ese número **no** es un cupo. Por
-//! eso el tipo de acá no tiene `percent` y la vista lo pinta sin barra: una
-//! barra insinuaría un techo que no existe.
+//! Sumar `totalCents` de los eventos **no** es un cupo: es el valor de lista
+//! de todo lo incluido (y el bonus de los proveedores). En Pro+ eso pasa los
+//! mil dólares con un plan de US$60, y pintar esa cifra como «consumo» miente.
+//!
+//! El dashboard lee `POST /api/dashboard/get-current-period-usage`:
+//! `autoPercentUsed` y `apiPercentUsed` son los mismos % que Cursor muestra
+//! («You've used 81% of your included total usage»). `includedSpend` / `limit`
+//! es el techo pagado (US$70 en Pro+); si faltan los % se usa esa fracción.
+//! El on-demand —si está encendido— es `totalSpend − included − bonus`.
 //!
 //! # De dónde sale la credencial
 //!
@@ -28,22 +29,37 @@ use rusqlite::{Connection, OpenFlags};
 use serde::Serialize;
 use serde_json::Value;
 
+const PERIOD_URL: &str = "https://cursor.com/api/dashboard/get-current-period-usage";
+const SUMMARY_URL: &str = "https://cursor.com/api/usage-summary";
 const AGG_URL: &str = "https://cursor.com/api/dashboard/get-aggregated-usage-events";
 const USAGE_URL: &str = "https://cursor.com/api/usage";
 const ORIGIN: &str = "https://cursor.com";
-const HTTP_TIMEOUT: Duration = Duration::from_secs(20);
+// 8 s y no 20: el fetch hace 3-4 requests EN SERIE y el hover de la pill
+// espera al agente más lento; con Cursor caído, 20 s por request dejaban
+// «Leyendo…» un minuto entero.
+const HTTP_TIMEOUT: Duration = Duration::from_secs(8);
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CursorUsageWindow {
+    /// `auto`, `api` o `monthly`. Viaja crudo: la vista pone el idioma.
+    pub kind: String,
+    /// Porcentaje ya consumido, 0..=100.
+    pub used_percent: f64,
+}
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct CursorAccountUsage {
-    /// Consumo del período en centavos de dólar. No es un cupo: ver el módulo.
+    /// On-demand (centavos). Cero si el plan no cobra extra.
     pub spend_cents: f64,
     /// `pro`, `pro_plus`, `ultra`, … tal como lo guarda el IDE.
     pub plan: Option<String>,
-    /// RFC3339 UTC. Inicio del período de facturación, si la API lo manda.
+    /// RFC3339 UTC. Inicio del período de facturación, si se conoce.
     pub period_start: Option<String>,
-    /// Un mes después de `period_start`, que es cuando se reinicia la cuenta.
+    /// RFC3339 UTC. Corte del período.
     pub period_end: Option<String>,
+    pub windows: Vec<CursorUsageWindow>,
     pub fetched_at: i64,
 }
 
@@ -154,37 +170,226 @@ pub fn fetch_account_usage() -> Result<CursorAccountUsage, String> {
         .build()
         .map_err(|e| format!("no se pudo crear el cliente HTTP: {e}"))?;
 
-    let agg = client
-        .post(AGG_URL)
-        .header(reqwest::header::COOKIE, &cookie)
-        .header(reqwest::header::ORIGIN, ORIGIN)
-        .header(reqwest::header::REFERER, "https://cursor.com/dashboard")
-        .json(&serde_json::json!({}))
-        .send()
-        .map_err(|e| format!("no se pudo consultar el uso de Cursor: {e}"))?;
-
-    let status = agg.status();
-    if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
-        return Err("la sesión de Cursor expiró. Vuelve a iniciar sesión en el IDE.".to_string());
+    let fetched_at = Utc::now().timestamp_millis();
+    let mut last_err: String;
+    match post_json(&client, &cookie, PERIOD_URL, serde_json::json!({})) {
+        Ok(body) => {
+            if let Some(parsed) = parse_period_body(&body) {
+                return Ok(parsed.into_usage(creds.plan, fetched_at));
+            }
+            last_err = "Cursor respondió sin datos de cupo".into();
+        }
+        Err(err) => last_err = err,
     }
-    if !status.is_success() {
-        return Err(format!("la API de Cursor respondió {status}"));
-    }
-    let body = agg
-        .text()
-        .map_err(|e| format!("respuesta de Cursor ilegible: {e}"))?;
-    let spend_cents = parse_spend_cents(&body)?;
 
-    // El período es un extra: si falla, se muestra el consumo igual. No vale
-    // perder el dato principal por no saber cuándo corta el mes.
+    match get_text(&client, &cookie, SUMMARY_URL) {
+        Ok(body) => {
+            if let Some(parsed) = parse_summary_body(&body) {
+                return Ok(parsed.into_usage(creds.plan, fetched_at));
+            }
+        }
+        Err(err) => last_err = err,
+    }
+
+    // Último recurso: la suma de eventos, que no es un cupo. Solo si no hubo %.
+    let spend_cents = match post_json(&client, &cookie, AGG_URL, serde_json::json!({})) {
+        Ok(body) => parse_spend_cents(&body)?,
+        Err(_) => return Err(last_err),
+    };
     let period_start = fetch_period_start(&client, &cookie, &creds.auth_id);
-
     Ok(CursorAccountUsage {
         spend_cents,
         plan: creds.plan,
         period_end: period_start.as_deref().and_then(plus_one_month),
         period_start,
-        fetched_at: Utc::now().timestamp_millis(),
+        windows: Vec::new(),
+        fetched_at,
+    })
+}
+
+struct ParsedPeriod {
+    windows: Vec<CursorUsageWindow>,
+    spend_cents: f64,
+    period_start: Option<String>,
+    period_end: Option<String>,
+}
+
+impl ParsedPeriod {
+    fn into_usage(self, plan: Option<String>, fetched_at: i64) -> CursorAccountUsage {
+        CursorAccountUsage {
+            spend_cents: self.spend_cents,
+            plan,
+            period_start: self.period_start,
+            period_end: self.period_end,
+            windows: self.windows,
+            fetched_at,
+        }
+    }
+}
+
+fn auth_error(status: reqwest::StatusCode) -> Option<String> {
+    if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
+        Some("la sesión de Cursor expiró. Vuelve a iniciar sesión en el IDE.".to_string())
+    } else {
+        None
+    }
+}
+
+fn post_json(
+    client: &reqwest::blocking::Client,
+    cookie: &str,
+    url: &str,
+    body: Value,
+) -> Result<String, String> {
+    let resp = client
+        .post(url)
+        .header(reqwest::header::COOKIE, cookie)
+        .header(reqwest::header::ORIGIN, ORIGIN)
+        .header(reqwest::header::REFERER, "https://cursor.com/dashboard")
+        .json(&body)
+        .send()
+        .map_err(|e| format!("no se pudo consultar el uso de Cursor: {e}"))?;
+    let status = resp.status();
+    if let Some(err) = auth_error(status) {
+        return Err(err);
+    }
+    if !status.is_success() {
+        return Err(format!("la API de Cursor respondió {status}"));
+    }
+    resp.text()
+        .map_err(|e| format!("respuesta de Cursor ilegible: {e}"))
+}
+
+fn get_text(
+    client: &reqwest::blocking::Client,
+    cookie: &str,
+    url: &str,
+) -> Result<String, String> {
+    let resp = client
+        .get(url)
+        .header(reqwest::header::COOKIE, cookie)
+        .header(reqwest::header::ORIGIN, ORIGIN)
+        .send()
+        .map_err(|e| format!("no se pudo consultar el uso de Cursor: {e}"))?;
+    let status = resp.status();
+    if let Some(err) = auth_error(status) {
+        return Err(err);
+    }
+    if !status.is_success() {
+        return Err(format!("la API de Cursor respondió {status}"));
+    }
+    resp.text()
+        .map_err(|e| format!("respuesta de Cursor ilegible: {e}"))
+}
+
+fn parse_epoch_ms(value: Option<&Value>) -> Option<i64> {
+    match value? {
+        Value::Number(n) => n.as_i64().or_else(|| n.as_f64().map(|f| f as i64)),
+        Value::String(s) => s
+            .parse::<i64>()
+            .ok()
+            .or_else(|| rfc3339_millis(s)),
+        _ => None,
+    }
+}
+
+fn rfc3339_millis(stamp: &str) -> Option<i64> {
+    Some(
+        DateTime::parse_from_rfc3339(stamp)
+            .ok()?
+            .with_timezone(&Utc)
+            .timestamp_millis(),
+    )
+}
+
+fn millis_to_rfc3339(ms: i64) -> Option<String> {
+    DateTime::from_timestamp_millis(ms).map(|dt| dt.to_rfc3339())
+}
+
+fn windows_from_plan(plan: &Value) -> Vec<CursorUsageWindow> {
+    let mut windows = Vec::new();
+    let push = |kind: &str, percent: Option<f64>, out: &mut Vec<CursorUsageWindow>| {
+        if let Some(percent) = percent {
+            out.push(CursorUsageWindow {
+                kind: kind.to_string(),
+                used_percent: percent,
+            });
+        }
+    };
+    push("auto", plan.get("autoPercentUsed").and_then(Value::as_f64), &mut windows);
+    push("api", plan.get("apiPercentUsed").and_then(Value::as_f64), &mut windows);
+    if windows.is_empty() {
+        let included = plan
+            .get("includedSpend")
+            .and_then(Value::as_f64)
+            .or_else(|| {
+                plan.get("breakdown")
+                    .and_then(|b| b.get("included"))
+                    .and_then(Value::as_f64)
+            });
+        let limit = plan.get("limit").and_then(Value::as_f64);
+        if let (Some(included), Some(limit)) = (included, limit) {
+            if limit > 0.0 {
+                windows.push(CursorUsageWindow {
+                    kind: "monthly".to_string(),
+                    used_percent: (included / limit) * 100.0,
+                });
+            }
+        }
+    }
+    windows
+}
+
+fn on_demand_cents(root: &Value, plan: &Value) -> f64 {
+    if let Some(od) = root
+        .get("individualUsage")
+        .and_then(|u| u.get("onDemand"))
+    {
+        if od.get("enabled").and_then(Value::as_bool) == Some(true) {
+            return od.get("used").and_then(Value::as_f64).unwrap_or(0.0).max(0.0);
+        }
+    }
+    let included = plan.get("includedSpend").and_then(Value::as_f64).unwrap_or(0.0);
+    let bonus = plan.get("bonusSpend").and_then(Value::as_f64).unwrap_or(0.0);
+    let total = plan.get("totalSpend").and_then(Value::as_f64).unwrap_or(0.0);
+    (total - included - bonus).max(0.0)
+}
+
+fn parse_period_body(body: &str) -> Option<ParsedPeriod> {
+    let root: Value = serde_json::from_str(body).ok()?;
+    let plan = root.get("planUsage")?;
+    let windows = windows_from_plan(plan);
+    if windows.is_empty() && on_demand_cents(&root, plan) <= 0.0 {
+        return None;
+    }
+    let start_ms = parse_epoch_ms(root.get("billingCycleStart"));
+    let end_ms = parse_epoch_ms(root.get("billingCycleEnd"));
+    Some(ParsedPeriod {
+        spend_cents: on_demand_cents(&root, plan),
+        windows,
+        period_start: start_ms.and_then(millis_to_rfc3339),
+        period_end: end_ms.and_then(millis_to_rfc3339),
+    })
+}
+
+fn parse_summary_body(body: &str) -> Option<ParsedPeriod> {
+    let root: Value = serde_json::from_str(body).ok()?;
+    let plan = root.get("individualUsage")?.get("plan")?;
+    let windows = windows_from_plan(plan);
+    if windows.is_empty() && on_demand_cents(&root, plan) <= 0.0 {
+        return None;
+    }
+    Some(ParsedPeriod {
+        spend_cents: on_demand_cents(&root, plan),
+        windows,
+        period_start: root
+            .get("billingCycleStart")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        period_end: root
+            .get("billingCycleEnd")
+            .and_then(Value::as_str)
+            .map(str::to_string),
     })
 }
 
@@ -276,5 +481,66 @@ mod tests {
             session_cookie(&creds),
             "WorkosCursorSessionToken=auth0%7Cuser_01ABC%3A%3Ajwt.tok.en"
         );
+    }
+
+    const PERIOD_JSON: &str = r#"{
+        "billingCycleStart": 1785609874000,
+        "billingCycleEnd": 1788288274000,
+        "planUsage": {
+            "totalSpend": 106357,
+            "includedSpend": 7000,
+            "bonusSpend": 99357,
+            "limit": 7000,
+            "autoPercentUsed": 80.5825,
+            "apiPercentUsed": 87.8,
+            "totalPercentUsed": 81.1885
+        }
+    }"#;
+
+    #[test]
+    fn el_periodo_trae_auto_y_api_no_el_valor_de_lista() {
+        let parsed = parse_period_body(PERIOD_JSON).expect("cupo");
+        assert_eq!(parsed.windows.len(), 2);
+        assert_eq!(parsed.windows[0].kind, "auto");
+        assert!((parsed.windows[0].used_percent - 80.5825).abs() < 1e-6);
+        assert_eq!(parsed.windows[1].kind, "api");
+        assert!((parsed.windows[1].used_percent - 87.8).abs() < 1e-6);
+        // included + bonus = total → on-demand cero. El 106357 no es un cupo.
+        assert_eq!(parsed.spend_cents, 0.0);
+        assert!(
+            parsed
+                .period_end
+                .as_deref()
+                .unwrap()
+                .starts_with("2026-09-01T18:44:34")
+        );
+    }
+
+    #[test]
+    fn sin_porcentajes_cae_al_incluido_sobre_el_techo() {
+        let body = r#"{
+            "billingCycleEnd": 1788288274000,
+            "planUsage": { "includedSpend": 3500, "limit": 7000, "totalSpend": 3500, "bonusSpend": 0 }
+        }"#;
+        let parsed = parse_period_body(body).expect("cupo");
+        assert_eq!(parsed.windows.len(), 1);
+        assert_eq!(parsed.windows[0].kind, "monthly");
+        assert!((parsed.windows[0].used_percent - 50.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn el_resumen_lee_on_demand_solo_si_esta_encendido() {
+        let body = r#"{
+            "billingCycleStart": "2026-08-01T18:44:34.000Z",
+            "billingCycleEnd": "2026-09-01T18:44:34.000Z",
+            "individualUsage": {
+                "plan": { "autoPercentUsed": 10.0, "apiPercentUsed": 20.0, "limit": 7000, "used": 7000 },
+                "onDemand": { "enabled": true, "used": 1234 }
+            }
+        }"#;
+        let parsed = parse_summary_body(body).expect("cupo");
+        assert_eq!(parsed.spend_cents, 1234.0);
+        assert_eq!(parsed.windows[0].kind, "auto");
+        assert_eq!(parsed.period_end.as_deref(), Some("2026-09-01T18:44:34.000Z"));
     }
 }

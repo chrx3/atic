@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AgentQuota, QuotaOverview } from "$core/types";
-import { quotaRows, spanFrom, toneFor, windowLabel } from "./pillQuota";
+import { modelOf, quotaRows, spanFrom, toneFor, windowLabel } from "./pillQuota";
 
 const NOW = 1_788_000_000_000;
 
@@ -24,6 +24,8 @@ describe("windowLabel", () => {
     // 7dOpus y 7d duran lo mismo; solo el id sabe cuál es cuál.
     expect(windowLabel("7dOpus", 10_080)).toBe("opus");
     expect(windowLabel("7d", 10_080)).toBe("week");
+    expect(windowLabel("auto", null)).toBe("auto");
+    expect(windowLabel("api", null)).toBe("api");
   });
 
   it("cae a los minutos cuando el id no dice nada", () => {
@@ -84,6 +86,36 @@ describe("quotaRows", () => {
       NOW,
     );
     expect(rows.map((r) => r.agent)).toEqual(["claude", "codex", "cursor-agent"]);
+  });
+
+  it("antigravity entra antes de cursor, con sus grupos como modelos", () => {
+    const rows = quotaRows(
+      overview([
+        quota({ agent: "cursor-agent" }),
+        quota({
+          agent: "agy",
+          windows: [
+            {
+              kind: "7d:gemini",
+              minutes: 10_080,
+              usedPercent: 7.08,
+              resetsAt: NOW + 86_400_000,
+            },
+            {
+              kind: "7d:claude+GPT",
+              minutes: 10_080,
+              usedPercent: 0,
+              resetsAt: NOW + 86_400_000,
+            },
+          ],
+        }),
+      ]),
+      NOW,
+    );
+    expect(rows.map((r) => r.agent)).toEqual(["agy", "cursor-agent"]);
+    expect(rows[0].name).toBe("Antigravity");
+    expect(rows[0].bars.map((b) => b.window)).toEqual(["model", "model"]);
+    expect(rows[0].bars.map((b) => b.model)).toEqual(["Gemini", "Claude+GPT"]);
   });
 
   it("un agente que no llega en el snapshot no ocupa fila", () => {
@@ -173,19 +205,23 @@ describe("quotaRows", () => {
     expect(rows[1].staleAt).toBe(NOW - 6 * 60 * 60 * 1000);
   });
 
-  it("Cursor llega con consumo y sin barras", () => {
+  it("Cursor llega con Auto y API, no con un gasto inventado", () => {
     const rows = quotaRows(
       overview([
         quota({
           agent: "cursor-agent",
           plan: "pro_plus",
-          spend: { cents: 121_312, periodEnd: NOW + 86_400_000 },
+          windows: [
+            { kind: "auto", minutes: null, usedPercent: 80.6, resetsAt: NOW + 86_400_000 },
+            { kind: "api", minutes: null, usedPercent: 87.8, resetsAt: NOW + 86_400_000 },
+          ],
         }),
       ]),
       NOW,
     );
-    expect(rows[0].bars).toEqual([]);
-    expect(rows[0].spend?.cents).toBe(121_312);
+    expect(rows[0].bars.map((b) => b.window)).toEqual(["auto", "api"]);
+    expect(rows[0].bars[0].percent).toBe(80.6);
+    expect(rows[0].spend).toBeNull();
     expect(rows[0].name).toBe("Cursor");
   });
 
@@ -196,5 +232,39 @@ describe("quotaRows", () => {
     );
     expect(rows.map((r) => r.agent)).toEqual(["claude", "gemini"]);
     expect(rows[1].name).toBe("gemini");
+  });
+});
+
+describe("semanales por modelo", () => {
+  it("una ventana `7d:<modelo>` se etiqueta con su nombre", () => {
+    expect(windowLabel("7d:fable", 10_080)).toBe("model");
+    expect(modelOf("7d:fable")).toBe("Fable");
+  });
+
+  it("las que ya tenian campo propio no cambian", () => {
+    expect(windowLabel("7dOpus", 10_080)).toBe("opus");
+    expect(modelOf("7dOpus")).toBeNull();
+    expect(modelOf("5h")).toBeNull();
+  });
+
+  it("un `7d:` sin modelo no inventa etiqueta", () => {
+    expect(modelOf("7d:")).toBeNull();
+    expect(windowLabel("7d:", 10_080)).toBe("week");
+  });
+
+  it("la fila la trae con el modelo adentro", () => {
+    const rows = quotaRows(
+      overview([
+        quota({
+          agent: "claude",
+          windows: [
+            { kind: "7d:fable", minutes: 10_080, usedPercent: 50, resetsAt: null },
+          ],
+        }),
+      ]),
+      NOW,
+    );
+    expect(rows[0].bars[0].window).toBe("model");
+    expect(rows[0].bars[0].model).toBe("Fable");
   });
 });
