@@ -29,7 +29,7 @@ export function applyPresenceSnapshot(
   return { list: snapshot, unread };
 }
 
-/** Solo si el foco se confirmó: si no llevamos al usuario a ningún lado, no se borra. */
+/** El clic sobre el aviso lo apaga aunque el foco no se confirme: el usuario ya actuó (a lo sumo queda con la consola delante). */
 export function markPresenceSeen(
   unread: Record<string, number>,
   id: string,

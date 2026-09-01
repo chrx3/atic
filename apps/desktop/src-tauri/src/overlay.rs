@@ -29,7 +29,7 @@
 //! (el de cursor y el de foco) y re-aplicarlos tras cada cambio de bandera:
 //! mezclarlos rompe en las dos direcciones.
 
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicIsize, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicIsize, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{sync_channel, SyncSender, TrySendError};
 use std::sync::{Mutex, OnceLock};
 
@@ -154,6 +154,15 @@ static COVER_TRIES: AtomicU32 = AtomicU32::new(0);
 
 /// Avisos de `WM_DISPLAYCHANGE` (capacidad 1: varios seguidos son el mismo).
 static DISPLAY_TX: OnceLock<SyncSender<()>> = OnceLock::new();
+
+/// Hasta cuándo ignorar `WM_DISPLAYCHANGE` (ms Unix): el propio `SetWindowPos`
+/// lo dispara, y resetear `COVER_TRIES` ahí reencuadraba en loop sobre `main`.
+#[cfg(windows)]
+static IGNORE_DISPLAY_UNTIL_MS: AtomicU64 = AtomicU64::new(0);
+/// Último `apply_overlay_geometry`, para reintentar un HWND recortado
+/// (p.ej. al colgar una llamada) sin spamear cada 2 s.
+#[cfg(windows)]
+static LAST_APPLY_MS: AtomicU64 = AtomicU64::new(0);
 
 /// Handle de la app para la wndproc: no llega por parámetro (es un callback
 /// crudo de Win32), así que se guarda acá una sola vez en `setup()`.
@@ -595,10 +604,33 @@ fn apply_overlay_geometry(window: &tauri::WebviewWindow) -> OverlayRect {
     crate::webview_tweaks::sync_controller_bounds(window);
     OVERLAY_PHYS_W.store(rect.w.max(0) as u32, Ordering::SeqCst);
     OVERLAY_PHYS_H.store(rect.h.max(0) as u32, Ordering::SeqCst);
+    note_overlay_apply();
     if let Ok(mut g) = APPLIED_TOPO.lock() {
         *g = Some(display_topo());
     }
     rect
+}
+
+#[cfg(windows)]
+fn unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// El `SetWindowPos` del apply dispara `WM_DISPLAYCHANGE`: no hay que
+/// tratarlo como un cambio de escritorio real.
+#[cfg(windows)]
+fn note_overlay_apply() {
+    let t = unix_ms();
+    LAST_APPLY_MS.store(t, Ordering::Relaxed);
+    IGNORE_DISPLAY_UNTIL_MS.store(t.saturating_add(800), Ordering::Relaxed);
+}
+
+#[cfg(windows)]
+fn display_event_is_echo() -> bool {
+    unix_ms() < IGNORE_DISPLAY_UNTIL_MS.load(Ordering::Relaxed)
 }
 
 /// Tras una suspensión larga con cambio de topología, Windows puede dejar el
@@ -677,6 +709,9 @@ fn sync_overlay_to_displays(app: &AppHandle) {
     }
     if !same {
         COVER_TRIES.store(0, Ordering::Relaxed);
+        // El innerWidth viejo aplasta los dos monitores en el recuadro de uno.
+        CSS_VIEW_W_BITS.store(0, Ordering::Release);
+        CSS_VIEW_H_BITS.store(0, Ordering::Release);
     }
     let outer = window
         .outer_position()
@@ -735,24 +770,44 @@ fn extent_matches(got: i32, want: i32, scale: f64) -> bool {
 /// ya sea de dos pantallas. Hay que comparar el HWND, no el último apply.
 #[cfg(windows)]
 fn overlay_covers_topo(window: &tauri::WebviewWindow, topo: &DisplayTopo, scale: f64) -> bool {
-    use windows_sys::Win32::UI::WindowsAndMessaging::GetWindowRect;
-
     let Ok(hwnd) = window.hwnd() else {
         return false;
     };
+    let Some(outer) = hwnd_outer_rect(hwnd.0 as isize) else {
+        return false;
+    };
+    hwnd_rect_covers_topo(outer, topo, scale)
+}
+
+#[cfg(windows)]
+fn hwnd_outer_rect(hwnd: isize) -> Option<(i32, i32, i32, i32)> {
+    use windows_sys::Win32::UI::WindowsAndMessaging::GetWindowRect;
+
+    if hwnd == 0 {
+        return None;
+    }
     let mut outer = windows_sys::Win32::Foundation::RECT {
         left: 0,
         top: 0,
         right: 0,
         bottom: 0,
     };
-    // SAFETY: HWND de Tauri vivo; GetWindowRect solo lee.
-    if unsafe { GetWindowRect(hwnd.0 as _, &mut outer) } == 0 {
-        return false;
+    // SAFETY: HWND del overlay vivo; GetWindowRect solo lee.
+    if unsafe { GetWindowRect(hwnd as _, &mut outer) } == 0 {
+        return None;
     }
-    let w = outer.right - outer.left;
-    let h = outer.bottom - outer.top;
-    if rect_matches_topo(outer.left, outer.top, w, h, topo, scale) {
+    Some((
+        outer.left,
+        outer.top,
+        outer.right - outer.left,
+        outer.bottom - outer.top,
+    ))
+}
+
+#[cfg(windows)]
+fn hwnd_rect_covers_topo(outer: (i32, i32, i32, i32), topo: &DisplayTopo, scale: f64) -> bool {
+    let (x, y, w, h) = outer;
+    if rect_matches_topo(x, y, w, h, topo, scale) {
         return true;
     }
     // `scale_factor` del HWND que cubre dos monitores suele ser 1.0, y
@@ -762,7 +817,7 @@ fn overlay_covers_topo(window: &tauri::WebviewWindow, topo: &DisplayTopo, scale:
     let phys_w = f64::from(OVERLAY_PHYS_W.load(Ordering::Acquire));
     if css_w > 1.0 && phys_w > 1.0 {
         let inferred = phys_w / css_w;
-        if rect_matches_topo(outer.left, outer.top, w, h, topo, inferred) {
+        if rect_matches_topo(x, y, w, h, topo, inferred) {
             return true;
         }
     }
@@ -771,9 +826,21 @@ fn overlay_covers_topo(window: &tauri::WebviewWindow, topo: &DisplayTopo, scale:
         .map(|m| m.scale)
         .fold(1.0_f64, f64::max);
     if (max_mon - scale).abs() > 0.02 {
-        return rect_matches_topo(outer.left, outer.top, w, h, topo, max_mon);
+        return rect_matches_topo(x, y, w, h, topo, max_mon);
     }
     false
+}
+
+/// ¿El HWND cubre el escritorio virtual ahora? Apta para el hilo de poll.
+#[cfg(windows)]
+fn overlay_hwnd_covers_virtual() -> bool {
+    let hwnd = OVERLAY_HWND.load(Ordering::Acquire);
+    let Some(outer) = hwnd_outer_rect(hwnd) else {
+        return true;
+    };
+    let topo = display_topo();
+    let scale = f64::from_bits(OVERLAY_SCALE_BITS.load(Ordering::Acquire)).max(0.01);
+    hwnd_rect_covers_topo(outer, &topo, scale)
 }
 
 #[cfg(windows)]
@@ -819,9 +886,20 @@ fn start_display_watch(app: AppHandle) {
             {
                 let topo = display_topo();
                 let recorded = APPLIED_TOPO.lock().ok().and_then(|g| *g);
+                let uncovered = !overlay_hwnd_covers_virtual();
+                let tries = COVER_TRIES.load(Ordering::Relaxed);
+                let apply_age = unix_ms().saturating_sub(LAST_APPLY_MS.load(Ordering::Relaxed));
+                // Tras una llamada, el HWND queda recortado a un monitor y
+                // `COVER_TRIES` ya gastó el presupuesto: hay que volver a
+                // pedir cobertura, pero no cada 2 s (loop sobre `main`).
+                if uncovered && tries >= 8 && apply_age > 15_000 {
+                    COVER_TRIES.store(0, Ordering::Relaxed);
+                    COVER_RETRY.store(true, Ordering::Relaxed);
+                }
                 if recorded != Some(topo)
                     || COVER_RETRY.load(Ordering::Relaxed)
                     || overlay_is_iconic()
+                    || (uncovered && tries < 8)
                 {
                     let _ = tx.try_send(());
                 }
@@ -905,13 +983,18 @@ unsafe extern "system" fn overlay_wndproc(
         return 0;
     }
 
-    // Hibernar / desbloquear: a veces no hay `WM_DISPLAYCHANGE` cuando el
-    // segundo monitor reaparece. El poll periódico cubre el resto.
+    // Hibernar / desbloquear / colgar una llamada: a veces no hay
+    // `WM_DISPLAYCHANGE` cuando el segundo monitor reaparece. El poll cubre
+    // el resto. El eco de nuestro `SetWindowPos` no debe resetear reintentos.
     if msg == WM_DISPLAYCHANGE
         || msg == WM_DPICHANGED
         || msg == WM_POWERBROADCAST
         || msg == WM_DEVICECHANGE
     {
+        if !display_event_is_echo() {
+            COVER_TRIES.store(0, Ordering::Relaxed);
+            COVER_RETRY.store(true, Ordering::Relaxed);
+        }
         if let Some(tx) = DISPLAY_TX.get() {
             let _ = tx.try_send(());
         }
@@ -1901,14 +1984,63 @@ fn client_size_physical() -> Option<(f64, f64)> {
     Some((f64::from(rc.right), f64::from(rc.bottom)))
 }
 
+/// ¿El CSS que mandó el frontend describe el cliente actual?
+///
+/// Recuadro chico al boot: CSS 1551, cliente 3840 → no. Tras una llamada:
+/// CSS 3840 (escritorio viejo), cliente recortado 1920 → tampoco. En ambos
+/// casos hay que caer a `phys/scale` o los dos monitores se pintan en uno.
+fn css_viewport_usable(css_w: f64, css_h: f64, client_w: f64, client_h: f64) -> bool {
+    if css_w <= 1.0 || css_h <= 1.0 || client_w <= 1.0 || client_h <= 1.0 {
+        return false;
+    }
+    let wr = css_w / client_w;
+    let hr = css_h / client_h;
+    // 0.45 cubre DPI 200% (CSS = cliente físico / 2) y rechaza 1551/3840.
+    // 1.2 rechaza un innerWidth de dos monitores sobre un HWND de uno.
+    (0.45..=1.2).contains(&wr) && (0.45..=1.2).contains(&hr)
+}
+
+fn pick_css_viewport(
+    css_w: f64,
+    css_h: f64,
+    client_w: f64,
+    client_h: f64,
+    phys_w: f64,
+    phys_h: f64,
+    scale: f64,
+) -> (f64, f64) {
+    let fallback = || {
+        let s = scale.max(0.01);
+        (phys_w / s, phys_h / s)
+    };
+    if client_w <= 1.0 || client_h <= 1.0 {
+        if css_w > 1.0 && css_h > 1.0 {
+            return (css_w, css_h);
+        }
+        return fallback();
+    }
+    if css_viewport_usable(css_w, css_h, client_w, client_h) {
+        return (css_w, css_h);
+    }
+    fallback()
+}
+
 fn css_viewport_size(phys_w: f64, phys_h: f64) -> (f64, f64) {
     let w = f64::from_bits(CSS_VIEW_W_BITS.load(Ordering::Acquire));
     let h = f64::from_bits(CSS_VIEW_H_BITS.load(Ordering::Acquire));
-    if w > 1.0 && h > 1.0 {
-        return (w, h);
-    }
     let scale = f64::from_bits(OVERLAY_SCALE_BITS.load(Ordering::Acquire)).max(0.01);
-    (phys_w / scale, phys_h / scale)
+    #[cfg(windows)]
+    {
+        let (cw, ch) = client_size_physical().unwrap_or((0.0, 0.0));
+        return pick_css_viewport(w, h, cw, ch, phys_w, phys_h, scale);
+    }
+    #[cfg(not(windows))]
+    {
+        if w > 1.0 && h > 1.0 {
+            return (w, h);
+        }
+        (phys_w / scale, phys_h / scale)
+    }
 }
 
 /// Extensión física del overlay para mapear cursor / hogar / monitores.
@@ -1925,6 +2057,11 @@ fn resolve_physical_extent(
     scale: f64,
 ) -> (f64, f64) {
     if stored_w > 1.0 && stored_h > 1.0 {
+        // HWND recortado (un monitor) con stored del escritorio dual: si se
+        // usa stored, el centro cae en el canto visible y "no hay 2ª pantalla".
+        if client_w > 1.0 && stored_w > client_w * 1.35 {
+            return (client_w, client_h);
+        }
         return (stored_w, stored_h);
     }
     if css_w > 1.0 && (client_w - css_w).abs() < 4.0 && (client_h - css_h).abs() < 4.0 {
@@ -2583,8 +2720,9 @@ pub fn overlay_rect(app: AppHandle) -> Option<OverlayRect> {
 #[cfg(test)]
 mod tests {
     use super::{
-        desired_click_through, extent_matches, lparam_screen_point, map_client_to_css,
-        map_css_to_client, resolve_physical_extent, should_arm,
+        css_viewport_usable, desired_click_through, extent_matches, lparam_screen_point,
+        map_client_to_css, map_css_to_client, pick_css_viewport, resolve_physical_extent,
+        should_arm,
     };
 
     #[test]
@@ -2633,6 +2771,13 @@ mod tests {
     }
 
     #[test]
+    fn physical_extent_distrusts_stored_when_hwnd_is_clipped() {
+        let (pw, ph) = resolve_physical_extent(3840.0, 1080.0, 1920.0, 1080.0, 1920.0, 1080.0, 1.0);
+        assert!((pw - 1920.0).abs() < 0.01);
+        assert!((ph - 1080.0).abs() < 0.01);
+    }
+
+    #[test]
     fn overlay_arms_pill_even_over_main() {
         assert!(!should_arm(false, false, false, false, false));
         assert!(should_arm(false, false, true, false, false));
@@ -2666,5 +2811,26 @@ mod tests {
         assert!(extent_matches(-1536, -1920, 1.25));
         assert!(!extent_matches(1920, 3840, 1.25));
         assert!(!extent_matches(0, 3840, 1.0));
+    }
+
+    #[test]
+    fn css_viewport_rejects_boot_letterbox_and_clipped_hwnd() {
+        // Recuadro chico WebView2 vs escritorio dual.
+        assert!(!css_viewport_usable(1551.0, 864.0, 3840.0, 1080.0));
+        // Tras una llamada: innerWidth de dos monitores, HWND de uno.
+        assert!(!css_viewport_usable(3840.0, 1080.0, 1920.0, 1080.0));
+        // DPI 125%: CSS DIP, cliente físico.
+        assert!(css_viewport_usable(3072.0, 864.0, 3840.0, 1080.0));
+        assert!(css_viewport_usable(1920.0, 1080.0, 1920.0, 1080.0));
+    }
+
+    #[test]
+    fn pick_css_falls_back_when_webview_lied() {
+        let (w, h) = pick_css_viewport(3840.0, 1080.0, 1920.0, 1080.0, 3840.0, 1080.0, 1.0);
+        assert!((w - 3840.0).abs() < 0.01);
+        assert!((h - 1080.0).abs() < 0.01);
+        let (w, h) = pick_css_viewport(3072.0, 864.0, 3072.0, 864.0, 3840.0, 1080.0, 1.25);
+        assert!((w - 3072.0).abs() < 0.01);
+        assert!((h - 864.0).abs() < 0.01);
     }
 }

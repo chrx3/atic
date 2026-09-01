@@ -183,10 +183,7 @@ pub fn ocr_capture_and_copy(state: State<AppState>, path: String) -> Result<Stri
         ));
     }
     write_sidecar(&resolved, &text)?;
-    let mut clipboard = arboard::Clipboard::new().map_err(|e| e.to_string())?;
-    clipboard
-        .set_text(text.clone())
-        .map_err(|e| e.to_string())?;
+    crate::clipboard_history::set_system_text(text.clone())?;
     Ok(text)
 }
 

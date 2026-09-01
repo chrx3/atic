@@ -7,6 +7,7 @@ import {
   EDGE_WALL_FLARE,
   EDGE_WALL_OVERLAP,
   defaultPillHome,
+  geometryReseat,
   dockAxis,
   dockCandidate,
   dockedEdgeAt,
@@ -307,6 +308,57 @@ describe("defaultPillHome", () => {
     expect(defaultPillHome({ w: 40, h: 40 }, SOLO)?.at).toEqual({
       x: (1000 - 40) / 2,
       y: 0,
+    });
+  });
+});
+
+describe("geometryReseat", () => {
+  const size = PILL;
+
+  it("isla de arriba en una esquina vuelve al centro de ese canto", () => {
+    expect(
+      geometryReseat(
+        { docked: "top", size, current: at(0, 0) },
+        SOLO,
+      ),
+    ).toEqual({
+      at: { x: (1000 - 40) / 2, y: 0 },
+      edge: "top",
+    });
+  });
+
+  it("isla derecha pegada arriba va al medio vertical de la derecha", () => {
+    expect(
+      geometryReseat(
+        { docked: "right", size, current: at(960, 0) },
+        SOLO,
+      ),
+    ).toEqual({
+      at: { x: 960, y: (800 - 40) / 2 },
+      edge: "right",
+    });
+  });
+
+  it("sin acople vuelve al hogar de arriba", () => {
+    expect(
+      geometryReseat(
+        { docked: null, size, current: at(200, 200) },
+        SOLO,
+      ),
+    ).toEqual(defaultPillHome(size, SOLO));
+  });
+
+  it("coordenadas del recuadro chico no pierden el canto exterior dual", () => {
+    // La isla "derecha" quedó en el monitor izquierdo (recuadro chico).
+    // El canto derecho de ese monitor es interior: hay que ir al derecho.
+    expect(
+      geometryReseat(
+        { docked: "right", size, current: at(960, 10) },
+        DUAL,
+      ),
+    ).toEqual({
+      at: { x: 1960, y: (800 - 40) / 2 },
+      edge: "right",
     });
   });
 });

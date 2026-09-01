@@ -276,7 +276,13 @@ fn start_board_impl(app: &AppHandle) -> Result<(), String> {
     }
 
     let state = app.state::<AppState>();
-    let (path, width, height) = freeze_screen(app, &state)?;
+    // La pizarra es de UNA pantalla: la del cursor cuando se la llamó.
+    //
+    // Congelaba y cubría el escritorio virtual entero, así que en dos monitores
+    // se comía los dos: el de al lado quedaba tapado por una foto suya, sin
+    // nada que dibujar ahí y sin poder usar lo que había debajo.
+    let area = board_area();
+    let (path, width, height) = freeze_screen(app, &state, area)?;
 
     let Some(window) = app.get_webview_window(ANNOTATE_LABEL) else {
         return Err(crate::ui_lang::msg(
@@ -290,7 +296,7 @@ fn start_board_impl(app: &AppHandle) -> Result<(), String> {
         width,
         height,
         mode: AnnotateMode::Board,
-        focus: focus_monitor(),
+        focus: focus_monitor(area),
     };
     *PENDING.lock_or_recover() = Some(pending.clone());
 
@@ -298,7 +304,7 @@ fn start_board_impl(app: &AppHandle) -> Result<(), String> {
     let _ = window.set_decorations(false);
     let _ = window.set_skip_taskbar(true);
     #[cfg(windows)]
-    crate::capture_session::cover_virtual_desktop(&window);
+    crate::capture_session::cover_rect(&window, area);
 
     window.show().map_err(|e| e.to_string())?;
     let _ = window.set_always_on_top(true);
@@ -309,44 +315,64 @@ fn start_board_impl(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-/// Área útil del monitor donde está el cursor, en píxeles de la imagen.
-///
-/// El origen de la imagen es la esquina del escritorio virtual, que puede tener
-/// coordenadas negativas: por eso se le resta, y no se usa el rect tal cual.
+/// El monitor donde está el cursor. Es el que la pizarra congela y cubre.
 #[cfg(windows)]
-fn focus_monitor() -> Option<FocusRect> {
-    let vs = atic_capture::monitors::virtual_screen();
+fn board_area() -> atic_capture::Rect {
     let monitors = atic_capture::monitors::enumerate();
     let cursor = crate::floating::cursor_position();
-    let target = cursor
+    cursor
         .and_then(|(x, y)| monitors.iter().find(|m| m.bounds.contains(x, y)))
+        .or_else(|| monitors.iter().find(|m| m.is_primary))
+        .or_else(|| monitors.first())
+        .map(|m| m.bounds)
+        // Sin monitores enumerados no hay a qué recortarse: el escritorio
+        // entero es peor que nada, pero es algo.
+        .unwrap_or_else(atic_capture::monitors::virtual_screen)
+}
+
+/// Área útil dentro de la imagen congelada, en píxeles de la imagen.
+///
+/// El origen de la imagen es la esquina de `area`, que en un monitor a la
+/// izquierda del primario tiene coordenadas negativas: por eso se le resta.
+#[cfg(windows)]
+fn focus_monitor(area: atic_capture::Rect) -> Option<FocusRect> {
+    let monitors = atic_capture::monitors::enumerate();
+    let target = monitors
+        .iter()
+        .find(|m| m.bounds.x == area.x && m.bounds.y == area.y)
         .or_else(|| monitors.iter().find(|m| m.is_primary))
         .or_else(|| monitors.first())?;
     // El área útil y no los bounds: los controles no deben caer bajo la barra
     // de tareas.
-    let area = target.work_area;
+    let work = target.work_area;
     Some(FocusRect {
-        x: area.x - vs.x,
-        y: area.y - vs.y,
-        width: area.width,
-        height: area.height,
+        x: work.x - area.x,
+        y: work.y - area.y,
+        width: work.width,
+        height: work.height,
     })
 }
 
 #[cfg(not(windows))]
-fn focus_monitor() -> Option<FocusRect> {
+fn board_area() -> atic_capture::Rect {
+    atic_capture::Rect::new(0, 0, 0, 0)
+}
+
+#[cfg(not(windows))]
+fn focus_monitor(_area: atic_capture::Rect) -> Option<FocusRect> {
     None
 }
 
-/// Congela el escritorio virtual a un PNG y devuelve ruta y tamaño físico.
+/// Congela `area` a un PNG y devuelve ruta y tamaño físico.
 #[cfg(windows)]
 fn freeze_screen(
     app: &AppHandle,
     state: &State<AppState>,
+    area: atic_capture::Rect,
 ) -> Result<(std::path::PathBuf, u32, u32), String> {
-    use atic_capture::{engine, monitors};
+    use atic_capture::engine;
 
-    let vs = monitors::virtual_screen();
+    let vs = area;
     // Sin cursor, al revés que en una captura: en la pizarra el puntero es la
     // herramienta, y dejarlo dibujado sería un puntero de más en la pantalla.
     let mut frame = engine::capture_rect(vs, false).map_err(|e| e.to_string())?;
@@ -376,6 +402,7 @@ fn freeze_screen(
 fn freeze_screen(
     _app: &AppHandle,
     _state: &State<AppState>,
+    _area: atic_capture::Rect,
 ) -> Result<(std::path::PathBuf, u32, u32), String> {
     Err(crate::ui_lang::msg(
         "La pizarra todavía no existe en esta plataforma.",
@@ -495,6 +522,7 @@ pub fn save_annotation(
     let _ = crate::capture_shelf::show_shelf(&app, None);
     match item {
         Some(item) => {
+            crate::clipboard_history::record_saved_capture(&app, &item);
             let _ = app.emit("screenshot-created", item);
         }
         None => {
@@ -506,8 +534,14 @@ pub fn save_annotation(
 
 /// Copia lo anotado al portapapeles como imagen.
 #[tauri::command]
-pub fn copy_annotation(data: String) -> Result<(), String> {
+pub fn copy_annotation(app: AppHandle, data: String) -> Result<(), String> {
     let bytes = decode_png(&data)?;
+    // Hay que archivar ANTES de escribir el portapapeles: si no, una captura
+    // reciente del mismo tamaño hace que el watcher trague el dibujo y no
+    // aparezca en el historial.
+    if let Ok((width, height)) = atic_capture::encoding::png_dimensions(&bytes) {
+        crate::clipboard_history::record_copied_png(&app, &bytes, width, height);
+    }
     crate::capture::copy_png_bytes(&bytes)
 }
 

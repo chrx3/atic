@@ -127,6 +127,42 @@ fn apply_terminal_color_env(cmd: &mut CommandBuilder) {
     cmd.env("FORCE_COLOR", "1");
 }
 
+/// ¿Variable de config de scripts npm/pnpm que el hijo no debe heredar?
+///
+/// Bajo `pnpm dev` el padre exporta `npm_config_*` y compañía; si la consola
+/// las hereda, un `npm install -g` instala dentro del proyecto en vez del
+/// prefix global. Case-insensitive: npm en Windows también lee `NPM_CONFIG_*`.
+fn is_script_env_var(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower.starts_with("npm_config_")
+        || lower.starts_with("npm_lifecycle_")
+        || lower.starts_with("npm_package_")
+        || lower == "npm_execpath"
+        || lower == "pnpm_script_src_dir"
+        || lower == "node_run_script_name"
+}
+
+/// Quita del hijo la config de scripts npm/pnpm heredada del proceso padre:
+/// la consola debe comportarse como una terminal recién abierta. No toca PATH
+/// ni el resto del entorno.
+fn apply_clean_script_env(cmd: &mut CommandBuilder) {
+    for (name, _) in std::env::vars_os() {
+        if let Some(name) = name.to_str() {
+            if is_script_env_var(name) {
+                cmd.env_remove(name);
+            }
+        }
+    }
+}
+
+/// El hijo ve el PATH fresco (proceso + registro): un CLI recién instalado
+/// resuelve en una consola nueva sin reiniciar Atic.
+fn apply_fresh_path(cmd: &mut CommandBuilder) {
+    if let Some(path) = super::exe::merged_path_var() {
+        cmd.env("PATH", path);
+    }
+}
+
 fn quote_cmd(s: &str) -> String {
     if s.bytes()
         .any(|b| b.is_ascii_whitespace() || matches!(b, b'"' | b'&' | b'^' | b'%'))
@@ -365,6 +401,8 @@ pub fn console_open(
         _ => unreachable!("kind ya validado"),
     };
     apply_terminal_color_env(&mut cmd);
+    apply_clean_script_env(&mut cmd);
+    apply_fresh_path(&mut cmd);
 
     let pty_system = native_pty_system();
     let pair = pty_system
@@ -466,4 +504,27 @@ pub fn console_gc(keep: Vec<String>) -> Result<u32, String> {
         close_session(id);
     }
     Ok(stale.len() as u32)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn filters_npm_pnpm_script_vars() {
+        // Las que dejaba pnpm dev y redirigian el prefix global de npm.
+        assert!(is_script_env_var("npm_config_dir"));
+        assert!(is_script_env_var("NPM_CONFIG_PREFIX"));
+        assert!(is_script_env_var("npm_config__jsr-registry"));
+        assert!(is_script_env_var("npm_lifecycle_event"));
+        assert!(is_script_env_var("npm_package_json"));
+        assert!(is_script_env_var("npm_execpath"));
+        assert!(is_script_env_var("PNPM_SCRIPT_SRC_DIR"));
+        assert!(is_script_env_var("NODE_RUN_SCRIPT_NAME"));
+        // El resto del entorno queda intacto.
+        assert!(!is_script_env_var("PATH"));
+        assert!(!is_script_env_var("NODE_ENV"));
+        assert!(!is_script_env_var("npmrc"));
+        assert!(!is_script_env_var("NPM_TOKEN"));
+    }
 }

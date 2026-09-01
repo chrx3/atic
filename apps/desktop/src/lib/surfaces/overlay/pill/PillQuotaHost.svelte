@@ -9,37 +9,70 @@
    * comparte campo con la isla y nace un cuello entre las dos: se lee como que
    * la pill se estiró para mostrar algo, que es lo que de verdad pasó.
    *
-   * De ahí que acá NO haya `background`, `border` ni `box-shadow`. La silueta la
-   * pinta `Skin` desde `OverlaySurface`, y una caja propia encima se vería como
-   * un parche rectangular sobre el blob. Este archivo aporta la geometría (por
-   * `publishEmergeSkin`) y el contenido; el color es de la piel.
+   * De ahí que acá NO haya `background` propio: lo pinta `Skin`. El
+   * `data-float` sí recibe `--skin` opaco en reposo (regla de OverlaySurface),
+   * y sin `border-radius` ese fill era un rectángulo sobre el blob. Por eso
+   * el radio coincide con `CORNER`, y va `is-joined` para no pintar el
+   * rectángulo encima del hilo.
    *
-   * # El hueco no es decorativo
+   * # Es de hover y nada más
    *
-   * `GAP` tiene que quedar por debajo de `REACH` o el cuello no cruza y vuelven
-   * a ser dos formas sueltas. Con `BLEND = 24`, `REACH` son 12 px.
+   * No se fija, no se arrastra y no se estira: aparece mientras el puntero
+   * está en la herramienta, y se va. Un panel que se quedaba pedía todo lo
+   * demás —marco propio, tamaño a mano, un modo compacto para cuando el marco
+   * no daba— y cada una de esas piezas era una forma de que el panel se viera
+   * distinto de la isla de la que nace.
    *
    * # Montaje
    *
    * Va en `OverlaySurface`, junto a los floats, y no dentro de `PillSurface`:
-   * ahí el filtro del goo se volvería el bloque contenedor de su `fixed`, y el
-   * panel quedaría posicionado contra la pill en vez de contra el viewport.
+   * ahí el filtro del goo se volvería el bloque contenedor de su `fixed`.
    *
    * El gesto y la temporización están en `quotaHover.svelte.ts`.
    */
-  import { REACH } from "$liquid/constants";
   import AgentLogo from "$features/agents/AgentLogo.svelte";
   import { t } from "$domain/i18n.svelte";
   import { agentQuotas } from "$domain/agentQuotas.svelte";
+  import { config } from "$domain/config.svelte";
+  import { sessionEffect } from "$domain/session";
+  import { isAgentShown } from "$features/agents/agentCatalog";
+  import { boxShape, stemBetween } from "$liquid/geometry";
   import { liquid } from "$surfaces/overlay/group.svelte";
-  import { publishEmergeSkin } from "$surfaces/overlay/floatEmergeSkin";
-  import { quotaRows, spanFrom, type QuotaRow, type WindowLabel } from "./pillQuota";
-  import { quotaHoverState } from "./quotaHover.svelte";
+  import {
+    placeBesidePill,
+    placeOnSide,
+    unionRects,
+  } from "$surfaces/overlay/floatPlace";
+  import {
+    publishMeasuredSkin,
+    rectKey,
+  } from "$surfaces/overlay/floatEmergeSkin";
+  import { surfaces } from "$surfaces/overlay/surfaces.svelte";
+  import {
+    quotaRows,
+    spanFrom,
+    type QuotaBar,
+    type QuotaRow,
+  } from "./pillQuota";
+  import {
+    enterQuotaPanel,
+    leaveQuotaPanel,
+    quotaHoverState,
+  } from "./quotaHover.svelte";
 
   /** Radio de la silueta. El mismo de los otros floats. */
   const CORNER = 20;
-  /** Hueco al botón. Por debajo de `REACH` para que el cuello cruce. */
-  const GAP = Math.round(REACH * 0.7);
+  /**
+   * Aire isla→panel: el largo del cuello.
+   *
+   * Es el número que decide si el efecto se ve. Pegados no hay cuello que
+   * mirar —dos gotas a 8 px se funden en un bulto sin cintura—, y lejos el
+   * hilo se lee como un alambre entre dos cajas. Con 14 el cuello es corto y
+   * gordo, y el `smin` filetea las dos juntas: eso es lo que se lee líquido.
+   */
+  const GAP = 14;
+  /** Radio del hilo. Un cuello flaco es un alambre por más filete que tenga. */
+  const STEM_R = 6;
   /** Margen mínimo contra el borde de la ventana. */
   const EDGE = 6;
   /** `--morph-close-dur`: cuánto dura el repliegue antes de desmontar. */
@@ -58,19 +91,32 @@
   let alive = $state(false);
   /** Abierto del todo. Es la clase que dispara el morph. */
   let shown = $state(false);
+  /** Reloj para «corta en X» y lo stale, vivo mientras el panel está montado. */
+  let now = $state(0);
 
-  const rows = $derived(quotaRows(agentQuotas.overview));
-  const now = $derived(quotaHoverState.open ? Date.now() : 0);
+  // Los agentes elegidos en Ajustes mandan también acá: es una sola lista de
+  // «con qué agentes trabajo», no una preferencia por pantalla.
+  $effect(() => sessionEffect(["config"]));
+
+  const agentsShown = $derived(config.current?.agents_shown ?? []);
+  const rows = $derived(
+    quotaRows(agentQuotas.overview, now).filter((row) =>
+      isAgentShown(row.agent, agentsShown),
+    ),
+  );
 
   function spanText(ms: number): string {
     const span = spanFrom(ms);
     return `${span.value} ${t(`pill.quota.unit.${span.unit}`)}`;
   }
 
-  function windowText(win: WindowLabel, minutes: number | null): string {
-    if (win !== "custom") return t(`pill.quota.window.${win}`);
-    if (minutes == null) return t("pill.quota.window.unknown");
-    return spanText(minutes * 60_000);
+  function windowText(bar: QuotaBar): string {
+    if (bar.window === "model") {
+      return t("pill.quota.window.modelWeek", { model: bar.model ?? "" });
+    }
+    if (bar.window !== "custom") return t(`pill.quota.window.${bar.window}`);
+    if (bar.minutes == null) return t("pill.quota.window.unknown");
+    return spanText(bar.minutes * 60_000);
   }
 
   /** Plan tal como lo guarda el proveedor (`max 20x`, `pro_plus`, `plus`). */
@@ -100,8 +146,7 @@
    * Solo lee `quotaHoverState.open` y solo escribe `alive` / `shown` /
    * `placed`. Preguntar acá por `alive` —«si ya está cerrado, no hagas nada»—
    * sería leer y escribir el mismo estado en un efecto, que es como se rompió
-   * la primera versión. El costo de no preguntar es un `setTimeout` de más al
-   * arrancar, que no hace nada.
+   * la primera versión.
    */
   $effect(() => {
     if (quotaHoverState.open) {
@@ -116,123 +161,171 @@
     return () => clearTimeout(timer);
   });
 
-  /**
-   * Coloca el panel hacia adentro de la pantalla.
-   *
-   * La isla solo existe acoplada a un canto, así que el borde más cercano al
-   * botón ES el canto donde vive la pill: el panel va al lado opuesto, o
-   * nacería fuera de la pantalla. `side` es el lado del panel que mira a la
-   * pill, que es lo que `.float-emerge` toma como origen del morph.
-   */
+  $effect(() => {
+    if (!alive) return;
+    now = Date.now();
+    const timer = setInterval(() => {
+      now = Date.now();
+    }, 1_000);
+    return () => clearInterval(timer);
+  });
+
+  /** Coloca el panel hacia adentro de la pantalla. */
   $effect(() => {
     const anchor = quotaHoverState.anchor;
-    // Dependencias explícitas: el contenido cambia el tamaño medido.
     void rows.length;
     void quotaHoverState.fallback;
     void agentQuotas.loading;
-    if (!alive || !anchor || !el) {
+    if (!alive || !el) {
       placed = false;
       return;
     }
-    // `offsetWidth/Height` y no `getBoundingClientRect()`: el morph de
-    // `.float-emerge` arranca en `scale(0.55)`, y el rect devuelve la medida
-    // YA escalada. Colocando con ese número el panel se recortaba contra un
-    // ancho que no era el suyo y terminaba saliéndose de la pantalla al
-    // llegar a tamaño completo. La caja de layout ignora el transform.
+    if (!anchor) {
+      placed = false;
+      return;
+    }
     const bw = el.offsetWidth;
     const bh = el.offsetHeight;
     if (bw <= 0 || bh <= 0) {
       placed = false;
       return;
     }
+    const pill = surfaces.live["pill"];
+    const skin = surfaces.live["pill-skin"];
+    void pill?.x;
+    void pill?.y;
+    void pill?.w;
+    void pill?.h;
+    void skin?.x;
+    void skin?.y;
+    void skin?.w;
+    void skin?.h;
+    // La rueda es más grande que el disco: anclar al disco dejaba el panel
+    // debajo de los gajos y el hover ciclaba (el panel robaba el mouse).
+    const face = unionRects([pill, skin, anchor]);
+    if (!face) {
+      placed = false;
+      return;
+    }
+    // El panel sale por el lado largo de la isla.
+    //
+    // `placeBesidePill` prueba siempre abajo primero, y acoplada a un canto la
+    // isla está parada: el panel se iba al pie de la pantalla, a 300 px de la
+    // herramienta que lo abrió y con el hilo cruzando media pantalla. Parada,
+    // el hueco está al costado.
+    //
+    // La orientación se pregunta a la PIEL y no a la unión: `pill` es la caja
+    // exterior —el respiro de la rueda— y es ancha aunque la isla esté parada.
+    // Acoplada, además, es contra la piel que hay que medir el hueco, o el
+    // cuello nace con el ancho de un respiro que no se ve.
+    const shape = skin ?? face;
+    const at =
+      shape.h > shape.w * 1.2
+        ? placeOnSide(
+            shape,
+            // `side` es el lado del panel que mira a la isla: «right» lo pone
+            // a la izquierda de ella.
+            shape.x - GAP - bw - EDGE >= 0 ? "right" : "left",
+            { w: bw, h: bh },
+            { gap: GAP, corner: CORNER },
+          )
+        : placeBesidePill(face, { w: bw, h: bh }, { gap: GAP, corner: CORNER });
+
+    // El lado y el «hacia afuera» salen de la isla entera —así el panel
+    // despeja la rueda—, pero sobre el eje paralelo manda el botón: el panel
+    // cae debajo de la herramienta que lo abrió, que es de donde el usuario lo
+    // llamó y a donde vuelve el cuello. Pegado al canto de la isla, que es lo
+    // que hace `placeBesidePill` sola, el hilo salía de un botón y el panel
+    // aparecía a media pantalla de distancia.
+    const acx = anchor.x + anchor.w / 2;
+    const acy = anchor.y + anchor.h / 2;
     const vw = window.innerWidth;
     const vh = window.innerHeight;
-    const cx = anchor.x + anchor.w / 2;
-    const cy = anchor.y + anchor.h / 2;
+    const horizontal = at.side === "top" || at.side === "bottom";
+    const nx = horizontal
+      ? Math.min(Math.max(acx - bw / 2, EDGE), Math.max(EDGE, vw - bw - EDGE))
+      : at.x;
+    const ny = horizontal
+      ? at.y
+      : Math.min(Math.max(acy - bh / 2, EDGE), Math.max(EDGE, vh - bh - EDGE));
+    const alongPct = horizontal
+      ? ((acx - nx) / Math.max(bw, 1)) * 100
+      : ((acy - ny) / Math.max(bh, 1)) * 100;
 
-    const room = { left: cx, right: vw - cx, top: cy, bottom: vh - cy };
-    const dock = (Object.keys(room) as (keyof typeof room)[]).reduce((a, b) =>
-      room[a] <= room[b] ? a : b,
-    );
-
-    // Todo en locales y una sola escritura al final. Leer `x` para recortarlo
-    // (`x = clamp(x)`) es leer y escribir el mismo estado dentro de un efecto:
-    // Svelte corta la actualización y el panel se queda a medio abrir. Pasó.
-    let nx: number;
-    let ny: number;
-    if (dock === "left" || dock === "right") {
-      nx = dock === "left" ? anchor.x + anchor.w + GAP : anchor.x - bw - GAP;
-      ny = cy - bh / 2;
-    } else {
-      ny = dock === "top" ? anchor.y + anchor.h + GAP : anchor.y - bh - GAP;
-      nx = cx - bw / 2;
-    }
-
-    nx = Math.min(Math.max(nx, EDGE), Math.max(EDGE, vw - bw - EDGE));
-    ny = Math.min(Math.max(ny, EDGE), Math.max(EDGE, vh - bh - EDGE));
-
-    // El cuello se mide contra la posición YA recortada: calculado antes,
-    // apuntaría a donde el panel habría estado si hubiera entrado entero.
-    const along =
-      dock === "left" || dock === "right"
-        ? ((cy - ny) / Math.max(bh, 1)) * 100
-        : ((cx - nx) / Math.max(bw, 1)) * 100;
-
-    side = dock;
+    side = at.side;
     x = nx;
     y = ny;
-    tail = Math.min(Math.max(along, 0), 100);
+    tail = Math.min(Math.max(alongPct, 0), 100);
     placed = true;
   });
 
-  // El morph necesita un cuadro entre «montado en su sitio» y «abierto», o el
-  // navegador pinta el estado final sin transición.
   $effect(() => {
     if (!placed) return;
     const raf = requestAnimationFrame(() => (shown = true));
     return () => cancelAnimationFrame(raf);
   });
 
-  // La silueta, para que el campo de distancia la funda con la isla.
+  $effect(() => (shown && el ? surfaces.add("quota", el) : undefined));
+
   $effect(() => {
     if (!alive || !el) {
       liquid.publish("quota", []);
       return;
     }
-    // Despierta el seguimiento en los dos morphs: al abrir y al replegar.
     void shown;
     void placed;
     void x;
     void y;
-    // Y también cuando cambia el contenido, que llega después del morph: los
-    // cupos se consultan al abrir, y `publishEmergeSkin` deja de seguir el
-    // rect en cuanto queda quieto. Con el panel acoplado arriba, crecer de
-    // «Leyendo cupos…» a las filas no mueve `x` ni `y` —el ancho se queda en
-    // `min-width` y el borde de arriba está clavado al botón—, así que sin
-    // estas dependencias la silueta se quedaba con la altura del cargando.
     void rows.length;
     void quotaHoverState.fallback;
     void agentQuotas.loading;
-    return publishEmergeSkin("quota", el, CORNER);
+    const anchor = quotaHoverState.anchor;
+    const stemSide = side;
+    const host = el;
+    return publishMeasuredSkin("quota", () => {
+      const r = host.getBoundingClientRect();
+      if (r.width <= 0 || r.height <= 0) {
+        return { key: "empty", shapes: [] };
+      }
+      const layoutW = host.offsetWidth || r.width;
+      const layoutH = host.offsetHeight || r.height;
+      const k = Math.min(
+        r.width / Math.max(layoutW, 1),
+        r.height / Math.max(layoutH, 1),
+        1,
+      );
+      const rect = { x: r.x, y: r.y, w: r.width, h: r.height };
+      const shapes = [boxShape(rect, CORNER * k)];
+      // Del mismo ancla del que se colocó el panel: el hilo sale del botón y
+      // cae sobre el panel que está justo debajo. Contra el canto de la
+      // pantalla el panel se corre y el centro del botón puede quedarse
+      // afuera; de eso se encarga `stemBetween`, que lo trae al solape.
+      if (anchor) {
+        const stem = stemBetween(anchor, rect, stemSide, STEM_R);
+        if (stem) shapes.push(stem);
+      }
+      return { key: `${rectKey(rect)}:${stemSide}`, shapes };
+    });
   });
 
-  // Desmontar la superficie no puede dejar la gota publicada: el Skin la
-  // seguiría dibujando sin nadie que la mueva.
   $effect(() => () => liquid.publish("quota", []));
 </script>
 
 {#if alive}
-  <!-- `aria-hidden`: es un apoyo visual del hover. El botón que lo abre ya
-       lleva su propio nombre accesible. -->
   <div
-    class="q-panel float-emerge"
+    class="q-panel float-emerge is-joined"
     class:is-shown={shown}
     data-side={side}
+    data-quota-panel
+    data-float="quota"
     style:left="{x}px"
     style:top="{y}px"
     style:--tail="{tail}%"
+    style:--float-stack={surfaces.stack("quota")}
     bind:this={el}
     aria-hidden="true"
+    onpointerenter={enterQuotaPanel}
+    onpointerleave={leaveQuotaPanel}
   >
     {#if rows.length > 0}
       <div class="q-rows">
@@ -256,9 +349,13 @@
               <div class="q-note">{spendText(row)}</div>
             {/if}
 
-            {#each row.bars as bar (bar.window + bar.minutes)}
+            <!-- El modelo entra a la clave: dos semanales «model» del mismo
+                 largo (Antigravity: Gemini y Claude+GPT) colisionaban y Svelte
+                 tiraba each_key_duplicate, dejando el panel en «Leyendo…».
+                 `resetsAt` desempata dos custom del mismo largo sin modelo. -->
+            {#each row.bars as bar (bar.window + (bar.model ?? "") + bar.minutes + (bar.resetsAt ?? ""))}
               <div class="q-bar">
-                <span class="q-win">{windowText(bar.window, bar.minutes)}</span>
+                <span class="q-win">{windowText(bar)}</span>
                 <span class="q-track">
                   <span
                     class="q-fill is-{bar.tone}"
@@ -286,27 +383,44 @@
 
 <style>
   /*
-   * Sin fondo, sin borde y sin sombra: los pinta `Skin` sobre la silueta ya
-   * fundida con la isla. Ver la cabecera del componente.
+   * Sin fondo propio: lo pinta `Skin`. El radio tiene que coincidir con
+   * `CORNER` porque OverlaySurface pinta `--skin` opaco en `[data-float]`
+   * cuando no está `is-joined`; sin radio ese fill era el rectángulo cuadrado
+   * que se veía detrás del blob.
    */
   .q-panel {
     position: fixed;
-    z-index: var(--z-overlay-float, 100);
+    z-index: calc(var(--z-overlay-float, 100) + var(--float-stack, 0));
+    box-sizing: border-box;
     min-width: 13rem;
     max-width: 22rem;
-    padding: 0.46rem 0.6rem;
+    padding: 0.4rem 0.45rem 0.46rem 0.6rem;
+    overflow: hidden;
+    border-radius: 20px;
     background: transparent;
     color: var(--text);
     font-size: 0.72rem;
     line-height: 1.3;
-
-    /* Duro, y también contra `.float-emerge.is-shown`, que lo pone en `auto`:
-       el puntero se queda en el botón que abrió el panel. Si el panel tomara
-       el mouse, el puntero saldría del botón, el hover se cortaría y el panel
-       se cerraría solo. */
-    pointer-events: none !important;
   }
 
+  /*
+   * `.float-emerge.is-shown` arma pointer-events al toque, a mitad del
+   * scale. El recuadro de layout ya es el final: robaba el mouse al botón
+   * (isla) o al gajo (rueda) y el panel se quedaba abierto o ciclaba.
+   */
+  .q-panel.float-emerge.is-shown {
+    pointer-events: none;
+    animation: q-enable-hit 0s linear var(--float-open-dur) forwards;
+  }
+
+  @keyframes q-enable-hit {
+    to {
+      pointer-events: auto;
+    }
+  }
+
+  /* Sin `overflow`: el panel crece con las filas. Una lista de cupos con
+     scroll es pedir que arrastren para ver el dato por el que la abrieron. */
   .q-rows {
     display: flex;
     flex-direction: column;
@@ -324,8 +438,6 @@
   }
 
   .q-meta {
-    /* Empuja el plan contra el canto derecho sin un `justify` que también
-       separaría el logo del nombre. */
     margin-left: auto;
     color: var(--faint);
     font-size: 0.66rem;
@@ -344,10 +456,6 @@
   .q-bar {
     display: grid;
     align-items: center;
-
-    /* Cuatro columnas fijas y no `auto`: con anchos que dependan del texto,
-       las barras de dos agentes distintos no arrancan en la misma x y el
-       panel deja de leerse como una tabla. */
     grid-template-columns: 4.2rem 1fr 2.1rem 2.1rem;
     gap: 0.34rem;
   }
@@ -366,9 +474,6 @@
     height: 0.28rem;
     overflow: hidden;
     border-radius: 999px;
-
-    /* El canal va sobre la piel, no sobre un fondo propio: se oscurece la piel
-       misma para que el surco parezca hundido en la gota. */
     background: color-mix(in sRGB, var(--text) 14%, transparent);
   }
 
@@ -391,5 +496,12 @@
     text-align: right;
     font-size: 0.68rem;
     font-variant-numeric: tabular-nums;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .q-panel.float-emerge.is-shown {
+      pointer-events: auto;
+      animation: none;
+    }
   }
 </style>

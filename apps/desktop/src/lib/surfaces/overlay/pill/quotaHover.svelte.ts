@@ -11,8 +11,8 @@
  * # Por qué no es un `use:tip`
  *
  * Es el mismo gesto y casi el mismo globo, pero el contenido no es texto: son
- * barras, tonos y una fila que se dibuja distinta porque su proveedor no
- * publica cupo. `tipState` guarda un `string` y lo pintan ~50 anclas; meterle
+ * barras, tonos y una fila que a veces lleva on-demand porque Cursor cobra
+ * extra. `tipState` guarda un `string` y lo pintan ~50 anclas; meterle
  * una variante rica obligaría a tocar el camino de todas ellas para servir a
  * una sola.
  *
@@ -24,11 +24,11 @@
  * si el panel apareciera con otro ritmo que los tooltips de al lado, la pill
  * tendría dos velocidades de hover para el mismo gesto.
  *
- * # Por qué no hace falta hit-rect
+ * # Hit-rect
  *
- * El overlay es click-through salvo en los rectángulos que publica. El panel
- * se dibuja con `pointer-events: none` y el puntero nunca lo pisa —se queda en
- * el botón, que sí es zona viva—, así que no hay nada que registrar.
+ * El puntero se queda en el botón, pero el panel publica hit-rect y puede
+ * tomar el mouse: quien baja a leerlo lo mantiene abierto. Por eso la gracia
+ * corta al salir del botón —cruzar el hueco no puede cerrarlo—.
  */
 import { agentQuotas } from "$domain/agentQuotas.svelte";
 
@@ -42,6 +42,7 @@ class QuotaHoverState {
   fallback = $state("");
 
   show(anchor: QuotaAnchor, fallback: string) {
+    cancelHide();
     this.anchor = anchor;
     this.fallback = fallback;
     this.open = true;
@@ -57,18 +58,53 @@ export const quotaHoverState = new QuotaHoverState();
 
 /** Espera antes de aparecer, en frío. Gemela de `SHOW_DELAY_MS` en `tip`. */
 const SHOW_DELAY_MS = 450;
+/** Tiempo para cruzar el hueco isla→panel y llegar al pin. */
+const HIDE_GRACE_MS = 400;
 
 let timer = 0;
+let hideTimer = 0;
 let owner: HTMLElement | null = null;
 let globalsInstalled = false;
 
-function hideNow() {
+function cancelHide() {
+  if (hideTimer) {
+    clearTimeout(hideTimer);
+    hideTimer = 0;
+  }
+}
+
+function cancelShow() {
   if (timer) {
     clearTimeout(timer);
     timer = 0;
   }
+}
+
+function hideNow() {
+  cancelHide();
+  cancelShow();
   owner = null;
   quotaHoverState.hide();
+}
+
+function scheduleHide() {
+  cancelHide();
+  hideTimer = window.setTimeout(() => {
+    hideTimer = 0;
+    hideNow();
+  }, HIDE_GRACE_MS);
+}
+
+export function enterQuotaPanel() {
+  cancelHide();
+}
+
+export function leaveQuotaPanel() {
+  scheduleHide();
+}
+
+function onKey(event: KeyboardEvent) {
+  if (event.key === "Escape") hideNow();
 }
 
 /**
@@ -81,6 +117,7 @@ function installGlobals() {
   globalsInstalled = true;
   window.addEventListener("pointerdown", hideNow, true);
   window.addEventListener("wheel", hideNow, true);
+  window.addEventListener("keydown", onKey, true);
   window.addEventListener("blur", hideNow);
 }
 
@@ -97,12 +134,16 @@ export function quotaHover(node: HTMLElement, fallback: string | null) {
 
   const open = () => {
     if (!current) return;
-    if (timer) clearTimeout(timer);
+    cancelHide();
+    cancelShow();
     // Se pide apenas entra el puntero, no al abrirse: los 450 ms de espera
     // son justo el tiempo que tarda la consulta, así que el panel abre lleno.
     void agentQuotas.ensure();
     timer = window.setTimeout(() => {
       timer = 0;
+      // El overlay es click-through fuera de la pill: a veces el leave no
+      // llega y este timer abriría el panel sobre el escritorio.
+      if (!node.isConnected || !node.matches(":hover")) return;
       owner = node;
       const box = node.getBoundingClientRect();
       quotaHoverState.show(
@@ -113,7 +154,10 @@ export function quotaHover(node: HTMLElement, fallback: string | null) {
   };
 
   const close = () => {
-    if (owner === node || owner === null) hideNow();
+    // Como `use:tip`: salir cancela la apertura. Si no, el timer dispara
+    // después y el panel queda abierto sin mouse encima.
+    cancelShow();
+    if (owner === node || owner === null) scheduleHide();
   };
 
   node.addEventListener("pointerenter", open);
@@ -123,7 +167,7 @@ export function quotaHover(node: HTMLElement, fallback: string | null) {
     update(next: string | null) {
       current = (next ?? "").trim();
       if (!current) {
-        close();
+        hideNow();
         return;
       }
       if (owner === node && quotaHoverState.open) {
@@ -133,9 +177,9 @@ export function quotaHover(node: HTMLElement, fallback: string | null) {
     destroy() {
       node.removeEventListener("pointerenter", open);
       node.removeEventListener("pointerleave", close);
-      // El botón se va del DOM al cerrarse la isla; el panel no puede
-      // quedar flotando sobre su hueco.
-      close();
+      // El botón se va del DOM al cerrarse la isla; el panel no puede quedar
+      // flotando sobre su hueco.
+      hideNow();
     },
   };
 }

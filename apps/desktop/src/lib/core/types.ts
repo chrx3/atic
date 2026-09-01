@@ -130,6 +130,13 @@ export interface AppConfig {
   pill_tools: string[];
   /** Herramientas detrás del gajo «Más». Vacío = no hay submenú. */
   pill_more_tools: string[];
+  /**
+   * Agentes a la vista, en el lanzador y en el panel de cupos. Vacío = todos.
+   *
+   * Una sola lista para los dos sitios: se elige con qué agentes se trabaja,
+   * no qué agente se ve en cada pantalla.
+   */
+  agents_shown: string[];
   /** Hosts SSH para agentes remotos (sin secretos). */
   ssh_hosts: SshHost[];
 }
@@ -886,7 +893,7 @@ export interface QuotaWindow {
   resetsAt: number | null;
 }
 
-/** Consumo sin techo conocido. Hoy solo Cursor. */
+/** Consumo on-demand, sin techo conocido. Hoy solo Cursor. */
 export interface QuotaSpend {
   cents: number;
   periodEnd: number | null;
@@ -896,7 +903,7 @@ export interface AgentQuota {
   /** `claude` | `codex` | `opencode` | `cursor-agent`. */
   agent: string;
   plan: string | null;
-  /** Vacío = el proveedor no publica cupo (se pinta sin barra). */
+  /** Vacío = el proveedor no publica cupo, o Cursor cayó al fallback. */
   windows: QuotaWindow[];
   spend: QuotaSpend | null;
   /** Epoch ms del dato. Puede ser viejo: Codex se lee del disco. */

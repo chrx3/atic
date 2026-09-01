@@ -71,6 +71,12 @@ windows-sys = { version = "0.59", features = [
     # Formatos del portapapeles: saber si lo copiado pide no ser archivado.
     "Win32_System_DataExchange",
     "Win32_System_Memory",
+    # Init de COM en el hilo bloqueante que extrae iconos del launcher.
+    "Win32_System_Com",
+    # PATH fresco del registro para resolver CLIs recién instalados.
+    "Win32_System_Registry",
+    # Leer la credencial de Antigravity (agy) del Credential Manager.
+    "Win32_Security_Credentials",
 ] }
 # Misma versión que trae Tauri/wry (desactivar Ctrl+P / atajos del navegador).
 webview2-com = "0.38"
@@ -90,6 +96,10 @@ windows = { version = "0.61", features = [
   "Win32_System_Memory",
   "Win32_System_Ole",
   "Win32_System_SystemServices",
+  # Enumerar shell:AppsFolder (apps UWP/Store del launcher) y sus iconos.
+  "Win32_UI_Shell",
+  # PKEY_AppUserModel_ID, para identificar cada app del AppsFolder.
+  "Win32_Storage_EnhancedStorage",
 ] }
 
 [features]

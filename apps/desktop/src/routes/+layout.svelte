@@ -7,6 +7,7 @@
   import ClipPreviewHost from "$surfaces/overlay/ClipPreviewHost.svelte";
   import { getConfig, onUiLanguage, onUiTheme } from "$ipc/config";
   import { applyUiLocale, t } from "$domain/i18n.svelte";
+  import { appUpdate } from "$domain/appUpdate.svelte";
   import {
     applyConfigTheme,
     applyTheme,
@@ -92,12 +93,16 @@
      * Ctrl+Alt+L — lab del OVERLAY (pill/agentes sandbox).
      * Ctrl+Alt+F — launcher lab (sliders en vivo sobre el overlay).
      * Ctrl+Alt+P — picker lab (rueda+cards; titlebar / Esc).
+     * Ctrl+Alt+U — aviso de update de mentira en la pill / gota.
      * Ctrl+Alt+M — UI legacy.
      */
     // Si quedó pegado de una sesión anterior, liberar el overlay al arrancar.
     if (import.meta.env.DEV) {
       localStorage.removeItem("atic-liquid-lab");
       localStorage.removeItem("atic-launcher-lab-open");
+      appUpdate.simulate(
+        localStorage.getItem("atic-fake-update") === "0" ? null : "0.4.25",
+      );
     }
 
     const onDevKey = (event: KeyboardEvent) => {
@@ -129,6 +134,19 @@
             newValue: on ? null : "1",
           }),
         );
+        return;
+      }
+
+      if (key === "u") {
+        event.preventDefault();
+        const on = localStorage.getItem("atic-fake-update") !== "0";
+        if (on) {
+          localStorage.setItem("atic-fake-update", "0");
+          appUpdate.simulate(null);
+        } else {
+          localStorage.setItem("atic-fake-update", "1");
+          appUpdate.simulate("0.4.25");
+        }
         return;
       }
 

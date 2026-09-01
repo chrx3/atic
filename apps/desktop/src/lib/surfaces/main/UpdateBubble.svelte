@@ -32,7 +32,7 @@
   );
 </script>
 
-{#if appUpdate.pending}
+{#if appUpdate.visible}
   <div class="dock">
     <Skin {shapes} color="var(--info)" shadow="var(--shadow-goo)" />
     <button
@@ -40,7 +40,7 @@
       class="hit"
       aria-label={label}
       title={label}
-      disabled={appUpdate.downloading || appUpdate.installing}
+      disabled={appUpdate.busy}
       onclick={() => void appUpdate.advance()}
     >
       {#if appUpdate.downloading}

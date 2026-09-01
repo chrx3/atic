@@ -95,6 +95,23 @@ fn sanitize_pill_tools(ids: Vec<String>) -> Vec<String> {
     seen
 }
 
+/// CLIs de agente que Atic sabe lanzar. Gemelo de `AGENTS` en `agentCatalog.ts`.
+pub const AGENT_CLIS: &[&str] = &["claude", "opencode", "codex", "cursor-agent", "agy", "grok"];
+
+/// Ids validos, sin repetidos y en el orden recibido.
+///
+/// Vacia significa «sin configurar», o sea todos: es lo que hace que sumar un
+/// agente al catalogo lo muestre sin tocar la config de nadie.
+fn sanitize_agents(ids: Vec<String>) -> Vec<String> {
+    let mut seen: Vec<String> = Vec::new();
+    for id in ids {
+        if AGENT_CLIS.contains(&id.as_str()) && !seen.contains(&id) {
+            seen.push(id);
+        }
+    }
+    seen
+}
+
 /// Las perillas del tema personalizado.
 ///
 /// Se guardan las PERILLAS y no los colores derivados: la derivación vive en
@@ -326,6 +343,11 @@ pub struct Config {
     pub pill_tools: Vec<String>,
     /// Herramientas detrás del gajo «Más», en orden. Vacío = no hay submenú.
     pub pill_more_tools: Vec<String>,
+    /// Agentes a la vista, en el lanzador y en el panel de cupos. Vacio = todos.
+    ///
+    /// Una sola lista para los dos sitios: el usuario elige «con que agentes
+    /// trabajo», no «que agentes veo en cada pantalla».
+    pub agents_shown: Vec<String>,
     /// Hosts SSH para sesiones de agente remotas.
     pub ssh_hosts: Vec<SshHost>,
 }
@@ -414,6 +436,7 @@ impl Default for Config {
             ui_theme: "system".to_string(),
             ui_theme_custom: CustomTheme::default(),
             ui_language: "system".to_string(),
+            agents_shown: Vec::new(),
             pill_tools: Vec::new(),
             pill_more_tools: Vec::new(),
             ssh_hosts: Vec::new(),
@@ -501,6 +524,7 @@ struct ConfigFile {
     ui_theme: Option<String>,
     ui_theme_custom: Option<CustomTheme>,
     ui_language: Option<String>,
+    agents_shown: Option<Vec<String>>,
     pill_tools: Option<Vec<String>>,
     pill_more_tools: Option<Vec<String>>,
     ssh_hosts: Option<Vec<SshHost>>,
@@ -613,6 +637,7 @@ impl Default for ConfigFile {
             ui_theme: None,
             ui_theme_custom: None,
             ui_language: None,
+            agents_shown: None,
             pill_tools: None,
             pill_more_tools: None,
             ssh_hosts: None,
@@ -632,6 +657,17 @@ fn migrate_retired_groq_model(model: &str) -> String {
         | "meta-llama/llama-4-scout-17b-16e-instruct"
         | "meta-llama/llama-4-maverick-17b-128e-instruct" => "openai/gpt-oss-120b".into(),
         other => other.to_string(),
+    }
+}
+
+/// Google retiró el Gemini CLI clásico (jun-2026); su sucesor es Antigravity
+/// (`agy`). Reescribe configs guardadas para que la marca del usuario no se
+/// pierda cuando `sanitize_agents` deje de reconocer el id viejo.
+fn migrate_retired_agent_cli(cli: String) -> String {
+    if cli == "gemini" {
+        "agy".into()
+    } else {
+        cli
     }
 }
 
@@ -853,6 +889,14 @@ impl From<ConfigFile> for Config {
                 Some("es") => "es".into(),
                 _ => "system".into(),
             },
+            agents_shown: sanitize_agents(
+                f.agents_shown
+                    .clone()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(migrate_retired_agent_cli)
+                    .collect(),
+            ),
             pill_tools: pill_ring,
             pill_more_tools: pill_more,
             ssh_hosts: f.ssh_hosts.unwrap_or_default(),
@@ -984,6 +1028,28 @@ mod tests {
         let cfg = Config::default();
         assert!(cfg.pill_tools.is_empty());
         assert!(cfg.pill_more_tools.is_empty());
+    }
+
+    #[test]
+    fn migrates_the_retired_gemini_cli_to_antigravity() {
+        let json = r#"{
+            "language": "es",
+            "whisper_model": "base",
+            "summary_backend": "claude",
+            "mail_backend": "mailto",
+            "smtp_host": "",
+            "smtp_port": 587,
+            "smtp_username": "",
+            "smtp_from": "",
+            "smtp_use_tls": true,
+            "global_shortcut": "CmdOrCtrl+Shift+R",
+            "show_pill": true,
+            "beep_on_start": false,
+            "agents_shown": ["claude", "gemini", "agy"]
+        }"#;
+        let cfg: Config = serde_json::from_str::<ConfigFile>(json).unwrap().into();
+        // `gemini` se convierte en `agy`; el duplicado se queda con su primer sitio.
+        assert_eq!(cfg.agents_shown, vec!["claude", "agy"]);
     }
 
     #[test]

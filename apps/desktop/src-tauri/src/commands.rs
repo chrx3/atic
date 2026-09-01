@@ -147,7 +147,13 @@ pub fn set_config(app: AppHandle, state: State<AppState>, config: Config) -> Res
     // La pill vive en el overlay, con su propia copia de la config, y solo la
     // relee cuando se le avisa. Sin este evento la rueda seguiría repartiendo
     // los gajos viejos hasta el próximo arranque.
-    if config.pill_tools != prev.pill_tools || config.pill_more_tools != prev.pill_more_tools {
+    //
+    // Los agentes a la vista viajan por el mismo aviso: es la misma copia de la
+    // config la que se queda vieja, y el panel de cupos del overlay los lee.
+    if config.pill_tools != prev.pill_tools
+        || config.pill_more_tools != prev.pill_more_tools
+        || config.agents_shown != prev.agents_shown
+    {
         let _ = app.emit("pill-tools", ());
     }
 

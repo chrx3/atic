@@ -14,9 +14,12 @@
 import {
   arrowHead,
   HIGHLIGHT_FACTOR,
+  LINE_HEIGHT,
   normalizeRect,
+  type Rect,
   type Shape,
   type SpanShape,
+  type TextShape,
 } from "./annotateModel";
 
 /**
@@ -45,6 +48,11 @@ export interface DrawTarget {
   rect(x: number, y: number, w: number, h: number): void;
   stroke(): void;
   fill(): void;
+  fillRect(x: number, y: number, w: number, h: number): void;
+  fillText(text: string, x: number, y: number): void;
+  strokeText(text: string, x: number, y: number): void;
+  font: string;
+  textBaseline: CanvasTextBaseline;
   /* Los mismos tipos que el DOM: un contexto real acepta también degradados. */
   strokeStyle: string | CanvasGradient | CanvasPattern;
   fillStyle: string | CanvasGradient | CanvasPattern;
@@ -99,8 +107,91 @@ export function drawShape(ctx: DrawTarget, shape: Shape): void {
       ctx.stroke();
       break;
     }
+    case "text":
+      drawText(ctx, shape);
+      break;
   }
 
+  ctx.restore();
+}
+
+/**
+ * La familia del texto.
+ *
+ * La misma pila que usa la app, para que lo escrito en el cuadro de edición y
+ * lo dibujado en el lienzo sean la misma letra: cualquier otra cosa haría que
+ * el texto se corriera al confirmar.
+ */
+export const TEXT_FONT =
+  '"Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif';
+
+export function fontFor(size: number): string {
+  return `600 ${size}px ${TEXT_FONT}`;
+}
+
+/**
+ * Texto con contorno.
+ *
+ * El contorno no es adorno: la anotación cae sobre una captura cualquiera, y
+ * un texto blanco sobre un fondo claro —o negro sobre uno oscuro— no se lee.
+ * Un halo del color contrario lo despega de lo que haya debajo sin tener que
+ * pintarle una caja atrás.
+ */
+function drawText(ctx: DrawTarget, shape: TextShape): void {
+  const lines = shape.text.split("\n");
+  const step = shape.size * LINE_HEIGHT;
+  ctx.font = fontFor(shape.size);
+  ctx.textBaseline = "top";
+  ctx.lineJoin = "round";
+  ctx.lineWidth = Math.max(2, shape.size / 7);
+  ctx.strokeStyle = haloFor(shape.color);
+  for (let i = 0; i < lines.length; i++) {
+    const y = shape.at.y + i * step;
+    if (lines[i].length === 0) continue;
+    ctx.strokeText(lines[i], shape.at.x, y);
+    ctx.fillText(lines[i], shape.at.x, y);
+  }
+}
+
+/** Negro para los colores claros, blanco para los oscuros. */
+export function haloFor(color: string): string {
+  return luminance(color) > 0.55 ? "#00000099" : "#ffffffcc";
+}
+
+/** Luminancia aproximada de un `#rrggbb`. Lo que no se entiende, se asume claro. */
+function luminance(color: string): number {
+  const hex = color.trim().replace("#", "");
+  if (hex.length !== 6) return 1;
+  const r = Number.parseInt(hex.slice(0, 2), 16);
+  const g = Number.parseInt(hex.slice(2, 4), 16);
+  const b = Number.parseInt(hex.slice(4, 6), 16);
+  if (!Number.isFinite(r + g + b)) return 1;
+  return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+}
+
+/**
+ * El velo de lo que el recorte deja afuera.
+ *
+ * Se pinta al final y en coordenadas de imagen, como todo lo demás: lo que se
+ * ve oscurecido es exactamente lo que se va a perder al soltar.
+ */
+export function drawCropMask(ctx: DrawTarget, crop: Rect, bounds: Rect): void {
+  ctx.save();
+  ctx.globalAlpha = 1;
+  ctx.globalCompositeOperation = "source-over";
+  ctx.fillStyle = "#00000080";
+  const right = bounds.x + bounds.w;
+  const bottom = bounds.y + bounds.h;
+  ctx.fillRect(bounds.x, bounds.y, bounds.w, crop.y - bounds.y);
+  ctx.fillRect(bounds.x, crop.y + crop.h, bounds.w, bottom - (crop.y + crop.h));
+  ctx.fillRect(bounds.x, crop.y, crop.x - bounds.x, crop.h);
+  ctx.fillRect(crop.x + crop.w, crop.y, right - (crop.x + crop.w), crop.h);
+
+  ctx.strokeStyle = "#ffffff";
+  ctx.lineWidth = Math.max(1, (bounds.w / 1280) * 2);
+  ctx.beginPath();
+  ctx.rect(crop.x, crop.y, crop.w, crop.h);
+  ctx.stroke();
   ctx.restore();
 }
 

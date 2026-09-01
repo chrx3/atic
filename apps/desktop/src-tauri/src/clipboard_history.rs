@@ -3,12 +3,13 @@
 //! Un hilo hace polling de `arboard`, persiste en `data/clipboard/` y expone
 //! comandos para listar, pegar, fijar y borrar.
 
+use std::borrow::Cow;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, TryLockError};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -110,6 +111,18 @@ struct PendingCapture {
 /// Cuánto vale la pena esperar a que el watcher vea nuestra propia captura.
 const PENDING_CAPTURE_TTL: Duration = Duration::from_secs(10);
 
+fn pending_is_fresh(pending: &PendingCapture) -> bool {
+    pending
+        .at
+        .elapsed()
+        .is_ok_and(|age| age < PENDING_CAPTURE_TTL)
+}
+
+/// ¿El watcher acaba de ver la imagen que nosotros mismos pusimos?
+fn pending_capture_matches(pending: &PendingCapture, width: usize, height: usize) -> bool {
+    pending_is_fresh(pending) && pending.width == width && pending.height == height
+}
+
 #[derive(Default)]
 struct HistoryState {
     items: Vec<ClipboardItem>,
@@ -125,6 +138,50 @@ struct HistoryState {
 }
 
 static HISTORY: Mutex<Option<Arc<Mutex<HistoryState>>>> = Mutex::new(None);
+
+/// Un solo hilo a la vez puede tener el portapapeles de Windows abierto.
+///
+/// El watcher vive en un `thread::spawn` y las escrituras (copiar un dibujo,
+/// una captura, pegar) corren en workers de Tauri. Sin este candado los dos
+/// llaman `OpenClipboard` a la vez; arboard encodea el PNG *con el clipboard
+/// ya abierto*, y `SetClipboardData` termina en `ERROR_CLIPBOARD_NOT_OPEN`
+/// (1418, «El subproceso no tiene abierto un Portapapeles»).
+static CLIPBOARD_GATE: Mutex<()> = Mutex::new(());
+
+/// Toma el candado para una escritura. El watcher, si está leyendo, termina
+/// esa vuelta y después se aparta: no se le deja `OpenClipboard` a mitad de
+/// un `set_image`.
+pub(crate) fn with_clipboard_write<R>(f: impl FnOnce() -> Result<R, String>) -> Result<R, String> {
+    let _guard = CLIPBOARD_GATE.lock_or_recover();
+    f()
+}
+
+/// Texto al portapapeles del sistema, por el mismo candado que las imágenes.
+pub(crate) fn set_system_text(text: impl Into<String>) -> Result<(), String> {
+    let text = text.into();
+    with_clipboard_write(|| {
+        let mut clipboard = Clipboard::new().map_err(|e| e.to_string())?;
+        clipboard.set_text(text).map_err(|e| e.to_string())
+    })
+}
+
+/// Intenta leer sin bloquear a quien está escribiendo. `None` = hay una
+/// escritura en curso; esta vuelta del watcher se salta.
+fn try_clipboard_read<R>(f: impl FnOnce() -> R) -> Option<R> {
+    let _guard = match CLIPBOARD_GATE.try_lock() {
+        Ok(guard) => guard,
+        Err(TryLockError::WouldBlock) => return None,
+        Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+    };
+    Some(f())
+}
+
+enum ClipPoll {
+    Sensitive,
+    Image { width: usize, height: usize, bytes: Vec<u8> },
+    Text(String),
+    Empty,
+}
 
 fn now_ms() -> u64 {
     SystemTime::now()
@@ -393,13 +450,9 @@ pub fn start_watcher(app: &AppHandle) {
             }
             let dir = app_state.dirs.clipboard_dir();
 
-            // Lo que el dueño del contenido pidió no archivar no se archiva.
-            // Es la única señal que existe: los gestores de contraseñas la
-            // ponen justamente para que su copia no sobreviva al pegado.
-            if clipboard_is_sensitive() {
-                continue;
-            }
-
+            // suppress_until no necesita el clipboard: se mira primero, para
+            // no abrir el portapapeles justo cuando nosotros mismos estamos
+            // escribiendo un dibujo o una captura.
             {
                 let mut hist = shared.lock_or_recover();
                 if let Some(until) = hist.suppress_until {
@@ -410,41 +463,75 @@ pub fn start_watcher(app: &AppHandle) {
                 }
             }
 
-            if let Ok(img) = clipboard.get_image() {
-                match ingest_image(&shared, &dir, &img) {
-                    Ok(changed) if changed => {
+            let Some(poll) = try_clipboard_read(|| {
+                // Lo que el dueño del contenido pidió no archivar no se
+                // archiva. Es la única señal que existe: los gestores de
+                // contraseñas la ponen justamente para que su copia no
+                // sobreviva al pegado.
+                if clipboard_is_sensitive() {
+                    return ClipPoll::Sensitive;
+                }
+                if let Ok(img) = clipboard.get_image() {
+                    return ClipPoll::Image {
+                        width: img.width,
+                        height: img.height,
+                        bytes: img.bytes.into_owned(),
+                    };
+                }
+                if let Ok(text) = clipboard.get_text() {
+                    return ClipPoll::Text(text);
+                }
+                ClipPoll::Empty
+            }) else {
+                continue;
+            };
+
+            match poll {
+                ClipPoll::Sensitive | ClipPoll::Empty => continue,
+                ClipPoll::Image {
+                    width,
+                    height,
+                    bytes,
+                } => {
+                    let img = ImageData {
+                        width,
+                        height,
+                        bytes: Cow::Owned(bytes),
+                    };
+                    match ingest_image(&shared, &dir, &img) {
+                        Ok(changed) if changed => {
+                            let _ = handle.emit("clipboard-history-changed", ());
+                        }
+                        Ok(_) => {}
+                        Err(err) => tracing::debug!(%err, "clipboard image ingest"),
+                    }
+                }
+                ClipPoll::Text(text) => {
+                    let trimmed = text.trim();
+                    if trimmed.is_empty() {
+                        continue;
+                    }
+                    let fp = fingerprint_text(trimmed);
+                    let preview: String = trimmed.chars().take(120).collect();
+                    let item = ClipboardItem {
+                        id: uuid::Uuid::new_v4().to_string(),
+                        kind: ClipboardKind::Text,
+                        preview,
+                        text: Some(trimmed.to_string()),
+                        image_path: None,
+                        created_at_ms: now_ms(),
+                        pinned: false,
+                        fingerprint: fp,
+                        source: "watcher".into(),
+                    };
+                    let mut hist = shared.lock_or_recover();
+                    let before_fp = hist.items.first().map(|i| i.fingerprint.clone());
+                    push_item(&mut hist, &dir, item);
+                    let after_fp = hist.items.first().map(|i| i.fingerprint.clone());
+                    if before_fp != after_fp {
+                        drop(hist);
                         let _ = handle.emit("clipboard-history-changed", ());
                     }
-                    Ok(_) => {}
-                    Err(err) => tracing::debug!(%err, "clipboard image ingest"),
-                }
-                continue;
-            }
-            if let Ok(text) = clipboard.get_text() {
-                let trimmed = text.trim();
-                if trimmed.is_empty() {
-                    continue;
-                }
-                let fp = fingerprint_text(trimmed);
-                let preview: String = trimmed.chars().take(120).collect();
-                let item = ClipboardItem {
-                    id: uuid::Uuid::new_v4().to_string(),
-                    kind: ClipboardKind::Text,
-                    preview,
-                    text: Some(trimmed.to_string()),
-                    image_path: None,
-                    created_at_ms: now_ms(),
-                    pinned: false,
-                    fingerprint: fp,
-                    source: "watcher".into(),
-                };
-                let mut hist = shared.lock_or_recover();
-                let before_fp = hist.items.first().map(|i| i.fingerprint.clone());
-                push_item(&mut hist, &dir, item);
-                let after_fp = hist.items.first().map(|i| i.fingerprint.clone());
-                if before_fp != after_fp {
-                    drop(hist);
-                    let _ = handle.emit("clipboard-history-changed", ());
                 }
             }
         }
@@ -474,17 +561,18 @@ fn ingest_image(
         if hist.last_fingerprint.as_ref() == Some(&fp) {
             return Ok(false);
         }
-        // ¿Es la captura que acabamos de copiar nosotros? Ya está en el
-        // historial con su identidad `capture:<id>`; grabarla acá otra vez es
-        // el duplicado «Imagen 631×638» + «Captura 15:36». Se sella su
-        // fingerprint de contenido en `last_fingerprint` para que no vuelva a
-        // entrar mientras siga en el portapapeles.
+        // ¿Es la captura/dibujo que acabamos de copiar nosotros? Ya está en
+        // el historial con su identidad; grabarla acá otra vez es el
+        // duplicado «Imagen 631×638» + «Captura 15:36». Se sella su
+        // fingerprint de contenido en `last_fingerprint` para que no vuelva
+        // a entrar mientras siga en el portapapeles.
+        //
+        // Solo dimensiones: el round-trip por el DIB no conserva los bytes.
+        // El riesgo es tragar un dibujo del mismo tamaño copiado enseguida;
+        // `copy_annotation` graba el ítem ANTES de escribir el portapapeles,
+        // así que si esto suprime el ingest el dibujo ya está en la lista.
         if let Some(pending) = hist.pending_capture.take() {
-            let fresh = pending
-                .at
-                .elapsed()
-                .is_ok_and(|age| age < PENDING_CAPTURE_TTL);
-            if fresh && pending.width == w && pending.height == h {
+            if pending_capture_matches(&pending, w, h) {
                 tracing::debug!(
                     target: "clipboard",
                     fingerprint = %pending.fingerprint,
@@ -494,7 +582,7 @@ fn ingest_image(
                 return Ok(false);
             }
             // Sigue vigente pero todavía no es esta imagen: devolverla.
-            if fresh {
+            if pending_is_fresh(&pending) {
                 hist.pending_capture = Some(pending);
             }
         }
@@ -837,8 +925,7 @@ pub fn copy_clipboard_item(state: State<AppState>, id: String) -> Result<(), Str
             if text.is_empty() {
                 return Err(item_empty_text());
             }
-            let mut clipboard = Clipboard::new().map_err(|e| e.to_string())?;
-            clipboard.set_text(text).map_err(|e| e.to_string())
+            set_system_text(text)
         }
         ClipboardKind::Image => {
             let path = item
@@ -913,10 +1000,7 @@ pub fn paste_clipboard_item(
             if text.is_empty() {
                 return Err(item_empty_text());
             }
-            {
-                let mut clipboard = Clipboard::new().map_err(|e| e.to_string())?;
-                clipboard.set_text(text).map_err(|e| e.to_string())?;
-            }
+            set_system_text(text)?;
             thread::sleep(Duration::from_millis(80));
             paste_text_hotkey_for(&app, target)
         }
@@ -1171,12 +1255,7 @@ pub fn clear_clipboard_history(app: AppHandle, state: State<AppState>) -> Result
 /// Default: Ctrl+V. Ctrl+Shift+V solo en terminales Electron/WebView2
 /// (Terax, Hyper…), donde Chromium intercepta Ctrl+V.
 pub(crate) fn paste_text(app: &AppHandle, text: &str) -> Result<(), String> {
-    {
-        let mut clipboard = Clipboard::new().map_err(|e| e.to_string())?;
-        clipboard
-            .set_text(text.to_string())
-            .map_err(|e| e.to_string())?;
-    }
+    set_system_text(text.to_string())?;
     thread::sleep(Duration::from_millis(80));
     #[cfg(windows)]
     let target = resolve_paste_target_hwnd();
@@ -1233,6 +1312,20 @@ pub(crate) fn has_live_external_foreground() -> bool {
 /// Se llama ANTES de copiar al portapapeles y suprime al watcher, para que la
 /// identidad que quede sea esta y no la que él improvisaría.
 pub(crate) fn record_capture(app: &AppHandle, cap: &crate::capture::CaptureItem) {
+    push_capture_item(app, cap, true);
+}
+
+/// Igual que [`record_capture`], pero sin anunciar `pending_capture`.
+///
+/// Guardar un dibujo escribe un PNG en capturas y NO lo pone en el
+/// portapapeles. Si se anunciara por dimensiones, el watcher podría tragar
+/// la captura original (mismo tamaño, todavía en el clipboard) como si
+/// fuera esta versión anotada.
+pub(crate) fn record_saved_capture(app: &AppHandle, cap: &crate::capture::CaptureItem) {
+    push_capture_item(app, cap, false);
+}
+
+fn push_capture_item(app: &AppHandle, cap: &crate::capture::CaptureItem, announce_pending: bool) {
     let Some(state) = app.try_state::<AppState>() else {
         return;
     };
@@ -1253,13 +1346,68 @@ pub(crate) fn record_capture(app: &AppHandle, cap: &crate::capture::CaptureItem)
     };
     {
         let mut hist = shared.lock_or_recover();
-        // El PNG está por entrar al portapapeles. Se anuncia por dimensiones
-        // —lo único que sobrevive seguro al round-trip por el DIB— para que
-        // `ingest_image` la reconozca en vez de grabar su propia copia.
+        if announce_pending {
+            // El PNG está por entrar al portapapeles. Se anuncia por
+            // dimensiones —lo único que sobrevive seguro al round-trip por
+            // el DIB— para que `ingest_image` la reconozca en vez de grabar
+            // su propia copia.
+            hist.pending_capture = Some(PendingCapture {
+                fingerprint: item.fingerprint.clone(),
+                width: cap.width as usize,
+                height: cap.height as usize,
+                at: SystemTime::now(),
+            });
+        }
+        push_item(&mut hist, &dir, item);
+    }
+    let _ = app.emit("clipboard-history-changed", ());
+}
+
+/// Archiva un PNG que el usuario copió a propósito (dibujo del editor).
+///
+/// Hay que grabarlo ANTES de escribir el portapapeles: si no, `pending_capture`
+/// de una captura reciente del mismo tamaño hace que el watcher trague el
+/// dibujo y no aparezca en el historial.
+pub(crate) fn record_copied_png(app: &AppHandle, png: &[u8], width: u32, height: u32) {
+    const MAX_COPIED_PNG: usize = 32 * 1024 * 1024;
+    if png.is_empty() || png.len() > MAX_COPIED_PNG {
+        return;
+    }
+    let Some(state) = app.try_state::<AppState>() else {
+        return;
+    };
+    let Ok(shared) = shared_history() else {
+        return;
+    };
+    let dir = state.dirs.clipboard_dir();
+    if let Err(err) = std::fs::create_dir_all(&dir) {
+        tracing::warn!(%err, "no se pudo crear la carpeta del historial");
+        return;
+    }
+    let id = uuid::Uuid::new_v4().to_string();
+    let filename = format!("img-{id}.png");
+    let path = dir.join(&filename);
+    if let Err(err) = std::fs::write(&path, png) {
+        tracing::warn!(%err, "no se pudo archivar el dibujo copiado");
+        return;
+    }
+    let item = ClipboardItem {
+        id: id.clone(),
+        kind: ClipboardKind::Image,
+        preview: image_preview_label(width as usize, height as usize),
+        text: None,
+        image_path: Some(path.to_string_lossy().into_owned()),
+        created_at_ms: now_ms(),
+        pinned: false,
+        fingerprint: format!("annotate:{id}"),
+        source: "annotate".into(),
+    };
+    {
+        let mut hist = shared.lock_or_recover();
         hist.pending_capture = Some(PendingCapture {
             fingerprint: item.fingerprint.clone(),
-            width: cap.width as usize,
-            height: cap.height as usize,
+            width: width as usize,
+            height: height as usize,
             at: SystemTime::now(),
         });
         push_item(&mut hist, &dir, item);
@@ -1422,12 +1570,7 @@ fn paste_into_window_under_cursor(app: &AppHandle, text: &str) -> Result<(), Str
     // Mismo respiro que el clic: WebView2/Electron tardan en asentar el foco del
     // hijo Chromium, y sin esto el chord se pierde.
     thread::sleep(Duration::from_millis(220));
-    {
-        let mut clipboard = Clipboard::new().map_err(|e| e.to_string())?;
-        clipboard
-            .set_text(text.to_string())
-            .map_err(|e| e.to_string())?;
-    }
+    set_system_text(text.to_string())?;
     thread::sleep(Duration::from_millis(80));
     paste_text_hotkey_for(app, Some(hwnd))
 }
@@ -2140,5 +2283,38 @@ pub fn force_foreground(hwnd: windows_sys::Win32::Foundation::HWND) {
         if attached_fg {
             let _ = AttachThreadInput(cur_tid, fg_tid, 0);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pending(width: usize, height: usize, age: Duration) -> PendingCapture {
+        PendingCapture {
+            fingerprint: "capture:test.png".into(),
+            width,
+            height,
+            at: SystemTime::now() - age,
+        }
+    }
+
+    #[test]
+    fn pending_fresco_del_mismo_tamano_se_reconoce() {
+        let p = pending(805, 38, Duration::from_millis(200));
+        assert!(pending_capture_matches(&p, 805, 38));
+    }
+
+    #[test]
+    fn pending_no_traga_otro_tamano() {
+        let p = pending(805, 38, Duration::from_millis(200));
+        assert!(!pending_capture_matches(&p, 1920, 1080));
+    }
+
+    #[test]
+    fn pending_caduca_a_los_diez_segundos() {
+        let p = pending(805, 38, Duration::from_secs(11));
+        assert!(!pending_is_fresh(&p));
+        assert!(!pending_capture_matches(&p, 805, 38));
     }
 }

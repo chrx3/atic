@@ -646,13 +646,22 @@ fn install_virtual_screen_limit(window: &tauri::WebviewWindow) {
 }
 
 /// Coloca el cliente del overlay sobre TODO el escritorio virtual.
+#[cfg(windows)]
+pub(crate) fn cover_virtual_desktop(window: &tauri::WebviewWindow) {
+    cover_rect(window, atic_capture::monitors::virtual_screen());
+}
+
+/// Coloca el cliente del overlay sobre `vs`, en píxeles físicos.
 ///
 /// Un `set_position` + `set_size` son dos `SetWindowPos`: DWM puede recortar
 /// el tamaño a un monitor y recentrar la ventana entre medio. Acá va posición
 /// y tamaño juntos, y después se corrige el desfase de no-cliente (borde DWM)
 /// para que el (0,0) del CSS coincida con el del PNG congelado.
+///
+/// Toma el rectángulo y no lo mide adentro porque la pizarra cubre un solo
+/// monitor —el que se congeló— y la mira de captura el escritorio entero.
 #[cfg(windows)]
-pub(crate) fn cover_virtual_desktop(window: &tauri::WebviewWindow) {
+pub(crate) fn cover_rect(window: &tauri::WebviewWindow, vs: atic_capture::Rect) {
     use windows_sys::Win32::Foundation::POINT;
     use windows_sys::Win32::Graphics::Gdi::ClientToScreen;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -661,7 +670,6 @@ pub(crate) fn cover_virtual_desktop(window: &tauri::WebviewWindow) {
 
     install_virtual_screen_limit(window);
 
-    let vs = atic_capture::monitors::virtual_screen();
     // Más que cualquier escritorio virtual razonable. Si se iguala al monitor
     // actual, Windows vuelve a recortar la ventana a una sola pantalla.
     let _ = window.set_max_size(Some(tauri::Size::Physical(tauri::PhysicalSize::new(

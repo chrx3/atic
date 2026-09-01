@@ -51,6 +51,21 @@ pub struct ExtraUsage {
     pub currency: Option<String>,
 }
 
+/// Una ventana semanal de un modelo que no tiene campo propio.
+///
+/// La API suma modelos —primero Opus, después Sonnet, ahora Fable— y cada uno
+/// llega como un `seven_day_<modelo>` nuevo. Con un campo fijo por modelo, cada
+/// alta era un parche acá y otro en la vista; recogiéndolos por prefijo, el que
+/// venga aparece solo.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelWindow {
+    /// Lo que sigue a `seven_day_` en la clave de la API (`opus`, `fable`, …).
+    pub model: String,
+    #[serde(flatten)]
+    pub window: UsageWindow,
+}
+
 /// Snapshot de cupos de la cuenta, listo para la UI.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -59,6 +74,8 @@ pub struct ClaudeAccountUsage {
     pub seven_day: Option<UsageWindow>,
     pub seven_day_opus: Option<UsageWindow>,
     pub seven_day_sonnet: Option<UsageWindow>,
+    /// Las semanales por modelo que no son Opus ni Sonnet, en orden de la API.
+    pub seven_day_models: Vec<ModelWindow>,
     pub extra_usage: Option<ExtraUsage>,
     /// Plan legible (`max`, `pro`, `max 20x`, …) si figura en credenciales.
     pub plan: Option<String>,
@@ -207,6 +224,10 @@ struct ApiUsage {
     seven_day_opus: Option<ApiWindow>,
     seven_day_sonnet: Option<ApiWindow>,
     extra_usage: Option<ApiExtra>,
+    /// Todo lo que la API mande y acá no tenga campo. De aquí salen las
+    /// semanales de los modelos nuevos.
+    #[serde(flatten)]
+    rest: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
 fn parse_usage_body(body: &str) -> Result<ClaudeAccountUsage, String> {
@@ -227,11 +248,30 @@ fn parse_usage_body(body: &str) -> Result<ClaudeAccountUsage, String> {
         currency: e.currency,
     });
 
+    // `BTreeMap` ordena por clave, así que el orden es estable entre consultas:
+    // las filas no bailan de sitio entre un hover y el siguiente.
+    let models = raw
+        .rest
+        .into_iter()
+        .filter_map(|(key, value)| {
+            let model = key.strip_prefix("seven_day_")?;
+            if model.is_empty() {
+                return None;
+            }
+            let win: ApiWindow = serde_json::from_value(value).ok()?;
+            Some(ModelWindow {
+                model: model.to_string(),
+                window: map_win(Some(win))?,
+            })
+        })
+        .collect::<Vec<_>>();
+
     let usage = ClaudeAccountUsage {
         five_hour: map_win(raw.five_hour),
         seven_day: map_win(raw.seven_day),
         seven_day_opus: map_win(raw.seven_day_opus),
         seven_day_sonnet: map_win(raw.seven_day_sonnet),
+        seven_day_models: models,
         extra_usage: extra,
         plan: None,
         fetched_at: chrono::Utc::now().timestamp_millis(),
@@ -241,6 +281,7 @@ fn parse_usage_body(body: &str) -> Result<ClaudeAccountUsage, String> {
         && usage.seven_day.is_none()
         && usage.seven_day_opus.is_none()
         && usage.seven_day_sonnet.is_none()
+        && usage.seven_day_models.is_empty()
         && usage.extra_usage.is_none()
     {
         return Err(
@@ -525,6 +566,35 @@ fn detect_claude_version() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// La API suma una ventana por modelo nuevo. Aparecen sin tocar nada.
+    #[test]
+    fn recoge_las_semanales_de_modelos_nuevos() {
+        let body = r#"{
+            "five_hour": { "utilization": 56.0 },
+            "seven_day": { "utilization": 62.0 },
+            "seven_day_fable": { "utilization": 50.0, "resets_at": "2026-09-02T07:00:00Z" }
+        }"#;
+        let u = parse_usage_body(body).unwrap();
+        assert_eq!(u.seven_day_models.len(), 1);
+        assert_eq!(u.seven_day_models[0].model, "fable");
+        assert_eq!(u.seven_day_models[0].window.utilization, 50.0);
+        // Las que tienen campo propio no se cuentan dos veces.
+        assert!(u.seven_day_models.iter().all(|m| m.model != "opus"));
+    }
+
+    /// Un `seven_day_*` que no sea una ventana no puede romper el resto.
+    #[test]
+    fn ignora_lo_que_no_sea_una_ventana() {
+        let body = r#"{
+            "five_hour": { "utilization": 10.0 },
+            "seven_day_algo": "texto",
+            "seven_day_": { "utilization": 1.0 }
+        }"#;
+        let u = parse_usage_body(body).unwrap();
+        assert!(u.seven_day_models.is_empty());
+        assert_eq!(u.five_hour.as_ref().unwrap().utilization, 10.0);
+    }
 
     #[test]
     fn parse_usage_typical() {

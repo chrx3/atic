@@ -8,7 +8,9 @@
   import { Folder, SquareTerminal, X } from "$lib/icons";
   import { onMount } from "svelte";
   import { AGENTS_REVEAL_CONSOLE, cliOnPath } from "$ipc/agents";
-  import { AGENTS } from "./agentCatalog";
+  import { AGENTS, shownAgents } from "./agentCatalog";
+  import { config } from "$domain/config.svelte";
+  import { sessionEffect } from "$domain/session";
   import { t } from "$domain/i18n.svelte";
 
   type LauncherView = "setup" | "console";
@@ -43,6 +45,19 @@
   /** La carpeta elegida sobrevive a cerrar el float y a reiniciar la app. */
   const CWD_STORAGE_KEY = "atic.agents.startFolder";
 
+  /**
+   * Los agentes elegidos en Ajustes. Vacío = todos.
+   *
+   * Se filtra la grilla y no el catálogo: `AGENTS` sigue siendo la lista de lo
+   * que Atic sabe lanzar —la usa la comprobación de PATH y la vista de
+   * instalación—, y esto es solo qué se ofrece.
+   */
+  // El lanzador vive en la ventana principal y en el float del overlay, y
+  // ninguna de las dos tenía por qué montar `config` antes de esto.
+  $effect(() => sessionEffect(["config"]));
+
+  const visible = $derived(shownAgents(config.current?.agents_shown ?? []));
+
   let selected = $state<string>(AGENTS[0].cli);
   let count = $state(1);
   let cwd = $state("");
@@ -52,17 +67,33 @@
   let onPath = $state<Record<string, boolean>>({});
   let pathReady = $state(false);
 
-  const chosen = $derived(AGENTS.find((agent) => agent.cli === selected) ?? AGENTS[0]);
+  const chosen = $derived(
+    visible.find((agent) => agent.cli === selected) ?? visible[0] ?? AGENTS[0],
+  );
   const missingCli = $derived(pathReady && onPath[selected] === false);
+  // Con el CLI ausente la consola se siembra con su instalador oficial, la
+  // misma mecánica que el botón "Instalar" del menú "+" de ConsolePanel.
   const seeds = $derived(
-    Array.from({ length: Math.max(1, Math.min(count, MAX_INSTANCES)) }, () => ({
-      kind: "local" as const,
-      label: chosen.name,
-      command: chosen.cli,
-    })),
+    missingCli
+      ? [
+          {
+            kind: "local" as const,
+            label: t("page.agents.installNamed", { name: chosen.name }),
+            command: chosen.install,
+          },
+        ]
+      : Array.from({ length: Math.max(1, Math.min(count, MAX_INSTANCES)) }, () => ({
+          kind: "local" as const,
+          label: chosen.name,
+          command: chosen.cli,
+        })),
   );
   const launchLabel = $derived(
-    hasConsole ? "Volver a consolas" : `Abrir ${chosen.name}`,
+    missingCli
+      ? t("page.agents.installNamed", { name: chosen.name })
+      : hasConsole
+        ? t("page.agents.backToConsoles")
+        : t("page.agents.openNamed", { name: chosen.name }),
   );
 
   function showView(next: LauncherView) {
@@ -81,14 +112,26 @@
     if (justOpened) revealLiveConsole();
   });
 
+  /** Instancia viva de ConsolePanel, para instalar sin remontar la consola. */
+  let panel = $state<ConsolePanel | null>(null);
+
   function launch() {
-    if (missingCli) return;
+    if (missingCli) {
+      // El CLI no está: el botón instala en vez de lanzar. Con la consola ya
+      // montada `initialTabs` no aplica; se pide la pestaña a la instancia.
+      if (hasConsole) panel?.installAgent(chosen);
+      else hasConsole = true;
+      showView("console");
+      return;
+    }
     if (!hasConsole) hasConsole = true;
     showView("console");
   }
 
   function backToSetup() {
     showView("setup");
+    // Por si el instalador corrió mientras tanto: refleja el PATH real.
+    refreshPath();
   }
 
   function resetSessions() {
@@ -135,12 +178,8 @@
     });
   }
 
-  onMount(() => {
-    try {
-      cwd = localStorage.getItem(CWD_STORAGE_KEY) ?? "";
-    } catch {
-      /* sin storage: arranca en la carpeta de inicio del usuario */
-    }
+  /** Reverifica qué CLIs están en el PATH (al montar y al volver del instalador). */
+  function refreshPath() {
     void Promise.all(
       AGENTS.map(async (agent) => {
         try {
@@ -153,6 +192,15 @@
       onPath = Object.fromEntries(rows);
       pathReady = true;
     });
+  }
+
+  onMount(() => {
+    try {
+      cwd = localStorage.getItem(CWD_STORAGE_KEY) ?? "";
+    } catch {
+      /* sin storage: arranca en la carpeta de inicio del usuario */
+    }
+    refreshPath();
     const onReveal = () => revealLiveConsole();
     window.addEventListener(AGENTS_REVEAL_CONSOLE, onReveal);
     return () => window.removeEventListener(AGENTS_REVEAL_CONSOLE, onReveal);
@@ -200,7 +248,7 @@
 
     <div class="setup">
       <div class="agent-picker" role="radiogroup" aria-label="Agente">
-        {#each AGENTS as agent (agent.cli)}
+        {#each visible as agent (agent.cli)}
           <button
             type="button"
             class="agent-option"
@@ -246,7 +294,10 @@
           >
             −
           </button>
-          <span class="count">{count} {count === 1 ? "consola" : "consolas"}</span>
+          <span class="count"
+            >{count}
+            {count === 1 ? t("page.agents.consoleSingular") : t("page.agents.consolePlural")}</span
+          >
           <button
             type="button"
             aria-label="Más consolas"
@@ -269,9 +320,14 @@
           </button>
         {/if}
 
-          <button type="button" class="launch" disabled={missingCli} onclick={launch}>
-            {#if hasConsole}<Icon icon={SquareTerminal} size={14} />{/if}
-            <span>{missingCli ? `${chosen.name} no está instalado` : launchLabel}</span>
+          <button
+            type="button"
+            class="launch"
+            use:tip={missingCli ? `${chosen.name} no está instalado` : undefined}
+            onclick={launch}
+          >
+            {#if hasConsole && !missingCli}<Icon icon={SquareTerminal} size={14} />{/if}
+            <span>{launchLabel}</span>
           <span class="arrow" aria-hidden="true">→</span>
         </button>
       </div>
@@ -286,6 +342,7 @@
       inert={view !== "console"}
     >
       <ConsolePanel
+        bind:this={panel}
         initialTabs={seeds}
         localCwd={cwd}
         onBack={backToSetup}
@@ -427,24 +484,6 @@
     align-items: center;
     gap: 0.1rem;
     margin-left: auto;
-  }
-
-  .chrome-btn {
-    display: grid;
-    width: 1.85rem;
-    height: 1.85rem;
-    place-items: center;
-    border: 0;
-    border-radius: 0.45rem;
-    background: transparent;
-    color: var(--rb-muted);
-    cursor: pointer;
-  }
-
-  .chrome-btn:hover,
-  .chrome-btn.is-on {
-    background: color-mix(in sRGB, var(--rb-text) 7%, transparent);
-    color: var(--rb-text);
   }
 
   .close {

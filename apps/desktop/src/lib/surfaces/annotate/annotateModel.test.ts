@@ -4,17 +4,22 @@ import {
   beginShape,
   clampToImage,
   commit,
+  cropRect,
   emptyState,
   extendShape,
   isDegenerate,
+  isDragTool,
+  MIN_CROP,
   normalizeRect,
   redo,
   strokeWidth,
+  textSize,
   toImagePoint,
   toolForKey,
   undo,
   type FreeShape,
   type SpanShape,
+  type TextShape,
 } from "./annotateModel";
 
 const RED = "#ff3b30";
@@ -171,5 +176,99 @@ describe("toolForKey", () => {
   it("lo que no es del editor no elige nada", () => {
     expect(toolForKey("z")).toBeNull();
     expect(toolForKey("Escape")).toBeNull();
+  });
+
+  it("las nuevas tambien tienen su tecla", () => {
+    expect(toolForKey("6")).toBe("text");
+    expect(toolForKey("t")).toBe("text");
+    expect(toolForKey("7")).toBe("crop");
+    expect(toolForKey("x")).toBe("crop");
+  });
+});
+
+describe("textSize", () => {
+  it("crece con el nivel", () => {
+    expect(textSize(1, 1280)).toBeLessThan(textSize(2, 1280));
+    expect(textSize(2, 1280)).toBeLessThan(textSize(3, 1280));
+  });
+
+  it("escala con la imagen, como el grosor", () => {
+    expect(textSize(2, 3840)).toBe(textSize(2, 1280) * 3);
+  });
+
+  it("nunca queda ilegible: es mucho mas grande que el trazo", () => {
+    expect(textSize(1, 1280)).toBeGreaterThan(strokeWidth(3, 1280));
+  });
+});
+
+describe("isDragTool", () => {
+  it("el texto y el recorte no nacen de un arrastre", () => {
+    expect(isDragTool("pen")).toBe(true);
+    expect(isDragTool("highlight")).toBe(true);
+    expect(isDragTool("text")).toBe(false);
+    expect(isDragTool("crop")).toBe(false);
+  });
+});
+
+describe("texto", () => {
+  const text = (value: string): TextShape => ({
+    kind: "text",
+    color: RED,
+    width: 4,
+    at: { x: 10, y: 20 },
+    text: value,
+    size: 26,
+  });
+
+  it("un cuadro vacio no deja nada", () => {
+    expect(isDegenerate(text(""))).toBe(true);
+    expect(isDegenerate(text("   \n  "))).toBe(true);
+  });
+
+  it("con algo escrito si se guarda", () => {
+    expect(isDegenerate(text("hola"))).toBe(false);
+    expect(commit(emptyState(), text("hola")).shapes).toHaveLength(1);
+  });
+
+  it("no se estira: se coloca una vez", () => {
+    const shape = text("hola");
+    expect(extendShape(shape, { x: 999, y: 999 })).toBe(shape);
+  });
+});
+
+describe("cropRect", () => {
+  const full = { x: 0, y: 0, w: 1000, h: 800 };
+
+  it("da igual hacia donde se arrastre", () => {
+    const ida = cropRect({ x: 100, y: 100 }, { x: 400, y: 300 }, full);
+    const vuelta = cropRect({ x: 400, y: 300 }, { x: 100, y: 100 }, full);
+    expect(ida).toEqual({ x: 100, y: 100, w: 300, h: 200 });
+    expect(vuelta).toEqual(ida);
+  });
+
+  it("no se sale de lo que se esta viendo", () => {
+    const next = cropRect({ x: -200, y: -50 }, { x: 5000, y: 5000 }, full);
+    expect(next).toEqual(full);
+  });
+
+  it("dentro de un recorte previo, el nuevo no lo agranda", () => {
+    const previo = { x: 200, y: 100, w: 400, h: 300 };
+    const next = cropRect({ x: 0, y: 0 }, { x: 5000, y: 5000 }, previo);
+    expect(next).toEqual(previo);
+  });
+
+  it("un clic suelto no recorta", () => {
+    expect(cropRect({ x: 10, y: 10 }, { x: 12, y: 14 }, full)).toBeNull();
+    expect(
+      cropRect({ x: 10, y: 10 }, { x: 10 + MIN_CROP - 1, y: 500 }, full),
+    ).toBeNull();
+  });
+
+  it("redondea: de aca sale el tamano de un canvas", () => {
+    const next = cropRect({ x: 10.4, y: 10.6 }, { x: 200.5, y: 300.5 }, full);
+    expect(next).not.toBeNull();
+    for (const value of Object.values(next!)) {
+      expect(Number.isInteger(value)).toBe(true);
+    }
   });
 });

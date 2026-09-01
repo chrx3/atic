@@ -20,6 +20,7 @@
   import SnippetsFloat from "./snippets/SnippetsFloat.svelte";
   import PillSurface from "./pill/PillSurface.svelte";
   import PillQuotaHost from "./pill/PillQuotaHost.svelte";
+  import { quotaHoverState } from "./pill/quotaHover.svelte";
   import PracticeCoach from "$features/onboarding/PracticeCoach.svelte";
   import { getConfig } from "$ipc/config";
   import {
@@ -34,6 +35,7 @@
   import Skin from "$liquid/Skin.svelte";
   import { BLEND, CELL, SMOOTH } from "$liquid/constants";
   import { LAUNCHER_LAB_OPEN_KEY, launcherLab } from "$lib/dev/launcherLab.svelte";
+  import { OVERLAY_GEOMETRY, viewportShifted } from "./overlayGeometry";
   import type { Component } from "svelte";
 
   const debug = $derived(page.url.searchParams.has("debug"));
@@ -141,22 +143,84 @@
   /** Espacio CSS real: fly-to y hit-test tienen que usar el mismo, no `client/DPI`. */
   let cssWidth = $state(0);
   let cssHeight = $state(0);
-  $effect(() => {
-    const w = cssWidth;
-    const h = cssHeight;
+  let lastAnnounced = { w: 0, h: 0 };
+  let probeTimer = 0;
+
+  function announceCssViewport(w: number, h: number) {
     if (w <= 1 || h <= 1) return;
-    void setOverlayCssViewport(w, h).catch(() => {
-      // Fuera de Tauri no hay a quién avisarle.
+    if (lastAnnounced.w > 0 && !viewportShifted(lastAnnounced, { w, h })) return;
+    lastAnnounced = { w, h };
+    void setOverlayCssViewport(w, h)
+      .catch(() => {
+        // Fuera de Tauri no hay a quién avisarle.
+      })
+      .finally(() => {
+        // No es `overlay-ready`: reemitir eso al reaplicar el HWND subía
+        // el overlay sobre `main`. La pill solo tiene que reasentar imanes.
+        window.dispatchEvent(new Event(OVERLAY_GEOMETRY));
+      });
+  }
+
+  /** Sondeo corto: WebView2 a veces cambia innerWidth sin `resize`. */
+  function armGeometryProbe() {
+    window.clearInterval(probeTimer);
+    let last = { w: 0, h: 0 };
+    let probes = 0;
+    const tick = () => {
+      const next = { w: window.innerWidth, h: window.innerHeight };
+      if (next.w <= 1 || next.h <= 1) return;
+      if (last.w > 0 && !viewportShifted(last, next)) return;
+      last = next;
+      announceCssViewport(next.w, next.h);
+    };
+    tick();
+    probeTimer = window.setInterval(() => {
+      tick();
+      if (++probes >= 16) window.clearInterval(probeTimer);
+    }, 200);
+  }
+
+  $effect(() => {
+    // Reaccionar al bind, pero anunciar el innerWidth vivo: el bind puede
+    // llegar tarde o quedarse en el recuadro chico de WebView2.
+    void cssWidth;
+    void cssHeight;
+    announceCssViewport(window.innerWidth, window.innerHeight);
+  });
+
+  /**
+   * WebView2 a veces agranda el overlay sin `resize` (visto: 1551×864 con
+   * escritorio 3840×1080). `bind:innerWidth` no se entera, Rust sigue
+   * mapeando áreas contra el recuadro chico y las islas quedan en una
+   * esquina. visualViewport + ResizeObserver + un sondeo al boot y cada
+   * vez que Rust avisa `overlay-ready` (cambio de monitores, fin de llamada).
+   */
+  $effect(() => {
+    armGeometryProbe();
+    const onVv = () => {
+      const next = { w: window.innerWidth, h: window.innerHeight };
+      if (next.w > 1 && next.h > 1) announceCssViewport(next.w, next.h);
+    };
+    window.visualViewport?.addEventListener("resize", onVv);
+    const ro = new ResizeObserver(() => {
+      const next = { w: window.innerWidth, h: window.innerHeight };
+      if (next.w > 1 && next.h > 1) announceCssViewport(next.w, next.h);
     });
+    ro.observe(document.documentElement);
+    return () => {
+      window.visualViewport?.removeEventListener("resize", onVv);
+      ro.disconnect();
+      window.clearInterval(probeTimer);
+    };
   });
 
   $effect(() => {
     const pending = onOverlayReady(() => {
+      lastAnnounced = { w: 0, h: 0 };
       const w = window.innerWidth;
       const h = window.innerHeight;
-      if (w > 1 && h > 1) {
-        void setOverlayCssViewport(w, h).catch(() => {});
-      }
+      if (w > 1 && h > 1) announceCssViewport(w, h);
+      armGeometryProbe();
       void surfaces.recoverHits();
     });
     return () => void pending.then((off) => off());
@@ -376,8 +440,12 @@
     <LauncherFloat />
     {#if shown}
       <PillSurface />
-      <!-- Después de la pill: publica su gota en el mismo grupo líquido y su
-           contenido tiene que quedar por encima de la piel fundida. -->
+    {/if}
+    <!-- Fuera del `shown` de la pill: si la isla se esconde con el panel
+         abierto, este tiene que seguir montado para replegarse en vez de
+         desaparecer de golpe. Después de la pill para que el contenido quede
+         sobre la piel fundida. -->
+    {#if shown || quotaHoverState.open}
       <PillQuotaHost />
     {/if}
     <PracticeCoach />
@@ -448,8 +516,9 @@
    * En reposo cada float es una ventana, no un charco: fondo opaco para no
    * ver otra interfaz a través, e isolation para el stacking. En `.is-joined`
    * sigue transparente o el cuello con la pill deja un hairline.
+   * El panel de cuota es solo Skin: el fill rectangular taparía la gota.
    */
-  .ov :global([data-float].is-shown:not(.is-joined):not(.is-expanding):not(.is-separating):not(.is-settling)) {
+  .ov :global([data-float].is-shown:not([data-quota-panel]):not(.is-joined):not(.is-expanding):not(.is-separating):not(.is-settling)) {
     background: var(--skin);
     isolation: isolate;
   }

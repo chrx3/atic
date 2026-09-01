@@ -43,11 +43,40 @@ const LANZABLES: [&str; 4] = [".exe", ".com", ".cmd", ".bat"];
 pub fn resolve(program: &str) -> Option<PathBuf> {
     resolve_with(
         program,
-        &dirs_from_env(),
+        &search_dirs(),
         &exts_from_env(),
         SIN_EXTENSION_SIRVE,
         |p| p.is_file(),
     )
+}
+
+/// Dónde buscar: el PATH del proceso y, en Windows, el fresco del registro.
+///
+/// El env del proceso queda congelado al arrancar; un instalador que agrega
+/// su carpeta al PATH del registro después (agy, claude, grok…) no se vería
+/// hasta reiniciar Atic. Se relee por llamada: `cli_on_path` corre poco.
+fn search_dirs() -> Vec<PathBuf> {
+    #[cfg(windows)]
+    {
+        merge_path_dirs(dirs_from_env(), dirs_from_registry())
+    }
+    #[cfg(not(windows))]
+    {
+        dirs_from_env()
+    }
+}
+
+/// El PATH fusionado como valor de variable, para el env de las consolas PTY.
+/// `None` = nada que fusionar: el hijo hereda el PATH tal cual.
+pub fn merged_path_var() -> Option<std::ffi::OsString> {
+    #[cfg(windows)]
+    {
+        std::env::join_paths(search_dirs()).ok()
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
 }
 
 /// ¿Un archivo sin extensión puede ejecutarse?
@@ -173,6 +202,89 @@ fn dirs_from_env() -> Vec<PathBuf> {
     std::env::var_os("PATH")
         .map(|p| std::env::split_paths(&p).collect())
         .unwrap_or_default()
+}
+
+/// Fusión sin duplicados, con el proceso primero: su orden ya resolvía bien y
+/// solo se le suman al final las carpetas que el registro trae de nuevas.
+/// Windows no distingue mayúsculas en rutas.
+#[cfg(windows)]
+fn merge_path_dirs(process: Vec<PathBuf>, fresh: Vec<PathBuf>) -> Vec<PathBuf> {
+    let mut seen: Vec<String> = process
+        .iter()
+        .map(|d| d.to_string_lossy().to_lowercase())
+        .collect();
+    let mut out = process;
+    for dir in fresh {
+        let key = dir.to_string_lossy().to_lowercase();
+        if !key.is_empty() && !seen.contains(&key) {
+            seen.push(key);
+            out.push(dir);
+        }
+    }
+    out
+}
+
+/// El PATH vigente en el registro (usuario + sistema). `RegGetValueW` con
+/// `RRF_RT_REG_SZ` ya expande los `REG_EXPAND_SZ` (`%SystemRoot%`…).
+#[cfg(windows)]
+fn dirs_from_registry() -> Vec<PathBuf> {
+    use windows_sys::Win32::System::Registry::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
+    let mut out = Vec::new();
+    for (root, subkey) in [
+        (HKEY_CURRENT_USER, "Environment"),
+        (
+            HKEY_LOCAL_MACHINE,
+            r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment",
+        ),
+    ] {
+        if let Some(value) = registry_path_value(root, subkey) {
+            out.extend(std::env::split_paths(&value));
+        }
+    }
+    out
+}
+
+#[cfg(windows)]
+fn registry_path_value(
+    root: windows_sys::Win32::System::Registry::HKEY,
+    subkey: &str,
+) -> Option<String> {
+    use windows_sys::Win32::System::Registry::{RegGetValueW, RRF_RT_REG_SZ};
+
+    let subkey_w: Vec<u16> = subkey.encode_utf16().chain(std::iter::once(0)).collect();
+    let value_w: Vec<u16> = "Path".encode_utf16().chain(std::iter::once(0)).collect();
+    unsafe {
+        let mut size: u32 = 0;
+        if RegGetValueW(
+            root,
+            subkey_w.as_ptr(),
+            value_w.as_ptr(),
+            RRF_RT_REG_SZ,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &mut size,
+        ) != 0
+            || size == 0
+        {
+            return None;
+        }
+        // `size` viene en bytes, con el NUL incluido.
+        let mut buf = vec![0u16; size.div_ceil(2) as usize];
+        if RegGetValueW(
+            root,
+            subkey_w.as_ptr(),
+            value_w.as_ptr(),
+            RRF_RT_REG_SZ,
+            std::ptr::null_mut(),
+            buf.as_mut_ptr().cast(),
+            &mut size,
+        ) != 0
+        {
+            return None;
+        }
+        let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+        Some(String::from_utf16_lossy(&buf[..len]))
+    }
 }
 
 /// Las extensiones a probar, en orden de preferencia.
@@ -305,6 +417,29 @@ mod tests {
         let (_, exts, hay) = entorno(&["/otro/opencode.cmd"]);
         let found = resolve_with("/otro/opencode", &[], &exts, WIN, |p| hay.contains(p));
         assert_eq!(found, Some(PathBuf::from("/otro/opencode.cmd")));
+    }
+
+    /// La fusión suma solo lo nuevo del registro, al final y sin repetir
+    /// (las rutas de Windows no distinguen mayúsculas).
+    #[cfg(windows)]
+    #[test]
+    fn fusiona_proceso_primero_y_sin_duplicados() {
+        let merged = merge_path_dirs(
+            vec![PathBuf::from(r"C:\uno"), PathBuf::from(r"C:\dos")],
+            vec![
+                PathBuf::from(r"c:\DOS"),
+                PathBuf::from(r"C:\tres"),
+                PathBuf::from(""),
+            ],
+        );
+        assert_eq!(
+            merged,
+            vec![
+                PathBuf::from(r"C:\uno"),
+                PathBuf::from(r"C:\dos"),
+                PathBuf::from(r"C:\tres"),
+            ]
+        );
     }
 
     #[test]

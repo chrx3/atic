@@ -67,6 +67,22 @@ export function liveHang(activity: Activity, surface: Surface = "none"): number 
 }
 
 /**
+ * Extra de caja para el aviso de update en la tira abierta.
+ *
+ * Cerrada, el icono vive EN la pestaña: no cuelga. Abierta, la pestaña se
+ * desmonta (si no, taparía las herramientas), así que el aviso cuelga igual
+ * que la gota de grabación para seguir siendo un clic, no un dibujo.
+ */
+export function updateHang(
+  surface: Surface,
+  expanded: boolean,
+  hasUpdate: boolean,
+): number {
+  if (!hasUpdate || surface !== "edge" || !expanded) return 0;
+  return PILL.recDrop + PILL.recDropGap;
+}
+
+/**
  * El contenido que la pill tiene que poder mostrar, en píxeles.
  *
  * `barW` se mide del DOM en vez de mantenerse en una tabla de anchos por
@@ -91,6 +107,8 @@ export function contentFor(
   islandCue: boolean = false,
   /** Cuántas marcas hay que alinear en la pestaña. 0 o 1 no alarga. */
   islandCueCount: number = 0,
+  /** Aviso de update: cuelga de la tira abierta, no de la pestaña cerrada. */
+  hasUpdate: boolean = false,
 ): Size {
   if (surface === "wheel") {
     const side = PILL.wheel - PILL.pad * 2;
@@ -101,7 +119,9 @@ export function contentFor(
     // Abierta es la tira de herramientas: acoplada, la pill deja de ser un
     // indicador y pasa a ser el acceso. Se despliega A LO LARGO del borde, que
     // es el único eje donde hay lugar sin taparle la pantalla al usuario.
-    const hang = liveHang(activity, "edge");
+    const hang =
+      liveHang(activity, "edge") +
+      updateHang("edge", dock.expanded, hasUpdate);
     if (dock.expanded) {
       const long = islandStripLong(toolCount + islandLiveSlots(activity));
       return dockAxis(dock.edge) === "x"
@@ -130,9 +150,19 @@ export function targetFor(
   toolCount: number = WHEEL_TOOLS.length,
   islandCue: boolean = false,
   islandCueCount: number = 0,
+  hasUpdate: boolean = false,
 ): Size {
   return windowFor(
-    contentFor(surface, barW, dock, activity, toolCount, islandCue, islandCueCount),
+    contentFor(
+      surface,
+      barW,
+      dock,
+      activity,
+      toolCount,
+      islandCue,
+      islandCueCount,
+      hasUpdate,
+    ),
   );
 }
 
@@ -181,6 +211,31 @@ export function shouldReturnToEdgeOnActivate(
 export const ISLAND_COLLAPSE_MS = 400;
 /** En «Más» el morph cambia el hit: hace falta un poco más. */
 export const ISLAND_COLLAPSE_MORE_MS = 700;
+/**
+ * Con aviso de update, la isla no abre en el mismo cuadro del hover.
+ *
+ * El icono está EN la pestaña cerrada. Abrir al instante lo desmonta y el
+ * clic cae en una herramienta. Un toque corto alcanza a apretar el aviso;
+ * pasado el delay, la tira abre y el aviso cuelga.
+ */
+export const UPDATE_ISLAND_OPEN_DELAY_MS = 180;
+
+/**
+ * ¿El hover ya cuenta para abrir la tira?
+ *
+ * Sin update, el primer sondeo abre. Con update y todavía cerrada, espera
+ * `UPDATE_ISLAND_OPEN_DELAY_MS` de cursor encima.
+ */
+export function islandHoverOpens(input: {
+  over: boolean;
+  expanded: boolean;
+  hasUpdate: boolean;
+  hoveredMs: number;
+}): boolean {
+  if (!input.over) return false;
+  if (input.expanded || !input.hasUpdate) return true;
+  return input.hoveredMs >= UPDATE_ISLAND_OPEN_DELAY_MS;
+}
 
 /**
  * ¿La isla sigue abierta con este sondeo?
@@ -215,6 +270,14 @@ export function wheelChromeActive(state: {
   collapsingFrom: "wheel" | null;
 }): boolean {
   return state.surface === "wheel" || state.collapsingFrom === "wheel";
+}
+
+/**
+ * Arrastrar la rueda abierta la cierra: si no, no es isla y no se acopla
+ * a un canto. El clic sin mover sigue cerrando por el núcleo.
+ */
+export function dragClosesWheel(surface: Surface): boolean {
+  return surface === "wheel";
 }
 
 /**
@@ -313,12 +376,26 @@ export function isDiscOnly(state: {
   activity: Activity;
   hasQueue: boolean;
   agentAlert: boolean;
+  /** Chip de update al lado del disco: si no, el texto se recorta a 40 px. */
+  hasUpdate?: boolean;
 }): boolean {
   return (
     state.activity === "idle" &&
     !state.hasQueue &&
-    !state.agentAlert
+    !state.agentAlert &&
+    !state.hasUpdate
   );
+}
+
+/**
+ * ¿Medir el ancho de la barra compacta ahora?
+ *
+ * El timer y las ondas de grabación disparan `ResizeObserver` a cada tick.
+ * Si se mide durante un arrastre, el reconciliador pelea con el gesto y la
+ * pill salta.
+ */
+export function shouldMeasureBar(surface: Surface, dragging: boolean): boolean {
+  return surface === "none" && !dragging;
 }
 
 /**

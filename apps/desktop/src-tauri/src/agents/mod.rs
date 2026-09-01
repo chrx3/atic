@@ -21,6 +21,7 @@
 //! específica de ese backend.
 
 pub mod acp;
+pub mod antigravity_usage;
 pub mod bridge;
 pub mod claude_code;
 pub mod claude_sessions;

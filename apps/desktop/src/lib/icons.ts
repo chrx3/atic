@@ -34,6 +34,7 @@ import {
   SquareTerminal,
   Star,
   Trash2,
+  Type,
   ArrowLeftRight,
   Plus,
   Share2,
@@ -215,4 +216,6 @@ export {
   PanelRightOpen,
   PanelBottomOpen,
   Keyboard,
+  Crop,
+  Type,
 };

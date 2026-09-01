@@ -4,9 +4,9 @@
 //!
 //! Cada proveedor cuenta distinto: Claude manda porcentajes con fecha RFC3339,
 //! Codex manda porcentajes con segundos Unix, OpenCode manda porcentajes con
-//! otra fecha RFC3339, y Cursor no manda porcentaje alguno. La pill no puede
-//! aprenderse cuatro formatos para dibujar cuatro barras: pinta [`AgentQuota`]
-//! y nada más.
+//! otra fecha RFC3339, y Cursor manda `autoPercentUsed` / `apiPercentUsed`
+//! (los mismos % que su dashboard). La pill no puede aprenderse cuatro formatos
+//! para dibujar cuatro barras: pinta [`AgentQuota`] y nada más.
 //!
 //! Esa traducción vive acá y no en la vista porque es donde se puede probar.
 //! «¿Un `resets_at` en segundos se convirtió bien a milisegundos?» se contesta
@@ -14,10 +14,9 @@
 //!
 //! # Qué NO hace
 //!
-//! No inventa cupos. Un agente que no publica porcentaje —Cursor— llega con
-//! `windows` vacío y `spend` lleno, y la vista lo pinta distinto. Rellenar esa
-//! barra contra un tope supuesto sería la única forma de que las cuatro filas
-//! se vieran iguales, y también la forma de mentir.
+//! No inventa cupos. Cursor llega con `windows` (Auto / API) cuando el
+//! dashboard las publica, y con `spend` solo si hay on-demand de verdad.
+//! Sumar el valor de lista de los eventos y pintarlo como barra sería mentir.
 //!
 //! # Frescura
 //!
@@ -54,7 +53,7 @@ pub struct QuotaWindow {
     pub resets_at: Option<i64>,
 }
 
-/// Consumo sin techo conocido. Hoy solo Cursor.
+/// Consumo on-demand, sin techo conocido. Hoy solo Cursor, y solo si cobra extra.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct QuotaSpend {
@@ -70,7 +69,7 @@ pub struct AgentQuota {
     /// `opencode`, `cursor-agent`).
     pub agent: String,
     pub plan: Option<String>,
-    /// Vacío = este proveedor no publica cupo.
+    /// Vacío = este proveedor no publica cupo (o Cursor cayó al fallback).
     pub windows: Vec<QuotaWindow>,
     /// Presente solo cuando no hay cupo que mostrar.
     pub spend: Option<QuotaSpend>,
@@ -140,6 +139,9 @@ fn collect() -> QuotaOverview {
     if super::cursor_usage::detected() {
         handles.push(std::thread::spawn(cursor_quota));
     }
+    if super::antigravity_usage::detected() {
+        handles.push(std::thread::spawn(antigravity_quota));
+    }
 
     let agents = handles
         .into_iter()
@@ -198,6 +200,12 @@ fn claude_quota() -> AgentQuota {
         push("7d", 10_080, &u.seven_day);
         push("7dOpus", 10_080, &u.seven_day_opus);
         push("7dSonnet", 10_080, &u.seven_day_sonnet);
+        // Las semanales de los modelos que la API sumó después (Fable y las que
+        // vengan): viajan con el nombre adentro del `kind` para que la vista no
+        // necesite una etiqueta nueva por cada una.
+        for extra in &u.seven_day_models {
+            push(&format!("7d:{}", extra.model), 10_080, &Some(extra.window.clone()));
+        }
 
         AgentQuota {
             agent: "claude".to_string(),
@@ -210,8 +218,43 @@ fn claude_quota() -> AgentQuota {
     })
 }
 
+/// ¿El dato del rollout de Codex todavía sirve? Sirve si al menos una ventana
+/// está vigente (su reinicio no pasó). Una ventana sin `resets_at` cuenta como
+/// vigente: no se puede probar que venció. `now_secs` en segundos Unix, igual
+/// que `resets_at` en el rollout.
+fn codex_rollout_is_current(u: &super::codex_usage::CodexAccountUsage, now_secs: i64) -> bool {
+    let current = |w: &Option<super::codex_usage::CodexUsageWindow>| {
+        w.as_ref()
+            .is_some_and(|w| w.resets_at.is_none_or(|s| s >= now_secs))
+    };
+    current(&u.primary) || current(&u.secondary)
+}
+
+/// Levanta `codex app-server` para pedir cupos frescos. Se paga solo cuando el
+/// rollout no sirve; el TTL del overview (60 s) acota la frecuencia.
+fn codex_fetch_fresh() -> Result<super::codex_usage::CodexAccountUsage, String> {
+    let started = Instant::now();
+    let result = super::codex_usage::fetch_account_usage();
+    tracing::debug!(
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        ok = result.is_ok(),
+        "cupos de Codex vía app-server (fallback)"
+    );
+    result
+}
+
 fn codex_quota() -> AgentQuota {
-    row("codex", super::codex_usage::fetch_from_rollout(), |u| {
+    let usage = match super::codex_usage::fetch_from_rollout() {
+        // Vigente: el disco alcanza y no se paga el proceso.
+        Ok(u) if codex_rollout_is_current(&u, Utc::now().timestamp()) => Ok(u),
+        // Todo vencido: mejor preguntar de verdad; si no se puede, el dato
+        // viejo se muestra igual (la vista ya lo marca de hace días).
+        Ok(stale) => Ok(codex_fetch_fresh().unwrap_or(stale)),
+        // Sin rollout utilizable: el app-server es la única vía; si también
+        // falla, se conserva el motivo original, que es más accionable.
+        Err(err) => codex_fetch_fresh().map_err(|_| err),
+    };
+    row("codex", usage, |u| {
         let mut windows = Vec::new();
         let mut push = |kind: &str, win: Option<super::codex_usage::CodexUsageWindow>| {
             if let Some(win) = win {
@@ -267,18 +310,66 @@ fn cursor_quota() -> AgentQuota {
     row(
         "cursor-agent",
         super::cursor_usage::fetch_account_usage(),
-        |u| AgentQuota {
-            agent: "cursor-agent".to_string(),
-            plan: u.plan,
-            windows: Vec::new(),
-            spend: Some(QuotaSpend {
-                cents: u.spend_cents,
-                period_end: u.period_end.as_deref().and_then(rfc3339_ms),
-            }),
-            fetched_at: Some(u.fetched_at),
-            error: None,
-        },
+        cursor_from,
     )
+}
+
+fn cursor_from(u: super::cursor_usage::CursorAccountUsage) -> AgentQuota {
+    let period_end = u.period_end.as_deref().and_then(rfc3339_ms);
+    AgentQuota {
+        agent: "cursor-agent".to_string(),
+        plan: u.plan,
+        windows: u
+            .windows
+            .into_iter()
+            .map(|w| QuotaWindow {
+                kind: w.kind,
+                minutes: None,
+                used_percent: w.used_percent,
+                resets_at: period_end,
+            })
+            .collect(),
+        spend: if u.spend_cents > 0.5 {
+            Some(QuotaSpend {
+                cents: u.spend_cents,
+                period_end,
+            })
+        } else {
+            None
+        },
+        fetched_at: Some(u.fetched_at),
+        error: None,
+    }
+}
+
+fn antigravity_quota() -> AgentQuota {
+    row(
+        "agy",
+        super::antigravity_usage::fetch_account_usage(),
+        antigravity_from,
+    )
+}
+
+fn antigravity_from(u: super::antigravity_usage::AntigravityAccountUsage) -> AgentQuota {
+    AgentQuota {
+        agent: "agy".to_string(),
+        plan: None,
+        windows: u
+            .windows
+            .into_iter()
+            .map(|w| QuotaWindow {
+                // Viaja como semanal por modelo (`7d:<grupo>`): la vista ya
+                // sabe pintar esas etiquetas sin aprender un id nuevo.
+                kind: format!("7d:{}", w.group),
+                minutes: Some(10_080),
+                used_percent: w.used_percent,
+                resets_at: w.resets_at.as_deref().and_then(rfc3339_ms),
+            })
+            .collect(),
+        spend: None,
+        fetched_at: Some(u.fetched_at),
+        error: None,
+    }
 }
 
 fn rfc3339_ms(stamp: &str) -> Option<i64> {
@@ -306,6 +397,39 @@ mod tests {
     }
 
     #[test]
+    fn el_rollout_de_codex_vencido_pide_fallback() {
+        let win = |resets_at| {
+            Some(super::super::codex_usage::CodexUsageWindow {
+                used_percent: 10.0,
+                window_duration_mins: 300,
+                resets_at,
+            })
+        };
+        let usage = |primary, secondary| super::super::codex_usage::CodexAccountUsage {
+            primary,
+            secondary,
+            plan: None,
+            limit_name: None,
+            fetched_at: 0,
+        };
+        let now = 1_000_000;
+        // Una ventana vigente alcanza para no pagar el proceso.
+        assert!(codex_rollout_is_current(
+            &usage(win(Some(now + 60)), win(Some(now - 60))),
+            now
+        ));
+        // Todas vencidas: toca el app-server.
+        assert!(!codex_rollout_is_current(
+            &usage(win(Some(now - 60)), win(Some(now - 1))),
+            now
+        ));
+        // Sin ventanas: ídem.
+        assert!(!codex_rollout_is_current(&usage(None, None), now));
+        // Sin `resets_at` no se puede probar que venció: cuenta como vigente.
+        assert!(codex_rollout_is_current(&usage(win(None), None), now));
+    }
+
+    #[test]
     fn una_fila_con_error_conserva_el_motivo() {
         let quota = row::<()>("codex", Err("sin sesiones".into()), |_| unreachable!());
         assert_eq!(quota.agent, "codex");
@@ -316,38 +440,37 @@ mod tests {
     }
 
     #[test]
-    fn cursor_llega_sin_ventanas_y_con_consumo() {
+    fn cursor_llega_con_ventanas_y_sin_on_demand() {
         let quota = cursor_row_de_prueba();
-        assert!(
-            quota.windows.is_empty(),
-            "Cursor no publica cupo; una ventana acá sería inventada"
-        );
-        let spend = quota.spend.unwrap();
-        assert_eq!(spend.cents, 121_312.0);
-        assert_eq!(spend.period_end, Some(1788288274000));
+        assert_eq!(quota.windows.len(), 2);
+        assert_eq!(quota.windows[0].kind, "auto");
+        assert!((quota.windows[0].used_percent - 80.5825).abs() < 1e-6);
+        assert_eq!(quota.windows[1].kind, "api");
+        assert!(quota.spend.is_none(), "on-demand cero no se pinta como gasto");
+        assert_eq!(quota.windows[0].resets_at, Some(1788288274000));
     }
 
     fn cursor_row_de_prueba() -> AgentQuota {
         row(
             "cursor-agent",
             Ok(super::super::cursor_usage::CursorAccountUsage {
-                spend_cents: 121_312.0,
+                spend_cents: 0.0,
                 plan: Some("pro_plus".into()),
                 period_start: Some("2026-08-01T18:44:34.000Z".into()),
                 period_end: Some("2026-09-01T18:44:34.000Z".into()),
+                windows: vec![
+                    super::super::cursor_usage::CursorUsageWindow {
+                        kind: "auto".into(),
+                        used_percent: 80.5825,
+                    },
+                    super::super::cursor_usage::CursorUsageWindow {
+                        kind: "api".into(),
+                        used_percent: 87.8,
+                    },
+                ],
                 fetched_at: 1_787_000_000_000,
             }),
-            |u| AgentQuota {
-                agent: "cursor-agent".to_string(),
-                plan: u.plan,
-                windows: Vec::new(),
-                spend: Some(QuotaSpend {
-                    cents: u.spend_cents,
-                    period_end: u.period_end.as_deref().and_then(rfc3339_ms),
-                }),
-                fetched_at: Some(u.fetched_at),
-                error: None,
-            },
+            cursor_from,
         )
     }
 }

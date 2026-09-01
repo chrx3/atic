@@ -13,6 +13,10 @@
     openai: { path: "/agents/openai.svg" },
     cursor: { path: "/agents/cursor.svg" },
     "cursor-agent": { path: "/agents/cursor.svg" },
+    gemini: { path: "/agents/gemini.svg" },
+    agy: { path: "/agents/antigravity.svg" },
+    grok: { path: "/agents/grok.svg" },
+    xai: { path: "/agents/grok.svg" },
   };
 
   const logo = $derived(LOGOS[agent?.trim().toLowerCase() ?? ""] ?? null);
