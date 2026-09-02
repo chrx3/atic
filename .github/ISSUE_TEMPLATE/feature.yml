@@ -22,12 +22,14 @@ body:
       label: Área
       options:
         - Pill / overlay
+        - Agentes
+        - Launcher
         - Reuniones (grabar / transcribir / resumir)
         - Dictado
+        - Capturas
+        - Pizarra
         - Clipboard
         - Textos
-        - Capturas
-        - Launcher
         - Ajustes / atajos
         - Build / empaquetado
         - Otra
