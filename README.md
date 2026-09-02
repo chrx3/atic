@@ -1,10 +1,10 @@
 <p align="center">
-  <img src="docs/assets/social-preview.png" width="720" alt="Atic — local-first desktop assistant">
+  <img src="docs/assets/social-preview.png" width="720" alt="Atic — caja de herramientas de escritorio">
 </p>
 
 <p align="center">
-  Asistente de escritorio local-first.<br>
-  Graba reuniones, dicta, captura y pega — sin ir a buscar una ventana.
+  Caja de herramientas de escritorio local-first.<br>
+  Vive en una <strong>pill</strong> flotante — no en una ventana que hay que ir a buscar.
 </p>
 
 <p align="center">
@@ -16,10 +16,17 @@
   <img src="https://img.shields.io/badge/Tauri-2-FFC131?logo=tauri&logoColor=black" alt="Tauri 2">
 </p>
 
-Atic vive en una **barra flotante** (la pill), la bandeja del sistema y atajos
-globales. El audio se graba en tu PC; Whisper transcribe en local. Si eliges
-Groq para dictado o live, ese audio sí sale a su API. Los resúmenes son BYOK:
-solo viaja el texto, con la clave en el llavero del sistema.
+Atic flota encima del escritorio: una pill que se pega al borde como una isla
+y abre una rueda con las herramientas. Conversas con los agentes CLI que ya
+tienes instalados, lanzas apps, dictas, grabas reuniones, capturas y pegas —
+sin salir de lo que estabas haciendo.
+
+No es otra ventana de chat ni un índice de todo el disco. Son las herramientas
+del SO y de tus CLIs, en una presencia que no interrumpe.
+
+El audio se graba en tu PC; Whisper transcribe en local. Si eliges Groq para
+dictado o live, ese audio sí sale a su API. Los resúmenes son BYOK: solo viaja
+el texto, con la clave en el llavero del sistema.
 
 **Windows** es la plataforma completa (mic + audio del sistema). En **macOS**
 hoy se graba solo el micrófono.
@@ -31,12 +38,17 @@ Atic es **open source** ([MIT](LICENSE)). El desarrollo vive en
 
 | | |
 |---|---|
+| **Agentes** | Claude Code, Codex, Cursor y OpenCode en una consola con interfaz. Atic no autentica: se cuelga del CLI que ya logueaste. |
+| **Apps** | Launcher tipo Spotlight (`Ctrl+Space`). Abre programas y acciones de Atic. |
 | **Reuniones** | Mic + sistema en pistas separadas, transcripción local, resumen editable, envío por correo. La detección de llamadas solo *sugiere* grabar. |
 | **Dictado** | Atajo global (toggle o push-to-talk). Transcribe y pega donde estabas escribiendo. |
+| **Capturas** | Ventana, región o monitor, al portapapeles y a un shelf flotante. |
+| **Pizarra** | Congela la pantalla y la marcas ahí donde está (flechas, círculos, trazo). |
 | **Clipboard** | Historial local de texto e imágenes. No archiva lo que un gestor de contraseñas marcó como efímero. |
 | **Textos** | Snippets a propósito, más un bloc de notas. Distinto del historial: esto lo guardas tú. |
-| **Capturas** | Ventana, región o monitor, al portapapeles y a un shelf flotante. |
-| **Apps** | Launcher tipo Spotlight (mismo atajo que Ctrl+Space). |
+
+La pill, la bandeja del sistema y los atajos globales son el shell. La ventana
+principal es la biblioteca: grabaciones, transcript, resumen, Ajustes.
 
 Catálogo vivo (hechas, a medias e ideas): [`Features/`](Features/).
 
@@ -56,7 +68,7 @@ Los modelos de Whisper se bajan en el primer uso; no van dentro del instalador.
 
 1. La pill queda siempre encima. Clic (o el atajo de la rueda) abre las herramientas.
 2. **Traer la pill** al cursor: atajo en Ajustes (por defecto `Ctrl+Shift+P`).
-3. Grabar, dictar, capturar y el launcher tienen atajos globales propios.
+3. Grabar, dictar, capturar, agentes y el launcher tienen atajos globales propios.
 4. La ventana principal es la biblioteca: grabaciones, transcript, resumen, Ajustes.
 
 | Atajo | Acción |
@@ -66,6 +78,8 @@ Los modelos de Whisper se bajan en el primer uso; no van dentro del instalador.
 | `Ctrl+Shift+V` | Historial de portapapeles |
 | `Ctrl+Shift+S` | Textos |
 | `Ctrl+Shift+4` | Captura |
+| `Ctrl+Shift+X` | Pizarra |
+| `Ctrl+Shift+A` | Agentes |
 | `Ctrl+Shift+P` | Traer la pill al cursor |
 | `Ctrl+Space` | Launcher |
 | `Alt+Z` | Rueda de herramientas |
@@ -78,11 +92,12 @@ aprieta el botón.
 
 ## Privacidad
 
-- Grabaciones, transcripts, clipboard y logs viven en el disco local
-  (`%APPDATA%\ciat\atic\data\` en Windows;
+- Grabaciones, transcripts, clipboard, conversaciones de agentes y logs viven
+  en el disco local (`%APPDATA%\ciat\atic\data\` en Windows;
   `~/Library/Application Support/ciat/atic/data/` en Mac).
 - Las API keys (Groq, Claude, OpenAI, …) y la contraseña SMTP van al **llavero
   del sistema**, no a `config.json`.
+- Atic no autentica agentes: usa el CLI que tú ya instalaste y logueaste.
 - No hay cuenta Atic ni telemetría de producto.
 
 ## Desarrollo

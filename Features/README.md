@@ -3,9 +3,6 @@
 Inventario de capacidades de producto: qué hay, qué está a medias y qué
 queremos. Cada ficha se actualiza cuando la feature cambia.
 
-En el instalador actual la herramienta de **agentes** está oculta en la UI;
-el código y su ficha siguen en el repo.
-
 Los planes técnicos largos siguen en [`docs/`](../docs/). Acá no se duplica
 implementación: se resume, se apunta al código y al plan si existe.
 
