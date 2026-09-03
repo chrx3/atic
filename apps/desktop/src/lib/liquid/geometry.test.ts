@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { boxShape, gapBetween, pillShape, stemBetween } from "./geometry";
+import {
+  boxShape,
+  gapBetween,
+  nearestStemBody,
+  pillShape,
+  stemBetween,
+  stemBodyFits,
+} from "./geometry";
 import { BLEND, BULGE, CELL, INFLUENCE, REACH } from "./constants";
 import { smin } from "./sdf";
 import { Field, shapeSD } from "./sdf";
@@ -67,6 +74,50 @@ describe("stemBetween", () => {
 
   it("sin solape no hay hilo posible: mejor ninguno que uno en el aire", () => {
     expect(stemBetween(pill, { x: 300, y: 50, w: 200, h: 160 }, "top", 4)).toBeNull();
+  });
+});
+
+describe("stemBodyFits", () => {
+  it("una pestaña de 10 px en el techo no sostiene un cuello", () => {
+    expect(
+      stemBodyFits({ x: 0, y: 0, w: 40, h: 10 }, "top", 6),
+    ).toBe(false);
+  });
+
+  it("la isla abierta (~34 px) sí", () => {
+    expect(
+      stemBodyFits({ x: 0, y: 0, w: 194, h: 34 }, "top", 6),
+    ).toBe(true);
+    expect(
+      stemBodyFits({ x: 0, y: 0, w: 34, h: 194 }, "left", 6),
+    ).toBe(true);
+  });
+
+  it("en el canto, la pestaña flaca tampoco: el grosor es el eje hacia el panel", () => {
+    expect(
+      stemBodyFits({ x: 0, y: 0, w: 10, h: 40 }, "left", 6),
+    ).toBe(false);
+  });
+});
+
+describe("nearestStemBody", () => {
+  const panel = { x: 400, y: 566, w: 208, h: 280 };
+
+  it("elige el cuerpo pegado y descarta el disco fantasma lejos", () => {
+    const ghost = { x: 400, y: 300, w: 40, h: 40 };
+    const wheel = { x: 400, y: 300, w: 252, h: 252 };
+    expect(nearestStemBody([ghost, wheel], panel, "top", 6, 24)).toEqual(wheel);
+  });
+
+  it("sin nadie al alcance, ningún hilo", () => {
+    const ghost = { x: 400, y: 300, w: 40, h: 40 };
+    expect(nearestStemBody([ghost], panel, "top", 6, 24)).toBeNull();
+  });
+
+  it("cuelga de la flor, no de un disco que solo se solapa en X", () => {
+    const ghost = { x: 400, y: 300, w: 40, h: 40 };
+    const petal = { x: 430, y: 480, w: 56, h: 56 };
+    expect(nearestStemBody([ghost, petal], panel, "top", 6, 80)).toEqual(petal);
   });
 });
 

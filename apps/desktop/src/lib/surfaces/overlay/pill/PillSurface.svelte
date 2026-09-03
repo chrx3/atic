@@ -101,12 +101,13 @@
     defaultPillHome,
     geometryReseat,
     edgeWallsFor,
+    snapDrop,
     snapMagnet,
     shouldUndock,
     type DockEdge,
   } from "$surfaces/overlay/edgeDock";
   import AgentAuthCard from "$surfaces/overlay/pill/AgentAuthCard.svelte";
-  import { afterTransition, MOTION, ms, wait } from "$lib/motion";
+  import { afterTransition, MOTION, ms, opacityFade, wait } from "$lib/motion";
   import { playWheelTick } from "$core/uiSound";
   import type { PermissionDecision } from "$core/types";
   // Lo que queda son los comandos DE LA PILL: su geometría, sus atajos y las
@@ -148,6 +149,11 @@
     type SlotRequest,
   } from "$surfaces/overlay/slotIntent";
   import { armOpenDismissGrace } from "$surfaces/overlay/openDismissGrace";
+  import {
+    birthAtCursor,
+    captureToolBirth,
+    waitToolResting,
+  } from "$surfaces/overlay/toolBirth";
   import {
     onOverlayDismiss,
     onOverlayYieldMain,
@@ -313,13 +319,56 @@
     };
   });
 
-  /** Acoplada: la pestaña engorda si hay aviso de agente o de update. */
+  /**
+   * Qué estado lleva la cara de la marca. La mascota dice QUÉ está corriendo;
+   * antes lo decía una gota colgada que cambiaba la silueta.
+   */
+  const markState = $derived<"idle" | "recording" | "dictating">(
+    recording ? "recording" : dictating ? "dictating" : "idle",
+  );
+
+  /**
+   * Qué hace el clic en la marca, y qué dice el globo.
+   *
+   * Si la cara muestra la herramienta que está corriendo, apretarla la para:
+   * un segundo botón rojo al lado era decir dos veces lo mismo y ocupar el
+   * ancho que la cápsula necesita para el contador. En reposo, la puerta a la
+   * rueda de siempre.
+   */
+  const markAction = $derived.by(() => {
+    if (markState === "recording") {
+      return { label: btWarning ?? t("pill.stopRecord"), run: toggleRecord };
+    }
+    if (markState === "dictating") {
+      return { label: t("pill.stopDictate"), run: toggleDictate };
+    }
+    return { label: discHint, run: () => void openWheel() };
+  });
+
+  /**
+   * Acoplada: la pestaña engorda si hay algo que decir además de la marca.
+   *
+   * La actividad NO cuenta: su control es la propia marca, que ya estaba ahí.
+   */
   const edgeCue = $derived(
     surface === "edge" && (showAgentTab || updateChip != null),
   );
   const edgeCueMarks = $derived(
     (showAgentTab ? Math.max(islandCueAgents.length, 1) : 0) +
       (updateChip ? 1 : 0),
+  );
+
+  /**
+   * ¿El aviso lleva a algún lado?
+   *
+   * Sin nada que abrir, enfocar ni atar, un botón promete lo que no cumple:
+   * cursor de mano, hover y un clic que se come el gesto sin decir nada. En
+   * ese caso el aviso es texto, y el mensaje entero vive en el globo.
+   */
+  const agentChipActs = $derived(
+    agentsDock.minimized ||
+      chip.target.kind !== "none" ||
+      chip.target.presenceId != null,
   );
 
   const agentChipAria = $derived.by(() => {
@@ -437,8 +486,24 @@
   let wheelOwnsQuota = false;
   $effect(() => {
     if (!wheelShown || wheelTool !== "agents" || !wheelEl) return;
-    const r = wheelEl.getBoundingClientRect();
-    quotaHoverState.show({ x: r.left, y: r.top, w: r.width, h: r.height }, agentsHelp);
+    const o = tracker.originAt;
+    const r = tracker.rects;
+    const parts = [];
+    for (const [id, rect] of Object.entries(r)) {
+      if (!id.startsWith("wheel-") || !rect) continue;
+      parts.push({ x: rect.x + o.x, y: rect.y + o.y, w: rect.w, h: rect.h });
+    }
+    // El ancla es el gajo, no `.p-wheel`: esa caja es el escenario de 252 px
+    // y el panel de cupos se iba abajo de toda la flor.
+    const petal =
+      wheelEl.querySelector<HTMLElement>(".pw-node.is-hot .pw-node-body") ??
+      wheelEl.querySelector<HTMLElement>(".pw-node.is-hot");
+    const box = (petal ?? wheelEl).getBoundingClientRect();
+    quotaHoverState.show(
+      { x: box.left, y: box.top, w: box.width, h: box.height },
+      agentsHelp,
+      parts.length > 0 ? parts : null,
+    );
     wheelOwnsQuota = true;
     return () => {
       if (!wheelOwnsQuota) return;
@@ -516,8 +581,6 @@
   const trackTail = (el: HTMLElement) => tracker.track("tail", el);
   /** La isla acoplada: llena la caja, así que se anima con ella. */
   const trackIsland = (el: HTMLElement) => tracker.track("island", el);
-  const trackLive = (el: HTMLElement) => tracker.track("live", el);
-  const trackUpdate = (el: HTMLElement) => tracker.track("update", el);
   /**
    * Cada herramienta se mide aparte, aunque hoy la silueta no las use.
    *
@@ -611,20 +674,30 @@
     { length: WHEEL_TOOLS.length + 2 },
     (_, i) => (el: HTMLElement) => tracker.track(`island-${i}`, el),
   );
+  /**
+   * Gota 0 = núcleo, 1…n = gajos, n+1 = viva. Holgura para el submenú.
+   * Mismas funciones estables que la tira: un `@attach` nuevo desmonta el rect.
+   */
+  const wheelAttachers = Array.from(
+    { length: WHEEL_TOOLS.length + 4 },
+    (_, i) => (el: HTMLElement) => tracker.track(`wheel-${i}`, el),
+  );
+  function attachWheelBlob(index: number) {
+    return wheelAttachers[index] ?? wheelAttachers[0]!;
+  }
 
   /** Margen tras la coreografía, por si el último cuadro llega tarde. */
   const ISLAND_SETTLE_MS = 120;
 
   /**
-   * Mantener despierto al tracker durante TODA la transición de la isla.
+   * Mantener despierto al tracker durante TODA la transición de la isla
+   * y del bloom de la rueda.
    *
    * `RectTracker` deja de mirar tras 3 cuadros sin cambios, y su propio
    * comentario avisa del riesgo: «una transición puede tener un cuadro sin
-   * cambio visible en el medio». La de la isla tiene muchos más que uno —el
-   * escalonado mete hasta 52 ms de `transition-delay`, que a 60 Hz son 3
-   * cuadros enteros en los que nada se mueve—, así que se dormía a mitad de
-   * camino y la silueta quedaba congelada donde la hubiera agarrado: un cuerpo
-   * chico bajo unos iconos ya desplegados, hasta que otra cosa lo despertaba.
+   * cambio visible en el medio». El escalonado mete varios de esos cuadros
+   * —isla o rueda—, así que se dormía a mitad de camino y la silueta quedaba
+   * congelada donde la hubiera agarrado.
    *
    * `wake()` es idempotente y solo reinicia el contador de quietud, así que
    * bombearlo por cuadro durante el tramo cuesta nada y garantiza que la
@@ -634,9 +707,18 @@
     void dock;
     void surface;
     void recording;
-    if (surface !== "edge" && !beadsAlive) return;
+    void wheelShown;
+    void tailIn;
+    const blooming = wheelChrome;
+    if (surface !== "edge" && !beadsAlive && !blooming) return;
     let raf = 0;
-    const until = performance.now() + ms(MOTION.islandOpen) + ISLAND_SETTLE_MS;
+    const bloomMs =
+      ms(MOTION.morphOpen) +
+      (WHEEL_TOOLS.length + 1) * ms(MOTION.morphStagger);
+    const until =
+      performance.now() +
+      (blooming ? bloomMs : ms(MOTION.islandOpen)) +
+      ISLAND_SETTLE_MS;
     const pump = () => {
       tracker.wake();
       raf = performance.now() < until ? requestAnimationFrame(pump) : 0;
@@ -663,6 +745,7 @@
     void dock;
     void beadsAlive;
     void recording;
+    void wheelShown;
     tracker.wake(true);
   });
 
@@ -684,11 +767,26 @@
    * gota son pastillas.
    */
   const skinShapes = $derived.by(() => {
-    // Con el chrome de la rueda activo (abierta o colapsando) la silueta la
-    // pintan las gotas de ParticleWheel. Publicar la barra en ese tramo deja
-    // un disco fantasma arriba-izquierda del cuadrado: el stack vive anclado
-    // al top-left del root, no al centro donde está la marca de la rueda.
-    if (wheelChrome) return [];
+    // Con el chrome de la rueda activo (abierta o colapsando) la silueta
+    // son las gotas medidas de ParticleWheel, en el mismo campo SDF que el
+    // resto del overlay. Publicar la barra en ese tramo deja un disco
+    // fantasma arriba-izquierda: el stack vive anclado al top-left del root,
+    // no al centro donde está la marca de la rueda.
+    if (wheelChrome) {
+      const r = tracker.rects;
+      const o = tracker.originAt;
+      const at = (rect: Rect): Rect => ({
+        ...rect,
+        x: rect.x + o.x,
+        y: rect.y + o.y,
+      });
+      const shapes = [];
+      for (const [id, rect] of Object.entries(r)) {
+        if (!id.startsWith("wheel-") || !rect) continue;
+        shapes.push(pillShape(at(rect)));
+      }
+      return shapes;
+    }
     const r = tracker.rects;
     // A coordenadas del overlay: el grupo mezcla las formas de la pill con las
     // de la consola, y solo son comparables en un origen común.
@@ -718,14 +816,12 @@
     //
     // Se mide un elemento propio que llena la caja, así que sigue la
     // transición de tamaño en vez de saltar. Y deja fuera la barra normal:
-    // publicarla dibujaba el disco de 40 px sobre una zona viva de 48×18 —la
-    // pill se veía sin cambiar y no respondía, porque lo que recibe el puntero
-    // es la caja y no lo dibujado—.
+    // publicarla dibujaba el disco de reposo sobre una zona viva de pestaña
+    // —la pill se veía sin cambiar y no respondía, porque lo que recibe el
+    // puntero es la caja y no lo dibujado—.
     if (surface === "edge") {
       const shapes = [];
       if (r.island) shapes.push(pillShape(at(r.island)));
-      if (r.live) shapes.push(pillShape(at(r.live)));
-      if (r.update) shapes.push(pillShape(at(r.update)));
       shapes.push(...wallFor(r.island));
       return shapes;
     }
@@ -758,8 +854,9 @@
   });
 
   /**
-   * El hogar: centro de arriba del monitor principal. Arrastrar la acerca a
-   * un imán, pero abrir una herramienta o cerrar un float la devuelve acá.
+   * El hogar: centro de arriba del monitor principal. Arrastrar la deja
+   * donde cae (o en un canto si quedó pegada). Abrir una herramienta o
+   * cerrar un float la devuelve acá.
    */
   let home = $state({ x: 0, y: 0 });
 
@@ -793,6 +890,8 @@
   let flying = $state(false);
   /** Generación del vuelo: Esc/reabrir invalidan un `flyTo` en curso. */
   let flightEpoch = 0;
+  /** Cambio de anillo (Más / atrás): no comparte epoch con el cierre. */
+  let wheelPageEpoch = 0;
 
   function cancelFlight() {
     flightEpoch += 1;
@@ -861,7 +960,9 @@
    *  tabla de anchos mágicos por estado — la fuente original del desajuste. */
   let barW = $state<number>(PILL.bar);
   let barEl = $state<HTMLElement | null>(null);
-  let agentDockEl = $state<HTMLButtonElement | null>(null);
+  // `HTMLElement` y no `HTMLButtonElement`: sin nada que abrir, el aviso se
+  // renderiza como `<span>`. Sigue midiéndose igual para el ancla del float.
+  let agentDockEl = $state<HTMLElement | null>(null);
 
   /**
    * Acoplada a un borde. `null` = flotando (centro de pantalla u otro imán).
@@ -871,6 +972,17 @@
    */
   let dock = $state<Dock | null>(null);
 
+  /**
+   * Celdas de la tira abierta: la marca, las herramientas y el aviso de update.
+   *
+   * La marca es una celda más y no un adorno: abierta y cerrada tienen que
+   * leerse como la misma cosa, y antes al abrir la marca desaparecía. El
+   * update entra acá porque ya no cuelga.
+   */
+  const islandSlots = $derived(
+    1 + stripNodes.length + (updateChip ? 1 : 0) + islandLiveSlots(activity),
+  );
+
   const target = $derived(
     windowFor(
       contentFor(
@@ -878,14 +990,14 @@
         barW,
         dock,
         activity,
-        stripNodes.length,
+        // La tira mide en celdas, no en herramientas: la marca y el update
+        // ocupan las suyas.
+        islandSlots,
         edgeCue,
         edgeCueMarks,
-        updateChip != null,
       ),
     ),
   );
-  const islandSlots = $derived(stripNodes.length + islandLiveSlots(activity));
 
   /**
    * Contra qué eje se aplana la isla, o `null` si no está acoplada.
@@ -940,6 +1052,25 @@
   });
 
   /**
+   * La gota de la barra (grabación, cola, aviso) tiene que existir también
+   * al irse: si se desmonta en el mismo cuadro, el campo corta y no hay
+   * cierre que leer. `tailIn` va un frame tarde para que `inset` transicione.
+   */
+  let tailAlive = $state(false);
+  let tailIn = $state(false);
+  $effect(() => {
+    if (!discOnly) {
+      tailAlive = true;
+      const raf = requestAnimationFrame(() => (tailIn = true));
+      return () => cancelAnimationFrame(raf);
+    }
+    tailIn = false;
+    if (!tailAlive) return;
+    const timer = setTimeout(() => (tailAlive = false), ms(MOTION.panel));
+    return () => clearTimeout(timer);
+  });
+
+  /**
    * Lado del chip de consola: opuesto al borde horizontal más cercano.
    * Usa el centro de la caja de la pill (no solo el disco) para no saltar
    * al expandirse el aviso.
@@ -978,12 +1109,19 @@
     }
     const id = target.presenceId;
     if (!id) return;
+    // Sin terminal atada, el clic ATA. Es lo que dice su propio globo
+    // (`pill.unboundTitle`), pero el código intentaba ENFOCAR una ventana que
+    // todavía no existe: devolvía "none", no pasaba nada y el clic se perdía.
+    // Atar era la acción útil y estaba escondida detrás de Ctrl.
+    const unbound = target.kind === "none";
     void (async () => {
       try {
-        let result = preferBind
-          ? await agentPresenceBind(id)
-          : await agentPresenceFocus(id);
-        if (result.kind === "none" && preferBind) {
+        let result =
+          preferBind || unbound
+            ? await agentPresenceBind(id)
+            : await agentPresenceFocus(id);
+        // Enfocar falló y todavía no probamos atar: la ventana pudo cerrarse.
+        if (result.kind === "none" && !preferBind && !unbound) {
           result = await agentPresenceBind(id);
         }
         // El clic ya es reconocimiento: aunque el foco no se confirme, el
@@ -1166,6 +1304,21 @@
     );
     if (outcome.ok) {
       collapsingFrom = null;
+      // El resize es `await`: con el gesto vivo, para cuando aterriza el
+      // arrastre ya movió la pill varios cuadros. Escribir `at` sin más la
+      // devolvía a donde estaba antes del resize —el salto— y encima dejaba el
+      // origen del gesto apuntando a una caja de otro tamaño, así que los
+      // cuadros siguientes la mantenían corrida medio ancho.
+      //
+      // Con el gesto vivo mandan el puntero y el tamaño nuevo: se re-centra y
+      // se vuelve a sembrar, igual que hace `releaseDockIfFar`.
+      if (dragOrigin && dragCursor) {
+        dragOrigin.cx = dragCursor.x;
+        dragOrigin.cy = dragCursor.y;
+        dragOrigin.ox = dragCursor.x - next.w / 2;
+        dragOrigin.oy = dragCursor.y - next.h / 2;
+        stage.moveTo({ x: dragOrigin.ox, y: dragOrigin.oy });
+      }
       at = stage.at();
       box = next;
     }
@@ -1226,7 +1379,7 @@
    */
   /*
    * Acoplada se publica la isla, no el stack: `liquidEl` sigue midiendo la
-   * barra de 40 px aunque esté oculta —`overflow: hidden` recorta lo que se
+   * barra compacta aunque esté oculta —`overflow: hidden` recorta lo que se
    * ve, no lo que mide— y eso dejaba una zona viva más grande que la pestaña.
    * Los floats anclan contra esta silueta, no contra el respiro de `pill`.
    */
@@ -1289,6 +1442,20 @@
     return () => observer.disconnect();
   });
 
+  /**
+   * El ancho real del contenido de la barra, ahora mismo.
+   *
+   * `max(offset, scroll)`: acoplada, `.p-shell` topa la barra al ancho de la
+   * ventana (una pestaña de 42) y `offsetWidth` miente; el contenido de verdad
+   * sigue en `scrollWidth`. Por eso se puede medir aunque la pill NO esté
+   * flotando, que es lo que hace falta al despegar.
+   */
+  function measuredBarW(): number | null {
+    const el = barEl;
+    if (!el) return null;
+    return Math.max(el.offsetWidth, el.scrollWidth);
+  }
+
   // Re-medir cuando cambia lo que la barra MUESTRA.
   //
   // El ResizeObserver debería alcanzar, pero con `width: max-content` dentro de
@@ -1350,14 +1517,19 @@
    * El acople no es solo mover: cambia `surface` a `"edge"`, y a partir de ahí
    * `contentFor` devuelve la pestaña y `pivotFor` clava el lado pegado. Se
    * llama con la posición YA final, después de que `moveTo` clampeó.
+   *
+   * `drop`: el usuario la acaba de soltar. Ahí no mandan los imanes de
+   * centro —un gesto de 40 px volvía al hogar—. Solo un canto cercano.
    */
-  function settleDock(): boolean {
+  function settleDock(opts?: { drop?: boolean }): boolean {
     // La rueda manda: mientras esté abierta o colapsando, la pill no es una
     // isla aunque esté parada sobre el canto.
     if (surface === "wheel" || collapsingFrom === "wheel") return false;
     const size = stage.applied() ?? windowFor({ w: PILL.bar, h: PILL.bar });
     const rect = { x: at.x, y: at.y, w: size.w, h: size.h };
-    const found = snapMagnet(rect, stage.workAreas());
+    const found = opts?.drop
+      ? snapDrop(rect, stage.workAreas())
+      : snapMagnet(rect, stage.workAreas());
     if (!found) {
       dock = null;
       if (surface === "edge") surface = "none";
@@ -1399,6 +1571,15 @@
     dock = null;
     surface = "none";
     if (!cursor || !dragOrigin) return;
+    // Medir ACÁ, aunque el gesto esté vivo.
+    //
+    // `shouldMeasureBar` congela la medición mientras se arrastra, así que
+    // acoplada `barW` es de la última vez que la pill estuvo flotando. Con esa
+    // medida rancia el destino sale del tamaño equivocado y la pill despega
+    // como disco para inflarse recién al soltar. En reposo son 18 px y no se
+    // ve; grabando son ~120 y la cápsula aterriza en cualquier lado.
+    const fresh = measuredBarW();
+    if (fresh !== null) barW = fresh;
     // `target` ya refleja el estado nuevo: los derivados se recalculan al
     // leerlos, no al final del tick.
     const next = target;
@@ -1473,6 +1654,10 @@
   $effect(() => {
     if (surface !== "edge") return;
     void stripPage;
+    // El panel de cupos cuelga de la isla: si esta se cierra, el hilo queda
+    // pintado en el vacío (pezón en el techo). Mientras el panel vive, la
+    // tira es el cuerpo.
+    void quotaHoverState.open;
     let alive = true;
     let leftAt: number | null = null;
     let hoveredAt: number | null = null;
@@ -1489,7 +1674,7 @@
         stripPage === "more" ? ISLAND_COLLAPSE_MORE_MS : ISLAND_COLLAPSE_MS;
       const next = islandHoverStay({
         over: islandHoverOpens({
-          over,
+          over: over || quotaHoverState.open,
           expanded: dock?.expanded === true,
           hasUpdate: updateChip != null,
           hoveredMs: hoveredAt == null ? 0 : now - hoveredAt,
@@ -1694,6 +1879,7 @@
     collapsingFrom = "wheel";
     wheelTool = null;
     wheelPage = "ring";
+    wheelPageEpoch += 1;
     surface = "none";
     try {
       await playCloseMorph(epoch, { returnHome: opts.returnHome ?? true });
@@ -1730,6 +1916,33 @@
   }
 
   /**
+   * Más / atrás: las gotas vuelven al núcleo y salen las nuevas.
+   * Cambiar `tools` con la rueda ya revelada desmontaba el anillo viejo
+   * sin outro — apertura sin cierre.
+   */
+  async function swapWheelPage(next: "ring" | "more") {
+    if (wheelPage === next || surface !== "wheel") return;
+    const epoch = ++wheelPageEpoch;
+    wheelTool = null;
+    playWheelTick();
+    if (!wheelShown) {
+      wheelPage = next;
+      return;
+    }
+    const prevQuick = wheelQuick;
+    wheelQuick = true;
+    wheelShown = false;
+    await awaitWheelMorph(MOTION.morphQuick);
+    wheelQuick = prevQuick;
+    if (epoch !== wheelPageEpoch || surface !== "wheel") return;
+    wheelPage = next;
+    await tick();
+    void wheelEl?.offsetWidth;
+    if (epoch !== wheelPageEpoch || surface !== "wheel") return;
+    wheelShown = true;
+  }
+
+  /**
    * Elegir un gajo: ejecutar la herramienta, o bajar al segundo anillo.
    *
    * «Más» no es una herramienta y por eso no pasa por `activateTool`: no tiene
@@ -1738,9 +1951,7 @@
    */
   function pickWheelNode(id: PillWheelId) {
     if (id === PILL_MORE_ID) {
-      wheelPage = "more";
-      wheelTool = null;
-      playWheelTick();
+      void swapWheelPage("more");
       return;
     }
     if (id === PILL_WINDOW_ID) {
@@ -1753,9 +1964,7 @@
 
   /** Volver del submenú al primer anillo. El núcleo hace de «atrás». */
   function backToRing() {
-    wheelPage = "ring";
-    wheelTool = null;
-    playWheelTick();
+    void swapWheelPage("ring");
   }
 
   /**
@@ -1962,8 +2171,8 @@
   }
 
   /**
-   * Tras abrir una tool: si venía de un canto, re-acopla (y expande la isla).
-   * Si venía flotando, vuelve a ese sitio y no se pega al borde.
+   * Tras abrir una tool: la pill vuelve a su hogar. Desde la rueda
+   * (Ctrl+Q) eso es el notch; desde un canto, el mismo canto.
    */
   async function restAfterToolOpen(opts: {
     returnToEdge: boolean;
@@ -2070,18 +2279,31 @@
       if (isSpatialTool(id)) spatialIntent = id;
       else if (id === "dictation") spatialIntent = null;
 
-      // Flotando se queda. Acoplada (o rueda abierta desde un canto) vuelve
-      // a ese borde; el float ancla a la isla.
-      await restAfterToolOpen({ returnToEdge, fromWheel });
       if (gen !== slotGen) return;
       if (!shouldCommitShow(slotPending)) return;
-      // Hit-rect fresco: sin esto el float ancla contra la geometría vieja
-      // (la caja de la rueda, o la posición previa al vuelo).
+      // Clipboard/textos: junto al cursor (atajo o rueda). El resto: la
+      // pill, para el monitor. El reveal corre después del vuelo a casa.
+      const pill =
+        surfaces.live["pill-skin"] ?? surfaces.live["pill"] ?? {
+          x: at.x,
+          y: at.y,
+          w: box.w,
+          h: box.h,
+        };
+      let birth = pill;
+      if (isCursorAnchored(id)) {
+        const cursor = await cursorPoint();
+        if (cursor) birth = birthAtCursor(cursor, { w: pill.w, h: pill.h });
+      }
+      captureToolBirth(birth);
       await surfaces.flush();
       await executeToolAction(id);
-      // El float publica su zona un tick después del evento de ancla.
       await tick();
       await surfaces.flush();
+      if (isSpatialTool(id)) await waitToolResting();
+      if (gen !== slotGen) return;
+      // Recién ahora la pill vuelve a su lugar (notch / hogar).
+      await restAfterToolOpen({ returnToEdge, fromWheel });
     } catch (err) {
       console.warn("activate-tool-slot", err);
     } finally {
@@ -2140,25 +2362,52 @@
    * que distingue "clic" de "arrastre" para no abrir la rueda al soltar de un
    * movimiento.
    *
-   * La posición se lee con `overlayCursor` (Rust), no solo con `pointermove`:
-   * cerca del borde la barra de tareas se queda con el mouse y el webview deja
-   * de recibir eventos; sin el cursor global el arrastre se cortaba a mitad.
+   * El seguimiento lo manda el DOM (`pointermove` / `clientX`). `.ov` es
+   * `inset: 0`, así que esas coords YA son las del overlay: no hay que
+   * traducirlas ni esperar un IPC. Preguntarle a Rust cada cuadro atrasaba la
+   * pill uno o dos frames y, al soltar rápido, el último `await` se descartaba
+   * con el origen ya anulado — la caja quedaba atrás y `settleDock` enganchaba
+   * el imán equivocado.
+   *
+   * Rust (`overlayCursor` / `overlayPrimaryDown`) solo entra cuando el DOM se
+   * queda mudo: la barra de tareas u otra ventana always-on-top se queda con
+   * el mouse y el webview deja de emitir eventos.
    */
   const DRAG_THRESHOLD = 4;
+  /** Sin `pointermove` en este rato, el cursor de Win32 toma el relevo. */
+  const DRAG_DOM_STALE_MS = 32;
   let dragOrigin: {
-    /** Null hasta el primer tick: lo siembra el cursor de Rust, no el evento. */
     cx: number | null;
     cy: number | null;
     ox: number;
     oy: number;
     pointerId: number;
   } | null = null;
+  /**
+   * Último cursor que vio el gesto, en coordenadas del overlay.
+   *
+   * Lo necesita `reconcile`: si la caja cambia de tamaño con el arrastre vivo,
+   * hay que re-centrarla bajo el puntero, y el reconciliador no tiene de dónde
+   * sacar el puntero por su cuenta.
+   */
+  let dragCursor: { x: number; y: number } | null = null;
   let dragMoved = false;
   let dragRaf = 0;
+  /** El último sample vino del DOM: al pasar a Rust hay que re-sembrar. */
+  let dragUsedDom = false;
+  let dragLastDomAt = 0;
   /** Ya se vio el botón apretado: recién ahí un `false` significa "soltó". */
   let dragSawDown = false;
   /** Icono de la isla donde arrancó el gesto, si arrancó en uno. */
   let islandPressTool: PillStripId | null = null;
+  /**
+   * La marca de la isla se aprieta como cualquier otro botón de la isla.
+   *
+   * En la isla el `click` nativo no sirve: el arrastre captura el puntero y
+   * el evento se re-apunta al root. Por eso todo acá se resuelve en `endDrag`
+   * con un `pointerdown` que solo deja anotado qué se apretó.
+   */
+  let islandPressMark = false;
   /** El gesto arrancó sobre el aviso/botón de consola de agentes. */
   let agentChipPressed = false;
   let agentChipPreferBind = false;
@@ -2211,20 +2460,20 @@
     agentChipPreferBind = onAgentChip && (event.ctrlKey || event.metaKey);
     updateChipPressed = onUpdateChip;
     wheelCorePressed = onWheelCore;
-    // El origen NO sale del evento del DOM: `clientX` mide contra la ventana, y
-    // traducirlo obliga a confiar en dónde cree el CSS que está `.ov`, que es
-    // un dato que llega por evento desde Rust y se atrasa justo cuando la
-    // ventana se acaba de reencuadrar. Lo siembra el primer tick, con el mismo
-    // cursor con el que se sigue el resto del gesto.
+    // Semilla del DOM: `.ov` cubre el viewport (`inset: 0`), `clientX/Y` son
+    // las coords del overlay. Esperar el primer IPC dejaba el gesto un cuadro
+    // atrás desde el primer pixel.
     dragOrigin = {
-      cx: null,
-      cy: null,
+      cx: event.clientX,
+      cy: event.clientY,
       ox: at.x,
       oy: at.y,
       pointerId: event.pointerId,
     };
     dragMoved = false;
     dragSawDown = false;
+    dragUsedDom = true;
+    dragLastDomAt = performance.now();
     // La ventana ya no se estira al escritorio entero durante el arrastre, así
     // que el puntero puede salirse de ella. Sin capturarlo, el `pointerup` de
     // afuera no llega y el gesto queda pegado.
@@ -2233,6 +2482,7 @@
     } catch {
       // Puntero ya liberado: el oyente de `window` alcanza.
     }
+    window.addEventListener("pointermove", onDragPointerMove, true);
     window.addEventListener("pointerup", endDrag, true);
     window.addEventListener("pointercancel", endDrag, true);
     // Armar el overlay YA: esperar el umbral de 4px dejaba un hueco donde
@@ -2241,46 +2491,83 @@
     if (!dragRaf) dragRaf = requestAnimationFrame(() => void tickDrag());
   }
 
+  /** Mueve la pill con el sample ya en coords del overlay. */
+  function applyDragCursor(cur: { x: number; y: number }) {
+    const origin = dragOrigin;
+    if (!origin) return;
+    dragCursor = cur;
+    if (origin.cx === null || origin.cy === null) {
+      origin.cx = cur.x;
+      origin.cy = cur.y;
+      return;
+    }
+    const dx = cur.x - origin.cx;
+    const dy = cur.y - origin.cy;
+    if (!dragMoved && Math.hypot(dx, dy) > DRAG_THRESHOLD) {
+      dragMoved = true;
+      // Rueda abierta: se cierra al mover para poder acoplar a un canto.
+      if (dragClosesWheel(surface)) {
+        collapseWheelForDrag(cur);
+      }
+    }
+    if (dragMoved) {
+      stage.moveTo({ x: origin.ox + dx, y: origin.oy + dy });
+      at = stage.at();
+      // Despegar en cuanto se aleja de verdad: si esperáramos a soltar, la
+      // isla arrastraría su forma de pestaña por toda la pantalla.
+      releaseDockIfFar(cur);
+    }
+  }
+
+  function onDragPointerMove(event: PointerEvent) {
+    const origin = dragOrigin;
+    if (!origin || event.pointerId !== origin.pointerId) return;
+    const cur = { x: event.clientX, y: event.clientY };
+    // Volvimos del fallback de Rust: re-sembrar o el delta mezcla dos relojes
+    // y la pill salta. El apply lo hace el rAF, no cada evento: si no, el
+    // tracker y la piel se despertarían a 200 Hz.
+    if (!dragUsedDom) {
+      origin.cx = cur.x;
+      origin.cy = cur.y;
+      origin.ox = at.x;
+      origin.oy = at.y;
+      dragUsedDom = true;
+    }
+    dragLastDomAt = performance.now();
+    dragCursor = cur;
+  }
+
   async function tickDrag() {
     dragRaf = 0;
     const origin = dragOrigin;
     if (!origin) return;
 
-    const [cur, down] = await Promise.all([
-      overlayCursor().catch(() => null),
-      overlayPrimaryDown().catch(() => null),
-    ]);
-    // Fin del gesto por Win32 y no por el DOM: soltar sobre la barra de tareas
-    // no manda `pointerup` acá, y el arrastre quedaba colgado con el hit-rect
-    // a pantalla completa. Se exige haberlo visto apretado antes, para que un
-    // cuadro madrugador no aborte el arrastre apenas empieza.
-    if (down === true) dragSawDown = true;
-    if (dragSawDown && down === false) {
-      endDrag();
-      return;
-    }
-    if (cur && dragOrigin === origin) {
-      // Primer cuadro: es la semilla, no un movimiento.
-      if (origin.cx === null || origin.cy === null) {
-        origin.cx = cur.x;
-        origin.cy = cur.y;
-      } else {
-        const dx = cur.x - origin.cx;
-        const dy = cur.y - origin.cy;
-        if (!dragMoved && Math.hypot(dx, dy) > DRAG_THRESHOLD) {
-          dragMoved = true;
-          // Rueda abierta: se cierra al mover para poder acoplar a un canto.
-          if (dragClosesWheel(surface)) {
-            collapseWheelForDrag(cur);
-          }
+    const stale = performance.now() - dragLastDomAt >= DRAG_DOM_STALE_MS;
+    if (!stale) {
+      if (dragCursor) applyDragCursor(dragCursor);
+    } else {
+      const [cur, down] = await Promise.all([
+        overlayCursor().catch(() => null),
+        overlayPrimaryDown().catch(() => null),
+      ]);
+      // Fin del gesto por Win32 y no por el DOM: soltar sobre la barra de
+      // tareas no manda `pointerup` acá, y el arrastre quedaba colgado con el
+      // hit-rect a pantalla completa. Se exige haberlo visto apretado antes,
+      // para que un cuadro madrugador no aborte el arrastre apenas empieza.
+      if (down === true) dragSawDown = true;
+      if (dragSawDown && down === false) {
+        endDrag();
+        return;
+      }
+      if (cur && dragOrigin === origin) {
+        if (dragUsedDom) {
+          origin.cx = cur.x;
+          origin.cy = cur.y;
+          origin.ox = at.x;
+          origin.oy = at.y;
+          dragUsedDom = false;
         }
-        if (dragMoved) {
-          stage.moveTo({ x: origin.ox + dx, y: origin.oy + dy });
-          at = stage.at();
-          // Despegar en cuanto se aleja de verdad: si esperáramos a soltar, la
-          // isla arrastraría su forma de pestaña por toda la pantalla.
-          releaseDockIfFar(cur);
-        }
+        applyDragCursor(cur);
       }
     }
 
@@ -2292,6 +2579,9 @@
   function stopDragWatch() {
     const pointerId = dragOrigin?.pointerId;
     dragOrigin = null;
+    dragCursor = null;
+    dragUsedDom = false;
+    dragLastDomAt = 0;
     if (pointerId !== undefined && rootEl?.hasPointerCapture(pointerId)) {
       rootEl.releasePointerCapture(pointerId);
     }
@@ -2300,20 +2590,37 @@
       dragRaf = 0;
     }
     surfaces.dragging = false;
+    window.removeEventListener("pointermove", onDragPointerMove, true);
     window.removeEventListener("pointerup", endDrag, true);
     window.removeEventListener("pointercancel", endDrag, true);
   }
 
   /** Soltar sin haber movido = clic. Abre la rueda aunque haya cola o grabación. */
-  function endDrag() {
+  function endDrag(event?: Event) {
+    // El último `pointermove` puede quedar atrás del `pointerup` si el gesto
+    // fue rápido. Aplicar acá, con el origen todavía vivo, evita que
+    // `settleDock` enganche un imán desde una caja rezagada.
+    if (event instanceof PointerEvent && dragOrigin) {
+      const cur = { x: event.clientX, y: event.clientY };
+      if (!dragUsedDom) {
+        dragOrigin.cx = cur.x;
+        dragOrigin.cy = cur.y;
+        dragOrigin.ox = at.x;
+        dragOrigin.oy = at.y;
+        dragUsedDom = true;
+      }
+      applyDragCursor(cur);
+    }
     const wasClick = dragOrigin !== null && !dragMoved;
     const moved = dragMoved;
     const pressedTool = islandPressTool;
+    const pressedMark = islandPressMark;
     const pressedAgentChip = agentChipPressed;
     const preferAgentBind = agentChipPreferBind;
     const pressedWheelCore = wheelCorePressed;
     const pressedUpdateChip = updateChipPressed;
     islandPressTool = null;
+    islandPressMark = false;
     agentChipPressed = false;
     agentChipPreferBind = false;
     wheelCorePressed = false;
@@ -2341,9 +2648,10 @@
           suppressUpdateChipClick = false;
         }, 250);
       }
-      // Arrastrar no redefine el hogar: engancha a un imán (centro o
-      // centro de un canto) y se queda ahí hasta abrir una tool.
-      settleDock();
+      // Al soltar se queda donde quedó, salvo que esté contra un canto.
+      // Los imanes de centro son para volver del hogar, no para deshacer
+      // un gesto corto.
+      settleDock({ drop: true });
       return;
     }
     // Soltar sobre un icono sin haber movido: eso sí era elegirlo.
@@ -2374,6 +2682,17 @@
       void closeWheel();
       return;
     }
+    // La marca es el control de lo que esté corriendo: para la grabación o el
+    // dictado, y en reposo abre la rueda. Va antes del clic genérico de la
+    // pestaña para que no dispare las dos cosas.
+    if (wasClick && pressedMark) {
+      if (markState === "idle") {
+        void openWheel();
+      } else if (!busy) {
+        markAction.run();
+      }
+      return;
+    }
     if (wasClick && pressedTool) {
       // «Más», «atrás» y Ventana no ejecutan una herramienta: no pasan por
       // `activateFromIsland` ni cierran la isla.
@@ -2394,9 +2713,10 @@
       activateFromIsland(pressedTool);
       return;
     }
-    // Acoplada, el clic abre la rueda igual: la isla es la pill, no otro
-    // control. Sale del canto a volar como siempre y vuelve al soltar.
-    if (wasClick && (surface === "none" || surface === "edge")) {
+    // Acoplada y CERRADA, el clic en la pestaña abre la rueda: la isla es la
+    // pill. Abierta, un clic que no cayó en un icono no debe abrirla —antes
+    // los huecos entre gotas circulares disparaban la rueda.
+    if (wasClick && (surface === "none" || (surface === "edge" && !islandOpen))) {
       void openWheel();
     }
   }
@@ -2590,20 +2910,6 @@
 
 <!-- Testigo de grabación (barra flotante). En la rueda y la isla acoplada
      la parada es una gota líquida colgada, no este botón. -->
-{#snippet recDot(label: string)}
-  <button
-    type="button"
-    class="p-rec"
-    data-no-drag
-    onclick={toggleRecord}
-    disabled={busy}
-    aria-label={label}
-    use:tip={btWarning ?? label}
-  >
-    <span class="p-rec-square" aria-hidden="true"></span>
-  </button>
-{/snippet}
-
 {#snippet iconBtn(label: string, icon: IconNode, onClick: () => void, size = 15)}
   <button
     type="button"
@@ -2626,7 +2932,7 @@
   class:is-docked={surface === "edge"}
   class:is-dragging={surfaces.dragging}
   data-edge={surface === "edge" ? dock?.edge : undefined}
-  style="left: {at.x}px; top: {at.y}px; width: {box.w}px; height: {box.h}px; --island-tool: {PILL.islandTool}px; --island-gap: {PILL.islandGap}px; --rec-drop: {PILL.recDrop}px; --rec-drop-gap: {PILL.recDropGap}px"
+  style="left: {at.x}px; top: {at.y}px; width: {box.w}px; height: {box.h}px; --pill-bar: {PILL.bar}px; --island-tool: {PILL.islandTool}px; --island-gap: {PILL.islandGap}px; --island-cue-btn: {PILL.islandCueBtn}px; --island-cue-mark: {PILL.islandCueMark}px; --rec-drop: {PILL.recDrop}px; --rec-drop-gap: {PILL.recDropGap}px"
   bind:this={rootEl}
   onpointerdown={beginDrag}
 >
@@ -2647,13 +2953,106 @@
           aria-hidden="true"
         ></i>
         <div
+          class="p-island-along"
+          class:is-hidden={islandOpen}
+          class:is-column={peekEdgeAxis === "x"}
+          inert={islandOpen || undefined}
+        >
+          <button
+            type="button"
+            class="p-island-mark"
+            disabled={busy && markState !== "idle"}
+            onpointerdown={() => (islandPressMark = true)}
+            use:tip={markAction.label}
+            aria-label={markAction.label}
+          >
+            <AticMark
+              size={PILL.islandMark}
+              strokeWidth={1.6}
+              alive={!islandOpen}
+              state={markState}
+            />
+          </button>
+          {#if edgeCue && !islandOpen}
+            <div class="p-island-cues">
+              {#if islandCue}
+                <button
+                  type="button"
+                  class="p-agent p-island-cue"
+                  class:is-dock={agentsDock.minimized}
+                  class:is-waiting={chip.tone === "waiting"}
+                  class:is-working={chip.tone === "working"}
+                  class:is-ready={chip.tone === "ready"}
+                  class:is-count={chip.tone === "count"}
+                  onclick={onAgentChipClick}
+                  use:tip={agentChipTitle}
+                  aria-label={agentChipAria}
+                >
+                  {#if chip.tone === "count"}
+                    <span class="p-island-cue-mark">{chip.label}</span>
+                  {:else if islandCueAgents.length > 0}
+                    <span class="p-island-cue-logos" aria-hidden="true">
+                      {#each islandCueAgents as id (id)}
+                        <AgentLogo agent={id} size={PILL.islandCueMark} />
+                      {/each}
+                    </span>
+                  {:else}
+                    <span class="p-island-cue-logo" aria-hidden="true">
+                      <AgentLogo agent={null} size={PILL.islandCueMark} />
+                    </span>
+                  {/if}
+                </button>
+              {/if}
+              {#if updateChip}
+                <button
+                  type="button"
+                  class="p-update p-island-update"
+                  class:is-ready={updateChip.tone === "ready"}
+                  class:is-busy={updateChip.tone === "busy"}
+                  disabled={appUpdate.busy}
+                  onclick={onUpdateChipClick}
+                  use:tip={updateChip.label}
+                  aria-label={updateChip.label}
+                >
+                  <span class="p-update-ico" aria-hidden="true">
+                    <Icon
+                      icon={updateChip.icon}
+                      size={PILL.islandCueMark - 1}
+                      strokeWidth={1.9}
+                    />
+                  </span>
+                </button>
+              {/if}
+            </div>
+          {/if}
+        </div>
+        <div
           class="p-island-tools"
           class:is-open={islandOpen}
           class:is-column={peekEdgeAxis === "x"}
           style="--n: {islandSlots}"
         >
+          <!-- La marca abre la tira igual que ocupa la pestaña: es la misma
+               pill, desplegada. Y si algo está corriendo, lo para: la cara ya
+               dice qué es, así que el clic actúa sobre eso. -->
+          <button
+            type="button"
+            class="p-island-tool p-island-tool-mark"
+            style="--i: 0; --s: {Math.abs((islandSlots - 1) / 2)}"
+            disabled={busy && markState !== "idle"}
+            use:tip={markAction.label}
+            aria-label={markAction.label}
+            onpointerdown={() => (islandPressMark = true)}
+          >
+            <AticMark
+              size={PILL.islandMark}
+              strokeWidth={1.6}
+              alive={islandOpen}
+              state={markState}
+            />
+          </button>
           {#each stripNodes as node, i (node.id)}
-            {@const slot = i + islandLiveSlots(activity)}
+            {@const slot = i + 1 + islandLiveSlots(activity)}
             {@const help = `${node.label} — ${node.short}`}
             <!-- Agentes no lleva `use:tip`: su hover abre el panel de cupos, y
                dos globos sobre el mismo botón se taparían. Sin cupos que
@@ -2670,7 +3069,7 @@
               {@attach islandAttachers[i]}
               onpointerdown={() => (islandPressTool = node.id)}
             >
-              <ToolIcon id={node.icon} size={18} strokeWidth={1.6} />
+              <ToolIcon id={node.icon} size={22} strokeWidth={1.6} />
               {#if node.id === "agents" && islandCue}
                 <span
                   class="p-island-agent-badge"
@@ -2685,93 +3084,27 @@
               {/if}
             </button>
           {/each}
+          <!-- Abierta, la pestaña se desmonta y con ella su chip de update.
+               Reaparece como celda de la tira —no colgando— para que el clic
+               siga existiendo sin que la silueta cambie. -->
+          {#if updateChip}
+            {@const slot = stripNodes.length + 1 + islandLiveSlots(activity)}
+            <button
+              type="button"
+              class="p-island-tool p-island-tool-update"
+              class:is-ready={updateChip.tone === "ready"}
+              class:is-busy={updateChip.tone === "busy"}
+              style="--i: {slot}; --s: {Math.abs((islandSlots - 1) / 2 - slot)}"
+              disabled={appUpdate.busy}
+              onclick={onUpdateChipClick}
+              use:tip={updateChip.label}
+              aria-label={updateChip.label}
+            >
+              <Icon icon={updateChip.icon} size={18} strokeWidth={1.8} />
+            </button>
+          {/if}
         </div>
-        <!-- Avisos de la pestaña. Se desmontan al abrir: si quedaran, el
-             overlay taparía los iconos. El update reaparece como gota colgada. -->
-        {#if edgeCue && !islandOpen}
-          <div class="p-island-cues">
-            {#if islandCue}
-              <button
-                type="button"
-                class="p-agent p-island-cue"
-                class:is-dock={agentsDock.minimized}
-                class:is-waiting={chip.tone === "waiting"}
-                class:is-working={chip.tone === "working"}
-                class:is-ready={chip.tone === "ready"}
-                class:is-count={chip.tone === "count"}
-                onclick={onAgentChipClick}
-                use:tip={agentChipTitle}
-                aria-label={agentChipAria}
-              >
-                {#if chip.tone === "count"}
-                  <span class="p-island-cue-mark">{chip.label}</span>
-                {:else if islandCueAgents.length > 0}
-                  <span class="p-island-cue-logos" aria-hidden="true">
-                    {#each islandCueAgents as id (id)}
-                      <AgentLogo agent={id} size={9} />
-                    {/each}
-                  </span>
-                {:else}
-                  <span class="p-island-cue-logo" aria-hidden="true">
-                    <AgentLogo agent={null} size={9} />
-                  </span>
-                {/if}
-              </button>
-            {/if}
-            {#if updateChip}
-              <button
-                type="button"
-                class="p-update p-island-update"
-                class:is-ready={updateChip.tone === "ready"}
-                class:is-busy={updateChip.tone === "busy"}
-                disabled={appUpdate.busy}
-                onclick={onUpdateChipClick}
-                use:tip={updateChip.label}
-                aria-label={updateChip.label}
-              >
-                <span class="p-update-ico" aria-hidden="true">
-                  <Icon icon={updateChip.icon} size={9} strokeWidth={1.9} />
-                </span>
-              </button>
-            {/if}
-          </div>
-        {/if}
       </div>
-      {#if recording}
-        <button
-          type="button"
-          class="p-live-drop"
-          {@attach trackLive}
-          data-no-drag
-          use:tip={btWarning ?? t("pill.stopRecord")}
-          aria-label={t("pill.stopRecord")}
-          disabled={busy}
-          onpointerdown={(e) => e.stopPropagation()}
-          onclick={toggleRecord}
-        >
-          <span class="p-rec-square" aria-hidden="true"></span>
-        </button>
-      {/if}
-      <!-- Abierta, el aviso de la pestaña se desmonta: si no, cubre la tira.
-           Cuelga acá —misma gota que la grabación— para que el clic siga
-           existiendo después del hover que abre las herramientas. -->
-      {#if updateChip && islandOpen}
-        <button
-          type="button"
-          class="p-update p-live-drop p-island-update-drop"
-          class:is-ready={updateChip.tone === "ready"}
-          class:is-busy={updateChip.tone === "busy"}
-          {@attach trackUpdate}
-          disabled={appUpdate.busy}
-          onclick={onUpdateChipClick}
-          use:tip={updateChip.label}
-          aria-label={updateChip.label}
-        >
-          <span class="p-update-ico" aria-hidden="true">
-            <Icon icon={updateChip.icon} size={11} strokeWidth={1.9} />
-          </span>
-        </button>
-      {/if}
     </div>
   {/if}
 
@@ -2785,6 +3118,7 @@
       particles={false}
       revealed={wheelShown}
       tools={wheelNodes}
+      skinAttach={attachWheelBlob}
       tipSilent={QUOTA_TOOL}
       bind:activeId={wheelTool}
       caption={wheelPage === "more" ? t("pill.more") : t("tools.wheelCaption")}
@@ -2839,9 +3173,10 @@
         aria-hidden="true"
       >
         <i class="p-skin-bar" {@attach trackBar}></i>
-        {#if !discOnly}
+        {#if tailAlive}
           <i
             class="p-skin-tail"
+            class:is-in={tailIn}
             class:is-from-start={consoleSide === "left"}
             {@attach trackTail}
           ></i>
@@ -2859,7 +3194,21 @@
           bind:this={barEl}
         >
           {#if activity === "recording"}
-            {@render recDot(t("pill.stopRecord"))}
+            <div class="p-bar-slot" transition:opacityFade>
+              {#if !wheelChrome}
+                <button
+                  type="button"
+                  class="p-mark is-lead"
+                  data-no-drag
+                  disabled={busy}
+                  onpointerdown={(e) => e.stopPropagation()}
+                  onclick={markAction.run}
+                  use:tip={markAction.label}
+                  aria-label={markAction.label}
+                >
+                  <AticMark size={28} strokeWidth={1.5} alive state={markState} />
+                </button>
+              {/if}
             <span class="p-timer">{fmt(elapsed)}</span>
             {#if liveError}
               <span class="p-chip is-error" role="status">{t("pill.error")}</span>
@@ -2881,6 +3230,7 @@
                 variant="quiet"
               />
             </div>
+            </div>
           {:else if dictation === "listening"}
             <!-- Escuchando: micrófono + ondas, sin texto. El ícono dice QUÉ está
                pasando (el mic está abierto) y las ondas dicen que te oye; la
@@ -2888,6 +3238,21 @@
                conjunto es el botón de parada. Los otros estados sí necesitan
                texto: "Transcribiendo…" y "Error" no se pueden mostrar con una
                animación. -->
+            <div class="p-bar-slot" transition:opacityFade>
+              {#if !wheelChrome}
+                <button
+                  type="button"
+                  class="p-mark is-lead"
+                  data-no-drag
+                  disabled={busy}
+                  onpointerdown={(e) => e.stopPropagation()}
+                  onclick={markAction.run}
+                  use:tip={markAction.label}
+                  aria-label={markAction.label}
+                >
+                  <AticMark size={28} strokeWidth={1.5} alive state={markState} />
+                </button>
+              {/if}
             <button
               type="button"
               class="p-dict-wave"
@@ -2900,7 +3265,23 @@
               <ToolIcon id="dictation" size={16} strokeWidth={1.5} />
               <Waveform mic={levels.mic} bars={18} variant="voice" live />
             </button>
+            </div>
           {:else if activity === "dictating"}
+            <div class="p-bar-slot" transition:opacityFade>
+              {#if !wheelChrome}
+                <button
+                  type="button"
+                  class="p-mark is-lead"
+                  data-no-drag
+                  disabled={busy}
+                  onpointerdown={(e) => e.stopPropagation()}
+                  onclick={markAction.run}
+                  use:tip={markAction.label}
+                  aria-label={markAction.label}
+                >
+                  <AticMark size={28} strokeWidth={1.5} alive state={markState} />
+                </button>
+              {/if}
             <button
               type="button"
               class="p-dict"
@@ -2916,14 +3297,16 @@
               <ToolIcon id="dictation" size={16} strokeWidth={1.5} />
             </button>
             <span class="p-label" aria-live="polite">{dictationLabel(dictation)}</span>
+            </div>
           {:else if hasQueue}
             <!-- La cola es un badge sobre el disco, no un reemplazo: antes borraba
                la pill entera y con ella el acceso a la rueda. -->
             <!-- Sin marca mientras la rueda manda: el stack queda en el
                top-left del root grande y una segunda «a» fantasma se veía ahí. -->
+            <div class="p-bar-slot" transition:opacityFade>
             {#if !wheelChrome}
               <span class="p-mark is-disc"
-                ><AticMark size={20} strokeWidth={1.4} /></span
+                ><AticMark size={28} strokeWidth={1.5} alive state={markState} /></span
               >
             {/if}
             <span class="p-queue-count">{paste.count}</span>
@@ -2940,31 +3323,38 @@
               {t("pill.paste")}
             </button>
             {@render iconBtn(t("pill.dismiss"), X, () => void paste.dismiss(), 13)}
+            </div>
           {:else}
             <!-- Reposo: disco con la marca. Un clic abre la rueda; el centro de
                la rueda la cierra. El doble clic ya no hace falta.
                Con la rueda abierta/colapsando no se monta: el único «a» visible
                es el de ParticleWheel (centro). El stack sigue midiendo el
-               disco vía `.p-bar.is-disc-only` (40px fijos). -->
+               disco vía `.p-bar.is-disc-only` (el diámetro de `PILL.bar`). -->
+            <div class="p-bar-slot" transition:opacityFade>
             {#if !wheelChrome}
               <span class="p-mark is-disc" use:tip={discHint}>
-                <AticMark size={22} strokeWidth={1.4} />
+                <AticMark size={32} strokeWidth={1.5} alive state={markState} />
               </span>
             {/if}
             <!-- Aviso del agente: aparece solo si hay algo que decir. Es un chip
                junto al disco y no un reemplazo, porque el disco sigue siendo la
                puerta a la rueda. -->
             {#if showAgentTab}
-              <button
-                type="button"
+              <svelte:element
+                this={agentChipActs ? "button" : "span"}
+                type={agentChipActs ? "button" : undefined}
+                role={agentChipActs ? undefined : "status"}
                 class="p-agent"
+                class:is-inert={!agentChipActs}
                 class:is-dock={agentsDock.minimized}
                 class:is-waiting={chip.tone === "waiting"}
                 class:is-working={chip.tone === "working"}
                 class:is-ready={chip.tone === "ready"}
                 class:is-count={chip.tone === "count"}
                 bind:this={agentDockEl}
-                onclick={(e) => onAgentChipClick(e)}
+                onclick={agentChipActs
+                  ? (e: MouseEvent) => onAgentChipClick(e)
+                  : undefined}
                 use:tip={agentChipTitle}
                 aria-label={agentChipAria}
               >
@@ -2989,7 +3379,7 @@
                 {:else if chip.tone === "count"}
                   <span class="p-agent-count">{chip.label}</span>
                 {/if}
-              </button>
+              </svelte:element>
             {/if}
             <!-- Hay versión nueva. Mismo sitio y misma cápsula que el aviso de
                agentes: el disco sigue siendo la puerta a la rueda, y esto es
@@ -3011,6 +3401,7 @@
                 <span class="p-update-text">{updateChip.text}</span>
               </button>
             {/if}
+            </div>
           {/if}
         </div>
       </div>
@@ -3126,18 +3517,22 @@
   }
 
   .p-root[data-edge="top"] .p-island {
+    top: 0;
     flex-direction: column;
   }
 
   .p-root[data-edge="bottom"] .p-island {
+    bottom: 0;
     flex-direction: column-reverse;
   }
 
   .p-root[data-edge="left"] .p-island {
+    left: 0;
     flex-direction: row;
   }
 
   .p-root[data-edge="right"] .p-island {
+    right: 0;
     flex-direction: row-reverse;
   }
 
@@ -3159,43 +3554,68 @@
     pointer-events: none;
   }
 
-  .p-live-drop {
+  /*
+   * Lo que se ve con la pestaña CERRADA, a lo largo del borde: la marca y,
+   * si hay algo que decir, el aviso al lado. Antes el aviso iba en `inset: 0`
+   * y tapaba la marca entera; ahora comparten la fila y la caja se alarga.
+   */
+  .p-island-along {
+    position: absolute;
+    inset: 0;
+    z-index: 2;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--island-gap);
+    pointer-events: none;
+    opacity: 1;
+    transition: opacity var(--island-open-dur) var(--ease-liquid);
+  }
+
+  .p-island-along > * {
+    pointer-events: auto;
+  }
+
+  .p-island-along.is-column {
+    flex-direction: column;
+  }
+
+  .p-island-along.is-hidden {
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  /*
+   * La marca es el control de lo que esté corriendo: en reposo abre la rueda,
+   * grabando o dictando lo para. Por eso es `<button>` y no un dibujo.
+   */
+  .p-island-mark {
+    position: relative;
+    z-index: 1;
     display: grid;
     flex: 0 0 auto;
-    width: var(--rec-drop);
-    height: var(--rec-drop);
     border: 0;
-    margin: 0;
     padding: 0;
     border-radius: 999px;
     background: transparent;
-    color: var(--rec);
-    cursor: pointer;
     place-items: center;
+    overflow: visible;
+    color: var(--text);
+    line-height: 0;
+    cursor: pointer;
     transition: transform var(--duration-quick) var(--ease-smooth-out);
   }
 
-  .p-live-drop .p-rec-square {
-    width: 10px;
-    height: 10px;
-    animation: p-island-rec-pulse 1.6s linear infinite;
+  .p-island-mark:active:not(:disabled) {
+    transform: scale(0.94);
   }
 
-  .p-live-drop:hover:not(:disabled),
-  .p-live-drop:focus-visible {
-    transform: scale(1.04);
-  }
-
-  .p-live-drop:active:not(:disabled) {
-    transform: scale(0.96);
-  }
-
-  .p-live-drop:focus-visible {
+  .p-island-mark:focus-visible {
     outline: none;
     box-shadow: var(--rb-focus);
   }
 
-  .p-live-drop:disabled {
+  .p-island-mark:disabled {
     cursor: default;
     opacity: 0.55;
   }
@@ -3263,6 +3683,7 @@
     height: var(--island-tool);
     border: 0;
     border-radius: 999px;
+    overflow: visible;
     background: transparent;
     color: var(--muted);
     cursor: pointer;
@@ -3290,6 +3711,18 @@
     transform: none;
   }
 
+  /* El visor es circular; el clic no. Un filete extra cubre el hueco entre
+     gotas para que no se cuele al cuerpo de la isla. */
+  .p-island-tools.is-open .p-island-tool::before {
+    content: "";
+    position: absolute;
+    inset: -2px calc(var(--island-gap) / -2 - 2px);
+  }
+
+  .p-island-tools.is-open.is-column .p-island-tool::before {
+    inset: calc(var(--island-gap) / -2 - 2px) -2px;
+  }
+
   /* Cerrada, las gotas no deben robar el clic: lo toma la pestaña o el aviso. */
   .p-island-tools:not(.is-open) {
     pointer-events: none;
@@ -3300,10 +3733,9 @@
    * estos botones cubren el cuerpo: agente y/o update.
    */
   .p-island-cues {
-    position: absolute;
-    inset: 0;
     z-index: 2;
     display: flex;
+    flex: 0 0 auto;
     align-items: center;
     justify-content: center;
     gap: 3px;
@@ -3317,6 +3749,51 @@
 
   .p-island-cues > * {
     pointer-events: auto;
+  }
+
+  /* La marca encabeza la tira: misma celda que una herramienta, sin el
+     recuadro del icono — es la pill, no una herramienta más. */
+  .p-island-tool-mark {
+    color: var(--text);
+    line-height: 0;
+    overflow: visible;
+  }
+
+  .p-island-tool-update {
+    color: var(--info);
+  }
+
+  .p-island-tool-update.is-ready {
+    color: var(--ok);
+  }
+
+  .p-island-tool-update.is-busy {
+    color: var(--muted);
+  }
+
+  /* Flotando, la marca encabeza los tres estados y es su control. */
+  .p-mark.is-lead {
+    flex-shrink: 0;
+    border: 0;
+    padding: 0;
+    border-radius: 999px;
+    background: transparent;
+    cursor: pointer;
+    transition: transform var(--duration-quick) var(--ease-smooth-out);
+  }
+
+  .p-mark.is-lead:active:not(:disabled) {
+    transform: scale(0.94);
+  }
+
+  .p-mark.is-lead:focus-visible {
+    outline: none;
+    box-shadow: var(--rb-focus);
+  }
+
+  .p-mark.is-lead:disabled {
+    cursor: default;
+    opacity: 0.55;
   }
 
   .p-island-cue.p-agent,
@@ -3342,9 +3819,16 @@
   .p-island-cues .p-island-cue.p-agent {
     position: relative;
     inset: auto;
-    flex: 1;
+    flex: 0 0 auto;
     width: auto;
-    height: auto;
+    height: var(--island-cue-btn);
+    min-width: var(--island-cue-btn);
+    padding: 0 4px;
+  }
+
+  .p-island-update .p-update-ico {
+    width: var(--island-cue-mark);
+    height: var(--island-cue-mark);
   }
 
   .p-island-update {
@@ -3365,12 +3849,12 @@
     cursor: pointer;
   }
 
-  .p-island-cues:has(.p-island-cue) .p-island-update {
+  .p-island-cues .p-island-update {
     position: relative;
     inset: auto;
     flex: 0 0 auto;
-    width: 18px;
-    height: 18px;
+    width: var(--island-cue-btn);
+    height: var(--island-cue-btn);
   }
 
   .p-island-update.is-ready {
@@ -3385,48 +3869,6 @@
 
   .p-island-update::after {
     content: none;
-  }
-
-  .p-update.p-island-update-drop {
-    display: grid;
-    min-height: 0;
-    padding: 0;
-    gap: 0;
-    place-items: center;
-    line-height: 0;
-    background: transparent;
-    color: var(--info);
-  }
-
-  .p-update.p-island-update-drop > * {
-    grid-area: 1 / 1;
-  }
-
-  .p-update.p-island-update-drop.is-ready {
-    background: transparent;
-    color: var(--ok);
-  }
-
-  .p-update.p-island-update-drop.is-busy {
-    background: transparent;
-    color: var(--muted);
-  }
-
-  /* Chip chico al centro de la gota: `.p-update` es inline-flex (icono +
-     texto) y pintaba un disco gris de 36 px, desfasado del líquido. */
-  .p-update.p-island-update-drop .p-update-ico {
-    width: 18px;
-    height: 18px;
-    border-radius: 999px;
-    background: color-mix(in sRGB, var(--info) 22%, transparent);
-  }
-
-  .p-update.p-island-update-drop.is-ready .p-update-ico {
-    background: color-mix(in sRGB, var(--ok) 22%, transparent);
-  }
-
-  .p-update.p-island-update-drop.is-busy .p-update-ico {
-    background: color-mix(in sRGB, var(--text) 10%, transparent);
   }
 
   .p-root[data-edge="top"] .p-island-cue.p-agent {
@@ -3449,8 +3891,8 @@
 
   .p-island-cue-logo {
     display: grid;
-    width: 9px;
-    height: 9px;
+    width: var(--island-cue-mark);
+    height: var(--island-cue-mark);
     overflow: hidden;
     place-items: center;
     color: currentColor;
@@ -3482,7 +3924,7 @@
   }
 
   .p-island-cue-mark {
-    font-size: 0.5625rem;
+    font-size: 0.75rem;
     font-weight: 650;
     font-variant-numeric: tabular-nums;
     line-height: 1;
@@ -3633,7 +4075,7 @@
   /* ─── Cuerpo líquido (barra) ─────────────────────────────────────────── */
   .p-liquid {
     /* `--goo-grow` viene de `app.css`. Sin compensarlo, el disco de reposo
-       saldría de 43 en vez de 40 y se comería casi la mitad del respiro que
+       saldría más grande que `PILL.bar` y se comería el respiro que
        `PILL.pad` deja dentro de la ventana. */
     position: relative;
     display: flex;
@@ -3654,10 +4096,10 @@
     /*
      * El descuento del engorde queda en cero.
      *
-     * Las medidas de acá abajo están escritas como `40px - goo-grow * 2`
+     * Las medidas de acá abajo están escritas como `var(--pill-bar) - goo-grow * 2`
      * porque el endurecido del filtro devolvía 2.8 px por lado. El contorno
      * trazado NO engorda: pasa por la geometría pedida. Con el descuento
-     * puesto, el disco de 40 se medía de 37.2.
+     * puesto, el disco se medía más chico que `PILL.bar`.
      *
      * Se apaga con la variable y no regla por regla: así vale para las dos
      * siluetas y para el `inset` de una sola vez.
@@ -3683,10 +4125,10 @@
   }
 
   /* La pastilla de siempre. El alto descuenta lo que el filtro va a devolver
-     por los dos lados, así que el borde final cae exactamente en los 40. */
+     por los dos lados, así que el borde final cae exactamente en el disco. */
   .p-skin-bar {
-    height: calc(40px - var(--goo-grow) * 2);
-    width: calc(40px - var(--goo-grow) * 2);
+    height: calc(var(--pill-bar) - var(--goo-grow) * 2);
+    width: calc(var(--pill-bar) - var(--goo-grow) * 2);
     flex-shrink: 0;
     border-radius: 999px;
   }
@@ -3707,26 +4149,19 @@
    */
   .p-skin-tail {
     position: absolute;
-    inset: 0;
+    inset: 7px 4px 7px calc(100% - 28px);
     border-radius: 999px;
-    animation: p-skin-arrive var(--panel-dur) var(--morph-ease);
+    transition: inset var(--panel-dur) var(--morph-ease);
   }
 
   /* Consola al inicio (cerca del borde derecho): la gota llega desde la izquierda. */
   .p-skin-tail.is-from-start {
-    animation-name: p-skin-arrive-start;
+    inset: 7px calc(100% - 28px) 7px 4px;
   }
 
-  @keyframes p-skin-arrive {
-    from {
-      inset: 7px 4px 7px calc(100% - 28px);
-    }
-  }
-
-  @keyframes p-skin-arrive-start {
-    from {
-      inset: 7px calc(100% - 28px) 7px 4px;
-    }
+  .p-skin-tail.is-in,
+  .p-skin-tail.is-from-start.is-in {
+    inset: 0;
   }
 
   /* ─── Barra ─────────────────────────────────────────────────────────── */
@@ -3746,7 +4181,7 @@
        aunque la ventana venga atrasada. */
     width: max-content;
     max-width: 100%;
-    height: 40px;
+    height: var(--pill-bar);
     flex-shrink: 0;
     align-items: center;
     overflow: hidden;
@@ -3764,45 +4199,42 @@
   /* max-content: el ancho lo fija el contenido, no la ventana. Es lo que hace
      que medir la barra no se realimente con el resize. */
   .p-bar {
-    display: flex;
+    display: grid;
     width: max-content;
-    min-width: 40px;
+    min-width: var(--pill-bar);
     height: 100%;
 
     /* NO encoger. `.p-shell` está topado con `max-width: 100%`, o sea el ancho
        de la VENTANA, así que sin esto la barra se comprimía hasta su min-width
-       de 40 px y eso era lo que medíamos: la ventana quedaba en 48, el tope en
-       48, la barra en 40. Un abrazo mortal donde la pill no podía crecer sola.
+       (el disco) y eso era lo que medíamos: ventana, tope y barra iguales.
+       Un abrazo mortal donde la pill no podía crecer sola.
        Se notaba al dictar con el atajo —quedaba redonda con las ondas
        recortadas adentro— pero no con la rueda, porque ahí la ventana se
        redimensiona antes por otro camino y destraba el tope.
        Overflow lo tapa `.p-shell` durante el frame que la ventana tarda. */
     flex-shrink: 0;
     align-items: center;
-    gap: 8px;
     padding: 0 12px 0 10px;
     white-space: nowrap;
   }
 
-  /* Lo que entra a la barra se funde en vez de aparecer de golpe.
-     Va sobre los hijos DIRECTOS porque son los que Svelte monta y desmonta al
-     cambiar de estado; lo que sobrevive al cambio —el timer, que solo cambia su
-     texto— no se re-anima y no parpadea.
-     Solo opacidad: `transform` acá pisaría el `scale` de hover de los botones,
-     porque una animación gana sobre una transición. */
-  .p-bar > * {
-    animation: p-in var(--morph-fade-dur) var(--morph-close-ease);
-  }
-
-  @keyframes p-in {
-    from {
-      opacity: 0;
-    }
+  /*
+   * Un slot por estado, apilados en la misma celda: el outro no suma anchos
+   * (la pastilla mediría viejo+nuevo y saltaría). `opacityFade` corre al
+   * montar Y al desmontar; el keyframe `p-in` solo existía de ida.
+   */
+  .p-bar-slot {
+    grid-area: 1 / 1;
+    display: flex;
+    height: 100%;
+    min-width: 0;
+    align-items: center;
+    gap: 8px;
   }
 
   /* Reposo: disco exacto. Con el padding de la barra quedaba elipse. */
   .p-bar.is-disc-only {
-    width: 40px;
+    width: var(--pill-bar);
     justify-content: center;
     padding: 0;
   }
@@ -3812,8 +4244,11 @@
    * chip en el DOM (mark → agent) pero pinta agent | mark.
    */
   .p-bar.is-console-start {
-    flex-direction: row-reverse;
     padding: 0 10px 0 12px;
+  }
+
+  .p-bar.is-console-start .p-bar-slot {
+    flex-direction: row-reverse;
   }
 
   .p-mark {
@@ -3821,6 +4256,7 @@
     flex-shrink: 0;
     color: var(--text);
     line-height: 0;
+    overflow: visible;
   }
 
   .p-label {
@@ -3901,7 +4337,6 @@
 
   /* ─── Botones ───────────────────────────────────────────────────────── */
   .p-icon,
-  .p-rec,
   .p-dict {
     display: grid;
     flex-shrink: 0;
@@ -3917,9 +4352,9 @@
   }
 
   .p-icon {
-    /* 40×40: hit area de chrome denso sin pseudo que se solape con vecinos. */
-    width: 40px;
-    height: 40px;
+    /* Hit area del chrome denso: el alto de la barra, sin pseudo que se solape. */
+    width: var(--pill-bar);
+    height: var(--pill-bar);
     border-radius: 999px;
     background: transparent;
     color: var(--muted);
@@ -3930,22 +4365,10 @@
     background: color-mix(in sRGB, var(--text) 8%, transparent);
   }
 
-  .p-rec,
   .p-dict {
     width: 32px;
     height: 32px;
     border-radius: 999px;
-  }
-
-  .p-rec {
-    background: color-mix(in sRGB, var(--rec) 24%, transparent);
-    color: var(--rec);
-  }
-
-  .p-rec-square {
-    width: 8px;
-    height: 8px;
-    background: currentColor;
   }
 
   .p-dict {
@@ -3966,13 +4389,11 @@
   }
 
   .p-icon:active:not(:disabled),
-  .p-rec:active:not(:disabled),
   .p-dict:active:not(:disabled) {
     transform: scale(0.96);
   }
 
   .p-icon:disabled,
-  .p-rec:disabled,
   .p-dict:disabled {
     opacity: 0.45;
     cursor: default;
@@ -3981,7 +4402,6 @@
   /* El anillo va por dentro y no como `outline`: la pill vive sobre una
      silueta redondeada y un contorno exterior se sale del contorno fundido. */
   .p-icon:focus-visible,
-  .p-rec:focus-visible,
   .p-dict:focus-visible,
   .p-queue-btn:focus-visible {
     outline: none;
@@ -4153,10 +4573,18 @@
   }
 
   .p-agent-msg {
+    /* Techo: sin él, el preview del agente estiraba la pill hasta donde
+       llegara el texto. El mensaje entero vive en el globo. */
+    max-width: 18ch;
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  /* Sin nada que abrir: es un aviso, no un control. */
+  .p-agent.is-inert {
+    cursor: default;
   }
 
   /* Aviso de actualización: la misma cápsula que el chip de agentes, en el
@@ -4290,6 +4718,7 @@
 
   @media (prefers-reduced-motion: reduce) {
     .p-root.is-flying,
+    .p-root.is-docked,
     .p-wheel,
     .p-wheel.is-open,
     .p-stack,
@@ -4297,22 +4726,19 @@
     .p-liquid,
     .p-skin-tail,
     .p-icon,
-    .p-rec,
     .p-dict,
     .p-queue-btn,
     .p-agent,
     .p-update,
     .p-auth-host,
     .p-island-tool,
+    .p-island-along,
+    .p-island-mark,
     .p-island-cue,
     .p-island-update,
     .p-island-cue-logo,
     .p-island-agent-badge,
-    .p-live-drop,
-    /* La animación vive en los hijos, no en la gota: sin ellos acá el
-       pulso seguiría con reduce activo. */
-    .p-live-drop .p-rec-square,
-    .p-live-drop .p-dict-glyph {
+    .p-mark.is-lead {
       transition: none !important;
       animation: none !important;
     }

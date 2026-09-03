@@ -66,7 +66,12 @@ impl Summarizer for OllamaSummarizer {
                 },
                 ChatMessage {
                     role: "user",
-                    content: prompts::user_prompt_for(template, meeting_title, &plain, self.english),
+                    content: prompts::user_prompt_for(
+                        template,
+                        meeting_title,
+                        &plain,
+                        self.english,
+                    ),
                 },
             ],
         };
@@ -113,13 +118,11 @@ impl Summarizer for OllamaSummarizer {
 
         let raw = strip_thinking_blocks(&raw);
         if raw.is_empty() {
-            return Err(SummarizeError::BadResponse(
-                if self.english {
-                    "Ollama returned no text".into()
-                } else {
-                    "Ollama no devolvió texto".into()
-                },
-            ));
+            return Err(SummarizeError::BadResponse(if self.english {
+                "Ollama returned no text".into()
+            } else {
+                "Ollama no devolvió texto".into()
+            }));
         }
 
         Ok(build_summary(

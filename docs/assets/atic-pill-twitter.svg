@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" role="img" aria-label="Atic">
+  <!-- Foto de perfil: la pill crema sobre el escritorio oscuro. -->
+  <rect width="1024" height="1024" fill="#1a1e26"/>
+  <circle cx="512" cy="512" r="400" fill="#f4f3ee"/>
+  <!-- Misma retícula 24 que AticMark: r=5.5, asta x=17.5, stroke 1.25, ojos 0.88×1.32. -->
+  <g
+    fill="none"
+    stroke="#26241f"
+    stroke-width="1.25"
+    stroke-linecap="butt"
+    transform="translate(512 512) scale(18.333333) translate(-12 -12)"
+  >
+    <circle cx="12" cy="12" r="5.5"/>
+    <path d="M17.5 6.5V17.5"/>
+  </g>
+  <g fill="#26241f" transform="translate(512 512) scale(18.333333) translate(-12 -12)">
+    <ellipse cx="10.12" cy="11.15" rx="0.88" ry="1.32"/>
+    <ellipse cx="13.88" cy="11.15" rx="0.88" ry="1.32"/>
+  </g>
+</svg>

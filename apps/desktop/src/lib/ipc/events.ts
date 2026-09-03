@@ -65,6 +65,7 @@ export interface AticEvents {
   // Resumen
   "summary-ready": { id: string };
   "summarize-delta": { id: string; delta: string };
+  "summarize-progress": { id: string; stage: string; part: number; of: number };
   "summarize-error": { id: string; message: string };
 
   // Capturas

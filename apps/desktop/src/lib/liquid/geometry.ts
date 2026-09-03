@@ -88,6 +88,53 @@ function stemAlong(
   return Math.min(Math.max(fromStart + fromSize / 2, lo), hi);
 }
 
+/**
+ * El cuerpo del que cuelga el hilo tiene que ser más gordo que el cuello.
+ *
+ * Una pestaña de 10 px en el borde de arriba no filetea con un panel de 200:
+ * el `smin` deja un pezón en el techo del panel, no una fusión. En el canto
+ * la isla abierta mide ~34 px y el cuello sí se lee.
+ */
+export function stemBodyFits(
+  body: Rect,
+  side: "top" | "bottom" | "left" | "right",
+  radius: number,
+): boolean {
+  if (radius <= 0) return false;
+  const thickness = side === "top" || side === "bottom" ? body.h : body.w;
+  return thickness >= radius * 3;
+}
+
+/**
+ * El cuerpo más cercano al panel que todavía filetea.
+ *
+ * La piel viva suele ganar, pero a veces es un disco fantasma —con la rueda
+ * abierta, `pill-skin` sigue midiendo el stack arriba-izquierda del root— y
+ * un hilo a ese disco deja el palo vertical que se ve al lado de la flor.
+ * `maxGap` corta esos hilos: un cuello de 200 px ya no es cuello.
+ */
+export function nearestStemBody(
+  candidates: readonly (Rect | null | undefined)[],
+  panel: Rect,
+  side: "top" | "bottom" | "left" | "right",
+  radius: number,
+  maxGap: number,
+): Rect | null {
+  let best: Rect | null = null;
+  let bestGap = Infinity;
+  for (const body of candidates) {
+    if (!body || !stemBodyFits(body, side, radius)) continue;
+    if (stemBetween(body, panel, side, radius) == null) continue;
+    const g = gapBetween(body, panel);
+    if (g > maxGap) continue;
+    if (g < bestGap) {
+      bestGap = g;
+      best = body;
+    }
+  }
+  return best;
+}
+
 export function stemBetween(
   from: Rect,
   to: Rect,

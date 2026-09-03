@@ -230,6 +230,66 @@ export function placeOnSide(
   return { side, offset: along, x, y, w: bw, h: bh };
 }
 
+const SIDES: PlaceResult["side"][] = ["top", "bottom", "left", "right"];
+
+function rectsOverlap(a: PillRect, b: PillRect, pad = 0): boolean {
+  return !(
+    a.x + a.w + pad <= b.x ||
+    b.x + b.w + pad <= a.x ||
+    a.y + a.h + pad <= b.y ||
+    b.y + b.h + pad <= a.y
+  );
+}
+
+/**
+ * Lado del panel que mira al pétalo: el que queda hacia afuera del hub.
+ *
+ * `side` es el del panel (`placeOnSide`): pétalo a la derecha del centro →
+ * el panel va más a la derecha y su cara `left` toca el pétalo.
+ */
+export function outwardSide(hub: PillRect, petal: PillRect): PlaceResult["side"] {
+  const dx = petal.x + petal.w / 2 - (hub.x + hub.w / 2);
+  const dy = petal.y + petal.h / 2 - (hub.y + hub.h / 2);
+  if (Math.abs(dx) >= Math.abs(dy)) return dx >= 0 ? "left" : "right";
+  return dy >= 0 ? "top" : "bottom";
+}
+
+function sideOrder(prefer: PlaceResult["side"]): PlaceResult["side"][] {
+  const opposite: Record<PlaceResult["side"], PlaceResult["side"]> = {
+    top: "bottom",
+    bottom: "top",
+    left: "right",
+    right: "left",
+  };
+  return [
+    prefer,
+    ...SIDES.filter((s) => s !== prefer && s !== opposite[prefer]),
+    opposite[prefer],
+  ];
+}
+
+/**
+ * Coloca el panel junto a un pétalo, no debajo de toda la flor.
+ *
+ * `hub` es el obstáculo (la rueda). `petal` es el gajo que lo abrió.
+ * Prueba primero el lado que apunta hacia afuera; si esa caja pisa el hub,
+ * prueba los demás.
+ */
+export function placeBesideAnchor(
+  hub: PillRect,
+  petal: PillRect,
+  panel: { w: number; h: number },
+  opts: { gap?: number; corner?: number; work?: Area[] } = {},
+): PlaceResult {
+  const prefer = outwardSide(hub, petal);
+  const gap = opts.gap ?? BUBBLE_GAP;
+  for (const side of sideOrder(prefer)) {
+    const at = placeOnSide(petal, side, panel, opts);
+    if (!rectsOverlap(at, hub, gap)) return at;
+  }
+  return placeOnSide(petal, prefer, panel, opts);
+}
+
 /**
  * Ancla `panel` a una esquina de `pill`.
  *

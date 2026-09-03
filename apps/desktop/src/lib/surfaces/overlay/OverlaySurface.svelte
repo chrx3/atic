@@ -32,6 +32,7 @@
   } from "$ipc/overlay";
   import { liveArea, surfaces } from "./surfaces.svelte";
   import { liquid } from "./group.svelte";
+  import { snapPreview } from "./snapPreview.svelte";
   import Skin from "$liquid/Skin.svelte";
   import { BLEND, CELL, SMOOTH } from "$liquid/constants";
   import { LAUNCHER_LAB_OPEN_KEY, launcherLab } from "$lib/dev/launcherLab.svelte";
@@ -431,6 +432,14 @@
       />
     {/each}
 
+    {#if snapPreview.frame}
+      <div
+        class="snap-ghost"
+        style="left: {snapPreview.frame.x}px; top: {snapPreview.frame.y}px; width: {snapPreview.frame.w}px; height: {snapPreview.frame.h}px"
+        aria-hidden="true"
+      ></div>
+    {/if}
+
     <!-- Floats siempre montados: escuchan anclas/dismiss aunque estén cerrados. -->
     {#if AGENTS_ENABLED}
       <AgentsFloat />
@@ -510,6 +519,32 @@
 
   .ov.is-dragging :global(.skin) {
     will-change: transform;
+  }
+
+  /*
+   * Destino del snap: detrás del globo, encima de la piel fundida. El marco
+   * se morphéa al cambiar de canto/esquina; al soltar se apaga y el float
+   * crece a ese rectángulo.
+   */
+  .snap-ghost {
+    position: fixed;
+    z-index: var(--z-overlay-pill);
+    box-sizing: border-box;
+    pointer-events: none;
+    border-radius: 1.625rem;
+    background: color-mix(in srgb, var(--skin) 38%, transparent);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text) 16%, transparent);
+    transition:
+      left var(--duration-slow) var(--ease-smooth-out),
+      top var(--duration-slow) var(--ease-smooth-out),
+      width var(--duration-slow) var(--ease-smooth-out),
+      height var(--duration-slow) var(--ease-smooth-out);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .snap-ghost {
+      transition: none;
+    }
   }
 
   /*

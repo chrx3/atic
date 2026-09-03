@@ -5,6 +5,7 @@ La cara de producto e instalación está en el [README](../README.md) de la raí
 | Documento | Para quién |
 |---|---|
 | [DEVELOPMENT.md](DEVELOPMENT.md) | Compilar y empaquetar en Windows |
+| [DISENO_PILL.md](DISENO_PILL.md) | Cómo se ve y se comporta cada superficie de la pill |
 | [MACOS.md](MACOS.md) | Toolchain y límites actuales en Mac |
 | [Features/](../Features/) | Catálogo vivo de capacidades |
 | [CONTRIBUTING.md](../CONTRIBUTING.md) | Cómo abrir un PR |

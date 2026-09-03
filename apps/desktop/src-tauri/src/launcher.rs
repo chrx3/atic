@@ -49,10 +49,10 @@ enum EntryTarget {
 }
 
 #[derive(Debug, Clone)]
-struct LauncherEntry {
-    id: String,
-    kind: LauncherKind,
-    title: String,
+pub(crate) struct LauncherEntry {
+    pub(crate) id: String,
+    pub(crate) kind: LauncherKind,
+    pub(crate) title: String,
     subtitle: String,
     target: EntryTarget,
 }
@@ -66,15 +66,27 @@ pub struct LauncherHit {
     pub subtitle: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub score: Option<u32>,
+    /// Hay una ventana visible de esta app.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub running: Option<bool>,
+    /// Es la ventana del frente.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub foreground: Option<bool>,
+    /// Epoch ms del arranque del proceso (GetProcessTimes).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub opened_at: Option<u64>,
+    /// Epoch ms de la última vez que Atic la lanzó o estuvo al frente.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_used_at: Option<u64>,
 }
 
 static INDEX: OnceLock<Mutex<Vec<LauncherEntry>>> = OnceLock::new();
 
-fn index() -> &'static Mutex<Vec<LauncherEntry>> {
+pub(crate) fn index() -> &'static Mutex<Vec<LauncherEntry>> {
     INDEX.get_or_init(|| Mutex::new(Vec::new()))
 }
 
-fn normalize(s: &str) -> String {
+pub(crate) fn normalize(s: &str) -> String {
     s.to_lowercase()
         .chars()
         .map(|c| match c {
@@ -631,7 +643,7 @@ pub fn refresh_language(en: bool) {
 /// Si el índice está vacío, dispara el rebuild (o se suma al que ya corre) y
 /// espera el swap. Solo para el pool bloqueante de `launcher_*`: el hilo UI
 /// abre el float igual y no paga COM.
-fn ensure_index_populated() {
+pub(crate) fn ensure_index_populated() {
     if !index().lock_or_recover().is_empty() {
         maybe_refresh_index();
         return;
@@ -804,6 +816,10 @@ pub async fn launcher_search(query: String) -> Result<Vec<LauncherHit>, String> 
                     entry.subtitle.clone()
                 },
                 score: Some(score),
+                running: None,
+                foreground: None,
+                opened_at: None,
+                last_used_at: None,
             })
             .collect()
     })
@@ -811,7 +827,7 @@ pub async fn launcher_search(query: String) -> Result<Vec<LauncherHit>, String> 
     .map_err(|e| e.to_string())
 }
 
-fn hit_from_entry(entry: &LauncherEntry) -> LauncherHit {
+pub(crate) fn hit_from_entry(entry: &LauncherEntry) -> LauncherHit {
     let en = INDEX_EN.load(Ordering::Relaxed);
     LauncherHit {
         id: entry.id.clone(),
@@ -823,6 +839,10 @@ fn hit_from_entry(entry: &LauncherEntry) -> LauncherHit {
             entry.subtitle.clone()
         },
         score: None,
+        running: None,
+        foreground: None,
+        opened_at: None,
+        last_used_at: None,
     }
 }
 
@@ -991,12 +1011,13 @@ fn run_action(app: &AppHandle, action: &str) -> Result<(), String> {
 /// Las acciones vuelven al hilo principal, que es donde siempre corrieron.
 #[tauri::command]
 pub async fn launcher_run(app: AppHandle, id: String) -> Result<(), String> {
+    let lookup = id.clone();
     let entry = tauri::async_runtime::spawn_blocking(move || {
         ensure_index_populated();
         index()
             .lock_or_recover()
             .iter()
-            .find(|e| e.id == id)
+            .find(|e| e.id == lookup)
             .cloned()
     })
     .await
@@ -1024,8 +1045,28 @@ pub async fn launcher_run(app: AppHandle, id: String) -> Result<(), String> {
             .map_err(|e| e.to_string())?;
         }
     }
+    remember_launch(&app, &id);
     hide(&app);
     Ok(())
+}
+
+fn remember_launch(app: &AppHandle, id: &str) {
+    let Some(state) = app.try_state::<AppState>() else {
+        return;
+    };
+    let path = crate::launcher_recents::store_path(&state.dirs.data_dir());
+    crate::launcher_recents::touch(&path, id);
+}
+
+/// Apps abiertas ahora + las que se lanzaron desde Atic.
+#[tauri::command]
+pub async fn launcher_list_recents(
+    state: State<'_, AppState>,
+) -> Result<Vec<LauncherHit>, String> {
+    let path = crate::launcher_recents::store_path(&state.dirs.data_dir());
+    tauri::async_runtime::spawn_blocking(move || crate::launcher_recents::list(&path))
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]

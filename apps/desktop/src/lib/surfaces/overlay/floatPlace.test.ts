@@ -3,6 +3,8 @@ import {
   PANEL_GROW_SEED,
   PANEL_RESTING_GAP_PX,
   expandPanelFromSeed,
+  outwardSide,
+  placeBesideAnchor,
   placeBesidePill,
   placeOnSide,
   placePanelFusedSeed,
@@ -145,6 +147,44 @@ describe("placeBesidePill", () => {
     });
     expect(placed.x).toBeGreaterThanOrEqual(1536);
     expect(placed.x + placed.w).toBeLessThanOrEqual(3072);
+  });
+});
+
+describe("placeBesideAnchor", () => {
+  const hub = { x: 400, y: 300, w: 220, h: 220 };
+  const panel = { w: 208, h: 280 };
+
+  it("pétalo a la derecha: el panel sale a su derecha, no bajo la flor", () => {
+    const petal = { x: 580, y: 390, w: 40, h: 40 };
+    expect(outwardSide(hub, petal)).toBe("left");
+    const placed = placeBesideAnchor(hub, petal, panel, {
+      gap: 14,
+      corner: 20,
+      work,
+    });
+    expect(placed.side).toBe("left");
+    expect(placed.x).toBeGreaterThanOrEqual(petal.x + petal.w);
+    expect(placed.y + placed.h).toBeGreaterThan(petal.y);
+    expect(placed.y).toBeLessThan(petal.y + petal.h);
+    const overlap = !(
+      placed.x + placed.w <= hub.x ||
+      placed.x >= hub.x + hub.w ||
+      placed.y + placed.h <= hub.y ||
+      placed.y >= hub.y + hub.h
+    );
+    expect(overlap).toBe(false);
+  });
+
+  it("pétalo abajo: el panel queda bajo el gajo, no centrado bajo el hub", () => {
+    const petal = { x: 490, y: 480, w: 40, h: 40 };
+    expect(outwardSide(hub, petal)).toBe("top");
+    const placed = placeBesideAnchor(hub, petal, panel, {
+      gap: 14,
+      corner: 20,
+      work,
+    });
+    expect(placed.side).toBe("top");
+    expect(placed.y).toBe(petal.y + petal.h + 14);
   });
 });
 

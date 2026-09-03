@@ -134,6 +134,7 @@ probar ideas, no se mantienen sincronizadas.
 
 ## Relacionado
 
+- [../docs/DISENO_PILL.md](../docs/DISENO_PILL.md) — estados, geometría y movimiento de la pill
 - [pill-liquid-emerge.md](pill-liquid-emerge.md) — patrón fused grow → separate (referencia: launcher)
 - [pill-shell.md](pill-shell.md)
 - [agentes.md](agentes.md)

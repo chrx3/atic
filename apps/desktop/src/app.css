@@ -126,6 +126,12 @@ textarea,
   --morph-fade-dur: 80ms;
   /* Cierre acelerado: al elegir herramienta la rueda ya cumplió su función. */
   --morph-quick-dur: 60ms;
+  /*
+   * Bloom de las gotas de la rueda. `--duration-micro` (40 ms) × 8 gajos
+   * dejaba la última a 390 ms: se leía como lista, no como un cuerpo.
+   * 16 ms cabe en el morph de 110 ms; el abanico se lee y ya está listo.
+   */
+  --morph-stagger: 16ms;
   --morph-scale: 0.97;
   --morph-blur: 2px;
 
@@ -213,7 +219,7 @@ textarea,
    * corto, ese cuerpo queda con la proporción de la pestaña y el cambio no se
    * nota.
    */
-  --island-shut-scale: 0.34;
+  --island-shut-scale: 0.91;
   --island-shut-squeeze: 0.22;
   --ease-smooth-out: cubic-bezier(0.22, 1, 0.36, 1);
   --ease-out: ease-out;

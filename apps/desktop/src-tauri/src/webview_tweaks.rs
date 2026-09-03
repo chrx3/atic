@@ -305,14 +305,7 @@ pub fn sync_controller_bounds(window: &WebviewWindow) -> Option<f64> {
             atic_core::config::sanitize_overlay_scale(s.config.lock_or_recover().overlay_scale)
         })
         .unwrap_or(1.0);
-    let scale = overlay_raster_scale(
-        hwnd_dpi,
-        tauri_scale,
-        max_mon,
-        outer_w,
-        vs_w,
-        user_scale,
-    );
+    let scale = overlay_raster_scale(hwnd_dpi, tauri_scale, max_mon, outer_w, vs_w, user_scale);
     let (phys_w, phys_h) = physical_client_px(client_w, client_h, outer_w, outer_h, scale);
     let dip_w = controller_dip_size(phys_w, scale);
     let dip_h = controller_dip_size(phys_h, scale);

@@ -406,17 +406,35 @@ export function snapMagnet(
 }
 
 /**
+ * Al soltar un arrastre: solo engancha un canto si quedó contra él.
+ *
+ * `snapMagnet` tira al centro de la pantalla o al centro del canto (96 px).
+ * Desde el hogar eso se lee como «la moví un poco y volvió». Acá el eje
+ * libre se conserva: pegada arriba se queda a esa X, no salta al medio.
+ */
+export function snapDrop(
+  rect: Rect,
+  areas: readonly Area[],
+): MagnetHit | null {
+  const dock = dockCandidate(rect, areas);
+  if (!dock) return null;
+  return { at: dock.at, edge: dock.edge };
+}
+
+/**
  * Pared SDF local en un canto, para que la pill se funda con el borde.
  *
  * Vive casi toda fuera del viewport: el clip recorta y se lee como gota
  * pegada (menisco / Dynamic Island). No es una tira a lo ancho de la
  * pantalla — solo un tramo cerca de la pill.
  *
- * `DEPTH` es hacia afuera. `OVERLAP` es cuánto asoma al viewport (0 = a ras
- * por fuera). `FLARE` es el filete simétrico a cada lado del dintel.
+ * `DEPTH` es hacia afuera. `OVERLAP` es cuánto asoma al viewport: un poco
+ * adentro para que el `smin` fusione dintel y pestaña en un solo cuerpo
+ * (0 dejaba un cuello y se leía bola pegada). `FLARE` es el filete simétrico
+ * a cada lado del dintel.
  */
 export const EDGE_WALL_DEPTH = 40;
-export const EDGE_WALL_OVERLAP = 0;
+export const EDGE_WALL_OVERLAP = 8;
 /**
  * Filete a cada lado de la pill, a lo largo del canto.
  *

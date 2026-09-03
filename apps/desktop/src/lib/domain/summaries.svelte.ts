@@ -46,6 +46,9 @@ class SummariesStore implements DomainStore {
   /** El último fallo fue de configuración: reintentar no lo arregla. */
   needsSetup = $state(false);
 
+  /** Etapa del resumen por partes (`map` / `wait` / `reduce`), o nada. */
+  progress = $state<{ stage: string; part: number; of: number } | null>(null);
+
   /** De qué grabación es el borrador. Evita releer al volver a abrirla. */
   #openId: string | null = null;
 
@@ -62,13 +65,21 @@ class SummariesStore implements DomainStore {
         if (p.id !== this.generating) return;
         this.draft += p.delta;
       },
+      "summarize-progress": (p) => {
+        if (p.id !== this.generating) return;
+        this.progress = { stage: p.stage, part: p.part, of: p.of };
+      },
       "summary-ready": (p) => {
-        if (p.id === this.generating) this.generating = null;
+        if (p.id === this.generating) {
+          this.generating = null;
+          this.progress = null;
+        }
         void this.#reload(p.id);
       },
       "summarize-error": (p) => {
         if (p.id !== this.generating) return;
         this.generating = null;
+        this.progress = null;
         this.needsSetup = isSetupProblem(p.message);
         toasts.push(p.message);
       },
@@ -109,12 +120,14 @@ class SummariesStore implements DomainStore {
   async generate(id: string): Promise<void> {
     this.generating = id;
     this.needsSetup = false;
+    this.progress = null;
     this.draft = "";
     this.dirty = false;
     try {
       await summarizeRecording(id, this.template);
     } catch (error) {
       this.generating = null;
+      this.progress = null;
       const message = String(error);
       this.needsSetup = isSetupProblem(message);
       // El borrador se restaura desde lo guardado: dejarlo vacío daría a

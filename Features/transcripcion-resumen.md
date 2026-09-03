@@ -16,6 +16,9 @@ o abrir borrador por correo.
 - Si se selecciona Groq, el audio se envía a su API. Los proveedores de resumen
   reciben texto, no audio.
 - Resumen con Claude, Ollama, OpenAI-compat (OpenRouter, Groq, etc.).
+- Groq (y un 413 de cupo en otros OpenAI-compat): si la transcripción no cabe
+  en un request, se resume **por partes** y luego se unen las notas. El cupo
+  TPM de Groq on_demand (~8000/min) obliga a esperar entre partes.
 - Envío SMTP o `mailto:` según config.
 
 ## Código
@@ -31,6 +34,7 @@ o abrir borrador por correo.
 
 ## Pendiente / siguiente
 
+- [x] Progreso por parte (1/n) en el panel de resumen
 - [ ] Mejoras de UX de cola / progreso si el feedback de usuarios lo pide
 - [ ] GPU por plataforma (Metal/CUDA/Vulkan) documentada en macOS/Windows
 

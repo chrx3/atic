@@ -1,5 +1,6 @@
 //! Generación de resúmenes con IA (Claude, Ollama y OpenAI-compatible).
 
+mod chunk;
 mod claude;
 mod error;
 mod models;
@@ -19,6 +20,16 @@ pub use providers::{find as find_provider, ProviderInfo, ProviderKind, PROVIDERS
 
 use atic_core::{Summary, Transcript};
 
+/// Aviso de etapa cuando el resumen va por partes (Groq / cupo chico).
+///
+/// `stage`: `map` (notas de una parte), `wait` (pausa de cupo), `reduce`
+/// (documento final). `part`/`of` son 1-based; en `reduce` `part` es `of`.
+pub struct SummarizeProgress {
+    pub stage: &'static str,
+    pub part: u32,
+    pub of: u32,
+}
+
 /// Contrato de un motor de resumen.
 pub trait Summarizer: Send + Sync {
     /// Nombre legible del backend (para la UI y los logs).
@@ -35,6 +46,19 @@ pub trait Summarizer: Send + Sync {
         meeting_title: &str,
         on_delta: &mut dyn FnMut(&str),
     ) -> Result<Summary>;
+
+    /// Igual que [`summarize`], con avisos de etapa (map/wait/reduce).
+    fn summarize_with_progress(
+        &self,
+        transcript: &Transcript,
+        template: SummaryTemplate,
+        meeting_title: &str,
+        on_delta: &mut dyn FnMut(&str),
+        on_progress: &mut dyn FnMut(&SummarizeProgress),
+    ) -> Result<Summary> {
+        let _ = on_progress;
+        self.summarize(transcript, template, meeting_title, on_delta)
+    }
 }
 
 /// Parámetros para construir el summarizer activo.
@@ -163,6 +187,35 @@ mod tests {
             SummarizeError::UnknownModel { model } => {
                 assert!(model.contains("maverick"));
             }
+            other => panic!("unexpected {other}"),
+        }
+    }
+
+    #[test]
+    fn groq_413_is_request_too_large_not_raw_json() {
+        let err = SummarizeError::from_http(
+            413,
+            r#"{"error":{"message":"Request too large for model `openai/gpt-oss-120b` on tokens per minute (TPM): Limit 8000, Requested 8272","code":"rate_limit_exceeded"}}"#,
+            "openai/gpt-oss-120b",
+        );
+        match err {
+            SummarizeError::RequestTooLarge { limit, .. } => assert_eq!(limit, Some(8000)),
+            other => panic!("unexpected {other}"),
+        }
+        let es = err.to_ui(false);
+        assert!(!es.contains("Request too"));
+        assert!(es.contains("demasiado larga"));
+    }
+
+    #[test]
+    fn groq_429_under_limit_is_rate_not_size() {
+        let err = SummarizeError::from_http(
+            429,
+            "Rate limit reached for model `openai/gpt-oss-120b` on tokens per minute (TPM): Limit 8000, Requested 2100, please wait 7 seconds and try again",
+            "openai/gpt-oss-120b",
+        );
+        match err {
+            SummarizeError::RateLimited { secs } => assert_eq!(secs, 7),
             other => panic!("unexpected {other}"),
         }
     }

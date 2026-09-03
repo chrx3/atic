@@ -61,8 +61,10 @@ class RecordingsStore implements DomainStore {
         void this.hydrate();
       },
       "summary-ready": () => void this.hydrate(),
-      "summarize-error": (p) => {
-        toasts.push(p.message);
+      "summarize-error": () => {
+        // El toast lo emite `summaries`: acá solo se refresca el estado
+        // (Transcribed otra vez). Si se avisara dos veces, salen dos globos
+        // idénticos.
         void this.hydrate();
       },
     });

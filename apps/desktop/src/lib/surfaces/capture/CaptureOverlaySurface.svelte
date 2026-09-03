@@ -48,7 +48,10 @@
   let revealed = $state(false);
   let hovered = $state<OverlayCandidate | null>(null);
   let region = $state<Rect | null>(null);
-  let cursor = $state({ x: 0, y: 0 });
+  /** Posición del mouse. No es `$state`: el puntero se mueve por DOM. */
+  let cursor = { x: 0, y: 0 };
+  let pointerEl: HTMLDivElement | undefined;
+  let helpEl: HTMLDivElement | undefined;
 
   let dragging = false;
   let dragStartClient = { x: 0, y: 0 };
@@ -114,6 +117,7 @@
     region = null;
     hovered = null;
     dragging = false;
+    if (pointerEl) pointerEl.hidden = true;
     frameSrc = "";
     frameW = 1;
     frameH = 1;
@@ -158,7 +162,13 @@
   }
 
   function onMouseMove(event: MouseEvent) {
-    cursor = { x: event.clientX, y: event.clientY };
+    cursor.x = event.clientX;
+    cursor.y = event.clientY;
+    if (pointerEl) {
+      pointerEl.hidden = false;
+      pointerEl.style.transform = `translate(${cursor.x}px, ${cursor.y}px)`;
+    }
+    if (helpEl) helpEl.style.left = `${cursor.x}px`;
     const point = toFrame(event.clientX, event.clientY);
     if (!dragging) {
       hovered = hitTest(point.x, point.y);
@@ -379,20 +389,32 @@
 
   <!-- La ayuda sigue al cursor en horizontal: en dos monitores, fijarla al
        centro la deja en la otra pantalla. -->
-  <div class="cap-help" style="left:{cursor.x}px;">
+  <div class="cap-help" bind:this={helpEl}>
     {t("page.captureHud.help")}
+  </div>
+
+  <div class="cap-pointer" bind:this={pointerEl} hidden aria-hidden="true">
+    <svg width="18" height="24" viewBox="0 0 18 24" fill="none">
+      <path
+        d="M1.2 1.2 1.2 20.2 6.1 15.4 9.4 23.1 12.2 21.9 8.8 14.1 16.2 13.9Z"
+        fill="#fff"
+        stroke="#111"
+        stroke-width="1.4"
+        stroke-linejoin="round"
+      />
+    </svg>
   </div>
 </div>
 
 <style>
-  /* La mira en cruz dice que lo que se está haciendo es apuntar. El fondo se
-     ve solo hasta que carga la foto congelada. */
+  /* La mira la dibujamos nosotros: el cursor del SO queda detrás del PNG
+     congelado (WebView2 a pantalla completa / escritorio virtual). */
   :global(html),
   :global(body) {
     overflow: hidden;
     margin: 0;
     background: var(--screen-backdrop);
-    cursor: crosshair;
+    cursor: none !important;
   }
 
   /*
@@ -407,6 +429,7 @@
     height: 100vh;
     overflow: hidden;
     user-select: none;
+    cursor: none;
     opacity: 0;
     transition: opacity var(--duration-quick, 150ms)
       var(--ease-smooth-out, cubic-bezier(0.22, 1, 0.36, 1));
@@ -425,6 +448,16 @@
     width: 100%;
     height: 100%;
     object-fit: fill;
+    cursor: none;
+  }
+
+  .cap-pointer {
+    pointer-events: none;
+    position: fixed;
+    left: 0;
+    top: 0;
+    z-index: 5;
+    will-change: transform;
   }
 
   .cap-hole {

@@ -72,7 +72,11 @@ pub fn get_config(state: State<AppState>) -> Config {
 }
 
 #[tauri::command]
-pub fn set_config(app: AppHandle, state: State<AppState>, mut config: Config) -> Result<(), String> {
+pub fn set_config(
+    app: AppHandle,
+    state: State<AppState>,
+    mut config: Config,
+) -> Result<(), String> {
     let show_pill = config.show_pill;
     let ui_theme = config.ui_theme.clone();
     let ui_resolved = config.resolved_ui_language();
@@ -89,8 +93,7 @@ pub fn set_config(app: AppHandle, state: State<AppState>, mut config: Config) ->
     let launcher_shortcut = config.launcher_shortcut.clone();
     let prev = state.config.lock_or_recover().clone();
     config.overlay_scale = atic_core::config::sanitize_overlay_scale(config.overlay_scale);
-    let overlay_scale_changed =
-        (config.overlay_scale - prev.overlay_scale).abs() > 0.001;
+    let overlay_scale_changed = (config.overlay_scale - prev.overlay_scale).abs() > 0.001;
 
     // Si algún atajo cambió, validar+registrar PRIMERO: aborta si es inválido
     // antes de persistir un valor que dejaría el hotkey muerto.

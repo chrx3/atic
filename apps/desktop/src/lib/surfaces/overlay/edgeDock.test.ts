@@ -19,6 +19,7 @@ import {
   isOuterEdge,
   nearestOuterWorkEdge,
   shouldUndock,
+  snapDrop,
   snapMagnet,
 } from "./edgeDock";
 import type { Area } from "$ipc/overlay";
@@ -255,11 +256,11 @@ describe("edgeWallsFor", () => {
     const walls = edgeWallsFor(pill, SOLO, { maxGap: 24, prefer: "top" });
     expect(walls).toHaveLength(2);
     const top = walls.find((w) => w.y < work.y);
-    const right = walls.find((w) => w.x >= work.x + work.w - 1);
+    const right = walls.find((w) => w.x >= work.x + work.w - EDGE_WALL_OVERLAP - 1);
     expect(top).toBeDefined();
     expect(right).toBeDefined();
     expect(top!.x + top!.w).toBe(work.x + work.w);
-    expect(right!.x).toBe(work.x + work.w);
+    expect(right!.x).toBe(work.x + work.w - EDGE_WALL_OVERLAP);
     expect(right!.y).toBe(pill.y);
   });
 
@@ -388,5 +389,24 @@ describe("snapMagnet", () => {
 
   it("el canto interior entre monitores no es un imán", () => {
     expect(snapMagnet(at(960, 380), DUAL)).toBeNull();
+  });
+});
+
+describe("snapDrop", () => {
+  it("un gesto corto desde el hogar no vuelve al centro del canto", () => {
+    // Hogar: centro de arriba. 40 px abajo y 30 a la izquierda: el imán
+    // de 96 px la devolvería; al soltar tiene que quedarse.
+    expect(snapDrop(at(450, 40), SOLO)).toBeNull();
+  });
+
+  it("contra un canto se pega ahí, no salta al centro", () => {
+    expect(snapDrop(at(400, 8), SOLO)).toEqual({
+      at: { x: 400, y: 0 },
+      edge: "top",
+    });
+    expect(snapDrop(at(10, 200), SOLO)).toEqual({
+      at: { x: 0, y: 200 },
+      edge: "left",
+    });
   });
 });

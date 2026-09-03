@@ -473,6 +473,10 @@ export interface LauncherHit {
   title: string;
   subtitle: string;
   score?: number;
+  running?: boolean;
+  foreground?: boolean;
+  openedAt?: number;
+  lastUsedAt?: number;
 }
 
 export interface OverlayCandidate {

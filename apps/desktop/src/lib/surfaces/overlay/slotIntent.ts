@@ -36,6 +36,11 @@ export function isCursorAnchored(id: ToolId): boolean {
   return id === "clipboard" || id === "snippets";
 }
 
+/** Launcher y agentes se sientan en el centro del monitor, no junto a la pill. */
+export function isScreenCentered(id: ToolId): boolean {
+  return id === "launcher" || id === "agents";
+}
+
 /** Distancia (px) entre la pill y el destino centrado en el cursor. */
 export function pillToCursorMovePx(
   pill: { x: number; y: number },

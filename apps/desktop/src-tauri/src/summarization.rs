@@ -27,6 +27,14 @@ struct DeltaPayload {
 }
 
 #[derive(Clone, Serialize)]
+struct ProgressPayload {
+    id: String,
+    stage: String,
+    part: u32,
+    of: u32,
+}
+
+#[derive(Clone, Serialize)]
 pub struct TemplateInfo {
     pub id: String,
     pub label: String,
@@ -298,6 +306,8 @@ fn run_summarize(
 ) {
     let app_delta = app.clone();
     let id_delta = id.clone();
+    let app_progress = app.clone();
+    let id_progress = id.clone();
     let result = (|| {
         heal_summarizer_model(&app, &mut summarizer_cfg);
         let summarizer = summarize::build_summarizer(&summarizer_cfg)?;
@@ -310,7 +320,24 @@ fn run_summarize(
                 },
             );
         };
-        summarizer.summarize(&transcript, template, &title, &mut on_delta)
+        let mut on_progress = |p: &summarize::SummarizeProgress| {
+            let _ = app_progress.emit(
+                "summarize-progress",
+                ProgressPayload {
+                    id: id_progress.clone(),
+                    stage: p.stage.to_string(),
+                    part: p.part,
+                    of: p.of,
+                },
+            );
+        };
+        summarizer.summarize_with_progress(
+            &transcript,
+            template,
+            &title,
+            &mut on_delta,
+            &mut on_progress,
+        )
     })();
 
     let state = app.state::<AppState>();
