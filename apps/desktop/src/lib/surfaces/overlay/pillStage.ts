@@ -16,7 +16,7 @@ export const PILL = {
   /** Respiro alrededor del contenido dentro de la ventana. */
   pad: 4,
   /** Alto de la barra compacta y diámetro del disco en reposo. */
-  bar: 40,
+  bar: 52,
   /**
    * Lado del escenario cuadrado de la rueda: el disco (232 px, fijado en
    * `.p-wheel` del CSS) más 10 px de aire por lado.
@@ -31,40 +31,45 @@ export const PILL = {
   /** Alto del panel (sin la barra). */
   panelH: 332,
   /**
-   * Isla acoplada en reposo: grosor contra el borde y largo a lo largo de él.
+   * Isla acoplada en reposo: pestaña que nace del muro, no un disco pegado.
    *
-   * Fina a propósito: acoplada deja de ser un botón y pasa a ser una pestaña.
-   * El largo es lo que la vuelve agarrable —10×10 sería imposible de apuntar—
-   * y lo que le da al líquido con qué formar el cuello cuando abre un float.
+   * `thick` es lo que asoma hacia adentro. Si vale lo mismo que `long`,
+   * `pillShape` sale un círculo y el `smin` con la pared se lee como una
+   * bola con un mordisco, no como un notch.
    */
-  islandThick: 10,
+  islandThick: 40,
   /**
-   * Pestaña con aviso de agente o dock achicado: cabe un icono de 11 px
-   * dentro del padding (4+4) del root y de la isla. Sigue siendo pestaña,
+   * Pestaña con aviso de agente o dock achicado: cabe un icono pequeño
+   * dentro del padding del root y de la isla. Sigue siendo pestaña,
    * menor que `islandTool`.
    *
    * Tiene que ser menor que `islandTool`: si la cerrada fuera más gorda que
    * la tira abierta, el hover de abrir encogería un eje y rearmaría el bucle.
    */
-  islandCueThick: 22,
+  islandCueThick: 42,
   /**
-   * **Tiene que valer lo mismo que `bar`.** No es estética: es lo que impide
-   * un bucle.
+   * Dintel de la pestaña, a lo largo del borde.
    *
-   * La isla se abre con el puntero encima y se cierra al salir. Si al abrirse
-   * encogiera en el eje largo (56 → 40), un cursor apoyado en el extremo
-   * quedaría fuera de la caja nueva: saldría, cerraría, la caja volvería a
-   * crecer bajo el cursor, entraría, abriría… a 60 Hz.
-   *
-   * Igualándolo a `bar`, el rectángulo abierto **contiene** siempre al
-   * cerrado: en el eje del borde solo crece y en el perpendicular no cambia.
-   * `pillPlan.test.ts` lo fija.
+   * Un poco más largo que `thick` para no volver al disco, y lo más corto
+   * que deja la marca al centro sin aire a los lados.
    */
-  islandLong: 40,
+  islandLong: 56,
+  /** La marca de Atic dentro de la pestaña. Se ve siempre, haya aviso o no. */
+  islandMark: 32,
+  /**
+   * Botón de aviso (agente o update) al lado de la marca en la pestaña.
+   *
+   * La marca ya no cede el sitio al aviso: conviven, y la pestaña se alarga
+   * a lo largo del borde en vez de taparla.
+   */
+  islandCueBtn: 26,
+  /** Logo de agente / icono de update dentro de ese botón. */
+  islandCueMark: 14,
   /** Lado del botón de herramienta dentro de la isla abierta. */
-  islandTool: 34,
-  /** Hueco entre botones de la tira. */
-  islandGap: 6,
+  islandTool: 44,
+  /** Hueco entre botones de la tira. Chico a propósito: el clic entre iconos
+   *  tiene que caer en una herramienta, no en el cuerpo (que abre la rueda). */
+  islandGap: 2,
   /** Diámetro de la gota de grabación/dictado que cuelga del chrome. */
   recDrop: 36,
   /** Hueco entre el cuerpo y la gota: bajo el alcance del goo (~10 px). */

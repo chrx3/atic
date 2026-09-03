@@ -17,6 +17,7 @@
   import {
     hideLauncher,
     launcherListFavorites,
+    launcherListRecents,
     launcherRun,
     launcherSearch,
     launcherToggleFavorite,
@@ -47,11 +48,11 @@
   import { rectKey } from "$surfaces/overlay/floatEmergeSkinMath";
   import { separateAxisProp, waitFrames } from "$surfaces/overlay/floatReveal";
   import { surfaces } from "$surfaces/overlay/surfaces.svelte";
+  import { notifyToolResting, toolBirth } from "$surfaces/overlay/toolBirth";
   import { dockedEdgeAt } from "$surfaces/overlay/edgeDock";
   import {
     placePanelFusedFull,
     placePanelFusedSeed,
-    placePanelResting,
   } from "$surfaces/overlay/floatPlace";
   import {
     armOpenDismissGrace,
@@ -61,6 +62,7 @@
   import LauncherIcon from "$surfaces/launcher/LauncherIcon.svelte";
   import Icon from "$ui/Icon.svelte";
   import { t } from "$domain/i18n.svelte";
+  import { spanFrom } from "$surfaces/overlay/pill/pillQuota";
   import Kbd from "$ui/Kbd.svelte";
   import { Star, X } from "$lib/icons";
 
@@ -99,6 +101,7 @@
 
   let query = $state("");
   let hits = $state<LauncherHit[]>([]);
+  let recents = $state<LauncherHit[]>([]);
   let favorites = $state<LauncherHit[]>([]);
   let favoriteIds = $state<string[]>([]);
   let selected = $state(0);
@@ -140,7 +143,8 @@
   const motionPhase = $derived(expanding || separating || revealPhase === "tuck");
 
   const hasQuery = $derived(query.trim().length > 0);
-  const showResults = $derived(hasQuery);
+  const list = $derived(hasQuery ? hits : recents);
+  const showResults = $derived(hasQuery || recents.length > 0);
 
   const favGap = $derived(isDev && launcherLab.open ? launcherLab.favGap : FAVS_GAP_PX);
   const dotGap = $derived(isDev && launcherLab.open ? launcherLab.dotGap : DOT_GAP_PX);
@@ -149,6 +153,7 @@
   );
   const labCloseDur = $derived(isDev && launcherLab.open ? launcherLab.closeDur : 120);
   const compactH = $derived(isDev && launcherLab.open ? launcherLab.barH : COMPACT_H);
+  const recentsHeight = $derived(compactH + 28 + recents.length * 44 + 10);
   const reach = $derived(
     isDev && launcherLab.open ? sminReach(launcherLab.blend) : REACH,
   );
@@ -181,6 +186,7 @@
     if (prefersReducedMotion()) {
       if (lastOpen) await applyCenterPlace(lastOpen);
       if (favorites.length === 0) await loadFavorites();
+      await loadRecents();
       favRevealCount = favorites.length;
       revealPhase = "ready";
       return;
@@ -218,6 +224,8 @@
       await loadFavorites();
       if (epoch !== revealEpoch) return;
     }
+    await loadRecents();
+    if (epoch !== revealEpoch) return;
     if (favorites.length === 0) {
       revealPhase = "ready";
       return;
@@ -312,9 +320,9 @@
   }
 
   /**
-   * Centra la barra stadium (ancho `a.w`) en el monitor del mouse / foco.
-   * Los favs van fuera del float (CSS absolute a la derecha); no desplazan
-   * el centro de la barra. En el canto, reposo junto a la isla.
+   * Centro del monitor (horizontal y vertical). Nace fused a la pill y
+   * en el separate aterriza acá. El monitor lo marca el nacimiento
+   * (Ctrl+Q = mouse), no la pill ya de vuelta en el notch.
    */
   async function applyCenterPlace(a: BubbleOpen) {
     try {
@@ -322,22 +330,13 @@
     } catch {
       // Fuera de Tauri o IPC fallido: se usa lo último que haya.
     }
-    const pill = livePillRect();
+    const pill = toolBirth() ?? livePillRect();
     const labCompact = isDev && launcherLab.open && !showResults;
     const w = labCompact ? launcherLab.barW : a.w;
     const h = labCompact ? compactH : a.h;
     const size = { w, h };
-    // Isla en el canto: reposo junto a ella, no centro de pantalla (la pill
-    // ya no vuela al slot).
-    if (pill && islandDocked(pill)) {
-      bubble.place({
-        ...a,
-        ...placePanelResting(pill, size, { corner: CORNER, work: workAreas }),
-      });
-      return;
-    }
-    // La pill ya está en el monitor correcto (vuelo del atajo, o clic local).
-    // overlayActiveAnchor prefería el foco de otra app y saltaba de pantalla.
+    // Centro del monitor: launcher no cuelga de la isla. Nace fused a la
+    // pill y en el separate aterriza acá, vertical y horizontal.
     let anchor: { x: number; y: number };
     if (pill) {
       anchor = { x: pill.x + pill.w / 2, y: pill.y + pill.h / 2 };
@@ -361,6 +360,7 @@
       side: "left",
       offset: size.h / 2,
     });
+    notifyToolResting();
   }
 
   /**
@@ -368,8 +368,10 @@
    * estira el ancho a la derecha. w y h van iguales: si el alto compacto
    * cambia en el lab, no nacer como óvalo.
    */
-  function placeFusedToPill(a: BubbleOpen) {
-    const pill = livePillRect();
+  function placeFusedToPill(
+    a: BubbleOpen,
+    pill = livePillRect(),
+  ) {
     const d = Math.min(isDev && launcherLab.open ? compactH : a.h, GROW_START_W);
     const fullH = isDev && launcherLab.open ? compactH : a.h;
     if (pill && islandDocked(pill)) {
@@ -468,7 +470,7 @@
     // Nunca recentrar durante birth/close: un segundo anchor hacía snap a
     // barra completa al lado → “elemento externo”.
     if (fresh || revealPhase === "hidden") {
-      placeFusedToPill(a);
+      placeFusedToPill(a, toolBirth() ?? livePillRect());
       return;
     }
     if (revealPhase === "ready" && !closing) {
@@ -628,7 +630,9 @@
 
   $effect(() => {
     if (!bubble.alive) return;
-    fitHeight(showResults ? EXPANDED_H : compactH);
+    const idleRecents = !hasQuery && recents.length > 0 && revealPhase === "ready";
+    const open = hasQuery || idleRecents;
+    fitHeight(open ? (hasQuery ? EXPANDED_H : recentsHeight) : compactH);
   });
 
   /**
@@ -666,6 +670,36 @@
     }
   }
 
+  async function loadRecents() {
+    try {
+      recents = await launcherListRecents();
+    } catch {
+      recents = [];
+    }
+  }
+
+  function recencyLabel(hit: LauncherHit): string {
+    const now = Date.now();
+    if (hit.foreground) return t("overlay.inUse");
+    if (hit.running && hit.openedAt) {
+      const age = now - hit.openedAt;
+      if (age < 60_000) return t("overlay.inUse");
+      const span = spanFrom(age);
+      return t("overlay.openedAgo", {
+        when: `${span.value} ${t(`overlay.span.${span.unit}`)}`,
+      });
+    }
+    if (hit.lastUsedAt) {
+      const age = now - hit.lastUsedAt;
+      if (age < 60_000) return t("overlay.justNow");
+      const span = spanFrom(age);
+      return t("overlay.usedAgo", {
+        when: `${span.value} ${t(`overlay.span.${span.unit}`)}`,
+      });
+    }
+    return t("overlay.recents");
+  }
+
   function clearSearchTimer() {
     if (searchTimer !== null) {
       clearTimeout(searchTimer);
@@ -684,7 +718,10 @@
   async function search(text: string) {
     const trimmed = text.trim();
     if (!trimmed) {
-      clearHits();
+      generation += 1;
+      hits = [];
+      searching = false;
+      selected = 0;
       return;
     }
     const mine = ++generation;
@@ -754,6 +791,7 @@
     selected = 0;
     // Favoritos ya se cargan antes del place (para el acto 3); no bloquear foco.
     if (favorites.length === 0) await loadFavorites();
+    await loadRecents();
     await tick();
     // Si aún no hay `.is-shown`, el $effect de abajo toma el foco al abrir.
     await focusSearch(select);
@@ -796,7 +834,7 @@
   });
 
   async function run(id?: string) {
-    const target = id ?? hits[selected]?.id;
+    const target = id ?? list[selected]?.id;
     if (!target) return;
     try {
       await launcherRun(target);
@@ -888,12 +926,12 @@
       return;
     }
     if (!bubble.shown) return;
-    if (event.key === "ArrowDown" && hits.length > 0) {
+    if (event.key === "ArrowDown" && list.length > 0) {
       event.preventDefault();
-      selected = (selected + 1) % hits.length;
-    } else if (event.key === "ArrowUp" && hits.length > 0) {
+      selected = (selected + 1) % list.length;
+    } else if (event.key === "ArrowUp" && list.length > 0) {
       event.preventDefault();
-      selected = (selected - 1 + hits.length) % hits.length;
+      selected = (selected - 1 + list.length) % list.length;
     } else if (event.key === "Enter") {
       event.preventDefault();
       void run();
@@ -915,7 +953,7 @@
           (revealPhase === "hidden" || revealPhase === "expand") &&
           !bubble.shown
         ) {
-          placeFusedToPill(lastOpen);
+          placeFusedToPill(lastOpen, toolBirth() ?? livePillRect());
         }
       })
       .catch(() => {
@@ -958,7 +996,7 @@
     class="lf"
     class:is-shown={bubble.shown}
     class:is-joined={joined}
-    class:is-expanded={showResults}
+    class:is-expanded={hasQuery || (recents.length > 0 && revealPhase === "ready")}
     class:is-expanding={expanding}
     class:is-separating={separating}
     class:is-favs-seq={favsSequencing}
@@ -1041,9 +1079,16 @@
       <p class="lf-err" role="alert">{error}</p>
     {/if}
 
-    {#if showResults}
-      <ul class="lf-list" role="listbox" aria-label={t("overlay.results")}>
-        {#each hits as hit, i (hit.id)}
+    {#if showResults && (hasQuery || revealPhase === "ready")}
+      {#if !hasQuery}
+        <p class="lf-heading">{t("overlay.recents")}</p>
+      {/if}
+      <ul
+        class="lf-list"
+        role="listbox"
+        aria-label={hasQuery ? t("overlay.results") : t("overlay.recents")}
+      >
+        {#each list as hit, i (hit.id)}
           <li>
             <div class="lf-hit" class:is-sel={i === selected}>
               <button
@@ -1066,7 +1111,9 @@
                 </span>
                 <span class="lf-hit-text">
                   <span class="lf-hit-title">{hit.title}</span>
-                  <span class="lf-hit-sub">{hit.subtitle}</span>
+                  <span class="lf-hit-sub"
+                    >{hasQuery ? hit.subtitle : recencyLabel(hit)}</span
+                  >
                 </span>
               </button>
               <button
@@ -1370,6 +1417,17 @@
     background: color-mix(in srgb, var(--danger, #c44) 18%, transparent);
     color: var(--danger, #c44);
     font-size: 0.75rem;
+  }
+
+  .lf-heading {
+    margin: 0;
+    flex-shrink: 0;
+    padding: 0.45rem 0.7rem 0.1rem;
+    color: var(--faint);
+    font-size: 0.62rem;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
   }
 
   .lf-list {

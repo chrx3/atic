@@ -22,7 +22,7 @@ ventana grande siempre al frente.
 - [`apps/desktop/src-tauri/src/floating.rs`](../apps/desktop/src-tauri/src/floating.rs) — geometría y morph de la pill
 - [`apps/desktop/src-tauri/src/tray.rs`](../apps/desktop/src-tauri/src/tray.rs) — bandeja
 - [`apps/desktop/src-tauri/src/shortcuts.rs`](../apps/desktop/src-tauri/src/shortcuts.rs) — atajos globales
-- [`apps/desktop/src/lib/PillSurface.svelte`](../apps/desktop/src/lib/PillSurface.svelte) — UI de la pill dentro del overlay
+- [`apps/desktop/src/lib/surfaces/overlay/pill/PillSurface.svelte`](../apps/desktop/src/lib/surfaces/overlay/pill/PillSurface.svelte) — UI de la pill dentro del overlay
 - [`apps/desktop/src/routes/overlay/+page.svelte`](../apps/desktop/src/routes/overlay/+page.svelte) — composición compartida de superficies flotantes
 
 ## Pendiente / siguiente
@@ -38,6 +38,7 @@ ventana grande siempre al frente.
 
 ## Relacionado
 
+- [../docs/DISENO_PILL.md](../docs/DISENO_PILL.md) — lineamientos de diseño de la pill
 - [pill-liquid-emerge.md](pill-liquid-emerge.md)
 - [dictado.md](dictado.md)
 - [capturas.md](capturas.md)

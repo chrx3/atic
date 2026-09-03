@@ -13,9 +13,9 @@
 
   import AticMark from "$lib/AticMark.svelte";
   import ToolIcon, { type IconId } from "$lib/ToolIcon.svelte";
-  import GooFilter, { preFilter } from "$lib/GooFilter.svelte";
   import { t } from "$domain/i18n.svelte";
   import { playWheelTick } from "$core/uiSound";
+  import { PILL } from "$surfaces/overlay/pillStage";
 
   /**
    * Un gajo de la rueda.
@@ -61,6 +61,11 @@
     onLive,
     onSelect,
     onCenter,
+    /**
+     * Mide cada gota compacta para el Skin SDF del overlay.
+     * El índice es estable: 0 núcleo, 1…n gajos, n+1 gota viva.
+     */
+    skinAttach,
   }: {
     caption?: string;
     compact?: boolean;
@@ -79,6 +84,7 @@
     live?: "off" | "recording" | "dictating";
     liveBusy?: boolean;
     onLive?: () => void;
+    skinAttach?: (index: number) => (el: HTMLElement) => void;
   } = $props();
 
   const shownCaption = $derived(caption ?? t("tools.pickHint"));
@@ -98,10 +104,8 @@
    *
    * Las herramientas no se dibujan sobre un disco: SON gotas que salen
    * del núcleo. El anillo queda lo bastante cerca para que, abiertas, el
-   * hueco (~8 px) quede bajo el alcance del filtro (~10.3 px con σ = 6) y se
+   * hueco (~8 px) quede bajo REACH del campo SDF (~12 px con BLEND 24) y se
    * lean como lóbulos de un blob, no como botones sueltos.
-   *
-   * Subir σ por encima de ~9 con este anillo las dejaría pegadas sin filete.
    */
   const SKIN = {
     /** Diámetro de cada gota, abierta. */
@@ -109,7 +113,7 @@
     /** Diámetro del núcleo, abierto. */
     core: 58,
     /** Cerrado todo vuelve al disco de la pill en reposo (`PILL.bar`). */
-    closed: 40,
+    closed: PILL.bar,
     /** Gota de grabación/dictado que cuelga bajo el anillo. */
     live: 36,
     /** Hueco entre la gota de las 6 y la gota viva (bajo el alcance ~10 px). */
@@ -125,8 +129,8 @@
   /**
    * Radio del anillo respecto al lado menor del lienzo.
    *
-   * En compacto era 0.34, luego 0.30 (hueco ~13 > alcance → gotas sueltas).
-   * 0.28 sobre 232 da ~65 px: hueco 65 − 29 − 28 ≈ 8, bajo el alcance ~10.3.
+   * En compacto era 0.34, luego 0.30 (hueco ~13 > REACH → gotas sueltas).
+   * 0.28 sobre 232 da ~65 px: hueco 65 − 29 − 28 ≈ 8, bajo REACH (~12).
    */
   const ringRatio = $derived(compact ? 0.28 : 0.27);
   const ringRadius = $derived(Math.min(width, height) * ringRatio);
@@ -524,40 +528,38 @@
     <canvas class="pw-canvas" bind:this={canvas} aria-hidden="true"></canvas>
   {/if}
 
-  {#if compact}
-    <GooFilter id="pw-goo" />
-  {/if}
-
   {#if width > 0}
     {#if compact}
-      <!-- Piel líquida: el núcleo y una gota por herramienta, fundidos entre
-           sí. Va aparte del contenido porque el filtro difumina y vuelve a
-           endurecer todo lo que tenga adentro: un icono acá sería una mancha. -->
-      <!-- `--d` es el tamaño ANTES del filtro: `preFilter` le descuenta lo
-           que el endurecido va a devolver, así que la silueta cerrada mide
-           exactamente los 40 del disco de la pill y el morph no salta. -->
+      <!--
+        Referencias de medida: el Skin SDF del overlay pinta la silueta.
+        Sin fondo propio —un fill acá y el campo encima dejarían doble disco.
+        Cerrado, `--d * --sc` es exactamente `SKIN.closed` (`PILL.bar`), el disco de
+        la pill, para que el handoff no salte.
+      -->
       <div class="pw-skin" aria-hidden="true">
         <i
           class="pw-blob"
-          style="--d: {preFilter(SKIN.core)}px;
-                 --sc: {preFilter(SKIN.closed) / preFilter(SKIN.core)}"
+          style="--d: {SKIN.core}px; --sc: {SKIN.closed / SKIN.core}"
+          {@attach skinAttach?.(0)}
         ></i>
         {#each nodes as node, index (node.tool.id)}
           <i
             class="pw-blob"
             style="left: {node.x}px; top: {node.y}px;
-                   --d: {preFilter(SKIN.node)}px;
+                   --d: {SKIN.node}px;
                    --tx: {width / 2 - node.x}px; --ty: {height / 2 - node.y}px;
-                   --sc: {preFilter(SKIN.closed) / preFilter(SKIN.node)};
-                   --delay: calc({index} * var(--duration-micro))"
+                   --sc: {SKIN.closed / SKIN.node};
+                   --delay: calc({index} * var(--morph-stagger))"
+            {@attach skinAttach?.(index + 1)}
           ></i>
         {/each}
         <i
           class="pw-blob is-live"
           class:is-out={liveOut}
           style="left: {livePos.x}px; top: {livePos.y}px;
-                 --d: {preFilter(SKIN.live)}px;
+                 --d: {SKIN.live}px;
                  --tx: {width / 2 - livePos.x}px; --ty: {height / 2 - livePos.y}px"
+          {@attach skinAttach?.(nodes.length + 1)}
         ></i>
       </div>
     {/if}
@@ -663,7 +665,7 @@
           use:tip={shownCenter}
         >
           <span class="pw-mark">
-            <AticMark size={compact ? 22 : 30} />
+            <AticMark size={compact ? 32 : 30} alive={compact} />
           </span>
           <span class="pw-caption">
             {compact
@@ -674,7 +676,7 @@
       {:else}
         <div class="pw-core is-inert" style="width: {coreSize}px; height: {coreSize}px">
           <span class="pw-mark">
-            <AticMark size={compact ? 22 : 30} />
+            <AticMark size={compact ? 32 : 30} alive={compact} />
           </span>
           <!-- En compacto el centro nombra la selección; en grande, la acción. -->
           <span class="pw-caption">
@@ -725,7 +727,6 @@
     position: absolute;
     inset: 0;
     pointer-events: none;
-    filter: url(#pw-goo);
   }
   .pw-blob {
     position: absolute;
@@ -735,7 +736,7 @@
     height: var(--d);
     margin: calc(var(--d) / -2) 0 0 calc(var(--d) / -2);
     border-radius: 999px;
-    background: var(--skin);
+    background: transparent;
     /*
      * Cerrado, cada gota vuelve al centro Y al tamaño del disco de la pill.
      *
@@ -756,7 +757,7 @@
     /* Fuera, escala 0 en el núcleo: si quedara al tamaño cerrado, el centro
        se engordaría con una gota fantasma aunque no hubiera grabación. */
     transform: translate(var(--tx, 0px), var(--ty, 0px)) scale(0);
-    transition: transform 220ms cubic-bezier(0.25, 1, 0.5, 1);
+    transition: transform var(--morph-open-dur) var(--morph-ease);
   }
 
   .pw-blob.is-live.is-out {
@@ -779,14 +780,14 @@
     opacity: 0;
     pointer-events: none;
     transition:
-      opacity 160ms cubic-bezier(0.25, 1, 0.5, 1),
-      transform 120ms cubic-bezier(0.25, 1, 0.5, 1);
+      opacity var(--morph-fade-dur) var(--morph-ease),
+      transform var(--duration-quick) var(--ease-smooth-out);
   }
 
   .pw-live.is-on {
     opacity: 1;
     pointer-events: auto;
-    transition-delay: 80ms;
+    transition-delay: var(--morph-stagger);
   }
 
   .pw-live:not(.is-rec) {
@@ -870,6 +871,7 @@
   .pw-mark {
     color: var(--text);
     line-height: 0;
+    overflow: visible;
   }
 
   /* Núcleo central: zona neutra circular; sin fondo ni borde. */

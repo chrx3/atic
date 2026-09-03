@@ -36,9 +36,17 @@
   import { config } from "$domain/config.svelte";
   import { sessionEffect } from "$domain/session";
   import { isAgentShown } from "$features/agents/agentCatalog";
-  import { boxShape, stemBetween } from "$liquid/geometry";
-  import { liquid } from "$surfaces/overlay/group.svelte";
   import {
+    boxShape,
+    gapBetween,
+    nearestStemBody,
+    stemBetween,
+    stemBodyFits,
+  } from "$liquid/geometry";
+  import { INFLUENCE, REACH } from "$liquid/constants";
+  import { liquid, LIQUID_HUB } from "$surfaces/overlay/group.svelte";
+  import {
+    placeBesideAnchor,
     placeBesidePill,
     placeOnSide,
     unionRects,
@@ -73,6 +81,8 @@
   const GAP = 14;
   /** Radio del hilo. Un cuello flaco es un alambre por más filete que tenga. */
   const STEM_R = 6;
+  /** Tope de un hilo desde las gotas de la rueda: más lejos ya es un alambre. */
+  const STEM_MAX = 96;
   /** Margen mínimo contra el borde de la ventana. */
   const EDGE = 6;
   /** `--morph-close-dur`: cuánto dura el repliegue antes de desmontar. */
@@ -91,6 +101,11 @@
   let alive = $state(false);
   /** Abierto del todo. Es la clase que dispara el morph. */
   let shown = $state(false);
+  /**
+   * Hay cuello de verdad con la pill. Si no, no se publica hilo ni se entra
+   * al hub: un hilo a un botón que ya no está deja el pezón del techo.
+   */
+  let joined = $state(false);
   /** Reloj para «corta en X» y lo stale, vivo mientras el panel está montado. */
   let now = $state(0);
 
@@ -129,6 +144,58 @@
     return new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 }).format(
       cents / 100,
     );
+  }
+
+  /**
+   * De dónde sale el cuello.
+   *
+   * Primero el gajo que abrió el panel: el hilo tiene que nacer de Agentes,
+   * no del AABB de la flor. Si ese cuerpo no sirve, las gotas publicadas
+   * (`parts`) son la flor de verdad. `pill-skin` en ese tramo sigue midiendo
+   * el stack —el disco de reposo arriba-izquierda del root— y un hilo a ese
+   * disco era el palo que se veía al lado de la flor.
+   */
+  function stemForQuota(
+    panel: { x: number; y: number; w: number; h: number },
+    stemSide: "top" | "bottom" | "left" | "right",
+  ): { body: { x: number; y: number; w: number; h: number }; radius: number } | null {
+    const petal = quotaHoverState.anchor;
+    if (
+      petal &&
+      stemBodyFits(petal, stemSide, STEM_R) &&
+      stemBetween(petal, panel, stemSide, STEM_R) &&
+      gapBetween(petal, panel) <= STEM_MAX
+    ) {
+      const g = gapBetween(petal, panel);
+      const radius = Math.min(12, Math.max(STEM_R, Math.round(g / 6)));
+      return { body: petal, radius };
+    }
+    const parts = quotaHoverState.parts;
+    if (parts && parts.length > 0) {
+      const hub = unionRects(parts);
+      if (
+        hub &&
+        stemBodyFits(hub, stemSide, STEM_R) &&
+        stemBetween(hub, panel, stemSide, STEM_R) &&
+        gapBetween(hub, panel) <= STEM_MAX
+      ) {
+        const g = gapBetween(hub, panel);
+        const radius = Math.min(12, Math.max(STEM_R, Math.round(g / 6)));
+        return { body: hub, radius };
+      }
+    }
+    const body = nearestStemBody(
+      [
+        surfaces.live["pill-skin"],
+        surfaces.live["pill"],
+        quotaHoverState.anchor,
+      ],
+      panel,
+      stemSide,
+      STEM_R,
+      INFLUENCE,
+    );
+    return body ? { body, radius: STEM_R } : null;
   }
 
   function spendText(row: QuotaRow): string {
@@ -192,6 +259,7 @@
     }
     const pill = surfaces.live["pill"];
     const skin = surfaces.live["pill-skin"];
+    const parts = quotaHoverState.parts;
     void pill?.x;
     void pill?.y;
     void pill?.w;
@@ -200,42 +268,41 @@
     void skin?.y;
     void skin?.w;
     void skin?.h;
-    // La rueda es más grande que el disco: anclar al disco dejaba el panel
-    // debajo de los gajos y el hover ciclaba (el panel robaba el mouse).
-    const face = unionRects([pill, skin, anchor]);
-    if (!face) {
+    void parts;
+    const hub = unionRects(parts && parts.length > 0 ? parts : [pill, skin, anchor]);
+    if (!hub) {
       placed = false;
       return;
     }
-    // El panel sale por el lado largo de la isla.
+    // Con la rueda abierta el ancla es el gajo, no la flor entera: si no, el
+    // panel cuelga del AABB de 252 px y se lee como un cartel bajo la rueda.
+    // `placeBesideAnchor` lo pone hacia afuera de ese gajo.
     //
-    // `placeBesidePill` prueba siempre abajo primero, y acoplada a un canto la
-    // isla está parada: el panel se iba al pie de la pantalla, a 300 px de la
-    // herramienta que lo abrió y con el hilo cruzando media pantalla. Parada,
-    // el hueco está al costado.
-    //
-    // La orientación se pregunta a la PIEL y no a la unión: `pill` es la caja
-    // exterior —el respiro de la rueda— y es ancha aunque la isla esté parada.
-    // Acoplada, además, es contra la piel que hay que medir el hueco, o el
-    // cuello nace con el ancho de un respiro que no se ve.
-    const shape = skin ?? face;
+    // En la isla, `placeBesidePill` prueba siempre abajo primero. Acoplada a
+    // un canto está parada: el panel se iba al pie de la pantalla. Parada, el
+    // hueco está al costado. La orientación se pregunta a la PIEL: `pill` es
+    // el respiro de la rueda y es ancha aunque la isla esté parada.
+    const shape = skin ?? hub;
     const at =
-      shape.h > shape.w * 1.2
-        ? placeOnSide(
-            shape,
-            // `side` es el lado del panel que mira a la isla: «right» lo pone
-            // a la izquierda de ella.
-            shape.x - GAP - bw - EDGE >= 0 ? "right" : "left",
-            { w: bw, h: bh },
-            { gap: GAP, corner: CORNER },
-          )
-        : placeBesidePill(face, { w: bw, h: bh }, { gap: GAP, corner: CORNER });
+      parts && parts.length > 0
+        ? placeBesideAnchor(hub, anchor, { w: bw, h: bh }, {
+            gap: GAP,
+            corner: CORNER,
+          })
+        : shape.h > shape.w * 1.2
+          ? placeOnSide(
+              shape,
+              // `side` es el lado del panel que mira a la isla: «right» lo
+              // pone a la izquierda de ella.
+              shape.x - GAP - bw - EDGE >= 0 ? "right" : "left",
+              { w: bw, h: bh },
+              { gap: GAP, corner: CORNER },
+            )
+          : placeBesidePill(hub, { w: bw, h: bh }, { gap: GAP, corner: CORNER });
 
-    // El lado y el «hacia afuera» salen de la isla entera —así el panel
-    // despeja la rueda—, pero sobre el eje paralelo manda el botón: el panel
-    // cae debajo de la herramienta que lo abrió, que es de donde el usuario lo
-    // llamó y a donde vuelve el cuello. Pegado al canto de la isla, que es lo
-    // que hace `placeBesidePill` sola, el hilo salía de un botón y el panel
+    // Sobre el eje paralelo manda el botón: el panel queda frente a la
+    // herramienta que lo abrió. Pegado al canto de la isla, que es lo que
+    // hace `placeBesidePill` sola, el hilo salía de un botón y el panel
     // aparecía a media pantalla de distancia.
     const acx = anchor.x + anchor.w / 2;
     const acy = anchor.y + anchor.h / 2;
@@ -269,6 +336,7 @@
 
   $effect(() => {
     if (!alive || !el) {
+      joined = false;
       liquid.publish("quota", []);
       return;
     }
@@ -278,34 +346,58 @@
     void y;
     void rows.length;
     void quotaHoverState.fallback;
+    void quotaHoverState.parts;
+    void quotaHoverState.anchor;
     void agentQuotas.loading;
-    const anchor = quotaHoverState.anchor;
+    const live = surfaces.live["pill-skin"] ?? surfaces.live["pill"];
+    void live?.x;
+    void live?.y;
+    void live?.w;
+    void live?.h;
     const stemSide = side;
     const host = el;
-    return publishMeasuredSkin("quota", () => {
-      const r = host.getBoundingClientRect();
-      if (r.width <= 0 || r.height <= 0) {
-        return { key: "empty", shapes: [] };
-      }
-      const layoutW = host.offsetWidth || r.width;
-      const layoutH = host.offsetHeight || r.height;
-      const k = Math.min(
-        r.width / Math.max(layoutW, 1),
-        r.height / Math.max(layoutH, 1),
-        1,
-      );
-      const rect = { x: r.x, y: r.y, w: r.width, h: r.height };
-      const shapes = [boxShape(rect, CORNER * k)];
-      // Del mismo ancla del que se colocó el panel: el hilo sale del botón y
-      // cae sobre el panel que está justo debajo. Contra el canto de la
-      // pantalla el panel se corre y el centro del botón puede quedarse
-      // afuera; de eso se encarga `stemBetween`, que lo trae al solape.
-      if (anchor) {
-        const stem = stemBetween(anchor, rect, stemSide, STEM_R);
-        if (stem) shapes.push(stem);
-      }
-      return { key: `${rectKey(rect)}:${stemSide}`, shapes };
-    });
+    const panelGuess = {
+      x,
+      y,
+      w: host.offsetWidth,
+      h: host.offsetHeight,
+    };
+    const hang = stemForQuota(panelGuess, stemSide);
+    const gap = hang
+      ? gapBetween(hang.body, panelGuess)
+      : live
+        ? gapBetween(live, panelGuess)
+        : Infinity;
+    joined = hang != null || gap <= REACH;
+    const group = joined || gap <= INFLUENCE ? LIQUID_HUB : undefined;
+    return publishMeasuredSkin(
+      "quota",
+      () => {
+        const r = host.getBoundingClientRect();
+        if (r.width <= 0 || r.height <= 0) {
+          return { key: "empty", shapes: [] };
+        }
+        const layoutW = host.offsetWidth || r.width;
+        const layoutH = host.offsetHeight || r.height;
+        const k = Math.min(
+          r.width / Math.max(layoutW, 1),
+          r.height / Math.max(layoutH, 1),
+          1,
+        );
+        const rect = { x: r.x, y: r.y, w: r.width, h: r.height };
+        const shapes = [boxShape(rect, CORNER * k)];
+        const next = stemForQuota(rect, stemSide);
+        if (next) {
+          const stem = stemBetween(next.body, rect, stemSide, next.radius);
+          if (stem) shapes.push(stem);
+        }
+        return {
+          key: `${rectKey(rect)}:${stemSide}:${next ? rectKey(next.body) : ""}:${next?.radius ?? 0}`,
+          shapes,
+        };
+      },
+      group,
+    );
   });
 
   $effect(() => () => liquid.publish("quota", []));
@@ -313,7 +405,8 @@
 
 {#if alive}
   <div
-    class="q-panel float-emerge is-joined"
+    class="q-panel float-emerge"
+    class:is-joined={joined}
     class:is-shown={shown}
     data-side={side}
     data-quota-panel
@@ -394,7 +487,7 @@
     box-sizing: border-box;
     min-width: 13rem;
     max-width: 22rem;
-    padding: 0.4rem 0.45rem 0.46rem 0.6rem;
+    padding: 0.5rem 0.7rem 0.55rem;
     overflow: hidden;
     border-radius: 20px;
     background: transparent;
@@ -456,7 +549,7 @@
   .q-bar {
     display: grid;
     align-items: center;
-    grid-template-columns: 4.2rem 1fr 2.1rem 2.1rem;
+    grid-template-columns: max-content 1fr 2.1rem 2.1rem;
     gap: 0.34rem;
   }
 
@@ -464,6 +557,13 @@
   .q-reset {
     color: var(--muted);
     font-size: 0.66rem;
+  }
+
+  .q-win {
+    overflow: hidden;
+    max-width: 7.2rem;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .q-reset {

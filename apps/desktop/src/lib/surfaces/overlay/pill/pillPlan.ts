@@ -25,10 +25,21 @@ export function islandStripLong(n: number): number {
   return n * PILL.islandTool + (n - 1) * PILL.islandGap;
 }
 
-/** Largo de la pestaña con `n` logos. Un solo icono cabe en `islandLong`. */
+/**
+ * Largo de la pestaña con `n` avisos, contando que la marca sigue ahí.
+ *
+ * Antes el aviso se pintaba ENCIMA de la marca —`.p-island-cues` iba en
+ * `inset: 0`— y la pestaña solo tenía que abrigar los logos. Ahora conviven
+ * a lo largo del borde, así que el largo es marca + un botón por aviso.
+ *
+ * Con varios logos de agente el botón es uno solo (los logos se apilan
+ * adentro), así que la cuenta sobra unos píxeles. Sobrar no recorta nada;
+ * quedarse corto sí.
+ */
 export function islandCueLong(n: number): number {
   const marks = Math.max(1, Math.floor(n) || 1);
-  const inner = marks * 10 + (marks - 1) * 3 + 10;
+  const cues = marks * PILL.islandCueBtn + (marks - 1) * PILL.islandGap;
+  const inner = PILL.islandMark + PILL.islandGap + cues + 12;
   return Math.max(PILL.islandLong, inner);
 }
 
@@ -58,28 +69,22 @@ export function islandLiveSlots(_activity: Activity): number {
 }
 
 /** Extra de caja para la gota viva (diámetro + cuello). */
-export function liveHang(activity: Activity, surface: Surface = "none"): number {
-  if (activity === "recording") return PILL.recDrop + PILL.recDropGap;
-  if (activity === "dictating" && surface === "wheel") {
+export function liveHang(
+  activity: Activity,
+  surface: Surface = "none",
+): number {
+  // Solo la rueda cuelga. Acoplada y flotando, la actividad vive DENTRO de la
+  // silueta: la cara de la marca dice cuál es y el stop es un chip más.
+  //
+  // Colgar una gota hacía que la forma cambiara con el estado, y era lo que
+  // hacía que la pestaña cerrada, la tira abierta y la cápsula flotante no se
+  // leyeran como la misma cosa. La rueda es su propio escenario cuadrado, así
+  // que ahí la gota no rompe ninguna continuidad.
+  if (surface !== "wheel") return 0;
+  if (activity === "recording" || activity === "dictating") {
     return PILL.recDrop + PILL.recDropGap;
   }
   return 0;
-}
-
-/**
- * Extra de caja para el aviso de update en la tira abierta.
- *
- * Cerrada, el icono vive EN la pestaña: no cuelga. Abierta, la pestaña se
- * desmonta (si no, taparía las herramientas), así que el aviso cuelga igual
- * que la gota de grabación para seguir siendo un clic, no un dibujo.
- */
-export function updateHang(
-  surface: Surface,
-  expanded: boolean,
-  hasUpdate: boolean,
-): number {
-  if (!hasUpdate || surface !== "edge" || !expanded) return 0;
-  return PILL.recDrop + PILL.recDropGap;
 }
 
 /**
@@ -107,8 +112,6 @@ export function contentFor(
   islandCue: boolean = false,
   /** Cuántas marcas hay que alinear en la pestaña. 0 o 1 no alarga. */
   islandCueCount: number = 0,
-  /** Aviso de update: cuelga de la tira abierta, no de la pestaña cerrada. */
-  hasUpdate: boolean = false,
 ): Size {
   if (surface === "wheel") {
     const side = PILL.wheel - PILL.pad * 2;
@@ -119,24 +122,32 @@ export function contentFor(
     // Abierta es la tira de herramientas: acoplada, la pill deja de ser un
     // indicador y pasa a ser el acceso. Se despliega A LO LARGO del borde, que
     // es el único eje donde hay lugar sin taparle la pantalla al usuario.
-    const hang =
-      liveHang(activity, "edge") +
-      updateHang("edge", dock.expanded, hasUpdate);
+    //
+    // Y SOLO a lo largo: acoplada no cuelga nada. Grabación y update son chips
+    // dentro de la pestaña, contados en `islandCueCount`.
     if (dock.expanded) {
-      const long = islandStripLong(toolCount + islandLiveSlots(activity));
+      // Nunca más corta que cerrada: la isla se abre con el puntero encima,
+      // y si al abrirse encogiera, el cursor quedaría fuera y el ciclo
+      // abrir/cerrar se realimentaría a 60 Hz. Con pocas herramientas a la
+      // vista (se pueden esconder desde Ajustes) la tira puede quedar más
+      // corta que la pestaña con avisos.
+      const long = Math.max(
+        islandStripLong(toolCount + islandLiveSlots(activity)),
+        islandCue ? islandCueLong(islandCueCount) : PILL.islandLong,
+      );
       return dockAxis(dock.edge) === "x"
-        ? { w: PILL.islandTool + hang, h: long }
-        : { w: long, h: PILL.islandTool + hang };
+        ? { w: PILL.islandTool, h: long }
+        : { w: long, h: PILL.islandTool };
     }
     // En reposo, una pestaña: fina contra el borde y larga a lo largo de él.
-    // Grabando, la gota cuelga hacia adentro (el pivote `dock*` clava el canto).
+    // Grabando se alarga, no engorda: el estado entró a la cara de la marca.
     const thick = islandCue ? PILL.islandCueThick : PILL.islandThick;
     const long = islandCue
       ? islandCueLong(islandCueCount)
       : PILL.islandLong;
     return dockAxis(dock.edge) === "x"
-      ? { w: thick + hang, h: long }
-      : { w: long, h: thick + hang };
+      ? { w: thick, h: long }
+      : { w: long, h: thick };
   }
   return { w: Math.max(barW, PILL.bar), h: PILL.bar };
 }
@@ -150,7 +161,6 @@ export function targetFor(
   toolCount: number = WHEEL_TOOLS.length,
   islandCue: boolean = false,
   islandCueCount: number = 0,
-  hasUpdate: boolean = false,
 ): Size {
   return windowFor(
     contentFor(
@@ -161,7 +171,6 @@ export function targetFor(
       toolCount,
       islandCue,
       islandCueCount,
-      hasUpdate,
     ),
   );
 }
@@ -197,14 +206,15 @@ export function shouldStayDockedOnActivate(surface: Surface): boolean {
 /**
  * ¿Hay que volver a un canto al abrir una tool?
  *
- * Solo si ya estaba acoplada. Flotando se queda donde está: la rueda no borra
- * `dock`, así que si sigue puesto es que se abrió desde un borde.
+ * Desde la rueda (Ctrl+Q o clic) la pill siempre vuelve a su lugar: el
+ * hogar se guardó antes del vuelo. Desde el canto, igual. Flotando a
+ * mano, sin rueda, se queda donde está.
  */
 export function shouldReturnToEdgeOnActivate(
   surface: Surface,
   dock: Dock | null,
 ): boolean {
-  return surface === "edge" || dock != null;
+  return surface === "edge" || surface === "wheel" || dock != null;
 }
 
 /** Tras salir del hit, la isla espera esto antes de volverse pestaña. */
@@ -363,7 +373,7 @@ export function morphsInPlace(state: {
  * Si el cursor ya está casi sobre la pill, el vuelo de apertura no aporta
  * significado —solo latencia. Umbral ≈ diámetro del disco.
  */
-export const FLIGHT_SKIP_PX = 48;
+export const FLIGHT_SKIP_PX = PILL.bar + 8;
 
 /**
  * La pill está en reposo: la barra es SOLO el disco.
@@ -376,7 +386,7 @@ export function isDiscOnly(state: {
   activity: Activity;
   hasQueue: boolean;
   agentAlert: boolean;
-  /** Chip de update al lado del disco: si no, el texto se recorta a 40 px. */
+  /** Chip de update al lado del disco: si no, el texto se recorta al disco. */
   hasUpdate?: boolean;
 }): boolean {
   return (
@@ -402,7 +412,7 @@ export function shouldMeasureBar(surface: Surface, dragging: boolean): boolean {
  * ¿Publicar el disco junto a la gota en el campo líquido?
  *
  * Solo mientras la gota todavía no lo cubre. Cuando ambas comparten el borde
- * izquierdo (disco de 40 px + pastilla ya expandida), el `smin` engorda ese
+ * izquierdo (disco en reposo + pastilla ya expandida), el `smin` engorda ese
  * lado y la silueta queda con aire muerto a la izquierda del contenido.
  */
 export function discJoinsTail(

@@ -9,10 +9,12 @@ import {
   overlayCursor,
   overlayWorkAreas,
   type Area,
+  type Point,
 } from "$ipc/overlay";
 import { MARGIN } from "./contract";
 import type { Bubble } from "./bubble.svelte";
 import { surfaces } from "./surfaces.svelte";
+import { workUnderCursor, type Rect } from "./floatSnap";
 
 const DRAG_THRESHOLD = 4;
 
@@ -23,6 +25,19 @@ export type BubbleDrag = {
   startDrag: (event: PointerEvent) => void;
   endDrag: () => void;
 };
+
+export type BubbleDragMove = {
+  cursor: Point;
+  work: Rect | null;
+  frame: Rect;
+  areas: Area[];
+  moved: boolean;
+};
+
+export type BubbleDragClamp = "contain" | "visible";
+
+/** Cuánto del marco tiene que seguir viéndose en el escritorio virtual. */
+const KEEP_VISIBLE = 64;
 
 function unionAreas(areas: Area[]): Area {
   let x0 = areas[0].x;
@@ -61,6 +76,29 @@ function clampToWork(
   };
 }
 
+/**
+ * No encierra el globo en un monitor: puede colgarse del canto y quedar
+ * a caballo entre pantallas. Solo evita que se pierda del todo.
+ */
+function clampKeepVisible(
+  workAreas: Area[],
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+): { x: number; y: number } {
+  if (workAreas.length === 0) return { x, y };
+  const desk = unionAreas(workAreas);
+  const minX = desk.x + KEEP_VISIBLE - w;
+  const maxX = desk.x + desk.w - KEEP_VISIBLE;
+  const minY = desk.y + KEEP_VISIBLE - h;
+  const maxY = desk.y + desk.h - KEEP_VISIBLE;
+  return {
+    x: Math.min(Math.max(x, minX), Math.max(minX, maxX)),
+    y: Math.min(Math.max(y, minY), Math.max(minY, maxY)),
+  };
+}
+
 function shouldSkip(event: PointerEvent, skip: string): boolean {
   // `closest` basta en el caso normal; `composedPath` cubre SVG/shadow por si
   // el target no sube al `button` / `[data-no-drag]` como esperamos.
@@ -75,9 +113,21 @@ function shouldSkip(event: PointerEvent, skip: string): boolean {
 export function createBubbleDrag(
   bubble: Bubble,
   getEl: () => HTMLElement | null,
-  options?: { skip?: string; onEnd?: () => void },
+  options?: {
+    skip?: string;
+    onEnd?: () => void;
+    onGrab?: (info: {
+      cursor: Point;
+      work: Rect | null;
+      setHome: (x: number, y: number) => void;
+    }) => void;
+    onMove?: (info: BubbleDragMove) => void;
+    onDrop?: (info: BubbleDragMove) => void;
+    clamp?: BubbleDragClamp;
+  },
 ): BubbleDrag {
   const skip = options?.skip ?? DEFAULT_SKIP;
+  const clampMode = options?.clamp ?? "contain";
 
   let drag: {
     /** Null hasta el primer tick: lo siembra el cursor de Rust, no el evento. */
@@ -88,15 +138,20 @@ export function createBubbleDrag(
     pointerId: number;
   } | null = null;
   let dragMoved = false;
+  let grabbed = false;
   let dragRaf = 0;
   let workAreas: Area[] = [];
+  let lastMove: BubbleDragMove | null = null;
 
   function endDrag() {
     if (!drag) return;
     const pointerId = drag.pointerId;
     const didMove = dragMoved;
+    const drop = lastMove;
     drag = null;
     dragMoved = false;
+    grabbed = false;
+    lastMove = null;
     if (dragRaf) {
       cancelAnimationFrame(dragRaf);
       dragRaf = 0;
@@ -112,6 +167,7 @@ export function createBubbleDrag(
     }
     window.removeEventListener("pointerup", endDrag, true);
     window.removeEventListener("pointercancel", endDrag, true);
+    if (didMove && drop) options?.onDrop?.(drop);
     if (didMove) options?.onEnd?.();
   }
 
@@ -134,8 +190,44 @@ export function createBubbleDrag(
           dragMoved = true;
         }
         if (dragMoved) {
-          const next = clampToWork(workAreas, d.ax + dx, d.ay + dy, a.w, a.h);
+          if (!grabbed) {
+            grabbed = true;
+            options?.onGrab?.({
+              cursor: cur,
+              work: workUnderCursor(cur, workAreas),
+              setHome: (x, y) => {
+                d.ax = x;
+                d.ay = y;
+                d.cx = cur.x;
+                d.cy = cur.y;
+              },
+            });
+          }
+          const dx2 = cur.x - d.cx;
+          const dy2 = cur.y - d.cy;
+          const placed = bubble.anchor ?? a;
+          const next = (clampMode === "visible" ? clampKeepVisible : clampToWork)(
+            workAreas,
+            d.ax + dx2,
+            d.ay + dy2,
+            placed.w,
+            placed.h,
+          );
           bubble.moveTo(next.x, next.y);
+          const frame = {
+            x: next.x,
+            y: next.y,
+            w: placed.w,
+            h: placed.h,
+          };
+          lastMove = {
+            cursor: cur,
+            work: workUnderCursor(cur, workAreas),
+            frame,
+            areas: workAreas,
+            moved: true,
+          };
+          options?.onMove?.(lastMove);
         }
       }
     }
@@ -166,6 +258,8 @@ export function createBubbleDrag(
       pointerId: event.pointerId,
     };
     dragMoved = false;
+    grabbed = false;
+    lastMove = null;
     const el = getEl();
     try {
       el?.setPointerCapture(event.pointerId);

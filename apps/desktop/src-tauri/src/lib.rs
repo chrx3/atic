@@ -15,6 +15,7 @@ mod floating;
 mod import;
 mod launcher;
 mod launcher_icons;
+mod launcher_recents;
 mod live;
 #[cfg(target_os = "macos")]
 mod macos_notes;
@@ -328,6 +329,7 @@ pub fn run() {
             launcher::launcher_search,
             launcher::launcher_run,
             launcher::launcher_list_favorites,
+            launcher::launcher_list_recents,
             launcher::launcher_toggle_favorite,
             launcher::launcher_icon,
         ])

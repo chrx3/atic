@@ -22,6 +22,7 @@
   import Field from "$ui/Field.svelte";
   import Input from "$ui/Input.svelte";
   import Modal from "$ui/Modal.svelte";
+  import ProgressBar from "$ui/ProgressBar.svelte";
   import SegmentedControl from "$ui/SegmentedControl.svelte";
   import Select from "$ui/Select.svelte";
   import TextArea from "$ui/TextArea.svelte";
@@ -72,6 +73,27 @@
   const mailBackend = $derived(config.current?.mail_backend ?? "mailto");
 
   const templateLabel = $derived(t(`page.summary.tpl.${summaries.template}`));
+
+  const progress = $derived(summaries.progress);
+  const preparingMessage = $derived.by(() => {
+    const p = progress;
+    if (!p) return t("page.summary.preparing");
+    if (p.stage === "reduce") return t("page.summary.reducing");
+    if (p.stage === "wait") return t("page.summary.waitQuota");
+    if (p.of > 0) {
+      return t("page.summary.partProgress", { part: p.part, of: p.of });
+    }
+    return t("page.summary.preparing");
+  });
+  const progressValue = $derived.by(() => {
+    const p = progress;
+    if (!p || p.of <= 0) return 0;
+    if (p.stage === "reduce") return 1;
+    return Math.min(p.part / p.of, 1);
+  });
+  const progressIndeterminate = $derived(
+    !progress || progress.stage === "wait" || progress.of <= 0,
+  );
 
   /** El título que se le pone al documento cuando el texto no trae ninguno. */
   const documentTitle = $derived(
@@ -212,12 +234,17 @@
             <p class="text-xs text-muted">
               {t("page.summary.generating", { label: templateLabel })}
             </p>
+            <ProgressBar
+              value={progressValue}
+              label={preparingMessage}
+              indeterminate={progressIndeterminate}
+            />
             <div class="max-h-72 overflow-y-auto">
               <SummaryDocument
                 content={summaries.draft}
                 defaultTitle={documentTitle}
                 streaming
-                emptyMessage={t("page.summary.preparing")}
+                emptyMessage={preparingMessage}
               />
             </div>
           </div>

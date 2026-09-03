@@ -100,6 +100,7 @@ export const MOTION = {
   morphClose: "--morph-close-dur",
   morphFade: "--morph-fade-dur",
   morphQuick: "--morph-quick-dur",
+  morphStagger: "--morph-stagger",
   panel: "--panel-dur",
   micro: "--duration-micro",
   quick: "--duration-quick",
@@ -121,6 +122,7 @@ export const MOTION_FALLBACK = {
   [MOTION.morphClose]: 100,
   [MOTION.morphFade]: 80,
   [MOTION.morphQuick]: 60,
+  [MOTION.morphStagger]: 16,
   [MOTION.panel]: 110,
   [MOTION.micro]: 40,
   [MOTION.quick]: 75,
@@ -144,6 +146,28 @@ export function ms(token: keyof typeof MOTION_FALLBACK): number {
 /** ease-in-out: swaps de pestaña / texto (transitions-polish). */
 function easeInOut(t: number): number {
   return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+}
+
+/**
+ * Entrada y salida de un hijo de la pill.
+ *
+ * Solo opacidad: un translate pelearía con el `scale` de hover/press de los
+ * botones. `transition:` (no `in:`) para que el outro exista: el keyframe
+ * `p-in` solo corría al montar.
+ */
+export function opacityFade(
+  _node: Element,
+  { duration }: { duration?: number } = {},
+): { duration: number; easing: (t: number) => number; css: (t: number) => string } {
+  if (prefersReducedMotion()) {
+    return { duration: 0, easing: (t) => t, css: () => "" };
+  }
+  const dur = duration ?? motionMs(MOTION.morphFade, MOTION_FALLBACK[MOTION.morphFade]);
+  return {
+    duration: dur,
+    easing: easeInOut,
+    css: (t) => `opacity:${t}`,
+  };
 }
 
 /**

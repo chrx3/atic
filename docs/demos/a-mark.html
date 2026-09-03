@@ -1,0 +1,544 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Atic · la a</title>
+    <style>
+      :root {
+        --bg: #121211;
+        --ink: #f0f0ea;
+        --muted: #a8a89e;
+        --faint: #74746c;
+        --ease: cubic-bezier(0.22, 1, 0.36, 1);
+        --font: "Aptos", "Avenir Next", "Helvetica Neue", "Segoe UI Variable",
+          sans-serif;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+      }
+
+      body {
+        display: grid;
+        grid-template-rows: auto 1fr auto;
+        min-height: 100dvh;
+        background: var(--bg);
+        color: var(--ink);
+        font-family: var(--font);
+        -webkit-font-smoothing: antialiased;
+        color-scheme: dark;
+        overflow: hidden;
+        cursor: none;
+      }
+
+      header,
+      footer {
+        padding: 1.25rem 1.5rem;
+        text-align: center;
+        pointer-events: none;
+      }
+
+      header p,
+      footer p {
+        margin: 0;
+        color: var(--faint);
+        font-size: 0.8125rem;
+        letter-spacing: 0.01em;
+      }
+
+      header strong {
+        color: var(--muted);
+        font-weight: 500;
+      }
+
+      .stage {
+        display: grid;
+        place-items: center;
+      }
+
+      .mark {
+        width: min(48vmin, 320px);
+        aspect-ratio: 1;
+        overflow: visible;
+      }
+
+      .head {
+        transform-box: view-box;
+        transform-origin: 12px 12px;
+        will-change: transform;
+      }
+
+      .bowl,
+      .asta {
+        fill: none;
+        stroke: var(--ink);
+        stroke-width: 1.25;
+        stroke-linecap: butt;
+      }
+
+      .face {
+        transform-box: view-box;
+        transform-origin: 12px 11.15px;
+        transform: scale(0.25);
+        opacity: 0;
+        transition:
+          transform 380ms var(--ease),
+          opacity 380ms var(--ease);
+      }
+
+      body.is-awake .face {
+        transform: scale(1);
+        opacity: 1;
+      }
+
+      .eye {
+        fill: var(--ink);
+      }
+
+      .bag {
+        fill: none;
+        stroke: var(--ink);
+        stroke-width: 0.14;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+
+      .pointer {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 8px;
+        height: 8px;
+        margin: -4px 0 0 -4px;
+        border-radius: 50%;
+        background: var(--ink);
+        pointer-events: none;
+        z-index: 4;
+        opacity: 0;
+      }
+
+      body.has-pointer .pointer {
+        opacity: 0.9;
+      }
+
+      .lab {
+        position: fixed;
+        top: 1rem;
+        right: 1rem;
+        z-index: 5;
+        width: 16.5rem;
+        padding: 0.85rem 1rem 1rem;
+        background: #1a1a18;
+        border: 1px solid rgb(240 240 234 / 12%);
+        cursor: default;
+        color: var(--ink);
+        font-size: 0.75rem;
+      }
+
+        .lab h2 {
+        margin: 0.75rem 0 0.7rem;
+        font-size: 0.75rem;
+        font-weight: 500;
+        color: var(--muted);
+      }
+
+      .lab h2:first-child {
+        margin-top: 0;
+      }
+
+      .lab label {
+        display: grid;
+        grid-template-columns: 6.2rem 1fr 2.4rem;
+        align-items: center;
+        gap: 0.4rem;
+        margin: 0.35rem 0;
+        color: var(--faint);
+        cursor: default;
+      }
+
+      .lab input[type="range"] {
+        width: 100%;
+        accent-color: var(--ink);
+        cursor: pointer;
+      }
+
+      .lab output {
+        font-variant-numeric: tabular-nums;
+        color: var(--ink);
+        text-align: right;
+      }
+
+      .lab pre {
+        margin: 0.7rem 0 0;
+        padding: 0.55rem 0.6rem;
+        background: #121211;
+        color: var(--muted);
+        font: 0.68rem/1.4 ui-monospace, "Cascadia Mono", monospace;
+        white-space: pre;
+        user-select: text;
+        cursor: text;
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        body {
+          cursor: default;
+        }
+
+        .pointer {
+          display: none;
+        }
+
+        .face {
+          transition: none;
+          transform: none;
+          opacity: 1;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <p><strong>atic</strong> · la a</p>
+    </header>
+
+    <main class="stage">
+      <svg class="mark" viewBox="0 0 24 24" aria-hidden="true">
+        <g class="head">
+          <circle class="bowl" cx="12" cy="12" r="5.5" />
+          <path class="asta" d="M17.5 6.5V17.5" />
+          <g class="face">
+            <g class="eye-l">
+              <ellipse class="eye" cx="0" cy="0" rx="0.88" ry="1.32" />
+              <path class="bag" />
+            </g>
+            <g class="eye-r">
+              <ellipse class="eye" cx="0" cy="0" rx="0.88" ry="1.32" />
+              <path class="bag" />
+            </g>
+          </g>
+        </g>
+      </svg>
+    </main>
+
+    <footer>
+      <p>cerca se juntan · lejos se abren · parpadea solo</p>
+    </footer>
+
+    <aside class="lab" id="lab">
+      <h2>ojeras</h2>
+      <label>
+        adentro
+        <input name="adentro" type="range" min="0.05" max="0.95" step="0.01" value="0.95" />
+        <output data-for="adentro"></output>
+      </label>
+      <label>
+        altura
+        <input name="altura" type="range" min="0.4" max="1.2" step="0.01" value="0.94" />
+        <output data-for="altura"></output>
+      </label>
+      <label>
+        largo
+        <input name="largo" type="range" min="0.05" max="0.9" step="0.01" value="0.47" />
+        <output data-for="largo"></output>
+      </label>
+      <label>
+        inclinación
+        <input name="inclinacion" type="range" min="0" max="1.4" step="0.01" value="0.88" />
+        <output data-for="inclinacion"></output>
+      </label>
+      <label>
+        curva
+        <input name="curva" type="range" min="0" max="1" step="0.01" value="0.42" />
+        <output data-for="curva"></output>
+      </label>
+      <label>
+        grosor
+        <input name="grosor" type="range" min="0.08" max="0.45" step="0.01" value="0.14" />
+        <output data-for="grosor"></output>
+      </label>
+      <h2>ojos</h2>
+      <label>
+        junto
+        <input name="junto" type="range" min="0.9" max="2.2" step="0.01" value="1.22" />
+        <output data-for="junto"></output>
+      </label>
+      <label>
+        lejos
+        <input name="lejos" type="range" min="1.4" max="3" step="0.01" value="2.05" />
+        <output data-for="lejos"></output>
+      </label>
+      <pre id="vals"></pre>
+    </aside>
+
+    <div class="pointer" aria-hidden="true"></div>
+
+    <script>
+      const reduced = window.matchMedia(
+        "(prefers-reduced-motion: reduce)",
+      ).matches;
+      const mark = document.querySelector(".mark");
+      const head = document.querySelector(".head");
+      const eyeL = document.querySelector(".eye-l");
+      const eyeR = document.querySelector(".eye-r");
+      const ovalL = eyeL.querySelector(".eye");
+      const ovalR = eyeR.querySelector(".eye");
+      const bagL = eyeL.querySelector(".bag");
+      const bagR = eyeR.querySelector(".bag");
+      const pointer = document.querySelector(".pointer");
+      const lab = document.querySelector("#lab");
+      const vals = document.querySelector("#vals");
+
+      const midX = 12;
+      const midY = 11.15;
+      const restSpread = 1.88;
+      const lookMax = 1.18;
+      const turnMax = 22;
+      const leanMax = 14;
+      const rxRest = 0.88;
+      const ryRest = 1.32;
+
+      const bag = {
+        adentro: 0.95,
+        altura: 0.94,
+        largo: 0.47,
+        inclinacion: 0.88,
+        curva: 0.42,
+        grosor: 0.14,
+      };
+      const eyes = {
+        junto: 1.22,
+        lejos: 2.05,
+      };
+
+      const want = {
+        lookX: 0,
+        lookY: 0,
+        rot: 0,
+        leanX: 0,
+        leanY: 0,
+        spread: restSpread,
+        rx: rxRest,
+        ry: ryRest,
+        lid: 1,
+      };
+      const now = { ...want };
+      let t0 = performance.now();
+      let blinkTimer = 0;
+      let lidHold = 0;
+
+      if (!reduced) {
+        window.setTimeout(() => document.body.classList.add("is-awake"), 320);
+        window.setTimeout(scheduleBlink, 1400);
+      } else {
+        document.body.classList.add("is-awake");
+      }
+
+      function lerp(a, b, t) {
+        return a + (b - a) * t;
+      }
+
+      function clampSpread(s) {
+        const lo = Math.min(eyes.junto, eyes.lejos);
+        const hi = Math.max(eyes.junto, eyes.lejos);
+        return Math.min(hi, Math.max(lo, s));
+      }
+
+      function readLab() {
+        for (const input of lab.querySelectorAll("input[type=range]")) {
+          const n = Number(input.value);
+          if (input.name in eyes) eyes[input.name] = n;
+          else bag[input.name] = n;
+          const out = lab.querySelector(`output[data-for="${input.name}"]`);
+          if (out) out.textContent = n.toFixed(2);
+        }
+        bagL.style.strokeWidth = String(bag.grosor);
+        bagR.style.strokeWidth = String(bag.grosor);
+        vals.textContent = [
+          `adentro: ${bag.adentro.toFixed(2)}`,
+          `altura: ${bag.altura.toFixed(2)}`,
+          `largo: ${bag.largo.toFixed(2)}`,
+          `inclinación: ${bag.inclinacion.toFixed(2)}`,
+          `curva: ${bag.curva.toFixed(2)}`,
+          `grosor: ${bag.grosor.toFixed(2)}`,
+          `junto: ${eyes.junto.toFixed(2)}`,
+          `lejos: ${eyes.lejos.toFixed(2)}`,
+        ].join("\n");
+      }
+
+      function bagPath(rx, ry, side) {
+        const startX = -side * rx * bag.adentro;
+        const startY = ry * bag.altura;
+        const endX = -side * rx * (bag.adentro - bag.inclinacion);
+        const endY = ry * (bag.altura + bag.largo);
+        const cX = (startX + endX) / 2 - side * rx * bag.curva * 0.35;
+        const cY = (startY + endY) / 2 + ry * bag.curva * 0.22;
+        return `M ${startX} ${startY} Q ${cX} ${cY} ${endX} ${endY}`;
+      }
+
+      function overflow(x, y, pad) {
+        const dx = x - 12;
+        const dy = y - 12;
+        const limit = 4.55 - pad;
+        const d = Math.hypot(dx, dy) || 1;
+        if (d <= limit) return { x: 0, y: 0 };
+        const extra = (d - limit) / d;
+        return { x: dx * extra, y: dy * extra };
+      }
+
+      function placePair(lookX, lookY, spread, rx, ry) {
+        const pad = Math.max(rx, ry);
+        const Lx = midX + lookX - spread;
+        const Rx = midX + lookX + spread;
+        const y = midY + lookY;
+        const oL = overflow(Lx, y, pad);
+        const oR = overflow(Rx, y, pad);
+        const ox = Math.abs(oL.x) > Math.abs(oR.x) ? oL.x : oR.x;
+        const oy = Math.abs(oL.y) > Math.abs(oR.y) ? oL.y : oR.y;
+        return {
+          L: { x: Lx - ox, y: y - oy },
+          R: { x: Rx - ox, y: y - oy },
+        };
+      }
+
+      function aim(clientX, clientY) {
+        pointer.style.transform = `translate(${clientX}px, ${clientY}px)`;
+        document.body.classList.add("has-pointer");
+
+        const box = mark.getBoundingClientRect();
+        const cx = box.left + box.width / 2;
+        const cy = box.top + box.height / 2;
+        const dx = clientX - cx;
+        const dy = clientY - cy;
+        const dist = Math.hypot(dx, dy) || 1;
+        const face = box.width * 0.5;
+        const reach = Math.min(1, Math.max(0, (dist - face * 0.18) / (face * 1.35)));
+        const nx = dx / dist;
+        const ny = dy / dist;
+
+        want.lookX = nx * lookMax * reach;
+        want.lookY = ny * lookMax * reach;
+        want.rot = nx * turnMax * reach;
+        want.leanX = nx * leanMax * reach;
+        want.leanY = ny * leanMax * 0.4 * reach;
+        want.spread = clampSpread(lerp(eyes.junto, eyes.lejos, reach));
+        want.rx = lerp(rxRest + 0.1, rxRest * 0.72, reach * Math.abs(nx));
+        want.ry = lerp(ryRest + 0.08, ryRest * 0.92, reach);
+      }
+
+      function restFace() {
+        document.body.classList.remove("has-pointer");
+        want.lookX = 0;
+        want.lookY = 0;
+        want.rot = 0;
+        want.leanX = 0;
+        want.leanY = 0;
+        want.spread = clampSpread(restSpread);
+        want.rx = rxRest;
+        want.ry = ryRest;
+      }
+
+      function blink(hold = 70) {
+        if (reduced) return;
+        want.lid = 0.1;
+        lidHold = hold;
+      }
+
+      function scheduleBlink() {
+        const wait = 1800 + Math.random() * 3400;
+        blinkTimer = window.setTimeout(() => {
+          blink(60 + Math.random() * 50);
+          if (Math.random() < 0.22) {
+            window.setTimeout(() => blink(55), 160);
+          }
+          scheduleBlink();
+        }, wait);
+      }
+
+      function tick(time) {
+        const dt = Math.min(32, time - (tick.prev || time));
+        tick.prev = time;
+
+        if (lidHold > 0) {
+          lidHold -= dt;
+          if (lidHold <= 0) want.lid = 1;
+        }
+
+        if (!reduced) {
+          now.rot += (want.rot - now.rot) * 0.08;
+          now.leanX += (want.leanX - now.leanX) * 0.08;
+          now.leanY += (want.leanY - now.leanY) * 0.08;
+          now.lookX += (want.lookX - now.lookX) * 0.16;
+          now.lookY += (want.lookY - now.lookY) * 0.16;
+          now.spread += (want.spread - now.spread) * 0.14;
+          now.rx += (want.rx - now.rx) * 0.14;
+          now.ry += (want.ry - now.ry) * 0.14;
+          now.lid += (want.lid - now.lid) * 0.42;
+        } else {
+          Object.assign(now, want);
+        }
+        now.spread = clampSpread(now.spread);
+
+        const sway = reduced ? 0 : Math.sin((time - t0) / 1100) * 1.6;
+        const rx = now.rx;
+        const ry = Math.max(0.08, now.ry * now.lid);
+
+        ovalL.setAttribute("rx", rx.toFixed(3));
+        ovalR.setAttribute("rx", rx.toFixed(3));
+        ovalL.setAttribute("ry", ry.toFixed(3));
+        ovalR.setAttribute("ry", ry.toFixed(3));
+
+        bagL.setAttribute("d", bagPath(rx, now.ry, -1));
+        bagR.setAttribute("d", bagPath(rx, now.ry, 1));
+        const bagOp = now.lid > 0.88 ? "1" : "0";
+        bagL.setAttribute("opacity", bagOp);
+        bagR.setAttribute("opacity", bagOp);
+
+        const pair = placePair(now.lookX, now.lookY, now.spread, rx, ry);
+
+        eyeL.setAttribute("transform", `translate(${pair.L.x} ${pair.L.y})`);
+        eyeR.setAttribute("transform", `translate(${pair.R.x} ${pair.R.y})`);
+
+        head.style.transform = `translate(${now.leanX}px, ${now.leanY}px) rotate(${now.rot + sway}deg)`;
+
+        requestAnimationFrame(tick);
+      }
+
+      function fromLab(e) {
+        return e.target.closest("#lab");
+      }
+
+      function onMove(e) {
+        if (fromLab(e)) return;
+        aim(e.clientX, e.clientY);
+      }
+
+      lab.addEventListener("input", readLab);
+      lab.addEventListener("pointerdown", (e) => e.stopPropagation());
+      lab.addEventListener("pointermove", (e) => e.stopPropagation());
+      readLab();
+
+      window.addEventListener("pointermove", onMove, { passive: true });
+      window.addEventListener("mousemove", onMove, { passive: true });
+
+      window.addEventListener("pointerdown", (e) => {
+        if (fromLab(e)) return;
+        aim(e.clientX, e.clientY);
+        window.clearTimeout(blinkTimer);
+        blink(80);
+        if (!reduced) scheduleBlink();
+      });
+
+      window.addEventListener("pointerleave", restFace);
+      document.documentElement.addEventListener("mouseleave", restFace);
+
+      requestAnimationFrame(tick);
+    </script>
+  </body>
+</html>

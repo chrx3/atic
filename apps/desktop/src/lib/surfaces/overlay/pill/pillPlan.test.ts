@@ -11,6 +11,7 @@ import { WHEEL_TOOLS } from "$core/tools";
   shouldMeasureBar,
   islandCueLong,
   islandLiveSlots,
+  liveHang,
   islandStripLong,
   morphsInPlace,
   pivotFor,
@@ -27,13 +28,12 @@ import { WHEEL_TOOLS } from "$core/tools";
   dragClosesWheel,
   wheelKeyAction,
   wheelOpenFlight,
-  updateHang,
   UPDATE_ISLAND_OPEN_DELAY_MS,
 } from "./pillPlan";
 
 describe("FLIGHT_SKIP_PX", () => {
   it("omite vuelos menores que ~un disco", () => {
-    expect(FLIGHT_SKIP_PX).toBe(48);
+    expect(FLIGHT_SKIP_PX).toBe(PILL.bar + 8);
   });
 });
 
@@ -82,7 +82,7 @@ describe("contentFor", () => {
       contentFor("edge", 180, { edge: "left", expanded: false }, "idle", 5, true),
     ).toEqual({
       w: PILL.islandCueThick,
-      h: PILL.islandLong,
+      h: islandCueLong(1),
     });
     expect(
       contentFor(
@@ -94,7 +94,7 @@ describe("contentFor", () => {
         true,
       ),
     ).toEqual({
-      w: PILL.islandLong,
+      w: islandCueLong(1),
       h: PILL.islandCueThick,
     });
     expect(
@@ -108,9 +108,14 @@ describe("contentFor", () => {
         3,
       ).w,
     ).toBe(islandCueLong(3));
-    expect(islandCueLong(1)).toBe(PILL.islandLong);
-    expect(islandCueLong(3)).toBeGreaterThan(PILL.islandLong);
-    // Abierta no crece: el aviso vive en el botón, no en la caja.
+    // La marca no cede el sitio al aviso, así que ya un logo alarga.
+    expect(islandCueLong(1)).toBeGreaterThan(PILL.islandLong);
+    expect(islandCueLong(1)).toBeGreaterThanOrEqual(
+      PILL.islandMark + PILL.islandCueBtn,
+    );
+    expect(islandCueLong(9)).toBeGreaterThan(islandCueLong(1));
+    // Abierta no crece por el aviso: con 5 herramientas la tira ya es más
+    // larga que cualquier pestaña, y el aviso vive en el botón de agentes.
     expect(
       contentFor("edge", 180, { edge: "left", expanded: true }, "idle", 5, true),
     ).toEqual(
@@ -196,12 +201,12 @@ describe("contentFor", () => {
     expect(shouldStayDockedOnActivate(docked.surface)).toBe(true);
   });
 
-  it("abrir una tool solo vuelve al canto si ya estaba acoplada", () => {
+  it("abrir una tool desde la rueda o el canto vuelve al hogar", () => {
     const dock = { edge: "top" as const, expanded: false };
     expect(shouldReturnToEdgeOnActivate("edge", dock)).toBe(true);
     expect(shouldReturnToEdgeOnActivate("wheel", dock)).toBe(true);
+    expect(shouldReturnToEdgeOnActivate("wheel", null)).toBe(true);
     expect(shouldReturnToEdgeOnActivate("none", null)).toBe(false);
-    expect(shouldReturnToEdgeOnActivate("wheel", null)).toBe(false);
   });
 
   it("un frame fuera del hit no cierra la isla; el linger sí", () => {
@@ -258,60 +263,42 @@ describe("contentFor", () => {
     expect(islandHoverOpens({ ...closed, over: false })).toBe(false);
   });
 
-  it("grabando, la tira no roba un slot: la gota cuelga del cuerpo", () => {
+  it("acoplada, la actividad no cuelga: la caja no crece hacia adentro", () => {
     expect(islandLiveSlots("idle")).toBe(0);
     expect(islandLiveSlots("recording")).toBe(0);
     expect(islandLiveSlots("dictating")).toBe(0);
-    const idle = contentFor("edge", 180, { edge: "bottom", expanded: true });
-    const rec = contentFor("edge", 180, { edge: "bottom", expanded: true }, "recording");
-    expect(rec.w).toBe(idle.w);
-    expect(rec.h).toBe(idle.h + PILL.recDrop + PILL.recDropGap);
-    const shutRec = contentFor(
-      "edge",
-      180,
-      { edge: "bottom", expanded: false },
-      "recording",
-    );
-    const shutIdle = contentFor("edge", 180, { edge: "bottom", expanded: false });
-    expect(shutRec.h).toBe(shutIdle.h + PILL.recDrop + PILL.recDropGap);
-    expect(shutRec.w).toBe(shutIdle.w);
+    // La gota que colgaba cambiaba la silueta con el estado. Ahora el estado
+    // vive en la cara de la marca y el stop es un chip: la caja es la misma.
+    for (const edge of ["top", "bottom", "left", "right"] as const) {
+      for (const expanded of [false, true]) {
+        const dock = { edge, expanded };
+        const idle = contentFor("edge", 180, dock, "idle", 5);
+        expect(contentFor("edge", 180, dock, "recording", 5)).toEqual(idle);
+        expect(contentFor("edge", 180, dock, "dictating", 5)).toEqual(idle);
+      }
+    }
   });
 
-  it("con aviso de update, la tira abierta deja hueco para la gota", () => {
-    expect(updateHang("edge", true, true)).toBe(PILL.recDrop + PILL.recDropGap);
-    expect(updateHang("edge", false, true)).toBe(0);
-    expect(updateHang("edge", true, false)).toBe(0);
-    expect(updateHang("none", true, true)).toBe(0);
-    const dockOpen = { edge: "bottom" as const, expanded: true };
-    const idle = contentFor("edge", 180, dockOpen, "idle", 5);
-    const upd = contentFor("edge", 180, dockOpen, "idle", 5, false, 0, true);
-    expect(upd.w).toBe(idle.w);
-    expect(upd.h).toBe(idle.h + PILL.recDrop + PILL.recDropGap);
-    const recAndUpd = contentFor("edge", 180, dockOpen, "recording", 5, false, 0, true);
-    const rec = contentFor("edge", 180, dockOpen, "recording", 5);
-    expect(recAndUpd.h).toBe(rec.h + PILL.recDrop + PILL.recDropGap);
-    // Cerrada no cuelga: el icono vive en la pestaña.
-    const shutCue = contentFor(
-      "edge",
-      180,
-      { edge: "bottom", expanded: false },
-      "idle",
-      5,
-      true,
-      1,
-      true,
+  it("la rueda sí cuelga: es su propio escenario, no rompe continuidad", () => {
+    expect(liveHang("recording", "wheel")).toBe(PILL.recDrop + PILL.recDropGap);
+    expect(liveHang("dictating", "wheel")).toBe(PILL.recDrop + PILL.recDropGap);
+    expect(liveHang("idle", "wheel")).toBe(0);
+    expect(liveHang("recording", "edge")).toBe(0);
+    expect(liveHang("recording", "none")).toBe(0);
+    const idle = contentFor("wheel", 999);
+    expect(contentFor("wheel", 999, null, "recording").h).toBe(
+      idle.h + PILL.wheelLiveHang,
     );
-    const shutCueNoUpd = contentFor(
-      "edge",
-      180,
-      { edge: "bottom", expanded: false },
-      "idle",
-      5,
-      true,
-      1,
-      false,
-    );
-    expect(shutCue).toEqual(shutCueNoUpd);
+  });
+
+  it("el aviso de update alarga la pestaña, no la hace colgar", () => {
+    const dockShut = { edge: "bottom" as const, expanded: false };
+    // Cuenta como una marca más: entra a `islandCueCount`, no a un hang.
+    const unaMarca = contentFor("edge", 180, dockShut, "idle", 5, true, 1);
+    const dosMarcas = contentFor("edge", 180, dockShut, "idle", 5, true, 2);
+    expect(dosMarcas.h).toBe(unaMarca.h);
+    expect(dosMarcas.w).toBeGreaterThan(unaMarca.w);
+    expect(dosMarcas.w).toBe(islandCueLong(2));
   });
 
   /**
@@ -321,33 +308,36 @@ describe("contentFor", () => {
    * al abrirse y el ciclo se realimentaría a 60 Hz.
    */
   it("abrir la isla nunca encoge la caja en ningún eje", () => {
-    expect(PILL.islandLong).toBe(PILL.bar);
-    for (const cue of [false, true]) {
-      for (const hasUpdate of [false, true]) {
-        for (const activity of ["idle", "recording", "dictating"] as const) {
-          for (const edge of ["left", "right", "top", "bottom"] as const) {
-            const shut = contentFor(
-              "edge",
-              180,
-              { edge, expanded: false },
-              activity,
-              WHEEL_TOOLS.length,
-              cue,
-              0,
-              hasUpdate,
-            );
-            const open = contentFor(
-              "edge",
-              180,
-              { edge, expanded: true },
-              activity,
-              WHEEL_TOOLS.length,
-              cue,
-              0,
-              hasUpdate,
-            );
-            expect(open.w).toBeGreaterThanOrEqual(shut.w);
-            expect(open.h).toBeGreaterThanOrEqual(shut.h);
+    expect(PILL.islandLong).toBeGreaterThan(PILL.islandThick);
+    // `toolCount` barre hasta 1: las herramientas se esconden desde Ajustes, y
+    // con pocas la tira abierta puede quedar más corta que una pestaña con
+    // avisos. Ahí es donde el piso de `contentFor` hace falta.
+    for (const toolCount of [1, 2, 3, WHEEL_TOOLS.length]) {
+      for (const cue of [false, true]) {
+        for (const cueCount of [0, 1, 3]) {
+          for (const activity of ["idle", "recording", "dictating"] as const) {
+            for (const edge of ["left", "right", "top", "bottom"] as const) {
+              const shut = contentFor(
+                "edge",
+                180,
+                { edge, expanded: false },
+                activity,
+                toolCount,
+                cue,
+                cueCount,
+              );
+              const open = contentFor(
+                "edge",
+                180,
+                { edge, expanded: true },
+                activity,
+                toolCount,
+                cue,
+                cueCount,
+              );
+              expect(open.w).toBeGreaterThanOrEqual(shut.w);
+              expect(open.h).toBeGreaterThanOrEqual(shut.h);
+            }
           }
         }
       }

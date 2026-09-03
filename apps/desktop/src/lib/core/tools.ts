@@ -111,10 +111,19 @@ export const TOOLS: ToolDef[] = AGENTS_ENABLED
   : ALL_TOOLS.filter((tool) => tool.id !== "agents");
 
 /**
- * La rueda de la pill: mismas tools menos el launcher.
- * Spotlight vive en Ctrl+Space y en la ventana principal, no en el anillo.
+ * La rueda de la pill: mismas tools menos las que son puro atajo.
+ *
+ * Un gajo solo se gana el sitio si apuntarle es mejor que la tecla. El
+ * launcher vive en Ctrl+Space, y el dictado en su atajo —que además es el
+ * único camino que puede hacer push-to-talk de verdad: el clic pasa por el
+ * vuelo al slot, así que cuando el mic abre ya soltaste el botón—. Las dos
+ * siguen enteras en la ventana principal y en sus atajos.
  */
-export const WHEEL_TOOLS: ToolDef[] = TOOLS.filter((tool) => tool.id !== "launcher");
+const SHORTCUT_ONLY: ReadonlySet<string> = new Set(["launcher", "dictation"]);
+
+export const WHEEL_TOOLS: ToolDef[] = TOOLS.filter(
+  (tool) => !SHORTCUT_ONLY.has(tool.id),
+);
 
 export function toolById(id: ToolId): ToolDef {
   return TOOLS.find((tool) => tool.id === id) ?? TOOLS[0];

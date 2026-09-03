@@ -18,6 +18,8 @@ export const launcherRun = (id: string) => invoke<void>("launcher_run", { id });
 export const launcherReindex = () => invoke<number>("launcher_reindex");
 export const launcherListFavorites = () =>
   invoke<LauncherHit[]>("launcher_list_favorites");
+export const launcherListRecents = () =>
+  invoke<LauncherHit[]>("launcher_list_recents");
 export const launcherToggleFavorite = (id: string) =>
   invoke<string[]>("launcher_toggle_favorite", { id });
 /** Data URL PNG del icono de una app (`null` si no hay / es acción). */

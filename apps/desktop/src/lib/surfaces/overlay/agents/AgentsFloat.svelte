@@ -28,13 +28,16 @@
     publishFollowSkin,
   } from "$surfaces/overlay/floatEmergeSkin";
   import { surfaces } from "$surfaces/overlay/surfaces.svelte";
+  import { notifyToolResting, toolBirth } from "$surfaces/overlay/toolBirth";
   import { Bubble, BUBBLE_MIN_W } from "$surfaces/overlay/bubble.svelte";
   import { createBubbleDrag } from "$surfaces/overlay/bubbleDrag";
+  import { snapFrame, snapTarget } from "$surfaces/overlay/floatSnap";
+  import { snapPreview } from "$surfaces/overlay/snapPreview.svelte";
   import {
     expandPanelFromSeed,
     placePanelFusedSeed,
-    placePanelResting,
   } from "$surfaces/overlay/floatPlace";
+  import { resolveSlot } from "$surfaces/overlay/toolSlots";
   import { separateAxisProp, waitFrames } from "$surfaces/overlay/floatReveal";
   import { gapBetween } from "$lib/liquid/geometry";
   import { REACH } from "$lib/liquid/constants";
@@ -77,6 +80,7 @@
   let browserSize = { w: BROWSER_DEFAULT_W, h: BROWSER_DEFAULT_H };
   let modeResizing = $state(false);
   let modeResizeEpoch = 0;
+  const resizable = $derived(launcherView === "console");
 
   type RevealPhase = "hidden" | "expand" | "settle" | "ready";
   let revealPhase = $state<RevealPhase>("hidden");
@@ -143,27 +147,17 @@
     };
   }
 
-  function placeNearPill(a: BubbleOpen, size: { w: number; h: number }): BubbleOpen {
-    const pill = surfaces.live["pill-skin"] ?? surfaces.live["pill"];
-    if (!pill) {
-      return {
-        ...a,
-        ...positionInWorkspace(
-          { x: a.x, y: a.y, w: 1, h: 1 },
-          size,
-          { x: a.x, y: a.y },
-        ),
-        ...size,
-      };
-    }
-    return {
-      ...a,
-      ...placePanelResting(pill, size, {
-        corner: BUBBLE_CORNER,
-        work: workAreas,
-      }),
-      ...size,
-    };
+  /** Centro del monitor de la pill / del ancla de nacimiento. */
+  function placeAtScreenCenter(
+    a: BubbleOpen,
+    size: { w: number; h: number },
+  ): BubbleOpen {
+    const pill = toolBirth() ?? surfaces.live["pill-skin"] ?? surfaces.live["pill"];
+    const anchor = pill
+      ? { x: pill.x + pill.w / 2, y: pill.y + pill.h / 2 }
+      : { x: a.x + a.w / 2, y: a.y + a.h / 2 };
+    const pos = resolveSlot("center", workAreas, size, anchor);
+    return { ...a, ...size, x: pos.x, y: pos.y, side: "left", offset: size.h / 2 };
   }
 
   function resolveRestingOpen(
@@ -180,7 +174,7 @@
       };
       return { ...a, ...positionInWorkspace(pill, panel, keep) };
     }
-    return placeNearPill(a, panel);
+    return placeAtScreenCenter(a, panel);
   }
 
   async function ensureWorkAreas() {
@@ -214,8 +208,10 @@
     return { ...a, w: setupWidth, h: setupHeight(setupWidth) };
   }
 
-  function placeBirthSeed(a: BubbleOpen) {
-    const pill = surfaces.live["pill-skin"] ?? surfaces.live["pill"];
+  function placeBirthSeed(
+    a: BubbleOpen,
+    pill = toolBirth() ?? surfaces.live["pill-skin"] ?? surfaces.live["pill"],
+  ) {
     if (!pill) {
       bubble.place(a);
       return;
@@ -241,6 +237,7 @@
       })
     ) {
       showAgentsPanel();
+      notifyToolResting();
       return;
     }
     const epoch = ++placeEpoch;
@@ -262,7 +259,10 @@
       placeBirthSeed(a);
       return;
     }
-    if (revealPhase === "ready") bubble.place(restingOpen);
+    if (revealPhase === "ready") {
+      bubble.place(restingOpen);
+      notifyToolResting();
+    }
   }
 
   function asOpen(a: { side: string; offset: number; x: number; y: number; w: number; h: number }): BubbleOpen {
@@ -276,13 +276,22 @@
     size: { w: number; h: number },
   ) {
     await ensureWorkAreas();
-    const target = placeNearPill(asOpen(current), size);
+    const target = {
+      ...asOpen(current),
+      ...positionInWorkspace(
+        surfaces.live["pill-skin"] ??
+          surfaces.live["pill"] ?? { x: current.x, y: current.y, w: 1, h: 1 },
+        size,
+        { x: current.x, y: current.y },
+      ),
+      ...size,
+    };
     const epoch = ++modeResizeEpoch;
     modeResizing = true;
     await tick();
     bubble.setFrame(target.x, target.y, target.w, target.h);
     restingOpen = target;
-    await wait(ms(MOTION.medium));
+    await wait(ms(MOTION.slow));
     if (epoch === modeResizeEpoch) modeResizing = false;
   }
 
@@ -345,6 +354,7 @@
     if (prefersReducedMotion()) {
       bubble.place(resting);
       revealPhase = "ready";
+      notifyToolResting();
       return;
     }
 
@@ -377,6 +387,7 @@
     if (epoch !== revealEpoch) return;
     const settleProp = separateAxisProp(bubble.anchor?.side);
     bubble.place(resting);
+    notifyToolResting();
     await afterTransition(bubEl, settleProp, settleDur);
     if (epoch !== revealEpoch) return;
     revealPhase = "ready";
@@ -390,6 +401,8 @@
   type Frame = { x: number; y: number; w: number; h: number };
   let maximized = $state(false);
   let minimized = $state(false);
+  /** Encajada a un canto/esquina (incluye maximizada). */
+  let snapped = $state(false);
   let frameBeforeMax: Frame | null = null;
 
   async function animateFrame(target: Frame) {
@@ -399,7 +412,7 @@
     bubble.setFrame(target.x, target.y, target.w, target.h);
     const a = bubble.anchor;
     if (a) restingOpen = { ...a, ...target, side: a.side as BubbleOpen["side"] };
-    await wait(ms(MOTION.medium));
+    await wait(ms(MOTION.slow));
     if (epoch === modeResizeEpoch) modeResizing = false;
   }
 
@@ -418,7 +431,9 @@
   function clearSizeToggles() {
     maximized = false;
     minimized = false;
+    snapped = false;
     frameBeforeMax = null;
+    snapPreview.frame = null;
     agentsDock.setMinimized(false);
   }
 
@@ -431,14 +446,39 @@
     });
   }
 
+  /**
+   * Espejo del open: el panel se encoge a la semilla. Sin esto, expandir
+   * animaba el tamaño y achicar cortaba de golpe (`visibility: hidden`).
+   */
+  async function playCloseMorph(epoch: number): Promise<void> {
+    if (prefersReducedMotion() || !bubble.shown || !bubble.anchor) return;
+    revealPhase = "expand";
+    await tick();
+    await waitFrames(2);
+    if (epoch !== revealEpoch) return;
+    const a = bubble.anchor;
+    if (a) {
+      placeBirthSeed(
+        asOpen(a),
+        surfaces.live["pill-skin"] ?? surfaces.live["pill"],
+      );
+    }
+    await afterTransition(bubEl, "width", growDur);
+  }
+
   function dockToPill() {
-    revealEpoch += 1;
-    revealPhase = "ready";
-    minimized = true;
-    agentsDock.setMinimized(true);
-    bubble.shown = false;
+    if (minimized) return;
+    const epoch = ++revealEpoch;
     releaseOverlayKeyboard();
-    clearAgentsOverlaySkin();
+    void (async () => {
+      await playCloseMorph(epoch);
+      if (epoch !== revealEpoch) return;
+      revealPhase = "ready";
+      minimized = true;
+      agentsDock.setMinimized(true);
+      bubble.shown = false;
+      clearAgentsOverlaySkin();
+    })();
   }
 
   /** El lanzador (antes de abrir una consola): X cierra, no achica. */
@@ -452,11 +492,14 @@
 
   /** Agranda si hay globo vivo. Si no, el ancla de Rust tiene que nacerlo. */
   function showAgentsPanel() {
+    const wasDocked = minimized;
     minimized = false;
     agentsDock.setMinimized(false);
     if (!bubble.alive || !bubble.anchor) return;
     revealEpoch += 1;
-    revealPhase = "ready";
+    // Desde el dock el marco quedó en la semilla: hay que crecer otra vez.
+    // Ya abierto, no re-disparar el morph.
+    revealPhase = wasDocked ? "hidden" : "ready";
     bubble.shown = true;
     void tick().then(() => {
       void surfaces.flush();
@@ -475,12 +518,16 @@
     if (maximized && frameBeforeMax) {
       const prev = frameBeforeMax;
       maximized = false;
+      snapped = false;
       frameBeforeMax = null;
       void animateFrame(prev);
       return;
     }
-    frameBeforeMax = { x: a.x, y: a.y, w: a.w, h: a.h };
+    if (!frameBeforeMax) {
+      frameBeforeMax = { x: a.x, y: a.y, w: a.w, h: a.h };
+    }
     maximized = true;
+    snapped = true;
     const work = workAreaAround(frameBeforeMax);
     void animateFrame({
       x: work.x + POSITION_MARGIN,
@@ -502,7 +549,39 @@
 
   let bubEl = $state<HTMLElement | null>(null);
   const { startDrag, endDrag } = createBubbleDrag(bubble, () => bubEl, {
-    onEnd: savePosition,
+    clamp: "visible",
+    onGrab: ({ cursor, setHome }) => {
+      modeResizeEpoch += 1;
+      modeResizing = false;
+      if (!snapped || !frameBeforeMax) return;
+      const prev = frameBeforeMax;
+      maximized = false;
+      snapped = false;
+      const nx = cursor.x - prev.w / 2;
+      const ny = cursor.y - 24;
+      bubble.setFrame(nx, ny, prev.w, prev.h);
+      setHome(nx, ny);
+    },
+    onMove: ({ frame, areas }) => {
+      const hit = snapTarget(frame, areas);
+      snapPreview.frame = hit ? snapFrame(hit.kind, hit.work, POSITION_MARGIN) : null;
+    },
+    onDrop: ({ frame, areas }) => {
+      snapPreview.frame = null;
+      const hit = snapTarget(frame, areas);
+      if (!hit) {
+        savePosition();
+        return;
+      }
+      const a = bubble.anchor;
+      if (a && !frameBeforeMax) {
+        frameBeforeMax = { x: a.x, y: a.y, w: a.w, h: a.h };
+      }
+      maximized = hit.kind === "max";
+      snapped = true;
+      const dest = snapFrame(hit.kind, hit.work, POSITION_MARGIN);
+      void animateFrame(dest).then(() => savePosition());
+    },
   });
 
   const pillSkin = $derived(surfaces.live["pill-skin"]);
@@ -526,7 +605,7 @@
   } | null = null;
 
   function startResize(edge: ResizeEdge, event: PointerEvent) {
-    if (event.button !== 0 || !bubble.anchor || minimized) return;
+    if (event.button !== 0 || !bubble.anchor || minimized || !resizable) return;
     event.preventDefault();
     event.stopPropagation();
     // Estirar a mano toma el control: el tamaño ya no es "maximizado".
@@ -621,18 +700,22 @@
    */
   function close() {
     if (!bubble.shown && !minimized && !bubble.alive) return;
-    revealEpoch += 1;
+    const epoch = ++revealEpoch;
     modeResizeEpoch += 1;
     modeResizing = false;
-    revealPhase = "ready";
     clearSizeToggles();
     endDrag();
     endResize();
     releaseOverlayKeyboard();
-    liquid.publish("agents", []);
-    bubble.hide();
-    void hideAgentsWindow();
-    agents.watch(null);
+    void (async () => {
+      await playCloseMorph(epoch);
+      if (epoch !== revealEpoch) return;
+      revealPhase = "ready";
+      liquid.publish("agents", []);
+      bubble.hide();
+      void hideAgentsWindow();
+      agents.watch(null);
+    })();
   }
 
   /**
@@ -825,54 +908,56 @@
         onDismiss={(id) => toasts.dismiss(id)}
       />
     </div>
-    <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <div
-      class="grip grip-n"
-      data-no-drag
-      onpointerdown={(e) => startResize("n", e)}
-    ></div>
-    <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <div
-      class="grip grip-s"
-      data-no-drag
-      onpointerdown={(e) => startResize("s", e)}
-    ></div>
-    <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <div
-      class="grip grip-e"
-      data-no-drag
-      onpointerdown={(e) => startResize("e", e)}
-    ></div>
-    <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <div
-      class="grip grip-w"
-      data-no-drag
-      onpointerdown={(e) => startResize("w", e)}
-    ></div>
-    <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <div
-      class="grip grip-ne"
-      data-no-drag
-      onpointerdown={(e) => startResize("ne", e)}
-    ></div>
-    <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <div
-      class="grip grip-nw"
-      data-no-drag
-      onpointerdown={(e) => startResize("nw", e)}
-    ></div>
-    <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <div
-      class="grip grip-se"
-      data-no-drag
-      onpointerdown={(e) => startResize("se", e)}
-    ></div>
-    <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <div
-      class="grip grip-sw"
-      data-no-drag
-      onpointerdown={(e) => startResize("sw", e)}
-    ></div>
+    {#if resizable}
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <div
+        class="grip grip-n"
+        data-no-drag
+        onpointerdown={(e) => startResize("n", e)}
+      ></div>
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <div
+        class="grip grip-s"
+        data-no-drag
+        onpointerdown={(e) => startResize("s", e)}
+      ></div>
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <div
+        class="grip grip-e"
+        data-no-drag
+        onpointerdown={(e) => startResize("e", e)}
+      ></div>
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <div
+        class="grip grip-w"
+        data-no-drag
+        onpointerdown={(e) => startResize("w", e)}
+      ></div>
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <div
+        class="grip grip-ne"
+        data-no-drag
+        onpointerdown={(e) => startResize("ne", e)}
+      ></div>
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <div
+        class="grip grip-nw"
+        data-no-drag
+        onpointerdown={(e) => startResize("nw", e)}
+      ></div>
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <div
+        class="grip grip-se"
+        data-no-drag
+        onpointerdown={(e) => startResize("se", e)}
+      ></div>
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <div
+        class="grip grip-sw"
+        data-no-drag
+        onpointerdown={(e) => startResize("sw", e)}
+      ></div>
+    {/if}
   </div>
 {/if}
 
@@ -909,6 +994,7 @@
 
   .af.is-shown {
     opacity: 1;
+    visibility: visible;
     pointer-events: auto;
   }
 
@@ -936,10 +1022,10 @@
 
   .af.is-mode-resizing {
     transition:
-      left var(--duration-medium) var(--ease-smooth-out),
-      top var(--duration-medium) var(--ease-smooth-out),
-      width var(--duration-medium) var(--ease-smooth-out),
-      height var(--duration-medium) var(--ease-smooth-out),
+      left var(--duration-slow) var(--ease-smooth-out),
+      top var(--duration-slow) var(--ease-smooth-out),
+      width var(--duration-slow) var(--ease-smooth-out),
+      height var(--duration-slow) var(--ease-smooth-out),
       opacity var(--duration-quick) var(--ease-smooth-out);
   }
 
@@ -984,12 +1070,17 @@
   }
 
   /* Oculto pero vivo: las PTYs siguen corriendo. Sin pointer-events ni
-     visibilidad, el overlay no arma clics sobre una ventana que no está. */
+     visibilidad, el overlay no arma clics sobre una ventana que no está.
+     `visibility` espera a que termine la opacidad: si salta en el mismo
+     cuadro, el fade de cierre no se ve. */
   .af.is-off,
   .af.is-docked {
     visibility: hidden;
     pointer-events: none;
     opacity: 0;
+    transition:
+      opacity var(--float-close-dur) var(--ease-smooth-out),
+      visibility 0s linear var(--float-close-dur);
   }
 
   @media (prefers-reduced-motion: reduce) {
@@ -997,6 +1088,8 @@
     .af.is-expanding,
     .af.is-settling,
     .af.is-mode-resizing,
+    .af.is-off,
+    .af.is-docked,
     .af-stage,
     .af.is-shown:not(.is-expanding) .af-stage {
       transition: none;

@@ -23,9 +23,6 @@ const OVERLAY_LABEL: &str = "capture-overlay";
 /// Sin esto, un segundo atajo rápido abre otra captura en paralelo y un
 /// `show()` tardío deja la ventana gris tapando el escritorio sin sesión.
 static STARTING: AtomicBool = AtomicBool::new(false);
-/// Tick (ms) en que empezó el arranque actual. Sirve para no cancelar por un
-/// segundo Pressed rebotado mientras el primero todavía congela.
-static START_TICK_MS: AtomicU64 = AtomicU64::new(0);
 /// Sube en cada cancelación. El arranque en curso aborta si su token no coincide.
 static GENERATION: AtomicU64 = AtomicU64::new(0);
 /// La mira confirmó estar pintada y usable (ack del webview de captura).
@@ -34,9 +31,6 @@ static GENERATION: AtomicU64 = AtomicU64::new(0);
 /// ventana está visible pero el webview quedó en blanco». `is_visible()` no
 /// sirve para eso: la pone en `true` este mismo módulo al llamar `show()`.
 static REVEALED: AtomicBool = AtomicBool::new(false);
-/// Ventana en la que un segundo atajo durante `STARTING` solo reafirma input
-/// en vez de cancelar (tap rápido / evento duplicado). Después sí cancela.
-const START_GRACE_MS: u64 = 400;
 
 #[cfg(windows)]
 pub struct OverlaySession {
@@ -81,15 +75,16 @@ pub struct OverlayInfo {
 
 #[tauri::command]
 pub fn start_capture_session(app: AppHandle) -> Result<(), String> {
-    start_impl(&app)
+    trigger(&app)
 }
 
-/// Disparador para el atajo global y el tray (no pasa por `invoke`).
+/// Disparador para el atajo, el tray y el botón de la UI.
 ///
 /// - Sesión ya abierta → cancela (toggle).
-/// - Arranque en curso dentro de la gracia → no cancela: reafirma click-through.
-///   Un tap muy corto no debe tumbar el freeze del primer Pressed.
-/// - Arranque colgado pasado la gracia → cancela.
+/// - Arranque en curso (congelando) → se ignora. El freeze de un escritorio
+///   grande / la 1ª creación del webview tarda más que un segundo tap; si
+///   canceláramos, el usuario tiene que apretar tres veces para ver la mira.
+///   Un arranque colgado lo corta el watchdog, no el segundo clic.
 /// - Idle → arranca.
 pub fn trigger(app: &AppHandle) -> Result<(), String> {
     if session_is_active(app) {
@@ -97,32 +92,10 @@ pub fn trigger(app: &AppHandle) -> Result<(), String> {
         return Ok(());
     }
     if STARTING.load(Ordering::SeqCst) {
-        let started = START_TICK_MS.load(Ordering::SeqCst);
-        let now = now_ms();
-        if now.saturating_sub(started) < START_GRACE_MS {
-            crate::overlay::reassert_capturing_input(app);
-            return Ok(());
-        }
-        end_session(app);
+        crate::overlay::reassert_capturing_input(app);
         return Ok(());
     }
     start_impl(app)
-}
-
-fn now_ms() -> u64 {
-    #[cfg(windows)]
-    {
-        // SAFETY: GetTickCount64 no tiene precondiciones.
-        unsafe { windows_sys::Win32::System::SystemInformation::GetTickCount64() }
-    }
-    #[cfg(not(windows))]
-    {
-        use std::time::{SystemTime, UNIX_EPOCH};
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0)
-    }
 }
 
 fn session_is_active(app: &AppHandle) -> bool {
@@ -181,7 +154,6 @@ fn end_session(app: &AppHandle) {
     // Invalida cualquier `start_impl` en vuelo antes de ocultar/limpiar.
     GENERATION.fetch_add(1, Ordering::SeqCst);
     STARTING.store(false, Ordering::SeqCst);
-    START_TICK_MS.store(0, Ordering::SeqCst);
     REVEALED.store(false, Ordering::SeqCst);
 
     // Ocultar (no cerrar): destruir la ventana provoca un crash de wry cuando
@@ -217,7 +189,6 @@ fn end_session_cleanup(_session: Option<OverlaySession>) {}
 /// Suelta `STARTING`/`CAPTURING` si el arranque abortó sin llegar a sesión.
 fn abandon_start(app: &AppHandle) {
     STARTING.store(false, Ordering::SeqCst);
-    START_TICK_MS.store(0, Ordering::SeqCst);
     if !session_is_active(app) {
         crate::overlay::set_capturing(app, false);
     }
@@ -230,16 +201,14 @@ fn start_impl(app: &AppHandle) -> Result<(), String> {
         end_session(app);
         return Ok(());
     }
-    // Otro arranque en curso: cancelar ese (toggle), no apilar otro.
-    // (El atajo usa gracia en `trigger`; este camino es el comando IPC.)
+    // Otro arranque en curso: no cancelar (el freeze sigue). Carrera rara
+    // entre atajo y botón; `trigger` ya filtró el caso habitual.
     if STARTING
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
         .is_err()
     {
-        end_session(app);
         return Ok(());
     }
-    START_TICK_MS.store(now_ms(), Ordering::SeqCst);
     // Arranca sin ack: el de la sesión anterior no vale para esta.
     REVEALED.store(false, Ordering::SeqCst);
 
@@ -385,7 +354,6 @@ fn start_freeze(app: &AppHandle, token: u64) -> Result<(), String> {
             frame_path,
         });
         STARTING.store(false, Ordering::SeqCst);
-        START_TICK_MS.store(0, Ordering::SeqCst);
     }
 
     if abort_requested(token) {

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   enqueueActivate,
   isCursorAnchored,
+  isScreenCentered,
   pillToCursorMovePx,
   shouldCommitShow,
   shouldReturnHomeAfterClose,
@@ -55,6 +56,10 @@ describe("isCursorAnchored / pillToCursorMovePx", () => {
     expect(isCursorAnchored("snippets")).toBe(true);
     expect(isCursorAnchored("launcher")).toBe(false);
     expect(isCursorAnchored("agents")).toBe(false);
+    expect(isScreenCentered("launcher")).toBe(true);
+    expect(isScreenCentered("agents")).toBe(true);
+    expect(isScreenCentered("clipboard")).toBe(false);
+    expect(isScreenCentered("snippets")).toBe(false);
   });
 
   it("mide el vuelo de la pill al cursor, o 0 si no hay puntero", () => {

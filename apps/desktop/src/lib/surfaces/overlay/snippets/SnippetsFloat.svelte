@@ -49,6 +49,7 @@
     waitFrames,
   } from "$surfaces/overlay/floatReveal";
   import { surfaces } from "$surfaces/overlay/surfaces.svelte";
+  import { notifyToolResting, toolBirth } from "$surfaces/overlay/toolBirth";
   import {
     armOpenDismissGrace,
     isOpenDismissGrace,
@@ -104,10 +105,15 @@
     revealEpoch += 1;
   }
 
+  function pillForOpen() {
+    return toolBirth() ?? surfaces.live["pill-skin"] ?? surfaces.live["pill"];
+  }
+
   function applyRestingPlace(a: BubbleOpen) {
-    const pill = surfaces.live["pill-skin"] ?? surfaces.live["pill"];
+    const pill = pillForOpen();
     if (!pill) {
       bubble.place(a);
+      notifyToolResting();
       return;
     }
     bubble.place({
@@ -118,10 +124,10 @@
         { corner: CORNER, work: workAreas },
       ),
     });
+    notifyToolResting();
   }
 
-  function placeFusedToPill(a: BubbleOpen) {
-    const pill = surfaces.live["pill-skin"] ?? surfaces.live["pill"];
+  function placeFusedToPill(a: BubbleOpen, pill = pillForOpen()) {
     if (!pill) {
       bubble.place(a);
       return;
@@ -240,7 +246,12 @@
     await tick();
     await waitFrames(2);
     if (epoch !== revealEpoch) return;
-    if (full) placeFusedToPill(full);
+    if (full) {
+      placeFusedToPill(
+        full,
+        surfaces.live["pill-skin"] ?? surfaces.live["pill"],
+      );
+    }
     await afterTransition(el, "width", openDur);
   }
 

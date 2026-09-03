@@ -38,12 +38,19 @@ export type QuotaAnchor = { x: number; y: number; w: number; h: number };
 class QuotaHoverState {
   open = $state(false);
   anchor = $state<QuotaAnchor | null>(null);
+  /**
+   * Gotas de la rueda, en coords del overlay. El hilo cuelga de estas y no
+   * de `pill-skin`: con la rueda abierta esa piel sigue siendo el stack
+   * arriba-izquierda, y el cuello se pintaba como un palo al lado de la flor.
+   */
+  parts = $state<QuotaAnchor[] | null>(null);
   /** Lo que dice el panel cuando no hay ningún cupo que mostrar. */
   fallback = $state("");
 
-  show(anchor: QuotaAnchor, fallback: string) {
+  show(anchor: QuotaAnchor, fallback: string, parts?: QuotaAnchor[] | null) {
     cancelHide();
     this.anchor = anchor;
+    this.parts = parts ?? null;
     this.fallback = fallback;
     this.open = true;
   }
@@ -51,6 +58,7 @@ class QuotaHoverState {
   hide() {
     this.open = false;
     this.anchor = null;
+    this.parts = null;
   }
 }
 

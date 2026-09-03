@@ -115,10 +115,7 @@ impl Summarizer for ClaudeSummarizer {
                 }
             }
             if event.event_type == "error" {
-                let msg = event
-                    .error
-                    .and_then(|e| e.message)
-                    .unwrap_or_else(|| {
+                let msg = event.error.and_then(|e| e.message).unwrap_or_else(|| {
                     if self.english {
                         "Claude SSE error".into()
                     } else {
@@ -131,13 +128,11 @@ impl Summarizer for ClaudeSummarizer {
 
         let raw = raw.trim().to_string();
         if raw.is_empty() {
-            return Err(SummarizeError::BadResponse(
-                if self.english {
-                    "the model returned no text".into()
-                } else {
-                    "el modelo no devolvió texto".into()
-                },
-            ));
+            return Err(SummarizeError::BadResponse(if self.english {
+                "the model returned no text".into()
+            } else {
+                "el modelo no devolvió texto".into()
+            }));
         }
 
         Ok(build_summary(
