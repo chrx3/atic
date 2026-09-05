@@ -31,6 +31,7 @@
     // Dependencias explícitas: el contenido cambia el tamaño medido.
     void clipPreviewState.text;
     void clipPreviewState.src;
+    void clipPreviewState.color;
     void clipPreviewState.kind;
     if (!clipPreviewState.open || !anchor || !el) {
       placed = false;
@@ -68,6 +69,11 @@
       <img class="cp-img" src={clipPreviewState.src} alt="" draggable="false" />
       {#if clipPreviewState.label}
         <p class="cp-label">{clipPreviewState.label}</p>
+      {/if}
+    {:else if clipPreviewState.kind === "color"}
+      <span class="cp-color" style:background={clipPreviewState.color}></span>
+      {#if clipPreviewState.label}
+        <p class="cp-value" data-numeric>{clipPreviewState.label}</p>
       {/if}
     {:else}
       <p class="cp-text">{clipPreviewState.text}</p>
@@ -147,6 +153,32 @@
       )
       50% / 12px 12px;
     object-fit: contain;
+  }
+
+  /*
+   * El color, en grande.
+   *
+   * Es el equivalente del preview de imagen: la fila ya dice el valor, y lo
+   * que no cabe en 28 px es el color mismo. El aro va en dos tonos porque un
+   * blanco y un negro puros son de lo más copiado y cada uno desaparece contra
+   * uno de los dos temas.
+   */
+  .cp-color {
+    display: block;
+    width: 13rem;
+    height: 5rem;
+    border-radius: 0.35rem;
+    box-shadow:
+      inset 0 0 0 1px rgb(255 255 255 / 22%),
+      inset 0 0 0 1px rgb(0 0 0 / 18%);
+  }
+
+  .cp-value {
+    margin: 0;
+    font-family: var(--rb-mono, monospace);
+    font-size: 0.72rem;
+    font-weight: 600;
+    line-height: 1.2;
   }
 
   .cp-label,

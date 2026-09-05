@@ -29,13 +29,19 @@ export type ClipPreviewAnchor = { x: number; y: number; w: number; h: number };
 export type ClipPreviewInput =
   | { kind: "text"; text: string; hint?: string }
   | { kind: "image"; src: string; label?: string; hint?: string }
+  /**
+   * Un color copiado. `color` es el hex ya normalizado que se pinta; `label`,
+   * el texto tal cual lo guardó el usuario, que puede venir en rgb o en hsl.
+   */
+  | { kind: "color"; color: string; label?: string; hint?: string }
   | null
   | undefined;
 
 class ClipPreviewState {
-  kind = $state<"text" | "image">("text");
+  kind = $state<"text" | "image" | "color">("text");
   text = $state("");
   src = $state("");
+  color = $state("");
   label = $state("");
   hint = $state("");
   anchor = $state<ClipPreviewAnchor | null>(null);
@@ -45,7 +51,8 @@ class ClipPreviewState {
     this.kind = input.kind;
     this.text = input.kind === "text" ? input.text : "";
     this.src = input.kind === "image" ? input.src : "";
-    this.label = input.kind === "image" ? (input.label ?? "") : "";
+    this.color = input.kind === "color" ? input.color : "";
+    this.label = input.kind === "text" ? "" : (input.label ?? "");
     this.hint = input.hint ?? "";
     this.anchor = anchor;
     this.open = true;
