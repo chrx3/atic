@@ -18,20 +18,45 @@
 
   export type MarkState = "idle" | "recording" | "dictating";
 
+  /**
+   * De dónde sale el puntero al que mira.
+   *
+   * `desktop` le pregunta a Rust por el cursor real, que es lo que hace falta
+   * en la overlay: ahí la marca es chica y el mouse casi siempre está afuera.
+   *
+   * `window` se queda solo con `pointermove`. Hace falta porque
+   * `overlay_cursor` es un comando GLOBAL y no falla llamado desde otra
+   * ventana: contesta en coordenadas CSS de la overlay, que nace en el canto
+   * del escritorio virtual. Medidas contra el `getBoundingClientRect()` de
+   * otra ventana son otro espacio, así que la mirada saldría corrida por la
+   * posición de esa ventana en la pantalla. El `catch` de `pollCursor` no
+   * alcanza para eso: nunca se dispara.
+   */
+  export type MarkTrack = "desktop" | "window";
+
   let {
     size = 24,
     strokeWidth = 1.25,
     alive = false,
     state: markState = "idle",
+    track = "desktop",
+    /** La mirada llega un poco después que el cuerpo (vuelo / summon). */
+    lag = false,
   }: {
     size?: number;
     strokeWidth?: number;
     alive?: boolean;
     state?: MarkState;
+    track?: MarkTrack;
+    lag?: boolean;
   } = $props();
 
   /** Con estado, la cara la ocupa el glifo: no hay ojos que animar. */
   const facing = $derived(alive && markState === "idle");
+  const lagRef = { current: false };
+  $effect(() => {
+    lagRef.current = lag;
+  });
 
   let svgEl = $state<SVGSVGElement | null>(null);
 
@@ -191,7 +216,7 @@
           }, 160);
         }
         scheduleBlink();
-      }, 1800 + Math.random() * 3400);
+      }, 2600 + Math.random() * 6400);
     }
 
     function onMove(e: PointerEvent | MouseEvent) {
@@ -232,11 +257,13 @@
         if (lidHold <= 0) want.lid = 1;
       }
 
-      now.rot += (want.rot - now.rot) * 0.08;
-      now.leanX += (want.leanX - now.leanX) * 0.08;
-      now.leanY += (want.leanY - now.leanY) * 0.08;
-      now.lookX += (want.lookX - now.lookX) * 0.16;
-      now.lookY += (want.lookY - now.lookY) * 0.16;
+      const body = lagRef.current ? 0.045 : 0.08;
+      const gaze = lagRef.current ? 0.055 : 0.16;
+      now.rot += (want.rot - now.rot) * body;
+      now.leanX += (want.leanX - now.leanX) * body;
+      now.leanY += (want.leanY - now.leanY) * body;
+      now.lookX += (want.lookX - now.lookX) * gaze;
+      now.lookY += (want.lookY - now.lookY) * gaze;
       now.spread += (want.spread - now.spread) * 0.14;
       now.rx += (want.rx - now.rx) * 0.14;
       now.ry += (want.ry - now.ry) * 0.14;
@@ -262,7 +289,7 @@
       eyeR.setAttribute("transform", `translate(${pair.R.x} ${pair.R.y})`);
       head.style.transform = `translate(${now.leanX}px, ${now.leanY}px) rotate(${now.rot + sway}deg)`;
 
-      pollCursor();
+      if (track === "desktop") pollCursor();
       raf = requestAnimationFrame(tick);
     }
 
@@ -363,13 +390,14 @@
 
   .am-state {
     stroke: none;
+    animation: am-state-in var(--duration-quick, 75ms)
+      var(--ease-smooth-out, cubic-bezier(0.22, 1, 0.36, 1)) both;
   }
 
   .am-rec {
     fill: var(--rb-record, #e5483f);
     transform-box: view-box;
     transform-origin: 12px 12px;
-    animation: am-rec-pulse 1.6s ease-in-out infinite;
   }
 
   .am-dict rect {
@@ -387,13 +415,16 @@
     animation-delay: 0.3s;
   }
 
-  @keyframes am-rec-pulse {
-    0%,
-    100% {
-      opacity: 1;
+  @keyframes am-state-in {
+    from {
+      opacity: 0;
+      transform: scale(0.25);
+      filter: blur(4px);
     }
-    50% {
-      opacity: 0.45;
+    to {
+      opacity: 1;
+      transform: scale(1);
+      filter: blur(0);
     }
   }
 
@@ -408,7 +439,7 @@
   }
 
   @media (prefers-reduced-motion: reduce) {
-    .am-rec,
+    .am-state,
     .am-dict rect {
       animation: none;
     }

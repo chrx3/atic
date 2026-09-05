@@ -73,6 +73,8 @@
     isDiscOnly,
     islandLiveSlots,
     morphsInPlace,
+    bloomPivot,
+    nextBarWidth,
     pivotFor,
     stepWheel as nextWheelTool,
     undockForSummon,
@@ -107,7 +109,7 @@
     type DockEdge,
   } from "$surfaces/overlay/edgeDock";
   import AgentAuthCard from "$surfaces/overlay/pill/AgentAuthCard.svelte";
-  import { afterTransition, MOTION, ms, opacityFade, wait } from "$lib/motion";
+  import { afterTransition, MOTION, ms, opacityFade } from "$lib/motion";
   import { playWheelTick } from "$core/uiSound";
   import type { PermissionDecision } from "$core/types";
   // Lo que queda son los comandos DE LA PILL: su geometría, sus atajos y las
@@ -581,6 +583,9 @@
   const trackTail = (el: HTMLElement) => tracker.track("tail", el);
   /** La isla acoplada: llena la caja, así que se anima con ella. */
   const trackIsland = (el: HTMLElement) => tracker.track("island", el);
+  const trackIslandCue = (el: HTMLElement) => tracker.track("island-cue", el);
+  const trackIslandUpdateCue = (el: HTMLElement) =>
+    tracker.track("island-update-cue", el);
   /**
    * Cada herramienta se mide aparte, aunque hoy la silueta no las use.
    *
@@ -709,15 +714,16 @@
     void recording;
     void wheelShown;
     void tailIn;
+    void flying;
     const blooming = wheelChrome;
-    if (surface !== "edge" && !beadsAlive && !blooming) return;
+    if (surface !== "edge" && !beadsAlive && !blooming && !flying) return;
     let raf = 0;
     const bloomMs =
       ms(MOTION.morphOpen) +
       (WHEEL_TOOLS.length + 1) * ms(MOTION.morphStagger);
     const until =
       performance.now() +
-      (blooming ? bloomMs : ms(MOTION.islandOpen)) +
+      (blooming ? bloomMs : flying ? ms(MOTION.flight) : ms(MOTION.islandOpen)) +
       ISLAND_SETTLE_MS;
     const pump = () => {
       tracker.wake();
@@ -822,6 +828,10 @@
     if (surface === "edge") {
       const shapes = [];
       if (r.island) shapes.push(pillShape(at(r.island)));
+      // Avisos: misma tinta, otro bulto. El smin los funde con la pestaña
+      // en vez de pintar una cápsula encima.
+      if (r["island-cue"]) shapes.push(pillShape(at(r["island-cue"])));
+      if (r["island-update-cue"]) shapes.push(pillShape(at(r["island-update-cue"])));
       shapes.push(...wallFor(r.island));
       return shapes;
     }
@@ -851,6 +861,10 @@
    */
   $effect(() => {
     liquid.publish("pill", skinShapes);
+  });
+
+  $effect(() => {
+    liquid.breathe = recording || dictation === "listening";
   });
 
   /**
@@ -888,61 +902,88 @@
   }
   /** El vuelo lo hace una transición CSS; esto la enciende solo cuando toca. */
   let flying = $state(false);
+  /**
+   * Inverso FLIP del vuelo: `left`/`top` ya están en el destino y esto
+   * mantiene el dibujo en el origen hasta que `transform` llega a 0.
+   * Animar `left`/`top` forzaba layout en cada cuadro; `translate3d` va en GPU.
+   */
+  let flightLift = $state<{ x: number; y: number } | null>(null);
   /** Generación del vuelo: Esc/reabrir invalidan un `flyTo` en curso. */
   let flightEpoch = 0;
   /** Cambio de anillo (Más / atrás): no comparte epoch con el cierre. */
   let wheelPageEpoch = 0;
+  /** Desde qué canto brotó la rueda. Null = morph al centro (summon). */
+  let wheelBloomEdge = $state<DockEdge | null>(null);
+  /** Compresión de 2–3 px contra el muro al acoplarse. */
+  let seating = $state(false);
+  let seatingTimer = 0;
 
   function cancelFlight() {
     flightEpoch += 1;
     flying = false;
+    flightLift = null;
+  }
+
+  function visualOrigin(): { x: number; y: number } {
+    const r = rootEl?.getBoundingClientRect();
+    return r ? { x: r.left, y: r.top } : stage.at();
   }
 
   /**
    * Mueve la pill con transición CSS hasta `p`.
    *
-   * Hay que pintar `.is-flying` *antes* de cambiar left/top: si clase y
-   * destino llegan en el mismo frame, el navegador salta sin animar.
-   * Devuelve la duración usada, o `-1` si el vuelo fue cancelado.
+   * FLIP: primero se escribe el destino en `left`/`top` (sin transición) y un
+   * `translate3d` deja el dibujo donde estaba; después se anima ese translate
+   * a 0. Hay que pintar el inverso *antes* de activar `.is-flying`: si clase y
+   * destino llegan juntos, el navegador salta sin animar.
+   *
+   * Un vuelo que pierde la epoch NO apaga `flying`: el que lo invalidó es el
+   * nuevo y necesita la clase. Devuelve la duración usada, o `-1` si se canceló.
    */
   async function flyTo(
     p: { x: number; y: number },
     opts: { skipIfNear?: number } = {},
   ): Promise<number> {
     const epoch = ++flightEpoch;
-    const from = stage.at();
-    const dist = Math.hypot(p.x - from.x, p.y - from.y);
+    const from = visualOrigin();
     const skip = opts.skipIfNear ?? 0;
     const dur = ms(MOTION.flight);
 
+    stage.moveTo(p);
+    const dest = stage.at();
+    const dx = from.x - dest.x;
+    const dy = from.y - dest.y;
+    const dist = Math.hypot(dx, dy);
+
     if (dist < skip || dur <= 0) {
-      stage.moveTo(p);
-      at = stage.at();
+      flying = false;
+      flightLift = null;
+      at = dest;
       surfaces.schedule();
       return 0;
     }
 
-    flying = true;
+    // Sin transición: clavar el inverso para que el salto de left/top no se vea.
+    flying = false;
+    flightLift = { x: dx, y: dy };
+    at = dest;
     await tick();
-    if (epoch !== flightEpoch) {
-      flying = false;
-      return -1;
-    }
-    // Fuerza layout con la transición ya activa y la posición vieja.
+    if (epoch !== flightEpoch) return -1;
     void rootEl?.offsetWidth;
 
-    stage.moveTo(p);
-    at = stage.at();
-    await wait(dur);
+    flying = true;
+    await tick();
+    if (epoch !== flightEpoch) return -1;
+    void rootEl?.offsetWidth;
 
-    if (epoch !== flightEpoch) {
-      flying = false;
-      return -1;
-    }
+    flightLift = { x: 0, y: 0 };
+    await afterTransition(rootEl, "transform", dur);
 
+    if (epoch !== flightEpoch) return -1;
     flying = false;
-    // Republicar al aterrizar: durante el vuelo getBoundingClientRect()
-    // reporta la posición animada; sin esto Rust arma el sitio de origen.
+    flightLift = null;
+    // Republicar al aterrizar: el hit-rect usa left/top de layout, no el
+    // translate visual. Sin esto Rust arma el sitio de origen.
     surfaces.schedule();
     return dur;
   }
@@ -1434,7 +1475,11 @@
       // max(offset, scroll): si alguna regla vuelve a topar la barra, el ancho
       // real del contenido sigue estando en scrollWidth. Sin esto, un clamp
       // aguas arriba deja la medición mintiendo y la ventana no crece nunca.
-      barW = Math.max(el.offsetWidth, el.scrollWidth);
+      barW = nextBarWidth(
+        barW,
+        Math.max(el.offsetWidth, el.scrollWidth),
+        recording || dictating,
+      );
     };
     const observer = new ResizeObserver(measure);
     observer.observe(el);
@@ -1476,6 +1521,7 @@
     void agentsDock.minimized;
     void agentReadyLabel;
     void consoleSide;
+    void elapsed;
     void surfaces.dragging;
     if (!shouldMeasureBar(surface, surfaces.dragging)) return;
     // Un frame después: en este tick el DOM todavía tiene el contenido viejo.
@@ -1484,7 +1530,11 @@
       // max(offset, scroll): si alguna regla vuelve a topar la barra, el ancho
       // real del contenido sigue estando en scrollWidth. Sin esto, un clamp
       // aguas arriba deja la medición mintiendo y la ventana no crece nunca.
-      barW = Math.max(el.offsetWidth, el.scrollWidth);
+      barW = nextBarWidth(
+        barW,
+        Math.max(el.offsetWidth, el.scrollWidth),
+        recording || dictating,
+      );
     });
     return () => cancelAnimationFrame(frame);
   });
@@ -1538,6 +1588,14 @@
     if (found.edge) {
       dock = { edge: found.edge, expanded: false };
       surface = "edge";
+      if (opts?.drop) {
+        seating = true;
+        window.clearTimeout(seatingTimer);
+        seatingTimer = window.setTimeout(() => {
+          seating = false;
+          seatingTimer = 0;
+        }, 200);
+      }
     } else {
       dock = null;
       if (surface === "edge") surface = "none";
@@ -1770,6 +1828,7 @@
     wheelTool = null;
     opening = true;
     const openEpoch = collapseEpoch;
+    const fromEdge = surface === "edge" ? (dock?.edge ?? null) : null;
     try {
       // 1) Guardar el hogar ANTES de tocar la geometría.
       home = { ...at };
@@ -1792,6 +1851,7 @@
       if (flew < 0 || openEpoch !== collapseEpoch) {
         surface = "none";
         wheelShown = false;
+        wheelBloomEdge = null;
         await flyTo(home, { skipIfNear: 2 });
         return;
       }
@@ -1802,10 +1862,13 @@
       collapsingFrom = null;
       surface = "wheel";
       wheelShown = false;
-      // 4) Crecer hit-box al instante (pivot center). El morph visual es el anillo.
+      // Clic en la isla (sin vuelo): la rueda brota del canto. Summon al
+      // cursor: morph al centro, como siempre.
+      wheelBloomEdge = fromEdge && flew === 0 ? fromEdge : null;
+      // 4) Crecer hit-box al instante. El morph visual es el anillo.
       const side = PILL.wheel - PILL.pad * 2;
       const next = windowFor({ w: side, h: side });
-      await stage.resize(next, pivotFor({ surface: "wheel", collapsingFrom: null }));
+      await stage.resize(next, bloomPivot(wheelBloomEdge));
       at = stage.at();
       box = next;
       await tick();
@@ -1818,6 +1881,7 @@
       console.warn("pill wheel open", err);
       surface = "none";
       wheelShown = false;
+      wheelBloomEdge = null;
       opening = false;
     } finally {
       // Abort por Esc: soltar locks aunque el epoch haya cambiado.
@@ -1831,13 +1895,19 @@
    */
   async function wheelCollapse() {
     const next = target;
-    await stage.resize(next, pivotFor({ surface: "none", collapsingFrom: "wheel" }));
+    await stage.resize(
+      next,
+      wheelBloomEdge
+        ? bloomPivot(wheelBloomEdge)
+        : pivotFor({ surface: "none", collapsingFrom: "wheel" }),
+    );
     at = stage.at();
     // El escenario ya encogió: el DOM tiene que seguirlo YA, antes de soltar
     // `collapsingFrom`. Si `box` se queda en tamaño rueda, el handoff al stack
     // pinta la marca compacta arriba-izquierda del cuadrado fantasma.
     box = next;
     collapsingFrom = null;
+    wheelBloomEdge = null;
     surfaces.schedule();
     trace(`wheelCollapse -> ${next.w}x${next.h} @ ${at.x},${at.y}`);
   }
@@ -2290,7 +2360,7 @@
           w: box.w,
           h: box.h,
         };
-      let birth = pill;
+      let birth: { x: number; y: number; w: number; h: number } = pill;
       if (isCursorAnchored(id)) {
         const cursor = await cursorPoint();
         if (cursor) birth = birthAtCursor(cursor, { w: pill.w, h: pill.h });
@@ -2900,6 +2970,7 @@
       window.clearTimeout(suppressAgentChipClickTimer);
       window.clearTimeout(suppressWheelCoreClickTimer);
       window.clearTimeout(resettleTimer);
+      window.clearTimeout(seatingTimer);
       window.removeEventListener("keydown", onKey, true);
       window.removeEventListener("resize", queueResettle);
       window.removeEventListener(OVERLAY_GEOMETRY, queueResettle);
@@ -2931,8 +3002,10 @@
   class:is-flying={flying}
   class:is-docked={surface === "edge"}
   class:is-dragging={surfaces.dragging}
+  class:is-seating={seating}
   data-edge={surface === "edge" ? dock?.edge : undefined}
-  style="left: {at.x}px; top: {at.y}px; width: {box.w}px; height: {box.h}px; --pill-bar: {PILL.bar}px; --island-tool: {PILL.islandTool}px; --island-gap: {PILL.islandGap}px; --island-cue-btn: {PILL.islandCueBtn}px; --island-cue-mark: {PILL.islandCueMark}px; --rec-drop: {PILL.recDrop}px; --rec-drop-gap: {PILL.recDropGap}px"
+  data-bloom={wheelBloomEdge ?? undefined}
+  style="left: {at.x}px; top: {at.y}px; width: {box.w}px; height: {box.h}px; --pill-bar: {PILL.bar}px; --island-tool: {PILL.islandTool}px; --island-gap: {PILL.islandGap}px; --island-cue-btn: {PILL.islandCueBtn}px; --island-cue-mark: {PILL.islandCueMark}px; --rec-drop: {PILL.recDrop}px; --rec-drop-gap: {PILL.recDropGap}px; {flightLift ? `transform: translate3d(${flightLift.x}px, ${flightLift.y}px, 0)` : ''}"
   bind:this={rootEl}
   onpointerdown={beginDrag}
 >
@@ -2971,6 +3044,7 @@
               strokeWidth={1.6}
               alive={!islandOpen}
               state={markState}
+              lag={flying}
             />
           </button>
           {#if edgeCue && !islandOpen}
@@ -2984,6 +3058,7 @@
                   class:is-working={chip.tone === "working"}
                   class:is-ready={chip.tone === "ready"}
                   class:is-count={chip.tone === "count"}
+                  {@attach trackIslandCue}
                   onclick={onAgentChipClick}
                   use:tip={agentChipTitle}
                   aria-label={agentChipAria}
@@ -3009,6 +3084,7 @@
                   class="p-update p-island-update"
                   class:is-ready={updateChip.tone === "ready"}
                   class:is-busy={updateChip.tone === "busy"}
+                  {@attach trackIslandUpdateCue}
                   disabled={appUpdate.busy}
                   onclick={onUpdateChipClick}
                   use:tip={updateChip.label}
@@ -3049,6 +3125,7 @@
               strokeWidth={1.6}
               alive={islandOpen}
               state={markState}
+              lag={flying}
             />
           </button>
           {#each stripNodes as node, i (node.id)}
@@ -3206,7 +3283,7 @@
                   use:tip={markAction.label}
                   aria-label={markAction.label}
                 >
-                  <AticMark size={28} strokeWidth={1.5} alive state={markState} />
+                  <AticMark size={28} strokeWidth={1.5} alive state={markState} lag={flying} />
                 </button>
               {/if}
             <span class="p-timer">{fmt(elapsed)}</span>
@@ -3250,7 +3327,7 @@
                   use:tip={markAction.label}
                   aria-label={markAction.label}
                 >
-                  <AticMark size={28} strokeWidth={1.5} alive state={markState} />
+                  <AticMark size={28} strokeWidth={1.5} alive state={markState} lag={flying} />
                 </button>
               {/if}
             <button
@@ -3279,7 +3356,7 @@
                   use:tip={markAction.label}
                   aria-label={markAction.label}
                 >
-                  <AticMark size={28} strokeWidth={1.5} alive state={markState} />
+                  <AticMark size={28} strokeWidth={1.5} alive state={markState} lag={flying} />
                 </button>
               {/if}
             <button
@@ -3306,7 +3383,7 @@
             <div class="p-bar-slot" transition:opacityFade>
             {#if !wheelChrome}
               <span class="p-mark is-disc"
-                ><AticMark size={28} strokeWidth={1.5} alive state={markState} /></span
+                ><AticMark size={28} strokeWidth={1.5} alive state={markState} lag={flying} /></span
               >
             {/if}
             <span class="p-queue-count">{paste.count}</span>
@@ -3333,7 +3410,7 @@
             <div class="p-bar-slot" transition:opacityFade>
             {#if !wheelChrome}
               <span class="p-mark is-disc" use:tip={discHint}>
-                <AticMark size={32} strokeWidth={1.5} alive state={markState} />
+                <AticMark size={32} strokeWidth={1.5} alive state={markState} lag={flying} />
               </span>
             {/if}
             <!-- Aviso del agente: aparece solo si hay algo que decir. Es un chip
@@ -3447,15 +3524,6 @@
     cursor: grab;
   }
 
-  /* El vuelo al hogar y al cursor. Solo mientras dura: si la transición
-     quedara siempre puesta, cada reencuadre de la barra compacta —el timer
-     tictaqueando, el badge de la cola— se arrastraría con cada tick. */
-  .p-root.is-flying {
-    transition:
-      left var(--flight-dur) var(--ease-smooth-out),
-      top var(--flight-dur) var(--ease-smooth-out);
-  }
-
   .p-root:active {
     cursor: grabbing;
   }
@@ -3488,11 +3556,63 @@
       top var(--island-open-dur) var(--ease-liquid);
   }
 
+  /* El vuelo al hogar y al cursor. Solo mientras dura: si la transición
+     quedara siempre puesta, cada reencuadre de la barra compacta —el timer
+     tictaqueando, el badge de la cola— se arrastraría con cada tick.
+     Va DESPUÉS de `.is-docked` para ganar el `transition` cuando coinciden:
+     el vuelo mueve con transform (GPU), no con left/top. */
+  .p-root.is-flying {
+    transition: transform var(--flight-dur) var(--ease-smooth-out);
+    will-change: transform;
+  }
+
   /* Arrastrando no: la posición tiene que seguir al dedo sin inercia.
      Antes solo se apagaba en `.is-docked`; grabando (barra flotante) el
      timer reencuadraba y la transición peleaba con el gesto. */
   .p-root.is-dragging {
     transition: none;
+    will-change: auto;
+  }
+
+  /* Gota contra el cristal: 2–3 px de aplastón, sin rebote. */
+  .p-root.is-seating:not(.is-flying)[data-edge="top"] {
+    transform-origin: center top;
+    animation: p-seat-y var(--duration-fast) var(--ease-smooth-out);
+  }
+
+  .p-root.is-seating:not(.is-flying)[data-edge="bottom"] {
+    transform-origin: center bottom;
+    animation: p-seat-y var(--duration-fast) var(--ease-smooth-out);
+  }
+
+  .p-root.is-seating:not(.is-flying)[data-edge="left"] {
+    transform-origin: left center;
+    animation: p-seat-x var(--duration-fast) var(--ease-smooth-out);
+  }
+
+  .p-root.is-seating:not(.is-flying)[data-edge="right"] {
+    transform-origin: right center;
+    animation: p-seat-x var(--duration-fast) var(--ease-smooth-out);
+  }
+
+  @keyframes p-seat-y {
+    0%,
+    100% {
+      transform: scaleY(1);
+    }
+    38% {
+      transform: scaleY(0.86);
+    }
+  }
+
+  @keyframes p-seat-x {
+    0%,
+    100% {
+      transform: scaleX(1);
+    }
+    38% {
+      transform: scaleX(0.86);
+    }
   }
 
   /* Acoplada, la barra normal no se muestra: la isla la reemplaza entera.
@@ -3607,7 +3727,7 @@
   }
 
   .p-island-mark:active:not(:disabled) {
-    transform: scale(0.94);
+    transform: scale(0.96);
   }
 
   .p-island-mark:focus-visible {
@@ -3711,6 +3831,16 @@
     transform: none;
   }
 
+  .p-island-tools.is-open .p-island-tool:hover:not(:disabled),
+  .p-island-tools.is-open .p-island-tool:focus-visible {
+    color: var(--text);
+    transform: translate(
+        calc(var(--island-from-x, 0px) * -0.55),
+        calc(var(--island-from-y, 0px) * -0.55)
+      )
+      scale(1.14);
+  }
+
   /* El visor es circular; el clic no. Un filete extra cubre el hueco entre
      gotas para que no se cuele al cuerpo de la isla. */
   .p-island-tools.is-open .p-island-tool::before {
@@ -3783,7 +3913,7 @@
   }
 
   .p-mark.is-lead:active:not(:disabled) {
-    transform: scale(0.94);
+    transform: scale(0.96);
   }
 
   .p-mark.is-lead:focus-visible {
@@ -3844,7 +3974,7 @@
     padding: 0;
     border: 0;
     border-radius: 999px;
-    background: color-mix(in sRGB, var(--info) 22%, transparent);
+    background: transparent;
     color: var(--info);
     cursor: pointer;
   }
@@ -3855,15 +3985,16 @@
     flex: 0 0 auto;
     width: var(--island-cue-btn);
     height: var(--island-cue-btn);
+    background: transparent;
   }
 
   .p-island-update.is-ready {
-    background: color-mix(in sRGB, var(--ok) 22%, transparent);
+    background: transparent;
     color: var(--ok);
   }
 
   .p-island-update.is-busy {
-    background: color-mix(in sRGB, var(--text) 10%, transparent);
+    background: transparent;
     color: var(--muted);
   }
 
@@ -3914,7 +4045,7 @@
   }
 
   .p-island-cue.is-working .p-island-cue-logo {
-    animation: p-agent-pulse 2s linear infinite;
+    animation: none;
   }
 
   .p-island-cue.is-dock:not(.is-waiting):not(.is-working):not(.is-ready):not(
@@ -3948,7 +4079,6 @@
 
   .p-island-agent-badge.is-working {
     color: var(--muted);
-    animation: p-agent-pulse 2s linear infinite;
   }
 
   .p-island-agent-badge.is-ready {
@@ -3983,12 +4113,6 @@
 
   .p-island-agent-badge.is-count {
     color: var(--accent);
-  }
-
-  .p-island-tool:hover,
-  .p-island-tool:focus-visible {
-    background: color-mix(in sRGB, var(--text) 14%, transparent);
-    color: var(--text);
   }
 
   /* De dónde nace cada uno: siempre desde el lado por el que está acoplada. */
@@ -4066,6 +4190,33 @@
     opacity: 1;
     pointer-events: auto;
     transition: opacity var(--morph-fade-dur) var(--morph-ease);
+  }
+
+  /* Brota del canto: el núcleo queda donde estaba la marca de la isla. */
+  .p-root[data-bloom="top"] .p-wheel {
+    top: 20px;
+    left: 50%;
+    margin: -116px 0 0 -116px;
+  }
+
+  .p-root[data-bloom="bottom"] .p-wheel {
+    top: auto;
+    bottom: 20px;
+    left: 50%;
+    margin: 0 0 -116px -116px;
+  }
+
+  .p-root[data-bloom="left"] .p-wheel {
+    top: 50%;
+    left: 20px;
+    margin: -116px 0 0 -116px;
+  }
+
+  .p-root[data-bloom="right"] .p-wheel {
+    top: 50%;
+    left: auto;
+    right: 20px;
+    margin: -116px -116px 0 0;
   }
 
   /* El disco de fondo se fue: ahora la superficie la ponen el núcleo y las
@@ -4549,11 +4700,10 @@
     color: var(--rec);
   }
 
-  /* Trabajando: presente, pulso linear continuo (alive, no noisy). */
+  /* Trabajando: la gota respira; el chip no parpadea. */
   .p-agent.is-working {
-    background: color-mix(in sRGB, var(--text) 7%, transparent);
+    background: transparent;
     color: var(--muted);
-    animation: p-agent-pulse 2s linear infinite;
   }
 
   /* Listo / respuesta sin leer: affordance clara, no solo un número. */
@@ -4658,11 +4808,7 @@
     line-height: 1;
   }
 
-  /* Pastilla viva mientras el agente trabaja: brillo del fill, no anillo.
-     Un inset se leía como borde y cortaba el cuello fundido con el float. */
-  .p-liquid.is-working {
-    animation: p-liquid-alive 2.2s linear infinite;
-  }
+  /* La respiración vive en el Skin del overlay, no en este fill. */
 
   /*
    * Auth: mismo `.float-emerge` que clipboard/agentes (nace/vuelve a la pill).
@@ -4733,6 +4879,7 @@
     .p-auth-host,
     .p-island-tool,
     .p-island-along,
+    .p-root.is-seating,
     .p-island-mark,
     .p-island-cue,
     .p-island-update,

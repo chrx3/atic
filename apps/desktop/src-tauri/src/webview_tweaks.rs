@@ -94,7 +94,7 @@ pub fn disable_browser_accelerator_keys(window: &WebviewWindow) {
                     let alt_down = GetKeyState(i32::from(VK_MENU)) < 0;
                     // WebView2 se come Ctrl+D/N/W aunque el acelerador del
                     // browser esté apagado. Reinyectarlos como layout de la
-                    // consola: partir, nueva pestaña, cerrar. Ctrl+Shift+D
+                    // consola: partir, menú de nueva consola/agente, cerrar. Ctrl+Shift+D
                     // parte hacia abajo y no choca con el split a la derecha.
                     let action = if label_for_key == "overlay"
                         && event_kind == COREWEBVIEW2_KEY_EVENT_KIND_KEY_DOWN

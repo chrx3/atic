@@ -22,6 +22,7 @@
   import Skin from "$liquid/Skin.svelte";
   import Button from "$ui/Button.svelte";
   import Icon from "$ui/Icon.svelte";
+  import RailDust from "./RailDust.svelte";
 
   let {
     activeTool,
@@ -173,7 +174,17 @@
     const columnLeft = hotX + PILL_W / 2 + CARD_FLOAT * layoutScale;
     // Zona hit sigue el hotX animado (crece/encoge con la rueda).
     const railHitW = hotX + PILL_W / 2 + 16;
-    return { R, step, wheelCx, wheelCy, hotX, columnLeft, railHitW };
+    // Cuánto sube el contenido por paso. Sale de `R`, así que el morph
+    // idle↔hover no lo mueve: al abrirse el arco, `R` crece justo lo que
+    // `sin(step)` encoge.
+    const pitch = R * Math.sin(step);
+    // Centro de las órbitas del polvo de fondo. Va con el ángulo idle a
+    // propósito: al abrirse la rueda `R` casi se duplica, y seguir eso de
+    // cerca aplanaría todas las órbitas de golpe en cada hover.
+    const stepIdle = (t.stepDeg * Math.PI) / 180;
+    const dustCx =
+      t.hotX - Math.max(designPitch / Math.sin(stepIdle), REF_CONTENT_H * 0.42);
+    return { R, step, pitch, dustCx, wheelCx, wheelCy, hotX, columnLeft, railHitW };
   });
 
   type Spot = {
@@ -687,6 +698,14 @@
     aria-hidden="true"
   ></div>
 
+  <!--
+    Decoración de fondo: va antes del Skin para quedar debajo de la piel.
+    Se cuelga de `visual` (no de los eventos) para que el campo viaje con las
+    cards venga el giro de donde venga: rueda, arrastre o teclado. `visual`
+    crece hacia abajo y el contenido sube, de ahí el signo.
+  -->
+  <RailDust travel={() => -visual * geometry.pitch} centerX={geometry.dustCx} />
+
   <Skin {shapes} blend={tune.blend} cell={tune.cell} smooth={2} />
 
   <div class="ink-layer">
@@ -769,7 +788,7 @@
               disabled={pinned.has(spot.tool.id) && pinLocked}
               onclick={(e) => void togglePin(spot.tool.id, e)}
             >
-              <Icon icon={Pin} size={15} />
+              <Icon icon={Pin} size={16} />
             </button>
           {/if}
           <button

@@ -20,6 +20,7 @@ import type {
   AnnotateOpen,
   BubbleOpen,
   CaptureItem,
+  OverlayPatch,
   ConsoleExitPayload,
   ConsoleOutputPayload,
   DictationStatusPayload,
@@ -158,6 +159,13 @@ export interface AticEvents {
    * Catálogo / ToolRail / atajo: el overlay vuela al slot y ejecuta la tool.
    * También lo emite Rust (p.ej. dictado toggle al empezar).
    */
+  "color-patch": OverlayPatch;
+  "color-picker-ended": number;
+  "color-toggle-rose": number;
+  "color-picker-error": { session: number; message: string };
+  /** Rosa abierta: el clic en el escritorio / Enter pide copiar el color de la UI. */
+  "color-request-commit": { session: number; patch: OverlayPatch | null };
+  "color-picked": string;
   "activate-tool-slot": ToolId;
   /**
    * Solo vuelo al slot (sin ejecutar). PTT: vuela en paralelo al start.

@@ -76,6 +76,11 @@ class LiquidGroup {
   islands = $state.raw<Island[]>([]);
   /** Plano, para quien no necesita islas. Misma regla: raw. */
   shapes = $state.raw<Shape[]>([]);
+  /**
+   * La gota respira: grabación o dictado. Lo lee el Skin, no cada superficie,
+   * para que el pulso sea uno solo y no un LED por chip.
+   */
+  breathe = $state(false);
 
   /** Por superficie, no en una sola lista: cada una reemplaza lo suyo. */
   #parts: Record<string, Shape[]> = {};

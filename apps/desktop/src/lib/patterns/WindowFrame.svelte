@@ -71,21 +71,32 @@
       </div>
     {/if}
 
+    <!--
+      Los tres glifos de ventana llevan `size` distinto A PROPÓSITO.
+
+      Lucide dibuja cada icono con la tinta que necesita dentro del mismo
+      cuadro de 24: la raya llega a 14 unidades, el cuadrado a 18 y la equis
+      solo a 12. Con un `size` común —los 12 que había— la equis quedaba un
+      tercio más chica que el cuadrado, que es lo que se veía en la barra.
+      Estos números igualan la TINTA en ~10 px, y `absoluteStrokeWidth` fija
+      el trazo en 1 px para los tres pese al `size` distinto: el mismo grosor
+      que los iconos de acción de al lado (1.75 sobre 14 ≈ 1 px).
+    -->
     {#if onMinimize || onMaximize || onClose}
       <div data-no-drag class="flex shrink-0 items-center">
         {#if onMinimize}
           <IconButton label={minLabel} size="sm" onclick={onMinimize}>
-            <Icon icon={Minus} size={12} />
+            <Icon icon={Minus} size={17} strokeWidth={1} absoluteStrokeWidth />
           </IconButton>
         {/if}
         {#if onMaximize}
           <IconButton label={maxLabel} size="sm" onclick={onMaximize}>
-            <Icon icon={Square} size={12} />
+            <Icon icon={Square} size={13} strokeWidth={1} absoluteStrokeWidth />
           </IconButton>
         {/if}
         {#if onClose}
           <IconButton label={xLabel} size="sm" variant="danger" onclick={onClose}>
-            <Icon icon={X} size={12} />
+            <Icon icon={X} size={20} strokeWidth={1} absoluteStrokeWidth />
           </IconButton>
         {/if}
       </div>

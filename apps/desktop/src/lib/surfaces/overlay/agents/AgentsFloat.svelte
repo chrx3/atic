@@ -59,13 +59,13 @@
   const POSITION_STORAGE_KEY = "atic.agents.consolePosition";
   const SETUP_WIDTH_STORAGE_KEY = "atic.agents.setupWidth";
   const POSITION_MARGIN = 12;
-  const SETUP_DEFAULT_W = 360;
-  const SETUP_WIDE_H = 176;
-  const SETUP_NARROW_H = 196;
+  const SETUP_DEFAULT_W = 400;
+  const SETUP_WIDE_H = 184;
+  const SETUP_NARROW_H = 208;
   const SETUP_NARROW_W = 560;
-  const BROWSER_DEFAULT_W = 520;
-  const BROWSER_DEFAULT_H = 420;
-  const BROWSER_MIN_H = 360;
+  const BROWSER_DEFAULT_W = 680;
+  const BROWSER_DEFAULT_H = 620;
+  const BROWSER_MIN_H = 560;
   const CONSOLE_DEFAULT_W = 680;
   const CONSOLE_DEFAULT_H = 520;
   const CONSOLE_MIN_H = 340;
@@ -95,7 +95,9 @@
 
   function readSetupWidth(): number {
     const saved = Number(localStorage.getItem(SETUP_WIDTH_STORAGE_KEY));
-    return Number.isFinite(saved) ? Math.max(BUBBLE_MIN_W, saved) : SETUP_DEFAULT_W;
+    return Number.isFinite(saved)
+      ? Math.max(SETUP_DEFAULT_W, saved)
+      : SETUP_DEFAULT_W;
   }
 
   function saveSetupWidth() {
@@ -201,8 +203,8 @@
     if (browserOpen) {
       return {
         ...a,
-        w: Math.max(BUBBLE_MIN_W, browserSize.w, a.w),
-        h: Math.max(BROWSER_MIN_H, browserSize.h),
+        w: Math.max(BROWSER_DEFAULT_W, browserSize.w, a.w),
+        h: Math.max(BROWSER_DEFAULT_H, browserSize.h),
       };
     }
     return { ...a, w: setupWidth, h: setupHeight(setupWidth) };
@@ -339,10 +341,10 @@
     } else browserSize = { w: current.w, h: current.h };
 
     const width = open
-      ? Math.max(BUBBLE_MIN_W, browserSize.w, current.w)
+      ? Math.max(BROWSER_DEFAULT_W, browserSize.w, current.w)
       : Math.max(BUBBLE_MIN_W, setupWidth);
     const size = open
-      ? { w: width, h: Math.max(BROWSER_MIN_H, browserSize.h) }
+      ? { w: width, h: Math.max(BROWSER_DEFAULT_H, browserSize.h) }
       : { w: width, h: setupHeight(width) };
     await animateToSize(current, size);
   }
@@ -466,9 +468,32 @@
     await afterTransition(bubEl, "width", growDur);
   }
 
+  /**
+   * Dockear devuelve el tamaño al de antes de agrandar.
+   *
+   * `restingOpen` es el marco al que crece `runOpenReveal`, y agrandar lo deja
+   * en el área de trabajo entera. Como dockear no limpiaba los toggles, la
+   * pestaña de la pill reabría a pantalla completa: el usuario minimizaba una
+   * consola normal y volvía con toda la altura del monitor.
+   *
+   * Se llama ANTES del morph de cierre, que reescribe `bubble.anchor` con la
+   * semilla: después ya no queda de dónde sacar el marco previo.
+   */
+  function collapseMaximizedForDock() {
+    const prev = frameBeforeMax;
+    maximized = false;
+    snapped = false;
+    frameBeforeMax = null;
+    snapPreview.frame = null;
+    if (!prev) return;
+    const base = restingOpen ?? (bubble.anchor ? asOpen(bubble.anchor) : null);
+    if (base) restingOpen = { ...base, ...prev };
+  }
+
   function dockToPill() {
     if (minimized) return;
     const epoch = ++revealEpoch;
+    collapseMaximizedForDock();
     releaseOverlayKeyboard();
     void (async () => {
       await playCloseMorph(epoch);
@@ -553,22 +578,38 @@
     onGrab: ({ cursor, setHome }) => {
       modeResizeEpoch += 1;
       modeResizing = false;
-      if (!snapped || !frameBeforeMax) return;
+      // Agarrar una ventana agrandada la devuelve a su tamaño previo, como
+      // hace Windows. `maximized` va aparte de `snapped` porque el botón de
+      // agrandar deja las dos, pero un rescate futuro podría dejar solo una.
+      if ((!snapped && !maximized) || !frameBeforeMax) return;
       const prev = frameBeforeMax;
       maximized = false;
       snapped = false;
+      // Sin esto el marco previo queda viejo: `onDrop` solo lo resiembra si
+      // está vacío, y el próximo restaurar volvería a un tamaño de hace rato.
+      frameBeforeMax = null;
       const nx = cursor.x - prev.w / 2;
       const ny = cursor.y - 24;
       bubble.setFrame(nx, ny, prev.w, prev.h);
       setHome(nx, ny);
     },
-    onMove: ({ frame, areas }) => {
-      const hit = snapTarget(frame, areas);
+    onMove: ({ cursor, areas }) => {
+      // El lanzador compacto tiene alto fijo (`setupHeight`). Snapearlo a
+      // pantalla completa o a la mitad lo deforma y el layout no lo aguanta.
+      if (!resizable) {
+        snapPreview.frame = null;
+        return;
+      }
+      const hit = snapTarget(cursor, areas);
       snapPreview.frame = hit ? snapFrame(hit.kind, hit.work, POSITION_MARGIN) : null;
     },
-    onDrop: ({ frame, areas }) => {
+    onDrop: ({ cursor, areas }) => {
       snapPreview.frame = null;
-      const hit = snapTarget(frame, areas);
+      if (!resizable) {
+        savePosition();
+        return;
+      }
+      const hit = snapTarget(cursor, areas);
       if (!hit) {
         savePosition();
         return;
@@ -584,6 +625,41 @@
     },
   });
 
+  /* ─── Doble clic en la barra: agrandar / restaurar ───────────────────────
+     No se usa el evento `dblclick` del DOM. Las dos barras que arrastran
+     (`ConsolePanel.bar` y `AgentLauncher.drag-rail`) cancelan el default del
+     `pointerdown` —lo necesitan para que arrastrar no seleccione texto ni
+     empiece un drag nativo—, y con el default cancelado los eventos de
+     compatibilidad del mouse dejan de ser confiables. Contar los `pointerdown`
+     usa el mismo flujo que ya alimenta el arrastre, y de paso cubre las dos
+     barras sin tocar ninguno de los dos componentes. */
+  const DOUBLE_CLICK_MS = 400;
+  /** Tolerancia de mano temblorosa: más que esto ya fue un arrastre corto. */
+  const DOUBLE_CLICK_SLOP = 6;
+  let lastHeaderClick: { t: number; x: number; y: number } | null = null;
+
+  function onHeaderPointerDown(event: PointerEvent) {
+    const prev = lastHeaderClick;
+    const near =
+      // Solo la consola: el lanzador tiene alto derivado de `setupHeight`, y
+      // agrandarlo a la pantalla entera deja una caja vacía enorme.
+      resizable &&
+      prev !== null &&
+      event.timeStamp - prev.t <= DOUBLE_CLICK_MS &&
+      Math.hypot(event.clientX - prev.x, event.clientY - prev.y) <=
+        DOUBLE_CLICK_SLOP;
+    if (near) {
+      lastHeaderClick = null;
+      // El arrastre del primer clic ya se cerró en su `pointerup` sin haberse
+      // movido, así que no queda gesto colgado; el `endDrag` es por las dudas.
+      endDrag();
+      toggleMaximize();
+      return;
+    }
+    lastHeaderClick = { t: event.timeStamp, x: event.clientX, y: event.clientY };
+    startDrag(event);
+  }
+
   const pillSkin = $derived(surfaces.live["pill-skin"]);
   const joined = $derived.by(() => {
     const a = bubble.anchor;
@@ -591,6 +667,60 @@
     if (!a || !p || !bubble.alive) return false;
     return gapBetween(p, a) <= REACH;
   });
+
+  /* ─── Bordes de redimensión ─────────────────────────────────────────────
+     Antes esto eran ocho `div.grip` apilados en z 7, y el contenido los tapaba:
+     `.composer` (z 8) y `.top-acts` (z 9) están deliberadamente por encima para
+     no perder sus propios clics, así que el canto inferior NUNCA se podía
+     agarrar y los laterales solo a medias. Apilar más alto rompía lo otro.
+
+     La salida es no preguntarle al DOM quién está debajo del puntero, sino
+     medir la distancia del puntero al marco. El gesto se decide por geometría
+     en la fase de captura de la raíz, así que gana sobre cualquier contenido
+     sin pelear por z-index — y solo en los pocos píxeles del canto, que es lo
+     que hace una ventana de verdad. */
+  const RESIZE_BAND = 8;
+  /** El vértice se agarra desde más lejos: apuntar a 8×8 es incómodo. */
+  const RESIZE_CORNER = 18;
+
+  function edgeAt(clientX: number, clientY: number): ResizeEdge | null {
+    const el = bubEl;
+    if (!el) return null;
+    const r = el.getBoundingClientRect();
+    const l = clientX - r.left;
+    const rt = r.right - clientX;
+    const t = clientY - r.top;
+    const b = r.bottom - clientY;
+    if (l < 0 || rt < 0 || t < 0 || b < 0) return null;
+    const h = l <= RESIZE_CORNER ? "w" : rt <= RESIZE_CORNER ? "e" : "";
+    const v = t <= RESIZE_CORNER ? "n" : b <= RESIZE_CORNER ? "s" : "";
+    if (h && v) return `${v}${h}` as ResizeEdge;
+    if (t <= RESIZE_BAND) return "n";
+    if (b <= RESIZE_BAND) return "s";
+    if (l <= RESIZE_BAND) return "w";
+    if (rt <= RESIZE_BAND) return "e";
+    return null;
+  }
+
+  /** Qué borde toca el puntero al pasar, para pintar el cursor. */
+  let hoverEdge = $state<ResizeEdge | null>(null);
+
+  function onRootPointerDown(event: PointerEvent) {
+    if (event.button !== 0 || !resizable || minimized) return;
+    const edge = edgeAt(event.clientX, event.clientY);
+    if (!edge) return;
+    // Captura + stop: el contenido no llega a verlo, así que el arrastre por
+    // la barra tampoco se dispara cuando el clic cayó en el canto.
+    event.stopPropagation();
+    startResize(edge, event);
+  }
+
+  function onRootPointerMove(event: PointerEvent) {
+    // Durante el gesto manda el borde tomado, no el que haya bajo el puntero.
+    if (resize) return;
+    hoverEdge =
+      resizable && !minimized ? edgeAt(event.clientX, event.clientY) : null;
+  }
 
   /** Estirar el globo desde cualquier borde o esquina. */
   let resize: {
@@ -622,15 +752,32 @@
       pointerId: event.pointerId,
     };
     try {
-      (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+      // La raíz, no el blanco del clic: el gesto lo decide la banda del canto,
+      // y el elemento que hubiera debajo puede desmontarse a mitad del estirón.
+      bubEl?.setPointerCapture(event.pointerId);
     } catch {
       /* ignore */
     }
+    // El mismo blindaje que el arrastre, y por el mismo motivo: publica un
+    // hit-rect a pantalla completa y arma el gesto en Rust sin esperar al IPC.
+    // Sin esto, agrandar rápido saca el cursor del rect publicado —que solo se
+    // remide un rAF más tarde, con los 6px de `ARM_MARGIN` de holgura—, el
+    // overlay vuelve a ser click-through y el gesto se corta a mitad.
+    surfaces.dragging = true;
     window.addEventListener("pointermove", onResizeMove);
     window.addEventListener("pointerup", endResize);
     window.addEventListener("pointercancel", endResize);
   }
 
+  /**
+   * Sigue con coordenadas del DOM, no con `overlayCursor()` como el arrastre.
+   *
+   * El arrastre necesita el cursor de Rust porque parte del origen absoluto del
+   * globo y cerca del canto de la pantalla el webview se queda sin eventos. Acá
+   * solo se usan DIFERENCIAS contra el punto de agarre, y el hit-rect a pantalla
+   * completa que publica `startResize` mantiene vivo el flujo de `pointermove`
+   * durante todo el gesto. Un viaje de IPC por cuadro no compraría nada.
+   */
   function onResizeMove(event: PointerEvent) {
     const r = resize;
     if (!r || !bubble.anchor) return;
@@ -651,18 +798,13 @@
       w = Math.max(BUBBLE_MIN_W, r.ow - dx);
       x = r.ax + r.ow - w;
     }
-    const minHeight =
-      launcherView === "console"
-        ? CONSOLE_MIN_H
-        : browserOpen
-          ? BROWSER_MIN_H
-          : setupHeight(w);
-    if (south) h = Math.max(minHeight, r.oh + dy);
+    // `resizable` exige la vista de consola, y entrar a ella apaga el
+    // navegador: acá el mínimo es siempre el del terminal.
+    if (south) h = Math.max(CONSOLE_MIN_H, r.oh + dy);
     if (north) {
-      h = Math.max(minHeight, r.oh - dy);
+      h = Math.max(CONSOLE_MIN_H, r.oh - dy);
       y = r.ay + r.oh - h;
     }
-    if (launcherView === "setup") h = Math.max(h, minHeight);
 
     bubble.setFrame(x, y, w, h);
   }
@@ -674,15 +816,13 @@
     window.removeEventListener("pointermove", onResizeMove);
     window.removeEventListener("pointerup", endResize);
     window.removeEventListener("pointercancel", endResize);
+    // Devuelve el hit-rect a la silueta real: el setter fuerza la remedición.
+    surfaces.dragging = false;
     const a = bubble.anchor;
     if (a) {
-      if (launcherView === "console") consoleSize = { w: a.w, h: a.h };
-      else if (browserOpen) browserSize = { w: a.w, h: a.h };
-      else {
-        setupWidth = a.w;
-        saveSetupWidth();
-      }
-      if (!browserOpen) void saveAgentsBubbleSize(a.w, a.h);
+      // Mismo motivo que en `onResizeMove`: acá solo se llega desde la consola.
+      consoleSize = { w: a.w, h: a.h };
+      void saveAgentsBubbleSize(a.w, a.h);
       savePosition();
     }
   }
@@ -870,6 +1010,9 @@
 </script>
 
 {#if bubble.alive || everAlive}
+  <!-- Los handlers de puntero de la raíz son solo la banda de redimensión: el
+       teclado ya agranda por el botón del header, que sí es un `button`. -->
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
     class="af"
     class:is-shown={bubble.shown}
@@ -882,15 +1025,19 @@
     data-float="agents"
     data-agents-float
     data-side={bubble.anchor?.side ?? "top"}
+    data-edge={hoverEdge ?? undefined}
     style={bubble.vars}
     style:--float-stack={surfaces.stack("agents")}
     style:--agents-grow-dur="{growDur}ms"
     style:--agents-settle-dur="{settleDur}ms"
     bind:this={bubEl}
+    onpointerdowncapture={onRootPointerDown}
+    onpointermove={onRootPointerMove}
+    onpointerleave={() => (hoverEdge = null)}
   >
     <div class="af-stage">
       <AgentLauncher
-        onHeaderPointerDown={startDrag}
+        onHeaderPointerDown={onHeaderPointerDown}
         onClose={dismissSetup}
         onViewChange={(view) => void changeLauncherView(view)}
         onBrowserChange={(open) => void changeBrowser(open)}
@@ -908,56 +1055,6 @@
         onDismiss={(id) => toasts.dismiss(id)}
       />
     </div>
-    {#if resizable}
-      <!-- svelte-ignore a11y_no_static_element_interactions -->
-      <div
-        class="grip grip-n"
-        data-no-drag
-        onpointerdown={(e) => startResize("n", e)}
-      ></div>
-      <!-- svelte-ignore a11y_no_static_element_interactions -->
-      <div
-        class="grip grip-s"
-        data-no-drag
-        onpointerdown={(e) => startResize("s", e)}
-      ></div>
-      <!-- svelte-ignore a11y_no_static_element_interactions -->
-      <div
-        class="grip grip-e"
-        data-no-drag
-        onpointerdown={(e) => startResize("e", e)}
-      ></div>
-      <!-- svelte-ignore a11y_no_static_element_interactions -->
-      <div
-        class="grip grip-w"
-        data-no-drag
-        onpointerdown={(e) => startResize("w", e)}
-      ></div>
-      <!-- svelte-ignore a11y_no_static_element_interactions -->
-      <div
-        class="grip grip-ne"
-        data-no-drag
-        onpointerdown={(e) => startResize("ne", e)}
-      ></div>
-      <!-- svelte-ignore a11y_no_static_element_interactions -->
-      <div
-        class="grip grip-nw"
-        data-no-drag
-        onpointerdown={(e) => startResize("nw", e)}
-      ></div>
-      <!-- svelte-ignore a11y_no_static_element_interactions -->
-      <div
-        class="grip grip-se"
-        data-no-drag
-        onpointerdown={(e) => startResize("se", e)}
-      ></div>
-      <!-- svelte-ignore a11y_no_static_element_interactions -->
-      <div
-        class="grip grip-sw"
-        data-no-drag
-        onpointerdown={(e) => startResize("sw", e)}
-      ></div>
-    {/if}
   </div>
 {/if}
 
@@ -1097,76 +1194,32 @@
     }
   }
 
-  .grip {
-    position: absolute;
-
-    /* Bajo el header (.top-acts z 9): no robar pin / minimizar. */
-    z-index: 7;
-    background: transparent;
-  }
-
-  .grip-n,
-  .grip-s {
-    left: 10px;
-    right: 10px;
-    height: 6px;
+  /* El cursor del canto: lo pone `data-edge`, que escribe `onRootPointerMove`.
+     `cursor` se hereda, pero cualquier hijo con regla propia (botón, input,
+     xterm) ganaría sobre la raíz y el usuario no vería el ns-/ew-resize justo
+     donde el gesto SÍ va a tomarse. Mientras el puntero está en la banda, se
+     fuerza a todo el subárbol a heredar. */
+  .af[data-edge="n"],
+  .af[data-edge="s"] {
     cursor: ns-resize;
   }
 
-  .grip-n {
-    top: 0;
-  }
-
-  .grip-s {
-    bottom: 0;
-  }
-
-  .grip-e,
-  .grip-w {
-    /* Debajo del header (~top-ctrl + padding): no tapar pin / minimizar. */
-    top: 40px;
-    bottom: 10px;
-    width: 6px;
+  .af[data-edge="e"],
+  .af[data-edge="w"] {
     cursor: ew-resize;
   }
 
-  .grip-e {
-    right: 0;
-  }
-
-  .grip-w {
-    left: 0;
-  }
-
-  .grip-ne,
-  .grip-nw,
-  .grip-se,
-  .grip-sw {
-    width: 14px;
-    height: 14px;
-  }
-
-  .grip-nw {
-    top: 0;
-    left: 0;
+  .af[data-edge="nw"],
+  .af[data-edge="se"] {
     cursor: nwse-resize;
   }
 
-  .grip-ne {
-    top: 0;
-    right: 0;
+  .af[data-edge="ne"],
+  .af[data-edge="sw"] {
     cursor: nesw-resize;
   }
 
-  .grip-sw {
-    bottom: 0;
-    left: 0;
-    cursor: nesw-resize;
-  }
-
-  .grip-se {
-    bottom: 0;
-    right: 0;
-    cursor: nwse-resize;
+  .af[data-edge] :global(*) {
+    cursor: inherit;
   }
 </style>

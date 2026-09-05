@@ -370,7 +370,7 @@
    */
   function placeFusedToPill(
     a: BubbleOpen,
-    pill = livePillRect(),
+    pill: { x: number; y: number; w: number; h: number } | null = livePillRect(),
   ) {
     const d = Math.min(isDev && launcherLab.open ? compactH : a.h, GROW_START_W);
     const fullH = isDev && launcherLab.open ? compactH : a.h;

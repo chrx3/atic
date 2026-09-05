@@ -2450,7 +2450,8 @@
 
   .top-acts {
     position: relative;
-    /* Encima de grips de AgentsFloat (z 7): pin/X no deben quedar bajo el resize. */
+    /* Los grips de AgentsFloat ya no existen (el resize se decide por la banda
+       geométrica del canto), pero esto sigue apilando el header sobre el stage. */
     z-index: 9;
     display: flex;
     flex-shrink: 0;
@@ -3259,7 +3260,8 @@
 
   .composer {
     position: relative;
-    /* Encima de grips de AgentsFloat (z 7): Local / carpeta / modelo. */
+    /* Ídem `.top-acts`: ya no pelea con ningún grip, pero mantiene Local /
+       carpeta / modelo por encima del stage. */
     z-index: 8;
     flex-shrink: 0;
     padding: 0.35rem 0.7rem 0.7rem;

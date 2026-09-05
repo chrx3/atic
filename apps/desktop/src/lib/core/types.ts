@@ -108,6 +108,8 @@ export interface AppConfig {
   screenshot_shortcut: string;
   /** Atajo global de la pizarra: dibujar sobre la pantalla congelada. */
   board_shortcut: string;
+  /** Atajo global del cuentagotas: color de un píxel de la pantalla. */
+  color_shortcut: string;
   /** Atajo global del launcher tipo Spotlight. */
   launcher_shortcut: string;
   /** Ids del launcher marcados como favoritos (`app:…` / `action:…`). */
@@ -489,12 +491,26 @@ export interface OverlayCandidate {
   height: number;
 }
 
+export type OverlayKind = "capture" | "color";
+
 export interface OverlayInfo {
   framePath: string;
   /** Tamaño físico del PNG congelado. */
   width: number;
   height: number;
   candidates: OverlayCandidate[];
+  /** Qué hace esta sesión: recorte o cuentagotas. */
+  kind: OverlayKind;
+}
+
+export interface OverlayPatch {
+  session: number;
+  hex: string;
+  r: number;
+  g: number;
+  b: number;
+  size: number;
+  rgba: number[];
 }
 
 /* ─── Agentes ─────────────────────────────────────────────────────────────

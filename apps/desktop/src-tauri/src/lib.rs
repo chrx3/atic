@@ -6,6 +6,7 @@ mod beep;
 mod capture;
 mod capture_session;
 mod capture_shelf;
+mod color_picker;
 mod clipboard_history;
 mod commands;
 mod diagnostics;
@@ -92,6 +93,11 @@ fn recover_orphaned_statuses(state: &AppState) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(debug_assertions)]
+    if std::env::args().any(|arg| arg == "--color-picker-smoke") {
+        run_color_picker_smoke();
+        return;
+    }
     // Antes que nada: si algo de acá en adelante panica, queremos leerlo.
     // `AppDirs::new()` se llama otra vez más abajo, en el setup; es idempotente
     // —crea directorios y ya— y este orden es el que permite que un fallo del
@@ -217,6 +223,11 @@ pub fn run() {
             capture::cleanup_captures_now,
             capture::open_captures_dir,
             capture_session::start_capture_session,
+            color_picker::start_color_picker,
+            color_picker::stop_color_picker,
+            color_picker::complete_color_pick,
+            color_picker::color_picker_set_rose,
+            color_picker::color_picker_state,
             capture_session::overlay_info,
             capture_session::show_capture_overlay,
             capture_session::capture_overlay_revealed,
@@ -341,7 +352,7 @@ pub fn run() {
             // de este `setup`, y si quedan visibles un instante se ve el
             // lienzo de anotar / el shelf / el launcher. `visible: false` en
             // la config es la barrera; esto cubre si algún runtime la ignora.
-            for label in ["capture-shelf", "launcher", annotate::ANNOTATE_LABEL] {
+            for label in ["capture-shelf", "launcher", "color-loupe", annotate::ANNOTATE_LABEL] {
                 if let Some(window) = app.get_webview_window(label) {
                     let _ = window.hide();
                 }
@@ -375,6 +386,7 @@ pub fn run() {
                 agents_shortcut,
                 screenshot_shortcut,
                 board_shortcut,
+                color_shortcut,
                 launcher_shortcut,
                 want_autostart,
                 ui_language,
@@ -391,6 +403,7 @@ pub fn run() {
                     cfg.agents_shortcut.clone(),
                     cfg.screenshot_shortcut.clone(),
                     cfg.board_shortcut.clone(),
+                    cfg.color_shortcut.clone(),
                     cfg.launcher_shortcut.clone(),
                     cfg.autostart,
                     cfg.resolved_ui_language(),
@@ -463,6 +476,7 @@ pub fn run() {
                     agents: &agents_shortcut,
                     screenshot: &screenshot_shortcut,
                     board: &board_shortcut,
+                    color: &color_shortcut,
                     launcher: &launcher_shortcut,
                 },
             ) {
@@ -499,6 +513,11 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| match event {
+            WindowEvent::CloseRequested { api, .. } if window.label() == "color-loupe" => {
+                api.prevent_close();
+                color_picker::stop(window.app_handle());
+                let _ = window.hide();
+            }
             // Cerrar oculta, no destruye.
             WindowEvent::CloseRequested { api, .. }
                 if window.label() == "main"
@@ -535,4 +554,39 @@ pub fn run() {
                 }
             }
         });
+}
+
+/// Real WebView2/native regression harness. A separate application identifier
+/// isolates storage and it intentionally starts no agents, audio or global
+/// shortcuts. Only available in debug builds and only via an explicit flag.
+#[cfg(debug_assertions)]
+fn run_color_picker_smoke() {
+    let mut context = tauri::generate_context!();
+    context.config_mut().identifier = "com.ciat.atic.color-smoke".into();
+    context.config_mut().app.windows.retain(|w| w.label == "color-loupe");
+    for window in &mut context.config_mut().app.windows {
+        window.additional_browser_args = Some("--remote-debugging-port=9337".into());
+    }
+    tauri::Builder::default()
+        .setup(|app| {
+            if let Some(window) = app.get_webview_window("color-loupe") {
+                window.hide()?;
+            }
+            webview_tweaks::apply_to_all_windows(app.handle());
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            color_picker::start_color_picker,
+            color_picker::stop_color_picker,
+            color_picker::complete_color_pick,
+            color_picker::color_picker_set_rose,
+            color_picker::color_picker_state,
+        ])
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { .. } = event {
+                color_picker::stop(window.app_handle());
+            }
+        })
+        .run(context)
+        .expect("color picker smoke runtime");
 }

@@ -180,11 +180,12 @@ class PlaybackController {
 
   async #ensureSrc(id: string, kind: "mic" | "system"): Promise<HTMLAudioElement> {
     const el = this.#el(kind);
-    if (this.#loaded.id === id && this.#loaded[kind] && el.src) return el;
+    const loadedKey = kind === "system" ? "sys" : "mic";
+    if (this.#loaded.id === id && this.#loaded[loadedKey] && el.src) return el;
     const source = await trackSrc(id, kind);
     el.src = source;
     if (this.#loaded.id !== id) this.#loaded = { id, mic: false, sys: false };
-    this.#loaded[kind] = true;
+    this.#loaded[loadedKey] = true;
     await this.#waitForMetadata(el);
     return el;
   }

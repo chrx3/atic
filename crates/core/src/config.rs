@@ -70,7 +70,7 @@ const UI_THEMES: [&str; 9] = [
 /// Herramientas que pueden vivir en la pill. Espejo de `WHEEL_TOOLS` en
 /// `apps/desktop/src/lib/core/tools.ts` — el launcher queda fuera a propósito:
 /// Spotlight vive en su atajo, no en la rueda.
-const PILL_TOOLS: [&str; 7] = [
+const PILL_TOOLS: [&str; 8] = [
     "meetings",
     "dictation",
     "clipboard",
@@ -78,10 +78,13 @@ const PILL_TOOLS: [&str; 7] = [
     "agents",
     "captures",
     "board",
+    "color",
 ];
 
 /// Tamaño de la pill y los paneles, relativo a 1 px CSS = 1 px de pantalla.
-pub const OVERLAY_SCALE_MIN: f64 = 0.75;
+/// El 75% se retiró: la isla y la cara de la marca quedaban por debajo
+/// de un hit usable. Quien lo tenga en el JSON pasa a 100% al cargar.
+pub const OVERLAY_SCALE_MIN: f64 = 1.0;
 pub const OVERLAY_SCALE_MAX: f64 = 1.5;
 pub const OVERLAY_SCALE_DEFAULT: f64 = 1.0;
 
@@ -329,6 +332,8 @@ pub struct Config {
     pub screenshot_shortcut: String,
     /// Atajo global para la pizarra: dibujar sobre la pantalla congelada.
     pub board_shortcut: String,
+    /// Atajo global para el cuentagotas: color de un píxel de la pantalla.
+    pub color_shortcut: String,
     /// Atajo global para el launcher tipo Spotlight.
     pub launcher_shortcut: String,
     /// Ids de entradas del launcher marcadas como favoritas (`app:…` / `action:…`).
@@ -442,6 +447,7 @@ impl Default for Config {
             clipboard_history: true,
             screenshot_shortcut: "CmdOrCtrl+Shift+4".to_string(),
             board_shortcut: "CmdOrCtrl+Shift+X".to_string(),
+            color_shortcut: "CmdOrCtrl+Shift+C".to_string(),
             launcher_shortcut: "CmdOrCtrl+Space".to_string(),
             launcher_favorites: Vec::new(),
             capture_shelf_side: "right".to_string(),
@@ -531,6 +537,7 @@ struct ConfigFile {
     clipboard_history: Option<bool>,
     screenshot_shortcut: Option<String>,
     board_shortcut: Option<String>,
+    color_shortcut: Option<String>,
     launcher_shortcut: Option<String>,
     launcher_favorites: Option<Vec<String>>,
     capture_shelf_side: Option<String>,
@@ -645,6 +652,7 @@ impl Default for ConfigFile {
             clipboard_history: None,
             screenshot_shortcut: None,
             board_shortcut: None,
+            color_shortcut: None,
             launcher_shortcut: None,
             launcher_favorites: None,
             capture_shelf_side: None,
@@ -878,6 +886,10 @@ impl From<ConfigFile> for Config {
                 .board_shortcut
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| "CmdOrCtrl+Shift+X".into()),
+            color_shortcut: f
+                .color_shortcut
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "CmdOrCtrl+Shift+C".into()),
             launcher_shortcut: f
                 .launcher_shortcut
                 .filter(|s| !s.is_empty())
@@ -1057,6 +1069,7 @@ mod tests {
     fn overlay_scale_clamps_and_snaps() {
         assert!((sanitize_overlay_scale(1.0) - 1.0).abs() < f64::EPSILON);
         assert!((sanitize_overlay_scale(1.25) - 1.25).abs() < f64::EPSILON);
+        assert!((sanitize_overlay_scale(0.75) - OVERLAY_SCALE_MIN).abs() < f64::EPSILON);
         assert!((sanitize_overlay_scale(0.1) - OVERLAY_SCALE_MIN).abs() < f64::EPSILON);
         assert!((sanitize_overlay_scale(9.0) - OVERLAY_SCALE_MAX).abs() < f64::EPSILON);
         assert!((sanitize_overlay_scale(f64::NAN) - OVERLAY_SCALE_DEFAULT).abs() < f64::EPSILON);

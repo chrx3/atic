@@ -2,7 +2,7 @@
 
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import type { UnlistenFn } from "@tauri-apps/api/event";
-import type { CaptureItem, OverlayInfo } from "$core/types";
+import type { CaptureItem, OverlayInfo, OverlayPatch } from "$core/types";
 import { on } from "./events";
 
 /**
@@ -38,6 +38,20 @@ export const readCaptureOcrCache = (path: string) =>
 
 // --- Overlay de selección ---
 export const startCaptureSession = () => invoke<void>("start_capture_session");
+export const startColorPicker = () => invoke<void>("start_color_picker");
+export const colorPickerState = () =>
+  invoke<{
+    session: number;
+    active: boolean;
+    open: boolean;
+    patch: OverlayPatch | null;
+  }>("color_picker_state");
+export const stopColorPicker = (session: number) =>
+  invoke<void>("stop_color_picker", { session });
+export const completeColorPick = (hex: string, session: number) =>
+  invoke<string>("complete_color_pick", { hex, session });
+export const setColorPickerRose = (open: boolean, session: number) =>
+  invoke<void>("color_picker_set_rose", { open, session });
 export const overlayInfo = () => invoke<OverlayInfo>("overlay_info");
 export const completeWindowCapture = (hwnd: number) =>
   invoke<string>("complete_window_capture", { hwnd });
@@ -59,8 +73,7 @@ export const showCaptureOverlay = () => invoke<void>("show_capture_overlay");
  * selección arrancó» de «la ventana se mostró pero el webview quedó en
  * blanco», y en el segundo caso la pill se queda sin recibir clics.
  */
-export const captureOverlayRevealed = () =>
-  invoke<void>("capture_overlay_revealed");
+export const captureOverlayRevealed = () => invoke<void>("capture_overlay_revealed");
 
 export const onScreenshotCreated = (
   cb: (item: CaptureItem) => void,

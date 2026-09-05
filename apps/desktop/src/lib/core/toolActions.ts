@@ -10,7 +10,7 @@ import { capture } from "$domain/capture.svelte";
 import { dictation } from "$domain/dictation.svelte";
 import { presentAgentsWindow } from "$ipc/agents";
 import { startBoard } from "$ipc/annotate";
-import { startCaptureSession } from "$ipc/captures";
+import { startCaptureSession, startColorPicker } from "$ipc/captures";
 import { showClipboardWindow } from "$ipc/clipboard";
 import { showLauncher } from "$ipc/search";
 import { showSnippetsWindow } from "$ipc/snippets";
@@ -49,6 +49,8 @@ export function toolAction(id: ToolId): ToolAction {
       return { kind: "run", label: t("tools.captures.actionLabel") };
     case "board":
       return { kind: "run", label: t("tools.board.actionLabel") };
+    case "color":
+      return { kind: "run", label: t("tools.color.actionLabel") };
     case "agents":
       return { kind: "run", label: t("tools.agents.actionLabel") };
     case "launcher":
@@ -84,6 +86,9 @@ export async function executeToolAction(
       return;
     case "board":
       await startBoard();
+      return;
+    case "color":
+      await startColorPicker();
       return;
     case "agents":
       if (AGENTS_ENABLED) await presentAgentsWindow();

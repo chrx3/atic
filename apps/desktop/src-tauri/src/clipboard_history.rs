@@ -1749,6 +1749,7 @@ fn reregister_shortcuts_from_config(app: &AppHandle) {
             agents: &cfg.agents_shortcut,
             screenshot: &cfg.screenshot_shortcut,
             board: &cfg.board_shortcut,
+            color: &cfg.color_shortcut,
             launcher: &cfg.launcher_shortcut,
         },
     ) {

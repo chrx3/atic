@@ -319,6 +319,21 @@ export function stackMarkVisible(state: {
  * El vuelo al cursor (abrir rueda / summon) no pasa por acá: usa `flyTo` en
  * la superficie; este pivote solo decide el morph de tamaño in-situ.
  */
+/** Pivote al abrir la rueda desde una isla: crece hacia el escritorio. */
+export function bloomPivot(edge: DockEdge | null | undefined): Pivot {
+  if (!edge) return "center";
+  switch (edge) {
+    case "left":
+      return "dockLeft";
+    case "right":
+      return "dockRight";
+    case "top":
+      return "dockTop";
+    case "bottom":
+      return "dockBottom";
+  }
+}
+
 export function pivotFor(state: {
   surface: Surface;
   collapsingFrom: "wheel" | null;
@@ -406,6 +421,25 @@ export function isDiscOnly(state: {
  */
 export function shouldMeasureBar(surface: Surface, dragging: boolean): boolean {
   return surface === "none" && !dragging;
+}
+
+/**
+ * El ancho medido de la barra, con histéresis.
+ *
+ * Las ondas de grabación cambian `height` de hijos a ~60 Hz. En WebView2 eso
+ * dispara `ResizeObserver` con ±1 px y el reconciliador reencuadra la caja
+ * desde `topLeft`: la pastilla parece caminar. Con actividad viva (grabar /
+ * dictar) solo se permite crecer; al volver a idle sí encoge.
+ */
+export function nextBarWidth(
+  current: number,
+  measured: number,
+  live: boolean,
+): number {
+  const n = Math.max(PILL.bar, Math.ceil(measured));
+  if (Math.abs(n - current) < 2) return current;
+  if (live && n < current) return current;
+  return n;
 }
 
 /**

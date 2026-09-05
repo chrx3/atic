@@ -71,10 +71,18 @@ export const es = {
       blurb: "Congela la pantalla y la marcas con flechas y círculos, ahí donde está.",
       actionLabel: "Dibujar",
     },
+    color: {
+      label: "Color",
+      short: "Cuentagotas",
+      blurb:
+        "Elige un color de la pantalla, píxel a píxel, o desde la rosa cromática. Se copia al portapapeles.",
+      actionLabel: "Elegir color",
+    },
     launcher: {
       label: "Apps",
       short: "Programas del sistema",
-      blurb: "Abre apps y acciones del PC. Mismo launcher que Ctrl+Space (tipo Spotlight).",
+      blurb:
+        "Abre apps y acciones del PC. Mismo launcher que Ctrl+Space (tipo Spotlight).",
       actionLabel: "Buscar apps",
     },
     wheelCaption: "Herramientas",
@@ -159,12 +167,16 @@ export const es = {
     appearance: {
       title: "Apariencia",
       theme: "Tema",
-      themeHint: "Claro y oscuro son los extremos; los del medio se separan mejor de lo que hay detrás.",
+      themeHint:
+        "Claro y oscuro son los extremos; los del medio se separan mejor de lo que hay detrás.",
       themeAria: "Tema de la interfaz",
-      overlayScale: "Tamaño",
+      overlayScale: "Tamaño de la pill",
       overlayScaleHint:
-        "Pill, clipboard y paneles. 100% es un píxel de interfaz por píxel de pantalla.",
-      overlayScaleAria: "Tamaño de la pill y los paneles",
+        "Solo la pill y los paneles flotantes. La ventana de Atic no cambia.",
+      overlayScaleAria: "Tamaño de la pill y los paneles flotantes",
+      scaleNormal: "Normal",
+      scaleLarge: "Grande",
+      scaleHuge: "Muy grande",
       system: "Sistema",
       light: "Claro",
       sepia: "Sepia",
@@ -211,7 +223,8 @@ export const es = {
       title: "Herramientas de la pill",
       hint: "La rueda reparte el ángulo entre las que estén: mientras menos gajos, más grande es el blanco de cada uno. Lo que saques de acá sigue estando en la ventana principal y en su atajo.",
       ring: "En la rueda",
-      ringHint: "Un gajo cada una, a un solo golpe. La primera queda arriba y siguen en el sentido del reloj.",
+      ringHint:
+        "Un gajo cada una, a un solo golpe. La primera queda arriba y siguen en el sentido del reloj.",
       more: "Detrás de «Más»",
       moreHint: "En un segundo anillo, a dos golpes. Para lo que usas poco.",
       hidden: "Fuera de la pill",
@@ -225,7 +238,8 @@ export const es = {
       down: "Bajar {label}",
       lastOne: "La rueda no puede quedar vacía: a esta última no se la puede sacar.",
       reset: "Volver a tenerlas todas en la rueda",
-      stripNote: "La tira del borde muestra las de la rueda y las de «Más» seguidas: es lineal, no tiene ángulo que ahorrar.",
+      stripNote:
+        "La tira del borde muestra las de la rueda y las de «Más» seguidas: es lineal, no tiene ángulo que ahorrar.",
     },
     shortcuts: {
       title: "Atajos globales",
@@ -250,6 +264,8 @@ export const es = {
       screenshot: "Captura de pantalla",
       board: "Dibujar en pantalla",
       boardHint: "Congela la pantalla y deja marcarla. Esc la saca.",
+      color: "Elegir color",
+      colorHint: "Congela la pantalla y copia el color bajo el cursor. R abre la rosa.",
       launcher: "Launcher",
       launcherHint: "Buscar y abrir apps, como Spotlight.",
     },
@@ -284,7 +300,8 @@ export const es = {
       mic: "Mic",
       pc: "PC",
       onDisk: "En disco",
-      onDiskHint: "WAV y transcripciones. Para una reunión concreta, usa Carpeta en Reuniones.",
+      onDiskHint:
+        "WAV y transcripciones. Para una reunión concreta, usa Carpeta en Reuniones.",
     },
     dictation: {
       how: "Cómo se activa",
@@ -323,7 +340,8 @@ export const es = {
     },
     launcher: {
       favorites: "Favoritos",
-      favoritesHint: "Aparecen como pelotitas al final de la barra del launcher. Máximo 8.",
+      favoritesHint:
+        "Aparecen como pelotitas al final de la barra del launcher. Máximo 8.",
       loading: "Cargando…",
       empty: "Sin favoritos",
       emptyHint: "Abre el launcher (Ctrl+Space), busca una app y toca la estrella.",
@@ -359,7 +377,8 @@ export const es = {
       missingKey: "Falta la clave de {name}",
       ollamaDown: "Ollama no está respondiendo",
       provider: "Proveedor",
-      providerHint: "El resumen es lo único que sale de tu máquina. Ollama corre local.",
+      providerHint:
+        "El resumen es lo único que sale de tu máquina. Ollama corre local.",
       who: "Quién resume",
       model: "Modelo",
       url: "URL",
@@ -381,7 +400,8 @@ export const es = {
       title: "Claude Code",
       hint: "La pill no escribe el settings ajeno. Fusiona la clave hooks; no reemplaces el archivo entero.",
       hooks: "Hooks",
-      hooksHint: "Sin esto, el chip no puede decir «permiso». Pégalo en ~/.claude/settings.json.",
+      hooksHint:
+        "Sin esto, el chip no puede decir «permiso». Pégalo en ~/.claude/settings.json.",
       copy: "Copiar",
       copied: "Copiado",
       copiedToast: "Copiado. Fusiona la clave hooks en ~/.claude/settings.json",
@@ -409,9 +429,11 @@ export const es = {
     installingBody:
       "El instalador corre en silencio. Si Windows muestra SmartScreen, dale a Ejecutar. Atic se cierra y vuelve a abrir.",
     readyTitle: "Descarga lista: {version}",
-    readyBody: "Ahora sí: instala y Atic se reinicia. El 100% de antes era solo el archivo.",
+    readyBody:
+      "Ahora sí: instala y Atic se reinicia. El 100% de antes era solo el archivo.",
     availableTitle: "Hay una versión nueva: {version}",
-    availableBody: "Primero se descarga el instalador. Después aparece Instalar y reiniciar.",
+    availableBody:
+      "Primero se descarga el instalador. Después aparece Instalar y reiniciar.",
     checkFailed: "No se pudo consultar",
     checkTimeout: "GitHub no respondió a tiempo. Puedes descargar igual, o reintentar.",
     checkFetch:
@@ -470,7 +492,8 @@ export const es = {
     dictationBody:
       "Si no tienes gráfica, Groq dicta casi al instante. El audio de esa frase corta sale de tu PC. Las reuniones se transcriben en tu máquina por defecto; en Reuniones o Ajustes puedes pasarlas a Groq.",
     dictationEngine: "Motor de dictado",
-    whisperNote: "Whisper corre en el CPU. En el paso siguiente se baja un modelo chico.",
+    whisperNote:
+      "Whisper corre en el CPU. En el paso siguiente se baja un modelo chico.",
     modelsGroq:
       "Las reuniones se transcriben en tu PC por defecto. Este modelo también sirve de reserva si Groq no responde.",
     modelsLocal:
@@ -825,7 +848,8 @@ export const es = {
     },
     agents: {
       booting: "Arrancando {name}",
-      bootingHint: "El terminal espera a tener tamaño. El agente pinta cuando está listo.",
+      bootingHint:
+        "El terminal espera a tener tamaño. El agente pinta cuando está listo.",
       bootingGeneric: "Arrancando consola",
       shortcuts: "Atajos",
       shortcutsAria: "Atajos de la consola",
@@ -833,7 +857,7 @@ export const es = {
       shortcutsHint: "Funcionan aunque el foco esté en el terminal.",
       shortcutSplitRight: "Dividir a la derecha",
       shortcutSplitDown: "Dividir hacia abajo",
-      shortcutNew: "Nueva consola",
+      shortcutNew: "Nueva consola o agente",
       shortcutClose: "Cerrar pestaña",
       shortcutZoom: "Zoom del texto (también Ctrl+rueda)",
       shortcutZoomReset: "Restablecer zoom",
@@ -854,6 +878,24 @@ export const es = {
       consoleSingular: "consola",
       consolePlural: "consolas",
       install: "Instalar",
+      folderPick: {
+        title: "Elegir carpeta",
+        use: "Usar esta carpeta",
+        up: "Subir",
+        upAria: "Subir un nivel",
+        roots: "Ubicaciones frecuentes",
+        entries: "Subcarpetas",
+        loading: "Cargando carpetas…",
+        retry: "Reintentar",
+        empty: "Esta carpeta no tiene subcarpetas",
+        search: "Buscar carpeta…",
+        searchAria: "Buscar carpetas",
+        noMatch: "Ninguna carpeta coincide",
+        favs: "Favoritos",
+        favAdd: "Añadir a favoritos",
+        favRemove: "Quitar de favoritos",
+        favCurrent: "Fijar esta carpeta",
+      },
     },
     captures: {
       count: "{count} recientes",
@@ -939,6 +981,33 @@ export const es = {
     },
     captureHud: {
       help: "Clic: ventana · Arrastrar: región · Espacio: pantalla · Esc cancela",
+    },
+    colorHud: {
+      edit: "Editar",
+      back: "Volver",
+      protocolError: "La interfaz y el motor de color no coinciden. Reinicia Atic.",
+      timeout: "El motor de color no respondió. Pulsa Esc para salir.",
+      loading: "Leyendo color…",
+      copying: "Copiando…",
+      copyError: "No se pudo copiar: {error}. Puedes reintentar.",
+      invalidHex: "Escribe seis dígitos hexadecimales, por ejemplo #3A82F6.",
+      hue: "Matiz",
+      saturation: "Saturación",
+      brightness: "Brillo",
+      apply: "Aplicar",
+      cancel: "Cancelar · Esc",
+      help: "Clic o Enter: copiar · R: editar",
+      helpRose: "Ajusta el color · Enter: copiar · R: volver",
+      rose: "Rosa",
+      roseOpen: "Abrir rosa cromática",
+      roseClose: "Cerrar rosa cromática",
+      roseAria: "Rosa cromática",
+      hex: "HEX",
+      rgb: "RGB",
+      hsl: "HSL",
+      copied: "Copiado {value}",
+      copy: "Copiar {value}",
+      recent: "Recientes",
     },
     launcherWin: {
       search: "Buscar",

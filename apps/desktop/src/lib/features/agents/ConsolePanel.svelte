@@ -9,7 +9,7 @@
    * y su ciclo de vida, y abrir o cerrar una no toca a las demás. El tope real
    * lo pone Rust (`MAX_CONSOLES`), porque cada sesión es un proceso vivo.
    */
-  import { onDestroy, onMount, untrack } from "svelte";
+  import { onDestroy, onMount, tick, untrack } from "svelte";
   import { fade } from "svelte/transition";
   import { ms, MOTION } from "$lib/motion";
   import { Terminal } from "@xterm/xterm";
@@ -564,7 +564,7 @@
       event.stopPropagation();
       if (!event.repeat) {
         traceWorkspaceShortcut(source, "new-console", event);
-        newTab("local");
+        openAddMenu();
       }
       return true;
     }
@@ -632,7 +632,7 @@
       splitPane("right");
     } else if (data === "\x0e") {
       traceWorkspaceShortcut("xterm-data", "new-console");
-      newTab("local");
+      openAddMenu();
     } else if (activeKey) {
       traceWorkspaceShortcut("xterm-data", "close-console");
       void closeTab(key);
@@ -808,7 +808,7 @@
     traceWorkspaceShortcut("native", action);
     if (action === "split-right") splitPane("right");
     else if (action === "split-down") splitPane("down");
-    else if (action === "new-console") newTab("local");
+    else if (action === "new-console") openAddMenu();
     else if (action === "close-console" && activeKey) void closeTab(activeKey);
   }
 
@@ -1059,10 +1059,7 @@
     });
   }
 
-  function toggleAddMenu() {
-    addMenuOpen = !addMenuOpen;
-    cmdPromptOpen = false;
-    if (!addMenuOpen) return;
+  function refreshAddMenuSources() {
     refreshAgentPath();
     void sshConfigAliases()
       .then((aliases) => {
@@ -1071,6 +1068,32 @@
       .catch(() => {
         sshAliases = [];
       });
+  }
+
+  function toggleAddMenu() {
+    addMenuOpen = !addMenuOpen;
+    cmdPromptOpen = false;
+    if (!addMenuOpen) return;
+    refreshAddMenuSources();
+  }
+
+  /** Ctrl+N: el mismo menú del "+", para elegir agente o consola. No toggle. */
+  function openAddMenu() {
+    if (connecting || !canAddTab) return;
+    closeCtx();
+    moreOpen = false;
+    shortcutsOpen = false;
+    cmdPromptOpen = false;
+    const already = addMenuOpen;
+    addMenuOpen = true;
+    if (!already) refreshAddMenuSources();
+    void tick().then(() => {
+      consoleEl
+        ?.querySelector<HTMLButtonElement>(
+          ".add-pop [role='menuitem']:not(.is-folder):not(:disabled)",
+        )
+        ?.focus();
+    });
   }
 
   function addFromMenu(seed: { kind: ConsoleKind; label?: string; command?: string }) {
@@ -2328,7 +2351,7 @@
           aria-label="Nueva consola o agente"
           aria-haspopup="menu"
           aria-expanded={addMenuOpen}
-          use:tip={"Nueva consola o agente"}
+          use:tip={"Nueva consola o agente (Ctrl+N)"}
           disabled={connecting || !canAddTab}
           onclick={toggleAddMenu}
         >

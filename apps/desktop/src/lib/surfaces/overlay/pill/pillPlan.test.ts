@@ -9,11 +9,13 @@ import { WHEEL_TOOLS } from "$core/tools";
   FLIGHT_SKIP_PX,
   isDiscOnly,
   shouldMeasureBar,
+  nextBarWidth,
   islandCueLong,
   islandLiveSlots,
   liveHang,
   islandStripLong,
   morphsInPlace,
+  bloomPivot,
   pivotFor,
   stepWheel,
   targetFor,
@@ -386,6 +388,20 @@ describe("pivotFor", () => {
   });
 });
 
+describe("bloomPivot", () => {
+  it("sin canto la rueda nace del centro", () => {
+    expect(bloomPivot(null)).toBe("center");
+    expect(bloomPivot(undefined)).toBe("center");
+  });
+
+  it("desde la isla crece hacia adentro, clavada al muro", () => {
+    expect(bloomPivot("top")).toBe("dockTop");
+    expect(bloomPivot("bottom")).toBe("dockBottom");
+    expect(bloomPivot("left")).toBe("dockLeft");
+    expect(bloomPivot("right")).toBe("dockRight");
+  });
+});
+
 describe("wheelChromeActive", () => {
   it("cubre rueda abierta y colapso en curso", () => {
     expect(wheelChromeActive({ surface: "wheel", collapsingFrom: null })).toBe(true);
@@ -491,6 +507,25 @@ describe("shouldMeasureBar", () => {
   it("acoplada o en rueda no mide la barra compacta", () => {
     expect(shouldMeasureBar("edge", false)).toBe(false);
     expect(shouldMeasureBar("wheel", false)).toBe(false);
+  });
+});
+
+describe("nextBarWidth", () => {
+  it("ignora el ruido de 1 px", () => {
+    expect(nextBarWidth(180, 180.4, true)).toBe(180);
+    expect(nextBarWidth(180, 181, true)).toBe(180);
+  });
+
+  it("grabando no encoge con las ondas", () => {
+    expect(nextBarWidth(200, 160, true)).toBe(200);
+  });
+
+  it("en idle sí encoge al contenido", () => {
+    expect(nextBarWidth(200, 52, false)).toBe(PILL.bar);
+  });
+
+  it("crece cuando el timer o un chip lo piden", () => {
+    expect(nextBarWidth(180, 210, true)).toBe(210);
   });
 });
 

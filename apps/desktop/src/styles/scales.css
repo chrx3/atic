@@ -73,7 +73,7 @@
   --shadow-float: 0 24px 70px rgb(0 0 0 / 45%);
 
   /* La del `drop-shadow` de la capa líquida, que va DESPUÉS de la fusión. */
-  --shadow-goo: 0 8px 18px rgb(0 0 0 / 28%);
+  --shadow-goo: 0 10px 22px rgb(0 0 0 / 38%);
 
   /* ── Curvas ───────────────────────────────────────────────────────────────
    * Namespace real de v4: genera `ease-morph` y `ease-calm`. Las duraciones
