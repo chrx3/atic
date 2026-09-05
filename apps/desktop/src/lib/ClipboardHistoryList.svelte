@@ -14,6 +14,7 @@
   import { ExternalLink, List, Pencil, ScanText, Search, Star, X } from "$lib/icons";
   import type { ClipboardItem } from "$lib/types";
   import { clipboardItemMatches } from "$lib/clipboardSearch";
+  import { parseCssColor, rgbToHex } from "$features/color/colorMath";
   import { t } from "$domain/i18n.svelte";
   import { openAnnotator } from "$ipc/annotate";
   import { ocrCaptureAndCopy, openManagedImage } from "$ipc/captures";
@@ -207,6 +208,19 @@
    */
   const PREVIEW_HINT = "Clic: pegar · Arrastra a otra app o al composer";
 
+  /**
+   * El color que muestra la miniatura, o `null` si la entrada no es un color.
+   *
+   * Se repinta el hex normalizado y no el texto tal cual: lo que hay en el
+   * historial viene del portapapeles del sistema, y eso no entra crudo en un
+   * `style`.
+   */
+  function swatchFor(item: ClipboardItem): string | null {
+    if (item.kind === "image") return null;
+    const rgb = parseCssColor(item.text || item.preview || "");
+    return rgb ? rgbToHex(rgb) : null;
+  }
+
   function previewFor(item: ClipboardItem): ClipPreviewInput {
     if (item.kind === "image") {
       if (!item.imagePath) return null;
@@ -214,6 +228,17 @@
         kind: "image",
         src: convertFileSrc(item.imagePath),
         label: item.preview,
+        hint: PREVIEW_HINT,
+      };
+    }
+    const swatch = swatchFor(item);
+    if (swatch) {
+      return {
+        kind: "color",
+        color: swatch,
+        // El valor tal cual se copió: puede ser rgb o hsl, y el hex que se
+        // pinta no es lo que el usuario va a pegar.
+        label: (item.text || item.preview).trim(),
         hint: PREVIEW_HINT,
       };
     }
@@ -426,6 +451,7 @@
         <li class="clip-pad" style:height="{windowed.topPad}px" aria-hidden="true"></li>
       {/if}
       {#each windowed.slice as item (item.id)}
+        {@const swatch = swatchFor(item)}
         <li class="clip-row">
           <div
             class="clip-item"
@@ -452,6 +478,8 @@
                   loading="lazy"
                   decoding="async"
                 />
+              {:else if swatch}
+                <span class="clip-swatch" style:background={swatch}></span>
               {:else}
                 <span class="clip-text-icon">Aa</span>
               {/if}
@@ -744,6 +772,21 @@
     color: var(--rb-muted);
     font-size: 0.7rem;
     font-weight: 700;
+  }
+
+  /*
+   * El color copiado, en vez de las letras.
+   *
+   * El aro va por dentro y en dos tonos para que un blanco sobre tema claro y
+   * un negro sobre tema oscuro sigan teniendo borde: con un solo color, la
+   * muestra se derrite contra el fondo justo en los extremos.
+   */
+  .clip-swatch {
+    width: 100%;
+    height: 100%;
+    box-shadow:
+      inset 0 0 0 1px rgb(255 255 255 / 22%),
+      inset 0 0 0 1px rgb(0 0 0 / 18%);
   }
 
   .clip-body {

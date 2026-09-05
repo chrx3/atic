@@ -26,6 +26,7 @@
   import Input from "$ui/Input.svelte";
   import SegmentedControl from "$ui/SegmentedControl.svelte";
   import { Pin, SquareArrowOutUpRight, Trash2 } from "$lib/icons";
+  import { parseCssColor, rgbToHex } from "$features/color/colorMath";
   import { t } from "$domain/i18n.svelte";
 
   let kind = $state<ClipboardKind | "all">("all");
@@ -64,6 +65,22 @@
     }
   }
 
+  /**
+   * Aro interior de la muestra de color, en dos tonos.
+   *
+   * Uno solo no alcanza: el blanco desaparece contra el tema claro y el negro
+   * contra el oscuro, y son justo los dos colores que más se copian.
+   */
+  const SWATCH_RING =
+    "inset 0 0 0 1px rgb(255 255 255 / 22%), inset 0 0 0 1px rgb(0 0 0 / 18%)";
+
+  /** El color de la entrada, o `null` si no es un color. */
+  function swatchFor(item: ClipboardItem): string | null {
+    if (item.kind === "image") return null;
+    const rgb = parseCssColor(item.text || item.preview || "");
+    return rgb ? rgbToHex(rgb) : null;
+  }
+
   function focusRow(index: number) {
     focusIndex = index;
     const row = listEl?.querySelector<HTMLElement>(`[data-row="${index}"]`);
@@ -87,6 +104,7 @@
 
 {#snippet row(item: ClipboardItem)}
   {@const index = flatIndex.get(item.id) ?? 0}
+  {@const swatch = swatchFor(item)}
   <li
     class="group flex items-start gap-2 border-b border-line px-3 py-1.5
            transition-colors duration-(--duration-quick) hover:bg-surface-2"
@@ -113,6 +131,9 @@
             loading="lazy"
             draggable="false"
           />
+        {:else if swatch}
+          <span class="size-full" style:background={swatch} style:box-shadow={SWATCH_RING}
+          ></span>
         {:else}
           <span class="text-micro font-semibold text-muted">Aa</span>
         {/if}
