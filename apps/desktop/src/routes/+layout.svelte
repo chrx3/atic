@@ -24,6 +24,7 @@
       "/capture-shelf",
       "/capture-overlay",
       "/capture-annotate",
+      "/color-loupe",
       "/launcher",
       "/overlay",
     ].includes(page.url.pathname),

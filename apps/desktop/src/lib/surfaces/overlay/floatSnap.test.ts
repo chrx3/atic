@@ -8,31 +8,31 @@ import {
 } from "./floatSnap";
 
 const work = { x: 0, y: 0, w: 1000, h: 800 };
-const frame = (x: number, y: number, w = 200, h = 160) => ({ x, y, w, h });
+const at = (x: number, y: number) => ({ x, y });
 
 describe("snapKindAt", () => {
-  it("el marco contra el techo maximiza, no un cuarto", () => {
-    expect(snapKindAt(frame(400, 8), work)).toBe("max");
+  it("el cursor contra el techo maximiza, no un cuarto", () => {
+    expect(snapKindAt(at(400, 8), work)).toBe("max");
   });
 
-  it("el marco contra un canto lateral parte a la mitad", () => {
-    expect(snapKindAt(frame(4, 300), work)).toBe("left");
-    expect(snapKindAt(frame(800, 300), work)).toBe("right");
+  it("el cursor contra un canto lateral parte a la mitad", () => {
+    expect(snapKindAt(at(4, 300), work)).toBe("left");
+    expect(snapKindAt(at(996, 300), work)).toBe("right");
   });
 
   it("abajo parte a la mitad inferior", () => {
-    expect(snapKindAt(frame(400, 650), work)).toBe("bottom");
+    expect(snapKindAt(at(400, 792), work)).toBe("bottom");
   });
 
   it("las esquinas ganan al canto", () => {
-    expect(snapKindAt(frame(4, 4), work)).toBe("tl");
-    expect(snapKindAt(frame(800, 4), work)).toBe("tr");
-    expect(snapKindAt(frame(4, 650), work)).toBe("bl");
-    expect(snapKindAt(frame(800, 650), work)).toBe("br");
+    expect(snapKindAt(at(4, 4), work)).toBe("tl");
+    expect(snapKindAt(at(996, 4), work)).toBe("tr");
+    expect(snapKindAt(at(4, 792), work)).toBe("bl");
+    expect(snapKindAt(at(996, 792), work)).toBe("br");
   });
 
-  it("lejos de los cantos no engancha, aunque el cursor esté al borde", () => {
-    expect(snapKindAt(frame(400, 300), work)).toBeNull();
+  it("lejos de los cantos no engancha", () => {
+    expect(snapKindAt(at(400, 300), work)).toBeNull();
   });
 });
 
@@ -99,35 +99,46 @@ describe("outerSides / snapTarget", () => {
     });
   });
 
-  it("a caballo de dos pantallas, lejos de la junta, no engancha", () => {
-    expect(snapTarget(frame(850, 200, 300, 200), [left, right])).toBeNull();
+  it("a caballo de dos pantallas, con el cursor lejos de la junta, no engancha", () => {
+    expect(snapTarget(at(920, 200), [left, right])).toBeNull();
   });
 
-  it("el marco contra la junta desde la izquierda parte a la derecha", () => {
-    expect(snapTarget(frame(800, 200, 200, 200), [left, right])).toEqual({
+  it("el cursor contra la junta desde la izquierda parte a la derecha", () => {
+    expect(snapTarget(at(990, 200), [left, right])).toEqual({
       kind: "right",
       work: left,
     });
   });
 
-  it("el marco contra la junta desde la derecha parte a la izquierda", () => {
-    expect(snapTarget(frame(1000, 200, 200, 200), [left, right])).toEqual({
+  it("el cursor contra la junta desde la derecha parte a la izquierda", () => {
+    expect(snapTarget(at(1010, 200), [left, right])).toEqual({
       kind: "left",
       work: right,
     });
   });
 
   it("colgando del canto izquierdo del monitor izquierdo parte a la izquierda", () => {
-    expect(snapTarget(frame(-12, 200, 300, 200), [left, right])).toEqual({
+    expect(snapTarget(at(-4, 200), [left, right])).toEqual({
       kind: "left",
       work: left,
     });
   });
 
   it("colgando del canto derecho del monitor derecho parte a la derecha", () => {
-    expect(snapTarget(frame(2050, 200, 300, 200), [left, right])).toEqual({
+    expect(snapTarget(at(2204, 200), [left, right])).toEqual({
       kind: "right",
       work: right,
+    });
+  });
+
+  it("el marco contra un canto no engancha si el cursor está lejos", () => {
+    expect(snapTarget(at(500, 400), [left, right])).toBeNull();
+  });
+
+  it("el cursor contra el techo maximiza aunque el marco no lo toque", () => {
+    expect(snapTarget(at(500, 8), [left, right])).toEqual({
+      kind: "max",
+      work: left,
     });
   });
 });

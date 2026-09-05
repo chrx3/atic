@@ -1123,6 +1123,7 @@ textarea,
   height: 1.1rem;
   min-width: 3.25rem;
   flex: 1;
+  overflow: hidden;
   user-select: none;
   -webkit-user-select: none;
 }
@@ -1130,6 +1131,7 @@ textarea,
   flex: 1;
   min-width: 2px;
   max-width: 4px;
+  height: 100%;
   border-radius: 999px;
   transform-origin: center;
   pointer-events: none;

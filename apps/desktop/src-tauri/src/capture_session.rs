@@ -32,6 +32,12 @@ static GENERATION: AtomicU64 = AtomicU64::new(0);
 /// sirve para eso: la pone en `true` este mismo módulo al llamar `show()`.
 static REVEALED: AtomicBool = AtomicBool::new(false);
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum OverlayKind {
+    Capture,
+}
+
 #[cfg(windows)]
 pub struct OverlaySession {
     /// Frame congelado de todo el escritorio virtual (coords físicas).
@@ -42,6 +48,7 @@ pub struct OverlaySession {
     monitors: Vec<atic_capture::monitors::MonitorInfo>,
     /// PNG temporal del frame congelado (se borra al terminar).
     frame_path: std::path::PathBuf,
+    kind: OverlayKind,
 }
 
 #[cfg(not(windows))]
@@ -71,6 +78,7 @@ pub struct OverlayInfo {
     pub width: f64,
     pub height: f64,
     pub candidates: Vec<OverlayCandidate>,
+    pub kind: OverlayKind,
 }
 
 #[tauri::command]
@@ -87,15 +95,37 @@ pub fn start_capture_session(app: AppHandle) -> Result<(), String> {
 ///   Un arranque colgado lo corta el watchdog, no el segundo clic.
 /// - Idle → arranca.
 pub fn trigger(app: &AppHandle) -> Result<(), String> {
+    // Sin despedida: lo próximo que pasa acá es congelar la pantalla.
+    crate::color_picker::stop_now(app);
+    trigger_kind(app, OverlayKind::Capture)
+}
+
+fn trigger_kind(app: &AppHandle, kind: OverlayKind) -> Result<(), String> {
     if session_is_active(app) {
+        let same = session_kind(app) == Some(kind);
         end_session(app);
-        return Ok(());
+        if same {
+            return Ok(());
+        }
     }
     if STARTING.load(Ordering::SeqCst) {
         crate::overlay::reassert_capturing_input(app);
         return Ok(());
     }
-    start_impl(app)
+    start_impl(app, kind)
+}
+
+fn session_kind(app: &AppHandle) -> Option<OverlayKind> {
+    #[cfg(windows)]
+    {
+        app.try_state::<crate::state::AppState>()
+            .and_then(|state| state.overlay_session.lock_or_recover().as_ref().map(|s| s.kind))
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = app;
+        None
+    }
 }
 
 fn session_is_active(app: &AppHandle) -> bool {
@@ -195,7 +225,7 @@ fn abandon_start(app: &AppHandle) {
 }
 
 #[cfg(windows)]
-fn start_impl(app: &AppHandle) -> Result<(), String> {
+fn start_impl(app: &AppHandle, kind: OverlayKind) -> Result<(), String> {
     // Solo una sesión: si ya hay overlay, cancelar (mismo criterio que el atajo).
     if session_is_active(app) {
         end_session(app);
@@ -223,7 +253,7 @@ fn start_impl(app: &AppHandle) -> Result<(), String> {
     if std::thread::Builder::new()
         .name("atic-capture-start".into())
         .spawn(move || {
-            if let Err(error) = start_freeze(&app_bg, token) {
+            if let Err(error) = start_freeze(&app_bg, token, kind) {
                 tracing::warn!(%error, "no se pudo abrir el overlay de captura");
                 abandon_start(&app_bg);
             }
@@ -280,7 +310,7 @@ pub(crate) fn compose_overlay(app: &AppHandle, frame: &mut atic_capture::Frame) 
 }
 
 #[cfg(windows)]
-fn start_freeze(app: &AppHandle, token: u64) -> Result<(), String> {
+fn start_freeze(app: &AppHandle, token: u64, kind: OverlayKind) -> Result<(), String> {
     use atic_capture::{engine, monitors, windows as capwin};
 
     let state = app.state::<crate::state::AppState>();
@@ -352,6 +382,7 @@ fn start_freeze(app: &AppHandle, token: u64) -> Result<(), String> {
             candidates,
             monitors,
             frame_path,
+            kind,
         });
         STARTING.store(false, Ordering::SeqCst);
     }
@@ -980,6 +1011,7 @@ fn overlay_info_impl(app: &AppHandle) -> Result<OverlayInfo, String> {
         width: f64::from(bounds.width),
         height: f64::from(bounds.height),
         candidates,
+        kind: session.kind,
     })
 }
 
@@ -1083,7 +1115,7 @@ fn save_capture(
 // ---------------------------------------------------------------------------
 
 #[cfg(not(windows))]
-fn start_impl(_app: &AppHandle) -> Result<(), String> {
+fn start_impl(_app: &AppHandle, _kind: OverlayKind) -> Result<(), String> {
     Err(crate::ui_lang::capture_windows_only())
 }
 

@@ -843,6 +843,7 @@
   .pw-nodes,
   .pw-caption {
     transform-origin: 50% 50%;
+    will-change: transform, opacity, filter;
     transition:
       opacity var(--morph-fade-dur) var(--morph-close-ease),
       transform var(--morph-close-dur) var(--morph-close-ease),

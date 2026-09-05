@@ -75,6 +75,12 @@
         fallback: "CmdOrCtrl+Shift+X",
       },
       {
+        key: "color_shortcut" as const,
+        label: t("settings.shortcuts.color"),
+        hint: t("settings.shortcuts.colorHint"),
+        fallback: "CmdOrCtrl+Shift+C",
+      },
+      {
         key: "launcher_shortcut" as const,
         label: t("settings.shortcuts.launcher"),
         hint: t("settings.shortcuts.launcherHint"),

@@ -264,6 +264,16 @@ fn builtin_actions(en: bool) -> Vec<LauncherEntry> {
             "board",
         ),
         (
+            "action:color",
+            pick(en, "Elegir color", "Pick color"),
+            pick(
+                en,
+                "Cuentagotas: un píxel de la pantalla al portapapeles",
+                "Eyedropper: copy a screen pixel to the clipboard",
+            ),
+            "color",
+        ),
+        (
             "action:clipboard",
             pick(en, "Historial de clipboard", "Clipboard history"),
             pick(
@@ -983,6 +993,7 @@ fn run_action(app: &AppHandle, action: &str) -> Result<(), String> {
         }
         "capture" => crate::capture_session::trigger(app),
         "board" => crate::annotate::toggle_board(app),
+        "color" => crate::color_picker::trigger(app),
         "clipboard" => {
             crate::clipboard_history::remember_paste_target();
             crate::shortcuts::emit_tool_slot(app, "activate-tool-slot", "clipboard");

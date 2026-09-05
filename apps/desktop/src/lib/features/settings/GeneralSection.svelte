@@ -24,6 +24,7 @@
     type UiTheme,
   } from "$lib/theme";
   import { t } from "$domain/i18n.svelte";
+  import AticMark from "$lib/AticMark.svelte";
 
   const cfg = $derived(config.current);
   const ui = useMainUi();
@@ -59,20 +60,21 @@
     })),
   );
 
-  const OVERLAY_SCALE_OPTIONS = [
-    { value: "0.75", label: "75%" },
-    { value: "1", label: "100%" },
-    { value: "1.25", label: "125%" },
-    { value: "1.5", label: "150%" },
-  ];
+  const OVERLAY_SCALE_OPTIONS = $derived([
+    { value: "1", label: t("settings.appearance.scaleNormal") },
+    { value: "1.25", label: t("settings.appearance.scaleLarge") },
+    { value: "1.5", label: t("settings.appearance.scaleHuge") },
+  ]);
 
   function overlayScaleKey(n: number): string {
     const snapped = Math.round(n * 20) / 20;
-    if (snapped <= 0.8) return "0.75";
     if (snapped <= 1.12) return "1";
     if (snapped <= 1.37) return "1.25";
     return "1.5";
   }
+
+  const overlayScale = $derived(overlayScaleKey(cfg?.overlay_scale ?? 1));
+  const overlayPreviewScale = $derived(Number(overlayScale));
 
   function patch(changes: Parameters<typeof config.patch>[0]) {
     void config.patch(changes).catch(toastError);
@@ -146,13 +148,30 @@
       </SettingsRow>
       <SettingsRow bare>
         {#snippet control()}
-          <div class="flex flex-col gap-2 py-0.5">
-            <div class="flex flex-col gap-0.5">
-              <span class="text-sm text-text">{t("settings.appearance.overlayScale")}</span>
-              <p class="text-xs text-faint">{t("settings.appearance.overlayScaleHint")}</p>
+          <div class="flex flex-col gap-3 py-0.5">
+            <div class="flex items-center gap-3">
+              <!-- Hueco fijo al máximo (150%): el disco escala por transform
+                   y el texto de al lado no se reacomoda. -->
+              <div class="grid h-12 w-12 shrink-0 place-items-center" aria-hidden="true">
+                <div
+                  class="grid size-8 place-items-center rounded-full
+                         bg-[var(--skin)] text-[var(--text)]
+                         shadow-[var(--shadow-goo)]
+                         transition-transform duration-(--duration-fast) ease-calm"
+                  style="transform: scale({overlayPreviewScale})"
+                >
+                  <AticMark size={17} strokeWidth={1.5} alive track="window" />
+                </div>
+              </div>
+              <div class="flex min-w-0 flex-col gap-0.5">
+                <span class="text-sm text-text">{t("settings.appearance.overlayScale")}</span>
+                <p class="text-pretty text-xs text-faint">
+                  {t("settings.appearance.overlayScaleHint")}
+                </p>
+              </div>
             </div>
             <SegmentedControl
-              value={overlayScaleKey(cfg.overlay_scale ?? 1)}
+              value={overlayScale}
               label={t("settings.appearance.overlayScaleAria")}
               options={OVERLAY_SCALE_OPTIONS}
               onchange={(value) => patch({ overlay_scale: Number(value) })}

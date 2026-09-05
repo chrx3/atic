@@ -7,6 +7,7 @@ export type ToolId =
   | "snippets"
   | "captures"
   | "board"
+  | "color"
   | "agents"
   | "launcher";
 
@@ -95,6 +96,14 @@ const ALL_TOOLS: ToolDef[] = [
     short: "Marcar la pantalla",
     blurb: "Congela la pantalla y la marcas con flechas y círculos, ahí donde está.",
     actionLabel: "Dibujar",
+  },
+  {
+    id: "color",
+    label: "Color",
+    short: "Cuentagotas",
+    blurb:
+      "Elige un color de la pantalla, píxel a píxel, o desde la rosa cromática. Se copia al portapapeles.",
+    actionLabel: "Elegir color",
   },
   {
     id: "launcher",

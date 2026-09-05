@@ -11,7 +11,9 @@
   import { localizeTool, t } from "$domain/i18n.svelte";
   import { LAUNCHER_LAB_OPEN_KEY } from "$lib/dev/launcherLab.svelte";
   import { pickerLab } from "$lib/dev/pickerLab.svelte";
+  import { capture } from "$domain/capture.svelte";
   import { config } from "$domain/config.svelte";
+  import { dictation } from "$domain/dictation.svelte";
   import { recordings } from "$domain/recordings.svelte";
   import { sessionEffect } from "$domain/session";
   import { toastError, toasts } from "$domain/toasts.svelte";
@@ -20,6 +22,7 @@
   import { onOpenSearchRequested } from "$ipc/search";
   import { appUpdate } from "$domain/appUpdate.svelte";
   import { closeWindow, minimizeWindow, toggleMaximizeWindow } from "$ipc/windows";
+  import AticMark from "$lib/AticMark.svelte";
   import WindowFrame from "$patterns/WindowFrame.svelte";
   import Icon from "$ui/Icon.svelte";
   import IconButton from "$ui/IconButton.svelte";
@@ -33,6 +36,11 @@
 
   const ui = provideMainUi();
   const isDev = import.meta.env.DEV;
+
+  /* Misma cuenta que la pill: la cara dice qué está corriendo ahora. */
+  const markState = $derived<"idle" | "recording" | "dictating">(
+    capture.active ? "recording" : dictation.active ? "dictating" : "idle",
+  );
   let launcherLabOpen = $state(false);
 
   // Panel estático en dev: sin dynamic import que pueda dejar la UI a medias.
@@ -141,6 +149,10 @@
   onMaximize={() => void toggleMaximizeWindow()}
   onClose={() => void closeWindow()}
 >
+  {#snippet start()}
+    <AticMark size={18} strokeWidth={1.5} alive track="window" state={markState} />
+  {/snippet}
+
   {#snippet actions()}
     <IconButton label={t("chrome.search")} size="sm" onclick={() => ui.openSearch()}>
       <Icon icon={Search} size={14} />

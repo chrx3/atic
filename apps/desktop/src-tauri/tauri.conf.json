@@ -57,6 +57,21 @@
         "visible": false
       },
       {
+        "label": "color-loupe",
+        "url": "/color-loupe",
+        "title": "Color",
+        "width": 312,
+        "height": 160,
+        "resizable": false,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "shadow": false,
+        "visible": false,
+        "focus": false
+      },
+      {
         "label": "launcher",
         "url": "/launcher",
         "title": "Buscar",

@@ -1,8 +1,10 @@
 /**
  * Snap tipo Windows para un float arrastrado.
  *
- * Manda el marco de la ventana, no el cursor. Un canto exterior engancha
- * apenas el globo lo toca o se cuelga. Un canto compartido (junta entre
+ * Manda el cursor, no el marco. Un globo alto toca el techo mucho antes
+ * de que el mouse llegue: si engancháramos por bordes de ventana, agrandar
+ * y partir se dispararían a mitad de camino. Un canto exterior engancha
+ * cuando el cursor lo toca o se cuelga. Un canto compartido (junta entre
  * monitores) engancha solo en una franja estrecha: así puedes partir a la
  * mitad contra la otra pantalla o dejar la ventana a caballo si ya cruzaste.
  */
@@ -58,23 +60,39 @@ function rangesOverlap(a0: number, a1: number, b0: number, b1: number): boolean 
   return a0 < b1 && b0 < a1;
 }
 
-function rectsOverlap(a: Rect, b: Rect): boolean {
-  return (
-    rangesOverlap(a.x, a.x + a.w, b.x, b.x + b.w) &&
-    rangesOverlap(a.y, a.y + a.h, b.y, b.y + b.h)
-  );
-}
-
-function overlapArea(a: Rect, b: Rect): number {
-  const x0 = Math.max(a.x, b.x);
-  const y0 = Math.max(a.y, b.y);
-  const x1 = Math.min(a.x + a.w, b.x + b.w);
-  const y1 = Math.min(a.y + a.h, b.y + b.h);
-  return Math.max(0, x1 - x0) * Math.max(0, y1 - y0);
-}
-
 function workOf(area: { x: number; y: number; w: number; h: number; work?: Rect }): Rect {
   return area.work ?? area;
+}
+
+function pointInRect(p: Point, r: Rect): boolean {
+  return p.x >= r.x && p.x <= r.x + r.w && p.y >= r.y && p.y <= r.y + r.h;
+}
+
+/** Distancia² al rectángulo: 0 si está adentro. */
+function dist2ToRect(p: Point, r: Rect): number {
+  const dx = p.x < r.x ? r.x - p.x : p.x > r.x + r.w ? p.x - (r.x + r.w) : 0;
+  const dy = p.y < r.y ? r.y - p.y : p.y > r.y + r.h ? p.y - (r.y + r.h) : 0;
+  return dx * dx + dy * dy;
+}
+
+/** Monitor que contiene el cursor, o el más cercano si se colgó del canto. */
+function areaAtCursor(
+  cursor: Point,
+  areas: readonly { x: number; y: number; w: number; h: number }[],
+): { x: number; y: number; w: number; h: number } | null {
+  if (areas.length === 0) return null;
+  const inside = areas.find((a) => pointInRect(cursor, a));
+  if (inside) return inside;
+  let best = areas[0];
+  let bestD = Infinity;
+  for (const a of areas) {
+    const d = dist2ToRect(cursor, a);
+    if (d < bestD) {
+      bestD = d;
+      best = a;
+    }
+  }
+  return best;
 }
 
 /** Qué cantos de un monitor no tienen otro pegado. */
@@ -139,24 +157,24 @@ function nearEdge(dist: number, role: EdgeRole, px: number): boolean {
 }
 
 /**
- * Destino según el marco contra un área.
+ * Destino según el cursor contra un área.
  */
 export function snapKindAt(
-  frame: Rect,
+  cursor: Point,
   work: Rect,
   edgePx: number = SNAP_EDGE_PX,
   cornerPx: number = SNAP_CORNER_PX,
   edges: SnapEdges = ALL_OUTER,
 ): SnapKind | null {
-  const left = frame.x - work.x;
-  const right = work.x + work.w - (frame.x + frame.w);
-  const top = frame.y - work.y;
-  const bottom = work.y + work.h - (frame.y + frame.h);
+  const left = cursor.x - work.x;
+  const right = work.x + work.w - cursor.x;
+  const top = cursor.y - work.y;
+  const bottom = work.y + work.h - cursor.y;
   let nearL = nearEdge(left, edges.left, cornerPx);
   let nearR = nearEdge(right, edges.right, cornerPx);
   let nearT = nearEdge(top, edges.top, cornerPx);
   let nearB = nearEdge(bottom, edges.bottom, cornerPx);
-  // Un globo más ancho/alto que el monitor toca los dos cantos: no es snap.
+  // Un área más estrecha que dos zonas de esquina no es un snap de canto.
   if (nearL && nearR) {
     nearL = false;
     nearR = false;
@@ -176,40 +194,27 @@ export function snapKindAt(
   return null;
 }
 
-/** Monitor cuyo canto está chocando el marco, si hay. */
+/** Monitor cuyo canto está bajo el cursor, si hay. */
 export function snapTarget(
-  frame: Rect,
+  cursor: Point,
   areas: readonly { x: number; y: number; w: number; h: number; work?: Rect }[],
   edgePx: number = SNAP_EDGE_PX,
   cornerPx: number = SNAP_CORNER_PX,
 ): SnapHit | null {
   if (areas.length === 0) return null;
   const bounds = areas.map((a) => ({ x: a.x, y: a.y, w: a.w, h: a.h }));
-  const cx = frame.x + frame.w / 2;
-  const cy = frame.y + frame.h / 2;
-  let best: (SnapHit & { score: number }) | null = null;
-  for (let i = 0; i < areas.length; i++) {
-    const area = areas[i];
-    const work = workOf(area);
-    if (!rectsOverlap(frame, work) && !rectsOverlap(frame, bounds[i])) continue;
-    const kind = snapKindAt(
-      frame,
-      work,
-      edgePx,
-      cornerPx,
-      monitorEdges(bounds[i], bounds),
-    );
-    if (!kind) continue;
-    const overlap = overlapArea(frame, work);
-    const home =
-      cx >= work.x &&
-      cx <= work.x + work.w &&
-      cy >= work.y &&
-      cy <= work.y + work.h;
-    const score = overlap + (home ? 1_000_000 : 0);
-    if (!best || score > best.score) best = { kind, work, score };
-  }
-  return best ? { kind: best.kind, work: best.work } : null;
+  const area = areaAtCursor(cursor, bounds);
+  if (!area) return null;
+  const index = bounds.indexOf(area);
+  const work = workOf(areas[index] ?? area);
+  const kind = snapKindAt(
+    cursor,
+    work,
+    edgePx,
+    cornerPx,
+    monitorEdges(area, bounds),
+  );
+  return kind ? { kind, work } : null;
 }
 
 /** Marco de destino dentro del área útil, con el mismo aire que el maximize. */

@@ -31,6 +31,20 @@ impl Frame {
         self.bounds.height
     }
 
+    /// RGBA de un píxel en coords del buffer (origen 0,0 = esquina del PNG).
+    pub fn pixel_rgba(&self, x: i32, y: i32) -> Option<[u8; 4]> {
+        if x < 0 || y < 0 {
+            return None;
+        }
+        let px = x as u32;
+        let py = y as u32;
+        if px >= self.width() || py >= self.height() {
+            return None;
+        }
+        let i = (py as usize * self.width() as usize + px as usize) * 4;
+        Some([self.bgra[i + 2], self.bgra[i + 1], self.bgra[i], self.bgra[i + 3]])
+    }
+
     /// Recorta una región (en coordenadas físicas del escritorio virtual) del
     /// frame. Devuelve `None` si la región no intersecta el frame.
     pub fn crop(&self, region: Rect) -> Option<Frame> {
@@ -169,6 +183,15 @@ mod tests {
             }
         }
         Frame::new(Rect::new(0, 0, 4, 4), bgra)
+    }
+
+    #[test]
+    fn pixel_rgba_reads_red_from_bgra() {
+        // BGRA: azul, verde, rojo, alpha.
+        let frame = Frame::new(Rect::new(0, 0, 1, 1), vec![10, 20, 30, 255]);
+        assert_eq!(frame.pixel_rgba(0, 0), Some([30, 20, 10, 255]));
+        assert_eq!(frame.pixel_rgba(-1, 0), None);
+        assert_eq!(frame.pixel_rgba(1, 0), None);
     }
 
     #[test]

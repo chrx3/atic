@@ -162,7 +162,7 @@
       class:rb-wave-bar-quiet={variant === "quiet"}
       class:rb-wave-bar-voice={variant === "voice"}
       data-tauri-drag-region
-      style="height: {Math.round(item.h * 100)}%"
+      style="transform: scaleY({Math.max(0.14, item.h).toFixed(3)})"
     ></span>
   {/each}
 </div>

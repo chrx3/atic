@@ -106,6 +106,7 @@ pub struct ShortcutBindings<'a> {
     pub agents: &'a str,
     pub screenshot: &'a str,
     pub board: &'a str,
+    pub color: &'a str,
     pub launcher: &'a str,
 }
 
@@ -137,6 +138,7 @@ pub fn register_shortcuts(app: &AppHandle, bindings: ShortcutBindings<'_>) -> Re
     };
     let screenshot = parse_binding(en, n("captura", "capture"), bindings.screenshot)?;
     let board = parse_binding(en, n("pizarra", "board"), bindings.board)?;
+    let color = parse_binding(en, n("color", "color"), bindings.color)?;
     let launcher_bind = parse_binding(en, "launcher", bindings.launcher)?;
 
     let mut named: Vec<(&str, &Binding)> = vec![
@@ -148,6 +150,7 @@ pub fn register_shortcuts(app: &AppHandle, bindings: ShortcutBindings<'_>) -> Re
         (n("fragmentos", "snippets"), &snippets),
         (n("captura", "capture"), &screenshot),
         (n("pizarra", "board"), &board),
+        ("color", &color),
         ("launcher", &launcher_bind),
     ];
     if let Some(ref agents) = agents {
@@ -381,6 +384,26 @@ pub fn register_shortcuts(app: &AppHandle, bindings: ShortcutBindings<'_>) -> Re
         }
         Binding::Mouse(_) => {
             tracing::warn!("la pizarra solo admite atajo de teclado");
+        }
+    }
+
+    match &color {
+        Binding::Key(sc) => {
+            let handle = app.clone();
+            let held = AtomicBool::new(false);
+            if let Err(err) = gs.on_shortcut(*sc, move |_app, _sc, event| {
+                if take_key_press(&held, event.state()) {
+                    if let Err(error) = crate::color_picker::trigger(&handle) {
+                        tracing::warn!(%error, "no se pudo abrir el cuentagotas");
+                    }
+                }
+            }) {
+                tracing::error!(%err, "no se pudo registrar el atajo de color");
+                failed.push("color".to_string());
+            }
+        }
+        Binding::Mouse(_) => {
+            tracing::warn!("el cuentagotas solo admite atajo de teclado");
         }
     }
 

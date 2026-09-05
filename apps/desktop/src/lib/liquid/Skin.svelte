@@ -32,6 +32,7 @@
     smooth = SMOOTH,
     color = "var(--skin)",
     shadow = "var(--shadow-goo)",
+    breathe = false,
     onPath,
   }: {
     shapes: Shape[];
@@ -42,6 +43,8 @@
     smooth?: number;
     color?: string;
     shadow?: string;
+    /** Un solo pulso de brillo: la gota está viva (grabar / dictar). */
+    breathe?: boolean;
     /**
      * Lo que se acaba de trazar, con su costo.
      *
@@ -55,6 +58,7 @@
   const tracer = new PathTracer();
   const traced = $derived.by(() => tracer.next(shapes, { blend, cell, smooth }));
   const path = $derived(traced.path);
+  const lightId = $props.id();
 
   // El par de `performance.now()` cuesta menos que un solo muestreo del campo,
   // así que no hace falta condicionarlo a que alguien esté escuchando.
@@ -69,6 +73,7 @@
   -->
   <div
     class="skin"
+    class:is-breathing={breathe}
     style:left="{path.minX}px"
     style:top="{path.minY}px"
     style:width="{path.width}px"
@@ -83,6 +88,19 @@
       height={path.height}
       viewBox="{path.minX} {path.minY} {path.width} {path.height}"
     >
+      <defs>
+        <linearGradient
+          id="sl-{lightId}"
+          x1="0"
+          y1="0"
+          x2="0"
+          y2="1"
+        >
+          <stop offset="0%" stop-color="#fff" stop-opacity="0.38" />
+          <stop offset="22%" stop-color="#fff" stop-opacity="0.08" />
+          <stop offset="55%" stop-color="#fff" stop-opacity="0" />
+        </linearGradient>
+      </defs>
       <!-- `evenodd` porque los lazos del contorno no salen orientados de forma
            consistente: con la regla por defecto, una isla interior se rellenaría
            en vez de quedar hueca. El stroke del mismo color no es un borde:
@@ -95,6 +113,16 @@
         stroke-width="1.25"
         stroke-linejoin="round"
         stroke-linecap="round"
+      />
+      <!-- Filete de luz: no es vidrio, es el lomo de una gota. -->
+      <path
+        d={path.d}
+        fill="url(#sl-{lightId})"
+        fill-rule="evenodd"
+        stroke="rgba(255,255,255,0.28)"
+        stroke-width="1.15"
+        stroke-linejoin="round"
+        pointer-events="none"
       />
     </svg>
   </div>
@@ -112,5 +140,25 @@
     display: block;
     overflow: visible;
     pointer-events: none;
+  }
+
+  .skin.is-breathing {
+    animation: skin-breathe 2.4s ease-in-out infinite;
+  }
+
+  @keyframes skin-breathe {
+    0%,
+    100% {
+      filter: brightness(1);
+    }
+    50% {
+      filter: brightness(1.08);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .skin.is-breathing {
+      animation: none;
+    }
   }
 </style>

@@ -429,6 +429,7 @@
         blend={skinBlend}
         cell={skinCell}
         smooth={skinSmooth}
+        breathe={liquid.breathe && island.id.split("+").includes("pill")}
       />
     {/each}
 

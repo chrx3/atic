@@ -57,3 +57,6 @@ skills-lock.json
 .impeccable/live/*.png
 # impeccable-ignore-end
 
+
+# Worktrees temporales de agentes
+.claude/worktrees/

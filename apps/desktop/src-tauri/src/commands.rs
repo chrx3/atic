@@ -90,6 +90,7 @@ pub fn set_config(
     let agents_shortcut = config.agents_shortcut.clone();
     let screenshot_shortcut = config.screenshot_shortcut.clone();
     let board_shortcut = config.board_shortcut.clone();
+    let color_shortcut = config.color_shortcut.clone();
     let launcher_shortcut = config.launcher_shortcut.clone();
     let prev = state.config.lock_or_recover().clone();
     config.overlay_scale = atic_core::config::sanitize_overlay_scale(config.overlay_scale);
@@ -106,6 +107,7 @@ pub fn set_config(
         || agents_shortcut != prev.agents_shortcut
         || screenshot_shortcut != prev.screenshot_shortcut
         || board_shortcut != prev.board_shortcut
+        || color_shortcut != prev.color_shortcut
         || launcher_shortcut != prev.launcher_shortcut
     {
         crate::shortcuts::register_shortcuts(
@@ -120,6 +122,7 @@ pub fn set_config(
                 agents: &agents_shortcut,
                 screenshot: &screenshot_shortcut,
                 board: &board_shortcut,
+                color: &color_shortcut,
                 launcher: &launcher_shortcut,
             },
         )?;

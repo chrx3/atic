@@ -69,6 +69,13 @@ export const en = {
       blurb: "Freezes the screen so you can mark it with arrows and circles in place.",
       actionLabel: "Draw",
     },
+    color: {
+      label: "Color",
+      short: "Eyedropper",
+      blurb:
+        "Pick a color from the screen, pixel by pixel, or from the chromatic wheel. Copies to the clipboard.",
+      actionLabel: "Pick color",
+    },
     launcher: {
       label: "Apps",
       short: "System programs",
@@ -151,18 +158,23 @@ export const en = {
       es: "Español",
       en: "English",
       speech: "Transcription",
-      speechHint: "What Whisper assumes when transcribing. System uses the OS language.",
+      speechHint:
+        "What Whisper assumes when transcribing. System uses the OS language.",
       speechAria: "Transcription language",
     },
     appearance: {
       title: "Appearance",
       theme: "Theme",
-      themeHint: "Light and dark are the extremes; the ones in between stand out better from what is behind.",
+      themeHint:
+        "Light and dark are the extremes; the ones in between stand out better from what is behind.",
       themeAria: "Interface theme",
-      overlayScale: "Size",
+      overlayScale: "Pill size",
       overlayScaleHint:
-        "Pill, clipboard and floating panels. 100% is one UI pixel per screen pixel.",
-      overlayScaleAria: "Size of the pill and panels",
+        "Only the pill and floating panels. The Atic window stays the same.",
+      overlayScaleAria: "Size of the pill and floating panels",
+      scaleNormal: "Normal",
+      scaleLarge: "Large",
+      scaleHuge: "Extra large",
       system: "System",
       light: "Light",
       sepia: "Sepia",
@@ -209,7 +221,8 @@ export const en = {
       title: "Tools on the pill",
       hint: "The wheel splits its angle between whatever is on it: fewer wedges, bigger targets. What you take out stays in the main window and on its shortcut.",
       ring: "On the wheel",
-      ringHint: "One wedge each, a single flick away. The first one sits at the top and they run clockwise.",
+      ringHint:
+        "One wedge each, a single flick away. The first one sits at the top and they run clockwise.",
       more: "Behind «More»",
       moreHint: "In a second ring, two steps away. For what you rarely reach for.",
       hidden: "Off the pill",
@@ -223,7 +236,8 @@ export const en = {
       down: "Move {label} down",
       lastOne: "The wheel cannot be left empty: this last one has to stay.",
       reset: "Put them all back on the wheel",
-      stripNote: "The edge strip shows the wheel ones and the «More» ones in a row: it is linear, it has no angle to save.",
+      stripNote:
+        "The edge strip shows the wheel ones and the «More» ones in a row: it is linear, it has no angle to save.",
     },
     shortcuts: {
       title: "Global shortcuts",
@@ -248,6 +262,9 @@ export const en = {
       screenshot: "Screenshot",
       board: "Draw on screen",
       boardHint: "Freezes the screen so you can mark it. Esc dismisses it.",
+      color: "Pick color",
+      colorHint:
+        "Freezes the screen and copies the color under the cursor. R opens the wheel.",
       launcher: "Launcher",
       launcherHint: "Search and open apps, like Spotlight.",
     },
@@ -357,7 +374,8 @@ export const en = {
       missingKey: "Missing {name} key",
       ollamaDown: "Ollama is not responding",
       provider: "Provider",
-      providerHint: "Summaries are the only thing that leaves your machine. Ollama runs locally.",
+      providerHint:
+        "Summaries are the only thing that leaves your machine. Ollama runs locally.",
       who: "Who summarizes",
       model: "Model",
       url: "URL",
@@ -379,7 +397,8 @@ export const en = {
       title: "Claude Code",
       hint: "The pill does not write someone else's settings. Merge the hooks key; don't replace the whole file.",
       hooks: "Hooks",
-      hooksHint: "Without this, the chip can't say “permission”. Paste it into ~/.claude/settings.json.",
+      hooksHint:
+        "Without this, the chip can't say “permission”. Paste it into ~/.claude/settings.json.",
       copy: "Copy",
       copied: "Copied",
       copiedToast: "Copied. Merge the hooks key into ~/.claude/settings.json",
@@ -411,7 +430,8 @@ export const en = {
     availableTitle: "A new version is out: {version}",
     availableBody: "The installer downloads first. Then Install and restart appears.",
     checkFailed: "Couldn't check",
-    checkTimeout: "GitHub didn't respond in time. You can still download, or try again.",
+    checkTimeout:
+      "GitHub didn't respond in time. You can still download, or try again.",
     checkFetch:
       "There's no update package on GitHub. latest.json needs to sit next to the .exe on the release.",
     upToDate: "You're up to date",
@@ -480,7 +500,8 @@ export const en = {
     downloadingChip: "Downloading",
     downloadingModel: "Downloading the model",
     downloadFailed: "Couldn't download the model",
-    pendingBytes: "About {size} left to download. You can continue and do it later in Settings.",
+    pendingBytes:
+      "About {size} left to download. You can continue and do it later in Settings.",
     shortcutsBody:
       "Three shortcuts, not ten. Confirm or change them now: you'll need them next.",
     conflictBody: "Pick another combination for {names}.",
@@ -730,8 +751,7 @@ export const en = {
         "Hit Transcribe to generate it. It runs locally, so it takes a while.",
       listenFrom: "Listen from {time}",
       transcriptTitle: "Transcript",
-      editHint:
-        "Saving drops empty clips and marks the previous summary as pending.",
+      editHint: "Saving drops empty clips and marks the previous summary as pending.",
       discard: "Discard",
       saveChanges: "Save changes",
       searchTranscript: "Search the transcript…",
@@ -792,8 +812,7 @@ export const en = {
     },
     snippets: {
       kicker: "Reusable shortcuts",
-      blurb:
-        "Snippets you save and paste with a click. Not clipboard history.",
+      blurb: "Snippets you save and paste with a click. Not clipboard history.",
       count: "{count} texts",
       view: "Texts view",
       what: "What to show",
@@ -822,7 +841,8 @@ export const en = {
     },
     agents: {
       booting: "Starting {name}",
-      bootingHint: "The terminal waits until it has a real size. The agent paints when it is ready.",
+      bootingHint:
+        "The terminal waits until it has a real size. The agent paints when it is ready.",
       bootingGeneric: "Starting console",
       shortcuts: "Shortcuts",
       shortcutsAria: "Console shortcuts",
@@ -830,7 +850,7 @@ export const en = {
       shortcutsHint: "They work even when the terminal has focus.",
       shortcutSplitRight: "Split to the right",
       shortcutSplitDown: "Split down",
-      shortcutNew: "New console",
+      shortcutNew: "New console or agent",
       shortcutClose: "Close tab",
       shortcutZoom: "Text zoom (also Ctrl+wheel)",
       shortcutZoomReset: "Reset zoom",
@@ -851,6 +871,24 @@ export const en = {
       consoleSingular: "console",
       consolePlural: "consoles",
       install: "Install",
+      folderPick: {
+        title: "Choose folder",
+        use: "Use this folder",
+        up: "Up",
+        upAria: "Go up one level",
+        roots: "Frequent locations",
+        entries: "Subfolders",
+        loading: "Loading folders…",
+        retry: "Try again",
+        empty: "This folder has no subfolders",
+        search: "Search folder…",
+        searchAria: "Search folders",
+        noMatch: "No folders match",
+        favs: "Favorites",
+        favAdd: "Add to favorites",
+        favRemove: "Remove from favorites",
+        favCurrent: "Pin this folder",
+      },
     },
     captures: {
       count: "{count} recent",
@@ -936,6 +974,33 @@ export const en = {
     },
     captureHud: {
       help: "Click: window · Drag: region · Space: screen · Esc cancels",
+    },
+    colorHud: {
+      edit: "Edit",
+      back: "Back",
+      protocolError: "The color interface and engine do not match. Restart Atic.",
+      timeout: "The color engine did not respond. Press Esc to exit.",
+      loading: "Reading color…",
+      copying: "Copying…",
+      copyError: "Could not copy: {error}. You can try again.",
+      invalidHex: "Enter six hexadecimal digits, for example #3A82F6.",
+      hue: "Hue",
+      saturation: "Saturation",
+      brightness: "Brightness",
+      apply: "Apply",
+      cancel: "Cancel · Esc",
+      help: "Click or Enter: copy · R: edit",
+      helpRose: "Adjust the color · Enter: copy · R: return",
+      rose: "Wheel",
+      roseOpen: "Open chromatic wheel",
+      roseClose: "Close chromatic wheel",
+      roseAria: "Chromatic wheel",
+      hex: "HEX",
+      rgb: "RGB",
+      hsl: "HSL",
+      copied: "Copied {value}",
+      copy: "Copy {value}",
+      recent: "Recent",
     },
     launcherWin: {
       search: "Search",
