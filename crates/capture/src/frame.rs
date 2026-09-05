@@ -1,7 +1,7 @@
 //! Frame en memoria: píxeles BGRA con su posición física en el escritorio
 //! virtual. Base de las capturas de monitor, región y ventana.
 
-use crate::encoding::bgra_to_png;
+use crate::encoding::{bgra_to_jpeg, bgra_to_png};
 use crate::error::Result;
 use crate::geometry::Rect;
 
@@ -69,6 +69,11 @@ impl Frame {
     /// Codifica el frame a PNG en memoria.
     pub fn to_png(&self) -> Result<Vec<u8>> {
         bgra_to_png(self.width(), self.height(), &self.bgra)
+    }
+
+    /// JPEG para la mira. `quality` 1–100; la captura final sigue siendo PNG.
+    pub fn to_jpeg(&self, quality: u8) -> Result<Vec<u8>> {
+        bgra_to_jpeg(self.width(), self.height(), &self.bgra, quality)
     }
 
     /// Frame desde un PNG, anclado en coords físicas `(x, y)`.

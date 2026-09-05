@@ -58,6 +58,8 @@ struct LiveConsole {
     master: Box<dyn MasterPty + Send>,
     killer: Box<dyn ChildKiller + Send + Sync>,
     stop: Arc<AtomicBool>,
+    /// PID del proceso raíz del PTY (`cmd /K` o la shell). 0 = desconocido.
+    pid: u32,
     _askpass: Option<AskpassGuard>,
 }
 
@@ -429,6 +431,7 @@ pub fn console_open(
     let session = Uuid::new_v4().to_string();
     let stop = Arc::new(AtomicBool::new(false));
     let killer = child.clone_killer();
+    let pid = child.process_id().unwrap_or(0);
 
     spawn_reader(app.clone(), session.clone(), reader, Arc::clone(&stop));
     spawn_wait(app, session.clone(), child, Arc::clone(&stop));
@@ -441,6 +444,7 @@ pub fn console_open(
                 master: pair.master,
                 killer,
                 stop,
+                pid,
                 _askpass: askpass,
             },
         );
@@ -506,6 +510,150 @@ pub fn console_gc(keep: Vec<String>) -> Result<u32, String> {
     Ok(stale.len() as u32)
 }
 
+/// CLI de agente que está corriendo *dentro* de la PTY (hijo de la shell).
+///
+/// Si abriste una consola local y después escribiste `codex`, la pestaña
+/// sigue siendo «Local» hasta que esto lo ve. `None` = solo la shell, o
+/// la sesión ya no existe.
+#[tauri::command]
+pub fn console_foreground_cli(session: String) -> Option<String> {
+    let pid = with_map(|map| map.get(&session).map(|live| live.pid))?;
+    if pid == 0 {
+        return None;
+    }
+    foreground_agent_cli(pid)
+}
+
+#[cfg(windows)]
+fn foreground_agent_cli(root: u32) -> Option<String> {
+    let rows = process_snapshot();
+    if rows.is_empty() {
+        return None;
+    }
+    let mut best: Option<(u32, String)> = None;
+    let mut stack = vec![(root, 0u32)];
+    let mut seen = HashSet::new();
+    while let Some((pid, depth)) = stack.pop() {
+        if !seen.insert(pid) {
+            continue;
+        }
+        if pid != root {
+            let path = process_image_path(pid).or_else(|| {
+                rows.iter()
+                    .find(|(id, _, _)| *id == pid)
+                    .map(|(_, _, exe)| exe.clone())
+            });
+            if let Some(path) = path {
+                if let Some(cli) = agent_cli_from_path(&path) {
+                    if best.as_ref().is_none_or(|(d, _)| depth >= *d) {
+                        best = Some((depth, cli));
+                    }
+                }
+            }
+        }
+        for (id, parent, _) in &rows {
+            if *parent == pid {
+                stack.push((*id, depth + 1));
+            }
+        }
+    }
+    best.map(|(_, cli)| cli)
+}
+
+#[cfg(not(windows))]
+fn foreground_agent_cli(_root: u32) -> Option<String> {
+    None
+}
+
+#[cfg(windows)]
+fn process_snapshot() -> Vec<(u32, u32, String)> {
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+        TH32CS_SNAPPROCESS,
+    };
+    let snap = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+    if snap.is_null() || snap == INVALID_HANDLE_VALUE {
+        return Vec::new();
+    }
+    let mut entry = unsafe { std::mem::zeroed::<PROCESSENTRY32W>() };
+    entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+    let mut out = Vec::new();
+    unsafe {
+        if Process32FirstW(snap, &mut entry) != 0 {
+            loop {
+                out.push((
+                    entry.th32ProcessID,
+                    entry.th32ParentProcessID,
+                    wchar_to_string(&entry.szExeFile),
+                ));
+                if Process32NextW(snap, &mut entry) == 0 {
+                    break;
+                }
+            }
+        }
+        CloseHandle(snap);
+    }
+    out
+}
+
+#[cfg(windows)]
+fn wchar_to_string(buf: &[u16]) -> String {
+    let end = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+    String::from_utf16_lossy(&buf[..end])
+}
+
+#[cfg(windows)]
+fn process_image_path(pid: u32) -> Option<String> {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle.is_null() {
+            return None;
+        }
+        let mut buf = [0u16; 512];
+        let mut len = buf.len() as u32;
+        let ok = QueryFullProcessImageNameW(handle, 0, buf.as_mut_ptr(), &mut len);
+        CloseHandle(handle);
+        if ok == 0 {
+            return None;
+        }
+        Some(String::from_utf16_lossy(&buf[..len as usize]))
+    }
+}
+
+/// Nombre de CLI conocido a partir de un exe o de su ruta (`codex.exe`,
+/// `…/opencode-ai/bin/opencode`).
+fn agent_cli_from_path(path: &str) -> Option<String> {
+    let normalized = path.replace('\\', "/").to_ascii_lowercase();
+    let stem = Path::new(&normalized)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("");
+    match stem {
+        "claude" | "claude-code" => return Some("claude".into()),
+        "codex" => return Some("codex".into()),
+        "opencode" => return Some("opencode".into()),
+        "cursor-agent" => return Some("cursor-agent".into()),
+        "agy" | "antigravity" => return Some("agy".into()),
+        "grok" => return Some("grok".into()),
+        _ => {}
+    }
+    let file = Path::new(&normalized)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("");
+    for name in ["claude", "codex", "opencode", "cursor-agent", "agy", "grok"] {
+        if file.contains(name) {
+            return Some(name.to_string());
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -526,5 +674,24 @@ mod tests {
         assert!(!is_script_env_var("NODE_ENV"));
         assert!(!is_script_env_var("npmrc"));
         assert!(!is_script_env_var("NPM_TOKEN"));
+    }
+
+    #[test]
+    fn agent_cli_from_exe_and_shim_path() {
+        assert_eq!(agent_cli_from_path("codex.exe").as_deref(), Some("codex"));
+        assert_eq!(
+            agent_cli_from_path(r"C:\Users\x\.local\bin\claude.exe").as_deref(),
+            Some("claude")
+        );
+        assert_eq!(
+            agent_cli_from_path(r"C:\npm\opencode.cmd").as_deref(),
+            Some("opencode")
+        );
+        assert_eq!(agent_cli_from_path("powershell.exe"), None);
+        assert_eq!(agent_cli_from_path("cursor.exe"), None);
+        assert_eq!(
+            agent_cli_from_path("cursor-agent.exe").as_deref(),
+            Some("cursor-agent")
+        );
     }
 }

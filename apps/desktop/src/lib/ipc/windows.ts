@@ -92,6 +92,26 @@ export function hideWindow(): Promise<void> {
   return getCurrentWindow().hide();
 }
 
+/** Bounds físicos de esta ventana (posición + tamaño). */
+export type PhysicalBounds = { x: number; y: number; w: number; h: number };
+
+/** El toast cubre el monitor: el preview puede salir de la esquina. */
+export type ShelfCover = {
+  rest: PhysicalBounds;
+  monX: number;
+  monY: number;
+  monW: number;
+  monH: number;
+};
+
+export function coverShelfMonitor(): Promise<ShelfCover | null> {
+  return invoke<ShelfCover | null>("capture_shelf_cover_monitor");
+}
+
+export function restoreShelfBounds(rest: PhysicalBounds): Promise<void> {
+  return invoke("capture_shelf_restore_bounds", { rest });
+}
+
 /**
  * Empieza a redimensionar desde un borde o una esquina.
  *

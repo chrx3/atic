@@ -47,7 +47,12 @@ class SummariesStore implements DomainStore {
   needsSetup = $state(false);
 
   /** Etapa del resumen por partes (`map` / `wait` / `reduce`), o nada. */
-  progress = $state<{ stage: string; part: number; of: number } | null>(null);
+  progress = $state<{
+    stage: string;
+    part: number;
+    of: number;
+    wait_secs: number;
+  } | null>(null);
 
   /** De qué grabación es el borrador. Evita releer al volver a abrirla. */
   #openId: string | null = null;
@@ -67,7 +72,12 @@ class SummariesStore implements DomainStore {
       },
       "summarize-progress": (p) => {
         if (p.id !== this.generating) return;
-        this.progress = { stage: p.stage, part: p.part, of: p.of };
+        this.progress = {
+          stage: p.stage,
+          part: p.part,
+          of: p.of,
+          wait_secs: p.wait_secs,
+        };
       },
       "summary-ready": (p) => {
         if (p.id === this.generating) {

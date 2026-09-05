@@ -1227,6 +1227,9 @@ fn restack(app: &AppHandle, _how: Restack) {
         }
         if on {
             tuck_below_work_windows(app);
+            if ITEM_DRAG_PASSTHROUGH.load(Ordering::Acquire) {
+                tuck_below_window(app, crate::capture_shelf::LABEL);
+            }
         }
     }
     #[cfg(not(windows))]
@@ -1241,6 +1244,12 @@ fn work_windows_above_overlay() -> &'static [&'static str] {
 }
 
 fn tuck_below_work_windows(app: &AppHandle) {
+    for label in work_windows_above_overlay() {
+        tuck_below_window(app, label);
+    }
+}
+
+fn tuck_below_window(app: &AppHandle, label: &str) {
     #[cfg(windows)]
     {
         use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -1252,34 +1261,32 @@ fn tuck_below_work_windows(app: &AppHandle) {
         let Ok(overlay_hwnd) = overlay.hwnd() else {
             return;
         };
-        for label in work_windows_above_overlay() {
-            let Some(window) = app.get_webview_window(*label) else {
-                continue;
-            };
-            if !window.is_visible().unwrap_or(false) {
-                continue;
-            }
-            let Ok(above) = window.hwnd() else {
-                continue;
-            };
-            // SAFETY: ambos HWND los da Tauri y viven mientras vivan las ventanas.
-            // `hWndInsertAfter` = la ventana que queda ENCIMA del overlay.
-            unsafe {
-                SetWindowPos(
-                    overlay_hwnd.0 as _,
-                    above.0 as _,
-                    0,
-                    0,
-                    0,
-                    0,
-                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
-                );
-            }
+        let Some(window) = app.get_webview_window(label) else {
+            return;
+        };
+        if !window.is_visible().unwrap_or(false) {
+            return;
+        }
+        let Ok(above) = window.hwnd() else {
+            return;
+        };
+        // SAFETY: ambos HWND los da Tauri y viven mientras vivan las ventanas.
+        // `hWndInsertAfter` = la ventana que queda ENCIMA del overlay.
+        unsafe {
+            SetWindowPos(
+                overlay_hwnd.0 as _,
+                above.0 as _,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+            );
         }
     }
     #[cfg(not(windows))]
     {
-        let _ = app;
+        let _ = (app, label);
     }
 }
 
@@ -1343,6 +1350,9 @@ pub fn set_click_through(window: &tauri::WebviewWindow, on: bool) {
     // ve el evento. En Chrome/`pnpm dev` esa lámina no existe.
     #[cfg(windows)]
     sync_webview_child_transparent(window, on);
+    // Cada cambio de bandera puede devolver el alfa uniforme a 255 y el
+    // overlay vuelve a tapar al de atrás (ver `keep_non_occluding`).
+    keep_non_occluding(window);
 }
 
 /// `WS_EX_TRANSPARENT` del hijo WebView2, alineado al click-through del padre.
@@ -1410,8 +1420,10 @@ const OVERLAY_ALPHA: u8 = 254;
 /// transparencia real.
 ///
 /// Hay que reponerlo después de CADA cambio de banderas: `set_ignore_cursor_events`
-/// reescribe `GWL_EXSTYLE` entero, y si en el camino quita y repone
-/// `WS_EX_LAYERED` el alfa vuelve al default.
+/// y `set_focusable` reescriben `GWL_EXSTYLE` entero, y si en el camino quitan
+/// y reponen `WS_EX_LAYERED` el alfa vuelve al default. El modo texto de
+/// agentes es el caso típico: el overlay ya está armado, no hay flanco de
+/// click-through, y sin reponer el alfa el escritorio de atrás se congela.
 pub fn keep_non_occluding(window: &tauri::WebviewWindow) {
     #[cfg(windows)]
     {
@@ -1439,6 +1451,30 @@ pub fn keep_non_occluding(window: &tauri::WebviewWindow) {
     {
         let _ = window;
     }
+}
+
+/// `set_focusable` / `set_ignore_cursor_events` van al hilo del event loop.
+/// Reponer el alfa ahora y otra vez cuando esa cola ya aplicó el estilo.
+#[cfg(windows)]
+fn schedule_non_occluding(app: &AppHandle) {
+    let app = app.clone();
+    let _ = std::thread::Builder::new()
+        .name("atic-overlay-alpha".into())
+        .spawn(move || {
+            let start = std::time::Instant::now();
+            for delay_ms in [0u64, 16, 50, 120] {
+                let target = std::time::Duration::from_millis(delay_ms);
+                if let Some(wait) = target.checked_sub(start.elapsed()) {
+                    std::thread::sleep(wait);
+                }
+                let again = app.clone();
+                let _ = app.run_on_main_thread(move || {
+                    if let Some(window) = again.get_webview_window(LABEL) {
+                        keep_non_occluding(&window);
+                    }
+                });
+            }
+        });
 }
 
 /// Arranque: colocar, mostrar y dejar el worker escuchando.
@@ -1630,9 +1666,8 @@ fn start_toggle_worker(app: AppHandle) {
                             POINTER_GESTURE.store(false, Ordering::Release);
                         }
                         set_click_through(&window, through);
-                        // Inmediatamente después del cambio de banderas: es el
-                        // único punto que aplica el click-through, así que es
-                        // el único donde el alfa se puede haber perdido.
+                        // Segunda pasada: `ignore_cursor_events` a veces aplica
+                        // en el event loop *después* de `set_click_through`.
                         keep_non_occluding(&window);
                         CLICK_THROUGH.store(through, Ordering::Release);
                     },
@@ -1772,6 +1807,8 @@ pub fn set_overlay_item_drag(app: AppHandle, on: bool) {
         }
         #[cfg(windows)]
         reevaluate_arm();
+        tuck_below_window(&app, crate::capture_shelf::LABEL);
+        let _ = app.emit("overlay-item-drag", true);
     } else {
         // Devolver lo podado. Si el overlay ya republicó por su cuenta, su
         // envío es más nuevo que esta copia y pisa a esta enseguida.
@@ -1782,6 +1819,7 @@ pub fn set_overlay_item_drag(app: AppHandle, on: bool) {
                 }
             }
         }
+        let _ = app.emit("overlay-item-drag", false);
         #[cfg(windows)]
         reevaluate_arm();
     }
@@ -2406,6 +2444,7 @@ pub fn set_overlay_text_mode(app: AppHandle, on: bool) {
             ARMED.store(false, Ordering::Release);
             set_click_through(&window, true);
             CLICK_THROUGH.store(true, Ordering::Release);
+            schedule_non_occluding(&app);
             return;
         }
         if on {
@@ -2421,8 +2460,15 @@ pub fn set_overlay_text_mode(app: AppHandle, on: bool) {
             // congelaba el overlay.
             if let Ok(hwnd) = window.hwnd() {
                 let raw = hwnd.0 as isize;
+                let app = app.clone();
                 std::thread::spawn(move || {
                     crate::clipboard_history::force_foreground(raw as _);
+                    let again = app.clone();
+                    let _ = app.run_on_main_thread(move || {
+                        if let Some(window) = again.get_webview_window(LABEL) {
+                            keep_non_occluding(&window);
+                        }
+                    });
                 });
             }
         } else {
@@ -2433,6 +2479,13 @@ pub fn set_overlay_text_mode(app: AppHandle, on: bool) {
         // cursor real. Arma solo si está sobre un hit-rect, y si no, repone el
         // click-through — sin forzar estados que rompan el clic siguiente.
         reevaluate_arm();
+        // Sin flanco de armado (escribir en agentes con el cursor sobre el
+        // float) el worker no toca el click-through y el alfa 254 no se
+        // reponía: Chromium congelaba el video de atrás. `set_focusable` va
+        // al event loop, así que el reintento cubre el instante en que
+        // realmente aplicó el estilo.
+        keep_non_occluding(&window);
+        schedule_non_occluding(&app);
     }
     #[cfg(not(windows))]
     {

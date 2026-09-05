@@ -43,10 +43,22 @@ pub fn capture_and_show(app: &AppHandle) -> Result<String, String> {
     Ok(path)
 }
 
-/// Tras guardar un PNG: copiar al portapapeles, mostrar shelf y emitir evento.
+/// Tras guardar un PNG: copiar al portapapeles, emitir evento y, si se pide,
+/// mostrar el shelf.
 ///
 /// `shelf_anchor` (coords físicas) elige en qué monitor aparece el shelf.
+/// La mira de captura pasa `show_shelf: false`: el recorte vuela hasta la
+/// esquina y recién ahí se revela la tarjeta.
 pub fn notify_capture_ready(app: &AppHandle, path: &str, shelf_anchor: Option<(i32, i32)>) {
+    notify_capture_ready_ex(app, path, shelf_anchor, true);
+}
+
+pub(crate) fn notify_capture_ready_ex(
+    app: &AppHandle,
+    path: &str,
+    shelf_anchor: Option<(i32, i32)>,
+    show_shelf: bool,
+) {
     let item = capture_item(Path::new(path));
     // Antes de copiar, no después: el historial tiene que quedarse con ESTA
     // identidad (`capture:<id>`, apuntando al PNG del dir de capturas) y no con
@@ -57,7 +69,9 @@ pub fn notify_capture_ready(app: &AppHandle, path: &str, shelf_anchor: Option<(i
     if let Err(error) = copy_png_to_clipboard(Path::new(path)) {
         tracing::warn!(%error, "no se pudo copiar la captura al portapapeles");
     }
-    let _ = crate::capture_shelf::show_shelf(app, shelf_anchor);
+    if show_shelf {
+        let _ = crate::capture_shelf::show_shelf(app, shelf_anchor);
+    }
     if let Some(item) = item {
         let _ = app.emit("screenshot-created", item);
     }

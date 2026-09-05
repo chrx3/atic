@@ -33,6 +33,13 @@ export const startFileDrag = (paths: string[]) =>
 export const readClipboardDragText = (path: string) =>
   invoke<string>("read_clipboard_drag_text", { path });
 
+/** Texto del portapapeles del sistema, sin pedir permiso al webview. */
+export const readSystemClipboardText = () =>
+  invoke<string>("read_system_clipboard_text");
+
+export const writeSystemClipboardText = (text: string) =>
+  invoke<void>("write_system_clipboard_text", { text });
+
 /**
  * `fly`: acercar la pill al cursor (atajo global) o expandir donde está.
  * Legacy: el historial ya no crece la pill; usa `showClipboardWindow`.

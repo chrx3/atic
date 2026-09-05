@@ -48,8 +48,14 @@ static LOUPE_PAD_PX: AtomicI32 = AtomicI32::new(0);
 static PREVIOUS_FOREGROUND: AtomicIsize = AtomicIsize::new(0);
 static WANT_PICK: AtomicBool = AtomicBool::new(false);
 static WANT_CANCEL: AtomicBool = AtomicBool::new(false);
+/// Enter tragado por el hook: no reusa `WANT_PICK`, que lleva la coords del clic.
+static WANT_ENTER_COMMIT: AtomicBool = AtomicBool::new(false);
+static WANT_TOGGLE_ROSE: AtomicBool = AtomicBool::new(false);
 static EAT_LEFT_UP: AtomicBool = AtomicBool::new(false);
 static EAT_RIGHT_UP: AtomicBool = AtomicBool::new(false);
+static EAT_ESC_UP: AtomicBool = AtomicBool::new(false);
+static EAT_ENTER_UP: AtomicBool = AtomicBool::new(false);
+static EAT_R_UP: AtomicBool = AtomicBool::new(false);
 static LAST_PATCH: Mutex<Option<OverlayPatch>> = Mutex::new(None);
 
 #[derive(Clone, Serialize)]
@@ -213,6 +219,8 @@ fn stop_inner(app: &AppHandle, farewell: bool) {
     ROSE_OPEN.store(false, Ordering::SeqCst);
     WANT_PICK.store(false, Ordering::SeqCst);
     WANT_CANCEL.store(false, Ordering::SeqCst);
+    WANT_ENTER_COMMIT.store(false, Ordering::SeqCst);
+    WANT_TOGGLE_ROSE.store(false, Ordering::SeqCst);
     COMMIT_PENDING.store(false, Ordering::SeqCst);
     overlay::set_capturing(app, false);
     // El evento primero: la piel corre su animación de salida y recién
@@ -279,8 +287,13 @@ fn run_loop(app: AppHandle, token: u64) {
     let _worker = WorkerGuard(app.clone(), token);
     WANT_PICK.store(false, Ordering::SeqCst);
     WANT_CANCEL.store(false, Ordering::SeqCst);
+    WANT_ENTER_COMMIT.store(false, Ordering::SeqCst);
+    WANT_TOGGLE_ROSE.store(false, Ordering::SeqCst);
     EAT_LEFT_UP.store(false, Ordering::SeqCst);
     EAT_RIGHT_UP.store(false, Ordering::SeqCst);
+    EAT_ESC_UP.store(false, Ordering::SeqCst);
+    EAT_ENTER_UP.store(false, Ordering::SeqCst);
+    EAT_R_UP.store(false, Ordering::SeqCst);
 
     // El clic que abrió la tool no debe copiar un color.
     while key_down(0x01) {
@@ -297,27 +310,22 @@ fn run_loop(app: AppHandle, token: u64) {
     let input = std::thread::Builder::new()
         .name("atic-color-input".into())
         .spawn(move || {
-            let hook = install_click_hook();
-            let _ = tx.send(!hook.is_null());
-            if hook.is_null() {
+            let mouse = install_click_hook();
+            let keys = install_key_hook();
+            let _ = tx.send(!mouse.is_null());
+            if mouse.is_null() {
+                uninstall_key_hook(keys);
                 return;
             }
-            while !abort(token)
-                || EAT_LEFT_UP.load(Ordering::SeqCst)
-                || EAT_RIGHT_UP.load(Ordering::SeqCst)
-            {
+            while !abort(token) || eat_pending() {
                 pump_mouse();
                 if abort(token) {
-                    if !key_down(0x01) {
-                        EAT_LEFT_UP.store(false, Ordering::SeqCst);
-                    }
-                    if !key_down(0x02) {
-                        EAT_RIGHT_UP.store(false, Ordering::SeqCst);
-                    }
+                    clear_eat_if_key_up();
                 }
                 std::thread::sleep(Duration::from_millis(4));
             }
-            uninstall_click_hook(hook);
+            uninstall_key_hook(keys);
+            uninstall_click_hook(mouse);
         });
     let input = match input {
         Ok(input) => input,
@@ -357,10 +365,16 @@ fn run_loop(app: AppHandle, token: u64) {
             windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow() as isize
                 == LOUPE_HWND.load(Ordering::SeqCst)
         };
-        let pick = clicked || (enter && !was_enter && !focused);
+        // El hook traga Enter/R: `GetAsyncKeyState` no las ve. El flanco
+        // queda en el atomic; el poll queda de respaldo si el hook no instaló.
+        let pick = clicked
+            || WANT_ENTER_COMMIT.swap(false, Ordering::SeqCst)
+            || (enter && !was_enter && !focused);
         was_enter = enter;
         let r_key = key_down(0x52);
-        if r_key && !was_r && !focused && !COMMIT_PENDING.load(Ordering::SeqCst) {
+        let toggle_rose = WANT_TOGGLE_ROSE.swap(false, Ordering::SeqCst)
+            || (r_key && !was_r && !focused);
+        if toggle_rose && !COMMIT_PENDING.load(Ordering::SeqCst) {
             // The frontend owns the editing state and acknowledges the resize.
             let _ = app.emit_to(LABEL, "color-toggle-rose", token);
         }
@@ -513,6 +527,134 @@ fn uninstall_click_hook(hook: windows_sys::Win32::UI::WindowsAndMessaging::HHOOK
             UnhookWindowsHookEx(hook);
         }
     }
+}
+
+#[cfg(windows)]
+fn eat_pending() -> bool {
+    EAT_LEFT_UP.load(Ordering::SeqCst)
+        || EAT_RIGHT_UP.load(Ordering::SeqCst)
+        || EAT_ESC_UP.load(Ordering::SeqCst)
+        || EAT_ENTER_UP.load(Ordering::SeqCst)
+        || EAT_R_UP.load(Ordering::SeqCst)
+}
+
+#[cfg(windows)]
+fn clear_eat_if_key_up() {
+    if !key_down(0x01) {
+        EAT_LEFT_UP.store(false, Ordering::SeqCst);
+    }
+    if !key_down(0x02) {
+        EAT_RIGHT_UP.store(false, Ordering::SeqCst);
+    }
+    if !key_down(0x1B) {
+        EAT_ESC_UP.store(false, Ordering::SeqCst);
+    }
+    if !key_down(0x0D) {
+        EAT_ENTER_UP.store(false, Ordering::SeqCst);
+    }
+    if !key_down(0x52) {
+        EAT_R_UP.store(false, Ordering::SeqCst);
+    }
+}
+
+#[cfg(windows)]
+fn loupe_is_foreground() -> bool {
+    use windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+    let hwnd = LOUPE_HWND.load(Ordering::SeqCst);
+    hwnd != 0 && unsafe { GetForegroundWindow() as isize == hwnd }
+}
+
+#[cfg(windows)]
+fn install_key_hook() -> windows_sys::Win32::UI::WindowsAndMessaging::HHOOK {
+    use windows_sys::Win32::Foundation::HINSTANCE;
+    use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{SetWindowsHookExW, WH_KEYBOARD_LL};
+
+    unsafe {
+        let module = GetModuleHandleW(std::ptr::null());
+        SetWindowsHookExW(WH_KEYBOARD_LL, Some(key_hook), module as HINSTANCE, 0)
+    }
+}
+
+#[cfg(windows)]
+fn uninstall_key_hook(hook: windows_sys::Win32::UI::WindowsAndMessaging::HHOOK) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::UnhookWindowsHookEx;
+    if !hook.is_null() {
+        unsafe {
+            UnhookWindowsHookEx(hook);
+        }
+    }
+}
+
+/// Come Esc / Enter / R para que no se escriban en la app de abajo.
+///
+/// El muestreo no toma foco (`SW_SHOWNOACTIVATE`): sin esto, Enter manda el
+/// chat y R se escribe en el editor. Con la rosa abierta la lupa SÍ tiene
+/// foco y hay que dejar pasar — el hex se tipea ahí.
+///
+/// Mismas reglas que el hook del mouse: volver al toque, no I/O, desinstalar
+/// al terminar y tragar el key-up pareado aunque la sesión ya cerró.
+#[cfg(windows)]
+unsafe extern "system" fn key_hook(
+    code: i32,
+    wparam: windows_sys::Win32::Foundation::WPARAM,
+    lparam: windows_sys::Win32::Foundation::LPARAM,
+) -> windows_sys::Win32::Foundation::LRESULT {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        CallNextHookEx, KBDLLHOOKSTRUCT, WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
+    };
+
+    if code < 0 {
+        return unsafe { CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam) };
+    }
+    let msg = wparam as u32;
+    let is_up = msg == WM_KEYUP || msg == WM_SYSKEYUP;
+    let is_down = msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN;
+    if !is_up && !is_down {
+        return unsafe { CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam) };
+    }
+    if lparam == 0 {
+        return unsafe { CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam) };
+    }
+    let vk = unsafe { (*(lparam as *const KBDLLHOOKSTRUCT)).vkCode };
+    if is_up {
+        let eaten = match vk {
+            0x1B => EAT_ESC_UP.swap(false, Ordering::SeqCst),
+            0x0D => EAT_ENTER_UP.swap(false, Ordering::SeqCst),
+            0x52 => EAT_R_UP.swap(false, Ordering::SeqCst),
+            _ => false,
+        };
+        if eaten {
+            return 1;
+        }
+        return unsafe { CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam) };
+    }
+    if !RUNNING.load(Ordering::SeqCst) || loupe_is_foreground() {
+        return unsafe { CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam) };
+    }
+    match vk {
+        0x1B => {
+            // `swap` ignora el repeat: el primer down marca el up pendiente.
+            if !EAT_ESC_UP.swap(true, Ordering::SeqCst) {
+                WANT_CANCEL.store(true, Ordering::SeqCst);
+            }
+            return 1;
+        }
+        0x0D => {
+            if !EAT_ENTER_UP.swap(true, Ordering::SeqCst) {
+                WANT_ENTER_COMMIT.store(true, Ordering::SeqCst);
+            }
+            return 1;
+        }
+        0x52 => {
+            if !EAT_R_UP.swap(true, Ordering::SeqCst) {
+                WANT_TOGGLE_ROSE.store(true, Ordering::SeqCst);
+            }
+            return 1;
+        }
+        _ => {}
+    }
+    unsafe { CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam) }
 }
 
 /// Come el clic de pantalla para no pulsar lo de debajo. Sobre la lupa deja pasar.
@@ -893,5 +1035,74 @@ mod tests {
         assert_eq!(unsafe { click_hook(0, WM_RBUTTONUP as usize, 0) }, 1);
         assert!(!EAT_LEFT_UP.load(Ordering::SeqCst));
         assert!(!EAT_RIGHT_UP.load(Ordering::SeqCst));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn consumes_shortcut_releases_even_after_session_ended() {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{KBDLLHOOKSTRUCT, WM_KEYUP};
+        RUNNING.store(false, Ordering::SeqCst);
+        EAT_ESC_UP.store(true, Ordering::SeqCst);
+        EAT_ENTER_UP.store(true, Ordering::SeqCst);
+        EAT_R_UP.store(true, Ordering::SeqCst);
+        let eat_up = |vk: u32| {
+            let info = KBDLLHOOKSTRUCT {
+                vkCode: vk,
+                scanCode: 0,
+                flags: 0,
+                time: 0,
+                dwExtraInfo: 0,
+            };
+            unsafe { key_hook(0, WM_KEYUP as usize, &info as *const _ as isize) }
+        };
+        assert_eq!(eat_up(0x1B), 1);
+        assert_eq!(eat_up(0x0D), 1);
+        assert_eq!(eat_up(0x52), 1);
+        assert!(!EAT_ESC_UP.load(Ordering::SeqCst));
+        assert!(!EAT_ENTER_UP.load(Ordering::SeqCst));
+        assert!(!EAT_R_UP.load(Ordering::SeqCst));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn swallowed_shortcuts_signal_the_picker_once() {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{KBDLLHOOKSTRUCT, WM_KEYDOWN};
+        RUNNING.store(true, Ordering::SeqCst);
+        LOUPE_HWND.store(0, Ordering::SeqCst);
+        WANT_CANCEL.store(false, Ordering::SeqCst);
+        WANT_ENTER_COMMIT.store(false, Ordering::SeqCst);
+        WANT_TOGGLE_ROSE.store(false, Ordering::SeqCst);
+        EAT_ESC_UP.store(false, Ordering::SeqCst);
+        EAT_ENTER_UP.store(false, Ordering::SeqCst);
+        EAT_R_UP.store(false, Ordering::SeqCst);
+        let eat_down = |vk: u32| {
+            let info = KBDLLHOOKSTRUCT {
+                vkCode: vk,
+                scanCode: 0,
+                flags: 0,
+                time: 0,
+                dwExtraInfo: 0,
+            };
+            unsafe { key_hook(0, WM_KEYDOWN as usize, &info as *const _ as isize) }
+        };
+        assert_eq!(eat_down(0x1B), 1);
+        assert!(WANT_CANCEL.swap(false, Ordering::SeqCst));
+        assert_eq!(eat_down(0x1B), 1);
+        assert!(!WANT_CANCEL.load(Ordering::SeqCst));
+        assert_eq!(eat_down(0x0D), 1);
+        assert!(WANT_ENTER_COMMIT.swap(false, Ordering::SeqCst));
+        assert_eq!(eat_down(0x0D), 1);
+        assert!(!WANT_ENTER_COMMIT.load(Ordering::SeqCst));
+        assert_eq!(eat_down(0x52), 1);
+        assert!(WANT_TOGGLE_ROSE.swap(false, Ordering::SeqCst));
+        assert_eq!(eat_down(0x52), 1);
+        assert!(!WANT_TOGGLE_ROSE.load(Ordering::SeqCst));
+        RUNNING.store(false, Ordering::SeqCst);
+        WANT_CANCEL.store(false, Ordering::SeqCst);
+        WANT_ENTER_COMMIT.store(false, Ordering::SeqCst);
+        WANT_TOGGLE_ROSE.store(false, Ordering::SeqCst);
+        EAT_ESC_UP.store(false, Ordering::SeqCst);
+        EAT_ENTER_UP.store(false, Ordering::SeqCst);
+        EAT_R_UP.store(false, Ordering::SeqCst);
     }
 }

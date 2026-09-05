@@ -520,7 +520,7 @@
                 </span>
               {:else}
                 <span class="clip-meta">
-                  {item.kind === "image" ? "Imagen" : "Texto"}
+                  {item.kind === "image" ? "Imagen" : swatch ? "Color" : "Texto"}
                   {#if item.pinned}
                     · Fav
                   {/if}
@@ -762,6 +762,9 @@
     border-radius: 8px;
     background: color-mix(in srgb, var(--rb-text) 8%, transparent);
     pointer-events: none;
+    box-shadow:
+      inset 0 0 0 1px rgb(255 255 255 / 14%),
+      inset 0 0 0 1px rgb(0 0 0 / 18%);
   }
   .clip-thumb img {
     width: 100%;

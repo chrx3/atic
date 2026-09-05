@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createDockExpand, reuseDockedFrame } from "./dockExpand";
+import { createDockExpand, reuseDockedFrame, shouldResizeLauncher, rememberedSetupWidth } from "./dockExpand";
 
 describe("createDockExpand", () => {
   it("call dispara el bind vigente", () => {
@@ -40,5 +40,54 @@ describe("reuseDockedFrame", () => {
     expect(
       reuseDockedFrame({ minimized: false, alive: true, hasAnchor: true }),
     ).toBe(false);
+  });
+});
+
+describe("shouldResizeLauncher", () => {
+  it("anima al pasar de selector a consola", () => {
+    expect(
+      shouldResizeLauncher({
+        current: "setup",
+        next: "console",
+        height: 184,
+        minConsoleHeight: 340,
+      }),
+    ).toBe(true);
+  });
+
+  it("agranda si la consola quedó con el marco del selector", () => {
+    expect(
+      shouldResizeLauncher({
+        current: "console",
+        next: "console",
+        height: 184,
+        minConsoleHeight: 340,
+      }),
+    ).toBe(true);
+  });
+
+  it("no anima si la consola ya tiene tamaño", () => {
+    expect(
+      shouldResizeLauncher({
+        current: "console",
+        next: "console",
+        height: 520,
+        minConsoleHeight: 340,
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("rememberedSetupWidth", () => {
+  it("descarta la semilla de nacimiento", () => {
+    expect(rememberedSetupWidth(40, 400)).toBe(400);
+  });
+
+  it("conserva un selector ya usable", () => {
+    expect(rememberedSetupWidth(480, 400)).toBe(480);
+  });
+
+  it("ignora valores rotos", () => {
+    expect(rememberedSetupWidth(Number.NaN, 400)).toBe(400);
   });
 });

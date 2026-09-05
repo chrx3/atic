@@ -14,9 +14,12 @@
      como para no reconocer la ventana de abajo. */
   --screen-scrim: rgb(0 0 0 / 28%);
 
-  /* El borde de la selección. Verde y no la tinta de la app: sobre una captura
-     cualquiera tiene que leerse igual, y el gris no sobrevive a un fondo gris. */
-  --screen-select: #2f9e44;
+  /* El borde de la selección. Cian, no verde: sobre Excel, VS Code o un
+     botón de éxito el verde se perdía. El punteado lo separa de un recuadro
+     de layout de la app de abajo. */
+  --screen-select: #5ec8ff;
+  /* Halo oscuro detrás del cian: sobre un cielo o un enlace no se derrite. */
+  --screen-select-edge: rgb(0 0 0 / 55%);
 
   /* Las etiquetas flotantes —medidas, ayuda—: negras y blancas fijas, porque
      también caen sobre contenido desconocido. */

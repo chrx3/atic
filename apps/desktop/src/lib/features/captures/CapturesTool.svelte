@@ -459,11 +459,13 @@
 
     <div class="flex min-h-0 flex-col gap-2">
       <div class="stage">
-        <img
-          src={captureSrc(item.path)}
-          alt={t("page.captures.alt", { label: item.label })}
-          class="max-h-full max-w-full object-contain"
-        />
+        {#key item.id}
+          <img
+            src={captureSrc(item.path)}
+            alt={t("page.captures.alt", { label: item.label })}
+            class="preview-img"
+          />
+        {/key}
       </div>
 
       <div class="flex flex-wrap items-center gap-1.5">
@@ -596,7 +598,13 @@
     border: 1px solid var(--line);
     border-radius: var(--radius-sm);
     background: var(--surface);
-    transition: border-color var(--duration-quick) var(--ease-calm);
+    transition:
+      border-color var(--duration-quick) var(--ease-calm),
+      box-shadow var(--duration-quick) var(--ease-calm);
+  }
+
+  .tile:hover {
+    border-color: color-mix(in srgb, var(--text) 22%, transparent);
   }
 
   .tile--on {
@@ -613,6 +621,16 @@
     padding: 0;
     background: var(--surface-2);
     cursor: pointer;
+    transition: transform var(--duration-quick) var(--ease-out);
+  }
+
+  .shot:active {
+    transform: scale(0.96);
+  }
+
+  .shot img {
+    outline: 1px solid color-mix(in srgb, var(--text) 10%, transparent);
+    outline-offset: -1px;
   }
 
   .shot:focus-visible {
@@ -680,6 +698,37 @@
     border-radius: var(--radius-sm);
     background: var(--surface-2);
     padding: 0.5rem;
+  }
+
+  .preview-img {
+    max-height: 100%;
+    max-width: 100%;
+    object-fit: contain;
+    animation: shot-in var(--duration-fast) var(--ease-out);
+  }
+
+  @keyframes shot-in {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .tile,
+    .shot,
+    .pick,
+    .acts,
+    .preview-img {
+      transition: none !important;
+      animation: none !important;
+    }
+
+    .shot:active {
+      transform: none;
+    }
   }
 
   .ocr {

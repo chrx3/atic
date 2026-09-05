@@ -150,7 +150,9 @@
         <span class="font-mono text-xs text-faint" data-numeric>
           {item.kind === "image"
             ? t("page.clipboard.kindImage")
-            : t("page.clipboard.kindText")}{formatListWhen(
+            : swatch
+              ? t("page.clipboard.kindColor")
+              : t("page.clipboard.kindText")}{formatListWhen(
             Math.floor(item.createdAtMs / 1000),
           )}
         </span>

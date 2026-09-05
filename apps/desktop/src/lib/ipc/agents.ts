@@ -207,6 +207,10 @@ export const consoleClose = (session: string) =>
 export const consoleGc = (keep: string[]) =>
   invoke<number>("console_gc", { keep });
 
+/** CLI de agente vivo dentro de la PTY, o `null` si solo hay una shell. */
+export const consoleForegroundCli = (session: string) =>
+  invoke<string | null>("console_foreground_cli", { session });
+
 export const onConsoleOutput = (
   cb: (payload: ConsoleOutputPayload) => void,
 ): Promise<UnlistenFn> => on("console-output", cb);

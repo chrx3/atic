@@ -23,6 +23,7 @@
     consoleOpen,
     consoleResize,
     consoleWrite,
+    consoleForegroundCli,
     cliOnPath,
     onAgentsWorkspaceShortcut,
     onConsoleExit,
@@ -32,6 +33,12 @@
     sshListHosts,
   } from "$ipc/agents";
   import { AGENTS } from "./agentCatalog";
+  import {
+    agentDisplayName,
+    canonicalAgentCli,
+    cliFromTitle,
+    restartCliFromOutput,
+  } from "./consoleAgent";
   import { agentLogoKey } from "$surfaces/overlay/pill/pillAgentChip";
   import { consoleCue } from "$surfaces/overlay/agents/consoleCue.svelte";
   import { getConfig } from "$ipc/config";
@@ -39,9 +46,11 @@
     CLIPBOARD_OLE_EVENT,
     onAgentsComposerInsert,
     readClipboardDragText,
+    readSystemClipboardText,
+    writeSystemClipboardText,
     type ClipboardOleDetail,
   } from "$ipc/clipboard";
-  import { pillTrace, overlayCursor, setOverlayTextMode } from "$ipc/overlay";
+  import { pillTrace, overlayCursor, setOverlayTextMode, onOverlayItemDrag } from "$ipc/overlay";
   import type { AgentsWorkspaceShortcut } from "$ipc/events";
   import type { AgentsComposerInsert, ConsoleKind, SshHost } from "$lib/types";
   import EmptyState from "$lib/ui/EmptyState.svelte";
@@ -185,7 +194,7 @@
     seam: number;
   };
 
-  const RAIL_MIN = 54;
+  const RAIL_MIN = 72;
   const RAIL_DEFAULT = 128;
   const RAIL_MAX = 224;
   const RAIL_STORAGE_KEY = "atic.agents.consoleRailWidth";
@@ -929,7 +938,10 @@
     const term = t ? termOf(t.key) : null;
     if (term) {
       term.write(data);
-      if (t) markBooted(t.key);
+      if (t) {
+        markBooted(t.key);
+        maybeRelaunchFromOutput(t, data);
+      }
       return;
     }
     const prev = outputBuf.get(session) ?? "";
@@ -946,6 +958,49 @@
     outputBuf.delete(session);
     termOf(key)?.write(pending);
     markBooted(key);
+    const tab = tabOf(key);
+    if (tab) maybeRelaunchFromOutput(tab, pending);
+  }
+
+  function adoptAgent(tab: Tab, cli: string) {
+    const canon = canonicalAgentCli(cli) ?? cli.trim();
+    if (!canon) return;
+    tab.command = canon;
+    tab.label = agentDisplayName(canon);
+  }
+
+  const relaunchAt = new Map<string, number>();
+
+  function maybeRelaunchFromOutput(tab: Tab, chunk: string) {
+    const cli = restartCliFromOutput(chunk, tab.command);
+    if (!cli) return;
+    const now = Date.now();
+    if ((relaunchAt.get(tab.key) ?? 0) + 8000 > now) return;
+    relaunchAt.set(tab.key, now);
+    adoptAgent(tab, cli);
+    const id = tab.sessionId;
+    if (!id) return;
+    const name = agentDisplayName(cli);
+    window.setTimeout(() => {
+      const live = tabOf(tab.key);
+      if (!live?.sessionId || live.sessionId !== id) return;
+      termOf(tab.key)?.writeln(`\r\n[Atic · ${t("page.agents.reopenAgent", { name })}]`);
+      void consoleWrite(id, `${cli}\r\n`).catch(() => {});
+    }, 400);
+  }
+
+  async function probeForeground(tab: Tab) {
+    if (tab.kind !== "local" || !tab.sessionId) return;
+    try {
+      const cli = await consoleForegroundCli(tab.sessionId);
+      if (!cli) return;
+      const live = tabOf(tab.key);
+      if (!live || live.sessionId !== tab.sessionId) return;
+      if (live.command === cli) return;
+      adoptAgent(live, cli);
+    } catch {
+      /* La sesión se cerró entre el poll y la respuesta. */
+    }
   }
 
   function markPending(key: string, on: boolean) {
@@ -1115,6 +1170,21 @@
       label: t("page.agents.installNamed", { name: agent.name }),
       command: agent.install,
     });
+  }
+
+  /**
+   * Suma pestañas del agente elegido sin desmontar las que ya están vivas.
+   * El lanzador lo usa cuando vuelves a Agentes con consolas abiertas.
+   */
+  export function openAgent(agent: (typeof AGENTS)[number], copies = 1) {
+    const n = Math.max(1, Math.min(copies, MAX_TABS));
+    for (let i = 0; i < n; i++) {
+      addFromMenu({
+        kind: "local",
+        label: agent.name,
+        command: agent.cli,
+      });
+    }
   }
 
   function persistSavedCmds() {
@@ -1792,21 +1862,25 @@
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
+    term.onTitleChange((title) => {
+      const cli = cliFromTitle(title);
+      const tab = tabOf(key);
+      if (cli && tab) adoptAgent(tab, cli);
+    });
     term.onData((data) => {
       if (consumeTerminalControlData(key, data)) return;
       const id = sessionOf(key);
       if (!id) return;
       void consoleWrite(id, data).catch(() => {});
     });
-    // Ctrl/Cmd+V y Ctrl/Cmd+C (con selección): clipboard API explícita.
+    // Ctrl+V: no usar clipboard.readText(). En localhost el webview pide
+    // permiso *después* de que el paste nativo ya pegó, y queda duplicado.
+    // Devolver false evita mandar ^V al PTY; el evento `paste` sigue.
     term.attachCustomKeyEventHandler((ev) => {
       if (ev.type !== "keydown") return true;
       if (consumeWorkspaceShortcut(ev, "xterm")) return false;
       const mod = ev.ctrlKey || ev.metaKey;
-      if (mod && (ev.key === "v" || ev.key === "V")) {
-        void pasteInto(key);
-        return false;
-      }
+      if (mod && (ev.key === "v" || ev.key === "V")) return false;
       if (mod && (ev.key === "c" || ev.key === "C") && term.hasSelection()) {
         void copyFrom(key);
         return false;
@@ -1852,20 +1926,19 @@
     const text = termOf(key)?.getSelection() ?? "";
     if (!text) return;
     try {
-      await navigator.clipboard.writeText(text);
+      await writeSystemClipboardText(text);
     } catch {
-      /* sin permiso */
+      /* portapapeles ocupado */
     }
   }
 
   async function pasteInto(key = activeKey) {
-    const term = termOf(key);
-    if (!term || !sessionOf(key)) return;
+    if (!termOf(key) || !sessionOf(key)) return;
     try {
-      const text = await navigator.clipboard.readText();
-      if (text) term.paste(text);
+      const text = await readSystemClipboardText();
+      pasteIntoTerm(key, text);
     } catch {
-      /* sin permiso / vacío */
+      /* vacío / ocupado */
     }
   }
 
@@ -2143,6 +2216,13 @@
       .catch(() => (pinned = false));
     window.addEventListener("keydown", onGlobalKey, true);
     window.addEventListener(CLIPBOARD_OLE_EVENT, onClipboardOle);
+    let stopItemDrag: (() => void) | undefined;
+    void onOverlayItemDrag((active) => {
+      if (active) startOleWatch();
+      else stopOleWatch();
+    }).then((un) => {
+      stopItemDrag = un;
+    });
     // Lanzador: N pestañas de agentes. Sin semilla: la pestaña de siempre.
     const seeds = (initialTabs ?? []).slice(0, MAX_TABS);
     if (seeds.length > 0) {
@@ -2206,11 +2286,17 @@
       attributeFilter: ["data-theme"],
     });
 
+    const probeTimer = window.setInterval(() => {
+      for (const tab of tabs) void probeForeground(tab);
+    }, 1600);
+
     return () => {
+      window.clearInterval(probeTimer);
       window.removeEventListener("keydown", onGlobalKey, true);
       window.removeEventListener(CLIPBOARD_OLE_EVENT, onClipboardOle);
       document.removeEventListener("pointerdown", onDocPointer, true);
       window.removeEventListener("blur", closeCtx);
+      stopItemDrag?.();
       stopOleWatch();
       themeObs.disconnect();
     };
@@ -2307,6 +2393,11 @@
               aria-current={t.key === activeKey ? "true" : undefined}
               use:tip={tabLabels[i]}
               onpointerdown={(e) => beginTabDrag(t.key, e)}
+              oncontextmenu={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                ctxMenu = { x: e.clientX, y: e.clientY, key: t.key };
+              }}
               onclick={() => {
                 if (dragConsumedClick) {
                   dragConsumedClick = false;
@@ -2712,6 +2803,21 @@
             {/if}
           </div>
         {/if}
+        <button
+          type="button"
+          class="icon-btn pin-btn"
+          class:is-on={pinned}
+          aria-label={pinned ? "Desfijar ventana" : "Fijar ventana arriba"}
+          aria-pressed={pinned}
+          use:tip={pinned ? "Desfijar ventana" : "Fijar ventana arriba"}
+          onclick={() => {
+            const next = !pinned;
+            pinned = next;
+            void setAgentsAlwaysOnTop(next).catch(() => (pinned = !next));
+          }}
+        >
+          <Icon icon={Pin} size={12} />
+        </button>
         {#if onToggleMinimize}
           <button
             type="button"
@@ -2737,30 +2843,15 @@
             <Icon icon={Square} size={11} />
           </button>
         {/if}
-        <button
-          type="button"
-          class="icon-btn pin-btn"
-          class:is-on={pinned}
-          aria-label={pinned ? "Desfijar ventana" : "Fijar ventana arriba"}
-          aria-pressed={pinned}
-          use:tip={pinned ? "Desfijar ventana" : "Fijar ventana arriba"}
-          onclick={() => {
-            const next = !pinned;
-            pinned = next;
-            void setAgentsAlwaysOnTop(next).catch(() => (pinned = !next));
-          }}
-        >
-          <Icon icon={Pin} size={12} />
-        </button>
         {#if onClose}
           <button
             type="button"
-            class="icon-btn"
+            class="icon-btn chrome-close"
             aria-label={t("chrome.close")}
             use:tip={t("page.agents.hideHint")}
             onclick={() => onClose()}
           >
-            <Icon icon={X} size={12} />
+            <Icon icon={X} size={11} />
           </button>
         {/if}
       </div>
@@ -2901,99 +2992,6 @@
           ondblclick={() => resetDividerRatio(divider.path)}
         ></div>
       {/each}
-
-      {#if ctxMenu}
-        <div
-          class="ctx"
-          style:left="{ctxMenu.x}px"
-          style:top="{ctxMenu.y}px"
-          role="menu"
-          tabindex="-1"
-          data-no-drag
-          onpointerdown={(e) => e.stopPropagation()}
-        >
-          {#if ctxMenu.group}
-            {@const entry = railGroups.find((g) => g.anchorKey === ctxMenu!.key)}
-            <button
-              type="button"
-              class="ctx-item"
-              role="menuitem"
-              disabled={!entry}
-              onclick={() => {
-                closeCtx();
-                if (entry) detachGroup(entry);
-              }}
-            >
-              Separar grupo
-            </button>
-            <button
-              type="button"
-              class="ctx-item"
-              role="menuitem"
-              disabled={!entry}
-              onclick={() => {
-                closeCtx();
-                if (entry) void closeGroup(entry);
-              }}
-            >
-              Cerrar grupo
-            </button>
-          {:else}
-            <button
-              type="button"
-              class="ctx-item"
-              role="menuitem"
-              disabled={!termOf(ctxMenu.key)?.hasSelection()}
-              onclick={() => {
-                const k = ctxMenu!.key;
-                closeCtx();
-                void copyFrom(k);
-              }}
-            >
-              Copiar
-            </button>
-            <button
-              type="button"
-              class="ctx-item"
-              role="menuitem"
-              disabled={!sessionOf(ctxMenu.key)}
-              onclick={() => {
-                const k = ctxMenu!.key;
-                closeCtx();
-                void pasteInto(k);
-              }}
-            >
-              Pegar
-            </button>
-            {#if visiblePaneKeys.length > 1 && visiblePaneKeys.includes(ctxMenu.key)}
-              <button
-                type="button"
-                class="ctx-item"
-                role="menuitem"
-                onclick={() => {
-                  const k = ctxMenu!.key;
-                  closeCtx();
-                  removeFromGroup(k);
-                }}
-              >
-                Sacar del grupo
-              </button>
-            {/if}
-            <button
-              type="button"
-              class="ctx-item"
-              role="menuitem"
-              onclick={() => {
-                const k = ctxMenu!.key;
-                closeCtx();
-                void closeTab(k);
-              }}
-            >
-              Cerrar consola
-            </button>
-          {/if}
-        </div>
-      {/if}
     </div>
   </div>
 
@@ -3006,6 +3004,99 @@
       aria-hidden="true"
     >
       <AgentLogo agent={dragTab?.command ?? null} size={16} />
+    </div>
+  {/if}
+
+  {#if ctxMenu}
+    <div
+      class="ctx"
+      style:left="{ctxMenu.x}px"
+      style:top="{ctxMenu.y}px"
+      role="menu"
+      tabindex="-1"
+      data-no-drag
+      onpointerdown={(e) => e.stopPropagation()}
+    >
+      {#if ctxMenu.group}
+        {@const entry = railGroups.find((g) => g.anchorKey === ctxMenu!.key)}
+        <button
+          type="button"
+          class="ctx-item"
+          role="menuitem"
+          disabled={!entry}
+          onclick={() => {
+            closeCtx();
+            if (entry) detachGroup(entry);
+          }}
+        >
+          Separar grupo
+        </button>
+        <button
+          type="button"
+          class="ctx-item"
+          role="menuitem"
+          disabled={!entry}
+          onclick={() => {
+            closeCtx();
+            if (entry) void closeGroup(entry);
+          }}
+        >
+          Cerrar grupo
+        </button>
+      {:else}
+        <button
+          type="button"
+          class="ctx-item"
+          role="menuitem"
+          disabled={!termOf(ctxMenu.key)?.hasSelection()}
+          onclick={() => {
+            const k = ctxMenu!.key;
+            closeCtx();
+            void copyFrom(k);
+          }}
+        >
+          Copiar
+        </button>
+        <button
+          type="button"
+          class="ctx-item"
+          role="menuitem"
+          disabled={!sessionOf(ctxMenu.key)}
+          onclick={() => {
+            const k = ctxMenu!.key;
+            closeCtx();
+            void pasteInto(k);
+          }}
+        >
+          Pegar
+        </button>
+        {#if visiblePaneKeys.length > 1 && visiblePaneKeys.includes(ctxMenu.key)}
+          <button
+            type="button"
+            class="ctx-item"
+            role="menuitem"
+            onclick={() => {
+              const k = ctxMenu!.key;
+              closeCtx();
+              removeFromGroup(k);
+            }}
+          >
+            Sacar del grupo
+          </button>
+        {/if}
+        <button
+          type="button"
+          class="ctx-item"
+          role="menuitem"
+          onclick={() => {
+            const k = ctxMenu!.key;
+            closeCtx();
+            void closeTab(k);
+          }}
+        >
+          Cerrar consola
+        </button>
+      {/if}
     </div>
   {/if}
 
@@ -3044,6 +3135,7 @@
 
   /* ─── Rail izquierdo: una ficha por consola ───────────────────────────── */
   .rail {
+    --rail-close: 1.2rem;
     position: relative;
     z-index: 2;
     display: flex;
@@ -3067,8 +3159,10 @@
   }
 
   .rail-slot {
-    position: relative;
-    display: inline-flex;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) var(--rail-close);
+    align-items: stretch;
+    width: 100%;
     flex-shrink: 0;
   }
 
@@ -3139,7 +3233,9 @@
     flex-direction: column;
     align-items: center;
     gap: 0.25rem;
+    width: 100%;
     padding-top: 0.3rem;
+    padding-right: var(--rail-close);
   }
 
   .rail-resizer {
@@ -3292,7 +3388,18 @@
     flex-shrink: 0;
     flex-wrap: nowrap;
     align-items: center;
-    gap: 0.2rem;
+    gap: 0.12rem;
+  }
+
+  .chrome-close {
+    margin-left: 0.42rem;
+    width: 1.55rem;
+    height: 1.55rem;
+  }
+
+  .chrome-close:hover {
+    color: var(--rb-record);
+    background: color-mix(in srgb, var(--rb-record) 16%, transparent);
   }
 
   .more-menu {
@@ -3786,9 +3893,11 @@
     overflow-y: auto !important;
   }
 
+  /* Hermano del rail, no hijo del .body: isolation + overflow del cuerpo
+     lo dejaban debajo del rail y los clics no llegaban a las acciones. */
   .ctx {
     position: fixed;
-    z-index: var(--z-popover, 60);
+    z-index: 30;
     display: flex;
     min-width: 7.5rem;
     flex-direction: column;
@@ -3798,6 +3907,7 @@
     padding: 0.2rem;
     background: color-mix(in srgb, var(--rb-surface) 94%, #0f1115);
     box-shadow: 0 8px 24px color-mix(in srgb, #000 35%, transparent);
+    pointer-events: auto;
 
     /* Más corto que los popovers: un menú contextual tiene que sentirse ya. */
     transform-origin: 0 0;
@@ -3852,35 +3962,35 @@
     transform: scale(0.96);
   }
 
-  /* Se revela al pasar por encima de la ficha: una X siempre visible en cada
-     una convierte el rail en ruido. */
+  /* Columna a la derecha, a todo el alto de la ficha. Se revela al hover;
+     el espacio queda reservado para que el icono no se mueva. */
   .tab-x {
-    position: absolute;
-    right: -0.3rem;
-    bottom: -0.3rem;
-    padding: 0.14rem;
+    align-self: stretch;
+    width: 100%;
+    height: 100%;
+    min-height: 0;
+    padding: 0;
+    border-radius: 0.45rem;
     opacity: 0;
-    background: var(--rb-surface);
-    box-shadow: 0 1px 4px color-mix(in srgb, #000 25%, transparent);
-    transition: opacity var(--duration-quick, 75ms) ease;
-  }
-
-  /* La X visible es diminuta; el área de clic no tiene por qué serlo. */
-  .tab-x::before {
-    position: absolute;
-    inset: -0.3rem;
-    content: "";
+    pointer-events: none;
+    background: transparent;
+    box-shadow: none;
   }
 
   .rail-slot:hover .tab-x,
   .rail-slot:focus-within .tab-x,
   .tab-x:focus-visible {
     opacity: 1;
+    pointer-events: auto;
   }
 
   .tab-x:hover {
     color: var(--rb-record);
-    background: color-mix(in srgb, var(--rb-record) 14%, var(--rb-surface));
+    background: color-mix(in srgb, var(--rb-record) 14%, transparent);
+  }
+
+  .tab-x:active:not(:disabled) {
+    transform: scale(0.96);
   }
 
   .add-menu {
@@ -4076,7 +4186,7 @@
 
   .console-desk .rail {
     width: var(--rail-width, 8rem);
-    min-width: 3.375rem;
+    min-width: 4.5rem;
     max-width: 14rem;
     padding: 0.4rem 0.34rem;
     background: color-mix(
@@ -4170,12 +4280,10 @@
   }
 
   .console-desk .tab-x {
-    right: 0.1rem;
-    bottom: 0.12rem;
-    width: 1.15rem;
-    height: 1.15rem;
-    padding: 0.2rem;
-    border-radius: 0.35rem;
+    width: 100%;
+    height: 100%;
+    padding: 0;
+    border-radius: 0.45rem;
   }
 
   .console-desk .bar {
@@ -4276,6 +4384,11 @@
     height: 1.7rem;
   }
 
+  .console-desk .chrome-close {
+    width: 1.45rem;
+    height: 1.45rem;
+  }
+
   .console-desk .icon-btn.is-on {
     color: var(--agent-accent);
     background: color-mix(in sRGB, var(--agent-accent) 13%, transparent);
@@ -4321,7 +4434,7 @@
 
   @container agents-console (width <= 34rem) {
     .console-desk .rail {
-      width: 3.35rem;
+      width: 4.5rem;
       padding-inline: 0.25rem;
     }
 
@@ -4347,8 +4460,8 @@
 
   @container agents-console (width <= 28rem) {
     .console-desk .rail {
-      width: 3rem;
-      min-width: 3rem;
+      width: 4.5rem;
+      min-width: 4.5rem;
       padding-inline: 0.2rem;
     }
 

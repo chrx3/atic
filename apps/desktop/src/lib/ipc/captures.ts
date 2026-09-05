@@ -2,7 +2,7 @@
 
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import type { UnlistenFn } from "@tauri-apps/api/event";
-import type { CaptureItem, OverlayInfo, OverlayPatch } from "$core/types";
+import type { CaptureItem, LandingRect, OverlayInfo, OverlayPatch } from "$core/types";
 import { on } from "./events";
 
 /**
@@ -63,6 +63,14 @@ export const completeRegionCapture = (
 ) => invoke<string>("complete_region_capture", { left, top, width, height });
 export const completeMonitorCapture = (x: number, y: number) =>
   invoke<string>("complete_monitor_capture", { x, y });
+export const completeCaptureFly = () => invoke<void>("complete_capture_fly");
+export const captureShelfLanding = (
+  left: number,
+  top: number,
+  width: number,
+  height: number,
+) =>
+  invoke<LandingRect>("capture_shelf_landing", { left, top, width, height });
 export const cancelCaptureSession = () => invoke<void>("cancel_capture_session");
 /** Muestra el overlay cuando el frame congelado ya cargó (evita telón gris). */
 export const showCaptureOverlay = () => invoke<void>("show_capture_overlay");

@@ -149,7 +149,7 @@ textarea,
   --rb-overlay-scrim: rgba(0, 0, 0, 0.28);
   --rb-overlay-chip: rgba(0, 0, 0, 0.75);
   --rb-overlay-ink: #fff;
-  --rb-overlay-select: #2f9e44;
+  --rb-overlay-select: #5ec8ff;
 
   /* Escala transitions.dev, compartida por las tres ventanas flotantes. */
   --duration-stagger: 20ms;

@@ -44,7 +44,7 @@
   import AgentLauncher from "$features/agents/AgentLauncher.svelte";
   import { isAgentsDismissSuppressed } from "$surfaces/overlay/agents/dismissGuard";
   import { agentsDock } from "$surfaces/overlay/agents/agentsDock.svelte";
-  import { reuseDockedFrame } from "$surfaces/overlay/agents/dockExpand";
+  import { reuseDockedFrame, shouldResizeLauncher, rememberedSetupWidth } from "$surfaces/overlay/agents/dockExpand";
   import { toasts } from "$domain/toasts.svelte";
   import ToastStack from "$ui/ToastStack.svelte";
   import { afterTransition, MOTION, ms, prefersReducedMotion, wait } from "$lib/motion";
@@ -80,6 +80,7 @@
   let browserSize = { w: BROWSER_DEFAULT_W, h: BROWSER_DEFAULT_H };
   let modeResizing = $state(false);
   let modeResizeEpoch = 0;
+  let liveConsoles = $state(false);
   const resizable = $derived(launcherView === "console");
 
   type RevealPhase = "hidden" | "expand" | "settle" | "ready";
@@ -95,13 +96,16 @@
 
   function readSetupWidth(): number {
     const saved = Number(localStorage.getItem(SETUP_WIDTH_STORAGE_KEY));
-    return Number.isFinite(saved)
-      ? Math.max(SETUP_DEFAULT_W, saved)
-      : SETUP_DEFAULT_W;
+    return rememberedSetupWidth(saved, SETUP_DEFAULT_W);
+  }
+
+  function setupPanelWidth(): number {
+    return rememberedSetupWidth(setupWidth, SETUP_DEFAULT_W);
   }
 
   function saveSetupWidth() {
     try {
+      setupWidth = setupPanelWidth();
       localStorage.setItem(SETUP_WIDTH_STORAGE_KEY, String(Math.round(setupWidth)));
     } catch {
       /* El tamaño compacto sigue funcionando aunque el storage esté bloqueado. */
@@ -207,7 +211,7 @@
         h: Math.max(BROWSER_DEFAULT_H, browserSize.h),
       };
     }
-    return { ...a, w: setupWidth, h: setupHeight(setupWidth) };
+    return { ...a, w: setupPanelWidth(), h: setupHeight(setupPanelWidth()) };
   }
 
   function placeBirthSeed(
@@ -298,23 +302,44 @@
   }
 
   async function changeLauncherView(next: LauncherView) {
-    if (launcherView === next) return;
-    clearSizeToggles();
     const current = bubble.anchor;
-    launcherView = next;
-    if (next === "console") browserOpen = false;
-    if (!current) return;
-
-    if (next === "console") {
-      setupWidth = current.w;
-      saveSetupWidth();
-    } else if (current.h >= CONSOLE_MIN_H) {
-      consoleSize = {
-        w: Math.max(CONSOLE_DEFAULT_W, current.w),
-        h: Math.max(CONSOLE_DEFAULT_H, current.h),
-      };
+    if (
+      !shouldResizeLauncher({
+        current: launcherView,
+        next,
+        height: current?.h,
+        minConsoleHeight: CONSOLE_MIN_H,
+      })
+    ) {
+      return;
     }
 
+    const prev = launcherView;
+    launcherView = next;
+    if (next === "console") browserOpen = false;
+    // Sin marco no hay a dónde crecer: no cancelar el morph de nacimiento.
+    if (!current) return;
+
+    // Corta el morph de nacimiento: si no, al reabrir desde el selector
+    // termina colocando el marco chico encima de la consola.
+    revealEpoch += 1;
+    clearSizeToggles();
+
+    if (prev !== next) {
+      if (next === "console") {
+        if (current.w >= SETUP_DEFAULT_W) {
+          setupWidth = current.w;
+          saveSetupWidth();
+        }
+      } else if (current.h >= CONSOLE_MIN_H) {
+        consoleSize = {
+          w: Math.max(CONSOLE_DEFAULT_W, current.w),
+          h: Math.max(CONSOLE_DEFAULT_H, current.h),
+        };
+      }
+    }
+
+    const setupW = setupPanelWidth();
     const size =
       next === "console"
         ? {
@@ -322,8 +347,8 @@
             h: Math.max(CONSOLE_DEFAULT_H, consoleSize.h),
           }
         : {
-            w: Math.max(BUBBLE_MIN_W, setupWidth),
-            h: setupHeight(Math.max(BUBBLE_MIN_W, setupWidth)),
+            w: setupW,
+            h: setupHeight(setupW),
           };
     await animateToSize(current, size);
   }
@@ -336,25 +361,32 @@
     if (!current) return;
 
     if (open) {
-      setupWidth = current.w;
-      saveSetupWidth();
+      if (current.w >= SETUP_DEFAULT_W) {
+        setupWidth = current.w;
+        saveSetupWidth();
+      }
     } else browserSize = { w: current.w, h: current.h };
 
+    const setupW = setupPanelWidth();
     const width = open
       ? Math.max(BROWSER_DEFAULT_W, browserSize.w, current.w)
-      : Math.max(BUBBLE_MIN_W, setupWidth);
+      : setupW;
     const size = open
       ? { w: width, h: Math.max(BROWSER_DEFAULT_H, browserSize.h) }
-      : { w: width, h: setupHeight(width) };
+      : { w: setupW, h: setupHeight(setupW) };
     await animateToSize(current, size);
+  }
+
+  function restingForView(): BubbleOpen | null {
+    return restingOpen ? frameForView(restingOpen) : null;
   }
 
   async function runOpenReveal() {
     const epoch = ++revealEpoch;
-    const resting = restingOpen;
-    if (!resting) return;
+    const initial = restingForView();
+    if (!initial) return;
     if (prefersReducedMotion()) {
-      bubble.place(resting);
+      bubble.place(restingForView() ?? initial);
       revealPhase = "ready";
       notifyToolResting();
       return;
@@ -364,10 +396,11 @@
     await tick();
     await waitFrames(2);
     await wait(BIRTH_SEED_HOLD_MS);
-    if (epoch !== revealEpoch || !bubble.anchor) return;
+    const expandingTo = restingForView();
+    if (epoch !== revealEpoch || !bubble.anchor || !expandingTo) return;
 
     bubble.place({
-      ...resting,
+      ...expandingTo,
       ...expandPanelFromSeed(
         {
           side: bubble.anchor.side as BubbleOpen["side"],
@@ -377,7 +410,7 @@
           w: bubble.anchor.w,
           h: bubble.anchor.h,
         },
-        { w: resting.w, h: resting.h },
+        { w: expandingTo.w, h: expandingTo.h },
       ),
     });
     await afterTransition(bubEl, "width", growDur);
@@ -386,9 +419,10 @@
     revealPhase = "settle";
     await tick();
     await waitFrames(2);
-    if (epoch !== revealEpoch) return;
+    const settleTo = restingForView();
+    if (epoch !== revealEpoch || !settleTo) return;
     const settleProp = separateAxisProp(bubble.anchor?.side);
-    bubble.place(resting);
+    bubble.place(settleTo);
     notifyToolResting();
     await afterTransition(bubEl, settleProp, settleDur);
     if (epoch !== revealEpoch) return;
@@ -508,7 +542,7 @@
 
   /** El lanzador (antes de abrir una consola): X cierra, no achica. */
   function dismissSetup() {
-    if (agents.sessions.length > 0) {
+    if (liveConsoles || agents.sessions.length > 0) {
       dockToPill();
       return;
     }
@@ -1043,6 +1077,7 @@
         onBrowserChange={(open) => void changeBrowser(open)}
         onToggleMaximize={toggleMaximize}
         onToggleMinimize={toggleMinimize}
+        onLiveChange={(live) => (liveConsoles = live)}
         {maximized}
         {minimized}
         shown={bubble.shown}

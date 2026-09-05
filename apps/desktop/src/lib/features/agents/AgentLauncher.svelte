@@ -5,7 +5,7 @@
   import FolderBrowser from "./FolderBrowser.svelte";
   import AgentLogo from "./AgentLogo.svelte";
   import Icon from "$ui/Icon.svelte";
-  import { Folder, SquareTerminal, X } from "$lib/icons";
+  import { Folder, X } from "$lib/icons";
   import { onMount } from "svelte";
   import { AGENTS_REVEAL_CONSOLE, cliOnPath } from "$ipc/agents";
   import { AGENTS, shownAgents } from "./agentCatalog";
@@ -22,6 +22,7 @@
     onBrowserChange,
     onToggleMaximize,
     onToggleMinimize,
+    onLiveChange,
     maximized = false,
     minimized = false,
     shown = false,
@@ -33,6 +34,8 @@
     onBrowserChange?: (open: boolean) => void;
     onToggleMaximize?: () => void;
     onToggleMinimize?: () => void;
+    /** Hay PTYs montadas: el float debe esconder, no destruir. */
+    onLiveChange?: (live: boolean) => void;
     maximized?: boolean;
     minimized?: boolean;
     /** El float está a la vista: si hay consolas vivas, mostrarlas. */
@@ -91,10 +94,13 @@
   const launchLabel = $derived(
     missingCli
       ? t("page.agents.installNamed", { name: chosen.name })
-      : hasConsole
-        ? t("page.agents.backToConsoles")
-        : t("page.agents.openNamed", { name: chosen.name }),
+      : t("page.agents.openNamed", { name: chosen.name }),
   );
+
+  function setHasConsole(next: boolean) {
+    hasConsole = next;
+    onLiveChange?.(next);
+  }
 
   function showView(next: LauncherView) {
     view = next;
@@ -120,11 +126,18 @@
       // El CLI no está: el botón instala en vez de lanzar. Con la consola ya
       // montada `initialTabs` no aplica; se pide la pestaña a la instancia.
       if (hasConsole) panel?.installAgent(chosen);
-      else hasConsole = true;
+      else setHasConsole(true);
       showView("console");
       return;
     }
-    if (!hasConsole) hasConsole = true;
+    if (hasConsole) {
+      // `initialTabs` solo siembra al montar. Acá hay que sumar pestañas
+      // sin matar las que ya corren.
+      panel?.openAgent(chosen, count);
+      showView("console");
+      return;
+    }
+    setHasConsole(true);
     showView("console");
   }
 
@@ -136,7 +149,7 @@
 
   function resetSessions() {
     // Al desmontar ConsolePanel su onDestroy cierra todas las PTYs.
-    hasConsole = false;
+    setHasConsole(false);
     showView("setup");
   }
 
@@ -226,10 +239,15 @@
       }}
     >
       {#if hasConsole}
-        <span class="live-status" role="status">
+        <button
+          type="button"
+          class="live-status"
+          use:tip={t("page.agents.backToConsoles")}
+          onclick={revealLiveConsole}
+        >
           <span class="live-dot" aria-hidden="true"></span>
-          Consolas activas
-        </span>
+          {t("page.agents.liveConsoles")}
+        </button>
       {/if}
       <div class="chrome">
         {#if onClose}
@@ -326,10 +344,9 @@
             use:tip={missingCli ? `${chosen.name} no está instalado` : undefined}
             onclick={launch}
           >
-            {#if hasConsole && !missingCli}<Icon icon={SquareTerminal} size={14} />{/if}
             <span>{launchLabel}</span>
-          <span class="arrow" aria-hidden="true">→</span>
-        </button>
+            <span class="arrow" aria-hidden="true">→</span>
+          </button>
       </div>
     </div>
   </section>
@@ -445,9 +462,20 @@
     align-items: center;
     gap: 0.35rem;
     margin-right: auto;
+    border: 0;
+    padding: 0.15rem 0.35rem 0.15rem 0.1rem;
+    background: transparent;
     color: var(--rb-muted);
+    font: inherit;
     font-size: 0.625rem;
     font-weight: 600;
+    cursor: pointer;
+    border-radius: 0.4rem;
+  }
+
+  .live-status:hover {
+    color: var(--rb-text);
+    background: color-mix(in sRGB, var(--rb-text) 7%, transparent);
   }
 
   .live-dot {
@@ -800,7 +828,8 @@
     .stepper button,
     .close,
     .reset,
-    .launch {
+    .launch,
+    .live-status {
       transition: none;
       transform: none;
     }

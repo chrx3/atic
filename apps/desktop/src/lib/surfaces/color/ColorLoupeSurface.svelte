@@ -352,7 +352,10 @@
     subscribe(on("color-patch", applyPatch));
     subscribe(
       on("color-toggle-rose", (token) => {
-        if (token === session && token > endedSession) toggleRose();
+        if (token <= endedSession) return;
+        // La lupa nace sin foco: R llega por Rust antes que el primer parche.
+        if (!session) session = token;
+        if (token === session) toggleRose();
       }),
     );
     subscribe(
