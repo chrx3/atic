@@ -204,6 +204,12 @@ export function agentLogoKey(id: string | null | undefined): string | null {
     case "cursor":
     case "cursor-agent":
       return "cursor-agent";
+    case "agy":
+    case "antigravity":
+      return "agy";
+    case "grok":
+    case "xai":
+      return "grok";
     default:
       return null;
   }

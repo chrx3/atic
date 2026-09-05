@@ -19,6 +19,7 @@
 //! el TUI: «Gemini models» y «Claude and GPT models»). Acá se reducen los
 //! modelos a esos dos grupos; el peor porcentaje del grupo manda.
 
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
@@ -53,6 +54,23 @@ pub struct AntigravityAccountUsage {
     pub fetched_at: i64,
 }
 
+static LAST_GOOD: OnceLock<Mutex<Option<AntigravityAccountUsage>>> = OnceLock::new();
+
+fn last_good_slot() -> &'static Mutex<Option<AntigravityAccountUsage>> {
+    LAST_GOOD.get_or_init(|| Mutex::new(None))
+}
+
+fn remember(value: &AntigravityAccountUsage) {
+    if let Ok(mut guard) = last_good_slot().lock() {
+        *guard = Some(value.clone());
+    }
+}
+
+/// Último snapshot bueno. Si la API falla, la pill sigue pintando estas barras.
+pub fn last_good() -> Option<AntigravityAccountUsage> {
+    last_good_slot().lock().ok()?.clone()
+}
+
 /// ¿Hay sesión de `agy` en esta máquina? (credencial en el keyring)
 pub fn detected() -> bool {
     read_credential_blob().is_some()
@@ -60,6 +78,14 @@ pub fn detected() -> bool {
 
 /// Consulta el cupo semanal por grupo de modelos.
 pub fn fetch_account_usage() -> Result<AntigravityAccountUsage, String> {
+    let result = fetch_account_usage_uncached();
+    if let Ok(ref value) = result {
+        remember(value);
+    }
+    result
+}
+
+fn fetch_account_usage_uncached() -> Result<AntigravityAccountUsage, String> {
     let blob = read_credential_blob()
         .ok_or_else(|| "no hay sesión de Antigravity (credencial ausente)".to_string())?;
     let token = access_token_from_blob(&blob)?;
@@ -77,6 +103,9 @@ pub fn fetch_account_usage() -> Result<AntigravityAccountUsage, String> {
         .send()
         .map_err(|e| format!("no se pudo consultar el cupo: {e}"))?;
     let status = response.status();
+    if status.as_u16() == 401 || status.as_u16() == 403 {
+        return Err("la sesión de Antigravity venció; abre agy para renovarla".into());
+    }
     if !status.is_success() {
         return Err(format!("la API de Antigravity respondió {status}"));
     }

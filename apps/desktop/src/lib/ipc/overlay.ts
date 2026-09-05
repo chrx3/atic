@@ -166,6 +166,9 @@ export const onOverlayYieldMain = (cb: () => void): Promise<UnlistenFn> =>
 export const onOverlayReady = (cb: () => void): Promise<UnlistenFn> =>
   on("overlay-ready", cb);
 
+export const onOverlayItemDrag = (cb: (active: boolean) => void): Promise<UnlistenFn> =>
+  on("overlay-item-drag", cb);
+
 export const onPillClipboardToggle = (cb: () => void): Promise<UnlistenFn> =>
   on("pill-clipboard-toggle", cb);
 export const onPillClipboardClose = (cb: () => void): Promise<UnlistenFn> =>

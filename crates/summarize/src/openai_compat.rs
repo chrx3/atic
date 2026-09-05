@@ -161,7 +161,16 @@ struct Run<'a> {
 
 impl Run<'_> {
     fn report(&mut self, stage: &'static str, part: u32, of: u32) {
-        (self.on_progress)(&SummarizeProgress { stage, part, of });
+        self.report_wait(stage, part, of, 0);
+    }
+
+    fn report_wait(&mut self, stage: &'static str, part: u32, of: u32, wait_secs: u32) {
+        (self.on_progress)(&SummarizeProgress {
+            stage,
+            part,
+            of,
+            wait_secs,
+        });
     }
 }
 
@@ -192,15 +201,37 @@ impl OpenAiCompatSummarizer {
 
     /// Groq on_demand: el TPM es techo por minuto. Encadenar partes ya
     /// agota el cupo; sin pausa el siguiente 413 es inmediato.
-    fn pace_between_calls(&self) {
+    fn pace_secs(&self) -> u64 {
         if self.provider_id == "groq" {
-            thread::sleep(Duration::from_secs(45));
+            45
+        } else {
+            0
         }
     }
 
-    fn wait_after_too_large(&self, err: &SummarizeError) {
+    fn pace_between_calls(&self, run: &mut Run<'_>, part: u32, of: u32) {
+        let secs = self.pace_secs();
+        if secs == 0 {
+            return;
+        }
+        run.report_wait("wait", part, of, secs as u32);
+        thread::sleep(Duration::from_secs(secs));
+    }
+
+    fn wait_secs_for(&self, err: &SummarizeError) -> u64 {
         let default = if self.provider_id == "groq" { 45 } else { 5 };
-        let secs = err.retry_secs().unwrap_or(default).clamp(1, 90);
+        err.retry_secs().unwrap_or(default).clamp(1, 90)
+    }
+
+    fn wait_after_too_large(
+        &self,
+        run: &mut Run<'_>,
+        err: &SummarizeError,
+        part: u32,
+        of: u32,
+    ) {
+        let secs = self.wait_secs_for(err);
+        run.report_wait("wait", part, of, secs as u32);
         thread::sleep(Duration::from_secs(secs));
     }
 
@@ -218,8 +249,7 @@ impl OpenAiCompatSummarizer {
             Ok(raw) => Ok(raw),
             Err(err) if err.is_too_large() => {
                 let limit = err.tpm_limit().unwrap_or(self.fallback_tpm_limit());
-                run.report("wait", 0, 0);
-                self.wait_after_too_large(&err);
+                self.wait_after_too_large(run, &err, 0, 0);
                 tracing::info!(
                     provider = %self.provider_id,
                     limit,
@@ -249,8 +279,7 @@ impl OpenAiCompatSummarizer {
             match self.chat(run.ep, &user, self.map_out(), on_delta) {
                 Ok(raw) => return Ok(raw),
                 Err(err) if err.is_too_large() => {
-                    run.report("wait", 0, 0);
-                    self.wait_after_too_large(&err);
+                    self.wait_after_too_large(run, &err, 0, 0);
                     let tighter = budget.max(2) / 2;
                     parts = chunk::split_plain(plain, tighter);
                     if parts.len() == 1 {
@@ -266,22 +295,20 @@ impl OpenAiCompatSummarizer {
         for (i, part) in parts.iter().enumerate() {
             let part_n = (i as u32) + 1;
             if i > 0 {
-                run.report("wait", part_n, n);
-                self.pace_between_calls();
+                self.pace_between_calls(run, part_n, n);
             }
             run.report("map", part_n, n);
-            notes.push(self.map_chunk(run.ep, part, i + 1, parts.len(), tpm_limit, 0)?);
+            notes.push(self.map_chunk(run, part, i + 1, parts.len(), tpm_limit, 0)?);
         }
 
-        run.report("wait", n, n);
-        self.pace_between_calls();
+        self.pace_between_calls(run, n, n);
         run.report("reduce", n, n);
-        self.reduce_notes(run.ep, notes, template, meeting_title, 0, on_delta)
+        self.reduce_notes(run, notes, template, meeting_title, 0, on_delta)
     }
 
     fn map_chunk(
         &self,
-        ep: &Endpoint<'_>,
+        run: &mut Run<'_>,
         part: &str,
         index: usize,
         of: usize,
@@ -289,10 +316,10 @@ impl OpenAiCompatSummarizer {
         depth: u8,
     ) -> Result<String> {
         let prompt = prompts::map_chunk_prompt(index, of, part, self.english);
-        match self.chat(ep, &prompt, self.map_out(), &mut |_| {}) {
+        match self.chat(run.ep, &prompt, self.map_out(), &mut |_| {}) {
             Ok(note) => Ok(note),
             Err(err) if err.is_too_large() && depth < 4 => {
-                self.wait_after_too_large(&err);
+                self.wait_after_too_large(run, &err, index as u32, of as u32);
                 let limit = err.tpm_limit().unwrap_or(tpm_limit);
                 let half = (part.chars().count() / 2).max(1);
                 let bits = chunk::split_plain(part, half);
@@ -302,9 +329,9 @@ impl OpenAiCompatSummarizer {
                 let mut notes = Vec::with_capacity(bits.len());
                 for (j, bit) in bits.iter().enumerate() {
                     if j > 0 {
-                        self.pace_between_calls();
+                        self.pace_between_calls(run, index as u32, of as u32);
                     }
-                    notes.push(self.map_chunk(ep, bit, index, of, limit, depth + 1)?);
+                    notes.push(self.map_chunk(run, bit, index, of, limit, depth + 1)?);
                 }
                 Ok(notes.join("\n\n"))
             }
@@ -314,7 +341,7 @@ impl OpenAiCompatSummarizer {
 
     fn reduce_notes(
         &self,
-        ep: &Endpoint<'_>,
+        run: &mut Run<'_>,
         notes: Vec<String>,
         template: SummaryTemplate,
         meeting_title: &str,
@@ -323,21 +350,22 @@ impl OpenAiCompatSummarizer {
     ) -> Result<String> {
         let source = prompts::reduce_source(&notes, self.english);
         let user = prompts::user_prompt_for(template, meeting_title, &source, self.english);
-        match self.chat(ep, &user, self.max_out(), on_delta) {
+        match self.chat(run.ep, &user, self.max_out(), on_delta) {
             Ok(raw) => Ok(raw),
             Err(err) if err.is_too_large() && notes.len() > 1 && depth < 4 => {
-                self.wait_after_too_large(&err);
+                let n = notes.len() as u32;
+                self.wait_after_too_large(run, &err, n, n);
                 let mid = notes.len() / 2;
                 let left: Vec<String> = notes[..mid].to_vec();
                 let right: Vec<String> = notes[mid..].to_vec();
                 let left =
-                    self.reduce_notes(ep, left, template, meeting_title, depth + 1, &mut |_| {})?;
-                self.pace_between_calls();
+                    self.reduce_notes(run, left, template, meeting_title, depth + 1, &mut |_| {})?;
+                self.pace_between_calls(run, n, n);
                 let right =
-                    self.reduce_notes(ep, right, template, meeting_title, depth + 1, &mut |_| {})?;
-                self.pace_between_calls();
+                    self.reduce_notes(run, right, template, meeting_title, depth + 1, &mut |_| {})?;
+                self.pace_between_calls(run, n, n);
                 self.reduce_notes(
-                    ep,
+                    run,
                     vec![left, right],
                     template,
                     meeting_title,
@@ -346,8 +374,8 @@ impl OpenAiCompatSummarizer {
                 )
             }
             Err(err) if err.is_too_large() => {
-                self.wait_after_too_large(&err);
-                self.chat(ep, &user, self.map_out(), on_delta)
+                self.wait_after_too_large(run, &err, 1, 1);
+                self.chat(run.ep, &user, self.map_out(), on_delta)
             }
             Err(err) => Err(err),
         }

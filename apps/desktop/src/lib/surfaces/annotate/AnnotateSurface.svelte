@@ -977,7 +977,13 @@
     cursor: pointer;
     transition:
       background var(--duration-quick) var(--ease-out),
-      color var(--duration-quick) var(--ease-out);
+      color var(--duration-quick) var(--ease-out),
+      transform var(--duration-quick) var(--ease-out);
+  }
+
+  .tool:active:not(:disabled),
+  .width:active {
+    transform: scale(0.96);
   }
 
   .tool:hover:not(:disabled),
@@ -1257,6 +1263,11 @@
     .canvas,
     .swatch::after {
       transition: none;
+    }
+
+    .tool:active:not(:disabled),
+    .width:active {
+      transform: none;
     }
   }
 </style>

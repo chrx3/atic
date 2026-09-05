@@ -484,7 +484,22 @@ export interface LauncherHit {
 export interface OverlayCandidate {
   hwnd: number;
   title: string;
-  /** Píxeles del PNG congelado, origen en la esquina del escritorio virtual. */
+  /** Píxeles del frame congelado, origen en la esquina del escritorio virtual. */
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+
+export interface OverlayMonitor {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+
+/** Thumb del shelf, en píxeles del frame congelado (igual que OverlayCandidate). */
+export interface LandingRect {
   left: number;
   top: number;
   width: number;
@@ -495,10 +510,11 @@ export type OverlayKind = "capture" | "color";
 
 export interface OverlayInfo {
   framePath: string;
-  /** Tamaño físico del PNG congelado. */
+  /** Tamaño físico del frame congelado. */
   width: number;
   height: number;
   candidates: OverlayCandidate[];
+  monitors: OverlayMonitor[];
   /** Qué hace esta sesión: recorte o cuentagotas. */
   kind: OverlayKind;
 }

@@ -234,6 +234,10 @@ pub fn run() {
             capture_session::complete_window_capture,
             capture_session::complete_region_capture,
             capture_session::complete_monitor_capture,
+            capture_session::complete_capture_fly,
+            capture_session::capture_shelf_landing,
+            capture_shelf::capture_shelf_cover_monitor,
+            capture_shelf::capture_shelf_restore_bounds,
             capture_session::cancel_capture_session,
             annotate::open_annotator,
             annotate::start_board,
@@ -252,6 +256,8 @@ pub fn run() {
             clipboard_history::start_clipboard_text_drag,
             clipboard_history::start_file_drag,
             clipboard_history::read_clipboard_drag_text,
+            clipboard_history::read_system_clipboard_text,
+            clipboard_history::write_system_clipboard_text,
             clipboard_history::pin_clipboard_item,
             clipboard_history::delete_clipboard_item,
             clipboard_history::clear_clipboard_history,
@@ -307,6 +313,7 @@ pub fn run() {
             agents::console::console_resize,
             agents::console::console_close,
             agents::console::console_gc,
+            agents::console::console_foreground_cli,
             agents::media::agent_stage_image,
             clipboard_history::restore_pill_position,
             snippets::list_snippets,
@@ -426,6 +433,8 @@ pub fn run() {
             // Precarga catálogos de modelos de agentes (Cursor, Claude, …)
             // para que el selector no espere al abrir la consola.
             agents::discover::preload_models_async();
+
+            capture_session::prewarm_capture_overlay(app.handle());
 
             crate::ui_lang::set_english(ui_language == "en");
             crate::ui_lang::apply_window_titles(app.handle());

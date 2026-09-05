@@ -79,7 +79,19 @@
     const p = progress;
     if (!p) return t("page.summary.preparing");
     if (p.stage === "reduce") return t("page.summary.reducing");
-    if (p.stage === "wait") return t("page.summary.waitQuota");
+    if (p.stage === "wait") {
+      if (p.wait_secs > 0 && p.of > 0) {
+        return t("page.summary.waitQuotaSecs", {
+          secs: p.wait_secs,
+          part: p.part,
+          of: p.of,
+        });
+      }
+      if (p.wait_secs > 0) {
+        return t("page.summary.waitQuotaSecsOnly", { secs: p.wait_secs });
+      }
+      return t("page.summary.waitQuota");
+    }
     if (p.of > 0) {
       return t("page.summary.partProgress", { part: p.part, of: p.of });
     }

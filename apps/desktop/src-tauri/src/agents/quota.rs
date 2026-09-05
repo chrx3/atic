@@ -347,11 +347,36 @@ fn cursor_from(u: super::cursor_usage::CursorAccountUsage) -> AgentQuota {
 }
 
 fn antigravity_quota() -> AgentQuota {
-    row(
-        "agy",
+    antigravity_row(
         super::antigravity_usage::fetch_account_usage(),
-        antigravity_from,
+        super::antigravity_usage::last_good(),
     )
+}
+
+/// Si la consulta falla, se conservan las barras del último snapshot bueno y
+/// el error se muestra igual: «no hay dato» y «sesión vencida» no son lo mismo.
+fn antigravity_row(
+    result: Result<super::antigravity_usage::AntigravityAccountUsage, String>,
+    stale: Option<super::antigravity_usage::AntigravityAccountUsage>,
+) -> AgentQuota {
+    match result {
+        Ok(usage) => antigravity_from(usage),
+        Err(error) => match stale {
+            Some(usage) => {
+                let mut quota = antigravity_from(usage);
+                quota.error = Some(error);
+                quota
+            }
+            None => AgentQuota {
+                agent: "agy".to_string(),
+                plan: None,
+                windows: Vec::new(),
+                spend: None,
+                fetched_at: None,
+                error: Some(error),
+            },
+        },
+    }
 }
 
 fn antigravity_from(u: super::antigravity_usage::AntigravityAccountUsage) -> AgentQuota {
@@ -441,6 +466,33 @@ mod tests {
         assert!(quota.windows.is_empty());
         assert!(quota.spend.is_none());
         assert!(quota.fetched_at.is_none());
+    }
+
+    #[test]
+    fn antigravity_conserva_barras_si_la_consulta_falla() {
+        let stale = super::super::antigravity_usage::AntigravityAccountUsage {
+            windows: vec![super::super::antigravity_usage::GroupWindow {
+                group: "gemini".into(),
+                used_percent: 12.0,
+                resets_at: Some("2026-09-08T14:22:38Z".into()),
+            }],
+            fetched_at: 1_788_000_000_000,
+        };
+        let quota = antigravity_row(
+            Err("la sesión de Antigravity venció; abre agy para renovarla".into()),
+            Some(stale),
+        );
+        assert_eq!(quota.agent, "agy");
+        assert_eq!(quota.windows.len(), 1);
+        assert_eq!(quota.windows[0].kind, "7d:gemini");
+        assert!(
+            quota
+                .error
+                .as_deref()
+                .is_some_and(|e| e.contains("agy")),
+            "{:?}",
+            quota.error
+        );
     }
 
     #[test]

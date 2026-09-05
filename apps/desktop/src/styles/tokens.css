@@ -57,6 +57,7 @@
   /* Sobre la pantalla del usuario, no sobre Atic: no siguen al tema. */
   --color-screen-scrim: var(--screen-scrim);
   --color-screen-select: var(--screen-select);
+  --color-screen-select-edge: var(--screen-select-edge);
   --color-screen-chip: var(--screen-chip);
   --color-screen-ink: var(--screen-ink);
 

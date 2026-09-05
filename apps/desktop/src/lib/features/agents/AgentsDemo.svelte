@@ -23,6 +23,7 @@
   } from "$ipc/agents";
   import { getConfig } from "$ipc/config";
   import { onAgentsComposerInsert, readClipboardDragText } from "$ipc/clipboard";
+  import { overlayCursorOverHit, onOverlayItemDrag } from "$ipc/overlay";
   import { pickAgentFiles } from "$ipc/dialogs";
   import { withAgentsDismissSuppressed } from "$surfaces/overlay/agents/dismissGuard";
   import {
@@ -124,6 +125,8 @@
   /** Selector Local | Remoto en el header. */
   let destMenuOpen = $state(false);
   let destRoot = $state<HTMLDivElement | null>(null);
+  let itemDragWatch: number | null = null;
+  let itemDragGen = 0;
   /** Panel inline de hosts (float / sin MainUi). */
   let hostsPanelOpen = $state(false);
   let hostsPanelCfg = $state<AppConfig | null>(null);
@@ -437,6 +440,31 @@
     } catch (err) {
       error = String(err);
     }
+  }
+
+  function stopItemDragWatch() {
+    itemDragGen++;
+    if (itemDragWatch != null) {
+      clearInterval(itemDragWatch);
+      itemDragWatch = null;
+    }
+    dropActive = false;
+  }
+
+  function startItemDragWatch() {
+    if (itemDragWatch != null) return;
+    const gen = ++itemDragGen;
+    itemDragWatch = window.setInterval(() => {
+      if (gen !== itemDragGen) return;
+      void overlayCursorOverHit("agents")
+        .then((over) => {
+          if (gen !== itemDragGen) return;
+          dropActive = over;
+        })
+        .catch(() => {
+          if (gen === itemDragGen) dropActive = false;
+        });
+    }, 50);
   }
 
   function onComposerDragOver(e: DragEvent) {
@@ -1462,9 +1490,18 @@
     void onAgentsComposerInsert(applyComposerInsert).then((un) => {
       stopInsert = un;
     });
+    let stopItemDrag: (() => void) | undefined;
+    void onOverlayItemDrag((active) => {
+      if (active) startItemDragWatch();
+      else stopItemDragWatch();
+    }).then((un) => {
+      stopItemDrag = un;
+    });
     return () => {
       window.removeEventListener("keydown", onWinKey, true);
       stopInsert?.();
+      stopItemDrag?.();
+      stopItemDragWatch();
       agents.watch(null);
     };
   });
@@ -1507,6 +1544,7 @@
   class="demo"
   class:is-float={variant === "float"}
   class:is-panel={variant === "panel"}
+  class:is-drop={dropActive}
   class:is-menu-open={modelMenuOpen ||
     effortMenuOpen ||
     modeMenuOpen ||
@@ -2403,6 +2441,11 @@
 
   .demo.is-float {
     border-radius: var(--r-outer);
+  }
+
+  .demo.is-drop {
+    box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--accent) 70%, transparent);
+    background: color-mix(in srgb, var(--accent) 10%, var(--rb-surface));
   }
 
   .demo.is-menu-open {

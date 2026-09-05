@@ -32,6 +32,7 @@ struct ProgressPayload {
     stage: String,
     part: u32,
     of: u32,
+    wait_secs: u32,
 }
 
 #[derive(Clone, Serialize)]
@@ -328,6 +329,7 @@ fn run_summarize(
                     stage: p.stage.to_string(),
                     part: p.part,
                     of: p.of,
+                    wait_secs: p.wait_secs,
                 },
             );
         };

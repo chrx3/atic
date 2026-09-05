@@ -1,7 +1,7 @@
-//! Codificación de frames BGRA (top-down) a PNG.
+//! Codificación de frames BGRA (top-down) a PNG o JPEG.
 //!
 //! GDI entrega los píxeles como BGRA de 32 bits con el canal alfa sin
-//! significado (0). Se reordena a RGBA y se fuerza alfa opaco antes de
+//! significado (0). Se reordena a RGB(A) y se fuerza alfa opaco antes de
 //! codificar, porque una captura de pantalla no tiene transparencia real.
 
 use crate::error::{Error, Result};
@@ -40,6 +40,37 @@ pub fn bgra_to_png(width: u32, height: u32, bgra: &[u8]) -> Result<Vec<u8>> {
             .write_image_data(&rgba)
             .map_err(|e| Error::Encode(e.to_string()))?;
     }
+    Ok(out)
+}
+
+/// JPEG de la mira de captura. No es el archivo final: es la foto que tapa el
+/// escritorio mientras eliges región/ventana. Calidad 80 se ve igual y pesa
+/// una fracción del PNG.
+pub fn bgra_to_jpeg(width: u32, height: u32, bgra: &[u8], quality: u8) -> Result<Vec<u8>> {
+    if width == 0 || height == 0 {
+        return Err(Error::InvalidDimensions(width, height));
+    }
+    let expected = width as usize * height as usize * 4;
+    if bgra.len() != expected {
+        return Err(Error::BufferSize {
+            expected,
+            got: bgra.len(),
+        });
+    }
+
+    let mut rgb = vec![0u8; width as usize * height as usize * 3];
+    for (src, dst) in bgra.chunks_exact(4).zip(rgb.chunks_exact_mut(3)) {
+        dst[0] = src[2];
+        dst[1] = src[1];
+        dst[2] = src[0];
+    }
+
+    let quality = quality.clamp(1, 100);
+    let mut out = Vec::new();
+    let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, quality);
+    encoder
+        .encode(&rgb, width, height, image::ExtendedColorType::Rgb8)
+        .map_err(|e| Error::Encode(e.to_string()))?;
     Ok(out)
 }
 
@@ -191,5 +222,25 @@ mod tests {
         assert_eq!((width, height), (2, 1));
         assert_eq!(&bgra[0..4], &[30, 20, 10, 40]);
         assert_eq!(&bgra[4..8], &[0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn jpeg_starts_with_soi_marker() {
+        let bgra = vec![255, 0, 0, 0, 0, 0, 255, 0];
+        let jpeg = bgra_to_jpeg(2, 1, &bgra, 80).unwrap();
+        assert_eq!(&jpeg[0..2], &[0xFF, 0xD8]);
+        assert!(jpeg.len() > 4);
+    }
+
+    #[test]
+    fn jpeg_rejects_wrong_buffer_size() {
+        let err = bgra_to_jpeg(2, 2, &[0u8; 8], 80).unwrap_err();
+        assert!(matches!(
+            err,
+            Error::BufferSize {
+                expected: 16,
+                got: 8
+            }
+        ));
     }
 }

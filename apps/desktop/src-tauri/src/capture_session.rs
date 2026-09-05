@@ -31,6 +31,9 @@ static GENERATION: AtomicU64 = AtomicU64::new(0);
 /// ventana está visible pero el webview quedó en blanco». `is_visible()` no
 /// sirve para eso: la pone en `true` este mismo módulo al llamar `show()`.
 static REVEALED: AtomicBool = AtomicBool::new(false);
+/// Ancla del shelf pendiente: la mira guarda el PNG y vuela; el shelf se
+/// muestra al aterrizar.
+static PENDING_SHELF: std::sync::Mutex<Option<(i32, i32)>> = std::sync::Mutex::new(None);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -54,7 +57,7 @@ pub struct OverlaySession {
 #[cfg(not(windows))]
 pub struct OverlaySession;
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OverlayCandidate {
     /// `HWND` como entero (cabe en el rango seguro de JS).
@@ -69,16 +72,36 @@ pub struct OverlayCandidate {
     pub height: f64,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OverlayInfo {
-    /// Ruta absoluta del PNG congelado (el frontend la pasa por convertFileSrc).
+    /// Ruta absoluta del JPEG de la mira (el frontend la pasa por convertFileSrc).
     pub frame_path: String,
-    /// Tamaño del PNG congelado en píxeles físicos.
+    /// Tamaño del frame congelado en píxeles físicos.
     pub width: f64,
     pub height: f64,
     pub candidates: Vec<OverlayCandidate>,
+    pub monitors: Vec<OverlayMonitor>,
     pub kind: OverlayKind,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OverlayMonitor {
+    pub left: f64,
+    pub top: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LandingRect {
+    /// Píxeles del frame congelado, el mismo espacio que `OverlayCandidate`.
+    pub left: f64,
+    pub top: f64,
+    pub width: f64,
+    pub height: f64,
 }
 
 #[tauri::command]
@@ -174,10 +197,38 @@ pub fn cancel_capture_session(app: AppHandle) {
     end_session(&app);
 }
 
-/// Cierra el overlay, copia al portapapeles, muestra el shelf y notifica.
+/// Copia al portapapeles y deja el shelf para el vuelo. El overlay sigue
+/// arriba hasta `complete_capture_fly` / `end_session`.
 fn finish(app: &AppHandle, path: &str, shelf_anchor: (i32, i32)) {
-    end_session(app);
-    crate::capture::notify_capture_ready(app, path, Some(shelf_anchor));
+    *PENDING_SHELF
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner()) = Some(shelf_anchor);
+    crate::capture::notify_capture_ready_ex(app, path, Some(shelf_anchor), false);
+}
+
+fn take_pending_shelf() -> Option<(i32, i32)> {
+    PENDING_SHELF
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .take()
+}
+
+/// La mira ya aterrizó: esconder el overlay y revelar el shelf.
+#[tauri::command]
+pub fn complete_capture_fly(app: AppHandle) {
+    end_session(&app);
+}
+
+/// Rectángulo del thumb del shelf, en píxeles del frame congelado.
+#[tauri::command]
+pub fn capture_shelf_landing(
+    app: AppHandle,
+    left: f64,
+    top: f64,
+    width: f64,
+    height: f64,
+) -> Result<LandingRect, String> {
+    capture_shelf_landing_impl(&app, left, top, width, height)
 }
 
 fn end_session(app: &AppHandle) {
@@ -186,10 +237,20 @@ fn end_session(app: &AppHandle) {
     STARTING.store(false, Ordering::SeqCst);
     REVEALED.store(false, Ordering::SeqCst);
 
+    // El shelf primero: si se oculta el overlay antes, hay un frame de
+    // escritorio vivo. Si había un vuelo pendiente (o se canceló a mitad),
+    // la captura ya está en disco y tiene que aparecer.
+    let pending = take_pending_shelf();
+    if let Some(anchor) = pending {
+        let _ = crate::capture_shelf::show_shelf(app, Some(anchor));
+    }
+
     // Ocultar (no cerrar): destruir la ventana provoca un crash de wry cuando
     // recibe WM_SETFOCUS durante su destrucción. Se reutiliza en la próxima
     // sesión.
     if let Some(window) = app.get_webview_window(OVERLAY_LABEL) {
+        #[cfg(windows)]
+        disable_dwm_transitions(&window);
         let _ = window.hide();
     }
     // La main dejó de robar hover al mostrar el overlay; devolver hit-testing.
@@ -244,24 +305,18 @@ fn start_impl(app: &AppHandle, kind: OverlayKind) -> Result<(), String> {
 
     let token = GENERATION.load(Ordering::SeqCst);
 
-    // Click-through YA, en el hilo del atajo, ANTES del freeze. Si el freeze
-    // corre en este mismo hilo, cualquier PostMessage/estilo en cola no aplica
-    // hasta terminar — y un tap no espera. Hold solo daba tiempo de sobra.
+    // Click-through de la pill. El freeze corre en este hilo, como la pizarra:
+    // el estilo llega cuando Windows bombea mensajes, y para entonces la mira
+    // ya cubre el escritorio.
     crate::overlay::set_capturing(app, true);
 
-    let app_bg = app.clone();
-    if std::thread::Builder::new()
-        .name("atic-capture-start".into())
-        .spawn(move || {
-            if let Err(error) = start_freeze(&app_bg, token, kind) {
-                tracing::warn!(%error, "no se pudo abrir el overlay de captura");
-                abandon_start(&app_bg);
-            }
-        })
-        .is_err()
-    {
+    // Misma forma que la pizarra: congelar y mostrar en este hilo. Un spawn
+    // extra dejaba la mira esperando el scheduler y un hop al hilo principal
+    // después de que los píxeles ya estaban listos.
+    if let Err(error) = start_freeze(app, token, kind) {
+        tracing::warn!(%error, "no se pudo abrir el overlay de captura");
         abandon_start(app);
-        return Err("no se pudo iniciar la captura en segundo plano".into());
+        return Err(error);
     }
     Ok(())
 }
@@ -316,40 +371,52 @@ fn start_freeze(app: &AppHandle, token: u64, kind: OverlayKind) -> Result<(), St
     let state = app.state::<crate::state::AppState>();
     let include_cursor = state.config.lock_or_recover().capture_include_cursor;
 
-    // Si un intento anterior dejó el overlay visible (telón #111), BitBlt lo
-    // congela como “escritorio” gris. Ocultar y dar un frame a DWM.
-    ensure_overlay_hidden(app);
-    std::thread::sleep(std::time::Duration::from_millis(32));
+    hide_overlay_if_visible(app);
     if abort_requested(token) {
         abandon_start(app);
         return Ok(());
     }
 
-    if let Err(err) = ensure_capture_overlay(app) {
-        abandon_start(app);
-        return Err(err);
-    }
-    if abort_requested(token) {
-        abandon_start(app);
-        return Ok(());
-    }
-
+    // Congelar YA. Crear el webview o encodear el preview no puede ir antes:
+    // el escritorio seguiría cambiando mientras esperamos.
     let virtual_screen = monitors::virtual_screen();
-    let mut frame = match engine::capture_rect(virtual_screen, include_cursor) {
+    let frame = match engine::capture_rect(virtual_screen, include_cursor) {
         Ok(frame) => frame,
         Err(error) => {
             abandon_start(app);
             return Err(error.to_string());
         }
     };
-    compose_overlay(app, &mut frame);
     if abort_requested(token) {
         abandon_start(app);
         return Ok(());
     }
 
-    let png = match frame.to_png() {
-        Ok(png) => png,
+    let pid = std::process::id();
+    let windows_ready = std::thread::Builder::new()
+        .name("atic-capture-windows".into())
+        .spawn(move || {
+            let monitors = monitors::enumerate();
+            let candidates = capwin::enumerate_candidates(pid, &monitors);
+            (monitors, candidates)
+        })
+        .ok();
+
+    let overlay_ready = overlay_is_ready(app);
+    let app_overlay = app.clone();
+    let overlay_wait = if overlay_ready {
+        None
+    } else {
+        std::thread::Builder::new()
+            .name("atic-capture-overlay".into())
+            .spawn(move || ensure_capture_overlay(&app_overlay))
+            .ok()
+    };
+
+    // JPEG de la mira: el PNG lossless es la captura final, no este telón.
+    // En un dual 4K el PNG se come cientos de ms.
+    let jpeg = match frame.to_jpeg(80) {
+        Ok(jpeg) => jpeg,
         Err(error) => {
             abandon_start(app);
             return Err(error.to_string());
@@ -360,14 +427,57 @@ fn start_freeze(app: &AppHandle, token: u64, kind: OverlayKind) -> Result<(), St
         return Ok(());
     }
 
-    let frame_path = state.dirs.overlay_frames_dir().join("overlay.png");
-    if let Err(error) = std::fs::write(&frame_path, &png) {
+    let frames_dir = state.dirs.overlay_frames_dir();
+    let frame_path = frames_dir.join("overlay.jpg");
+    let _ = std::fs::remove_file(frames_dir.join("overlay.png"));
+    if let Err(error) = std::fs::write(&frame_path, &jpeg) {
         abandon_start(app);
         return Err(error.to_string());
     }
 
-    let monitors = monitors::enumerate();
-    let candidates = capwin::enumerate_candidates(std::process::id(), &monitors);
+    let (monitors, candidates) = match windows_ready {
+        Some(handle) => handle.join().unwrap_or_else(|_| {
+            let monitors = monitors::enumerate();
+            let candidates = capwin::enumerate_candidates(pid, &monitors);
+            (monitors, candidates)
+        }),
+        None => {
+            let monitors = monitors::enumerate();
+            let candidates = capwin::enumerate_candidates(pid, &monitors);
+            (monitors, candidates)
+        }
+    };
+
+    match overlay_wait {
+        Some(handle) => match handle.join() {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => {
+                abandon_start(app);
+                let _ = std::fs::remove_file(&frame_path);
+                return Err(err);
+            }
+            Err(_) => {
+                if let Err(err) = ensure_capture_overlay(app) {
+                    abandon_start(app);
+                    let _ = std::fs::remove_file(&frame_path);
+                    return Err(err);
+                }
+            }
+        },
+        None if overlay_ready => {}
+        None => {
+            if let Err(err) = ensure_capture_overlay(app) {
+                abandon_start(app);
+                let _ = std::fs::remove_file(&frame_path);
+                return Err(err);
+            }
+        }
+    }
+    if abort_requested(token) {
+        abandon_start(app);
+        let _ = std::fs::remove_file(&frame_path);
+        return Ok(());
+    }
 
     {
         let mut guard = state.overlay_session.lock_or_recover();
@@ -395,30 +505,47 @@ fn start_freeze(app: &AppHandle, token: u64, kind: OverlayKind) -> Result<(), St
     // CAPTURING ya está activo desde el primer Pressed; reafirmar por si el
     // freeze/blur pisó el ex-style mientras tanto.
     crate::overlay::reassert_capturing_input(app);
-    // Mostrar YA: el webview de captura nace oculto y Chromium se duerme.
-    // Si esperamos a que el frontend reciba el evento y llame a `show`,
-    // a veces no llega nunca: la mira no aparece y la pill queda click-through.
-    let app_show = app.clone();
-    let (tx, rx) = std::sync::mpsc::channel();
-    app.run_on_main_thread(move || {
-        let _ = tx.send(show_overlay_window(&app_show));
-    })
-    .map_err(|err| err.to_string())?;
-    match rx.recv_timeout(std::time::Duration::from_secs(3)) {
-        Ok(Ok(())) => {}
-        Ok(Err(err)) => {
-            tracing::warn!(%err, "no se pudo mostrar el overlay de captura");
+    // No mostrar todavía: la ventana oculta carga el JPEG. Si nace visible,
+    // el usuario ve #111 un instante —el negro entre el atajo y el congelado.
+    // `eval` despierta Chromium sin el telón.
+    if let Some(window) = app.get_webview_window(OVERLAY_LABEL) {
+        let _ = window.eval("void 0");
+    }
+    let info = match overlay_info_impl(app) {
+        Ok(info) => info,
+        Err(err) => {
             end_session(app);
             return Err(err);
         }
-        Err(_) => {
-            end_session(app);
-            return Err("timeout mostrando capture-overlay".into());
-        }
-    }
-    let _ = app.emit("overlay-session-started", ());
+    };
+    let _ = app.emit("overlay-session-started", info);
     schedule_show_watchdog(app.clone(), token);
+    // La pill encima del frame, sin bloquear la mira. Si el recorte llega
+    // antes, la captura sale sin la pill: es el caso raro.
+    compose_overlay_into_session(app);
     Ok(())
+}
+
+#[cfg(windows)]
+fn hide_overlay_if_visible(app: &AppHandle) {
+    let Some(window) = app.get_webview_window(OVERLAY_LABEL) else {
+        return;
+    };
+    if !window.is_visible().unwrap_or(false) {
+        return;
+    }
+    ensure_overlay_hidden(app);
+    // Un frame a DWM: si BitBlt corre ahora, congela el telón #111.
+    std::thread::sleep(std::time::Duration::from_millis(16));
+}
+
+#[cfg(windows)]
+fn compose_overlay_into_session(app: &AppHandle) {
+    let state = app.state::<crate::state::AppState>();
+    let mut guard = state.overlay_session.lock_or_recover();
+    if let Some(session) = guard.as_mut() {
+        compose_overlay(app, &mut session.frame);
+    }
 }
 
 /// Si la mira no confirma que está en pantalla, soltar el mouse.
@@ -477,6 +604,8 @@ pub fn capture_overlay_revealed() {
 
 fn ensure_overlay_hidden(app: &AppHandle) {
     if let Some(window) = app.get_webview_window(OVERLAY_LABEL) {
+        #[cfg(windows)]
+        disable_dwm_transitions(&window);
         let _ = window.hide();
     }
 }
@@ -748,6 +877,28 @@ pub(crate) fn cover_rect(window: &tauri::WebviewWindow, vs: atic_capture::Rect) 
     crate::webview_tweaks::sync_controller_bounds(window);
 }
 
+/// Sin esto DWM anima el `show`/`hide` como si naciera una ventana nueva.
+/// La mira tiene que aparecer como el mismo escritorio, un frame después.
+#[cfg(windows)]
+fn disable_dwm_transitions(window: &tauri::WebviewWindow) {
+    use windows_sys::Win32::Graphics::Dwm::{
+        DwmSetWindowAttribute, DWMWA_TRANSITIONS_FORCEDISABLED,
+    };
+
+    let Ok(hwnd) = window.hwnd() else {
+        return;
+    };
+    let disable: i32 = 1;
+    unsafe {
+        let _ = DwmSetWindowAttribute(
+            hwnd.0 as _,
+            DWMWA_TRANSITIONS_FORCEDISABLED as u32,
+            std::ptr::from_ref(&disable).cast(),
+            std::mem::size_of::<i32>() as u32,
+        );
+    }
+}
+
 fn create_capture_overlay(app: &AppHandle) -> Result<tauri::WebviewWindow, String> {
     #[cfg(windows)]
     let (lx, ly, lw, lh) = virtual_screen_logical();
@@ -790,6 +941,7 @@ fn create_capture_overlay(app: &AppHandle) -> Result<tauri::WebviewWindow, Strin
         install_virtual_screen_limit(&window);
         crate::webview_tweaks::disable_browser_accelerator_keys(&window);
         cover_virtual_desktop(&window);
+        disable_dwm_transitions(&window);
     }
     Ok(window)
 }
@@ -815,7 +967,34 @@ fn create_capture_overlay(app: &AppHandle) -> Result<tauri::WebviewWindow, Strin
 ///
 /// Creándola acá, `create_capture_overlay` le da su propio `data_directory`:
 /// environment aparte, los flags anti-throttling sí se aplican, y la primera
-/// captura paga el costo de crearla.
+/// captura paga el costo de crearla. `prewarm_capture_overlay` adelanta ese
+/// costo al arranque, como la ventana de la pizarra.
+
+/// Precarga el webview de captura en background. Sin esto, la primera mira
+/// paga crear Chromium *después* del freeze y se siente más lenta que la pizarra.
+pub(crate) fn prewarm_capture_overlay(app: &AppHandle) {
+    #[cfg(windows)]
+    {
+        let app = app.clone();
+        let _ = std::thread::Builder::new()
+            .name("atic-capture-prewarm".into())
+            .spawn(move || {
+                if let Err(err) = ensure_capture_overlay(&app) {
+                    tracing::warn!(%err, "no se pudo precargar el overlay de captura");
+                }
+            });
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = app;
+    }
+}
+
+fn overlay_is_ready(app: &AppHandle) -> bool {
+    app.get_webview_window(OVERLAY_LABEL)
+        .is_some_and(|window| capture_webview_alive(&window))
+}
+
 fn ensure_capture_overlay(app: &AppHandle) -> Result<(), String> {
     let app_probe = app.clone();
     let (tx, rx) = std::sync::mpsc::channel();
@@ -890,6 +1069,7 @@ fn show_overlay_window(app: &AppHandle) -> Result<(), String> {
     // Tamaño/posición ANTES del show, en un solo SetWindowPos: si no, Windows
     // recorta a un monitor y DWM centra la ventana entre las dos pantallas.
     cover_virtual_desktop(&window);
+    disable_dwm_transitions(&window);
     let _ = window.set_always_on_top(true);
     let _ = window.show();
     cover_virtual_desktop(&window);
@@ -1006,13 +1186,102 @@ fn overlay_info_impl(app: &AppHandle) -> Result<OverlayInfo, String> {
         })
         .collect();
 
+    let monitors = session
+        .monitors
+        .iter()
+        .map(|monitor| {
+            let visual = monitor.bounds;
+            OverlayMonitor {
+                left: f64::from(visual.x - bounds.x),
+                top: f64::from(visual.y - bounds.y),
+                width: f64::from(visual.width),
+                height: f64::from(visual.height),
+            }
+        })
+        .collect();
+
     Ok(OverlayInfo {
         frame_path: session.frame_path.to_string_lossy().into_owned(),
         width: f64::from(bounds.width),
         height: f64::from(bounds.height),
         candidates,
+        monitors,
         kind: session.kind,
     })
+}
+
+/// Padding y thumb del shelf: tienen que coincidir con `ShelfSurface.svelte`.
+const SHELF_PAD: f64 = 10.0;
+const SHELF_THUMB_W: f64 = 96.0;
+const SHELF_THUMB_H: f64 = 64.0;
+
+#[cfg(windows)]
+fn capture_shelf_landing_impl(
+    app: &AppHandle,
+    left: f64,
+    top: f64,
+    width: f64,
+    height: f64,
+) -> Result<LandingRect, String> {
+    let state = app.state::<crate::state::AppState>();
+    let (near, bounds) = {
+        let guard = state.overlay_session.lock_or_recover();
+        let session = guard.as_ref().ok_or("sin sesión de captura activa")?;
+        let bounds = session.frame.bounds;
+        (
+            (
+                bounds.x + (left + width * 0.5).round() as i32,
+                bounds.y + (top + height * 0.5).round() as i32,
+            ),
+            bounds,
+        )
+    };
+
+    let left_side = state
+        .config
+        .lock_or_recover()
+        .capture_shelf_side
+        .eq_ignore_ascii_case("left");
+
+    // Colocar (oculto) para leer la posición real, no una estimación.
+    crate::floating::place(
+        app,
+        "capture-shelf",
+        crate::floating::Anchor::BottomCorner {
+            near: Some(near),
+            left_side,
+        },
+    )
+    .ok_or("no se pudo ubicar el shelf")?;
+
+    let shelf = app
+        .get_webview_window("capture-shelf")
+        .ok_or("sin shelf")?;
+    let pos = shelf.outer_position().map_err(|e| e.to_string())?;
+    let shelf_scale = shelf.scale_factor().unwrap_or(1.0).max(0.01);
+
+    let thumb_x = f64::from(pos.x) + SHELF_PAD * shelf_scale;
+    let thumb_y = f64::from(pos.y) + SHELF_PAD * shelf_scale;
+    let thumb_w = SHELF_THUMB_W * shelf_scale;
+    let thumb_h = SHELF_THUMB_H * shelf_scale;
+
+    Ok(LandingRect {
+        left: thumb_x - f64::from(bounds.x),
+        top: thumb_y - f64::from(bounds.y),
+        width: thumb_w,
+        height: thumb_h,
+    })
+}
+
+#[cfg(not(windows))]
+fn capture_shelf_landing_impl(
+    _app: &AppHandle,
+    _left: f64,
+    _top: f64,
+    _width: f64,
+    _height: f64,
+) -> Result<LandingRect, String> {
+    Err(crate::ui_lang::capture_windows_only())
 }
 
 #[cfg(windows)]

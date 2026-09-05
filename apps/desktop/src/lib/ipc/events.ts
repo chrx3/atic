@@ -20,6 +20,7 @@ import type {
   AnnotateOpen,
   BubbleOpen,
   CaptureItem,
+  OverlayInfo,
   OverlayPatch,
   ConsoleExitPayload,
   ConsoleOutputPayload,
@@ -66,7 +67,13 @@ export interface AticEvents {
   // Resumen
   "summary-ready": { id: string };
   "summarize-delta": { id: string; delta: string };
-  "summarize-progress": { id: string; stage: string; part: number; of: number };
+  "summarize-progress": {
+    id: string;
+    stage: string;
+    part: number;
+    of: number;
+    wait_secs: number;
+  };
   "summarize-error": { id: string; message: string };
 
   // Capturas
@@ -75,7 +82,7 @@ export interface AticEvents {
   /** Con qué imagen tiene que abrirse el editor de anotaciones. */
   "annotate-open": AnnotateOpen;
   /** Hay una foto congelada lista y el overlay de selección puede pintarla. */
-  "overlay-session-started": void;
+  "overlay-session-started": OverlayInfo;
   "overlay-session-ended": void;
 
   // Clipboard y fragmentos
@@ -105,6 +112,8 @@ export interface AticEvents {
   "overlay-yield-main": void;
   /** El overlay ya está colocado: republicar viewport CSS y hit-rects. */
   "overlay-ready": void;
+  /** Arrastre OLE/estante hacia agentes: pintar drop-target. */
+  "overlay-item-drag": boolean;
 
   // Agentes
   "agents-bubble-anchor": BubbleOpen;

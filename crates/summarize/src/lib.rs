@@ -28,6 +28,8 @@ pub struct SummarizeProgress {
     pub stage: &'static str,
     pub part: u32,
     pub of: u32,
+    /// Segundos de pausa cuando `stage` es `wait`; 0 si no hay espera.
+    pub wait_secs: u32,
 }
 
 /// Contrato de un motor de resumen.

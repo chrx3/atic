@@ -900,6 +900,24 @@ pub fn read_clipboard_drag_text(state: State<AppState>, path: String) -> Result<
     std::fs::read_to_string(&path).map_err(|e| e.to_string())
 }
 
+/// Texto actual del portapapeles del sistema.
+///
+/// Las consolas no deben usar `navigator.clipboard.readText()`: en el webview
+/// de localhost eso pide permiso y, si el paste nativo ya pegó, duplica.
+#[tauri::command]
+pub fn read_system_clipboard_text() -> Result<String, String> {
+    with_clipboard_write(|| {
+        let mut clipboard = Clipboard::new().map_err(|e| e.to_string())?;
+        clipboard.get_text().map_err(|e| e.to_string())
+    })
+}
+
+/// Escribe texto al portapapeles del sistema (mismo candado que el watcher).
+#[tauri::command]
+pub fn write_system_clipboard_text(text: String) -> Result<(), String> {
+    set_system_text(text)
+}
+
 /// Deja el ítem en el portapapeles, y nada más.
 ///
 /// `paste_clipboard_item` devuelve el foco a la app anterior y le manda
