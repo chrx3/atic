@@ -76,3 +76,37 @@ export function cliFromTitle(title: string): string | null {
     canonicalAgentCli(trimmed.split(/[|·\u2014\-]/)[0] ?? "")
   );
 }
+
+/** Más largo que esto no es un nombre, es una frase. */
+const NOMBRE_MAX = 40;
+
+/**
+ * El nombre propio que el TUI puso en su título, si puso alguno.
+ *
+ * Los CLIs escriben el título por OSC, y ahí es donde asoma un `/rename`: el
+ * título pasa de «Grok» a «Grok · agy». Se descartan los trozos que son el
+ * nombre de un CLI —eso es el título por defecto, no un rename— y los que son
+ * rutas, que son el cwd: la pestaña ya lo muestra aparte y cambiaría con cada
+ * `cd`.
+ *
+ * `null` = el título no dice nada que no supiéramos, y la pestaña se queda
+ * como está en vez de bailar con cada cambio del TUI.
+ */
+export function tabNameFromTitle(title: string): string | null {
+  const trozos = title
+    .split(/[|·—–]|\s-\s/)
+    .map((t) => t.trim())
+    // Fuera el cwd (`~/Downloads`, `C:\repo`) y las frases: ni uno ni
+    // otro son un nombre, y el cwd cambiaría con cada `cd`.
+    .filter(
+      (t) => t && t.length <= NOMBRE_MAX && !/[/\\]/.test(t) && !t.startsWith("~"),
+    );
+  if (trozos.length === 0) return null;
+  // Un solo trozo y es la marca: el título por defecto, no un rename.
+  if (trozos.length === 1) return canonicalAgentCli(trozos[0]) ? null : trozos[0];
+  // Con varios, el nombre es el primero que no sea una marca; si todos lo
+  // parecen —renombrar a «agy» es legítimo— vale el último, que es el que el
+  // TUI agregó detrás de la suya.
+  return trozos.find((t) => !canonicalAgentCli(t)) ?? trozos[trozos.length - 1];
+}
+
