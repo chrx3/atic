@@ -330,12 +330,20 @@ fn run_loop(app: AppHandle, token: u64) {
     let input = match input {
         Ok(input) => input,
         Err(error) => {
-            report_error(&app, token, format!("No se pudo iniciar el cuentagotas: {error}"));
+            report_error(
+                &app,
+                token,
+                format!("No se pudo iniciar el cuentagotas: {error}"),
+            );
             return;
         }
     };
     if rx.recv_timeout(Duration::from_secs(2)).ok() != Some(true) {
-        report_error(&app, token, "No se pudo activar la captura del ratón".into());
+        report_error(
+            &app,
+            token,
+            "No se pudo activar la captura del ratón".into(),
+        );
         stop(&app);
         let _ = input.join();
         return;
@@ -372,8 +380,8 @@ fn run_loop(app: AppHandle, token: u64) {
             || (enter && !was_enter && !focused);
         was_enter = enter;
         let r_key = key_down(0x52);
-        let toggle_rose = WANT_TOGGLE_ROSE.swap(false, Ordering::SeqCst)
-            || (r_key && !was_r && !focused);
+        let toggle_rose =
+            WANT_TOGGLE_ROSE.swap(false, Ordering::SeqCst) || (r_key && !was_r && !focused);
         if toggle_rose && !COMMIT_PENDING.load(Ordering::SeqCst) {
             // The frontend owns the editing state and acknowledges the resize.
             let _ = app.emit_to(LABEL, "color-toggle-rose", token);

@@ -486,10 +486,7 @@ mod tests {
         assert_eq!(quota.windows.len(), 1);
         assert_eq!(quota.windows[0].kind, "7d:gemini");
         assert!(
-            quota
-                .error
-                .as_deref()
-                .is_some_and(|e| e.contains("agy")),
+            quota.error.as_deref().is_some_and(|e| e.contains("agy")),
             "{:?}",
             quota.error
         );

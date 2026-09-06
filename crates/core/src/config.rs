@@ -920,9 +920,7 @@ impl From<ConfigFile> for Config {
                 Some("es") => "es".into(),
                 _ => "system".into(),
             },
-            overlay_scale: sanitize_overlay_scale(
-                f.overlay_scale.unwrap_or(OVERLAY_SCALE_DEFAULT),
-            ),
+            overlay_scale: sanitize_overlay_scale(f.overlay_scale.unwrap_or(OVERLAY_SCALE_DEFAULT)),
             agents_shown: sanitize_agents(
                 f.agents_shown
                     .clone()

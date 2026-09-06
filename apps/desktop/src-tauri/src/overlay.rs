@@ -2102,7 +2102,7 @@ fn css_viewport_size(phys_w: f64, phys_h: f64) -> (f64, f64) {
     #[cfg(windows)]
     {
         let (cw, ch) = client_size_physical().unwrap_or((0.0, 0.0));
-        return pick_css_viewport(w, h, cw, ch, phys_w, phys_h, scale);
+        pick_css_viewport(w, h, cw, ch, phys_w, phys_h, scale)
     }
     #[cfg(not(windows))]
     {

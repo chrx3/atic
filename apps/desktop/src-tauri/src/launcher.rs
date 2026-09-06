@@ -1071,9 +1071,7 @@ fn remember_launch(app: &AppHandle, id: &str) {
 
 /// Apps abiertas ahora + las que se lanzaron desde Atic.
 #[tauri::command]
-pub async fn launcher_list_recents(
-    state: State<'_, AppState>,
-) -> Result<Vec<LauncherHit>, String> {
+pub async fn launcher_list_recents(state: State<'_, AppState>) -> Result<Vec<LauncherHit>, String> {
     let path = crate::launcher_recents::store_path(&state.dirs.data_dir());
     tauri::async_runtime::spawn_blocking(move || crate::launcher_recents::list(&path))
         .await

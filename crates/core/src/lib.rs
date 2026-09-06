@@ -3,10 +3,10 @@
 //! la plataforma de UI, para poder reutilizarse en escritorio y móvil.
 
 pub mod config;
-pub mod locale;
 pub mod db;
 pub mod error;
 pub mod fs_atomic;
+pub mod locale;
 pub mod models;
 pub mod paths;
 pub mod secrets;

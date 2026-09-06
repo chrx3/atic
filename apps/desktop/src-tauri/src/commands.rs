@@ -206,7 +206,7 @@ pub fn recording_track_path(
     let file = match track.as_str() {
         "mic" => "mic.wav",
         "system" => "system.wav",
-        _ => return Err(crate::ui_lang::msg("Pista inválida.", "Invalid track.").into()),
+        _ => return Err(crate::ui_lang::msg("Pista inválida.", "Invalid track.")),
     };
     let recording = state
         .db
