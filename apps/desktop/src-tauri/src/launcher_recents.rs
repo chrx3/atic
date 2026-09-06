@@ -11,7 +11,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-use crate::launcher::{hit_from_entry, index, ensure_index_populated, LauncherHit, LauncherKind};
+use crate::launcher::{ensure_index_populated, hit_from_entry, index, LauncherHit, LauncherKind};
 use atic_core::MutexExt;
 
 const RECENTS_LIMIT: usize = 8;
@@ -111,15 +111,22 @@ pub fn process_fits_app(stem: &str, window_title: &str, app_title: &str, app_id:
     if stem_n.len() >= 4 && contains_token(&stem_n, &title_n) {
         return true;
     }
-    if stem_n.len() >= 4 && id_n.contains(&stem_n) {
+    if stem_n.len() >= 4 && contains_token(&id_n, &stem_n) {
         return true;
     }
     let win_n = crate::launcher::normalize(window_title);
     if win_n.is_empty() || title_n.len() < 4 {
         return false;
     }
+    // El nombre de la app cae en un extremo del título de ventana: al
+    // principio en «Adobe Illustrator - dibujo.ai», al final en «Informe -
+    // Word» o «Grok - Google Chrome». Mirar solo el primer segmento pierde
+    // WINWORD/Word y POWERPNT/PowerPoint, cuyo exe no se parece al nombre.
     let head = win_n.split(" - ").next().unwrap_or(&win_n);
-    head == title_n || contains_token(head, &title_n) || contains_token(&title_n, head)
+    let tail = win_n.rsplit(" - ").next().unwrap_or(&win_n);
+    [head, tail].iter().any(|seg| {
+        *seg == title_n || contains_token(seg, &title_n) || contains_token(&title_n, seg)
+    })
 }
 
 fn contains_token(hay: &str, needle: &str) -> bool {
@@ -261,8 +268,7 @@ mod windows {
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         EnumWindows, GetForegroundWindow, GetWindow, GetWindowLongPtrW, GetWindowTextLengthW,
-        GetWindowTextW, GetWindowThreadProcessId, IsIconic, IsWindowVisible, GWL_EXSTYLE,
-        GW_OWNER,
+        GetWindowTextW, GetWindowThreadProcessId, IsIconic, IsWindowVisible, GWL_EXSTYLE, GW_OWNER,
     };
 
     const WS_EX_TOOLWINDOW: isize = 0x0000_0080;
@@ -404,16 +410,34 @@ mod tests {
 
     #[test]
     fn no_confunde_stems_cortos() {
-        assert!(!process_fits_app("id", "Idle", "Adobe InDesign", "app:id.lnk"));
+        assert!(!process_fits_app(
+            "id",
+            "Idle",
+            "Adobe InDesign",
+            "app:id.lnk"
+        ));
     }
 
     #[test]
     fn code_no_es_barcode() {
+        // El stem `code` no puede colarse por substring en `Barcode.lnk`.
+        // El título de ventana es de VS Code, no de la app Barcode: si la
+        // ventana *fuera* "Barcode Scanner", sí es esa app (como Word).
         assert!(!process_fits_app(
             "code",
-            "Barcode Scanner",
+            "launcher.rs — atic",
             "Barcode",
             "app:Barcode.lnk"
+        ));
+    }
+
+    #[test]
+    fn winword_abre_word_por_titulo() {
+        assert!(process_fits_app(
+            "winword",
+            "Informe - Word",
+            "Word",
+            "app:Word.lnk"
         ));
     }
 
@@ -426,11 +450,8 @@ mod tests {
 
     #[test]
     fn touch_pone_el_id_adelante_y_sin_duplicar() {
-        let dir = std::env::temp_dir().join(format!(
-            "atic-recents-{}-{}",
-            std::process::id(),
-            now_ms()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("atic-recents-{}-{}", std::process::id(), now_ms()));
         let _ = std::fs::create_dir_all(&dir);
         let path = dir.join("launcher-recents.json");
         touch(&path, "app:a");
