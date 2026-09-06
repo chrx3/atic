@@ -401,6 +401,16 @@ export const en = {
       copy: "Copy",
       copied: "Copied",
       copiedToast: "Copied. Merge the hooks key into ~/.claude/settings.json",
+      hubCopiedToast: "Copied. Paste it into the matching app.",
+      hubTitle: "From other apps",
+      hubHint: "Paste this into the matching app. Atic doesn't touch those files.",
+      hubOn: "Running on port {port}",
+      hubOff: "Not running",
+      hubRefresh: "Refresh",
+      hubPath: "atic-mcp path",
+      hubPathMissing: "Binary not found; run `pnpm mcp:build`",
+      hubCodexHelp:
+        "If you delete tool_timeout_sec, Codex cuts back to 60 s and the parent loses the session. They go together.",
     },
     groq: {
       hasKey: "A Groq key is in the keychain",
@@ -572,9 +582,9 @@ export const en = {
     agentFallback: "the agent",
     goToAgent: "Go to {name} in its terminal",
     openConsole: "Open the agent console",
-    unbound: "No terminal bound. Click binds the last window",
+    unbound: "No terminal bound. Click focuses it or dismisses the cue",
     unboundTitle:
-      "No terminal bound. Click binds the last window · Ctrl+click to pick another",
+      "No terminal bound. Click focuses that console if possible · otherwise dismisses the cue",
     working: "The agent is working",
     waiting: "The agent is waiting for your permission",
     unread: "{label} unread",

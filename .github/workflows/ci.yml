@@ -62,6 +62,8 @@ jobs:
         with:
           version: "18"
       - uses: Swatinem/rust-cache@v2
+      - name: Sidecar MCP (lo exige tauri-build al compilar)
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-mcp.ps1
       - name: clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: test
@@ -87,6 +89,9 @@ jobs:
       - name: Install frontend deps
         working-directory: apps/desktop
         run: pnpm install --frozen-lockfile
+      - name: Sidecar MCP (lo exige tauri-build al compilar)
+        working-directory: apps/desktop
+        run: pnpm mcp:build
       - name: Build (sin firmar)
         working-directory: apps/desktop
         run: pnpm tauri build --no-bundle

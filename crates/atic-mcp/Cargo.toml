@@ -1,0 +1,28 @@
+[package]
+name = "atic-mcp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "atic_mcp"
+path = "src/lib.rs"
+
+[[bin]]
+name = "atic-mcp"
+path = "src/main.rs"
+
+[dependencies]
+rmcp = { version = "3", features = ["server", "transport-io", "macros"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+reqwest = { version = "0.12", default-features = false, features = ["json"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+directories = "6"
+anyhow = { workspace = true }
+
+[features]
+# Solo para tests: deja apuntar a un `hub.json` de mentira.
+test-hooks = []

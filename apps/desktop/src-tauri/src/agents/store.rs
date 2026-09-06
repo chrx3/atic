@@ -51,6 +51,7 @@ pub fn open(
     backend_name: &str,
     cwd: &str,
     remote_host_id: Option<&str>,
+    parent: Option<&str>,
 ) {
     let thread = Thread {
         id: id.to_string(),
@@ -59,6 +60,10 @@ pub fn open(
         provider_session: None,
         cwd: cwd.to_string(),
         remote_host_id: remote_host_id
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string()),
+        parent: parent
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .map(|s| s.to_string()),
@@ -117,6 +122,7 @@ pub fn flush(db: &Db, id: &str) {
                 provider_session: thread.provider_session.clone(),
                 cwd: thread.cwd.clone(),
                 remote_host_id: thread.remote_host_id.clone(),
+                parent: thread.parent.clone(),
                 model: thread.model.clone(),
                 updated_at: thread.updated_at,
                 preview,
@@ -181,6 +187,8 @@ pub struct StoredThread {
     pub provider_session: Option<String>,
     pub cwd: String,
     pub remote_host_id: Option<String>,
+    /// Quién pidió la sesión. `None` = nació en la UI.
+    pub parent: Option<String>,
     pub model: String,
     pub updated_at: i64,
     /// Primeras palabras del usuario. Es con lo que se reconoce una
@@ -202,6 +210,7 @@ fn to_stored(row: AgentThreadRow, with_turns: bool) -> StoredThread {
         provider_session: row.provider_session,
         cwd: row.cwd,
         remote_host_id: row.remote_host_id,
+        parent: row.parent,
         model: row.model,
         updated_at: row.updated_at,
         preview: row.preview,

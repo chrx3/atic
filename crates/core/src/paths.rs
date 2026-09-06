@@ -79,6 +79,11 @@ impl AppDirs {
         self.db_path.clone()
     }
 
+    /// Estado del hub de orquestación para que `atic-mcp` lo encuentre.
+    pub fn hub_path(&self) -> PathBuf {
+        self.data_dir.join("hub.json")
+    }
+
     /// Archivo de configuración (JSON).
     pub fn config_path(&self) -> PathBuf {
         self.data_dir.join("config.json")

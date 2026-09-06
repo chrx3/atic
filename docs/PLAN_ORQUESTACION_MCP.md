@@ -10,6 +10,20 @@ central. Sin un protocolo N×N. Sin A2A. Sin committee/advisor.
 > cerradas más abajo. No hay código de hub ni de servidor MCP todavía. El
 > harness de los cuatro backends **sí** existe y es lo que este plan reusa.
 > Si vienes a retomar, arranca por [Traspaso](#traspaso-para-quien-siga).
+>
+> Re-validación Fable 5.1 (2026-09-05): el código sigue igual en lo que el
+> plan toca. Lo que cambió es el mundo de afuera: spec MCP **2026-07-28**,
+> `rmcp` 3.2, y **timeouts de tool de 60 s en Codex y Cursor** que obligan a
+> dos enmiendas en `atic_delegate` (espera por host y `atic_wait`). Detalle
+> y fuentes en [Revisión 2026-09-05](#revisión-2026-09-05-fable-51).
+>
+> Implementación (Muse Spark, 2026-09-06, sin validar): fases 0 y 1
+> codificadas según [`TAREAS_ORQUESTACION_MCP.md`](TAREAS_ORQUESTACION_MCP.md).
+> Falta correr `cargo test`, `clippy`, `pnpm verify` y la demo manual del
+> §5.10. Desvíos anotados en el reporte de fase (ver ficha
+> `Features/orquestacion-agentes.md`).
+> Para implementar, el paso a paso está en
+> [`TAREAS_ORQUESTACION_MCP.md`](TAREAS_ORQUESTACION_MCP.md).
 
 Relacionado: [`PLAN_AGENTES.md`](PLAN_AGENTES.md) (harness, modelo canónico,
 punto 6: orquestador). Este plan entra un orquestador **chico**: no es Synara
@@ -113,6 +127,9 @@ Verificado en la revisión contra el código (2026-08-30):
 | Codex tarda ~8 s al abrir **porque levanta sus MCP** | `codex.rs` cabecera | Inyectar este MCP en cada Codex **encarece el handshake** |
 | Data dir | `AppDirs` → `%APPDATA%\ciat\atic\data` | `hub.json` |
 | Ejemplo punta a punta | `cargo run -p atic-desktop --example agente_real` | Cómo probar un backend sin UI |
+| `StartOptions.remote` (SSH, solo Claude) | `mod.rs`; `bridge.rs` `agent_start` | Llegó después del borrador. `atic_spawn` v1 no lo acepta; la clave anti-reuso incluye el host |
+| `agent_mcp_servers` | `crates/core` `config.rs`; `McpServersModal.svelte` | Se **guarda y no se lee**: hoy nadie manda `mcpConfig` al arrancar. El merge con `atic` se hace en Rust, desde la config, no «encima» de algo que la UI mande |
+| Fin de turno | `AgentDelta::TurnEnd { status }` en `model.rs` | Es lo que el hub escucha para destrabar `wait`; `turns.rs` solo lleva el estado |
 
 ---
 
@@ -130,7 +147,8 @@ Verificado en la revisión contra el código (2026-08-30):
 - Padre: cualquiera que cargue el MCP (Atic, Claude Code, Cursor IDE, Codex CLI,
   OpenCode).
 - Grafo: profundidad máxima 2, anti-ciclo, rechazo (no reuso) si ya hay hilo
-  vivo del mismo backend+cwd, un turno por recado, timeout 5 min.
+  vivo del mismo backend+host+cwd, un turno por recado, timeout 5 min en el
+  hub y **menos si el host corta antes** ([Timeouts del host](#timeouts-del-host)).
 - Hijos visibles en la consola de Atic (padre, backend, estado).
 - Instalación del MCP en apps originales: **snippet para pegar** (como los
   hooks de `ping.rs`). Botón opcional «copiar config» por host. No pisar
@@ -164,7 +182,7 @@ Verificado en la revisión contra el código (2026-08-30):
 
 ```text
 [Cursor.exe | claude | codex | Atic UI]
-        stdio MCP (JSON-RPC, Content-Length)
+        stdio MCP (JSON-RPC, una línea por mensaje)
               │
          atic-mcp.exe          ← binario chico, sin ventana
               │  HTTP JSON en 127.0.0.1:<puerto>
@@ -206,7 +224,8 @@ un stack ni «connection refused».
   delegar: sin Atic no hay quién apruebe los permisos del otro agente.»
 - Un request = un JSON. Sin websocket en v1. `atic_delegate` y `atic_prompt`
   (`wait: true`) **bloquean** con notificaciones de progreso MCP y timeout
-  5 min. No hay job + poll: el modelo a veces no vuelve a pollar.
+  5 min. No hay job + poll: el modelo a veces no vuelve a pollar. El tope
+  real lo pone el **host**, no el hub: ver [Timeouts del host](#timeouts-del-host).
 
 No named pipes en v1: TCP localhost es el mismo código en Windows y macOS.
 El token evita que otra app en la máquina hable con el hub solo por conocer el
@@ -220,6 +239,44 @@ Tauri. El hub, para bloquear hasta `TurnEnded`, necesita un primitivo que
 `on_delta` (o un wrapper). Sin eso, `wait: true` no se puede implementar
 desde Rust. Va en fase 0 (la interfaz) y se cablea en fase 1. No es un
 detalle de implementación que «aparezca después».
+
+### Timeouts del host
+
+Verificado el 2026-09-05 contra la doc y los binarios instalados. Cada host
+corta el `tools/call` por su cuenta y el hub no se entera:
+
+| Host padre | Corte del `tools/call` | Ajustable | El progreso lo estira |
+|---|---|---|---|
+| Claude Code `-p` (el que arranca Atic; 2.1.261) | Idle 30 min en stdio; pared ~28 h (`MCP_TOOL_TIMEOUT`) | Sí: `timeout` por servidor en el JSON, o `MCP_TOOL_TIMEOUT` | Sí: cada `notifications/progress` reinicia el idle |
+| Claude Code interactivo (terminal) | Igual, pero a los **2 min** la llamada pasa a **segundo plano**: el modelo recibe un id de tarea y sigue; el resultado le llega como notificación (`CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS`; v2.1.212+). El sidecar no nota nada: el `tools/call` sigue abierto | Sí | Sí |
+| Codex CLI / `codex app-server` (0.153) | **60 s** (`mcp_servers.<id>.tool_timeout_sec`) | Sí, por servidor en `config.toml` o con `-c` | No documentado; asumir que no |
+| Cursor IDE / `cursor-agent` (2026.09) | **~60 s**, `MCP error -32001` | **No** hay ajuste de usuario (foro, jun-2026) | Sin confirmar |
+| OpenCode (1.15) | Sin corte documentado para `tools/call`. Su `timeout` (5 s) es para **listar tools** | `timeout` en ms | Sin dato |
+
+Consecuencias:
+
+- El «timeout 5 min» del hub solo lo ve entero Claude Code. Desde Codex o
+  Cursor, un `atic_delegate` que pase de ~60 s vuelve como error del host,
+  **sin** `session`, y el padre pierde el hilo que Atic sí levantó.
+- Por eso la espera **no es una constante**. El snippet de cada host pasa
+  `--host <id>` en `args`; con eso `atic-mcp` espera **menos que el corte del
+  host**: ~50 s en Codex y Cursor, 5 min en Claude. Si falta `--host`, usa el
+  `clientInfo` del `initialize` legacy (o la identidad en `_meta` de la spec
+  nueva) y, si tampoco, el presupuesto corto. Al vencer devuelve el mismo
+  payload de [timeout como traspaso](#timeout-como-traspaso), con `session`.
+- Para reengancharse hace falta una tool que **espere sin abrir turno**:
+  [`atic_wait`](#atic_wait-enmienda-2026-09-05). Sin ella, tras el corte el
+  único camino era `atic_prompt`, que es un turno nuevo.
+- El snippet de Codex lleva `tool_timeout_sec = 330`, para que el corte lo
+  ponga Atic y no Codex. En Cursor no hay equivalente: ahí manda `atic_wait`.
+- `server/discover`, `initialize` y `tools/list` se contestan **sin tocar el
+  hub**: OpenCode corta el listado a los 5 s, Codex el arranque a los 10 s
+  (`startup_timeout_sec`) y Claude `-p` con `--mcp-config` espera al servidor
+  hasta 30 s (`MCP_TIMEOUT`) antes del primer turno. La lista de tools es
+  estática; el hub se consulta recién en `tools/call`.
+- Tope de salida: Claude avisa desde 10 k tokens y corta en 25 k
+  (`MAX_MCP_OUTPUT_TOKENS`); Codex trunca por `tools.<tool>.output_token_limit`.
+  Los 32 KB del plan (~8 k tokens) quedan debajo de los dos.
 
 ### Cache de `available`
 
@@ -246,12 +303,23 @@ El servidor que hay que anunciar es siempre el mismo:
 La ruta sale del instalador (junto a Atic). En dev: ruta absoluta del
 `atic-mcp` compilado, no un `atic-mcp` suelto en el PATH.
 
+Ese JSON sirve **tal cual** solo en Claude Code y Cursor (`mcpServers`). Los
+otros dos hosts tienen su propio formato, y tres de los cuatro CLIs traen un
+subcomando para registrar servidores, que es mejor snippet que un archivo:
+
+| Host | Formato de config | Qué se le da al usuario |
+|---|---|---|
+| Claude Code | `mcpServers` (JSON) en `~/.claude.json` o `.mcp.json` | `claude mcp add atic -- C:\ruta\atic-mcp.exe --host claude-code` |
+| Cursor IDE / `cursor-agent` | `mcpServers` (JSON) en `~/.cursor/mcp.json` | No hay `add`: pegar el JSON con `"args": ["--host", "cursor"]`. `cursor-agent mcp list` para verificar |
+| Codex | `[mcp_servers.atic]` (TOML) en `~/.codex/config.toml` | `codex mcp add atic -- C:\ruta\atic-mcp.exe --host codex` y `-c mcp_servers.atic.tool_timeout_sec=330` |
+| OpenCode | `mcp.atic` con `type: "local"` y `command` como **array** (JSON) en `opencode.json` | `opencode mcp add` |
+
 Cómo llega a cada padre:
 
 | Padre | v1 |
 |---|---|
-| Claude Code **arrancado por Atic** | Merge del servidor `atic` en `--mcp-config` (el flag ya existe). Suma, no reemplaza, lo de `McpServersModal`. |
-| Codex / Cursor / OpenCode **arrancados por Atic** | **No** heredan este MCP. `ATIC_DELEGATE_DEPTH` y el id del padre **sí** viajan en el env del proceso hijo, aunque el MCP no se inyecte. Así, si ese proceso más tarde carga el MCP por config global del usuario, el grafo no miente. |
+| Claude Code **arrancado por Atic** | Merge del servidor `atic` en `--mcp-config` (el flag ya existe). Suma, no reemplaza, lo de `McpServersModal`. Ojo: hoy la UI **no** manda `mcpConfig` y nadie lee `agent_mcp_servers`, así que el merge se arma en Rust, en `agent_start`, desde la config. Con `--host claude-code` en `args`. |
+| Codex / Cursor / OpenCode **arrancados por Atic** | **No** heredan este MCP. `ATIC_DELEGATE_DEPTH` y el id del padre **sí** viajan en el env del proceso hijo, aunque el MCP no se inyecte. Así, si ese proceso más tarde carga el MCP por config global del usuario, el grafo no miente. Codex **podría** recibirlo sin tocar `config.toml` (`codex -c 'mcp_servers.atic.command="…"' app-server` existe en 0.153): no se hace por el handshake de 8 s, no por falta de mecanismo. |
 | Cursor IDE, Codex CLI, Claude de terminal | Snippet en Ajustes → Agentes → «Usar Atic desde otras apps». El usuario pega. |
 | Hijo Claude spawneado por `atic_spawn` / `atic_delegate` | Recibe el MCP (es Claude). Cadena típica: Cursor IDE → Claude (plan) → Codex (parche). El segundo salto no lleva MCP en Codex; el tercero no existe. |
 
@@ -280,7 +348,7 @@ Reglas v1 (constantes, no UI):
 | Regla | Valor | Por qué |
 |---|---|---|
 | Profundidad máxima | 2 | Con hijos no-Claude sin MCP, la cadena de dos saltos pasa por un hijo Claude: Cursor IDE → Claude planifica → Codex parchea. Profundidad 1 mata ese patrón. |
-| Mismo backend + mismo cwd + hilo vivo | **Rechazar.** Mensaje que sugiere `atic_prompt` a esa sesión | Reusar mezcla contextos de dos encargos. Clonar en silencio deja dos Codex sobre los mismos archivos |
+| Mismo backend + mismo host + mismo cwd + hilo vivo | **Rechazar.** Mensaje que sugiere `atic_prompt` a esa sesión. La clave lleva el host (`local` o el id SSH) porque el harness ya sabe abrir Claude remoto y un `/home/x` en dos máquinas no es el mismo cwd | Reusar mezcla contextos de dos encargos. Clonar en silencio deja dos Codex sobre los mismos archivos |
 | Ciclo A→B→A en el mismo `root` | Rechazar | El padre ya tiene el contexto |
 | Presupuesto | 1 turno hijo por `atic_delegate` / `atic_prompt`; timeout 5 min. `atic_spawn` cuenta para profundidad, no abre turno | Las tres tools comparten el grafo. No hay reintento ni fan-out |
 | Permisos del hijo | `permissionMode` del padre; default `default` (preguntar en Atic) | Aprobar `atic_delegate` en Cursor no es consentimiento para que el hijo edite. El padre puede pasar `acceptEdits` si el usuario lo pide |
@@ -330,7 +398,8 @@ Ids: `claude-code`, `codex`, `opencode`, `cursor`.
 ### `atic_list_sessions`
 
 Opcional `backend`. Lista hilos **vivos en Atic** (no las TUI ajenas). Id,
-backend, cwd, si hay turno corriendo, `parent` si es hijo de una delegación.
+backend, cwd, `remote` (id del host SSH o `null`), si hay turno corriendo,
+`parent` si es hijo de una delegación.
 
 ### `atic_spawn`
 
@@ -345,7 +414,9 @@ backend, cwd, si hay turno corriendo, `parent` si es hijo de una delegación.
 ```
 
 Equivale a `agent_start`. Cuenta contra la profundidad. Devuelve
-`{ "session": "<uuid Atic>" }`. No manda el prompt.
+`{ "session": "<uuid Atic>" }`. No manda el prompt. v1 es **local**: no
+acepta `remote` aunque el harness ya sepa abrir Claude por SSH; un hijo en
+otra máquina pidiendo permisos es otro plan.
 
 Rechaza si `backend` no está `available`, si `depth` ya es el máximo, si ya
 hay hilo vivo de ese backend+cwd (con sugerencia a `atic_prompt`), o si Atic
@@ -426,7 +497,7 @@ Al timeout de 5 min (turno o permiso) el hub **no** devuelve solo un error y
   "session": "<uuid Atic>",
   "status": "timeout",
   "text": "<transcript parcial, tope 32 KB>",
-  "hint": "La sesión sigue viva en Atic. Sigue con atic_prompt o mira atic_list_sessions."
+  "hint": "La sesión sigue viva en Atic. Espera el turno con atic_wait, manda otro con atic_prompt, o mira atic_list_sessions."
 }
 ```
 
@@ -438,6 +509,32 @@ continuar.
 
 `{ "session": "<uuid>" }` → `agent_interrupt`. v1: interrupt del turno, no
 matar la sesión.
+
+### `atic_wait` (enmienda 2026-09-05)
+
+```json
+{
+  "session": "<uuid>",
+  "timeout_s": 50
+}
+```
+
+Espera el fin del turno **que ya está corriendo** en esa sesión, sin abrir
+otro. Misma respuesta que `atic_prompt` (`session`, `status`, `text`, `hint`).
+Si no hay turno corriendo, devuelve el último resultado al tiro. `timeout_s`
+se recorta al presupuesto del host, igual que en `delegate`.
+
+Existe porque Codex y Cursor cortan el `tools/call` a los 60 s
+([Timeouts del host](#timeouts-del-host)): sin esto, el padre que recibió
+`status: "timeout"` solo podía mandar `atic_prompt`, que es un turno nuevo.
+No es job+poll: el default sigue siendo bloquear, y `atic_wait` es solo el
+reenganche cuando el host cortó antes que el hub. No cuenta contra el
+presupuesto de turnos. Cada `atic_wait` espera hasta su propio tope
+(`timeout_s` recortado al host); el turno del hijo no se corta por edad. Si
+el padre quiere cortarlo, `atic_cancel`.
+
+Las instrucciones de implementación, con firmas, contratos exactos y tests,
+están en [`TAREAS_ORQUESTACION_MCP.md`](TAREAS_ORQUESTACION_MCP.md).
 
 ### Lo que no va en el MCP
 
@@ -488,13 +585,19 @@ Cambios:
 | spawn de hijos (bridge/hub) | Setear `ATIC_DELEGATE_DEPTH` y padre en el env **siempre** |
 | `lib.rs` | Arrancar/parar el hub con la app |
 | `crates/core` `AppDirs` | `hub.json` junto al resto de data |
-| Empaquetado NSIS / sidecar | `atic-mcp.exe` al lado de Atic; snippet con ruta absoluta |
+| Empaquetado NSIS / sidecar | `bundle.externalBin: ["binaries/atic-mcp"]` en `tauri.conf.json` (hoy no hay `externalBin`); el binario se nombra con el triple, `atic-mcp-x86_64-pc-windows-msvc.exe`, y Tauri lo instala como `atic-mcp.exe` al lado de `Atic.exe`; snippet con esa ruta absoluta |
 | Tests | Grafo (profundidad, ciclo, rechazo de reuso, ruteo por `kind`) **sin** CLI. Timeout → payload de traspaso. Cache de available. `atic-mcp` con hub fake |
 
 No extraer `agents/` a un crate en v1.
 
-SDK MCP: `rmcp` en el binario chico. En el desktop, JSON HTTP a mano (un hilo
-+ `std::net::TcpListener`). No meter tokio en `atic-desktop` por esto.
+SDK MCP: `rmcp` 3.2 en el binario chico (features `server`, `transport-io`,
+`macros`; `#[tool_router]` + `serve(stdio())`; progreso con
+`context.peer.notify_progress`). Es **dual-era**: habla la spec 2026-07-28 y
+la legacy 2025-11-25 con `initialize`, así que da lo mismo en qué revisión
+esté cada host. Trae tokio; queda ahí. En el desktop, JSON HTTP a mano (un
+hilo + `std::net::TcpListener`). Tokio ya está en el árbol por Tauri
+(`tauri::async_runtime`), así que la regla no es «sin tokio» sino «sin `rmcp`
+ni un segundo runtime en `atic-desktop`».
 
 ---
 
@@ -518,8 +621,10 @@ Cada fase cierra con algo usable.
 - Hub localhost + `hub.json`.
 - Cache de `available` (TTL o al arrancar el hub).
 - Espera real a `TurnEnded` cableada al callback de deltas.
-- `atic-mcp` stdio: handshake MCP, las tools, proxy al hub, progreso, timeout
-  con transcript parcial.
+- `atic-mcp` stdio: `server/discover` + `initialize` legacy (lo hace `rmcp`),
+  lista de tools estática sin tocar el hub, proxy al hub en `tools/call`,
+  progreso, espera acotada por `--host`, timeout con transcript parcial,
+  `atic_wait`.
 - Atic arranca el hub; `list_agents` usa la cache.
 - `spawn` / `prompt` / `delegate` contra el harness real.
 - `ATIC_DELEGATE_DEPTH` en el env de cada hijo.
@@ -605,10 +710,25 @@ Encima:
 - **Output enorme.** Tope 8 KB en el item Atic; tope 32 KB en la respuesta MCP.
 - **PATH de `atic-mcp` en el snippet.** Ruta absoluta real. Un binario «en el
   PATH» falla en Windows igual que `opencode`.
-- **Framing MCP.** Lo cubre `rmcp`. No reimplementar a mano.
+- **Framing MCP.** Una línea JSON por mensaje, sin cabeceras `Content-Length`
+  (eso es LSP; el primer borrador lo confundía). Lo cubre `rmcp`. No
+  reimplementar a mano. Nada en stdout que no sea MCP: los logs del sidecar
+  van a stderr.
 - **macOS:** el sidecar tendrá que firmarse el día que el desktop lo haga.
 - **No mezclar el servidor `atic` de orquestación en `McpServersModal`.** El
   merge de `--mcp-config` y el editor del usuario son dos listas.
+- **El host corta antes que el hub.** Codex y Cursor: 60 s por `tools/call`.
+  Presupuesto por `--host` + `atic_wait`; el snippet de Codex sube
+  `tool_timeout_sec`. Sin esto el padre pierde el `session` del hijo que
+  Atic sí levantó.
+- **`tools/list` lento = servidor «caído».** OpenCode 5 s, Codex 10 s de
+  arranque, Claude `-p` 30 s. Lista estática; el hub recién en `tools/call`.
+- **Nombre doble.** El host expone `mcp__atic__atic_delegate`. Es feo pero
+  estable; si se acorta el prefijo, hacerlo antes de fase 2 (los snippets y
+  las reglas de permisos de los usuarios lo copian).
+- **`--permission-mode auto`.** Claude 2.1.261 lo acepta; el harness no lo
+  conoce y lo baja a `manual`. Fuera de este plan, pero un padre que lo pase
+  en `atic_spawn` va a recibir `manual` sin aviso.
 
 ---
 
@@ -686,13 +806,100 @@ espera a `TurnEnded`, ejemplo JSON inválido (corregido).
 
 ---
 
+## Revisión 2026-09-05 (Fable 5.1)
+
+Segunda pasada, seis días después de la primera, con `main` en 0.4.28 y el
+mundo de afuera consultado en vivo (doc oficial + `--help` de los binarios
+instalados en esta máquina).
+
+### Lo que se sostiene
+
+- Código: `mcp_config` sigue cableado solo en `claude_code.rs`; ids
+  `claude-code` / `codex` / `opencode` / `cursor`; `agent_backends()` sigue
+  lanzando un proceso por backend; `SESSIONS` y los comandos `agent_start` /
+  `agent_send` / `agent_interrupt` / `agent_stop` / `agent_permission` están
+  donde el plan dice; no hay primitivo de espera a fin de turno (`turns.rs`
+  solo lleva el estado; lo que hay que escuchar es
+  `AgentDelta::TurnEnd { status }`); single-instance en `lib.rs`;
+  `ProjectDirs("com", "ciat", "atic")`; handshake de 8 s en `codex.rs`;
+  `ping.rs` como precedente del snippet. Los commits desde el 30-08 tocan
+  presencia, foco, cuotas y overlay, no el harness.
+- Arquitectura estrella, perímetro, grafo, ruteo por `kind`, hub obligatorio,
+  sesión hija viva: nada de afuera los toca.
+- Tope de 32 KB: por debajo del aviso de Claude (10 k tokens) y de su corte
+  (25 k), y de la truncación por tool de Codex.
+
+### Lo que cambió afuera
+
+1. **Spec MCP.** La vigente es la revisión **2026-07-28**: sin handshake
+   `initialize` (versión y capacidades viajan en `_meta` de cada request),
+   `server/discover` obligatorio, el servidor ya no inicia requests. La
+   legacy (2025-11-25 y anteriores) sigue viva y `rmcp` 3.2.0 (31-08-2026)
+   es dual-era. Para este plan: `rmcp` lo absorbe; cambia el vocabulario de
+   la fase 1, no el diseño.
+2. **Framing stdio.** Siempre fue una línea JSON por mensaje; el diagrama
+   decía `Content-Length` (eso es LSP). Corregido.
+3. **Timeouts del host.** Codex `tool_timeout_sec` = 60 s; Cursor ~60 s sin
+   ajuste; Claude Code interactivo manda a segundo plano a los 2 min y en
+   `-p` espera al servidor hasta 30 s antes del primer turno; OpenCode corta
+   el listado de tools a los 5 s. Nada de esto estaba en el plan y toca la
+   decisión 2 (delegate bloqueante). Ver [Timeouts del host](#timeouts-del-host).
+4. **Tasks MCP** existe como extensión (`io.modelcontextprotocol/tasks`, repo
+   `ext-tasks`) y resuelve exactamente «tool larga sin bloquear», pero ninguno
+   de los cuatro hosts figura en la matriz de clientes con soporte. No se usa
+   en v1; es el reemplazo natural de `atic_wait` el día que lo hablen.
+5. **Snippets por host.** Claude y Cursor comparten `mcpServers`; Codex es
+   TOML; OpenCode es `mcp` + `type: local` + `command` array. Tres de los
+   cuatro CLIs traen `mcp add`. Y `codex -c mcp_servers.atic.command=…`
+   funciona en `app-server`: la inyección en hijos Codex es posible sin tocar
+   `config.toml` (la decisión 9 se mantiene por el handshake, no por falta de
+   mecanismo).
+6. **SSH.** `StartOptions.remote` ya existe (solo Claude). `atic_spawn` v1 es
+   local; `atic_list_sessions` muestra `remote`; la clave anti-reuso incluye
+   el host.
+7. **`agent_mcp_servers` no llega a Claude.** Se guarda desde
+   `McpServersModal` y nadie lo lee ni lo manda en `agent_start`. El merge
+   con `atic` se arma en Rust desde la config; de paso arregla eso.
+8. **Claude `--permission-mode`** acepta `auto` y `manual`; el harness no
+   mapea `auto`.
+
+### Enmiendas
+
+- **E1.** Espera acotada por host (`--host` en `args` del snippet; ~50 s en
+  Codex y Cursor, 5 min en Claude). El payload de traspaso no cambia.
+- **E2.** Nueva tool `atic_wait` para reengancharse a un turno en curso sin
+  abrir otro. El default sigue bloqueando; no es job+poll.
+- **E3.** `tools/list` estático e instantáneo; el hub recién en `tools/call`.
+- **E4.** Snippets por host, con `mcp add` donde exista y `tool_timeout_sec`
+  en Codex.
+- **E5.** `atic_spawn` rechaza `remote`; `atic_list_sessions` lo expone; la
+  clave anti-reuso es backend+host+cwd.
+
+Las decisiones cerradas 1–14 quedan. La 7 y el cierre 2 se leen con E1 y E2.
+
+### Fuentes
+
+- modelcontextprotocol.io/specification/2026-07-28 (transports, stdio,
+  versioning); /extensions/tasks; /extensions/client-matrix
+- crates.io/crates/rmcp (3.2.0); github.com/modelcontextprotocol/rust-sdk
+- code.claude.com/docs/en/mcp y /cli-reference; `claude --help` 2.1.261
+- learn.chatgpt.com/docs/config-file/config-reference y /docs/extend/mcp;
+  `codex --help`, `codex app-server --help`, `codex mcp add --help` 0.153.4
+- cursor.com/docs/context/mcp; foro de Cursor «Agent acp: MCP tools/call
+  times out at ~60s with no way to configure it» (jun-2026);
+  `cursor-agent mcp --help` 2026.09.02
+- opencode.ai/docs/mcp-servers; `opencode mcp --help` 1.15.13
+- v2.tauri.app/develop/sidecar
+
+---
+
 ## Traspaso para quien siga
 
 1. Leer este archivo y [PLAN_AGENTES.md](PLAN_AGENTES.md) (hallazgo ACP,
    trampas de spawn, punto 5 vs 6). Las preguntas **ya están cerradas**.
-2. Fase 0 primero: grafo + ruteo por `kind` + payload de timeout + interfaz
-   de espera a `TurnEnded`. Tests. Cero `rmcp`, cero `bridge.rs` todavía
-   más allá de leerlo.
+2. Fase 0 primero: grafo + ruteo por `kind` + payload de timeout + presupuesto
+   de espera por host + interfaz de espera a `TurnEnd`. Tests. Cero `rmcp`,
+   cero `bridge.rs` todavía más allá de leerlo.
 3. No extraer `agents/` «por si el MCP lo necesita».
 4. No escribir configs de Claude/Codex/Cursor en el disco del usuario.
 5. No inyectar este MCP en Codex/ACP «por si acaso».

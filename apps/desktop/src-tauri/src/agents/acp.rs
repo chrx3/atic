@@ -40,8 +40,8 @@ use std::sync::{Arc, Mutex};
 
 use agent_client_protocol::schema::v1::{
     AuthenticateRequest, CancelNotification, ContentBlock, ContentChunk, ImageContent,
-    InitializeRequest, NewSessionRequest, PermissionOptionKind, PromptRequest,
-    RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
+    InitializeRequest, McpServer, McpServerStdio, NewSessionRequest, PermissionOptionKind,
+    PromptRequest, RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
     SelectedPermissionOutcome, SessionConfigKind, SessionConfigOption, SessionConfigOptionCategory,
     SessionConfigSelect, SessionConfigSelectOption, SessionConfigSelectOptions, SessionId,
     SessionNotification, SessionUpdate, SetSessionConfigOptionRequest, StopReason, TextContent,
@@ -71,6 +71,9 @@ pub struct Acp {
     display_name: &'static str,
     program: &'static str,
     args: &'static [&'static str],
+    /// Dónde mirar si hay sesión iniciada. Puntero y no `match` sobre `id`
+    /// para que sumar un agente ACP siga siendo escribir una constante.
+    signed_in: fn() -> Option<bool>,
 }
 
 /// Instalado con `npm i -g opencode-ai`. En Windows queda como shim `.cmd`.
@@ -79,6 +82,7 @@ pub const OPENCODE: Acp = Acp {
     display_name: "OpenCode",
     program: "opencode",
     args: &["acp"],
+    signed_in: super::login::opencode,
 };
 
 /// `cursor-agent` expone ACP con el subcomando `acp`, igual que OpenCode.
@@ -87,6 +91,18 @@ pub const CURSOR: Acp = Acp {
     display_name: "Cursor",
     program: "cursor-agent",
     args: &["acp"],
+    signed_in: super::login::cursor,
+};
+
+/// Grok no lo anuncia como «acp» pero `grok agent stdio` responde `initialize`
+/// con `protocolVersion: 1` y capacidades ACP; su formato nativo son las
+/// `session update` del protocolo. Se instala en `~/.grok/bin`.
+pub const GROK: Acp = Acp {
+    id: "grok",
+    display_name: "Grok",
+    program: "grok",
+    args: &["agent", "stdio"],
+    signed_in: super::login::grok,
 };
 
 /// Lo que la sesión le pide al hilo de conexión.
@@ -198,11 +214,23 @@ impl AgentBackend for Acp {
         super::exe::resolve(self.program).is_some()
     }
 
+    fn signed_in(&self) -> Option<bool> {
+        (self.signed_in)()
+    }
+
     fn start(
         &self,
         options: StartOptions,
         on_delta: Box<dyn Fn(AgentDelta) + Send + Sync + 'static>,
     ) -> Result<Box<dyn AgentSession>, String> {
+        // Los servidores MCP del modal siguen siendo cosa de Claude: vienen en
+        // su forma JSON y traducirlos a la del protocolo es otra tarea. El de
+        // orquestación sí entra, en el `session/new` (`mcp_servers` es parte de
+        // ACP, no un añadido nuestro).
+        if options.mcp_config.is_some() {
+            static WARNED: std::sync::Once = std::sync::Once::new();
+            WARNED.call_once(|| tracing::warn!(backend = %self.id(), "los servidores MCP del modal solo se aplican a Claude Code"));
+        }
         // `launcher` y no `resolve`: si el CLI resultó ser un guion `.cmd`, hay
         // que lanzarlo por el intérprete y no dárselo a Windows tal cual.
         let (program, prefijo) = super::exe::launcher(self.program).ok_or_else(|| {
@@ -230,6 +258,9 @@ impl AgentBackend for Acp {
         let desired_model = options.model.clone();
         let desired_effort = options.effort.clone();
         let desired_fast = options.fast;
+        // El grafo de delegación viaja siempre, inyectes o no el MCP.
+        let env = options.env.clone();
+        let atic_mcp = options.atic_mcp.clone();
         let args: Vec<String> = prefijo
             .into_iter()
             .chain(self.args.iter().map(|a| a.to_string()))
@@ -246,6 +277,8 @@ impl AgentBackend for Acp {
                         program,
                         args,
                         cwd,
+                        env,
+                        atic_mcp,
                         backend_id,
                         desired_model,
                         desired_effort,
@@ -267,6 +300,18 @@ impl AgentBackend for Acp {
     }
 }
 
+/// Los MCP que se le declaran al agente al abrir la sesión: hoy solo el de
+/// orquestación, y solo si el hub corre. `mcp_servers` es parte de `session/new`
+/// en ACP, así que esto no le pide nada raro a ningún CLI.
+fn servidores_mcp(atic: Option<&super::hub::AticMcp>) -> Vec<McpServer> {
+    atic.map(|a| {
+        vec![McpServer::Stdio(
+            McpServerStdio::new("atic", a.command.clone()).args(a.args.clone()),
+        )]
+    })
+    .unwrap_or_default()
+}
+
 /// Con qué arrancar la conexión: el proceso y lo que el usuario pidió antes de
 /// que hubiera sesión donde pedirlo.
 ///
@@ -277,6 +322,10 @@ struct Arranque {
     program: std::path::PathBuf,
     args: Vec<String>,
     cwd: String,
+    /// `ATIC_*` del grafo: viajan aunque el MCP no se inyecte.
+    env: Vec<(String, String)>,
+    /// El servidor de orquestación, para que este hijo pueda delegar a su vez.
+    atic_mcp: Option<super::hub::AticMcp>,
     backend_id: &'static str,
     desired_model: Option<String>,
     desired_effort: Option<String>,
@@ -294,12 +343,14 @@ async fn connect(
         program,
         args,
         cwd,
+        env,
+        atic_mcp,
         backend_id,
         desired_model,
         desired_effort,
         desired_fast,
     } = arranque;
-    let agent = AcpAgent::new(AcpAgentConfig::new(&program).args(args));
+    let agent = AcpAgent::new(AcpAgentConfig::new(&program).args(args).envs(env));
 
     let notif = {
         let (emit, shared) = (emit.clone(), shared.clone());
@@ -484,7 +535,10 @@ async fn connect(
             }
 
             let session = conn
-                .send_request(NewSessionRequest::new(std::path::PathBuf::from(&cwd)))
+                .send_request(
+                    NewSessionRequest::new(std::path::PathBuf::from(&cwd))
+                        .mcp_servers(servidores_mcp(atic_mcp.as_ref())),
+                )
                 .block_task()
                 .await?;
 
@@ -1533,6 +1587,26 @@ mod tests {
                 .map(|(i, k)| PermissionOption::new(format!("o{i}"), format!("op{i}"), *k))
                 .collect(),
         )
+    }
+
+    #[test]
+    fn sin_hub_no_se_declara_ningun_mcp() {
+        assert!(servidores_mcp(None).is_empty());
+    }
+
+    #[test]
+    fn el_mcp_de_orquestacion_va_como_stdio_en_la_sesion() {
+        let atic = super::super::hub::AticMcp {
+            command: std::path::PathBuf::from("/opt/atic-mcp"),
+            args: vec!["--host".into(), "grok".into()],
+        };
+        let servidores = servidores_mcp(Some(&atic));
+        let [McpServer::Stdio(uno)] = &servidores[..] else {
+            panic!("se esperaba un único servidor stdio");
+        };
+        assert_eq!(uno.name, "atic");
+        assert_eq!(uno.command, std::path::PathBuf::from("/opt/atic-mcp"));
+        assert_eq!(uno.args, ["--host", "grok"]);
     }
 
     #[test]

@@ -97,6 +97,13 @@ export interface AgentSessionView {
   id: string;
   backendId: string;
   backendName: string;
+  /** Quién pidió la sesión; null = nació en la UI. */
+  parent?: string | null;
+  /**
+   * El nombre que le puso quien la pidió (`label` de `atic_delegate`), ya
+   * hecho único en Rust. null = nadie la nombró, se muestra por su backend.
+   */
+  label?: string | null;
   status: AgentStatus;
   /**
    * La conversación, en turnos.
@@ -269,7 +276,14 @@ class AgentSessionStore {
     this.#unlisten = onAgentDelta((payload) => this.#receive(payload));
     try {
       const live = await agentSessions();
-      for (const info of live) this.#ensure(info.id, info.backendId, info.backendName);
+      for (const info of live)
+        this.#ensure(
+          info.id,
+          info.backendId,
+          info.backendName,
+          info.parent ?? null,
+          info.label ?? null,
+        );
     } catch (err) {
       console.warn("adoptar sesiones de agente", err);
     }
@@ -445,6 +459,11 @@ class AgentSessionStore {
     if (session) session.unread = 0;
   }
 
+  /** Cerrar o achicar el globo: esos mensajes ya no son un aviso en la pill. */
+  markAllRead(): void {
+    for (const s of this.sessions) s.unread = 0;
+  }
+
   /**
    * Watch ligado a la visibilidad del float.
    * Cerrado → `null` para que unread/avisos de la pill vuelvan a funcionar.
@@ -485,13 +504,21 @@ class AgentSessionStore {
     }
   }
 
-  #ensure(id: string, backendId: string, backendName: string): AgentSessionView {
+  #ensure(
+    id: string,
+    backendId: string,
+    backendName: string,
+    parent: string | null = null,
+    label: string | null = null,
+  ): AgentSessionView {
     const found = this.byId(id);
     if (found) return found;
     const session: AgentSessionView = {
       id,
       backendId,
       backendName,
+      parent,
+      label,
       status: "ready",
       turns: [],
       unread: 0,
@@ -768,3 +795,27 @@ class AgentSessionStore {
 }
 
 export const agents = new AgentSessionStore();
+
+/**
+ * Nombre legible del padre de una delegación (`<uuid>` Atic o
+ * `external:<host>:<pid>`). `null` si nació en la UI.
+ */
+export function nombrePadre(parent: string | null | undefined): string | null {
+  if (!parent) return null;
+  if (parent.startsWith("external:")) {
+    const host = parent.split(":")[1] ?? "";
+    switch (host) {
+      case "cursor":
+        return "Cursor IDE";
+      case "codex":
+        return "Codex CLI";
+      case "claude-code":
+        return "Claude Code";
+      case "opencode":
+        return "OpenCode";
+      default:
+        return host || "otra app";
+    }
+  }
+  return "otra sesión";
+}

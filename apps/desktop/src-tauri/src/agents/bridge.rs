@@ -18,8 +18,8 @@ use atic_core::{MutexExt, SshHost};
 use crate::state::AppState;
 
 use super::{
-    claude_code::ClaudeCode, AgentBackend, AgentDelta, AgentSession, AgentSkill,
-    PermissionDecision, StartOptions,
+    claude_code::ClaudeCode, hub, hub::api, hub::graph, hub::wait::TurnWatch, AgentBackend,
+    AgentDelta, AgentSession, AgentSkill, PermissionDecision, StartOptions,
 };
 
 /// Una sesión viva más lo que hace falta para nombrarla sin volver a mirar la
@@ -28,6 +28,63 @@ struct Entry {
     backend: String,
     display_name: String,
     session: Box<dyn AgentSession>,
+    /// Acumula el turno para quien lo espera por MCP. Lo alimenta `on_delta`
+    /// en primera línea: quien espera despierta aunque el store o el emit fallen.
+    watch: std::sync::Arc<TurnWatch>,
+    meta: SessionMeta,
+}
+
+/// De dónde salió la sesión: la UI es raíz, el hub trae padre y profundidad.
+pub(crate) struct SpawnMeta {
+    pub parent: Option<String>,
+    /// Profundidad del hijo (la UI es 0; el hub pasa `depth + 1` del pedido).
+    pub depth: u8,
+    /// Raíz del encargo para detectar ciclos. Vacío = se acuña con la clave nueva.
+    pub root: Option<String>,
+    pub label: Option<String>,
+}
+
+impl SpawnMeta {
+    pub fn root() -> Self {
+        Self {
+            parent: None,
+            depth: 0,
+            root: None,
+            label: None,
+        }
+    }
+}
+
+/// Variables del grafo para el proceso hijo. Van siempre, inyectes o no el
+/// MCP: si ese proceso carga el MCP por config global, la profundidad no miente.
+pub(crate) fn hub_env(
+    clave: &str,
+    profundidad_hijo: u8,
+    raiz: &str,
+    padre: Option<&str>,
+) -> Vec<(String, String)> {
+    let mut env = vec![
+        ("ATIC_SESSION".to_string(), clave.to_string()),
+        (
+            "ATIC_DELEGATE_DEPTH".to_string(),
+            profundidad_hijo.to_string(),
+        ),
+        ("ATIC_ROOT".to_string(), raiz.to_string()),
+    ];
+    if let Some(padre) = padre {
+        env.push(("ATIC_PARENT".to_string(), padre.to_string()));
+    }
+    env
+}
+
+/// Lo que el hub necesita saber de cada sesión sin tocar el proceso.
+#[derive(Clone)]
+pub(crate) struct SessionMeta {
+    pub cwd: String,
+    pub remote_host_id: Option<String>,
+    pub parent: Option<String>,
+    pub label: Option<String>,
+    pub root: String,
 }
 
 /// Sesiones abiertas, por clave local.
@@ -62,11 +119,64 @@ fn backends() -> Vec<Box<dyn AgentBackend>> {
         Box::new(super::codex::Codex),
         Box::new(super::acp::OPENCODE),
         Box::new(super::acp::CURSOR),
+        Box::new(super::acp::GROK),
+        Box::new(super::antigravity::Antigravity),
     ]
 }
 
 fn find(id: &str) -> Option<Box<dyn AgentBackend>> {
     backends().into_iter().find(|b| b.id() == id)
+}
+
+/// Los ids que existen, sin tocar el disco.
+///
+/// Es lo que tiene que consultar cualquiera que valide un backend: una lista
+/// escrita a mano en otro archivo se queda vieja al sumar uno, y el síntoma es
+/// «Backend desconocido» para algo que sí está.
+pub(crate) fn backend_ids() -> Vec<&'static str> {
+    backends().iter().map(|b| b.id()).collect()
+}
+
+/// El nombre para mostrar de un backend, o `None` si el id no existe.
+pub(crate) fn backend_display_name(id: &str) -> Option<&'static str> {
+    backends()
+        .iter()
+        .find(|b| b.id() == id)
+        .map(|b| b.display_name())
+}
+
+/// Las etiquetas que ya están en uso por sesiones vivas.
+fn etiquetas_vivas() -> HashSet<String> {
+    SESSIONS
+        .lock_or_recover()
+        .as_ref()
+        .map(|map| {
+            map.values()
+                .filter_map(|e| e.meta.label.clone())
+                .collect::<HashSet<_>>()
+        })
+        .unwrap_or_default()
+}
+
+/// Un nombre que no choque con los que ya andan dando vueltas.
+///
+/// Quien delega elige el nombre y no tiene forma de saber qué hay abierto, así
+/// que dos encargos parecidos terminan pidiendo «revisor» los dos. Repetirlo
+/// haría que la vista muestre dos consolas iguales y que el usuario no sepa a
+/// cuál le está hablando; por eso el segundo pasa a ser «revisor 2».
+fn etiqueta_unica(pedida: &str, usadas: &HashSet<String>) -> String {
+    let base = pedida.trim();
+    if base.is_empty() {
+        return String::new();
+    }
+    if !usadas.contains(base) {
+        return base.to_string();
+    }
+    // Un tope: si hay cien «revisor» vivos, el problema no es el nombre.
+    (2..=100)
+        .map(|n| format!("{base} {n}"))
+        .find(|c| !usadas.contains(c))
+        .unwrap_or_else(|| base.to_string())
 }
 
 #[derive(Serialize)]
@@ -77,6 +187,9 @@ pub struct BackendInfo {
     /// Si está instalado. Un backend ausente se muestra deshabilitado en vez
     /// de ofrecerse y fallar recién al usarlo.
     pub available: bool,
+    /// Si tiene sesión iniciada; `None` = no se sabe mirar. Nunca apaga
+    /// `available`: son dos problemas con dos arreglos distintos.
+    pub signed_in: Option<bool>,
 }
 
 /// Lo que viaja al frontend en cada cambio.
@@ -103,6 +216,10 @@ pub struct SessionInfo {
     pub id: String,
     pub backend_id: String,
     pub backend_name: String,
+    /// Quién la pidió; `None` = nació en la UI.
+    pub parent: Option<String>,
+    /// El nombre que le puso quien la pidió, ya hecho único.
+    pub label: Option<String>,
 }
 
 /// Qué sesiones siguen vivas.
@@ -120,6 +237,8 @@ pub fn agent_sessions() -> Vec<SessionInfo> {
                     id: id.clone(),
                     backend_id: entry.backend.clone(),
                     backend_name: entry.display_name.clone(),
+                    parent: entry.meta.parent.clone(),
+                    label: entry.meta.label.clone(),
                 })
                 .collect()
         })
@@ -298,12 +417,21 @@ pub fn hide_agents_window(app: AppHandle) {
 /// UI debería llamarlo al abrir la vista, no en cada render.
 #[tauri::command]
 pub fn agent_backends() -> Vec<BackendInfo> {
+    backend_availability()
+}
+
+/// Lo mismo pero sin envoltorio Tauri: lo usa la cache del hub.
+///
+/// Sondea el disco (binario en el PATH, archivos de credenciales) una vez por
+/// backend, así que se llama desde la cache y no desde cada request.
+pub(crate) fn backend_availability() -> Vec<BackendInfo> {
     backends()
         .iter()
         .map(|b| BackendInfo {
             id: b.id().to_string(),
             display_name: b.display_name().to_string(),
             available: b.is_available(),
+            signed_in: b.signed_in(),
         })
         .collect()
 }
@@ -336,11 +464,26 @@ pub struct StartRequest {
 #[tauri::command]
 pub fn agent_start(
     app: AppHandle,
-    state: State<AppState>,
     backend: String,
     options: Option<StartRequest>,
 ) -> Result<String, String> {
-    let options = options.unwrap_or_default();
+    // El arranque real es `start_session`: la UI entra como raíz y el hub con
+    // padre y profundidad.
+    start_session(
+        &app,
+        &backend,
+        options.unwrap_or_default(),
+        SpawnMeta::root(),
+    )
+}
+
+/// El arranque reutilizable: la UI y el hub pasan por acá.
+pub(crate) fn start_session(
+    app: &AppHandle,
+    backend: &str,
+    options: StartRequest,
+    spawn: SpawnMeta,
+) -> Result<String, String> {
     let StartRequest {
         cwd,
         remote_host_id,
@@ -353,9 +496,12 @@ pub fn agent_start(
         add_dirs,
         fork,
     } = options;
-    let agent = find(&backend).ok_or_else(|| format!("backend desconocido: {backend}"))?;
+    let agent = find(backend).ok_or_else(|| format!("backend desconocido: {backend}"))?;
     let key = uuid::Uuid::new_v4().to_string();
     let display_name = agent.display_name().to_string();
+    // Dueño para el callback de deltas: `on_delta` pide `'static` y acá solo
+    // hay un préstamo. Sin este clon, el cierre captura `&AppHandle` y no compila.
+    let app = app.clone();
 
     let remote = if let Some(id) = remote_host_id
         .as_deref()
@@ -365,6 +511,9 @@ pub fn agent_start(
         if backend != "claude-code" {
             return Err("Por ahora solo Claude Code admite sesión remota por SSH.".into());
         }
+        let state = app
+            .try_state::<AppState>()
+            .ok_or_else(|| "la app no está lista".to_string())?;
         let host = state
             .config
             .lock_or_recover()
@@ -378,18 +527,61 @@ pub fn agent_start(
         None
     };
 
+    let root = spawn.root.clone().unwrap_or_else(|| key.clone());
+    // El grafo viaja en el env aunque el MCP no se inyecte: si ese proceso
+    // carga el MCP por config global del usuario, la profundidad no miente.
+    let env = hub_env(&key, spawn.depth, &root, spawn.parent.as_deref());
+
+    // El merge vive en Rust porque la UI no manda `mcpConfig` (nadie lee
+    // `agent_mcp_servers` al arrancar): se arma desde la config en disco.
+    //
+    // Claude recibe el servidor `atic` dentro del `mcp_config` ya mergeado; los
+    // demás backends por `atic_mcp`, que cada adaptador traduce a lo suyo. Los
+    // servidores del modal siguen siendo solo de Claude: vienen en forma JSON
+    // suya y convertirlos a TOML/ACP es otra tarea.
+    let es_claude = backend == "claude-code";
+    let atic_mcp = if remote.is_none() && !es_claude {
+        hub::atic_mcp(backend)
+    } else {
+        None
+    };
+    let mcp_config = if es_claude && remote.is_none() {
+        let guardada = app
+            .try_state::<AppState>()
+            .map(|s| s.config.lock_or_recover().agent_mcp_servers.clone())
+            .unwrap_or_default();
+        hub::merge_mcp_config(&guardada, mcp_config.as_deref(), hub::mcp_server_entry())
+    } else {
+        mcp_config
+    };
+
+    let meta = SessionMeta {
+        cwd: cwd.clone().unwrap_or_default(),
+        remote_host_id: remote_host_id.clone(),
+        parent: spawn.parent.clone(),
+        label: spawn
+            .label
+            .clone()
+            .map(|l| etiqueta_unica(&l, &etiquetas_vivas())),
+        root,
+    };
+
     // Seguir el hilo desde ANTES de arrancar: el primer delta puede llegar
     // mientras `start` todavía no volvió, y sin el hilo abierto se perdería.
     super::store::open(
         &key,
-        &backend,
+        backend,
         &display_name,
         cwd.as_deref().unwrap_or(""),
         remote_host_id.as_deref(),
+        meta.parent.as_deref(),
     );
 
+    let watch = TurnWatch::new();
+    let watch_delta = watch.clone();
+
     let emit_key = key.clone();
-    let emit_backend = backend.clone();
+    let emit_backend = backend.to_string();
     let emit_name = display_name.clone();
     let session = agent.start(
         StartOptions {
@@ -409,12 +601,14 @@ pub fn agent_start(
             fast,
             permission_mode,
             mcp_config,
+            atic_mcp,
             add_dirs,
+            env,
         },
         Box::new(move |delta| {
-            // Primero al store, después a la ventana. El orden importa poco
-            // para la vista y mucho para el disco: si emitir fallara, el hilo
-            // ya quedó aplicado igual.
+            // Primero al vigilante del hub, después al store y a la ventana.
+            // Quien espera un `TurnEnd` tiene que despertar aunque el emit falle.
+            watch_delta.observe(&delta);
             if super::store::apply(&emit_key, &delta) {
                 with_db(&app, |db| super::store::flush(db, &emit_key));
             }
@@ -436,12 +630,167 @@ pub fn agent_start(
         .insert(
             key.clone(),
             Entry {
-                backend,
+                backend: backend.to_string(),
                 display_name,
                 session,
+                watch,
+                meta,
             },
         );
     Ok(key)
+}
+
+/// Lo vivo para el hub: backend, host, clave de carpeta, raíz y si trabaja.
+pub(crate) fn live_sessions() -> Vec<graph::LiveSession> {
+    SESSIONS
+        .lock_or_recover()
+        .as_ref()
+        .map(|map| {
+            map.iter()
+                .map(|(id, entry)| graph::LiveSession {
+                    id: id.clone(),
+                    backend: entry.backend.clone(),
+                    host: entry
+                        .meta
+                        .remote_host_id
+                        .clone()
+                        .unwrap_or_else(|| "local".to_string()),
+                    cwd_key: graph::cwd_key(&entry.meta.cwd),
+                    root: Some(entry.meta.root.clone()),
+                    running: entry.watch.is_running(),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// El vigilante de una sesión, para esperar su `TurnEnd` desde el hub.
+pub(crate) fn session_watch(id: &str) -> Option<std::sync::Arc<TurnWatch>> {
+    SESSIONS
+        .lock_or_recover()
+        .as_ref()
+        .and_then(|map| map.get(id))
+        .map(|entry| entry.watch.clone())
+}
+
+/// Manda un texto sin origen: lo que `agent_send` hace cuando viene del hub.
+/// Ponerle nombre a una sesión viva. Devuelve el que quedó, que puede no ser
+/// el pedido si ya había otra con ese.
+///
+/// Sirve de identificador: quien delega puede decir «pregúntale a agy» en vez
+/// de arrastrar un uuid, y el usuario puede bautizar una consola que abrió él.
+pub(crate) fn set_label(id: &str, label: &str) -> Result<String, String> {
+    let usadas: HashSet<String> = {
+        let guard = SESSIONS.lock_or_recover();
+        let sessions = guard
+            .as_ref()
+            .ok_or_else(|| "no hay sesiones abiertas".to_string())?;
+        if !sessions.contains_key(id) {
+            return Err("esa sesión ya no existe".to_string());
+        }
+        sessions
+            .iter()
+            // La propia no cuenta: renombrar «agy» a «agy» no la hace «agy 2».
+            .filter(|(k, _)| k.as_str() != id)
+            .filter_map(|(_, e)| e.meta.label.clone())
+            .collect()
+    };
+    let final_ = etiqueta_unica(label, &usadas);
+    let mut guard = SESSIONS.lock_or_recover();
+    let sessions = guard
+        .as_mut()
+        .ok_or_else(|| "no hay sesiones abiertas".to_string())?;
+    let entry = sessions
+        .get_mut(id)
+        .ok_or_else(|| "esa sesión ya no existe".to_string())?;
+    entry.meta.label = if final_.is_empty() {
+        None
+    } else {
+        Some(final_.clone())
+    };
+    Ok(final_)
+}
+
+/// Qué sesión es «agy»: el nombre, sin distinguir mayúsculas ni espacios.
+///
+/// `Err` cuando hay más de una: con dos sesiones llamadas igual, elegir una
+/// sería mandarle el recado a la equivocada la mitad de las veces.
+pub(crate) fn session_by_label(nombre: &str) -> Result<Option<String>, Vec<String>> {
+    let buscado = nombre.trim().to_lowercase();
+    if buscado.is_empty() {
+        return Ok(None);
+    }
+    let guard = SESSIONS.lock_or_recover();
+    let Some(sessions) = guard.as_ref() else {
+        return Ok(None);
+    };
+    let coincidencias: Vec<String> = sessions
+        .iter()
+        .filter(|(_, e)| {
+            e.meta
+                .label
+                .as_deref()
+                .is_some_and(|l| l.trim().to_lowercase() == buscado)
+        })
+        .map(|(k, _)| k.clone())
+        .collect();
+    match coincidencias.len() {
+        0 => Ok(None),
+        1 => Ok(Some(coincidencias[0].clone())),
+        _ => Err(coincidencias),
+    }
+}
+
+/// Manda un turno que pidió otro agente por el hub.
+///
+/// `de` es quién pregunta, ya en legible. Va como `Origin`, el mismo sello que
+/// llevan el dictado o la captura: sin él, en la consola aparece un mensaje de
+/// usuario que el usuario no escribió y no hay forma de saber de quién vino.
+pub(crate) fn send_text(id: &str, text: &str, de: Option<&str>) -> Result<(), String> {
+    let origen = de.map(|via| super::model::Origin {
+        via: via.to_string(),
+        file: None,
+        files: Vec::new(),
+    });
+    let mut guard = SESSIONS.lock_or_recover();
+    let sessions = guard
+        .as_mut()
+        .ok_or_else(|| "no hay sesiones abiertas".to_string())?;
+    sessions
+        .get_mut(id)
+        .ok_or_else(|| "esa sesión ya no existe".to_string())?
+        .session
+        .send(text, origen)
+}
+
+/// Interrumpe el turno sin origen UI: lo mismo que `agent_interrupt`.
+pub(crate) fn interrupt_session(id: &str) -> Result<(), String> {
+    let mut guard = SESSIONS.lock_or_recover();
+    let sessions = guard
+        .as_mut()
+        .ok_or_else(|| "no hay sesiones abiertas".to_string())?;
+    sessions
+        .get_mut(id)
+        .ok_or_else(|| "esa sesión ya no existe".to_string())?
+        .session
+        .interrupt()
+}
+
+/// Ficha de una sesión para `atic_list_sessions`.
+pub(crate) fn session_info(id: &str) -> Option<api::SessionInfo> {
+    SESSIONS
+        .lock_or_recover()
+        .as_ref()
+        .and_then(|map| map.get(id))
+        .map(|entry| api::SessionInfo {
+            session: id.to_string(),
+            backend: entry.backend.clone(),
+            cwd: entry.meta.cwd.clone(),
+            remote: entry.meta.remote_host_id.clone(),
+            running: entry.watch.is_running(),
+            parent: entry.meta.parent.clone(),
+            label: entry.meta.label.clone(),
+        })
 }
 
 /// Manda un turno.
@@ -528,6 +877,16 @@ pub async fn agent_list_models(
     tauri::async_runtime::spawn_blocking(move || crate::agents::discover::list_models(&backend))
         .await
         .map_err(|e| format!("list_models cancelado: {e}"))?
+}
+
+/// Le pone nombre a una consola desde la interfaz.
+///
+/// El mismo nombre que usan los agentes para llamarse entre ellos: bautizar
+/// una consola acá es lo que hace que «pregúntale a agy» funcione desde otro
+/// agente. Devuelve el que quedó, con número si ya estaba tomado.
+#[tauri::command]
+pub fn agent_rename_session(session: String, label: String) -> Result<String, String> {
+    set_label(&session, &label)
 }
 
 /// Corta el turno en curso. La sesión sigue viva (historial, cwd, modelo).
@@ -777,4 +1136,73 @@ pub fn ssh_config_aliases() -> Vec<String> {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sin_sesiones_abiertas_nadie_responde_a_un_nombre() {
+        // El registro global está vacío en los tests: lo que se comprueba es
+        // que un nombre desconocido sea «no hay» y no un error de estado.
+        assert_eq!(session_by_label("agy"), Ok(None));
+        assert_eq!(session_by_label("   "), Ok(None));
+        assert!(set_label("no-existe", "agy").is_err());
+    }
+
+    #[test]
+    fn una_etiqueta_libre_se_respeta_tal_cual() {
+        let usadas = HashSet::new();
+        assert_eq!(etiqueta_unica("revisor", &usadas), "revisor");
+        assert_eq!(etiqueta_unica("  revisor  ", &usadas), "revisor");
+    }
+
+    #[test]
+    fn la_repetida_se_numera_desde_dos() {
+        let usadas: HashSet<String> = ["revisor".to_string()].into_iter().collect();
+        assert_eq!(etiqueta_unica("revisor", &usadas), "revisor 2");
+        let usadas: HashSet<String> = ["revisor", "revisor 2"]
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        assert_eq!(etiqueta_unica("revisor", &usadas), "revisor 3");
+    }
+
+    #[test]
+    fn una_etiqueta_vacia_no_se_numera() {
+        let usadas: HashSet<String> = ["".to_string()].into_iter().collect();
+        assert_eq!(etiqueta_unica("   ", &usadas), "");
+    }
+
+    fn valor(env: &[(String, String)], nombre: &str) -> Option<String> {
+        env.iter()
+            .find(|(k, _)| k == nombre)
+            .map(|(_, v)| v.clone())
+    }
+
+    #[test]
+    fn las_vars_atic_llevan_sesion_profundidad_y_raiz() {
+        let env = hub_env("clave1", 1, "raiz1", Some("padre1"));
+        assert_eq!(valor(&env, "ATIC_SESSION").as_deref(), Some("clave1"));
+        assert_eq!(valor(&env, "ATIC_DELEGATE_DEPTH").as_deref(), Some("1"));
+        assert_eq!(valor(&env, "ATIC_ROOT").as_deref(), Some("raiz1"));
+        assert_eq!(valor(&env, "ATIC_PARENT").as_deref(), Some("padre1"));
+    }
+
+    #[test]
+    fn el_padre_solo_viaja_en_los_hijos() {
+        let env = hub_env("clave1", 0, "clave1", None);
+        assert_eq!(valor(&env, "ATIC_DELEGATE_DEPTH").as_deref(), Some("0"));
+        assert_eq!(valor(&env, "ATIC_ROOT").as_deref(), Some("clave1"));
+        assert!(valor(&env, "ATIC_PARENT").is_none(), "la UI no pone padre");
+    }
+
+    #[test]
+    fn arrancar_sin_nada_no_trae_env() {
+        assert!(
+            StartOptions::default().env.is_empty(),
+            "el env lo pone el puente, no el valor por defecto"
+        );
+    }
 }

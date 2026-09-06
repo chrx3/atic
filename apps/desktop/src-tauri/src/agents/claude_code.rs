@@ -51,6 +51,10 @@ impl AgentBackend for ClaudeCode {
         "Claude Code"
     }
 
+    fn signed_in(&self) -> Option<bool> {
+        super::login::claude()
+    }
+
     fn is_available(&self) -> bool {
         Command::new("claude")
             .arg("--version")
@@ -90,6 +94,8 @@ impl AgentBackend for ClaudeCode {
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
+            // El grafo de delegación viaja siempre, inyectes o no el MCP.
+            cmd.envs(options.env.iter().cloned());
             if let Some(dir) = &options.cwd {
                 cmd.current_dir(dir);
             }
@@ -1020,6 +1026,7 @@ impl ClaudeSession {
 }
 
 /// Cómo tratar un slash de control en `send`.
+#[allow(clippy::large_enum_variant)]
 enum ControlSlash {
     /// Cambia el modo vía `set_permission_mode` (sin burbuja ni reenvío).
     SetMode { mode: String, notice: String },

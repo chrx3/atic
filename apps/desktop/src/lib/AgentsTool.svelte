@@ -7,7 +7,7 @@
    * proceso compitiendo por ser «la» sesión.
    */
   import { presentAgentsWindow } from "$lib/api";
-  import { agents } from "$lib/agentSessions.svelte";
+  import { agents, nombrePadre } from "$lib/agentSessions.svelte";
   import { onMount } from "svelte";
 
   onMount(() => {
@@ -26,7 +26,13 @@
     <ul class="at-list">
       {#each agents.sessions as s (s.id)}
         <li class="at-item">
-          <span class="at-name">{s.backendName}</span>
+          <!-- Con nombre manda el nombre: quien delegó lo eligió para poder
+               referirse a esta consola, y el backend pasa a ser el detalle. -->
+          <span class="at-name"
+            >{#if s.label}{s.label} · {s.backendName}{:else}{s.backendName}{/if}{#if nombrePadre(
+              s.parent,
+            )} · pedido por {nombrePadre(s.parent)}{/if}</span
+          >
           <span class="at-state">
             {#if s.pending.length > 0}
               espera tu permiso

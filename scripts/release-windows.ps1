@@ -40,6 +40,9 @@ $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = (Get-Content -Raw $passPath).Trim()
 
 Push-Location (Join-Path $repo "apps\desktop")
 try {
+    # El sidecar MCP lo exige tauri-build al compilar (además va en beforeBuildCommand).
+    pnpm mcp:build
+    if ($LASTEXITCODE -ne 0) { throw "pnpm mcp:build falló ($LASTEXITCODE)" }
     pnpm tauri build --bundles nsis
     if ($LASTEXITCODE -ne 0) { throw "pnpm tauri build falló ($LASTEXITCODE)" }
 }

@@ -21,6 +21,7 @@
 //! específica de ese backend.
 
 pub mod acp;
+pub mod antigravity;
 pub mod antigravity_usage;
 pub mod bridge;
 pub mod claude_code;
@@ -34,6 +35,8 @@ pub mod discover;
 pub mod exe;
 pub mod focus;
 pub mod fs_browse;
+pub mod hub;
+pub mod login;
 pub mod media;
 pub mod model;
 pub mod opencode_usage;
@@ -162,8 +165,20 @@ pub struct StartOptions {
     /// Son para **el agente**: le suman herramientas a él. Atic solo los
     /// administra y se los pasa al arrancar.
     pub mcp_config: Option<String>,
+    /// El servidor `atic` de orquestación, para que el hijo pueda delegar a su
+    /// vez. Va aparte de `mcp_config` porque cada adaptador lo traduce a su
+    /// formato (Claude ya lo lleva mergeado dentro de `mcp_config`; Codex lo
+    /// pasa por `-c` y ACP en el `session/new`).
+    pub atic_mcp: Option<hub::AticMcp>,
     /// Carpetas adicionales a las que el agente puede acceder.
     pub add_dirs: Vec<String>,
+    /// Variables de entorno para el proceso hijo (`ATIC_SESSION`,
+    /// `ATIC_DELEGATE_DEPTH`, `ATIC_ROOT`, `ATIC_PARENT`).
+    ///
+    /// Viajan acá y no en cada adaptador porque todos los hijos las llevan,
+    /// inyecten o no el MCP: si ese proceso carga el MCP por config global
+    /// del usuario, el grafo no miente.
+    pub env: Vec<(String, String)>,
 }
 
 /// Un agente de consola que Atic sabe manejar.
@@ -181,6 +196,16 @@ pub trait AgentBackend: Send + Sync {
     /// Se consulta antes de ofrecerlo: un backend que no está no debería
     /// aparecer como opción y fallar recién al usarlo.
     fn is_available(&self) -> bool;
+
+    /// ¿Tiene sesión iniciada? `None` = no se sabe mirar en este backend.
+    ///
+    /// Va aparte de `is_available` a propósito: «no está instalado» y «está pero
+    /// sin login» tienen arreglos distintos, y la detección es una heurística
+    /// sobre archivos de credenciales (ver [`login`]) que no debe esconder a un
+    /// agente que funciona. Quien lo consuma lo informa; no lo usa para filtrar.
+    fn signed_in(&self) -> Option<bool> {
+        None
+    }
 
     /// Arranca una sesión.
     ///

@@ -60,6 +60,8 @@ TAURI_SIGNING_PRIVATE_KEY_PASSWORD="$(tr -d '\n' < "$pass_path")"
 rustup target add aarch64-apple-darwin x86_64-apple-darwin
 
 pushd apps/desktop > /dev/null
+# El sidecar MCP lo exige tauri-build al compilar (además va en beforeBuildCommand).
+pnpm mcp:build
 pnpm tauri build --bundles dmg,app --target universal-apple-darwin
 popd > /dev/null
 

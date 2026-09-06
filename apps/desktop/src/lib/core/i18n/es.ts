@@ -405,6 +405,16 @@ export const es = {
       copy: "Copiar",
       copied: "Copiado",
       copiedToast: "Copiado. Fusiona la clave hooks en ~/.claude/settings.json",
+      hubCopiedToast: "Copiado. Pégalo en la app correspondiente.",
+      hubTitle: "Desde otras apps",
+      hubHint: "Pega esto en la app correspondiente. Atic no toca esos archivos.",
+      hubOn: "En marcha en el puerto {port}",
+      hubOff: "No arrancó",
+      hubRefresh: "Actualizar",
+      hubPath: "Ruta de atic-mcp",
+      hubPathMissing: "No se encontró el binario; ejecuta `pnpm mcp:build`",
+      hubCodexHelp:
+        "Si borras tool_timeout_sec, Codex vuelve a cortar a los 60 s y el padre pierde la sesión. Van juntos.",
     },
     groq: {
       hasKey: "Hay una clave de Groq en el llavero",
@@ -577,9 +587,9 @@ export const es = {
     agentFallback: "el agente",
     goToAgent: "Ir a {name} en su terminal",
     openConsole: "Abrir la consola de agentes",
-    unbound: "Sin terminal atada. Clic vincula la última ventana",
+    unbound: "Sin terminal atada. Clic intenta enfocarla o descarta el aviso",
     unboundTitle:
-      "Sin terminal atada. Clic vincula la última ventana · Ctrl+clic para elegir otra",
+      "Sin terminal atada. Clic enfoca esa consola si se puede · si no, descarta el aviso",
     working: "El agente está trabajando",
     waiting: "El agente espera tu permiso",
     unread: "{label} sin leer",

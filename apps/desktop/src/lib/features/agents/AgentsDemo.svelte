@@ -6,7 +6,7 @@
    * (mensajes, tools, thinking, plan). Historial vía agent_threads + resume.
    */
   import { onMount, tick } from "svelte";
-  import { agents } from "$lib/agentSessions.svelte";
+  import { agents, nombrePadre } from "$lib/agentSessions.svelte";
   import { convertFileSrc } from "@tauri-apps/api/core";
   import {
     agentBackends,
@@ -1674,7 +1674,6 @@
     {/if}
   {/snippet}
 
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
   <header class="top">
     <div
       class="brand"
@@ -1695,7 +1694,6 @@
       <!-- Solo el hueco central arrastra: si el drag vive en todo el header,
            pin / historial / Bypass / X pierden el clic (sobre todo con otra
            app detrás del overlay). -->
-      <!-- svelte-ignore a11y_no_static_element_interactions -->
       <div
         class="top-drag"
         aria-hidden="true"
@@ -1936,6 +1934,13 @@
                     <span class="hist-ago">{ago(t.updatedAt)}</span>
                     {#if t.remoteHostId}
                       <span class="hist-tag">SSH</span>
+                    {/if}
+                    {#if nombrePadre(t.parent)}
+                      <span
+                        class="hist-tag"
+                        title="Sesión abierta por otro agente vía Atic"
+                        >pedido por {nombrePadre(t.parent)}</span
+                      >
                     {/if}
                     {#if t.providerSession}
                       <span class="hist-tag">reanudable</span>
@@ -2245,7 +2250,6 @@
   {/if}
 
   {#if !consoleOpen}
-    <!-- svelte-ignore a11y_no_static_element_interactions -->
     <footer
       class="composer"
       class:is-drop={dropActive}

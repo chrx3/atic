@@ -541,6 +541,13 @@ export interface AgentBackendInfo {
   displayName: string;
   /** Instalado y utilizable en este equipo. */
   available: boolean;
+  /**
+   * Con sesión iniciada. `null`/ausente = no se sabe mirar en ese backend.
+   *
+   * Nunca apaga `available`: «no está instalado» y «está pero sin login» se
+   * arreglan distinto, y esconder el segundo deja al usuario sin saber cuál es.
+   */
+  signedIn?: boolean | null;
 }
 
 /** Un comando de barra que ofrece el agente (skills incluidas). */
@@ -802,6 +809,8 @@ export type PresenceSource = "jsonl" | "hook" | "process";
 export type PresenceWindow = {
   pid: number;
   hwnd: number;
+  /** La ventana es de Atic (consola interna), no una TUI ajena. */
+  own?: boolean;
 };
 
 export type AgentPresence = {
@@ -831,6 +840,17 @@ export interface AgentSessionInfo {
   id: string;
   backendId: string;
   backendName: string;
+  /** Quién la pidió; null = nació en la UI. */
+  parent?: string | null;
+  /** El nombre que le puso quien la pidió, ya hecho único en Rust. */
+  label?: string | null;
+}
+
+/** Hub de orquestación MCP: lo que muestra Ajustes → Agentes. */
+export interface HubStatus {
+  running: boolean;
+  port: number | null;
+  mcpPath: string | null;
 }
 
 /**
@@ -850,6 +870,8 @@ export interface StoredThread {
   cwd: string;
   /** Host SSH; null = local. */
   remoteHostId: string | null;
+  /** Quién pidió la sesión; null = nació en la UI. */
+  parent?: string | null;
   model: string;
   /** Segundos desde epoch. */
   updatedAt: number;
