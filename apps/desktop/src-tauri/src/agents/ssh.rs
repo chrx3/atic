@@ -205,12 +205,12 @@ fn ssh_program_missing_message(program: &Path) -> String {
     let shown = program.display();
     #[cfg(windows)]
     {
-        return format!(
+        format!(
             "No se encontró el cliente OpenSSH (`{shown}`). \
              Instálalo (Configuración → Aplicaciones opcionales → OpenSSH Client) \
              o asegúrate de que exista `C:\\Windows\\System32\\OpenSSH\\ssh.exe`. \
              Las apps de escritorio a veces no ven el PATH de tu terminal."
-        );
+        )
     }
     #[cfg(not(windows))]
     {
@@ -283,11 +283,11 @@ fn askpass_ext() -> &'static str {
     }
 }
 
+type AskpassPrep = (Option<AskpassGuard>, Option<String>, Option<String>);
+
 /// Aplica SSH_ASKPASS si hay passphrase en el keyring. Devuelve guard + valor
 /// para setear en el Command (no se loguea).
-pub fn prepare_askpass(
-    host: &SshHost,
-) -> Result<(Option<AskpassGuard>, Option<String>, Option<String>), String> {
+pub fn prepare_askpass(host: &SshHost) -> Result<AskpassPrep, String> {
     if host.auth != "key" {
         return Ok((None, None, None));
     }

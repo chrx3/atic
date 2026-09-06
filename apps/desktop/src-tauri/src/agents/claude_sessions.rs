@@ -581,7 +581,7 @@ pub fn list_for_cwd(cwd: &str) -> Vec<ClaudeCodeSession> {
             cwd: cwd_str.clone(),
         });
     }
-    out.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    out.sort_by_key(|b| std::cmp::Reverse(b.updated_at));
     // Tope razonable para el picker; el CLI también muestra un recorte.
     out.truncate(40);
     out

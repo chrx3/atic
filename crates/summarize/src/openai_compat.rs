@@ -223,13 +223,7 @@ impl OpenAiCompatSummarizer {
         err.retry_secs().unwrap_or(default).clamp(1, 90)
     }
 
-    fn wait_after_too_large(
-        &self,
-        run: &mut Run<'_>,
-        err: &SummarizeError,
-        part: u32,
-        of: u32,
-    ) {
+    fn wait_after_too_large(&self, run: &mut Run<'_>, err: &SummarizeError, part: u32, of: u32) {
         let secs = self.wait_secs_for(err);
         run.report_wait("wait", part, of, secs as u32);
         thread::sleep(Duration::from_secs(secs));

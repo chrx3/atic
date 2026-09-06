@@ -133,7 +133,6 @@ pub fn delete_secret(kind: SecretKind) -> Result<()> {
 ///
 /// El enum fijo no escala a N hosts; estas claves van como
 /// `ssh_host_{id}_passphrase` / `ssh_host_{id}_password`.
-
 fn named_entry(name: &str) -> Result<Entry> {
     Entry::new(SERVICE, name).map_err(|err| Error::Secret(err.to_string()))
 }

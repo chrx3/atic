@@ -42,7 +42,12 @@ impl Frame {
             return None;
         }
         let i = (py as usize * self.width() as usize + px as usize) * 4;
-        Some([self.bgra[i + 2], self.bgra[i + 1], self.bgra[i], self.bgra[i + 3]])
+        Some([
+            self.bgra[i + 2],
+            self.bgra[i + 1],
+            self.bgra[i],
+            self.bgra[i + 3],
+        ])
     }
 
     /// Recorta una región (en coordenadas físicas del escritorio virtual) del

@@ -183,7 +183,7 @@ pub fn open_annotator_path(app: &AppHandle, captures_dir: &Path, path: &str) -> 
 }
 
 fn open_annotator_file(app: &AppHandle, target: &Path) -> Result<(), String> {
-    let (width, height) = png_size(&target)?;
+    let (width, height) = png_size(target)?;
 
     let Some(window) = app.get_webview_window(ANNOTATE_LABEL) else {
         return Err(crate::ui_lang::msg(

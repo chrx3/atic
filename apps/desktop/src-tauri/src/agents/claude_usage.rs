@@ -148,13 +148,13 @@ enum UsageErr {
     Other(String),
 }
 
-impl UsageErr {
-    fn to_string(self) -> String {
+impl std::fmt::Display for UsageErr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             UsageErr::Unauthorized => {
-                "sesión Claude vencida. Ejecuta `claude auth login`.".to_string()
+                write!(f, "sesión Claude vencida. Ejecuta `claude auth login`.")
             }
-            UsageErr::Other(m) => m,
+            UsageErr::Other(m) => write!(f, "{m}"),
         }
     }
 }
@@ -479,7 +479,7 @@ fn refresh_and_persist(client: &reqwest::blocking::Client, path: &Path) -> Resul
         if let Ok((t, _)) = load_access_token_no_refresh(path) {
             return Ok(t);
         }
-        return Err("credenciales cambiaron durante el refresh; reintentá".to_string());
+        return Err("credenciales cambiaron durante el refresh; vuelve a intentar".to_string());
     }
 
     let oauth_obj = root

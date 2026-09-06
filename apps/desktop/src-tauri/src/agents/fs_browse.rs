@@ -153,7 +153,7 @@ pub fn list_directories(path: Option<String>) -> Result<DirectoryListing, String
         });
     }
 
-    entries.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    entries.sort_by_key(|a| a.name.to_lowercase());
 
     Ok(DirectoryListing {
         path: display_path(&dir),

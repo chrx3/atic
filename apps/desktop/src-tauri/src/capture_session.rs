@@ -141,8 +141,13 @@ fn trigger_kind(app: &AppHandle, kind: OverlayKind) -> Result<(), String> {
 fn session_kind(app: &AppHandle) -> Option<OverlayKind> {
     #[cfg(windows)]
     {
-        app.try_state::<crate::state::AppState>()
-            .and_then(|state| state.overlay_session.lock_or_recover().as_ref().map(|s| s.kind))
+        app.try_state::<crate::state::AppState>().and_then(|state| {
+            state
+                .overlay_session
+                .lock_or_recover()
+                .as_ref()
+                .map(|s| s.kind)
+        })
     }
     #[cfg(not(windows))]
     {
@@ -969,7 +974,7 @@ fn create_capture_overlay(app: &AppHandle) -> Result<tauri::WebviewWindow, Strin
 /// environment aparte, los flags anti-throttling sí se aplican, y la primera
 /// captura paga el costo de crearla. `prewarm_capture_overlay` adelanta ese
 /// costo al arranque, como la ventana de la pizarra.
-
+///
 /// Precarga el webview de captura en background. Sin esto, la primera mira
 /// paga crear Chromium *después* del freeze y se siente más lenta que la pizarra.
 pub(crate) fn prewarm_capture_overlay(app: &AppHandle) {
@@ -1254,9 +1259,7 @@ fn capture_shelf_landing_impl(
     )
     .ok_or("no se pudo ubicar el shelf")?;
 
-    let shelf = app
-        .get_webview_window("capture-shelf")
-        .ok_or("sin shelf")?;
+    let shelf = app.get_webview_window("capture-shelf").ok_or("sin shelf")?;
     let pos = shelf.outer_position().map_err(|e| e.to_string())?;
     let shelf_scale = shelf.scale_factor().unwrap_or(1.0).max(0.01);
 
