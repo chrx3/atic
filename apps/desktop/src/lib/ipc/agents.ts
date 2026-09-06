@@ -143,6 +143,14 @@ export const agentClaudeSessions = (cwd: string) =>
 export const agentClaudeTranscript = (cwd: string, id: string) =>
   invoke<AgentTurn[]>("agent_claude_transcript", { cwd, id });
 
+/** ¿Tiene ese CLI el servidor `atic` en su config? Levanta un proceso: cachear. */
+export const agentMcpStatus = (cli: string) =>
+  invoke<boolean>("agent_mcp_status", { cli });
+
+/** Conecta o desconecta ese CLI del hub. Devuelve cómo quedó. */
+export const agentMcpToggle = (cli: string, on: boolean) =>
+  invoke<boolean>("agent_mcp_toggle", { cli, on });
+
 /** Hub de orquestación: ¿corre y dónde está el sidecar? */
 export const hubStatus = () => invoke<HubStatus>("hub_status");
 

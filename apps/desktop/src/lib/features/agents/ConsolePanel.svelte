@@ -57,6 +57,9 @@
   import EmptyState from "$lib/ui/EmptyState.svelte";
   import AccountUsageModal from "./AccountUsageModal.svelte";
   import AgentLogo from "./AgentLogo.svelte";
+  import HubConversation from "./HubConversation.svelte";
+  import { agents } from "$lib/agentSessions.svelte";
+  import { agentMcpStatus, agentMcpToggle } from "$ipc/agents";
   import Icon from "$ui/Icon.svelte";
   import {
     ArrowLeft,
@@ -64,6 +67,7 @@
     Folder,
     Minus,
     Pin,
+    Plug,
     Plus,
     Square,
     SquareTerminal,
@@ -165,6 +169,15 @@
      * una vieja la devuelve a donde estaba, no a la carpeta de moda.
      */
     cwd: string | null;
+    /**
+     * Sesión del hub que esta pestaña muestra, si no es una consola.
+     *
+     * Las que abre un agente por MCP no tienen PTY: son procesos que hablan
+     * por el puente, y lo que hay que enseñar es su conversación. Con esto
+     * puesto, la pestaña no conecta ningún terminal y el panel dibuja el hilo
+     * en lugar del xterm.
+     */
+    hubSession?: string | null;
   };
 
   type Box = { term: Terminal; fit: FitAddon; el: HTMLElement };
@@ -1278,6 +1291,11 @@
   async function connect(key = activeKey) {
     const tab = tabOf(key);
     if (!tab) return;
+    // Una pestaña de agente no tiene proceso que abrir: su sesión ya corre del
+    // lado de Rust y acá solo se mira.
+    if (tab.hubSession) return;
+    // Relanzar es justo lo que hacía falta para que el CLI lea su config nueva.
+    mcpReiniciar = mcpReiniciar.filter((k) => k !== key);
     error = null;
     if (tab.kind === "ssh" && !hostById(tab.hostId)) {
       error = "Elige un host SSH en la consola (o agrégalo en Ajustes → Agentes).";
@@ -1365,6 +1383,8 @@
     label?: string;
     command?: string;
     hostId?: string;
+    /** Sesión del hub: la pestaña muestra su hilo en vez de un terminal. */
+    hubSession?: string;
     splitDirection?: SplitDirection;
     splitSourceKey?: string;
   };
@@ -1378,6 +1398,7 @@
     tab.label = opts.label?.trim() || null;
     tab.command = kind === "local" ? (opts.command?.trim() || null) : null;
     tab.cwd = kind === "local" ? startFolder : null;
+    tab.hubSession = opts.hubSession ?? null;
   }
 
   function layoutTab(
@@ -1454,6 +1475,7 @@
           label: opts.label?.trim() || null,
           command: opts.command?.trim() || null,
           cwd: kind === "local" ? startFolder : null,
+          hubSession: opts.hubSession ?? null,
         },
       ];
     }
@@ -1465,9 +1487,126 @@
     queueConnect(key, kind);
   }
 
+  /**
+   * Una sesión que un agente le pidió a otro se abre como pestaña.
+   *
+   * Es lo que faltaba para verlas: hasta ahora corrían sin ventana y la única
+   * forma de saber qué se decían era preguntárselo al agente. Solo las que
+   * tienen padre —las que abre el usuario ya tienen su consola— y solo si
+   * queda sitio: las consolas de verdad mandan sobre esto.
+   */
+  // El store de sesiones es por ventana y `init` es idempotente: llamarlo acá
+  // es lo que hace que las delegaciones se vean en la superficie donde de
+  // verdad se trabaja, y no solo en la principal.
+  void agents.init();
+
+  /* ─── El MCP de orquestación en el CLI de esta consola ──────────────────
+     Una consola es el CLI del usuario con su config: si no tiene el servidor
+     `atic` registrado, ese agente no puede hablar con los demás por mucho que
+     Atic esté abierto. El enchufe de la barra lo dice y lo arregla. */
+
+  /** `null` = todavía sin preguntar; el CLI se consulta una vez y se cachea. */
+  let mcpDe = $state<Record<string, boolean | null>>({});
+  let mcpOcupado = $state<string | null>(null);
+  /**
+   * Consolas cuyo CLI cambió de MCP con el proceso ya en marcha.
+   *
+   * Un CLI lee su config al arrancar: conectarlo a mitad de sesión no le llega
+   * hasta que se relanza. Sin decirlo, el enchufe queda verde y el agente
+   * sigue sin las herramientas, que es exactamente lo que confunde.
+   */
+  let mcpReiniciar = $state<string[]>([]);
+
+  /** El CLI de la consola activa, si es un agente que sepamos conectar. */
+  const mcpCli = $derived(
+    active && !active.hubSession ? canonicalAgentCli(active.command) : null,
+  );
+  const mcpOn = $derived(mcpCli ? (mcpDe[mcpCli] ?? null) : null);
+  /** Conectado en la config, pero este proceso arrancó antes de estarlo. */
+  const mcpPendiente = $derived(
+    mcpOn === true && !!active && mcpReiniciar.includes(active.key),
+  );
+
+  $effect(() => {
+    const cli = mcpCli;
+    if (!cli || cli in mcpDe) return;
+    // Reservar la casilla antes de preguntar: sin esto, cada render vuelve a
+    // lanzar el proceso del CLI mientras la respuesta viaja.
+    mcpDe = { ...mcpDe, [cli]: null };
+    void agentMcpStatus(cli)
+      .then((on) => (mcpDe = { ...mcpDe, [cli]: on }))
+      .catch(() => (mcpDe = { ...mcpDe, [cli]: false }));
+  });
+
+  async function toggleMcp() {
+    const cli = mcpCli;
+    if (!cli || mcpOcupado) return;
+    mcpOcupado = cli;
+    error = null;
+    try {
+      const on = await agentMcpToggle(cli, !mcpOn);
+      mcpDe = { ...mcpDe, [cli]: on };
+      // Las consolas de ese mismo CLI que ya estén corriendo no se enteran.
+      const afectadas = tabs
+        .filter((t) => !!t.sessionId && canonicalAgentCli(t.command) === cli)
+        .map((t) => t.key);
+      mcpReiniciar = [...new Set([...mcpReiniciar, ...afectadas])];
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
+    } finally {
+      mcpOcupado = null;
+    }
+  }
+
+  /** Sesiones que el usuario cerró: no vuelven solas. */
+  const hubCerradas = new Set<string>();
+  /** Turnos que ya tenía cada sesión al abrir el panel. */
+  const hubVistos = new Map<string, number>();
+  let hubMedido = false;
+
+  $effect(() => {
+    // Lo que ya estaba hablado antes de mirar no es novedad: se anota como
+    // línea base para que el panel no se llene de golpe al abrirlo.
+    if (!hubMedido) {
+      for (const s of agents.sessions) hubVistos.set(s.id, s.turns.length);
+      hubMedido = true;
+    }
+    for (const s of agents.sessions) {
+      if (!s.parent || hubCerradas.has(s.id)) continue;
+      if (tabs.some((t) => t.hubSession === s.id)) continue;
+      // La pestaña aparece cuando alguien le pregunta algo, no al nacer: una
+      // sesión recién abierta todavía no tiene nada que enseñar.
+      if (s.turns.length <= (hubVistos.get(s.id) ?? 0)) continue;
+      if (tabs.length >= MAX_TABS) return;
+      // A mano y no con `newTab`: ese activa la pestaña y rehace la vista, y
+      // una delegación que ocurre mientras escribes no puede robarte el foco.
+      // Aparece en el rail y se abre cuando la cliques.
+      tabs = [
+        ...tabs,
+        {
+          key: `t${++seq}`,
+          kind: "local",
+          sessionId: null,
+          hostId: null,
+          label: s.label?.trim() || s.backendName,
+          command: canonicalAgentCli(s.backendId),
+          cwd: null,
+          hubSession: s.id,
+        },
+      ];
+    }
+  });
+
   async function closeTab(key: string) {
     const idx = tabs.findIndex((t) => t.key === key);
     if (idx < 0) return;
+    // Cerrar una delegación es decir «ya la vi»: sin anotarlo, el efecto la
+    // vuelve a abrir en el mismo cuadro y la ficha no se deja cerrar.
+    const hub = tabs[idx].hubSession;
+    if (hub) {
+      hubCerradas.add(hub);
+      hubVistos.set(hub, agents.byId(hub)?.turns.length ?? 0);
+    }
     const paneIdx = visiblePaneKeys.indexOf(key);
     const nextTree = paneTree ? removePaneLeaf(paneTree, key) : null;
     closeCtx();
@@ -2681,6 +2820,37 @@
             ></span>
           </span>
         {/if}
+        {#if mcpCli}
+          <button
+            type="button"
+            class="mcp-chip"
+            class:is-on={mcpOn === true}
+            class:is-busy={mcpOcupado === mcpCli}
+            disabled={mcpOcupado === mcpCli}
+            use:tip={mcpPendiente
+              ? "Conectado, pero esta consola arrancó antes: reiníciala para que el agente vea las herramientas."
+              : mcpOn
+                ? "Este agente está conectado al hub de Atic y puede hablar con los demás. Clic para desconectarlo."
+                : "Activar MCP para comunicar agentes de distintos proveedores. Clic aquí."}
+            aria-label={mcpOn
+              ? "Desconectar el MCP de este agente"
+              : "Activar el MCP de este agente"}
+            aria-pressed={mcpOn === true}
+            onclick={() => void toggleMcp()}
+          >
+            <Icon icon={Plug} size={13} />
+            <!-- Rojo: le falta. Verde: puede orquestar. Ámbar: ya está en su
+                 config pero este proceso arrancó antes de que estuviera. -->
+            {#if mcpOn !== null}
+              <span
+                class="mcp-punto"
+                class:is-on={mcpOn && !mcpPendiente}
+                class:is-wait={mcpPendiente}
+                aria-hidden="true"
+              ></span>
+            {/if}
+          </button>
+        {/if}
         <div class="where-block">
           <p class="where" use:tip={active ? tabLabels[tabs.indexOf(active)] : ""}>
             {active ? tabLabels[tabs.indexOf(active)] : "Sin consolas"}
@@ -2959,8 +3129,13 @@
           ondragover={onClipDragOver}
           ondrop={(e) => void onClipDrop(e)}
         >
-          <div class="term-host" {@attach mountTerm(tab.key)}></div>
-          {#if paneLoading(tab.key)}
+          {#if tab.hubSession}
+            <!-- Sin PTY: lo que hay que enseñar es la conversación. -->
+            <HubConversation sessionId={tab.hubSession} />
+          {:else}
+            <div class="term-host" {@attach mountTerm(tab.key)}></div>
+          {/if}
+          {#if !tab.hubSession && paneLoading(tab.key)}
             {@const tabName = tab.label || tabLabels[tabs.indexOf(tab)] || ""}
             <!-- Salida suave: el primer output del CLI aparece debajo mientras
                  el velo se disuelve, en vez de un corte seco. -->
@@ -3301,6 +3476,57 @@
 
   /* Carpeta de inicio a la vista y editable sin volver al lanzador. Solo el
      último tramo de la ruta: el path entero vive en el `title`. */
+  /* El enchufe: dice si este agente puede hablar con los demás. */
+  .mcp-chip {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    border: 0;
+    border-radius: 0.5rem;
+    padding: 0.24rem;
+    background: color-mix(in sRGB, var(--rb-text) 5%, transparent);
+    color: var(--rb-muted);
+    cursor: pointer;
+    transition:
+      background-color var(--duration-quick, 75ms) ease,
+      color var(--duration-quick, 75ms) ease;
+  }
+
+  .mcp-chip:hover {
+    background: color-mix(in sRGB, var(--rb-text) 10%, transparent);
+  }
+
+  .mcp-chip.is-on {
+    color: var(--rb-text);
+  }
+
+  .mcp-chip.is-busy {
+    opacity: 0.6;
+    cursor: progress;
+  }
+
+  /* Abajo a la derecha, como el aviso de una app sin configurar. */
+  .mcp-punto {
+    position: absolute;
+    right: 0.1rem;
+    bottom: 0.1rem;
+    width: 0.32rem;
+    height: 0.32rem;
+    border-radius: 50%;
+    background: #e5484d;
+  }
+
+  .mcp-punto.is-on {
+    background: #30a46c;
+  }
+
+  /* Está puesto pero el proceso no lo ha leído: ni rojo ni verde. */
+  .mcp-punto.is-wait {
+    background: #f5a524;
+  }
+
   .folder-chip {
     display: inline-flex;
     min-width: 0;

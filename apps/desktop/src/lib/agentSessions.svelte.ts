@@ -452,6 +452,27 @@ class AgentSessionStore {
     return this.sessions.find((s) => s.id === id);
   }
 
+  /**
+   * Vuelve a pedir quién pidió cada sesión y cómo se llama.
+   *
+   * Los deltas no lo traen —van por cada trozo de texto y no vale la pena
+   * cargarlos con esto—, así que una sesión que nace mientras la ventana está
+   * abierta llega sin padre ni nombre. Se refresca al verla aparecer y cuando
+   * alguien mira la lista.
+   */
+  async refreshMeta(): Promise<void> {
+    try {
+      for (const info of await agentSessions()) {
+        const s = this.byId(info.id);
+        if (!s) continue;
+        s.parent = info.parent ?? null;
+        s.label = info.label ?? null;
+      }
+    } catch (err) {
+      console.warn("refrescar metadatos de sesiones", err);
+    }
+  }
+
   /** Marca cuál se está mirando; la deja leída. */
   watch(id: string | null): void {
     this.watching = id;
@@ -576,11 +597,15 @@ class AgentSessionStore {
    */
   #receive(payload: AgentDeltaPayload): void {
     if (this.#stopped.has(payload.session)) return;
+    // Una sesión que no conocíamos: la abrió otro agente por el hub, y sus
+    // metadatos (quién la pidió, cómo se llama) no viajan en el delta.
+    const nueva = !this.byId(payload.session);
     const s = this.#ensure(
       payload.session,
       payload.backendId,
       payload.backendName,
     );
+    if (nueva) void this.refreshMeta();
     // Nombre real en cuanto llega: `start` la crea con el id como etiqueta
     // provisional para no depender de que el backend responda.
     s.backendName = payload.backendName;

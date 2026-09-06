@@ -298,6 +298,8 @@ pub fn run() {
             agents::bridge::agent_codex_usage,
             agents::bridge::agent_quota_overview,
             agents::hub::hub_status,
+            agents::mcp_install::agent_mcp_status,
+            agents::mcp_install::agent_mcp_toggle,
             agents::hub::hub_snippet,
             agents::presence::agent_presences,
             agents::presence::agent_presence_focus,
