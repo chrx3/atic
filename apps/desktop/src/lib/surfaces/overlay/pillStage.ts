@@ -82,6 +82,8 @@ export const PILL = {
    * cuello de 8 sin recortar el filtro.
    */
   wheelLiveHang: 28,
+  /** Cada aviso extra debajo del primero, en la barra flotante. */
+  agentStackRow: 28,
 } as const;
 
 export type Size = { w: number; h: number };

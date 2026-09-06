@@ -50,11 +50,14 @@ pub enum PresenceSource {
     Process,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct PresenceWindow {
     pub pid: u32,
     pub hwnd: isize,
+    /// La ventana es de Atic. La pill abre la consola, no enfoca un TUI.
+    #[serde(default)]
+    pub own: bool,
 }
 
 /// Lo que la pill ve: status + preview. `updated_at` y `window` no cuentan.
@@ -169,8 +172,9 @@ impl Registry {
         list
     }
 
-    /// Sin proceso ni HWND del agente, el JSONL/SQLite no debe seguir avisando.
-    /// Presencias recién actualizadas se conservan (Codex en PTY no expone codex.exe).
+    /// Sin proceso del agente, un `Ready` no puede seguir avisando: el JSONL
+    /// queda en disco y el usuario ya cerró la terminal.
+    /// Working/Waiting sin proceso espera un poco (Codex en PTY no expone exe).
     fn demote_orphans(&mut self) {
         let now = now_secs();
         let backends: Vec<String> = self
@@ -189,19 +193,25 @@ impl Registry {
             let hwnd_ok = p
                 .window
                 .as_ref()
-                .is_some_and(|w| super::focus::hwnd_alive(w.hwnd) && pids.contains(&w.pid));
+                .is_some_and(|w| super::focus::hwnd_alive(w.hwnd));
             if hwnd_ok {
                 continue;
             }
-            if pids.is_empty()
-                && matches!(
-                    p.status,
-                    PresenceStatus::Ready | PresenceStatus::Working | PresenceStatus::Waiting
-                )
-                && now.saturating_sub(p.updated_at) >= ORPHAN_GRACE_SECS
-            {
-                p.status = PresenceStatus::Idle;
-                p.window = None;
+            let window_dead = p
+                .window
+                .as_ref()
+                .is_some_and(|w| !super::focus::hwnd_alive(w.hwnd));
+            p.window = None;
+            match p.status {
+                PresenceStatus::Ready if window_dead || pids.is_empty() => {
+                    p.status = PresenceStatus::Idle;
+                }
+                PresenceStatus::Working | PresenceStatus::Waiting
+                    if pids.is_empty() && now.saturating_sub(p.updated_at) >= ORPHAN_GRACE_SECS =>
+                {
+                    p.status = PresenceStatus::Idle;
+                }
+                _ => {}
             }
         }
     }

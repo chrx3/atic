@@ -5,6 +5,7 @@
    */
   import { onMount, tick } from "svelte";
   import { agents } from "$lib/agentSessions.svelte";
+  import { presence } from "$lib/agentPresence.svelte";
   import {
     agentsAlwaysOnTop,
     hideAgentsWindow,
@@ -44,6 +45,8 @@
   import AgentLauncher from "$features/agents/AgentLauncher.svelte";
   import { isAgentsDismissSuppressed } from "$surfaces/overlay/agents/dismissGuard";
   import { agentsDock } from "$surfaces/overlay/agents/agentsDock.svelte";
+  import { consoleCue } from "$surfaces/overlay/agents/consoleCue.svelte";
+  import { presenceIdsToDismissOnAticHide } from "$surfaces/overlay/pill/pillAgentChip";
   import { reuseDockedFrame, shouldResizeLauncher, rememberedSetupWidth } from "$surfaces/overlay/agents/dockExpand";
   import { toasts } from "$domain/toasts.svelte";
   import ToastStack from "$ui/ToastStack.svelte";
@@ -65,7 +68,6 @@
   const SETUP_NARROW_W = 560;
   const BROWSER_DEFAULT_W = 680;
   const BROWSER_DEFAULT_H = 620;
-  const BROWSER_MIN_H = 560;
   const CONSOLE_DEFAULT_W = 680;
   const CONSOLE_DEFAULT_H = 520;
   const CONSOLE_MIN_H = 340;
@@ -524,6 +526,13 @@
     if (base) restingOpen = { ...base, ...prev };
   }
 
+  function dismissAticConsoleCues() {
+    agents.markAllRead();
+    presence.markSeenMany(
+      presenceIdsToDismissOnAticHide(presence.view, consoleCue.clis),
+    );
+  }
+
   function dockToPill() {
     if (minimized) return;
     const epoch = ++revealEpoch;
@@ -537,6 +546,7 @@
       agentsDock.setMinimized(true);
       bubble.shown = false;
       clearAgentsOverlaySkin();
+      dismissAticConsoleCues();
     })();
   }
 
@@ -889,6 +899,7 @@
       bubble.hide();
       void hideAgentsWindow();
       agents.watch(null);
+      dismissAticConsoleCues();
     })();
   }
 
