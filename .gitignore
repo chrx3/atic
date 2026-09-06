@@ -13,6 +13,8 @@ apps/desktop/.svelte-kit
 
 # Tauri (generado)
 apps/desktop/src-tauri/gen
+# Sidecar MCP compilado (lo pone `pnpm mcp:build`)
+apps/desktop/src-tauri/binaries/
 
 # Env / secrets locales
 .env

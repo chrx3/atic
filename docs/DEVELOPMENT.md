@@ -63,6 +63,7 @@ Xcode CLT, Rust stable, CMake, Node 22+, pnpm 10+. Guía completa:
 ```bash
 cd apps/desktop
 pnpm install
+pnpm mcp:build    # sidecar MCP (solo la primera vez; después va solo en cada build)
 pnpm tauri dev      # desarrollo con recarga en caliente
 pnpm tauri build    # instalador de producción
 ```

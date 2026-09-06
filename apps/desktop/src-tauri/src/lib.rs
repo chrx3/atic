@@ -6,8 +6,8 @@ mod beep;
 mod capture;
 mod capture_session;
 mod capture_shelf;
-mod color_picker;
 mod clipboard_history;
+mod color_picker;
 mod commands;
 mod diagnostics;
 mod dictation;
@@ -287,6 +287,7 @@ pub fn run() {
             agents::bridge::agent_skills,
             agents::bridge::agent_list_models,
             agents::bridge::agent_interrupt,
+            agents::bridge::agent_rename_session,
             agents::bridge::agent_stop,
             agents::bridge::agent_threads,
             agents::bridge::agent_thread,
@@ -296,6 +297,8 @@ pub fn run() {
             agents::bridge::agent_claude_usage,
             agents::bridge::agent_codex_usage,
             agents::bridge::agent_quota_overview,
+            agents::hub::hub_status,
+            agents::hub::hub_snippet,
             agents::presence::agent_presences,
             agents::presence::agent_presence_focus,
             agents::presence::agent_presence_bind,
@@ -359,7 +362,12 @@ pub fn run() {
             // de este `setup`, y si quedan visibles un instante se ve el
             // lienzo de anotar / el shelf / el launcher. `visible: false` en
             // la config es la barrera; esto cubre si algún runtime la ignora.
-            for label in ["capture-shelf", "launcher", "color-loupe", annotate::ANNOTATE_LABEL] {
+            for label in [
+                "capture-shelf",
+                "launcher",
+                "color-loupe",
+                annotate::ANNOTATE_LABEL,
+            ] {
                 if let Some(window) = app.get_webview_window(label) {
                     let _ = window.hide();
                 }
@@ -433,6 +441,14 @@ pub fn run() {
             // Precarga catálogos de modelos de agentes (Cursor, Claude, …)
             // para que el selector no espere al abrir la consola.
             agents::discover::preload_models_async();
+
+            // Hub de orquestación MCP: si no arranca, los agentes siguen
+            // funcionando; solo la delegación entre ellos queda abajo.
+            if agents::UI_ENABLED {
+                if let Err(e) = agents::hub::server::start(app.handle().clone()) {
+                    tracing::warn!(error = %e, "el hub de orquestación no arrancó");
+                }
+            }
 
             capture_session::prewarm_capture_overlay(app.handle());
 
@@ -554,8 +570,9 @@ pub fn run() {
         .expect("error al iniciar Atic")
         .run(move |app, event| {
             if let RunEvent::Exit = event {
-                // Los agentes son procesos externos: si Atic se va sin cerrarlos,
-                // quedan corriendo y consumiendo tokens sin nadie mirando.
+                // Primero el hub (deja de aceptar y borra `hub.json`) y después
+                // los procesos: en ese orden no quedan delegaciones colgadas.
+                agents::hub::server::stop();
                 agents::bridge::stop_all(app);
                 if let Some(state) = app.try_state::<AppState>() {
                     let cfg = state.config.lock_or_recover().clone();
@@ -572,7 +589,11 @@ pub fn run() {
 fn run_color_picker_smoke() {
     let mut context = tauri::generate_context!();
     context.config_mut().identifier = "com.ciat.atic.color-smoke".into();
-    context.config_mut().app.windows.retain(|w| w.label == "color-loupe");
+    context
+        .config_mut()
+        .app
+        .windows
+        .retain(|w| w.label == "color-loupe");
     for window in &mut context.config_mut().app.windows {
         window.additional_browser_args = Some("--remote-debugging-port=9337".into());
     }

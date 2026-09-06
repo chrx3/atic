@@ -7,6 +7,7 @@ members = [
     "crates/transcribe",
     "crates/summarize",
     "crates/mailer",
+    "crates/atic-mcp",
     "apps/desktop/src-tauri",
 ]
 

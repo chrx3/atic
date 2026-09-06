@@ -23,6 +23,7 @@ import type {
   DirectoryListing,
   PermissionDecision,
   QuotaOverview,
+  HubStatus,
   SshHost,
   SshHostSecretFlags,
   SshTestResult,
@@ -141,6 +142,15 @@ export const agentClaudeSessions = (cwd: string) =>
 /** Transcript del CLI en turnos canónicos (para pintar al reanudar). */
 export const agentClaudeTranscript = (cwd: string, id: string) =>
   invoke<AgentTurn[]>("agent_claude_transcript", { cwd, id });
+
+/** Hub de orquestación: ¿corre y dónde está el sidecar? */
+export const hubStatus = () => invoke<HubStatus>("hub_status");
+
+/** Snippet para pegar en cada host. Atic no escribe configs ajenas. */
+export const hubSnippet = (
+  host: "claude-code" | "cursor" | "codex" | "opencode" | "grok" | "antigravity",
+) =>
+  invoke<string>("hub_snippet", { host });
 
 /**
  * Cupos de la cuenta Claude (ventana 5 h / semanal). Misma fuente que `/usage`.

@@ -132,6 +132,10 @@
       </p>
     {/if}
 
+    <p class="rb-hint">
+      El servidor `atic` de orquestación se suma solo; no lo pongas acá.
+    </p>
+
     <button type="button" class="rb-btn rb-btn-ghost" onclick={add}>
       Añadir servidor
     </button>

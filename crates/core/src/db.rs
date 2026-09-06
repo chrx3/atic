@@ -47,6 +47,8 @@ const MIGRATION_3: &str = "ALTER TABLE agent_threads ADD COLUMN preview TEXT NOT
 
 const MIGRATION_4: &str = "ALTER TABLE agent_threads ADD COLUMN remote_host_id TEXT;";
 
+const MIGRATION_5: &str = "ALTER TABLE agent_threads ADD COLUMN parent TEXT;";
+
 /// Un hilo de agente tal como se guarda.
 #[derive(Debug, Clone)]
 pub struct AgentThreadRow {
@@ -58,6 +60,9 @@ pub struct AgentThreadRow {
     pub cwd: String,
     /// Host SSH de destino; `None` = local.
     pub remote_host_id: Option<String>,
+    /// Quién pidió la sesión (`<uuid>` Atic o `external:<host>:<pid>`).
+    /// `None` = nació en la UI.
+    pub parent: Option<String>,
     pub model: String,
     /// Segundos desde epoch.
     pub updated_at: i64,
@@ -101,6 +106,7 @@ impl Db {
             (2, MIGRATION_2),
             (3, MIGRATION_3),
             (4, MIGRATION_4),
+            (5, MIGRATION_5),
         ] {
             if current < version {
                 self.apply_migration(version, sql)?;
@@ -137,14 +143,15 @@ impl Db {
     pub fn save_agent_thread(&self, t: &AgentThreadRow) -> Result<()> {
         self.conn.execute(
             "INSERT INTO agent_threads
-               (id, backend_id, backend_name, provider_session, cwd, remote_host_id,
+               (id, backend_id, backend_name, provider_session, cwd, remote_host_id, parent,
                 model, updated_at, preview, turns)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
              ON CONFLICT(id) DO UPDATE SET
                backend_name     = excluded.backend_name,
                provider_session = excluded.provider_session,
                cwd              = excluded.cwd,
                remote_host_id   = excluded.remote_host_id,
+               parent           = excluded.parent,
                model            = excluded.model,
                updated_at       = excluded.updated_at,
                preview          = excluded.preview,
@@ -156,6 +163,7 @@ impl Db {
                 t.provider_session,
                 t.cwd,
                 t.remote_host_id,
+                t.parent,
                 t.model,
                 t.updated_at,
                 t.preview,
@@ -172,7 +180,7 @@ impl Db {
     /// para mostrar diez líneas.
     pub fn list_agent_threads(&self, limit: u32) -> Result<Vec<AgentThreadRow>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, backend_id, backend_name, provider_session, cwd, remote_host_id,
+            "SELECT id, backend_id, backend_name, provider_session, cwd, remote_host_id, parent,
                     model, updated_at, preview, '' AS turns
              FROM agent_threads ORDER BY updated_at DESC LIMIT ?1",
         )?;
@@ -184,7 +192,7 @@ impl Db {
 
     pub fn get_agent_thread(&self, id: &str) -> Result<Option<AgentThreadRow>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, backend_id, backend_name, provider_session, cwd, remote_host_id,
+            "SELECT id, backend_id, backend_name, provider_session, cwd, remote_host_id, parent,
                     model, updated_at, preview, turns
              FROM agent_threads WHERE id = ?1",
         )?;
@@ -299,6 +307,7 @@ fn agent_thread_from_row(row: &Row<'_>) -> rusqlite::Result<AgentThreadRow> {
         provider_session: row.get("provider_session")?,
         cwd: row.get("cwd")?,
         remote_host_id: row.get("remote_host_id")?,
+        parent: row.get("parent").unwrap_or(None),
         model: row.get("model")?,
         updated_at: row.get("updated_at")?,
         preview: row.get("preview")?,
@@ -310,13 +319,22 @@ fn agent_thread_from_row(row: &Row<'_>) -> rusqlite::Result<AgentThreadRow> {
 mod agent_thread_tests {
     use super::*;
 
+    /// Una carpeta por llamada, sin chocar con nadie.
+    ///
+    /// Solo con el reloj no alcanza: en Windows la granularidad es de
+    /// milisegundos, dos tests en paralelo se llevan el mismo nombre y el
+    /// segundo revienta al crear una tabla que ya existe. El contador lo
+    /// resuelve dentro del proceso y el pid entre procesos.
     fn temp_db_path() -> std::path::PathBuf {
+        static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let dir = std::env::temp_dir().join(format!(
-            "atic-test-{}",
+            "atic-test-{}-{}-{}",
+            std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         ));
         dir.join("atic.db3")
     }
@@ -333,6 +351,7 @@ mod agent_thread_tests {
             provider_session: Some("s1".into()),
             cwd: "C:/p".into(),
             remote_host_id: None,
+            parent: None,
             model: "opus".into(),
             updated_at: at,
             preview: format!("Vista previa de {id}"),
@@ -485,7 +504,7 @@ mod agent_thread_tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(version, 4, "la versión no tendría que haber subido");
+        assert_eq!(version, 5, "la versión no tendría que haber subido");
 
         // Y la base sigue usable: reabrirla no explota.
         drop(db);
@@ -520,6 +539,36 @@ mod agent_thread_tests {
                 .remote_host_id
                 .as_deref(),
             Some("host-abc")
+        );
+    }
+
+    #[test]
+    fn la_migracion_5_agrega_el_padre() {
+        let path = temp_db_path();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_version (version INTEGER NOT NULL);
+             INSERT INTO schema_version (version) VALUES (4);",
+        )
+        .unwrap();
+        conn.execute_batch(MIGRATION_1).unwrap();
+        conn.execute_batch(MIGRATION_2).unwrap();
+        conn.execute_batch(MIGRATION_3).unwrap();
+        conn.execute_batch(MIGRATION_4).unwrap();
+        drop(conn);
+
+        let db = Db::open(&path).unwrap();
+        let mut r = row("h1", 1);
+        r.parent = Some("external:cursor:1234".into());
+        db.save_agent_thread(&r).unwrap();
+        assert_eq!(
+            db.get_agent_thread("h1")
+                .unwrap()
+                .unwrap()
+                .parent
+                .as_deref(),
+            Some("external:cursor:1234")
         );
     }
 }

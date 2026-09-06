@@ -18,5 +18,6 @@ Planes largos que se consultan seguido:
 
 - [PLAN_AGENTES.md](PLAN_AGENTES.md) — harness multi-proveedor
 - [PLAN_ORQUESTACION_MCP.md](PLAN_ORQUESTACION_MCP.md) — MCP para delegar entre agentes
+- [TAREAS_ORQUESTACION_MCP.md](TAREAS_ORQUESTACION_MCP.md) — paso a paso para implementar ese plan (rutas, contratos, tests)
 
 `demos/` son prototipos HTML del sistema líquido de la pill.

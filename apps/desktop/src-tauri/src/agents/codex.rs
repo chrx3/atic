@@ -179,6 +179,35 @@ fn policy(mode: Option<&str>) -> (&'static str, &'static str) {
     }
 }
 
+/// Presupuesto que se le da al hijo Codex para esperar a *su* hijo, y el corte
+/// de tool que lo acompaña. Van juntos: sin `tool_timeout_sec`, Codex corta la
+/// llamada a los 60 s y el padre pierde el `session` de un turno que sigue vivo.
+const ESPERA_HIJO_S: u64 = 300;
+const TIMEOUT_TOOL_S: u64 = 330;
+
+/// `-c` para que un hijo Codex también pueda delegar.
+///
+/// `app-server` acepta `-c clave=valor` y parsea el valor como TOML; JSON es un
+/// subconjunto válido para cadenas y arrays, así que `serde_json` sirve de
+/// escapador y las barras de Windows no necesitan tabla propia.
+fn overrides_atic(atic: Option<&super::hub::AticMcp>) -> Vec<String> {
+    let Some(atic) = atic else {
+        return Vec::new();
+    };
+    let mut args = atic.args.clone();
+    args.extend(["--wait".to_string(), ESPERA_HIJO_S.to_string()]);
+    let command = json!(atic.command.to_string_lossy());
+    let args = json!(args);
+    vec![
+        "-c".to_string(),
+        format!("mcp_servers.atic.command={command}"),
+        "-c".to_string(),
+        format!("mcp_servers.atic.args={args}"),
+        "-c".to_string(),
+        format!("mcp_servers.atic.tool_timeout_sec={TIMEOUT_TOOL_S}"),
+    ]
+}
+
 impl AgentBackend for Codex {
     fn id(&self) -> &'static str {
         "codex"
@@ -192,11 +221,22 @@ impl AgentBackend for Codex {
         super::exe::resolve(PROGRAM).is_some()
     }
 
+    fn signed_in(&self) -> Option<bool> {
+        super::login::codex()
+    }
+
     fn start(
         &self,
         options: StartOptions,
         on_delta: Box<dyn Fn(AgentDelta) + Send + Sync + 'static>,
     ) -> Result<Box<dyn AgentSession>, String> {
+        // Los servidores MCP del modal siguen siendo cosa de Claude: vienen en
+        // su forma JSON y traducirlos a TOML es otra tarea. El de orquestación
+        // sí entra, por `atic_mcp`, más abajo.
+        if options.mcp_config.is_some() {
+            static WARNED: std::sync::Once = std::sync::Once::new();
+            WARNED.call_once(|| tracing::warn!(backend = %self.id(), "los servidores MCP del modal solo se aplican a Claude Code"));
+        }
         // `launcher` y no `resolve`: hoy `codex` es un `.exe` de verdad, pero si
         // mañana se instala como shim hay que lanzarlo por el intérprete.
         let (program, prefix) = super::exe::launcher(PROGRAM).ok_or_else(|| {
@@ -207,9 +247,12 @@ impl AgentBackend for Codex {
         let mut cmd = Command::new(program);
         cmd.args(prefix)
             .arg("app-server")
+            .args(overrides_atic(options.atic_mcp.as_ref()))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        // El grafo de delegación viaja siempre, inyectes o no el MCP.
+        cmd.envs(options.env.iter().cloned());
         if let Some(dir) = &options.cwd {
             cmd.current_dir(dir);
         }
@@ -1329,6 +1372,38 @@ impl Drop for CodexSession {
 mod tests {
     use super::*;
     use atic_core::MutexExt;
+
+    #[test]
+    fn sin_hub_no_hay_overrides() {
+        assert!(overrides_atic(None).is_empty());
+    }
+
+    #[test]
+    fn el_override_de_atic_lleva_la_ruta_y_el_timeout() {
+        let ruta = format!("C:{0}Archivos{0}atic-mcp.exe", "\\");
+        let atic = super::super::hub::AticMcp {
+            command: std::path::PathBuf::from(&ruta),
+            args: vec!["--host".into(), "codex".into()],
+        };
+        let args = overrides_atic(Some(&atic));
+        assert_eq!(args.len(), 6, "tres pares -c clave=valor");
+
+        // La comprobación que importa no es el texto escapado sino que el
+        // valor decodifique de vuelta: es lo que hará Codex al parsear el TOML.
+        let valor = |clave: &str| -> String {
+            let pref = format!("mcp_servers.atic.{clave}=");
+            args.iter()
+                .find_map(|a| a.strip_prefix(&pref))
+                .unwrap_or_else(|| panic!("falta {pref}"))
+                .to_string()
+        };
+        let command: String =
+            serde_json::from_str(&valor("command")).expect("command es una cadena");
+        assert_eq!(command, ruta);
+        let lista: Vec<String> = serde_json::from_str(&valor("args")).expect("args es un array");
+        assert_eq!(lista, ["--host", "codex", "--wait", "300"]);
+        assert_eq!(valor("tool_timeout_sec"), TIMEOUT_TOOL_S.to_string());
+    }
 
     /// Un traductor sin proceso detrás.
     ///
