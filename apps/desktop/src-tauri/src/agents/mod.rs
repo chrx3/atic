@@ -37,6 +37,7 @@ pub mod focus;
 pub mod fs_browse;
 pub mod hub;
 pub mod login;
+pub mod mcp_install;
 pub mod media;
 pub mod model;
 pub mod opencode_usage;
