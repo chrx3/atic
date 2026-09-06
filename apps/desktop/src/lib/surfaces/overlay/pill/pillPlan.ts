@@ -43,6 +43,13 @@ export function islandCueLong(n: number): number {
   return Math.max(PILL.islandLong, inner);
 }
 
+/** Alto extra de la barra flotante cuando hay más de un aviso de consola. */
+export function agentStackHang(n: number): number {
+  const rows = Math.max(0, Math.floor(n) || 0);
+  if (rows <= 1) return 0;
+  return (rows - 1) * PILL.agentStackRow;
+}
+
 /** Qué hay desplegado. Clipboard/snippets ya no crecen la pill: son floats. */
 export type Surface = "none" | "wheel" | "edge";
 
@@ -112,6 +119,8 @@ export function contentFor(
   islandCue: boolean = false,
   /** Cuántas marcas hay que alinear en la pestaña. 0 o 1 no alarga. */
   islandCueCount: number = 0,
+  /** Avisos de consola apilados en la barra flotante. */
+  agentStack: number = 0,
 ): Size {
   if (surface === "wheel") {
     const side = PILL.wheel - PILL.pad * 2;
@@ -149,7 +158,10 @@ export function contentFor(
       ? { w: thick, h: long }
       : { w: long, h: thick };
   }
-  return { w: Math.max(barW, PILL.bar), h: PILL.bar };
+  return {
+    w: Math.max(barW, PILL.bar),
+    h: PILL.bar + agentStackHang(agentStack),
+  };
 }
 
 /** El tamaño de la caja para un estado dado. */
@@ -161,6 +173,7 @@ export function targetFor(
   toolCount: number = WHEEL_TOOLS.length,
   islandCue: boolean = false,
   islandCueCount: number = 0,
+  agentStack: number = 0,
 ): Size {
   return windowFor(
     contentFor(
@@ -171,6 +184,7 @@ export function targetFor(
       toolCount,
       islandCue,
       islandCueCount,
+      agentStack,
     ),
   );
 }

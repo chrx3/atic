@@ -24,9 +24,23 @@ export function applyPresenceSnapshot(
     }
   }
   for (const id of Object.keys(unread)) {
-    if (!snapshot.some((p) => p.id === id)) delete unread[id];
+    const next = snapshot.find((p) => p.id === id);
+    if (!next || next.status === "idle") delete unread[id];
   }
   return { list: snapshot, unread };
+}
+
+/** Apaga varios avisos de una: al cerrar el globo de Atic, esos ya se vieron. */
+export function markPresenceSeenMany(
+  unread: Record<string, number>,
+  ids: Iterable<string>,
+): Record<string, number> {
+  let next = unread;
+  for (const id of ids) {
+    const marked = markPresenceSeen(next, id);
+    if (marked !== next) next = marked;
+  }
+  return next;
 }
 
 /** El clic sobre el aviso lo apaga aunque el foco no se confirme: el usuario ya actuó (a lo sumo queda con la consola delante). */

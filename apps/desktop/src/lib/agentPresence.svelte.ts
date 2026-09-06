@@ -9,6 +9,7 @@ import type { AgentPresence } from "$core/types";
 import {
   applyPresenceSnapshot,
   markPresenceSeen,
+  markPresenceSeenMany,
   type PresenceView,
 } from "./agentPresenceReduce";
 
@@ -35,6 +36,10 @@ class AgentPresenceStore {
 
   markSeen(id: string): void {
     this.unread = markPresenceSeen(this.unread, id);
+  }
+
+  markSeenMany(ids: Iterable<string>): void {
+    this.unread = markPresenceSeenMany(this.unread, ids);
   }
 
   async init(): Promise<void> {

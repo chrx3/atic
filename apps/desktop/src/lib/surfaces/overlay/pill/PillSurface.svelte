@@ -90,7 +90,12 @@
     type Dock,
     type Surface,
   } from "$surfaces/overlay/pill/pillPlan";
-  import { agentChip, cueAgentIds } from "$surfaces/overlay/pill/pillAgentChip";
+  import {
+    agentChip,
+    agentChips,
+    cueAgentIds,
+    type AgentChip,
+  } from "$surfaces/overlay/pill/pillAgentChip";
   import { consoleCue } from "$surfaces/overlay/agents/consoleCue.svelte";
   import { agentsDock } from "$surfaces/overlay/agents/agentsDock.svelte";
   import {
@@ -235,27 +240,27 @@
    * Une el chat de Atic (si está habilitado) con las TUI que el pager mira.
    * La decisión es pura (`agentChip`); acá solo se ejecuta.
    */
-  const chip = $derived(
-    agentChip({
-      chat: {
-        unread: agents.unread,
-        working: agents.working,
-        waiting: agents.waiting,
-        readyLabel: agents.readyLabel,
-        readyBackendId: agents.readyBackendId,
-        updatedAt: agents.readyUpdatedAt,
-        providerSessions: agents.sessions.map((s) => s.providerSession),
-      },
-      presence: presence.view,
-      chatEnabled: AGENTS_ENABLED,
-      pagerEnabled: AGENT_PAGER_ENABLED,
-      consoles: consoleCue.clis,
-    }),
+  const chipState = $derived({
+    chat: {
+      unread: agents.unread,
+      working: agents.working,
+      waiting: agents.waiting,
+      readyLabel: agents.readyLabel,
+      readyBackendId: agents.readyBackendId,
+      updatedAt: agents.readyUpdatedAt,
+      providerSessions: agents.sessions.map((s) => s.providerSession),
+    },
+    presence: presence.view,
+    chatEnabled: AGENTS_ENABLED,
+    pagerEnabled: AGENT_PAGER_ENABLED,
+    consoles: consoleCue.clis,
+  });
+  const chips = $derived(agentChips(chipState));
+  const chip = $derived(agentChip(chipState));
+  const agentAlert = $derived(chips.length > 0);
+  const agentWorking = $derived(
+    chips.some((c) => c.tone === "working" || c.tone === "count"),
   );
-  const agentAlert = $derived(chip.tone !== "off");
-  const agentWorking = $derived(chip.tone === "working" || chip.tone === "count");
-  const agentReady = $derived(chip.tone === "ready");
-  const agentReadyLabel = $derived(chip.label ?? t("pill.ready"));
   /** El panel desplegado ya cubre el aviso; achicado, la pestaña vive en la pill. */
   const agentsExpanded = $derived(
     !agentsDock.minimized && surfaces.live["agents"] != null,
@@ -268,15 +273,6 @@
    * legible. Misma condición que el chip flotante (aviso o dock achicado).
    */
   const islandCue = $derived(surface === "edge" && showAgentTab);
-  /** Logos en la pestaña / chip: ocupados + CLIs de consola. */
-  const islandCueAgents = $derived(
-    cueAgentIds({
-      sessions: agents.sessions,
-      presence: presence.view,
-      consoles: consoleCue.clis,
-      chipLogoId: chip.logoId,
-    }),
-  );
   /**
    * Aviso de actualización: qué muestra el chip y qué dice al pasar el mouse.
    *
@@ -356,7 +352,7 @@
     surface === "edge" && (showAgentTab || updateChip != null),
   );
   const edgeCueMarks = $derived(
-    (showAgentTab ? Math.max(islandCueAgents.length, 1) : 0) +
+    (showAgentTab ? Math.max(chips.length, agentsDock.minimized ? 1 : 0) : 0) +
       (updateChip ? 1 : 0),
   );
 
@@ -367,15 +363,26 @@
    * cursor de mano, hover y un clic que se come el gesto sin decir nada. En
    * ese caso el aviso es texto, y el mensaje entero vive en el globo.
    */
-  const agentChipActs = $derived(
-    agentsDock.minimized ||
-      chip.target.kind !== "none" ||
-      chip.target.presenceId != null,
-  );
+  function chipActs(c: AgentChip): boolean {
+    return (
+      agentsDock.minimized ||
+      c.target.kind !== "none" ||
+      c.target.presenceId != null
+    );
+  }
 
-  const agentChipAria = $derived.by(() => {
-    if (agentsDock.minimized) return t("page.agents.dockExpand");
-    const target = chip.target;
+  function chipLogos(c: AgentChip): string[] {
+    return cueAgentIds({
+      sessions: agents.sessions,
+      presence: presence.view,
+      consoles: consoleCue.clis,
+      chipLogoId: c.logoId,
+    });
+  }
+
+  function chipAria(c: AgentChip): string {
+    if (agentsDock.minimized && c.tone === "off") return t("page.agents.dockExpand");
+    const target = c.target;
     if (target.kind === "focus") {
       const name =
         presence.list.find((p) => p.id === target.presenceId)?.backendName ??
@@ -383,36 +390,29 @@
       return t("pill.goToAgent", { name });
     }
     if (target.kind === "console") return t("pill.openConsole");
-    if (target.kind === "none") {
-      return t("pill.unbound");
-    }
-    if (chip.tone === "working") return t("pill.working");
-    return agentReadyLabel;
-  });
-  const agentChipTitle = $derived.by(() => {
-    if (agentsDock.minimized) {
-      if (chip.tone === "waiting") return t("pill.waiting");
-      if (chip.tone === "ready") return agentReadyLabel;
-      if (chip.tone === "count") return t("pill.unread", { label: chip.label ?? "" });
-      if (chip.tone === "working") return chip.label ?? t("pill.working");
+    if (target.kind === "none") return t("pill.unbound");
+    if (c.tone === "working") return t("pill.working");
+    return c.label ?? t("pill.ready");
+  }
+
+  function chipTitle(c: AgentChip): string {
+    if (agentsDock.minimized && c.tone === "off") {
       return t("page.agents.dockExpand");
     }
-    if (chip.target.kind === "none") {
-      return t("pill.unboundTitle");
-    }
+    if (c.target.kind === "none") return t("pill.unboundTitle");
     const base =
-      chip.tone === "waiting"
+      c.tone === "waiting"
         ? t("pill.waiting")
-        : chip.tone === "ready"
-          ? agentReadyLabel
-          : chip.tone === "count"
-            ? t("pill.unread", { label: chip.label ?? "" })
-            : chip.label ?? t("pill.working");
-    if (chip.target.kind === "focus") {
-      return t("pill.rebind", { base });
-    }
+        : c.tone === "ready"
+          ? (c.label ?? t("pill.ready"))
+          : c.tone === "count"
+            ? t("pill.unread", { label: c.label ?? "" })
+            : (c.label ?? t("pill.working"));
+    if (c.target.kind === "focus") return t("pill.rebind", { base });
     return base;
-  });
+  }
+
+  const agentChipAria = $derived(chipAria(chip));
   const authRequest = $derived(agents.primaryPending);
   /** Consola abierta: el permiso se decide ahí; no duplicar el diálogo. */
   let agentsConsoleOpen = $state(false);
@@ -1036,6 +1036,7 @@
         islandSlots,
         edgeCue,
         edgeCueMarks,
+        surface === "none" ? chips.length : 0,
       ),
     ),
   );
@@ -1136,24 +1137,23 @@
     }
   }
 
-  function activateAgentChip(preferBindFromGesture = false) {
-    if (agentsDock.minimized) {
+  function activateAgentChip(which: AgentChip | null, preferBindFromGesture = false) {
+    const current = which ?? chip;
+    if (agentsDock.minimized && (current.tone === "off" || !which)) {
       agentsDock.expand();
       void presentAgentsWindow();
       return;
     }
-    const target = chip.target;
+    const target = current.target;
     const preferBind = preferBindFromGesture;
     if (target.kind === "console") {
       void openAgentsConsole();
+      if (target.presenceId) presence.markSeen(target.presenceId);
+      if (current.id === "chat") agents.markAllRead();
       return;
     }
     const id = target.presenceId;
     if (!id) return;
-    // Sin terminal atada, el clic ATA. Es lo que dice su propio globo
-    // (`pill.unboundTitle`), pero el código intentaba ENFOCAR una ventana que
-    // todavía no existe: devolvía "none", no pasaba nada y el clic se perdía.
-    // Atar era la acción útil y estaba escondida detrás de Ctrl.
     const unbound = target.kind === "none";
     void (async () => {
       try {
@@ -1161,37 +1161,27 @@
           preferBind || unbound
             ? await agentPresenceBind(id)
             : await agentPresenceFocus(id);
-        // Enfocar falló y todavía no probamos atar: la ventana pudo cerrarse.
         if (result.kind === "none" && !preferBind && !unbound) {
           result = await agentPresenceBind(id);
         }
-        // El clic ya es reconocimiento: aunque el foco no se confirme, el
-        // usuario actuó sobre el aviso. Un chip imposible de apagar es peor
-        // que perder un reintento de foco.
         presence.markSeen(id);
         if (result.kind === "console") {
-          // La ventana de la presencia es de Atic: su consola sí es el destino.
           await openAgentsConsole();
         }
-        // "none": sesión externa sin ventana enfocable. Abrir la consola de
-        // Atic sería engañoso (no tiene que ver con ese aviso); Rust ya hizo
-        // parpadear la ventana en la barra si la conocía.
       } catch (err) {
-        // El clic ya reconoció el aviso: un IPC caído no puede dejar el chip
-        // encendido para siempre.
         presence.markSeen(id);
         console.warn("enfocar terminal del agente", err);
       }
     })();
   }
 
-  function onAgentChipClick(event: MouseEvent) {
+  function onAgentChipClick(event: MouseEvent, which: AgentChip | null = null) {
     if (suppressAgentChipClick && event.detail > 0) {
       event.preventDefault();
       suppressAgentChipClick = false;
       return;
     }
-    activateAgentChip(event.ctrlKey || event.metaKey);
+    activateAgentChip(which, event.ctrlKey || event.metaKey);
   }
 
   function onUpdateChipClick(event: MouseEvent) {
@@ -1519,7 +1509,7 @@
     void btWarning;
     void agentAlert;
     void agentsDock.minimized;
-    void agentReadyLabel;
+    void chips;
     void consoleSide;
     void elapsed;
     void surfaces.dragging;
@@ -2480,6 +2470,7 @@
   let islandPressMark = false;
   /** El gesto arrancó sobre el aviso/botón de consola de agentes. */
   let agentChipPressed = false;
+  let agentChipPressedId = "";
   let agentChipPreferBind = false;
   /** Un drag sobre el chip no debe terminar convertido en click. */
   let suppressAgentChipClick = false;
@@ -2527,6 +2518,9 @@
       return;
     }
     agentChipPressed = onAgentChip;
+    agentChipPressedId = onAgentChip
+      ? ((el.closest(".p-agent") as HTMLElement | null)?.dataset.chipId ?? "")
+      : "";
     agentChipPreferBind = onAgentChip && (event.ctrlKey || event.metaKey);
     updateChipPressed = onUpdateChip;
     wheelCorePressed = onWheelCore;
@@ -2686,12 +2680,14 @@
     const pressedTool = islandPressTool;
     const pressedMark = islandPressMark;
     const pressedAgentChip = agentChipPressed;
+    const pressedAgentChipId = agentChipPressedId;
     const preferAgentBind = agentChipPreferBind;
     const pressedWheelCore = wheelCorePressed;
     const pressedUpdateChip = updateChipPressed;
     islandPressTool = null;
     islandPressMark = false;
     agentChipPressed = false;
+    agentChipPressedId = "";
     agentChipPreferBind = false;
     wheelCorePressed = false;
     updateChipPressed = false;
@@ -2732,7 +2728,10 @@
       suppressAgentChipClickTimer = window.setTimeout(() => {
         suppressAgentChipClick = false;
       }, 250);
-      activateAgentChip(preferAgentBind);
+      activateAgentChip(
+        chips.find((c) => c.id === pressedAgentChipId) ?? null,
+        preferAgentBind,
+      );
       return;
     }
     if (wasClick && pressedUpdateChip) {
@@ -3050,33 +3049,37 @@
           {#if edgeCue && !islandOpen}
             <div class="p-island-cues">
               {#if islandCue}
-                <button
-                  type="button"
-                  class="p-agent p-island-cue"
-                  class:is-dock={agentsDock.minimized}
-                  class:is-waiting={chip.tone === "waiting"}
-                  class:is-working={chip.tone === "working"}
-                  class:is-ready={chip.tone === "ready"}
-                  class:is-count={chip.tone === "count"}
-                  {@attach trackIslandCue}
-                  onclick={onAgentChipClick}
-                  use:tip={agentChipTitle}
-                  aria-label={agentChipAria}
-                >
-                  {#if chip.tone === "count"}
-                    <span class="p-island-cue-mark">{chip.label}</span>
-                  {:else if islandCueAgents.length > 0}
-                    <span class="p-island-cue-logos" aria-hidden="true">
-                      {#each islandCueAgents as id (id)}
-                        <AgentLogo agent={id} size={PILL.islandCueMark} />
-                      {/each}
-                    </span>
-                  {:else}
-                    <span class="p-island-cue-logo" aria-hidden="true">
-                      <AgentLogo agent={null} size={PILL.islandCueMark} />
-                    </span>
-                  {/if}
-                </button>
+                {#each chips.length > 0 ? chips : [chip] as c, i (c.id || "dock")}
+                  {@const logos = chipLogos(c)}
+                  <button
+                    type="button"
+                    class="p-agent p-island-cue"
+                    class:is-dock={agentsDock.minimized && chips.length === 0}
+                    class:is-waiting={c.tone === "waiting"}
+                    class:is-working={c.tone === "working"}
+                    class:is-ready={c.tone === "ready"}
+                    class:is-count={c.tone === "count"}
+                    data-chip-id={c.id}
+                    {@attach i === 0 ? trackIslandCue : () => {}}
+                    onclick={(e) => onAgentChipClick(e, c.tone === "off" ? null : c)}
+                    use:tip={chipTitle(c)}
+                    aria-label={chipAria(c)}
+                  >
+                    {#if c.tone === "count"}
+                      <span class="p-island-cue-mark">{c.label}</span>
+                    {:else if logos.length > 0}
+                      <span class="p-island-cue-logos" aria-hidden="true">
+                        {#each logos as id (id)}
+                          <AgentLogo agent={id} size={PILL.islandCueMark} />
+                        {/each}
+                      </span>
+                    {:else}
+                      <span class="p-island-cue-logo" aria-hidden="true">
+                        <AgentLogo agent={null} size={PILL.islandCueMark} />
+                      </span>
+                    {/if}
+                  </button>
+                {/each}
               {/if}
               {#if updateChip}
                 <button
@@ -3417,46 +3420,55 @@
                junto al disco y no un reemplazo, porque el disco sigue siendo la
                puerta a la rueda. -->
             {#if showAgentTab}
-              <svelte:element
-                this={agentChipActs ? "button" : "span"}
-                type={agentChipActs ? "button" : undefined}
-                role={agentChipActs ? undefined : "status"}
-                class="p-agent"
-                class:is-inert={!agentChipActs}
-                class:is-dock={agentsDock.minimized}
-                class:is-waiting={chip.tone === "waiting"}
-                class:is-working={chip.tone === "working"}
-                class:is-ready={chip.tone === "ready"}
-                class:is-count={chip.tone === "count"}
-                bind:this={agentDockEl}
-                onclick={agentChipActs
-                  ? (e: MouseEvent) => onAgentChipClick(e)
-                  : undefined}
-                use:tip={agentChipTitle}
-                aria-label={agentChipAria}
-              >
-                <span class="p-agent-ico" class:is-row={islandCueAgents.length > 1} aria-hidden="true">
-                  {#if islandCueAgents.length > 0}
-                    {#each islandCueAgents as id (id)}
-                      <AgentLogo agent={id} size={agentsDock.minimized ? 13 : 11} />
-                    {/each}
-                  {:else}
-                    <AgentLogo
-                      agent={null}
-                      size={agentsDock.minimized ? 13 : 11}
-                    />
+              <div class="p-agent-stack">
+              {#each chips.length > 0 ? chips : [chip] as c, i (c.id || "dock")}
+                {@const logos = chipLogos(c)}
+                {@const acts = chipActs(c)}
+                <svelte:element
+                  this={acts ? "button" : "span"}
+                  type={acts ? "button" : undefined}
+                  role={acts ? undefined : "status"}
+                  class="p-agent"
+                  class:is-inert={!acts}
+                  class:is-dock={agentsDock.minimized && chips.length === 0}
+                  class:is-waiting={c.tone === "waiting"}
+                  class:is-working={c.tone === "working"}
+                  class:is-ready={c.tone === "ready"}
+                  class:is-count={c.tone === "count"}
+                  data-chip-id={c.id}
+                  {@attach (el: HTMLElement) => {
+                    if (i === 0) agentDockEl = el;
+                  }}
+                  onclick={acts
+                    ? (e: MouseEvent) => onAgentChipClick(e, c.tone === "off" ? null : c)
+                    : undefined}
+                  use:tip={chipTitle(c)}
+                  aria-label={chipAria(c)}
+                >
+                  <span class="p-agent-ico" class:is-row={logos.length > 1} aria-hidden="true">
+                    {#if logos.length > 0}
+                      {#each logos as id (id)}
+                        <AgentLogo agent={id} size={agentsDock.minimized ? 13 : 11} />
+                      {/each}
+                    {:else}
+                      <AgentLogo
+                        agent={null}
+                        size={agentsDock.minimized ? 13 : 11}
+                      />
+                    {/if}
+                  </span>
+                  {#if c.tone === "waiting"}
+                    <span class="p-agent-count">{t("pill.permission")}</span>
+                  {:else if c.tone === "ready"}
+                    <span class="p-agent-msg">{c.label ?? t("pill.ready")}</span>
+                  {:else if c.tone === "working" && c.label}
+                    <span class="p-agent-msg">{c.label}</span>
+                  {:else if c.tone === "count"}
+                    <span class="p-agent-count">{c.label}</span>
                   {/if}
-                </span>
-                {#if chip.tone === "waiting"}
-                  <span class="p-agent-count">{t("pill.permission")}</span>
-                {:else if chip.tone === "ready"}
-                  <span class="p-agent-msg">{agentReadyLabel}</span>
-                {:else if chip.tone === "working" && chip.label}
-                  <span class="p-agent-msg">{chip.label}</span>
-                {:else if chip.tone === "count"}
-                  <span class="p-agent-count">{chip.label}</span>
-                {/if}
-              </svelte:element>
+                </svelte:element>
+              {/each}
+              </div>
             {/if}
             <!-- Hay versión nueva. Mismo sitio y misma cápsula que el aviso de
                agentes: el disco sigue siendo la puerta a la rueda, y esto es
@@ -4603,6 +4615,18 @@
   .p-queue-btn:disabled {
     opacity: 0.45;
     cursor: default;
+  }
+
+  .p-agent-stack {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+    flex-shrink: 0;
+  }
+
+  .p-bar.is-console-start .p-agent-stack {
+    align-items: flex-end;
   }
 
   /* ─── Aviso de agente ───────────────────────────────────────────────── */

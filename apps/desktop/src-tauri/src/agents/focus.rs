@@ -58,6 +58,17 @@ pub fn unique_attach(
     Some((presence_ids[0].clone(), win))
 }
 
+/// Un solo proceso libre → se puede atar a la presencia que el usuario cliqueó.
+pub fn attach_free(
+    free_pids: &[u32],
+    hwnd_for_pid: impl Fn(u32) -> Option<PresenceWindow>,
+) -> Option<PresenceWindow> {
+    if free_pids.len() != 1 {
+        return None;
+    }
+    hwnd_for_pid(free_pids[0])
+}
+
 pub fn focus_id(id: &str) -> PresenceFocusResult {
     if !super::PAGER_ENABLED {
         return PresenceFocusResult {
@@ -69,14 +80,10 @@ pub fn focus_id(id: &str) -> PresenceFocusResult {
             kind: FocusKind::None,
         };
     };
-    let live = agent_tui_pids(&presence.backend_id);
-    let window_ok = presence
-        .window
-        .as_ref()
-        .is_some_and(|w| hwnd_alive(w.hwnd) && live.contains(&w.pid));
+    let window_ok = presence.window.as_ref().is_some_and(|w| hwnd_alive(w.hwnd));
     if !window_ok {
         presence.window = None;
-        if let Some(win) = resolve_unique_for(&presence.backend_id, id) {
+        if let Some(win) = resolve_for_id(&presence.backend_id, id) {
             presence::set_window(id, win.clone());
             presence.window = Some(win);
         }
@@ -93,12 +100,14 @@ pub fn bind_id(id: &str) -> PresenceFocusResult {
             kind: FocusKind::None,
         };
     }
-    if presence::get(id).is_none() {
+    let Some(presence) = presence::get(id) else {
         return PresenceFocusResult {
             kind: FocusKind::None,
         };
-    }
-    let Some(win) = last_external_window() else {
+    };
+    let Some(win) = resolve_for_id(&presence.backend_id, id)
+        .or_else(|| last_external_matching(&presence.backend_id))
+    else {
         return PresenceFocusResult {
             kind: FocusKind::None,
         };
@@ -122,6 +131,7 @@ pub fn bind_from_hwnd(
     Some(PresenceWindow {
         pid: pid_of(hwnd),
         hwnd,
+        own: false,
     })
 }
 
@@ -172,7 +182,7 @@ pub fn attach_unique_backend(backend_id: &str) {
     if p.window.as_ref().is_some_and(|w| hwnd_alive(w.hwnd)) {
         return;
     }
-    if let Some(win) = resolve_unique_for(backend_id, &p.id) {
+    if let Some(win) = resolve_for_id(backend_id, &p.id) {
         presence::set_window(&p.id, win);
     }
 }
@@ -180,7 +190,7 @@ pub fn attach_unique_backend(backend_id: &str) {
 pub(crate) fn agent_tui_pids(backend_id: &str) -> Vec<u32> {
     #[cfg(windows)]
     {
-        agent_pids(backend_id)
+        agent_pids(backend_id, false)
     }
     #[cfg(not(windows))]
     {
@@ -189,15 +199,56 @@ pub(crate) fn agent_tui_pids(backend_id: &str) -> Vec<u32> {
     }
 }
 
-fn resolve_unique_for(backend_id: &str, presence_id: &str) -> Option<PresenceWindow> {
+#[cfg(windows)]
+fn external_agent_pids(backend_id: &str) -> Vec<u32> {
+    agent_pids(backend_id, true)
+}
+
+fn resolve_for_id(backend_id: &str, presence_id: &str) -> Option<PresenceWindow> {
     #[cfg(windows)]
     {
-        let pids = agent_pids(backend_id);
-        unique_attach(&pids, &[presence_id.to_string()], hwnd_for_agent).map(|(_, w)| w)
+        use std::collections::HashSet;
+        let pids = external_agent_pids(backend_id);
+        let snap = presence::snapshot();
+        let used_hwnds: HashSet<isize> = snap
+            .iter()
+            .filter(|p| p.id != presence_id)
+            .filter_map(|p| {
+                p.window
+                    .as_ref()
+                    .filter(|w| hwnd_alive(w.hwnd))
+                    .map(|w| w.hwnd)
+            })
+            .collect();
+        let free: Vec<u32> = pids
+            .into_iter()
+            .filter(|&pid| hwnd_for_agent(pid).is_some_and(|w| !used_hwnds.contains(&w.hwnd)))
+            .collect();
+        attach_free(&free, hwnd_for_agent)
     }
     #[cfg(not(windows))]
     {
         let _ = (backend_id, presence_id);
+        None
+    }
+}
+
+fn last_external_matching(backend_id: &str) -> Option<PresenceWindow> {
+    #[cfg(windows)]
+    {
+        let last = last_external_window()?;
+        for pid in external_agent_pids(backend_id) {
+            if let Some(win) = hwnd_for_agent(pid) {
+                if win.hwnd == last.hwnd {
+                    return Some(win);
+                }
+            }
+        }
+        None
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = backend_id;
         None
     }
 }
@@ -244,7 +295,7 @@ impl WindowFocus for Win32Focus {
     fn flash(&self, hwnd: isize) {
         use windows_sys::Win32::Foundation::HWND;
         use windows_sys::Win32::UI::WindowsAndMessaging::{FlashWindowEx, FLASHWINFO, FLASHW_TRAY};
-        let mut info = FLASHWINFO {
+        let info = FLASHWINFO {
             cbSize: std::mem::size_of::<FLASHWINFO>() as u32,
             hwnd: hwnd as HWND,
             dwFlags: FLASHW_TRAY,
@@ -252,7 +303,7 @@ impl WindowFocus for Win32Focus {
             dwTimeout: 0,
         };
         unsafe {
-            let _ = FlashWindowEx(&mut info);
+            let _ = FlashWindowEx(&info);
         }
     }
 }
@@ -269,7 +320,7 @@ fn agent_exe(backend_id: &str) -> Option<&'static str> {
 }
 
 #[cfg(windows)]
-fn agent_pids(backend_id: &str) -> Vec<u32> {
+fn agent_pids(backend_id: &str, external_only: bool) -> Vec<u32> {
     let Some(exe) = agent_exe(backend_id) else {
         return Vec::new();
     };
@@ -279,12 +330,15 @@ fn agent_pids(backend_id: &str) -> Vec<u32> {
         .filter(|(_, _, name)| name == exe)
         .map(|(pid, _, _)| *pid)
         .collect();
+    let skip_atic = ["atic.exe", "atic-desktop.exe"];
     if backend_id == "cursor" {
         exclude_ide_children(
             &pids,
             &snap,
             &["cursor.exe", "atic.exe", "atic-desktop.exe"],
         )
+    } else if external_only {
+        exclude_ide_children(&pids, &snap, &skip_atic)
     } else {
         pids
     }
@@ -310,7 +364,7 @@ pub fn exclude_ide_children(
                 let Some((ppid, name)) = tree.get(&current) else {
                     break;
                 };
-                if current != *pid && skip_exe.iter().any(|s| *s == name.as_str()) {
+                if current != *pid && skip_exe.contains(&name.as_str()) {
                     return false;
                 }
                 if *ppid == 0 || *ppid == current {
@@ -412,7 +466,11 @@ fn hwnd_for_agent(pid: u32) -> Option<PresenceWindow> {
         if let Some(hwnds) = state.by_pid.get(&current) {
             for &hwnd in hwnds {
                 if !api.is_own(hwnd) {
-                    return Some(PresenceWindow { pid: current, hwnd });
+                    return Some(PresenceWindow {
+                        pid: current,
+                        hwnd,
+                        own: false,
+                    });
                 }
             }
         }
@@ -448,7 +506,11 @@ mod tests {
     }
 
     fn win(pid: u32, hwnd: isize) -> PresenceWindow {
-        PresenceWindow { pid, hwnd }
+        PresenceWindow {
+            pid,
+            hwnd,
+            own: false,
+        }
     }
 
     #[test]
@@ -465,6 +527,16 @@ mod tests {
     #[test]
     fn unique_dos_sesiones_no_adivina() {
         assert!(unique_attach(&[10], &["s1".into(), "s2".into()], |_| Some(win(10, 99))).is_none());
+    }
+
+    #[test]
+    fn attach_free_un_pid_ata() {
+        assert_eq!(attach_free(&[10], |_| Some(win(10, 99))), Some(win(10, 99)));
+    }
+
+    #[test]
+    fn attach_free_dos_pids_no_adivina() {
+        assert!(attach_free(&[10, 11], |_| Some(win(10, 99))).is_none());
     }
 
     #[test]

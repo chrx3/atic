@@ -66,4 +66,17 @@ describe("applyPresenceSnapshot", () => {
   it("baja unread al marcar visto", () => {
     expect(markPresenceSeen({ s1: 1 }, "s1")).toEqual({ s1: 0 });
   });
+
+  it("idle o ausente apaga el unread", () => {
+    const withUnread = applyPresenceSnapshot(
+      { list: [presence({ id: "s1", status: "working" })], unread: {}, watching: false },
+      [presence({ id: "s1", status: "ready" })],
+    );
+    expect(withUnread.unread.s1).toBe(1);
+    const idle = applyPresenceSnapshot(
+      { ...withUnread, watching: false },
+      [presence({ id: "s1", status: "idle" })],
+    );
+    expect(idle.unread.s1).toBeUndefined();
+  });
 });

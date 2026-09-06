@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { PresenceView } from "$lib/agentPresenceReduce";
-import { agentChip, cueAgentId, cueAgentIds, type ChipTone } from "./pillAgentChip";
+import { agentChip, agentChips, cueAgentId, cueAgentIds, presenceIdsToDismissOnAticHide, type ChipTone } from "./pillAgentChip";
 
 const emptyChat = {
   unread: 0,
@@ -64,6 +64,7 @@ describe("agentChip", () => {
         presence: [presence({ id: "t", status: "working" })],
       }),
     ).toEqual({
+      id: "chat",
       tone: "waiting",
       label: "permiso",
       target: { kind: "console" },
@@ -82,6 +83,7 @@ describe("agentChip", () => {
         chat: { working: true, unread: 1, readyLabel: "Soy Muse Spark" },
       }),
     ).toEqual({
+      id: "chat",
       tone: "working",
       label: "Soy Muse Spark",
       target: { kind: "console" },
@@ -102,6 +104,7 @@ describe("agentChip", () => {
         ],
       }),
     ).toEqual({
+      id: "chat",
       tone: "ready",
       label: "desde el chat",
       target: { kind: "console" },
@@ -115,6 +118,7 @@ describe("agentChip", () => {
       presence: [presence({ id: "t", status: "working", preview: "" })],
     });
     expect(result).toEqual({
+      id: "t",
       tone: "working",
       label: null,
       target: { kind: "none", presenceId: "t" },
@@ -136,6 +140,48 @@ describe("agentChip", () => {
         ],
       }).target,
     ).toEqual({ kind: "focus", presenceId: "t" });
+  });
+
+  it("con HWND propio el destino es consola", () => {
+    expect(
+      chip({
+        chatEnabled: false,
+        presence: [
+          presence({
+            id: "t",
+            status: "ready",
+            unread: 1,
+            window: { pid: 1, hwnd: 99, own: true },
+          }),
+        ],
+      }).target,
+    ).toEqual({ kind: "console", presenceId: "t" });
+  });
+
+  it("lista cada consola en vez de quedarse con una", () => {
+    expect(
+      agentChips({
+        chat: { ...emptyChat },
+        chatEnabled: false,
+        pagerEnabled: true,
+        presence: [
+          presence({
+            id: "a",
+            status: "ready",
+            unread: 1,
+            preview: "uno",
+            updatedAt: 1,
+          }),
+          presence({
+            id: "b",
+            backendId: "codex",
+            status: "working",
+            preview: "dos",
+            updatedAt: 2,
+          }),
+        ],
+      }).map((c) => c.id),
+    ).toEqual(["b", "a"]);
   });
 
   it("ignora una presencia cuyo id es providerSession del chat", () => {
@@ -176,6 +222,7 @@ describe("agentChip", () => {
         ],
       }),
     ).toMatchObject({
+      id: "c",
       tone: "ready",
       label: "Soy Codex",
       logoId: "codex",
@@ -207,6 +254,7 @@ describe("agentChip", () => {
         ],
       }),
     ).toEqual({
+      id: "c",
       tone: "ready",
       label: "Soy Codex",
       target: { kind: "none", presenceId: "c" },
@@ -236,6 +284,7 @@ describe("agentChip", () => {
         ],
       }),
     ).toEqual({
+      id: "c",
       tone: "ready",
       label: "jokes",
       target: { kind: "none", presenceId: "c" },
@@ -256,6 +305,7 @@ describe("agentChip", () => {
         ],
       }),
     ).toEqual({
+      id: "t",
       tone: "working",
       label: "Generando respuesta…",
       target: { kind: "none", presenceId: "t" },
@@ -330,5 +380,20 @@ describe("cueAgentId", () => {
         consoles: ["codex", "opencode"],
       }),
     ).toEqual(["claude-code", "codex", "opencode"]);
+  });
+});
+
+describe("presenceIdsToDismissOnAticHide", () => {
+  it("apaga la TUI propia y la del CLI vivo adentro, no la externa atada", () => {
+    expect(
+      presenceIdsToDismissOnAticHide(
+        [
+          { id: "own", backendId: "claude-code", window: { hwnd: 1, own: true } },
+          { id: "pty", backendId: "codex", window: null },
+          { id: "wt", backendId: "claude-code", window: { hwnd: 9, own: false } },
+        ],
+        ["codex"],
+      ),
+    ).toEqual(["own", "pty"]);
   });
 });
