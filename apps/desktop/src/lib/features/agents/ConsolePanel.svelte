@@ -38,6 +38,7 @@
     canonicalAgentCli,
     cliFromTitle,
     restartCliFromOutput,
+    tabNameFromTitle,
   } from "./consoleAgent";
   import { agentLogoKey } from "$surfaces/overlay/pill/pillAgentChip";
   import { consoleCue } from "$surfaces/overlay/agents/consoleCue.svelte";
@@ -1863,9 +1864,14 @@
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.onTitleChange((title) => {
-      const cli = cliFromTitle(title);
       const tab = tabOf(key);
-      if (cli && tab) adoptAgent(tab, cli);
+      if (!tab) return;
+      const cli = cliFromTitle(title);
+      if (cli) adoptAgent(tab, cli);
+      // Después de adoptar: `adoptAgent` deja el nombre del CLI, y si el TUI
+      // puso uno propio —un `/rename`— ese manda sobre la marca.
+      const propio = tabNameFromTitle(title);
+      if (propio) tab.label = propio;
     });
     term.onData((data) => {
       if (consumeTerminalControlData(key, data)) return;

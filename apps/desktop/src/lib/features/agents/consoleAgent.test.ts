@@ -3,6 +3,7 @@ import {
   agentDisplayName,
   canonicalAgentCli,
   cliFromTitle,
+  tabNameFromTitle,
   restartCliFromOutput,
 } from "./consoleAgent";
 
@@ -45,6 +46,35 @@ describe("cliFromTitle", () => {
   it("toma la marca aunque el TUI agregue el cwd", () => {
     expect(cliFromTitle("Codex")).toBe("codex");
     expect(cliFromTitle("Claude Code · Downloads")).toBe("claude");
+  });
+});
+
+describe("tabNameFromTitle", () => {
+  it("no ve un nombre donde solo esta la marca del CLI", () => {
+    expect(tabNameFromTitle("Grok")).toBeNull();
+    expect(tabNameFromTitle("Claude Code")).toBeNull();
+    expect(tabNameFromTitle("   ")).toBeNull();
+  });
+
+  it("saca el nombre que el TUI agrego detras de su marca", () => {
+    expect(tabNameFromTitle("Codex - revisor")).toBe("revisor");
+    expect(tabNameFromTitle("Claude Code · refactor")).toBe("refactor");
+  });
+
+  it("acepta un nombre que se parece a otro CLI", () => {
+    // Renombrar la conversacion a «agy» es legitimo aunque sea un alias.
+    expect(tabNameFromTitle("Grok · agy")).toBe("agy");
+  });
+
+  it("ignora el cwd, que la pestana ya muestra aparte", () => {
+    expect(tabNameFromTitle("Claude Code · ~/Downloads")).toBeNull();
+    expect(tabNameFromTitle("Codex · C:\\repo")).toBeNull();
+    expect(tabNameFromTitle("grok · /home/lenovo/src")).toBeNull();
+  });
+
+  it("ignora una frase larga, que no es un nombre", () => {
+    const frase = "esto es una linea de estado larguisima que no nombra nada";
+    expect(tabNameFromTitle(`Grok · ${frase}`)).toBeNull();
   });
 });
 
