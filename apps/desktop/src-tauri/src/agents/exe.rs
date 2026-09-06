@@ -68,15 +68,55 @@ fn search_dirs() -> Vec<PathBuf> {
 
 /// El PATH fusionado como valor de variable, para el env de las consolas PTY.
 /// `None` = nada que fusionar: el hijo hereda el PATH tal cual.
+/// Cuánto puede medir el PATH que se le pasa a una consola.
+///
+/// `cmd` no expande `%PATH%` más allá de ~8 KB: devuelve vacío, y entonces no
+/// resuelve ni un comando. El tope deja aire para el resto del bloque.
+#[cfg(windows)]
+const MAX_PATH_VAR: usize = 7000;
+
+/// El PATH fusionado como valor de variable, para el env de las consolas PTY.
+/// `None` = nada que fusionar: el hijo hereda el PATH tal cual.
 pub fn merged_path_var() -> Option<std::ffi::OsString> {
     #[cfg(windows)]
     {
-        std::env::join_paths(search_dirs()).ok()
+        elegir_path(dirs_from_env(), dirs_from_registry())
     }
     #[cfg(not(windows))]
     {
         None
     }
+}
+
+/// Con qué PATH arrancar la consola.
+///
+/// Normalmente el del proceso más lo que el registro traiga de nuevo. Pero en
+/// dev el del proceso viene envenenado: `cargo run` mete en él **un
+/// `rustc-link-search` por cada subcarpeta** del árbol CMake de
+/// `whisper-rs-sys`, y la fusión pasa del límite que `cmd` sabe expandir. El
+/// hijo se queda entonces con un PATH cortado a media ruta, lleno de carpetas
+/// de build y sin ninguna de las que sirven: `agy`, `cursor-agent`, `grok`…
+///
+/// Cuando eso pasa se usa el del registro a secas, que es exactamente lo que
+/// tendría una terminal recién abierta, en vez de entregar uno truncado.
+#[cfg(windows)]
+fn elegir_path(proceso: Vec<PathBuf>, registro: Vec<PathBuf>) -> Option<std::ffi::OsString> {
+    let fusionado = join_no_vacio(merge_path_dirs(proceso, registro.clone()));
+    match fusionado {
+        Some(v) if v.len() <= MAX_PATH_VAR => Some(v),
+        // Demasiado largo, o nada que ofrecer: el del registro.
+        _ => join_no_vacio(registro),
+    }
+}
+
+/// `join_paths` de una lista vacía devuelve `Ok("")`, y poner el PATH vacío es
+/// peor que no tocarlo: adentro no resuelve nada.
+#[cfg(windows)]
+fn join_no_vacio(dirs: Vec<PathBuf>) -> Option<std::ffi::OsString> {
+    if dirs.is_empty() {
+        return None;
+    }
+    std::env::join_paths(dirs).ok().filter(|v| !v.is_empty())
 }
 
 /// ¿Un archivo sin extensión puede ejecutarse?
@@ -314,6 +354,55 @@ fn exts_from_env() -> Vec<String> {
 mod tests {
     use super::*;
     use std::collections::HashSet;
+
+    /// El PATH de la consola cuando el del proceso viene envenenado.
+    ///
+    /// En dev `cargo run` mete una carpeta de build por cada
+    /// `rustc-link-search`, y son cientos: la fusion no cabe en lo que `cmd`
+    /// sabe expandir y el hijo se queda sin nada que resolver.
+    #[cfg(windows)]
+    #[test]
+    fn un_path_de_proceso_desbordado_cae_al_del_registro() {
+        let basura: Vec<PathBuf> = (0..400)
+            .map(|i| PathBuf::from(format!(r"C:\repo\target\debug\build\cmake\sub{i:04}")))
+            .collect();
+        let registro = vec![
+            PathBuf::from(r"C:\Windows\system32"),
+            PathBuf::from(r"C:\Users\x\AppData\Local\agy\bin"),
+        ];
+        let elegido = elegir_path(basura, registro).expect("algo tiene que dar");
+        let texto = elegido.to_string_lossy().into_owned();
+        assert!(
+            texto.len() <= MAX_PATH_VAR,
+            "no puede pasarse: {}",
+            texto.len()
+        );
+        assert!(texto.contains(r"agy\bin"), "y lleva lo que sirve: {texto}");
+        assert!(
+            !texto.contains("sub0000"),
+            "sin la basura del build: {texto}"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn con_un_path_normal_se_fusiona_como_siempre() {
+        let proceso = vec![PathBuf::from(r"C:\Windows\system32")];
+        let registro = vec![PathBuf::from(r"C:\Users\x\.grok\bin")];
+        let texto = elegir_path(proceso, registro)
+            .expect("hay directorios")
+            .to_string_lossy()
+            .into_owned();
+        assert!(texto.contains("system32"), "{texto}");
+        assert!(texto.contains(r".grok\bin"), "{texto}");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn sin_directorios_no_se_toca_el_path_del_hijo() {
+        // Poner el PATH vacio deja la consola sin resolver ni un comando.
+        assert!(elegir_path(Vec::new(), Vec::new()).is_none());
+    }
 
     /// En Windows el nombre pelado NO se ejecuta; en Unix sí. Los tests fijan
     /// las dos reglas por separado en vez de depender de dónde corren.
