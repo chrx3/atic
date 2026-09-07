@@ -81,6 +81,24 @@ pub fn window_bounds(hwnd: isize) -> Option<Rect> {
     unsafe { extended_frame_bounds(hwnd as HWND) }
 }
 
+/// `GetWindowRect`: incluye la sombra invisible de DWM.
+///
+/// `PrintWindow` pinta en este rectángulo. Si el lienzo es el marco visual
+/// (más chico, desplazado), la foto nace con la sombra a la izquierda y el
+/// contenido corrido: al tapar la ventana se ve una franja del escritorio.
+pub fn window_outer_bounds(hwnd: isize) -> Option<Rect> {
+    let mut rect: RECT = unsafe { std::mem::zeroed() };
+    if unsafe { GetWindowRect(hwnd as HWND, &mut rect) } == 0 {
+        return None;
+    }
+    let bounds = Rect::from_ltrb(rect.left, rect.top, rect.right, rect.bottom);
+    if bounds.is_empty() {
+        None
+    } else {
+        Some(bounds)
+    }
+}
+
 unsafe extern "system" fn collect_window(hwnd: HWND, param: LPARAM) -> i32 {
     let collector = &mut *(param as *mut Collector);
 

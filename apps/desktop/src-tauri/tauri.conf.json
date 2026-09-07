@@ -6,7 +6,7 @@
   "build": {
     "beforeDevCommand": "pnpm dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "pnpm mcp:build && pnpm build",
+    "beforeBuildCommand": "pnpm mcp:build && pnpm unix:build && pnpm build",
     "frontendDist": "../build"
   },
   "app": {
@@ -84,6 +84,20 @@
         "skipTaskbar": true,
         "shadow": false,
         "visible": false
+      },
+      {
+        "label": "window-flip",
+        "url": "/window-flip",
+        "title": "Notas de ventana",
+        "width": 640,
+        "height": 480,
+        "resizable": false,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "shadow": false,
+        "visible": false
       }
     ],
     "security": {
@@ -97,7 +111,7 @@
   "bundle": {
     "active": true,
     "targets": ["nsis", "dmg"],
-    "externalBin": ["binaries/atic-mcp"],
+    "externalBin": ["binaries/atic-mcp", "binaries/atic-unix"],
     "createUpdaterArtifacts": true,
     "publisher": "chrx3",
     "category": "Productivity",

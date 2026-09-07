@@ -425,6 +425,28 @@ pub fn register_shortcuts(app: &AppHandle, bindings: ShortcutBindings<'_>) -> Re
         }
     }
 
+    // Prototipo: no vive en config. Se re-registra acá porque
+    // `unregister_all` borra también este atajo.
+    {
+        let handle = app.clone();
+        let held = AtomicBool::new(false);
+        match crate::window_flip::SHORTCUT.parse::<Shortcut>() {
+            Ok(sc) => {
+                if let Err(err) = gs.on_shortcut(sc, move |_app, _sc, event| {
+                    if take_key_press(&held, event.state()) {
+                        crate::window_flip::toggle(&handle);
+                    }
+                }) {
+                    tracing::error!(%err, "no se pudo registrar el atajo de voltear ventana");
+                    failed.push("voltear ventana".to_string());
+                }
+            }
+            Err(err) => {
+                tracing::error!(%err, "atajo de voltear ventana inválido");
+            }
+        }
+    }
+
     mouse_bindings::set_bindings(app, mouse);
 
     if let Some(app_state) = app.try_state::<state::AppState>() {

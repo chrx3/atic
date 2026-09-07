@@ -655,6 +655,13 @@ export const en = {
     closeHint: "close",
     play: "Play",
     pause: "Pause",
+    windowFlip: {
+      kicker: "Back of {exe}",
+      untitled: "Untitled window",
+      placeholder: "Notes for this window. They save themselves.",
+      close: "Flip back (Esc or Ctrl+Shift+B)",
+      hint: "The real window is hidden for a moment. You should see the desktop around the card as it turns.",
+    },
   },
   shelf: {
     recent: "Recent capture",
