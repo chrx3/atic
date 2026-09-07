@@ -429,6 +429,54 @@ export interface ClipboardItem {
   source: string;
 }
 
+export interface InkStroke {
+  color: string;
+  width: number;
+  points: [number, number][];
+}
+
+export interface CheckItem {
+  id: string;
+  text: string;
+  done: boolean;
+}
+
+/** Marco en el tablero. Cero = nota vieja; el front lo coloca al abrir. */
+export interface NoteFrame {
+  x?: number;
+  y?: number;
+  w?: number;
+  h?: number;
+}
+
+/** Un bloque de una nota de ventana. `kind` viene del `#[serde(tag)]` de Rust. */
+export type NoteBlock =
+  | ({ kind: "text"; id: string; body: string } & NoteFrame)
+  | ({
+      kind: "image";
+      id: string;
+      asset: string;
+      width: number;
+      height: number;
+    } & NoteFrame)
+  | ({ kind: "check"; id: string; items: CheckItem[] } & NoteFrame)
+  | ({ kind: "ink"; id: string; strokes: InkStroke[]; height: number } & NoteFrame);
+
+/** La tapa de una ventana ajena: la foto del frente y la nota del reverso. */
+export interface WindowFlipView {
+  key: string;
+  title: string;
+  exe: string;
+  previewPath: string;
+  blocks: NoteBlock[];
+  /** Carpeta de binarios de la app, para armar la URL de cada imagen. */
+  assetsDir: string;
+  cardLeft: number;
+  cardTop: number;
+  cardWidth: number;
+  cardHeight: number;
+}
+
 export interface Snippet {
   id: string;
   name: string;

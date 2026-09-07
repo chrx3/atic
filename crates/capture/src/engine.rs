@@ -103,9 +103,32 @@ impl Drop for MemCanvas {
 /// Captura una región del escritorio virtual (coordenadas físicas) con
 /// `BitBlt`. Si `include_cursor`, dibuja el cursor sobre el frame.
 pub fn capture_rect(rect: Rect, include_cursor: bool) -> Result<Frame> {
+    blt_rect(rect, include_cursor, true)
+}
+
+/// Como [`capture_rect`], pero sin `CAPTUREBLT`.
+///
+/// Esa bandera es justamente la que hace que la copia incluya las ventanas
+/// `WS_EX_LAYERED`. Sirve para congelar el escritorio —ahí las queremos—, pero
+/// no para fotografiar una ventana ajena: las flotantes de Atic que estén
+/// encima quedan pegadas en la foto. La pill es layered y aparecía dentro de
+/// la captura de la ventana que se voltea.
+///
+/// Sigue siendo una copia de la pantalla: una ventana normal encima del
+/// rectángulo se captura igual.
+pub fn capture_rect_without_layered(rect: Rect) -> Result<Frame> {
+    blt_rect(rect, false, false)
+}
+
+fn blt_rect(rect: Rect, include_cursor: bool, include_layered: bool) -> Result<Frame> {
     if rect.is_empty() {
         return Err(Error::InvalidDimensions(rect.width, rect.height));
     }
+    let rop = if include_layered {
+        SRCCOPY | CAPTUREBLT
+    } else {
+        SRCCOPY
+    };
     // SAFETY: `canvas` gestiona los recursos GDI; las llamadas usan handles
     // válidos y dimensiones acordes al bitmap.
     unsafe {
@@ -119,7 +142,7 @@ pub fn capture_rect(rect: Rect, include_cursor: bool) -> Result<Frame> {
             canvas.screen_dc,
             rect.x,
             rect.y,
-            SRCCOPY | CAPTUREBLT,
+            rop,
         );
         if ok == 0 {
             return Err(Error::Gdi("BitBlt falló".into()));
@@ -154,6 +177,9 @@ pub fn freeze_monitors(monitors: &[MonitorInfo], include_cursor: bool) -> Vec<Fr
 /// `PrintWindow` dibuja en coordenadas de `GetWindowRect`. Si el lienzo es el
 /// marco visual, más chico, la sombra queda a la izquierda y el contenido se
 /// corre. Acá se imprime el rectángulo exterior y se recorta al visual.
+///
+/// Si `PrintWindow` no sirve, cae a la pantalla sin las layered: el que pide
+/// la foto de una ventana no quiere las flotantes que tenga encima.
 pub fn capture_window_visual(hwnd: isize) -> Result<Frame> {
     let visual = crate::windows::window_bounds(hwnd)
         .ok_or_else(|| Error::Gdi("ventana sin límites".into()))?;
@@ -168,7 +194,7 @@ pub fn capture_window_visual(hwnd: isize) -> Result<Frame> {
             return Ok(frame);
         }
     }
-    capture_rect(visual, false)
+    capture_rect_without_layered(visual)
 }
 
 /// Como [`print_window`], pero el lienzo y el origen del `Frame` son `bounds`.
