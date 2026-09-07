@@ -149,16 +149,33 @@ pub fn freeze_monitors(monitors: &[MonitorInfo], include_cursor: bool) -> Vec<Fr
         .collect()
 }
 
-/// Captura una ventana SOLO con `PrintWindow` (renderiza únicamente la ventana
-/// objetivo, sin tocar la pantalla). Devuelve `None` si el resultado sale negro
-/// o falla, para que el llamador decida el fallback.
+/// Captura una ventana recortada al marco **visible** (sin sombra DWM).
 ///
-/// Útil durante el overlay: `PrintWindow` no captura los overlays, y el
-/// fallback (recortar del frame congelado) tampoco.
-pub fn print_window(hwnd: isize) -> Result<Option<Frame>> {
-    let bounds = crate::windows::window_bounds(hwnd)
+/// `PrintWindow` dibuja en coordenadas de `GetWindowRect`. Si el lienzo es el
+/// marco visual, más chico, la sombra queda a la izquierda y el contenido se
+/// corre. Acá se imprime el rectángulo exterior y se recorta al visual.
+pub fn capture_window_visual(hwnd: isize) -> Result<Frame> {
+    let visual = crate::windows::window_bounds(hwnd)
         .ok_or_else(|| Error::Gdi("ventana sin límites".into()))?;
-    // SAFETY: `canvas` gestiona los recursos; `hwnd` proviene de la enumeración.
+    let outer = crate::windows::window_outer_bounds(hwnd).unwrap_or(visual);
+    if let Ok(Some(frame)) = print_window_rect(hwnd, outer) {
+        if let Some(cropped) = frame.crop(visual) {
+            if !is_black(&cropped.bgra) {
+                return Ok(cropped);
+            }
+        }
+        if !is_black(&frame.bgra) {
+            return Ok(frame);
+        }
+    }
+    capture_rect(visual, false)
+}
+
+/// Como [`print_window`], pero el lienzo y el origen del `Frame` son `bounds`.
+fn print_window_rect(hwnd: isize, bounds: Rect) -> Result<Option<Frame>> {
+    if bounds.is_empty() {
+        return Ok(None);
+    }
     unsafe {
         let canvas = MemCanvas::new(bounds.width, bounds.height)?;
         let ok = PrintWindow(hwnd as HWND, canvas.mem_dc, PW_RENDERFULLCONTENT) != 0;
@@ -169,6 +186,18 @@ pub fn print_window(hwnd: isize) -> Result<Option<Frame>> {
             Ok(None)
         }
     }
+}
+
+/// Captura una ventana SOLO con `PrintWindow` (renderiza únicamente la ventana
+/// objetivo, sin tocar la pantalla). Devuelve `None` si el resultado sale negro
+/// o falla, para que el llamador decida el fallback.
+///
+/// Útil durante el overlay: `PrintWindow` no captura los overlays, y el
+/// fallback (recortar del frame congelado) tampoco.
+pub fn print_window(hwnd: isize) -> Result<Option<Frame>> {
+    let bounds = crate::windows::window_bounds(hwnd)
+        .ok_or_else(|| Error::Gdi("ventana sin límites".into()))?;
+    print_window_rect(hwnd, bounds)
 }
 
 /// Como `print_window`, y si el HWND (layered/WebView2) sale negro, prueba

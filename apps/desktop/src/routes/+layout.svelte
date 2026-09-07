@@ -27,6 +27,7 @@
       "/color-loupe",
       "/launcher",
       "/overlay",
+      "/window-flip",
     ].includes(page.url.pathname),
   );
 

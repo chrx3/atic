@@ -159,10 +159,43 @@ fn apply_clean_script_env(cmd: &mut CommandBuilder) {
 
 /// El hijo ve el PATH fresco (proceso + registro): un CLI recién instalado
 /// resuelve en una consola nueva sin reiniciar Atic.
-fn apply_fresh_path(cmd: &mut CommandBuilder) {
-    if let Some(path) = super::exe::merged_path_var() {
-        cmd.env("PATH", path);
-    }
+///
+/// Delante va la carpeta de los comandos Unix, que Atic trae consigo: es lo
+/// que hace que `ls` funcione en una consola de Windows sin que el usuario
+/// instale nada. Va primero a propósito —si el sistema ya tiene un `ls`, el
+/// nuestro manda—, y si falla preparar los enlaces la consola abre igual: sin
+/// `ls`, pero abre.
+fn apply_fresh_path(cmd: &mut CommandBuilder, dir_datos: Option<&std::path::Path>) {
+    let unix = dir_datos.and_then(|dir| match super::unix_tools::preparar(dir) {
+        Ok(bin) => Some(bin),
+        Err(e) => {
+            tracing::warn!(error = %e, "sin comandos Unix en la consola");
+            None
+        }
+    });
+    let Some(base) = super::exe::merged_path_var() else {
+        // Sin PATH que fusionar no se toca el heredado; pero si hay comandos
+        // Unix, se antepone igual al que el hijo vaya a heredar.
+        if let Some(unix) = unix {
+            if let Some(actual) = std::env::var_os("PATH") {
+                let mut valor = std::ffi::OsString::from(unix);
+                valor.push(";");
+                valor.push(actual);
+                cmd.env("PATH", valor);
+            }
+        }
+        return;
+    };
+    let valor = match unix {
+        Some(unix) => {
+            let mut v = std::ffi::OsString::from(unix);
+            v.push(";");
+            v.push(&base);
+            v
+        }
+        None => base,
+    };
+    cmd.env("PATH", valor);
 }
 
 fn quote_cmd(s: &str) -> String {
@@ -404,7 +437,7 @@ pub fn console_open(
     };
     apply_terminal_color_env(&mut cmd);
     apply_clean_script_env(&mut cmd);
-    apply_fresh_path(&mut cmd);
+    apply_fresh_path(&mut cmd, Some(&state.dirs.data_dir()));
 
     let pty_system = native_pty_system();
     let pair = pty_system

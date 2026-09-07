@@ -2,7 +2,7 @@
  * Actualizaciones de la app.
  *
  * GitHub Releases no avisa por websocket: se pregunta `latest.json` al
- * arrancar, al enfocar la ventana (con tope) y cada pocas horas.
+ * arrancar, al enfocar la ventana (con tope) y cada media hora.
  *
  * Descarga e instalación van aparte: el evento Finished del plugin es
  * «archivo en disco», no «ya quedó instalado».
@@ -19,8 +19,8 @@ import {
   type AppUpdate,
 } from "$ipc/updates";
 
-const POLL_MS = 4 * 60 * 60 * 1000;
-const FOCUS_GAP_MS = 30 * 60 * 1000;
+const POLL_MS = 30 * 60 * 1000;
+const FOCUS_GAP_MS = 5 * 60 * 1000;
 
 class AppUpdateStore {
   /** Recurso de Tauri: no proxyar, tiene rid y bytes descargados. */

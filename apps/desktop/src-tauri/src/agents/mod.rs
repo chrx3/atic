@@ -48,6 +48,7 @@ pub mod skills;
 pub mod ssh;
 pub mod store;
 pub mod turns;
+pub mod unix_tools;
 pub mod watch_claude;
 pub mod watch_codex;
 pub mod watch_cursor;

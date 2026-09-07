@@ -18,6 +18,7 @@
     "test:watch": "vitest",
     "verify": "pnpm check && pnpm lint && pnpm lint:css && pnpm format:check && pnpm test",
     "mcp:build": "node ../../scripts/build-mcp.mjs",
+    "unix:build": "node ../../scripts/build-unix.mjs",
     "tauri": "tauri"
   },
   "license": "MIT",

@@ -39,6 +39,7 @@ mod transcription;
 mod tray;
 mod ui_lang;
 mod webview_tweaks;
+mod window_flip;
 
 use std::sync::Mutex;
 
@@ -355,6 +356,10 @@ pub fn run() {
             launcher::launcher_list_recents,
             launcher::launcher_toggle_favorite,
             launcher::launcher_icon,
+            window_flip::window_flip_state,
+            window_flip::window_flip_save_note,
+            window_flip::window_flip_refresh_preview,
+            window_flip::window_flip_close,
         ])
         .setup(move |app| {
             // El estado ya está registrado por el Builder: acá solo se lee.
@@ -368,6 +373,7 @@ pub fn run() {
                 "capture-shelf",
                 "launcher",
                 "color-loupe",
+                window_flip::LABEL,
                 annotate::ANNOTATE_LABEL,
             ] {
                 if let Some(window) = app.get_webview_window(label) {
@@ -549,6 +555,7 @@ pub fn run() {
             WindowEvent::CloseRequested { api, .. }
                 if window.label() == "main"
                     || window.label() == "launcher"
+                    || window.label() == window_flip::LABEL
                     || window.label() == annotate::ANNOTATE_LABEL =>
             {
                 api.prevent_close();
@@ -572,6 +579,7 @@ pub fn run() {
         .expect("error al iniciar Atic")
         .run(move |app, event| {
             if let RunEvent::Exit = event {
+                window_flip::uncloak_on_exit();
                 // Primero el hub (deja de aceptar y borra `hub.json`) y después
                 // los procesos: en ese orden no quedan delegaciones colgadas.
                 agents::hub::server::stop();

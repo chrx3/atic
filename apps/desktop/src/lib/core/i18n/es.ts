@@ -660,6 +660,13 @@ export const es = {
     closeHint: "cerrar",
     play: "Reproducir",
     pause: "Pausar",
+    windowFlip: {
+      kicker: "Reverso de {exe}",
+      untitled: "Ventana sin título",
+      placeholder: "Notas de esta ventana. Se guardan solas.",
+      close: "Volver (Esc o Ctrl+Shift+B)",
+      hint: "La ventana de abajo se oculta un momento. Al girar deberías ver el escritorio a los lados.",
+    },
   },
   shelf: {
     recent: "Captura reciente",

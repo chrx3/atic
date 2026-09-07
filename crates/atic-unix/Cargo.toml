@@ -1,0 +1,39 @@
+[package]
+name = "atic-unix"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Comandos Unix para las consolas de Atic, sobre uutils/coreutils (MIT)"
+
+[[bin]]
+name = "atic-unix"
+path = "src/main.rs"
+
+# Un crate por comando: se paga en tiempo de compilación solo lo que se ofrece,
+# y sumar uno más es una línea acá y otra en la tabla de `main.rs`.
+[dependencies]
+uucore = "0.11"
+uu_basename = "0.11"
+uu_cat = "0.11"
+uu_cp = "0.11"
+uu_cut = "0.11"
+uu_dirname = "0.11"
+uu_du = "0.11"
+uu_env = "0.11"
+uu_head = "0.11"
+uu_ls = "0.11"
+uu_mkdir = "0.11"
+uu_mv = "0.11"
+uu_nl = "0.11"
+uu_realpath = "0.11"
+uu_rm = "0.11"
+uu_rmdir = "0.11"
+uu_seq = "0.11"
+uu_sort = "0.11"
+uu_tac = "0.11"
+uu_tail = "0.11"
+uu_tee = "0.11"
+uu_touch = "0.11"
+uu_tr = "0.11"
+uu_uniq = "0.11"
+uu_wc = "0.11"
