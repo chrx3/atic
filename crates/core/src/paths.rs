@@ -26,6 +26,7 @@ impl AppDirs {
         std::fs::create_dir_all(this.overlay_frames_dir())?;
         std::fs::create_dir_all(this.clipboard_dir())?;
         std::fs::create_dir_all(this.snippets_dir())?;
+        std::fs::create_dir_all(this.notes_dir())?;
         std::fs::create_dir_all(this.logs_dir())?;
         Ok(this)
     }
@@ -64,6 +65,12 @@ impl AppDirs {
     /// Fragmentos de texto reutilizables y bloc de notas.
     pub fn snippets_dir(&self) -> PathBuf {
         self.data_dir.join("snippets")
+    }
+
+    /// Notas por app: una subcarpeta por ejecutable, con su `note.json` y los
+    /// binarios que el usuario pegó adentro.
+    pub fn notes_dir(&self) -> PathBuf {
+        self.data_dir.join("notes")
     }
 
     /// Registro rotativo de la app.

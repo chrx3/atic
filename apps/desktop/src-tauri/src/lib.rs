@@ -23,6 +23,7 @@ mod macos_notes;
 mod mail;
 mod meeting_detection;
 mod mouse_bindings;
+mod notes;
 mod ocr;
 #[cfg(windows)]
 mod ole_text_drag;
@@ -357,8 +358,13 @@ pub fn run() {
             launcher::launcher_toggle_favorite,
             launcher::launcher_icon,
             window_flip::window_flip_state,
-            window_flip::window_flip_save_note,
+            window_flip::window_flip_save_blocks,
+            window_flip::window_flip_paste_image,
+            window_flip::window_flip_focus_is_foreign,
+            window_flip::window_flip_import_image,
             window_flip::window_flip_refresh_preview,
+            window_flip::window_flip_present,
+            window_flip::window_flip_conceal,
             window_flip::window_flip_close,
         ])
         .setup(move |app| {
@@ -373,12 +379,20 @@ pub fn run() {
                 "capture-shelf",
                 "launcher",
                 "color-loupe",
-                window_flip::LABEL,
                 annotate::ANNOTATE_LABEL,
             ] {
                 if let Some(window) = app.get_webview_window(label) {
                     let _ = window.hide();
                 }
+            }
+            // La tapa se estaciona fuera de pantalla: el primer `show` de
+            // WebView2 pestañea; así el compositor ya está caliente.
+            window_flip::park(&app.handle());
+
+            // Notas del flip: del JSON plano viejo al modelo por app. Una sola
+            // vez, y si algo falla el archivo original queda donde estaba.
+            if let Some(state) = app.try_state::<crate::state::AppState>() {
+                notes::migrate_legacy(&state.dirs.data_dir(), &state.dirs.notes_dir());
             }
 
             // Permite reproducir los WAV grabados vía el protocolo asset://.
@@ -397,6 +411,10 @@ pub fn run() {
             let _ = app
                 .asset_protocol_scope()
                 .allow_directory(dirs.clipboard_dir(), true);
+            // Imágenes pegadas en las notas de ventana.
+            let _ = app
+                .asset_protocol_scope()
+                .allow_directory(dirs.notes_dir(), true);
 
             // Una sola toma del lock: la config se lee entera y se suelta.
             let (

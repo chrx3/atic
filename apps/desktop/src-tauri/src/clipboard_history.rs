@@ -59,7 +59,7 @@ static TRACKING: AtomicBool = AtomicBool::new(false);
 const TRACK_MS: u64 = 200;
 
 const MAX_ITEMS: usize = 100;
-const MAX_IMAGE_BYTES: usize = 8 * 1024 * 1024;
+pub(crate) const MAX_IMAGE_BYTES: usize = 8 * 1024 * 1024;
 const POLL_MS: u64 = 450;
 const HISTORY_FILE: &str = "history.json";
 
@@ -263,7 +263,7 @@ fn save_dismissed_captures(dir: &Path, fingerprints: &HashSet<String>) {
     }
 }
 
-fn encode_png_rgba(rgba: &[u8], width: usize, height: usize) -> Result<Vec<u8>, String> {
+pub(crate) fn encode_png_rgba(rgba: &[u8], width: usize, height: usize) -> Result<Vec<u8>, String> {
     let mut out = Vec::new();
     let encoder = image::codecs::png::PngEncoder::new(&mut out);
     encoder

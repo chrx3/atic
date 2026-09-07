@@ -22,7 +22,9 @@ import {
   Keyboard,
   Lightbulb,
   List,
+  ListChecks,
   Mic,
+  MousePointer2,
   Pencil,
   Pipette,
   Search,
@@ -224,4 +226,6 @@ export {
   Crop,
   Type,
   Pipette,
+  MousePointer2,
+  ListChecks,
 };

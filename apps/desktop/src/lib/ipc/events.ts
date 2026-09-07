@@ -28,6 +28,7 @@ import type {
   DownloadProgress,
   Levels,
   MeetingDetectionPayload,
+  WindowFlipView,
   Segment,
   StatusPayload,
   TranscribeProgress,
@@ -163,17 +164,7 @@ export interface AticEvents {
   /** Launcher oculto (Esc, exclusive, run). */
   "launcher-closed": void;
   /** Prototipo: tapa de notas sobre una ventana ajena. */
-  "window-flip-open": {
-    key: string;
-    title: string;
-    exe: string;
-    previewPath: string;
-    note: string;
-    cardLeft: number;
-    cardTop: number;
-    cardWidth: number;
-    cardHeight: number;
-  };
+  "window-flip-open": WindowFlipView;
   "window-flip-request-close": void;
   /** Abrir el buscador de la ventana principal (puede emitirlo el frontend). */
   "open-search": void;
