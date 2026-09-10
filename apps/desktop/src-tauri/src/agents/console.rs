@@ -95,11 +95,7 @@ fn resolve_local_shell() -> CommandBuilder {
             cmd.arg("-NoLogo");
             return cmd;
         }
-        let cmd_exe = PathBuf::from(&sysroot).join(r"System32\cmd.exe");
-        if cmd_exe.is_file() {
-            return CommandBuilder::new(cmd_exe);
-        }
-        CommandBuilder::new("cmd.exe")
+        CommandBuilder::new(system_cmd_exe())
     }
     #[cfg(not(windows))]
     {
@@ -198,6 +194,25 @@ fn apply_fresh_path(cmd: &mut CommandBuilder, dir_datos: Option<&std::path::Path
     cmd.env("PATH", valor);
 }
 
+/// El `cmd.exe` de Windows, por ruta absoluta.
+///
+/// Por nombre pelado la PTY lo busca en el PATH probando `PATHEXT`, y un
+/// paquete de npm que instale un bin llamado `cmd` deja un `cmd.cmd` en la
+/// carpeta de npm: eso es lo que se lanzaba en vez de la shell, y el CLI de
+/// Node moría con «too many arguments» antes de que el agente arrancara.
+#[cfg(windows)]
+fn system_cmd_exe() -> PathBuf {
+    let sysroot = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
+    let cmd_exe = PathBuf::from(&sysroot).join(r"System32\cmd.exe");
+    if cmd_exe.is_file() {
+        return cmd_exe;
+    }
+    std::env::var_os("COMSPEC")
+        .map(PathBuf::from)
+        .filter(|p| p.is_file())
+        .unwrap_or(cmd_exe)
+}
+
 fn quote_cmd(s: &str) -> String {
     if s.bytes()
         .any(|b| b.is_ascii_whitespace() || matches!(b, b'"' | b'&' | b'^' | b'%'))
@@ -239,7 +254,7 @@ fn build_local_command(command: &str) -> Result<CommandBuilder, String> {
             line.push(' ');
             line.push_str(&quote_cmd(arg));
         }
-        let mut cmd = CommandBuilder::new("cmd.exe");
+        let mut cmd = CommandBuilder::new(system_cmd_exe());
         cmd.arg("/K");
         cmd.arg(line);
         Ok(cmd)
@@ -269,7 +284,7 @@ fn build_shell_line(line: &str) -> CommandBuilder {
             cmd.arg(line);
             return cmd;
         }
-        let mut cmd = CommandBuilder::new("cmd.exe");
+        let mut cmd = CommandBuilder::new(system_cmd_exe());
         cmd.arg("/K");
         cmd.arg(line);
         cmd
@@ -725,6 +740,18 @@ mod tests {
         assert_eq!(
             agent_cli_from_path("cursor-agent.exe").as_deref(),
             Some("cursor-agent")
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn la_shell_de_los_agentes_es_el_cmd_de_windows() {
+        let ruta = system_cmd_exe();
+        assert!(ruta.is_absolute(), "{}", ruta.display());
+        assert!(
+            ruta.to_string_lossy().to_lowercase().ends_with(r"\cmd.exe"),
+            "{}",
+            ruta.display()
         );
     }
 }

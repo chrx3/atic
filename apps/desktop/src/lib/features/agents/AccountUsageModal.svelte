@@ -6,6 +6,7 @@
     CodexUsageWindow,
   } from "$lib/types";
   import { agentClaudeUsage, agentCodexUsage } from "$ipc/agents";
+  import { t } from "$domain/i18n.svelte";
   import Modal from "$ui/Modal.svelte";
   import ProgressBar from "$ui/ProgressBar.svelte";
   import AgentLogo from "./AgentLogo.svelte";
@@ -38,7 +39,7 @@
           ? "OpenCode"
           : agent === "cursor-agent"
             ? "Cursor"
-            : "Agente",
+            : t("page.agents.usageModal.providerFallback"),
   );
   const hasLiveQuota = $derived(agent === "claude" || agent === "codex");
 
@@ -53,21 +54,27 @@
     const date = new Date(typeof value === "number" ? value * 1000 : value);
     if (Number.isNaN(date.getTime())) return null;
     const minutes = Math.max(0, Math.round((date.getTime() - Date.now()) / 60_000));
-    if (minutes < 60) return `Reinicia en ${minutes} min`;
+    if (minutes < 60) return t("page.agents.usageModal.resetMin", { n: minutes });
     const hours = Math.round(minutes / 60);
-    if (hours < 36) return `Reinicia en ${hours} h`;
+    if (hours < 36) return t("page.agents.usageModal.resetH", { n: hours });
     const days = Math.round(hours / 24);
-    return `Reinicia en ${days} d`;
+    return t("page.agents.usageModal.resetD", { n: days });
   }
 
   function durationLabel(minutes: number): string {
     if (minutes % 10_080 === 0) {
       const weeks = minutes / 10_080;
-      return weeks === 1 ? "Semana" : `${weeks} semanas`;
+      return weeks === 1
+        ? t("page.agents.usageModal.week")
+        : t("page.agents.usageModal.weeks", { n: weeks });
     }
-    if (minutes % 1_440 === 0) return `${minutes / 1_440} días`;
-    if (minutes % 60 === 0) return `${minutes / 60} h`;
-    return `${minutes} min`;
+    if (minutes % 1_440 === 0) {
+      return t("page.agents.usageModal.days", { n: minutes / 1_440 });
+    }
+    if (minutes % 60 === 0) {
+      return t("page.agents.usageModal.hours", { n: minutes / 60 });
+    }
+    return t("page.agents.usageModal.minutes", { n: minutes });
   }
 
   function codexRow(key: string, window: CodexUsageWindow | null): UsageRow | null {
@@ -97,10 +104,10 @@
           });
         }
       };
-      add("5h", "5 horas", claude.fiveHour);
-      add("7d", "Semana", claude.sevenDay);
-      add("opus", "Semana · Opus", claude.sevenDayOpus);
-      add("sonnet", "Semana · Sonnet", claude.sevenDaySonnet);
+      add("5h", t("page.agents.usageModal.fiveHours"), claude.fiveHour);
+      add("7d", t("page.agents.usageModal.week"), claude.sevenDay);
+      add("opus", t("page.agents.usageModal.weekOpus"), claude.sevenDayOpus);
+      add("sonnet", t("page.agents.usageModal.weekSonnet"), claude.sevenDaySonnet);
       return out;
     }
     if (codex) {
@@ -145,30 +152,37 @@
 
 <div class="usage-modal">
   <Modal
-    title={`Uso de ${provider}`}
-    subtitle={plan ? `Plan ${plan}` : "Uso restante"}
+    title={t("page.agents.usageModal.title", { provider })}
+    subtitle={plan
+      ? t("page.agents.usageModal.subtitlePlan", { plan })
+      : t("page.agents.usageModal.subtitleFallback")}
     size="sm"
     contained
     {onClose}
   >
     <div class="usage-stack">
-      <div class="provider-mark">
-        <AgentLogo {agent} size={24} />
-        <div>
-          <strong>{provider}</strong>
-          <span>{refreshing ? "Actualizando…" : "Cuenta local activa"}</span>
+      {#if hasLiveQuota}
+        <div class="provider-mark">
+          <AgentLogo {agent} size={22} />
+          <span aria-live="polite">
+            {refreshing
+              ? t("page.agents.usageModal.refreshing")
+              : t("page.agents.usageModal.accountActive")}
+          </span>
         </div>
-      </div>
+      {/if}
 
       {#if loading}
         <div class="usage-state" aria-live="polite">
-          <ProgressBar indeterminate label="Consultando cupos" />
+          <ProgressBar indeterminate label={t("page.agents.usageModal.loading")} />
         </div>
       {:else if error && rows.length === 0}
         <div class="usage-state is-error">
-          <strong>No se pudo leer el uso</strong>
+          <strong>{t("page.agents.usageModal.readFail")}</strong>
           <span>{error}</span>
-          <button type="button" onclick={() => load()}>Reintentar</button>
+          <button type="button" onclick={() => load()}>
+            {t("page.agents.usageModal.retry")}
+          </button>
         </div>
       {:else if rows.length > 0}
         {#if error}
@@ -176,14 +190,18 @@
         {/if}
         <ul class="usage-list">
           {#each rows as row (row.key)}
+            {@const remaining = Math.max(0, Math.round(100 - row.used))}
             <li>
               <div class="usage-head">
                 <span>{row.label}</span>
-                <strong>{Math.max(0, Math.round(100 - row.used))}% restante</strong>
+                <span class="usage-value">
+                  <strong data-numeric>{remaining}%</strong>
+                  {t("page.agents.usageModal.remaining")}
+                </span>
               </div>
               <ProgressBar
-                value={row.used / 100}
-                label={`${Math.round(row.used)}% usado`}
+                value={remaining / 100}
+                ariaLabel={row.label}
                 tone={row.used >= 85 ? "warn" : row.used >= 60 ? "accent" : "ok"}
               />
               {#if row.reset}<span class="reset">{row.reset}</span>{/if}
@@ -192,25 +210,18 @@
         </ul>
         <p class="source">
           {agent === "claude"
-            ? "Misma fuente que /usage en Claude Code."
-            : "Lectura oficial de account/rateLimits/read en Codex."}
+            ? t("page.agents.usageModal.sourceClaude")
+            : t("page.agents.usageModal.sourceCodex")}
         </p>
       {:else if agent === "opencode"}
         <div class="usage-state">
-          <strong>No existe un saldo único de OpenCode</strong>
-          <span>
-            OpenCode usa el proveedor que configures. Puedes ver consumo y costo
-            histórico con <code>opencode stats</code>; el cupo restante depende de
-            OpenAI, Anthropic u otro proveedor.
-          </span>
+          <strong>{t("page.agents.usageModal.opencodeTitle")}</strong>
+          <span>{t("page.agents.usageModal.opencodeBody")}</span>
         </div>
       {:else if agent === "cursor-agent"}
         <div class="usage-state">
-          <strong>Cursor muestra su cupo dentro de la consola</strong>
-          <span>
-            Escribe <code>/usage</code> en la sesión de Cursor para ver el uso y los
-            límites de tu plan. El desglose completo sigue en el dashboard de Cursor.
-          </span>
+          <strong>{t("page.agents.usageModal.cursorTitle")}</strong>
+          <span>{t("page.agents.usageModal.cursorBody")}</span>
           {#if onRunUsageCommand}
             <button
               type="button"
@@ -219,14 +230,14 @@
                 onClose();
               }}
             >
-              Escribir /usage en la consola
+              {t("page.agents.usageModal.runUsage")}
             </button>
           {/if}
         </div>
       {:else}
         <div class="usage-state">
-          <strong>Uso no disponible</strong>
-          <span>Esta consola no pertenece a un agente compatible.</span>
+          <strong>{t("page.agents.usageModal.unavailableTitle")}</strong>
+          <span>{t("page.agents.usageModal.unavailableBody")}</span>
         </div>
       {/if}
     </div>
@@ -237,42 +248,26 @@
   .usage-stack {
     display: flex;
     flex-direction: column;
-    gap: 0.85rem;
+    gap: 1rem;
   }
 
   .provider-mark {
     display: flex;
     align-items: center;
-    gap: 0.7rem;
-    color: var(--rb-text);
+    gap: 0.6rem;
+    color: var(--text);
   }
 
-  .provider-mark > div {
-    display: flex;
-    min-width: 0;
-    flex-direction: column;
-    gap: 0.08rem;
-  }
-
-  .provider-mark strong,
-  .usage-state strong {
-    font-size: 0.75rem;
-    font-weight: 700;
-  }
-
-  .provider-mark span,
-  .usage-state span,
-  .source,
-  .reset {
-    color: var(--rb-muted);
-    font-size: 0.65rem;
+  .provider-mark span {
+    color: var(--muted);
+    font-size: 0.6875rem;
     line-height: 1.45;
   }
 
   .usage-list {
     display: flex;
     flex-direction: column;
-    gap: 0.8rem;
+    gap: 1rem;
     margin: 0;
     padding: 0;
     list-style: none;
@@ -281,7 +276,7 @@
   .usage-list li {
     display: flex;
     flex-direction: column;
-    gap: 0.28rem;
+    gap: 0.3rem;
   }
 
   .usage-head {
@@ -289,51 +284,97 @@
     align-items: baseline;
     justify-content: space-between;
     gap: 0.75rem;
-    font-size: 0.7rem;
   }
 
-  .usage-head strong {
+  .usage-head > span:first-child {
+    color: var(--muted);
+    font-size: 0.75rem;
+  }
+
+  .usage-value {
+    color: var(--muted);
+    font-size: 0.6875rem;
+    white-space: nowrap;
+  }
+
+  .usage-value strong {
+    color: var(--text);
+    font-size: 0.8125rem;
+    font-weight: 650;
     font-variant-numeric: tabular-nums;
   }
 
   .reset {
     align-self: flex-end;
-    color: var(--rb-faint);
+    color: var(--faint);
+    font-size: 0.6875rem;
+    line-height: 1.45;
   }
 
   .source,
   .soft-error {
     margin: 0;
+    color: var(--faint);
+    font-size: 0.6875rem;
+    line-height: 1.45;
+  }
+
+  .soft-error {
+    color: var(--danger);
   }
 
   .usage-state {
     display: flex;
     flex-direction: column;
-    gap: 0.45rem;
-    border-radius: 0.7rem;
+    gap: 0.5rem;
+    border-radius: var(--radius-sm);
     padding: 0.75rem;
-    background: color-mix(in sRGB, var(--rb-surface-2) 72%, transparent);
+    background: color-mix(in sRGB, var(--surface-2) 72%, transparent);
   }
 
-  .usage-state.is-error,
-  .soft-error {
-    color: var(--rb-record);
+  .usage-state strong {
+    color: var(--text);
+    font-size: 0.75rem;
+    font-weight: 650;
+  }
+
+  .usage-state span {
+    color: var(--muted);
+    font-size: 0.6875rem;
+    line-height: 1.45;
+  }
+
+  .usage-state.is-error strong {
+    color: var(--danger);
   }
 
   .usage-state button {
     align-self: flex-start;
-    border: 1px solid color-mix(in sRGB, var(--rb-border) 84%, transparent);
-    border-radius: 0.5rem;
-    padding: 0.28rem 0.55rem;
-    background: var(--rb-surface);
-    color: var(--rb-text);
+    border: 1px solid color-mix(in sRGB, var(--line) 84%, transparent);
+    border-radius: var(--radius-xs);
+    padding: 0.3rem 0.6rem;
+    background: var(--surface);
+    color: var(--text);
     font: inherit;
-    font-size: 0.65rem;
+    font-size: 0.6875rem;
     cursor: pointer;
+    transition:
+      background-color var(--duration-quick) var(--ease-smooth-out),
+      border-color var(--duration-quick) var(--ease-smooth-out),
+      transform var(--duration-quick) var(--ease-smooth-out);
   }
 
-  code {
-    font-family: var(--rb-mono, ui-monospace, monospace);
-    color: var(--rb-text);
+  .usage-state button:hover {
+    background: var(--surface-2);
+    border-color: var(--line-strong);
+  }
+
+  .usage-state button:active {
+    transform: scale(0.96);
+  }
+
+  .usage-state button:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
   }
 </style>

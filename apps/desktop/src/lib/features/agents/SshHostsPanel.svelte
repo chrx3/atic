@@ -11,12 +11,14 @@
     sshTestHost,
   } from "$ipc/agents";
   import { config as appConfig } from "$domain/config.svelte";
+  import { t } from "$domain/i18n.svelte";
   import { getConfig, setConfig } from "$ipc/config";
   import { pickSshIdentityFile } from "$ipc/dialogs";
   import type { AppConfig, SshHost, SshHostSecretFlags } from "$lib/types";
   import SettingsGroup from "$patterns/SettingsGroup.svelte";
   import SettingsRow from "$patterns/SettingsRow.svelte";
   import Button from "$ui/Button.svelte";
+  import ConfirmDialog from "$ui/ConfirmDialog.svelte";
   import Input from "$ui/Input.svelte";
   import Select from "$ui/Select.svelte";
 
@@ -122,30 +124,26 @@
     const user = draft.user.trim();
     const host = draft.host.trim();
     if (!host) {
-      onToast("Host es obligatorio (IP, hostname o alias de ssh_config).");
+      onToast(t("page.agents.ssh.hostRequired"));
       return;
     }
     if (host.includes("@") || /\s/.test(host)) {
-      onToast(
-        "Host debe ser solo el nombre/IP/alias. Usuario y puerto van aparte (o vacíos con alias).",
-      );
+      onToast(t("page.agents.ssh.hostOnlyName"));
       return;
     }
     // host:22 pegado por error (permitir IPv6 con varios ':').
     if (/^[^:]+:\d+$/.test(host)) {
-      onToast(
-        "No pongas el puerto en Host. Usa el campo Puerto, o vacío con alias de ssh_config.",
-      );
+      onToast(t("page.agents.ssh.noPortInHost"));
       return;
     }
     if (user.includes("@") || /\s/.test(user)) {
-      onToast("Usuario inválido. Con un alias de ssh_config, déjalo vacío.");
+      onToast(t("page.agents.ssh.invalidUser"));
       return;
     }
     const label =
       draft.label.trim() || (user ? `${user}@${host}` : host);
     if (draft.auth === "key" && !draft.identity_file?.trim()) {
-      onToast("Auth por clave: elige un identity file.");
+      onToast(t("page.agents.ssh.keyAuthNeedsFile"));
       return;
     }
     const next: SshHost = {
@@ -178,8 +176,11 @@
     }
     draft = null;
     editingId = null;
-    onToast("Host SSH guardado.");
+    onToast(t("page.agents.ssh.saved"));
   }
+
+  /** Host esperando confirmación: borra el host y sus secretos del llavero. */
+  let removing = $state<SshHost | null>(null);
 
   async function removeHost(id: string) {
     const list = (config.ssh_hosts ?? []).filter((h) => h.id !== id);
@@ -187,17 +188,19 @@
       await persistHosts(list);
       await sshDeleteHostSecrets(id);
       await refreshFlags();
+      onToast(t("page.agents.ssh.deleted"));
     } catch (e) {
       onToast(String(e));
     }
     if (editingId === id) cancelEdit();
+    removing = null;
   }
 
   async function clearPassphrase(id: string) {
     try {
       await sshSetHostSecret(id, "passphrase", "");
       await refreshFlags();
-      onToast("Passphrase eliminada del llavero.");
+      onToast(t("page.agents.ssh.passphraseCleared"));
     } catch (e) {
       onToast(String(e));
     }
@@ -219,7 +222,11 @@
           : row,
       );
       config = { ...config, ssh_hosts: list };
-      onToast(result.ok ? "Conexión SSH OK" : "Falló el test SSH");
+      onToast(
+        result.ok
+          ? t("page.agents.ssh.testOk")
+          : t("page.agents.ssh.testFailed"),
+      );
     } catch (e) {
       testMessage = String(e);
       onToast(String(e));
@@ -236,12 +243,12 @@
 </script>
 
 <SettingsGroup
-  title="Hosts SSH"
-  hint="Puedes usar un alias de ~/.ssh/config (Host = contabo, Usuario/Puerto vacíos). Prefiere ssh-agent. Hace falta el cliente OpenSSH."
+  title={t("page.agents.ssh.title")}
+  hint={t("page.agents.ssh.hint")}
 >
   {#if hosts.length === 0 && !draft}
     <p class="py-2 text-xs text-faint">
-      Todavía no hay hosts. Agrega uno para empezar.
+      {t("page.agents.ssh.empty")}
     </p>
   {/if}
 
@@ -260,9 +267,11 @@
             <div class="truncate text-sm font-medium text-text">{h.label}</div>
             <div class="truncate text-xs text-faint">
               {destinationLabel(h)}
-              · {h.auth === "key" ? "clave" : "agent"}
+              · {h.auth === "key"
+                ? t("page.agents.ssh.authKeyTag")
+                : t("page.agents.ssh.authAgentTag")}
               {#if flagsFor(h.id)?.hasPassphrase}
-                · passphrase
+                · {t("page.agents.ssh.passphraseTag")}
               {/if}
             </div>
           </div>
@@ -273,17 +282,19 @@
               disabled={testingId === h.id}
               onclick={() => void test(h)}
             >
-              {testingId === h.id ? "Probando…" : "Probar"}
+              {testingId === h.id
+                ? t("page.agents.ssh.testBusy")
+                : t("page.agents.ssh.test")}
             </Button>
             <Button variant="ghost" size="sm" onclick={() => startEdit(h)}>
-              Editar
+              {t("page.agents.ssh.edit")}
             </Button>
             <Button
               variant="ghost"
               size="sm"
-              onclick={() => void removeHost(h.id)}
+              onclick={() => (removing = h)}
             >
-              Borrar
+              {t("page.agents.ssh.remove")}
             </Button>
           </div>
         </li>
@@ -298,7 +309,7 @@
   {#if !draft}
     <div class="py-2">
       <Button variant="soft" size="sm" onclick={startCreate}>
-        Agregar host
+        {t("page.agents.ssh.add")}
       </Button>
     </div>
   {:else}
@@ -306,23 +317,38 @@
   {/if}
 </SettingsGroup>
 
+{#if removing}
+  <ConfirmDialog
+    title={t("page.agents.ssh.deleteTitle", { label: removing.label })}
+    body={t("page.agents.ssh.deleteBody")}
+    confirmLabel={t("page.agents.ssh.remove")}
+    tone="danger"
+    onConfirm={() => void removeHost(removing!.id)}
+    onCancel={() => (removing = null)}
+  />
+{/if}
+
 {#snippet hostForm(d: SshHost)}
-  <SettingsRow label="Etiqueta">
+  <SettingsRow label={t("page.agents.ssh.labelField")}>
     {#snippet control({ id })}
       <Input {id} bind:value={d.label} placeholder="prod-api" />
     {/snippet}
   </SettingsRow>
   <SettingsRow
-    label="Usuario"
-    hint="Opcional con alias de ssh_config (vacío = lo define el config)."
+    label={t("page.agents.ssh.userField")}
+    hint={t("page.agents.ssh.userHint")}
   >
     {#snippet control({ id })}
-      <Input {id} bind:value={d.user} placeholder="root (o vacío)" />
+      <Input
+        {id}
+        bind:value={d.user}
+        placeholder={t("page.agents.ssh.userPlaceholder")}
+      />
     {/snippet}
   </SettingsRow>
   <SettingsRow
-    label="Host"
-    hint="IP, hostname, o alias Host de ~/.ssh/config (p.ej. contabo)."
+    label={t("page.agents.ssh.hostField")}
+    hint={t("page.agents.ssh.hostHint")}
   >
     {#snippet control({ id })}
       <Input
@@ -333,8 +359,8 @@
     {/snippet}
   </SettingsRow>
   <SettingsRow
-    label="Puerto"
-    hint="Vacío = no pasar -p (usa ssh_config o el default 22)."
+    label={t("page.agents.ssh.portField")}
+    hint={t("page.agents.ssh.portHint")}
   >
     {#snippet control({ id })}
       <Input
@@ -343,7 +369,7 @@
         min="0"
         max="65535"
         value={d.port > 0 ? String(d.port) : ""}
-        placeholder="auto"
+        placeholder={t("page.agents.ssh.portPlaceholder")}
         oninput={(e: Event) => {
           const raw = (e.currentTarget as HTMLInputElement).value.trim();
           if (!raw) {
@@ -356,14 +382,14 @@
       />
     {/snippet}
   </SettingsRow>
-  <SettingsRow label="Autenticación">
+  <SettingsRow label={t("page.agents.ssh.authField")}>
     {#snippet control({ id })}
       <Select
         {id}
         value={d.auth}
         options={[
-          { value: "agent", label: "ssh-agent (recomendado)" },
-          { value: "key", label: "Identity file" },
+          { value: "agent", label: t("page.agents.ssh.authAgentOption") },
+          { value: "key", label: t("page.agents.ssh.identityFile") },
         ]}
         onchange={(e: Event) => {
           d.auth = (e.currentTarget as HTMLSelectElement).value;
@@ -372,14 +398,17 @@
     {/snippet}
   </SettingsRow>
   {#if d.auth === "key"}
-    <SettingsRow label="Identity file" hint="Ruta al .pem / id_ed25519">
+    <SettingsRow
+      label={t("page.agents.ssh.identityFile")}
+      hint={t("page.agents.ssh.identityHint")}
+    >
       {#snippet control()}
         <div class="flex min-w-0 flex-col gap-1">
           <Input
             readonly
             mono
             value={d.identity_file ?? ""}
-            placeholder="Sin archivo"
+            placeholder={t("page.agents.ssh.noFilePlaceholder")}
           />
           <Button
             variant="ghost"
@@ -387,16 +416,16 @@
             full
             onclick={() => void pickIdentity()}
           >
-            Elegir…
+            {t("page.agents.ssh.choose")}
           </Button>
         </div>
       {/snippet}
     </SettingsRow>
     <SettingsRow
-      label="Passphrase"
+      label={t("page.agents.ssh.passphrase")}
       hint={flagsFor(d.id)?.hasPassphrase
-        ? "Guardada en el llavero; deja vacío para no cambiar."
-        : "Opcional; va al llavero."}
+        ? t("page.agents.ssh.passphraseSavedHint")
+        : t("page.agents.ssh.passphraseHint")}
     >
       {#snippet control({ id })}
         <div class="flex min-w-0 flex-col gap-1">
@@ -406,7 +435,7 @@
             autocomplete="new-password"
             placeholder={flagsFor(d.id)?.hasPassphrase
               ? "••••••••"
-              : "Opcional"}
+              : t("page.agents.ssh.optionalPlaceholder")}
             bind:value={passphrase}
           />
           {#if flagsFor(d.id)?.hasPassphrase}
@@ -416,14 +445,17 @@
               full
               onclick={() => void clearPassphrase(d.id)}
             >
-              Borrar del llavero
+              {t("page.agents.ssh.clearPassphrase")}
             </Button>
           {/if}
         </div>
       {/snippet}
     </SettingsRow>
   {/if}
-  <SettingsRow label="Cwd remoto" hint="Directorio por defecto en el host.">
+  <SettingsRow
+    label={t("page.agents.ssh.cwd")}
+    hint={t("page.agents.ssh.cwdHint")}
+  >
     {#snippet control({ id })}
       <Input
         {id}
@@ -437,7 +469,10 @@
       />
     {/snippet}
   </SettingsRow>
-  <SettingsRow label="Binario remoto" hint="Comando del agente en el PATH remoto.">
+  <SettingsRow
+    label={t("page.agents.ssh.remoteBin")}
+    hint={t("page.agents.ssh.remoteBinHint")}
+  >
     {#snippet control({ id })}
       <Input
         {id}
@@ -452,9 +487,11 @@
     {/snippet}
   </SettingsRow>
   <div class="flex justify-end gap-2 py-2">
-    <Button variant="ghost" size="sm" onclick={cancelEdit}>Cancelar</Button>
+    <Button variant="ghost" size="sm" onclick={cancelEdit}>
+      {t("page.agents.ssh.cancel")}
+    </Button>
     <Button variant="primary" size="sm" onclick={() => void saveDraft()}>
-      Listo
+      {t("page.agents.ssh.done")}
     </Button>
   </div>
 {/snippet}

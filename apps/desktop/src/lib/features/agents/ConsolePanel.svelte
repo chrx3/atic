@@ -60,7 +60,8 @@
   import HubConversation from "./HubConversation.svelte";
   import { agents } from "$lib/agentSessions.svelte";
   import { agentMcpStatus, agentMcpToggle } from "$ipc/agents";
-  import Icon from "$ui/Icon.svelte";
+  import ConfirmDialog from "$ui/ConfirmDialog.svelte";
+import Icon from "$ui/Icon.svelte";
   import {
     ArrowLeft,
     Activity,
@@ -369,6 +370,8 @@
   const MIN_TERM_W = 280;
   const MIN_TERM_H = 160;
   let pendingKeys = $state<Record<string, true>>({});
+  /** Cierre esperando confirmación: hay una PTY viva que no se puede recuperar. */
+  let pendingClose = $state<{ keys: string[]; label: string } | null>(null);
   let bootedKeys = $state<Record<string, true>>({});
   const bootTimers = new Map<string, number>();
 
@@ -457,7 +460,7 @@
 
   /** Última carpeta de la ruta: en la barra no cabe el path entero. */
   function folderName(path: string | null): string {
-    if (!path) return "Carpeta de inicio";
+    if (!path) return t("page.agents.console.startFolder");
     const parts = path.split(/[/\\]/).filter(Boolean);
     return parts.at(-1) || path;
   }
@@ -1298,7 +1301,7 @@
     mcpReiniciar = mcpReiniciar.filter((k) => k !== key);
     error = null;
     if (tab.kind === "ssh" && !hostById(tab.hostId)) {
-      error = "Elige un host SSH en la consola (o agrégalo en Ajustes → Agentes).";
+      error = t("page.agents.console.pickHostError");
       return;
     }
     connecting = true;
@@ -1452,7 +1455,7 @@
     if (tabs.length >= MAX_TABS) {
       const idle = idleTabKey();
       if (!idle) {
-        error = `Ya hay ${MAX_TABS} consolas abiertas. Cierra alguna para abrir otra.`;
+        error = t("page.agents.console.maxTabs", { n: MAX_TABS });
         return;
       }
       const tab = tabOf(idle);
@@ -1597,7 +1600,21 @@
     }
   });
 
+  /**
+   * Cerrar una consola con PTY viva pide confirmación: matarla no tiene
+   * deshacer. Sin sesión (o todavía preparándose) se cierra directo.
+   */
   async function closeTab(key: string) {
+    const tab = tabs.find((t) => t.key === key);
+    if (!tab) return;
+    if (tab.sessionId || pendingKeys[key]) {
+      pendingClose = { keys: [key], label: baseLabel(tab) };
+      return;
+    }
+    await closeTabNow(key);
+  }
+
+  async function closeTabNow(key: string) {
     const idx = tabs.findIndex((t) => t.key === key);
     if (idx < 0) return;
     // Cerrar una delegación es decir «ya la vi»: sin anotarlo, el efecto la
@@ -1781,9 +1798,23 @@
 
   /** Cerrar la ficha de un grupo cierra todas sus consolas. */
   async function closeGroup(entry: RailGroup) {
-    for (const key of [...entry.keys]) {
-      await closeTab(key);
+    const keys = [...entry.keys];
+    const live = keys.some((key) => {
+      const tab = tabs.find((t) => t.key === key);
+      return tab ? Boolean(tab.sessionId) || pendingKeys[key] === true : false;
+    });
+    if (live) {
+      pendingClose = { keys, label: entry.label };
+      return;
     }
+    for (const key of keys) await closeTabNow(key);
+  }
+
+  async function confirmClose() {
+    const pending = pendingClose;
+    if (!pending) return;
+    pendingClose = null;
+    for (const key of pending.keys) await closeTabNow(key);
   }
 
   /**
@@ -2463,7 +2494,7 @@
 <section
   class="console console-desk"
   bind:this={consoleEl}
-  aria-label="Consola"
+  aria-label={t("page.agents.console.aria")}
   onwheelcapture={onConsoleWheel}
 >
   <aside
@@ -2481,9 +2512,9 @@
       onBarPointerDown(e);
     }}
   >
-    <div class="rail-tabs" role="group" aria-label="Consolas abiertas">
-      {#each tabs as t, i (t.key)}
-        {@const railGroup = railGroups.find((g) => g.anchorKey === t.key)}
+    <div class="rail-tabs" role="group" aria-label={t("page.agents.console.openTabsAria")}>
+      {#each tabs as tab, i (tab.key)}
+        {@const railGroup = railGroups.find((g) => g.anchorKey === tab.key)}
         {#if railGroup}
           <!-- El grupo entero es UNA ficha: clicarla restaura la división. -->
           <span class="rail-slot">
@@ -2512,66 +2543,74 @@
               </span>
               <span class="rail-copy">
                 <span class="rail-name">{railGroup.label}</span>
-                <span class="rail-status">{railGroup.tabs.length} consolas</span>
+                <span class="rail-status">
+                  {t("page.agents.console.consolesCount", {
+                    n: railGroup.tabs.length,
+                  })}
+                </span>
               </span>
               {#if railGroup.tabs.some((gt) => gt.sessionId)}
-                <span class="live" use:tip={"Sesión activa"} aria-hidden="true"></span>
+                <span class="live" use:tip={t("page.agents.console.activeSession")} aria-hidden="true"></span>
               {/if}
             </button>
             <button
               type="button"
               class="tab-x"
-              aria-label="Cerrar grupo {railGroup.label}"
-              use:tip={"Cerrar el grupo y todas sus consolas"}
+              aria-label={t("page.agents.console.closeGroupAria", {
+                label: railGroup.label,
+              })}
+              use:tip={t("page.agents.console.closeGroupTip")}
               onclick={() => void closeGroup(railGroup)}
             >
               <Icon icon={X} size={9} />
             </button>
           </span>
-        {:else if !railGroups.some((g) => g.keys.includes(t.key))}
+        {:else if !railGroups.some((g) => g.keys.includes(tab.key))}
           <span class="rail-slot">
             <button
               type="button"
               class="rail-tab"
-              class:is-on={t.key === activeKey}
-              class:is-dragging={tabDrag?.key === t.key}
-              aria-current={t.key === activeKey ? "true" : undefined}
+              class:is-on={tab.key === activeKey}
+              class:is-dragging={tabDrag?.key === tab.key}
+              aria-current={tab.key === activeKey ? "true" : undefined}
               use:tip={tabLabels[i]}
-              onpointerdown={(e) => beginTabDrag(t.key, e)}
+              onpointerdown={(e) => beginTabDrag(tab.key, e)}
               oncontextmenu={(e) => {
                 e.preventDefault();
                 e.stopPropagation();
-                ctxMenu = { x: e.clientX, y: e.clientY, key: t.key };
+                ctxMenu = { x: e.clientX, y: e.clientY, key: tab.key };
               }}
               onclick={() => {
                 if (dragConsumedClick) {
                   dragConsumedClick = false;
                   return;
                 }
-                switchTab(t.key);
+                switchTab(tab.key);
               }}
             >
-              <span class="rail-logo"><AgentLogo agent={t.command} size={18} /></span>
+              <span class="rail-logo"><AgentLogo agent={tab.command} size={18} /></span>
               <span class="rail-copy">
                 <span class="rail-name">{tabLabels[i]}</span>
                 <span class="rail-status">
-                  {t.sessionId
-                    ? "Activa"
-                    : connecting && t.key === activeKey
-                      ? "Preparando"
-                      : "Pausada"}
+                  {tab.sessionId
+                    ? t("page.agents.console.tabActive")
+                    : connecting && tab.key === activeKey
+                      ? t("page.agents.console.tabPreparing")
+                      : t("page.agents.console.tabPaused")}
                 </span>
               </span>
-              {#if t.sessionId}
-                <span class="live" use:tip={"Sesión activa"} aria-hidden="true"></span>
+              {#if tab.sessionId}
+                <span class="live" use:tip={t("page.agents.console.activeSession")} aria-hidden="true"></span>
               {/if}
             </button>
             <button
               type="button"
               class="tab-x"
-              aria-label="Cerrar {tabLabels[i]}"
-              use:tip={"Cerrar pestaña"}
-              onclick={() => void closeTab(t.key)}
+              aria-label={t("page.agents.console.closeTabAria", {
+                label: tabLabels[i],
+              })}
+              use:tip={t("page.agents.console.closeTabTip")}
+              onclick={() => void closeTab(tab.key)}
             >
               <Icon icon={X} size={9} />
             </button>
@@ -2584,10 +2623,10 @@
         <button
           type="button"
           class="tab-add"
-          aria-label="Nueva consola o agente"
+          aria-label={t("page.agents.console.newConsoleAria")}
           aria-haspopup="menu"
           aria-expanded={addMenuOpen}
-          use:tip={"Nueva consola o agente (Ctrl+N)"}
+          use:tip={t("page.agents.console.newConsoleTip")}
           disabled={connecting || !canAddTab}
           onclick={toggleAddMenu}
         >
@@ -2597,17 +2636,19 @@
           <div
             class="add-pop"
             role="menu"
-            aria-label="Abrir nueva consola"
+            aria-label={t("page.agents.console.openNewAria")}
             tabindex="-1"
             onpointerdown={(e) => e.stopPropagation()}
           >
             {#if onPickFolder}
-              <p class="add-group" aria-hidden="true">Se abre en</p>
+              <p class="add-group" aria-hidden="true">
+                {t("page.agents.console.opensIn")}
+              </p>
               <button
                 type="button"
                 class="add-item is-folder"
                 role="menuitem"
-                use:tip={startFolder ?? "Carpeta de inicio del usuario"}
+                use:tip={startFolder ?? t("page.agents.console.startFolderUser")}
                 onclick={() => void pickStartFolder(true)}
               >
                 <span class="add-glyph"><Icon icon={Folder} size={13} /></span>
@@ -2615,7 +2656,9 @@
                 <span class="add-chevron" aria-hidden="true">›</span>
               </button>
             {/if}
-            <p class="add-group" aria-hidden="true">Agentes</p>
+            <p class="add-group" aria-hidden="true">
+              {t("page.agents.console.agents")}
+            </p>
             {#each AGENTS as agent (agent.cli)}
               {#if !agentPathReady}
                 <button
@@ -2633,7 +2676,9 @@
                   type="button"
                   class="add-item"
                   role="menuitem"
-                  use:tip={`${agent.name} no está instalado. Abre una consola y ejecuta el instalador oficial.`}
+                  use:tip={t("page.agents.console.agentNotInstalled", {
+                    name: agent.name,
+                  })}
                   onclick={() => installAgent(agent)}
                 >
                   <span class="add-glyph"><AgentLogo agent={agent.cli} size={14} /></span>
@@ -2666,7 +2711,7 @@
               onclick={() => addFromMenu({ kind: "local" })}
             >
               <span class="add-glyph"><Icon icon={SquareTerminal} size={13} /></span>
-              Consola local
+              {t("page.agents.console.localConsole")}
             </button>
             <button
               type="button"
@@ -2675,7 +2720,7 @@
               onclick={() => addFromMenu({ kind: "ssh" })}
             >
               <span class="add-glyph is-ssh-glyph">SSH</span>
-              Consola SSH
+              {t("page.agents.console.sshConsole")}
             </button>
             <button
               type="button"
@@ -2685,14 +2730,14 @@
               onclick={() => (cmdPromptOpen = !cmdPromptOpen)}
             >
               <span class="add-glyph is-ssh-glyph">›_</span>
-              Comando…
+              {t("page.agents.console.command")}
             </button>
             {#if cmdPromptOpen}
               <input
                 class="add-cmd"
                 type="text"
                 placeholder="ssh root@1.2.3.4 · dashboard"
-                aria-label="Comando a ejecutar en una consola nueva"
+                aria-label={t("page.agents.console.commandAria")}
                 bind:value={cmdText}
                 {@attach (el) => {
                   void setOverlayTextMode(true).catch(() => {});
@@ -2710,14 +2755,16 @@
               />
             {/if}
             {#if savedCmds.length > 0}
-              <p class="add-group" aria-hidden="true">Guardados</p>
+              <p class="add-group" aria-hidden="true">
+                {t("page.agents.console.savedGroup")}
+              </p>
               {#each savedCmds as cmd (cmd)}
                 <span class="add-saved">
                   <button
                     type="button"
                     class="add-item"
                     role="menuitem"
-                    use:tip={`Abrir consola con «${cmd}»`}
+                    use:tip={t("page.agents.console.openSavedCmd", { cmd })}
                     onclick={() =>
                       addFromMenu({ kind: "local", label: cmd, command: cmd })}
                   >
@@ -2729,8 +2776,8 @@
                   <button
                     type="button"
                     class="add-forget"
-                    aria-label={`Olvidar «${cmd}»`}
-                    use:tip={"Olvidar comando"}
+                    aria-label={t("page.agents.console.forgetSavedAria", { cmd })}
+                    use:tip={t("page.agents.console.forgetCommand")}
                     onclick={() => removeSavedCmd(cmd)}
                   >
                     <Icon icon={X} size={9} />
@@ -2765,8 +2812,10 @@
     <button
       type="button"
       class="rail-resizer"
-      aria-label={`Cambiar ancho de la barra lateral, ${Math.round(railWidth)} píxeles`}
-      use:tip={"Arrastra para cambiar el ancho · Doble clic para contraer"}
+      aria-label={t("page.agents.console.railWidthAria", {
+        n: Math.round(railWidth),
+      })}
+      use:tip={t("page.agents.console.railResizeTip")}
       data-rail-resizer
       onpointerdown={startRailResize}
       onkeydown={onRailResizeKey}
@@ -2791,12 +2840,12 @@
           <button
             type="button"
             class="back-btn"
-            aria-label="Volver al lanzador"
-            use:tip={"Volver al lanzador"}
+            aria-label={t("page.agents.console.backToLauncher")}
+            use:tip={t("page.agents.console.backToLauncher")}
             onclick={onBack}
           >
             <Icon icon={ArrowLeft} size={13} />
-            <span>Agentes</span>
+            <span>{t("page.agents.console.agents")}</span>
           </button>
         {/if}
         {#if active?.command}
@@ -2828,13 +2877,13 @@
             class:is-busy={mcpOcupado === mcpCli}
             disabled={mcpOcupado === mcpCli}
             use:tip={mcpPendiente
-              ? "Conectado, pero esta consola arrancó antes: reiníciala para que el agente vea las herramientas."
+              ? t("page.agents.console.mcpPending")
               : mcpOn
-                ? "Este agente está conectado al hub de Atic y puede hablar con los demás. Clic para desconectarlo."
-                : "Activar MCP para comunicar agentes de distintos proveedores. Clic aquí."}
+                ? t("page.agents.console.mcpConnected")
+                : t("page.agents.console.mcpEnable")}
             aria-label={mcpOn
-              ? "Desconectar el MCP de este agente"
-              : "Activar el MCP de este agente"}
+              ? t("page.agents.console.mcpDisconnectAria")
+              : t("page.agents.console.mcpEnableAria")}
             aria-pressed={mcpOn === true}
             onclick={() => void toggleMcp()}
           >
@@ -2853,15 +2902,21 @@
         {/if}
         <div class="where-block">
           <p class="where" use:tip={active ? tabLabels[tabs.indexOf(active)] : ""}>
-            {active ? tabLabels[tabs.indexOf(active)] : "Sin consolas"}
+            {active
+              ? tabLabels[tabs.indexOf(active)]
+              : t("page.agents.console.noConsoles")}
           </p>
         </div>
         {#if onPickFolder}
           <button
             type="button"
             class="folder-chip"
-            use:tip={`Carpeta de inicio: ${startFolder ?? "carpeta del usuario"}. Las consolas nuevas se abren acá y las shells vivas se mudan; los agentes se quedan.`}
-            aria-label={`Cambiar carpeta de inicio. Actual: ${startFolder ?? "carpeta del usuario"}`}
+            use:tip={t("page.agents.console.startFolderTip", {
+              folder: startFolder ?? t("page.agents.console.userFolder"),
+            })}
+            aria-label={t("page.agents.console.changeStartFolderAria", {
+              folder: startFolder ?? t("page.agents.console.userFolder"),
+            })}
             onclick={() => void pickStartFolder()}
           >
             <Icon icon={Folder} size={12} />
@@ -2885,7 +2940,7 @@
               }}
             >
               {#if sshHosts.length === 0}
-                <option value="">Sin hosts</option>
+                <option value="">{t("page.agents.console.noHosts")}</option>
               {:else}
                 {#each sshHosts as h (h.id)}
                   <option value={h.id}>{hostOptionLabel(h)}</option>
@@ -2983,9 +3038,13 @@
           type="button"
           class="icon-btn pin-btn"
           class:is-on={pinned}
-          aria-label={pinned ? "Desfijar ventana" : "Fijar ventana arriba"}
+          aria-label={pinned
+            ? t("page.agents.console.unpinWindow")
+            : t("page.agents.console.pinWindow")}
           aria-pressed={pinned}
-          use:tip={pinned ? "Desfijar ventana" : "Fijar ventana arriba"}
+          use:tip={pinned
+            ? t("page.agents.console.unpinWindow")
+            : t("page.agents.console.pinWindow")}
           onclick={() => {
             const next = !pinned;
             pinned = next;
@@ -3039,8 +3098,8 @@
         <button
           type="button"
           class="err-x"
-          aria-label="Descartar aviso"
-          use:tip={"Descartar aviso"}
+          aria-label={t("page.agents.console.dismissNotice")}
+          use:tip={t("page.agents.console.dismissNotice")}
           onclick={() => (error = null)}
         >
           <Icon icon={X} size={11} />
@@ -3061,13 +3120,13 @@
         <div class="empty">
           <EmptyState
             compact
-            title="Sin consolas"
-            hint="Abre una consola local (PowerShell) o una sesión SSH."
+            title={t("page.agents.console.noConsoles")}
+            hint={t("page.agents.console.emptyHint")}
           >
             {#snippet action()}
               <button type="button" class="chip is-go" onclick={() => newTab("local")}>
                 <Icon icon={SquareTerminal} size={12} />
-                Nueva consola
+                {t("page.agents.console.newConsole")}
               </button>
             {/snippet}
           </EmptyState>
@@ -3076,8 +3135,8 @@
         <div class="empty">
           <EmptyState
             compact
-            title="Sin host remoto"
-            hint="Agrega un host en Ajustes → Agentes y vuelve a abrir la consola."
+            title={t("page.agents.console.noRemoteHost")}
+            hint={t("page.agents.console.noRemoteHostHint")}
           />
         </div>
       {:else if !paneMode && !connected && !connecting}
@@ -3085,16 +3144,16 @@
           <EmptyState
             compact
             title={active?.kind === "local"
-              ? "Consola local"
-              : `SSH · ${sshLabel ?? "remoto"}`}
+              ? t("page.agents.console.localConsole")
+              : `SSH · ${sshLabel ?? t("page.agents.console.remoteFallback")}`}
             hint={active?.kind === "local"
-              ? "PowerShell en este equipo (fallback cmd)."
-              : "Abre ssh -t al host seleccionado."}
+              ? t("page.agents.console.localConsoleHint")
+              : t("page.agents.console.sshConsoleHint")}
           >
             {#snippet action()}
               <button type="button" class="chip is-go" onclick={() => void connect()}>
                 <Icon icon={SquareTerminal} size={12} />
-                Conectar
+                {t("page.agents.connect")}
               </button>
             {/snippet}
           </EmptyState>
@@ -3164,7 +3223,7 @@
           class:is-vertical={divider.direction === "right"}
           role="separator"
           aria-orientation={divider.direction === "right" ? "vertical" : "horizontal"}
-          use:tip={"Arrastra para repartir el espacio · doble clic: mitades"}
+          use:tip={t("page.agents.console.dividerTip")}
           style={divider.direction === "right"
             ? `left: ${divider.seam}%; top: ${divider.y}%; height: ${divider.height}%;`
             : `top: ${divider.seam}%; left: ${divider.x}%; width: ${divider.width}%;`}
@@ -3210,7 +3269,7 @@
             if (entry) detachGroup(entry);
           }}
         >
-          Separar grupo
+          {t("page.agents.console.detachGroup")}
         </button>
         <button
           type="button"
@@ -3222,7 +3281,7 @@
             if (entry) void closeGroup(entry);
           }}
         >
-          Cerrar grupo
+          {t("page.agents.console.closeGroup")}
         </button>
       {:else}
         <button
@@ -3236,7 +3295,7 @@
             void copyFrom(k);
           }}
         >
-          Copiar
+          {t("page.agents.console.copy")}
         </button>
         <button
           type="button"
@@ -3249,7 +3308,7 @@
             void pasteInto(k);
           }}
         >
-          Pegar
+          {t("page.agents.console.paste")}
         </button>
         {#if visiblePaneKeys.length > 1 && visiblePaneKeys.includes(ctxMenu.key)}
           <button
@@ -3262,7 +3321,7 @@
               removeFromGroup(k);
             }}
           >
-            Sacar del grupo
+            {t("page.agents.console.removeFromGroup")}
           </button>
         {/if}
         <button
@@ -3275,7 +3334,7 @@
             void closeTab(k);
           }}
         >
-          Cerrar consola
+          {t("page.agents.console.closeConsole")}
         </button>
       {/if}
     </div>
@@ -3295,6 +3354,17 @@
           : undefined}
       />
     {/key}
+  {/if}
+
+  {#if pendingClose}
+    <ConfirmDialog
+      title={t("page.agents.console.closeConfirmTitle", { label: pendingClose.label })}
+      body={t("page.agents.console.closeConfirmBody")}
+      confirmLabel={t("page.agents.console.closeConfirmAction")}
+      tone="danger"
+      onConfirm={() => void confirmClose()}
+      onCancel={() => (pendingClose = null)}
+    />
   {/if}
 </section>
 

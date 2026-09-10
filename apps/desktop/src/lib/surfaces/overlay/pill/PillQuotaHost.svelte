@@ -32,6 +32,7 @@
    */
   import AgentLogo from "$features/agents/AgentLogo.svelte";
   import { t } from "$domain/i18n.svelte";
+  import { ms, MOTION } from "$lib/motion";
   import { agentQuotas } from "$domain/agentQuotas.svelte";
   import { config } from "$domain/config.svelte";
   import { sessionEffect } from "$domain/session";
@@ -61,6 +62,7 @@
     spanFrom,
     type QuotaBar,
     type QuotaRow,
+    type QuotaTone,
   } from "./pillQuota";
   import {
     enterQuotaPanel,
@@ -86,9 +88,19 @@
   /** Margen mínimo contra el borde de la ventana. */
   const EDGE = 6;
   /** `--morph-close-dur`: cuánto dura el repliegue antes de desmontar. */
-  const CLOSE_MS = 100;
+  const CLOSE_MS = ms(MOTION.morphClose);
+  /** Radio de la gota de detalle del canto (más chica que el panel). */
+  const CARD_CORNER = 12;
+  /** Radio del cuello panel→detalle. Un poco más fino que el de la pill. */
+  const CARD_STEM_R = 5;
 
   let el = $state<HTMLElement | null>(null);
+  /** Card de detalle del canto: gota propia, unida por un cuello. */
+  let cardEl = $state<HTMLElement | null>(null);
+  /** Anillo de cada agente: de ahí sale la altura de la card. */
+  let agentEls = $state<Record<string, HTMLElement | null>>({});
+  /** Centro de la card, en coords del panel (layout, no bounding). */
+  let cardTop = $state(0);
   let x = $state(0);
   let y = $state(0);
   /** Lado del panel que mira a la pill: de ahí nace el morph. */
@@ -119,6 +131,12 @@
       isAgentShown(row.agent, agentsShown),
     ),
   );
+
+  /**
+   * Agente bajo el puntero. La fila de anillos no lleva texto: el detalle
+   * completo aparece abajo, y sin hover manda la ventana más apretada.
+   */
+  let hover = $state<string | null>(null);
 
   function spanText(ms: number): string {
     const span = spanFrom(ms);
@@ -207,6 +225,42 @@
     })}`;
   }
 
+  /** La ventana más apretada del agente: el anillo resume eso. */
+  function headline(row: QuotaRow): { percent: number; tone: QuotaTone } {
+    const first = row.bars[0];
+    if (!first) return { percent: 0, tone: "ok" };
+    return row.bars.reduce(
+      (best, bar) =>
+        bar.percent > best.percent
+          ? { percent: bar.percent, tone: bar.tone }
+          : best,
+      { percent: first.percent, tone: first.tone },
+    );
+  }
+
+  /** Sin hover, el agente más apretado; con hover, el apuntado. */
+  const detailRow = $derived.by(() => {
+    const pointed = hover ? rows.find((r) => r.agent === hover) : null;
+    if (pointed) return pointed;
+    const withBars = rows.filter((row) => row.bars.length > 0);
+    if (withBars.length === 0) return rows[0] ?? null;
+    return withBars.reduce((a, b) =>
+      headline(b).percent > headline(a).percent ? b : a,
+    );
+  });
+
+  /**
+   * Isla vertical (pill acoplada a un canto) y sin rueda abierta: el panel se
+   * dibuja en columna para acompañar el canto. Se pregunta por la silueta y
+   * no por `side`: con la rueda abierta el panel también puede caer a un
+   * costado y ahí el layout horizontal sigue siendo el correcto.
+   */
+  const sideLayout = $derived.by(() => {
+    if (quotaHoverState.parts?.length) return false;
+    const shape = surfaces.live["pill-skin"] ?? surfaces.live["pill"];
+    return shape != null && shape.h > shape.w * 1.2;
+  });
+
   /**
    * Montar / desmontar, con el repliegue en el medio.
    *
@@ -220,6 +274,7 @@
       alive = true;
       return;
     }
+    hover = null;
     shown = false;
     const timer = setTimeout(() => {
       alive = false;
@@ -241,6 +296,7 @@
   $effect(() => {
     const anchor = quotaHoverState.anchor;
     void rows.length;
+    void sideLayout;
     void quotaHoverState.fallback;
     void agentQuotas.loading;
     if (!alive || !el) {
@@ -332,7 +388,34 @@
     return () => cancelAnimationFrame(raf);
   });
 
+  /**
+   * La card del canto se centra contra el anillo del proveedor que se está
+   * viendo. Se mide con `offsetTop` (layout, no bounding): el morph escala el
+   * panel y un bounding a mitad de vuelo dejaría la card corrida.
+   */
+  $effect(() => {
+    if (!sideLayout || !el || !cardEl) return;
+    const row = detailRow;
+    const ring = row ? agentEls[row.agent] : null;
+    if (!ring) return;
+    const h = cardEl.offsetHeight;
+    const vh = window.innerHeight;
+    const top = ring.offsetTop + ring.offsetHeight / 2 - h / 2;
+    cardTop = Math.max(EDGE - y, Math.min(top, vh - EDGE - h - y));
+  });
+
   $effect(() => (shown && el ? surfaces.add("quota", el) : undefined));
+
+  /**
+   * La card del canto flota fuera de la caja del panel, así que se publica
+   * como zona viva propia. Sin esto, el overlay se desarma al mover el puntero
+   * hacia ella y el panel se cierra justo cuando ibas a leer el detalle.
+   */
+  $effect(() => {
+    if (!sideLayout || !cardEl) return;
+    void side;
+    return surfaces.add("quota-card", cardEl);
+  });
 
   $effect(() => {
     if (!alive || !el) {
@@ -345,6 +428,9 @@
     void x;
     void y;
     void rows.length;
+    void hover;
+    void sideLayout;
+    void cardTop;
     void quotaHoverState.fallback;
     void quotaHoverState.parts;
     void quotaHoverState.anchor;
@@ -391,8 +477,29 @@
           const stem = stemBetween(next.body, rect, stemSide, next.radius);
           if (stem) shapes.push(stem);
         }
+        // Gota de detalle del canto: caja + cuello, en la misma isla que el
+        // panel para que la piel las una. El contenido va encima.
+        let card = "";
+        const cr = sideLayout ? cardEl?.getBoundingClientRect() : null;
+        if (cr && cr.width > 0 && cr.height > 0) {
+          const cardRect = { x: cr.x, y: cr.y, w: cr.width, h: cr.height };
+          const neck = stemBetween(
+            cardRect,
+            rect,
+            stemSide === "left" ? "right" : "left",
+            CARD_STEM_R,
+          );
+          if (neck) {
+            shapes.push(boxShape(cardRect, CARD_CORNER * k), neck);
+            card = rectKey(cardRect);
+
+            // La card viaja con transición: el hit-rect tiene que seguirla
+            // cuadro a cuadro, no quedar clavado en la posición vieja.
+            if (!surfaces.dragging) surfaces.schedule();
+          }
+        }
         return {
-          key: `${rectKey(rect)}:${stemSide}:${next ? rectKey(next.body) : ""}:${next?.radius ?? 0}`,
+          key: `${rectKey(rect)}:${stemSide}:${next ? rectKey(next.body) : ""}:${next?.radius ?? 0}:${card}`,
           shapes,
         };
       },
@@ -408,6 +515,7 @@
     class="q-panel float-emerge"
     class:is-joined={joined}
     class:is-shown={shown}
+    class:is-side={sideLayout}
     data-side={side}
     data-quota-panel
     data-float="quota"
@@ -421,51 +529,111 @@
     onpointerleave={leaveQuotaPanel}
   >
     {#if rows.length > 0}
-      <div class="q-rows">
+      <div class="q-rings">
         {#each rows as row (row.agent)}
-          <div class="q-row">
-            <div class="q-head">
-              <AgentLogo agent={row.agent} size={13} />
-              <span class="q-name">{row.name}</span>
-              {#if row.staleAt != null}
-                <span class="q-meta"
-                  >{t("pill.quota.stale", { when: spanText(now - row.staleAt) })}</span
-                >
-              {:else if row.plan}
-                <span class="q-meta">{planText(row.plan)}</span>
-              {/if}
-            </div>
-
-            {#if row.error}
-              <div class="q-note is-error">{row.error}</div>
-            {:else if row.spend}
-              <div class="q-note">{spendText(row)}</div>
-            {/if}
-
-            <!-- El modelo entra a la clave: dos semanales «model» del mismo
-                 largo (Antigravity: Gemini y Claude+GPT) colisionaban y Svelte
-                 tiraba each_key_duplicate, dejando el panel en «Leyendo…».
-                 `resetsAt` desempata dos custom del mismo largo sin modelo. -->
-            {#each row.bars as bar (bar.window + (bar.model ?? "") + bar.minutes + (bar.resetsAt ?? ""))}
-              <div class="q-bar">
-                <span class="q-win">{windowText(bar)}</span>
-                <span class="q-track">
-                  <span
-                    class="q-fill is-{bar.tone}"
-                    style:width="{Math.max(bar.percent, 2)}%"
-                  ></span>
-                </span>
-                <span class="q-pct" data-numeric>{Math.round(bar.percent)}%</span>
-                <span class="q-reset">
-                  {bar.resetsAt != null && bar.resetsAt > now
-                    ? spanText(bar.resetsAt - now)
-                    : ""}
-                </span>
-              </div>
-            {/each}
+          {@const head = headline(row)}
+          <div
+            class="q-agent"
+            class:is-hovered={detailRow?.agent === row.agent}
+            aria-hidden="true"
+            bind:this={agentEls[row.agent]}
+            onpointerenter={() => (hover = row.agent)}
+          >
+            <span class="q-ring">
+              <svg viewBox="0 0 40 40">
+                <circle
+                  class="q-ring-track"
+                  cx="20"
+                  cy="20"
+                  r="17"
+                  pathLength="100"
+                ></circle>
+                <circle
+                  class="q-ring-fill is-{head.tone}"
+                  cx="20"
+                  cy="20"
+                  r="17"
+                  pathLength="100"
+                  style:stroke-dasharray="{Math.max(head.percent, 1)} 100"
+                ></circle>
+              </svg>
+              <span class="q-ring-logo"
+                ><AgentLogo agent={row.agent} size={16} /></span
+              >
+            </span>
+            <span class="q-agent-pct" data-numeric>
+              {row.bars.length > 0 ? `${Math.round(head.percent)}%` : "—"}
+            </span>
           </div>
         {/each}
       </div>
+
+      {#if detailRow}
+        <div class="q-detail" bind:this={cardEl} style:top="{cardTop}px">
+          <div class="q-detail-head">
+            <span class="q-detail-name">{detailRow.name}</span>
+            {#if detailRow.staleAt != null}
+              <span class="q-detail-meta"
+                >{t("pill.quota.stale", {
+                  when: spanText(now - detailRow.staleAt),
+                })}</span
+              >
+            {:else if detailRow.plan}
+              <span class="q-detail-meta">{planText(detailRow.plan)}</span>
+            {/if}
+          </div>
+
+          {#if detailRow.error}
+            <p class="q-detail-error">{detailRow.error}</p>
+          {:else if detailRow.bars.length > 0}
+            <!-- El modelo entra a la clave: dos semanales «model» del mismo
+                 largo (Antigravity: Gemini y Claude+GPT) colisionaban y
+                 Svelte tiraba each_key_duplicate, dejando el panel en
+                 «Leyendo…». `resetsAt` desempata dos custom iguales. -->
+            {#if sideLayout}
+              {#each detailRow.bars as bar (bar.window + (bar.model ?? "") + bar.minutes + (bar.resetsAt ?? ""))}
+                <p class="q-line is-{bar.tone}">
+                  <span class="q-line-win">{windowText(bar)}</span>
+                  <span class="q-line-val">
+                    <strong data-numeric>{Math.round(bar.percent)}%</strong>
+                    {#if bar.resetsAt != null && bar.resetsAt > now}
+                      <span class="q-line-reset"
+                        >· {t("pill.quota.reset", {
+                          when: spanText(bar.resetsAt - now),
+                        })}</span
+                      >
+                    {/if}
+                  </span>
+                </p>
+              {/each}
+            {:else}
+              {#each detailRow.bars as bar (bar.window + (bar.model ?? "") + bar.minutes + (bar.resetsAt ?? ""))}
+                <div class="q-bar is-{bar.tone}">
+                  <span class="q-win">{windowText(bar)}</span>
+                  <span class="q-track">
+                    <span class="q-fill" style:width="{Math.max(bar.percent, 2)}%"></span>
+                  </span>
+                  <span class="q-val">
+                    <span class="q-pct" data-numeric>{Math.round(bar.percent)}%</span>
+                    {#if bar.resetsAt != null && bar.resetsAt > now}
+                      <span class="q-sep" aria-hidden="true">·</span>
+                      <span class="q-reset"
+                        >{t("pill.quota.reset", {
+                          when: spanText(bar.resetsAt - now),
+                        })}</span
+                      >
+                    {/if}
+                  </span>
+                </div>
+              {/each}
+            {/if}
+          {/if}
+
+          {#if !detailRow.error && detailRow.spend}
+            <p class="q-detail-note">{spendText(detailRow)}</p>
+          {/if}
+        </div>
+      {/if}
     {:else if agentQuotas.loading}
       <div class="q-fallback">{t("pill.quota.loading")}</div>
     {:else}
@@ -485,15 +653,18 @@
     position: fixed;
     z-index: calc(var(--z-overlay-float, 100) + var(--float-stack, 0));
     box-sizing: border-box;
-    min-width: 13rem;
-    max-width: 22rem;
-    padding: 0.5rem 0.7rem 0.55rem;
+
+    /* Ancho fijo, no `min/max`: el detalle cambia al hover y un panel
+       content-sized movía los anillos bajo el puntero — el hover entraba y
+       salía en loop. Con ancho fijo, el alto puede crecer sin tocar el resto. */
+    width: 16rem;
+    padding: 0.55rem 0.7rem 0.6rem;
     overflow: hidden;
     border-radius: 20px;
     background: transparent;
     color: var(--text);
-    font-size: 0.72rem;
-    line-height: 1.3;
+    font-size: 0.75rem;
+    line-height: 1.35;
   }
 
   /*
@@ -512,69 +683,238 @@
     }
   }
 
-  /* Sin `overflow`: el panel crece con las filas. Una lista de cupos con
-     scroll es pedir que arrastren para ver el dato por el que la abrieron. */
-  .q-rows {
+  /* Anillos por agente: el estado de un vistazo, sin una línea de texto. */
+  .q-rings {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    gap: 0.45rem 0.6rem;
+  }
+
+  .q-agent {
     display: flex;
     flex-direction: column;
-    gap: 0.36rem;
-  }
-
-  .q-head {
-    display: flex;
     align-items: center;
-    gap: 0.3rem;
+    gap: 0.2rem;
   }
 
-  .q-name {
-    font-weight: 600;
-  }
-
-  .q-meta {
-    margin-left: auto;
-    color: var(--faint);
-    font-size: 0.66rem;
-  }
-
-  .q-note,
-  .q-fallback {
-    color: var(--muted);
-    font-size: 0.68rem;
-  }
-
-  .q-note.is-error {
-    color: var(--warn);
-  }
-
-  .q-bar {
+  .q-ring {
+    position: relative;
     display: grid;
-    align-items: center;
-    grid-template-columns: max-content 1fr 2.1rem 2.1rem;
-    gap: 0.34rem;
+    width: 2.15rem;
+    height: 2.15rem;
+    place-items: center;
   }
 
-  .q-win,
-  .q-reset {
+  .q-ring svg {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    transform: rotate(-90deg);
+  }
+
+  .q-ring-track,
+  .q-ring-fill {
+    fill: none;
+    stroke-width: 3;
+
+    /* El arco se asienta cuando llega dato fresco y el tono entra suave. */
+    transition:
+      stroke var(--duration-fast, 125ms) var(--ease-smooth-out, ease-out),
+      stroke-dasharray var(--duration-slow, 200ms) var(--ease-smooth-out, ease-out);
+  }
+
+  .q-ring-track {
+    stroke: color-mix(in sRGB, var(--text) 13%, transparent);
+  }
+
+  .q-agent.is-hovered .q-ring-track {
+    stroke: color-mix(in sRGB, var(--text) 26%, transparent);
+  }
+
+  .q-ring-fill {
+    stroke: var(--accent);
+    stroke-linecap: round;
+  }
+
+  .q-ring-fill.is-warn {
+    stroke: var(--warn);
+  }
+
+  .q-ring-fill.is-hot {
+    stroke: var(--danger);
+  }
+
+  .q-ring-logo {
+    display: grid;
+    place-items: center;
+    color: var(--text);
+  }
+
+  .q-agent-pct {
+    font-size: 0.6875rem;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
     color: var(--muted);
-    font-size: 0.66rem;
+    transition: color var(--duration-fast, 125ms) var(--ease-smooth-out, ease-out);
   }
 
-  .q-win {
+  .q-agent.is-hovered .q-agent-pct {
+    color: var(--text);
+  }
+
+  /* En el canto el panel queda con los anillos contra el borde y el detalle
+     flota aparte, hacia adentro: así el cuerpo no reserva el alto del texto
+     ni deja huecos. `data-side` es el lado del panel que da a la isla, así
+     que la isla a la izquierda espeja todo. */
+  .q-panel.is-side {
+    width: auto;
+    overflow: visible;
+  }
+
+  .q-panel.is-side .q-rings {
+    flex-flow: column nowrap;
+    align-items: stretch;
+    gap: 0.35rem;
+  }
+
+  .q-panel.is-side .q-agent {
+    flex-direction: row-reverse;
+    align-items: center;
+    gap: 0.4rem;
+  }
+
+  .q-panel.is-side[data-side="left"] .q-agent {
+    flex-direction: row;
+  }
+
+  /* Card de detalle: la pinta la piel como una gota más (caja + cuello), así
+     que acá solo van contenido y posición. El `top` se anima recién cuando el
+     panel ya está asentado: si no, la gota se deslizaría desde 0 al abrir. */
+  .q-panel.is-side .q-detail {
+    position: absolute;
+    width: 11rem;
+    margin: 0;
+    padding: 0.6rem 0.7rem 0.65rem;
+    border-top: 0;
+  }
+
+  .q-panel.is-side.is-shown .q-detail {
+    transition: top var(--duration-slow, 200ms) var(--ease-smooth-out, ease-out);
+  }
+
+  .q-panel.is-side[data-side="right"] .q-detail {
+    right: calc(100% + 1.15rem);
+  }
+
+  .q-panel.is-side[data-side="left"] .q-detail {
+    left: calc(100% + 1.15rem);
+  }
+
+  .q-line {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.5rem;
+    margin: 0;
+    font-size: 0.6875rem;
+    line-height: 1.4;
+  }
+
+  .q-line-win {
     overflow: hidden;
-    max-width: 7.2rem;
+    color: var(--muted);
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  .q-reset {
-    text-align: right;
+  .q-line-val {
+    color: var(--muted);
+    white-space: nowrap;
+  }
+
+  .q-line-val strong {
+    color: var(--text);
+    font-weight: 650;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .q-line.is-warn .q-line-val strong {
+    color: var(--warn);
+  }
+
+  .q-line.is-hot .q-line-val strong {
+    color: var(--danger);
+  }
+
+  .q-line-reset {
+    color: var(--faint);
+  }
+
+  /* Detalle del agente apuntado: nombre, plan y una línea por ventana. */
+  .q-detail {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+    margin-top: 0.5rem;
+    padding-top: 0.5rem;
+    border-top: 1px solid var(--line);
+  }
+
+  .q-detail-head {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
+  }
+
+  .q-detail-name {
+    color: var(--text);
+    font-weight: 600;
+  }
+
+  .q-detail-meta {
+    margin-left: auto;
+    color: var(--faint);
+    font-size: 0.6875rem;
+  }
+
+  .q-detail-error {
+    margin: 0;
+    color: var(--warn);
+    font-size: 0.6875rem;
+    line-height: 1.4;
+    text-wrap: pretty;
+  }
+
+  .q-detail-note {
+    margin: 0;
+    color: var(--muted);
+    font-size: 0.6875rem;
+    line-height: 1.4;
+  }
+
+  /* Etiqueta fija: todas las pistas arrancan y terminan en la misma columna. */
+  .q-bar {
+    display: grid;
+    align-items: center;
+    grid-template-columns: 5.25rem minmax(0, 1fr) minmax(4.75rem, max-content);
+    gap: 0.4rem;
+  }
+
+  .q-win {
+    overflow: hidden;
+    color: var(--muted);
+    font-size: 0.6875rem;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .q-track {
-    height: 0.28rem;
+    height: 0.3rem;
     overflow: hidden;
     border-radius: 999px;
-    background: color-mix(in sRGB, var(--text) 14%, transparent);
+    background: color-mix(in sRGB, var(--text) 13%, transparent);
   }
 
   .q-fill {
@@ -584,24 +924,60 @@
     background: var(--accent);
   }
 
-  .q-fill.is-warn {
+  .q-bar.is-warn .q-fill {
     background: var(--warn);
   }
 
-  .q-fill.is-hot {
+  .q-bar.is-hot .q-fill {
     background: var(--danger);
   }
 
+  /* El % manda; el reinicio acompaña como texto, no como columna. */
+  .q-val {
+    display: flex;
+    align-items: baseline;
+    justify-content: flex-end;
+    gap: 0.25rem;
+    white-space: nowrap;
+  }
+
   .q-pct {
-    text-align: right;
-    font-size: 0.68rem;
+    font-weight: 650;
     font-variant-numeric: tabular-nums;
+  }
+
+  .q-bar.is-warn .q-pct {
+    color: var(--warn);
+  }
+
+  .q-bar.is-hot .q-pct {
+    color: var(--danger);
+  }
+
+  .q-sep,
+  .q-reset {
+    color: var(--faint);
+    font-size: 0.6875rem;
+  }
+
+  .q-fallback {
+    color: var(--muted);
+    font-size: 0.6875rem;
+    line-height: 1.4;
   }
 
   @media (prefers-reduced-motion: reduce) {
     .q-panel.float-emerge.is-shown {
       pointer-events: auto;
       animation: none;
+    }
+
+    /* Sin viaje espacial ni arcos animados: el estado cambia igual. */
+    .q-panel.is-side.is-shown .q-detail,
+    .q-ring-track,
+    .q-ring-fill,
+    .q-agent-pct {
+      transition: none;
     }
   }
 </style>
