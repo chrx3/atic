@@ -571,6 +571,9 @@
   .sf.is-shown {
     opacity: 1;
     pointer-events: auto;
+    /* Abrir invita, cerrar se aparta: sin esto el abrir heredaba la
+       duración del cierre y la asimetría desaparecía. */
+    transition: opacity var(--float-open-dur) var(--ease-smooth-out);
   }
 
   .sf.is-expanding {

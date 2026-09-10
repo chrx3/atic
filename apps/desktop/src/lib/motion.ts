@@ -1,3 +1,5 @@
+import { cubicOut } from "svelte/easing";
+
 /**
  * Puente entre los tokens de motion (CSS) y el código que los necesita en JS.
  *
@@ -167,6 +169,32 @@ export function opacityFade(
     duration: dur,
     easing: easeInOut,
     css: (t) => `opacity:${t}`,
+  };
+}
+
+/**
+ * Aparición de superficie: scale 0.97, blur 2px, 8px de viaje.
+ *
+ * Es la firma del morph de la pill. Abrir invita (`--duration-slow`), cerrar se
+ * aparta (`--duration-fast`). Las transiciones de Svelte van por WAAPI, así que
+ * el media query de CSS no las apaga: hay que consultar `prefersReducedMotion`
+ * acá, y por eso el guard es explícito y no una clase.
+ */
+export function emerge(
+  _node: Element,
+  params: { duration?: number } = {},
+  options?: { direction?: "in" | "out" | "both" },
+): { duration: number; easing: (t: number) => number; css: (t: number, u: number) => string } {
+  if (prefersReducedMotion()) {
+    return { duration: 0, easing: (t) => t, css: () => "" };
+  }
+  const open = motionMs(MOTION.slow, MOTION_FALLBACK[MOTION.slow]);
+  const close = motionMs(MOTION.fast, MOTION_FALLBACK[MOTION.fast]);
+  return {
+    duration: params.duration ?? (options?.direction === "out" ? close : open),
+    easing: cubicOut,
+    css: (t, u) =>
+      `opacity:${t};transform:translateY(${u * 8}px) scale(${0.97 + 0.03 * t});filter:blur(${u * 2}px)`,
   };
 }
 

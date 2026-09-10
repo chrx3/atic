@@ -523,7 +523,7 @@
    * Idle: no rAF eterno (epsilon + tope en `publishMeasuredSkin`). Solo se
    * despierta al abrir/cerrar/mover gaps o ancla.
    */
-  function publishCompactPills(root: HTMLElement, group?: string): () => void {
+  function publishCompactPills(root: HTMLElement, _group?: string): () => void {
     return publishMeasuredSkin("launcher", () => {
       const shapes: Shape[] = [];
       const parts: string[] = [];
@@ -1191,6 +1191,9 @@
   .lf.is-shown {
     opacity: 1;
     pointer-events: auto;
+    /* Abrir invita, cerrar se aparta: sin esto el abrir heredaba la
+       duración del cierre y la asimetría desaparecía. */
+    transition: opacity var(--float-open-dur) var(--ease-smooth-out);
   }
 
   .lf.is-expanding {
