@@ -409,7 +409,20 @@ pub fn sync_controller_bounds(_window: &WebviewWindow) -> Option<f64> {
 /// rasterizarla. El PNG suele traer alpha de verdad; si no, el freeze hace
 /// knockout del negro vacío.
 #[cfg(windows)]
+/// ¿El preview de WebView2 ya falló en esta corrida?
+///
+/// `CapturePreview` viene fallando siempre en esta máquina —el log lo dice en
+/// cada captura: «CapturePreview tardó demasiado»— y el respaldo a `PrintWindow`
+/// sí funciona. Esperar los 800 ms completos por algo que no va a llegar es casi
+/// un segundo de mouse trabado justo cuando empieza una captura, así que después
+/// del primer fallo se va directo al respaldo. Si algún día funciona, la primera
+/// captura lo usa igual.
+static PREVIEW_CAIDO: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 pub fn capture_preview_png(window: &WebviewWindow) -> Result<Vec<u8>, String> {
+    if PREVIEW_CAIDO.load(std::sync::atomic::Ordering::Relaxed) {
+        return Err("CapturePreview ya falló en esta corrida".into());
+    }
     use std::time::Duration;
     use webview2_com::CapturePreviewCompletedHandler;
     use webview2_com::Microsoft::Web::WebView2::Win32::COREWEBVIEW2_CAPTURE_PREVIEW_IMAGE_FORMAT_PNG;
@@ -505,8 +518,12 @@ pub fn capture_preview_png(window: &WebviewWindow) -> Result<Vec<u8>, String> {
         })
         .map_err(|err| err.to_string())?;
 
-    rx.recv_timeout(Duration::from_millis(800))
-        .map_err(|_| "CapturePreview tardó demasiado".to_string())?
+    // 120 ms alcanzan de sobra cuando el preview responde; cuando no, el
+    // respaldo ya está esperando.
+    rx.recv_timeout(Duration::from_millis(120)).map_err(|_| {
+        PREVIEW_CAIDO.store(true, std::sync::atomic::Ordering::Relaxed);
+        "CapturePreview tardó demasiado".to_string()
+    })?
 }
 
 #[cfg(not(windows))]
