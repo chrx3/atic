@@ -1588,12 +1588,20 @@ pub fn yield_to_main(app: &AppHandle) {
 /// completa de un drag ya muerto: esa lámina deja Atic pintada y sin input.
 /// Durante un gesto de puntero hay que seguir armado: si se vuelve
 /// click-through a mitad, se pierde el `pointerup`.
+///
+/// `over_real` = el cursor está sobre una zona interactiva de verdad, no sobre
+/// el rect "drag" que cubre la pantalla. Con la pill acoplada arriba o al canto
+/// queda encima de `main`: sin esto, un rect "drag" presente desarmaba TODO el
+/// overlay y el clic del chip de update se lo comía `main`. Durante un arrastre
+/// de ítem los rects reales se podan, así que la exención sigue protegiendo el
+/// `yield_to_main`.
 fn should_arm(
     capturing: bool,
     over_main: bool,
     over_hit: bool,
     has_drag: bool,
     gesture: bool,
+    over_real: bool,
 ) -> bool {
     if capturing {
         return false;
@@ -1601,7 +1609,7 @@ fn should_arm(
     if gesture {
         return true;
     }
-    if over_main && has_drag {
+    if over_main && has_drag && !over_real {
         return false;
     }
     over_hit
@@ -1942,13 +1950,16 @@ fn overlay_eats_physical(cx: i32, cy: i32) -> bool {
     };
     let over_hit = rects.iter().any(|r| r.contains(x, y, ARM_MARGIN));
     let has_drag = rects.iter().any(|r| r.id == "drag");
+    let over_real = rects
+        .iter()
+        .any(|r| r.id != "drag" && r.contains(x, y, ARM_MARGIN));
     drop(rects);
     // Mismo caso especial que `should_arm`: el rect "drag" cubre toda la
     // pantalla mientras dura un arrastre. Si se lo comiera igual sobre
     // `main`, `main` nunca recibiría el movimiento que dispara
     // `yield_to_main` y el arrastre quedaría pegado para siempre — junto con
     // el resto de la ventana, porque a partir de acá decide el hit-test.
-    if has_drag && cursor_over_visible_main() {
+    if has_drag && !over_real && cursor_over_visible_main() {
         return false;
     }
     over_hit
@@ -2260,6 +2271,9 @@ fn reevaluate_arm() {
     };
     let over_hit = rects.iter().any(|r| r.contains(x, y, ARM_MARGIN));
     let has_drag = rects.iter().any(|r| r.id == "drag");
+    let over_real = rects
+        .iter()
+        .any(|r| r.id != "drag" && r.contains(x, y, ARM_MARGIN));
     drop(rects);
 
     let over_main = cursor_over_visible_main();
@@ -2278,6 +2292,7 @@ fn reevaluate_arm() {
         over_hit,
         has_drag,
         gesture,
+        over_real,
     );
 
     // Solo en los flancos: aplicar el estilo en cada muestra sería cientos de
@@ -2870,21 +2885,34 @@ mod tests {
 
     #[test]
     fn overlay_arms_pill_even_over_main() {
-        assert!(!should_arm(false, false, false, false, false));
-        assert!(should_arm(false, false, true, false, false));
+        assert!(!should_arm(false, false, false, false, false, false));
+        assert!(should_arm(false, false, true, false, false, false));
         // Pill / float encima de `main`: tiene que recibir el mouse.
-        assert!(should_arm(false, true, true, false, false));
-        // Hit-rect fullscreen muerto encima de `main`: ceder el input.
-        assert!(!should_arm(false, true, true, true, false));
-        assert!(!should_arm(true, false, true, false, false));
-        assert!(!should_arm(true, true, true, false, false));
+        assert!(should_arm(false, true, true, false, false, false));
+        // Hit-rect fullscreen muerto encima de `main`: ceder el input. El
+        // `false` final es «no hay zona interactiva debajo»: el único rect que
+        // toca el cursor es el de drag.
+        assert!(!should_arm(false, true, true, true, false, false));
+        assert!(!should_arm(true, false, true, false, false, false));
+        assert!(!should_arm(true, true, true, false, false, false));
+    }
+
+    /// La pill acoplada arriba o al canto queda encima de `main`. Si además hay
+    /// un rect "drag" —aunque sea residuo de un arrastre terminado—, el overlay
+    /// entero se desarmaba y el clic del chip de update se lo comía `main`. Si
+    /// el cursor está sobre una zona interactiva de verdad, esa zona gana.
+    #[test]
+    fn overlay_arms_a_real_zone_beside_the_drag_rect() {
+        assert!(should_arm(false, true, true, true, false, true));
+        // Y con un gesto en curso sigue armado, como antes.
+        assert!(should_arm(false, true, true, true, true, true));
     }
 
     #[test]
     fn overlay_stays_armed_during_pointer_gesture() {
-        assert!(should_arm(false, true, false, true, true));
-        assert!(should_arm(false, true, true, true, true));
-        assert!(!should_arm(true, true, true, true, true));
+        assert!(should_arm(false, true, false, true, true, false));
+        assert!(should_arm(false, true, true, true, true, false));
+        assert!(!should_arm(true, true, true, true, true, false));
     }
 
     #[test]
