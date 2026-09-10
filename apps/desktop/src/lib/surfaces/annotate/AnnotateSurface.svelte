@@ -1270,4 +1270,10 @@
       transform: none;
     }
   }
+
+  /* Sin `.atic-root` en esta ventana: anillo de foco local. */
+  .editor :where(button):focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
 </style>

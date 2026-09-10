@@ -15,6 +15,7 @@
   import { models } from "$domain/models.svelte";
   import { downloadModelAndWait } from "$ipc/models";
   import { minimizeWindow } from "$ipc/windows";
+  import { tabPanel } from "$lib/motion";
   import GroqKeyField from "$features/settings/GroqKeyField.svelte";
   import { SETUP_SHORTCUTS } from "./practice";
   import Banner from "$ui/Banner.svelte";
@@ -162,7 +163,9 @@
     onClose={() => void dismissReplay()}
   >
     <div class="flex flex-col gap-4">
-      {#if step === 0}
+      {#key step}
+        <div class="flex flex-col gap-4" in:tabPanel|local out:tabPanel|local>
+          {#if step === 0}
         <p class="max-w-[60ch] text-sm leading-relaxed text-muted">
           {t("onboarding.welcomeBody")}
         </p>
@@ -347,6 +350,8 @@
           {t("onboarding.restInSettings")}
         </p>
       {/if}
+        </div>
+      {/key}
     </div>
 
     {#snippet actions()}

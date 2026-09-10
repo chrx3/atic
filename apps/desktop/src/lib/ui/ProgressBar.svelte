@@ -9,6 +9,7 @@
   let {
     value = 0,
     label,
+    ariaLabel,
     indeterminate = false,
     tone = "accent",
   }: {
@@ -16,6 +17,8 @@
     value?: number;
     /** Si viene, se dibuja arriba con el porcentaje al costado. */
     label?: string;
+    /** Nombre accesible cuando la barra no lleva `label` visible. */
+    ariaLabel?: string;
     indeterminate?: boolean;
     tone?: "accent" | "ok" | "warn";
   } = $props();
@@ -37,7 +40,7 @@
   <div
     class="h-1 overflow-hidden rounded-pill bg-surface-2"
     role="progressbar"
-    aria-label={label}
+    aria-label={label ?? ariaLabel}
     aria-valuenow={indeterminate ? undefined : pct}
     aria-valuemin={indeterminate ? undefined : 0}
     aria-valuemax={indeterminate ? undefined : 100}

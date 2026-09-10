@@ -65,9 +65,14 @@
         <Button
           variant={dictation.active ? "danger-solid" : "primary"}
           size="sm"
+          loading={dictation.phase === "transcribing"}
           onclick={() => void dictation.toggle().catch(toastError)}
         >
-          {dictation.active ? t("tools.dictation.stop") : t("page.dictation.tryHere")}
+          {dictation.phase === "transcribing"
+            ? t("page.dictation.transcribing")
+            : dictation.active
+              ? t("tools.dictation.stop")
+              : t("page.dictation.tryHere")}
         </Button>
       </div>
       <p class="text-xs text-faint">

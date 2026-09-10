@@ -17,7 +17,7 @@
    * ventana, y el tamaño lo aplica Rust en un solo IPC (resize + posición). No
    * hay banderas de carrera: el reconciliador descarta destinos obsoletos.
    */
-  import { onMount, tick } from "svelte";
+  import { onMount, tick, untrack } from "svelte";
   import type { UnlistenFn } from "@tauri-apps/api/event";
   import type { DictationPhase } from "$core/types";
   import { capture } from "$domain/capture.svelte";
@@ -1070,6 +1070,26 @@
   // usuario frente a media lista sin saber por qué.
   $effect(() => {
     if (!islandOpen) stripPage = "ring";
+  });
+
+  /**
+   * Re-deal de la tira al cambiar de página («Más»/atrás).
+   *
+   * Es una animación CSS disparada por esta clase, no una transición de
+   * Svelte a propósito: `islandAttachers` se indexa por posición sobre el
+   * catálogo, y un elemento saliente vivo durante el outro correría el índice
+   * y daría de baja el rect de otra gota.
+   */
+  let stripSwapping = $state(false);
+  let lastStripPage: "ring" | "more" = untrack(() => stripPage);
+  $effect(() => {
+    const page = stripPage;
+    if (page === lastStripPage) return;
+    lastStripPage = page;
+    if (!islandOpen) return;
+    stripSwapping = true;
+    const timer = setTimeout(() => (stripSwapping = false), 260);
+    return () => clearTimeout(timer);
   });
 
   /**
@@ -3109,6 +3129,7 @@
           class="p-island-tools"
           class:is-open={islandOpen}
           class:is-column={peekEdgeAxis === "x"}
+          class:is-swapping={stripSwapping}
           style="--n: {islandSlots}"
         >
           <!-- La marca abre la tira igual que ocupa la pestaña: es la misma
@@ -3841,6 +3862,21 @@
   .p-island-tools.is-open .p-island-tool {
     opacity: 1;
     transform: none;
+  }
+
+  /*
+   * Re-deal de página: las gotas vuelven a entrar con el escalonado de `--s`.
+   * Solo opacidad del glifo; la forma la sigue midiendo el tracker del rect.
+   */
+  .p-island-tools.is-swapping.is-open .p-island-tool {
+    animation: island-tool-swap var(--island-open-dur) var(--ease-liquid) backwards;
+    animation-delay: calc(var(--s, 0) * var(--island-stagger));
+  }
+
+  @keyframes island-tool-swap {
+    from {
+      opacity: 0;
+    }
   }
 
   .p-island-tools.is-open .p-island-tool:hover:not(:disabled),
@@ -4734,7 +4770,7 @@
   .p-agent.is-ready {
     background: color-mix(in sRGB, var(--ok) 14%, transparent);
     color: var(--ok);
-    animation: p-agent-ready-in var(--duration-very-slow, 500ms) var(--ease-smooth-out)
+    animation: p-agent-ready-in var(--duration-very-slow, 250ms) var(--ease-smooth-out)
       both;
   }
 
@@ -4839,7 +4875,7 @@
    * Solo alarga la apertura; el viaje y el scale viven en `app.css`.
    */
   .p-auth-host {
-    --float-open-dur: 150ms;
+    --float-open-dur: var(--duration-medium);
     position: absolute;
     z-index: 6;
   }

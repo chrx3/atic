@@ -10,6 +10,7 @@
   import { capture } from "$domain/capture.svelte";
   import Chip from "$ui/Chip.svelte";
   import { t } from "$domain/i18n.svelte";
+  import { prefersReducedMotion } from "$lib/motion";
 
   /**
    * Sigue al último renglón.
@@ -24,7 +25,10 @@
       // Se leen para que el efecto vuelva a correr cuando llega texto nuevo.
       void capture.segments.length;
       void capture.partial;
-      node.scrollTo({ top: node.scrollHeight, behavior: "smooth" });
+      node.scrollTo({
+        top: node.scrollHeight,
+        behavior: prefersReducedMotion() ? "auto" : "smooth",
+      });
     });
   }
 

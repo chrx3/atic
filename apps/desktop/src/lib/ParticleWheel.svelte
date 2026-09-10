@@ -943,7 +943,7 @@
     text-align: center;
     text-transform: uppercase;
     pointer-events: none;
-    animation: pw-fade-in 400ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
+    animation: pw-fade-in var(--duration-very-slow) var(--ease-smooth-out) backwards;
     animation-delay: 320ms;
   }
 
@@ -1007,7 +1007,7 @@
   }
 
   .pw:not(.is-compact) .pw-sep {
-    animation: pw-fade-in 320ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
+    animation: pw-fade-in var(--duration-very-slow) var(--ease-smooth-out) backwards;
     animation-delay: 180ms;
   }
 
@@ -1043,7 +1043,7 @@
      fill backwards y no both: al terminar deben mandar las transiciones. */
   .pw:not(.is-compact) .pw-node-body {
     animation: pw-node-in var(--duration-medium) var(--ease-smooth-out) backwards;
-    animation-delay: calc(var(--i, 0) * 40ms + 40ms);
+    animation-delay: calc(var(--i, 0) * var(--duration-micro) + var(--duration-micro));
   }
 
   .pw:not(.is-compact) .pw-center {

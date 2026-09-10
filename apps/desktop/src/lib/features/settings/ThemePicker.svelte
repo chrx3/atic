@@ -66,6 +66,8 @@
   {#each options as option (option.value)}
     <label
       class="flex cursor-pointer items-center gap-2 rounded-sm border p-1.5
+             has-[:focus-visible]:[outline:2px_solid_var(--accent)]
+             has-[:focus-visible]:[outline-offset:2px]
              transition-colors duration-(--duration-quick) ease-calm
              {option.value === value
         ? 'border-line-strong bg-elevated text-text shadow-card'

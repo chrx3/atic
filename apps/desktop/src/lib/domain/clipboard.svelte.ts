@@ -14,6 +14,8 @@ import type { DomainStore } from "./store";
 
 class ClipboardStore implements DomainStore {
   items = $state<ClipboardItem[]>([]);
+  /** Primer llenado: el panel muestra «Cargando» en vez de «vacío». */
+  loading = $state(true);
   /** Filtro de la vista. Vive acá y no en el componente para que la pill y la
    *  ventana principal no se pisen el uno al otro al abrirse a la vez. */
   query = $state("");
@@ -28,7 +30,11 @@ class ClipboardStore implements DomainStore {
   }
 
   async hydrate(): Promise<void> {
-    this.items = await listClipboardHistory();
+    try {
+      this.items = await listClipboardHistory();
+    } finally {
+      this.loading = false;
+    }
   }
 
   async listen(): Promise<() => void> {

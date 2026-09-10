@@ -25,6 +25,7 @@
   import type { Snippet } from "svelte";
   import Icon from "$ui/Icon.svelte";
   import { X } from "$lib/icons";
+  import { ms, MOTION } from "$lib/motion";
   import { t } from "$domain/i18n.svelte";
 
   type Size = "sm" | "md" | "lg" | "xl";
@@ -81,8 +82,8 @@
     xl: "max-w-224",
   };
 
-  /** Cierre: `--duration-quick` (150ms). Abrir usa `--duration-fast` en CSS. */
-  const CLOSE_MS = 150;
+  /** Cierre: `--duration-quick`. Abrir usa `--duration-fast` en CSS. */
+  const CLOSE_MS = ms(MOTION.quick);
 
   const titleId = $props.id();
   let dialog = $state<HTMLDialogElement | null>(null);
