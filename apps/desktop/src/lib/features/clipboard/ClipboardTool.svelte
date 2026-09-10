@@ -20,6 +20,7 @@
   import ToolPage from "$patterns/ToolPage.svelte";
   import Toolbar from "$patterns/Toolbar.svelte";
   import Chip from "$ui/Chip.svelte";
+  import ConfirmDialog from "$ui/ConfirmDialog.svelte";
   import EmptyState from "$ui/EmptyState.svelte";
   import Icon from "$ui/Icon.svelte";
   import IconButton from "$ui/IconButton.svelte";
@@ -31,6 +32,11 @@
 
   let kind = $state<ClipboardKind | "all">("all");
   let focusIndex = $state(0);
+/** Elemento esperando confirmación de borrado. */
+let confirmingDeleteId = $state<string | null>(null);
+const confirmTarget = $derived(
+  clipboard.items.find((item) => item.id === confirmingDeleteId) ?? null,
+);
   let listEl = $state<HTMLDivElement | null>(null);
 
   const kindOptions = $derived([
@@ -65,6 +71,13 @@
     }
   }
 
+  async function deleteConfirmed() {
+    const item = confirmTarget;
+    if (!item) return;
+    confirmingDeleteId = null;
+    await run(() => clipboard.remove(item.id));
+  }
+
   /**
    * Aro interior de la muestra de color, en dos tonos.
    *
@@ -97,7 +110,7 @@
     }
     if (event.key === "Delete") {
       event.preventDefault();
-      void run(() => clipboard.remove(item.id));
+      confirmingDeleteId = item.id;
     }
   }
 </script>
@@ -186,7 +199,7 @@
         label={t("page.common.delete")}
         size="sm"
         variant="danger"
-        onclick={() => void run(() => clipboard.remove(item.id))}
+        onclick={() => (confirmingDeleteId = item.id)}
       >
         <Icon icon={Trash2} size={12} />
       </IconButton>
@@ -262,6 +275,17 @@
     </div>
   </div>
 </ToolPage>
+
+{#if confirmTarget}
+  <ConfirmDialog
+    title={t("page.clipboard.deleteTitle")}
+    body={t("page.clipboard.deleteBody")}
+    confirmLabel={t("page.common.delete")}
+    tone="danger"
+    onConfirm={() => void deleteConfirmed()}
+    onCancel={() => (confirmingDeleteId = null)}
+  />
+{/if}
 
 <style>
   .day {

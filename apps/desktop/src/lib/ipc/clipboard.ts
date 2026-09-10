@@ -29,6 +29,11 @@ export const startClipboardTextDrag = (id: string) =>
  *  archivo caía además en la app de atrás. */
 export const startFileDrag = (paths: string[]) =>
   invoke<void>("start_file_drag", { paths });
+/** Pega el portapapeles actual en la ventana bajo el cursor (la captura ya está copiada). */
+export const pasteSystemClipboardUnderCursor = () =>
+  invoke<void>("paste_system_clipboard_under_cursor");
+export const pasteToExternalHwnd = (hwnd: number) =>
+  invoke<void>("paste_to_external_hwnd", { hwnd });
 /** Contenido de un `.atic-drag-*.txt` del historial. */
 export const readClipboardDragText = (path: string) =>
   invoke<string>("read_clipboard_drag_text", { path });

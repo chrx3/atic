@@ -1216,9 +1216,9 @@ fn overlay_info_impl(app: &AppHandle) -> Result<OverlayInfo, String> {
 }
 
 /// Padding y thumb del shelf: tienen que coincidir con `ShelfSurface.svelte`.
-const SHELF_PAD: f64 = 10.0;
-const SHELF_THUMB_W: f64 = 96.0;
-const SHELF_THUMB_H: f64 = 64.0;
+const SHELF_PAD: f64 = 8.0;
+const SHELF_THUMB_W: f64 = 192.0;
+const SHELF_THUMB_H: f64 = 120.0;
 
 #[cfg(windows)]
 fn capture_shelf_landing_impl(

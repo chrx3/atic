@@ -1546,6 +1546,77 @@ pub(crate) fn last_external_hwnd() -> Option<windows_sys::Win32::Foundation::HWN
     resolve_paste_target_hwnd()
 }
 
+/// Pega lo que ya está en el portapapeles (p. ej. la captura) en la ventana
+/// bajo el cursor. El estante se esconde antes: si no, `WindowFromPoint`
+/// devolvería el toast.
+/// Pega el portapapeles actual en un HWND ya resuelto (el toast cubre el
+/// monitor: `WindowFromPoint` no sirve hasta esconderlo).
+#[tauri::command]
+pub fn paste_to_external_hwnd(app: AppHandle, hwnd: i64) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::HWND;
+        use windows_sys::Win32::UI::WindowsAndMessaging::IsWindow;
+        if hwnd == 0 {
+            return Ok(());
+        }
+        let hwnd = hwnd as isize as HWND;
+        if unsafe { IsWindow(hwnd) } == 0 || is_own_app_hwnd(hwnd) {
+            return Ok(());
+        }
+        if let Ok(shared) = shared_history() {
+            let mut hist = shared.lock_or_recover();
+            hist.suppress_until = Some(SystemTime::now() + Duration::from_millis(1600));
+        }
+        force_foreground(hwnd);
+        thread::sleep(Duration::from_millis(220));
+        paste_text_hotkey_for(&app, Some(hwnd))
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (app, hwnd);
+        Ok(())
+    }
+}
+
+#[tauri::command]
+pub fn paste_system_clipboard_under_cursor(app: AppHandle) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::POINT;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            GetAncestor, GetCursorPos, IsWindow, WindowFromPoint, GA_ROOT,
+        };
+
+        let hwnd = unsafe {
+            let mut pt = POINT { x: 0, y: 0 };
+            if GetCursorPos(&mut pt) == 0 {
+                return Ok(());
+            }
+            let under = WindowFromPoint(pt);
+            if under.is_null() {
+                return Ok(());
+            }
+            GetAncestor(under, GA_ROOT)
+        };
+        if hwnd.is_null() || unsafe { IsWindow(hwnd) } == 0 || is_own_app_hwnd(hwnd) {
+            return Ok(());
+        }
+        if let Ok(shared) = shared_history() {
+            let mut hist = shared.lock_or_recover();
+            hist.suppress_until = Some(SystemTime::now() + Duration::from_millis(1600));
+        }
+        force_foreground(hwnd);
+        thread::sleep(Duration::from_millis(220));
+        paste_text_hotkey_for(&app, Some(hwnd))
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = app;
+        Ok(())
+    }
+}
+
 /// Plan B del arrastre de texto: pegar en la ventana que está bajo el cursor.
 ///
 /// Hay targets que no registran drop-target de TEXTO: las consolas clásicas y
@@ -1769,6 +1840,7 @@ fn reregister_shortcuts_from_config(app: &AppHandle) {
             board: &cfg.board_shortcut,
             color: &cfg.color_shortcut,
             launcher: &cfg.launcher_shortcut,
+            window_flip: &cfg.window_flip_shortcut,
         },
     ) {
         tracing::warn!(%err, "no se pudieron re-registrar atajos tras pegado");
