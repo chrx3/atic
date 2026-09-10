@@ -95,3 +95,26 @@ export async function pickAgentFiles(): Promise<string[]> {
   if (!picked) return [];
   return Array.isArray(picked) ? picked : [picked];
 }
+
+const BOARD_EXPORT_FILTER: Record<string, string> = {
+  png: "PNG",
+  jpeg: "JPEG",
+  pdf: "PDF",
+  docx: "Word",
+  pptx: "PowerPoint",
+  zip: "ZIP",
+};
+
+/** Dónde guardar el tablero. `null` si se canceló. */
+export async function pickBoardExportPath(
+  suggestedName: string,
+  format: string,
+): Promise<string | null> {
+  const { save } = await import("@tauri-apps/plugin-dialog");
+  const ext = format === "zip" ? "zip" : format;
+  return save({
+    title: "Exportar tablero",
+    defaultPath: `${suggestedName}.${ext}`,
+    filters: [{ name: BOARD_EXPORT_FILTER[format] ?? format, extensions: [ext] }],
+  });
+}

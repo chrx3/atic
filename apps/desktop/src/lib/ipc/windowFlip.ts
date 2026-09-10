@@ -29,6 +29,10 @@ export const windowFlipFocusIsForeign = () =>
 export const windowFlipAssetSrc = (assetsDir: string, asset: string) =>
   convertFileSrc(`${assetsDir}/${asset}`);
 
+/** Data URL mismo-origen para rasterizar el tablero sin contaminar el canvas. */
+export const windowFlipAssetData = (asset: string) =>
+  invoke<string>("window_flip_asset_data", { asset });
+
 export const closeWindowFlip = () => invoke<void>("window_flip_close");
 
 export const presentWindowFlip = () => invoke<void>("window_flip_present");
@@ -40,6 +44,35 @@ export const refreshWindowFlipPreview = () =>
 
 export const windowFlipPreviewSrc = (path: string) =>
   path ? convertFileSrc(path) : "";
+
+export const exportWindowFlip = (
+  format: string,
+  path: string,
+  pages: {
+    previewBase64: string;
+    previewMime: string;
+    fotos: {
+      imageBase64: string;
+      mime: string;
+      x: number;
+      y: number;
+      w: number;
+      h: number;
+    }[];
+    textos: { body: string; x: number; y: number; w: number; h: number }[];
+    checks: {
+      items: { text: string; done: boolean }[];
+      x: number;
+      y: number;
+      w: number;
+      h: number;
+    }[];
+    inkBase64: string;
+  }[],
+  /** Tamaño de la celda del tablero: de acá sale la página del PDF y del PPT. */
+  pageW: number,
+  pageH: number,
+) => invoke<string>("window_flip_export", { format, path, pages, pageW, pageH });
 
 export const onWindowFlipOpen = (
   cb: (view: WindowFlipView) => void,
