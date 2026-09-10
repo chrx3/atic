@@ -108,6 +108,7 @@ pub struct ShortcutBindings<'a> {
     pub board: &'a str,
     pub color: &'a str,
     pub launcher: &'a str,
+    pub window_flip: &'a str,
 }
 
 /// Los errores de *sintaxis* de cualquier atajo abortan (se valida antes de
@@ -140,6 +141,11 @@ pub fn register_shortcuts(app: &AppHandle, bindings: ShortcutBindings<'_>) -> Re
     let board = parse_binding(en, n("pizarra", "board"), bindings.board)?;
     let color = parse_binding(en, n("color", "color"), bindings.color)?;
     let launcher_bind = parse_binding(en, "launcher", bindings.launcher)?;
+    let window_flip = parse_binding(
+        en,
+        n("voltear ventana", "flip window"),
+        bindings.window_flip,
+    )?;
 
     let mut named: Vec<(&str, &Binding)> = vec![
         (n("grabación", "recording"), &recording),
@@ -152,6 +158,7 @@ pub fn register_shortcuts(app: &AppHandle, bindings: ShortcutBindings<'_>) -> Re
         (n("pizarra", "board"), &board),
         ("color", &color),
         ("launcher", &launcher_bind),
+        (n("voltear ventana", "flip window"), &window_flip),
     ];
     if let Some(ref agents) = agents {
         named.push((n("agentes", "agents"), agents));
@@ -425,25 +432,21 @@ pub fn register_shortcuts(app: &AppHandle, bindings: ShortcutBindings<'_>) -> Re
         }
     }
 
-    // Prototipo: no vive en config. Se re-registra acá porque
-    // `unregister_all` borra también este atajo.
-    {
-        let handle = app.clone();
-        let held = AtomicBool::new(false);
-        match crate::window_flip::SHORTCUT.parse::<Shortcut>() {
-            Ok(sc) => {
-                if let Err(err) = gs.on_shortcut(sc, move |_app, _sc, event| {
-                    if take_key_press(&held, event.state()) {
-                        crate::window_flip::toggle(&handle);
-                    }
-                }) {
-                    tracing::error!(%err, "no se pudo registrar el atajo de voltear ventana");
-                    failed.push("voltear ventana".to_string());
+    match &window_flip {
+        Binding::Key(sc) => {
+            let handle = app.clone();
+            let held = AtomicBool::new(false);
+            if let Err(err) = gs.on_shortcut(*sc, move |_app, _sc, event| {
+                if take_key_press(&held, event.state()) {
+                    crate::window_flip::toggle(&handle);
                 }
+            }) {
+                tracing::error!(%err, "no se pudo registrar el atajo de voltear ventana");
+                failed.push("voltear ventana".to_string());
             }
-            Err(err) => {
-                tracing::error!(%err, "atajo de voltear ventana inválido");
-            }
+        }
+        Binding::Mouse(_) => {
+            tracing::warn!("voltear ventana solo admite atajo de teclado");
         }
     }
 

@@ -336,6 +336,8 @@ pub struct Config {
     pub color_shortcut: String,
     /// Atajo global para el launcher tipo Spotlight.
     pub launcher_shortcut: String,
+    /// Atajo global para voltear la ventana al frente y anotar en el reverso.
+    pub window_flip_shortcut: String,
     /// Ids de entradas del launcher marcadas como favoritas (`app:…` / `action:…`).
     pub launcher_favorites: Vec<String>,
     /// Lado del shelf de capturas: `right` | `left`.
@@ -449,6 +451,7 @@ impl Default for Config {
             board_shortcut: "CmdOrCtrl+Shift+X".to_string(),
             color_shortcut: "CmdOrCtrl+Shift+C".to_string(),
             launcher_shortcut: "CmdOrCtrl+Space".to_string(),
+            window_flip_shortcut: "CmdOrCtrl+Shift+B".to_string(),
             launcher_favorites: Vec::new(),
             capture_shelf_side: "right".to_string(),
             capture_shelf_timeout_seconds: 20,
@@ -539,6 +542,7 @@ struct ConfigFile {
     board_shortcut: Option<String>,
     color_shortcut: Option<String>,
     launcher_shortcut: Option<String>,
+    window_flip_shortcut: Option<String>,
     launcher_favorites: Option<Vec<String>>,
     capture_shelf_side: Option<String>,
     capture_shelf_timeout_seconds: Option<u32>,
@@ -654,6 +658,7 @@ impl Default for ConfigFile {
             board_shortcut: None,
             color_shortcut: None,
             launcher_shortcut: None,
+            window_flip_shortcut: None,
             launcher_favorites: None,
             capture_shelf_side: None,
             capture_shelf_timeout_seconds: None,
@@ -894,6 +899,10 @@ impl From<ConfigFile> for Config {
                 .launcher_shortcut
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| "CmdOrCtrl+Space".into()),
+            window_flip_shortcut: f
+                .window_flip_shortcut
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "CmdOrCtrl+Shift+B".into()),
             launcher_favorites: f.launcher_favorites.unwrap_or_default(),
             capture_shelf_side: match f.capture_shelf_side.as_deref() {
                 Some("left") => "left".into(),

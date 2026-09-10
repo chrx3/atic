@@ -41,6 +41,7 @@ mod tray;
 mod ui_lang;
 mod webview_tweaks;
 mod window_flip;
+mod window_flip_export;
 
 use std::sync::Mutex;
 
@@ -240,6 +241,7 @@ pub fn run() {
             capture_session::capture_shelf_landing,
             capture_shelf::capture_shelf_cover_monitor,
             capture_shelf::capture_shelf_restore_bounds,
+            capture_shelf::capture_shelf_foreign_hwnd,
             capture_session::cancel_capture_session,
             annotate::open_annotator,
             annotate::start_board,
@@ -257,6 +259,8 @@ pub fn run() {
             clipboard_history::clipboard_drag_path,
             clipboard_history::start_clipboard_text_drag,
             clipboard_history::start_file_drag,
+            clipboard_history::paste_system_clipboard_under_cursor,
+            clipboard_history::paste_to_external_hwnd,
             clipboard_history::read_clipboard_drag_text,
             clipboard_history::read_system_clipboard_text,
             clipboard_history::write_system_clipboard_text,
@@ -362,10 +366,12 @@ pub fn run() {
             window_flip::window_flip_paste_image,
             window_flip::window_flip_focus_is_foreign,
             window_flip::window_flip_import_image,
+            window_flip::window_flip_asset_data,
             window_flip::window_flip_refresh_preview,
             window_flip::window_flip_present,
             window_flip::window_flip_conceal,
             window_flip::window_flip_close,
+            window_flip_export::window_flip_export,
         ])
         .setup(move |app| {
             // El estado ya está registrado por el Builder: acá solo se lee.
@@ -429,6 +435,7 @@ pub fn run() {
                 board_shortcut,
                 color_shortcut,
                 launcher_shortcut,
+                window_flip_shortcut,
                 want_autostart,
                 ui_language,
             ) = {
@@ -446,6 +453,7 @@ pub fn run() {
                     cfg.board_shortcut.clone(),
                     cfg.color_shortcut.clone(),
                     cfg.launcher_shortcut.clone(),
+                    cfg.window_flip_shortcut.clone(),
                     cfg.autostart,
                     cfg.resolved_ui_language(),
                 )
@@ -529,6 +537,7 @@ pub fn run() {
                     board: &board_shortcut,
                     color: &color_shortcut,
                     launcher: &launcher_shortcut,
+                    window_flip: &window_flip_shortcut,
                 },
             ) {
                 tracing::error!(%err, "no se pudieron registrar los atajos globales");
