@@ -6,6 +6,7 @@ use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
 
+use base64::Engine;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 #[cfg(windows)]
@@ -15,9 +16,6 @@ use crate::state::AppState;
 use atic_core::MutexExt;
 
 pub const LABEL: &str = "window-flip";
-
-/// Atajo fijo del prototipo. No pasa por Ajustes todavía.
-pub const SHORTCUT: &str = "CmdOrCtrl+Shift+B";
 
 static OPEN: AtomicBool = AtomicBool::new(false);
 static PRESENTED: AtomicBool = AtomicBool::new(false);
@@ -73,6 +71,8 @@ struct FlipSession {
     key: String,
     title: String,
     exe: String,
+    /// `data:image/png;base64,…` del .exe, o vacío si no se pudo leer.
+    icon: String,
     preview_path: PathBuf,
     blocks: Vec<crate::notes::Block>,
     /// Carpeta de binarios de esta app. El front la necesita entera para
@@ -95,6 +95,7 @@ pub struct WindowFlipView {
     pub key: String,
     pub title: String,
     pub exe: String,
+    pub icon: String,
     pub preview_path: String,
     pub blocks: Vec<crate::notes::Block>,
     pub assets_dir: String,
@@ -110,6 +111,7 @@ impl From<&FlipSession> for WindowFlipView {
             key: s.key.clone(),
             title: s.title.clone(),
             exe: s.exe.clone(),
+            icon: s.icon.clone(),
             preview_path: s.preview_path.to_string_lossy().into_owned(),
             blocks: s.blocks.clone(),
             assets_dir: s.assets_dir.to_string_lossy().into_owned(),
@@ -280,6 +282,49 @@ pub fn window_flip_import_image(
         width,
         height,
     })
+}
+
+/// Data URL de un binario de la nota abierta.
+///
+/// El protocolo de assets es otro origen: dibujarlo en un canvas contamina
+/// `toDataURL` y el export del tablero falla. Un data URL es del mismo origen.
+#[tauri::command]
+pub fn window_flip_asset_data(state: State<AppState>, asset: String) -> Result<String, String> {
+    let nombre = Path::new(&asset)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .filter(|n| !n.is_empty() && *n != "." && *n != "..")
+        .ok_or_else(|| "imagen inválida".to_string())?;
+    let exe = SESSION
+        .lock_or_recover()
+        .as_ref()
+        .map(|s| s.exe.clone())
+        .ok_or_else(|| "no hay tapa abierta".to_string())?;
+    let dir = crate::notes::assets_dir(&state.dirs.notes_dir(), &exe);
+    let destino = dir.join(nombre);
+    let dir = dir
+        .canonicalize()
+        .map_err(|_| "no se encontró la imagen".to_string())?;
+    let destino = destino
+        .canonicalize()
+        .map_err(|_| "no se encontró la imagen".to_string())?;
+    if !destino.starts_with(&dir) {
+        return Err("esa imagen no es de la nota".into());
+    }
+    let bytes = std::fs::read(&destino).map_err(|e| e.to_string())?;
+    let mime = if bytes.starts_with(&[0x89, b'P', b'N', b'G']) {
+        "image/png"
+    } else if bytes.len() >= 3 && bytes[0] == 0xFF && bytes[1] == 0xD8 && bytes[2] == 0xFF {
+        "image/jpeg"
+    } else if bytes.starts_with(b"GIF8") {
+        "image/gif"
+    } else if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        "image/webp"
+    } else {
+        "image/png"
+    };
+    let data = base64::engine::general_purpose::STANDARD.encode(bytes);
+    Ok(format!("data:{mime};base64,{data}"))
 }
 
 /// ¿El foco se fue a una ventana que no es de Atic?
@@ -465,7 +510,16 @@ fn open_windows(app: &AppHandle) -> Result<(), String> {
     }
 
     let title = unsafe { window_title(hwnd) };
-    let exe = process_exe_name(hwnd).unwrap_or_else(|| "app".into());
+    let exe_path = process_exe_path(hwnd);
+    let exe = exe_path
+        .as_ref()
+        .and_then(|p| p.file_name())
+        .map(|n| n.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_else(|| "app".into());
+    let icon = exe_path
+        .as_ref()
+        .and_then(|p| crate::launcher_icons::icon_data_url(p))
+        .unwrap_or_default();
     let key = note_key(&exe, &title);
 
     let dirs = app
@@ -502,6 +556,7 @@ fn open_windows(app: &AppHandle) -> Result<(), String> {
         key,
         title,
         exe,
+        icon,
         preview_path: if hay_foto { preview_path } else { PathBuf::new() },
         blocks,
         assets_dir,
@@ -1043,7 +1098,7 @@ unsafe fn window_title(hwnd: windows_sys::Win32::Foundation::HWND) -> String {
 }
 
 #[cfg(windows)]
-fn process_exe_name(hwnd: windows_sys::Win32::Foundation::HWND) -> Option<String> {
+fn process_exe_path(hwnd: windows_sys::Win32::Foundation::HWND) -> Option<PathBuf> {
     use windows_sys::Win32::Foundation::CloseHandle;
     use windows_sys::Win32::System::Threading::{
         OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
@@ -1067,13 +1122,9 @@ fn process_exe_name(hwnd: windows_sys::Win32::Foundation::HWND) -> Option<String
         if ok == 0 || path_len == 0 {
             return None;
         }
-        let path = String::from_utf16_lossy(&path_buf[..path_len as usize]);
-        Some(
-            path.rsplit(['\\', '/'])
-                .next()
-                .unwrap_or(&path)
-                .to_ascii_lowercase(),
-        )
+        Some(PathBuf::from(String::from_utf16_lossy(
+            &path_buf[..path_len as usize],
+        )))
     }
 }
 

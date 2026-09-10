@@ -63,3 +63,5 @@ skills-lock.json
 
 # Worktrees temporales de agentes
 .claude/worktrees/
+# Local Pi runtime state
+.atl/

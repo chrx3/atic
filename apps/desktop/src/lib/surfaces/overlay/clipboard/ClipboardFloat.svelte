@@ -449,7 +449,7 @@
 
 {#if bubble.alive}
   <div
-    class="cf"
+    class="cf float-emerge"
     class:is-shown={bubble.shown}
     class:is-joined={joined}
     class:is-expanding={expanding}
@@ -534,14 +534,12 @@
     background: transparent;
     color: var(--text);
     overflow: hidden;
-    opacity: 0;
-    pointer-events: none;
-    transition: opacity var(--float-close-dur) var(--ease-smooth-out);
-  }
-
-  .cf.is-shown {
-    opacity: 1;
-    pointer-events: auto;
+    /*
+     * La entrada y la salida las lleva `.float-emerge` (app.css): opacidad, scale
+     * y viaje hacia la pill, con `data-side` como origen. Abrir invita
+     * (`--float-open-dur`) y cerrar se aparta (`--float-close-dur`). Antes había
+     * sólo opacidad, y con la duración del cierre para los dos lados.
+     */
   }
 
   .cf.is-expanding {
@@ -550,6 +548,7 @@
       height var(--launcher-bar-open-dur) var(--ease-smooth-out),
       left var(--launcher-bar-open-dur) var(--ease-smooth-out),
       top var(--launcher-bar-open-dur) var(--ease-smooth-out),
+      transform var(--float-open-dur) var(--ease-smooth-out),
       opacity var(--float-close-dur) var(--ease-smooth-out);
   }
 
@@ -566,6 +565,7 @@
       top var(--launcher-separate-dur) var(--ease-smooth-out),
       width var(--duration-quick) var(--ease-smooth-out),
       height var(--duration-quick) var(--ease-smooth-out),
+      transform var(--float-close-dur) var(--ease-smooth-out),
       opacity var(--float-close-dur) var(--ease-smooth-out);
   }
 

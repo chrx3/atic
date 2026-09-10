@@ -20,6 +20,9 @@
     type NoteBlock,
     type WindowFlipView,
   } from "$ipc/windowFlip";
+  import { AppWindow, Check } from "$lib/icons";
+  import { emerge } from "$lib/motion";
+  import Icon from "$ui/Icon.svelte";
   import FlipBoard from "./FlipBoard.svelte";
   import { colocarSiHaceFalta } from "./flipLayout";
 
@@ -42,6 +45,9 @@
 
   let view = $state<WindowFlipView | null>(null);
   let bloques = $state<NoteBlock[]>([]);
+  /** Atajo vigente para el hint del pie: se lee de la config al montar. */
+  /** True mientras se exporta: el diálogo nativo no debe voltear el reverso. */
+  let ocupado = $state(false);
   let showBack = $state(false);
   let cardReady = $state(false);
   let giro = $state<"" | "reverso" | "frente">("");
@@ -58,8 +64,20 @@
   let generacion = 0;
 
   const anchoTarjeta = $derived((view?.cardWidth ?? 1) * anchoVentana);
-  // Ventana chica: el encabezado y el pie se comen el bloc.
-  const compacta = $derived((view?.cardHeight ?? 1) * altoVentana < 260);
+  const altoTarjeta = $derived((view?.cardHeight ?? 1) * altoVentana);
+
+  /**
+   * Tres niveles de espacio, de más a menos.
+   *
+   * La barra tiene trece botones y, con etiquetas en los dos grupos, necesita
+   * unos 1300px de ancho. Con sólo las herramientas nombradas baja a ~950, y con
+   * todo en icono a ~470. De ahí salen los cortes: en 855 —una ventana chica
+   * normal— la barra partida en dos filas se comía el bloc.
+   *
+   * El pie es lo último que sobra: el atajo del encabezado está en Ajustes.
+   */
+  const compacta = $derived(anchoTarjeta < 1000 || altoTarjeta < 430);
+  const accionesSoloIcono = $derived(anchoTarjeta < 1400 || compacta);
   const focoX = $derived(((view?.cardLeft ?? 0) + (view?.cardWidth ?? 1) / 2) * 100);
   const focoY = $derived(((view?.cardTop ?? 0) + (view?.cardHeight ?? 1) / 2) * 100);
 
@@ -179,7 +197,7 @@
   }
 
   async function beginClose() {
-    if (closing) return;
+    if (ocupado || closing) return;
     closing = true;
     generacion += 1;
     if (saveTimer) clearTimeout(saveTimer);
@@ -264,7 +282,7 @@
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         event.preventDefault();
-        void beginClose();
+        if (!ocupado) void beginClose();
       }
     };
     window.addEventListener("keydown", onKey);
@@ -314,44 +332,40 @@
         {/if}
       </div>
       <div class="face back" class:compacta>
-        <header>
-          <p class="kicker">
-            {t("overlay.windowFlip.kicker", { exe: view?.exe ?? "" })}
-          </p>
-          <h1>{view?.title || t("overlay.windowFlip.untitled")}</h1>
-        </header>
         <FlipBoard
           bind:bloques
           bind:cajonAbierto
           assetsDir={view?.assetsDir ?? ""}
           {compacta}
+          {accionesSoloIcono}
+          notaKey={view?.key ?? ""}
+          nombreArchivo={view?.title || view?.exe || "tablero"}
           onpersist={persist}
-        />
-        <footer>
-          <p class="estado">
-            <span class:apagada={guardado}>{t("overlay.windowFlip.hint")}</span>
-            <span class="guardado" class:visible={guardado} aria-live="polite">
-              {guardado ? t("overlay.windowFlip.saved") : ""}
-            </span>
+          onclose={() => void beginClose()}
+          onocupado={(v) => (ocupado = v)}
+        >
+          {#snippet encabezado()}
+            <div class="titulos">
+              {#if view?.icon}
+                <img class="app-icon" src={view.icon} alt="" width="20" height="20" />
+              {:else}
+                <span class="app-icon hueco" aria-hidden="true">
+                  <Icon icon={AppWindow} size={13} />
+                </span>
+              {/if}
+              <p class="kicker">
+                {t("overlay.windowFlip.kicker", { exe: view?.exe ?? "" })}
+              </p>
+              <h1>{view?.title || t("overlay.windowFlip.untitled")}</h1>
+            </div>
+          {/snippet}
+        </FlipBoard>
+        {#if guardado}
+          <p class="guardado-flote" aria-live="polite" transition:emerge>
+            <Icon icon={Check} size={12} />
+            {t("overlay.windowFlip.saved")}
           </p>
-          <div class="acciones">
-            <button
-              type="button"
-              class="rb-btn rb-btn-ghost"
-              aria-pressed={cajonAbierto}
-              onclick={() => (cajonAbierto = !cajonAbierto)}
-            >
-              {t("overlay.windowFlip.drawer")}
-            </button>
-            <button
-              type="button"
-              class="rb-btn rb-btn-soft"
-              onclick={() => void beginClose()}
-            >
-              {t("overlay.windowFlip.close")}
-            </button>
-          </div>
-        </footer>
+        {/if}
       </div>
     </div>
   </div>
@@ -459,6 +473,28 @@
     }
   }
 
+  /*
+   * El aviso de guardado flota sobre el tablero en vez de ocupar una fila:
+   * el pie se comía 36px para decir una frase que se lee una vez.
+   */
+  .guardado-flote {
+    position: absolute;
+    bottom: 14px;
+    left: var(--pad);
+    z-index: 4;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    margin: 0;
+    padding: 4px 9px;
+    border-radius: 999px;
+    background: var(--rb-surface);
+    box-shadow: 0 2px 10px rgb(0 0 0 / 20%);
+    color: var(--rb-ok);
+    font-size: 11.5px;
+    pointer-events: none;
+  }
+
   @media (prefers-reduced-motion: reduce) {
     .card.ready.al-reverso,
     .card.ready.al-frente {
@@ -500,7 +536,7 @@
 
     display: flex;
     flex-direction: column;
-    background: var(--rb-surface);
+    background: var(--rb-bg1);
     color: var(--rb-text);
     transform: rotateY(180deg) translateZ(1px);
     box-sizing: border-box;
@@ -510,45 +546,69 @@
     --pad: 12px;
   }
 
-  header {
+  .back.compacta :global(.barra) {
+    gap: 6px;
+  }
+
+  .back.compacta :global(.barra .rb-btn) {
+    padding: 0.3rem 0.55rem;
+    font-size: 0.78rem;
+  }
+
+  .app-icon {
     display: grid;
-    gap: 3px;
-    padding: var(--pad) var(--pad) 10px;
+    width: 20px;
+    height: 20px;
+    flex: none;
+    place-items: center;
+    overflow: hidden;
+    border-radius: 6px;
+    background: var(--rb-surface-elevated);
+    outline: 1px solid rgb(0 0 0 / 12%);
+    outline-offset: -1px;
+    object-fit: cover;
+  }
+
+  :global(:root[data-theme-base="dark"]) .app-icon {
+    outline: 1px solid rgb(255 255 255 / 14%);
+    outline-offset: -1px;
+  }
+
+  .app-icon.hueco {
+    color: var(--rb-text);
+  }
+
+  /* Vive en la fila de la barra: el ancho que sobra se lo come el título. */
+  .titulos {
+    display: flex;
+    min-width: 0;
+    align-items: center;
+    gap: 6px;
   }
 
   .kicker {
     margin: 0;
     font-size: 11px;
     font-weight: 500;
-    letter-spacing: 0.04em;
-    text-transform: lowercase;
-    color: var(--rb-faint);
+    color: color-mix(in sRGB, var(--rb-text) 72%, transparent);
   }
 
-  header h1 {
+  .titulos h1 {
+    min-width: 0;
     margin: 0;
     font-family: var(--rb-display);
-    font-size: 16px;
+    font-size: 13px;
     font-weight: 600;
     line-height: 1.3;
 
     /* El título es de la ventana ajena: puede ser una frase entera. */
-    text-wrap: balance;
-    display: -webkit-box;
-    -webkit-line-clamp: 2;
-    line-clamp: 2;
-    -webkit-box-orient: vertical;
     overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
   }
 
   .back.compacta .kicker {
     display: none;
-  }
-
-  .back.compacta header h1 {
-    font-size: 14px;
-    -webkit-line-clamp: 1;
-    line-clamp: 1;
   }
 
   .back :global(.tablero) {
@@ -556,53 +616,9 @@
     min-height: 0;
   }
 
-  .acciones {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-  }
-
-  footer {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 10px;
-    padding: 10px var(--pad) var(--pad);
-    margin-top: 10px;
-    box-shadow: inset 0 1px 0 var(--rb-hairline);
-  }
-
-  /* Las dos líneas comparten celda: el aviso entra sin mover el pie. */
-  .estado {
-    display: grid;
-    min-width: 0;
-    margin: 0;
-    font-size: 11.5px;
-    color: var(--rb-faint);
-  }
-
-  .estado > span {
-    grid-area: 1 / 1;
-    overflow: hidden;
-    white-space: nowrap;
-    text-overflow: ellipsis;
-    transition: opacity var(--duration-fast) var(--ease-smooth-out);
-  }
-
-  .estado > span.apagada {
-    opacity: 0;
-  }
-
-  .guardado {
-    opacity: 0;
-    color: var(--rb-ok);
-  }
-
-  .guardado.visible {
-    opacity: 1;
-  }
-
-  .back.compacta .estado {
-    display: none;
+  @media (prefers-reduced-motion: reduce) {
+    .guardado-flote {
+      animation: none;
+    }
   }
 </style>
