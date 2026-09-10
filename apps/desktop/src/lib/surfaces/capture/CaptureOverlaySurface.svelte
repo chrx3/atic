@@ -214,9 +214,9 @@
     });
     const framePerCssX = frameW / Math.max(mapped.width, 1);
     const framePerCssY = frameH / Math.max(mapped.height, 1);
-    const pad = (16 + 10) * framePerCssX;
-    const tw = 96 * framePerCssX;
-    const th = 64 * framePerCssY;
+    const pad = (16 + 8) * framePerCssX;
+    const tw = 192 * framePerCssX;
+    const th = 120 * framePerCssY;
     return {
       left: mon.left + mon.width - pad - tw,
       top: mon.top + mon.height - pad - th,
@@ -568,8 +568,13 @@
         <span class="cap-v se" aria-hidden="true"></span>
         <span class="cap-v sw" aria-hidden="true"></span>
       </div>
-      <div class="cap-size" data-numeric style={sizeStyle}>
-        {Math.round(selection.width)} × {Math.round(selection.height)}
+      <div class="cap-meta" style={sizeStyle}>
+        {#if hovered?.title}
+          <span class="cap-name">{hovered.title}</span>
+        {/if}
+        <span class="cap-size" data-numeric>
+          {Math.round(selection.width)} × {Math.round(selection.height)}
+        </span>
       </div>
     </div>
   {:else if frameSrc}
@@ -787,22 +792,41 @@
     border-width: 0 0 3px 3px;
   }
 
-  .cap-size {
+  .cap-meta {
     pointer-events: none;
     position: absolute;
-    transform: translateY(calc(-100% - 4px));
-    border-radius: var(--rb-radius-xs, 5px);
-    background: var(--screen-chip);
-    padding: 2px 6px;
-    font-family: var(--rb-mono, ui-monospace, monospace);
-    font-variant-numeric: tabular-nums;
-    font-size: 12px;
-    white-space: nowrap;
-    color: var(--screen-ink, #fff);
-    outline: 1px solid rgb(255 255 255 / 10%);
-    outline-offset: -1px;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+    transform: translateY(calc(-100% - 6px));
     animation: cap-chip-in var(--duration-fast, 125ms)
       var(--ease-smooth-out, cubic-bezier(0.22, 1, 0.36, 1)) both;
+  }
+
+  .cap-name,
+  .cap-size {
+    max-width: min(22rem, 70vw);
+    overflow: hidden;
+    border-radius: var(--rb-radius-xs, 5px);
+    background: var(--screen-chip);
+    padding: 2px 8px;
+    color: var(--screen-ink, #fff);
+    font-size: 12px;
+    line-height: 1.25;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    outline: 1px solid rgb(255 255 255 / 10%);
+    outline-offset: -1px;
+  }
+
+  .cap-name {
+    font-weight: 650;
+  }
+
+  .cap-size {
+    font-family: var(--rb-mono, ui-monospace, monospace);
+    font-variant-numeric: tabular-nums;
   }
 
   @keyframes cap-chip-in {
@@ -812,7 +836,7 @@
     }
     to {
       opacity: 1;
-      transform: translateY(calc(-100% - 4px));
+      transform: translateY(calc(-100% - 6px));
     }
   }
 
@@ -856,6 +880,7 @@
     .cap-dim.is-on,
     .cap-help,
     .cap.is-revealed .cap-help,
+    .cap-meta,
     .cap-size {
       transition: none !important;
       animation: none !important;
@@ -866,9 +891,10 @@
       transform: translateX(-50%);
     }
 
+    .cap-meta,
     .cap-size {
       opacity: 1;
-      transform: translateY(calc(-100% - 4px));
+      transform: translateY(calc(-100% - 6px));
     }
 
     .cap-fly,

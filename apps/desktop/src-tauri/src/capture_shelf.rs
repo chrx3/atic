@@ -16,14 +16,14 @@ const SHELF_LABEL: &str = "capture-shelf";
 pub const LABEL: &str = SHELF_LABEL;
 
 /// Más que cualquier monitor razonable. `set_max_size(None)` no levanta el
-/// tope de `tauri.conf.json` (288×120) y Windows recorta el HWND al toast.
+/// tope de `tauri.conf.json` (228×152) y Windows recorta el HWND al toast.
 const COVER_MAX: u32 = 16384;
 
 /// Límites lógicos del toast, iguales a `tauri.conf.json`.
-const TOAST_MIN_W: f64 = 200.0;
-const TOAST_MIN_H: f64 = 88.0;
-const TOAST_MAX_W: f64 = 288.0;
-const TOAST_MAX_H: f64 = 120.0;
+const TOAST_MIN_W: f64 = 188.0;
+const TOAST_MIN_H: f64 = 116.0;
+const TOAST_MAX_W: f64 = 228.0;
+const TOAST_MAX_H: f64 = 152.0;
 
 /// Muestra la notificación de captura.
 ///
@@ -97,7 +97,7 @@ fn snapshot_outer(window: &WebviewWindow) -> Option<PhysicalBounds> {
 
 /// Cubre el monitor del toast para que el preview pueda viajar con el mouse.
 ///
-/// El estante nace 256×104, no redimensionable y con max 288×120. Un
+/// El estante nace 208×136, no redimensionable y con max 228×152. Un
 /// `set_size` desde JS no agranda ese HWND: el ghost se pinta y se recorta
 /// en la esquina. Acá se hace lo mismo que el overlay: tope enorme,
 /// `SetWindowPos` de una y bounds de WebView2 al cliente nuevo.
@@ -140,6 +140,92 @@ pub fn capture_shelf_restore_bounds(
     }
     apply_restore(&window, rest);
     Ok(())
+}
+
+/// HWND de la app bajo el cursor, ignorando el estante (cubre el monitor).
+///
+/// `WindowFromPoint` devolvería el toast. Enumeramos top-level en z-order.
+/// `0` = escritorio o Atic.
+#[tauri::command]
+pub fn capture_shelf_foreign_hwnd() -> i64 {
+    #[cfg(not(windows))]
+    {
+        0
+    }
+    #[cfg(windows)]
+    {
+        foreign_hwnd_at_cursor().unwrap_or(0)
+    }
+}
+
+#[cfg(windows)]
+fn foreign_hwnd_at_cursor() -> Option<i64> {
+    use windows_sys::Win32::Foundation::{BOOL, HWND, LPARAM, POINT, RECT};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        EnumWindows, GetClassNameW, GetCursorPos, GetWindowLongPtrW, GetWindowRect, IsIconic,
+        IsWindowVisible, GWL_EXSTYLE, WS_EX_TRANSPARENT,
+    };
+
+    let mut pt = POINT { x: 0, y: 0 };
+    unsafe {
+        if GetCursorPos(&mut pt) == 0 {
+            return None;
+        }
+    }
+
+    struct Ctx {
+        pt: POINT,
+        found: Option<i64>,
+    }
+    let mut ctx = Ctx { pt, found: None };
+
+    unsafe extern "system" fn callback(hwnd: HWND, lparam: LPARAM) -> BOOL {
+        let ctx = unsafe { &mut *(lparam as *mut Ctx) };
+        if crate::clipboard_history::is_own_app_hwnd(hwnd) {
+            return 1;
+        }
+        if unsafe { IsWindowVisible(hwnd) } == 0 || unsafe { IsIconic(hwnd) } != 0 {
+            return 1;
+        }
+        let ex = unsafe { GetWindowLongPtrW(hwnd, GWL_EXSTYLE) };
+        if ex & (WS_EX_TRANSPARENT as isize) != 0 {
+            return 1;
+        }
+        let mut class = [0u16; 64];
+        let n = unsafe { GetClassNameW(hwnd, class.as_mut_ptr(), 64) };
+        if n > 0 {
+            let class = String::from_utf16_lossy(&class[..n as usize]);
+            if matches!(
+                class.as_str(),
+                "Progman" | "WorkerW" | "Shell_TrayWnd" | "Shell_SecondaryTrayWnd"
+            ) {
+                return 1;
+            }
+        }
+        let mut rect = RECT {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+        };
+        if unsafe { GetWindowRect(hwnd, &mut rect) } == 0 {
+            return 1;
+        }
+        if ctx.pt.x >= rect.left
+            && ctx.pt.x < rect.right
+            && ctx.pt.y >= rect.top
+            && ctx.pt.y < rect.bottom
+        {
+            ctx.found = Some(hwnd as isize as i64);
+            return 0;
+        }
+        1
+    }
+
+    unsafe {
+        EnumWindows(Some(callback), &mut ctx as *mut Ctx as LPARAM);
+    }
+    ctx.found
 }
 
 #[cfg(windows)]

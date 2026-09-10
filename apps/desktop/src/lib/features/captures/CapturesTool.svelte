@@ -45,6 +45,8 @@
   let rangeAnchor = -1;
   let confirmingBulk = $state(false);
   let deletingBulk = $state(false);
+  /** Captura esperando confirmación: el borrado de una también es sin vuelta. */
+  let confirmingDeleteId = $state<string | null>(null);
 
   /** El texto leído de la captura que se está mirando. `null` = no se pidió. */
   let ocrText = $state<string | null>(null);
@@ -58,6 +60,9 @@
     ),
   );
   const groups = $derived(groupByDay(visible, secondsOf));
+  const confirmTarget = $derived(
+    visible.find((item) => item.id === confirmingDeleteId) ?? null,
+  );
   /** Índice plano de cada ítem: el teclado recorre la grilla entera, no un día. */
   const flatIndex = $derived(new Map(visible.map((item, index) => [item.id, index])));
   const chosen = $derived(new Set(selected));
@@ -138,7 +143,7 @@
         return;
       }
       const item = visible[focusIndex];
-      if (item) void run(() => captures.remove(item.path));
+      if (item) confirmingDeleteId = item.id;
     }
   }
 
@@ -190,6 +195,25 @@
       toastError(error);
     } finally {
       deletingBulk = false;
+    }
+  }
+
+  /** Borra una sola: desde la grilla, la miniatura o la vista previa. */
+  async function deleteConfirmed() {
+    const item = confirmTarget;
+    if (!item) return;
+    confirmingDeleteId = null;
+    const wasPreview = previewId === item.id;
+    const at = previewIndex;
+    try {
+      await captures.remove(item.path);
+      selected = selected.filter((value) => value !== item.id);
+      if (wasPreview) {
+        // Seguir mirando: se cae a la que ocupó su lugar, o a la anterior.
+        previewId = visible[at]?.id ?? visible[at - 1]?.id ?? null;
+      }
+    } catch (error) {
+      toastError(error);
     }
   }
 
@@ -404,7 +428,7 @@
                       label={t("page.common.delete")}
                       size="sm"
                       variant="danger"
-                      onclick={() => void run(() => captures.remove(item.path))}
+                      onclick={() => (confirmingDeleteId = item.id)}
                     >
                       <Icon icon={Trash2} size={12} />
                     </IconButton>
@@ -505,16 +529,7 @@
         <Button
           variant="danger"
           size="sm"
-          onclick={() =>
-            void run(async () => {
-              const at = previewIndex;
-              await captures.remove(item.path);
-              // Seguir mirando: se cae a la que ocupó su lugar, o a la
-              // anterior. Se mira `visible` y no la lista entera porque el
-              // índice era de la lista filtrada: con una búsqueda puesta,
-              // saltaría a una captura que no está en pantalla.
-              previewId = visible[at]?.id ?? visible[at - 1]?.id ?? null;
-            })}
+          onclick={() => (confirmingDeleteId = item.id)}
         >
           {t("page.common.delete")}
         </Button>
@@ -550,6 +565,17 @@
     busy={deletingBulk}
     onConfirm={() => void deleteSelected()}
     onCancel={() => (confirmingBulk = false)}
+  />
+{/if}
+
+{#if confirmTarget}
+  <ConfirmDialog
+    title={t("page.captures.deleteTitle")}
+    body={t("page.captures.deleteBody")}
+    confirmLabel={t("page.common.delete")}
+    tone="danger"
+    onConfirm={() => void deleteConfirmed()}
+    onCancel={() => (confirmingDeleteId = null)}
   />
 {/if}
 

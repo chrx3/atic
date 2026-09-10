@@ -92,27 +92,32 @@
     max-width: 26rem;
     flex-direction: column;
     gap: 0.4rem;
-    border: 1px solid color-mix(in sRGB, var(--line) 80%, transparent);
     border-radius: 0.6rem;
     padding: 0.5rem 0.6rem;
 
     /* Traslúcido con desenfoque detrás: es un apoyo momentáneo, no una
        ventana. Deja ver que abajo sigue estando la lista. */
-    background: color-mix(in sRGB, var(--surface) 88%, transparent);
+    background: color-mix(in sRGB, var(--surface) 92%, transparent);
     backdrop-filter: blur(10px);
-    box-shadow: 0 12px 32px color-mix(in sRGB, rgb(0 0 0) 38%, transparent);
+    box-shadow:
+      0 0 0 1px color-mix(in sRGB, var(--line) 80%, transparent),
+      0 6px 8px color-mix(in sRGB, rgb(0 0 0) 22%, transparent);
     color: var(--text);
     opacity: 0;
+    transform: translateY(4px);
 
     /* Duro: el overlay es click-through salvo en sus hit-rects, y un panel que
        reciba el mouse taparía el escritorio de abajo. Tampoco se publica como
        zona viva, por lo mismo. */
     pointer-events: none;
-    transition: opacity var(--duration-fast, 125ms) var(--ease-smooth-out, ease-out);
+    transition:
+      opacity var(--duration-fast, 150ms) var(--ease-smooth-out, ease-out),
+      transform var(--duration-fast, 150ms) var(--ease-smooth-out, ease-out);
   }
 
   .cp.is-placed {
     opacity: 1;
+    transform: none;
   }
 
   /*
@@ -144,6 +149,8 @@
     max-width: 100%;
     max-height: 17rem;
     border-radius: 0.35rem;
+    outline: 1px solid rgb(255 255 255 / 10%);
+    outline-offset: -1px;
 
     /* El damero se ve por debajo de un PNG con transparencia; sin esto una
        captura con fondo alfa se lee como un recorte roto. */
@@ -198,6 +205,7 @@
   @media (prefers-reduced-motion: reduce) {
     .cp {
       transition: none;
+      transform: none;
     }
   }
 </style>

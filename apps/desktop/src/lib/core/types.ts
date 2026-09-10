@@ -112,6 +112,8 @@ export interface AppConfig {
   color_shortcut: string;
   /** Atajo global del launcher tipo Spotlight. */
   launcher_shortcut: string;
+  /** Atajo global para voltear la ventana al frente y anotar en el reverso. */
+  window_flip_shortcut: string;
   /** Ids del launcher marcados como favoritos (`app:…` / `action:…`). */
   launcher_favorites: string[];
   capture_shelf_side: string;
@@ -467,6 +469,8 @@ export interface WindowFlipView {
   key: string;
   title: string;
   exe: string;
+  /** data URL PNG del .exe, o vacío. */
+  icon: string;
   previewPath: string;
   blocks: NoteBlock[];
   /** Carpeta de binarios de la app, para armar la URL de cada imagen. */

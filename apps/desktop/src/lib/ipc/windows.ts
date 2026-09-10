@@ -112,6 +112,11 @@ export function restoreShelfBounds(rest: PhysicalBounds): Promise<void> {
   return invoke("capture_shelf_restore_bounds", { rest });
 }
 
+/** HWND de la app bajo el cursor, 0 si es Atic o el escritorio. */
+export function shelfForeignHwnd(): Promise<number> {
+  return invoke<number>("capture_shelf_foreign_hwnd");
+}
+
 /**
  * Empieza a redimensionar desde un borde o una esquina.
  *

@@ -11,9 +11,21 @@
    */
   import { convertFileSrc } from "@tauri-apps/api/core";
   import Icon from "$ui/Icon.svelte";
-  import { ExternalLink, List, Pencil, ScanText, Search, Star, X } from "$lib/icons";
-  import type { ClipboardItem } from "$lib/types";
+  import {
+    ExternalLink,
+    ImageIcon,
+    Layers,
+    List,
+    Pencil,
+    ScanText,
+    Search,
+    Star,
+    Type,
+    X,
+  } from "$lib/icons";
+  import type { ClipboardItem, ClipboardKind } from "$lib/types";
   import { clipboardItemMatches } from "$lib/clipboardSearch";
+  import { formatListWhen } from "$core/format";
   import { parseCssColor, rgbToHex } from "$features/color/colorMath";
   import { t } from "$domain/i18n.svelte";
   import { openAnnotator } from "$ipc/annotate";
@@ -56,6 +68,7 @@
   let ocrBusyId = $state<string | null>(null);
   let query = $state("");
   let favoritesOnly = $state(false);
+  let kind = $state<ClipboardKind | "all">("all");
   let press: {
     id: string;
     x: number;
@@ -69,6 +82,9 @@
 
   const visibleItems = $derived.by(() => {
     let list = items;
+    if (kind !== "all") {
+      list = list.filter((item) => item.kind === kind);
+    }
     if (favoritesOnly) {
       list = list.filter((item) => item.pinned);
     }
@@ -125,6 +141,7 @@
   $effect(() => {
     void query;
     void favoritesOnly;
+    void kind;
     if (listEl) {
       listEl.scrollTop = 0;
       scrollTop = 0;
@@ -206,7 +223,7 @@
    * viejo) caen al `preview` recortado: no aporta, pero deja la pista puesta en
    * vez de dejar la fila muda.
    */
-  const PREVIEW_HINT = "Clic: pegar · Arrastra a otra app o al composer";
+  const PREVIEW_HINT = $derived(t("overlay.clipboardHint"));
 
   /**
    * El color que muestra la miniatura, o `null` si la entrada no es un color.
@@ -327,7 +344,7 @@
         path = await clipboardDragPath(item.id);
       }
       if (!path) {
-        report("No se pudo preparar el arrastre");
+        report(t("page.clipboard.dragFail"));
         return;
       }
       await startFileDrag([path]);
@@ -348,9 +365,9 @@
     }
   }
 
-  async function togglePin(item: ClipboardItem, event: MouseEvent) {
-    event.stopPropagation();
-    event.preventDefault();
+  async function togglePin(item: ClipboardItem, event?: MouseEvent) {
+    event?.stopPropagation();
+    event?.preventDefault();
     try {
       await pinClipboardItem(item.id, !item.pinned);
       await onRefresh();
@@ -359,9 +376,9 @@
     }
   }
 
-  async function remove(item: ClipboardItem, event: MouseEvent) {
-    event.stopPropagation();
-    event.preventDefault();
+  async function remove(item: ClipboardItem, event?: Event) {
+    event?.stopPropagation();
+    event?.preventDefault();
     try {
       // Siempre `delete_clipboard_item`: las capturas viven en otra carpeta
       // y el PNG no es del historial. `deleteCapture` borraba el archivo, el
@@ -383,31 +400,51 @@
       <input
         class="clip-search"
         type="search"
-        placeholder="Buscar…"
+        placeholder={t("page.clipboard.searchPlaceholder")}
         autocomplete="off"
         spellcheck="false"
         bind:value={query}
-        aria-label="Buscar en el historial"
+        aria-label={t("page.clipboard.search")}
       />
     </label>
     <div class="clip-toolbar-row">
-      <span class="clip-count">
-        {#if loading}
-          Cargando…
-        {:else if query.trim() || favoritesOnly}
-          {visibleItems.length}/{items.length}
-        {:else}
-          {items.length} ítems
-        {/if}
-      </span>
-      <div class="clip-filters" role="group" aria-label="Filtrar historial">
+      <div class="clip-kinds" role="group" aria-label={t("page.clipboard.kindFilter")}>
+        <button
+          type="button"
+          class="clip-kind"
+          class:is-on={kind === "all"}
+          onclick={() => (kind = "all")}
+        >
+          <Icon icon={Layers} size={12} />
+          {t("page.clipboard.kindAll")}
+        </button>
+        <button
+          type="button"
+          class="clip-kind"
+          class:is-on={kind === "text"}
+          onclick={() => (kind = "text")}
+        >
+          <Icon icon={Type} size={12} />
+          {t("page.clipboard.kindTextOnly")}
+        </button>
+        <button
+          type="button"
+          class="clip-kind"
+          class:is-on={kind === "image"}
+          onclick={() => (kind = "image")}
+        >
+          <Icon icon={ImageIcon} size={12} />
+          {t("page.clipboard.kindImageOnly")}
+        </button>
+      </div>
+      <div class="clip-filters" role="group" aria-label={t("page.clipboard.filterAria")}>
         <button
           type="button"
           class="clip-filter-btn"
           class:is-on={!favoritesOnly}
           onclick={() => (favoritesOnly = false)}
-          aria-label="Mostrar todos"
-          use:tip={"Todos"}
+          aria-label={t("page.clipboard.showAll")}
+          use:tip={t("page.clipboard.showAll")}
         >
           <Icon icon={List} size={14} />
         </button>
@@ -416,8 +453,8 @@
           class="clip-filter-btn"
           class:is-on={favoritesOnly}
           onclick={() => (favoritesOnly = true)}
-          aria-label="Solo favoritos"
-          use:tip={"Favoritos"}
+          aria-label={t("page.clipboard.favoritesOnly")}
+          use:tip={t("page.clipboard.favoritesOnly")}
         >
           <Icon
             icon={Star}
@@ -427,23 +464,35 @@
         </button>
       </div>
     </div>
+    <span class="clip-count">
+      {#if loading}
+        {t("page.clipboard.loading")}
+      {:else if query.trim() || favoritesOnly || kind !== "all"}
+        {visibleItems.length}/{items.length}
+      {:else}
+        {t("page.clipboard.count", { count: items.length })}
+      {/if}
+    </span>
   </div>
 
   {#if !loading && items.length === 0}
-    <p class="clip-empty">Copia texto o una imagen para empezar el historial.</p>
+    <p class="clip-empty">
+      {t("page.clipboard.empty")}
+      <span class="clip-empty-hint">{t("page.clipboard.emptyHint")}</span>
+    </p>
   {:else if !loading && visibleItems.length === 0}
     <p class="clip-empty">
-      {#if favoritesOnly && !query.trim()}
-        No hay favoritos. Marca ítems con la estrella.
+      {#if favoritesOnly && !query.trim() && kind === "all"}
+        {t("page.clipboard.noFavorites")}
       {:else}
-        Sin coincidencias.
+        {t("page.common.nothing")}
       {/if}
     </p>
   {:else}
     <ul
       class="clip-items"
-      role="listbox"
-      aria-label="Historial del portapapeles"
+      role="list"
+      aria-label={t("page.clipboard.listAria")}
       bind:this={listEl}
       onscroll={onListScroll}
     >
@@ -452,20 +501,27 @@
       {/if}
       {#each windowed.slice as item (item.id)}
         {@const swatch = swatchFor(item)}
-        <li class="clip-row">
+        {@const kindLabel = item.kind === "image"
+          ? t("page.clipboard.kindImage")
+          : swatch
+            ? t("page.clipboard.kindColor")
+            : t("page.clipboard.kindText")}
+        <li class="clip-row" use:clipPreview={previewFor(item)}>
           <div
             class="clip-item"
             class:is-busy={busyId === item.id}
             class:is-dragging={draggingId === item.id}
-            role="option"
-            aria-selected={busyId === item.id || draggingId === item.id}
+            role="button"
+            aria-busy={busyId === item.id}
             tabindex="0"
-            use:clipPreview={previewFor(item)}
             onpointerdown={(e) => onItemDown(e, item)}
             onkeydown={(e) => {
               if (e.key === "Enter" || e.key === " ") {
                 e.preventDefault();
                 void paste(item);
+              } else if (e.key === "Delete") {
+                e.preventDefault();
+                void remove(item, e);
               }
             }}
           >
@@ -481,54 +537,56 @@
               {:else if swatch}
                 <span class="clip-swatch" style:background={swatch}></span>
               {:else}
-                <span class="clip-text-icon">Aa</span>
+                <span class="clip-text-icon">
+                  <Icon icon={Type} size={13} />
+                </span>
               {/if}
             </span>
             <span class="clip-body">
-              <span class="clip-preview">{item.preview || "(vacío)"}</span>
-              {#if item.kind === "image" && item.imagePath}
-                <span class="clip-quick">
-                  <button
-                    type="button"
-                    class="clip-chip"
-                    onpointerdown={(e) => e.stopPropagation()}
-                    onclick={(e) => void drawImage(item, e)}
-                  >
-                    <Icon icon={Pencil} size={11} />
-                    {t("page.clipboard.draw")}
-                  </button>
-                  <button
-                    type="button"
-                    class="clip-chip"
-                    onpointerdown={(e) => e.stopPropagation()}
-                    onclick={(e) => void openImage(item, e)}
-                  >
-                    <Icon icon={ExternalLink} size={11} />
-                    {t("page.clipboard.openLarge")}
-                  </button>
-                  <button
-                    type="button"
-                    class="clip-chip"
-                    disabled={ocrBusyId === item.id}
-                    aria-busy={ocrBusyId === item.id}
-                    onpointerdown={(e) => e.stopPropagation()}
-                    onclick={(e) => void ocrImage(item, e)}
-                  >
-                    <Icon icon={ScanText} size={11} />
-                    {ocrBusyId === item.id ? "…" : t("page.clipboard.ocr")}
-                  </button>
-                </span>
-              {:else}
+              <span class="clip-preview">
+                {item.preview || t("page.clipboard.emptyPreview")}
+              </span>
+              <span class="clip-sub">
                 <span class="clip-meta">
-                  {item.kind === "image" ? "Imagen" : swatch ? "Color" : "Texto"}
-                  {#if item.pinned}
-                    · Fav
-                  {/if}
+                  {kindLabel}{formatListWhen(Math.floor(item.createdAtMs / 1000))}
                   {#if item.source === "capture"}
-                    · Captura
+                    · {t("page.clipboard.sourceCapture")}
                   {/if}
                 </span>
-              {/if}
+                {#if item.kind === "image" && item.imagePath}
+                  <span class="clip-quick">
+                    <button
+                      type="button"
+                      class="clip-chip"
+                      onpointerdown={(e) => e.stopPropagation()}
+                      onclick={(e) => void drawImage(item, e)}
+                    >
+                      <Icon icon={Pencil} size={11} />
+                      {t("page.clipboard.draw")}
+                    </button>
+                    <button
+                      type="button"
+                      class="clip-chip"
+                      onpointerdown={(e) => e.stopPropagation()}
+                      onclick={(e) => void openImage(item, e)}
+                    >
+                      <Icon icon={ExternalLink} size={11} />
+                      {t("page.clipboard.openLarge")}
+                    </button>
+                    <button
+                      type="button"
+                      class="clip-chip"
+                      disabled={ocrBusyId === item.id}
+                      aria-busy={ocrBusyId === item.id}
+                      onpointerdown={(e) => e.stopPropagation()}
+                      onclick={(e) => void ocrImage(item, e)}
+                    >
+                      <Icon icon={ScanText} size={11} />
+                      {ocrBusyId === item.id ? t("page.captures.ocrReading") : t("page.clipboard.ocr")}
+                    </button>
+                  </span>
+                {/if}
+              </span>
             </span>
           </div>
           <div class="clip-actions">
@@ -538,8 +596,8 @@
               class:is-on={item.pinned}
               onpointerdown={(e) => e.stopPropagation()}
               onclick={(e) => void togglePin(item, e)}
-              aria-label={item.pinned ? "Quitar de favoritos" : "Marcar favorito"}
-              use:tip={item.pinned ? "Quitar de favoritos" : "Marcar favorito"}
+              aria-label={item.pinned ? t("page.clipboard.unpin") : t("page.clipboard.pin")}
+              use:tip={item.pinned ? t("page.clipboard.unpin") : t("page.clipboard.pin")}
             >
               <Icon
                 icon={Star}
@@ -559,8 +617,8 @@
                 e.preventDefault();
                 void remove(item, e);
               }}
-              aria-label="Eliminar"
-              use:tip={"Eliminar"}
+              aria-label={t("page.common.delete")}
+              use:tip={t("page.common.delete")}
             >
               <Icon icon={X} size={14} />
             </button>
@@ -630,16 +688,49 @@
   .clip-search::placeholder {
     color: var(--rb-muted);
   }
-  .clip-search:focus {
-    border-color: color-mix(in srgb, var(--rb-accent) 55%, var(--rb-border));
+  .clip-search:focus,
+  .clip-search:focus-visible {
+    box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--rb-accent) 70%, transparent);
   }
 
   .clip-count {
-    flex: 1;
     min-width: 0;
     color: var(--rb-muted);
-    font-size: 0.6875rem;
+    font-size: 0.625rem;
     font-weight: 600;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .clip-kinds {
+    display: flex;
+    min-width: 0;
+    flex: 1;
+    gap: 0.15rem;
+  }
+
+  .clip-kind {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    height: 1.75rem;
+    border: 0;
+    border-radius: 6px;
+    margin: 0;
+    padding: 0 0.4rem;
+    background: transparent;
+    color: var(--rb-muted);
+    font: inherit;
+    font-size: 0.625rem;
+    font-weight: 650;
+    cursor: pointer;
+  }
+  .clip-kind:hover {
+    background: color-mix(in srgb, var(--rb-text) 8%, transparent);
+    color: var(--rb-text);
+  }
+  .clip-kind.is-on {
+    background: color-mix(in srgb, var(--rb-accent) 14%, transparent);
+    color: var(--rb-accent);
   }
 
   .clip-filters {
@@ -650,8 +741,8 @@
 
   .clip-filter-btn {
     display: grid;
-    min-width: 1.55rem;
-    height: 1.35rem;
+    min-width: 1.75rem;
+    height: 1.75rem;
     place-items: center;
     border: 0;
     border-radius: 6px;
@@ -677,6 +768,13 @@
     color: var(--rb-muted);
     font-size: 0.75rem;
     line-height: 1.4;
+  }
+
+  .clip-empty-hint {
+    display: block;
+    margin-top: 0.2rem;
+    color: var(--rb-faint, var(--rb-muted));
+    font-size: 0.6875rem;
   }
 
   .clip-items {
@@ -770,6 +868,8 @@
     width: 100%;
     height: 100%;
     object-fit: cover;
+    outline: 1px solid rgb(255 255 255 / 10%);
+    outline-offset: -1px;
   }
   .clip-text-icon {
     color: var(--rb-muted);
@@ -810,17 +910,47 @@
     text-overflow: ellipsis;
   }
 
+  .clip-sub {
+    position: relative;
+    min-height: 1.25rem;
+  }
+
   .clip-meta {
     color: var(--rb-muted);
     font-size: 0.625rem;
+    font-variant-numeric: tabular-nums;
+    transition: opacity var(--duration-quick, 75ms)
+      var(--ease-smooth-out, ease-out);
   }
 
   .clip-quick {
+    position: absolute;
+    inset: 0;
     display: flex;
     min-width: 0;
     flex-wrap: wrap;
+    align-items: center;
     gap: 0.2rem;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity var(--duration-quick, 75ms)
+      var(--ease-smooth-out, ease-out);
+  }
+
+  .clip-row:hover .clip-quick,
+  .clip-row:focus-within .clip-quick {
+    opacity: 1;
     pointer-events: auto;
+  }
+
+  .clip-row:hover .clip-meta,
+  .clip-row:focus-within .clip-meta {
+    opacity: 0;
+  }
+
+  .clip-row:hover .clip-meta:only-child,
+  .clip-row:focus-within .clip-meta:only-child {
+    opacity: 1;
   }
 
   .clip-chip {
@@ -843,6 +973,14 @@
     background: color-mix(in sRGB, var(--rb-text) 14%, transparent);
     color: var(--rb-text);
   }
+  .clip-chip:active:not(:disabled) {
+    transform: scale(0.96);
+  }
+  .clip-filter-btn:active,
+  .clip-kind:active,
+  .clip-icon-btn:active {
+    transform: scale(0.96);
+  }
 
   .clip-chip:disabled {
     cursor: default;
@@ -862,8 +1000,8 @@
 
   .clip-icon-btn {
     display: grid;
-    min-width: 1.55rem;
-    height: 1.35rem;
+    min-width: 1.75rem;
+    height: 1.75rem;
     place-items: center;
     border: 0;
     border-radius: 6px;

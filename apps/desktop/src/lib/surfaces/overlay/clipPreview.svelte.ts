@@ -116,7 +116,7 @@ export function clipPreview(node: HTMLElement, input: ClipPreviewInput) {
   installGlobals();
   let current = input;
 
-  const open = () => {
+  const open = (immediate = false) => {
     if (!current) return;
     clearTimer();
     const run = () => {
@@ -126,17 +126,35 @@ export function clipPreview(node: HTMLElement, input: ClipPreviewInput) {
       const r = node.getBoundingClientRect();
       clipPreviewState.show(current, { x: r.left, y: r.top, w: r.width, h: r.height });
     };
-    if (clipPreviewState.open || Date.now() < warmUntil) run();
+    if (immediate || clipPreviewState.open || Date.now() < warmUntil) run();
     else timer = window.setTimeout(run, SHOW_DELAY_MS);
   };
 
-  const close = () => {
+  const stillInside = (event: FocusEvent | PointerEvent) => {
+    const next = event.relatedTarget;
+    return next instanceof Node && node.contains(next);
+  };
+
+  const close = (event?: FocusEvent | PointerEvent) => {
+    if (event && stillInside(event)) return;
     clearTimer();
     if (owner === node) hideNow();
   };
 
-  node.addEventListener("pointerenter", open);
+  const openSoon = () => open(false);
+  const openNow = (event: FocusEvent) => {
+    // Solo teclado: un clic ya dispara pointerenter, y abrir al toque en el
+    // mousedown haría parpadear el panel en cada pegado.
+    const target = event.target as HTMLElement | null;
+    if (node.matches(":focus-visible") || target?.matches(":focus-visible")) {
+      open(true);
+    }
+  };
+
+  node.addEventListener("pointerenter", openSoon);
   node.addEventListener("pointerleave", close);
+  node.addEventListener("focusin", openNow);
+  node.addEventListener("focusout", close);
 
   return {
     update(next: ClipPreviewInput) {
@@ -151,8 +169,10 @@ export function clipPreview(node: HTMLElement, input: ClipPreviewInput) {
       }
     },
     destroy() {
-      node.removeEventListener("pointerenter", open);
+      node.removeEventListener("pointerenter", openSoon);
       node.removeEventListener("pointerleave", close);
+      node.removeEventListener("focusin", openNow);
+      node.removeEventListener("focusout", close);
       // La fila se va del DOM —scroll de la lista virtualizada, un borrado— y
       // el panel no puede quedar colgado sobre su hueco.
       close();
