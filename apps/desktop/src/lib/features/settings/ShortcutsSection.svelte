@@ -81,6 +81,12 @@
         fallback: "CmdOrCtrl+Shift+C",
       },
       {
+        key: "window_flip_shortcut" as const,
+        label: t("settings.shortcuts.flip"),
+        hint: t("settings.shortcuts.flipHint"),
+        fallback: "CmdOrCtrl+Shift+B",
+      },
+      {
         key: "launcher_shortcut" as const,
         label: t("settings.shortcuts.launcher"),
         hint: t("settings.shortcuts.launcherHint"),
