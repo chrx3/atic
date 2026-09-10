@@ -35,6 +35,7 @@
   let query = $state("");
   let hits = $state<SearchHit[]>([]);
   let active = $state(0);
+  let searching = $state(false);
   let input = $state<HTMLInputElement | null>(null);
 
   /**
@@ -47,8 +48,10 @@
     const q = query.trim();
     if (!q) {
       hits = [];
+      searching = false;
       return;
     }
+    searching = true;
     let cancelled = false;
     const timer = setTimeout(() => {
       void searchLocal(q)
@@ -56,8 +59,12 @@
           if (cancelled) return;
           hits = found;
           active = 0;
+          searching = false;
         })
-        .catch(toastError);
+        .catch((error) => {
+          if (!cancelled) searching = false;
+          toastError(error);
+        });
     }, 140);
     return () => {
       cancelled = true;
@@ -130,6 +137,8 @@
 
   {#if !query.trim()}
     <EmptyState title={t("page.search.typeToSearch")} hint={t("page.search.typeHint")} />
+  {:else if searching}
+    <EmptyState title={t("page.search.searching")} />
   {:else if hits.length === 0}
     <EmptyState title={t("page.common.nothing")} hint={t("page.common.fewerWords")} />
   {:else}

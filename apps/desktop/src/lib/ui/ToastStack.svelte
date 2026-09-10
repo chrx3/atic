@@ -21,6 +21,7 @@
   import { fly } from "svelte/transition";
   import Icon from "$ui/Icon.svelte";
   import { X } from "$lib/icons";
+  import { ms, MOTION } from "$lib/motion";
   import IconButton from "./IconButton.svelte";
   import { t } from "$domain/i18n.svelte";
 
@@ -72,7 +73,7 @@
     <div
       class="pointer-events-auto flex max-w-100 items-center gap-2 rounded-sm border
              border-line bg-elevated py-1.5 pr-1.5 pl-3 shadow-pop"
-      transition:fly={{ y: 8, duration: 200 }}
+      transition:fly={{ y: 8, duration: ms(MOTION.slow) }}
     >
       <p class="min-w-0 flex-1 truncate text-sm text-text">{toast.message}</p>
       {#if onDismiss}

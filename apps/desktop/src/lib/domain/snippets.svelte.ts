@@ -20,6 +20,8 @@ const SCRATCH_DEBOUNCE_MS = 600;
 class SnippetsStore implements DomainStore {
   items = $state<Snippet[]>([]);
   scratchpad = $state<Scratchpad | null>(null);
+  /** Primer llenado: el panel muestra «Cargando» en vez de «vacío». */
+  loading = $state(true);
   query = $state("");
 
   #timer: ReturnType<typeof setTimeout> | null = null;
@@ -33,10 +35,14 @@ class SnippetsStore implements DomainStore {
   }
 
   async hydrate(): Promise<void> {
-    [this.items, this.scratchpad] = await Promise.all([
-      listSnippets(),
-      getScratchpad(),
-    ]);
+    try {
+      [this.items, this.scratchpad] = await Promise.all([
+        listSnippets(),
+        getScratchpad(),
+      ]);
+    } finally {
+      this.loading = false;
+    }
   }
 
   async listen(): Promise<() => void> {

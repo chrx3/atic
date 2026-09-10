@@ -42,6 +42,8 @@
     <label
       class="seg-opt relative flex flex-1 cursor-pointer items-center justify-center
              rounded-xs text-xs font-medium whitespace-nowrap
+             has-[:focus-visible]:[outline:2px_solid_var(--accent)]
+             has-[:focus-visible]:[outline-offset:2px]
              transition-[color,background-color,transform]
              duration-(--duration-quick) ease-calm active:scale-[0.96]
              {height}

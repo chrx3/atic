@@ -31,14 +31,56 @@
   // de textos a mano se desharía solo en el siguiente render.
   let tab = $state<"snippets" | "scratchpad">(untrack(() => initialTab));
   let editing = $state<SnippetItem | null>(null);
+  /** Copia persistida: contra esto se mide si hay cambios sin guardar. */
+  let pristine = $state<SnippetItem | null>(null);
+  /** Selección o cierre esperando confirmación por descartar edición. */
+  let pendingDiscard = $state<{ next: SnippetItem | null } | null>(null);
   let toDelete = $state<SnippetItem | null>(null);
   let saving = $state(false);
   let listEl = $state<HTMLDivElement | null>(null);
+
+  const dirty = $derived(
+    editing != null &&
+      (editing.name !== pristine?.name || editing.body !== pristine?.body),
+  );
 
   const flatIndex = $derived(
     new Map(snippets.visible.map((item, index) => [item.id, index])),
   );
   const editingIndex = $derived(editing?.id ? (flatIndex.get(editing.id) ?? -1) : -1);
+
+  function openEditor(item: SnippetItem) {
+    editing = { ...item };
+    pristine = { ...item };
+  }
+
+  /** Elegir otro texto con edición sin guardar pide confirmación. */
+  function requestSelect(item: SnippetItem) {
+    if (dirty) {
+      pendingDiscard = { next: item };
+      return;
+    }
+    openEditor(item);
+  }
+
+  function requestClose() {
+    if (dirty) {
+      pendingDiscard = { next: null };
+      return;
+    }
+    editing = null;
+    pristine = null;
+  }
+
+  function confirmDiscard() {
+    const next = pendingDiscard?.next ?? null;
+    pendingDiscard = null;
+    if (next) openEditor(next);
+    else {
+      editing = null;
+      pristine = null;
+    }
+  }
 
   /**
    * Elegir con el teclado abre el texto en el editor, igual que el clic: acá
@@ -47,7 +89,7 @@
   function selectAt(index: number) {
     const item = snippets.visible[index];
     if (!item) return;
-    editing = { ...item };
+    requestSelect(item);
     const row = listEl?.querySelector<HTMLElement>(`[data-row="${index}"]`);
     row?.focus();
     row?.scrollIntoView({ block: "nearest" });
@@ -78,6 +120,7 @@
       await snippets.save(item);
       toasts.push(t("toast.savedNamed", { name: item.name }));
       editing = null;
+      pristine = null;
     } catch (error) {
       toastError(error);
     } finally {
@@ -90,7 +133,10 @@
     if (!target) return;
     try {
       await snippets.remove(target.id);
-      if (editing?.id === target.id) editing = null;
+      if (editing?.id === target.id) {
+        editing = null;
+        pristine = null;
+      }
       toDelete = null;
     } catch (error) {
       toastError(error);
@@ -121,7 +167,7 @@
       />
       {#snippet end()}
         {#if tab === "snippets"}
-          <Button variant="primary" size="sm" onclick={() => (editing = blank())}>
+          <Button variant="primary" size="sm" onclick={() => openEditor(blank())}>
             {t("page.snippets.new")}
           </Button>
         {/if}
@@ -182,7 +228,7 @@
                     <Button
                       variant="primary"
                       size="sm"
-                      onclick={() => (editing = blank())}
+                      onclick={() => openEditor(blank())}
                     >
                       {t("page.snippets.newText")}
                     </Button>
@@ -200,7 +246,7 @@
                         data-row={index}
                         aria-current={editing?.id === item.id ? "true" : undefined}
                         onkeydown={(event) => onListKeydown(event, item)}
-                        onclick={() => (editing = { ...item })}
+                        onclick={() => requestSelect(item)}
                       >
                         <span class="truncate text-sm text-text">{item.name}</span>
                         <span class="line-clamp-1 text-xs text-faint">{item.body}</span>
@@ -231,7 +277,7 @@
                     .then(() => toasts.push(t("toast.pasted")))
                     .catch(toastError)}
                 onDelete={() => (toDelete = editing)}
-                onClose={() => (editing = null)}
+                onClose={requestClose}
               />
             {/if}
           {/snippet}
@@ -244,7 +290,7 @@
               hint={t("page.snippets.pickHint")}
             >
               {#snippet action()}
-                <Button variant="soft" size="sm" onclick={() => (editing = blank())}>
+                <Button variant="soft" size="sm" onclick={() => openEditor(blank())}>
                   {t("page.snippets.newText")}
                 </Button>
               {/snippet}
@@ -264,5 +310,16 @@
     tone="danger"
     onConfirm={() => void confirmDelete()}
     onCancel={() => (toDelete = null)}
+  />
+{/if}
+
+{#if pendingDiscard}
+  <ConfirmDialog
+    title={t("page.snippets.discardTitle")}
+    body={t("page.snippets.discardBody")}
+    confirmLabel={t("page.snippets.discardConfirm")}
+    tone="danger"
+    onConfirm={confirmDiscard}
+    onCancel={() => (pendingDiscard = null)}
   />
 {/if}

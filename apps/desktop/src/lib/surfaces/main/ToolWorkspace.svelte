@@ -95,7 +95,7 @@
 
 <svelte:window onkeydown={onKeydown} />
 
-<section class="ws" aria-label={tool.label}>
+<section class="ws" aria-label={tool.label} in:tabPanel|local out:tabPanel|local>
   <div class="ws-bar">
     <IconButton label={t("workspace.back")} size="sm" onclick={onClose}>
       <Icon icon={House} size={14} />

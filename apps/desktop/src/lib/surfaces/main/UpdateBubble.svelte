@@ -105,7 +105,7 @@
 
   @media (prefers-reduced-motion: no-preference) {
     .dock {
-      animation: rise var(--duration-enter, 420ms) var(--ease-smooth-out, ease) both;
+      animation: rise var(--duration-slow, 200ms) var(--ease-smooth-out, ease) both;
     }
   }
 
