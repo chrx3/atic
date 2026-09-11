@@ -1,5 +1,5 @@
 /**
- * Los números que el overlay comparte con Rust.
+ * Los números y labels que el overlay comparte con Rust.
  *
  * Cada uno existe dos veces —acá y en `src-tauri/`— porque las dos mitades
  * hacen la misma cuenta desde lados distintos: el frontend coloca un `div`
@@ -43,3 +43,13 @@ export const BUBBLE_MIN_H = 176;
  * las dos siluetas se funden, por encima se separan.
  */
 export const BUBBLE_GAP = 10;
+
+/**
+ * El label de la ventana del overlay, gemelo de `LABEL` en `overlay.rs`.
+ *
+ * No es cosmético: el overlay es la única ventana que publica zonas vivas
+ * (`set_overlay_hit_rects`), y esa lista es global en Rust. Publicar desde otra
+ * ventana la pisa entera y deja la pill inalcanzable, así que quien quiera sumar
+ * una zona viva tiene que preguntar primero si ESTE webview es el overlay.
+ */
+export const OVERLAY_LABEL = "overlay";
