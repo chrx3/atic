@@ -35,6 +35,9 @@
   const arbol = $derived.by(() => {
     const vivas = agents.sessions;
     const conocidas = new Set(vivas.map((s) => s.id));
+    // Tabla de paso del recorrido, no estado reactivo: se arma en cada
+    // derivación y se lee por `get`.
+    // eslint-disable-next-line svelte/prefer-svelte-reactivity -- ver arriba
     const hijos = new Map<string | null, AgentSessionView[]>();
     for (const s of vivas) {
       const padre = s.parent && conocidas.has(s.parent) ? s.parent : null;
@@ -115,6 +118,7 @@
         {#each arbol as { s, hondura } (s.id)}
           <li style="--hondura: {hondura}">
             <button
+              type="button"
               class="nodo"
               class:activa={activa === s.id}
               onclick={() => abrir(s.id)}
@@ -145,10 +149,11 @@
       <nav class="tabs">
         {#each pestañas as s (s.id)}
           <span class="tab" class:activa={activa === s.id}>
-            <button class="tab-abrir" onclick={() => abrir(s.id)}>
+            <button type="button" class="tab-abrir" onclick={() => abrir(s.id)}>
               {nombre(s)}
             </button>
             <button
+              type="button"
               class="tab-cerrar"
               onclick={() => cerrar(s.id)}
               aria-label="Cerrar {nombre(s)}">×</button

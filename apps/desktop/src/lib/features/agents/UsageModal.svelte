@@ -440,7 +440,7 @@
     width: 0.4rem;
     height: 0.4rem;
     border-radius: 999px;
-    background: color-mix(in srgb, var(--accent, #da7756) 70%, transparent);
+    background: color-mix(in sRGB, var(--accent) 70%, transparent);
   }
 
   .live-dot.is-pulse {
@@ -562,7 +562,7 @@
     font-weight: 600;
     font-variant-numeric: tabular-nums;
     letter-spacing: -0.02em;
-    color: var(--accent, #da7756);
+    color: var(--accent);
     line-height: 1.15;
   }
 

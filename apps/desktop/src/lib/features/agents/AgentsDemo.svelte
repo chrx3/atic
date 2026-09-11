@@ -300,6 +300,8 @@
   );
 
   const turnEnds = $derived.by((): Map<string, number | null> => {
+    // Tabla de paso de la derivación, no estado reactivo.
+    // eslint-disable-next-line svelte/prefer-svelte-reactivity -- ver arriba
     const map = new Map<string, number | null>();
     for (const turn of viewTurns) {
       if (turn.status === "running") continue;
@@ -605,6 +607,9 @@
   );
 
   /** Evita toast repetido al re-renderizar el mismo notice. */
+  // Cache de dedupe, no estado: `SvelteSet` acá sólo agregaría reactividad que
+  // nadie lee.
+  // eslint-disable-next-line svelte/prefer-svelte-reactivity -- ver arriba
   const toastedStatusIds = new Set<string>();
 
   $effect(() => {
@@ -2353,7 +2358,7 @@
     --top-ctrl-r: 0.4rem;
 
     /* Tokens que heredan AgentConversation / ToolCard / Message */
-    --coral: var(--accent, #da7756);
+    --coral: var(--accent);
     --text: var(--rb-text);
     --dim: var(--rb-muted);
     --faint: var(--rb-faint);
@@ -2374,7 +2379,7 @@
     font-family: var(--rb-font);
     background: var(--rb-surface);
     overflow: hidden;
-    --accent: #da7756;
+    --accent: var(--agent-accent);
   }
 
   .demo.is-float {
@@ -3550,7 +3555,7 @@
   .chip.is-go {
     border-color: transparent;
     background: var(--accent);
-    color: #fff;
+    color: var(--rb-on-accent);
     max-width: none;
     min-height: 1.55rem;
     padding: 0.1rem 0.6rem;
@@ -3599,7 +3604,7 @@
     border-radius: var(--r-chip);
     padding: 0;
     background: var(--accent);
-    color: #fff;
+    color: var(--rb-on-accent);
     font: inherit;
     cursor: pointer;
     transition:

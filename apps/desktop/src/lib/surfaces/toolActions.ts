@@ -4,6 +4,11 @@
  * El CTA de la card no “abre” la tool: la ejecuta (grabar, dictar, capturar…).
  * Clipboard / textos / agentes / Apps: abren float (vía slot si hay).
  * Tools con slot espacial delegan en el overlay: flyTo → ejecutar.
+ *
+ * Vive en `surfaces/` y no en `core/`: orquesta dominio, IPC y slots, y la
+ * consumen las DOS superficies que ofrecen la acción (el rail de `main` y la
+ * rueda de la pill). Bajarla a `core` era mentir sobre sus dependencias;
+ * bajarla a `features` la haría importar hacia arriba (`toolSlots`).
  */
 
 import { capture } from "$domain/capture.svelte";
@@ -17,7 +22,7 @@ import { showSnippetsWindow } from "$ipc/snippets";
 import { emit } from "@tauri-apps/api/event";
 import { hasToolSlot } from "$surfaces/overlay/toolSlots";
 import { t } from "$domain/i18n.svelte";
-import { AGENTS_ENABLED, type ToolId } from "./tools";
+import { AGENTS_ENABLED, type ToolId } from "$core/tools";
 
 export type ToolActionKind = "run" | "openDetail";
 

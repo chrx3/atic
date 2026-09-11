@@ -118,7 +118,7 @@
     align-items: center;
     justify-content: center;
     padding: 16px;
-    background: color-mix(in sRGB, var(--rb-bg1, #1a1a1a) 55%, transparent);
+    background: color-mix(in sRGB, var(--rb-bg1) 55%, transparent);
     animation: velo-entra var(--duration-fast) var(--ease-smooth-out) both;
   }
 

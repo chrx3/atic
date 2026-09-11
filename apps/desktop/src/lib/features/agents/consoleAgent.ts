@@ -23,6 +23,9 @@ const RESTART_NAME =
 const UPDATE_OK = /update ran successfully|\bupdated successfully\b/i;
 
 function stripAnsi(chunk: string): string {
+  // El `\x1b` ES el patrón: sin el caracter de control no hay forma de
+  // reconocer una secuencia ANSI.
+  // eslint-disable-next-line no-control-regex -- ver arriba
   return chunk.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "").replace(/\r/g, "");
 }
 
@@ -73,7 +76,7 @@ export function cliFromTitle(title: string): string | null {
   if (!trimmed) return null;
   return (
     canonicalAgentCli(trimmed) ??
-    canonicalAgentCli(trimmed.split(/[|·\u2014\-]/)[0] ?? "")
+    canonicalAgentCli(trimmed.split(/[|·\u2014-]/)[0] ?? "")
   );
 }
 

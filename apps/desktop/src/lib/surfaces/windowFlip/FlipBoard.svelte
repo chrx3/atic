@@ -2719,9 +2719,6 @@
     place-items: center;
     border-style: dashed;
     color: var(--rb-muted);
-  }
-
-  .mini-mas {
     transition:
       color var(--duration-fast) var(--ease-smooth-out),
       border-color var(--duration-fast) var(--ease-smooth-out);
@@ -3002,9 +2999,6 @@
     font: inherit;
     font-size: 11.5px;
     cursor: pointer;
-  }
-
-  .mas {
     transition:
       color var(--duration-quick) var(--ease-smooth-out),
       background-color var(--duration-quick) var(--ease-smooth-out);
