@@ -1,5 +1,7 @@
 <script lang="ts">
   import { tip } from "$surfaces/overlay/tip.svelte";
+  import { surfaces } from "$surfaces/overlay/surfaces.svelte";
+  import { OVERLAY_LABEL } from "$surfaces/overlay/contract";
   /**
    * Consola embebida (xterm + PTY): N pestañas, cada una Local (PowerShell) o
    * SSH (`ssh -t`).
@@ -43,6 +45,7 @@
   import { agentLogoKey } from "$surfaces/overlay/pill/pillAgentChip";
   import { consoleCue } from "$surfaces/overlay/agents/consoleCue.svelte";
   import { getConfig } from "$ipc/config";
+  import { currentWindowLabel } from "$ipc/windows";
   import {
     CLIPBOARD_OLE_EVENT,
     onAgentsComposerInsert,
@@ -320,6 +323,34 @@ import Icon from "$ui/Icon.svelte";
   let ctxMenu = $state<{ x: number; y: number; key: string; group?: boolean } | null>(
     null,
   );
+  let ctxEl = $state<HTMLElement | null>(null);
+
+  /**
+   * ¿Esta consola vive en la ventana del overlay?
+   *
+   * `ConsolePanel` también se monta en la consola de la ventana principal
+   * (`AgentsTool`, `AgentsDemo`). Importa distinguirlo porque las zonas vivas se
+   * publican por IPC a una lista GLOBAL de Rust: publicarlas desde `main` la pisa
+   * entera y la pill queda inalcanzable hasta que el overlay vuelva a publicar.
+   */
+  const overlayHost = (() => {
+    try {
+      return currentWindowLabel() === OVERLAY_LABEL;
+    } catch {
+      return false;
+    }
+  })();
+
+  /**
+   * El menú contextual abre en las coords del cursor y puede sobresalir la caja
+   * medida del float, que es la hit-rect: lo que queda afuera no recibe clics.
+   * Mientras está abierto publica una zona propia, y el registro la da de baja
+   * al cerrarlo.
+   */
+  $effect(() => {
+    const el = ctxEl;
+    return el && overlayHost ? surfaces.add("agents-ctx", el) : undefined;
+  });
   /** Árbol de splits. Las pestañas fuera del árbol siguen vivas en el rail. */
   let paneTree = $state<PaneNode | null>(null);
   /**
@@ -3250,6 +3281,7 @@ import Icon from "$ui/Icon.svelte";
   {#if ctxMenu}
     <div
       class="ctx"
+      bind:this={ctxEl}
       style:left="{ctxMenu.x}px"
       style:top="{ctxMenu.y}px"
       role="menu"
@@ -3362,6 +3394,7 @@ import Icon from "$ui/Icon.svelte";
       body={t("page.agents.console.closeConfirmBody")}
       confirmLabel={t("page.agents.console.closeConfirmAction")}
       tone="danger"
+      contained
       onConfirm={() => void confirmClose()}
       onCancel={() => (pendingClose = null)}
     />

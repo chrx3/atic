@@ -17,6 +17,14 @@
     cancelLabel,
     tone = "default",
     busy = false,
+    /**
+     * Dentro del overlay (la consola de agentes vive en el float), el
+     * `showModal()` nativo va a la top layer del webview y el diálogo queda
+     * centrado en todo el escritorio virtual: fuera de las hit-rects del float,
+     * donde el overlay sigue click-through y ningún clic llega a los botones.
+     * `contained` lo ancla al panel que lo hospeda.
+     */
+    contained = false,
     onConfirm,
     onCancel,
   }: {
@@ -27,6 +35,7 @@
     tone?: "default" | "danger";
     /** Mientras la acción está en vuelo. Bloquea los dos botones. */
     busy?: boolean;
+    contained?: boolean;
     onConfirm: () => void;
     onCancel: () => void;
   } = $props();
@@ -35,7 +44,7 @@
   const cancelText = $derived(cancelLabel ?? t("chrome.cancel"));
 </script>
 
-<Modal {title} size="sm" onClose={onCancel} dismissible={!busy}>
+<Modal {title} size="sm" {contained} onClose={onCancel} dismissible={!busy}>
   {#snippet actions()}
     <Button variant="ghost" disabled={busy} onclick={onCancel}>{cancelText}</Button>
     <Button
