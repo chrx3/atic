@@ -14,7 +14,7 @@
   import AticMark from "$lib/AticMark.svelte";
   import ToolIcon, { type IconId } from "$lib/ToolIcon.svelte";
   import { t } from "$domain/i18n.svelte";
-  import { playWheelTick } from "$core/uiSound";
+  import { playWheelTick } from "$ipc/uiSound";
   import { PILL } from "$surfaces/overlay/pillStage";
 
   /**

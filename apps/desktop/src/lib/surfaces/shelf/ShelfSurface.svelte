@@ -847,6 +847,22 @@
     --shelf-open: var(--duration-medium, 150ms);
     --shelf-close: var(--duration-fast, 125ms);
 
+    /*
+     * Los colores del shelf, declarados una sola vez.
+     *
+     * No son tokens de la paleta a propósito: el shelf vive SOBRE una captura,
+     * igual que el overlay de selección, así que no puede seguir el tema —un
+     * chip claro sobre una captura clara sería invisible—. Es la misma razón que
+     * documentan los `--rb-overlay-*`.
+     */
+    --shelf-ink: rgb(244 244 238);
+    --shelf-chip: rgb(18 18 16 / 82%);
+    --shelf-chip-soft: rgb(18 18 16 / 78%);
+    --shelf-strip: rgb(8 8 7 / 94%);
+    --shelf-strip-soft: rgb(8 8 7 / 90%);
+    --shelf-ok: rgb(157 255 196);
+    --shelf-error: rgb(255 180 173);
+
     position: relative;
     box-sizing: border-box;
     display: block;
@@ -996,7 +1012,7 @@
     width: 1px;
     height: 1px;
     overflow: hidden;
-    clip: rect(0 0 0 0);
+    clip-path: inset(50%);
     white-space: nowrap;
   }
 
@@ -1031,8 +1047,8 @@
     border: 0;
     border-radius: 999px;
     padding: 0;
-    background: rgb(18 18 16 / 82%);
-    color: #f4f4ee;
+    background: var(--shelf-chip);
+    color: var(--shelf-ink);
     cursor: pointer;
     box-shadow: 0 1px 2px rgb(0 0 0 / 40%);
     outline: 1px solid rgb(255 255 255 / 16%);
@@ -1067,11 +1083,11 @@
   }
 
   .shelf-dot:hover:not(:disabled) {
-    background: rgb(8 8 7 / 94%);
+    background: var(--shelf-strip);
   }
 
   .shelf-dot:focus-visible {
-    outline: 2px solid #f4f4ee;
+    outline: 2px solid var(--shelf-ink);
     outline-offset: 1px;
   }
 
@@ -1115,8 +1131,8 @@
     border: 0;
     border-radius: 8px;
     padding: 0 12px;
-    background: rgb(18 18 16 / 78%);
-    color: #f4f4ee;
+    background: var(--shelf-chip-soft);
+    color: var(--shelf-ink);
     font: inherit;
     font-size: 12px;
     font-weight: 650;
@@ -1129,11 +1145,11 @@
   }
 
   .shelf-sub:hover {
-    background: rgb(8 8 7 / 90%);
+    background: var(--shelf-strip-soft);
   }
 
   .shelf-sub:focus-visible {
-    outline: 2px solid #f4f4ee;
+    outline: 2px solid var(--shelf-ink);
     outline-offset: 2px;
   }
 
@@ -1151,7 +1167,7 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    color: #f4f4ee;
+    color: var(--shelf-ink);
     font-size: 11px;
     font-weight: 650;
     text-shadow: 0 1px 2px rgb(0 0 0 / 80%);
@@ -1159,16 +1175,16 @@
   }
 
   .shelf-note.is-ok {
-    color: #9dffc4;
+    color: var(--shelf-ok);
   }
 
   .shelf-note.is-error {
-    color: #ffb4ad;
+    color: var(--shelf-error);
   }
 
   /* Anillo propio: el shelf vive sobre la captura, no bajo `.atic-root`. */
   .shelf :where(button):focus-visible {
-    outline: 2px solid #f4f4ee;
+    outline: 2px solid var(--shelf-ink);
     outline-offset: 2px;
   }
 
@@ -1179,7 +1195,7 @@
     left: var(--shelf-pad);
     height: 2px;
     border-radius: 1px;
-    background: color-mix(in srgb, var(--rb-accent, #7aa2f7) 75%, transparent);
+    background: color-mix(in sRGB, var(--rb-accent) 75%, transparent);
     transform: scaleX(1);
     transform-origin: left center;
     pointer-events: none;

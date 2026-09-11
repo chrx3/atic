@@ -114,17 +114,13 @@
 
   .slash-opt.is-on,
   .slash-opt:hover {
-    background: color-mix(
-      in srgb,
-      var(--accent, #da7756) 10%,
-      var(--rb-surface-2, transparent)
-    );
+    background: color-mix(in sRGB, var(--accent) 10%, var(--rb-surface-2, transparent));
   }
 
   .slash-name {
     grid-column: 1;
     grid-row: 1;
-    color: var(--accent, #da7756);
+    color: var(--accent);
     font-size: 0.75rem;
     font-weight: 650;
   }

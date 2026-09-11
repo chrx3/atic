@@ -54,11 +54,17 @@ const boundaries = [
   {
     files: ["src/lib/ui/**", "src/lib/liquid/**"],
     banned: ["$ipc/*", "$domain/*", "$features/*", "$surfaces/*", "@tauri-apps/*"],
+    // Traducir no es saber de dominio: `t()` es infraestructura de textos, y las
+    // primitivas traen sus etiquetas por defecto (Cancelar, Cerrar). Lo que sigue
+    // prohibido es el estado y la lógica del dominio.
+    allow: ["$domain/i18n.svelte"],
     why: "las primitivas no saben de dominio ni de Tauri: reciben props y nada más.",
   },
   {
     files: ["src/lib/patterns/**"],
     banned: ["$ipc/*", "$domain/*", "$features/*", "$surfaces/*", "@tauri-apps/*"],
+    // Misma excepción que en las primitivas: los patrones rotulan sus acciones.
+    allow: ["$domain/i18n.svelte"],
     why: "los patrones componen primitivas; el dominio entra por las features.",
   },
   {
@@ -143,12 +149,19 @@ export default ts.config(
     },
   },
 
-  ...boundaries.map(({ files, banned, why }) => ({
+  ...boundaries.map(({ files, banned, allow = [], why }) => ({
     files,
     rules: {
       "no-restricted-imports": [
         "error",
-        { patterns: [{ group: banned, message: why }] },
+        // Las excepciones se escriben como negaciones de la propia lista: una
+        // segunda lista de prohibidos se desincroniza en cuanto alguien agrega
+        // una capa arriba.
+        {
+          patterns: [
+            { group: [...banned, ...allow.map((p) => `!${p}`)], message: why },
+          ],
+        },
       ],
     },
   })),

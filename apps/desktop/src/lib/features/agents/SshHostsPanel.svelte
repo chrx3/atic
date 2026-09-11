@@ -475,14 +475,14 @@
     width: 8px;
     height: 8px;
     border-radius: 50%;
-    background: #9ca3af;
+    background: var(--rb-muted);
   }
 
   .ssh-dot[data-status="ok"] {
-    background: #22a06b;
+    background: var(--rb-ok);
   }
 
   .ssh-dot[data-status="bad"] {
-    background: #e34935;
+    background: var(--rb-record);
   }
 </style>

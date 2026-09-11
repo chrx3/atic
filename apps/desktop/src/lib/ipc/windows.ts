@@ -62,8 +62,8 @@ export async function onWindowMaximizeChange(
   cb: (maximized: boolean) => void,
 ): Promise<() => void> {
   const win = getCurrentWindow();
-  return win.onResized(async () => {
-    cb(await win.isMaximized());
+  return win.onResized(() => {
+    void win.isMaximized().then(cb);
   });
 }
 

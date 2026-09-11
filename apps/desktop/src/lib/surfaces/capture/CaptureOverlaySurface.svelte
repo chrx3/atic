@@ -756,7 +756,7 @@
     position: absolute;
     box-sizing: border-box;
     container-type: size;
-    border: 2px dashed var(--screen-select, #5ec8ff);
+    border: 2px dashed var(--screen-select);
     box-shadow:
       0 0 0 1px var(--screen-select-edge, rgb(0 0 0 / 55%)),
       inset 0 0 0 1px rgb(255 255 255 / 22%),
@@ -773,7 +773,7 @@
     width: min(22px, 32cqw);
     height: min(22px, 32cqh);
     box-sizing: border-box;
-    border-color: var(--screen-select, #5ec8ff);
+    border-color: var(--screen-select);
     border-style: solid;
     filter: drop-shadow(0 0 0.6px var(--screen-select-edge, rgb(0 0 0 / 80%)));
   }
@@ -821,7 +821,7 @@
     border-radius: var(--rb-radius-xs, 5px);
     background: var(--screen-chip);
     padding: 2px 8px;
-    color: var(--screen-ink, #fff);
+    color: var(--screen-ink);
     font-size: 12px;
     line-height: 1.25;
     white-space: nowrap;
@@ -868,7 +868,7 @@
     padding: 6px 14px;
     font-size: 14px;
     white-space: nowrap;
-    color: var(--screen-ink, #fff);
+    color: var(--screen-ink);
     box-shadow: 0 8px 24px rgb(0 0 0 / 28%);
     outline: 1px solid rgb(255 255 255 / 10%);
     outline-offset: -1px;

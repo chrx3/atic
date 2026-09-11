@@ -1381,8 +1381,8 @@
   }
 
   .lf-dot.is-action {
-    background: color-mix(in srgb, var(--ok, #3a8) 16%, var(--skin));
-    color: var(--ok, #3a8);
+    background: color-mix(in sRGB, var(--ok) 16%, var(--skin));
+    color: var(--ok);
   }
 
   .lf-dot :global(img) {
@@ -1426,8 +1426,8 @@
   .lf-err {
     margin: 0;
     padding: 0.4rem 0.75rem;
-    background: color-mix(in srgb, var(--danger, #c44) 18%, transparent);
-    color: var(--danger, #c44);
+    background: color-mix(in sRGB, var(--danger) 18%, transparent);
+    color: var(--danger);
     font-size: 0.75rem;
   }
 
@@ -1501,8 +1501,8 @@
   }
 
   .lf-hit-ico.is-action {
-    background: color-mix(in srgb, var(--ok, #3a8) 18%, transparent);
-    color: var(--ok, #3a8);
+    background: color-mix(in sRGB, var(--ok) 18%, transparent);
+    color: var(--ok);
   }
 
   .lf-hit-text {
@@ -1568,7 +1568,7 @@
   }
 
   .lf-star.is-on {
-    color: var(--warn, #c90);
+    color: var(--warn);
   }
 
   .lf-star:active {

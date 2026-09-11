@@ -45,6 +45,9 @@ export const LAUNCHER_LAB_DEFAULTS: LauncherLabValues = {
   closeDur: 90,
   barW: 292,
   barH: 40,
+  // `GOO_GROW` viene del árbol previo (`GooFilter.svelte`), que está fuera del
+  // proyecto tipado: el servicio de tipos lo entrega como `error`.
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment -- ver arriba
   gooGrow: GOO_GROW,
 };
 

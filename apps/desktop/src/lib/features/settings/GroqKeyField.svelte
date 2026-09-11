@@ -85,6 +85,7 @@
     {t("settings.groq.freeBefore")}
     <a
       href={GROQ_KEYS_URL}
+      rel="external"
       class="text-accent underline-offset-2 hover:underline"
       onclick={(event) => {
         event.preventDefault();

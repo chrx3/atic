@@ -24,7 +24,6 @@ import { surfaces } from "$surfaces/overlay/surfaces.svelte";
 import {
   IDLE_FRAMES,
   MAX_TRACK_FRAMES,
-  rectKey,
   sameRect,
   type SkinRect,
 } from "./floatEmergeSkinMath";

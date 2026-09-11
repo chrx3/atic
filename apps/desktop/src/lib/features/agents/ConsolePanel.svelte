@@ -410,6 +410,10 @@
   let stopListen: (() => void) | null = null;
   let seq = 0;
   /** Output que llegó antes de mapear la sesión o de abrir el xterm. */
+  // Caches de trabajo (buffer de PTY, timers, rate-limit, dedupe): se mutan
+  // fuera del ciclo de render y nadie los lee como estado. `SvelteMap`/`SvelteSet`
+  // sólo agregarían proxys sobre datos que no disparan nada.
+  // eslint-disable-next-line svelte/prefer-svelte-reactivity -- ver arriba
   const outputBuf = new Map<string, string>();
   const OUTPUT_BUF_MAX = 256_000;
   let resolveListen: () => void = () => {};
@@ -423,6 +427,7 @@
   /** Cierre esperando confirmación: hay una PTY viva que no se puede recuperar. */
   let pendingClose = $state<{ keys: string[]; label: string } | null>(null);
   let bootedKeys = $state<Record<string, true>>({});
+  // eslint-disable-next-line svelte/prefer-svelte-reactivity -- ver arriba
   const bootTimers = new Map<string, number>();
 
   const active = $derived(tabs.find((t) => t.key === activeKey) ?? null);
@@ -1034,6 +1039,7 @@
     tab.label = agentDisplayName(canon);
   }
 
+  // eslint-disable-next-line svelte/prefer-svelte-reactivity -- ver arriba
   const relaunchAt = new Map<string, number>();
 
   function maybeRelaunchFromOutput(tab: Tab, chunk: string) {
@@ -1610,8 +1616,10 @@
   }
 
   /** Sesiones que el usuario cerró: no vuelven solas. */
+  // eslint-disable-next-line svelte/prefer-svelte-reactivity -- ver arriba
   const hubCerradas = new Set<string>();
   /** Turnos que ya tenía cada sesión al abrir el panel. */
+  // eslint-disable-next-line svelte/prefer-svelte-reactivity -- ver arriba
   const hubVistos = new Map<string, number>();
   let hubMedido = false;
 
@@ -3515,13 +3523,12 @@
 
   .rail-tab.is-on {
     color: var(--rb-text);
-    background: color-mix(in srgb, var(--accent, #da7756) 17%, transparent);
+    background: color-mix(in sRGB, var(--accent) 17%, transparent);
   }
 
   .rail-tab:focus-visible {
     outline: none;
-    box-shadow: inset 0 0 0 2px
-      color-mix(in srgb, var(--accent, #da7756) 55%, transparent);
+    box-shadow: inset 0 0 0 2px color-mix(in sRGB, var(--accent) 55%, transparent);
   }
 
   .rail-logo,
@@ -3545,8 +3552,8 @@
     width: 0.32rem;
     height: 0.32rem;
     border-radius: 999px;
-    background: color-mix(in srgb, var(--accent, #da7756) 90%, #fff);
-    box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent, #da7756) 22%, transparent);
+    background: color-mix(in sRGB, var(--accent) 90%, var(--rb-overlay-ink));
+    box-shadow: 0 0 0 2px color-mix(in sRGB, var(--accent) 22%, transparent);
   }
 
   .rail-add {
@@ -3657,16 +3664,16 @@
     width: 0.32rem;
     height: 0.32rem;
     border-radius: 50%;
-    background: #e5484d;
+    background: var(--rb-record);
   }
 
   .mcp-punto.is-on {
-    background: #30a46c;
+    background: var(--rb-ok);
   }
 
   /* Está puesto pero el proceso no lo ha leído: ni rojo ni verde. */
   .mcp-punto.is-wait {
-    background: #f5a524;
+    background: var(--rb-warn);
   }
 
   .folder-chip {
@@ -3732,7 +3739,7 @@
     padding: 0;
     margin: -1px;
     overflow: hidden;
-    clip: rect(0, 0, 0, 0);
+    clip-path: inset(50%);
     white-space: nowrap;
     border: 0;
   }
@@ -3763,6 +3770,7 @@
     flex-wrap: nowrap;
     align-items: center;
     gap: 0.12rem;
+    justify-content: flex-end;
   }
 
   .chrome-close {
@@ -3789,6 +3797,8 @@
     left: auto;
     z-index: 20;
     max-width: min(16.5rem, calc(100cqi - 5rem));
+    transform-origin: 100% 0;
+    animation: pop-in-down var(--duration-fast) var(--ease-smooth-out);
   }
 
   .more-pop {
@@ -3799,18 +3809,12 @@
     border: 1px solid color-mix(in sRGB, var(--rb-border) 80%, transparent);
     border-radius: 0.65rem;
     padding: 0.32rem;
-    background: color-mix(in srgb, var(--rb-surface) 96%, var(--rb-bg0, #0f1115));
-    box-shadow: 0 8px 22px color-mix(in srgb, #000 32%, transparent);
+    background: color-mix(in sRGB, var(--rb-surface) 96%, var(--rb-bg0));
+    box-shadow: 0 8px 22px rgb(0 0 0 / 32%);
   }
 
   /* Menús: nacen del gatillo con un beat corto. La salida es instantánea,
      igual que un menú nativo. */
-  .more-pop,
-  .shortcuts-pop {
-    transform-origin: 100% 0;
-    animation: pop-in-down var(--duration-fast) var(--ease-smooth-out);
-  }
-
   @keyframes pop-in-down {
     from {
       opacity: 0;
@@ -3859,8 +3863,8 @@
     border: 1px solid color-mix(in sRGB, var(--rb-border) 80%, transparent);
     border-radius: 0.65rem;
     padding: 0.55rem 0.6rem 0.5rem;
-    background: color-mix(in srgb, var(--rb-surface) 96%, var(--rb-bg0, #0f1115));
-    box-shadow: 0 8px 22px color-mix(in srgb, #000 32%, transparent);
+    background: color-mix(in sRGB, var(--rb-surface) 96%, var(--rb-bg0));
+    box-shadow: 0 8px 22px rgb(0 0 0 / 32%);
   }
 
   .shortcuts-title {
@@ -3908,10 +3912,6 @@
     font-variant-numeric: tabular-nums;
   }
 
-  .window-actions {
-    justify-content: flex-end;
-  }
-
   .chip {
     display: inline-flex;
     align-items: center;
@@ -3943,8 +3943,8 @@
   }
 
   .chip.is-go {
-    border-color: color-mix(in srgb, var(--accent, #da7756) 45%, transparent);
-    background: color-mix(in srgb, var(--accent, #da7756) 22%, transparent);
+    border-color: color-mix(in sRGB, var(--accent) 45%, transparent);
+    background: color-mix(in sRGB, var(--accent) 22%, transparent);
     color: var(--rb-text);
   }
 
@@ -4022,7 +4022,7 @@
     flex: 1;
     min-height: 0;
     overflow: hidden;
-    background: color-mix(in srgb, var(--rb-surface) 88%, var(--rb-bg0, #0f1115));
+    background: color-mix(in sRGB, var(--rb-surface) 88%, var(--rb-bg0));
   }
 
   .empty {
@@ -4032,7 +4032,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    background: color-mix(in srgb, #0f1115 55%, transparent);
+    background: color-mix(in sRGB, var(--rb-bg0) 55%, transparent);
     pointer-events: auto;
   }
 
@@ -4278,8 +4278,8 @@
     border: 1px solid color-mix(in sRGB, var(--rb-border) 80%, transparent);
     border-radius: 0.45rem;
     padding: 0.2rem;
-    background: color-mix(in srgb, var(--rb-surface) 94%, #0f1115);
-    box-shadow: 0 8px 24px color-mix(in srgb, #000 35%, transparent);
+    background: color-mix(in sRGB, var(--rb-surface) 94%, var(--rb-bg0));
+    box-shadow: 0 8px 24px rgb(0 0 0 / 35%);
     pointer-events: auto;
 
     /* Más corto que los popovers: un menú contextual tiene que sentirse ya. */
@@ -4446,15 +4446,15 @@
     flex: 0 0 auto;
     border-radius: 0.3rem;
     padding: 0.1rem 0.34rem;
-    background: color-mix(in sRGB, var(--accent, #da7756) 16%, transparent);
-    color: var(--accent, #da7756);
+    background: color-mix(in sRGB, var(--accent) 16%, transparent);
+    color: var(--accent);
     font-size: 0.62rem;
     font-weight: 640;
     letter-spacing: 0.02em;
   }
 
   .add-item:hover .add-install {
-    background: color-mix(in sRGB, var(--accent, #da7756) 26%, transparent);
+    background: color-mix(in sRGB, var(--accent) 26%, transparent);
   }
 
   .add-chevron {
@@ -4537,7 +4537,7 @@
   .tab-add:hover:not(:disabled),
   .tab-add:focus-visible {
     color: var(--rb-text);
-    background: color-mix(in srgb, var(--accent, #da7756) 18%, transparent);
+    background: color-mix(in sRGB, var(--accent) 18%, transparent);
   }
 
   .tab-add:disabled {
@@ -4711,14 +4711,11 @@
       background-color var(--duration-quick, 75ms) ease,
       border-color var(--duration-quick, 75ms) ease,
       transform var(--duration-quick, 75ms) ease;
+    padding: 0.14rem 0.34rem 0.14rem 0.24rem;
   }
 
   .console-desk .back-btn:active {
     transform: scale(0.96);
-  }
-
-  .console-desk .back-btn {
-    padding: 0.14rem 0.34rem 0.14rem 0.24rem;
   }
 
   .console-desk .back-btn:hover {

@@ -8,11 +8,11 @@
    */
   import { onDestroy, untrack } from "svelte";
   import { pillLayout } from "$core/pillTools";
-  import { runToolAction, toolAction } from "$core/toolActions";
+  import { runToolAction, toolAction } from "$surfaces/toolActions";
   import { TOOLS, WHEEL_TOOLS, type ToolId } from "$core/tools";
   import { config } from "$domain/config.svelte";
   import { localizeTool, t } from "$domain/i18n.svelte";
-  import { playWheelTick } from "$core/uiSound";
+  import { playWheelTick } from "$ipc/uiSound";
   import { PICKER_CELL_PROD_MIN, pickerLab } from "$lib/dev/pickerLab.svelte";
   import { toastError } from "$domain/toasts.svelte";
   import ToolIcon from "$lib/ToolIcon.svelte";

@@ -754,6 +754,7 @@
   .body {
     position: relative;
     padding: 10px 14px 10px 30px;
+    transform-origin: 32px 32px;
   }
 
   /*
@@ -864,10 +865,6 @@
   }
 
   /* El morph nace del cuadro de muestra, que es donde mira el usuario. */
-  .body {
-    transform-origin: 32px 32px;
-  }
-
   @media (prefers-reduced-motion: reduce) {
     .stage.is-in .body,
     .stage.is-out .body,

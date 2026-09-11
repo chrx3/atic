@@ -192,21 +192,19 @@
               label={t("settings.language.label")}
               hint={t("settings.language.hint")}
             >
-              {#snippet children()}
-                <SegmentedControl
-                  value={["system", "en", "es"].includes(cfg.ui_language)
-                    ? cfg.ui_language
-                    : "system"}
-                  label={t("settings.language.aria")}
-                  options={[
-                    { value: "system", label: t("settings.language.system") },
-                    { value: "es", label: t("settings.language.es") },
-                    { value: "en", label: t("settings.language.en") },
-                  ]}
-                  onchange={(language) => patch({ ui_language: language })}
-                  full
-                />
-              {/snippet}
+              <SegmentedControl
+                value={["system", "en", "es"].includes(cfg.ui_language)
+                  ? cfg.ui_language
+                  : "system"}
+                label={t("settings.language.aria")}
+                options={[
+                  { value: "system", label: t("settings.language.system") },
+                  { value: "es", label: t("settings.language.es") },
+                  { value: "en", label: t("settings.language.en") },
+                ]}
+                onchange={(language) => patch({ ui_language: language })}
+                full
+              />
             </Field>
 
             <Field

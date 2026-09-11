@@ -115,7 +115,7 @@
   } from "$surfaces/overlay/edgeDock";
   import AgentAuthCard from "$surfaces/overlay/pill/AgentAuthCard.svelte";
   import { afterTransition, MOTION, ms, opacityFade } from "$lib/motion";
-  import { playWheelTick } from "$core/uiSound";
+  import { playWheelTick } from "$ipc/uiSound";
   import type { PermissionDecision } from "$core/types";
   // Lo que queda son los comandos DE LA PILL: su geometría, sus atajos y las
   // ventanas que abre. El estado de la app lo traen los stores.
@@ -143,7 +143,7 @@
     onSnippetsBubbleDismiss,
     snippetsAlwaysOnTop,
   } from "$ipc/snippets";
-  import { executeToolAction } from "$core/toolActions";
+  import { executeToolAction } from "$surfaces/toolActions";
   import { isSpatialTool } from "$surfaces/overlay/toolSlots";
   import {
     enqueueActivate,
@@ -4598,9 +4598,6 @@
     width: 32px;
     height: 32px;
     border-radius: 999px;
-  }
-
-  .p-dict {
     background: transparent;
     color: var(--muted);
   }
