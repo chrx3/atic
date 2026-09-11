@@ -21,7 +21,12 @@
 
 <!-- Angosto: una fila de pestañas. -->
 <div class="p-3 pb-0 @md/settings:hidden">
-  <SegmentedControl bind:value options={sections} label={t("settings.nav.sectionAria")} full />
+  <SegmentedControl
+    bind:value
+    options={sections}
+    label={t("settings.nav.sectionAria")}
+    full
+  />
 </div>
 
 <!-- Ancho: una columna. -->
@@ -44,7 +49,10 @@
         : 'text-muted hover:bg-surface-2 hover:text-text'}"
     >
       {#if section.icon}
-        <span class="nav-icon inline-grid shrink-0 place-items-center" aria-hidden="true">
+        <span
+          class="nav-icon inline-grid shrink-0 place-items-center"
+          aria-hidden="true"
+        >
           <ToolIcon id={section.icon} size={15} strokeWidth={1.4} />
         </span>
       {/if}

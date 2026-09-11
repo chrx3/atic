@@ -140,8 +140,7 @@
       onToast(t("page.agents.ssh.invalidUser"));
       return;
     }
-    const label =
-      draft.label.trim() || (user ? `${user}@${host}` : host);
+    const label = draft.label.trim() || (user ? `${user}@${host}` : host);
     if (draft.auth === "key" && !draft.identity_file?.trim()) {
       onToast(t("page.agents.ssh.keyAuthNeedsFile"));
       return;
@@ -154,8 +153,7 @@
       // 0 = no pasar -p (ssh_config / default OpenSSH).
       port: draft.port > 0 ? draft.port : 0,
       auth: draft.auth === "key" ? "key" : "agent",
-      identity_file:
-        draft.auth === "key" ? (draft.identity_file?.trim() || null) : null,
+      identity_file: draft.auth === "key" ? draft.identity_file?.trim() || null : null,
       default_remote_cwd: draft.default_remote_cwd?.trim() || null,
       remote_agent_bin: draft.remote_agent_bin?.trim() || null,
     };
@@ -223,9 +221,7 @@
       );
       config = { ...config, ssh_hosts: list };
       onToast(
-        result.ok
-          ? t("page.agents.ssh.testOk")
-          : t("page.agents.ssh.testFailed"),
+        result.ok ? t("page.agents.ssh.testOk") : t("page.agents.ssh.testFailed"),
       );
     } catch (e) {
       testMessage = String(e);
@@ -242,10 +238,7 @@
   }
 </script>
 
-<SettingsGroup
-  title={t("page.agents.ssh.title")}
-  hint={t("page.agents.ssh.hint")}
->
+<SettingsGroup title={t("page.agents.ssh.title")} hint={t("page.agents.ssh.hint")}>
   {#if hosts.length === 0 && !draft}
     <p class="py-2 text-xs text-faint">
       {t("page.agents.ssh.empty")}
@@ -258,10 +251,7 @@
         <li
           class="flex min-w-0 items-center gap-2.5 rounded-md bg-surface-2 px-2.5 py-2"
         >
-          <span
-            class="ssh-dot shrink-0"
-            data-status={statusDot(h)}
-            aria-hidden="true"
+          <span class="ssh-dot shrink-0" data-status={statusDot(h)} aria-hidden="true"
           ></span>
           <div class="min-w-0 flex-1">
             <div class="truncate text-sm font-medium text-text">{h.label}</div>
@@ -289,11 +279,7 @@
             <Button variant="ghost" size="sm" onclick={() => startEdit(h)}>
               {t("page.agents.ssh.edit")}
             </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              onclick={() => (removing = h)}
-            >
+            <Button variant="ghost" size="sm" onclick={() => (removing = h)}>
               {t("page.agents.ssh.remove")}
             </Button>
           </div>
@@ -351,11 +337,7 @@
     hint={t("page.agents.ssh.hostHint")}
   >
     {#snippet control({ id })}
-      <Input
-        {id}
-        bind:value={d.host}
-        placeholder="contabo o 10.0.0.5"
-      />
+      <Input {id} bind:value={d.host} placeholder="contabo o 10.0.0.5" />
     {/snippet}
   </SettingsRow>
   <SettingsRow
@@ -410,12 +392,7 @@
             value={d.identity_file ?? ""}
             placeholder={t("page.agents.ssh.noFilePlaceholder")}
           />
-          <Button
-            variant="ghost"
-            size="sm"
-            full
-            onclick={() => void pickIdentity()}
-          >
+          <Button variant="ghost" size="sm" full onclick={() => void pickIdentity()}>
             {t("page.agents.ssh.choose")}
           </Button>
         </div>
@@ -452,10 +429,7 @@
       {/snippet}
     </SettingsRow>
   {/if}
-  <SettingsRow
-    label={t("page.agents.ssh.cwd")}
-    hint={t("page.agents.ssh.cwdHint")}
-  >
+  <SettingsRow label={t("page.agents.ssh.cwd")} hint={t("page.agents.ssh.cwdHint")}>
     {#snippet control({ id })}
       <Input
         {id}
@@ -503,9 +477,11 @@
     border-radius: 50%;
     background: #9ca3af;
   }
+
   .ssh-dot[data-status="ok"] {
     background: #22a06b;
   }
+
   .ssh-dot[data-status="bad"] {
     background: #e34935;
   }

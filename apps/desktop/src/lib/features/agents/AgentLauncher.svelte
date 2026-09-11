@@ -274,16 +274,12 @@
             class:is-missing={pathReady && onPath[agent.cli] === false}
             role="radio"
             aria-checked={selected === agent.cli}
-            aria-label={
-              pathReady && onPath[agent.cli] === false
-                ? `${agent.name} (no está en el PATH)`
-                : agent.name
-            }
-            use:tip={
-              pathReady && onPath[agent.cli] === false
-                ? `${agent.name} no está en el PATH`
-                : agent.name
-            }
+            aria-label={pathReady && onPath[agent.cli] === false
+              ? `${agent.name} (no está en el PATH)`
+              : agent.name}
+            use:tip={pathReady && onPath[agent.cli] === false
+              ? `${agent.name} no está en el PATH`
+              : agent.name}
             onclick={() => (selected = agent.cli)}
           >
             <span class="agent-logo"><AgentLogo agent={agent.cli} size={22} /></span>
@@ -314,7 +310,9 @@
           </button>
           <span class="count"
             >{count}
-            {count === 1 ? t("page.agents.consoleSingular") : t("page.agents.consolePlural")}</span
+            {count === 1
+              ? t("page.agents.consoleSingular")
+              : t("page.agents.consolePlural")}</span
           >
           <button
             type="button"
@@ -338,15 +336,15 @@
           </button>
         {/if}
 
-          <button
-            type="button"
-            class="launch"
-            use:tip={missingCli ? `${chosen.name} no está instalado` : undefined}
-            onclick={launch}
-          >
-            <span>{launchLabel}</span>
-            <span class="arrow" aria-hidden="true">→</span>
-          </button>
+        <button
+          type="button"
+          class="launch"
+          use:tip={missingCli ? `${chosen.name} no está instalado` : undefined}
+          onclick={launch}
+        >
+          <span>{launchLabel}</span>
+          <span class="arrow" aria-hidden="true">→</span>
+        </button>
       </div>
     </div>
   </section>

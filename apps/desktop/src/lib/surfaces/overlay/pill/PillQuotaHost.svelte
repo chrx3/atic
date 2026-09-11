@@ -52,10 +52,7 @@
     placeOnSide,
     unionRects,
   } from "$surfaces/overlay/floatPlace";
-  import {
-    publishMeasuredSkin,
-    rectKey,
-  } from "$surfaces/overlay/floatEmergeSkin";
+  import { publishMeasuredSkin, rectKey } from "$surfaces/overlay/floatEmergeSkin";
   import { surfaces } from "$surfaces/overlay/surfaces.svelte";
   import {
     quotaRows,
@@ -203,11 +200,7 @@
       }
     }
     const body = nearestStemBody(
-      [
-        surfaces.live["pill-skin"],
-        surfaces.live["pill"],
-        quotaHoverState.anchor,
-      ],
+      [surfaces.live["pill-skin"], surfaces.live["pill"], quotaHoverState.anchor],
       panel,
       stemSide,
       STEM_R,
@@ -231,9 +224,7 @@
     if (!first) return { percent: 0, tone: "ok" };
     return row.bars.reduce(
       (best, bar) =>
-        bar.percent > best.percent
-          ? { percent: bar.percent, tone: bar.tone }
-          : best,
+        bar.percent > best.percent ? { percent: bar.percent, tone: bar.tone } : best,
       { percent: first.percent, tone: first.tone },
     );
   }
@@ -341,10 +332,15 @@
     const shape = skin ?? hub;
     const at =
       parts && parts.length > 0
-        ? placeBesideAnchor(hub, anchor, { w: bw, h: bh }, {
-            gap: GAP,
-            corner: CORNER,
-          })
+        ? placeBesideAnchor(
+            hub,
+            anchor,
+            { w: bw, h: bh },
+            {
+              gap: GAP,
+              corner: CORNER,
+            },
+          )
         : shape.h > shape.w * 1.2
           ? placeOnSide(
               shape,
@@ -541,12 +537,7 @@
           >
             <span class="q-ring">
               <svg viewBox="0 0 40 40">
-                <circle
-                  class="q-ring-track"
-                  cx="20"
-                  cy="20"
-                  r="17"
-                  pathLength="100"
+                <circle class="q-ring-track" cx="20" cy="20" r="17" pathLength="100"
                 ></circle>
                 <circle
                   class="q-ring-fill is-{head.tone}"
@@ -557,9 +548,7 @@
                   style:stroke-dasharray="{Math.max(head.percent, 1)} 100"
                 ></circle>
               </svg>
-              <span class="q-ring-logo"
-                ><AgentLogo agent={row.agent} size={16} /></span
-              >
+              <span class="q-ring-logo"><AgentLogo agent={row.agent} size={16} /></span>
             </span>
             <span class="q-agent-pct" data-numeric>
               {row.bars.length > 0 ? `${Math.round(head.percent)}%` : "—"}
@@ -611,7 +600,8 @@
                 <div class="q-bar is-{bar.tone}">
                   <span class="q-win">{windowText(bar)}</span>
                   <span class="q-track">
-                    <span class="q-fill" style:width="{Math.max(bar.percent, 2)}%"></span>
+                    <span class="q-fill" style:width="{Math.max(bar.percent, 2)}%"
+                    ></span>
                   </span>
                   <span class="q-val">
                     <span class="q-pct" data-numeric>{Math.round(bar.percent)}%</span>

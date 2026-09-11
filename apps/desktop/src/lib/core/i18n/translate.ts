@@ -36,7 +36,7 @@ function interpolate(template: string, vars?: Record<string, string | number>): 
   );
 }
 
-const TABLES: Record<Locale, Dict> = { es: es as Dict, en: en as Dict };
+const TABLES: Record<Locale, Dict> = { es: es, en: en };
 
 export function translate(
   locale: Locale,

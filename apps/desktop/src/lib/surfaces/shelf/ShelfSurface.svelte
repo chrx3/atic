@@ -26,7 +26,11 @@
     onScreenshotCreated,
   } from "$ipc/captures";
   import { openAnnotator } from "$ipc/annotate";
-  import { pasteToExternalHwnd, startFileDrag, tryClipboardDropOnAgents } from "$ipc/clipboard";
+  import {
+    pasteToExternalHwnd,
+    startFileDrag,
+    tryClipboardDropOnAgents,
+  } from "$ipc/clipboard";
   import { getConfig, openDataDir } from "$ipc/config";
   import { setOverlayItemDrag, overlayCursorOverHit } from "$ipc/overlay";
   import Icon from "$ui/Icon.svelte";
@@ -254,7 +258,8 @@
 
   function pinGhost(pos: { left: number; top: number }) {
     ghostPos = pos;
-    if (ghostEl) ghostEl.style.transform = `translate3d(${pos.left}px, ${pos.top}px, 0)`;
+    if (ghostEl)
+      ghostEl.style.transform = `translate3d(${pos.left}px, ${pos.top}px, 0)`;
   }
 
   function showGhost(pos: { left: number; top: number }) {
@@ -677,9 +682,7 @@
     covering = false;
     lastScreen = { x: event.screenX, y: event.screenY };
     const r = thumbEl?.getBoundingClientRect();
-    grab = r
-      ? { x: event.clientX - r.left, y: event.clientY - r.top }
-      : { x: 0, y: 0 };
+    grab = r ? { x: event.clientX - r.left, y: event.clientY - r.top } : { x: 0, y: 0 };
     bindGesture();
     try {
       (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
@@ -843,6 +846,7 @@
     --shelf-pad: 8px;
     --shelf-open: var(--duration-medium, 150ms);
     --shelf-close: var(--duration-fast, 125ms);
+
     position: relative;
     box-sizing: border-box;
     display: block;
@@ -858,7 +862,8 @@
     pointer-events: none;
     transition:
       opacity var(--shelf-close) var(--ease-smooth-out, cubic-bezier(0.22, 1, 0.36, 1)),
-      transform var(--shelf-close) var(--ease-smooth-out, cubic-bezier(0.22, 1, 0.36, 1));
+      transform var(--shelf-close)
+        var(--ease-smooth-out, cubic-bezier(0.22, 1, 0.36, 1));
   }
 
   .shelf.is-shown {
@@ -980,8 +985,10 @@
   .shelf-ghost.is-flinging {
     opacity: 0;
     transition:
-      transform var(--duration-fast, 125ms) var(--ease-smooth-out, cubic-bezier(0.22, 1, 0.36, 1)),
-      opacity var(--duration-fast, 125ms) var(--ease-smooth-out, cubic-bezier(0.22, 1, 0.36, 1));
+      transform var(--duration-fast, 125ms)
+        var(--ease-smooth-out, cubic-bezier(0.22, 1, 0.36, 1)),
+      opacity var(--duration-fast, 125ms)
+        var(--ease-smooth-out, cubic-bezier(0.22, 1, 0.36, 1));
   }
 
   .shelf-tip {
@@ -1187,6 +1194,7 @@
     from {
       transform: scaleX(1);
     }
+
     to {
       transform: scaleX(0);
     }

@@ -44,10 +44,7 @@
     publishEmergeSkin,
     publishFollowSkin,
   } from "$surfaces/overlay/floatEmergeSkin";
-  import {
-    separateAxisProp,
-    waitFrames,
-  } from "$surfaces/overlay/floatReveal";
+  import { separateAxisProp, waitFrames } from "$surfaces/overlay/floatReveal";
   import { surfaces } from "$surfaces/overlay/surfaces.svelte";
   import { notifyToolResting, toolBirth } from "$surfaces/overlay/toolBirth";
   import {
@@ -69,23 +66,13 @@
   let workAreas = $state<Area[]>([]);
   let lastOpen: BubbleOpen | null = null;
 
-  type RevealPhase =
-    | "hidden"
-    | "expand"
-    | "separate"
-    | "ready"
-    | "approach"
-    | "shrink";
+  type RevealPhase = "hidden" | "expand" | "separate" | "ready" | "approach" | "shrink";
   let revealPhase = $state<RevealPhase>("hidden");
   let revealEpoch = 0;
   let closing = false;
   let ignoreIpcDismiss = false;
-  const expanding = $derived(
-    revealPhase === "expand" || revealPhase === "shrink",
-  );
-  const separating = $derived(
-    revealPhase === "separate" || revealPhase === "approach",
-  );
+  const expanding = $derived(revealPhase === "expand" || revealPhase === "shrink");
+  const separating = $derived(revealPhase === "separate" || revealPhase === "approach");
   const motionPhase = $derived(expanding || separating);
 
   let openDur = $state(100);
@@ -229,12 +216,11 @@
     if (full && pill) {
       bubble.place({
         ...full,
-        ...placePanelFusedFull(
-          pill,
-          { w: full.w, h: full.h },
-          side,
-          { corner: CORNER, work: workAreas, fusedGap: FUSED_GAP_PX },
-        ),
+        ...placePanelFusedFull(pill, { w: full.w, h: full.h }, side, {
+          corner: CORNER,
+          work: workAreas,
+          fusedGap: FUSED_GAP_PX,
+        }),
       });
     } else if (full) {
       applyRestingPlace(full);
@@ -247,10 +233,7 @@
     await waitFrames(2);
     if (epoch !== revealEpoch) return;
     if (full) {
-      placeFusedToPill(
-        full,
-        surfaces.live["pill-skin"] ?? surfaces.live["pill"],
-      );
+      placeFusedToPill(full, surfaces.live["pill-skin"] ?? surfaces.live["pill"]);
     }
     await afterTransition(el, "width", openDur);
   }
@@ -303,9 +286,12 @@
     if (!bubble.alive || !bubble.shown) return;
     void bubble.anchor;
     void surfaces.recoverHits();
-    const t = window.setTimeout(() => {
-      void surfaces.recoverHits();
-    }, ms(MOTION.floatOpen) + 48);
+    const t = window.setTimeout(
+      () => {
+        void surfaces.recoverHits();
+      },
+      ms(MOTION.floatOpen) + 48,
+    );
     return () => window.clearTimeout(t);
   });
   $effect(() => {
@@ -327,10 +313,7 @@
     }
   }
 
-  function finishDismiss(
-    wasShown: boolean,
-    opts: { skipHideWindow?: boolean } = {},
-  ) {
+  function finishDismiss(wasShown: boolean, opts: { skipHideWindow?: boolean } = {}) {
     lastOpen = null;
     revealPhase = "hidden";
     endDrag();
@@ -467,7 +450,12 @@
   >
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <header class="sf-head" onpointerdown={startDrag}>
-      <div class="sf-tabs" role="tablist" aria-label={t("overlay.snippets")} data-no-drag>
+      <div
+        class="sf-tabs"
+        role="tablist"
+        aria-label={t("overlay.snippets")}
+        data-no-drag
+      >
         <button
           type="button"
           role="tab"
@@ -533,8 +521,7 @@
             value={snippets.scratchpad?.body ?? ""}
             oninput={(e) => snippets.editScratchpad(e.currentTarget.value)}
             placeholder={t("overlay.scratchPlaceholder")}
-            aria-label={t("overlay.scratchAria")}
-          ></textarea>
+            aria-label={t("overlay.scratchAria")}></textarea>
         </div>
       {/if}
     </div>
@@ -559,6 +546,7 @@
     box-sizing: border-box;
     padding: 0.45rem 0.5rem 0.55rem;
     border-radius: 18px;
+
     /* Transparente: un fill opaco corta la sombra de la piel en el cuello. */
     background: transparent;
     color: var(--text);
@@ -571,6 +559,7 @@
   .sf.is-shown {
     opacity: 1;
     pointer-events: auto;
+
     /* Abrir invita, cerrar se aparta: sin esto el abrir heredaba la
        duración del cierre y la asimetría desaparecía. */
     transition: opacity var(--float-open-dur) var(--ease-smooth-out);
@@ -691,7 +680,7 @@
   .sf-icon:hover,
   .sf-icon.is-on {
     color: var(--text);
-    background: color-mix(in srgb, var(--text) 8%, transparent);
+    background: color-mix(in sRGB, var(--text) 8%, transparent);
   }
 
   .sf-icon:active {

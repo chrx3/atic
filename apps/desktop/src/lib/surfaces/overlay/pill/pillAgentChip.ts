@@ -121,10 +121,7 @@ function liveLogosFromConsoles(
   return logos;
 }
 
-function skipStalePresence(
-  p: PresenceView,
-  liveLogos: Set<string>,
-): boolean {
+function skipStalePresence(p: PresenceView, liveLogos: Set<string>): boolean {
   if (liveLogos.size === 0) return false;
   if (p.window?.hwnd) return false;
   const logo = agentLogoKey(p.backendId);
@@ -213,10 +210,7 @@ const BUSY: Record<string, true> = { working: true, waiting: true };
 export function agentLogoKey(id: string | null | undefined): string | null {
   if (!id) return null;
   const raw = id.trim().toLowerCase().replace(/\\/g, "/");
-  const base = (raw.split("/").pop() ?? raw).replace(
-    /\.(exe|cmd|bat|ps1|com)$/i,
-    "",
-  );
+  const base = (raw.split("/").pop() ?? raw).replace(/\.(exe|cmd|bat|ps1|com)$/i, "");
   switch (base) {
     case "claude":
     case "claude-code":

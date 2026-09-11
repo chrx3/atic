@@ -212,8 +212,18 @@ describe("quotaRows", () => {
           agent: "cursor-agent",
           plan: "pro_plus",
           windows: [
-            { kind: "auto", minutes: null, usedPercent: 80.6, resetsAt: NOW + 86_400_000 },
-            { kind: "api", minutes: null, usedPercent: 87.8, resetsAt: NOW + 86_400_000 },
+            {
+              kind: "auto",
+              minutes: null,
+              usedPercent: 80.6,
+              resetsAt: NOW + 86_400_000,
+            },
+            {
+              kind: "api",
+              minutes: null,
+              usedPercent: 87.8,
+              resetsAt: NOW + 86_400_000,
+            },
           ],
         }),
       ]),

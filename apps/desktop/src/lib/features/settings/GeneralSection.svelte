@@ -95,10 +95,15 @@
 {#if cfg}
   <div class="flex flex-col gap-5">
     <SettingsGroup title={t("settings.appearance.title")}>
-      <SettingsRow label={t("settings.language.label")} hint={t("settings.language.hint")}>
+      <SettingsRow
+        label={t("settings.language.label")}
+        hint={t("settings.language.hint")}
+      >
         {#snippet control()}
           <SegmentedControl
-            value={["system", "en", "es"].includes(cfg.ui_language) ? cfg.ui_language : "system"}
+            value={["system", "en", "es"].includes(cfg.ui_language)
+              ? cfg.ui_language
+              : "system"}
             label={t("settings.language.aria")}
             options={[
               { value: "system", label: t("settings.language.system") },
@@ -110,7 +115,10 @@
           />
         {/snippet}
       </SettingsRow>
-      <SettingsRow label={t("settings.language.speech")} hint={t("settings.language.speechHint")}>
+      <SettingsRow
+        label={t("settings.language.speech")}
+        hint={t("settings.language.speechHint")}
+      >
         {#snippet control()}
           <Select
             value={cfg.language}
@@ -141,7 +149,10 @@
               onchange={setTheme}
             />
             {#if theme === "custom"}
-              <ThemeEditor {knobs} onchange={(next) => patch({ ui_theme_custom: next })} />
+              <ThemeEditor
+                {knobs}
+                onchange={(next) => patch({ ui_theme_custom: next })}
+              />
             {/if}
           </div>
         {/snippet}
@@ -152,7 +163,10 @@
             <div class="flex items-center gap-3">
               <!-- Hueco fijo al máximo (150%): el disco escala por transform
                    y el texto de al lado no se reacomoda. -->
-              <div class="grid h-12 w-12 shrink-0 place-items-center" aria-hidden="true">
+              <div
+                class="grid h-12 w-12 shrink-0 place-items-center"
+                aria-hidden="true"
+              >
                 <div
                   class="grid size-8 place-items-center rounded-full
                          bg-[var(--skin)] text-[var(--text)]
@@ -164,7 +178,9 @@
                 </div>
               </div>
               <div class="flex min-w-0 flex-col gap-0.5">
-                <span class="text-sm text-text">{t("settings.appearance.overlayScale")}</span>
+                <span class="text-sm text-text"
+                  >{t("settings.appearance.overlayScale")}</span
+                >
                 <p class="text-pretty text-xs text-faint">
                   {t("settings.appearance.overlayScaleHint")}
                 </p>
@@ -206,7 +222,10 @@
       </SettingsRow>
     </SettingsGroup>
 
-    <SettingsGroup title={t("settings.tutorial.title")} hint={t("settings.tutorial.hint")}>
+    <SettingsGroup
+      title={t("settings.tutorial.title")}
+      hint={t("settings.tutorial.hint")}
+    >
       <SettingsRow label={t("settings.tutorial.firstUse")}>
         {#snippet control()}
           <Button
@@ -222,10 +241,7 @@
     </SettingsGroup>
 
     <SettingsGroup title={t("settings.data.title")} hint={t("settings.data.hint")}>
-      <SettingsRow
-        label={t("settings.data.keep")}
-        hint={t("settings.data.keepHint")}
-      >
+      <SettingsRow label={t("settings.data.keep")} hint={t("settings.data.keepHint")}>
         {#snippet control({ id })}
           <Input
             {id}
@@ -251,7 +267,10 @@
         {/snippet}
       </SettingsRow>
 
-      <SettingsRow label={t("settings.data.folder")} hint={t("settings.data.folderHint")}>
+      <SettingsRow
+        label={t("settings.data.folder")}
+        hint={t("settings.data.folderHint")}
+      >
         {#snippet control()}
           <Button
             variant="soft"

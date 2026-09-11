@@ -263,7 +263,9 @@
         >
           {t("page.common.copy")}
         </Button>
-        <Button variant="soft" size="sm" onclick={beginEditing}>{t("page.meetings.edit")}</Button>
+        <Button variant="soft" size="sm" onclick={beginEditing}
+          >{t("page.meetings.edit")}</Button
+        >
 
         <span
           class="w-full font-mono text-micro text-faint"

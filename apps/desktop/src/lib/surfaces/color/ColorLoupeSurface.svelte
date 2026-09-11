@@ -472,240 +472,242 @@
         class="grid"
         class:is-ready={ready}
       ></canvas>
-    <div class="preview-content">
-      <button
-        type="button"
-        class="read"
-        style:background={hex}
-        style:color={ink}
-        disabled={!ready || copying || changingMode}
-        onclick={() => void commit()}
-      >
-        <span class="swatch" style:background={hex}></span>
-        <span class="hex" data-numeric
-          >{ready ? value : t("page.colorHud.loading")}</span
-        >
-      </button>
-      <div class="bar">
-        <p class="help">
-          {roseOpen ? t("page.colorHud.helpRose") : t("page.colorHud.help")}
-        </p>
+      <div class="preview-content">
         <button
           type="button"
-          class="rose-btn"
-          aria-pressed={roseOpen}
-          aria-label={roseOpen
-            ? t("page.colorHud.roseClose")
-            : t("page.colorHud.roseOpen")}
-          onclick={toggleRose}
+          class="read"
+          style:background={hex}
+          style:color={ink}
           disabled={!ready || copying || changingMode}
+          onclick={() => void commit()}
         >
-          {roseOpen ? t("page.colorHud.back") : t("page.colorHud.edit")}
+          <span class="swatch" style:background={hex}></span>
+          <span class="hex" data-numeric
+            >{ready ? value : t("page.colorHud.loading")}</span
+          >
         </button>
+        <div class="bar">
+          <p class="help">
+            {roseOpen ? t("page.colorHud.helpRose") : t("page.colorHud.help")}
+          </p>
+          <button
+            type="button"
+            class="rose-btn"
+            aria-pressed={roseOpen}
+            aria-label={roseOpen
+              ? t("page.colorHud.roseClose")
+              : t("page.colorHud.roseOpen")}
+            onclick={toggleRose}
+            disabled={!ready || copying || changingMode}
+          >
+            {roseOpen ? t("page.colorHud.back") : t("page.colorHud.edit")}
+          </button>
+        </div>
       </div>
     </div>
-  </div>
 
-  {#if error}<p class="error" role="alert">{error}</p>{/if}
+    {#if error}<p class="error" role="alert">{error}</p>{/if}
 
-  {#if roseOpen}
-    <div
-      class="rose"
-      role="dialog"
-      aria-label={t("page.colorHud.roseAria")}
-      inert={copying}
-      transition:slide={{ duration: ROSE_MS }}
-    >
-      <div class="rose-head">
-        <button
-          type="button"
-          class="rose-swatch"
-          style:background={hex}
-          aria-label={value}
-          disabled={!ready || copying}
-          onclick={() => void commit()}
-        ></button>
-        <div class="meta">
-          <button
-            type="button"
-            class="code"
-            class:is-on={format === "hex"}
-            onclick={() => (format = "hex")}
-          >
-            {hex}
-          </button>
-          <button
-            type="button"
-            class="code"
-            class:is-on={format === "rgb"}
-            onclick={() => (format = "rgb")}
-          >
-            rgb({rgb.r}, {rgb.g}, {rgb.b})
-          </button>
-          <button
-            type="button"
-            class="code"
-            class:is-on={format === "hsl"}
-            onclick={() => (format = "hsl")}
-          >
-            hsl({Math.round(hsl.h)}, {Math.round(hsl.s * 100)}%, {Math.round(
-              hsl.l * 100,
-            )}%)
-          </button>
-        </div>
-      </div>
-
-      <div class="wheel">
-        <div
-          bind:this={ringEl}
-          class="ring"
-          style:--hue="{hsv.h}deg"
-          role="slider"
-          tabindex="0"
-          aria-label={t("page.colorHud.hue")}
-          aria-valuemin={0}
-          aria-valuemax={359}
-          aria-valuenow={Math.round(hsv.h) % 360}
-          onkeydown={(event) => {
-            const step = event.shiftKey ? 10 : 1;
-            if (
-              [
-                "ArrowLeft",
-                "ArrowDown",
-                "ArrowRight",
-                "ArrowUp",
-                "Home",
-                "End",
-              ].includes(event.key)
-            ) {
-              event.preventDefault();
-              const h =
-                event.key === "Home"
-                  ? 0
-                  : event.key === "End"
-                    ? 359
-                    : (hsv.h +
-                        (["ArrowLeft", "ArrowDown"].includes(event.key)
-                          ? -step
-                          : step) +
-                        360) %
-                      360;
-              setHsv({ ...hsv, h });
-            }
-          }}
-          onpointerdown={(event) => beginDrag(event, "hue")}
-          onlostpointercapture={onUp}
-        >
-          <div class="ring-fill"></div>
-          <div class="hue-knob"></div>
-        </div>
-        <canvas
-          bind:this={svEl}
-          class="sv"
-          width="112"
-          height="112"
-          aria-hidden="true"
-          onpointerdown={(event) => beginDrag(event, "sv")}
-          onlostpointercapture={onUp}
-        ></canvas>
-        <div
-          class="sv-knob"
-          style:left="{36 + hsv.s * 104}px"
-          style:top="{36 + (1 - hsv.v) * 104}px"
-        ></div>
-      </div>
-
-      <div class="channels">
-        <label
-          >{t("page.colorHud.saturation")}
-          <input
-            type="range"
-            aria-label={t("page.colorHud.saturation")}
-            min="0"
-            max="100"
-            value={hsv.s * 100}
-            oninput={(event) => setHsv({ ...hsv, s: +event.currentTarget.value / 100 })}
-          />
-          <output>{Math.round(hsv.s * 100)}%</output>
-        </label>
-        <label
-          >{t("page.colorHud.brightness")}
-          <input
-            type="range"
-            aria-label={t("page.colorHud.brightness")}
-            min="0"
-            max="100"
-            value={hsv.v * 100}
-            oninput={(event) => setHsv({ ...hsv, v: +event.currentTarget.value / 100 })}
-          />
-          <output>{Math.round(hsv.v * 100)}%</output>
-        </label>
-      </div>
-      <form
-        class="hex-entry"
-        onsubmit={(event) => {
-          event.preventDefault();
-          applyHex();
-        }}
+    {#if roseOpen}
+      <div
+        class="rose"
+        role="dialog"
+        aria-label={t("page.colorHud.roseAria")}
+        inert={copying}
+        transition:slide={{ duration: ROSE_MS }}
       >
-        <label for="color-hex">HEX</label>
-        <input
-          id="color-hex"
-          bind:value={hexDraft}
-          maxlength="7"
-          spellcheck="false"
-          placeholder="#RRGGBB"
-        />
-        <button type="submit">{t("page.colorHud.apply")}</button>
-      </form>
-
-      <div class="ticks">
-        {#each ROSE_HUES as hue (hue)}
-          {@const swatch = roseSwatch(hue)}
+        <div class="rose-head">
           <button
             type="button"
-            class="tick"
-            style:background={rgbToHex(swatch)}
-            aria-label="{Math.round(hue)}°"
-            onclick={() => {
-              setHsv({ h: hue, s: 1, v: 1 });
-            }}
+            class="rose-swatch"
+            style:background={hex}
+            aria-label={value}
+            disabled={!ready || copying}
+            onclick={() => void commit()}
           ></button>
-        {/each}
-      </div>
-
-      {#if recent.length > 0}
-        <div class="recent">
-          <span class="recent-label">{t("page.colorHud.recent")}</span>
-          <div class="ticks">
-            {#each recent as item (item)}
-              <button
-                type="button"
-                class="tick"
-                style:background={item}
-                aria-label={item}
-                onclick={() => {
-                  const parsed = parseHex(item);
-                  if (parsed) {
-                    setRgb(parsed);
-                  }
-                }}
-              ></button>
-            {/each}
+          <div class="meta">
+            <button
+              type="button"
+              class="code"
+              class:is-on={format === "hex"}
+              onclick={() => (format = "hex")}
+            >
+              {hex}
+            </button>
+            <button
+              type="button"
+              class="code"
+              class:is-on={format === "rgb"}
+              onclick={() => (format = "rgb")}
+            >
+              rgb({rgb.r}, {rgb.g}, {rgb.b})
+            </button>
+            <button
+              type="button"
+              class="code"
+              class:is-on={format === "hsl"}
+              onclick={() => (format = "hsl")}
+            >
+              hsl({Math.round(hsl.h)}, {Math.round(hsl.s * 100)}%, {Math.round(
+                hsl.l * 100,
+              )}%)
+            </button>
           </div>
         </div>
-      {/if}
 
-      <button
-        type="button"
-        class="copy"
-        disabled={!ready || copying || changingMode}
-        onclick={() => void commit()}
-      >
-        {copying ? t("page.colorHud.copying") : t("page.colorHud.copy", { value })}
-      </button>
-    </div>
-  {/if}
+        <div class="wheel">
+          <div
+            bind:this={ringEl}
+            class="ring"
+            style:--hue="{hsv.h}deg"
+            role="slider"
+            tabindex="0"
+            aria-label={t("page.colorHud.hue")}
+            aria-valuemin={0}
+            aria-valuemax={359}
+            aria-valuenow={Math.round(hsv.h) % 360}
+            onkeydown={(event) => {
+              const step = event.shiftKey ? 10 : 1;
+              if (
+                [
+                  "ArrowLeft",
+                  "ArrowDown",
+                  "ArrowRight",
+                  "ArrowUp",
+                  "Home",
+                  "End",
+                ].includes(event.key)
+              ) {
+                event.preventDefault();
+                const h =
+                  event.key === "Home"
+                    ? 0
+                    : event.key === "End"
+                      ? 359
+                      : (hsv.h +
+                          (["ArrowLeft", "ArrowDown"].includes(event.key)
+                            ? -step
+                            : step) +
+                          360) %
+                        360;
+                setHsv({ ...hsv, h });
+              }
+            }}
+            onpointerdown={(event) => beginDrag(event, "hue")}
+            onlostpointercapture={onUp}
+          >
+            <div class="ring-fill"></div>
+            <div class="hue-knob"></div>
+          </div>
+          <canvas
+            bind:this={svEl}
+            class="sv"
+            width="112"
+            height="112"
+            aria-hidden="true"
+            onpointerdown={(event) => beginDrag(event, "sv")}
+            onlostpointercapture={onUp}
+          ></canvas>
+          <div
+            class="sv-knob"
+            style:left="{36 + hsv.s * 104}px"
+            style:top="{36 + (1 - hsv.v) * 104}px"
+          ></div>
+        </div>
+
+        <div class="channels">
+          <label
+            >{t("page.colorHud.saturation")}
+            <input
+              type="range"
+              aria-label={t("page.colorHud.saturation")}
+              min="0"
+              max="100"
+              value={hsv.s * 100}
+              oninput={(event) =>
+                setHsv({ ...hsv, s: +event.currentTarget.value / 100 })}
+            />
+            <output>{Math.round(hsv.s * 100)}%</output>
+          </label>
+          <label
+            >{t("page.colorHud.brightness")}
+            <input
+              type="range"
+              aria-label={t("page.colorHud.brightness")}
+              min="0"
+              max="100"
+              value={hsv.v * 100}
+              oninput={(event) =>
+                setHsv({ ...hsv, v: +event.currentTarget.value / 100 })}
+            />
+            <output>{Math.round(hsv.v * 100)}%</output>
+          </label>
+        </div>
+        <form
+          class="hex-entry"
+          onsubmit={(event) => {
+            event.preventDefault();
+            applyHex();
+          }}
+        >
+          <label for="color-hex">HEX</label>
+          <input
+            id="color-hex"
+            bind:value={hexDraft}
+            maxlength="7"
+            spellcheck="false"
+            placeholder="#RRGGBB"
+          />
+          <button type="submit">{t("page.colorHud.apply")}</button>
+        </form>
+
+        <div class="ticks">
+          {#each ROSE_HUES as hue (hue)}
+            {@const swatch = roseSwatch(hue)}
+            <button
+              type="button"
+              class="tick"
+              style:background={rgbToHex(swatch)}
+              aria-label="{Math.round(hue)}°"
+              onclick={() => {
+                setHsv({ h: hue, s: 1, v: 1 });
+              }}
+            ></button>
+          {/each}
+        </div>
+
+        {#if recent.length > 0}
+          <div class="recent">
+            <span class="recent-label">{t("page.colorHud.recent")}</span>
+            <div class="ticks">
+              {#each recent as item (item)}
+                <button
+                  type="button"
+                  class="tick"
+                  style:background={item}
+                  aria-label={item}
+                  onclick={() => {
+                    const parsed = parseHex(item);
+                    if (parsed) {
+                      setRgb(parsed);
+                    }
+                  }}
+                ></button>
+              {/each}
+            </div>
+          </div>
+        {/if}
+
+        <button
+          type="button"
+          class="copy"
+          disabled={!ready || copying || changingMode}
+          onclick={() => void commit()}
+        >
+          {copying ? t("page.colorHud.copying") : t("page.colorHud.copy", { value })}
+        </button>
+      </div>
+    {/if}
     <button
       type="button"
       class="cancel"
@@ -729,6 +731,7 @@
   .stage {
     position: relative;
     box-sizing: border-box;
+
     /* El aire donde cae la sombra de la gota. Lo reserva `PAD` en Rust. */
     padding: 24px;
     min-height: 100vh;
@@ -793,6 +796,7 @@
     from {
       opacity: 0;
     }
+
     to {
       opacity: 1;
     }
@@ -802,6 +806,7 @@
     from {
       transform: scale(0.84);
     }
+
     to {
       transform: none;
     }
@@ -811,6 +816,7 @@
     from {
       opacity: 1;
     }
+
     to {
       opacity: 0;
     }
@@ -820,6 +826,7 @@
     from {
       transform: none;
     }
+
     to {
       transform: scale(0.9);
     }
@@ -830,10 +837,12 @@
       opacity: 1;
       filter: none;
     }
+
     35% {
       opacity: 1;
       filter: brightness(1.3);
     }
+
     100% {
       opacity: 0;
       filter: none;
@@ -844,9 +853,11 @@
     0% {
       transform: none;
     }
+
     35% {
       transform: scale(1.05);
     }
+
     100% {
       transform: scale(0.94);
     }
@@ -891,6 +902,7 @@
     width: 64px;
     height: 64px;
     flex: 0 0 64px;
+
     /*
      * El ojo asoma por la izquierda del cuerpo.
      *
@@ -900,6 +912,7 @@
      */
     margin-left: -26px;
     image-rendering: pixelated;
+
     /* Redondo como el lóbulo que lo abriga, no como una miniatura. */
     border-radius: 15px;
     outline: 1px solid color-mix(in sRGB, var(--text) 14%, transparent);
@@ -917,6 +930,7 @@
       opacity: 0.35;
       transform: scale(0.86);
     }
+
     to {
       opacity: 1;
       transform: none;

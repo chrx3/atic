@@ -377,11 +377,15 @@
     if (pill && islandDocked(pill)) {
       bubble.place({
         ...a,
-        ...placePanelFusedSeed(pill, { w: a.w, h: fullH }, {
-          corner: CORNER,
-          work: workAreas,
-          seed: d,
-        }),
+        ...placePanelFusedSeed(
+          pill,
+          { w: a.w, h: fullH },
+          {
+            corner: CORNER,
+            work: workAreas,
+            seed: d,
+          },
+        ),
       });
       return;
     }
@@ -409,7 +413,9 @@
     let x = bubble.anchor?.x ?? 0;
     let y = bubble.anchor?.y ?? 0;
     if (pill && islandDocked(pill)) {
-      const side = (bubble.anchor?.side ?? lastOpen?.side ?? "left") as BubbleOpen["side"];
+      const side = (bubble.anchor?.side ??
+        lastOpen?.side ??
+        "left") as BubbleOpen["side"];
       const base = lastOpen ?? {
         side,
         offset: h / 2,
@@ -420,12 +426,11 @@
       };
       bubble.place({
         ...base,
-        ...placePanelFusedFull(
-          pill,
-          { w: fullW, h },
-          side,
-          { corner: CORNER, work: workAreas, fusedGap: FUSED_GAP_PX },
-        ),
+        ...placePanelFusedFull(pill, { w: fullW, h }, side, {
+          corner: CORNER,
+          work: workAreas,
+          fusedGap: FUSED_GAP_PX,
+        }),
       });
       return;
     }
@@ -1184,6 +1189,7 @@
     overflow: hidden;
     opacity: 0;
     pointer-events: none;
+
     /* Sin transition de height: al buscar, saltar a EXPANDED_H evita thrash
        (layout + hit-rects) en cada tecla. El grow de apertura anima width. */
   }
@@ -1191,6 +1197,7 @@
   .lf.is-shown {
     opacity: 1;
     pointer-events: auto;
+
     /* Abrir invita, cerrar se aparta: sin esto el abrir heredaba la
        duración del cierre y la asimetría desaparecía. */
     transition: opacity var(--float-open-dur) var(--ease-smooth-out);
@@ -1233,7 +1240,7 @@
     justify-content: center;
   }
 
-  .lf:not(.is-expanded):not(.is-expanding) {
+  .lf:not(.is-expanded, .is-expanding) {
     overflow: visible;
   }
 
@@ -1244,6 +1251,7 @@
     align-items: center;
     justify-content: center;
     gap: 14px;
+
     /* Compacto: mismo alto que la pill (40px). */
     min-height: 40px;
     height: 40px;
@@ -1259,7 +1267,7 @@
     min-height: 40px;
     height: 40px;
     padding: 0;
-    border-bottom: 1px solid color-mix(in srgb, var(--text) 10%, transparent);
+    border-bottom: 1px solid color-mix(in sRGB, var(--text) 10%, transparent);
   }
 
   .lf-head {
@@ -1346,6 +1354,7 @@
     position: relative;
     z-index: 1;
     opacity: 0;
+
     /* Pegada a la barra; al .is-out viaja a su sitio. */
     transform: translateX(calc(-1 * var(--lf-fav-gap, 15px) - 8px)) scale(0.82);
     transition:
@@ -1363,7 +1372,7 @@
 
   .lf-dot.is-out:hover {
     color: var(--text);
-    background: color-mix(in srgb, var(--text) 12%, var(--skin));
+    background: color-mix(in sRGB, var(--text) 12%, var(--skin));
     transform: scale(1.06);
   }
 
@@ -1407,7 +1416,7 @@
 
   .lf-icon:hover {
     color: var(--text);
-    background: color-mix(in srgb, var(--text) 8%, transparent);
+    background: color-mix(in sRGB, var(--text) 8%, transparent);
   }
 
   .lf-icon:active {
@@ -1458,7 +1467,7 @@
   }
 
   .lf-hit.is-sel {
-    background: color-mix(in srgb, var(--text) 5%, transparent);
+    background: color-mix(in sRGB, var(--text) 5%, transparent);
   }
 
   .lf-hit-main {
@@ -1487,7 +1496,7 @@
     height: 2rem;
     flex-shrink: 0;
     border-radius: 0.4rem;
-    background: color-mix(in srgb, var(--text) 6%, transparent);
+    background: color-mix(in sRGB, var(--text) 6%, transparent);
     color: var(--muted);
   }
 
@@ -1554,7 +1563,7 @@
   }
 
   .lf-star:hover {
-    background: color-mix(in srgb, var(--text) 8%, transparent);
+    background: color-mix(in sRGB, var(--text) 8%, transparent);
     color: var(--text);
   }
 
@@ -1584,7 +1593,7 @@
     min-width: 0;
     padding: 0.35rem 0.5rem 0.5rem;
     overflow: hidden;
-    border-top: 1px solid color-mix(in srgb, var(--text) 10%, transparent);
+    border-top: 1px solid color-mix(in sRGB, var(--text) 10%, transparent);
     color: var(--faint);
     font-size: 0.6rem;
   }

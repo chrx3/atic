@@ -348,9 +348,7 @@
    *
    * La actividad NO cuenta: su control es la propia marca, que ya estaba ahí.
    */
-  const edgeCue = $derived(
-    surface === "edge" && (showAgentTab || updateChip != null),
-  );
+  const edgeCue = $derived(surface === "edge" && (showAgentTab || updateChip != null));
   const edgeCueMarks = $derived(
     (showAgentTab ? Math.max(chips.length, agentsDock.minimized ? 1 : 0) : 0) +
       (updateChip ? 1 : 0),
@@ -365,9 +363,7 @@
    */
   function chipActs(c: AgentChip): boolean {
     return (
-      agentsDock.minimized ||
-      c.target.kind !== "none" ||
-      c.target.presenceId != null
+      agentsDock.minimized || c.target.kind !== "none" || c.target.presenceId != null
     );
   }
 
@@ -659,14 +655,9 @@
     short: t("pill.openMainHint"),
     icon: "window",
   });
-  const ringNodes: WheelNode[] = $derived([
-    ...layout.ring.map(localizeTool),
-    moreNode,
-  ]);
+  const ringNodes: WheelNode[] = $derived([...layout.ring.map(localizeTool), moreNode]);
   const wheelNodes: WheelNode[] = $derived(
-    wheelPage === "more"
-      ? [...layout.more.map(localizeTool), windowNode]
-      : ringNodes,
+    wheelPage === "more" ? [...layout.more.map(localizeTool), windowNode] : ringNodes,
   );
 
   // Los adjuntadores se crean UNA vez sobre el catálogo completo y se indexan
@@ -719,8 +710,7 @@
     if (surface !== "edge" && !beadsAlive && !blooming && !flying) return;
     let raf = 0;
     const bloomMs =
-      ms(MOTION.morphOpen) +
-      (WHEEL_TOOLS.length + 1) * ms(MOTION.morphStagger);
+      ms(MOTION.morphOpen) + (WHEEL_TOOLS.length + 1) * ms(MOTION.morphStagger);
     const until =
       performance.now() +
       (blooming ? bloomMs : flying ? ms(MOTION.flight) : ms(MOTION.islandOpen)) +
@@ -2363,8 +2353,8 @@
       if (!shouldCommitShow(slotPending)) return;
       // Clipboard/textos: junto al cursor (atajo o rueda). El resto: la
       // pill, para el monitor. El reveal corre después del vuelo a casa.
-      const pill =
-        surfaces.live["pill-skin"] ?? surfaces.live["pill"] ?? {
+      const pill = surfaces.live["pill-skin"] ??
+        surfaces.live["pill"] ?? {
           x: at.x,
           y: at.y,
           w: box.w,
@@ -3024,7 +3014,9 @@
   class:is-seating={seating}
   data-edge={surface === "edge" ? dock?.edge : undefined}
   data-bloom={wheelBloomEdge ?? undefined}
-  style="left: {at.x}px; top: {at.y}px; width: {box.w}px; height: {box.h}px; --pill-bar: {PILL.bar}px; --island-tool: {PILL.islandTool}px; --island-gap: {PILL.islandGap}px; --island-cue-btn: {PILL.islandCueBtn}px; --island-cue-mark: {PILL.islandCueMark}px; --rec-drop: {PILL.recDrop}px; --rec-drop-gap: {PILL.recDropGap}px; {flightLift ? `transform: translate3d(${flightLift.x}px, ${flightLift.y}px, 0)` : ''}"
+  style="left: {at.x}px; top: {at.y}px; width: {box.w}px; height: {box.h}px; --pill-bar: {PILL.bar}px; --island-tool: {PILL.islandTool}px; --island-gap: {PILL.islandGap}px; --island-cue-btn: {PILL.islandCueBtn}px; --island-cue-mark: {PILL.islandCueMark}px; --rec-drop: {PILL.recDrop}px; --rec-drop-gap: {PILL.recDropGap}px; {flightLift
+    ? `transform: translate3d(${flightLift.x}px, ${flightLift.y}px, 0)`
+    : ''}"
   bind:this={rootEl}
   onpointerdown={beginDrag}
 >
@@ -3180,8 +3172,8 @@
                   class:is-ready={chip.tone === "ready"}
                   class:is-count={chip.tone === "count"}
                   class:is-label={islandAgentBadgeLabel != null}
-                  aria-hidden="true"
-                >{islandAgentBadgeLabel ?? ""}</span>
+                  aria-hidden="true">{islandAgentBadgeLabel ?? ""}</span
+                >
               {/if}
             </button>
           {/each}
@@ -3307,30 +3299,36 @@
                   use:tip={markAction.label}
                   aria-label={markAction.label}
                 >
-                  <AticMark size={28} strokeWidth={1.5} alive state={markState} lag={flying} />
+                  <AticMark
+                    size={28}
+                    strokeWidth={1.5}
+                    alive
+                    state={markState}
+                    lag={flying}
+                  />
                 </button>
               {/if}
-            <span class="p-timer">{fmt(elapsed)}</span>
-            {#if liveError}
-              <span class="p-chip is-error" role="status">{t("pill.error")}</span>
-            {:else if btWarning}
-              <span
-                class="p-chip is-warn"
-                role="status"
-                use:tip={btWarning}
-                aria-label={btWarning}>BT</span
-              >
-            {:else if liveActive}
-              <span class="p-chip" role="status">{t("pill.live")}</span>
-            {/if}
-            <div class="p-wave">
-              <Waveform
-                mic={levels.mic}
-                system={levels.system}
-                bars={10}
-                variant="quiet"
-              />
-            </div>
+              <span class="p-timer">{fmt(elapsed)}</span>
+              {#if liveError}
+                <span class="p-chip is-error" role="status">{t("pill.error")}</span>
+              {:else if btWarning}
+                <span
+                  class="p-chip is-warn"
+                  role="status"
+                  use:tip={btWarning}
+                  aria-label={btWarning}>BT</span
+                >
+              {:else if liveActive}
+                <span class="p-chip" role="status">{t("pill.live")}</span>
+              {/if}
+              <div class="p-wave">
+                <Waveform
+                  mic={levels.mic}
+                  system={levels.system}
+                  bars={10}
+                  variant="quiet"
+                />
+              </div>
             </div>
           {:else if dictation === "listening"}
             <!-- Escuchando: micrófono + ondas, sin texto. El ícono dice QUÉ está
@@ -3351,21 +3349,27 @@
                   use:tip={markAction.label}
                   aria-label={markAction.label}
                 >
-                  <AticMark size={28} strokeWidth={1.5} alive state={markState} lag={flying} />
+                  <AticMark
+                    size={28}
+                    strokeWidth={1.5}
+                    alive
+                    state={markState}
+                    lag={flying}
+                  />
                 </button>
               {/if}
-            <button
-              type="button"
-              class="p-dict-wave"
-              data-no-drag
-              onclick={toggleDictate}
-              disabled={busy}
-              aria-label={t("pill.stopDictate")}
-              use:tip={t("pill.dictatingHint")}
-            >
-              <ToolIcon id="dictation" size={16} strokeWidth={1.5} />
-              <Waveform mic={levels.mic} bars={18} variant="voice" live />
-            </button>
+              <button
+                type="button"
+                class="p-dict-wave"
+                data-no-drag
+                onclick={toggleDictate}
+                disabled={busy}
+                aria-label={t("pill.stopDictate")}
+                use:tip={t("pill.dictatingHint")}
+              >
+                <ToolIcon id="dictation" size={16} strokeWidth={1.5} />
+                <Waveform mic={levels.mic} bars={18} variant="voice" live />
+              </button>
             </div>
           {:else if activity === "dictating"}
             <div class="p-bar-slot" transition:opacityFade>
@@ -3380,24 +3384,31 @@
                   use:tip={markAction.label}
                   aria-label={markAction.label}
                 >
-                  <AticMark size={28} strokeWidth={1.5} alive state={markState} lag={flying} />
+                  <AticMark
+                    size={28}
+                    strokeWidth={1.5}
+                    alive
+                    state={markState}
+                    lag={flying}
+                  />
                 </button>
               {/if}
-            <button
-              type="button"
-              class="p-dict"
-              class:is-busy={dictation === "transcribing"}
-              class:is-ok={dictation === "pasted"}
-              class:is-error={dictation === "error"}
-              data-no-drag
-              onclick={toggleDictate}
-              disabled={busy || dictation === "transcribing"}
-              aria-label={t("pill.dictation")}
-              use:tip={dictationLabel(dictation)}
-            >
-              <ToolIcon id="dictation" size={16} strokeWidth={1.5} />
-            </button>
-            <span class="p-label" aria-live="polite">{dictationLabel(dictation)}</span>
+              <button
+                type="button"
+                class="p-dict"
+                class:is-busy={dictation === "transcribing"}
+                class:is-ok={dictation === "pasted"}
+                class:is-error={dictation === "error"}
+                data-no-drag
+                onclick={toggleDictate}
+                disabled={busy || dictation === "transcribing"}
+                aria-label={t("pill.dictation")}
+                use:tip={dictationLabel(dictation)}
+              >
+                <ToolIcon id="dictation" size={16} strokeWidth={1.5} />
+              </button>
+              <span class="p-label" aria-live="polite">{dictationLabel(dictation)}</span
+              >
             </div>
           {:else if hasQueue}
             <!-- La cola es un badge sobre el disco, no un reemplazo: antes borraba
@@ -3405,25 +3416,31 @@
             <!-- Sin marca mientras la rueda manda: el stack queda en el
                top-left del root grande y una segunda «a» fantasma se veía ahí. -->
             <div class="p-bar-slot" transition:opacityFade>
-            {#if !wheelChrome}
-              <span class="p-mark is-disc"
-                ><AticMark size={28} strokeWidth={1.5} alive state={markState} lag={flying} /></span
+              {#if !wheelChrome}
+                <span class="p-mark is-disc"
+                  ><AticMark
+                    size={28}
+                    strokeWidth={1.5}
+                    alive
+                    state={markState}
+                    lag={flying}
+                  /></span
+                >
+              {/if}
+              <span class="p-queue-count">{paste.count}</span>
+              <span class="p-queue-text" use:tip={paste.front?.text}>
+                {paste.front?.text ?? ""}
+              </span>
+              <button
+                type="button"
+                class="p-queue-btn"
+                data-no-drag
+                disabled={paste.busy}
+                onclick={() => void paste.paste()}
               >
-            {/if}
-            <span class="p-queue-count">{paste.count}</span>
-            <span class="p-queue-text" use:tip={paste.front?.text}>
-              {paste.front?.text ?? ""}
-            </span>
-            <button
-              type="button"
-              class="p-queue-btn"
-              data-no-drag
-              disabled={paste.busy}
-              onclick={() => void paste.paste()}
-            >
-              {t("pill.paste")}
-            </button>
-            {@render iconBtn(t("pill.dismiss"), X, () => void paste.dismiss(), 13)}
+                {t("pill.paste")}
+              </button>
+              {@render iconBtn(t("pill.dismiss"), X, () => void paste.dismiss(), 13)}
             </div>
           {:else}
             <!-- Reposo: disco con la marca. Un clic abre la rueda; el centro de
@@ -3432,85 +3449,99 @@
                es el de ParticleWheel (centro). El stack sigue midiendo el
                disco vía `.p-bar.is-disc-only` (el diámetro de `PILL.bar`). -->
             <div class="p-bar-slot" transition:opacityFade>
-            {#if !wheelChrome}
-              <span class="p-mark is-disc" use:tip={discHint}>
-                <AticMark size={32} strokeWidth={1.5} alive state={markState} lag={flying} />
-              </span>
-            {/if}
-            <!-- Aviso del agente: aparece solo si hay algo que decir. Es un chip
+              {#if !wheelChrome}
+                <span class="p-mark is-disc" use:tip={discHint}>
+                  <AticMark
+                    size={32}
+                    strokeWidth={1.5}
+                    alive
+                    state={markState}
+                    lag={flying}
+                  />
+                </span>
+              {/if}
+              <!-- Aviso del agente: aparece solo si hay algo que decir. Es un chip
                junto al disco y no un reemplazo, porque el disco sigue siendo la
                puerta a la rueda. -->
-            {#if showAgentTab}
-              <div class="p-agent-stack">
-              {#each chips.length > 0 ? chips : [chip] as c, i (c.id || "dock")}
-                {@const logos = chipLogos(c)}
-                {@const acts = chipActs(c)}
-                <svelte:element
-                  this={acts ? "button" : "span"}
-                  type={acts ? "button" : undefined}
-                  role={acts ? undefined : "status"}
-                  class="p-agent"
-                  class:is-inert={!acts}
-                  class:is-dock={agentsDock.minimized && chips.length === 0}
-                  class:is-waiting={c.tone === "waiting"}
-                  class:is-working={c.tone === "working"}
-                  class:is-ready={c.tone === "ready"}
-                  class:is-count={c.tone === "count"}
-                  data-chip-id={c.id}
-                  {@attach (el: HTMLElement) => {
-                    if (i === 0) agentDockEl = el;
-                  }}
-                  onclick={acts
-                    ? (e: MouseEvent) => onAgentChipClick(e, c.tone === "off" ? null : c)
-                    : undefined}
-                  use:tip={chipTitle(c)}
-                  aria-label={chipAria(c)}
-                >
-                  <span class="p-agent-ico" class:is-row={logos.length > 1} aria-hidden="true">
-                    {#if logos.length > 0}
-                      {#each logos as id (id)}
-                        <AgentLogo agent={id} size={agentsDock.minimized ? 13 : 11} />
-                      {/each}
-                    {:else}
-                      <AgentLogo
-                        agent={null}
-                        size={agentsDock.minimized ? 13 : 11}
-                      />
-                    {/if}
-                  </span>
-                  {#if c.tone === "waiting"}
-                    <span class="p-agent-count">{t("pill.permission")}</span>
-                  {:else if c.tone === "ready"}
-                    <span class="p-agent-msg">{c.label ?? t("pill.ready")}</span>
-                  {:else if c.tone === "working" && c.label}
-                    <span class="p-agent-msg">{c.label}</span>
-                  {:else if c.tone === "count"}
-                    <span class="p-agent-count">{c.label}</span>
-                  {/if}
-                </svelte:element>
-              {/each}
-              </div>
-            {/if}
-            <!-- Hay versión nueva. Mismo sitio y misma cápsula que el aviso de
+              {#if showAgentTab}
+                <div class="p-agent-stack">
+                  {#each chips.length > 0 ? chips : [chip] as c, i (c.id || "dock")}
+                    {@const logos = chipLogos(c)}
+                    {@const acts = chipActs(c)}
+                    <svelte:element
+                      this={acts ? "button" : "span"}
+                      type={acts ? "button" : undefined}
+                      role={acts ? undefined : "status"}
+                      class="p-agent"
+                      class:is-inert={!acts}
+                      class:is-dock={agentsDock.minimized && chips.length === 0}
+                      class:is-waiting={c.tone === "waiting"}
+                      class:is-working={c.tone === "working"}
+                      class:is-ready={c.tone === "ready"}
+                      class:is-count={c.tone === "count"}
+                      data-chip-id={c.id}
+                      {@attach (el: HTMLElement) => {
+                        if (i === 0) agentDockEl = el;
+                      }}
+                      onclick={acts
+                        ? (e: MouseEvent) =>
+                            onAgentChipClick(e, c.tone === "off" ? null : c)
+                        : undefined}
+                      use:tip={chipTitle(c)}
+                      aria-label={chipAria(c)}
+                    >
+                      <span
+                        class="p-agent-ico"
+                        class:is-row={logos.length > 1}
+                        aria-hidden="true"
+                      >
+                        {#if logos.length > 0}
+                          {#each logos as id (id)}
+                            <AgentLogo
+                              agent={id}
+                              size={agentsDock.minimized ? 13 : 11}
+                            />
+                          {/each}
+                        {:else}
+                          <AgentLogo
+                            agent={null}
+                            size={agentsDock.minimized ? 13 : 11}
+                          />
+                        {/if}
+                      </span>
+                      {#if c.tone === "waiting"}
+                        <span class="p-agent-count">{t("pill.permission")}</span>
+                      {:else if c.tone === "ready"}
+                        <span class="p-agent-msg">{c.label ?? t("pill.ready")}</span>
+                      {:else if c.tone === "working" && c.label}
+                        <span class="p-agent-msg">{c.label}</span>
+                      {:else if c.tone === "count"}
+                        <span class="p-agent-count">{c.label}</span>
+                      {/if}
+                    </svelte:element>
+                  {/each}
+                </div>
+              {/if}
+              <!-- Hay versión nueva. Mismo sitio y misma cápsula que el aviso de
                agentes: el disco sigue siendo la puerta a la rueda, y esto es
                algo que la pill cuenta, no algo que la reemplace. -->
-            {#if updateChip && !wheelChrome}
-              <button
-                type="button"
-                class="p-update"
-                class:is-ready={updateChip.tone === "ready"}
-                class:is-busy={updateChip.tone === "busy"}
-                disabled={appUpdate.busy}
-                onclick={onUpdateChipClick}
-                use:tip={updateChip.label}
-                aria-label={updateChip.label}
-              >
-                <span class="p-update-ico" aria-hidden="true">
-                  <Icon icon={updateChip.icon} size={11} strokeWidth={1.9} />
-                </span>
-                <span class="p-update-text">{updateChip.text}</span>
-              </button>
-            {/if}
+              {#if updateChip && !wheelChrome}
+                <button
+                  type="button"
+                  class="p-update"
+                  class:is-ready={updateChip.tone === "ready"}
+                  class:is-busy={updateChip.tone === "busy"}
+                  disabled={appUpdate.busy}
+                  onclick={onUpdateChipClick}
+                  use:tip={updateChip.label}
+                  aria-label={updateChip.label}
+                >
+                  <span class="p-update-ico" aria-hidden="true">
+                    <Icon icon={updateChip.icon} size={11} strokeWidth={1.9} />
+                  </span>
+                  <span class="p-update-text">{updateChip.text}</span>
+                </button>
+              {/if}
             </div>
           {/if}
         </div>
@@ -3633,6 +3664,7 @@
     100% {
       transform: scaleY(1);
     }
+
     38% {
       transform: scaleY(0.86);
     }
@@ -3643,6 +3675,7 @@
     100% {
       transform: scaleX(1);
     }
+
     38% {
       transform: scaleX(0.86);
     }
@@ -3778,6 +3811,7 @@
     100% {
       opacity: 0.55;
     }
+
     50% {
       opacity: 1;
     }
@@ -4096,9 +4130,7 @@
     animation: none;
   }
 
-  .p-island-cue.is-dock:not(.is-waiting):not(.is-working):not(.is-ready):not(
-      .is-count
-    ) {
+  .p-island-cue.is-dock:not(.is-waiting, .is-working, .is-ready, .is-count) {
     color: var(--muted);
   }
 
@@ -4133,9 +4165,7 @@
     color: var(--ok);
   }
 
-  .p-island-agent-badge.is-dock:not(.is-waiting):not(.is-working):not(.is-ready):not(
-      .is-count
-    ) {
+  .p-island-agent-badge.is-dock:not(.is-waiting, .is-working, .is-ready, .is-count) {
     color: var(--muted);
   }
 
@@ -4876,6 +4906,7 @@
    */
   .p-auth-host {
     --float-open-dur: var(--duration-medium);
+
     position: absolute;
     z-index: 6;
   }

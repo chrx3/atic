@@ -48,7 +48,13 @@
   import type { AnnotateMode, FocusRect } from "$core/types";
   import { captureSrc } from "$ipc/captures";
   import { startResizeDragging } from "$ipc/windows";
-  import { drawCropMask, drawShape, drawShapes, fontFor, haloFor } from "./annotateDraw";
+  import {
+    drawCropMask,
+    drawShape,
+    drawShapes,
+    fontFor,
+    haloFor,
+  } from "./annotateDraw";
   import {
     beginShape,
     COLORS,
@@ -73,17 +79,30 @@
     type WidthLevel,
   } from "./annotateModel";
 
-  const TOOLS = $derived(
-    [
-      { id: "pen" as const, icon: Pencil, label: t("page.annotate.pen"), key: "1" },
-      { id: "arrow" as const, icon: MoveUpRight, label: t("page.annotate.arrow"), key: "2" },
-      { id: "ellipse" as const, icon: Circle, label: t("page.annotate.ellipse"), key: "3" },
-      { id: "rect" as const, icon: Square, label: t("page.annotate.rect"), key: "4" },
-      { id: "highlight" as const, icon: Highlighter, label: t("page.annotate.highlight"), key: "5" },
-      { id: "text" as const, icon: Type, label: t("page.annotate.text"), key: "6" },
-      { id: "crop" as const, icon: Crop, label: t("page.annotate.crop"), key: "7" },
-    ],
-  );
+  const TOOLS = $derived([
+    { id: "pen" as const, icon: Pencil, label: t("page.annotate.pen"), key: "1" },
+    {
+      id: "arrow" as const,
+      icon: MoveUpRight,
+      label: t("page.annotate.arrow"),
+      key: "2",
+    },
+    {
+      id: "ellipse" as const,
+      icon: Circle,
+      label: t("page.annotate.ellipse"),
+      key: "3",
+    },
+    { id: "rect" as const, icon: Square, label: t("page.annotate.rect"), key: "4" },
+    {
+      id: "highlight" as const,
+      icon: Highlighter,
+      label: t("page.annotate.highlight"),
+      key: "5",
+    },
+    { id: "text" as const, icon: Type, label: t("page.annotate.text"), key: "6" },
+    { id: "crop" as const, icon: Crop, label: t("page.annotate.crop"), key: "7" },
+  ]);
 
   /** Cuánto queda el aviso antes de cerrar. Da tiempo a leerlo, no a esperar. */
   const NOTE_MS = 900;
@@ -824,7 +843,9 @@
         class="action"
         class:is-danger={confirmDiscard}
         title={t("page.annotate.closeTitle")}
-        aria-label={confirmDiscard ? t("page.annotate.discard") : t("page.common.close")}
+        aria-label={confirmDiscard
+          ? t("page.annotate.discard")
+          : t("page.common.close")}
         onclick={requestClose}
       >
         {#if confirmDiscard}
@@ -881,11 +902,7 @@
     <!-- Sin lienzo listo NO se muestra la ayuda de dibujo: decir «arrastrá para
          dibujar» sobre un editor que todavía no acepta el puntero es lo que
          hizo que un fallo de carga se leyera como «no anda el dibujo». -->
-    {error ??
-      note ??
-      (ready
-        ? t("page.annotate.help")
-        : t("page.annotate.loading"))}
+    {error ?? note ?? (ready ? t("page.annotate.help") : t("page.annotate.loading"))}
   </p>
 
   <!--

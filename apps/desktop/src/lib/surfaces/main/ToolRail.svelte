@@ -652,7 +652,10 @@
       }
       tracker.wake();
 
-      window.addEventListener("wheel", onWindowWheel, { passive: false, capture: true });
+      window.addEventListener("wheel", onWindowWheel, {
+        passive: false,
+        capture: true,
+      });
       return () => {
         ro.disconnect();
         tracker.stop();
@@ -858,6 +861,7 @@
     color: inherit;
     cursor: inherit;
     touch-action: none;
+
     /*
      * width/height/opacity los conduce el spring de `visual` cada frame.
      * Una transition CSS aquí desincroniza left/top (instantáneos) del tamaño
@@ -874,6 +878,7 @@
       var(--rb-text) calc(var(--p, 0) * 100%)
     );
     pointer-events: none;
+
     /* 17/20 ≈ 0.85 → 1.05 en el centro; continuo con prominence. */
     transform: scale(calc(0.85 + 0.2 * var(--p, 0)));
   }
@@ -884,6 +889,7 @@
     flex-direction: column;
     justify-content: space-between;
     gap: calc(0.35rem * var(--ls, 1));
+
     /* Padding continuo por --p: evita flip cold→hot de layout al beep. */
     padding: calc((0.75rem + 0.2rem * var(--p, 0)) * var(--ls, 1))
       calc((0.9rem + 0.15rem * var(--p, 0)) * var(--ls, 1));
@@ -892,6 +898,7 @@
     color: inherit;
     cursor: inherit;
     box-sizing: border-box;
+
     /* Igual que .drop: geometría por JS; no pelear con transition de layout. */
   }
 
@@ -911,6 +918,7 @@
 
   .card-chrome {
     flex-shrink: 0;
+
     /* --p cambia cada frame con el spring; sin transition de layout/filter. */
     transform: scale(calc(0.92 + 0.08 * var(--p, 0)));
     filter: blur(calc((1 - var(--p, 0)) * var(--blur-small, 2px)));

@@ -109,4 +109,3 @@ export function tabNameFromTitle(title: string): string | null {
   // TUI agregó detrás de la suya.
   return trozos.find((t) => !canonicalAgentCli(t)) ?? trozos[trozos.length - 1];
 }
-

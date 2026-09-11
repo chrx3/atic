@@ -1,10 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  drawCropMask,
-  drawShape,
-  haloFor,
-  type DrawTarget,
-} from "./annotateDraw";
+import { drawCropMask, drawShape, haloFor, type DrawTarget } from "./annotateDraw";
 import { HIGHLIGHT_FACTOR, type Shape } from "./annotateModel";
 
 /**

@@ -37,10 +37,10 @@ function tokenizeWords(text: string): string[] {
 }
 
 function isRepetitionHallucination(text: string): boolean {
-    const words = tokenizeWords(text);
-    if (words.length < 6) return false;
+  const words = tokenizeWords(text);
+  if (words.length < 6) return false;
 
-    let run = 1;
+  let run = 1;
   for (let i = 1; i < words.length; i++) {
     if (words[i] === words[i - 1]) {
       run += 1;

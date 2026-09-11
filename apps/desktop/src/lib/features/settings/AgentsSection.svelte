@@ -52,7 +52,9 @@
    * Los agentes marcados. Vacio en la config = todos, y por eso la vista
    * arranca con todas las casillas puestas: es lo que se ve.
    */
-  const shown = $derived(shownAgents(config.current?.agents_shown ?? []).map((a) => a.cli));
+  const shown = $derived(
+    shownAgents(config.current?.agents_shown ?? []).map((a) => a.cli),
+  );
 
   /**
    * Marcar y desmarcar, guardando el orden del catalogo.
@@ -139,10 +141,7 @@
 
 <div class="flex flex-col gap-5">
   {#if AGENT_PAGER_ENABLED}
-    <SettingsGroup
-      title={t("settings.agents.title")}
-      hint={t("settings.agents.hint")}
-    >
+    <SettingsGroup title={t("settings.agents.title")} hint={t("settings.agents.hint")}>
       <SettingsRow
         label={t("settings.agents.hooks")}
         hint={t("settings.agents.hooksHint")}
@@ -163,8 +162,7 @@
 
     {#if snippet}
       <pre
-        class="m-0 max-h-48 overflow-auto rounded-sm border border-line bg-surface-2 p-2 text-[11px] leading-snug text-faint whitespace-pre-wrap break-all"
-      >{snippet}</pre>
+        class="m-0 max-h-48 overflow-auto rounded-sm border border-line bg-surface-2 p-2 text-[11px] leading-snug text-faint whitespace-pre-wrap break-all">{snippet}</pre>
     {/if}
   {/if}
 
@@ -205,12 +203,7 @@
           : (hubError ?? "")}
       >
         {#snippet control()}
-          <Button
-            variant="soft"
-            size="sm"
-            full
-            onclick={() => void refreshHub()}
-          >
+          <Button variant="soft" size="sm" full onclick={() => void refreshHub()}>
             {t("settings.agents.hubRefresh")}
           </Button>
         {/snippet}
@@ -240,8 +233,9 @@
         </SettingsRow>
         {#if hubSnippets[host]}
           <pre
-            class="m-0 max-h-48 overflow-auto rounded-sm border border-line bg-surface-2 p-2 text-[11px] leading-snug text-faint whitespace-pre-wrap break-all"
-          >{hubSnippets[host]}</pre>
+            class="m-0 max-h-48 overflow-auto rounded-sm border border-line bg-surface-2 p-2 text-[11px] leading-snug text-faint whitespace-pre-wrap break-all">{hubSnippets[
+              host
+            ]}</pre>
         {/if}
         {#if host === "codex"}
           <p class="text-[11px] text-faint">

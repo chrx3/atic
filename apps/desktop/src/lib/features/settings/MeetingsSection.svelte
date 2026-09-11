@@ -105,7 +105,10 @@
           {/snippet}
         </SettingsRow>
       {:else}
-        <SettingsRow label={t("settings.meetings.model")} hint={t("settings.meetings.modelHint")}>
+        <SettingsRow
+          label={t("settings.meetings.model")}
+          hint={t("settings.meetings.modelHint")}
+        >
           {#snippet control({ id })}
             <Select
               {id}

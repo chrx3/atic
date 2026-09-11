@@ -57,8 +57,7 @@ export const showClipboardWindow = () => invoke<void>("show_clipboard_window");
 export const hideClipboardWindow = () => invoke<void>("hide_clipboard_window");
 
 /** ¿El float de clipboard queda fijado arriba de otras apps? */
-export const clipboardAlwaysOnTop = () =>
-  invoke<boolean>("clipboard_always_on_top");
+export const clipboardAlwaysOnTop = () => invoke<boolean>("clipboard_always_on_top");
 
 /** Fija o desfija el float (always-on-top del overlay mientras está abierto). */
 export const setClipboardAlwaysOnTop = (on: boolean) =>

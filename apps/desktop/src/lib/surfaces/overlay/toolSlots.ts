@@ -53,9 +53,7 @@ const DEFAULT_SLOTS: Partial<Record<ToolId, SlotId>> = {
 let slotOverrides: Partial<Record<ToolId, SlotId>> = {};
 
 /** Sustituye overrides; pasar `{}` o `null` limpia. */
-export function setSlotOverrides(
-  next: Partial<Record<ToolId, SlotId>> | null,
-): void {
+export function setSlotOverrides(next: Partial<Record<ToolId, SlotId>> | null): void {
   slotOverrides = next ? { ...next } : {};
 }
 

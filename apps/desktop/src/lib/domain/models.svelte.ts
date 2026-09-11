@@ -44,7 +44,9 @@ class ModelsStore implements DomainStore {
 
   get meetingProgressLabel(): string {
     if (this.meetingUsesGroq) {
-      return groqModelLabel(config.current?.meeting_groq_model ?? "whisper-large-v3-turbo");
+      return groqModelLabel(
+        config.current?.meeting_groq_model ?? "whisper-large-v3-turbo",
+      );
     }
     return this.meetingModel ? whisperModelLabel(this.meetingModel.id) : "Whisper";
   }

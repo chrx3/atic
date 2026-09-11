@@ -31,9 +31,8 @@
     <header class="cab">
       <span class="quien">{sesion.label?.trim() || sesion.backendName}</span>
       <span class="meta">
-        {sesion.backendName}{#if nombrePadre(sesion.parent)} · pedido por {nombrePadre(
-            sesion.parent,
-          )}{/if}
+        {sesion.backendName}{#if nombrePadre(sesion.parent)}
+          · pedido por {nombrePadre(sesion.parent)}{/if}
       </span>
     </header>
 

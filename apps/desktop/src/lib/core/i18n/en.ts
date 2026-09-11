@@ -1124,8 +1124,7 @@ export const en = {
           "Connected, but this console started earlier: restart it so the agent sees the tools.",
         mcpConnected:
           "This agent is connected to the Atic hub and can talk to the others. Click to disconnect it.",
-        mcpEnable:
-          "Enable MCP to connect agents from different providers. Click here.",
+        mcpEnable: "Enable MCP to connect agents from different providers. Click here.",
         mcpDisconnectAria: "Disconnect this agent's MCP",
         mcpEnableAria: "Enable this agent's MCP",
         noConsoles: "No consoles",
@@ -1139,8 +1138,7 @@ export const en = {
         emptyHint: "Open a local console (PowerShell) or an SSH session.",
         newConsole: "New console",
         noRemoteHost: "No remote host",
-        noRemoteHostHint:
-          "Add a host in Settings → Agents and reopen the console.",
+        noRemoteHostHint: "Add a host in Settings → Agents and reopen the console.",
         remoteFallback: "remote",
         localConsoleHint: "PowerShell on this machine (cmd fallback).",
         sshConsoleHint: "Opens ssh -t to the selected host.",
@@ -1157,10 +1155,10 @@ export const en = {
         pickHostError:
           "Choose an SSH host in the console (or add it in Settings → Agents).",
         maxTabs: "There are already {n} consoles open. Close one to open another.",
-      closeConfirmTitle: "Close “{label}”",
-      closeConfirmBody:
-        "The console and its process are closed. This cannot be undone.",
-      closeConfirmAction: "Close",
+        closeConfirmTitle: "Close “{label}”",
+        closeConfirmBody:
+          "The console and its process are closed. This cannot be undone.",
+        closeConfirmAction: "Close",
       },
     },
     captures: {

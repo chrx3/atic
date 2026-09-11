@@ -20,11 +20,7 @@
   const isApp = $derived(kind === "app" || id.startsWith("app:"));
 
   const which = $derived(
-    id.startsWith("action:")
-      ? id.slice("action:".length)
-      : isApp
-        ? "app"
-        : "search",
+    id.startsWith("action:") ? id.slice("action:".length) : isApp ? "app" : "search",
   );
 
   const fallback = $derived(LAUNCHER_ICONS[which] ?? Search);

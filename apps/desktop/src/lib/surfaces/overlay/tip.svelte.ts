@@ -37,10 +37,7 @@
 export type TipPlacement = "auto" | "top" | "bottom";
 
 export type TipInput =
-  | string
-  | null
-  | undefined
-  | { text?: string | null; placement?: TipPlacement };
+  string | null | undefined | { text?: string | null; placement?: TipPlacement };
 
 /** Caja del ancla en px CSS del viewport, copiada (el DOMRect vive poco). */
 export type TipAnchor = { x: number; y: number; w: number; h: number };

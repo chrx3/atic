@@ -47,7 +47,11 @@
   import { agentsDock } from "$surfaces/overlay/agents/agentsDock.svelte";
   import { consoleCue } from "$surfaces/overlay/agents/consoleCue.svelte";
   import { presenceIdsToDismissOnAticHide } from "$surfaces/overlay/pill/pillAgentChip";
-  import { reuseDockedFrame, shouldResizeLauncher, rememberedSetupWidth } from "$surfaces/overlay/agents/dockExpand";
+  import {
+    reuseDockedFrame,
+    shouldResizeLauncher,
+    rememberedSetupWidth,
+  } from "$surfaces/overlay/agents/dockExpand";
   import { toasts } from "$domain/toasts.svelte";
   import ToastStack from "$ui/ToastStack.svelte";
   import { afterTransition, MOTION, ms, prefersReducedMotion, wait } from "$lib/motion";
@@ -168,18 +172,16 @@
     return { ...a, ...size, x: pos.x, y: pos.y, side: "left", offset: size.h / 2 };
   }
 
-  function resolveRestingOpen(
-    a: BubbleOpen,
-    keep: SavedPosition | null,
-  ): BubbleOpen {
+  function resolveRestingOpen(a: BubbleOpen, keep: SavedPosition | null): BubbleOpen {
     const panel = { w: a.w, h: a.h };
     if (keep) {
-      const pill = surfaces.live["pill-skin"] ?? surfaces.live["pill"] ?? {
-        x: a.x,
-        y: a.y,
-        w: 1,
-        h: 1,
-      };
+      const pill = surfaces.live["pill-skin"] ??
+        surfaces.live["pill"] ?? {
+          x: a.x,
+          y: a.y,
+          w: 1,
+          h: 1,
+        };
       return { ...a, ...positionInWorkspace(pill, panel, keep) };
     }
     return placeAtScreenCenter(a, panel);
@@ -258,9 +260,7 @@
     if (epoch !== placeEpoch) return;
 
     const keep =
-      !fresh && bubble.anchor
-        ? { x: bubble.anchor.x, y: bubble.anchor.y }
-        : null;
+      !fresh && bubble.anchor ? { x: bubble.anchor.x, y: bubble.anchor.y } : null;
     restingOpen = resolveRestingOpen(a, keep);
 
     if (fresh || revealPhase === "hidden") {
@@ -273,14 +273,28 @@
     }
   }
 
-  function asOpen(a: { side: string; offset: number; x: number; y: number; w: number; h: number }): BubbleOpen {
+  function asOpen(a: {
+    side: string;
+    offset: number;
+    x: number;
+    y: number;
+    w: number;
+    h: number;
+  }): BubbleOpen {
     const side: BubbleOpen["side"] =
       a.side === "bottom" || a.side === "left" || a.side === "right" ? a.side : "top";
     return { ...a, side };
   }
 
   async function animateToSize(
-    current: { side: string; offset: number; x: number; y: number; w: number; h: number },
+    current: {
+      side: string;
+      offset: number;
+      x: number;
+      y: number;
+      w: number;
+      h: number;
+    },
     size: { w: number; h: number },
   ) {
     await ensureWorkAreas();
@@ -370,9 +384,7 @@
     } else browserSize = { w: current.w, h: current.h };
 
     const setupW = setupPanelWidth();
-    const width = open
-      ? Math.max(BROWSER_DEFAULT_W, browserSize.w, current.w)
-      : setupW;
+    const width = open ? Math.max(BROWSER_DEFAULT_W, browserSize.w, current.w) : setupW;
     const size = open
       ? { w: width, h: Math.max(BROWSER_DEFAULT_H, browserSize.h) }
       : { w: setupW, h: setupHeight(setupW) };
@@ -496,10 +508,7 @@
     if (epoch !== revealEpoch) return;
     const a = bubble.anchor;
     if (a) {
-      placeBirthSeed(
-        asOpen(a),
-        surfaces.live["pill-skin"] ?? surfaces.live["pill"],
-      );
+      placeBirthSeed(asOpen(a), surfaces.live["pill-skin"] ?? surfaces.live["pill"]);
     }
     await afterTransition(bubEl, "width", growDur);
   }
@@ -690,8 +699,7 @@
       resizable &&
       prev !== null &&
       event.timeStamp - prev.t <= DOUBLE_CLICK_MS &&
-      Math.hypot(event.clientX - prev.x, event.clientY - prev.y) <=
-        DOUBLE_CLICK_SLOP;
+      Math.hypot(event.clientX - prev.x, event.clientY - prev.y) <= DOUBLE_CLICK_SLOP;
     if (near) {
       lastHeaderClick = null;
       // El arrastre del primer clic ya se cerró en su `pointerup` sin haberse
@@ -762,8 +770,7 @@
   function onRootPointerMove(event: PointerEvent) {
     // Durante el gesto manda el borde tomado, no el que haya bajo el puntero.
     if (resize) return;
-    hoverEdge =
-      resizable && !minimized ? edgeAt(event.clientX, event.clientY) : null;
+    hoverEdge = resizable && !minimized ? edgeAt(event.clientX, event.clientY) : null;
   }
 
   /** Estirar el globo desde cualquier borde o esquina. */
@@ -924,7 +931,13 @@
 
   /** Clic afuera: en el lanzador cierra; en la consola achica. Respeta pin. */
   function tryAutoClose() {
-    if (!bubble.shown || minimized || isAgentsDismissSuppressed() || isOpenDismissGrace()) return;
+    if (
+      !bubble.shown ||
+      minimized ||
+      isAgentsDismissSuppressed() ||
+      isOpenDismissGrace()
+    )
+      return;
     void agentsAlwaysOnTop()
       .then((pinned) => {
         if (pinned || isAgentsDismissSuppressed() || !bubble.shown) return;
@@ -1082,7 +1095,7 @@
   >
     <div class="af-stage">
       <AgentLauncher
-        onHeaderPointerDown={onHeaderPointerDown}
+        {onHeaderPointerDown}
         onClose={dismissSetup}
         onViewChange={(view) => void changeLauncherView(view)}
         onBrowserChange={(open) => void changeBrowser(open)}
@@ -1126,6 +1139,7 @@
     display: flex;
     flex-direction: column;
     border-radius: 1.625rem;
+
     /* Transparente: un fill opaco tapa la sombra de la piel y deja un
        hairline en el cuello fundido con la pill. */
     background: transparent;

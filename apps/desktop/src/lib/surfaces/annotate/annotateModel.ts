@@ -19,13 +19,7 @@
  * obligaría a un segundo selector para un solo botón.
  */
 export type AnnotateTool =
-  | "pen"
-  | "arrow"
-  | "ellipse"
-  | "rect"
-  | "highlight"
-  | "text"
-  | "crop";
+  "pen" | "arrow" | "ellipse" | "rect" | "highlight" | "text" | "crop";
 
 /** Las que dejan una forma en el documento. `crop` cambia el encuadre. */
 export function drawsShape(tool: AnnotateTool): boolean {

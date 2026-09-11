@@ -14,7 +14,11 @@
   import { config } from "$domain/config.svelte";
   import { toastError, toasts } from "$domain/toasts.svelte";
   import { secretsStatus, setSecret } from "$ipc/config";
-  import { listLiveSummaryModels, listSummaryProviders, ollamaAvailable } from "$ipc/summaries";
+  import {
+    listLiveSummaryModels,
+    listSummaryProviders,
+    ollamaAvailable,
+  } from "$ipc/summaries";
   import SettingsGroup from "$patterns/SettingsGroup.svelte";
   import SettingsRow from "$patterns/SettingsRow.svelte";
   import Banner from "$ui/Banner.svelte";
@@ -126,7 +130,10 @@
 {#if cfg}
   <div class="flex flex-col gap-5">
     {#if provider?.needs_api_key && !hasKey[provider.id]}
-      <Banner tone="warn" title={t("settings.summary.missingKey", { name: provider.display_name })} />
+      <Banner
+        tone="warn"
+        title={t("settings.summary.missingKey", { name: provider.display_name })}
+      />
     {:else if ollamaUp === false}
       <Banner tone="warn" title={t("settings.summary.ollamaDown")}>
         {t("settings.summary.ollamaBody")}
@@ -186,7 +193,10 @@
       </SettingsRow>
 
       {#if provider?.base_url_editable}
-        <SettingsRow label={t("settings.summary.url")} hint={t("settings.summary.urlHint")}>
+        <SettingsRow
+          label={t("settings.summary.url")}
+          hint={t("settings.summary.urlHint")}
+        >
           {#snippet control({ id })}
             <Input
               {id}
@@ -208,7 +218,9 @@
         hint={t("settings.summary.keyHint")}
       >
         <SettingsRow
-          label={hasKey[provider.id] ? t("settings.summary.replaceKey") : t("settings.summary.setKey")}
+          label={hasKey[provider.id]
+            ? t("settings.summary.replaceKey")
+            : t("settings.summary.setKey")}
           hint={hasKey[provider.id] ? t("settings.summary.keyStoredHint") : undefined}
         >
           {#snippet control({ id })}

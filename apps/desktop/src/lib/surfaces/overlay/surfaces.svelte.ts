@@ -18,7 +18,12 @@
 
 import { untrack } from "svelte";
 
-import { setOverlayHitRects, setOverlayItemDrag, setOverlayPointerGesture, type HitRect } from "$ipc/overlay";
+import {
+  setOverlayHitRects,
+  setOverlayItemDrag,
+  setOverlayPointerGesture,
+  type HitRect,
+} from "$ipc/overlay";
 import { releaseOwned } from "./releaseOwned";
 
 /** El `id` viaja a Rust: necesita distinguir la pill, que es de donde cuelga
@@ -84,11 +89,7 @@ export function layoutRect(el: HTMLElement): {
   const r = el.getBoundingClientRect();
   // Scale transform sin left/top usable: conservar tamaño de layout anclado
   // al top-left visual (mejor que la zona chica cerca de la pill).
-  if (
-    ow > 0 &&
-    oh > 0 &&
-    (Math.abs(r.width - ow) > 1 || Math.abs(r.height - oh) > 1)
-  ) {
+  if (ow > 0 && oh > 0 && (Math.abs(r.width - ow) > 1 || Math.abs(r.height - oh) > 1)) {
     return { x: r.x, y: r.y, w: ow, h: oh };
   }
   return {
@@ -250,10 +251,7 @@ class OverlaySurfaces {
   #onTransitionEnd = (event: TransitionEvent) => {
     // Solo el root registrado (no hijos): emerge usa transform/opacity.
     if (event.target !== event.currentTarget) return;
-    if (
-      event.propertyName !== "transform" &&
-      event.propertyName !== "opacity"
-    ) {
+    if (event.propertyName !== "transform" && event.propertyName !== "opacity") {
       return;
     }
     this.schedule();

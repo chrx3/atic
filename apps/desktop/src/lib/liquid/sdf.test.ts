@@ -147,9 +147,9 @@ describe("Field.eval AABB", () => {
     const k = 20;
     const field = new Field(shapes, k);
     const naive = (x: number, y: number) => {
-      let d = shapeSD(shapes[0]!, x, y);
+      let d = shapeSD(shapes[0], x, y);
       for (let i = 1; i < shapes.length; i++) {
-        d = smin(d, shapeSD(shapes[i]!, x, y), k);
+        d = smin(d, shapeSD(shapes[i], x, y), k);
       }
       return d;
     };

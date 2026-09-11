@@ -317,12 +317,7 @@ describe("geometryReseat", () => {
   const size = PILL;
 
   it("isla de arriba en una esquina vuelve al centro de ese canto", () => {
-    expect(
-      geometryReseat(
-        { docked: "top", size, current: at(0, 0) },
-        SOLO,
-      ),
-    ).toEqual({
+    expect(geometryReseat({ docked: "top", size, current: at(0, 0) }, SOLO)).toEqual({
       at: { x: (1000 - 40) / 2, y: 0 },
       edge: "top",
     });
@@ -330,10 +325,7 @@ describe("geometryReseat", () => {
 
   it("isla derecha pegada arriba va al medio vertical de la derecha", () => {
     expect(
-      geometryReseat(
-        { docked: "right", size, current: at(960, 0) },
-        SOLO,
-      ),
+      geometryReseat({ docked: "right", size, current: at(960, 0) }, SOLO),
     ).toEqual({
       at: { x: 960, y: (800 - 40) / 2 },
       edge: "right",
@@ -341,22 +333,16 @@ describe("geometryReseat", () => {
   });
 
   it("sin acople vuelve al hogar de arriba", () => {
-    expect(
-      geometryReseat(
-        { docked: null, size, current: at(200, 200) },
-        SOLO,
-      ),
-    ).toEqual(defaultPillHome(size, SOLO));
+    expect(geometryReseat({ docked: null, size, current: at(200, 200) }, SOLO)).toEqual(
+      defaultPillHome(size, SOLO),
+    );
   });
 
   it("coordenadas del recuadro chico no pierden el canto exterior dual", () => {
     // La isla "derecha" quedó en el monitor izquierdo (recuadro chico).
     // El canto derecho de ese monitor es interior: hay que ir al derecho.
     expect(
-      geometryReseat(
-        { docked: "right", size, current: at(960, 10) },
-        DUAL,
-      ),
+      geometryReseat({ docked: "right", size, current: at(960, 10) }, DUAL),
     ).toEqual({
       at: { x: 1960, y: (800 - 40) / 2 },
       edge: "right",

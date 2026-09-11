@@ -79,24 +79,16 @@ describe("stemBetween", () => {
 
 describe("stemBodyFits", () => {
   it("una pestaña de 10 px en el techo no sostiene un cuello", () => {
-    expect(
-      stemBodyFits({ x: 0, y: 0, w: 40, h: 10 }, "top", 6),
-    ).toBe(false);
+    expect(stemBodyFits({ x: 0, y: 0, w: 40, h: 10 }, "top", 6)).toBe(false);
   });
 
   it("la isla abierta (~34 px) sí", () => {
-    expect(
-      stemBodyFits({ x: 0, y: 0, w: 194, h: 34 }, "top", 6),
-    ).toBe(true);
-    expect(
-      stemBodyFits({ x: 0, y: 0, w: 34, h: 194 }, "left", 6),
-    ).toBe(true);
+    expect(stemBodyFits({ x: 0, y: 0, w: 194, h: 34 }, "top", 6)).toBe(true);
+    expect(stemBodyFits({ x: 0, y: 0, w: 34, h: 194 }, "left", 6)).toBe(true);
   });
 
   it("en el canto, la pestaña flaca tampoco: el grosor es el eje hacia el panel", () => {
-    expect(
-      stemBodyFits({ x: 0, y: 0, w: 10, h: 40 }, "left", 6),
-    ).toBe(false);
+    expect(stemBodyFits({ x: 0, y: 0, w: 10, h: 40 }, "left", 6)).toBe(false);
   });
 });
 

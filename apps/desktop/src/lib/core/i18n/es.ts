@@ -1071,8 +1071,7 @@ export const es = {
         noFilePlaceholder: "Sin archivo",
         choose: "Elegir…",
         passphrase: "Passphrase",
-        passphraseSavedHint:
-          "Guardada en el llavero; deja vacío para no cambiar.",
+        passphraseSavedHint: "Guardada en el llavero; deja vacío para no cambiar.",
         passphraseHint: "Opcional; va al llavero.",
         optionalPlaceholder: "Opcional",
         clearPassphrase: "Borrar del llavero",
@@ -1165,9 +1164,9 @@ export const es = {
         pickHostError:
           "Elige un host SSH en la consola (o agrégalo en Ajustes → Agentes).",
         maxTabs: "Ya hay {n} consolas abiertas. Cierra alguna para abrir otra.",
-      closeConfirmTitle: "Cerrar «{label}»",
-      closeConfirmBody: "Se cierra la consola y su proceso. No se puede deshacer.",
-      closeConfirmAction: "Cerrar",
+        closeConfirmTitle: "Cerrar «{label}»",
+        closeConfirmBody: "Se cierra la consola y su proceso. No se puede deshacer.",
+        closeConfirmAction: "Cerrar",
       },
     },
     captures: {

@@ -61,8 +61,8 @@
          border-0 bg-transparent p-0 text-inherit shadow-none
          flex flex-col items-center gap-1.5 px-3
          {placement === 'local'
-           ? 'absolute inset-x-0 bottom-3'
-           : 'fixed inset-x-0 bottom-3'}"
+    ? 'absolute inset-x-0 bottom-3'
+    : 'fixed inset-x-0 bottom-3'}"
   style:inset={usePopover ? "auto 0 0.75rem 0" : undefined}
   style:width={usePopover ? "100%" : undefined}
   style:overflow="visible"
@@ -77,7 +77,11 @@
     >
       <p class="min-w-0 flex-1 truncate text-sm text-text">{toast.message}</p>
       {#if onDismiss}
-        <IconButton label={t("chrome.dismiss")} size="sm" onclick={() => onDismiss(toast.id)}>
+        <IconButton
+          label={t("chrome.dismiss")}
+          size="sm"
+          onclick={() => onDismiss(toast.id)}
+        >
           <Icon icon={X} size={12} />
         </IconButton>
       {/if}

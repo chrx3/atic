@@ -42,7 +42,9 @@ export function toolAction(id: ToolId): ToolAction {
     case "dictation":
       return {
         kind: "run",
-        label: dictation.active ? t("tools.dictation.stop") : t("tools.dictation.start"),
+        label: dictation.active
+          ? t("tools.dictation.stop")
+          : t("tools.dictation.start"),
         danger: dictation.active,
       };
     case "captures":
@@ -63,17 +65,14 @@ export function toolAction(id: ToolId): ToolAction {
 }
 
 /** Pedir al overlay: volar al slot y ejecutar la tool. */
-export const requestActivateAtSlot = (tool: ToolId) =>
-  emit("activate-tool-slot", tool);
+export const requestActivateAtSlot = (tool: ToolId) => emit("activate-tool-slot", tool);
 
 /**
  * Ejecuta la acción sin pasar por el vuelo al slot.
  * Lo usa el overlay después de `flyTo`, o tools sin slot.
  * Clipboard / textos / Apps: abrir (idempotente), no toggle.
  */
-export async function executeToolAction(
-  id: ToolId,
-): Promise<"openedDetail" | void> {
+export async function executeToolAction(id: ToolId): Promise<"openedDetail" | void> {
   switch (id) {
     case "meetings":
       await capture.toggle();

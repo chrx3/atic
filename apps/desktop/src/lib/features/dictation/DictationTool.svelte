@@ -50,7 +50,8 @@
     <div class="flex flex-col gap-2">
       <p class="text-sm text-muted text-pretty">
         {#if shortcut}
-          {t("page.dictation.press")} <Kbd combo={formatShortcut(shortcut)} separator="+" />
+          {t("page.dictation.press")}
+          <Kbd combo={formatShortcut(shortcut)} separator="+" />
           {#if pushToTalk}
             {t("page.dictation.hold")}
           {:else}

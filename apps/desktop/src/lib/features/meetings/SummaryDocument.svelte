@@ -117,7 +117,9 @@
                             ? 'bg-accent text-on-accent'
                             : 'bg-line-strong text-transparent'}"
                           role="img"
-                          aria-label={item.checked ? t("page.summary.done") : t("page.summary.pending")}
+                          aria-label={item.checked
+                            ? t("page.summary.done")
+                            : t("page.summary.pending")}
                         >
                           ✓
                         </span>

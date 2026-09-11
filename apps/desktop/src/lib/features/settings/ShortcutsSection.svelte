@@ -21,79 +21,77 @@
     void config.patch(changes).catch(toastError);
   }
 
-  const ALL_SHORTCUTS = $derived(
-    [
-      {
-        key: "global_shortcut" as const,
-        label: t("settings.shortcuts.record"),
-        hint: t("settings.shortcuts.recordHint"),
-        fallback: "CmdOrCtrl+Shift+R",
-      },
-      {
-        key: "dictation_shortcut" as const,
-        label: t("settings.shortcuts.dictate"),
-        hint: t("settings.shortcuts.dictateHint"),
-        fallback: "CmdOrCtrl+Shift+D",
-      },
-      {
-        key: "summon_pill_shortcut" as const,
-        label: t("settings.shortcuts.summon"),
-        hint: t("settings.shortcuts.summonHint"),
-        fallback: "CmdOrCtrl+Shift+P",
-      },
-      {
-        key: "pill_radial_shortcut" as const,
-        label: t("settings.shortcuts.wheel"),
-        hint: t("settings.shortcuts.wheelHint"),
-        fallback: "CmdOrCtrl+Shift+Space",
-      },
-      {
-        key: "clipboard_shortcut" as const,
-        label: t("settings.shortcuts.clipboard"),
-        fallback: "CmdOrCtrl+Shift+V",
-      },
-      {
-        key: "snippets_shortcut" as const,
-        label: t("settings.shortcuts.snippets"),
-        fallback: "CmdOrCtrl+Shift+S",
-      },
-      {
-        key: "agents_shortcut" as const,
-        label: t("settings.shortcuts.agents"),
-        hint: t("settings.shortcuts.agentsHint"),
-        fallback: "CmdOrCtrl+Shift+A",
-      },
-      {
-        key: "screenshot_shortcut" as const,
-        label: t("settings.shortcuts.screenshot"),
-        fallback: "CmdOrCtrl+Shift+4",
-      },
-      {
-        key: "board_shortcut" as const,
-        label: t("settings.shortcuts.board"),
-        hint: t("settings.shortcuts.boardHint"),
-        fallback: "CmdOrCtrl+Shift+X",
-      },
-      {
-        key: "color_shortcut" as const,
-        label: t("settings.shortcuts.color"),
-        hint: t("settings.shortcuts.colorHint"),
-        fallback: "CmdOrCtrl+Shift+C",
-      },
-      {
-        key: "window_flip_shortcut" as const,
-        label: t("settings.shortcuts.flip"),
-        hint: t("settings.shortcuts.flipHint"),
-        fallback: "CmdOrCtrl+Shift+B",
-      },
-      {
-        key: "launcher_shortcut" as const,
-        label: t("settings.shortcuts.launcher"),
-        hint: t("settings.shortcuts.launcherHint"),
-        fallback: "CmdOrCtrl+Space",
-      },
-    ] as const,
-  );
+  const ALL_SHORTCUTS = $derived([
+    {
+      key: "global_shortcut" as const,
+      label: t("settings.shortcuts.record"),
+      hint: t("settings.shortcuts.recordHint"),
+      fallback: "CmdOrCtrl+Shift+R",
+    },
+    {
+      key: "dictation_shortcut" as const,
+      label: t("settings.shortcuts.dictate"),
+      hint: t("settings.shortcuts.dictateHint"),
+      fallback: "CmdOrCtrl+Shift+D",
+    },
+    {
+      key: "summon_pill_shortcut" as const,
+      label: t("settings.shortcuts.summon"),
+      hint: t("settings.shortcuts.summonHint"),
+      fallback: "CmdOrCtrl+Shift+P",
+    },
+    {
+      key: "pill_radial_shortcut" as const,
+      label: t("settings.shortcuts.wheel"),
+      hint: t("settings.shortcuts.wheelHint"),
+      fallback: "CmdOrCtrl+Shift+Space",
+    },
+    {
+      key: "clipboard_shortcut" as const,
+      label: t("settings.shortcuts.clipboard"),
+      fallback: "CmdOrCtrl+Shift+V",
+    },
+    {
+      key: "snippets_shortcut" as const,
+      label: t("settings.shortcuts.snippets"),
+      fallback: "CmdOrCtrl+Shift+S",
+    },
+    {
+      key: "agents_shortcut" as const,
+      label: t("settings.shortcuts.agents"),
+      hint: t("settings.shortcuts.agentsHint"),
+      fallback: "CmdOrCtrl+Shift+A",
+    },
+    {
+      key: "screenshot_shortcut" as const,
+      label: t("settings.shortcuts.screenshot"),
+      fallback: "CmdOrCtrl+Shift+4",
+    },
+    {
+      key: "board_shortcut" as const,
+      label: t("settings.shortcuts.board"),
+      hint: t("settings.shortcuts.boardHint"),
+      fallback: "CmdOrCtrl+Shift+X",
+    },
+    {
+      key: "color_shortcut" as const,
+      label: t("settings.shortcuts.color"),
+      hint: t("settings.shortcuts.colorHint"),
+      fallback: "CmdOrCtrl+Shift+C",
+    },
+    {
+      key: "window_flip_shortcut" as const,
+      label: t("settings.shortcuts.flip"),
+      hint: t("settings.shortcuts.flipHint"),
+      fallback: "CmdOrCtrl+Shift+B",
+    },
+    {
+      key: "launcher_shortcut" as const,
+      label: t("settings.shortcuts.launcher"),
+      hint: t("settings.shortcuts.launcherHint"),
+      fallback: "CmdOrCtrl+Space",
+    },
+  ] as const);
 
   const SHORTCUTS = $derived(
     AGENTS_ENABLED
@@ -124,7 +122,9 @@
     >
       {#each SHORTCUTS as item (item.key)}
         <SettingsRow
-          label={conflicts.has(item.key) ? `${item.label} · ${t("settings.shortcuts.conflictSuffix")}` : item.label}
+          label={conflicts.has(item.key)
+            ? `${item.label} · ${t("settings.shortcuts.conflictSuffix")}`
+            : item.label}
           hint={"hint" in item ? item.hint : undefined}
         >
           {#snippet control()}

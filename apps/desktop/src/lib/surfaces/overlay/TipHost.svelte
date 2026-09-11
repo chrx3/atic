@@ -41,10 +41,18 @@
     const fitsAbove = above >= EDGE;
     const top =
       placement === "top"
-        ? (fitsAbove ? above : below)
+        ? fitsAbove
+          ? above
+          : below
         : placement === "bottom"
-          ? (fitsBelow ? below : above)
-          : (fitsBelow ? below : fitsAbove ? above : below);
+          ? fitsBelow
+            ? below
+            : above
+          : fitsBelow
+            ? below
+            : fitsAbove
+              ? above
+              : below;
     const left = anchor.x + anchor.w / 2 - box.width / 2;
     x = Math.min(Math.max(left, EDGE), Math.max(EDGE, vw - box.width - EDGE));
     y = Math.min(Math.max(top, EDGE), Math.max(EDGE, vh - box.height - EDGE));

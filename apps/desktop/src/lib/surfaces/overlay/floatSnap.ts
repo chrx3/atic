@@ -12,15 +12,7 @@
 export type Point = { x: number; y: number };
 export type Rect = { x: number; y: number; w: number; h: number };
 
-export type SnapKind =
-  | "max"
-  | "left"
-  | "right"
-  | "bottom"
-  | "tl"
-  | "tr"
-  | "bl"
-  | "br";
+export type SnapKind = "max" | "left" | "right" | "bottom" | "tl" | "tr" | "bl" | "br";
 
 export type SnapHit = { kind: SnapKind; work: Rect };
 
@@ -60,7 +52,13 @@ function rangesOverlap(a0: number, a1: number, b0: number, b1: number): boolean 
   return a0 < b1 && b0 < a1;
 }
 
-function workOf(area: { x: number; y: number; w: number; h: number; work?: Rect }): Rect {
+function workOf(area: {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  work?: Rect;
+}): Rect {
   return area.work ?? area;
 }
 
@@ -207,13 +205,7 @@ export function snapTarget(
   if (!area) return null;
   const index = bounds.indexOf(area);
   const work = workOf(areas[index] ?? area);
-  const kind = snapKindAt(
-    cursor,
-    work,
-    edgePx,
-    cornerPx,
-    monitorEdges(area, bounds),
-  );
+  const kind = snapKindAt(cursor, work, edgePx, cornerPx, monitorEdges(area, bounds));
   return kind ? { kind, work } : null;
 }
 

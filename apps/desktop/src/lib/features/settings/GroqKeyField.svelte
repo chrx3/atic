@@ -6,15 +6,18 @@
    * consola de Groq en el navegador, no dentro de Atic.
    */
   import { toastError, toasts } from "$domain/toasts.svelte";
-  import { GROQ_KEYS_URL, openExternalUrl, secretsStatus, setSecret } from "$ipc/config";
+  import {
+    GROQ_KEYS_URL,
+    openExternalUrl,
+    secretsStatus,
+    setSecret,
+  } from "$ipc/config";
   import Banner from "$ui/Banner.svelte";
   import Button from "$ui/Button.svelte";
   import Input from "$ui/Input.svelte";
   import { t } from "$domain/i18n.svelte";
 
-  let {
-    missingHint,
-  }: { missingHint?: string } = $props();
+  let { missingHint }: { missingHint?: string } = $props();
   const hint = $derived(missingHint ?? t("settings.dictation.groqKeyHint"));
   let hasKey = $state(false);
   let key = $state("");
