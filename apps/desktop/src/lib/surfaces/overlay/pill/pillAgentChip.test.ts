@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type { PresenceView } from "$lib/agentPresenceReduce";
-import { agentChip, agentChips, cueAgentId, cueAgentIds, presenceIdsToDismissOnAticHide, type ChipTone } from "./pillAgentChip";
+import {
+  agentChip,
+  agentChips,
+  cueAgentId,
+  cueAgentIds,
+  presenceIdsToDismissOnAticHide,
+  type ChipTone,
+} from "./pillAgentChip";
 
 const emptyChat = {
   unread: 0,

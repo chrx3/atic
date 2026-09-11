@@ -121,7 +121,7 @@ export function clusterParts(
   const bounds = ids.map((id) => unionAabb(parts[id] ?? [])!);
   const parent = ids.map((_, i) => i);
   const find = (i: number): number =>
-    parent[i] === i ? i : (parent[i] = find(parent[i]!));
+    parent[i] === i ? i : (parent[i] = find(parent[i]));
   const unite = (i: number, j: number) => {
     const a = find(i);
     const b = find(j);
@@ -131,11 +131,11 @@ export function clusterParts(
   for (let i = 0; i < ids.length; i++) {
     for (let j = i + 1; j < ids.length; j++) {
       if (affinity) {
-        const a = affinity[ids[i]!] ?? ids[i]!;
-        const b = affinity[ids[j]!] ?? ids[j]!;
+        const a = affinity[ids[i]] ?? ids[i];
+        const b = affinity[ids[j]] ?? ids[j];
         if (a !== b) continue;
       }
-      if (aabbGap(bounds[i]!, bounds[j]!) <= reach) unite(i, j);
+      if (aabbGap(bounds[i], bounds[j]) <= reach) unite(i, j);
     }
   }
 
@@ -143,7 +143,7 @@ export function clusterParts(
   for (let i = 0; i < ids.length; i++) {
     const root = find(i);
     const g = groups.get(root);
-    const id = ids[i]!;
+    const id = ids[i];
     if (g) g.push(id);
     else groups.set(root, [id]);
   }

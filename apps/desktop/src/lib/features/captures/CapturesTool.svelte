@@ -630,7 +630,7 @@
   }
 
   .tile:hover {
-    border-color: color-mix(in srgb, var(--text) 22%, transparent);
+    border-color: color-mix(in sRGB, var(--text) 22%, transparent);
   }
 
   .tile--on {
@@ -655,7 +655,7 @@
   }
 
   .shot img {
-    outline: 1px solid color-mix(in srgb, var(--text) 10%, transparent);
+    outline: 1px solid color-mix(in sRGB, var(--text) 10%, transparent);
     outline-offset: -1px;
   }
 
@@ -737,6 +737,7 @@
     from {
       opacity: 0;
     }
+
     to {
       opacity: 1;
     }

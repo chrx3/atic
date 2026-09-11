@@ -57,10 +57,7 @@
   import FolderBrowser from "./FolderBrowser.svelte";
   import SlashPalette from "./SlashPalette.svelte";
   import SshHostsPanel from "./SshHostsPanel.svelte";
-  import {
-    isChatStatusNoise,
-    statusToastMessage,
-  } from "./chatNotifications";
+  import { isChatStatusNoise, statusToastMessage } from "./chatNotifications";
   import { resolveSlashCommands, skillsAsCommands } from "./slashCatalog";
   import { config } from "$domain/config.svelte";
   import { toasts } from "$domain/toasts.svelte";
@@ -221,9 +218,7 @@
         ? effortShortLabel(session.effort)
         : "Effort",
   );
-  const modeLabel = $derived(
-    modeShortLabel(mode || session?.mode || "manual"),
-  );
+  const modeLabel = $derived(modeShortLabel(mode || session?.mode || "manual"));
   const contextChip = $derived.by((): string | null => {
     const tokens = session?.contextTokens ?? 0;
     if (tokens <= 0) return null;
@@ -234,9 +229,7 @@
   });
   const waiting = $derived((session?.pending.length ?? 0) > 0);
   const selectedHost = $derived(
-    remoteHostId
-      ? (sshHosts.find((h) => h.id === remoteHostId) ?? null)
-      : null,
+    remoteHostId ? (sshHosts.find((h) => h.id === remoteHostId) ?? null) : null,
   );
   /** Remoto no depende del `claude` local en PATH. */
   const agentOk = $derived(!!remoteHostId || available === true);
@@ -257,9 +250,7 @@
    * El cwd del CLI se fija al spawn. Bloquear solo mid-turno / archivo —
    * no por tener `sessionId` (ensureSession al foco dejaba el chip muerto).
    */
-  const folderBlocked = $derived(
-    !!archive || working || waiting || starting,
-  );
+  const folderBlocked = $derived(!!archive || working || waiting || starting);
   const folderChipTitle = $derived(
     archive
       ? "Sal del archivo para cambiar la carpeta"
@@ -287,8 +278,7 @@
       working &&
       viewTurns.some((t) =>
         t.items.some(
-          (i) =>
-            i.kind === "notice" && i.text.startsWith("Compactando el contexto"),
+          (i) => i.kind === "notice" && i.text.startsWith("Compactando el contexto"),
         ),
       ),
   );
@@ -332,18 +322,13 @@
     }
     return sum;
   });
-  const usageContextTokens = $derived(
-    archive ? 0 : (session?.contextTokens ?? 0),
-  );
-  const usageContextSize = $derived(
-    archive ? null : (session?.contextSize ?? null),
-  );
+  const usageContextTokens = $derived(archive ? 0 : (session?.contextTokens ?? 0));
+  const usageContextSize = $derived(archive ? null : (session?.contextSize ?? null));
 
   const streamingLive = $derived(
     !archive &&
       conversationItems.some(
-        (i) =>
-          (i.kind === "message" || i.kind === "reasoning") && i.streaming,
+        (i) => (i.kind === "message" || i.kind === "reasoning") && i.streaming,
       ),
   );
 
@@ -616,9 +601,7 @@
   const slashOpen = $derived(slashQuery !== null);
 
   const slashActive = $derived(
-    slashFiltered.length === 0
-      ? 0
-      : Math.min(slashIndex, slashFiltered.length - 1),
+    slashFiltered.length === 0 ? 0 : Math.min(slashIndex, slashFiltered.length - 1),
   );
 
   /** Evita toast repetido al re-renderizar el mismo notice. */
@@ -660,11 +643,7 @@
   $effect(() => {
     const live = session?.mode;
     // Solo modos de permiso reales; un ResumeMode ("full") no debe contaminar.
-    if (
-      live &&
-      live !== mode &&
-      PERMISSION_MODES.some((m) => m.id === live)
-    ) {
+    if (live && live !== mode && PERMISSION_MODES.some((m) => m.id === live)) {
       mode = live;
     }
   });
@@ -889,10 +868,9 @@
       }
 
       // Ojo: `resumeMode` ("full"|"summary"|"context") NO es permission-mode.
-      const permissionMode =
-        PERMISSION_MODES.some((m) => m.id === mode)
-          ? mode
-          : rememberedMode(BACKEND);
+      const permissionMode = PERMISSION_MODES.some((m) => m.id === mode)
+        ? mode
+        : rememberedMode(BACKEND);
 
       if (remoteHostId) {
         error = "Reanudar sesiones del CLI solo está disponible en Local.";
@@ -916,8 +894,7 @@
       if (chosen === "summary") {
         // Igual que “Resume from summary” en Claude Code: compacta el contexto.
         await agents.compact(id);
-        resumeNote =
-          "Reanudada desde resumen. Compactando contexto (/compact)…";
+        resumeNote = "Reanudada desde resumen. Compactando contexto (/compact)…";
       } else if (chosen === "full") {
         resumeNote =
           "Sesión completa. Historial en pantalla; Claude tiene el contexto intacto.";
@@ -1019,10 +996,7 @@
       return;
     }
     if (working || waiting || starting) {
-      toasts.push(
-        "No se puede cambiar la carpeta mientras el agente trabaja",
-        3500,
-      );
+      toasts.push("No se puede cambiar la carpeta mientras el agente trabaja", 3500);
       return;
     }
     if (remoteHostId) {
@@ -1041,10 +1015,7 @@
     folderOpen = false;
     if (!next) return;
     if (working || waiting || starting) {
-      toasts.push(
-        "No se puede cambiar la carpeta mientras el agente trabaja",
-        3500,
-      );
+      toasts.push("No se puede cambiar la carpeta mientras el agente trabaja", 3500);
       return;
     }
     const norm = (p: string) => p.replace(/\\/g, "/").replace(/\/+$/, "");
@@ -1198,12 +1169,7 @@
   async function send() {
     const text = draft.trim();
     const pendingFiles = attaches.map((a) => a.path);
-    if (
-      (!text && pendingFiles.length === 0) ||
-      working ||
-      agentMissing ||
-      archive
-    ) {
+    if ((!text && pendingFiles.length === 0) || working || agentMissing || archive) {
       return;
     }
 
@@ -1355,8 +1321,7 @@
       }
       if (slashFiltered.length > 0 && e.key === "ArrowUp") {
         e.preventDefault();
-        slashIndex =
-          (slashActive - 1 + slashFiltered.length) % slashFiltered.length;
+        slashIndex = (slashActive - 1 + slashFiltered.length) % slashFiltered.length;
         return;
       }
       if (e.key === "Escape") {
@@ -1394,9 +1359,7 @@
       .find(
         (s) =>
           s.backendId === BACKEND &&
-          (s.status === "ready" ||
-            s.status === "working" ||
-            s.status === "waiting"),
+          (s.status === "ready" || s.status === "working" || s.status === "waiting"),
       );
     if (!live) return;
     sessionId = live.id;
@@ -1566,9 +1529,7 @@
         class="chip is-dest"
         class:is-on={!!remoteHostId}
         class:is-locked={folderBlocked}
-        title={remoteHostId
-          ? `Remoto: ${destLabel}`
-          : "Local (este equipo)"}
+        title={remoteHostId ? `Remoto: ${destLabel}` : "Local (este equipo)"}
         aria-label={`Destino: ${destLabel}`}
         aria-expanded={destMenuOpen}
         aria-disabled={folderBlocked}
@@ -1630,9 +1591,7 @@
       class="chip is-folder"
       class:is-on={!!cwd}
       class:is-locked={folderBlocked}
-      title={remoteHostId
-        ? "cwd remoto (path POSIX)"
-        : folderChipTitle}
+      title={remoteHostId ? "cwd remoto (path POSIX)" : folderChipTitle}
       aria-label={cwd ? `Carpeta: ${folderLabel}` : "Elegir carpeta"}
       aria-disabled={folderBlocked}
       onclick={openFolderBrowser}
@@ -1677,9 +1636,7 @@
   <header class="top">
     <div
       class="brand"
-      title={archive
-        ? "Archivo · solo lectura"
-        : "Claude Code · login local del CLI"}
+      title={archive ? "Archivo · solo lectura" : "Claude Code · login local del CLI"}
     >
       <img
         class="brand-mark"
@@ -1784,9 +1741,7 @@
         class:is-busy={working && available !== false && !archive}
         class:is-arch={!!archive}
         class:is-plan={(mode || session?.mode) === "plan" && !archive}
-        title={available === false
-          ? "Claude Code no está en el PATH"
-          : statusLabel}
+        title={available === false ? "Claude Code no está en el PATH" : statusLabel}
       >
         <span class="badge-dot" aria-hidden="true"></span>
         <span class="badge-t">
@@ -1813,11 +1768,7 @@
     </div>
   </header>
 
-  <div
-    class="hist-layer"
-    class:is-open={historyOpen}
-    inert={!historyOpen}
-  >
+  <div class="hist-layer" class:is-open={historyOpen} inert={!historyOpen}>
     <button
       type="button"
       class="hist-scrim"
@@ -1861,10 +1812,7 @@
           </p>
           {#if !cwd.trim()}
             <div class="hist-empty-wrap">
-              <EmptyState
-                title="Elige una carpeta"
-                hint="Para ver sesiones del CLI."
-              >
+              <EmptyState title="Elige una carpeta" hint="Para ver sesiones del CLI.">
                 {#snippet action()}
                   <button
                     type="button"
@@ -1914,10 +1862,7 @@
           <p class="hist-empty">Cargando…</p>
         {:else if threads.length === 0}
           <div class="hist-empty-wrap">
-            <EmptyState
-              title="Sin historial"
-              hint="Aparece al cerrar un turno."
-            />
+            <EmptyState title="Sin historial" hint="Aparece al cerrar un turno." />
           </div>
         {:else}
           <ul class="hist-list">
@@ -2000,9 +1945,7 @@
           {:else}
             <div class="hero" data-no-drag>
               <p class="hero-t">
-                {cwd.trim()
-                  ? "Pregunta lo que necesites"
-                  : "Elige carpeta y empieza"}
+                {cwd.trim() ? "Pregunta lo que necesites" : "Elige carpeta y empieza"}
               </p>
               <p class="hero-h">
                 {cwd.trim()
@@ -2090,10 +2033,7 @@
       panelMax="min(90dvh, 640px)"
       onClose={closeHostsPanel}
     >
-      <SshHostsPanel
-        bind:config={hostsPanelCfg}
-        onToast={(msg) => toasts.push(msg)}
-      />
+      <SshHostsPanel bind:config={hostsPanelCfg} onToast={(msg) => toasts.push(msg)} />
     </Modal>
   {/if}
 
@@ -2108,9 +2048,8 @@
       <div class="resume-card">
         <p class="resume-t">Compactar contexto</p>
         <p class="resume-d is-full">
-          Igual que <code>/compact</code> en Claude Code: resume la conversación
-          en un resumen para liberar tokens. El historial local del CLI se
-          conserva; en Atic queda el resumen.
+          Igual que <code>/compact</code> en Claude Code: resume la conversación en un resumen
+          para liberar tokens. El historial local del CLI se conserva; en Atic queda el resumen.
         </p>
         <label class="compact-keep">
           <span class="compact-keep-l">Conservar (opcional)</span>
@@ -2118,15 +2057,10 @@
             class="compact-keep-in"
             rows="3"
             placeholder="Ej: decisión de usar Postgres, error pendiente en auth.ts…"
-            bind:value={compactKeep}
-          ></textarea>
+            bind:value={compactKeep}></textarea>
         </label>
         <div class="resume-opts">
-          <button
-            type="button"
-            class="resume-opt"
-            onclick={() => void runCompact()}
-          >
+          <button type="button" class="resume-opt" onclick={() => void runCompact()}>
             <span class="resume-opt-t">Compactar</span>
             <span class="resume-opt-d"
               >Genera el resumen y recorta el chat visible.</span
@@ -2166,8 +2100,8 @@
           >
             <span class="resume-opt-t">Desde resumen</span>
             <span class="resume-opt-d"
-              >Como en Claude Code: corre <code>/compact</code> y sigue con el
-              resumen (menos tokens).</span
+              >Como en Claude Code: corre <code>/compact</code> y sigue con el resumen (menos
+              tokens).</span
             >
           </button>
           <button
@@ -2237,7 +2171,8 @@
       <button
         type="button"
         class="chip is-go"
-        disabled={!archive.providerSession || (!archive.remoteHostId && available === false)}
+        disabled={!archive.providerSession ||
+          (!archive.remoteHostId && available === false)}
         onclick={() => void resumeArchive()}
       >
         Continuar
@@ -2370,8 +2305,7 @@
             if (!archive && agentOk) void ensureSession();
           }}
           disabled={agentMissing || !!archive}
-          aria-label="Mensaje"
-        ></textarea>
+          aria-label="Mensaje"></textarea>
         <div class="row">
           <div class="set" data-no-drag>
             {@render sessionControls()}
@@ -2396,10 +2330,7 @@
               title={ctaLabel}
               onclick={() => (working && !waiting ? void interrupt() : void send())}
             >
-              <Icon
-                icon={working && !waiting ? Square : ArrowUp}
-                size={14}
-              />
+              <Icon icon={working && !waiting ? Square : ArrowUp} size={14} />
             </button>
           </div>
         </div>
@@ -2415,10 +2346,12 @@
     --r-card: 15px;
     --r-in: 10px;
     --r-chip: 999px;
+
     /* Controles del header: misma altura óptica (pin, historial, Bypass, ready). */
     --top-ctrl: 1.75rem;
     --top-ctrl-fs: 0.625rem;
     --top-ctrl-r: 0.4rem;
+
     /* Tokens que heredan AgentConversation / ToolCard / Message */
     --coral: var(--accent, #da7756);
     --text: var(--rb-text);
@@ -2427,9 +2360,10 @@
     --line: var(--rb-border);
     --card: var(--rb-surface-2);
     --code: var(--rb-surface-2);
-    --hover: color-mix(in srgb, var(--rb-text) 6%, transparent);
+    --hover: color-mix(in sRGB, var(--rb-text) 6%, transparent);
     --add: var(--rb-ok);
     --del: var(--rb-record);
+
     position: relative;
     display: flex;
     flex-direction: column;
@@ -2448,8 +2382,8 @@
   }
 
   .demo.is-drop {
-    box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--accent) 70%, transparent);
-    background: color-mix(in srgb, var(--accent) 10%, var(--rb-surface));
+    box-shadow: inset 0 0 0 2px color-mix(in sRGB, var(--accent) 70%, transparent);
+    background: color-mix(in sRGB, var(--accent) 10%, var(--rb-surface));
   }
 
   .demo.is-menu-open {
@@ -2470,6 +2404,7 @@
     flex: 1;
     min-width: 0.75rem;
     align-self: stretch;
+
     /* Zona de arrastre dedicada (solo float). */
     cursor: grab;
     touch-action: none;
@@ -2497,6 +2432,7 @@
 
   .top-acts {
     position: relative;
+
     /* Los grips de AgentsFloat ya no existen (el resize se decide por la banda
        geométrica del canto), pero esto sigue apilando el header sobre el stage. */
     z-index: 9;
@@ -2536,7 +2472,7 @@
   .icon-btn:hover,
   .icon-btn.is-on {
     color: var(--rb-text);
-    background: color-mix(in srgb, var(--rb-text) 8%, transparent);
+    background: color-mix(in sRGB, var(--rb-text) 8%, transparent);
     box-shadow: none;
     filter: none;
   }
@@ -2564,7 +2500,7 @@
     letter-spacing: 0.01em;
     font-variant-numeric: tabular-nums;
     color: var(--rb-muted);
-    background: color-mix(in srgb, var(--rb-text) 5%, transparent);
+    background: color-mix(in sRGB, var(--rb-text) 5%, transparent);
     transition:
       color var(--duration-quick) var(--ease-smooth-out),
       background var(--duration-quick) var(--ease-smooth-out);
@@ -2575,11 +2511,11 @@
   }
 
   button.badge:hover {
-    background: color-mix(in srgb, var(--rb-text) 8%, transparent);
+    background: color-mix(in sRGB, var(--rb-text) 8%, transparent);
   }
 
   button.badge.is-live:hover {
-    background: color-mix(in srgb, var(--rb-ok) 20%, transparent);
+    background: color-mix(in sRGB, var(--rb-ok) 20%, transparent);
   }
 
   button.badge:active {
@@ -2603,32 +2539,32 @@
 
   .badge.is-live {
     color: var(--rb-ok);
-    background: color-mix(in srgb, var(--rb-ok) 14%, transparent);
+    background: color-mix(in sRGB, var(--rb-ok) 14%, transparent);
   }
 
   .badge.is-off {
     color: var(--rb-warn);
-    background: color-mix(in srgb, var(--rb-warn) 14%, transparent);
+    background: color-mix(in sRGB, var(--rb-warn) 14%, transparent);
   }
 
   .badge.is-busy {
     color: var(--accent);
-    background: color-mix(in srgb, var(--accent) 14%, transparent);
+    background: color-mix(in sRGB, var(--accent) 14%, transparent);
   }
 
   .badge.is-arch {
     color: var(--rb-info);
-    background: color-mix(in srgb, var(--rb-info) 14%, transparent);
+    background: color-mix(in sRGB, var(--rb-info) 14%, transparent);
   }
 
   .badge.is-plan {
     color: var(--accent);
-    background: color-mix(in srgb, var(--accent) 12%, transparent);
+    background: color-mix(in sRGB, var(--accent) 12%, transparent);
   }
 
   .badge.is-ctx {
     color: var(--rb-faint);
-    background: color-mix(in srgb, var(--rb-text) 5%, transparent);
+    background: color-mix(in sRGB, var(--rb-text) 5%, transparent);
     text-transform: none;
     letter-spacing: 0.01em;
     font-variant-numeric: tabular-nums;
@@ -2648,7 +2584,7 @@
     min-height: var(--top-ctrl);
     max-width: 5.5rem;
     border-color: transparent;
-    background: color-mix(in srgb, var(--rb-text) 5%, transparent);
+    background: color-mix(in sRGB, var(--rb-text) 5%, transparent);
     color: var(--rb-muted);
     font-size: var(--top-ctrl-fs);
     font-weight: 500;
@@ -2660,7 +2596,7 @@
   .mode-pick :global(.pm-chip:hover),
   .mode-pick :global(.pm-chip.is-open) {
     color: var(--rb-text);
-    background: color-mix(in srgb, var(--rb-text) 8%, transparent);
+    background: color-mix(in sRGB, var(--rb-text) 8%, transparent);
   }
 
   .hist-layer {
@@ -2682,7 +2618,7 @@
     padding: 0;
     border: none;
     cursor: default;
-    background: color-mix(in srgb, var(--rb-text) 16%, transparent);
+    background: color-mix(in sRGB, var(--rb-text) 16%, transparent);
     opacity: 0;
     transition: opacity 240ms ease-out;
   }
@@ -2702,7 +2638,8 @@
     width: min(300px, 85%);
     max-width: 100%;
     box-sizing: border-box;
-    background: color-mix(in srgb, var(--rb-surface) 96%, var(--rb-bg0));
+    background: color-mix(in sRGB, var(--rb-surface) 96%, var(--rb-bg0));
+
     /* Sin sombra blanda: con translateX(-100%) el glow se filtraba al panel. */
     box-shadow: none;
     transform: translateX(-100%);
@@ -2711,8 +2648,9 @@
 
   .hist-layer.is-open .hist {
     transform: translateX(0);
+
     /* Solo separación dura respecto al scrim; sin halo. */
-    box-shadow: 1px 0 0 color-mix(in srgb, var(--rb-text) 8%, transparent);
+    box-shadow: 1px 0 0 color-mix(in sRGB, var(--rb-text) 8%, transparent);
   }
 
   .hist-h {
@@ -2756,7 +2694,7 @@
     display: grid;
     place-items: center;
     padding: 0.75rem;
-    background: color-mix(in srgb, var(--rb-text) 28%, transparent);
+    background: color-mix(in sRGB, var(--rb-text) 28%, transparent);
   }
 
   .resume-card {
@@ -2764,7 +2702,7 @@
     border-radius: 14px;
     padding: 0.85rem 0.9rem 0.75rem;
     background: var(--rb-surface);
-    box-shadow: 0 12px 32px color-mix(in srgb, var(--rb-text) 18%, transparent);
+    box-shadow: 0 12px 32px color-mix(in sRGB, var(--rb-text) 18%, transparent);
   }
 
   .resume-t {
@@ -2821,7 +2759,7 @@
 
   .compact-keep-in:focus {
     outline: none;
-    border-color: color-mix(in srgb, var(--accent) 55%, var(--rb-border));
+    border-color: color-mix(in sRGB, var(--accent) 55%, var(--rb-border));
     box-shadow: var(--rb-focus);
   }
 
@@ -2851,7 +2789,7 @@
   }
 
   .resume-opt:hover {
-    background: color-mix(in srgb, var(--rb-text) 5%, transparent);
+    background: color-mix(in sRGB, var(--rb-text) 5%, transparent);
   }
 
   .resume-opt:active {
@@ -2859,8 +2797,8 @@
   }
 
   .resume-opt.is-go {
-    border-color: color-mix(in srgb, var(--accent) 45%, var(--rb-border));
-    background: color-mix(in srgb, var(--accent) 10%, transparent);
+    border-color: color-mix(in sRGB, var(--accent) 45%, var(--rb-border));
+    background: color-mix(in sRGB, var(--accent) 10%, transparent);
   }
 
   .resume-opt-t {
@@ -2899,7 +2837,7 @@
     font-size: 0.65rem;
     line-height: 1.3;
     color: var(--rb-muted);
-    background: color-mix(in srgb, var(--accent) 10%, var(--rb-surface));
+    background: color-mix(in sRGB, var(--accent) 10%, var(--rb-surface));
     box-shadow: 0 -1px 0 var(--rb-hairline);
   }
 
@@ -2969,7 +2907,7 @@
   }
 
   .hist-row:hover {
-    background: color-mix(in srgb, var(--rb-text) 5%, var(--rb-surface-2));
+    background: color-mix(in sRGB, var(--rb-text) 5%, var(--rb-surface-2));
   }
 
   .hist-row:active {
@@ -3016,7 +2954,7 @@
 
   .hist-del:hover {
     color: var(--rb-record);
-    background: color-mix(in srgb, var(--rb-record) 10%, transparent);
+    background: color-mix(in sRGB, var(--rb-record) 10%, transparent);
   }
 
   .hist-del:active {
@@ -3032,9 +2970,9 @@
     overflow: auto;
     padding: 0.45rem 0.75rem 0.35rem;
     scrollbar-width: thin;
+
     /* El overlay pone user-select:none / touch-action:none; acá se copia. */
     user-select: text;
-    -webkit-user-select: text;
     touch-action: auto;
     cursor: text;
   }
@@ -3114,10 +3052,10 @@
   }
 
   .sug {
-    border: 1px solid color-mix(in srgb, var(--rb-text) 10%, transparent);
+    border: 1px solid color-mix(in sRGB, var(--rb-text) 10%, transparent);
     border-radius: var(--r-chip);
     padding: 0.28rem 0.65rem;
-    background: color-mix(in srgb, var(--rb-text) 3.5%, transparent);
+    background: color-mix(in sRGB, var(--rb-text) 3.5%, transparent);
     color: var(--rb-muted);
     font: inherit;
     font-size: 0.68rem;
@@ -3134,8 +3072,8 @@
 
   .sug:hover:not(:disabled) {
     color: var(--rb-text);
-    border-color: color-mix(in srgb, var(--accent) 35%, var(--rb-border));
-    background: color-mix(in srgb, var(--rb-text) 7%, transparent);
+    border-color: color-mix(in sRGB, var(--accent) 35%, var(--rb-border));
+    background: color-mix(in sRGB, var(--rb-text) 7%, transparent);
   }
 
   .sug:active:not(:disabled) {
@@ -3171,7 +3109,7 @@
     justify-content: flex-end;
     gap: 0.3rem;
     padding: 0.3rem 0.5rem;
-    background: color-mix(in srgb, var(--rb-info) 8%, var(--rb-surface));
+    background: color-mix(in sRGB, var(--rb-info) 8%, var(--rb-surface));
     box-shadow: 0 -1px 0 var(--rb-hairline);
   }
 
@@ -3191,7 +3129,7 @@
     min-width: 0;
     border-radius: calc(var(--r-in) - 2px);
     padding: 0.18rem 0.22rem 0.18rem 0.4rem;
-    background: color-mix(in srgb, var(--rb-text) 4.5%, transparent);
+    background: color-mix(in sRGB, var(--rb-text) 4.5%, transparent);
     animation: perm-in var(--duration-fast) var(--ease-smooth-out) both;
   }
 
@@ -3228,7 +3166,7 @@
     border: 0;
     border-radius: 999px;
     padding: 0 0.42rem;
-    background: color-mix(in srgb, var(--rb-text) 7%, transparent);
+    background: color-mix(in sRGB, var(--rb-text) 7%, transparent);
     color: var(--rb-text);
     font-size: 0.55rem;
     font-weight: 650;
@@ -3251,7 +3189,7 @@
   }
 
   .perm-btn:hover {
-    background: color-mix(in srgb, var(--rb-text) 12%, transparent);
+    background: color-mix(in sRGB, var(--rb-text) 12%, transparent);
   }
 
   .perm-btn:active {
@@ -3269,16 +3207,16 @@
   }
 
   .perm-btn.is-danger:hover {
-    background: color-mix(in srgb, var(--rb-record) 12%, transparent);
+    background: color-mix(in sRGB, var(--rb-record) 12%, transparent);
   }
 
   .perm-btn.is-go {
-    background: color-mix(in srgb, var(--accent) 16%, transparent);
+    background: color-mix(in sRGB, var(--accent) 16%, transparent);
     color: var(--accent);
   }
 
   .perm-btn.is-go:hover {
-    background: color-mix(in srgb, var(--accent) 24%, transparent);
+    background: color-mix(in sRGB, var(--accent) 24%, transparent);
   }
 
   @keyframes perm-in {
@@ -3302,11 +3240,12 @@
     font-size: 0.65rem;
     line-height: 1.3;
     color: var(--rb-warn);
-    background: color-mix(in srgb, var(--rb-warn) 12%, transparent);
+    background: color-mix(in sRGB, var(--rb-warn) 12%, transparent);
   }
 
   .composer {
     position: relative;
+
     /* Ídem `.top-acts`: ya no pelea con ningún grip, pero mantiene Local /
        carpeta / modelo por encima del stage. */
     z-index: 8;
@@ -3320,13 +3259,13 @@
     display: flex;
     flex-direction: column;
     gap: 0.35rem;
-    border: 1px solid color-mix(in srgb, var(--rb-text) 9%, transparent);
+    border: 1px solid color-mix(in sRGB, var(--rb-text) 9%, transparent);
     border-radius: var(--r-card);
     padding: 0.55rem 0.6rem 0.45rem;
-    background: color-mix(in srgb, var(--rb-surface-2) 88%, var(--rb-bg0));
+    background: color-mix(in sRGB, var(--rb-surface-2) 88%, var(--rb-bg0));
     box-shadow:
-      0 1px 0 color-mix(in srgb, var(--rb-text) 4%, transparent) inset,
-      0 10px 28px color-mix(in srgb, var(--rb-text) 8%, transparent);
+      0 1px 0 color-mix(in sRGB, var(--rb-text) 4%, transparent) inset,
+      0 10px 28px color-mix(in sRGB, var(--rb-text) 8%, transparent);
     transition:
       border-color var(--duration-quick) var(--ease-smooth-out),
       box-shadow var(--duration-quick) var(--ease-smooth-out);
@@ -3338,10 +3277,10 @@
   }
 
   .composer-card:focus-within {
-    border-color: color-mix(in srgb, var(--accent) 42%, var(--rb-border));
+    border-color: color-mix(in sRGB, var(--accent) 42%, var(--rb-border));
     box-shadow:
-      0 1px 0 color-mix(in srgb, var(--rb-text) 4%, transparent) inset,
-      0 10px 28px color-mix(in srgb, var(--rb-text) 8%, transparent),
+      0 1px 0 color-mix(in sRGB, var(--rb-text) 4%, transparent) inset,
+      0 10px 28px color-mix(in sRGB, var(--rb-text) 8%, transparent),
       var(--rb-focus);
   }
 
@@ -3350,8 +3289,8 @@
   }
 
   .composer-card.is-drop {
-    border-color: color-mix(in srgb, var(--accent) 55%, var(--rb-border));
-    background: color-mix(in srgb, var(--accent) 8%, var(--rb-surface-2));
+    border-color: color-mix(in sRGB, var(--accent) 55%, var(--rb-border));
+    background: color-mix(in sRGB, var(--accent) 8%, var(--rb-surface-2));
   }
 
   .attach-row {
@@ -3368,7 +3307,7 @@
     border: 1px solid var(--rb-border);
     border-radius: 8px;
     padding: 0.15rem;
-    background: color-mix(in srgb, var(--rb-text) 4%, transparent);
+    background: color-mix(in sRGB, var(--rb-text) 4%, transparent);
   }
 
   .attach-thumb-btn {
@@ -3383,7 +3322,7 @@
   }
 
   .attach-thumb-btn:hover .attach-thumb {
-    outline-color: color-mix(in srgb, var(--accent) 55%, transparent);
+    outline-color: color-mix(in sRGB, var(--accent) 55%, transparent);
   }
 
   .attach-thumb {
@@ -3392,7 +3331,7 @@
     height: 2.25rem;
     border-radius: 5px;
     object-fit: cover;
-    outline: 1px solid rgba(255, 255, 255, 0.1);
+    outline: 1px solid rgb(255 255 255 / 10%);
   }
 
   .attach-x {
@@ -3409,7 +3348,7 @@
     background: var(--rb-surface);
     color: var(--rb-faint);
     cursor: pointer;
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+    box-shadow: 0 1px 2px rgb(0 0 0 / 25%);
   }
 
   .attach-x:hover:not(:disabled) {
@@ -3466,7 +3405,7 @@
   }
 
   .in::placeholder {
-    color: color-mix(in srgb, var(--rb-text) 40%, transparent);
+    color: color-mix(in sRGB, var(--rb-text) 40%, transparent);
   }
 
   .row {
@@ -3496,10 +3435,10 @@
     min-height: 1.55rem;
     align-items: center;
     gap: 0.24rem;
-    border: 1px solid color-mix(in srgb, var(--rb-text) 8%, transparent);
+    border: 1px solid color-mix(in sRGB, var(--rb-text) 8%, transparent);
     border-radius: var(--r-chip);
     padding: 0.1rem 0.45rem;
-    background: color-mix(in srgb, var(--rb-text) 3%, transparent);
+    background: color-mix(in sRGB, var(--rb-text) 3%, transparent);
     color: var(--rb-muted);
     font: inherit;
     font-size: 0.62rem;
@@ -3550,7 +3489,7 @@
     border: 1px solid var(--rb-border);
     border-radius: 10px;
     background: var(--rb-surface-2, var(--rb-surface));
-    box-shadow: 0 10px 28px color-mix(in srgb, var(--rb-text) 12%, transparent);
+    box-shadow: 0 10px 28px color-mix(in sRGB, var(--rb-text) 12%, transparent);
     display: flex;
     flex-direction: column;
     gap: 0.15rem;
@@ -3570,7 +3509,7 @@
 
   .dest-opt:hover,
   .dest-opt.is-active {
-    background: color-mix(in srgb, var(--accent) 14%, transparent);
+    background: color-mix(in sRGB, var(--accent) 14%, transparent);
   }
 
   .dest-hint {
@@ -3590,7 +3529,7 @@
 
   .chip:hover:not(:disabled) {
     color: var(--rb-text);
-    background: color-mix(in srgb, var(--rb-text) 7%, transparent);
+    background: color-mix(in sRGB, var(--rb-text) 7%, transparent);
   }
 
   .chip:active:not(:disabled) {
@@ -3605,7 +3544,7 @@
 
   .chip.is-on {
     color: var(--rb-text);
-    border-color: color-mix(in srgb, var(--accent) 38%, transparent);
+    border-color: color-mix(in sRGB, var(--accent) 38%, transparent);
   }
 
   .chip.is-go {
@@ -3626,8 +3565,8 @@
   .model :global(.pm-chip) {
     min-height: 1.55rem;
     max-width: 7.5rem;
-    border-color: color-mix(in srgb, var(--rb-text) 8%, transparent);
-    background: color-mix(in srgb, var(--rb-text) 3%, transparent);
+    border-color: color-mix(in sRGB, var(--rb-text) 8%, transparent);
+    background: color-mix(in sRGB, var(--rb-text) 3%, transparent);
     color: var(--rb-muted);
     font-size: 0.62rem;
     padding: 0.08rem 0.4rem;
@@ -3641,7 +3580,7 @@
   .model :global(.pm-chip:hover),
   .model :global(.pm-chip.is-open) {
     color: var(--rb-text);
-    background: color-mix(in srgb, var(--rb-text) 7%, transparent);
+    background: color-mix(in sRGB, var(--rb-text) 7%, transparent);
   }
 
   .model :global(.pm-chip:active) {
@@ -3698,6 +3637,7 @@
       opacity: 0;
       transform: translateY(6px);
     }
+
     to {
       opacity: 1;
       transform: translateY(0);
@@ -3709,6 +3649,7 @@
       opacity: 0;
       transform: translateY(5px);
     }
+
     to {
       opacity: 1;
       transform: translateY(0);
@@ -3722,11 +3663,13 @@
     .perm {
       animation: none;
     }
+
     .hist-scrim,
     .hist,
     .perm-btn {
       transition: none;
     }
+
     .chip:active:not(:disabled),
     .sug:active:not(:disabled),
     .send:active:not(:disabled),

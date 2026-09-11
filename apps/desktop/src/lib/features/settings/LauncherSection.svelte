@@ -6,10 +6,7 @@
   import { onMount } from "svelte";
   import { config } from "$domain/config.svelte";
   import { toastError } from "$domain/toasts.svelte";
-  import {
-    launcherListFavorites,
-    launcherToggleFavorite,
-  } from "$ipc/search";
+  import { launcherListFavorites, launcherToggleFavorite } from "$ipc/search";
   import type { LauncherHit } from "$core/types";
   import SettingsGroup from "$patterns/SettingsGroup.svelte";
   import SettingsRow from "$patterns/SettingsRow.svelte";
@@ -25,7 +22,10 @@
     loading = true;
     try {
       favorites = await launcherListFavorites();
-      if (cfg && favorites.map((f) => f.id).join("\0") !== cfg.launcher_favorites.join("\0")) {
+      if (
+        cfg &&
+        favorites.map((f) => f.id).join("\0") !== cfg.launcher_favorites.join("\0")
+      ) {
         // Alinea el store si hay ids huérfanos filtrados por Rust.
         await config.patch({
           launcher_favorites: favorites.map((f) => f.id),
@@ -82,11 +82,7 @@
                 <span class="fav-ico" aria-hidden="true">
                   <LauncherIcon id={fav.id} kind={fav.kind} size={16} />
                 </span>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onclick={() => void remove(fav.id)}
-                >
+                <Button variant="ghost" size="sm" onclick={() => void remove(fav.id)}>
                   {t("settings.launcher.remove")}
                 </Button>
               </div>
@@ -111,7 +107,7 @@
     width: 1.75rem;
     height: 1.75rem;
     border-radius: 999px;
-    background: color-mix(in srgb, var(--text, currentColor) 8%, transparent);
+    background: color-mix(in sRGB, var(--text, currentColor) 8%, transparent);
     color: var(--muted, inherit);
   }
 </style>

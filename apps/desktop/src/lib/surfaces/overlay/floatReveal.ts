@@ -17,17 +17,13 @@ export function waitFrames(n = 2): Promise<void> {
  * Propiedad CSS que suele moverse al approach/separate según el lado del cuello.
  * top/bottom → `top`; left/right → `left`.
  */
-export function separateAxisProp(
-  side: string | undefined,
-): "left" | "top" {
+export function separateAxisProp(side: string | undefined): "left" | "top" {
   return side === "left" || side === "right" ? "left" : "top";
 }
 
 /** Fases de cierre reverse (espejo de expand/separate; tuck = peels). */
 export type CloseRevealPhase = "tuck" | "approach" | "shrink";
 
-export function isCloseRevealPhase(
-  phase: string,
-): phase is CloseRevealPhase {
+export function isCloseRevealPhase(phase: string): phase is CloseRevealPhase {
   return phase === "tuck" || phase === "approach" || phase === "shrink";
 }

@@ -264,8 +264,7 @@
         const radial = Math.sqrt(Math.max(0, r * r - dy * dy));
         let x = cx + radial;
         // Techo ~0.31: por encima deja de ser polvo y se lee como ruido.
-        let alpha =
-          (0.11 + p.depth * 0.2) * (0.7 + 0.3 * Math.sin(t * p.tws + p.tw));
+        let alpha = (0.11 + p.depth * 0.2) * (0.7 + 0.3 * Math.sin(t * p.tws + p.tw));
 
         // Campo del puntero: aparta sin alterar la órbita ni acumular estado.
         if (pointerLive) {
@@ -303,7 +302,14 @@
           // paga en cada una.
           const cos = radial / r;
           const sin = dy / r;
-          ctx.setTransform(dpr * cos, dpr * sin, -dpr * sin, dpr * cos, dpr * x, dpr * y);
+          ctx.setTransform(
+            dpr * cos,
+            dpr * sin,
+            -dpr * sin,
+            dpr * cos,
+            dpr * x,
+            dpr * y,
+          );
           const top = dShift < 0 ? 0 : -streak;
           ctx.drawImage(sprite, -radius, top - radius, radius * 2, radius * 2 + streak);
           rotated = true;

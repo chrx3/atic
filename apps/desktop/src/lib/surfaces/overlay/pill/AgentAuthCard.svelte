@@ -92,10 +92,12 @@
 <style>
   .auth {
     box-sizing: border-box;
+
     /* Radio host líquido = 12; padding ~6 → botones pill no compiten de radio. */
     width: min(22rem, 100%);
     padding: 0.375rem 0.4rem 0.375rem 0.55rem;
     border-radius: 12px;
+
     /* Sin fondo ni sombra: la piel líquida del overlay es la superficie. */
     color: var(--text);
     -webkit-font-smoothing: antialiased;

@@ -26,10 +26,7 @@ export const PILL_BACK_ID = "back";
 export const PILL_WINDOW_ID = "window";
 
 /** Lo que puede ocupar un gajo: una herramienta, la puerta al submenú, o Ventana. */
-export type PillWheelId =
-  | ToolId
-  | typeof PILL_MORE_ID
-  | typeof PILL_WINDOW_ID;
+export type PillWheelId = ToolId | typeof PILL_MORE_ID | typeof PILL_WINDOW_ID;
 
 /** Lo mismo, más el «atrás» que la tira necesita y la rueda no. */
 export type PillStripId = PillWheelId | typeof PILL_BACK_ID;
@@ -100,10 +97,7 @@ export function pillStripPage(
 ): PillStripId[] {
   const onFirst = opts.windowOnFirst === true;
   if (page === "more") {
-    const ids: PillStripId[] = [
-      PILL_BACK_ID,
-      ...layout.more.map((tool) => tool.id),
-    ];
+    const ids: PillStripId[] = [PILL_BACK_ID, ...layout.more.map((tool) => tool.id)];
     if (!onFirst) ids.push(PILL_WINDOW_ID);
     return ids;
   }

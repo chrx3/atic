@@ -18,6 +18,7 @@
      botón de éxito el verde se perdía. El punteado lo separa de un recuadro
      de layout de la app de abajo. */
   --screen-select: #5ec8ff;
+
   /* Halo oscuro detrás del cian: sobre un cielo o un enlace no se derrite. */
   --screen-select-edge: rgb(0 0 0 / 55%);
 

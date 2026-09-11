@@ -102,7 +102,11 @@
 
 <svelte:window onkeydown={onKeydown} />
 
-<div class="h-screen w-screen p-3" role="dialog" aria-label={t("page.launcherWin.search")}>
+<div
+  class="h-screen w-screen p-3"
+  role="dialog"
+  aria-label={t("page.launcherWin.search")}
+>
   <div
     class="flex h-full flex-col overflow-hidden rounded-lg border border-line
            bg-elevated text-text shadow-float"
@@ -204,9 +208,15 @@
     <footer
       class="flex gap-3.5 border-t border-line px-4 pt-2 pb-2.5 text-micro text-faint"
     >
-      <span class="inline-flex items-center gap-1.5"><Kbd combo="↑+↓" /> {t("overlay.navHint")}</span>
-      <span class="inline-flex items-center gap-1.5"><Kbd combo="Enter" /> {t("overlay.openHint")}</span>
-      <span class="inline-flex items-center gap-1.5"><Kbd combo="Esc" /> {t("overlay.closeHint")}</span>
+      <span class="inline-flex items-center gap-1.5"
+        ><Kbd combo="↑+↓" /> {t("overlay.navHint")}</span
+      >
+      <span class="inline-flex items-center gap-1.5"
+        ><Kbd combo="Enter" /> {t("overlay.openHint")}</span
+      >
+      <span class="inline-flex items-center gap-1.5"
+        ><Kbd combo="Esc" /> {t("overlay.closeHint")}</span
+      >
     </footer>
   </div>
 </div>

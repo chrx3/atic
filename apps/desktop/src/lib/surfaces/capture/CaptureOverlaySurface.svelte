@@ -13,7 +13,12 @@
    * salida deja al usuario sin poder usar el PC. De ahí el watchdog, el cierre
    * con Escape aunque el frame no haya cargado, y el cierre si la imagen falla.
    */
-  import type { LandingRect, OverlayCandidate, OverlayInfo, OverlayMonitor } from "$core/types";
+  import type {
+    LandingRect,
+    OverlayCandidate,
+    OverlayInfo,
+    OverlayMonitor,
+  } from "$core/types";
   import { MOTION, afterTransition, ms, prefersReducedMotion, wait } from "$lib/motion";
   import {
     cancelCaptureSession,
@@ -199,13 +204,12 @@
   }
 
   function fallbackLanding(from: Rect): LandingRect {
-    const mon =
-      hitMonitor(from.left + from.width / 2, from.top + from.height / 2) ?? {
-        left: 0,
-        top: 0,
-        width: frameW,
-        height: frameH,
-      };
+    const mon = hitMonitor(from.left + from.width / 2, from.top + from.height / 2) ?? {
+      left: 0,
+      top: 0,
+      width: frameW,
+      height: frameH,
+    };
     const mapped = clientRectFromFrame({
       left: 0,
       top: 0,
@@ -241,9 +245,12 @@
       moving: false,
     };
     flying = true;
-    const landingP = captureShelfLanding(from.left, from.top, from.width, from.height).catch(
-      () => fallbackLanding(from),
-    );
+    const landingP = captureShelfLanding(
+      from.left,
+      from.top,
+      from.width,
+      from.height,
+    ).catch(() => fallbackLanding(from));
     await tick();
     await waitFrames(2);
     if (fly) fly.lifted = true;
@@ -689,7 +696,8 @@
     border-radius: var(--rb-radius-xs, 5px);
     box-shadow: var(--shadow-pop, 0 8px 24px rgb(0 0 0 / 32%));
     outline: 1px solid rgb(255 255 255 / 10%);
-    animation: cap-fly-blur 150ms var(--ease-smooth-out, cubic-bezier(0.22, 1, 0.36, 1)) both;
+    animation: cap-fly-blur 150ms var(--ease-smooth-out, cubic-bezier(0.22, 1, 0.36, 1))
+      both;
     transition:
       left 150ms var(--ease-smooth-out, cubic-bezier(0.22, 1, 0.36, 1)),
       top 150ms var(--ease-smooth-out, cubic-bezier(0.22, 1, 0.36, 1)),
@@ -704,9 +712,11 @@
     0% {
       filter: blur(0);
     }
+
     40% {
       filter: blur(4px);
     }
+
     100% {
       filter: blur(0);
     }
@@ -834,6 +844,7 @@
       opacity: 0;
       transform: translateY(calc(-100% - 2px));
     }
+
     to {
       opacity: 1;
       transform: translateY(calc(-100% - 6px));
@@ -864,8 +875,10 @@
     opacity: 0;
     transform: translateX(-50%) translateY(var(--distance-micro, 4px));
     transition:
-      opacity var(--duration-fast, 125ms) var(--ease-smooth-out, cubic-bezier(0.22, 1, 0.36, 1)),
-      transform var(--duration-fast, 125ms) var(--ease-smooth-out, cubic-bezier(0.22, 1, 0.36, 1));
+      opacity var(--duration-fast, 125ms)
+        var(--ease-smooth-out, cubic-bezier(0.22, 1, 0.36, 1)),
+      transform var(--duration-fast, 125ms)
+        var(--ease-smooth-out, cubic-bezier(0.22, 1, 0.36, 1));
     transition-delay: 0ms;
   }
 

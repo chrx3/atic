@@ -3,8 +3,7 @@ import { boxShape, pillShape } from "./geometry";
 import { clusterParts, rigidShift, unionAabb } from "./motion";
 import type { Shape } from "./sdf";
 
-const box = (x: number, y: number, w = 40, h = 40): Shape =>
-  pillShape({ x, y, w, h });
+const box = (x: number, y: number, w = 40, h = 40): Shape => pillShape({ x, y, w, h });
 
 describe("rigidShift", () => {
   it("devuelve el delta común cuando todo se traslada igual", () => {
@@ -20,12 +19,8 @@ describe("rigidShift", () => {
   });
 
   it("acepta cápsulas que se mueven juntas", () => {
-    const a: Shape[] = [
-      { kind: "capsule", ax: 0, ay: 0, bx: 10, by: 0, r: 4 },
-    ];
-    const b: Shape[] = [
-      { kind: "capsule", ax: 5, ay: 8, bx: 15, by: 8, r: 4 },
-    ];
+    const a: Shape[] = [{ kind: "capsule", ax: 0, ay: 0, bx: 10, by: 0, r: 4 }];
+    const b: Shape[] = [{ kind: "capsule", ax: 5, ay: 8, bx: 15, by: 8, r: 4 }];
     expect(rigidShift(a, b)).toEqual({ dx: 5, dy: 8 });
   });
 });
@@ -56,22 +51,20 @@ describe("clusterParts", () => {
   it("no funde floats de distinto grupo aunque se solapen", () => {
     const clipboard = [box(0, 0, 200, 300)];
     const agents = [box(20, 20, 200, 300)];
-    const islands = clusterParts(
-      { clipboard, agents },
-      10,
-      { clipboard: "clipboard", agents: "agents" },
-    );
+    const islands = clusterParts({ clipboard, agents }, 10, {
+      clipboard: "clipboard",
+      agents: "agents",
+    });
     expect(islands.map((i) => i.id).sort()).toEqual(["agents", "clipboard"]);
   });
 
   it("sí funde un float con la pill si ambos van al hub", () => {
     const pill = [box(0, 0)];
     const clipboard = [box(20, 0)];
-    const islands = clusterParts(
-      { pill, clipboard },
-      10,
-      { pill: "hub", clipboard: "hub" },
-    );
+    const islands = clusterParts({ pill, clipboard }, 10, {
+      pill: "hub",
+      clipboard: "hub",
+    });
     expect(islands).toHaveLength(1);
     expect(islands[0]?.id).toBe("clipboard+pill");
   });

@@ -28,7 +28,13 @@
   import IconButton from "$ui/IconButton.svelte";
   import Modal from "$ui/Modal.svelte";
   import ToastStack from "$ui/ToastStack.svelte";
-  import { AppWindow, GraduationCap, Search, Settings, SlidersHorizontal } from "$lib/icons";
+  import {
+    AppWindow,
+    GraduationCap,
+    Search,
+    Settings,
+    SlidersHorizontal,
+  } from "$lib/icons";
   import ToolWorkspace from "./ToolWorkspace.svelte";
   import ToolRail from "./ToolRail.svelte";
   import UpdateBubble from "./UpdateBubble.svelte";
@@ -44,9 +50,9 @@
   let launcherLabOpen = $state(false);
 
   // Panel estático en dev: sin dynamic import que pueda dejar la UI a medias.
-  let PickerLabPanel = $state<typeof import("$lib/dev/PickerLabPanel.svelte").default | null>(
-    null,
-  );
+  let PickerLabPanel = $state<
+    typeof import("$lib/dev/PickerLabPanel.svelte").default | null
+  >(null);
   $effect(() => {
     if (!isDev) return;
     let cancelled = false;
@@ -158,7 +164,11 @@
       <Icon icon={Search} size={14} />
     </IconButton>
 
-    <IconButton label={t("chrome.settings")} size="sm" onclick={() => ui.openSettings()}>
+    <IconButton
+      label={t("chrome.settings")}
+      size="sm"
+      onclick={() => ui.openSettings()}
+    >
       <Icon icon={Settings} size={14} />
     </IconButton>
 

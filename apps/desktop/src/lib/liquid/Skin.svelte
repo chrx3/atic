@@ -89,13 +89,7 @@
       viewBox="{path.minX} {path.minY} {path.width} {path.height}"
     >
       <defs>
-        <linearGradient
-          id="sl-{lightId}"
-          x1="0"
-          y1="0"
-          x2="0"
-          y2="1"
-        >
+        <linearGradient id="sl-{lightId}" x1="0" y1="0" x2="0" y2="1">
           <stop offset="0%" stop-color="#fff" stop-opacity="0.38" />
           <stop offset="22%" stop-color="#fff" stop-opacity="0.08" />
           <stop offset="55%" stop-color="#fff" stop-opacity="0" />
@@ -151,6 +145,7 @@
     100% {
       filter: brightness(1);
     }
+
     50% {
       filter: brightness(1.08);
     }

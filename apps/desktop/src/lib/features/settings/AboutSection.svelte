@@ -78,15 +78,24 @@
   </SettingsGroup>
 
   {#if appUpdate.installing}
-    <Banner tone="info" title={t("about.installingTitle", { version: appUpdate.version ?? "" })}>
+    <Banner
+      tone="info"
+      title={t("about.installingTitle", { version: appUpdate.version ?? "" })}
+    >
       {t("about.installingBody")}
     </Banner>
   {:else if appUpdate.downloaded && !appUpdate.downloading}
-    <Banner tone="info" title={t("about.readyTitle", { version: appUpdate.version ?? "" })}>
+    <Banner
+      tone="info"
+      title={t("about.readyTitle", { version: appUpdate.version ?? "" })}
+    >
       {t("about.readyBody")}
     </Banner>
   {:else if appUpdate.pending && !appUpdate.downloading}
-    <Banner tone="info" title={t("about.availableTitle", { version: appUpdate.version ?? "" })}>
+    <Banner
+      tone="info"
+      title={t("about.availableTitle", { version: appUpdate.version ?? "" })}
+    >
       {t("about.availableBody")}
     </Banner>
   {:else if appUpdate.error}

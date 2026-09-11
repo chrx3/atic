@@ -507,7 +507,6 @@
     inset: 0;
     overflow: hidden;
     border-radius: 8px;
-    -webkit-backface-visibility: hidden;
     backface-visibility: hidden;
 
     /* La sombra va en cada cara y no en la tarjeta: en el contenedor 3D

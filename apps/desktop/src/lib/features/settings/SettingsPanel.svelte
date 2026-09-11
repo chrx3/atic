@@ -30,19 +30,61 @@
   const SHOW_AGENTS = AGENTS_ENABLED || AGENT_PAGER_ENABLED;
 
   const sections = $derived([
-    { value: "general" as const, label: t("settings.nav.general"), icon: "general" as IconId },
-    { value: "meetings" as const, label: t("settings.nav.meetings"), icon: "meetings" as IconId },
-    { value: "dictation" as const, label: t("settings.nav.dictation"), icon: "dictation" as IconId },
-    { value: "captures" as const, label: t("settings.nav.captures"), icon: "captures" as IconId },
-    { value: "shortcuts" as const, label: t("settings.nav.shortcuts"), icon: "shortcuts" as IconId },
+    {
+      value: "general" as const,
+      label: t("settings.nav.general"),
+      icon: "general" as IconId,
+    },
+    {
+      value: "meetings" as const,
+      label: t("settings.nav.meetings"),
+      icon: "meetings" as IconId,
+    },
+    {
+      value: "dictation" as const,
+      label: t("settings.nav.dictation"),
+      icon: "dictation" as IconId,
+    },
+    {
+      value: "captures" as const,
+      label: t("settings.nav.captures"),
+      icon: "captures" as IconId,
+    },
+    {
+      value: "shortcuts" as const,
+      label: t("settings.nav.shortcuts"),
+      icon: "shortcuts" as IconId,
+    },
     { value: "pill" as const, label: t("settings.nav.pill"), icon: "pill" as IconId },
-    { value: "launcher" as const, label: t("settings.nav.launcher"), icon: "launcher" as IconId },
-    { value: "audio" as const, label: t("settings.nav.audio"), icon: "audio" as IconId },
-    { value: "summary" as const, label: t("settings.nav.summary"), icon: "summary" as IconId },
+    {
+      value: "launcher" as const,
+      label: t("settings.nav.launcher"),
+      icon: "launcher" as IconId,
+    },
+    {
+      value: "audio" as const,
+      label: t("settings.nav.audio"),
+      icon: "audio" as IconId,
+    },
+    {
+      value: "summary" as const,
+      label: t("settings.nav.summary"),
+      icon: "summary" as IconId,
+    },
     ...(SHOW_AGENTS
-      ? [{ value: "agents" as const, label: t("settings.nav.agents"), icon: "agents" as IconId }]
+      ? [
+          {
+            value: "agents" as const,
+            label: t("settings.nav.agents"),
+            icon: "agents" as IconId,
+          },
+        ]
       : []),
-    { value: "about" as const, label: t("settings.nav.about"), icon: "about" as IconId },
+    {
+      value: "about" as const,
+      label: t("settings.nav.about"),
+      icon: "about" as IconId,
+    },
   ]);
 
   let {
@@ -68,7 +110,7 @@
   a sí mismo.
 -->
 <div class="@container/settings flex h-full min-h-0 overflow-hidden">
-  <SettingsNav bind:value={section} sections={sections} />
+  <SettingsNav bind:value={section} {sections} />
 
   <div class="settings-stage min-h-0 flex-1 overflow-y-auto p-4">
     {#key section}
@@ -104,6 +146,7 @@
 <style>
   .settings-stage {
     position: relative;
+
     /* La altura la fija el modal (`fill`); acá solo scrollea el contenido. */
     height: 100%;
   }

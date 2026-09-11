@@ -69,8 +69,7 @@ export const captureShelfLanding = (
   top: number,
   width: number,
   height: number,
-) =>
-  invoke<LandingRect>("capture_shelf_landing", { left, top, width, height });
+) => invoke<LandingRect>("capture_shelf_landing", { left, top, width, height });
 export const cancelCaptureSession = () => invoke<void>("cancel_capture_session");
 /** Muestra el overlay cuando el frame congelado ya cargó (evita telón gris). */
 export const showCaptureOverlay = () => invoke<void>("show_capture_overlay");

@@ -88,7 +88,10 @@
         {/snippet}
       </SettingsRow>
 
-      <SettingsRow label={t("settings.audio.dictationMic")} hint={t("settings.audio.dictationMicHint")}>
+      <SettingsRow
+        label={t("settings.audio.dictationMic")}
+        hint={t("settings.audio.dictationMicHint")}
+      >
         {#snippet control({ id })}
           <Select
             {id}
@@ -103,7 +106,10 @@
         {/snippet}
       </SettingsRow>
 
-      <SettingsRow label={t("settings.audio.output")} hint={t("settings.audio.outputHint")}>
+      <SettingsRow
+        label={t("settings.audio.output")}
+        hint={t("settings.audio.outputHint")}
+      >
         {#snippet control({ id })}
           <Select
             {id}
@@ -116,7 +122,10 @@
         {/snippet}
       </SettingsRow>
 
-      <SettingsRow label={t("settings.audio.refresh")} hint={t("settings.audio.refreshHint")}>
+      <SettingsRow
+        label={t("settings.audio.refresh")}
+        hint={t("settings.audio.refreshHint")}
+      >
         {#snippet control()}
           <Button variant="soft" size="sm" full {loading} onclick={() => void load()}>
             {t("settings.audio.refreshBtn")}
@@ -126,7 +135,10 @@
     </SettingsGroup>
 
     <SettingsGroup title={t("settings.audio.treatment")}>
-      <SettingsRow label={t("settings.audio.noise")} hint={t("settings.audio.noiseHint")}>
+      <SettingsRow
+        label={t("settings.audio.noise")}
+        hint={t("settings.audio.noiseHint")}
+      >
         {#snippet control()}
           <SegmentedControl
             value={cfg.noise_suppression || "off"}

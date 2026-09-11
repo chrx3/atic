@@ -2278,6 +2278,7 @@
     /* Los dos anchos que se pedían fijos y en ventana chica se comían el bloc. */
     --cajon-w: clamp(124px, 18vw, 168px);
     --mini-w: clamp(52px, 7vw, 84px);
+
     position: relative;
     display: flex;
     flex: 1;
@@ -2588,8 +2589,7 @@
     justify-content: center;
     gap: 6px;
     padding: 6px var(--pad) 10px;
-    overflow-x: auto;
-    overflow-y: hidden;
+    overflow: auto hidden;
     scrollbar-width: thin;
   }
 
@@ -3090,10 +3090,12 @@
   }
 
   /* Pestañas del cajón: pegadas arriba, el listado scrollea debajo. */
+
   /*
    * Dos columnas y no cuatro: en 168px de cajón cada pestaña quedaba en 42 y
    * los nombres salían cortados («Tex…», «Re…»). En dos filas entran enteros.
    */
+
   /*
    * Envoltorio de cada rama del cajón.
    *

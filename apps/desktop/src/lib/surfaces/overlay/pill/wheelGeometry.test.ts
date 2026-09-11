@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { liveDropPosition, nodeAngle, nodePosition, separators, wedgeClip } from "./wheelGeometry";
+import {
+  liveDropPosition,
+  nodeAngle,
+  nodePosition,
+  separators,
+  wedgeClip,
+} from "./wheelGeometry";
 
 const SQUARE = { width: 240, height: 240 };
 

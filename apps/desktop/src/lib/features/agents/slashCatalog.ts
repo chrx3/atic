@@ -83,7 +83,9 @@ export const CLAUDE_CODE_FALLBACK_COMMANDS: SlashCommand[] = [
 ];
 
 /** Skills de disco → misma forma que un slash del CLI. */
-export function skillsAsCommands(skills: AgentSkill[] | undefined | null): SlashCommand[] {
+export function skillsAsCommands(
+  skills: AgentSkill[] | undefined | null,
+): SlashCommand[] {
   if (!skills?.length) return [];
   return skills.map((s) => ({
     name: s.name,

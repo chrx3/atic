@@ -13,7 +13,9 @@ describe("shownAgents", () => {
   });
 
   it("un id que ya no existe no deja un hueco", () => {
-    expect(shownAgents(["claude", "un-agente-que-ya-no-esta"]).map((a) => a.cli)).toEqual(["claude"]);
+    expect(
+      shownAgents(["claude", "un-agente-que-ya-no-esta"]).map((a) => a.cli),
+    ).toEqual(["claude"]);
   });
 
   it("dejar fuera a todos devuelve todos: una grilla vacía no tiene salida", () => {

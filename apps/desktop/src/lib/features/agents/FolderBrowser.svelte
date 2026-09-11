@@ -47,9 +47,7 @@
   let jumpAt = 0;
 
   const canGoUp = $derived(!!listing?.parent);
-  const visible = $derived(
-    listing ? filterEntries(listing.entries, query) : [],
-  );
+  const visible = $derived(listing ? filterEntries(listing.entries, query) : []);
   const currentFav = $derived(!!browsePath && isFav(favs, browsePath));
 
   async function load(path: string | null | undefined) {

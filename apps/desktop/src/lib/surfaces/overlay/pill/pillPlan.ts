@@ -76,10 +76,7 @@ export function islandLiveSlots(_activity: Activity): number {
 }
 
 /** Extra de caja para la gota viva (diámetro + cuello). */
-export function liveHang(
-  activity: Activity,
-  surface: Surface = "none",
-): number {
+export function liveHang(activity: Activity, surface: Surface = "none"): number {
   // Solo la rueda cuelga. Acoplada y flotando, la actividad vive DENTRO de la
   // silueta: la cara de la marca dice cuál es y el stop es un chip más.
   //
@@ -151,12 +148,8 @@ export function contentFor(
     // En reposo, una pestaña: fina contra el borde y larga a lo largo de él.
     // Grabando se alarga, no engorda: el estado entró a la cara de la marca.
     const thick = islandCue ? PILL.islandCueThick : PILL.islandThick;
-    const long = islandCue
-      ? islandCueLong(islandCueCount)
-      : PILL.islandLong;
-    return dockAxis(dock.edge) === "x"
-      ? { w: thick, h: long }
-      : { w: long, h: thick };
+    const long = islandCue ? islandCueLong(islandCueCount) : PILL.islandLong;
+    return dockAxis(dock.edge) === "x" ? { w: thick, h: long } : { w: long, h: thick };
   }
   return {
     w: Math.max(barW, PILL.bar),
@@ -196,10 +189,10 @@ export function targetFor(
  * desacoplar, llega al puntero con forma de isla y se queda así: el vuelo
  * solo mueve, no cambia `surface`.
  */
-export function undockForSummon(state: {
+export function undockForSummon(state: { surface: Surface; dock: Dock | null }): {
   surface: Surface;
   dock: Dock | null;
-}): { surface: Surface; dock: Dock | null } {
+} {
   if (state.surface === "edge") {
     return { surface: "none", dock: null };
   }
@@ -445,11 +438,7 @@ export function shouldMeasureBar(surface: Surface, dragging: boolean): boolean {
  * desde `topLeft`: la pastilla parece caminar. Con actividad viva (grabar /
  * dictar) solo se permite crecer; al volver a idle sí encoge.
  */
-export function nextBarWidth(
-  current: number,
-  measured: number,
-  live: boolean,
-): number {
+export function nextBarWidth(current: number, measured: number, live: boolean): number {
   const n = Math.max(PILL.bar, Math.ceil(measured));
   if (Math.abs(n - current) < 2) return current;
   if (live && n < current) return current;
@@ -551,9 +540,8 @@ export function consoleSideFor(
   const cx = pill.x + size.w / 2;
   const cy = pill.y + size.h / 2;
   const area =
-    areas.find(
-      (a) => cx >= a.x && cx <= a.x + a.w && cy >= a.y && cy <= a.y + a.h,
-    ) ?? areas[0];
+    areas.find((a) => cx >= a.x && cx <= a.x + a.w && cy >= a.y && cy <= a.y + a.h) ??
+    areas[0];
   if (!area) return "right";
   const distLeft = cx - area.x;
   const distRight = area.x + area.w - cx;

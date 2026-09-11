@@ -20,7 +20,10 @@
 
 {#if cfg}
   <div class="flex flex-col gap-5">
-    <SettingsGroup title={t("settings.captures.shelf")} hint={t("settings.captures.shelfHint")}>
+    <SettingsGroup
+      title={t("settings.captures.shelf")}
+      hint={t("settings.captures.shelfHint")}
+    >
       <SettingsRow label={t("settings.captures.side")}>
         {#snippet control()}
           <SegmentedControl
@@ -36,7 +39,10 @@
         {/snippet}
       </SettingsRow>
 
-      <SettingsRow label={t("settings.captures.timeout")} hint={t("settings.captures.timeoutHint")}>
+      <SettingsRow
+        label={t("settings.captures.timeout")}
+        hint={t("settings.captures.timeoutHint")}
+      >
         {#snippet control({ id })}
           <Input
             {id}
@@ -64,7 +70,10 @@
         {/snippet}
       </SettingsRow>
 
-      <SettingsRow label={t("settings.captures.keep")} hint={t("settings.captures.keepHint")}>
+      <SettingsRow
+        label={t("settings.captures.keep")}
+        hint={t("settings.captures.keepHint")}
+      >
         {#snippet control({ id })}
           <Input
             {id}
@@ -80,7 +89,10 @@
         {/snippet}
       </SettingsRow>
 
-      <SettingsRow label={t("settings.captures.cleanup")} hint={t("settings.captures.cleanupHint")}>
+      <SettingsRow
+        label={t("settings.captures.cleanup")}
+        hint={t("settings.captures.cleanupHint")}
+      >
         {#snippet control()}
           <Button
             variant="soft"

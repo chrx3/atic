@@ -66,7 +66,10 @@
         }}
       />
       {#if option.icon}
-        <span class="seg-icon inline-grid shrink-0 place-items-center" aria-hidden="true">
+        <span
+          class="seg-icon inline-grid shrink-0 place-items-center"
+          aria-hidden="true"
+        >
           <ToolIcon id={option.icon} size={iconSize} strokeWidth={1.5} />
         </span>
       {/if}

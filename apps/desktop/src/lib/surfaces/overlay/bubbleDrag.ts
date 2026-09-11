@@ -5,12 +5,7 @@
  * con el mouse: el webview deja de recibir eventos y el globo se “corta”
  * a mitad de camino. `overlayCursor` sigue leyendo la posición real.
  */
-import {
-  overlayCursor,
-  overlayWorkAreas,
-  type Area,
-  type Point,
-} from "$ipc/overlay";
+import { overlayCursor, overlayWorkAreas, type Area, type Point } from "$ipc/overlay";
 import { MARGIN } from "./contract";
 import type { Bubble } from "./bubble.svelte";
 import { surfaces } from "./surfaces.svelte";

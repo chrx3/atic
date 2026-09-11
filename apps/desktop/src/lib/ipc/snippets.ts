@@ -20,8 +20,7 @@ export const showSnippetsWindow = () => invoke<void>("show_snippets_window");
 export const hideSnippetsWindow = () => invoke<void>("hide_snippets_window");
 
 /** ¿El float de textos queda fijado arriba de otras apps? */
-export const snippetsAlwaysOnTop = () =>
-  invoke<boolean>("snippets_always_on_top");
+export const snippetsAlwaysOnTop = () => invoke<boolean>("snippets_always_on_top");
 
 /** Fija o desfija el float (always-on-top del overlay mientras está abierto). */
 export const setSnippetsAlwaysOnTop = (on: boolean) =>

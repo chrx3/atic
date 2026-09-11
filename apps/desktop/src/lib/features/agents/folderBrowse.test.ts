@@ -80,8 +80,6 @@ describe("toggleFav", () => {
     const two = toggleFav(one, apps);
     expect(two[0]).toEqual(apps);
     expect(isFav(two, atic.path)).toBe(true);
-    expect(toggleFav(two, { name: "ATIC", path: "c:/work/atic" })).toEqual([
-      apps,
-    ]);
+    expect(toggleFav(two, { name: "ATIC", path: "c:/work/atic" })).toEqual([apps]);
   });
 });

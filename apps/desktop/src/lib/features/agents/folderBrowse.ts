@@ -83,10 +83,7 @@ export function isFav(favs: readonly FolderFav[], path: string): boolean {
   return favs.some((fav) => pathsEqual(fav.path, path));
 }
 
-export function toggleFav(
-  favs: readonly FolderFav[],
-  entry: FolderFav,
-): FolderFav[] {
+export function toggleFav(favs: readonly FolderFav[], entry: FolderFav): FolderFav[] {
   if (isFav(favs, entry.path)) {
     return favs.filter((fav) => !pathsEqual(fav.path, entry.path));
   }

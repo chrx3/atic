@@ -26,6 +26,7 @@
   --z-overlay-float: 3;
 
   --z-popover: 60;
+
   /* ToastStack usa `popover` (top layer) además de este z: si no, queda bajo
    * cualquier `<dialog showModal()>`. */
   --z-toast: 100;

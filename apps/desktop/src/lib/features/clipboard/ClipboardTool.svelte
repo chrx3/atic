@@ -32,11 +32,11 @@
 
   let kind = $state<ClipboardKind | "all">("all");
   let focusIndex = $state(0);
-/** Elemento esperando confirmación de borrado. */
-let confirmingDeleteId = $state<string | null>(null);
-const confirmTarget = $derived(
-  clipboard.items.find((item) => item.id === confirmingDeleteId) ?? null,
-);
+  /** Elemento esperando confirmación de borrado. */
+  let confirmingDeleteId = $state<string | null>(null);
+  const confirmTarget = $derived(
+    clipboard.items.find((item) => item.id === confirmingDeleteId) ?? null,
+  );
   let listEl = $state<HTMLDivElement | null>(null);
 
   const kindOptions = $derived([
@@ -145,7 +145,10 @@ const confirmTarget = $derived(
             draggable="false"
           />
         {:else if swatch}
-          <span class="size-full" style:background={swatch} style:box-shadow={SWATCH_RING}
+          <span
+            class="size-full"
+            style:background={swatch}
+            style:box-shadow={SWATCH_RING}
           ></span>
         {:else}
           <span class="text-micro font-semibold text-muted">Aa</span>

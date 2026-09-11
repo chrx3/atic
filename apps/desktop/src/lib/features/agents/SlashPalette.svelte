@@ -77,7 +77,7 @@
     border: 1px solid var(--rb-border);
     border-radius: 12px;
     background: var(--rb-surface);
-    box-shadow: 0 10px 28px color-mix(in srgb, var(--rb-text) 16%, transparent);
+    box-shadow: 0 10px 28px color-mix(in sRGB, var(--rb-text) 16%, transparent);
   }
 
   .slash-list {
@@ -99,8 +99,7 @@
     width: 100%;
     grid-template-columns: auto 1fr;
     grid-template-rows: auto auto;
-    column-gap: 0.35rem;
-    row-gap: 0.05rem;
+    gap: 0.05rem 0.35rem;
     align-items: baseline;
     border: 0;
     border-radius: 9px;

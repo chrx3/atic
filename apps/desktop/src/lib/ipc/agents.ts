@@ -157,8 +157,7 @@ export const hubStatus = () => invoke<HubStatus>("hub_status");
 /** Snippet para pegar en cada host. Atic no escribe configs ajenas. */
 export const hubSnippet = (
   host: "claude-code" | "cursor" | "codex" | "opencode" | "grok" | "antigravity",
-) =>
-  invoke<string>("hub_snippet", { host });
+) => invoke<string>("hub_snippet", { host });
 
 /**
  * Cupos de la cuenta Claude (ventana 5 h / semanal). Misma fuente que `/usage`.
@@ -222,8 +221,7 @@ export const consoleClose = (session: string) =>
   invoke<void>("console_close", { session });
 
 /** Cierra en Rust las PTYs cuyo id no está en `keep`. */
-export const consoleGc = (keep: string[]) =>
-  invoke<number>("console_gc", { keep });
+export const consoleGc = (keep: string[]) => invoke<number>("console_gc", { keep });
 
 /** CLI de agente vivo dentro de la PTY, o `null` si solo hay una shell. */
 export const consoleForegroundCli = (session: string) =>

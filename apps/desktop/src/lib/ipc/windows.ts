@@ -150,4 +150,3 @@ export async function onWindowFocus(
 ): Promise<() => void> {
   return getCurrentWindow().onFocusChanged(({ payload }) => cb(payload));
 }
-

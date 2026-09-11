@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { createDockExpand, reuseDockedFrame, shouldResizeLauncher, rememberedSetupWidth } from "./dockExpand";
+import {
+  createDockExpand,
+  reuseDockedFrame,
+  shouldResizeLauncher,
+  rememberedSetupWidth,
+} from "./dockExpand";
 
 describe("createDockExpand", () => {
   it("call dispara el bind vigente", () => {
@@ -31,15 +36,15 @@ describe("createDockExpand", () => {
 
 describe("reuseDockedFrame", () => {
   it("solo si está achicado y el globo sigue vivo", () => {
-    expect(
-      reuseDockedFrame({ minimized: true, alive: true, hasAnchor: true }),
-    ).toBe(true);
-    expect(
-      reuseDockedFrame({ minimized: true, alive: false, hasAnchor: true }),
-    ).toBe(false);
-    expect(
-      reuseDockedFrame({ minimized: false, alive: true, hasAnchor: true }),
-    ).toBe(false);
+    expect(reuseDockedFrame({ minimized: true, alive: true, hasAnchor: true })).toBe(
+      true,
+    );
+    expect(reuseDockedFrame({ minimized: true, alive: false, hasAnchor: true })).toBe(
+      false,
+    );
+    expect(reuseDockedFrame({ minimized: false, alive: true, hasAnchor: true })).toBe(
+      false,
+    );
   });
 });
 

@@ -54,7 +54,12 @@
     writeSystemClipboardText,
     type ClipboardOleDetail,
   } from "$ipc/clipboard";
-  import { pillTrace, overlayCursor, setOverlayTextMode, onOverlayItemDrag } from "$ipc/overlay";
+  import {
+    pillTrace,
+    overlayCursor,
+    setOverlayTextMode,
+    onOverlayItemDrag,
+  } from "$ipc/overlay";
   import type { AgentsWorkspaceShortcut } from "$ipc/events";
   import type { AgentsComposerInsert, ConsoleKind, SshHost } from "$lib/types";
   import EmptyState from "$lib/ui/EmptyState.svelte";
@@ -64,7 +69,7 @@
   import { agents } from "$lib/agentSessions.svelte";
   import { agentMcpStatus, agentMcpToggle } from "$ipc/agents";
   import ConfirmDialog from "$ui/ConfirmDialog.svelte";
-import Icon from "$ui/Icon.svelte";
+  import Icon from "$ui/Icon.svelte";
   import {
     ArrowLeft,
     Activity,
@@ -294,14 +299,28 @@ import Icon from "$ui/Icon.svelte";
       return [
         { path, direction: "right", x, y, width, height, seam: x + first },
         ...collectPaneDividers(node.first, path + "f", x, y, first, height),
-        ...collectPaneDividers(node.second, path + "s", x + first, y, width - first, height),
+        ...collectPaneDividers(
+          node.second,
+          path + "s",
+          x + first,
+          y,
+          width - first,
+          height,
+        ),
       ];
     }
     const first = height * ratio;
     return [
       { path, direction: "down", x, y, width, height, seam: y + first },
       ...collectPaneDividers(node.first, path + "f", x, y, width, first),
-      ...collectPaneDividers(node.second, path + "s", x, y + first, width, height - first),
+      ...collectPaneDividers(
+        node.second,
+        path + "s",
+        x,
+        y + first,
+        width,
+        height - first,
+      ),
     ];
   }
 
@@ -478,9 +497,7 @@ import Icon from "$ui/Icon.svelte";
   });
 
   const railCompact = $derived(railWidth < 92);
-  const hasIdleTab = $derived(
-    tabs.some((t) => !t.sessionId && !pendingKeys[t.key]),
-  );
+  const hasIdleTab = $derived(tabs.some((t) => !t.sessionId && !pendingKeys[t.key]));
   const canAddTab = $derived(tabs.length < MAX_TABS || hasIdleTab);
 
   /**
@@ -652,7 +669,12 @@ import Icon from "$ui/Icon.svelte";
       setFontZoom(fontZoom - 1);
       return true;
     }
-    if (mod && !event.shiftKey && !event.altKey && (key === "0" || code === "Numpad0")) {
+    if (
+      mod &&
+      !event.shiftKey &&
+      !event.altKey &&
+      (key === "0" || code === "Numpad0")
+    ) {
       event.preventDefault();
       event.stopPropagation();
       setFontZoom(0);
@@ -668,12 +690,7 @@ import Icon from "$ui/Icon.svelte";
    * que Ctrl+D llegue como EOF al CLI y que Ctrl+W borre una palabra.
    */
   function consumeTerminalControlData(key: string, data: string): boolean {
-    if (
-      data !== "\x04" &&
-      data !== "\x0e" &&
-      data !== "\x17" &&
-      data !== "\x1f"
-    ) {
+    if (data !== "\x04" && data !== "\x0e" && data !== "\x17" && data !== "\x1f") {
       return false;
     }
     // Ctrl+- llega como 0x1F (Ctrl+_) cuando el keydown no aparece. El precio
@@ -1032,7 +1049,9 @@ import Icon from "$ui/Icon.svelte";
     window.setTimeout(() => {
       const live = tabOf(tab.key);
       if (!live?.sessionId || live.sessionId !== id) return;
-      termOf(tab.key)?.writeln(`\r\n[Atic · ${t("page.agents.reopenAgent", { name })}]`);
+      termOf(tab.key)?.writeln(
+        `\r\n[Atic · ${t("page.agents.reopenAgent", { name })}]`,
+      );
       void consoleWrite(id, `${cli}\r\n`).catch(() => {});
     }, 400);
   }
@@ -1286,9 +1305,7 @@ import Icon from "$ui/Icon.svelte";
   }
 
   function knownSessionIds(): string[] {
-    return tabs
-      .map((t) => t.sessionId)
-      .filter((id): id is string => !!id);
+    return tabs.map((t) => t.sessionId).filter((id): id is string => !!id);
   }
 
   async function reapOrphanConsoles() {
@@ -1430,7 +1447,7 @@ import Icon from "$ui/Icon.svelte";
         ? (opts.hostId ?? remoteHost?.id ?? sshHosts[0]?.id ?? null)
         : null;
     tab.label = opts.label?.trim() || null;
-    tab.command = kind === "local" ? (opts.command?.trim() || null) : null;
+    tab.command = kind === "local" ? opts.command?.trim() || null : null;
     tab.cwd = kind === "local" ? startFolder : null;
     tab.hubSession = opts.hubSession ?? null;
   }
@@ -1855,11 +1872,8 @@ import Icon from "$ui/Icon.svelte";
    */
   function detachGroup(entry: RailGroup) {
     const visible =
-      visiblePaneKeys.length > 1 &&
-      visiblePaneKeys.some((k) => entry.keys.includes(k));
-    groups = groups.filter(
-      (g) => !paneLeafKeys(g).some((k) => entry.keys.includes(k)),
-    );
+      visiblePaneKeys.length > 1 && visiblePaneKeys.some((k) => entry.keys.includes(k));
+    groups = groups.filter((g) => !paneLeafKeys(g).some((k) => entry.keys.includes(k)));
     if (visible) {
       const key = entry.keys.includes(activeKey) ? activeKey : entry.keys[0];
       paneTree = leaf(key);
@@ -2189,7 +2203,9 @@ import Icon from "$ui/Icon.svelte";
   function termKeyAt(x: number, y: number): string | null {
     return (
       termKeyHit(x, y) ??
-      (sessionOf(activeKey) && visiblePaneKeys.includes(activeKey) ? activeKey : null) ??
+      (sessionOf(activeKey) && visiblePaneKeys.includes(activeKey)
+        ? activeKey
+        : null) ??
       visiblePaneKeys.find((key) => sessionOf(key)) ??
       null
     );
@@ -2228,9 +2244,9 @@ import Icon from "$ui/Icon.svelte";
     const key =
       typeof x === "number" && typeof y === "number"
         ? (termKeyHit(x, y) ??
-            (pointInEl(consoleEl, x, y) || pointInEl(bodyEl, x, y)
-              ? termKeyAt(-1, -1)
-              : null))
+          (pointInEl(consoleEl, x, y) || pointInEl(bodyEl, x, y)
+            ? termKeyAt(-1, -1)
+            : null))
         : termKeyAt(-1, -1);
     if (!key) return;
     if (payload.kind === "image" && payload.imagePath) {
@@ -2461,14 +2477,16 @@ import Icon from "$ui/Icon.svelte";
         refreshAgentPath();
       }),
       onAgentsComposerInsert((payload) => void applyClipboardInsert(payload)),
-    ]).then((uns) => {
-      stopListen = () => {
-        for (const u of uns) u();
-      };
-      resolveListen();
-    }).catch(() => {
-      resolveListen();
-    });
+    ])
+      .then((uns) => {
+        stopListen = () => {
+          for (const u of uns) u();
+        };
+        resolveListen();
+      })
+      .catch(() => {
+        resolveListen();
+      });
 
     const onDocPointer = (e: PointerEvent) => {
       // Capture: stopPropagation del menú no alcanza; hay que excluir el .ctx acá.
@@ -2543,7 +2561,11 @@ import Icon from "$ui/Icon.svelte";
       onBarPointerDown(e);
     }}
   >
-    <div class="rail-tabs" role="group" aria-label={t("page.agents.console.openTabsAria")}>
+    <div
+      class="rail-tabs"
+      role="group"
+      aria-label={t("page.agents.console.openTabsAria")}
+    >
       {#each tabs as tab, i (tab.key)}
         {@const railGroup = railGroups.find((g) => g.anchorKey === tab.key)}
         {#if railGroup}
@@ -2581,7 +2603,11 @@ import Icon from "$ui/Icon.svelte";
                 </span>
               </span>
               {#if railGroup.tabs.some((gt) => gt.sessionId)}
-                <span class="live" use:tip={t("page.agents.console.activeSession")} aria-hidden="true"></span>
+                <span
+                  class="live"
+                  use:tip={t("page.agents.console.activeSession")}
+                  aria-hidden="true"
+                ></span>
               {/if}
             </button>
             <button
@@ -2631,7 +2657,11 @@ import Icon from "$ui/Icon.svelte";
                 </span>
               </span>
               {#if tab.sessionId}
-                <span class="live" use:tip={t("page.agents.console.activeSession")} aria-hidden="true"></span>
+                <span
+                  class="live"
+                  use:tip={t("page.agents.console.activeSession")}
+                  aria-hidden="true"
+                ></span>
               {/if}
             </button>
             <button
@@ -2699,7 +2729,9 @@ import Icon from "$ui/Icon.svelte";
                   disabled
                   aria-busy="true"
                 >
-                  <span class="add-glyph"><AgentLogo agent={agent.cli} size={14} /></span>
+                  <span class="add-glyph"
+                    ><AgentLogo agent={agent.cli} size={14} /></span
+                  >
                   {agent.name}
                 </button>
               {:else if agentOnPath[agent.cli] === false}
@@ -2712,7 +2744,9 @@ import Icon from "$ui/Icon.svelte";
                   })}
                   onclick={() => installAgent(agent)}
                 >
-                  <span class="add-glyph"><AgentLogo agent={agent.cli} size={14} /></span>
+                  <span class="add-glyph"
+                    ><AgentLogo agent={agent.cli} size={14} /></span
+                  >
                   <span class="add-ellipsis">{agent.name}</span>
                   <span class="add-install">{t("page.agents.install")}</span>
                 </button>
@@ -2727,10 +2761,11 @@ import Icon from "$ui/Icon.svelte";
                       kind: "local",
                       label: agent.name,
                       command: agent.cli,
-                    })
-                  }
+                    })}
                 >
-                  <span class="add-glyph"><AgentLogo agent={agent.cli} size={14} /></span>
+                  <span class="add-glyph"
+                    ><AgentLogo agent={agent.cli} size={14} /></span
+                  >
                   {agent.name}
                 </button>
               {/if}
@@ -3200,10 +3235,8 @@ import Icon from "$ui/Icon.svelte";
           class="term"
           class:is-active={tab.key === activeKey}
           class:is-hidden={!paneRect}
-          class:is-drop={
-            clipDropKey === tab.key ||
-            (!!tabDrag && tabDrag.key !== tab.key && dropHint?.key === tab.key)
-          }
+          class:is-drop={clipDropKey === tab.key ||
+            (!!tabDrag && tabDrag.key !== tab.key && dropHint?.key === tab.key)}
           class:drop-right={!clipDropKey && dropHint?.zone === "right"}
           class:drop-down={!clipDropKey && dropHint?.zone === "down"}
           class:is-join-left={!!paneRect && paneRect.x > 0.01}
@@ -3229,7 +3262,11 @@ import Icon from "$ui/Icon.svelte";
             {@const tabName = tab.label || tabLabels[tabs.indexOf(tab)] || ""}
             <!-- Salida suave: el primer output del CLI aparece debajo mientras
                  el velo se disuelve, en vez de un corte seco. -->
-            <div class="term-boot" role="status" out:fade={{ duration: ms(MOTION.fast) }}>
+            <div
+              class="term-boot"
+              role="status"
+              out:fade={{ duration: ms(MOTION.fast) }}
+            >
               {#if tab.command}
                 <span class="term-boot-logo">
                   <AgentLogo agent={tab.command} size={28} />
@@ -3413,13 +3450,13 @@ import Icon from "$ui/Icon.svelte";
 
     /* Overlay: user-select/touch-action none; xterm necesita interactuar. */
     user-select: text;
-    -webkit-user-select: text;
     touch-action: auto;
   }
 
   /* ─── Rail izquierdo: una ficha por consola ───────────────────────────── */
   .rail {
     --rail-close: 1.2rem;
+
     position: relative;
     z-index: 2;
     display: flex;
@@ -3473,7 +3510,7 @@ import Icon from "$ui/Icon.svelte";
 
   .rail-tab:hover:not(:disabled) {
     color: var(--rb-text);
-    background: color-mix(in srgb, var(--rb-text) 7%, transparent);
+    background: color-mix(in sRGB, var(--rb-text) 7%, transparent);
   }
 
   .rail-tab.is-on {
@@ -3483,7 +3520,8 @@ import Icon from "$ui/Icon.svelte";
 
   .rail-tab:focus-visible {
     outline: none;
-    box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--accent, #da7756) 55%, transparent);
+    box-shadow: inset 0 0 0 2px
+      color-mix(in srgb, var(--accent, #da7756) 55%, transparent);
   }
 
   .rail-logo,
@@ -3579,6 +3617,7 @@ import Icon from "$ui/Icon.svelte";
 
   /* Carpeta de inicio a la vista y editable sin volver al lanzador. Solo el
      último tramo de la ruta: el path entero vive en el `title`. */
+
   /* El enchufe: dice si este agente puede hablar con los demás. */
   .mcp-chip {
     position: relative;
@@ -3701,10 +3740,10 @@ import Icon from "$ui/Icon.svelte";
   .host-select {
     min-width: 0;
     max-width: 100%;
-    border: 1px solid color-mix(in srgb, var(--rb-border) 80%, transparent);
+    border: 1px solid color-mix(in sRGB, var(--rb-border) 80%, transparent);
     border-radius: 0.35rem;
     padding: 0.18rem 0.4rem;
-    background: color-mix(in srgb, var(--rb-surface-2) 80%, transparent);
+    background: color-mix(in sRGB, var(--rb-surface-2) 80%, transparent);
     color: var(--rb-text);
     font: inherit;
     font-size: 0.62rem;
@@ -3734,7 +3773,7 @@ import Icon from "$ui/Icon.svelte";
 
   .chrome-close:hover {
     color: var(--rb-record);
-    background: color-mix(in srgb, var(--rb-record) 16%, transparent);
+    background: color-mix(in sRGB, var(--rb-record) 16%, transparent);
   }
 
   .more-menu {
@@ -3757,7 +3796,7 @@ import Icon from "$ui/Icon.svelte";
     min-width: 11.5rem;
     flex-direction: column;
     gap: 0.08rem;
-    border: 1px solid color-mix(in srgb, var(--rb-border) 80%, transparent);
+    border: 1px solid color-mix(in sRGB, var(--rb-border) 80%, transparent);
     border-radius: 0.65rem;
     padding: 0.32rem;
     background: color-mix(in srgb, var(--rb-surface) 96%, var(--rb-bg0, #0f1115));
@@ -3804,7 +3843,7 @@ import Icon from "$ui/Icon.svelte";
   }
 
   .more-item:hover:not(:disabled) {
-    background: color-mix(in srgb, var(--rb-text) 8%, transparent);
+    background: color-mix(in sRGB, var(--rb-text) 8%, transparent);
   }
 
   .more-item:disabled {
@@ -3817,7 +3856,7 @@ import Icon from "$ui/Icon.svelte";
     width: 16.5rem;
     flex-direction: column;
     gap: 0.35rem;
-    border: 1px solid color-mix(in srgb, var(--rb-border) 80%, transparent);
+    border: 1px solid color-mix(in sRGB, var(--rb-border) 80%, transparent);
     border-radius: 0.65rem;
     padding: 0.55rem 0.6rem 0.5rem;
     background: color-mix(in srgb, var(--rb-surface) 96%, var(--rb-bg0, #0f1115));
@@ -3860,7 +3899,7 @@ import Icon from "$ui/Icon.svelte";
 
   .shortcuts-list kbd {
     margin-left: auto;
-    border: 1px solid color-mix(in srgb, var(--rb-border) 80%, transparent);
+    border: 1px solid color-mix(in sRGB, var(--rb-border) 80%, transparent);
     border-radius: 0.28rem;
     padding: 0.08rem 0.32rem;
     color: var(--rb-muted);
@@ -3877,10 +3916,10 @@ import Icon from "$ui/Icon.svelte";
     display: inline-flex;
     align-items: center;
     gap: 0.24rem;
-    border: 1px solid color-mix(in srgb, var(--rb-border) 80%, transparent);
+    border: 1px solid color-mix(in sRGB, var(--rb-border) 80%, transparent);
     border-radius: 999px;
     padding: 0.18rem 0.52rem;
-    background: color-mix(in srgb, var(--rb-surface-2) 70%, transparent);
+    background: color-mix(in sRGB, var(--rb-surface-2) 70%, transparent);
     color: var(--rb-muted);
     font: inherit;
     font-size: 0.62rem;
@@ -3896,7 +3935,7 @@ import Icon from "$ui/Icon.svelte";
 
   .chip:hover:not(:disabled) {
     color: var(--rb-text);
-    border-color: color-mix(in srgb, var(--rb-text) 22%, transparent);
+    border-color: color-mix(in sRGB, var(--rb-text) 22%, transparent);
   }
 
   .chip:active:not(:disabled) {
@@ -3932,7 +3971,7 @@ import Icon from "$ui/Icon.svelte";
 
   .icon-btn:hover {
     color: var(--rb-text);
-    background: color-mix(in srgb, var(--rb-record) 16%, transparent);
+    background: color-mix(in sRGB, var(--rb-record) 16%, transparent);
   }
 
   .icon-btn:active {
@@ -3945,7 +3984,7 @@ import Icon from "$ui/Icon.svelte";
     gap: 0.5rem;
     margin: 0;
     padding: 0.25rem 0.65rem;
-    border-bottom: 1px solid color-mix(in srgb, var(--rb-record) 35%, transparent);
+    border-bottom: 1px solid color-mix(in sRGB, var(--rb-record) 35%, transparent);
     color: var(--rb-record);
     font-size: 0.68rem;
     line-height: 1.35;
@@ -4118,7 +4157,7 @@ import Icon from "$ui/Icon.svelte";
     justify-content: center;
     gap: 0.42rem;
     padding: 1rem;
-    background: color-mix(in srgb, var(--rb-bg0) 92%, transparent);
+    background: color-mix(in sRGB, var(--rb-bg0) 92%, transparent);
     pointer-events: none;
     animation: term-boot-in var(--duration-fast) var(--ease-smooth-out);
   }
@@ -4158,7 +4197,7 @@ import Icon from "$ui/Icon.svelte";
     width: 1.05rem;
     height: 1.05rem;
     margin-top: 0.35rem;
-    border: 1.5px solid color-mix(in srgb, var(--rb-muted) 32%, transparent);
+    border: 1.5px solid color-mix(in sRGB, var(--rb-muted) 32%, transparent);
     border-top-color: var(--accent, var(--rb-text));
     border-radius: 999px;
     animation: term-boot-spin 0.7s linear infinite;
@@ -4173,7 +4212,7 @@ import Icon from "$ui/Icon.svelte";
   @media (prefers-reduced-motion: reduce) {
     .term-boot-spin {
       animation: none;
-      border-top-color: color-mix(in srgb, var(--rb-muted) 32%, transparent);
+      border-top-color: color-mix(in sRGB, var(--rb-muted) 32%, transparent);
       opacity: 0.7;
     }
 
@@ -4221,7 +4260,6 @@ import Icon from "$ui/Icon.svelte";
 
   .term :global(.xterm-helper-textarea) {
     user-select: text;
-    -webkit-user-select: text;
   }
 
   .term :global(.xterm-viewport) {
@@ -4237,7 +4275,7 @@ import Icon from "$ui/Icon.svelte";
     min-width: 7.5rem;
     flex-direction: column;
     gap: 0.1rem;
-    border: 1px solid color-mix(in srgb, var(--rb-border) 80%, transparent);
+    border: 1px solid color-mix(in sRGB, var(--rb-border) 80%, transparent);
     border-radius: 0.45rem;
     padding: 0.2rem;
     background: color-mix(in srgb, var(--rb-surface) 94%, #0f1115);
@@ -4263,7 +4301,7 @@ import Icon from "$ui/Icon.svelte";
   }
 
   .ctx-item:hover:not(:disabled) {
-    background: color-mix(in srgb, var(--rb-text) 8%, transparent);
+    background: color-mix(in sRGB, var(--rb-text) 8%, transparent);
   }
 
   .ctx-item:disabled {
@@ -4321,7 +4359,7 @@ import Icon from "$ui/Icon.svelte";
 
   .tab-x:hover {
     color: var(--rb-record);
-    background: color-mix(in srgb, var(--rb-record) 14%, transparent);
+    background: color-mix(in sRGB, var(--rb-record) 14%, transparent);
   }
 
   .tab-x:active:not(:disabled) {
@@ -4702,7 +4740,8 @@ import Icon from "$ui/Icon.svelte";
     width: 0.42rem;
     height: 0.42rem;
     background: var(--rb-muted);
-    box-shadow: 0 0 0 2px color-mix(in sRGB, var(--skin, var(--rb-surface)) 88%, transparent);
+    box-shadow: 0 0 0 2px
+      color-mix(in sRGB, var(--skin, var(--rb-surface)) 88%, transparent);
   }
 
   .console-desk .session-dot.is-live {

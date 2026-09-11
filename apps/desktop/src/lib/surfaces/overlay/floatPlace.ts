@@ -40,10 +40,7 @@ export function unionRects(
   return acc;
 }
 
-export type PlaceResult = Pick<
-  BubbleOpen,
-  "side" | "offset" | "x" | "y" | "w" | "h"
->;
+export type PlaceResult = Pick<BubbleOpen, "side" | "offset" | "x" | "y" | "w" | "h">;
 
 /** Fusionado a la pill al nacer: ≪ REACH → un solo blob. */
 export const FUSED_GAP_PX = 2;
@@ -106,8 +103,7 @@ function areaAroundPill(pill: PillRect, work?: Area[]): Area | undefined {
   const acx = pill.x + pill.w / 2;
   const acy = pill.y + pill.h / 2;
   const hit = work.find(
-    (a) =>
-      acx >= a.x && acx <= a.x + a.w && acy >= a.y && acy <= a.y + a.h,
+    (a) => acx >= a.x && acx <= a.x + a.w && acy >= a.y && acy <= a.y + a.h,
   );
   if (hit) return hit;
   let best = work[0];
@@ -124,7 +120,11 @@ function areaAroundPill(pill: PillRect, work?: Area[]): Area | undefined {
   return best;
 }
 
-function resolveWork(pill: PillRect, panel: { w: number; h: number }, work?: Area[]): Area {
+function resolveWork(
+  pill: PillRect,
+  panel: { w: number; h: number },
+  work?: Area[],
+): Area {
   const area =
     areaAroundPill(pill, work) ??
     ({
@@ -175,7 +175,10 @@ function alongAxis(
 ): number {
   if (near >= lo + MARGIN && near + size + MARGIN <= hi) return near;
   if (far >= lo + MARGIN && far + size + MARGIN <= hi) return far;
-  return Math.min(Math.max(near, lo + MARGIN), Math.max(hi - size - MARGIN, lo + MARGIN));
+  return Math.min(
+    Math.max(near, lo + MARGIN),
+    Math.max(hi - size - MARGIN, lo + MARGIN),
+  );
 }
 
 /**
@@ -372,20 +375,22 @@ export function placePanelFusedSeed(
   const seed = opts.seed ?? PANEL_GROW_SEED;
   const overlap = opts.overlap ?? SEED_OVERLAP_PX;
   // Gap negativo = solapa la pill. fusedGap legacy solo si overlap explícito 0.
-  const gap =
-    opts.overlap === 0 && opts.fusedGap != null
-      ? opts.fusedGap
-      : -overlap;
+  const gap = opts.overlap === 0 && opts.fusedGap != null ? opts.fusedGap : -overlap;
   const resting = placePanelResting(pill, full, {
     corner: opts.corner,
     work: opts.work,
     gap: opts.restingGap,
   });
-  return placeOnSide(pill, resting.side, { w: seed, h: seed }, {
-    gap,
-    corner: Math.min(opts.corner ?? 20, seed / 2),
-    work: opts.work,
-  });
+  return placeOnSide(
+    pill,
+    resting.side,
+    { w: seed, h: seed },
+    {
+      gap,
+      corner: Math.min(opts.corner ?? 20, seed / 2),
+      work: opts.work,
+    },
+  );
 }
 
 /**

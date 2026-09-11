@@ -136,7 +136,10 @@
   {/snippet}
 
   {#if !query.trim()}
-    <EmptyState title={t("page.search.typeToSearch")} hint={t("page.search.typeHint")} />
+    <EmptyState
+      title={t("page.search.typeToSearch")}
+      hint={t("page.search.typeHint")}
+    />
   {:else if searching}
     <EmptyState title={t("page.search.searching")} />
   {:else if hits.length === 0}

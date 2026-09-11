@@ -17,9 +17,7 @@ describe("isJunkTranscriptText", () => {
       "¡Adiós! ¡Adiós! ¡Adiós! ¡Adiós! ¡Adiós! ¡Adiós!";
     expect(isJunkTranscriptText(looping)).toBe(true);
     expect(
-      isJunkTranscriptText(
-        "¡Adiós! ¡Adiós! ¡Adiós! ¡Adiós! ¡Adiós! ¡Adiós! ¡Adiós!",
-      ),
+      isJunkTranscriptText("¡Adiós! ¡Adiós! ¡Adiós! ¡Adiós! ¡Adiós! ¡Adiós! ¡Adiós!"),
     ).toBe(true);
   });
 

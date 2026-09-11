@@ -61,7 +61,9 @@
         // Si ya había un resumen guardado, el paso útil es revisarlo.
         if (summaries.byId[id]) phase = "review";
       })
-      .catch((error) => (loadError = t("page.summary.openFail", { error: String(error) })))
+      .catch(
+        (error) => (loadError = t("page.summary.openFail", { error: String(error) })),
+      )
       .finally(() => (loading = false));
   });
 
@@ -109,16 +111,20 @@
 
   /** El título que se le pone al documento cuando el texto no trae ninguno. */
   const documentTitle = $derived(
-      summaries.template === "followup_email"
-        ? t("page.summary.docMessage")
-        : summaries.template === "action_items"
-          ? t("page.summary.docActions")
-          : t("page.summary.docSummary"),
+    summaries.template === "followup_email"
+      ? t("page.summary.docMessage")
+      : summaries.template === "action_items"
+        ? t("page.summary.docActions")
+        : t("page.summary.docSummary"),
   );
 
   const STEPS = $derived([
     { value: "generate" as const, label: t("page.summary.stepGenerate") },
-    { value: "review" as const, label: t("page.summary.stepReview"), disabled: !canReview },
+    {
+      value: "review" as const,
+      label: t("page.summary.stepReview"),
+      disabled: !canReview,
+    },
     { value: "send" as const, label: t("page.summary.stepSend"), disabled: !canSend },
   ]);
 
@@ -178,9 +184,7 @@
         summaries.draft,
       );
       toasts.push(
-        result.backend === "mailto"
-          ? t("page.summary.mailtoOpened")
-          : result.message,
+        result.backend === "mailto" ? t("page.summary.mailtoOpened") : result.message,
       );
     } catch (error) {
       toastError(error);
@@ -195,9 +199,16 @@
   }
 </script>
 
-<Modal title={t("page.summary.title")} subtitle={recording.title} size="lg" onClose={requestClose}>
+<Modal
+  title={t("page.summary.title")}
+  subtitle={recording.title}
+  size="lg"
+  onClose={requestClose}
+>
   {#if loading}
-    <p class="py-12 text-center text-sm text-muted" role="status">{t("page.summary.loading")}</p>
+    <p class="py-12 text-center text-sm text-muted" role="status">
+      {t("page.summary.loading")}
+    </p>
   {:else if loadError}
     <p class="py-12 text-center text-sm text-danger" role="alert">{loadError}</p>
   {:else}
@@ -327,7 +338,10 @@
             : t("page.summary.mailtoBlurb")}
         </p>
 
-        <Field label={t("page.summary.recipients")} hint={t("page.summary.recipientsHint")}>
+        <Field
+          label={t("page.summary.recipients")}
+          hint={t("page.summary.recipientsHint")}
+        >
           {#snippet children({ id, describedBy })}
             <Input
               {id}
@@ -341,14 +355,16 @@
         </Field>
 
         <div class="flex flex-col gap-1.5">
-          <span class="text-xs font-medium text-muted">{t("page.summary.subject")}</span>
+          <span class="text-xs font-medium text-muted">{t("page.summary.subject")}</span
+          >
           <p class="truncate text-sm text-text">
             {summaries.subject || t("page.summary.noSubject")}
           </p>
         </div>
 
         <div class="flex flex-col gap-1.5">
-          <span class="text-xs font-medium text-muted">{t("page.summary.content")}</span>
+          <span class="text-xs font-medium text-muted">{t("page.summary.content")}</span
+          >
           <div class="max-h-56 overflow-y-auto">
             <SummaryDocument
               content={summaries.draft}
@@ -365,7 +381,9 @@
     {#if !loading && !loadError}
       {#if phase === "generate"}
         {#if canReview}
-          <Button variant="soft" onclick={() => (phase = "review")}>{t("page.summary.review")}</Button>
+          <Button variant="soft" onclick={() => (phase = "review")}
+            >{t("page.summary.review")}</Button
+          >
         {/if}
         <Button variant="primary" loading={generating} onclick={requestGeneration}>
           {saved ? t("page.summary.regenerate") : t("page.summary.generate")}
@@ -383,14 +401,18 @@
           {t("page.summary.continue")}
         </Button>
       {:else}
-        <Button variant="ghost" onclick={() => (phase = "review")}>{t("page.summary.back")}</Button>
+        <Button variant="ghost" onclick={() => (phase = "review")}
+          >{t("page.summary.back")}</Button
+        >
         <Button
           variant="primary"
           loading={sending}
           disabled={!canSend}
           onclick={() => void send()}
         >
-          {mailBackend === "smtp" ? t("page.summary.sendMail") : t("page.summary.openDraft")}
+          {mailBackend === "smtp"
+            ? t("page.summary.sendMail")
+            : t("page.summary.openDraft")}
         </Button>
       {/if}
     {/if}

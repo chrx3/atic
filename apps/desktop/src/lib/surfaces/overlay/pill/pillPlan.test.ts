@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { PILL } from "../pillStage";
 import { WHEEL_TOOLS } from "$core/tools";
-  import {
+import {
   blocksBrowserChrome,
   consoleSideFor,
   contentFor,
@@ -87,28 +87,14 @@ describe("contentFor", () => {
       h: islandCueLong(1),
     });
     expect(
-      contentFor(
-        "edge",
-        180,
-        { edge: "bottom", expanded: false },
-        "idle",
-        5,
-        true,
-      ),
+      contentFor("edge", 180, { edge: "bottom", expanded: false }, "idle", 5, true),
     ).toEqual({
       w: islandCueLong(1),
       h: PILL.islandCueThick,
     });
     expect(
-      contentFor(
-        "edge",
-        180,
-        { edge: "bottom", expanded: false },
-        "idle",
-        5,
-        true,
-        3,
-      ).w,
+      contentFor("edge", 180, { edge: "bottom", expanded: false }, "idle", 5, true, 3)
+        .w,
     ).toBe(islandCueLong(3));
     // La marca no cede el sitio al aviso, así que ya un logo alarga.
     expect(islandCueLong(1)).toBeGreaterThan(PILL.islandLong);
@@ -173,7 +159,10 @@ describe("contentFor", () => {
   });
 
   it("desacoplar para summon restaura la barra, no la pestaña", () => {
-    const docked = { surface: "edge" as const, dock: { edge: "top" as const, expanded: false } };
+    const docked = {
+      surface: "edge" as const,
+      dock: { edge: "top" as const, expanded: false },
+    };
     const next = undockForSummon(docked);
     expect(next).toEqual({ surface: "none", dock: null });
     expect(contentFor(next.surface, 180, next.dock).h).toBe(PILL.bar);
@@ -405,15 +394,11 @@ describe("bloomPivot", () => {
 describe("wheelChromeActive", () => {
   it("cubre rueda abierta y colapso en curso", () => {
     expect(wheelChromeActive({ surface: "wheel", collapsingFrom: null })).toBe(true);
-    expect(
-      wheelChromeActive({ surface: "none", collapsingFrom: "wheel" }),
-    ).toBe(true);
+    expect(wheelChromeActive({ surface: "none", collapsingFrom: "wheel" })).toBe(true);
   });
 
   it("en reposo el chrome de la rueda no es la silueta", () => {
-    expect(wheelChromeActive({ surface: "none", collapsingFrom: null })).toBe(
-      false,
-    );
+    expect(wheelChromeActive({ surface: "none", collapsingFrom: null })).toBe(false);
   });
 });
 
@@ -427,18 +412,12 @@ describe("dragClosesWheel", () => {
 
 describe("stackMarkVisible", () => {
   it("oculta la marca del stack con la rueda abierta o colapsando", () => {
-    expect(stackMarkVisible({ surface: "wheel", collapsingFrom: null })).toBe(
-      false,
-    );
-    expect(
-      stackMarkVisible({ surface: "none", collapsingFrom: "wheel" }),
-    ).toBe(false);
+    expect(stackMarkVisible({ surface: "wheel", collapsingFrom: null })).toBe(false);
+    expect(stackMarkVisible({ surface: "none", collapsingFrom: "wheel" })).toBe(false);
   });
 
   it("muestra la marca del stack solo en reposo", () => {
-    expect(stackMarkVisible({ surface: "none", collapsingFrom: null })).toBe(
-      true,
-    );
+    expect(stackMarkVisible({ surface: "none", collapsingFrom: null })).toBe(true);
   });
 });
 
@@ -564,15 +543,11 @@ describe("consoleSideFor", () => {
   const area = { x: 0, y: 0, w: 1000, h: 800 };
 
   it("cerca del borde izquierdo, la consola va a la derecha", () => {
-    expect(consoleSideFor([area], { x: 20, y: 100 }, { w: 48, h: 48 })).toBe(
-      "right",
-    );
+    expect(consoleSideFor([area], { x: 20, y: 100 }, { w: 48, h: 48 })).toBe("right");
   });
 
   it("cerca del borde derecho, la consola va a la izquierda", () => {
-    expect(consoleSideFor([area], { x: 920, y: 100 }, { w: 48, h: 48 })).toBe(
-      "left",
-    );
+    expect(consoleSideFor([area], { x: 920, y: 100 }, { w: 48, h: 48 })).toBe("left");
   });
 
   it("sin monitores, por defecto a la derecha", () => {

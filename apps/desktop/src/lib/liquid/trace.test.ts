@@ -23,14 +23,8 @@ describe("PathTracer", () => {
 
   it("remuestrea si cambia el tamaño", () => {
     const tracer = new PathTracer();
-    const first = tracer.next(
-      [pillShape({ x: 0, y: 0, w: 40, h: 40 })],
-      opts,
-    );
-    const grown = tracer.next(
-      [pillShape({ x: 0, y: 0, w: 80, h: 40 })],
-      opts,
-    );
+    const first = tracer.next([pillShape({ x: 0, y: 0, w: 40, h: 40 })], opts);
+    const grown = tracer.next([pillShape({ x: 0, y: 0, w: 80, h: 40 })], opts);
     expect(grown.tx).toBe(0);
     expect(grown.ty).toBe(0);
     expect(grown.path.d).not.toBe(first.path.d);
@@ -38,14 +32,12 @@ describe("PathTracer", () => {
 
   it("conserva el path fino al cambiar la celda si hay traslado", () => {
     const tracer = new PathTracer();
-    const first = tracer.next(
-      [pillShape({ x: 0, y: 0, w: 40, h: 40 })],
-      opts,
-    );
-    const moved = tracer.next(
-      [pillShape({ x: 12, y: 0, w: 40, h: 40 })],
-      { ...opts, cell: 12, smooth: 0 },
-    );
+    const first = tracer.next([pillShape({ x: 0, y: 0, w: 40, h: 40 })], opts);
+    const moved = tracer.next([pillShape({ x: 12, y: 0, w: 40, h: 40 })], {
+      ...opts,
+      cell: 12,
+      smooth: 0,
+    });
     expect(moved.path.d).toBe(first.path.d);
     expect(moved.tx).toBe(12);
   });

@@ -62,7 +62,9 @@ export function friendlyUpdateError(
 ): string {
   const raw = error instanceof Error ? error.message : String(error);
   if (/check-timeout/i.test(raw)) return messages.timeout;
-  if (/404|not found|failed to fetch|error sending request|Could not fetch/i.test(raw)) {
+  if (
+    /404|not found|failed to fetch|error sending request|Could not fetch/i.test(raw)
+  ) {
     return messages.fetch;
   }
   return raw;

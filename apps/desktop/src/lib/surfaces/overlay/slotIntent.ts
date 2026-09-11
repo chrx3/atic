@@ -24,12 +24,7 @@ export type SlotIntent = "close" | "show" | "relocate";
  */
 export type SlotRequest = { id: ToolId; force?: boolean };
 
-const SPATIAL_ORDER: ToolId[] = [
-  "clipboard",
-  "snippets",
-  "agents",
-  "launcher",
-];
+const SPATIAL_ORDER: ToolId[] = ["clipboard", "snippets", "agents", "launcher"];
 
 /** Clipboard y textos vuelan al cursor; launcher / agentes tienen slot fijo. */
 export function isCursorAnchored(id: ToolId): boolean {
@@ -48,10 +43,7 @@ export function pillToCursorMovePx(
   cursor: { x: number; y: number } | null,
 ): number {
   if (!cursor) return 0;
-  return Math.hypot(
-    cursor.x - size.w / 2 - pill.x,
-    cursor.y - size.h / 2 - pill.y,
-  );
+  return Math.hypot(cursor.x - size.w / 2 - pill.x, cursor.y - size.h / 2 - pill.y);
 }
 
 /**

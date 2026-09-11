@@ -88,7 +88,19 @@ export async function pickAgentFiles(): Promise<string[]> {
       },
       {
         name: "Documentos",
-        extensions: ["md", "txt", "pdf", "json", "csv", "ts", "js", "tsx", "jsx", "rs", "py"],
+        extensions: [
+          "md",
+          "txt",
+          "pdf",
+          "json",
+          "csv",
+          "ts",
+          "js",
+          "tsx",
+          "jsx",
+          "rs",
+          "py",
+        ],
       },
     ],
   });

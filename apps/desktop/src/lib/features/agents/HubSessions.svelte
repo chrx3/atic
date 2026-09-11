@@ -11,7 +11,11 @@
    * conversación aparte —quién queda como interlocutor, qué pasa si el padre
    * está esperando ese turno— y meterla ahora mezclaría dos problemas.
    */
-  import { agents, nombrePadre, type AgentSessionView } from "$lib/agentSessions.svelte";
+  import {
+    agents,
+    nombrePadre,
+    type AgentSessionView,
+  } from "$lib/agentSessions.svelte";
   import type { AgentItem, AgentTurn } from "$lib/types";
 
   /** Una sesión y su sitio en la cadena. */
@@ -117,9 +121,8 @@
             >
               <span class="nombre">{nombre(s)}</span>
               <span class="meta">
-                {s.backendName}{#if nombrePadre(s.parent)} · {nombrePadre(
-                    s.parent,
-                  )}{/if}
+                {s.backendName}{#if nombrePadre(s.parent)}
+                  · {nombrePadre(s.parent)}{/if}
               </span>
               <span class="estado" data-estado={s.status}>
                 {#if s.pending.length > 0}

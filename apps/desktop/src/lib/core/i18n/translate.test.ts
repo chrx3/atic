@@ -20,8 +20,12 @@ describe("translate", () => {
   });
 
   it("interpola variables", () => {
-    expect(translate("es", "about.availableTitle", { version: "1.2" })).toContain("1.2");
-    expect(translate("en", "about.availableTitle", { version: "1.2" })).toContain("1.2");
+    expect(translate("es", "about.availableTitle", { version: "1.2" })).toContain(
+      "1.2",
+    );
+    expect(translate("en", "about.availableTitle", { version: "1.2" })).toContain(
+      "1.2",
+    );
   });
 
   it("cae a español si falta la clave en inglés", () => {
@@ -45,8 +49,8 @@ describe("translate", () => {
       }
       return out;
     }
-    const esKeys = leaves(es as unknown as Record<string, unknown>).sort();
-    const enKeys = leaves(en as unknown as Record<string, unknown>).sort();
+    const esKeys = leaves(es).sort();
+    const enKeys = leaves(en).sort();
     expect(enKeys).toEqual(esKeys);
   });
 });

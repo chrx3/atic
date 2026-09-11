@@ -67,9 +67,8 @@ export function areaFor(rect: Rect, areas: readonly Area[]): Area | null {
   const cx = rect.x + rect.w / 2;
   const cy = rect.y + rect.h / 2;
   return (
-    areas.find(
-      (a) => cx >= a.x && cx <= a.x + a.w && cy >= a.y && cy <= a.y + a.h,
-    ) ?? areas[0]
+    areas.find((a) => cx >= a.x && cx <= a.x + a.w && cy >= a.y && cy <= a.y + a.h) ??
+    areas[0]
   );
 }
 
@@ -101,10 +100,7 @@ export function isOuterEdge(
 }
 
 /** Distancia del rect a cada borde del área útil (negativa si se pasa). */
-export function edgeGaps(
-  rect: Rect,
-  work: Rect,
-): Record<DockEdge, number> {
+export function edgeGaps(rect: Rect, work: Rect): Record<DockEdge, number> {
   return {
     left: rect.x - work.x,
     right: work.x + work.w - (rect.x + rect.w),
@@ -412,10 +408,7 @@ export function snapMagnet(
  * Desde el hogar eso se lee como «la moví un poco y volvió». Acá el eje
  * libre se conserva: pegada arriba se queda a esa X, no salta al medio.
  */
-export function snapDrop(
-  rect: Rect,
-  areas: readonly Area[],
-): MagnetHit | null {
+export function snapDrop(rect: Rect, areas: readonly Area[]): MagnetHit | null {
   const dock = dockCandidate(rect, areas);
   if (!dock) return null;
   return { at: dock.at, edge: dock.edge };

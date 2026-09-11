@@ -35,7 +35,11 @@
 <div class="flex flex-col gap-3 p-4">
   <Field label={t("page.snippets.name")} required>
     {#snippet children({ id })}
-      <Input {id} bind:value={item.name} placeholder={t("page.snippets.namePlaceholder")} />
+      <Input
+        {id}
+        bind:value={item.name}
+        placeholder={t("page.snippets.namePlaceholder")}
+      />
     {/snippet}
   </Field>
 
@@ -67,6 +71,7 @@
       >
     {/if}
 
-    <Button variant="ghost" size="sm" onclick={onClose}>{t("page.common.close")}</Button>
+    <Button variant="ghost" size="sm" onclick={onClose}>{t("page.common.close")}</Button
+    >
   </div>
 </div>

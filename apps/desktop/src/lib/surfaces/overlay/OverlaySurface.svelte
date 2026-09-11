@@ -436,7 +436,8 @@
     {#if snapPreview.frame}
       <div
         class="snap-ghost"
-        style="left: {snapPreview.frame.x}px; top: {snapPreview.frame.y}px; width: {snapPreview.frame.w}px; height: {snapPreview.frame.h}px"
+        style="left: {snapPreview.frame.x}px; top: {snapPreview.frame
+          .y}px; width: {snapPreview.frame.w}px; height: {snapPreview.frame.h}px"
         aria-hidden="true"
       ></div>
     {/if}
@@ -533,8 +534,8 @@
     box-sizing: border-box;
     pointer-events: none;
     border-radius: 1.625rem;
-    background: color-mix(in srgb, var(--skin) 38%, transparent);
-    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text) 16%, transparent);
+    background: color-mix(in sRGB, var(--skin) 38%, transparent);
+    box-shadow: inset 0 0 0 1px color-mix(in sRGB, var(--text) 16%, transparent);
     transition:
       left var(--duration-slow) var(--ease-smooth-out),
       top var(--duration-slow) var(--ease-smooth-out),
@@ -554,7 +555,16 @@
    * sigue transparente o el cuello con la pill deja un hairline.
    * El panel de cuota es solo Skin: el fill rectangular taparía la gota.
    */
-  .ov :global([data-float].is-shown:not([data-quota-panel]):not(.is-joined):not(.is-expanding):not(.is-separating):not(.is-settling)) {
+  .ov
+    :global(
+      [data-float].is-shown:not(
+          [data-quota-panel],
+          .is-joined,
+          .is-expanding,
+          .is-separating,
+          .is-settling
+        )
+    ) {
     background: var(--skin);
     isolation: isolate;
   }

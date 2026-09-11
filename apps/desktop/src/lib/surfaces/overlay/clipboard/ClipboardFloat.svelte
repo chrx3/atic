@@ -36,23 +36,14 @@
     publishEmergeSkin,
     publishFollowSkin,
   } from "$surfaces/overlay/floatEmergeSkin";
-  import {
-    separateAxisProp,
-    waitFrames,
-  } from "$surfaces/overlay/floatReveal";
+  import { separateAxisProp, waitFrames } from "$surfaces/overlay/floatReveal";
   import { surfaces } from "$surfaces/overlay/surfaces.svelte";
   import { notifyToolResting, toolBirth } from "$surfaces/overlay/toolBirth";
   import {
     armOpenDismissGrace,
     isOpenDismissGrace,
   } from "$surfaces/overlay/openDismissGrace";
-  import {
-    afterTransition,
-    MOTION,
-    ms,
-    prefersReducedMotion,
-    wait,
-  } from "$lib/motion";
+  import { afterTransition, MOTION, ms, prefersReducedMotion, wait } from "$lib/motion";
   import Icon from "$ui/Icon.svelte";
   import { t } from "$domain/i18n.svelte";
   import ToastStack from "$ui/ToastStack.svelte";
@@ -70,23 +61,13 @@
   /** Último ancla: re-colocar cuando llegan work areas. */
   let lastOpen: BubbleOpen | null = null;
 
-  type RevealPhase =
-    | "hidden"
-    | "expand"
-    | "separate"
-    | "ready"
-    | "approach"
-    | "shrink";
+  type RevealPhase = "hidden" | "expand" | "separate" | "ready" | "approach" | "shrink";
   let revealPhase = $state<RevealPhase>("hidden");
   let revealEpoch = 0;
   let closing = false;
   let ignoreIpcDismiss = false;
-  const expanding = $derived(
-    revealPhase === "expand" || revealPhase === "shrink",
-  );
-  const separating = $derived(
-    revealPhase === "separate" || revealPhase === "approach",
-  );
+  const expanding = $derived(revealPhase === "expand" || revealPhase === "shrink");
+  const separating = $derived(revealPhase === "separate" || revealPhase === "approach");
   const motionPhase = $derived(expanding || separating);
 
   let openDur = $state(100);
@@ -230,12 +211,11 @@
     if (full && pill) {
       bubble.place({
         ...full,
-        ...placePanelFusedFull(
-          pill,
-          { w: full.w, h: full.h },
-          side,
-          { corner: CORNER, work: workAreas, fusedGap: FUSED_GAP_PX },
-        ),
+        ...placePanelFusedFull(pill, { w: full.w, h: full.h }, side, {
+          corner: CORNER,
+          work: workAreas,
+          fusedGap: FUSED_GAP_PX,
+        }),
       });
     } else if (full) {
       applyRestingPlace(full);
@@ -248,10 +228,7 @@
     await waitFrames(2);
     if (epoch !== revealEpoch) return;
     if (full) {
-      placeFusedToPill(
-        full,
-        surfaces.live["pill-skin"] ?? surfaces.live["pill"],
-      );
+      placeFusedToPill(full, surfaces.live["pill-skin"] ?? surfaces.live["pill"]);
     }
     await afterTransition(el, "width", openDur);
   }
@@ -304,9 +281,12 @@
     if (!bubble.alive || !bubble.shown) return;
     void bubble.anchor;
     void surfaces.recoverHits();
-    const t = window.setTimeout(() => {
-      void surfaces.recoverHits();
-    }, ms(MOTION.floatOpen) + 48);
+    const t = window.setTimeout(
+      () => {
+        void surfaces.recoverHits();
+      },
+      ms(MOTION.floatOpen) + 48,
+    );
     return () => window.clearTimeout(t);
   });
   $effect(() => {
@@ -328,10 +308,7 @@
     }
   }
 
-  function finishDismiss(
-    wasShown: boolean,
-    opts: { skipHideWindow?: boolean } = {},
-  ) {
+  function finishDismiss(wasShown: boolean, opts: { skipHideWindow?: boolean } = {}) {
     lastOpen = null;
     revealPhase = "hidden";
     endDrag();
@@ -530,10 +507,12 @@
     box-sizing: border-box;
     padding: 0.45rem 0.5rem 0.55rem;
     border-radius: 18px;
+
     /* Transparente: un fill opaco corta la sombra de la piel en el cuello. */
     background: transparent;
     color: var(--text);
     overflow: hidden;
+
     /*
      * La entrada y la salida las lleva `.float-emerge` (app.css): opacidad, scale
      * y viaje hacia la pill, con `data-side` como origen. Abrir invita
@@ -654,7 +633,7 @@
   .cf-icon:hover,
   .cf-icon.is-on {
     color: var(--text);
-    background: color-mix(in srgb, var(--text) 8%, transparent);
+    background: color-mix(in sRGB, var(--text) 8%, transparent);
   }
 
   .cf-icon:active {

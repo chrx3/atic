@@ -68,8 +68,7 @@ export const overlayCursor = () => invoke<Point | null>("overlay_cursor");
  * Punto en el monitor activo (mouse, o la ventana con foco si está en otra
  * pantalla). El launcher y los slots lo usan para centrarse ahí, no en la pill.
  */
-export const overlayActiveAnchor = () =>
-  invoke<Point | null>("overlay_active_anchor");
+export const overlayActiveAnchor = () => invoke<Point | null>("overlay_active_anchor");
 
 /** Las áreas útiles de cada monitor, en px CSS del overlay. */
 export const overlayWorkAreas = () => invoke<Area[]>("overlay_work_areas");

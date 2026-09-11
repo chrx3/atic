@@ -51,11 +51,7 @@
       accountError = null;
     } catch (e) {
       accountError =
-        typeof e === "string"
-          ? e
-          : e instanceof Error
-            ? e.message
-            : String(e);
+        typeof e === "string" ? e : e instanceof Error ? e.message : String(e);
     } finally {
       accountLoading = false;
       refreshing = false;
@@ -143,24 +139,26 @@
     turns.filter((t) => t.status !== "running" && t.items.length > 0),
   );
   const turnRows = $derived(
-    [...finishedTurns].reverse().slice(0, 12).map((t, i) => {
-      const n = finishedTurns.length - i;
-      const userMsg = t.items.find(
-        (it): it is Extract<AgentItem, { kind: "message" }> =>
-          it.kind === "message" && it.role === "user",
-      );
-      const anyMsg = t.items.find(
-        (it): it is Extract<AgentItem, { kind: "message" }> =>
-          it.kind === "message",
-      );
-      const raw = (userMsg?.text ?? anyMsg?.text ?? `Turno ${n}`).trim();
-      return {
-        id: t.id,
-        index: n,
-        cost: t.costUsd,
-        preview: raw.length > 40 ? `${raw.slice(0, 40)}…` : raw,
-      };
-    }),
+    [...finishedTurns]
+      .reverse()
+      .slice(0, 12)
+      .map((t, i) => {
+        const n = finishedTurns.length - i;
+        const userMsg = t.items.find(
+          (it): it is Extract<AgentItem, { kind: "message" }> =>
+            it.kind === "message" && it.role === "user",
+        );
+        const anyMsg = t.items.find(
+          (it): it is Extract<AgentItem, { kind: "message" }> => it.kind === "message",
+        );
+        const raw = (userMsg?.text ?? anyMsg?.text ?? `Turno ${n}`).trim();
+        return {
+          id: t.id,
+          index: n,
+          cost: t.costUsd,
+          preview: raw.length > 40 ? `${raw.slice(0, 40)}…` : raw,
+        };
+      }),
   );
 
   const turnsWithCost = $derived(
@@ -229,14 +227,15 @@
 </script>
 
 <div class="usage-root" style="--accent: {ACCENT}">
-  <Modal title="Uso" subtitle={subtitle} size="sm" contained onClose={onClose}>
+  <Modal title="Uso" {subtitle} size="sm" contained {onClose}>
     <div class="stack">
       <section class="account" aria-label="Uso de la cuenta">
         <div class="sec-head">
           <h3 class="sec-h">Cupos de la cuenta</h3>
           {#if updatedHint}
             <span class="live" aria-live="polite">
-              <span class="live-dot" class:is-pulse={refreshing} aria-hidden="true"></span>
+              <span class="live-dot" class:is-pulse={refreshing} aria-hidden="true"
+              ></span>
               {updatedHint}
             </span>
           {/if}
@@ -259,8 +258,8 @@
           <div class="state">
             <p class="state-t">Sin cupos de suscripción</p>
             <p class="state-d">
-              Este dato solo aparece con plan Pro/Max (OAuth). Con API key no
-              hay ventana de 5 h ni semanal.
+              Este dato solo aparece con plan Pro/Max (OAuth). Con API key no hay
+              ventana de 5 h ni semanal.
             </p>
           </div>
         {:else}
@@ -365,11 +364,7 @@
                 <li class="turn">
                   <span class="turn-n" data-numeric>#{row.index}</span>
                   <span class="turn-p" use:tip={row.preview}>{row.preview}</span>
-                  <span
-                    class="turn-c"
-                    class:is-bare={row.cost == null}
-                    data-numeric
-                  >
+                  <span class="turn-c" class:is-bare={row.cost == null} data-numeric>
                     {row.cost != null ? formatCost(row.cost) : "—"}
                   </span>
                 </li>
@@ -550,7 +545,7 @@
     padding: 0.4rem 0.55rem;
     border: 1px solid var(--rb-border);
     border-radius: 0.45rem;
-    background: color-mix(in srgb, var(--rb-text) 3%, transparent);
+    background: color-mix(in sRGB, var(--rb-text) 3%, transparent);
   }
 
   .stat-l {
