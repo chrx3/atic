@@ -1,24 +1,31 @@
-//! Spike de la Fase 0: valida que la captura GDI produce PNGs correctos.
+//! Spike de captura: valida que el motor produce PNGs con contenido.
 //!
 //! Congela cada monitor y captura la ventana en primer plano, escribiendo los
-//! PNG a la carpeta temporal e informando dimensiones y si el frame trae
-//! contenido (no todo negro). No cubre el arrastre nativo (requiere prueba
-//! manual con `tauri-plugin-drag`).
+//! PNG a la carpeta temporal. En macOS pide permiso de grabación de pantalla.
 //!
 //! Uso:
 //!   cargo run --example spike -p atic-capture
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 fn main() {
     use atic_capture::{engine, monitors, windows as win};
 
-    // El spike es un binario suelto (no Tauri), así que debe declararse
-    // consciente de DPI para que BitBlt capture píxeles físicos reales.
+    #[cfg(windows)]
     unsafe {
         use windows_sys::Win32::UI::HiDpi::{
             SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
         };
         SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let access = core_graphics::access::ScreenCaptureAccess;
+        println!(
+            "permiso grabación de pantalla: preflight={} request={}",
+            access.preflight(),
+            access.request()
+        );
     }
 
     let out_dir = std::env::temp_dir();
@@ -35,14 +42,28 @@ fn main() {
     }
 
     println!("\n== Captura de monitores (congelar primero) ==");
-    for frame in engine::freeze_monitors(&mons, false) {
-        let path = out_dir.join(format!(
-            "spike_{}x{}_{}.png",
-            frame.width(),
-            frame.height(),
-            frame.bounds.x
-        ));
-        report(&frame, &path);
+    for monitor in &mons {
+        match engine::capture_rect(monitor.bounds, false) {
+            Ok(frame) => {
+                let path = out_dir.join(format!(
+                    "spike_{}x{}_{}.png",
+                    frame.width(),
+                    frame.height(),
+                    frame.bounds.x
+                ));
+                report(&frame, &path);
+            }
+            Err(error) => println!("  {} error: {error}", monitor.id),
+        }
+    }
+
+    let candidates = win::enumerate_candidates(0, &mons);
+    println!("\n== Ventanas candidatas: {} ==", candidates.len());
+    for candidate in candidates.iter().take(8) {
+        println!(
+            "  id={} pid={} {} {:?}",
+            candidate.hwnd, candidate.process_id, candidate.title, candidate.visual_bounds
+        );
     }
 
     println!("\n== Captura de la ventana en primer plano ==");
@@ -60,7 +81,7 @@ fn main() {
     }
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 fn report(frame: &atic_capture::Frame, path: &std::path::Path) {
     let non_black = frame.bgra.iter().any(|&b| b > 8);
     match frame.to_png() {
@@ -86,7 +107,7 @@ fn report(frame: &atic_capture::Frame, path: &std::path::Path) {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 fn main() {
-    eprintln!("El spike de capturas solo funciona en Windows.");
+    eprintln!("El spike de capturas solo funciona en Windows y macOS.");
 }

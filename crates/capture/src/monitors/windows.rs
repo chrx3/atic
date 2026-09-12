@@ -1,11 +1,4 @@
 //! Enumeración de monitores vía Win32 (`EnumDisplayMonitors`).
-//!
-//! El motor usa esto para conocer los rectángulos físicos de cada pantalla
-//! (para congelar frames) y el área útil (`rcWork`, sin barra de tareas) para
-//! ubicar el shelf. La capa Tauri puede además usar `available_monitors()`
-//! para la geometría de los overlays.
-
-use serde::Serialize;
 
 use windows_sys::Win32::Foundation::{LPARAM, RECT};
 use windows_sys::Win32::Graphics::Gdi::{
@@ -16,40 +9,15 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
 };
 
+use super::MonitorInfo;
 use crate::geometry::Rect;
 
-#[derive(Debug, Clone, Serialize)]
-pub struct MonitorInfo {
-    /// Identificador estable dentro de una sesión (orden de enumeración).
-    pub id: String,
-    /// Rectángulo físico del monitor en coordenadas del escritorio virtual.
-    pub bounds: Rect,
-    /// Área útil (excluye la barra de tareas), para ubicar el shelf.
-    pub work_area: Rect,
-    pub is_primary: bool,
-    /// Escala del monitor (1.0 = 100%, 1.25 = 125%…).
-    ///
-    /// Por monitor y no por ventana: `GetDpiForWindow` da un solo número, el
-    /// del monitor donde la ventana esté en ese momento. Quien decide EN QUÉ
-    /// monitor poner algo necesita saber la escala de cada uno antes de
-    /// haberlo puesto ahí.
-    pub scale: f64,
-}
-
-/// Rectángulo del escritorio virtual completo (incluye monitores en
-/// coordenadas negativas).
+/// Fallback cuando `EnumDisplayMonitors` no devolvió nada.
 ///
-/// Se arma con la unión de `EnumDisplayMonitors`, no con `GetSystemMetrics`:
-/// tras hibernar, las métricas del escritorio virtual a veces siguen en una
-/// sola pantalla mientras los monitores ya volvieron.
-pub fn virtual_screen() -> Rect {
-    if let Some(union) = Rect::union_all(enumerate().into_iter().map(|m| m.bounds)) {
-        return union;
-    }
-    metrics_virtual_screen()
-}
-
-fn metrics_virtual_screen() -> Rect {
+/// Tras hibernar, las métricas del escritorio virtual a veces siguen en una
+/// sola pantalla mientras los monitores ya volvieron; por eso `virtual_screen`
+/// prefiere la unión de `enumerate`.
+pub(super) fn metrics_virtual_screen() -> Rect {
     // SAFETY: GetSystemMetrics no tiene precondiciones y no toca memoria nuestra.
     unsafe {
         let x = GetSystemMetrics(SM_XVIRTUALSCREEN);
@@ -60,8 +28,7 @@ fn metrics_virtual_screen() -> Rect {
     }
 }
 
-/// Enumera los monitores activos.
-pub fn enumerate() -> Vec<MonitorInfo> {
+pub(super) fn enumerate() -> Vec<MonitorInfo> {
     let mut monitors: Vec<MonitorInfo> = Vec::new();
     // SAFETY: el puntero a `monitors` vive durante toda la llamada y solo se usa
     // dentro del callback en este mismo hilo.
@@ -94,7 +61,6 @@ unsafe extern "system" fn collect_monitor(
             scale: scale_of(monitor),
         });
     }
-    // Continuar la enumeración.
     1
 }
 
@@ -111,21 +77,6 @@ unsafe fn scale_of(monitor: HMONITOR) -> f64 {
     } else {
         1.0
     }
-}
-
-/// Monitor que contiene un punto del escritorio virtual.
-///
-/// Se busca por `bounds` y no por `work_area`: un punto sobre la barra de
-/// tareas sigue perteneciendo a ese monitor, y quien pregunta suele estar
-/// resolviendo «dónde está el cursor» o «dónde está esta ventana».
-pub fn from_point(x: i32, y: i32) -> Option<MonitorInfo> {
-    let monitors = enumerate();
-    monitors
-        .iter()
-        .find(|m| m.bounds.contains(x, y))
-        .or_else(|| monitors.iter().find(|m| m.is_primary))
-        .or_else(|| monitors.first())
-        .cloned()
 }
 
 fn rect_from(r: RECT) -> Rect {

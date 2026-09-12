@@ -1,10 +1,4 @@
-//! Enumeración y filtrado de ventanas candidatas para capturar.
-//!
-//! Usa `EnumWindows` (orden topmost-first) + DWM para los límites visuales
-//! reales (sin la sombra invisible) y para descartar ventanas ocultas del
-//! sistema (`cloaked`). Sigue el estilo Win32 de `meeting_detection.rs`.
-
-use serde::Serialize;
+//! Enumeración Win32: `EnumWindows` + DWM (marco visual, sin sombra).
 
 use windows_sys::Win32::Foundation::{HWND, LPARAM, RECT};
 use windows_sys::Win32::Graphics::Dwm::{
@@ -16,25 +10,9 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     WS_EX_TOOLWINDOW,
 };
 
+use super::{monitor_for, WindowCandidate, MIN_WINDOW_SIDE};
 use crate::geometry::Rect;
 use crate::monitors::MonitorInfo;
-
-/// Lado mínimo (px físicos) para considerar una ventana seleccionable.
-const MIN_WINDOW_SIDE: u32 = 40;
-
-#[derive(Debug, Clone, Serialize)]
-pub struct WindowCandidate {
-    /// `HWND` como entero, para poder almacenarlo y serializarlo.
-    pub hwnd: isize,
-    pub title: String,
-    /// Límites visuales reales (`DWMWA_EXTENDED_FRAME_BOUNDS`), en coordenadas
-    /// físicas del escritorio virtual.
-    pub visual_bounds: Rect,
-    pub process_id: u32,
-    /// Posición en el orden Z (0 = más al frente).
-    pub z_index: usize,
-    pub monitor_id: String,
-}
 
 struct Collector<'a> {
     exclude_pid: u32,
@@ -59,13 +37,6 @@ pub fn enumerate_candidates(exclude_pid: u32, monitors: &[MonitorInfo]) -> Vec<W
         );
     }
     collector.out
-}
-
-/// Índice del candidato más al frente que contiene el punto físico, o `None`.
-pub fn topmost_at(candidates: &[WindowCandidate], x: i32, y: i32) -> Option<usize> {
-    candidates
-        .iter()
-        .position(|c| c.visual_bounds.contains(x, y))
 }
 
 /// `HWND` de la ventana en primer plano, como entero (`0` si no hay).
@@ -138,16 +109,6 @@ unsafe extern "system" fn collect_window(hwnd: HWND, param: LPARAM) -> i32 {
         monitor_id,
     });
     1
-}
-
-/// Monitor cuyo rectángulo tiene mayor intersección con la ventana.
-fn monitor_for(bounds: &Rect, monitors: &[MonitorInfo]) -> String {
-    monitors
-        .iter()
-        .filter_map(|m| m.bounds.intersection(bounds).map(|i| (i.area(), &m.id)))
-        .max_by_key(|(area, _)| *area)
-        .map(|(_, id)| id.clone())
-        .unwrap_or_default()
 }
 
 unsafe fn is_cloaked(hwnd: HWND) -> bool {

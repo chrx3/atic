@@ -6,6 +6,12 @@ pub enum Error {
     #[error("error de GDI: {0}")]
     Gdi(String),
 
+    #[error("error de captura: {0}")]
+    Capture(String),
+
+    #[error("sin permiso de grabación de pantalla")]
+    Permission,
+
     #[error("error de E/S: {0}")]
     Io(#[from] std::io::Error),
 

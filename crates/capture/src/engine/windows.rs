@@ -12,10 +12,10 @@ use windows_sys::Win32::Graphics::Gdi::{
 use windows_sys::Win32::Storage::Xps::PrintWindow;
 use windows_sys::Win32::UI::WindowsAndMessaging::{EnumChildWindows, PW_RENDERFULLCONTENT};
 
+use super::is_black;
 use crate::error::{Error, Result};
 use crate::frame::Frame;
 use crate::geometry::Rect;
-use crate::monitors::MonitorInfo;
 
 /// Lienzo en memoria (DC + bitmap compatibles con la pantalla). RAII: libera
 /// todos los recursos GDI al soltarse, incluso en caminos de error.
@@ -153,23 +153,6 @@ fn blt_rect(rect: Rect, include_cursor: bool, include_layered: bool) -> Result<F
         let bgra = canvas.read_bgra()?;
         Ok(Frame::new(rect, bgra))
     }
-}
-
-/// Congela cada monitor a memoria de una sola vez (flujo «congelar primero»).
-/// Las capturas que fallen se registran y se omiten.
-pub fn freeze_monitors(monitors: &[MonitorInfo], include_cursor: bool) -> Vec<Frame> {
-    monitors
-        .iter()
-        .filter_map(
-            |monitor| match capture_rect(monitor.bounds, include_cursor) {
-                Ok(frame) => Some(frame),
-                Err(error) => {
-                    tracing::warn!(%error, id = %monitor.id, "no se pudo congelar el monitor");
-                    None
-                }
-            },
-        )
-        .collect()
 }
 
 /// Captura una ventana recortada al marco **visible** (sin sombra DWM).
@@ -315,12 +298,6 @@ pub fn capture_window(hwnd: isize) -> Result<Frame> {
             capture_rect(bounds, false)
         }
     }
-}
-
-/// `true` si todos los píxeles son (casi) negros; corta al primer no-negro.
-fn is_black(bgra: &[u8]) -> bool {
-    const THRESHOLD: u8 = 8;
-    !bgra.iter().any(|&byte| byte > THRESHOLD)
 }
 
 /// Dibuja el cursor del sistema sobre el DC, en coordenadas relativas al origen
