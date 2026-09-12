@@ -438,10 +438,30 @@ fn show_cover(app: &AppHandle) {
             // `geom` ya está en puntos globales: lógico directo.
             crate::floating::apply_global_bounds(&window, x, y, w as i32, h as i32);
             macos_cover_chrome(&window);
+            // Ya hay foto: la tapa vuelve a ser interactiva.
+            let _ = window.set_ignore_cursor_events(false);
         }
         let _ = window.set_always_on_top(true);
         let _ = window.show();
     }
+}
+
+/// En Mac un WKWebView oculto no carga la página ni recibe el evento: se
+/// muestra transparente y click-through para despertarlo, ya en su geometría
+/// final. El front llama a `present` cuando la foto está lista.
+#[cfg(target_os = "macos")]
+fn wake_flip_window(window: &tauri::WebviewWindow, overlay: atic_capture::Rect) {
+    crate::floating::apply_global_bounds(
+        window,
+        overlay.x,
+        overlay.y,
+        overlay.width as i32,
+        overlay.height as i32,
+    );
+    macos_cover_chrome(window);
+    let _ = window.set_ignore_cursor_events(true);
+    let _ = window.set_always_on_top(true);
+    let _ = window.show();
 }
 
 /// Nivel flotante pero **debajo** de la pill (que sube a 25), visible en
@@ -626,6 +646,9 @@ fn open_macos(app: &AppHandle) -> Result<(), String> {
     GEN.fetch_add(1, Ordering::SeqCst);
     OPEN.store(true, Ordering::SeqCst);
     PRESENTED.store(false, Ordering::SeqCst);
+
+    #[cfg(target_os = "macos")]
+    wake_flip_window(&window, overlay);
 
     let _ = window.emit("window-flip-open", WindowFlipView::from(&session));
 
