@@ -107,7 +107,10 @@ fn main() {
 
     // Lo normal: invocado por el enlace, `ls.exe` corre `ls`.
     if let Some(nombre) = invocado_como(argv0) {
-        if let Some(code) = correr(&nombre, std::iter::once(OsString::from(&nombre)).chain(args)) {
+        if let Some(code) = correr(
+            &nombre,
+            std::iter::once(OsString::from(&nombre)).chain(args),
+        ) {
             std::process::exit(code);
         }
     }
