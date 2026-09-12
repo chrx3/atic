@@ -251,7 +251,7 @@ Detalle completo en el [README del repo](../README.md#privacidad).
 | en curso | Sistema líquido (transversal) | [liquid.md](liquid.md) |
 | hecho | Emergencia fused grow → separate (patrón) | [pill-liquid-emerge.md](pill-liquid-emerge.md) |
 | hecho | Ajustes y onboarding | [ajustes-onboarding.md](ajustes-onboarding.md) |
-| parcial | Audio del sistema en macOS | [macos-audio-sistema.md](macos-audio-sistema.md) |
+| hecho | Audio del sistema en macOS | [macos-audio-sistema.md](macos-audio-sistema.md) |
 | hecho | Launcher tipo Spotlight | [launcher-spotlight.md](launcher-spotlight.md) |
 | parcial | Acciones de sistema (Windows) | [system-actions.md](system-actions.md) |
 | idea | Companion móvil | [companion-movil.md](companion-movil.md) |

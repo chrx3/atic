@@ -10,7 +10,7 @@ Workspace de Cargo con la lógica en crates y la UI en Tauri 2 + SvelteKit.
 ```
 crates/
   core/        Dominio: grabaciones, SQLite, config, secretos (keyring)
-  audio/       Captura mic + loopback (WASAPI en Windows; stub macOS)
+  audio/       Captura mic + loopback (WASAPI en Windows; ScreenCaptureKit en macOS)
   capture/     Capturas de pantalla (GDI en Windows; Core Graphics en macOS)
   transcribe/  Whisper local + Groq opcional + live + import de audio
   summarize/   Resumen BYOK: Claude, Ollama, OpenAI-compat
