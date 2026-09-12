@@ -783,10 +783,7 @@ fn cursor_over_loupe(x: i32, y: i32) -> bool {
     let pad = LOUPE_PAD_PX.load(Ordering::SeqCst);
     let left = LOUPE_X.load(Ordering::SeqCst) + pad;
     let top = LOUPE_Y.load(Ordering::SeqCst) + pad;
-    x >= left
-        && x < left + (w - pad * 2).max(0)
-        && y >= top
-        && y < top + (h - pad * 2).max(0)
+    x >= left && x < left + (w - pad * 2).max(0) && y >= top && y < top + (h - pad * 2).max(0)
 }
 
 #[cfg(target_os = "macos")]
@@ -1081,8 +1078,7 @@ fn sample_live(
     if capture.is_empty() {
         return Err("fuera de pantalla".into());
     }
-    let frame =
-        engine::capture_rect(capture, false).map_err(crate::ui_lang::map_capture_error)?;
+    let frame = engine::capture_rect(capture, false).map_err(crate::ui_lang::map_capture_error)?;
     // En Mac el frame sale a resolución nativa (puntos × escala): el punto
     // global se traduce a píxeles del PNG. En Windows ya coinciden.
     let scale = if capture.width > 0 {
@@ -1290,9 +1286,7 @@ fn resize_loupe(app: &AppHandle, rose: bool) -> Result<(), String> {
                 if previous != 0 && previous != raw {
                     PREVIOUS_FOREGROUND.store(previous, Ordering::SeqCst);
                 }
-                std::thread::spawn(move || {
-                    crate::clipboard_history::force_foreground(raw as _)
-                });
+                std::thread::spawn(move || crate::clipboard_history::force_foreground(raw as _));
             }
             #[cfg(target_os = "macos")]
             {

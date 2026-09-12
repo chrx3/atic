@@ -313,9 +313,7 @@ fn install_macos_monitors() {
         if let Some(monitor) = global_monitor {
             std::mem::forget(monitor);
         }
-        if let Some(monitor) =
-            NSEvent::addLocalMonitorForEventsMatchingMask_handler(mask, &local)
-        {
+        if let Some(monitor) = NSEvent::addLocalMonitorForEventsMatchingMask_handler(mask, &local) {
             std::mem::forget(monitor);
         }
     }
