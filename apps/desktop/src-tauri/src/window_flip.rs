@@ -342,8 +342,7 @@ pub fn window_flip_focus_is_foreign(app: AppHandle) -> bool {
     #[cfg(target_os = "macos")]
     {
         let _ = app;
-        crate::macos_notes::frontmost_app_pid()
-            .is_some_and(|pid| pid != std::process::id() as i32)
+        crate::macos_notes::frontmost_app_pid().is_some_and(|pid| pid != std::process::id() as i32)
     }
     #[cfg(not(any(windows, target_os = "macos")))]
     {
@@ -539,10 +538,22 @@ fn open_macos(app: &AppHandle) -> Result<(), String> {
     }
 
     let monitors = atic_capture::monitors::enumerate();
-    let candidate = capwin::enumerate_candidates(pid_self, &monitors)
+    let candidate = match capwin::enumerate_candidates(pid_self, &monitors)
         .into_iter()
         .next()
-        .ok_or_else(|| "no hay ventana al frente".to_string())?;
+    {
+        Some(candidate) => candidate,
+        None => {
+            // Sin Grabación de pantalla, CGWindowList sólo lista ventanas
+            // propias: después de excluir las de Atic la lista queda vacía.
+            let access = core_graphics::access::ScreenCaptureAccess;
+            if !access.preflight() {
+                let _ = access.request();
+                return Err(crate::ui_lang::capture_permission());
+            }
+            return Err("no hay ventana al frente".into());
+        }
+    };
     let bounds = candidate.visual_bounds;
     if bounds.width < 80 || bounds.height < 80 {
         return Err("la ventana es demasiado chica".into());
