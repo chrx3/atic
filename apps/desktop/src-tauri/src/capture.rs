@@ -556,7 +556,7 @@ fn ensure_in_dir(dir: &Path, path: &Path) -> Result<PathBuf, String> {
     }
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 fn capture_primary(app: &AppHandle) -> Result<(String, (i32, i32)), String> {
     use atic_capture::{engine, monitors, naming};
 
@@ -572,16 +572,19 @@ fn capture_primary(app: &AppHandle) -> Result<(String, (i32, i32)), String> {
             crate::ui_lang::msg("No se detectaron monitores.", "No monitors were detected.")
         })?;
 
-    let frame = engine::capture_rect(target.bounds, false).map_err(|error| error.to_string())?;
+    let frame =
+        engine::capture_rect(target.bounds, false).map_err(crate::ui_lang::map_capture_error)?;
     let png = frame.to_png().map_err(|error| error.to_string())?;
-    let anchor = rect_center(frame.bounds);
+    // El ancla va en coords globales (puntos en Mac), no en píxeles nativos:
+    // `frame.bounds` es nativo en Mac y ubicaría el shelf en otro monitor.
+    let anchor = rect_center(target.bounds);
 
     let path = dir.join(naming::unique_capture_filename(&dir));
     std::fs::write(&path, &png).map_err(|error| error.to_string())?;
     Ok((path.to_string_lossy().into_owned(), anchor))
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 fn rect_center(bounds: atic_capture::Rect) -> (i32, i32) {
     (
         bounds.x + bounds.width as i32 / 2,
@@ -589,7 +592,7 @@ fn rect_center(bounds: atic_capture::Rect) -> (i32, i32) {
     )
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 fn capture_primary(_app: &AppHandle) -> Result<(String, (i32, i32)), String> {
     Err(crate::ui_lang::capture_windows_only())
 }

@@ -280,7 +280,6 @@ fn place_hwnd(window: &WebviewWindow, x: i32, y: i32, w: i32, h: i32) {
     }
     #[cfg(not(windows))]
     {
-        let _ = window.set_position(tauri::PhysicalPosition::new(x, y));
-        let _ = window.set_size(tauri::PhysicalSize::new(w.max(1) as u32, h.max(1) as u32));
+        crate::floating::apply_global_bounds(window, x, y, w, h);
     }
 }

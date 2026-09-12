@@ -5,8 +5,8 @@
 //! cubre el escritorio virtual mostrando ese frame. El usuario selecciona una
 //! ventana (clic), una región (arrastre) o un monitor (Espacio). La captura se
 //! recorta del frame congelado (región/monitor) o se re-renderiza con
-//! `PrintWindow` (ventana), de modo que el overlay nunca aparece en el
-//! resultado.
+//! `PrintWindow` / `CGWindowListCreateImage` (ventana), de modo que el overlay
+//! nunca aparece en el resultado.
 //!
 //! El overlay es opaco a propósito: las ventanas transparentes de WebView2
 //! hacen crashear a wry en `WM_SETFOCUS` al recibir un clic.
@@ -79,7 +79,22 @@ fn input_idle_ms() -> Option<u64> {
     Some(now.wrapping_sub(info.dwTime) as u64)
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+fn input_idle_ms() -> Option<u64> {
+    #[link(name = "CoreGraphics", kind = "framework")]
+    extern "C" {
+        fn CGEventSourceSecondsSinceLastEventType(state: i32, event_type: u32) -> f64;
+    }
+    // CombinedSessionState = 0, kCGAnyInputEventType = 0xFFFFFFFF.
+    let secs = unsafe { CGEventSourceSecondsSinceLastEventType(0, u32::MAX) };
+    if secs.is_finite() && secs >= 0.0 {
+        Some((secs * 1000.0) as u64)
+    } else {
+        None
+    }
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 fn input_idle_ms() -> Option<u64> {
     // Sin probe nativo se conserva el comportamiento seguro: usuario activo.
     Some(0)
@@ -91,20 +106,117 @@ pub enum OverlayKind {
     Capture,
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 pub struct OverlaySession {
-    /// Frame congelado de todo el escritorio virtual (coords físicas).
+    /// Windows: frame congelado del escritorio virtual (coords físicas), que
+    /// también es la fuente de los recortes.
+    #[cfg(windows)]
     frame: atic_capture::Frame,
-    /// Ventanas candidatas (coords físicas globales), z-order topmost-first.
+    /// macOS: frames **nativos** por monitor, en el mismo orden que
+    /// `monitors`. Un Retina y un 1x no comparten grilla de píxeles, así que
+    /// los recortes finales salen de acá y conservan la resolución de cada
+    /// pantalla.
+    #[cfg(target_os = "macos")]
+    natives: Vec<atic_capture::Frame>,
+    /// Rect del escritorio virtual en el espacio del preview (píxeles del
+    /// JPEG que ve el frontend).
+    preview_bounds: atic_capture::Rect,
+    /// Píxeles de preview por punto del escritorio (1.0 en Windows).
+    preview_scale: f64,
+    /// Ventanas candidatas (coords globales), z-order topmost-first.
     candidates: Vec<atic_capture::windows::WindowCandidate>,
     /// Monitores, para la selección de monitor completo.
     monitors: Vec<atic_capture::monitors::MonitorInfo>,
-    /// PNG temporal del frame congelado (se borra al terminar).
+    /// JPEG temporal del frame congelado (se borra al terminar).
     frame_path: std::path::PathBuf,
     kind: OverlayKind,
 }
 
-#[cfg(not(windows))]
+#[cfg(any(windows, target_os = "macos"))]
+impl OverlaySession {
+    /// Punto global (puntos en Mac, físicos en Windows) → píxeles del preview.
+    fn point_to_preview(&self, x: i32, y: i32) -> (f64, f64) {
+        (
+            f64::from(x) * self.preview_scale - f64::from(self.preview_bounds.x),
+            f64::from(y) * self.preview_scale - f64::from(self.preview_bounds.y),
+        )
+    }
+
+    /// Píxeles del preview (relativos a su esquina) → punto global.
+    fn preview_to_point(&self, right: f64, down: f64) -> (i32, i32) {
+        (
+            ((f64::from(self.preview_bounds.x) + right) / self.preview_scale).round() as i32,
+            ((f64::from(self.preview_bounds.y) + down) / self.preview_scale).round() as i32,
+        )
+    }
+
+    /// Recorta una región del escritorio congelado (coords en puntos) a la
+    /// mejor resolución disponible.
+    ///
+    /// Windows: del frame único. macOS: de los frames nativos; si la región
+    /// toca un solo monitor sale nativa, si cruza monitores de escalas
+    /// distintas se compone en la mayor.
+    fn crop_points(&self, rect: atic_capture::Rect) -> Option<atic_capture::Frame> {
+        #[cfg(windows)]
+        {
+            self.frame.crop(rect)
+        }
+        #[cfg(target_os = "macos")]
+        {
+            crop_natives(&self.monitors, &self.natives, rect)
+        }
+    }
+}
+
+/// Escala un rect en el espacio global a píxeles de una escala dada.
+#[cfg(any(windows, target_os = "macos"))]
+fn scaled_rect(rect: atic_capture::Rect, scale: f64) -> atic_capture::Rect {
+    atic_capture::Rect::new(
+        (f64::from(rect.x) * scale).round() as i32,
+        (f64::from(rect.y) * scale).round() as i32,
+        (f64::from(rect.width) * scale).round().max(1.0) as u32,
+        (f64::from(rect.height) * scale).round().max(1.0) as u32,
+    )
+}
+
+/// Compone el recorte de una región en puntos usando los frames nativos.
+#[cfg(target_os = "macos")]
+fn crop_natives(
+    monitors: &[atic_capture::monitors::MonitorInfo],
+    natives: &[atic_capture::Frame],
+    rect: atic_capture::Rect,
+) -> Option<atic_capture::Frame> {
+    let mut out_scale = 1.0_f64;
+    let mut found = false;
+    for monitor in monitors.iter().take(natives.len()) {
+        if monitor.bounds.intersection(&rect).is_some() {
+            out_scale = out_scale.max(monitor.scale.max(0.01));
+            found = true;
+        }
+    }
+    if !found {
+        return None;
+    }
+    let out_bounds = scaled_rect(rect, out_scale);
+    let mut canvas = atic_capture::Frame::new(
+        out_bounds,
+        vec![0u8; out_bounds.width as usize * out_bounds.height as usize * 4],
+    );
+    let mut any = false;
+    for (monitor, native) in monitors.iter().zip(natives) {
+        let Some(inter) = monitor.bounds.intersection(&rect) else {
+            continue;
+        };
+        let Some(cropped) = native.crop(scaled_rect(inter, monitor.scale.max(0.01))) else {
+            continue;
+        };
+        canvas.blend_over_scaled(&cropped, scaled_rect(inter, out_scale));
+        any = true;
+    }
+    any.then_some(canvas)
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 pub struct OverlaySession;
 
 #[derive(Clone, Serialize)]
@@ -189,7 +301,7 @@ fn trigger_kind(app: &AppHandle, kind: OverlayKind) -> Result<(), String> {
 }
 
 fn session_kind(app: &AppHandle) -> Option<OverlayKind> {
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     {
         app.try_state::<crate::state::AppState>().and_then(|state| {
             state
@@ -199,7 +311,7 @@ fn session_kind(app: &AppHandle) -> Option<OverlayKind> {
                 .map(|s| s.kind)
         })
     }
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         let _ = app;
         None
@@ -318,14 +430,14 @@ fn end_session(app: &AppHandle) {
     let _ = app.emit("overlay-session-ended", ());
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 fn end_session_cleanup(session: Option<OverlaySession>) {
     if let Some(session) = session {
         let _ = std::fs::remove_file(&session.frame_path);
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 fn end_session_cleanup(_session: Option<OverlaySession>) {}
 
 // ---------------------------------------------------------------------------
@@ -340,7 +452,7 @@ fn abandon_start(app: &AppHandle) {
     }
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 fn start_impl(app: &AppHandle, kind: OverlayKind) -> Result<(), String> {
     mark_capture_overlay_used();
     // Solo una sesión: si ya hay overlay, cancelar (mismo criterio que el atajo).
@@ -420,9 +532,94 @@ pub(crate) fn compose_overlay(app: &AppHandle, frame: &mut atic_capture::Frame) 
     }
 }
 
+/// Congela el escritorio para la mira.
+///
+/// Devuelve el frame del preview (el que se muestra), su escala en píxeles por
+/// punto y —en macOS— los frames nativos por monitor, que son la fuente de los
+/// recortes finales. En Windows el preview ya es el frame físico único y
+/// `natives` va vacío.
 #[cfg(windows)]
+fn freeze_desktop(
+    include_cursor: bool,
+) -> Result<(atic_capture::Frame, f64, Vec<atic_capture::Frame>), String> {
+    let vs = atic_capture::monitors::virtual_screen();
+    let frame = atic_capture::engine::capture_rect(vs, include_cursor)
+        .map_err(crate::ui_lang::map_capture_error)?;
+    Ok((frame, 1.0, Vec::new()))
+}
+
+#[cfg(target_os = "macos")]
+fn freeze_desktop(
+    include_cursor: bool,
+) -> Result<(atic_capture::Frame, f64, Vec<atic_capture::Frame>), String> {
+    use atic_capture::{engine, monitors, Frame, Rect};
+
+    let monitors = monitors::enumerate();
+    let vs = monitors::virtual_screen();
+    // El preview se arma en la escala **mayor** presente: es la que AppKit le
+    // da al backing de la ventana que cruza pantallas, así que el Retina queda
+    // 1:1 y los 1x se downsamplean (nítidos igual). Con la escala menor el
+    // text del escritorio congelado salía borroso en el Retina. Es solo el
+    // telón de la selección; cada captura final sale nativa de su monitor.
+    let preview_scale = monitors.iter().map(|m| m.scale).fold(0.0_f64, f64::max);
+    let preview_scale = if preview_scale.is_finite() && preview_scale > 0.1 {
+        preview_scale
+    } else {
+        1.0
+    };
+
+    let mut natives = Vec::with_capacity(monitors.len());
+    let mut first_error: Option<String> = None;
+    let mut captured = 0usize;
+    for monitor in &monitors {
+        match engine::capture_rect(monitor.bounds, include_cursor) {
+            Ok(frame) => {
+                natives.push(frame);
+                captured += 1;
+            }
+            Err(error) => {
+                tracing::warn!(%error, id = %monitor.id, "no se pudo congelar el monitor");
+                first_error.get_or_insert_with(|| crate::ui_lang::map_capture_error(error));
+                natives.push(Frame::new(Rect::new(0, 0, 1, 1), vec![0u8; 4]));
+            }
+        }
+    }
+    if captured == 0 {
+        return Err(first_error.unwrap_or_else(|| {
+            crate::ui_lang::msg(
+                "No se pudo congelar ninguna pantalla.",
+                "Could not freeze any screen.",
+            )
+        }));
+    }
+
+    let preview_bounds = scaled_rect(vs, preview_scale);
+    let mut preview = Frame::new(
+        preview_bounds,
+        vec![0u8; preview_bounds.width as usize * preview_bounds.height as usize * 4],
+    );
+    for (monitor, native) in monitors.iter().zip(natives.iter()) {
+        if native.bounds.width <= 1 {
+            continue;
+        }
+        preview.blend_over_scaled(native, scaled_rect(monitor.bounds, preview_scale));
+    }
+    tracing::debug!(
+        target: "captura",
+        w = preview.width(),
+        h = preview.height(),
+        non_black = preview
+            .bgra
+            .chunks_exact(4)
+            .any(|px| px[0] > 8 || px[1] > 8 || px[2] > 8),
+        "preview armado"
+    );
+    Ok((preview, preview_scale, natives))
+}
+
+#[cfg(any(windows, target_os = "macos"))]
 fn start_freeze(app: &AppHandle, token: u64, kind: OverlayKind) -> Result<(), String> {
-    use atic_capture::{engine, monitors, windows as capwin};
+    use atic_capture::{monitors, windows as capwin};
 
     let state = app.state::<crate::state::AppState>();
     let include_cursor = state.config.lock_or_recover().capture_include_cursor;
@@ -435,14 +632,17 @@ fn start_freeze(app: &AppHandle, token: u64, kind: OverlayKind) -> Result<(), St
 
     // Congelar YA. Crear el webview o encodear el preview no puede ir antes:
     // el escritorio seguiría cambiando mientras esperamos.
-    let virtual_screen = monitors::virtual_screen();
-    let frame = match engine::capture_rect(virtual_screen, include_cursor) {
-        Ok(frame) => frame,
+    let (frame, preview_scale, natives) = match freeze_desktop(include_cursor) {
+        Ok(frozen) => frozen,
         Err(error) => {
             abandon_start(app);
-            return Err(error.to_string());
+            return Err(error);
         }
     };
+    // En Windows el frame único ya es la fuente de recortes; `natives` solo lo
+    // usa macOS.
+    #[cfg(windows)]
+    let _ = &natives;
     if abort_requested(token) {
         abandon_start(app);
         return Ok(());
@@ -543,13 +743,28 @@ fn start_freeze(app: &AppHandle, token: u64, kind: OverlayKind) -> Result<(), St
             let _ = std::fs::remove_file(&frame_path);
             return Ok(());
         }
-        *guard = Some(OverlaySession {
+        let preview_bounds = frame.bounds;
+        #[cfg(windows)]
+        let session = OverlaySession {
             frame,
+            preview_bounds,
+            preview_scale,
             candidates,
             monitors,
             frame_path,
             kind,
-        });
+        };
+        #[cfg(target_os = "macos")]
+        let session = OverlaySession {
+            natives,
+            preview_bounds,
+            preview_scale,
+            candidates,
+            monitors,
+            frame_path,
+            kind,
+        };
+        *guard = Some(session);
         STARTING.store(false, Ordering::SeqCst);
     }
 
@@ -575,14 +790,23 @@ fn start_freeze(app: &AppHandle, token: u64, kind: OverlayKind) -> Result<(), St
         }
     };
     let _ = app.emit("overlay-session-started", info);
+    tracing::debug!(target: "captura", overlay_ready, "sesión de captura emitida");
+    // En Mac un WKWebView oculto no carga la página hasta que la ventana se
+    // muestra: sin este empujón el webview precalentado nunca escucha el
+    // evento y la mira queda en negro hasta que el watchdog cancela. Se
+    // muestra transparente y click-through; el frontend la revela cuando el
+    // frame está pintado.
+    #[cfg(target_os = "macos")]
+    wake_capture_overlay(app);
     schedule_show_watchdog(app.clone(), token);
     // La pill encima del frame, sin bloquear la mira. Si el recorte llega
     // antes, la captura sale sin la pill: es el caso raro.
+    #[cfg(windows)]
     compose_overlay_into_session(app);
     Ok(())
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 fn hide_overlay_if_visible(app: &AppHandle) {
     let Some(window) = app.get_webview_window(OVERLAY_LABEL) else {
         return;
@@ -621,6 +845,15 @@ fn compose_overlay_into_session(app: &AppHandle) {
 /// mejor contexto. Este es el backstop para cuando ni siquiera llegó a
 /// escuchar `overlay-session-started`, que es precisamente cuando el de allá
 /// no existe.
+#[cfg(windows)]
+const SHOW_WATCHDOG_SECS: u64 = 6;
+/// En Mac la ventana recién se muestra al empezar la sesión y la página se
+/// carga ahí: el primer render en dev (Vite transformando la ruta) puede
+/// pasar de 6 s. En release revela en menos de un segundo; el watchdog solo
+/// cubre que la creación/el render se traben.
+#[cfg(target_os = "macos")]
+const SHOW_WATCHDOG_SECS: u64 = 15;
+#[cfg(not(any(windows, target_os = "macos")))]
 const SHOW_WATCHDOG_SECS: u64 = 6;
 
 fn schedule_show_watchdog(app: AppHandle, token: u64) {
@@ -655,6 +888,7 @@ pub fn show_capture_overlay(app: AppHandle) -> Result<(), String> {
 /// que apaga el watchdog de [`schedule_show_watchdog`].
 #[tauri::command]
 pub fn capture_overlay_revealed() {
+    tracing::debug!(target: "captura", "mira revelada");
     REVEALED.store(true, Ordering::SeqCst);
 }
 
@@ -712,9 +946,13 @@ fn capture_webview_alive(window: &tauri::WebviewWindow) -> bool {
 /// Misma cuenta que el overlay de la pill: WebView2 se queda con el
 /// `inner_size` del create. Si nace a 800×600, en dos monitores la mira queda
 /// como una sola pantalla, a menudo centrada entre las dos.
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 fn virtual_screen_logical() -> (f64, f64, f64, f64) {
     let vs = atic_capture::monitors::virtual_screen();
+    // En Mac `virtual_screen()` ya está en puntos (unidad lógica de AppKit).
+    #[cfg(target_os = "macos")]
+    let scale = 1.0_f64;
+    #[cfg(not(target_os = "macos"))]
     let scale = atic_capture::monitors::enumerate()
         .iter()
         .map(|m| m.scale)
@@ -933,6 +1171,52 @@ pub(crate) fn cover_rect(window: &tauri::WebviewWindow, vs: atic_capture::Rect) 
     crate::webview_tweaks::sync_controller_bounds(window);
 }
 
+/// Por encima de la pill (nivel 25) y de la barra de menú (24).
+///
+/// `always_on_top` de Tauri usa `NSFloatingWindowLevel` (3). La mira tiene que
+/// tapar el escritorio entero, incluido el notch de la pill.
+#[cfg(target_os = "macos")]
+fn macos_capture_overlay_chrome(window: &tauri::WebviewWindow) {
+    let Ok(ptr) = window.ns_window() else {
+        return;
+    };
+    let ns = ptr as *mut objc2::runtime::AnyObject;
+    if ns.is_null() {
+        return;
+    }
+    unsafe {
+        // NSPopUpMenuWindowLevel = 101.
+        let _: () = objc2::msg_send![ns, setLevel: 101isize];
+        let behavior: usize = 1 | (1 << 4) | (1 << 8);
+        let _: () = objc2::msg_send![ns, setCollectionBehavior: behavior];
+        let _: () = objc2::msg_send![ns, setHidesOnDeactivate: false];
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn cover_virtual_desktop(window: &tauri::WebviewWindow) {
+    cover_rect(window, atic_capture::monitors::virtual_screen());
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn cover_rect(window: &tauri::WebviewWindow, vs: atic_capture::Rect) {
+    // `vs` está en puntos y AppKit coloca ventanas en puntos: lógico directo.
+    // `Physical` se dividiría por el backing scale de la ventana y con
+    // monitores de escalas distintas no hay un factor único.
+    let _ = window.set_max_size(Some(tauri::Size::Logical(tauri::LogicalSize::new(
+        16384.0, 16384.0,
+    ))));
+    let _ = window.set_position(tauri::LogicalPosition::new(
+        f64::from(vs.x),
+        f64::from(vs.y),
+    ));
+    let _ = window.set_size(tauri::LogicalSize::new(
+        f64::from(vs.width).max(1.0),
+        f64::from(vs.height).max(1.0),
+    ));
+    macos_capture_overlay_chrome(window);
+}
+
 /// Sin esto DWM anima el `show`/`hide` como si naciera una ventana nueva.
 /// La mira tiene que aparecer como el mismo escritorio, un frame después.
 #[cfg(windows)]
@@ -956,9 +1240,9 @@ fn disable_dwm_transitions(window: &tauri::WebviewWindow) {
 }
 
 fn create_capture_overlay(app: &AppHandle) -> Result<tauri::WebviewWindow, String> {
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     let (lx, ly, lw, lh) = virtual_screen_logical();
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "macos")))]
     let (lx, ly, lw, lh) = (0.0, 0.0, 800.0, 600.0);
 
     let mut builder = tauri::WebviewWindowBuilder::new(
@@ -980,6 +1264,16 @@ fn create_capture_overlay(app: &AppHandle) -> Result<tauri::WebviewWindow, Strin
     .skip_taskbar(true)
     .shadow(false)
     .visible(false);
+    #[cfg(target_os = "macos")]
+    {
+        // Transparente para poder mostrarla temprano (despierta el webview
+        // oculto, que en WKWebView no carga hasta verse) sin que aparezca un
+        // fondo negro antes de que el frame esté pintado.
+        builder = builder
+            .accept_first_mouse(true)
+            .transparent(true)
+            .visible_on_all_workspaces(true);
+    }
     if let Ok(dir) = app.path().app_local_data_dir() {
         builder = builder.data_directory(dir.join("capture-overlay-webview"));
     }
@@ -998,6 +1292,11 @@ fn create_capture_overlay(app: &AppHandle) -> Result<tauri::WebviewWindow, Strin
         crate::webview_tweaks::disable_browser_accelerator_keys(&window);
         cover_virtual_desktop(&window);
         disable_dwm_transitions(&window);
+    }
+    #[cfg(target_os = "macos")]
+    {
+        cover_virtual_desktop(&window);
+        macos_capture_overlay_chrome(&window);
     }
     Ok(window)
 }
@@ -1031,8 +1330,14 @@ fn create_capture_overlay(app: &AppHandle) -> Result<tauri::WebviewWindow, Strin
 pub(crate) fn prewarm_capture_overlay(app: &AppHandle) {
     ensure_capture_overlay_idle_reaper(app);
     ensure_capture_overlay_activity_rewarmer(app);
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     {
+        // El arranque y el rewarmer pueden pedirlo a la vez (la creación tarda
+        // segundos y el rewarmer la ve "faltante"): una sola creación en vuelo.
+        static PREWARM_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+        if PREWARM_IN_FLIGHT.swap(true, Ordering::SeqCst) {
+            return;
+        }
         let app = app.clone();
         let _ = std::thread::Builder::new()
             .name("atic-capture-prewarm".into())
@@ -1042,9 +1347,10 @@ pub(crate) fn prewarm_capture_overlay(app: &AppHandle) {
                 } else {
                     mark_capture_overlay_used();
                 }
+                PREWARM_IN_FLIGHT.store(false, Ordering::SeqCst);
             });
     }
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         let _ = app;
     }
@@ -1203,8 +1509,7 @@ fn ensure_capture_overlay_activity_rewarmer(app: &AppHandle) {
             if starting || active || warming {
                 continue;
             }
-            if input_idle
-                .is_none_or(|elapsed| elapsed > CAPTURE_ACTIVITY_RECENT.as_millis() as u64)
+            if input_idle.is_none_or(|elapsed| elapsed > CAPTURE_ACTIVITY_RECENT.as_millis() as u64)
             {
                 continue;
             }
@@ -1277,13 +1582,12 @@ fn ensure_capture_overlay(app: &AppHandle) -> Result<(), String> {
         let _ = tx.send(result);
     })
     .map_err(|err| err.to_string())?;
-    rx.recv_timeout(CAPTURE_CREATE_TIMEOUT)
-        .map_err(|_| {
-            crate::ui_lang::msg(
-                "Se agotó el tiempo al crear la captura.",
-                "Timed out creating the capture overlay.",
-            )
-        })?
+    rx.recv_timeout(CAPTURE_CREATE_TIMEOUT).map_err(|_| {
+        crate::ui_lang::msg(
+            "Se agotó el tiempo al crear la captura.",
+            "Timed out creating the capture overlay.",
+        )
+    })?
 }
 
 fn restore_main_hit_testing(app: &AppHandle) {
@@ -1292,8 +1596,29 @@ fn restore_main_hit_testing(app: &AppHandle) {
     }
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
+/// Despierta la mira sin revelarla: la muestra transparente y click-through.
+///
+/// `WKWebView` no carga la página de una ventana oculta; mostrarla al empezar
+/// la sesión es lo que hace que el webview monte, pida `overlayInfo()` y
+/// cargue el frame. El frontend llama después a `showCaptureOverlay`, que la
+/// vuelve interactiva y la deja con el frame ya pintado.
+#[cfg(target_os = "macos")]
+fn wake_capture_overlay(app: &AppHandle) {
+    let Some(window) = app.get_webview_window(OVERLAY_LABEL) else {
+        return;
+    };
+    // Click-through: todavía no hay frame que seleccionar y no debe robarle
+    // el mouse al escritorio mientras carga.
+    let _ = window.set_ignore_cursor_events(true);
+    cover_virtual_desktop(&window);
+    let _ = window.set_always_on_top(true);
+    let _ = window.show();
+    tracing::debug!(target: "captura", "mira despertada");
+}
+
 fn show_overlay_window(app: &AppHandle) -> Result<(), String> {
+    tracing::debug!(target: "captura", "show_overlay_window");
     let state = app.state::<crate::state::AppState>();
     {
         let guard = state.overlay_session.lock_or_recover();
@@ -1312,6 +1637,7 @@ fn show_overlay_window(app: &AppHandle) -> Result<(), String> {
     // Tamaño/posición ANTES del show, en un solo SetWindowPos: si no, Windows
     // recorta a un monitor y DWM centra la ventana entre las dos pantallas.
     cover_virtual_desktop(&window);
+    #[cfg(windows)]
     disable_dwm_transitions(&window);
     let _ = window.set_always_on_top(true);
     let _ = window.show();
@@ -1329,7 +1655,10 @@ fn show_overlay_window(app: &AppHandle) -> Result<(), String> {
     // overlay de captura al frente de la banda topmost. Con retry: el freeze
     // ya consumió los timers del primer Pressed.
     crate::overlay::reassert_capturing_input_with_retry(app);
+    #[cfg(windows)]
     raise_capture_overlay(&window);
+    #[cfg(target_os = "macos")]
+    macos_capture_overlay_chrome(&window);
     cover_virtual_desktop(&window);
     schedule_cover_retries(app);
 
@@ -1337,6 +1666,7 @@ fn show_overlay_window(app: &AppHandle) -> Result<(), String> {
     // esta app también usa SendInput para pegar. `force_foreground` activa sin
     // teclas fantasma — hace falta para Esc y para que WebView2 reciba el mouse
     // sin un clic previo “fuera” de la main.
+    #[cfg(windows)]
     if let Ok(hwnd) = window.hwnd() {
         let raw = hwnd.0 as isize;
         let app_bg = app.clone();
@@ -1348,12 +1678,16 @@ fn show_overlay_window(app: &AppHandle) -> Result<(), String> {
             crate::overlay::reassert_capturing_input(&app_bg);
         });
     }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = window.set_focus();
+    }
     Ok(())
 }
 
 /// WebView2 termina de nacer después del `show`: sin repetir, se queda en el
 /// recuadro del create (una pantalla, centrada).
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 fn schedule_cover_retries(app: &AppHandle) {
     let app = app.clone();
     std::thread::Builder::new()
@@ -1401,31 +1735,34 @@ fn raise_capture_overlay(window: &tauri::WebviewWindow) {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 fn show_overlay_window(_app: &AppHandle) -> Result<(), String> {
     Err(crate::ui_lang::capture_windows_only())
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 fn overlay_info_impl(app: &AppHandle) -> Result<OverlayInfo, String> {
     let state = app.state::<crate::state::AppState>();
     let guard = state.overlay_session.lock_or_recover();
     let session = guard.as_ref().ok_or("sin sesión de captura activa")?;
 
-    let bounds = session.frame.bounds;
+    let bounds = session.preview_bounds;
+
+    let to_preview = |x: i32, y: i32| session.point_to_preview(x, y);
 
     let candidates = session
         .candidates
         .iter()
         .map(|candidate| {
             let visual = candidate.visual_bounds;
+            let (left, top) = to_preview(visual.x, visual.y);
             OverlayCandidate {
                 hwnd: candidate.hwnd as i64,
                 title: candidate.title.clone(),
-                left: f64::from(visual.x - bounds.x),
-                top: f64::from(visual.y - bounds.y),
-                width: f64::from(visual.width),
-                height: f64::from(visual.height),
+                left,
+                top,
+                width: f64::from(visual.width) * session.preview_scale,
+                height: f64::from(visual.height) * session.preview_scale,
             }
         })
         .collect();
@@ -1435,11 +1772,12 @@ fn overlay_info_impl(app: &AppHandle) -> Result<OverlayInfo, String> {
         .iter()
         .map(|monitor| {
             let visual = monitor.bounds;
+            let (left, top) = to_preview(visual.x, visual.y);
             OverlayMonitor {
-                left: f64::from(visual.x - bounds.x),
-                top: f64::from(visual.y - bounds.y),
-                width: f64::from(visual.width),
-                height: f64::from(visual.height),
+                left,
+                top,
+                width: f64::from(visual.width) * session.preview_scale,
+                height: f64::from(visual.height) * session.preview_scale,
             }
         })
         .collect();
@@ -1459,7 +1797,7 @@ const SHELF_PAD: f64 = 8.0;
 const SHELF_THUMB_W: f64 = 192.0;
 const SHELF_THUMB_H: f64 = 120.0;
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 fn capture_shelf_landing_impl(
     app: &AppHandle,
     left: f64,
@@ -1468,17 +1806,13 @@ fn capture_shelf_landing_impl(
     height: f64,
 ) -> Result<LandingRect, String> {
     let state = app.state::<crate::state::AppState>();
-    let (near, bounds) = {
+    let (near, bounds, preview_scale) = {
         let guard = state.overlay_session.lock_or_recover();
         let session = guard.as_ref().ok_or("sin sesión de captura activa")?;
-        let bounds = session.frame.bounds;
-        (
-            (
-                bounds.x + (left + width * 0.5).round() as i32,
-                bounds.y + (top + height * 0.5).round() as i32,
-            ),
-            bounds,
-        )
+        // `left/top/width/height` llegan en píxeles del preview, relativos a la
+        // esquina del frame: se traducen a un punto global para elegir monitor.
+        let (nx, ny) = session.preview_to_point(left + width * 0.5, top + height * 0.5);
+        ((nx, ny), session.preview_bounds, session.preview_scale)
     };
 
     let left_side = state
@@ -1500,22 +1834,29 @@ fn capture_shelf_landing_impl(
 
     let shelf = app.get_webview_window("capture-shelf").ok_or("sin shelf")?;
     let pos = shelf.outer_position().map_err(|e| e.to_string())?;
-    let shelf_scale = shelf.scale_factor().unwrap_or(1.0).max(0.01);
-
-    let thumb_x = f64::from(pos.x) + SHELF_PAD * shelf_scale;
-    let thumb_y = f64::from(pos.y) + SHELF_PAD * shelf_scale;
-    let thumb_w = SHELF_THUMB_W * shelf_scale;
-    let thumb_h = SHELF_THUMB_H * shelf_scale;
+    // En Mac la posición de Tauri es física pero el global son puntos.
+    let (pos_x, pos_y) = (
+        crate::floating::to_global(&shelf, f64::from(pos.x)),
+        crate::floating::to_global(&shelf, f64::from(pos.y)),
+    );
+    // Un `CSS px` equivale a la escala DPI de Windows o a 1 punto en Mac; pasar
+    // a píxeles del preview multiplica además por su escala.
+    #[cfg(windows)]
+    let units_per_css = shelf.scale_factor().unwrap_or(1.0).max(0.01);
+    #[cfg(target_os = "macos")]
+    let units_per_css = 1.0_f64;
+    let thumb_x = (pos_x + SHELF_PAD * units_per_css) * preview_scale;
+    let thumb_y = (pos_y + SHELF_PAD * units_per_css) * preview_scale;
 
     Ok(LandingRect {
         left: thumb_x - f64::from(bounds.x),
         top: thumb_y - f64::from(bounds.y),
-        width: thumb_w,
-        height: thumb_h,
+        width: SHELF_THUMB_W * units_per_css * preview_scale,
+        height: SHELF_THUMB_H * units_per_css * preview_scale,
     })
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 fn capture_shelf_landing_impl(
     _app: &AppHandle,
     _left: f64,
@@ -1526,7 +1867,7 @@ fn capture_shelf_landing_impl(
     Err(crate::ui_lang::capture_windows_only())
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 fn window_capture_impl(app: &AppHandle, hwnd: i64) -> Result<(String, (i32, i32)), String> {
     use atic_capture::{engine, windows as capwin};
 
@@ -1536,21 +1877,27 @@ fn window_capture_impl(app: &AppHandle, hwnd: i64) -> Result<(String, (i32, i32)
 
     // PrintWindow renderiza solo la ventana; si falla/negro, recorta del frame
     // congelado (nunca de la pantalla, para no capturar el overlay).
-    let frame = match engine::print_window(hwnd as isize).map_err(|e| e.to_string())? {
-        Some(frame) => frame,
-        None => {
-            let win_bounds = capwin::window_bounds(hwnd as isize).ok_or("ventana sin límites")?;
-            session
-                .frame
-                .crop(win_bounds)
-                .ok_or("la ventana quedó fuera del área capturada")?
-        }
-    };
+    let window_bounds = capwin::window_bounds(hwnd as isize);
+    let frame =
+        match engine::print_window(hwnd as isize).map_err(crate::ui_lang::map_capture_error)? {
+            Some(frame) => frame,
+            None => {
+                let win_bounds = window_bounds.ok_or("ventana sin límites")?;
+                session
+                    .crop_points(win_bounds)
+                    .ok_or("la ventana quedó fuera del área capturada")?
+            }
+        };
+    // El ancla va en coords globales (puntos en Mac): la ventana nativa no
+    // sirve para ubicar el shelf si el monitor no es 1x.
+    let anchor = window_bounds
+        .map(rect_center)
+        .unwrap_or_else(|| rect_center(frame.bounds));
     drop(guard);
-    save_capture(app, &frame)
+    save_capture(app, &frame, anchor)
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 fn region_capture_impl(
     app: &AppHandle,
     left: f64,
@@ -1563,31 +1910,31 @@ fn region_capture_impl(
     let state = app.state::<crate::state::AppState>();
     let guard = state.overlay_session.lock_or_recover();
     let session = guard.as_ref().ok_or("sin sesión de captura activa")?;
-    let bounds = session.frame.bounds;
 
+    // La mira manda píxeles del preview; el recorte se pide en coords globales
+    // para que cada monitor aporte su resolución nativa.
+    let (px, py) = session.preview_to_point(left, top);
     let region = Rect::new(
-        bounds.x + left.round() as i32,
-        bounds.y + top.round() as i32,
-        width.round().max(1.0) as u32,
-        height.round().max(1.0) as u32,
+        px,
+        py,
+        (width / session.preview_scale).round().max(1.0) as u32,
+        (height / session.preview_scale).round().max(1.0) as u32,
     );
     let frame = session
-        .frame
-        .crop(region)
+        .crop_points(region)
         .ok_or("la región quedó fuera del área capturada")?;
+    let anchor = rect_center(region);
     drop(guard);
-    save_capture(app, &frame)
+    save_capture(app, &frame, anchor)
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 fn monitor_capture_impl(app: &AppHandle, x: f64, y: f64) -> Result<(String, (i32, i32)), String> {
     let state = app.state::<crate::state::AppState>();
     let guard = state.overlay_session.lock_or_recover();
     let session = guard.as_ref().ok_or("sin sesión de captura activa")?;
-    let bounds = session.frame.bounds;
 
-    let point_x = bounds.x + x.round() as i32;
-    let point_y = bounds.y + y.round() as i32;
+    let (point_x, point_y) = session.preview_to_point(x, y);
     let monitor = session
         .monitors
         .iter()
@@ -1596,17 +1943,27 @@ fn monitor_capture_impl(app: &AppHandle, x: f64, y: f64) -> Result<(String, (i32
         .or_else(|| session.monitors.first())
         .ok_or("no se encontró el monitor")?;
     let frame = session
-        .frame
-        .crop(monitor.bounds)
+        .crop_points(monitor.bounds)
         .ok_or("el monitor quedó fuera del área capturada")?;
+    let anchor = rect_center(monitor.bounds);
     drop(guard);
-    save_capture(app, &frame)
+    save_capture(app, &frame, anchor)
 }
 
-#[cfg(windows)]
+/// Centro de un rect en coords globales, para el vuelo del shelf.
+#[cfg(any(windows, target_os = "macos"))]
+fn rect_center(rect: atic_capture::Rect) -> (i32, i32) {
+    (
+        rect.x + rect.width as i32 / 2,
+        rect.y + rect.height as i32 / 2,
+    )
+}
+
+#[cfg(any(windows, target_os = "macos"))]
 fn save_capture(
     app: &AppHandle,
     frame: &atic_capture::Frame,
+    anchor: (i32, i32),
 ) -> Result<(String, (i32, i32)), String> {
     use atic_capture::naming;
     let state = app.state::<crate::state::AppState>();
@@ -1614,33 +1971,29 @@ fn save_capture(
     let dir = state.dirs.captures_dir();
     let path = dir.join(naming::unique_capture_filename(&dir));
     std::fs::write(&path, &png).map_err(|e| e.to_string())?;
-    let anchor = (
-        frame.bounds.x + frame.bounds.width as i32 / 2,
-        frame.bounds.y + frame.bounds.height as i32 / 2,
-    );
     Ok((path.to_string_lossy().into_owned(), anchor))
 }
 
 // ---------------------------------------------------------------------------
-// Stubs para plataformas no-Windows (la captura solo existe en Windows).
+// Stubs para plataformas sin motor de captura.
 // ---------------------------------------------------------------------------
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 fn start_impl(_app: &AppHandle, _kind: OverlayKind) -> Result<(), String> {
     Err(crate::ui_lang::capture_windows_only())
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 fn overlay_info_impl(_app: &AppHandle) -> Result<OverlayInfo, String> {
     Err(crate::ui_lang::capture_windows_only())
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 fn window_capture_impl(_app: &AppHandle, _hwnd: i64) -> Result<(String, (i32, i32)), String> {
     Err(crate::ui_lang::capture_windows_only())
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 fn region_capture_impl(
     _app: &AppHandle,
     _left: f64,
@@ -1651,7 +2004,7 @@ fn region_capture_impl(
     Err(crate::ui_lang::capture_windows_only())
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 fn monitor_capture_impl(
     _app: &AppHandle,
     _x: f64,

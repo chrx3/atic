@@ -98,7 +98,7 @@ fn recover_orphaned_statuses(state: &AppState) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    #[cfg(debug_assertions)]
+    #[cfg(all(debug_assertions, windows))]
     if std::env::args().any(|arg| arg == "--color-picker-smoke") {
         run_color_picker_smoke();
         return;
@@ -618,8 +618,9 @@ pub fn run() {
 
 /// Real WebView2/native regression harness. A separate application identifier
 /// isolates storage and it intentionally starts no agents, audio or global
-/// shortcuts. Only available in debug builds and only via an explicit flag.
-#[cfg(debug_assertions)]
+/// shortcuts. Windows-only: a second `generate_context!` in this crate
+/// duplicates `_EMBED_INFO_PLIST` on macOS and the link fails.
+#[cfg(all(debug_assertions, windows))]
 fn run_color_picker_smoke() {
     let mut context = tauri::generate_context!();
     context.config_mut().identifier = "com.ciat.atic.color-smoke".into();

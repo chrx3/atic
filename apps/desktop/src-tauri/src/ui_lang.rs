@@ -33,9 +33,23 @@ pub fn rec_missing() -> String {
 #[allow(dead_code)]
 pub fn capture_windows_only() -> String {
     msg(
-        "La captura de pantalla solo está disponible en Windows.",
-        "Screen capture is only available on Windows.",
+        "Esta herramienta de captura todavía no está disponible en esta plataforma.",
+        "This capture tool is not available on this platform yet.",
     )
+}
+
+pub fn capture_permission() -> String {
+    msg(
+        "Atic necesita permiso de grabación de pantalla. Actívalo en Ajustes → Privacidad y seguridad → Grabación de pantalla.",
+        "Atic needs Screen Recording permission. Enable it in Settings → Privacy & Security → Screen Recording.",
+    )
+}
+
+pub fn map_capture_error(error: atic_capture::Error) -> String {
+    match error {
+        atic_capture::Error::Permission => capture_permission(),
+        other => other.to_string(),
+    }
 }
 
 pub fn apply_window_titles(app: &AppHandle) {

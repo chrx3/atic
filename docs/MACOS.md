@@ -3,9 +3,22 @@
 Documentación para desarrollar y probar en **macOS** (Apple Silicon o Intel).
 El instalable (DMG firmado) viene después; aquí solo el flujo de desarrollo.
 
-> **Limitación actual (fase 4):** en macOS la app graba **solo micrófono**.
-> El audio del sistema («Otros» / loopback) aún no está implementado
-> (ScreenCaptureKit). En Windows sí funciona mic + sistema.
+> **Limitaciones actuales en macOS**
+>
+> - Audio: se graba **solo el micrófono**. El loopback del sistema
+>   (ScreenCaptureKit) aún no está. En Windows sí funciona mic + sistema.
+> - Cuentagotas y voltear ventana: siguen siendo Windows (gancho de ratón / GDI).
+> - Botones laterales del ratón: Raw Input de Win32.
+> - La pill usa `macos-private-api` y se pone por encima de la barra de menú
+>   para el notch del techo. Fuera del App Store no es un problema.
+>
+> Capturas, mira de selección y pizarra **sí** funcionan: Core Graphics
+> (`CGDisplayCreateImage`). macOS pedirá **Grabación de pantalla** la primera vez.
+>
+> Monitores con escalas distintas (Retina + 1x) están soportados: la geometría
+> va en puntos (el espacio de AppKit) y cada captura final sale a resolución
+> nativa de su monitor. Si falta Grabación de pantalla, Atic avisa con un
+> mensaje claro en vez de guardar una foto solo del fondo de pantalla.
 
 ---
 
@@ -93,13 +106,27 @@ Deberías ver:
 ### Permisos de macOS (primera ejecución)
 
 Al grabar o dictar, el sistema pedirá acceso al **micrófono**. Acepta.
+Al hacer una captura o abrir la pizarra, pedirá **Grabación de pantalla**. Acepta.
+
+Al dictar o pegar desde el historial, macOS pedirá **Accesibilidad** (para
+simular Cmd+V). Es el mismo permiso que usan los atajos globales.
 
 Rutas típicas si lo denegaste por error:
 
 - **Ajustes del Sistema → Privacidad y seguridad → Micrófono** → habilita Atic / Terminal / Cursor (según desde dónde lances `tauri dev`).
+- **Ajustes → Privacidad y seguridad → Grabación de pantalla** → habilita el binario de `tauri dev` (`atic-desktop`).
+- **Ajustes → Privacidad y seguridad → Accesibilidad** → habilita `atic-desktop` para el pegado automático.
 
-El `Info.plist` del proyecto ya declara textos TCC para micrófono y (futuro)
-captura de audio/pantalla. La captura de sistema aún no está activa.
+Tras conceder Grabación de pantalla hay que **reiniciar la app**: macOS no le
+da el permiso a un proceso ya corriendo. Lo mismo con Accesibilidad.
+
+En desarrollo, cada rebuild cambia el binario y macOS puede volver a pedir el
+permiso. Para que no pase en cada compilación, concede **Grabación de pantalla
+a la terminal** desde donde lanzas `pnpm tauri dev` (Terminal, iTerm, VS Code):
+TCC atribuye la captura al proceso responsable y los rebuilds no la revocan.
+
+El `Info.plist` del proyecto declara textos TCC para micrófono y grabación de
+pantalla. El audio de sistema (ScreenCaptureKit) aún no está activo.
 
 ### Atajos globales
 
@@ -128,6 +155,8 @@ para atajos globales. Si el atajo no responde:
 6. **Dictado** (atajo o botón de la pill): hablar → soltar / toggle → texto pegado en el campo activo.
 7. **Pill**: que no se corte al dictar/transcribir; arrastrar posición.
 8. **Entrada / salida** en la barra de grabación (mic y altavoces listados).
+9. **Captura**: atajo o herramienta de la pill → mira sobre el escritorio congelado → región / ventana / monitor. Acepta el permiso de grabación de pantalla.
+10. **Pizarra**: dibujar sobre la pantalla del cursor.
 
 Datos locales en Mac:
 

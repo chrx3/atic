@@ -408,7 +408,7 @@ pub fn sync_controller_bounds(_window: &WebviewWindow) -> Option<f64> {
 /// `BitBlt` / `PrintWindow` no ven esta ventana layered. Chromium sí puede
 /// rasterizarla. El PNG suele traer alpha de verdad; si no, el freeze hace
 /// knockout del negro vacío.
-#[cfg(windows)]
+///
 /// ¿El preview de WebView2 ya falló en esta corrida?
 ///
 /// `CapturePreview` viene fallando siempre en esta máquina —el log lo dice en
@@ -417,8 +417,10 @@ pub fn sync_controller_bounds(_window: &WebviewWindow) -> Option<f64> {
 /// un segundo de mouse trabado justo cuando empieza una captura, así que después
 /// del primer fallo se va directo al respaldo. Si algún día funciona, la primera
 /// captura lo usa igual.
+#[cfg(windows)]
 static PREVIEW_CAIDO: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+#[cfg(windows)]
 pub fn capture_preview_png(window: &WebviewWindow) -> Result<Vec<u8>, String> {
     if PREVIEW_CAIDO.load(std::sync::atomic::Ordering::Relaxed) {
         return Err("CapturePreview ya falló en esta corrida".into());

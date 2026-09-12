@@ -15,7 +15,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["tray-icon", "protocol-asset", "devtools"] }
+tauri = { version = "2", features = ["tray-icon", "protocol-asset", "devtools", "macos-private-api"] }
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-global-shortcut = "2"
@@ -106,6 +106,13 @@ windows = { version = "0.61", features = [
   # PKEY_AppUserModel_ID, para identificar cada app del AppsFolder.
   "Win32_Storage_EnhancedStorage",
 ] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+core-foundation = "0.10"
+core-graphics = "0.24"
+# Arrastre nativo (NSPasteboard/NSDraggingSession) para las salidas de Atic.
+drag = "2"
+objc2 = "0.6"
 
 [features]
 default = []
