@@ -2528,6 +2528,11 @@ pub fn on_button_down() {}
 /// En Mac no hay Raw Input: un hilo mira el cursor y solo salta al hilo de
 /// UI cuando cambia el armado. Preguntar a Tauri 60 veces/s dejaba la pill
 /// viscosa y el primer clic se perdía (la ventana seguía click-through).
+///
+/// De paso reenvía la posición del cursor mientras el overlay es interactivo:
+/// el WKWebView no recibe `mouseMoved` hasta que la ventana es key, así que la
+/// rueda y los floats no verían el `pointerenter`. El front lo convierte en
+/// eventos sintéticos.
 #[cfg(target_os = "macos")]
 fn start_macos_hit_poll(app: AppHandle) {
     std::thread::Builder::new()
@@ -2536,9 +2541,11 @@ fn start_macos_hit_poll(app: AppHandle) {
             let mut last_over = std::time::Instant::now()
                 .checked_sub(std::time::Duration::from_secs(1))
                 .unwrap_or_else(std::time::Instant::now);
+            let mut hover_at: Option<(f64, f64)> = None;
             loop {
                 std::thread::sleep(std::time::Duration::from_millis(SAMPLE_MS as u64));
-                let over = cursor_over_any_hit();
+                let sample = cursor_over_any_hit();
+                let over = sample.is_some();
                 if over {
                     last_over = std::time::Instant::now();
                 }
@@ -2546,6 +2553,22 @@ fn start_macos_hit_poll(app: AppHandle) {
                 let hold = last_over.elapsed() < std::time::Duration::from_millis(60);
                 let armed = !capturing && (over || hold);
                 let through = desired_click_through(capturing, armed);
+
+                // Hover: sólo con el overlay interactivo y el cursor adentro.
+                if through {
+                    if hover_at.take().is_some() {
+                        let _ =
+                            app.emit_to(LABEL, "overlay-cursor", OverlayPoint { x: -1.0, y: -1.0 });
+                    }
+                } else if let Some((x, y)) = sample {
+                    let moved = hover_at
+                        .is_none_or(|(lx, ly)| (lx - x).abs() > 0.5 || (ly - y).abs() > 0.5);
+                    if moved {
+                        hover_at = Some((x, y));
+                        let _ = app.emit_to(LABEL, "overlay-cursor", OverlayPoint { x, y });
+                    }
+                }
+
                 let prev = ARMED.swap(armed, Ordering::AcqRel);
                 if prev == armed && CLICK_THROUGH.load(Ordering::Acquire) == through {
                     continue;
@@ -2559,20 +2582,20 @@ fn start_macos_hit_poll(app: AppHandle) {
         .ok();
 }
 
-fn cursor_over_any_hit() -> bool {
-    let Some((x, y)) = cursor_overlay_css() else {
-        return false;
-    };
-    let Ok(rects) = HIT_RECTS.try_lock() else {
-        return false;
-    };
-    rects.iter().any(|r| r.contains(x, y, ARM_MARGIN))
+/// Posición CSS del cursor si está sobre alguna zona publicada.
+fn cursor_over_any_hit() -> Option<(f64, f64)> {
+    let (x, y) = cursor_overlay_css()?;
+    let rects = HIT_RECTS.try_lock().ok()?;
+    rects
+        .iter()
+        .any(|r| r.contains(x, y, ARM_MARGIN))
+        .then_some((x, y))
 }
 
 #[cfg(target_os = "macos")]
 fn reevaluate_arm_macos() {
     if let Some(app) = APP_HANDLE.get() {
-        let over = cursor_over_any_hit();
+        let over = cursor_over_any_hit().is_some();
         let capturing = CAPTURING.load(Ordering::Acquire);
         ARMED.store(over && !capturing, Ordering::Release);
         apply_armed_click_through(app);
