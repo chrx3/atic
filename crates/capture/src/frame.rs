@@ -164,6 +164,7 @@ impl Frame {
                 }
                 if sa == 255 {
                     self.bgra[di..di + 3].copy_from_slice(&src.bgra[si..si + 3]);
+                    self.bgra[di + 3] = 255;
                     continue;
                 }
                 let a = sa as u16;
@@ -174,9 +175,57 @@ impl Frame {
                     ((src.bgra[si + 1] as u16 * a + self.bgra[di + 1] as u16 * inv) / 255) as u8;
                 self.bgra[di + 2] =
                     ((src.bgra[si + 2] as u16 * a + self.bgra[di + 2] as u16 * inv) / 255) as u8;
+                // Propagar el alfa: una composición previa deja el destino en
+                // 0 (el caso de `capture_rect`), y volver a componer ese frame
+                // como fuente lo trataría como transparente y copiaría nada.
+                let da = self.bgra[di + 3] as u16;
+                self.bgra[di + 3] = (a + da * inv / 255) as u8;
             }
         }
     }
+
+    /// Pinta `src` escalado para ocupar `target` (coords del canvas).
+    ///
+    /// Lo usa el motor de macOS para componer un escritorio con monitores de
+    /// escalas distintas en una sola grilla. Si el tamaño coincide, no hay
+    /// remuestreo: es el caso de un monitor Retina consigo mismo.
+    pub fn blend_over_scaled(&mut self, src: &Frame, target: Rect) {
+        if target.is_empty() {
+            return;
+        }
+        if src.bounds.width == target.width && src.bounds.height == target.height {
+            let mut placed = src.clone();
+            placed.bounds = target;
+            self.blend_over(&placed);
+            return;
+        }
+        let bgra = resize_bgra(
+            src.width(),
+            src.height(),
+            &src.bgra,
+            target.width,
+            target.height,
+        );
+        let placed = Frame::new(target, bgra);
+        self.blend_over(&placed);
+    }
+}
+
+/// Remuestreo bilineal de un buffer BGRA (`image` ya es dependencia del crate).
+fn resize_bgra(sw: u32, sh: u32, src: &[u8], dw: u32, dh: u32) -> Vec<u8> {
+    let rgba: Vec<u8> = src
+        .chunks_exact(4)
+        .flat_map(|px| [px[2], px[1], px[0], px[3]])
+        .collect();
+    let Some(image) = image::RgbaImage::from_raw(sw, sh, rgba) else {
+        return vec![0u8; dw as usize * dh as usize * 4];
+    };
+    let scaled = image::imageops::resize(&image, dw, dh, image::imageops::FilterType::Triangle);
+    let mut bgra = Vec::with_capacity(dw as usize * dh as usize * 4);
+    for px in scaled.pixels() {
+        bgra.extend_from_slice(&[px[2], px[1], px[0], px[3]]);
+    }
+    bgra
 }
 
 #[cfg(test)]
@@ -247,6 +296,17 @@ mod tests {
         dst.blend_over(&src);
         assert_eq!(&dst.bgra[0..4], &[255, 0, 0, 255]);
         assert_eq!(&dst.bgra[4..8], &[0, 0, 255, 255]);
+    }
+
+    #[test]
+    fn blend_over_marks_destination_opaque() {
+        // El destino nace con alfa 0 (como el lienzo de `capture_rect`); al
+        // componer una fuente opaca el píxel tiene que quedar opaco, o una
+        // segunda composición lo trata como transparente.
+        let mut dst = Frame::new(Rect::new(0, 0, 1, 1), vec![0, 0, 0, 0]);
+        let src = Frame::new(Rect::new(0, 0, 1, 1), vec![10, 20, 30, 255]);
+        dst.blend_over(&src);
+        assert_eq!(&dst.bgra, &[10, 20, 30, 255]);
     }
 
     #[test]
