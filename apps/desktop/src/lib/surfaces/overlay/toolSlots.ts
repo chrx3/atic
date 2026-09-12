@@ -30,7 +30,7 @@ export type Point = { x: number; y: number };
 export type Size = { w: number; h: number };
 
 /** Ancho de la barra stadium (alineado a `LAUNCHER_SHAPE.w` en launcher.rs). */
-export const LAUNCHER_BAR_W = 292;
+export const LAUNCHER_BAR_W = 324;
 /** Hueco entre el borde derecho de la pill y el izquierdo de la barra. */
 export const LAUNCHER_PILL_GAP = 16;
 /**

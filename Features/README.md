@@ -125,7 +125,10 @@ El flujo completo del producto original: graba, transcribe local y resume.
 No está en la rueda pero es una herramienta más. Barra de búsqueda global tipo
 Spotlight / Raycast: abre programas y acciones de Atic sin pasar por el buscador
 de Windows. Indexa los `.lnk` del menú Inicio (Windows) y `/Applications`
-(macOS), más las acciones internas como resultados de primera clase.
+(macOS), más las acciones internas como resultados de primera clase. Además:
+**calculadora inline** (aritmética + unidades), **cerrar la app del resultado**
+(`Ctrl/Cmd+Enter`) o **todas** las abiertas, y **acciones de sistema** (bloquear,
+suspender, silenciar, vaciar papelera) — [system-actions.md](system-actions.md).
 
 **No** es un índice de todo el disco tipo Everything.
 
@@ -213,6 +216,8 @@ Consolidado de los pendientes de cada ficha que el usuario llegaría a notar.
 | Retención temporal / configuración del límite fijo de 100 ítems del clipboard | [clipboard-historial.md](clipboard-historial.md) |
 | Preferencias del launcher (raíces extra, exclusiones, favoritos) | [launcher-spotlight.md](launcher-spotlight.md) |
 | Ranking por uso y fuzzy más fino en el launcher | [launcher-spotlight.md](launcher-spotlight.md) |
+| Divisas/cripto en vivo y gestión de ventanas en el launcher | [launcher-spotlight.md](launcher-spotlight.md) |
+| Acciones de sistema en macOS | [system-actions.md](system-actions.md) |
 | Expansión de textos por trigger tipado | [snippets.md](snippets.md) |
 | Capturas en macOS | [capturas.md](capturas.md) |
 | Companion móvil | [companion-movil.md](companion-movil.md) |
@@ -248,6 +253,7 @@ Detalle completo en el [README del repo](../README.md#privacidad).
 | hecho | Ajustes y onboarding | [ajustes-onboarding.md](ajustes-onboarding.md) |
 | parcial | Audio del sistema en macOS | [macos-audio-sistema.md](macos-audio-sistema.md) |
 | hecho | Launcher tipo Spotlight | [launcher-spotlight.md](launcher-spotlight.md) |
+| parcial | Acciones de sistema (Windows) | [system-actions.md](system-actions.md) |
 | idea | Companion móvil | [companion-movil.md](companion-movil.md) |
 | idea | Hosts SSH para agentes remotos | [ssh-remote-hosts.md](ssh-remote-hosts.md) |
 | idea | Orquestación de agentes (MCP) | [orquestacion-agentes.md](orquestacion-agentes.md) |

@@ -19,7 +19,7 @@ const FAVORITES_LIMIT: usize = 8;
 
 /// Float Spotlight compacto (una línea); el frontend crece al buscar.
 const LAUNCHER_SHAPE: BubbleShape = BubbleShape {
-    w: 292,
+    w: 324,
     h: 40,
     gap: 10,
     corner: 18,
@@ -305,9 +305,58 @@ fn builtin_actions(en: bool) -> Vec<LauncherEntry> {
             ),
             "settings",
         ),
+        (
+            "action:quit-all",
+            pick(en, "Cerrar todas las apps", "Quit all apps"),
+            pick(
+                en,
+                "Cerrar las apps abiertas (piden guardar lo que corresponda)",
+                "Close open apps (they ask to save what they need)",
+            ),
+            "quit-all",
+        ),
+        (
+            "action:sys-lock",
+            pick(en, "Bloquear pantalla", "Lock screen"),
+            pick(
+                en,
+                "Cerrar la sesión y pedir la contraseña",
+                "Lock the session and ask for the password",
+            ),
+            "sys-lock",
+        ),
+        (
+            "action:sys-sleep",
+            pick(en, "Suspender", "Sleep"),
+            pick(en, "Suspender el equipo", "Suspend the computer"),
+            "sys-sleep",
+        ),
+        (
+            "action:sys-mute",
+            pick(en, "Silenciar o activar sonido", "Mute or unmute"),
+            pick(
+                en,
+                "Alternar el silencio de la salida de audio",
+                "Toggle audio mute",
+            ),
+            "sys-mute",
+        ),
+        (
+            "action:sys-trash",
+            pick(en, "Vaciar papelera", "Empty trash"),
+            pick(
+                en,
+                "Windows pide confirmación: no se puede deshacer",
+                "Windows asks first: this cannot be undone",
+            ),
+            "sys-trash",
+        ),
     ]
     .into_iter()
     .filter(|(_, _, _, action)| crate::agents::UI_ENABLED || *action != "agents")
+    .filter(|(_, _, _, action)| {
+        cfg!(windows) || !(action.starts_with("sys-") || *action == "quit-all")
+    })
     .map(|(id, title, subtitle, action)| LauncherEntry {
         id: id.into(),
         kind: LauncherKind::Action,
@@ -800,6 +849,29 @@ pub async fn launcher_search(query: String) -> Result<Vec<LauncherHit>, String> 
             return Vec::new();
         }
 
+        // Calculadora: si la query es una cuenta o una conversión, el resultado
+        // va primero y se lleva el Enter. El id es sintético: no vive en el
+        // índice, `launcher_run` lo resuelve aparte.
+        let mut hits: Vec<LauncherHit> = Vec::new();
+        if let Some(value) = crate::calc::evaluate(q) {
+            hits.push(LauncherHit {
+                id: format!("calc:{q}"),
+                kind: LauncherKind::Action,
+                title: value,
+                subtitle: pick(
+                    INDEX_EN.load(Ordering::Relaxed),
+                    "Enter para copiar",
+                    "Enter to copy",
+                )
+                .to_string(),
+                score: Some(u32::MAX),
+                running: None,
+                foreground: None,
+                opened_at: None,
+                last_used_at: None,
+            });
+        }
+
         let mut scored: Vec<(u32, &LauncherEntry)> = Vec::new();
         for entry in guard.iter() {
             let Some(score) = entry_score(q, entry) else {
@@ -808,30 +880,32 @@ pub async fn launcher_search(query: String) -> Result<Vec<LauncherHit>, String> 
             scored.push((score, entry));
         }
         scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.title.cmp(&b.1.title)));
-        scored
-            .into_iter()
-            .take(SEARCH_LIMIT)
-            .map(|(score, entry)| LauncherHit {
-                id: entry.id.clone(),
-                kind: entry.kind,
-                title: entry.title.clone(),
-                subtitle: if entry.kind == LauncherKind::App {
-                    pick(
-                        INDEX_EN.load(Ordering::Relaxed),
-                        "Aplicación",
-                        "Application",
-                    )
-                    .to_string()
-                } else {
-                    entry.subtitle.clone()
-                },
-                score: Some(score),
-                running: None,
-                foreground: None,
-                opened_at: None,
-                last_used_at: None,
-            })
-            .collect()
+        hits.extend(
+            scored
+                .into_iter()
+                .take(SEARCH_LIMIT)
+                .map(|(score, entry)| LauncherHit {
+                    id: entry.id.clone(),
+                    kind: entry.kind,
+                    title: entry.title.clone(),
+                    subtitle: if entry.kind == LauncherKind::App {
+                        pick(
+                            INDEX_EN.load(Ordering::Relaxed),
+                            "Aplicación",
+                            "Application",
+                        )
+                        .to_string()
+                    } else {
+                        entry.subtitle.clone()
+                    },
+                    score: Some(score),
+                    running: None,
+                    foreground: None,
+                    opened_at: None,
+                    last_used_at: None,
+                }),
+        );
+        hits
     })
     .await
     .map_err(|e| e.to_string())
@@ -1014,6 +1088,15 @@ fn run_action(app: &AppHandle, action: &str) -> Result<(), String> {
             crate::state::show_main(app);
             Ok(())
         }
+        "quit-all" => {
+            let closed = crate::launcher_recents::close_user_windows();
+            tracing::info!(closed, "launcher: cerrar todas las apps");
+            Ok(())
+        }
+        "sys-lock" => crate::system_actions::lock_screen(),
+        "sys-sleep" => crate::system_actions::sleep(),
+        "sys-mute" => crate::system_actions::toggle_mute(),
+        "sys-trash" => crate::system_actions::empty_trash(),
         other => Err(format!("acción desconocida: {other}")),
     }
 }
@@ -1022,6 +1105,18 @@ fn run_action(app: &AppHandle, action: &str) -> Result<(), String> {
 /// Las acciones vuelven al hilo principal, que es donde siempre corrieron.
 #[tauri::command]
 pub async fn launcher_run(app: AppHandle, id: String) -> Result<(), String> {
+    // Calculadora: no está en el índice, se evalúa y se copia el valor.
+    if let Some(expr) = id.strip_prefix("calc:") {
+        let value = crate::calc::evaluate(expr).ok_or_else(|| "cuenta inválida".to_string())?;
+        let mut clipboard =
+            arboard::Clipboard::new().map_err(|e| format!("sin portapapeles: {e}"))?;
+        clipboard
+            .set_text(value)
+            .map_err(|e| format!("no se pudo copiar: {e}"))?;
+        hide(&app);
+        return Ok(());
+    }
+
     let lookup = id.clone();
     let entry = tauri::async_runtime::spawn_blocking(move || {
         ensure_index_populated();
@@ -1061,6 +1156,45 @@ pub async fn launcher_run(app: AppHandle, id: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Cierra la app de un resultado con `WM_CLOSE`: graceful, como el aspa de la
+/// ventana. La app (y Windows) hacen lo suyo, incluido preguntar por cambios sin
+/// guardar. No hay force quit a propósito: Atic no mata procesos.
+///
+/// Devuelve cuántas ventanas se pidieron cerrar; 0 = no está corriendo.
+#[tauri::command]
+pub async fn launcher_quit(id: String) -> Result<usize, String> {
+    let lookup = id.clone();
+    let entry = tauri::async_runtime::spawn_blocking(move || {
+        ensure_index_populated();
+        index()
+            .lock_or_recover()
+            .iter()
+            .find(|e| e.id == lookup)
+            .cloned()
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    let Some(entry) = entry else {
+        return Err("resultado no encontrado".into());
+    };
+    if !matches!(entry.target, EntryTarget::Path(_)) {
+        return Err("solo apps de escritorio".into());
+    }
+
+    let title = entry.title.clone();
+    let target = entry.id.clone();
+    let closed = tauri::async_runtime::spawn_blocking(move || {
+        crate::launcher_recents::close_app_windows(&title, &target)
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    if closed == 0 {
+        return Err("no está corriendo".into());
+    }
+    tracing::info!(%id, closed, "launcher: cerrar app");
+    Ok(closed)
+}
+
 fn remember_launch(app: &AppHandle, id: &str) {
     let Some(state) = app.try_state::<AppState>() else {
         return;
@@ -1081,6 +1215,20 @@ pub async fn launcher_list_recents(state: State<'_, AppState>) -> Result<Vec<Lau
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn acciones_de_sistema_segun_plataforma() {
+        let ids: Vec<String> = builtin_actions(false).into_iter().map(|e| e.id).collect();
+        for id in [
+            "action:sys-lock",
+            "action:sys-sleep",
+            "action:sys-mute",
+            "action:sys-trash",
+        ] {
+            assert_eq!(ids.iter().any(|it| it == id), cfg!(windows), "{id}");
+        }
+        assert!(ids.iter().any(|id| id == "action:quit-all"));
+    }
 
     #[test]
     fn exact_and_prefix_outrank_typos() {

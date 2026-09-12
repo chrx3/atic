@@ -31,8 +31,8 @@ ventana grande siempre al frente.
 - [x] Open/close rueda: morph = ParticleWheel (gotas); hit-box instantánea con
       pivot center (no tween width — derivaba el centro); skip-flight cercano;
       Esc cancela el vuelo; cierre espera `afterTransition` de nodos y vuelve al hogar
-- [x] Morph pill → launcher (pill al slot → barra crece a la der. →
-      separa → favs secuenciales + liquid; receta en
+- [x] Morph pill → launcher (pill al slot → barra nace centrada y crece en
+      el sitio → favs + liquid; receta en
       [pill-liquid-emerge.md](pill-liquid-emerge.md))
 - [ ] Overrides de slot por tool en Ajustes (`setSlotOverrides` ya existe)
 

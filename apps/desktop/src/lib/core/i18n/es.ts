@@ -661,6 +661,7 @@ export const es = {
     navHint: "navegar",
     openHint: "abrir",
     closeHint: "cerrar",
+    quitHint: "cerrar app",
     play: "Reproducir",
     pause: "Pausar",
     windowFlip: {

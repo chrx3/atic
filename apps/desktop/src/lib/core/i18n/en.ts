@@ -657,6 +657,7 @@ export const en = {
     navHint: "navigate",
     openHint: "open",
     closeHint: "close",
+    quitHint: "quit app",
     play: "Play",
     pause: "Pause",
     windowFlip: {

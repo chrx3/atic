@@ -23,7 +23,7 @@ Eso alcanza para decidir qué se toca y qué no, sin caso por caso:
 | Rail / picker de la ventana principal | sí | las gotas salen del arco, entre sí |
 | Cards del picker (derecha de la rueda) | sí* | mismo material; flotan aparte (hueco > REACH), no se pegan al arco |
 | Modal de detalle de herramienta | **no** | aparece encima; no sale del rail |
-| Launcher | sí | crece desde la pill; se separa; favs; cierra en reverse (tuck→fuse→shrink) — [pill-liquid-emerge.md](pill-liquid-emerge.md) |
+| Launcher | sí | nace centrado (gota → stadium, mismo gesto que los favs); favs; cierra en espejo (tuck→recede) — [pill-liquid-emerge.md](pill-liquid-emerge.md) |
 | Shelf de capturas | **no** | idem |
 
 Si algo no sale de nada, fundirlo es ruido.
@@ -135,7 +135,7 @@ probar ideas, no se mantienen sincronizadas.
 ## Relacionado
 
 - [../docs/DISENO_PILL.md](../docs/DISENO_PILL.md) — estados, geometría y movimiento de la pill
-- [pill-liquid-emerge.md](pill-liquid-emerge.md) — patrón fused grow → separate (referencia: launcher)
+- [pill-liquid-emerge.md](pill-liquid-emerge.md) — patrón emergencia (acto A: nacimiento centrado; acto B: fused grow → separate)
 - [pill-shell.md](pill-shell.md)
 - [agentes.md](agentes.md)
 - [launcher-spotlight.md](launcher-spotlight.md)
