@@ -137,7 +137,7 @@ fn fit_window(image: (u32, u32), work: (i32, i32, u32, u32), scale: f64) -> Wind
 }
 
 /// Área útil y escala del monitor donde está el cursor (o el primario).
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 fn target_work_area() -> ((i32, i32, u32, u32), f64) {
     let monitors = atic_capture::monitors::enumerate();
     let cursor = crate::floating::cursor_position();
@@ -146,20 +146,28 @@ fn target_work_area() -> ((i32, i32, u32, u32), f64) {
         .or_else(|| monitors.iter().find(|m| m.is_primary))
         .or_else(|| monitors.first());
     match target {
-        Some(m) => (
+        Some(m) => {
+            // En Mac el área útil ya está en puntos y la ventana se coloca en
+            // lógico: el cromo no se escala. En Windows sí (DPI del monitor).
+            #[cfg(target_os = "macos")]
+            let scale = 1.0;
+            #[cfg(not(target_os = "macos"))]
+            let scale = m.scale;
             (
-                m.work_area.x,
-                m.work_area.y,
-                m.work_area.width,
-                m.work_area.height,
-            ),
-            m.scale,
-        ),
+                (
+                    m.work_area.x,
+                    m.work_area.y,
+                    m.work_area.width,
+                    m.work_area.height,
+                ),
+                scale,
+            )
+        }
         None => ((0, 0, 1280, 720), 1.0),
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 fn target_work_area() -> ((i32, i32, u32, u32), f64) {
     ((0, 0, 1280, 720), 1.0)
 }
@@ -197,8 +205,7 @@ fn open_annotator_file(app: &AppHandle, target: &Path) -> Result<(), String> {
     let _ = window.unminimize();
     let _ = window.set_decorations(false);
     let _ = window.set_skip_taskbar(true);
-    let _ = window.set_size(tauri::PhysicalSize::new(rect.w, rect.h));
-    let _ = window.set_position(tauri::PhysicalPosition::new(rect.x, rect.y));
+    crate::floating::apply_global_bounds(&window, rect.x, rect.y, rect.w as i32, rect.h as i32);
 
     let pending = AnnotateOpen {
         path: target.to_string_lossy().into_owned(),
@@ -303,7 +310,7 @@ fn start_board_impl(app: &AppHandle) -> Result<(), String> {
     let _ = window.unminimize();
     let _ = window.set_decorations(false);
     let _ = window.set_skip_taskbar(true);
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     crate::capture_session::cover_rect(&window, area);
 
     window.show().map_err(|e| e.to_string())?;
@@ -316,7 +323,7 @@ fn start_board_impl(app: &AppHandle) -> Result<(), String> {
 }
 
 /// El monitor donde está el cursor. Es el que la pizarra congela y cubre.
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 fn board_area() -> atic_capture::Rect {
     let monitors = atic_capture::monitors::enumerate();
     let cursor = crate::floating::cursor_position();
@@ -334,7 +341,7 @@ fn board_area() -> atic_capture::Rect {
 ///
 /// El origen de la imagen es la esquina de `area`, que en un monitor a la
 /// izquierda del primario tiene coordenadas negativas: por eso se le resta.
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 fn focus_monitor(area: atic_capture::Rect) -> Option<FocusRect> {
     let monitors = atic_capture::monitors::enumerate();
     let target = monitors
@@ -345,26 +352,32 @@ fn focus_monitor(area: atic_capture::Rect) -> Option<FocusRect> {
     // El área útil y no los bounds: los controles no deben caer bajo la barra
     // de tareas.
     let work = target.work_area;
+    // La imagen de la pizarra es nativa: en Mac (puntos globales) hay que
+    // pasar el área útil a píxeles del PNG; en Windows ya coincide.
+    #[cfg(target_os = "macos")]
+    let s = target.scale.max(0.01);
+    #[cfg(not(target_os = "macos"))]
+    let s = 1.0;
     Some(FocusRect {
-        x: work.x - area.x,
-        y: work.y - area.y,
-        width: work.width,
-        height: work.height,
+        x: (((work.x - area.x) as f64) * s).round() as i32,
+        y: (((work.y - area.y) as f64) * s).round() as i32,
+        width: ((work.width as f64) * s).round() as u32,
+        height: ((work.height as f64) * s).round() as u32,
     })
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 fn board_area() -> atic_capture::Rect {
     atic_capture::Rect::new(0, 0, 0, 0)
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 fn focus_monitor(_area: atic_capture::Rect) -> Option<FocusRect> {
     None
 }
 
 /// Congela `area` a un PNG y devuelve ruta y tamaño físico.
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 fn freeze_screen(
     app: &AppHandle,
     state: &State<AppState>,
@@ -375,8 +388,16 @@ fn freeze_screen(
     let vs = area;
     // Sin cursor, al revés que en una captura: en la pizarra el puntero es la
     // herramienta, y dejarlo dibujado sería un puntero de más en la pantalla.
-    let mut frame = engine::capture_rect(vs, false).map_err(|e| e.to_string())?;
-    crate::capture_session::compose_overlay(app, &mut frame);
+    let frame = {
+        #[allow(unused_mut)]
+        let mut frame =
+            engine::capture_rect(vs, false).map_err(crate::ui_lang::map_capture_error)?;
+        #[cfg(windows)]
+        crate::capture_session::compose_overlay(app, &mut frame);
+        #[cfg(target_os = "macos")]
+        let _ = app;
+        frame
+    };
     let png = frame.to_png().map_err(|e| e.to_string())?;
 
     let dir = state.dirs.overlay_frames_dir();
@@ -395,10 +416,12 @@ fn freeze_screen(
             &format!("Could not freeze the frame: {e}"),
         )
     })?;
-    Ok((path, vs.width, vs.height))
+    // El tamaño es el del PNG, que en Mac es nativo (puntos × escala) y no el
+    // del rect en puntos: el lienzo se dimensiona con esto.
+    Ok((path, frame.width(), frame.height()))
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 fn freeze_screen(
     _app: &AppHandle,
     _state: &State<AppState>,

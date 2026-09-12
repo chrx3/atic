@@ -633,7 +633,10 @@
   :global(body) {
     overflow: hidden;
     margin: 0;
-    background: var(--screen-backdrop);
+    /* Transparente: la ventana se muestra al empezar la sesión (para que el
+       webview cargue) y hasta que el frame pinta no debe verse un telón
+       negro tapando el escritorio vivo. */
+    background: transparent;
     cursor: none !important;
   }
 
