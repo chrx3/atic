@@ -64,6 +64,9 @@ enum ConcealKind {
 struct Conceal {
     hwnd: isize,
     chrome: bool,
+    /// App oculta (macOS): no hay nodo por ventana al que volver.
+    #[cfg(target_os = "macos")]
+    pid: i32,
 }
 
 #[derive(Clone)]
@@ -79,6 +82,8 @@ struct FlipSession {
     /// armar la URL `asset://` de cada imagen.
     assets_dir: PathBuf,
     target_hwnd: isize,
+    /// PID de la app del frente (macOS; en Windows queda en 0).
+    target_pid: i32,
     overlay_x: i32,
     overlay_y: i32,
     overlay_w: u32,
@@ -334,7 +339,13 @@ pub fn window_flip_asset_data(state: State<AppState>, asset: String) -> Result<S
 /// usuario quiso.
 #[tauri::command]
 pub fn window_flip_focus_is_foreign(app: AppHandle) -> bool {
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        let _ = app;
+        crate::macos_notes::frontmost_app_pid()
+            .is_some_and(|pid| pid != std::process::id() as i32)
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         let _ = app;
         true
@@ -423,8 +434,37 @@ fn show_cover(app: &AppHandle) {
             let _ = window.set_size(PhysicalSize::new(w, h));
             let _ = window.set_position(PhysicalPosition::new(x, y));
         }
+        #[cfg(target_os = "macos")]
+        if let Some((x, y, w, h)) = geom {
+            // `geom` ya está en puntos globales: lógico directo.
+            crate::floating::apply_global_bounds(&window, x, y, w as i32, h as i32);
+            macos_cover_chrome(&window);
+        }
         let _ = window.set_always_on_top(true);
         let _ = window.show();
+    }
+}
+
+/// Nivel flotante pero **debajo** de la pill (que sube a 25), visible en
+/// todos los Spaces y sin animación de show/hide para no demorar el giro.
+#[cfg(target_os = "macos")]
+fn macos_cover_chrome(window: &tauri::WebviewWindow) {
+    let Ok(ptr) = window.ns_window() else {
+        return;
+    };
+    let ns = ptr as *mut objc2::runtime::AnyObject;
+    if ns.is_null() {
+        return;
+    }
+    unsafe {
+        // NSFloatingWindowLevel = 3.
+        let _: () = objc2::msg_send![ns, setLevel: 3isize];
+        // CanJoinAllSpaces | Stationary | FullScreenAuxiliary.
+        let behavior: usize = 1 | (1 << 4) | (1 << 8);
+        let _: () = objc2::msg_send![ns, setCollectionBehavior: behavior];
+        let _: () = objc2::msg_send![ns, setHidesOnDeactivate: false];
+        // NSWindowAnimationBehaviorNone = 2.
+        let _: () = objc2::msg_send![ns, setAnimationBehavior: 2isize];
     }
 }
 
@@ -444,7 +484,18 @@ fn conceal_cover(app: &AppHandle, hwnd: isize) {
         conceal_atic_chrome(app, hwnd);
         let _ = unsafe { DwmFlush() };
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        let _ = hwnd;
+        // No hay cloak por ventana: se oculta la app entera del target.
+        let pid = SESSION
+            .lock_or_recover()
+            .as_ref()
+            .map(|s| s.target_pid)
+            .unwrap_or(0);
+        conceal_app(pid, false);
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         conceal_hwnd(hwnd, false, true);
     }
@@ -459,7 +510,11 @@ fn conceal_cover(app: &AppHandle, hwnd: isize) {
 }
 
 fn open(app: &AppHandle) -> Result<(), String> {
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        return open_macos(app);
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         let _ = app;
         return Err(crate::ui_lang::capture_windows_only());
@@ -468,6 +523,114 @@ fn open(app: &AppHandle) -> Result<(), String> {
     {
         open_windows(app)
     }
+}
+
+/// Abre la tapa sobre la ventana ajena más al frente (CGWindowList).
+#[cfg(target_os = "macos")]
+fn open_macos(app: &AppHandle) -> Result<(), String> {
+    use atic_capture::windows as capwin;
+
+    let pid_self = std::process::id();
+    // Si Atic está al frente no hay nada que voltear: la pill es
+    // non-activating, así que esto sólo pasa con la ventana principal.
+    if crate::macos_notes::frontmost_app_pid() == Some(pid_self as i32) {
+        hide(app);
+        return Ok(());
+    }
+
+    let monitors = atic_capture::monitors::enumerate();
+    let candidate = capwin::enumerate_candidates(pid_self, &monitors)
+        .into_iter()
+        .next()
+        .ok_or_else(|| "no hay ventana al frente".to_string())?;
+    let bounds = candidate.visual_bounds;
+    if bounds.width < 80 || bounds.height < 80 {
+        return Err("la ventana es demasiado chica".into());
+    }
+    let hwnd = candidate.hwnd;
+    let pid = candidate.process_id as i32;
+    let title = candidate.title.clone();
+    let exe = crate::macos_notes::app_exe_name(pid)
+        .unwrap_or_else(|| "app".into())
+        .to_ascii_lowercase();
+    // Sin extractor de iconos en Mac: el frente usa su placeholder.
+    let icon = String::new();
+    let key = note_key(&exe, &title);
+
+    let dirs = app
+        .try_state::<AppState>()
+        .ok_or_else(|| "sin estado".to_string())?
+        .dirs
+        .clone();
+    let overlay = overlay_for_flip(bounds);
+    let (card_left, card_top, card_width, card_height) = card_layout(bounds, overlay);
+
+    let window = app
+        .get_webview_window(LABEL)
+        .ok_or_else(|| "falta la ventana window-flip".to_string())?;
+    // Tamaño ya, posición no: se coloca en `show_cover` con la foto lista.
+    let _ = window.set_size(tauri::LogicalSize::new(
+        f64::from(overlay.width),
+        f64::from(overlay.height),
+    ));
+
+    let gen = GEN.load(Ordering::SeqCst) + 1;
+    let preview_path = dirs
+        .overlay_frames_dir()
+        .join(format!("window-flip-{gen}.png"));
+    let hay_foto = capture_preview(hwnd, &preview_path, true);
+
+    let mut doc = crate::notes::load(&dirs.notes_dir(), &exe);
+    let page_id = doc.page_for_title(&title);
+    let blocks = doc
+        .page_mut(&page_id)
+        .map(|page| page.blocks.clone())
+        .unwrap_or_default();
+    let assets_dir = crate::notes::assets_dir(&dirs.notes_dir(), &exe);
+    let session = FlipSession {
+        key,
+        title,
+        exe,
+        icon,
+        preview_path: if hay_foto {
+            preview_path
+        } else {
+            PathBuf::new()
+        },
+        blocks,
+        assets_dir,
+        target_hwnd: hwnd,
+        target_pid: pid,
+        overlay_x: overlay.x,
+        overlay_y: overlay.y,
+        overlay_w: overlay.width,
+        overlay_h: overlay.height,
+        card_left,
+        card_top,
+        card_width,
+        card_height,
+    };
+
+    *SESSION.lock_or_recover() = Some(session.clone());
+    GEN.fetch_add(1, Ordering::SeqCst);
+    OPEN.store(true, Ordering::SeqCst);
+    PRESENTED.store(false, Ordering::SeqCst);
+
+    let _ = window.emit("window-flip-open", WindowFlipView::from(&session));
+
+    let handle = app.clone();
+    let gen = GEN.load(Ordering::SeqCst);
+    thread::spawn(move || {
+        thread::sleep(Duration::from_millis(1800));
+        if OPEN.load(Ordering::SeqCst)
+            && GEN.load(Ordering::SeqCst) == gen
+            && !PRESENTED.load(Ordering::SeqCst)
+        {
+            tracing::warn!(target: "window_flip", "el front no montó la tapa; se cancela el volteo");
+            hide(&handle);
+        }
+    });
+    Ok(())
 }
 
 #[cfg(windows)]
@@ -562,6 +725,7 @@ fn open_windows(app: &AppHandle) -> Result<(), String> {
         blocks,
         assets_dir,
         target_hwnd: hwnd as isize,
+        target_pid: 0,
         overlay_x: overlay.x,
         overlay_y: overlay.y,
         overlay_w: overlay.width,
@@ -636,16 +800,15 @@ fn refresh_preview_windows(app: &AppHandle) -> Result<WindowFlipView, String> {
     Ok(WindowFlipView::from(&*session))
 }
 
-#[cfg(windows)]
 /// Deja la foto de la ventana en `path`. `false` = no hay foto usable.
 ///
-/// Siempre recorta al marco visible. `permitir_pantalla` usa BitBlt del
-/// escritorio (píxeles de DWM, misma nitidez que la ventana viva). PrintWindow
-/// de un WebView se ve más blando y con las esquinas cuadradas.
-///
-/// Sin las layered: con `CAPTUREBLT` la pill del overlay quedaba pegada en el
-/// frente de la tarjeta cuando caía sobre la ventana que se voltea.
+/// Windows: recorta al marco visible; `permitir_pantalla` usa BitBlt del
+/// escritorio sin layered (la pill no se pega en el frente).
+/// macOS: `CGWindowListCreateImage` captura sólo esa ventana aunque esté
+/// tapada, con la pantalla como respaldo.
+#[cfg(any(windows, target_os = "macos"))]
 fn capture_preview(hwnd: isize, path: &Path, permitir_pantalla: bool) -> bool {
+    #[cfg(windows)]
     let frame = if permitir_pantalla {
         match atic_capture::windows::window_bounds(hwnd)
             .ok_or_else(|| "ventana sin límites".to_string())
@@ -674,6 +837,27 @@ fn capture_preview(hwnd: isize, path: &Path, permitir_pantalla: bool) -> bool {
             }
         }
     };
+
+    #[cfg(target_os = "macos")]
+    let frame = {
+        let window_frame = match atic_capture::engine::print_window(hwnd) {
+            Ok(frame) => frame,
+            Err(error) => {
+                tracing::warn!(target: "window_flip", %error, "no se pudo capturar sólo la ventana");
+                None
+            }
+        };
+        window_frame.or_else(|| {
+            if permitir_pantalla {
+                atic_capture::windows::window_bounds(hwnd).and_then(|bounds| {
+                    atic_capture::engine::capture_rect_without_layered(bounds).ok()
+                })
+            } else {
+                None
+            }
+        })
+    };
+
     let Some(frame) = frame else {
         if permitir_pantalla {
             olvidar_preview(path);
@@ -763,6 +947,7 @@ fn card_layout(visual: atic_capture::Rect, overlay: atic_capture::Rect) -> (f64,
     )
 }
 
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 fn conceal_hwnd(hwnd: isize, chrome: bool, allow_hide: bool) {
     if hwnd == 0 {
         return;
@@ -805,6 +990,29 @@ fn conceal_hwnd(hwnd: isize, chrome: bool, allow_hide: bool) {
     }
 }
 
+/// Oculta la app entera del target (macOS no tiene cloak por ventana).
+///
+/// Es lo más parecido a `DWMWA_CLOAK`: todo lo demás de esa app desaparece
+/// con ella, pero al volver el frame queda como estaba (AppKit lo conserva).
+#[cfg(target_os = "macos")]
+fn conceal_app(pid: i32, chrome: bool) {
+    if pid <= 0 {
+        return;
+    }
+    {
+        let guard = CONCEAL.lock_or_recover();
+        if guard.iter().any(|c| c.pid == pid) {
+            return;
+        }
+    }
+    crate::macos_notes::hide_app(pid);
+    CONCEAL.lock_or_recover().push(Conceal {
+        hwnd: 0,
+        chrome,
+        pid,
+    });
+}
+
 #[cfg(windows)]
 fn conceal_atic_chrome(app: &AppHandle, skip: isize) {
     // El overlay (pill) no se oculta: es chrome del escritorio, no de la
@@ -843,15 +1051,15 @@ fn reveal_matching(pred: impl Fn(&Conceal) -> bool) {
     }
     *guard = keep;
     drop(guard);
-    #[cfg(not(windows))]
-    {
-        let _ = restore;
-    }
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     {
         for item in restore {
             restore_concealed(item);
         }
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        let _ = restore;
     }
 }
 
@@ -880,6 +1088,12 @@ fn restore_concealed(conceal: Conceal) {
             restore_placement(conceal.hwnd, conceal.placement);
         }
     }
+}
+
+#[cfg(target_os = "macos")]
+fn restore_concealed(conceal: Conceal) {
+    let _ = conceal.hwnd;
+    crate::macos_notes::unhide_app(conceal.pid);
 }
 
 /// Estaciona la tapa fuera de pantalla, visible para WebView2.
@@ -989,7 +1203,21 @@ fn focus_target(app: &AppHandle, hwnd: isize) {
     }
 }
 
-#[cfg(not(windows))]
+/// Devuelve el foco a la app del target (macOS): `unhide` y activar.
+#[cfg(target_os = "macos")]
+fn focus_target(_app: &AppHandle, _hwnd: isize) {
+    let pid = SESSION
+        .lock_or_recover()
+        .as_ref()
+        .map(|s| s.target_pid)
+        .unwrap_or(0);
+    if pid > 0 {
+        crate::macos_notes::unhide_app(pid);
+        crate::macos_notes::activate_app(pid);
+    }
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 fn focus_target(_app: &AppHandle, _hwnd: isize) {}
 
 #[cfg(windows)]

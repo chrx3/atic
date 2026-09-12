@@ -101,6 +101,78 @@ pub fn activate_app(pid: i32) {
     }
 }
 
+/// Nombre del ejecutable de la app `pid`, en minúsculas (identidad de notas).
+pub fn app_exe_name(pid: i32) -> Option<String> {
+    if pid <= 0 {
+        return None;
+    }
+    // SAFETY: se leen `executableURL` y su `lastPathComponent`; si alguno
+    // falta el puntero es nulo y se corta.
+    unsafe {
+        let app: *mut AnyObject = objc2::msg_send![
+            objc2::class!(NSRunningApplication),
+            runningApplicationWithProcessIdentifier: pid
+        ];
+        if app.is_null() {
+            return None;
+        }
+        let url: *mut AnyObject = objc2::msg_send![app, executableURL];
+        if url.is_null() {
+            return None;
+        }
+        let name: *mut AnyObject = objc2::msg_send![url, lastPathComponent];
+        if name.is_null() {
+            return None;
+        }
+        let utf8: *const std::os::raw::c_char = objc2::msg_send![name, UTF8String];
+        if utf8.is_null() {
+            return None;
+        }
+        let text = std::ffi::CStr::from_ptr(utf8)
+            .to_string_lossy()
+            .to_ascii_lowercase();
+        if text.is_empty() {
+            None
+        } else {
+            Some(text)
+        }
+    }
+}
+
+/// Oculta la app entera (`NSRunningApplication.hide`).
+pub fn hide_app(pid: i32) {
+    if pid <= 0 {
+        return;
+    }
+    // SAFETY: mensaje a un NSRunningApplication válido; si no existe es nulo.
+    unsafe {
+        let app: *mut AnyObject = objc2::msg_send![
+            objc2::class!(NSRunningApplication),
+            runningApplicationWithProcessIdentifier: pid
+        ];
+        if !app.is_null() {
+            let _: bool = objc2::msg_send![app, hide];
+        }
+    }
+}
+
+/// Deshace [`hide_app`].
+pub fn unhide_app(pid: i32) {
+    if pid <= 0 {
+        return;
+    }
+    // SAFETY: mensaje a un NSRunningApplication válido; si no existe es nulo.
+    unsafe {
+        let app: *mut AnyObject = objc2::msg_send![
+            objc2::class!(NSRunningApplication),
+            runningApplicationWithProcessIdentifier: pid
+        ];
+        if !app.is_null() {
+            let _: bool = objc2::msg_send![app, unhide];
+        }
+    }
+}
+
 #[link(name = "ApplicationServices", kind = "framework")]
 extern "C" {
     fn AXIsProcessTrusted() -> u8;
