@@ -1447,9 +1447,7 @@
    * overlay seguía click-through sobre los chips y no se podía ni abrir un
    * agente ni agarrar la pill desde ahí.
    */
-  $effect(() =>
-    agentStackEl ? surfaces.add("agent-stack", agentStackEl) : undefined,
-  );
+  $effect(() => (agentStackEl ? surfaces.add("agent-stack", agentStackEl) : undefined));
 
   /**
    * Republicar cuando la pill se MUEVE.
