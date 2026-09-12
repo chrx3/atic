@@ -633,6 +633,7 @@
   :global(body) {
     overflow: hidden;
     margin: 0;
+
     /* Transparente: la ventana se muestra al empezar la sesión (para que el
        webview cargue) y hasta que el frame pinta no debe verse un telón
        negro tapando el escritorio vivo. */
