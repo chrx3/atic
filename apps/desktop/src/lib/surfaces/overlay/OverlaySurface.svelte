@@ -142,8 +142,9 @@
     return () => void pending.then((off) => off());
   });
 
-  // En Mac un WKWebView sin foco no recibe `mouseMoved`: el hover de la rueda
-  // y de los floats se arma con la posición que reenvía Rust.
+  // En Mac un WKWebView sin foco no recibe `mouseMoved` ni a veces el clic:
+  // hover y pointer de la rueda, el notch y los floats se arman con lo que
+  // reenvía Rust.
   $effect(() => startSyntheticHover());
 
   /** Espacio CSS real: fly-to y hit-test tienen que usar el mismo, no `client/DPI`. */

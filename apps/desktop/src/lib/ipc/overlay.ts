@@ -12,6 +12,8 @@ import type { UnlistenFn } from "@tauri-apps/api/event";
 import { on } from "./events";
 
 export type Point = { x: number; y: number };
+/** Clic principal sobre un hit-rect, en px CSS del overlay (macOS). */
+export type OverlayPointer = Point & { down: boolean };
 export type Rect = { x: number; y: number; w: number; h: number };
 /**
  * Un monitor, en px CSS del overlay.

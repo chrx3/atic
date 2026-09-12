@@ -82,6 +82,7 @@
     shouldMeasureBar,
     islandHoverStay,
     islandHoverOpens,
+    pointerMoveDrags,
     ISLAND_COLLAPSE_MS,
     ISLAND_COLLAPSE_MORE_MS,
     wheelChromeActive,
@@ -2611,6 +2612,7 @@
   function onDragPointerMove(event: PointerEvent) {
     const origin = dragOrigin;
     if (!origin || event.pointerId !== origin.pointerId) return;
+    if (!pointerMoveDrags(event.buttons)) return;
     const cur = { x: event.clientX, y: event.clientY };
     // Volvimos del fallback de Rust: re-sembrar o el delta mezcla dos relojes
     // y la pill salta. El apply lo hace el rAF, no cada evento: si no, el
