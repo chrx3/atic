@@ -509,21 +509,28 @@ fn create(app: &AppHandle) -> Option<tauri::WebviewWindow> {
 /// `set_always_on_top` pisa el nivel, así que hay que reponerlo después.
 #[cfg(target_os = "macos")]
 pub(crate) fn macos_set_status_level(window: &tauri::WebviewWindow) {
-    let Ok(ptr) = window.ns_window() else {
-        return;
-    };
-    let ns = ptr as *mut objc2::runtime::AnyObject;
-    if ns.is_null() {
-        return;
-    }
-    unsafe {
-        // NSStatusWindowLevel = 25 (menú = 24).
-        let _: () = objc2::msg_send![ns, setLevel: 25isize];
-        // CanJoinAllSpaces | Stationary | FullScreenAuxiliary
-        let behavior: usize = 1 | (1 << 4) | (1 << 8);
-        let _: () = objc2::msg_send![ns, setCollectionBehavior: behavior];
-        let _: () = objc2::msg_send![ns, setHidesOnDeactivate: false];
-    }
+    // AppKit exige el hilo principal: esto puede venir de un worker de tokio
+    // (comandos async) y `setLevel` fuera del main thread aborta el proceso.
+    let window = window.clone();
+    let inner = window.clone();
+    let _ = window.run_on_main_thread(move || {
+        let window = &inner;
+        let Ok(ptr) = window.ns_window() else {
+            return;
+        };
+        let ns = ptr as *mut objc2::runtime::AnyObject;
+        if ns.is_null() {
+            return;
+        }
+        unsafe {
+            // NSStatusWindowLevel = 25 (menú = 24).
+            let _: () = objc2::msg_send![ns, setLevel: 25isize];
+            // CanJoinAllSpaces | Stationary | FullScreenAuxiliary
+            let behavior: usize = 1 | (1 << 4) | (1 << 8);
+            let _: () = objc2::msg_send![ns, setCollectionBehavior: behavior];
+            let _: () = objc2::msg_send![ns, setHidesOnDeactivate: false];
+        }
+    });
 }
 
 /// Coloca el overlay sobre TODO el escritorio virtual y lo muestra.

@@ -1177,20 +1177,26 @@ pub(crate) fn cover_rect(window: &tauri::WebviewWindow, vs: atic_capture::Rect) 
 /// tapar el escritorio entero, incluido el notch de la pill.
 #[cfg(target_os = "macos")]
 fn macos_capture_overlay_chrome(window: &tauri::WebviewWindow) {
-    let Ok(ptr) = window.ns_window() else {
-        return;
-    };
-    let ns = ptr as *mut objc2::runtime::AnyObject;
-    if ns.is_null() {
-        return;
-    }
-    unsafe {
-        // NSPopUpMenuWindowLevel = 101.
-        let _: () = objc2::msg_send![ns, setLevel: 101isize];
-        let behavior: usize = 1 | (1 << 4) | (1 << 8);
-        let _: () = objc2::msg_send![ns, setCollectionBehavior: behavior];
-        let _: () = objc2::msg_send![ns, setHidesOnDeactivate: false];
-    }
+    // AppKit exige el hilo principal: la mira se prepara desde su worker.
+    let window = window.clone();
+    let inner = window.clone();
+    let _ = window.run_on_main_thread(move || {
+        let window = &inner;
+        let Ok(ptr) = window.ns_window() else {
+            return;
+        };
+        let ns = ptr as *mut objc2::runtime::AnyObject;
+        if ns.is_null() {
+            return;
+        }
+        unsafe {
+            // NSPopUpMenuWindowLevel = 101.
+            let _: () = objc2::msg_send![ns, setLevel: 101isize];
+            let behavior: usize = 1 | (1 << 4) | (1 << 8);
+            let _: () = objc2::msg_send![ns, setCollectionBehavior: behavior];
+            let _: () = objc2::msg_send![ns, setHidesOnDeactivate: false];
+        }
+    });
 }
 
 #[cfg(target_os = "macos")]
