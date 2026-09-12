@@ -1,15 +1,19 @@
-//! Bindings globales de botones laterales del mouse (Windows).
+//! Bindings globales de botones laterales del mouse.
 //!
 //! `tauri-plugin-global-shortcut` usa `RegisterHotKey`, que no admite mouse.
-//! Este módulo usa **Raw Input** (`WM_INPUT` + `RIDEV_INPUTSINK`) en una ventana
-//! message-only oculta: los eventos son copias fuera del camino crítico del
-//! input, así que **nunca pueden congelar el ratón del sistema**, aunque Atic
-//! se cuelgue por completo.
+//! En Windows el módulo usa **Raw Input** (`WM_INPUT` + `RIDEV_INPUTSINK`) en
+//! una ventana message-only oculta: los eventos son copias fuera del camino
+//! crítico del input, así que **nunca pueden congelar el ratón del sistema**,
+//! aunque Atic se cuelgue por completo.
 //!
-//! Limitación aceptada: Raw Input no puede consumir el evento. En algunas apps
-//! (p. ej. navegadores) el botón lateral seguirá disparando su acción por
-//! defecto (atrás/adelante) además de la de Atic. Es el tradeoff seguro frente
-//! a `WH_MOUSE_LL`, que bloqueaba todo el input del SO.
+//! En macOS usa monitores `NSEvent` (global + local): el bloque corre en el
+//! hilo principal y sólo toca atomics y `try_send`, igual que el wndproc.
+//!
+//! Limitación aceptada: ninguna de las dos vías puede consumir el evento. En
+//! algunas apps (p. ej. navegadores) el botón lateral seguirá disparando su
+//! acción por defecto (atrás/adelante) además de la de Atic. Es el tradeoff
+//! seguro frente a `WH_MOUSE_LL` / un tap activo, que bloqueaba todo el input
+//! del SO.
 
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError, SyncSender, TrySendError};
@@ -101,69 +105,87 @@ pub fn parse_side_button(s: &str) -> Option<SideButton> {
     }
 }
 
-/// Arranca el hilo Raw Input (Windows). En otras plataformas es no-op.
+/// Arranca la captura de botones laterales (Raw Input en Windows, monitores
+/// NSEvent en macOS). En otras plataformas es no-op.
 pub fn init(app: &AppHandle) {
     if let Ok(mut slot) = app_slot().lock() {
         *slot = Some(app.clone());
     }
 
-    #[cfg(windows)]
-    ensure_rawinput_and_worker();
+    #[cfg(any(windows, target_os = "macos"))]
+    ensure_started();
 
-    #[cfg(not(windows))]
-    tracing::info!("bindings de mouse lateral solo están disponibles en Windows");
+    #[cfg(not(any(windows, target_os = "macos")))]
+    tracing::info!("bindings de mouse lateral solo están disponibles en Windows y macOS");
 }
 
 /// Sustituye los bindings laterales. Vacío = no dispara acciones.
 pub fn set_bindings(app: &AppHandle, bindings: Vec<(SideButton, MouseAction)>) {
-    #[cfg(not(windows))]
-    {
-        let _ = app;
-        if !bindings.is_empty() {
-            tracing::warn!("bindings de mouse lateral solo están disponibles en Windows");
+    let count = bindings.len();
+
+    let mut x1 = ACT_NONE;
+    let mut x2 = ACT_NONE;
+    for (btn, action) in bindings {
+        let code = action_to_u8(action);
+        match btn {
+            SideButton::X1 => x1 = code,
+            SideButton::X2 => x2 = code,
         }
-        return;
+    }
+    BIND_X1.store(x1, Ordering::Release);
+    BIND_X2.store(x2, Ordering::Release);
+
+    if let Ok(mut slot) = app_slot().lock() {
+        *slot = Some(app.clone());
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     {
-        let count = bindings.len();
-
-        let mut x1 = ACT_NONE;
-        let mut x2 = ACT_NONE;
-        for (btn, action) in bindings {
-            let code = action_to_u8(action);
-            match btn {
-                SideButton::X1 => x1 = code,
-                SideButton::X2 => x2 = code,
-            }
-        }
-        BIND_X1.store(x1, Ordering::Release);
-        BIND_X2.store(x2, Ordering::Release);
-
-        if let Ok(mut slot) = app_slot().lock() {
-            *slot = Some(app.clone());
-        }
-
-        ensure_rawinput_and_worker();
+        ensure_started();
         tracing::info!(count, x1, x2, "bindings de mouse lateral actualizados");
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        let _ = (app, x1, x2);
+        if count > 0 {
+            tracing::warn!("bindings de mouse lateral solo están disponibles en Windows y macOS");
+        }
     }
 }
 
-#[cfg(windows)]
-fn ensure_rawinput_and_worker() {
+/// Arranca el worker y la fuente nativa, una sola vez por proceso.
+#[cfg(any(windows, target_os = "macos"))]
+fn ensure_started() {
     if RAW_STARTED.swap(true, Ordering::SeqCst) {
         return;
     }
 
-    let (tx, rx) = mpsc::sync_channel::<HookEvent>(256);
-    if EVENT_TX.set(tx).is_err() {
+    if let Err(error) = ensure_event_worker() {
         RAW_STARTED.store(false, Ordering::SeqCst);
-        tracing::error!("EVENT_TX de mouse ya inicializado");
+        tracing::error!(%error, "no se pudo arrancar el worker de mouse");
         return;
     }
 
-    if let Err(err) = thread::Builder::new()
+    #[cfg(windows)]
+    if let Err(error) = spawn_rawinput_thread() {
+        RAW_STARTED.store(false, Ordering::SeqCst);
+        tracing::error!(%error, "no se pudo arrancar el hilo Raw Input de mouse");
+    }
+
+    #[cfg(target_os = "macos")]
+    install_macos_monitors();
+}
+
+/// Worker único: recibe eventos de la fuente nativa y despacha fuera del
+/// camino crítico del input.
+#[cfg(any(windows, target_os = "macos"))]
+fn ensure_event_worker() -> Result<(), String> {
+    let (tx, rx) = mpsc::sync_channel::<HookEvent>(256);
+    if EVENT_TX.set(tx).is_err() {
+        return Err("EVENT_TX de mouse ya inicializado".into());
+    }
+
+    thread::Builder::new()
         .name("atic-mouse-worker".into())
         .spawn(move || {
             loop {
@@ -179,29 +201,28 @@ fn ensure_rawinput_and_worker() {
                 if let Some(ev) = ev {
                     dispatch(&app, ev.action, ev.edge);
                 }
-                // Recuperar UP de dictado si el wndproc lo marcó con canal lleno.
+                // Recuperar UP de dictado si la fuente lo marcó con canal lleno.
                 if PENDING_DICTATION_UP.swap(false, Ordering::AcqRel) {
                     dispatch(&app, MouseAction::Dictation, Edge::Up);
                 }
             }
         })
-    {
-        RAW_STARTED.store(false, Ordering::SeqCst);
-        tracing::error!(%err, "no se pudo arrancar el worker de mouse");
-        return;
-    }
-
-    let result = thread::Builder::new()
-        .name("atic-mouse-rawinput".into())
-        .spawn(rawinput_thread_main);
-    if let Err(err) = result {
-        RAW_STARTED.store(false, Ordering::SeqCst);
-        tracing::error!(%err, "no se pudo arrancar el hilo Raw Input de mouse");
-    }
+        .map(|_| ())
+        .map_err(|err| err.to_string())
 }
 
-/// Encola evento desde el wndproc. Si el canal está lleno, no pierde UP de dictado.
 #[cfg(windows)]
+fn spawn_rawinput_thread() -> Result<(), String> {
+    thread::Builder::new()
+        .name("atic-mouse-rawinput".into())
+        .spawn(rawinput_thread_main)
+        .map(|_| ())
+        .map_err(|err| err.to_string())
+}
+
+/// Encola evento desde el wndproc o el monitor NSEvent. Si el canal está
+/// lleno, no pierde UP de dictado.
+#[cfg(any(windows, target_os = "macos"))]
 fn enqueue_hook_event(ev: HookEvent) {
     let Some(tx) = EVENT_TX.get() else {
         return;
@@ -221,6 +242,84 @@ fn enqueue_hook_event(ev: HookEvent) {
         }
         Err(TrySendError::Disconnected(_)) => {}
     }
+}
+
+/// Monitores NSEvent: global para el resto del sistema y local para las
+/// ventanas de Atic (el monitor global no ve los eventos propios).
+///
+/// El bloque se ejecuta en el hilo principal: sólo atomics y `try_send`, con
+/// la misma disciplina que el wndproc de Raw Input. Los monitores viven toda
+/// la corrida del proceso.
+#[cfg(target_os = "macos")]
+fn install_macos_monitors() {
+    use std::ptr::NonNull;
+
+    use block2::RcBlock;
+    use objc2_app_kit::{NSEvent, NSEventMask, NSEventType};
+
+    /// `buttonNumber` de macOS para los botones laterales (atrás/adelante).
+    const BUTTON_BACK: isize = 3;
+    const BUTTON_FORWARD: isize = 4;
+
+    /// Procesa el evento y devuelve `true` si fue un clic principal, que el
+    /// overlay usa para «cerrar lo que tengas abierto».
+    fn observe(event: NonNull<NSEvent>) -> bool {
+        // SAFETY: el monitor entrega un NSEvent vivo durante la llamada.
+        let event = unsafe { event.as_ref() };
+        let kind = event.r#type();
+        let main_down = kind == NSEventType::LeftMouseDown
+            || kind == NSEventType::RightMouseDown
+            || kind == NSEventType::OtherMouseDown;
+        let edge = if kind == NSEventType::OtherMouseDown {
+            Some(Edge::Down)
+        } else if kind == NSEventType::OtherMouseUp {
+            Some(Edge::Up)
+        } else {
+            None
+        };
+        if let Some(edge) = edge {
+            let bound = match event.buttonNumber() {
+                BUTTON_BACK => BIND_X1.load(Ordering::Acquire),
+                BUTTON_FORWARD => BIND_X2.load(Ordering::Acquire),
+                _ => ACT_NONE,
+            };
+            if let Some(action) = u8_to_action(bound) {
+                enqueue_hook_event(HookEvent { action, edge });
+            }
+        }
+        main_down
+    }
+
+    let mask = NSEventMask::LeftMouseDown
+        | NSEventMask::RightMouseDown
+        | NSEventMask::OtherMouseDown
+        | NSEventMask::OtherMouseUp;
+    let global = RcBlock::new(|event: NonNull<NSEvent>| {
+        if observe(event) {
+            crate::overlay::on_button_down();
+        }
+    });
+    let local = RcBlock::new(|event: NonNull<NSEvent>| {
+        if observe(event) {
+            crate::overlay::on_button_down();
+        }
+        event.as_ptr()
+    });
+
+    let global_monitor = NSEvent::addGlobalMonitorForEventsMatchingMask_handler(mask, &global);
+    // SAFETY: los bloques no capturan nada y los monitores se liberan al
+    // terminar el proceso; no se desinstalan.
+    unsafe {
+        if let Some(monitor) = global_monitor {
+            std::mem::forget(monitor);
+        }
+        if let Some(monitor) =
+            NSEvent::addLocalMonitorForEventsMatchingMask_handler(mask, &local)
+        {
+            std::mem::forget(monitor);
+        }
+    }
+    tracing::info!("monitores NSEvent instalados (botones laterales MouseX1/MouseX2)");
 }
 
 #[cfg(windows)]
