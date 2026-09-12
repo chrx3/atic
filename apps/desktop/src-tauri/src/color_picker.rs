@@ -1,10 +1,11 @@
 //! Cuentagotas en vivo: no congela la pantalla.
 //!
 //! Una lupa pequeña (ventana opaca, always-on-top, sin foco) sigue al cursor.
-//! El píxel se lee con `BitBlt` en las coords físicas de `GetCursorPos`, así
-//! que coincide con lo que hay bajo el puntero también con DPI ≠ 100% y varios
-//! monitores. El clic se come con un `WH_MOUSE_LL` de sesión corta para no
-//! pulsar lo que hay debajo.
+//! El píxel se lee con `BitBlt` (Windows) o Core Graphics (macOS) en las coords
+//! globales del cursor, así que coincide con lo que hay bajo el puntero también
+//! con DPI ≠ 100% y varios monitores. El clic se come con un `WH_MOUSE_LL` de
+//! sesión corta en Windows; en macOS con un `CGEventTap` activo, que también
+//! traga Esc/Enter/R mientras dura la sesión.
 
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicIsize, AtomicU64, Ordering};
 use std::sync::Mutex;
@@ -15,6 +16,13 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use crate::overlay;
 use atic_core::MutexExt;
+
+#[cfg(target_os = "macos")]
+use core_foundation::base::TCFType;
+#[cfg(target_os = "macos")]
+use core_foundation::mach_port::CFMachPort;
+#[cfg(target_os = "macos")]
+use core_foundation::runloop::{kCFRunLoopCommonModes, kCFRunLoopDefaultMode, CFRunLoop};
 
 const LABEL: &str = "color-loupe";
 const GRID: u32 = 13;
@@ -44,6 +52,18 @@ static LOUPE_HWND: AtomicIsize = AtomicIsize::new(0);
 /// medir contra la gota, no contra la ventana, o el cuentagotas se queda con
 /// un anillo muerto donde ni lee color ni recibe clics.
 static LOUPE_PAD_PX: AtomicI32 = AtomicI32::new(0);
+/// Gota de la lupa en puntos globales (macOS), para el hit-test del event tap.
+#[cfg(target_os = "macos")]
+static LOUPE_X: AtomicI32 = AtomicI32::new(0);
+#[cfg(target_os = "macos")]
+static LOUPE_Y: AtomicI32 = AtomicI32::new(0);
+#[cfg(target_os = "macos")]
+static LOUPE_W: AtomicI32 = AtomicI32::new(0);
+#[cfg(target_os = "macos")]
+static LOUPE_H: AtomicI32 = AtomicI32::new(0);
+/// La rosa tiene el foco de teclado: los atajos se dejan pasar (ahí se tipea).
+#[cfg(target_os = "macos")]
+static LOUPE_FOCUSED: AtomicBool = AtomicBool::new(false);
 /// Ventana que tenía el primer plano antes de que la rosa lo tomara.
 static PREVIOUS_FOREGROUND: AtomicIsize = AtomicIsize::new(0);
 static WANT_PICK: AtomicBool = AtomicBool::new(false);
@@ -222,6 +242,8 @@ fn stop_inner(app: &AppHandle, farewell: bool) {
     WANT_ENTER_COMMIT.store(false, Ordering::SeqCst);
     WANT_TOGGLE_ROSE.store(false, Ordering::SeqCst);
     COMMIT_PENDING.store(false, Ordering::SeqCst);
+    #[cfg(target_os = "macos")]
+    LOUPE_FOCUSED.store(false, Ordering::SeqCst);
     overlay::set_capturing(app, false);
     // El evento primero: la piel corre su animación de salida y recién
     // entonces la ventana se esconde.
@@ -234,12 +256,12 @@ fn stop_inner(app: &AppHandle, farewell: bool) {
 }
 
 fn start(app: &AppHandle) -> Result<(), String> {
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         let _ = app;
         return Err(crate::ui_lang::capture_windows_only());
     }
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     {
         ensure_loupe(app)?;
         if WORKER_ACTIVE.swap(true, Ordering::SeqCst) {
@@ -273,7 +295,32 @@ fn start(app: &AppHandle) -> Result<(), String> {
     }
 }
 
+/// Constantes de teclado por plataforma: VK de Windows / keycode de macOS.
 #[cfg(windows)]
+const KEY_ESC: i32 = 0x1B;
+#[cfg(windows)]
+const KEY_ENTER: i32 = 0x0D;
+#[cfg(windows)]
+const KEY_R: i32 = 0x52;
+#[cfg(target_os = "macos")]
+const KEY_ESC: i32 = 53;
+#[cfg(target_os = "macos")]
+const KEY_ENTER: i32 = 36;
+#[cfg(target_os = "macos")]
+const KEY_R: i32 = 15;
+
+/// ¿Sigue apretado el botón que abrió la tool?
+#[cfg(windows)]
+fn primary_down() -> bool {
+    key_down(0x01)
+}
+
+#[cfg(target_os = "macos")]
+fn primary_down() -> bool {
+    crate::floating::primary_button_down()
+}
+
+#[cfg(any(windows, target_os = "macos"))]
 fn run_loop(app: AppHandle, token: u64) {
     struct WorkerGuard(AppHandle, u64);
     impl Drop for WorkerGuard {
@@ -296,7 +343,7 @@ fn run_loop(app: AppHandle, token: u64) {
     EAT_R_UP.store(false, Ordering::SeqCst);
 
     // El clic que abrió la tool no debe copiar un color.
-    while key_down(0x01) {
+    while primary_down() {
         if abort(token) {
             return;
         }
@@ -304,51 +351,16 @@ fn run_loop(app: AppHandle, token: u64) {
         std::thread::sleep(Duration::from_millis(16));
     }
 
-    // A low-level hook is called on its installing thread. That thread must
-    // never capture pixels, emit WebView events, or wait for the window thread.
-    let (tx, rx) = std::sync::mpsc::sync_channel(1);
-    let input = std::thread::Builder::new()
-        .name("atic-color-input".into())
-        .spawn(move || {
-            let mouse = install_click_hook();
-            let keys = install_key_hook();
-            let _ = tx.send(!mouse.is_null());
-            if mouse.is_null() {
-                uninstall_key_hook(keys);
-                return;
-            }
-            while !abort(token) || eat_pending() {
-                pump_mouse();
-                if abort(token) {
-                    clear_eat_if_key_up();
-                }
-                std::thread::sleep(Duration::from_millis(4));
-            }
-            uninstall_key_hook(keys);
-            uninstall_click_hook(mouse);
-        });
-    let input = match input {
+    let input = match start_input_capture(token) {
         Ok(input) => input,
         Err(error) => {
-            report_error(
-                &app,
-                token,
-                format!("No se pudo iniciar el cuentagotas: {error}"),
-            );
+            report_error(&app, token, error);
+            stop(&app);
             return;
         }
     };
-    if rx.recv_timeout(Duration::from_secs(2)).ok() != Some(true) {
-        report_error(
-            &app,
-            token,
-            "No se pudo activar la captura del ratón".into(),
-        );
-        stop(&app);
-        let _ = input.join();
-        return;
-    }
-    let mut was_r = key_down(0x52);
+
+    let mut was_r = key_down(KEY_R);
     let mut was_enter = key_down(0x0D);
     let mut pending_since = Instant::now();
     let mut sample_failed = false;
@@ -362,24 +374,21 @@ fn run_loop(app: AppHandle, token: u64) {
             break;
         }
 
-        if WANT_CANCEL.swap(false, Ordering::SeqCst) || key_down(0x1B) {
+        if WANT_CANCEL.swap(false, Ordering::SeqCst) || key_down(KEY_ESC) {
             stop(&app);
             break;
         }
         let rose = ROSE_OPEN.load(Ordering::SeqCst);
-        let enter = key_down(0x0D);
+        let enter = key_down(KEY_ENTER);
         let clicked = WANT_PICK.swap(false, Ordering::SeqCst);
-        let focused = unsafe {
-            windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow() as isize
-                == LOUPE_HWND.load(Ordering::SeqCst)
-        };
+        let focused = loupe_is_foreground();
         // El hook traga Enter/R: `GetAsyncKeyState` no las ve. El flanco
         // queda en el atomic; el poll queda de respaldo si el hook no instaló.
         let pick = clicked
             || WANT_ENTER_COMMIT.swap(false, Ordering::SeqCst)
             || (enter && !was_enter && !focused);
         was_enter = enter;
-        let r_key = key_down(0x52);
+        let r_key = key_down(KEY_R);
         let toggle_rose =
             WANT_TOGGLE_ROSE.swap(false, Ordering::SeqCst) || (r_key && !was_r && !focused);
         if toggle_rose && !COMMIT_PENDING.load(Ordering::SeqCst) {
@@ -417,7 +426,7 @@ fn run_loop(app: AppHandle, token: u64) {
                 }
                 // Native positioning is asynchronous and independent of JS.
                 if previous_position != position {
-                    place_loupe_cached(cx, cy, false, &monitors);
+                    place_loupe_cached(&app, cx, cy, false, &monitors);
                     previous_position = position;
                 }
                 if pick || sampled_at.elapsed() >= Duration::from_millis(33) {
@@ -471,6 +480,332 @@ fn pack_position(x: i32, y: i32) -> u64 {
 
 fn unpack_position(value: u64) -> (i32, i32) {
     ((value >> 32) as u32 as i32, value as u32 as i32)
+}
+
+// --- Windows: hooks de sesión corta -----------------------------------------
+
+/// Escucha global de Windows: hooks de sesión corta en un hilo propio.
+#[cfg(windows)]
+fn start_input_capture(token: u64) -> Result<std::thread::JoinHandle<()>, String> {
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    let input = std::thread::Builder::new()
+        .name("atic-color-input".into())
+        .spawn(move || {
+            let mouse = install_click_hook();
+            let keys = install_key_hook();
+            let _ = tx.send(!mouse.is_null());
+            if mouse.is_null() {
+                uninstall_key_hook(keys);
+                return;
+            }
+            while !abort(token) || eat_pending() {
+                pump_mouse();
+                if abort(token) {
+                    clear_eat_if_key_up();
+                }
+                std::thread::sleep(Duration::from_millis(4));
+            }
+            uninstall_key_hook(keys);
+            uninstall_click_hook(mouse);
+        })
+        .map_err(|error| format!("No se pudo iniciar el cuentagotas: {error}"))?;
+    if rx.recv_timeout(Duration::from_secs(2)).ok() != Some(true) {
+        let _ = input.join();
+        return Err("No se pudo activar la captura del ratón".into());
+    }
+    Ok(input)
+}
+
+// --- macOS: event tap activo ------------------------------------------------
+
+#[cfg(target_os = "macos")]
+type CGEventRef = *mut std::ffi::c_void;
+#[cfg(target_os = "macos")]
+type CFMachPortRef = core_foundation::mach_port::CFMachPortRef;
+
+#[cfg(target_os = "macos")]
+#[link(name = "CoreGraphics", kind = "framework")]
+extern "C" {
+    fn CGEventTapCreate(
+        tap: u32,
+        place: u32,
+        options: u32,
+        events_of_interest: u64,
+        callback: unsafe extern "C" fn(
+            *mut std::ffi::c_void,
+            u32,
+            CGEventRef,
+            *mut std::ffi::c_void,
+        ) -> CGEventRef,
+        user_info: *mut std::ffi::c_void,
+    ) -> CFMachPortRef;
+    fn CGEventTapEnable(tap: CFMachPortRef, enable: bool);
+    fn CGEventGetLocation(event: CGEventRef) -> core_graphics::geometry::CGPoint;
+    fn CGEventGetIntegerValueField(event: CGEventRef, field: u32) -> i64;
+}
+
+/// Puerto vivo del tap, para re-habilitarlo si el SO lo desactiva por timeout.
+#[cfg(target_os = "macos")]
+static TAP_PORT: std::sync::atomic::AtomicPtr<std::ffi::c_void> =
+    std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
+
+/// Tipos de `CGEventType` que interesan (CGEventTypes.h).
+#[cfg(target_os = "macos")]
+const EV_LEFT_DOWN: u32 = 1;
+#[cfg(target_os = "macos")]
+const EV_LEFT_UP: u32 = 2;
+#[cfg(target_os = "macos")]
+const EV_RIGHT_DOWN: u32 = 3;
+#[cfg(target_os = "macos")]
+const EV_RIGHT_UP: u32 = 4;
+#[cfg(target_os = "macos")]
+const EV_KEY_DOWN: u32 = 10;
+#[cfg(target_os = "macos")]
+const EV_KEY_UP: u32 = 11;
+#[cfg(target_os = "macos")]
+const EV_TAP_DISABLED_BY_TIMEOUT: u32 = 0xFFFF_FFFE;
+#[cfg(target_os = "macos")]
+const EV_TAP_DISABLED_BY_USER: u32 = 0xFFFF_FFFF;
+/// `kCGKeyboardEventKeycode`.
+#[cfg(target_os = "macos")]
+const KEYCODE_FIELD: u32 = 9;
+/// `kCGSessionEventTap`, `kCGEventTapPlacementHeadInsert`, `Default` (activo).
+#[cfg(target_os = "macos")]
+const SESSION_TAP: u32 = 1;
+#[cfg(target_os = "macos")]
+const TAP_HEAD_INSERT: u32 = 0;
+#[cfg(target_os = "macos")]
+const TAP_ACTIVE: u32 = 0;
+
+/// Callback del tap: sólo atomics y lecturas de CG, como el wndproc de
+/// Windows. Devolver null se come el evento.
+#[cfg(target_os = "macos")]
+unsafe extern "C" fn tap_callback(
+    _proxy: *mut std::ffi::c_void,
+    etype: u32,
+    event: CGEventRef,
+    _user_info: *mut std::ffi::c_void,
+) -> CGEventRef {
+    if etype == EV_TAP_DISABLED_BY_TIMEOUT || etype == EV_TAP_DISABLED_BY_USER {
+        let port = TAP_PORT.load(Ordering::Acquire);
+        if !port.is_null() {
+            unsafe { CGEventTapEnable(port as CFMachPortRef, true) };
+        }
+        return event;
+    }
+    // SAFETY: `event` llega vivo del SO durante el callback.
+    let location = unsafe { CGEventGetLocation(event) };
+    let (x, y) = (location.x.round() as i32, location.y.round() as i32);
+    let over_loupe = cursor_over_loupe(x, y);
+    let running = RUNNING.load(Ordering::SeqCst);
+    let consume = match etype {
+        EV_LEFT_DOWN => {
+            if running && !over_loupe {
+                if !COMMIT_PENDING.load(Ordering::SeqCst) && !WANT_PICK.load(Ordering::SeqCst) {
+                    PICK_POSITION.store(pack_position(x, y), Ordering::SeqCst);
+                    WANT_PICK.store(true, Ordering::SeqCst);
+                }
+                EAT_LEFT_UP.store(true, Ordering::SeqCst);
+                true
+            } else {
+                false
+            }
+        }
+        EV_LEFT_UP => EAT_LEFT_UP.swap(false, Ordering::SeqCst),
+        EV_RIGHT_DOWN => {
+            if running && !over_loupe {
+                WANT_CANCEL.store(true, Ordering::SeqCst);
+                EAT_RIGHT_UP.store(true, Ordering::SeqCst);
+                true
+            } else {
+                false
+            }
+        }
+        EV_RIGHT_UP => EAT_RIGHT_UP.swap(false, Ordering::SeqCst),
+        EV_KEY_DOWN => {
+            if !running || loupe_is_foreground() {
+                false
+            } else {
+                // SAFETY: `event` es un evento de teclado vivo.
+                let key = unsafe { CGEventGetIntegerValueField(event, KEYCODE_FIELD) } as i32;
+                match key {
+                    KEY_ESC => {
+                        if !EAT_ESC_UP.swap(true, Ordering::SeqCst) {
+                            WANT_CANCEL.store(true, Ordering::SeqCst);
+                        }
+                        true
+                    }
+                    KEY_ENTER => {
+                        if !EAT_ENTER_UP.swap(true, Ordering::SeqCst) {
+                            WANT_ENTER_COMMIT.store(true, Ordering::SeqCst);
+                        }
+                        true
+                    }
+                    KEY_R => {
+                        if !EAT_R_UP.swap(true, Ordering::SeqCst) {
+                            WANT_TOGGLE_ROSE.store(true, Ordering::SeqCst);
+                        }
+                        true
+                    }
+                    _ => false,
+                }
+            }
+        }
+        EV_KEY_UP => {
+            // SAFETY: `event` es un evento de teclado vivo.
+            let key = unsafe { CGEventGetIntegerValueField(event, KEYCODE_FIELD) } as i32;
+            match key {
+                KEY_ESC => EAT_ESC_UP.swap(false, Ordering::SeqCst),
+                KEY_ENTER => EAT_ENTER_UP.swap(false, Ordering::SeqCst),
+                KEY_R => EAT_R_UP.swap(false, Ordering::SeqCst),
+                _ => false,
+            }
+        }
+        _ => false,
+    };
+    if consume {
+        std::ptr::null_mut()
+    } else {
+        event
+    }
+}
+
+/// Crea el tap activo. Sin Accesibilidad macOS no lo permite: se pide y se
+/// devuelve un mensaje para la UI.
+#[cfg(target_os = "macos")]
+fn create_event_tap() -> Result<CFMachPort, String> {
+    if !crate::macos_notes::accessibility_trusted() {
+        let _ = crate::macos_notes::request_accessibility();
+        return Err(crate::ui_lang::msg(
+            "Atic necesita permiso de Accesibilidad para el cuentagotas. Actívalo en Ajustes → Privacidad y seguridad → Accesibilidad y reinicia Atic.",
+            "Atic needs Accessibility permission for the eyedropper. Enable it in Settings → Privacy & Security → Accessibility, then restart Atic.",
+        ));
+    }
+    let mask = (1u64 << EV_LEFT_DOWN)
+        | (1u64 << EV_LEFT_UP)
+        | (1u64 << EV_RIGHT_DOWN)
+        | (1u64 << EV_RIGHT_UP)
+        | (1u64 << EV_KEY_DOWN)
+        | (1u64 << EV_KEY_UP);
+    // SAFETY: callback estático y sin user_info; sólo crea el tap.
+    let port = unsafe {
+        CGEventTapCreate(
+            SESSION_TAP,
+            TAP_HEAD_INSERT,
+            TAP_ACTIVE,
+            mask,
+            tap_callback,
+            std::ptr::null_mut(),
+        )
+    };
+    if port.is_null() {
+        return Err(crate::ui_lang::msg(
+            "No se pudo escuchar el ratón. Revisa el permiso de Accesibilidad de Atic.",
+            "Could not listen to the mouse. Check Atic's Accessibility permission.",
+        ));
+    }
+    TAP_PORT.store(port.cast::<std::ffi::c_void>(), Ordering::Release);
+    // SAFETY: la regla de creación transfiere la referencia del tap a CFMachPort.
+    Ok(unsafe { CFMachPort::wrap_under_create_rule(port) })
+}
+
+#[cfg(target_os = "macos")]
+fn attach_event_tap(tap: &CFMachPort) -> Result<(), String> {
+    let source = tap
+        .create_runloop_source(0)
+        .map_err(|_| "No se pudo crear la fuente del run loop".to_string())?;
+    let current = CFRunLoop::get_current();
+    current.add_source(&source, unsafe { kCFRunLoopCommonModes });
+    // SAFETY: el tap vive hasta que el hilo termina.
+    unsafe { CGEventTapEnable(tap.as_concrete_TypeRef(), true) };
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn detach_event_tap() {
+    let port = TAP_PORT.swap(std::ptr::null_mut(), Ordering::AcqRel);
+    if !port.is_null() {
+        // SAFETY: puerto creado por este módulo y todavía vivo.
+        unsafe { CGEventTapEnable(port as CFMachPortRef, false) };
+    }
+}
+
+/// Escucha global de macOS: un `CGEventTap` activo en un hilo con run loop.
+#[cfg(target_os = "macos")]
+fn start_input_capture(token: u64) -> Result<std::thread::JoinHandle<()>, String> {
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    let input = std::thread::Builder::new()
+        .name("atic-color-input".into())
+        .spawn(move || {
+            let tap = match create_event_tap() {
+                Ok(tap) => tap,
+                Err(error) => {
+                    let _ = tx.send(Err(error));
+                    return;
+                }
+            };
+            if let Err(error) = attach_event_tap(&tap) {
+                let _ = tx.send(Err(error));
+                return;
+            }
+            let _ = tx.send(Ok(()));
+            while !abort(token) {
+                CFRunLoop::run_in_mode(
+                    unsafe { kCFRunLoopDefaultMode },
+                    Duration::from_millis(50),
+                    false,
+                );
+            }
+            detach_event_tap();
+            // el tap se libera al salir del hilo
+        })
+        .map_err(|error| format!("No se pudo iniciar el cuentagotas: {error}"))?;
+    match rx.recv_timeout(Duration::from_secs(2)) {
+        Ok(Ok(())) => Ok(input),
+        Ok(Err(error)) => {
+            let _ = input.join();
+            Err(error)
+        }
+        _ => {
+            let _ = input.join();
+            Err("No se pudo activar la captura del ratón".into())
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn cursor_over_loupe(x: i32, y: i32) -> bool {
+    let w = LOUPE_W.load(Ordering::SeqCst);
+    let h = LOUPE_H.load(Ordering::SeqCst);
+    if w <= 0 || h <= 0 {
+        return false;
+    }
+    let pad = LOUPE_PAD_PX.load(Ordering::SeqCst);
+    let left = LOUPE_X.load(Ordering::SeqCst) + pad;
+    let top = LOUPE_Y.load(Ordering::SeqCst) + pad;
+    x >= left
+        && x < left + (w - pad * 2).max(0)
+        && y >= top
+        && y < top + (h - pad * 2).max(0)
+}
+
+#[cfg(target_os = "macos")]
+fn key_down(keycode: i32) -> bool {
+    #[link(name = "CoreGraphics", kind = "framework")]
+    extern "C" {
+        fn CGEventSourceKeyState(state_id: i32, key: u16) -> u8;
+    }
+    // kCGEventSourceStateCombinedSessionState = 0.
+    unsafe { CGEventSourceKeyState(0, keycode as u16) != 0 }
+}
+
+#[cfg(target_os = "macos")]
+fn pump_mouse() {}
+
+/// En Mac los atajos se tragan salvo con la rosa abierta y Atic al frente.
+#[cfg(target_os = "macos")]
+fn loupe_is_foreground() -> bool {
+    LOUPE_FOCUSED.load(Ordering::SeqCst)
 }
 
 #[cfg(windows)]
@@ -722,7 +1057,7 @@ fn abort(token: u64) -> bool {
     !RUNNING.load(Ordering::SeqCst) || GENERATION.load(Ordering::SeqCst) != token
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 fn sample_live(
     cx: i32,
     cy: i32,
@@ -746,15 +1081,26 @@ fn sample_live(
     if capture.is_empty() {
         return Err("fuera de pantalla".into());
     }
-    let frame = engine::capture_rect(capture, false).map_err(|e| e.to_string())?;
+    let frame =
+        engine::capture_rect(capture, false).map_err(crate::ui_lang::map_capture_error)?;
+    // En Mac el frame sale a resolución nativa (puntos × escala): el punto
+    // global se traduce a píxeles del PNG. En Windows ya coinciden.
+    let scale = if capture.width > 0 {
+        frame.width() as f64 / f64::from(capture.width)
+    } else {
+        1.0
+    };
+    let to_pixel = |x: i32, y: i32| {
+        (
+            ((f64::from(x - capture.x)) * scale).round() as i32,
+            ((f64::from(y - capture.y)) * scale).round() as i32,
+        )
+    };
     let mut rgba = vec![0u8; (size * size * 4) as usize];
     for py in 0..size as i32 {
         for px in 0..size as i32 {
-            let wx = origin_x + px;
-            let wy = origin_y + py;
+            let (fx, fy) = to_pixel(origin_x + px, origin_y + py);
             let i = ((py * size as i32 + px) * 4) as usize;
-            let fx = wx - frame.bounds.x;
-            let fy = wy - frame.bounds.y;
             if let Some([r, g, b, a]) = frame.pixel_rgba(fx, fy) {
                 rgba[i] = r;
                 rgba[i + 1] = g;
@@ -764,8 +1110,7 @@ fn sample_live(
         }
     }
     let [r, g, b, _] = {
-        let fx = cx - frame.bounds.x;
-        let fy = cy - frame.bounds.y;
+        let (fx, fy) = to_pixel(cx, cy);
         frame.pixel_rgba(fx, fy).unwrap_or([0, 0, 0, 255])
     };
     Ok(OverlayPatch {
@@ -869,7 +1214,14 @@ fn show_loupe(app: &AppHandle) -> Result<(), String> {
             let _ = window.show();
         }
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        let _ = window.show();
+        // Por encima del menú, como la pill: la lupa puede quedar cerca del
+        // techo y no debe meterse debajo de la barra.
+        crate::overlay::macos_set_status_level(&window);
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         let _ = window.show();
     }
@@ -914,28 +1266,45 @@ fn resize_loupe(app: &AppHandle, rose: bool) -> Result<(), String> {
     let window = app
         .get_webview_window(LABEL)
         .ok_or("La ventana del cuentagotas no existe")?;
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     {
-        let hwnd = window.hwnd().map_err(|e| e.to_string())?;
-        LOUPE_HWND.store(hwnd.0 as isize, Ordering::SeqCst);
+        #[cfg(windows)]
+        let hwnd = {
+            let hwnd = window.hwnd().map_err(|e| e.to_string())?;
+            LOUPE_HWND.store(hwnd.0 as isize, Ordering::SeqCst);
+            hwnd
+        };
         if let Some((cx, cy)) = crate::floating::cursor_position() {
-            place_loupe_cached(cx, cy, rose, &atic_capture::monitors::enumerate());
+            place_loupe_cached(app, cx, cy, rose, &atic_capture::monitors::enumerate());
         }
         // No synchronous geometry getters in an IPC callback: these can wait for
         // the same window thread that is currently servicing the callback.
         // tao's `set_focus` only activates windows it showed itself, and this
         // one is shown natively, so it never gave the rose keyboard focus.
         if rose {
-            use windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
-            let raw = hwnd.0 as isize;
-            let previous = unsafe { GetForegroundWindow() } as isize;
-            if previous != 0 && previous != raw {
-                PREVIOUS_FOREGROUND.store(previous, Ordering::SeqCst);
+            #[cfg(windows)]
+            {
+                use windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+                let raw = hwnd.0 as isize;
+                let previous = unsafe { GetForegroundWindow() } as isize;
+                if previous != 0 && previous != raw {
+                    PREVIOUS_FOREGROUND.store(previous, Ordering::SeqCst);
+                }
+                std::thread::spawn(move || {
+                    crate::clipboard_history::force_foreground(raw as _)
+                });
             }
-            std::thread::spawn(move || crate::clipboard_history::force_foreground(raw as _));
+            #[cfg(target_os = "macos")]
+            {
+                let _ = window.set_focus();
+                LOUPE_FOCUSED.store(true, Ordering::SeqCst);
+            }
+        } else {
+            #[cfg(target_os = "macos")]
+            LOUPE_FOCUSED.store(false, Ordering::SeqCst);
         }
     }
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         if rose {
             window.set_focus().map_err(|e| e.to_string())?;
@@ -946,6 +1315,7 @@ fn resize_loupe(app: &AppHandle, rose: bool) -> Result<(), String> {
 
 #[cfg(windows)]
 fn place_loupe_cached(
+    _app: &AppHandle,
     cx: i32,
     cy: i32,
     rose: bool,
@@ -998,6 +1368,52 @@ fn place_loupe_cached(
             SWP_NOACTIVATE | SWP_NOZORDER | SWP_ASYNCWINDOWPOS,
         );
     }
+}
+
+/// En Mac todo el espacio global son puntos: la posición y el tamaño van
+/// lógicos y la gota se recorta para el hit-test del tap.
+#[cfg(target_os = "macos")]
+fn place_loupe_cached(
+    app: &AppHandle,
+    cx: i32,
+    cy: i32,
+    rose: bool,
+    monitors: &[atic_capture::monitors::MonitorInfo],
+) {
+    let Some(window) = app.get_webview_window(LABEL) else {
+        return;
+    };
+    let Some(mon) = monitors
+        .iter()
+        .find(|m| m.bounds.contains(cx, cy))
+        .or_else(|| monitors.first())
+    else {
+        return;
+    };
+    let (lw, lh) = if rose { ROSE } else { COMPACT };
+    let work = mon.work_area;
+    let w = (lw.round() as i32).min(work.width as i32);
+    let h = (lh.round() as i32).min(work.height as i32);
+    let pad = PAD.round() as i32;
+    LOUPE_PAD_PX.store(pad, Ordering::SeqCst);
+    let offset = (OFFSET - pad).max(0);
+    let x = if cx + offset + w <= work.right() {
+        cx + offset
+    } else {
+        cx - offset - w
+    };
+    let y = if cy + offset + h <= work.bottom() {
+        cy + offset
+    } else {
+        cy - offset - h
+    };
+    let x = x.clamp(work.x, (work.right() - w).max(work.x));
+    let y = y.clamp(work.y, (work.bottom() - h).max(work.y));
+    LOUPE_X.store(x, Ordering::SeqCst);
+    LOUPE_Y.store(y, Ordering::SeqCst);
+    LOUPE_W.store(w, Ordering::SeqCst);
+    LOUPE_H.store(h, Ordering::SeqCst);
+    crate::floating::apply_global_bounds(&window, x, y, w, h);
 }
 
 #[cfg(test)]
