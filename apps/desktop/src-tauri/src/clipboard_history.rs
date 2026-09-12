@@ -773,10 +773,124 @@ pub fn clipboard_drag_path(state: State<AppState>, id: String) -> Result<String,
     }
 }
 
+/// Qué arrastrar en macOS.
+///
+/// El proveedor de datos del crate `drag` no es `Send`, así que el
+/// `DragItem` se arma recién dentro del hilo principal.
+#[cfg(target_os = "macos")]
+enum MacDragRequest {
+    Files(Vec<PathBuf>),
+    Text(String),
+}
+
+/// Arrastre nativo de macOS (`NSDraggingSession`) y espera al soltado.
+///
+/// El callback del crate cierra la sesión: bloquear acá (el comando es
+/// `async`, corre en un worker) mantiene el overlay click-through hasta que
+/// el arrastre termina, igual que el OLE de Windows.
+#[cfg(target_os = "macos")]
+fn start_native_drag(app: &AppHandle, request: MacDragRequest) -> Result<(), String> {
+    let window = app
+        .get_webview_window(crate::overlay::LABEL)
+        .ok_or_else(|| crate::ui_lang::msg("No se encontró el overlay.", "Overlay not found."))?;
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
+    let tx_error = tx.clone();
+    app.run_on_main_thread(move || {
+        let (item, image) = match request {
+            MacDragRequest::Files(paths) => {
+                let image = paths
+                    .iter()
+                    .find(|path| is_image_path(path))
+                    .map(|path| drag::Image::File(path.clone()))
+                    .unwrap_or_else(|| drag::Image::Raw(drag_preview_png()));
+                (drag::DragItem::Files(paths), image)
+            }
+            MacDragRequest::Text(text) => {
+                let provider = Box::new(move |kind: &str| {
+                    if kind.contains("utf8-plain-text")
+                        || kind.contains("plain-text")
+                        || kind == "NSStringPboardType"
+                    {
+                        Some(text.clone().into_bytes())
+                    } else {
+                        None
+                    }
+                });
+                (
+                    drag::DragItem::Data {
+                        provider,
+                        types: vec!["public.utf8-plain-text".into(), "public.plain-text".into()],
+                    },
+                    drag::Image::Raw(drag_preview_png()),
+                )
+            }
+        };
+        let result = drag::start_drag(
+            &window,
+            item,
+            image,
+            move |outcome, _cursor| {
+                let label = match outcome {
+                    drag::DragResult::Dropped => "dropped",
+                    drag::DragResult::Cancel => "cancel",
+                };
+                let _ = tx.send(label.to_string());
+            },
+            drag::Options::default(),
+        );
+        if let Err(error) = result {
+            let _ = tx_error.send(format!("error: {error}"));
+        }
+    })
+    .map_err(|e| e.to_string())?;
+    let outcome = rx
+        .recv_timeout(std::time::Duration::from_secs(120))
+        .map_err(|_| {
+            crate::ui_lang::msg(
+                "El arrastre no terminó a tiempo.",
+                "The drag did not finish in time.",
+            )
+        })?;
+    if let Some(error) = outcome.strip_prefix("error: ") {
+        return Err(error.to_string());
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn is_image_path(path: &Path) -> bool {
+    matches!(
+        path.extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| ext.to_ascii_lowercase())
+            .as_deref(),
+        Some("png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "tiff")
+    )
+}
+
+/// Vista previa del arrastre cuando no hay una imagen propia (texto).
+#[cfg(target_os = "macos")]
+fn drag_preview_png() -> Vec<u8> {
+    const SIDE: u32 = 48;
+    let mut img = image::RgbaImage::new(SIDE, SIDE);
+    for (x, y, px) in img.enumerate_pixels_mut() {
+        let border = x < 2 || y < 2 || x >= SIDE - 2 || y >= SIDE - 2;
+        *px = if border {
+            image::Rgba([120, 120, 128, 255])
+        } else {
+            image::Rgba([245, 245, 247, 255])
+        };
+    }
+    let mut out = std::io::Cursor::new(Vec::new());
+    let _ = image::DynamicImage::ImageRgba8(img).write_to(&mut out, image::ImageFormat::Png);
+    out.into_inner()
+}
+
 /// Arrastra texto como `CF_UNICODETEXT` (no como archivo).
 ///
 /// En Windows, `tauri-plugin-drag` solo hace HDROP: soltar un `.txt` en Cursor
-/// inserta la ruta. Este comando hace OLE de texto plano.
+/// inserta la ruta. Este comando hace OLE de texto plano. En macOS usa
+/// `NSPasteboard` con `public.utf8-plain-text`.
 #[tauri::command]
 pub async fn start_clipboard_text_drag(
     app: AppHandle,
@@ -827,12 +941,22 @@ pub async fn start_clipboard_text_drag(
         }
         Ok(())
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        let result = start_native_drag(&app, MacDragRequest::Text(text.clone()));
+        // El overlay quedó click-through durante el arrastre: si se soltó
+        // sobre la consola de agentes, insertarlo como hace Windows.
+        if crate::overlay::cursor_over_hit_id("agents") {
+            let _ = insert_text_into_agents(&app, &text);
+        }
+        result
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         let _ = (app, text);
         Err(crate::ui_lang::msg(
-            "El arrastre de texto solo está en Windows.",
-            "Text drag is only available on Windows.",
+            "El arrastre de texto no está disponible en esta plataforma.",
+            "Text drag is not available on this platform.",
         ))
     }
 }
@@ -863,12 +987,17 @@ pub async fn start_file_drag(app: AppHandle, paths: Vec<String>) -> Result<(), S
         rx.recv().map_err(|e| e.to_string())??;
         Ok(())
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        let paths: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
+        start_native_drag(&app, MacDragRequest::Files(paths))
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         let _ = (app, paths);
         Err(crate::ui_lang::msg(
-            "El arrastre de archivos solo está en Windows.",
-            "File drag is only available on Windows.",
+            "El arrastre de archivos no está disponible en esta plataforma.",
+            "File drag is not available on this platform.",
         ))
     }
 }
@@ -1285,13 +1414,17 @@ pub(crate) fn paste_text(app: &AppHandle, text: &str) -> Result<(), String> {
     paste_text_hotkey_for(app, target)
 }
 
-/// True si hay un HWND externo guardado (aunque Atic tenga el foco ahora).
+/// True si hay un destino externo guardado (aunque Atic tenga el foco ahora).
 pub(crate) fn has_saved_external_paste_target() -> bool {
     #[cfg(windows)]
     {
         saved_paste_target_hwnd().is_some_and(|h| !is_own_app_hwnd(h))
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        PREV_FOREGROUND.load(Ordering::SeqCst) > 0
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         false
     }
@@ -1310,7 +1443,11 @@ pub(crate) fn has_live_external_foreground() -> bool {
             !fg.is_null() && IsWindow(fg) != 0 && !is_own_app_hwnd(fg)
         }
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        crate::macos_notes::frontmost_app_pid().is_some_and(|pid| pid != std::process::id() as i32)
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         true
     }
@@ -1510,7 +1647,12 @@ fn paste_text_hotkey_for(
             paste_ctrl_v()
         }
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        let _ = (app, _target);
+        crate::macos_notes::paste_cmd_v()
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         let _ = (app, _target);
         Err(crate::ui_lang::msg(
@@ -2197,6 +2339,23 @@ fn save_foreground_hwnd() {
             tracing::debug!(target: "paste_geo", "DESTINO    {exe}");
         }
     }
+    #[cfg(target_os = "macos")]
+    {
+        // En Mac el destino es la app en primer plano, no una ventana: la pill
+        // es non-activating y el frente sigue siendo la app del usuario.
+        let Some(pid) = crate::macos_notes::frontmost_app_pid() else {
+            return;
+        };
+        if pid == std::process::id() as i32 {
+            return;
+        }
+        let raw = pid as isize;
+        let changed = PREV_FOREGROUND.swap(raw, Ordering::SeqCst) != raw;
+        *SAVED_AT.lock_or_recover() = Some(std::time::Instant::now());
+        if changed {
+            tracing::debug!(target: "paste_geo", pid, "DESTINO");
+        }
+    }
 }
 
 /// Sigue la ventana externa en foco mientras dura un dictado.
@@ -2270,6 +2429,18 @@ fn restore_foreground_hwnd() {
                 );
             }
         }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let pid = PREV_FOREGROUND.load(Ordering::SeqCst);
+        if pid <= 0 {
+            tracing::debug!(target: "paste_geo", "RESTORE    sin destino guardado");
+            return;
+        }
+        crate::macos_notes::activate_app(pid as i32);
+        // AppKit tarda un frame en devolver el foco; el Cmd+V va después.
+        thread::sleep(Duration::from_millis(140));
+        tracing::debug!(target: "paste_geo", "RESTORE    pid={pid}");
     }
 }
 

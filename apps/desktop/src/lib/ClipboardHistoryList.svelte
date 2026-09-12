@@ -270,6 +270,11 @@
     if (event.button !== 0 || busyId || draggingId) return;
     const target = event.target as HTMLElement;
     if (target.closest(".clip-actions, .clip-icon-btn, .clip-quick")) return;
+    // Sin esto el primer movimiento del arrastre nativo arranca una selección
+    // de texto que queda pintada al volver al panel (macOS no manda pointerup
+    // durante la sesión de arrastre).
+    event.preventDefault();
+    window.getSelection()?.removeAllRanges();
     const seedPath =
       item.kind === "image" && item.imagePath ? item.imagePath : null;
     press = {
@@ -358,6 +363,9 @@
         report(error);
       }
     } finally {
+      // La sesión nativa puede haber dejado una selección a medias: se limpia
+      // al soltar para que el panel no quede “seleccionando” al volver.
+      window.getSelection()?.removeAllRanges();
       dispatchClipboardOle(false);
       draggingId = null;
       await setOverlayItemDrag(false).catch(() => {});
