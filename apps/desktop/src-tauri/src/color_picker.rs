@@ -1403,11 +1403,19 @@ fn place_loupe_cached(
     };
     let x = x.clamp(work.x, (work.right() - w).max(work.x));
     let y = y.clamp(work.y, (work.bottom() - h).max(work.y));
+    // Mover y redimensionar son dos escrituras nativas: el tamaño sólo cambia
+    // al abrir/cerrar la rosa. Mandarlo en cada movimiento forzaba un resize
+    // del webview a 60 Hz y la lupa se sentía pegajosa.
+    let size_changed = LOUPE_W.load(Ordering::SeqCst) != w || LOUPE_H.load(Ordering::SeqCst) != h;
     LOUPE_X.store(x, Ordering::SeqCst);
     LOUPE_Y.store(y, Ordering::SeqCst);
     LOUPE_W.store(w, Ordering::SeqCst);
     LOUPE_H.store(h, Ordering::SeqCst);
-    crate::floating::apply_global_bounds(&window, x, y, w, h);
+    if size_changed {
+        crate::floating::apply_global_bounds(&window, x, y, w, h);
+    } else {
+        crate::floating::set_global_position(&window, x, y);
+    }
 }
 
 #[cfg(test)]

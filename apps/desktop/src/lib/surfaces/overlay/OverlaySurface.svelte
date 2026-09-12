@@ -31,6 +31,7 @@
     setOverlayTextMode,
   } from "$ipc/overlay";
   import { liveArea, surfaces } from "./surfaces.svelte";
+  import { startSyntheticHover } from "./syntheticHover";
   import { liquid } from "./group.svelte";
   import { snapPreview } from "./snapPreview.svelte";
   import Skin from "$liquid/Skin.svelte";
@@ -140,6 +141,10 @@
     const pending = onPillVisibility((visible) => (shown = visible));
     return () => void pending.then((off) => off());
   });
+
+  // En Mac un WKWebView sin foco no recibe `mouseMoved`: el hover de la rueda
+  // y de los floats se arma con la posición que reenvía Rust.
+  $effect(() => startSyntheticHover());
 
   /** Espacio CSS real: fly-to y hit-test tienen que usar el mismo, no `client/DPI`. */
   let cssWidth = $state(0);

@@ -21,6 +21,8 @@ static OPEN: AtomicBool = AtomicBool::new(false);
 static PRESENTED: AtomicBool = AtomicBool::new(false);
 static GEN: AtomicU64 = AtomicU64::new(0);
 static SESSION: Mutex<Option<FlipSession>> = Mutex::new(None);
+/// Último toggle aceptado, para ignorar la repetición del atajo global.
+static LAST_TOGGLE: Mutex<Option<std::time::Instant>> = Mutex::new(None);
 /// Ventana de debajo y chrome de Atic (scratchpad, shelf, etc.).
 /// Si Atic se cierra mal hay que devolverlas igual.
 static CONCEAL: Mutex<Vec<Conceal>> = Mutex::new(Vec::new());
@@ -130,6 +132,17 @@ impl From<&FlipSession> for WindowFlipView {
 
 /// Abre o cierra la tapa sobre la ventana del frente.
 pub fn toggle(app: &AppHandle) {
+    // El atajo es un global shortcut con repetición: mantenerlo apretado
+    // disparaba abrir/cerrar/abrir y la tapa parecía parpadear. Una ventana
+    // corta descarta el repeat físico sin bloquear un toggle deliberado.
+    let now = std::time::Instant::now();
+    {
+        let mut last = LAST_TOGGLE.lock_or_recover();
+        if last.is_some_and(|at| now.duration_since(at) < Duration::from_millis(700)) {
+            return;
+        }
+        *last = Some(now);
+    }
     if OPEN.load(Ordering::SeqCst) {
         request_close(app);
         return;
