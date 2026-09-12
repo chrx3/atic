@@ -706,8 +706,8 @@ pub fn float_open() -> bool {
 
 /// Abre el float del launcher (sale de la pill vía `panel_float`).
 ///
-/// La ventana Tauri `launcher` queda sin uso en el path primario: el UI vive
-/// en el overlay con `.float-emerge`, como clipboard/snippets/agentes.
+/// El launcher no tiene ventana Tauri propia: el UI vive en el overlay con
+/// `.float-emerge`, como clipboard/snippets/agentes.
 pub fn show(app: &AppHandle) {
     if LAUNCHER_OPEN.load(Ordering::Relaxed) {
         return;

@@ -379,14 +379,9 @@ pub fn run() {
 
             // Ocultar YA las ventanas auxiliares: nacen con el Builder, antes
             // de este `setup`, y si quedan visibles un instante se ve el
-            // lienzo de anotar / el shelf / el launcher. `visible: false` en
-            // la config es la barrera; esto cubre si algún runtime la ignora.
-            for label in [
-                "capture-shelf",
-                "launcher",
-                "color-loupe",
-                annotate::ANNOTATE_LABEL,
-            ] {
+            // lienzo de anotar / el shelf. `visible: false` en la config es
+            // la barrera; esto cubre si algún runtime la ignora.
+            for label in ["capture-shelf", "color-loupe", annotate::ANNOTATE_LABEL] {
                 if let Some(window) = app.get_webview_window(label) {
                     let _ = window.hide();
                 }
@@ -581,7 +576,6 @@ pub fn run() {
             // Cerrar oculta, no destruye.
             WindowEvent::CloseRequested { api, .. }
                 if window.label() == "main"
-                    || window.label() == "launcher"
                     || window.label() == window_flip::LABEL
                     || window.label() == annotate::ANNOTATE_LABEL =>
             {

@@ -46,7 +46,6 @@ pub fn apply_window_titles(app: &AppHandle) {
             "capture-annotate",
             pick(en, "Dibujar sobre la captura", "Draw on capture"),
         ),
-        ("launcher", pick(en, "Buscar", "Search")),
     ];
     for (label, title) in titles {
         if let Some(window) = app.get_webview_window(label) {
