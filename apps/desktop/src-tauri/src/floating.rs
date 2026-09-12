@@ -13,7 +13,9 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use atic_core::MutexExt;
-use tauri::{AppHandle, Manager, PhysicalPosition};
+#[cfg(not(target_os = "macos"))]
+use tauri::PhysicalPosition;
+use tauri::{AppHandle, Manager};
 
 /// Margen mínimo contra el borde del área útil.
 const MARGIN: i32 = 0;
@@ -76,6 +78,9 @@ pub enum Anchor {
 }
 
 /// Posición del cursor en coordenadas del escritorio virtual.
+///
+/// Físicos en Windows; en Mac, puntos Quartz (el mismo espacio que usan los
+/// monitores y las ventanas de AppKit).
 #[cfg(windows)]
 pub fn cursor_position() -> Option<(i32, i32)> {
     use windows_sys::Win32::Foundation::POINT;
@@ -90,7 +95,55 @@ pub fn cursor_position() -> Option<(i32, i32)> {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+pub fn cursor_position() -> Option<(i32, i32)> {
+    // Quartz ya entrega puntos en el espacio global: sin escalas por monitor,
+    // que era lo que desfasaba el hit-test en el monitor 1x junto a un Retina.
+    quartz_cursor().map(|(x, y)| (x.round() as i32, y.round() as i32))
+}
+
+/// Cursor en puntos Quartz (origen arriba-izquierda de la pantalla principal).
+///
+/// `CGEvent::new(source)` no trae la posición real. Hay que crear el evento
+/// con source NULL, como documenta Apple.
+#[cfg(target_os = "macos")]
+fn quartz_cursor() -> Option<(f64, f64)> {
+    use core_graphics::geometry::CGPoint;
+    use std::ffi::c_void;
+
+    #[link(name = "CoreGraphics", kind = "framework")]
+    extern "C" {
+        fn CGEventCreate(source: *const c_void) -> *mut c_void;
+        fn CGEventGetLocation(event: *mut c_void) -> CGPoint;
+    }
+    #[link(name = "CoreFoundation", kind = "framework")]
+    extern "C" {
+        fn CFRelease(cf: *const c_void);
+    }
+
+    unsafe {
+        let event = CGEventCreate(std::ptr::null());
+        if event.is_null() {
+            return None;
+        }
+        let loc = CGEventGetLocation(event);
+        CFRelease(event);
+        Some((loc.x, loc.y))
+    }
+}
+
+/// ¿El botón principal del mouse está apretado?
+#[cfg(target_os = "macos")]
+pub fn primary_button_down() -> bool {
+    #[link(name = "CoreGraphics", kind = "framework")]
+    extern "C" {
+        fn CGEventSourceButtonState(state_id: i32, button: u32) -> u8;
+    }
+    // CombinedSessionState = 0, kCGMouseButtonLeft = 0.
+    unsafe { CGEventSourceButtonState(0, 0) != 0 }
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 pub fn cursor_position() -> Option<(i32, i32)> {
     None
 }
@@ -102,43 +155,38 @@ pub fn cursor_position() -> Option<(i32, i32)> {
 /// modo tipo Dynamic Island. El monitor se elige por el **centro**; si el
 /// centro cae en el hueco entre pantallas, se clampea al escritorio virtual.
 pub fn clamp(x: i32, y: i32, w: i32, h: i32) -> (i32, i32) {
-    #[cfg(windows)]
-    {
-        let monitors = atic_capture::monitors::enumerate();
-        if monitors.is_empty() {
-            return (x, y);
-        }
-        let ww = w.max(1);
-        let hh = h.max(1);
-        let (cx, cy) = (x + ww / 2, y + hh / 2);
-
-        let rect = monitors
-            .iter()
-            .find(|m| m.bounds.contains(cx, cy))
-            .map(|m| m.bounds)
-            .unwrap_or_else(atic_capture::monitors::virtual_screen);
-
-        // max() contra el mínimo: en un monitor más chico que la ventana, el
-        // clamp invertido la mandaba fuera de pantalla.
-        let max_x = (rect.right() - ww - MARGIN).max(rect.x + MARGIN);
-        let max_y = (rect.bottom() - hh - MARGIN).max(rect.y + MARGIN);
-        (
-            x.clamp(rect.x + MARGIN, max_x),
-            y.clamp(rect.y + MARGIN, max_y),
-        )
+    let monitors = atic_capture::monitors::enumerate();
+    if monitors.is_empty() {
+        return (x, y);
     }
-    #[cfg(not(windows))]
-    {
-        let _ = (w, h);
-        (x, y)
-    }
+    let ww = w.max(1);
+    let hh = h.max(1);
+    let (cx, cy) = (x + ww / 2, y + hh / 2);
+
+    let rect = monitors
+        .iter()
+        .find(|m| m.bounds.contains(cx, cy))
+        .map(|m| m.bounds)
+        .unwrap_or_else(atic_capture::monitors::virtual_screen);
+
+    // max() contra el mínimo: en un monitor más chico que la ventana, el
+    // clamp invertido la mandaba fuera de pantalla.
+    let max_x = (rect.right() - ww - MARGIN).max(rect.x + MARGIN);
+    let max_y = (rect.bottom() - hh - MARGIN).max(rect.y + MARGIN);
+    (
+        x.clamp(rect.x + MARGIN, max_x),
+        y.clamp(rect.y + MARGIN, max_y),
+    )
 }
 
 /// Resuelve un [`Anchor`] a la esquina superior izquierda ya clampeada.
 pub fn resolve(app: &AppHandle, label: &str, anchor: Anchor) -> Option<(i32, i32)> {
     let window = app.get_webview_window(label)?;
     let size = window.outer_size().ok()?;
-    let (w, h) = (size.width as i32, size.height as i32);
+    let (w, h) = (
+        to_global(&window, f64::from(size.width)).round() as i32,
+        to_global(&window, f64::from(size.height)).round() as i32,
+    );
 
     let (x, y) = match anchor {
         Anchor::Point(px, py) => (px, py),
@@ -147,31 +195,65 @@ pub fn resolve(app: &AppHandle, label: &str, anchor: Anchor) -> Option<(i32, i32
             (cx - w / 2, cy - h / 2)
         }
         Anchor::BottomCorner { near, left_side } => {
-            #[cfg(windows)]
-            {
-                let monitors = atic_capture::monitors::enumerate();
-                let target = near
-                    .and_then(|(px, py)| monitors.iter().find(|m| m.bounds.contains(px, py)))
-                    .or_else(|| monitors.iter().find(|m| m.is_primary))
-                    .or_else(|| monitors.first())?;
-                let work = target.work_area;
-                const CORNER_MARGIN: i32 = 16;
-                let x = if left_side {
-                    work.x + CORNER_MARGIN
-                } else {
-                    work.right() - w - CORNER_MARGIN
-                };
-                (x, work.bottom() - h - CORNER_MARGIN)
-            }
-            #[cfg(not(windows))]
-            {
-                let _ = (near, left_side);
-                return None;
-            }
+            let monitors = atic_capture::monitors::enumerate();
+            let target = near
+                .and_then(|(px, py)| monitors.iter().find(|m| m.bounds.contains(px, py)))
+                .or_else(|| monitors.iter().find(|m| m.is_primary))
+                .or_else(|| monitors.first())?;
+            let work = target.work_area;
+            const CORNER_MARGIN: i32 = 16;
+            let x = if left_side {
+                work.x + CORNER_MARGIN
+            } else {
+                work.right() - w - CORNER_MARGIN
+            };
+            (x, work.bottom() - h - CORNER_MARGIN)
         }
     };
 
     Some(clamp(x, y, w, h))
+}
+
+/// Convierte una medida física de Tauri al espacio global de la app.
+///
+/// En Windows el espacio global ya es físico. En Mac son puntos: `Tauri`
+/// entrega `outer_position/size` en píxeles del backing store y hay que
+/// dividir por la escala de la ventana.
+pub(crate) fn to_global(window: &tauri::WebviewWindow, value: f64) -> f64 {
+    #[cfg(target_os = "macos")]
+    {
+        value / window.scale_factor().unwrap_or(1.0).max(0.01)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = window;
+        value
+    }
+}
+
+/// Coloca la ventana en una posición global de la app (puntos en Mac).
+///
+/// `PhysicalPosition` en Mac se divide por el backing scale de la ventana:
+/// pasar puntos por ahí duplicaba la coordenada en Retina.
+pub(crate) fn set_global_position(window: &tauri::WebviewWindow, x: i32, y: i32) {
+    #[cfg(target_os = "macos")]
+    let _ = window.set_position(tauri::LogicalPosition::new(f64::from(x), f64::from(y)));
+    #[cfg(not(target_os = "macos"))]
+    let _ = window.set_position(PhysicalPosition::new(x, y));
+}
+
+/// [`set_global_position`] más tamaño, en el espacio global de la app.
+pub(crate) fn apply_global_bounds(window: &tauri::WebviewWindow, x: i32, y: i32, w: i32, h: i32) {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = window.set_position(tauri::LogicalPosition::new(f64::from(x), f64::from(y)));
+        let _ = window.set_size(tauri::LogicalSize::new(f64::from(w), f64::from(h)));
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = window.set_position(PhysicalPosition::new(x, y));
+        let _ = window.set_size(tauri::PhysicalSize::new(w.max(1) as u32, h.max(1) as u32));
+    }
 }
 
 /// Traza de geometría: cada línea es UNA escritura de posición, y leídas en
@@ -191,15 +273,28 @@ macro_rules! geo {
     };
 }
 
-/// Posición y tamaño actuales, para las trazas.
+/// Posición y tamaño actuales, en el espacio global de la app y para las trazas.
 fn snapshot(app: &AppHandle, label: &str) -> ((i32, i32), (i32, i32)) {
     let Some(w) = app.get_webview_window(label) else {
         return ((0, 0), (0, 0));
     };
-    let pos = w.outer_position().map(|p| (p.x, p.y)).unwrap_or((0, 0));
+    let pos = w
+        .outer_position()
+        .map(|p| {
+            (
+                to_global(&w, f64::from(p.x)).round() as i32,
+                to_global(&w, f64::from(p.y)).round() as i32,
+            )
+        })
+        .unwrap_or((0, 0));
     let size = w
         .outer_size()
-        .map(|s| (s.width as i32, s.height as i32))
+        .map(|s| {
+            (
+                to_global(&w, f64::from(s.width)).round() as i32,
+                to_global(&w, f64::from(s.height)).round() as i32,
+            )
+        })
         .unwrap_or((0, 0));
     (pos, size)
 }
@@ -242,7 +337,7 @@ pub fn place(app: &AppHandle, label: &str, anchor: Anchor) -> Option<(i32, i32)>
     let generation = bump_gen(label);
     let (from, size) = snapshot(app, label);
     let window = app.get_webview_window(label)?;
-    let _ = window.set_position(PhysicalPosition::new(target.0, target.1));
+    set_global_position(&window, target.0, target.1);
     geo!(
         "PLACE      {label} anchor={anchor:?} size={size:?} {from:?} -> {target:?} gen={generation}"
     );
@@ -329,41 +424,53 @@ pub fn resize_floating(
         return Ok(ResizeResult { up: false });
     };
 
-    // El tamaño físico se calcula, no se relee: `outer_size()` justo después de
+    // El tamaño siguiente se calcula en el espacio global de la app (puntos en
+    // Mac, físicos en el resto), no se relee: `outer_size()` justo después de
     // `set_size` puede devolver el valor viejo (el resize del SO es asíncrono).
-    let next_w = (width * scale).round() as i32;
-    let next_h = (height * scale).round() as i32;
-    let prev_w = prev_size.width as i32;
-    let prev_h = prev_size.height as i32;
+    #[cfg(target_os = "macos")]
+    let (next_w, next_h) = (width.round() as i32, height.round() as i32);
+    #[cfg(not(target_os = "macos"))]
+    let (next_w, next_h) = (
+        (width * scale).round() as i32,
+        (height * scale).round() as i32,
+    );
+    #[cfg(target_os = "macos")]
+    let (px, py) = (
+        (f64::from(prev_pos.x) / scale).round() as i32,
+        (f64::from(prev_pos.y) / scale).round() as i32,
+    );
+    #[cfg(not(target_os = "macos"))]
+    let (px, py) = (prev_pos.x, prev_pos.y);
+    #[cfg(target_os = "macos")]
+    let (prev_w, prev_h) = (
+        (f64::from(prev_size.width) / scale).round() as i32,
+        (f64::from(prev_size.height) / scale).round() as i32,
+    );
+    #[cfg(not(target_os = "macos"))]
+    let (prev_w, prev_h) = (prev_size.width as i32, prev_size.height as i32);
 
     let mut up = false;
     let (x, y) = match pivot {
-        Pivot::TopLeft => (prev_pos.x, prev_pos.y),
-        Pivot::Center => (
-            prev_pos.x + (prev_w - next_w) / 2,
-            prev_pos.y + (prev_h - next_h) / 2,
-        ),
+        Pivot::TopLeft => (px, py),
+        Pivot::Center => (px + (prev_w - next_w) / 2, py + (prev_h - next_h) / 2),
         Pivot::Panel => {
             // Abrir hacia abajo si el panel entra en el área útil; si no, dejar
             // la barra donde está y crecer hacia arriba.
-            if fits_below(prev_pos.x, prev_pos.y, next_w, next_h) {
-                (prev_pos.x, prev_pos.y)
+            if fits_below(px, py, next_w, next_h) {
+                (px, py)
             } else {
                 up = true;
-                (prev_pos.x, prev_pos.y + prev_h - next_h)
+                (px, py + prev_h - next_h)
             }
         }
         Pivot::BottomLeft => {
             up = true;
-            (prev_pos.x, prev_pos.y + prev_h - next_h)
+            (px, py + prev_h - next_h)
         }
-        // Centrado con el tamaño NUEVO. Ese era el punto de todo: hacerlo con
-        // el viejo dejaba la ventana descentrada respecto del puntero.
         Pivot::Cursor => match cursor_position() {
             Some((cx, cy)) => (cx - next_w / 2, cy - next_h / 2),
-            // Sin cursor (o fuera de Windows), no mover: mejor quieta que en
-            // una coordenada inventada.
-            None => (prev_pos.x, prev_pos.y),
+            // Sin cursor, no mover: mejor quieta que en una coordenada inventada.
+            None => (px, py),
         },
     };
 
@@ -397,16 +504,14 @@ pub fn resize_floating(
         window
             .set_size(tauri::LogicalSize::new(width, height))
             .map_err(|e| e.to_string())?;
-        let _ = window.set_position(PhysicalPosition::new(cx, cy));
+        set_global_position(&window, cx, cy);
     }
     // `pre` vs `post` separa el pivote del clamp: si difieren, la ventana la
     // corrió el borde del monitor, no el pivote elegido.
     geo!(
         "RESIZE     {label} pivot={pivot:?} size=({prev_w},{prev_h})->({next_w},{next_h}) \
-         pos=({},{})->pre=({x},{y}) post=({cx},{cy}) up={up} cancel_gen={cancelled} \
-         atomico={atomic}",
-        prev_pos.x,
-        prev_pos.y
+         pos=({px},{py})->pre=({x},{y}) post=({cx},{cy}) up={up} cancel_gen={cancelled} \
+         atomico={atomic}"
     );
     Ok(ResizeResult { up })
 }
@@ -416,25 +521,17 @@ pub fn resize_floating(
 /// El monitor se busca por la esquina de la barra, que es el punto que no se
 /// mueve: es el que decide si el panel cabe hacia abajo.
 fn fits_below(x: i32, y: i32, w: i32, h: i32) -> bool {
-    #[cfg(windows)]
-    {
-        let monitors = atic_capture::monitors::enumerate();
-        let center_x = x + w / 2;
-        let target = monitors
-            .iter()
-            .find(|m| m.work_area.contains(center_x, y))
-            .or_else(|| monitors.iter().find(|m| m.is_primary))
-            .or_else(|| monitors.first());
-        let Some(m) = target else {
-            return true;
-        };
-        y + h <= m.work_area.bottom() - MARGIN
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = (x, y, w, h);
-        true
-    }
+    let monitors = atic_capture::monitors::enumerate();
+    let center_x = x + w / 2;
+    let target = monitors
+        .iter()
+        .find(|m| m.work_area.contains(center_x, y))
+        .or_else(|| monitors.iter().find(|m| m.is_primary))
+        .or_else(|| monitors.first());
+    let Some(m) = target else {
+        return true;
+    };
+    y + h <= m.work_area.bottom() - MARGIN
 }
 
 /// Destino de un vuelo y cuánto va a durar.
@@ -543,8 +640,7 @@ pub fn tween(app: &AppHandle, label: &str, to: Rect) -> Option<Flight> {
             }
             #[cfg(not(windows))]
             {
-                let _ = win.set_position(PhysicalPosition::new(now.x, now.y));
-                let _ = win.set_size(tauri::PhysicalSize::new(now.w as u32, now.h as u32));
+                apply_global_bounds(&win, now.x, now.y, now.w, now.h);
             }
             frames += 1;
 
@@ -657,7 +753,6 @@ pub struct BubbleShape {
 /// En el lado elegido se ancla por **esquina**, no al centro: el panel no debe
 /// quedar debajo/al lado centrado tapando la pill, sino salir de ella y
 /// tocarse solo por el cuello en una esquina.
-#[cfg(windows)]
 /// El origen llega como RECTÁNGULO y ya no como etiqueta de ventana.
 ///
 /// La pill dejó de ser una ventana —vive dentro del overlay—, así que
@@ -768,13 +863,4 @@ pub fn bubble_rect(
             offset: along,
         },
     ))
-}
-
-#[cfg(not(windows))]
-pub fn bubble_rect(
-    _app: &AppHandle,
-    _origin_rect: Rect,
-    _shape: BubbleShape,
-) -> Option<(Rect, BubbleAnchor)> {
-    None
 }

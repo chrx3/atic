@@ -994,6 +994,7 @@
   // `HTMLElement` y no `HTMLButtonElement`: sin nada que abrir, el aviso se
   // renderiza como `<span>`. Sigue midiéndose igual para el ancla del float.
   let agentDockEl = $state<HTMLElement | null>(null);
+  let agentStackEl = $state<HTMLElement | null>(null);
 
   /**
    * Acoplada a un borde. `null` = flotando (centro de pantalla u otro imán).
@@ -1436,6 +1437,17 @@
     agentsDock.minimized && agentDockEl
       ? surfaces.add("agents", agentDockEl)
       : undefined,
+  );
+
+  /**
+   * El racimo de chips de agentes también arma hit-rects.
+   *
+   * Cuelga al costado del disco, fuera de la caja del root: sin esto el
+   * overlay seguía click-through sobre los chips y no se podía ni abrir un
+   * agente ni agarrar la pill desde ahí.
+   */
+  $effect(() =>
+    agentStackEl ? surfaces.add("agent-stack", agentStackEl) : undefined,
   );
 
   /**
@@ -2527,6 +2539,9 @@
     ) {
       return;
     }
+    // WebKit inicia un arrastre nativo del SVG del icono (o una selección) si
+    // no se corta acá: el gesto se lo queda el navegador y la pill no se mueve.
+    event.preventDefault();
     agentChipPressed = onAgentChip;
     agentChipPressedId = onAgentChip
       ? ((el.closest(".p-agent") as HTMLElement | null)?.dataset.chipId ?? "")
@@ -3464,7 +3479,7 @@
                junto al disco y no un reemplazo, porque el disco sigue siendo la
                puerta a la rueda. -->
               {#if showAgentTab}
-                <div class="p-agent-stack">
+                <div class="p-agent-stack" bind:this={agentStackEl}>
                   {#each chips.length > 0 ? chips : [chip] as c, i (c.id || "dock")}
                     {@const logos = chipLogos(c)}
                     {@const acts = chipActs(c)}
@@ -3590,6 +3605,12 @@
 
   .p-root:active {
     cursor: grabbing;
+  }
+
+  /* WebKit puede iniciar el arrastre nativo de un SVG/imagen y quedarse con
+     el gesto: la pill no se mueve aunque el pointerdown haya llegado. */
+  .p-root :where(svg, img) {
+    -webkit-user-drag: none;
   }
 
   .p-root.is-wheel {
