@@ -51,11 +51,11 @@ function intersect(a: Area, b: Area): Area | null {
 }
 
 /**
- * Encaja un rectángulo en el monitor que le corresponde (`bounds` completos).
+ * Encaja un rectángulo en el escritorio virtual (`bounds` de todos los
+ * monitores). `MARGIN = 0` → puede solapar taskbar/menú y pegarse al borde.
  *
- * Misma regla que `floating::clamp` en Rust: monitor por **centro**; si el
- * centro cae entre pantallas, se usa la unión de todas las áreas (escritorio
- * virtual). `MARGIN = 0` → puede solapar taskbar y pegarse al borde.
+ * No se clampea al monitor del centro: eso impedía arrastrar de una pantalla
+ * a otra. El acople a un canto concreto lo decide `snapDrop` al soltar.
  *
  * Además se corta contra el viewport CSS (`view`, o `[0, ∞)` si no hay). El
  * overlay pinta desde (0,0) y `html { overflow: hidden }` recorta lo negativo:
@@ -76,12 +76,10 @@ export function clampTo(
   if (areas.length === 0) {
     return clampRect(paint, p, size);
   }
-  const cx = p.x + size.w / 2;
-  const cy = p.y + size.h / 2;
-  const hit = areas.find(
-    (a) => cx >= a.x && cx <= a.x + a.w && cy >= a.y && cy <= a.y + a.h,
-  );
-  const area = intersect(hit ?? unionAreas(areas), paint) ?? paint;
+  // Unión de monitores, no el que contiene el centro: si se clampea al
+  // monitor actual, el centro nunca cruza al vecino (el maxX es
+  // `right - width`) y la pill no puede cambiar de pantalla.
+  const area = intersect(unionAreas(areas), paint) ?? paint;
   return clampRect(area, p, size);
 }
 
