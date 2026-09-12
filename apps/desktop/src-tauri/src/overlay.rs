@@ -2554,13 +2554,16 @@ fn start_macos_hit_poll(app: AppHandle) {
                 let armed = !capturing && (over || hold);
                 let through = desired_click_through(capturing, armed);
 
-                // Hover: sólo con el overlay interactivo y el cursor adentro.
+                // Hover: mientras el overlay es interactivo se sigue el cursor
+                // aunque el punto no caiga en un hit-rect publicado — la isla
+                // expandida puede ir por delante de la zona todavía publicada.
+                // `-1` marca «se fue» y el front limpia el hover.
                 if through {
                     if hover_at.take().is_some() {
                         let _ =
                             app.emit_to(LABEL, "overlay-cursor", OverlayPoint { x: -1.0, y: -1.0 });
                     }
-                } else if let Some((x, y)) = sample {
+                } else if let Some((x, y)) = cursor_overlay_css() {
                     let moved = hover_at
                         .is_none_or(|(lx, ly)| (lx - x).abs() > 0.5 || (ly - y).abs() > 0.5);
                     if moved {
