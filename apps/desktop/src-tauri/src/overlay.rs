@@ -508,7 +508,7 @@ fn create(app: &AppHandle) -> Option<tauri::WebviewWindow> {
 /// 24: la pill en y=0 quedaba *debajo* del menú y no se leía como notch.
 /// `set_always_on_top` pisa el nivel, así que hay que reponerlo después.
 #[cfg(target_os = "macos")]
-fn macos_overlay_chrome(window: &tauri::WebviewWindow) {
+pub(crate) fn macos_set_status_level(window: &tauri::WebviewWindow) {
     let Ok(ptr) = window.ns_window() else {
         return;
     };
@@ -632,7 +632,7 @@ pub fn place(app: &AppHandle) -> Option<OverlayRect> {
         ));
         let _ = window.set_always_on_top(true);
         #[cfg(target_os = "macos")]
-        macos_overlay_chrome(&window);
+        macos_set_status_level(&window);
         let _ = window.show();
         // El CSS del overlay vive en el mismo espacio global: factor 1.
         OVERLAY_SCALE_BITS.store(1.0f64.to_bits(), Ordering::SeqCst);
@@ -1353,7 +1353,7 @@ fn restack(app: &AppHandle, _how: Restack) {
             let _ = window.set_always_on_top(on);
             #[cfg(target_os = "macos")]
             if on {
-                macos_overlay_chrome(&window);
+                macos_set_status_level(&window);
             }
         }
         let _ = _how;
@@ -1478,7 +1478,7 @@ fn apply_armed_click_through(app: &AppHandle) {
     if armed && !capturing {
         let _ = window.set_always_on_top(true);
         #[cfg(target_os = "macos")]
-        macos_overlay_chrome(&window);
+        macos_set_status_level(&window);
     }
     set_click_through(&window, through);
     keep_non_occluding(&window);
@@ -2507,7 +2507,15 @@ pub fn on_button_down() {
     }
 }
 
-#[cfg(not(windows))]
+/// En Mac no hay Raw Input: un monitor NSEvent reporta cada clic principal.
+#[cfg(target_os = "macos")]
+pub fn on_button_down() {
+    if !ARMED.load(Ordering::Acquire) {
+        send(Msg::Outside);
+    }
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 pub fn on_button_down() {}
 
 /// En Mac no hay Raw Input: un hilo mira el cursor y solo salta al hilo de
