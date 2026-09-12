@@ -88,9 +88,7 @@ pub fn preparar(dir_datos: &Path) -> Result<PathBuf, String> {
     std::fs::create_dir_all(&destino)
         .map_err(|e| format!("no se pudo crear {}: {e}", destino.display()))?;
 
-    let referencia = std::fs::metadata(&origen)
-        .and_then(|m| m.modified())
-        .ok();
+    let referencia = std::fs::metadata(&origen).and_then(|m| m.modified()).ok();
 
     for nombre in COMANDOS {
         let enlace = destino.join(exe_name(nombre));
@@ -125,7 +123,10 @@ mod tests {
         // Estos cuatro son los que la gente busca primero y NO son coreutils:
         // dejarlos en la lista crearía un `grep.exe` que no sabe hacer grep.
         for ausente in ["grep", "sed", "awk", "find"] {
-            assert!(!COMANDOS.contains(&ausente), "«{ausente}» no lo trae uutils");
+            assert!(
+                !COMANDOS.contains(&ausente),
+                "«{ausente}» no lo trae uutils"
+            );
         }
         assert!(COMANDOS.contains(&"ls"));
     }

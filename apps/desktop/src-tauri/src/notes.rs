@@ -284,7 +284,11 @@ pub fn add_clipboard_image(notes_dir: &Path, app: &str) -> Result<(String, u32, 
 ///
 /// Se decodifica y se vuelve a codificar en vez de copiar el archivo: valida
 /// que sea una imagen de verdad y deja todo el `assets/` en un solo formato.
-pub fn import_image(notes_dir: &Path, app: &str, origen: &Path) -> Result<(String, u32, u32), String> {
+pub fn import_image(
+    notes_dir: &Path,
+    app: &str,
+    origen: &Path,
+) -> Result<(String, u32, u32), String> {
     let img = image::open(origen).map_err(|e| e.to_string())?.to_rgba8();
     let (w, h) = img.dimensions();
     let png = crate::clipboard_history::encode_png_rgba(&img, w as usize, h as usize)?;
@@ -321,7 +325,9 @@ pub fn collect_garbage(notes_dir: &Path, note: &Note) {
         .collect();
     for entrada in entradas.flatten() {
         let nombre = entrada.file_name();
-        let Some(nombre) = nombre.to_str() else { continue };
+        let Some(nombre) = nombre.to_str() else {
+            continue;
+        };
         if !vivos.contains(nombre) {
             let _ = std::fs::remove_file(entrada.path());
         }
@@ -479,7 +485,9 @@ mod tests {
         let texto: Block =
             serde_json::from_str(r#"{"kind":"text","id":"t","body":"hola"}"#).unwrap();
         match texto {
-            Block::Text { x, y, w, h, body, .. } => {
+            Block::Text {
+                x, y, w, h, body, ..
+            } => {
                 assert_eq!(body, "hola");
                 assert_eq!((x, y, w, h), (0.0, 0.0, 0.0, 0.0));
             }

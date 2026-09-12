@@ -238,8 +238,7 @@ pub fn window_flip_paste_image(state: State<AppState>) -> Result<PastedImage, St
         .as_ref()
         .map(|s| s.exe.clone())
         .ok_or_else(|| "no hay tapa abierta".to_string())?;
-    let (asset, width, height) =
-        crate::notes::add_clipboard_image(&state.dirs.notes_dir(), &exe)?;
+    let (asset, width, height) = crate::notes::add_clipboard_image(&state.dirs.notes_dir(), &exe)?;
     Ok(PastedImage {
         asset,
         width,
@@ -351,8 +350,7 @@ pub fn window_flip_focus_is_foreign(app: AppHandle) -> bool {
         }
         let raiz = unsafe { GetAncestor(hwnd, GA_ROOT) };
         let hwnd = if raiz.is_null() { hwnd } else { raiz } as isize;
-        !app
-            .webview_windows()
+        !app.webview_windows()
             .values()
             .filter_map(|w| w.hwnd().ok())
             .any(|h| h.0 as isize == hwnd)
@@ -413,14 +411,10 @@ fn show_cover(app: &AppHandle) {
     if !OPEN.load(Ordering::SeqCst) {
         return;
     }
-    let geom = SESSION.lock_or_recover().as_ref().map(|s| {
-        (
-            s.overlay_x,
-            s.overlay_y,
-            s.overlay_w,
-            s.overlay_h,
-        )
-    });
+    let geom = SESSION
+        .lock_or_recover()
+        .as_ref()
+        .map(|s| (s.overlay_x, s.overlay_y, s.overlay_w, s.overlay_h));
     if let Some(window) = app.get_webview_window(LABEL) {
         #[cfg(windows)]
         disable_dwm_transitions(&window);
@@ -494,7 +488,8 @@ fn open_windows(app: &AppHandle) -> Result<(), String> {
             root
         }
     };
-    if is_our_label(app, hwnd as isize, LABEL) || is_our_label(app, hwnd as isize, crate::overlay::LABEL)
+    if is_our_label(app, hwnd as isize, LABEL)
+        || is_our_label(app, hwnd as isize, crate::overlay::LABEL)
     {
         hide(app);
         return Ok(());
@@ -540,7 +535,9 @@ fn open_windows(app: &AppHandle) -> Result<(), String> {
     let _ = window.set_size(PhysicalSize::new(overlay.width, overlay.height));
 
     let gen = GEN.load(Ordering::SeqCst) + 1;
-    let preview_path = dirs.overlay_frames_dir().join(format!("window-flip-{gen}.png"));
+    let preview_path = dirs
+        .overlay_frames_dir()
+        .join(format!("window-flip-{gen}.png"));
     // No hace falta tapar la pill: la foto va sin las ventanas layered, así
     // que el overlay no entra. Esconderla acá era el pestañeo de arranque.
     let hay_foto = capture_preview(hwnd as isize, &preview_path, true);
@@ -557,7 +554,11 @@ fn open_windows(app: &AppHandle) -> Result<(), String> {
         title,
         exe,
         icon,
-        preview_path: if hay_foto { preview_path } else { PathBuf::new() },
+        preview_path: if hay_foto {
+            preview_path
+        } else {
+            PathBuf::new()
+        },
         blocks,
         assets_dir,
         target_hwnd: hwnd as isize,
@@ -615,12 +616,16 @@ fn refresh_preview_windows(app: &AppHandle) -> Result<WindowFlipView, String> {
         .dirs
         .clone();
     let mut guard = SESSION.lock_or_recover();
-    let session = guard.as_mut().ok_or_else(|| "no hay tapa abierta".to_string())?;
+    let session = guard
+        .as_mut()
+        .ok_or_else(|| "no hay tapa abierta".to_string())?;
     if session.target_hwnd == 0 {
         return Ok(WindowFlipView::from(&*session));
     }
     let gen = GEN.load(Ordering::SeqCst);
-    let path = dirs.overlay_frames_dir().join(format!("window-flip-{gen}-back.png"));
+    let path = dirs
+        .overlay_frames_dir()
+        .join(format!("window-flip-{gen}-back.png"));
     if !capture_preview(session.target_hwnd, &path, false) {
         return Ok(WindowFlipView::from(&*session));
     }
@@ -920,7 +925,7 @@ fn read_placement(hwnd: isize) -> Option<SavedPlacement> {
 fn restore_placement(hwnd: isize, saved: Option<SavedPlacement>) {
     use windows_sys::Win32::Foundation::RECT;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        SetWindowPlacement, ShowWindow, WINDOWPLACEMENT, SW_SHOWNOACTIVATE,
+        SetWindowPlacement, ShowWindow, SW_SHOWNOACTIVATE, WINDOWPLACEMENT,
     };
 
     let Some(saved) = saved else {
@@ -1136,10 +1141,6 @@ fn note_key(exe: &str, title: &str) -> String {
     }
 }
 
-
-
-
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1161,7 +1162,10 @@ mod tests {
         let p = std::env::temp_dir().join(format!("atic-flip-{}.png", std::process::id()));
         std::fs::write(&p, b"png").unwrap();
         olvidar_preview(&p);
-        assert!(!p.exists(), "la foto de la ventana no puede quedarse en disco");
+        assert!(
+            !p.exists(),
+            "la foto de la ventana no puede quedarse en disco"
+        );
     }
 
     /// Guarda como lo hace `window_flip_save_note`, sin la sesión de por medio.
