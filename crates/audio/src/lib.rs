@@ -1,7 +1,8 @@
 //! Captura de audio para Atic.
 //!
-//! Graba micrófono y/o audio del sistema (loopback WASAPI en Windows) a WAV
-//! separados, y publica niveles RMS periódicos para el medidor de la UI.
+//! Graba micrófono y/o audio del sistema (loopback WASAPI en Windows,
+//! ScreenCaptureKit en macOS) a WAV separados, y publica niveles RMS
+//! periódicos para el medidor de la UI.
 //!
 //! El `cpal::Stream` no es `Send` en Windows, por lo que toda la captura vive
 //! en un hilo dedicado ("audio-capture") controlado por canales. `start`
@@ -19,6 +20,8 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use thiserror::Error;
 
 mod noise;
+#[cfg(target_os = "macos")]
+mod screencapturekit;
 #[cfg(windows)]
 mod wasapi;
 use noise::MicNoiseProcessor;
@@ -49,6 +52,10 @@ pub enum AudioError {
     Wav(#[from] hound::Error),
     #[error("el hilo de captura terminó inesperadamente")]
     CaptureThreadGone,
+    #[error("audio del sistema no soportado: {0}")]
+    SystemAudioUnsupported(String),
+    #[error("falta el permiso de Grabación de pantalla para el audio del sistema")]
+    SystemAudioPermission,
 }
 
 impl AudioError {
@@ -127,6 +134,25 @@ impl AudioError {
                     "The capture thread ended unexpectedly".into()
                 } else {
                     self.to_string()
+                }
+            }
+            Self::SystemAudioUnsupported(detail) => {
+                if en {
+                    format!("System audio is not supported: {detail}")
+                } else {
+                    self.to_string()
+                }
+            }
+            Self::SystemAudioPermission => {
+                if en {
+                    "Atic needs Screen Recording permission for system audio. Enable it in \
+                     Settings → Privacy & Security → Screen Recording, then restart Atic."
+                        .into()
+                } else {
+                    "Atic necesita permiso de Grabación de pantalla para el audio del sistema. \
+                     Actívalo en Ajustes → Privacidad y seguridad → Grabación de pantalla y \
+                     reinicia Atic."
+                        .into()
                 }
             }
         }
@@ -888,6 +914,15 @@ impl CaptureSession {
     }
 }
 
+/// Pista de sistema activa: loopback WASAPI (cpal) o ScreenCaptureKit.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+enum SystemStream {
+    #[cfg(not(target_os = "macos"))]
+    Cpal(cpal::Stream),
+    #[cfg(target_os = "macos")]
+    Sck(crate::screencapturekit::SystemAudioGuard),
+}
+
 /// Cuerpo del hilo de captura: construye streams, mide niveles y espera stop.
 fn control_loop(
     config: CaptureConfig,
@@ -904,7 +939,7 @@ fn control_loop(
 
     let mut mic_stream = None;
     let mut mic_writer = None;
-    let mut sys_stream = None;
+    let mut sys_stream: Option<SystemStream> = None;
     let mut sys_writer = None;
 
     // --- Micrófono ---
@@ -946,6 +981,7 @@ fn control_loop(
             events.clone(),
             &config.output_device_id,
             config.stt_tap.clone(),
+            config.english,
         ) {
             Ok((stream, writer)) => {
                 sys_stream = Some(stream);
@@ -1011,20 +1047,20 @@ fn control_loop(
 }
 
 #[derive(Clone)]
-struct LevelMeter {
+pub(crate) struct LevelMeter {
     current: Arc<AtomicU32>,
     peak: Arc<AtomicU32>,
 }
 
 impl LevelMeter {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             current: Arc::new(AtomicU32::new(0)),
             peak: Arc::new(AtomicU32::new(0)),
         }
     }
 
-    fn observe(&self, rms: f32) {
+    pub(crate) fn observe(&self, rms: f32) {
         self.current.store(rms.to_bits(), Ordering::Relaxed);
         self.peak.fetch_max(rms.to_bits(), Ordering::Relaxed);
     }
@@ -1079,7 +1115,9 @@ fn start_mic_stream(
     Ok((stream, writer))
 }
 
-/// Intenta abrir el loopback del dispositivo de salida elegido (o el default).
+/// Intenta abrir la pista de sistema: loopback WASAPI en Windows,
+/// ScreenCaptureKit en macOS. En Mac `output_device_id` se ignora (SCK captura
+/// la mezcla del display elegido).
 fn try_start_system_stream(
     host: &cpal::Host,
     path: &Path,
@@ -1087,20 +1125,19 @@ fn try_start_system_stream(
     events: Sender<CaptureEvent>,
     output_device_id: &str,
     stt_tap: Option<SyncSender<AudioTapChunk>>,
-) -> Result<(cpal::Stream, JoinHandle<Result<u64, AudioError>>), AudioError> {
+    english: bool,
+) -> Result<(SystemStream, JoinHandle<Result<u64, AudioError>>), AudioError> {
     #[cfg(target_os = "macos")]
     {
-        let _ = (host, path, meter, events, output_device_id, stt_tap);
-        // Fase 4: ScreenCaptureKit / Core Audio taps. Mientras tanto solo mic.
-        return Err(AudioError::Config(
-            "En macOS el audio del sistema requiere ScreenCaptureKit (fase 4). \
-             Grabando solo micrófono."
-                .into(),
-        ));
+        let _ = (host, output_device_id);
+        let (guard, writer) =
+            crate::screencapturekit::start(path, meter, events, stt_tap, english)?;
+        return Ok((SystemStream::Sck(guard), writer));
     }
 
     #[cfg(not(target_os = "macos"))]
     {
+        let _ = english;
         let device = resolve_output_device(host, output_device_id)?;
         // En WASAPI, construir un stream de entrada sobre un dispositivo de salida
         // usando su formato de reproducción activa el modo loopback.
@@ -1120,7 +1157,7 @@ fn try_start_system_stream(
             CaptureTrack::System,
         )?;
         stream.play()?;
-        Ok((stream, writer))
+        Ok((SystemStream::Cpal(stream), writer))
     }
 }
 

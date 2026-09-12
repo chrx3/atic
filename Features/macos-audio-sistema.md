@@ -1,28 +1,31 @@
 # Audio del sistema en macOS
 
-**Estado:** `parcial` (andamiaje) / objetivo `en curso` cuando haya Mac
+**Estado:** `implementado` (ScreenCaptureKit, macOS 13+)
 
 ## Resumen
 
-En Windows, Atic captura mic + loopback del sistema. En macOS hoy solo el
-micrófono. La fase 4 es capturar audio del sistema vía ScreenCaptureKit.
+En Windows, Atic captura mic + loopback del sistema (WASAPI). En macOS usa
+**ScreenCaptureKit** (`SCStream` con `capturesAudio`) sobre un display y sólo
+consume la salida de audio. Misma experiencia que Windows: pistas mic / both /
+sistema y medidor de "Otros".
 
-## Cómo se usa
-
-- Hoy: grabar con pistas mic / both cae a mic en Mac (aviso esperado).
-- Objetivo: misma experiencia que Windows en reuniones.
+SCK pide **Grabación de pantalla** y enciende el indicador de captura del
+sistema mientras dura la grabación. En macOS 11/12 la pista de sistema no está
+disponible y la UI muestra ese mensaje.
 
 ## Código
 
-- [`crates/audio/`](../crates/audio/) — stub / notas fase 4
-- [`apps/desktop/src-tauri/src/macos_notes.rs`](../apps/desktop/src-tauri/src/macos_notes.rs)
-- [`docs/MACOS.md`](../docs/MACOS.md)
+- [`crates/audio/src/screencapturekit.rs`](../crates/audio/src/screencapturekit.rs) — stream, callback `SCStreamOutput`, conversión `CMSampleBuffer` → f32 y writer con línea de tiempo (rellena silencio para no desalinear la pista del mic).
+- [`crates/audio/src/lib.rs`](../crates/audio/src/lib.rs) — `try_start_system_stream` elige WASAPI o SCK; `SystemStream` encapsula el guard.
+- [`apps/desktop/src-tauri/Info.plist`](../apps/desktop/src-tauri/Info.plist) — `NSScreenCaptureUsageDescription`.
+- [`docs/MACOS.md`](../docs/MACOS.md) — permisos y desarrollo.
 
 ## Pendiente / siguiente
 
-- [ ] Implementar captura ScreenCaptureKit en Mac real
-- [ ] Permisos TCC / entitlement documentados para el usuario
+- [x] Implementar captura ScreenCaptureKit
+- [x] Permisos TCC documentados para el usuario
 - [ ] Probar Meet / Zoom / Teams en Mac con loopback
+- [ ] Evaluar CoreAudio Process Tap (macOS 14.2+) para capturar sólo la reunión
 
 ## Relacionado
 

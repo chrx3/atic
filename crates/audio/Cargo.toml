@@ -13,6 +13,32 @@ hound = "3.5"
 # Pure Rust RNNoise; sin features default (CLI/hound) para no arrastrar clap.
 nnnoiseless = { version = "0.5.2", default-features = false }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6"
+dispatch2 = "0.3"
+objc2 = "0.6"
+objc2-core-audio-types = { version = "0.3", features = ["objc2"] }
+objc2-core-media = { version = "0.3", default-features = false, features = [
+  "CMSampleBuffer",
+  "CMBlockBuffer",
+  "CMFormatDescription",
+  "objc2",
+  "objc2-core-audio-types",
+] }
+objc2-foundation = { version = "0.3", default-features = false, features = [
+  "NSArray",
+  "NSError",
+  "NSObject",
+  "NSString",
+] }
+objc2-screen-capture-kit = { version = "0.3", default-features = false, features = [
+  "std",
+  "SCStream",
+  "SCShareableContent",
+  "block2",
+  "dispatch2",
+] }
+
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.61.3", features = [
     "Win32_Devices_FunctionDiscovery",

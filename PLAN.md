@@ -90,7 +90,7 @@ No hace falta integrarse con Zoom/Teams/Meet: el loopback captura todo el audio 
 | 1 | Grabadora (Windows) | Captura mic + loopback, guardar y reproducir grabaciones, pill flotante. **Primera versión usable.** | Hecho |
 | 2 | Transcripción | whisper-rs + descarga de modelos, vista de transcript con hablantes. | Hecho |
 | 3 | Resumen + correo | BYOK multi-proveedor (Claude, Ollama, OpenAI-compat), plantillas, editor, SMTP/mailto. **Producto completo en Windows.** | Hecho |
-| 4 | macOS | Audio del sistema (ScreenCaptureKit/CA taps), permisos TCC, firma y notarización. | Andamiaje (Info.plist + stub; falta captura real — requiere Mac) |
+| 4 | macOS | Audio del sistema (ScreenCaptureKit/CA taps), permisos TCC, firma y notarización. | Audio del sistema implementado con ScreenCaptureKit; firma y notarización pendientes |
 | 5 | Detección de llamadas | Procesos + títulos de ventana (Meet) + mic-en-uso WASAPI; pill pulsante; beep; autostart; onboarding legal. | Hecho (Windows) |
 | 6 (futuro) | Móvil companion | Tauri 2 iOS/Android: ver/reenviar resúmenes y grabar reuniones presenciales por micrófono. **No graba audio de llamadas del sistema** (limitación de OS). | Documentado (`docs/MOBILE.md`) |
 

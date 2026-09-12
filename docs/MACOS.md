@@ -5,15 +5,18 @@ El instalable (DMG firmado) viene después; aquí solo el flujo de desarrollo.
 
 > **Limitaciones actuales en macOS**
 >
-> - Audio: se graba **solo el micrófono**. El loopback del sistema
->   (ScreenCaptureKit) aún no está. En Windows sí funciona mic + sistema.
-> - Cuentagotas y voltear ventana: siguen siendo Windows (gancho de ratón / GDI).
-> - Botones laterales del ratón: Raw Input de Win32.
+> - Audio del sistema: implementado con ScreenCaptureKit (macOS 13+), requiere
+>   **Grabación de pantalla**. Enciende el indicador de captura mientras se
+>   graba y en macOS 11/12 solo hay micrófono.
+> - El cuentagotas usa un `CGEventTap` y el pegado automático sintetiza Cmd+V:
+>   ambos necesitan **Accesibilidad**.
 > - La pill usa `macos-private-api` y se pone por encima de la barra de menú
 >   para el notch del techo. Fuera del App Store no es un problema.
 >
-> Capturas, mira de selección y pizarra **sí** funcionan: Core Graphics
-> (`CGDisplayCreateImage`). macOS pedirá **Grabación de pantalla** la primera vez.
+> Capturas, mira de selección, pizarra, cuentagotas, voltear ventana y botones
+> laterales del mouse **sí** funcionan: Core Graphics
+> (`CGDisplayCreateImage`) y monitores `NSEvent`. macOS pedirá **Grabación de
+> pantalla** la primera vez.
 >
 > Monitores con escalas distintas (Retina + 1x) están soportados: la geometría
 > va en puntos (el espacio de AppKit) y cada captura final sale a resolución

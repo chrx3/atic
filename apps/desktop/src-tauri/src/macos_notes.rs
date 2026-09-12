@@ -1,28 +1,14 @@
 //! Utilidades macOS de la capa Tauri: foco/pegado y permisos TCC.
 //!
-//! El audio del sistema en macOS no es loopback WASAPI. Opciones:
-//! - ScreenCaptureKit (macOS 13+) con filtro de audio de pantalla/app
-//! - Core Audio taps (macOS 14.4+)
-//!
-//! Mientras no esté implementado, `try_start_system_stream` en
-//! `crates/audio` falla de forma controlada y la app graba solo micrófono
-//! (o falla si el usuario eligió solo «otros» / modo parlantes).
-//!
-//! ## Checklist de implementación
-//!
-//! 1. Binding Swift/ObjC o crate `screencapturekit` / `cidre` desde `crates/audio`.
-//! 2. Pedir permiso de captura de pantalla/audio antes de abrir el stream.
-//! 3. Escribir PCM a WAV con el mismo contrato que WASAPI (`system.wav`).
-//! 4. Respetar `CaptureConfig.capture_system` (modo parlantes / solo otros).
-//! 5. Firma + notarización para distribución fuera de desarrollo.
+//! El audio del sistema vive en `crates/audio` (`screencapturekit.rs`), no acá.
 //!
 //! Permisos TCC (ver `Info.plist`):
 //! - NSMicrophoneUsageDescription
 //! - NSAudioCaptureUsageDescription / NSScreenCaptureUsageDescription
 //!
-//! Además de la fase 4 de audio, acá viven los puentes de AppKit que no
-//! justifican un módulo propio: app en primer plano (para pegar), simulación
-//! de Cmd+V (Accesibilidad) y apertura de paneles de Privacidad.
+//! Acá viven los puentes de AppKit que no justifican un módulo propio: app en
+//! primer plano y activación (para pegar), ocultar/mostrar apps (window flip),
+//! simulación de Cmd+V (Accesibilidad) y apertura de paneles de Privacidad.
 
 #![allow(dead_code)]
 
