@@ -18,6 +18,19 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
 const OVERLAY_LABEL: &str = "capture-overlay";
+/// Tras este idle sin uso, se destruye el webview precalentado para soltar RAM.
+const CAPTURE_IDLE_TTL: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+/// Mismo umbral que `CAPTURE_IDLE_TTL`: captura e input deben quedar idle juntos.
+const CAPTURE_INPUT_IDLE: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+const CAPTURE_IDLE_CHECK: std::time::Duration = std::time::Duration::from_secs(60);
+/// La creación en frío puede tardar varios segundos bajo carga; esto es red de
+/// seguridad contra una creación trabada, no un timeout del path normal.
+const CAPTURE_CREATE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(25);
+const CAPTURE_ACTIVITY_CHECK: std::time::Duration = std::time::Duration::from_secs(2);
+const CAPTURE_ACTIVITY_RECENT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Último uso/precarga del overlay de captura, en milisegundos desde Unix epoch.
+static CAPTURE_LAST_USED_MS: AtomicU64 = AtomicU64::new(0);
 
 /// `start_impl` está congelando el escritorio (aún sin sesión activa).
 /// Sin esto, un segundo atajo rápido abre otra captura en paralelo y un
@@ -34,6 +47,43 @@ static REVEALED: AtomicBool = AtomicBool::new(false);
 /// Ancla del shelf pendiente: la mira guarda el PNG y vuela; el shelf se
 /// muestra al aterrizar.
 static PENDING_SHELF: std::sync::Mutex<Option<(i32, i32)>> = std::sync::Mutex::new(None);
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64)
+        .unwrap_or(0)
+}
+
+fn mark_capture_overlay_used() {
+    CAPTURE_LAST_USED_MS.store(now_ms(), Ordering::SeqCst);
+}
+
+#[cfg(windows)]
+fn input_idle_ms() -> Option<u64> {
+    use windows_sys::Win32::System::SystemInformation::GetTickCount64;
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetLastInputInfo, LASTINPUTINFO};
+
+    let mut info = LASTINPUTINFO {
+        cbSize: std::mem::size_of::<LASTINPUTINFO>() as u32,
+        dwTime: 0,
+    };
+    // SAFETY: `info` apunta a memoria válida y `cbSize` tiene el tamaño requerido.
+    if unsafe { GetLastInputInfo(&mut info) } == 0 {
+        return None;
+    }
+    // `dwTime` es un tick de 32 bits. Se compara contra los 32 bits bajos del
+    // tick actual con resta modular: un wrap cuenta el elapsed real, no "idle
+    // para siempre".
+    let now = unsafe { GetTickCount64() as u32 };
+    Some(now.wrapping_sub(info.dwTime) as u64)
+}
+
+#[cfg(not(windows))]
+fn input_idle_ms() -> Option<u64> {
+    // Sin probe nativo se conserva el comportamiento seguro: usuario activo.
+    Some(0)
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -292,6 +342,7 @@ fn abandon_start(app: &AppHandle) {
 
 #[cfg(windows)]
 fn start_impl(app: &AppHandle, kind: OverlayKind) -> Result<(), String> {
+    mark_capture_overlay_used();
     // Solo una sesión: si ya hay overlay, cancelar (mismo criterio que el atajo).
     if session_is_active(app) {
         end_session(app);
@@ -978,6 +1029,8 @@ fn create_capture_overlay(app: &AppHandle) -> Result<tauri::WebviewWindow, Strin
 /// Precarga el webview de captura en background. Sin esto, la primera mira
 /// paga crear Chromium *después* del freeze y se siente más lenta que la pizarra.
 pub(crate) fn prewarm_capture_overlay(app: &AppHandle) {
+    ensure_capture_overlay_idle_reaper(app);
+    ensure_capture_overlay_activity_rewarmer(app);
     #[cfg(windows)]
     {
         let app = app.clone();
@@ -986,6 +1039,8 @@ pub(crate) fn prewarm_capture_overlay(app: &AppHandle) {
             .spawn(move || {
                 if let Err(err) = ensure_capture_overlay(&app) {
                     tracing::warn!(%err, "no se pudo precargar el overlay de captura");
+                } else {
+                    mark_capture_overlay_used();
                 }
             });
     }
@@ -993,6 +1048,189 @@ pub(crate) fn prewarm_capture_overlay(app: &AppHandle) {
     {
         let _ = app;
     }
+}
+
+/// Hilo único: si el overlay precalentado no se usa durante `CAPTURE_IDLE_TTL`,
+/// destruye la ventana oculta y deja que la próxima captura la recree on-demand.
+///
+/// Invariante anti-churn: para destruir hacen falta DOS idles a la vez, sin
+/// capturas por `CAPTURE_IDLE_TTL` y sin input por `CAPTURE_INPUT_IDLE`. Si solo
+/// miráramos capturas, un usuario activo dispararía destroy a los 10 minutos y
+/// el monitor de actividad lo recrearía enseguida, ciclando WebView2 y ~350 MB.
+fn ensure_capture_overlay_idle_reaper(app: &AppHandle) {
+    static STARTED: AtomicBool = AtomicBool::new(false);
+    if STARTED.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let app2 = app.clone();
+    let spawn_result = std::thread::Builder::new()
+        .name("atic-capture-idle".into())
+        .spawn(move || loop {
+            std::thread::sleep(CAPTURE_IDLE_CHECK);
+            let starting = STARTING.load(Ordering::SeqCst);
+            let revealed = REVEALED.load(Ordering::SeqCst);
+            let active = session_is_active(&app2);
+            let last = CAPTURE_LAST_USED_MS.load(Ordering::SeqCst);
+            let now = now_ms();
+            let elapsed_ms = now.saturating_sub(last);
+            let input_idle = input_idle_ms();
+            let window = app2.get_webview_window(OVERLAY_LABEL);
+            let window_exists = window.is_some();
+            let visible_result = window.as_ref().map(|window| window.is_visible());
+            tracing::debug!(
+                starting,
+                revealed,
+                active,
+                last_used_ms = last,
+                elapsed_ms,
+                input_idle_ms = ?input_idle,
+                window_exists,
+                visible = ?visible_result,
+                "capture idle tick"
+            );
+            if starting || revealed {
+                continue;
+            }
+            if active {
+                continue;
+            }
+            if last == 0 {
+                continue;
+            }
+            if elapsed_ms < CAPTURE_IDLE_TTL.as_millis() as u64 {
+                continue;
+            }
+
+            let app_destroy = app2.clone();
+            let (tx, rx) = std::sync::mpsc::channel();
+            if app2
+                .run_on_main_thread(move || {
+                    let starting = STARTING.load(Ordering::SeqCst);
+                    let revealed = REVEALED.load(Ordering::SeqCst);
+                    let active = session_is_active(&app_destroy);
+                    let mut visible_result = None;
+                    let mut input_idle = None;
+                    let (destroyed, branch) = if starting || revealed || active {
+                        (false, "busy")
+                    } else if let Some(window) = app_destroy.get_webview_window(OVERLAY_LABEL) {
+                        let visible = window.is_visible();
+                        let visible_blocks_destroy =
+                            visible.as_ref().map_or(true, |visible| *visible);
+                        visible_result = Some(visible);
+                        if visible_blocks_destroy {
+                            (false, "visible")
+                        } else {
+                            input_idle = input_idle_ms();
+                            if input_idle.is_none_or(|elapsed| {
+                                elapsed < CAPTURE_INPUT_IDLE.as_millis() as u64
+                            }) {
+                                (false, "input-active")
+                            } else {
+                                let _ = window.destroy();
+                                (true, "destroy")
+                            }
+                        }
+                    } else {
+                        (false, "missing-window")
+                    };
+                    tracing::debug!(
+                        starting,
+                        revealed,
+                        active,
+                        branch,
+                        destroyed,
+                        input_idle_ms = ?input_idle,
+                        visible = ?visible_result,
+                        "capture idle main-thread decision"
+                    );
+                    let _ = tx.send(destroyed);
+                })
+                .is_err()
+            {
+                continue;
+            }
+            if rx
+                .recv_timeout(std::time::Duration::from_secs(3))
+                .unwrap_or(false)
+            {
+                std::thread::sleep(std::time::Duration::from_millis(400));
+                CAPTURE_LAST_USED_MS.store(0, Ordering::SeqCst);
+                tracing::info!(
+                    idle_secs = CAPTURE_IDLE_TTL.as_secs(),
+                    "overlay de captura liberado por idle"
+                );
+            }
+        });
+    tracing::debug!(
+        spawn = if spawn_result.is_ok() { "Ok" } else { "Err" },
+        error = ?spawn_result.as_ref().err(),
+        "capture idle reaper spawn"
+    );
+}
+
+/// Hilo único: cuando vuelve el input tras liberar el overlay, lo vuelve a
+/// precalentar sin mezclar esa decisión con el reaper de memoria.
+fn ensure_capture_overlay_activity_rewarmer(app: &AppHandle) {
+    static STARTED: AtomicBool = AtomicBool::new(false);
+    static WARMING: AtomicBool = AtomicBool::new(false);
+    if STARTED.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let app2 = app.clone();
+    let spawn_result = std::thread::Builder::new()
+        .name("atic-capture-activity".into())
+        .spawn(move || loop {
+            std::thread::sleep(CAPTURE_ACTIVITY_CHECK);
+            let starting = STARTING.load(Ordering::SeqCst);
+            let active = session_is_active(&app2);
+            let window_exists = app2.get_webview_window(OVERLAY_LABEL).is_some();
+            let input_idle = input_idle_ms();
+            let warming = WARMING.load(Ordering::SeqCst);
+            tracing::debug!(
+                starting,
+                active,
+                window_exists,
+                input_idle_ms = ?input_idle,
+                warming,
+                "capture activity tick"
+            );
+            if window_exists {
+                if WARMING.swap(false, Ordering::SeqCst) {
+                    tracing::info!("overlay de captura re-precargado por actividad");
+                }
+                continue;
+            }
+            if starting || active || warming {
+                continue;
+            }
+            if input_idle
+                .is_none_or(|elapsed| elapsed > CAPTURE_ACTIVITY_RECENT.as_millis() as u64)
+            {
+                continue;
+            }
+            if WARMING
+                .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                .is_err()
+            {
+                continue;
+            }
+            tracing::debug!(
+                input_idle_ms = ?input_idle,
+                "capture activity rewarm decision"
+            );
+            prewarm_capture_overlay(&app2);
+            // Si la creación falla, soltar `WARMING`: sin esta red de seguridad
+            // un intento fallido trabaría el monitor para siempre.
+            std::thread::spawn(|| {
+                std::thread::sleep(CAPTURE_CREATE_TIMEOUT + std::time::Duration::from_secs(5));
+                WARMING.store(false, Ordering::SeqCst);
+            });
+        });
+    tracing::debug!(
+        spawn = if spawn_result.is_ok() { "Ok" } else { "Err" },
+        error = ?spawn_result.as_ref().err(),
+        "capture activity rewarmer spawn"
+    );
 }
 
 fn overlay_is_ready(app: &AppHandle) -> bool {
@@ -1039,7 +1277,7 @@ fn ensure_capture_overlay(app: &AppHandle) -> Result<(), String> {
         let _ = tx.send(result);
     })
     .map_err(|err| err.to_string())?;
-    rx.recv_timeout(std::time::Duration::from_secs(8))
+    rx.recv_timeout(CAPTURE_CREATE_TIMEOUT)
         .map_err(|_| {
             crate::ui_lang::msg(
                 "Se agotó el tiempo al crear la captura.",
@@ -1077,6 +1315,7 @@ fn show_overlay_window(app: &AppHandle) -> Result<(), String> {
     disable_dwm_transitions(&window);
     let _ = window.set_always_on_top(true);
     let _ = window.show();
+    mark_capture_overlay_used();
     cover_virtual_desktop(&window);
 
     // Misma app, mismo proceso: con el cursor sobre `main`, Windows puede
