@@ -267,9 +267,10 @@ fn install_macos_monitors() {
         // SAFETY: el monitor entrega un NSEvent vivo durante la llamada.
         let event = unsafe { event.as_ref() };
         let kind = event.r#type();
-        let main_down = kind == NSEventType::LeftMouseDown
-            || kind == NSEventType::RightMouseDown
-            || kind == NSEventType::OtherMouseDown;
+        let left_down = kind == NSEventType::LeftMouseDown;
+        let left_up = kind == NSEventType::LeftMouseUp;
+        let main_down =
+            left_down || kind == NSEventType::RightMouseDown || kind == NSEventType::OtherMouseDown;
         let edge = if kind == NSEventType::OtherMouseDown {
             Some(Edge::Down)
         } else if kind == NSEventType::OtherMouseUp {
@@ -287,10 +288,16 @@ fn install_macos_monitors() {
                 enqueue_hook_event(HookEvent { action, edge });
             }
         }
+        if left_down {
+            crate::overlay::on_left_down();
+        } else if left_up {
+            crate::overlay::on_left_up();
+        }
         main_down
     }
 
     let mask = NSEventMask::LeftMouseDown
+        | NSEventMask::LeftMouseUp
         | NSEventMask::RightMouseDown
         | NSEventMask::OtherMouseDown
         | NSEventMask::OtherMouseUp;

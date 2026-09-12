@@ -24,6 +24,7 @@ import {
   shouldReturnToEdgeOnActivate,
   islandHoverStay,
   islandHoverOpens,
+  pointerMoveDrags,
   ISLAND_COLLAPSE_MS,
   stackMarkVisible,
   wheelChromeActive,
@@ -252,6 +253,11 @@ describe("contentFor", () => {
     expect(islandHoverOpens({ ...closed, hasUpdate: false })).toBe(true);
     expect(islandHoverOpens({ ...closed, expanded: true })).toBe(true);
     expect(islandHoverOpens({ ...closed, over: false })).toBe(false);
+  });
+
+  it("el pointermove del hover sintético no cuenta como arrastre", () => {
+    expect(pointerMoveDrags(0)).toBe(false);
+    expect(pointerMoveDrags(1)).toBe(true);
   });
 
   it("acoplada, la actividad no cuelga: la caja no crece hacia adentro", () => {

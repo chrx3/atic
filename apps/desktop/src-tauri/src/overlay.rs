@@ -197,6 +197,11 @@ static ITEM_DRAG_PASSTHROUGH: AtomicBool = AtomicBool::new(false);
 /// no entrega el `pointerup` y el arrastre queda pegado para siempre.
 static POINTER_GESTURE: AtomicBool = AtomicBool::new(false);
 
+/// Clic principal sobre un hit-rect: el front sintetiza pointerdown/up si el
+/// WKWebView no entregó el evento (notch sobre el menú / Dock).
+#[cfg(target_os = "macos")]
+static POINTER_DOWN_EMITTED: AtomicBool = AtomicBool::new(false);
+
 /// Lo último que se le APLICÓ de verdad a la ventana. `true` = deja pasar.
 ///
 /// Separado de `ARMED` porque son dos cosas: uno es la intención, que se
@@ -507,30 +512,49 @@ fn create(app: &AppHandle) -> Option<tauri::WebviewWindow> {
 /// `always_on_top` de Tauri usa `NSFloatingWindowLevel` (3). El menú vive en
 /// 24: la pill en y=0 quedaba *debajo* del menú y no se leía como notch.
 /// `set_always_on_top` pisa el nivel, así que hay que reponerlo después.
+///
+/// Con el overlay armado sube a `NSPopUpMenuWindowLevel` (101): a 25 AppKit
+/// se queda los clics de la franja del menú y del Dock, y el notch solo
+/// reaccionaba al hover sintético.
 #[cfg(target_os = "macos")]
-pub(crate) fn macos_set_status_level(window: &tauri::WebviewWindow) {
+const MACOS_STATUS_LEVEL: isize = 25;
+#[cfg(target_os = "macos")]
+const MACOS_CLICK_LEVEL: isize = 101;
+
+#[cfg(target_os = "macos")]
+fn macos_apply_overlay_level(window: &tauri::WebviewWindow, level: isize) {
+    let Ok(ptr) = window.ns_window() else {
+        return;
+    };
+    let ns = ptr as *mut objc2::runtime::AnyObject;
+    if ns.is_null() {
+        return;
+    }
+    unsafe {
+        let _: () = objc2::msg_send![ns, setLevel: level];
+        // CanJoinAllSpaces | Stationary | FullScreenAuxiliary
+        let behavior: usize = 1 | (1 << 4) | (1 << 8);
+        let _: () = objc2::msg_send![ns, setCollectionBehavior: behavior];
+        let _: () = objc2::msg_send![ns, setHidesOnDeactivate: false];
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn macos_set_overlay_level(window: &tauri::WebviewWindow, level: isize) {
     // AppKit exige el hilo principal: esto puede venir de un worker de tokio
     // (comandos async) y `setLevel` fuera del main thread aborta el proceso.
+    // Aunque `apply_armed` ya corre en main, `set_always_on_top` se encola:
+    // este `run_on_main_thread` queda *después* y sobrevive al level 3.
     let window = window.clone();
     let inner = window.clone();
     let _ = window.run_on_main_thread(move || {
-        let window = &inner;
-        let Ok(ptr) = window.ns_window() else {
-            return;
-        };
-        let ns = ptr as *mut objc2::runtime::AnyObject;
-        if ns.is_null() {
-            return;
-        }
-        unsafe {
-            // NSStatusWindowLevel = 25 (menú = 24).
-            let _: () = objc2::msg_send![ns, setLevel: 25isize];
-            // CanJoinAllSpaces | Stationary | FullScreenAuxiliary
-            let behavior: usize = 1 | (1 << 4) | (1 << 8);
-            let _: () = objc2::msg_send![ns, setCollectionBehavior: behavior];
-            let _: () = objc2::msg_send![ns, setHidesOnDeactivate: false];
-        }
+        macos_apply_overlay_level(&inner, level);
     });
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn macos_set_status_level(window: &tauri::WebviewWindow) {
+    macos_set_overlay_level(window, MACOS_STATUS_LEVEL);
 }
 
 /// Coloca el overlay sobre TODO el escritorio virtual y lo muestra.
@@ -1485,7 +1509,10 @@ fn apply_armed_click_through(app: &AppHandle) {
     if armed && !capturing {
         let _ = window.set_always_on_top(true);
         #[cfg(target_os = "macos")]
-        macos_set_status_level(&window);
+        macos_set_overlay_level(&window, MACOS_CLICK_LEVEL);
+    } else {
+        #[cfg(target_os = "macos")]
+        macos_set_overlay_level(&window, MACOS_STATUS_LEVEL);
     }
     set_click_through(&window, through);
     keep_non_occluding(&window);
@@ -2515,11 +2542,48 @@ pub fn on_button_down() {
 }
 
 /// En Mac no hay Raw Input: un monitor NSEvent reporta cada clic principal.
+///
+/// Si el cursor está sobre un hit-rect, el clic es nuestro aunque `ARMED`
+/// todavía no se haya aplicado: el hover del notch se pinta un frame antes
+/// de que `ignore_cursor_events` baje, y AppKit se queda el `mouseDown`.
 #[cfg(target_os = "macos")]
 pub fn on_button_down() {
-    if !ARMED.load(Ordering::Acquire) {
-        send(Msg::Outside);
+    if cursor_over_any_hit().is_some() || ARMED.load(Ordering::Acquire) {
+        return;
     }
+    send(Msg::Outside);
+}
+
+/// El WKWebView no-key a veces no entrega el `mouseDown` (notch / menú / Dock).
+/// El monitor NSEvent sí lo ve: se reenvía al front para sintetizar el clic.
+#[cfg(target_os = "macos")]
+pub fn on_left_down() {
+    if CAPTURING.load(Ordering::Acquire) {
+        return;
+    }
+    let Some((x, y)) = cursor_over_any_hit() else {
+        return;
+    };
+    POINTER_DOWN_EMITTED.store(true, Ordering::Release);
+    emit_overlay_pointer(x, y, true);
+}
+
+/// Cierra el gesto sintético aunque el cursor ya haya salido del hit-rect.
+#[cfg(target_os = "macos")]
+pub fn on_left_up() {
+    if !POINTER_DOWN_EMITTED.swap(false, Ordering::AcqRel) {
+        return;
+    }
+    let (x, y) = cursor_overlay_css().unwrap_or((-1.0, -1.0));
+    emit_overlay_pointer(x, y, false);
+}
+
+#[cfg(target_os = "macos")]
+fn emit_overlay_pointer(x: f64, y: f64, down: bool) {
+    let Some(app) = APP_HANDLE.get() else {
+        return;
+    };
+    let _ = app.emit_to(LABEL, "overlay-pointer", OverlayPointer { x, y, down });
 }
 
 #[cfg(not(any(windows, target_os = "macos")))]
@@ -2627,6 +2691,14 @@ fn now_ms() -> i64 {
 pub struct OverlayPoint {
     pub x: f64,
     pub y: f64,
+}
+
+/// Clic principal en el mismo espacio que `overlay-cursor`.
+#[derive(Debug, Clone, Copy, serde::Serialize)]
+pub struct OverlayPointer {
+    pub x: f64,
+    pub y: f64,
+    pub down: bool,
 }
 
 /// Rectángulo en píxeles CSS relativos al overlay.

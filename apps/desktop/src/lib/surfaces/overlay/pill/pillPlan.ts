@@ -238,6 +238,18 @@ export const ISLAND_COLLAPSE_MORE_MS = 700;
 export const UPDATE_ISLAND_OPEN_DELAY_MS = 180;
 
 /**
+ * ¿Este `pointermove` cuenta como arrastre de la pill?
+ *
+ * El hover sintético de macOS dispara `pointermove` con `buttons === 0`. Si se
+ * mezcla con el origen del gesto (coords del DOM), un clic en la isla —notch
+ * de techo o de canto— se lee como arrastre y la herramienta no se activa.
+ * La rueda no pasa por este gesto: sus gajos usan `onclick`.
+ */
+export function pointerMoveDrags(buttons: number): boolean {
+  return buttons !== 0;
+}
+
+/**
  * ¿El hover ya cuenta para abrir la tira?
  *
  * Sin update, el primer sondeo abre. Con update y todavía cerrada, espera

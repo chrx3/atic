@@ -1,14 +1,20 @@
 /**
- * Hover sintético para macOS.
+ * Hover y clic sintéticos para macOS.
  *
  * El WKWebView no entrega `mouseMoved`/`pointerenter` mientras la ventana del
  * overlay no es key, así que los nodos de la rueda y los `onpointerenter` de
  * los floats no reaccionan al pasar el mouse: hay que hacer clic primero.
  *
- * Rust ya muestrea el cursor para armar el overlay, así que mientras es
- * interactivo manda `overlay-cursor` con la posición CSS. Acá se traduce a
- * eventos pointer/mouse sobre el elemento bajo el punto, respetando entrar y
- * salir de la cadena de ancestros.
+ * El clic tiene el mismo hueco, y en el notch (techo o canto) es peor: la
+ * pestaña vive encima del menú / Dock y AppKit a veces se queda el
+ * `mouseDown`. El hover sí se ve porque Rust ya muestrea el cursor; el clic
+ * nativo a veces llega y a veces no. La rueda, más adentro de la pantalla,
+ * suele recibir el evento de verdad.
+ *
+ * Rust manda `overlay-cursor` (posición) y `overlay-pointer` (down/up del
+ * botón principal sobre un hit-rect). Acá se traducen a pointer/mouse sobre el
+ * elemento bajo el punto. Si el DOM ya recibió el clic de verdad, no se
+ * duplica.
  *
  * Los eventos sintéticos no actualizan el estado `:hover` real del motor, así
  * que además se espejan las reglas CSS `:hover` a un atributo que se pone en la
@@ -20,7 +26,8 @@
  */
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
-import type { Point } from "$ipc/overlay";
+import type { OverlayPointer, Point } from "$ipc/overlay";
+import { nativePointerAlreadyHandled } from "./syntheticPointer";
 
 const HOVER_ATTR = "data-synth-hover";
 
@@ -98,21 +105,102 @@ function fire(
   x: number,
   y: number,
   bubbles: boolean,
+  press: { button: number; buttons: number; cancelable: boolean } = {
+    button: -1,
+    buttons: 0,
+    cancelable: false,
+  },
 ): void {
   el.dispatchEvent(
     new PointerEvent(type, {
       bubbles,
       composed: true,
-      cancelable: false,
+      cancelable: press.cancelable,
+      view: window,
       clientX: x,
       clientY: y,
       pointerId: 1,
       pointerType: "mouse",
       isPrimary: true,
-      button: -1,
-      buttons: 0,
+      button: press.button,
+      buttons: press.buttons,
     }),
   );
+}
+
+function fireMouse(
+  el: Element,
+  type: string,
+  x: number,
+  y: number,
+  press: { button: number; buttons: number; detail: number },
+): void {
+  el.dispatchEvent(
+    new MouseEvent(type, {
+      bubbles: true,
+      composed: true,
+      cancelable: true,
+      view: window,
+      clientX: x,
+      clientY: y,
+      button: press.button,
+      buttons: press.buttons,
+      detail: press.detail,
+    }),
+  );
+}
+
+let lastTrustedDown = 0;
+let lastTrustedUp = 0;
+let synthHeld = false;
+let synthDownTarget: Element | null = null;
+
+function applyClick(point: OverlayPointer): void {
+  if (document.hasFocus()) {
+    synthHeld = false;
+    synthDownTarget = null;
+    return;
+  }
+  const now = performance.now();
+  if (point.down) {
+    if (nativePointerAlreadyHandled(lastTrustedDown, now)) return;
+    const target = document.elementFromPoint(point.x, point.y);
+    if (!target) return;
+    synthHeld = true;
+    synthDownTarget = target;
+    const press = { button: 0, buttons: 1, cancelable: true };
+    fire(target, "pointerdown", point.x, point.y, true, press);
+    fireMouse(target, "mousedown", point.x, point.y, {
+      button: 0,
+      buttons: 1,
+      detail: 1,
+    });
+    return;
+  }
+  if (!synthHeld) return;
+  synthHeld = false;
+  const held = synthDownTarget;
+  synthDownTarget = null;
+  if (nativePointerAlreadyHandled(lastTrustedUp, now)) return;
+  const target =
+    (point.x >= 0 && point.y >= 0
+      ? document.elementFromPoint(point.x, point.y)
+      : null) ?? held;
+  if (!target) return;
+  const x = point.x >= 0 ? point.x : 0;
+  const y = point.y >= 0 ? point.y : 0;
+  const release = { button: 0, buttons: 0, cancelable: true };
+  fire(target, "pointerup", x, y, true, release);
+  fireMouse(target, "mouseup", x, y, {
+    button: 0,
+    buttons: 0,
+    detail: 1,
+  });
+  fireMouse(target, "click", x, y, {
+    button: 0,
+    buttons: 0,
+    detail: 1,
+  });
 }
 
 function clearHover(): void {
@@ -166,24 +254,60 @@ function applyPoint(point: Point): void {
   markChain(next);
 }
 
-/** Escucha el cursor y devuelve la baja. */
+function onTrustedPointer(event: PointerEvent): void {
+  if (!event.isTrusted || event.button !== 0) return;
+  // El IPC a veces gana al mouseDown nativo: si ya sintetizamos, no dejar
+  // que el evento real dispare el mismo gesto otra vez.
+  if (synthHeld) {
+    event.stopImmediatePropagation();
+    event.preventDefault();
+    return;
+  }
+  const now = performance.now();
+  if (event.type === "pointerdown") lastTrustedDown = now;
+  else lastTrustedUp = now;
+}
+
+/** Escucha el cursor y los clics, y devuelve la baja. */
 export function startSyntheticHover(): () => void {
   installHoverCss();
+  lastTrustedDown = 0;
+  lastTrustedUp = 0;
+  synthHeld = false;
+  synthDownTarget = null;
   let disposed = false;
-  let unlisten: UnlistenFn | null = null;
+  let unlistenCursor: UnlistenFn | null = null;
+  let unlistenPointer: UnlistenFn | null = null;
+  window.addEventListener("pointerdown", onTrustedPointer, true);
+  window.addEventListener("pointerup", onTrustedPointer, true);
   void listen<Point>("overlay-cursor", (event) => applyPoint(event.payload)).then(
     (off) => {
       if (disposed) {
         off();
       } else {
-        unlisten = off;
+        unlistenCursor = off;
       }
     },
   );
+  void listen<OverlayPointer>("overlay-pointer", (event) =>
+    applyClick(event.payload),
+  ).then((off) => {
+    if (disposed) {
+      off();
+    } else {
+      unlistenPointer = off;
+    }
+  });
   return () => {
     disposed = true;
-    unlisten?.();
-    unlisten = null;
+    unlistenCursor?.();
+    unlistenCursor = null;
+    unlistenPointer?.();
+    unlistenPointer = null;
+    window.removeEventListener("pointerdown", onTrustedPointer, true);
+    window.removeEventListener("pointerup", onTrustedPointer, true);
+    synthHeld = false;
+    synthDownTarget = null;
     clearHover();
   };
 }
