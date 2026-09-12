@@ -468,23 +468,29 @@ fn wake_flip_window(window: &tauri::WebviewWindow, overlay: atic_capture::Rect) 
 /// todos los Spaces y sin animación de show/hide para no demorar el giro.
 #[cfg(target_os = "macos")]
 fn macos_cover_chrome(window: &tauri::WebviewWindow) {
-    let Ok(ptr) = window.ns_window() else {
-        return;
-    };
-    let ns = ptr as *mut objc2::runtime::AnyObject;
-    if ns.is_null() {
-        return;
-    }
-    unsafe {
-        // NSFloatingWindowLevel = 3.
-        let _: () = objc2::msg_send![ns, setLevel: 3isize];
-        // CanJoinAllSpaces | Stationary | FullScreenAuxiliary.
-        let behavior: usize = 1 | (1 << 4) | (1 << 8);
-        let _: () = objc2::msg_send![ns, setCollectionBehavior: behavior];
-        let _: () = objc2::msg_send![ns, setHidesOnDeactivate: false];
-        // NSWindowAnimationBehaviorNone = 2.
-        let _: () = objc2::msg_send![ns, setAnimationBehavior: 2isize];
-    }
+    // AppKit exige el hilo principal para NSWindow.
+    let window = window.clone();
+    let inner = window.clone();
+    let _ = window.run_on_main_thread(move || {
+        let window = &inner;
+        let Ok(ptr) = window.ns_window() else {
+            return;
+        };
+        let ns = ptr as *mut objc2::runtime::AnyObject;
+        if ns.is_null() {
+            return;
+        }
+        unsafe {
+            // NSFloatingWindowLevel = 3.
+            let _: () = objc2::msg_send![ns, setLevel: 3isize];
+            // CanJoinAllSpaces | Stationary | FullScreenAuxiliary.
+            let behavior: usize = 1 | (1 << 4) | (1 << 8);
+            let _: () = objc2::msg_send![ns, setCollectionBehavior: behavior];
+            let _: () = objc2::msg_send![ns, setHidesOnDeactivate: false];
+            // NSWindowAnimationBehaviorNone = 2.
+            let _: () = objc2::msg_send![ns, setAnimationBehavior: 2isize];
+        }
+    });
 }
 
 fn conceal_cover(app: &AppHandle, hwnd: isize) {
