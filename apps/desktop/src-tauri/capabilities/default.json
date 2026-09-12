@@ -9,7 +9,6 @@
     "capture-overlay",
     "capture-annotate",
     "color-loupe",
-    "launcher",
     "window-flip"
   ],
   "permissions": [

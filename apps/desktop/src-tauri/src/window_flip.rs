@@ -803,11 +803,10 @@ fn conceal_hwnd(hwnd: isize, chrome: bool, allow_hide: bool) {
 #[cfg(windows)]
 fn conceal_atic_chrome(app: &AppHandle, skip: isize) {
     // El overlay (pill) no se oculta: es chrome del escritorio, no de la
-    // ventana que gira. Shelf / launcher / loupe sí tapan la tarjeta.
+    // ventana que gira. Shelf / loupe sí tapan la tarjeta.
     const LABELS: &[&str] = &[
         crate::capture_shelf::LABEL,
         crate::annotate::ANNOTATE_LABEL,
-        "launcher",
         "color-loupe",
     ];
     for label in LABELS {
