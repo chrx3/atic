@@ -29,7 +29,9 @@
 //! (el de cursor y el de foco) y re-aplicarlos tras cada cambio de bandera:
 //! mezclarlos rompe en las dos direcciones.
 
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicIsize, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{
+    AtomicBool, AtomicI32, AtomicI64, AtomicIsize, AtomicU32, AtomicU64, Ordering,
+};
 use std::sync::mpsc::{sync_channel, SyncSender, TrySendError};
 use std::sync::{Mutex, OnceLock};
 
@@ -134,6 +136,17 @@ static CSS_VIEW_H_BITS: std::sync::atomic::AtomicU64 = std::sync::atomic::Atomic
 /// el mapeo cambia y la pill se ve pero el mouse la atraviesa.
 static OVERLAY_PHYS_W: AtomicU32 = AtomicU32::new(0);
 static OVERLAY_PHYS_H: AtomicU32 = AtomicU32::new(0);
+/// Origen físico del overlay. El hit-test de Mac lo lee desde un hilo sin
+/// preguntarle a Tauri (eso iba al event loop 60 veces por segundo).
+static OVERLAY_ORIGIN_X: AtomicI32 = AtomicI32::new(0);
+static OVERLAY_ORIGIN_Y: AtomicI32 = AtomicI32::new(0);
+
+fn note_overlay_origin(x: i32, y: i32, w: u32, h: u32) {
+    OVERLAY_ORIGIN_X.store(x, Ordering::Release);
+    OVERLAY_ORIGIN_Y.store(y, Ordering::Release);
+    OVERLAY_PHYS_W.store(w, Ordering::Release);
+    OVERLAY_PHYS_H.store(h, Ordering::Release);
+}
 
 /// Topología aplicada al overlay. Si al login Windows aún no enumeró el
 /// segundo monitor, esto queda en 1 pantalla y hay que reaplicar después.
@@ -402,20 +415,6 @@ pub struct OverlayRect {
     pub scale: f64,
 }
 
-/// Coloca el overlay sobre TODO el escritorio virtual y lo muestra.
-///
-/// El plan original lo ponía sobre un solo monitor y lo movía cuando la pill
-/// cruzaba a otro. Se descartó al probarlo: arrastrar una superficie hacia el
-/// borde la recorta contra el canto del overlay durante todo el trecho que va
-/// desde que asoma hasta que su centro cruza —medio ancho de la forma— y al
-/// llegar al otro monitor hay que reubicarla bajo el cursor sin romper la
-/// captura del puntero. Mucha maquinaria y un artefacto visible, para resolver
-/// un caso que abarcando todo simplemente no existe.
-///
-/// El precio es el DPI: una ventana tiene UNA escala, la del monitor donde
-/// Windows la considere. Con monitores de escalas distintas, las superficies se
-/// dibujan con la escala equivocada en todos menos uno. Por eso abajo se avisa
-/// si las escalas no coinciden — es la condición que hace falsa esta decisión.
 /// Crea la ventana. Se hace acá y no en `tauri.conf.json` a propósito.
 ///
 /// Las ventanas declaradas en la config nacen ANTES de que corra `setup()`, y
@@ -436,14 +435,25 @@ fn create(app: &AppHandle) -> Option<tauri::WebviewWindow> {
     // inicial aunque después se haga `set_size` al escritorio virtual. Con
     // 480×320 el CSS vive en un recuadro, el fly-to no llega al mouse y los
     // hit-rects no coinciden con el cursor.
+    //
+    // En Mac `virtual_screen()` ya está en puntos, que es la unidad del
+    // `inner_size` lógico: no hay que dividir por la escala de nadie. En
+    // Windows el escritorio virtual es físico y sí hace falta la escala.
     let vs = atic_capture::monitors::virtual_screen();
-    let scale = atic_capture::monitors::enumerate()
-        .iter()
-        .map(|m| m.scale)
-        .fold(1.0_f64, f64::max)
-        .max(0.01);
-    let lw = (f64::from(vs.width) / scale).max(1.0);
-    let lh = (f64::from(vs.height) / scale).max(1.0);
+    #[cfg(windows)]
+    let (lw, lh) = {
+        let scale = atic_capture::monitors::enumerate()
+            .iter()
+            .map(|m| m.scale)
+            .fold(1.0_f64, f64::max)
+            .max(0.01);
+        (
+            (f64::from(vs.width) / scale).max(1.0),
+            (f64::from(vs.height) / scale).max(1.0),
+        )
+    };
+    #[cfg(not(windows))]
+    let (lw, lh) = (f64::from(vs.width).max(1.0), f64::from(vs.height).max(1.0));
     let mut builder =
         tauri::WebviewWindowBuilder::new(app, LABEL, tauri::WebviewUrl::App("overlay".into()))
             .title("Atic")
@@ -456,6 +466,12 @@ fn create(app: &AppHandle) -> Option<tauri::WebviewWindow> {
             .shadow(false)
             .focusable(false)
             .visible(false);
+    #[cfg(target_os = "macos")]
+    {
+        builder = builder
+            .accept_first_mouse(true)
+            .visible_on_all_workspaces(true);
+    }
     // Perfil propio: main/launcher/captura y la app instalada comparten
     // `com.ciat.atic`. Cinco controladores WebView2 sobre el mismo user-data
     // es el HRESULT 0x8007139F (estado inválido) y un HWND sin Chromium.
@@ -486,6 +502,39 @@ fn create(app: &AppHandle) -> Option<tauri::WebviewWindow> {
         .ok()
 }
 
+/// Por encima de la barra de menú y visible en todas las pantallas/Spaces.
+///
+/// `always_on_top` de Tauri usa `NSFloatingWindowLevel` (3). El menú vive en
+/// 24: la pill en y=0 quedaba *debajo* del menú y no se leía como notch.
+/// `set_always_on_top` pisa el nivel, así que hay que reponerlo después.
+#[cfg(target_os = "macos")]
+fn macos_overlay_chrome(window: &tauri::WebviewWindow) {
+    let Ok(ptr) = window.ns_window() else {
+        return;
+    };
+    let ns = ptr as *mut objc2::runtime::AnyObject;
+    if ns.is_null() {
+        return;
+    }
+    unsafe {
+        // NSStatusWindowLevel = 25 (menú = 24).
+        let _: () = objc2::msg_send![ns, setLevel: 25isize];
+        // CanJoinAllSpaces | Stationary | FullScreenAuxiliary
+        let behavior: usize = 1 | (1 << 4) | (1 << 8);
+        let _: () = objc2::msg_send![ns, setCollectionBehavior: behavior];
+        let _: () = objc2::msg_send![ns, setHidesOnDeactivate: false];
+    }
+}
+
+/// Coloca el overlay sobre TODO el escritorio virtual y lo muestra.
+///
+/// El plan original lo ponía sobre un solo monitor y lo movía cuando la pill
+/// cruzaba a otro. Se descartó al probarlo: arrastrar una superficie hacia el
+/// borde la recorta contra el canto del overlay durante todo el trecho que va
+/// desde que asoma hasta que su centro cruza —medio ancho de la forma— y al
+/// llegar al otro monitor hay que reubicarla bajo el cursor sin romper la
+/// captura del puntero. Mucha maquinaria y un artefacto visible, para resolver
+/// un caso que abarcando todo simplemente no existe.
 pub fn place(app: &AppHandle) -> Option<OverlayRect> {
     #[cfg(windows)]
     {
@@ -564,8 +613,50 @@ pub fn place(app: &AppHandle) -> Option<OverlayRect> {
     }
     #[cfg(not(windows))]
     {
-        let _ = app;
-        None
+        let window = create(app)?;
+        let vs = atic_capture::monitors::virtual_screen();
+        // En Mac el espacio global son puntos: posición y tamaño lógicos, que
+        // AppKit interpreta tal cual. `Physical` se divide por el backing
+        // scale de la ventana y con monitores de escalas distintas no existe
+        // un factor único capaz de cubrir el escritorio entero.
+        let _ = window.set_max_size(Some(tauri::Size::Logical(tauri::LogicalSize::new(
+            16384.0, 16384.0,
+        ))));
+        let _ = window.set_position(tauri::LogicalPosition::new(
+            f64::from(vs.x),
+            f64::from(vs.y),
+        ));
+        let _ = window.set_size(tauri::LogicalSize::new(
+            f64::from(vs.width).max(1.0),
+            f64::from(vs.height).max(1.0),
+        ));
+        let _ = window.set_always_on_top(true);
+        #[cfg(target_os = "macos")]
+        macos_overlay_chrome(&window);
+        let _ = window.show();
+        // El CSS del overlay vive en el mismo espacio global: factor 1.
+        OVERLAY_SCALE_BITS.store(1.0f64.to_bits(), Ordering::SeqCst);
+        note_overlay_origin(vs.x, vs.y, vs.width, vs.height);
+        set_click_through(&window, true);
+        tracing::info!(
+            target: "overlay",
+            scale = 1.0,
+            backing = window.scale_factor().unwrap_or(1.0),
+            monitors = atic_capture::monitors::enumerate().len(),
+            "overlay en {},{} {}x{}",
+            vs.x,
+            vs.y,
+            vs.width,
+            vs.height
+        );
+        let _ = app.emit("overlay-ready", ());
+        Some(OverlayRect {
+            x: vs.x,
+            y: vs.y,
+            w: vs.width as i32,
+            h: vs.height as i32,
+            scale: 1.0,
+        })
     }
 }
 
@@ -585,6 +676,7 @@ fn display_topo() -> DisplayTopo {
 #[cfg(windows)]
 fn apply_overlay_geometry(window: &tauri::WebviewWindow) -> OverlayRect {
     let vs = atic_capture::monitors::virtual_screen();
+    note_overlay_origin(vs.x, vs.y, vs.width, vs.height);
     let rect = OverlayRect {
         x: vs.x,
         y: vs.y,
@@ -891,7 +983,13 @@ fn start_display_watch(app: AppHandle) {
                 let _ = app.run_on_main_thread(move || {
                     #[cfg(windows)]
                     sync_overlay_to_displays(&again);
-                    #[cfg(not(windows))]
+                    #[cfg(target_os = "macos")]
+                    {
+                        if !CAPTURING.load(Ordering::Acquire) {
+                            let _ = place(&again);
+                        }
+                    }
+                    #[cfg(not(any(windows, target_os = "macos")))]
                     let _ = again;
                 });
             }
@@ -931,6 +1029,23 @@ fn start_display_watch(app: AppHandle) {
             }
             #[cfg(not(windows))]
             {
+                // Mac no recibe un `WM_DISPLAYCHANGE`: conectar o desconectar
+                // una pantalla hay que detectarlo comparando. Sin esto el
+                // overlay se queda con el tamaño del escritorio anterior.
+                #[cfg(target_os = "macos")]
+                {
+                    if !CAPTURING.load(Ordering::Acquire) {
+                        let vs = atic_capture::monitors::virtual_screen();
+                        let changed = vs.x != OVERLAY_ORIGIN_X.load(Ordering::Acquire)
+                            || vs.y != OVERLAY_ORIGIN_Y.load(Ordering::Acquire)
+                            || vs.width != OVERLAY_PHYS_W.load(Ordering::Acquire)
+                            || vs.height != OVERLAY_PHYS_H.load(Ordering::Acquire);
+                        if changed {
+                            let _ = tx.try_send(());
+                        }
+                    }
+                }
+                #[cfg(not(target_os = "macos"))]
                 let _ = &tx;
             }
         })
@@ -1234,7 +1349,14 @@ fn restack(app: &AppHandle, _how: Restack) {
     }
     #[cfg(not(windows))]
     {
-        let _ = (app, on, _how);
+        if let Some(window) = app.get_webview_window(LABEL) {
+            let _ = window.set_always_on_top(on);
+            #[cfg(target_os = "macos")]
+            if on {
+                macos_overlay_chrome(&window);
+            }
+        }
+        let _ = _how;
     }
 }
 
@@ -1335,6 +1457,33 @@ pub fn set_topmost(app: &AppHandle, on: bool) {
     let through = !ARMED.load(Ordering::Acquire);
     set_click_through(&window, through);
     CLICK_THROUGH.store(through, Ordering::Release);
+}
+
+/// Aplica `ignore_cursor_events` según `ARMED`. En Mac tiene que correr en
+/// el hilo principal: `NSWindow` no admite cambios de otro hilo.
+fn apply_armed_click_through(app: &AppHandle) {
+    let capturing = CAPTURING.load(Ordering::Acquire);
+    let armed = ARMED.load(Ordering::Acquire);
+    let through = desired_click_through(capturing, armed);
+    if CLICK_THROUGH.load(Ordering::Acquire) == through {
+        return;
+    }
+    let Some(window) = app.get_webview_window(LABEL) else {
+        return;
+    };
+    if capturing {
+        ARMED.store(false, Ordering::Release);
+        POINTER_GESTURE.store(false, Ordering::Release);
+    }
+    if armed && !capturing {
+        let _ = window.set_always_on_top(true);
+        #[cfg(target_os = "macos")]
+        macos_overlay_chrome(&window);
+    }
+    set_click_through(&window, through);
+    keep_non_occluding(&window);
+    CLICK_THROUGH.store(through, Ordering::Release);
+    tracing::debug!(target: "overlay", armed, through, "click-through");
 }
 
 /// Deja pasar el mouse a lo que haya debajo, o lo intercepta.
@@ -1489,6 +1638,8 @@ pub fn setup(app: &AppHandle) {
     remember_main(app);
     start_toggle_worker(app.clone());
     start_display_watch(app.clone());
+    #[cfg(target_os = "macos")]
+    start_macos_hit_poll(app.clone());
     let handle = app.clone();
     std::thread::Builder::new()
         .name("atic-overlay-boot".into())
@@ -1564,9 +1715,12 @@ pub fn remember_main(app: &AppHandle) {
     let Some(main) = app.get_webview_window("main") else {
         return;
     };
+    #[cfg(windows)]
     if let Ok(hwnd) = main.hwnd() {
         MAIN_HWND.store(hwnd.0 as isize, Ordering::Release);
     }
+    #[cfg(not(windows))]
+    let _ = main;
 }
 
 /// `main` está al frente: soltar un drag pegado (hit-rect fullscreen).
@@ -1650,35 +1804,45 @@ fn start_toggle_worker(app: AppHandle) {
                     // la ventana terminaba opaca para siempre. Convergiendo al
                     // estado actual, un aviso perdido no cuesta nada: el
                     // siguiente pone las cosas en su sitio.
-                    Msg::Sync => loop {
-                        let capturing = CAPTURING.load(Ordering::Acquire);
-                        let armed = ARMED.load(Ordering::Acquire);
-                        let through = desired_click_through(capturing, armed);
-                        if CLICK_THROUGH.load(Ordering::Acquire) == through {
-                            break;
+                    Msg::Sync => {
+                        #[cfg(target_os = "macos")]
+                        {
+                            let again = app.clone();
+                            let _ = app.run_on_main_thread(move || {
+                                apply_armed_click_through(&again);
+                            });
                         }
-                        // Durante captura nunca reclamar el frente: le roba el
-                        // mouse al overlay de selección.
-                        if armed && !capturing {
-                            if POINTER_GESTURE.load(Ordering::Acquire) {
-                                raise(&app);
-                            } else {
-                                raise_for_pointer(&app);
+                        #[cfg(not(target_os = "macos"))]
+                        loop {
+                            let capturing = CAPTURING.load(Ordering::Acquire);
+                            let armed = ARMED.load(Ordering::Acquire);
+                            let through = desired_click_through(capturing, armed);
+                            if CLICK_THROUGH.load(Ordering::Acquire) == through {
+                                break;
                             }
+                            // Durante captura nunca reclamar el frente: le roba el
+                            // mouse al overlay de selección.
+                            if armed && !capturing {
+                                if POINTER_GESTURE.load(Ordering::Acquire) {
+                                    raise(&app);
+                                } else {
+                                    raise_for_pointer(&app);
+                                }
+                            }
+                            let Some(window) = app.get_webview_window(LABEL) else {
+                                break;
+                            };
+                            if capturing {
+                                ARMED.store(false, Ordering::Release);
+                                POINTER_GESTURE.store(false, Ordering::Release);
+                            }
+                            set_click_through(&window, through);
+                            // Segunda pasada: `ignore_cursor_events` a veces aplica
+                            // en el event loop *después* de `set_click_through`.
+                            keep_non_occluding(&window);
+                            CLICK_THROUGH.store(through, Ordering::Release);
                         }
-                        let Some(window) = app.get_webview_window(LABEL) else {
-                            break;
-                        };
-                        if capturing {
-                            ARMED.store(false, Ordering::Release);
-                            POINTER_GESTURE.store(false, Ordering::Release);
-                        }
-                        set_click_through(&window, through);
-                        // Segunda pasada: `ignore_cursor_events` a veces aplica
-                        // en el event loop *después* de `set_click_through`.
-                        keep_non_occluding(&window);
-                        CLICK_THROUGH.store(through, Ordering::Release);
-                    },
+                    }
                     Msg::Outside => {
                         let _ = app.emit("overlay-dismiss", ());
                     }
@@ -1705,6 +1869,7 @@ pub fn set_overlay_hit_rects(app: AppHandle, rects: Vec<HitRect>) {
     // con retraso y, si se descartan, el frontend no vuelve a mandarlas
     // (`#sent` ya las dio por publicadas) y la pill queda inalcanzable.
     if let Some(window) = app.get_webview_window(LABEL) {
+        #[cfg(windows)]
         if let Ok(hwnd) = window.hwnd() {
             OVERLAY_HWND.store(hwnd.0 as isize, Ordering::Release);
         }
@@ -1770,6 +1935,8 @@ pub fn set_overlay_hit_rects(app: AppHandle, rects: Vec<HitRect>) {
     // burbuja de agentes cuando se abre debajo del cursor.
     #[cfg(windows)]
     reevaluate_arm();
+    #[cfg(target_os = "macos")]
+    reevaluate_arm_macos();
 }
 
 /// Gesto de puntero: armar YA, sin esperar el hit-rect fullscreen por IPC.
@@ -1789,6 +1956,8 @@ pub fn set_overlay_pointer_gesture(_app: AppHandle, on: bool) {
     } else {
         #[cfg(windows)]
         reevaluate_arm();
+        #[cfg(target_os = "macos")]
+        reevaluate_arm_macos();
     }
 }
 
@@ -1850,23 +2019,15 @@ pub fn overlay_cursor_over_hit(id: String) -> bool {
 
 /// Crate-interno: cursor sobre un hit-rect publicado.
 pub fn cursor_over_hit_id(id: &str) -> bool {
-    #[cfg(windows)]
-    {
-        let Some((x, y)) = cursor_overlay_css() else {
-            return false;
-        };
-        let Ok(rects) = HIT_RECTS.lock() else {
-            return false;
-        };
-        rects
-            .iter()
-            .any(|r| r.id == id && r.contains(x, y, ARM_MARGIN))
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = id;
-        false
-    }
+    let Some((x, y)) = cursor_overlay_css() else {
+        return false;
+    };
+    let Ok(rects) = HIT_RECTS.lock() else {
+        return false;
+    };
+    rects
+        .iter()
+        .any(|r| r.id == id && r.contains(x, y, ARM_MARGIN))
 }
 
 /// Llamado desde el hilo de Raw Input en cada paquete de movimiento.
@@ -1891,26 +2052,34 @@ pub fn on_cursor_sample() {
 /// cliente, luego físicos → CSS. `ScreenToClient` a veces no comparte unidad
 /// con `GetClientRect` (físico vs DIP) y el hit-test se iba a un lado de la
 /// pill pintada.
-#[cfg(windows)]
 fn cursor_overlay_css() -> Option<(f64, f64)> {
-    let hwnd = OVERLAY_HWND.load(Ordering::Acquire);
-    if hwnd == 0 {
-        return None;
-    }
-    let (cx, cy) = crate::floating::cursor_position()?;
-    overlay_css_from_physical(cx, cy)
-}
-
-/// Cursor en CSS del overlay, o `None` fuera de Windows / sin HWND.
-pub fn cursor_css_point() -> Option<(f64, f64)> {
     #[cfg(windows)]
     {
-        cursor_overlay_css()
+        let hwnd = OVERLAY_HWND.load(Ordering::Acquire);
+        if hwnd == 0 {
+            return None;
+        }
+        let (cx, cy) = crate::floating::cursor_position()?;
+        return overlay_css_from_physical(cx, cy);
     }
     #[cfg(not(windows))]
     {
-        None
+        if OVERLAY_PHYS_W.load(Ordering::Acquire) == 0 {
+            return None;
+        }
+        let (cx, cy) = crate::floating::cursor_position()?;
+        let ox = OVERLAY_ORIGIN_X.load(Ordering::Acquire);
+        let oy = OVERLAY_ORIGIN_Y.load(Ordering::Acquire);
+        Some(physical_client_to_css(
+            f64::from(cx - ox),
+            f64::from(cy - oy),
+        ))
     }
+}
+
+/// Cursor en CSS del overlay.
+pub fn cursor_css_point() -> Option<(f64, f64)> {
+    cursor_overlay_css()
 }
 
 /// Punto de pantalla (p. ej. `lParam` de `WM_NCHITTEST`) → CSS del overlay.
@@ -2215,6 +2384,8 @@ pub fn set_overlay_css_viewport(w: f64, h: f64) {
     );
     #[cfg(windows)]
     reevaluate_arm();
+    #[cfg(target_os = "macos")]
+    reevaluate_arm_macos();
 }
 
 /// ¿El cursor está sobre la ventana principal visible (no minimizada)?
@@ -2339,6 +2510,60 @@ pub fn on_button_down() {
 #[cfg(not(windows))]
 pub fn on_button_down() {}
 
+/// En Mac no hay Raw Input: un hilo mira el cursor y solo salta al hilo de
+/// UI cuando cambia el armado. Preguntar a Tauri 60 veces/s dejaba la pill
+/// viscosa y el primer clic se perdía (la ventana seguía click-through).
+#[cfg(target_os = "macos")]
+fn start_macos_hit_poll(app: AppHandle) {
+    std::thread::Builder::new()
+        .name("atic-overlay-hit-mac".into())
+        .spawn(move || {
+            let mut last_over = std::time::Instant::now()
+                .checked_sub(std::time::Duration::from_secs(1))
+                .unwrap_or_else(std::time::Instant::now);
+            loop {
+                std::thread::sleep(std::time::Duration::from_millis(SAMPLE_MS as u64));
+                let over = cursor_over_any_hit();
+                if over {
+                    last_over = std::time::Instant::now();
+                }
+                let capturing = CAPTURING.load(Ordering::Acquire);
+                let hold = last_over.elapsed() < std::time::Duration::from_millis(60);
+                let armed = !capturing && (over || hold);
+                let through = desired_click_through(capturing, armed);
+                let prev = ARMED.swap(armed, Ordering::AcqRel);
+                if prev == armed && CLICK_THROUGH.load(Ordering::Acquire) == through {
+                    continue;
+                }
+                let again = app.clone();
+                let _ = app.run_on_main_thread(move || {
+                    apply_armed_click_through(&again);
+                });
+            }
+        })
+        .ok();
+}
+
+fn cursor_over_any_hit() -> bool {
+    let Some((x, y)) = cursor_overlay_css() else {
+        return false;
+    };
+    let Ok(rects) = HIT_RECTS.try_lock() else {
+        return false;
+    };
+    rects.iter().any(|r| r.contains(x, y, ARM_MARGIN))
+}
+
+#[cfg(target_os = "macos")]
+fn reevaluate_arm_macos() {
+    if let Some(app) = APP_HANDLE.get() {
+        let over = cursor_over_any_hit();
+        let capturing = CAPTURING.load(Ordering::Acquire);
+        ARMED.store(over && !capturing, Ordering::Release);
+        apply_armed_click_through(app);
+    }
+}
+
 /// `try_send`: si el worker está ocupado se descarta. Lo que importa es el
 /// estado final, no la secuencia.
 fn send(msg: Msg) {
@@ -2394,11 +2619,22 @@ pub struct OverlayArea {
     pub primary: bool,
 }
 
-/// Escala del overlay. Es el puente entre los físicos de Win32 y los CSS.
+/// Escala del overlay. Es el puente entre el espacio global de la app y los CSS.
+///
+/// En Windows el global es físico y los CSS lógicos (DPI del monitor). En Mac
+/// el global ya son puntos y el CSS también: 1.0.
 pub fn scale(app: &AppHandle) -> f64 {
-    app.get_webview_window(LABEL)
-        .and_then(|w| w.scale_factor().ok())
-        .unwrap_or(1.0)
+    #[cfg(target_os = "macos")]
+    {
+        let _ = app;
+        1.0
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        app.get_webview_window(LABEL)
+            .and_then(|w| w.scale_factor().ok())
+            .unwrap_or(1.0)
+    }
 }
 
 /// Traduce un rectángulo físico del escritorio a coordenadas del overlay.
@@ -2409,18 +2645,10 @@ pub fn scale(app: &AppHandle) -> f64 {
 /// Devuelve un rectángulo pelado y no un `OverlayArea`: esto traduce una caja
 /// cualquiera, no un monitor, y no hay ningún área útil que informar.
 pub fn to_local(app: &AppHandle, r: crate::floating::Rect) -> Option<OverlayRectCss> {
-    #[cfg(windows)]
-    {
-        let (ox, oy, _scale) = frame(app)?;
-        let (x, y) = physical_client_to_css(f64::from(r.x) - ox, f64::from(r.y) - oy);
-        let (w, h) = physical_client_to_css(f64::from(r.w), f64::from(r.h));
-        Some(OverlayRectCss { x, y, w, h })
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = (app, r);
-        None
-    }
+    let (ox, oy, _scale) = frame(app)?;
+    let (x, y) = physical_client_to_css(f64::from(r.x) - ox, f64::from(r.y) - oy);
+    let (w, h) = physical_client_to_css(f64::from(r.w), f64::from(r.h));
+    Some(OverlayRectCss { x, y, w, h })
 }
 
 /// Deja que el overlay reciba el teclado, o se lo vuelve a quitar.
@@ -2504,28 +2732,44 @@ pub fn set_overlay_text_mode(app: AppHandle, on: bool) {
     }
     #[cfg(not(windows))]
     {
-        let _ = (app, on);
+        let Some(window) = app.get_webview_window(LABEL) else {
+            return;
+        };
+        let _ = window.set_focusable(on);
+        if on {
+            let _ = window.set_focus();
+        }
+        #[cfg(target_os = "macos")]
+        reevaluate_arm_macos();
     }
 }
 
-/// Origen y escala del overlay, para traducir físicos a CSS.
-#[cfg(windows)]
+/// Origen y escala del overlay, en el espacio global de la app, para traducir
+/// a CSS.
 fn frame(app: &AppHandle) -> Option<(f64, f64, f64)> {
     let window = app.get_webview_window(LABEL)?;
-    let stored = f64::from_bits(OVERLAY_SCALE_BITS.load(Ordering::Acquire));
-    let scale = if stored > 1.001 {
-        stored
-    } else {
-        window.scale_factor().unwrap_or(1.0)
+    #[cfg(target_os = "macos")]
+    let scale = 1.0;
+    #[cfg(not(target_os = "macos"))]
+    let scale = {
+        let stored = f64::from_bits(OVERLAY_SCALE_BITS.load(Ordering::Acquire));
+        if stored > 1.001 {
+            stored
+        } else {
+            window.scale_factor().unwrap_or(1.0)
+        }
     };
+    #[cfg(windows)]
     if let Ok(hwnd) = window.hwnd() {
         OVERLAY_HWND.store(hwnd.0 as isize, Ordering::Release);
     }
     let (ox, oy) = client_origin_physical().or_else(|| {
-        window
-            .outer_position()
-            .ok()
-            .map(|p| (f64::from(p.x), f64::from(p.y)))
+        window.outer_position().ok().map(|p| {
+            (
+                crate::floating::to_global(&window, f64::from(p.x)),
+                crate::floating::to_global(&window, f64::from(p.y)),
+            )
+        })
     })?;
     Some((ox, oy, scale))
 }
@@ -2538,18 +2782,9 @@ fn frame(app: &AppHandle) -> Option<(f64, f64, f64)> {
 /// no existe.
 #[tauri::command]
 pub fn overlay_cursor(app: AppHandle) -> Option<OverlayPoint> {
-    #[cfg(windows)]
-    {
-        // Misma conversión que el hit-test y `pill_home` (físicos − origen).
-        let _ = frame(&app)?;
-        let (x, y) = cursor_overlay_css()?;
-        Some(OverlayPoint { x, y })
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = app;
-        None
-    }
+    let _ = frame(&app)?;
+    let (x, y) = cursor_overlay_css()?;
+    Some(OverlayPoint { x, y })
 }
 
 /// Monitor en el que abrir el launcher: mouse, o el de la ventana con foco.
@@ -2568,8 +2803,7 @@ pub fn overlay_active_anchor(app: AppHandle) -> Option<OverlayPoint> {
     }
     #[cfg(not(windows))]
     {
-        let _ = app;
-        None
+        overlay_cursor(app)
     }
 }
 
@@ -2671,36 +2905,28 @@ fn active_desktop_point() -> Option<(i32, i32)> {
 /// `floating::Anchor::BottomCorner`.
 #[tauri::command]
 pub fn overlay_work_areas(app: AppHandle) -> Vec<OverlayArea> {
-    #[cfg(windows)]
-    {
-        let Some((ox, oy, _scale)) = frame(&app) else {
-            return Vec::new();
-        };
-        atic_capture::monitors::enumerate()
-            .iter()
-            .map(|m| {
-                let to_css = |r: &atic_capture::Rect| {
-                    let (x, y) = physical_client_to_css(f64::from(r.x) - ox, f64::from(r.y) - oy);
-                    let (w, h) = physical_client_to_css(f64::from(r.width), f64::from(r.height));
-                    OverlayRectCss { x, y, w, h }
-                };
-                let bounds = to_css(&m.bounds);
-                OverlayArea {
-                    x: bounds.x,
-                    y: bounds.y,
-                    w: bounds.w,
-                    h: bounds.h,
-                    work: to_css(&m.work_area),
-                    primary: m.is_primary,
-                }
-            })
-            .collect()
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = app;
-        Vec::new()
-    }
+    let Some((ox, oy, _scale)) = frame(&app) else {
+        return Vec::new();
+    };
+    atic_capture::monitors::enumerate()
+        .iter()
+        .map(|m| {
+            let to_css = |r: &atic_capture::Rect| {
+                let (x, y) = physical_client_to_css(f64::from(r.x) - ox, f64::from(r.y) - oy);
+                let (w, h) = physical_client_to_css(f64::from(r.width), f64::from(r.height));
+                OverlayRectCss { x, y, w, h }
+            };
+            let bounds = to_css(&m.bounds);
+            OverlayArea {
+                x: bounds.x,
+                y: bounds.y,
+                w: bounds.w,
+                h: bounds.h,
+                work: to_css(&m.work_area),
+                primary: m.is_primary,
+            }
+        })
+        .collect()
 }
 
 /// ¿El botón principal del mouse está apretado ahora mismo?
@@ -2731,10 +2957,12 @@ pub fn overlay_primary_down() -> bool {
             (GetAsyncKeyState(vk) as u16 & 0x8000) != 0
         }
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
     {
-        // `true` = "sigue como estabas". Devolver `false` cortaría todos los
-        // arrastres al primer cuadro donde el overlay no está implementado.
+        crate::floating::primary_button_down()
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
         true
     }
 }
@@ -2749,28 +2977,21 @@ pub fn overlay_primary_down() -> bool {
 /// venía guardando `pill_position` y la que sobrevive a cambios de escala.
 #[tauri::command]
 pub fn save_pill_home(app: AppHandle, x: f64, y: f64) {
-    #[cfg(windows)]
-    {
-        use atic_core::sync::MutexExt;
+    use atic_core::sync::MutexExt;
 
-        let Some((ox, oy, _scale)) = frame(&app) else {
-            return;
-        };
-        let Some(state) = app.try_state::<crate::state::AppState>() else {
-            return;
-        };
-        // Durante el clipboard en el cursor la pill está de paseo: guardar ahí
-        // pisaría el hogar de verdad con una posición prestada.
-        if state.pre_clipboard_position.lock_or_recover().is_some() {
-            return;
-        }
-        let (px, py) = css_to_physical_client(x, y);
-        state.config.lock_or_recover().pill_position = Some((ox + px, oy + py));
+    let Some((ox, oy, _scale)) = frame(&app) else {
+        return;
+    };
+    let Some(state) = app.try_state::<crate::state::AppState>() else {
+        return;
+    };
+    // Durante el clipboard en el cursor la pill está de paseo: guardar ahí
+    // pisaría el hogar de verdad con una posición prestada.
+    if state.pre_clipboard_position.lock_or_recover().is_some() {
+        return;
     }
-    #[cfg(not(windows))]
-    {
-        let _ = (app, x, y);
-    }
+    let (px, py) = css_to_physical_client(x, y);
+    state.config.lock_or_recover().pill_position = Some((ox + px, oy + py));
 }
 
 /// Dónde tiene que arrancar la pill, en coordenadas del overlay.
@@ -2780,46 +3001,37 @@ pub fn save_pill_home(app: AppHandle, x: f64, y: f64) {
 /// acá y no repartida en el frontend. Simétrico con `save_pill_home`.
 #[tauri::command]
 pub fn pill_home(app: AppHandle) -> Option<OverlayPoint> {
-    #[cfg(windows)]
-    {
-        use atic_core::sync::MutexExt;
+    use atic_core::sync::MutexExt;
 
-        let (ox, oy, _scale) = frame(&app)?;
-        let state = app.try_state::<crate::state::AppState>()?;
-        let (px, py) = state.config.lock_or_recover().pill_position?;
-        let (x, y) = physical_client_to_css(px - ox, py - oy);
-        Some(OverlayPoint { x, y })
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = app;
-        None
-    }
+    let (ox, oy, _scale) = frame(&app)?;
+    let state = app.try_state::<crate::state::AppState>()?;
+    let (px, py) = state.config.lock_or_recover().pill_position?;
+    let (x, y) = physical_client_to_css(px - ox, py - oy);
+    Some(OverlayPoint { x, y })
 }
 
 /// Rectángulo actual, para que el frontend sepa en qué coordenadas trabaja.
 #[tauri::command]
 pub fn overlay_rect(app: AppHandle) -> Option<OverlayRect> {
-    #[cfg(windows)]
-    {
-        let window = app.get_webview_window(LABEL)?;
-        let pos = window.outer_position().ok()?;
-        let size = window.outer_size().ok()?;
+    let window = app.get_webview_window(LABEL)?;
+    let pos = window.outer_position().ok()?;
+    let size = window.outer_size().ok()?;
+    // En Mac el espacio global son puntos: se traduce la posición/size físicos
+    // de Tauri y la escala es 1 (el CSS ya está en puntos).
+    #[cfg(target_os = "macos")]
+    let scale = 1.0;
+    #[cfg(not(target_os = "macos"))]
+    let scale = {
         let stored = f64::from_bits(OVERLAY_SCALE_BITS.load(Ordering::Acquire));
-        let scale = stored.max(window.scale_factor().unwrap_or(1.0));
-        Some(OverlayRect {
-            x: pos.x,
-            y: pos.y,
-            w: size.width as i32,
-            h: size.height as i32,
-            scale,
-        })
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = app;
-        None
-    }
+        stored.max(window.scale_factor().unwrap_or(1.0))
+    };
+    Some(OverlayRect {
+        x: crate::floating::to_global(&window, f64::from(pos.x)).round() as i32,
+        y: crate::floating::to_global(&window, f64::from(pos.y)).round() as i32,
+        w: crate::floating::to_global(&window, f64::from(size.width)).round() as i32,
+        h: crate::floating::to_global(&window, f64::from(size.height)).round() as i32,
+        scale,
+    })
 }
 
 #[cfg(test)]
