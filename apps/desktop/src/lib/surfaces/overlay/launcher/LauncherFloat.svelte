@@ -3,14 +3,14 @@
   /**
    * Float del launcher Spotlight.
    *
-   * Apertura (como expandir al dictar + Spotlight):
-   * 1) La pill vuela al slot (PillSurface).
-   * 2) Disco-semilla coincidente con la pill; se estira a la derecha (width).
-   * 3) Se separa al centro (cuello líquido).
-   * 4) Cada favorito se desprende de a uno.
+   * Apertura (nacimiento centrado, sin viaje):
+   * 1) La pill vuela al slot (PillSurface) y deja libre el centro.
+   * 2) La barra nace en su centro: fade + grow en el sitio, con la silueta a
+   *    cargo del líquido (el mismo gesto que los favs).
+   * 3) Cada favorito se desprende de a uno.
    *
-   * Cierre = reverse: tuck favs → approach (fuse) → shrink → dismiss;
-   * la pill vuelve a casa al terminar (PillSurface espera el hit-rect).
+   * Cierre = espejo: tuck favs → repliegue en el centro (fade + shrink) →
+   * dismiss; la pill vuelve a casa al terminar (PillSurface espera el hit-rect).
    */
   import { onMount, tick, untrack } from "svelte";
   import type { BubbleOpen, LauncherHit } from "$core/types";
@@ -18,6 +18,7 @@
     hideLauncher,
     launcherListFavorites,
     launcherListRecents,
+    launcherQuit,
     launcherRun,
     launcherSearch,
     launcherToggleFavorite,
@@ -34,7 +35,7 @@
   import type { Area } from "$ipc/overlay";
   import { Bubble } from "$surfaces/overlay/bubble.svelte";
   import { createBubbleDrag } from "$surfaces/overlay/bubbleDrag";
-  import { resolveSlot, LAUNCHER_BAR_W } from "$surfaces/overlay/toolSlots";
+  import { resolveSlot } from "$surfaces/overlay/toolSlots";
   import { gapBetween, pillShape } from "$lib/liquid/geometry";
   import { REACH } from "$lib/liquid/constants";
   import { sminReach, type Shape } from "$lib/liquid/sdf";
@@ -46,14 +47,8 @@
     publishMeasuredSkin,
   } from "$surfaces/overlay/floatEmergeSkin";
   import { rectKey } from "$surfaces/overlay/floatEmergeSkinMath";
-  import { separateAxisProp, waitFrames } from "$surfaces/overlay/floatReveal";
   import { surfaces } from "$surfaces/overlay/surfaces.svelte";
   import { notifyToolResting, toolBirth } from "$surfaces/overlay/toolBirth";
-  import { dockedEdgeAt } from "$surfaces/overlay/edgeDock";
-  import {
-    placePanelFusedFull,
-    placePanelFusedSeed,
-  } from "$surfaces/overlay/floatPlace";
   import {
     armOpenDismissGrace,
     isOpenDismissGrace,
@@ -79,14 +74,21 @@
    */
   const DOT_GAP_PX = 15;
   /**
-   * Semilla = disco de la pill (40×40). El overlap es el diámetro: dos
-   * círculos desfasados 20 px se leían como óvalo desde el primer frame.
+   * Semilla del nacimiento: disco del alto de la pill (40 px), centrado donde
+   * vivirá la barra. De ahí **estira** al stadium final.
    */
-  const GROW_START_W = 40;
-  /** Approach/close: gap bajo REACH para re-fundir el cuello. */
-  const FUSED_GAP_PX = 2;
-  /** Hold en disco fused antes de estirar (ms). */
-  const SEED_HOLD_MS = 100;
+  const BIRTH_SEED_PX = 40;
+  /** Aparición de la gota: fade + scale, el mismo gesto que los favs. */
+  const BIRTH_DROP_DUR_MS = 120;
+  /** Beat en la gota antes de estirar (ms): deja leer el nacimiento. */
+  const BIRTH_HOLD_MS = 60;
+  /**
+   * Estirón: 40 → 324 px de ancho.
+   *
+   * 200 ms (y no los 100 del grow de panel) porque acá el recorrido es 8× el
+   * ancho original: el nacimiento tiene que **verse**, no adivinarse.
+   */
+  const BIRTH_DUR_MS = 200;
   /** Alto ancla compacto (= pill 40px; alineado a `LAUNCHER_SHAPE` en launcher.rs). */
   const COMPACT_H = 40;
   const EXPANDED_H = 360;
@@ -104,6 +106,11 @@
   let recents = $state<LauncherHit[]>([]);
   let favorites = $state<LauncherHit[]>([]);
   let favoriteIds = $state<string[]>([]);
+  let favoritesLoaded = false;
+  let recentsLoaded = false;
+  let favoritesInFlight: Promise<void> | null = null;
+  let recentsInFlight: Promise<void> | null = null;
+  let loadEpoch = 0;
   let selected = $state(0);
   let searching = $state(false);
   let error = $state("");
@@ -114,42 +121,43 @@
   const SEARCH_DEBOUNCE_MS = 120;
 
   /**
-   * Coreografía tipo dictado → Spotlight:
-   * open:  hidden → expand → separate → favs → ready
-   * close: tuck → approach → shrink → (dismiss)
+   * Coreografía del float:
+   * open:  hidden → birth → favs → ready
+   * close: tuck → recede → (dismiss)
+   *
+   * El reveal pasa en el sitio: la barra nace centrada, no viaja formada.
    */
-  type RevealPhase =
-    | "hidden"
-    | "expand"
-    | "separate"
-    | "favs"
-    | "ready"
-    | "tuck"
-    | "approach"
-    | "shrink";
+  type RevealPhase = "hidden" | "birth" | "favs" | "ready" | "tuck" | "recede";
   let revealPhase = $state<RevealPhase>("hidden");
+  /** Rect de reposo del nacimiento: el que la gota estira. */
+  let restRect: { x: number; y: number; w: number; h: number } | null = null;
   let revealEpoch = 0;
+  /** Animación de morph en curso: se cancela al reabrir o forzar dismiss. */
+  let revealAnim: Animation | null = null;
   /** Evita reentrar close / segundo Esc fuerza dismiss. */
   let closing = false;
   /** `hideLauncher` re-dispara dismiss IPC: ignorar ese eco. */
   let ignoreIpcDismiss = false;
   /** Cuántos favs ya salieron (0 = ninguno; N = primeros N visibles). */
   let favRevealCount = $state(0);
-  const expanding = $derived(revealPhase === "expand" || revealPhase === "shrink");
-  const separating = $derived(revealPhase === "separate" || revealPhase === "approach");
+  /** Nace o se repliega: silueta líquida y chrome apagado. */
+  const revealing = $derived(revealPhase === "birth" || revealPhase === "recede");
   const favsSequencing = $derived(
     revealPhase === "favs" || revealPhase === "ready" || revealPhase === "tuck",
   );
-  const motionPhase = $derived(expanding || separating || revealPhase === "tuck");
+  const favsStaggering = $derived(revealPhase === "favs" || revealPhase === "tuck");
+  const motionPhase = $derived(revealing || revealPhase === "tuck");
 
   const hasQuery = $derived(query.trim().length > 0);
   const list = $derived(hasQuery ? hits : recents);
   const showResults = $derived(hasQuery || recents.length > 0);
+  /** El resultado seleccionado es una app: Ctrl+Enter la cierra. */
+  const selectedIsApp = $derived(list[selected]?.kind === "app");
 
   const favGap = $derived(isDev && launcherLab.open ? launcherLab.favGap : FAVS_GAP_PX);
   const dotGap = $derived(isDev && launcherLab.open ? launcherLab.dotGap : DOT_GAP_PX);
   const labOpenDur = $derived(
-    isDev && launcherLab.open ? launcherLab.openDur : ms(MOTION.launcherBar),
+    isDev && launcherLab.open ? launcherLab.openDur : BIRTH_DUR_MS,
   );
   const labCloseDur = $derived(isDev && launcherLab.open ? launcherLab.closeDur : 120);
   const compactH = $derived(isDev && launcherLab.open ? launcherLab.barH : COMPACT_H);
@@ -158,14 +166,12 @@
     isDev && launcherLab.open ? sminReach(launcherLab.blend) : REACH,
   );
 
-  let openDur = $state(150);
+  let openDur = $state(BIRTH_DUR_MS);
   let closeDur = $state(120);
-  let separateDur = $state(150);
-  let favStaggerDur = $state(150);
+  let favStaggerDur = $state(90);
 
   function armOpenDur() {
     openDur = labOpenDur;
-    separateDur = ms(MOTION.launcherSeparate);
     favStaggerDur = ms(MOTION.launcherFavStagger);
   }
 
@@ -175,81 +181,80 @@
 
   function cancelReveal() {
     revealEpoch += 1;
+    revealAnim?.cancel();
+    revealAnim = null;
   }
 
   /**
-   * Acto expand→separate→favs secuenciales.
-   * No usa scale de `.float-emerge`: crece width como la barra de dictado.
+   * Nacimiento: la barra ya está colocada como gota en su centro; acá se la
+   * deja leer un beat y **estira** hasta el stadium (width + left, mismo centro).
+   * Los favs salen después; no hay viaje: la pill se corre al slot.
    */
   async function runOpenReveal() {
     const epoch = ++revealEpoch;
     if (prefersReducedMotion()) {
+      // Sin morph: la barra va directo a su rect de reposo.
+      revealPhase = "ready";
       if (lastOpen) await applyCenterPlace(lastOpen);
-      if (favorites.length === 0) await loadFavorites();
-      await loadRecents();
+      await ensureFavoritesLoaded();
+      await ensureRecentsLoaded();
       favRevealCount = favorites.length;
-      revealPhase = "ready";
       return;
     }
 
-    revealPhase = "expand";
+    revealPhase = "birth";
     favRevealCount = 0;
-    await tick();
-    await waitFrames(2);
-    // Un beat en disco fused: si estiramos al primer frame, se lee “apareció
-    // una barra” en vez de “nació de la pill”.
-    await wait(SEED_HOLD_MS);
+    // Favs/recientes viajan en paralelo al grow: cuando la barra se asienta,
+    // el primer peel ya tiene datos.
+    const hydration = (async () => {
+      await ensureFavoritesLoaded();
+      await ensureRecentsLoaded();
+    })();
+    // La gota aparece con el mismo gesto que los favs (fade + scale desde el
+    // centro). WAAPI: los keyframes son explícitos, no dependen de un frame
+    // previo pintado.
+    await animateEl(
+      el,
+      [
+        { opacity: 0, transform: "scale(0.82)" },
+        { opacity: 1, transform: "none" },
+      ],
+      BIRTH_DROP_DUR_MS,
+      {
+        easeVar: "--ease-smooth-out",
+        easeFallback: "cubic-bezier(0.22, 1, 0.36, 1)",
+      },
+    );
+    if (epoch !== revealEpoch) return;
+    // Beat: deja leer la gota antes del estirón.
+    await wait(BIRTH_HOLD_MS);
+    if (epoch !== revealEpoch) return;
+    await stretchToRest(openDur);
+    if (epoch !== revealEpoch) return;
+    await hydration;
     if (epoch !== revealEpoch) return;
 
-    // Crecer a la derecha (borde izquierdo clavado; semilla aún solapada).
-    const fullW =
-      isDev && launcherLab.open ? launcherLab.barW : (lastOpen?.w ?? LAUNCHER_BAR_W);
-    if (bubble.anchor) {
-      bubble.anchor = { ...bubble.anchor, w: fullW };
-    }
-    await afterTransition(el, "width", openDur);
-    if (epoch !== revealEpoch) return;
-
-    // Separar: armar transición de `left` un frame antes de mover el ancla
-    // (si no, el left cambia sin `.is-separating` y se ve snap).
-    revealPhase = "separate";
-    await tick();
-    await waitFrames(2);
-    if (epoch !== revealEpoch) return;
-    if (lastOpen) await applyCenterPlace({ ...lastOpen, w: fullW, h: compactH });
-    await afterTransition(el, "left", separateDur);
-    if (epoch !== revealEpoch) return;
-
-    if (favorites.length === 0) {
-      await loadFavorites();
-      if (epoch !== revealEpoch) return;
-    }
-    await loadRecents();
-    if (epoch !== revealEpoch) return;
     if (favorites.length === 0) {
       revealPhase = "ready";
       return;
     }
 
-    // Favs de a uno: cada bolita se desprende de la barra.
+    // Favs: un solo cambio de estado; CSS aplica el delay escalonado vía --lf-i.
     revealPhase = "favs";
-    for (let i = 1; i <= favorites.length; i++) {
-      if (epoch !== revealEpoch) return;
-      favRevealCount = i;
-      await tick();
-      const dot = el?.querySelector(`.lf-dot:nth-child(${i})`);
-      if (dot instanceof HTMLElement) {
-        await afterTransition(dot, "transform", favStaggerDur);
-      } else {
-        await wait(favStaggerDur);
-      }
+    favRevealCount = favorites.length;
+    await tick();
+    const lastDot = el?.querySelector(`.lf-dot:nth-child(${favorites.length})`);
+    if (lastDot instanceof HTMLElement) {
+      await afterTransition(lastDot, "transform", favStaggerDur * favorites.length);
+    } else {
+      await wait(favStaggerDur * favorites.length);
     }
     if (epoch !== revealEpoch) return;
     revealPhase = "ready";
   }
 
   /**
-   * Close = reverse del open: tuck favs → approach (fuse) → shrink → caller dismiss.
+   * Close = espejo del open: tuck favs → repliegue en el centro → caller dismiss.
    * No pone `hidden` (eso re-dispararía open mientras `shown`).
    */
   async function runCloseReveal(epoch: number): Promise<void> {
@@ -258,7 +263,7 @@
       return;
     }
 
-    // Panel de resultados: volver a stadium compacto antes del fuse.
+    // Panel de resultados: volver a stadium compacto antes del repliegue.
     if (query.trim() || showResults) {
       clearSearchTimer();
       query = "";
@@ -273,56 +278,181 @@
       await tick();
       const firstDot = el?.querySelector(".lf-dot");
       if (firstDot instanceof HTMLElement) {
-        await afterTransition(firstDot, "transform", favStaggerDur);
+        await afterTransition(firstDot, "transform", favStaggerDur * favorites.length);
       } else {
-        await wait(favStaggerDur);
+        await wait(favStaggerDur * favorites.length);
       }
       if (epoch !== revealEpoch) return;
     }
 
-    const fullW =
-      isDev && launcherLab.open
-        ? launcherLab.barW
-        : (bubble.anchor?.w ?? lastOpen?.w ?? LAUNCHER_BAR_W);
-
-    revealPhase = "approach";
+    // Repliegue: espejo del nacimiento, en el mismo centro (sin viaje a la pill).
+    revealPhase = "recede";
     await tick();
-    await waitFrames(2);
     if (epoch !== revealEpoch) return;
-    placeFusedFullToPill(fullW);
-    await afterTransition(el, separateAxisProp("left"), separateDur);
-    if (epoch !== revealEpoch) return;
-
-    revealPhase = "shrink";
-    await tick();
-    await waitFrames(2);
-    if (epoch !== revealEpoch) return;
-    const seedBase = lastOpen ?? {
-      side: "left" as const,
-      offset: compactH / 2,
-      x: bubble.anchor?.x ?? 0,
-      y: bubble.anchor?.y ?? 0,
-      w: LAUNCHER_BAR_W,
-      h: compactH,
-    };
-    placeFusedToPill({ ...seedBase, w: fullW, h: compactH });
-    await afterTransition(el, "width", openDur);
+    await shrinkToSeed(closeDur);
   }
 
   function livePillRect() {
     return surfaces.live["pill-skin"] ?? surfaces.live["pill"];
   }
 
-  function islandDocked(
-    pill: { x: number; y: number; w: number; h: number } | undefined,
-  ): boolean {
-    return pill != null && dockedEdgeAt(pill, workAreas) != null;
+  /** Centro de la pill (o del nacimiento) para elegir el monitor del reveal. */
+  function pillCenter(): { x: number; y: number } | null {
+    const pill = toolBirth() ?? livePillRect();
+    return pill ? { x: pill.x + pill.w / 2, y: pill.y + pill.h / 2 } : null;
   }
 
   /**
-   * Centro del monitor (horizontal y vertical). Nace fused a la pill y
-   * en el separate aterriza acá. El monitor lo marca el nacimiento
-   * (Ctrl+Q = mouse), no la pill ya de vuelta en el notch.
+   * Gota del nacimiento: cápsula de `BIRTH_SEED_PX` de ancho, al alto de la
+   * barra y centrada en el rect de reposo. Con el alto compacto (40) es un
+   * disco —el tamaño de la pill—; y como el alto no cambia, el estirón es
+   * puramente horizontal (no hay salto vertical posible).
+   */
+  function seedRect(rest: { x: number; y: number; w: number; h: number }) {
+    const d = Math.min(rest.w, BIRTH_SEED_PX);
+    return {
+      x: rest.x + (rest.w - d) / 2,
+      y: rest.y,
+      w: d,
+      h: rest.h,
+    };
+  }
+
+  /**
+   * Anima el float y resuelve al terminar.
+   *
+   * WAAPI y no una transición CSS a propósito: los keyframes llevan las medidas
+   * explícitas (40 → 324 px), así que la animación no depende de que el frame
+   * anterior haya quedado pintado ni de que una clase arme la transición a
+   * tiempo — las dos formas de perder el morph. `finished` es el hecho.
+   * La curva sale del token del proyecto (`--ease-liquid` por defecto).
+   *
+   * `hold` fija el último keyframe (`fill: forwards`) y no cancela: es lo que
+   * necesita el repliegue para llegar al dismiss ya apagado, sin un frame de
+   * barra a opacidad plena.
+   */
+  async function animateEl(
+    node: HTMLElement | null,
+    frames: Keyframe[],
+    dur: number,
+    opts: { easeVar?: string; easeFallback?: string; hold?: boolean } = {},
+  ): Promise<void> {
+    if (!node || dur <= 0) return;
+    const ease =
+      getComputedStyle(node)
+        .getPropertyValue(opts.easeVar ?? "--ease-liquid")
+        .trim() ||
+      opts.easeFallback ||
+      "cubic-bezier(0.5, 0, 0.2, 1)";
+    const anim = node.animate(frames, {
+      duration: dur,
+      easing: ease,
+      fill: opts.hold ? "forwards" : "both",
+    });
+    revealAnim = anim;
+    try {
+      await anim.finished;
+    } catch {
+      // Cancelada por close/reopen: no hay nada que esperar.
+    } finally {
+      if (revealAnim === anim) revealAnim = null;
+      if (!opts.hold) anim.cancel();
+    }
+  }
+
+  /** Estira la gota al rect de reposo: width + left, mismo centro. */
+  async function stretchToRest(dur: number): Promise<void> {
+    const rest = restRect;
+    const cur = bubble.anchor;
+    if (!rest || !cur) return;
+    const from = { width: `${cur.w}px`, left: `${cur.x}px` };
+    const to = { width: `${rest.w}px`, left: `${rest.x}px` };
+    bubble.place({
+      side: cur.side as BubbleOpen["side"],
+      offset: rest.h / 2,
+      x: rest.x,
+      y: rest.y,
+      w: rest.w,
+      h: rest.h,
+    });
+    await animateEl(el, [from, to], dur);
+  }
+
+  /**
+   * Reverse: repliega el stadium a la gota, en el centro donde está parado, y la
+   * apaga ahí mismo — espejo del nacimiento (rect + fade + scale).
+   */
+  async function shrinkToSeed(dur: number): Promise<void> {
+    const cur = bubble.anchor;
+    if (!cur) return;
+    const seed = seedRect(cur);
+    const from = {
+      width: `${cur.w}px`,
+      left: `${cur.x}px`,
+      opacity: "1",
+      transform: "scale(1)",
+    };
+    const to = {
+      width: `${seed.w}px`,
+      left: `${seed.x}px`,
+      opacity: "0",
+      transform: "scale(0.82)",
+    };
+    bubble.place({
+      side: cur.side as BubbleOpen["side"],
+      offset: seed.h / 2,
+      x: seed.x,
+      y: seed.y,
+      w: seed.w,
+      h: seed.h,
+    });
+    await animateEl(el, [from, to], dur, { hold: true });
+  }
+
+  /**
+   * Centro del monitor (horizontal y vertical) con las work areas que ya
+   * tenemos: la barra nace ahí mismo, sin esperar un IPC.
+   *
+   * Con `seed` queda guardado el rect de reposo y se coloca solo la gota: el
+   * estirón llega después, cuando el reveal lo dispare.
+   *
+   * El monitor lo marca el nacimiento (Ctrl+Q = mouse), no la pill ya de
+   * vuelta en el notch.
+   */
+  function placeAtCenter(
+    a: BubbleOpen,
+    anchor: { x: number; y: number },
+    seed: boolean,
+  ): void {
+    const labCompact = isDev && launcherLab.open && !showResults;
+    const w = labCompact ? launcherLab.barW : a.w;
+    const h = labCompact ? compactH : a.h;
+    const pos = resolveSlot("center", workAreas, { w, h }, anchor);
+    restRect = { x: pos.x, y: pos.y, w, h };
+    const rect = seed ? seedRect(restRect) : restRect;
+    bubble.place({
+      ...a,
+      w: rect.w,
+      h: rect.h,
+      x: rect.x,
+      y: rect.y,
+      side: "left",
+      offset: rect.h / 2,
+    });
+    notifyToolResting();
+  }
+
+  /** Nacimiento: gota centrada, con lo que ya sabemos, en el frame del atajo. */
+  function centerPlace(a: BubbleOpen): void {
+    placeAtCenter(a, pillCenter() ?? { x: a.x + a.w / 2, y: a.y + a.h / 2 }, true);
+  }
+
+  /**
+   * Centro con work areas frescas (el monitor puede llegar después del atajo).
+   * Idempotente: si el rect no cambió, `bubble.place` no re-monta el reveal.
+   *
+   * Mientras el reveal no cerró (fase distinta de `ready`) coloca la **gota**;
+   * a mitad del morph no toca nada: un rect distinto ahí es un salto visible.
    */
   async function applyCenterPlace(a: BubbleOpen) {
     try {
@@ -330,17 +460,10 @@
     } catch {
       // Fuera de Tauri o IPC fallido: se usa lo último que haya.
     }
-    const pill = toolBirth() ?? livePillRect();
-    const labCompact = isDev && launcherLab.open && !showResults;
-    const w = labCompact ? launcherLab.barW : a.w;
-    const h = labCompact ? compactH : a.h;
-    const size = { w, h };
-    // Centro del monitor: launcher no cuelga de la isla. Nace fused a la
-    // pill y en el separate aterriza acá, vertical y horizontal.
-    let anchor: { x: number; y: number };
-    if (pill) {
-      anchor = { x: pill.x + pill.w / 2, y: pill.y + pill.h / 2 };
-    } else {
+    // Bail temprano: si el reveal ya arrancó no vale la pena pedir el ancla.
+    if (revealPhase !== "hidden" && revealPhase !== "ready") return;
+    let anchor = pillCenter();
+    if (!anchor) {
       try {
         anchor = (await overlayActiveAnchor()) ?? {
           x: a.x + a.w / 2,
@@ -350,111 +473,10 @@
         anchor = { x: a.x + a.w / 2, y: a.y + a.h / 2 };
       }
     }
-    const pos = resolveSlot("center", workAreas, size, anchor);
-    bubble.place({
-      ...a,
-      w,
-      h,
-      x: pos.x,
-      y: pos.y,
-      side: "left",
-      offset: size.h / 2,
-    });
-    notifyToolResting();
-  }
-
-  /**
-   * Disco-semilla coincidente con la pill (un círculo). Luego `runOpenReveal`
-   * estira el ancho a la derecha. w y h van iguales: si el alto compacto
-   * cambia en el lab, no nacer como óvalo.
-   */
-  function placeFusedToPill(
-    a: BubbleOpen,
-    pill: { x: number; y: number; w: number; h: number } | null = livePillRect(),
-  ) {
-    const d = Math.min(isDev && launcherLab.open ? compactH : a.h, GROW_START_W);
-    const fullH = isDev && launcherLab.open ? compactH : a.h;
-    if (pill && islandDocked(pill)) {
-      bubble.place({
-        ...a,
-        ...placePanelFusedSeed(
-          pill,
-          { w: a.w, h: fullH },
-          {
-            corner: CORNER,
-            work: workAreas,
-            seed: d,
-          },
-        ),
-      });
-      return;
-    }
-    let x = a.x;
-    let y = a.y;
-    if (pill) {
-      x = pill.x + pill.w - d;
-      y = pill.y + (pill.h - d) / 2;
-    }
-    bubble.place({
-      ...a,
-      w: d,
-      h: d,
-      x,
-      y,
-      side: "left",
-      offset: d / 2,
-    });
-  }
-
-  /** Ancho completo aún fused (reverse de separate / previa al shrink). */
-  function placeFusedFullToPill(fullW: number) {
-    const pill = livePillRect();
-    const h = compactH;
-    let x = bubble.anchor?.x ?? 0;
-    let y = bubble.anchor?.y ?? 0;
-    if (pill && islandDocked(pill)) {
-      const side = (bubble.anchor?.side ??
-        lastOpen?.side ??
-        "left") as BubbleOpen["side"];
-      const base = lastOpen ?? {
-        side,
-        offset: h / 2,
-        x,
-        y,
-        w: fullW,
-        h,
-      };
-      bubble.place({
-        ...base,
-        ...placePanelFusedFull(pill, { w: fullW, h }, side, {
-          corner: CORNER,
-          work: workAreas,
-          fusedGap: FUSED_GAP_PX,
-        }),
-      });
-      return;
-    }
-    if (pill) {
-      x = pill.x + pill.w + FUSED_GAP_PX;
-      y = pill.y + (pill.h - h) / 2;
-    }
-    const base = lastOpen ?? {
-      side: "left" as const,
-      offset: h / 2,
-      x,
-      y,
-      w: fullW,
-      h,
-    };
-    bubble.place({
-      ...base,
-      w: fullW,
-      h,
-      x,
-      y,
-      side: "left",
-      offset: h / 2,
-    });
+    // Última verificación antes de mover: entre los awaits la fase pudo cambiar
+    // (birth/favs/tuck/recede) y un rect distinto ahí es un salto visible.
+    if (revealPhase !== "hidden" && revealPhase !== "ready") return;
+    placeAtCenter(a, anchor, revealPhase !== "ready");
   }
 
   async function placeFromPill(a: BubbleOpen) {
@@ -472,10 +494,12 @@
       }
     }
     if (lastOpen !== a) return;
-    // Nunca recentrar durante birth/close: un segundo anchor hacía snap a
-    // barra completa al lado → “elemento externo”.
+    // Nace en su centro: se coloca sync (el reveal arranca en el primer frame)
+    // y el refine de work areas llega después, idempotente si el monitor no
+    // cambió. Nunca recentrar a mitad del reveal: salta.
     if (fresh || revealPhase === "hidden") {
-      placeFusedToPill(a, toolBirth() ?? livePillRect());
+      centerPlace(a);
+      void applyCenterPlace(a);
       return;
     }
     if (revealPhase === "ready" && !closing) {
@@ -574,7 +598,14 @@
       liquid.publish("launcher", []);
       return;
     }
-    // Durante grow/separate/close reverse el ancho/left se mueve: seguir frame a frame.
+    // Nacimiento/repliegue: la barra se pinta sola mientras crece (la caja es la
+    // que estira). Sin silueta líquida propia: no hay cuello con la pill y
+    // duplicaría el blob.
+    if (revealing) {
+      liquid.publish("launcher", []);
+      return;
+    }
+    // Tuck de peels: siguen la geometría cuadro a cuadro.
     if (motionPhase) {
       return publishFollowSkin("launcher", el, CORNER, group);
     }
@@ -642,7 +673,7 @@
 
   /**
    * Lab: re-aplicar ancho/alto compacto al mover barW/barH.
-   * Solo en ready (no pelear con expand/separate).
+   * Solo en ready (no pelear con el reveal).
    */
   $effect(() => {
     if (
@@ -664,23 +695,61 @@
     });
   });
 
-  async function loadFavorites() {
+  async function loadFavorites(epoch = loadEpoch) {
     try {
       const next = await launcherListFavorites();
+      if (epoch !== loadEpoch) return;
       favorites = next;
       favoriteIds = next.map((f) => f.id);
     } catch {
+      if (epoch !== loadEpoch) return;
       favorites = [];
       favoriteIds = [];
+    } finally {
+      if (epoch === loadEpoch) favoritesLoaded = true;
     }
   }
 
-  async function loadRecents() {
-    try {
-      recents = await launcherListRecents();
-    } catch {
-      recents = [];
+  async function ensureFavoritesLoaded() {
+    if (favoritesLoaded) return;
+    const epoch = loadEpoch;
+    if (!favoritesInFlight) {
+      const promise = loadFavorites(epoch).finally(() => {
+        if (favoritesInFlight === promise) favoritesInFlight = null;
+      });
+      favoritesInFlight = promise;
     }
+    await favoritesInFlight;
+  }
+
+  async function refreshFavorites() {
+    favoritesLoaded = false;
+    await loadFavorites(loadEpoch);
+  }
+
+  async function loadRecents(epoch = loadEpoch) {
+    try {
+      const next = await launcherListRecents();
+      if (epoch !== loadEpoch) return;
+      recents = next;
+    } catch {
+      if (epoch !== loadEpoch) return;
+      recents = [];
+    } finally {
+      if (epoch === loadEpoch) recentsLoaded = true;
+    }
+  }
+
+  async function ensureRecentsLoaded() {
+    if (recentsLoaded) return;
+    const epoch = loadEpoch;
+    if (!recentsInFlight) {
+      const promise = loadRecents(epoch).finally(() => {
+        if (recentsInFlight === promise) recentsInFlight = null;
+      });
+      recentsInFlight = promise;
+    }
+    await recentsInFlight;
   }
 
   function recencyLabel(hit: LauncherHit): string {
@@ -794,9 +863,9 @@
     searching = false;
     error = "";
     selected = 0;
-    // Favoritos ya se cargan antes del place (para el acto 3); no bloquear foco.
-    if (favorites.length === 0) await loadFavorites();
-    await loadRecents();
+    // Favoritos/recientes se coalescen: anchor/opened/reveal pueden cruzarse al abrir.
+    await ensureFavoritesLoaded();
+    await ensureRecentsLoaded();
     await tick();
     // Si aún no hay `.is-shown`, el $effect de abajo toma el foco al abrir.
     await focusSearch(select);
@@ -848,11 +917,33 @@
     }
   }
 
+  /**
+   * Ctrl+Enter sobre una app: cerrarla con `WM_CLOSE` (graceful: la app y el
+   * sistema deciden, incluido preguntar por cambios sin guardar). La barra queda
+   * abierta para cerrar varias seguidas.
+   */
+  async function quitSelected() {
+    const hit = list[selected];
+    if (!hit || hit.kind !== "app") return;
+    try {
+      await launcherQuit(hit.id);
+      // Cambió el estado «en uso»: refrescar la lista sin cerrar la barra.
+      if (hasQuery) {
+        void search(query);
+      } else {
+        recentsLoaded = false;
+        void ensureRecentsLoaded();
+      }
+    } catch (failure) {
+      error = failure instanceof Error ? failure.message : String(failure);
+    }
+  }
+
   async function toggleFavorite(id: string, event?: Event) {
     event?.stopPropagation();
     try {
       favoriteIds = await launcherToggleFavorite(id);
-      await loadFavorites();
+      await refreshFavorites();
       // Sin esto las bolitas existen en el DOM pero con opacity 0 (`is-out`
       // exige i < favRevealCount). Había que cerrar y reabrir para verlas.
       favRevealCount = favorites.length;
@@ -860,7 +951,7 @@
       surfaces.schedule();
     } catch (failure) {
       error = failure instanceof Error ? failure.message : String(failure);
-      await loadFavorites();
+      await refreshFavorites();
       favRevealCount = favorites.length;
     }
   }
@@ -871,6 +962,11 @@
 
   function finishDismiss(wasShown: boolean, opts: { skipHideLauncher?: boolean } = {}) {
     clearSearchTimer();
+    loadEpoch += 1;
+    favoritesLoaded = false;
+    recentsLoaded = false;
+    favoritesInFlight = null;
+    recentsInFlight = null;
     lastOpen = null;
     favRevealCount = 0;
     revealPhase = "hidden";
@@ -905,6 +1001,7 @@
     }
     closing = true;
     const wasShown = bubble.shown;
+    armCloseDur();
     clearSearchTimer();
     endDrag();
     surfaces.resetInteraction();
@@ -937,6 +1034,9 @@
     } else if (event.key === "ArrowUp" && list.length > 0) {
       event.preventDefault();
       selected = (selected - 1 + list.length) % list.length;
+    } else if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+      event.preventDefault();
+      void quitSelected();
     } else if (event.key === "Enter") {
       event.preventDefault();
       void run();
@@ -948,17 +1048,17 @@
       .then((areas) => {
         workAreas = areas;
         // Si el ancla llegó antes que las áreas, el fallback era el viewport
-        // virtual entero → el float quedaba corrido. No recentrar durante
-        // expand/separate: eso mataría el grow desde la pill.
+        // virtual entero → el float quedaba corrido. No recentrar durante el
+        // reveal: el nacimiento ya aterrizó centrado y re-placearlo salta.
         if (lastOpen && bubble.alive && revealPhase === "ready") {
           void applyCenterPlace(lastOpen);
         } else if (
           lastOpen &&
           bubble.alive &&
-          (revealPhase === "hidden" || revealPhase === "expand") &&
+          (revealPhase === "hidden" || revealPhase === "birth") &&
           !bubble.shown
         ) {
-          placeFusedToPill(lastOpen, toolBirth() ?? livePillRect());
+          centerPlace(lastOpen);
         }
       })
       .catch(() => {
@@ -968,10 +1068,7 @@
       onLauncherBubbleAnchor((a) => {
         // Acto 2 ya: no esperar favs (eso hacía “snap” tras la carga).
         void placeFromPill(a);
-        void (async () => {
-          await loadFavorites();
-          await reset(true);
-        })();
+        void reset(true);
       }),
       onLauncherBubbleDismiss(() => {
         if (ignoreIpcDismiss) return;
@@ -1002,19 +1099,18 @@
     class:is-shown={bubble.shown}
     class:is-joined={joined}
     class:is-expanded={hasQuery || (recents.length > 0 && revealPhase === "ready")}
-    class:is-expanding={expanding}
-    class:is-separating={separating}
+    class:is-revealing={revealing}
     class:is-favs-seq={favsSequencing}
+    class:is-favs-stagger={favsStaggering}
+    class:is-tucking={revealPhase === "tuck"}
     data-float="launcher"
     data-side={bubble.anchor?.side ?? "left"}
     style={bubble.vars}
     style:--float-stack={surfaces.stack("launcher")}
     style:--lf-fav-gap="{favGap}px"
     style:--lf-dot-gap="{dotGap}px"
-    style:--launcher-bar-open-dur="{openDur}ms"
-    style:--launcher-separate-dur="{separateDur}ms"
     style:--launcher-fav-stagger="{favStaggerDur}ms"
-    style:--float-close-dur="{closeDur}ms"
+    style:--lf-fav-last-index={Math.max(favorites.length - 1, 0)}
     bind:this={el}
     role="dialog"
     aria-label={t("overlay.searchApps")}
@@ -1121,24 +1217,26 @@
                   >
                 </span>
               </button>
-              <button
-                type="button"
-                class="lf-star"
-                class:is-on={isFavorite(hit.id)}
-                data-no-drag
-                aria-label={isFavorite(hit.id)
-                  ? t("overlay.favRemove", { title: hit.title })
-                  : t("overlay.favAdd", { title: hit.title })}
-                aria-pressed={isFavorite(hit.id)}
-                onpointerdown={(e) => e.stopPropagation()}
-                onclick={(e) => void toggleFavorite(hit.id, e)}
-              >
-                <Icon
-                  icon={Star}
-                  size={14}
-                  fill={isFavorite(hit.id) ? "currentColor" : "none"}
-                />
-              </button>
+              {#if !hit.id.startsWith("calc:")}
+                <button
+                  type="button"
+                  class="lf-star"
+                  class:is-on={isFavorite(hit.id)}
+                  data-no-drag
+                  aria-label={isFavorite(hit.id)
+                    ? t("overlay.favRemove", { title: hit.title })
+                    : t("overlay.favAdd", { title: hit.title })}
+                  aria-pressed={isFavorite(hit.id)}
+                  onpointerdown={(e) => e.stopPropagation()}
+                  onclick={(e) => void toggleFavorite(hit.id, e)}
+                >
+                  <Icon
+                    icon={Star}
+                    size={14}
+                    fill={isFavorite(hit.id) ? "currentColor" : "none"}
+                  />
+                </button>
+              {/if}
             </div>
           </li>
         {:else}
@@ -1156,6 +1254,10 @@
         <span class="lf-hint"><Kbd combo="↑↓" /> {t("overlay.navHint")}</span>
         <span class="lf-hint"><Kbd combo="Enter" /> {t("overlay.openHint")}</span>
         <span class="lf-hint"><Kbd combo="Esc" /> {t("overlay.closeHint")}</span>
+        {#if selectedIsApp}
+          <span class="lf-hint"><Kbd combo="Ctrl+Enter" /> {t("overlay.quitHint")}</span
+          >
+        {/if}
       </footer>
     {/if}
   </div>
@@ -1163,14 +1265,14 @@
 
 <style>
   /*
-   * Nace como disco coincidente con la pill; el width crece a stadium; luego
-   * separate + favs. El chrome se apaga durante `.is-expanding`.
+   * Nace y muere en su centro (fade + grow), con la silueta a cargo del
+   * líquido; el chrome recién aparece cuando la barra se asienta.
    */
   .lf {
-    /* bar-open/separate heredan de :root (app.css). fav-stagger y float-close
-       quedan como overrides locales a propósito: difieren del root. */
-    --launcher-fav-stagger: 150ms;
-    --float-close-dur: var(--duration-quick);
+    /* Duraciones locales (el inline las pisa con las del lab de dev): stagger de
+       los favs y entrada del chrome cuando la barra se asienta. */
+    --launcher-fav-stagger: 90ms;
+    --lf-chrome-dur: 120ms;
 
     position: absolute;
     z-index: calc(var(--z-overlay-float) + var(--float-stack, 0));
@@ -1191,41 +1293,32 @@
     pointer-events: none;
 
     /* Sin transition de height: al buscar, saltar a EXPANDED_H evita thrash
-       (layout + hit-rects) en cada tecla. El grow de apertura anima width. */
+       (layout + hit-rects) en cada tecla; el nacimiento anima transform. */
   }
 
   .lf.is-shown {
     opacity: 1;
     pointer-events: auto;
-
-    /* Abrir invita, cerrar se aparta: sin esto el abrir heredaba la
-       duración del cierre y la asimetría desaparecía. */
-    transition: opacity var(--float-open-dur) var(--ease-smooth-out);
   }
 
-  .lf.is-expanding {
-    transition:
-      width var(--launcher-bar-open-dur) var(--ease-smooth-out),
-      height var(--launcher-bar-open-dur) var(--ease-smooth-out);
+  /*
+   * Morph en curso (nacimiento o repliegue): el rect, el fade y el scale los
+   * mueve JS (`animateEl`, WAAPI) y acá solo se recorta el contenido y se apaga
+   * el chrome, así lo que se ve crecer/replegarse es la barra y nada más.
+   */
+  .lf.is-revealing {
     overflow: hidden;
   }
 
   /*
-   * Durante el grow la silueta la pinta el líquido. El float está por encima
-   * de la pill: un head opaco taparía la «a» y, si el input impone min-width,
-   * se leería stadium desde el primer frame.
+   * Nacimiento/repliegue: acá la barra crece sola y el chrome todavía no
+   * corresponde. Un head visible en una caja de 40 px taparía la silueta y el
+   * input se leería stadium desde el primer frame.
    */
-  .lf.is-expanding .lf-head {
+  .lf.is-revealing .lf-head {
     opacity: 0;
     pointer-events: none;
     background: transparent;
-  }
-
-  .lf.is-separating {
-    transition:
-      left var(--launcher-separate-dur) var(--ease-smooth-out),
-      top var(--launcher-separate-dur) var(--ease-smooth-out),
-      width var(--duration-quick) var(--ease-smooth-out);
   }
 
   /* Expandido: panel único con surface. Compacto: chrome transparente.
@@ -1234,13 +1327,16 @@
     background: var(--skin);
     overflow: visible;
     border-radius: 18px;
+    box-shadow:
+      0 18px 48px color-mix(in sRGB, var(--text) 18%, transparent),
+      inset 0 0 0 1px color-mix(in sRGB, var(--text) 10%, transparent);
   }
 
   .lf:not(.is-expanded) {
     justify-content: center;
   }
 
-  .lf:not(.is-expanded, .is-expanding) {
+  .lf:not(.is-expanded, .is-revealing) {
     overflow: visible;
   }
 
@@ -1284,6 +1380,9 @@
     cursor: grab;
     touch-action: none;
     user-select: none;
+
+    /* El chrome entra cuando la barra se asienta: misma familia que el grow. */
+    transition: opacity var(--lf-chrome-dur) var(--ease-smooth-out);
   }
 
   .lf-head:active {
@@ -1364,6 +1463,16 @@
       opacity var(--launcher-fav-stagger) var(--ease-smooth-out);
   }
 
+  .lf.is-favs-stagger .lf-dot {
+    transition-delay: calc(var(--lf-i, 0) * var(--launcher-fav-stagger));
+  }
+
+  .lf.is-favs-stagger.is-tucking .lf-dot {
+    transition-delay: calc(
+      (var(--lf-fav-last-index, 0) - var(--lf-i, 0)) * var(--launcher-fav-stagger)
+    );
+  }
+
   .lf-dot.is-out {
     opacity: 1;
     pointer-events: auto;
@@ -1421,6 +1530,20 @@
 
   .lf-icon:active {
     transform: scale(0.96);
+  }
+
+  .lf-head:has(.lf-input:focus-visible),
+  .lf-icon:focus-visible,
+  .lf-dot:focus-visible,
+  .lf-hit-main:focus-visible,
+  .lf-star:focus-visible {
+    outline: 2px solid color-mix(in sRGB, var(--ok) 78%, var(--text));
+    outline-offset: 3px;
+    box-shadow: 0 0 0 4px color-mix(in sRGB, var(--ok) 18%, transparent);
+  }
+
+  .lf-hit-main:focus-visible {
+    background: color-mix(in sRGB, var(--text) 7%, transparent);
   }
 
   .lf-err {
@@ -1610,8 +1733,7 @@
 
   @media (prefers-reduced-motion: reduce) {
     .lf,
-    .lf.is-expanding,
-    .lf.is-separating,
+    .lf-head,
     .lf-favs,
     .lf:not(.is-shown) .lf-favs,
     .lf-dot {

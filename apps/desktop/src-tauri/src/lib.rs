@@ -3,6 +3,7 @@
 pub mod agents;
 mod annotate;
 mod beep;
+mod calc;
 mod capture;
 mod capture_session;
 mod capture_shelf;
@@ -36,6 +37,7 @@ mod shortcuts;
 mod snippets;
 mod state;
 mod summarization;
+mod system_actions;
 mod transcription;
 mod tray;
 mod ui_lang;
@@ -357,6 +359,7 @@ pub fn run() {
             launcher::launcher_reindex,
             launcher::launcher_search,
             launcher::launcher_run,
+            launcher::launcher_quit,
             launcher::launcher_list_favorites,
             launcher::launcher_list_recents,
             launcher::launcher_toggle_favorite,

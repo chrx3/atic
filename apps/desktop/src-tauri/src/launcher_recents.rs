@@ -165,6 +165,36 @@ fn running_apps() -> Vec<RunningApp> {
     Vec::new()
 }
 
+/// Cierra (WM_CLOSE) las ventanas visibles de una app del índice.
+///
+/// El match app ↔ proceso es el mismo de los recientes (`process_fits_app`): en
+/// Windows el índice guarda el `.lnk` del menú Inicio, así que el nombre del
+/// ejecutable no alcanza por sí solo (Word es `WINWORD.EXE`).
+/// Devuelve cuántas ventanas se pidieron cerrar; 0 = la app no está corriendo.
+pub fn close_app_windows(app_title: &str, app_id: &str) -> usize {
+    #[cfg(windows)]
+    {
+        windows::close_app_windows(app_title, app_id)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (app_title, app_id);
+        0
+    }
+}
+
+/// Cierra todas las ventanas visibles de apps de usuario (sin el shell ni Atic).
+pub fn close_user_windows() -> usize {
+    #[cfg(windows)]
+    {
+        windows::close_user_windows()
+    }
+    #[cfg(not(windows))]
+    {
+        0
+    }
+}
+
 /// Recientes: primero las que están abiertas (con tiempo de proceso),
 /// después las que Atic lanzó y ya no se ven.
 pub fn list(store: &Path) -> Vec<LauncherHit> {
@@ -268,11 +298,120 @@ mod windows {
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         EnumWindows, GetForegroundWindow, GetWindow, GetWindowLongPtrW, GetWindowTextLengthW,
-        GetWindowTextW, GetWindowThreadProcessId, IsIconic, IsWindowVisible, GWL_EXSTYLE, GW_OWNER,
+        GetWindowTextW, GetWindowThreadProcessId, IsIconic, IsWindowVisible, PostMessageW,
+        GWL_EXSTYLE, GW_OWNER, WM_CLOSE,
     };
 
     const WS_EX_TOOLWINDOW: isize = 0x0000_0080;
     const WS_EX_NOACTIVATE: isize = 0x0800_0000;
+
+    /// Ventana visible de primer nivel, con la identidad de su proceso.
+    struct WindowRef {
+        hwnd: HWND,
+        stem: String,
+        title: String,
+    }
+
+    /// Ventana de app «de verdad»: visible, con título, sin dueño ni chrome de
+    /// herramienta. Mismo criterio que `collect`.
+    unsafe fn window_is_app(hwnd: HWND) -> bool {
+        if IsWindowVisible(hwnd) == 0 || IsIconic(hwnd) != 0 {
+            return false;
+        }
+        let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+        if ex & WS_EX_TOOLWINDOW != 0 || ex & WS_EX_NOACTIVATE != 0 {
+            return false;
+        }
+        if !GetWindow(hwnd, GW_OWNER).is_null() {
+            return false;
+        }
+        GetWindowTextLengthW(hwnd) >= 1
+    }
+
+    unsafe fn window_title(hwnd: HWND) -> String {
+        let length = GetWindowTextLengthW(hwnd);
+        if length < 1 {
+            return String::new();
+        }
+        let mut buffer = vec![0u16; length as usize + 1];
+        let copied = GetWindowTextW(hwnd, buffer.as_mut_ptr(), buffer.len() as i32);
+        if copied <= 0 {
+            return String::new();
+        }
+        buffer.truncate(copied as usize);
+        String::from_utf16_lossy(&buffer)
+    }
+
+    fn exe_stem(path: &str) -> String {
+        Path::new(path)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_lowercase()
+    }
+
+    struct Visible {
+        self_pid: u32,
+        out: Vec<WindowRef>,
+    }
+
+    /// Ventanas visibles de apps de usuario: sin el shell y sin Atic.
+    fn visible_windows() -> Vec<WindowRef> {
+        let mut state = Visible {
+            self_pid: std::process::id(),
+            out: Vec::new(),
+        };
+        unsafe {
+            let _ = EnumWindows(
+                Some(on_visible_window),
+                &mut state as *mut Visible as LPARAM,
+            );
+        }
+        state.out
+    }
+
+    unsafe extern "system" fn on_visible_window(hwnd: HWND, param: LPARAM) -> BOOL {
+        let state = &mut *(param as *mut Visible);
+        if !window_is_app(hwnd) {
+            return 1;
+        }
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(hwnd, &mut pid);
+        if pid == 0 || pid == state.self_pid {
+            return 1;
+        }
+        let Some((path, _)) = process_info(pid) else {
+            return 1;
+        };
+        let stem = exe_stem(&path);
+        if stem.is_empty() || super::skip_process_stem(&stem) {
+            return 1;
+        }
+        state.out.push(WindowRef {
+            hwnd,
+            stem,
+            title: window_title(hwnd),
+        });
+        1
+    }
+
+    /// WM_CLOSE (como el aspa de la ventana) a las ventanas de esa app.
+    /// Graceful a propósito: nunca se termina el proceso a la fuerza.
+    pub fn close_app_windows(app_title: &str, app_id: &str) -> usize {
+        visible_windows()
+            .into_iter()
+            .filter(|w| super::process_fits_app(&w.stem, &w.title, app_title, app_id))
+            .filter(|w| unsafe { PostMessageW(w.hwnd, WM_CLOSE, 0, 0) } != 0)
+            .count()
+    }
+
+    /// WM_CLOSE a todas las ventanas de apps de usuario.
+    pub fn close_user_windows() -> usize {
+        visible_windows()
+            .into_iter()
+            .filter(|w| unsafe { PostMessageW(w.hwnd, WM_CLOSE, 0, 0) } != 0)
+            .count()
+    }
 
     struct Collect {
         self_pid: u32,
