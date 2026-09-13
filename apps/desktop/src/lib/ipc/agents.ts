@@ -262,6 +262,17 @@ export function revealAgentsConsole() {
   window.dispatchEvent(new Event(AGENTS_REVEAL_CONSOLE));
 }
 
+/**
+ * El PATH de los CLIs pudo cambiar (típicamente: terminó un instalador en una
+ * consola). El lanzador lo escucha para no quedar con «Instalar» cuando el
+ * binario ya está.
+ */
+export const AGENTS_PATH_CHANGED = "atic-agents-path-changed";
+
+export function notifyAgentsPathChanged() {
+  window.dispatchEvent(new Event(AGENTS_PATH_CHANGED));
+}
+
 /** Repliega la burbuja sobre la pill. */
 export const hideAgentsWindow = () => invoke<void>("hide_agents_window");
 
