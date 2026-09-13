@@ -1,6 +1,12 @@
 <script lang="ts">
   /** Captura de atajo por teclas o botones laterales del mouse. */
 
+  import {
+    isModifierOnlyKey,
+    shortcutFromEvent,
+    shortcutParts,
+  } from "$core/hotkeys";
+
   let {
     value = "CmdOrCtrl+Shift+R",
     defaultValue = "CmdOrCtrl+Shift+R",
@@ -32,30 +38,12 @@
   function displayParts(raw: string): string[] {
     if (raw === "MouseX1") return ["Mouse atrás"];
     if (raw === "MouseX2") return ["Mouse adelante"];
-    return raw
-      .replace(/CmdOrCtrl/gi, "Ctrl")
-      .replace(/CommandOrControl/gi, "Ctrl")
-      .replace(/Super/gi, "Win")
-      .split("+")
-      .map((p) => p.trim())
-      .filter(Boolean);
-  }
-
-  /**
-   * Tecla FÍSICA a partir de `KeyboardEvent.code`.
-   *
-   * En Mac, con Option apretada `e.key` trae el carácter del layout (`@` con
-   * Option+2, `®` con Option+R) y el parser de atajos no lo reconoce: el
-   * registro fallaba. `code` no depende del layout ni de los modificadores.
-   */
-  function codeToKey(code: string): string {
-    if (/^Key[A-Z]$/.test(code)) return code.slice(3);
-    if (/^Digit[0-9]$/.test(code)) return code.slice(5);
-    return code;
+    return shortcutParts(raw);
   }
 
   function keyEventToShortcut(e: KeyboardEvent): string | null {
-    if (["Control", "Shift", "Alt", "Meta", "OS"].includes(e.key)) return null;
+    // Un modificador solo no es un atajo: no hay nada que rechazar todavía.
+    if (isModifierOnlyKey(e.key)) return null;
 
     // En Windows, Win (metaKey) la reserva el SO. En macOS metaKey es Command.
     const isWindows =
@@ -68,19 +56,7 @@
       return null;
     }
 
-    const out: string[] = [];
-    if (e.ctrlKey || e.metaKey) out.push("CmdOrCtrl");
-    if (e.altKey) out.push("Alt");
-    if (e.shiftKey) out.push("Shift");
-
-    let key = e.code ? codeToKey(e.code) : e.key;
-    if (key === " ") key = "Space";
-    else if (key.length === 1) key = key.toUpperCase();
-    else if (/^F\d{1,2}$/i.test(key)) key = key.toUpperCase();
-
-    if (out.length === 0 && !/^F\d{1,2}$/i.test(key)) return null;
-    out.push(key);
-    return out.join("+");
+    return shortcutFromEvent(e);
   }
 
   /** Botones laterales: 3 = atrás (X1), 4 = adelante (X2). */

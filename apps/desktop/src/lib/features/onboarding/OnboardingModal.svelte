@@ -13,6 +13,7 @@
   import type { ModelStatus } from "$core/types";
   import { config } from "$domain/config.svelte";
   import { models } from "$domain/models.svelte";
+  import { resumeShortcuts, suspendShortcuts } from "$ipc/config";
   import { downloadModelAndWait } from "$ipc/models";
   import { minimizeWindow } from "$ipc/windows";
   import { tabPanel } from "$lib/motion";
@@ -92,6 +93,15 @@
 
   function patch(changes: Parameters<typeof config.patch>[0]) {
     void config.patch(changes).catch(() => {});
+  }
+
+  /** Los globales se apagan mientras HotkeyCapture captura (y vuelven al salir). */
+  function suspendGlobals() {
+    void suspendShortcuts().catch(() => {});
+  }
+
+  function resumeGlobals() {
+    void resumeShortcuts().catch(() => {});
   }
 
   function setDictationBackend(value: string) {
@@ -358,6 +368,8 @@
                     ariaLabel={t("settings.shortcuts.changeAria", {
                       label: t(`onboarding.setup.${item.id}.label`),
                     })}
+                    onCaptureStart={suspendGlobals}
+                    onCaptureEnd={resumeGlobals}
                     onChange={(sc) => patch({ [item.key]: sc })}
                   />
                 </li>

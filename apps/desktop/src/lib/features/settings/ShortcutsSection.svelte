@@ -8,6 +8,7 @@
    */
   import { config } from "$domain/config.svelte";
   import { toastError } from "$domain/toasts.svelte";
+  import { resumeShortcuts, suspendShortcuts } from "$ipc/config";
   import SettingsGroup from "$patterns/SettingsGroup.svelte";
   import SettingsRow from "$patterns/SettingsRow.svelte";
   import Banner from "$ui/Banner.svelte";
@@ -19,6 +20,15 @@
 
   function patch(changes: Parameters<typeof config.patch>[0]) {
     void config.patch(changes).catch(toastError);
+  }
+
+  /** Los globales se apagan mientras HotkeyCapture captura (y vuelven al salir). */
+  function suspendGlobals() {
+    void suspendShortcuts().catch(() => {});
+  }
+
+  function resumeGlobals() {
+    void resumeShortcuts().catch(() => {});
   }
 
   const ALL_SHORTCUTS = $derived([
@@ -101,6 +111,37 @@
 
   /** Rust manda los nombres tal como los registró. */
   const conflicts = $derived(new Set(config.conflicts));
+
+  /** Qué otros comandos comparten el atajo de cada clave de config. */
+  const sharedWith = $derived.by(() => {
+    const map: Record<string, string[]> = {};
+    for (const group of config.shared) {
+      for (const key of group) {
+        map[key] = group.filter((other) => other !== key);
+      }
+    }
+    return map;
+  });
+
+  /** La etiqueta visible de cada clave, para nombrar a los otros comandos. */
+  const labelsByKey = $derived.by(() => {
+    const map: Record<string, string> = {};
+    for (const item of ALL_SHORTCUTS) map[item.key] = item.label;
+    return map;
+  });
+
+  function sharedLabels(key: string): string {
+    return (sharedWith[key] ?? [])
+      .map((other) => labelsByKey[other] ?? other)
+      .join(", ");
+  }
+
+  function rowLabel(item: { key: string; label: string }): string {
+    const marks: string[] = [];
+    if (conflicts.has(item.key)) marks.push(t("settings.shortcuts.conflictSuffix"));
+    if (sharedWith[item.key]) marks.push(t("settings.shortcuts.sharedSuffix"));
+    return marks.length > 0 ? `${item.label} · ${marks.join(", ")}` : item.label;
+  }
 </script>
 
 {#if cfg}
@@ -116,24 +157,44 @@
       </Banner>
     {/if}
 
+    {#if config.shared.length > 0}
+      <Banner
+        tone="danger"
+        title={config.shared.length === 1
+          ? t("settings.shortcuts.sharedOne")
+          : t("settings.shortcuts.sharedMany", { count: config.shared.length })}
+      >
+        {t("settings.shortcuts.sharedBody")}
+      </Banner>
+    {/if}
+
     <SettingsGroup
       title={t("settings.shortcuts.title")}
       hint={t("settings.shortcuts.hint")}
     >
       {#each SHORTCUTS as item (item.key)}
         <SettingsRow
-          label={conflicts.has(item.key)
-            ? `${item.label} · ${t("settings.shortcuts.conflictSuffix")}`
-            : item.label}
+          label={rowLabel(item)}
           hint={"hint" in item ? item.hint : undefined}
         >
           {#snippet control()}
-            <HotkeyCapture
-              value={cfg[item.key]}
-              defaultValue={item.fallback}
-              ariaLabel={t("settings.shortcuts.changeAria", { label: item.label })}
-              onChange={(sc) => patch({ [item.key]: sc })}
-            />
+            <div class="flex flex-col gap-1">
+              <HotkeyCapture
+                value={cfg[item.key]}
+                defaultValue={item.fallback}
+                ariaLabel={t("settings.shortcuts.changeAria", { label: item.label })}
+                onCaptureStart={suspendGlobals}
+                onCaptureEnd={resumeGlobals}
+                onChange={(sc) => patch({ [item.key]: sc })}
+              />
+              {#if sharedWith[item.key]}
+                <p class="text-xs text-danger">
+                  {t("settings.shortcuts.sharedWith", {
+                    labels: sharedLabels(item.key),
+                  })}
+                </p>
+              {/if}
+            </div>
           {/snippet}
         </SettingsRow>
       {/each}

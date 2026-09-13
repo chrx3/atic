@@ -126,6 +126,7 @@ export interface AticEvents {
 
   // Sistema
   "shortcuts-failed": string[];
+  "shortcuts-shared": string[][];
   /**
    * Tema de UI persistido (`light` | `dark` | `system`).
    *

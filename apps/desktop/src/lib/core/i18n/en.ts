@@ -247,6 +247,12 @@ export const en = {
       conflictMany: "Another app already took {count} shortcuts",
       conflictBody: "Pick another combination for the ones marked.",
       conflictSuffix: "conflict",
+      sharedOne: "One shortcut is shared by two commands",
+      sharedMany: "{count} shortcuts are shared by two commands",
+      sharedBody:
+        "The first of each one is active. Change one of the two so the other responds again.",
+      sharedSuffix: "shared",
+      sharedWith: "Shared with {labels}",
       changeAria: "Change the shortcut for {label}",
       record: "Record / stop",
       recordHint: "Starts and stops a recording from any app.",

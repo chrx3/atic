@@ -249,6 +249,12 @@ export const es = {
       conflictMany: "{count} atajos ya los tenía tomados otra app",
       conflictBody: "Elige otra combinación para los marcados.",
       conflictSuffix: "en conflicto",
+      sharedOne: "Hay un atajo repetido entre comandos",
+      sharedMany: "Hay {count} atajos repetidos entre comandos",
+      sharedBody:
+        "Se activa el primero de cada uno. Cambiá uno de los dos para que el otro vuelva a responder.",
+      sharedSuffix: "repetido",
+      sharedWith: "Compartido con {labels}",
       changeAria: "Cambiar el atajo de {label}",
       record: "Grabar / parar",
       recordHint: "Empieza y termina una grabación desde cualquier app.",

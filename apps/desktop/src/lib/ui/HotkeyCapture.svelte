@@ -7,6 +7,12 @@
    * que el SO se reserva, y el pulsado que completa la captura y que no puede
    * ser el mismo que dispare el guardado.
    */
+  import {
+    detectShortcutOs,
+    isModifierOnlyKey,
+    shortcutFromEvent,
+    shortcutParts,
+  } from "$core/hotkeys";
   import Kbd from "./Kbd.svelte";
   import { t } from "$domain/i18n.svelte";
 
@@ -15,12 +21,21 @@
     defaultValue = "",
     ariaLabel,
     onChange,
+    onCaptureStart,
+    onCaptureEnd,
   }: {
     value?: string;
     /** Para el botón de restablecer. Si es igual al valor, no se ofrece. */
     defaultValue?: string;
     ariaLabel?: string;
     onChange: (shortcut: string) => void | Promise<void>;
+    /**
+     * Ciclo de la captura. La feature los usa para suspender los globales
+     * mientras dura: si no, la tecla que se aprieta para asignar dispara la
+     * herramienta que ya tenía ese atajo. El primitivo solo los avisa.
+     */
+    onCaptureStart?: () => void;
+    onCaptureEnd?: () => void;
   } = $props();
 
   const captureAria = $derived(ariaLabel ?? t("hotkey.change"));
@@ -43,42 +58,21 @@
   function displayParts(raw: string): string[] {
     if (raw === "MouseX1") return [t("hotkey.mouseBack")];
     if (raw === "MouseX2") return [t("hotkey.mouseForward")];
-    return raw
-      .replace(/CmdOrCtrl/gi, "Ctrl")
-      .replace(/CommandOrControl/gi, "Ctrl")
-      .replace(/Super/gi, "Win")
-      .split("+")
-      .map((p) => p.trim())
-      .filter(Boolean);
+    return shortcutParts(raw);
   }
 
   function keyEventToShortcut(e: KeyboardEvent): string | null {
-    // Un modificador solo no es un atajo: se espera a la tecla que lo acompaña.
-    if (["Control", "Shift", "Alt", "Meta", "OS"].includes(e.key)) return null;
+    // Un modificador solo no es un atajo: no hay nada que rechazar todavía.
+    if (isModifierOnlyKey(e.key)) return null;
 
     // En Windows la tecla Win la reserva el SO y el registro global falla sin
     // decir por qué. Mejor rechazarla acá y explicarlo.
-    const isWindows =
-      typeof navigator !== "undefined" && /Win/i.test(navigator.userAgent);
-    if (isWindows && e.metaKey) {
+    if (detectShortcutOs(navigator.userAgent) === "windows" && e.metaKey) {
       showReject(t("hotkey.winReject"));
       return null;
     }
 
-    const out: string[] = [];
-    if (e.ctrlKey || e.metaKey) out.push("CmdOrCtrl");
-    if (e.altKey) out.push("Alt");
-    if (e.shiftKey) out.push("Shift");
-
-    let key = e.key;
-    if (key === " ") key = "Space";
-    else if (key.length === 1) key = key.toUpperCase();
-    else if (/^F\d{1,2}$/i.test(key)) key = key.toUpperCase();
-
-    // Sin modificador no hay atajo global posible, salvo las F.
-    if (out.length === 0 && !/^F\d{1,2}$/i.test(key)) return null;
-    out.push(key);
-    return out.join("+");
+    return shortcutFromEvent(e);
   }
 
   /** Botones laterales: 3 = atrás (X1), 4 = adelante (X2). */
@@ -126,6 +120,7 @@
 
   $effect(() => {
     if (!capturing) return;
+    onCaptureStart?.();
     const onBlur = () => (capturing = false);
     // En captura, todo pasa por el window y en fase de captura: si no, el
     // atajo se lo come el control que tenga el foco.
@@ -141,6 +136,7 @@
       window.removeEventListener("mouseup", onMouse, true);
       window.removeEventListener("auxclick", onMouse, true);
       window.removeEventListener("blur", onBlur);
+      onCaptureEnd?.();
     };
   });
 

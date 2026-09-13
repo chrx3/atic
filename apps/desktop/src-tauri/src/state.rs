@@ -43,6 +43,9 @@ pub struct AppState {
     /// Atajos que el SO rechazó registrar (ya los tiene otra app). Un conflicto
     /// es silencioso para el usuario si solo se loguea: esto lo hace visible.
     pub shortcut_failures: Mutex<Vec<String>>,
+    /// Grupos de atajos repetidos entre comandos (claves de config). El SO
+    /// admite un registro por chord: el resto queda inactivo y la UI lo marca.
+    pub shortcut_shared: Mutex<Vec<Vec<String>>>,
 }
 
 /// Grabación actualmente en curso.

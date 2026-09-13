@@ -5,6 +5,8 @@ import {
   setConfig,
   failedShortcuts,
   onShortcutsFailed,
+  sharedShortcuts,
+  onShortcutsShared,
   secretsStatus,
 } from "$ipc/config";
 import { on } from "$ipc/events";
@@ -19,6 +21,9 @@ class ConfigStore implements DomainStore {
   /** Atajos globales que otra app ya tenía tomados. */
   conflicts = $state<string[]>([]);
 
+  /** Grupos de claves que comparten el mismo atajo. La UI los marca en rojo. */
+  shared = $state<string[][]>([]);
+
   /** El proveedor de resumen elegido no tiene clave, o no está corriendo. */
   summarySetupNeeded = $state(false);
 
@@ -31,11 +36,15 @@ class ConfigStore implements DomainStore {
     void failedShortcuts()
       .then((names) => (this.conflicts = names))
       .catch(() => {});
+    void sharedShortcuts()
+      .then((groups) => (this.shared = groups))
+      .catch(() => {});
   }
 
   async listen(): Promise<() => void> {
-    // Se emite en cada registro, también vacío, para poder limpiar el aviso.
+    // Se emiten en cada registro, también vacíos, para poder limpiar avisos.
     const unConflicts = await onShortcutsFailed((names) => (this.conflicts = names));
+    const unShared = await onShortcutsShared((groups) => (this.shared = groups));
     const unPractice = await on("onboarding-practice", () => {
       void this.hydrate().catch(() => {});
     });
@@ -46,6 +55,7 @@ class ConfigStore implements DomainStore {
     });
     return () => {
       unConflicts();
+      unShared();
       unPractice();
       unPillTools();
     };
