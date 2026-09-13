@@ -26,15 +26,21 @@ apps/desktop/  App Tauri 2: ventana principal + overlay (pill) + tray
 - Visual Studio Build Tools con el workload "Desktop development with C++"
 - **CMake** y **LLVM/libclang** — los necesita `whisper-rs` / whisper.cpp.
   Si `libclang.dll` no está en el PATH, exporta `LIBCLANG_PATH` a `…\LLVM\bin`.
-- **`CPATH` con las cabeceras de clang Y las de MSVC** si compilas fuera del
-  Developer PowerShell for VS. `libclang` **no** lee `INCLUDE`. El síntoma
-  engaña: `fatal error: 'stdio.h' file not found`, seguido de un
-  `attempt to compute 12_usize - 16_usize` en bindings de Linux que
-  `whisper-rs-sys` usa de reserva.
+- **Cabeceras para bindgen** si compilas fuera del Developer PowerShell for
+  VS. `libclang` **no** lee `INCLUDE`. El síntoma engaña: `fatal error:
+  'stdio.h' file not found`, seguido de un `attempt to compute 12_usize -
+  16_usize` en bindings de Linux que `whisper-rs-sys` usa de reserva.
 
-  Desde LLVM 19 hace falta el directorio de cabeceras propias de clang
-  (`lib\clang\<mayor>\include`). Sin él el error pasa a `'stdbool.h' file not
-  found`. Ajusta el número de versión al de tu instalación.
+  Para no exportar variables a mano, cargá el helper (detecta LLVM, MSVC y el
+  Windows SDK —incluidas las cabeceras propias de clang— y arma
+  `LIBCLANG_PATH` + `BINDGEN_EXTRA_CLANG_ARGS`):
+
+  ```powershell
+  . .\scripts\win-env.ps1
+  ```
+
+  `scripts/release-windows.ps1` ya lo carga solo. El equivalente manual con
+  `vcvars64.bat` y `CPATH` (ajustá `22` a tu versión de clang):
 
   ```powershell
   $vc = "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
@@ -45,10 +51,10 @@ apps/desktop/  App Tauri 2: ventana principal + overlay (pill) + tray
   ```
 
   Si ya hubo un intento fallido, cargo cachea los bindings malos. Borra el
-  directorio del build script:
+  directorio del build script (debug y/o release):
 
   ```powershell
-  Remove-Item -Recurse -Force target\debug\build\whisper-rs-sys-*
+  Remove-Item -Recurse -Force target\debug\build\whisper-rs-sys-*, target\release\build\whisper-rs-sys-*
   ```
 - Node.js 22+ y pnpm 10+
 - WebView2 (incluido en Windows 11)
