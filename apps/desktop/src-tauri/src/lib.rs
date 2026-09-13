@@ -548,6 +548,15 @@ pub fn run() {
             agents::watch_cursor::start(app.handle());
             agents::watch_opencode::start(app.handle());
 
+            // El primer OCR tarda mientras macOS prepara los modelos de Vision:
+            // se paga acá, en segundo plano, para que la primera captura no
+            // espere esos segundos en la cara del usuario.
+            #[cfg(target_os = "macos")]
+            std::thread::spawn(|| {
+                std::thread::sleep(std::time::Duration::from_secs(6));
+                crate::ocr::warm_up();
+            });
+
             // Preferencias de pin de floats (antes de crear el overlay).
             {
                 let state = app.state::<AppState>();

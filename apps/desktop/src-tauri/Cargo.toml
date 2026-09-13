@@ -114,6 +114,15 @@ core-graphics = "0.24"
 # Arrastre nativo (NSPasteboard/NSDraggingSession) para las salidas de Atic.
 drag = "2"
 objc2 = "0.6"
+# OCR de capturas con Vision (VNRecognizeTextRequest).
+objc2-foundation = { version = "0.3", default-features = false, features = [
+  "NSArray",
+  "NSData",
+  "NSDictionary",
+  "NSLocale",
+  "NSObject",
+  "NSString",
+] }
 # Monitores NSEvent para los botones laterales del mouse.
 objc2-app-kit = { version = "0.3", default-features = false, features = [
   "NSEvent",
