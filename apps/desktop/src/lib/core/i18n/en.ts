@@ -135,6 +135,7 @@ export const en = {
     dayYesterday: "Yesterday",
   },
   settings: {
+    loading: "Loading…",
     nav: {
       aria: "Settings sections",
       sectionAria: "Settings section",
