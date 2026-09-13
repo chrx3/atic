@@ -41,6 +41,10 @@ const LANZABLES: [&str; 4] = [".exe", ".com", ".cmd", ".bat"];
 /// Un nombre que ya trae separador se toma como ruta y no se busca: quien lo
 /// escribió sabía dónde estaba.
 pub fn resolve(program: &str) -> Option<PathBuf> {
+    #[cfg(target_os = "macos")]
+    if let Some(found) = preferred_standalone(program) {
+        return Some(found);
+    }
     resolve_with(
         program,
         &search_dirs(),
@@ -48,6 +52,22 @@ pub fn resolve(program: &str) -> Option<PathBuf> {
         SIN_EXTENSION_SIRVE,
         |p| p.is_file(),
     )
+}
+
+/// Instalación standalone que le gana al PATH.
+///
+/// OpenCode v2 se instala con el script oficial en `~/.opencode/bin` y puede
+/// convivir con el shim npm de v1 (Homebrew, nvm). Cuando están los dos, la
+/// standalone es la que Atic tiene que usar: v2 es la que el usuario eligió
+/// al instalar y trae su propio `opencode mcp add`.
+#[cfg(target_os = "macos")]
+fn preferred_standalone(program: &str) -> Option<PathBuf> {
+    if program != "opencode" {
+        return None;
+    }
+    let home = std::env::var_os("HOME").map(PathBuf::from)?;
+    let candidate = home.join(".opencode").join("bin").join("opencode");
+    candidate.is_file().then_some(candidate)
 }
 
 /// Dónde buscar: el PATH del proceso y, en Windows, el fresco del registro.
@@ -658,6 +678,13 @@ mod tests {
             texto.iter().any(|d| d.ends_with(".opencode/bin")),
             "{texto:?}"
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn la_standalone_solo_aplica_a_opencode() {
+        assert!(preferred_standalone("claude").is_none());
+        assert!(preferred_standalone("codex").is_none());
     }
 
     #[cfg(target_os = "macos")]

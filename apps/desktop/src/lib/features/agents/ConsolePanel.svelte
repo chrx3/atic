@@ -34,7 +34,7 @@
     sshConfigAliases,
     sshListHosts,
   } from "$ipc/agents";
-  import { AGENTS } from "./agentCatalog";
+  import { AGENTS, installCommand } from "./agentCatalog";
   import {
     agentDisplayName,
     canonicalAgentCli,
@@ -1241,7 +1241,7 @@
     addFromMenu({
       kind: "local",
       label: t("page.agents.installNamed", { name: agent.name }),
-      command: agent.install,
+      command: installCommand(agent),
     });
   }
 
