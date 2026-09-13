@@ -3,11 +3,18 @@
 # del updater en esta Mac. Requiere Xcode Command Line Tools, Rust (rustup),
 # Node/pnpm y, si vas a publicar, la CLI de GitHub (gh).
 #
-# No firma con el certificado de Apple Developer: el .app queda con la firma
-# ad-hoc que aplica Tauri por defecto. La primera vez que se abra en una Mac
-# (propia o de otra persona), Gatekeeper va a bloquearlo por no estar
-# notarizado — hay que hacer clic derecho > Abrir, o correr
-# `xattr -cr /Applications/Atic.app`.
+# No firma con el certificado de Apple Developer: el .app sale con firma
+# ad-hoc (APPLE_SIGNING_IDENTITY=-), que es lo mínimo para Apple Silicon. La
+# primera vez que se abra en una Mac (propia o de otra persona), Gatekeeper va
+# a bloquearlo por no estar notarizado — hay que hacer clic derecho > Abrir, o
+# correr `xattr -cr /Applications/Atic.app`.
+#
+# Si tenés una identidad real, exportá APPLE_SIGNING_IDENTITY antes de correr
+# el script y se usa esa en lugar de la ad-hoc.
+#
+# Nota: con CI=true (o sin permiso de Automatización) el DMG se arma sin el
+# AppleScript de Finder: mismos archivos, solo sin posición de iconos. En
+# terminales interactivas el script lo deja tal cual para conservar el layout.
 #
 # La clave de firma del updater es la MISMA que usa release-windows.ps1.
 # Copiala a esta Mac en:
@@ -56,6 +63,10 @@ export TAURI_SIGNING_PRIVATE_KEY
 TAURI_SIGNING_PRIVATE_KEY="$(cat "$key_path")"
 export TAURI_SIGNING_PRIVATE_KEY_PASSWORD
 TAURI_SIGNING_PRIVATE_KEY_PASSWORD="$(tr -d '\n' < "$pass_path")"
+
+# Firma ad-hoc si no hay identidad de Apple exportada: sin esto Tauri no firma
+# el bundle y en Apple Silicon Gatekeeper lo trata como app dañada.
+export APPLE_SIGNING_IDENTITY="${APPLE_SIGNING_IDENTITY:--}"
 
 rustup target add aarch64-apple-darwin x86_64-apple-darwin
 
