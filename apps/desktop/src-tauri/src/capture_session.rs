@@ -811,12 +811,18 @@ fn hide_overlay_if_visible(app: &AppHandle) {
     let Some(window) = app.get_webview_window(OVERLAY_LABEL) else {
         return;
     };
-    if !window.is_visible().unwrap_or(false) {
-        return;
-    }
     ensure_overlay_hidden(app);
-    // Un frame a DWM: si BitBlt corre ahora, congela el telón #111.
-    std::thread::sleep(std::time::Duration::from_millis(16));
+    // El compositor tarda un frame o dos en sacarla de pantalla. Antes solo se
+    // esperaba si `is_visible` daba true: cerrar la mira y disparar de nuevo
+    // enseguida (end_session ya la ocultó) congelaba la mira anterior —marco
+    // punteado y scrim— dentro de la captura.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(150);
+    while window.is_visible().unwrap_or(false) && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(8));
+    }
+    // Dos frames a 60 Hz, pase lo que pase: `hide()` puede haber flipado el
+    // estado antes de que el window server la saque de la pantalla.
+    std::thread::sleep(std::time::Duration::from_millis(34));
 }
 
 #[cfg(windows)]
