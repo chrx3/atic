@@ -31,6 +31,7 @@
  * corta al salir del botón —cruzar el hueco no puede cerrarlo—.
  */
 import { agentQuotas } from "$domain/agentQuotas.svelte";
+import { isSyntheticHovered } from "../syntheticHover";
 
 /** Caja del ancla en px CSS del viewport, copiada (el DOMRect vive poco). */
 export type QuotaAnchor = { x: number; y: number; w: number; h: number };
@@ -150,8 +151,12 @@ export function quotaHover(node: HTMLElement, fallback: string | null) {
     timer = window.setTimeout(() => {
       timer = 0;
       // El overlay es click-through fuera de la pill: a veces el leave no
-      // llega y este timer abriría el panel sobre el escritorio.
-      if (!node.isConnected || !node.matches(":hover")) return;
+      // llega y este timer abriría el panel sobre el escritorio. En Mac el
+      // `:hover` real no se actualiza con eventos sintéticos: alcanza con que
+      // la cadena sintética cubra el nodo.
+      if (!node.isConnected || !(node.matches(":hover") || isSyntheticHovered(node))) {
+        return;
+      }
       owner = node;
       const box = node.getBoundingClientRect();
       quotaHoverState.show(
