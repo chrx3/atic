@@ -143,7 +143,7 @@ fi
 
 node -e '
 const fs = require("fs");
-const [, , existingPath, outPath, ver, sig, url, pubDate] = process.argv;
+const [existingPath, outPath, ver, sig, url, pubDate] = process.argv.slice(1);
 let manifest = { version: ver, notes: `Atic v${ver}`, pub_date: pubDate, platforms: {} };
 if (existingPath && fs.existsSync(existingPath)) {
   try {
