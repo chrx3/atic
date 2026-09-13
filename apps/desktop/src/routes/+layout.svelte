@@ -7,6 +7,7 @@
   import ClipPreviewHost from "$surfaces/overlay/ClipPreviewHost.svelte";
   import { getConfig, onUiLanguage, onUiTheme } from "$ipc/config";
   import { applyUiLocale, t } from "$domain/i18n.svelte";
+  import { detectShortcutOs, setShortcutOs } from "$core/hotkeys";
   import {
     applyConfigTheme,
     applyTheme,
@@ -16,6 +17,13 @@
   import "../app.css";
 
   let { children } = $props();
+
+  // El SO no cambia en caliente y `$core` es TS puro: se lo inyectamos acá,
+  // antes de que cualquier componente muestre o capture un atajo. En Mac los
+  // símbolos son ⌘⌥⌃⇧; en Windows/Linux, nombres (Ctrl, Alt, Shift, Win).
+  if (typeof navigator !== "undefined") {
+    setShortcutOs(detectShortcutOs(navigator.userAgent));
+  }
 
   // Ventanas flotantes: sin chrome de app (fondo transparente).
   const isFloating = $derived(

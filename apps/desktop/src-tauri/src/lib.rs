@@ -140,6 +140,7 @@ pub fn run() {
         overlay_session: Mutex::new(None),
         pre_clipboard_position: Mutex::new(None),
         shortcut_failures: Mutex::new(Vec::new()),
+        shortcut_shared: Mutex::new(Vec::new()),
     };
 
     tauri::Builder::default()
@@ -172,6 +173,9 @@ pub fn run() {
             commands::set_pill_visible,
             commands::show_main_window,
             shortcuts::failed_shortcuts,
+            shortcuts::shared_shortcuts,
+            shortcuts::suspend_shortcuts,
+            shortcuts::resume_shortcuts,
             floating::resize_floating,
             overlay::overlay_rect,
             overlay::overlay_cursor,

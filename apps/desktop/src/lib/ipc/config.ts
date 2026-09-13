@@ -75,6 +75,25 @@ export const failedShortcuts = () => invoke<string[]>("failed_shortcuts");
 export const onShortcutsFailed = (cb: (names: string[]) => void): Promise<UnlistenFn> =>
   on("shortcuts-failed", cb);
 
+// --- Atajos repetidos entre comandos ---
+/** Grupos de claves de config cuyo atajo comparten dos o más comandos. */
+export const sharedShortcuts = () => invoke<string[][]>("shared_shortcuts");
+
+/** Se emite en cada registro, también vacío (permite limpiar las marcas). */
+export const onShortcutsShared = (
+  cb: (groups: string[][]) => void,
+): Promise<UnlistenFn> => on("shortcuts-shared", cb);
+
+// --- Captura de atajos (HotkeyCapture) ---
+/**
+ * Desregistra los globales mientras se captura uno nuevo: si no, apretar el
+ * atajo que se quiere asignar dispara la herramienta que ya lo tenía.
+ */
+export const suspendShortcuts = () => invoke<void>("suspend_shortcuts");
+
+/** Re-registra desde la config guardada al terminar (o cancelar) la captura. */
+export const resumeShortcuts = () => invoke<void>("resume_shortcuts");
+
 /** Claves de Groq: cuenta gratis, suficiente para dictar. */
 export const GROQ_KEYS_URL = "https://console.groq.com/keys";
 

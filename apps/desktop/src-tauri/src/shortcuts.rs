@@ -3,6 +3,7 @@
 //! Teclado: `tauri-plugin-global-shortcut`.
 //! Botones laterales del mouse: Raw Input (ver `mouse_bindings`).
 
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use tauri::{AppHandle, Emitter, Manager};
@@ -11,6 +12,10 @@ use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 use crate::mouse_bindings::{self, MouseAction, SideButton};
 use crate::{clipboard_history, dictation, launcher, state};
 use atic_core::MutexExt;
+
+/// La UI está capturando un atajo (Ajustes): los globales quedan desregistrados
+/// a propósito y ningún registro nuevo debe armarlos hasta terminar.
+static CAPTURING: AtomicBool = AtomicBool::new(false);
 
 /// Primer `Pressed` de un chord. El auto-repeat de Windows reenvía Pressed
 /// mientras se sostiene: sin esto, clipboard/launcher abren y se cierran solos.
@@ -48,6 +53,36 @@ fn binding_dup_key(b: &Binding) -> String {
         Binding::Mouse(SideButton::X1) => "mouse:x1".into(),
         Binding::Mouse(SideButton::X2) => "mouse:x2".into(),
     }
+}
+
+/// `None` si otro comando ya registra ese atajo. El SO admite un solo registro
+/// por chord: el repetido queda inactivo y la UI lo marca compartido.
+fn active<'a>(skipped: &HashSet<String>, key: &str, binding: &'a Binding) -> Option<&'a Binding> {
+    if skipped.contains(key) {
+        None
+    } else {
+        Some(binding)
+    }
+}
+
+/// Grupos de claves de config que comparten el mismo atajo. Los usa la UI para
+/// marcarlos en rojo; acá se registra solo el primero de cada grupo.
+fn shared_groups(named: &[(&str, &Binding)]) -> Vec<Vec<String>> {
+    let mut groups: Vec<Vec<String>> = Vec::new();
+    let mut group_of: HashMap<String, usize> = HashMap::new();
+    for (key, binding) in named {
+        match group_of.entry(binding_dup_key(binding)) {
+            std::collections::hash_map::Entry::Vacant(slot) => {
+                slot.insert(groups.len());
+                groups.push(vec![(*key).to_string()]);
+            }
+            std::collections::hash_map::Entry::Occupied(slot) => {
+                groups[*slot.get()].push((*key).to_string());
+            }
+        }
+    }
+    groups.retain(|group| group.len() > 1);
+    groups
 }
 
 fn dictation_listening(app: &AppHandle) -> bool {
@@ -119,6 +154,10 @@ pub struct ShortcutBindings<'a> {
 /// Esos fallos se acumulan en [`AppState::shortcut_failures`] y se emiten como
 /// `shortcuts-failed`, para que el usuario pueda reasignarlos: un atajo que el
 /// SO rechazó es indistinguible de uno roto si solo queda en el log.
+///
+/// Un atajo **repetido** entre comandos ya no aborta: se registra el primero y
+/// el resto se emite como `shortcuts-shared` para que la UI los marque. Así se
+/// puede mover un atajo de un comando a otro sin desasignar y reasignar.
 pub fn register_shortcuts(app: &AppHandle, bindings: ShortcutBindings<'_>) -> Result<(), String> {
     let en = crate::ui_lang::english();
     let n = |es, english| crate::ui_lang::pick(en, es, english);
@@ -147,38 +186,43 @@ pub fn register_shortcuts(app: &AppHandle, bindings: ShortcutBindings<'_>) -> Re
         bindings.window_flip,
     )?;
 
+    // Captura en curso: se valida igual (los parse de arriba ya rechazan un
+    // atajo inválido antes de persistir), pero el registro espera. Al terminar,
+    // la captura re-registra desde la config que ya quedó guardada.
+    if CAPTURING.load(Ordering::SeqCst) {
+        tracing::debug!("captura de atajo en curso: registro postergado");
+        return Ok(());
+    }
+
+    // Claves de config por binding. La UI marca las filas con esto: los nombres
+    // visibles dependen del idioma y no cruzan bien la frontera.
     let mut named: Vec<(&str, &Binding)> = vec![
-        (n("grabación", "recording"), &recording),
-        (n("dictado", "dictation"), &dictation),
-        (n("traer pill", "bring pill"), &summon),
-        (n("rueda de la pill", "pill wheel"), &radial),
-        ("clipboard", &clipboard),
-        (n("fragmentos", "snippets"), &snippets),
-        (n("captura", "capture"), &screenshot),
-        (n("pizarra", "board"), &board),
-        ("color", &color),
-        ("launcher", &launcher_bind),
-        (n("voltear ventana", "flip window"), &window_flip),
+        ("global_shortcut", &recording),
+        ("dictation_shortcut", &dictation),
+        ("summon_pill_shortcut", &summon),
+        ("pill_radial_shortcut", &radial),
+        ("clipboard_shortcut", &clipboard),
+        ("snippets_shortcut", &snippets),
+        ("screenshot_shortcut", &screenshot),
+        ("board_shortcut", &board),
+        ("color_shortcut", &color),
+        ("launcher_shortcut", &launcher_bind),
+        ("window_flip_shortcut", &window_flip),
     ];
     if let Some(ref agents) = agents {
-        named.push((n("agentes", "agents"), agents));
+        named.push(("agents_shortcut", agents));
     }
-    for i in 0..named.len() {
-        for j in (i + 1)..named.len() {
-            if binding_dup_key(named[i].1) == binding_dup_key(named[j].1) {
-                return Err(crate::ui_lang::msg(
-                    &format!(
-                        "Los atajos de {} y {} no pueden coincidir.",
-                        named[i].0, named[j].0
-                    ),
-                    &format!(
-                        "The {} and {} shortcuts cannot be the same.",
-                        named[i].0, named[j].0
-                    ),
-                ));
-            }
-        }
-    }
+
+    // Un atajo repetido no aborta el guardado: se registra el primero y el
+    // resto se marca compartido en la UI. Rechazarlo obligaba a desasignar y
+    // reasignar para poder mover un atajo entre comandos: dos pasos de más.
+    let shared = shared_groups(&named);
+    // El primero de cada grupo queda activo. Al resto ni se intenta registrar:
+    // el SO rechaza el segundo registro del mismo chord y no hay acción doble.
+    let skipped: HashSet<String> = shared
+        .iter()
+        .flat_map(|group| group.iter().skip(1).cloned())
+        .collect();
 
     let gs = app.global_shortcut();
     if let Err(err) = gs.unregister_all() {
@@ -188,8 +232,8 @@ pub fn register_shortcuts(app: &AppHandle, bindings: ShortcutBindings<'_>) -> Re
     let mut mouse: Vec<(SideButton, MouseAction)> = Vec::new();
     let mut failed: Vec<String> = Vec::new();
 
-    match &recording {
-        Binding::Key(sc) => {
+    match active(&skipped, "global_shortcut", &recording) {
+        Some(Binding::Key(sc)) => {
             let handle = app.clone();
             let held = AtomicBool::new(false);
             if let Err(err) = gs.on_shortcut(*sc, move |_app, _sc, event| {
@@ -201,11 +245,12 @@ pub fn register_shortcuts(app: &AppHandle, bindings: ShortcutBindings<'_>) -> Re
                 failed.push("grabación".to_string());
             }
         }
-        Binding::Mouse(btn) => mouse.push((*btn, MouseAction::Recording)),
+        Some(Binding::Mouse(btn)) => mouse.push((*btn, MouseAction::Recording)),
+        None => {}
     }
 
-    match &dictation {
-        Binding::Key(sc) => {
+    match active(&skipped, "dictation_shortcut", &dictation) {
+        Some(Binding::Key(sc)) => {
             let handle = app.clone();
             let held = AtomicBool::new(false);
             if let Err(err) = gs.on_shortcut(*sc, move |app, _sc, event| {
@@ -238,11 +283,12 @@ pub fn register_shortcuts(app: &AppHandle, bindings: ShortcutBindings<'_>) -> Re
                 failed.push("dictado".to_string());
             }
         }
-        Binding::Mouse(btn) => mouse.push((*btn, MouseAction::Dictation)),
+        Some(Binding::Mouse(btn)) => mouse.push((*btn, MouseAction::Dictation)),
+        None => {}
     }
 
-    match &summon {
-        Binding::Key(sc) => {
+    match active(&skipped, "summon_pill_shortcut", &summon) {
+        Some(Binding::Key(sc)) => {
             let handle = app.clone();
             let held = AtomicBool::new(false);
             if let Err(err) = gs.on_shortcut(*sc, move |_app, _sc, event| {
@@ -254,11 +300,12 @@ pub fn register_shortcuts(app: &AppHandle, bindings: ShortcutBindings<'_>) -> Re
                 failed.push("traer pill".to_string());
             }
         }
-        Binding::Mouse(btn) => mouse.push((*btn, MouseAction::SummonPill)),
+        Some(Binding::Mouse(btn)) => mouse.push((*btn, MouseAction::SummonPill)),
+        None => {}
     }
 
-    match &radial {
-        Binding::Key(sc) => {
+    match active(&skipped, "pill_radial_shortcut", &radial) {
+        Some(Binding::Key(sc)) => {
             let handle = app.clone();
             // Mantener-para-abrir: Pressed abre, Released activa y cierra. El
             // auto-repeat del SO reenvía Pressed mientras se sostiene, pero el
@@ -297,13 +344,14 @@ pub fn register_shortcuts(app: &AppHandle, bindings: ShortcutBindings<'_>) -> Re
                 failed.push("rueda de herramientas".to_string());
             }
         }
-        Binding::Mouse(_) => {
+        Some(Binding::Mouse(_)) => {
             tracing::warn!("la rueda de la pill solo admite atajo de teclado");
         }
+        None => {}
     }
 
-    match &clipboard {
-        Binding::Key(sc) => {
+    match active(&skipped, "clipboard_shortcut", &clipboard) {
+        Some(Binding::Key(sc)) => {
             let handle = app.clone();
             let held = AtomicBool::new(false);
             if let Err(err) = gs.on_shortcut(*sc, move |_app, _sc, event| {
@@ -316,11 +364,12 @@ pub fn register_shortcuts(app: &AppHandle, bindings: ShortcutBindings<'_>) -> Re
                 failed.push("clipboard".to_string());
             }
         }
-        Binding::Mouse(btn) => mouse.push((*btn, MouseAction::Clipboard)),
+        Some(Binding::Mouse(btn)) => mouse.push((*btn, MouseAction::Clipboard)),
+        None => {}
     }
 
-    match &snippets {
-        Binding::Key(sc) => {
+    match active(&skipped, "snippets_shortcut", &snippets) {
+        Some(Binding::Key(sc)) => {
             let handle = app.clone();
             let held = AtomicBool::new(false);
             if let Err(err) = gs.on_shortcut(*sc, move |_app, _sc, event| {
@@ -333,12 +382,13 @@ pub fn register_shortcuts(app: &AppHandle, bindings: ShortcutBindings<'_>) -> Re
                 failed.push("fragmentos".to_string());
             }
         }
-        Binding::Mouse(btn) => mouse.push((*btn, MouseAction::Snippets)),
+        Some(Binding::Mouse(btn)) => mouse.push((*btn, MouseAction::Snippets)),
+        None => {}
     }
 
     if let Some(agents) = &agents {
-        match agents {
-            Binding::Key(sc) => {
+        match active(&skipped, "agents_shortcut", agents) {
+            Some(Binding::Key(sc)) => {
                 let handle = app.clone();
                 let held = AtomicBool::new(false);
                 if let Err(err) = gs.on_shortcut(*sc, move |_app, _sc, event| {
@@ -350,14 +400,15 @@ pub fn register_shortcuts(app: &AppHandle, bindings: ShortcutBindings<'_>) -> Re
                     failed.push("agentes".to_string());
                 }
             }
-            Binding::Mouse(_) => {
+            Some(Binding::Mouse(_)) => {
                 tracing::warn!("la consola de agentes solo admite atajo de teclado");
             }
+            None => {}
         }
     }
 
-    match &screenshot {
-        Binding::Key(sc) => {
+    match active(&skipped, "screenshot_shortcut", &screenshot) {
+        Some(Binding::Key(sc)) => {
             let handle = app.clone();
             let held = AtomicBool::new(false);
             if let Err(err) = gs.on_shortcut(*sc, move |_app, _sc, event| {
@@ -371,11 +422,12 @@ pub fn register_shortcuts(app: &AppHandle, bindings: ShortcutBindings<'_>) -> Re
                 failed.push("captura".to_string());
             }
         }
-        Binding::Mouse(btn) => mouse.push((*btn, MouseAction::Screenshot)),
+        Some(Binding::Mouse(btn)) => mouse.push((*btn, MouseAction::Screenshot)),
+        None => {}
     }
 
-    match &board {
-        Binding::Key(sc) => {
+    match active(&skipped, "board_shortcut", &board) {
+        Some(Binding::Key(sc)) => {
             let handle = app.clone();
             let held = AtomicBool::new(false);
             if let Err(err) = gs.on_shortcut(*sc, move |_app, _sc, event| {
@@ -389,13 +441,14 @@ pub fn register_shortcuts(app: &AppHandle, bindings: ShortcutBindings<'_>) -> Re
                 failed.push("pizarra".to_string());
             }
         }
-        Binding::Mouse(_) => {
+        Some(Binding::Mouse(_)) => {
             tracing::warn!("la pizarra solo admite atajo de teclado");
         }
+        None => {}
     }
 
-    match &color {
-        Binding::Key(sc) => {
+    match active(&skipped, "color_shortcut", &color) {
+        Some(Binding::Key(sc)) => {
             let handle = app.clone();
             let held = AtomicBool::new(false);
             if let Err(err) = gs.on_shortcut(*sc, move |_app, _sc, event| {
@@ -409,13 +462,14 @@ pub fn register_shortcuts(app: &AppHandle, bindings: ShortcutBindings<'_>) -> Re
                 failed.push("color".to_string());
             }
         }
-        Binding::Mouse(_) => {
+        Some(Binding::Mouse(_)) => {
             tracing::warn!("el cuentagotas solo admite atajo de teclado");
         }
+        None => {}
     }
 
-    match &launcher_bind {
-        Binding::Key(sc) => {
+    match active(&skipped, "launcher_shortcut", &launcher_bind) {
+        Some(Binding::Key(sc)) => {
             let handle = app.clone();
             let held = AtomicBool::new(false);
             if let Err(err) = gs.on_shortcut(*sc, move |_app, _sc, event| {
@@ -427,13 +481,14 @@ pub fn register_shortcuts(app: &AppHandle, bindings: ShortcutBindings<'_>) -> Re
                 failed.push("launcher".to_string());
             }
         }
-        Binding::Mouse(_) => {
+        Some(Binding::Mouse(_)) => {
             tracing::warn!("el launcher solo admite atajo de teclado");
         }
+        None => {}
     }
 
-    match &window_flip {
-        Binding::Key(sc) => {
+    match active(&skipped, "window_flip_shortcut", &window_flip) {
+        Some(Binding::Key(sc)) => {
             let handle = app.clone();
             let held = AtomicBool::new(false);
             if let Err(err) = gs.on_shortcut(*sc, move |_app, _sc, event| {
@@ -445,19 +500,22 @@ pub fn register_shortcuts(app: &AppHandle, bindings: ShortcutBindings<'_>) -> Re
                 failed.push("voltear ventana".to_string());
             }
         }
-        Binding::Mouse(_) => {
+        Some(Binding::Mouse(_)) => {
             tracing::warn!("voltear ventana solo admite atajo de teclado");
         }
+        None => {}
     }
 
     mouse_bindings::set_bindings(app, mouse);
 
     if let Some(app_state) = app.try_state::<state::AppState>() {
         *app_state.shortcut_failures.lock_or_recover() = failed.clone();
+        *app_state.shortcut_shared.lock_or_recover() = shared.clone();
     }
     // Siempre se emite, también vacío: así la UI puede limpiar un aviso previo
     // cuando el usuario reasigna el atajo en conflicto.
     let _ = app.emit("shortcuts-failed", failed);
+    let _ = app.emit("shortcuts-shared", shared);
 
     Ok(())
 }
@@ -466,6 +524,60 @@ pub fn register_shortcuts(app: &AppHandle, bindings: ShortcutBindings<'_>) -> Re
 #[tauri::command]
 pub fn failed_shortcuts(state: tauri::State<state::AppState>) -> Vec<String> {
     state.shortcut_failures.lock_or_recover().clone()
+}
+
+/// Grupos de claves de config cuyo atajo comparten dos o más comandos.
+#[tauri::command]
+pub fn shared_shortcuts(state: tauri::State<state::AppState>) -> Vec<Vec<String>> {
+    state.shortcut_shared.lock_or_recover().clone()
+}
+
+/// Desregistra todos los globales mientras la UI captura un atajo nuevo.
+///
+/// Sin esto, apretar el atajo deseado dispara la herramienta que ya lo tenía:
+/// el registro en el SO no distingue «estoy configurando» de «quiero usarlo».
+#[tauri::command]
+pub fn suspend_shortcuts(app: AppHandle) {
+    CAPTURING.store(true, Ordering::SeqCst);
+    if let Err(err) = app.global_shortcut().unregister_all() {
+        tracing::debug!(%err, "unregister_all al capturar (puede estar vacío)");
+    }
+    // Los laterales del mouse se observan siempre: vaciar los bindings evita
+    // que el mismo pulsado capture y además dispare la acción ya asignada.
+    mouse_bindings::set_bindings(&app, Vec::new());
+}
+
+/// Re-registra los globales al terminar la captura. La config pudo cambiar
+/// mientras se capturaba, así que se relee en vez de reusar bindings.
+#[tauri::command]
+pub fn resume_shortcuts(app: AppHandle) -> Result<(), String> {
+    CAPTURING.store(false, Ordering::SeqCst);
+    reregister_from_config(&app)
+}
+
+/// Registra todos los globales con la config vigente.
+pub fn reregister_from_config(app: &AppHandle) -> Result<(), String> {
+    let Some(state) = app.try_state::<state::AppState>() else {
+        return Ok(());
+    };
+    let cfg = state.config.lock_or_recover().clone();
+    register_shortcuts(
+        app,
+        ShortcutBindings {
+            recording: &cfg.global_shortcut,
+            dictation: &cfg.dictation_shortcut,
+            summon_pill: &cfg.summon_pill_shortcut,
+            pill_radial: &cfg.pill_radial_shortcut,
+            clipboard: &cfg.clipboard_shortcut,
+            snippets: &cfg.snippets_shortcut,
+            agents: &cfg.agents_shortcut,
+            screenshot: &cfg.screenshot_shortcut,
+            board: &cfg.board_shortcut,
+            color: &cfg.color_shortcut,
+            launcher: &cfg.launcher_shortcut,
+            window_flip: &cfg.window_flip_shortcut,
+        },
+    )
 }
 
 #[cfg(test)]
@@ -480,5 +592,43 @@ mod tests {
         assert!(!take_key_press(&held, ShortcutState::Pressed));
         assert!(!take_key_press(&held, ShortcutState::Released));
         assert!(take_key_press(&held, ShortcutState::Pressed));
+    }
+
+    #[test]
+    fn shared_groups_junta_solo_los_repetidos() {
+        let alt_q: Binding = Binding::Key("Alt+Q".parse().unwrap());
+        let alt_q_again: Binding = Binding::Key("Alt+Q".parse().unwrap());
+        let alt_z: Binding = Binding::Key("Alt+Z".parse().unwrap());
+        let named = vec![
+            ("dictation_shortcut", &alt_q),
+            ("clipboard_shortcut", &alt_z),
+            ("snippets_shortcut", &alt_q_again),
+        ];
+        assert_eq!(
+            shared_groups(&named),
+            vec![vec![
+                "dictation_shortcut".to_string(),
+                "snippets_shortcut".to_string()
+            ]]
+        );
+    }
+
+    #[test]
+    fn shared_groups_tambien_mira_los_botones_del_mouse() {
+        let key: Binding = Binding::Key("Alt+Z".parse().unwrap());
+        let x1: Binding = Binding::Mouse(SideButton::X1);
+        let x1_again: Binding = Binding::Mouse(SideButton::X1);
+        let named = vec![
+            ("dictation_shortcut", &x1),
+            ("clipboard_shortcut", &key),
+            ("snippets_shortcut", &x1_again),
+        ];
+        assert_eq!(
+            shared_groups(&named),
+            vec![vec![
+                "dictation_shortcut".to_string(),
+                "snippets_shortcut".to_string()
+            ]]
+        );
     }
 }

@@ -1,4 +1,5 @@
 import { parseLocale, translate, type Locale } from "./i18n/translate";
+import { formatShortcutText } from "./hotkeys";
 import type { RecordingStatus } from "./types";
 
 let locale: Locale = "es";
@@ -62,14 +63,12 @@ export function formatListWhen(epochSecs: number): string {
   }).format(value);
 }
 
-/** Atajo legible para texto corrido: `CmdOrCtrl+Shift+P` → `Ctrl + Shift + P`. */
+/**
+ * Atajo legible para texto corrido: `CmdOrCtrl+Shift+P` → `Ctrl + Shift + P`,
+ * o `⌘ + ⇧ + P` en Mac. El SO lo inyecta el layout al arrancar la ventana.
+ */
 export function formatShortcut(raw: string): string {
-  return raw
-    .replace(/CmdOrCtrl/gi, "Ctrl")
-    .split("+")
-    .map((part) => part.trim())
-    .filter(Boolean)
-    .join(" + ");
+  return formatShortcutText(raw);
 }
 
 export function formatMegabytes(bytes: number): string {
