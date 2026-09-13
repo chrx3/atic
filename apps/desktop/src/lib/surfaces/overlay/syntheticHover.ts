@@ -85,6 +85,17 @@ function markChain(next: Element[]): void {
   marked = next.slice();
 }
 
+/**
+ * ¿La cadena de hover sintético cubre este elemento (o un ancestro)?
+ *
+ * Los eventos sintéticos no actualizan el `:hover` del motor, así que quien
+ * espere `matches(":hover")` en Mac no lo ve la primera vez. La cadena se
+ * limpia sola cuando el overlay se desarma o el puntero se va.
+ */
+export function isSyntheticHovered(el: Element): boolean {
+  return el.closest(`[${HOVER_ATTR}]`) !== null;
+}
+
 function unmarkAll(): void {
   for (const el of marked) el.removeAttribute(HOVER_ATTR);
   marked = [];
