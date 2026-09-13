@@ -899,6 +899,15 @@
     cursor: inherit;
     box-sizing: border-box;
 
+    /*
+     * Capa propia y estable. El blur inline (`spot.blur`) cambia cuadro a
+     * cuadro mientras las tarjetas se mueven, y sin promover la capa WKWebView
+     * dejaba costuras de 1 px con color en el borde al recomponer (se veían
+     * como líneas moradas durante la entrada y se iban al asentarse).
+     */
+    will-change: filter;
+    transform: translateZ(0);
+
     /* Igual que .drop: geometría por JS; no pelear con transition de layout. */
   }
 
