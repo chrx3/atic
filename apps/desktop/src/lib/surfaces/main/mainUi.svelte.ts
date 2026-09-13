@@ -31,6 +31,8 @@ export class MainUi {
   /** Modal de Ajustes generales (SettingsPanel). */
   settingsOpen = $state(false);
   settingsSection = $state<SettingsSectionId>("general");
+  /** Pantalla de permisos de macOS: arranque y acceso desde Ajustes. */
+  permissionsOpen = $state(false);
   /** Remonta el tutorial si ya estaba a mitad. */
   onboardingReplay = $state(0);
   /**
@@ -76,6 +78,14 @@ export class MainUi {
 
   closeSettings(): void {
     this.settingsOpen = false;
+  }
+
+  openPermissions(): void {
+    this.permissionsOpen = true;
+  }
+
+  closePermissions(): void {
+    this.permissionsOpen = false;
   }
 
   /** Vuelve a mostrar el tutorial de primer uso, desde el principio. */

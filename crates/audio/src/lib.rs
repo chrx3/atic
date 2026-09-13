@@ -11,7 +11,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender, TryRecvError};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -876,6 +876,42 @@ impl CaptureHandle {
     }
 }
 
+/// Hilo que vuelca una pista a WAV hasta que se le pida cerrar.
+///
+/// El cierre va por canal propio y no por la caída del `Sender` de audio: en
+/// CoreAudio el callback del stream puede sobrevivir al `drop` del stream, el
+/// writer quedaría esperando en `recv()` para siempre y `CaptureHandle::stop`
+/// no volvería (la pill se quedaba en «Transcribiendo…»).
+struct TrackWriter {
+    done: Sender<()>,
+    join: JoinHandle<Result<u64, AudioError>>,
+}
+
+impl TrackWriter {
+    /// Pide el cierre, drena lo pendiente y espera al hilo. Devuelve `true`
+    /// solo si el WAV quedó finalizado.
+    fn finish(self) -> bool {
+        let _ = self.done.send(());
+        matches!(self.join.join(), Ok(Ok(_)))
+    }
+}
+
+/// Próximo buffer de una pista. `None` = hay que cerrar (señal de `done` o
+/// canal de audio cortado).
+fn next_buffer(rx: &Receiver<Vec<f32>>, done: &Receiver<()>) -> Option<Vec<f32>> {
+    loop {
+        match done.try_recv() {
+            Ok(()) | Err(TryRecvError::Disconnected) => return None,
+            Err(TryRecvError::Empty) => {}
+        }
+        match rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(buf) => return Some(buf),
+            Err(RecvTimeoutError::Timeout) => continue,
+            Err(RecvTimeoutError::Disconnected) => return None,
+        }
+    }
+}
+
 /// Punto de entrada para iniciar una sesión de captura.
 pub struct CaptureSession;
 
@@ -1028,14 +1064,8 @@ fn control_loop(
     drop(mic_stream);
     drop(sys_stream);
 
-    let mic_written = match mic_writer {
-        Some(writer) => matches!(writer.join(), Ok(Ok(_))),
-        None => false,
-    };
-    let system_written = match sys_writer {
-        Some(writer) => matches!(writer.join(), Ok(Ok(_))),
-        None => false,
-    };
+    let mic_written = mic_writer.map(TrackWriter::finish).unwrap_or(false);
+    let system_written = sys_writer.map(TrackWriter::finish).unwrap_or(false);
 
     CaptureSummary {
         duration_secs,
@@ -1082,7 +1112,7 @@ fn start_mic_stream(
     noise_suppression: &str,
     mic_device_id: &str,
     stt_tap: Option<SyncSender<AudioTapChunk>>,
-) -> Result<(cpal::Stream, JoinHandle<Result<u64, AudioError>>), AudioError> {
+) -> Result<(cpal::Stream, TrackWriter), AudioError> {
     let device = resolve_input_device(host, mic_device_id)?;
     let supported = resolve_input_config(&device)?;
     if let Ok(name) = device.name() {
@@ -1126,7 +1156,7 @@ fn try_start_system_stream(
     output_device_id: &str,
     stt_tap: Option<SyncSender<AudioTapChunk>>,
     english: bool,
-) -> Result<(SystemStream, JoinHandle<Result<u64, AudioError>>), AudioError> {
+) -> Result<(SystemStream, TrackWriter), AudioError> {
     #[cfg(target_os = "macos")]
     {
         let _ = (host, output_device_id);
@@ -1162,19 +1192,27 @@ fn try_start_system_stream(
 }
 
 /// Hilo escritor: recibe buffers de f32 y los vuelca a un WAV, finalizándolo
-/// cuando el canal se cierra.
+/// cuando se le pide cerrar (o cuando el canal de audio se corta).
 fn spawn_writer(
     path: PathBuf,
     spec: hound::WavSpec,
     rx: Receiver<Vec<f32>>,
-) -> JoinHandle<Result<u64, AudioError>> {
-    thread::spawn(move || {
+) -> TrackWriter {
+    let (done_tx, done) = mpsc::channel::<()>();
+    let join = thread::spawn(move || {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
         let mut writer = hound::WavWriter::create(&path, spec)?;
         let mut written: u64 = 0;
-        while let Ok(buf) = rx.recv() {
+        while let Some(buf) = next_buffer(&rx, &done) {
+            for sample in buf {
+                writer.write_sample(sample)?;
+                written += 1;
+            }
+        }
+        // Lo que quedó encolado antes del cierre no se pierde.
+        while let Ok(buf) = rx.try_recv() {
             for sample in buf {
                 writer.write_sample(sample)?;
                 written += 1;
@@ -1182,7 +1220,8 @@ fn spawn_writer(
         }
         writer.finalize()?;
         Ok(written)
-    })
+    });
+    TrackWriter { done: done_tx, join }
 }
 
 /// Escritor de micrófono con high-pass + gate + RNNoise (solo esta pista).
@@ -1190,14 +1229,22 @@ fn spawn_mic_noise_writer(
     path: PathBuf,
     mut proc: MicNoiseProcessor,
     rx: Receiver<Vec<f32>>,
-) -> JoinHandle<Result<u64, AudioError>> {
-    thread::spawn(move || {
+) -> TrackWriter {
+    let (done_tx, done) = mpsc::channel::<()>();
+    let join = thread::spawn(move || {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
         let mut writer = hound::WavWriter::create(&path, proc.out_spec())?;
         let mut written: u64 = 0;
-        while let Ok(buf) = rx.recv() {
+        while let Some(buf) = next_buffer(&rx, &done) {
+            for sample in proc.process(&buf) {
+                writer.write_sample(sample)?;
+                written += 1;
+            }
+        }
+        // Lo que quedó encolado antes del cierre no se pierde.
+        while let Ok(buf) = rx.try_recv() {
             for sample in proc.process(&buf) {
                 writer.write_sample(sample)?;
                 written += 1;
@@ -1209,7 +1256,8 @@ fn spawn_mic_noise_writer(
         }
         writer.finalize()?;
         Ok(written)
-    })
+    });
+    TrackWriter { done: done_tx, join }
 }
 
 fn wav_spec(cfg: &cpal::SupportedStreamConfig) -> hound::WavSpec {
@@ -1492,5 +1540,35 @@ mod tests {
         assert!(!looks_like_bluetooth("USB Headset (Jabra Evolve2)"));
         assert!(looks_like_headset("USB Headset (Jabra Evolve2)"));
         assert!(looks_like_bluetooth("AirPods Hands-Free AG Audio"));
+    }
+
+    /// Regresión: `CaptureHandle::stop` se quedaba colgado en `writer.join()`
+    /// cuando el stream (CoreAudio) no soltaba su `Sender` al dropearse: la
+    /// pill quedaba en «Transcribiendo…» para siempre.
+    #[test]
+    fn writer_cierra_con_el_canal_de_audio_abierto() {
+        let dir = std::env::temp_dir().join(format!("atic-audio-writer-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("mic.wav");
+        let (tx, rx) = mpsc::channel::<Vec<f32>>();
+        let writer = spawn_writer(
+            path.clone(),
+            hound::WavSpec {
+                channels: 1,
+                sample_rate: 48_000,
+                bits_per_sample: 32,
+                sample_format: hound::SampleFormat::Float,
+            },
+            rx,
+        );
+
+        tx.send(vec![0.5; 480]).unwrap();
+        assert!(writer.finish(), "el WAV debe finalizar sin cerrar el canal");
+
+        // El Sender sigue vivo a propósito: es el caso que colgaba.
+        drop(tx);
+        let reader = hound::WavReader::open(&path).unwrap();
+        assert_eq!(reader.duration(), 480);
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

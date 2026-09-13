@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Entitlements para el Hardened Runtime de macOS (Tauri lo activa por defecto
+  al firmar).
+
+  Sin `com.apple.security.device.audio-input`, una app con hardened runtime
+  puede abrir el micrófono pero el sistema le entrega silencio: el dictado y
+  las grabaciones salían vacíos (Whisper transcribía «Gracias.»).
+-->
+<plist version="1.0">
+<dict>
+	<key>com.apple.security.device.audio-input</key>
+	<true/>
+</dict>
+</plist>

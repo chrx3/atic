@@ -13,6 +13,8 @@ apps/desktop/.svelte-kit
 
 # Tauri (generado)
 apps/desktop/src-tauri/gen
+# Firma local de macOS: cada máquina pone su identidad (ver docs/MACOS.md)
+apps/desktop/src-tauri/tauri.macos.conf.json
 # Sidecar MCP compilado (lo pone `pnpm mcp:build`)
 apps/desktop/src-tauri/binaries/
 
