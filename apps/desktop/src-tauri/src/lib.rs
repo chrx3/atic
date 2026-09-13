@@ -103,6 +103,10 @@ pub fn run() {
         run_color_picker_smoke();
         return;
     }
+    // macOS: una app abierta desde Finder hereda el PATH mínimo del sistema y
+    // no encuentra los CLIs de los agentes. Se arma antes de que existan hilos
+    // y lo heredan la consola, las sesiones ACP y el discovery.
+    agents::exe::ensure_user_path_on_process();
     // Antes que nada: si algo de acá en adelante panica, queremos leerlo.
     // `AppDirs::new()` se llama otra vez más abajo, en el setup; es idempotente
     // —crea directorios y ya— y este orden es el que permite que un fallo del

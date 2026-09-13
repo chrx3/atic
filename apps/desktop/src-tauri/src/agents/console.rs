@@ -85,6 +85,30 @@ fn pty_size(cols: Option<u16>, rows: Option<u16>) -> PtySize {
     }
 }
 
+/// La shell del usuario.
+///
+/// Una app abierta desde Finder no hereda `SHELL`; el fallback histórico a
+/// `/bin/bash` abría una shell sin el perfil del usuario en macOS, donde el
+/// default del sistema es zsh. `SHELL` solo se usa si el archivo existe: una
+/// variable apuntando a una shell desinstalada rompía el arranque del PTY.
+#[cfg(not(windows))]
+fn user_shell() -> PathBuf {
+    if let Some(shell) = std::env::var_os("SHELL")
+        .map(PathBuf::from)
+        .filter(|shell| shell.is_file())
+    {
+        return shell;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let zsh = PathBuf::from("/bin/zsh");
+        if zsh.is_file() {
+            return zsh;
+        }
+    }
+    PathBuf::from("/bin/bash")
+}
+
 fn resolve_local_shell() -> CommandBuilder {
     #[cfg(windows)]
     {
@@ -99,8 +123,7 @@ fn resolve_local_shell() -> CommandBuilder {
     }
     #[cfg(not(windows))]
     {
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".into());
-        CommandBuilder::new(shell)
+        CommandBuilder::new(user_shell())
     }
 }
 
@@ -153,8 +176,9 @@ fn apply_clean_script_env(cmd: &mut CommandBuilder) {
     }
 }
 
-/// El hijo ve el PATH fresco (proceso + registro): un CLI recién instalado
-/// resuelve en una consola nueva sin reiniciar Atic.
+/// El hijo ve el PATH fresco (proceso + registro en Windows, proceso +
+/// carpetas de usuario en macOS): un CLI recién instalado resuelve en una
+/// consola nueva sin reiniciar Atic.
 ///
 /// Delante va la carpeta de los comandos Unix, que Atic trae consigo: es lo
 /// que hace que `ls` funcione en una consola de Windows sin que el usuario
@@ -169,29 +193,26 @@ fn apply_fresh_path(cmd: &mut CommandBuilder, dir_datos: Option<&std::path::Path
             None
         }
     });
-    let Some(base) = super::exe::merged_path_var() else {
-        // Sin PATH que fusionar no se toca el heredado; pero si hay comandos
-        // Unix, se antepone igual al que el hijo vaya a heredar.
-        if let Some(unix) = unix {
-            if let Some(actual) = std::env::var_os("PATH") {
-                let mut valor = std::ffi::OsString::from(unix);
-                valor.push(";");
-                valor.push(actual);
-                cmd.env("PATH", valor);
-            }
-        }
+    // `join_paths` arma el separador del sistema. Armarlo a mano con `;` dejaba
+    // el PATH roto en macOS (`a;b:c` es una sola ruta inexistente) y la consola
+    // no resolvía ni un comando.
+    let base = super::exe::merged_path_var().or_else(|| std::env::var_os("PATH"));
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    if let Some(unix) = unix {
+        dirs.push(unix);
+    }
+    if let Some(base) = base {
+        dirs.extend(std::env::split_paths(&base));
+    }
+    if dirs.is_empty() {
         return;
-    };
-    let valor = match unix {
-        Some(unix) => {
-            let mut v = std::ffi::OsString::from(unix);
-            v.push(";");
-            v.push(&base);
-            v
+    }
+    match std::env::join_paths(dirs) {
+        Ok(valor) => {
+            cmd.env("PATH", valor);
         }
-        None => base,
-    };
-    cmd.env("PATH", valor);
+        Err(e) => tracing::warn!(error = %e, "no se pudo armar el PATH de la consola"),
+    }
 }
 
 /// El `cmd.exe` de Windows, por ruta absoluta.
@@ -291,8 +312,7 @@ fn build_shell_line(line: &str) -> CommandBuilder {
     }
     #[cfg(not(windows))]
     {
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".into());
-        let mut cmd = CommandBuilder::new(shell);
+        let mut cmd = CommandBuilder::new(user_shell());
         cmd.arg("-ic");
         cmd.arg(line);
         cmd
@@ -753,5 +773,15 @@ mod tests {
             "{}",
             ruta.display()
         );
+    }
+
+    /// La ruta elegida tiene que existir: spawnear un path inexistente rompe
+    /// el PTY, y en macOS el fallback es zsh, no bash.
+    #[cfg(not(windows))]
+    #[test]
+    fn la_shell_del_usuario_existe() {
+        let shell = user_shell();
+        assert!(shell.is_file(), "{}", shell.display());
+        assert!(shell.is_absolute(), "{}", shell.display());
     }
 }
