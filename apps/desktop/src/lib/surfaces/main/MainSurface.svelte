@@ -6,7 +6,7 @@
    * ajustes viven en el workspace, encima del picker y a ventana completa. El
    * estado de dominio lo monta `sessionEffect`.
    */
-  import { untrack } from "svelte";
+  import { onMount, untrack } from "svelte";
   import { toolById } from "$core/tools";
   import { localizeTool, t } from "$domain/i18n.svelte";
   import { LAUNCHER_LAB_OPEN_KEY } from "$lib/dev/launcherLab.svelte";
@@ -142,6 +142,19 @@
       pickerLab.toggle();
     }
   }
+
+  onMount(() => {
+    // Ajustes es un chunk grande (11 secciones) y sin prefetch el primer clic
+    // abría el modal vacío mientras cargaba; en dev Vite además lo transforma
+    // al vuelo. Se pide en idle, cuando no compite con el arranque.
+    const warm = () => void import("$features/settings/SettingsPanel.svelte");
+    if (typeof window.requestIdleCallback === "function") {
+      const idle = window.requestIdleCallback(warm, { timeout: 4000 });
+      return () => window.cancelIdleCallback(idle);
+    }
+    const timer = setTimeout(warm, 1500);
+    return () => clearTimeout(timer);
+  });
 </script>
 
 <svelte:window onkeydown={onKeydown} />
@@ -271,7 +284,11 @@
     onClose={() => ui.closeSettings()}
   >
     <div class="-mx-4 -my-3 flex h-full min-h-0 flex-1 flex-col overflow-hidden">
-      {#await import("$features/settings/SettingsPanel.svelte") then { default: SettingsPanel }}
+      {#await import("$features/settings/SettingsPanel.svelte")}
+        <div class="flex h-full w-full items-center justify-center text-sm text-muted">
+          {t("settings.loading")}
+        </div>
+      {:then { default: SettingsPanel }}
         {#key ui.settingsSection}
           <SettingsPanel initialSection={ui.settingsSection} />
         {/key}

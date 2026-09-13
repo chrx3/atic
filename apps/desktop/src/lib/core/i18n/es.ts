@@ -138,6 +138,7 @@ export const es = {
     dayYesterday: "Ayer",
   },
   settings: {
+    loading: "Cargando…",
     nav: {
       aria: "Secciones de ajustes",
       sectionAria: "Sección de ajustes",
