@@ -27,6 +27,7 @@
     consoleWrite,
     consoleForegroundCli,
     cliOnPath,
+    notifyAgentsPathChanged,
     onAgentsWorkspaceShortcut,
     onConsoleExit,
     onConsoleOutput,
@@ -2483,6 +2484,7 @@
         termOf(key)?.writeln(`\r\n[sesión terminada · exit ${code}]`);
         // Si la pestaña era un instalador, el CLI puede haber aparecido.
         refreshAgentPath();
+        notifyAgentsPathChanged();
       }),
       onAgentsComposerInsert((payload) => void applyClipboardInsert(payload)),
     ])

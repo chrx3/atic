@@ -7,7 +7,7 @@
   import Icon from "$ui/Icon.svelte";
   import { Folder, X } from "$lib/icons";
   import { onMount } from "svelte";
-  import { AGENTS_REVEAL_CONSOLE, cliOnPath } from "$ipc/agents";
+  import { AGENTS_PATH_CHANGED, AGENTS_REVEAL_CONSOLE, cliOnPath } from "$ipc/agents";
   import { AGENTS, installCommand, shownAgents } from "./agentCatalog";
   import { config } from "$domain/config.svelte";
   import { sessionEffect } from "$domain/session";
@@ -105,6 +105,9 @@
   function showView(next: LauncherView) {
     view = next;
     onViewChange?.(next);
+    // Volver al setup re-mira el PATH: puede haber terminado un instalador
+    // mientras estábamos en la consola.
+    if (next === "setup") refreshPath();
   }
 
   function revealLiveConsole() {
@@ -142,9 +145,8 @@
   }
 
   function backToSetup() {
+    // `showView` ya re-mira el PATH por si el instalador corrió mientras tanto.
     showView("setup");
-    // Por si el instalador corrió mientras tanto: refleja el PATH real.
-    refreshPath();
   }
 
   function resetSessions() {
@@ -215,8 +217,15 @@
     }
     refreshPath();
     const onReveal = () => revealLiveConsole();
+    // Un instalador corrió en la consola y terminó: el setup tiene que
+    // enterarse aunque esté a la vista en ese momento.
+    const onPathChanged = () => refreshPath();
     window.addEventListener(AGENTS_REVEAL_CONSOLE, onReveal);
-    return () => window.removeEventListener(AGENTS_REVEAL_CONSOLE, onReveal);
+    window.addEventListener(AGENTS_PATH_CHANGED, onPathChanged);
+    return () => {
+      window.removeEventListener(AGENTS_REVEAL_CONSOLE, onReveal);
+      window.removeEventListener(AGENTS_PATH_CHANGED, onPathChanged);
+    };
   });
 </script>
 
