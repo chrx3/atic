@@ -6,13 +6,17 @@
 //! guardó al hacer `/connect`. No hay OAuth ni refresh: es una clave larga.
 //!
 //! `auth.json` vive en `~/.local/share/opencode/` **también en Windows**: el
-//! CLI usa esa ruta literal, no `%APPDATA%`. Verificado en la máquina de
-//! desarrollo antes de escribir esto.
+//! CLI usa esa ruta literal, no `%APPDATA%`.
+//!
+//! v2 mudó el login a la tabla `credential` de su SQLite y deja `auth.json`
+//! viejo: leer solo el archivo mostraba para siempre el cupo de la cuenta
+//! anterior (cambiar la key no se veía). Se toma la fuente más nueva.
 
 use std::fs;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use rusqlite::{Connection, OpenFlags};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -62,10 +66,65 @@ pub fn detected() -> bool {
     load_key().is_some()
 }
 
+/// La clave del plan, de la fuente más nueva entre v1 (archivo) y v2 (DB).
 fn load_key() -> Option<String> {
-    let text = fs::read_to_string(auth_path()?).ok()?;
+    newest(file_key(), db_key())
+}
+
+/// Gana el candidato con la fecha más reciente; `None` si no hay ninguno.
+fn newest(file: Option<(String, i64)>, db: Option<(String, i64)>) -> Option<String> {
+    match (file, db) {
+        (Some((file_key, file_at)), Some((db_key, db_at))) => {
+            Some(if db_at >= file_at { db_key } else { file_key })
+        }
+        (Some((key, _)), None) | (None, Some((key, _))) => Some(key),
+        (None, None) => None,
+    }
+}
+
+/// v1: `auth.json` con `{"opencode-go": {"key": "…"}}`, y la fecha del archivo.
+fn file_key() -> Option<(String, i64)> {
+    let path = auth_path()?;
+    let text = fs::read_to_string(&path).ok()?;
+    let at = fs::metadata(&path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as i64)?;
     let root: Value = serde_json::from_str(&text).ok()?;
-    parse_key(&root)
+    parse_key(&root).map(|key| (key, at))
+}
+
+/// v2: tabla `credential` con `integration_id = opencode-go` y
+/// `value = {"type":"key","key":"…"}`; `time_updated` viene en epoch ms.
+fn db_key() -> Option<(String, i64)> {
+    let path = super::watch_opencode::db_path()?;
+    let conn = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY).ok()?;
+    for name in PLAN_KEYS {
+        let found = conn.query_row(
+            "SELECT value, time_updated FROM credential \
+             WHERE integration_id = ?1 AND active = 1 \
+             ORDER BY time_updated DESC LIMIT 1",
+            rusqlite::params![name],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+        );
+        if let Ok((value, at)) = found {
+            if let Some(key) = parse_db_value(&value) {
+                return Some((key, at));
+            }
+        }
+    }
+    None
+}
+
+/// `{"type":"key","key":"sk-…"}` → `sk-…`. Sin key o vacía, `None`.
+fn parse_db_value(value: &str) -> Option<String> {
+    let root: Value = serde_json::from_str(value).ok()?;
+    root.get("key")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|key| !key.is_empty())
+        .map(str::to_string)
 }
 
 fn parse_key(root: &Value) -> Option<String> {
@@ -200,5 +259,33 @@ mod tests {
         assert_eq!(parse_key(&root).as_deref(), Some("si-es-esta"));
         assert!(parse_key(&json!({ "openai": { "type": "oauth" } })).is_none());
         assert!(parse_key(&json!({ "opencode-go": { "key": "" } })).is_none());
+    }
+
+    #[test]
+    fn la_credencial_de_v2_tambien_da_la_clave() {
+        assert_eq!(
+            parse_db_value(r#"{"type":"key","key":" sk-abc "}"#).as_deref(),
+            Some("sk-abc")
+        );
+        assert_eq!(parse_db_value(r#"{"type":"oauth"}"#), None);
+        assert_eq!(parse_db_value(r#"{"key":"   "}"#), None);
+        assert_eq!(parse_db_value("no es json"), None);
+    }
+
+    #[test]
+    fn gana_la_fuente_mas_nueva() {
+        let file = Some(("vieja".to_string(), 100));
+        let db = Some(("nueva".to_string(), 200));
+        assert_eq!(newest(file.clone(), db.clone()).as_deref(), Some("nueva"));
+        assert_eq!(newest(db, file).as_deref(), Some("nueva"));
+        assert_eq!(
+            newest(Some(("sola".into(), 1)), None).as_deref(),
+            Some("sola")
+        );
+        assert_eq!(
+            newest(None, Some(("sola".into(), 1))).as_deref(),
+            Some("sola")
+        );
+        assert_eq!(newest(None, None), None);
     }
 }
