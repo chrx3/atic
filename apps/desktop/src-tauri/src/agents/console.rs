@@ -251,6 +251,14 @@ fn quote_cmd(s: &str) -> String {
 /// la pestaña muere y parece que “se cerró”. `cmd /K` espera al TUI y, si el
 /// proceso termina, deja el prompt.
 fn build_local_command(command: &str) -> Result<CommandBuilder, String> {
+    // Sintaxis de shell (pipe, redirección, comillas, encadenados…): partir la
+    // línea por espacios y lanzar el primer token directo le pasa `|`, `>`
+    // y compañía como argumentos al ejecutable. El instalador de Grok moría en
+    // `curl … | bash` con `|` y `bash` interpretados como URLs. Esas líneas van
+    // enteras a la shell del usuario, que es quien sabe interpretarlas.
+    if has_shell_syntax(command) {
+        return Ok(build_shell_line(command));
+    }
     let mut parts = command.split_whitespace();
     let program = parts
         .next()
@@ -288,6 +296,17 @@ fn build_local_command(command: &str) -> Result<CommandBuilder, String> {
         cmd.args(extra);
         Ok(cmd)
     }
+}
+
+/// ¿La línea necesita una shell para interpretarse?
+///
+/// Pipes, redirecciones, encadenados, variables, globs y comillas: nada de eso
+/// lo entiende `Command`; solo el intérprete. Las líneas de instalación de los
+/// agentes caen acá por el `|` (y las de Windows también por las comillas).
+fn has_shell_syntax(line: &str) -> bool {
+    line.contains([
+        '|', '&', ';', '<', '>', '$', '`', '(', ')', '*', '?', '~', '"', '\'',
+    ])
 }
 
 /// Línea arbitraria dentro de la shell del usuario, con el prompt vivo al
@@ -783,5 +802,47 @@ mod tests {
         let shell = user_shell();
         assert!(shell.is_file(), "{}", shell.display());
         assert!(shell.is_absolute(), "{}", shell.display());
+    }
+
+    #[test]
+    fn detecta_sintaxis_de_shell() {
+        assert!(has_shell_syntax(
+            "curl -fsSL https://x.ai/cli/install.sh | bash"
+        ));
+        assert!(has_shell_syntax(
+            "irm 'https://cursor.com/install?win32=true' | iex"
+        ));
+        assert!(has_shell_syntax("npm i > log.txt"));
+        assert!(!has_shell_syntax("npm install -g @openai/codex"));
+        assert!(!has_shell_syntax("opencode"));
+    }
+
+    /// La regresión del instalador de Grok: `curl … | bash` lanzaba curl
+    /// directo y `|` y `bash` terminaban siendo URLs.
+    #[cfg(not(windows))]
+    #[test]
+    fn una_linea_con_pipe_va_a_la_shell() {
+        let cmd = build_local_command("curl -fsSL https://x.ai/cli/install.sh | bash").unwrap();
+        let argv = cmd.get_argv();
+        assert_eq!(argv[0].as_os_str(), user_shell().as_os_str(), "{argv:?}");
+        assert!(
+            argv.iter().any(|a| a.to_string_lossy().contains("| bash")),
+            "{argv:?}"
+        );
+    }
+
+    /// Un comando simple sigue yendo directo: no hay shell de por medio.
+    #[test]
+    fn un_comando_simple_no_pasa_por_la_shell() {
+        let Some((exe, _)) = crate::agents::exe::launcher("echo") else {
+            return;
+        };
+        let cmd = build_local_command("echo hola").unwrap();
+        assert_eq!(
+            cmd.get_argv()[0].as_os_str(),
+            exe.as_os_str(),
+            "{:?}",
+            cmd.get_argv()
+        );
     }
 }
