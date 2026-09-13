@@ -119,6 +119,8 @@ objc2-foundation = { version = "0.3", default-features = false, features = [
   "NSArray",
   "NSData",
   "NSDictionary",
+  # NSRect/NSSize para el icono del launcher (CGImageForProposedRect).
+  "NSGeometry",
   "NSLocale",
   "NSObject",
   "NSString",

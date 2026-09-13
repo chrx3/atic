@@ -354,8 +354,12 @@ fn builtin_actions(en: bool) -> Vec<LauncherEntry> {
     ]
     .into_iter()
     .filter(|(_, _, _, action)| crate::agents::UI_ENABLED || *action != "agents")
-    .filter(|(_, _, _, action)| {
-        cfg!(windows) || !(action.starts_with("sys-") || *action == "quit-all")
+    // `sys-*` (bloquear, suspender, silenciar, papelera) solo existe en
+    // Windows; «Cerrar todas las apps» también corre en macOS.
+    .filter(|(_, _, _, action)| match *action {
+        a if a.starts_with("sys-") => cfg!(windows),
+        "quit-all" => cfg!(any(windows, target_os = "macos")),
+        _ => true,
     })
     .map(|(id, title, subtitle, action)| LauncherEntry {
         id: id.into(),
@@ -447,16 +451,22 @@ fn walk_lnks(
     }
 }
 
+/// Raíces de apps de macOS. `/System/Library/CoreServices` queda afuera a
+/// propósito: ahí viven agentes internos (Dock, loginwindow, ControlCenter…),
+/// no apps que tenga sentido abrir desde el launcher.
 #[cfg(target_os = "macos")]
 fn collect_start_menu_apps() -> Vec<LauncherEntry> {
-    let mut roots = vec![PathBuf::from("/Applications")];
+    let mut roots = vec![
+        PathBuf::from("/Applications"),
+        PathBuf::from("/System/Applications"),
+    ];
     if let Some(home) = dirs_home() {
         roots.push(home.join("Applications"));
     }
     let mut out = Vec::new();
     let mut seen = std::collections::HashSet::new();
     for root in roots {
-        walk_apps(&root, &mut out, &mut seen);
+        walk_apps(&root, 0, &mut out, &mut seen);
     }
     out.sort_by_key(|entry| entry.title.to_lowercase());
     out
@@ -467,12 +477,24 @@ fn dirs_home() -> Option<PathBuf> {
     std::env::var_os("HOME").map(PathBuf::from)
 }
 
+/// Hasta dónde bajar dentro de una raíz. `/Applications/Utilities/*.app` es
+/// profundidad 1 y `/System/Applications/Utilities/*.app` 2; Apps anidadas más
+/// abajo (p. ej. dentro de un paquete) ya no son apps de usuario.
+#[cfg(target_os = "macos")]
+const MAX_APP_DEPTH: usize = 4;
+
+/// Camina una raíz sin entrar jamás a un `.app` (el paquete es la app, no su
+/// contenido) y salteando carpetas ocultas.
 #[cfg(target_os = "macos")]
 fn walk_apps(
     dir: &Path,
+    depth: usize,
     out: &mut Vec<LauncherEntry>,
     seen: &mut std::collections::HashSet<String>,
 ) {
+    if depth > MAX_APP_DEPTH {
+        return;
+    }
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
@@ -481,24 +503,35 @@ fn walk_apps(
         let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
             continue;
         };
-        if !name.ends_with(".app") {
+        if name.ends_with(".app") {
+            let title = name.trim_end_matches(".app");
+            if should_skip_app_name(title) {
+                continue;
+            }
+            let key = normalize(title);
+            if !seen.insert(key) {
+                continue;
+            }
+            out.push(LauncherEntry {
+                id: format!("app:{}", path.to_string_lossy()),
+                kind: LauncherKind::App,
+                title: title.to_string(),
+                subtitle: "Aplicación".into(),
+                target: EntryTarget::Path(path),
+            });
             continue;
         }
-        let title = name.trim_end_matches(".app");
-        if should_skip_app_name(title) {
-            continue;
+        // Solo carpetas reales (no symlinks, que podrían dar la vuelta) y nada
+        // oculto: los `.app` van sueltos, las subcarpetas son Utilities, etc.
+        if depth < MAX_APP_DEPTH
+            && !name.starts_with('.')
+            && entry
+                .file_type()
+                .map(|file_type| file_type.is_dir())
+                .unwrap_or(false)
+        {
+            walk_apps(&path, depth + 1, out, seen);
         }
-        let key = normalize(title);
-        if !seen.insert(key) {
-            continue;
-        }
-        out.push(LauncherEntry {
-            id: format!("app:{}", path.to_string_lossy()),
-            kind: LauncherKind::App,
-            title: title.to_string(),
-            subtitle: "Aplicación".into(),
-            target: EntryTarget::Path(path),
-        });
     }
 }
 
@@ -1227,7 +1260,36 @@ mod tests {
         ] {
             assert_eq!(ids.iter().any(|it| it == id), cfg!(windows), "{id}");
         }
-        assert!(ids.iter().any(|id| id == "action:quit-all"));
+        assert_eq!(
+            ids.iter().any(|id| id == "action:quit-all"),
+            cfg!(any(windows, target_os = "macos")),
+            "cerrar todas las apps"
+        );
+    }
+
+    /// El walk de macOS baja a subcarpetas (Utilities), no entra a los `.app`
+    /// ni a carpetas ocultas, y deduplica por título normalizado.
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn walk_apps_mac_baja_a_subcarpetas_y_saltea_ocultos() {
+        let root = std::env::temp_dir().join(format!(
+            "atic-launcher-apps-{}-{}",
+            std::process::id(),
+            now_secs()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("A.app")).unwrap();
+        std::fs::create_dir_all(root.join("Utilities/B.app")).unwrap();
+        std::fs::create_dir_all(root.join(".oculto/C.app")).unwrap();
+        std::fs::create_dir_all(root.join("D.app/Contents")).unwrap();
+        std::fs::create_dir_all(root.join("Foo.app/Nested.app")).unwrap();
+        let mut out = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        walk_apps(&root, 0, &mut out, &mut seen);
+        let mut titles: Vec<&str> = out.iter().map(|entry| entry.title.as_str()).collect();
+        titles.sort_unstable();
+        assert_eq!(titles, vec!["A", "B", "D", "Foo"]);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

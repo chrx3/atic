@@ -160,6 +160,11 @@ para atajos globales. Si el atajo no responde:
 8. **Entrada / salida** en la barra de grabación (mic y altavoces listados).
 9. **Captura**: atajo o herramienta de la pill → mira sobre el escritorio congelado → región / ventana / monitor. Acepta el permiso de grabación de pantalla.
 10. **Pizarra**: dibujar sobre la pantalla del cursor.
+11. **Launcher** (`Cmd+Space` o el atajo configurado): buscar apps propias y
+    del sistema (`/Applications`, `/System/Applications`), ver **Recientes**
+    al abrir, favoritos, iconos reales, y `Cmd+Enter` para cerrar la app
+    seleccionada (Quit graceful). Ojo: `Cmd+Space` es Spotlight; si no abre,
+    reasigna el atajo en Ajustes.
 
 Datos locales en Mac:
 
