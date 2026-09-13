@@ -91,6 +91,16 @@ for triple in aarch64-apple-darwin x86_64-apple-darwin; do
   sh "$repo/scripts/build-unix.sh" "$triple"
 done
 
+# Al empaquetar, Tauri busca el sidecar con el sufijo del target pedido:
+# para `--target universal-apple-darwin` espera un binario universal ya
+# combinado, así que se lipo-ean los dos.
+destino="$repo/apps/desktop/src-tauri/binaries"
+for nombre in atic-mcp atic-unix; do
+  lipo -create -output "$destino/$nombre-universal-apple-darwin" \
+    "$destino/$nombre-aarch64-apple-darwin" \
+    "$destino/$nombre-x86_64-apple-darwin"
+done
+
 pushd apps/desktop > /dev/null
 pnpm tauri build --bundles dmg,app --target universal-apple-darwin
 popd > /dev/null
