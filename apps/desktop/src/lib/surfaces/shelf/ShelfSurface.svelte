@@ -22,8 +22,10 @@
     activateCapture,
     captureSrc,
     copyCaptureImage,
+    listRecentCaptures,
     ocrCaptureAndCopy,
     onScreenshotCreated,
+    onShelfShown,
   } from "$ipc/captures";
   import { openAnnotator } from "$ipc/annotate";
   import {
@@ -76,6 +78,8 @@
   type DiscardDir = "x" | "y";
 
   let current = $state<CaptureItem | null>(null);
+  /** Último id presentado: evita presentar dos veces la misma captura. */
+  let lastPresentedId: string | null = null;
   let src = $state("");
   let busy = $state(false);
   let ocrBusy = $state(false);
@@ -142,6 +146,7 @@
 
   /** Presenta la tarjeta: un frame replegada para que la transición tenga origen. */
   async function present(item: CaptureItem) {
+    lastPresentedId = item.id;
     drag = null;
     clearGhost();
     covering = false;
@@ -343,10 +348,22 @@
 
   $effect(() => {
     const pending = onScreenshotCreated((item) => {
+      if (item.id === lastPresentedId) return;
       void present(item);
+    });
+    // El shelf recién mostrado pudo perderse el evento (webview dormido al
+    // arrancar): se trae la última captura por su cuenta.
+    const shownEvt = onShelfShown(() => {
+      void listRecentCaptures()
+        .then((items) => {
+          const latest = items[0];
+          if (latest && latest.id !== lastPresentedId) void present(latest);
+        })
+        .catch(() => {});
     });
     return () => {
       void pending.then((off) => off());
+      void shownEvt.then((off) => off());
       clearTimer();
       endPress();
       drag = null;

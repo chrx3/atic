@@ -76,6 +76,8 @@ export interface AticEvents {
 
   // Capturas
   "screenshot-created": CaptureItem;
+  /** El shelf acaba de mostrarse: la vista trae la última captura si se perdió el evento. */
+  "shelf-shown": void;
   "screenshot-shelf-updated": void;
   /** Con qué imagen tiene que abrirse el editor de anotaciones. */
   "annotate-open": AnnotateOpen;

@@ -86,5 +86,13 @@ export const onScreenshotCreated = (
   cb: (item: CaptureItem) => void,
 ): Promise<UnlistenFn> => on("screenshot-created", cb);
 
+/**
+ * El shelf acaba de mostrarse. Sirve para traer la última captura cuando el
+ * evento `screenshot-created` se perdió con el webview todavía dormido:
+ * la primera captura de la sesión llegaba al shelf vacío.
+ */
+export const onShelfShown = (cb: () => void): Promise<UnlistenFn> =>
+  on("shelf-shown", cb);
+
 export const onScreenshotShelfUpdated = (cb: () => void): Promise<UnlistenFn> =>
   on("screenshot-shelf-updated", cb);
