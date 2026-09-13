@@ -1827,8 +1827,11 @@ fn capture_shelf_landing_impl(
         .capture_shelf_side
         .eq_ignore_ascii_case("left");
 
-    // Colocar (oculto) para leer la posición real, no una estimación.
-    crate::floating::place(
+    // Colocar (oculto) y usar la posición **calculada**, no `outer_position()`:
+    // `set_position` se aplica en el event loop, así que leer enseguida
+    // devolvía la posición vieja. En la primera captura eso era el centro de
+    // la pantalla y el vuelo aterrizaba ahí.
+    let (pos_x, pos_y) = crate::floating::place(
         app,
         "capture-shelf",
         crate::floating::Anchor::BottomCorner {
@@ -1838,21 +1841,18 @@ fn capture_shelf_landing_impl(
     )
     .ok_or("no se pudo ubicar el shelf")?;
 
-    let shelf = app.get_webview_window("capture-shelf").ok_or("sin shelf")?;
-    let pos = shelf.outer_position().map_err(|e| e.to_string())?;
-    // En Mac la posición de Tauri es física pero el global son puntos.
-    let (pos_x, pos_y) = (
-        crate::floating::to_global(&shelf, f64::from(pos.x)),
-        crate::floating::to_global(&shelf, f64::from(pos.y)),
-    );
     // Un `CSS px` equivale a la escala DPI de Windows o a 1 punto en Mac; pasar
     // a píxeles del preview multiplica además por su escala.
     #[cfg(windows)]
-    let units_per_css = shelf.scale_factor().unwrap_or(1.0).max(0.01);
+    let units_per_css = app
+        .get_webview_window("capture-shelf")
+        .and_then(|shelf| shelf.scale_factor().ok())
+        .unwrap_or(1.0)
+        .max(0.01);
     #[cfg(target_os = "macos")]
     let units_per_css = 1.0_f64;
-    let thumb_x = (pos_x + SHELF_PAD * units_per_css) * preview_scale;
-    let thumb_y = (pos_y + SHELF_PAD * units_per_css) * preview_scale;
+    let thumb_x = (f64::from(pos_x) + SHELF_PAD * units_per_css) * preview_scale;
+    let thumb_y = (f64::from(pos_y) + SHELF_PAD * units_per_css) * preview_scale;
 
     Ok(LandingRect {
         left: thumb_x - f64::from(bounds.x),
