@@ -55,15 +55,85 @@ pub fn resolve(program: &str) -> Option<PathBuf> {
 /// El env del proceso queda congelado al arrancar; un instalador que agrega
 /// su carpeta al PATH del registro después (agy, claude, grok…) no se vería
 /// hasta reiniciar Atic. Se relee por llamada: `cli_on_path` corre poco.
+///
+/// En macOS una app abierta desde Finder hereda el PATH mínimo del sistema, así
+/// que además se suman las carpetas donde instaladores y gestores de paquetes
+/// dejan los CLIs (Homebrew, `~/.local/bin`, `~/.opencode/bin`…).
 fn search_dirs() -> Vec<PathBuf> {
     #[cfg(windows)]
     {
         merge_path_dirs(dirs_from_env(), dirs_from_registry())
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        merge_path_dirs(dirs_from_env(), macos_user_dirs())
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         dirs_from_env()
     }
+}
+
+/// Carpetas de usuario donde los CLIs de agentes suelen quedar en macOS.
+///
+/// No se filtra por existencia: agregar una carpeta que no está es inofensivo
+/// (el resolve prueba archivos), y evita releer el disco en cada búsqueda.
+#[cfg(target_os = "macos")]
+fn macos_user_dirs() -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+        for rel in [
+            ".local/bin",
+            ".opencode/bin",
+            ".cargo/bin",
+            ".bun/bin",
+            ".volta/bin",
+            "Library/pnpm",
+        ] {
+            out.push(home.join(rel));
+        }
+        // nvm instala cada versión de Node en su propia carpeta; sus globales
+        // (claude, codex…) viven ahí. Se recorren todas: no cuesta nada y así
+        // no importa cuál esté activa en la shell del usuario.
+        if let Ok(versions) = std::fs::read_dir(home.join(".nvm/versions/node")) {
+            for version in versions.flatten() {
+                out.push(version.path().join("bin"));
+            }
+        }
+    }
+    for dir in [
+        "/opt/homebrew/bin",
+        "/opt/homebrew/sbin",
+        "/usr/local/bin",
+        "/usr/local/sbin",
+    ] {
+        out.push(PathBuf::from(dir));
+    }
+    out
+}
+
+/// Deja el PATH del proceso con las carpetas de usuario en macOS.
+///
+/// Una app abierta desde Finder hereda `/usr/bin:/bin:/usr/sbin:/sbin`; sin
+/// esto no encuentra `claude`, `codex` ni el resto de los CLIs. Se arma una
+/// sola vez al arrancar (antes de crear hilos) y todos los hijos lo heredan:
+/// PTY, sesiones ACP, discovery y chequeos de cupo.
+#[cfg(target_os = "macos")]
+pub fn ensure_user_path_on_process() {
+    if let Some(path) = joined_user_path() {
+        // SAFETY: se llama al principio de `run`, antes de que la app cree
+        // hilos; nadie más está leyendo el entorno.
+        std::env::set_var("PATH", path);
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn ensure_user_path_on_process() {}
+
+/// El PATH del proceso más las carpetas de usuario de macOS.
+#[cfg(target_os = "macos")]
+fn joined_user_path() -> Option<std::ffi::OsString> {
+    join_no_vacio(merge_path_dirs(dirs_from_env(), macos_user_dirs()))
 }
 
 /// El PATH fusionado como valor de variable, para el env de las consolas PTY.
@@ -82,7 +152,11 @@ pub fn merged_path_var() -> Option<std::ffi::OsString> {
     {
         elegir_path(dirs_from_env(), dirs_from_registry())
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        joined_user_path()
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         None
     }
@@ -111,7 +185,7 @@ fn elegir_path(proceso: Vec<PathBuf>, registro: Vec<PathBuf>) -> Option<std::ffi
 
 /// `join_paths` de una lista vacía devuelve `Ok("")`, y poner el PATH vacío es
 /// peor que no tocarlo: adentro no resuelve nada.
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 fn join_no_vacio(dirs: Vec<PathBuf>) -> Option<std::ffi::OsString> {
     if dirs.is_empty() {
         return None;
@@ -245,9 +319,9 @@ fn dirs_from_env() -> Vec<PathBuf> {
 }
 
 /// Fusión sin duplicados, con el proceso primero: su orden ya resolvía bien y
-/// solo se le suman al final las carpetas que el registro trae de nuevas.
-/// Windows no distingue mayúsculas en rutas.
-#[cfg(windows)]
+/// solo se le suman al final las carpetas nuevas. La clave va en minúsculas
+/// porque Windows no distingue mayúsculas (y macOS, por defecto, tampoco).
+#[cfg(any(windows, target_os = "macos"))]
 fn merge_path_dirs(process: Vec<PathBuf>, fresh: Vec<PathBuf>) -> Vec<PathBuf> {
     let mut seen: Vec<String> = process
         .iter()
@@ -542,5 +616,56 @@ mod tests {
             resolve_with("", &dirs, &exts, WIN, |p| hay.contains(p)),
             None
         );
+    }
+
+    /// macOS: las carpetas de usuario se suman al final, sin duplicar las que
+    /// ya traía el proceso.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_suma_carpetas_de_usuario_al_final() {
+        let merged = merge_path_dirs(
+            vec![PathBuf::from("/usr/bin"), PathBuf::from("/bin")],
+            vec![
+                PathBuf::from("/bin"),
+                PathBuf::from("/Users/x/.local/bin"),
+                PathBuf::from("/opt/homebrew/bin"),
+            ],
+        );
+        assert_eq!(
+            merged,
+            vec![
+                PathBuf::from("/usr/bin"),
+                PathBuf::from("/bin"),
+                PathBuf::from("/Users/x/.local/bin"),
+                PathBuf::from("/opt/homebrew/bin"),
+            ]
+        );
+    }
+
+    /// Una app GUI hereda el PATH mínimo: las carpetas de usuario tienen que
+    /// estar para que `claude`, `codex` y compañía resuelvan.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_user_dirs_trae_local_bin_y_homebrew() {
+        let dirs = macos_user_dirs();
+        let texto: Vec<String> = dirs
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
+        assert!(texto.iter().any(|d| d.ends_with(".local/bin")), "{texto:?}");
+        assert!(texto.iter().any(|d| d == "/opt/homebrew/bin"), "{texto:?}");
+        assert!(
+            texto.iter().any(|d| d.ends_with(".opencode/bin")),
+            "{texto:?}"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_merged_path_var_no_queda_vacio() {
+        let path = merged_path_var().expect("con HOME y PATH tiene que armar algo");
+        let texto = path.to_string_lossy();
+        assert!(texto.contains(".local/bin"), "{texto}");
+        assert!(texto.contains("/opt/homebrew/bin"), "{texto}");
     }
 }
