@@ -8,7 +8,7 @@
 
 use atic_core::MutexExt;
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager, WebviewWindow};
+use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
 
 const SHELF_LABEL: &str = "capture-shelf";
 
@@ -43,6 +43,9 @@ pub fn show_shelf(app: &AppHandle, anchor: Option<(i32, i32)>) -> tauri::Result<
     position_shelf(app, &window, anchor);
     window.show()?;
     let _ = window.set_always_on_top(true);
+    // Con la ventana ya visible: si el webview estaba dormido, se perdió el
+    // `screenshot-created` de la captura y tiene que traerla por su cuenta.
+    let _ = app.emit("shelf-shown", ());
     Ok(())
 }
 
