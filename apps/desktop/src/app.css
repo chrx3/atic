@@ -92,6 +92,10 @@ textarea,
   --rb-faint: #8f8f86;
 
   --rb-record: #d6453d;
+  /* Semáforos de AppKit: no dependen del tema. */
+  --rb-mac-close: #ff5f57;
+  --rb-mac-min: #febc2e;
+  --rb-mac-max: #28c840;
   --rb-record-soft: #f7e6e3;
   --rb-mic: #3a6b50;
   --rb-sys: #4f6a82;
@@ -334,6 +338,9 @@ textarea,
   --rb-faint: #6e6e66;
 
   --rb-record: #e85a52;
+  --rb-mac-close: #ff5f57;
+  --rb-mac-min: #febc2e;
+  --rb-mac-max: #28c840;
   --rb-record-soft: #3a2220;
   --rb-mic: #6faf88;
   --rb-sys: #7ea0bc;
