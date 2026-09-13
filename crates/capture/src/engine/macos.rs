@@ -1,6 +1,10 @@
 //! Captura Core Graphics: `CGDisplayCreateImage` por monitor y
 //! `CGWindowListCreateImage` para una ventana.
 //!
+//! Las regiones chicas (la lupa del cuentagotas) también salen por
+//! `CGWindowListCreateImage` recortadas: convertir el display entero por frame
+//! a 30 Hz no deja mover la ventana a tiempo.
+//!
 //! Las regiones llegan en **puntos** (el espacio global de Quartz). La salida
 //! de un solo monitor es nativa (2880 px en Retina); cuando la región cruza
 //! monitores con escalas distintas, cada display se reescala a la mayor para
@@ -16,8 +20,9 @@ use core_graphics::display::CGDisplay;
 use core_graphics::geometry::{CGPoint, CGRect, CGSize};
 use core_graphics::image::CGImage;
 use core_graphics::window::{
-    self, kCGWindowImageBestResolution, kCGWindowImageBoundsIgnoreFraming,
+    self, kCGNullWindowID, kCGWindowImageBestResolution, kCGWindowImageBoundsIgnoreFraming,
     kCGWindowImageShouldBeOpaque, kCGWindowListOptionIncludingWindow,
+    kCGWindowListOptionOnScreenOnly,
 };
 
 use super::is_black;
@@ -45,6 +50,15 @@ pub fn capture_rect_without_layered(rect: Rect) -> Result<Frame> {
 fn capture_rect_inner(rect: Rect) -> Result<Frame> {
     if rect.is_empty() {
         return Err(Error::InvalidDimensions(rect.width, rect.height));
+    }
+
+    // La lupa del cuentagotas muestrea ~15×15 puntos a ~30 Hz. El camino
+    // general captura cada display entero y lo convierte completo a BGRA
+    // (~20 MB por frame en Retina): el loop no alcanza a mover la ventana y la
+    // lupa se siente atrasada respecto al cursor. Para regiones chicas dentro
+    // de un solo monitor, el window server recorta solo ese rect.
+    if let Some(frame) = capture_small_region(rect) {
+        return Ok(frame);
     }
 
     let Ok(ids) = CGDisplay::active_displays() else {
@@ -132,6 +146,55 @@ fn capture_rect_inner(rect: Rect) -> Result<Frame> {
         return Err(Error::Permission);
     }
     Ok(canvas)
+}
+
+/// Camino rápido para regiones chicas dentro de un único monitor.
+///
+/// `None` si la región es grande, cruza monitores o el window server no
+/// devolvió imagen; el llamador sigue con el camino general, que conserva los
+/// diagnósticos de permiso y la composición multi-escala.
+fn capture_small_region(rect: Rect) -> Option<Frame> {
+    const MAX_SIDE: u32 = 128;
+    if rect.width > MAX_SIDE || rect.height > MAX_SIDE {
+        return None;
+    }
+    let monitors = crate::monitors::enumerate();
+    let within_one = monitors.iter().any(|m| {
+        rect.x >= m.bounds.x
+            && rect.y >= m.bounds.y
+            && rect.right() <= m.bounds.right()
+            && rect.bottom() <= m.bounds.bottom()
+    });
+    if !within_one {
+        return None;
+    }
+
+    let cg_rect = CGRect::new(
+        &CGPoint::new(f64::from(rect.x), f64::from(rect.y)),
+        &CGSize::new(f64::from(rect.width), f64::from(rect.height)),
+    );
+    let image = window::create_image(
+        cg_rect,
+        kCGWindowListOptionOnScreenOnly,
+        kCGNullWindowID,
+        kCGWindowImageBestResolution | kCGWindowImageShouldBeOpaque,
+    )?;
+    let (width, height, bgra) = cgimage_to_bgra(&image).ok()?;
+    if width == 0 || height == 0 {
+        return None;
+    }
+    // La imagen sale a resolución nativa del display; se ancla al mismo espacio
+    // que el camino general (origen escalado) para que el muestreo no mienta.
+    let scale = if rect.width > 0 {
+        f64::from(width) / f64::from(rect.width)
+    } else {
+        1.0
+    };
+    let target = scale_rect(rect, scale);
+    Some(Frame::new(
+        Rect::new(target.x, target.y, width, height),
+        bgra,
+    ))
 }
 
 fn point_bounds_of(display_id: u32, monitor: Option<&MonitorInfo>) -> Rect {
