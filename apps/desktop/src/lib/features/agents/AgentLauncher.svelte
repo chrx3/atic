@@ -8,7 +8,7 @@
   import { Folder, X } from "$lib/icons";
   import { onMount } from "svelte";
   import { AGENTS_REVEAL_CONSOLE, cliOnPath } from "$ipc/agents";
-  import { AGENTS, shownAgents } from "./agentCatalog";
+  import { AGENTS, installCommand, shownAgents } from "./agentCatalog";
   import { config } from "$domain/config.svelte";
   import { sessionEffect } from "$domain/session";
   import { t } from "$domain/i18n.svelte";
@@ -82,7 +82,7 @@
           {
             kind: "local" as const,
             label: t("page.agents.installNamed", { name: chosen.name }),
-            command: chosen.install,
+            command: installCommand(chosen),
           },
         ]
       : Array.from({ length: Math.max(1, Math.min(count, MAX_INSTANCES)) }, () => ({

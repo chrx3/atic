@@ -57,6 +57,52 @@ fn config_json(cli: &str) -> Option<PathBuf> {
     })
 }
 
+/// OpenCode v2 mudó el registro de MCP: trae `opencode mcp add` y la entrada
+/// vive bajo `mcp.servers`. v1 exigía editar `{"mcp": {…}}` a mano.
+fn opencode_v2() -> bool {
+    version_major("opencode").is_some_and(|major| major >= 2)
+}
+
+/// El número mayor de `<cli> --version`, o `None` si no se puede correr.
+fn version_major(cli: &str) -> Option<u32> {
+    let (program, prefix) = super::exe::launcher(cli)?;
+    let mut cmd = Command::new(program);
+    cmd.args(prefix).arg("--version").stdin(Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000);
+    }
+    let salida = cmd.output().ok()?;
+    parse_major(&format!(
+        "{}{}",
+        String::from_utf8_lossy(&salida.stdout),
+        String::from_utf8_lossy(&salida.stderr)
+    ))
+}
+
+/// `"2.0.2"`, `"opencode v2.0.2"` o `"1.18.30"` → 2, 2, 1.
+fn parse_major(texto: &str) -> Option<u32> {
+    texto.split_whitespace().find_map(|token| {
+        token
+            .trim_start_matches('v')
+            .split('.')
+            .next()?
+            .parse()
+            .ok()
+    })
+}
+
+/// Los dos formatos de OpenCode: v1 `mcp.atic`, v2 `mcp.servers.atic`.
+fn entrada_mcp_presente(cfg: &Value) -> bool {
+    cfg.get("mcp").and_then(|m| m.get(NOMBRE)).is_some()
+        || cfg
+            .get("mcp")
+            .and_then(|m| m.get("servers"))
+            .and_then(|s| s.get(NOMBRE))
+            .is_some()
+}
+
 /// La ruta del sidecar, o el motivo por el que no se puede ofrecer.
 fn sidecar() -> Result<String, String> {
     super::hub::mcp_path()
@@ -173,11 +219,12 @@ pub fn instalado(cli: &str) -> Result<bool, String> {
         return Err(format!("«{cli}» no es un agente que Atic sepa conectar."));
     }
     if let Some(ruta) = config_json(cli) {
+        let cfg = leer_json(&ruta)?;
+        if cli == "opencode" {
+            return Ok(entrada_mcp_presente(&cfg));
+        }
         let (clave, _) = entrada_json(cli, "", "");
-        return Ok(leer_json(&ruta)?
-            .get(&clave)
-            .and_then(|m| m.get(NOMBRE))
-            .is_some());
+        return Ok(cfg.get(&clave).and_then(|m| m.get(NOMBRE)).is_some());
     }
     // Los que se administran solos: se les pregunta a ellos.
     let (_, texto) = mcp_cmd(cli, &["list".to_string()])?;
@@ -189,6 +236,25 @@ pub fn instalado(cli: &str) -> Result<bool, String> {
 pub fn instalar(cli: &str) -> Result<(), String> {
     let host = host_de(cli).ok_or_else(|| format!("«{cli}» no se puede conectar."))?;
     let ruta = sidecar()?;
+    // v2 sabe registrarse solo y escribe su formato (`mcp.servers`); v1 no
+    // tiene un `add` no interactivo y sigue por el JSON.
+    if cli == "opencode" && opencode_v2() {
+        let args = vec![
+            "add".to_string(),
+            "--global".to_string(),
+            NOMBRE.to_string(),
+            "--".to_string(),
+            ruta.clone(),
+            "--host".to_string(),
+            host.to_string(),
+        ];
+        let (ok, texto) = mcp_cmd(cli, &args)?;
+        return if ok {
+            Ok(())
+        } else {
+            Err(recorte(&texto, cli))
+        };
+    }
     if let Some(archivo) = config_json(cli) {
         let mut cfg = leer_json(&archivo)?;
         let (clave, entrada) = entrada_json(cli, &ruta, host);
@@ -219,9 +285,19 @@ pub fn quitar(cli: &str) -> Result<(), String> {
     }
     if let Some(archivo) = config_json(cli) {
         let mut cfg = leer_json(&archivo)?;
-        let (clave, _) = entrada_json(cli, "", "");
-        if let Some(mapa) = cfg.get_mut(&clave).and_then(|m| m.as_object_mut()) {
-            mapa.remove(NOMBRE);
+        if cli == "opencode" {
+            // v2 no tiene `mcp remove`: se quitan las dos formas conocidas.
+            if let Some(mapa) = cfg.get_mut("mcp").and_then(|m| m.as_object_mut()) {
+                mapa.remove(NOMBRE);
+                if let Some(servidores) = mapa.get_mut("servers").and_then(|s| s.as_object_mut()) {
+                    servidores.remove(NOMBRE);
+                }
+            }
+        } else {
+            let (clave, _) = entrada_json(cli, "", "");
+            if let Some(mapa) = cfg.get_mut(&clave).and_then(|m| m.as_object_mut()) {
+                mapa.remove(NOMBRE);
+            }
         }
         return escribir_json(&archivo, &cfg);
     }
@@ -359,5 +435,29 @@ mod tests {
     fn un_archivo_que_no_existe_es_un_objeto_vacio() {
         let ruta = std::env::temp_dir().join("atic-no-existe-jamas.json");
         assert_eq!(leer_json(&ruta).unwrap(), json!({}));
+    }
+
+    #[test]
+    fn parse_major_lee_los_formatos_de_version() {
+        assert_eq!(parse_major("2.0.2"), Some(2));
+        assert_eq!(parse_major("opencode v2.0.2"), Some(2));
+        assert_eq!(parse_major("1.18.30"), Some(1));
+        assert_eq!(
+            parse_major("OpenCode command line interface\n1.18.30"),
+            Some(1)
+        );
+        assert_eq!(parse_major("sin números"), None);
+    }
+
+    #[test]
+    fn opencode_acepta_los_dos_formatos_de_entrada_mcp() {
+        let v1 = json!({ "mcp": { "atic": { "type": "local" } } });
+        let v2 = json!({ "mcp": { "servers": { "atic": { "type": "local" } } } });
+        assert!(entrada_mcp_presente(&v1));
+        assert!(entrada_mcp_presente(&v2));
+        assert!(!entrada_mcp_presente(
+            &json!({ "mcp": { "servers": { "otro": {} } } })
+        ));
+        assert!(!entrada_mcp_presente(&json!({})));
     }
 }

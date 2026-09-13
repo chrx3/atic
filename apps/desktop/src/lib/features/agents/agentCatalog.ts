@@ -3,46 +3,79 @@
  * Lo comparten el lanzador (grilla de selección) y el menú "+" del rail
  * de consolas: una sola lista, un solo orden.
  */
-export type AgentDef = { cli: string; name: string; install: string };
+import { shortcutOs } from "$core/hotkeys";
 
-/**
- * `install` es la línea oficial para Windows (la app hoy solo corre ahí) y se
- * ejecuta en una consola nueva, dentro de la shell del usuario: `irm | iex`
- * son los instaladores nativos publicados por cada vendor; el resto va por
- * npm porque no publican instalador de Windows.
- */
+export type AgentDef = {
+  cli: string;
+  name: string;
+  /**
+   * Línea oficial de instalación por sistema.
+   *
+   * `windows` usa `irm | iex` (los instaladores nativos) o npm cuando el
+   * vendor no publica uno; el resto son los `curl | bash` oficiales, que
+   * también sirven en Linux.
+   */
+  install: { windows: string; macos: string };
+};
+
+/** La línea de instalación del SO en el que corre Atic. */
+export function installCommand(agent: AgentDef): string {
+  // `shortcutOs` lo setea el layout al arrancar con el userAgent real; en
+  // tests queda "other", que comparte el camino de bash con macOS.
+  return shortcutOs() === "windows" ? agent.install.windows : agent.install.macos;
+}
+
 export const AGENTS: AgentDef[] = [
   {
     cli: "claude",
     name: "Claude Code",
-    install: "irm https://claude.ai/install.ps1 | iex",
+    install: {
+      windows: "irm https://claude.ai/install.ps1 | iex",
+      macos: "curl -fsSL https://claude.ai/install.sh | bash",
+    },
   },
   {
     cli: "opencode",
     name: "OpenCode",
-    install: "npm install -g opencode-ai",
+    install: {
+      windows: "npm install -g opencode-ai",
+      // v2 se instala standalone en ~/.opencode/bin (y le gana al shim npm).
+      macos: "curl -fsSL https://opencode.ai/install | bash",
+    },
   },
   {
     cli: "codex",
     name: "Codex",
-    install: "npm install -g @openai/codex",
+    install: {
+      windows: "npm install -g @openai/codex",
+      macos: "npm install -g @openai/codex",
+    },
   },
   {
     cli: "cursor-agent",
     name: "Cursor",
-    install: "irm 'https://cursor.com/install?win32=true' | iex",
+    install: {
+      windows: "irm 'https://cursor.com/install?win32=true' | iex",
+      macos: "curl https://cursor.com/install -fsS | bash",
+    },
   },
   {
     // Sucesor del Gemini CLI clásico, que Google retiró en jun-2026.
     cli: "agy",
     name: "Antigravity",
-    install: "irm https://antigravity.google/cli/install.ps1 | iex",
+    install: {
+      windows: "irm https://antigravity.google/cli/install.ps1 | iex",
+      macos: "curl -fsSL https://antigravity.google/cli/install.sh | bash",
+    },
   },
   {
-    // El instalador deja `grok.exe` en `~/.grok/bin` y lo suma al PATH.
+    // El instalador deja `grok` en `~/.grok/bin` y lo suma al PATH.
     cli: "grok",
     name: "Grok",
-    install: "irm https://x.ai/cli/install.ps1 | iex",
+    install: {
+      windows: "irm https://x.ai/cli/install.ps1 | iex",
+      macos: "curl -fsSL https://x.ai/cli/install.sh | bash",
+    },
   },
 ];
 
