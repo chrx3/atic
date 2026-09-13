@@ -112,6 +112,10 @@
   let drag = $state<{ fling: boolean } | null>(null);
   let expanding = false;
   let fileDragStarted = false;
+  /** El último press arrancó sobre la miniatura (y no sobre un botón). */
+  let pressOnThumb = false;
+  /** Un drag consumió el gesto: el clic del botón que lo originó se traga. */
+  let swallowClick = false;
   let dropping = false;
   let oleSince = 0;
   let oleHwnd = 0;
@@ -546,9 +550,9 @@
   }
 
   function recapture() {
-    if (pointerId === null || !thumbEl || !press) return;
+    if (pointerId === null || !shelfEl || !press) return;
     try {
-      thumbEl.setPointerCapture(pointerId);
+      shelfEl.setPointerCapture(pointerId);
     } catch {
       // El resize de WebView2 a veces suelta el id; el listener de ventana sigue.
     }
@@ -570,9 +574,9 @@
 
   function endPress() {
     unbindGesture();
-    if (pointerId !== null && thumbEl) {
+    if (pointerId !== null && shelfEl) {
       try {
-        thumbEl.releasePointerCapture(pointerId);
+        shelfEl.releasePointerCapture(pointerId);
       } catch {
         // Ya no había capture.
       }
@@ -608,6 +612,10 @@
     if (!dragging) {
       if (Math.hypot(rawX, rawY) <= DRAG_THRESHOLD) return;
       dragging = true;
+      capturePointer(event.pointerId);
+      // Si el gesto empezó sobre un botón (Dibujar, OCR, carpeta…), al soltar
+      // llegaría un clic que no corresponde: se traga una vez.
+      swallowClick = true;
       clearTimer();
       drag = { fling: false };
       if (isMac) {
@@ -665,7 +673,9 @@
     if (fileDragStarted) return;
     if (wasClick) {
       covering = false;
-      void activate();
+      // Solo la miniatura abre al clic: los botones de la tarjeta ya traen su
+      // propio `onclick`, y el drag puede haber empezado encima de uno.
+      if (pressOnThumb) void activate();
       return;
     }
     if (!wasDragging) return;
@@ -701,9 +711,27 @@
     void snapBack();
   }
 
+  /**
+   * Un drag consumió el gesto: el clic de soltar no debe activar el botón
+   * sobre el que empezó (Dibujar, OCR…). Se corre en captura para pasar antes
+   * que el `onclick` del botón.
+   */
+  function onClickCapture(event: MouseEvent) {
+    if (!swallowClick) return;
+    swallowClick = false;
+    event.preventDefault();
+    event.stopPropagation();
+  }
+
   function onDown(event: PointerEvent) {
     if (event.button !== 0 || busy || ocrBusy) return;
-    event.preventDefault();
+    const target = event.target as HTMLElement | null;
+    const button = target?.closest("button") ?? null;
+    pressOnThumb = button === thumbEl;
+    // Sobre un botón NO se previene el default: el clic tiene que activarlo
+    // igual. Sobre la miniatura (o el fondo) sí, para no seleccionar texto.
+    if (!button || pressOnThumb) event.preventDefault();
+    swallowClick = false;
     pointerId = event.pointerId;
     press = { x: event.screenX, y: event.screenY };
     dragging = false;
@@ -718,8 +746,16 @@
     const r = thumbEl?.getBoundingClientRect();
     grab = r ? { x: event.clientX - r.left, y: event.clientY - r.top } : { x: 0, y: 0 };
     bindGesture();
+    // El capture se toma recién al arrancar el drag (en `onMove`): capturar
+    // en el `pointerdown` retargeteaba el `pointerup` a la tarjeta y el clic
+    // de los botones (Dibujar, OCR, carpeta) dejaba de dispararse.
+  }
+
+  /** Capture del gesto en la tarjeta, para no perder el drag fuera. */
+  function capturePointer(id: number) {
+    if (!shelfEl) return;
     try {
-      (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+      shelfEl.setPointerCapture(id);
     } catch {
       // Sin capture, los listeners de ventana cubren el gesto.
     }
@@ -757,6 +793,9 @@
       hovering = false;
       armDismiss(false);
     }}
+    onpointerdown={onDown}
+    onlostpointercapture={onLostCapture}
+    onclickcapture={onClickCapture}
     role="group"
     aria-label={t("shelf.recent")}
   >
@@ -765,8 +804,6 @@
       bind:this={thumbEl}
       class="shelf-thumb"
       class:is-parked={ghostLive}
-      onpointerdown={onDown}
-      onlostpointercapture={onLostCapture}
       aria-label={t("shelf.open", { label: current.label || current.id })}
       aria-describedby="shelf-tip"
     >
@@ -777,7 +814,6 @@
       <button
         type="button"
         class="shelf-dot is-tl"
-        onpointerdown={(e) => e.stopPropagation()}
         onclick={(e) => {
           e.stopPropagation();
           void hide();
@@ -789,7 +825,6 @@
       <button
         type="button"
         class="shelf-dot is-tr"
-        onpointerdown={(e) => e.stopPropagation()}
         onclick={openFolder}
         aria-label={t("shelf.folder")}
       >
@@ -797,12 +832,7 @@
       </button>
 
       <div class="shelf-center">
-        <button
-          type="button"
-          class="shelf-sub"
-          onpointerdown={(e) => e.stopPropagation()}
-          onclick={(e) => void annotate(e)}
-        >
+        <button type="button" class="shelf-sub" onclick={(e) => void annotate(e)}>
           <Icon icon={Pencil} size={13} />
           {t("shelf.draw")}
         </button>
@@ -813,7 +843,6 @@
         class="shelf-dot is-bl"
         disabled={ocrBusy}
         aria-busy={ocrBusy}
-        onpointerdown={(e) => e.stopPropagation()}
         onclick={(e) => void ocr(e)}
         aria-label={t("shelf.text")}
       >
@@ -880,6 +909,10 @@
     --shelf-pad: 8px;
     --shelf-open: var(--duration-medium, 150ms);
     --shelf-close: var(--duration-fast, 125ms);
+
+    /* El drag puede empezar sobre un botón (no se previene su default para no
+       romperle el clic): sin esto, arrastrar desde ahí selecciona texto. */
+    user-select: none;
 
     /*
      * Los colores del shelf, declarados una sola vez.
