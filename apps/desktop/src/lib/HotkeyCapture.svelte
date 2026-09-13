@@ -41,6 +41,19 @@
       .filter(Boolean);
   }
 
+  /**
+   * Tecla FÍSICA a partir de `KeyboardEvent.code`.
+   *
+   * En Mac, con Option apretada `e.key` trae el carácter del layout (`@` con
+   * Option+2, `®` con Option+R) y el parser de atajos no lo reconoce: el
+   * registro fallaba. `code` no depende del layout ni de los modificadores.
+   */
+  function codeToKey(code: string): string {
+    if (/^Key[A-Z]$/.test(code)) return code.slice(3);
+    if (/^Digit[0-9]$/.test(code)) return code.slice(5);
+    return code;
+  }
+
   function keyEventToShortcut(e: KeyboardEvent): string | null {
     if (["Control", "Shift", "Alt", "Meta", "OS"].includes(e.key)) return null;
 
@@ -60,7 +73,7 @@
     if (e.altKey) out.push("Alt");
     if (e.shiftKey) out.push("Shift");
 
-    let key = e.key;
+    let key = e.code ? codeToKey(e.code) : e.key;
     if (key === " ") key = "Space";
     else if (key.length === 1) key = key.toUpperCase();
     else if (/^F\d{1,2}$/i.test(key)) key = key.toUpperCase();
