@@ -51,6 +51,15 @@
   /** Más que esto en píxeles y el clic pasa a ser un arrastre. */
   const DRAG_THRESHOLD = 5;
 
+  /**
+   * WKWebView en Mac reporta `MacIntel`. En vez del ghost con cobertura del
+   * monitor (que en Mac no existe: `capture_shelf_cover_monitor` es Win32), el
+   * gesto arranca el arrastre nativo de archivo y el sistema pone la imagen.
+   */
+  const isMac =
+    typeof navigator !== "undefined" &&
+    /mac/i.test(navigator.platform || navigator.userAgent);
+
   /** Recorrido hacia el borde para soltar el toast. */
   const DISCARD_PX = 56;
 
@@ -584,6 +593,14 @@
       dragging = true;
       clearTimer();
       drag = { fling: false };
+      if (isMac) {
+        // Arrastre nativo de macOS: el PNG viaja como archivo y se suelta en
+        // cualquier app (correo, chat, Finder). No hay ghost ni cobertura del
+        // monitor porque no existe el recorte de WebView2 que los motivó.
+        const item = current;
+        if (item) void beginOle(item);
+        return;
+      }
       covering = true;
       void expandForDrag();
       return;
