@@ -195,7 +195,7 @@ voz solo cambia color, registro y duración.
 | Dictado y pegado | sí | sí |
 | Capturas de pantalla | sí | no |
 | Clipboard, textos, agentes | sí | sí |
-| Launcher | sí (menú Inicio) | sí (`/Applications`) |
+| Launcher | sí (menú Inicio + Store) | sí (apps, iconos, Recientes y cerrar apps) |
 
 Windows es la plataforma completa. En macOS, grabar una reunión captura **solo
 tu voz** — es la limitación conocida más grande del producto hoy.

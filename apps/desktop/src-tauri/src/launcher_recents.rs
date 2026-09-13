@@ -2,8 +2,9 @@
 //!
 //! El idle del Spotlight no puede ser una barra muda. Windows no ofrece un
 //! “últimas usadas” limpio (UserAssist va cifrado); lo que sí es honesto es
-//! enumerar ventanas visibles (abierta desde cuándo) y recordar lo que Atic
-//! mismo abrió (usada hace).
+//! enumerar lo que está abierto ahora (abierta desde cuándo) y recordar lo que
+//! Atic mismo abrió (usada hace). En macOS, `NSWorkspace.runningApplications`
+//! da las apps regulares vivas sin pedir permisos.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -160,7 +161,12 @@ fn running_apps() -> Vec<RunningApp> {
     windows::collect()
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+fn running_apps() -> Vec<RunningApp> {
+    macos::collect()
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 fn running_apps() -> Vec<RunningApp> {
     Vec::new()
 }
@@ -176,7 +182,11 @@ pub fn close_app_windows(app_title: &str, app_id: &str) -> usize {
     {
         windows::close_app_windows(app_title, app_id)
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        macos::close_app_windows(app_title, app_id)
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         let _ = (app_title, app_id);
         0
@@ -189,7 +199,11 @@ pub fn close_user_windows() -> usize {
     {
         windows::close_user_windows()
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        macos::close_user_windows()
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         0
     }
@@ -523,6 +537,161 @@ mod windows {
     }
 }
 
+/// Apps de usuario vivas ahora vía AppKit. Solo aplicaciones «regulares»: los
+/// agentes de fondo y el chrome del sistema (`activationPolicy` distinto) quedan
+/// afuera solos, sin depender de Grabación de pantalla como `CGWindowList`.
+#[cfg(target_os = "macos")]
+mod macos {
+    use std::path::Path;
+
+    use objc2::rc::autoreleasepool;
+    use objc2::runtime::{AnyObject, Bool};
+    use objc2_foundation::{NSArray, NSString};
+
+    use super::RunningApp;
+
+    // AppKit tiene que estar cargado para que `class!(NSWorkspace)` y
+    // `class!(NSRunningApplication)` resuelvan por nombre.
+    #[link(name = "AppKit", kind = "framework")]
+    extern "C" {}
+
+    /// `NSApplicationActivationPolicyRegular`.
+    const ACTIVATION_POLICY_REGULAR: isize = 0;
+
+    struct LiveApp {
+        /// `NSRunningApplication` prestado: vale mientras dure el pool que lo
+        /// produjo (el NSArray de `runningApplications` lo mantiene vivo).
+        raw: *mut AnyObject,
+        app: RunningApp,
+    }
+
+    /// `NSString` prestado → `String`. `None` si el puntero es nulo.
+    fn nsstring_to_string(value: *mut AnyObject) -> Option<String> {
+        if value.is_null() {
+            return None;
+        }
+        // SAFETY: `value` es un NSString vivo en el pool del llamador.
+        let value: &NSString = unsafe { &*value.cast() };
+        Some(value.to_string())
+    }
+
+    /// Apps regulares de usuario (sin el shell, Atic ni agentes de fondo).
+    fn live_apps() -> Vec<LiveApp> {
+        // SAFETY: mensajes a AppKit; `runningApplications` es +0 y vive en el
+        // pool del llamador, igual que cada NSRunningApplication.
+        unsafe {
+            let workspace: *mut AnyObject =
+                objc2::msg_send![objc2::class!(NSWorkspace), sharedWorkspace];
+            if workspace.is_null() {
+                return Vec::new();
+            }
+            let apps: *mut AnyObject = objc2::msg_send![workspace, runningApplications];
+            if apps.is_null() {
+                return Vec::new();
+            }
+            let apps: &NSArray<AnyObject> = &*apps.cast();
+            let self_pid = std::process::id() as i32;
+            let mut out = Vec::with_capacity(apps.len());
+            for app in apps.iter() {
+                let policy: isize = objc2::msg_send![&*app, activationPolicy];
+                if policy != ACTIVATION_POLICY_REGULAR {
+                    continue;
+                }
+                let pid: i32 = objc2::msg_send![&*app, processIdentifier];
+                if pid <= 0 || pid == self_pid {
+                    continue;
+                }
+                // El stem del bundle coincide con el título del índice (que
+                // también sale del nombre del `.app`), aunque el nombre
+                // localizado difiera.
+                let bundle: *mut AnyObject = objc2::msg_send![&*app, bundleURL];
+                if bundle.is_null() {
+                    continue;
+                }
+                let path = match nsstring_to_string(objc2::msg_send![bundle, path]) {
+                    Some(path) => path,
+                    None => continue,
+                };
+                let stem = Path::new(&path)
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("")
+                    .to_lowercase();
+                // Finder es el escritorio, no una app abierta: mismo criterio
+                // que Explorer en Windows.
+                if stem.is_empty() || stem == "finder" || super::skip_process_stem(&stem) {
+                    continue;
+                }
+                let title = nsstring_to_string(objc2::msg_send![&*app, localizedName])
+                    .unwrap_or_else(|| stem.clone());
+                let active: Bool = objc2::msg_send![&*app, isActive];
+                let date: *mut AnyObject = objc2::msg_send![&*app, launchDate];
+                let started_ms = if date.is_null() {
+                    0
+                } else {
+                    let secs: f64 = objc2::msg_send![date, timeIntervalSince1970];
+                    if secs > 0.0 {
+                        (secs * 1000.0) as u64
+                    } else {
+                        0
+                    }
+                };
+                out.push(LiveApp {
+                    raw: &*app as *const AnyObject as *mut AnyObject,
+                    app: RunningApp {
+                        stem,
+                        title,
+                        started_ms,
+                        foreground: active.as_bool(),
+                    },
+                });
+            }
+            out
+        }
+    }
+
+    pub fn collect() -> Vec<RunningApp> {
+        autoreleasepool(|_| live_apps().into_iter().map(|live| live.app).collect())
+    }
+
+    /// Pide cerrar (Quit, nunca force) las apps que emparejen con la entrada.
+    /// Devuelve cuántas se pidieron cerrar; 0 = no está corriendo.
+    pub fn close_app_windows(app_title: &str, app_id: &str) -> usize {
+        autoreleasepool(|_| {
+            let mut asked = 0;
+            for live in live_apps() {
+                if super::process_fits_app(&live.app.stem, &live.app.title, app_title, app_id) {
+                    terminate(live.raw);
+                    asked += 1;
+                }
+            }
+            asked
+        })
+    }
+
+    /// Pide cerrar todas las apps de usuario regulares (sin Finder ni Atic).
+    pub fn close_user_windows() -> usize {
+        autoreleasepool(|_| {
+            let mut asked = 0;
+            for live in live_apps() {
+                terminate(live.raw);
+                asked += 1;
+            }
+            asked
+        })
+    }
+
+    /// `NSRunningApplication.terminate`: la app decide (puede preguntar por
+    /// cambios sin guardar). Nunca `forceTerminate`.
+    fn terminate(app: *mut AnyObject) {
+        if app.is_null() {
+            return;
+        }
+        // SAFETY: mensaje a una app viva en el pool del llamador.
+        let _: Bool = unsafe { objc2::msg_send![app, terminate] };
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -571,6 +740,28 @@ mod tests {
     }
 
     #[test]
+    fn bundle_mac_encuentra_la_app_del_indice() {
+        // El stem sale del nombre del `.app`, igual que el título del índice.
+        assert!(process_fits_app(
+            "ghostty",
+            "Ghostty",
+            "Ghostty",
+            "app:/Applications/Ghostty.app"
+        ));
+    }
+
+    #[test]
+    fn nombre_localizado_cae_al_stem_del_bundle() {
+        // Aunque AppKit dé el nombre traducido, el stem del bundle coincide.
+        assert!(process_fits_app(
+            "music",
+            "Música",
+            "Music",
+            "app:/System/Applications/Music.app"
+        ));
+    }
+
+    #[test]
     fn winword_abre_word_por_titulo() {
         assert!(process_fits_app(
             "winword",
@@ -585,6 +776,39 @@ mod tests {
         assert!(skip_process_stem("explorer"));
         assert!(skip_process_stem("msedgewebview2"));
         assert!(!skip_process_stem("chrome"));
+    }
+
+    /// Humo manual de macOS: AppKit real (icono + apps vivas) y el índice del
+    /// sistema. No corre en CI: depende de que haya apps abiertas y de Safari.
+    /// `cargo test -p atic-desktop --lib humo_mac -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    #[cfg(target_os = "macos")]
+    fn humo_mac_iconos_y_recientes() {
+        let icon = crate::launcher_icons::icon_data_url(Path::new("/Applications/Safari.app"));
+        println!(
+            "icono Safari: {}",
+            icon.as_deref()
+                .map(|url| format!("{} bytes", url.len()))
+                .unwrap_or_else(|| "ninguno".into())
+        );
+        assert!(icon.is_some(), "iconForFile debería dar un PNG");
+
+        let dir = std::env::temp_dir().join(format!("atic-recents-humo-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let rows = list(&dir.join("launcher-recents.json"));
+        println!("recientes: {}", rows.len());
+        for row in &rows {
+            println!(
+                " - {} (running={:?} fg={:?})",
+                row.title, row.running, row.foreground
+            );
+        }
+        assert!(
+            !rows.is_empty(),
+            "con apps abiertas, Recientes no debería venir vacío"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

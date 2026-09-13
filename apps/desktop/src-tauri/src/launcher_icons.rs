@@ -34,9 +34,91 @@ fn extract(path: &Path) -> Option<String> {
     extract_windows(path)
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+fn extract(path: &Path) -> Option<String> {
+    macos::icon_png(path)
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 fn extract(_path: &Path) -> Option<String> {
     None
+}
+
+/// Icono de un `.app` con AppKit.
+///
+/// `iconForFile` entrega la imagen del workspace y `CGImageForProposedRect` la
+/// mejor representación para el tamaño pedido (en Retina sale 128 px reales,
+/// ~15 KB de PNG). AppKit pide pool de autorelease propio: el hilo bloqueante
+/// de Tauri no siempre lo tiene.
+#[cfg(target_os = "macos")]
+mod macos {
+    use std::path::Path;
+
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    use objc2::rc::{autoreleasepool, Retained};
+    use objc2::runtime::AnyObject;
+    use objc2_foundation::{NSData, NSDictionary, NSPoint, NSRect, NSSize, NSString};
+
+    // AppKit tiene que estar cargado para que las clases resuelvan por nombre.
+    #[link(name = "AppKit", kind = "framework")]
+    extern "C" {}
+
+    /// `NSBitmapImageFileTypePNG`.
+    const PNG: usize = 4;
+    /// Lado del cuadrado que se le pide a AppKit; el front lo muestra a 16-20 px.
+    const ICON_PX: f64 = 64.0;
+
+    pub(super) fn icon_png(path: &Path) -> Option<String> {
+        let path = path.to_str()?;
+        autoreleasepool(|_| {
+            // SAFETY: mensajes a AppKit; los objetos +0 viven en este pool y los
+            // +1 de `alloc`/`init` se liberan con `Retained::from_raw`.
+            unsafe {
+                let workspace: *mut AnyObject =
+                    objc2::msg_send![objc2::class!(NSWorkspace), sharedWorkspace];
+                if workspace.is_null() {
+                    return None;
+                }
+                let ns_path = NSString::from_str(path);
+                let image: *mut AnyObject = objc2::msg_send![workspace, iconForFile: &*ns_path];
+                if image.is_null() {
+                    return None;
+                }
+                let mut rect = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(ICON_PX, ICON_PX));
+                let cg: *mut AnyObject = objc2::msg_send![
+                    image,
+                    CGImageForProposedRect: &mut rect as *mut NSRect,
+                    context: std::ptr::null_mut::<AnyObject>(),
+                    hints: std::ptr::null_mut::<AnyObject>()
+                ];
+                if cg.is_null() {
+                    return None;
+                }
+                let rep: *mut AnyObject = objc2::msg_send![objc2::class!(NSBitmapImageRep), alloc];
+                let rep: *mut AnyObject = objc2::msg_send![rep, initWithCGImage: cg];
+                if rep.is_null() {
+                    return None;
+                }
+                let properties = NSDictionary::<NSString, AnyObject>::new();
+                let png: *mut AnyObject = objc2::msg_send![
+                    rep,
+                    representationUsingType: PNG,
+                    properties: &*properties
+                ];
+                let bytes = if png.is_null() {
+                    None
+                } else {
+                    // SAFETY: `png` es un NSData +0 vivo en este pool.
+                    let png: &NSData = &*png.cast();
+                    Some(png.to_vec())
+                };
+                // `alloc`/`init` es +1: se libera sí o sí antes de cerrar el pool.
+                drop(Retained::from_raw(rep));
+                let bytes = bytes?;
+                Some(format!("data:image/png;base64,{}", STANDARD.encode(bytes)))
+            }
+        })
+    }
 }
 
 /// Corre `f` con COM inicializado en este hilo (pool bloqueante de Tauri o
