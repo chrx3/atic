@@ -569,6 +569,38 @@ export const es = {
         "Copia cualquier texto y aprieta el atajo. Tiene que abrirse junto a la pill.",
     },
   },
+  permissions: {
+    title: "Permisos de macOS",
+    subtitle: "Atic los necesita para grabar y ayudarte",
+    intro:
+      "Concédelos ahora y no vuelve a pedírtelos. Puedes cambiarlos cuando quieras en Ajustes → Privacidad y seguridad.",
+    granted: "Concedido",
+    pending: "Pendiente",
+    allow: "Permitir",
+    openSettings: "Abrir Ajustes",
+    retry: "Reintentar",
+    restart: "Reiniciar Atic",
+    restartHint:
+      "Si ya lo activaste y sigue pendiente, macOS necesita reiniciar la app para aplicarlo.",
+    done: "Continuar",
+    allGrantedTitle: "Todo listo",
+    allGrantedBody: "Atic ya tiene los permisos que necesita.",
+    settingsGroup: "Permisos de macOS",
+    settingsHint: "Micrófono, grabación de pantalla y accesibilidad.",
+    review: "Revisar permisos",
+    microphone: {
+      label: "Micrófono",
+      hint: "Grabar tu voz en reuniones y dictado.",
+    },
+    screen_recording: {
+      label: "Grabación de pantalla",
+      hint: "Capturas, pizarra y audio de las llamadas.",
+    },
+    accessibility: {
+      label: "Accesibilidad",
+      hint: "Pegar lo dictado y usar el cuentagotas sobre otras apps.",
+    },
+  },
   pill: {
     more: "Más",
     moreHint: "Las que dejaste en el segundo anillo",

@@ -5,6 +5,7 @@
   import { getVersion } from "@tauri-apps/api/app";
   import { appUpdate } from "$domain/appUpdate.svelte";
   import { toastError } from "$domain/toasts.svelte";
+  import { useMainUi } from "$surfaces/main/mainUi.svelte";
   import { GITHUB_RELEASES_URL, GITHUB_REPO_URL } from "$ipc/updates";
   import { openExternalUrl } from "$ipc/config";
   import SettingsGroup from "$patterns/SettingsGroup.svelte";
@@ -17,11 +18,12 @@
 
   let version = $state("");
 
+  const ui = useMainUi();
+  const isMac = navigator.userAgent.includes("Mac");
+
   const busy = $derived(appUpdate.busy);
   const buildLabel = $derived(
-    version
-      ? `${navigator.userAgent.includes("Mac") ? "macOS" : "Windows"} · v${version}`
-      : "…",
+    version ? `${isMac ? "macOS" : "Windows"} · v${version}` : "…",
   );
 
   $effect(() => {
@@ -76,6 +78,21 @@
       {/snippet}
     </SettingsRow>
   </SettingsGroup>
+
+  {#if isMac}
+    <SettingsGroup
+      title={t("permissions.settingsGroup")}
+      hint={t("permissions.settingsHint")}
+    >
+      <SettingsRow bare>
+        {#snippet control()}
+          <Button variant="soft" size="sm" full onclick={() => ui.openPermissions()}>
+            {t("permissions.review")}
+          </Button>
+        {/snippet}
+      </SettingsRow>
+    </SettingsGroup>
+  {/if}
 
   {#if appUpdate.installing}
     <Banner

@@ -18,8 +18,11 @@
   import { sessionEffect } from "$domain/session";
   import { toastError, toasts } from "$domain/toasts.svelte";
   import OnboardingModal from "$features/onboarding/OnboardingModal.svelte";
+  import PermissionsModal from "$features/permissions/PermissionsModal.svelte";
+  import { hasMissingPermissions } from "$features/permissions/model";
   import SearchModal from "$features/search/SearchModal.svelte";
   import { onOpenSearchRequested } from "$ipc/search";
+  import { macPermissionsStatus } from "$ipc/permissions";
   import { appUpdate } from "$domain/appUpdate.svelte";
   import { closeWindow, minimizeWindow, toggleMaximizeWindow } from "$ipc/windows";
   import AticMark from "$lib/AticMark.svelte";
@@ -113,6 +116,26 @@
 
   const tool = $derived(localizeTool(toolById(ui.activeTool)));
   const onboardingDone = $derived(config.current?.onboarding_done === true);
+
+  /**
+   * macOS: al arrancar, si falta algún permiso TCC, se ofrece la pantalla que
+   * los pide. Se chequea una sola vez por sesión: cerrarla no la reabre hasta
+   * el próximo arranque (o desde Ajustes → Acerca de).
+   */
+  const isMac = navigator.userAgent.includes("Mac");
+  let permissionsChecked = false;
+
+  $effect(() => {
+    if (!isMac || !onboardingDone || permissionsChecked) return;
+    permissionsChecked = true;
+    void macPermissionsStatus()
+      .then((status) => {
+        if (hasMissingPermissions(status)) ui.openPermissions();
+      })
+      .catch(() => {
+        /* fuera de Tauri */
+      });
+  });
 
   $effect(() => {
     if (isDev) return;
@@ -258,6 +281,10 @@
       }}
     />
   {/key}
+{/if}
+
+{#if ui.permissionsOpen}
+  <PermissionsModal onClose={() => ui.closePermissions()} />
 {/if}
 
 {#if ui.searchOpen}

@@ -31,6 +31,7 @@ mod ole_text_drag;
 mod overlay;
 mod panel_float;
 mod paste_queue;
+mod permissions;
 mod retention;
 mod search;
 mod shortcuts;
@@ -173,6 +174,9 @@ pub fn run() {
             commands::rename_recording,
             commands::get_config,
             commands::set_config,
+            permissions::mac_permissions_status,
+            permissions::mac_request_permission,
+            permissions::mac_open_privacy_pane,
             tray::set_tray_menu,
             commands::set_pill_visible,
             commands::show_main_window,

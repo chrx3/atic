@@ -11,8 +11,8 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender};
-use std::thread::{self, JoinHandle};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender, TryRecvError};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use block2::RcBlock;
@@ -172,7 +172,7 @@ pub(crate) fn start(
     events: Sender<CaptureEvent>,
     stt_tap: Option<SyncSender<AudioTapChunk>>,
     english: bool,
-) -> Result<(SystemAudioGuard, JoinHandle<Result<u64, AudioError>>), AudioError> {
+) -> Result<(SystemAudioGuard, crate::TrackWriter), AudioError> {
     if !available!(macos = 13.0) {
         return Err(AudioError::SystemAudioUnsupported(
             "macOS 13 o superior (ScreenCaptureKit)".into(),
@@ -439,12 +439,16 @@ fn wav_spec() -> hound::WavSpec {
 
 /// Writer con línea de tiempo: si SCK deja de llamar (silencio), rellena con
 /// ceros hasta el tiempo transcurrido para no encoger la pista de "otros".
+///
+/// Cierra por señal propia, no por la caída del `Sender`: el delegate de SCK
+/// podría seguir retenido y el join no volvería nunca.
 fn spawn_timeline_writer(
     path: PathBuf,
     spec: hound::WavSpec,
     rx: Receiver<Vec<f32>>,
-) -> JoinHandle<Result<u64, AudioError>> {
-    thread::spawn(move || {
+) -> crate::TrackWriter {
+    let (done_tx, done) = mpsc::channel::<()>();
+    let join = thread::spawn(move || {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -455,6 +459,10 @@ fn spawn_timeline_writer(
         let mut frames: u64 = 0;
         let mut written: u64 = 0;
         loop {
+            match done.try_recv() {
+                Ok(()) | Err(TryRecvError::Disconnected) => break,
+                Err(TryRecvError::Empty) => {}
+            }
             match rx.recv_timeout(Duration::from_millis(100)) {
                 Ok(buffer) => {
                     for sample in buffer {
@@ -477,7 +485,18 @@ fn spawn_timeline_writer(
                 Err(RecvTimeoutError::Disconnected) => break,
             }
         }
+        // Lo que quedó encolado antes del cierre no se pierde.
+        while let Ok(buffer) = rx.try_recv() {
+            for sample in buffer {
+                writer.write_sample(sample)?;
+                written += 1;
+            }
+        }
         writer.finalize()?;
         Ok(written)
-    })
+    });
+    crate::TrackWriter {
+        done: done_tx,
+        join,
+    }
 }

@@ -3,14 +3,16 @@
 # del updater en esta Mac. Requiere Xcode Command Line Tools, Rust (rustup),
 # Node/pnpm y, si vas a publicar, la CLI de GitHub (gh).
 #
-# No firma con el certificado de Apple Developer: el .app sale con firma
-# ad-hoc (APPLE_SIGNING_IDENTITY=-), que es lo mínimo para Apple Silicon. La
-# primera vez que se abra en una Mac (propia o de otra persona), Gatekeeper va
-# a bloquearlo por no estar notarizado — hay que hacer clic derecho > Abrir, o
-# correr `xattr -cr /Applications/Atic.app`.
+# No usa el certificado de pago de Apple Developer. Si existe
+# ~/.tauri/atic-signing-identity, firma con ese certificado propio (creado una
+# vez en el Llavero; ver docs/MACOS.md) y así macOS conserva los permisos TCC
+# entre builds y actualizaciones. Si no existe, cae a firma ad-hoc
+# (APPLE_SIGNING_IDENTITY=-), que es lo mínimo para Apple Silicon.
 #
-# Si tenés una identidad real, exportá APPLE_SIGNING_IDENTITY antes de correr
-# el script y se usa esa en lugar de la ad-hoc.
+# Con cualquier firma no notarizada, la primera vez que se abra en otra Mac
+# Gatekeeper la bloquea: clic derecho > Abrir, o `xattr -cr /Applications/Atic.app`.
+#
+# APPLE_SIGNING_IDENTITY exportado tiene prioridad sobre el archivo.
 #
 # Nota: con CI=true (o sin permiso de Automatización) el DMG se arma sin el
 # AppleScript de Finder: mismos archivos, solo sin posición de iconos. En
@@ -64,8 +66,20 @@ TAURI_SIGNING_PRIVATE_KEY="$(cat "$key_path")"
 export TAURI_SIGNING_PRIVATE_KEY_PASSWORD
 TAURI_SIGNING_PRIVATE_KEY_PASSWORD="$(tr -d '\n' < "$pass_path")"
 
-# Firma ad-hoc si no hay identidad de Apple exportada: sin esto Tauri no firma
-# el bundle y en Apple Silicon Gatekeeper lo trata como app dañada.
+# Identidad de firma: manda APPLE_SIGNING_IDENTITY; si no está definida, se
+# lee ~/.tauri/atic-signing-identity (certificado propio, ver docs/MACOS.md).
+identity_file="$HOME/.tauri/atic-signing-identity"
+if [[ -z "${APPLE_SIGNING_IDENTITY:-}" && -f "$identity_file" ]]; then
+  APPLE_SIGNING_IDENTITY="$(tr -d '\n' < "$identity_file")"
+fi
+if [[ -n "${APPLE_SIGNING_IDENTITY:-}" && "$APPLE_SIGNING_IDENTITY" != "-" ]] &&
+  ! security find-identity -v -p codesigning | grep -qF "$APPLE_SIGNING_IDENTITY"; then
+  echo "La identidad '$APPLE_SIGNING_IDENTITY' no está en el Llavero." >&2
+  echo "Revisá docs/MACOS.md (Firma local) o exportá APPLE_SIGNING_IDENTITY=- para ad-hoc." >&2
+  exit 1
+fi
+# Firma ad-hoc si no hay identidad: sin esto Tauri no firma el bundle y en
+# Apple Silicon Gatekeeper lo trata como app dañada.
 export APPLE_SIGNING_IDENTITY="${APPLE_SIGNING_IDENTITY:--}"
 
 rustup target add aarch64-apple-darwin x86_64-apple-darwin

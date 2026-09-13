@@ -19,6 +19,7 @@ use objc2::runtime::AnyObject;
 /// Paneles de Privacidad y seguridad que la app puede necesitar.
 #[derive(Clone, Copy, Debug)]
 pub enum PrivacyPane {
+    Microfono,
     Accesibilidad,
     GrabacionDePantalla,
     SupervisionDeEntrada,
@@ -27,6 +28,7 @@ pub enum PrivacyPane {
 impl PrivacyPane {
     fn anchor(self) -> &'static str {
         match self {
+            PrivacyPane::Microfono => "Privacy_Microphone",
             PrivacyPane::Accesibilidad => "Privacy_Accessibility",
             PrivacyPane::GrabacionDePantalla => "Privacy_ScreenCapture",
             PrivacyPane::SupervisionDeEntrada => "Privacy_ListenEvent",
@@ -196,6 +198,8 @@ extern "C" {
     ) -> *mut c_void;
     fn CGEventSetFlags(event: *mut c_void, flags: u64);
     fn CGEventPost(tap: u32, event: *mut c_void);
+    fn CGPreflightScreenCaptureAccess() -> bool;
+    fn CGRequestScreenCaptureAccess() -> bool;
 }
 
 #[link(name = "CoreFoundation", kind = "framework")]
@@ -250,15 +254,76 @@ pub fn paste_cmd_v() -> Result<(), String> {
     Ok(())
 }
 
-/// Placeholder: comprobar permisos de micrófono / captura de audio.
-pub fn permissions_needed() -> &'static [&'static str] {
-    &[
-        "micrófono",
-        "captura de audio del sistema (ScreenCaptureKit)",
-    ]
+// --- Permisos TCC para la UI de inicio ---
+
+#[link(name = "AVFoundation", kind = "framework")]
+extern "C" {
+    /// Constante `AVMediaTypeAudio` (NSString) de AVFoundation.
+    static AVMediaTypeAudio: *const c_void;
 }
 
-/// Estado documentado de la fase 4 (útil para UI de onboarding futura).
-pub fn phase4_status() -> &'static str {
-    "andamiaje: Info.plist + stub; falta captura real ScreenCaptureKit"
+/// `AVAuthorizationStatus` del micrófono.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MicrophonePermission {
+    NotDetermined,
+    Restricted,
+    Denied,
+    Authorized,
+}
+
+/// ¿Puede la app usar el micrófono? `NotDetermined` habilita el diálogo;
+/// `Denied`/`Restricted` solo se arreglan desde Ajustes.
+pub fn microphone_permission() -> MicrophonePermission {
+    // SAFETY: consulta pura de TCC; la clase y la constante quedan enlazadas
+    // por AVFoundation.
+    let status: isize = unsafe {
+        let device = objc2::class!(AVCaptureDevice);
+        objc2::msg_send![device, authorizationStatusForMediaType: AVMediaTypeAudio]
+    };
+    match status {
+        1 => MicrophonePermission::Restricted,
+        2 => MicrophonePermission::Denied,
+        3 => MicrophonePermission::Authorized,
+        _ => MicrophonePermission::NotDetermined,
+    }
+}
+
+/// Pide micrófono y espera la decisión del usuario.
+///
+/// Si el estado ya está decidido, macOS responde sin diálogo. El tope de 120 s
+/// es por si el usuario nunca contesta.
+pub fn request_microphone() -> bool {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    use block2::RcBlock;
+
+    let (tx, rx) = mpsc::channel::<bool>();
+    let block = RcBlock::new(move |granted: objc2::runtime::Bool| {
+        let _ = tx.send(granted.as_bool());
+    });
+    // SAFETY: la clase y la constante vienen de AVFoundation, enlazada arriba;
+    // el bloque vive hasta que la API lo copia y la respuesta llega por canal.
+    unsafe {
+        let device = objc2::class!(AVCaptureDevice);
+        let _: () = objc2::msg_send![
+            device,
+            requestAccessForMediaType: AVMediaTypeAudio,
+            completionHandler: &*block
+        ];
+    }
+    rx.recv_timeout(Duration::from_secs(120)).unwrap_or(false)
+}
+
+/// ¿Hay permiso de grabación de pantalla? (También cubre el audio del sistema.)
+pub fn screen_recording_trusted() -> bool {
+    // SAFETY: consulta pura de TCC.
+    unsafe { CGPreflightScreenCaptureAccess() }
+}
+
+/// Pide grabación de pantalla: el diálogo del sistema agrega Atic a la lista.
+/// Tras concederlo, macOS exige reiniciar la app para capturar.
+pub fn request_screen_recording() -> bool {
+    // SAFETY: muestra el diálogo del sistema si falta el permiso.
+    unsafe { CGRequestScreenCaptureAccess() }
 }

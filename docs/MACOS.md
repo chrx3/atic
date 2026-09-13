@@ -114,6 +114,11 @@ Al hacer una captura o abrir la pizarra, pedirá **Grabación de pantalla**. Ace
 Al dictar o pegar desde el historial, macOS pedirá **Accesibilidad** (para
 simular Cmd+V). Es el mismo permiso que usan los atajos globales.
 
+Al arrancar, si falta alguno de los tres permisos, Atic muestra la pantalla
+**Permisos de macOS** con el estado de cada uno y botones para pedirlo o abrir
+el panel correspondiente. También se puede reabrir desde Ajustes → Acerca de →
+Revisar permisos.
+
 Rutas típicas si lo denegaste por error:
 
 - **Ajustes del Sistema → Privacidad y seguridad → Micrófono** → habilita Atic / Terminal / Cursor (según desde dónde lances `tauri dev`).
@@ -123,13 +128,46 @@ Rutas típicas si lo denegaste por error:
 Tras conceder Grabación de pantalla hay que **reiniciar la app**: macOS no le
 da el permiso a un proceso ya corriendo. Lo mismo con Accesibilidad.
 
-En desarrollo, cada rebuild cambia el binario y macOS puede volver a pedir el
-permiso. Para que no pase en cada compilación, concede **Grabación de pantalla
-a la terminal** desde donde lanzas `pnpm tauri dev` (Terminal, iTerm, VS Code):
-TCC atribuye la captura al proceso responsable y los rebuilds no la revocan.
+En desarrollo, cada rebuild cambia el binario y, con firma ad-hoc, macOS
+pierde los permisos y los vuelve a pedir. Dos caminos:
+
+- **Grabación de pantalla en dev**: concede el permiso a la terminal desde
+  donde lanzas `pnpm tauri dev` (Terminal, iTerm, VS Code); TCC atribuye la
+  captura al proceso responsable y los rebuilds no la revocan.
+- **Firma estable** (recomendado para el `.app`): mira la sección siguiente.
 
 El `Info.plist` del proyecto declara textos TCC para micrófono y grabación de
 pantalla. El audio de sistema (ScreenCaptureKit) aún no está activo.
+
+### Firma local estable (certificado propio)
+
+Con firma ad-hoc el permiso queda atado al hash del binario: cada build lo
+invalida y reaparece el diálogo «quiere controlar esta Mac». Firmando siempre
+con el mismo certificado autofirmado, el permiso sobrevive a los rebuilds (y a
+las actualizaciones que distribuyas con ese certificado).
+
+1. Crea el certificado una vez: **Acceso a Llavero → Asistente de
+   certificados → Crear un certificado…** → nombre `Atic Dev`, tipo
+   **Firma de código**, autofirmado, con validez larga (p. ej. 10 años).
+2. Guarda el nombre en `~/.tauri/atic-signing-identity` (una línea, sin
+   espacios extra). Lo usan `scripts/release-macos.sh` y
+   `apps/desktop/src-tauri/tauri.macos.conf.json` (este archivo está en
+   `.gitignore`: cada máquina pone el suyo).
+3. Borra las filas viejas de Atic en Ajustes → Privacidad y seguridad, abre la
+   app firmada, concede el permiso una vez y reiníciala.
+
+El bundle apunta a `entitlements.plist` (`com.apple.security.device.audio-input`).
+Sin ese entitlement, el Hardened Runtime que Tauri aplica al firmar le entrega
+**silencio** a la app por el micrófono (el dictado transcribe «Gracias.»). En
+`tauri dev`, sin firma ni hardened runtime, no hace falta; en cualquier build
+firmado sí.
+
+`tauri dev` no firma (Tauri no firma en dev), así que ahí el camino corto es
+abrir el `.app` compilado o conceder los permisos a la terminal desde la que
+corres `pnpm tauri dev`.
+
+Si al firmar aparece `resource fork, Finder information, or similar detritus
+not allowed`: corre `xattr -cr RUTA/Atic.app` y reintenta.
 
 ### Atajos globales
 

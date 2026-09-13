@@ -565,6 +565,38 @@ export const en = {
         "Copy any text and press the shortcut. It should open next to the pill.",
     },
   },
+  permissions: {
+    title: "macOS permissions",
+    subtitle: "Atic needs them to record and help you",
+    intro:
+      "Grant them now and it won't ask again. You can change them any time in Settings → Privacy & Security.",
+    granted: "Granted",
+    pending: "Pending",
+    allow: "Allow",
+    openSettings: "Open Settings",
+    retry: "Retry",
+    restart: "Restart Atic",
+    restartHint:
+      "If you already enabled it and it still shows as pending, macOS needs the app restarted to apply it.",
+    done: "Continue",
+    allGrantedTitle: "All set",
+    allGrantedBody: "Atic has the permissions it needs.",
+    settingsGroup: "macOS permissions",
+    settingsHint: "Microphone, screen recording and accessibility.",
+    review: "Review permissions",
+    microphone: {
+      label: "Microphone",
+      hint: "Record your voice in meetings and dictation.",
+    },
+    screen_recording: {
+      label: "Screen recording",
+      hint: "Screenshots, whiteboard and call audio.",
+    },
+    accessibility: {
+      label: "Accessibility",
+      hint: "Paste dictation and use the eyedropper over other apps.",
+    },
+  },
   pill: {
     more: "More",
     moreHint: "The ones you left in the second ring",
