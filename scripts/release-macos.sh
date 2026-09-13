@@ -84,9 +84,14 @@ export APPLE_SIGNING_IDENTITY="${APPLE_SIGNING_IDENTITY:--}"
 
 rustup target add aarch64-apple-darwin x86_64-apple-darwin
 
+# Los sidecars llevan sufijo por triple: el build universal exige los dos.
+# (`beforeBuildCommand` rehace el del host durante el build; acá se agregan.)
+for triple in aarch64-apple-darwin x86_64-apple-darwin; do
+  sh "$repo/scripts/build-mcp.sh" "$triple"
+  sh "$repo/scripts/build-unix.sh" "$triple"
+done
+
 pushd apps/desktop > /dev/null
-# El sidecar MCP lo exige tauri-build al compilar (además va en beforeBuildCommand).
-pnpm mcp:build
 pnpm tauri build --bundles dmg,app --target universal-apple-darwin
 popd > /dev/null
 
