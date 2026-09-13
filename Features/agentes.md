@@ -31,6 +31,20 @@ credenciales locales del usuario: no lee tokens; el CLI hereda el login.
 - [x] Atajo global para abrir/cerrar la consola (`agents_shortcut`, default
   `CmdOrCtrl+Shift+A`; Ajustes → Atajos)
 
+## Instalación de CLIs
+
+Cuando un agente no está en el PATH, el lanzador y el menú «+» de la consola
+siembran una consola nueva con su **instalador oficial** (`agentCatalog.ts`,
+línea por SO: `curl | bash` en macOS/Linux, `irm | iex` o npm en Windows). El
+usuario ve correr la instalación y Atic re-detecta el CLI al volver.
+
+- [x] macOS: al arrancar se arma el PATH de la app (Finder hereda el mínimo)
+      con Homebrew, `~/.local/bin`, `~/.opencode/bin`, cargo/bun/volta/pnpm y
+      nvm; la consola usa `$SHELL` o zsh.
+- [x] OpenCode v2: el binario standalone de `~/.opencode/bin` le gana al shim
+      npm de v1, y su MCP se registra con `opencode mcp add` (formato
+      `mcp.servers`); v1 sigue por el JSON de siempre.
+
 ## Pendiente
 
 - [ ] Modos de permiso en composer
