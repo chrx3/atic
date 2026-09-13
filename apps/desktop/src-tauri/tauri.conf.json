@@ -39,7 +39,8 @@
         "alwaysOnTop": true,
         "skipTaskbar": true,
         "shadow": false,
-        "visible": false
+        "visible": false,
+        "acceptFirstMouse": true
       },
       {
         "label": "capture-annotate",

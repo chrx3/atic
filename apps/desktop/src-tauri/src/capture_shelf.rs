@@ -41,6 +41,7 @@ pub fn show_shelf(app: &AppHandle, anchor: Option<(i32, i32)>) -> tauri::Result<
     let _ = window.set_decorations(false);
     let _ = window.set_skip_taskbar(true);
     position_shelf(app, &window, anchor);
+    macos_no_activating(&window);
     window.show()?;
     let _ = window.set_always_on_top(true);
     // Con la ventana ya visible: si el webview estaba dormido, se perdió el
@@ -48,6 +49,34 @@ pub fn show_shelf(app: &AppHandle, anchor: Option<(i32, i32)>) -> tauri::Result<
     let _ = app.emit("shelf-shown", ());
     Ok(())
 }
+
+/// Un clic o arrastre en el shelf no puede activar Atic.
+///
+/// Al activarse la app, macOS trae al frente su ventana principal y el
+/// preview quedaba tapado por Atic mismo. El bit de panel no-activante en el
+/// `NSWindow` evita la activación sin perder los eventos del mouse.
+#[cfg(target_os = "macos")]
+fn macos_no_activating(window: &WebviewWindow) {
+    let window = window.clone();
+    let inner = window.clone();
+    let _ = window.run_on_main_thread(move || {
+        let Ok(ptr) = inner.ns_window() else {
+            return;
+        };
+        let ns = ptr as *mut objc2::runtime::AnyObject;
+        if ns.is_null() {
+            return;
+        }
+        // NSWindowStyleMaskNonactivatingPanel = 1 << 7.
+        unsafe {
+            let mask: usize = objc2::msg_send![ns, styleMask];
+            let _: () = objc2::msg_send![ns, setStyleMask: mask | (1usize << 7)];
+        }
+    });
+}
+
+#[cfg(not(target_os = "macos"))]
+fn macos_no_activating(_window: &WebviewWindow) {}
 
 /// Delega en `floating`: la esquina y el clamp al monitor son los mismos que
 /// usa la pill. Antes esto reimplementaba la búsqueda de monitor y el margen.
