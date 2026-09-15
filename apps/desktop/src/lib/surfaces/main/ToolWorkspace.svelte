@@ -12,7 +12,7 @@
    * título sigue arrastrando, y los diálogos de verdad —confirmar, ver la
    * transcripción— siguen abriéndose por encima de esto.
    */
-  import { TOOLS, type ToolId } from "$core/tools";
+  import { BODIED_TOOLS, TOOLS, type ToolId } from "$core/tools";
   import { localizeTool, t } from "$domain/i18n.svelte";
   import AgentsTool from "$features/agents/AgentsTool.svelte";
   import CapturesTool from "$features/captures/CapturesTool.svelte";
@@ -24,7 +24,7 @@
   import MeetingsSection from "$features/settings/MeetingsSection.svelte";
   import ShortcutsSection from "$features/settings/ShortcutsSection.svelte";
   import SnippetsTool from "$features/snippets/SnippetsTool.svelte";
-  import { House, Settings } from "$lib/icons";
+  import { Settings } from "$lib/icons";
   import { tabPanel } from "$lib/motion";
   import ToolModalChrome from "$patterns/ToolModalChrome.svelte";
   import Icon from "$ui/Icon.svelte";
@@ -37,32 +37,26 @@
     toolId,
     tab = $bindable<Tab>("detail"),
     snippetsTab = "snippets",
-    onClose,
     onSelectTool,
     onOpenSettings,
   }: {
     toolId: ToolId;
     tab?: Tab;
     snippetsTab?: "snippets" | "scratchpad";
-    onClose: () => void;
     onSelectTool: (tool: ToolId) => void;
     onOpenSettings?: () => void;
   } = $props();
 
-  /** Las que tienen cuerpo propio. Pizarra y Apps son una acción, no una vista. */
-  const BODIED = new Set<ToolId>([
-    "meetings",
-    "captures",
-    "clipboard",
-    "snippets",
-    "dictation",
-    "agents",
-  ]);
-
+  /**
+   * Las que tienen cuerpo propio, del registro. Pizarra y Apps son una
+   * acción, no una vista: no tienen pestaña en el workspace.
+   */
   const tabs = $derived(
-    TOOLS.filter((item) => BODIED.has(item.id))
-      .map(localizeTool)
-      .map((item) => ({ value: item.id, label: item.label, icon: item.id })),
+    BODIED_TOOLS.map(localizeTool).map((item) => ({
+      value: item.id,
+      label: item.label,
+      icon: item.id,
+    })),
   );
 
   const tool = $derived(
@@ -77,30 +71,10 @@
   // derived escribible— y el cambio real lo hace `onSelectTool`, así el estado
   // sigue viviendo arriba y esta copia se vuelve a alinear sola.
   let picked = $derived(toolId);
-
-  /**
-   * Esc vuelve a la rueda, pero solo si no hay un diálogo encima.
-   *
-   * Los `<dialog>` nativos manejan su propio Esc y el keydown igual burbujea
-   * hasta acá: sin esta guarda, cerrar una confirmación cerraría también la
-   * herramienta que la abrió.
-   */
-  function onKeydown(event: KeyboardEvent) {
-    if (event.key !== "Escape" || event.defaultPrevented) return;
-    if (document.querySelector("dialog[open]")) return;
-    event.preventDefault();
-    onClose();
-  }
 </script>
-
-<svelte:window onkeydown={onKeydown} />
 
 <section class="ws" aria-label={tool.label} in:tabPanel|local out:tabPanel|local>
   <div class="ws-bar">
-    <IconButton label={t("workspace.back")} size="sm" onclick={onClose}>
-      <Icon icon={House} size={14} />
-    </IconButton>
-
     <div class="ws-tabs">
       <SegmentedControl
         bind:value={picked}

@@ -589,6 +589,22 @@ pub fn run() {
                 let _ = main.set_ignore_cursor_events(false);
             }
 
+            // Arranque silencioso: la app vive en la pill.
+            //
+            // La principal solo se muestra sola cuando hace falta: el primer
+            // arranque (onboarding) o si no hay pill —sin ella no quedaría
+            // ninguna superficie—. Después la abren el tray, el launcher, la
+            // pill (Ajustes / Reuniones) o volver a abrir la app (single
+            // instance / Dock), que pasan por `show_main`.
+            let (primera_vez, hay_pill) = {
+                let state = app.state::<AppState>();
+                let cfg = state.config.lock_or_recover();
+                (!cfg.onboarding_done, cfg.show_pill)
+            };
+            if primera_vez || !hay_pill {
+                state::show_main(app.handle());
+            }
+
             Ok(())
         })
         .on_window_event(|window, event| match event {
@@ -622,8 +638,8 @@ pub fn run() {
         })
         .build(tauri::generate_context!())
         .expect("error al iniciar Atic")
-        .run(move |app, event| {
-            if let RunEvent::Exit = event {
+        .run(move |app, event| match event {
+            RunEvent::Exit => {
                 window_flip::uncloak_on_exit();
                 // Primero el hub (deja de aceptar y borra `hub.json`) y después
                 // los procesos: en ese orden no quedan delegaciones colgadas.
@@ -634,6 +650,12 @@ pub fn run() {
                     let _ = cfg.save(&state.dirs.config_path());
                 }
             }
+            // Clic en el Dock / «abrir» la app con ella ya corriendo: la
+            // principal vuelve. Sin esto, con el arranque silencioso la app no
+            // tendría forma de reaparecer desde el sistema.
+            #[cfg(target_os = "macos")]
+            RunEvent::Reopen { .. } => state::show_main(app),
+            _ => {}
         });
 }
 

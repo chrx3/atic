@@ -1,6 +1,5 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { goto } from "$app/navigation";
   import { page } from "$app/state";
   import { installDesktopChromeGuards } from "$lib/desktopChrome";
   import TipHost from "$surfaces/overlay/TipHost.svelte";
@@ -101,8 +100,6 @@
      *
      * Ctrl+Alt+L — lab del OVERLAY (pill/agentes sandbox).
      * Ctrl+Alt+F — launcher lab (sliders en vivo sobre el overlay).
-     * Ctrl+Alt+P — picker lab (rueda+cards; titlebar / Esc).
-     * Ctrl+Alt+M — UI legacy.
      */
     // Si quedó pegado de una sesión anterior, liberar el overlay al arrancar.
     if (import.meta.env.DEV) {
@@ -140,12 +137,6 @@
           }),
         );
         return;
-      }
-
-      if (key === "m") {
-        event.preventDefault();
-        const path = window.location.pathname;
-        void goto(path.startsWith("/legacy") ? "/" : "/legacy");
       }
     };
     if (import.meta.env.DEV) window.addEventListener("keydown", onDevKey);
