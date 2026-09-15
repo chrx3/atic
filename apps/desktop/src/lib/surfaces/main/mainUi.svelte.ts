@@ -7,16 +7,14 @@
  * imposible montar dos veces la superficie en un test.
  *
  * La ventana ya no tiene picker: siempre muestra el cuerpo de una herramienta
- * (Reuniones por defecto) y las pestañas del workspace cambian entre las que
- * tienen vista. Las que son acción (Pizarra, Color, Apps) viven en la pill.
+ * (Reuniones por defecto) y el menú del título cambia entre las que tienen
+ * vista. Las que son acción (Pizarra, Color, Apps) viven en la pill.
  */
 
 import { getContext, setContext } from "svelte";
 import { config } from "$domain/config.svelte";
 import { BODIED_TOOLS, type ToolId } from "$core/tools";
 import type { SettingsSectionId } from "$features/settings/settingsSections";
-
-export type DetailTab = "detail" | "settings";
 
 /** ¿Esta tool tiene cuerpo que mostrar en la ventana? */
 function hasBody(id: ToolId): boolean {
@@ -27,7 +25,6 @@ export class MainUi {
   activeTool = $state<ToolId>("meetings");
   /** Con qué pestaña abre la herramienta de textos cuando se entra desde fuera. */
   snippetsTab = $state<"snippets" | "scratchpad">("snippets");
-  detailTab = $state<DetailTab>("detail");
 
   /** Modal de búsqueda global (SearchModal / Ctrl+K). */
   searchOpen = $state(false);
@@ -49,10 +46,9 @@ export class MainUi {
     if (hasBody(tool)) this.activeTool = tool;
   }
 
-  openDetail(tool: ToolId, tab: DetailTab = "detail"): void {
+  openDetail(tool: ToolId): void {
     if (!hasBody(tool)) return;
     this.activeTool = tool;
-    this.detailTab = tab;
   }
 
   /**

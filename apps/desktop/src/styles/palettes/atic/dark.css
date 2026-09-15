@@ -29,7 +29,11 @@
      tamaño, no el color. */
   --text: #f0f0ea;
   --muted: #a8a89e;
-  --faint: #74746c;
+
+  /* El gris anterior (#74746c) daba 3.6:1 sobre `--surface-2` y se usaba en
+     texto de 11 px: por debajo del 4.5:1 que pide una letra chica. Este da
+     5.1:1 y no rompe el orden de la tinta (text 15.2 › muted 7.0 › faint 5.1). */
+  --faint: #8f8f86;
 
   /* Separador principal. El hairline hace el trabajo que en otros sistemas
      hace una sombra. */

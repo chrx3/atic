@@ -150,3 +150,19 @@ export async function onWindowFocus(
 ): Promise<() => void> {
   return getCurrentWindow().onFocusChanged(({ payload }) => cb(payload));
 }
+
+/** ¿Esta ventana tiene el foco ahora mismo? */
+export function windowIsFocused(): Promise<boolean> {
+  return getCurrentWindow().isFocused();
+}
+
+/**
+ * Le cuenta a Rust si la ventana principal tiene el foco.
+ *
+ * El dictado lo necesita: al terminar decide si pega en la app externa o si
+ * deja el texto en Atic, y desde su hilo no puede preguntar por la ventana
+ * clave. Sin reporte, Rust asume que no tiene el foco.
+ */
+export function setMainWindowFocused(focused: boolean): Promise<void> {
+  return invoke<void>("set_main_window_focused", { focused });
+}

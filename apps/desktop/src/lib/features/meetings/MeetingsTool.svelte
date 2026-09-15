@@ -1,12 +1,19 @@
 <script lang="ts">
   /**
-   * Reuniones: grabar, ver lo grabado, transcribir.
+   * Reuniones: grabar, ver lo grabado, transcribir y resumir.
    *
-   * Es la primera pantalla que conecta los stores de dominio con las
-   * primitivas, y por eso no tiene ni un `onMount` con suscripciones ni una
-   * variable de estado propia que venga de Rust: todo eso vive en `domain/` y
-   * acá solo se lee. Lo único local es lo que no sale de la ventana — qué
-   * confirmación está abierta, qué se está filtrando, qué se está renombrando.
+   * Dos capas y no cinco. Una sola barra: la grabadora, que es además la única
+   * pieza con color y movimiento de la pantalla (medidores y cronómetro solo
+   * mientras entra audio). Y el par lista/detalle, sin rótulos que repitan lo
+   * que el contenido ya dice.
+   *
+   * El detalle muestra el contenido primero —reproductor y transcripción— y
+   * deja lo secundario en el menú `⋯`; el motor de transcripción es un ajuste y
+   * vive en Ajustes, así que acá solo queda una línea que dice con cuál corre.
+   *
+   * Igual que antes: acá no hay estado de dominio. Lo único local es lo que no
+   * sale de la ventana — qué confirmación está abierta, qué se filtra, qué se
+   * renombra.
    */
   import { fuzzyMatch } from "$core/clipboardSearch";
   import { groupByDay } from "$core/dayGroups";
@@ -15,35 +22,38 @@
   import type { Recording, RecordingStatus } from "$core/types";
   import { capture } from "$domain/capture.svelte";
   import { models } from "$domain/models.svelte";
+  import { defaultTrack, playback } from "$domain/playback.svelte";
   import { recordings } from "$domain/recordings.svelte";
+  import { summaries } from "$domain/summaries.svelte";
   import { toastError, toasts } from "$domain/toasts.svelte";
   import { t, whisperModelLabel } from "$domain/i18n.svelte";
+  import type { SettingsSectionId } from "$features/settings/settingsSections";
   import { pickAudioFiles } from "$ipc/dialogs";
   import { openRecordingDir } from "$ipc/recordings";
-  import { Pencil } from "$lib/icons";
+  import { Ellipsis, Folder, Pencil, SlidersHorizontal, Trash2 } from "$lib/icons";
   import ListDetail from "$patterns/ListDetail.svelte";
   import ToolPage from "$patterns/ToolPage.svelte";
   import Toolbar from "$patterns/Toolbar.svelte";
-  import Button from "$ui/Button.svelte";
   import Banner from "$ui/Banner.svelte";
+  import Button from "$ui/Button.svelte";
   import Chip from "$ui/Chip.svelte";
   import ConfirmDialog from "$ui/ConfirmDialog.svelte";
   import EmptyState from "$ui/EmptyState.svelte";
   import Icon from "$ui/Icon.svelte";
   import IconButton from "$ui/IconButton.svelte";
   import Input from "$ui/Input.svelte";
+  import Menu from "$ui/Menu.svelte";
+  import type { MenuItem } from "$ui/menu";
   import Meter from "$ui/Meter.svelte";
   import ProgressBar from "$ui/ProgressBar.svelte";
-  import Select from "$ui/Select.svelte";
   import LiveTranscript from "./LiveTranscript.svelte";
   import RecordingPlayer from "./RecordingPlayer.svelte";
   import SummaryPanel from "./SummaryPanel.svelte";
-  import TranscribeModelSelect from "./TranscribeModelSelect.svelte";
   import TranscriptPanel from "./TranscriptPanel.svelte";
   import TranscriptView from "./TranscriptView.svelte";
-  import { summaries } from "$domain/summaries.svelte";
 
-  let { onOpenSettings }: { onOpenSettings?: () => void } = $props();
+  let { onOpenSettings }: { onOpenSettings?: (section?: SettingsSectionId) => void } =
+    $props();
 
   let toDelete = $state<Recording | null>(null);
   let deleting = $state(false);
@@ -86,6 +96,14 @@
     })),
   ]);
 
+  const filterItems = $derived.by((): MenuItem<RecordingStatus | "all">[] =>
+    statusOptions.map((option) => ({
+      id: option.value,
+      label: option.label,
+      checked: option.value === statusFilter,
+    })),
+  );
+
   const visible = $derived(
     recordings.items.filter(
       (item) =>
@@ -100,6 +118,24 @@
   const flatIndex = $derived(new Map(visible.map((item, index) => [item.id, index])));
   const selectedIndex = $derived(
     recordings.selectedId === null ? -1 : (flatIndex.get(recordings.selectedId) ?? -1),
+  );
+
+  /**
+   * Con qué corre la transcripción. Es la única huella que queda del motor en
+   * esta pantalla: el ajuste se cambia en Ajustes › Reuniones.
+   */
+  const engine = $derived(
+    `${models.meetingUsesGroq ? t("settings.meetings.groq") : t("settings.meetings.local")} · ${models.meetingProgressLabel}`,
+  );
+
+  /**
+   * Si hay transcripción que mostrar. Se mira el estado de la grabación y no
+   * la caché porque el texto recién se pide al montar `TranscriptView`: si
+   * dependiera de la caché, el detalle nunca lo montaría.
+   */
+  const hasTranscript = $derived(
+    recordings.selected !== null &&
+      ["transcribed", "summarized", "summarizing"].includes(recordings.selected.status),
   );
 
   async function toggle() {
@@ -171,6 +207,27 @@
     }
   }
 
+  // --- Las acciones del detalle que no merecen un botón propio ---
+
+  type DetailPick = "folder" | "delete";
+
+  const detailItems = $derived.by((): MenuItem<DetailPick>[] => [
+    {
+      id: "folder",
+      label: t("page.meetings.openFolder"),
+      icon: Folder,
+      disabled: openingFolder,
+    },
+    { id: "delete", label: t("page.common.delete"), icon: Trash2, danger: true },
+  ]);
+
+  function onDetailPick(id: DetailPick) {
+    const item = recordings.selected;
+    if (!item) return;
+    if (id === "folder") void openThisRecording(item.id);
+    else toDelete = item;
+  }
+
   // --- Renombrar ---
 
   /**
@@ -233,7 +290,35 @@
       toDelete = recordings.selected;
     }
   }
+
+  /**
+   * Espacio reproduce o pausa, como en cualquier app de audio del sistema.
+   * Se ignora si hay un diálogo abierto, si se está escribiendo o si el foco
+   * está en un control (ahí el espacio hace lo que ese control diga).
+   */
+  function onKeydown(event: KeyboardEvent) {
+    if (event.key !== " ") return;
+    if (draftTitle !== null || transcriptFor || summaryFor || toDelete) return;
+    const target = event.target as HTMLElement | null;
+    if (target?.closest("input, textarea, select, button, a, [contenteditable]"))
+      return;
+    const item = recordings.selected;
+    if (!item) return;
+    event.preventDefault();
+    if (playback.label) void playback.toggle();
+    else void playback.play(item, defaultTrack(item));
+  }
 </script>
+
+<svelte:window onkeydown={onKeydown} />
+
+{#snippet filterTrigger()}
+  <Icon icon={SlidersHorizontal} size={14} />
+{/snippet}
+
+{#snippet moreTrigger()}
+  <Icon icon={Ellipsis} size={14} />
+{/snippet}
 
 <ToolPage
   title={t("tools.meetings.label")}
@@ -241,28 +326,16 @@
   blurb={t("tools.meetings.blurb")}
   kicker={t("tools.meetings.short")}
 >
-  {#snippet meta()}
-    {#if capture.active}
-      <Chip tone="rec">
-        {t("page.meetings.recordingChip", { elapsed: formatDuration(capture.elapsed) })}
-      </Chip>
-    {:else}
-      <Chip>{t("page.meetings.count", { count: recordings.items.length })}</Chip>
-    {/if}
-    {#if capture.meeting?.active}
-      <Chip tone="info">
-        {t("page.meetings.meetingDetected")}{capture.meeting.provider
-          ? ` · ${capture.meeting.provider}`
-          : ""}
-      </Chip>
-    {/if}
-  {/snippet}
-
   <div class="flex h-full min-h-0 flex-col">
+    <!--
+      La barra es la grabadora: el botón que graba, el que importa y —solo
+      mientras entra audio— el cronómetro con los dos medidores. El estado de
+      grabación vive acá y no en un chip aparte.
+    -->
     <Toolbar label={t("page.meetings.actions")}>
       <Button
         variant={capture.active ? "danger-solid" : "primary"}
-        size="sm"
+        size="md"
         loading={capture.busy}
         onclick={toggle}
       >
@@ -271,7 +344,7 @@
 
       <Button
         variant="soft"
-        size="sm"
+        size="md"
         loading={importing}
         disabled={capture.active}
         onclick={() => void importAudio()}
@@ -279,35 +352,42 @@
         {t("page.meetings.import")}
       </Button>
 
-      <div class="w-40">
-        <Select
-          bind:value={statusFilter}
-          options={statusOptions}
-          aria-label={t("page.meetings.statusFilter")}
-        />
-      </div>
-
       {#snippet end()}
+        {#if capture.meeting?.active}
+          <Chip tone="info">
+            {t("page.meetings.meetingDetected")}{capture.meeting.provider
+              ? ` · ${capture.meeting.provider}`
+              : ""}
+          </Chip>
+        {/if}
         {#if capture.active}
-          <!-- Los niveles solo tienen sentido mientras entra audio. -->
-          <div class="flex w-40 flex-col gap-0.5">
-            <Meter
-              value={capture.levels.mic}
-              tone="mic"
-              label={t("page.meetings.me")}
-            />
-            <Meter
-              value={capture.levels.system}
-              tone="sys"
-              label={t("page.meetings.others")}
-            />
-          </div>
+          <span class="flex items-center gap-2.5">
+            <span class="flex items-center gap-1.5">
+              <span class="rec-dot" aria-hidden="true"></span>
+              <span class="font-mono text-xs text-rec" data-numeric>
+                {formatDuration(capture.elapsed)}
+              </span>
+            </span>
+            <!-- Los niveles solo tienen sentido mientras entra audio. -->
+            <div class="flex w-32 flex-col gap-0.5">
+              <Meter
+                value={capture.levels.mic}
+                tone="mic"
+                label={t("page.meetings.me")}
+              />
+              <Meter
+                value={capture.levels.system}
+                tone="sys"
+                label={t("page.meetings.others")}
+              />
+            </div>
+          </span>
         {/if}
       {/snippet}
     </Toolbar>
 
     {#if models.missing.length > 0}
-      <div class="px-4 pt-3">
+      <div class="px-3 pt-3">
         <Banner
           tone="warn"
           title={models.missing.length === 1
@@ -332,7 +412,7 @@
     {/if}
 
     {#if models.downloading}
-      <div class="px-4 pt-3">
+      <div class="px-3 pt-3">
         <ProgressBar
           value={models.downloading.downloaded / Math.max(models.downloading.total, 1)}
           label={t("page.meetings.downloading")}
@@ -341,7 +421,7 @@
     {/if}
 
     {#if capture.note}
-      <div class="px-4 pt-3">
+      <div class="px-3 pt-3">
         <Banner tone="warn" title={capture.note} />
       </div>
     {/if}
@@ -355,12 +435,32 @@
         listCount={visible.length}
       >
         {#snippet listHeader()}
-          <Input
-            type="search"
-            bind:value={query}
-            placeholder={t("page.meetings.searchPlaceholder")}
-            aria-label={t("page.meetings.searchAria")}
-          />
+          <div class="flex items-center gap-1.5">
+            <div class="min-w-0 flex-1">
+              <Input
+                type="search"
+                bind:value={query}
+                placeholder={t("page.meetings.searchPlaceholder")}
+                aria-label={t("page.meetings.searchAria")}
+              />
+            </div>
+            <!-- Filtrar es del listado, no de la herramienta: vive acá. Abre
+                 alineado a la derecha para no salir de la columna. -->
+            <Menu
+              items={filterItems}
+              label={t("page.meetings.statusFilter")}
+              triggerLabel={t("page.meetings.statusFilter")}
+              align="end"
+              onpick={(value) => (statusFilter = value)}
+              pressed={statusFilter !== "all"}
+              triggerClass="grid size-8 shrink-0 place-items-center rounded-sm text-muted
+                            transition-colors duration-(--duration-quick) ease-calm
+                            hover:bg-surface-2 hover:text-text
+                            aria-pressed:bg-surface-2 aria-pressed:text-text
+                            focus-visible:[outline:2px_solid_var(--accent)]"
+              trigger={filterTrigger}
+            />
+          </div>
         {/snippet}
 
         {#snippet list()}
@@ -425,56 +525,68 @@
         {#snippet detail()}
           {@const item = recordings.selected}
           {#if item}
-            <!-- Sin padding propio: el panel de ListDetail ya lo trae. -->
             <div class="flex flex-col gap-3">
-              <div class="flex items-start gap-2">
-                <div class="flex min-w-0 flex-1 flex-col gap-1">
-                  {#if draftTitle !== null}
-                    <div class="flex items-center gap-1.5">
-                      <Input
-                        bind:value={draftTitle}
-                        aria-label={t("page.meetings.renameAria")}
-                        onkeydown={(event: KeyboardEvent) =>
-                          onTitleKeydown(event, item)}
-                      />
-                      <Button
-                        variant="primary"
-                        size="sm"
-                        loading={renaming}
-                        onclick={() => void saveTitle(item)}
-                      >
-                        {t("page.common.save")}
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onclick={() => (draftTitle = null)}
-                      >
-                        {t("chrome.cancel")}
-                      </Button>
-                    </div>
-                  {:else}
-                    <div class="flex min-w-0 items-center gap-1">
+              {#if draftTitle !== null}
+                <div class="flex items-center gap-1.5">
+                  <Input
+                    bind:value={draftTitle}
+                    aria-label={t("page.meetings.renameAria")}
+                    onkeydown={(event: KeyboardEvent) => onTitleKeydown(event, item)}
+                  />
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    loading={renaming}
+                    onclick={() => void saveTitle(item)}
+                  >
+                    {t("page.common.save")}
+                  </Button>
+                  <Button variant="ghost" size="sm" onclick={() => (draftTitle = null)}>
+                    {t("chrome.cancel")}
+                  </Button>
+                </div>
+              {:else}
+                <!-- El estado va al lado del título: describe a la grabación,
+                     no al panel. Lo secundario, al menú. -->
+                <div class="flex items-start gap-2">
+                  <div class="flex min-w-0 flex-1 flex-col gap-1">
+                    <div class="flex min-w-0 items-center gap-2">
                       <h3 class="min-w-0 truncate text-md font-semibold text-text">
                         {item.title}
                       </h3>
-                      <IconButton
-                        label={t("page.common.rename")}
-                        size="sm"
-                        onclick={() => (draftTitle = item.title)}
-                      >
-                        <Icon icon={Pencil} size={12} />
-                      </IconButton>
+                      <Chip tone={TONE[item.status]}>
+                        {t(`page.meetings.status.${item.status}`)}
+                      </Chip>
                     </div>
-                  {/if}
-                  <p class="font-mono text-xs text-faint" data-numeric>
-                    {formatDuration(item.duration_secs)} · {formatDate(item.started_at)}
-                  </p>
+                    <p class="font-mono text-xs text-faint" data-numeric>
+                      {formatDuration(item.duration_secs)} · {formatDate(
+                        item.started_at,
+                      )}
+                    </p>
+                  </div>
+                  <div class="flex shrink-0 items-center gap-0.5">
+                    <IconButton
+                      label={t("page.common.rename")}
+                      size="sm"
+                      onclick={() => (draftTitle = item.title)}
+                    >
+                      <Icon icon={Pencil} size={13} />
+                    </IconButton>
+                    <Menu
+                      items={detailItems}
+                      label={t("page.common.more")}
+                      triggerLabel={t("page.common.more")}
+                      align="end"
+                      onpick={onDetailPick}
+                      triggerClass="grid size-6 place-items-center rounded-sm text-muted
+                                    transition-colors duration-(--duration-quick) ease-calm
+                                    hover:bg-surface-2 hover:text-text
+                                    focus-visible:[outline:2px_solid_var(--accent)]"
+                      trigger={moreTrigger}
+                    />
+                  </div>
                 </div>
-                <Chip tone={TONE[item.status]}
-                  >{t(`page.meetings.status.${item.status}`)}</Chip
-                >
-              </div>
+              {/if}
 
               {#if item.mic_path || item.system_path}
                 <RecordingPlayer recording={item} />
@@ -490,74 +602,70 @@
                 />
               {/if}
 
-              <!--
-                Dos filas y no una de siete botones iguales. Arriba lo que se
-                hace con la reunión —resumirla, corregirla, sacarla de en
-                medio—; abajo el motor de transcripción, que es una decisión
-                aparte y arrastra su propio selector.
-              -->
-              <div class="flex flex-wrap items-center gap-1.5">
-                <Button variant="primary" size="sm" onclick={() => (summaryFor = item)}>
-                  {summaries.byId[item.id]
-                    ? t("page.meetings.summary")
-                    : t("page.meetings.summarize")}
-                </Button>
-                <Button variant="soft" size="sm" onclick={() => (transcriptFor = item)}>
-                  {t("page.meetings.viewFix")}
-                </Button>
-                <div class="ml-auto flex items-center gap-1.5">
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    loading={openingFolder}
-                    onclick={() => void openThisRecording(item.id)}
+              {#if hasTranscript}
+                <section class="flex flex-col gap-2">
+                  <div class="flex flex-wrap items-center gap-1.5">
+                    <Button
+                      variant="soft"
+                      size="sm"
+                      onclick={() => (transcriptFor = item)}
+                    >
+                      {t("page.meetings.edit")}
+                    </Button>
+                    <Button
+                      variant="soft"
+                      size="sm"
+                      onclick={() => (summaryFor = item)}
+                    >
+                      {summaries.byId[item.id]
+                        ? t("page.meetings.viewSummary")
+                        : t("page.meetings.summarize")}
+                    </Button>
+                  </div>
+                  <TranscriptView recordingId={item.id} />
+                </section>
+              {:else}
+                <div class="border-t border-line pt-3">
+                  <EmptyState
+                    title={t("page.meetings.noTranscript")}
+                    hint={t("page.meetings.engineHint", { engine })}
                   >
-                    {t("page.meetings.folder")}
-                  </Button>
-                  <Button variant="danger" size="sm" onclick={() => (toDelete = item)}>
-                    {t("page.common.delete")}
-                  </Button>
+                    {#snippet action()}
+                      <div class="flex flex-wrap items-center justify-center gap-1.5">
+                        {#if !models.meetingCanTranscribe}
+                          <Button
+                            variant="soft"
+                            size="sm"
+                            loading={models.downloading !== null}
+                            onclick={() => {
+                              const id = models.meetingModel?.id;
+                              if (id) void models.download(id).catch(toastError);
+                            }}
+                          >
+                            {t("page.meetings.downloadModel")}
+                          </Button>
+                        {:else}
+                          <Button
+                            variant="soft"
+                            size="sm"
+                            disabled={recordings.progress[item.id] !== undefined}
+                            onclick={() => void transcribe(item.id)}
+                          >
+                            {t("page.meetings.transcribeAudio")}
+                          </Button>
+                        {/if}
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onclick={() => onOpenSettings?.("meetings")}
+                        >
+                          {t("page.meetings.changeEngine")}
+                        </Button>
+                      </div>
+                    {/snippet}
+                  </EmptyState>
                 </div>
-              </div>
-
-              <div class="flex flex-wrap items-center gap-1.5">
-                <span class="text-micro text-muted uppercase">
-                  {t("page.meetings.transcriptionRow")}
-                </span>
-                <div class="min-w-52 max-w-72 flex-1">
-                  <TranscribeModelSelect
-                    disabled={recordings.progress[item.id] !== undefined}
-                  />
-                </div>
-                {#if !models.meetingCanTranscribe}
-                  <Button
-                    variant="soft"
-                    size="sm"
-                    loading={models.downloading !== null}
-                    onclick={() => {
-                      const id = models.meetingModel?.id;
-                      if (id) void models.download(id).catch(toastError);
-                    }}
-                  >
-                    {t("page.common.download")}
-                  </Button>
-                {:else}
-                  <Button
-                    variant="soft"
-                    size="sm"
-                    disabled={recordings.progress[item.id] !== undefined}
-                    onclick={() => void transcribe(item.id)}
-                  >
-                    {item.status === "recorded" || item.status === "error"
-                      ? t("page.meetings.transcribe")
-                      : t("page.meetings.retranscribe")}
-                  </Button>
-                {/if}
-              </div>
-
-              <div class="border-t border-line pt-3">
-                <TranscriptView recordingId={item.id} />
-              </div>
+              {/if}
             </div>
           {/if}
         {/snippet}
@@ -590,7 +698,7 @@
 {#if summaryFor}
   <SummaryPanel
     recording={summaryFor}
-    {onOpenSettings}
+    onOpenSettings={() => onOpenSettings?.("summary")}
     onClose={() => (summaryFor = null)}
   />
 {/if}
@@ -645,5 +753,13 @@
 
   .dot[data-tone="danger"] {
     background: var(--danger);
+  }
+
+  /* El único punto rojo de la pantalla: dice que hay audio entrando. */
+  .rec-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 999px;
+    background: var(--rec);
   }
 </style>

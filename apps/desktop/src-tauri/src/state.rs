@@ -30,6 +30,13 @@ pub struct AppState {
     pub config: Mutex<Config>,
     pub active: Mutex<Option<ActiveRecording>>,
     pub dictation: Mutex<Option<crate::dictation::ActiveDictation>>,
+    /// Texto del último dictado, para que la ventana principal lo muestre
+    /// aunque se abra después de dictar. No se persiste: es de la sesión.
+    pub dictation_last_text: Mutex<Option<String>>,
+    /// ¿La ventana principal tiene el foco? Lo reporta el webview, que es el
+    /// único que puede saberlo: preguntar por la ventana clave desde el hilo
+    /// del dictado sería tocar AppKit fuera del hilo principal.
+    pub main_window_focused: AtomicBool,
     pub audio_test_running: Mutex<bool>,
     /// Modelos Whisper residentes (dictado + reuniones pueden coexistir).
     pub whisper: Mutex<HashMap<PathBuf, Arc<LoadedModel>>>,

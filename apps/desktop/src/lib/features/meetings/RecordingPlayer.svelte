@@ -1,20 +1,22 @@
 <script lang="ts">
   /**
-   * Pista a escuchar y barra de reproducción.
+   * Reproductor de la grabación: la barra, y la pista cuando hay más de una.
    *
-   * «Todos» mezcla mic y sistema. «Yo» / «Otros» aíslan una. El cabezal es el
-   * del controlador global, el mismo que usa la transcripción.
+   * La pista es un `<select>` chico en la misma fila y no un segmentado de
+   * tres tercios: elegir pista es secundario, y en macOS —donde no hay loopback
+   * del sistema— solo existe una. El cabezal es el del controlador global, el
+   * mismo que usa la transcripción.
    */
   import type { Recording } from "$core/types";
+  import { t } from "$domain/i18n.svelte";
   import {
     defaultTrack,
     listenOptions,
     playback,
     type AudioTrack,
   } from "$domain/playback.svelte";
-  import SegmentedControl from "$ui/SegmentedControl.svelte";
+  import Select from "$ui/Select.svelte";
   import AudioPlayer from "./AudioPlayer.svelte";
-  import { t } from "$domain/i18n.svelte";
 
   let { recording }: { recording: Recording } = $props();
 
@@ -35,25 +37,28 @@
       : defaultTrack(recording),
   );
 
-  function onTrack(next: AudioTrack) {
+  function onTrack(event: Event) {
+    const next = (event.currentTarget as HTMLSelectElement).value as AudioTrack;
     void playback.switchTrack(recording, next);
   }
 </script>
 
-<div class="flex flex-col gap-2">
-  {#if options.length > 1}
-    <SegmentedControl
-      value={track}
-      {options}
-      size="sm"
-      label={t("page.meetings.track")}
-      onchange={onTrack}
-    />
-  {/if}
+<div class="flex items-center gap-2 rounded-md bg-surface-2 p-2">
   <AudioPlayer
     alwaysVisible
     dismissible={false}
     placeholder={t("page.meetings.playThis")}
     onEmptyPlay={() => playback.play(recording, track)}
   />
+
+  {#if options.length > 1}
+    <div class="w-24 shrink-0">
+      <Select
+        value={track}
+        {options}
+        onchange={onTrack}
+        aria-label={t("page.meetings.track")}
+      />
+    </div>
+  {/if}
 </div>

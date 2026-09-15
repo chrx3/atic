@@ -69,6 +69,9 @@ pub enum DictationPhase {
 pub struct DictationStatusPayload {
     pub phase: DictationPhase,
     pub message: Option<String>,
+    /// Lo que se dictó. Viaja en `Pasted` para que la ventana principal pueda
+    /// mostrarlo —la pill solo necesita el estado— y es `None` en el resto.
+    pub text: Option<String>,
 }
 
 pub struct ActiveDictation {
@@ -77,10 +80,19 @@ pub struct ActiveDictation {
     pub handle: CaptureHandle,
 }
 
-fn emit_status(app: &AppHandle, phase: DictationPhase, message: Option<String>) {
+fn emit_status(
+    app: &AppHandle,
+    phase: DictationPhase,
+    message: Option<String>,
+    text: Option<String>,
+) {
     let _ = app.emit(
         "dictation-status",
-        DictationStatusPayload { phase, message },
+        DictationStatusPayload {
+            phase,
+            message,
+            text,
+        },
     );
 }
 
@@ -92,7 +104,7 @@ pub fn toggle_dictation(app: &AppHandle) {
         stop_and_paste(app);
     } else if let Err(message) = start_dictation(app) {
         tracing::error!(%message, "no se pudo iniciar dictado");
-        emit_status(app, DictationPhase::Error, Some(message.clone()));
+        emit_status(app, DictationPhase::Error, Some(message.clone()), None);
         let _ = app.emit("capture-error", ErrorPayload { message });
     }
 }
@@ -105,7 +117,7 @@ pub fn dictation_key_down(app: &AppHandle) {
     }
     if let Err(message) = start_dictation(app) {
         tracing::error!(%message, "no se pudo iniciar dictado (PTT)");
-        emit_status(app, DictationPhase::Error, Some(message.clone()));
+        emit_status(app, DictationPhase::Error, Some(message.clone()), None);
         let _ = app.emit("capture-error", ErrorPayload { message });
     }
 }
@@ -227,7 +239,7 @@ fn start_dictation(app: &AppHandle) -> Result<(), String> {
     // el texto esté listo, ese pasa a ser el destino.
     crate::clipboard_history::start_foreground_tracking();
 
-    emit_status(app, DictationPhase::Listening, None);
+    emit_status(app, DictationPhase::Listening, None, None);
     Ok(())
 }
 
@@ -237,7 +249,7 @@ fn stop_and_paste(app: &AppHandle) {
         return;
     };
 
-    emit_status(app, DictationPhase::Transcribing, None);
+    emit_status(app, DictationPhase::Transcribing, None, None);
 
     let app2 = app.clone();
     thread::spawn(move || {
@@ -338,6 +350,19 @@ fn stop_and_paste(app: &AppHandle) {
             // Congelar el destino: de acá en más el foco lo movemos nosotros.
             crate::clipboard_history::stop_foreground_tracking();
 
+            // El foco está en la ventana principal: estás dictando para leerlo
+            // (o para copiarlo), no para que Atic le saque el foco a la app
+            // anterior. Se encola y la pantalla de Dictado lo muestra con
+            // Pegar / Copiar.
+            let main_focused = app2
+                .state::<AppState>()
+                .main_window_focused
+                .load(std::sync::atomic::Ordering::SeqCst);
+            if main_focused && !crate::clipboard_history::has_live_external_foreground() {
+                crate::paste_queue::enqueue(&app2, &text)?;
+                return Ok((text, crate::paste_queue::PasteOutcome::Queued));
+            }
+
             // Si ya estás en una ventana externa, ESA es la que quieres: no
             // tocar el foco. Si no, restaurar el destino guardado al arrancar
             // (o el último clic externo durante el dictado). Agentes abierto
@@ -390,17 +415,23 @@ fn stop_and_paste(app: &AppHandle) {
                         elapsed_ms as f64 / 1_000.0
                     )
                 };
-                emit_status(&app2, DictationPhase::Pasted, Some(message));
+                // Último dictado, para que la ventana principal lo muestre sin
+                // depender de haber estado abierta en el momento del evento.
+                {
+                    let state = app2.state::<AppState>();
+                    *state.dictation_last_text.lock_or_recover() = Some(text.clone());
+                }
+                emit_status(&app2, DictationPhase::Pasted, Some(message), Some(text));
                 // Vuelve a idle tras un momento para no dejar la pill en "Pegado".
                 thread::sleep(Duration::from_millis(1600));
-                emit_status(&app2, DictationPhase::Idle, None);
+                emit_status(&app2, DictationPhase::Idle, None, None);
             }
             Err(message) => {
                 tracing::warn!(%message, "dictado falló");
-                emit_status(&app2, DictationPhase::Error, Some(message.clone()));
+                emit_status(&app2, DictationPhase::Error, Some(message.clone()), None);
                 let _ = app2.emit("capture-error", ErrorPayload { message });
                 thread::sleep(Duration::from_millis(2200));
-                emit_status(&app2, DictationPhase::Idle, None);
+                emit_status(&app2, DictationPhase::Idle, None, None);
             }
         }
     });

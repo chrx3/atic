@@ -20,7 +20,9 @@
 
   --text: #f0f0ea;
   --muted: #a8a89e;
-  --faint: #74746c;
+
+  /* Mismo 4.5:1 mínimo que `dark.css`: la consola comparte la paleta. */
+  --faint: #8f8f86;
 
   --line: rgb(240 240 234 / 10%);
   --line-strong: rgb(240 240 234 / 18%);

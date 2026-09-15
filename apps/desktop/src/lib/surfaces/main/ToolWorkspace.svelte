@@ -2,151 +2,59 @@
   /**
    * El contenido de una herramienta, a ventana completa.
    *
-   * Reemplaza al modal de detalle. El modal servía cuando lo que se abría era
-   * una ficha, pero lo que hay adentro es una biblioteca: con doscientas
-   * capturas o una transcripción de una hora, un panel de 896 px en medio de
-   * una ventana maximizada es la limitación y no el foco. Además obligaba a
-   * cerrar para cambiar de herramienta y apilaba diálogo sobre diálogo.
-   *
-   * Vive DENTRO del marco de la ventana y no en la top layer: la barra de
-   * título sigue arrastrando, y los diálogos de verdad —confirmar, ver la
-   * transcripción— siguen abriéndose por encima de esto.
+   * Ya no tiene barra propia: el selector de herramientas vive en el menú del
+   * título (`WindowFrame.titleMenu`) y los ajustes de cada herramienta en
+   * Ajustes, que es donde el sistema los espera. Esta capa solo decide qué
+   * cuerpo se muestra, y lo cubre todo para que el picker de la pill no se
+   * dibuje debajo.
    */
-  import { BODIED_TOOLS, TOOLS, type ToolId } from "$core/tools";
-  import { localizeTool, t } from "$domain/i18n.svelte";
+  import { TOOLS, type ToolId } from "$core/tools";
+  import { localizeTool } from "$domain/i18n.svelte";
   import AgentsTool from "$features/agents/AgentsTool.svelte";
   import CapturesTool from "$features/captures/CapturesTool.svelte";
   import ClipboardTool from "$features/clipboard/ClipboardTool.svelte";
   import DictationTool from "$features/dictation/DictationTool.svelte";
   import MeetingsTool from "$features/meetings/MeetingsTool.svelte";
-  import CapturesSection from "$features/settings/CapturesSection.svelte";
-  import DictationSection from "$features/settings/DictationSection.svelte";
-  import MeetingsSection from "$features/settings/MeetingsSection.svelte";
-  import ShortcutsSection from "$features/settings/ShortcutsSection.svelte";
   import SnippetsTool from "$features/snippets/SnippetsTool.svelte";
-  import { Settings } from "$lib/icons";
+  import type { SettingsSectionId } from "$features/settings/settingsSections";
   import { tabPanel } from "$lib/motion";
   import ToolModalChrome from "$patterns/ToolModalChrome.svelte";
-  import Icon from "$ui/Icon.svelte";
-  import IconButton from "$ui/IconButton.svelte";
-  import SegmentedControl from "$ui/SegmentedControl.svelte";
-
-  type Tab = "detail" | "settings";
 
   let {
     toolId,
-    tab = $bindable<Tab>("detail"),
     snippetsTab = "snippets",
-    onSelectTool,
     onOpenSettings,
   }: {
     toolId: ToolId;
-    tab?: Tab;
     snippetsTab?: "snippets" | "scratchpad";
-    onSelectTool: (tool: ToolId) => void;
-    onOpenSettings?: () => void;
+    /** Con sección: cada herramienta abre la suya (motor de reuniones, etc.). */
+    onOpenSettings?: (section?: SettingsSectionId) => void;
   } = $props();
-
-  /**
-   * Las que tienen cuerpo propio, del registro. Pizarra y Apps son una
-   * acción, no una vista: no tienen pestaña en el workspace.
-   */
-  const tabs = $derived(
-    BODIED_TOOLS.map(localizeTool).map((item) => ({
-      value: item.id,
-      label: item.label,
-      icon: item.id,
-    })),
-  );
 
   const tool = $derived(
     localizeTool(TOOLS.find((item) => item.id === toolId) ?? TOOLS[0]),
   );
-
-  /** Agentes es chat a pantalla: no tiene ajustes propios que valga separar. */
-  const chatOnly = $derived(toolId === "agents");
-  const activeTab = $derived(chatOnly ? ("detail" as const) : tab);
-
-  // Espejo del tool activo: el control segmentado escribe acá —por eso es un
-  // derived escribible— y el cambio real lo hace `onSelectTool`, así el estado
-  // sigue viviendo arriba y esta copia se vuelve a alinear sola.
-  let picked = $derived(toolId);
 </script>
 
-<section class="ws" aria-label={tool.label} in:tabPanel|local out:tabPanel|local>
-  <div class="ws-bar">
-    <div class="ws-tabs">
-      <SegmentedControl
-        bind:value={picked}
-        options={tabs}
-        label={t("workspace.tools")}
-        size="sm"
-        full
-        onchange={(id) => onSelectTool(id)}
-      />
-    </div>
-
-    {#if !chatOnly}
-      <IconButton
-        label={t("chrome.settings")}
-        size="sm"
-        pressed={tab === "settings"}
-        onclick={() => (tab = tab === "settings" ? "detail" : "settings")}
-      >
-        <Icon icon={Settings} size={14} />
-      </IconButton>
-    {/if}
-  </div>
-
+<section class="ws" aria-label={tool.label}>
   <div class="ws-body">
-    {#key `${toolId}:${activeTab}`}
+    {#key toolId}
       <div class="ws-pane" in:tabPanel|local out:tabPanel|local>
-        {#if activeTab === "detail"}
-          <ToolModalChrome>
-            {#if toolId === "meetings"}
-              <MeetingsTool {onOpenSettings} />
-            {:else if toolId === "dictation"}
-              <DictationTool />
-            {:else if toolId === "clipboard"}
-              <ClipboardTool />
-            {:else if toolId === "snippets"}
-              <SnippetsTool initialTab={snippetsTab} />
-            {:else if toolId === "captures"}
-              <CapturesTool />
-            {:else if toolId === "agents"}
-              <AgentsTool />
-            {/if}
-          </ToolModalChrome>
-        {:else}
-          <div class="ws-settings">
-            <div class="ws-settings-inner">
-              {#if toolId === "meetings"}
-                <MeetingsSection />
-              {:else if toolId === "dictation"}
-                <DictationSection />
-              {:else if toolId === "captures"}
-                <CapturesSection />
-              {:else}
-                <div class="flex flex-col gap-3">
-                  <p class="text-sm text-muted">
-                    {t("tools.noOwnSettings", { label: tool.label })}
-                  </p>
-                  <ShortcutsSection />
-                  {#if onOpenSettings}
-                    <button
-                      type="button"
-                      class="self-start text-xs font-medium text-text underline-offset-2
-                             hover:underline"
-                      onclick={onOpenSettings}
-                    >
-                      {t("tools.openAllSettings")}
-                    </button>
-                  {/if}
-                </div>
-              {/if}
-            </div>
-          </div>
-        {/if}
+        <ToolModalChrome>
+          {#if toolId === "meetings"}
+            <MeetingsTool {onOpenSettings} />
+          {:else if toolId === "dictation"}
+            <DictationTool {onOpenSettings} />
+          {:else if toolId === "clipboard"}
+            <ClipboardTool />
+          {:else if toolId === "snippets"}
+            <SnippetsTool initialTab={snippetsTab} />
+          {:else if toolId === "captures"}
+            <CapturesTool />
+          {:else if toolId === "agents"}
+            <AgentsTool />
+          {/if}
+        </ToolModalChrome>
       </div>
     {/key}
   </div>
@@ -167,23 +75,6 @@
     background: var(--bg);
   }
 
-  .ws-bar {
-    display: flex;
-    flex-shrink: 0;
-    align-items: center;
-    gap: 0.5rem;
-    border-bottom: 1px solid var(--line);
-    padding: 0.375rem 0.5rem;
-  }
-
-  /* Tope: con la ventana maximizada, seis pestañas estiradas a 1900px se
-     leen como una barra de filtros y no como navegación. */
-  .ws-tabs {
-    min-width: 0;
-    flex: 1;
-    max-width: 44rem;
-  }
-
   .ws-body {
     position: relative;
     display: flex;
@@ -200,17 +91,5 @@
     flex-direction: column;
     overflow: hidden;
     transform-origin: 50% 0;
-  }
-
-  .ws-settings {
-    min-height: 0;
-    flex: 1;
-    overflow-y: auto;
-  }
-
-  /* Los ajustes son texto y controles: a ancho completo quedan ilegibles. */
-  .ws-settings-inner {
-    max-width: 42rem;
-    padding: 0.875rem 1rem 1.25rem;
   }
 </style>

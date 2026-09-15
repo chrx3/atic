@@ -32,7 +32,7 @@
   } = $props();
 </script>
 
-<div class="flex flex-col gap-3 p-4">
+<div class="flex flex-col gap-3">
   <Field label={t("page.snippets.name")} required>
     {#snippet children({ id })}
       <Input
@@ -64,7 +64,7 @@
          significa nada. -->
     {#if item.id}
       <Button variant="soft" size="sm" onclick={() => onPaste(item.id)}
-        >{t("pill.paste")}</Button
+        >{t("page.snippets.pasteActive")}</Button
       >
       <Button variant="danger" size="sm" onclick={onDelete}
         >{t("page.common.delete")}</Button

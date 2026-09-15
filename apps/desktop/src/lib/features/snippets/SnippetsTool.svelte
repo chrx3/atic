@@ -14,7 +14,6 @@
   import ToolPage from "$patterns/ToolPage.svelte";
   import Toolbar from "$patterns/Toolbar.svelte";
   import Button from "$ui/Button.svelte";
-  import Chip from "$ui/Chip.svelte";
   import ConfirmDialog from "$ui/ConfirmDialog.svelte";
   import EmptyState from "$ui/EmptyState.svelte";
   import Input from "$ui/Input.svelte";
@@ -150,10 +149,6 @@
   kicker={t("page.snippets.kicker")}
   blurb={t("page.snippets.blurb")}
 >
-  {#snippet meta()}
-    <Chip>{t("page.snippets.count", { count: snippets.items.length })}</Chip>
-  {/snippet}
-
   <div class="flex h-full min-h-0 flex-col">
     <Toolbar label={t("page.snippets.view")}>
       <SegmentedControl
@@ -174,24 +169,39 @@
       {/snippet}
     </Toolbar>
 
-    {#if tab === "snippets"}
-      <p class="shrink-0 border-b border-line px-3 py-1.5 text-xs text-muted">
-        {t("page.snippets.intro")}
-      </p>
-    {/if}
-
     {#if tab === "scratchpad"}
-      <div class="min-h-0 flex-1 overflow-y-auto p-3">
+      <div class="flex min-h-0 flex-1 flex-col gap-1.5 p-3">
         <!-- Guarda sola con retardo; al salir de la vista se fuerza lo pendiente. -->
-        <TextArea
-          value={snippets.scratchpad?.body ?? ""}
-          oninput={(e: Event) =>
-            snippets.editScratchpad((e.currentTarget as HTMLTextAreaElement).value)}
-          onblur={() => snippets.flushScratchpad()}
-          rows={16}
-          aria-label={t("page.snippets.padAria")}
-          placeholder={t("page.snippets.padPlaceholder")}
-        />
+        <div class="min-h-0 flex-1">
+          <TextArea
+            fill
+            value={snippets.scratchpad?.body ?? ""}
+            oninput={(e: Event) =>
+              snippets.editScratchpad((e.currentTarget as HTMLTextAreaElement).value)}
+            onblur={() => snippets.flushScratchpad()}
+            aria-label={t("page.snippets.padAria")}
+            placeholder={t("page.snippets.padPlaceholder")}
+          />
+        </div>
+        <!-- El bloc guarda sin que nadie aprete nada: sin esta línea, no hay
+             forma de saber que lo escrito llegó a disco. -->
+        <p
+          class="flex shrink-0 items-center justify-between text-micro text-faint"
+          role="status"
+        >
+          <span>
+            {snippets.saving
+              ? t("page.snippets.saving")
+              : snippets.savedAt
+                ? t("page.snippets.saved")
+                : ""}
+          </span>
+          <span class="font-mono" data-numeric>
+            {t("page.snippets.chars", {
+              count: (snippets.scratchpad?.body ?? "").length,
+            })}
+          </span>
+        </p>
       </div>
     {:else}
       <div class="min-h-0 flex-1">

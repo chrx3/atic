@@ -8,11 +8,19 @@
   let {
     combo,
     separator = "+",
+    size = "sm",
   }: {
     combo: string;
     /** Con qué viene unida la cadena de entrada. */
     separator?: string;
+    /** `md` cuando la combinación es lo principal de la pantalla. */
+    size?: "sm" | "md";
   } = $props();
+
+  const SIZES = {
+    sm: "h-5 min-w-5 px-1 text-xs",
+    md: "h-7 min-w-7 px-1.5 text-sm",
+  };
 
   const keys = $derived(
     combo
@@ -25,7 +33,9 @@
 <span class="inline-flex items-center gap-0.5">
   {#each keys as key, i (i)}
     <kbd
-      class="inline-flex h-5 min-w-5 items-center justify-center rounded-xs border border-line bg-surface-2 px-1 font-mono text-xs text-muted"
+      class="inline-flex items-center justify-center rounded-xs border border-line bg-surface-2 font-mono text-muted {SIZES[
+        size
+      ]}"
     >
       {key}
     </kbd>

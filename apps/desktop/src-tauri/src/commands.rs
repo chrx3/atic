@@ -252,6 +252,23 @@ pub fn dictation_phase(state: State<AppState>) -> crate::dictation::DictationPha
     }
 }
 
+/// El texto del último dictado de esta sesión. `None` si todavía no hubo.
+#[tauri::command]
+pub fn dictation_last_text(state: State<AppState>) -> Option<String> {
+    state.dictation_last_text.lock_or_recover().clone()
+}
+
+/// El webview principal reporta si su ventana tiene el foco.
+///
+/// Arranca en `false` a propósito: sin reporte, el dictado se comporta como
+/// siempre (pegar en el destino guardado o encolar).
+#[tauri::command]
+pub fn set_main_window_focused(state: State<AppState>, focused: bool) {
+    state
+        .main_window_focused
+        .store(focused, std::sync::atomic::Ordering::SeqCst);
+}
+
 #[tauri::command]
 pub fn list_input_devices() -> Result<Vec<atic_audio::InputDeviceInfo>, String> {
     atic_audio::list_input_devices().map_err(|e| e.to_ui(crate::ui_lang::english()))

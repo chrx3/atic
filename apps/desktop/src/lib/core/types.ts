@@ -89,8 +89,6 @@ export interface AppConfig {
   record_tracks: string;
   /** Pistas a transcribir: both | mic | system */
   transcribe_tracks: string;
-  /** Prioriza solo audio del sistema (evita eco del mic con parlantes). */
-  speakers_mode: boolean;
   /** Supresión de ruido en mic: off | low | medium | high */
   noise_suppression: string;
   /** Arrancar con el sistema. */
@@ -232,6 +230,8 @@ export type DictationPhase = "idle" | "listening" | "transcribing" | "pasted" | 
 export interface DictationStatusPayload {
   phase: DictationPhase;
   message: string | null;
+  /** Lo dictado. Solo viene en `pasted`; la ventana principal lo muestra. */
+  text: string | null;
 }
 
 export interface InputDeviceInfo {
