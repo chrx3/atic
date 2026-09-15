@@ -21,7 +21,7 @@
         "minWidth": 640,
         "minHeight": 460,
         "decorations": false,
-        "visible": true
+        "visible": false
       },
       {
         "label": "capture-shelf",

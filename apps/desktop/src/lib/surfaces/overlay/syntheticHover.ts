@@ -27,7 +27,11 @@
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 import type { OverlayPointer, Point } from "$ipc/overlay";
-import { nativePointerAlreadyHandled } from "./syntheticPointer";
+import {
+  nativePointerAlreadyHandled,
+  resolveSynthEcho,
+  type SynthEcho,
+} from "./syntheticPointer";
 
 const HOVER_ATTR = "data-synth-hover";
 
@@ -165,15 +169,20 @@ let lastTrustedDown = 0;
 let lastTrustedUp = 0;
 let synthHeld = false;
 let synthDownTarget: Element | null = null;
+/** Punto del clic sintetizado cuyo eco nativo todavía puede llegar. */
+let echoClick: SynthEcho = null;
 
 function applyClick(point: OverlayPointer): void {
   if (document.hasFocus()) {
     synthHeld = false;
     synthDownTarget = null;
+    echoClick = null;
     return;
   }
   const now = performance.now();
   if (point.down) {
+    // Una pulsación nueva: el eco del clic anterior ya no puede llegar.
+    echoClick = null;
     if (nativePointerAlreadyHandled(lastTrustedDown, now)) return;
     const target = document.elementFromPoint(point.x, point.y);
     if (!target) return;
@@ -212,6 +221,9 @@ function applyClick(point: OverlayPointer): void {
     buttons: 0,
     detail: 1,
   });
+  // El clic nativo de este mismo gesto puede llegar después: marcarlo para
+  // que no vuelva a disparar el botón (ver `resolveSynthEcho`).
+  echoClick = { x, y };
 }
 
 function clearHover(): void {
@@ -266,7 +278,18 @@ function applyPoint(point: Point): void {
 }
 
 function onTrustedPointer(event: PointerEvent): void {
-  if (!event.isTrusted || event.button !== 0) return;
+  if (!event.isTrusted) return;
+  // El eco solo puede ser del botón principal; otro botón no lo toca.
+  if (event.button === 0) {
+    const { echo, consume } = resolveSynthEcho(echoClick, event);
+    echoClick = echo;
+    if (consume) {
+      event.stopImmediatePropagation();
+      event.preventDefault();
+      return;
+    }
+  }
+  if (event.button !== 0) return;
   // El IPC a veces gana al mouseDown nativo: si ya sintetizamos, no dejar
   // que el evento real dispare el mismo gesto otra vez.
   if (synthHeld) {
@@ -279,6 +302,23 @@ function onTrustedPointer(event: PointerEvent): void {
   else lastTrustedUp = now;
 }
 
+/**
+ * El `click`/`mouseup` nativo que cierra un gesto ya sintetizado.
+ *
+ * El `click` (y su `mouseup`) no pasan por `onTrustedPointer`, y son
+ * justamente los que vuelven a disparar el botón. Si llegan al mismo punto
+ * del clic que sintetizamos, son el eco del mismo gesto físico: se tragan.
+ */
+function onTrustedEcho(event: MouseEvent): void {
+  if (!event.isTrusted || event.button !== 0) return;
+  const { echo, consume } = resolveSynthEcho(echoClick, event);
+  echoClick = echo;
+  if (consume) {
+    event.stopImmediatePropagation();
+    event.preventDefault();
+  }
+}
+
 /** Escucha el cursor y los clics, y devuelve la baja. */
 export function startSyntheticHover(): () => void {
   installHoverCss();
@@ -286,9 +326,14 @@ export function startSyntheticHover(): () => void {
   lastTrustedUp = 0;
   synthHeld = false;
   synthDownTarget = null;
+  echoClick = null;
   let disposed = false;
   let unlistenCursor: UnlistenFn | null = null;
   let unlistenPointer: UnlistenFn | null = null;
+  // El eco primero: si el evento es del gesto ya sintetizado, no debe llegar
+  // ni siquiera a los oyentes que actualizan los relojes de confianza.
+  window.addEventListener("mouseup", onTrustedEcho, true);
+  window.addEventListener("click", onTrustedEcho, true);
   window.addEventListener("pointerdown", onTrustedPointer, true);
   window.addEventListener("pointerup", onTrustedPointer, true);
   void listen<Point>("overlay-cursor", (event) => applyPoint(event.payload)).then(
@@ -315,10 +360,13 @@ export function startSyntheticHover(): () => void {
     unlistenCursor = null;
     unlistenPointer?.();
     unlistenPointer = null;
+    window.removeEventListener("mouseup", onTrustedEcho, true);
+    window.removeEventListener("click", onTrustedEcho, true);
     window.removeEventListener("pointerdown", onTrustedPointer, true);
     window.removeEventListener("pointerup", onTrustedPointer, true);
     synthHeld = false;
     synthDownTarget = null;
+    echoClick = null;
     clearHover();
   };
 }

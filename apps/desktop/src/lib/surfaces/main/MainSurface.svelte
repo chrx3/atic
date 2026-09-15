@@ -2,15 +2,17 @@
   /**
    * La ventana principal.
    *
-   * Shell: picker líquido (rueda + cards). El contenido de cada tool y sus
-   * ajustes viven en el workspace, encima del picker y a ventana completa. El
-   * estado de dominio lo monta `sessionEffect`.
+   * Ya no hay picker: la ventana muestra directamente el cuerpo de una
+   * herramienta (Reuniones por defecto) con las pestañas del workspace para
+   * cambiar entre las que tienen vista. Todo lo demás vive en la pill: esto es
+   * la biblioteca donde el contenido grande se lee y se edita.
+   *
+   * El estado de dominio lo monta `sessionEffect`.
    */
   import { onMount, untrack } from "svelte";
   import { toolById } from "$core/tools";
   import { localizeTool, t } from "$domain/i18n.svelte";
   import { LAUNCHER_LAB_OPEN_KEY } from "$lib/dev/launcherLab.svelte";
-  import { pickerLab } from "$lib/dev/pickerLab.svelte";
   import { capture } from "$domain/capture.svelte";
   import { config } from "$domain/config.svelte";
   import { dictation } from "$domain/dictation.svelte";
@@ -31,15 +33,8 @@
   import IconButton from "$ui/IconButton.svelte";
   import Modal from "$ui/Modal.svelte";
   import ToastStack from "$ui/ToastStack.svelte";
-  import {
-    AppWindow,
-    GraduationCap,
-    Search,
-    Settings,
-    SlidersHorizontal,
-  } from "$lib/icons";
+  import { AppWindow, GraduationCap, Search, Settings } from "$lib/icons";
   import ToolWorkspace from "./ToolWorkspace.svelte";
-  import ToolRail from "./ToolRail.svelte";
   import UpdateBubble from "./UpdateBubble.svelte";
   import { provideMainUi } from "./mainUi.svelte";
 
@@ -51,21 +46,6 @@
     capture.active ? "recording" : dictation.active ? "dictating" : "idle",
   );
   let launcherLabOpen = $state(false);
-
-  // Panel estático en dev: sin dynamic import que pueda dejar la UI a medias.
-  let PickerLabPanel = $state<
-    typeof import("$lib/dev/PickerLabPanel.svelte").default | null
-  >(null);
-  $effect(() => {
-    if (!isDev) return;
-    let cancelled = false;
-    void import("$lib/dev/PickerLabPanel.svelte").then((m) => {
-      if (!cancelled) PickerLabPanel = m.default;
-    });
-    return () => {
-      cancelled = true;
-    };
-  });
 
   $effect(() => {
     if (!isDev) return;
@@ -154,16 +134,6 @@
       event.preventDefault();
       ui.openSearch();
     }
-    if (!isDev) return;
-    if (event.key === "Escape" && pickerLab.open) {
-      event.preventDefault();
-      pickerLab.close();
-      return;
-    }
-    if (event.ctrlKey && event.altKey && event.key.toLowerCase() === "p") {
-      event.preventDefault();
-      pickerLab.toggle();
-    }
   }
 
   onMount(() => {
@@ -226,46 +196,21 @@
       >
         <Icon icon={AppWindow} size={14} />
       </IconButton>
-      <IconButton
-        label={pickerLab.open ? t("chrome.pickerLabClose") : t("chrome.pickerLab")}
-        size="sm"
-        pressed={pickerLab.open}
-        onclick={() => pickerLab.toggle()}
-      >
-        <Icon icon={SlidersHorizontal} size={14} />
-      </IconButton>
     {/if}
   {/snippet}
 
   <div class="shell">
     <!--
-      El picker no se desmonta al abrir una herramienta: la rueda conserva su
-      giro y volver no la re-anima. `inert` la saca del tabulador y de los
-      lectores de pantalla mientras está tapada, que es lo que `hidden` daría
-      pero sin perder el estado.
+      Sin picker: la ventana muestra el cuerpo de la herramienta activa. Las
+      pestañas del workspace (y el buscador) cambian entre las que tienen vista.
     -->
-    <div
-      class="rail"
-      class:rail--away={ui.detailTool !== null}
-      inert={ui.detailTool !== null}
-    >
-      <ToolRail
-        activeTool={ui.activeTool}
-        onSelect={(id) => ui.openTool(id)}
-        onOpenDetail={(id) => ui.openDetail(id)}
-      />
-    </div>
-
-    {#if ui.detailTool}
-      <ToolWorkspace
-        toolId={ui.detailTool}
-        bind:tab={ui.detailTab}
-        snippetsTab={ui.snippetsTab}
-        onClose={() => ui.closeDetail()}
-        onSelectTool={(id) => ui.openDetail(id)}
-        onOpenSettings={() => ui.openSettings()}
-      />
-    {/if}
+    <ToolWorkspace
+      toolId={ui.activeTool}
+      bind:tab={ui.detailTab}
+      snippetsTab={ui.snippetsTab}
+      onSelectTool={(id) => ui.openTool(id)}
+      onOpenSettings={() => ui.openSettings()}
+    />
 
     <UpdateBubble />
   </div>
@@ -326,27 +271,11 @@
 
 <ToastStack items={toasts.items} onDismiss={(id) => toasts.dismiss(id)} />
 
-{#if isDev && pickerLab.open && PickerLabPanel}
-  <PickerLabPanel />
-{/if}
-
 <style>
   .shell {
     position: relative;
     display: flex;
     height: 100%;
     min-height: 0;
-  }
-
-  .rail {
-    display: flex;
-    min-width: 0;
-    min-height: 0;
-    flex: 1;
-  }
-
-  /* Tapada por el workspace: sin pintar, pero montada. */
-  .rail--away {
-    visibility: hidden;
   }
 </style>

@@ -169,13 +169,25 @@
       lid: 1,
     };
     const now = { ...want };
-    let t0 = performance.now();
     let lidHold = 0;
     let raf = 0;
     let blinkTimer = 0;
     let blinkFollow = 0;
     let cancelled = false;
     let cursorPending = false;
+    /**
+     * Loop estacionado: no hay nada que animar, así que se apagó el rAF.
+     *
+     * Escribir el SVG todos los frames costaba estilo/layout/paint de la marca
+     * en las dos ventanas (y su commit de capas) aun con la cara quieta. Acá el
+     * loop se detiene cuando `needsFrames()` dice que todo llegó, y despierta
+     * con pointermove (DOM), un parpadeo, un clic, o el sondeo lento del cursor
+     * —que mientras está estacionado corre por `setTimeout`, sin rAF—.
+     */
+    let parked = false;
+    let parkTimer = 0;
+    /** Fase acumulada del vaivén: solo avanza mientras el loop corre. */
+    let swayPhase = 0;
 
     function aim(clientX: number, clientY: number) {
       const box = svg.getBoundingClientRect();
@@ -204,6 +216,7 @@
     function blink(hold = 70) {
       want.lid = 0.1;
       lidHold = hold;
+      wake();
     }
 
     function scheduleBlink() {
@@ -220,15 +233,57 @@
     }
 
     function onMove(e: PointerEvent | MouseEvent) {
+      lastDomMoveAt = performance.now();
+      cursorMoving = true;
+      wake();
       aim(e.clientX, e.clientY);
     }
+
+    /**
+     * Sondeo del cursor con ritmo adaptativo.
+     *
+     * Sondear en cada frame (60 rAF/s) convertía a `overlay_cursor` en un
+     * flood de IPC: cada invoke cruza dos procesos WebKit por URL-scheme
+     * (URLSchemeTask + headers de CFNetwork), y con `cursorPending` quedaba
+     * back-to-back — la tasa la ponía el IPC, no el diseño. El hilo principal
+     * se quedaba ~20% de CPU solo despachando respuestas, y esa presión se
+     * paga en fluidez de todo lo demás (rueda, vuelos, hover).
+     *
+     * Acá el ritmo lo pone el movimiento: rápido mientras el cursor viaja
+     * (33 ms), lento cuando paró (180 ms) — el lerp de `tick` suaviza igual,
+     * así que parado no hay nada que actualizar y en viaje el ojo retoma en
+     * menos de un latido. Y si el DOM ya vio `pointermove` hace poco
+     * (overlay armada, ventana key) el sondeo ni arranca: el evento real es
+     * más fresco y no cuesta IPC.
+     */
+    const CURSOR_POLL_FAST_MS = 33;
+    const CURSOR_POLL_IDLE_MS = 180;
+    const CURSOR_DOM_GRACE_MS = 250;
+    let lastPollAt = 0;
+    let lastSeenX = Number.NaN;
+    let lastSeenY = Number.NaN;
+    let cursorMoving = true;
+    let lastDomMoveAt = -Infinity;
 
     function pollCursor() {
       if (cursorPending || cancelled) return;
       cursorPending = true;
       void overlayCursor()
         .then((p) => {
-          if (!cancelled && p) aim(p.x, p.y);
+          if (cancelled) return;
+          if (!p) return;
+          const moved =
+            Number.isNaN(lastSeenX) ||
+            Math.abs(p.x - lastSeenX) > 0.5 ||
+            Math.abs(p.y - lastSeenY) > 0.5;
+          cursorMoving = moved;
+          // Quieto no se reescribe `want`: el loop puede estar estacionado y un
+          // `aim` sin frame no llega a pintarse. Con movimiento, despierta.
+          if (!moved) return;
+          lastSeenX = p.x;
+          lastSeenY = p.y;
+          wake();
+          aim(p.x, p.y);
         })
         .catch(() => {
           /* Sin overlay (tests, ventana principal): alcanza pointermove. */
@@ -236,6 +291,59 @@
         .finally(() => {
           cursorPending = false;
         });
+    }
+
+    /**
+     * Despierta el loop. Idempotente: si ya corre, no hace nada.
+     *
+     * `last` se re-ancla para que el `dt` del primer frame no traiga el tiempo
+     * estacionado (el lidHold se comería la pausa entera de un salto).
+     */
+    function wake() {
+      if (cancelled) return;
+      if (!parked && raf) return;
+      parked = false;
+      window.clearTimeout(parkTimer);
+      parkTimer = 0;
+      last = performance.now();
+      if (!raf) raf = requestAnimationFrame(tick);
+    }
+
+    /** Estaciona el loop y sigue mirando el cursor sin gastar frames. */
+    function park() {
+      if (parked) return;
+      parked = true;
+      scheduleParkedPoll();
+    }
+
+    function scheduleParkedPoll() {
+      // En `window` no hay nada que sondear: despiertan pointermove y blink.
+      if (track !== "desktop") return;
+      window.clearTimeout(parkTimer);
+      parkTimer = window.setTimeout(() => {
+        if (cancelled || !parked) return;
+        pollCursor();
+        scheduleParkedPoll();
+      }, CURSOR_POLL_IDLE_MS);
+    }
+
+    /**
+     * ¿Queda algo por animar? El lerp converge: por debajo de estos épsilons
+     * el ojo no distingue el paso y no vale un frame (ni su commit de capas).
+     */
+    function needsFrames(): boolean {
+      if (lidHold > 0) return true;
+      return (
+        Math.abs(want.rot - now.rot) > 0.01 ||
+        Math.abs(want.leanX - now.leanX) > 0.05 ||
+        Math.abs(want.leanY - now.leanY) > 0.05 ||
+        Math.abs(want.lookX - now.lookX) > 0.01 ||
+        Math.abs(want.lookY - now.lookY) > 0.01 ||
+        Math.abs(want.spread - now.spread) > 0.01 ||
+        Math.abs(want.rx - now.rx) > 0.005 ||
+        Math.abs(want.ry - now.ry) > 0.005 ||
+        Math.abs(want.lid - now.lid) > 0.005
+      );
     }
 
     function onDown() {
@@ -248,9 +356,13 @@
     let last = performance.now();
 
     function tick(time: number) {
+      raf = 0;
       if (cancelled) return;
       const dt = Math.min(32, time - last);
       last = time;
+      // El vaivén acumula su fase mientras corre: al estacionarse se congela y
+      // al volver sigue donde estaba (con `Math.sin(time)` habría un salto).
+      swayPhase += dt;
 
       if (lidHold > 0) {
         lidHold -= dt;
@@ -270,7 +382,7 @@
       now.lid += (want.lid - now.lid) * 0.42;
       now.spread = clampSpread(now.spread);
 
-      const sway = Math.sin((time - t0) / 1100) * 1.2;
+      const sway = Math.sin(swayPhase / 1100) * 1.2;
       const rx = now.rx;
       const ry = Math.max(0.08, now.ry * now.lid);
 
@@ -289,8 +401,17 @@
       eyeR.setAttribute("transform", `translate(${pair.R.x} ${pair.R.y})`);
       head.style.transform = `translate(${now.leanX}px, ${now.leanY}px) rotate(${now.rot + sway}deg)`;
 
-      if (track === "desktop") pollCursor();
-      raf = requestAnimationFrame(tick);
+      if (track === "desktop" && time - lastDomMoveAt >= CURSOR_DOM_GRACE_MS) {
+        const pace = cursorMoving ? CURSOR_POLL_FAST_MS : CURSOR_POLL_IDLE_MS;
+        if (time - lastPollAt >= pace) {
+          lastPollAt = time;
+          pollCursor();
+        }
+      }
+      // Todo asentado: se apaga el rAF hasta el próximo movimiento, parpadeo o
+      // estado. Mientras tanto, el sondeo lento sigue por `setTimeout`.
+      if (needsFrames()) raf = requestAnimationFrame(tick);
+      else park();
     }
 
     window.addEventListener("pointermove", onMove, { passive: true });
@@ -302,6 +423,7 @@
     return () => {
       cancelled = true;
       cancelAnimationFrame(raf);
+      window.clearTimeout(parkTimer);
       window.clearTimeout(blinkTimer);
       window.clearTimeout(blinkFollow);
       window.removeEventListener("pointermove", onMove);

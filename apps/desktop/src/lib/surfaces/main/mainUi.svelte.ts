@@ -6,23 +6,27 @@
  * en caliente —dejando la vista anterior pegada tras cada guardado— y haría
  * imposible montar dos veces la superficie en un test.
  *
- * El picker (rueda + cards) es la portada. `openTool` centra la herramienta;
- * `openDetail` abre su contenido en el workspace, encima del picker y a
- * ventana completa.
+ * La ventana ya no tiene picker: siempre muestra el cuerpo de una herramienta
+ * (Reuniones por defecto) y las pestañas del workspace cambian entre las que
+ * tienen vista. Las que son acción (Pizarra, Color, Apps) viven en la pill.
  */
 
 import { getContext, setContext } from "svelte";
 import { config } from "$domain/config.svelte";
-import type { ToolId } from "$core/tools";
+import { BODIED_TOOLS, type ToolId } from "$core/tools";
 import type { SettingsSectionId } from "$features/settings/settingsSections";
 
 export type DetailTab = "detail" | "settings";
+
+/** ¿Esta tool tiene cuerpo que mostrar en la ventana? */
+function hasBody(id: ToolId): boolean {
+  return BODIED_TOOLS.some((tool) => tool.id === id);
+}
 
 export class MainUi {
   activeTool = $state<ToolId>("meetings");
   /** Con qué pestaña abre la herramienta de textos cuando se entra desde fuera. */
   snippetsTab = $state<"snippets" | "scratchpad">("snippets");
-  detailTool = $state<ToolId | null>(null);
   detailTab = $state<DetailTab>("detail");
 
   /** Modal de búsqueda global (SearchModal / Ctrl+K). */
@@ -42,18 +46,13 @@ export class MainUi {
   replayingOnboarding = $state(false);
 
   openTool(tool: ToolId): void {
-    this.activeTool = tool;
+    if (hasBody(tool)) this.activeTool = tool;
   }
 
   openDetail(tool: ToolId, tab: DetailTab = "detail"): void {
+    if (!hasBody(tool)) return;
     this.activeTool = tool;
-    this.detailTool = tool;
     this.detailTab = tab;
-  }
-
-  closeDetail(): void {
-    this.detailTool = null;
-    this.detailTab = "detail";
   }
 
   /**
@@ -94,7 +93,6 @@ export class MainUi {
     await config.patch({ onboarding_done: false, onboarding_practice_done: false });
     this.closeSearch();
     this.closeSettings();
-    this.closeDetail();
     this.onboardingReplay += 1;
   }
 }
