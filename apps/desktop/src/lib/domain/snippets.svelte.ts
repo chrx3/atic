@@ -77,6 +77,11 @@ class SnippetsStore implements DomainStore {
     this.#timer = setTimeout(() => this.flushScratchpad(), SCRATCH_DEBOUNCE_MS);
   }
 
+  /** Mientras el bloc tiene algo en vuelo hacia disco. */
+  saving = $state(false);
+  /** Cuándo se guardó por última vez, para la línea de estado del bloc. */
+  savedAt = $state<number | null>(null);
+
   flushScratchpad(): void {
     if (this.#timer) {
       clearTimeout(this.#timer);
@@ -85,10 +90,18 @@ class SnippetsStore implements DomainStore {
     const body = this.#pending;
     this.#pending = null;
     if (body === null) return;
-    void setScratchpad(body).catch(() => {
-      // Si falla, lo escrito sigue en pantalla: perderlo sería peor que no
-      // haberlo guardado.
-    });
+    this.saving = true;
+    void setScratchpad(body)
+      .then(() => {
+        this.savedAt = Date.now();
+      })
+      .catch(() => {
+        // Si falla, lo escrito sigue en pantalla: perderlo sería peor que no
+        // haberlo guardado.
+      })
+      .finally(() => {
+        this.saving = false;
+      });
   }
 }
 

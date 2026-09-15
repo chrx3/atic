@@ -10,8 +10,9 @@
    * El estado de dominio lo monta `sessionEffect`.
    */
   import { onMount, untrack } from "svelte";
-  import { toolById } from "$core/tools";
+  import { BODIED_TOOLS, toolById, type ToolId } from "$core/tools";
   import { localizeTool, t } from "$domain/i18n.svelte";
+  import type { SettingsSectionId } from "$features/settings/settingsSections";
   import { LAUNCHER_LAB_OPEN_KEY } from "$lib/dev/launcherLab.svelte";
   import { capture } from "$domain/capture.svelte";
   import { config } from "$domain/config.svelte";
@@ -26,14 +27,24 @@
   import { onOpenSearchRequested } from "$ipc/search";
   import { macPermissionsStatus } from "$ipc/permissions";
   import { appUpdate } from "$domain/appUpdate.svelte";
-  import { closeWindow, minimizeWindow, toggleMaximizeWindow } from "$ipc/windows";
+  import {
+    closeWindow,
+    minimizeWindow,
+    onWindowFocus,
+    setMainWindowFocused,
+    toggleMaximizeWindow,
+    windowIsFocused,
+  } from "$ipc/windows";
   import AticMark from "$lib/AticMark.svelte";
   import WindowFrame from "$patterns/WindowFrame.svelte";
   import Icon from "$ui/Icon.svelte";
   import IconButton from "$ui/IconButton.svelte";
   import Modal from "$ui/Modal.svelte";
   import ToastStack from "$ui/ToastStack.svelte";
-  import { AppWindow, GraduationCap, Search, Settings } from "$lib/icons";
+  import { AppWindow, ChevronDown, GraduationCap, Search, Settings } from "$lib/icons";
+  import { TOOL_ICONS } from "$lib/icons";
+  import Menu from "$ui/Menu.svelte";
+  import type { MenuItem } from "$ui/menu";
   import ToolWorkspace from "./ToolWorkspace.svelte";
   import UpdateBubble from "./UpdateBubble.svelte";
   import { provideMainUi } from "./mainUi.svelte";
@@ -82,6 +93,8 @@
       "snippets",
       "captures",
       "summaries",
+      // La ventana muestra lo que quedó en la cola de pegado del dictado.
+      "paste",
     ]),
   );
 
@@ -94,8 +107,62 @@
     return () => stop?.();
   });
 
+  /**
+   * El dictado decide en Rust si pega en la app externa o si deja el texto en
+   * Atic. Desde su hilo no puede preguntar si esta ventana tiene el foco, así
+   * que se lo reportamos en cada cambio y una vez al arrancar.
+   */
+  $effect(() => {
+    let stop: (() => void) | undefined;
+    void windowIsFocused()
+      .then((focused) => setMainWindowFocused(focused))
+      .catch(() => {
+        /* fuera de Tauri */
+      });
+    void onWindowFocus((focused) => void setMainWindowFocused(focused)).then((un) => {
+      stop = un;
+    });
+    return () => stop?.();
+  });
+
   const tool = $derived(localizeTool(toolById(ui.activeTool)));
   const onboardingDone = $derived(config.current?.onboarding_done === true);
+
+  /**
+   * El menú del título: cambiar de herramienta sin una fila de pestañas.
+   *
+   * Solo entran las que tienen cuerpo —Pizarra, Color y Apps son atajos, no
+   * vistas— y el último ítem lleva a los ajustes de la herramienta abierta,
+   * que es lo que antes hacía el engranaje de la barra del workspace.
+   */
+  type ToolPick = ToolId | "settings";
+  const SETTINGS_SECTION: Partial<Record<ToolId, SettingsSectionId>> = {
+    meetings: "meetings",
+    dictation: "dictation",
+    captures: "captures",
+    agents: "agents",
+  };
+  const toolItems = $derived.by((): MenuItem<ToolPick>[] => [
+    ...BODIED_TOOLS.map((item) => ({
+      id: item.id,
+      label: localizeTool(item).label,
+      icon: TOOL_ICONS[item.id],
+      checked: item.id === ui.activeTool,
+    })),
+    {
+      id: "settings",
+      label: t("workspace.settingsForTool", { label: tool.label }),
+      icon: TOOL_ICONS.settings,
+    },
+  ]);
+
+  function onToolPick(id: ToolPick) {
+    if (id === "settings") {
+      ui.openSettings(SETTINGS_SECTION[ui.activeTool] ?? "general");
+      return;
+    }
+    ui.openTool(id);
+  }
 
   /**
    * macOS: al arrancar, si falta algún permiso TCC, se ofrece la pantalla que
@@ -150,6 +217,25 @@
   });
 </script>
 
+{#snippet titleMenu()}
+  <Menu
+    items={toolItems}
+    label={t("workspace.tools")}
+    onpick={onToolPick}
+    triggerClass="flex min-w-0 items-center gap-1.5 rounded-xs px-1 py-0.5 text-xs
+                   font-medium text-text transition-colors
+                   duration-(--duration-quick) ease-calm hover:bg-surface-2
+                   focus-visible:[outline:2px_solid_var(--accent)]"
+    trigger={toolTrigger}
+  />
+{/snippet}
+
+{#snippet toolTrigger()}
+  <Icon icon={TOOL_ICONS[ui.activeTool]} size={13} />
+  <span class="min-w-0 truncate">{tool.label}</span>
+  <Icon icon={ChevronDown} size={11} class="shrink-0 text-faint" />
+{/snippet}
+
 <svelte:window onkeydown={onKeydown} />
 
 <WindowFrame
@@ -160,6 +246,7 @@
   onMinimize={() => void minimizeWindow()}
   onMaximize={() => void toggleMaximizeWindow()}
   onClose={() => void closeWindow()}
+  {titleMenu}
 >
   {#snippet start()}
     <AticMark size={18} strokeWidth={1.5} alive track="window" state={markState} />
@@ -201,15 +288,13 @@
 
   <div class="shell">
     <!--
-      Sin picker: la ventana muestra el cuerpo de la herramienta activa. Las
-      pestañas del workspace (y el buscador) cambian entre las que tienen vista.
+      Sin picker: la ventana muestra el cuerpo de la herramienta activa. El
+      menú del título (y el buscador) cambian entre las que tienen vista.
     -->
     <ToolWorkspace
       toolId={ui.activeTool}
-      bind:tab={ui.detailTab}
       snippetsTab={ui.snippetsTab}
-      onSelectTool={(id) => ui.openTool(id)}
-      onOpenSettings={() => ui.openSettings()}
+      onOpenSettings={(section) => ui.openSettings(section ?? "general")}
     />
 
     <UpdateBubble />

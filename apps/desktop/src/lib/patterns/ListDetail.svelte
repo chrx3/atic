@@ -75,7 +75,7 @@
                [&_li_button]:ease-calm
                [&_li_button:hover]:bg-surface-2
                [&_li_button[aria-current=true]]:bg-surface-2
-               [&_li_button[aria-current=true]]:shadow-[inset_2px_0_0_0_var(--rb-record)]
+               [&_li_button[aria-current=true]]:shadow-[inset_2px_0_0_0_var(--accent)]
                [&_ul]:flex [&_ul]:flex-col [&_ul]:divide-y [&_ul]:divide-line"
       >
         {@render list()}

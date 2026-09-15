@@ -12,6 +12,7 @@
     rows = 3,
     autogrow = false,
     maxRows = 12,
+    fill = false,
     invalid = false,
     ...rest
   }: {
@@ -19,6 +20,8 @@
     rows?: number;
     autogrow?: boolean;
     maxRows?: number;
+    /** Ocupa todo el alto disponible. Para hojas que se escriben, como el bloc. */
+    fill?: boolean;
     invalid?: boolean;
     [key: string]: unknown;
   } = $props();
@@ -46,5 +49,6 @@
          placeholder:text-faint
          disabled:opacity-45
          {invalid ? 'border-danger' : 'border-line focus:border-line-strong'}
-         {autogrow ? 'resize-none overflow-hidden' : ''}"
+         {autogrow ? 'resize-none overflow-hidden' : ''}
+         {fill ? 'h-full resize-none' : ''}"
   {...rest}></textarea>

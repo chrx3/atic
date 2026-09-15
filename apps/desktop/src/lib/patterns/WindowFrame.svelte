@@ -29,6 +29,7 @@
     maximizeLabel,
     closeLabel,
     start,
+    titleMenu,
     actions,
     children,
   }: {
@@ -41,6 +42,12 @@
     closeLabel?: string;
     /** A la izquierda del título: marca, volver, lo que sea. */
     start?: Snippet;
+    /**
+     * Reemplaza el texto del título por un control —el menú de herramientas—.
+     * El `<h1>` sigue existiendo para el lector de pantalla; adentro va el
+     * disparador, que es lo que en macOS se hace con el menú del documento.
+     */
+    titleMenu?: Snippet;
     /** A la derecha, antes de los controles de ventana. */
     actions?: Snippet;
     children: Snippet;
@@ -141,12 +148,22 @@
       <div data-no-drag class="flex shrink-0 items-center gap-1">{@render start()}</div>
     {/if}
 
-    <!-- El título también arrastra: es la zona más grande y la más obvia. -->
+    <!--
+      El título también arrastra: es la zona más grande y la más obvia.
+      Sin `truncate` cuando hay menú: es `overflow: hidden`, y recortaría el
+      desplegable a la altura de esta fila. El truncado va en el texto.
+    -->
     <h1
       data-tauri-drag-region
-      class="min-w-0 flex-1 truncate text-xs font-medium text-muted select-none"
+      class="flex min-w-0 flex-1 items-center text-xs font-medium text-muted select-none"
+      aria-label={title}
     >
-      {title}
+      {#if titleMenu}
+        <span data-no-drag class="flex min-w-0 items-center">{@render titleMenu()}</span
+        >
+      {:else}
+        <span class="truncate">{title}</span>
+      {/if}
     </h1>
 
     {#if actions}

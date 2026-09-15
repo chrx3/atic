@@ -21,13 +21,11 @@
   import ToolPage from "$patterns/ToolPage.svelte";
   import Toolbar from "$patterns/Toolbar.svelte";
   import Button from "$ui/Button.svelte";
-  import Chip from "$ui/Chip.svelte";
   import ConfirmDialog from "$ui/ConfirmDialog.svelte";
   import EmptyState from "$ui/EmptyState.svelte";
   import Icon from "$ui/Icon.svelte";
   import IconButton from "$ui/IconButton.svelte";
   import Input from "$ui/Input.svelte";
-  import Kbd from "$ui/Kbd.svelte";
   import Modal from "$ui/Modal.svelte";
   import { ArrowLeft, ArrowRight, Copy, Folder, ScanText, Trash2 } from "$lib/icons";
   import type { CaptureItem } from "$core/types";
@@ -275,13 +273,6 @@
   kicker={t("tools.captures.short")}
   blurb={t("tools.captures.blurb")}
 >
-  {#snippet meta()}
-    <Chip>{t("page.captures.count", { count: captures.items.length })}</Chip>
-    {#if shortcut}
-      <Kbd combo={formatShortcut(shortcut)} separator="+" />
-    {/if}
-  {/snippet}
-
   <div class="flex h-full min-h-0 flex-col">
     <Toolbar label={t("page.captures.actions")}>
       <div class="w-full max-w-72">
@@ -294,7 +285,7 @@
       </div>
 
       {#snippet end()}
-        <span class="text-xs text-muted">
+        <span class="text-micro text-faint">
           {t("page.captures.retention")}
         </span>
         <Button
@@ -399,9 +390,14 @@
                   </span>
 
                   <div class="acts">
+                    <!-- Ratón sí, tabulador no: la grilla entera es un solo
+                         paso de tabulación y las flechas la recorren. Las
+                         mismas acciones, con nombre y teclado, viven en el
+                         visor (Enter). -->
                     <IconButton
                       label={t("page.captures.copyImage")}
                       size="sm"
+                      tabindex={-1}
                       onclick={() =>
                         void run(
                           () => captures.copy(item.path),
@@ -413,6 +409,7 @@
                     <IconButton
                       label={t("page.captures.copyOcr")}
                       size="sm"
+                      tabindex={-1}
                       onclick={() => void ocr(item.path)}
                     >
                       <Icon icon={ScanText} size={12} />
@@ -420,6 +417,7 @@
                     <IconButton
                       label={t("page.captures.reveal")}
                       size="sm"
+                      tabindex={-1}
                       onclick={() => void run(() => captures.reveal(item.path))}
                     >
                       <Icon icon={Folder} size={12} />
@@ -428,6 +426,7 @@
                       label={t("page.common.delete")}
                       size="sm"
                       variant="danger"
+                      tabindex={-1}
                       onclick={() => (confirmingDeleteId = item.id)}
                     >
                       <Icon icon={Trash2} size={12} />
@@ -440,7 +439,7 @@
         </div>
 
         <p class="mt-3 text-center text-micro text-faint">
-          {t("page.common.keyboardHint")}
+          {t("page.captures.keyboardHint")}
         </p>
       {/if}
     </div>
