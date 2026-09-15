@@ -169,8 +169,8 @@ export interface AticEvents {
   /** Abrir el buscador de la ventana principal (puede emitirlo el frontend). */
   "open-search": void;
   /**
-   * Catálogo / ToolRail / atajo: el overlay vuela al slot y ejecuta la tool.
-   * También lo emite Rust (p.ej. dictado toggle al empezar).
+   * Catálogo / pestañas del workspace / atajo: el overlay vuela al slot y
+   * ejecuta la tool. También lo emite Rust (p.ej. dictado toggle al empezar).
    */
   "color-patch": OverlayPatch;
   "color-picker-ended": number;

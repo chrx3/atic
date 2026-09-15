@@ -20,8 +20,6 @@ Eso alcanza para decidir qué se toca y qué no, sin caso por caso:
 | Rueda de herramientas (compacta) | sí | las seis gotas salen del núcleo |
 | Float de agentes | sí | cuelga de la pill, por el cuello |
 | Barra al crecer (grabando, cola, aviso) | sí (pendiente) | lo que llega se incorpora al disco |
-| Rail / picker de la ventana principal | sí | las gotas salen del arco, entre sí |
-| Cards del picker (derecha de la rueda) | sí* | mismo material; flotan aparte (hueco > REACH), no se pegan al arco |
 | Modal de detalle de herramienta | **no** | aparece encima; no sale del rail |
 | Launcher | sí | nace centrado (gota → stadium, mismo gesto que los favs); favs; cierra en espejo (tuck→recede) — [pill-liquid-emerge.md](pill-liquid-emerge.md) |
 | Shelf de capturas | **no** | idem |
@@ -69,8 +67,11 @@ antes, o el disco de 40 sale de 43. En JS está `preFilter()`.
 - [`apps/desktop/src/app.css`](../apps/desktop/src/app.css) — `--skin` y `--goo-grow`
 - [`apps/desktop/src/lib/surfaces/overlay/pill/PillSurface.svelte`](../apps/desktop/src/lib/surfaces/overlay/pill/PillSurface.svelte) — publica siluetas al grupo del overlay
 - [`apps/desktop/src/lib/ParticleWheel.svelte`](../apps/desktop/src/lib/ParticleWheel.svelte) — `.pw-skin`, núcleo + seis gotas (solo `compact`, goo SVG)
-- [`apps/desktop/src/lib/surfaces/main/ToolRail.svelte`](../apps/desktop/src/lib/surfaces/main/ToolRail.svelte) — picker de la ventana principal: arco + cards (SDF local)
 - [`apps/desktop/src/lib/surfaces/overlay/agents/AgentsFloat.svelte`](../apps/desktop/src/lib/surfaces/overlay/agents/AgentsFloat.svelte) — junta pill ↔ float de agentes vía el grupo del overlay
+
+> El picker de la ventana principal (`ToolRail` + `RailDust`) se eliminó el
+> 2026-09-14: la ventana muestra el workspace y la única rueda viva es la de la
+> pill (`ParticleWheel` compacta).
 
 ## La junta pill ↔ consola
 

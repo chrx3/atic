@@ -67,12 +67,15 @@ impl AgentBackend for Antigravity {
         options: StartOptions,
         on_delta: Box<dyn Fn(AgentDelta) + Send + Sync + 'static>,
     ) -> Result<Box<dyn AgentSession>, String> {
-        if options.mcp_config.is_some() {
+        // Antigravity es el único que no acepta servidores por invocación: los
+        // del modal no se le pueden declarar como a Codex o ACP. Se avisa una
+        // vez; el usuario puede registrarlos con `agy mcp add` si los quiere.
+        if !options.mcp_servers.is_empty() {
             static WARNED: std::sync::Once = std::sync::Once::new();
             WARNED.call_once(|| {
                 tracing::warn!(
                     backend = "antigravity",
-                    "los servidores MCP del modal solo se aplican a Claude Code"
+                    "Antigravity no acepta servidores MCP por invocación; los del modal solo se aplican a Claude Code, Codex y ACP"
                 )
             });
         }

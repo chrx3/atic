@@ -28,6 +28,14 @@ ventana grande siempre al frente.
 ## Pendiente / siguiente
 
 - [ ] Pulir geometría multi-monitor / DPI cuando aparezcan regresiones
+- [x] La ventana principal ya no tiene picker: muestra el cuerpo de la tool
+      activa (workspace con pestañas) y la única rueda viva es la de la pill
+- [x] Arranque silencioso: la principal nace oculta (`visible: false`) y la
+      abren el tray, el single-instance, el Dock (macOS) o el primer arranque
+      con onboarding pendiente
+- [x] Registro de tools: `shortcutOnly` y `body` viven en el `ToolDef`
+      (`core/tools.ts`); `WHEEL_TOOLS` y `BODIED_TOOLS` se derivan de ahí, y
+      los tests de contrato exigen icono y copy es/en por tool
 - [x] Open/close rueda: morph = ParticleWheel (gotas); hit-box instantánea con
       pivot center (no tween width — derivaba el centro); skip-flight cercano;
       Esc cancela el vuelo; cierre espera `afterTransition` de nodos y vuelve al hogar

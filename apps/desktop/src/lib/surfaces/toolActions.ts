@@ -110,7 +110,7 @@ export async function executeToolAction(id: ToolId): Promise<"openedDetail" | vo
 }
 
 /**
- * Acción primaria desde catálogo / ToolRail.
+ * Acción primaria desde catálogo / pestañas.
  * Si la tool tiene slot, el overlay vuela y ejecuta; si no, corre acá.
  */
 export async function runToolAction(id: ToolId): Promise<"openedDetail" | void> {

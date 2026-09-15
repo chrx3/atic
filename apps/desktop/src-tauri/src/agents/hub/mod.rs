@@ -13,6 +13,8 @@ use std::sync::Mutex;
 
 use atic_core::MutexExt;
 
+use super::mcp_servers::ModalServer;
+
 /// Estado vivo del hub: lo que `atic-mcp` necesita para encontrar a Atic.
 #[derive(Debug, Clone)]
 pub struct HubState {
@@ -239,16 +241,6 @@ pub fn merge_mcp_config(
         return None;
     }
     Some(serde_json::json!({ "mcpServers": servidores }).to_string())
-}
-
-#[derive(serde::Deserialize)]
-struct ModalServer {
-    #[serde(default)]
-    name: String,
-    #[serde(default)]
-    json: String,
-    #[serde(default)]
-    enabled: bool,
 }
 
 #[cfg(test)]

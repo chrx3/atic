@@ -23,6 +23,7 @@ pub fn responder(metodo: &str, ruta: &str, cuerpo: &[u8]) -> (u16, String) {
         ("POST", "/v1/wait") => r#"{"session":"s1","backend":"codex","status":"done","text":"hola","hint":null,"elapsed_s":3}"#.to_string(),
         ("POST", "/v1/spawn") => r#"{"session":"s9"}"#.to_string(),
         ("POST", "/v1/cancel") => r#"{"session":"s1","status":"cancelling"}"#.to_string(),
+        ("POST", "/v1/close") => r#"{"session":"s1","status":"closed"}"#.to_string(),
         _ => {
             let _ = cuerpo;
             return (404, r#"{"error":{"code":"bad_request","message":"Ruta desconocida."}}"#.to_string());

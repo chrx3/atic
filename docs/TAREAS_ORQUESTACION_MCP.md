@@ -960,6 +960,13 @@ Los servidores del modal (`agent_mcp_servers`) siguen siendo solo de Claude:
 vienen en su forma JSON y traducirlos a TOML/ACP es otra tarea. Los adaptadores
 lo avisan con un `warn` de una sola vez.
 
+> Actualizado el 2026-09-14: esa tarea se hizo (`agents/mcp_servers.rs`). El
+> modal y el `mcp_config` del request se normalizan una vez en `bridge` y cada
+> adaptador los inyecta: Codex por `-c mcp_servers.<nombre>.*`, ACP en el
+> `mcp_servers` del `session/new`. Solo stdio (un servidor por URL se saltea
+> con aviso) y Antigravity sigue afuera porque no acepta servidores por
+> invocación. El `warn` viejo de los adaptadores ya no existe.
+
 ### 11.2 Dos backends nuevos
 
 - **Grok** (`acp::GROK`): `grok agent stdio` habla ACP v1 —responde

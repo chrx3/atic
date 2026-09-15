@@ -537,22 +537,41 @@ pub(crate) fn start_session(
     //
     // Claude recibe el servidor `atic` dentro del `mcp_config` ya mergeado; los
     // demás backends por `atic_mcp`, que cada adaptador traduce a lo suyo. Los
-    // servidores del modal siguen siendo solo de Claude: vienen en forma JSON
-    // suya y convertirlos a TOML/ACP es otra tarea.
+    // servidores del modal van a `mcp_servers` ya normalizados: Codex los
+    // escribe como `-c` al arrancar y ACP en el `mcp_servers` del `session/new`.
     let es_claude = backend == "claude-code";
     let atic_mcp = if remote.is_none() && !es_claude {
         hub::atic_mcp(backend)
     } else {
         None
     };
-    let mcp_config = if es_claude && remote.is_none() {
+    let (mcp_config, mcp_servers) = if es_claude && remote.is_none() {
         let guardada = app
             .try_state::<AppState>()
             .map(|s| s.config.lock_or_recover().agent_mcp_servers.clone())
             .unwrap_or_default();
-        hub::merge_mcp_config(&guardada, mcp_config.as_deref(), hub::mcp_server_entry())
+        (
+            hub::merge_mcp_config(&guardada, mcp_config.as_deref(), hub::mcp_server_entry()),
+            Vec::new(),
+        )
+    } else if remote.is_none() {
+        let guardada = app
+            .try_state::<AppState>()
+            .map(|s| s.config.lock_or_recover().agent_mcp_servers.clone())
+            .unwrap_or_default();
+        let trad = super::mcp_servers::traducir(&guardada, mcp_config.as_deref());
+        for (nombre, motivo) in &trad.salteados {
+            tracing::warn!(
+                backend,
+                servidor = %nombre,
+                motivo = %motivo,
+                "servidor MCP del modal sin traducir para este backend"
+            );
+        }
+        // Ya está en `mcp_servers`: no se le pasa además el JSON crudo.
+        (None, trad.servidores)
     } else {
-        mcp_config
+        (mcp_config, Vec::new())
     };
 
     let meta = SessionMeta {
@@ -601,6 +620,7 @@ pub(crate) fn start_session(
             fast,
             permission_mode,
             mcp_config,
+            mcp_servers,
             atic_mcp,
             add_dirs,
             env,

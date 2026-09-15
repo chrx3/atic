@@ -52,6 +52,21 @@ fn hub_json_path() -> Option<std::path::PathBuf> {
     ProjectDirs::from("com", "ciat", "atic").map(|d| d.data_dir().join("hub.json"))
 }
 
+/// Cliente HTTP compartido por todas las llamadas.
+///
+/// Uno por proceso y no uno por `tools/call`: `reqwest::Client` es un pool de
+/// conexiones, y armarlo de nuevo en cada request tiraba el pool a la basura
+/// (además de que cada `locate()` hacía su propio cliente para el health).
+fn cliente() -> &'static reqwest::Client {
+    static CLIENTE: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    CLIENTE.get_or_init(|| {
+        reqwest::Client::builder()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new())
+    })
+}
+
 /// Localiza al hub y comprueba que respira (`GET /v1/health`, 1 s).
 pub async fn locate() -> Result<Hub, HubFallo> {
     let ruta = hub_json_path().ok_or(HubFallo::Ausente)?;
@@ -66,11 +81,7 @@ pub async fn locate() -> Result<Hub, HubFallo> {
         .and_then(|t| t.as_str())
         .ok_or(HubFallo::Ausente)?
         .to_string();
-    let cliente = reqwest::Client::builder()
-        .timeout(Duration::from_secs(2))
-        .build()
-        .map_err(|e| HubFallo::Red(e.to_string()))?;
-    let resp = cliente
+    let resp = cliente()
         .get(format!("http://127.0.0.1:{port}/v1/health"))
         .header("Authorization", format!("Bearer {token}"))
         .timeout(Duration::from_secs(1))
@@ -83,18 +94,11 @@ pub async fn locate() -> Result<Hub, HubFallo> {
     Ok(Hub {
         base: format!("http://127.0.0.1:{port}"),
         token,
-        cliente,
+        cliente: cliente().clone(),
     })
 }
 
 impl Hub {
-    fn con_tiempo(&self, espera_s: u64) -> reqwest::Client {
-        reqwest::Client::builder()
-            .timeout(Duration::from_secs(espera_s.saturating_add(15)))
-            .build()
-            .unwrap_or_else(|_| self.cliente.clone())
-    }
-
     async fn get<R: DeserializeOwned>(&self, ruta: &str) -> Result<R, HubFallo> {
         let resp = self
             .cliente
@@ -113,9 +117,10 @@ impl Hub {
         espera_s: u64,
     ) -> Result<R, HubFallo> {
         let resp = self
-            .con_tiempo(espera_s)
+            .cliente
             .post(format!("{}{ruta}", self.base))
             .header("Authorization", format!("Bearer {}", self.token))
+            .timeout(Duration::from_secs(espera_s.saturating_add(15)))
             .json(cuerpo)
             .send()
             .await
@@ -199,5 +204,12 @@ impl Hub {
         cuerpo: &crate::payload::CancelRequest,
     ) -> Result<crate::payload::Cancelling, HubFallo> {
         self.post("/v1/cancel", cuerpo, 30).await
+    }
+
+    pub async fn close(
+        &self,
+        cuerpo: &crate::payload::CloseRequest,
+    ) -> Result<crate::payload::Closed, HubFallo> {
+        self.post("/v1/close", cuerpo, 30).await
     }
 }

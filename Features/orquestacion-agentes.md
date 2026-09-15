@@ -37,6 +37,28 @@ Nuevo:
 - [`crates/atic-mcp/`](../../crates/atic-mcp/) — sidecar MCP stdio (`rmcp` solo acá)
 - Ajustes → Agentes → «Desde otras apps» (estado del hub + snippets por host)
 
+Endurecido el 2026-09-14, **sin tocar el contrato** de las tools existentes
+(las instalaciones viejas del sidecar siguen entendiendo todo):
+
+- `atic_close` — cierra la sesión y libera su proceso; es la salida cuando una
+  sesión trabada bloquea `already_running`. `atic_cancel` sigue igual: solo
+  corta el turno.
+- `con_progreso` ya no paniquea si el pedido al hub se cae: devuelve error de
+  tool (el sidecar es el servidor MCP del host; matarlo deja al agente sin
+  ninguna tool).
+- `exito` ya no devuelve texto vacío si falla la serialización.
+- El sidecar reusa un único cliente HTTP por proceso (antes armaba uno por
+  llamada, tirando el pool de conexiones en cada `tools/call`).
+
+Compatibilidad de los MCP del usuario (2026-09-14): los servidores del modal
+que antes solo veía Claude Code ahora también se inyectan en Codex (`-c
+mcp_servers.*`) y en los ACP —OpenCode, Cursor, Grok— (`mcp_servers` del
+`session/new`). `agents/mcp_servers.rs` normaliza una sola vez; solo stdio, lo
+que no se puede traducir se saltea con un aviso, y Antigravity queda afuera
+(no acepta servidores por invocación). No se escribe la config de ningún CLI.
+El editor vive en Ajustes → Agentes → «Servidores MCP»
+(`AgentMcpServersModal.svelte`), que guarda `agent_mcp_servers`.
+
 El harness que se reusa:
 
 - [`bridge.rs`](../apps/desktop/src-tauri/src/agents/bridge.rs) — start / send

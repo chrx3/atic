@@ -38,6 +38,21 @@ export type ToolDef = {
    * Los labels dinámicos (Grabar/Parar) viven en `toolActions`.
    */
   actionLabel: string;
+  /**
+   * Solo vive en su atajo: no gana gajo en la rueda.
+   *
+   * Va acá y no en una lista paralela para que sumar una tool de este tipo sea
+   * marcar su campo, no acordarse de un `Set` en otro archivo. El test repetía
+   * la lista a mano y por eso no podía fallar cuando el código cambiaba.
+   */
+  shortcutOnly?: boolean;
+  /**
+   * Tiene cuerpo a pantalla completa en la ventana principal.
+   *
+   * Pizarra y Apps son una acción, no una vista: no tienen pestaña en el
+   * workspace. Antes esa lista vivía dentro de `ToolWorkspace`.
+   */
+  body?: boolean;
   /** false = UI lista; true = aún en construcción. */
   comingSoon?: boolean;
 };
@@ -49,6 +64,7 @@ const ALL_TOOLS: ToolDef[] = [
     short: "Grabar y resumir",
     blurb: "Audio del PC, transcripción local y resúmenes editables.",
     actionLabel: "Grabar",
+    body: true,
   },
   {
     id: "dictation",
@@ -56,6 +72,8 @@ const ALL_TOOLS: ToolDef[] = [
     short: "Voz a texto",
     blurb: "Habla y pega texto en cualquier app con un atajo.",
     actionLabel: "Dictar",
+    shortcutOnly: true,
+    body: true,
   },
   {
     id: "clipboard",
@@ -63,6 +81,7 @@ const ALL_TOOLS: ToolDef[] = [
     short: "Historial",
     blurb: "Historial local de texto e imágenes; atajo para pegar desde la pill.",
     actionLabel: "Ver historial",
+    body: true,
   },
   {
     id: "snippets",
@@ -74,6 +93,7 @@ const ALL_TOOLS: ToolDef[] = [
     blurb:
       "Los textos que escribes siempre, listos para pegar. Más un bloc para notas sueltas.",
     actionLabel: "Ver textos",
+    body: true,
   },
   {
     id: "agents",
@@ -82,6 +102,7 @@ const ALL_TOOLS: ToolDef[] = [
     blurb:
       "Conversa con agentes de consola desde una interfaz, sin perder sus herramientas.",
     actionLabel: "Abrir consola",
+    body: true,
   },
   {
     id: "captures",
@@ -89,6 +110,7 @@ const ALL_TOOLS: ToolDef[] = [
     short: "Pantalla",
     blurb: "Recortes rápidos al portapapeles y al shelf flotante.",
     actionLabel: "Tomar captura",
+    body: true,
   },
   {
     id: "board",
@@ -112,6 +134,7 @@ const ALL_TOOLS: ToolDef[] = [
     blurb:
       "Abre apps y acciones del PC. Mismo launcher que Ctrl+Space (tipo Spotlight).",
     actionLabel: "Buscar apps",
+    shortcutOnly: true,
   },
 ];
 
@@ -126,13 +149,17 @@ export const TOOLS: ToolDef[] = AGENTS_ENABLED
  * launcher vive en Ctrl+Space, y el dictado en su atajo —que además es el
  * único camino que puede hacer push-to-talk de verdad: el clic pasa por el
  * vuelo al slot, así que cuando el mic abre ya soltaste el botón—. Las dos
- * siguen enteras en la ventana principal y en sus atajos.
+ * siguen enteras en la ventana principal y en sus atajos, con su `body`.
  */
-const SHORTCUT_ONLY: ReadonlySet<string> = new Set(["launcher", "dictation"]);
+export const WHEEL_TOOLS: ToolDef[] = TOOLS.filter((tool) => !tool.shortcutOnly);
 
-export const WHEEL_TOOLS: ToolDef[] = TOOLS.filter(
-  (tool) => !SHORTCUT_ONLY.has(tool.id),
-);
+/**
+ * Las que tienen cuerpo propio en la ventana principal (`ToolWorkspace`).
+ *
+ * Se deriva del registro para que el set que estaba dentro del componente no
+ * se quede viejo al sumar una tool con vista.
+ */
+export const BODIED_TOOLS: ToolDef[] = TOOLS.filter((tool) => tool.body);
 
 export function toolById(id: ToolId): ToolDef {
   return TOOLS.find((tool) => tool.id === id) ?? TOOLS[0];

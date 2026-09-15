@@ -11,9 +11,10 @@
   import { toastError, toasts } from "$domain/toasts.svelte";
   import { AGENTS, shownAgents } from "$features/agents/agentCatalog";
   import SshHostsPanel from "$features/agents/SshHostsPanel.svelte";
+  import AgentMcpServersModal from "$features/settings/AgentMcpServersModal.svelte";
   import Switch from "$ui/Switch.svelte";
   import { agentPresenceHookSnippet, hubSnippet, hubStatus } from "$ipc/agents";
-  import type { HubStatus } from "$core/types";
+  import type { HubStatus, McpServerConfig } from "$core/types";
   import SettingsGroup from "$patterns/SettingsGroup.svelte";
   import SettingsRow from "$patterns/SettingsRow.svelte";
   import Button from "$ui/Button.svelte";
@@ -21,6 +22,28 @@
 
   let snippet = $state("");
   let copied = $state(false);
+  let mcpOpen = $state(false);
+
+  /**
+   * Cuántos servidores MCP del agente están activos, para el subtítulo.
+   *
+   * Se cuenta de la config y no del modal: el número tiene que reflejar lo
+   * guardado, aunque el borrador de una edición abierta diga otra cosa.
+   */
+  const mcpCountLabel = $derived.by(() => {
+    let total = 0;
+    try {
+      const lista = JSON.parse(
+        config.current?.agent_mcp_servers ?? "[]",
+      ) as McpServerConfig[];
+      if (Array.isArray(lista)) total = lista.filter((s) => s?.enabled).length;
+    } catch {
+      /* Config rota: se muestra como ninguno, que es lo que va a cargar. */
+    }
+    if (total === 0) return t("settings.agents.mcpCountNone");
+    if (total === 1) return t("settings.agents.mcpCountOne");
+    return t("settings.agents.mcpCountMany", { n: total });
+  });
 
   /**
    * Hub de orquestación MCP: un agente en otra app puede encargarle turnos a
@@ -191,6 +214,27 @@
 
   {#if AGENTS_ENABLED}
     <SettingsGroup
+      title={t("settings.agents.mcpTitle")}
+      hint={t("settings.agents.mcpHint")}
+    >
+      <SettingsRow label={t("settings.agents.mcpTitle")} hint={mcpCountLabel}>
+        {#snippet control()}
+          <Button
+            variant="soft"
+            size="sm"
+            full
+            disabled={!config.current}
+            onclick={() => (mcpOpen = true)}
+          >
+            {t("settings.agents.mcpEdit")}
+          </Button>
+        {/snippet}
+      </SettingsRow>
+    </SettingsGroup>
+  {/if}
+
+  {#if AGENTS_ENABLED}
+    <SettingsGroup
       title={t("settings.agents.hubTitle")}
       hint={t("settings.agents.hubHint")}
     >
@@ -246,3 +290,7 @@
     </SettingsGroup>
   {/if}
 </div>
+
+{#if mcpOpen}
+  <AgentMcpServersModal onClose={() => (mcpOpen = false)} />
+{/if}
