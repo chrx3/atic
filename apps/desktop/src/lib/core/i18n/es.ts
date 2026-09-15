@@ -114,12 +114,9 @@ export const es = {
     dismiss: "Descartar",
     launcherLab: "Launcher lab (Ctrl+Alt+F)",
     launcherLabClose: "Cerrar launcher lab (Ctrl+Alt+F)",
-    pickerLab: "Ajustar rueda y cards",
-    pickerLabClose: "Cerrar ajuste picker",
   },
   workspace: {
     tools: "Herramientas",
-    back: "Volver a la rueda",
     view: "Vista de la herramienta",
   },
   hotkey: {
@@ -424,6 +421,28 @@ export const es = {
       hubPathMissing: "No se encontró el binario; ejecuta `pnpm mcp:build`",
       hubCodexHelp:
         "Si borras tool_timeout_sec, Codex vuelve a cortar a los 60 s y el padre pierde la sesión. Van juntos.",
+      mcpTitle: "Servidores MCP",
+      mcpHint:
+        "Herramientas extra para el agente. Se cargan al abrir una sesión nueva; no tocan la config de su CLI.",
+      mcpCountNone: "Ninguno configurado",
+      mcpCountOne: "1 configurado",
+      mcpCountMany: "{n} configurados",
+      mcpEdit: "Editar",
+      mcpBody:
+        "Pega el bloque JSON que documenta cada servidor. Se cargan al abrir una sesión nueva.",
+      mcpName: "Nombre",
+      mcpActive: "Activo",
+      mcpRemove: "Quitar",
+      mcpJsonAria: "Definición JSON",
+      mcpInvalid: "JSON inválido: este servidor se salta al arrancar.",
+      mcpEmpty:
+        "Todavía no hay ninguno. El agente igual usa los que ya tengas configurados en su propio CLI.",
+      mcpAticNote:
+        "El servidor `atic` de orquestación se suma solo; no lo pongas acá. Lo que no sea stdio se saltea en los agentes que no lo entienden.",
+      mcpAdd: "Añadir servidor",
+      mcpCancel: "Cancelar",
+      mcpSave: "Guardar",
+      mcpSaving: "Guardando…",
     },
     groq: {
       hasKey: "Hay una clave de Groq en el llavero",

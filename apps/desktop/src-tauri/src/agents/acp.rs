@@ -39,7 +39,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use agent_client_protocol::schema::v1::{
-    AuthenticateRequest, CancelNotification, ContentBlock, ContentChunk, ImageContent,
+    AuthenticateRequest, CancelNotification, ContentBlock, ContentChunk, EnvVariable, ImageContent,
     InitializeRequest, McpServer, McpServerStdio, NewSessionRequest, PermissionOptionKind,
     PromptRequest, RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
     SelectedPermissionOutcome, SessionConfigKind, SessionConfigOption, SessionConfigOptionCategory,
@@ -223,14 +223,6 @@ impl AgentBackend for Acp {
         options: StartOptions,
         on_delta: Box<dyn Fn(AgentDelta) + Send + Sync + 'static>,
     ) -> Result<Box<dyn AgentSession>, String> {
-        // Los servidores MCP del modal siguen siendo cosa de Claude: vienen en
-        // su forma JSON y traducirlos a la del protocolo es otra tarea. El de
-        // orquestación sí entra, en el `session/new` (`mcp_servers` es parte de
-        // ACP, no un añadido nuestro).
-        if options.mcp_config.is_some() {
-            static WARNED: std::sync::Once = std::sync::Once::new();
-            WARNED.call_once(|| tracing::warn!(backend = %self.id(), "los servidores MCP del modal solo se aplican a Claude Code"));
-        }
         // `launcher` y no `resolve`: si el CLI resultó ser un guion `.cmd`, hay
         // que lanzarlo por el intérprete y no dárselo a Windows tal cual.
         let (program, prefijo) = super::exe::launcher(self.program).ok_or_else(|| {
@@ -261,6 +253,9 @@ impl AgentBackend for Acp {
         // El grafo de delegación viaja siempre, inyectes o no el MCP.
         let env = options.env.clone();
         let atic_mcp = options.atic_mcp.clone();
+        // Los del modal vienen normalizados desde `bridge`: acá solo se
+        // declaran en el `session/new`, que es donde ACP los acepta.
+        let mcp_servers = options.mcp_servers.clone();
         let args: Vec<String> = prefijo
             .into_iter()
             .chain(self.args.iter().map(|a| a.to_string()))
@@ -279,6 +274,7 @@ impl AgentBackend for Acp {
                         cwd,
                         env,
                         atic_mcp,
+                        mcp_servers,
                         backend_id,
                         desired_model,
                         desired_effort,
@@ -300,16 +296,33 @@ impl AgentBackend for Acp {
     }
 }
 
-/// Los MCP que se le declaran al agente al abrir la sesión: hoy solo el de
-/// orquestación, y solo si el hub corre. `mcp_servers` es parte de `session/new`
-/// en ACP, así que esto no le pide nada raro a ningún CLI.
-fn servidores_mcp(atic: Option<&super::hub::AticMcp>) -> Vec<McpServer> {
-    atic.map(|a| {
-        vec![McpServer::Stdio(
+/// Los MCP que se le declaran al agente al abrir la sesión: el de orquestación
+/// —si el hub corre— más los del modal, ya normalizados por `bridge`.
+/// `mcp_servers` es parte de `session/new` en ACP, así que esto no le pide
+/// nada raro a ningún CLI.
+fn servidores_mcp(
+    atic: Option<&super::hub::AticMcp>,
+    extra: &[super::mcp_servers::McpServerDef],
+) -> Vec<McpServer> {
+    let mut out = Vec::new();
+    if let Some(a) = atic {
+        out.push(McpServer::Stdio(
             McpServerStdio::new("atic", a.command.clone()).args(a.args.clone()),
-        )]
-    })
-    .unwrap_or_default()
+        ));
+    }
+    for s in extra {
+        let env = s
+            .env
+            .iter()
+            .map(|(k, v)| EnvVariable::new(k.clone(), v.clone()))
+            .collect();
+        out.push(McpServer::Stdio(
+            McpServerStdio::new(s.name.clone(), s.command.clone())
+                .args(s.args.clone())
+                .env(env),
+        ));
+    }
+    out
 }
 
 /// Con qué arrancar la conexión: el proceso y lo que el usuario pidió antes de
@@ -326,6 +339,8 @@ struct Arranque {
     env: Vec<(String, String)>,
     /// El servidor de orquestación, para que este hijo pueda delegar a su vez.
     atic_mcp: Option<super::hub::AticMcp>,
+    /// Los del modal, ya normalizados por `bridge`.
+    mcp_servers: Vec<super::mcp_servers::McpServerDef>,
     backend_id: &'static str,
     desired_model: Option<String>,
     desired_effort: Option<String>,
@@ -345,6 +360,7 @@ async fn connect(
         cwd,
         env,
         atic_mcp,
+        mcp_servers,
         backend_id,
         desired_model,
         desired_effort,
@@ -537,7 +553,7 @@ async fn connect(
             let session = conn
                 .send_request(
                     NewSessionRequest::new(std::path::PathBuf::from(&cwd))
-                        .mcp_servers(servidores_mcp(atic_mcp.as_ref())),
+                        .mcp_servers(servidores_mcp(atic_mcp.as_ref(), &mcp_servers)),
                 )
                 .block_task()
                 .await?;
@@ -1591,7 +1607,7 @@ mod tests {
 
     #[test]
     fn sin_hub_no_se_declara_ningun_mcp() {
-        assert!(servidores_mcp(None).is_empty());
+        assert!(servidores_mcp(None, &[]).is_empty());
     }
 
     #[test]
@@ -1600,13 +1616,33 @@ mod tests {
             command: std::path::PathBuf::from("/opt/atic-mcp"),
             args: vec!["--host".into(), "grok".into()],
         };
-        let servidores = servidores_mcp(Some(&atic));
+        let servidores = servidores_mcp(Some(&atic), &[]);
         let [McpServer::Stdio(uno)] = &servidores[..] else {
             panic!("se esperaba un único servidor stdio");
         };
         assert_eq!(uno.name, "atic");
         assert_eq!(uno.command, std::path::PathBuf::from("/opt/atic-mcp"));
         assert_eq!(uno.args, ["--host", "grok"]);
+    }
+
+    #[test]
+    fn los_servidores_del_modal_van_al_lado_del_de_orquestacion() {
+        let extra = vec![super::super::mcp_servers::McpServerDef {
+            name: "fs".into(),
+            command: "/usr/bin/npx".into(),
+            args: vec!["-y".into(), "server-fs".into()],
+            env: vec![("TOKEN".into(), "abc".into())],
+        }];
+        let servidores = servidores_mcp(None, &extra);
+        let [McpServer::Stdio(uno)] = &servidores[..] else {
+            panic!("se esperaba un único servidor stdio");
+        };
+        assert_eq!(uno.name, "fs");
+        assert_eq!(uno.command, std::path::PathBuf::from("/usr/bin/npx"));
+        assert_eq!(uno.args, ["-y", "server-fs"]);
+        assert_eq!(uno.env.len(), 1);
+        assert_eq!(uno.env[0].name, "TOKEN");
+        assert_eq!(uno.env[0].value, "abc");
     }
 
     #[test]

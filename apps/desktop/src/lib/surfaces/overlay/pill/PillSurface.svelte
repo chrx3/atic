@@ -2275,7 +2275,7 @@
   }
 
   /**
-   * Camino ÚNICO de activación: catálogo, ToolRail, atajo global y rueda.
+   * Camino ÚNICO de activación: catálogo, atajo global y rueda.
    *
    * El atajo nombra el destino: misma tool abierta y cursor ahí → cerrar;
    * clipboard/textos con el cursor lejos → reubicar; otra (o ninguna) →

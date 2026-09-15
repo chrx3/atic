@@ -111,12 +111,9 @@ export const en = {
     dismiss: "Dismiss",
     launcherLab: "Launcher lab (Ctrl+Alt+F)",
     launcherLabClose: "Close launcher lab (Ctrl+Alt+F)",
-    pickerLab: "Adjust wheel and cards",
-    pickerLabClose: "Close picker lab",
   },
   workspace: {
     tools: "Tools",
-    back: "Back to the wheel",
     view: "Tool view",
   },
   hotkey: {
@@ -421,6 +418,28 @@ export const en = {
       hubPathMissing: "Binary not found; run `pnpm mcp:build`",
       hubCodexHelp:
         "If you delete tool_timeout_sec, Codex cuts back to 60 s and the parent loses the session. They go together.",
+      mcpTitle: "MCP servers",
+      mcpHint:
+        "Extra tools for the agent. They load when a session opens; they never touch the CLI's own config.",
+      mcpCountNone: "None configured",
+      mcpCountOne: "1 configured",
+      mcpCountMany: "{n} configured",
+      mcpEdit: "Edit",
+      mcpBody:
+        "Paste the JSON block each server documents. They load when a new session opens.",
+      mcpName: "Name",
+      mcpActive: "On",
+      mcpRemove: "Remove",
+      mcpJsonAria: "JSON definition",
+      mcpInvalid: "Invalid JSON: this server is skipped at launch.",
+      mcpEmpty:
+        "None yet. The agent still uses whatever you have configured in its own CLI.",
+      mcpAticNote:
+        "The `atic` orchestration server is added automatically; don't put it here. Anything that isn't stdio is skipped on agents that can't read it.",
+      mcpAdd: "Add server",
+      mcpCancel: "Cancel",
+      mcpSave: "Save",
+      mcpSaving: "Saving…",
     },
     groq: {
       hasKey: "A Groq key is in the keychain",

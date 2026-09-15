@@ -1,5 +1,5 @@
 //! Handshake stdio contra el binario real: cada respuesta es una línea JSON
-//! válida, `tools` trae las siete, y por stdout no sale nada raro.
+//! válida, `tools` trae las ocho, y por stdout no sale nada raro.
 //!
 //! Además: sin hub, `atic_list_agents` devuelve `isError` con el copy exacto
 //! de `hub_missing`; y `atic_prompt` con `wait: false` devuelve
@@ -69,7 +69,7 @@ fn handshake_lista_y_errores_hablan_espanol() {
         .write_all(b"{\"jsonrpc\": \"2.0\", \"method\": \"notifications/initialized\"}\n")
         .unwrap();
 
-    // `tools/list`: tiene que traer las siete sin tocar el hub.
+    // `tools/list`: tiene que traer las ocho sin tocar el hub.
     let lista = pedir(
         &mut hijo_stdin,
         &mut lector,
@@ -97,6 +97,7 @@ fn handshake_lista_y_errores_hablan_espanol() {
         "atic_delegate",
         "atic_wait",
         "atic_cancel",
+        "atic_close",
     ] {
         assert!(nombres.contains(&esperada.to_string()), "falta {esperada}");
     }

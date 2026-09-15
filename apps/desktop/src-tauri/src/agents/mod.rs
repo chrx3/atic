@@ -38,6 +38,7 @@ pub mod fs_browse;
 pub mod hub;
 pub mod login;
 pub mod mcp_install;
+pub mod mcp_servers;
 pub mod media;
 pub mod model;
 pub mod opencode_usage;
@@ -165,8 +166,15 @@ pub struct StartOptions {
     /// Servidores MCP extra, como JSON `{"mcpServers": {…}}`.
     ///
     /// Son para **el agente**: le suman herramientas a él. Atic solo los
-    /// administra y se los pasa al arrancar.
+    /// administra y se los pasa al arrancar. Claude los lleva acá; los demás
+    /// backends reciben la versión normalizada en `mcp_servers`.
     pub mcp_config: Option<String>,
+    /// Los servidores del modal y del request, ya normalizados a stdio.
+    ///
+    /// Codex los inyecta como `-c` al arrancar y ACP en el `mcp_servers` del
+    /// `session/new`. Se arma una sola vez en `bridge` para que ningún
+    /// adaptador tenga que parsear el JSON de Claude.
+    pub mcp_servers: Vec<mcp_servers::McpServerDef>,
     /// El servidor `atic` de orquestación, para que el hijo pueda delegar a su
     /// vez. Va aparte de `mcp_config` porque cada adaptador lo traduce a su
     /// formato (Claude ya lo lleva mergeado dentro de `mcp_config`; Codex lo

@@ -190,6 +190,16 @@ pub struct CancelRequest {
     pub session: String,
 }
 
+/// Cerrar la sesión entera y liberar el proceso del agente.
+///
+/// Distinto de `CancelRequest`: `cancel` corta el turno y deja la sesión viva;
+/// esto la saca del registro y libera el cupo de `already_running`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CloseRequest {
+    pub session: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

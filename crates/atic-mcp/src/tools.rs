@@ -80,15 +80,18 @@ impl AticServer {
 
     /// Corre el futuro mandando `notifications/progress` cada 5 s si el request
     /// trae `progressToken`. Sin token, no se manda nada.
-    async fn con_progreso<T, F>(
+    ///
+    /// Si la tarea se cae (un panic adentro del pedido al hub), devuelve un
+    /// error de tool en vez de paniquear: el sidecar es el servidor MCP del
+    /// host, y matarlo deja al agente sin ninguna tool hasta que lo reinicie.
+    async fn con_progreso<F>(
         peer: Peer<RoleServer>,
         token: Option<ProgressToken>,
         etiqueta: String,
         futuro: F,
-    ) -> T
+    ) -> Result<CallToolResult, McpError>
     where
-        F: std::future::Future<Output = T> + Send + 'static,
-        T: Send + 'static,
+        F: std::future::Future<Output = Result<CallToolResult, McpError>> + Send + 'static,
     {
         let Some(token) = token else {
             return futuro.await;
@@ -97,7 +100,13 @@ impl AticServer {
         let mut pasados = 0u64;
         loop {
             tokio::select! {
-                salida = &mut futuro => return salida.unwrap_or_else(|_| panic!("el pedido al hub se canceló")),
+                salida = &mut futuro => {
+                    return salida.unwrap_or_else(|_| {
+                        Ok(CallToolResult::error(vec![ContentBlock::text(
+                            "La llamada a Atic se cortó antes de responder. Vuelve a intentarlo.",
+                        )]))
+                    });
+                }
                 _ = tokio::time::sleep(Duration::from_secs(5)) => {
                     pasados += 5;
                     let mut aviso = ProgressNotificationParam::new(token.clone(), pasados as f64);
@@ -115,9 +124,14 @@ impl AticServer {
     }
 
     fn exito<T: serde::Serialize>(valor: &T) -> Result<CallToolResult, McpError> {
-        Ok(CallToolResult::success(vec![ContentBlock::text(
-            serde_json::to_string(valor).unwrap_or_default(),
-        )]))
+        // Nada de texto vacío en silencio: si la respuesta no serializa, el
+        // modelo tiene que leer por qué, no un `""`.
+        match serde_json::to_string(valor) {
+            Ok(texto) => Ok(CallToolResult::success(vec![ContentBlock::text(texto)])),
+            Err(e) => Ok(CallToolResult::error(vec![ContentBlock::text(format!(
+                "Atic no pudo armar la respuesta: {e}. Vuelve a intentarlo."
+            ))])),
+        }
     }
 }
 
@@ -301,6 +315,14 @@ pub struct EsperarTurno {
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CortarTurno {
+    pub session: String,
+}
+
+/// Cerrar la sesión entera y liberar el proceso del agente.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CerrarSesion {
+    /// Id de la sesión o el nombre que tenga.
     pub session: String,
 }
 
@@ -532,6 +554,27 @@ impl AticServer {
             session: params.0.session,
         };
         match hub.cancel(&pedido).await {
+            Ok(r) => Self::exito(&r),
+            Err(e) => Self::error(e),
+        }
+    }
+
+    #[tool(
+        name = "atic_close",
+        description = "Cierra la sesión y libera su proceso. A diferencia de atic_cancel (que solo corta el turno), esto elimina la sesión: úsala cuando ya no la necesites o para destrabar un already_running. No se puede deshacer."
+    )]
+    async fn atic_close(
+        &self,
+        params: Parameters<CerrarSesion>,
+    ) -> Result<CallToolResult, McpError> {
+        let hub = match hub_client::locate().await {
+            Ok(h) => h,
+            Err(e) => return Self::error(e),
+        };
+        let pedido = payload::CloseRequest {
+            session: params.0.session,
+        };
+        match hub.close(&pedido).await {
             Ok(r) => Self::exito(&r),
             Err(e) => Self::error(e),
         }

@@ -40,6 +40,16 @@ async fn el_directorio_tiene_forma_y_la_delegacion_vuelve_con_sesion() {
         recado.hint.as_deref().unwrap_or("").contains("atic_wait"),
         "el hint dice cómo seguir"
     );
+
+    // Cerrar la sesión es aditivo: el hub falso responde la forma del contrato.
+    let cerrada = hub
+        .close(&atic_mcp::payload::CloseRequest {
+            session: "s1".into(),
+        })
+        .await
+        .expect("cierra");
+    assert_eq!(cerrada.status, "closed");
+    assert_eq!(cerrada.session, "s1");
 }
 
 #[test]

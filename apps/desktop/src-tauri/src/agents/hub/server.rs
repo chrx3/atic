@@ -240,6 +240,7 @@ fn rutear(pedido: Pedido, token: &str, app: Option<&AppHandle>) -> Vec<u8> {
         ("POST", "/v1/delegate") => delegate(pedido, app, empezo),
         ("POST", "/v1/wait") => wait(pedido, empezo),
         ("POST", "/v1/cancel") => cancel(pedido),
+        ("POST", "/v1/close") => close(pedido, app),
         ("POST", "/v1/rename") => rename(pedido),
         _ => no_hay_forma(
             404,
@@ -735,6 +736,31 @@ fn cancel(pedido: Pedido) -> Vec<u8> {
     hay_forma(serde_json::json!({ "session": sesion, "status": "cancelling" }))
 }
 
+/// Cierra la sesión y libera su proceso.
+///
+/// `cancel` corta el turno y la deja viva; esto la saca del registro. Es la
+/// salida cuando una sesión quedó trabada y `already_running` bloquea
+/// delegarle de nuevo. `agent_stop` no falla si ya no estaba: la sesión pudo
+/// haber muerto entre la resolución y esta llamada.
+fn close(pedido: Pedido, app: Option<&AppHandle>) -> Vec<u8> {
+    let req: api::CloseRequest = match cuerpo(&pedido) {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
+    let sesion = match resolver_sesion(&req.session) {
+        Ok(s) => s,
+        Err(e) => return e,
+    };
+    let Some(app) = app else {
+        return no_hay_forma(
+            500,
+            HubError::nueva("bad_request", "El hub no está listo.".into()),
+        );
+    };
+    super::super::bridge::agent_stop(app.clone(), sesion.clone());
+    hay_forma(serde_json::json!({ "session": sesion, "status": "closed" }))
+}
+
 /// Espera el fin del turno hasta `espera_s`. Sin turno corriendo devuelve lo
 /// último visto al tiro.
 fn esperar(session: &str, espera_s: u64) -> super::wait::WaitOutcome {
@@ -1008,6 +1034,22 @@ mod tests {
             Some(&token),
             "POST",
             "/v1/wait",
+            Some(r#"{"session":"no-existe"}"#),
+        );
+        assert_eq!(codigo, 404);
+        let v: serde_json::Value = serde_json::from_str(&cuerpo).unwrap();
+        assert_eq!(v["error"]["code"], "unknown_session");
+        apagar(port, &vivo);
+    }
+
+    #[test]
+    fn close_sesion_desconocida_es_404() {
+        let (port, token, vivo) = hub_de_test();
+        let (codigo, cuerpo) = pegar(
+            port,
+            Some(&token),
+            "POST",
+            "/v1/close",
             Some(r#"{"session":"no-existe"}"#),
         );
         assert_eq!(codigo, 404);

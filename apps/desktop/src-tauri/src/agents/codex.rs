@@ -208,6 +208,35 @@ fn overrides_atic(atic: Option<&super::hub::AticMcp>) -> Vec<String> {
     ]
 }
 
+/// Todos los `-c` de MCP: el de orquestación más los del modal.
+///
+/// Los del modal llegan normalizados desde `bridge`, así que acá solo se
+/// escribe el TOML. El valor va por `serde_json` por el mismo motivo que el de
+/// `atic`: JSON es un subconjunto válido de TOML para cadenas y arrays, y así
+/// las barras de Windows no necesitan tabla de escapes propia.
+fn overrides_mcp(
+    atic: Option<&super::hub::AticMcp>,
+    extra: &[super::mcp_servers::McpServerDef],
+) -> Vec<String> {
+    let mut out = overrides_atic(atic);
+    for s in extra {
+        let command = json!(s.command);
+        out.push("-c".to_string());
+        out.push(format!("mcp_servers.{}.command={command}", s.name));
+        if !s.args.is_empty() {
+            let lista = json!(s.args);
+            out.push("-c".to_string());
+            out.push(format!("mcp_servers.{}.args={lista}", s.name));
+        }
+        for (clave, valor) in &s.env {
+            let valor = json!(valor);
+            out.push("-c".to_string());
+            out.push(format!("mcp_servers.{}.env.{clave}={valor}", s.name));
+        }
+    }
+    out
+}
+
 impl AgentBackend for Codex {
     fn id(&self) -> &'static str {
         "codex"
@@ -230,13 +259,6 @@ impl AgentBackend for Codex {
         options: StartOptions,
         on_delta: Box<dyn Fn(AgentDelta) + Send + Sync + 'static>,
     ) -> Result<Box<dyn AgentSession>, String> {
-        // Los servidores MCP del modal siguen siendo cosa de Claude: vienen en
-        // su forma JSON y traducirlos a TOML es otra tarea. El de orquestación
-        // sí entra, por `atic_mcp`, más abajo.
-        if options.mcp_config.is_some() {
-            static WARNED: std::sync::Once = std::sync::Once::new();
-            WARNED.call_once(|| tracing::warn!(backend = %self.id(), "los servidores MCP del modal solo se aplican a Claude Code"));
-        }
         // `launcher` y no `resolve`: hoy `codex` es un `.exe` de verdad, pero si
         // mañana se instala como shim hay que lanzarlo por el intérprete.
         let (program, prefix) = super::exe::launcher(PROGRAM).ok_or_else(|| {
@@ -247,7 +269,10 @@ impl AgentBackend for Codex {
         let mut cmd = Command::new(program);
         cmd.args(prefix)
             .arg("app-server")
-            .args(overrides_atic(options.atic_mcp.as_ref()))
+            .args(overrides_mcp(
+                options.atic_mcp.as_ref(),
+                &options.mcp_servers,
+            ))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -1403,6 +1428,47 @@ mod tests {
         let lista: Vec<String> = serde_json::from_str(&valor("args")).expect("args es un array");
         assert_eq!(lista, ["--host", "codex", "--wait", "300"]);
         assert_eq!(valor("tool_timeout_sec"), TIMEOUT_TOOL_S.to_string());
+    }
+
+    #[test]
+    fn los_servidores_del_modal_se_traducen_a_overrides() {
+        let extra = vec![super::super::mcp_servers::McpServerDef {
+            name: "fs".into(),
+            command: r"C:\Program Files\node\npx.cmd".into(),
+            args: vec!["-y".into(), "server-fs".into()],
+            env: vec![("TOKEN".into(), "a\"b".into())],
+        }];
+        let args = overrides_mcp(None, &extra);
+        assert_eq!(args.len(), 6, "tres pares -c clave=valor");
+
+        // Igual que el de `atic`: no importa el texto escapado sino que el
+        // valor decodifique de vuelta, que es lo que hará Codex al parsear.
+        let valor = |clave: &str| -> String {
+            let pref = format!("mcp_servers.fs.{clave}=");
+            args.iter()
+                .find_map(|a| a.strip_prefix(&pref))
+                .unwrap_or_else(|| panic!("falta {pref}"))
+                .to_string()
+        };
+        let command: String = serde_json::from_str(&valor("command")).expect("command es texto");
+        assert_eq!(command, r"C:\Program Files\node\npx.cmd");
+        let lista: Vec<String> = serde_json::from_str(&valor("args")).expect("args es una lista");
+        assert_eq!(lista, ["-y", "server-fs"]);
+        let token: String = serde_json::from_str(&valor("env.TOKEN")).expect("TOKEN es texto");
+        assert_eq!(token, "a\"b");
+    }
+
+    #[test]
+    fn un_servidor_sin_args_no_lleva_la_clave_args() {
+        let extra = vec![super::super::mcp_servers::McpServerDef {
+            name: "uno".into(),
+            command: "x".into(),
+            args: Vec::new(),
+            env: Vec::new(),
+        }];
+        let args = overrides_mcp(None, &extra);
+        assert_eq!(args.len(), 2);
+        assert!(args[1].starts_with("mcp_servers.uno.command="));
     }
 
     /// Un traductor sin proceso detrás.

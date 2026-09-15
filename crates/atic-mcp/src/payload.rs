@@ -159,6 +159,19 @@ pub struct CancelRequest {
     pub session: String,
 }
 
+/// Cerrar la sesión entera y liberar el proceso del agente.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CloseRequest {
+    pub session: String,
+}
+
+/// Respuesta de `POST /v1/close`: `{ "session", "status": "closed" }`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Closed {
+    pub session: String,
+    pub status: String,
+}
+
 /// Envoltorios de lista del hub.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AgentList {
