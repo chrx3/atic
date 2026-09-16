@@ -15,8 +15,13 @@
   --elevated: #f2ece1;
 
   --text: #2b2419;
-  --muted: #6c6252;
-  --faint: #978d7b;
+
+  /* Ahora que faint subió, muted sube con él: si no, los dos niveles
+     quedarían al mismo peso y la jerarquía de tinta se pierde. */
+  --muted: #574f42;
+
+  /* 4.5:1 mínimo para texto chico: daba 2.36:1 sobre surface-2. */
+  --faint: #635c4e;
 
   --line: rgb(43 36 25 / 13%);
   --line-strong: rgb(43 36 25 / 22%);
