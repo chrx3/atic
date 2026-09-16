@@ -16,7 +16,9 @@
 
   --text: #171714;
   --muted: #5f5f58;
-  --faint: #8f8f86;
+
+  /* 4.5:1 mínimo para texto chico: daba 2.82:1 sobre surface-2. */
+  --faint: #6b6b63;
 
   --line: rgb(28 28 24 / 11%);
   --line-strong: rgb(28 28 24 / 20%);
