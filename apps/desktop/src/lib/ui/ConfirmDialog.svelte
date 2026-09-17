@@ -3,9 +3,12 @@
    * «¿Seguro?». Construido sobre `Modal`, no en paralelo.
    *
    * `dismissible` queda en `true`: cancelar con Esc siempre tiene que poder,
-   * porque el camino seguro es no hacer nada. Lo que no se puede es confirmar
-   * sin apuntar al botón.
+   * porque el camino seguro es no hacer nada. El foco inicial va al botón de
+   * confirmar, así Enter/Space lo activan sin apuntar —como el botón default
+   * de un diálogo nativo— con un beat de espera para que un Enter apretado a
+   * la vez que se abrió el diálogo (que iba para lo de abajo) no confirme.
    */
+  import { onMount } from "svelte";
   import Button from "./Button.svelte";
   import Modal from "./Modal.svelte";
   import { t } from "$domain/i18n.svelte";
@@ -42,18 +45,33 @@
 
   const confirmText = $derived(confirmLabel ?? t("chrome.confirm"));
   const cancelText = $derived(cancelLabel ?? t("chrome.cancel"));
+
+  /** Enter confirma: el foco inicial va al botón de confirmar. */
+  let root = $state<HTMLElement | null>(null);
+
+  onMount(() => {
+    const timer = window.setTimeout(() => {
+      root
+        ?.querySelector<HTMLElement>("[data-confirm]")
+        ?.focus({ preventScroll: true });
+    }, 120);
+    return () => window.clearTimeout(timer);
+  });
 </script>
 
-<Modal {title} size="sm" {contained} onClose={onCancel} dismissible={!busy}>
-  {#snippet actions()}
-    <Button variant="ghost" disabled={busy} onclick={onCancel}>{cancelText}</Button>
-    <Button
-      variant={tone === "danger" ? "danger-solid" : "primary"}
-      loading={busy}
-      onclick={onConfirm}
-    >
-      {confirmText}
-    </Button>
-  {/snippet}
-  <p class="text-sm text-muted">{body}</p>
-</Modal>
+<div bind:this={root} class="contents">
+  <Modal {title} size="sm" {contained} onClose={onCancel} dismissible={!busy}>
+    {#snippet actions()}
+      <Button variant="ghost" disabled={busy} onclick={onCancel}>{cancelText}</Button>
+      <Button
+        variant={tone === "danger" ? "danger-solid" : "primary"}
+        loading={busy}
+        data-confirm
+        onclick={onConfirm}
+      >
+        {confirmText}
+      </Button>
+    {/snippet}
+    <p class="text-sm text-muted">{body}</p>
+  </Modal>
+</div>

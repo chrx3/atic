@@ -67,8 +67,28 @@
   import AccountUsageModal from "./AccountUsageModal.svelte";
   import AgentLogo from "./AgentLogo.svelte";
   import HubConversation from "./HubConversation.svelte";
+  import HotkeyCapture from "$ui/HotkeyCapture.svelte";
+  import {
+    CONSOLE_ACTION_ORDER,
+    CONSOLE_SHORTCUT_DEFAULTS,
+    chordMatches,
+    controlByte,
+    loadConsoleShortcuts,
+    parseChord,
+    saveConsoleShortcuts,
+    validateConsoleShortcut,
+    type ConsoleAction,
+  } from "./consoleShortcuts";
+  import { attentionDue } from "./consoleAttention";
+  import {
+    treeToKeys,
+    treeToSessions,
+    type SessionTree,
+    type TransferBody,
+    type TransferTabDescriptor,
+  } from "./consoleTransfer";
   import { agents } from "$lib/agentSessions.svelte";
-  import { agentMcpStatus, agentMcpToggle } from "$ipc/agents";
+  import { agentMcpStatus, agentMcpToggle, consoleTail } from "$ipc/agents";
   import ConfirmDialog from "$ui/ConfirmDialog.svelte";
   import Icon from "$ui/Icon.svelte";
   import {
@@ -76,14 +96,15 @@
     Activity,
     Folder,
     Minus,
+    Pill,
     Pin,
     Plug,
     Plus,
     Square,
+    SquareArrowOutUpRight,
     SquareTerminal,
     X,
     Keyboard,
-    EllipsisVertical,
   } from "$lib/icons";
   import { t } from "$lib/domain/i18n.svelte";
   import { themeBase } from "$lib/theme";
@@ -102,6 +123,10 @@
     onToggleMinimize,
     maximized = false,
     minimized = false,
+    visible = true,
+    onNeedsAttention,
+    onDetachRequest,
+    detachBusy = false,
   }: {
     /** Host SSH del destino actual de agentes; default de una pestaña nueva. */
     remoteHost?: SshHost | null;
@@ -140,6 +165,20 @@
     onToggleMinimize?: () => void;
     maximized?: boolean;
     minimized?: boolean;
+    /**
+     * La consola está a la vista (float abierto y esta vista al frente). En la
+     * ventana principal siempre es `true`; en el overlay lo decide el float.
+     */
+    visible?: boolean;
+    /**
+     * Una consola que trabajaba se quedó en silencio fuera de vista: el turno
+     * terminó o el agente espera algo. El dueño decide cómo avisar (toast).
+     */
+    onNeedsAttention?: (label: string) => void;
+    /** El usuario pidió mudar estas consolas a la otra ventana. */
+    onDetachRequest?: () => void;
+    /** Hay una mudanza en vuelo: el botón no acepta otra. */
+    detachBusy?: boolean;
   } = $props();
 
   /** Semilla de pestaña del lanzador: consola local corriendo un agente. */
@@ -390,7 +429,6 @@
   let pinned = $state(false);
   let usageOpen = $state(false);
   let shortcutsOpen = $state(false);
-  let moreOpen = $state(false);
   let addMenuOpen = $state(false);
   /** `cli → en PATH`. Se llena al abrir el menú "+" por primera vez. */
   let agentOnPath = $state<Record<string, boolean>>({});
@@ -527,7 +565,6 @@
     if (!onPickFolder) return;
     addMenuOpen = false;
     cmdPromptOpen = false;
-    moreOpen = false;
     const picked = await onPickFolder();
     if (picked) followStartFolder(picked);
     if (reopenAddMenu && picked) addMenuOpen = true;
@@ -613,49 +650,85 @@
     void pillTrace(`[agents-key] dom source=${source} action=${action}${details}`);
   }
 
+  /** Atajos de estructura editables (Atajos del menú de ventana). */
+  let consoleShortcuts = $state(loadConsoleShortcuts());
+  /** Mientras se captura un atajo, la consola no lo consume por debajo. */
+  let shortcutCapturing = $state(false);
+  let shortcutError = $state<string | null>(null);
+
+  /** Pares acción → acorde listos para casar contra cualquier keydown. */
+  const consoleChords = $derived.by(() =>
+    CONSOLE_ACTION_ORDER.flatMap((action) => {
+      const chord = parseChord(consoleShortcuts[action]);
+      return chord ? [[action, chord] as const] : [];
+    }),
+  );
+
+  /** Byte → acción: la vía `onData` (el keydown que WebView2 no entregó). */
+  const controlByteActions = $derived.by(() =>
+    CONSOLE_ACTION_ORDER.flatMap((action) => {
+      const byte = controlByte(consoleShortcuts[action]);
+      return byte ? [[byte, action] as const] : [];
+    }),
+  );
+
+  function runConsoleAction(
+    action: ConsoleAction,
+    source: "window" | "xterm" | "xterm-data" | "native",
+    event?: KeyboardEvent,
+  ) {
+    switch (action) {
+      case "split-right":
+        traceWorkspaceShortcut(source, "split-right", event);
+        splitPane("right");
+        break;
+      case "split-down":
+        traceWorkspaceShortcut(source, "split-down", event);
+        splitPane("down");
+        break;
+      case "new-console":
+        traceWorkspaceShortcut(source, "new-console", event);
+        openAddMenu();
+        break;
+      case "close-console":
+        traceWorkspaceShortcut(source, "close-console", event);
+        if (activeKey) void closeTab(activeKey);
+        break;
+    }
+  }
+
+  function setConsoleShortcut(action: ConsoleAction, raw: string) {
+    const check = validateConsoleShortcut(raw, consoleShortcuts, action);
+    if (!check.ok) {
+      shortcutError =
+        check.reason === "in-use"
+          ? t("page.agents.shortcutInUse")
+          : check.reason === "zoom"
+            ? t("page.agents.shortcutZoomReserved")
+            : t("page.agents.shortcutNeedsMod");
+      return;
+    }
+    shortcutError = null;
+    const next = { ...consoleShortcuts, [action]: raw };
+    consoleShortcuts = next;
+    saveConsoleShortcuts(next);
+  }
+
   function consumeWorkspaceShortcut(
     event: KeyboardEvent,
     source: "window" | "xterm",
   ): boolean {
-    if (event.isComposing) return false;
+    if (event.isComposing || shortcutCapturing) return false;
     const key = event.key.toLowerCase();
     const code = event.code;
     const mod = event.ctrlKey || event.metaKey;
 
-    // `code` cubre WebView2/xterm cuando Ctrl transforma `event.key` en un
-    // carácter de control antes de que Svelte reciba el acorde.
-    if (mod && !event.altKey && (code === "KeyD" || key === "d")) {
+    // Atajos de estructura: casar el evento contra los acordes de config.
+    for (const [action, chord] of consoleChords) {
+      if (!chordMatches(chord, event)) continue;
       event.preventDefault();
       event.stopPropagation();
-      if (!event.repeat) {
-        const direction = event.shiftKey ? "down" : "right";
-        traceWorkspaceShortcut(
-          source,
-          direction === "down" ? "split-down" : "split-right",
-          event,
-        );
-        splitPane(direction);
-      }
-      return true;
-    }
-
-    if (mod && !event.shiftKey && !event.altKey && (code === "KeyN" || key === "n")) {
-      event.preventDefault();
-      event.stopPropagation();
-      if (!event.repeat) {
-        traceWorkspaceShortcut(source, "new-console", event);
-        openAddMenu();
-      }
-      return true;
-    }
-
-    if (mod && !event.shiftKey && !event.altKey && (code === "KeyW" || key === "w")) {
-      event.preventDefault();
-      event.stopPropagation();
-      if (!event.repeat && activeKey) {
-        traceWorkspaceShortcut(source, "close-console", event);
-        void closeTab(activeKey);
-      }
+      if (!event.repeat) runConsoleAction(action, source, event);
       return true;
     }
 
@@ -694,29 +767,27 @@
    * WebView2 omite algunos `keydown` sin Shift dentro del textarea de xterm,
    * pero xterm sí los traduce a sus bytes de control. Consumirlos acá evita
    * que Ctrl+D llegue como EOF al CLI y que Ctrl+W borre una palabra.
+   * Los bytes salen de los acordes configurados (`controlByte`): reasignar un
+   * atajo a otra letra reasigna también su byte de rescate.
    */
   function consumeTerminalControlData(key: string, data: string): boolean {
-    if (data !== "\x04" && data !== "\x0e" && data !== "\x17" && data !== "\x1f") {
-      return false;
-    }
     // Ctrl+- llega como 0x1F (Ctrl+_) cuando el keydown no aparece. El precio
     // es que el undo de readline (Ctrl+_) queda detrás del zoom.
     if (data === "\x1f") {
       setFontZoom(fontZoom - 1);
       return true;
     }
+    const action = controlByteActions.find(([byte]) => byte === data)?.[1];
+    if (!action) return false;
     activeKey = key;
     error = null;
-    if (data === "\x04") {
-      traceWorkspaceShortcut("xterm-data", "split-right");
-      splitPane("right");
-    } else if (data === "\x0e") {
-      traceWorkspaceShortcut("xterm-data", "new-console");
-      openAddMenu();
-    } else if (activeKey) {
+    if (action === "close-console") {
+      // El byte lo mandó ESTA pestaña: se cierra la que lo mandó, no la activa.
       traceWorkspaceShortcut("xterm-data", "close-console");
       void closeTab(key);
+      return true;
     }
+    runConsoleAction(action, "xterm-data");
     return true;
   }
 
@@ -865,15 +936,11 @@
     if (event.isComposing) return;
     // Esc con un menú abierto lo cierra a él, no a la ventana entera: es lo
     // que hace cualquier menú nativo. stopPropagation frena el Esc del float.
-    if (
-      event.key === "Escape" &&
-      (ctxMenu || addMenuOpen || moreOpen || shortcutsOpen)
-    ) {
+    if (event.key === "Escape" && (ctxMenu || addMenuOpen || shortcutsOpen)) {
       event.preventDefault();
       event.stopPropagation();
       closeCtx();
       addMenuOpen = false;
-      moreOpen = false;
       shortcutsOpen = false;
       cmdPromptOpen = false;
       return;
@@ -1005,6 +1072,9 @@
   }
 
   function pushOutput(session: string, data: string) {
+    // Actividad: rearma el detector de "terminó" para esta sesión.
+    lastOutputAt.set(session, Date.now());
+    attentionSent.delete(session);
     const t = tabForSession(session);
     const term = t ? termOf(t.key) : null;
     if (term) {
@@ -1042,6 +1112,65 @@
 
   // eslint-disable-next-line svelte/prefer-svelte-reactivity -- ver arriba
   const relaunchAt = new Map<string, number>();
+
+  /**
+   * Aviso de "terminó" con la consola fuera de vista.
+   *
+   * Sin PTY que pregunte si el turno acabó, la señal es el silencio: una
+   * sesión que venía escribiendo y lleva IDLE sin una línea —acabó el turno
+   * o espera algo (permiso, entrada)— necesita ojos. Un aviso por racha: el
+   * próximo output rearma. Y solo cuenta lo que llegó DESPUÉS de la última
+   * vez vista, para no avisar al dockear una consola que ya se miraba. La
+   * decisión vive en `consoleAttention` (pura y probada); acá el reloj.
+   */
+  const ATTENTION_IDLE_MS = 12_000;
+  const ATTENTION_TICK_MS = 2_500;
+  // eslint-disable-next-line svelte/prefer-svelte-reactivity -- ver arriba
+  const lastOutputAt = new Map<string, number>();
+  // eslint-disable-next-line svelte/prefer-svelte-reactivity -- ver arriba
+  const attentionSent = new Set<string>();
+  let lastSeenVisibleAt = 0;
+  let attentionTimer = 0;
+
+  function attentionTick() {
+    const now = Date.now();
+    const watching = visible && !minimized;
+    if (watching) lastSeenVisibleAt = now;
+    if (!onNeedsAttention) return;
+    // eslint-disable-next-line svelte/prefer-svelte-reactivity -- temporary reducer set.
+    const alive = new Set<string>();
+    for (const t of tabs) if (t.sessionId) alive.add(t.sessionId);
+    // Las cerradas no vuelven a avisar ni dejan basura.
+    for (const id of [...lastOutputAt.keys()]) {
+      if (!alive.has(id)) {
+        lastOutputAt.delete(id);
+        attentionSent.delete(id);
+      }
+    }
+    if (watching) return;
+    const due = attentionDue({
+      now,
+      visible: false,
+      idleMs: ATTENTION_IDLE_MS,
+      lastSeenVisibleAt,
+      sent: attentionSent,
+      sessions: tabs.flatMap((t, i) =>
+        t.sessionId
+          ? [
+              {
+                id: t.sessionId,
+                label: tabLabels[i] ?? baseLabel(t),
+                lastOutputAt: lastOutputAt.get(t.sessionId) ?? null,
+              },
+            ]
+          : [],
+      ),
+    });
+    for (const hit of due) {
+      attentionSent.add(hit.id);
+      onNeedsAttention(hit.label);
+    }
+  }
 
   function maybeRelaunchFromOutput(tab: Tab, chunk: string) {
     const cli = restartCliFromOutput(chunk, tab.command);
@@ -1115,14 +1244,19 @@
     return !!tab.sessionId && !!tab.command;
   }
 
-  const CONSOLE_SHORTCUTS = [
-    { keys: "Ctrl+D", labelKey: "page.agents.shortcutSplitRight" },
-    { keys: "Ctrl+Shift+D", labelKey: "page.agents.shortcutSplitDown" },
-    { keys: "Ctrl+N", labelKey: "page.agents.shortcutNew" },
-    { keys: "Ctrl+W", labelKey: "page.agents.shortcutClose" },
+  /** Fila del cheatsheet: las editables traen su acción; el zoom queda fijo. */
+  const CONSOLE_SHORTCUT_ROWS: Array<{
+    action?: ConsoleAction;
+    keys?: string;
+    labelKey: string;
+  }> = [
+    { action: "split-right", labelKey: "page.agents.shortcutSplitRight" },
+    { action: "split-down", labelKey: "page.agents.shortcutSplitDown" },
+    { action: "new-console", labelKey: "page.agents.shortcutNew" },
+    { action: "close-console", labelKey: "page.agents.shortcutClose" },
     { keys: "Ctrl + / −", labelKey: "page.agents.shortcutZoom" },
     { keys: "Ctrl+0", labelKey: "page.agents.shortcutZoomReset" },
-  ] as const;
+  ];
 
   async function loadSshHosts() {
     try {
@@ -1210,7 +1344,6 @@
   function openAddMenu() {
     if (connecting || !canAddTab) return;
     closeCtx();
-    moreOpen = false;
     shortcutsOpen = false;
     cmdPromptOpen = false;
     const already = addMenuOpen;
@@ -1874,6 +2007,192 @@
     for (const key of pending.keys) await closeTabNow(key);
   }
 
+  /* ─── Mudanza entre ventanas (float ⇄ principal) ──────────────────────────
+     Las PTY viven en Rust: lo que viaja es la vista (fichas + división) y el
+     scrollback se repinta con `console_tail`. Dueño único: la emisora suelta
+     sin matar y la receptora adopta; la protección `begin/end_transfer` cubre
+     la ventana donde ninguna vista reclama. */
+
+  /** Id estable para el traspaso: PTY viva o ficha del hub. */
+  function transferIdOf(tab: Tab): string | null {
+    if (tab.sessionId) return tab.sessionId;
+    if (tab.hubSession) return `hub:${tab.hubSession}`;
+    return null;
+  }
+
+  function snapshotBody(): TransferBody | null {
+    const descs: TransferTabDescriptor[] = [];
+    // eslint-disable-next-line svelte/prefer-svelte-reactivity -- temporary reducer map.
+    const sessionByKey = new Map<string, string>();
+    for (const t of tabs) {
+      const sid = transferIdOf(t);
+      if (!sid) continue;
+      sessionByKey.set(t.key, sid);
+      descs.push({
+        session: t.sessionId,
+        kind: t.kind,
+        hostId: t.hostId,
+        label: t.label,
+        command: t.command,
+        cwd: t.cwd,
+        hubSession: t.hubSession ?? null,
+      });
+    }
+    if (descs.length === 0) return null;
+    const tree = treeToSessions(paneTree, (key) => sessionByKey.get(key) ?? null);
+    const activeTab = tabOf(activeKey);
+    return {
+      tabs: descs,
+      tree,
+      activeSession: activeTab ? transferIdOf(activeTab) : null,
+      sessions: descs.map((d) => d.session).filter((s): s is string => !!s),
+    };
+  }
+
+  /**
+   * Paquete para mudar estas consolas. Espera a los spawns en curso: una
+   * ficha a medio abrir sin sesión no viaja (se queda acá, viva).
+   */
+  export async function buildTransferPayload(): Promise<TransferBody | null> {
+    await openChain.catch(() => {});
+    await tick();
+    return snapshotBody();
+  }
+
+  /**
+   * Suelta las sesiones indicadas SIN matarlas: la receptora ya adoptó. El
+   * teardown del `{@attach}` dispone los xterms al salir del DOM; acá solo se
+   * suelta el estado. Devuelve cuántas fichas quedan.
+   */
+  export function clearTransferred(ids: string[]): number {
+    const goneSessions = new Set(ids);
+    const goneKeys = new Set(
+      tabs
+        .filter((t) => t.sessionId && goneSessions.has(t.sessionId))
+        .map((t) => t.key),
+    );
+    if (goneKeys.size === 0) return tabs.length;
+    tabs = tabs.filter((t) => !goneKeys.has(t.key));
+    const prune = (node: PaneNode | null): PaneNode | null => {
+      if (!node) return null;
+      if (node.kind === "leaf") return goneKeys.has(node.key) ? null : node;
+      const first = prune(node.first);
+      const second = prune(node.second);
+      if (first && second) return { ...node, first, second };
+      return first ?? second;
+    };
+    paneTree = prune(paneTree);
+    groups = groups.filter((g) => !paneLeafKeys(g).some((k) => goneKeys.has(k)));
+    if (activeKey && goneKeys.has(activeKey)) {
+      activeKey = tabs[0]?.key ?? "";
+    }
+    for (const id of ids) {
+      outputBuf.delete(id);
+      lastOutputAt.delete(id);
+      attentionSent.delete(id);
+    }
+    mcpReiniciar = mcpReiniciar.filter((k) => !goneKeys.has(k));
+    return tabs.length;
+  }
+
+  /**
+   * Adopta consolas vivas de la otra ventana: crea las fichas con su sesión
+   * ya puesta (sin `console_open`) y repinta cada terminal con su `tail`.
+   * Respeta el tope y no duplica sesiones ya vistas. Devuelve las adoptadas.
+   */
+  export async function adoptSessions(
+    incoming: TransferTabDescriptor[],
+    tree: SessionTree | null,
+    activeSession: string | null,
+  ): Promise<string[]> {
+    const hadTabs = tabs.length > 0;
+    // eslint-disable-next-line svelte/prefer-svelte-reactivity -- temporary reducer map.
+    const keyBySession = new Map<string, string>();
+    for (const t of tabs) {
+      const sid = transferIdOf(t);
+      if (sid) keyBySession.set(sid, t.key);
+    }
+    const adopted: string[] = [];
+    for (const desc of incoming.slice(0, Math.max(0, MAX_TABS - tabs.length))) {
+      const sid = desc.session ?? (desc.hubSession ? `hub:${desc.hubSession}` : null);
+      if (!sid || keyBySession.has(sid)) {
+        if (sid && keyBySession.has(sid) && desc.session) adopted.push(desc.session);
+        continue;
+      }
+      const key = `t${++seq}`;
+      keyBySession.set(sid, key);
+      tabs = [
+        ...tabs,
+        {
+          key,
+          kind: desc.kind,
+          sessionId: desc.session,
+          hostId: desc.hostId,
+          label: desc.label,
+          command: desc.command,
+          cwd: desc.cwd,
+          hubSession: desc.hubSession,
+        },
+      ];
+      if (desc.session) adopted.push(desc.session);
+    }
+    if (adopted.length === 0 && incoming.length > 0) return [];
+    // Receptora vacía: hereda división y foco. Con fichas propias, las
+    // adoptadas entran al rail y la vista no se toca.
+    if (!hadTabs) {
+      const remapped = treeToKeys(tree, (session) => keyBySession.get(session) ?? null);
+      const firstKey = tabs[0]?.key ?? "";
+      paneTree = remapped ?? (firstKey ? leaf(firstKey) : null);
+      activeKey = (activeSession && keyBySession.get(activeSession)) || firstKey;
+    }
+    error = null;
+    // Un cuadro después el `{@attach}` ya creó los xterms: como `queueConnect`.
+    await tick();
+    await tick();
+    for (const id of adopted) {
+      const tab = tabs.find((t) => t.sessionId === id);
+      if (tab) void adoptOne(tab.key, id);
+    }
+    // Solo a la vista: adoptando dockeado no se toca foco ni teclado.
+    if (activeKey && visible && !minimized) focusVisiblePane(activeKey);
+    return adopted;
+  }
+
+  /**
+   * Repinta una ficha adoptada: espera tamaño real, escribe el `tail` de Rust
+   * y lo pendiente del vuelo, y reencuadra el PTY al panel nuevo. Sin
+   * `console_open`, sin `reset`: el proceso nunca se enteró de la mudanza.
+   */
+  async function adoptOne(key: string, id: string) {
+    markPending(key, true);
+    await listenReady.catch(() => {});
+    await waitForTermReady(key);
+    const tab = tabOf(key);
+    if (!tab || tab.sessionId !== id) {
+      markPending(key, false);
+      return;
+    }
+    try {
+      const tail = await consoleTail(id, 131072).catch(() => "");
+      const live = tabOf(key);
+      if (!live || live.sessionId !== id) return;
+      if (tail) termOf(key)?.write(tail);
+      flushOutput(id, key);
+      markBooted(key);
+      requestAnimationFrame(() => {
+        fitAndResize(key);
+        // Solo a la vista: con el float dockeado (vuelta auto a la pill),
+        // pedir teclado robaría el foco y rompería el click-through.
+        if (key === activeKey && visible && !minimized) requestOverlayKeyboard(key);
+      });
+      setTimeout(() => fitAndResize(key), 350);
+    } catch {
+      /* la sesión murió en el vuelo: queda la ficha, reconectable */
+    } finally {
+      markPending(key, false);
+    }
+  }
+
   /**
    * Deshace un grupo sin cerrar nada: sus consolas vuelven como fichas
    * sueltas. Si era la división visible hay que colapsar la vista también —
@@ -2448,6 +2767,10 @@
       .catch(() => (pinned = false));
     window.addEventListener("keydown", onGlobalKey, true);
     window.addEventListener(CLIPBOARD_OLE_EVENT, onClipboardOle);
+    // El detector de "terminó" corre siempre: él mismo decide si la consola
+    // está a la vista y no avisa nada.
+    lastSeenVisibleAt = Date.now();
+    attentionTimer = window.setInterval(attentionTick, ATTENTION_TICK_MS);
     let stopItemDrag: (() => void) | undefined;
     void onOverlayItemDrag((active) => {
       if (active) startOleWatch();
@@ -2508,7 +2831,6 @@
       }
       closeCtx();
       shortcutsOpen = false;
-      moreOpen = false;
       addMenuOpen = false;
     };
     document.addEventListener("pointerdown", onDocPointer, true);
@@ -2538,6 +2860,7 @@
   });
 
   onDestroy(() => {
+    if (attentionTimer) window.clearInterval(attentionTimer);
     stopListen?.();
     for (const timer of bootTimers.values()) window.clearTimeout(timer);
     bootTimers.clear();
@@ -2945,6 +3268,13 @@
             ></span>
           </span>
         {/if}
+        <div class="where-block">
+          <p class="where" use:tip={active ? tabLabels[tabs.indexOf(active)] : ""}>
+            {active
+              ? tabLabels[tabs.indexOf(active)]
+              : t("page.agents.console.noConsoles")}
+          </p>
+        </div>
         {#if mcpCli}
           <button
             type="button"
@@ -2976,13 +3306,6 @@
             {/if}
           </button>
         {/if}
-        <div class="where-block">
-          <p class="where" use:tip={active ? tabLabels[tabs.indexOf(active)] : ""}>
-            {active
-              ? tabLabels[tabs.indexOf(active)]
-              : t("page.agents.console.noConsoles")}
-          </p>
-        </div>
         {#if onPickFolder}
           <button
             type="button"
@@ -3003,10 +3326,10 @@
       <div class="window-actions">
         {#if active?.kind === "ssh"}
           <label class="host-pick">
-            <span class="sr">Host SSH</span>
+            <span class="sr">{t("page.agents.console.hostPickAria")}</span>
             <select
               class="host-select"
-              aria-label="Host SSH"
+              aria-label={t("page.agents.console.hostPickAria")}
               disabled={connecting || !!active.sessionId || sshHosts.length === 0}
               value={active.hostId ?? ""}
               onchange={(e) => {
@@ -3026,70 +3349,42 @@
           </label>
         {/if}
         {#if active}
+          {#if !connected}
+            <button
+              type="button"
+              class="icon-btn"
+              disabled={connecting || (active.kind === "ssh" && !activeHost)}
+              aria-label={connecting
+                ? t("page.agents.preparingAria")
+                : active.kind === "ssh"
+                  ? t("page.agents.connect")
+                  : t("page.agents.reconnect")}
+              use:tip={connecting
+                ? t("page.agents.preparingAria")
+                : active.kind === "ssh"
+                  ? t("page.agents.connect")
+                  : t("page.agents.reconnect")}
+              onclick={() => void connect()}
+            >
+              <Icon icon={SquareTerminal} size={13} />
+            </button>
+          {/if}
           <div class="more-menu">
             <button
               type="button"
               class="icon-btn"
-              aria-label={t("page.agents.moreAria")}
-              aria-haspopup="menu"
-              aria-expanded={moreOpen}
-              use:tip={t("page.agents.more")}
+              class:is-on={shortcutsOpen}
+              aria-label={t("page.agents.shortcutsAria")}
+              aria-haspopup="dialog"
+              aria-expanded={shortcutsOpen}
+              use:tip={t("page.agents.shortcuts")}
               onclick={() => {
-                moreOpen = !moreOpen;
-                shortcutsOpen = false;
+                shortcutsOpen = !shortcutsOpen;
+                shortcutError = null;
               }}
             >
-              <Icon icon={EllipsisVertical} size={13} />
+              <Icon icon={Keyboard} size={13} />
             </button>
-            {#if moreOpen}
-              <div class="more-pop" role="menu" aria-label={t("page.agents.moreAria")}>
-                <button
-                  type="button"
-                  class="more-item"
-                  role="menuitem"
-                  onclick={() => {
-                    shortcutsOpen = true;
-                    moreOpen = false;
-                  }}
-                >
-                  <Icon icon={Keyboard} size={13} />
-                  {t("page.agents.shortcuts")}
-                </button>
-                {#if usageAgent}
-                  <button
-                    type="button"
-                    class="more-item"
-                    role="menuitem"
-                    onclick={() => {
-                      usageOpen = true;
-                      moreOpen = false;
-                    }}
-                  >
-                    <Icon icon={Activity} size={13} />
-                    {t("page.agents.usage")}
-                  </button>
-                {/if}
-                {#if !connected}
-                  <button
-                    type="button"
-                    class="more-item"
-                    role="menuitem"
-                    disabled={connecting || (active.kind === "ssh" && !activeHost)}
-                    onclick={() => {
-                      moreOpen = false;
-                      void connect();
-                    }}
-                  >
-                    <Icon icon={SquareTerminal} size={13} />
-                    {connecting
-                      ? t("page.agents.preparingAria")
-                      : active.kind === "ssh"
-                        ? t("page.agents.connect")
-                        : t("page.agents.reconnect")}
-                  </button>
-                {/if}
-              </div>
-            {/if}
             {#if shortcutsOpen}
               <div
                 class="shortcuts-pop"
@@ -3099,16 +3394,61 @@
                 <p class="shortcuts-title">{t("page.agents.shortcutsTitle")}</p>
                 <p class="shortcuts-hint">{t("page.agents.shortcutsHint")}</p>
                 <ul class="shortcuts-list">
-                  {#each CONSOLE_SHORTCUTS as item (item.keys)}
-                    <li>
-                      <span>{t(item.labelKey)}</span>
-                      <kbd>{item.keys}</kbd>
+                  {#each CONSOLE_SHORTCUT_ROWS as row (row.labelKey)}
+                    <li class:is-editable={!!row.action}>
+                      <span>{t(row.labelKey)}</span>
+                      {#if row.action}
+                        {@const shortcutAction = row.action}
+                        <HotkeyCapture
+                          value={consoleShortcuts[shortcutAction]}
+                          defaultValue={CONSOLE_SHORTCUT_DEFAULTS[shortcutAction]}
+                          ariaLabel={t("page.agents.shortcutChangeAria", {
+                            label: t(row.labelKey),
+                          })}
+                          onChange={(next) => setConsoleShortcut(shortcutAction, next)}
+                          onCaptureStart={() => (shortcutCapturing = true)}
+                          onCaptureEnd={() => (shortcutCapturing = false)}
+                        />
+                      {:else}
+                        <kbd>{row.keys}</kbd>
+                      {/if}
                     </li>
                   {/each}
                 </ul>
+                {#if shortcutError}
+                  <p class="shortcuts-error" role="status">{shortcutError}</p>
+                {/if}
               </div>
             {/if}
           </div>
+          {#if usageAgent}
+            <button
+              type="button"
+              class="icon-btn"
+              class:is-on={usageOpen}
+              aria-label={t("page.agents.usageAria")}
+              use:tip={t("page.agents.usage")}
+              onclick={() => (usageOpen = true)}
+            >
+              <Icon icon={Activity} size={13} />
+            </button>
+          {/if}
+        {/if}
+        {#if tabs.length > 0 && onDetachRequest}
+          <button
+            type="button"
+            class="icon-btn"
+            disabled={detachBusy}
+            aria-label={overlayHost
+              ? t("page.agents.console.popOut")
+              : t("page.agents.console.dockBack")}
+            use:tip={overlayHost
+              ? t("page.agents.console.popOutTip")
+              : t("page.agents.console.dockBackTip")}
+            onclick={() => onDetachRequest?.()}
+          >
+            <Icon icon={overlayHost ? SquareArrowOutUpRight : Pill} size={13} />
+          </button>
         {/if}
         <button
           type="button"
@@ -3424,6 +3764,7 @@
       <AccountUsageModal
         agent={usageAgent}
         onClose={() => (usageOpen = false)}
+        onOpenConsole={sessionId ? () => requestOverlayKeyboard() : undefined}
         onRunUsageCommand={sessionId
           ? () => {
               const id = sessionId;
@@ -3558,9 +3899,11 @@
     box-shadow: 0 0 0 2px color-mix(in sRGB, var(--accent) 22%, transparent);
   }
 
+  /* Pegado al final de la lista: «otra más». El fondo se lo come el espacio
+     sobrante, no el botón — antes margin-top:auto lo exile abajo y quedaba
+     suelto en la esquina, lejos de las fichas a las que sirve. */
   .rail-add {
     display: flex;
-    margin-top: auto;
     flex-direction: column;
     align-items: center;
     gap: 0.25rem;
@@ -3691,7 +4034,7 @@
     background: color-mix(in sRGB, var(--rb-text) 5%, transparent);
     color: var(--rb-muted);
     font: inherit;
-    font-size: 0.62rem;
+    font-size: 0.65rem;
     font-weight: 600;
     cursor: pointer;
     transition:
@@ -3755,7 +4098,7 @@
     background: color-mix(in sRGB, var(--rb-surface-2) 80%, transparent);
     color: var(--rb-text);
     font: inherit;
-    font-size: 0.62rem;
+    font-size: 0.65rem;
     font-weight: 560;
     cursor: pointer;
   }
@@ -3791,30 +4134,6 @@
     flex: 0 0 auto;
   }
 
-  .more-pop,
-  .shortcuts-pop {
-    position: absolute;
-    top: calc(100% + 0.28rem);
-    right: 0;
-    left: auto;
-    z-index: 20;
-    max-width: min(16.5rem, calc(100cqi - 5rem));
-    transform-origin: 100% 0;
-    animation: pop-in-down var(--duration-fast) var(--ease-smooth-out);
-  }
-
-  .more-pop {
-    display: flex;
-    min-width: 11.5rem;
-    flex-direction: column;
-    gap: 0.08rem;
-    border: 1px solid color-mix(in sRGB, var(--rb-border) 80%, transparent);
-    border-radius: 0.65rem;
-    padding: 0.32rem;
-    background: color-mix(in sRGB, var(--rb-surface) 96%, var(--rb-bg0));
-    box-shadow: 0 8px 22px rgb(0 0 0 / 32%);
-  }
-
   /* Menús: nacen del gatillo con un beat corto. La salida es instantánea,
      igual que un menú nativo. */
   @keyframes pop-in-down {
@@ -3824,44 +4143,19 @@
     }
   }
 
-  @keyframes pop-in-up {
-    from {
-      opacity: 0;
-      transform: translateY(4px) scale(0.98);
-    }
-  }
-
-  .more-item {
-    display: flex;
-    width: 100%;
-    align-items: center;
-    gap: 0.5rem;
-    border: 0;
-    border-radius: 0.42rem;
-    padding: 0.38rem 0.48rem;
-    background: transparent;
-    color: var(--rb-text);
-    font: inherit;
-    font-size: 0.7rem;
-    font-weight: 540;
-    text-align: left;
-    cursor: pointer;
-  }
-
-  .more-item:hover:not(:disabled) {
-    background: color-mix(in sRGB, var(--rb-text) 8%, transparent);
-  }
-
-  .more-item:disabled {
-    opacity: 0.5;
-    cursor: default;
-  }
-
   .shortcuts-pop {
+    position: absolute;
+    top: calc(100% + 0.28rem);
+    right: 0;
+    left: auto;
+    z-index: 20;
     display: flex;
     width: 16.5rem;
+    max-width: min(16.5rem, calc(100cqi - 5rem));
     flex-direction: column;
     gap: 0.35rem;
+    transform-origin: 100% 0;
+    animation: pop-in-down var(--duration-fast) var(--ease-smooth-out);
     border: 1px solid color-mix(in sRGB, var(--rb-border) 80%, transparent);
     border-radius: 0.65rem;
     padding: 0.55rem 0.6rem 0.5rem;
@@ -3880,7 +4174,7 @@
   .shortcuts-hint {
     margin: 0;
     color: var(--rb-muted);
-    font-size: 0.62rem;
+    font-size: 0.65rem;
     line-height: 1.35;
   }
 
@@ -3901,6 +4195,22 @@
     color: var(--rb-text);
     font-size: 0.7rem;
     font-weight: 520;
+  }
+
+  /* Fila editable: la etiqueta arriba, la captura debajo — el popover queda
+     angosto y el botón de captura respira a ancho completo. */
+  .shortcuts-list li.is-editable {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.22rem;
+  }
+
+  .shortcuts-error {
+    margin: 0.1rem 0 0;
+    color: var(--rb-record);
+    font-size: 0.62rem;
+    line-height: 1.4;
   }
 
   .shortcuts-list kbd {
@@ -3924,7 +4234,7 @@
     background: color-mix(in sRGB, var(--rb-surface-2) 70%, transparent);
     color: var(--rb-muted);
     font: inherit;
-    font-size: 0.62rem;
+    font-size: 0.65rem;
     font-weight: 600;
     letter-spacing: 0.01em;
     cursor: pointer;
@@ -4218,7 +4528,6 @@
       opacity: 0.7;
     }
 
-    .more-pop,
     .shortcuts-pop,
     .add-pop,
     .ctx,
@@ -4337,8 +4646,9 @@
     transform: scale(0.96);
   }
 
-  /* Columna a la derecha, a todo el alto de la ficha. Se revela al hover;
-     el espacio queda reservado para que el icono no se mueva. */
+  /* Columna a la derecha, a todo el alto de la ficha. El espacio ya está
+     reservado para que el icono no se mueva — una × invisible ahí es espacio
+     muerto: en reposo es una × fantasma (tinta al 60%), el hover la sube. */
   .tab-x {
     align-self: stretch;
     width: 100%;
@@ -4346,8 +4656,9 @@
     min-height: 0;
     padding: 0;
     border-radius: 0.45rem;
-    opacity: 0;
-    pointer-events: none;
+    color: var(--rb-muted);
+    opacity: 0.6;
+    pointer-events: auto;
     background: transparent;
     box-shadow: none;
   }
@@ -4356,7 +4667,7 @@
   .rail-slot:focus-within .tab-x,
   .tab-x:focus-visible {
     opacity: 1;
-    pointer-events: auto;
+    color: var(--rb-text);
   }
 
   .tab-x:hover {
@@ -4373,10 +4684,11 @@
     display: inline-flex;
   }
 
-  /* Ancla en el rail y abre hacia arriba-derecha, sobre los terminales. */
+  /* Ancla en el rail y abre hacia abajo-derecha, sobre los terminales: el
+     botón "+" vive arriba, junto a las fichas. */
   .add-pop {
     position: absolute;
-    bottom: calc(100% + 0.3rem);
+    top: calc(100% + 0.3rem);
     left: 0;
     z-index: 9;
     display: flex;
@@ -4391,9 +4703,9 @@
     background: color-mix(in sRGB, var(--rb-surface) 96%, var(--rb-bg0));
     box-shadow: 0 8px 22px color-mix(in sRGB, rgb(0 0 0) 32%, transparent);
 
-    /* Abre hacia arriba: emerge desde el botón "+". */
-    transform-origin: 0 100%;
-    animation: pop-in-up var(--duration-fast) var(--ease-smooth-out);
+    /* Abre hacia abajo: emerge desde el botón "+". */
+    transform-origin: 0 0;
+    animation: pop-in-down var(--duration-fast) var(--ease-smooth-out);
   }
 
   .add-item {
@@ -4450,7 +4762,7 @@
     padding: 0.1rem 0.34rem;
     background: color-mix(in sRGB, var(--accent) 16%, transparent);
     color: var(--accent);
-    font-size: 0.62rem;
+    font-size: 0.65rem;
     font-weight: 640;
     letter-spacing: 0.02em;
   }
@@ -4471,8 +4783,8 @@
     margin: 0.18rem 0 0;
     padding: 0.14rem 0.44rem;
     border-top: 1px solid color-mix(in sRGB, var(--rb-border) 62%, transparent);
-    color: var(--rb-faint);
-    font-size: 0.54rem;
+    color: var(--rb-muted);
+    font-size: 0.625rem;
     font-weight: 680;
     letter-spacing: 0.05em;
     text-transform: uppercase;
@@ -4563,7 +4875,11 @@
     width: var(--rail-width, 8rem);
     min-width: 4.5rem;
     max-width: 14rem;
-    padding: 0.4rem 0.34rem;
+
+    /* Respiro uniforme en la esquina: el radio de la primera ficha se deriva
+       de acá (interno = 1.625rem − 0.45rem). Con el padding viejo (0.4 /
+       0.34) las dos curvas se rozaban y dejaban la cuña negra del canto. */
+    padding: 0.45rem;
     background: color-mix(
       in sRGB,
       var(--rb-sidebar, var(--rb-surface-2)) 88%,
@@ -4593,6 +4909,14 @@
 
   .console-desk .rail-tab.is-on {
     background: color-mix(in sRGB, var(--agent-accent) 13%, var(--skin));
+  }
+
+  /* Esquina concéntrica: la ventana curva 1.625rem y la primera ficha vive a
+     0.45rem del canto (el padding del rail, igual arriba que a la izquierda).
+     Su esquina superior izquierda sigue la MISMA curva — interno = externo −
+     respiro — y las dos quedan paralelas con aire parejo, sin cuña. */
+  .console-desk .rail-slot:first-child .rail-tab {
+    border-top-left-radius: calc(1.625rem - 0.45rem);
   }
 
   /* Sin chip de fondo detrás del logo: se veía un cuadrado dentro de otro.
@@ -4637,13 +4961,14 @@
 
   .rail-name {
     color: var(--rb-text);
-    font-size: 0.66rem;
+    font-size: 0.7rem;
     font-weight: 680;
   }
 
   .rail-status {
-    color: var(--rb-faint);
-    font-size: 0.54rem;
+    /* muted, no faint: a 10px el piso es 4.5:1 y rb-faint da 3.6:1. */
+    color: var(--rb-muted);
+    font-size: 0.625rem;
     font-weight: 540;
   }
 
@@ -4705,7 +5030,7 @@
     background: transparent;
     color: var(--rb-muted);
     font: inherit;
-    font-size: 0.62rem;
+    font-size: 0.65rem;
     font-weight: 650;
     cursor: pointer;
     transition:
@@ -4772,7 +5097,7 @@
   }
 
   .console-desk .rail.is-compact {
-    padding-inline: 0.24rem;
+    padding-inline: 0.45rem;
   }
 
   .console-desk .rail.is-compact .rail-tab {
@@ -4808,7 +5133,7 @@
   @container agents-console (width <= 34rem) {
     .console-desk .rail {
       width: 4.5rem;
-      padding-inline: 0.25rem;
+      padding-inline: 0.45rem;
     }
 
     .console-desk .rail-tab {
@@ -4835,7 +5160,7 @@
     .console-desk .rail {
       width: 4.5rem;
       min-width: 4.5rem;
-      padding-inline: 0.2rem;
+      padding-inline: 0.45rem;
     }
 
     .console-desk .rail-tab {

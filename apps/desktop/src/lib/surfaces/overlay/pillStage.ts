@@ -70,6 +70,14 @@ export const PILL = {
   /** Hueco entre botones de la tira. Chico a propósito: el clic entre iconos
    *  tiene que caer en una herramienta, no en el cuerpo (que abre la rueda). */
   islandGap: 2,
+  /**
+   * Tarjeta de cara expandida colgada de la pestaña (un solo blob, gap 0).
+   *
+   * Fijo al abrir: el contenido vivo (timer, texto) no puede re-medir la caja
+   * a cada frame. El CSS tiene que sumar exacto: pestaña + `islandCardH`.
+   */
+  islandCardW: 280,
+  islandCardH: 104,
   /** Diámetro de la gota de grabación/dictado que cuelga del chrome. */
   recDrop: 36,
   /** Hueco entre el cuerpo y la gota: bajo el alcance del goo (~10 px). */

@@ -71,6 +71,10 @@ export interface AppConfig {
   agents_bubble_size: [number, number] | null;
   /** Consola de agentes fijada arriba (always-on-top) mientras está abierta. */
   agents_always_on_top: boolean;
+  /** Float de clipboard fijado arriba mientras está abierto. */
+  clipboard_always_on_top: boolean;
+  /** Float de textos/snippets fijado arriba mientras está abierto. */
+  snippets_always_on_top: boolean;
   beep_on_start: boolean;
   /** Toques graves de interfaz (capturas, dictado). Interruptor maestro. */
   ui_sounds: boolean;
@@ -89,6 +93,8 @@ export interface AppConfig {
   record_tracks: string;
   /** Pistas a transcribir: both | mic | system */
   transcribe_tracks: string;
+  /** Modo parlantes: prioriza solo el audio del sistema (evita el eco del mic). */
+  speakers_mode: boolean;
   /** Supresión de ruido en mic: off | low | medium | high */
   noise_suppression: string;
   /** Arrancar con el sistema. */

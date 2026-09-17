@@ -26,6 +26,7 @@ export const onUiLanguage = (cb: (language: string) => void): Promise<UnlistenFn
 
 export const setTrayMenu = (labels: {
   show: string;
+  consoles: string;
   capture: string;
   togglePill: string;
   summonPill: string;

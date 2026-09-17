@@ -5,9 +5,26 @@
   import FolderBrowser from "./FolderBrowser.svelte";
   import AgentLogo from "./AgentLogo.svelte";
   import Icon from "$ui/Icon.svelte";
-  import { Folder, X } from "$lib/icons";
-  import { onMount } from "svelte";
-  import { AGENTS_PATH_CHANGED, AGENTS_REVEAL_CONSOLE, cliOnPath } from "$ipc/agents";
+  import { ArrowRight, ChevronRight, Folder, Minus, Plus, X } from "$lib/icons";
+  import { onMount, tick } from "svelte";
+  import {
+    AGENTS_PATH_CHANGED,
+    AGENTS_REVEAL_CONSOLE,
+    agentsEnsureWindow,
+    cliOnPath,
+    consoleBeginTransfer,
+    consoleEndTransfer,
+    consoleTransferDeliver,
+    onAgentsTransferAck,
+  } from "$ipc/agents";
+  import { currentWindowLabel, hideWindow } from "$ipc/windows";
+  import { OVERLAY_LABEL } from "$surfaces/overlay/contract";
+  import {
+    transferInbox,
+    AGENTS_WINDOW_LABEL,
+    type TransferPayload,
+  } from "./consoleTransfer.svelte";
+  import { toasts } from "$domain/toasts.svelte";
   import { AGENTS, installCommand, shownAgents } from "./agentCatalog";
   import { config } from "$domain/config.svelte";
   import { sessionEffect } from "$domain/session";
@@ -23,6 +40,7 @@
     onToggleMaximize,
     onToggleMinimize,
     onLiveChange,
+    onNeedsAttention,
     maximized = false,
     minimized = false,
     shown = false,
@@ -36,6 +54,8 @@
     onToggleMinimize?: () => void;
     /** Hay PTYs montadas: el float debe esconder, no destruir. */
     onLiveChange?: (live: boolean) => void;
+    /** Una consola enmudeció fuera de vista: el dueño avisa (toast). */
+    onNeedsAttention?: (label: string) => void;
     maximized?: boolean;
     minimized?: boolean;
     /** El float está a la vista: si hay consolas vivas, mostrarlas. */
@@ -73,7 +93,41 @@
   const chosen = $derived(
     visible.find((agent) => agent.cli === selected) ?? visible[0] ?? AGENTS[0],
   );
-  const missingCli = $derived(pathReady && onPath[selected] === false);
+  // Sobre `chosen` y no sobre `selected`: si Ajustes ocultó al seleccionado,
+  // el lanzador ya muestra otro —`visible[0]`— y el estado del PATH tiene que
+  // ser el de ese, o ofrece instalar un agente que no es el que abre.
+  const missingCli = $derived(pathReady && onPath[chosen.cli] === false);
+
+  /**
+   * Patrón radio de la grilla: un solo tope de Tab (el elegido) y ←→/↑↓
+   * eligen con envolvente. Con clic el navegador ya deja el foco en la celda,
+   * así que el roving queda consistente por cualquier camino.
+   */
+  let pickerEl = $state<HTMLDivElement | null>(null);
+
+  function onPickerKeydown(event: KeyboardEvent) {
+    const step =
+      event.key === "ArrowRight" || event.key === "ArrowDown"
+        ? 1
+        : event.key === "ArrowLeft" || event.key === "ArrowUp"
+          ? -1
+          : 0;
+    if (!step || !pickerEl) return;
+    const options = Array.from(
+      pickerEl.querySelectorAll<HTMLButtonElement>(".agent-option"),
+    );
+    // El target de un keydown es el elemento con foco, pero contiene() hace
+    // robusto el caso de un hijo (el logo) que algún día reciba el foco.
+    const target = event.target instanceof Element ? event.target : null;
+    const current = options.findIndex(
+      (option) => option === target || (target && option.contains(target)),
+    );
+    if (current < 0 || options.length < 2) return;
+    const next = options[(current + step + options.length) % options.length];
+    event.preventDefault();
+    next.focus();
+    selected = next.dataset.cli ?? selected;
+  }
   // Con el CLI ausente la consola se siembra con su instalador oficial, la
   // misma mecánica que el botón "Instalar" del menú "+" de ConsolePanel.
   const seeds = $derived(
@@ -123,6 +177,150 @@
 
   /** Instancia viva de ConsolePanel, para instalar sin remontar la consola. */
   let panel = $state<ConsolePanel | null>(null);
+
+  /* ─── Mudanza entre ventanas ────────────────────────────────────────────
+     Dueño único: la emisora protege (`begin`), la receptora adopta y confirma
+     (`end` + ack), y recién ahí la emisora suelta sin matar. Si el ack no
+     llega, se levanta la protección y todo se queda donde estaba. */
+  const myLabel = currentWindowLabel();
+  /** Fuera del float, el hogar es la ventana dedicada; desde ella, la pill. */
+  const otherLabel = myLabel === OVERLAY_LABEL ? AGENTS_WINDOW_LABEL : OVERLAY_LABEL;
+  const DETACH_ACK_MS = 4000;
+  let detachBusy = $state(false);
+  /** Baja del oyente de acks de mudanza (se arma en el onMount). */
+  let ackUnlisten: (() => void) | null = null;
+  // Caché de trabajo: acks en vuelo. No es estado de vista.
+  // eslint-disable-next-line svelte/prefer-svelte-reactivity -- ver panel: se muta fuera del render
+  const pendingDetach = new Map<string, { done: (adopted: string[]) => void }>();
+
+  /** Adoptar lo que llegó al buzón de esta ventana. */
+  async function receiveTransfer(payload: TransferPayload) {
+    if (!hasConsole) setHasConsole(true);
+    await tick();
+    let guard = 0;
+    while (!panel && guard++ < 60) {
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    }
+    let adopted: string[] = [];
+    if (panel) {
+      try {
+        adopted = await panel.adoptSessions(
+          payload.tabs,
+          payload.tree,
+          payload.activeSession,
+        );
+      } catch {
+        adopted = [];
+      }
+    }
+    try {
+      await consoleEndTransfer(payload.sessions);
+    } catch {
+      /* la marca caduca sola */
+    }
+    try {
+      await consoleTransferDeliver(
+        payload.from,
+        "agents-transfer-ack",
+        JSON.stringify({ transferId: payload.transferId, adopted }),
+      );
+    } catch {
+      /* la emisora cubre con su timeout */
+    }
+    if (adopted.length > 0) showView("console");
+    // De vuelta en la pill con el float cerrado: sin esto, la mudanza no se
+    // ve en ningún lado. En la ventana dedicada `shown` siempre es true.
+    if (adopted.length > 0 && !shown && myLabel === OVERLAY_LABEL) {
+      toasts.push(t("page.agents.console.receivedBack"));
+    }
+  }
+
+  $effect(() => {
+    const inbox = transferInbox.current;
+    if (!inbox || inbox.to !== myLabel) return;
+    transferInbox.take();
+    void receiveTransfer(inbox);
+  });
+
+  /** Mudar estas consolas a la otra ventana, vivas y con scrollback. */
+  async function detachTo() {
+    if (detachBusy || !panel) return;
+    const body = await panel.buildTransferPayload().catch(() => null);
+    if (!body || body.sessions.length === 0) {
+      toasts.push(t("page.agents.console.nothingToMove"));
+      return;
+    }
+    detachBusy = true;
+    // A la ventana dedicada: primero existe y al frente; sin ella el ack no
+    // llega nunca y el timeout devolvería todo.
+    if (otherLabel === AGENTS_WINDOW_LABEL) {
+      try {
+        await agentsEnsureWindow();
+      } catch {
+        detachBusy = false;
+        toasts.push(t("page.agents.console.detachFailed"));
+        return;
+      }
+    }
+    try {
+      await consoleBeginTransfer(body.sessions);
+    } catch {
+      detachBusy = false;
+      toasts.push(t("page.agents.console.detachFailed"));
+      return;
+    }
+    const transferId = crypto.randomUUID();
+    const payload: TransferPayload = {
+      ...body,
+      transferId,
+      from: myLabel,
+      to: otherLabel,
+    };
+    try {
+      await consoleTransferDeliver(
+        otherLabel,
+        "agents-transfer",
+        JSON.stringify(payload),
+      );
+    } catch {
+      await consoleEndTransfer(body.sessions).catch(() => {});
+      detachBusy = false;
+      toasts.push(t("page.agents.console.detachFailed"));
+      return;
+    }
+    const adopted = await new Promise<string[]>((resolve) => {
+      const timer = window.setTimeout(() => {
+        pendingDetach.delete(transferId);
+        resolve([]);
+      }, DETACH_ACK_MS);
+      pendingDetach.set(transferId, {
+        done: (list: string[]) => {
+          window.clearTimeout(timer);
+          pendingDetach.delete(transferId);
+          resolve(list);
+        },
+      });
+    });
+    if (adopted.length === 0) {
+      await consoleEndTransfer(body.sessions).catch(() => {});
+      detachBusy = false;
+      toasts.push(t("page.agents.console.detachFailed"));
+      return;
+    }
+    const remaining = panel?.clearTransferred(adopted) ?? 0;
+    if (remaining === 0) {
+      // Sin fichas no hay consola que mostrar: vuelve al setup. Las sesiones
+      // ya son de la otra ventana, así que desmontar no mata nada. Y si esta
+      // era la ventana dedicada, se esconde sola: cumplió.
+      setHasConsole(false);
+      showView("setup");
+      if (myLabel === AGENTS_WINDOW_LABEL) {
+        void hideWindow().catch(() => {});
+      }
+    }
+    detachBusy = false;
+    toasts.push(t("page.agents.console.detachedOk"));
+  }
 
   function launch() {
     if (missingCli) {
@@ -222,9 +420,20 @@
     const onPathChanged = () => refreshPath();
     window.addEventListener(AGENTS_REVEAL_CONSOLE, onReveal);
     window.addEventListener(AGENTS_PATH_CHANGED, onPathChanged);
+    void onAgentsTransferAck((raw) => {
+      try {
+        const ack = JSON.parse(raw) as { transferId: string; adopted: string[] };
+        pendingDetach.get(ack.transferId)?.done(ack.adopted ?? []);
+      } catch {
+        /* ruido */
+      }
+    }).then((unlisten) => {
+      ackUnlisten = unlisten;
+    });
     return () => {
       window.removeEventListener(AGENTS_REVEAL_CONSOLE, onReveal);
       window.removeEventListener(AGENTS_PATH_CHANGED, onPathChanged);
+      ackUnlisten?.();
     };
   });
 </script>
@@ -235,12 +444,12 @@
     class:is-hidden={view !== "setup"}
     aria-hidden={view !== "setup" ? "true" : undefined}
     inert={view !== "setup"}
-    aria-label="Abrir agentes"
+    aria-label={t("page.agents.launcher.openAria")}
   >
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <header
       class="drag-rail"
-      aria-label="Mover ventana"
+      aria-label={t("page.agents.launcher.moveAria")}
       onpointerdown={(event) => {
         if (onHeaderPointerDown && !(event.target as HTMLElement).closest("button")) {
           onHeaderPointerDown(event);
@@ -274,7 +483,14 @@
     </header>
 
     <div class="setup">
-      <div class="agent-picker" role="radiogroup" aria-label="Agente">
+      <div
+        class="agent-picker"
+        role="radiogroup"
+        aria-label={t("page.agents.launcher.agentAria")}
+        tabindex="-1"
+        bind:this={pickerEl}
+        onkeydown={onPickerKeydown}
+      >
         {#each visible as agent (agent.cli)}
           <button
             type="button"
@@ -283,11 +499,13 @@
             class:is-missing={pathReady && onPath[agent.cli] === false}
             role="radio"
             aria-checked={selected === agent.cli}
+            tabindex={selected === agent.cli ? 0 : -1}
+            data-cli={agent.cli}
             aria-label={pathReady && onPath[agent.cli] === false
-              ? `${agent.name} (no está en el PATH)`
+              ? t("page.agents.launcher.notOnPath", { name: agent.name })
               : agent.name}
             use:tip={pathReady && onPath[agent.cli] === false
-              ? `${agent.name} no está en el PATH`
+              ? t("page.agents.launcher.notOnPath", { name: agent.name })
               : agent.name}
             onclick={() => (selected = agent.cli)}
           >
@@ -300,22 +518,28 @@
         <button
           type="button"
           class="folder"
-          use:tip={cwd || "Carpeta de inicio del usuario"}
+          use:tip={cwd || t("page.agents.console.startFolderUser")}
           onclick={() => void requestFolder()}
         >
           <Icon icon={Folder} size={15} />
-          <span>{cwd.trim() || "Carpeta de inicio"}</span>
-          <span class="chevron" aria-hidden="true">›</span>
+          <span>{cwd.trim() || t("page.agents.console.startFolder")}</span>
+          <span class="chevron" aria-hidden="true"
+            ><Icon icon={ChevronRight} size={14} /></span
+          >
         </button>
 
-        <div class="stepper" role="group" aria-label="Cantidad de consolas">
+        <div
+          class="stepper"
+          role="group"
+          aria-label={t("page.agents.launcher.consolesCount")}
+        >
           <button
             type="button"
-            aria-label="Menos consolas"
+            aria-label={t("page.agents.launcher.fewerConsoles")}
             disabled={count <= 1}
             onclick={() => (count = Math.max(1, count - 1))}
           >
-            −
+            <Icon icon={Minus} size={13} />
           </button>
           <span class="count"
             >{count}
@@ -325,11 +549,11 @@
           >
           <button
             type="button"
-            aria-label="Más consolas"
+            aria-label={t("page.agents.launcher.moreConsoles")}
             disabled={count >= MAX_INSTANCES}
             onclick={() => (count = Math.min(MAX_INSTANCES, count + 1))}
           >
-            +
+            <Icon icon={Plus} size={13} />
           </button>
         </div>
 
@@ -337,24 +561,28 @@
           <button
             type="button"
             class="reset"
-            aria-label="Cerrar y matar las consolas"
-            use:tip={"Cierra las consolas y mata los procesos"}
+            aria-label={t("page.agents.launcher.killConsoles")}
+            use:tip={t("page.agents.launcher.killConsolesTip")}
             onclick={resetSessions}
           >
             <Icon icon={X} size={13} />
           </button>
         {/if}
-
-        <button
-          type="button"
-          class="launch"
-          use:tip={missingCli ? `${chosen.name} no está instalado` : undefined}
-          onclick={launch}
-        >
-          <span>{launchLabel}</span>
-          <span class="arrow" aria-hidden="true">→</span>
-        </button>
       </div>
+
+      <button
+        type="button"
+        class="launch"
+        use:tip={missingCli
+          ? t("page.agents.launcher.notInstalled", { name: chosen.name })
+          : undefined}
+        onclick={launch}
+      >
+        <span>{launchLabel}</span>
+        <span class="arrow" aria-hidden="true"
+          ><Icon icon={ArrowRight} size={14} /></span
+        >
+      </button>
     </div>
   </section>
 
@@ -376,6 +604,10 @@
         {onToggleMinimize}
         {maximized}
         {minimized}
+        visible={shown && !minimized}
+        {onNeedsAttention}
+        onDetachRequest={detachTo}
+        {detachBusy}
         onBarPointerDown={onHeaderPointerDown}
       />
     </div>
@@ -538,7 +770,9 @@
     min-height: 0;
     flex: 1;
     flex-direction: column;
-    gap: 0.65rem;
+
+    /* Ritmo: la decisión (picker → modificadores) apretada. */
+    gap: 0.5rem;
     padding: 0.75rem;
     overflow: auto;
   }
@@ -581,7 +815,9 @@
 
   .agent-option.is-on {
     background: color-mix(in sRGB, var(--agent-accent) 12%, transparent);
-    box-shadow: inset 0 0 0 1px color-mix(in sRGB, var(--agent-accent) 72%, transparent);
+
+    /* 56% en vez de 72%: el anillo no le pelea al CTA, que es la acción. */
+    box-shadow: inset 0 0 0 1px color-mix(in sRGB, var(--agent-accent) 56%, transparent);
   }
 
   .agent-option.is-missing {
@@ -610,16 +846,17 @@
     transform: scale(0.96);
   }
 
+  /* Una fila de modificadores: dónde (carpeta) y cuántas (stepper) cambian el
+     lanzamiento; la carpeta ocupa el resto del ancho porque su contenido es
+     el que crece. El reset entra y sale sin dejar huecos (flex, no grid). */
   .launch-row {
-    display: grid;
-    grid-template-columns: minmax(9rem, 1fr) auto auto auto;
-    gap: 0.55rem;
+    display: flex;
+    gap: 0.4rem;
     align-items: stretch;
   }
 
   .folder,
-  .stepper,
-  .launch {
+  .stepper {
     min-height: 2.45rem;
     border: 0; /* mismo lenguaje que el selector de agentes: sin bordes, fondos suaves */
     border-radius: 0.62rem;
@@ -628,6 +865,7 @@
 
   .folder {
     display: flex;
+    flex: 1 1 auto;
     min-width: 0;
     align-items: center;
     gap: 0.48rem;
@@ -639,6 +877,17 @@
     transition:
       background-color var(--duration-fast, 125ms) var(--ease-smooth-out, ease),
       color var(--duration-fast, 125ms) var(--ease-smooth-out, ease);
+  }
+
+  .stepper {
+    flex: none;
+    display: grid;
+    grid-template-columns: 1.9rem max-content 1.9rem;
+    align-items: stretch;
+    gap: 0.2rem;
+    min-width: max-content;
+    padding: 0.25rem;
+    background: color-mix(in sRGB, var(--rb-surface-2) 62%, transparent);
   }
 
   .folder:hover {
@@ -656,20 +905,12 @@
   }
 
   .chevron {
-    color: var(--rb-faint);
-    font-size: 1rem;
-    line-height: 1;
-  }
-
-  .stepper {
     display: grid;
-    grid-template-columns: 1.9rem max-content 1.9rem;
-    flex: none;
-    align-items: stretch;
-    gap: 0.2rem;
-    min-width: max-content;
-    padding: 0.25rem;
-    background: color-mix(in sRGB, var(--rb-surface-2) 62%, transparent);
+    place-items: center;
+
+    /* muted, no faint: la flecha es la señal de «hay más» y como gráfica
+       significativa pide 3:1 (faint da 2.9:1 en claro). */
+    color: var(--rb-muted);
   }
 
   .stepper button {
@@ -734,16 +975,21 @@
     color: var(--rb-record);
   }
 
+  /* El commit va solo: fila propia a todo lo ancho. La acción más frecuente
+     (abrir con lo ya elegido) gana el ancho completo y una letra más que los
+     modificadores. */
   .launch {
-    display: inline-flex;
-    min-width: 10rem;
+    display: flex;
+    width: 100%;
+    min-height: 2.55rem;
     align-items: center;
     justify-content: center;
     gap: 0.42rem;
+    margin-top: 0.2rem; /* cierra el ritmo: el commit va más separado */
     padding: 0.42rem 0.75rem;
     background: var(--agent-accent);
     color: var(--rb-on-accent);
-    font-size: 0.7rem;
+    font-size: 0.72rem;
     font-weight: 700;
     cursor: pointer;
     transition:
@@ -768,7 +1014,6 @@
 
   .launch .arrow {
     margin-left: 0.12rem;
-    font-size: 0.9rem;
   }
 
   button:focus-visible {
@@ -776,32 +1021,16 @@
     box-shadow: var(--rb-focus);
   }
 
+  /* La estructura es la misma a todo ancho (elegir / condicionar / commit):
+     el breakpoint solo aprieta densidad, no reordena. */
   @container agents-launcher (width <= 35rem) {
     .setup {
-      gap: 0.48rem;
-      padding: 0.55rem;
-    }
-
-    .launch-row {
-      grid-template-columns: max-content auto minmax(0, 1fr);
-      gap: 0.4rem;
-    }
-
-    .folder {
-      grid-column: 1 / -1;
-    }
-
-    .stepper {
-      grid-column: 1;
+      gap: 0.45rem;
+      padding: 0.6rem;
     }
 
     .launch {
-      grid-column: 3;
-      min-width: 8.75rem;
-    }
-
-    .reset {
-      grid-column: 2;
+      margin-top: 0.15rem;
     }
   }
 
@@ -818,11 +1047,6 @@
 
     .stepper button {
       width: 1.65rem;
-    }
-
-    .launch {
-      min-width: 7.8rem;
-      padding-inline: 0.55rem;
     }
   }
 

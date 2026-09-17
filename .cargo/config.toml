@@ -1,0 +1,13 @@
+# Alias de cargo para el ciclo de desarrollo.
+#
+# La app vive en un solo crate grande (`atic-desktop`): comprobarlo sin linkear
+# tarda una fracción de un build, y los tests de la lib corren en menos de un
+# segundo una vez compilada. El detalle está en `docs/DEVELOPMENT.md`
+# («Ciclo rápido»).
+[alias]
+# Comprobar la app sin linkear (el ciclo interno de Rust).
+ck = "check -p atic-desktop"
+# Tests de la lib de la app. Acepta filtro: `cargo ckt agents::mcp_install`.
+ckt = "test -p atic-desktop --lib"
+# Todo el workspace, sin linkear.
+ckw = "check --workspace --all-targets"

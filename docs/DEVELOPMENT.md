@@ -28,8 +28,8 @@ apps/desktop/  App Tauri 2: ventana principal + overlay (pill) + tray
   Si `libclang.dll` no está en el PATH, exporta `LIBCLANG_PATH` a `…\LLVM\bin`.
 - **Cabeceras para bindgen** si compilas fuera del Developer PowerShell for
   VS. `libclang` **no** lee `INCLUDE`. El síntoma engaña: `fatal error:
-  'stdio.h' file not found`, seguido de un `attempt to compute 12_usize -
-  16_usize` en bindings de Linux que `whisper-rs-sys` usa de reserva.
+'stdio.h' file not found`, seguido de un `attempt to compute 12_usize -
+16_usize` en bindings de Linux que `whisper-rs-sys` usa de reserva.
 
   Para no exportar variables a mano, cargá el helper (detecta LLVM, MSVC y el
   Windows SDK —incluidas las cabeceras propias de clang— y arma
@@ -56,6 +56,7 @@ apps/desktop/  App Tauri 2: ventana principal + overlay (pill) + tray
   ```powershell
   Remove-Item -Recurse -Force target\debug\build\whisper-rs-sys-*, target\release\build\whisper-rs-sys-*
   ```
+
 - Node.js 22+ y pnpm 10+
 - WebView2 (incluido en Windows 11)
 
@@ -75,10 +76,74 @@ pnpm tauri dev      # desarrollo con recarga en caliente
 pnpm tauri build    # instalador de producción
 ```
 
+En macOS también hay `apps/desktop/dev-atic.sh`: carga el entorno
+(`scripts/mac-env.sh`: wrapper de rustc y `libclang` de Homebrew si hace falta)
+y arranca `tauri dev`. Acepta `--trace` para las trazas de geometría.
+
+## Ciclo rápido
+
+El costo del día a día no es escribir código: es compilar y verificar. La
+regla es escalonar, no saltear.
+
+**Ciclo interno (segundos).** El frontend recarga con HMR dentro de
+`pnpm tauri dev`. Para Rust, comprobar sin linkear es una fracción de un
+build, y los tests ya compilados corren en menos de un segundo:
+
+```bash
+cargo ck                      # alias: check -p atic-desktop, sin linkear
+cargo ckt agents::mcp_install # alias: los tests de la lib, con filtro
+cargo ckw                     # alias: todo el workspace, sin linkear
+```
+
+Los alias viven en `.cargo/config.toml`.
+
+**Aviso sobre sccache e incremental.** Si `~/.cargo/config.toml` tiene
+`rustc-wrapper = "sccache"` (como en el equipo de desarrollo), **no actives
+`CARGO_INCREMENTAL`**: sccache lo prohíbe y el build falla con «incremental
+compilation is prohibited». Con sccache el ciclo interno de Rust es `cargo ck`
+(sin linkear) y un build completo cuando necesitas ver la app. El script
+`scripts/mac-env.sh` detecta el caso y deja el entorno consistente.
+
+**El crate caro es `atic-desktop`.** Ahí vive la app entera (unas 68 mil
+líneas): cualquier cambio en su `src/` recompila ese crate completo (sccache no
+puede cachearlo tal como está configurado, por sus crate-types) y enlaza el
+binario. Los crates del workspace y las dependencias solo se recompilan si los
+tocas, y eso sccache lo cubre. Por eso: cambios de UI → HMR; cambios de lógica
+→ `cargo ck` primero, build completo solo para probar la app.
+
+**Antes de commitear.** Formato de lo tocado, clippy y los tests del crate que
+cambió:
+
+```bash
+cargo fmt --all
+cargo clippy -p atic-desktop --all-targets
+cargo test -p atic-desktop --lib
+```
+
+**Antes de subir.** El gate completo (lo mismo que correría CI):
+
+```bash
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+pnpm verify
+```
+
+Los tests no se saltean, se acotan: correr `cargo test -p atic-desktop --lib`
+sobre el crate ya compilado cuesta menos que el build que de todos modos haces
+para ver la app. Lo que sí queda para el final —o para CI— es lo que no se
+puede simular: los CLIs de agentes reales, los permisos de macOS y el audio.
+
+Dos cosas que ahorran minutos: no corras `cargo clean` (el `target/` es
+grande y nada de él es basura) y no mezcles perfiles (`--release` recompila
+todo el grafo).
+
 ## Validación
 
-El workflow `.github/workflows/ci.yml` no corre en push ni en PRs (cupo de
-Actions). Disparalo a mano desde la pestaña Actions cuando haga falta.
+El workflow `.github/workflows/ci.yml` corre `frontend` y `rustfmt` en cada
+push a `main` y en cada PR. Los jobs pesados (`rust`, `build`) siguen siendo
+manuales desde Actions → CI → Run workflow: en un repo público los minutos de
+runners estándar son gratis, pero un job de Windows/macOS tarda bastante más
+que la alternativa local.
 
 ```bash
 cargo fmt --all --check
@@ -95,19 +160,19 @@ pnpm verify
 
 ## Empaquetado
 
-| Plataforma | Formato | Salida local |
-|---|---|---|
-| Windows | NSIS (`*-setup.exe`) | `target/release/bundle/nsis/` |
-| macOS | DMG + `.app.tar.gz` | `target/release/bundle/dmg/` y `macos/` |
+| Plataforma | Formato              | Salida local                            |
+| ---------- | -------------------- | --------------------------------------- |
+| Windows    | NSIS (`*-setup.exe`) | `target/release/bundle/nsis/`           |
+| macOS      | DMG + `.app.tar.gz`  | `target/release/bundle/dmg/` y `macos/` |
 
 Por defecto Whisper corre en **CPU** (CI y release). GPU opcional en builds
 locales:
 
-| Feature | Plataforma | Requisitos |
-|---|---|---|
-| `gpu-metal` | macOS | Xcode / Metal |
-| `gpu-cuda` | Windows / Linux NVIDIA | CUDA Toolkit |
-| `gpu-vulkan` | Windows / Linux AMD/Intel | Vulkan SDK |
+| Feature      | Plataforma                | Requisitos    |
+| ------------ | ------------------------- | ------------- |
+| `gpu-metal`  | macOS                     | Xcode / Metal |
+| `gpu-cuda`   | Windows / Linux NVIDIA    | CUDA Toolkit  |
+| `gpu-vulkan` | Windows / Linux AMD/Intel | Vulkan SDK    |
 
 ```bash
 cd apps/desktop
@@ -116,10 +181,10 @@ pnpm tauri build -- --features gpu-cuda     # NVIDIA
 pnpm tauri build -- --features gpu-vulkan   # AMD/Intel
 ```
 
-PRs hacia `main`. **El release de Windows se firma en local.** El workflow
+PRs hacia `main`. **El release se firma en local** (Windows con Authenticode,
+macOS con notarization): las claves viven en tu disco, no en CI. El workflow
 [`.github/workflows/release.yml`](../.github/workflows/release.yml) existe por
-si hay minutos de Actions, pero no hay que usarlo: Windows + macOS agotan el
-cupo. Un tag `v*` no lo dispara.
+si algún día se firma en CI, pero un tag `v*` no lo dispara.
 
 Desde la raíz del repo:
 

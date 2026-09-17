@@ -21,8 +21,9 @@ El desarrollo activo está en `main`. Las versiones publicadas son tags `v*`.
 4. Abre un pull request hacia `main`.
 
 Antes de pedir revisión, asegúrate de que las comprobaciones locales pasen.
-CI y el workflow de instaladores son solo `workflow_dispatch` (los tags y
-los push a `main` no disparan builds).
+CI corre `frontend` y `rustfmt` en cada PR; los jobs pesados (clippy + tests
+completos, build) siguen siendo `workflow_dispatch`, y los push a `main` no
+compilan instaladores.
 
 ## Requisitos
 
@@ -43,6 +44,10 @@ pnpm tauri dev
 ```
 
 ## Validación local
+
+El ciclo rápido (HMR, `cargo ck`, tests del crate que tocaste) está en
+[`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) → «Ciclo rápido». Antes de subir,
+esto tiene que estar limpio:
 
 Rust (desde la raíz del repo):
 

@@ -227,6 +227,25 @@ export const consoleGc = (keep: string[]) => invoke<number>("console_gc", { keep
 export const consoleForegroundCli = (session: string) =>
   invoke<string | null>("console_foreground_cli", { session });
 
+/** Últimos bytes emitidos: repinta un xterm nuevo sin perder scrollback. */
+export const consoleTail = (session: string, maxBytes?: number) =>
+  invoke<string>("console_tail", { session, maxBytes });
+
+/** Protege sesiones en vuelo a otra ventana (ver `TRANSFERS` en Rust). */
+export const consoleBeginTransfer = (sessions: string[]) =>
+  invoke<void>("console_begin_transfer", { sessions });
+
+/** La receptora ya adoptó: se levanta la protección. */
+export const consoleEndTransfer = (sessions: string[]) =>
+  invoke<void>("console_end_transfer", { sessions });
+
+/** Entrega un JSON a otra ventana (traspaso de consolas o su ack). */
+export const consoleTransferDeliver = (
+  targetWindow: string,
+  event: "agents-transfer" | "agents-transfer-ack",
+  payload: string,
+) => invoke<void>("console_transfer_deliver", { targetWindow, event, payload });
+
 export const onConsoleOutput = (
   cb: (payload: ConsoleOutputPayload) => void,
 ): Promise<UnlistenFn> => on("console-output", cb);
@@ -239,6 +258,18 @@ export const onConsoleExit = (
 export const onAgentsWorkspaceShortcut = (
   cb: (shortcut: AgentsWorkspaceShortcut) => void,
 ): Promise<UnlistenFn> => on("agents-workspace-shortcut", cb);
+
+/** Llega una mudanza de consolas vivas (JSON de `TransferPayload`). */
+export const onAgentsTransfer = (cb: (payload: string) => void): Promise<UnlistenFn> =>
+  on("agents-transfer", cb);
+
+/** La otra ventana adoptó (JSON de `{ transferId, adopted }`). */
+export const onAgentsTransferAck = (
+  cb: (payload: string) => void,
+): Promise<UnlistenFn> => on("agents-transfer-ack", cb);
+
+/** Crea la ventana dedicada de consolas si no existe y la trae al frente. */
+export const agentsEnsureWindow = () => invoke<void>("agents_ensure_window");
 
 // --- La burbuja ---
 /** True si la burbuja de agentes está visible. */

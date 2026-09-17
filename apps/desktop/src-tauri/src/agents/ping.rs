@@ -24,11 +24,7 @@ pub fn ping_path() -> PathBuf {
 
 /// Línea de `settings.json` (hooks) para pegar. No se escribe sola.
 pub fn hook_snippet() -> String {
-    let path = ping_path();
-    let path_ps = path.to_string_lossy().replace('\\', "\\\\");
-    let command = format!(
-        "powershell -NoProfile -NonInteractive -WindowStyle Hidden -Command \"$t=[Console]::In.ReadToEnd().Trim(); if($t){{ Add-Content -LiteralPath '{path_ps}' -Value $t -Encoding utf8 }}\""
-    );
+    let command = hook_command(&ping_path());
     serde_json::to_string_pretty(&serde_json::json!({
         "hooks": {
             "PermissionRequest": [{
@@ -44,6 +40,28 @@ pub fn hook_snippet() -> String {
         }
     }))
     .unwrap_or_else(|_| "{}".into())
+}
+
+/// El comando que el CLI corre por cada hook, con el shell de su SO.
+///
+/// Claude Code ejecuta los hooks con el shell del sistema: un `powershell`
+/// en macOS/Linux no existe y el ping nunca llegaba —por eso el chip no
+/// podía decir «permiso»—. Los dos caminos anexan la línea JSON que el CLI
+/// manda por stdin, tal cual; Atic la drena por offset.
+#[cfg(windows)]
+fn hook_command(path: &std::path::Path) -> String {
+    let path_ps = path.to_string_lossy().replace('\\', "\\\\");
+    format!(
+        "powershell -NoProfile -NonInteractive -WindowStyle Hidden -Command \"$t=[Console]::In.ReadToEnd().Trim(); if($t){{ Add-Content -LiteralPath '{path_ps}' -Value $t -Encoding utf8 }}\""
+    )
+}
+
+#[cfg(not(windows))]
+fn hook_command(path: &std::path::Path) -> String {
+    // La ruta va entre comillas dobles dentro del `sh -c`; una comilla simple
+    // en el camino se escapa cerrando y reabriendo el literal.
+    let path_sh = path.to_string_lossy().replace('\'', r"'\''");
+    format!("sh -c 'printf \"%s\\n\" \"$(cat)\" >> \"{path_sh}\"'")
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -229,5 +247,25 @@ mod tests {
             .pointer("/hooks/PermissionRequest")
             .and_then(Value::as_array)
             .is_some());
+    }
+
+    #[test]
+    fn el_comando_del_hook_usa_el_shell_de_su_so() {
+        let path = ping_path();
+        let command = hook_command(&path);
+        #[cfg(windows)]
+        {
+            assert!(command.contains("powershell"), "{command}");
+            let escapada = path.to_string_lossy().replace('\\', "\\\\");
+            assert!(command.contains(&escapada), "{command}");
+        }
+        #[cfg(not(windows))]
+        {
+            assert!(command.starts_with("sh -c "), "{command}");
+            assert!(
+                command.contains(&path.to_string_lossy().to_string()),
+                "{command}"
+            );
+        }
     }
 }

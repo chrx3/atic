@@ -209,7 +209,13 @@ pub fn merge_mcp_config(
     // Los del modal que estén `enabled`.
     if let Ok(lista) = serde_json::from_str::<Vec<ModalServer>>(agent_mcp_servers) {
         for s in lista {
-            if !s.enabled || s.name.trim().is_empty() || s.name == "atic" {
+            if !s.enabled || s.name == "atic" {
+                continue;
+            }
+            // Sin nombre no hay clave posible; se avisa en vez de que
+            // desaparezca sin ruido.
+            if s.name.trim().is_empty() {
+                tracing::warn!("servidor MCP del modal sin nombre: se saltea");
                 continue;
             }
             if let Ok(v) = serde_json::from_str::<serde_json::Value>(&s.json) {

@@ -1,37 +1,32 @@
 <script lang="ts">
   /**
-   * Agentes en la ventana principal: lanzador de consolas CLI.
-   * El wrapper de chat (AgentsDemo) queda fuera del camino mientras la
-   * feature se reactiva; este componente es la puerta.
-   */
-  import AgentLauncher from "./AgentLauncher.svelte";
-  import HubSessions from "./HubSessions.svelte";
-  import { agents } from "$lib/agentSessions.svelte";
-
-  /**
-   * Escuchar los deltas en ESTA ventana.
+   * Agentes en la ventana principal: solo configuración.
    *
-   * El store es por ventana: que la pill escuche no le sirve a la principal.
-   * Sin esto, `agents.sessions` está vacío acá y las delegaciones no se ven.
-   * `init` es idempotente, así que llamarlo al montar no pisa a nadie.
+   * Las consolas vivas no viven acá: están en la pill o en su ventana
+   * dedicada. Esta tool es la puerta a todo lo configurable de los agentes
+   * (los mismos controles de Ajustes → Agentes) más el botón que abre la
+   * ventana de consolas.
    */
-  void agents.init();
-
-  /**
-   * Las sesiones que un agente le pidió a otro. Solo esas: las que abre el
-   * usuario ya tienen su consola, y una lista con todo repetiría lo que el
-   * lanzador muestra al lado.
-   */
-  const delegadas = $derived(agents.sessions.filter((s) => !!s.parent));
+  import AgentsSection from "$features/settings/AgentsSection.svelte";
+  import Button from "$ui/Button.svelte";
+  import Icon from "$ui/Icon.svelte";
+  import { SquareArrowOutUpRight } from "$lib/icons";
+  import { agentsEnsureWindow } from "$ipc/agents";
+  import { toastError } from "$domain/toasts.svelte";
+  import { t } from "$domain/i18n.svelte";
 </script>
 
 <div class="host">
-  <AgentLauncher />
-  {#if delegadas.length > 0}
-    <div class="delegaciones">
-      <HubSessions />
-    </div>
-  {/if}
+  <div class="open-row">
+    <Button variant="soft" onclick={() => void agentsEnsureWindow().catch(toastError)}>
+      {#snippet icon()}<Icon icon={SquareArrowOutUpRight} size={14} />{/snippet}
+      {t("page.agents.openConsolesWindow")}
+    </Button>
+    <p>{t("page.agents.openConsolesWindowHint")}</p>
+  </div>
+  <div class="config-scroll">
+    <AgentsSection />
+  </div>
 </div>
 
 <style>
@@ -42,13 +37,26 @@
     min-height: 0;
   }
 
-  /* Mitad de la altura como techo: el lanzador no se puede quedar sin sitio
-     porque alguien delegó cinco veces. */
-  .delegaciones {
-    flex: 1 1 auto;
+  .open-row {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.85rem 1rem 0.65rem;
+  }
+
+  .open-row p {
+    margin: 0;
+    min-width: 0;
+    color: var(--muted);
+    font-size: 0.75rem;
+    line-height: 1.4;
+  }
+
+  .config-scroll {
     min-height: 0;
-    max-height: 50%;
-    padding-top: 10px;
-    border-top: 1px solid color-mix(in sRGB, var(--rb-text) 10%, transparent);
+    flex: 1;
+    overflow-y: auto;
+    padding: 0 1rem 1.5rem;
   }
 </style>
