@@ -1,8 +1,9 @@
 name: CI
 
-# Cupo de Actions: Frontend + rustfmt + Windows en cada PR/push agotó los
-# minutos (Windows ×2, macOS ×10). Este workflow NO corre en push ni en
-# pull_request. Disparalo a mano desde Actions → CI → Run workflow.
+# Repo público: los runners estándar no consumen minutos, así que `frontend` y
+# `rustfmt` corren en cada push a `main` y en cada PR (feedback rápido).
+# Los jobs pesados (`rust` en Windows, `build`) siguen a mano desde Actions →
+# CI → Run workflow: tardan bastante más que correrlos en local.
 # Instaladores: solo en local (`scripts/release-windows.ps1`). No hay job de
 # release en GitHub.
 
@@ -10,9 +11,12 @@ on:
   workflow_dispatch:
     inputs:
       windows:
-        description: "Correr clippy/test y build en Windows (caro, se factura ×2)"
+        description: "Correr clippy/test y build en Windows (lento)"
         type: boolean
         default: false
+  push:
+    branches: [main]
+  pull_request:
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
