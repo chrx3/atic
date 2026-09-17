@@ -125,6 +125,13 @@ export interface AticEvents {
   "console-output": ConsoleOutputPayload;
   "console-exit": ConsoleExitPayload;
   "agents-workspace-shortcut": AgentsWorkspaceShortcut;
+  /**
+   * Mudanza de consolas vivas entre ventanas (float ⇄ principal). JSON de
+   * `TransferPayload`: la carga es dinámica y el mapa lleva tipos crudos.
+   */
+  "agents-transfer": string;
+  /** Confirmación de adopción: JSON de `{ transferId, adopted }`. */
+  "agents-transfer-ack": string;
 
   // Sistema
   "shortcuts-failed": string[];

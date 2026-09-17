@@ -12,6 +12,7 @@ use atic_core::MutexExt;
 #[serde(rename_all = "camelCase")]
 pub struct TrayLabels {
     pub show: String,
+    pub consoles: String,
     pub capture: String,
     pub toggle_pill: String,
     pub summon_pill: String,
@@ -21,6 +22,7 @@ pub struct TrayLabels {
 fn tray_menu(app: &AppHandle, labels: &TrayLabels) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
     MenuBuilder::new(app)
         .text("show", &labels.show)
+        .text("consoles", &labels.consoles)
         .text("capture", &labels.capture)
         .text("toggle_pill", &labels.toggle_pill)
         .text("summon_pill", &labels.summon_pill)
@@ -37,6 +39,7 @@ pub fn build_tray(app: &AppHandle) -> tauri::Result<()> {
     let labels = if en {
         TrayLabels {
             show: "Open Atic".into(),
+            consoles: "Agent consoles".into(),
             capture: "Capture screen".into(),
             toggle_pill: "Show / hide pill".into(),
             summon_pill: "Bring pill to cursor".into(),
@@ -45,6 +48,7 @@ pub fn build_tray(app: &AppHandle) -> tauri::Result<()> {
     } else {
         TrayLabels {
             show: "Abrir Atic".into(),
+            consoles: "Consolas de agentes".into(),
             capture: "Capturar pantalla".into(),
             toggle_pill: "Mostrar / ocultar pill".into(),
             summon_pill: "Traer pill al cursor".into(),
@@ -65,6 +69,11 @@ pub fn build_tray(app: &AppHandle) -> tauri::Result<()> {
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id.as_ref() {
             "show" => state::show_main(app),
+            "consoles" => {
+                if let Err(error) = crate::agents_window::ensure_agents_window(app) {
+                    tracing::warn!(%error, "no se pudo abrir la ventana de consolas");
+                }
+            }
             "capture" => {
                 if let Err(error) = crate::capture_session::trigger(app) {
                     tracing::warn!(%error, "no se pudo abrir el overlay de captura");

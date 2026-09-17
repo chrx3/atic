@@ -25,10 +25,11 @@
   let mcpOpen = $state(false);
 
   /**
-   * Cuántos servidores MCP del agente están activos, para el subtítulo.
+   * Cuántos servidores MCP se van a cargar de verdad.
    *
-   * Se cuenta de la config y no del modal: el número tiene que reflejar lo
-   * guardado, aunque el borrador de una edición abierta diga otra cosa.
+   * No alcanza con `enabled`: una entrada sin nombre o con el JSON roto se
+   * saltea al arrancar (`mcp_servers.rs`), y contarla acá haría que el
+   * subtítulo prometa más de lo que el agente va a tener.
    */
   const mcpCountLabel = $derived.by(() => {
     let total = 0;
@@ -36,7 +37,11 @@
       const lista = JSON.parse(
         config.current?.agent_mcp_servers ?? "[]",
       ) as McpServerConfig[];
-      if (Array.isArray(lista)) total = lista.filter((s) => s?.enabled).length;
+      if (Array.isArray(lista)) {
+        total = lista.filter(
+          (s) => s?.enabled === true && !!s.name?.trim() && loadable(s.json),
+        ).length;
+      }
     } catch {
       /* Config rota: se muestra como ninguno, que es lo que va a cargar. */
     }
@@ -44,6 +49,16 @@
     if (total === 1) return t("settings.agents.mcpCountOne");
     return t("settings.agents.mcpCountMany", { n: total });
   });
+
+  /** ¿La definición tiene la forma mínima para que el arranque la use? */
+  function loadable(json: string | undefined): boolean {
+    try {
+      const parsed = JSON.parse(json ?? "");
+      return typeof parsed === "object" && parsed !== null;
+    } catch {
+      return false;
+    }
+  }
 
   /**
    * Hub de orquestación MCP: un agente en otra app puede encargarle turnos a

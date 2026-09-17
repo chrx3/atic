@@ -1,6 +1,7 @@
 //! Punto de entrada de la aplicación de escritorio Atic.
 
 pub mod agents;
+mod agents_window;
 mod annotate;
 mod beep;
 mod calc;
@@ -300,6 +301,7 @@ pub fn run() {
             agents::bridge::present_agents_window,
             agents::bridge::hide_agents_window,
             agents::bridge::save_agents_bubble_size,
+            agents_window::agents_ensure_window,
             agents::bridge::agents_always_on_top,
             agents::bridge::set_agents_always_on_top,
             agents::bridge::agent_set_model,
@@ -342,6 +344,10 @@ pub fn run() {
             agents::console::console_resize,
             agents::console::console_close,
             agents::console::console_gc,
+            agents::console::console_tail,
+            agents::console::console_begin_transfer,
+            agents::console::console_end_transfer,
+            agents::console::console_transfer_deliver,
             agents::console::console_foreground_cli,
             agents::media::agent_stage_image,
             clipboard_history::restore_pill_position,
@@ -621,7 +627,8 @@ pub fn run() {
             WindowEvent::CloseRequested { api, .. }
                 if window.label() == "main"
                     || window.label() == window_flip::LABEL
-                    || window.label() == annotate::ANNOTATE_LABEL =>
+                    || window.label() == annotate::ANNOTATE_LABEL
+                    || window.label() == agents_window::LABEL =>
             {
                 api.prevent_close();
                 let _ = window.hide();

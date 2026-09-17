@@ -44,6 +44,7 @@ export function localizeTool(tool: ToolDef): ToolDef {
 function syncTray(): void {
   void setTrayMenu({
     show: t("tray.show"),
+    consoles: t("tray.consoles"),
     capture: t("tray.capture"),
     togglePill: t("tray.togglePill"),
     summonPill: t("tray.summonPill"),

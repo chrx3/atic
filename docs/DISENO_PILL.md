@@ -77,6 +77,7 @@ ninguno, casi siempre es un aviso (ver más abajo) y no un estado.
 | `wheel` | cuadrado de `wheel` (252) | núcleo + gajos de herramienta |
 | `edge` cerrada | pestaña `islandThick` × `islandLong` | la marca; los avisos al lado si hay |
 | `edge` abierta | tira `islandTool` de largo variable | la marca, un botón por herramienta, el update |
+| `edge` + cara | tarjeta `islandCardW` × (`thick` + `islandCardH`) colgada con gap 0 | la pestaña + UNA cara (hoy: permiso del agente) |
 
 **La marca está en las tres.** Es lo que hace que se lean como la misma pill
 desplegándose, y no como tres controles distintos. En la tira abierta es la
@@ -198,6 +199,26 @@ Curvas: `--ease-liquid` `cubic-bezier(0.5, 0, 0.2, 1)` para lo que se deforma,
    el estado abierto: las reglas de `.is-open` siguen mandando.
 
 ---
+
+## Caras de la isla (notch cargado)
+
+La pestaña puede desplegar UNA cara de contenido (`IslandFace` en `pillPlan.ts`):
+hoy `agent` (permiso pendiente), mañana `rec`/`dict`/`queue`. Reglas:
+
+1. **Transitoria y única.** Auto-abre lo urgente (un pedido nuevo bloquea al
+   agente); lo demás abre por tap. Nunca convive con la tira: la cara gana.
+2. **Un solo blob.** La tarjeta cuelga con gap 0 y la skin llena la caja: la
+   silueta se estira, no se suma una segunda forma. Solo cantos horizontales;
+   en laterales se degrada a pestaña/tira.
+3. **Tamaño fijo al abrir** (`islandCardW/H`): lo vivo no re-mide la caja. El
+   CSS suma exacto pestaña + tarjeta o el `overflow: hidden` recorta.
+4. **Mismas palabras y mismo gesto** que su superficie grande: la cara `agent`
+   dice lo mismo que la tarjeta flotante y decide por el mismo `decideAuth`.
+5. **Colapsar no resuelve**: clic afuera / Esc vuelven al cue, que sigue
+   pulsando. Solo decidir, abrir la consola o que se vaya el pedido la cierran
+   del todo — y un pedido nuevo sí re-abre.
+6. **La marca manda igual**: en reposo abre la rueda, con actividad la para, en
+   las tres superficies. El cuerpo de la pestaña es lo que expande/informa.
 
 ## Avisos: agente, update, cola
 

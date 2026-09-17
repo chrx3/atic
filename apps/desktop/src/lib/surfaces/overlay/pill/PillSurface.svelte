@@ -82,6 +82,7 @@
     shouldMeasureBar,
     islandHoverStay,
     islandHoverOpens,
+    islandFaceAgent,
     pointerMoveDrags,
     ISLAND_COLLAPSE_MS,
     ISLAND_COLLAPSE_MORE_MS,
@@ -89,6 +90,7 @@
     wheelKeyAction,
     wheelOpenFlight,
     type Dock,
+    type IslandFace,
     type Surface,
   } from "$surfaces/overlay/pill/pillPlan";
   import {
@@ -115,7 +117,13 @@
     type DockEdge,
   } from "$surfaces/overlay/edgeDock";
   import AgentAuthCard from "$surfaces/overlay/pill/AgentAuthCard.svelte";
-  import { afterTransition, MOTION, ms, opacityFade } from "$lib/motion";
+  import {
+    afterTransition,
+    MOTION,
+    ms,
+    opacityFade,
+    prefersReducedMotion,
+  } from "$lib/motion";
   import { playWheelTick } from "$ipc/uiSound";
   import type { PermissionDecision } from "$core/types";
   // Lo que queda son los comandos DE LA PILL: su geometría, sus atajos y las
@@ -707,8 +715,11 @@
     void wheelShown;
     void tailIn;
     void flying;
+    void bootHidden;
+    void birthing;
+    void agentFaceOpen;
     const blooming = wheelChrome;
-    if (surface !== "edge" && !beadsAlive && !blooming && !flying) return;
+    if (surface !== "edge" && !beadsAlive && !blooming && !flying && !birthing) return;
     let raf = 0;
     const bloomMs =
       ms(MOTION.morphOpen) + (WHEEL_TOOLS.length + 1) * ms(MOTION.morphStagger);
@@ -743,6 +754,9 @@
     void beadsAlive;
     void recording;
     void wheelShown;
+    void bootHidden;
+    void birthing;
+    void agentFaceOpen;
     tracker.wake(true);
   });
 
@@ -851,6 +865,12 @@
    * separados no se pueden fundir por definición.
    */
   $effect(() => {
+    // Oculta en boot: el SDF es una capa aparte y el `opacity: 0` del DOM no
+    // lo tapa. Sin este gate el blob se vería antes que la gota.
+    if (bootHidden) {
+      liquid.publish("pill", []);
+      return;
+    }
     liquid.publish("pill", skinShapes);
   });
 
@@ -908,6 +928,14 @@
   /** Compresión de 2–3 px contra el muro al acoplarse. */
   let seating = $state(false);
   let seatingTimer = 0;
+  /**
+   * Nacimiento desde el centro (boot): la pill no viaja desde la esquina,
+   * brota como gota en su hogar. `bootHidden` la mantiene fuera (DOM + SDF)
+   * mientras se asienta la geometría; `birthing` anima solo transform/opacity.
+   */
+  let bootHidden = $state(true);
+  let birthing = $state(false);
+  let birthTimer = 0;
 
   function cancelFlight() {
     flightEpoch += 1;
@@ -1006,6 +1034,38 @@
   let dock = $state<Dock | null>(null);
 
   /**
+   * Cara `agent` de la isla: el permiso pendiente vive en la tarjeta cuando
+   * está acoplada (flotando ya tiene la suya: `showAuthCard`).
+   *
+   * Auto-abre con un pedido nuevo —bloquea al agente— y no re-abre el que se
+   * colapsó a mano (clic afuera / Esc): el cue sigue pulsando para volver.
+   */
+  const agentFaceReq = $derived(
+    authRequest && surface === "edge" && !agentsConsoleOpen ? authRequest : null,
+  );
+  let agentFaceDismissed = $state<string | null>(null);
+  const agentFace: IslandFace = $derived(
+    islandFaceAgent({
+      surface,
+      dock,
+      authId: agentFaceReq?.permission.id ?? null,
+      dismissedAuthId: agentFaceDismissed,
+    })
+      ? "agent"
+      : "tab",
+  );
+  const agentFaceOpen = $derived(agentFace === "agent");
+  $effect(() => {
+    if (!authRequest) agentFaceDismissed = null;
+  });
+  /** Colapso manual: decidir, consola, clic afuera y Esc pasan por acá. */
+  function dismissAgentFace(): void {
+    agentFaceDismissed = agentFaceReq?.permission.id ?? agentFaceDismissed;
+  }
+  /** Alto de la zona de pestaña cuando la tarjeta cuelga (igual que cerrada). */
+  const faceTabH = $derived(islandCue ? PILL.islandCueThick : PILL.islandThick);
+
+  /**
    * Celdas de la tira abierta: la marca, las herramientas y el aviso de update.
    *
    * La marca es una celda más y no un adorno: abierta y cerrada tienen que
@@ -1029,6 +1089,7 @@
         edgeCue,
         edgeCueMarks,
         surface === "none" ? chips.length : 0,
+        agentFace,
       ),
     ),
   );
@@ -2489,6 +2550,13 @@
    * con un `pointerdown` que solo deja anotado qué se apretó.
    */
   let islandPressMark = false;
+  /**
+   * La cara agent se aprieta como cualquier botón de la isla: el arrastre
+   * captura el puntero y el clic nativo se re-apunta al root, así que se
+   * anota en `pointerdown` y se resuelve en `endDrag`. El teclado va por
+   * `onkeydown` del botón (ahí no hay pointerdown que lo duplique).
+   */
+  let facePress: "allow" | "deny" | null = null;
   /** El gesto arrancó sobre el aviso/botón de consola de agentes. */
   let agentChipPressed = false;
   let agentChipPressedId = "";
@@ -2709,6 +2777,7 @@
     const preferAgentBind = agentChipPreferBind;
     const pressedWheelCore = wheelCorePressed;
     const pressedUpdateChip = updateChipPressed;
+    const pressedFace = facePress;
     islandPressTool = null;
     islandPressMark = false;
     agentChipPressed = false;
@@ -2716,6 +2785,7 @@
     agentChipPreferBind = false;
     wheelCorePressed = false;
     updateChipPressed = false;
+    facePress = null;
     stopDragWatch();
     if (moved) {
       if (pressedAgentChip) {
@@ -2766,6 +2836,11 @@
         suppressUpdateChipClick = false;
       }, 250);
       void appUpdate.advance();
+      return;
+    }
+    // Cara agent: la decisión pasa por el mismo `decideAuth` de la tarjeta.
+    if (wasClick && pressedFace) {
+      void decideAuth(pressedFace);
       return;
     }
     // Soltar el núcleo sin haber movido sigue siendo cerrar. Se decide acá y
@@ -2841,8 +2916,30 @@
       // Recién ahora hay hogar de verdad: antes de esto, un resize temprano
       // re-asentaría la pill sobre el {0,0} inicial.
       homeRestored = true;
-      // El viewport pudo haber crecido durante `loadAreas` sin `resize`.
-      queueResettle();
+      // Asentar ANTES del primer frame visible: con el viewport del boot el
+      // hogar puede salir corrido (p. ej. a la izquierda) y el `left/top` con
+      // transición lo animaría hasta el centro. Oculta (`is-boot` = sin
+      // transición) el teleport no se ve; el reveal es gota desde el centro.
+      await resettleAfterGeometry();
+      if (prefersReducedMotion()) {
+        bootHidden = false;
+      } else {
+        await tick();
+        await new Promise<void>((r) =>
+          requestAnimationFrame(() => requestAnimationFrame(() => r())),
+        );
+        bootHidden = false;
+        birthing = true;
+        tracker.wake(true);
+        window.clearTimeout(birthTimer);
+        birthTimer = window.setTimeout(
+          () => {
+            birthing = false;
+            birthTimer = 0;
+          },
+          ms(MOTION.islandOpen) + 60,
+        );
+      }
       try {
         const cfg = await getConfig();
         wheelShortcut = cfg.pill_radial_shortcut;
@@ -2913,6 +3010,13 @@
     );
 
     const onKey = (event: KeyboardEvent) => {
+      // La cara colapsa a cue sin resolver: Esc nunca decide por el usuario.
+      if (event.key === "Escape" && agentFaceOpen) {
+        event.preventDefault();
+        event.stopPropagation();
+        dismissAgentFace();
+        return;
+      }
       if (event.key === "Escape" && (surface === "wheel" || openingWheel)) {
         event.preventDefault();
         event.stopPropagation();
@@ -2966,6 +3070,8 @@
         dragMoved = false;
         return;
       }
+      // La cara no resuelve nada: colapsa a cue, que sigue pulsando.
+      if (agentFaceOpen) dismissAgentFace();
       if (openingWheel && surface !== "wheel") {
         cancelFlight();
         collapseEpoch += 1;
@@ -2995,6 +3101,7 @@
       window.clearTimeout(suppressWheelCoreClickTimer);
       window.clearTimeout(resettleTimer);
       window.clearTimeout(seatingTimer);
+      window.clearTimeout(birthTimer);
       window.removeEventListener("keydown", onKey, true);
       window.removeEventListener("resize", queueResettle);
       window.removeEventListener(OVERLAY_GEOMETRY, queueResettle);
@@ -3027,9 +3134,11 @@
   class:is-docked={surface === "edge"}
   class:is-dragging={surfaces.dragging}
   class:is-seating={seating}
+  class:is-boot={bootHidden}
+  class:is-birthing={birthing}
   data-edge={surface === "edge" ? dock?.edge : undefined}
   data-bloom={wheelBloomEdge ?? undefined}
-  style="left: {at.x}px; top: {at.y}px; width: {box.w}px; height: {box.h}px; --pill-bar: {PILL.bar}px; --island-tool: {PILL.islandTool}px; --island-gap: {PILL.islandGap}px; --island-cue-btn: {PILL.islandCueBtn}px; --island-cue-mark: {PILL.islandCueMark}px; --rec-drop: {PILL.recDrop}px; --rec-drop-gap: {PILL.recDropGap}px; {flightLift
+  style="left: {at.x}px; top: {at.y}px; width: {box.w}px; height: {box.h}px; --pill-bar: {PILL.bar}px; --island-tool: {PILL.islandTool}px; --island-gap: {PILL.islandGap}px; --island-cue-btn: {PILL.islandCueBtn}px; --island-cue-mark: {PILL.islandCueMark}px; --face-tab-h: {faceTabH}px; --face-card-h: {PILL.islandCardH}px; --rec-drop: {PILL.recDrop}px; --rec-drop-gap: {PILL.recDropGap}px; {flightLift
     ? `transform: translate3d(${flightLift.x}px, ${flightLift.y}px, 0)`
     : ''}"
   bind:this={rootEl}
@@ -3043,7 +3152,7 @@
        transicionar y el CSS pintaría el final directo. Existen desde que la
        pill se acopla, cerradas, y la clase las abre. -->
   {#if surface === "edge" || beadsAlive}
-    <div class="p-island" class:is-open={islandOpen}>
+    <div class="p-island" class:is-open={islandOpen} class:is-face={agentFaceOpen}>
       <div class="p-island-body">
         <i
           class="p-island-skin"
@@ -3053,9 +3162,9 @@
         ></i>
         <div
           class="p-island-along"
-          class:is-hidden={islandOpen}
+          class:is-hidden={islandOpen && !agentFaceOpen}
           class:is-column={peekEdgeAxis === "x"}
-          inert={islandOpen || undefined}
+          inert={(islandOpen && !agentFaceOpen) || undefined}
         >
           <button
             type="button"
@@ -3212,6 +3321,56 @@
             </button>
           {/if}
         </div>
+        <!-- Cara agent: tarjeta colgada de la pestaña con el permiso pendiente.
+             Mismas palabras que la tarjeta flotante y la consola: es el mismo
+             pedido, no otro dialecto. La decisión pasa por `decideAuth`. -->
+        {#if agentFaceOpen && agentFaceReq}
+          {@const perm = agentFaceReq.permission}
+          {@const faceLogos = chipLogos(chip)}
+          <div class="p-face" data-face="agent" transition:opacityFade>
+            <div class="p-face-head">
+              <AgentLogo agent={faceLogos[0] ?? null} size={16} />
+              <span class="p-face-title">{t("page.agents.permission.title")}</span>
+            </div>
+            <p class="p-face-desc" use:tip={perm.description?.trim() || perm.tool}>
+              <strong>{perm.tool}</strong>{perm.description?.trim()
+                ? ` · ${perm.description.trim()}`
+                : ""}
+            </p>
+            <div class="p-face-actions">
+              <button
+                type="button"
+                class="p-face-btn is-deny"
+                disabled={authBusy}
+                aria-label={t("page.agents.permission.deny")}
+                onpointerdown={() => (facePress = "deny")}
+                onkeydown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    void decideAuth("deny");
+                  }
+                }}
+              >
+                {t("page.agents.permission.deny")}
+              </button>
+              <button
+                type="button"
+                class="p-face-btn is-allow"
+                disabled={authBusy}
+                aria-label={t("page.agents.permission.allow")}
+                onpointerdown={() => (facePress = "allow")}
+                onkeydown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    void decideAuth("allow");
+                  }
+                }}
+              >
+                {t("page.agents.permission.allow")}
+              </button>
+            </div>
+          </div>
+        {/if}
       </div>
     </div>
   {/if}
@@ -3659,6 +3818,30 @@
     will-change: auto;
   }
 
+  /*
+   * Nacimiento desde el centro (boot): sin viaje desde la esquina.
+   * `is-boot` apaga TODA transición para que los teleports de asentamiento
+   * no se vean, y encoge+apaga la isla. Al salir, `is-birthing` anima solo
+   * transform/opacity de la isla —GPU, sin layout— con la curva/duración de
+   * la isla para que el tracker la siga cuadro a cuadro. Origen según el
+   * canto: la gota cae del borde.
+   */
+  .p-root.is-boot {
+    transition: none;
+  }
+
+  .p-root.is-boot .p-island {
+    opacity: 0;
+    transform: scale(0.55);
+  }
+
+  .p-root.is-birthing .p-island {
+    transition:
+      opacity var(--island-open-dur) var(--ease-liquid),
+      transform var(--island-open-dur) var(--ease-liquid);
+    will-change: opacity, transform;
+  }
+
   /* Gota contra el cristal: 2–3 px de aplastón, sin rebote. */
   .p-root.is-seating:not(.is-flying)[data-edge="top"] {
     transform-origin: center top;
@@ -3726,21 +3909,25 @@
   .p-root[data-edge="top"] .p-island {
     top: 0;
     flex-direction: column;
+    transform-origin: center top;
   }
 
   .p-root[data-edge="bottom"] .p-island {
     bottom: 0;
     flex-direction: column-reverse;
+    transform-origin: center bottom;
   }
 
   .p-root[data-edge="left"] .p-island {
     left: 0;
     flex-direction: row;
+    transform-origin: left center;
   }
 
   .p-root[data-edge="right"] .p-island {
     right: 0;
     flex-direction: row-reverse;
+    transform-origin: right center;
   }
 
   .p-island-body {
@@ -4002,6 +4189,129 @@
 
   .p-island-tool-update.is-busy {
     color: var(--muted);
+  }
+
+  /*
+   * Cara expandida: tarjeta colgada de la pestaña con gap 0 —la skin llena
+   * la caja entera, así que pestaña + tarjeta son un solo blob.
+   * La tira no convive con la cara: se oculta (el hover la reabre al cerrar).
+   */
+  .p-island.is-face .p-island-body {
+    flex-direction: column;
+  }
+
+  .p-root[data-edge="bottom"] .p-island.is-face .p-island-body {
+    flex-direction: column-reverse;
+  }
+
+  .p-island.is-face .p-island-tools {
+    display: none;
+  }
+
+  .p-island.is-face .p-island-along {
+    bottom: auto;
+    height: var(--face-tab-h);
+  }
+
+  .p-root[data-edge="bottom"] .p-island.is-face .p-island-along {
+    top: auto;
+    bottom: 0;
+  }
+
+  .p-face {
+    z-index: 2;
+    display: flex;
+    height: var(--face-card-h);
+    flex-direction: column;
+    justify-content: center;
+    gap: 6px;
+    padding: 10px 12px;
+    pointer-events: auto;
+  }
+
+  .p-face-head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--text);
+    font-size: 0.75rem;
+    font-weight: 600;
+    line-height: 1.2;
+  }
+
+  .p-face-desc {
+    overflow: hidden;
+    margin: 0;
+    color: var(--muted);
+    font-size: 0.75rem;
+    line-height: 1.2;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .p-face-desc strong {
+    color: var(--text);
+    font-weight: 600;
+  }
+
+  .p-face-actions {
+    display: flex;
+    gap: 8px;
+  }
+
+  .p-face-btn {
+    position: relative;
+    display: inline-flex;
+    height: 2rem;
+    flex: 1 1 0;
+    align-items: center;
+    justify-content: center;
+    border: 0;
+    border-radius: 999px;
+    background: color-mix(in sRGB, var(--text) 8%, transparent);
+    color: var(--text);
+    font-size: 0.6875rem;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: transform var(--duration-quick) var(--ease-smooth-out);
+  }
+
+  /* Hit ≥40px sin inflar la tarjeta visible (igual que la tarjeta auth). */
+  .p-face-btn::after {
+    content: "";
+    position: absolute;
+    inset-block: 50%;
+    inset-inline: 0;
+    height: 40px;
+    transform: translateY(-50%);
+  }
+
+  /* Aprobar: tinta ok; rechazar: tinta rec con anillo. Igual que la tarjeta. */
+  .p-face-btn.is-allow {
+    background: color-mix(in sRGB, var(--ok) 18%, transparent);
+    color: var(--ok);
+  }
+
+  .p-face-btn.is-deny {
+    background: color-mix(in sRGB, var(--rec) 18%, transparent);
+    color: var(--rec);
+    box-shadow: inset 0 0 0 1px color-mix(in sRGB, var(--rec) 42%, transparent);
+  }
+
+  .p-face-btn:active:not(:disabled) {
+    transform: scale(0.96);
+  }
+
+  .p-face-btn:focus-visible {
+    outline: none;
+    box-shadow: var(--rb-focus);
+  }
+
+  .p-face-btn:disabled {
+    opacity: 0.45;
+    cursor: default;
   }
 
   /* Flotando, la marca encabeza los tres estados y es su control. */

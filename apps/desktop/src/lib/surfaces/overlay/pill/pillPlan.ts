@@ -54,6 +54,13 @@ export function agentStackHang(n: number): number {
 export type Surface = "none" | "wheel" | "edge";
 
 /**
+ * Cara de la isla acoplada. `tab` es la pestaña/tira de siempre; cada cara
+ * extra es una tarjeta transitoria colgada de la pestaña (un solo blob).
+ * Solo cantos horizontales: en laterales se degrada a `tab`.
+ */
+export type IslandFace = "tab" | "agent";
+
+/**
  * Acoplada a un borde, y si el puntero la tiene abierta.
  *
  * Va aparte de `Surface` en vez de multiplicar los estados (`edge-left`,
@@ -118,6 +125,12 @@ export function contentFor(
   islandCueCount: number = 0,
   /** Avisos de consola apilados en la barra flotante. */
   agentStack: number = 0,
+  /**
+   * Cara expandida de la isla. Solo vale acoplada en canto horizontal; en el
+   * resto se ignora (la tarjeta no cabe en laterales y flotando el permiso
+   * ya tiene su tarjeta propia).
+   */
+  face: IslandFace = "tab",
 ): Size {
   if (surface === "wheel") {
     const side = PILL.wheel - PILL.pad * 2;
@@ -125,6 +138,15 @@ export function contentFor(
     return { w: side, h: side + hang };
   }
   if (surface === "edge" && dock) {
+    // En reposo, una pestaña: fina contra el borde y larga a lo largo de él.
+    // Grabando se alarga, no engorda: el estado entró a la cara de la marca.
+    const thick = islandCue ? PILL.islandCueThick : PILL.islandThick;
+    const long = islandCue ? islandCueLong(islandCueCount) : PILL.islandLong;
+    // Cara expandida: la tarjeta cuelga de la pestaña con gap 0, un solo blob
+    // que crece hacia adentro. Gana a la tira: no conviven.
+    if (face === "agent" && dockAxis(dock.edge) === "y") {
+      return { w: Math.max(long, PILL.islandCardW), h: thick + PILL.islandCardH };
+    }
     // Abierta es la tira de herramientas: acoplada, la pill deja de ser un
     // indicador y pasa a ser el acceso. Se despliega A LO LARGO del borde, que
     // es el único eje donde hay lugar sin taparle la pantalla al usuario.
@@ -145,10 +167,6 @@ export function contentFor(
         ? { w: PILL.islandTool, h: long }
         : { w: long, h: PILL.islandTool };
     }
-    // En reposo, una pestaña: fina contra el borde y larga a lo largo de él.
-    // Grabando se alarga, no engorda: el estado entró a la cara de la marca.
-    const thick = islandCue ? PILL.islandCueThick : PILL.islandThick;
-    const long = islandCue ? islandCueLong(islandCueCount) : PILL.islandLong;
     return dockAxis(dock.edge) === "x" ? { w: thick, h: long } : { w: long, h: thick };
   }
   return {
@@ -167,6 +185,7 @@ export function targetFor(
   islandCue: boolean = false,
   islandCueCount: number = 0,
   agentStack: number = 0,
+  face: IslandFace = "tab",
 ): Size {
   return windowFor(
     contentFor(
@@ -178,8 +197,28 @@ export function targetFor(
       islandCue,
       islandCueCount,
       agentStack,
+      face,
     ),
   );
+}
+
+/**
+ * ¿La isla muestra la cara de permiso del agente?
+ *
+ * Pura y testeable: auto-abre con un pedido nuevo (urgente, bloquea al
+ * agente), no re-abre el que el usuario ya colapsó a mano, y solo en canto
+ * horizontal acoplado (flotando el permiso ya tiene su tarjeta propia).
+ */
+export function islandFaceAgent(state: {
+  surface: Surface;
+  dock: Dock | null;
+  authId: string | null;
+  dismissedAuthId: string | null;
+}): boolean {
+  if (state.surface !== "edge" || !state.dock) return false;
+  if (dockAxis(state.dock.edge) !== "y") return false;
+  if (!state.authId) return false;
+  return state.authId !== state.dismissedAuthId;
 }
 
 /**

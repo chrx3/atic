@@ -5,13 +5,13 @@
 //! `local` ya no reemplaza a la anterior. El tope es defensivo, no de diseño
 //! (cada sesión es un proceso vivo); quien las presenta decide cómo agruparlas.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
 use serde::{Deserialize, Serialize};
@@ -69,6 +69,55 @@ struct LiveConsole {
 const MAX_CONSOLES: usize = 12;
 
 static CONSOLES: Mutex<Option<HashMap<String, LiveConsole>>> = Mutex::new(None);
+
+/// Cola de traspaso entre ventanas (float ⇄ principal).
+///
+/// Mudar una consola viva de una webview a otra tiene una ventana donde
+/// ninguna vista la reclama: la emisora ya soltó y la receptora todavía no
+/// adoptó. Sin esto, un `console_gc` o un `console_close` rezagado en esa
+/// ventana mata el PTY en pleno vuelo. Llevar timestamp acota la fuga si la
+/// receptora nunca confirma: pasado el TTL, valen las reglas normales.
+static TRANSFERS: Mutex<Option<HashMap<String, Instant>>> = Mutex::new(None);
+
+/// Cuánto dura la protección de una sesión en vuelo.
+const TRANSFER_TTL: Duration = Duration::from_secs(90);
+
+/// Cola de scrollback por sesión: los últimos bytes emitidos.
+///
+/// Repintar un xterm recién montado (mudar de ventana) sin esto deja el
+/// terminal vacío aunque el PTY siga vivo. El tope iguala al buffer del
+/// frontend (`OUTPUT_BUF_MAX`): misma ventana de historia en los dos lados.
+const TAIL_MAX: usize = 256 * 1024;
+
+static TAILS: Mutex<Option<HashMap<String, Arc<Mutex<VecDeque<u8>>>>>> = Mutex::new(None);
+
+fn with_tails<T>(f: impl FnOnce(&mut HashMap<String, Arc<Mutex<VecDeque<u8>>>>) -> T) -> T {
+    let mut guard = TAILS.lock_or_recover();
+    let map = guard.get_or_insert_with(HashMap::new);
+    f(map)
+}
+
+/// Guarda los últimos bytes; lo viejo cae por delante.
+fn tail_push(buf: &mut VecDeque<u8>, bytes: &[u8]) {
+    buf.extend(bytes.iter().copied());
+    let sobran = buf.len().saturating_sub(TAIL_MAX);
+    if sobran > 0 {
+        buf.drain(..sobran);
+    }
+}
+
+fn transfer_guarded(id: &str) -> bool {
+    let mut guard = TRANSFERS.lock_or_recover();
+    let map = guard.get_or_insert_with(HashMap::new);
+    match map.get(id) {
+        Some(at) if at.elapsed() < TRANSFER_TTL => true,
+        Some(_) => {
+            map.remove(id);
+            false
+        }
+        None => false,
+    }
+}
 
 fn with_map<T>(f: impl FnOnce(&mut HashMap<String, LiveConsole>) -> T) -> T {
     let mut guard = CONSOLES.lock_or_recover();
@@ -363,6 +412,7 @@ fn spawn_reader(
     session: String,
     mut reader: Box<dyn Read + Send>,
     stop: Arc<AtomicBool>,
+    tail: Arc<Mutex<VecDeque<u8>>>,
 ) {
     thread::Builder::new()
         .name(format!("console-read-{session}"))
@@ -376,6 +426,9 @@ fn spawn_reader(
                     Ok(0) => break,
                     Ok(n) => {
                         let data = String::from_utf8_lossy(&buf[..n]).into_owned();
+                        if let Ok(mut cola) = tail.lock() {
+                            tail_push(&mut cola, data.as_bytes());
+                        }
                         let _ = app.emit(
                             "console-output",
                             ConsoleOutputPayload {
@@ -414,6 +467,9 @@ fn spawn_wait(
             with_map(|map| {
                 map.remove(&session);
             });
+            with_tails(|tails| {
+                tails.remove(&session);
+            });
             let _ = app.emit("console-exit", ConsoleExitPayload { session, code });
         })
         .ok();
@@ -421,6 +477,9 @@ fn spawn_wait(
 
 fn close_session(id: &str) {
     let taken = with_map(|map| map.remove(id));
+    with_tails(|tails| {
+        tails.remove(id);
+    });
     if let Some(mut live) = taken {
         live.stop.store(true, Ordering::Relaxed);
         let _ = live.killer.kill();
@@ -520,7 +579,17 @@ pub fn console_open(
     let killer = child.clone_killer();
     let pid = child.process_id().unwrap_or(0);
 
-    spawn_reader(app.clone(), session.clone(), reader, Arc::clone(&stop));
+    let tail = Arc::new(Mutex::new(VecDeque::new()));
+    with_tails(|tails| {
+        tails.insert(session.clone(), Arc::clone(&tail));
+    });
+    spawn_reader(
+        app.clone(),
+        session.clone(),
+        reader,
+        Arc::clone(&stop),
+        tail,
+    );
     spawn_wait(app, session.clone(), child, Arc::clone(&stop));
 
     with_map(|map| {
@@ -576,18 +645,30 @@ pub fn console_resize(session: String, cols: u16, rows: u16) -> Result<(), Strin
 
 #[tauri::command]
 pub fn console_close(session: String) -> Result<(), String> {
+    // En vuelo a otra ventana: la emisora suelta sin matar; la receptora ya
+    // adoptó o está por adoptar. Se consume la marca para no blindar de más.
+    let mut guard = TRANSFERS.lock_or_recover();
+    if let Some(map) = guard.as_mut() {
+        if map.remove(&session).is_some() {
+            return Ok(());
+        }
+    }
+    drop(guard);
     close_session(&session);
     Ok(())
 }
 
 /// Mata PTYs cuyo id la vista ya no reconoce (pestaña cerrada a mitad de
 /// `console_open`, `onDestroy` que no alcanzó a esperar, etc.).
+///
+/// Las sesiones en vuelo a otra ventana no se tocan: pasado el TTL, la marca
+/// caduca y valen las reglas normales (una receptora caída no fuga PTYs).
 #[tauri::command]
 pub fn console_gc(keep: Vec<String>) -> Result<u32, String> {
     let keep: HashSet<String> = keep.into_iter().collect();
     let stale: Vec<String> = with_map(|map| {
         map.keys()
-            .filter(|id| !keep.contains(*id))
+            .filter(|id| !keep.contains(*id) && !transfer_guarded(id))
             .cloned()
             .collect()
     });
@@ -595,6 +676,67 @@ pub fn console_gc(keep: Vec<String>) -> Result<u32, String> {
         close_session(id);
     }
     Ok(stale.len() as u32)
+}
+
+/// Últimos bytes emitidos por la sesión, para repintar un terminal nuevo.
+///
+/// Al mudar una consola de ventana, el xterm nace vacío aunque el PTY siga
+/// vivo: esto le devuelve su scrollback reciente. Puede cortar un escape ANSI
+/// por la mitad al inicio —xterm lo tolera— y un multibyte partido sale como
+/// `�`; el resto llega intacto.
+#[tauri::command]
+pub fn console_tail(session: String, max_bytes: Option<usize>) -> Result<String, String> {
+    let tope = max_bytes.unwrap_or(TAIL_MAX).clamp(1, TAIL_MAX);
+    with_tails(|tails| {
+        let arc = tails
+            .get(&session)
+            .ok_or_else(|| "esa consola ya no existe".to_string())?;
+        let mut cola = arc
+            .lock()
+            .map_err(|_| "lock de la cola de consola".to_string())?;
+        let contiguo = cola.make_contiguous();
+        let desde = contiguo.len().saturating_sub(tope);
+        Ok(String::from_utf8_lossy(&contiguo[desde..]).into_owned())
+    })
+}
+
+/// Marca sesiones en vuelo a otra ventana. Ver `TRANSFERS`.
+#[tauri::command]
+pub fn console_begin_transfer(sessions: Vec<String>) -> Result<(), String> {
+    let now = Instant::now();
+    let mut guard = TRANSFERS.lock_or_recover();
+    let map = guard.get_or_insert_with(HashMap::new);
+    for id in sessions {
+        map.insert(id, now);
+    }
+    Ok(())
+}
+
+/// La receptora ya adoptó: se levanta la protección.
+#[tauri::command]
+pub fn console_end_transfer(sessions: Vec<String>) -> Result<(), String> {
+    let mut guard = TRANSFERS.lock_or_recover();
+    if let Some(map) = guard.as_mut() {
+        for id in &sessions {
+            map.remove(id);
+        }
+    }
+    Ok(())
+}
+
+/// Entrega un JSON a otra ventana (`agents-transfer`, su ack, …).
+///
+/// El envío pasa por Rust y no por `emitTo` del frontend: el backend emite a
+/// cualquier etiqueta sin pedir permiso extra de capabilities.
+#[tauri::command]
+pub fn console_transfer_deliver(
+    app: AppHandle,
+    target_window: String,
+    event: String,
+    payload: String,
+) -> Result<(), String> {
+    app.emit_to(target_window.as_str(), event.as_str(), payload)
+        .map_err(|e| format!("no se pudo avisar a la otra ventana: {e}"))
 }
 
 /// CLI de agente que está corriendo *dentro* de la PTY (hijo de la shell).
@@ -744,6 +886,35 @@ fn agent_cli_from_path(path: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tail_push_recorta_por_delante() {
+        let mut cola = VecDeque::new();
+        tail_push(&mut cola, b"hola ");
+        tail_push(&mut cola, b"mundo");
+        assert_eq!(cola.iter().copied().collect::<Vec<_>>(), b"hola mundo");
+        // Llenar por encima del tope: lo viejo cae, lo nuevo queda entero.
+        let grande = vec![b'x'; TAIL_MAX + 100];
+        tail_push(&mut cola, &grande);
+        assert_eq!(cola.len(), TAIL_MAX);
+        assert!(cola.iter().all(|b| *b == b'x'));
+    }
+
+    #[test]
+    fn transfer_guarded_consume_y_caduca() {
+        let id = format!("test-{}", Uuid::new_v4());
+        assert!(!transfer_guarded(&id));
+        console_begin_transfer(vec![id.clone()]).unwrap();
+        assert!(transfer_guarded(&id));
+        // `console_close` en vuelo no mata: consume la marca y sigue vivo.
+        console_close(id.clone()).unwrap();
+        assert!(!transfer_guarded(&id));
+        // Sin marca, el gc lo vería como huérfano (acá solo se prueba la
+        // marca: matar de verdad necesita un PTY y no se hace en tests).
+        console_begin_transfer(vec![id.clone()]).unwrap();
+        console_end_transfer(vec![id.clone()]).unwrap();
+        assert!(!transfer_guarded(&id));
+    }
 
     #[test]
     fn filters_npm_pnpm_script_vars() {

@@ -24,6 +24,7 @@ import {
   shouldReturnToEdgeOnActivate,
   islandHoverStay,
   islandHoverOpens,
+  islandFaceAgent,
   pointerMoveDrags,
   ISLAND_COLLAPSE_MS,
   stackMarkVisible,
@@ -157,6 +158,90 @@ describe("contentFor", () => {
 
   it("sin dock, `edge` no puede decidir nada y cae a la barra", () => {
     expect(contentFor("edge", 180)).toEqual(contentFor("none", 180));
+  });
+
+  it("cara agent: tarjeta colgada de la pestaña, solo en canto horizontal", () => {
+    const face = "agent" as const;
+    // Arriba/abajo: la tarjeta gana a la tira y ensancha a la tarjeta.
+    expect(
+      contentFor(
+        "edge",
+        180,
+        { edge: "top", expanded: false },
+        "idle",
+        5,
+        false,
+        0,
+        0,
+        face,
+      ),
+    ).toEqual({ w: PILL.islandCardW, h: PILL.islandThick + PILL.islandCardH });
+    expect(
+      contentFor(
+        "edge",
+        180,
+        { edge: "bottom", expanded: true },
+        "idle",
+        5,
+        false,
+        0,
+        0,
+        face,
+      ),
+    ).toEqual({ w: PILL.islandCardW, h: PILL.islandThick + PILL.islandCardH });
+    // Con aviso, la pestaña engorda y la tarjeta hereda el ancho si es mayor.
+    const cue = contentFor(
+      "edge",
+      180,
+      { edge: "top", expanded: false },
+      "idle",
+      5,
+      true,
+      1,
+      0,
+      face,
+    );
+    expect(cue.h).toBe(PILL.islandCueThick + PILL.islandCardH);
+    expect(cue.w).toBe(Math.max(islandCueLong(1), PILL.islandCardW));
+    // En laterales se degrada a pestaña/tira: la tarjeta no cabe.
+    const leftDock = { edge: "left" as const, expanded: false };
+    expect(contentFor("edge", 180, leftDock, "idle", 5, false, 0, 0, face)).toEqual(
+      contentFor("edge", 180, leftDock, "idle", 5),
+    );
+    const leftOpen = { edge: "left" as const, expanded: true };
+    expect(contentFor("edge", 180, leftOpen, "idle", 5, false, 0, 0, face)).toEqual(
+      contentFor("edge", 180, leftOpen, "idle", 5),
+    );
+    // Flotando y en rueda la cara no existe: el permiso ya tiene su tarjeta.
+    expect(contentFor("none", 180, null, "idle", 5, false, 0, 0, face)).toEqual(
+      contentFor("none", 180),
+    );
+    expect(contentFor("wheel", 999, null, "idle", 5, false, 0, 0, face)).toEqual(
+      contentFor("wheel", 999),
+    );
+  });
+
+  it("islandFaceAgent: auto-abre con pedido nuevo, no re-abre el colapsado", () => {
+    const dock = { edge: "top" as const, expanded: false };
+    const base = {
+      surface: "edge" as const,
+      dock,
+      authId: "p1",
+      dismissedAuthId: null,
+    };
+    expect(islandFaceAgent(base)).toBe(true);
+    expect(islandFaceAgent({ ...base, dismissedAuthId: "p1" })).toBe(false);
+    // Un pedido NUEVO sí re-abre aunque se haya colapsado el anterior.
+    expect(islandFaceAgent({ ...base, authId: "p2", dismissedAuthId: "p1" })).toBe(
+      true,
+    );
+    // Sin pedido, flotando, sin dock o en lateral: pestaña.
+    expect(islandFaceAgent({ ...base, authId: null })).toBe(false);
+    expect(islandFaceAgent({ ...base, surface: "none" as const })).toBe(false);
+    expect(islandFaceAgent({ ...base, dock: null })).toBe(false);
+    expect(
+      islandFaceAgent({ ...base, dock: { edge: "left" as const, expanded: false } }),
+    ).toBe(false);
   });
 
   it("desacoplar para summon restaura la barra, no la pestaña", () => {

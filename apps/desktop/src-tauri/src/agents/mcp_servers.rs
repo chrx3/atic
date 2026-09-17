@@ -66,14 +66,23 @@ pub fn traducir(agent_mcp_servers: &str, req_mcp_config: Option<&str>) -> Traduc
     // `BTreeMap`: la salida queda en orden estable (y en el mismo orden para
     // todos los hosts) sin depender del orden de inserción.
     let mut crudos: BTreeMap<String, Value> = BTreeMap::new();
+    let mut salteados: Vec<(String, String)> = Vec::new();
 
     if let Ok(lista) = serde_json::from_str::<Vec<ModalServer>>(agent_mcp_servers) {
         for s in lista {
-            if !s.enabled || s.name.trim().is_empty() {
+            if !s.enabled {
+                continue;
+            }
+            let nombre = s.name.trim();
+            if nombre.is_empty() {
+                // No es un nombre raro: es una entrada a medio llenar. El
+                // modal no la marca (el JSON puede estar bien) y sin esto se
+                // esfumaba sin que ninguna capa lo dijera.
+                salteados.push((String::new(), "le falta el nombre".into()));
                 continue;
             }
             if let Ok(v) = serde_json::from_str::<Value>(&s.json) {
-                crudos.insert(s.name.trim().to_string(), v);
+                crudos.insert(nombre.to_string(), v);
             }
         }
     }
@@ -92,7 +101,10 @@ pub fn traducir(agent_mcp_servers: &str, req_mcp_config: Option<&str>) -> Traduc
         }
     }
 
-    let mut salida = Traduccion::default();
+    let mut salida = Traduccion {
+        salteados,
+        ..Traduccion::default()
+    };
     for (nombre, valor) in crudos {
         // El de orquestación lo pone cada adaptador: si el usuario lo tuviera
         // guardado, el suyo no debe ganarle al de Atic.
@@ -233,6 +245,17 @@ mod tests {
     fn el_deshabilitado_no_entra() {
         let guardada = modal(&[("off", r#"{"command":"x"}"#, false)]);
         assert!(traducir(&guardada, None).servidores.is_empty());
+    }
+
+    #[test]
+    fn la_entrada_sin_nombre_se_avisa() {
+        // El modal no la marca (el JSON está bien) y antes se esfumaba sin
+        // que ninguna capa lo dijera: ahora sale en `salteados`.
+        let guardada = modal(&[("", r#"{"command":"x"}"#, true)]);
+        let t = traducir(&guardada, None);
+        assert!(t.servidores.is_empty());
+        assert_eq!(t.salteados.len(), 1);
+        assert!(t.salteados[0].1.contains("nombre"), "{:?}", t.salteados);
     }
 
     #[test]

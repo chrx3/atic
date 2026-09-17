@@ -1193,11 +1193,7 @@ fn try_start_system_stream(
 
 /// Hilo escritor: recibe buffers de f32 y los vuelca a un WAV, finalizándolo
 /// cuando se le pide cerrar (o cuando el canal de audio se corta).
-fn spawn_writer(
-    path: PathBuf,
-    spec: hound::WavSpec,
-    rx: Receiver<Vec<f32>>,
-) -> TrackWriter {
+fn spawn_writer(path: PathBuf, spec: hound::WavSpec, rx: Receiver<Vec<f32>>) -> TrackWriter {
     let (done_tx, done) = mpsc::channel::<()>();
     let join = thread::spawn(move || {
         if let Some(parent) = path.parent() {
@@ -1221,7 +1217,10 @@ fn spawn_writer(
         writer.finalize()?;
         Ok(written)
     });
-    TrackWriter { done: done_tx, join }
+    TrackWriter {
+        done: done_tx,
+        join,
+    }
 }
 
 /// Escritor de micrófono con high-pass + gate + RNNoise (solo esta pista).
@@ -1257,7 +1256,10 @@ fn spawn_mic_noise_writer(
         writer.finalize()?;
         Ok(written)
     });
-    TrackWriter { done: done_tx, join }
+    TrackWriter {
+        done: done_tx,
+        join,
+    }
 }
 
 fn wav_spec(cfg: &cpal::SupportedStreamConfig) -> hound::WavSpec {

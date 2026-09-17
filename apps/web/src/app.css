@@ -1,0 +1,109 @@
+/**
+ * La cadena de estilos del sitio, calcada de `apps/desktop/src/app.css`.
+ *
+ * Los tokens NO se copian: se importan del árbol de la app. Si la app cambia
+ * una paleta o una curva, el sitio cambia con ella. Lo único propio es lo de
+ * abajo — la tipografía del documento y el chrome del sitio.
+ *
+ *   tailwind   → el motor, y las variantes
+ *   paletas    → los literales, redefinibles por scope
+ *   tokens     → `@theme inline` les pone nombre de cara a Tailwind
+ *   escalas    → spacing, tipografía, radios, sombras, curvas
+ *   motion     → duraciones
+ *   capas      → z-index
+ *   base       → lo mínimo bajo `.atic-root`
+ */
+@import "tailwindcss";
+
+@source "./lib";
+@source "./routes";
+
+@import "../../desktop/src/styles/palettes/atic/dark.css";
+@import "../../desktop/src/styles/palettes/atic/light.css";
+@import "../../desktop/src/styles/palettes/atic/graphite.css";
+@import "../../desktop/src/styles/palettes/atic/midnight.css";
+@import "../../desktop/src/styles/palettes/atic/sepia.css";
+@import "../../desktop/src/styles/palettes/atic/mist.css";
+@import "../../desktop/src/styles/palettes/atic/claude.css";
+@import "../../desktop/src/styles/palettes/atic/claude-dark.css";
+@import "../../desktop/src/styles/tokens.css";
+@import "../../desktop/src/styles/scales.css";
+@import "../../desktop/src/styles/motion.css";
+@import "../../desktop/src/styles/layers.css";
+@import "../../desktop/src/styles/base.css";
+
+@custom-variant dark (&:where([data-theme-base="dark"], [data-theme-base="dark"] *));
+
+/**
+ * Los tokens de morph que en la app viven en `app.css` (no en `motion.css`).
+ * El sitio no importa `app.css` entero —tiene el árbol viejo de la app—, así
+ * que se copian acá. Si cambian allá, cambian acá.
+ */
+:root {
+  /* Abrir y cerrar de la rueda: 110 ms, sin overshoot (el rebote recortaba
+     la rueda contra el borde y se leía jelly). */
+  --morph-open-dur: 110ms;
+  --morph-close-dur: 100ms;
+  --morph-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --morph-close-ease: var(--ease-smooth-out);
+  --morph-fade-dur: 80ms;
+  --morph-quick-dur: 60ms;
+  --morph-stagger: 16ms;
+  --morph-scale: 0.97;
+  --morph-blur: 2px;
+  --panel-dur: 110ms;
+  --flight-dur: 110ms;
+
+  /* La curva calmada del proyecto, con su nombre. */
+  --ease-smooth-out: cubic-bezier(0.22, 1, 0.36, 1);
+
+  /* El float que nace de la pill y vuelve a ella. */
+  --float-open-dur: var(--duration-medium);
+  --float-close-dur: var(--morph-close-dur);
+  --float-ease: var(--ease-smooth-out);
+  --float-scale: 0.55;
+  --float-travel: 18px;
+  --float-blur: 2px;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  min-height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  overscroll-behavior: none;
+}
+
+button,
+select,
+[role="button"] {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+input,
+textarea {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+/* El separador es la hairline; la sombra solo para lo que flota de verdad. */
+hr {
+  border: 0;
+  border-top: 1px solid var(--line);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+}

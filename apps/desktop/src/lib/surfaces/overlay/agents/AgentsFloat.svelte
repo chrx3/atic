@@ -12,6 +12,7 @@
     onAgentsBubbleAnchor,
     onAgentsBubbleDismiss,
     onAgentsBubbleExpand,
+    onAgentsTransfer,
     saveAgentsBubbleSize,
   } from "$ipc/agents";
   import {
@@ -53,6 +54,11 @@
     rememberedSetupWidth,
   } from "$surfaces/overlay/agents/dockExpand";
   import { toasts } from "$domain/toasts.svelte";
+  import { t } from "$domain/i18n.svelte";
+  import {
+    transferInbox,
+    type TransferPayload,
+  } from "$features/agents/consoleTransfer.svelte";
   import ToastStack from "$ui/ToastStack.svelte";
   import { afterTransition, MOTION, ms, prefersReducedMotion, wait } from "$lib/motion";
   import {
@@ -67,9 +73,10 @@
   const SETUP_WIDTH_STORAGE_KEY = "atic.agents.setupWidth";
   const POSITION_MARGIN = 12;
   const SETUP_DEFAULT_W = 400;
-  const SETUP_WIDE_H = 184;
-  const SETUP_NARROW_H = 208;
-  const SETUP_NARROW_W = 560;
+  /* La estructura del lanzador es la misma a todo ancho (elegir /
+     condicionar / commit), así que una sola altura lo cubre: los anchos
+     grandes respiran en la carpeta, no en más alto. */
+  const SETUP_H = 208;
   const BROWSER_DEFAULT_W = 680;
   const BROWSER_DEFAULT_H = 620;
   const CONSOLE_DEFAULT_W = 680;
@@ -196,8 +203,8 @@
     }
   }
 
-  function setupHeight(width: number): number {
-    return width <= SETUP_NARROW_W ? SETUP_NARROW_H : SETUP_WIDE_H;
+  function setupHeight(): number {
+    return SETUP_H;
   }
 
   function frameForView(a: BubbleOpen): BubbleOpen {
@@ -215,7 +222,7 @@
         h: Math.max(BROWSER_DEFAULT_H, browserSize.h),
       };
     }
-    return { ...a, w: setupPanelWidth(), h: setupHeight(setupPanelWidth()) };
+    return { ...a, w: setupPanelWidth(), h: setupHeight() };
   }
 
   function placeBirthSeed(
@@ -364,7 +371,7 @@
           }
         : {
             w: setupW,
-            h: setupHeight(setupW),
+            h: setupHeight(),
           };
     await animateToSize(current, size);
   }
@@ -387,7 +394,7 @@
     const width = open ? Math.max(BROWSER_DEFAULT_W, browserSize.w, current.w) : setupW;
     const size = open
       ? { w: width, h: Math.max(BROWSER_DEFAULT_H, browserSize.h) }
-      : { w: setupW, h: setupHeight(setupW) };
+      : { w: setupW, h: setupHeight() };
     await animateToSize(current, size);
   }
 
@@ -1028,6 +1035,17 @@
       onAgentsBubbleExpand(() => {
         expandFromDock();
       }),
+      // Mudanza desde la principal: el lanzador adopta desde el buzón.
+      onAgentsTransfer((raw) => {
+        let payload: TransferPayload;
+        try {
+          payload = JSON.parse(raw) as TransferPayload;
+        } catch {
+          return;
+        }
+        if (!payload || payload.to !== "overlay") return;
+        transferInbox.offer(payload);
+      }),
       // Clic afuera (Raw Input → overlay-dismiss). Pin / diálogo nativo → no.
       onOverlayDismiss(() => {
         tryAutoClose();
@@ -1102,6 +1120,7 @@
         onToggleMaximize={toggleMaximize}
         onToggleMinimize={toggleMinimize}
         onLiveChange={(live) => (liveConsoles = live)}
+        onNeedsAttention={(label) => toasts.push(t("page.agents.turnDone", { label }))}
         {maximized}
         {minimized}
         shown={bubble.shown}

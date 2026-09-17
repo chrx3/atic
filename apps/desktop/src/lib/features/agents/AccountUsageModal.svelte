@@ -5,7 +5,8 @@
     CodexAccountUsage,
     CodexUsageWindow,
   } from "$lib/types";
-  import { agentClaudeUsage, agentCodexUsage } from "$ipc/agents";
+  import { agentClaudeUsage, agentCodexUsage, agentQuotaOverview } from "$ipc/agents";
+  import { quotaRows, type QuotaRow } from "$surfaces/overlay/pill/pillQuota";
   import { t } from "$domain/i18n.svelte";
   import Modal from "$ui/Modal.svelte";
   import ProgressBar from "$ui/ProgressBar.svelte";
@@ -15,11 +16,14 @@
     agent,
     onClose,
     onRunUsageCommand,
+    onOpenConsole,
   }: {
     agent: string;
     onClose: () => void;
     /** Escribe `/usage` en la consola activa del agente (si hay sesión viva). */
     onRunUsageCommand?: () => void;
+    /** Enfoca la consola: para agentes que pintan su uso en el propio TUI. */
+    onOpenConsole?: () => void;
   } = $props();
 
   type UsageRow = {
@@ -27,6 +31,12 @@
     label: string;
     used: number;
     reset: string | null;
+    /**
+     * `remaining` = el número grande es lo que queda (Claude/Codex, formato
+     * histórico del modal). `used` = el número grande es lo consumido, igual
+     * que el hover de la pill: la barra crece con el uso en los dos.
+     */
+    mode: "remaining" | "used";
   };
 
   const POLL_MS = 15_000;
@@ -42,9 +52,17 @@
             : t("page.agents.usageModal.providerFallback"),
   );
   const hasLiveQuota = $derived(agent === "claude" || agent === "codex");
+  /**
+   * Los que leen el mismo snapshot normalizado que el hover de la pill.
+   * OpenCode no tiene modal propio del proveedor, pero su cupo YA se consulta
+   * y se muestra en la pill: repetir acá el «no hay forma de verlo» era
+   * mentirle a quien lo tenía al lado.
+   */
+  const usesOverview = $derived(agent === "opencode" || agent === "cursor-agent");
 
   let claude = $state<ClaudeAccountUsage | null>(null);
   let codex = $state<CodexAccountUsage | null>(null);
+  let overviewRow = $state<QuotaRow | null>(null);
   let loading = $state(false);
   let refreshing = $state(false);
   let error = $state<string | null>(null);
@@ -84,8 +102,37 @@
       label: durationLabel(window.windowDurationMins),
       used: window.usedPercent,
       reset: resetLabel(window.resetsAt),
+      mode: "remaining",
     };
   }
+
+  /** Etiqueta de ventana con las mismas palabras que el hover de la pill. */
+  function overviewLabel(row: QuotaRow, bar: QuotaRow["bars"][number]): string {
+    if (bar.window === "custom") {
+      // Ventana sin nombre conocido: el largo en minutos la describe.
+      return bar.minutes == null
+        ? t("pill.quota.window.unknown")
+        : durationLabel(bar.minutes);
+    }
+    if (bar.window === "model") {
+      return t("pill.quota.window.modelWeek", { model: bar.model ?? "" });
+    }
+    return t(`pill.quota.window.${bar.window}`);
+  }
+
+  const overviewRows = $derived.by((): UsageRow[] => {
+    const row = overviewRow;
+    if (!row) return [];
+    return row.bars.map((bar) => ({
+      key: `${bar.window}:${bar.model ?? ""}`,
+      label: overviewLabel(row, bar),
+      used: bar.percent,
+      // `resetLabel` espera epoch en SEGUNDOS; el snapshot trae milisegundos.
+      reset: resetLabel(bar.resetsAt == null ? null : Math.round(bar.resetsAt / 1000)),
+      // Igual que el hover de la pill: el número grande es lo consumido.
+      mode: "used" as const,
+    }));
+  });
 
   const rows = $derived.by((): UsageRow[] => {
     if (claude) {
@@ -101,6 +148,7 @@
             label,
             used: window.utilization,
             reset: resetLabel(window.resetsAt),
+            mode: "remaining",
           });
         }
       };
@@ -116,18 +164,27 @@
         codexRow("secondary", codex.secondary),
       ].filter((row): row is UsageRow => row != null);
     }
+    if (overviewRow) return overviewRows;
     return [];
   });
 
-  const plan = $derived(claude?.plan ?? codex?.plan ?? null);
+  const plan = $derived(claude?.plan ?? codex?.plan ?? overviewRow?.plan ?? null);
+  /** Las filas del snapshot se presentan como consumido: cambia el subtítulo. */
+  const showingOverview = $derived(usesOverview && overviewRow != null);
 
   async function load(silent = false) {
-    if (!hasLiveQuota) return;
+    if (!hasLiveQuota && !usesOverview) return;
     if (silent) refreshing = true;
     else loading = true;
     try {
       if (agent === "claude") claude = await agentClaudeUsage();
       else if (agent === "codex") codex = await agentCodexUsage();
+      else if (usesOverview) {
+        const row = quotaRows(await agentQuotaOverview()).find(
+          (candidate) => candidate.agent === agent,
+        );
+        overviewRow = row ?? null;
+      }
       error = null;
     } catch (cause) {
       error =
@@ -143,7 +200,7 @@
   }
 
   onMount(() => {
-    if (!hasLiveQuota) return;
+    if (!hasLiveQuota && !usesOverview) return;
     void load();
     const timer = window.setInterval(() => void load(true), POLL_MS);
     return () => window.clearInterval(timer);
@@ -155,13 +212,15 @@
     title={t("page.agents.usageModal.title", { provider })}
     subtitle={plan
       ? t("page.agents.usageModal.subtitlePlan", { plan })
-      : t("page.agents.usageModal.subtitleFallback")}
+      : showingOverview
+        ? t("page.agents.usageModal.subtitleUsage")
+        : t("page.agents.usageModal.subtitleFallback")}
     size="sm"
     contained
     {onClose}
   >
     <div class="usage-stack">
-      {#if hasLiveQuota}
+      {#if hasLiveQuota || (usesOverview && rows.length > 0)}
         <div class="provider-mark">
           <AgentLogo {agent} size={22} />
           <span aria-live="polite">
@@ -190,17 +249,22 @@
         {/if}
         <ul class="usage-list">
           {#each rows as row (row.key)}
-            {@const remaining = Math.max(0, Math.round(100 - row.used))}
+            {@const shown =
+              row.mode === "used"
+                ? Math.min(100, Math.max(0, Math.round(row.used)))
+                : Math.max(0, Math.round(100 - row.used))}
             <li>
               <div class="usage-head">
                 <span>{row.label}</span>
                 <span class="usage-value">
-                  <strong data-numeric>{remaining}%</strong>
-                  {t("page.agents.usageModal.remaining")}
+                  <strong data-numeric>{shown}%</strong>
+                  {row.mode === "used"
+                    ? t("page.agents.usageModal.used")
+                    : t("page.agents.usageModal.remaining")}
                 </span>
               </div>
               <ProgressBar
-                value={remaining / 100}
+                value={shown / 100}
                 ariaLabel={row.label}
                 tone={row.used >= 85 ? "warn" : row.used >= 60 ? "accent" : "ok"}
               />
@@ -211,12 +275,25 @@
         <p class="source">
           {agent === "claude"
             ? t("page.agents.usageModal.sourceClaude")
-            : t("page.agents.usageModal.sourceCodex")}
+            : agent === "codex"
+              ? t("page.agents.usageModal.sourceCodex")
+              : t("page.agents.usageModal.sourcePill")}
         </p>
       {:else if agent === "opencode"}
         <div class="usage-state">
           <strong>{t("page.agents.usageModal.opencodeTitle")}</strong>
           <span>{t("page.agents.usageModal.opencodeBody")}</span>
+          {#if onOpenConsole}
+            <button
+              type="button"
+              onclick={() => {
+                onOpenConsole();
+                onClose();
+              }}
+            >
+              {t("page.agents.usageModal.openConsole")}
+            </button>
+          {/if}
         </div>
       {:else if agent === "cursor-agent"}
         <div class="usage-state">
