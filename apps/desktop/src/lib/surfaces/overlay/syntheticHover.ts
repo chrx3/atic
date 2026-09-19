@@ -30,6 +30,7 @@ import type { OverlayPointer, Point } from "$ipc/overlay";
 import {
   nativePointerAlreadyHandled,
   resolveSynthEcho,
+  shouldApplySynthPointer,
   type SynthEcho,
 } from "./syntheticPointer";
 
@@ -173,17 +174,18 @@ let synthDownTarget: Element | null = null;
 let echoClick: SynthEcho = null;
 
 function applyClick(point: OverlayPointer): void {
-  if (document.hasFocus()) {
-    synthHeld = false;
-    synthDownTarget = null;
-    echoClick = null;
-    return;
-  }
   const now = performance.now();
   if (point.down) {
     // Una pulsación nueva: el eco del clic anterior ya no puede llegar.
     echoClick = null;
-    if (nativePointerAlreadyHandled(lastTrustedDown, now)) return;
+    if (
+      !shouldApplySynthPointer({
+        synthHeld,
+        nativeAlreadyHandled: nativePointerAlreadyHandled(lastTrustedDown, now),
+      })
+    ) {
+      return;
+    }
     const target = document.elementFromPoint(point.x, point.y);
     if (!target) return;
     synthHeld = true;

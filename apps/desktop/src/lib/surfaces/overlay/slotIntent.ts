@@ -58,10 +58,12 @@ export function slotIntent(
   requestedIsOpen: boolean,
   movePx = 0,
   skipIfNear = 48,
-  opts: { force?: boolean } = {},
+  opts: { force?: boolean; stayPut?: boolean } = {},
 ): SlotIntent {
   if (opts.force) return "show";
   if (!isSpatialTool(requested) || !requestedIsOpen) return "show";
+  // Cara en el notch: el segundo atajo cierra, no reubica al cursor.
+  if (opts.stayPut) return "close";
   if (isCursorAnchored(requested) && movePx >= skipIfNear) return "relocate";
   return "close";
 }

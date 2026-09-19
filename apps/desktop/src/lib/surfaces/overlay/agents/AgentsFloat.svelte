@@ -46,6 +46,7 @@
   import AgentLauncher from "$features/agents/AgentLauncher.svelte";
   import { isAgentsDismissSuppressed } from "$surfaces/overlay/agents/dismissGuard";
   import { agentsDock } from "$surfaces/overlay/agents/agentsDock.svelte";
+  import { agentsIslandHost } from "./agentsIslandHost.svelte";
   import { consoleCue } from "$surfaces/overlay/agents/consoleCue.svelte";
   import { presenceIdsToDismissOnAticHide } from "$surfaces/overlay/pill/pillAgentChip";
   import {
@@ -246,6 +247,10 @@
   let placeEpoch = 0;
 
   async function placeFromPill(a: BubbleOpen) {
+    if (agentsIslandHost.on) {
+      void hideAgentsWindow().catch(() => {});
+      return;
+    }
     if (
       reuseDockedFrame({
         minimized,

@@ -127,6 +127,7 @@
     onNeedsAttention,
     onDetachRequest,
     detachBusy = false,
+    windowChrome = true,
   }: {
     /** Host SSH del destino actual de agentes; default de una pestaña nueva. */
     remoteHost?: SshHost | null;
@@ -179,6 +180,8 @@
     onDetachRequest?: () => void;
     /** Hay una mudanza en vuelo: el botón no acepta otra. */
     detachBusy?: boolean;
+    /** Pin / min / max / cerrar. En la isla el blob ya es el marco. */
+    windowChrome?: boolean;
   } = $props();
 
   /** Semilla de pestaña del lanzador: consola local corriendo un agente. */
@@ -3450,60 +3453,62 @@
             <Icon icon={overlayHost ? SquareArrowOutUpRight : Pill} size={13} />
           </button>
         {/if}
-        <button
-          type="button"
-          class="icon-btn pin-btn"
-          class:is-on={pinned}
-          aria-label={pinned
-            ? t("page.agents.console.unpinWindow")
-            : t("page.agents.console.pinWindow")}
-          aria-pressed={pinned}
-          use:tip={pinned
-            ? t("page.agents.console.unpinWindow")
-            : t("page.agents.console.pinWindow")}
-          onclick={() => {
-            const next = !pinned;
-            pinned = next;
-            void setAgentsAlwaysOnTop(next).catch(() => (pinned = !next));
-          }}
-        >
-          <Icon icon={Pin} size={12} />
-        </button>
-        {#if onToggleMinimize}
+        {#if windowChrome}
           <button
             type="button"
-            class="icon-btn"
-            aria-label={minimized ? t("chrome.restore") : t("chrome.minimize")}
-            aria-pressed={minimized}
-            use:tip={minimized ? t("chrome.restore") : t("chrome.minimize")}
-            onclick={onToggleMinimize}
+            class="icon-btn pin-btn"
+            class:is-on={pinned}
+            aria-label={pinned
+              ? t("page.agents.console.unpinWindow")
+              : t("page.agents.console.pinWindow")}
+            aria-pressed={pinned}
+            use:tip={pinned
+              ? t("page.agents.console.unpinWindow")
+              : t("page.agents.console.pinWindow")}
+            onclick={() => {
+              const next = !pinned;
+              pinned = next;
+              void setAgentsAlwaysOnTop(next).catch(() => (pinned = !next));
+            }}
           >
-            <Icon icon={Minus} size={12} />
+            <Icon icon={Pin} size={12} />
           </button>
-        {/if}
-        {#if onToggleMaximize}
-          <button
-            type="button"
-            class="icon-btn"
-            class:is-on={maximized}
-            aria-label={maximized ? t("chrome.restore") : t("chrome.maximize")}
-            aria-pressed={maximized}
-            use:tip={maximized ? t("chrome.restore") : t("chrome.maximize")}
-            onclick={onToggleMaximize}
-          >
-            <Icon icon={Square} size={11} />
-          </button>
-        {/if}
-        {#if onClose}
-          <button
-            type="button"
-            class="icon-btn chrome-close"
-            aria-label={t("chrome.close")}
-            use:tip={t("page.agents.hideHint")}
-            onclick={() => onClose()}
-          >
-            <Icon icon={X} size={11} />
-          </button>
+          {#if onToggleMinimize}
+            <button
+              type="button"
+              class="icon-btn"
+              aria-label={minimized ? t("chrome.restore") : t("chrome.minimize")}
+              aria-pressed={minimized}
+              use:tip={minimized ? t("chrome.restore") : t("chrome.minimize")}
+              onclick={onToggleMinimize}
+            >
+              <Icon icon={Minus} size={12} />
+            </button>
+          {/if}
+          {#if onToggleMaximize}
+            <button
+              type="button"
+              class="icon-btn"
+              class:is-on={maximized}
+              aria-label={maximized ? t("chrome.restore") : t("chrome.maximize")}
+              aria-pressed={maximized}
+              use:tip={maximized ? t("chrome.restore") : t("chrome.maximize")}
+              onclick={onToggleMaximize}
+            >
+              <Icon icon={Square} size={11} />
+            </button>
+          {/if}
+          {#if onClose}
+            <button
+              type="button"
+              class="icon-btn chrome-close"
+              aria-label={t("chrome.close")}
+              use:tip={t("page.agents.hideHint")}
+              onclick={() => onClose()}
+            >
+              <Icon icon={X} size={11} />
+            </button>
+          {/if}
         {/if}
       </div>
     </header>

@@ -10,12 +10,15 @@
   import {
     AGENTS_PATH_CHANGED,
     AGENTS_REVEAL_CONSOLE,
+    AGENTS_ISLAND_LAUNCH,
     agentsEnsureWindow,
     cliOnPath,
     consoleBeginTransfer,
     consoleEndTransfer,
     consoleTransferDeliver,
     onAgentsTransferAck,
+    takeAgentsIslandLaunch,
+    type AgentsIslandLaunchDetail,
   } from "$ipc/agents";
   import { currentWindowLabel, hideWindow } from "$ipc/windows";
   import { OVERLAY_LABEL } from "$surfaces/overlay/contract";
@@ -44,6 +47,7 @@
     maximized = false,
     minimized = false,
     shown = false,
+    island = false,
   }: {
     onHeaderPointerDown?: (e: PointerEvent) => void;
     /** Cerrar el float. El overlay no lo pasa: ahí solo se minimiza o agranda. */
@@ -60,6 +64,8 @@
     minimized?: boolean;
     /** El float está a la vista: si hay consolas vivas, mostrarlas. */
     shown?: boolean;
+    /** Cara de la isla: sin chrome de ventana, el blob es el marco. */
+    island?: boolean;
   } = $props();
 
   /** El tope duro lo pone Rust (MAX_CONSOLES). */
@@ -342,6 +348,15 @@
     showView("console");
   }
 
+  function applyIslandLaunch(detail: AgentsIslandLaunchDetail) {
+    selected = detail.cli;
+    if (detail.count != null) {
+      count = Math.max(1, Math.min(MAX_INSTANCES, detail.count));
+    }
+    if (detail.cwd != null) cwd = detail.cwd;
+    launch();
+  }
+
   function backToSetup() {
     // `showView` ya re-mira el PATH por si el instalador corrió mientras tanto.
     showView("setup");
@@ -414,12 +429,21 @@
       /* sin storage: arranca en la carpeta de inicio del usuario */
     }
     refreshPath();
+    const pending = takeAgentsIslandLaunch();
+    if (pending) applyIslandLaunch(pending);
     const onReveal = () => revealLiveConsole();
     // Un instalador corrió en la consola y terminó: el setup tiene que
     // enterarse aunque esté a la vista en ese momento.
     const onPathChanged = () => refreshPath();
+    const onIslandLaunch = (event: Event) => {
+      const detail =
+        takeAgentsIslandLaunch() ??
+        (event as CustomEvent<AgentsIslandLaunchDetail>).detail;
+      if (detail) applyIslandLaunch(detail);
+    };
     window.addEventListener(AGENTS_REVEAL_CONSOLE, onReveal);
     window.addEventListener(AGENTS_PATH_CHANGED, onPathChanged);
+    window.addEventListener(AGENTS_ISLAND_LAUNCH, onIslandLaunch);
     void onAgentsTransferAck((raw) => {
       try {
         const ack = JSON.parse(raw) as { transferId: string; adopted: string[] };
@@ -433,12 +457,13 @@
     return () => {
       window.removeEventListener(AGENTS_REVEAL_CONSOLE, onReveal);
       window.removeEventListener(AGENTS_PATH_CHANGED, onPathChanged);
+      window.removeEventListener(AGENTS_ISLAND_LAUNCH, onIslandLaunch);
       ackUnlisten?.();
     };
   });
 </script>
 
-<div class="agent-views">
+<div class="agent-views" class:is-island={island}>
   <section
     class="launcher-view"
     class:is-hidden={view !== "setup"}
@@ -600,15 +625,16 @@
         onBack={backToSetup}
         onEmpty={resetSessions}
         onPickFolder={requestFolder}
-        {onToggleMaximize}
-        {onToggleMinimize}
+        onToggleMaximize={island ? undefined : onToggleMaximize}
+        onToggleMinimize={island ? undefined : onToggleMinimize}
+        windowChrome={!island}
         {maximized}
         {minimized}
         visible={shown && !minimized}
         {onNeedsAttention}
-        onDetachRequest={detachTo}
+        onDetachRequest={island ? undefined : detachTo}
         {detachBusy}
-        onBarPointerDown={onHeaderPointerDown}
+        onBarPointerDown={island ? undefined : onHeaderPointerDown}
       />
     </div>
   {/if}
@@ -1048,6 +1074,43 @@
     .stepper button {
       width: 1.65rem;
     }
+  }
+
+  .agent-views.is-island {
+    --agent-accent: var(--accent, var(--rb-accent, var(--rb-text)));
+
+    background: transparent;
+    border-radius: 0;
+  }
+
+  .agent-views.is-island .launcher-view {
+    background: transparent;
+    border-radius: 0;
+  }
+
+  .agent-views.is-island .drag-rail {
+    min-height: 0;
+    flex-basis: 0;
+    padding: 0;
+  }
+
+  .agent-views.is-island .drag-rail:not(:has(.live-status)) {
+    display: none;
+  }
+
+  .agent-views.is-island .chrome {
+    display: none;
+  }
+
+  .agent-views.is-island .setup {
+    flex: 1 1 auto;
+    gap: 0.4rem;
+    padding: 0.15rem 0.05rem 0.2rem;
+    justify-content: flex-start;
+  }
+
+  .agent-views.is-island .launch {
+    min-height: 2.05rem;
   }
 
   @media (prefers-reduced-motion: reduce) {

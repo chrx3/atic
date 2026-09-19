@@ -282,13 +282,39 @@ export const showAgentsWindow = () => invoke<void>("show_agents_window");
 export const presentAgentsWindow = () => invoke<void>("present_agents_window");
 
 /**
+ * Lanzar un agente desde la cara de la isla. El float puede no estar montado
+ * todavía: se guarda el pedido y el lanzador lo consume al nacer.
+ */
+export const AGENTS_ISLAND_LAUNCH = "atic-agents-island-launch";
+
+export type AgentsIslandLaunchDetail = {
+  cli: string;
+  count?: number;
+  cwd?: string;
+};
+
+let pendingIslandLaunch: AgentsIslandLaunchDetail | null = null;
+
+export function requestAgentsIslandLaunch(detail: AgentsIslandLaunchDetail): void {
+  pendingIslandLaunch = detail;
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(new CustomEvent(AGENTS_ISLAND_LAUNCH, { detail }));
+}
+
+export function takeAgentsIslandLaunch(): AgentsIslandLaunchDetail | null {
+  const next = pendingIslandLaunch;
+  pendingIslandLaunch = null;
+  return next;
+}
+
+export const AGENTS_REVEAL_CONSOLE = "atic-agents-reveal-console";
+
+/**
  * Pide al lanzador que muestre las consolas ya vivas, sin toggle.
  *
  * El chip de la pill lo dispara antes de abrir el float: si hay PTY,
  * se ve la consola y no el setup.
  */
-export const AGENTS_REVEAL_CONSOLE = "atic-agents-reveal-console";
-
 export function revealAgentsConsole() {
   window.dispatchEvent(new Event(AGENTS_REVEAL_CONSOLE));
 }

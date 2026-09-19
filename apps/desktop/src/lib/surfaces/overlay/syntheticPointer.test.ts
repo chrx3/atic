@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { nativePointerAlreadyHandled, resolveSynthEcho } from "./syntheticPointer";
+import {
+  nativePointerAlreadyHandled,
+  resolveSynthEcho,
+  shouldApplySynthPointer,
+} from "./syntheticPointer";
 
 describe("nativePointerAlreadyHandled", () => {
   it("no omite si nunca llegó un clic nativo", () => {
@@ -14,6 +18,29 @@ describe("nativePointerAlreadyHandled", () => {
 
   it("vuelve a sintetizar cuando el nativo ya es viejo", () => {
     expect(nativePointerAlreadyHandled(100, 181)).toBe(false);
+  });
+});
+
+describe("shouldApplySynthPointer", () => {
+  it("el primer clic enfoca sin llegar al DOM: hay que sintetizar", () => {
+    expect(
+      shouldApplySynthPointer({ synthHeld: false, nativeAlreadyHandled: false }),
+    ).toBe(true);
+  });
+
+  it("si el DOM ya recibió el flanco, no duplica", () => {
+    expect(
+      shouldApplySynthPointer({ synthHeld: false, nativeAlreadyHandled: true }),
+    ).toBe(false);
+  });
+
+  it("completa el up sintético aunque el nativo llegue después", () => {
+    expect(
+      shouldApplySynthPointer({ synthHeld: true, nativeAlreadyHandled: true }),
+    ).toBe(true);
+    expect(
+      shouldApplySynthPointer({ synthHeld: true, nativeAlreadyHandled: false }),
+    ).toBe(true);
   });
 });
 

@@ -47,6 +47,7 @@
     items = [],
     loading = false,
     compact = false,
+    island = false,
     onRefresh,
     onPasteStart,
     onPasted,
@@ -55,6 +56,8 @@
     items?: ClipboardItem[];
     loading?: boolean;
     compact?: boolean;
+    /** Cara de la isla: menos chrome, filas densas, margen de la curva. */
+    island?: boolean;
     onRefresh: () => void | Promise<void>;
     onPasteStart?: () => void;
     onPasted?: () => void;
@@ -96,8 +99,8 @@
   });
 
   /** Ventana virtual (~fila fija): evita montar hasta 100 thumbs a la vez. */
-  const ROW_H = $derived(compact ? 62 : 72);
-  const ROW_GAP = 5; // 0.3rem
+  const ROW_H = $derived(island ? 44 : compact ? 62 : 72);
+  const ROW_GAP = island ? 2 : 5;
   const OVERSCAN = 4;
   let listEl = $state<HTMLElement | null>(null);
   let scrollTop = $state(0);
@@ -399,11 +402,11 @@
   }
 </script>
 
-<div class="clip-list" class:is-compact={compact}>
+<div class="clip-list" class:is-compact={compact} class:is-island={island}>
   <div class="clip-toolbar">
     <label class="clip-search-wrap">
       <span class="clip-search-icon" aria-hidden="true">
-        <Icon icon={Search} size={14} />
+        <Icon icon={Search} size={island ? 12 : 14} />
       </span>
       <input
         class="clip-search"
@@ -422,47 +425,52 @@
           class="clip-kind"
           class:is-on={kind === "all"}
           onclick={() => (kind = "all")}
+          aria-label={t("page.clipboard.kindAll")}
         >
           <Icon icon={Layers} size={12} />
-          {t("page.clipboard.kindAll")}
+          {#if !island}{t("page.clipboard.kindAll")}{/if}
         </button>
         <button
           type="button"
           class="clip-kind"
           class:is-on={kind === "text"}
           onclick={() => (kind = "text")}
+          aria-label={t("page.clipboard.kindTextOnly")}
         >
           <Icon icon={Type} size={12} />
-          {t("page.clipboard.kindTextOnly")}
+          {#if !island}{t("page.clipboard.kindTextOnly")}{/if}
         </button>
         <button
           type="button"
           class="clip-kind"
           class:is-on={kind === "image"}
           onclick={() => (kind = "image")}
+          aria-label={t("page.clipboard.kindImageOnly")}
         >
           <Icon icon={ImageIcon} size={12} />
-          {t("page.clipboard.kindImageOnly")}
+          {#if !island}{t("page.clipboard.kindImageOnly")}{/if}
         </button>
       </div>
       <div class="clip-filters" role="group" aria-label={t("page.clipboard.filterAria")}>
-        <button
-          type="button"
-          class="clip-filter-btn"
-          class:is-on={!favoritesOnly}
-          onclick={() => (favoritesOnly = false)}
-          aria-label={t("page.clipboard.showAll")}
-          use:tip={t("page.clipboard.showAll")}
-        >
-          <Icon icon={List} size={14} />
-        </button>
+        {#if !island}
+          <button
+            type="button"
+            class="clip-filter-btn"
+            class:is-on={!favoritesOnly}
+            onclick={() => (favoritesOnly = false)}
+            aria-label={t("page.clipboard.showAll")}
+            use:tip={t("page.clipboard.showAll")}
+          >
+            <Icon icon={List} size={14} />
+          </button>
+        {/if}
         <button
           type="button"
           class="clip-filter-btn"
           class:is-on={favoritesOnly}
-          onclick={() => (favoritesOnly = true)}
-          aria-label={t("page.clipboard.favoritesOnly")}
-          use:tip={t("page.clipboard.favoritesOnly")}
+          onclick={() => (favoritesOnly = !favoritesOnly)}
+          aria-label={favoritesOnly ? t("page.clipboard.showAll") : t("page.clipboard.favoritesOnly")}
+          use:tip={favoritesOnly ? t("page.clipboard.showAll") : t("page.clipboard.favoritesOnly")}
         >
           <Icon
             icon={Star}
@@ -472,15 +480,17 @@
         </button>
       </div>
     </div>
-    <span class="clip-count">
-      {#if loading}
-        {t("page.clipboard.loading")}
-      {:else if query.trim() || favoritesOnly || kind !== "all"}
-        {visibleItems.length}/{items.length}
-      {:else}
-        {t("page.clipboard.count", { count: items.length })}
-      {/if}
-    </span>
+    {#if !island}
+      <span class="clip-count">
+        {#if loading}
+          {t("page.clipboard.loading")}
+        {:else if query.trim() || favoritesOnly || kind !== "all"}
+          {visibleItems.length}/{items.length}
+        {:else}
+          {t("page.clipboard.count", { count: items.length })}
+        {/if}
+      </span>
+    {/if}
   </div>
 
   {#if !loading && items.length === 0}
@@ -1038,6 +1048,104 @@
   .is-compact .clip-item {
     padding: 0.3rem 0.35rem;
   }
+
+  /* Cara de isla: una fila de chrome, filas densas, aire para la curva. */
+  .is-island {
+    gap: 0.3rem;
+  }
+
+  .is-island .clip-toolbar {
+    flex-direction: row;
+    align-items: center;
+    gap: 0.3rem;
+    padding: 0 0.2rem;
+  }
+
+  .is-island .clip-search-wrap {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .is-island .clip-search {
+    height: 1.6rem;
+    border-radius: 999px;
+    padding: 0 0.4rem 0 1.4rem;
+    font-size: 0.625rem;
+    background: color-mix(in srgb, var(--rb-text) 7%, transparent);
+  }
+
+  .is-island .clip-toolbar-row {
+    flex: none;
+    gap: 0.15rem;
+  }
+
+  .is-island .clip-kinds {
+    flex: none;
+  }
+
+  .is-island .clip-kind {
+    width: 1.6rem;
+    height: 1.6rem;
+    justify-content: center;
+    padding: 0;
+    border-radius: 999px;
+  }
+
+  .is-island .clip-filter-btn {
+    min-width: 1.6rem;
+    height: 1.6rem;
+    border-radius: 999px;
+  }
+
+  .is-island .clip-items {
+    padding: 0 0.15rem 1.35rem;
+  }
+
+  .is-island .clip-items > .clip-row {
+    height: 44px;
+    min-height: 44px;
+    margin: 0 0 2px;
+  }
+
+  .is-island .clip-item {
+    gap: 0.4rem;
+    border: 0;
+    border-radius: 12px;
+    padding: 0.2rem 0.4rem;
+    background: transparent;
+  }
+
+  .is-island .clip-item:hover,
+  .is-island .clip-item:focus-visible {
+    border-color: transparent;
+    background: color-mix(in srgb, var(--rb-text) 8%, transparent);
+  }
+
+  .is-island .clip-thumb {
+    width: 22px;
+    height: 22px;
+    border-radius: 6px;
+    box-shadow: none;
+  }
+
+  .is-island .clip-preview {
+    font-size: 0.6875rem;
+  }
+
+  .is-island .clip-meta {
+    font-size: 0.5625rem;
+  }
+
+  .is-island .clip-actions {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .is-island .clip-icon-btn {
+    min-width: 1.4rem;
+    height: 1.4rem;
+  }
+
   .is-compact .clip-search {
     padding: 0.22rem 0.4rem 0.22rem 1.45rem;
   }

@@ -48,6 +48,15 @@ describe("slotIntent", () => {
     expect(slotIntent("clipboard", true, 0, 48, { force: false })).toBe("close");
     expect(slotIntent("clipboard", true, 90, 48, { force: false })).toBe("relocate");
   });
+
+  it("stayPut: clipboard en la isla cierra, aunque el cursor esté lejos", () => {
+    expect(slotIntent("clipboard", true, 400, 48, { stayPut: true })).toBe("close");
+  });
+
+  it("stayPut: textos y agentes en la isla también cierran", () => {
+    expect(slotIntent("snippets", true, 400, 48, { stayPut: true })).toBe("close");
+    expect(slotIntent("agents", true, 400, 48, { stayPut: true })).toBe("close");
+  });
 });
 
 describe("isCursorAnchored / pillToCursorMovePx", () => {

@@ -219,9 +219,10 @@ describe("edgeWallRect", () => {
     const pill = pillShape(rect);
     const wall = pillShape(edgeWallRect("top", rect, work));
     const field = new Field([pill, wall], BLEND);
-    expect(shapeSD(pill, 201, 6)).toBeGreaterThan(0);
-    expect(field.eval(201, 6)).toBeLessThan(0);
-    // Fuera del flare: no hay mancha de líquido al costado.
+    const midX = rect.x + rect.w / 2;
+    expect(shapeSD(pill, midX, 4)).toBeLessThan(0);
+    expect(field.eval(midX, 4)).toBeLessThan(0);
+    // Fuera del ancho de la pill: no hay mancha de líquido al costado.
     expect(field.eval(rect.x - EDGE_WALL_FLARE - 12, 6)).toBeGreaterThan(0);
     expect(field.eval(500, 8)).toBeGreaterThan(0);
   });
@@ -385,11 +386,14 @@ describe("snapDrop", () => {
     expect(snapDrop(at(450, 40), SOLO)).toBeNull();
   });
 
-  it("contra un canto se pega ahí, no salta al centro", () => {
+  it("contra el techo va al centro, como el notch", () => {
     expect(snapDrop(at(400, 8), SOLO)).toEqual({
-      at: { x: 400, y: 0 },
+      at: { x: (1000 - 40) / 2, y: 0 },
       edge: "top",
     });
+  });
+
+  it("en un costado se pega ahí, no salta al centro", () => {
     expect(snapDrop(at(10, 200), SOLO)).toEqual({
       at: { x: 0, y: 200 },
       edge: "left",

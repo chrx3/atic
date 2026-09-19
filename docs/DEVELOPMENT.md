@@ -120,13 +120,31 @@ cargo clippy -p atic-desktop --all-targets
 cargo test -p atic-desktop --lib
 ```
 
-**Antes de subir.** El gate completo (lo mismo que correría CI):
+**Antes de subir.** Desde la raíz, valida según lo que cambió:
 
 ```bash
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
-pnpm verify
+pnpm verify:desktop # tipos, lint, estilos, formato y tests del frontend desktop
+pnpm verify:web     # tipos y build de producción del sitio
+pnpm verify:rust    # sidecars, formato, clippy estricto y tests del workspace
 ```
+
+`pnpm verify` combina desktop, web y formato de Rust, sin compilar Rust.
+`pnpm verify:all` agrega la validación completa de Rust; úsalo antes de un
+release. Los comandos se detienen si falla una etapa y no publican nada.
+La CI automática actual cubre solo el frontend desktop y el formato de Rust;
+no reemplaza estas comprobaciones locales.
+
+Instala primero las dependencias:
+
+```bash
+pnpm --dir apps/desktop install --frozen-lockfile
+pnpm --dir apps/web install --frozen-lockfile
+```
+
+La validación de Rust requiere el entorno nativo de tu plataforma (en Windows,
+carga `scripts/win-env.ps1`; en macOS, `scripts/mac-env.sh`).
+`pnpm prepare:sidecars` prepara ambos binarios auxiliares; ejecútalo antes de
+`pnpm check:rust` o `pnpm dev` en un clon nuevo.
 
 Los tests no se saltean, se acotan: correr `cargo test -p atic-desktop --lib`
 sobre el crate ya compilado cuesta menos que el build que de todos modos haces
@@ -181,10 +199,14 @@ pnpm tauri build -- --features gpu-cuda     # NVIDIA
 pnpm tauri build -- --features gpu-vulkan   # AMD/Intel
 ```
 
-PRs hacia `main`. **El release se firma en local** (Windows con Authenticode,
-macOS con notarization): las claves viven en tu disco, no en CI. El workflow
-[`.github/workflows/release.yml`](../.github/workflows/release.yml) existe por
-si algún día se firma en CI, pero un tag `v*` no lo dispara.
+PRs hacia `main`. **Los artefactos del updater se firman en local**:
+las claves viven en tu disco, no en CI. Esa firma no equivale a Authenticode
+en Windows ni a notarización de Apple. El script de macOS usa una identidad
+local si está configurada o firma ad-hoc. No hay workflow de release;
+crear un tag `v*` no publica instaladores.
+
+Antes de empaquetar, ejecuta `pnpm verify:all` desde la raíz. Por ahora los
+scripts de release no exigen esta validación automáticamente.
 
 Desde la raíz del repo:
 

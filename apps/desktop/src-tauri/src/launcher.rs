@@ -1113,7 +1113,7 @@ fn run_action(app: &AppHandle, action: &str) -> Result<(), String> {
         }
         "agents" => {
             if crate::agents::UI_ENABLED {
-                crate::agents::bridge::show_agents_window(app.clone());
+                crate::shortcuts::emit_tool_slot(app, "activate-tool-slot", "agents");
             }
             Ok(())
         }

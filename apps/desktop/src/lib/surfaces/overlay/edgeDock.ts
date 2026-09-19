@@ -402,15 +402,21 @@ export function snapMagnet(
 }
 
 /**
- * Al soltar un arrastre: solo engancha un canto si quedó contra él.
+ * Al soltar un arrastre: engancha un canto si quedó contra él.
  *
- * `snapMagnet` tira al centro de la pantalla o al centro del canto (96 px).
- * Desde el hogar eso se lee como «la moví un poco y volvió». Acá el eje
- * libre se conserva: pegada arriba se queda a esa X, no salta al medio.
+ * El techo es el notch: siempre al centro de ese canto, como el recorte de
+ * Apple. En laterales y abajo el eje libre se conserva —ahí sí es un
+ * parking, no una isla de hardware.
  */
 export function snapDrop(rect: Rect, areas: readonly Area[]): MagnetHit | null {
   const dock = dockCandidate(rect, areas);
   if (!dock) return null;
+  if (dock.edge === "top") {
+    return {
+      at: edgeCenterPoint("top", { w: rect.w, h: rect.h }, workAreaOf(dock.area)),
+      edge: "top",
+    };
+  }
   return { at: dock.at, edge: dock.edge };
 }
 
@@ -418,24 +424,25 @@ export function snapDrop(rect: Rect, areas: readonly Area[]): MagnetHit | null {
  * Pared SDF local en un canto, para que la pill se funda con el borde.
  *
  * Vive casi toda fuera del viewport: el clip recorta y se lee como gota
- * pegada (menisco / Dynamic Island). No es una tira a lo ancho de la
- * pantalla — solo un tramo cerca de la pill.
+ * pegada. No es una tira a lo ancho de la pantalla — solo un tramo cerca
+ * de la pill. Acoplada, la isla ya no usa esta pared: su silueta es
+ * `notchShape` (lados verticales al bisel, sin menisco).
  *
  * `DEPTH` es hacia afuera. `OVERLAP` es cuánto asoma al viewport: un poco
  * adentro para que el `smin` fusione dintel y pestaña en un solo cuerpo
- * (0 dejaba un cuello y se leía bola pegada). `FLARE` es el filete simétrico
- * a cada lado del dintel.
+ * (0 dejaba un cuello y se leía bola pegada). `FLARE` es el filete a cada
+ * lado: 0 para que no nazcan alas. Un filete ancho + `smin` era lo que
+ * abría los costados hacia afuera en vez de seguir derecho al techo.
  */
 export const EDGE_WALL_DEPTH = 40;
 export const EDGE_WALL_OVERLAP = 8;
 /**
  * Filete a cada lado de la pill, a lo largo del canto.
  *
- * 8 px era tan corto que el `smin` se enrollaba en las esquinas vivas de la
- * pared y un lado (casi siempre el que mira al canto cercano) se leía más
- * largo. 28 deja un dintel simétrico tipo Dynamic Island.
+ * 0: la pared mide lo mismo que la pill. Cualquier ancho extra se funde
+ * en un menisco y se lee como alas, no como notch.
  */
-export const EDGE_WALL_FLARE = 28;
+export const EDGE_WALL_FLARE = 0;
 /**
  * Si el otro canto está a menos de esto, es una esquina: se emite también
  * esa pared y el dintel llega hasta el vértice.

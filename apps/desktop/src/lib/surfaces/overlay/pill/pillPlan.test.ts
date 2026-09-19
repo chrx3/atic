@@ -21,11 +21,20 @@ import {
   targetFor,
   undockForSummon,
   shouldStayDockedOnActivate,
+  shouldRecenterTopNotch,
   shouldReturnToEdgeOnActivate,
   islandHoverStay,
   islandHoverOpens,
+  floatWheelHoverWatches,
+  floatWheelHoverOpens,
+  FLOAT_WHEEL_HOVER_OPEN_MS,
   islandFaceAgent,
+  islandFaceClipboard,
+  islandFacePanel,
+  isIslandPanelFace,
+  islandNotchRadius,
   pointerMoveDrags,
+  pointerGestureWasClick,
   ISLAND_COLLAPSE_MS,
   stackMarkVisible,
   wheelChromeActive,
@@ -98,8 +107,8 @@ describe("contentFor", () => {
       contentFor("edge", 180, { edge: "bottom", expanded: false }, "idle", 5, true, 3)
         .w,
     ).toBe(islandCueLong(3));
-    // La marca no cede el sitio al aviso, así que ya un logo alarga.
-    expect(islandCueLong(1)).toBeGreaterThan(PILL.islandLong);
+    // Un logo cabe en el dintel de la isla; no hay que alargar. Varios sí.
+    expect(islandCueLong(1)).toBe(PILL.islandLong);
     expect(islandCueLong(1)).toBeGreaterThanOrEqual(
       PILL.islandMark + PILL.islandCueBtn,
     );
@@ -221,6 +230,78 @@ describe("contentFor", () => {
     );
   });
 
+  it("isla alta usa radio de panel, no de pastilla", () => {
+    expect(islandNotchRadius({ w: 124, h: 40 })).toBe(20);
+    expect(islandNotchRadius({ w: 280, h: 292 })).toBe(PILL.islandClipR);
+  });
+
+  it("cara clipboard: lista colgada de la pestaña, en cualquier canto", () => {
+    const face = "clipboard" as const;
+    expect(
+      contentFor(
+        "edge",
+        180,
+        { edge: "top", expanded: false },
+        "idle",
+        5,
+        false,
+        0,
+        0,
+        face,
+      ),
+    ).toEqual({ w: PILL.islandClipW, h: PILL.islandThick + PILL.islandClipH });
+    expect(
+      contentFor(
+        "edge",
+        180,
+        { edge: "left", expanded: false },
+        "idle",
+        5,
+        false,
+        0,
+        0,
+        face,
+      ),
+    ).toEqual({ w: PILL.islandThick + PILL.islandClipW, h: PILL.islandClipH });
+  });
+
+  it("textos usan el mismo panel que clipboard; agentes, uno más grande", () => {
+    const top = { edge: "top" as const, expanded: false };
+    const left = { edge: "left" as const, expanded: false };
+    expect(isIslandPanelFace("snippets")).toBe(true);
+    expect(contentFor("edge", 180, top, "idle", 5, false, 0, 0, "snippets")).toEqual(
+      contentFor("edge", 180, top, "idle", 5, false, 0, 0, "clipboard"),
+    );
+    expect(contentFor("edge", 180, top, "idle", 5, false, 0, 0, "agents")).toEqual({
+      w: PILL.islandAgentsSetupW,
+      h: PILL.islandThick + PILL.islandAgentsSetupH,
+    });
+    expect(contentFor("edge", 180, left, "idle", 5, false, 0, 0, "agents")).toEqual({
+      w: PILL.islandThick + PILL.islandAgentsSetupW,
+      h: PILL.islandAgentsSetupH,
+    });
+    expect(
+      contentFor("edge", 180, top, "idle", 5, false, 0, 0, "agents", true),
+    ).toEqual({ w: PILL.islandAgentsW, h: PILL.islandThick + PILL.islandAgentsH });
+  });
+
+  it("islandFaceClipboard: acoplada y pedida, también en laterales", () => {
+    const dock = { edge: "top" as const, expanded: false };
+    expect(islandFaceClipboard({ surface: "edge", dock, requested: true })).toBe(true);
+    expect(islandFaceClipboard({ surface: "edge", dock, requested: false })).toBe(
+      false,
+    );
+    expect(
+      islandFaceClipboard({
+        surface: "edge",
+        dock: { edge: "left", expanded: false },
+        requested: true,
+      }),
+    ).toBe(true);
+    expect(islandFaceClipboard({ surface: "none", dock, requested: true })).toBe(false);
+    expect(islandFacePanel({ surface: "edge", dock, requested: true })).toBe(true);
+  });
+
   it("islandFaceAgent: auto-abre con pedido nuevo, no re-abre el colapsado", () => {
     const dock = { edge: "top" as const, expanded: false };
     const base = {
@@ -264,6 +345,24 @@ describe("contentFor", () => {
       surface: "wheel",
       dock: null,
     });
+  });
+
+  it("recentrar el notch solo en isla de techo, en reposo", () => {
+    const docked = {
+      surface: "edge" as const,
+      dock: { edge: "top" as const, expanded: false },
+    };
+    expect(shouldRecenterTopNotch(docked)).toBe(true);
+    expect(shouldRecenterTopNotch({ ...docked, flying: true })).toBe(false);
+    expect(shouldRecenterTopNotch({ ...docked, opening: true })).toBe(false);
+    expect(shouldRecenterTopNotch({ surface: "wheel", dock: docked.dock })).toBe(false);
+    expect(shouldRecenterTopNotch({ surface: "none", dock: docked.dock })).toBe(false);
+    expect(
+      shouldRecenterTopNotch({
+        surface: "edge",
+        dock: { edge: "left", expanded: false },
+      }),
+    ).toBe(false);
   });
 
   it("activar desde el canto se queda acoplada; el summon no", () => {
@@ -340,9 +439,90 @@ describe("contentFor", () => {
     expect(islandHoverOpens({ ...closed, over: false })).toBe(false);
   });
 
+  it("el disco flotante mira el hover; el atajo no se cierra al alejar", () => {
+    expect(
+      floatWheelHoverWatches({
+        surface: "none",
+        discOnly: true,
+        heldByHover: false,
+        collapsingFrom: null,
+      }),
+    ).toBe(true);
+    expect(
+      floatWheelHoverWatches({
+        surface: "none",
+        discOnly: false,
+        heldByHover: false,
+        collapsingFrom: null,
+      }),
+    ).toBe(false);
+    expect(
+      floatWheelHoverWatches({
+        surface: "edge",
+        discOnly: true,
+        heldByHover: false,
+        collapsingFrom: null,
+      }),
+    ).toBe(false);
+    expect(
+      floatWheelHoverWatches({
+        surface: "wheel",
+        discOnly: true,
+        heldByHover: true,
+        collapsingFrom: null,
+      }),
+    ).toBe(true);
+    expect(
+      floatWheelHoverWatches({
+        surface: "wheel",
+        discOnly: true,
+        heldByHover: false,
+        collapsingFrom: null,
+      }),
+    ).toBe(false);
+    expect(
+      floatWheelHoverWatches({
+        surface: "none",
+        discOnly: true,
+        heldByHover: true,
+        collapsingFrom: "wheel",
+      }),
+    ).toBe(false);
+  });
+
+  it("el disco flotante espera un toque antes de abrir la rueda", () => {
+    const closed = { over: true, alreadyOpen: false, hoveredMs: 0 };
+    expect(floatWheelHoverOpens(closed)).toBe(false);
+    expect(
+      floatWheelHoverOpens({
+        ...closed,
+        hoveredMs: FLOAT_WHEEL_HOVER_OPEN_MS - 1,
+      }),
+    ).toBe(false);
+    expect(
+      floatWheelHoverOpens({
+        ...closed,
+        hoveredMs: FLOAT_WHEEL_HOVER_OPEN_MS,
+      }),
+    ).toBe(true);
+    expect(floatWheelHoverOpens({ over: true, alreadyOpen: true, hoveredMs: 0 })).toBe(
+      true,
+    );
+    expect(
+      floatWheelHoverOpens({ over: false, alreadyOpen: true, hoveredMs: 500 }),
+    ).toBe(false);
+  });
+
   it("el pointermove del hover sintético no cuenta como arrastre", () => {
     expect(pointerMoveDrags(0)).toBe(false);
     expect(pointerMoveDrags(1)).toBe(true);
+  });
+
+  it("el clic se mide contra el down original, no contra un origen re-sembrado", () => {
+    const press = { x: 100, y: 100 };
+    expect(pointerGestureWasClick(press, { x: 102, y: 101 }, 4)).toBe(true);
+    expect(pointerGestureWasClick(press, { x: 110, y: 100 }, 4)).toBe(false);
+    expect(pointerGestureWasClick(null, { x: 100, y: 100 }, 4)).toBe(false);
   });
 
   it("acoplada, la actividad no cuelga: la caja no crece hacia adentro", () => {
@@ -376,11 +556,13 @@ describe("contentFor", () => {
   it("el aviso de update alarga la pestaña, no la hace colgar", () => {
     const dockShut = { edge: "bottom" as const, expanded: false };
     // Cuenta como una marca más: entra a `islandCueCount`, no a un hang.
+    // Uno o dos logos caben en el dintel; con varios la isla se alarga
+    // a lo largo del borde y el grosor no cambia.
     const unaMarca = contentFor("edge", 180, dockShut, "idle", 5, true, 1);
-    const dosMarcas = contentFor("edge", 180, dockShut, "idle", 5, true, 2);
-    expect(dosMarcas.h).toBe(unaMarca.h);
-    expect(dosMarcas.w).toBeGreaterThan(unaMarca.w);
-    expect(dosMarcas.w).toBe(islandCueLong(2));
+    const muchas = contentFor("edge", 180, dockShut, "idle", 5, true, 4);
+    expect(muchas.h).toBe(unaMarca.h);
+    expect(muchas.w).toBeGreaterThan(unaMarca.w);
+    expect(muchas.w).toBe(islandCueLong(4));
   });
 
   /**
@@ -682,6 +864,17 @@ describe("wheelOpenFlight", () => {
       skipIfNear: FLIGHT_SKIP_PX,
     });
     expect(dest).toEqual({ x: 102, y: 102 });
+  });
+
+  it("sin cursor (clic en la pill) no vuela: encaja donde está", () => {
+    const dest = wheelOpenFlight({
+      cursor: null,
+      pill: { x: 400, y: 300, w: 48, h: 48 },
+      wheel,
+      areas: [area],
+      skipIfNear: FLIGHT_SKIP_PX,
+    });
+    expect(dest).toEqual({ x: 400, y: 300 });
   });
 });
 

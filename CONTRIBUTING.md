@@ -49,20 +49,23 @@ El ciclo rápido (HMR, `cargo ck`, tests del crate que tocaste) está en
 [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) → «Ciclo rápido». Antes de subir,
 esto tiene que estar limpio:
 
-Rust (desde la raíz del repo):
+Desde la raíz del repo, según el área que cambió:
 
 ```bash
-cargo fmt --all --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+pnpm verify:desktop
+pnpm verify:web
+pnpm verify:rust
 ```
 
-Frontend:
+Para validar frontend desktop, sitio web y formato de Rust juntos:
 
 ```bash
-cd apps/desktop
 pnpm verify
 ```
+
+Antes de un release, usa `pnpm verify:all`: también prepara los sidecars y
+ejecuta clippy y tests del workspace Rust. Requiere las dependencias de ambas
+apps y el entorno nativo descrito en las guías de desarrollo.
 
 ## PRs
 

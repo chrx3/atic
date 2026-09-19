@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   boxShape,
+  clampDockedTabRect,
   gapBetween,
   nearestStemBody,
+  notchShape,
   pillShape,
   stemBetween,
   stemBodyFits,
@@ -29,6 +31,76 @@ describe("pillShape", () => {
   it("redondea hasta la mitad del lado corto", () => {
     expect(pillShape({ x: 0, y: 0, w: 176, h: 40 }).r).toBe(20);
     expect(pillShape({ x: 0, y: 0, w: 40, h: 176 }).r).toBe(20);
+  });
+});
+
+describe("notchShape", () => {
+  const rect = { x: 200, y: 0, w: 124, h: 40 };
+
+  it("en el techo mete el radio arriba y deja el ancho igual", () => {
+    const s = notchShape(rect, "top");
+    expect(s).toEqual({
+      kind: "box",
+      cx: 262,
+      cy: 10,
+      hw: 62,
+      hh: 30,
+      r: 20,
+    });
+  });
+
+  it("con radio de panel el cuerpo no es una pastilla", () => {
+    const tall = { x: 200, y: 0, w: 280, h: 292 };
+    const s = notchShape(tall, "top", 22);
+    expect(s.r).toBe(22);
+    expect(shapeSD(s, tall.x, 40)).toBeCloseTo(0, 0);
+  });
+
+  it("al ras del techo el lado es vertical, no un ala", () => {
+    const s = notchShape(rect, "top");
+    // Un pelín bajo el canto: el lado izquierdo ya es la vertical.
+    expect(shapeSD(s, rect.x, 4)).toBeCloseTo(0, 0);
+    expect(shapeSD(s, rect.x + rect.w, 4)).toBeCloseTo(0, 0);
+    // Fuera del ancho no hay menisco.
+    expect(shapeSD(s, rect.x - 8, 4)).toBeGreaterThan(4);
+    expect(shapeSD(s, rect.x + rect.w + 8, 4)).toBeGreaterThan(4);
+  });
+});
+
+describe("clampDockedTabRect", () => {
+  it("en el techo estira hacia el escritorio y no mueve el bisel", () => {
+    const cut = { x: 200, y: 0, w: 124, h: 22 };
+    expect(clampDockedTabRect(cut, "top", 40)).toEqual({
+      x: 200,
+      y: 0,
+      w: 124,
+      h: 40,
+    });
+  });
+
+  it("abajo conserva el canto y crece hacia adentro", () => {
+    const cut = { x: 10, y: 860, w: 124, h: 18 };
+    expect(clampDockedTabRect(cut, "bottom", 40)).toEqual({
+      x: 10,
+      y: 838,
+      w: 124,
+      h: 40,
+    });
+  });
+
+  it("si ya mide el dintel, no toca el rect", () => {
+    const tab = { x: 200, y: 0, w: 124, h: 40 };
+    expect(clampDockedTabRect(tab, "top", 40)).toBe(tab);
+  });
+
+  it("a la derecha conserva el canto y crece hacia adentro", () => {
+    const cut = { x: 1400, y: 200, w: 16, h: 124 };
+    expect(clampDockedTabRect(cut, "right", 40)).toEqual({
+      x: 1376,
+      y: 200,
+      w: 40,
+      h: 124,
+    });
   });
 });
 

@@ -427,6 +427,33 @@ fn exigir_disponible(id: &str) -> Result<(), Vec<u8>> {
     ))
 }
 
+/// Elige un backend automático solo entre agentes que se pueden usar ahora.
+///
+/// `disponibles()` devuelve la caché inmediatamente para que `/v1/agents` no
+/// bloquee el listado. En el primer encargo, sin embargo, una caché vacía no
+/// significa que no haya agentes: el refresco de arranque puede seguir en
+/// curso. Hacemos una sola actualización síncrona antes de responder que no
+/// hay backend.
+fn elegir_backend_auto(kind: Option<api::Kind>) -> Option<String> {
+    let usable = |lista: &[api::AgentInfo]| {
+        let refs = referencias_utilizables(lista);
+        graph::route(kind, &refs).map(str::to_string)
+    };
+
+    if let Some(backend) = usable(&disponibles()) {
+        return Some(backend);
+    }
+    usable(&refrescar_disponibles())
+}
+
+fn referencias_utilizables(lista: &[api::AgentInfo]) -> Vec<(&str, bool)> {
+    lista
+        .iter()
+        .filter(|a| utilizable(a, &a.id))
+        .map(|a| (a.id.as_str(), true))
+        .collect()
+}
+
 fn validar_modo(mode: &Option<String>) -> Result<(), Vec<u8>> {
     let Some(m) = mode.as_deref() else {
         return Ok(());
@@ -541,13 +568,8 @@ fn delegate(pedido: Pedido, app: Option<&AppHandle>, empezo: Instant) -> Vec<u8>
     };
     // Backend concreto o `"auto"` por `kind`: nunca las dos cosas ni prosa.
     let backend = if req.backend == "auto" {
-        let vigentes = disponibles();
-        let refs: Vec<(&str, bool)> = vigentes
-            .iter()
-            .map(|a| (a.id.as_str(), a.available))
-            .collect();
-        match graph::route(req.kind, &refs) {
-            Some(b) => b.to_string(),
+        match elegir_backend_auto(req.kind) {
+            Some(b) => b,
             None => {
                 return no_hay_forma(
                     409,
@@ -732,8 +754,27 @@ fn cancel(pedido: Pedido) -> Vec<u8> {
         Ok(s) => s,
         Err(e) => return e,
     };
-    let _ = super::super::bridge::interrupt_session(&sesion);
+    if let Err(msg) = super::super::bridge::interrupt_session(&sesion) {
+        return fallo_cancel(msg);
+    }
     hay_forma(serde_json::json!({ "session": sesion, "status": "cancelling" }))
+}
+
+/// Mapea el fallo de `interrupt_session` a respuesta HTTP.
+///
+/// La sesión se resolvió justo antes, así que «ya no existe» / «no hay
+/// sesiones» es una carrera (murió entre medio): 404 `unknown_session` como
+/// en `prompt`/`wait`. Cualquier otro mensaje es del backend al interrumpir
+/// (canal de control, ACP): 409 `cancel_failed` con el detalle.
+fn fallo_cancel(msg: String) -> Vec<u8> {
+    if msg.contains("ya no existe") || msg.contains("no hay sesiones") {
+        no_hay_forma(
+            404,
+            HubError::nueva("unknown_session", "Esa sesión ya no existe en Atic.".into()),
+        )
+    } else {
+        no_hay_forma(409, HubError::nueva("cancel_failed", msg))
+    }
 }
 
 /// Cierra la sesión y libera su proceso.
@@ -1056,6 +1097,51 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&cuerpo).unwrap();
         assert_eq!(v["error"]["code"], "unknown_session");
         apagar(port, &vivo);
+    }
+
+    #[test]
+    fn auto_ignora_backend_sin_login() {
+        let agentes = vec![
+            api::AgentInfo {
+                id: "claude-code".into(),
+                name: "Claude Code".into(),
+                available: true,
+                signed_in: Some(false),
+                blurb: String::new(),
+            },
+            api::AgentInfo {
+                id: "codex".into(),
+                name: "Codex".into(),
+                available: true,
+                signed_in: Some(true),
+                blurb: String::new(),
+            },
+        ];
+        let refs = referencias_utilizables(&agentes);
+        assert_eq!(graph::route(Some(api::Kind::Plan), &refs), Some("codex"));
+    }
+
+    #[test]
+    fn cancel_informa_si_el_backend_no_se_puede_interrumpir() {
+        let respuesta = fallo_cancel("el canal ya está cerrado".into());
+        let texto = String::from_utf8_lossy(&respuesta);
+        assert!(texto.starts_with("HTTP/1.1 409"), "{texto}");
+        assert!(texto.contains("cancel_failed"), "{texto}");
+    }
+
+    #[test]
+    fn cancel_de_sesion_muerta_entre_resolver_e_interrumpir_es_404() {
+        // La sesión se resolvió justo antes: si ya no existe, fue una
+        // carrera y se informa como unknown_session, igual que prompt/wait.
+        for msg in [
+            "esa sesión ya no existe",
+            "no hay sesiones abiertas".to_string(),
+        ] {
+            let respuesta = fallo_cancel(msg);
+            let texto = String::from_utf8_lossy(&respuesta);
+            assert!(texto.starts_with("HTTP/1.1 404"), "{texto}");
+            assert!(texto.contains("unknown_session"), "{texto}");
+        }
     }
 
     #[test]

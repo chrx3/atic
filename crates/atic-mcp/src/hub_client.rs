@@ -35,9 +35,41 @@ impl HubFallo {
     pub fn mensaje(&self) -> String {
         match self {
             HubFallo::Ausente => HUB_MISSING.to_string(),
-            HubFallo::Error(e) => e.message.clone(),
+            HubFallo::Error(e) => {
+                // El agente necesita el código y `data` para resolver casos
+                // como `ambiguous_session` sin tener que adivinar qué pasó.
+                // Se mantiene como texto porque MCP lo entrega en un bloque
+                // de error, pero conserva la forma estructurada del contrato.
+                let mut detalle = serde_json::json!({
+                    "code": e.code,
+                    "message": e.message,
+                });
+                if let Some(data) = &e.data {
+                    detalle["data"] = data.clone();
+                }
+                format!("Atic respondió con un error: {detalle}")
+            }
             HubFallo::Red(m) => format!("No se pudo hablar con Atic: {m}."),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn error_del_hub_conserva_codigo_y_datos() {
+        let fallo = HubFallo::Error(HubError {
+            code: "ambiguous_session".into(),
+            message: "Hay dos sesiones con ese nombre.".into(),
+            data: Some(serde_json::json!({"sessions": ["s1", "s2"]})),
+        });
+        let texto = fallo.mensaje();
+        assert!(texto.contains("ambiguous_session"));
+        assert!(texto.contains("Hay dos sesiones con ese nombre."));
+        assert!(texto.contains("s1"));
+        assert!(texto.contains("s2"));
     }
 }
 

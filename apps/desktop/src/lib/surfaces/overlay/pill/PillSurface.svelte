@@ -29,9 +29,14 @@
   import AticMark from "$lib/AticMark.svelte";
   import { liquid } from "$surfaces/overlay/group.svelte";
   import { publishEmergeSkin } from "$surfaces/overlay/floatEmergeSkin";
-  import type { Rect } from "$lib/liquid/geometry";
   import { RectTracker } from "$lib/liquid/measure.svelte";
-  import { gapBetween, pillShape } from "$lib/liquid/geometry";
+  import {
+    clampDockedTabRect,
+    gapBetween,
+    notchShape,
+    pillShape,
+    type Rect,
+  } from "$lib/liquid/geometry";
   import { INFLUENCE, REACH } from "$lib/liquid/constants";
   import ToolIcon, { type IconId } from "$lib/ToolIcon.svelte";
   import AgentLogo from "$features/agents/AgentLogo.svelte";
@@ -78,12 +83,18 @@
     pivotFor,
     stepWheel as nextWheelTool,
     undockForSummon,
+    shouldRecenterTopNotch,
     shouldReturnToEdgeOnActivate,
     shouldMeasureBar,
     islandHoverStay,
     islandHoverOpens,
+    floatWheelHoverWatches,
+    floatWheelHoverOpens,
     islandFaceAgent,
+    islandFacePanel,
+    islandNotchRadius,
     pointerMoveDrags,
+    pointerGestureWasClick,
     ISLAND_COLLAPSE_MS,
     ISLAND_COLLAPSE_MORE_MS,
     wheelChromeActive,
@@ -107,8 +118,10 @@
     quotaHoverState,
   } from "$surfaces/overlay/pill/quotaHover.svelte";
   import {
+    areaFor,
     dockAxis,
     defaultPillHome,
+    edgeCenterPoint,
     geometryReseat,
     edgeWallsFor,
     snapDrop,
@@ -123,6 +136,7 @@
     ms,
     opacityFade,
     prefersReducedMotion,
+    tabPanel,
   } from "$lib/motion";
   import { playWheelTick } from "$ipc/uiSound";
   import type { PermissionDecision } from "$core/types";
@@ -134,7 +148,6 @@
     hideAgentsWindow,
     onAgentsBubbleAnchor,
     onAgentsBubbleDismiss,
-    presentAgentsWindow,
     agentPresenceFocus,
     agentPresenceBind,
     revealAgentsConsole,
@@ -152,6 +165,12 @@
     onSnippetsBubbleDismiss,
     snippetsAlwaysOnTop,
   } from "$ipc/snippets";
+  import ClipboardHistoryList from "$lib/ClipboardHistoryList.svelte";
+  import SnippetsList from "$lib/SnippetsList.svelte";
+  import AgentLauncher from "$features/agents/AgentLauncher.svelte";
+  import { agentsIslandHost } from "$surfaces/overlay/agents/agentsIslandHost.svelte";
+  import { clipboard } from "$domain/clipboard.svelte";
+  import { snippets } from "$domain/snippets.svelte";
   import { executeToolAction } from "$surfaces/toolActions";
   import { isSpatialTool } from "$surfaces/overlay/toolSlots";
   import {
@@ -164,7 +183,10 @@
     spatialDismissTargets,
     type SlotRequest,
   } from "$surfaces/overlay/slotIntent";
-  import { armOpenDismissGrace } from "$surfaces/overlay/openDismissGrace";
+  import {
+    armOpenDismissGrace,
+    isOpenDismissGrace,
+  } from "$surfaces/overlay/openDismissGrace";
   import {
     birthAtCursor,
     captureToolBirth,
@@ -183,6 +205,7 @@
     pillTrace,
     savePillHome,
     setOverlayPointerGesture,
+    workAreaOf,
   } from "$ipc/overlay";
   import { OVERLAY_GEOMETRY } from "$surfaces/overlay/overlayGeometry";
 
@@ -191,8 +214,8 @@
    * está testeado. Acá queda la ejecución: el estado, los efectos y los viajes
    * a Rust.
    *
-   * Clipboard, snippets y agentes abren ventanas flotantes propias; la pill solo
-   * los invoca desde la rueda o muestra el aviso de agente en la barra.
+   * Clipboard, textos y agentes abren como cara de la isla (un solo blob).
+   * El launcher sigue siendo float espacial.
    */
 
   /**
@@ -202,7 +225,9 @@
    * oyentes, duplicados con la ventana principal: dos cronómetros contando lo
    * mismo. Ahora se declara una vez qué necesita esta ventana y el resto se lee.
    */
-  $effect(() => sessionEffect(["config", "capture", "dictation", "paste"]));
+  $effect(() =>
+    sessionEffect(["config", "capture", "dictation", "paste", "clipboard", "snippets"]),
+  );
 
   // ─── Eje 1: actividad ────────────────────────────────────────────────────
   const recording = $derived(capture.active);
@@ -231,6 +256,15 @@
   let stripPage = $state<"ring" | "more">("ring");
   /** Cierre acelerado: al elegir herramienta la rueda ya cumplió su función. */
   let wheelQuick = $state(false);
+  /**
+   * La rueda la abrió el hover del disco flotante, no un clic ni el atajo.
+   *
+   * Solo entonces alejar el mouse la cierra, como la isla. Un summon con
+   * `Alt+Z` se queda hasta Esc, clic afuera o elegir herramienta.
+   */
+  let wheelHeldByHover = $state(false);
+  /** Tras cerrar, no reabrir en el mismo hover: el morph deja el cursor encima. */
+  let floatWheelHoverLockUntil = 0;
   /**
    * Qué superficie se está cerrando.
    *
@@ -349,7 +383,7 @@
     if (markState === "dictating") {
       return { label: t("pill.stopDictate"), run: toggleDictate };
     }
-    return { label: discHint, run: () => void openWheel() };
+    return { label: discHint, run: () => void openWheel({ fromClick: true }) };
   });
 
   /**
@@ -458,7 +492,7 @@
   let wheelShortcut = $state("");
 
   /**
-   * La ayuda del disco: atajo, qué hace el clic y que se puede arrastrar.
+   * La ayuda del disco: atajo, que el hover abre las tools y que se puede arrastrar.
    *
    * Antes vivía inline en el `use:tip`. Ahora la leen dos consumidores —el
    * `aria-label` del disco y el pie del panel de cupos—, y repetirla dejaría
@@ -526,7 +560,7 @@
       wheelShortcut
         ? t("pill.toolsWithShortcut", { shortcut: formatShortcut(wheelShortcut) })
         : "",
-      t("pill.clickTools"),
+      t("pill.hoverTools"),
       t("pill.dragMove"),
     ]
       .filter(Boolean)
@@ -718,14 +752,29 @@
     void bootHidden;
     void birthing;
     void agentFaceOpen;
+    void seating;
+    void islandFace;
+    void box.w;
+    void box.h;
     const blooming = wheelChrome;
-    if (surface !== "edge" && !beadsAlive && !blooming && !flying && !birthing) return;
+    if (
+      surface !== "edge" &&
+      !beadsAlive &&
+      !blooming &&
+      !flying &&
+      !birthing &&
+      !seating
+    )
+      return;
     let raf = 0;
     const bloomMs =
       ms(MOTION.morphOpen) + (WHEEL_TOOLS.length + 1) * ms(MOTION.morphStagger);
     const until =
       performance.now() +
-      (blooming ? bloomMs : flying ? ms(MOTION.flight) : ms(MOTION.islandOpen)) +
+      Math.max(
+        blooming ? bloomMs : flying ? ms(MOTION.flight) : ms(MOTION.islandOpen),
+        seating ? ms(MOTION.fast) : 0,
+      ) +
       ISLAND_SETTLE_MS;
     const pump = () => {
       tracker.wake();
@@ -757,6 +806,10 @@
     void bootHidden;
     void birthing;
     void agentFaceOpen;
+    void seating;
+    void islandFace;
+    void box.w;
+    void box.h;
     tracker.wake(true);
   });
 
@@ -832,12 +885,25 @@
     // puntero es la caja y no lo dibujado—.
     if (surface === "edge") {
       const shapes = [];
-      if (r.island) shapes.push(pillShape(at(r.island)));
+      // Sin pared SDF: el filete de la pared era más ancho que la isla y el
+      // smin lo convertía en alas. `notchShape` mete el radio del canto en
+      // el bisel y los lados bajan derechos.
+      if (r.island) {
+        let box = at(r.island);
+        // El rebote de `--ease-island` se pasa del dintel; si el tracker
+        // se duerme en ese valle, la pestaña queda cortada. El aplastón
+        // de asiento sí puede encoger un instante: no se pisa acá.
+        if (dock && islandFace === "tab" && !dock.expanded && !seating) {
+          box = clampDockedTabRect(box, dock.edge, faceTabH);
+        }
+        shapes.push(
+          dock ? notchShape(box, dock.edge, islandNotchRadius(box)) : pillShape(box),
+        );
+      }
       // Avisos: misma tinta, otro bulto. El smin los funde con la pestaña
       // en vez de pintar una cápsula encima.
       if (r["island-cue"]) shapes.push(pillShape(at(r["island-cue"])));
       if (r["island-update-cue"]) shapes.push(pillShape(at(r["island-update-cue"])));
-      shapes.push(...wallFor(r.island));
       return shapes;
     }
 
@@ -889,8 +955,13 @@
     return windowFor({ w: PILL.bar, h: PILL.bar });
   }
 
+  /** Tamaño de la isla en reposo en el techo: el hogar se centra con ESTO. */
+  function notchHomeSize() {
+    return windowFor(contentFor("edge", barW, { edge: "top", expanded: false }));
+  }
+
   function refreshDefaultHome() {
-    const dest = defaultPillHome(restSize(), stage.workAreas());
+    const dest = defaultPillHome(notchHomeSize(), stage.workAreas());
     if (dest) home = dest.at;
   }
 
@@ -1044,23 +1115,53 @@
     authRequest && surface === "edge" && !agentsConsoleOpen ? authRequest : null,
   );
   let agentFaceDismissed = $state<string | null>(null);
-  const agentFace: IslandFace = $derived(
-    islandFaceAgent({
-      surface,
-      dock,
-      authId: agentFaceReq?.permission.id ?? null,
-      dismissedAuthId: agentFaceDismissed,
-    })
-      ? "agent"
-      : "tab",
-  );
-  const agentFaceOpen = $derived(agentFace === "agent");
+  /** Pedido explícito de panel en la isla (clipboard, textos, agentes). */
+  let toolFace = $state<"tab" | "clipboard" | "snippets" | "agents">("tab");
+  let snippetsTab = $state<"list" | "scratchpad">("list");
+  const islandFace: IslandFace = $derived.by(() => {
+    if (
+      islandFaceAgent({
+        surface,
+        dock,
+        authId: agentFaceReq?.permission.id ?? null,
+        dismissedAuthId: agentFaceDismissed,
+      })
+    ) {
+      return "agent";
+    }
+    if (islandFacePanel({ surface, dock, requested: toolFace !== "tab" })) {
+      return toolFace;
+    }
+    return "tab";
+  });
+  const agentFaceOpen = $derived(islandFace === "agent");
+  const clipboardFaceOpen = $derived(islandFace === "clipboard");
+  const snippetsFaceOpen = $derived(islandFace === "snippets");
+  const agentsFaceOpen = $derived(islandFace === "agents");
+  let agentsMounted = $state(false);
+  let agentsLive = $state(false);
+  let agentsConsoleView = $state(false);
+  const faceOpen = $derived(islandFace !== "tab");
   $effect(() => {
     if (!authRequest) agentFaceDismissed = null;
+  });
+  $effect(() => {
+    if (surface !== "edge") toolFace = "tab";
   });
   /** Colapso manual: decidir, consola, clic afuera y Esc pasan por acá. */
   function dismissAgentFace(): void {
     agentFaceDismissed = agentFaceReq?.permission.id ?? agentFaceDismissed;
+  }
+  let islandFaceLockUntil = 0;
+  let clipFaceEl = $state<HTMLElement | null>(null);
+  function dismissToolFace(): void {
+    const was = toolFace;
+    toolFace = "tab";
+    if (was !== "tab" && spatialIntent === was) spatialIntent = null;
+    islandFaceLockUntil = performance.now() + ISLAND_COLLAPSE_MS;
+    setIslandExpanded(false);
+    void setOverlayPointerGesture(false).catch(() => {});
+    if (was === "agents" && agentsLive) agentsDock.setMinimized(true);
   }
   /** Alto de la zona de pestaña cuando la tarjeta cuelga (igual que cerrada). */
   const faceTabH = $derived(islandCue ? PILL.islandCueThick : PILL.islandThick);
@@ -1076,6 +1177,29 @@
     1 + stripNodes.length + (updateChip ? 1 : 0) + islandLiveSlots(activity),
   );
 
+  /**
+   * Piso CSS del dintel: el overshoot de `--ease-island` no puede dejar la
+   * caja más chica que la pestaña en reposo. Crece sí; encoger de más, no.
+   */
+  const dockedTabWindow = $derived(
+    surface === "edge" && dock
+      ? windowFor(
+          contentFor(
+            "edge",
+            barW,
+            { edge: dock.edge, expanded: false },
+            activity,
+            islandSlots,
+            edgeCue,
+            edgeCueMarks,
+            0,
+            "tab",
+            false,
+          ),
+        )
+      : null,
+  );
+
   const target = $derived(
     windowFor(
       contentFor(
@@ -1089,7 +1213,8 @@
         edgeCue,
         edgeCueMarks,
         surface === "none" ? chips.length : 0,
-        agentFace,
+        islandFace,
+        agentsConsoleView,
       ),
     ),
   );
@@ -1203,7 +1328,7 @@
   async function openAgentsConsole() {
     try {
       revealAgentsConsole();
-      await presentAgentsWindow();
+      await openIslandTool("agents");
       agentsConsoleOpen = true;
     } catch (err) {
       console.warn("abrir consola de agentes", err);
@@ -1213,8 +1338,8 @@
   function activateAgentChip(which: AgentChip | null, preferBindFromGesture = false) {
     const current = which ?? chip;
     if (agentsDock.minimized && (current.tone === "off" || !which)) {
-      agentsDock.expand();
-      void presentAgentsWindow();
+      void openIslandTool("agents");
+      revealAgentsConsole();
       return;
     }
     const target = current.target;
@@ -1422,6 +1547,23 @@
         dragOrigin.ox = dragCursor.x - next.w / 2;
         dragOrigin.oy = dragCursor.y - next.h / 2;
         stage.moveTo({ x: dragOrigin.ox, y: dragOrigin.oy });
+      } else if (
+        shouldRecenterTopNotch({
+          surface,
+          dock,
+          flying,
+          opening: opening || openingWheel,
+        })
+      ) {
+        // Solo la isla en el techo, en reposo. Si corre al abrir la rueda,
+        // el `dock.top` que quedó tira el cuadrado al canto y el clic
+        // parece no hacer nada.
+        const areas = stage.workAreas();
+        const here = { x: stage.at().x, y: stage.at().y, w: next.w, h: next.h };
+        const area = areaFor(here, areas);
+        if (area) {
+          stage.moveTo(edgeCenterPoint("top", next, workAreaOf(area)));
+        }
       }
       at = stage.at();
       box = next;
@@ -1666,7 +1808,8 @@
         seatingTimer = window.setTimeout(() => {
           seating = false;
           seatingTimer = 0;
-        }, 200);
+          tracker.wake(true);
+        }, ms(MOTION.slow));
       }
     } else {
       dock = null;
@@ -1730,6 +1873,8 @@
    */
   function collapseWheelForDrag(cursor: { x: number; y: number }): void {
     if (!dragClosesWheel(surface) || !dragOrigin) return;
+    wheelHeldByHover = false;
+    floatWheelHoverLockUntil = performance.now() + ISLAND_COLLAPSE_MS;
     cancelPendingCollapse();
     collapsingFrom = null;
     wheelShown = false;
@@ -1788,6 +1933,7 @@
     // pintado en el vacío (pezón en el techo). Mientras el panel vive, la
     // tira es el cuerpo.
     void quotaHoverState.open;
+    void islandFace;
     let alive = true;
     let leftAt: number | null = null;
     let hoveredAt: number | null = null;
@@ -1795,13 +1941,21 @@
       // Arrastrando no: agrandar la caja a mitad del gesto mueve el suelo bajo
       // el puntero, y encima el destino de acople se calcula con ese tamaño.
       if (dragOrigin) return;
-      const over = await overlayCursorOverHit("pill").catch(() => null);
-      if (!alive || dragOrigin || over === null) return;
-      const now = performance.now();
-      if (over) hoveredAt = hoveredAt ?? now;
-      else hoveredAt = null;
       const lingerMs =
         stripPage === "more" ? ISLAND_COLLAPSE_MORE_MS : ISLAND_COLLAPSE_MS;
+      const now = performance.now();
+      // Cara abierta o recién cerrada: no pasar por la tira. Si leftAt queda
+      // null, el linger de hover abre la tira 400 ms y se ve el morph doble.
+      if (islandFace !== "tab" || now < islandFaceLockUntil) {
+        if (dock?.expanded) setIslandExpanded(false);
+        leftAt = now - lingerMs;
+        hoveredAt = null;
+        return;
+      }
+      const over = await overlayCursorOverHit("pill").catch(() => null);
+      if (!alive || dragOrigin || over === null) return;
+      if (over) hoveredAt = hoveredAt ?? now;
+      else hoveredAt = null;
       const next = islandHoverStay({
         over: islandHoverOpens({
           over: over || quotaHoverState.open,
@@ -1815,6 +1969,71 @@
       });
       leftAt = next.leftAt;
       setIslandExpanded(next.open);
+    };
+    void look();
+    const timer = setInterval(() => void look(), ISLAND_HOVER_MS);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+    };
+  });
+
+  /**
+   * Disco flotante: el hover abre la rueda, alejarla la cierra.
+   *
+   * Misma fuente que la isla (`overlayCursorOverHit`), no `pointerenter`: el
+   * overlay es click-through y el primer clic en macOS se lo queda AppKit.
+   * Por eso el notch ya andaba y el disco pedía dos clics.
+   */
+  $effect(() => {
+    if (
+      !floatWheelHoverWatches({
+        surface,
+        discOnly,
+        heldByHover: wheelHeldByHover,
+        collapsingFrom,
+      })
+    ) {
+      return;
+    }
+    let alive = true;
+    let leftAt: number | null = null;
+    let hoveredAt: number | null = null;
+    const look = async () => {
+      if (dragOrigin || openingWheel || flying || bootHidden || birthing || seating) {
+        return;
+      }
+      const now = performance.now();
+      if (now < floatWheelHoverLockUntil) {
+        leftAt = now - ISLAND_COLLAPSE_MS;
+        hoveredAt = null;
+        return;
+      }
+      const over = await overlayCursorOverHit("pill").catch(() => null);
+      if (!alive || dragOrigin || openingWheel || over === null) return;
+      if (over) hoveredAt = hoveredAt ?? now;
+      else hoveredAt = null;
+      const next = islandHoverStay({
+        over: floatWheelHoverOpens({
+          over,
+          alreadyOpen: surface === "wheel",
+          hoveredMs: hoveredAt == null ? 0 : now - hoveredAt,
+        }),
+        now,
+        leftAt,
+        lingerMs: ISLAND_COLLAPSE_MS,
+      });
+      leftAt = next.leftAt;
+      if (next.open) {
+        if (surface === "none") {
+          wheelHeldByHover = true;
+          void openWheel({ fromClick: true, fromHover: true });
+        }
+        return;
+      }
+      if (surface === "wheel" && wheelHeldByHover) {
+        void closeWheel();
+      }
     };
     void look();
     const timer = setInterval(() => void look(), ISLAND_HOVER_MS);
@@ -1872,14 +2091,19 @@
    * La firma visual es ParticleWheel (gotas/nodos), no un tween de width del
    * root: animar la caja con pivot center hacía derivar el centro.
    */
-  async function openWheel() {
+  async function openWheel(opts: { fromClick?: boolean; fromHover?: boolean } = {}) {
     // `surface` recién vale "wheel" al final. En esa ventana el auto-repeat del
     // atajo (Windows reenvía `Pressed` mientras la tecla está sostenida) podía
     // reentrar acá: el segundo pase cancelaba el tween del primero.
     if (surface === "wheel" || openingWheel) return;
+    if (!opts.fromHover) wheelHeldByHover = false;
     openingWheel = true;
+    // El mismo clic que abre llega tarde como `overlay-dismiss` (el overlay
+    // se rearma al soltar el gesto). Sin gracia, aborta el vuelo y la pill
+    // pega un salto al canto y vuelve.
+    armOpenDismissGrace();
     try {
-      await openWheelInner();
+      await openWheelInner(opts);
     } finally {
       // Pase lo que pase: una bandera trabada acá dejaría la rueda muerta para
       // el resto de la sesión.
@@ -1887,7 +2111,7 @@
     }
   }
 
-  async function openWheelInner() {
+  async function openWheelInner(opts: { fromClick?: boolean } = {}) {
     trace("openWheel");
     // Cancela un encoger pendiente: si el morph de cierre aún corre, el resize
     // chico no debe llegar después de que ya volvimos a crecer.
@@ -1906,6 +2130,9 @@
       home = { ...at };
       // 2) Volar al sitio donde la rueda cabe: cursor si está lejos (atajo),
       //    o el centro actual clampeado si el clic es sobre la pill.
+      //    En el clic no usamos `overlayCursor()`: durante el gesto Rust
+      //    publica hit fullscreen y el punto sale en otro lado (visto: un
+      //    segundo pegada al canto derecho y de vuelta).
       await stage.loadAreas();
       const size = stage.applied() ?? windowFor({ w: PILL.bar, h: PILL.bar });
       const wheel = windowFor({
@@ -1913,7 +2140,7 @@
         h: PILL.wheel - PILL.pad * 2,
       });
       const dest = wheelOpenFlight({
-        cursor: await cursorPoint(),
+        cursor: opts.fromClick ? null : await cursorPoint(),
         pill: { x: at.x, y: at.y, w: size.w, h: size.h },
         wheel,
         areas: stage.workAreas(),
@@ -2012,6 +2239,8 @@
   /** Cierra la rueda. Por defecto vuelve al hogar; un atajo de tool no debe. */
   async function closeWheel(opts: { returnHome?: boolean } = {}) {
     if (surface !== "wheel") return;
+    wheelHeldByHover = false;
+    floatWheelHoverLockUntil = performance.now() + ISLAND_COLLAPSE_MS;
     trace("closeWheel");
     const epoch = ++collapseEpoch;
     opening = true;
@@ -2177,10 +2406,20 @@
     }
   }
 
-  /** Float espacial ya visible (hit-rect registrado). */
+  /** Float espacial ya visible, o panel como cara de la isla. */
   function spatialToolOpen(id: ToolId): boolean {
-    if (id === "agents") return agentsConsoleOpen;
+    if (id === "clipboard" && toolFace === "clipboard") return true;
+    if (id === "snippets" && toolFace === "snippets") return true;
+    if (id === "agents") return toolFace === "agents" || agentsConsoleOpen;
     return isSpatialTool(id) && surfaces.live[id] != null;
+  }
+
+  function islandStayPut(id: ToolId): boolean {
+    return (
+      (id === "clipboard" && toolFace === "clipboard") ||
+      (id === "snippets" && toolFace === "snippets") ||
+      (id === "agents" && toolFace === "agents")
+    );
   }
 
   /**
@@ -2335,6 +2574,39 @@
     }
   }
 
+  /** Historial, textos o agentes dentro de la isla del notch, un solo blob. */
+  async function openIslandTool(
+    id: "clipboard" | "snippets" | "agents",
+  ): Promise<void> {
+    if (id === "clipboard") await hideClipboardWindow().catch(() => {});
+    else if (id === "snippets") await hideSnippetsWindow().catch(() => {});
+    else await hideAgentsWindow().catch(() => {});
+    if (dock) {
+      // El canto actual: laterales también. No volar al techo.
+      surface = "edge";
+      dock = { ...dock, expanded: false };
+    } else if (surface !== "edge") {
+      await goDefaultHome();
+    }
+    if (dock) dock = { ...dock, expanded: false };
+    toolFace = id;
+    if (id === "clipboard") void clipboard.hydrate();
+    if (id === "snippets") {
+      snippetsTab = "list";
+      void snippets.hydrate();
+    }
+    if (id === "agents") {
+      agentsIslandHost.on = true;
+      agentsMounted = true;
+      agentsDock.setMinimized(false);
+      if (!agentsLive) agentsConsoleView = false;
+    }
+    armOpenDismissGrace();
+    await setOverlayPointerGesture(true).catch(() => {});
+    await tick();
+    clipFaceEl?.focus({ preventScroll: true });
+  }
+
   /**
    * Camino ÚNICO de activación: catálogo, atajo global y rueda.
    *
@@ -2391,10 +2663,18 @@
         // Con `force` la distancia no decide nada: ahorrarse el IPC del cursor.
         force ? 0 : await cursorMovePx(id),
         FLIGHT_SKIP_PX,
-        { force },
+        { force, stayPut: islandStayPut(id) },
       );
 
       if (intent === "close") {
+        if (islandStayPut(id)) {
+          dismissToolFace();
+          if (slotPending) return;
+          if (!shouldReturnHomeAfterClose(slotPending)) return;
+          returnHomeSuppressed = false;
+          await maybeReturnHome();
+          return;
+        }
         if (spatialIntent === id) spatialIntent = null;
         await dismissSpatialTool(id).catch(() => {});
         if (slotPending) return;
@@ -2423,8 +2703,12 @@
 
       if (gen !== slotGen) return;
       if (!shouldCommitShow(slotPending)) return;
-      // Clipboard/textos: junto al cursor (atajo o rueda). El resto: la
-      // pill, para el monitor. El reveal corre después del vuelo a casa.
+      if (id === "clipboard" || id === "snippets" || id === "agents") {
+        if (id === "agents" && !AGENTS_ENABLED) return;
+        await openIslandTool(id);
+        return;
+      }
+      // Launcher: junto al cursor o al centro. El reveal corre después del vuelo a casa.
       const pill = surfaces.live["pill-skin"] ??
         surfaces.live["pill"] ?? {
           x: at.x,
@@ -2449,7 +2733,9 @@
     } catch (err) {
       console.warn("activate-tool-slot", err);
     } finally {
-      if (hold) void setOverlayPointerGesture(false).catch(() => {});
+      if (hold && toolFace === "tab") {
+        void setOverlayPointerGesture(false).catch(() => {});
+      }
       slotBusy = false;
       returnHomeSuppressed = false;
       const next = slotPending;
@@ -2518,6 +2804,8 @@
   const DRAG_THRESHOLD = 4;
   /** Sin `pointermove` en este rato, el cursor de Win32 toma el relevo. */
   const DRAG_DOM_STALE_MS = 32;
+  /** Down original: no se re-siembra. De ahí sale si el gesto fue un clic. */
+  let dragPress: { x: number; y: number } | null = null;
   let dragOrigin: {
     cx: number | null;
     cy: number | null;
@@ -2597,18 +2885,20 @@
     // abrirse, así que no hay que ir a buscarlo. El trato es el del disco en
     // reposo: clic cierra, arrastre mueve.
     const onWheelCore = el.closest(".pw-core") !== null;
+    const onRestDisc = el.closest(".p-mark.is-disc") !== null;
     if (
       !onIsland &&
       !onAgentChip &&
       !onUpdateChip &&
       !onWheelCore &&
+      !onRestDisc &&
       el.closest("button, a, input, textarea, [data-no-drag]")
     ) {
       return;
     }
-    // WebKit inicia un arrastre nativo del SVG del icono (o una selección) si
-    // no se corta acá: el gesto se lo queda el navegador y la pill no se mueve.
-    event.preventDefault();
+    // No preventDefault ni capture todavía: el disco en reposo necesita el
+    // `click` nativo (y el sintético de macOS). Capturar al down re-apunta el
+    // clic al root y no abre. El SVG no se arrastra: `-webkit-user-drag: none`.
     agentChipPressed = onAgentChip;
     agentChipPressedId = onAgentChip
       ? ((el.closest(".p-agent") as HTMLElement | null)?.dataset.chipId ?? "")
@@ -2619,6 +2909,7 @@
     // Semilla del DOM: `.ov` cubre el viewport (`inset: 0`), `clientX/Y` son
     // las coords del overlay. Esperar el primer IPC dejaba el gesto un cuadro
     // atrás desde el primer pixel.
+    dragPress = { x: event.clientX, y: event.clientY };
     dragOrigin = {
       cx: event.clientX,
       cy: event.clientY,
@@ -2630,21 +2921,22 @@
     dragSawDown = false;
     dragUsedDom = true;
     dragLastDomAt = performance.now();
-    // La ventana ya no se estira al escritorio entero durante el arrastre, así
-    // que el puntero puede salirse de ella. Sin capturarlo, el `pointerup` de
-    // afuera no llega y el gesto queda pegado.
-    try {
-      rootEl?.setPointerCapture(event.pointerId);
-    } catch {
-      // Puntero ya liberado: el oyente de `window` alcanza.
-    }
     window.addEventListener("pointermove", onDragPointerMove, true);
     window.addEventListener("pointerup", endDrag, true);
     window.addEventListener("pointercancel", endDrag, true);
     // Armar el overlay YA: esperar el umbral de 4px dejaba un hueco donde
-    // Rust desarma y el pointerup se pierde.
+    // Rust desarma y el pointerup se pierde. La captura del puntero espera
+    // al umbral para no comerse el clic del disco.
     surfaces.dragging = true;
     if (!dragRaf) dragRaf = requestAnimationFrame(() => void tickDrag());
+  }
+
+  function captureDragPointer(pointerId: number): void {
+    try {
+      rootEl?.setPointerCapture(pointerId);
+    } catch {
+      // Puntero ya liberado: el oyente de `window` alcanza.
+    }
   }
 
   /** Mueve la pill con el sample ya en coords del overlay. */
@@ -2659,8 +2951,12 @@
     }
     const dx = cur.x - origin.cx;
     const dy = cur.y - origin.cy;
-    if (!dragMoved && Math.hypot(dx, dy) > DRAG_THRESHOLD) {
+    const fromPress = dragPress
+      ? Math.hypot(cur.x - dragPress.x, cur.y - dragPress.y)
+      : Math.hypot(dx, dy);
+    if (!dragMoved && fromPress > DRAG_THRESHOLD) {
       dragMoved = true;
+      captureDragPointer(origin.pointerId);
       // Rueda abierta: se cierra al mover para poder acoplar a un canto.
       if (dragClosesWheel(surface)) {
         collapseWheelForDrag(cur);
@@ -2736,6 +3032,7 @@
   function stopDragWatch() {
     const pointerId = dragOrigin?.pointerId;
     dragOrigin = null;
+    dragPress = null;
     dragCursor = null;
     dragUsedDom = false;
     dragLastDomAt = 0;
@@ -2768,7 +3065,13 @@
       }
       applyDragCursor(cur);
     }
-    const wasClick = dragOrigin !== null && !dragMoved;
+    const release =
+      event instanceof PointerEvent
+        ? { x: event.clientX, y: event.clientY }
+        : dragCursor;
+    const wasClick = release
+      ? pointerGestureWasClick(dragPress, release, DRAG_THRESHOLD)
+      : dragOrigin !== null && !dragMoved;
     const moved = dragMoved;
     const pressedTool = islandPressTool;
     const pressedMark = islandPressMark;
@@ -2847,7 +3150,10 @@
     // no por el click nativo del botón porque el arrastre captura el puntero:
     // dejarlo en manos del click sería confiar en cómo cada motor lo re-apunta.
     // Un segundo cierre no molesta: `closeWheel` sale de una si ya no está.
-    if (wasClick && pressedWheelCore) {
+    if (wasClick && pressedWheelCore && surface === "wheel") {
+      // Hover la mantiene abierta: el núcleo está bajo el cursor al brotar y
+      // un clic residual la cerraría. Se cierra al alejar, como la isla.
+      if (wheelHeldByHover) return;
       void closeWheel();
       return;
     }
@@ -2855,8 +3161,12 @@
     // dictado, y en reposo abre la rueda. Va antes del clic genérico de la
     // pestaña para que no dispare las dos cosas.
     if (wasClick && pressedMark) {
+      if (clipboardFaceOpen || snippetsFaceOpen || agentsFaceOpen) {
+        dismissToolFace();
+        return;
+      }
       if (markState === "idle") {
-        void openWheel();
+        void openWheel({ fromClick: true });
       } else if (!busy) {
         markAction.run();
       }
@@ -2886,7 +3196,7 @@
     // pill. Abierta, un clic que no cayó en un icono no debe abrirla —antes
     // los huecos entre gotas circulares disparaban la rueda.
     if (wasClick && (surface === "none" || (surface === "edge" && !islandOpen))) {
-      void openWheel();
+      void openWheel({ fromClick: true });
     }
   }
 
@@ -3017,6 +3327,19 @@
         dismissAgentFace();
         return;
       }
+      if (
+        event.key === "Escape" &&
+        (clipboardFaceOpen || snippetsFaceOpen || agentsFaceOpen)
+      ) {
+        const inConsole = (event.target as HTMLElement | null)?.closest?.(
+          ".console, .xterm",
+        );
+        if (agentsFaceOpen && inConsole) return;
+        event.preventDefault();
+        event.stopPropagation();
+        dismissToolFace();
+        return;
+      }
       if (event.key === "Escape" && (surface === "wheel" || openingWheel)) {
         event.preventDefault();
         event.stopPropagation();
@@ -3063,6 +3386,7 @@
      */
     const onOutside = () => {
       surfaces.resetInteraction();
+      if (isOpenDismissGrace()) return;
       if (dragMoved) {
         // Solo el clic que terminó el arrastre. La bandera vive hasta el
         // próximo `beginDrag`, y sin consumirla acá un arrastre de la rueda
@@ -3072,6 +3396,7 @@
       }
       // La cara no resuelve nada: colapsa a cue, que sigue pulsando.
       if (agentFaceOpen) dismissAgentFace();
+      if (clipboardFaceOpen || snippetsFaceOpen || agentsFaceOpen) dismissToolFace();
       if (openingWheel && surface !== "wheel") {
         cancelFlight();
         collapseEpoch += 1;
@@ -3138,7 +3463,13 @@
   class:is-birthing={birthing}
   data-edge={surface === "edge" ? dock?.edge : undefined}
   data-bloom={wheelBloomEdge ?? undefined}
-  style="left: {at.x}px; top: {at.y}px; width: {box.w}px; height: {box.h}px; --pill-bar: {PILL.bar}px; --island-tool: {PILL.islandTool}px; --island-gap: {PILL.islandGap}px; --island-cue-btn: {PILL.islandCueBtn}px; --island-cue-mark: {PILL.islandCueMark}px; --face-tab-h: {faceTabH}px; --face-card-h: {PILL.islandCardH}px; --rec-drop: {PILL.recDrop}px; --rec-drop-gap: {PILL.recDropGap}px; {flightLift
+  style="left: {at.x}px; top: {at.y}px; width: {box.w}px; height: {box.h}px; {dockedTabWindow
+    ? `min-width: ${dockedTabWindow.w}px; min-height: ${dockedTabWindow.h}px; `
+    : ''}--pill-bar: {PILL.bar}px; --island-tool: {PILL.islandTool}px; --island-gap: {PILL.islandGap}px; --island-cue-btn: {PILL.islandCueBtn}px; --island-cue-mark: {PILL.islandCueMark}px; --face-tab-h: {faceTabH}px; --face-card-h: {PILL.islandCardH}px; --face-clip-h: {PILL.islandClipH}px; --face-agents-w: {agentsConsoleView
+    ? PILL.islandAgentsW
+    : PILL.islandAgentsSetupW}px; --face-agents-h: {agentsConsoleView
+    ? PILL.islandAgentsH
+    : PILL.islandAgentsSetupH}px; --island-clip-r: {PILL.islandClipR}px; --rec-drop: {PILL.recDrop}px; --rec-drop-gap: {PILL.recDropGap}px; {flightLift
     ? `transform: translate3d(${flightLift.x}px, ${flightLift.y}px, 0)`
     : ''}"
   bind:this={rootEl}
@@ -3152,7 +3483,7 @@
        transicionar y el CSS pintaría el final directo. Existen desde que la
        pill se acopla, cerradas, y la clase las abre. -->
   {#if surface === "edge" || beadsAlive}
-    <div class="p-island" class:is-open={islandOpen} class:is-face={agentFaceOpen}>
+    <div class="p-island" class:is-open={islandOpen} class:is-face={faceOpen}>
       <div class="p-island-body">
         <i
           class="p-island-skin"
@@ -3162,9 +3493,9 @@
         ></i>
         <div
           class="p-island-along"
-          class:is-hidden={islandOpen && !agentFaceOpen}
+          class:is-hidden={islandOpen && !faceOpen}
           class:is-column={peekEdgeAxis === "x"}
-          inert={(islandOpen && !agentFaceOpen) || undefined}
+          inert={(islandOpen && !faceOpen) || undefined}
         >
           <button
             type="button"
@@ -3324,6 +3655,120 @@
         <!-- Cara agent: tarjeta colgada de la pestaña con el permiso pendiente.
              Mismas palabras que la tarjeta flotante y la consola: es el mismo
              pedido, no otro dialecto. La decisión pasa por `decideAuth`. -->
+        {#if clipboardFaceOpen}
+          <div
+            class="p-face"
+            data-face="clipboard"
+            data-no-drag
+            tabindex="-1"
+            bind:this={clipFaceEl}
+            onpointerdown={(e) => e.stopPropagation()}
+            onkeydown={(e) => {
+              if (e.key === "Escape") {
+                e.preventDefault();
+                dismissToolFace();
+              }
+            }}
+            transition:opacityFade
+          >
+            <ClipboardHistoryList
+              items={clipboard.items}
+              loading={clipboard.loading}
+              compact
+              island
+              onRefresh={() => clipboard.hydrate()}
+            />
+          </div>
+        {/if}
+        {#if snippetsFaceOpen}
+          <div
+            class="p-face"
+            data-face="snippets"
+            data-no-drag
+            tabindex="-1"
+            bind:this={clipFaceEl}
+            onpointerdown={(e) => e.stopPropagation()}
+            onkeydown={(e) => {
+              if (e.key === "Escape") {
+                e.preventDefault();
+                dismissToolFace();
+              }
+            }}
+            transition:opacityFade
+          >
+            <div class="p-face-tabs" role="tablist" aria-label={t("overlay.snippets")}>
+              <button
+                type="button"
+                role="tab"
+                class="p-face-tab"
+                class:is-on={snippetsTab === "list"}
+                aria-selected={snippetsTab === "list"}
+                onclick={() => (snippetsTab = "list")}
+              >
+                {t("overlay.texts")}
+              </button>
+              <button
+                type="button"
+                role="tab"
+                class="p-face-tab"
+                class:is-on={snippetsTab === "scratchpad"}
+                aria-selected={snippetsTab === "scratchpad"}
+                onclick={() => (snippetsTab = "scratchpad")}
+              >
+                {t("overlay.notes")}
+              </button>
+            </div>
+            {#if snippetsTab === "list"}
+              <div class="p-face-pane" in:tabPanel|local out:tabPanel|local>
+                <SnippetsList
+                  items={snippets.items}
+                  loading={snippets.loading}
+                  compact
+                  island
+                  onRefresh={() => void snippets.hydrate()}
+                />
+              </div>
+            {:else}
+              <div class="p-face-pane" in:tabPanel|local out:tabPanel|local>
+                <textarea
+                  class="p-face-scratch"
+                  value={snippets.scratchpad?.body ?? ""}
+                  oninput={(e) => snippets.editScratchpad(e.currentTarget.value)}
+                  placeholder={t("overlay.scratchPlaceholder")}
+                  aria-label={t("overlay.scratchAria")}></textarea>
+              </div>
+            {/if}
+          </div>
+        {/if}
+        {#if agentsMounted}
+          <div
+            class="p-face"
+            class:is-stowed={!agentsFaceOpen}
+            data-face="agents"
+            data-no-drag
+            tabindex="-1"
+            bind:this={clipFaceEl}
+            onpointerdown={(e) => e.stopPropagation()}
+            onkeydown={(e) => {
+              if (e.key === "Escape") {
+                const inConsole = (e.target as HTMLElement | null)?.closest?.(
+                  ".console, .xterm",
+                );
+                if (inConsole) return;
+                e.preventDefault();
+                dismissToolFace();
+              }
+            }}
+            transition:opacityFade
+          >
+            <AgentLauncher
+              island
+              shown={agentsFaceOpen}
+              onLiveChange={(live) => (agentsLive = live)}
+              onViewChange={(view) => (agentsConsoleView = view === "console")}
+            />
+          </div>
+        {/if}
         {#if agentFaceOpen && agentFaceReq}
           {@const perm = agentFaceReq.permission}
           {@const faceLogos = chipLogos(chip)}
@@ -3411,6 +3856,7 @@
           backToRing();
           return;
         }
+        if (wheelHeldByHover) return;
         void closeWheel();
       }}
     />
@@ -3617,14 +4063,23 @@
               {@render iconBtn(t("pill.dismiss"), X, () => void paste.dismiss(), 13)}
             </div>
           {:else}
-            <!-- Reposo: disco con la marca. Un clic abre la rueda; el centro de
-               la rueda la cierra. El doble clic ya no hace falta.
+            <!-- Reposo: disco con la marca. El hover abre la rueda, como la
+               isla; alejar el mouse la cierra. El clic sigue abriendo.
                Con la rueda abierta/colapsando no se monta: el único «a» visible
                es el de ParticleWheel (centro). El stack sigue midiendo el
                disco vía `.p-bar.is-disc-only` (el diámetro de `PILL.bar`). -->
             <div class="p-bar-slot" transition:opacityFade>
               {#if !wheelChrome}
-                <span class="p-mark is-disc" use:tip={discHint}>
+                <button
+                  type="button"
+                  class="p-mark is-disc"
+                  onclick={() => {
+                    if (dragMoved) return;
+                    markAction.run();
+                  }}
+                  use:tip={discHint}
+                  aria-label={discHint}
+                >
                   <AticMark
                     size={32}
                     strokeWidth={1.5}
@@ -3632,7 +4087,7 @@
                     state={markState}
                     lag={flying}
                   />
-                </span>
+                </button>
               {/if}
               <!-- Aviso del agente: aparece solo si hay algo que decir. Es un chip
                junto al disco y no un reemplazo, porque el disco sigue siendo la
@@ -3793,11 +4248,15 @@
    * mientras las gotas siguen viaje y se lee como dos animaciones distintas.
    */
   .p-root.is-docked {
+    /* Misma curva en tamaño y posición: si width rebota y left no, el
+       canto acoplado se despega (el lado derecho queda a medio camino).
+       El overshoot de `--ease-island` no puede bajar del dintel: el
+       `min-width`/`min-height` inline es el piso de la pestaña en reposo. */
     transition:
-      width var(--island-open-dur) var(--ease-liquid),
-      height var(--island-open-dur) var(--ease-liquid),
-      left var(--island-open-dur) var(--ease-liquid),
-      top var(--island-open-dur) var(--ease-liquid);
+      width var(--island-open-dur) var(--ease-island),
+      height var(--island-open-dur) var(--ease-island),
+      left var(--island-open-dur) var(--ease-island),
+      top var(--island-open-dur) var(--ease-island);
   }
 
   /* El vuelo al hogar y al cursor. Solo mientras dura: si la transición
@@ -3842,7 +4301,12 @@
     will-change: opacity, transform;
   }
 
-  /* Gota contra el cristal: 2–3 px de aplastón, sin rebote. */
+  /* Gota contra el cristal: 2–3 px de aplastón, sin rebote.
+     `overflow: visible` para que el scale no recorte el redondeo del dintel. */
+  .p-root.is-seating:not(.is-flying) {
+    overflow: visible;
+  }
+
   .p-root.is-seating:not(.is-flying)[data-edge="top"] {
     transform-origin: center top;
     animation: p-seat-y var(--duration-fast) var(--ease-smooth-out);
@@ -3948,6 +4412,23 @@
     pointer-events: none;
   }
 
+  /* El redondeo va al escritorio, no al bisel: lados derechos al canto. */
+  .p-root[data-edge="top"] .p-island-skin {
+    border-radius: 0 0 var(--island-clip-r, 22px) var(--island-clip-r, 22px);
+  }
+
+  .p-root[data-edge="bottom"] .p-island-skin {
+    border-radius: var(--island-clip-r, 22px) var(--island-clip-r, 22px) 0 0;
+  }
+
+  .p-root[data-edge="left"] .p-island-skin {
+    border-radius: 0 999px 999px 0;
+  }
+
+  .p-root[data-edge="right"] .p-island-skin {
+    border-radius: 999px 0 0 999px;
+  }
+
   /*
    * Lo que se ve con la pestaña CERRADA, a lo largo del borde: la marca y,
    * si hay algo que decir, el aviso al lado. Antes el aviso iba en `inset: 0`
@@ -3964,6 +4445,33 @@
     pointer-events: none;
     opacity: 1;
     transition: opacity var(--island-open-dur) var(--ease-liquid);
+  }
+
+  /* Pegada al canto, no al centro de la caja: al cerrar el clipboard el
+     logo se quedaba en el medio del panel y subía con el encogimiento. */
+  .p-root[data-edge="top"] .p-island-along {
+    bottom: auto;
+    height: var(--face-tab-h);
+  }
+
+  .p-root[data-edge="bottom"] .p-island-along {
+    top: auto;
+    bottom: 0;
+    height: var(--face-tab-h);
+  }
+
+  .p-root[data-edge="left"] .p-island-along {
+    top: 0;
+    right: auto;
+    bottom: 0;
+    height: auto;
+    width: var(--face-tab-h);
+  }
+
+  .p-root[data-edge="right"] .p-island-along {
+    inset: 0 0 0 auto;
+    height: auto;
+    width: var(--face-tab-h);
   }
 
   .p-island-along > * {
@@ -4197,25 +4705,43 @@
    * La tira no convive con la cara: se oculta (el hover la reabre al cerrar).
    */
   .p-island.is-face .p-island-body {
+    display: flex;
     flex-direction: column;
+    align-items: stretch;
+    justify-content: flex-start;
+    padding-top: var(--face-tab-h);
   }
 
   .p-root[data-edge="bottom"] .p-island.is-face .p-island-body {
     flex-direction: column-reverse;
+    padding-top: 0;
+    padding-bottom: var(--face-tab-h);
+  }
+
+  .p-root[data-edge="left"] .p-island.is-face .p-island-body {
+    flex-direction: row;
+    padding-top: 0;
+    padding-left: var(--face-tab-h);
+  }
+
+  .p-root[data-edge="right"] .p-island.is-face .p-island-body {
+    flex-direction: row-reverse;
+    padding-top: 0;
+    padding-right: var(--face-tab-h);
+  }
+
+  .p-island.is-face .p-face {
+    flex: 1 1 auto;
+    min-height: 0;
   }
 
   .p-island.is-face .p-island-tools {
     display: none;
   }
 
-  .p-island.is-face .p-island-along {
-    bottom: auto;
-    height: var(--face-tab-h);
-  }
-
+  .p-root[data-edge="top"] .p-island.is-face .p-island-along,
   .p-root[data-edge="bottom"] .p-island.is-face .p-island-along {
-    top: auto;
-    bottom: 0;
+    height: var(--face-tab-h);
   }
 
   .p-face {
@@ -4227,6 +4753,81 @@
     gap: 6px;
     padding: 10px 12px;
     pointer-events: auto;
+  }
+
+  .p-face[data-face="clipboard"],
+  .p-face[data-face="snippets"] {
+    height: var(--face-clip-h);
+    min-height: 0;
+    justify-content: stretch;
+    gap: 0;
+    padding: 4px 10px 0;
+    overflow: hidden;
+  }
+
+  .p-face[data-face="agents"] {
+    height: var(--face-agents-h);
+    min-height: 0;
+    justify-content: stretch;
+    gap: 0;
+    padding: 6px 8px 8px;
+    overflow: hidden;
+  }
+
+  .p-face[data-face="agents"].is-stowed {
+    position: fixed;
+    left: -12000px;
+    top: 0;
+    width: var(--face-agents-w);
+    height: var(--face-agents-h);
+    pointer-events: none;
+  }
+
+  .p-face-tabs {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 0.15rem;
+    padding: 0 0.15rem 0.25rem;
+  }
+
+  .p-face-tab {
+    border: 0;
+    border-radius: 999px;
+    padding: 0.18rem 0.55rem;
+    background: transparent;
+    color: var(--muted);
+    font-size: 0.6875rem;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .p-face-tab.is-on {
+    background: color-mix(in sRGB, var(--rb-text) 10%, transparent);
+    color: var(--text);
+  }
+
+  .p-face-pane {
+    display: flex;
+    min-height: 0;
+    flex: 1;
+    flex-direction: column;
+  }
+
+  .p-face-scratch {
+    width: 100%;
+    min-height: 0;
+    flex: 1;
+    resize: none;
+    border: 0;
+    border-radius: 0.55rem;
+    padding: 0.45rem 0.5rem;
+    background: color-mix(in sRGB, var(--rb-text) 6%, transparent);
+    color: var(--text);
+    font: inherit;
+    font-size: 0.75rem;
+    line-height: 1.35;
+    outline: none;
   }
 
   .p-face-head {
@@ -4817,6 +5418,19 @@
     color: var(--text);
     line-height: 0;
     overflow: visible;
+  }
+
+  .p-mark.is-disc {
+    border: 0;
+    padding: 0;
+    border-radius: 999px;
+    background: transparent;
+    cursor: pointer;
+  }
+
+  .p-mark.is-disc:focus-visible {
+    outline: none;
+    box-shadow: var(--rb-focus);
   }
 
   .p-label {

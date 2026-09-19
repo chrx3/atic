@@ -48,12 +48,13 @@ export const PILL = {
    */
   islandCueThick: 42,
   /**
-   * Dintel de la pestaña, a lo largo del borde.
+   * Dintel de la isla, a lo largo del borde.
    *
-   * Un poco más largo que `thick` para no volver al disco, y lo más corto
-   * que deja la marca al centro sin aire a los lados.
+   * Más largo que `thick` a propósito: si se acercan, `pillShape` sale un
+   * círculo. El valor es una cápsula tipo Dynamic Island, no una pestaña
+   * justa a la marca. Un aviso cabe adentro sin alargar; varios sí.
    */
-  islandLong: 56,
+  islandLong: 124,
   /** La marca de Atic dentro de la pestaña. Se ve siempre, haya aviso o no. */
   islandMark: 32,
   /**
@@ -78,6 +79,22 @@ export const PILL = {
    */
   islandCardW: 280,
   islandCardH: 104,
+  /**
+   * Cara de panel (clipboard, textos, agentes): lista o lanzador con scroll
+   * dentro de la isla, no un float. Fijo al abrir, igual que `islandCard*`.
+   */
+  islandClipW: 280,
+  islandClipH: 252,
+  /**
+   * Cara de agentes: el lanzador es chico; la consola pide más alto.
+   * Dos medidas fijas para no re-medir el DOM a cada tecla.
+   */
+  islandAgentsSetupW: 400,
+  islandAgentsSetupH: 188,
+  islandAgentsW: 440,
+  islandAgentsH: 496,
+  /** Radio de la cara con contenido: si fuera pastilla, un panel alto se lee gota. */
+  islandClipR: 22,
   /** Diámetro de la gota de grabación/dictado que cuelga del chrome. */
   recDrop: 36,
   /** Hueco entre el cuerpo y la gota: bajo el alcance del goo (~10 px). */
