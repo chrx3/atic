@@ -50,15 +50,18 @@ export function agentStackHang(n: number): number {
   return (rows - 1) * PILL.agentStackRow;
 }
 
-/** Qué hay desplegado. Clipboard/snippets ya no crecen la pill: son floats. */
+/** Qué hay desplegado. Textos y agentes pueden ser cara, como clipboard. */
 export type Surface = "none" | "wheel" | "edge";
 
 /**
- * Cara de la isla acoplada. `tab` es la pestaña/tira de siempre; cada cara
- * extra es una tarjeta transitoria colgada de la pestaña (un solo blob).
- * Solo cantos horizontales: en laterales se degrada a `tab`.
+ * Cara de la isla acoplada. `tab` es la pestaña/tira; `agent` es el permiso
+ * pendiente; el resto son paneles de herramienta (un solo blob, cualquier canto).
  */
-export type IslandFace = "tab" | "agent";
+export type IslandFace = "tab" | "agent" | "clipboard" | "snippets" | "agents";
+
+export function isIslandPanelFace(face: IslandFace): boolean {
+  return face === "clipboard" || face === "snippets" || face === "agents";
+}
 
 /**
  * Acoplada a un borde, y si el puntero la tiene abierta.
@@ -126,11 +129,12 @@ export function contentFor(
   /** Avisos de consola apilados en la barra flotante. */
   agentStack: number = 0,
   /**
-   * Cara expandida de la isla. Solo vale acoplada en canto horizontal; en el
-   * resto se ignora (la tarjeta no cabe en laterales y flotando el permiso
-   * ya tiene su tarjeta propia).
+   * Cara expandida de la isla. El permiso (`agent`) solo en cantos
+   * horizontales; los paneles (clipboard / textos / agentes) en cualquiera.
    */
   face: IslandFace = "tab",
+  /** Cara agentes: true = consola (panel alto), false = lanzador compacto. */
+  agentsConsole: boolean = false,
 ): Size {
   if (surface === "wheel") {
     const side = PILL.wheel - PILL.pad * 2;
@@ -146,6 +150,18 @@ export function contentFor(
     // que crece hacia adentro. Gana a la tira: no conviven.
     if (face === "agent" && dockAxis(dock.edge) === "y") {
       return { w: Math.max(long, PILL.islandCardW), h: thick + PILL.islandCardH };
+    }
+    if (face === "agents") {
+      const w = agentsConsole ? PILL.islandAgentsW : PILL.islandAgentsSetupW;
+      const h = agentsConsole ? PILL.islandAgentsH : PILL.islandAgentsSetupH;
+      return dockAxis(dock.edge) === "x"
+        ? { w: thick + w, h: Math.max(long, h) }
+        : { w: Math.max(long, w), h: thick + h };
+    }
+    if (isIslandPanelFace(face)) {
+      return dockAxis(dock.edge) === "x"
+        ? { w: thick + PILL.islandClipW, h: Math.max(long, PILL.islandClipH) }
+        : { w: Math.max(long, PILL.islandClipW), h: thick + PILL.islandClipH };
     }
     // Abierta es la tira de herramientas: acoplada, la pill deja de ser un
     // indicador y pasa a ser el acceso. Se despliega A LO LARGO del borde, que
@@ -186,6 +202,7 @@ export function targetFor(
   islandCueCount: number = 0,
   agentStack: number = 0,
   face: IslandFace = "tab",
+  agentsConsole: boolean = false,
 ): Size {
   return windowFor(
     contentFor(
@@ -198,6 +215,7 @@ export function targetFor(
       islandCueCount,
       agentStack,
       face,
+      agentsConsole,
     ),
   );
 }
@@ -219,6 +237,34 @@ export function islandFaceAgent(state: {
   if (dockAxis(state.dock.edge) !== "y") return false;
   if (!state.authId) return false;
   return state.authId !== state.dismissedAuthId;
+}
+
+/**
+ * Radio de la isla en un canto: pestaña = pastilla; panel alto = rectángulo
+ * redondeado. Si el radio siguiera a `min(w,h)/2`, el clipboard se lee gota.
+ */
+export function islandNotchRadius(size: { w: number; h: number }): number {
+  const cap = Math.min(size.w, size.h) / 2;
+  return cap > PILL.islandClipR + 8 ? PILL.islandClipR : cap;
+}
+
+/** Panel de herramienta en la isla, en cualquier canto acoplado. */
+export function islandFacePanel(state: {
+  surface: Surface;
+  dock: Dock | null;
+  requested: boolean;
+}): boolean {
+  if (!state.requested) return false;
+  return state.surface === "edge" && state.dock != null;
+}
+
+/** Historial en la isla. Mismo predicado que los otros paneles. */
+export function islandFaceClipboard(state: {
+  surface: Surface;
+  dock: Dock | null;
+  requested: boolean;
+}): boolean {
+  return islandFacePanel(state);
 }
 
 /**
@@ -250,6 +296,26 @@ export function shouldStayDockedOnActivate(surface: Surface): boolean {
 }
 
 /**
+ * Recentrar al medio del techo solo si la pill ES la isla, en reposo.
+ *
+ * Si corre con la rueda abriéndose, el `dock.edge === "top"` que quedó
+ * del notch tira el cuadrado de 252 px otra vez al canto: el clic y el
+ * atajo desde el notch parecen no abrir nada, y al abortar queda el
+ * disco flotante (modo pill), donde el atajo sí anda.
+ */
+export function shouldRecenterTopNotch(state: {
+  surface: Surface;
+  dock: Dock | null;
+  flying?: boolean;
+  opening?: boolean;
+}): boolean {
+  if (state.surface !== "edge") return false;
+  if (state.dock?.edge !== "top") return false;
+  if (state.flying || state.opening) return false;
+  return true;
+}
+
+/**
  * ¿Hay que volver a un canto al abrir una tool?
  *
  * Desde la rueda (Ctrl+Q o clic) la pill siempre vuelve a su lugar: el
@@ -275,6 +341,14 @@ export const ISLAND_COLLAPSE_MORE_MS = 700;
  * pasado el delay, la tira abre y el aviso cuelga.
  */
 export const UPDATE_ISLAND_OPEN_DELAY_MS = 180;
+/**
+ * Disco flotante: espera un toque antes de abrir la rueda al hover.
+ *
+ * En el canto el hover es deliberado (hay que ir al borde). En medio de la
+ * pantalla cruzar el disco no debería desplegar 252 px. El delay cubre un
+ * sondeo de la isla (~100 ms) y un poco más.
+ */
+export const FLOAT_WHEEL_HOVER_OPEN_MS = 180;
 
 /**
  * ¿Este `pointermove` cuenta como arrastre de la pill?
@@ -286,6 +360,22 @@ export const UPDATE_ISLAND_OPEN_DELAY_MS = 180;
  */
 export function pointerMoveDrags(buttons: number): boolean {
   return buttons !== 0;
+}
+
+/**
+ * ¿El gesto fue un clic? Se mide contra el `pointerdown` original.
+ *
+ * El origen del arrastre se re-siembra al pasar de DOM a Rust, y el hover
+ * sintético mezcla coordenadas: con eso un clic en el disco flotante se
+ * leía como arrastre y no abría la rueda (el atajo sí, no pasa por acá).
+ */
+export function pointerGestureWasClick(
+  press: { x: number; y: number } | null,
+  release: { x: number; y: number } | null,
+  thresholdPx: number,
+): boolean {
+  if (!press || !release) return false;
+  return Math.hypot(release.x - press.x, release.y - press.y) <= thresholdPx;
 }
 
 /**
@@ -320,6 +410,41 @@ export function islandHoverStay(input: {
   if (input.over) return { open: true, leftAt: null };
   const leftAt = input.leftAt ?? input.now;
   return { open: input.now - leftAt < input.lingerMs, leftAt };
+}
+
+/**
+ * ¿El disco flotante mira el cursor para abrir/cerrar la rueda?
+ *
+ * Mismo contrato que la isla: Rust es la fuente, no `pointerenter`. En macOS
+ * el primer clic sobre el disco se lo queda AppKit; el hover no pasa por eso.
+ * Solo el disco en reposo, o la rueda que este hover abrió (un atajo no se
+ * cierra al alejar el mouse).
+ */
+export function floatWheelHoverWatches(input: {
+  surface: Surface;
+  discOnly: boolean;
+  heldByHover: boolean;
+  collapsingFrom: "wheel" | null;
+}): boolean {
+  if (input.collapsingFrom === "wheel") return false;
+  if (input.surface === "none" && input.discOnly) return true;
+  return input.surface === "wheel" && input.heldByHover;
+}
+
+/**
+ * ¿El hover ya cuenta para abrir la rueda del disco flotante?
+ *
+ * Cerrada, espera `FLOAT_WHEEL_HOVER_OPEN_MS`. Abierta, el primer sondeo
+ * encima la mantiene: no re-aplicar el delay a mitad de uso.
+ */
+export function floatWheelHoverOpens(input: {
+  over: boolean;
+  alreadyOpen: boolean;
+  hoveredMs: number;
+}): boolean {
+  if (!input.over) return false;
+  if (input.alreadyOpen) return true;
+  return input.hoveredMs >= FLOAT_WHEEL_HOVER_OPEN_MS;
 }
 
 /**

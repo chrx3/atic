@@ -10,6 +10,7 @@
     items = [],
     loading = false,
     compact = false,
+    island = false,
     onRefresh,
     onEdit,
     onPasteStart,
@@ -19,6 +20,7 @@
     items?: TextSnippet[];
     loading?: boolean;
     compact?: boolean;
+    island?: boolean;
     onRefresh: () => void | Promise<void>;
     onEdit?: (snippet: TextSnippet) => void;
     onPasteStart?: () => void;
@@ -77,10 +79,10 @@
   }
 </script>
 
-<div class="snip-list" class:compact>
+<div class="snip-list" class:compact class:is-island={island}>
   <div class="snip-toolbar">
     <label class="snip-search">
-      <Icon icon={Search} size={14} />
+      <Icon icon={Search} size={island ? 12 : 14} />
       <input
         type="search"
         placeholder="Buscar por nombre o palabra…"
@@ -294,6 +296,42 @@
 
   .compact .snip-item {
     padding: 0.4rem 0.5rem;
+  }
+
+  .is-island {
+    gap: 0.3rem;
+  }
+
+  .is-island .snip-toolbar {
+    padding: 0 0.15rem;
+  }
+
+  .is-island .snip-search {
+    height: 1.6rem;
+    border-radius: 999px;
+    padding: 0 0.45rem;
+    background: color-mix(in srgb, var(--rb-text) 7%, transparent);
+  }
+
+  .is-island .snip-search input {
+    font-size: 0.625rem;
+  }
+
+  .is-island .snip-items {
+    gap: 0.15rem;
+  }
+
+  .is-island .snip-item {
+    border-radius: 0.45rem;
+    padding: 0.3rem 0.4rem;
+  }
+
+  .is-island .snip-name {
+    font-size: 0.75rem;
+  }
+
+  .is-island .snip-preview {
+    font-size: 0.6875rem;
   }
 
   @container atic-main (max-width: 36.999rem) {

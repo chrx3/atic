@@ -32,6 +32,55 @@ export function pillShape(rect: Rect): Shape {
   return boxShape(rect, Math.min(rect.w, rect.h) / 2);
 }
 
+/** Canto contra el que una isla se aplana. */
+export type NotchEdge = "left" | "right" | "top" | "bottom";
+
+/**
+ * Isla tipo notch: el redondeo del canto acoplado queda fuera de la
+ * pantalla. En el borde se leen lados verticales, no un menisco que se abre.
+ *
+ * Una pastilla entera en el viewport redondea las cuatro esquinas; el techo
+ * entonces se estrecha. Una pared SDF más ancha, al fundirse, hacía lo
+ * contrario: alas hacia afuera. Metiendo el radio del canto en el bisel, el
+ * lado visible arranca ya vertical.
+ */
+export function notchShape(rect: Rect, edge: NotchEdge, radius?: number): Shape {
+  const cap = Math.min(rect.w, rect.h) / 2;
+  const r = Math.min(radius ?? cap, cap);
+  switch (edge) {
+    case "top":
+      return boxShape({ x: rect.x, y: rect.y - r, w: rect.w, h: rect.h + r }, r);
+    case "bottom":
+      return boxShape({ x: rect.x, y: rect.y, w: rect.w, h: rect.h + r }, r);
+    case "left":
+      return boxShape({ x: rect.x - r, y: rect.y, w: rect.w + r, h: rect.h }, r);
+    case "right":
+      return boxShape({ x: rect.x, y: rect.y, w: rect.w + r, h: rect.h }, r);
+  }
+}
+
+/**
+ * Piso del dintel acoplado: el rebote de tamaño no puede dejar la pestaña
+ * más flaca que en reposo.
+ *
+ * `--ease-island` se pasa del destino. Al cerrar, ese overshoot encoge por
+ * debajo del alto (o ancho) de la pestaña; si el tracker se duerme en el
+ * valle, la silueta queda cortada contra el canto. Crece hacia el escritorio,
+ * nunca contra el bisel.
+ */
+export function clampDockedTabRect(box: Rect, edge: NotchEdge, minThick: number): Rect {
+  if (!(minThick > 0)) return box;
+  const vertical = edge === "top" || edge === "bottom";
+  const thick = vertical ? box.h : box.w;
+  if (thick >= minThick) return box;
+  if (vertical) {
+    const y = edge === "top" ? box.y : box.y + box.h - minThick;
+    return { ...box, y, h: minThick };
+  }
+  const x = edge === "left" ? box.x : box.x + box.w - minThick;
+  return { ...box, x, w: minThick };
+}
+
 /**
  * Separación entre dos rectángulos por el eje que de verdad los separa.
  *

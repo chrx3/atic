@@ -393,7 +393,7 @@ pub fn register_shortcuts(app: &AppHandle, bindings: ShortcutBindings<'_>) -> Re
                 let held = AtomicBool::new(false);
                 if let Err(err) = gs.on_shortcut(*sc, move |_app, _sc, event| {
                     if take_key_press(&held, event.state()) {
-                        crate::agents::bridge::show_agents_window(handle.clone());
+                        emit_tool_slot(&handle, "activate-tool-slot", "agents");
                     }
                 }) {
                     tracing::error!(%err, "no se pudo registrar el atajo de agentes");

@@ -634,6 +634,7 @@ export const es = {
     paste: "Pegar",
     dismiss: "Descartar",
     clickTools: "Clic para las herramientas",
+    hoverTools: "Pasa el mouse para las herramientas",
     dragMove: "Arrastra para mover",
     toolsWithShortcut: "{shortcut} · herramientas",
     permission: "permiso",

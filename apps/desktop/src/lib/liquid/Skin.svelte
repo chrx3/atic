@@ -58,7 +58,6 @@
   const tracer = new PathTracer();
   const traced = $derived.by(() => tracer.next(shapes, { blend, cell, smooth }));
   const path = $derived(traced.path);
-  const lightId = $props.id();
 
   // El par de `performance.now()` cuesta menos que un solo muestreo del campo,
   // así que no hace falta condicionarlo a que alguien esté escuchando.
@@ -88,17 +87,11 @@
       height={path.height}
       viewBox="{path.minX} {path.minY} {path.width} {path.height}"
     >
-      <defs>
-        <linearGradient id="sl-{lightId}" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stop-color="#fff" stop-opacity="0.38" />
-          <stop offset="22%" stop-color="#fff" stop-opacity="0.08" />
-          <stop offset="55%" stop-color="#fff" stop-opacity="0" />
-        </linearGradient>
-      </defs>
       <!-- `evenodd` porque los lazos del contorno no salen orientados de forma
            consistente: con la regla por defecto, una isla interior se rellenaría
-           en vez de quedar hueca. El stroke del mismo color no es un borde:
-           redondea el aliasing de marching squares (~celda de 6 px). -->
+           en vez de quedar hueca. El stroke del mismo color no es un borde de
+           contraste: redondea el aliasing de marching squares (~celda de 6 px).
+           Sin filete blanco ni degradé: el notch de Apple es un recorte mate. -->
       <path
         d={path.d}
         fill={color}
@@ -107,16 +100,6 @@
         stroke-width="1.25"
         stroke-linejoin="round"
         stroke-linecap="round"
-      />
-      <!-- Filete de luz: no es vidrio, es el lomo de una gota. -->
-      <path
-        d={path.d}
-        fill="url(#sl-{lightId})"
-        fill-rule="evenodd"
-        stroke="rgba(255,255,255,0.28)"
-        stroke-width="1.15"
-        stroke-linejoin="round"
-        pointer-events="none"
       />
     </svg>
   </div>

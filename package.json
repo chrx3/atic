@@ -3,8 +3,18 @@
   "private": true,
   "scripts": {
     "dev": "pnpm --dir apps/desktop tauri dev",
+    "dev:web": "pnpm --dir apps/web dev",
     "tauri": "pnpm --dir apps/desktop tauri",
     "check": "pnpm --dir apps/desktop check",
+    "check:rust": "cargo check --locked --workspace --all-targets",
+    "test": "pnpm --dir apps/desktop test",
+    "verify:desktop": "pnpm --dir apps/desktop verify",
+    "verify:web": "pnpm --dir apps/web check && pnpm --dir apps/web build",
+    "verify:format": "cargo fmt --all --check",
+    "prepare:sidecars": "pnpm --dir apps/desktop mcp:build && pnpm --dir apps/desktop unix:build",
+    "verify:rust": "pnpm prepare:sidecars && pnpm verify:format && cargo clippy --locked --workspace --all-targets -- -D warnings && cargo test --locked --workspace",
+    "verify": "pnpm verify:desktop && pnpm verify:web && pnpm verify:format",
+    "verify:all": "pnpm verify && pnpm verify:rust",
     "build": "pnpm --dir apps/desktop tauri build"
   }
 }

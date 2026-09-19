@@ -2,7 +2,7 @@
  * Acción primaria de cada herramienta en el picker de la ventana principal.
  *
  * El CTA de la card no “abre” la tool: la ejecuta (grabar, dictar, capturar…).
- * Clipboard / textos / agentes / Apps: abren float (vía slot si hay).
+ * Clipboard / textos / agentes: la isla de la pill (vía slot). Apps: float.
  * Tools con slot espacial delegan en el overlay: flyTo → ejecutar.
  *
  * Vive en `surfaces/` y no en `core/`: orquesta dominio, IPC y slots, y la
@@ -13,16 +13,14 @@
 
 import { capture } from "$domain/capture.svelte";
 import { dictation } from "$domain/dictation.svelte";
-import { presentAgentsWindow } from "$ipc/agents";
 import { startBoard } from "$ipc/annotate";
 import { startCaptureSession, startColorPicker } from "$ipc/captures";
 import { showClipboardWindow } from "$ipc/clipboard";
 import { showLauncher } from "$ipc/search";
-import { showSnippetsWindow } from "$ipc/snippets";
 import { emit } from "@tauri-apps/api/event";
 import { hasToolSlot } from "$surfaces/overlay/toolSlots";
 import { t } from "$domain/i18n.svelte";
-import { AGENTS_ENABLED, type ToolId } from "$core/tools";
+import { type ToolId } from "$core/tools";
 
 export type ToolActionKind = "run" | "openDetail";
 
@@ -75,7 +73,7 @@ export const requestActivateAtSlot = (tool: ToolId) => emit("activate-tool-slot"
 /**
  * Ejecuta la acción sin pasar por el vuelo al slot.
  * Lo usa el overlay después de `flyTo`, o tools sin slot.
- * Clipboard / textos / Apps: abrir (idempotente), no toggle.
+ * Textos y agentes viven en la isla; no reabrir el float.
  */
 export async function executeToolAction(id: ToolId): Promise<"openedDetail" | void> {
   switch (id) {
@@ -95,7 +93,8 @@ export async function executeToolAction(id: ToolId): Promise<"openedDetail" | vo
       await startColorPicker();
       return;
     case "agents":
-      if (AGENTS_ENABLED) await presentAgentsWindow();
+      // La isla de la pill es la superficie. Un handler viejo del overlay
+      // no debe volver a abrir el float.
       return;
     case "launcher":
       await showLauncher();
@@ -104,7 +103,6 @@ export async function executeToolAction(id: ToolId): Promise<"openedDetail" | vo
       await showClipboardWindow();
       return;
     case "snippets":
-      await showSnippetsWindow();
       return;
   }
 }

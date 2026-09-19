@@ -205,13 +205,17 @@ textarea,
    * final. A 110 ms no se llega a leer y el efecto se pierde: parecen iconos
    * que aparecen, que es justo lo que no queremos.
    */
-  --island-open-dur: 190ms;
+  --island-open-dur: 240ms;
+  /* Overshoot hacia el escritorio, no contra el canto.
+     El dintel acoplado tiene un piso de tamaño (ver `dockedTabWindow` /
+     `clampDockedTabRect`): este ease se puede pasar del destino al abrir,
+     pero al cerrar no puede dejar la pestaña cortada. */
+  --ease-island: cubic-bezier(0.33, 1.38, 0.46, 1);
   /*
    * Arranque lento, salida larga: la gota se resiste antes de separarse.
    *
-   * Sin rebote — los dos puntos de control quedan dentro de 0..1 en Y. El
-   * rebote se sacó del proyecto a propósito y una isla que rebota contra el
-   * canto se vería como un error, no como líquido.
+   * Sin rebote en left/top — una isla que rebota contra el canto se lee
+   * como un error. El tamaño sí puede pasarse un poco (`--ease-island`).
    */
   --ease-liquid: cubic-bezier(0.5, 0, 0.2, 1);
   /*

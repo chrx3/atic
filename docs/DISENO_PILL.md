@@ -75,9 +75,9 @@ ninguno, casi siempre es un aviso (ver más abajo) y no un estado.
 | `none` + dictating | cápsula | icono de dictado + ondas, sin texto |
 | `none` + cola | cápsula | marca, contador, pegar, descartar |
 | `wheel` | cuadrado de `wheel` (252) | núcleo + gajos de herramienta |
-| `edge` cerrada | pestaña `islandThick` × `islandLong` | la marca; los avisos al lado si hay |
+| `edge` cerrada | cápsula `islandThick` × `islandLong` | la marca; los avisos al lado si hay |
 | `edge` abierta | tira `islandTool` de largo variable | la marca, un botón por herramienta, el update |
-| `edge` + cara | tarjeta `islandCardW` × (`thick` + `islandCardH`) colgada con gap 0 | la pestaña + UNA cara (hoy: permiso del agente) |
+| `edge` + cara | tarjeta colgada con gap 0 | pestaña + UNA cara (permiso agente o clipboard) |
 
 **La marca está en las tres.** Es lo que hace que se lean como la misma pill
 desplegándose, y no como tres controles distintos. En la tira abierta es la
@@ -112,12 +112,15 @@ más escribe píxeles de layout de la pill.
 | `panelW` / `panelH` | 312 / 332 | panel de historial y fragmentos |
 | `islandThick` | 40 | lo que la pestaña asoma hacia adentro |
 | `islandCueThick` | 42 | ídem, con aviso: cabe un icono legible |
-| `islandLong` | 56 | dintel de la pestaña a lo largo del borde |
+| `islandLong` | 124 | dintel de la isla a lo largo del borde (cápsula tipo notch) |
 | `islandMark` | 32 | la marca de Atic dentro de la pestaña |
 | `islandCueBtn` | 26 | botón de aviso al lado de la marca |
 | `islandCueMark` | 14 | logo de agente / icono de update dentro de ese botón |
 | `islandTool` | 44 | botón de herramienta en la tira abierta |
 | `islandGap` | 2 | hueco entre botones de la tira |
+| `islandCardW` / `islandCardH` | 280 / 104 | cara de permiso de agente |
+| `islandClipW` / `islandClipH` | 280 / 252 | cara de clipboard (lista con scroll) |
+| `islandClipR` | 22 | radio del panel alto; si fuera pastilla se lee gota |
 | `recDrop` / `recDropGap` | 36 / 8 | gota de actividad y su cuello — **solo en la rueda** |
 | `wheelLiveHang` | 28 | alto extra de la rueda cuando hay gota viva |
 

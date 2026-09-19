@@ -631,6 +631,7 @@ export const en = {
     paste: "Paste",
     dismiss: "Dismiss",
     clickTools: "Click for tools",
+    hoverTools: "Hover for tools",
     dragMove: "Drag to move",
     toolsWithShortcut: "{shortcut} · tools",
     permission: "permission",

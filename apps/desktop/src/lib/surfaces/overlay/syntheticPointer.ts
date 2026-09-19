@@ -2,6 +2,26 @@
 export const SYNTH_TRUST_MS = 80;
 
 /**
+ * ¿Hay que aplicar este flanco sintético?
+ *
+ * El primer clic en macOS enfoca el WKWebView y AppKit se queda el
+ * `mouseDown`: el DOM no ve nada, pero `document.hasFocus()` ya es true.
+ * Si abortamos por el foco, hace falta un segundo clic (el nativo) para
+ * abrir. El atajo no pasa por acá, por eso sí anda al primer toque.
+ *
+ * `hasFocus` no decide. Si el DOM ya recibió el flanco, no duplicar. Si el
+ * gesto sintético ya arrancó, hay que terminarlo aunque el nativo llegue
+ * después.
+ */
+export function shouldApplySynthPointer(input: {
+  synthHeld: boolean;
+  nativeAlreadyHandled: boolean;
+}): boolean {
+  if (input.nativeAlreadyHandled && !input.synthHeld) return false;
+  return true;
+}
+
+/**
  * ¿El DOM ya recibió este flanco? El IPC de Rust llega después del NSEvent:
  * si el WKWebView sí lo entregó, no hay que sintetizar otro.
  */

@@ -137,7 +137,7 @@ export const MOTION_FALLBACK = {
   [MOTION.launcherBar]: 100,
   [MOTION.launcherSeparate]: 90,
   [MOTION.launcherFavStagger]: 90,
-  [MOTION.islandOpen]: 190,
+  [MOTION.islandOpen]: 240,
 } as const;
 
 /** Atajo: duración efectiva de un token conocido. */

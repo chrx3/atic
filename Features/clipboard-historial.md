@@ -10,10 +10,10 @@ ventanas (texto e imagen).
 
 ## Cómo se usa
 
-- Abrir historial desde la pill (rueda / atajo): sale un **float independiente**
-  en el overlay con el morph fused grow → separate + reverse close
-  ([pill-liquid-emerge.md](pill-liquid-emerge.md)). La barra de la pill
-  **no crece**.
+- Abrir historial desde la pill (rueda / atajo / tira): la isla del notch
+  **se estira** y muestra la lista adentro (cara `clipboard`, un solo blob).
+  Esc, clic afuera o volver a activar la cierra. Arrastre OLE y clic-para-pegar
+  siguen igual.
 - **Clic** para pegar (Ctrl+V al destino, o insert interno si agentes está
   abierto). El float **no se cierra** solo: puedes pegar / arrastrar varias
   veces; cierra con X, Esc o clic afuera (salvo pin).
