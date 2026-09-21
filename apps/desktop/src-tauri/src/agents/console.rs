@@ -5,7 +5,7 @@
 //! `local` ya no reemplaza a la anterior. El tope es defensivo, no de diseño
 //! (cada sesión es un proceso vivo); quien las presenta decide cómo agruparlas.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -51,6 +51,9 @@ pub struct ConsoleOpenOptions {
     /// Comando a ejecutar en la PTY local (`claude`, `opencode…`).
     /// Vacío/ausente = shell del sistema, como siempre.
     pub command: Option<String>,
+    /// Vista que la abre. La reclama desde el arranque: sin esto, entre el
+    /// `open` y el `attach` hay un hueco en el que el barrido la vería sola.
+    pub view: Option<String>,
 }
 
 struct LiveConsole {
@@ -81,6 +84,127 @@ static TRANSFERS: Mutex<Option<HashMap<String, Instant>>> = Mutex::new(None);
 
 /// Cuánto dura la protección de una sesión en vuelo.
 const TRANSFER_TTL: Duration = Duration::from_secs(90);
+
+/// Qué vistas están mostrando cada sesión.
+///
+/// El GC no puede preguntarle a UNA vista qué sesiones existen. Con la isla y
+/// el float (o la ventana dedicada) vivos a la vez, la lista de una es el
+/// "huérfano" de la otra: `console_gc(keep)` mataba las PTY de la vecina en
+/// cuanto caducaba la marca de traspaso. Acá cada vista declara lo que
+/// muestra y el GC solo toca lo que no reclama nadie.
+///
+/// `orphan_since` es la otra mitad: entre desmontar una vista y montar la
+/// siguiente hay un hueco de milisegundos que no es orfandad. Se cuenta desde
+/// que la sesión se queda sin vistas, no desde que el GC la mira.
+#[derive(Default)]
+struct Claims {
+    /// sesión → vista → último latido de esa vista.
+    ///
+    /// Lleva reloj porque una vista puede morir **sin desmontarse**: una
+    /// recarga del overlay (HMR en desarrollo) se lleva el webview sin correr
+    /// ningún `onDestroy`. Sin caducidad, ese reclamo fantasma mantendría viva
+    /// para siempre una PTY que ya no mira nadie — justo lo que el barrido
+    /// existe para evitar.
+    by_session: HashMap<String, HashMap<String, Instant>>,
+    orphan_since: HashMap<String, Instant>,
+}
+
+static CLAIMS: Mutex<Option<Claims>> = Mutex::new(None);
+
+/// Cuánto aguanta viva una sesión que no muestra ninguna vista.
+///
+/// Cubre el desmontar/montar de un despegue, una recarga del overlay en
+/// desarrollo y el arranque de la app antes de que la UI reclame lo suyo.
+const ORPHAN_GRACE: Duration = Duration::from_secs(30);
+
+/// Cada cuánto barre el hilo de limpieza.
+const REAP_EVERY: Duration = Duration::from_secs(20);
+
+/// Cuánto vale un reclamo sin latido. La vista late cada 10 s: cuatro
+/// perdidos es una vista muerta, no una lenta.
+const CLAIM_TTL: Duration = Duration::from_secs(45);
+
+fn with_claims<T>(f: impl FnOnce(&mut Claims) -> T) -> T {
+    let mut guard = CLAIMS.lock_or_recover();
+    let claims = guard.get_or_insert_with(Claims::default);
+    f(claims)
+}
+
+/// Una vista muestra la sesión (o confirma que la sigue mostrando).
+fn claim(session: &str, view: &str) {
+    with_claims(|c| {
+        c.by_session
+            .entry(session.to_string())
+            .or_default()
+            .insert(view.to_string(), Instant::now());
+        c.orphan_since.remove(session);
+    });
+}
+
+/// Una vista deja de mostrarla. Sin vistas, arranca el reloj de la gracia.
+fn unclaim(session: &str, view: &str) {
+    with_claims(|c| {
+        let vacia = match c.by_session.get_mut(session) {
+            Some(vistas) => {
+                vistas.remove(view);
+                vistas.is_empty()
+            }
+            None => true,
+        };
+        if vacia {
+            c.by_session.remove(session);
+            c.orphan_since
+                .entry(session.to_string())
+                .or_insert_with(Instant::now);
+        }
+    });
+}
+
+/// La sesión se fue (cerrada o muerta): fuera del registro.
+fn forget_claims(session: &str) {
+    with_claims(|c| {
+        c.by_session.remove(session);
+        c.orphan_since.remove(session);
+    });
+}
+
+/// ¿La reclama alguna vista **viva**? Los reclamos vencidos se tiran acá.
+fn claimed(session: &str) -> bool {
+    with_claims(|c| {
+        let vivas = match c.by_session.get_mut(session) {
+            Some(vistas) => {
+                vistas.retain(|_, visto| visto.elapsed() < CLAIM_TTL);
+                !vistas.is_empty()
+            }
+            None => return false,
+        };
+        if !vivas {
+            c.by_session.remove(session);
+            c.orphan_since
+                .entry(session.to_string())
+                .or_insert_with(Instant::now);
+        }
+        vivas
+    })
+}
+
+/// ¿Lleva sin ninguna vista más que la gracia?
+///
+/// La primera vez que se ve sin dueño se anota y se la deja pasar: una sesión
+/// recién abierta (o que nadie reclamó todavía) no es basura.
+fn orphan_ready(session: &str) -> bool {
+    with_claims(|c| {
+        if c.by_session.contains_key(session) {
+            return false;
+        }
+
+        let desde = c
+            .orphan_since
+            .entry(session.to_string())
+            .or_insert_with(Instant::now);
+        desde.elapsed() >= ORPHAN_GRACE
+    })
+}
 
 /// Cola de scrollback por sesión: los últimos bytes emitidos.
 ///
@@ -470,12 +594,14 @@ fn spawn_wait(
             with_tails(|tails| {
                 tails.remove(&session);
             });
+            forget_claims(&session);
             let _ = app.emit("console-exit", ConsoleExitPayload { session, code });
         })
         .ok();
 }
 
 fn close_session(id: &str) {
+    forget_claims(id);
     let taken = with_map(|map| map.remove(id));
     with_tails(|tails| {
         tails.remove(id);
@@ -605,6 +731,15 @@ pub fn console_open(
             },
         );
     });
+    if let Some(view) = options
+        .view
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+    {
+        claim(&session, view);
+    }
+    spawn_reaper();
 
     Ok(session)
 }
@@ -658,24 +793,66 @@ pub fn console_close(session: String) -> Result<(), String> {
     Ok(())
 }
 
-/// Mata PTYs cuyo id la vista ya no reconoce (pestaña cerrada a mitad de
-/// `console_open`, `onDestroy` que no alcanzó a esperar, etc.).
+/// Mata las PTY que no muestra ninguna vista.
 ///
-/// Las sesiones en vuelo a otra ventana no se tocan: pasado el TTL, la marca
-/// caduca y valen las reglas normales (una receptora caída no fuga PTYs).
-#[tauri::command]
-pub fn console_gc(keep: Vec<String>) -> Result<u32, String> {
-    let keep: HashSet<String> = keep.into_iter().collect();
-    let stale: Vec<String> = with_map(|map| {
-        map.keys()
-            .filter(|id| !keep.contains(*id) && !transfer_guarded(id))
-            .cloned()
-            .collect()
-    });
+/// Ya NO recibe la lista de la vista que llama: eso mataba las sesiones de las
+/// otras vistas (ver `Claims`). Una sesión sobrevive mientras alguien la
+/// reclame, mientras esté en vuelo a otra ventana, o mientras no haya agotado
+/// la gracia sin dueño.
+pub fn reap_orphans() -> u32 {
+    let vivas: Vec<String> = with_map(|map| map.keys().cloned().collect());
+    let stale: Vec<String> = vivas
+        .into_iter()
+        .filter(|id| !claimed(id) && !transfer_guarded(id) && orphan_ready(id))
+        .collect();
     for id in &stale {
         close_session(id);
     }
-    Ok(stale.len() as u32)
+    stale.len() as u32
+}
+
+/// Barrido a pedido de la UI. El de verdad lo hace el hilo de `spawn_reaper`.
+#[tauri::command]
+pub fn console_gc() -> Result<u32, String> {
+    Ok(reap_orphans())
+}
+
+/// Hilo de limpieza, armado la primera vez que se abre una consola.
+///
+/// Sin esto, una sesión huérfana (ventana cerrada, overlay recargado) viviría
+/// hasta que alguien abriera otra consola. Vive en este módulo y no en el
+/// `setup` de la app para no pedirle nada a `lib.rs`.
+fn spawn_reaper() {
+    static REAPER: std::sync::Once = std::sync::Once::new();
+    REAPER.call_once(|| {
+        thread::spawn(|| loop {
+            thread::sleep(REAP_EVERY);
+            reap_orphans();
+        });
+    });
+}
+
+/// La vista empieza a mostrar esta sesión (y deja de ser huérfana).
+#[tauri::command]
+pub fn console_attach(session: String, view: String) {
+    claim(&session, &view);
+}
+
+/// La vista deja de mostrarla. No la mata: solo suelta.
+#[tauri::command]
+pub fn console_detach(session: String, view: String) {
+    unclaim(&session, &view);
+}
+
+/// «Sigo acá y sigo mostrando esto.»
+///
+/// Es lo que separa una vista viva de una que se fue sin avisar. Manda la
+/// lista entera para que un reclamo perdido se recupere solo.
+#[tauri::command]
+pub fn console_heartbeat(view: String, sessions: Vec<String>) {
+    for session in sessions {
+        claim(&session, &view);
+    }
 }
 
 /// Últimos bytes emitidos por la sesión, para repintar un terminal nuevo.
@@ -914,6 +1091,49 @@ mod tests {
         console_begin_transfer(vec![id.clone()]).unwrap();
         console_end_transfer(vec![id.clone()]).unwrap();
         assert!(!transfer_guarded(&id));
+    }
+
+    #[test]
+    fn el_registro_de_vistas_manda_sobre_el_barrido() {
+        let id = format!("test-{}", Uuid::new_v4());
+        assert!(!claimed(&id));
+
+        claim(&id, "isla");
+        claim(&id, "float");
+        assert!(claimed(&id));
+        assert!(!orphan_ready(&id));
+
+        // Soltar UNA vista no la deja huérfana: la otra la sigue mostrando.
+        unclaim(&id, "isla");
+        assert!(claimed(&id));
+
+        // Sin vistas entra en la gracia, que es justo el hueco del despegue.
+        unclaim(&id, "float");
+        assert!(!claimed(&id));
+        assert!(!orphan_ready(&id), "recién soltada no es huérfana");
+
+        // Y volver a reclamarla apaga el reloj.
+        claim(&id, "float");
+        assert!(claimed(&id));
+        forget_claims(&id);
+        assert!(!claimed(&id));
+    }
+
+    #[test]
+    fn un_reclamo_sin_latido_caduca() {
+        let id = format!("test-{}", Uuid::new_v4());
+        // Una vista que se fue sin desmontarse (recarga del overlay) deja su
+        // reclamo con el reloj viejo: no puede blindar la PTY para siempre.
+        with_claims(|c| {
+            c.by_session.entry(id.clone()).or_default().insert(
+                "fantasma".to_string(),
+                Instant::now() - CLAIM_TTL - Duration::from_secs(1),
+            );
+        });
+        assert!(!claimed(&id), "el reclamo vencido no cuenta");
+        // Y al caer entra en la gracia como cualquier huérfana.
+        assert!(!orphan_ready(&id));
+        forget_claims(&id);
     }
 
     #[test]

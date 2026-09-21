@@ -20,8 +20,11 @@
   import {
     agentStageImage,
     agentsAlwaysOnTop,
+    consoleAttach,
     consoleClose,
+    consoleDetach,
     consoleGc,
+    consoleHeartbeat,
     consoleOpen,
     consoleResize,
     consoleWrite,
@@ -127,7 +130,10 @@
     onNeedsAttention,
     onDetachRequest,
     detachBusy = false,
+    onRetachRequest,
+    suppressInitialTab = false,
     windowChrome = true,
+    dense = false,
   }: {
     /** Host SSH del destino actual de agentes; default de una pestaña nueva. */
     remoteHost?: SshHost | null;
@@ -180,8 +186,21 @@
     onDetachRequest?: () => void;
     /** Hay una mudanza en vuelo: el botón no acepta otra. */
     detachBusy?: boolean;
+    /** El usuario pidió devolver estas consolas a la isla (solo float). */
+    onRetachRequest?: () => void;
+    /**
+     * No sembrar pestaña al montar: viene una adopción en vuelo y el spawn
+     * inicial quedaría como ficha extra (duplicaba la mudanza).
+     */
+    suppressInitialTab?: boolean;
     /** Pin / min / max / cerrar. En la isla el blob ya es el marco. */
     windowChrome?: boolean;
+    /**
+     * Modo denso: riel de iconos y header mínimo. Es para la isla, donde la
+     * caja mide 440 px y el chrome se come el ancho del terminal; la ventana
+     * dedicada y el float no lo usan.
+     */
+    dense?: boolean;
   } = $props();
 
   /** Semilla de pestaña del lanzador: consola local corriendo un agente. */
@@ -260,7 +279,7 @@
     seam: number;
   };
 
-  const RAIL_MIN = 72;
+  const RAIL_MIN = 60;
   const RAIL_DEFAULT = 128;
   const RAIL_MAX = 224;
   const RAIL_STORAGE_KEY = "atic.agents.consoleRailWidth";
@@ -429,6 +448,9 @@
   let railWidth = $state(RAIL_DEFAULT);
   /** Un solo zoom para todas las consolas, como el zoom de una app. */
   let fontZoom = $state(0);
+  /** Cue efímero del zoom: aparece al cambiarlo y se apaga solo. */
+  let zoomCue = $state<number | null>(null);
+  let zoomCueTimer = 0;
   let pinned = $state(false);
   let usageOpen = $state(false);
   let shortcutsOpen = $state(false);
@@ -543,7 +565,11 @@
     });
   });
 
-  const railCompact = $derived(railWidth < 92);
+  /**
+   * Riel en modo icono: por ancho elegido o porque el modo denso lo impone.
+   * El ancho persistido (`RAIL_*`) no se toca: denso es solo presentación.
+   */
+  const railCompact = $derived(railWidth < 92 || dense);
   const hasIdleTab = $derived(tabs.some((t) => !t.sessionId && !pendingKeys[t.key]));
   const canAddTab = $derived(tabs.length < MAX_TABS || hasIdleTab);
 
@@ -803,6 +829,11 @@
     if (next === fontZoom) return;
     fontZoom = next;
     localStorage.setItem(FONT_ZOOM_KEY, String(next));
+    // Chip visible un momento: sin esto el cambio de tamaño es invisible
+    // hasta que el ojo compara.
+    zoomCue = next;
+    window.clearTimeout(zoomCueTimer);
+    zoomCueTimer = window.setTimeout(() => (zoomCue = null), 1100);
     // El refit aplica el tamaño nuevo y re-dimensiona el PTY a los cols/rows
     // resultantes; las pestañas ocultas lo reciben al volver a la vista.
     scheduleFitVisible();
@@ -816,6 +847,45 @@
     if (event.deltaY === 0) return;
     setFontZoom(fontZoom + (event.deltaY < 0 ? 1 : -1));
   }
+
+  /**
+   * Pinch del trackpad en macOS.
+   *
+   * WKWebView no manda wheel+Ctrl (eso es Chromium): el gesto llega como
+   * `gesturestart/gesturechange/gestureend` con `scale` acumulado. Mismo
+   * zoom, otro transporte. Las teclas y Ctrl+rueda siguen funcionando.
+   */
+  function bindPinchZoom(el: HTMLElement): () => void {
+    let base = 0;
+    const cancel = (event: Event) => {
+      if (event.cancelable) event.preventDefault();
+    };
+    const onStart = (event: Event) => {
+      cancel(event);
+      base = fontZoom;
+    };
+    const onChange = (event: Event) => {
+      const scale = (event as Event & { scale?: number }).scale;
+      if (typeof scale !== "number" || scale <= 0) return;
+      cancel(event);
+      setFontZoom(base + Math.round((scale - 1) * 10));
+    };
+    el.addEventListener("gesturestart", onStart, { passive: false });
+    el.addEventListener("gesturechange", onChange, { passive: false });
+    el.addEventListener("gestureend", cancel, { passive: false });
+    return () => {
+      el.removeEventListener("gesturestart", onStart);
+      el.removeEventListener("gesturechange", onChange);
+      el.removeEventListener("gestureend", cancel);
+    };
+  }
+
+  // El pinch se ata al panel de la consola: el resto del overlay (pill, rueda)
+  // no participa del gesto.
+  $effect(() => {
+    const el = consoleEl;
+    return el ? bindPinchZoom(el) : undefined;
+  });
 
   function clampRailWidth(width: number): number {
     return Math.min(RAIL_MAX, Math.max(RAIL_MIN, width));
@@ -969,6 +1039,26 @@
     scheduleFitVisible();
   });
 
+  /**
+   * Al REAPARECER la cara, forzar fit + repaint aunque el tamaño no haya
+   * cambiado.
+   *
+   * Estacionada fuera de pantalla (`.is-stowed`, la cara de la isla), el canvas
+   * de xterm se congela y su `ResizeObserver` no ve diferencia de tamaño al
+   * volver: sin esto la consola queda en blanco. Se espera a que la caja de la
+   * isla se asiente (pestaña→consola dura `--island-open-dur`) para no medir a
+   * mitad de camino.
+   */
+  let wasVisible = untrack(() => visible);
+  $effect(() => {
+    const nowVisible = visible;
+    if (nowVisible === wasVisible) return;
+    wasVisible = nowVisible;
+    if (!nowVisible) return;
+    const timer = window.setTimeout(() => scheduleFitVisible(), ms(MOTION.islandOpen));
+    return () => window.clearTimeout(timer);
+  });
+
   function hostLabel(h: SshHost): string {
     return h.label?.trim() || (h.user?.trim() ? `${h.user}@${h.host}` : h.host);
   }
@@ -1065,9 +1155,46 @@
     return tabOf(key)?.sessionId ?? null;
   }
 
+  /**
+   * Quién es esta vista para Rust.
+   *
+   * Cada panel montado (isla, float, ventana dedicada) es una vista distinta
+   * de las mismas PTY. Rust barre lo que no reclama nadie, así que la vista
+   * tiene que decir qué muestra — y soltarlo al irse, sin matarlo.
+   */
+  const VIEW_ID = crypto.randomUUID();
+
+  /** Esta vista muestra la sesión: mientras la reclame, el barrido no la toca. */
+  function attachSession(id: string): void {
+    if (id.startsWith("hub:")) return;
+    void consoleAttach(id, VIEW_ID).catch(() => {});
+  }
+
+  /** La suelta. Soltar no es cerrar: la PTY sigue viva para quien la tome. */
+  function detachSession(id: string): void {
+    if (id.startsWith("hub:")) return;
+    void consoleDetach(id, VIEW_ID).catch(() => {});
+  }
+
+  /** Cada cuánto esta vista confirma que sigue viva (ver `CLAIM_TTL` en Rust). */
+  const HEARTBEAT_MS = 10_000;
+  let heartbeatTimer = 0;
+
+  function startHeartbeat(): void {
+    if (heartbeatTimer) return;
+    heartbeatTimer = window.setInterval(() => {
+      const ids = knownSessionIds().filter((id) => !id.startsWith("hub:"));
+      if (ids.length === 0) return;
+      void consoleHeartbeat(VIEW_ID, ids).catch(() => {});
+    }, HEARTBEAT_MS);
+  }
+
   function setSession(key: string, id: string | null) {
     const t = tabOf(key);
+    const previo = t?.sessionId ?? null;
     if (t) t.sessionId = id;
+    if (previo && previo !== id) detachSession(previo);
+    if (id) attachSession(id);
   }
 
   function tabForSession(id: string): Tab | undefined {
@@ -1435,6 +1562,8 @@
     }
     if (id) {
       outputBuf.delete(id);
+      // Entregada: la PTY es de la otra instancia. Cerrarla la mataría.
+      if (handedOver.has(id)) return;
       try {
         await consoleClose(id);
       } catch {
@@ -1443,9 +1572,18 @@
     }
   }
 
-  async function disconnectAll() {
-    await Promise.all(tabs.map((t) => disconnect(t.key)));
-  }
+  /**
+   * Sesiones que YA NO son de este panel: se mudaron a otra ventana o a la
+   * otra instancia del overlay y allá siguen vivas.
+   *
+   * No alcanza con sacar la ficha de `tabs`: el desmontaje llegó a ver la
+   * lista vieja (traza `onDestroy ids=[…] tabs=1` justo después de vaciarla)
+   * y cerró una PTY ajena — la consola moría al despegarla. Este registro es
+   * un `Set` común, fuera del estado reactivo, y manda sobre cualquier lista:
+   * lo entregado no se cierra nunca desde acá.
+   */
+  // eslint-disable-next-line svelte/prefer-svelte-reactivity -- registro interno, no es estado de vista
+  const handedOver = new Set<string>();
 
   function knownSessionIds(): string[] {
     return tabs.map((t) => t.sessionId).filter((id): id is string => !!id);
@@ -1453,7 +1591,7 @@
 
   async function reapOrphanConsoles() {
     try {
-      await consoleGc(knownSessionIds());
+      await consoleGc();
     } catch {
       /* backend viejo o mapa ya vacío */
     }
@@ -1516,6 +1654,7 @@
       fitTermOnly(key);
       await reapOrphanConsoles();
       const openOpts = {
+        view: VIEW_ID,
         kind: live.kind,
         hostId: live.kind === "ssh" ? live.hostId : null,
         cwd: live.kind === "local" ? live.cwd : null,
@@ -2068,10 +2207,19 @@
    * suelta el estado. Devuelve cuántas fichas quedan.
    */
   export function clearTransferred(ids: string[]): number {
+    for (const id of ids) {
+      handedOver.add(id);
+      detachSession(id);
+    }
     const goneSessions = new Set(ids);
+
     const goneKeys = new Set(
       tabs
-        .filter((t) => t.sessionId && goneSessions.has(t.sessionId))
+        .filter(
+          (t) =>
+            (t.sessionId && goneSessions.has(t.sessionId)) ||
+            (t.hubSession && goneSessions.has(`hub:${t.hubSession}`)),
+        )
         .map((t) => t.key),
     );
     if (goneKeys.size === 0) return tabs.length;
@@ -2119,7 +2267,7 @@
     for (const desc of incoming.slice(0, Math.max(0, MAX_TABS - tabs.length))) {
       const sid = desc.session ?? (desc.hubSession ? `hub:${desc.hubSession}` : null);
       if (!sid || keyBySession.has(sid)) {
-        if (sid && keyBySession.has(sid) && desc.session) adopted.push(desc.session);
+        if (sid && keyBySession.has(sid)) adopted.push(sid);
         continue;
       }
       const key = `t${++seq}`;
@@ -2138,6 +2286,11 @@
         },
       ];
       if (desc.session) adopted.push(desc.session);
+      else if (desc.hubSession) adopted.push(`hub:${desc.hubSession}`);
+      // Vuelve a ser nuestra: si la habíamos entregado antes (ida y vuelta
+      // isla ⇄ float), sin esto no la cerraríamos nunca y quedaría colgada.
+      handedOver.delete(sid);
+      attachSession(sid);
     }
     if (adopted.length === 0 && incoming.length > 0) return [];
     // Receptora vacía: hereda división y foco. Con fichas propias, las
@@ -2153,6 +2306,9 @@
     await tick();
     await tick();
     for (const id of adopted) {
+      // Las fichas del hub no tienen PTY que repintar: su vista sale de su
+      // propio estado y `console_tail` fallaría con un id `hub:*`.
+      if (id.startsWith("hub:")) continue;
       const tab = tabs.find((t) => t.sessionId === id);
       if (tab) void adoptOne(tab.key, id);
     }
@@ -2256,6 +2412,25 @@
       requestAnimationFrame(run);
     });
     window.setTimeout(run, 48);
+  }
+
+  /**
+   * Fit coalescido para cambios que llegan a ráfagas (el `ResizeObserver`).
+   *
+   * Con la caja de la isla animando pestaña→consola (`--island-open-dur`), la
+   * cara se aplasta y el observer dispara en cada cuadro: un fit por evento
+   * manda `consoleResize` con filas/cols intermedios —tormenta de SIGWINCH— y
+   * deja el canvas a medio pintar. Acá se espera una ventana de quietud corta
+   * y se hace UN fit, con su refresh, sobre todas las fichas visibles.
+   */
+  const FIT_SETTLE_MS = 96;
+  let settledFitTimer = 0;
+  function scheduleSettledFit() {
+    window.clearTimeout(settledFitTimer);
+    settledFitTimer = window.setTimeout(() => {
+      settledFitTimer = 0;
+      for (const key of visiblePaneKeys) fitAndResize(key);
+    }, FIT_SETTLE_MS);
   }
 
   function fitAndResize(key = activeKey) {
@@ -2459,7 +2634,10 @@
         if (id) flushOutput(id, key);
         const observer = new ResizeObserver(() => {
           if (!visiblePaneKeys.includes(key)) return;
-          fitAndResize(key);
+          // Coalescido: durante la animación de la caja esto dispara en cada
+          // cuadro y un fit por evento rompe el canvas y manda resizes
+          // intermedios al PTY (ver `scheduleSettledFit`).
+          scheduleSettledFit();
         });
         observer.observe(el);
         requestAnimationFrame(() => {
@@ -2748,6 +2926,7 @@
   }
 
   onMount(() => {
+    startHeartbeat();
     const savedRailWidth = Number(localStorage.getItem(RAIL_STORAGE_KEY));
     if (Number.isFinite(savedRailWidth) && savedRailWidth > 0) {
       railWidth = clampRailWidth(savedRailWidth);
@@ -2782,18 +2961,22 @@
       stopItemDrag = un;
     });
     // Lanzador: N pestañas de agentes. Sin semilla: la pestaña de siempre.
+    // Con adopción en vuelo no se siembra nada: el spawn inicial quedaría
+    // como ficha extra junto a las adoptadas.
     const seeds = (initialTabs ?? []).slice(0, MAX_TABS);
-    if (seeds.length > 0) {
-      for (const seed of seeds) {
-        newTab(seed.kind === "ssh" ? "ssh" : "local", seed);
+    if (!suppressInitialTab) {
+      if (seeds.length > 0) {
+        for (const seed of seeds) {
+          newTab(seed.kind === "ssh" ? "ssh" : "local", seed);
+        }
+        const firstKey = tabs[0]?.key;
+        if (firstKey) {
+          activeKey = firstKey;
+          paneTree = leaf(firstKey);
+        }
+      } else {
+        newTab(initialKind === "ssh" ? "ssh" : "local");
       }
-      const firstKey = tabs[0]?.key;
-      if (firstKey) {
-        activeKey = firstKey;
-        paneTree = leaf(firstKey);
-      }
-    } else {
-      newTab(initialKind === "ssh" ? "ssh" : "local");
     }
 
     void Promise.all([
@@ -2867,9 +3050,12 @@
     stopListen?.();
     for (const timer of bootTimers.values()) window.clearTimeout(timer);
     bootTimers.clear();
-    const ids = knownSessionIds();
-    for (const id of ids) void consoleClose(id).catch(() => {});
-    void disconnectAll();
+    window.clearInterval(heartbeatTimer);
+    heartbeatTimer = 0;
+    // Desmontarse NO mata una consola. La vista suelta lo que mostraba y el
+    // barrido de Rust decide: si otra vista la reclama (despegue, recarga del
+    // overlay), sigue viva; si no la reclama nadie, muere pasada la gracia.
+    for (const id of knownSessionIds()) detachSession(id);
     consoleCue.clear(cueOwner);
     // Los xterm los dispone el teardown de cada `{@attach}`.
   });
@@ -2878,10 +3064,16 @@
 <!-- Captura: la rueda con Ctrl es zoom aunque caiga sobre el scroll del xterm. -->
 <section
   class="console console-desk"
+  class:is-dense={dense}
   bind:this={consoleEl}
   aria-label={t("page.agents.console.aria")}
   onwheelcapture={onConsoleWheel}
 >
+  {#if zoomCue !== null}
+    <div class="zoom-cue" role="status" aria-live="polite">
+      {100 + zoomCue * 10}%
+    </div>
+  {/if}
   <aside
     class="rail"
     class:is-compact={railCompact}
@@ -3437,6 +3629,43 @@
             </button>
           {/if}
         {/if}
+        {#if tabs.length > 0}
+          <div
+            class="zoom-ctl"
+            role="group"
+            aria-label={t("page.agents.console.zoomAria")}
+          >
+            <button
+              type="button"
+              class="icon-btn"
+              disabled={fontZoom <= FONT_ZOOM_MIN}
+              aria-label={t("page.agents.console.zoomOut")}
+              use:tip={t("page.agents.console.zoomOut")}
+              onclick={() => setFontZoom(fontZoom - 1)}
+            >
+              <Icon icon={Minus} size={12} />
+            </button>
+            <button
+              type="button"
+              class="zoom-level"
+              aria-label={t("page.agents.console.zoomReset")}
+              use:tip={t("page.agents.console.zoomReset")}
+              onclick={() => setFontZoom(0)}
+            >
+              {100 + fontZoom * 10}%
+            </button>
+            <button
+              type="button"
+              class="icon-btn"
+              disabled={fontZoom >= FONT_ZOOM_MAX}
+              aria-label={t("page.agents.console.zoomIn")}
+              use:tip={t("page.agents.console.zoomIn")}
+              onclick={() => setFontZoom(fontZoom + 1)}
+            >
+              <Icon icon={Plus} size={12} />
+            </button>
+          </div>
+        {/if}
         {#if tabs.length > 0 && onDetachRequest}
           <button
             type="button"
@@ -3451,6 +3680,18 @@
             onclick={() => onDetachRequest?.()}
           >
             <Icon icon={overlayHost ? SquareArrowOutUpRight : Pill} size={13} />
+          </button>
+        {/if}
+        {#if tabs.length > 0 && onRetachRequest}
+          <button
+            type="button"
+            class="icon-btn"
+            disabled={detachBusy}
+            aria-label={t("page.agents.console.dockBack")}
+            use:tip={t("page.agents.console.dockBackTip")}
+            onclick={() => onRetachRequest?.()}
+          >
+            <Icon icon={Pill} size={13} />
           </button>
         {/if}
         {#if windowChrome}
@@ -3822,6 +4063,67 @@
     width: var(--rail-width, 2.9rem);
     padding: 0.35rem 0.25rem;
     border-right: 0;
+  }
+
+  /* Cue del zoom: aparece al ajustarlo y se apaga solo. */
+  .zoom-cue {
+    position: absolute;
+    top: 3.4rem;
+    left: 50%;
+    z-index: 5;
+    padding: 0.3rem 0.7rem;
+    border: 1px solid color-mix(in sRGB, var(--rb-border-strong) 70%, transparent);
+    border-radius: 999px;
+    background: color-mix(in sRGB, var(--rb-surface-elevated) 96%, var(--rb-bg0));
+    box-shadow: 0 8px 22px color-mix(in sRGB, rgb(0 0 0) 32%, transparent);
+    color: var(--rb-text);
+    font-size: 0.75rem;
+    font-weight: 650;
+    font-variant-numeric: tabular-nums;
+    transform: translateX(-50%);
+    pointer-events: none;
+  }
+
+  /* Botones de zoom de la cabecera: − / % (clic = restablecer) / +. */
+  .zoom-ctl {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.02rem;
+    margin-right: 0.1rem;
+  }
+
+  /* Más chicos que el resto de la cabecera: son tres y no pueden robarle
+     ancho al nombre de la sesión. */
+  .console-desk .zoom-ctl .icon-btn {
+    width: 1.45rem;
+    height: 1.45rem;
+  }
+
+  .zoom-ctl .icon-btn:disabled {
+    opacity: 0.4;
+    cursor: default;
+  }
+
+  .zoom-level {
+    min-width: 2.15rem;
+    border: 0;
+    border-radius: 0.4rem;
+    padding: 0.12rem 0.2rem;
+    background: transparent;
+    color: var(--rb-muted);
+    font: inherit;
+    font-size: 0.62rem;
+    font-weight: 650;
+    font-variant-numeric: tabular-nums;
+    cursor: pointer;
+    transition:
+      color var(--duration-quick, 75ms) ease,
+      background-color var(--duration-quick, 75ms) ease;
+  }
+
+  .zoom-level:hover {
+    color: var(--rb-text);
+    background: color-mix(in sRGB, var(--rb-text) 7%, transparent);
   }
 
   .rail-tabs {
@@ -4878,7 +5180,7 @@
 
   .console-desk .rail {
     width: var(--rail-width, 8rem);
-    min-width: 4.5rem;
+    min-width: 3.75rem;
     max-width: 14rem;
 
     /* Respiro uniforme en la esquina: el radio de la primera ficha se deriva
@@ -5136,22 +5438,8 @@
   }
 
   @container agents-console (width <= 34rem) {
-    .console-desk .rail {
-      width: 4.5rem;
-      padding-inline: 0.45rem;
-    }
-
-    .console-desk .rail-tab {
-      grid-template-columns: 1fr;
-      justify-items: center;
-      height: 2.65rem;
-      padding: 0.3rem;
-    }
-
-    .console-desk .rail-copy {
-      display: none;
-    }
-
+    /* El ancho del rail lo manda el usuario (arrastre / doble clic): acá no
+       se pisa. La forma compacta la decide `is-compact` (railWidth < 92). */
     .console-desk .back-btn span {
       display: none;
     }
@@ -5162,16 +5450,6 @@
   }
 
   @container agents-console (width <= 28rem) {
-    .console-desk .rail {
-      width: 4.5rem;
-      min-width: 4.5rem;
-      padding-inline: 0.45rem;
-    }
-
-    .console-desk .rail-tab {
-      height: 2.45rem;
-    }
-
     .console-desk .bar {
       padding-inline: 0.34rem;
     }
@@ -5183,6 +5461,138 @@
     .console-desk .chip {
       padding-inline: 0.42rem;
     }
+  }
+
+  /* ─── Modo denso: solo la isla (la caja mide 440 px) ───────────────────── */
+
+  /*
+   * El chrome se come el ancho útil: el riel pasa a barra de sesiones ABAJO, el
+   * terminal se queda con todo el ancho y el header pierde label doble y zoom ±.
+   * La ventana dedicada y el float no lo usan: ahí el espacio sobra.
+   */
+  .console.is-dense {
+    /* El riel va primero en el DOM: en reversa queda al pie. */
+    flex-direction: column-reverse;
+  }
+
+  .console.is-dense .rail {
+    /* Sin columna reservada para la cruz: la × sale del flujo (abajo). */
+    --rail-close: 0;
+
+    width: auto;
+    height: auto;
+    min-width: 0;
+
+    /* El tope de la columna no aplica: la barra ocupa todo el ancho. */
+    max-width: none;
+    flex-direction: row;
+    align-items: center;
+    gap: 0.3rem;
+    padding: 0.3rem 0.45rem;
+
+    /* Separador sutil con el terminal, como el resto de la consola. */
+    border-top: 1px solid color-mix(in sRGB, var(--rb-border) 62%, transparent);
+  }
+
+  /* Fichas en fila, con scroll horizontal cuando no entran. */
+  .console.is-dense .rail-tabs {
+    flex: 1 1 auto;
+    width: auto;
+    min-width: 0;
+    flex-direction: row;
+    align-items: center;
+    overflow: auto hidden;
+  }
+
+  /* Ancho natural por ficha (el 100% era de la columna); la × se ancla acá. */
+  .console.is-dense .rail-slot {
+    position: relative;
+    width: auto;
+    flex: 0 0 auto;
+  }
+
+  .console.is-dense .rail-tab {
+    width: 2.4rem;
+    height: 2.4rem;
+  }
+
+  /* El radio concéntrico era de la esquina de la ventana: acá es una ficha más. */
+  .console.is-dense .rail-slot:first-child .rail-tab {
+    border-top-left-radius: 0.6rem;
+  }
+
+  /* El ancho lo manda el modo: arrastrar el riel acá no tiene sentido. */
+  .console.is-dense .rail-resizer {
+    display: none;
+  }
+
+  /* La × vive encima de la ficha y aparece al hover/foco (antes era una
+     columna fantasma; en la franja angosta no hay lugar para reservarla). */
+  .console.is-dense .tab-x {
+    position: absolute;
+    top: 0.15rem;
+    right: 0.15rem;
+    z-index: 1;
+    width: 1.2rem;
+    height: 1.2rem;
+    min-height: 0;
+    border-radius: 999px;
+    padding: 0;
+    opacity: 0;
+  }
+
+  .console.is-dense .rail-slot:hover .tab-x,
+  .console.is-dense .rail-slot:focus-within .tab-x,
+  .console.is-dense .tab-x:focus-visible {
+    opacity: 1;
+  }
+
+  /* El punto de sesión vivo baja al otro vértice: la × ocupa el de arriba. */
+  .console.is-dense .rail-tab .live {
+    top: auto;
+    right: 0.24rem;
+    bottom: 0.24rem;
+  }
+
+  /* El «+» cierra la fila; su menú abre hacia arriba y pegado al borde. */
+  .console.is-dense .rail-add {
+    width: auto;
+    flex: 0 0 auto;
+    padding: 0;
+  }
+
+  .console.is-dense .add-pop {
+    inset: auto 0 calc(100% + 0.3rem) auto;
+  }
+
+  /* Header mínimo: la barra baja y los controles se achican. */
+  .console.is-dense .bar {
+    min-height: 2.25rem;
+    padding: 0.2rem 0.4rem;
+  }
+
+  .console.is-dense .icon-btn {
+    width: 1.45rem;
+    height: 1.45rem;
+  }
+
+  /* El nombre de la carpeta ya está en el tooltip: acá queda solo el icono. */
+  .console.is-dense .folder-chip {
+    padding: 0.2rem 0.32rem;
+  }
+
+  .console.is-dense .folder-chip span {
+    display: none;
+  }
+
+  /* Zoom: el % manda (clic = restablecer); − / + siguen por Ctrl+rueda y pinch. */
+  .console.is-dense .zoom-ctl .icon-btn {
+    display: none;
+  }
+
+  /* La barra densa es más baja: el cue sube con ella. */
+  .console.is-dense .zoom-cue {
+    top: 2.9rem;
   }
 
   @media (prefers-reduced-motion: reduce) {
