@@ -71,8 +71,6 @@
   const THUMB_W = 192;
   const THUMB_H = 120;
   const SHELF_PAD = 8;
-  /** Sobre otra app, esperar esto antes de pasar a OLE (un roce no cuenta). */
-  const OLE_DWELL_MS = 380;
   const FOREIGN_CHECK_MS = 80;
 
   type DiscardDir = "x" | "y";
@@ -117,7 +115,6 @@
   /** Un drag consumió el gesto: el clic del botón que lo originó se traga. */
   let swallowClick = false;
   let dropping = false;
-  let oleSince = 0;
   let oleHwnd = 0;
   let lastForeignCheck = 0;
   let pointerId: number | null = null;
@@ -158,7 +155,6 @@
     pendingUp = false;
     fileDragStarted = false;
     dropping = false;
-    oleSince = 0;
     oleHwnd = 0;
     holdGesture = false;
     ignoreLostCapture = false;
@@ -439,20 +435,26 @@
     }
   }
 
+  /**
+   * ¿El puntero se quedó sobre otra app? Entonces el gesto pasa a arrastre
+   * nativo de archivo.
+   *
+   * DOS muestras seguidas con el MISMO hwnd: un roce al cruzar ventanas no
+   * cuenta y el arrastre no arranca mientras el cursor barre. Antes además
+   * había que sostenerlo 380 ms, y por eso soltar rápido sobre otra app no
+   * hacía nada: la intención ya está en el gesto, no en el reloj.
+   */
   async function considerOle(item: CaptureItem) {
     if (fileDragStarted || !dragging || expanding) return;
     const hwnd = await shelfForeignHwnd().catch(() => 0);
     if (!hwnd || !dragging) {
       oleHwnd = 0;
-      oleSince = 0;
       return;
     }
     if (oleHwnd !== hwnd) {
       oleHwnd = hwnd;
-      oleSince = Date.now();
       return;
     }
-    if (Date.now() - oleSince < OLE_DWELL_MS) return;
     void beginOle(item);
   }
 
@@ -635,7 +637,6 @@
     if (!item || expanding || fileDragStarted) return;
     if (ghostLive && discardDirOf(ghostPos)) {
       oleHwnd = 0;
-      oleSince = 0;
       return;
     }
     const now = Date.now();
@@ -738,7 +739,6 @@
     fileDragStarted = false;
     dropping = false;
     oleHwnd = 0;
-    oleSince = 0;
     drag = null;
     clearGhost();
     covering = false;

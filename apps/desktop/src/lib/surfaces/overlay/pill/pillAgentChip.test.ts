@@ -73,27 +73,20 @@ describe("agentChip", () => {
     ).toBe<ChipTone>("off");
   });
 
-  it("ready muestra el inicio de la última respuesta, se haya leído o no", () => {
-    // El preview del cierre va SIEMPRE: es el relato de que terminó.
-    const got = chip({ presence: [presence({ id: "t", status: "ready", unread: 0 })] });
-    expect(got).toMatchObject({
-      id: "t",
-      tone: "ready",
-      label: "El arreglo ya está",
-      target: { kind: "none", presenceId: "t" },
-    });
-    // Con respuesta sin leer también: mismo texto, es aviso además.
+  it("ready sin leer muestra el inicio de la respuesta; ya visto se apaga", () => {
+    expect(
+      chip({ presence: [presence({ id: "t", status: "ready", unread: 0 })] }).tone,
+    ).toBe<ChipTone>("off");
     expect(
       chip({
         presence: [presence({ id: "t", status: "ready", unread: 1, preview: "chau" })],
       }).label,
     ).toBe("chau");
-    // Sin preview: el fallback de la fila dice «Listo».
     expect(
       chip({
         presence: [presence({ id: "t", status: "ready", unread: 0, preview: null })],
-      }).label,
-    ).toBe(null);
+      }).tone,
+    ).toBe<ChipTone>("off");
   });
 
   it("prioridad waiting > working > ready, y a igualdad gana el chat", () => {
@@ -576,17 +569,15 @@ describe("agentChipLogos", () => {
 });
 
 describe("presenceIdsToDismissOnAticHide", () => {
-  it("apaga la TUI propia y la del CLI vivo adentro, no la externa atada", () => {
+  it("apaga la TUI de Atic, también la consola ya cerrada, no la externa", () => {
     expect(
-      presenceIdsToDismissOnAticHide(
-        [
-          { id: "own", backendId: "claude-code", window: { hwnd: 1, own: true } },
-          { id: "pty", backendId: "codex", window: null },
-          { id: "wt", backendId: "claude-code", window: { hwnd: 9, own: false } },
-        ],
-        ["codex"],
-      ),
-    ).toEqual(["own", "pty"]);
+      presenceIdsToDismissOnAticHide([
+        { id: "own", backendId: "claude-code", window: { hwnd: 1, own: true } },
+        { id: "pty", backendId: "codex", window: null },
+        { id: "gone", backendId: "opencode", window: null },
+        { id: "wt", backendId: "claude-code", window: { hwnd: 9, own: false } },
+      ]),
+    ).toEqual(["own", "pty", "gone"]);
   });
 });
 

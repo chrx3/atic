@@ -12,6 +12,10 @@ use atic_core::MutexExt;
 
 use crate::state::AppState;
 
+// Solo Windows: resolver la ruta del `.exe` y pedirle el ícono al shell es
+// Win32 + COM. En macOS la pestaña de recursos no muestra íconos.
+#[cfg(windows)]
+mod app_icons;
 mod apps;
 mod audio;
 mod awake;
@@ -37,6 +41,10 @@ const SYS_DISMISS: &str = "system-bubble-dismiss";
 pub struct SystemApp {
     pub id: String,
     pub name: String,
+    /// Ícono de la app como data URL. Falta cuando no se puede sacar del
+    /// ejecutable —o cuando todavía no le tocó el turno al presupuesto por
+    /// vuelta—: la fila reserva el mismo hueco igual.
+    pub icon: Option<String>,
     pub pid: u32,
     pub cpu: f32,
     pub ram_bytes: u64,
@@ -61,6 +69,9 @@ pub struct SystemSnapshot {
 pub struct AudioSession {
     pub id: String,
     pub name: String,
+    /// Ícono de la app como data URL. Falta cuando no se puede sacar del
+    /// ejecutable: la fila queda igual, con el hueco reservado.
+    pub icon: Option<String>,
     pub volume: f32,
     pub muted: bool,
 }

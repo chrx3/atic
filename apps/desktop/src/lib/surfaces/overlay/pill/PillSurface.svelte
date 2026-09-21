@@ -240,6 +240,7 @@
     pillTrace,
     savePillHome,
     setOverlayPointerGesture,
+    setOverlayTextMode,
     workAreaOf,
   } from "$ipc/overlay";
   import { OVERLAY_GEOMETRY } from "$surfaces/overlay/overlayGeometry";
@@ -252,6 +253,15 @@
    * Clipboard, textos y agentes abren como cara de la isla (un solo blob).
    * El launcher sigue siendo float espacial.
    */
+
+  /**
+   * En Mac el overlay lo maneja AppKit y el teclado de la cara funciona sin
+   * pedir nada. En Windows la ventana es `WS_EX_NOACTIVATE` y hay que pedirlo
+   * explícito: ver el efecto de `faceKeysOpen`.
+   */
+  const isMac =
+    typeof navigator !== "undefined" &&
+    /mac/i.test(navigator.platform || navigator.userAgent);
 
   /**
    * El estado de la app no es de la pill.
@@ -1479,6 +1489,61 @@
    * que estar en la lista (ver el efecto de registro).
    */
   let agentsFaceEl = $state<HTMLElement | null>(null);
+
+  /**
+   * Teclado de la cara abierta (Windows).
+   *
+   * La ventana del overlay nace `focusable: false` —`WS_EX_NOACTIVATE`— para no
+   * robarle el foco a la app donde escribes. El precio es que **tampoco recibe
+   * teclas**: hasta hoy el `keydown` de Esc solo llegaba después de tocar un
+   * campo de texto, que es lo único que pide `set_overlay_text_mode`. Con esto
+   * se pide al abrir la cara y se devuelve al cerrarla, así Esc cierra sin
+   * tener que clicar un input primero.
+   */
+  const faceKeysOpen = $derived(
+    clipboardFaceOpen ||
+      snippetsFaceOpen ||
+      systemFaceOpen ||
+      agentsFaceOpen ||
+      sidePanel !== null,
+  );
+  /** Ya pedimos el teclado por esta cara: evita repetir el viaje a Rust. */
+  let faceKeysHeld = false;
+  $effect(() => {
+    if (isMac || faceKeysOpen === faceKeysHeld) return;
+    faceKeysHeld = faceKeysOpen;
+    if (faceKeysOpen) {
+      void setOverlayTextMode(true).catch(() => {});
+      return;
+    }
+    releaseFaceKeys();
+  });
+  // Se desmonta la pill con una cara abierta: nadie baja el modo texto y la
+  // app de abajo se queda sin teclado.
+  $effect(() => () => releaseFaceKeys());
+
+  /**
+   * Devuelve el teclado al cerrar la cara.
+   *
+   * Salvo que el foco esté en un campo de verdad: ahí el modo texto lo sigue
+   * necesitando y lo gobierna `OverlaySurface`. Se le avisa con el mismo evento
+   * que él ya escucha, para que no quede creyendo que el teclado sigue pedido
+   * —si quedara así, al clicar el campo la próxima vez no lo repondría y la
+   * consola quedaría muda.
+   */
+  function releaseFaceKeys(): void {
+    if (isMac) return;
+    const ae = document.activeElement;
+    const typing =
+      ae instanceof HTMLElement &&
+      ae.closest(
+        "input, textarea, [contenteditable='true'], [data-console-term], .xterm",
+      ) !== null;
+    if (typing) return;
+    window.dispatchEvent(new Event("atic-overlay-leave-text"));
+    void setOverlayTextMode(false).catch(() => {});
+  }
+
   function dismissToolFace(): void {
     sidePanel = null;
     const was = toolFace;

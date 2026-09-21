@@ -5,6 +5,7 @@
   import { systemAlerts } from "$domain/systemAlerts.svelte";
   import Icon from "$ui/Icon.svelte";
   import ConfirmDialog from "$ui/ConfirmDialog.svelte";
+  import { tip } from "$surfaces/overlay/tip.svelte";
   import { Coffee, Lock, Moon, Trash2, Volume2, VolumeX, X } from "$lib/icons";
   import { barWidth, formatBytes, formatPercent } from "./systemFormat";
   import type { SystemApp } from "$ipc/system";
@@ -26,6 +27,8 @@
   let forceTarget = $state<SystemApp | null>(null);
   let forceBusy = $state(false);
   let askTrash = $state(false);
+
+  const sessions = $derived(system.audio?.sessions ?? []);
 
   /**
    * Cada pestaña a su ritmo, y solo la que se está viendo.
@@ -152,7 +155,7 @@
       class="sys-quick-btn"
       class:is-on={system.awake}
       aria-pressed={system.awake}
-      title={system.awake ? t("overlay.system.awakeOn") : t("overlay.system.awakeHint")}
+      use:tip={system.awake ? t("overlay.system.awakeOn") : t("overlay.system.awakeHint")}
       onclick={() => void system.setAwake(!system.awake)}
     >
       <Icon icon={Coffee} size={13} />
@@ -266,7 +269,7 @@
             class="sys-sort-btn"
             class:is-on={system.showBackground}
             aria-pressed={system.showBackground}
-            title={t("overlay.system.backgroundHint")}
+            use:tip={t("overlay.system.backgroundHint")}
             onclick={() => (system.showBackground = !system.showBackground)}
           >
             {t("overlay.system.showBackground")}
@@ -304,6 +307,19 @@
                   : app.name}
                 onclick={() => void focusApp(app)}
               >
+                <!-- Mismo hueco que las sesiones de audio: 1rem fijo, con ícono
+                   o sin él, para que ninguna fila se corra ni cambie de alto. -->
+                <span class="sys-app-icon">
+                  {#if app.icon}
+                    <img
+                      src={app.icon}
+                      width="16"
+                      height="16"
+                      alt=""
+                      draggable="false"
+                    />
+                  {/if}
+                </span>
                 <strong>{app.name}</strong>
                 <span>
                   {formatPercent(app.cpu)} · {formatBytes(app.ram_bytes)}
@@ -353,9 +369,24 @@
         {#if system.audio.per_app && system.audio.sessions.length > 0}
           <p class="sys-kicker">{t("overlay.system.sessions")}</p>
           <ul class="sys-list">
-            {#each system.audio.sessions as session (session.id)}
+            {#each sessions as session (session.id)}
               <li class="sys-row sys-row-stack">
-                <strong>{session.name}</strong>
+                <span class="sys-session">
+                  <!-- El hueco va siempre, con ícono o sin él: la fila no se
+                     corre cuando una app no entrega el suyo. -->
+                  <span class="sys-session-icon">
+                    {#if session.icon}
+                      <img
+                        src={session.icon}
+                        width="16"
+                        height="16"
+                        alt=""
+                        draggable="false"
+                      />
+                    {/if}
+                  </span>
+                  <strong>{session.name}</strong>
+                </span>
                 <OverlaySlider
                   label={session.name}
                   value={session.volume}
@@ -619,7 +650,13 @@
     gap: 0.2rem;
     margin: 0;
     padding: 0;
-    overflow: auto;
+    /* El pulgar del slider mide 14 px y va centrado sobre el riel: en los
+       extremos sobresale ~7 px del riel y eso volvía scrolleable esta lista en
+       horizontal (barra abajo de cada slider). El recorte horizontal cae en el
+       mismo borde donde ya recorta `.sys`, que es quien encierra el panel, así
+       que visualmente no se corta nada que no se cortara antes. */
+    overflow-x: hidden;
+    overflow-y: auto;
     list-style: none;
   }
 
@@ -636,12 +673,44 @@
     gap: 0.2rem;
   }
 
-  .sys-row-main {
+  .sys-session {
     display: flex;
     min-width: 0;
+    align-items: center;
+    gap: 0.35rem;
+  }
+
+  .sys-session strong {
     flex: 1;
-    flex-direction: column;
-    align-items: flex-start;
+    min-width: 0;
+  }
+
+  /* Cuadrado fijo: mismo hueco con ícono y sin él. */
+  .sys-session-icon,
+  .sys-app-icon {
+    display: grid;
+    width: 1rem;
+    height: 1rem;
+    flex-shrink: 0;
+    place-items: center;
+  }
+
+  .sys-session-icon img,
+  .sys-app-icon img {
+    display: block;
+    width: 1rem;
+    height: 1rem;
+    border-radius: 0.2rem;
+    object-fit: contain;
+  }
+
+  .sys-row-main {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+    column-gap: 0.35rem;
+    min-width: 0;
+    flex: 1;
     padding: 0;
     border: 0;
     background: none;
@@ -649,6 +718,18 @@
     font: inherit;
     text-align: left;
     cursor: pointer;
+  }
+
+  /* El hueco del ícono ocupa la primera columna y las dos filas: el nombre y
+     las cifras quedan alineados al mismo borde, con ícono o sin él. */
+  .sys-row-main .sys-app-icon {
+    grid-column: 1;
+    grid-row: 1 / span 2;
+  }
+
+  .sys-row-main strong,
+  .sys-row-main > span:not(.sys-app-icon) {
+    grid-column: 2;
   }
 
   .sys-row-main:disabled {

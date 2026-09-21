@@ -8,6 +8,12 @@ import { on } from "./events";
 export type SystemApp = {
   id: string;
   name: string;
+  /**
+   * Ícono de la app como data URL. Falta si no se pudo extraer del ejecutable
+   * —o si todavía no le tocó el turno al presupuesto por vuelta—: la fila
+   * reserva el mismo hueco igual.
+   */
+  icon?: string | null;
   pid: number;
   cpu: number;
   ram_bytes: number;
@@ -31,6 +37,8 @@ export type AudioSession = {
   name: string;
   volume: number;
   muted: boolean;
+  /** Ícono de la app como data URL. Falta cuando no se puede sacar del ejecutable. */
+  icon?: string | null;
 };
 
 export type SystemAudio = {

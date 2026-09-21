@@ -113,9 +113,9 @@ function fromPresence(p: PresenceView, labels: ChipLabels): AgentChip {
     };
   }
   if (p.status === "ready") {
-    // Terminó: el preview SIEMPRE va — el inicio de la última respuesta es
-    // lo que cierra el relato en la cara live, se haya leído o no. Con
-    // respuesta sin leer además cuenta como aviso (verde con texto).
+    // Ya visto (cerraste la consola, o el clic del aviso): no sigue en la
+    // pill. El preview solo acompaña al aviso sin leer.
+    if (p.unread <= 0) return OFF;
     return {
       id: p.id,
       tone: "ready",
@@ -345,9 +345,10 @@ export function logoSlots(
 }
 
 /**
- * Al achicar o cerrar el globo de Atic, estos avisos TUI ya no tienen
- * consola que mostrar: la ventana propia, o el JSONL de un CLI que sigue
- * vivo adentro.
+ * Al cerrar o achicar la consola de Atic, estos avisos ya no tienen dónde
+ * volver. Incluye la TUI propia, el JSONL de un CLI que seguía adentro y el
+ * de uno que acabas de cerrar. La terminal externa (HWND ajeno) se queda:
+ * esa ventana no la cerraste desde Atic.
  */
 export function presenceIdsToDismissOnAticHide(
   presence: Array<{
@@ -355,18 +356,11 @@ export function presenceIdsToDismissOnAticHide(
     backendId: string;
     window?: { hwnd?: number | null; own?: boolean } | null;
   }>,
-  consoles: Array<string | null | undefined> | undefined,
 ): string[] {
-  const logos = liveLogosFromConsoles(consoles);
   const ids: string[] = [];
   for (const p of presence) {
-    if (p.window?.own) {
-      ids.push(p.id);
-      continue;
-    }
-    if (p.window?.hwnd) continue;
-    const logo = agentLogoKey(p.backendId);
-    if (logo && logos.has(logo)) ids.push(p.id);
+    if (p.window?.hwnd && !p.window.own) continue;
+    ids.push(p.id);
   }
   return ids;
 }
