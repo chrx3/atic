@@ -49,6 +49,11 @@ class Toasts {
 
 export const toasts = new Toasts();
 
+/** Otra pila, para un panel que no debe pintar en el fondo del overlay. */
+export function createToasts(): Toasts {
+  return new Toasts();
+}
+
 /** Atajo para el caso más común: reportar un error que ya viene de Rust. */
 export function toastError(error: unknown, durationMs?: number): void {
   toasts.push(error instanceof Error ? error.message : String(error), durationMs);

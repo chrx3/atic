@@ -1,7 +1,9 @@
 <script lang="ts">
+  import { onDestroy } from "svelte";
   import { system } from "$domain/system.svelte";
   import { t } from "$domain/i18n.svelte";
-  import { toasts } from "$domain/toasts.svelte";
+  import { createToasts } from "$domain/toasts.svelte";
+  import ToastStack from "$ui/ToastStack.svelte";
   import { systemAlerts } from "$domain/systemAlerts.svelte";
   import Icon from "$ui/Icon.svelte";
   import ConfirmDialog from "$ui/ConfirmDialog.svelte";
@@ -23,6 +25,16 @@
       ? (system.snapshot.ram_used / system.snapshot.ram_total) * 100
       : 0,
   );
+
+  /**
+   * Avisos de este panel, no los globales.
+   *
+   * Los globales los pinta el host del overlay, fijo al fondo de la ventana
+   * transparente: «ya no estaba abierta» quedaba en la barra de tareas, lejos
+   * de la pill. Acá la pila vive dentro del propio panel.
+   */
+  const notices = createToasts();
+  onDestroy(() => notices.clear());
 
   let forceTarget = $state<SystemApp | null>(null);
   let forceBusy = $state(false);
@@ -76,13 +88,13 @@
   async function closeApp(app: SystemApp) {
     try {
       const n = await system.closeApp(app.id);
-      toasts.push(
+      notices.push(
         n > 0
           ? t("overlay.system.closing", { name: app.name })
           : t("overlay.system.closedNone", { name: app.name }),
       );
     } catch (err) {
-      toasts.push(err instanceof Error ? err.message : String(err));
+      notices.push(err instanceof Error ? err.message : String(err));
     }
   }
 
@@ -101,7 +113,7 @@
     try {
       await system.runAction("trash");
     } catch (err) {
-      toasts.push(err instanceof Error ? err.message : String(err));
+      notices.push(err instanceof Error ? err.message : String(err));
     }
   }
 
@@ -544,6 +556,11 @@
       onCancel={() => (askTrash = false)}
     />
   {/if}
+  <ToastStack
+    placement="local"
+    items={notices.items}
+    onDismiss={(id) => notices.dismiss(id)}
+  />
 </div>
 
 <style>
@@ -555,6 +572,11 @@
     flex-direction: column;
     gap: 0.35rem;
     overflow: hidden;
+  }
+
+  /* La pila es absoluta al panel: sin esto el aviso crece a 400px y se sale. */
+  .sys :global([aria-live="polite"] > div) {
+    max-width: 100%;
   }
 
   .sys-quick,
