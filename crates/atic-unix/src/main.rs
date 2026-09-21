@@ -143,9 +143,18 @@ mod tests {
 
     #[test]
     fn el_nombre_sale_de_la_ruta_sin_extension_ni_mayusculas() {
+        // La ruta con `\` solo se comprueba en Windows: `Path::file_stem` usa
+        // los separadores del SO donde corre, así que en macOS/Linux la barra
+        // invertida es un carácter más del nombre y el test fallaba sin que
+        // hubiera nada roto.
+        #[cfg(windows)]
         assert_eq!(
             invocado_como(Some(OsString::from(r"C:\atic\bin\LS.exe"))).as_deref(),
             Some("ls")
+        );
+        assert_eq!(
+            invocado_como(Some(OsString::from("/usr/local/bin/CAT.exe"))).as_deref(),
+            Some("cat")
         );
         assert_eq!(
             invocado_como(Some(OsString::from("/usr/local/bin/cat"))).as_deref(),
