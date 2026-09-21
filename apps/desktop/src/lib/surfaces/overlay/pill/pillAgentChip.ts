@@ -321,6 +321,29 @@ export function agentChipLogos(
   return cueAgentIds(state);
 }
 
+/** Cuántos logos caben en un aviso antes de pasar a contador. */
+export const LOGO_SLOTS_MAX = 3;
+
+/**
+ * Qué logos se ven en un aviso y cuántos quedan contados.
+ *
+ * Con la consola minimizada, el aviso junta las marcas de todos los agentes
+ * vivos. Sin tope, cinco logos de 18 px se salían de la pestaña: el botón
+ * crece con su contenido, pero la pestaña se mide antes. Hasta tres se ven
+ * enteros; con más, dos logos y un "+N" en la tercera celda — la lista
+ * completa sigue en el globo.
+ */
+export function logoSlots(
+  logos: string[],
+  max = LOGO_SLOTS_MAX,
+): { shown: string[]; extra: number; cells: number } {
+  if (logos.length <= max) {
+    return { shown: logos, extra: 0, cells: Math.max(1, logos.length) };
+  }
+  const shown = logos.slice(0, max - 1);
+  return { shown, extra: logos.length - shown.length, cells: max };
+}
+
 /**
  * Al achicar o cerrar el globo de Atic, estos avisos TUI ya no tienen
  * consola que mostrar: la ventana propia, o el JSONL de un CLI que sigue
