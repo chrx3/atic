@@ -13,5 +13,10 @@ export const agentsIslandHost = $state({ on: false });
  * plano. Se registra al montar el float y se baja al desmontar.
  */
 export const agentsFloatHandoff: {
-  current: null | ((init: { pointerId: number; x: number; y: number }) => void);
+  /**
+   * `false` = el float todavía no tiene marco: la pill reintenta. Sin eso el
+   * primer despegue (el globo aún no nació) llama al arrastre en vacío y el
+   * panel se queda en el rect de la cara.
+   */
+  current: null | ((init: { pointerId: number; x: number; y: number }) => boolean);
 } = { current: null };
