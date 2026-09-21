@@ -220,8 +220,31 @@ export const consoleResize = (session: string, cols: number, rows: number) =>
 export const consoleClose = (session: string) =>
   invoke<void>("console_close", { session });
 
-/** Cierra en Rust las PTYs cuyo id no está en `keep`. */
-export const consoleGc = (keep: string[]) => invoke<number>("console_gc", { keep });
+/**
+ * Barre las PTY que no muestra ninguna vista.
+ *
+ * Ya no lleva `keep`: mandar la lista de UNA vista mataba las sesiones de las
+ * otras (la isla reapeaba las del float). Quién muestra qué lo sabe Rust por
+ * `consoleAttach`/`consoleDetach`.
+ */
+export const consoleGc = () => invoke<number>("console_gc");
+
+/** Esta vista empieza a mostrar la sesión: mientras la reclame, no se barre. */
+export const consoleAttach = (session: string, view: string) =>
+  invoke<void>("console_attach", { session, view });
+
+/** Deja de mostrarla. No la mata: soltar no es cerrar. */
+export const consoleDetach = (session: string, view: string) =>
+  invoke<void>("console_detach", { session, view });
+
+/**
+ * «Sigo acá y sigo mostrando esto.»
+ *
+ * Una recarga del overlay se lleva la vista sin correr ningún `onDestroy`;
+ * sin latido, su reclamo blindaría esas PTY para siempre.
+ */
+export const consoleHeartbeat = (view: string, sessions: string[]) =>
+  invoke<void>("console_heartbeat", { view, sessions });
 
 /** CLI de agente vivo dentro de la PTY, o `null` si solo hay una shell. */
 export const consoleForegroundCli = (session: string) =>
@@ -274,6 +297,24 @@ export const agentsEnsureWindow = () => invoke<void>("agents_ensure_window");
 // --- La burbuja ---
 /** True si la burbuja de agentes está visible. */
 export const agentsWindowVisible = () => invoke<boolean>("agents_window_visible");
+
+/**
+ * La consola de la isla avisa que está a la vista (o que se fue).
+ *
+ * El historial lo usa: abierto, el pegado inserta en la consola en vez de
+ * mandar Ctrl+V a la app de atrás.
+ */
+export const setAgentsConsoleOpen = (on: boolean) =>
+  invoke<void>("set_agents_console_open", { on });
+
+/**
+ * La ventana dedicada avisa que hospeda consolas (mismo contrato que la isla).
+ *
+ * Con las PTY ahí, el pegado del historial entra a su sesión en vez de salir a
+ * la app de atrás. La isla mantiene su bandera aparte: no se pisan.
+ */
+export const setAgentsWindowOpen = (on: boolean) =>
+  invoke<void>("set_agents_window_open", { on });
 
 /** Abre (o repliega) la consola de agentes: sale de la pill y vuelve a ella. */
 export const showAgentsWindow = () => invoke<void>("show_agents_window");

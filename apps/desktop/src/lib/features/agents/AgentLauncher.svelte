@@ -7,6 +7,7 @@
   import Icon from "$ui/Icon.svelte";
   import { ArrowRight, ChevronRight, Folder, Minus, Plus, X } from "$lib/icons";
   import { onMount, tick } from "svelte";
+  import { emit } from "@tauri-apps/api/event";
   import {
     AGENTS_PATH_CHANGED,
     AGENTS_REVEAL_CONSOLE,
@@ -16,7 +17,9 @@
     consoleBeginTransfer,
     consoleEndTransfer,
     consoleTransferDeliver,
+    listDirectories,
     onAgentsTransferAck,
+    setAgentsWindowOpen,
     takeAgentsIslandLaunch,
     type AgentsIslandLaunchDetail,
   } from "$ipc/agents";
@@ -24,8 +27,13 @@
   import { OVERLAY_LABEL } from "$surfaces/overlay/contract";
   import {
     transferInbox,
+    overlayTransferBus,
+    AGENTS_OVERLAY_DETACH,
+    AGENTS_OVERLAY_DETACHED,
     AGENTS_WINDOW_LABEL,
     type TransferPayload,
+    type OverlayTransferRole,
+    type AgentsOverlayDetachDetail,
   } from "./consoleTransfer.svelte";
   import { toasts } from "$domain/toasts.svelte";
   import { AGENTS, installCommand, shownAgents } from "./agentCatalog";
@@ -93,6 +101,16 @@
   let browsing = $state(false);
   let view = $state<LauncherView>("setup");
   let hasConsole = $state(false);
+  /**
+   * Adopción en vuelo: el panel que monte no siembra su pestaña inicial
+   * (quedaría duplicando las adoptadas). Se resetea al terminar de recibir.
+   */
+  let incomingTransfer = $state(false);
+  /**
+   * La ventana está a la vista. Oculta (cerrada a la bandeja) no es destino de
+   * pegado: el historial debe caer donde el usuario mira.
+   */
+  let windowShown = $state(true);
   let onPath = $state<Record<string, boolean>>({});
   let pathReady = $state(false);
 
@@ -178,7 +196,13 @@
   $effect(() => {
     const justOpened = shown && !wasShown;
     wasShown = shown;
-    if (justOpened) revealLiveConsole();
+    if (!justOpened) return;
+    revealLiveConsole();
+    // Re-sincronizar con el host en CADA apertura: tras una recarga la vista
+    // pudo quedar desalineada del otro lado (la isla grande mostrando el
+    // setup = el hueco muerto). El estado real es este.
+    onViewChange?.(view);
+    if (view === "setup") onBrowserChange?.(browsing);
   });
 
   /** Instancia viva de ConsolePanel, para instalar sin remontar la consola. */
@@ -199,8 +223,49 @@
   // eslint-disable-next-line svelte/prefer-svelte-reactivity -- ver panel: se muta fuera del render
   const pendingDetach = new Map<string, { done: (adopted: string[]) => void }>();
 
-  /** Adoptar lo que llegó al buzón de esta ventana. */
-  async function receiveTransfer(payload: TransferPayload) {
+  /** Espera el ack de la receptora (misma espera para la otra ventana y el bus). */
+  function waitTransferAck(transferId: string): Promise<string[]> {
+    return new Promise<string[]>((resolve) => {
+      const timer = window.setTimeout(() => {
+        pendingDetach.delete(transferId);
+        resolve([]);
+      }, DETACH_ACK_MS);
+      pendingDetach.set(transferId, {
+        done: (list: string[]) => {
+          window.clearTimeout(timer);
+          pendingDetach.delete(transferId);
+          resolve(list);
+        },
+      });
+    });
+  }
+
+  /** Suelta las adoptadas sin matarlas; si no queda nada, vuelve al setup. */
+  function settleAfterDetach(adopted: string[]): void {
+    const remaining = panel?.clearTransferred(adopted) ?? 0;
+    if (remaining === 0) {
+      // Sin fichas no hay consola que mostrar: vuelve al setup. Las sesiones
+      // ya son de la otra ventana, así que desmontar no mata nada. Y si esta
+      // era la ventana dedicada, se esconde sola: cumplió.
+      setHasConsole(false);
+      showView("setup");
+      if (myLabel === AGENTS_WINDOW_LABEL) {
+        void hideWindow().catch(() => {});
+      }
+    }
+  }
+
+  /**
+   * Adoptar un paquete: montar la consola si hace falta y tomar las fichas.
+   *
+   * Es la mitad común de los dos caminos. Lo que cambia es CÓMO se confirma:
+   * la otra ventana necesita un evento por Rust; la otra instancia del mismo
+   * overlay, nada — resuelve la promesa en el acto.
+   */
+  async function adoptPayload(payload: TransferPayload): Promise<string[]> {
+    // El panel monta al poner `hasConsole`: si sembrara su pestaña inicial
+    // ahora, quedaría como ficha extra junto a las adoptadas.
+    incomingTransfer = true;
     if (!hasConsole) setHasConsole(true);
     await tick();
     let guard = 0;
@@ -219,6 +284,14 @@
         adopted = [];
       }
     }
+    if (adopted.length > 0) showView("console");
+    incomingTransfer = false;
+    return adopted;
+  }
+
+  /** Adoptar lo que llegó desde OTRA ventana: marca en Rust y ack por evento. */
+  async function receiveTransfer(payload: TransferPayload) {
+    const adopted = await adoptPayload(payload);
     try {
       await consoleEndTransfer(payload.sessions);
     } catch {
@@ -233,10 +306,10 @@
     } catch {
       /* la emisora cubre con su timeout */
     }
-    if (adopted.length > 0) showView("console");
     // De vuelta en la pill con el float cerrado: sin esto, la mudanza no se
-    // ve en ningún lado. En la ventana dedicada `shown` siempre es true.
-    if (adopted.length > 0 && !shown && myLabel === OVERLAY_LABEL) {
+    // ve en ningún lado. En la ventana dedicada `shown` siempre es true. Los
+    // traspasos coreografiados (detach/retach) no avisan: la emisora confirmó.
+    if (adopted.length > 0 && !shown && !payload.quiet && myLabel === OVERLAY_LABEL) {
       toasts.push(t("page.agents.console.receivedBack"));
     }
   }
@@ -248,11 +321,56 @@
     void receiveTransfer(inbox);
   });
 
-  /** Mudar estas consolas a la otra ventana, vivas y con scrollback. */
+  /**
+   * Instancia que SOY dentro del overlay: la cara de la isla o el float. En
+   * la ventana dedicada no hay roles (null) y el bus local no aplica.
+   */
+  const transferRole: OverlayTransferRole | null = $derived(
+    myLabel === OVERLAY_LABEL ? (island ? "island" : "float") : null,
+  );
+
+  /**
+   * Traspaso intra-overlay dirigido a ESTA instancia: adoptar del bus.
+   *
+   * La confirmación es la promesa de la emisora, no un evento: misma ventana,
+   * mismo contexto JS. Adoptar reclama las sesiones en Rust (`console_attach`)
+   * ANTES de que la emisora las suelte, así que nunca quedan sin dueño.
+   */
+  $effect(() => {
+    const req = overlayTransferBus.current;
+    if (!req || !transferRole || req.to !== transferRole) return;
+    overlayTransferBus.take();
+    void adoptPayload(req.payload).then(req.done, () => req.done([]));
+  });
+
+  /**
+   * La ventana dedicada publica que hospeda consolas vivas y a la vista.
+   *
+   * Sin esto `agents_open()` (Rust) queda falso con las PTY acá y el pegado
+   * del historial sale a la app de atrás en vez de entrar a la sesión. La isla
+   * lleva su bandera aparte, así que no se pisan; oculta no cuenta porque pegar
+   * en una consola que no se ve no da feedback.
+   */
+  $effect(() => {
+    if (myLabel !== AGENTS_WINDOW_LABEL) return;
+    const on = hasConsole && windowShown;
+    void setAgentsWindowOpen(on).catch(() => {});
+    return () => {
+      void setAgentsWindowOpen(false).catch(() => {});
+    };
+  });
+
+  /**
+   * Mudar estas consolas a la otra ventana, vivas y con scrollback.
+   *
+   * El destino lo decide `otherLabel`: el overlay manda a la ventana dedicada
+   * y la ventana dedicada vuelve al overlay.
+   */
   async function detachTo() {
     if (detachBusy || !panel) return;
     const body = await panel.buildTransferPayload().catch(() => null);
-    if (!body || body.sessions.length === 0) {
+    // Fichas, no solo PTYs: las del hub viajan como vista (sin `sessions`).
+    if (!body || body.tabs.length === 0) {
       toasts.push(t("page.agents.console.nothingToMove"));
       return;
     }
@@ -294,38 +412,76 @@
       toasts.push(t("page.agents.console.detachFailed"));
       return;
     }
-    const adopted = await new Promise<string[]>((resolve) => {
-      const timer = window.setTimeout(() => {
-        pendingDetach.delete(transferId);
-        resolve([]);
-      }, DETACH_ACK_MS);
-      pendingDetach.set(transferId, {
-        done: (list: string[]) => {
-          window.clearTimeout(timer);
-          pendingDetach.delete(transferId);
-          resolve(list);
-        },
-      });
-    });
+    const adopted = await waitTransferAck(transferId);
     if (adopted.length === 0) {
       await consoleEndTransfer(body.sessions).catch(() => {});
       detachBusy = false;
       toasts.push(t("page.agents.console.detachFailed"));
       return;
     }
-    const remaining = panel?.clearTransferred(adopted) ?? 0;
-    if (remaining === 0) {
-      // Sin fichas no hay consola que mostrar: vuelve al setup. Las sesiones
-      // ya son de la otra ventana, así que desmontar no mata nada. Y si esta
-      // era la ventana dedicada, se esconde sola: cumplió.
-      setHasConsole(false);
-      showView("setup");
-      if (myLabel === AGENTS_WINDOW_LABEL) {
-        void hideWindow().catch(() => {});
-      }
-    }
+    settleAfterDetach(adopted);
     detachBusy = false;
     toasts.push(t("page.agents.console.detachedOk"));
+  }
+
+  /**
+   * Mudar estas consolas a la OTRA instancia del overlay (isla ⇄ float).
+   *
+   * Mismo protocolo que `detachTo`, pero el transporte es el bus local (misma
+   * ventana) en vez del evento vía Rust: sin ventana dedicada que abrir y sin
+   * espera de montaje ajena — el bus retiene la oferta hasta que la receptora
+   * la toma. Al terminar avisa con `AGENTS_OVERLAY_DETACHED` para que la pill
+   * cierre/abra superficies.
+   */
+  async function detachToLocal(to: OverlayTransferRole): Promise<void> {
+    if (detachBusy || !transferRole) return;
+    // Sin consola montada no hay `panel` (el float se quedó en el setup tras
+    // cerrar sus fichas). El retach igual tiene que volver a la isla: cae por
+    // el camino vacío de acá abajo en vez de morir en silencio.
+    const body = panel ? await panel.buildTransferPayload().catch(() => null) : null;
+    // Fichas, no solo PTYs: las del hub viajan como vista (sin `sessions`).
+    if (!body || body.tabs.length === 0) {
+      // Retach de un float vacío: no hay nada que mudar, pero sí que cerrar
+      // y abrir la cara. Se avisa igual (vacío) y la pill hace el resto.
+      if (to === "island") {
+        window.dispatchEvent(
+          new CustomEvent(AGENTS_OVERLAY_DETACHED, { detail: { to, empty: true } }),
+        );
+        return;
+      }
+      toasts.push(t("page.agents.console.nothingToMove"));
+      return;
+    }
+    detachBusy = true;
+    // Sin `console_begin_transfer`: la protección de la PTY ya no es una marca
+    // con TTL que el primer `console_close` se comía, sino el registro de
+    // vistas de Rust. La receptora reclama antes de que esta suelte.
+    const payload: TransferPayload = {
+      ...body,
+      transferId: crypto.randomUUID(),
+      from: myLabel,
+      to: myLabel,
+      quiet: true,
+    };
+    const adopted = await overlayTransferBus.offer(to, payload);
+    if (adopted.length === 0) {
+      detachBusy = false;
+      toasts.push(t("page.agents.console.detachFailed"));
+      return;
+    }
+    settleAfterDetach(adopted);
+    detachBusy = false;
+    toasts.push(t("page.agents.console.detachedOk"));
+    window.dispatchEvent(new CustomEvent(AGENTS_OVERLAY_DETACHED, { detail: { to } }));
+  }
+
+  /**
+   * Devolver estas consolas a la isla. No mueve nada directo: la pill
+   * orquesta (abre la cara al terminar y cierra el float), así que esto
+   * solo pide el re-acople por el mismo evento que clipboard/textos.
+   */
+  function retachToIsland(): void {
+    void emit("dock-tool-face", "agents").catch(() => {});
   }
 
   function launch() {
@@ -428,7 +584,20 @@
     } catch {
       /* sin storage: arranca en la carpeta de inicio del usuario */
     }
+    // La carpeta guardada puede haber desaparecido (checkouts viejos): si no
+    // existe, se limpia y vuelve a la carpeta de inicio del usuario.
+    if (cwd) {
+      void listDirectories(cwd).catch(() => {
+        cwd = "";
+        saveCwd();
+      });
+    }
     refreshPath();
+    // Re-sincronizar la vista con el host: una recarga puede dejar del otro
+    // lado una vista/tamaño viejos (la isla quedaba grande con el setup y
+    // aparecía el hueco muerto). Al montar, el estado real es este.
+    onViewChange?.(view);
+    if (view === "setup") onBrowserChange?.(browsing);
     const pending = takeAgentsIslandLaunch();
     if (pending) applyIslandLaunch(pending);
     const onReveal = () => revealLiveConsole();
@@ -441,9 +610,22 @@
         (event as CustomEvent<AgentsIslandLaunchDetail>).detail;
       if (detail) applyIslandLaunch(detail);
     };
+    // La pill pide mudar mis consolas a la otra instancia del overlay
+    // (detach/retach del grab). Solo responde quien ES el origen.
+    const onOverlayDetach = (event: Event) => {
+      const detail = (event as CustomEvent<AgentsOverlayDetachDetail>).detail;
+      if (!detail || !transferRole || detail.from !== transferRole) return;
+      void detachToLocal(detail.to);
+    };
+    // Ocultar la ventana la saca de los destinos de pegado (T5): sin esto la
+    // bandera queda encendida con las PTY vivas detrás de una ventana invisible.
+    const syncShown = () => (windowShown = document.visibilityState !== "hidden");
+    syncShown();
     window.addEventListener(AGENTS_REVEAL_CONSOLE, onReveal);
     window.addEventListener(AGENTS_PATH_CHANGED, onPathChanged);
     window.addEventListener(AGENTS_ISLAND_LAUNCH, onIslandLaunch);
+    window.addEventListener(AGENTS_OVERLAY_DETACH, onOverlayDetach);
+    document.addEventListener("visibilitychange", syncShown);
     void onAgentsTransferAck((raw) => {
       try {
         const ack = JSON.parse(raw) as { transferId: string; adopted: string[] };
@@ -458,6 +640,8 @@
       window.removeEventListener(AGENTS_REVEAL_CONSOLE, onReveal);
       window.removeEventListener(AGENTS_PATH_CHANGED, onPathChanged);
       window.removeEventListener(AGENTS_ISLAND_LAUNCH, onIslandLaunch);
+      window.removeEventListener(AGENTS_OVERLAY_DETACH, onOverlayDetach);
+      document.removeEventListener("visibilitychange", syncShown);
       ackUnlisten?.();
     };
   });
@@ -634,7 +818,12 @@
         {onNeedsAttention}
         onDetachRequest={island ? undefined : detachTo}
         {detachBusy}
+        suppressInitialTab={incomingTransfer}
+        onRetachRequest={myLabel === OVERLAY_LABEL && !island
+          ? retachToIsland
+          : undefined}
         onBarPointerDown={island ? undefined : onHeaderPointerDown}
+        dense={island}
       />
     </div>
   {/if}
