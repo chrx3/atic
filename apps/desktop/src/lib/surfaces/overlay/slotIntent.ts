@@ -24,11 +24,17 @@ export type SlotIntent = "close" | "show" | "relocate";
  */
 export type SlotRequest = { id: ToolId; force?: boolean };
 
-const SPATIAL_ORDER: ToolId[] = ["clipboard", "snippets", "agents", "launcher"];
+const SPATIAL_ORDER: ToolId[] = [
+  "clipboard",
+  "snippets",
+  "system",
+  "agents",
+  "launcher",
+];
 
-/** Clipboard y textos vuelan al cursor; launcher / agentes tienen slot fijo. */
+/** Clipboard, textos y sistema vuelan al cursor; launcher / agentes tienen slot fijo. */
 export function isCursorAnchored(id: ToolId): boolean {
-  return id === "clipboard" || id === "snippets";
+  return id === "clipboard" || id === "snippets" || id === "system";
 }
 
 /** Launcher y agentes se sientan en el centro del monitor, no junto a la pill. */
@@ -77,6 +83,7 @@ export function spatialDismissTargets(
   pinned: {
     clipboard?: boolean;
     snippets?: boolean;
+    system?: boolean;
     agents?: boolean;
   },
 ): ToolId[] {
@@ -84,6 +91,7 @@ export function spatialDismissTargets(
     if (id === keep) return false;
     if (id === "clipboard" && pinned.clipboard) return false;
     if (id === "snippets" && pinned.snippets) return false;
+    if (id === "system" && pinned.system) return false;
     if (id === "agents" && pinned.agents) return false;
     return true;
   });

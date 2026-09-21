@@ -85,7 +85,38 @@ pub fn state_db_path() -> Option<PathBuf> {
 }
 
 pub fn detected() -> bool {
-    state_db_path().map(|p| p.is_file()).unwrap_or(false)
+    if state_db_path().map(|p| p.is_file()).unwrap_or(false) {
+        return true;
+    }
+    cli_config_path()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|t| auth_id_from_cli_config(&t))
+        .is_some()
+}
+
+pub(crate) fn cli_config_path() -> Option<PathBuf> {
+    let home = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME"))?;
+    Some(PathBuf::from(home).join(".cursor").join("cli-config.json"))
+}
+
+/// `authInfo.authId` del CLI. Sin esto no se arma la cookie del dashboard.
+fn auth_id_from_cli_config(text: &str) -> Option<String> {
+    let root: Value = serde_json::from_str(text).ok()?;
+    root.pointer("/authInfo/authId")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+fn plan_from_cli_config(text: &str) -> Option<String> {
+    let root: Value = serde_json::from_str(text).ok()?;
+    root.pointer("/authInfo/membershipType")
+        .or_else(|| root.pointer("/authInfo/plan"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
 }
 
 struct Creds {
@@ -112,6 +143,13 @@ fn open_state_db(path: &Path) -> Result<Connection, String> {
 }
 
 fn load_creds() -> Result<Creds, String> {
+    if let Ok(creds) = load_creds_from_ide() {
+        return Ok(creds);
+    }
+    load_creds_from_cli()
+}
+
+fn load_creds_from_ide() -> Result<Creds, String> {
     let path = state_db_path().ok_or_else(|| "no se encontró la carpeta de Cursor".to_string())?;
     if !path.is_file() {
         return Err("Cursor no está instalado en esta máquina.".to_string());
@@ -134,6 +172,29 @@ fn load_creds() -> Result<Creds, String> {
         token,
         auth_id,
         plan: get("cursorAuth/stripeMembershipType"),
+    })
+}
+
+fn load_creds_from_cli() -> Result<Creds, String> {
+    let path =
+        cli_config_path().ok_or_else(|| "no se encontró ~/.cursor/cli-config.json".to_string())?;
+    let text = std::fs::read_to_string(&path)
+        .map_err(|e| format!("no se pudo leer la config del CLI de Cursor: {e}"))?;
+    let auth_id = auth_id_from_cli_config(&text).ok_or_else(|| {
+        "el CLI de Cursor no tiene sesión (falta authId). Ejecuta `cursor-agent login`.".to_string()
+    })?;
+    let token = super::os_keychain::generic_password(
+        super::os_keychain::CURSOR_KEYCHAIN_SERVICE,
+        super::os_keychain::CURSOR_KEYCHAIN_ACCOUNT,
+    )
+    .ok_or_else(|| {
+        "Cursor CLI no tiene token en el llavero. Abre Cursor o ejecuta `cursor-agent login`."
+            .to_string()
+    })?;
+    Ok(Creds {
+        token,
+        auth_id,
+        plan: plan_from_cli_config(&text),
     })
 }
 
@@ -492,6 +553,13 @@ mod tests {
             session_cookie(&creds),
             "WorkosCursorSessionToken=auth0%7Cuser_01ABC%3A%3Ajwt.tok.en"
         );
+    }
+
+    #[test]
+    fn el_cli_config_entrega_el_auth_id() {
+        let text = r#"{"authInfo":{"email":"a@b.c","authId":"user_01ABC"}}"#;
+        assert_eq!(auth_id_from_cli_config(text).as_deref(), Some("user_01ABC"));
+        assert!(auth_id_from_cli_config("{}").is_none());
     }
 
     const PERIOD_JSON: &str = r#"{

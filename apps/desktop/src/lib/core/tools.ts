@@ -9,6 +9,7 @@ export type ToolId =
   | "board"
   | "color"
   | "agents"
+  | "system"
   | "launcher";
 
 /**
@@ -103,6 +104,14 @@ const ALL_TOOLS: ToolDef[] = [
       "Conversa con agentes de consola desde una interfaz, sin perder sus herramientas.",
     actionLabel: "Abrir consola",
     body: true,
+  },
+  {
+    id: "system",
+    label: "Sistema",
+    short: "Volumen y recursos",
+    blurb:
+      "Volumen, CPU, RAM y pantallas. Cierra apps y cambia el brillo desde la pill.",
+    actionLabel: "Abrir controles",
   },
   {
     id: "captures",

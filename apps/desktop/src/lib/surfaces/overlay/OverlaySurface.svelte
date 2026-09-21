@@ -16,6 +16,7 @@
   import { AGENTS_ENABLED } from "$core/tools";
   import AgentsFloat from "./agents/AgentsFloat.svelte";
   import ClipboardFloat from "./clipboard/ClipboardFloat.svelte";
+  import SystemFloat from "./system/SystemFloat.svelte";
   import LauncherFloat from "./launcher/LauncherFloat.svelte";
   import SnippetsFloat from "./snippets/SnippetsFloat.svelte";
   import PillSurface from "./pill/PillSurface.svelte";
@@ -35,7 +36,7 @@
   import { liquid } from "./group.svelte";
   import { snapPreview } from "./snapPreview.svelte";
   import Skin from "$liquid/Skin.svelte";
-  import { BLEND, CELL, SMOOTH } from "$liquid/constants";
+  import { CELL, SMOOTH } from "$liquid/constants";
   import { LAUNCHER_LAB_OPEN_KEY, launcherLab } from "$lib/dev/launcherLab.svelte";
   import { OVERLAY_GEOMETRY, viewportShifted } from "./overlayGeometry";
   import type { Component } from "svelte";
@@ -65,7 +66,16 @@
   >(null);
   let launcherLabEl = $state<HTMLElement | null>(null);
 
-  const skinBlend = $derived(isDev && launcherLab.open ? launcherLab.blend : BLEND);
+  /**
+   * Blend de render de la piel, elegido a ojo con el launcher lab.
+   *
+   * 0: uniones duras, sin filete de fusión. `BLEND` sigue gobernando el
+   * agrupado y los alcances; esto es solo el `smin` del trazado.
+   */
+  const SKIN_BLEND = 0;
+  const skinBlend = $derived(
+    isDev && launcherLab.open ? launcherLab.blend : SKIN_BLEND,
+  );
   // Misma calidad quieto y en movimiento. Antes el drag bajaba a celda 12 y
   // suavizado 0 "por costo", y la pill se veía poligonal al moverse; el campo
   // real es chico (pill ~350 muestras, float grande ~10k) y remeshear fino a
@@ -453,6 +463,7 @@
       <AgentsFloat />
     {/if}
     <ClipboardFloat />
+    <SystemFloat />
     <SnippetsFloat />
     <LauncherFloat />
     {#if shown}
@@ -502,13 +513,16 @@
     inset: 0;
   }
 
+  /*
+   * Como el lab del overlay: cubre el viewport para que el mouse entero
+   * quede adentro durante un arrastre. Con el host tamaño-panel, salirse un
+   * píxel devolvía el click-through, el `pointerup` se perdía y el slider
+   * quedaba pegado al cursor.
+   */
   .launcher-lab-host {
     position: fixed;
-    top: 3.25rem;
-    left: 0.75rem;
+    inset: 0;
     z-index: 90;
-    width: min(19rem, calc(100vw - 1.5rem));
-    max-height: min(70vh, 34rem);
     pointer-events: auto;
   }
 

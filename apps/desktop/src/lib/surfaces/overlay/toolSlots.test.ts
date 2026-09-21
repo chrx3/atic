@@ -35,6 +35,7 @@ describe("toolSlots", () => {
     expect(isSpatialTool("clipboard")).toBe(true);
     expect(isSpatialTool("snippets")).toBe(true);
     expect(isSpatialTool("agents")).toBe(true);
+    expect(isSpatialTool("system")).toBe(true);
     expect(isSpatialTool("dictation")).toBe(false);
   });
 

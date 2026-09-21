@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { PresenceView } from "$lib/agentPresenceReduce";
 import {
+  agentChipLogos,
   agentChip,
   agentChips,
   cueAgentId,
@@ -37,11 +38,15 @@ function chip(opts: {
     providerSessions?: Array<string | null>;
     updatedAt?: number;
     readyBackendId?: string | null;
+    answering?: boolean;
   };
   presence?: PresenceView[];
   chatEnabled?: boolean;
   pagerEnabled?: boolean;
   consoles?: Array<string | null | undefined>;
+  now?: number;
+  workingLabel?: string;
+  answeringLabel?: string;
 }) {
   return agentChip({
     chat: { ...emptyChat, ...opts.chat },
@@ -49,6 +54,9 @@ function chip(opts: {
     chatEnabled: opts.chatEnabled ?? true,
     pagerEnabled: opts.pagerEnabled ?? true,
     consoles: opts.consoles,
+    now: opts.now,
+    workingLabel: opts.workingLabel,
+    answeringLabel: opts.answeringLabel,
   });
 }
 
@@ -62,6 +70,29 @@ describe("agentChip", () => {
         pagerEnabled: false,
       }).tone,
     ).toBe<ChipTone>("off");
+  });
+
+  it("ready muestra el inicio de la última respuesta, se haya leído o no", () => {
+    // El preview del cierre va SIEMPRE: es el relato de que terminó.
+    const got = chip({ presence: [presence({ id: "t", status: "ready", unread: 0 })] });
+    expect(got).toMatchObject({
+      id: "t",
+      tone: "ready",
+      label: "El arreglo ya está",
+      target: { kind: "none", presenceId: "t" },
+    });
+    // Con respuesta sin leer también: mismo texto, es aviso además.
+    expect(
+      chip({
+        presence: [presence({ id: "t", status: "ready", unread: 1, preview: "chau" })],
+      }).label,
+    ).toBe("chau");
+    // Sin preview: el fallback de la fila dice «Listo».
+    expect(
+      chip({
+        presence: [presence({ id: "t", status: "ready", unread: 0, preview: null })],
+      }).label,
+    ).toBe(null);
   });
 
   it("prioridad waiting > working > ready, y a igualdad gana el chat", () => {
@@ -127,10 +158,47 @@ describe("agentChip", () => {
     expect(result).toEqual({
       id: "t",
       tone: "working",
-      label: null,
+      // Sin preview la TUI solo puede decir que trabaja (no hay stream).
+      label: "Trabajando…",
       target: { kind: "none", presenceId: "t" },
       logoId: "claude-code",
     });
+  });
+
+  it("sin texto, el chip distingue contestar de trabajar", () => {
+    // Stream vivo: contesta.
+    expect(
+      chip({ chat: { working: true, readyLabel: null, answering: true } }),
+    ).toMatchObject({ tone: "working", label: "Contestando…" });
+    // Herramientas o pensando: trabaja (y ausente el flag, igual).
+    expect(
+      chip({ chat: { working: true, readyLabel: null, answering: false } }),
+    ).toMatchObject({ tone: "working", label: "Trabajando…" });
+    expect(chip({ chat: { working: true, readyLabel: null } })).toMatchObject({
+      tone: "working",
+      label: "Trabajando…",
+    });
+    // Con preview manda el texto, aunque esté contestando.
+    expect(
+      chip({
+        chat: { working: true, readyLabel: "voy por la mitad", answering: true },
+      }),
+    ).toMatchObject({ tone: "working", label: "voy por la mitad" });
+    // La UI pisa los textos con su i18n.
+    expect(
+      chip({
+        chat: { working: true, readyLabel: null, answering: true },
+        workingLabel: "WORK",
+        answeringLabel: "ANSWER",
+      }),
+    ).toMatchObject({ tone: "working", label: "ANSWER" });
+    expect(
+      chip({
+        chat: { working: true, readyLabel: null, answering: false },
+        workingLabel: "WORK",
+        answeringLabel: "ANSWER",
+      }),
+    ).toMatchObject({ tone: "working", label: "WORK" });
   });
 
   it("con HWND el destino es focus", () => {
@@ -236,7 +304,7 @@ describe("agentChip", () => {
     });
   });
 
-  it("ignora presencia stale sin HWND si la consola viva es otra", () => {
+  it("conserva una presencia ready aunque la consola viva sea otra", () => {
     expect(
       chip({
         chatEnabled: false,
@@ -261,12 +329,102 @@ describe("agentChip", () => {
         ],
       }),
     ).toEqual({
-      id: "c",
+      id: "o",
       tone: "ready",
-      label: "Soy Codex",
-      target: { kind: "none", presenceId: "c" },
-      logoId: "codex",
+      label: "¡Holaaa!",
+      target: { kind: "none", presenceId: "o" },
+      logoId: "opencode",
     });
+  });
+
+  it("conserva working fresco sin HWND aunque sea de otra marca", () => {
+    expect(
+      chip({
+        chatEnabled: false,
+        consoles: ["codex"],
+        now: 1_000_000,
+        presence: [
+          presence({
+            id: "o",
+            backendId: "opencode",
+            status: "working",
+            updatedAt: 1_000,
+          }),
+        ],
+      }),
+    ).toMatchObject({ id: "o", tone: "working", logoId: "opencode" });
+  });
+
+  it("working realmente viejo sin HWND se descarta cuando ya hay clock", () => {
+    expect(
+      chip({
+        chatEnabled: false,
+        consoles: ["codex"],
+        now: 1_100_001,
+        presence: [
+          presence({
+            id: "o",
+            backendId: "opencode",
+            status: "working",
+            updatedAt: 1_000,
+          }),
+        ],
+      }).tone,
+    ).toBe("off");
+  });
+
+  it("sin now no aplica la poda de working", () => {
+    expect(
+      chip({
+        chatEnabled: false,
+        consoles: ["codex"],
+        presence: [
+          presence({
+            id: "o",
+            backendId: "opencode",
+            status: "working",
+            updatedAt: 1,
+          }),
+        ],
+      }),
+    ).toMatchObject({ id: "o", tone: "working" });
+  });
+
+  it("un working viejo con HWND se conserva", () => {
+    expect(
+      chip({
+        chatEnabled: false,
+        consoles: ["codex"],
+        now: 1_100_001,
+        presence: [
+          presence({
+            id: "o",
+            backendId: "opencode",
+            status: "working",
+            updatedAt: 1_000,
+            window: { pid: 1, hwnd: 99 },
+          }),
+        ],
+      }),
+    ).toMatchObject({ id: "o", tone: "working", target: { kind: "focus" } });
+  });
+
+  it("un working viejo con consola viva de la misma marca se conserva", () => {
+    expect(
+      chip({
+        chatEnabled: false,
+        consoles: ["opencode"],
+        now: 1_100_001,
+        presence: [
+          presence({
+            id: "o",
+            backendId: "opencode",
+            status: "working",
+            updatedAt: 1_000,
+          }),
+        ],
+      }),
+    ).toMatchObject({ id: "o", tone: "working", logoId: "opencode" });
   });
 
   it("chat stale de otro backend se ignora si la consola viva no coincide", () => {
@@ -387,6 +545,32 @@ describe("cueAgentId", () => {
         consoles: ["codex", "opencode"],
       }),
     ).toEqual(["claude-code", "codex", "opencode"]);
+  });
+});
+
+describe("agentChipLogos", () => {
+  const aggregateState = {
+    sessions: [{ backendId: "claude-code", status: "working" }],
+    presence: [{ backendId: "codex", status: "working" }],
+    consoles: ["opencode"],
+  };
+
+  it("no mezcla logos en un chip real sin logo y deja el fallback genérico", () => {
+    expect(
+      agentChipLogos({ tone: "working", logoId: null }, aggregateState, true),
+    ).toEqual([]);
+  });
+
+  it("conserva un solo logo del chip real y agrega solo el dock minimizado", () => {
+    expect(
+      agentChipLogos({ tone: "working", logoId: "codex" }, aggregateState, true),
+    ).toEqual(["codex"]);
+    expect(agentChipLogos({ tone: "off", logoId: null }, aggregateState, true)).toEqual(
+      ["claude-code", "codex", "opencode"],
+    );
+    expect(
+      agentChipLogos({ tone: "off", logoId: null }, aggregateState, false),
+    ).toEqual([]);
   });
 });
 

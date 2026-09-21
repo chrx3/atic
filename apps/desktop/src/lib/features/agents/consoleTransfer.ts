@@ -60,6 +60,11 @@ export type TransferPayload = TransferBody & {
   /** Etiqueta de ventana (`main` | `overlay`). */
   from: string;
   to: string;
+  /**
+   * Traspaso coreografiado por la pill (detach/retach intra-overlay): la
+   * receptora no avisa con toast, la emisora ya confirmó.
+   */
+  quiet?: boolean;
 };
 
 /** Etiqueta de la ventana dedicada de consolas. Debe coincidir con Rust. */

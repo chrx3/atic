@@ -22,12 +22,27 @@ export function birthAtCursor(
 }
 
 let birth: BirthRect | null = null;
+/** Reposo EXACTO pedido por un despegue: el float nace y descansa ahí. */
+let rest: BirthRect | null = null;
 let resting = false;
 let restingResolvers: Array<() => void> = [];
 
 export function captureToolBirth(rect: BirthRect | null): void {
   birth = rect ? { ...rect } : null;
+  // La limpieza del acto (null) apaga también el reposo: el birth ya
+  // consumió el rect de la cara que lo pidió.
+  if (!birth) rest = null;
   resting = false;
+}
+
+/** Marca el rect EXACTO donde el float debe nacer y descansar. */
+export function captureToolResting(rect: BirthRect | null): void {
+  rest = rect ? { ...rect } : null;
+}
+
+/** Rect de reposo del despegue en curso, si hay. */
+export function toolResting(): BirthRect | null {
+  return rest;
 }
 
 export function toolBirth(): BirthRect | null {

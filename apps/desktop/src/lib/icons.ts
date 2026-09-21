@@ -12,6 +12,8 @@ import {
   Camera,
   CircleDot,
   Clipboard,
+  Coffee,
+  MemoryStick,
   Crop,
   FileImage,
   FileText,
@@ -94,6 +96,7 @@ import {
   PanelRightClose,
   PanelRightOpen,
   PanelBottomOpen,
+  PanelTopClose,
 } from "lucide";
 import type { ToolId } from "$lib/tools";
 
@@ -124,6 +127,7 @@ export const TOOL_ICONS: Record<AppIconId, IconNode> = {
   agents: SquareTerminal,
   clipboard: Clipboard,
   snippets: AlignLeft,
+  system: Cpu,
   captures: Crop,
   board: Pencil,
   color: Pipette,
@@ -147,6 +151,7 @@ export const LAUNCHER_ICONS: Record<string, IconNode> = {
   color: Pipette,
   clipboard: Clipboard,
   snippets: FileText,
+  system: Cpu,
   agents: SquareTerminal,
   settings: Settings,
   calc: Calculator,
@@ -184,6 +189,8 @@ export const AGENT_ICONS = {
 
 export {
   Activity,
+  Coffee,
+  MemoryStick,
   Search,
   Trash2,
   List,
@@ -198,6 +205,7 @@ export {
   VolumeX,
   Pin,
   Plug,
+  Lock,
   Copy,
   Sun,
   Moon,
@@ -251,6 +259,7 @@ export {
   Pill,
   PanelRightOpen,
   PanelBottomOpen,
+  PanelTopClose,
   Keyboard,
   Crop,
   Type,

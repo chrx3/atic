@@ -37,7 +37,8 @@ export type NotchEdge = "left" | "right" | "top" | "bottom";
 
 /**
  * Isla tipo notch: el redondeo del canto acoplado queda fuera de la
- * pantalla. En el borde se leen lados verticales, no un menisco que se abre.
+ * pantalla. En el borde se leen lados verticales; el menisco del contacto
+ * lo aporta aparte la pared con filete de `edgeWallsFor`.
  *
  * Una pastilla entera en el viewport redondea las cuatro esquinas; el techo
  * entonces se estrecha. Una pared SDF más ancha, al fundirse, hacía lo

@@ -54,7 +54,7 @@ combinan, más el acople al borde. Están marcados como tal en
 | Eje | Valores | Quién manda |
 |---|---|---|
 | **1. Actividad** | `idle` · `recording` · `dictating` | grabación y dictado, no la UI |
-| **2. Superficie** | `none` · `wheel` · `edge` | el usuario: clic, `Alt+Z`, arrastre al borde |
+| **2. Superficie** | `none` · `wheel` · `edge` | el usuario: hover, `Alt+Z`, arrastre al borde |
 | **3. Cola de pegado** | vacía · con ítems | el clipboard cuando no hay destino |
 | **Acople** | `Dock { edge, expanded }` | contra qué lado se aplana y si el puntero la abrió |
 
@@ -81,14 +81,16 @@ ninguno, casi siempre es un aviso (ver más abajo) y no un estado.
 
 **La marca está en las tres.** Es lo que hace que se lean como la misma pill
 desplegándose, y no como tres controles distintos. En la tira abierta es la
-primera celda y su clic abre la rueda, igual que el cuerpo de la pestaña.
+primera celda; su clic no abre la rueda: acoplada, la rueda no se abre (las
+herramientas van por hover).
 
 **La actividad no cuelga: la dice la cara de la marca.** Grabando, el círculo
 de la 'a' se llena con el cuadrado rojo latiendo; dictando, con tres barras.
 La cabeza y el asta no se mueven, así que la marca se sigue leyendo.
 
 **Y la marca es el control de lo que muestra.** Si la cara dice qué está
-corriendo, apretarla lo para; en reposo abre la rueda. Un segundo botón rojo al
+corriendo, apretarla lo para; en reposo el clic no hace nada —la rueda se abre
+por hover en la flotante o con el atajo—. Un segundo botón rojo al
 lado decía dos veces lo mismo y se comía el ancho que la cápsula necesita para
 el contador. Vale para las tres formas: pestaña, tira y cápsula. Por eso la
 actividad tampoco cuenta en `edgeCueMarks`: su control ya estaba ahí.
@@ -145,8 +147,9 @@ No son preferencias: romperlas produce bugs concretos que ya pasaron.
    entera estando acoplada dibujaba el disco sobre una zona viva del tamaño de
    la pestaña: se veía sin cambiar y no respondía.
 5. **Entre dos gotas circulares no puede haber hueco muerto.** Un clic que cae
-   entre iconos llega al cuerpo de la isla, y el cuerpo abre la rueda. Por eso
-   `islandGap` es 2 y los botones llevan un `::before` que cubre el filete.
+   entre iconos llega al cuerpo de la isla, que no tiene acción: un clic sin
+   respuesta se lee como falla. Por eso `islandGap` es 2 y los botones llevan
+   un `::before` que cubre el filete.
 6. **Restar `--goo-grow` a lo que se dibuje con tamaño exacto.** El endurecido
    del filtro engorda la silueta 1.68 px por lado. Ver
    [`liquid.md`](../Features/liquid.md).
@@ -220,16 +223,18 @@ hoy `agent` (permiso pendiente), mañana `rec`/`dict`/`queue`. Reglas:
 5. **Colapsar no resuelve**: clic afuera / Esc vuelven al cue, que sigue
    pulsando. Solo decidir, abrir la consola o que se vaya el pedido la cierran
    del todo — y un pedido nuevo sí re-abre.
-6. **La marca manda igual**: en reposo abre la rueda, con actividad la para, en
-   las tres superficies. El cuerpo de la pestaña es lo que expande/informa.
+6. **La marca manda igual**: con actividad la para; en reposo el clic no hace
+   nada, en las tres superficies. El cuerpo de la pestaña es lo que
+   expande/informa.
 
 ## Avisos: agente, update, cola
 
 Un aviso **no** es un estado: es algo que aparece al lado de lo que ya está.
 Los tres siguen el mismo contrato.
 
-1. **Nunca reemplazan a la marca.** La marca de Atic es la puerta a la rueda;
-   taparla deja al usuario sin acceso. En la pestaña acoplada conviven: la
+1. **Nunca reemplazan a la marca.** La marca de Atic es la puerta a la rueda
+   (por hover o con el atajo); taparla deja al usuario sin acceso. En la
+   pestaña acoplada conviven: la
    pestaña se alarga a lo largo del borde y `islandCueLong` mide marca + un
    botón por aviso.
 2. **Crecen a lo largo del borde, no hacia adentro.** Hacia adentro tapan

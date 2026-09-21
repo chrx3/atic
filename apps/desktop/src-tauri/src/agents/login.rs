@@ -34,14 +34,10 @@ fn env_con_algo(clave: &str) -> bool {
     std::env::var(clave).is_ok_and(|v| !v.trim().is_empty())
 }
 
-/// Claude Code: token OAuth en el entorno o credenciales en su carpeta de
-/// configuración (que `CLAUDE_CONFIG_DIR` puede mover).
+/// Claude Code: token OAuth en el entorno, `~/.claude/.credentials.json` o el
+/// llavero de macOS (`Claude Code-credentials`).
 pub fn claude() -> Option<bool> {
-    if env_con_algo("CLAUDE_CODE_OAUTH_TOKEN") {
-        return Some(true);
-    }
-    let dir = super::skills::config_dir()?;
-    Some(dir.join(".credentials.json").is_file())
+    Some(super::claude_usage::detected())
 }
 
 /// Codex: `~/.codex/auth.json` lo escribe `codex login`, y la clave de OpenAI en

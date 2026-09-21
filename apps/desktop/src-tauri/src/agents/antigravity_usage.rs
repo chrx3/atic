@@ -10,8 +10,10 @@
 //! `agy` guarda su OAuth en el keyring nativo; en Windows es el Credential
 //! Manager, entrada genérica `gemini:antigravity`, con un JSON
 //! `{ token: { access_token, refresh_token, expiry }, auth_method }` (a veces
-//! con BOM). No se refresca desde acá: `agy` rota el token cada vez que corre,
-//! así que si venció se muestra el motivo y listo — abrir `agy` lo renueva.
+//! con BOM). En macOS es el llavero `gemini` / `antigravity`, a menudo
+//! envuelto en `go-keyring-base64:`. Si el access token venció, se refresca
+//! con Google OAuth y se escribe de vuelta: si no, el hover solo vería Agy
+//! cuando el CLI acaba de correr.
 //!
 //! # Agrupación
 //!
@@ -27,6 +29,10 @@ use serde::Serialize;
 use serde_json::Value;
 
 const MODELS_URL: &str = "https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels";
+const GOOGLE_TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
+/// Client id público del CLI Gemini / Antigravity. El `id_token` trae el mismo.
+const FALLBACK_CLIENT_ID: &str =
+    "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com";
 /// UA con la forma del cliente oficial (`antigravity/<ver> <so>/<arch>`).
 const USER_AGENT: &str = "antigravity/1.1.23 windows/amd64";
 /// Entrada del Credential Manager donde `agy` guarda su OAuth.
@@ -86,14 +92,36 @@ pub fn fetch_account_usage() -> Result<AntigravityAccountUsage, String> {
 }
 
 fn fetch_account_usage_uncached() -> Result<AntigravityAccountUsage, String> {
-    let blob = read_credential_blob()
+    let raw = read_credential_raw()
         .ok_or_else(|| "no hay sesión de Antigravity (credencial ausente)".to_string())?;
-    let token = access_token_from_blob(&blob)?;
+    let blob = decode_keyring_blob(&raw)
+        .ok_or_else(|| "credencial de Antigravity ilegible".to_string())?;
+    let mut root = parse_credential_json(&blob)?;
 
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(15))
         .build()
         .map_err(|e| format!("no se pudo crear el cliente HTTP: {e}"))?;
+
+    let mut token = match live_access_token(&root) {
+        Ok(token) => token,
+        Err(_) => refresh_google_token(&client, &mut root, &raw)?,
+    };
+
+    match call_models(&client, &token) {
+        Ok(usage) => Ok(usage),
+        Err(err) if err.contains("401") || err.contains("403") => {
+            token = refresh_google_token(&client, &mut root, &raw)?;
+            call_models(&client, &token)
+        }
+        Err(err) => Err(err),
+    }
+}
+
+fn call_models(
+    client: &reqwest::blocking::Client,
+    token: &str,
+) -> Result<AntigravityAccountUsage, String> {
     let response = client
         .post(MODELS_URL)
         .header("Authorization", format!("Bearer {token}"))
@@ -104,7 +132,7 @@ fn fetch_account_usage_uncached() -> Result<AntigravityAccountUsage, String> {
         .map_err(|e| format!("no se pudo consultar el cupo: {e}"))?;
     let status = response.status();
     if status.as_u16() == 401 || status.as_u16() == 403 {
-        return Err("la sesión de Antigravity venció; abre agy para renovarla".into());
+        return Err(format!("la API de Antigravity respondió {status}"));
     }
     if !status.is_success() {
         return Err(format!("la API de Antigravity respondió {status}"));
@@ -123,25 +151,145 @@ fn fetch_account_usage_uncached() -> Result<AntigravityAccountUsage, String> {
     })
 }
 
+fn parse_credential_json(blob: &str) -> Result<Value, String> {
+    serde_json::from_str(blob.trim_start_matches('\u{feff}'))
+        .map_err(|_| "credencial de Antigravity ilegible".to_string())
+}
+
 /// El access token del blob del keyring, validando que no esté vencido.
 fn access_token_from_blob(blob: &str) -> Result<String, String> {
-    // El blob puede venir con BOM (lo escribe Go con el JSON tal cual).
-    let root: Value = serde_json::from_str(blob.trim_start_matches('\u{feff}'))
-        .map_err(|_| "credencial de Antigravity ilegible".to_string())?;
+    live_access_token(&parse_credential_json(blob)?)
+}
+
+fn live_access_token(root: &Value) -> Result<String, String> {
     let token = root
         .pointer("/token/access_token")
         .and_then(Value::as_str)
         .filter(|t| !t.is_empty())
         .ok_or_else(|| "credencial de Antigravity sin access token".to_string())?;
-    if let Some(expiry) = root.pointer("/token/expiry").and_then(Value::as_str) {
-        if let Ok(when) = DateTime::parse_from_rfc3339(expiry) {
-            let left = when.with_timezone(&Utc).timestamp_millis() - Utc::now().timestamp_millis();
-            if left < EXPIRY_SKEW_MS {
-                return Err("la sesión de Antigravity venció; abre agy para renovarla".to_string());
+    if token_expired(root) {
+        return Err("la sesión de Antigravity venció; abre agy para renovarla".to_string());
+    }
+    Ok(token.to_string())
+}
+
+fn token_expired(root: &Value) -> bool {
+    let Some(expiry) = root.pointer("/token/expiry").and_then(Value::as_str) else {
+        return false;
+    };
+    let Ok(when) = DateTime::parse_from_rfc3339(expiry) else {
+        return false;
+    };
+    when.with_timezone(&Utc).timestamp_millis() - Utc::now().timestamp_millis() < EXPIRY_SKEW_MS
+}
+
+fn refresh_google_token(
+    client: &reqwest::blocking::Client,
+    root: &mut Value,
+    original_raw: &str,
+) -> Result<String, String> {
+    let refresh = root
+        .pointer("/token/refresh_token")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "la sesión de Antigravity venció; abre agy para renovarla".to_string())?
+        .to_string();
+    let client_id = google_client_id(root);
+    let resp = client
+        .post(GOOGLE_TOKEN_URL)
+        .form(&[
+            ("grant_type", "refresh_token"),
+            ("refresh_token", refresh.as_str()),
+            ("client_id", client_id.as_str()),
+        ])
+        .send()
+        .map_err(|e| format!("no se pudo renovar Antigravity: {e}"))?;
+    let status = resp.status();
+    let text = resp.text().unwrap_or_default();
+    if !status.is_success() {
+        return Err("la sesión de Antigravity venció; abre agy para renovarla".into());
+    }
+    let body: Value =
+        serde_json::from_str(&text).map_err(|e| format!("refresh de Antigravity ilegible: {e}"))?;
+    let access = body
+        .get("access_token")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "refresh de Antigravity sin access_token".to_string())?
+        .to_string();
+    let expires_in = body
+        .get("expires_in")
+        .and_then(Value::as_i64)
+        .unwrap_or(3600);
+    let expiry = (Utc::now() + chrono::Duration::seconds(expires_in)).to_rfc3339();
+
+    {
+        let token_obj = root
+            .pointer_mut("/token")
+            .and_then(Value::as_object_mut)
+            .ok_or_else(|| "credencial de Antigravity sin objeto token".to_string())?;
+        token_obj.insert("access_token".into(), Value::String(access.clone()));
+        token_obj.insert("expiry".into(), Value::String(expiry));
+        if let Some(r) = body.get("refresh_token").and_then(Value::as_str) {
+            if !r.is_empty() {
+                token_obj.insert("refresh_token".into(), Value::String(r.to_string()));
             }
         }
     }
-    Ok(token.to_string())
+    if let Some(id_token) = body.get("id_token").and_then(Value::as_str) {
+        if !id_token.is_empty() {
+            if let Some(obj) = root.as_object_mut() {
+                obj.insert("id_token".into(), Value::String(id_token.to_string()));
+            }
+        }
+    }
+    let _ = persist_credential_blob(root, original_raw);
+    Ok(access)
+}
+
+fn google_client_id(root: &Value) -> String {
+    root.get("id_token")
+        .and_then(Value::as_str)
+        .and_then(azp_from_jwt)
+        .unwrap_or_else(|| FALLBACK_CLIENT_ID.to_string())
+}
+
+fn azp_from_jwt(jwt: &str) -> Option<String> {
+    use base64::Engine;
+    let payload = jwt.split('.').nth(1)?;
+    let mut padded = payload.replace('-', "+").replace('_', "/");
+    while padded.len() % 4 != 0 {
+        padded.push('=');
+    }
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(padded)
+        .ok()?;
+    let body: Value = serde_json::from_slice(&bytes).ok()?;
+    body.get("azp")
+        .or_else(|| body.get("aud"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+fn persist_credential_blob(root: &Value, original_raw: &str) -> Result<(), String> {
+    let json = serde_json::to_string(root).map_err(|e| format!("serializar Antigravity: {e}"))?;
+    write_credential_raw(&encode_keyring_blob(&json, original_raw))
+}
+
+fn encode_keyring_blob(json: &str, original_raw: &str) -> String {
+    let raw = original_raw.trim().trim_start_matches('\u{feff}');
+    if raw.starts_with("go-keyring-base64:") {
+        use base64::Engine;
+        format!(
+            "go-keyring-base64:{}",
+            base64::engine::general_purpose::STANDARD.encode(json.as_bytes())
+        )
+    } else {
+        json.to_string()
+    }
 }
 
 /// Reduce `models` (mapa id → modelo) a las ventanas por grupo.
@@ -193,9 +341,39 @@ fn group_windows(body: &Value) -> Vec<GroupWindow> {
         .collect()
 }
 
-/// El blob de la credencial `gemini:antigravity`, como texto.
-#[cfg(windows)]
+/// El blob de la credencial, como JSON de `agy`.
+///
+/// En Windows es Credential Manager (`gemini:antigravity`). En macOS, el
+/// llavero `gemini` / `antigravity`. Go a veces lo envuelve en
+/// `go-keyring-base64:`.
 fn read_credential_blob() -> Option<String> {
+    let raw = read_credential_raw()?;
+    decode_keyring_blob(&raw)
+}
+
+/// Quita el envoltorio de `github.com/zalando/go-keyring` si viene.
+fn decode_keyring_blob(raw: &str) -> Option<String> {
+    let raw = raw.trim().trim_start_matches('\u{feff}');
+    const PREFIX: &str = "go-keyring-base64:";
+    if let Some(rest) = raw.strip_prefix(PREFIX) {
+        use base64::Engine;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(rest.trim())
+            .ok()?;
+        String::from_utf8(bytes).ok()
+    } else if raw.starts_with('{') {
+        Some(raw.to_string())
+    } else {
+        use base64::Engine;
+        let bytes = base64::engine::general_purpose::STANDARD.decode(raw).ok()?;
+        let text = String::from_utf8(bytes).ok()?;
+        text.trim().starts_with('{').then_some(text)
+    }
+}
+
+/// El blob de la credencial `gemini:antigravity`, como texto crudo.
+#[cfg(windows)]
+fn read_credential_raw() -> Option<String> {
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
 
@@ -227,9 +405,33 @@ fn read_credential_blob() -> Option<String> {
     }
 }
 
-#[cfg(not(windows))]
-fn read_credential_blob() -> Option<String> {
+#[cfg(target_os = "macos")]
+fn read_credential_raw() -> Option<String> {
+    super::os_keychain::generic_password(
+        super::os_keychain::AGY_KEYCHAIN_SERVICE,
+        super::os_keychain::AGY_KEYCHAIN_ACCOUNT,
+    )
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
+fn read_credential_raw() -> Option<String> {
     None
+}
+
+fn write_credential_raw(secret: &str) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        super::os_keychain::set_generic_password(
+            super::os_keychain::AGY_KEYCHAIN_SERVICE,
+            super::os_keychain::AGY_KEYCHAIN_ACCOUNT,
+            secret,
+        )
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = secret;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -301,5 +503,39 @@ mod tests {
         assert!(err.contains("venció"), "{err}");
 
         assert!(access_token_from_blob("no-json").is_err());
+    }
+
+    #[test]
+    fn go_keyring_base64_se_desenvuelve() {
+        use base64::Engine;
+        let json = r#"{"token":{"access_token":"tok"}}"#;
+        let wrapped = format!(
+            "go-keyring-base64:{}",
+            base64::engine::general_purpose::STANDARD.encode(json.as_bytes())
+        );
+        assert_eq!(decode_keyring_blob(&wrapped).as_deref(), Some(json));
+        assert_eq!(decode_keyring_blob(json).as_deref(), Some(json));
+        assert_eq!(
+            decode_keyring_blob(&base64::engine::general_purpose::STANDARD.encode(json.as_bytes()))
+                .as_deref(),
+            Some(json)
+        );
+        assert!(decode_keyring_blob("secreto-opaco").is_none());
+        assert_eq!(encode_keyring_blob(json, &wrapped), wrapped);
+    }
+
+    #[test]
+    fn el_client_id_sale_del_id_token() {
+        use base64::Engine;
+        let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(r#"{"azp":"abc.apps.googleusercontent.com","aud":"other"}"#);
+        let jwt = format!("eyJhbGciOiJub25lIn0.{payload}.sig");
+        assert_eq!(
+            azp_from_jwt(&jwt).as_deref(),
+            Some("abc.apps.googleusercontent.com")
+        );
+        let root = json!({ "id_token": jwt });
+        assert_eq!(google_client_id(&root), "abc.apps.googleusercontent.com");
+        assert_eq!(google_client_id(&json!({})), FALLBACK_CLIENT_ID);
     }
 }

@@ -14,7 +14,7 @@ import { agentQuotaOverview } from "$ipc/agents";
 import type { QuotaOverview } from "$core/types";
 
 /** Cuánto vale el snapshot local antes de volver a pedirlo. */
-const FRESH_MS = 45_000;
+const FRESH_MS = 5_000;
 
 class AgentQuotas {
   overview = $state<QuotaOverview | null>(null);

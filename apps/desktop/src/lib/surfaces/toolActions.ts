@@ -16,6 +16,7 @@ import { dictation } from "$domain/dictation.svelte";
 import { startBoard } from "$ipc/annotate";
 import { startCaptureSession, startColorPicker } from "$ipc/captures";
 import { showClipboardWindow } from "$ipc/clipboard";
+import { showSystemWindow } from "$ipc/system";
 import { showLauncher } from "$ipc/search";
 import { emit } from "@tauri-apps/api/event";
 import { hasToolSlot } from "$surfaces/overlay/toolSlots";
@@ -64,6 +65,8 @@ export function toolAction(id: ToolId): ToolAction {
       return { kind: "run", label: t("tools.clipboard.actionLabel") };
     case "snippets":
       return { kind: "run", label: t("tools.snippets.actionLabel") };
+    case "system":
+      return { kind: "run", label: t("tools.system.actionLabel") };
   }
 }
 
@@ -101,6 +104,9 @@ export async function executeToolAction(id: ToolId): Promise<"openedDetail" | vo
       return;
     case "clipboard":
       await showClipboardWindow();
+      return;
+    case "system":
+      await showSystemWindow();
       return;
     case "snippets":
       return;

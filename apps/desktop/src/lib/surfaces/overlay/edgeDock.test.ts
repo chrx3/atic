@@ -226,6 +226,18 @@ describe("edgeWallRect", () => {
     expect(field.eval(rect.x - EDGE_WALL_FLARE - 12, 6)).toBeGreaterThan(0);
     expect(field.eval(500, 8)).toBeGreaterThan(0);
   });
+
+  it("el filete del acople dibuja el menisco pegado al canto", () => {
+    const rect = { x: 200, y: 0, w: 80, h: 40 };
+    const shape = pillShape(rect);
+    const field = (flare: number) =>
+      new Field([shape, pillShape(edgeWallRect("top", rect, work, { flare }))], BLEND);
+    const x = rect.x - 4;
+    // Con filete, el líquido se abre a los lados sobre el canto…
+    expect(field(12).eval(x, 2)).toBeLessThan(0);
+    // …y sin él el costado baja derecho, sin mancha.
+    expect(field(0).eval(x, 2)).toBeGreaterThan(0);
+  });
 });
 
 describe("edgeWallsFor", () => {

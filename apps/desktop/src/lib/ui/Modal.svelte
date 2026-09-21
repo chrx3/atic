@@ -54,6 +54,11 @@
      * overlay transparente del desktop.
      */
     contained = false,
+    /**
+     * Telón oscuro detrás del panel. En el overlay transparente molesta:
+     * ahí se apaga y el diálogo igual cubre la ventana para el clic-afuera.
+     */
+    scrim = true,
     onClose,
     header,
     actions,
@@ -68,6 +73,7 @@
     fill?: boolean;
     panelMax?: string;
     contained?: boolean;
+    scrim?: boolean;
     onClose: () => void;
     /** Reemplaza al encabezado por defecto, conservando el título accesible. */
     header?: Snippet;
@@ -179,6 +185,7 @@
     ? 'absolute inset-0 z-20 h-full w-full'
     : 'fixed inset-0 h-dvh w-screen bg-transparent'}"
   class:is-contained={contained}
+  class:no-scrim={!scrim}
   class:is-closing={closing}
   oncancel={onCancel}
   onclick={onBackdrop}
@@ -247,6 +254,11 @@
   .modal-root::backdrop {
     background: var(--rb-backdrop);
     animation: modal-backdrop-in var(--duration-fast) var(--ease-smooth-out) both;
+  }
+
+  .modal-root.no-scrim::backdrop {
+    background: transparent;
+    animation: none;
   }
 
   /* Telón propio: `::backdrop` solo existe con `showModal()` / top layer. */

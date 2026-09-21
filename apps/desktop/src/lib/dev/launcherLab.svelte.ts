@@ -9,6 +9,7 @@
 import { GOO_GROW } from "$lib/GooFilter.svelte";
 import { BLEND, CELL } from "$liquid/constants";
 import { sminReach } from "$liquid/sdf";
+import { MENISCUS_FLARE } from "$surfaces/overlay/edgeDock";
 
 const STORAGE_KEY = "atic-launcher-lab";
 /** Flag entre ventanas (main ↔ overlay), como `atic-liquid-lab`. */
@@ -33,6 +34,8 @@ export type LauncherLabValues = {
   barH: number;
   /** `--goo-grow` en px (filtro SVG; overlay SDF lo ignora). */
   gooGrow: number;
+  /** Filete del menisco del canto acoplado (px). */
+  meniscusFlare: number;
 };
 
 export const LAUNCHER_LAB_DEFAULTS: LauncherLabValues = {
@@ -49,6 +52,7 @@ export const LAUNCHER_LAB_DEFAULTS: LauncherLabValues = {
   // proyecto tipado: el servicio de tipos lo entrega como `error`.
   // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment -- ver arriba
   gooGrow: GOO_GROW,
+  meniscusFlare: MENISCUS_FLARE,
 };
 
 function load(): LauncherLabValues {
@@ -78,6 +82,7 @@ class LauncherLab {
   barW = $state(LAUNCHER_LAB_DEFAULTS.barW);
   barH = $state(LAUNCHER_LAB_DEFAULTS.barH);
   gooGrow = $state(LAUNCHER_LAB_DEFAULTS.gooGrow);
+  meniscusFlare = $state(LAUNCHER_LAB_DEFAULTS.meniscusFlare);
 
   constructor() {
     this.apply(load());
@@ -103,6 +108,7 @@ class LauncherLab {
     if (v.barW != null) this.barW = clamp(v.barW, 240, 560);
     if (v.barH != null) this.barH = clamp(v.barH, 36, 72);
     if (v.gooGrow != null) this.gooGrow = clamp(v.gooGrow, 0, 8);
+    if (v.meniscusFlare != null) this.meniscusFlare = clamp(v.meniscusFlare, 0, 32);
   }
 
   snapshot(): LauncherLabValues {
@@ -116,6 +122,7 @@ class LauncherLab {
       barW: this.barW,
       barH: this.barH,
       gooGrow: this.gooGrow,
+      meniscusFlare: this.meniscusFlare,
     };
   }
 

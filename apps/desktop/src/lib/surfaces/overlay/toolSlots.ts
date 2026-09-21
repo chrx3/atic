@@ -71,6 +71,7 @@ export function isSpatialTool(tool: ToolId): boolean {
     tool === "launcher" ||
     tool === "clipboard" ||
     tool === "snippets" ||
+    tool === "system" ||
     tool === "agents"
   );
 }

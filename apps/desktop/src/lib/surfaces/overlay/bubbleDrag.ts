@@ -12,6 +12,14 @@ import { surfaces } from "./surfaces.svelte";
 import { workUnderCursor, type Rect } from "./floatSnap";
 
 const DRAG_THRESHOLD = 4;
+/**
+ * Sin `pointermove` del DOM en este rato, el cursor de Rust toma el relevo.
+ *
+ * El DOM es más rápido (sin IPC por cuadro) pero se queda mudo cuando otra
+ * ventana se queda con el mouse; Rust lo ve siempre. Mismo trato que el
+ * arrastre de la pill.
+ */
+const DRAG_DOM_STALE_MS = 32;
 
 const DEFAULT_SKIP =
   "button, a, input, textarea, select, label, [data-no-drag], [data-selectable], [role='listbox'], [role='menu']";
@@ -125,7 +133,8 @@ export function createBubbleDrag(
   const clampMode = options?.clamp ?? "contain";
 
   let drag: {
-    /** Null hasta el primer tick: lo siembra el cursor de Rust, no el evento. */
+    /** Null hasta el primer tick (semilla del cursor de Rust) — salvo en el
+     *  traspaso sintético del gesto, que ya trae la mano en el evento. */
     cx: number | null;
     cy: number | null;
     ax: number;
@@ -137,6 +146,13 @@ export function createBubbleDrag(
   let dragRaf = 0;
   let workAreas: Area[] = [];
   let lastMove: BubbleDragMove | null = null;
+  /** Último cursor visto por el DOM: sin IPC y con la mano al día. */
+  let domCursor = { x: 0, y: 0, at: 0 };
+
+  function onDomPointerMove(event: PointerEvent): void {
+    if (!drag || event.pointerId !== drag.pointerId) return;
+    domCursor = { x: event.clientX, y: event.clientY, at: performance.now() };
+  }
 
   function endDrag() {
     if (!drag) return;
@@ -162,6 +178,8 @@ export function createBubbleDrag(
     }
     window.removeEventListener("pointerup", endDrag, true);
     window.removeEventListener("pointercancel", endDrag, true);
+    window.removeEventListener("pointermove", onDomPointerMove, true);
+    domCursor = { x: 0, y: 0, at: 0 };
     if (didMove && drop) options?.onDrop?.(drop);
     if (didMove) options?.onEnd?.();
   }
@@ -172,7 +190,13 @@ export function createBubbleDrag(
     const a = bubble.anchor;
     if (!d || !a) return;
 
-    const cur = await overlayCursor().catch(() => null);
+    // El DOM manda mientras esté fresco; el IPC es la red cuando el webview
+    // se queda sin eventos (otra ventana se llevó el mouse).
+    const domFresh =
+      domCursor.at !== 0 && performance.now() - domCursor.at < DRAG_DOM_STALE_MS;
+    const cur = domFresh
+      ? { x: domCursor.x, y: domCursor.y }
+      : await overlayCursor().catch(() => null);
     if (cur && drag === d) {
       // Primer cuadro: es la semilla, no un movimiento.
       if (d.cx === null || d.cy === null) {
@@ -246,8 +270,11 @@ export function createBubbleDrag(
     // Lo siembra el primer tick con el cursor de Rust: el mismo reloj y el
     // mismo espacio con los que se sigue el resto del gesto.
     drag = {
-      cx: null,
-      cy: null,
+      // Un evento sintético (traspaso del gesto al despegar) SÍ trae la
+      // posición real de la mano: se siembra con ella y el panel arranca a
+      // moverse en el primer tick, sin el viaje de ida a Rust.
+      cx: event.isTrusted ? null : event.clientX,
+      cy: event.isTrusted ? null : event.clientY,
       ax: a.x,
       ay: a.y,
       pointerId: event.pointerId,
@@ -255,6 +282,7 @@ export function createBubbleDrag(
     dragMoved = false;
     grabbed = false;
     lastMove = null;
+    domCursor = { x: event.clientX, y: event.clientY, at: performance.now() };
     const el = getEl();
     try {
       el?.setPointerCapture(event.pointerId);
@@ -263,6 +291,7 @@ export function createBubbleDrag(
     }
     window.addEventListener("pointerup", endDrag, true);
     window.addEventListener("pointercancel", endDrag, true);
+    window.addEventListener("pointermove", onDomPointerMove, true);
     surfaces.dragging = true;
     void overlayWorkAreas()
       .then((areas) => {

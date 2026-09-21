@@ -82,6 +82,10 @@ windows-sys = { version = "0.59", features = [
     # Acciones de sistema del launcher: suspender y bloquear la sesión.
     "Win32_System_Power",
     "Win32_System_Shutdown",
+    # Snapshot de procesos (working set) del panel de sistema.
+    "Win32_System_ProcessStatus",
+    # Brillo DDC de monitores externos.
+    "Win32_Devices_Display",
 ] }
 # Misma versión que trae Tauri/wry (desactivar Ctrl+P / atajos del navegador).
 webview2-com = "0.38"
@@ -105,6 +109,10 @@ windows = { version = "0.61", features = [
   "Win32_UI_Shell",
   # PKEY_AppUserModel_ID, para identificar cada app del AppsFolder.
   "Win32_Storage_EnhancedStorage",
+  # Volumen maestro y sesiones de audio del panel de sistema.
+  "Win32_Media_Audio",
+  # Brillo / monitores físicos (DXVA2).
+  "Win32_Devices_Display",
 ] }
 
 [target.'cfg(target_os = "macos")'.dependencies]

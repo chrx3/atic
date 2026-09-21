@@ -439,10 +439,20 @@ export const EDGE_WALL_OVERLAP = 8;
 /**
  * Filete a cada lado de la pill, a lo largo del canto.
  *
- * 0: la pared mide lo mismo que la pill. Cualquier ancho extra se funde
- * en un menisco y se lee como alas, no como notch.
+ * 0 (default): la pared mide lo mismo que la pill y el canto queda derecho,
+ * que es lo que la fusión suelta busca. Un filete chico se lee como menisco;
+ * uno ancho abre los costados y se lee como alas, no como notch — por eso el
+ * acople usa un valor medido (`MENISCUS_FLARE`).
  */
 export const EDGE_WALL_FLARE = 0;
+
+/**
+ * Filete del menisco acoplado: el canto que toca la pantalla se lee líquido.
+ *
+ * Chico a propósito: con `BLEND` el `smin` cierra la junta solo. Más ancho
+ * que esto eran las alas que el notch evitaba.
+ */
+export const MENISCUS_FLARE = 12;
 /**
  * Si el otro canto está a menos de esto, es una esquina: se emite también
  * esa pared y el dintel llega hasta el vértice.
@@ -563,9 +573,10 @@ function flaresAlong(
   pill: Rect,
   work: Rect,
   nearby: ReadonlySet<DockEdge>,
+  flare: number,
 ): { flareBefore: number; flareAfter: number } {
   const room = roomAlong(edge, pill, work);
-  const f = EDGE_WALL_FLARE;
+  const f = flare;
   const cornerBefore =
     edge === "top" || edge === "bottom"
       ? nearby.has("left") || room.before <= EDGE_CORNER_PX
@@ -595,13 +606,20 @@ function flaresAlong(
 export function edgeWallsFor(
   pill: Rect,
   areas: readonly Area[],
-  opts?: { maxGap?: number; prefer?: DockEdge | null; cornerPx?: number },
+  opts?: {
+    maxGap?: number;
+    prefer?: DockEdge | null;
+    cornerPx?: number;
+    /** Filete a cada lado del dintel (menisco). Default `EDGE_WALL_FLARE`. */
+    flare?: number;
+  },
 ): Rect[] {
   const area = areaFor(pill, areas);
   if (!area) return [];
   const work = workAreaOf(area);
   const maxGap = opts?.maxGap ?? 24;
   const cornerPx = opts?.cornerPx ?? EDGE_CORNER_PX;
+  const flare = opts?.flare ?? EDGE_WALL_FLARE;
   const nearby = nearbyOuterWorkEdges(pill, areas, Math.max(maxGap, cornerPx));
   const edges: DockEdge[] = [];
   if (
@@ -622,6 +640,6 @@ export function edgeWallsFor(
   if (edges.length === 0) return [];
   const set = new Set(edges);
   return edges.map((edge) =>
-    edgeWallRect(edge, pill, work, flaresAlong(edge, pill, work, set)),
+    edgeWallRect(edge, pill, work, flaresAlong(edge, pill, work, set, flare)),
   );
 }

@@ -66,7 +66,7 @@ pub struct QuotaSpend {
 #[serde(rename_all = "camelCase")]
 pub struct AgentQuota {
     /// Mismo id que usa el catálogo de agentes (`claude`, `codex`,
-    /// `opencode`, `cursor-agent`).
+    /// `opencode`, `agy`, `grok`, `cursor-agent`).
     pub agent: String,
     pub plan: Option<String>,
     /// Vacío = este proveedor no publica cupo (o Cursor cayó al fallback).
@@ -88,6 +88,7 @@ pub struct QuotaOverview {
 
 struct Cache {
     at: Instant,
+    stamp: u64,
     value: QuotaOverview,
 }
 
@@ -101,10 +102,11 @@ fn cache() -> &'static Mutex<Option<Cache>> {
 ///
 /// `force` salta la caché: es para el botón de refrescar, no para el poll.
 pub fn fetch_overview(force: bool) -> QuotaOverview {
+    let stamp = sources_stamp();
     if !force {
         let guard = cache().lock().unwrap_or_else(|e| e.into_inner());
         if let Some(hit) = guard.as_ref() {
-            if hit.at.elapsed() < CACHE_TTL {
+            if hit.at.elapsed() < CACHE_TTL && hit.stamp == stamp {
                 return hit.value.clone();
             }
         }
@@ -114,20 +116,20 @@ pub fn fetch_overview(force: bool) -> QuotaOverview {
     if let Ok(mut guard) = cache().lock() {
         *guard = Some(Cache {
             at: Instant::now(),
+            stamp,
             value: value.clone(),
         });
     }
     value
 }
 
-/// Los cuatro en paralelo.
+/// Los agentes con sesión, en paralelo.
 ///
-/// En serie el peor caso es la suma de los timeouts (20 + 15 + 15 + 20 s), y
-/// un proveedor caído dejaría al hover esperando por los otros tres que ya
-/// estaban listos. Cada uno en su hilo hace que el total sea el más lento.
+/// En serie el peor caso es la suma de los timeouts, y un proveedor caído
+/// dejaría al hover esperando por los otros que ya estaban listos.
 fn collect() -> QuotaOverview {
     let mut handles = Vec::new();
-    if claude_detected() {
+    if super::claude_usage::detected() {
         handles.push(std::thread::spawn(claude_quota));
     }
     if super::codex_usage::detected() {
@@ -142,6 +144,9 @@ fn collect() -> QuotaOverview {
     if super::antigravity_usage::detected() {
         handles.push(std::thread::spawn(antigravity_quota));
     }
+    if super::grok_usage::detected() {
+        handles.push(std::thread::spawn(grok_quota));
+    }
 
     let agents = handles
         .into_iter()
@@ -154,13 +159,41 @@ fn collect() -> QuotaOverview {
     }
 }
 
-fn claude_detected() -> bool {
-    if std::env::var("CLAUDE_CODE_OAUTH_TOKEN").is_ok_and(|v| !v.trim().is_empty()) {
-        return true;
+/// Quién está logueado y cuándo se tocó su credencial.
+///
+/// Si cambia (login, logout, rotar una key), la caché de un minuto no puede
+/// seguir pintando el snapshot anterior.
+fn sources_stamp() -> u64 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut h = DefaultHasher::new();
+    super::claude_usage::detected().hash(&mut h);
+    super::codex_usage::detected().hash(&mut h);
+    super::opencode_usage::detected().hash(&mut h);
+    super::cursor_usage::detected().hash(&mut h);
+    super::antigravity_usage::detected().hash(&mut h);
+    super::grok_usage::detected().hash(&mut h);
+    for path in [
+        super::opencode_usage::auth_path(),
+        super::grok_usage::auth_path(),
+        super::cursor_usage::cli_config_path(),
+        super::cursor_usage::state_db_path(),
+        super::claude_usage::credentials_path(),
+        std::env::var_os("USERPROFILE")
+            .or_else(|| std::env::var_os("HOME"))
+            .map(|h| std::path::PathBuf::from(h).join(".codex").join("auth.json")),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if let Ok(meta) = std::fs::metadata(&path) {
+            if let Ok(mtime) = meta.modified() {
+                mtime.hash(&mut h);
+            }
+            meta.len().hash(&mut h);
+        }
     }
-    super::skills::config_dir()
-        .map(|dir| dir.join(".credentials.json").is_file())
-        .unwrap_or(false)
+    h.finish()
 }
 
 /// Envuelve un resultado en la fila del agente, con el error visible.
@@ -399,6 +432,28 @@ fn antigravity_from(u: super::antigravity_usage::AntigravityAccountUsage) -> Age
         fetched_at: Some(u.fetched_at),
         error: None,
     }
+}
+
+fn grok_quota() -> AgentQuota {
+    row("grok", super::grok_usage::fetch_account_usage(), |u| {
+        AgentQuota {
+            agent: "grok".to_string(),
+            plan: u.plan,
+            windows: u
+                .windows
+                .into_iter()
+                .map(|w| QuotaWindow {
+                    kind: w.kind,
+                    minutes: None,
+                    used_percent: w.percent,
+                    resets_at: w.resets_at.as_deref().and_then(rfc3339_ms),
+                })
+                .collect(),
+            spend: None,
+            fetched_at: Some(u.fetched_at),
+            error: None,
+        }
+    })
 }
 
 fn rfc3339_ms(stamp: &str) -> Option<i64> {

@@ -5,6 +5,7 @@ import {
   isFav,
   jumpIndex,
   leafName,
+  parentPath,
   pathsEqual,
   toggleFav,
 } from "./folderBrowse";
@@ -23,6 +24,15 @@ describe("foldName / pathsEqual", () => {
   it("saca el último segmento", () => {
     expect(leafName("C:\\Users\\Christian\\atic")).toBe("atic");
     expect(leafName("/home/user/docs/")).toBe("docs");
+  });
+
+  it("sube al padre y se detiene en la raíz", () => {
+    expect(parentPath("/Users/chrx3/atic")).toBe("/Users/chrx3");
+    expect(parentPath("/Users")).toBe("/");
+    expect(parentPath("/")).toBeNull();
+    expect(parentPath("C:\\Users\\atic")).toBe("C:\\Users");
+    expect(parentPath("C:\\Users")).toBe("C:/");
+    expect(parentPath("C:/")).toBeNull();
   });
 });
 
