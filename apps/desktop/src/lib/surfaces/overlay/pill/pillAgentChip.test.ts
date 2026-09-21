@@ -8,6 +8,7 @@ import {
   cueAgentIds,
   presenceIdsToDismissOnAticHide,
   type ChipTone,
+  logoSlots,
 } from "./pillAgentChip";
 
 const emptyChat = {
@@ -586,5 +587,30 @@ describe("presenceIdsToDismissOnAticHide", () => {
         ["codex"],
       ),
     ).toEqual(["own", "pty"]);
+  });
+});
+
+describe("logoSlots", () => {
+  it("hasta tres logos se ven enteros", () => {
+    expect(logoSlots(["claude"])).toEqual({ shown: ["claude"], extra: 0, cells: 1 });
+    expect(logoSlots(["claude", "opencode", "codex"])).toEqual({
+      shown: ["claude", "opencode", "codex"],
+      extra: 0,
+      cells: 3,
+    });
+  });
+
+  it("con más, dos logos y un contador: nunca más de tres celdas", () => {
+    // Regresión: cinco logos de 18 px se salían de la pestaña acoplada.
+    const cinco = ["claude", "opencode", "codex", "cursor", "grok"];
+    expect(logoSlots(cinco)).toEqual({
+      shown: ["claude", "opencode"],
+      extra: 3,
+      cells: 3,
+    });
+  });
+
+  it("sin logos ocupa igual una celda (el logo genérico)", () => {
+    expect(logoSlots([]).cells).toBe(1);
   });
 });

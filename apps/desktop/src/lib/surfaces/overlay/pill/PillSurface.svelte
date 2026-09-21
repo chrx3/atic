@@ -115,6 +115,7 @@
     agentChip,
     agentChips,
     agentChipLogos,
+    logoSlots,
     type AgentChip,
   } from "$surfaces/overlay/pill/pillAgentChip";
   import { consoleCue } from "$surfaces/overlay/agents/consoleCue.svelte";
@@ -555,8 +556,20 @@
     surface === "edge" &&
       (showAgentTab || updateChip != null || systemChip != null || volumeChip != null),
   );
+  /**
+   * Celdas del aviso de la consola minimizada (sin chip propio).
+   *
+   * Ese aviso junta los logos de todos los agentes vivos en UN botón que crece
+   * con su contenido; la pestaña se mide antes y contaba uno solo, así que con
+   * cinco agentes los logos se salían. `logoSlots` los topa en tres celdas.
+   */
+  const dockCueCells = $derived(
+    chips.length === 0 && agentsDock.minimized ? logoSlots(chipLogos(chip)).cells : 1,
+  );
   const edgeCueMarks = $derived(
-    (showAgentTab ? Math.max(chips.length, agentsDock.minimized ? 1 : 0) : 0) +
+    (showAgentTab
+      ? Math.max(chips.length, agentsDock.minimized ? dockCueCells : 0)
+      : 0) +
       (updateChip ? 1 : 0) +
       (systemChip || volumeChip ? 1 : 0),
   );
@@ -4285,6 +4298,7 @@
               {#if islandCue}
                 {#each chips.length > 0 ? chips : [chip] as c, i (c.id || "dock")}
                   {@const logos = chipLogos(c)}
+                  {@const slots = logoSlots(logos)}
                   <button
                     type="button"
                     class="p-agent p-island-cue"
@@ -4304,16 +4318,22 @@
                       <span class="p-island-cue-mark">{c.label}</span>
                     {:else if i === 0 && islandCueMsg}
                       <span class="p-island-cue-logos" aria-hidden="true">
-                        {#each logos as id (id)}
+                        {#each slots.shown as id (id)}
                           <AgentLogo agent={id} size={PILL.islandCueMark} />
                         {/each}
+                        {#if slots.extra > 0}
+                          <span class="p-island-cue-more">+{slots.extra}</span>
+                        {/if}
                       </span>
                       <span class="p-island-cue-msg">{c.label}</span>
                     {:else if logos.length > 0}
                       <span class="p-island-cue-logos" aria-hidden="true">
-                        {#each logos as id (id)}
+                        {#each slots.shown as id (id)}
                           <AgentLogo agent={id} size={PILL.islandCueMark} />
                         {/each}
+                        {#if slots.extra > 0}
+                          <span class="p-island-cue-more">+{slots.extra}</span>
+                        {/if}
                       </span>
                     {:else}
                       <span class="p-island-cue-logo" aria-hidden="true">
@@ -6108,18 +6128,28 @@
 
   .p-face[data-face="clipboard"],
   .p-face[data-face="snippets"],
-  /* Medida propia, más alta que la del clipboard: la lista es lo que se vino
-     a mirar y arriba hay ~190 px fijos. Tiene que sumar exacto con
-     `islandSysH` (ver `pillStage`), o la caja y la cara se desalinean. */
   .p-face[data-face="system"] {
     position: relative;
-    width: var(--face-sys-w, 300px);
-    height: var(--face-sys-h);
+    height: var(--face-clip-h);
     min-height: 0;
     justify-content: stretch;
     gap: 0;
     padding: 4px 10px 0;
     overflow: hidden;
+  }
+
+  /*
+   * Sistema pisa SOLO la medida: arriba de la lista lleva fila rápida,
+   * pestañas, medidores, orden y filtro (~190 px fijos), y con el alto del
+   * clipboard la lista quedaba en dos filas. Tiene que sumar exacto con
+   * `islandSys*` (ver `pillStage`), o la caja y la cara se desalinean.
+   *
+   * Regla aparte a propósito: la de arriba es compartida, y cambiarla ahí
+   * agrandaba también el historial y los textos, que se salían de su caja.
+   */
+  .p-face[data-face="system"] {
+    width: var(--face-sys-w);
+    height: var(--face-sys-h);
   }
 
   .p-face[data-face="agents"] {
@@ -6543,6 +6573,19 @@
   .p-root[data-edge="left"] .p-island-cue-logos,
   .p-root[data-edge="right"] .p-island-cue-logos {
     flex-direction: column;
+  }
+
+  /* "+3": los agentes que no entran. Del alto de un logo, para que la
+     celda mida lo mismo que las otras y la pestaña no salte. */
+  .p-island-cue-more {
+    display: grid;
+    min-width: var(--island-cue-mark);
+    height: var(--island-cue-mark);
+    place-items: center;
+    color: var(--muted);
+    font-size: 0.625rem;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
   }
 
   .p-island-cue.is-working .p-island-cue-logo {
