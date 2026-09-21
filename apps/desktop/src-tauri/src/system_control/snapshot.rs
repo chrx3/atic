@@ -183,6 +183,9 @@ pub fn group_apps(rows: Vec<RawProc>, proc_cpu: &HashMap<u32, f32>) -> Vec<Syste
         let entry = map.entry(row.stem.clone()).or_insert_with(|| SystemApp {
             id: row.stem.clone(),
             name: row.name.clone(),
+            // Se completa después, ya con la lista recortada y por presupuesto:
+            // ver `app_icons::attach`.
+            icon: None,
             pid: row.pid,
             cpu: 0.0,
             ram_bytes: 0,
@@ -439,11 +442,15 @@ mod imp {
         let ram_total = mem.ullTotalPhys;
         let ram_used = ram_total.saturating_sub(mem.ullAvailPhys);
 
+        // Los íconos se resuelven recién acá, después del recorte de 64: no
+        // tiene sentido abrir ejecutables cuya fila la lista no va a mostrar.
+        let mut apps = group_apps(rows, &proc_cpu);
+        crate::system_control::app_icons::attach(&mut apps);
         Ok(SystemSnapshot {
             cpu,
             ram_used,
             ram_total,
-            apps: group_apps(rows, &proc_cpu),
+            apps,
         })
     }
 

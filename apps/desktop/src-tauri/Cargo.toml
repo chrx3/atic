@@ -111,6 +111,8 @@ windows = { version = "0.61", features = [
   "Win32_Storage_EnhancedStorage",
   # Volumen maestro y sesiones de audio del panel de sistema.
   "Win32_Media_Audio",
+  # IAudioEndpointVolume vive en Media::Audio::Endpoints (volumen maestro).
+  "Win32_Media_Audio_Endpoints",
   # Brillo / monitores físicos (DXVA2).
   "Win32_Devices_Display",
 ] }

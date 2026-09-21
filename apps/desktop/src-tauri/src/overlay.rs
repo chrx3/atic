@@ -60,6 +60,22 @@ const ARM_MARGIN: f64 = 6.0;
 /// por segundo para nada.
 const SAMPLE_MS: i64 = 4;
 
+/// Cuánto puede sobrevivir `POINTER_GESTURE` sin que nadie lo baje, en ms.
+///
+/// Es un seguro contra el frontend, no contra el usuario: el flag lo levanta el
+/// frontend al abrir una cara y hay caminos que no lo vuelven a bajar nunca. Un
+/// flag así, leído crudo, le devuelve «el overlay come este punto» a CUALQUIER
+/// punto de la pantalla y el escritorio entero deja de recibir clics.
+///
+/// El margen es holgado a propósito: un arrastre legítimo dura lo que dure la
+/// mano, y mientras el botón esté apretado el watchdog no toca nada.
+#[cfg(windows)]
+const GESTURE_WATCHDOG_MS: i64 = 20_000;
+
+/// Cada cuánto late ese watchdog. Barato: dos lecturas de atomics por vuelta.
+#[cfg(windows)]
+const GESTURE_WATCHDOG_TICK_MS: u64 = 2_000;
+
 /// Zonas que SÍ deben recibir el mouse, en **CSS del overlay** (no físicos).
 ///
 /// Se comparan contra el cursor pasado por `ScreenToClient` + escala: así el
@@ -195,7 +211,28 @@ static ITEM_DRAG_PASSTHROUGH: AtomicBool = AtomicBool::new(false);
 /// Gesto de puntero en curso (pill / float). El overlay se queda armado aunque
 /// el cursor salga del hit-rect o cruce `main`: si se desarma a mitad, Windows
 /// no entrega el `pointerup` y el arrastre queda pegado para siempre.
+///
+/// Es una INTENCIÓN del frontend, no un hecho, y por eso nadie la lee crudo:
+/// ver `gesture_active`.
 static POINTER_GESTURE: AtomicBool = AtomicBool::new(false);
+
+/// El gesto nació con el botón principal apretado y todavía no lo soltaron.
+///
+/// Es lo que separa un arrastre de verdad de una simple intención de apertura.
+/// Un flag levantado con el botón ya suelto —el camino de la cara de
+/// clipboard— no puede eximir al overlay del hit-test ni un paquete: eso es lo
+/// que dejaba el escritorio entero sin recibir clics.
+///
+/// La suelta la ve `on_cursor_sample`, que recibe TODOS los paquetes del mouse
+/// del sistema: un gesto no puede sobrevivir a su propio botón.
+#[cfg(windows)]
+static GESTURE_BUTTON_HELD: AtomicBool = AtomicBool::new(false);
+
+/// Cuándo se levantó (o se refrescó) `POINTER_GESTURE`, en ms de
+/// `GetTickCount64`. Solo lo usa el watchdog para distinguir un flag recién
+/// levantado de uno huérfano.
+#[cfg(windows)]
+static GESTURE_AT_MS: AtomicI64 = AtomicI64::new(0);
 
 /// Clic principal sobre un hit-rect: el front sintetiza pointerdown/up si el
 /// WKWebView no entregó el evento (notch sobre el menú / Dock).
@@ -1672,6 +1709,8 @@ pub fn setup(app: &AppHandle) {
     remember_main(app);
     start_toggle_worker(app.clone());
     start_display_watch(app.clone());
+    #[cfg(windows)]
+    start_gesture_watchdog();
     #[cfg(target_os = "macos")]
     start_macos_hit_poll(app.clone());
     let handle = app.clone();
@@ -1775,7 +1814,8 @@ pub fn yield_to_main(app: &AppHandle) {
 /// `main`. Lo que no puede armarse encima de `main` es el hit-rect a pantalla
 /// completa de un drag ya muerto: esa lámina deja Atic pintada y sin input.
 /// Durante un gesto de puntero hay que seguir armado: si se vuelve
-/// click-through a mitad, se pierde el `pointerup`.
+/// click-through a mitad, se pierde el `pointerup`. El `gesture` que llega acá
+/// ya pasó por [`gesture_active`]: un flag sin botón apretado no exime.
 ///
 /// `over_real` = el cursor está sobre una zona interactiva de verdad, no sobre
 /// el rect "drag" que cubre la pantalla. Con la pill acoplada arriba o al canto
@@ -1801,6 +1841,96 @@ fn should_arm(
         return false;
     }
     over_hit
+}
+
+/// Regla pura del gesto de puntero, sin atomics ni Win32 (así se testea).
+///
+/// Un gesto solo exime al overlay del hit-test si TODAS se cumplen:
+///
+/// - `flag`: el frontend dice que hay un gesto en curso.
+/// - `button_held_since_start`: el flag se levantó con el botón ya apretado, o
+///   sea que hay un botón de por medio y no una simple intención de apertura.
+/// - `button_down`: ese botón sigue apretado ahora.
+/// - `!item_drag`: no hay un arrastre OLE de ítem, que necesita lo contrario
+///   (click-through para que el drop caiga en la app de destino).
+///
+/// Solo Windows la usa: en Mac el armado lo gobierna AppKit y no hay gesto que
+/// validar.
+#[cfg(windows)]
+fn gesture_exempts(
+    flag: bool,
+    button_held_since_start: bool,
+    button_down: bool,
+    item_drag: bool,
+) -> bool {
+    flag && button_held_since_start && button_down && !item_drag
+}
+
+/// ¿El gesto de puntero exime al overlay del hit-test AHORA MISMO?
+///
+/// `POINTER_GESTURE` es una INTENCIÓN del frontend, no un hecho: lo levanta al
+/// abrir una cara y hay caminos que no lo bajan nunca. Leído crudo, hacía que
+/// `overlay_eats_physical` devolviera «el overlay come este punto» para
+/// CUALQUIER punto de la pantalla: los clics del escritorio entero morían en la
+/// lámina y el «clic afuera» no cerraba nada. El hecho es otro: un gesto de
+/// verdad nace con el botón apretado y dura hasta que lo sueltan.
+///
+/// Sin botón apretado el flag queda inerte, que es justo lo que necesita la
+/// apertura de una cara: ahí el overlay se sostiene con los hit-rects
+/// publicados, no con el flag.
+#[cfg(windows)]
+fn gesture_active() -> bool {
+    let flag = POINTER_GESTURE.load(Ordering::Acquire);
+    // Antes de preguntarle a Win32: casi siempre el flag está en falso.
+    if !flag {
+        return false;
+    }
+    let live = gesture_exempts(
+        flag,
+        GESTURE_BUTTON_HELD.load(Ordering::Acquire),
+        primary_button_down(),
+        ITEM_DRAG_PASSTHROUGH.load(Ordering::Acquire),
+    );
+    if live {
+        // Sigue vivo: se sella para que el watchdog mida desde acá.
+        GESTURE_AT_MS.store(now_ms(), Ordering::Release);
+    }
+    live
+}
+
+/// Red de seguridad del gesto de puntero.
+///
+/// Con `GESTURE_BUTTON_HELD` un flag sin botón ya es inerte, pero el flag sigue
+/// en pie y nadie lo baja: si mañana el hit-test lo volviera a leer crudo, el
+/// escritorio se quedaría sin clics otra vez. Este hilo lo limpia solo: pasado
+/// `GESTURE_WATCHDOG_MS` con el flag levantado y el botón sin apretar, ya no es
+/// un gesto, es basura.
+///
+/// Mientras el botón esté apretado no toca nada —un arrastre real dura lo que
+/// dure la mano— y al limpiar rearma contra el cursor real, como si el gesto
+/// hubiera terminado bien.
+#[cfg(windows)]
+fn start_gesture_watchdog() {
+    let _ = std::thread::Builder::new()
+        .name("atic-overlay-gesture".into())
+        .spawn(move || loop {
+            std::thread::sleep(std::time::Duration::from_millis(GESTURE_WATCHDOG_TICK_MS));
+            if !POINTER_GESTURE.load(Ordering::Acquire) || primary_button_down() {
+                continue;
+            }
+            if now_ms() - GESTURE_AT_MS.load(Ordering::Acquire) < GESTURE_WATCHDOG_MS {
+                continue;
+            }
+            POINTER_GESTURE.store(false, Ordering::Release);
+            GESTURE_BUTTON_HELD.store(false, Ordering::Release);
+            tracing::warn!(
+                target: "overlay",
+                "gesto de puntero huérfano: nadie lo bajó y se limpia solo"
+            );
+            // El estado aplicado a la ventana quedó un paso atrás hasta el
+            // próximo movimiento: reconciliarlo ahora.
+            reevaluate_arm();
+        });
 }
 
 /// Hilo que aplica el click-through.
@@ -1984,6 +2114,14 @@ pub fn set_overlay_pointer_gesture(_app: AppHandle, on: bool) {
         return;
     }
     POINTER_GESTURE.store(on, Ordering::SeqCst);
+    #[cfg(windows)]
+    {
+        // Un gesto nace con el botón apretado (arrastre de la pill, la isla o
+        // la rueda) o no es gesto: la apertura de una cara por atajo llega acá
+        // con el botón suelto y no puede eximir al overlay del hit-test.
+        GESTURE_BUTTON_HELD.store(on && primary_button_down(), Ordering::Release);
+        GESTURE_AT_MS.store(if on { now_ms() } else { 0 }, Ordering::Release);
+    }
     if on {
         ARMED.store(true, Ordering::SeqCst);
         send(Msg::Sync);
@@ -2071,6 +2209,14 @@ pub fn cursor_over_hit_id(id: &str) -> bool {
 /// de unas pocas por segundo es prácticamente imposible.
 #[cfg(windows)]
 pub fn on_cursor_sample() {
+    // Un botón suelto termina el gesto YA. `GESTURE_BUTTON_HELD` es lo único
+    // que exime al overlay del hit-test, así que un flag que sobrevive a su
+    // botón es exactamente cómo el escritorio se quedaba sin recibir clics. Va
+    // antes del freno de `SAMPLE_MS` a propósito: el paquete de la suelta no
+    // puede perderse.
+    if GESTURE_BUTTON_HELD.load(Ordering::Acquire) && !primary_button_down() {
+        GESTURE_BUTTON_HELD.store(false, Ordering::Release);
+    }
     let now = now_ms();
     let last = LAST_SAMPLE.load(Ordering::Relaxed);
     if now - last < SAMPLE_MS {
@@ -2142,7 +2288,10 @@ fn overlay_eats_physical(cx: i32, cy: i32) -> bool {
     if CAPTURING.load(Ordering::Acquire) {
         return false;
     }
-    if POINTER_GESTURE.load(Ordering::Acquire) {
+    // El gesto, validado: mientras dura un arrastre real el overlay se queda
+    // con TODOS los puntos, porque el `pointerup` se pierde si se desarma a
+    // mitad. Un flag huérfano no cuenta (ver `gesture_active`).
+    if gesture_active() {
         return true;
     }
     let Some((x, y)) = overlay_css_from_physical(cx, cy) else {
@@ -2482,7 +2631,7 @@ fn reevaluate_arm() {
     drop(rects);
 
     let over_main = cursor_over_visible_main();
-    let gesture = POINTER_GESTURE.load(Ordering::Acquire);
+    let gesture = gesture_active();
     if over_main && has_drag && !gesture {
         if !YIELDED_MAIN.swap(true, Ordering::AcqRel) {
             send(Msg::YieldMain);
@@ -3042,6 +3191,26 @@ pub fn overlay_work_areas(app: AppHandle) -> Vec<OverlayArea> {
         .collect()
 }
 
+/// ¿El botón principal del mouse está apretado ahora mismo? (Win32 puro)
+///
+/// Sirve desde cualquier hilo: `GetAsyncKeyState` lee el estado físico del
+/// sistema, no el de una cola de mensajes.
+#[cfg(windows)]
+fn primary_button_down() -> bool {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_SWAPBUTTON};
+    // SAFETY: ninguna de las dos tiene precondiciones ni toca memoria nuestra.
+    unsafe {
+        // Con los botones invertidos el "principal" es el físico derecho.
+        let vk = if GetSystemMetrics(SM_SWAPBUTTON) != 0 {
+            0x02 // VK_RBUTTON
+        } else {
+            0x01 // VK_LBUTTON
+        };
+        (GetAsyncKeyState(vk) as u16 & 0x8000) != 0
+    }
+}
+
 /// ¿El botón principal del mouse está apretado ahora mismo?
 ///
 /// El arrastre de la pill termina con `pointerup`, y ese evento **se pierde**
@@ -3057,18 +3226,7 @@ pub fn overlay_work_areas(app: AppHandle) -> Vec<OverlayArea> {
 pub fn overlay_primary_down() -> bool {
     #[cfg(windows)]
     {
-        use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
-        use windows_sys::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_SWAPBUTTON};
-        // SAFETY: ninguna de las dos tiene precondiciones ni toca memoria nuestra.
-        unsafe {
-            // Con los botones invertidos el "principal" es el físico derecho.
-            let vk = if GetSystemMetrics(SM_SWAPBUTTON) != 0 {
-                0x02 // VK_RBUTTON
-            } else {
-                0x01 // VK_LBUTTON
-            };
-            (GetAsyncKeyState(vk) as u16 & 0x8000) != 0
-        }
+        primary_button_down()
     }
     #[cfg(target_os = "macos")]
     {
@@ -3154,6 +3312,30 @@ mod tests {
         map_client_to_css, map_css_to_client, pick_css_viewport, resolve_physical_extent,
         should_arm,
     };
+
+    /// Un flag de gesto sin botón apretado es INERTE.
+    ///
+    /// Es la regresión que dejaba el escritorio sin clics: la cara de clipboard
+    /// levantaba el flag y nunca lo bajaba, y `overlay_eats_physical` le
+    /// devolvía `true` a cualquier punto. Un `true` acá vuelve a comerse el
+    /// escritorio entero.
+    #[cfg(windows)]
+    #[test]
+    fn flag_sin_boton_no_exime_al_overlay() {
+        use super::gesture_exempts;
+        // Flag huérfano: sin gesto de por medio, con botón o sin él.
+        assert!(!gesture_exempts(true, false, false, false));
+        assert!(!gesture_exempts(true, false, true, false));
+        // Nació con el botón apretado pero ya lo soltaron: también inerte.
+        assert!(!gesture_exempts(true, true, false, false));
+        // Arrastre real: flag + botón apretado desde el arranque.
+        assert!(gesture_exempts(true, true, true, false));
+        // Sin flag no hay exención que valga.
+        assert!(!gesture_exempts(false, true, true, false));
+        // Arrastre OLE de ítem: el overlay tiene que quedar click-through para
+        // que el drop caiga en la app de destino.
+        assert!(!gesture_exempts(true, true, true, true));
+    }
 
     #[test]
     fn lparam_packs_negative_virtual_screen() {

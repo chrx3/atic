@@ -91,6 +91,7 @@
     type TransferTabDescriptor,
   } from "./consoleTransfer";
   import { agents } from "$lib/agentSessions.svelte";
+  import { presence } from "$lib/agentPresence.svelte";
   import { agentMcpStatus, agentMcpToggle, consoleTail } from "$ipc/agents";
   import ConfirmDialog from "$ui/ConfirmDialog.svelte";
   import Icon from "$ui/Icon.svelte";
@@ -1933,6 +1934,25 @@
   });
 
   /**
+   * La consola de ese CLI ya no está: el «Listo» de la pill no tiene a dónde
+   * volver. Una terminal externa (HWND ajeno) se deja, no la cerraste acá.
+   */
+  function dismissClosedConsoleCue(command: string | null) {
+    const logo = agentLogoKey(canonicalAgentCli(command ?? "") ?? command);
+    if (!logo) return;
+    const still = tabs.some(
+      (item) => agentLogoKey(canonicalAgentCli(item.command ?? "") ?? item.command) === logo,
+    );
+    if (still) return;
+    presence.markSeenMany(
+      presence.view
+        .filter((item) => !(item.window?.hwnd && !item.window.own))
+        .filter((item) => agentLogoKey(item.backendId) === logo)
+        .map((item) => item.id),
+    );
+  }
+
+  /**
    * Cerrar una consola con PTY viva pide confirmación: matarla no tiene
    * deshacer. Sin sesión (o todavía preparándose) se cierra directo.
    */
@@ -1956,11 +1976,14 @@
       hubCerradas.add(hub);
       hubVistos.set(hub, agents.byId(hub)?.turns.length ?? 0);
     }
+    const closedCommand = tabs[idx].command;
     const paneIdx = visiblePaneKeys.indexOf(key);
     const nextTree = paneTree ? removePaneLeaf(paneTree, key) : null;
     closeCtx();
     await disconnect(key);
     tabs = tabs.filter((t) => t.key !== key);
+    dismissClosedConsoleCue(closedCommand);
+    if (tabs.length === 0) agents.markAllRead();
     const nextPaneKeys = paneLeafKeys(nextTree).filter((paneKey) =>
       tabs.some((tab) => tab.key === paneKey),
     );

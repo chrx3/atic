@@ -5,7 +5,7 @@
 //! `local` ya no reemplaza a la anterior. El tope es defensivo, no de diseño
 //! (cada sesión es un proceso vivo); quien las presenta decide cómo agruparlas.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};

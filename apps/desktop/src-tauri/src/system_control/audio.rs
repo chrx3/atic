@@ -1,6 +1,8 @@
 //! Volumen maestro y, en Windows, sesiones por app.
 
 #[cfg(windows)]
+use super::app_icons::{app_name, process_path};
+#[cfg(windows)]
 use super::AudioSession;
 use super::SystemAudio;
 
@@ -24,10 +26,12 @@ pub fn set_session(id: &str, volume: f32) -> Result<(), String> {
 mod imp {
     use super::*;
     use windows::core::Interface;
+    // IAudioEndpointVolume vive en el submódulo Endpoints, no en Media::Audio.
+    use windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolume;
     use windows::Win32::Media::Audio::{
-        eConsole, eRender, IAudioEndpointVolume, IAudioSessionControl, IAudioSessionControl2,
-        IAudioSessionEnumerator, IAudioSessionManager2, IMMDeviceEnumerator, ISimpleAudioVolume,
-        MMDeviceEnumerator, DEVICE_STATE_ACTIVE,
+        eConsole, eRender, IAudioSessionControl, IAudioSessionControl2, IAudioSessionEnumerator,
+        IAudioSessionManager2, IMMDeviceEnumerator, ISimpleAudioVolume, MMDeviceEnumerator,
+        DEVICE_STATE_ACTIVE,
     };
     use windows::Win32::System::Com::{
         CoCreateInstance, CoInitializeEx, CLSCTX_ALL, COINIT_MULTITHREADED,
@@ -56,14 +60,12 @@ mod imp {
 
     pub fn read() -> Result<SystemAudio, String> {
         let vol = endpoint()?;
-        let mut level = 0f32;
-        let mut muted = windows::core::BOOL(0);
-        unsafe {
-            vol.GetMasterVolumeLevelScalar(&mut level)
-                .map_err(|e| format!("leer volumen: {e}"))?;
-            vol.GetMute(&mut muted)
-                .map_err(|e| format!("leer silencio: {e}"))?;
-        }
+        // En windows 0.61 estos getters devuelven el valor directamente.
+        let level = unsafe {
+            vol.GetMasterVolumeLevelScalar()
+                .map_err(|e| format!("leer volumen: {e}"))?
+        };
+        let muted = unsafe { vol.GetMute().map_err(|e| format!("leer silencio: {e}"))? };
         let sessions = sessions().unwrap_or_default();
         Ok(SystemAudio {
             volume: level.clamp(0.0, 1.0),
@@ -76,7 +78,7 @@ mod imp {
     pub fn set_master(volume: f32) -> Result<(), String> {
         let vol = endpoint()?;
         unsafe {
-            vol.SetMasterVolumeLevelScalar(volume, None)
+            vol.SetMasterVolumeLevelScalar(volume, std::ptr::null())
                 .map_err(|e| format!("volumen: {e}"))
         }
     }
@@ -84,7 +86,7 @@ mod imp {
     pub fn set_muted(muted: bool) -> Result<(), String> {
         let vol = endpoint()?;
         unsafe {
-            vol.SetMute(windows::core::BOOL::from(muted), None)
+            vol.SetMute(muted, std::ptr::null())
                 .map_err(|e| format!("silencio: {e}"))
         }
     }
@@ -126,11 +128,27 @@ mod imp {
                     .cast()
                     .map_err(|e| format!("volumen de sesión: {e}"))?;
                 return simple
-                    .SetMasterVolume(volume, None)
+                    .SetMasterVolume(volume, std::ptr::null())
                     .map_err(|e| format!("volumen de sesión: {e}"));
             }
         }
         Err("sesión de audio no encontrada".into())
+    }
+
+    /// Nombre que la app publica en su sesión de audio, si publica alguno.
+    ///
+    /// En Windows esto viene vacío para la mayoría de las apps, así que es solo
+    /// el primer escalón de la cadena de nombres de `app_icons`.
+    fn display_name(control: &IAudioSessionControl) -> Option<String> {
+        // SAFETY: la sesión vive mientras dure la llamada y `to_string` copia
+        // el PWSTR antes de perderlo de vista.
+        unsafe {
+            control
+                .GetDisplayName()
+                .ok()
+                .and_then(|s| s.to_string().ok())
+                .filter(|s| !s.is_empty())
+        }
     }
 
     fn sessions() -> Result<Vec<AudioSession>, String> {
@@ -168,19 +186,23 @@ mod imp {
                     Ok(s) => s,
                     Err(_) => continue,
                 };
-                let mut level = 0f32;
-                let mut muted = windows::core::BOOL(0);
-                let _ = simple.GetMasterVolume(&mut level);
-                let _ = simple.GetMute(&mut muted);
-                let name = control
-                    .GetDisplayName()
-                    .ok()
-                    .map(|s| s.to_string())
-                    .filter(|s| !s.is_empty())
+                let level = simple.GetMasterVolume().unwrap_or(0.0);
+                let muted = simple.GetMute().unwrap_or_default();
+                // Nombre visible: lo que publique la sesión, si no el recurso del
+                // ejecutable y, si no queda otra, el genérico de siempre.
+                let path = process_path(pid);
+                let name = display_name(&control)
+                    .or_else(|| path.as_deref().and_then(app_name))
                     .unwrap_or_else(|| format!("App {pid}"));
+                // El ícono sale de la caché de `launcher_icons`: a partir de la
+                // segunda vuelta no vuelve a tocar el shell.
+                let icon = path
+                    .as_deref()
+                    .and_then(crate::launcher_icons::icon_data_url);
                 out.push(AudioSession {
                     id: pid.to_string(),
                     name,
+                    icon,
                     volume: level.clamp(0.0, 1.0),
                     muted: muted.as_bool(),
                 });
@@ -188,6 +210,9 @@ mod imp {
             Ok(out)
         }
     }
+
+    // Las pruebas de `file_description` y `app_name` se mudaron a
+    // `system_control::app_icons`, que es donde viven ahora esas funciones.
 }
 
 #[cfg(target_os = "macos")]

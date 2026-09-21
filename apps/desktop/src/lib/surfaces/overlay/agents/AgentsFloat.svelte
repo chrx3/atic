@@ -53,7 +53,6 @@
   import { isAgentsDismissSuppressed } from "$surfaces/overlay/agents/dismissGuard";
   import { agentsDock } from "$surfaces/overlay/agents/agentsDock.svelte";
   import { agentsIslandHost, agentsFloatHandoff } from "./agentsIslandHost.svelte";
-  import { consoleCue } from "$surfaces/overlay/agents/consoleCue.svelte";
   import { presenceIdsToDismissOnAticHide } from "$surfaces/overlay/pill/pillAgentChip";
   import {
     reuseDockedFrame,
@@ -593,9 +592,7 @@
 
   function dismissAticConsoleCues() {
     agents.markAllRead();
-    presence.markSeenMany(
-      presenceIdsToDismissOnAticHide(presence.view, consoleCue.clis),
-    );
+    presence.markSeenMany(presenceIdsToDismissOnAticHide(presence.view));
   }
 
   function dockToPill() {
