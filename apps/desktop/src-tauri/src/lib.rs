@@ -40,6 +40,7 @@ mod snippets;
 mod state;
 mod summarization;
 mod system_actions;
+mod system_control;
 mod transcription;
 mod tray;
 mod ui_lang;
@@ -300,6 +301,8 @@ pub fn run() {
             agents::bridge::show_agents_window,
             agents::bridge::present_agents_window,
             agents::bridge::hide_agents_window,
+            agents::bridge::set_agents_console_open,
+            agents::bridge::set_agents_window_open,
             agents::bridge::save_agents_bubble_size,
             agents_window::agents_ensure_window,
             agents::bridge::agents_always_on_top,
@@ -344,6 +347,9 @@ pub fn run() {
             agents::console::console_resize,
             agents::console::console_close,
             agents::console::console_gc,
+            agents::console::console_attach,
+            agents::console::console_detach,
+            agents::console::console_heartbeat,
             agents::console::console_tail,
             agents::console::console_begin_transfer,
             agents::console::console_end_transfer,
@@ -365,6 +371,26 @@ pub fn run() {
             snippets::hide_snippets_window,
             snippets::snippets_always_on_top,
             snippets::set_snippets_always_on_top,
+            system_control::show_system_window,
+            system_control::hide_system_window,
+            system_control::system_always_on_top,
+            system_control::set_system_always_on_top,
+            system_control::system_snapshot,
+            system_control::system_audio,
+            system_control::system_set_volume,
+            system_control::system_set_muted,
+            system_control::system_set_session_volume,
+            system_control::system_displays,
+            system_control::system_set_brightness,
+            system_control::system_close_app,
+            system_control::system_force_app,
+            system_control::system_focus_app,
+            system_control::system_awake,
+            system_control::set_system_awake,
+            system_control::system_alerts,
+            system_control::system_alert_settings,
+            system_control::set_system_alert_settings,
+            system_control::system_action,
             paste_queue::list_paste_queue,
             paste_queue::enqueue_paste,
             paste_queue::dismiss_paste_queue_item,
@@ -420,6 +446,10 @@ pub fn run() {
             if let Some(state) = app.try_state::<crate::state::AppState>() {
                 notes::migrate_legacy(&state.dirs.data_dir(), &state.dirs.notes_dir());
             }
+
+            // Vigilante del equipo: el aviso de la pill no puede depender de
+            // que alguien abra el panel de sistema.
+            system_control::start_watch(app.handle().clone());
 
             // Permite reproducir los WAV grabados vía el protocolo asset://.
             let _ = app
@@ -586,6 +616,7 @@ pub fn run() {
                 agents::bridge::init_always_on_top(cfg.agents_always_on_top);
                 clipboard_history::init_always_on_top(cfg.clipboard_always_on_top);
                 snippets::init_always_on_top(cfg.snippets_always_on_top);
+                system_control::init_always_on_top(cfg.system_always_on_top);
             }
 
             // El overlay va DESPUÉS de la pill: elige monitor mirando dónde
@@ -652,6 +683,9 @@ pub fn run() {
         .run(move |app, event| match event {
             RunEvent::Exit => {
                 window_flip::uncloak_on_exit();
+                // El café se suelta siempre: si Atic se va con la retención
+                // puesta, el equipo se queda sin dormir y nadie sabe por qué.
+                system_control::shutdown();
                 // Primero el hub (deja de aceptar y borra `hub.json`) y después
                 // los procesos: en ese orden no quedan delegaciones colgadas.
                 agents::hub::server::stop();

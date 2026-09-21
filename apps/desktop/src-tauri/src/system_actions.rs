@@ -2,10 +2,8 @@
 //!
 //! Regla del producto: **nunca forzar acciones destructivas**. Por eso vaciar la
 //! papelera conserva el diálogo de confirmación de Windows (no se le pasa
-//! `SHERB_NOCONFIRMATION`) y no hay force-quit en ningún lado.
-//!
-//! Windows-first: en macOS estas acciones todavía devuelven un error explícito y
-//! el launcher directamente no las lista (`builtin_actions` filtra por `cfg`).
+//! `SHERB_NOCONFIRMATION`) y en macOS el panel de sistema confirma antes.
+//! El force-quit de apps vive en el panel de sistema, con diálogo propio.
 
 /// Bloquea la sesión (equivalente a Win+L).
 pub fn lock_screen() -> Result<(), String> {
@@ -94,7 +92,81 @@ mod imp {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+mod imp {
+    use std::ffi::CString;
+    use std::os::raw::c_void;
+    use std::process::Command;
+
+    const RTLD_LAZY: i32 = 1;
+
+    extern "C" {
+        fn dlopen(filename: *const i8, flags: i32) -> *mut c_void;
+        fn dlsym(handle: *mut c_void, symbol: *const i8) -> *mut c_void;
+    }
+
+    type LockFn = unsafe extern "C" fn();
+
+    pub fn lock_screen() -> Result<(), String> {
+        let path = CString::new(
+            "/System/Library/PrivateFrameworks/login.framework/Versions/Current/login",
+        )
+        .map_err(|_| "lock".to_string())?;
+        let sym = CString::new("SACLockScreenImmediate").map_err(|_| "lock".to_string())?;
+        unsafe {
+            let handle = dlopen(path.as_ptr(), RTLD_LAZY);
+            if !handle.is_null() {
+                let ptr = dlsym(handle, sym.as_ptr());
+                if !ptr.is_null() {
+                    let lock: LockFn = std::mem::transmute(ptr);
+                    lock();
+                    return Ok(());
+                }
+            }
+        }
+        let status = Command::new("pmset")
+            .arg("displaysleepnow")
+            .status()
+            .map_err(|e| format!("bloquear: {e}"))?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err("no se pudo bloquear la sesión".into())
+        }
+    }
+
+    pub fn sleep() -> Result<(), String> {
+        let status = Command::new("pmset")
+            .arg("sleepnow")
+            .status()
+            .map_err(|e| format!("suspender: {e}"))?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err("no se pudo suspender el equipo".into())
+        }
+    }
+
+    pub fn toggle_mute() -> Result<(), String> {
+        let audio = crate::system_control::system_audio()?;
+        crate::system_control::system_set_muted(!audio.muted)
+    }
+
+    pub fn empty_trash() -> Result<(), String> {
+        // Finder pregunta antes si el usuario no apagó esa advertencia.
+        let status = Command::new("osascript")
+            .args(["-e", "tell application \"Finder\" to empty the trash"])
+            .status()
+            .map_err(|e| format!("papelera: {e}"))?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err("no se pudo vaciar la papelera".into())
+        }
+    }
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 mod imp {
     const NO_SOPORTADO: &str = "no soportado en esta plataforma todavía";
 

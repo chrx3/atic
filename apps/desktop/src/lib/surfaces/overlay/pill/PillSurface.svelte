@@ -35,6 +35,7 @@
     gapBetween,
     notchShape,
     pillShape,
+    stemBetween,
     type Rect,
   } from "$lib/liquid/geometry";
   import { INFLUENCE, REACH } from "$lib/liquid/constants";
@@ -63,7 +64,7 @@
   import { localizeTool, t } from "$domain/i18n.svelte";
   import { formatShortcut } from "$lib/format";
   import Icon from "$ui/Icon.svelte";
-  import { Check, Download, X } from "$lib/icons";
+  import { Check, Cpu, Download, MemoryStick, Volume2, VolumeX, X } from "$lib/icons";
   import type { IconNode } from "morphicons/svelte";
   import { PILL, windowFor, type Size } from "$surfaces/overlay/pillStage";
   import { createCssStage } from "$surfaces/overlay/pillCssStage";
@@ -91,8 +92,14 @@
     floatWheelHoverWatches,
     floatWheelHoverOpens,
     islandFaceAgent,
+    islandFaceDictation,
+    islandFaceLive,
     islandFacePanel,
+    islandFaceBlocksHover,
     islandNotchRadius,
+    pointInRect,
+    notchRecenterSize,
+    sideExitX,
     pointerMoveDrags,
     pointerGestureWasClick,
     ISLAND_COLLAPSE_MS,
@@ -107,7 +114,7 @@
   import {
     agentChip,
     agentChips,
-    cueAgentIds,
+    agentChipLogos,
     type AgentChip,
   } from "$surfaces/overlay/pill/pillAgentChip";
   import { consoleCue } from "$surfaces/overlay/agents/consoleCue.svelte";
@@ -124,6 +131,7 @@
     edgeCenterPoint,
     geometryReseat,
     edgeWallsFor,
+    MENISCUS_FLARE,
     snapDrop,
     snapMagnet,
     shouldUndock,
@@ -139,6 +147,7 @@
     tabPanel,
   } from "$lib/motion";
   import { playWheelTick } from "$ipc/uiSound";
+  import { launcherLab } from "$lib/dev/launcherLab.svelte";
   import type { PermissionDecision } from "$core/types";
   // Lo que queda son los comandos DE LA PILL: su geometría, sus atajos y las
   // ventanas que abre. El estado de la app lo traen los stores.
@@ -146,16 +155,19 @@
     agentsAlwaysOnTop,
     agentsWindowVisible,
     hideAgentsWindow,
+    showAgentsWindow,
     onAgentsBubbleAnchor,
     onAgentsBubbleDismiss,
     agentPresenceFocus,
     agentPresenceBind,
     revealAgentsConsole,
+    setAgentsConsoleOpen,
   } from "$ipc/agents";
   import {
     clipboardAlwaysOnTop,
     hideClipboardWindow,
     onClipboardBubbleDismiss,
+    showClipboardWindow,
   } from "$ipc/clipboard";
   import { getConfig, showMainWindow } from "$ipc/config";
   import { on } from "$ipc/events";
@@ -163,12 +175,33 @@
   import {
     hideSnippetsWindow,
     onSnippetsBubbleDismiss,
+    showSnippetsWindow,
     snippetsAlwaysOnTop,
   } from "$ipc/snippets";
+  import {
+    hideSystemWindow,
+    onSystemBubbleDismiss,
+    showSystemWindow,
+    systemAlwaysOnTop,
+  } from "$ipc/system";
   import ClipboardHistoryList from "$lib/ClipboardHistoryList.svelte";
   import SnippetsList from "$lib/SnippetsList.svelte";
+  import SystemPanel from "$features/system/SystemPanel.svelte";
+  import { systemAlerts } from "$domain/systemAlerts.svelte";
+  import { system } from "$domain/system.svelte";
   import AgentLauncher from "$features/agents/AgentLauncher.svelte";
-  import { agentsIslandHost } from "$surfaces/overlay/agents/agentsIslandHost.svelte";
+  import { transferInbox } from "$features/agents/consoleTransfer.svelte";
+  import { OVERLAY_LABEL } from "$surfaces/overlay/contract";
+  import {
+    agentsIslandHost,
+    agentsFloatHandoff,
+  } from "$surfaces/overlay/agents/agentsIslandHost.svelte";
+  import {
+    AGENTS_OVERLAY_DETACH,
+    AGENTS_OVERLAY_DETACHED,
+    type AgentsOverlayDetachDetail,
+    type AgentsOverlayDetachedDetail,
+  } from "$features/agents/consoleTransfer.svelte";
   import { clipboard } from "$domain/clipboard.svelte";
   import { snippets } from "$domain/snippets.svelte";
   import { executeToolAction } from "$surfaces/toolActions";
@@ -190,6 +223,7 @@
   import {
     birthAtCursor,
     captureToolBirth,
+    captureToolResting,
     waitToolResting,
   } from "$surfaces/overlay/toolBirth";
   import {
@@ -291,12 +325,18 @@
       readyLabel: agents.readyLabel,
       readyBackendId: agents.readyBackendId,
       updatedAt: agents.readyUpdatedAt,
+      answering: agents.answering,
       providerSessions: agents.sessions.map((s) => s.providerSession),
     },
     presence: presence.view,
     chatEnabled: AGENTS_ENABLED,
     pagerEnabled: AGENT_PAGER_ENABLED,
     consoles: consoleCue.clis,
+    now: Date.now(),
+    // Textos del chip cuando el agente todavía no escribió nada: el estado
+    // distingue contestar (stream vivo) de trabajar (herramientas).
+    workingLabel: t("pill.chipWorking"),
+    answeringLabel: t("pill.chipAnswering"),
   });
   const chips = $derived(agentChips(chipState));
   const chip = $derived(agentChip(chipState));
@@ -304,10 +344,23 @@
   const agentWorking = $derived(
     chips.some((c) => c.tone === "working" || c.tone === "count"),
   );
-  /** El panel desplegado ya cubre el aviso; achicado, la pestaña vive en la pill. */
-  const agentsExpanded = $derived(
-    !agentsDock.minimized && surfaces.live["agents"] != null,
-  );
+  /**
+   * El panel desplegado ya cubre el aviso; achicado, la pestaña vive en la pill.
+   *
+   * La cara de agentes abierta EN LA ISLA no cuenta como panel desplegado:
+   * comparte la banda con la marca y los chips siguen siendo el aviso. El
+   * hit-rect `agents` sí se publica con la cara abierta (drop OLE), así que se
+   * excluye por la cara y no por el rect.
+   *
+   * Va con `$derived.by` y no con una expresión: `agentsFaceOpen` se declara
+   * más abajo y los deriveds son perezosos, pero el chequeo de tipos no admite
+   * la referencia directa.
+   */
+  const agentsExpanded = $derived.by(() => {
+    if (agentsDock.minimized) return false;
+    if (surfaces.live["agents"] == null) return false;
+    return !agentsFaceOpen;
+  });
   const showAgentTab = $derived(
     !wheelChrome && (agentsDock.minimized || (agentAlert && !agentsExpanded)),
   );
@@ -316,6 +369,19 @@
    * legible. Misma condición que el chip flotante (aviso o dock achicado).
    */
   const islandCue = $derived(surface === "edge" && showAgentTab);
+  /**
+   * El primer aviso dice qué pasa: preview del agente («Refactorizando el
+   * hub»), «permiso» en espera, o el estado («Trabajando…»). Solo en notch
+   * del eje y —a los lados no hay largo que regalar— y solo el chip primero,
+   * el urgente; el resto queda logo solo. En línea el eje: `peekEdgeAxis`
+   * se declara más abajo y el `target` de acá arriba lo necesita.
+   */
+  const islandCueMsg = $derived.by(() => {
+    if (!islandCue) return false;
+    if (!dock || dockAxis(dock.edge) !== "y") return false;
+    if (chips.length === 0) return false;
+    return chips[0].tone !== "count" && chips[0].label != null;
+  });
   /**
    * Aviso de actualización: qué muestra el chip y qué dice al pasar el mouse.
    *
@@ -361,6 +427,98 @@
   });
 
   /**
+   * Aviso del equipo: CPU o memoria sostenidas por encima del umbral.
+   *
+   * Mismo sitio y misma cápsula que el aviso de actualización — es otra cosa
+   * que la pill CUENTA, no otra cosa que la reemplace. El texto es el
+   * porcentaje; quién se lo está comiendo va en el globo, que es donde cabe.
+   */
+  const systemChip = $derived.by(() => {
+    const aviso = systemAlerts.top;
+    if (!aviso) return null;
+    const valor = Math.round(aviso.value);
+    const que =
+      aviso.kind === "cpu" ? t("overlay.system.cpu") : t("overlay.system.ram");
+    return {
+      // Un icono por métrica, no un pulso genérico: acoplada, el icono es TODO
+      // lo que se ve, y un "87%" sin decir de qué no informa nada.
+      icon: aviso.kind === "cpu" ? Cpu : MemoryStick,
+      text: `${que} ${valor}%`,
+      kind: aviso.kind,
+      label: aviso.culprit
+        ? t("overlay.system.alertBy", { what: que, value: valor, name: aviso.culprit })
+        : t("overlay.system.alert", { what: que, value: valor }),
+    };
+  });
+
+  /**
+   * Rueda del mouse sobre la pill = volumen del equipo.
+   *
+   * Es el gesto que el panel nunca debió pedir: subir el volumen no puede
+   * costar rueda → Sistema → pestaña → slider. El cursor ya está sobre la
+   * pill, que además vive siempre arriba: es el único sitio de Atic donde
+   * este gesto sale gratis.
+   *
+   * No se roba el scroll de nadie: si el puntero está sobre una cara (la
+   * lista del historial, la consola, el panel del costado), la rueda es de
+   * ellas. Solo el cuerpo de la pill lo toma.
+   */
+  const VOLUME_STEP = 0.04;
+  /** Cuánto queda el chip a la vista después del último giro. */
+  const VOLUME_CUE_MS = 1400;
+  let volumeCue = $state<number | null>(null);
+  let volumeCueTimer = 0;
+
+  async function onPillWheel(event: WheelEvent) {
+    const el = event.target as HTMLElement | null;
+    // Lo que tiene scroll propio se queda con la rueda.
+    if (el?.closest(".p-face, .p-side, .p-wheel")) return;
+    if (event.deltaY === 0) return;
+    event.preventDefault();
+    // Sin audio leído todavía: se pide una vez y este giro ya cuenta.
+    if (!system.audio) await system.hydrate("audio");
+    const actual = system.audio?.volume ?? 0;
+    // Rueda arriba sube: `deltaY` es negativo hacia arriba.
+    const next = Math.min(
+      1,
+      Math.max(0, actual - Math.sign(event.deltaY) * VOLUME_STEP),
+    );
+    volumeCue = Math.round(next * 100);
+    window.clearTimeout(volumeCueTimer);
+    volumeCueTimer = window.setTimeout(() => (volumeCue = null), VOLUME_CUE_MS);
+    if (system.audio?.muted && next > 0) void system.setMuted(false);
+    await system.setVolume(next);
+  }
+
+  /**
+   * El chip del volumen comparte cápsula con los otros avisos.
+   *
+   * Es lo mismo que hacen el update y el aviso del equipo: algo que la pill
+   * cuenta por un rato, en el sitio donde ya se cuentan las cosas. Así no hay
+   * un HUD nuevo que posicionar contra el borde ni una superficie que medir.
+   */
+  const volumeChip = $derived.by(() => {
+    if (volumeCue == null) return null;
+    return {
+      icon: volumeCue === 0 ? VolumeX : Volume2,
+      text: `${volumeCue}%`,
+      label: t("overlay.system.volume"),
+    };
+  });
+
+  /**
+   * El clic del aviso abre el panel de sistema y baja el chip.
+   *
+   * Bajar no es "olvidar": el aviso vuelve si el problema se va y regresa. Lo
+   * que no puede pasar es que quede pulsando mientras lo estás mirando.
+   */
+  function onSystemChipClick() {
+    const aviso = systemAlerts.top;
+    if (aviso) systemAlerts.dismiss(aviso.kind);
+    requestActivateAtSlot("system", { force: true });
+  }
+
+  /**
    * Qué estado lleva la cara de la marca. La mascota dice QUÉ está corriendo;
    * antes lo decía una gota colgada que cambiaba la silueta.
    */
@@ -373,8 +531,8 @@
    *
    * Si la cara muestra la herramienta que está corriendo, apretarla la para:
    * un segundo botón rojo al lado era decir dos veces lo mismo y ocupar el
-   * ancho que la cápsula necesita para el contador. En reposo, la puerta a la
-   * rueda de siempre.
+   * ancho que la cápsula necesita para el contador. En reposo el clic no hace
+   * nada: la rueda se abre por hover (flotante) o con el atajo.
    */
   const markAction = $derived.by(() => {
     if (markState === "recording") {
@@ -383,7 +541,9 @@
     if (markState === "dictating") {
       return { label: t("pill.stopDictate"), run: toggleDictate };
     }
-    return { label: discHint, run: () => void openWheel({ fromClick: true }) };
+    // Sin acción en reposo: acoplada la rueda no se abre nunca y flotante la
+    // despliega el hover.
+    return { label: discHint, run: () => {} };
   });
 
   /**
@@ -391,10 +551,14 @@
    *
    * La actividad NO cuenta: su control es la propia marca, que ya estaba ahí.
    */
-  const edgeCue = $derived(surface === "edge" && (showAgentTab || updateChip != null));
+  const edgeCue = $derived(
+    surface === "edge" &&
+      (showAgentTab || updateChip != null || systemChip != null || volumeChip != null),
+  );
   const edgeCueMarks = $derived(
     (showAgentTab ? Math.max(chips.length, agentsDock.minimized ? 1 : 0) : 0) +
-      (updateChip ? 1 : 0),
+      (updateChip ? 1 : 0) +
+      (systemChip || volumeChip ? 1 : 0),
   );
 
   /**
@@ -411,12 +575,15 @@
   }
 
   function chipLogos(c: AgentChip): string[] {
-    return cueAgentIds({
-      sessions: agents.sessions,
-      presence: presence.view,
-      consoles: consoleCue.clis,
-      chipLogoId: c.logoId,
-    });
+    return agentChipLogos(
+      c,
+      {
+        sessions: agents.sessions,
+        presence: presence.view,
+        consoles: consoleCue.clis,
+      },
+      agentsDock.minimized,
+    );
   }
 
   function chipAria(c: AgentChip): string {
@@ -449,6 +616,16 @@
             : (c.label ?? t("pill.working"));
     if (c.target.kind === "focus") return t("pill.rebind", { base });
     return base;
+  }
+
+  /** Texto visible de una fila: el pipeline manda; el fallback solo nombra el estado. */
+  function chipLiveLabel(c: AgentChip): string {
+    const label = c.label?.trim();
+    if (label) return label;
+    if (c.tone === "count") return String(c.label ?? 0);
+    if (c.tone === "waiting") return t("pill.permission");
+    if (c.tone === "working") return t("pill.chipWorking");
+    return t("pill.ready");
   }
 
   const agentChipAria = $derived(chipAria(chip));
@@ -485,7 +662,7 @@
       activity,
       hasQueue,
       agentAlert: agentAlert || agentsDock.minimized,
-      hasUpdate: updateChip != null,
+      hasUpdate: updateChip != null || systemChip != null || volumeChip != null,
     }),
   );
 
@@ -620,6 +797,8 @@
    */
   const trackBar = (el: HTMLElement) => tracker.track("bar", el);
   const trackTail = (el: HTMLElement) => tracker.track("tail", el);
+  /** La gota de dictado (onda que cuelga): su silueta va al mismo campo. */
+  const trackDrop = (el: HTMLElement) => tracker.track("drop", el);
   /** La isla acoplada: llena la caja, así que se anima con ella. */
   const trackIsland = (el: HTMLElement) => tracker.track("island", el);
   const trackIslandCue = (el: HTMLElement) => tracker.track("island-cue", el);
@@ -885,9 +1064,10 @@
     // puntero es la caja y no lo dibujado—.
     if (surface === "edge") {
       const shapes = [];
-      // Sin pared SDF: el filete de la pared era más ancho que la isla y el
-      // smin lo convertía en alas. `notchShape` mete el radio del canto en
-      // el bisel y los lados bajan derechos.
+      // `notchShape` mete el radio del canto en el bisel y los lados bajan
+      // derechos; la pared de abajo le devuelve el menisco del contacto con
+      // un filete medido —uno ancho era más ancho que la isla y el smin lo
+      // convertía en alas—.
       if (r.island) {
         let box = at(r.island);
         // El rebote de `--ease-island` se pasa del dintel; si el tracker
@@ -899,6 +1079,17 @@
         shapes.push(
           dock ? notchShape(box, dock.edge, islandNotchRadius(box)) : pillShape(box),
         );
+        // Menisco: la isla se funde al canto como la pill suelta que llega
+        // al borde. `box` ya viene en coords del overlay: nada de `at()`.
+        if (dock) {
+          shapes.push(
+            ...edgeWallsFor(box, stage.workAreas(), {
+              maxGap: INFLUENCE,
+              prefer: dock.edge,
+              flare: meniscusFlare,
+            }).map(pillShape),
+          );
+        }
       }
       // Avisos: misma tinta, otro bulto. El smin los funde con la pestaña
       // en vez de pintar una cápsula encima.
@@ -916,6 +1107,15 @@
     // La gota, si está. El disco solo mientras la gota no lo cubra: ver
     // `discJoinsTail` — publicar ambos en reposo engordaba el lado izquierdo.
     if (r.tail) shapes.push(pillShape(at(r.tail)));
+    // Dictado flotante: la gota de la onda cuelga del disco. Con el blend de
+    // render en 0 el campo no filetea el hueco, así que el cuello es una forma
+    // más (cápsula del hilo, como el globo de agentes): sin ella se verían dos
+    // pastillas sueltas.
+    if (r.bar && r.drop) {
+      const neck = stemBetween(at(r.bar), at(r.drop), "top", PILL.recDropNeck);
+      if (neck) shapes.push(neck);
+    }
+    if (r.drop) shapes.push(pillShape(at(r.drop)));
     if (r.bar && (!r.tail || discJoinsTail(r.bar, r.tail))) {
       shapes.push(pillShape(at(r.bar)));
     }
@@ -940,8 +1140,14 @@
     liquid.publish("pill", skinShapes);
   });
 
+  /**
+   * La piel respira: grabando/dictando y también mientras un agente trabaja.
+   *
+   * El latido sale de la silueta (Skin), no de un adorno encima: el aviso
+   * «estoy trabajando» nace de la misma piel que el resto de la pill.
+   */
   $effect(() => {
-    liquid.breathe = recording || dictation === "listening";
+    liquid.breathe = recording || dictation === "listening" || agentWorking;
   });
 
   /**
@@ -1116,7 +1322,7 @@
   );
   let agentFaceDismissed = $state<string | null>(null);
   /** Pedido explícito de panel en la isla (clipboard, textos, agentes). */
-  let toolFace = $state<"tab" | "clipboard" | "snippets" | "agents">("tab");
+  let toolFace = $state<"tab" | "clipboard" | "snippets" | "system" | "agents">("tab");
   let snippetsTab = $state<"list" | "scratchpad">("list");
   const islandFace: IslandFace = $derived.by(() => {
     if (
@@ -1129,24 +1335,122 @@
     ) {
       return "agent";
     }
+    if (islandFaceDictation({ surface, dock, dictating })) {
+      return "dictation";
+    }
     if (islandFacePanel({ surface, dock, requested: toolFace !== "tab" })) {
       return toolFace;
+    }
+    if (islandFaceLive({ surface, dock, live: chips.length > 0 })) {
+      return "live";
     }
     return "tab";
   });
   const agentFaceOpen = $derived(islandFace === "agent");
+  const dictationFaceOpen = $derived(islandFace === "dictation");
+  const liveFaceOpen = $derived(islandFace === "live");
   const clipboardFaceOpen = $derived(islandFace === "clipboard");
   const snippetsFaceOpen = $derived(islandFace === "snippets");
+  const systemFaceOpen = $derived(islandFace === "system");
   const agentsFaceOpen = $derived(islandFace === "agents");
   let agentsMounted = $state(false);
   let agentsLive = $state(false);
   let agentsConsoleView = $state(false);
+  let agentsBrowserOpen = $state(false);
+  /** Panel que convive CON la consola, dentro de la isla (clipboard/textos). */
+  let sidePanel = $state<"clipboard" | "snippets" | null>(null);
+  /**
+   * El layout con panel sobrevive al cierre: mientras la caja encoge, el
+   * pivote tiene que seguir clavando el lado de la consola (si no, salta media
+   * diferencia). Se suelta solo, pasado el tramo de `--island-open-dur`.
+   */
+  let sideHold = $state(false);
+  /** Hay panel abierto (o su layout todavía aplicado durante el cierre). */
+  const sideLayout = $derived(sidePanel !== null || sideHold);
+  /** Ese layout se pinta solo con la cara de la consola a la vista. */
+  const sideApplied = $derived(sideLayout && agentsFaceOpen);
+  /**
+   * La caja OBJETIVO ya suma el panel. No es lo mismo que el layout: al cerrar
+   * la caja encoge de inmediato (sin panel) mientras el layout sigue aplicado
+   * un tramo. El pivote usa el layout; la unidad del recentrado, esto.
+   */
+  const sideInBox = $derived(sidePanel !== null);
   const faceOpen = $derived(islandFace !== "tab");
+
+  /**
+   * Hay una consola viva en la isla: a la vista, tapada por otra cara
+   * (clipboard / textos) o achicada en el dock.
+   *
+   * Alcanza para que el pegado del historial entre a la sesión en vez de
+   * salir a la app de atrás, y para no cerrarla al abrir otra herramienta.
+   */
+  function islandConsoleAlive(): boolean {
+    return agentsMounted && agentsLive;
+  }
+
+  /** La cara de la consola está abierta a la vista: el panel va al costado. */
+  function consoleFaceShowing(): boolean {
+    return islandFace === "agents" && agentsConsoleView && agentsLive;
+  }
+
+  // El puente tiene que enterarse de la consola de la isla (no tiene ventana
+  // propia): sin esto, pegar desde el historial salía a la app de atrás.
+  $effect(() => {
+    const alive = islandConsoleAlive();
+    if (!alive || !agentsConsoleView) sidePanel = null;
+    agentsConsoleOpen = alive;
+    void setAgentsConsoleOpen(alive).catch(() => {});
+  });
+
+  /**
+   * Un traspaso dirigido al overlay necesita la cara montada.
+   *
+   * El lanzador es quien adopta y ackea: sin cara, el traspaso se queda en el
+   * buzón y la emisora aborta a los 4 s. Pasa al volver de la ventana dedicada
+   * si la isla quedó en setup (sin fichas montadas) o tras una recarga. Se
+   * abre igual que con el atajo; el lanzador consume el buzón al montar.
+   */
+  $effect(() => {
+    const inbox = transferInbox.current;
+    if (!inbox || inbox.to !== OVERLAY_LABEL) return;
+    if (agentsMounted && agentsFaceOpen) return;
+    void openIslandTool("agents");
+  });
+
+  /**
+   * Suelta el layout con panel recién cuando la caja terminó de encoger.
+   *
+   * Abrir y cerrar son simétricos: durante el tramo de cierre el pivote tiene
+   * que seguir clavando el borde del lado de la consola; sin eso, el pivote
+   * del canto recentraría una caja todavía ancha y la consola saltaría media
+   * diferencia. Con el cierre total (dismiss) no hay nada que sostener: la
+   * pestaña vuelve al centro como siempre.
+   */
+  $effect(() => {
+    if (sidePanel !== null && consoleFaceShowing()) {
+      sideHold = true;
+      return;
+    }
+    if (!sideHold) return;
+    if (!agentsFaceOpen) {
+      sideHold = false;
+      return;
+    }
+    const timer = setTimeout(() => (sideHold = false), ms(MOTION.islandOpen));
+    return () => clearTimeout(timer);
+  });
+
   $effect(() => {
     if (!authRequest) agentFaceDismissed = null;
   });
   $effect(() => {
-    if (surface !== "edge") toolFace = "tab";
+    // Fuera del canto no hay cara ni panel: si el flag quedara colgado, al
+    // reabrir la consola el panel reaparecía solo y el primer atajo de
+    // clipboard "cerraba" algo invisible. Cubre la rueda y el desacople.
+    if (surface !== "edge") {
+      toolFace = "tab";
+      sidePanel = null;
+    }
   });
   /** Colapso manual: decidir, consola, clic afuera y Esc pasan por acá. */
   function dismissAgentFace(): void {
@@ -1154,7 +1458,16 @@
   }
   let islandFaceLockUntil = 0;
   let clipFaceEl = $state<HTMLElement | null>(null);
+  /**
+   * La cara de agentes montada, para publicarla como hit-rect `agents`.
+   *
+   * No alcanza con el chip del dock: durante un arrastre OLE Rust poda los
+   * hit-rects a los drop-targets y la consola ABIERTA en la isla también tiene
+   * que estar en la lista (ver el efecto de registro).
+   */
+  let agentsFaceEl = $state<HTMLElement | null>(null);
   function dismissToolFace(): void {
+    sidePanel = null;
     const was = toolFace;
     toolFace = "tab";
     if (was !== "tab" && spatialIntent === was) spatialIntent = null;
@@ -1162,6 +1475,263 @@
     setIslandExpanded(false);
     void setOverlayPointerGesture(false).catch(() => {});
     if (was === "agents" && agentsLive) agentsDock.setMinimized(true);
+  }
+
+  /**
+   * Despegar la cara: el panel sale de la isla y queda flotando.
+   *
+   * El rect de la cara es el ancla de nacimiento (`toolBirth`): el float nace
+   * fundido ahí y descansa al lado, en vez de saltar a la pill. El pin ("no
+   * se cierra con clic afuera") y la X ya vienen de fábrica en el float; el
+   * cierre por clic afuera lo maneja el float, como con cualquier otra
+   * apertura por atajo.
+   *
+   * Agentes no entra: su consola vive en la isla y mudarla pasa por el
+   * traspaso de consola, no por este botón.
+   */
+  async function detachToolFace(): Promise<void> {
+    const id = toolFace;
+    if (id !== "clipboard" && id !== "snippets" && id !== "system" && id !== "agents")
+      return;
+    const r = clipFaceEl?.getBoundingClientRect();
+    if (r && r.width > 0 && r.height > 0) {
+      const rect = { x: r.x, y: r.y, w: r.width, h: r.height };
+      captureToolBirth(rect);
+      // El reposo EXACTO es el rect de la cara: el float nace en el sitio
+      // del panel, no al lado.
+      captureToolResting(rect);
+      void waitToolResting().then(() => captureToolBirth(null));
+    }
+    dismissToolFace();
+    armIslandBounce();
+    if (id === "clipboard") await showClipboardWindow().catch(() => {});
+    else if (id === "snippets") await showSnippetsWindow().catch(() => {});
+    else if (id === "system") await showSystemWindow().catch(() => {});
+    else await detachAgentsFloat();
+  }
+
+  /**
+   * Gesto del grab: arrastre y clic comparten la misma barrita.
+   *
+   * Poca distancia al soltar = clic: despega en el sitio (el camino de
+   * siempre). Arrastre real = despegar YA mientras sigue la mano: la cara
+   * colapsa, el float nace del rect de la cara y, cuando descansa, le
+   * traspasamos el gesto vivo a su header para que siga el cursor hasta el
+   * soltar. El notch (la banda) no se mueve en ninguno de los dos.
+   *
+   * El traspaso no necesita eventos DOM confiables: `startDrag` del float
+   * siembra su origen con el cursor de Rust en el primer tick, y su lazo
+   * sigue `overlayCursor`. El pointerup del usuario lo recogen los
+   * oyentes de window (capture) que el mismo float instala.
+   */
+  const DETACH_DRAG_THRESHOLD = 10;
+  let detachGesture: {
+    pointerId: number;
+    startX: number;
+    startY: number;
+    /** Última posición de la mano, para sembrar el arrastre del float. */
+    lastX: number;
+    lastY: number;
+    detached: boolean;
+  } | null = null;
+
+  function startDetachGesture(event: PointerEvent): void {
+    if (event.button !== 0 || detachGesture) return;
+    detachGesture = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      lastX: event.clientX,
+      lastY: event.clientY,
+      detached: false,
+    };
+    window.addEventListener("pointermove", onDetachPointerMove, true);
+    window.addEventListener("pointerup", onDetachPointerUp, true);
+    window.addEventListener("pointercancel", onDetachPointerCancel, true);
+    event.preventDefault();
+  }
+
+  function endDetachGesture(): typeof detachGesture {
+    const g = detachGesture;
+    detachGesture = null;
+    window.removeEventListener("pointermove", onDetachPointerMove, true);
+    window.removeEventListener("pointerup", onDetachPointerUp, true);
+    window.removeEventListener("pointercancel", onDetachPointerCancel, true);
+    return g;
+  }
+
+  function onDetachPointerMove(event: PointerEvent): void {
+    const g = detachGesture;
+    if (!g || event.pointerId !== g.pointerId) return;
+    g.lastX = event.clientX;
+    g.lastY = event.clientY;
+    if (g.detached) return;
+    const dx = event.clientX - g.startX;
+    const dy = event.clientY - g.startY;
+    if (Math.hypot(dx, dy) < DETACH_DRAG_THRESHOLD) return;
+    g.detached = true;
+    void beginDetachDrag();
+  }
+
+  function onDetachPointerUp(event: PointerEvent): void {
+    const g = endDetachGesture();
+    if (!g || event.pointerId !== g.pointerId) return;
+    // Soltar sin arrastre = clic: despega en el sitio.
+    if (!g.detached) void detachToolFace();
+  }
+
+  function onDetachPointerCancel(event: PointerEvent): void {
+    const g = endDetachGesture();
+    if (!g || event.pointerId !== g.pointerId) return;
+    if (!g.detached) void detachToolFace();
+  }
+
+  async function beginDetachDrag(): Promise<void> {
+    const id = toolFace;
+    if (id !== "clipboard" && id !== "snippets" && id !== "system" && id !== "agents")
+      return;
+    const r = clipFaceEl?.getBoundingClientRect();
+    if (r && r.width > 0 && r.height > 0) {
+      const rect = { x: r.x, y: r.y, w: r.width, h: r.height };
+      captureToolBirth(rect);
+      captureToolResting(rect);
+      void waitToolResting().then(() => captureToolBirth(null));
+    }
+    dismissToolFace();
+    armIslandBounce();
+    if (id === "clipboard") await showClipboardWindow().catch(() => {});
+    else if (id === "snippets") await showSnippetsWindow().catch(() => {});
+    else if (id === "system") await showSystemWindow().catch(() => {});
+    else await detachAgentsFloat();
+    // El gesto NO se suelta: apenas el header del float existe, el arrastre
+    // pasa a él y sigue pegado a la mano. Agentes no espera al header (su
+    // barra monta tras adoptar): traspasa directo al motor del float, que se
+    // registra al montar — el panel sigue a la mano mientras el contenido
+    // llega en segundo plano. Se sondea mientras el gesto siga vivo. La
+    // posición es la REAL de la mano: el drag arranca moviéndose al instante.
+    const gesture = detachGesture;
+    if (!gesture || !gesture.detached) return;
+    if (id === "agents") {
+      for (let i = 0; i < 600; i++) {
+        const live = detachGesture;
+        if (!live || !live.detached || live.pointerId !== gesture.pointerId) return;
+        const handoff = agentsFloatHandoff.current;
+        if (handoff) {
+          handoff({ pointerId: gesture.pointerId, x: live.lastX, y: live.lastY });
+          return;
+        }
+        await new Promise<void>((r) => requestAnimationFrame(() => r()));
+      }
+      return;
+    }
+    for (let i = 0; i < 600; i++) {
+      const live = detachGesture;
+      if (!live || !live.detached || live.pointerId !== gesture.pointerId) return;
+      if (id !== "clipboard" && id !== "snippets" && id !== "system") return;
+      const head = detachFloatHeader(id);
+      if (head) {
+        head.dispatchEvent(
+          new PointerEvent("pointerdown", {
+            bubbles: true,
+            button: 0,
+            pointerId: gesture.pointerId,
+            pointerType: "mouse",
+            isPrimary: true,
+            clientX: live.lastX,
+            clientY: live.lastY,
+          }),
+        );
+        return;
+      }
+      await new Promise<void>((r) => requestAnimationFrame(() => r()));
+    }
+  }
+
+  /** Header del float ya montado: ahí vive su `startDrag`. */
+  function detachFloatHeader(
+    id: "clipboard" | "snippets" | "system",
+  ): HTMLElement | null {
+    const sel =
+      id === "clipboard"
+        ? '[data-float="clipboard"] .cf-head'
+        : id === "snippets"
+          ? '[data-float="snippets"] .sf-head'
+          : '[data-float="system"] .sys-head';
+    return document.querySelector(sel);
+  }
+
+  /**
+   * Abrir el float de agentes en el rect de la cara y mudar las consolas.
+   *
+   * La isla deja de hospedar (`agentsIslandHost.on = false`) para que el
+   * ancla de Rust nazca el float en vez de ignorarse; con consolas vivas se
+   * pide la mudanza isla → float por el bus local.
+   */
+  async function detachAgentsFloat(): Promise<void> {
+    const live = agentsLive;
+    agentsIslandHost.on = false;
+    await showAgentsWindow().catch(() => {});
+    if (live) {
+      window.dispatchEvent(
+        new CustomEvent<AgentsOverlayDetachDetail>(AGENTS_OVERLAY_DETACH, {
+          detail: { from: "island", to: "float" },
+        }),
+      );
+    }
+  }
+
+  /**
+   * Re-acople desde el float: el lanzador del float muda sus consolas a la
+   * isla; al terminar (`onOverlayDetached`) se abre la cara y se cierra el
+   * float.
+   */
+  function retachAgentsFromFloat(): void {
+    window.dispatchEvent(
+      new CustomEvent<AgentsOverlayDetachDetail>(AGENTS_OVERLAY_DETACH, {
+        detail: { from: "float", to: "island" },
+      }),
+    );
+  }
+
+  /**
+   * Cierre de la mudanza intra-overlay.
+   *
+   * Float: las consolas ya no están en la isla — el chip no queda como
+   * "minimizado" (eso lo puso `dismissToolFace` al despegar).
+   * Isla: la cara recibe las consolas; `openIslandTool` esconde el float.
+   */
+  function onOverlayDetached(event: Event): void {
+    const detail = (event as CustomEvent<AgentsOverlayDetachedDetail>).detail;
+    if (!detail) return;
+    if (detail.to === "float") {
+      agentsDock.setMinimized(false);
+      return;
+    }
+    void openIslandTool("agents");
+  }
+
+  /**
+   * Rebote del despegue: el panel se fue de golpe y la isla queda liviana.
+   *
+   * Aplastón + estirón (squash & stretch) sobre el cuerpo de la isla, con el
+   * origen clavado en el canto: la pestaña "rebota" contra el borde. El
+   * tracker se despierta al arrancar y al terminar: el transform animado
+   * cambia el rect cada cuadro y el campo lo sigue.
+   */
+  let detachBounce = $state(false);
+  let detachBounceTimer = 0;
+
+  function armIslandBounce(): void {
+    detachBounce = true;
+    tracker.wake(true);
+    window.clearTimeout(detachBounceTimer);
+    // Cubre delay (200) + animación (360) del CSS: soltar la bandera antes
+    // cortaría el rebote a mitad del estirón.
+    detachBounceTimer = window.setTimeout(() => {
+      detachBounce = false;
+      detachBounceTimer = 0;
+      tracker.wake(true);
+    }, 620);
   }
   /** Alto de la zona de pestaña cuando la tarjeta cuelga (igual que cerrada). */
   const faceTabH = $derived(islandCue ? PILL.islandCueThick : PILL.islandThick);
@@ -1174,7 +1744,11 @@
    * update entra acá porque ya no cuelga.
    */
   const islandSlots = $derived(
-    1 + stripNodes.length + (updateChip ? 1 : 0) + islandLiveSlots(activity),
+    1 +
+      stripNodes.length +
+      (updateChip ? 1 : 0) +
+      (systemChip || volumeChip ? 1 : 0) +
+      islandLiveSlots(activity),
   );
 
   /**
@@ -1215,6 +1789,14 @@
         surface === "none" ? chips.length : 0,
         islandFace,
         agentsConsoleView,
+        agentsBrowserOpen,
+        // El panel al costado agranda la caja ya, sin esperar el layout: la
+        // transición de cierre la tiene que encoger de una.
+        sideInBox,
+        // El primer aviso con texto reserva su tramo fijo en la pestaña.
+        islandCueMsg,
+        // La cara live crece una fila compacta por chip.
+        chips.length,
       ),
     ),
   );
@@ -1307,6 +1889,30 @@
     tailIn = false;
     if (!tailAlive) return;
     const timer = setTimeout(() => (tailAlive = false), ms(MOTION.panel));
+    return () => clearTimeout(timer);
+  });
+
+  /**
+   * La gota del dictado: la onda cuelga debajo de la barra flotante.
+   *
+   * Misma mecánica que el tail: el elemento vive un tramo de más al cerrar
+   * (la caja encoge con `--island-open-dur`) y `dropIn` entra un frame tarde
+   * para que la caída transicione.
+   */
+  const dictatingBar = $derived(
+    surface === "none" && dictation === "listening" && !wheelChrome,
+  );
+  let dropAlive = $state(false);
+  let dropIn = $state(false);
+  $effect(() => {
+    if (dictatingBar) {
+      dropAlive = true;
+      const raf = requestAnimationFrame(() => (dropIn = true));
+      return () => cancelAnimationFrame(raf);
+    }
+    dropIn = false;
+    if (!dropAlive) return;
+    const timer = setTimeout(() => (dropAlive = false), ms(MOTION.islandOpen));
     return () => clearTimeout(timer);
   });
 
@@ -1506,6 +2112,13 @@
    * para que el resize pendiente no encaje la ventana después del summon.
    */
   let collapseEpoch = 0;
+  /**
+   * La caja APLICADA llevaba panel. Lo mantiene solo `reconcile`, al final de
+   * su rama exitosa: distingue su salida (cierre total) del estado normal, y
+   * ahí la pestaña se ancla a la unidad de la consola en vez de al centro de
+   * una caja ancha que ya no está.
+   */
+  let appliedSide = false;
 
   /** Invalida un encoger/vuelo en curso. */
   function cancelPendingCollapse() {
@@ -1515,7 +2128,7 @@
   }
   /** El estado del que dependen las decisiones de `pillPlan`. */
   function plan() {
-    return { surface, collapsingFrom, dock };
+    return { surface, collapsingFrom, dock, side: sideApplied };
   }
 
   /**
@@ -1526,6 +2139,9 @@
   async function reconcile(next: Size) {
     if (opening) return;
     const from = stage.applied();
+    // Punto de partida previo al resize: la salida del layout con panel se
+    // ancla a la consola, no a la caja ancha que ya no está.
+    const startAt = stage.at();
     const outcome = await stage.resize(
       next,
       pivotFor(plan()),
@@ -1547,26 +2163,48 @@
         dragOrigin.ox = dragCursor.x - next.w / 2;
         dragOrigin.oy = dragCursor.y - next.h / 2;
         stage.moveTo({ x: dragOrigin.ox, y: dragOrigin.oy });
-      } else if (
-        shouldRecenterTopNotch({
-          surface,
-          dock,
-          flying,
-          opening: opening || openingWheel,
-        })
-      ) {
-        // Solo la isla en el techo, en reposo. Si corre al abrir la rueda,
-        // el `dock.top` que quedó tira el cuadrado al canto y el clic
-        // parece no hacer nada.
-        const areas = stage.workAreas();
-        const here = { x: stage.at().x, y: stage.at().y, w: next.w, h: next.h };
-        const area = areaFor(here, areas);
-        if (area) {
-          stage.moveTo(edgeCenterPoint("top", next, workAreaOf(area)));
+      } else {
+        // Salida del layout con panel: el pivote del canto centra la caja
+        // ancha y, sin panel, la pestaña queda corrida media diferencia. Se
+        // ancla por la unidad (la consola). En laterales no hace falta: el
+        // canto ya clava el eje. En el techo el recentrado de abajo reafirma
+        // el medio de la pantalla; en el piso, este ancla es la autoridad.
+        if (appliedSide && !sideInBox && from && dock && dockAxis(dock.edge) === "y") {
+          stage.moveTo({
+            x: sideExitX({ at: startAt, from, next }),
+            y: stage.at().y,
+          });
+        }
+        if (
+          shouldRecenterTopNotch({
+            surface,
+            dock,
+            flying,
+            opening: opening || openingWheel,
+          })
+        ) {
+          // Solo la isla en el techo, en reposo. Si corre al abrir la rueda,
+          // el `dock.top` que quedó tira el cuadrado al canto y el clic
+          // parece no hacer nada.
+          const areas = stage.workAreas();
+          const here = { x: stage.at().x, y: stage.at().y, w: next.w, h: next.h };
+          const area = areaFor(here, areas);
+          if (area) {
+            // Con panel en la caja, la unidad que va al medio del techo es la
+            // consola: la caja entera incluye el panel y centrarla la correría.
+            stage.moveTo(
+              edgeCenterPoint(
+                "top",
+                notchRecenterSize(next, sideInBox),
+                workAreaOf(area),
+              ),
+            );
+          }
         }
       }
       at = stage.at();
       box = next;
+      appliedSide = sideInBox;
     }
   }
 
@@ -1616,6 +2254,18 @@
   $effect(() => (rootEl ? surfaces.add("pill", rootEl) : undefined));
 
   /**
+   * El filete del menisco, en vivo desde el launcher lab (dev).
+   *
+   * Fuera del lab manda `MENISCUS_FLARE`; con el lab abierto (Ctrl+Alt+F), su
+   * slider. Cuando el número quede elegido, se hornea en la constante.
+   */
+  const meniscusFlare = $derived(
+    import.meta.env.DEV && launcherLab.open
+      ? launcherLab.meniscusFlare
+      : MENISCUS_FLARE,
+  );
+
+  /**
    * La SILUETA, aparte de la zona viva.
    *
    * No son lo mismo: la zona incluye el respiro que la pill deja alrededor
@@ -1637,11 +2287,18 @@
   /** La tarjeta de auth también tiene que armar hit-rects o queda click-through. */
   $effect(() => (authEl && authAlive ? surfaces.add("agent-auth", authEl) : undefined));
 
-  $effect(() =>
-    agentsDock.minimized && agentDockEl
-      ? surfaces.add("agents", agentDockEl)
-      : undefined,
-  );
+  $effect(() => {
+    // Con un arrastre OLE, Rust poda los hit-rects a los drop-targets
+    // (`is_ole_drop_target`): solo `agents`. Minimizada, el target es el chip;
+    // ABIERTA en la isla, la cara de agentes — sin esto el overlay queda
+    // click-through sobre la consola y el drop cae en la app de atrás.
+    const el = agentsDock.minimized
+      ? agentDockEl
+      : agentsFaceOpen
+        ? agentsFaceEl
+        : null;
+    return el ? surfaces.add("agents", el) : undefined;
+  });
 
   /**
    * El racimo de chips de agentes también arma hit-rects.
@@ -1911,6 +2568,12 @@
    * llamadas por segundo, contra las 60 que ya hace el arrastre.
    */
   const ISLAND_HOVER_MS = 100;
+  /**
+   * Huella de la cara live mientras el hover abre la tira. La caja encoge
+   * hacia el canto; si el cursor estaba en el aviso, sin este rectángulo
+   * Rust lo da por fuera y la isla se cierra sola.
+   */
+  let liveHoverHold: { x: number; y: number; w: number; h: number } | null = null;
 
   /**
    * Abrir y cerrar la isla lo decide Rust, no el DOM.
@@ -1944,23 +2607,35 @@
       const lingerMs =
         stripPage === "more" ? ISLAND_COLLAPSE_MORE_MS : ISLAND_COLLAPSE_MS;
       const now = performance.now();
-      // Cara abierta o recién cerrada: no pasar por la tira. Si leftAt queda
+      // Cara de panel o recién cerrada: no pasar por la tira. Si leftAt queda
       // null, el linger de hover abre la tira 400 ms y se ve el morph doble.
-      if (islandFace !== "tab" || now < islandFaceLockUntil) {
+      // `live` no cuenta: es un aviso, el hover tiene que abrir las tools.
+      if (islandFaceBlocksHover(islandFace) || now < islandFaceLockUntil) {
         if (dock?.expanded) setIslandExpanded(false);
         leftAt = now - lingerMs;
         hoveredAt = null;
+        liveHoverHold = null;
         return;
       }
-      const over = await overlayCursorOverHit("pill").catch(() => null);
-      if (!alive || dragOrigin || over === null) return;
+      const overPill = await overlayCursorOverHit("pill").catch(() => null);
+      if (!alive || dragOrigin || overPill === null) return;
+      let over = overPill;
+      if (!over && liveHoverHold) {
+        const cursor = await overlayCursor().catch(() => null);
+        over = pointInRect(cursor, liveHoverHold);
+      }
+      if (islandFace === "live" && overPill) {
+        const pill = surfaces.live["pill"];
+        if (pill) liveHoverHold = { x: pill.x, y: pill.y, w: pill.w, h: pill.h };
+      }
+      if (!over) liveHoverHold = null;
       if (over) hoveredAt = hoveredAt ?? now;
       else hoveredAt = null;
       const next = islandHoverStay({
         over: islandHoverOpens({
           over: over || quotaHoverState.open,
           expanded: dock?.expanded === true,
-          hasUpdate: updateChip != null,
+          hasUpdate: updateChip != null || systemChip != null || islandFace === "live",
           hoveredMs: hoveredAt == null ? 0 : now - hoveredAt,
         }),
         now,
@@ -1990,6 +2665,8 @@
       !floatWheelHoverWatches({
         surface,
         discOnly,
+        idleCapsule:
+          surface === "none" && activity === "idle" && !hasQueue && !discOnly,
         heldByHover: wheelHeldByHover,
         collapsingFrom,
       })
@@ -2044,31 +2721,12 @@
   });
 
   /**
-   * Dictar acoplada DESACOP.LA la pill mientras dura el dictado.
-   *
-   * Acoplada, la barra con las ondas está oculta (`.p-root.is-docked .p-stack`)
-   * y la pestaña no tiene dónde mostrarlas: sin esto, dictar en un borde no
-   * muestra señal alguna. La pill vuelve a ser la barra normal —mic + ondas— y
-   * al terminar intenta volver a su canto: `settleDock` re-evalúa el candidato,
-   * así que si el usuario la arrastró lejos durante el dictado no se acopla de
-   * golpe en un sitio que ya no le corresponde.
+   * Dictar acoplada ya NO desacopla: la onda vive en la cara de dictado
+   * (`.p-face[data-face="dictation"]`), colgada de la pestaña. La pill
+   * mantiene la forma del notch y crece hacia el escritorio —el pivote del
+   * canto clava el lado pegado—. La gota (`.p-skin-drop`) queda solo para la
+   * pill flotante, donde no hay pestaña en qué colgar.
    */
-  let dictDockedEdge: DockEdge | null = null;
-  $effect(() => {
-    if (dictating) {
-      if (surface === "edge" && !dragOrigin) {
-        dictDockedEdge = dock?.edge ?? null;
-        surface = "none";
-        dock = null;
-      }
-      return;
-    }
-    if (dictDockedEdge === null) return;
-    dictDockedEdge = null;
-    // Solo tiene sentido re-acoplar si sigue flotando libre cerca del canto:
-    // la rueda o un arrastre mandan sobre este regreso.
-    if (surface === "none") settleDock();
-  });
 
   /**
    * Elegir una herramienta desde la isla.
@@ -2374,15 +3032,30 @@
   let slotGen = 0;
   async function dismissSpatialTools(keep?: ToolId) {
     returnHomeSuppressed = true;
-    const [clipPinned, snipPinned, agentsPinned] = await Promise.all([
-      clipboardAlwaysOnTop().catch(() => false),
-      snippetsAlwaysOnTop().catch(() => false),
-      agentsAlwaysOnTop().catch(() => false),
-    ]);
+    const [clipPinned, snipPinned, sysPinned, agentsPinned, consoleLive] =
+      await Promise.all([
+        clipboardAlwaysOnTop().catch(() => false),
+        snippetsAlwaysOnTop().catch(() => false),
+        systemAlwaysOnTop().catch(() => false),
+        agentsAlwaysOnTop().catch(() => false),
+        // Pregunta viva al puente: el flag local puede quedar viejo tras una
+        // recarga, y entonces abrir el clipboard cerraba la consola.
+        agentsWindowVisible()
+          .then((live) => {
+            agentsConsoleOpen = live;
+            return live;
+          })
+          .catch(() => agentsConsoleOpen),
+      ]);
     const targets = spatialDismissTargets(keep, {
       clipboard: clipPinned,
       snippets: snipPinned,
-      agents: agentsPinned,
+      system: sysPinned,
+      // La consola abierta no se cierra al abrir otra herramienta: es la
+      // superficie donde se pega (clipboard → composer/PTY). En la isla el
+      // puente la ve por el aviso del efecto; el chequeo local evita la
+      // carrera mientras el aviso viaja.
+      agents: agentsPinned || consoleLive || islandConsoleAlive(),
     });
     await Promise.all(targets.map((id) => dismissSpatialTool(id).catch(() => {})));
   }
@@ -2398,6 +3071,9 @@
       case "snippets":
         await hideSnippetsWindow();
         return;
+      case "system":
+        await hideSystemWindow();
+        return;
       case "agents":
         await hideAgentsWindow();
         return;
@@ -2408,16 +3084,22 @@
 
   /** Float espacial ya visible, o panel como cara de la isla. */
   function spatialToolOpen(id: ToolId): boolean {
-    if (id === "clipboard" && toolFace === "clipboard") return true;
-    if (id === "snippets" && toolFace === "snippets") return true;
-    if (id === "agents") return toolFace === "agents" || agentsConsoleOpen;
+    if (id === "clipboard" && (toolFace === "clipboard" || sidePanel === "clipboard"))
+      return true;
+    if (id === "snippets" && (toolFace === "snippets" || sidePanel === "snippets"))
+      return true;
+    if (id === "system" && toolFace === "system") return true;
+    // Solo la cara: una consola viva detrás de otra cara (o en el dock) no
+    // es «abierta» para el interruptor — pedirla la trae al frente.
+    if (id === "agents") return toolFace === "agents";
     return isSpatialTool(id) && surfaces.live[id] != null;
   }
 
   function islandStayPut(id: ToolId): boolean {
     return (
-      (id === "clipboard" && toolFace === "clipboard") ||
-      (id === "snippets" && toolFace === "snippets") ||
+      (id === "clipboard" && (toolFace === "clipboard" || sidePanel === "clipboard")) ||
+      (id === "snippets" && (toolFace === "snippets" || sidePanel === "snippets")) ||
+      (id === "system" && toolFace === "system") ||
       (id === "agents" && toolFace === "agents")
     );
   }
@@ -2446,6 +3128,7 @@
     return (
       spatialToolOpen("clipboard") ||
       spatialToolOpen("snippets") ||
+      spatialToolOpen("system") ||
       spatialToolOpen("launcher") ||
       spatialToolOpen("agents")
     );
@@ -2539,7 +3222,9 @@
   }
 
   /** Dismiss de tool con reverse liquid: esperar a que el float se funda. */
-  async function maybeReturnHomeAfterFloat(id: "launcher" | "clipboard" | "snippets") {
+  async function maybeReturnHomeAfterFloat(
+    id: "launcher" | "clipboard" | "snippets" | "system",
+  ) {
     // El acto de la pill ya espera el cierre (close / relocate). Si
     // también esperamos acá, un reabrir pisa el wait y se queda colgado
     // del float nuevo.
@@ -2574,12 +3259,13 @@
     }
   }
 
-  /** Historial, textos o agentes dentro de la isla del notch, un solo blob. */
+  /** Historial, textos, sistema o agentes dentro de la isla del notch, un solo blob. */
   async function openIslandTool(
-    id: "clipboard" | "snippets" | "agents",
+    id: "clipboard" | "snippets" | "system" | "agents",
   ): Promise<void> {
     if (id === "clipboard") await hideClipboardWindow().catch(() => {});
     else if (id === "snippets") await hideSnippetsWindow().catch(() => {});
+    else if (id === "system") await hideSystemWindow().catch(() => {});
     else await hideAgentsWindow().catch(() => {});
     if (dock) {
       // El canto actual: laterales también. No volar al techo.
@@ -2605,6 +3291,18 @@
     await setOverlayPointerGesture(true).catch(() => {});
     await tick();
     clipFaceEl?.focus({ preventScroll: true });
+  }
+
+  /**
+   * Tras pegar en la sesión, el panel del costado se retira: la consola
+   * queda sola a la vista. Con la cara abierta (sin consola) no se toca.
+   */
+  function backToConsoleAfterPaste(): void {
+    if (sidePanel !== null) {
+      sidePanel = null;
+      return;
+    }
+    if (islandConsoleAlive()) void openIslandTool("agents");
   }
 
   /**
@@ -2667,6 +3365,14 @@
       );
 
       if (intent === "close") {
+        // El panel del costado se apaga solo: la isla no colapsa.
+        if (id !== "agents" && sidePanel === id) {
+          sidePanel = null;
+          // Espejo del cierre genérico: el int de la tool no puede quedar
+          // colgado bloqueando la vuelta al hogar.
+          if (spatialIntent === id) spatialIntent = null;
+          return;
+        }
         if (islandStayPut(id)) {
           dismissToolFace();
           if (slotPending) return;
@@ -2678,7 +3384,12 @@
         if (spatialIntent === id) spatialIntent = null;
         await dismissSpatialTool(id).catch(() => {});
         if (slotPending) return;
-        if (id === "launcher" || id === "clipboard" || id === "snippets") {
+        if (
+          id === "launcher" ||
+          id === "clipboard" ||
+          id === "snippets" ||
+          id === "system"
+        ) {
           await waitSpatialSurfaceGone(id);
         }
         if (gen !== slotGen) return;
@@ -2703,8 +3414,22 @@
 
       if (gen !== slotGen) return;
       if (!shouldCommitShow(slotPending)) return;
-      if (id === "clipboard" || id === "snippets" || id === "agents") {
+      if (
+        id === "clipboard" ||
+        id === "snippets" ||
+        id === "system" ||
+        id === "agents"
+      ) {
         if (id === "agents" && !AGENTS_ENABLED) return;
+        // Con la cara de la consola a la vista, clipboard y textos entran AL
+        // COSTADO dentro de la isla: la consola no se cierra y el pegado
+        // entra a su sesión. Sin consola, abren como cara, como siempre.
+        // Sistema no pega a la consola: siempre es cara propia.
+        if ((id === "clipboard" || id === "snippets") && consoleFaceShowing()) {
+          sidePanel = id;
+          return;
+        }
+        sidePanel = null;
         await openIslandTool(id);
         return;
       }
@@ -3158,16 +3883,15 @@
       return;
     }
     // La marca es el control de lo que esté corriendo: para la grabación o el
-    // dictado, y en reposo abre la rueda. Va antes del clic genérico de la
+    // dictado. En reposo el clic no abre la rueda: acoplada no se abre y
+    // flotante la despliega el hover. Va antes del clic genérico de la
     // pestaña para que no dispare las dos cosas.
     if (wasClick && pressedMark) {
-      if (clipboardFaceOpen || snippetsFaceOpen || agentsFaceOpen) {
+      if (clipboardFaceOpen || snippetsFaceOpen || systemFaceOpen || agentsFaceOpen) {
         dismissToolFace();
         return;
       }
-      if (markState === "idle") {
-        void openWheel({ fromClick: true });
-      } else if (!busy) {
+      if (markState !== "idle" && !busy) {
         markAction.run();
       }
       return;
@@ -3192,12 +3916,9 @@
       activateFromIsland(pressedTool);
       return;
     }
-    // Acoplada y CERRADA, el clic en la pestaña abre la rueda: la isla es la
-    // pill. Abierta, un clic que no cayó en un icono no debe abrirla —antes
-    // los huecos entre gotas circulares disparaban la rueda.
-    if (wasClick && (surface === "none" || (surface === "edge" && !islandOpen))) {
-      void openWheel({ fromClick: true });
-    }
+    // El clic genérico no abre la rueda en ninguna forma: acoplada no se abre
+    // y flotante la despliega el hover. Antes los huecos entre gotas
+    // circulares también la disparaban desde la pestaña.
   }
 
   // ─── Ciclo de vida ───────────────────────────────────────────────────────
@@ -3210,6 +3931,8 @@
     // si notificaran todas habría un toast por ventana abierta.
     void agents.init({ notify: true });
     if (AGENT_PAGER_ENABLED) void presence.init();
+    // El aviso del equipo no puede depender de abrir el panel de sistema.
+    void systemAlerts.init();
 
     (async () => {
       // Los monitores y el hogar, antes de nada: el primer reencuadre ya los
@@ -3290,8 +4013,19 @@
       }),
       onClipboardBubbleDismiss(() => void maybeReturnHomeAfterFloat("clipboard")),
       onSnippetsBubbleDismiss(() => void maybeReturnHomeAfterFloat("snippets")),
+      onSystemBubbleDismiss(() => void maybeReturnHomeAfterFloat("system")),
       onLauncherBubbleDismiss(() => void maybeReturnHomeAfterFloat("launcher")),
       on("activate-tool-slot", (tool) => requestActivateAtSlot(tool)),
+      // Retach: el float pide volver a la isla. Clipboard/textos abren la
+      // cara directo (mismo camino que el atajo); agentes mueve primero sus
+      // consolas vivas y la cara se abre al terminar (ver `onOverlayDetached`).
+      on("dock-tool-face", (tool) => {
+        if (tool === "clipboard" || tool === "snippets" || tool === "system") {
+          void openIslandTool(tool);
+          return;
+        }
+        if (tool === "agents") retachAgentsFromFloat();
+      }),
       on("overlay-session-started", () => {
         surfaces.resetInteraction();
         void closeWheel({ returnHome: false });
@@ -3327,9 +4061,21 @@
         dismissAgentFace();
         return;
       }
+      // El panel del costado se apaga sin tocar la consola de atrás.
+      if (event.key === "Escape" && sidePanel) {
+        const inConsole = (event.target as HTMLElement | null)?.closest?.(
+          ".console, .xterm",
+        );
+        if (!inConsole) {
+          event.preventDefault();
+          event.stopPropagation();
+          sidePanel = null;
+          return;
+        }
+      }
       if (
         event.key === "Escape" &&
-        (clipboardFaceOpen || snippetsFaceOpen || agentsFaceOpen)
+        (clipboardFaceOpen || snippetsFaceOpen || systemFaceOpen || agentsFaceOpen)
       ) {
         const inConsole = (event.target as HTMLElement | null)?.closest?.(
           ".console, .xterm",
@@ -3396,7 +4142,8 @@
       }
       // La cara no resuelve nada: colapsa a cue, que sigue pulsando.
       if (agentFaceOpen) dismissAgentFace();
-      if (clipboardFaceOpen || snippetsFaceOpen || agentsFaceOpen) dismissToolFace();
+      if (clipboardFaceOpen || snippetsFaceOpen || systemFaceOpen || agentsFaceOpen)
+        dismissToolFace();
       if (openingWheel && surface !== "wheel") {
         cancelFlight();
         collapseEpoch += 1;
@@ -3406,6 +4153,9 @@
     };
 
     window.addEventListener("keydown", onKey, true);
+    // Mudanza intra-overlay de consolas (detach/retach de agentes): termina
+    // la coreografía abriendo/cerrando superficies.
+    window.addEventListener(AGENTS_OVERLAY_DETACHED, onOverlayDetached);
     // El viewport que crece tarde (boot tras hibernar) y el reencuadre de
     // Rust tras un cambio de monitores: ambos re-asientan el hogar.
     window.addEventListener("resize", queueResettle);
@@ -3422,12 +4172,15 @@
     return () => {
       stopDragWatch();
       stopUpdatePolling?.();
+      if (detachGesture) endDetachGesture();
+      window.clearTimeout(detachBounceTimer);
       window.clearTimeout(suppressAgentChipClickTimer);
       window.clearTimeout(suppressWheelCoreClickTimer);
       window.clearTimeout(resettleTimer);
       window.clearTimeout(seatingTimer);
       window.clearTimeout(birthTimer);
       window.removeEventListener("keydown", onKey, true);
+      window.removeEventListener(AGENTS_OVERLAY_DETACHED, onOverlayDetached);
       window.removeEventListener("resize", queueResettle);
       window.removeEventListener(OVERLAY_GEOMETRY, queueResettle);
       unlisteners.forEach((u) => u.then((fn) => fn()));
@@ -3465,15 +4218,23 @@
   data-bloom={wheelBloomEdge ?? undefined}
   style="left: {at.x}px; top: {at.y}px; width: {box.w}px; height: {box.h}px; {dockedTabWindow
     ? `min-width: ${dockedTabWindow.w}px; min-height: ${dockedTabWindow.h}px; `
-    : ''}--pill-bar: {PILL.bar}px; --island-tool: {PILL.islandTool}px; --island-gap: {PILL.islandGap}px; --island-cue-btn: {PILL.islandCueBtn}px; --island-cue-mark: {PILL.islandCueMark}px; --face-tab-h: {faceTabH}px; --face-card-h: {PILL.islandCardH}px; --face-clip-h: {PILL.islandClipH}px; --face-agents-w: {agentsConsoleView
-    ? PILL.islandAgentsW
-    : PILL.islandAgentsSetupW}px; --face-agents-h: {agentsConsoleView
-    ? PILL.islandAgentsH
-    : PILL.islandAgentsSetupH}px; --island-clip-r: {PILL.islandClipR}px; --rec-drop: {PILL.recDrop}px; --rec-drop-gap: {PILL.recDropGap}px; {flightLift
+    : ''}--pill-bar: {PILL.bar}px; --island-tool: {PILL.islandTool}px; --island-gap: {PILL.islandGap}px; --island-cue-btn: {PILL.islandCueBtn}px; --island-cue-mark: {PILL.islandCueMark}px; --island-cue-msg-w: {PILL.islandCueMsgW}px; --face-tab-h: {faceTabH}px; --face-card-h: {PILL.islandCardH}px; --face-dict-h: {PILL.islandDictH}px; --face-clip-w: {PILL.islandClipW}px; --face-clip-h: {PILL.islandClipH}px; --face-sys-w: {PILL.islandSysW}px; --face-sys-h: {PILL.islandSysH}px; --face-agents-w: {agentsBrowserOpen
+    ? PILL.islandBrowseW
+    : agentsConsoleView
+      ? PILL.islandAgentsW
+      : PILL.islandAgentsSetupW}px; --face-agents-h: {agentsBrowserOpen
+    ? PILL.islandBrowseH
+    : agentsConsoleView
+      ? PILL.islandAgentsH
+      : PILL.islandAgentsSetupH}px; --face-live-w: {PILL.islandDictW}px; --island-live-row: {PILL.islandLiveRow}px; --island-live-rows: {Math.max(
+    1,
+    chips.length,
+  )}; --island-clip-r: {PILL.islandClipR}px; --rec-drop: {PILL.recDrop}px; --rec-drop-gap: {PILL.recDropGap}px; {flightLift
     ? `transform: translate3d(${flightLift.x}px, ${flightLift.y}px, 0)`
     : ''}"
   bind:this={rootEl}
   onpointerdown={beginDrag}
+  onwheel={onPillWheel}
 >
   <!-- Acoplada al borde. `.p-island-skin` llena el cuerpo de la tira y es
        lo que se mide: la silueta líquida sale de ahí. Si hay grabación, una
@@ -3483,7 +4244,13 @@
        transicionar y el CSS pintaría el final directo. Existen desde que la
        pill se acopla, cerradas, y la clase las abre. -->
   {#if surface === "edge" || beadsAlive}
-    <div class="p-island" class:is-open={islandOpen} class:is-face={faceOpen}>
+    <div
+      class="p-island"
+      class:is-open={islandOpen}
+      class:is-face={faceOpen}
+      class:has-side={sideApplied}
+      class:is-detach-bounce={detachBounce}
+    >
       <div class="p-island-body">
         <i
           class="p-island-skin"
@@ -3513,7 +4280,7 @@
               lag={flying}
             />
           </button>
-          {#if edgeCue && !islandOpen}
+          {#if edgeCue && !islandOpen && !liveFaceOpen}
             <div class="p-island-cues">
               {#if islandCue}
                 {#each chips.length > 0 ? chips : [chip] as c, i (c.id || "dock")}
@@ -3522,6 +4289,7 @@
                     type="button"
                     class="p-agent p-island-cue"
                     class:is-dock={agentsDock.minimized && chips.length === 0}
+                    class:is-msg={i === 0 && islandCueMsg}
                     class:is-waiting={c.tone === "waiting"}
                     class:is-working={c.tone === "working"}
                     class:is-ready={c.tone === "ready"}
@@ -3534,6 +4302,13 @@
                   >
                     {#if c.tone === "count"}
                       <span class="p-island-cue-mark">{c.label}</span>
+                    {:else if i === 0 && islandCueMsg}
+                      <span class="p-island-cue-logos" aria-hidden="true">
+                        {#each logos as id (id)}
+                          <AgentLogo agent={id} size={PILL.islandCueMark} />
+                        {/each}
+                      </span>
+                      <span class="p-island-cue-msg">{c.label}</span>
                     {:else if logos.length > 0}
                       <span class="p-island-cue-logos" aria-hidden="true">
                         {#each logos as id (id)}
@@ -3547,6 +4322,39 @@
                     {/if}
                   </button>
                 {/each}
+              {/if}
+              {#if volumeChip}
+                <!-- Volumen recién cambiado con la rueda. No es un botón: no
+                     lleva a ningún lado, y un botón que no hace nada miente. -->
+                <span class="p-update is-volume" aria-hidden="true">
+                  <span class="p-update-ico">
+                    <Icon
+                      icon={volumeChip.icon}
+                      size={PILL.islandCueMark - 1}
+                      strokeWidth={1.9}
+                    />
+                  </span>
+                </span>
+              {:else if systemChip}
+                <!-- El equipo se está ahogando. Comparte cápsula con el aviso
+                     de actualización porque es lo mismo: algo que la pill
+                     cuenta sin robarle el sitio a la marca. -->
+                <button
+                  type="button"
+                  class="p-update p-island-update is-alert"
+                  {@attach trackIslandUpdateCue}
+                  onclick={onSystemChipClick}
+                  use:tip={systemChip.label}
+                  aria-label={systemChip.label}
+                >
+                  <span class="p-update-ico" aria-hidden="true">
+                    <Icon
+                      icon={systemChip.icon}
+                      size={PILL.islandCueMark - 1}
+                      strokeWidth={1.9}
+                    />
+                  </span>
+                </button>
               {/if}
               {#if updateChip}
                 <button
@@ -3652,6 +4460,45 @@
             </button>
           {/if}
         </div>
+        {#if liveFaceOpen}
+          <div
+            class="p-face"
+            data-face="live"
+            data-no-drag
+            tabindex="-1"
+            onpointerdown={(e) => e.stopPropagation()}
+            transition:opacityFade
+          >
+            <div class="p-live-list" role="list">
+              {#each chips as c (c.id)}
+                {@const logos = chipLogos(c)}
+                <button
+                  type="button"
+                  class="p-live-row"
+                  class:is-waiting={c.tone === "waiting"}
+                  class:is-working={c.tone === "working"}
+                  class:is-ready={c.tone === "ready"}
+                  class:is-count={c.tone === "count"}
+                  data-chip-id={c.id}
+                  onclick={(e) => onAgentChipClick(e, c.tone === "off" ? null : c)}
+                  use:tip={chipTitle(c)}
+                  aria-label={chipAria(c)}
+                >
+                  <span class="p-live-row-logos" aria-hidden="true">
+                    {#if logos.length > 0}
+                      {#each logos as id (id)}
+                        <AgentLogo agent={id} size={16} />
+                      {/each}
+                    {:else}
+                      <AgentLogo agent={null} size={16} />
+                    {/if}
+                  </span>
+                  <span class="p-live-row-label">{chipLiveLabel(c)}</span>
+                </button>
+              {/each}
+            </div>
+          </div>
+        {/if}
         <!-- Cara agent: tarjeta colgada de la pestaña con el permiso pendiente.
              Mismas palabras que la tarjeta flotante y la consola: es el mismo
              pedido, no otro dialecto. La decisión pasa por `decideAuth`. -->
@@ -3671,11 +4518,32 @@
             }}
             transition:opacityFade
           >
+            <!-- Grab del panel: entre el notch y el contenido. Clic despega
+                 en el sitio; arrastre despega siguiendo la mano. El notch
+                 (la banda) no se mueve. -->
+            <div class="p-face-grab">
+              <button
+                type="button"
+                class="p-face-grab-btn"
+                use:tip={t("overlay.detach")}
+                aria-label={t("overlay.detach")}
+                onpointerdown={startDetachGesture}
+                onkeydown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    void detachToolFace();
+                  }
+                }}
+              >
+                <i class="p-face-grab-bar" aria-hidden="true"></i>
+              </button>
+            </div>
             <ClipboardHistoryList
               items={clipboard.items}
               loading={clipboard.loading}
               compact
               island
+              onPasted={backToConsoleAfterPaste}
               onRefresh={() => clipboard.hydrate()}
             />
           </div>
@@ -3696,6 +4564,23 @@
             }}
             transition:opacityFade
           >
+            <div class="p-face-grab">
+              <button
+                type="button"
+                class="p-face-grab-btn"
+                use:tip={t("overlay.detach")}
+                aria-label={t("overlay.detach")}
+                onpointerdown={startDetachGesture}
+                onkeydown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    void detachToolFace();
+                  }
+                }}
+              >
+                <i class="p-face-grab-bar" aria-hidden="true"></i>
+              </button>
+            </div>
             <div class="p-face-tabs" role="tablist" aria-label={t("overlay.snippets")}>
               <button
                 type="button"
@@ -3725,6 +4610,7 @@
                   loading={snippets.loading}
                   compact
                   island
+                  onPasted={backToConsoleAfterPaste}
                   onRefresh={() => void snippets.hydrate()}
                 />
               </div>
@@ -3740,35 +4626,176 @@
             {/if}
           </div>
         {/if}
-        {#if agentsMounted}
+        {#if systemFaceOpen}
           <div
             class="p-face"
-            class:is-stowed={!agentsFaceOpen}
-            data-face="agents"
+            data-face="system"
             data-no-drag
             tabindex="-1"
             bind:this={clipFaceEl}
             onpointerdown={(e) => e.stopPropagation()}
             onkeydown={(e) => {
               if (e.key === "Escape") {
-                const inConsole = (e.target as HTMLElement | null)?.closest?.(
-                  ".console, .xterm",
-                );
-                if (inConsole) return;
                 e.preventDefault();
                 dismissToolFace();
               }
             }}
             transition:opacityFade
           >
-            <AgentLauncher
-              island
-              shown={agentsFaceOpen}
-              onLiveChange={(live) => (agentsLive = live)}
-              onViewChange={(view) => (agentsConsoleView = view === "console")}
-            />
+            <div class="p-face-grab">
+              <button
+                type="button"
+                class="p-face-grab-btn"
+                use:tip={t("overlay.detach")}
+                aria-label={t("overlay.detach")}
+                onpointerdown={startDetachGesture}
+                onkeydown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    void detachToolFace();
+                  }
+                }}
+              >
+                <i class="p-face-grab-bar" aria-hidden="true"></i>
+              </button>
+            </div>
+            <SystemPanel island />
           </div>
         {/if}
+        <!-- Fila consola + panel: con el panel abierto, la caja suma el ancho
+             de los dos y la consola queda clavada contra su canto. Sin panel
+             la fila es `display: contents`: el layout no cambia. -->
+        <div class="p-row" class:is-side={sideApplied}>
+          {#if agentsMounted}
+            <div
+              class="p-face"
+              class:is-stowed={!agentsFaceOpen}
+              data-face="agents"
+              data-no-drag
+              tabindex="-1"
+              bind:this={clipFaceEl}
+              {@attach (el: HTMLElement) => {
+                agentsFaceEl = el;
+                return () => {
+                  if (agentsFaceEl === el) agentsFaceEl = null;
+                };
+              }}
+              onpointerdown={(e) => e.stopPropagation()}
+              onkeydown={(e) => {
+                if (e.key === "Escape") {
+                  const inConsole = (e.target as HTMLElement | null)?.closest?.(
+                    ".console, .xterm",
+                  );
+                  if (inConsole) return;
+                  e.preventDefault();
+                  dismissToolFace();
+                }
+              }}
+              transition:opacityFade
+            >
+              {#if agentsFaceOpen}
+                <!-- Grab del panel: entre el notch y la consola. Clic despega
+                     en el sitio; arrastre despega siguiendo la mano. -->
+                <div class="p-face-grab">
+                  <button
+                    type="button"
+                    class="p-face-grab-btn"
+                    use:tip={t("overlay.detach")}
+                    aria-label={t("overlay.detach")}
+                    onpointerdown={startDetachGesture}
+                    onkeydown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        void detachToolFace();
+                      }
+                    }}
+                  >
+                    <i class="p-face-grab-bar" aria-hidden="true"></i>
+                  </button>
+                </div>
+              {/if}
+              <AgentLauncher
+                island
+                shown={agentsFaceOpen}
+                onLiveChange={(live) => (agentsLive = live)}
+                onViewChange={(view) => (agentsConsoleView = view === "console")}
+                onBrowserChange={(open) => (agentsBrowserOpen = open)}
+              />
+            </div>
+          {/if}
+          {#if sidePanel && consoleFaceShowing()}
+            <!-- El pointerdown no sube al root: sin esto, arrastrar un ítem
+                 del historial (drag nativo) sembraba el arrastre de la isla y
+                 desacoplaba la consola. Mismo patrón que las caras. -->
+            <div
+              class="p-side"
+              data-no-drag
+              onpointerdown={(e) => e.stopPropagation()}
+              transition:opacityFade
+            >
+              {#if sidePanel === "clipboard"}
+                <div class="p-face-pane">
+                  <ClipboardHistoryList
+                    items={clipboard.items}
+                    loading={clipboard.loading}
+                    compact
+                    island
+                    onPasted={backToConsoleAfterPaste}
+                    onRefresh={() => clipboard.hydrate()}
+                  />
+                </div>
+              {:else}
+                <div
+                  class="p-face-tabs"
+                  role="tablist"
+                  aria-label={t("overlay.snippets")}
+                >
+                  <button
+                    type="button"
+                    role="tab"
+                    class="p-face-tab"
+                    class:is-on={snippetsTab === "list"}
+                    aria-selected={snippetsTab === "list"}
+                    onclick={() => (snippetsTab = "list")}
+                  >
+                    {t("overlay.texts")}
+                  </button>
+                  <button
+                    type="button"
+                    role="tab"
+                    class="p-face-tab"
+                    class:is-on={snippetsTab === "scratchpad"}
+                    aria-selected={snippetsTab === "scratchpad"}
+                    onclick={() => (snippetsTab = "scratchpad")}
+                  >
+                    {t("overlay.notes")}
+                  </button>
+                </div>
+                {#if snippetsTab === "list"}
+                  <div class="p-face-pane">
+                    <SnippetsList
+                      items={snippets.items}
+                      loading={snippets.loading}
+                      compact
+                      island
+                      onPasted={backToConsoleAfterPaste}
+                      onRefresh={() => void snippets.hydrate()}
+                    />
+                  </div>
+                {:else}
+                  <div class="p-face-pane">
+                    <textarea
+                      class="p-face-scratch"
+                      value={snippets.scratchpad?.body ?? ""}
+                      oninput={(e) => snippets.editScratchpad(e.currentTarget.value)}
+                      placeholder={t("overlay.scratchPlaceholder")}
+                      aria-label={t("overlay.scratchAria")}></textarea>
+                  </div>
+                {/if}
+              {/if}
+            </div>
+          {/if}
+        </div>
         {#if agentFaceOpen && agentFaceReq}
           {@const perm = agentFaceReq.permission}
           {@const faceLogos = chipLogos(chip)}
@@ -3814,6 +4841,30 @@
                 {t("page.agents.permission.allow")}
               </button>
             </div>
+          </div>
+        {/if}
+        {#if dictationFaceOpen}
+          <!-- Cara dictado: la onda (o el estado) cuelga de la pestaña, mismo
+               blob que la cara de agentes. La silueta es la isla entera, no
+               una gota aparte. Parar el dictado sigue siendo el clic en la
+               marca, en la banda de arriba. -->
+          <div class="p-face" data-face="dictation" transition:opacityFade>
+            {#if dictation === "listening"}
+              <span class="p-face-wave" aria-hidden="true">
+                <Waveform mic={levels.mic} bars={8} variant="voice" live />
+              </span>
+            {:else}
+              <span
+                class="p-face-status"
+                class:is-busy={dictation === "transcribing"}
+                class:is-ok={dictation === "pasted"}
+                class:is-error={dictation === "error"}
+                aria-live="polite"
+              >
+                <ToolIcon id="dictation" size={16} strokeWidth={1.5} />
+                <span class="p-face-label">{dictationLabel(dictation)}</span>
+              </span>
+            {/if}
           </div>
         {/if}
       </div>
@@ -3894,6 +4945,21 @@
             {@attach trackTail}
           ></i>
         {/if}
+        {#if dropAlive}
+          <!-- Dictado: la onda baja a una gota que cuelga de la caja. La
+               silueta la publica el campo (un solo blob con la barra); acá
+               vive la onda. Decorativa: el stop es la cara. -->
+          <i
+            class="p-skin-drop"
+            class:is-in={dropIn}
+            aria-hidden="true"
+            {@attach trackDrop}
+          >
+            <span class="p-wave-hang">
+              <Waveform mic={levels.mic} bars={14} variant="voice" live />
+            </span>
+          </i>
+        {/if}
       </div>
 
       <div class="p-shell">
@@ -3951,12 +5017,9 @@
               </div>
             </div>
           {:else if dictation === "listening"}
-            <!-- Escuchando: micrófono + ondas, sin texto. El ícono dice QUÉ está
-               pasando (el mic está abierto) y las ondas dicen que te oye; la
-               palabra "Dictando" no agregaba nada sobre esos dos. Todo el
-               conjunto es el botón de parada. Los otros estados sí necesitan
-               texto: "Transcribiendo…" y "Error" no se pueden mostrar con una
-               animación. -->
+            <!-- Escuchando: la cara queda sola en su lugar y la onda cuelga
+               debajo (gota `.p-skin-drop`). El ícono del micrófono no va: el
+               stop es el clic en la cara, como en grabación. -->
             <div class="p-bar-slot" transition:opacityFade>
               {#if !wheelChrome}
                 <button
@@ -3978,18 +5041,6 @@
                   />
                 </button>
               {/if}
-              <button
-                type="button"
-                class="p-dict-wave"
-                data-no-drag
-                onclick={toggleDictate}
-                disabled={busy}
-                aria-label={t("pill.stopDictate")}
-                use:tip={t("pill.dictatingHint")}
-              >
-                <ToolIcon id="dictation" size={16} strokeWidth={1.5} />
-                <Waveform mic={levels.mic} bars={18} variant="voice" live />
-              </button>
             </div>
           {:else if activity === "dictating"}
             <div class="p-bar-slot" transition:opacityFade>
@@ -4154,6 +5205,27 @@
               <!-- Hay versión nueva. Mismo sitio y misma cápsula que el aviso de
                agentes: el disco sigue siendo la puerta a la rueda, y esto es
                algo que la pill cuenta, no algo que la reemplace. -->
+              {#if volumeChip && !wheelChrome}
+                <span class="p-update is-volume" aria-hidden="true">
+                  <span class="p-update-ico">
+                    <Icon icon={volumeChip.icon} size={11} strokeWidth={1.9} />
+                  </span>
+                  <span class="p-update-text">{volumeChip.text}</span>
+                </span>
+              {:else if systemChip && !wheelChrome}
+                <button
+                  type="button"
+                  class="p-update is-alert"
+                  onclick={onSystemChipClick}
+                  use:tip={systemChip.label}
+                  aria-label={systemChip.label}
+                >
+                  <span class="p-update-ico" aria-hidden="true">
+                    <Icon icon={systemChip.icon} size={11} strokeWidth={1.9} />
+                  </span>
+                  <span class="p-update-text">{systemChip.text}</span>
+                </button>
+              {/if}
               {#if updateChip && !wheelChrome}
                 <button
                   type="button"
@@ -4349,6 +5421,75 @@
     }
   }
 
+  /*
+   * Rebote del despegue: el panel se fue y la isla queda liviana. Aplastón
+   * (suelta el peso) + estirón + asentamiento, con el origen clavado en el
+   * canto. Va sobre `.p-island-body` y no sobre el root: la caja ya está
+   * corriendo su transición de encogimiento y no la quiero pisar. El delay
+   * deja que el colapso (`--island-open-dur`) termine antes del aplastón.
+   */
+  .p-island.is-detach-bounce .p-island-body {
+    will-change: transform;
+  }
+
+  .p-root[data-edge="top"] .p-island.is-detach-bounce .p-island-body {
+    transform-origin: center top;
+    animation: island-detach-y 360ms var(--ease-liquid) 200ms backwards;
+  }
+
+  .p-root[data-edge="bottom"] .p-island.is-detach-bounce .p-island-body {
+    transform-origin: center bottom;
+    animation: island-detach-y 360ms var(--ease-liquid) 200ms backwards;
+  }
+
+  .p-root[data-edge="left"] .p-island.is-detach-bounce .p-island-body {
+    transform-origin: left center;
+    animation: island-detach-x 360ms var(--ease-liquid) 200ms backwards;
+  }
+
+  .p-root[data-edge="right"] .p-island.is-detach-bounce .p-island-body {
+    transform-origin: right center;
+    animation: island-detach-x 360ms var(--ease-liquid) 200ms backwards;
+  }
+
+  @keyframes island-detach-y {
+    0%,
+    100% {
+      transform: scaleY(1);
+    }
+
+    30% {
+      transform: scaleY(0.9);
+    }
+
+    62% {
+      transform: scaleY(1.05);
+    }
+
+    84% {
+      transform: scaleY(0.99);
+    }
+  }
+
+  @keyframes island-detach-x {
+    0%,
+    100% {
+      transform: scaleX(1);
+    }
+
+    30% {
+      transform: scaleX(0.9);
+    }
+
+    62% {
+      transform: scaleX(1.05);
+    }
+
+    84% {
+      transform: scaleX(0.99);
+    }
+  }
+
   /* Acoplada, la barra normal no se muestra: la isla la reemplaza entera.
      `opacity` y no `display` para que el stack siga existiendo y midiéndose
      —el resto del componente cuenta con sus rects—. */
@@ -4402,6 +5543,36 @@
     min-width: 0;
     min-height: 0;
     place-items: center;
+  }
+
+  /*
+   * Fila consola + panel.
+   *
+   * Cerrada es `display: contents`: la cara agents vuelve a ser hija directa
+   * del body y el layout no cambia. Abierta (`is-side`) es una fila de verdad:
+   * la consola conserva su ancho y el panel entra al costado, en flujo, en vez
+   * de montarse encima. El lado pegado al canto lo clava el pivote de la caja
+   * (ver `pivotFor`), así que la consola no se corre al abrir ni al cerrar.
+   */
+  .p-row {
+    display: contents;
+  }
+
+  .p-row.is-side {
+    display: flex;
+    flex: 1 1 auto;
+    align-items: stretch;
+    justify-content: flex-start;
+
+    /* Sin hueco: consola y panel son UNA superficie, no dos tarjetas. */
+    gap: 0;
+    min-width: 0;
+    min-height: 0;
+  }
+
+  /* Canto derecho: el panel aparece del otro lado de la consola. */
+  .p-root[data-edge="right"] .p-row.is-side {
+    flex-direction: row-reverse;
   }
 
   .p-island-skin {
@@ -4474,6 +5645,19 @@
     width: var(--face-tab-h);
   }
 
+  /*
+   * Con el panel al costado, la banda de la pestaña se limita a la consola:
+   * así la marca queda exactamente donde estaba en vez de centrarse sobre el
+   * blob entero. En laterales la consola ya ocupa todo el alto: no hay nada
+   * que atar.
+   */
+  .p-root[data-edge="top"] .p-island.has-side .p-island-along,
+  .p-root[data-edge="bottom"] .p-island.has-side .p-island-along {
+    right: auto;
+    left: 0;
+    width: var(--face-agents-w);
+  }
+
   .p-island-along > * {
     pointer-events: auto;
   }
@@ -4488,8 +5672,9 @@
   }
 
   /*
-   * La marca es el control de lo que esté corriendo: en reposo abre la rueda,
-   * grabando o dictando lo para. Por eso es `<button>` y no un dibujo.
+   * La marca es el control de lo que esté corriendo: grabando o dictando lo
+   * para; en reposo el clic no hace nada (la rueda va por hover o atajo).
+   * Sigue siendo `<button>` por el foco y el `aria-label`.
    */
   .p-island-mark {
     position: relative;
@@ -4520,6 +5705,52 @@
   .p-island-mark:disabled {
     cursor: default;
     opacity: 0.55;
+  }
+
+  /*
+   * Grab del panel: la barrita entre el notch y el contenido. Clic despega;
+   * el gesto largo no hace nada — despegar es un clic, mover el float es
+   * tarea de su header.
+   */
+  .p-face-grab {
+    display: flex;
+    flex: 0 0 auto;
+    justify-content: center;
+  }
+
+  .p-face-grab-btn {
+    display: grid;
+    place-items: center;
+    width: 2.75rem;
+    height: 0.95rem;
+    border: 0;
+    padding: 0;
+    border-radius: 999px;
+    background: transparent;
+    cursor: grab;
+    transform: scale(0.96);
+    transition: transform var(--duration-quick) var(--ease-smooth-out);
+  }
+
+  .p-face-grab-btn:active {
+    transform: scale(0.9);
+  }
+
+  .p-face-grab-btn:focus-visible {
+    outline: none;
+    box-shadow: var(--rb-focus);
+  }
+
+  .p-face-grab-bar {
+    width: 2rem;
+    height: 3px;
+    border-radius: 999px;
+    background: color-mix(in sRGB, var(--rb-text) 24%, transparent);
+    transition: background var(--duration-quick) var(--ease-smooth-out);
+  }
+
+  .p-face-grab-btn:hover .p-face-grab-bar {
+    background: color-mix(in sRGB, var(--rb-text) 55%, transparent);
   }
 
   @keyframes p-island-rec-pulse {
@@ -4753,11 +5984,137 @@
     gap: 6px;
     padding: 10px 12px;
     pointer-events: auto;
+
+    /* La cara se enfoca por código al abrir una herramienta (`tabindex="-1"`):
+       WebKit dibujaría su anillo de foco (azul) alrededor del panel. No es una
+       parada de tabulación; los controles de adentro conservan su foco real. */
+    outline: none;
+  }
+
+  /* Cara ambiental: una tarjeta angosta, una fila por agente, sin duplicar el
+     logo que ya vive en la banda de la pestaña. */
+  .p-island.is-face .p-face[data-face="live"] {
+    box-sizing: border-box;
+    width: var(--face-live-w);
+    height: calc(var(--island-live-rows) * var(--island-live-row));
+    flex: 0 0 auto;
+    min-width: 0;
+    min-height: 0;
+    align-self: center;
+    justify-content: center;
+    gap: 0;
+    padding: 0 8px;
+    overflow: hidden;
+  }
+
+  .p-root[data-edge="left"] .p-face[data-face="live"],
+  .p-root[data-edge="right"] .p-face[data-face="live"] {
+    height: auto;
+    min-height: calc(var(--island-live-rows) * var(--island-live-row));
+    align-self: stretch;
+  }
+
+  .p-live-list {
+    display: flex;
+    width: 100%;
+    height: 100%;
+    flex-direction: column;
+    align-items: stretch;
+    justify-content: center;
+    gap: 0;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .p-live-row {
+    position: relative;
+    display: flex;
+    width: 100%;
+    min-width: 0;
+    height: var(--island-live-row);
+    flex: 0 0 var(--island-live-row);
+    align-items: center;
+    gap: 8px;
+    border: 0;
+    border-radius: 8px;
+    padding: 0 8px;
+    background: color-mix(in sRGB, var(--text) 5%, transparent);
+    color: var(--muted);
+    text-align: left;
+    cursor: pointer;
+    transition:
+      background var(--duration-quick) var(--ease-smooth-out),
+      color var(--duration-quick) var(--ease-smooth-out),
+      transform var(--duration-quick) var(--ease-smooth-out);
+  }
+
+  .p-live-row:hover,
+  .p-live-row:focus-visible {
+    background: color-mix(in sRGB, var(--text) 10%, transparent);
+    color: var(--text);
+  }
+
+  .p-live-row:active {
+    transform: scale(0.985);
+  }
+
+  .p-live-row:focus-visible {
+    outline: none;
+    box-shadow: var(--rb-focus);
+  }
+
+  .p-live-row.is-waiting {
+    background: color-mix(in sRGB, var(--rec) 14%, transparent);
+    color: var(--rec);
+  }
+
+  .p-live-row.is-working {
+    background: color-mix(in sRGB, var(--warn) 10%, transparent);
+    color: var(--warn);
+    animation: p-agent-pulse 1.8s var(--ease-liquid) infinite;
+  }
+
+  .p-live-row.is-ready {
+    background: color-mix(in sRGB, var(--ok) 12%, transparent);
+    color: var(--ok);
+  }
+
+  .p-live-row.is-count {
+    background: color-mix(in sRGB, var(--accent) 12%, transparent);
+    color: var(--accent);
+  }
+
+  .p-live-row-logos {
+    display: flex;
+    width: 20px;
+    height: 20px;
+    flex: 0 0 20px;
+    align-items: center;
+    justify-content: center;
+    gap: 2px;
+    overflow: hidden;
+  }
+
+  .p-live-row-label {
+    min-width: 0;
+    overflow: hidden;
+    font-family: var(--font-sans);
+    font-size: 0.6875rem;
+    font-weight: 600;
+    line-height: 1;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .p-face[data-face="clipboard"],
-  .p-face[data-face="snippets"] {
-    height: var(--face-clip-h);
+  .p-face[data-face="snippets"],
+  /* Medida propia, más alta que la del clipboard: la lista es lo que se vino
+     a mirar y arriba hay ~190 px fijos. Tiene que sumar exacto con
+     `islandSysH` (ver `pillStage`), o la caja y la cara se desalinean. */
+  .p-face[data-face="system"] {
+    position: relative;
+    width: var(--face-sys-w, 300px);
+    height: var(--face-sys-h);
     min-height: 0;
     justify-content: stretch;
     gap: 0;
@@ -4781,6 +6138,117 @@
     width: var(--face-agents-w);
     height: var(--face-agents-h);
     pointer-events: none;
+  }
+
+  /*
+   * Cara dictado: onda centrada mientras escucha; icono + estado
+   * («Transcribiendo…», «Pegado», error) después. La onda crece desde el
+   * centro —la pestaña de arriba ya ancla el gesto, no hace falta que «caiga».
+   */
+  .p-face[data-face="dictation"] {
+    height: var(--face-dict-h, 72px);
+    align-items: center;
+    justify-content: center;
+  }
+
+  .p-face-wave {
+    display: block;
+    width: 8rem;
+    padding: 0 2px;
+  }
+
+  .p-face-wave :global(.rb-wave) {
+    flex: 1 1 auto;
+    width: 100%;
+    min-width: 0;
+    align-items: center;
+  }
+
+  .p-face-wave :global(.rb-wave-voice) {
+    gap: 1px;
+    height: 0.65rem;
+    justify-content: space-between;
+  }
+
+  .p-face-wave :global(.rb-wave-bar) {
+    transform-origin: center;
+  }
+
+  .p-face-status {
+    display: flex;
+    max-width: 100%;
+    align-items: center;
+    gap: 8px;
+    color: var(--muted);
+  }
+
+  .p-face-status.is-busy {
+    color: var(--warn);
+  }
+
+  .p-face-status.is-ok {
+    color: var(--ok);
+  }
+
+  .p-face-status.is-error {
+    color: var(--rec);
+  }
+
+  .p-face-label {
+    overflow: hidden;
+    font-family: var(--font-sans);
+    font-size: 0.6875rem;
+    font-weight: 500;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /*
+   * Panel del costado: clipboard / textos conviven con la consola dentro de
+   * la isla, AL LADO y en flujo. Una sola superficie: sin fondo, anillo ni
+   * sombra propios —el contenido va directo sobre la silueta líquida, como el
+   * de la consola— y sin hueco con ella. Solo el padding interno para que no
+   * toque el borde redondeado del blob.
+   */
+  .p-side {
+    z-index: 3;
+    display: flex;
+    width: var(--face-clip-w, 280px);
+    flex: 0 0 auto;
+    align-self: stretch;
+    flex-direction: column;
+    min-height: 0;
+    padding: 4px 10px 0;
+    overflow: hidden;
+
+    /* Entrada: desplazamiento corto desde el lado de la consola, con la
+       familia de motion de la isla. El fade lo pone `opacityFade`. */
+    animation: p-side-in var(--island-open-dur) var(--ease-liquid) backwards;
+  }
+
+  @keyframes p-side-in {
+    from {
+      transform: translateX(calc(var(--distance-micro, 4px) * -1));
+    }
+  }
+
+  /* Canto derecho: el panel nace del otro lado de la consola. */
+  .p-root[data-edge="right"] .p-side {
+    animation-name: p-side-in-right;
+  }
+
+  @keyframes p-side-in-right {
+    from {
+      transform: translateX(var(--distance-micro, 4px));
+    }
+  }
+
+  /* Con panel, la consola conserva su ancho: el ancho extra es del panel. */
+  .p-row.is-side > .p-face[data-face="agents"] {
+    flex: 0 0 auto;
+    width: var(--face-agents-w);
   }
 
   .p-face-tabs {
@@ -5017,21 +6485,40 @@
   }
 
   .p-root[data-edge="top"] .p-island-cue.p-agent {
-    align-items: start;
-    padding-top: 2px;
+    align-items: center;
+    padding-top: 0;
   }
 
   .p-root[data-edge="bottom"] .p-island-cue.p-agent {
-    align-items: end;
-    padding-bottom: 2px;
+    align-items: center;
+    padding-bottom: 0;
   }
 
   .p-island-cue.p-agent::after {
     content: none;
   }
 
+  /* Trabajando/contestando: el icono de la pestaña late suave. El latido de la
+     silueta lo lleva la piel (`liquid.breathe`); acá el aviso puntual. */
   .p-island-cue.is-working {
-    animation: none;
+    animation: p-agent-pulse 1.8s var(--ease-liquid) infinite;
+  }
+
+  /*
+   * Estados en la pestaña: espera y listo también se leen. Eran iguales al
+   * dock apagado —solo el latido distinguía—. Misma lengua que el chip
+   * flotante: alerta (lo que bloquea al agente: una pregunta/permiso) y ok
+   * (lo terminado). La cápsula sirve para cualquier marca, también para el
+   * logo genérico de un CLI sin logo propio.
+   */
+  .p-island-cues .p-island-cue.p-agent.is-waiting {
+    background: color-mix(in sRGB, var(--rec) 16%, transparent);
+    color: var(--rec);
+  }
+
+  .p-island-cues .p-island-cue.p-agent.is-ready {
+    background: color-mix(in sRGB, var(--ok) 14%, transparent);
+    color: var(--ok);
   }
 
   .p-island-cue-logo {
@@ -5071,6 +6558,27 @@
     font-weight: 650;
     font-variant-numeric: tabular-nums;
     line-height: 1;
+  }
+
+  /*
+   * Aviso con texto (notch del eje y): el preview del agente o el estado.
+   * El ancho lo reservó `islandCueLong` — el texto solo recorta con elipsis
+   * dentro de ese tramo, no re-mide la pestaña.
+   */
+  .p-island-cues .p-island-cue.p-agent.is-msg {
+    display: flex;
+    gap: 0.25rem;
+  }
+
+  .p-island-cue-msg {
+    overflow: hidden;
+    max-width: calc(var(--island-cue-msg-w, 96px) - 0.25rem);
+    font-family: var(--font-sans);
+    font-size: 0.625rem;
+    font-weight: 650;
+    letter-spacing: 0.02em;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .p-island-agent-badge {
@@ -5325,6 +6833,62 @@
     inset: 0;
   }
 
+  /*
+   * La gota del dictado: cuelga de la barra flotante con la onda adentro.
+   *
+   * Cae desde la pill (mismo gesto que la gota de la rueda: encoge y baja) y
+   * mide lo mismo que el disco. El cuello lo publica `skinShapes` como una
+   * cápsula: con el blend de render en 0 el campo no funde huecos solo.
+   * `pointer-events: none` lo hereda de `.p-skin`. Va más específico que
+   * `.p-skin > i` (display: block) para centrar adentro.
+   */
+  .p-skin > i.p-skin-drop {
+    position: absolute;
+    top: calc(var(--pill-bar) + var(--rec-drop-gap));
+    left: 50%;
+    display: grid;
+
+    /* Igual de ancha que el disco: la gota no puede verse más grande que él. */
+    width: calc(var(--pill-bar) - var(--goo-grow) * 2);
+    height: var(--rec-drop);
+    padding: 0 0.25rem;
+    place-items: center;
+    border-radius: 999px;
+    opacity: 0;
+    transform: translate(-50%, -60%) scale(0.4);
+    transition:
+      transform var(--island-open-dur) var(--ease-liquid),
+      opacity var(--island-open-dur) var(--ease-liquid);
+  }
+
+  .p-skin > i.p-skin-drop.is-in {
+    opacity: 1;
+    transform: translateX(-50%);
+  }
+
+  .p-wave-hang {
+    display: block;
+    width: 100%;
+  }
+
+  /* La onda crece hacia ABAJO desde el borde de arriba: el envión «cae». */
+  .p-wave-hang :global(.rb-wave) {
+    flex: 1 1 auto;
+    width: 100%;
+    min-width: 0;
+    align-items: flex-start;
+  }
+
+  .p-wave-hang :global(.rb-wave-voice) {
+    gap: 1px;
+    height: 1.05rem;
+    justify-content: space-between;
+  }
+
+  .p-wave-hang :global(.rb-wave-bar) {
+    transform-origin: top;
+  }
+
   /* ─── Barra ─────────────────────────────────────────────────────────── */
 
   /* Una sola piel para todos los estados. Antes la barra y la tira de cola
@@ -5487,27 +7051,6 @@
   /* Las ondas SON el control mientras dicta: sin chrome de botón, solo el
      área clickeable. Sin esto habría que dejar el ícono al lado y volvíamos a
      tener dos cosas donde alcanza una. */
-  .p-dict-wave {
-    display: flex;
-    height: 100%;
-    align-items: center;
-    gap: 8px;
-    border: 0;
-    background: none;
-    color: var(--text);
-    cursor: pointer;
-    padding: 0 2px;
-    margin: 0;
-  }
-
-  /* El micrófono no se comprime: es el que da el contexto de la animación. */
-  .p-dict-wave :global(svg) {
-    flex-shrink: 0;
-  }
-
-  .p-dict-wave:disabled {
-    cursor: default;
-  }
 
   /* ─── Botones ───────────────────────────────────────────────────────── */
   .p-icon,
@@ -5732,10 +7275,15 @@
     color: var(--rec);
   }
 
-  /* Trabajando: la gota respira; el chip no parpadea. */
+  /* Trabajando / contestando: la gota de la piel respira y el logo late
+     suave; el chip no parpadea entero (el texto tiene que leerse). */
   .p-agent.is-working {
     background: transparent;
     color: var(--muted);
+  }
+
+  .p-agent.is-working .p-agent-ico {
+    animation: p-agent-pulse 1.8s var(--ease-liquid) infinite;
   }
 
   /* Listo / respuesta sin leer: affordance clara, no solo un número. */
@@ -5810,6 +7358,35 @@
   /* Bajando o instalando: no se puede volver a apretar, y el cursor lo dice. */
   .p-update:disabled {
     cursor: progress;
+  }
+
+  /*
+   * El aviso del equipo no es una novedad agradable: tono de atención de la
+   * casa —el mismo del permiso de agentes— y respira. Un chip quieto, del
+   * mismo tamaño que el del update, se lee como información; esto es un
+   * pedido de atención y tiene que distinguirse sin leerlo.
+   */
+  .p-update.is-alert {
+    border-color: color-mix(in sRGB, var(--warn) 55%, transparent);
+    background: color-mix(in sRGB, var(--warn) 14%, transparent);
+    color: var(--warn);
+    animation: p-alert-breathe 2.4s ease-in-out infinite;
+  }
+
+  @keyframes p-alert-breathe {
+    0%,
+    100% {
+      border-color: color-mix(in sRGB, var(--warn) 55%, transparent);
+    }
+
+    50% {
+      border-color: color-mix(in sRGB, var(--warn) 100%, transparent);
+    }
+  }
+
+  /* El volumen es información, no un aviso: tono normal y sin puntero. */
+  .p-update.is-volume {
+    cursor: default;
   }
 
   /* Ya está en disco: el próximo clic instala y reinicia. */
@@ -5896,6 +7473,10 @@
   }
 
   @media (prefers-reduced-motion: reduce) {
+    .p-update.is-alert {
+      animation: none;
+    }
+
     .p-root.is-flying,
     .p-root.is-docked,
     .p-wheel,
@@ -5904,6 +7485,7 @@
     .p-shell,
     .p-liquid,
     .p-skin-tail,
+    .p-skin-drop,
     .p-icon,
     .p-dict,
     .p-queue-btn,
@@ -5912,12 +7494,16 @@
     .p-auth-host,
     .p-island-tool,
     .p-island-along,
+    .p-side,
+    .p-agent-ico,
     .p-root.is-seating,
+    .p-island.is-detach-bounce .p-island-body,
     .p-island-mark,
     .p-island-cue,
     .p-island-update,
     .p-island-cue-logo,
     .p-island-agent-badge,
+    .p-live-row,
     .p-mark.is-lead {
       transition: none !important;
       animation: none !important;

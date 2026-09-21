@@ -65,7 +65,14 @@ export const PILL = {
    */
   islandCueBtn: 26,
   /** Logo de agente / icono de update dentro de ese botón. */
-  islandCueMark: 14,
+  islandCueMark: 18,
+  /**
+   * Tramo de texto del primer aviso en la pestaña (notch arriba/abajo).
+   *
+   * Fijo, no medido: es lo que `islandCueLong` suma y lo que la etiqueta
+   * recorta con elipsis. El preview vivo no puede re-medir la caja por frame.
+   */
+  islandCueMsgW: 96,
   /** Lado del botón de herramienta dentro de la isla abierta. */
   islandTool: 44,
   /** Hueco entre botones de la tira. Chico a propósito: el clic entre iconos
@@ -86,6 +93,15 @@ export const PILL = {
   islandClipW: 280,
   islandClipH: 252,
   /**
+   * Cara de sistema: pide más alto que una lista a secas.
+   *
+   * Arriba lleva fila rápida, pestañas, dos medidores, el orden y el filtro —
+   * unos 190 px fijos antes de la primera fila. Con el alto del clipboard la
+   * lista quedaba en una fila y media, que es justo lo que uno vino a mirar.
+   */
+  islandSysW: 300,
+  islandSysH: 430,
+  /**
    * Cara de agentes: el lanzador es chico; la consola pide más alto.
    * Dos medidas fijas para no re-medir el DOM a cada tecla.
    */
@@ -93,12 +109,37 @@ export const PILL = {
   islandAgentsSetupH: 188,
   islandAgentsW: 440,
   islandAgentsH: 496,
+  /** Cara agentes con el selector de carpetas abierto (mismo tamaño que su float). */
+  islandBrowseW: 680,
+  islandBrowseH: 620,
+  /**
+   * Cara de dictado colgada de la pestaña: la onda (o el estado) vive ahí,
+   * no en una gota aparte. Fija al abrir, igual que las otras caras.
+   */
+  islandDictW: 232,
+  islandDictH: 72,
+  /** Alto de cada fila de la cara ambiental de agentes. */
+  islandLiveRow: 32,
   /** Radio de la cara con contenido: si fuera pastilla, un panel alto se lee gota. */
   islandClipR: 22,
   /** Diámetro de la gota de grabación/dictado que cuelga del chrome. */
   recDrop: 36,
-  /** Hueco entre el cuerpo y la gota: bajo el alcance del goo (~10 px). */
+  /**
+   * Hueco entre el cuerpo y la gota.
+   *
+   * No lo cruza el campo (el blend de render está en 0): es el largo del
+   * cuello que publica `skinShapes` entre la pill y la gota del dictado.
+   */
   recDropGap: 8,
+  /**
+   * Radio del cuello que cose la gota del dictado con la pill.
+   *
+   * El blend de render está en 0 (`OverlaySurface.SKIN_BLEND`: uniones duras),
+   * así que el campo NO filetea ningún hueco: el cuello, cuando hace falta,
+   * tiene que ser una forma más —el mismo recurso que el hilo del globo de
+   * agentes—. 10 deja una cintura de 20 px entre un disco de 52 y la gota.
+   */
+  recDropNeck: 10,
   /**
    * Extra de alto de la rueda cuando hay gota viva.
    *

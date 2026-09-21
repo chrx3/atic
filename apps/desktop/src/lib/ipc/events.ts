@@ -37,6 +37,8 @@ import type {
 export type AgentsWorkspaceShortcut =
   "split-right" | "split-down" | "new-console" | "close-console";
 
+import type { SystemAlert } from "./system";
+
 export interface AticEvents {
   // Grabación
   "audio-levels": Levels;
@@ -93,6 +95,14 @@ export interface AticEvents {
   "clipboard-bubble-dismiss": void;
   "snippets-bubble-anchor": BubbleOpen;
   "snippets-bubble-dismiss": void;
+  "system-bubble-anchor": BubbleOpen;
+  "system-bubble-dismiss": void;
+  /**
+   * El vigilante del equipo cambió de opinión: la lista completa de avisos
+   * encendidos (vacía = no pasa nada). Lo emite Rust cada vez que enciende o
+   * apaga uno, no en cada latido.
+   */
+  "system-alert": SystemAlert[];
 
   // Cola de pegado
   "paste-queue-changed": void;
@@ -187,6 +197,11 @@ export interface AticEvents {
   "color-request-commit": { session: number; patch: OverlayPatch | null };
   "color-picked": string;
   "activate-tool-slot": ToolId;
+  /**
+   * Retach: el float pide volver a la isla (lo emite el frontend). El overlay
+   * lo re-acopla en su cara, mismo camino que el atajo.
+   */
+  "dock-tool-face": ToolId;
   /**
    * Solo vuelo al slot (sin ejecutar). PTT: vuela en paralelo al start.
    */

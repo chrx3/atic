@@ -36,10 +36,11 @@ export function islandStripLong(n: number): number {
  * adentro), así que la cuenta sobra unos píxeles. Sobrar no recorta nada;
  * quedarse corto sí.
  */
-export function islandCueLong(n: number): number {
+export function islandCueLong(n: number, msg = false): number {
   const marks = Math.max(1, Math.floor(n) || 1);
   const cues = marks * PILL.islandCueBtn + (marks - 1) * PILL.islandGap;
-  const inner = PILL.islandMark + PILL.islandGap + cues + 12;
+  const inner =
+    PILL.islandMark + PILL.islandGap + cues + (msg ? PILL.islandCueMsgW : 0) + 12;
   return Math.max(PILL.islandLong, inner);
 }
 
@@ -57,10 +58,23 @@ export type Surface = "none" | "wheel" | "edge";
  * Cara de la isla acoplada. `tab` es la pestaña/tira; `agent` es el permiso
  * pendiente; el resto son paneles de herramienta (un solo blob, cualquier canto).
  */
-export type IslandFace = "tab" | "agent" | "clipboard" | "snippets" | "agents";
+export type IslandFace =
+  | "tab"
+  | "agent"
+  | "dictation"
+  | "live"
+  | "clipboard"
+  | "snippets"
+  | "system"
+  | "agents";
 
 export function isIslandPanelFace(face: IslandFace): boolean {
-  return face === "clipboard" || face === "snippets" || face === "agents";
+  return (
+    face === "clipboard" ||
+    face === "snippets" ||
+    face === "system" ||
+    face === "agents"
+  );
 }
 
 /**
@@ -85,20 +99,37 @@ export function islandLiveSlots(_activity: Activity): number {
   return 0;
 }
 
-/** Extra de caja para la gota viva (diámetro + cuello). */
+/**
+ * Extra de caja para la gota viva (diámetro + cuello).
+ *
+ * Cuelga en dos casos: la rueda (grabando o dictando, su propio escenario) y
+ * la barra FLOTANTE en dictado, donde la onda baja a una gota debajo de la
+ * caja. Grabar no cuelga en la barra: su onda vive adentro.
+ *
+ * Acoplada no cuelga: colgar una gota hacía que la forma cambiara con el
+ * estado, y era lo que hacía que la pestaña cerrada, la tira abierta y la
+ * cápsula flotante no se leyeran como la misma cosa (ahí el dictado además
+ * desacopla solo).
+ */
 export function liveHang(activity: Activity, surface: Surface = "none"): number {
-  // Solo la rueda cuelga. Acoplada y flotando, la actividad vive DENTRO de la
-  // silueta: la cara de la marca dice cuál es y el stop es un chip más.
-  //
-  // Colgar una gota hacía que la forma cambiara con el estado, y era lo que
-  // hacía que la pestaña cerrada, la tira abierta y la cápsula flotante no se
-  // leyeran como la misma cosa. La rueda es su propio escenario cuadrado, así
-  // que ahí la gota no rompe ninguna continuidad.
-  if (surface !== "wheel") return 0;
-  if (activity === "recording" || activity === "dictating") {
+  if (activity !== "recording" && activity !== "dictating") return 0;
+  if (surface === "wheel") return PILL.recDrop + PILL.recDropGap;
+  if (surface === "none" && activity === "dictating") {
     return PILL.recDrop + PILL.recDropGap;
   }
   return 0;
+}
+
+/**
+ * Tramo que el panel lateral le suma a la caja de la cara de agentes.
+ *
+ * Es UN número para los tres lugares que lo necesitan —`contentFor`, el
+ * recentrado del techo y el anclaje de salida—: consola y panel son una sola
+ * superficie sin hueco (`.p-row.is-side` va con `gap: 0`), así que el tramo es
+ * el ancho del panel. Si algún día vuelve la separación, vuelve acá y en el CSS.
+ */
+export function sidePanelSpan(): number {
+  return PILL.islandClipW;
 }
 
 /**
@@ -135,28 +166,80 @@ export function contentFor(
   face: IslandFace = "tab",
   /** Cara agentes: true = consola (panel alto), false = lanzador compacto. */
   agentsConsole: boolean = false,
+  /** Cara agentes con el selector de carpetas abierto: la pill lo envuelve. */
+  agentsBrowse: boolean = false,
+  /**
+   * Panel lateral junto a la consola (clipboard / textos). Solo cambia la
+   * medida de la cara `agents`: la caja suma el tramo del panel (ver
+   * `sidePanelSpan`), con el borde del lado acoplado fijo (ver `pivotFor`),
+   * así la consola no se corre. En el eje y el alto acompaña al de la consola.
+   */
+  side: boolean = false,
+  /**
+   * El primer aviso de la pestaña lleva texto (preview / «permiso»): la
+   * pestaña reserva el tramo fijo `islandCueMsgW`. Solo notches del eje y.
+   */
+  islandCueMsg: boolean = false,
+  /** Filas de la cara ambiental de agentes. */
+  liveRows: number = 0,
 ): Size {
   if (surface === "wheel") {
-    const side = PILL.wheel - PILL.pad * 2;
+    const wheelSide = PILL.wheel - PILL.pad * 2;
     const hang = liveHang(activity, "wheel") > 0 ? PILL.wheelLiveHang : 0;
-    return { w: side, h: side + hang };
+    return { w: wheelSide, h: wheelSide + hang };
   }
   if (surface === "edge" && dock) {
     // En reposo, una pestaña: fina contra el borde y larga a lo largo de él.
     // Grabando se alarga, no engorda: el estado entró a la cara de la marca.
     const thick = islandCue ? PILL.islandCueThick : PILL.islandThick;
-    const long = islandCue ? islandCueLong(islandCueCount) : PILL.islandLong;
+    const long = islandCue
+      ? islandCueLong(islandCueCount, islandCueMsg)
+      : PILL.islandLong;
     // Cara expandida: la tarjeta cuelga de la pestaña con gap 0, un solo blob
     // que crece hacia adentro. Gana a la tira: no conviven.
     if (face === "agent" && dockAxis(dock.edge) === "y") {
       return { w: Math.max(long, PILL.islandCardW), h: thick + PILL.islandCardH };
     }
-    if (face === "agents") {
-      const w = agentsConsole ? PILL.islandAgentsW : PILL.islandAgentsSetupW;
-      const h = agentsConsole ? PILL.islandAgentsH : PILL.islandAgentsSetupH;
+    // Cara dictado: la caja crece hacia adentro (el pivote del canto clava el
+    // lado pegado), mismo blob pestaña + tarjeta. Gana a la tira abierta.
+    if (face === "dictation") {
       return dockAxis(dock.edge) === "x"
-        ? { w: thick + w, h: Math.max(long, h) }
-        : { w: Math.max(long, w), h: thick + h };
+        ? { w: thick + PILL.islandDictW, h: Math.max(long, PILL.islandDictH) }
+        : { w: Math.max(long, PILL.islandDictW), h: thick + PILL.islandDictH };
+    }
+    // Cerrada: el aviso cuelga. Abierta, cede a la tira — si ganara, el hover
+    // no podría desplegar las herramientas mientras un agente trabaja.
+    if (face === "live" && !dock.expanded) {
+      const rows = Math.max(1, Math.floor(liveRows) || 1);
+      const liveH = rows * PILL.islandLiveRow;
+      return dockAxis(dock.edge) === "x"
+        ? { w: thick + PILL.islandDictW, h: Math.max(long, liveH) }
+        : { w: Math.max(long, PILL.islandDictW), h: thick + liveH };
+    }
+    if (face === "agents") {
+      const w = agentsBrowse
+        ? PILL.islandBrowseW
+        : agentsConsole
+          ? PILL.islandAgentsW
+          : PILL.islandAgentsSetupW;
+      const h = agentsBrowse
+        ? PILL.islandBrowseH
+        : agentsConsole
+          ? PILL.islandAgentsH
+          : PILL.islandAgentsSetupH;
+      // Con panel al costado la caja suma consola + panel, sin hueco. El alto
+      // sale del mayor entre consola y panel (496 > 252: no cambia).
+      const panelW = side ? sidePanelSpan() : 0;
+      const panelH = side ? PILL.islandClipH : 0;
+      return dockAxis(dock.edge) === "x"
+        ? { w: thick + w + panelW, h: Math.max(long, h, panelH) }
+        : { w: Math.max(long, w + panelW), h: thick + Math.max(h, panelH) };
+    }
+    if (face === "system") {
+      // Medida propia: ver `islandSysH` en `pillStage`.
+      return dockAxis(dock.edge) === "x"
+        ? { w: thick + PILL.islandSysW, h: Math.max(long, PILL.islandSysH) }
+        : { w: Math.max(long, PILL.islandSysW), h: thick + PILL.islandSysH };
     }
     if (isIslandPanelFace(face)) {
       return dockAxis(dock.edge) === "x"
@@ -177,7 +260,7 @@ export function contentFor(
       // corta que la pestaña con avisos.
       const long = Math.max(
         islandStripLong(toolCount + islandLiveSlots(activity)),
-        islandCue ? islandCueLong(islandCueCount) : PILL.islandLong,
+        islandCue ? islandCueLong(islandCueCount, islandCueMsg) : PILL.islandLong,
       );
       return dockAxis(dock.edge) === "x"
         ? { w: PILL.islandTool, h: long }
@@ -187,7 +270,7 @@ export function contentFor(
   }
   return {
     w: Math.max(barW, PILL.bar),
-    h: PILL.bar + agentStackHang(agentStack),
+    h: PILL.bar + agentStackHang(agentStack) + liveHang(activity, surface),
   };
 }
 
@@ -203,6 +286,10 @@ export function targetFor(
   agentStack: number = 0,
   face: IslandFace = "tab",
   agentsConsole: boolean = false,
+  /** Panel lateral junto a la consola (ver `contentFor`). */
+  side: boolean = false,
+  /** Filas de la cara ambiental de agentes (ver `contentFor`). */
+  liveRows: number = 0,
 ): Size {
   return windowFor(
     contentFor(
@@ -216,6 +303,10 @@ export function targetFor(
       agentStack,
       face,
       agentsConsole,
+      false,
+      side,
+      false,
+      liveRows,
     ),
   );
 }
@@ -256,6 +347,62 @@ export function islandFacePanel(state: {
 }): boolean {
   if (!state.requested) return false;
   return state.surface === "edge" && state.dock != null;
+}
+
+/**
+ * Dictar acoplada muestra una cara de la isla: la onda (o el estado) cuelga
+ * de la pestaña en vez de desacoplar la pill a una gota. Prioridad: gana a
+ * las caras de herramienta (el dictado es transitorio y el usuario lo pidió)
+ * y pierde contra el permiso de agente, que es urgente.
+ */
+export function islandFaceDictation(state: {
+  surface: Surface;
+  dock: Dock | null;
+  dictating: boolean;
+}): boolean {
+  return state.surface === "edge" && state.dock != null && state.dictating;
+}
+
+/** Cara ambiental: una fila compacta por cada agente activo del notch. */
+export function islandFaceLive(state: {
+  surface: Surface;
+  dock: Dock | null;
+  live: boolean;
+}): boolean {
+  if (state.surface !== "edge" || !state.dock || !state.live) return false;
+  // El hover abre la tira: si la cara live siguiera ganando, las
+  // herramientas no existirían mientras un agente trabaja.
+  return !state.dock.expanded;
+}
+
+/**
+ * ¿Esta cara bloquea el hover que abre la tira?
+ *
+ * Clipboard, permiso y dictado son paneles que el usuario está usando: el
+ * hover no los sustituye. `live` es un aviso, no un panel: el hover tiene
+ * que poder abrir las herramientas.
+ */
+export function islandFaceBlocksHover(face: IslandFace): boolean {
+  return face !== "tab" && face !== "live";
+}
+
+/**
+ * ¿El cursor sigue dentro de un hit recordado (CSS del overlay)?
+ *
+ * Al abrir la tira la cara live encoge hacia el canto. Sin este hold, el
+ * cursor queda en el vacío y el ciclo abrir/cerrar se realimenta.
+ */
+export function pointInRect(
+  point: { x: number; y: number } | null | undefined,
+  rect: { x: number; y: number; w: number; h: number } | null | undefined,
+): boolean {
+  if (!point || !rect || rect.w <= 0 || rect.h <= 0) return false;
+  return (
+    point.x >= rect.x &&
+    point.x < rect.x + rect.w &&
+    point.y >= rect.y &&
+    point.y < rect.y + rect.h
+  );
 }
 
 /** Historial en la isla. Mismo predicado que los otros paneles. */
@@ -313,6 +460,40 @@ export function shouldRecenterTopNotch(state: {
   if (state.dock?.edge !== "top") return false;
   if (state.flying || state.opening) return false;
   return true;
+}
+
+/**
+ * Tamaño de la «unidad» que hay que centrar en el canto de arriba.
+ *
+ * `side` mira la CAJA que se está aplicando, no el layout: con panel, la caja
+ * es consola + panel y centrarla entera correría la consola media diferencia.
+ * Lo que va al medio del techo es la consola, así que la unidad le descuenta
+ * el tramo del panel. Sin panel la unidad es la caja tal cual —que
+ * es el caso del cierre, cuando la caja ya encogió y el layout todavía no—.
+ */
+export function notchRecenterSize(next: Size, side: boolean): Size {
+  if (!side) return next;
+  return { w: next.w - sidePanelSpan(), h: next.h };
+}
+
+/**
+ * X con la que sale del layout con panel una caja en canto horizontal.
+ *
+ * Modela SOLO la salida (cierre total incluido): `from` es la caja APLICADA
+ * con panel y `next` la que entra sin él. El pivote del canto centra la caja
+ * ancha, así que al encoger la pestaña quedaría corrida; anclando por la
+ * unidad —la columna de la consola— la pestaña cae donde estaba la consola.
+ * En el cierre a consola es un no-op: `from.w - sidePanelSpan() === next.w`.
+ *
+ * No sirve para el eje x: ahí el canto ya clava el borde y no hay corrimiento.
+ */
+export function sideExitX(state: {
+  at: { x: number };
+  from: Size;
+  next: Size;
+}): number {
+  const unitW = state.from.w - sidePanelSpan();
+  return state.at.x + (unitW - state.next.w) / 2;
 }
 
 /**
@@ -425,9 +606,14 @@ export function floatWheelHoverWatches(input: {
   discOnly: boolean;
   heldByHover: boolean;
   collapsingFrom: "wheel" | null;
+  /**
+   * Cápsula idle con aviso (agente / update): el disco sigue siendo la
+   * puerta a la rueda. Grabar y la cola no: ahí el hover no despliega.
+   */
+  idleCapsule?: boolean;
 }): boolean {
   if (input.collapsingFrom === "wheel") return false;
-  if (input.surface === "none" && input.discOnly) return true;
+  if (input.surface === "none" && (input.discOnly || input.idleCapsule)) return true;
   return input.surface === "wheel" && input.heldByHover;
 }
 
@@ -521,6 +707,13 @@ export function pivotFor(state: {
   surface: Surface;
   collapsingFrom: "wheel" | null;
   dock?: Dock | null;
+  /**
+   * El layout aplicado lleva panel al costado. En los cantos horizontales el
+   * pivote deja de recentrar el eje libre: el borde del lado de la consola
+   * queda fijo y la caja crece (y encoge) hacia el panel. En laterales no
+   * cambia nada: su canto ya está clavado.
+   */
+  side?: boolean;
 }): Pivot {
   if (state.surface === "wheel") return "center";
   if (state.collapsingFrom === "wheel") return "center";
@@ -533,9 +726,9 @@ export function pivotFor(state: {
       case "right":
         return "dockRight";
       case "top":
-        return "dockTop";
+        return state.side ? "topLeft" : "dockTop";
       case "bottom":
-        return "dockBottom";
+        return state.side ? "bottomLeft" : "dockBottom";
     }
   }
   return "topLeft";

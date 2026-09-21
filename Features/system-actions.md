@@ -1,41 +1,41 @@
 # Acciones de sistema
 
-**Estado:** `parcial` (Windows; macOS pendiente)
+**Estado:** `hecho`
 
 ## Resumen
 
 Acciones del sistema operativo que se invocan desde el launcher como resultados
-propios: bloquear la sesión, suspender, silenciar la salida de audio y vaciar la
+propios, y también desde la fila rápida del [panel de sistema](sistema.md):
+bloquear la sesión, suspender, silenciar la salida de audio y vaciar la
 papelera. Existen para no salir de Atic cuando el flujo es «una tecla y listo».
-Son Windows-first porque cada una depende de una API del SO.
 
 ## Cómo se usa
 
 - `Ctrl+Space` → escribir `bloquear`, `suspender`, `silenciar` o `vaciar` → Enter.
 - También se pueden fijar como favoritos del launcher (funcionan como cualquier
   acción interna).
+- En la pill, la cara **Sistema** tiene los mismos atajos en la fila de arriba.
 
-| Acción | Qué hace | Nota |
+| Acción | Windows | macOS |
 |---|---|---|
-| Bloquear pantalla | `LockWorkStation` (equivale a Win+L) | reversible con la contraseña |
-| Suspender | `SetSuspendState` sin forzar | no hiberna |
-| Silenciar o activar sonido | `SendInput` con `VK_VOLUME_MUTE` | la misma tecla del teclado |
-| Vaciar papelera | `SHEmptyRecycleBinW` | **conserva el diálogo de Windows**: es irreversible |
-| Cerrar todas las apps | `WM_CLOSE` a las ventanas visibles de apps de usuario | pide guardar lo que corresponda; no toca el shell ni Atic |
+| Bloquear pantalla | `LockWorkStation` (Win+L) | `SACLockScreenImmediate`, o `pmset displaysleepnow` |
+| Suspender | `SetSuspendState` sin forzar | `pmset sleepnow` |
+| Silenciar o activar sonido | tecla `VK_VOLUME_MUTE` | mute del dispositivo de salida (CoreAudio) |
+| Vaciar papelera | `SHEmptyRecycleBinW` (conserva el diálogo del SO) | Finder vacía la papelera (también pregunta) |
+| Cerrar todas las apps | `WM_CLOSE` a ventanas de usuario | `terminate` de apps regulares |
 
-Política: **nunca forzar acciones destructivas**. Por eso la papelera pregunta
-(no se le pasa `SHERB_NOCONFIRMATION`) y no existe force quit: cerrar una app es
-mandarle `WM_CLOSE`, como el aspa de su ventana, y la app decide.
+Política: **nunca forzar acciones destructivas** desde el launcher. El force-quit
+de una app vive solo en el panel de sistema, detrás de un diálogo propio.
 
 ## Código
 
-- [`apps/desktop/src-tauri/src/system_actions.rs`](../apps/desktop/src-tauri/src/system_actions.rs) — las cuatro acciones (Windows + stubs por plataforma)
+- [`apps/desktop/src-tauri/src/system_actions.rs`](../apps/desktop/src-tauri/src/system_actions.rs) — lock / sleep / mute / trash
 - [`apps/desktop/src-tauri/src/launcher.rs`](../apps/desktop/src-tauri/src/launcher.rs) — `builtin_actions` (ids `action:sys-*`) y `run_action`
 - [`apps/desktop/src-tauri/src/launcher_recents.rs`](../apps/desktop/src-tauri/src/launcher_recents.rs) — ventanas visibles de apps de usuario (`close_user_windows`)
+- [`apps/desktop/src-tauri/src/system_control/`](../apps/desktop/src-tauri/src/system_control/) — panel: snapshot, volumen, brillo y cierre por app
 
 ## Pendiente / siguiente
 
-- [ ] macOS: bloquear/suspender y mute tienen equivalentes propios
 - [ ] Tema claro/oscuro y archivos ocultos (escritura en registro + `WM_SETTINGCHANGE`)
 - [ ] Bluetooth (WinRT `Windows.Devices.Radios`)
 - [ ] Reiniciar / apagar con confirmación propia
@@ -43,5 +43,6 @@ mandarle `WM_CLOSE`, como el aspa de su ventana, y la app decide.
 
 ## Relacionado
 
+- [sistema.md](sistema.md)
 - [launcher-spotlight.md](launcher-spotlight.md)
 - [pill-shell.md](pill-shell.md)
