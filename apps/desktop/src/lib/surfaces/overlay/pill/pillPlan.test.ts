@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { PILL } from "../pillStage";
+import { PILL, windowFor } from "../pillStage";
 import { WHEEL_TOOLS } from "$core/tools";
 import {
   blocksBrowserChrome,
@@ -11,12 +11,18 @@ import {
   shouldMeasureBar,
   nextBarWidth,
   islandCueLong,
+  islandFaceDictation,
+  islandFaceLive,
+  islandFaceBlocksHover,
   islandLiveSlots,
   liveHang,
   islandStripLong,
   morphsInPlace,
   bloomPivot,
   pivotFor,
+  notchRecenterSize,
+  sideExitX,
+  sidePanelSpan,
   stepWheel,
   targetFor,
   undockForSummon,
@@ -33,6 +39,7 @@ import {
   islandFacePanel,
   isIslandPanelFace,
   islandNotchRadius,
+  pointInRect,
   pointerMoveDrags,
   pointerGestureWasClick,
   ISLAND_COLLAPSE_MS,
@@ -230,6 +237,220 @@ describe("contentFor", () => {
     );
   });
 
+  it("cara dictado: onda colgada de la pestaña, en cualquier canto", () => {
+    const face = "dictation" as const;
+    // Notch: crece hacia abajo (pestaña + tarjeta), no hacia el lado.
+    expect(
+      contentFor(
+        "edge",
+        180,
+        { edge: "top", expanded: false },
+        "idle",
+        5,
+        false,
+        0,
+        0,
+        face,
+      ),
+    ).toEqual({ w: PILL.islandDictW, h: PILL.islandThick + PILL.islandDictH });
+    expect(
+      contentFor(
+        "edge",
+        180,
+        { edge: "bottom", expanded: true },
+        "idle",
+        5,
+        false,
+        0,
+        0,
+        face,
+      ),
+    ).toEqual({ w: PILL.islandDictW, h: PILL.islandThick + PILL.islandDictH });
+    // Lateral: la tarjeta crece hacia adentro, a lo ancho.
+    expect(
+      contentFor(
+        "edge",
+        180,
+        { edge: "left", expanded: false },
+        "idle",
+        5,
+        false,
+        0,
+        0,
+        face,
+      ),
+    ).toEqual({ w: PILL.islandThick + PILL.islandDictW, h: PILL.islandLong });
+    // Gana a la tira abierta y a la pestaña con avisos.
+    expect(
+      contentFor(
+        "edge",
+        180,
+        { edge: "top", expanded: true },
+        "idle",
+        5,
+        true,
+        2,
+        0,
+        face,
+      ).h,
+    ).toBe(PILL.islandCueThick + PILL.islandDictH);
+    // Flotando y en rueda no existe: la onda cuelga como gota.
+    expect(contentFor("none", 180, null, "dictating", 5, false, 0, 0, face)).toEqual(
+      contentFor("none", 180, null, "dictating"),
+    );
+    expect(contentFor("wheel", 999, null, "dictating", 5, false, 0, 0, face)).toEqual(
+      contentFor("wheel", 999, null, "dictating"),
+    );
+  });
+
+  it("cara dictado: solo acoplada y dictando", () => {
+    const dock = { edge: "top" as const, expanded: false };
+    expect(islandFaceDictation({ surface: "edge", dock, dictating: true })).toBe(true);
+    expect(islandFaceDictation({ surface: "edge", dock, dictating: false })).toBe(
+      false,
+    );
+    expect(islandFaceDictation({ surface: "none", dock: null, dictating: true })).toBe(
+      false,
+    );
+    expect(islandFaceDictation({ surface: "edge", dock: null, dictating: true })).toBe(
+      false,
+    );
+  });
+
+  it("cara live: una fila por agente; el hover la cede a la tira", () => {
+    const top = { edge: "top" as const, expanded: false };
+    expect(
+      contentFor(
+        "edge",
+        180,
+        top,
+        "idle",
+        5,
+        false,
+        0,
+        0,
+        "live",
+        false,
+        false,
+        false,
+        false,
+        3,
+      ),
+    ).toEqual({ w: PILL.islandDictW, h: PILL.islandThick + 3 * PILL.islandLiveRow });
+    expect(
+      contentFor(
+        "edge",
+        180,
+        { edge: "left", expanded: false },
+        "idle",
+        5,
+        false,
+        0,
+        0,
+        "live",
+        false,
+        false,
+        false,
+        false,
+        2,
+      ),
+    ).toEqual({
+      w: PILL.islandThick + PILL.islandDictW,
+      h: Math.max(PILL.islandLong, 2 * PILL.islandLiveRow),
+    });
+    // Una llamada sin filas todavía reserva una fila visible.
+    expect(
+      contentFor(
+        "edge",
+        180,
+        { edge: "bottom", expanded: false },
+        "idle",
+        5,
+        false,
+        0,
+        0,
+        "live",
+      ).h,
+    ).toBe(PILL.islandThick + PILL.islandLiveRow);
+    // Abierta gana la tira: si live siguiera mandando, el hover no abriría.
+    const topOpen = { edge: "top" as const, expanded: true };
+    expect(
+      contentFor(
+        "edge",
+        180,
+        topOpen,
+        "idle",
+        5,
+        false,
+        0,
+        0,
+        "live",
+        false,
+        false,
+        false,
+        false,
+        3,
+      ),
+    ).toEqual(contentFor("edge", 180, topOpen, "idle", 5));
+  });
+
+  it("targetFor propaga las filas de la cara live", () => {
+    const dock = { edge: "bottom" as const, expanded: false };
+    expect(
+      targetFor("edge", 180, dock, "idle", 5, false, 0, 0, "live", false, false, 3),
+    ).toEqual(
+      windowFor(
+        contentFor(
+          "edge",
+          180,
+          dock,
+          "idle",
+          5,
+          false,
+          0,
+          0,
+          "live",
+          false,
+          false,
+          false,
+          false,
+          3,
+        ),
+      ),
+    );
+  });
+
+  it("el tramo de texto del aviso alarga la pestaña solo cuando entra", () => {
+    // Con varios avisos la base ya supera el piso: el tramo suma exacto.
+    expect(islandCueLong(3, true)).toBe(islandCueLong(3) + PILL.islandCueMsgW);
+    // Con uno, el piso `islandLong` domina la base sin texto; con texto gana
+    // la suma. Nada encoge al quitar el texto.
+    expect(islandCueLong(1, true)).toBe(
+      Math.max(
+        PILL.islandLong,
+        PILL.islandMark + PILL.islandGap + PILL.islandCueBtn + 12 + PILL.islandCueMsgW,
+      ),
+    );
+    expect(islandCueLong(1, false)).toBe(islandCueLong(1));
+    expect(
+      contentFor(
+        "edge",
+        180,
+        { edge: "top", expanded: false },
+        "idle",
+        5,
+        true,
+        1,
+        0,
+        "tab",
+        false,
+        false,
+        false,
+        true,
+      ).w,
+    ).toBe(islandCueLong(1, true));
+  });
+
   it("isla alta usa radio de panel, no de pastilla", () => {
     expect(islandNotchRadius({ w: 124, h: 40 })).toBe(20);
     expect(islandNotchRadius({ w: 280, h: 292 })).toBe(PILL.islandClipR);
@@ -265,13 +486,22 @@ describe("contentFor", () => {
     ).toEqual({ w: PILL.islandThick + PILL.islandClipW, h: PILL.islandClipH });
   });
 
-  it("textos usan el mismo panel que clipboard; agentes, uno más grande", () => {
+  it("textos usan el mismo panel que clipboard; sistema y agentes, uno más grande", () => {
     const top = { edge: "top" as const, expanded: false };
     const left = { edge: "left" as const, expanded: false };
     expect(isIslandPanelFace("snippets")).toBe(true);
+    expect(isIslandPanelFace("system")).toBe(true);
     expect(contentFor("edge", 180, top, "idle", 5, false, 0, 0, "snippets")).toEqual(
       contentFor("edge", 180, top, "idle", 5, false, 0, 0, "clipboard"),
     );
+    // Sistema tiene medida propia: encima de la lista lleva fila rápida,
+    // pestañas, medidores, orden y filtro. Con el alto del clipboard la lista
+    // quedaba en dos filas.
+    expect(contentFor("edge", 180, top, "idle", 5, false, 0, 0, "system")).toEqual({
+      w: PILL.islandSysW,
+      h: PILL.islandThick + PILL.islandSysH,
+    });
+    expect(PILL.islandSysH).toBeGreaterThan(PILL.islandClipH);
     expect(contentFor("edge", 180, top, "idle", 5, false, 0, 0, "agents")).toEqual({
       w: PILL.islandAgentsSetupW,
       h: PILL.islandThick + PILL.islandAgentsSetupH,
@@ -283,6 +513,169 @@ describe("contentFor", () => {
     expect(
       contentFor("edge", 180, top, "idle", 5, false, 0, 0, "agents", true),
     ).toEqual({ w: PILL.islandAgentsW, h: PILL.islandThick + PILL.islandAgentsH });
+  });
+
+  it("con panel al costado, la caja suma consola + panel (sin hueco)", () => {
+    const panelW = sidePanelSpan();
+    // Una sola superficie: el tramo del panel es su ancho, nada más.
+    expect(panelW).toBe(PILL.islandClipW);
+    // Eje y (arriba/abajo): a lo largo del canto; el alto sigue al de la
+    // consola (496 > 252), así que no se mueve.
+    for (const edge of ["top", "bottom"] as const) {
+      expect(
+        contentFor(
+          "edge",
+          180,
+          { edge, expanded: false },
+          "idle",
+          5,
+          false,
+          0,
+          0,
+          "agents",
+          true,
+          false,
+          true,
+        ),
+      ).toEqual({
+        w: Math.max(PILL.islandLong, PILL.islandAgentsW + panelW),
+        h: PILL.islandThick + Math.max(PILL.islandAgentsH, PILL.islandClipH),
+      });
+    }
+    // Eje x (laterales): el canto ya ancla el ancho; el panel entra a lo ancho.
+    for (const edge of ["left", "right"] as const) {
+      expect(
+        contentFor(
+          "edge",
+          180,
+          { edge, expanded: false },
+          "idle",
+          5,
+          false,
+          0,
+          0,
+          "agents",
+          true,
+          false,
+          true,
+        ),
+      ).toEqual({
+        w: PILL.islandThick + PILL.islandAgentsW + panelW,
+        h: Math.max(PILL.islandLong, PILL.islandAgentsH, PILL.islandClipH),
+      });
+    }
+  });
+
+  it("sin panel la cara agentes mide igual, y el flag no toca otras caras", () => {
+    const top = { edge: "top" as const, expanded: false };
+    expect(
+      contentFor(
+        "edge",
+        180,
+        top,
+        "idle",
+        5,
+        false,
+        0,
+        0,
+        "agents",
+        true,
+        false,
+        false,
+      ),
+    ).toEqual(contentFor("edge", 180, top, "idle", 5, false, 0, 0, "agents", true));
+    for (const face of ["tab", "clipboard", "snippets", "agent"] as const) {
+      expect(
+        contentFor("edge", 180, top, "idle", 5, false, 0, 0, face, false, false, true),
+      ).toEqual(
+        contentFor("edge", 180, top, "idle", 5, false, 0, 0, face, false, false),
+      );
+    }
+    // Flotando o en rueda la cara no existe: el flag tampoco.
+    expect(
+      contentFor(
+        "none",
+        180,
+        null,
+        "idle",
+        5,
+        false,
+        0,
+        0,
+        "agents",
+        true,
+        false,
+        true,
+      ),
+    ).toEqual(contentFor("none", 180));
+  });
+
+  it("targetFor también suma el panel", () => {
+    const dock = { edge: "top" as const, expanded: false };
+    expect(
+      targetFor("edge", 180, dock, "idle", 5, false, 0, 0, "agents", true, true),
+    ).toEqual(
+      windowFor(
+        contentFor(
+          "edge",
+          180,
+          dock,
+          "idle",
+          5,
+          false,
+          0,
+          0,
+          "agents",
+          true,
+          false,
+          true,
+        ),
+      ),
+    );
+  });
+
+  it("con panel, el selector de carpetas también suma su ancho", () => {
+    const panelW = sidePanelSpan();
+    // Eje y: a lo largo del canto; el alto sale del mayor de los dos.
+    expect(
+      contentFor(
+        "edge",
+        180,
+        { edge: "top", expanded: false },
+        "idle",
+        5,
+        false,
+        0,
+        0,
+        "agents",
+        false,
+        true,
+        true,
+      ),
+    ).toEqual({
+      w: Math.max(PILL.islandLong, PILL.islandBrowseW + panelW),
+      h: PILL.islandThick + Math.max(PILL.islandBrowseH, PILL.islandClipH),
+    });
+    // Eje x: el canto ancla el ancho y el panel entra a lo ancho.
+    expect(
+      contentFor(
+        "edge",
+        180,
+        { edge: "left", expanded: false },
+        "idle",
+        5,
+        false,
+        0,
+        0,
+        "agents",
+        false,
+        true,
+        true,
+      ),
+    ).toEqual({
+      w: PILL.islandThick + PILL.islandBrowseW + panelW,
+      h: Math.max(PILL.islandLong, PILL.islandBrowseH, PILL.islandClipH),
+    });
   });
 
   it("islandFaceClipboard: acoplada y pedida, también en laterales", () => {
@@ -300,6 +693,40 @@ describe("contentFor", () => {
     ).toBe(true);
     expect(islandFaceClipboard({ surface: "none", dock, requested: true })).toBe(false);
     expect(islandFacePanel({ surface: "edge", dock, requested: true })).toBe(true);
+  });
+
+  it("islandFaceLive: solo con agentes, dock y tira cerrada", () => {
+    const dock = { edge: "top" as const, expanded: false };
+    expect(islandFaceLive({ surface: "edge", dock, live: true })).toBe(true);
+    expect(
+      islandFaceLive({
+        surface: "edge",
+        dock: { edge: "left", expanded: true },
+        live: true,
+      }),
+    ).toBe(false);
+    expect(islandFaceLive({ surface: "edge", dock, live: false })).toBe(false);
+    expect(islandFaceLive({ surface: "edge", dock: null, live: true })).toBe(false);
+    expect(islandFaceLive({ surface: "none", dock, live: true })).toBe(false);
+  });
+
+  it("islandFaceBlocksHover: live no tapa la tira; un panel sí", () => {
+    expect(islandFaceBlocksHover("tab")).toBe(false);
+    expect(islandFaceBlocksHover("live")).toBe(false);
+    expect(islandFaceBlocksHover("clipboard")).toBe(true);
+    expect(islandFaceBlocksHover("agent")).toBe(true);
+    expect(islandFaceBlocksHover("dictation")).toBe(true);
+    expect(islandFaceBlocksHover("agents")).toBe(true);
+  });
+
+  it("pointInRect cubre el hold del hover live", () => {
+    const rect = { x: 10, y: 20, w: 40, h: 30 };
+    expect(pointInRect({ x: 10, y: 20 }, rect)).toBe(true);
+    expect(pointInRect({ x: 49.9, y: 49.9 }, rect)).toBe(true);
+    expect(pointInRect({ x: 50, y: 35 }, rect)).toBe(false);
+    expect(pointInRect({ x: 12, y: 50 }, rect)).toBe(false);
+    expect(pointInRect(null, rect)).toBe(false);
+    expect(pointInRect({ x: 12, y: 22 }, null)).toBe(false);
   });
 
   it("islandFaceAgent: auto-abre con pedido nuevo, no re-abre el colapsado", () => {
@@ -458,6 +885,15 @@ describe("contentFor", () => {
     ).toBe(false);
     expect(
       floatWheelHoverWatches({
+        surface: "none",
+        discOnly: false,
+        idleCapsule: true,
+        heldByHover: false,
+        collapsingFrom: null,
+      }),
+    ).toBe(true);
+    expect(
+      floatWheelHoverWatches({
         surface: "edge",
         discOnly: true,
         heldByHover: false,
@@ -550,6 +986,25 @@ describe("contentFor", () => {
     const idle = contentFor("wheel", 999);
     expect(contentFor("wheel", 999, null, "recording").h).toBe(
       idle.h + PILL.wheelLiveHang,
+    );
+  });
+
+  it("flotando, el dictado cuelga la gota de la onda; grabar no", () => {
+    // Dictando en la barra: la gota (diámetro + cuello) suma a la caja.
+    expect(liveHang("dictating", "none")).toBe(PILL.recDrop + PILL.recDropGap);
+    // Grabar deja la onda adentro de la barra: sin hang.
+    expect(liveHang("recording", "none")).toBe(0);
+    expect(liveHang("idle", "none")).toBe(0);
+
+    const base = contentFor("none", 180);
+    const dictando = contentFor("none", 180, null, "dictating");
+    expect(dictando.h).toBe(base.h + PILL.recDrop + PILL.recDropGap);
+    expect(dictando.w).toBe(base.w);
+    expect(contentFor("none", 180, null, "recording")).toEqual(base);
+    // Con avisos de consola apilados, la gota suma igual.
+    const conStack = contentFor("none", 180, null, "dictating", 5, false, 0, 2);
+    expect(conStack.h).toBe(
+      base.h + PILL.agentStackRow + PILL.recDrop + PILL.recDropGap,
     );
   });
 
@@ -647,6 +1102,97 @@ describe("pivotFor", () => {
         dock: { edge: "right", expanded: true },
       }),
     ).toBe("center");
+  });
+
+  it("con panel al costado, el canto horizontal clava el lado de la consola", () => {
+    const dock = (edge: "left" | "right" | "top" | "bottom") => ({
+      ...base,
+      surface: "edge" as const,
+      dock: { edge, expanded: false },
+      side: true,
+    });
+    // La consola no se corre: la caja crece hacia el panel, no hacia el medio.
+    expect(pivotFor(dock("top"))).toBe("topLeft");
+    expect(pivotFor(dock("bottom"))).toBe("bottomLeft");
+    // Los laterales ya anclan su canto: el panel entra hacia adentro.
+    expect(pivotFor(dock("left"))).toBe("dockLeft");
+    expect(pivotFor(dock("right"))).toBe("dockRight");
+    // Sin panel, el pivote de siempre.
+    expect(
+      pivotFor({
+        ...base,
+        surface: "edge",
+        dock: { edge: "top", expanded: false },
+      }),
+    ).toBe("dockTop");
+  });
+});
+
+describe("notchRecenterSize", () => {
+  it("sin panel, la unidad a centrar es la caja entera", () => {
+    const box = { w: 448, h: 544 };
+    expect(notchRecenterSize(box, false)).toEqual(box);
+  });
+
+  it("con panel, la unidad es la consola", () => {
+    // Caja = consola (448 de ventana) + panel (280), sin hueco.
+    const box = { w: PILL.islandAgentsW + sidePanelSpan() + PILL.pad * 2, h: 544 };
+    expect(notchRecenterSize(box, true)).toEqual({
+      w: PILL.islandAgentsW + PILL.pad * 2,
+      h: 544,
+    });
+  });
+});
+
+describe("sideExitX", () => {
+  const docked = (edge: "top" | "bottom") => ({ edge, expanded: false });
+  const conPanel = (edge: "top" | "bottom") =>
+    windowFor(
+      contentFor(
+        "edge",
+        180,
+        docked(edge),
+        "idle",
+        5,
+        false,
+        0,
+        0,
+        "agents",
+        true,
+        false,
+        true,
+      ),
+    );
+
+  it("cierre total desde el panel: la pestaña cae donde estaba la consola", () => {
+    const from = conPanel("bottom");
+    const next = windowFor(contentFor("edge", 180, docked("bottom")));
+    const at = { x: 220 };
+    const consoleW = from.w - sidePanelSpan();
+    expect(sideExitX({ at, from, next })).toBe(at.x + (consoleW - next.w) / 2);
+    // Mismo centro que la consola: el ancla que el pivote del canto no deja.
+    expect(sideExitX({ at, from, next }) + next.w / 2).toBe(at.x + consoleW / 2);
+  });
+
+  it("cierre a consola: no mueve (from − panel === next)", () => {
+    const from = conPanel("top");
+    const next = windowFor(
+      contentFor("edge", 180, docked("top"), "idle", 5, false, 0, 0, "agents", true),
+    );
+    expect(sideExitX({ at: { x: 400 }, from, next })).toBe(400);
+  });
+
+  it("sanity con los números reales de PILL", () => {
+    // Consola 440, pestaña 124: el corrimiento es la mitad de la diferencia,
+    // que es exactamente el salto que dejaba el pivote `dockBottom`.
+    const from = {
+      w: PILL.islandAgentsW + sidePanelSpan() + PILL.pad * 2,
+      h: 544,
+    };
+    const next = { w: PILL.islandLong + PILL.pad * 2, h: 56 };
+    expect(sideExitX({ at: { x: 0 }, from, next })).toBe(
+      (PILL.islandAgentsW - PILL.islandLong) / 2,
+    );
   });
 });
 

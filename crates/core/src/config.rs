@@ -70,12 +70,13 @@ const UI_THEMES: [&str; 9] = [
 /// Herramientas que pueden vivir en la pill. Espejo de `WHEEL_TOOLS` en
 /// `apps/desktop/src/lib/core/tools.ts` — el launcher queda fuera a propósito:
 /// Spotlight vive en su atajo, no en la rueda.
-const PILL_TOOLS: [&str; 8] = [
+const PILL_TOOLS: [&str; 9] = [
     "meetings",
     "dictation",
     "clipboard",
     "snippets",
     "agents",
+    "system",
     "captures",
     "board",
     "color",
@@ -280,6 +281,22 @@ pub struct Config {
     pub clipboard_always_on_top: bool,
     /// Float de textos/snippets fijado arriba mientras está abierto.
     pub snippets_always_on_top: bool,
+    /// Float de sistema fijado arriba mientras está abierto.
+    pub system_always_on_top: bool,
+    /// Avisar en la pill cuando el equipo se ahoga (CPU o memoria sostenidas).
+    ///
+    /// El panel de sistema hay que acordarse de abrirlo; esto es lo que hace
+    /// que el equipo te busque a ti. Apagado = no se vigila nada.
+    pub system_alerts: bool,
+    /// Umbral de CPU (%) que hay que superar para que avise. 0 = no vigilar.
+    pub system_alert_cpu: u8,
+    /// Umbral de memoria usada (%) para avisar. 0 = no vigilar.
+    pub system_alert_ram: u8,
+    /// Cuántos segundos seguidos hay que estar por encima antes de avisar.
+    ///
+    /// Un pico de dos segundos al abrir una app no es un problema; lo que
+    /// molesta es lo sostenido. Por eso el aviso llega tarde a propósito.
+    pub system_alert_seconds: u16,
     /// Sonido grave al iniciar/detener grabación (aviso de consentimiento).
     pub beep_on_start: bool,
     /// Toques graves de interfaz (capturas, dictado). Interruptor maestro.
@@ -427,6 +444,11 @@ impl Default for Config {
             agents_always_on_top: false,
             clipboard_always_on_top: false,
             snippets_always_on_top: false,
+            system_always_on_top: false,
+            system_alerts: true,
+            system_alert_cpu: 85,
+            system_alert_ram: 90,
+            system_alert_seconds: 120,
             beep_on_start: false,
             ui_sounds: true,
             sound_recording_start: String::new(),
@@ -516,6 +538,11 @@ struct ConfigFile {
     agents_always_on_top: Option<bool>,
     clipboard_always_on_top: Option<bool>,
     snippets_always_on_top: Option<bool>,
+    system_always_on_top: Option<bool>,
+    system_alerts: Option<bool>,
+    system_alert_cpu: Option<u8>,
+    system_alert_ram: Option<u8>,
+    system_alert_seconds: Option<u16>,
     beep_on_start: bool,
     ui_sounds: Option<bool>,
     sound_recording_start: Option<String>,
@@ -634,6 +661,11 @@ impl Default for ConfigFile {
             agents_always_on_top: Some(d.agents_always_on_top),
             clipboard_always_on_top: Some(d.clipboard_always_on_top),
             snippets_always_on_top: Some(d.snippets_always_on_top),
+            system_always_on_top: Some(d.system_always_on_top),
+            system_alerts: Some(d.system_alerts),
+            system_alert_cpu: Some(d.system_alert_cpu),
+            system_alert_ram: Some(d.system_alert_ram),
+            system_alert_seconds: Some(d.system_alert_seconds),
             beep_on_start: d.beep_on_start,
             ui_sounds: None,
             sound_recording_start: None,
@@ -858,6 +890,11 @@ impl From<ConfigFile> for Config {
             agents_always_on_top: f.agents_always_on_top.unwrap_or(false),
             clipboard_always_on_top: f.clipboard_always_on_top.unwrap_or(false),
             snippets_always_on_top: f.snippets_always_on_top.unwrap_or(false),
+            system_always_on_top: f.system_always_on_top.unwrap_or(false),
+            system_alerts: f.system_alerts.unwrap_or(true),
+            system_alert_cpu: f.system_alert_cpu.unwrap_or(85),
+            system_alert_ram: f.system_alert_ram.unwrap_or(90),
+            system_alert_seconds: f.system_alert_seconds.unwrap_or(120),
             beep_on_start: f.beep_on_start,
             // Configs antiguas: activar toques de UI (captura/dictado).
             ui_sounds: f.ui_sounds.unwrap_or(true),
