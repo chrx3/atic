@@ -4,6 +4,7 @@
    * Por ahora hospeda la misma demo visual que la ventana principal.
    */
   import { onMount, tick } from "svelte";
+  import { emit } from "@tauri-apps/api/event";
   import { agents } from "$lib/agentSessions.svelte";
   import { presence } from "$lib/agentPresence.svelte";
   import {
@@ -30,7 +31,11 @@
     publishFollowSkin,
   } from "$surfaces/overlay/floatEmergeSkin";
   import { surfaces } from "$surfaces/overlay/surfaces.svelte";
-  import { notifyToolResting, toolBirth } from "$surfaces/overlay/toolBirth";
+  import {
+    notifyToolResting,
+    toolBirth,
+    toolResting,
+  } from "$surfaces/overlay/toolBirth";
   import { Bubble, BUBBLE_MIN_W } from "$surfaces/overlay/bubble.svelte";
   import { createBubbleDrag } from "$surfaces/overlay/bubbleDrag";
   import { snapFrame, snapTarget } from "$surfaces/overlay/floatSnap";
@@ -42,11 +47,12 @@
   import { resolveSlot } from "$surfaces/overlay/toolSlots";
   import { separateAxisProp, waitFrames } from "$surfaces/overlay/floatReveal";
   import { gapBetween } from "$lib/liquid/geometry";
+  import { awayFromPill, retachesOnDrop } from "$surfaces/overlay/retachMagnet";
   import { REACH } from "$lib/liquid/constants";
   import AgentLauncher from "$features/agents/AgentLauncher.svelte";
   import { isAgentsDismissSuppressed } from "$surfaces/overlay/agents/dismissGuard";
   import { agentsDock } from "$surfaces/overlay/agents/agentsDock.svelte";
-  import { agentsIslandHost } from "./agentsIslandHost.svelte";
+  import { agentsIslandHost, agentsFloatHandoff } from "./agentsIslandHost.svelte";
   import { consoleCue } from "$surfaces/overlay/agents/consoleCue.svelte";
   import { presenceIdsToDismissOnAticHide } from "$surfaces/overlay/pill/pillAgentChip";
   import {
@@ -83,6 +89,12 @@
   const CONSOLE_DEFAULT_W = 680;
   const CONSOLE_DEFAULT_H = 520;
   const CONSOLE_MIN_H = 340;
+  /** Imán del re-acople (reglas y porqués en `retachMagnet`). */
+  let dropRetachArmed = false;
+  function armDropRetach(): void {
+    const pill = surfaces.live["pill-skin"] ?? surfaces.live["pill"];
+    dropRetachArmed = awayFromPill(pill, bubble.anchor);
+  }
   let workAreas = $state<Area[]>([]);
   let restingOpen = $state<BubbleOpen | null>(null);
 
@@ -100,6 +112,8 @@
   type RevealPhase = "hidden" | "expand" | "settle" | "ready";
   let revealPhase = $state<RevealPhase>("hidden");
   let revealEpoch = 0;
+  /** Entró por despegue: nace en el rect de la cara, sin morph de nacimiento. */
+  let detachDirect = false;
   const expanding = $derived(revealPhase === "expand");
   const settling = $derived(revealPhase === "settle");
   const motionPhase = $derived(expanding || settling);
@@ -251,6 +265,28 @@
       void hideAgentsWindow().catch(() => {});
       return;
     }
+    // Despegue: el rect de la cara manda sobre todo lo demás (incluido un
+    // marco dockeado viejo). El panel ya vive en su rect exacto (era la
+    // cara): sin semilla ni morph, el mismo elemento cortado en dos.
+    const rest = toolResting();
+    if (rest) {
+      detachDirect = true;
+      armOpenDismissGrace();
+      bubble.place({
+        ...a,
+        x: rest.x,
+        y: rest.y,
+        w: rest.w,
+        h: rest.h,
+        side: "top",
+        offset: rest.w / 2,
+      });
+      // Sin frame replegado: nace ya mostrado en su rect, como si la cara
+      // nunca se hubiera ido.
+      bubble.shown = true;
+      return;
+    }
+    detachDirect = false;
     if (
       reuseDockedFrame({
         minimized,
@@ -411,6 +447,14 @@
     const epoch = ++revealEpoch;
     const initial = restingForView();
     if (!initial) return;
+    // Despegue: directo al reposo con el rect de la cara. La bandera es
+    // local: el `rest` global ya se limpió cuando corre el efecto. El ancla
+    // ya quedó puesta en `placeFromPill`: acá solo se marca listo.
+    if (detachDirect) {
+      revealPhase = "ready";
+      notifyToolResting();
+      return;
+    }
     if (prefersReducedMotion()) {
       bubble.place(restingForView() ?? initial);
       revealPhase = "ready";
@@ -641,6 +685,8 @@
   const { startDrag, endDrag } = createBubbleDrag(bubble, () => bubEl, {
     clamp: "visible",
     onGrab: ({ cursor, setHome }) => {
+      // El gesto arranca: si ya está lejos, el retach al soltar vale desde ya.
+      armDropRetach();
       modeResizeEpoch += 1;
       modeResizing = false;
       // Agarrar una ventana agrandada la devuelve a su tamaño previo, como
@@ -659,6 +705,8 @@
       setHome(nx, ny);
     },
     onMove: ({ cursor, areas }) => {
+      // Salió de la zona: el retach queda armado para este gesto.
+      if (!dropRetachArmed) armDropRetach();
       // El lanzador compacto tiene alto fijo (`setupHeight`). Snapearlo a
       // pantalla completa o a la mitad lo deforma y el layout no lo aguanta.
       if (!resizable) {
@@ -670,6 +718,14 @@
     },
     onDrop: ({ cursor, areas }) => {
       snapPreview.frame = null;
+      // Soltado cerca de la pill CON el retach armado: se coloca en la isla.
+      // Sin armar (el gesto nació pegado y nunca se alejó), queda flotando.
+      const pill = surfaces.live["pill-skin"] ?? surfaces.live["pill"];
+      if (retachesOnDrop(dropRetachArmed, pill, bubble.anchor)) {
+        dropRetachArmed = false;
+        void emit("dock-tool-face", "agents").catch(() => {});
+        return;
+      }
       if (!resizable) {
         savePosition();
         return;
@@ -936,6 +992,7 @@
   $effect(() => {
     if (!bubble.alive) {
       if (revealPhase !== "hidden") revealPhase = "hidden";
+      detachDirect = false;
       return;
     }
     if (bubble.shown && revealPhase === "hidden") void runOpenReveal();
@@ -1014,6 +1071,20 @@
   onMount(() => {
     applyTheme(readCachedTheme());
     setupWidth = readSetupWidth();
+    // Handoff del detach: la pill traspasa el gesto vivo directo al motor
+    // de arrastre, sin evento DOM de por medio (el header aún no existe: la
+    // consola llega después por el traspaso).
+    agentsFloatHandoff.current = (init) => {
+      startDrag(
+        new PointerEvent("pointerdown", {
+          button: 0,
+          pointerId: init.pointerId,
+          clientX: init.x,
+          clientY: init.y,
+          bubbles: true,
+        }),
+      );
+    };
     void overlayWorkAreas()
       .then((areas) => {
         workAreas = areas;
@@ -1079,6 +1150,7 @@
     const unbindDock = agentsDock.bind(expandFromDock);
     return () => {
       unbindDock();
+      if (agentsFloatHandoff.current) agentsFloatHandoff.current = null;
       window.removeEventListener("keydown", onKey);
       endDrag();
       endResize();
@@ -1130,18 +1202,37 @@
         {minimized}
         shown={bubble.shown}
       />
-      <!-- local: sin popover/viewport; el overlay es fullscreen y el toast
-         quedaría abajo de toda la pantalla, lejos del bubble. -->
-      <ToastStack
-        placement="local"
-        items={toasts.items}
-        onDismiss={(id) => toasts.dismiss(id)}
-      />
     </div>
   </div>
 {/if}
 
+<!--
+  Avisos del overlay, fuera del ciclo del bubble: el float puede no nacer
+  (la isla hospeda la consola) y el detach necesita feedback igual. Host a
+  pantalla completa para conservar el anclaje `local` (abajo del overlay),
+  sin depender de la vida del float.
+-->
+<div class="toast-host">
+  <ToastStack
+    placement="local"
+    items={toasts.items}
+    onDismiss={(id) => toasts.dismiss(id)}
+  />
+</div>
+
 <style>
+  /*
+   * Host de los avisos: fixed a pantalla completa para que la pila (`local`,
+   * `absolute inset-x-0 bottom-3`) quede al pie del overlay. No recibe
+   * punteros; cada toast los recupera.
+   */
+  .toast-host {
+    position: fixed;
+    inset: 0;
+    z-index: var(--z-toast);
+    pointer-events: none;
+  }
+
   .af {
     /* Sobreimpulso sutil solo en el tamaño: el panel "respira" al abrirse.
        La posición va en smooth-out para que la trayectoria no serpentee. */
