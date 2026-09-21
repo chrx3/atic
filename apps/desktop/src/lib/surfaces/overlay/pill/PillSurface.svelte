@@ -156,7 +156,7 @@
     agentsAlwaysOnTop,
     agentsWindowVisible,
     hideAgentsWindow,
-    showAgentsWindow,
+    presentAgentsWindow,
     onAgentsBubbleAnchor,
     onAgentsBubbleDismiss,
     agentPresenceFocus,
@@ -1551,7 +1551,12 @@
     if (was !== "tab" && spatialIntent === was) spatialIntent = null;
     islandFaceLockUntil = performance.now() + ISLAND_COLLAPSE_MS;
     setIslandExpanded(false);
-    void setOverlayPointerGesture(false).catch(() => {});
+    // Durante el despegue el botón sigue apretado. Bajar el gesto acá desarma
+    // el overlay en Windows: el cursor ya no está sobre la cara, el puntero
+    // se pierde y el panel nace pegado al notch.
+    if (!detachGesture) {
+      void setOverlayPointerGesture(false).catch(() => {});
+    }
     if (was === "agents" && agentsLive) agentsDock.setMinimized(true);
   }
 
@@ -1612,9 +1617,12 @@
     lastY: number;
     detached: boolean;
   } | null = null;
+  /** El float ya tomó el puntero: el pointerup no debe soltar el armado. */
+  let detachHandoff = false;
 
   function startDetachGesture(event: PointerEvent): void {
     if (event.button !== 0 || detachGesture) return;
+    detachHandoff = false;
     detachGesture = {
       pointerId: event.pointerId,
       startX: event.clientX,
@@ -1627,6 +1635,21 @@
     window.addEventListener("pointerup", onDetachPointerUp, true);
     window.addEventListener("pointercancel", onDetachPointerCancel, true);
     event.preventDefault();
+    // La cara hace stopPropagation, así que el arrastre de la pill no arma
+    // el overlay. En Windows, sin esto, colapsar la cara deja el cursor
+    // fuera de los hit-rects y el overlay pasa a click-through a mitad del
+    // gesto: el panel aparece en el sitio y no sigue la mano. El primero
+    // tarda más (el globo todavía no existe) y es el que se queda pegado.
+    // Hay que armarlo con el botón todavía apretado; si el flag ya estaba
+    // levantado sin botón (apertura de la cara), repetir el aviso lo sella.
+    surfaces.dragging = true;
+    void setOverlayPointerGesture(true).catch(() => {});
+  }
+
+  function releaseDetachArm(): void {
+    if (detachHandoff) return;
+    detachHandoff = false;
+    surfaces.dragging = false;
   }
 
   function endDetachGesture(): typeof detachGesture {
@@ -1654,6 +1677,10 @@
   function onDetachPointerUp(event: PointerEvent): void {
     const g = endDetachGesture();
     if (!g || event.pointerId !== g.pointerId) return;
+    // Si el float ya escuchaba, su pointerup cierra el arrastre. Si no
+    // alcanzó a nacer, soltar el armado: si no, el hit-rect queda a
+    // pantalla completa.
+    releaseDetachArm();
     // Soltar sin arrastre = clic: despega en el sitio.
     if (!g.detached) void detachToolFace();
   }
@@ -1661,6 +1688,7 @@
   function onDetachPointerCancel(event: PointerEvent): void {
     const g = endDetachGesture();
     if (!g || event.pointerId !== g.pointerId) return;
+    releaseDetachArm();
     if (!g.detached) void detachToolFace();
   }
 
@@ -1694,8 +1722,10 @@
         const live = detachGesture;
         if (!live || !live.detached || live.pointerId !== gesture.pointerId) return;
         const handoff = agentsFloatHandoff.current;
-        if (handoff) {
-          handoff({ pointerId: gesture.pointerId, x: live.lastX, y: live.lastY });
+        if (
+          handoff?.({ pointerId: gesture.pointerId, x: live.lastX, y: live.lastY })
+        ) {
+          detachHandoff = true;
           return;
         }
         await new Promise<void>((r) => requestAnimationFrame(() => r()));
@@ -1748,7 +1778,9 @@
   async function detachAgentsFloat(): Promise<void> {
     const live = agentsLive;
     agentsIslandHost.on = false;
-    await showAgentsWindow().catch(() => {});
+    // `show` es un interruptor: si Rust todavía cree el globo abierto, el
+    // despegue lo CERRABA. Presentar reancla si ya está, y abre si no.
+    await presentAgentsWindow().catch(() => {});
     if (live) {
       window.dispatchEvent(
         new CustomEvent<AgentsOverlayDetachDetail>(AGENTS_OVERLAY_DETACH, {
@@ -4250,7 +4282,11 @@
     return () => {
       stopDragWatch();
       stopUpdatePolling?.();
-      if (detachGesture) endDetachGesture();
+      if (detachGesture) {
+        const owned = detachHandoff;
+        endDetachGesture();
+        if (!owned) surfaces.dragging = false;
+      }
       window.clearTimeout(detachBounceTimer);
       window.clearTimeout(suppressAgentChipClickTimer);
       window.clearTimeout(suppressWheelCoreClickTimer);

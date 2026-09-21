@@ -1072,6 +1072,9 @@
     // de arrastre, sin evento DOM de por medio (el header aún no existe: la
     // consola llega después por el traspaso).
     agentsFloatHandoff.current = (init) => {
+      // El ancla llega un turno después de `show`: sin marco, `startDrag`
+      // sale al instante y la pill da el traspaso por hecho.
+      if (!bubble.anchor) return false;
       startDrag(
         new PointerEvent("pointerdown", {
           button: 0,
@@ -1081,6 +1084,7 @@
           bubbles: true,
         }),
       );
+      return true;
     };
     void overlayWorkAreas()
       .then((areas) => {
