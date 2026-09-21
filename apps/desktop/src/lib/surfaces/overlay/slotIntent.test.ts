@@ -24,9 +24,10 @@ describe("slotIntent", () => {
     expect(slotIntent("launcher", true, 200)).toBe("close");
   });
 
-  it("reubica clipboard / textos si ya están abiertos y el cursor se fue", () => {
+  it("reubica clipboard / textos / sistema si ya están abiertos y el cursor se fue", () => {
     expect(slotIntent("clipboard", true, 48)).toBe("relocate");
     expect(slotIntent("snippets", true, 120)).toBe("relocate");
+    expect(slotIntent("system", true, 48)).toBe("relocate");
   });
 
   it("dictado / grabar / captura no se cierran por estar “abiertos”", () => {
@@ -53,22 +54,25 @@ describe("slotIntent", () => {
     expect(slotIntent("clipboard", true, 400, 48, { stayPut: true })).toBe("close");
   });
 
-  it("stayPut: textos y agentes en la isla también cierran", () => {
+  it("stayPut: textos, sistema y agentes en la isla también cierran", () => {
     expect(slotIntent("snippets", true, 400, 48, { stayPut: true })).toBe("close");
+    expect(slotIntent("system", true, 400, 48, { stayPut: true })).toBe("close");
     expect(slotIntent("agents", true, 400, 48, { stayPut: true })).toBe("close");
   });
 });
 
 describe("isCursorAnchored / pillToCursorMovePx", () => {
-  it("solo clipboard y textos se anclan al cursor", () => {
+  it("clipboard, textos y sistema se anclan al cursor", () => {
     expect(isCursorAnchored("clipboard")).toBe(true);
     expect(isCursorAnchored("snippets")).toBe(true);
+    expect(isCursorAnchored("system")).toBe(true);
     expect(isCursorAnchored("launcher")).toBe(false);
     expect(isCursorAnchored("agents")).toBe(false);
     expect(isScreenCentered("launcher")).toBe(true);
     expect(isScreenCentered("agents")).toBe(true);
     expect(isScreenCentered("clipboard")).toBe(false);
     expect(isScreenCentered("snippets")).toBe(false);
+    expect(isScreenCentered("system")).toBe(false);
   });
 
   it("mide el vuelo de la pill al cursor, o 0 si no hay puntero", () => {
@@ -83,6 +87,7 @@ describe("spatialDismissTargets", () => {
   it("al mostrar clipboard cierra el resto", () => {
     expect(spatialDismissTargets("clipboard", {})).toEqual([
       "snippets",
+      "system",
       "agents",
       "launcher",
     ]);
@@ -94,12 +99,13 @@ describe("spatialDismissTargets", () => {
         snippets: true,
         agents: true,
       }),
-    ).toEqual(["launcher"]);
+    ).toEqual(["system", "launcher"]);
   });
 
   it("sin keep, cierra todas las espaciales no fijadas", () => {
     expect(spatialDismissTargets(undefined, { clipboard: true })).toEqual([
       "snippets",
+      "system",
       "agents",
       "launcher",
     ]);

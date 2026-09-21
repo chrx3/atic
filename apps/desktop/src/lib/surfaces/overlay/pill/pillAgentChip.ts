@@ -50,20 +50,33 @@ function better(
   return nr > 0 && nextAt > bestAt;
 }
 
-function fromChat(chat: {
-  unread: number;
-  working: boolean;
-  waiting: number;
-  readyLabel: string | null;
-  readyBackendId?: string | null;
-}): AgentChip {
+function fromChat(
+  chat: {
+    unread: number;
+    working: boolean;
+    waiting: number;
+    readyLabel: string | null;
+    readyBackendId?: string | null;
+    /** El stream del assistant está vivo: contesta, no solo trabaja. */
+    answering?: boolean;
+  },
+  labels: ChipLabels,
+): AgentChip {
   const target: ChipTarget = { kind: "console" };
   const logoId = agentLogoKey(chat.readyBackendId);
   if (chat.waiting > 0) {
     return { id: "chat", tone: "waiting", label: "permiso", target, logoId };
   }
   if (chat.working) {
-    return { id: "chat", tone: "working", label: chat.readyLabel, target, logoId };
+    return {
+      id: "chat",
+      tone: "working",
+      // Sin texto todavía, el chip igual dice en qué anda: contestando (deltas
+      // llegando) o trabajando (herramientas, pensando).
+      label: chat.readyLabel ?? (chat.answering ? labels.answering : labels.working),
+      target,
+      logoId,
+    };
   }
   if (chat.unread > 0) {
     return {
@@ -83,7 +96,7 @@ function presenceTarget(p: PresenceView): ChipTarget {
   return { kind: "none", presenceId: p.id };
 }
 
-function fromPresence(p: PresenceView): AgentChip {
+function fromPresence(p: PresenceView, labels: ChipLabels): AgentChip {
   const target = presenceTarget(p);
   const logoId = agentLogoKey(p.backendId);
   if (p.status === "waiting") {
@@ -93,16 +106,20 @@ function fromPresence(p: PresenceView): AgentChip {
     return {
       id: p.id,
       tone: "working",
-      label: p.preview ? clipChipPreview(p.preview) : null,
+      // Una TUI solo dice «trabajando»: no hay stream que distinguir.
+      label: p.preview?.trim() ? clipChipPreview(p.preview) : labels.working,
       target,
       logoId,
     };
   }
-  if (p.status === "ready" && p.unread > 0) {
+  if (p.status === "ready") {
+    // Terminó: el preview SIEMPRE va — el inicio de la última respuesta es
+    // lo que cierra el relato en la cara live, se haya leído o no. Con
+    // respuesta sin leer además cuenta como aviso (verde con texto).
     return {
       id: p.id,
       tone: "ready",
-      label: clipChipPreview(p.preview),
+      label: p.preview?.trim() ? clipChipPreview(p.preview) : null,
       target,
       logoId,
     };
@@ -121,11 +138,21 @@ function liveLogosFromConsoles(
   return logos;
 }
 
-function skipStalePresence(p: PresenceView, liveLogos: Set<string>): boolean {
-  if (liveLogos.size === 0) return false;
+const STALE_WORKING_MS = 90_000;
+
+function skipStalePresence(
+  p: PresenceView,
+  liveLogos: Set<string>,
+  now?: number,
+): boolean {
   if (p.window?.hwnd) return false;
   const logo = agentLogoKey(p.backendId);
-  return !logo || !liveLogos.has(logo);
+  if (logo && liveLogos.has(logo)) return false;
+  // Ready is already pruned by the watcher. Waiting is an explicit hook
+  // signal, so only an unbound working presence gets a frontend age guard.
+  // Tests can omit `now` to exercise the presence pipeline without a clock.
+  if (p.status !== "working" || now == null) return false;
+  return now - p.updatedAt * 1000 > STALE_WORKING_MS;
 }
 
 function chatForLiveConsoles(
@@ -135,12 +162,14 @@ function chatForLiveConsoles(
     waiting: number;
     readyLabel: string | null;
     readyBackendId?: string | null;
+    answering?: boolean;
   },
   liveLogos: Set<string>,
+  labels: ChipLabels,
 ): AgentChip {
-  if (liveLogos.size === 0) return fromChat(chat);
+  if (liveLogos.size === 0) return fromChat(chat, labels);
   const chatLogo = agentLogoKey(chat.readyBackendId);
-  if (chatLogo && liveLogos.has(chatLogo)) return fromChat(chat);
+  if (chatLogo && liveLogos.has(chatLogo)) return fromChat(chat, labels);
   return OFF;
 }
 
@@ -151,6 +180,8 @@ type ChipInput = {
     waiting: number;
     readyLabel: string | null;
     readyBackendId?: string | null;
+    /** El stream del assistant está vivo: contesta, no solo trabaja. */
+    answering?: boolean;
     updatedAt?: number;
     providerSessions?: Array<string | null | undefined>;
   };
@@ -158,6 +189,19 @@ type ChipInput = {
   chatEnabled: boolean;
   pagerEnabled: boolean;
   consoles?: Array<string | null | undefined>;
+  /** Epoch milliseconds used only to discard genuinely old unbound work. */
+  now?: number;
+  /** Textos del chip cuando no hay preview. La UI pasa los de i18n. */
+  workingLabel?: string;
+  answeringLabel?: string;
+};
+
+/** Textos por defecto del chip ocupado; la UI los pisa con su i18n. */
+type ChipLabels = { working: string; answering: string };
+
+const DEFAULT_LABELS: ChipLabels = {
+  working: "Trabajando…",
+  answering: "Contestando…",
 };
 
 const CHIP_STACK_MAX = 4;
@@ -168,8 +212,12 @@ const CHIP_STACK_MAX = 4;
  */
 export function agentChips(state: ChipInput): AgentChip[] {
   const liveLogos = liveLogosFromConsoles(state.consoles);
+  const labels: ChipLabels = {
+    working: state.workingLabel ?? DEFAULT_LABELS.working,
+    answering: state.answeringLabel ?? DEFAULT_LABELS.answering,
+  };
   const chatResult = state.chatEnabled
-    ? chatForLiveConsoles(state.chat, liveLogos)
+    ? chatForLiveConsoles(state.chat, liveLogos, labels)
     : OFF;
   const chatAt = state.chat.updatedAt ?? 0;
   const ranked: { chip: AgentChip; at: number }[] = [];
@@ -182,8 +230,8 @@ export function agentChips(state: ChipInput): AgentChip[] {
     );
     for (const p of state.presence) {
       if (live.has(p.id)) continue;
-      if (skipStalePresence(p, liveLogos)) continue;
-      const next = fromPresence(p);
+      if (skipStalePresence(p, liveLogos, state.now)) continue;
+      const next = fromPresence(p, labels);
       if (next.tone === "off") continue;
       ranked.push({ chip: next, at: p.updatedAt });
     }
@@ -234,17 +282,19 @@ export function agentLogoKey(id: string | null | undefined): string | null {
   }
 }
 
-/**
- * Logos de la pestaña: agentes ocupados (chat/TUI) y consolas con CLI conocida.
- * Un id por marca, en el orden en que aparecen.
- */
-export function cueAgentIds(state: {
+type CueAgentState = {
   sessions: Array<{ backendId: string; status: string }>;
   presence: Array<{ backendId: string; status: string }>;
   consoles?: Array<string | null | undefined>;
   /** Si el chip ya eligió un agente, solo ese logo: no mezclar marcas. */
   chipLogoId?: string | null;
-}): string[] {
+};
+
+/**
+ * Logos de la pestaña: agentes ocupados (chat/TUI) y consolas con CLI conocida.
+ * Un id por marca, en el orden en que aparecen.
+ */
+export function cueAgentIds(state: CueAgentState): string[] {
   if (state.chipLogoId) return [state.chipLogoId];
   const ids: string[] = [];
   const add = (raw: string | null | undefined) => {
@@ -259,6 +309,16 @@ export function cueAgentIds(state: {
   }
   for (const c of state.consoles ?? []) add(c);
   return ids;
+}
+
+export function agentChipLogos(
+  chip: Pick<AgentChip, "tone" | "logoId">,
+  state: Omit<CueAgentState, "chipLogoId">,
+  dockMinimized: boolean,
+): string[] {
+  if (chip.tone !== "off") return chip.logoId ? [chip.logoId] : [];
+  if (!dockMinimized) return [];
+  return cueAgentIds(state);
 }
 
 /**

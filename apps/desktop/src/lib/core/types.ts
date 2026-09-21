@@ -75,6 +75,8 @@ export interface AppConfig {
   clipboard_always_on_top: boolean;
   /** Float de textos/snippets fijado arriba mientras está abierto. */
   snippets_always_on_top: boolean;
+  /** Float de sistema fijado arriba mientras está abierto. */
+  system_always_on_top: boolean;
   beep_on_start: boolean;
   /** Toques graves de interfaz (capturas, dictado). Interruptor maestro. */
   ui_sounds: boolean;
@@ -203,6 +205,8 @@ export interface ConsoleOpenOptions {
   rows?: number;
   /** Comando a ejecutar en la PTY local (CLI de un agente). Vacío = shell. */
   command?: string | null;
+  /** Vista que la abre: la reclama desde el arranque (ver `console_attach`). */
+  view?: string | null;
 }
 
 export interface ConsoleOutputPayload {

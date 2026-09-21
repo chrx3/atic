@@ -29,6 +29,7 @@
     { label: "barW (px)", key: "barW", min: 240, max: 560, step: 4 },
     { label: "barH (px)", key: "barH", min: 36, max: 72, step: 1 },
     { label: "gooGrow (px)", key: "gooGrow", min: 0, max: 8, step: 0.1 },
+    { label: "menisco del canto (px)", key: "meniscusFlare", min: 0, max: 32, step: 1 },
   ];
 
   function valueOf(key: keyof LauncherLabValues): number {
@@ -101,9 +102,12 @@
 
 <style>
   .lab {
-    position: relative;
+    /* El host cubre el viewport (para no perder arrastres); el panel va acá. */
+    position: fixed;
+    top: 3.25rem;
+    left: 0.75rem;
     display: flex;
-    width: 100%;
+    width: min(19rem, calc(100vw - 1.5rem));
     max-height: min(70vh, 34rem);
     flex-direction: column;
     overflow: hidden;

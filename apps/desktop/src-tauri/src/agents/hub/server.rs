@@ -1134,7 +1134,7 @@ mod tests {
         // La sesión se resolvió justo antes: si ya no existe, fue una
         // carrera y se informa como unknown_session, igual que prompt/wait.
         for msg in [
-            "esa sesión ya no existe",
+            "esa sesión ya no existe".to_string(),
             "no hay sesiones abiertas".to_string(),
         ] {
             let respuesta = fallo_cancel(msg);

@@ -70,11 +70,28 @@ export function pillLayout(
 
   // Todo en «Más» y nada en el anillo dejaría un único gajo que solo abre
   // otro anillo: dos pasos para llegar a cualquier cosa. Sube el submenú.
-  if (ring.length === 0) {
-    return { ring: more, more: [], hidden: hiddenFrom(more) };
+  let ringOut = ring;
+  let moreOut = more;
+  if (ringOut.length === 0) {
+    ringOut = moreOut;
+    moreOut = [];
   }
 
-  return { ring, more, hidden: hiddenFrom([...ring, ...more]) };
+  // Tools nuevas: una rueda ya armada no las esconde. Entran al anillo
+  // para que se vean; Ajustes → Pill las mueve o las saca.
+  const extra = newcomers(ringOut, moreOut);
+  ringOut = extra.length === 0 ? ringOut : [...ringOut, ...extra];
+  return { ring: ringOut, more: moreOut, hidden: hiddenFrom([...ringOut, ...moreOut]) };
+}
+
+/** Catálogo que se ofreció después de que ya había ruedas personalizadas. */
+const OFFER_IN_RING: readonly ToolId[] = ["system"];
+
+function newcomers(ring: ToolDef[], more: ToolDef[]): ToolDef[] {
+  const taken = new Set([...ring, ...more].map((tool) => tool.id));
+  return WHEEL_TOOLS.filter(
+    (tool) => OFFER_IN_RING.includes(tool.id) && !taken.has(tool.id),
+  );
 }
 
 function hiddenFrom(shown: readonly ToolDef[]): ToolDef[] {

@@ -17,6 +17,7 @@
     isTypingTarget,
     jumpIndex,
     leafName,
+    parentPath,
     pathsEqual,
     readFavs,
     toggleFav,
@@ -56,20 +57,35 @@
     query = "";
     jumpBuffer = "";
     activePath = null;
-    try {
-      const next = await listDirectories(path?.trim() || null);
-      listing = next;
-      browsePath = next.path;
-    } catch (cause) {
-      error =
-        typeof cause === "string"
-          ? cause
-          : cause instanceof Error
-            ? cause.message
-            : String(cause);
-    } finally {
-      loading = false;
+    let target = path?.trim() || null;
+    let notice: string | null = null;
+    // La carpeta pedida puede no existir (una guardada vieja, un disco que se
+    // fue): en vez de morir en «no existe», sube al ancestro que sí exista.
+    // El aviso suave explica el salto y la navegación sigue viva.
+    for (let hop = 0; hop < 32; hop++) {
+      try {
+        const next = await listDirectories(target);
+        listing = next;
+        browsePath = next.path;
+        error = notice;
+        break;
+      } catch (cause) {
+        const message =
+          typeof cause === "string"
+            ? cause
+            : cause instanceof Error
+              ? cause.message
+              : String(cause);
+        const parent = target ? parentPath(target) : null;
+        if (!parent || parent === target) {
+          error = message;
+          break;
+        }
+        notice ??= message;
+        target = parent;
+      }
     }
+    loading = false;
   }
 
   onMount(() => {

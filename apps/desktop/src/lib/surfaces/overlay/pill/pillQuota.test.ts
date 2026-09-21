@@ -118,6 +118,19 @@ describe("quotaRows", () => {
     expect(rows[0].bars.map((b) => b.model)).toEqual(["Gemini", "Claude+GPT"]);
   });
 
+  it("grok entra entre antigravity y cursor", () => {
+    const rows = quotaRows(
+      overview([
+        quota({ agent: "cursor-agent" }),
+        quota({ agent: "grok" }),
+        quota({ agent: "agy" }),
+      ]),
+      NOW,
+    );
+    expect(rows.map((r) => r.agent)).toEqual(["agy", "grok", "cursor-agent"]);
+    expect(rows[1].name).toBe("Grok");
+  });
+
   it("un agente que no llega en el snapshot no ocupa fila", () => {
     const rows = quotaRows(overview([quota({ agent: "claude" })]), NOW);
     expect(rows).toHaveLength(1);

@@ -53,6 +53,26 @@ export interface PendingPermission {
 /** Catálogo `/` de la última sesión, para el primer `/` en frío. */
 const CATALOG_KEY = "atic.agents.slashCatalog";
 
+/**
+ * ¿La sesión está contestando AHORA?
+ *
+ * `streaming` en el último mensaje del assistant es la diferencia entre
+ * «contestando» (deltas llegando) y «trabajando» (herramientas, pensando). Se
+ * mira el ÚLTIMO mensaje y no cualquiera: al cerrar el turno el backend lo
+ * apaga, y un flag viejo no debe dejar la pill diciendo «Contestando…».
+ */
+export function sessionAnswering(s: AgentSessionView): boolean {
+  for (let i = s.turns.length - 1; i >= 0; i--) {
+    const items = s.turns[i].items;
+    for (let j = items.length - 1; j >= 0; j--) {
+      const it = items[j];
+      if (it.kind !== "message" || it.role !== "assistant") continue;
+      return it.streaming === true;
+    }
+  }
+  return false;
+}
+
 function readStoredCatalog(): Record<string, SlashCommand[]> {
   try {
     const raw = localStorage.getItem(CATALOG_KEY);
@@ -198,7 +218,18 @@ class AgentSessionStore {
    * Tras 45s sin deltas, liberamos la sesión.
    */
   static readonly WORKING_TIMEOUT_MS = 45_000;
+  /**
+   * Ritmo mínimo del `lastText` mientras el stream está vivo.
+   *
+   * El chip de la barra lo muestra y la barra se re-mide cuando cambia: a
+   * 60 chunks/s la caja tironea. 120ms alcanza para que se lea «vivo».
+   */
+  static readonly STREAM_TEXT_MS = 120;
   #workingTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  /** Último refresco aceptado del texto en stream, por sesión. */
+  #streamTextAt = new Map<string, number>();
+  /** Refresh coalescido pendiente del texto en stream, por sesión. */
+  #streamTextTimers = new Map<string, ReturnType<typeof setTimeout>>();
   /** Sesiones que el usuario pidió cortar: un delta tardío no las revive. */
   #stopped = new Set<string>();
 
@@ -210,6 +241,19 @@ class AgentSessionStore {
   /** Algún agente está trabajando ahora mismo. */
   get working(): boolean {
     return this.sessions.some((s) => s.status === "working");
+  }
+
+  /**
+   * El agente del chip está contestando: el stream del assistant sigue vivo.
+   *
+   * Es la sesión del chip (`#chipSession`) y no cualquiera: el texto que la
+   * pill muestra es el suyo. Con varias sesiones ocupadas —una con
+   * herramientas y otra escribiendo— la etiqueta tiene que hablar de la que
+   * se está mostrando.
+   */
+  get answering(): boolean {
+    const s = this.#chipSession;
+    return s ? sessionAnswering(s) : false;
   }
 
   /**
@@ -753,12 +797,52 @@ class AgentSessionStore {
   }
 
   #setLastText(s: AgentSessionView, text: string): void {
+    // Un texto definitivo pisa cualquier coalescido pendiente: si no, un
+    // timer en vuelo repondría un prefijo viejo después del cierre.
+    const pending = this.#streamTextTimers.get(s.id);
+    if (pending) {
+      clearTimeout(pending);
+      this.#streamTextTimers.delete(s.id);
+    }
     s.lastText = text;
     s.lastTextAt = Math.floor(Date.now() / 1000);
   }
 
+  /**
+   * `lastText` mientras el stream está vivo: coalescido a `STREAM_TEXT_MS`.
+   *
+   * Cada chunk reescribe el texto del chip y la barra flotante se vuelve a
+   * medir (el efecto de medida depende de `chips`): sin freno, un stream de
+   * decenas de chunks por segundo mueve la caja decenas de veces. El texto es
+   * un preview de 28ch que no gana nada cambiando a 60 Hz; el cierre del turno
+   * entra por `#setLastText` y deja el texto exacto.
+   */
+  #setLastTextStreaming(s: AgentSessionView, text: string): void {
+    const now = Date.now();
+    const last = this.#streamTextAt.get(s.id) ?? 0;
+    if (now - last >= AgentSessionStore.STREAM_TEXT_MS) {
+      this.#streamTextAt.set(s.id, now);
+      this.#setLastText(s, text);
+      return;
+    }
+    const timer = this.#streamTextTimers.get(s.id);
+    if (timer) clearTimeout(timer);
+    this.#streamTextTimers.set(
+      s.id,
+      setTimeout(() => {
+        this.#streamTextTimers.delete(s.id);
+        this.#streamTextAt.set(s.id, Date.now());
+        this.#setLastText(s, text);
+      }, AgentSessionStore.STREAM_TEXT_MS),
+    );
+  }
+
   #rememberAssistant(s: AgentSessionView, it: AgentItem): void {
     if (it.kind === "message" && it.role === "assistant" && it.text.trim()) {
+      if (it.streaming === true) {
+        this.#setLastTextStreaming(s, it.text);
+        return;
+      }
       this.#setLastText(s, it.text);
     }
   }

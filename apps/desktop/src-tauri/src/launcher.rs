@@ -296,6 +296,16 @@ fn builtin_actions(en: bool) -> Vec<LauncherEntry> {
             "agents",
         ),
         (
+            "action:system",
+            pick(en, "Sistema", "System"),
+            pick(
+                en,
+                "Volumen, recursos y pantallas junto a la pill",
+                "Volume, resources and displays next to the pill",
+            ),
+            "system",
+        ),
+        (
             "action:settings",
             pick(en, "Ajustes", "Settings"),
             pick(
@@ -346,18 +356,16 @@ fn builtin_actions(en: bool) -> Vec<LauncherEntry> {
             pick(en, "Vaciar papelera", "Empty trash"),
             pick(
                 en,
-                "Windows pide confirmación: no se puede deshacer",
-                "Windows asks first: this cannot be undone",
+                "Pide confirmación: no se puede deshacer",
+                "Asks first: this cannot be undone",
             ),
             "sys-trash",
         ),
     ]
     .into_iter()
     .filter(|(_, _, _, action)| crate::agents::UI_ENABLED || *action != "agents")
-    // `sys-*` (bloquear, suspender, silenciar, papelera) solo existe en
-    // Windows; «Cerrar todas las apps» también corre en macOS.
     .filter(|(_, _, _, action)| match *action {
-        a if a.starts_with("sys-") => cfg!(windows),
+        a if a.starts_with("sys-") => cfg!(any(windows, target_os = "macos")),
         "quit-all" => cfg!(any(windows, target_os = "macos")),
         _ => true,
     })
@@ -1117,6 +1125,10 @@ fn run_action(app: &AppHandle, action: &str) -> Result<(), String> {
             }
             Ok(())
         }
+        "system" => {
+            crate::shortcuts::emit_tool_slot(app, "activate-tool-slot", "system");
+            Ok(())
+        }
         "settings" => {
             crate::state::show_main(app);
             Ok(())
@@ -1258,7 +1270,11 @@ mod tests {
             "action:sys-mute",
             "action:sys-trash",
         ] {
-            assert_eq!(ids.iter().any(|it| it == id), cfg!(windows), "{id}");
+            assert_eq!(
+                ids.iter().any(|it| it == id),
+                cfg!(any(windows, target_os = "macos")),
+                "{id}"
+            );
         }
         assert_eq!(
             ids.iter().any(|id| id == "action:quit-all"),

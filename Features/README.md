@@ -18,7 +18,7 @@ a Groq; los proveedores de resumen reciben únicamente el texto transcrito.
 No tiene una ventana grande que haya que ir a buscar. Vive en tres lugares:
 
 - **La pill** — barra flotante siempre encima, movible, que se expande según lo
-  que esté pasando y despliega una rueda con las siete herramientas.
+  que esté pasando y despliega una rueda con las herramientas.
 - **La bandeja del sistema** — mostrar/ocultar y salir.
 - **Nueve atajos globales** — cubren los flujos principales y permiten abrir el
   resto de herramientas mediante la rueda o el launcher, sin buscar la ventana
@@ -29,9 +29,9 @@ resumen, ajustes) para el trabajo que no cabe en la pill.
 
 ---
 
-## Las siete herramientas
+## Las herramientas de la rueda
 
-Las que ve el usuario en la rueda, en el orden de [`tools.ts`](../apps/desktop/src/lib/tools.ts).
+Las que ve el usuario en la rueda, en el orden de [`tools.ts`](../apps/desktop/src/lib/core/tools.ts).
 
 ### 1. Reuniones — grabar y resumir
 
@@ -97,7 +97,18 @@ El flujo completo del producto original: graba, transcribe local y resume.
 
 → [agentes.md](agentes.md) · [liquid.md](liquid.md)
 
-### 6. Capturas — recortes de pantalla
+### 6. Sistema — volumen, recursos y pantallas
+
+- Cara de la isla, mismo gesto que clipboard: lista adentro, se puede despegar.
+- CPU y RAM del equipo más las apps de usuario, ordenables. Cerrar como el aspa;
+  forzar cierre solo con confirmación.
+- Volumen maestro en Windows y macOS; sliders por app **solo en Windows**.
+- Lista de monitores y brillo cuando el SO lo expone.
+- Fila rápida: bloquear, suspender, silencio y vaciar papelera.
+
+→ [sistema.md](sistema.md) · [system-actions.md](system-actions.md)
+
+### 7. Capturas — recortes de pantalla
 
 - **Región, ventana o monitor**, con overlay para delimitar.
 - Van al portapapeles y a un **shelf flotante**.
@@ -110,7 +121,7 @@ El flujo completo del producto original: graba, transcribe local y resume.
 
 → [capturas.md](capturas.md)
 
-### 7. Pizarra — marcar la pantalla
+### 8. Pizarra — marcar la pantalla
 
 - `Ctrl/Cmd+Shift+X` **congela la pantalla** y la marcas ahí donde está, con
   las mismas herramientas del editor de capturas.
@@ -195,6 +206,7 @@ voz solo cambia color, registro y duración.
 | Dictado y pegado | sí | sí |
 | Capturas de pantalla | sí | no |
 | Clipboard, textos, agentes | sí | sí |
+| Sistema (volumen, recursos, brillo, cerrar apps) | sí | sí (volumen por app no) |
 | Launcher | sí (menú Inicio + Store) | sí (apps, iconos, Recientes y cerrar apps) |
 
 Windows es la plataforma completa. En macOS, grabar una reunión captura **solo
@@ -217,7 +229,6 @@ Consolidado de los pendientes de cada ficha que el usuario llegaría a notar.
 | Preferencias del launcher (raíces extra, exclusiones, favoritos) | [launcher-spotlight.md](launcher-spotlight.md) |
 | Ranking por uso y fuzzy más fino en el launcher | [launcher-spotlight.md](launcher-spotlight.md) |
 | Divisas/cripto en vivo y gestión de ventanas en el launcher | [launcher-spotlight.md](launcher-spotlight.md) |
-| Acciones de sistema en macOS | [system-actions.md](system-actions.md) |
 | Expansión de textos por trigger tipado | [snippets.md](snippets.md) |
 | Capturas en macOS | [capturas.md](capturas.md) |
 | Companion móvil | [companion-movil.md](companion-movil.md) |
@@ -253,7 +264,8 @@ Detalle completo en el [README del repo](../README.md#privacidad).
 | hecho | Ajustes y onboarding | [ajustes-onboarding.md](ajustes-onboarding.md) |
 | hecho | Audio del sistema en macOS | [macos-audio-sistema.md](macos-audio-sistema.md) |
 | hecho | Launcher tipo Spotlight | [launcher-spotlight.md](launcher-spotlight.md) |
-| parcial | Acciones de sistema (Windows) | [system-actions.md](system-actions.md) |
+| hecho | Panel de sistema | [sistema.md](sistema.md) |
+| hecho | Acciones de sistema | [system-actions.md](system-actions.md) |
 | idea | Companion móvil | [companion-movil.md](companion-movil.md) |
 | idea | Hosts SSH para agentes remotos | [ssh-remote-hosts.md](ssh-remote-hosts.md) |
 | idea | Orquestación de agentes (MCP) | [orquestacion-agentes.md](orquestacion-agentes.md) |

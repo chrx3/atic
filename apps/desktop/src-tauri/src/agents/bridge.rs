@@ -295,10 +295,42 @@ const AGENTS_ANCHOR: &str = "agents-bubble-anchor";
 const AGENTS_DISMISS: &str = "agents-bubble-dismiss";
 const AGENTS_EXPAND: &str = "agents-bubble-expand";
 
+/// La consola también vive dentro de la isla del overlay (sin ventana propia).
+///
+/// El float ya no nace encima de la pill, así que este flag es el que cuenta
+/// para el historial: con la consola de la isla a la vista, el pegado inserta
+/// en ella en vez de mandar Ctrl+V afuera.
+static ISLAND_OPEN: AtomicBool = AtomicBool::new(false);
+
+/// Y la ventana dedicada `agents`, que hospeda las PTY cuando la consola se
+/// separa de la isla. Cada dueña lleva su bandera: isla y ventana conviven y
+/// la última en escribir no puede apagar a la otra.
+static WINDOW_OPEN: AtomicBool = AtomicBool::new(false);
+
 /// ¿La consola está desplegada? Lo pregunta el historial del portapapeles, que
 /// con ella abierta inserta en el compositor en vez de pegar afuera.
 pub fn agents_open() -> bool {
     OPEN.load(Ordering::Relaxed)
+        || ISLAND_OPEN.load(Ordering::Relaxed)
+        || WINDOW_OPEN.load(Ordering::Relaxed)
+}
+
+/// El overlay avisa si la consola de la isla está a la vista.
+///
+/// No emite eventos ni toca la geometría: la isla maneja su ciclo de vida
+/// (abrir, achicar, dock). Solo destraba el pegado interno del historial.
+#[tauri::command]
+pub fn set_agents_console_open(on: bool) {
+    ISLAND_OPEN.store(on, Ordering::Relaxed);
+}
+
+/// La ventana dedicada avisa si hospeda consolas vivas y a la vista.
+///
+/// Mismo contrato que la isla: con la bandera encendida, el pegado del
+/// historial entra a su sesión en vez de salir a la app de atrás.
+#[tauri::command]
+pub fn set_agents_window_open(on: bool) {
+    WINDOW_OPEN.store(on, Ordering::Relaxed);
 }
 
 /// Carga la preferencia de pin desde config (una vez, al arrancar).

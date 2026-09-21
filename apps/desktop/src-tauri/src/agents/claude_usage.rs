@@ -2,11 +2,12 @@
 //!
 //! El CLI solo muestra esto con `/usage` en una sesión interactiva. Atic lee
 //! el mismo endpoint OAuth no documentado que usa el CLI
-//! (`GET /api/oauth/usage`) con el token de `~/.claude/.credentials.json`.
+//! (`GET /api/oauth/usage`) con el token de `~/.claude/.credentials.json`
+//! o, en macOS, el llavero `Claude Code-credentials`.
 //!
 //! Si el access token está vencido o la API responde 401, se refresca una vez
 //! (client_id público de Claude Code) y se escribe el token rotado de vuelta
-//! preservando el resto del JSON — Claude Code comparte ese archivo.
+//! preservando el resto del JSON — Claude Code comparte ese archivo o llavero.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -121,8 +122,8 @@ fn fetch_account_usage_uncached() -> Result<ClaudeAccountUsage, String> {
         .build()
         .map_err(|e| format!("no se pudo crear el cliente HTTP: {e}"))?;
 
-    let creds_path = credentials_path();
-    let (mut token, plan) = load_access_token(&client, creds_path.as_deref())?;
+    let store = cred_store();
+    let (mut token, plan) = load_access_token(&client, store.as_ref())?;
 
     match call_usage(&client, &token) {
         Ok(mut usage) => {
@@ -130,11 +131,11 @@ fn fetch_account_usage_uncached() -> Result<ClaudeAccountUsage, String> {
             Ok(usage)
         }
         Err(UsageErr::Unauthorized) => {
-            let path = creds_path.ok_or_else(|| {
+            let store = store.ok_or_else(|| {
                 "no hay credenciales OAuth de Claude. Abre Claude Code y ejecuta `claude auth login`."
                     .to_string()
             })?;
-            token = refresh_and_persist(&client, &path)?;
+            token = refresh_and_persist(&client, &store)?;
             let mut usage = call_usage(&client, &token).map_err(|e| e.to_string())?;
             usage.plan = plan.or(usage.plan);
             Ok(usage)
@@ -292,13 +293,74 @@ fn parse_usage_body(body: &str) -> Result<ClaudeAccountUsage, String> {
     Ok(usage)
 }
 
-fn credentials_path() -> Option<PathBuf> {
+pub(crate) fn credentials_path() -> Option<PathBuf> {
     Some(config_dir()?.join(".credentials.json"))
+}
+
+/// Dónde está el OAuth de Claude en esta máquina.
+enum ClaudeStore {
+    File(PathBuf),
+    Keychain { account: String },
+}
+
+impl ClaudeStore {
+    fn read(&self) -> Result<String, String> {
+        match self {
+            Self::File(path) => fs::read_to_string(path)
+                .map_err(|e| format!("no se pudieron leer las credenciales de Claude: {e}")),
+            Self::Keychain { account } => super::os_keychain::generic_password(
+                super::os_keychain::CLAUDE_KEYCHAIN_SERVICE,
+                account,
+            )
+            .ok_or_else(|| "no hay credenciales de Claude en el llavero".to_string()),
+        }
+    }
+
+    fn write_json(&self, root: &Value) -> Result<(), String> {
+        match self {
+            Self::File(path) => atomic_write_json(path, root),
+            Self::Keychain { account } => {
+                let body = serde_json::to_string(root)
+                    .map_err(|e| format!("serializar credenciales: {e}"))?;
+                super::os_keychain::set_generic_password(
+                    super::os_keychain::CLAUDE_KEYCHAIN_SERVICE,
+                    account,
+                    &body,
+                )
+            }
+        }
+    }
+
+    fn mtime(&self) -> Option<SystemTime> {
+        match self {
+            Self::File(path) => fs::metadata(path).and_then(|m| m.modified()).ok(),
+            Self::Keychain { .. } => None,
+        }
+    }
+}
+
+/// ¿Hay sesión OAuth de Claude? Archivo (Windows) o llavero (macOS).
+pub fn detected() -> bool {
+    if std::env::var("CLAUDE_CODE_OAUTH_TOKEN").is_ok_and(|v| !v.trim().is_empty()) {
+        return true;
+    }
+    cred_store().is_some()
+}
+
+fn cred_store() -> Option<ClaudeStore> {
+    if let Some(path) = credentials_path() {
+        if path.is_file() {
+            return Some(ClaudeStore::File(path));
+        }
+    }
+    let account = super::os_keychain::claude_keychain_account()?;
+    super::os_keychain::generic_password(super::os_keychain::CLAUDE_KEYCHAIN_SERVICE, &account)
+        .map(|_| ClaudeStore::Keychain { account })
 }
 
 fn load_access_token(
     client: &reqwest::blocking::Client,
-    path: Option<&Path>,
+    store: Option<&ClaudeStore>,
 ) -> Result<(String, Option<String>), String> {
     if let Ok(env_token) = std::env::var("CLAUDE_CODE_OAUTH_TOKEN") {
         let t = env_token.trim().to_string();
@@ -307,18 +369,11 @@ fn load_access_token(
         }
     }
 
-    let path = path.ok_or_else(|| {
-        "no se encontró ~/.claude. ¿Claude Code está instalado y con sesión iniciada?".to_string()
+    let store = store.ok_or_else(|| {
+        "no hay credenciales OAuth de Claude. Ejecuta `claude auth login` en una terminal."
+            .to_string()
     })?;
-    if !path.is_file() {
-        return Err(
-            "no hay credenciales OAuth de Claude. Ejecuta `claude auth login` en una terminal."
-                .to_string(),
-        );
-    }
-
-    let text = fs::read_to_string(path)
-        .map_err(|e| format!("no se pudieron leer las credenciales de Claude: {e}"))?;
+    let text = store.read()?;
     let root: Value = serde_json::from_str(&text)
         .map_err(|_| "credenciales de Claude ilegibles (JSON inválido)".to_string())?;
     let oauth = root.get("claudeAiOauth").ok_or_else(|| {
@@ -362,7 +417,7 @@ fn load_access_token(
         .unwrap_or(false);
 
     if expiring {
-        match refresh_and_persist(client, path) {
+        match refresh_and_persist(client, store) {
             Ok(t) => return Ok((t, plan)),
             Err(e) => {
                 // Si el refresh falla pero el token aún no venció del todo, seguir.
@@ -390,9 +445,11 @@ fn prettify_plan(raw: &str) -> String {
         .replace('_', " ")
 }
 
-fn refresh_and_persist(client: &reqwest::blocking::Client, path: &Path) -> Result<String, String> {
-    let text = fs::read_to_string(path)
-        .map_err(|e| format!("no se pudieron leer las credenciales: {e}"))?;
+fn refresh_and_persist(
+    client: &reqwest::blocking::Client,
+    store: &ClaudeStore,
+) -> Result<String, String> {
+    let text = store.read()?;
     let mut root: Value = serde_json::from_str(&text)
         .map_err(|_| "credenciales ilegibles al refrescar".to_string())?;
     let oauth = root
@@ -427,7 +484,7 @@ fn refresh_and_persist(client: &reqwest::blocking::Client, path: &Path) -> Resul
         body["scope"] = json!(scopes.join(" "));
     }
 
-    let mtime_before = fs::metadata(path).and_then(|m| m.modified()).ok();
+    let mtime_before = store.mtime();
 
     let mut last_err = String::from("refresh falló");
     let mut parsed: Option<Value> = None;
@@ -473,10 +530,10 @@ fn refresh_and_persist(client: &reqwest::blocking::Client, path: &Path) -> Resul
     let expires_ms = chrono::Utc::now().timestamp_millis() + expires_in * 1000;
 
     // Si Claude Code rotó el archivo mientras pedíamos refresh, no pisar.
-    let mtime_after = fs::metadata(path).and_then(|m| m.modified()).ok();
+    let mtime_after = store.mtime();
     if mtime_changed(mtime_before, mtime_after) {
         // Releer y usar el access token nuevo si ya está.
-        if let Ok((t, _)) = load_access_token_no_refresh(path) {
+        if let Ok((t, _)) = load_access_token_no_refresh(store) {
             return Ok(t);
         }
         return Err("credenciales cambiaron durante el refresh; vuelve a intentar".to_string());
@@ -500,12 +557,12 @@ fn refresh_and_persist(client: &reqwest::blocking::Client, path: &Path) -> Resul
         }
     }
 
-    atomic_write_json(path, &root)?;
+    store.write_json(&root)?;
     Ok(access)
 }
 
-fn load_access_token_no_refresh(path: &Path) -> Result<(String, Option<String>), String> {
-    let text = fs::read_to_string(path).map_err(|e| e.to_string())?;
+fn load_access_token_no_refresh(store: &ClaudeStore) -> Result<(String, Option<String>), String> {
+    let text = store.read()?;
     let root: Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
     let oauth = root.get("claudeAiOauth").ok_or("sin oauth")?;
     let access = oauth

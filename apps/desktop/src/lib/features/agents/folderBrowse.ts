@@ -34,6 +34,17 @@ export function leafName(path: string): string {
   return parts[parts.length - 1] || path;
 }
 
+/** El directorio padre de una ruta; `null` si no hay (raíz o letra de disco). */
+export function parentPath(path: string): string | null {
+  const p = path.trim().replace(/[\\/]+$/, "");
+  if (!p) return null;
+  const idx = Math.max(p.lastIndexOf("/"), p.lastIndexOf("\\"));
+  if (idx < 0) return null;
+  if (idx === 0) return "/";
+  const head = p.slice(0, idx);
+  return /^[A-Za-z]:$/.test(head) ? `${head}/` : head;
+}
+
 export function filterEntries<T extends { name: string }>(
   entries: readonly T[],
   query: string,

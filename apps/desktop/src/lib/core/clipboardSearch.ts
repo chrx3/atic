@@ -4,8 +4,12 @@ export function normalizeSearchText(value: string): string {
 }
 
 /**
- * Coincidencia ligera: substring, tokens (todos presentes) o caracteres en orden.
- * Query vacía = match.
+ * Coincidencia ligera: substring o tokens (todas las palabras presentes).
+ *
+ * SIN “caracteres en orden”: en textos largos casi cualquier palabra es una
+ * subsecuencia salteada de un párrafo —buscar “mantenemos” devolvía ítems que
+ * ni la contenían—. Buscar es substring (normalizado) o todas las palabras, y
+ * nada más. Query vacía = match.
  */
 export function fuzzyMatch(haystack: string, query: string): boolean {
   const q = normalizeSearchText(query).trim();
@@ -16,15 +20,7 @@ export function fuzzyMatch(haystack: string, query: string): boolean {
   if (text.includes(q)) return true;
 
   const tokens = q.split(/\s+/).filter(Boolean);
-  if (tokens.length > 1 && tokens.every((token) => text.includes(token))) {
-    return true;
-  }
-
-  let qi = 0;
-  for (let i = 0; i < text.length && qi < q.length; i++) {
-    if (text[i] === q[qi]) qi++;
-  }
-  return qi === q.length;
+  return tokens.length > 1 && tokens.every((token) => text.includes(token));
 }
 
 export function clipboardItemMatches(

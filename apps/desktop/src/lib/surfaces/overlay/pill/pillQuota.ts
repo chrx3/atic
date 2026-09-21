@@ -78,13 +78,14 @@ export type QuotaRow = {
  * apuntar a una posición aprendida. Cursor va última: sus barras (Auto / API)
  * no coinciden con las ventanas de tiempo de los otros tres.
  */
-const ORDER = ["claude", "codex", "opencode", "agy", "cursor-agent"] as const;
+const ORDER = ["claude", "codex", "opencode", "agy", "grok", "cursor-agent"] as const;
 
 const NAMES: Record<string, string> = {
   claude: "Claude Code",
   codex: "Codex",
   opencode: "OpenCode",
   agy: "Antigravity",
+  grok: "Grok",
   "cursor-agent": "Cursor",
 };
 

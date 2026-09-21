@@ -14,21 +14,38 @@ describe("pillLayout", () => {
 
   it("respeta el orden elegido, no el del catálogo", () => {
     const layout = pillLayout(["captures", "meetings"]);
-    expect(ids(layout.ring)).toEqual(["captures", "meetings"]);
+    expect(ids(layout.ring)).toEqual(["captures", "meetings", "system"]);
   });
 
   it("lo que no está en ninguna lista queda oculto", () => {
     const layout = pillLayout(["meetings"], ["board"]);
-    expect(ids(layout.ring)).toEqual(["meetings"]);
+    expect(ids(layout.ring)).toEqual(["meetings", "system"]);
     expect(ids(layout.more)).toEqual(["board"]);
     expect(ids(layout.hidden)).not.toContain("meetings");
     expect(ids(layout.hidden)).not.toContain("board");
+    expect(ids(layout.hidden)).not.toContain("system");
     expect(ids(layout.hidden)).toContain("clipboard");
+  });
+
+  it("una tool nueva entra al anillo, no se esconde en ruedas ya armadas", () => {
+    const layout = pillLayout(
+      ["clipboard", "agents", "captures", "board", "color"],
+      ["meetings", "snippets"],
+    );
+    expect(ids(layout.ring)).toEqual([
+      "clipboard",
+      "agents",
+      "captures",
+      "board",
+      "color",
+      "system",
+    ]);
+    expect(ids(layout.more)).toEqual(["meetings", "snippets"]);
   });
 
   it("descarta ids que no son herramientas de la pill", () => {
     const layout = pillLayout(["meetings", "launcher", "inventada"], ["board"]);
-    expect(ids(layout.ring)).toEqual(["meetings"]);
+    expect(ids(layout.ring)).toEqual(["meetings", "system"]);
   });
 
   it("no repite una herramienta ni dentro de una lista ni entre las dos", () => {
@@ -36,13 +53,13 @@ describe("pillLayout", () => {
       ["meetings", "meetings", "board"],
       ["board", "clipboard"],
     );
-    expect(ids(layout.ring)).toEqual(["meetings", "board"]);
+    expect(ids(layout.ring)).toEqual(["meetings", "board", "system"]);
     expect(ids(layout.more)).toEqual(["clipboard"]);
   });
 
   it("con el anillo vacío, el submenú sube: nadie queda a dos pasos de todo", () => {
     const layout = pillLayout([], ["board", "clipboard"]);
-    expect(ids(layout.ring)).toEqual(["board", "clipboard"]);
+    expect(ids(layout.ring)).toEqual(["board", "clipboard", "system"]);
     expect(layout.more).toEqual([]);
   });
 
@@ -55,19 +72,31 @@ describe("pillLayout", () => {
 describe("pillStripPage", () => {
   it("la tira repite el escalón de la rueda: las fijas y la puerta a «Más»", () => {
     const layout = pillLayout(["meetings", "captures"], ["board"]);
-    expect(pillStripPage(layout)).toEqual(["meetings", "captures", "more"]);
+    expect(pillStripPage(layout)).toEqual(["meetings", "captures", "system", "more"]);
   });
 
   it("sin herramientas en «Más» la puerta sigue: Ventana vive detrás", () => {
     const layout = pillLayout(["meetings", "captures"], []);
-    expect(pillStripPage(layout)).toEqual(["meetings", "captures", "more"]);
+    expect(pillStripPage(layout)).toEqual(["meetings", "captures", "system", "more"]);
   });
 
-  it("en el canto Ventana va en el primer paso, y sin «Más» si no hay submenú", () => {
+  it("en el canto Ventana va en el primer paso; «Más» queda si hay submenú", () => {
+    const layout = pillLayout(["meetings", "captures"], ["board"]);
+    expect(pillStripPage(layout, "ring", { windowOnFirst: true })).toEqual([
+      "meetings",
+      "captures",
+      "system",
+      "more",
+      "window",
+    ]);
+  });
+
+  it("en el canto sin submenú, Ventana va en el primer paso", () => {
     const layout = pillLayout(["meetings", "captures"], []);
     expect(pillStripPage(layout, "ring", { windowOnFirst: true })).toEqual([
       "meetings",
       "captures",
+      "system",
       "window",
     ]);
   });
@@ -76,6 +105,7 @@ describe("pillStripPage", () => {
     const layout = pillLayout(["meetings"], ["board"]);
     expect(pillStripPage(layout, "ring", { windowOnFirst: true })).toEqual([
       "meetings",
+      "system",
       "more",
       "window",
     ]);

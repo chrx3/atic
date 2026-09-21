@@ -53,9 +53,9 @@ muestra** (nada de números dudosos). Divisas y cripto quedan afuera a propósit
 ### Acciones de sistema
 
 `Bloquear pantalla`, `Suspender`, `Silenciar o activar sonido` y `Vaciar
-papelera` son de Windows por ahora (en macOS siguen pendientes). La papelera
-conserva el diálogo de confirmación del SO: Atic no fuerza acciones destructivas.
-`Cerrar todas las apps` corre en las dos plataformas: en Windows manda
+papelera` corren en Windows y macOS. La papelera conserva el diálogo de
+confirmación del SO: Atic no fuerza acciones destructivas.
+`Cerrar todas las apps` también corre en las dos plataformas: en Windows manda
 `WM_CLOSE` a las ventanas visibles de apps de usuario (no al shell ni a Atic) y
 en macOS pide Quit a las apps regulares vivas (`NSRunningApplication.terminate`).
 
