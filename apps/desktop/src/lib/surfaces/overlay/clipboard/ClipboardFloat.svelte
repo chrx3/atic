@@ -30,6 +30,11 @@
     placePanelResting,
   } from "$surfaces/overlay/floatPlace";
   import { gapBetween } from "$lib/liquid/geometry";
+  import {
+    awayFromPill,
+    retachesOnDrop,
+    type MagnetRect,
+  } from "$surfaces/overlay/retachMagnet";
   import { REACH } from "$lib/liquid/constants";
   import { liquid, LIQUID_HUB } from "$surfaces/overlay/group.svelte";
   import {
@@ -38,7 +43,11 @@
   } from "$surfaces/overlay/floatEmergeSkin";
   import { separateAxisProp, waitFrames } from "$surfaces/overlay/floatReveal";
   import { surfaces } from "$surfaces/overlay/surfaces.svelte";
-  import { notifyToolResting, toolBirth } from "$surfaces/overlay/toolBirth";
+  import {
+    notifyToolResting,
+    toolBirth,
+    toolResting,
+  } from "$surfaces/overlay/toolBirth";
   import {
     armOpenDismissGrace,
     isOpenDismissGrace,
@@ -48,13 +57,28 @@
   import { t } from "$domain/i18n.svelte";
   import ToastStack from "$ui/ToastStack.svelte";
   import { toasts } from "$domain/toasts.svelte";
-  import { Pin, X } from "$lib/icons";
+  import { Pin, PanelTopClose, X } from "$lib/icons";
+  import { emit } from "@tauri-apps/api/event";
 
   const CORNER = 20;
   const SEED_HOLD_MS = 60;
   const bubble = new Bubble();
   let el = $state<HTMLElement | null>(null);
-  const { startDrag, endDrag } = createBubbleDrag(bubble, () => el);
+  /** Imán del re-acople (reglas y porqués en `retachMagnet`). */
+  let dropRetachArmed = false;
+  function armDropRetach(): void {
+    const pill = surfaces.live["pill-skin"] ?? surfaces.live["pill"];
+    dropRetachArmed = awayFromPill(pill, bubble.anchor);
+  }
+  const { startDrag, endDrag } = createBubbleDrag(bubble, () => el, {
+    // El gesto arranca: si ya está lejos, el retach al soltar vale desde ya.
+    onGrab: () => armDropRetach(),
+    onMove: () => {
+      // Salió de la zona: el retach queda armado para este gesto.
+      if (!dropRetachArmed) armDropRetach();
+    },
+    onDrop: (info) => maybeRetachOnDrop(info.frame),
+  });
   /** Pin always-on-top (misma semántica que agentes). */
   let pinned = $state(false);
   let workAreas = $state<Area[]>([]);
@@ -66,6 +90,10 @@
   let revealEpoch = 0;
   let closing = false;
   let ignoreIpcDismiss = false;
+  /** El panel entró por despegue: directo al reposo, sin morph de nacimiento. */
+  let detachDirect = false;
+  /** Retach en curso: el dismiss del overlay no debe cerrar el panel. */
+  let retaching = false;
   const expanding = $derived(revealPhase === "expand" || revealPhase === "shrink");
   const separating = $derived(revealPhase === "separate" || revealPhase === "approach");
   const motionPhase = $derived(expanding || separating);
@@ -92,6 +120,15 @@
   }
 
   function applyRestingPlace(a: BubbleOpen) {
+    const rest = toolResting();
+    if (rest) {
+      // Despegue: el reposo EXACTO es el rect de la cara — mismo tamaño y
+      // misma posición. El panel es el mismo que estaba pegado; el notch se
+      // queda con su pestaña.
+      bubble.place({ ...a, x: rest.x, y: rest.y, w: rest.w, h: rest.h });
+      notifyToolResting();
+      return;
+    }
     const pill = pillForOpen();
     if (!pill) {
       bubble.place(a);
@@ -110,6 +147,22 @@
   }
 
   function placeFusedToPill(a: BubbleOpen, pill = pillForOpen()) {
+    const rest = toolResting();
+    if (rest) {
+      // Despegue: la semilla ES el rect de la cara — mismo tamaño y misma
+      // posición. De ahí crece a su tamaño de float conservando la esquina
+      // (side "top"), así que la transición es continuidad, no nacimiento.
+      bubble.place({
+        ...a,
+        x: rest.x,
+        y: rest.y,
+        w: rest.w,
+        h: rest.h,
+        side: "top",
+        offset: rest.w / 2,
+      });
+      return;
+    }
     if (!pill) {
       bubble.place(a);
       return;
@@ -139,6 +192,17 @@
       }
     }
     if (lastOpen !== a) return;
+    // Despegue: el panel ya nace en su rect exacto (era la cara). Sin gota,
+    // sin grow, sin chrome escondido: el mismo elemento, cortado en dos.
+    if (toolResting()) {
+      detachDirect = true;
+      applyRestingPlace(a);
+      // Sin frame replegado: el panel ya está en su rect, como si la cara
+      // nunca se hubiera ido. `place` siempre programa un cuadro en scale +
+      // viaje hacia la pill; en el despegue ese nacimiento rompe el corte.
+      bubble.shown = true;
+      return;
+    }
     // No reposo durante birth/close: un re-anchor hacía snap separado.
     if (fresh || revealPhase === "hidden") {
       placeFusedToPill(a);
@@ -151,6 +215,14 @@
 
   async function runOpenReveal() {
     const epoch = ++revealEpoch;
+    // Despegue: directo al reposo. La bandera es local a propósito: el `rest`
+    // global ya se limpió cuando corre el efecto, y depender de él resucitaba
+    // el morph (la caja vacía que parecía rehacer el elemento).
+    if (detachDirect) {
+      if (lastOpen) applyRestingPlace(lastOpen);
+      revealPhase = "ready";
+      return;
+    }
     if (prefersReducedMotion()) {
       if (lastOpen) applyRestingPlace(lastOpen);
       revealPhase = "ready";
@@ -203,6 +275,13 @@
     const full = lastOpen;
     const pill = surfaces.live["pill-skin"] ?? surfaces.live["pill"];
     const side = (bubble.anchor?.side ?? full?.side ?? "top") as BubbleOpen["side"];
+    // El cierre conserva el tamaño VIVO: el panel pudo nacer con el rect de
+    // la cara (despegue) y crecer a 312×372 solo por el ancla de Rust.
+    const cur = bubble.anchor;
+    const size = {
+      w: cur?.w ?? full?.w ?? 0,
+      h: cur?.h ?? full?.h ?? 0,
+    };
 
     revealPhase = "approach";
     await tick();
@@ -211,7 +290,7 @@
     if (full && pill) {
       bubble.place({
         ...full,
-        ...placePanelFusedFull(pill, { w: full.w, h: full.h }, side, {
+        ...placePanelFusedFull(pill, size, side, {
           corner: CORNER,
           work: workAreas,
           fusedGap: FUSED_GAP_PX,
@@ -221,16 +300,9 @@
       applyRestingPlace(full);
     }
     await afterTransition(el, separateAxisProp(side), separateDur);
-    if (epoch !== revealEpoch) return;
-
-    revealPhase = "shrink";
-    await tick();
-    await waitFrames(2);
-    if (epoch !== revealEpoch) return;
-    if (full) {
-      placeFusedToPill(full, surfaces.live["pill-skin"] ?? surfaces.live["pill"]);
-    }
-    await afterTransition(el, "width", openDur);
+    // Sin semilla ni "pelota": el panel llega a la pill y se apaga ahí; la
+    // cara —con el notch ya agrandado— aparece del otro lado. El re-tach es
+    // el despegue al revés.
   }
 
   $effect(() => {
@@ -308,9 +380,38 @@
     }
   }
 
+  /**
+   * Retach: el despegue al revés, sin coreografía.
+   *
+   * El panel se apaga EN EL ACTO (sin fade, sin pelota, sin corrimiento) y
+   * la isla abre su cara —del mismo tamaño— en el mismo tramo. Nunca hay dos
+   * paneles vivos a la vez: es el mismo corte que el despegue, al revés.
+   */
+  function retachToPill(): void {
+    if (retaching || closing) return;
+    retaching = true;
+    void emit("dock-tool-face", "clipboard").catch(() => {});
+    finishDismiss(bubble.shown);
+    bubble.alive = false;
+  }
+
+  /**
+   * Soltado cerca de la pill CON el imán armado: se coloca. Lejos —o sin
+   * armar, porque el gesto nació pegado al notch y nunca se alejó— queda
+   * flotando.
+   */
+  function maybeRetachOnDrop(frame: MagnetRect): void {
+    const pill = surfaces.live["pill-skin"] ?? surfaces.live["pill"];
+    if (!retachesOnDrop(dropRetachArmed, pill, frame)) return;
+    dropRetachArmed = false;
+    retachToPill();
+  }
+
   function finishDismiss(wasShown: boolean, opts: { skipHideWindow?: boolean } = {}) {
     lastOpen = null;
     revealPhase = "hidden";
+    detachDirect = false;
+    retaching = false;
     endDrag();
     surfaces.resetInteraction();
     armCloseDur();
@@ -391,6 +492,7 @@
         void placeFromPill(a);
       }),
       onClipboardBubbleDismiss(() => {
+        if (retaching) return;
         if (ignoreIpcDismiss) return;
         void close({ fromIpcDismiss: true });
       }),
@@ -442,12 +544,11 @@
     role="dialog"
     aria-label={t("tools.clipboard.label")}
   >
+    <!-- Barra de arrastre al centro y controles mínimos a la derecha: el
+         mismo espíritu que la cara de la isla, sin título ni hint. -->
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <header class="cf-head" onpointerdown={startDrag}>
-      <div class="cf-titles">
-        <h2 class="cf-title">{t("tools.clipboard.label")}</h2>
-        <p class="cf-hint">{t("overlay.clipboardHint")}</p>
-      </div>
+      <i class="cf-grab" aria-hidden="true"></i>
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <div class="cf-acts" data-no-drag onpointerdown={(e) => e.stopPropagation()}>
         <button
@@ -460,6 +561,15 @@
           onclick={() => void togglePin()}
         >
           <Icon icon={Pin} size={13} />
+        </button>
+        <button
+          type="button"
+          class="cf-icon"
+          onclick={retachToPill}
+          aria-label={t("overlay.retach")}
+          use:tip={t("overlay.retach")}
+        >
+          <Icon icon={PanelTopClose} size={14} />
         </button>
         <button
           type="button"
@@ -477,6 +587,7 @@
         items={clipboard.items}
         loading={false}
         compact
+        island
         onRefresh={() => void clipboard.hydrate()}
         onError={(message) => toasts.push(message, 4200)}
       />
@@ -494,6 +605,13 @@
    * Fused grow → separate: nace seed pegado a la pill, crece w/h con borde
    * clavado, luego se aleja (gap > REACH) y corta el cuello.
    */
+
+  /* Abierto sin clic, el anillo de foco del sistema se lee como “seleccionado”. */
+  .cf:focus,
+  .cf:focus-visible {
+    outline: none;
+  }
+
   .cf {
     /* Duraciones heredadas de :root (app.css); sin overrides locales. */
     position: absolute;
@@ -549,13 +667,14 @@
   }
 
   .cf-head {
+    position: relative;
     display: flex;
     flex-shrink: 0;
     align-items: center;
-    justify-content: space-between;
+    justify-content: flex-end;
     gap: 0.5rem;
-    margin-bottom: 0.35rem;
-    min-height: 2rem;
+    margin-bottom: 0.2rem;
+    min-height: 1.5rem;
     cursor: grab;
     touch-action: none;
     user-select: none;
@@ -565,35 +684,16 @@
     cursor: grabbing;
   }
 
-  .cf-titles {
-    display: flex;
-    min-width: 0;
-    flex: 1;
-    flex-direction: column;
-    gap: 0.05rem;
-  }
-
-  .cf-title {
-    margin: 0;
-    min-width: 0;
-    font-size: 0.75rem;
-    font-weight: 650;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-    color: var(--muted);
-    text-wrap: balance;
-  }
-
-  .cf-hint {
-    margin: 0;
-    min-width: 0;
-    overflow: hidden;
-    font-size: 0.625rem;
-    font-weight: 500;
-    line-height: 1.2;
-    color: var(--faint);
-    white-space: nowrap;
-    text-overflow: ellipsis;
+  /* La barrita del centro: mismo lenguaje que el grab de la cara. */
+  .cf-grab {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 2rem;
+    height: 3px;
+    transform: translate(-50%, -50%);
+    border-radius: 999px;
+    background: color-mix(in sRGB, var(--rb-text) 24%, transparent);
   }
 
   .cf-acts {
