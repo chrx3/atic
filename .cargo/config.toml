@@ -11,3 +11,8 @@ ck = "check -p atic-desktop"
 ckt = "test -p atic-desktop --lib"
 # Todo el workspace, sin linkear.
 ckw = "check --workspace --all-targets"
+
+# Enlazado en Windows con el lld que viene en el toolchain: bastante más rápido
+# que link.exe en un binario de este tamaño. No afecta a macOS.
+[target.x86_64-pc-windows-msvc]
+linker = "rust-lld"
