@@ -51,3 +51,6 @@ incremental = false
 
 [profile.dev.package."*"]
 opt-level = 3
+# Sin debuginfo en las dependencias: nadie pone breakpoints dentro de tauri o
+# reqwest, y el PDB de este proyecto pesa demasiado como para pagarlo dos veces.
+debug = 0
