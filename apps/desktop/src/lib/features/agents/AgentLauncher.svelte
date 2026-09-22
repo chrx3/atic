@@ -36,6 +36,7 @@
     type AgentsOverlayDetachDetail,
   } from "./consoleTransfer.svelte";
   import { toasts } from "$domain/toasts.svelte";
+  import { agentsFloatLive } from "$surfaces/overlay/agents/agentsIslandHost.svelte";
   import { AGENTS, installCommand, shownAgents } from "./agentCatalog";
   import { config } from "$domain/config.svelte";
   import { sessionEffect } from "$domain/session";
@@ -56,6 +57,7 @@
     minimized = false,
     shown = false,
     island = false,
+    onRevealFloat,
   }: {
     onHeaderPointerDown?: (e: PointerEvent) => void;
     /** Cerrar el float. El overlay no lo pasa: ahí solo se minimiza o agranda. */
@@ -74,6 +76,8 @@
     shown?: boolean;
     /** Cara de la isla: sin chrome de ventana, el blob es el marco. */
     island?: boolean;
+    /** Isla: las consolas viven en el float y el usuario pidió ir a ellas. */
+    onRevealFloat?: () => void;
   } = $props();
 
   /** El tope duro lo pone Rust (MAX_CONSOLES). */
@@ -190,6 +194,17 @@
 
   function revealLiveConsole() {
     if (hasConsole) showView("console");
+  }
+
+  /**
+   * Botón "Consolas activas". Solo el clic explícito agranda el float: si lo
+   * hiciera `revealLiveConsole` (corre en cada apertura de la cara), el float
+   * crecía a su último reposo —el rect de la cara— y los dos selectores
+   * quedaban encimados.
+   */
+  function goToLiveConsoles() {
+    if (hasConsole) showView("console");
+    else if (island && agentsFloatLive.on) onRevealFloat?.();
   }
 
   let wasShown = false;
@@ -471,7 +486,8 @@
     }
     settleAfterDetach(adopted);
     detachBusy = false;
-    toasts.push(t("page.agents.console.detachedOk"));
+    // Sin aviso de éxito: isla ⇄ float es la misma ventana y la mudanza se
+    // ve. «Mudadas a la otra ventana» salía en cada despegue y re-acople.
     window.dispatchEvent(new CustomEvent(AGENTS_OVERLAY_DETACHED, { detail: { to } }));
   }
 
@@ -650,6 +666,7 @@
 <div class="agent-views" class:is-island={island}>
   <section
     class="launcher-view"
+    class:has-console={hasConsole}
     class:is-hidden={view !== "setup"}
     aria-hidden={view !== "setup" ? "true" : undefined}
     inert={view !== "setup"}
@@ -665,12 +682,12 @@
         }
       }}
     >
-      {#if hasConsole}
+      {#if hasConsole || (island && agentsFloatLive.on)}
         <button
           type="button"
           class="live-status"
           use:tip={t("page.agents.backToConsoles")}
-          onclick={revealLiveConsole}
+          onclick={goToLiveConsoles}
         >
           <span class="live-dot" aria-hidden="true"></span>
           {t("page.agents.liveConsoles")}
@@ -1277,6 +1294,14 @@
     border-radius: 0;
   }
 
+  /* En isla la cara dibuja su propio fondo, así que el fill del float sobra…
+     salvo que haya una consola viva debajo: nunca se oculta (WebView2 congela
+     el canvas de xterm con visibility/opacity), así que sin este tapador el
+     selector sale transparente y los dos se pintan encima. */
+  .agent-views.is-island .launcher-view.has-console {
+    background: var(--skin);
+  }
+
   .agent-views.is-island .drag-rail {
     min-height: 0;
     flex-basis: 0;
@@ -1285,6 +1310,15 @@
 
   .agent-views.is-island .drag-rail:not(:has(.live-status)) {
     display: none;
+  }
+
+  /* El rail se colapsa en isla (el grab ya es el agarre), pero con el atajo a
+     la consola viva tiene que medir algo: a flex-basis 0 el botón queda
+     aplastado contra el setup y no hay por dónde volver. */
+  .agent-views.is-island .drag-rail:has(.live-status) {
+    min-height: 1.3rem;
+    flex-basis: 1.3rem;
+    padding: 0.15rem 0.45rem 0 0.55rem;
   }
 
   .agent-views.is-island .chrome {

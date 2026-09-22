@@ -29,14 +29,34 @@
     items,
     onDismiss,
     placement = "viewport",
+    surface,
   }: {
     items: { id: number; message: string }[];
     onDismiss?: (id: number) => void;
     placement?: "viewport" | "local";
+    /**
+     * Solo `local` en el overlay: la pila vive fuera de los floats y Rust no
+     * tiene hit-rect de los avisos — se ven pero la X no recibe clics. Cada
+     * aviso publica el suyo al montar y lo da de baja al salir.
+     */
+    surface?: {
+      prefix: string;
+      add: (id: string, el: HTMLElement) => () => void;
+    };
   } = $props();
 
   let root = $state<HTMLDivElement | null>(null);
   const usePopover = $derived(placement === "viewport");
+
+  /** Alta del hit-rect del aviso (solo overlay `local` con superficie). */
+  function hitRect(
+    el: HTMLElement,
+    id: number,
+  ): { destroy?: () => void } | void {
+    if (placement !== "local" || !surface) return;
+    const release = surface.add(`${surface.prefix}:toast-${id}`, el);
+    return { destroy: release };
+  }
 
   $effect(() => {
     const el = root;
@@ -71,6 +91,7 @@
 >
   {#each items as toast (toast.id)}
     <div
+      use:hitRect={toast.id}
       class="pointer-events-auto flex max-w-100 items-center gap-2 rounded-sm border
              border-line bg-elevated py-1.5 pr-1.5 pl-3 shadow-pop"
       transition:fly={{ y: 8, duration: ms(MOTION.slow) }}
