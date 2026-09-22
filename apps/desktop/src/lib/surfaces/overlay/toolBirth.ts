@@ -71,3 +71,57 @@ export function waitToolResting(ms = 700): Promise<void> {
     restingResolvers.push(done);
   });
 }
+
+/**
+ * Compuerta del traspaso del gesto de detach al motor de arrastre.
+ *
+ * La pill sondea el handoff por cuadro y el float acepta en cuanto tiene
+ * marco — pero ese marco puede ser el VIEJO (dockear y cerrar apagan el
+ * globo sin limpiar su anchor). Aceptar ya sembraría el arrastre con la
+ * última posición del float, antes de que el evento de Rust lo coloque en
+ * el rect de la cara, y el panel seguiría a la mano con ese offset todo el
+ * gesto. Con reposo pendiente y marco sin aplicar, se pide reintentar.
+ */
+export type DetachFrame = { x: number; y: number; w: number; h: number };
+
+export type DetachHandoffGate = { waited: number };
+
+/** Cuadros esperando la colocación antes de aceptar igual (no colgar el gesto). */
+export const DETACH_HANDOFF_PLACE_FRAMES = 90;
+
+export function createDetachHandoffGate(): DetachHandoffGate {
+  return { waited: 0 };
+}
+
+function frameMatchesRest(frame: DetachFrame, rest: BirthRect): boolean {
+  return (
+    Math.abs(frame.x - rest.x) < 1 &&
+    Math.abs(frame.y - rest.y) < 1 &&
+    Math.abs(frame.w - rest.w) < 1 &&
+    Math.abs(frame.h - rest.h) < 1
+  );
+}
+
+/**
+ * `true` = el traspaso puede sembrar el arrastre con este marco.
+ * `false` = la pill reintenta en el cuadro siguiente.
+ */
+export function nextDetachHandoff(
+  gate: DetachHandoffGate,
+  anchor: DetachFrame | null,
+  rest: BirthRect | null,
+): boolean {
+  // Sin marco el traspaso sale al vacío: la pill reintenta (caso de siempre).
+  if (!anchor) {
+    gate.waited = 0;
+    return false;
+  }
+  if (rest && !frameMatchesRest(anchor, rest)) {
+    gate.waited += 1;
+    // El evento de Rust a veces tarda: pasado un rato se acepta igual para
+    // no dejar el gesto colgado (queda el comportamiento de antes).
+    if (gate.waited <= DETACH_HANDOFF_PLACE_FRAMES) return false;
+  }
+  gate.waited = 0;
+  return true;
+}

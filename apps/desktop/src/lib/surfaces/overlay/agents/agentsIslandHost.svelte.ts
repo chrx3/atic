@@ -20,3 +20,13 @@ export const agentsFloatHandoff: {
    */
   current: null | ((init: { pointerId: number; x: number; y: number }) => boolean);
 } = { current: null };
+
+/**
+ * El float tiene consolas montadas (PTYs vivas).
+ *
+ * La isla y el float son dos instancias del lanzador con `hasConsole` propio:
+ * sin esta señal, la cara muestra el setup sin atajo aunque la consola esté
+ * abierta en el float. La escribe el float vía `onLiveChange`; la lee la isla
+ * para el botón "Consolas activas".
+ */
+export const agentsFloatLive = $state({ on: false });
