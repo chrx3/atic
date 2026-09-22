@@ -238,6 +238,7 @@ fn to_presence(id: &str, t: &Tracked) -> AgentPresence {
         updated_at: t.updated_at,
         window: None,
         source: PresenceSource::Jsonl,
+        activity: None,
     })
 }
 

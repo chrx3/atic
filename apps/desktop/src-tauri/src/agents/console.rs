@@ -744,6 +744,56 @@ pub fn console_open(
     Ok(session)
 }
 
+/// La consola de Atic donde corre esta sesión de Claude Code, si corre en una.
+///
+/// Del `sessionId` al PID de Claude (`~/.claude/sessions`), y de ahí hacia
+/// arriba por el árbol de procesos hasta dar con el PTY de alguna consola.
+/// Así el clic en su aviso abre ESA pestaña, la haya lanzado Atic o la hayas
+/// escrito a mano en una shell.
+#[tauri::command]
+pub fn console_for_presence(presence_id: String) -> Option<String> {
+    #[cfg(windows)]
+    {
+        let pid = super::claude_sessions::pid_for_session(&presence_id)?;
+        let consoles: Vec<(String, u32)> = with_map(|map| {
+            map.iter()
+                .filter(|(_, live)| live.pid != 0)
+                .map(|(id, live)| (id.clone(), live.pid))
+                .collect()
+        });
+        if consoles.is_empty() {
+            return None;
+        }
+        console_for_pid(pid, &super::focus::parent_map(), &consoles)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = presence_id;
+        None
+    }
+}
+
+/// Sube desde `pid` hasta encontrar la raíz de una consola. Tope de pasos: el
+/// árbol de Windows puede traer ciclos por PIDs reusados.
+fn console_for_pid(
+    pid: u32,
+    parents: &HashMap<u32, u32>,
+    consoles: &[(String, u32)],
+) -> Option<String> {
+    const MAX_DEPTH: usize = 16;
+    let mut current = pid;
+    for _ in 0..MAX_DEPTH {
+        if let Some((id, _)) = consoles.iter().find(|(_, root)| *root == current) {
+            return Some(id.clone());
+        }
+        match parents.get(&current) {
+            Some(&parent) if parent != 0 && parent != current => current = parent,
+            _ => return None,
+        }
+    }
+    None
+}
+
 #[tauri::command]
 pub fn console_write(session: String, data: String) -> Result<(), String> {
     with_map(|map| {
@@ -1063,6 +1113,36 @@ fn agent_cli_from_path(path: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn claude_dentro_de_la_shell_de_una_consola_la_encuentra() {
+        // claude (30) ← node (20) ← pwsh (10, raíz del PTY de la consola "b")
+        let parents = HashMap::from([(30, 20), (20, 10), (10, 1)]);
+        let consoles = vec![("a".to_string(), 99), ("b".to_string(), 10)];
+        assert_eq!(console_for_pid(30, &parents, &consoles), Some("b".into()));
+    }
+
+    #[test]
+    fn claude_que_es_la_raiz_del_pty_tambien() {
+        let consoles = vec![("a".to_string(), 30)];
+        assert_eq!(
+            console_for_pid(30, &HashMap::new(), &consoles),
+            Some("a".into())
+        );
+    }
+
+    #[test]
+    fn claude_en_una_terminal_externa_no_es_de_atic() {
+        let parents = HashMap::from([(30, 20), (20, 5)]);
+        let consoles = vec![("a".to_string(), 10)];
+        assert_eq!(console_for_pid(30, &parents, &consoles), None);
+    }
+
+    #[test]
+    fn un_ciclo_de_pids_no_cuelga() {
+        let parents = HashMap::from([(1, 2), (2, 1)]);
+        assert_eq!(console_for_pid(1, &parents, &[("a".to_string(), 99)]), None);
+    }
 
     #[test]
     fn tail_push_recorta_por_delante() {

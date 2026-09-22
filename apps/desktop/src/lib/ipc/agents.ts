@@ -211,6 +211,10 @@ export const sshTestHost = (host: SshHost) =>
 export const consoleOpen = (options: ConsoleOpenOptions) =>
   invoke<string>("console_open", { options });
 
+/** La consola de Atic donde corre esta sesión de Claude Code, o null. */
+export const consoleForPresence = (presenceId: string) =>
+  invoke<string | null>("console_for_presence", { presenceId });
+
 export const consoleWrite = (session: string, data: string) =>
   invoke<void>("console_write", { session, data });
 

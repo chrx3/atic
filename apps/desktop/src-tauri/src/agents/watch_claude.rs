@@ -13,12 +13,16 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde_json::Value;
 use tauri::AppHandle;
 
-use super::presence::{self, AgentPresence, PresenceSource, PresenceStatus};
+use super::presence::{
+    self, ActivityKind, AgentPresence, PresenceActivity, PresenceSource, PresenceStatus,
+};
 
 const POLL: Duration = Duration::from_secs(1);
 const LIVE_WINDOW_SECS: u64 = 15 * 60;
 const DISAPPEAR_SECS: i64 = 30 * 60;
 const PREVIEW_MAX: usize = 120;
+/// Tope del detalle de la actividad (archivo, comando): la pill lo recorta más.
+const DETAIL_MAX: usize = 48;
 const FIRST_READ_TAIL: u64 = 256 * 1024;
 const BACKEND_ID: &str = "claude-code";
 const BACKEND_NAME: &str = "Claude Code";
@@ -47,6 +51,7 @@ struct Tracked {
     status: PresenceStatus,
     preview: Option<String>,
     updated_at: i64,
+    activity: Option<PresenceActivity>,
 }
 
 #[derive(Debug, Default)]
@@ -83,6 +88,104 @@ pub fn classify(v: &Value) -> LineKind {
         Some("user") => LineKind::Activity,
         _ => LineKind::Ignore,
     }
+}
+
+/// Qué está haciendo, según la línea.
+///
+/// Del mensaje del asistente cuenta el ÚLTIMO bloque: es lo que está pasando
+/// ahora. Un `tool_result` (línea `user` sin prompt) es el agente leyendo lo
+/// que devolvió la herramienta, o sea pensando el paso siguiente.
+pub fn activity_of(v: &Value) -> Option<PresenceActivity> {
+    if v.get("isSidechain").and_then(Value::as_bool) == Some(true) {
+        return None;
+    }
+    match v.get("type").and_then(Value::as_str) {
+        Some("user") if v.get("promptSource").is_none() => {
+            Some(activity(ActivityKind::Thinking, None))
+        }
+        Some("assistant") => {
+            let blocks = v.pointer("/message/content")?.as_array()?;
+            let block = blocks.iter().rev().find(|b| {
+                matches!(
+                    b.get("type").and_then(Value::as_str),
+                    Some("tool_use" | "thinking" | "text")
+                )
+            })?;
+            match block.get("type").and_then(Value::as_str) {
+                Some("tool_use") => Some(tool_activity(block)),
+                Some("thinking") => Some(activity(ActivityKind::Thinking, None)),
+                _ => Some(activity(ActivityKind::Writing, None)),
+            }
+        }
+        _ => None,
+    }
+}
+
+fn activity(kind: ActivityKind, detail: Option<String>) -> PresenceActivity {
+    PresenceActivity { kind, detail }
+}
+
+fn tool_activity(block: &Value) -> PresenceActivity {
+    let name = block.get("name").and_then(Value::as_str).unwrap_or("");
+    let input = block.get("input");
+    let field = |key: &str| {
+        input
+            .and_then(|i| i.get(key))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+    };
+    match name {
+        "Edit" | "MultiEdit" | "Write" | "NotebookEdit" => activity(
+            ActivityKind::Editing,
+            field("file_path")
+                .or_else(|| field("notebook_path"))
+                .map(file_name),
+        ),
+        "Read" => activity(ActivityKind::Reading, field("file_path").map(file_name)),
+        "Grep" | "Glob" | "LS" => activity(ActivityKind::Searching, field("pattern").map(short)),
+        "WebSearch" => activity(ActivityKind::Searching, field("query").map(short)),
+        "WebFetch" => activity(ActivityKind::Reading, field("url").map(short)),
+        "Bash" | "PowerShell" => {
+            activity(ActivityKind::Running, field("command").map(command_head))
+        }
+        "Task" | "Agent" => activity(ActivityKind::Delegating, field("description").map(short)),
+        "TodoWrite" => activity(ActivityKind::Thinking, None),
+        _ => activity(ActivityKind::Tool, Some(short(tool_label(name)))),
+    }
+}
+
+/// Solo el nombre del archivo: la ruta entera no entra y dice lo mismo.
+fn file_name(path: &str) -> String {
+    let name = path.rsplit(['/', '\\']).next().unwrap_or(path);
+    short(name)
+}
+
+/// Las dos primeras palabras del comando: `pnpm test`, `git status`.
+fn command_head(command: &str) -> String {
+    let first_line = command.lines().next().unwrap_or(command);
+    short(
+        &first_line
+            .split_whitespace()
+            .take(2)
+            .collect::<Vec<_>>()
+            .join(" "),
+    )
+}
+
+/// `mcp__atlassian__search` → `search`: el prefijo del servidor no aporta.
+fn tool_label(name: &str) -> &str {
+    name.rsplit("__").next().unwrap_or(name)
+}
+
+fn short(text: &str) -> String {
+    let text = text.trim();
+    if text.chars().count() <= DETAIL_MAX {
+        return text.to_string();
+    }
+    let mut out: String = text.chars().take(DETAIL_MAX - 1).collect();
+    out.push('…');
+    out
 }
 
 fn extract_assistant_preview(v: &Value) -> Option<String> {
@@ -152,10 +255,12 @@ fn apply_kind(tracked: &mut Tracked, kind: LineKind, cwd: &str, now: i64) {
         LineKind::Ignore => {}
         LineKind::Prompt => {
             tracked.status = PresenceStatus::Working;
+            tracked.activity = Some(activity(ActivityKind::Thinking, None));
             tracked.updated_at = now;
         }
         LineKind::EndTurn { preview } => {
             tracked.status = PresenceStatus::Ready;
+            tracked.activity = None;
             if let Some(p) = preview {
                 tracked.preview = Some(p);
             }
@@ -181,6 +286,7 @@ fn to_presence(id: &str, t: &Tracked) -> AgentPresence {
         updated_at: t.updated_at,
         window: None,
         source: PresenceSource::Jsonl,
+        activity: t.activity.clone(),
     })
 }
 
@@ -293,6 +399,7 @@ pub fn tick(
                     status: PresenceStatus::Idle,
                     preview: None,
                     updated_at: now,
+                    activity: None,
                 });
             if tracked.path != path {
                 tracked.path = path.clone();
@@ -310,7 +417,13 @@ pub fn tick(
                 if ignore.contains(&id) {
                     continue;
                 }
+                let is_activity = kind == LineKind::Activity;
                 apply_kind(tracked, kind, &cwd_of(&v), now);
+                if is_activity && tracked.status == PresenceStatus::Working {
+                    if let Some(next) = activity_of(&v) {
+                        tracked.activity = Some(next);
+                    }
+                }
             }
         }
     }
@@ -370,6 +483,90 @@ pub fn start(app: &AppHandle) {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn tool(name: &str, input: Value) -> Value {
+        json!({
+            "type": "assistant",
+            "message": {
+                "stop_reason": "tool_use",
+                "content": [{ "type": "text", "text": "voy" }, { "type": "tool_use", "name": name, "input": input }]
+            }
+        })
+    }
+
+    #[test]
+    fn editar_dice_el_archivo_no_la_ruta() {
+        let a = activity_of(&tool(
+            "Edit",
+            json!({ "file_path": r"C:\repo\src\PillSurface.svelte" }),
+        ))
+        .unwrap();
+        assert_eq!(a.kind, ActivityKind::Editing);
+        assert_eq!(a.detail.as_deref(), Some("PillSurface.svelte"));
+    }
+
+    #[test]
+    fn comando_dice_sus_dos_primeras_palabras() {
+        let a = activity_of(&tool(
+            "Bash",
+            json!({ "command": "pnpm test --run\necho hi" }),
+        ))
+        .unwrap();
+        assert_eq!(a.kind, ActivityKind::Running);
+        assert_eq!(a.detail.as_deref(), Some("pnpm test"));
+    }
+
+    #[test]
+    fn manda_el_ultimo_bloque() {
+        let v = json!({
+            "type": "assistant",
+            "message": { "content": [{ "type": "thinking", "thinking": "..." }, { "type": "text", "text": "Hola" }] }
+        });
+        assert_eq!(activity_of(&v).unwrap().kind, ActivityKind::Writing);
+        let v = json!({
+            "type": "assistant",
+            "message": { "content": [{ "type": "thinking", "thinking": "..." }] }
+        });
+        assert_eq!(activity_of(&v).unwrap().kind, ActivityKind::Thinking);
+    }
+
+    #[test]
+    fn resultado_de_herramienta_es_pensar_y_el_prompt_no_cuenta() {
+        let result = json!({ "type": "user", "message": { "content": [] } });
+        assert_eq!(activity_of(&result).unwrap().kind, ActivityKind::Thinking);
+        let prompt = json!({ "type": "user", "promptSource": "cli", "message": {} });
+        assert!(activity_of(&prompt).is_none());
+    }
+
+    #[test]
+    fn herramienta_mcp_sin_prefijo_y_detalle_largo_recortado() {
+        let a = activity_of(&tool("mcp__atlassian__searchJiraIssuesUsingJql", json!({}))).unwrap();
+        assert_eq!(a.kind, ActivityKind::Tool);
+        assert_eq!(a.detail.as_deref(), Some("searchJiraIssuesUsingJql"));
+        let long = "x".repeat(80);
+        let a = activity_of(&tool("Grep", json!({ "pattern": long }))).unwrap();
+        assert_eq!(a.detail.unwrap().chars().count(), DETAIL_MAX);
+    }
+
+    #[test]
+    fn fin_de_turno_borra_la_actividad() {
+        let mut t = Tracked {
+            path: PathBuf::from("x.jsonl"),
+            tail: Tail::default(),
+            cwd: String::new(),
+            status: PresenceStatus::Idle,
+            preview: None,
+            updated_at: 0,
+            activity: None,
+        };
+        apply_kind(&mut t, LineKind::Prompt, "/repo", 1);
+        assert_eq!(
+            t.activity.as_ref().map(|a| a.kind),
+            Some(ActivityKind::Thinking)
+        );
+        apply_kind(&mut t, LineKind::EndTurn { preview: None }, "/repo", 2);
+        assert!(t.activity.is_none());
+    }
 
     fn parse(v: Value) -> LineKind {
         classify(&v)
@@ -489,6 +686,7 @@ mod tests {
             status: PresenceStatus::Idle,
             preview: None,
             updated_at: 0,
+            activity: None,
         };
         apply_kind(&mut t, LineKind::Prompt, "/repo", 10);
         assert_eq!(t.status, PresenceStatus::Working);

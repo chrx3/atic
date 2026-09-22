@@ -377,6 +377,15 @@ pub fn exclude_ide_children(
         .collect()
 }
 
+/// Padre de cada proceso vivo (pid → ppid). Para subir por el árbol.
+#[cfg(windows)]
+pub(crate) fn parent_map() -> std::collections::HashMap<u32, u32> {
+    process_snapshot()
+        .into_iter()
+        .map(|(pid, ppid, _)| (pid, ppid))
+        .collect()
+}
+
 #[cfg(windows)]
 fn process_snapshot() -> Vec<(u32, u32, String)> {
     use std::mem::{size_of, zeroed};
