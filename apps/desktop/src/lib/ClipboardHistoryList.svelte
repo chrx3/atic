@@ -543,7 +543,11 @@
               }
             }}
           >
-            <span class="clip-thumb" aria-hidden="true">
+            <span
+              class="clip-thumb"
+              class:is-image={item.kind === "image" && !!item.imagePath}
+              aria-hidden="true"
+            >
               {#if item.kind === "image" && item.imagePath}
                 <img
                   src={convertFileSrc(item.imagePath)}
@@ -882,6 +886,15 @@
       inset 0 0 0 1px rgb(255 255 255 / 14%),
       inset 0 0 0 1px rgb(0 0 0 / 18%);
   }
+  /*
+   * Las imágenes piden más que un ícono: apaisadas y del alto que da la fila.
+   * El alto de la fila no cambia (la lista virtualizada lo asume fijo); se
+   * usa el aire que ya tenía alrededor de la miniatura cuadrada.
+   */
+  .clip-thumb.is-image {
+    width: 52px;
+    height: 40px;
+  }
   .clip-thumb img {
     width: 100%;
     height: 100%;
@@ -1045,6 +1058,10 @@
     width: 30px;
     height: 30px;
   }
+  .is-compact .clip-thumb.is-image {
+    width: 46px;
+    height: 34px;
+  }
   .is-compact .clip-item {
     padding: 0.3rem 0.35rem;
   }
@@ -1126,6 +1143,12 @@
     height: 22px;
     border-radius: 6px;
     box-shadow: none;
+  }
+
+  /* Fila de 44 px: la imagen puede usar casi todo el alto. */
+  .is-island .clip-thumb.is-image {
+    width: 44px;
+    height: 34px;
   }
 
   .is-island .clip-preview {

@@ -924,8 +924,18 @@ pub async fn start_clipboard_text_drag(
         })
         .map_err(|e| e.to_string())?;
         let outcome = rx.recv().map_err(|e| e.to_string())??;
+        let over_agents = crate::overlay::cursor_over_hit_id("agents");
+        let web_terminal = web_terminal_under_cursor();
+        tracing::debug!(
+            target: "clipboard",
+            dropped = outcome.dropped,
+            effect = outcome.effect,
+            over_agents,
+            web_terminal,
+            "arrastre de texto terminado"
+        );
         // CANCEL sobre agentes (QueryContinueDrag): insertar en composer/consola.
-        if agents_visible(&app) && crate::overlay::cursor_over_hit_id("agents") {
+        if agents_visible(&app) && over_agents {
             let _ = app.emit(
                 "agents-composer-insert",
                 AgentsComposerInsert::text_drop(text),
@@ -936,7 +946,10 @@ pub async fn start_clipboard_text_drag(
         // 0 y no pasa nada. Es lo que hacen las consolas y los terminales
         // Electron —donde vive Claude Code—, que solo registran drop-target de
         // archivos. Ahí caemos al mismo camino que el clic, que ahí sí anda.
-        if outcome.dropped && outcome.effect == 0 {
+        //
+        // Las terminales web (Terax…) mienten: Chromium acepta el texto (efecto
+        // COPY) y el xterm de adentro lo ignora. Ahí también va el respaldo.
+        if drop_needs_paste_fallback(outcome.dropped, outcome.effect, web_terminal) {
             paste_into_window_under_cursor(&app, &text)?;
         }
         Ok(())
@@ -1055,6 +1068,15 @@ pub fn write_system_clipboard_text(text: String) -> Result<(), String> {
 /// anterior» es cualquier cosa que estuviera abierta, y pegar le mete texto a
 /// un tercero que nadie está mirando. Copiar es lo que esa ventana puede
 /// prometer sin adivinar el destino.
+/// Copia un texto suelto al portapapeles, sin pegarlo.
+///
+/// Lo usa el vistazo de Color: el overlay no toma el foco, y sin foco
+/// `navigator.clipboard` del webview rechaza la escritura.
+#[tauri::command]
+pub fn copy_text(text: String) -> Result<(), String> {
+    set_system_text(text)
+}
+
 #[tauri::command]
 pub fn copy_clipboard_item(state: State<AppState>, id: String) -> Result<(), String> {
     let item = find_item(&state, &id).ok_or_else(item_missing)?;
@@ -1791,6 +1813,11 @@ fn paste_into_window_under_cursor(app: &AppHandle, text: &str) -> Result<(), Str
     };
     // Soltar sobre el escritorio —o sobre nosotros mismos— no pega nada.
     if hwnd.is_null() || unsafe { IsWindow(hwnd) } == 0 || is_own_app_hwnd(hwnd) {
+        tracing::debug!(
+            target: "clipboard",
+            own = !hwnd.is_null() && is_own_app_hwnd(hwnd),
+            "arrastre soltado sin destino: no se pega"
+        );
         return Ok(());
     }
 
@@ -1856,6 +1883,38 @@ fn hwnd_needs_ctrl_shift_v(hwnd: windows_sys::Win32::Foundation::HWND) -> bool {
         return false;
     };
     exe_needs_ctrl_shift_v(&exe)
+}
+
+/// ¿Soltar texto necesita el pegado de respaldo?
+///
+/// Sí si el destino lo rechazó (efecto 0), y también si es una terminal web:
+/// ahí Chromium dice que lo copió pero el xterm no lo inserta.
+#[cfg(any(windows, test))]
+fn drop_needs_paste_fallback(dropped: bool, effect: u32, web_terminal: bool) -> bool {
+    dropped && (effect == 0 || web_terminal)
+}
+
+/// La ventana raíz bajo el cursor es una terminal Electron/WebView2.
+#[cfg(windows)]
+fn web_terminal_under_cursor() -> bool {
+    use windows_sys::Win32::Foundation::POINT;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetAncestor, GetCursorPos, WindowFromPoint, GA_ROOT,
+    };
+
+    // SAFETY: lecturas de Win32 sin punteros retenidos; un HWND nulo se descarta.
+    let hwnd = unsafe {
+        let mut pt = POINT { x: 0, y: 0 };
+        if GetCursorPos(&mut pt) == 0 {
+            return false;
+        }
+        let under = WindowFromPoint(pt);
+        if under.is_null() {
+            return false;
+        }
+        GetAncestor(under, GA_ROOT)
+    };
+    !hwnd.is_null() && hwnd_needs_ctrl_shift_v(hwnd)
 }
 
 /// Terminales Electron/WebView2 donde el paste es Ctrl+Shift+V.
@@ -2550,6 +2609,27 @@ pub fn force_foreground(hwnd: windows_sys::Win32::Foundation::HWND) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn soltar_rechazado_usa_el_respaldo() {
+        assert!(drop_needs_paste_fallback(true, 0, false));
+    }
+
+    #[test]
+    fn terminal_web_que_dice_copiar_igual_usa_el_respaldo() {
+        // Regresión: Terax devolvía COPY (1) y el texto no aparecía.
+        assert!(drop_needs_paste_fallback(true, 1, true));
+    }
+
+    #[test]
+    fn destino_que_acepta_de_verdad_no_se_pega_dos_veces() {
+        assert!(!drop_needs_paste_fallback(true, 1, false));
+    }
+
+    #[test]
+    fn arrastre_cancelado_no_pega() {
+        assert!(!drop_needs_paste_fallback(false, 0, true));
+    }
 
     fn pending(width: usize, height: usize, age: Duration) -> PendingCapture {
         PendingCapture {

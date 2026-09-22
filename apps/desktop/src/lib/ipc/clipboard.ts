@@ -14,6 +14,8 @@ export const pasteClipboardItem = (id: string) =>
 /** Solo al portapapeles: sin devolver el foco ni mandar Ctrl+V a nadie. */
 export const copyClipboardItem = (id: string) =>
   invoke<void>("copy_clipboard_item", { id });
+/** Un texto suelto al portapapeles (el overlay sin foco no puede con `navigator.clipboard`). */
+export const copyText = (text: string) => invoke<void>("copy_text", { text });
 export const pinClipboardItem = (id: string, pinned: boolean) =>
   invoke<void>("pin_clipboard_item", { id, pinned });
 export const deleteClipboardItem = (id: string) =>
