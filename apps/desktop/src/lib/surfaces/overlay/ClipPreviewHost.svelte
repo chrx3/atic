@@ -89,7 +89,7 @@
     position: fixed;
     z-index: var(--z-toast, 100);
     display: flex;
-    max-width: 26rem;
+    max-width: min(36rem, 75vw);
     flex-direction: column;
     gap: 0.4rem;
     border-radius: 0.6rem;
@@ -144,10 +144,17 @@
     overflow-wrap: anywhere;
   }
 
+  /*
+   * Grande de verdad: las chicas se agrandan hasta un mínimo legible (una
+   * franja de 235×68 se veía igual de chica que en la fila) y las grandes
+   * llegan más lejos, siempre dentro de la ventana. `contain` conserva la
+   * proporción en los dos casos.
+   */
   .cp-img {
     display: block;
-    max-width: 100%;
-    max-height: 17rem;
+    min-width: min(16rem, 60vw);
+    max-width: min(34rem, 70vw);
+    max-height: min(24rem, 70vh);
     border-radius: 0.35rem;
     outline: 1px solid rgb(255 255 255 / 10%);
     outline-offset: -1px;
