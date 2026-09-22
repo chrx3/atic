@@ -587,9 +587,49 @@ pub fn list_for_cwd(cwd: &str) -> Vec<ClaudeCodeSession> {
     out
 }
 
+/// El PID del proceso de Claude Code que lleva esta sesión.
+///
+/// Claude Code deja `~/.claude/sessions/<pid>.json` con su `sessionId` (el
+/// mismo nombre del `.jsonl`). Es formato interno: si cambia, `None` y quien
+/// llama sigue como antes.
+pub fn pid_for_session(session_id: &str) -> Option<u32> {
+    let dir = config_dir()?.join("sessions");
+    for entry in fs::read_dir(dir).ok()?.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        let Ok(text) = fs::read_to_string(&path) else {
+            continue;
+        };
+        if let Some(pid) = pid_from_session_file(&text, session_id) {
+            return Some(pid);
+        }
+    }
+    None
+}
+
+fn pid_from_session_file(text: &str, session_id: &str) -> Option<u32> {
+    let v: Value = serde_json::from_str(text).ok()?;
+    if v.get("sessionId").and_then(Value::as_str) != Some(session_id) {
+        return None;
+    }
+    v.get("pid")
+        .and_then(Value::as_u64)
+        .and_then(|p| u32::try_from(p).ok())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn el_archivo_de_sesion_da_el_pid_de_esa_sesion() {
+        let text = r#"{"pid":26088,"sessionId":"abc","cwd":"C:\\x"}"#;
+        assert_eq!(pid_from_session_file(text, "abc"), Some(26088));
+        assert_eq!(pid_from_session_file(text, "otra"), None);
+        assert_eq!(pid_from_session_file("no es json", "abc"), None);
+    }
 
     #[test]
     fn encode_windows_atic_path() {

@@ -80,6 +80,7 @@ pub fn tick(pids: &[u32], cwd: Option<&str>, now: i64) -> Vec<AgentPresence> {
                 updated_at: now,
                 window: None,
                 source: PresenceSource::Process,
+                activity: None,
             })
         })
         .collect()

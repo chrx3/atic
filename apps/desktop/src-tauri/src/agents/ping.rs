@@ -134,6 +134,7 @@ pub fn apply_ping(ping: HookPing) {
         updated_at: now,
         window: None,
         source: PresenceSource::Hook,
+        activity: None,
     });
     presence.status = ping.status;
     presence.source = PresenceSource::Hook;

@@ -361,6 +361,7 @@ pub fn tick_db(path: &Path, now: i64, ignore: &HashSet<String>) -> Vec<AgentPres
             updated_at,
             window: None,
             source: PresenceSource::Jsonl,
+            activity: None,
         }));
     }
     out

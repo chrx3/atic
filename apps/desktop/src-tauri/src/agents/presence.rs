@@ -31,6 +31,34 @@ pub struct AgentPresence {
     pub window: Option<PresenceWindow>,
     /// De dónde salió el estado. `waiting` SOLO es legítimo con `Hook`.
     pub source: PresenceSource,
+    /// Qué está haciendo mientras trabaja. Solo lo sabe quien lee el
+    /// transcript (Claude Code); el resto dice «trabajando» a secas.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub activity: Option<PresenceActivity>,
+}
+
+/// La actividad del turno en curso: para que la pill diga «editando X» y no
+/// solo «trabajando».
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PresenceActivity {
+    pub kind: ActivityKind,
+    /// Un dato corto que acompaña: el archivo, el comando, lo que busca.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ActivityKind {
+    Thinking,
+    Writing,
+    Editing,
+    Reading,
+    Searching,
+    Running,
+    Delegating,
+    Tool,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
@@ -149,6 +177,10 @@ impl Coalescer {
 pub fn normalize(mut presence: AgentPresence) -> AgentPresence {
     if presence.status == PresenceStatus::Waiting && presence.source != PresenceSource::Hook {
         presence.status = PresenceStatus::Working;
+    }
+    // La actividad es del turno en curso: fuera de `working` ya no es cierta.
+    if presence.status != PresenceStatus::Working {
+        presence.activity = None;
     }
     presence
 }
@@ -335,6 +367,7 @@ mod tests {
             updated_at: at,
             window: None,
             source: PresenceSource::Jsonl,
+            activity: None,
         }
     }
 

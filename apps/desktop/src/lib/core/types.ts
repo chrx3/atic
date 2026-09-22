@@ -885,7 +885,22 @@ export type AgentPresence = {
   updatedAt: number;
   window: PresenceWindow | null;
   source: PresenceSource;
+  /** Qué hace mientras trabaja. Solo lo trae quien lee el transcript. */
+  activity?: PresenceActivity | null;
 };
+
+export type ActivityKind =
+  | "thinking"
+  | "writing"
+  | "editing"
+  | "reading"
+  | "searching"
+  | "running"
+  | "delegating"
+  | "tool";
+
+/** La actividad del turno en curso, con un dato corto (archivo, comando). */
+export type PresenceActivity = { kind: ActivityKind; detail?: string | null };
 
 export type PresenceFocusResult = { kind: "focused" | "console" | "none" };
 
