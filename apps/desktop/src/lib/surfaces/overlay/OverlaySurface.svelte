@@ -20,8 +20,8 @@
   import LauncherFloat from "./launcher/LauncherFloat.svelte";
   import SnippetsFloat from "./snippets/SnippetsFloat.svelte";
   import PillSurface from "./pill/PillSurface.svelte";
-  import PillQuotaHost from "./pill/PillQuotaHost.svelte";
-  import { quotaHoverState } from "./pill/quotaHover.svelte";
+  import PillPeekHost from "./pill/PillPeekHost.svelte";
+  import { toolPeekState } from "./pill/toolPeek.svelte";
   import PracticeCoach from "$features/onboarding/PracticeCoach.svelte";
   import { getConfig } from "$ipc/config";
   import {
@@ -473,8 +473,8 @@
          abierto, este tiene que seguir montado para replegarse en vez de
          desaparecer de golpe. Después de la pill para que el contenido quede
          sobre la piel fundida. -->
-    {#if shown || quotaHoverState.open}
-      <PillQuotaHost />
+    {#if shown || toolPeekState.open}
+      <PillPeekHost />
     {/if}
     <PracticeCoach />
 

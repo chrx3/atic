@@ -65,6 +65,7 @@
     onOverlayItemDrag,
   } from "$ipc/overlay";
   import type { AgentsWorkspaceShortcut } from "$ipc/events";
+  import { CONSOLE_FOCUS_EVENT, type ConsoleFocusDetail } from "./consoleFocus";
   import type { AgentsComposerInsert, ConsoleKind, SshHost } from "$lib/types";
   import EmptyState from "$lib/ui/EmptyState.svelte";
   import AccountUsageModal from "./AccountUsageModal.svelte";
@@ -2130,6 +2131,13 @@
    * sin desalojar a nadie —el swap por clic se fue; componer una división es
    * el gesto explícito de arrastrar una ficha sobre un pane—.
    */
+  /** El aviso de un agente pide ver SU pestaña: si la tengo, la muestro. */
+  function onConsoleFocus(event: Event): void {
+    const session = (event as CustomEvent<ConsoleFocusDetail>).detail?.session;
+    const tab = session ? tabs.find((t) => t.sessionId === session) : undefined;
+    if (tab) switchTab(tab.key);
+  }
+
   function switchTab(key: string) {
     closeCtx();
     paneTree = groupWith(key) ?? leaf(key);
@@ -2972,6 +2980,7 @@
       .catch(() => (pinned = false));
     window.addEventListener("keydown", onGlobalKey, true);
     window.addEventListener(CLIPBOARD_OLE_EVENT, onClipboardOle);
+    window.addEventListener(CONSOLE_FOCUS_EVENT, onConsoleFocus);
     // El detector de "terminó" corre siempre: él mismo decide si la consola
     // está a la vista y no avisa nada.
     lastSeenVisibleAt = Date.now();
@@ -3060,6 +3069,7 @@
       window.clearInterval(probeTimer);
       window.removeEventListener("keydown", onGlobalKey, true);
       window.removeEventListener(CLIPBOARD_OLE_EVENT, onClipboardOle);
+      window.removeEventListener(CONSOLE_FOCUS_EVENT, onConsoleFocus);
       document.removeEventListener("pointerdown", onDocPointer, true);
       window.removeEventListener("blur", closeCtx);
       stopItemDrag?.();
@@ -3689,7 +3699,10 @@
             </button>
           </div>
         {/if}
-        {#if tabs.length > 0 && onDetachRequest}
+        {#if tabs.length > 0 && onDetachRequest && !overlayHost}
+          <!-- Sin pop-out en el overlay: la mudanza a la ventana dedicada
+            se iba con doble clic y dejaba el float negro. La vuelta desde
+            la ventana dedicada (dockBack) sí se conserva. -->
           <button
             type="button"
             class="icon-btn"

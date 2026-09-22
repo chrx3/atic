@@ -271,12 +271,24 @@ function sideOrder(prefer: PlaceResult["side"]): PlaceResult["side"][] {
   ];
 }
 
+function overlapArea(a: PillRect, b: PillRect): number {
+  const w = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x);
+  const h = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y);
+  return w > 0 && h > 0 ? w * h : 0;
+}
+
 /**
  * Coloca el panel junto a un pétalo, no debajo de toda la flor.
  *
  * `hub` es el obstáculo (la rueda). `petal` es el gajo que lo abrió.
  * Prueba primero el lado que apunta hacia afuera; si esa caja pisa el hub,
  * prueba los demás.
+ *
+ * Con la rueda contra un borde de la pantalla puede que ningún lado del gajo
+ * quede libre: hacia afuera no entra y el clamp lo empuja encima de la flor, y
+ * a los costados un panel centrado en el gajo tapa los gajos vecinos. Ahí se
+ * pega a la rueda entera, que siempre deja algún costado libre; y si ni así,
+ * lo que menos la tape.
  */
 export function placeBesideAnchor(
   hub: PillRect,
@@ -286,11 +298,17 @@ export function placeBesideAnchor(
 ): PlaceResult {
   const prefer = outwardSide(hub, petal);
   const gap = opts.gap ?? BUBBLE_GAP;
-  for (const side of sideOrder(prefer)) {
+  const order = sideOrder(prefer);
+  for (const side of order) {
     const at = placeOnSide(petal, side, panel, opts);
     if (!rectsOverlap(at, hub, gap)) return at;
   }
-  return placeOnSide(petal, prefer, panel, opts);
+  const besideHub = order.map((side) => placeOnSide(hub, side, panel, opts));
+  const free = besideHub.find((at) => !rectsOverlap(at, hub, gap));
+  if (free) return free;
+  return besideHub.reduce((best, at) =>
+    overlapArea(at, hub) < overlapArea(best, hub) ? at : best,
+  );
 }
 
 /**

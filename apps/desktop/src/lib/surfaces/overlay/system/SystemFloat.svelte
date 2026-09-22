@@ -29,10 +29,13 @@
   } from "$surfaces/overlay/floatPlace";
   import { gapBetween } from "$lib/liquid/geometry";
   import {
-    awayFromPill,
-    retachesOnDrop,
+    createRetachGesture,
+    retachReady,
+    trackRetach,
+    type MagnetPoint,
     type MagnetRect,
   } from "$surfaces/overlay/retachMagnet";
+  import { showRetachPreview } from "$surfaces/overlay/retachPreview.svelte";
   import { REACH } from "$lib/liquid/constants";
   import { liquid, LIQUID_HUB } from "$surfaces/overlay/group.svelte";
   import {
@@ -61,19 +64,23 @@
   const bubble = new Bubble();
   let el = $state<HTMLElement | null>(null);
   /** Imán del re-acople (reglas y porqués en `retachMagnet`). */
-  let dropRetachArmed = false;
-  function armDropRetach(): void {
-    const pill = surfaces.live["pill-skin"] ?? surfaces.live["pill"];
-    dropRetachArmed = awayFromPill(pill, bubble.anchor);
+  let retachGesture = createRetachGesture();
+  function magnetPill() {
+    return surfaces.live["pill-skin"] ?? surfaces.live["pill"];
   }
   const { startDrag, endDrag } = createBubbleDrag(bubble, () => el, {
-    // El gesto arranca: si ya está lejos, el retach al soltar vale desde ya.
-    onGrab: () => armDropRetach(),
-    onMove: () => {
-      // Salió de la zona: el retach queda armado para este gesto.
-      if (!dropRetachArmed) armDropRetach();
+    // El gesto arranca: lo que ya está lejos (marco o cursor) arma desde ya.
+    onGrab: ({ cursor }) => {
+      retachGesture = createRetachGesture();
+      trackRetach(retachGesture, magnetPill(), bubble.anchor, cursor);
     },
-    onDrop: (info) => maybeRetachOnDrop(info.frame),
+    onMove: ({ frame, cursor }) => {
+      const pill = magnetPill();
+      trackRetach(retachGesture, pill, frame, cursor);
+      showRetachPreview("system", retachReady(retachGesture, pill, frame, cursor));
+    },
+    onDrop: (info) => maybeRetachOnDrop(info.frame, info.cursor),
+    onEnd: () => showRetachPreview("system", false),
   });
   /** Pin always-on-top (misma semántica que agentes). */
   let pinned = $state(false);
@@ -374,31 +381,47 @@
     }
   }
 
+  /** Tope del corte si el dismiss de la pill no llega. */
+  const RETACH_CUT_FALLBACK_MS = 400;
+  let retachCutTimer = 0;
+
   /**
-   * Retach: el despegue al revés, sin coreografía.
+   * Retach: el despegue al revés.
    *
-   * El panel se apaga EN EL ACTO (sin fade, sin pelota, sin corrimiento) y
-   * la isla abre su cara —del mismo tamaño— en el mismo tramo. Nunca hay dos
-   * paneles vivos a la vez: es el mismo corte que el despegue, al revés.
+   * El panel viaja hasta quedar fundido con la pill (el `approach` del cierre)
+   * y recién ahí pide la cara. El corte espera el dismiss que la pill manda al
+   * abrirla: el panel se apaga en el mismo tramo en que la cara crece, sin un
+   * cuadro vacío entre los dos. Nunca hay dos paneles vivos a la vez.
    */
-  function retachToPill(): void {
+  async function retachToPill(): Promise<void> {
     if (retaching || closing) return;
     retaching = true;
-    void emit("dock-tool-face", "system").catch(() => {});
-    finishDismiss(bubble.shown);
+    endDrag();
+    surfaces.resetInteraction();
+    const epoch = ++revealEpoch;
+    await runCloseReveal(epoch);
+    if (!retaching || epoch !== revealEpoch) return;
+    retachCutTimer = window.setTimeout(() => cutRetach(false), RETACH_CUT_FALLBACK_MS);
+    void emit("dock-tool-face", "system").catch(() => cutRetach(false));
+  }
+
+  /** `pillHid`: la pill ya bajó la ventana al abrir la cara. */
+  function cutRetach(pillHid: boolean): void {
+    if (!retaching) return;
+    window.clearTimeout(retachCutTimer);
+    retachCutTimer = 0;
+    finishDismiss(bubble.shown, { skipHideWindow: pillHid });
     bubble.alive = false;
   }
 
   /**
-   * Soltado cerca de la pill CON el imán armado: se coloca. Lejos —o sin
-   * armar, porque el gesto nació pegado al notch y nunca se alejó— queda
-   * flotando.
+   * Soltado cerca de la pill CON el imán armado, o con el cursor sobre ella:
+   * se coloca. Si no, queda flotando.
    */
-  function maybeRetachOnDrop(frame: MagnetRect): void {
-    const pill = surfaces.live["pill-skin"] ?? surfaces.live["pill"];
-    if (!retachesOnDrop(dropRetachArmed, pill, frame)) return;
-    dropRetachArmed = false;
-    retachToPill();
+  function maybeRetachOnDrop(frame: MagnetRect, cursor: MagnetPoint): void {
+    if (!retachReady(retachGesture, magnetPill(), frame, cursor)) return;
+    retachGesture = createRetachGesture();
+    void retachToPill();
   }
 
   function finishDismiss(wasShown: boolean, opts: { skipHideWindow?: boolean } = {}) {
@@ -486,7 +509,10 @@
         void placeFromPill(a);
       }),
       onSystemBubbleDismiss(() => {
-        if (retaching) return;
+        if (retaching) {
+          cutRetach(true);
+          return;
+        }
         if (ignoreIpcDismiss) return;
         void close({ fromIpcDismiss: true });
       }),
@@ -512,6 +538,8 @@
     window.addEventListener("keydown", onKey);
     return () => {
       window.removeEventListener("keydown", onKey);
+      window.clearTimeout(retachCutTimer);
+      showRetachPreview("system", false);
       endDrag();
       surfaces.resetInteraction();
       for (const p of un) void p.then((fn) => fn());
@@ -559,7 +587,7 @@
         <button
           type="button"
           class="sys-icon"
-          onclick={retachToPill}
+          onclick={() => void retachToPill()}
           aria-label={t("overlay.retach")}
           use:tip={t("overlay.retach")}
         >

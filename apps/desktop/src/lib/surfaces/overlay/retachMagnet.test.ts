@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
 
-import { RETACH_GAP_PX, awayFromPill, retachesOnDrop } from "./retachMagnet";
+import {
+  RETACH_GAP_PX,
+  awayFromPill,
+  createRetachGesture,
+  cursorOnPill,
+  retachReady,
+  retachesOnDrop,
+  trackRetach,
+} from "./retachMagnet";
 
 /** Pestaña del notch, arriba al centro. */
 const pill = { x: 800, y: 0, w: 220, h: 34 };
@@ -46,5 +54,41 @@ describe("retachesOnDrop", () => {
 
   it("sin pill medida no se coloca", () => {
     expect(retachesOnDrop(true, null, justDetached)).toBe(false);
+  });
+});
+
+describe("retachReady", () => {
+  const onPill = { x: 900, y: 10 };
+  const offPill = { x: 900, y: 200 };
+
+  it("cursor sobre la pill coloca aunque el marco nunca saliera", () => {
+    const g = createRetachGesture();
+    trackRetach(g, pill, justDetached, offPill);
+    trackRetach(g, pill, justDetached, onPill);
+    expect(retachReady(g, pill, justDetached, onPill)).toBe(true);
+  });
+
+  it("regresión: el despegue con la mano sobre la pill no se re-acopla", () => {
+    // El gesto nace con el cursor encima y nunca sale: sin armar.
+    const g = createRetachGesture();
+    trackRetach(g, pill, justDetached, onPill);
+    expect(retachReady(g, pill, justDetached, onPill)).toBe(false);
+  });
+
+  it("marco armado y en rango coloca con el cursor en cualquier lado", () => {
+    const g = createRetachGesture();
+    trackRetach(g, pill, farAway, offPill);
+    expect(retachReady(g, pill, justDetached, offPill)).toBe(true);
+  });
+
+  it("lejos y sin cursor en la pill, sigue flotando", () => {
+    const g = createRetachGesture();
+    trackRetach(g, pill, farAway, offPill);
+    expect(retachReady(g, pill, farAway, offPill)).toBe(false);
+  });
+
+  it("cursorOnPill sin medidas es false", () => {
+    expect(cursorOnPill(null, onPill)).toBe(false);
+    expect(cursorOnPill(pill, null)).toBe(false);
   });
 });

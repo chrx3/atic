@@ -11,7 +11,7 @@
    * El orden importa y por eso se puede cambiar: la posición de un gajo es lo
    * que se aprende con la mano, no su icono.
    */
-  import { pillLayout } from "$core/pillTools";
+  import { pillLayout, placePillTool, type PillBucket } from "$core/pillTools";
   import type { ToolDef } from "$core/tools";
   import { config } from "$domain/config.svelte";
   import { localizeTool, t } from "$domain/i18n.svelte";
@@ -23,8 +23,7 @@
   import Icon from "$ui/Icon.svelte";
   import IconButton from "$ui/IconButton.svelte";
   import Select from "$ui/Select.svelte";
-
-  type Bucket = "ring" | "more" | "hidden";
+  import { emit } from "@tauri-apps/api/event";
 
   const cfg = $derived(config.current);
   const layout = $derived(pillLayout(cfg?.pill_tools, cfg?.pill_more_tools));
@@ -65,37 +64,30 @@
     },
   ]);
 
-  async function save(ring: ToolDef[], more: ToolDef[]) {
+  function resetHome() {
+    void emit("pill-home-reset", null).catch(toastError);
+  }
+
+  async function save(ring: string[], more: string[]) {
     try {
-      await config.patch({
-        pill_tools: ring.map((tool) => tool.id),
-        pill_more_tools: more.map((tool) => tool.id),
-      });
+      await config.patch({ pill_tools: ring, pill_more_tools: more });
     } catch (error) {
       toastError(error);
     }
   }
 
-  function without(tools: ToolDef[], id: string): ToolDef[] {
-    return tools.filter((tool) => tool.id !== id);
-  }
-
-  function moveTo(tool: ToolDef, to: Bucket) {
-    const ring = without(layout.ring, tool.id);
-    const more = without(layout.more, tool.id);
-    if (to === "ring") void save([...ring, tool], more);
-    else if (to === "more") void save(ring, [...more, tool]);
-    else void save(ring, more);
+  function moveTo(tool: ToolDef, to: PillBucket) {
+    const next = placePillTool(layout, tool.id, to);
+    if (next) void save(next.ring, next.more);
   }
 
   /** Un paso arriba o abajo dentro de su propio cubo. */
-  function reorder(bucket: Exclude<Bucket, "hidden">, index: number, delta: number) {
-    const list = bucket === "ring" ? [...layout.ring] : [...layout.more];
+  function reorder(bucket: Exclude<PillBucket, "hidden">, index: number, delta: number) {
+    const list = bucket === "ring" ? layout.ring : layout.more;
     const next = index + delta;
     if (next < 0 || next >= list.length) return;
-    [list[index], list[next]] = [list[next], list[index]];
-    if (bucket === "ring") void save(list, layout.more);
-    else void save(layout.ring, list);
+    const placed = placePillTool(layout, list[index].id, bucket, next);
+    if (placed) void save(placed.ring, placed.more);
   }
 </script>
 
@@ -159,7 +151,7 @@
                       onchange={(event: Event) =>
                         moveTo(
                           tool,
-                          (event.currentTarget as HTMLSelectElement).value as Bucket,
+                          (event.currentTarget as HTMLSelectElement).value as PillBucket,
                         )}
                     />
                   </span>
@@ -179,6 +171,14 @@
       <div class="pt-2">
         <Button variant="soft" size="sm" onclick={() => void save([], [])}>
           {t("settings.pill.reset")}
+        </Button>
+      </div>
+    </SettingsGroup>
+
+    <SettingsGroup title={t("settings.pill.homeTitle")} hint={t("settings.pill.homeHint")}>
+      <div>
+        <Button variant="soft" size="sm" onclick={resetHome}>
+          {t("settings.pill.homeReset")}
         </Button>
       </div>
     </SettingsGroup>

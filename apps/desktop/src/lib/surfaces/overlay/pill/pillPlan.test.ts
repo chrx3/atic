@@ -502,6 +502,15 @@ describe("contentFor", () => {
       h: PILL.islandThick + PILL.islandSysH,
     });
     expect(PILL.islandSysH).toBeGreaterThan(PILL.islandClipH);
+    expect(isIslandPanelFace("customize")).toBe(true);
+    expect(contentFor("edge", 180, top, "idle", 5, false, 0, 0, "customize")).toEqual({
+      w: PILL.islandCustomW,
+      h: PILL.islandThick + PILL.islandCustomH,
+    });
+    expect(contentFor("edge", 180, left, "idle", 5, false, 0, 0, "customize")).toEqual({
+      w: PILL.islandThick + PILL.islandCustomW,
+      h: PILL.islandCustomH,
+    });
     expect(contentFor("edge", 180, top, "idle", 5, false, 0, 0, "agents")).toEqual({
       w: PILL.islandAgentsSetupW,
       h: PILL.islandThick + PILL.islandAgentsSetupH,

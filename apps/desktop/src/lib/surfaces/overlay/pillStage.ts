@@ -102,6 +102,12 @@ export const PILL = {
   islandSysW: 300,
   islandSysH: 430,
   /**
+   * Cara de personalizar: tres filas de iconos (rueda, «Más», fuera) con su
+   * rótulo, más cabecera y pie. El ancho deja 8 fichas por fila sin partirla.
+   */
+  islandCustomW: 360,
+  islandCustomH: 290,
+  /**
    * Cara de agentes: el lanzador es chico; la consola pide más alto.
    * Dos medidas fijas para no re-medir el DOM a cada tecla.
    */

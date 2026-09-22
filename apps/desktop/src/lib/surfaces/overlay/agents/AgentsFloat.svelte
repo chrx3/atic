@@ -26,14 +26,12 @@
   import type { BubbleOpen } from "$core/types";
   import { applyTheme, readCachedTheme } from "$lib/theme";
   import { liquid, LIQUID_HUB } from "$surfaces/overlay/group.svelte";
-  import {
-    publishEmergeSkin,
-    publishFollowSkin,
-  } from "$surfaces/overlay/floatEmergeSkin";
+  import { publishEmergeSkin } from "$surfaces/overlay/floatEmergeSkin";
   import { surfaces } from "$surfaces/overlay/surfaces.svelte";
   import {
+    createDetachHandoffGate,
+    nextDetachHandoff,
     notifyToolResting,
-    toolBirth,
     toolResting,
   } from "$surfaces/overlay/toolBirth";
   import { Bubble, BUBBLE_MIN_W } from "$surfaces/overlay/bubble.svelte";
@@ -41,18 +39,21 @@
   import { snapFrame, snapTarget } from "$surfaces/overlay/floatSnap";
   import { snapPreview } from "$surfaces/overlay/snapPreview.svelte";
   import {
-    expandPanelFromSeed,
-    placePanelFusedSeed,
+    placePanelFusedFull,
+    placePanelResting,
   } from "$surfaces/overlay/floatPlace";
-  import { resolveSlot } from "$surfaces/overlay/toolSlots";
-  import { separateAxisProp, waitFrames } from "$surfaces/overlay/floatReveal";
   import { gapBetween } from "$lib/liquid/geometry";
-  import { awayFromPill, retachesOnDrop } from "$surfaces/overlay/retachMagnet";
+  import {
+    createRetachGesture,
+    retachReady,
+    trackRetach,
+  } from "$surfaces/overlay/retachMagnet";
+  import { showRetachPreview } from "$surfaces/overlay/retachPreview.svelte";
   import { REACH } from "$lib/liquid/constants";
   import AgentLauncher from "$features/agents/AgentLauncher.svelte";
   import { isAgentsDismissSuppressed } from "$surfaces/overlay/agents/dismissGuard";
   import { agentsDock } from "$surfaces/overlay/agents/agentsDock.svelte";
-  import { agentsIslandHost, agentsFloatHandoff } from "./agentsIslandHost.svelte";
+  import { agentsIslandHost, agentsFloatHandoff, agentsFloatLive } from "./agentsIslandHost.svelte";
   import { presenceIdsToDismissOnAticHide } from "$surfaces/overlay/pill/pillAgentChip";
   import {
     reuseDockedFrame,
@@ -66,15 +67,13 @@
     type TransferPayload,
   } from "$features/agents/consoleTransfer.svelte";
   import ToastStack from "$ui/ToastStack.svelte";
-  import { afterTransition, MOTION, ms, prefersReducedMotion, wait } from "$lib/motion";
+  import { MOTION, ms, prefersReducedMotion, wait } from "$lib/motion";
   import {
     armOpenDismissGrace,
     isOpenDismissGrace,
   } from "$surfaces/overlay/openDismissGrace";
 
   const BUBBLE_CORNER = 26;
-  /* Un beat visible en la pill antes de crecer: así se LEE que nace de ahí. */
-  const BIRTH_SEED_HOLD_MS = 60;
   const POSITION_STORAGE_KEY = "atic.agents.consolePosition";
   const SETUP_WIDTH_STORAGE_KEY = "atic.agents.setupWidth";
   const POSITION_MARGIN = 12;
@@ -89,10 +88,9 @@
   const CONSOLE_DEFAULT_H = 520;
   const CONSOLE_MIN_H = 340;
   /** Imán del re-acople (reglas y porqués en `retachMagnet`). */
-  let dropRetachArmed = false;
-  function armDropRetach(): void {
-    const pill = surfaces.live["pill-skin"] ?? surfaces.live["pill"];
-    dropRetachArmed = awayFromPill(pill, bubble.anchor);
+  let retachGesture = createRetachGesture();
+  function magnetPill() {
+    return surfaces.live["pill-skin"] ?? surfaces.live["pill"];
   }
   let workAreas = $state<Area[]>([]);
   let restingOpen = $state<BubbleOpen | null>(null);
@@ -108,16 +106,17 @@
   let liveConsoles = $state(false);
   const resizable = $derived(launcherView === "console");
 
-  type RevealPhase = "hidden" | "expand" | "settle" | "ready";
+  type RevealPhase = "hidden" | "ready";
   let revealPhase = $state<RevealPhase>("hidden");
-  let revealEpoch = 0;
   /** Entró por despegue: nace en el rect de la cara, sin morph de nacimiento. */
   let detachDirect = false;
-  const expanding = $derived(revealPhase === "expand");
-  const settling = $derived(revealPhase === "settle");
-  const motionPhase = $derived(expanding || settling);
-  const growDur = ms(MOTION.slow);
-  const settleDur = ms(MOTION.medium);
+  /**
+   * El gesto de detach ya traspasó al motor de arrastre: el panel es de la
+   * mano. Un ancla o expand tardío no puede re-colocarlo ni re-correr el
+   * morph (lo devuelve a la cara a mitad del gesto y el arrastre queda con
+   * ese offset). Se baja al soltar.
+   */
+  let detachDragActive = false;
 
   type SavedPosition = { x: number; y: number };
 
@@ -180,19 +179,6 @@
     };
   }
 
-  /** Centro del monitor de la pill / del ancla de nacimiento. */
-  function placeAtScreenCenter(
-    a: BubbleOpen,
-    size: { w: number; h: number },
-  ): BubbleOpen {
-    const pill = toolBirth() ?? surfaces.live["pill-skin"] ?? surfaces.live["pill"];
-    const anchor = pill
-      ? { x: pill.x + pill.w / 2, y: pill.y + pill.h / 2 }
-      : { x: a.x + a.w / 2, y: a.y + a.h / 2 };
-    const pos = resolveSlot("center", workAreas, size, anchor);
-    return { ...a, ...size, x: pos.x, y: pos.y, side: "left", offset: size.h / 2 };
-  }
-
   function resolveRestingOpen(a: BubbleOpen, keep: SavedPosition | null): BubbleOpen {
     const panel = { w: a.w, h: a.h };
     if (keep) {
@@ -205,7 +191,14 @@
         };
       return { ...a, ...positionInWorkspace(pill, panel, keep) };
     }
-    return placeAtScreenCenter(a, panel);
+    // Sin última posición: al lado de la pill, como el resto de los floats.
+    // El centro de pantalla era el pedido viejo y ya no va.
+    const pill = surfaces.live["pill-skin"] ?? surfaces.live["pill"];
+    if (!pill) return { ...a, ...panel };
+    return {
+      ...a,
+      ...placePanelResting(pill, panel, { corner: BUBBLE_CORNER, work: workAreas }),
+    };
   }
 
   async function ensureWorkAreas() {
@@ -239,27 +232,12 @@
     return { ...a, w: setupPanelWidth(), h: setupHeight() };
   }
 
-  function placeBirthSeed(
-    a: BubbleOpen,
-    pill = toolBirth() ?? surfaces.live["pill-skin"] ?? surfaces.live["pill"],
-  ) {
-    if (!pill) {
-      bubble.place(a);
-      return;
-    }
-    bubble.place({
-      ...a,
-      ...placePanelFusedSeed(
-        pill,
-        { w: a.w, h: a.h },
-        { corner: BUBBLE_CORNER, work: workAreas },
-      ),
-    });
-  }
-
   let placeEpoch = 0;
 
   async function placeFromPill(a: BubbleOpen) {
+    // El arrastre del detach es dueño de la geometría: un ancla repetida
+    // (present con OPEN, reanchor) no re-coloca a mitad del gesto.
+    if (detachDragActive) return;
     if (agentsIslandHost.on) {
       void hideAgentsWindow().catch(() => {});
       return;
@@ -270,6 +248,10 @@
     const rest = toolResting();
     if (rest) {
       detachDirect = true;
+      // Un dock previo (retach con sesiones del hub) deja `minimized`: sin
+      // bajarlo, `.is-docked` esconde el panel que acaba de nacer.
+      minimized = false;
+      agentsDock.setMinimized(false);
       armOpenDismissGrace();
       bubble.place({
         ...a,
@@ -311,7 +293,9 @@
     restingOpen = resolveRestingOpen(a, keep);
 
     if (fresh || revealPhase === "hidden") {
-      placeBirthSeed(a);
+      // Nace directo en su reposo (fade): ya no crece desde la semilla de la
+      // pill anclado a una esquina.
+      bubble.place(restingOpen);
       return;
     }
     if (revealPhase === "ready") {
@@ -380,12 +364,9 @@
     const prev = launcherView;
     launcherView = next;
     if (next === "console") browserOpen = false;
-    // Sin marco no hay a dónde crecer: no cancelar el morph de nacimiento.
+    // Sin marco no hay a dónde crecer.
     if (!current) return;
 
-    // Corta el morph de nacimiento: si no, al reabrir desde el selector
-    // termina colocando el marco chico encima de la consola.
-    revealEpoch += 1;
     clearSizeToggles();
 
     if (prev !== next) {
@@ -442,60 +423,16 @@
     return restingOpen ? frameForView(restingOpen) : null;
   }
 
-  async function runOpenReveal() {
-    const epoch = ++revealEpoch;
+  function runOpenReveal() {
     const initial = restingForView();
     if (!initial) return;
-    // Despegue: directo al reposo con el rect de la cara. La bandera es
-    // local: el `rest` global ya se limpió cuando corre el efecto. El ancla
-    // ya quedó puesta en `placeFromPill`: acá solo se marca listo.
-    if (detachDirect) {
-      revealPhase = "ready";
-      notifyToolResting();
-      return;
-    }
-    if (prefersReducedMotion()) {
-      bubble.place(restingForView() ?? initial);
-      revealPhase = "ready";
-      notifyToolResting();
-      return;
-    }
-
-    revealPhase = "expand";
-    await tick();
-    await waitFrames(2);
-    await wait(BIRTH_SEED_HOLD_MS);
-    const expandingTo = restingForView();
-    if (epoch !== revealEpoch || !bubble.anchor || !expandingTo) return;
-
-    bubble.place({
-      ...expandingTo,
-      ...expandPanelFromSeed(
-        {
-          side: bubble.anchor.side as BubbleOpen["side"],
-          offset: bubble.anchor.offset,
-          x: bubble.anchor.x,
-          y: bubble.anchor.y,
-          w: bubble.anchor.w,
-          h: bubble.anchor.h,
-        },
-        { w: expandingTo.w, h: expandingTo.h },
-      ),
-    });
-    await afterTransition(bubEl, "width", growDur);
-    if (epoch !== revealEpoch) return;
-
-    revealPhase = "settle";
-    await tick();
-    await waitFrames(2);
-    const settleTo = restingForView();
-    if (epoch !== revealEpoch || !settleTo) return;
-    const settleProp = separateAxisProp(bubble.anchor?.side);
-    bubble.place(settleTo);
-    notifyToolResting();
-    await afterTransition(bubEl, settleProp, settleDur);
-    if (epoch !== revealEpoch) return;
+    // Despegue: el ancla ya quedó en el rect de la cara (`placeFromPill`).
+    // La bandera es local: el `rest` global ya se limpió cuando corre esto.
+    // Si no, directo al reposo: el panel aparece con el fade de `.is-shown`
+    // en su lugar, sin crecer desde la semilla de la pill.
+    if (!detachDirect) bubble.place(initial);
     revealPhase = "ready";
+    notifyToolResting();
   }
 
   /* ─── Agrandar / minimizar ──────────────────────────────────────────────
@@ -552,23 +489,6 @@
   }
 
   /**
-   * Espejo del open: el panel se encoge a la semilla. Sin esto, expandir
-   * animaba el tamaño y achicar cortaba de golpe (`visibility: hidden`).
-   */
-  async function playCloseMorph(epoch: number): Promise<void> {
-    if (prefersReducedMotion() || !bubble.shown || !bubble.anchor) return;
-    revealPhase = "expand";
-    await tick();
-    await waitFrames(2);
-    if (epoch !== revealEpoch) return;
-    const a = bubble.anchor;
-    if (a) {
-      placeBirthSeed(asOpen(a), surfaces.live["pill-skin"] ?? surfaces.live["pill"]);
-    }
-    await afterTransition(bubEl, "width", growDur);
-  }
-
-  /**
    * Dockear devuelve el tamaño al de antes de agrandar.
    *
    * `restingOpen` es el marco al que crece `runOpenReveal`, y agrandar lo deja
@@ -576,8 +496,8 @@
    * pestaña de la pill reabría a pantalla completa: el usuario minimizaba una
    * consola normal y volvía con toda la altura del monitor.
    *
-   * Se llama ANTES del morph de cierre, que reescribe `bubble.anchor` con la
-   * semilla: después ya no queda de dónde sacar el marco previo.
+   * Sin agrandar, el reposo es el marco actual: tras un despegue arrastrado
+   * `restingOpen` quedaba viejo y la pestaña reabría lejos de donde se soltó.
    */
   function collapseMaximizedForDock() {
     const prev = frameBeforeMax;
@@ -585,8 +505,12 @@
     snapped = false;
     frameBeforeMax = null;
     snapPreview.frame = null;
-    if (!prev) return;
-    const base = restingOpen ?? (bubble.anchor ? asOpen(bubble.anchor) : null);
+    const current = bubble.anchor ? asOpen(bubble.anchor) : null;
+    if (!prev) {
+      if (current) restingOpen = current;
+      return;
+    }
+    const base = restingOpen ?? current;
     if (base) restingOpen = { ...base, ...prev };
   }
 
@@ -597,19 +521,16 @@
 
   function dockToPill() {
     if (minimized) return;
-    const epoch = ++revealEpoch;
+    // Se apaga en su lugar (fade de `.is-docked`): ya no se encoge hacia la
+    // esquina de la pill. El marco queda donde estaba para volver ahí.
     collapseMaximizedForDock();
     releaseOverlayKeyboard();
-    void (async () => {
-      await playCloseMorph(epoch);
-      if (epoch !== revealEpoch) return;
-      revealPhase = "ready";
-      minimized = true;
-      agentsDock.setMinimized(true);
-      bubble.shown = false;
-      clearAgentsOverlaySkin();
-      dismissAticConsoleCues();
-    })();
+    revealPhase = "ready";
+    minimized = true;
+    agentsDock.setMinimized(true);
+    bubble.shown = false;
+    clearAgentsOverlaySkin();
+    dismissAticConsoleCues();
   }
 
   /** El lanzador (antes de abrir una consola): X cierra, no achica. */
@@ -627,7 +548,6 @@
     minimized = false;
     agentsDock.setMinimized(false);
     if (!bubble.alive || !bubble.anchor) return;
-    revealEpoch += 1;
     // Desde el dock el marco quedó en la semilla: hay que crecer otra vez.
     // Ya abierto, no re-disparar el morph.
     revealPhase = wasDocked ? "hidden" : "ready";
@@ -682,8 +602,9 @@
   const { startDrag, endDrag } = createBubbleDrag(bubble, () => bubEl, {
     clamp: "visible",
     onGrab: ({ cursor, setHome }) => {
-      // El gesto arranca: si ya está lejos, el retach al soltar vale desde ya.
-      armDropRetach();
+      // El gesto arranca: lo que ya está lejos (marco o cursor) arma desde ya.
+      retachGesture = createRetachGesture();
+      trackRetach(retachGesture, magnetPill(), bubble.anchor, cursor);
       modeResizeEpoch += 1;
       modeResizing = false;
       // Agarrar una ventana agrandada la devuelve a su tamaño previo, como
@@ -701,9 +622,16 @@
       bubble.setFrame(nx, ny, prev.w, prev.h);
       setHome(nx, ny);
     },
-    onMove: ({ cursor, areas }) => {
-      // Salió de la zona: el retach queda armado para este gesto.
-      if (!dropRetachArmed) armDropRetach();
+    onMove: ({ cursor, frame, areas }) => {
+      const pill = magnetPill();
+      trackRetach(retachGesture, pill, frame, cursor);
+      const ready = retachReady(retachGesture, pill, frame, cursor);
+      showRetachPreview("agents", ready);
+      // Soltar ahí coloca en la isla: el fantasma del snap mentiría.
+      if (ready) {
+        snapPreview.frame = null;
+        return;
+      }
       // El lanzador compacto tiene alto fijo (`setupHeight`). Snapearlo a
       // pantalla completa o a la mitad lo deforma y el layout no lo aguanta.
       if (!resizable) {
@@ -715,12 +643,10 @@
     },
     onDrop: ({ cursor, areas }) => {
       snapPreview.frame = null;
-      // Soltado cerca de la pill CON el retach armado: se coloca en la isla.
-      // Sin armar (el gesto nació pegado y nunca se alejó), queda flotando.
-      const pill = surfaces.live["pill-skin"] ?? surfaces.live["pill"];
-      if (retachesOnDrop(dropRetachArmed, pill, bubble.anchor)) {
-        dropRetachArmed = false;
-        void emit("dock-tool-face", "agents").catch(() => {});
+      // Imán armado y en rango, o cursor sobre la pill: se coloca en la isla.
+      if (retachReady(retachGesture, magnetPill(), bubble.anchor, cursor)) {
+        retachGesture = createRetachGesture();
+        void retachToIsland();
         return;
       }
       if (!resizable) {
@@ -741,7 +667,28 @@
       const dest = snapFrame(hit.kind, hit.work, POSITION_MARGIN);
       void animateFrame(dest).then(() => savePosition());
     },
+    onEnd: () => showRetachPreview("agents", false),
   });
+
+  /**
+   * Re-acople: el panel viaja hasta fundirse con la pill y recién ahí pide la
+   * cara. La pill orquesta el resto (muda las consolas, abre la cara y apaga
+   * este float), así que el apagado ocurre junto a la isla y no donde se soltó.
+   */
+  async function retachToIsland(): Promise<void> {
+    const pill = magnetPill();
+    const a = bubble.anchor;
+    if (pill && a && !prefersReducedMotion()) {
+      const fused = placePanelFusedFull(
+        pill,
+        { w: a.w, h: a.h },
+        a.side as BubbleOpen["side"],
+        { corner: BUBBLE_CORNER, work: workAreas },
+      );
+      await animateFrame({ x: fused.x, y: fused.y, w: fused.w, h: fused.h });
+    }
+    void emit("dock-tool-face", "agents").catch(() => {});
+  }
 
   /* ─── Doble clic en la barra: agrandar / restaurar ───────────────────────
      No se usa el evento `dblclick` del DOM. Las dos barras que arrastran
@@ -778,6 +725,23 @@
   }
 
   const pillSkin = $derived(surfaces.live["pill-skin"]);
+  /**
+   * Monitor de la pill: ahí van los avisos. El overlay abarca todos los
+   * monitores y el pie del overlay caía entre dos pantallas.
+   */
+  const toastArea = $derived.by(() => {
+    const pill = pillSkin ?? surfaces.live["pill"];
+    return pill && workAreas.length > 0 ? workAreaAround(pill) : null;
+  });
+  /**
+   * La pila de avisos vive fuera del bubble: cada aviso publica su propio
+   * hit-rect para poder cerrarlo. Estable por instancia: un literal en el
+   * markup re-registraría en cada render.
+   */
+  const toastSurface = {
+    prefix: "agents-toasts",
+    add: (id: string, el: HTMLElement) => surfaces.add(id, el),
+  };
   const joined = $derived.by(() => {
     const a = bubble.anchor;
     const p = pillSkin;
@@ -956,23 +920,18 @@
    */
   function close() {
     if (!bubble.shown && !minimized && !bubble.alive) return;
-    const epoch = ++revealEpoch;
     modeResizeEpoch += 1;
     modeResizing = false;
     clearSizeToggles();
     endDrag();
     endResize();
     releaseOverlayKeyboard();
-    void (async () => {
-      await playCloseMorph(epoch);
-      if (epoch !== revealEpoch) return;
-      revealPhase = "ready";
-      liquid.publish("agents", []);
-      bubble.hide();
-      void hideAgentsWindow();
-      agents.watch(null);
-      dismissAticConsoleCues();
-    })();
+    revealPhase = "ready";
+    liquid.publish("agents", []);
+    bubble.hide();
+    void hideAgentsWindow();
+    agents.watch(null);
+    dismissAticConsoleCues();
   }
 
   /**
@@ -1020,14 +979,9 @@
       liquid.publish("agents", []);
       return;
     }
-    // Seguir el morph visual: el ancla lógica no escala al cerrar.
     void bubble.shown;
-    void revealPhase;
     void bubble.anchor;
-    const group = motionPhase || joined ? LIQUID_HUB : undefined;
-    if (motionPhase) {
-      return publishFollowSkin("agents", bubEl, BUBBLE_CORNER, group);
-    }
+    const group = joined ? LIQUID_HUB : undefined;
     return publishEmergeSkin("agents", bubEl, BUBBLE_CORNER, group);
   });
 
@@ -1053,7 +1007,7 @@
       () => {
         void surfaces.recoverHits();
       },
-      growDur + settleDur + 64,
+      ms(MOTION.slow) + 64,
     );
     return () => window.clearTimeout(t);
   });
@@ -1065,16 +1019,30 @@
     surfaces.schedule();
   });
 
+  // El motor baja `dragging` por todos sus caminos (soltar, watchdog de 15s,
+  // resetInteraction): la bandera del detach no puede quedar pegada aunque el
+  // pointerup se pierda fuera del overlay. Pegada bloquearía las colocaciones
+  // siguientes (float negro) y reviviría el offset.
+  $effect(() => {
+    if (!surfaces.dragging) detachDragActive = false;
+  });
+
   onMount(() => {
     applyTheme(readCachedTheme());
     setupWidth = readSetupWidth();
     // Handoff del detach: la pill traspasa el gesto vivo directo al motor
     // de arrastre, sin evento DOM de por medio (el header aún no existe: la
-    // consola llega después por el traspaso).
+    // consola llega después por el traspaso). La compuerta no acepta con el
+    // marco viejo (el float dockeado sigue vivo con su última posición):
+    // espera a que el detach lo coloque en el rect de la cara para que el
+    // panel nazca bajo la mano y la siga sin offset.
+    const handoffGate = createDetachHandoffGate();
     agentsFloatHandoff.current = (init) => {
-      // El ancla llega un turno después de `show`: sin marco, `startDrag`
-      // sale al instante y la pill da el traspaso por hecho.
-      if (!bubble.anchor) return false;
+      if (!nextDetachHandoff(handoffGate, bubble.anchor, toolResting()))
+        return false;
+      // Desde acá el panel es de la mano: ni el ancla repetida ni el expand
+      // tardío lo tocan hasta soltar (ver `placeFromPill` y el expand).
+      detachDragActive = true;
       startDrag(
         new PointerEvent("pointerdown", {
           button: 0,
@@ -1110,6 +1078,10 @@
         else dockToPill();
       }),
       onAgentsBubbleExpand(() => {
+        // `present` con el globo abierto emite expand ANTES de reanclar: a
+        // mitad de un detach correría el morph de nacimiento sobre el panel
+        // que ya sigue a la mano (~1s perdido + offset). El detach es dueño.
+        if (detachDragActive || toolResting()) return;
         expandFromDock();
       }),
       // Mudanza desde la principal: el lanzador adopta desde el buzón.
@@ -1153,6 +1125,7 @@
       unbindDock();
       if (agentsFloatHandoff.current) agentsFloatHandoff.current = null;
       window.removeEventListener("keydown", onKey);
+      showRetachPreview("agents", false);
       endDrag();
       endResize();
       for (const p of un) void p.then((fn) => fn());
@@ -1171,8 +1144,6 @@
     class="af"
     class:is-shown={bubble.shown}
     class:is-off={!bubble.alive}
-    class:is-expanding={expanding}
-    class:is-settling={settling}
     class:is-mode-resizing={modeResizing}
     class:is-joined={joined}
     class:is-docked={minimized}
@@ -1182,8 +1153,6 @@
     data-edge={hoverEdge ?? undefined}
     style={bubble.vars}
     style:--float-stack={surfaces.stack("agents")}
-    style:--agents-grow-dur="{growDur}ms"
-    style:--agents-settle-dur="{settleDur}ms"
     bind:this={bubEl}
     onpointerdowncapture={onRootPointerDown}
     onpointermove={onRootPointerMove}
@@ -1197,7 +1166,10 @@
         onBrowserChange={(open) => void changeBrowser(open)}
         onToggleMaximize={toggleMaximize}
         onToggleMinimize={toggleMinimize}
-        onLiveChange={(live) => (liveConsoles = live)}
+        onLiveChange={(live) => {
+          liveConsoles = live;
+          agentsFloatLive.on = live;
+        }}
         onNeedsAttention={(label) => toasts.push(t("page.agents.turnDone", { label }))}
         {maximized}
         {minimized}
@@ -1209,13 +1181,20 @@
 
 <!--
   Avisos del overlay, fuera del ciclo del bubble: el float puede no nacer
-  (la isla hospeda la consola) y el detach necesita feedback igual. Host a
-  pantalla completa para conservar el anclaje `local` (abajo del overlay),
-  sin depender de la vida del float.
+  (la isla hospeda la consola) y el detach necesita feedback igual. Host del
+  tamaño del área útil del monitor de la pill (anclaje `local`, al pie de esa
+  pantalla), sin depender de la vida del float.
 -->
-<div class="toast-host">
+<div
+  class="toast-host"
+  style:left={toastArea ? `${toastArea.x}px` : undefined}
+  style:top={toastArea ? `${toastArea.y}px` : undefined}
+  style:width={toastArea ? `${toastArea.w}px` : undefined}
+  style:height={toastArea ? `${toastArea.h}px` : undefined}
+>
   <ToastStack
     placement="local"
+    surface={toastSurface}
     items={toasts.items}
     onDismiss={(id) => toasts.dismiss(id)}
   />
@@ -1223,9 +1202,10 @@
 
 <style>
   /*
-   * Host de los avisos: fixed a pantalla completa para que la pila (`local`,
-   * `absolute inset-x-0 bottom-3`) quede al pie del overlay. No recibe
-   * punteros; cada toast los recupera.
+   * Host de los avisos: fixed (a pantalla completa hasta conocer el monitor
+   * de la pill) para que la pila (`local`, `absolute inset-x-0 bottom-3`)
+   * quede al pie. No recibe punteros; cada aviso publica su propio hit-rect
+   * (`surface`) para que su X reciba clics.
    */
   .toast-host {
     position: fixed;
@@ -1235,10 +1215,6 @@
   }
 
   .af {
-    /* Sobreimpulso sutil solo en el tamaño: el panel "respira" al abrirse.
-       La posición va en smooth-out para que la trayectoria no serpentee. */
-    --ease-emerge: cubic-bezier(0.3, 1.18, 0.36, 1);
-
     position: absolute;
 
     /* En reposo, el stack de floats: el último tocado gana. Junto a la pill
@@ -1273,24 +1249,6 @@
 
   .af.is-joined {
     z-index: calc(var(--z-overlay-pill) - 1);
-  }
-
-  .af.is-expanding {
-    transition:
-      width var(--agents-grow-dur) var(--ease-emerge),
-      height var(--agents-grow-dur) var(--ease-emerge),
-      left var(--agents-grow-dur) var(--ease-smooth-out),
-      top var(--agents-grow-dur) var(--ease-smooth-out),
-      opacity var(--duration-quick) var(--ease-smooth-out);
-  }
-
-  .af.is-settling {
-    transition:
-      left var(--agents-settle-dur) var(--ease-smooth-out),
-      top var(--agents-settle-dur) var(--ease-smooth-out),
-      width var(--duration-quick) var(--ease-smooth-out),
-      height var(--duration-quick) var(--ease-smooth-out),
-      opacity var(--duration-quick) var(--ease-smooth-out);
   }
 
   .af.is-mode-resizing {
@@ -1335,7 +1293,7 @@
     transform-origin: 100% var(--tail, 50%);
   }
 
-  .af.is-shown:not(.is-expanding) .af-stage {
+  .af.is-shown .af-stage {
     opacity: 1;
     transform: none;
     pointer-events: auto;
@@ -1358,13 +1316,11 @@
 
   @media (prefers-reduced-motion: reduce) {
     .af,
-    .af.is-expanding,
-    .af.is-settling,
     .af.is-mode-resizing,
     .af.is-off,
     .af.is-docked,
     .af-stage,
-    .af.is-shown:not(.is-expanding) .af-stage {
+    .af.is-shown .af-stage {
       transition: none;
       transform: none;
     }

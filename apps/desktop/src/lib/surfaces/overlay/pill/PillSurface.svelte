@@ -53,6 +53,7 @@
   } from "$lib/tools";
   import {
     PILL_BACK_ID,
+    PILL_CUSTOMIZE_ID,
     PILL_MORE_ID,
     PILL_WINDOW_ID,
     pillLayout,
@@ -61,6 +62,7 @@
     type PillWheelId,
   } from "$core/pillTools";
   import { config } from "$domain/config.svelte";
+  import { toastError } from "$domain/toasts.svelte";
   import { localizeTool, t } from "$domain/i18n.svelte";
   import { formatShortcut } from "$lib/format";
   import Icon from "$ui/Icon.svelte";
@@ -120,11 +122,16 @@
   } from "$surfaces/overlay/pill/pillAgentChip";
   import { consoleCue } from "$surfaces/overlay/agents/consoleCue.svelte";
   import { agentsDock } from "$surfaces/overlay/agents/agentsDock.svelte";
+  import { retachPreview } from "$surfaces/overlay/retachPreview.svelte";
+  import { pushRecentColor } from "$features/color/colorMath";
+  import { requestConsoleFocus } from "$features/agents/consoleFocus";
   import {
-    leaveQuotaPanel,
-    quotaHover,
-    quotaHoverState,
-  } from "$surfaces/overlay/pill/quotaHover.svelte";
+    isPeekTool,
+    leavePeekPanel,
+    peekFor,
+    toolPeek,
+    toolPeekState,
+  } from "$surfaces/overlay/pill/toolPeek.svelte";
   import {
     areaFor,
     dockAxis,
@@ -136,8 +143,12 @@
     snapDrop,
     snapMagnet,
     shouldUndock,
+    pillHomeFrom,
+    pillHomePoint,
     type DockEdge,
+    type PillHome,
   } from "$surfaces/overlay/edgeDock";
+  import { clearPillHome, readPillHome, writePillHome } from "./pillHomeStore";
   import AgentAuthCard from "$surfaces/overlay/pill/AgentAuthCard.svelte";
   import {
     afterTransition,
@@ -149,7 +160,7 @@
   } from "$lib/motion";
   import { playWheelTick } from "$ipc/uiSound";
   import { launcherLab } from "$lib/dev/launcherLab.svelte";
-  import type { PermissionDecision } from "$core/types";
+  import type { PermissionDecision, PresenceActivity } from "$core/types";
   // Lo que queda son los comandos DE LA PILL: su geometría, sus atajos y las
   // ventanas que abre. El estado de la app lo traen los stores.
   import {
@@ -161,6 +172,7 @@
     onAgentsBubbleDismiss,
     agentPresenceFocus,
     agentPresenceBind,
+    consoleForPresence,
     revealAgentsConsole,
     setAgentsConsoleOpen,
   } from "$ipc/agents";
@@ -188,6 +200,7 @@
   import ClipboardHistoryList from "$lib/ClipboardHistoryList.svelte";
   import SnippetsList from "$lib/SnippetsList.svelte";
   import SystemPanel from "$features/system/SystemPanel.svelte";
+  import PillCustomize from "./PillCustomize.svelte";
   import { systemAlerts } from "$domain/systemAlerts.svelte";
   import { system } from "$domain/system.svelte";
   import AgentLauncher from "$features/agents/AgentLauncher.svelte";
@@ -641,6 +654,37 @@
     return base;
   }
 
+  /**
+   * Qué hace el agente de esta fila, si se sabe.
+   *
+   * Solo la presencia que lee el transcript (Claude Code) la trae; el chat y
+   * las demás TUI dicen «trabajando» a secas y se animan como «pensando».
+   */
+  function liveActivity(c: AgentChip): PresenceActivity | null {
+    if (c.tone !== "working") return null;
+    return presence.view.find((p) => p.id === c.id)?.activity ?? null;
+  }
+
+  function activityText(a: PresenceActivity): string {
+    const detail = a.detail?.trim();
+    return detail
+      ? t(`pill.activity.${a.kind}On`, { detail })
+      : t(`pill.activity.${a.kind}`);
+  }
+
+  /** El aviso completo al pasar el mouse: la fila lo recorta a una línea. */
+  function liveTitle(c: AgentChip): string {
+    const full = presence.view.find((p) => p.id === c.id)?.preview?.trim();
+    if (c.tone === "ready" && full) return full;
+    return chipTitle(c);
+  }
+
+  /** «Ya lo vi»: solo los avisos de listo; trabajar o pedir permiso siguen. */
+  function dismissLive(c: AgentChip): void {
+    if (c.id === "chat") agents.markAllRead();
+    else presence.markSeen(c.id);
+  }
+
   /** Texto visible de una fila: el pipeline manda; el fallback solo nombra el estado. */
   function chipLiveLabel(c: AgentChip): string {
     const label = c.label?.trim();
@@ -706,16 +750,16 @@
 
   let wheelEl = $state<HTMLElement | null>(null);
 
-  /** Lo que dice el panel si no hay ningún cupo: lo que diría el tooltip. */
-  const agentsHelp = $derived.by(() => {
-    const tool = localizeTool(toolById("agents"));
+  /** Lo que dice el vistazo si no hay nada que mostrar: lo que diría el tooltip. */
+  function toolHelp(id: ToolId): string {
+    const tool = localizeTool(toolById(id));
     return `${tool.label} — ${tool.short}`;
-  });
+  }
 
   /**
-   * El gajo «Agentes» de la rueda abre el mismo panel que el botón de la isla.
+   * Un gajo con vistazo abre el mismo panel que su botón en la isla.
    *
-   * Va por `wheelTool` y no por un `use:quotaHover` porque los gajos los pinta
+   * Va por `wheelTool` y no por un `use:toolPeek` porque los gajos los pinta
    * `ParticleWheel`, que es compartido: la pill sabe cuál está activo por el
    * `bind:activeId` que ya existía, y con eso alcanza.
    *
@@ -724,9 +768,10 @@
    * que al cruzar isla→panel. Llamar a hide() en cada render con el gajo
    * inactivo también cerraría el panel que abrió la isla.
    */
-  let wheelOwnsQuota = false;
+  let wheelOwnsPeek = false;
   $effect(() => {
-    if (!wheelShown || wheelTool !== "agents" || !wheelEl) return;
+    const peekTool = wheelTool;
+    if (!wheelShown || !isPeekTool(peekTool) || !wheelEl) return;
     const o = tracker.originAt;
     const r = tracker.rects;
     const parts = [];
@@ -740,18 +785,18 @@
       wheelEl.querySelector<HTMLElement>(".pw-node.is-hot .pw-node-body") ??
       wheelEl.querySelector<HTMLElement>(".pw-node.is-hot");
     const box = (petal ?? wheelEl).getBoundingClientRect();
-    quotaHoverState.show(
+    toolPeekState.show(
+      { tool: peekTool, fallback: toolHelp(peekTool) },
       { x: box.left, y: box.top, w: box.width, h: box.height },
-      agentsHelp,
       parts.length > 0 ? parts : null,
     );
-    wheelOwnsQuota = true;
+    wheelOwnsPeek = true;
     return () => {
-      if (!wheelOwnsQuota) return;
-      wheelOwnsQuota = false;
+      if (!wheelOwnsPeek) return;
+      wheelOwnsPeek = false;
       // Gracia, no corte: si el gajo pierde el mouse porque el panel nació
       // encima, o al cruzar el hueco hacia el pin, hide() inmediato ciclaba.
-      leaveQuotaPanel();
+      leavePeekPanel();
     };
   });
 
@@ -879,6 +924,14 @@
             label: t("pill.openMain"),
             short: t("pill.openMainHint"),
             icon: "window",
+          };
+        }
+        if (id === PILL_CUSTOMIZE_ID) {
+          return {
+            id,
+            label: t("pill.customize"),
+            short: t("pill.customizeHint"),
+            icon: "customize",
           };
         }
         const tool = localizeTool(toolById(id));
@@ -1174,24 +1227,57 @@
   });
 
   /**
-   * El hogar: centro de arriba del monitor principal. Arrastrar la deja
-   * donde cae (o en un canto si quedó pegada). Abrir una herramienta o
-   * cerrar un float la devuelve acá.
+   * El hogar: donde el usuario la acopló por última vez (`chosenHome`), o el
+   * centro de arriba del monitor principal si nunca la acopló o ese monitor
+   * ya no está. Arrastrar la deja donde cae; abrir una herramienta o cerrar
+   * un float la devuelve acá.
    */
   let home = $state({ x: 0, y: 0 });
+  /** Canto del hogar vigente. */
+  let homeEdge: DockEdge = "top";
+  /** El hogar vigente es el elegido (no el de por defecto). */
+  let homeChosen = false;
+  /**
+   * Lo elige el usuario al SOLTARLA contra un canto. Dejarla flotando no lo
+   * cambia: un arrastre de paso no es mudarse.
+   */
+  let chosenHome: PillHome | null = readPillHome();
 
   function restSize() {
     return windowFor({ w: PILL.bar, h: PILL.bar });
   }
 
-  /** Tamaño de la isla en reposo en el techo: el hogar se centra con ESTO. */
-  function notchHomeSize() {
-    return windowFor(contentFor("edge", barW, { edge: "top", expanded: false }));
+  /** Tamaño de la isla en reposo en ese canto: el hogar se centra con ESTO. */
+  function notchHomeSize(edge: DockEdge = "top") {
+    return windowFor(contentFor("edge", barW, { edge, expanded: false }));
   }
 
   function refreshDefaultHome() {
-    const dest = defaultPillHome(notchHomeSize(), stage.workAreas());
-    if (dest) home = dest.at;
+    const areas = stage.workAreas();
+    const chosen = chosenHome
+      ? pillHomePoint(chosenHome, notchHomeSize(chosenHome.edge), areas)
+      : null;
+    const dest = chosen ?? defaultPillHome(notchHomeSize(), areas);
+    if (!dest) return;
+    home = dest.at;
+    homeEdge = dest.edge;
+    homeChosen = chosen !== null;
+  }
+
+  /** La soltaron contra un canto: ese pasa a ser su hogar. */
+  function rememberHome(edge: DockEdge, size: { w: number; h: number }): void {
+    const next = pillHomeFrom(edge, { x: at.x, y: at.y, w: size.w, h: size.h }, stage.workAreas());
+    if (!next) return;
+    chosenHome = next;
+    writePillHome(next);
+    refreshDefaultHome();
+  }
+
+  /** Ajustes → Pill: olvidar el hogar elegido y volver al de por defecto. */
+  async function resetHome(): Promise<void> {
+    chosenHome = null;
+    clearPillHome();
+    await goDefaultHome();
   }
 
   function atDefaultHome(px = 8): boolean {
@@ -1200,16 +1286,16 @@
 
   async function goDefaultHome(): Promise<void> {
     refreshDefaultHome();
-    if (atDefaultHome(2) && surface === "edge" && dock?.edge === "top") return;
+    if (atDefaultHome(2) && surface === "edge" && dock?.edge === homeEdge) return;
     if (Math.hypot(home.x - at.x, home.y - at.y) >= 2) {
       await flyTo(home);
     } else {
       stage.moveTo(home);
       at = stage.at();
     }
-    dock = { edge: "top", expanded: false };
+    dock = { edge: homeEdge, expanded: false };
     surface = "edge";
-    settleDock();
+    settleDock({ keep: homeChosen });
   }
   /** El vuelo lo hace una transición CSS; esto la enciende solo cuando toca. */
   let flying = $state(false);
@@ -1345,7 +1431,9 @@
   );
   let agentFaceDismissed = $state<string | null>(null);
   /** Pedido explícito de panel en la isla (clipboard, textos, agentes). */
-  let toolFace = $state<"tab" | "clipboard" | "snippets" | "system" | "agents">("tab");
+  let toolFace = $state<"tab" | "clipboard" | "snippets" | "system" | "agents" | "customize">(
+    "tab",
+  );
   let snippetsTab = $state<"list" | "scratchpad">("list");
   const islandFace: IslandFace = $derived.by(() => {
     if (
@@ -1376,6 +1464,9 @@
   const snippetsFaceOpen = $derived(islandFace === "snippets");
   const systemFaceOpen = $derived(islandFace === "system");
   const agentsFaceOpen = $derived(islandFace === "agents");
+  const customizeFaceOpen = $derived(islandFace === "customize");
+  /** Ficha desde la que se abrió el editor (presión larga o clic derecho). */
+  let customizeFocus = $state<ToolId | null>(null);
   let agentsMounted = $state(false);
   let agentsLive = $state(false);
   let agentsConsoleView = $state(false);
@@ -1481,6 +1572,8 @@
   }
   let islandFaceLockUntil = 0;
   let clipFaceEl = $state<HTMLElement | null>(null);
+  /** Filas de avisos: sobre ellas el hover no abre la tira (ver el sondeo). */
+  let liveListEl = $state<HTMLElement | null>(null);
   /**
    * La cara de agentes montada, para publicarla como hit-rect `agents`.
    *
@@ -1489,6 +1582,18 @@
    * que estar en la lista (ver el efecto de registro).
    */
   let agentsFaceEl = $state<HTMLElement | null>(null);
+
+  /**
+   * El elemento de la cara `id`.
+   *
+   * Las caras comparten `clipFaceEl`: al desmontarse la del historial (o
+   * textos / sistema) queda en null, y la de agentes —montada siempre— no
+   * vuelve a enlazarse. El despegue medía null, nacía sin reposo y el float
+   * crecía desde la semilla de la esquina, lejos de la mano.
+   */
+  function faceElFor(id: "clipboard" | "snippets" | "system" | "agents") {
+    return id === "agents" ? agentsFaceEl : clipFaceEl;
+  }
 
   /**
    * Teclado de la cara abierta (Windows).
@@ -1505,6 +1610,7 @@
       snippetsFaceOpen ||
       systemFaceOpen ||
       agentsFaceOpen ||
+      customizeFaceOpen ||
       sidePanel !== null,
   );
   /** Ya pedimos el teclado por esta cara: evita repetir el viaje a Rust. */
@@ -1576,7 +1682,7 @@
     const id = toolFace;
     if (id !== "clipboard" && id !== "snippets" && id !== "system" && id !== "agents")
       return;
-    const r = clipFaceEl?.getBoundingClientRect();
+    const r = faceElFor(id)?.getBoundingClientRect();
     if (r && r.width > 0 && r.height > 0) {
       const rect = { x: r.x, y: r.y, w: r.width, h: r.height };
       captureToolBirth(rect);
@@ -1696,7 +1802,7 @@
     const id = toolFace;
     if (id !== "clipboard" && id !== "snippets" && id !== "system" && id !== "agents")
       return;
-    const r = clipFaceEl?.getBoundingClientRect();
+    const r = faceElFor(id)?.getBoundingClientRect();
     if (r && r.width > 0 && r.height > 0) {
       const rect = { x: r.x, y: r.y, w: r.width, h: r.height };
       captureToolBirth(rect);
@@ -1830,6 +1936,17 @@
    */
   let detachBounce = $state(false);
   let detachBounceTimer = 0;
+
+  /**
+   * Vista previa del imán: un float arrastrado se colocaría si se soltara ya.
+   * Con una cara abierta no: hinchar la tarjeta entera sería un salto.
+   */
+  const retachCue = $derived(retachPreview.tool !== null && !faceOpen);
+  $effect(() => {
+    void retachCue;
+    // El transform cambia el rect cada cuadro: el campo líquido tiene que seguirlo.
+    tracker.wake(true);
+  });
 
   function armIslandBounce(): void {
     detachBounce = true;
@@ -2051,6 +2168,28 @@
     }
   }
 
+  /**
+   * Abre la consola en la pestaña de ESTE agente, si corre en una de Atic.
+   * Si Rust no la encuentra, la consola abre como siempre.
+   */
+  async function openAgentsConsoleAt(presenceId: string | undefined): Promise<void> {
+    const session = presenceId ? await consoleForPresence(presenceId).catch(() => null) : null;
+    if (session) await openConsoleSession(session);
+    else await openAgentsConsole();
+  }
+
+  /**
+   * La consola puede estar montándose recién (la isla la monta al abrirse): se
+   * pide la pestaña ahora y otra vez un momento después. Pedirla dos veces no
+   * cambia nada si ya está a la vista.
+   */
+  async function openConsoleSession(session: string): Promise<void> {
+    await openAgentsConsole();
+    await tick();
+    requestConsoleFocus(session);
+    window.setTimeout(() => requestConsoleFocus(session), 200);
+  }
+
   function activateAgentChip(which: AgentChip | null, preferBindFromGesture = false) {
     const current = which ?? chip;
     if (agentsDock.minimized && (current.tone === "off" || !which)) {
@@ -2061,7 +2200,7 @@
     const target = current.target;
     const preferBind = preferBindFromGesture;
     if (target.kind === "console") {
-      void openAgentsConsole();
+      void openAgentsConsoleAt(target.presenceId);
       if (target.presenceId) presence.markSeen(target.presenceId);
       if (current.id === "chat") agents.markAllRead();
       return;
@@ -2071,6 +2210,14 @@
     const unbound = target.kind === "none";
     void (async () => {
       try {
+        // Corre en una consola de Atic: esa pestaña, sin adivinar ventanas.
+        // Con varios Claude abiertos, atar por ventana no es confiable.
+        const session = await consoleForPresence(id).catch(() => null);
+        if (session) {
+          presence.markSeen(id);
+          await openConsoleSession(session);
+          return;
+        }
         let result =
           preferBind || unbound
             ? await agentPresenceBind(id)
@@ -2080,7 +2227,7 @@
         }
         presence.markSeen(id);
         if (result.kind === "console") {
-          await openAgentsConsole();
+          await openAgentsConsoleAt(id);
         }
       } catch (err) {
         presence.markSeen(id);
@@ -2550,17 +2697,22 @@
    * llama con la posición YA final, después de que `moveTo` clampeó.
    *
    * `drop`: el usuario la acaba de soltar. Ahí no mandan los imanes de
-   * centro —un gesto de 40 px volvía al hogar—. Solo un canto cercano.
+   * centro —un gesto de 40 px volvía al hogar—. Solo un canto cercano. Y ese
+   * canto pasa a ser su hogar.
+   *
+   * `keep`: volvió a un hogar elegido. Se engancha como al soltar, sin los
+   * imanes: el del canto la recentraría y perdería la altura que eligió.
    */
-  function settleDock(opts?: { drop?: boolean }): boolean {
+  function settleDock(opts?: { drop?: boolean; keep?: boolean }): boolean {
     // La rueda manda: mientras esté abierta o colapsando, la pill no es una
     // isla aunque esté parada sobre el canto.
     if (surface === "wheel" || collapsingFrom === "wheel") return false;
     const size = stage.applied() ?? windowFor({ w: PILL.bar, h: PILL.bar });
     const rect = { x: at.x, y: at.y, w: size.w, h: size.h };
-    const found = opts?.drop
-      ? snapDrop(rect, stage.workAreas())
-      : snapMagnet(rect, stage.workAreas());
+    const found =
+      opts?.drop || opts?.keep
+        ? snapDrop(rect, stage.workAreas())
+        : snapMagnet(rect, stage.workAreas());
     if (!found) {
       dock = null;
       if (surface === "edge") surface = "none";
@@ -2584,6 +2736,7 @@
     }
     stage.moveTo(found.at);
     at = stage.at();
+    if (opts?.drop && found.edge) rememberHome(found.edge, size);
     surfaces.schedule();
     return true;
   }
@@ -2705,7 +2858,7 @@
     // El panel de cupos cuelga de la isla: si esta se cierra, el hilo queda
     // pintado en el vacío (pezón en el techo). Mientras el panel vive, la
     // tira es el cuerpo.
-    void quotaHoverState.open;
+    void toolPeekState.open;
     void islandFace;
     let alive = true;
     let leftAt: number | null = null;
@@ -2729,6 +2882,19 @@
       }
       const overPill = await overlayCursorOverHit("pill").catch(() => null);
       if (!alive || dragOrigin || overPill === null) return;
+      // Sobre las filas de avisos la tira no abre: ahí se elige un agente o se
+      // descarta un aviso. Las herramientas se piden desde la pestaña, que es
+      // de donde nace la tira.
+      if (overPill && islandFace === "live" && !dock?.expanded && liveListEl) {
+        const cursor = await overlayCursor().catch(() => null);
+        if (!alive) return;
+        const r = liveListEl.getBoundingClientRect();
+        if (pointInRect(cursor, { x: r.x, y: r.y, w: r.width, h: r.height })) {
+          hoveredAt = null;
+          liveHoverHold = null;
+          return;
+        }
+      }
       let over = overPill;
       if (!over && liveHoverHold) {
         const cursor = await overlayCursor().catch(() => null);
@@ -2743,7 +2909,7 @@
       else hoveredAt = null;
       const next = islandHoverStay({
         over: islandHoverOpens({
-          over: over || quotaHoverState.open,
+          over: over || toolPeekState.open,
           expanded: dock?.expanded === true,
           hasUpdate: updateChip != null || systemChip != null || islandFace === "live",
           hoveredMs: hoveredAt == null ? 0 : now - hoveredAt,
@@ -2999,7 +3165,7 @@
       // Si el hogar estaba en un canto, volver a él es volver a ser isla. Sin
       // esto la rueda "desacoplaba" la pill: volvía al borde con forma de
       // barra y no se recuperaba hasta arrastrarla de nuevo.
-      settleDock();
+      settleDock({ keep: homeChosen });
     }
     return true;
   }
@@ -3300,23 +3466,25 @@
     if (surface !== "none" && surface !== "edge") return;
     if (dock?.expanded && !booting) return;
     const size = stage.applied() ?? restSize();
-    const seat = geometryReseat(
-      {
-        docked: surface === "edge" ? (dock?.edge ?? null) : null,
-        size,
-        current: { x: at.x, y: at.y, w: size.w, h: size.h },
-      },
-      stage.workAreas(),
-    );
-    if (!seat) return;
     refreshDefaultHome();
+    const docked = surface === "edge" ? (dock?.edge ?? null) : null;
+    // Con hogar elegido, a su punto exacto: `geometryReseat` la recentraría
+    // en el canto (o la mandaría arriba si flotaba).
+    const seat =
+      homeChosen && (docked === null || docked === homeEdge)
+        ? { at: home, edge: homeEdge }
+        : geometryReseat(
+            { docked, size, current: { x: at.x, y: at.y, w: size.w, h: size.h } },
+            stage.workAreas(),
+          );
+    if (!seat) return;
     stage.moveTo(seat.at);
     at = stage.at();
     if (seat.edge) {
       dock = { edge: seat.edge, expanded: false };
       surface = "edge";
     }
-    settleDock();
+    settleDock({ keep: homeChosen });
   }
 
   /**
@@ -3328,7 +3496,7 @@
     if (anySpatialOpen()) return;
     if (surface === "edge") return;
     refreshDefaultHome();
-    if (atDefaultHome(2)) settleDock();
+    if (atDefaultHome(2)) settleDock({ keep: homeChosen });
   }
 
   /** Dismiss de tool con reverse liquid: esperar a que el float se funda. */
@@ -3358,7 +3526,7 @@
       if (Math.hypot(home.x - at.x, home.y - at.y) >= 2) {
         await flyTo(home);
       }
-      settleDock();
+      settleDock({ keep: homeChosen });
     }
     if (!opts.returnToEdge) return;
     if (surface !== "edge") await goDefaultHome();
@@ -3400,7 +3568,60 @@
     armOpenDismissGrace();
     await setOverlayPointerGesture(true).catch(() => {});
     await tick();
-    clipFaceEl?.focus({ preventScroll: true });
+    faceElFor(id)?.focus({ preventScroll: true });
+  }
+
+  /**
+   * Abre el editor de la pill como cara de la isla.
+   *
+   * Solo acoplada: es donde vive la tira que se edita. `focus` destaca la
+   * ficha desde la que se pidió (presión larga o clic derecho sobre ella);
+   * «Más», Ventana y compañía no son herramientas y no se destacan.
+   */
+  async function openCustomizeFace(focus: PillStripId | null): Promise<void> {
+    if (surface !== "edge" || !dock) return;
+    const tool = WHEEL_TOOLS.find((item) => item.id === focus);
+    customizeFocus = tool ? tool.id : null;
+    dock = { ...dock, expanded: false };
+    toolFace = "customize";
+    armOpenDismissGrace();
+    await setOverlayPointerGesture(true).catch(() => {});
+  }
+
+  /** Cada soltar del editor se guarda en el acto: la tira ya queda así. */
+  function saveCustomize(next: { ring: string[]; more: string[] }): void {
+    void config
+      .patch({ pill_tools: next.ring, pill_more_tools: next.more })
+      .catch(toastError);
+  }
+
+  /**
+   * Presión larga sobre una ficha de la tira: abre el editor con ella a mano.
+   *
+   * La presión arranca también el arrastre de la pill (la isla se agarra desde
+   * cualquier parte). Si se cumple el plazo sin moverse, el gesto deja de ser
+   * arrastre y clic: se suelta la vigilancia, así el soltar no ejecuta la
+   * herramienta ni un movimiento posterior desacopla la pill.
+   */
+  const STRIP_HOLD_MS = 480;
+  let stripHoldTimer = 0;
+
+  function armStripHold(id: PillStripId): void {
+    cancelStripHold();
+    stripHoldTimer = window.setTimeout(() => {
+      stripHoldTimer = 0;
+      if (!dragOrigin || dragMoved) return;
+      stopDragWatch();
+      islandPressTool = null;
+      playWheelTick();
+      void openCustomizeFace(id);
+    }, STRIP_HOLD_MS);
+  }
+
+  function cancelStripHold(): void {
+    if (!stripHoldTimer) return;
+    window.clearTimeout(stripHoldTimer);
+    stripHoldTimer = 0;
   }
 
   /**
@@ -3791,6 +4012,7 @@
       : Math.hypot(dx, dy);
     if (!dragMoved && fromPress > DRAG_THRESHOLD) {
       dragMoved = true;
+      cancelStripHold();
       captureDragPointer(origin.pointerId);
       // Rueda abierta: se cierra al mover para poder acoplar a un canto.
       if (dragClosesWheel(surface)) {
@@ -3907,6 +4129,7 @@
     const wasClick = release
       ? pointerGestureWasClick(dragPress, release, DRAG_THRESHOLD)
       : dragOrigin !== null && !dragMoved;
+    cancelStripHold();
     const moved = dragMoved;
     const pressedTool = islandPressTool;
     const pressedMark = islandPressMark;
@@ -3997,7 +4220,13 @@
     // flotante la despliega el hover. Va antes del clic genérico de la
     // pestaña para que no dispare las dos cosas.
     if (wasClick && pressedMark) {
-      if (clipboardFaceOpen || snippetsFaceOpen || systemFaceOpen || agentsFaceOpen) {
+      if (
+        clipboardFaceOpen ||
+        snippetsFaceOpen ||
+        systemFaceOpen ||
+        agentsFaceOpen ||
+        customizeFaceOpen
+      ) {
         dismissToolFace();
         return;
       }
@@ -4021,6 +4250,10 @@
       }
       if (pressedTool === PILL_WINDOW_ID) {
         void showMainWindow();
+        return;
+      }
+      if (pressedTool === PILL_CUSTOMIZE_ID) {
+        void openCustomizeFace(null);
         return;
       }
       activateFromIsland(pressedTool);
@@ -4052,9 +4285,9 @@
       refreshDefaultHome();
       stage.moveTo(home);
       at = stage.at();
-      dock = { edge: "top", expanded: false };
+      dock = { edge: homeEdge, expanded: false };
       surface = "edge";
-      settleDock();
+      settleDock({ keep: homeChosen });
       void savePillHome(home.x, home.y);
       // Recién ahora hay hogar de verdad: antes de esto, un resize temprano
       // re-asentaría la pill sobre el {0,0} inicial.
@@ -4141,6 +4374,11 @@
         void closeWheel({ returnHome: false });
       }),
       on("fly-tool-slot", (tool) => void flySlotOnly(tool)),
+      on("pill-home-reset", () => void resetHome()),
+      // El overlay tiene `data_directory` propio: los recientes que guarda la
+      // lupa no llegan acá. Rust avisa cada color confirmado y el vistazo de
+      // Color arma su propia lista con eso.
+      on("color-picked", (hex) => void pushRecentColor(hex)),
       onPillRadialPress(() => void openWheel()),
       onPillRadialRelease(() => onWheelRelease()),
       onPillReset(async () => {
@@ -4185,7 +4423,11 @@
       }
       if (
         event.key === "Escape" &&
-        (clipboardFaceOpen || snippetsFaceOpen || systemFaceOpen || agentsFaceOpen)
+        (clipboardFaceOpen ||
+          snippetsFaceOpen ||
+          systemFaceOpen ||
+          agentsFaceOpen ||
+          customizeFaceOpen)
       ) {
         const inConsole = (event.target as HTMLElement | null)?.closest?.(
           ".console, .xterm",
@@ -4252,7 +4494,13 @@
       }
       // La cara no resuelve nada: colapsa a cue, que sigue pulsando.
       if (agentFaceOpen) dismissAgentFace();
-      if (clipboardFaceOpen || snippetsFaceOpen || systemFaceOpen || agentsFaceOpen)
+      if (
+        clipboardFaceOpen ||
+        snippetsFaceOpen ||
+        systemFaceOpen ||
+        agentsFaceOpen ||
+        customizeFaceOpen
+      )
         dismissToolFace();
       if (openingWheel && surface !== "wheel") {
         cancelFlight();
@@ -4288,6 +4536,7 @@
         if (!owned) surfaces.dragging = false;
       }
       window.clearTimeout(detachBounceTimer);
+      cancelStripHold();
       window.clearTimeout(suppressAgentChipClickTimer);
       window.clearTimeout(suppressWheelCoreClickTimer);
       window.clearTimeout(resettleTimer);
@@ -4364,6 +4613,7 @@
       class:is-face={faceOpen}
       class:has-side={sideApplied}
       class:is-detach-bounce={detachBounce}
+      class:is-retach-cue={retachCue}
     >
       <div class="p-island-body">
         <i
@@ -4531,20 +4781,27 @@
           {#each stripNodes as node, i (node.id)}
             {@const slot = i + 1 + islandLiveSlots(activity)}
             {@const help = `${node.label} — ${node.short}`}
-            <!-- Agentes no lleva `use:tip`: su hover abre el panel de cupos, y
-               dos globos sobre el mismo botón se taparían. Sin cupos que
-               mostrar, el panel dice lo mismo que habría dicho el tooltip. -->
+            <!-- Las que tienen vistazo no llevan `use:tip`: su hover abre el
+               vistazo, y dos globos sobre el mismo botón se taparían. Sin nada
+               que mostrar, el vistazo dice lo mismo que habría dicho el tooltip. -->
             <button
               type="button"
               class="p-island-tool"
               style="--i: {slot}; --s: {Math.abs((islandSlots - 1) / 2 - slot)}"
-              use:tip={node.id === "agents" ? "" : help}
-              use:quotaHover={node.id === "agents" ? help : ""}
+              use:tip={isPeekTool(node.id) ? "" : help}
+              use:toolPeek={peekFor(node.id, help)}
               aria-label={node.id === "agents" && islandCue
                 ? agentChipAria
                 : `${node.label}. ${node.short}`}
               {@attach islandAttachers[i]}
-              onpointerdown={() => (islandPressTool = node.id)}
+              onpointerdown={(e) => {
+                islandPressTool = node.id;
+                if (e.button === 0) armStripHold(node.id);
+              }}
+              oncontextmenu={(e) => {
+                e.preventDefault();
+                void openCustomizeFace(node.id);
+              }}
             >
               <ToolIcon id={node.icon} size={22} strokeWidth={1.6} />
               {#if node.id === "agents" && islandCue}
@@ -4590,32 +4847,55 @@
             onpointerdown={(e) => e.stopPropagation()}
             transition:opacityFade
           >
-            <div class="p-live-list" role="list">
+            <div class="p-live-list" role="list" bind:this={liveListEl}>
               {#each chips as c (c.id)}
                 {@const logos = chipLogos(c)}
-                <button
-                  type="button"
-                  class="p-live-row"
-                  class:is-waiting={c.tone === "waiting"}
-                  class:is-working={c.tone === "working"}
-                  class:is-ready={c.tone === "ready"}
-                  class:is-count={c.tone === "count"}
-                  data-chip-id={c.id}
-                  onclick={(e) => onAgentChipClick(e, c.tone === "off" ? null : c)}
-                  use:tip={chipTitle(c)}
-                  aria-label={chipAria(c)}
-                >
-                  <span class="p-live-row-logos" aria-hidden="true">
-                    {#if logos.length > 0}
-                      {#each logos as id (id)}
-                        <AgentLogo agent={id} size={16} />
-                      {/each}
-                    {:else}
-                      <AgentLogo agent={null} size={16} />
+                {@const act = liveActivity(c)}
+                <div class="p-live-item" role="listitem" class:has-x={c.tone === "ready"}>
+                  <button
+                    type="button"
+                    class="p-live-row"
+                    class:is-waiting={c.tone === "waiting"}
+                    class:is-working={c.tone === "working"}
+                    class:is-ready={c.tone === "ready"}
+                    class:is-count={c.tone === "count"}
+                    data-chip-id={c.id}
+                    onclick={(e) => onAgentChipClick(e, c.tone === "off" ? null : c)}
+                    use:tip={liveTitle(c)}
+                    aria-label={chipAria(c)}
+                  >
+                    <span class="p-live-row-logos" aria-hidden="true">
+                      {#if logos.length > 0}
+                        {#each logos as id (id)}
+                          <AgentLogo agent={id} size={16} />
+                        {/each}
+                      {:else}
+                        <AgentLogo agent={null} size={16} />
+                      {/if}
+                    </span>
+                    <span class="p-live-row-label">
+                      {act ? activityText(act) : chipLiveLabel(c)}
+                    </span>
+                    {#if c.tone === "working"}
+                      <!-- La animación dice qué hace: tres gotas que piensan,
+                           un trazo que edita, un cursor que ejecuta… -->
+                      <span class="p-live-act" data-act={act?.kind ?? "thinking"} aria-hidden="true">
+                        <i></i><i></i><i></i>
+                      </span>
                     {/if}
-                  </span>
-                  <span class="p-live-row-label">{chipLiveLabel(c)}</span>
-                </button>
+                  </button>
+                  {#if c.tone === "ready"}
+                    <button
+                      type="button"
+                      class="p-live-x"
+                      aria-label={t("pill.dismiss")}
+                      use:tip={t("pill.dismiss")}
+                      onclick={() => dismissLive(c)}
+                    >
+                      <Icon icon={X} size={11} />
+                    </button>
+                  {/if}
+                </div>
               {/each}
             </div>
           </div>
@@ -4783,6 +5063,31 @@
             <SystemPanel island />
           </div>
         {/if}
+        {#if customizeFaceOpen}
+          <div
+            class="p-face"
+            data-face="customize"
+            data-no-drag
+            tabindex="-1"
+            bind:this={clipFaceEl}
+            onpointerdown={(e) => e.stopPropagation()}
+            onkeydown={(e) => {
+              if (e.key === "Escape") {
+                e.preventDefault();
+                dismissToolFace();
+              }
+            }}
+            transition:opacityFade
+          >
+            <PillCustomize
+              {layout}
+              focus={customizeFocus}
+              onplace={saveCustomize}
+              onreset={() => saveCustomize({ ring: [], more: [] })}
+              ondone={dismissToolFace}
+            />
+          </div>
+        {/if}
         <!-- Fila consola + panel: con el panel abierto, la caja suma el ancho
              de los dos y la consola queda clavada contra su canto. Sin panel
              la fila es `display: contents`: el layout no cambia. -->
@@ -4841,6 +5146,12 @@
                 onLiveChange={(live) => (agentsLive = live)}
                 onViewChange={(view) => (agentsConsoleView = view === "console")}
                 onBrowserChange={(open) => (agentsBrowserOpen = open)}
+                onRevealFloat={() => {
+                  // Las consolas están en el float: la cara se retira para
+                  // que el float no crezca encima de ella.
+                  dismissToolFace();
+                  agentsDock.expand();
+                }}
               />
             </div>
           {/if}
@@ -5553,6 +5864,34 @@
     will-change: transform;
   }
 
+  /*
+   * Vista previa del imán: la pestaña se hincha hacia afuera del canto para
+   * recibir el panel. Anuncia lo que hará el soltar; no decide nada.
+   */
+  .p-island-body {
+    transition: transform var(--duration-medium) var(--ease-smooth-out);
+  }
+
+  .p-root[data-edge="top"] .p-island.is-retach-cue .p-island-body {
+    transform-origin: center top;
+    transform: scale(1.1, 1.2);
+  }
+
+  .p-root[data-edge="bottom"] .p-island.is-retach-cue .p-island-body {
+    transform-origin: center bottom;
+    transform: scale(1.1, 1.2);
+  }
+
+  .p-root[data-edge="left"] .p-island.is-retach-cue .p-island-body {
+    transform-origin: left center;
+    transform: scale(1.2, 1.1);
+  }
+
+  .p-root[data-edge="right"] .p-island.is-retach-cue .p-island-body {
+    transform-origin: right center;
+    transform: scale(1.2, 1.1);
+  }
+
   .p-root[data-edge="top"] .p-island.is-detach-bounce .p-island-body {
     transform-origin: center top;
     animation: island-detach-y 360ms var(--ease-liquid) 200ms backwards;
@@ -6147,13 +6486,22 @@
     overflow: hidden;
   }
 
+  /* Fila + su «descartar»: la X no puede ir DENTRO del botón de la fila. */
+  .p-live-item {
+    position: relative;
+    display: flex;
+    min-width: 0;
+    height: var(--island-live-row);
+    flex: 0 0 var(--island-live-row);
+  }
+
   .p-live-row {
     position: relative;
     display: flex;
     width: 100%;
     min-width: 0;
-    height: var(--island-live-row);
-    flex: 0 0 var(--island-live-row);
+    height: 100%;
+    flex: 1 1 auto;
     align-items: center;
     gap: 8px;
     border: 0;
@@ -6214,6 +6562,246 @@
     justify-content: center;
     gap: 2px;
     overflow: hidden;
+  }
+
+  /* Con la X a la vista, el texto le deja lugar. */
+  .p-live-item.has-x:hover .p-live-row,
+  .p-live-item.has-x:focus-within .p-live-row {
+    padding-right: 26px;
+  }
+
+  .p-live-x {
+    position: absolute;
+    top: 50%;
+    right: 4px;
+    display: grid;
+    width: 20px;
+    height: 20px;
+    border: 0;
+    border-radius: 999px;
+    padding: 0;
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+    opacity: 0;
+    place-items: center;
+    transform: translateY(-50%);
+    transition:
+      opacity var(--duration-quick) var(--ease-smooth-out),
+      background var(--duration-quick) var(--ease-smooth-out),
+      color var(--duration-quick) var(--ease-smooth-out);
+  }
+
+  .p-live-item:hover .p-live-x,
+  .p-live-x:focus-visible {
+    opacity: 1;
+  }
+
+  .p-live-x:hover {
+    background: color-mix(in sRGB, var(--text) 12%, transparent);
+    color: var(--text);
+  }
+
+  .p-live-x:focus-visible {
+    outline: none;
+    box-shadow: var(--rb-focus);
+  }
+
+  /* Con animación de actividad, la fila deja de latir: una cosa moviéndose alcanza. */
+  .p-live-row.is-working:has(.p-live-act) {
+    animation: none;
+  }
+
+  /*
+   * La actividad, en 14 × 10 px al final de la fila. Tres <i> que cada estado
+   * usa a su modo: puntos que respiran (pensar), que saltan (escribir), un
+   * trazo que crece (editar), una barra que barre (leer), un punto que orbita
+   * (buscar), un cursor que parpadea (ejecutar), dos puntos que se pasan la
+   * posta (delegar) y un aro que gira (otra herramienta).
+   */
+  .p-live-act {
+    position: relative;
+    display: flex;
+    width: 14px;
+    height: 10px;
+    flex: 0 0 14px;
+    align-items: center;
+    justify-content: space-between;
+    margin-left: auto;
+  }
+
+  .p-live-act i {
+    display: block;
+    width: 3px;
+    height: 3px;
+    border-radius: 999px;
+    background: currentColor;
+  }
+
+  .p-live-act[data-act="thinking"] i {
+    animation: p-act-breathe 1.2s var(--ease-smooth-out) infinite;
+  }
+
+  .p-live-act[data-act="writing"] i {
+    animation: p-act-hop 0.9s var(--ease-smooth-out) infinite;
+  }
+
+  .p-live-act[data-act="thinking"] i:nth-child(2),
+  .p-live-act[data-act="writing"] i:nth-child(2) {
+    animation-delay: 0.15s;
+  }
+
+  .p-live-act[data-act="thinking"] i:nth-child(3),
+  .p-live-act[data-act="writing"] i:nth-child(3) {
+    animation-delay: 0.3s;
+  }
+
+  .p-live-act[data-act="editing"] i,
+  .p-live-act[data-act="reading"] i,
+  .p-live-act[data-act="running"] i,
+  .p-live-act[data-act="searching"] i,
+  .p-live-act[data-act="tool"] i {
+    display: none;
+  }
+
+  .p-live-act[data-act="editing"] i:first-child {
+    display: block;
+    position: absolute;
+    bottom: 1px;
+    left: 0;
+    width: 0;
+    height: 2px;
+    animation: p-act-stroke 1.1s var(--ease-smooth-out) infinite;
+  }
+
+  .p-live-act[data-act="reading"] i:first-child {
+    display: block;
+    position: absolute;
+    left: 0;
+    width: 2px;
+    height: 10px;
+    animation: p-act-scan 1.1s var(--ease-liquid) infinite alternate;
+  }
+
+  .p-live-act[data-act="running"] i:first-child {
+    display: block;
+    width: 6px;
+    height: 9px;
+    border-radius: 1px;
+    animation: p-act-blink 0.9s steps(2, jump-none) infinite;
+  }
+
+  .p-live-act[data-act="searching"] {
+    justify-content: center;
+    animation: p-act-orbit 1s linear infinite;
+  }
+
+  .p-live-act[data-act="searching"] i:first-child {
+    display: block;
+    transform: translateX(4px);
+  }
+
+  .p-live-act[data-act="delegating"] i:nth-child(3) {
+    display: none;
+  }
+
+  .p-live-act[data-act="delegating"] i:first-child {
+    animation: p-act-pass 1s var(--ease-liquid) infinite alternate;
+  }
+
+  .p-live-act[data-act="delegating"] i:nth-child(2) {
+    animation: p-act-pass 1s var(--ease-liquid) infinite alternate-reverse;
+  }
+
+  .p-live-act[data-act="tool"] i:first-child {
+    display: block;
+    width: 9px;
+    height: 9px;
+    margin: 0 auto;
+    border: 1.5px solid color-mix(in sRGB, currentColor 30%, transparent);
+    border-top-color: currentColor;
+    background: transparent;
+    animation: p-act-spin 0.9s linear infinite;
+  }
+
+  @keyframes p-act-breathe {
+    0%,
+    100% {
+      opacity: 0.3;
+      transform: scale(0.8);
+    }
+
+    50% {
+      opacity: 1;
+      transform: scale(1.1);
+    }
+  }
+
+  @keyframes p-act-hop {
+    0%,
+    60%,
+    100% {
+      transform: translateY(0);
+    }
+
+    30% {
+      transform: translateY(-3px);
+    }
+  }
+
+  @keyframes p-act-stroke {
+    0% {
+      width: 0;
+      opacity: 1;
+    }
+
+    70% {
+      width: 14px;
+      opacity: 1;
+    }
+
+    100% {
+      width: 14px;
+      opacity: 0;
+    }
+  }
+
+  @keyframes p-act-scan {
+    from {
+      transform: translateX(0);
+    }
+
+    to {
+      transform: translateX(12px);
+    }
+  }
+
+  @keyframes p-act-blink {
+    to {
+      opacity: 0;
+    }
+  }
+
+  @keyframes p-act-orbit {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+
+  @keyframes p-act-pass {
+    from {
+      transform: translateX(0);
+    }
+
+    to {
+      transform: translateX(6px);
+    }
+  }
+
+  @keyframes p-act-spin {
+    to {
+      transform: rotate(360deg);
+    }
   }
 
   .p-live-row-label {
@@ -7648,6 +8236,8 @@
     .p-island-cue-logo,
     .p-island-agent-badge,
     .p-live-row,
+    .p-live-act,
+    .p-live-act i,
     .p-mark.is-lead {
       transition: none !important;
       animation: none !important;

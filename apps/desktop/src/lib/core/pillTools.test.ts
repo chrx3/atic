@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { pillLayout, pillStripPage } from "./pillTools";
+import { pillLayout, pillStripPage, placePillTool } from "./pillTools";
 import { WHEEL_TOOLS } from "./tools";
 
 const ids = (tools: { id: string }[]) => tools.map((tool) => tool.id);
@@ -109,9 +109,11 @@ describe("pillStripPage", () => {
       "more",
       "window",
     ]);
+    // En su lugar, al final del segundo paso, va la puerta al editor.
     expect(pillStripPage(layout, "more", { windowOnFirst: true })).toEqual([
       "back",
       "board",
+      "customize",
     ]);
   });
 
@@ -133,5 +135,62 @@ describe("pillStripPage", () => {
   it("lo oculto tampoco aparece en la tira", () => {
     const layout = pillLayout(["meetings"], []);
     expect(pillStripPage(layout)).not.toContain("clipboard");
+  });
+});
+
+describe("placePillTool", () => {
+  const layout = pillLayout(["meetings", "clipboard", "system"], ["board"]);
+
+  it("reordena dentro del anillo", () => {
+    expect(placePillTool(layout, "system", "ring", 0)).toEqual({
+      ring: ["system", "meetings", "clipboard"],
+      more: ["board"],
+    });
+  });
+
+  it("pasa del anillo a «Más» en la posición pedida", () => {
+    expect(placePillTool(layout, "clipboard", "more", 0)).toEqual({
+      ring: ["meetings", "system"],
+      more: ["clipboard", "board"],
+    });
+  });
+
+  it("sin índice va al final", () => {
+    expect(placePillTool(layout, "board", "ring")).toEqual({
+      ring: ["meetings", "clipboard", "system", "board"],
+      more: [],
+    });
+  });
+
+  it("ocultar la saca de las dos listas", () => {
+    expect(placePillTool(layout, "board", "hidden")).toEqual({
+      ring: ["meetings", "clipboard", "system"],
+      more: [],
+    });
+  });
+
+  it("una oculta entra donde se la suelta", () => {
+    expect(placePillTool(layout, "color", "ring", 1)).toEqual({
+      ring: ["meetings", "color", "clipboard", "system"],
+      more: ["board"],
+    });
+  });
+
+  it("el índice fuera de rango se acota", () => {
+    expect(placePillTool(layout, "meetings", "ring", 99)?.ring).toEqual([
+      "clipboard",
+      "system",
+      "meetings",
+    ]);
+  });
+
+  it("la rueda no puede quedar vacía", () => {
+    const one = pillLayout(["system"], ["board"]);
+    expect(placePillTool(one, "system", "more")).toBeNull();
+    expect(placePillTool(one, "system", "hidden")).toBeNull();
+    expect(placePillTool(one, "system", "ring", 0)).toEqual({
+      ring: ["system"],
+      more: ["board"],
+    });
   });
 });

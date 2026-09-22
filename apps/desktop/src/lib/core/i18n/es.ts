@@ -243,6 +243,10 @@ export const es = {
       reset: "Volver a tenerlas todas en la rueda",
       stripNote:
         "La tira del borde muestra las de la rueda y las de «Más» seguidas: es lineal, no tiene ángulo que ahorrar.",
+      homeTitle: "Posición de la pill",
+      homeHint:
+        "La pill vuelve al último canto donde la soltaste, a la misma altura. Si ese monitor ya no está, vuelve arriba al centro.",
+      homeReset: "Volver arriba al centro",
     },
     shortcuts: {
       title: "Atajos globales",
@@ -628,6 +632,18 @@ export const es = {
     backHint: "Al primer grupo",
     openMain: "Ventana principal",
     openMainHint: "Abrir la app",
+    customize: "Personalizar",
+    customizeHint: "Ordenar y elegir herramientas",
+    customizeTitle: "Personalizar la pill",
+    customizeDrag: "Arrastra para ordenar",
+    customizeRing: "A la vista",
+    customizeMore: "Detrás de «Más»",
+    customizeHidden: "Fuera de la pill",
+    customizeDropHere: "Suelta aquí",
+    customizeDone: "Listo",
+    customizeReset: "Restablecer",
+    customizeLastOne: "Tiene que quedar al menos una a la vista",
+    customizeChip: "{label}. Flechas para moverla",
     stopRecord: "Detener grabación",
     stopDictate: "Detener dictado",
     dictatingHint: "Dictando · clic para detener",
@@ -658,6 +674,25 @@ export const es = {
      * agente corre herramientas («trabajando») o el stream contesta.
      */
     chipWorking: "Trabajando…",
+    /** Lo que hace un agente mientras trabaja; `On` lleva el dato (archivo, comando). */
+    activity: {
+      thinking: "Pensando…",
+      thinkingOn: "Pensando…",
+      writing: "Escribiendo…",
+      writingOn: "Escribiendo…",
+      editing: "Editando…",
+      editingOn: "Editando {detail}",
+      reading: "Leyendo…",
+      readingOn: "Leyendo {detail}",
+      searching: "Buscando…",
+      searchingOn: "Buscando {detail}",
+      running: "Ejecutando…",
+      runningOn: "Ejecutando {detail}",
+      delegating: "Delegando…",
+      delegatingOn: "Delegando: {detail}",
+      tool: "Usando una herramienta…",
+      toolOn: "Usando {detail}",
+    },
     chipAnswering: "Contestando…",
     waiting: "El agente espera tu permiso",
     unread: "{label} sin leer",
@@ -669,6 +704,25 @@ export const es = {
      * arman con `unit.*` a partir de su largo. Cursor usa `auto` y `api`, los
      * mismos % que su dashboard. `spend` solo aparece si hay on-demand.
      */
+    peek: {
+      cpu: "CPU",
+      ram: "Memoria",
+      top: "Lo que más consume",
+      openSystem: "Abrir Sistema",
+      openClipboard: "Ver el historial completo",
+      clipboardEmpty: "Todavía no has copiado nada",
+      clipboardImage: "Imagen",
+      paste: "Pegar {label}",
+      copied: "Copiado",
+      capturesEmpty: "Todavía no hay capturas",
+      capturesNew: "Nueva captura",
+      captureCopy: "Copiar la captura de las {label}",
+      colorEmpty: "Todavía no has tomado colores",
+      colorPick: "Tomar un color",
+      colorCopy: "Copiar {hex}",
+      snippetsEmpty: "Todavía no tienes textos guardados",
+      snippetsOpen: "Ver todos los textos",
+    },
     quota: {
       window: {
         now: "Ahora",

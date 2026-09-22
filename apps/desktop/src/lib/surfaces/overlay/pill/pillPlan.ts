@@ -66,14 +66,16 @@ export type IslandFace =
   | "clipboard"
   | "snippets"
   | "system"
-  | "agents";
+  | "agents"
+  | "customize";
 
 export function isIslandPanelFace(face: IslandFace): boolean {
   return (
     face === "clipboard" ||
     face === "snippets" ||
     face === "system" ||
-    face === "agents"
+    face === "agents" ||
+    face === "customize"
   );
 }
 
@@ -240,6 +242,12 @@ export function contentFor(
       return dockAxis(dock.edge) === "x"
         ? { w: thick + PILL.islandSysW, h: Math.max(long, PILL.islandSysH) }
         : { w: Math.max(long, PILL.islandSysW), h: thick + PILL.islandSysH };
+    }
+    if (face === "customize") {
+      // Medida propia: ver `islandCustomH` en `pillStage`.
+      return dockAxis(dock.edge) === "x"
+        ? { w: thick + PILL.islandCustomW, h: Math.max(long, PILL.islandCustomH) }
+        : { w: Math.max(long, PILL.islandCustomW), h: thick + PILL.islandCustomH };
     }
     if (isIslandPanelFace(face)) {
       return dockAxis(dock.edge) === "x"
