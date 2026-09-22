@@ -300,6 +300,155 @@ pub fn capture_window(hwnd: isize) -> Result<Frame> {
     }
 }
 
+/// El cursor tal como estaba en un instante, para dibujarlo más tarde.
+///
+/// La mira congela el escritorio y recién después le pega encima la pill (que
+/// `BitBlt` no ve). Si el cursor se dibujara al congelar, la pill lo taparía:
+/// se guarda acá y se dibuja al final. El ícono es una copia: el del sistema
+/// puede cambiar o destruirse antes de que se use.
+pub struct CursorSnapshot {
+    icon: windows_sys::Win32::UI::WindowsAndMessaging::HICON,
+    /// Esquina del ícono (ya descontado el hotspot), en coords físicas.
+    x: i32,
+    y: i32,
+}
+
+// SAFETY: un HICON es un objeto USER del proceso, válido desde cualquier hilo;
+// la copia es exclusiva de este valor y se destruye una sola vez en `drop`.
+unsafe impl Send for CursorSnapshot {}
+
+impl Drop for CursorSnapshot {
+    fn drop(&mut self) {
+        // SAFETY: `icon` salió de `CopyIcon` y solo se destruye acá.
+        unsafe {
+            windows_sys::Win32::UI::WindowsAndMessaging::DestroyIcon(self.icon);
+        }
+    }
+}
+
+/// Lado del recuadro que se redibuja alrededor del cursor. Alcanza para los
+/// cursores grandes de accesibilidad sin copiar el escritorio entero.
+const CURSOR_REGION: i32 = 256;
+
+/// Guarda el cursor de ahora. `None` si está oculto o no se puede leer.
+pub fn snapshot_cursor() -> Option<CursorSnapshot> {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        CopyIcon, GetCursorInfo, GetIconInfo, CURSORINFO, CURSOR_SHOWING, ICONINFO,
+    };
+
+    // SAFETY: estructuras inicializadas con su tamaño; los bitmaps que devuelve
+    // `GetIconInfo` se liberan antes de salir.
+    unsafe {
+        let mut cursor: CURSORINFO = std::mem::zeroed();
+        cursor.cbSize = std::mem::size_of::<CURSORINFO>() as u32;
+        if GetCursorInfo(&mut cursor) == 0 || cursor.flags & CURSOR_SHOWING == 0 {
+            return None;
+        }
+        let mut info: ICONINFO = std::mem::zeroed();
+        if GetIconInfo(cursor.hCursor, &mut info) == 0 {
+            return None;
+        }
+        if !info.hbmColor.is_null() {
+            DeleteObject(info.hbmColor as HGDIOBJ);
+        }
+        if !info.hbmMask.is_null() {
+            DeleteObject(info.hbmMask as HGDIOBJ);
+        }
+        let icon = CopyIcon(cursor.hCursor);
+        if icon.is_null() {
+            return None;
+        }
+        Some(CursorSnapshot {
+            icon,
+            x: cursor.ptScreenPos.x - info.xHotspot as i32,
+            y: cursor.ptScreenPos.y - info.yHotspot as i32,
+        })
+    }
+}
+
+impl CursorSnapshot {
+    /// Dibuja el cursor encima de `frame`. Best-effort: si algo falla, el frame
+    /// queda como estaba.
+    ///
+    /// Se redibuja solo el recuadro del cursor con GDI —`DrawIconEx` necesita
+    /// los píxeles de abajo para los cursores que invierten el color— y se
+    /// devuelve al frame opaco, como el resto del escritorio.
+    pub fn draw_onto(&self, frame: &mut Frame) {
+        use windows_sys::Win32::Graphics::Gdi::SetDIBits;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{DrawIconEx, DI_NORMAL};
+
+        let fw = frame.bounds.width as i32;
+        let fh = frame.bounds.height as i32;
+        let rx = self.x - frame.bounds.x;
+        let ry = self.y - frame.bounds.y;
+        let x0 = rx.max(0);
+        let y0 = ry.max(0);
+        let x1 = (rx + CURSOR_REGION).min(fw);
+        let y1 = (ry + CURSOR_REGION).min(fh);
+        if x1 <= x0 || y1 <= y0 {
+            return;
+        }
+        let (w, h) = ((x1 - x0) as usize, (y1 - y0) as usize);
+        let stride = fw as usize * 4;
+        let mut region = vec![0u8; w * h * 4];
+        for row in 0..h {
+            let src = (y0 as usize + row) * stride + x0 as usize * 4;
+            region[row * w * 4..(row + 1) * w * 4].copy_from_slice(&frame.bgra[src..src + w * 4]);
+        }
+
+        // SAFETY: `canvas` gestiona los recursos GDI; el buffer mide w*h*4 y
+        // el encabezado lo describe como BGRA top-down de esas dimensiones.
+        let drawn = unsafe {
+            let Ok(canvas) = MemCanvas::new(w as u32, h as u32) else {
+                return;
+            };
+            let mut info: BITMAPINFO = std::mem::zeroed();
+            info.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
+            info.bmiHeader.biWidth = w as i32;
+            info.bmiHeader.biHeight = -(h as i32);
+            info.bmiHeader.biPlanes = 1;
+            info.bmiHeader.biBitCount = 32;
+            info.bmiHeader.biCompression = BI_RGB;
+            let copied = SetDIBits(
+                canvas.mem_dc,
+                canvas.bitmap,
+                0,
+                h as u32,
+                region.as_ptr() as *const core::ffi::c_void,
+                &info,
+                DIB_RGB_COLORS,
+            );
+            if copied == 0 {
+                return;
+            }
+            DrawIconEx(
+                canvas.mem_dc,
+                rx - x0,
+                ry - y0,
+                self.icon,
+                0,
+                0,
+                0,
+                null_mut(),
+                DI_NORMAL,
+            );
+            match canvas.read_bgra() {
+                Ok(bgra) => bgra,
+                Err(_) => return,
+            }
+        };
+
+        for row in 0..h {
+            let dst = (y0 as usize + row) * stride + x0 as usize * 4;
+            let line = &drawn[row * w * 4..(row + 1) * w * 4];
+            frame.bgra[dst..dst + w * 4].copy_from_slice(line);
+            for px in frame.bgra[dst..dst + w * 4].chunks_exact_mut(4) {
+                px[3] = 255;
+            }
+        }
+    }
+}
+
 /// Dibuja el cursor del sistema sobre el DC, en coordenadas relativas al origen
 /// del frame. Best-effort: si algo falla, no dibuja nada.
 unsafe fn draw_cursor(dc: HDC, origin_x: i32, origin_y: i32) {

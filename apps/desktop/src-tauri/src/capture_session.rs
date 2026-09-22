@@ -130,6 +130,11 @@ pub struct OverlaySession {
     /// JPEG temporal del frame congelado (se borra al terminar).
     frame_path: std::path::PathBuf,
     kind: OverlayKind,
+    /// Windows: el cursor del instante de congelar. Se dibuja después de pegar
+    /// la pill encima (`compose_overlay_into_session`): dibujado al congelar,
+    /// la pill lo tapaba.
+    #[cfg(windows)]
+    cursor: Option<atic_capture::engine::CursorSnapshot>,
 }
 
 #[cfg(any(windows, target_os = "macos"))]
@@ -630,9 +635,23 @@ fn start_freeze(app: &AppHandle, token: u64, kind: OverlayKind) -> Result<(), St
         return Ok(());
     }
 
+    // Windows: congelar sin cursor y guardarlo aparte. `BitBlt` no ve la pill,
+    // que se compone encima más tarde; si el cursor ya estuviera en el frame,
+    // la pill lo taparía. Se dibuja al final, sobre ella.
+    #[cfg(windows)]
+    let cursor = if include_cursor {
+        atic_capture::engine::snapshot_cursor()
+    } else {
+        None
+    };
+    #[cfg(windows)]
+    let freeze_cursor = false;
+    #[cfg(target_os = "macos")]
+    let freeze_cursor = include_cursor;
+
     // Congelar YA. Crear el webview o encodear el preview no puede ir antes:
     // el escritorio seguiría cambiando mientras esperamos.
-    let (frame, preview_scale, natives) = match freeze_desktop(include_cursor) {
+    let (frame, preview_scale, natives) = match freeze_desktop(freeze_cursor) {
         Ok(frozen) => frozen,
         Err(error) => {
             abandon_start(app);
@@ -753,6 +772,7 @@ fn start_freeze(app: &AppHandle, token: u64, kind: OverlayKind) -> Result<(), St
             monitors,
             frame_path,
             kind,
+            cursor,
         };
         #[cfg(target_os = "macos")]
         let session = OverlaySession {
@@ -831,6 +851,9 @@ fn compose_overlay_into_session(app: &AppHandle) {
     let mut guard = state.overlay_session.lock_or_recover();
     if let Some(session) = guard.as_mut() {
         compose_overlay(app, &mut session.frame);
+        if let Some(cursor) = session.cursor.take() {
+            cursor.draw_onto(&mut session.frame);
+        }
     }
 }
 

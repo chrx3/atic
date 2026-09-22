@@ -14,7 +14,7 @@ mod windows;
 #[cfg(windows)]
 pub use windows::{
     capture_rect, capture_rect_without_layered, capture_window, capture_window_visual,
-    print_window, print_window_tree,
+    print_window, print_window_tree, snapshot_cursor, CursorSnapshot,
 };
 
 #[cfg(target_os = "macos")]
