@@ -206,6 +206,8 @@ export interface AticEvents {
    * Solo vuelo al slot (sin ejecutar). PTT: vuela en paralelo al start.
    */
   "fly-tool-slot": ToolId;
+  /** Ajustes → Pill: olvidar el hogar elegido y volver arriba al centro. */
+  "pill-home-reset": null;
 }
 
 export type AticEvent = keyof AticEvents;

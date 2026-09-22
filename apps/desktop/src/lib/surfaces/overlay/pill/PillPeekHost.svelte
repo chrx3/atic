@@ -1,6 +1,10 @@
 <script lang="ts">
   /**
-   * El panel de cupos: una gota más del grupo líquido.
+   * El vistazo de una herramienta: una gota más del grupo líquido.
+   *
+   * La ubicación, el morph y el hilo son de todos los vistazos; lo de adentro
+   * depende de `toolPeekState.tool`. Agentes pinta sus cupos acá mismo (fue el
+   * primero y trae el diseño del canto); Sistema y Clipboard, su componente.
    *
    * # Por qué se funde en vez de flotar aparte
    *
@@ -28,7 +32,7 @@
    * Va en `OverlaySurface`, junto a los floats, y no dentro de `PillSurface`:
    * ahí el filtro del goo se volvería el bloque contenedor de su `fixed`.
    *
-   * El gesto y la temporización están en `quotaHover.svelte.ts`.
+   * El gesto y la temporización están en `toolPeek.svelte.ts`.
    */
   import AgentLogo from "$features/agents/AgentLogo.svelte";
   import { t } from "$domain/i18n.svelte";
@@ -62,10 +66,18 @@
     type QuotaTone,
   } from "./pillQuota";
   import {
-    enterQuotaPanel,
-    leaveQuotaPanel,
-    quotaHoverState,
-  } from "./quotaHover.svelte";
+    enterPeekPanel,
+    hideToolPeek,
+    leavePeekPanel,
+    toolPeekState,
+    type PeekTool,
+  } from "./toolPeek.svelte";
+  import { emit } from "@tauri-apps/api/event";
+  import CapturesPeek from "./CapturesPeek.svelte";
+  import ClipboardPeek from "./ClipboardPeek.svelte";
+  import ColorPeek from "./ColorPeek.svelte";
+  import SnippetsPeek from "./SnippetsPeek.svelte";
+  import SystemPeek from "./SystemPeek.svelte";
 
   /** Radio de la silueta. El mismo de los otros floats. */
   const CORNER = 20;
@@ -174,7 +186,7 @@
     panel: { x: number; y: number; w: number; h: number },
     stemSide: "top" | "bottom" | "left" | "right",
   ): { body: { x: number; y: number; w: number; h: number }; radius: number } | null {
-    const petal = quotaHoverState.anchor;
+    const petal = toolPeekState.anchor;
     if (
       petal &&
       stemBodyFits(petal, stemSide, STEM_R) &&
@@ -185,7 +197,7 @@
       const radius = Math.min(12, Math.max(STEM_R, Math.round(g / 6)));
       return { body: petal, radius };
     }
-    const parts = quotaHoverState.parts;
+    const parts = toolPeekState.parts;
     if (parts && parts.length > 0) {
       const hub = unionRects(parts);
       if (
@@ -200,7 +212,7 @@
       }
     }
     const body = nearestStemBody(
-      [surfaces.live["pill-skin"], surfaces.live["pill"], quotaHoverState.anchor],
+      [surfaces.live["pill-skin"], surfaces.live["pill"], toolPeekState.anchor],
       panel,
       stemSide,
       STEM_R,
@@ -247,7 +259,7 @@
    * costado y ahí el layout horizontal sigue siendo el correcto.
    */
   const sideLayout = $derived.by(() => {
-    if (quotaHoverState.parts?.length) return false;
+    if (toolPeekState.tool !== "agents" || toolPeekState.parts?.length) return false;
     const shape = surfaces.live["pill-skin"] ?? surfaces.live["pill"];
     return shape != null && shape.h > shape.w * 1.2;
   });
@@ -255,13 +267,13 @@
   /**
    * Montar / desmontar, con el repliegue en el medio.
    *
-   * Solo lee `quotaHoverState.open` y solo escribe `alive` / `shown` /
+   * Solo lee `toolPeekState.open` y solo escribe `alive` / `shown` /
    * `placed`. Preguntar acá por `alive` —«si ya está cerrado, no hagas nada»—
    * sería leer y escribir el mismo estado en un efecto, que es como se rompió
    * la primera versión.
    */
   $effect(() => {
-    if (quotaHoverState.open) {
+    if (toolPeekState.open) {
       alive = true;
       return;
     }
@@ -283,12 +295,33 @@
     return () => clearInterval(timer);
   });
 
+  /**
+   * El contenido cambia de alto solo (el historial llega, una app entra al
+   * top): hay que volver a colocar y a medir la piel, o el panel queda
+   * cortado o corrido de su hilo.
+   */
+  let sizeEpoch = $state(0);
+  $effect(() => {
+    if (!el) return;
+    const observer = new ResizeObserver(() => (sizeEpoch += 1));
+    observer.observe(el);
+    return () => observer.disconnect();
+  });
+
+  /** Pasa a la herramienta completa: el mismo camino que su atajo. */
+  function openTool(tool: PeekTool): void {
+    hideToolPeek();
+    void emit("activate-tool-slot", tool).catch(() => {});
+  }
+
   /** Coloca el panel hacia adentro de la pantalla. */
   $effect(() => {
-    const anchor = quotaHoverState.anchor;
+    const anchor = toolPeekState.anchor;
+    void toolPeekState.tool;
+    void sizeEpoch;
     void rows.length;
     void sideLayout;
-    void quotaHoverState.fallback;
+    void toolPeekState.fallback;
     void agentQuotas.loading;
     if (!alive || !el) {
       placed = false;
@@ -306,7 +339,7 @@
     }
     const pill = surfaces.live["pill"];
     const skin = surfaces.live["pill-skin"];
-    const parts = quotaHoverState.parts;
+    const parts = toolPeekState.parts;
     void pill?.x;
     void pill?.y;
     void pill?.w;
@@ -427,9 +460,11 @@
     void hover;
     void sideLayout;
     void cardTop;
-    void quotaHoverState.fallback;
-    void quotaHoverState.parts;
-    void quotaHoverState.anchor;
+    void sizeEpoch;
+    void toolPeekState.tool;
+    void toolPeekState.fallback;
+    void toolPeekState.parts;
+    void toolPeekState.anchor;
     void agentQuotas.loading;
     const live = surfaces.live["pill-skin"] ?? surfaces.live["pill"];
     void live?.x;
@@ -520,11 +555,21 @@
     style:--tail="{tail}%"
     style:--float-stack={surfaces.stack("quota")}
     bind:this={el}
-    aria-hidden="true"
-    onpointerenter={enterQuotaPanel}
-    onpointerleave={leaveQuotaPanel}
+    aria-hidden={toolPeekState.tool === "agents"}
+    onpointerenter={enterPeekPanel}
+    onpointerleave={leavePeekPanel}
   >
-    {#if rows.length > 0}
+    {#if toolPeekState.tool === "system"}
+      <SystemPeek onopen={() => openTool("system")} />
+    {:else if toolPeekState.tool === "clipboard"}
+      <ClipboardPeek onpasted={hideToolPeek} onopen={() => openTool("clipboard")} />
+    {:else if toolPeekState.tool === "captures"}
+      <CapturesPeek ondone={hideToolPeek} onnew={() => openTool("captures")} />
+    {:else if toolPeekState.tool === "color"}
+      <ColorPeek ondone={hideToolPeek} onpick={() => openTool("color")} />
+    {:else if toolPeekState.tool === "snippets"}
+      <SnippetsPeek onpasted={hideToolPeek} onopen={() => openTool("snippets")} />
+    {:else if rows.length > 0}
       <div class="q-rings">
         {#each rows as row (row.agent)}
           {@const head = headline(row)}
@@ -627,7 +672,7 @@
     {:else if agentQuotas.loading}
       <div class="q-fallback">{t("pill.quota.loading")}</div>
     {:else}
-      <div class="q-fallback">{quotaHoverState.fallback}</div>
+      <div class="q-fallback">{toolPeekState.fallback}</div>
     {/if}
   </div>
 {/if}

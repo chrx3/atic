@@ -25,11 +25,17 @@ export const PILL_BACK_ID = "back";
  */
 export const PILL_WINDOW_ID = "window";
 
+/**
+ * Abre el editor de la pill. Solo en la tira del canto, al final de «Más»:
+ * es donde se edita (ver `PillCustomize`), y la rueda no tiene dónde.
+ */
+export const PILL_CUSTOMIZE_ID = "customize";
+
 /** Lo que puede ocupar un gajo: una herramienta, la puerta al submenú, o Ventana. */
 export type PillWheelId = ToolId | typeof PILL_MORE_ID | typeof PILL_WINDOW_ID;
 
 /** Lo mismo, más el «atrás» que la tira necesita y la rueda no. */
-export type PillStripId = PillWheelId | typeof PILL_BACK_ID;
+export type PillStripId = PillWheelId | typeof PILL_BACK_ID | typeof PILL_CUSTOMIZE_ID;
 
 export type PillLayout = {
   /** Primer anillo, sin contar el gajo «Más». */
@@ -84,6 +90,39 @@ export function pillLayout(
   return { ring: ringOut, more: moreOut, hidden: hiddenFrom([...ringOut, ...moreOut]) };
 }
 
+/** Dónde puede quedar una herramienta: primer anillo, «Más» o fuera de la pill. */
+export type PillBucket = "ring" | "more" | "hidden";
+
+/** Las dos listas que se guardan en la config (`pill_tools`, `pill_more_tools`). */
+export type PillToolIds = { ring: ToolId[]; more: ToolId[] };
+
+/**
+ * Coloca `id` en `to`, en la posición `index` de esa lista ya sin él (al final
+ * si falta). Es la única regla de edición: la usan Ajustes y el editor de la
+ * pill, para que las dos no puedan decidir distinto.
+ *
+ * La rueda no puede quedar vacía: sacar la última devuelve null. `pillLayout`
+ * ya se defiende de eso, pero lo haría deshaciendo en silencio lo que el
+ * usuario acaba de hacer.
+ */
+export function placePillTool(
+  layout: PillLayout,
+  id: ToolId,
+  to: PillBucket,
+  index?: number,
+): PillToolIds | null {
+  const ring = layout.ring.map((tool) => tool.id).filter((other) => other !== id);
+  const more = layout.more.map((tool) => tool.id).filter((other) => other !== id);
+  if (to !== "ring" && ring.length === 0) return null;
+  const insert = (list: ToolId[]) => {
+    const at = index === undefined ? list.length : Math.max(0, Math.min(index, list.length));
+    list.splice(at, 0, id);
+  };
+  if (to === "ring") insert(ring);
+  else if (to === "more") insert(more);
+  return { ring, more };
+}
+
 /** Catálogo que se ofreció después de que ya había ruedas personalizadas. */
 const OFFER_IN_RING: readonly ToolId[] = ["system"];
 
@@ -115,7 +154,7 @@ export function pillStripPage(
   const onFirst = opts.windowOnFirst === true;
   if (page === "more") {
     const ids: PillStripId[] = [PILL_BACK_ID, ...layout.more.map((tool) => tool.id)];
-    if (!onFirst) ids.push(PILL_WINDOW_ID);
+    ids.push(onFirst ? PILL_CUSTOMIZE_ID : PILL_WINDOW_ID);
     return ids;
   }
   const ids: PillStripId[] = layout.ring.map((tool) => tool.id);

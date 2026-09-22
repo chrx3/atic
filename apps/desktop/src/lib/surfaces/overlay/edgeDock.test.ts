@@ -17,7 +17,10 @@ import {
   edgeWallRect,
   edgeWallsFor,
   isOuterEdge,
+  isPillHome,
   nearestOuterWorkEdge,
+  pillHomeFrom,
+  pillHomePoint,
   shouldUndock,
   snapDrop,
   snapMagnet,
@@ -410,5 +413,56 @@ describe("snapDrop", () => {
       at: { x: 0, y: 200 },
       edge: "left",
     });
+  });
+});
+
+describe("hogar elegido", () => {
+  const TAB = { w: 34, h: 180 };
+
+  it("acoplada a la izquierda a un tercio, vuelve al mismo tercio", () => {
+    const rect = { x: 0, y: Math.round((800 - TAB.h) / 3), ...TAB };
+    const home = pillHomeFrom("left", rect, SOLO);
+    expect(home?.edge).toBe("left");
+    expect(pillHomePoint(home!, TAB, SOLO)).toEqual({
+      at: { x: 0, y: rect.y },
+      edge: "left",
+    });
+  });
+
+  it("si la caja cambia de tamaño conserva el centro, no la esquina", () => {
+    // Soltada como barra de 40: la pestaña de 180 queda centrada en el mismo sitio.
+    const home = pillHomeFrom("right", { x: 960, y: 300, w: 40, h: 40 }, SOLO)!;
+    expect(pillHomePoint(home, TAB, SOLO)?.at).toEqual({ x: 1000 - TAB.w, y: 320 - 90 });
+  });
+
+  it("pegada a una esquina, la caja más larga no se sale del área", () => {
+    const home = pillHomeFrom("right", { x: 1000 - TAB.w, y: 0, ...TAB }, SOLO)!;
+    const longer = { w: 34, h: 300 };
+    expect(pillHomePoint(home, longer, SOLO)?.at).toEqual({ x: 1000 - 34, y: 0 });
+  });
+
+  it("respeta el área útil: abajo queda sobre la barra de tareas", () => {
+    const bar = { w: 180, h: 34 };
+    const home = pillHomeFrom("bottom", { x: 410, y: 760 - 34, ...bar }, SOLO_TASKBAR)!;
+    expect(pillHomePoint(home, bar, SOLO_TASKBAR)?.at).toEqual({ x: 410, y: 726 });
+  });
+
+  it("monitor que ya no está: sin hogar elegido", () => {
+    const home = pillHomeFrom("right", { x: 2000 - TAB.w, y: 100, ...TAB }, DUAL)!;
+    expect(pillHomePoint(home, TAB, SOLO)).toBeNull();
+  });
+
+  it("canto que dejó de ser exterior (otra pantalla al lado): sin hogar elegido", () => {
+    const home = pillHomeFrom("right", { x: 1000 - TAB.w, y: 100, ...TAB }, SOLO)!;
+    expect(pillHomePoint(home, TAB, DUAL)).toBeNull();
+  });
+
+  it("valida lo leído del almacenamiento", () => {
+    const ok = { edge: "left", along: 0.2, area: { x: 0, y: 0, w: 1000, h: 800 } };
+    expect(isPillHome(ok)).toBe(true);
+    expect(isPillHome(null)).toBe(false);
+    expect(isPillHome({ ...ok, edge: "middle" })).toBe(false);
+    expect(isPillHome({ ...ok, along: Number.NaN })).toBe(false);
+    expect(isPillHome({ ...ok, area: { x: 0, y: 0, w: 1000 } })).toBe(false);
   });
 });

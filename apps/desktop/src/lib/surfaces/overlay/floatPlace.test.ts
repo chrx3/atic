@@ -218,6 +218,26 @@ describe("placeBesideAnchor", () => {
     expect(placed.side).toBe("top");
     expect(placed.y).toBe(petal.y + petal.h + 14);
   });
+
+  it("regresión: rueda contra el techo, gajo de arriba: no tapa la flor", () => {
+    // Hacia afuera (arriba) no entra y el clamp lo bajaba encima de la rueda;
+    // a los costados del gajo también la pisaba. Se pega a la rueda entera.
+    const top = { x: 400, y: 10, w: 220, h: 220 };
+    const petal = { x: 490, y: 10, w: 40, h: 40 };
+    const placed = placeBesideAnchor(top, petal, { w: 270, h: 150 }, {
+      gap: 14,
+      corner: 20,
+      work,
+    });
+    const overlap = !(
+      placed.x + placed.w <= top.x ||
+      placed.x >= top.x + top.w ||
+      placed.y + placed.h <= top.y ||
+      placed.y >= top.y + top.h
+    );
+    expect(overlap).toBe(false);
+    expect(placed.y).toBeGreaterThanOrEqual(0);
+  });
 });
 
 describe("placeOnSide", () => {

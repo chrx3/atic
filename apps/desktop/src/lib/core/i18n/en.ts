@@ -242,6 +242,10 @@ export const en = {
       reset: "Put them all back on the wheel",
       stripNote:
         "The edge strip shows the wheel ones and the «More» ones in a row: it is linear, it has no angle to save.",
+      homeTitle: "Pill position",
+      homeHint:
+        "The pill goes back to the last edge you dropped it on, at the same spot. If that monitor is gone, it goes back to the top center.",
+      homeReset: "Back to the top center",
     },
     shortcuts: {
       title: "Global shortcuts",
@@ -625,6 +629,18 @@ export const en = {
     backHint: "To the first group",
     openMain: "Main window",
     openMainHint: "Open the app",
+    customize: "Customize",
+    customizeHint: "Arrange and pick tools",
+    customizeTitle: "Customize the pill",
+    customizeDrag: "Drag to arrange",
+    customizeRing: "In view",
+    customizeMore: "Behind «More»",
+    customizeHidden: "Off the pill",
+    customizeDropHere: "Drop here",
+    customizeDone: "Done",
+    customizeReset: "Reset",
+    customizeLastOne: "At least one has to stay in view",
+    customizeChip: "{label}. Arrow keys to move it",
     stopRecord: "Stop recording",
     stopDictate: "Stop dictation",
     dictatingHint: "Dictating · click to stop",
@@ -655,6 +671,24 @@ export const en = {
      * is running tools ("working") or the stream is answering.
      */
     chipWorking: "Working…",
+    activity: {
+      thinking: "Thinking…",
+      thinkingOn: "Thinking…",
+      writing: "Writing…",
+      writingOn: "Writing…",
+      editing: "Editing…",
+      editingOn: "Editing {detail}",
+      reading: "Reading…",
+      readingOn: "Reading {detail}",
+      searching: "Searching…",
+      searchingOn: "Searching {detail}",
+      running: "Running…",
+      runningOn: "Running {detail}",
+      delegating: "Delegating…",
+      delegatingOn: "Delegating: {detail}",
+      tool: "Using a tool…",
+      toolOn: "Using {detail}",
+    },
     chipAnswering: "Answering…",
     waiting: "The agent is waiting for your permission",
     unread: "{label} unread",
@@ -666,6 +700,25 @@ export const en = {
      * from their length with `unit.*`. Cursor uses `auto` and `api`, the same
      * percentages as its dashboard. `spend` only appears for on-demand.
      */
+    peek: {
+      cpu: "CPU",
+      ram: "Memory",
+      top: "Using the most",
+      openSystem: "Open System",
+      openClipboard: "See the full history",
+      clipboardEmpty: "You have not copied anything yet",
+      clipboardImage: "Image",
+      paste: "Paste {label}",
+      copied: "Copied",
+      capturesEmpty: "No captures yet",
+      capturesNew: "New capture",
+      captureCopy: "Copy the {label} capture",
+      colorEmpty: "You have not picked any colors yet",
+      colorPick: "Pick a color",
+      colorCopy: "Copy {hex}",
+      snippetsEmpty: "You have no saved snippets yet",
+      snippetsOpen: "See all snippets",
+    },
     quota: {
       window: {
         now: "Now",

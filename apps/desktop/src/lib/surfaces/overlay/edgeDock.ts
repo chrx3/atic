@@ -294,6 +294,95 @@ export function defaultPillHome(
 }
 
 /**
+ * Hogar elegido: el canto donde el usuario acopló la pill, en qué monitor y a
+ * qué altura de ese canto (`along`: dónde cae su CENTRO, 0 = inicio del área
+ * útil, 1 = final).
+ *
+ * Se guarda así y no como un punto: el largo de la isla cambia con los avisos
+ * y el origen del overlay cambia al enchufar o sacar un monitor. Y va por el
+ * centro y no por la esquina porque al soltarla la caja todavía mide lo de la
+ * barra, no lo de la pestaña: con la esquina, el hogar se corría medio largo.
+ */
+export type PillHome = { edge: DockEdge; along: number; area: Rect };
+
+/** Cuánto puede moverse un monitor (redondeo de escala) y seguir siendo el mismo. */
+const HOME_AREA_TOLERANCE = 2;
+
+function sameRect(a: Rect, b: Rect, tolerance: number): boolean {
+  return (
+    Math.abs(a.x - b.x) <= tolerance &&
+    Math.abs(a.y - b.y) <= tolerance &&
+    Math.abs(a.w - b.w) <= tolerance &&
+    Math.abs(a.h - b.h) <= tolerance
+  );
+}
+
+/** El hogar que deja una pill acoplada en `edge` con esta caja. */
+export function pillHomeFrom(
+  edge: DockEdge,
+  rect: Rect,
+  areas: readonly Area[],
+): PillHome | null {
+  const area = areaFor(rect, areas);
+  if (!area) return null;
+  const work = workAreaOf(area);
+  const alongX = dockAxis(edge) === "y";
+  const length = alongX ? work.w : work.h;
+  const center = alongX ? rect.x + rect.w / 2 - work.x : rect.y + rect.h / 2 - work.y;
+  const along = length > 0 ? Math.min(1, Math.max(0, center / length)) : 0.5;
+  return { edge, along, area: { x: area.x, y: area.y, w: area.w, h: area.h } };
+}
+
+/**
+ * Dónde queda ese hogar hoy, para una caja de `size`.
+ *
+ * `null` si el monitor ya no está o si ese canto dejó de dar al vacío (se
+ * pegó otra pantalla al lado): ahí manda el hogar por defecto.
+ */
+export function pillHomePoint(
+  home: PillHome,
+  size: { w: number; h: number },
+  areas: readonly Area[],
+): { at: { x: number; y: number }; edge: DockEdge } | null {
+  const area = areas.find((a) => sameRect(a, home.area, HOME_AREA_TOLERANCE));
+  if (!area || !isOuterEdge(home.edge, area, areas)) return null;
+  const work = workAreaOf(area);
+  const along = Math.min(1, Math.max(0, home.along));
+  // El centro en su fracción, sin que la caja se salga del área útil.
+  const clamp = (v: number, lo: number, hi: number) => Math.min(Math.max(v, lo), Math.max(lo, hi));
+  const x = Math.round(
+    clamp(work.x + along * work.w - size.w / 2, work.x, work.x + work.w - size.w),
+  );
+  const y = Math.round(
+    clamp(work.y + along * work.h - size.h / 2, work.y, work.y + work.h - size.h),
+  );
+  switch (home.edge) {
+    case "left":
+      return { at: { x: work.x, y }, edge: "left" };
+    case "right":
+      return { at: { x: work.x + work.w - size.w, y }, edge: "right" };
+    case "top":
+      return { at: { x, y: work.y }, edge: "top" };
+    case "bottom":
+      return { at: { x, y: work.y + work.h - size.h }, edge: "bottom" };
+  }
+}
+
+/** ¿Lo leído del almacenamiento tiene forma de hogar? Puede venir de otra versión. */
+export function isPillHome(value: unknown): value is PillHome {
+  if (!value || typeof value !== "object") return false;
+  const v = value as Record<string, unknown>;
+  const area = v.area as Record<string, unknown> | undefined;
+  return (
+    DOCK_EDGES.includes(v.edge as DockEdge) &&
+    typeof v.along === "number" &&
+    Number.isFinite(v.along) &&
+    !!area &&
+    ["x", "y", "w", "h"].every((k) => typeof area[k] === "number" && Number.isFinite(area[k]))
+  );
+}
+
+/**
  * Monitor donde recentrar una isla acoplada tras un cambio de viewport.
  *
  * El recuadro chico de WebView2 deja la pill en coordenadas que, contra las
