@@ -115,6 +115,11 @@ mod imp {
                 .GetSessionEnumerator()
                 .map_err(|e| format!("sesiones: {e}"))?;
             let count = list.GetCount().map_err(|e| format!("sesiones: {e}"))?;
+            // Una app puede tener varias sesiones (los navegadores, por
+            // pestaña o por dispositivo): la fila es la app, así que el
+            // volumen va a todas. Con solo la primera, mover el control no
+            // cambiaba lo que se oía.
+            let mut found = false;
             for i in 0..count {
                 let control: IAudioSessionControl =
                     list.GetSession(i).map_err(|e| format!("sesión: {e}"))?;
@@ -127,9 +132,13 @@ mod imp {
                 let simple: ISimpleAudioVolume = control
                     .cast()
                     .map_err(|e| format!("volumen de sesión: {e}"))?;
-                return simple
+                simple
                     .SetMasterVolume(volume, std::ptr::null())
-                    .map_err(|e| format!("volumen de sesión: {e}"));
+                    .map_err(|e| format!("volumen de sesión: {e}"))?;
+                found = true;
+            }
+            if found {
+                return Ok(());
             }
         }
         Err("sesión de audio no encontrada".into())
@@ -169,6 +178,7 @@ mod imp {
                 .map_err(|e| format!("sesiones: {e}"))?;
             let count = list.GetCount().map_err(|e| format!("sesiones: {e}"))?;
             let mut out = Vec::new();
+            let mut seen = std::collections::HashSet::new();
             for i in 0..count {
                 let control: IAudioSessionControl = match list.GetSession(i) {
                     Ok(c) => c,
@@ -179,9 +189,13 @@ mod imp {
                     Err(_) => continue,
                 };
                 let pid = control2.GetProcessId().unwrap_or(0);
-                if pid == 0 {
+                // Una fila por app: el id es el PID y una app puede traer varias
+                // sesiones. Repetido, el panel tiraba `each_key_duplicate` en
+                // cada refresco y dejaba el overlay a medio pintar.
+                if pid == 0 || seen.contains(&pid) {
                     continue;
                 }
+                seen.insert(pid);
                 let simple: ISimpleAudioVolume = match control.cast() {
                     Ok(s) => s,
                     Err(_) => continue,
