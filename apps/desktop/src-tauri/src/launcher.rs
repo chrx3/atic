@@ -274,6 +274,16 @@ fn builtin_actions(en: bool) -> Vec<LauncherEntry> {
             "color",
         ),
         (
+            "action:emoji",
+            pick(en, "Emojis", "Emoji"),
+            pick(
+                en,
+                "Buscar y pegar emojis (o escribe «:»)",
+                "Search and paste emoji (or type “:”)",
+            ),
+            "emoji",
+        ),
+        (
             "action:clipboard",
             pick(en, "Historial de clipboard", "Clipboard history"),
             pick(
@@ -1065,7 +1075,7 @@ pub(crate) fn aumid_valido(aumid: &str) -> bool {
 /// Lanza una app del AppsFolder por AppUserModelID: no hay .exe que abrir,
 /// el shell activa el paquete.
 #[cfg(windows)]
-fn launch_apps_folder(aumid: &str) -> Result<(), String> {
+pub(crate) fn launch_apps_folder(aumid: &str) -> Result<(), String> {
     use windows_sys::Win32::UI::Shell::ShellExecuteW;
 
     if !aumid_valido(aumid) {
@@ -1096,7 +1106,7 @@ fn launch_apps_folder(aumid: &str) -> Result<(), String> {
 }
 
 #[cfg(not(windows))]
-fn launch_apps_folder(_aumid: &str) -> Result<(), String> {
+pub(crate) fn launch_apps_folder(_aumid: &str) -> Result<(), String> {
     Err("apps de Store solo existen en Windows".into())
 }
 
@@ -1129,6 +1139,9 @@ fn run_action(app: &AppHandle, action: &str) -> Result<(), String> {
             crate::shortcuts::emit_tool_slot(app, "activate-tool-slot", "system");
             Ok(())
         }
+        // El float entra al modo emoji sin pasar por acá; esto cubre un
+        // `launcher_run` directo (sin barra abierta no hay grilla que mostrar).
+        "emoji" => Ok(()),
         "settings" => {
             crate::state::show_main(app);
             Ok(())
@@ -1238,6 +1251,33 @@ pub async fn launcher_quit(id: String) -> Result<usize, String> {
     }
     tracing::info!(%id, closed, "launcher: cerrar app");
     Ok(closed)
+}
+
+/// Emoji del launcher: cierra la barra y lo pega en la app que tenía el foco
+/// antes de abrirla (`paste = false`: solo lo deja en el portapapeles).
+///
+/// Mismo camino que los fragmentos: devolver el foco, esperar a que asiente y
+/// pegar; sin destino externo, `paste_queue` lo encola en vez de perderlo.
+#[tauri::command]
+pub async fn launcher_paste_text(app: AppHandle, text: String, paste: bool) -> Result<(), String> {
+    if text.is_empty() {
+        return Err("nada para pegar".into());
+    }
+    hide(&app);
+    tauri::async_runtime::spawn_blocking(move || {
+        if !paste {
+            let mut clipboard =
+                arboard::Clipboard::new().map_err(|e| format!("sin portapapeles: {e}"))?;
+            return clipboard
+                .set_text(text)
+                .map_err(|e| format!("no se pudo copiar: {e}"));
+        }
+        crate::clipboard_history::focus_paste_target();
+        thread::sleep(Duration::from_millis(220));
+        crate::paste_queue::paste_text_or_enqueue(&app, &text)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 fn remember_launch(app: &AppHandle, id: &str) {

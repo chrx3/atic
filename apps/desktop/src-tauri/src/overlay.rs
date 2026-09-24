@@ -937,18 +937,21 @@ fn sync_overlay_to_displays(app: &AppHandle) {
     }
 }
 
-/// `SetWindowRect` a veces viene en DIP y `topo` en físicos. Aceptar ambos.
-fn extent_matches(got: i32, want: i32, scale: f64) -> bool {
+/// ¿El rectángulo del HWND es el del escritorio virtual? `GetWindowRect` a
+/// veces viene en DIP y `want` en físicos, así que se acepta a escala 1, a
+/// `scale` o a `1/scale` — pero **la misma para las cuatro medidas**.
+///
+/// Mezclarlas daba falsos positivos: tras desconectar un proyector el
+/// overlay quedó en 1938×1098 (un monitor) y el ancho «calzaba» escalado por
+/// un factor deducido del propio webview atascado mientras el alto calzaba
+/// directo. Así se daba por cubierto y nunca se reintentaba.
+fn rect_fits(got: (i32, i32, i32, i32), want: (i32, i32, i32, i32), scale: f64) -> bool {
     const SLACK: i32 = 32;
-    if (got - want).abs() <= SLACK {
-        return true;
-    }
-    if scale <= 1.01 {
-        return false;
-    }
-    let scaled = (f64::from(got) * scale).round() as i32;
-    let unscaled = (f64::from(got) / scale).round() as i32;
-    (scaled - want).abs() <= SLACK || (unscaled - want).abs() <= SLACK
+    let fits = |k: f64| {
+        let near = |g: i32, w: i32| ((f64::from(g) * k).round() as i32 - w).abs() <= SLACK;
+        near(got.0, want.0) && near(got.1, want.1) && near(got.2, want.2) && near(got.3, want.3)
+    };
+    fits(1.0) || (scale > 1.01 && (fits(scale) || fits(1.0 / scale)))
 }
 
 /// `SetWindowPos` a veces se recorta al monitor actual aunque la topología
@@ -1030,10 +1033,11 @@ fn overlay_hwnd_covers_virtual() -> bool {
 
 #[cfg(windows)]
 fn rect_matches_topo(x: i32, y: i32, w: i32, h: i32, topo: &DisplayTopo, scale: f64) -> bool {
-    extent_matches(x, topo.x, scale)
-        && extent_matches(y, topo.y, scale)
-        && extent_matches(w, topo.w as i32, scale)
-        && extent_matches(h, topo.h as i32, scale)
+    rect_fits(
+        (x, y, w, h),
+        (topo.x, topo.y, topo.w as i32, topo.h as i32),
+        scale,
+    )
 }
 
 fn start_display_watch(app: AppHandle) {
@@ -1155,9 +1159,9 @@ unsafe extern "system" fn overlay_wndproc(
     lparam: windows_sys::Win32::Foundation::LPARAM,
 ) -> windows_sys::Win32::Foundation::LRESULT {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        CallWindowProcW, HTCLIENT, HTTRANSPARENT, MINMAXINFO, WM_DEVICECHANGE, WM_DISPLAYCHANGE,
-        WM_DPICHANGED, WM_GETMINMAXINFO, WM_MOUSEHWHEEL, WM_MOUSEWHEEL, WM_NCHITTEST,
-        WM_POWERBROADCAST,
+        CallWindowProcW, HTCLIENT, HTTRANSPARENT, MINMAXINFO, SPI_SETWORKAREA, WM_DEVICECHANGE,
+        WM_DISPLAYCHANGE, WM_DPICHANGED, WM_GETMINMAXINFO, WM_MOUSEHWHEEL, WM_MOUSEWHEEL,
+        WM_NCHITTEST, WM_POWERBROADCAST, WM_SETTINGCHANGE,
     };
 
     if msg == WM_NCHITTEST {
@@ -1207,6 +1211,15 @@ unsafe extern "system" fn overlay_wndproc(
         }
         if let Some(tx) = DISPLAY_TX.get() {
             let _ = tx.try_send(());
+        }
+    }
+
+    // La barra de tareas cambió de lado, de tamaño o se ocultó: el escritorio
+    // mide lo mismo y no llega `WM_DISPLAYCHANGE`, pero el área útil sí cambió.
+    // Sin este aviso la pill seguía acoplada contra la barra vieja.
+    if msg == WM_SETTINGCHANGE && wparam == SPI_SETWORKAREA as usize {
+        if let Some(app) = APP_HANDLE.get() {
+            let _ = app.emit_to(LABEL, "overlay-work-area", ());
         }
     }
 
@@ -3308,9 +3321,8 @@ pub fn overlay_rect(app: AppHandle) -> Option<OverlayRect> {
 #[cfg(test)]
 mod tests {
     use super::{
-        css_viewport_usable, desired_click_through, extent_matches, lparam_screen_point,
-        map_client_to_css, map_css_to_client, pick_css_viewport, resolve_physical_extent,
-        should_arm,
+        css_viewport_usable, desired_click_through, lparam_screen_point, map_client_to_css,
+        map_css_to_client, pick_css_viewport, rect_fits, resolve_physical_extent, should_arm,
     };
 
     /// Un flag de gesto sin botón apretado es INERTE.
@@ -3431,12 +3443,17 @@ mod tests {
     }
 
     #[test]
-    fn extent_matches_physical_or_dip() {
-        assert!(extent_matches(3840, 3840, 1.25));
-        assert!(extent_matches(3072, 3840, 1.25));
-        assert!(extent_matches(-1536, -1920, 1.25));
-        assert!(!extent_matches(1920, 3840, 1.25));
-        assert!(!extent_matches(0, 3840, 1.0));
+    fn rect_fits_physical_or_dip_but_one_scale_for_all() {
+        let desk = (-1920, 0, 3840, 1085);
+        // Físico, o todo en DIP al 125%.
+        assert!(rect_fits((-1920, 0, 3840, 1085), desk, 1.25));
+        assert!(rect_fits((-1536, 0, 3072, 868), desk, 1.25));
+        // Un solo monitor no cubre dos.
+        assert!(!rect_fits((-1920, 0, 1920, 1080), desk, 1.25));
+        // Lo de la presentación: el ancho calza escalado (1938 × 1.98) y el
+        // alto directo. Mezclar escalas lo daba por bueno.
+        assert!(!rect_fits((-1920, 0, 1938, 1098), desk, 3840.0 / 1938.0));
+        assert!(!rect_fits((0, 0, 0, 3840), (0, 0, 3840, 3840), 1.0));
     }
 
     #[test]

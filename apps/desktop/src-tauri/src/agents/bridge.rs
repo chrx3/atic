@@ -630,6 +630,7 @@ pub(crate) fn start_session(
 
     let watch = TurnWatch::new();
     let watch_delta = watch.clone();
+    let clock = Mutex::new(super::model::TurnClock::default());
 
     let emit_key = key.clone();
     let emit_backend = backend.to_string();
@@ -657,7 +658,8 @@ pub(crate) fn start_session(
             add_dirs,
             env,
         },
-        Box::new(move |delta| {
+        Box::new(move |mut delta| {
+            clock.lock_or_recover().observe(&mut delta);
             // Primero al vigilante del hub, después al store y a la ventana.
             // Quien espera un `TurnEnd` tiene que despertar aunque el emit falle.
             watch_delta.observe(&delta);
@@ -899,13 +901,47 @@ pub fn agent_permission(
     decision: PermissionDecision,
 ) -> Result<(), String> {
     let mut guard = SESSIONS.lock_or_recover();
+    let entry = guard
+        .as_mut()
+        .ok_or_else(|| "no hay sesiones abiertas".to_string())?
+        .get_mut(&session)
+        .ok_or_else(|| "esa sesión ya no existe".to_string())?;
+    entry.session.respond_permission(&id, decision)?;
+    // Claude Code no manda parche de estado al contestar: sin esto el hub
+    // seguiría mostrándole el permiso como pendiente al padre.
+    entry.watch.resolve_permission(&id);
+    Ok(())
+}
+
+/// Cambia el modo de la sesión (ACP: agent / plan / ask).
+#[tauri::command]
+pub fn agent_set_mode(session: String, mode: String) -> Result<(), String> {
+    let mut guard = SESSIONS.lock_or_recover();
     guard
         .as_mut()
         .ok_or_else(|| "no hay sesiones abiertas".to_string())?
         .get_mut(&session)
         .ok_or_else(|| "esa sesión ya no existe".to_string())?
         .session
-        .respond_permission(&id, decision)
+        .set_mode(&mode)
+}
+
+/// Contesta un permiso con datos: la herramienta se aprueba con este input.
+/// Es la respuesta a una pregunta del agente (`AskUserQuestion`).
+#[tauri::command]
+pub fn agent_answer(
+    session: String,
+    id: String,
+    updated_input: serde_json::Value,
+) -> Result<(), String> {
+    let mut guard = SESSIONS.lock_or_recover();
+    guard
+        .as_mut()
+        .ok_or_else(|| "no hay sesiones abiertas".to_string())?
+        .get_mut(&session)
+        .ok_or_else(|| "esa sesión ya no existe".to_string())?
+        .session
+        .answer_permission(&id, updated_input)
 }
 
 /// Las skills disponibles para una carpeta de trabajo.
@@ -974,6 +1010,9 @@ pub fn agent_stop(app: AppHandle, session: String) {
         });
     }
     with_db(&app, |db| super::store::close(db, &session));
+    // Cada ventana tiene su propia lista de sesiones: sin este aviso, la pill
+    // seguía mostrando el chat que se cerró en la ventana de agentes.
+    let _ = app.emit("agent-stopped", serde_json::json!({ "session": session }));
 }
 
 /// Cierra todo. Se llama al salir para no dejar procesos huérfanos.

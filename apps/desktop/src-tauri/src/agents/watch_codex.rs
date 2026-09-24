@@ -7,7 +7,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -22,7 +22,10 @@ const LIVE_WINDOW_SECS: u64 = 15 * 60;
 const DISAPPEAR_SECS: i64 = 30 * 60;
 const PREVIEW_MAX: usize = 120;
 const FIRST_READ_TAIL: u64 = 256 * 1024;
-const HEAD_PEEK: usize = 16 * 1024;
+/// Hasta dónde se lee el principio del rollout buscando `session_meta`. Esa
+/// línea trae las instrucciones base enteras (unos 20 KB en Codex 0.156): con
+/// menos no se llega a leer completa y el TUI queda descartado.
+const HEAD_PEEK: u64 = 1024 * 1024;
 const BACKEND_ID: &str = "codex";
 const BACKEND_NAME: &str = "Codex";
 
@@ -175,15 +178,26 @@ fn cwd_of(v: &Value) -> String {
 }
 
 fn peek_origin(path: &Path) -> Origin {
-    let Ok(mut file) = File::open(path) else {
+    let Ok(file) = File::open(path) else {
         return Origin::Pending;
     };
-    let len = file.metadata().map(|m| m.len()).unwrap_or(0);
-    let mut buf = vec![0u8; HEAD_PEEK];
-    let n = file.read(&mut buf).unwrap_or(0);
-    buf.truncate(n);
-    for raw in buf.split(|b| *b == b'\n') {
-        let line = raw.strip_suffix(b"\r").unwrap_or(raw);
+    let mut reader = BufReader::new(file.take(HEAD_PEEK));
+    let mut read = 0u64;
+    let mut raw = Vec::new();
+    loop {
+        raw.clear();
+        let n = reader.read_until(b'\n', &mut raw).unwrap_or(0);
+        if n == 0 {
+            break;
+        }
+        read += n as u64;
+        if raw.last() != Some(&b'\n') {
+            // Línea cortada: o el archivo todavía se está escribiendo, o
+            // pasó el tope de lectura.
+            break;
+        }
+        let line = raw.strip_suffix(b"\n").unwrap_or(&raw);
+        let line = line.strip_suffix(b"\r").unwrap_or(line);
         if line.is_empty() {
             continue;
         }
@@ -194,7 +208,7 @@ fn peek_origin(path: &Path) -> Origin {
             return if keep { Origin::Tui } else { Origin::Skip };
         }
     }
-    if len > HEAD_PEEK as u64 {
+    if read >= HEAD_PEEK {
         Origin::Skip
     } else {
         Origin::Pending
@@ -290,7 +304,22 @@ fn should_keep(t: &Tracked, now: i64) -> bool {
     }
 }
 
-fn for_each_rollout(root: &Path, mut visit: impl FnMut(&Path, &str)) {
+/// El rollout de una sesión, buscado por el id en el nombre del archivo.
+pub fn rollout_path(session_id: &str) -> Option<PathBuf> {
+    rollout_path_in(&sessions_root()?, session_id)
+}
+
+fn rollout_path_in(root: &Path, session_id: &str) -> Option<PathBuf> {
+    let mut found = None;
+    for_each_rollout(root, |path, id| {
+        if found.is_none() && id == session_id {
+            found = Some(path.to_path_buf());
+        }
+    });
+    found
+}
+
+pub(crate) fn for_each_rollout(root: &Path, mut visit: impl FnMut(&Path, &str)) {
     let Ok(years) = std::fs::read_dir(root) else {
         return;
     };
@@ -660,6 +689,53 @@ mod tests {
         tick(&root, now, &mut state, &ignore);
         assert_eq!(state.tracked[id].status, PresenceStatus::Ready);
         assert_eq!(state.tracked[id].preview.as_deref(), Some("hecho"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn peek_origin_lee_un_session_meta_largo() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let file = std::env::temp_dir().join(format!("atic-peek-codex-{nonce}.jsonl"));
+        // Como en Codex 0.156: las instrucciones base hacen la línea > 16 KB.
+        let meta = json!({
+            "type": "session_meta",
+            "payload": {
+                "originator": "codex-tui",
+                "source": "cli",
+                "cwd": "/repo",
+                "base_instructions": { "text": "x".repeat(40 * 1024) },
+            },
+        });
+        std::fs::write(&file, format!("{meta}\n")).unwrap();
+        assert_eq!(peek_origin(&file), Origin::Tui);
+
+        // A medio escribir todavía no se sabe.
+        let text = meta.to_string();
+        std::fs::write(&file, &text[..text.len() / 2]).unwrap();
+        assert_eq!(peek_origin(&file), Origin::Pending);
+
+        let _ = std::fs::remove_file(&file);
+    }
+
+    #[test]
+    fn rollout_path_encuentra_por_id() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("atic-watch-codex-path-{nonce}"));
+        let day = root.join("2026").join("09").join("24");
+        std::fs::create_dir_all(&day).unwrap();
+        let id = "01a0d4e5-5c7a-76a0-b9c8-e7d8ebb80ad4";
+        let file = day.join(format!("rollout-2026-09-24T16-29-56-{id}.jsonl"));
+        std::fs::write(&file, "").unwrap();
+
+        assert_eq!(rollout_path_in(&root, id), Some(file));
+        assert_eq!(rollout_path_in(&root, "otro-id"), None);
 
         let _ = std::fs::remove_dir_all(&root);
     }

@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use atic_core::MutexExt;
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 use super::api::{self, HubError, Outcome, OutcomeStatus};
 use super::graph;
@@ -241,6 +241,7 @@ fn rutear(pedido: Pedido, token: &str, app: Option<&AppHandle>) -> Vec<u8> {
         ("POST", "/v1/wait") => wait(pedido, empezo),
         ("POST", "/v1/cancel") => cancel(pedido),
         ("POST", "/v1/close") => close(pedido, app),
+        ("POST", "/v1/permission") => permission(pedido, app),
         ("POST", "/v1/rename") => rename(pedido),
         _ => no_hay_forma(
             404,
@@ -802,6 +803,66 @@ fn close(pedido: Pedido, app: Option<&AppHandle>) -> Vec<u8> {
     hay_forma(serde_json::json!({ "session": sesion, "status": "closed" }))
 }
 
+/// Contesta un permiso de una sesión hija en nombre de quien la abrió.
+///
+/// Sin esto, un hijo que pide permiso deja al padre esperando hasta el tope
+/// aunque nadie esté mirando Atic. Solo contesta el padre o un ancestro (ver
+/// `graph::may_answer_permission`); después se avisa a las ventanas con el
+/// mismo evento que usa la UI, para que la tarjeta deje de mostrarlo pendiente.
+fn permission(pedido: Pedido, app: Option<&AppHandle>) -> Vec<u8> {
+    let req: api::PermissionRequest = match cuerpo(&pedido) {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
+    let sesion = match resolver_sesion(&req.session) {
+        Ok(s) => s,
+        Err(e) => return e,
+    };
+    let padre_de = |s: &str| super::super::bridge::session_info(s).and_then(|i| i.parent);
+    if !graph::may_answer_permission(req.from.as_deref().unwrap_or(""), &sesion, padre_de) {
+        return no_hay_forma(
+            403,
+            HubError::nueva(
+                "not_parent",
+                "Solo quien abrió esta sesión (o alguien más arriba en su cadena) puede contestar sus permisos. Si no es tuya, que lo conteste alguien en Atic.".into(),
+            ),
+        );
+    }
+    let Some(reloj) = super::super::bridge::session_watch(&sesion) else {
+        return no_hay_forma(
+            404,
+            HubError::nueva("unknown_session", "Esa sesión ya no existe en Atic.".into()),
+        );
+    };
+    let id =
+        match graph::pick_permission(&reloj.pending_permissions(), req.permission_id.as_deref()) {
+            Ok(id) => id,
+            Err(e) => return no_hay_forma(409, e),
+        };
+    use super::super::PermissionDecision;
+    let decision = match req.decision {
+        api::PermissionAnswer::Allow => PermissionDecision::Allow,
+        api::PermissionAnswer::AllowAlways => PermissionDecision::AllowAlways,
+        api::PermissionAnswer::Deny => PermissionDecision::Deny,
+    };
+    if let Err(msg) = super::super::bridge::agent_permission(sesion.clone(), id.clone(), decision) {
+        return no_hay_forma(409, HubError::nueva("permission_failed", msg));
+    }
+    if let Some(app) = app {
+        let _ = app.emit(
+            "agents-permission-resolved",
+            serde_json::json!({ "session": sesion, "id": id }),
+        );
+    }
+    hay_forma(serde_json::json!({
+        "session": sesion,
+        "permissionId": id,
+        "decision": req.decision,
+        "status": "answered",
+        "permissions": reloj.pending_permissions(),
+    }))
+}
+
 /// Espera el fin del turno hasta `espera_s`. Sin turno corriendo devuelve lo
 /// último visto al tiro.
 fn esperar(session: &str, espera_s: u64) -> super::wait::WaitOutcome {
@@ -810,6 +871,9 @@ fn esperar(session: &str, espera_s: u64) -> super::wait::WaitOutcome {
     };
     reloj.wait_until(Instant::now() + Duration::from_secs(espera_s))
 }
+
+/// Lo que lee el padre cuando el hijo está detenido en un permiso.
+const HINT_PERMISO: &str = "El agente está detenido esperando un permiso (mira `permissions`). Contéstalo tú con atic_permission (session, permissionId, decision: allow | allow_always | deny) o deja que lo conteste alguien en Atic, y sigue con atic_wait.";
 
 /// Mapea la espera al `Resultado` que lee el modelo padre. El timeout no mata
 /// la sesión: devuelve el parcial + el id + el hint para seguir.
@@ -832,6 +896,7 @@ fn termino(
                     text: graph::cap_text(&text),
                     hint: None,
                     elapsed_s,
+                    permissions: Vec::new(),
                 },
                 TurnStatus::Cancelled => Outcome {
                     session: session.to_string(),
@@ -840,6 +905,7 @@ fn termino(
                     text: graph::cap_text(&text),
                     hint: Some("El turno se canceló; la sesión sigue viva.".into()),
                     elapsed_s,
+                    permissions: Vec::new(),
                 },
                 _ => Outcome {
                     session: session.to_string(),
@@ -850,27 +916,35 @@ fn termino(
                         "El turno falló. Revisa el texto; la sesión sigue viva si quieres reintentar con atic_prompt.".into(),
                     ),
                     elapsed_s,
+                    permissions: Vec::new(),
                 },
             }
         }
-        super::wait::WaitOutcome::Timeout {
-            text,
-            permission_pending,
-        } => Outcome {
+        super::wait::WaitOutcome::Timeout { text, permissions } => Outcome {
             session: session.to_string(),
             backend: backend.to_string(),
-            status: if permission_pending {
-                OutcomeStatus::PermissionTimeout
-            } else {
+            status: if permissions.is_empty() {
                 OutcomeStatus::Timeout
+            } else {
+                OutcomeStatus::PermissionTimeout
             },
             text: graph::cap_text(&text),
-            hint: Some(if permission_pending {
-                "El agente está esperando un permiso en Atic. Apruébalo o recházalo ahí y sigue con atic_wait.".to_string()
-            } else {
+            hint: Some(if permissions.is_empty() {
                 "La sesión sigue viva en Atic. Espera el turno con atic_wait, manda otro con atic_prompt, o mira atic_list_sessions.".to_string()
+            } else {
+                HINT_PERMISO.to_string()
             }),
             elapsed_s,
+            permissions,
+        },
+        super::wait::WaitOutcome::Permission { text, permissions } => Outcome {
+            session: session.to_string(),
+            backend: backend.to_string(),
+            status: OutcomeStatus::PermissionRequired,
+            text: graph::cap_text(&text),
+            hint: Some(HINT_PERMISO.to_string()),
+            elapsed_s,
+            permissions,
         },
         super::wait::WaitOutcome::Idle { last } => match last {
             Some((status, text)) => termino(
@@ -887,6 +961,7 @@ fn termino(
                 text: String::new(),
                 hint: None,
                 elapsed_s,
+                permissions: Vec::new(),
             },
         },
     }
@@ -904,6 +979,7 @@ fn no_hay_forma(codigo: u16, error: HubError) -> Vec<u8> {
     let razon = match codigo {
         400 => "Bad Request",
         401 => "Unauthorized",
+        403 => "Forbidden",
         404 => "Not Found",
         409 => "Conflict",
         _ => "Error",
@@ -1081,6 +1157,65 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&cuerpo).unwrap();
         assert_eq!(v["error"]["code"], "unknown_session");
         apagar(port, &vivo);
+    }
+
+    #[test]
+    fn permission_de_sesion_desconocida_es_404() {
+        let (port, token, vivo) = hub_de_test();
+        let (codigo, cuerpo) = pegar(
+            port,
+            Some(&token),
+            "POST",
+            "/v1/permission",
+            Some(r#"{"session":"no-existe","decision":"allow"}"#),
+        );
+        // Sin sesión viva no hay nada que autorizar: 404 antes que 403.
+        assert_eq!(codigo, 404);
+        let v: serde_json::Value = serde_json::from_str(&cuerpo).unwrap();
+        assert_eq!(v["error"]["code"], "unknown_session");
+        let (codigo, _) = pegar(
+            port,
+            Some(&token),
+            "POST",
+            "/v1/permission",
+            Some(r#"{"session":"s1","decision":"quizas"}"#),
+        );
+        assert_eq!(codigo, 400, "una decisión inventada no pasa el contrato");
+        apagar(port, &vivo);
+    }
+
+    #[test]
+    fn un_permiso_nuevo_vuelve_como_permission_required_con_la_lista() {
+        let permisos = vec![api::PendingPermission {
+            id: "p1".into(),
+            tool: "Bash".into(),
+            description: "correr ls".into(),
+            input: r#"{"command":"ls"}"#.into(),
+        }];
+        let r = termino(
+            "s1",
+            "codex",
+            super::super::wait::WaitOutcome::Permission {
+                text: "voy".into(),
+                permissions: permisos.clone(),
+            },
+            "Codex",
+            Instant::now(),
+        );
+        assert_eq!(r.status, OutcomeStatus::PermissionRequired);
+        assert_eq!(r.permissions, permisos);
+        assert!(r.hint.unwrap().contains("atic_permission"));
+        let r = termino(
+            "s1",
+            "codex",
+            super::super::wait::WaitOutcome::Timeout {
+                text: String::new(),
+                permissions: permisos,
+            },
+            "Codex",
+            Instant::now(),
+        );
+        assert_eq!(r.status, OutcomeStatus::PermissionTimeout);
     }
 
     #[test]

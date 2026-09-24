@@ -19,8 +19,9 @@ pub enum Kind {
 }
 
 /// Cómo terminó un turno visto por el MCP.
-/// Difiere de `model::TurnStatus` a propósito: `timeout` y
-/// `permission_timeout` son traspasos (la sesión sigue viva), no estados del hilo.
+/// Difiere de `model::TurnStatus` a propósito: `timeout`,
+/// `permission_timeout` y `permission_required` son traspasos (la sesión sigue
+/// viva), no estados del hilo.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OutcomeStatus {
@@ -28,6 +29,21 @@ pub enum OutcomeStatus {
     Failed,
     Timeout,
     PermissionTimeout,
+    /// El hijo se detuvo a pedir un permiso nuevo: la espera vuelve antes del
+    /// tope para que el padre lo conteste con `atic_permission`, en vez de
+    /// quemar minutos esperando a un humano que quizás no está mirando.
+    PermissionRequired,
+}
+
+/// Un permiso que el hijo tiene esperando, tal como lo ve el padre.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PendingPermission {
+    pub id: String,
+    pub tool: String,
+    pub description: String,
+    /// El input de la herramienta en JSON compacto y recortado: alcanza para
+    /// decidir sin inflar la respuesta con un archivo entero.
+    pub input: String,
 }
 
 /// Lo que siempre devuelve `atic_prompt` / `atic_delegate` / `atic_wait`.
@@ -39,6 +55,10 @@ pub struct Outcome {
     pub text: String,
     pub hint: Option<String>,
     pub elapsed_s: u64,
+    /// Permisos que el hijo tiene sin contestar. Vacío se omite: un sidecar
+    /// viejo sigue leyendo la misma forma de siempre.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub permissions: Vec<PendingPermission>,
 }
 
 /// Error del hub: el `message` lo lee el modelo, así que va en tuteo.
@@ -190,6 +210,30 @@ pub struct CancelRequest {
     pub session: String,
 }
 
+/// Qué contesta el padre a un permiso del hijo.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PermissionAnswer {
+    Allow,
+    AllowAlways,
+    Deny,
+}
+
+/// Contestar un permiso de una sesión hija.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PermissionRequest {
+    /// Id o nombre de la sesión hija.
+    pub session: String,
+    /// Opcional si hay exactamente un permiso pendiente.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_id: Option<String>,
+    pub decision: PermissionAnswer,
+    /// Quién contesta; solo el padre de la sesión (o un ancestro) puede.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
+}
+
 /// Cerrar la sesión entera y liberar el proceso del agente.
 ///
 /// Distinto de `CancelRequest`: `cancel` corta el turno y deja la sesión viva;
@@ -211,5 +255,28 @@ mod tests {
         let texto = r#"{"backend":"auto","kind":"magia","text":"hola","depth":0}"#;
         let r: Result<DelegateRequest, _> = serde_json::from_str(texto);
         assert!(r.is_err(), "el enum `Kind` es cerrado");
+    }
+
+    #[test]
+    fn la_decision_del_permiso_va_en_snake_case() {
+        let texto = r#"{"session":"s1","decision":"allow_always","from":"external:claude-code:1"}"#;
+        let r: PermissionRequest = serde_json::from_str(texto).unwrap();
+        assert_eq!(r.decision, PermissionAnswer::AllowAlways);
+        assert!(r.permission_id.is_none());
+    }
+
+    #[test]
+    fn sin_permisos_pendientes_el_resultado_no_trae_el_campo() {
+        let r = Outcome {
+            session: "s1".into(),
+            backend: "codex".into(),
+            status: OutcomeStatus::Done,
+            text: String::new(),
+            hint: None,
+            elapsed_s: 0,
+            permissions: Vec::new(),
+        };
+        let v = serde_json::to_value(&r).unwrap();
+        assert!(v.get("permissions").is_none(), "{v}");
     }
 }

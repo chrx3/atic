@@ -33,6 +33,9 @@ Opciones, de más simple a más compleja:
 - Carpeta en OneDrive/iCloud sincronizada
 - API local en la LAN (escritorio como servidor)
 
+Propuesta común con el escritorio (LAN, P2P con iroh y carpeta del usuario):
+[`Features/sync-dispositivos.md`](../Features/sync-dispositivos.md).
+
 ## Cómo arrancar cuando toque
 
 ```bash

@@ -1104,7 +1104,7 @@
       if (e.key !== "Escape" || !bubble.shown || minimized) return;
       // Esc: achica a la pill solo si no está fijada (panel sticky).
       if (isAgentsDismissSuppressed()) return;
-      // Consola PTY / xterm: AgentsDemo maneja Esc (cerrar consola); no achicar el float.
+      // Dentro de la consola (xterm o chat) Esc es del contenido: no achicar el float.
       const t = e.target as HTMLElement | null;
       if (t?.closest?.(".console, .xterm")) return;
       e.preventDefault();

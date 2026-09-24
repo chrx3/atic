@@ -581,19 +581,21 @@
                       type="button"
                       class="clip-chip"
                       onpointerdown={(e) => e.stopPropagation()}
+                      use:tip={t("page.clipboard.draw")}
                       onclick={(e) => void drawImage(item, e)}
                     >
                       <Icon icon={Pencil} size={11} />
-                      {t("page.clipboard.draw")}
+                      <span class="clip-chip-label">{t("page.clipboard.draw")}</span>
                     </button>
                     <button
                       type="button"
                       class="clip-chip"
                       onpointerdown={(e) => e.stopPropagation()}
+                      use:tip={t("page.clipboard.openLarge")}
                       onclick={(e) => void openImage(item, e)}
                     >
                       <Icon icon={ExternalLink} size={11} />
-                      {t("page.clipboard.openLarge")}
+                      <span class="clip-chip-label">{t("page.clipboard.openLarge")}</span>
                     </button>
                     <button
                       type="button"
@@ -601,10 +603,13 @@
                       disabled={ocrBusyId === item.id}
                       aria-busy={ocrBusyId === item.id}
                       onpointerdown={(e) => e.stopPropagation()}
+                      use:tip={t("page.clipboard.ocr")}
                       onclick={(e) => void ocrImage(item, e)}
                     >
                       <Icon icon={ScanText} size={11} />
-                      {ocrBusyId === item.id ? t("page.captures.ocrReading") : t("page.clipboard.ocr")}
+                      <span class="clip-chip-label">
+                        {ocrBusyId === item.id ? t("page.captures.ocrReading") : t("page.clipboard.ocr")}
+                      </span>
                     </button>
                   </span>
                 {/if}
@@ -954,13 +959,19 @@
       var(--ease-smooth-out, ease-out);
   }
 
+  /*
+   * Una sola línea, siempre: la fila mide 1.25rem y oculta lo que desborda, así
+   * que un chip que saltaba de línea quedaba cortado a la mitad. Sin ancho para
+   * los tres rótulos, los chips se quedan con el ícono (el `title` lo nombra).
+   */
   .clip-quick {
     position: absolute;
     inset: 0;
     display: flex;
     min-width: 0;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
     align-items: center;
+    container-type: inline-size;
     gap: 0.2rem;
     opacity: 0;
     pointer-events: none;
@@ -1019,7 +1030,24 @@
   }
 
   .clip-chip :global(svg) {
+    flex: none;
     pointer-events: none;
+  }
+
+  .clip-chip-label {
+    white-space: nowrap;
+  }
+
+  @container (width < 11.5rem) {
+    .clip-chip-label {
+      display: none;
+    }
+
+    .clip-chip {
+      width: 1.5rem;
+      justify-content: center;
+      padding: 0;
+    }
   }
 
   .clip-actions {

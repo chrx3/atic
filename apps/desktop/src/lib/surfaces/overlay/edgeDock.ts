@@ -99,6 +99,37 @@ export function isOuterEdge(
   }
 }
 
+/**
+ * Cantos reservados por el SO donde igual se acopla.
+ *
+ * En macOS la barra de menú ocupa el techo de todas las pantallas: sin esta
+ * excepción no habría notch arriba, que es su lugar natural. En Windows no hay
+ * ninguna: ver `isDockableEdge`.
+ */
+const RESERVED_DOCK_OK: readonly DockEdge[] =
+  typeof navigator !== "undefined" && /mac/i.test(navigator.platform || "")
+    ? ["top"]
+    : [];
+
+/**
+ * ¿Se puede acoplar a este canto del monitor?
+ *
+ * Exterior, y sin una barra del SO entre el canto y el área útil. Antes solo
+ * se pedía lo primero y el notch se colgaba del borde de la barra de tareas:
+ * quedaba a media pantalla del canto real, flotando sobre los íconos, y se
+ * leía como un error. Sobre una barra la pill queda suelta, como en cualquier
+ * otro punto del escritorio.
+ */
+export function isDockableEdge(
+  edge: DockEdge,
+  area: Area,
+  areas: readonly Area[],
+  reservedOk: readonly DockEdge[] = RESERVED_DOCK_OK,
+): boolean {
+  if (!isOuterEdge(edge, area, areas)) return false;
+  return !edgeHasReservedInset(edge, area) || reservedOk.includes(edge);
+}
+
 /** Distancia del rect a cada borde del área útil (negativa si se pasa). */
 export function edgeGaps(rect: Rect, work: Rect): Record<DockEdge, number> {
   return {
@@ -187,7 +218,7 @@ export function dockCandidate(
   let best: DockEdge | null = null;
   let bestGap = Infinity;
   for (const edge of edges) {
-    if (!isOuterEdge(edge, area, areas)) continue;
+    if (!isDockableEdge(edge, area, areas)) continue;
     const gap = gaps[edge];
     // Negativo = ya se pasó del borde; cuenta como pegada, no como lejos.
     const dist = Math.max(gap, 0);
@@ -345,7 +376,7 @@ export function pillHomePoint(
   areas: readonly Area[],
 ): { at: { x: number; y: number }; edge: DockEdge } | null {
   const area = areas.find((a) => sameRect(a, home.area, HOME_AREA_TOLERANCE));
-  if (!area || !isOuterEdge(home.edge, area, areas)) return null;
+  if (!area || !isDockableEdge(home.edge, area, areas)) return null;
   const work = workAreaOf(area);
   const along = Math.min(1, Math.max(0, home.along));
   // El centro en su fracción, sin que la caja se salga del área útil.
@@ -396,10 +427,10 @@ function areaWithOuterEdge(
   areas: readonly Area[],
 ): Area | null {
   const containing = areaFor(current, areas);
-  if (containing && isOuterEdge(edge, containing, areas)) return containing;
+  if (containing && isDockableEdge(edge, containing, areas)) return containing;
   const primary = primaryArea(areas);
-  if (primary && isOuterEdge(edge, primary, areas)) return primary;
-  return areas.find((a) => isOuterEdge(edge, a, areas)) ?? primary;
+  if (primary && isDockableEdge(edge, primary, areas)) return primary;
+  return areas.find((a) => isDockableEdge(edge, a, areas)) ?? primary;
 }
 
 /**
@@ -426,7 +457,7 @@ export function geometryReseat(
     };
     const area = areaWithOuterEdge(state.docked, current, areas);
     if (!area) return null;
-    if (!isOuterEdge(state.docked, area, areas)) {
+    if (!isDockableEdge(state.docked, area, areas)) {
       return defaultPillHome(state.size, areas);
     }
     return {
@@ -462,7 +493,7 @@ export function snapMagnet(
   const cy = rect.y + rect.h / 2;
   const magnets: MagnetHit[] = [{ at: screenCenterPoint(size, work), edge: null }];
   for (const edge of DOCK_EDGES) {
-    if (!isOuterEdge(edge, area, areas)) continue;
+    if (!isDockableEdge(edge, area, areas)) continue;
     magnets.push({
       at: edgeCenterPoint(edge, size, work),
       edge,

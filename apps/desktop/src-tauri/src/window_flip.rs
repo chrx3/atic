@@ -17,6 +17,11 @@ use atic_core::MutexExt;
 
 pub const LABEL: &str = "window-flip";
 
+/// Todas las ventanas comparten un solo tablero. Se guarda como la nota de una
+/// app ficticia, con una sola página, para reusar el disco y los binarios de
+/// `notes` tal cual.
+const BOARD_NOTE: &str = "atic-tablero";
+
 static OPEN: AtomicBool = AtomicBool::new(false);
 static PRESENTED: AtomicBool = AtomicBool::new(false);
 static GEN: AtomicU64 = AtomicU64::new(0);
@@ -231,12 +236,9 @@ pub fn window_flip_save_blocks(
         return Ok(());
     };
     session.blocks = blocks;
-    // La página se resuelve por título en cada guardado en vez de recordar su
-    // id: la nota puede haber cambiado en disco (otra ventana de la misma app)
-    // entre que se abrió la tapa y se escribió.
     let notes_dir = state.dirs.notes_dir();
-    let mut note = crate::notes::load(&notes_dir, &session.exe);
-    let page_id = note.page_for_title(&session.title);
+    let mut note = crate::notes::load(&notes_dir, BOARD_NOTE);
+    let page_id = note.page_for_title("");
     if let Some(page) = note.page_mut(&page_id) {
         page.set_blocks(session.blocks.clone());
     }
@@ -251,12 +253,11 @@ pub fn window_flip_save_blocks(
 /// es el mismo contenido que el `paste` del webview acaba de ver.
 #[tauri::command]
 pub fn window_flip_paste_image(state: State<AppState>) -> Result<PastedImage, String> {
-    let exe = SESSION
-        .lock_or_recover()
-        .as_ref()
-        .map(|s| s.exe.clone())
-        .ok_or_else(|| "no hay tapa abierta".to_string())?;
-    let (asset, width, height) = crate::notes::add_clipboard_image(&state.dirs.notes_dir(), &exe)?;
+    if SESSION.lock_or_recover().is_none() {
+        return Err("no hay tapa abierta".into());
+    }
+    let (asset, width, height) =
+        crate::notes::add_clipboard_image(&state.dirs.notes_dir(), BOARD_NOTE)?;
     Ok(PastedImage {
         asset,
         width,
@@ -287,13 +288,11 @@ pub fn window_flip_import_image(
     if !permitido {
         return Err("esa imagen no es del historial".into());
     }
-    let exe = SESSION
-        .lock_or_recover()
-        .as_ref()
-        .map(|s| s.exe.clone())
-        .ok_or_else(|| "no hay tapa abierta".to_string())?;
+    if SESSION.lock_or_recover().is_none() {
+        return Err("no hay tapa abierta".into());
+    }
     let (asset, width, height) =
-        crate::notes::import_image(&state.dirs.notes_dir(), &exe, &origen)?;
+        crate::notes::import_image(&state.dirs.notes_dir(), BOARD_NOTE, &origen)?;
     Ok(PastedImage {
         asset,
         width,
@@ -312,12 +311,10 @@ pub fn window_flip_asset_data(state: State<AppState>, asset: String) -> Result<S
         .and_then(|n| n.to_str())
         .filter(|n| !n.is_empty() && *n != "." && *n != "..")
         .ok_or_else(|| "imagen inválida".to_string())?;
-    let exe = SESSION
-        .lock_or_recover()
-        .as_ref()
-        .map(|s| s.exe.clone())
-        .ok_or_else(|| "no hay tapa abierta".to_string())?;
-    let dir = crate::notes::assets_dir(&state.dirs.notes_dir(), &exe);
+    if SESSION.lock_or_recover().is_none() {
+        return Err("no hay tapa abierta".into());
+    }
+    let dir = crate::notes::assets_dir(&state.dirs.notes_dir(), BOARD_NOTE);
     let destino = dir.join(nombre);
     let dir = dir
         .canonicalize()
@@ -630,13 +627,8 @@ fn open_macos(app: &AppHandle) -> Result<(), String> {
         .join(format!("window-flip-{gen}.png"));
     let hay_foto = capture_preview(hwnd, &preview_path, true);
 
-    let mut doc = crate::notes::load(&dirs.notes_dir(), &exe);
-    let page_id = doc.page_for_title(&title);
-    let blocks = doc
-        .page_mut(&page_id)
-        .map(|page| page.blocks.clone())
-        .unwrap_or_default();
-    let assets_dir = crate::notes::assets_dir(&dirs.notes_dir(), &exe);
+    let blocks = load_board(&dirs.notes_dir(), &exe, &title);
+    let assets_dir = crate::notes::assets_dir(&dirs.notes_dir(), BOARD_NOTE);
     let session = FlipSession {
         key,
         title,
@@ -758,13 +750,8 @@ fn open_windows(app: &AppHandle) -> Result<(), String> {
     // que el overlay no entra. Esconderla acá era el pestañeo de arranque.
     let hay_foto = capture_preview(hwnd as isize, &preview_path, true);
 
-    let mut doc = crate::notes::load(&dirs.notes_dir(), &exe);
-    let page_id = doc.page_for_title(&title);
-    let blocks = doc
-        .page_mut(&page_id)
-        .map(|page| page.blocks.clone())
-        .unwrap_or_default();
-    let assets_dir = crate::notes::assets_dir(&dirs.notes_dir(), &exe);
+    let blocks = load_board(&dirs.notes_dir(), &exe, &title);
+    let assets_dir = crate::notes::assets_dir(&dirs.notes_dir(), BOARD_NOTE);
     let session = FlipSession {
         key,
         title,
@@ -1413,6 +1400,71 @@ fn process_exe_path(hwnd: windows_sys::Win32::Foundation::HWND) -> Option<PathBu
     }
 }
 
+/// Bloques del tablero compartido.
+///
+/// La primera vez que se abre, el tablero nace con la página que tenía la
+/// ventana de debajo: antes cada ventana tenía la suya, y abrir el tablero
+/// vacío encima de notas escritas parecería que se borraron. Las notas viejas
+/// quedan en disco sin tocar.
+fn load_board(notes_dir: &Path, exe: &str, title: &str) -> Vec<crate::notes::Block> {
+    let mut board = crate::notes::load(notes_dir, BOARD_NOTE);
+    if board.pages.is_empty() {
+        let heredados = heredar_pagina(notes_dir, exe, title);
+        if !heredados.is_empty() {
+            let page_id = board.page_for_title("");
+            if let Some(page) = board.page_mut(&page_id) {
+                page.set_blocks(heredados);
+            }
+            if let Err(err) = crate::notes::save(notes_dir, &mut board) {
+                tracing::warn!(target: "notes", %err, "no se pudo sembrar el tablero compartido");
+            }
+        }
+    }
+    let page_id = board.page_for_title("");
+    board
+        .page_mut(&page_id)
+        .map(|page| page.blocks.clone())
+        .unwrap_or_default()
+}
+
+/// La página de esa ventana en el modelo por app (o la última que se editó de
+/// esa app), con sus imágenes copiadas a los binarios del tablero. Una imagen
+/// que no se pudo copiar se descarta: apuntaría a un archivo que no existe.
+fn heredar_pagina(notes_dir: &Path, exe: &str, title: &str) -> Vec<crate::notes::Block> {
+    let mut vieja = crate::notes::load(notes_dir, exe);
+    let Some(pagina) = vieja
+        .pages
+        .iter()
+        .find(|p| p.title == title.trim() && !p.blocks.is_empty())
+        .or_else(|| {
+            vieja
+                .pages
+                .iter()
+                .filter(|p| !p.blocks.is_empty())
+                .max_by_key(|p| p.updated_at)
+        })
+        .map(|p| p.id.clone())
+    else {
+        return Vec::new();
+    };
+    let bloques = vieja
+        .page_mut(&pagina)
+        .map(|p| std::mem::take(&mut p.blocks))
+        .unwrap_or_default();
+    let origen = crate::notes::assets_dir(notes_dir, exe);
+    let destino = crate::notes::assets_dir(notes_dir, BOARD_NOTE);
+    bloques
+        .into_iter()
+        .filter(|bloque| match bloque {
+            crate::notes::Block::Image { asset, .. } => {
+                std::fs::create_dir_all(&destino).is_ok()
+                    && std::fs::copy(origen.join(asset), destino.join(asset)).is_ok()
+            }
+            _ => true,
+        })
+        .collect()
+}
+
 fn note_key(exe: &str, title: &str) -> String {
     let title = title.trim();
     if title.is_empty() {
@@ -1515,6 +1567,33 @@ mod tests {
         // El original se conserva renombrado, no se borra.
         assert!(!dir.join("window_flip_notes.json").exists());
         assert!(dir.join("window_flip_notes.migrado.json").exists());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn el_tablero_es_uno_solo_y_nace_de_la_ventana_abierta() {
+        let dir = std::env::temp_dir().join(format!("atic-tablero-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        escribir(&dir, "teams.exe", "Standup", "acordarse del deploy");
+        escribir(&dir, "code.exe", "main.rs", "otra");
+
+        let texto = |bloques: &[crate::notes::Block]| match bloques {
+            [crate::notes::Block::Text { body, .. }] => body.clone(),
+            otro => panic!("se esperaba un solo texto: {otro:?}"),
+        };
+        assert_eq!(
+            texto(&load_board(&dir, "teams.exe", "Standup")),
+            "acordarse del deploy"
+        );
+        // La segunda ventana ve el mismo tablero, no su nota vieja.
+        assert_eq!(
+            texto(&load_board(&dir, "code.exe", "main.rs")),
+            "acordarse del deploy"
+        );
+        // La nota por app queda como estaba.
+        assert_eq!(leer(&dir, "code.exe", "main.rs"), "otra");
 
         let _ = std::fs::remove_dir_all(&dir);
     }

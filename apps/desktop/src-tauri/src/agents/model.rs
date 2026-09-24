@@ -356,6 +356,15 @@ pub struct ModelInfo {
     pub supports_fast: bool,
 }
 
+/// Un modo del agente (ACP: agent / plan / ask). El actual va en `mode`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModeInfo {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+}
+
 /// Lo que cambia del hilo, no de un item suelto.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -379,6 +388,9 @@ pub struct ThreadPatch {
     pub model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mode: Option<String>,
+    /// Los modos que ofrece el agente. Llega una vez, al arrancar.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub modes: Option<Vec<ModeInfo>>,
     /// Contexto consumido. Se informa **durante** el turno, no al final: lo que
     /// se quiere ver es cómo sube mientras el agente trabaja.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -440,6 +452,10 @@ pub enum AgentDelta {
         turn: TurnId,
         status: TurnStatus,
         cost_usd: Option<f64>,
+        /// Cuánto duró. El backend que lo informa lo pone (Claude, en su
+        /// `result`); si no, lo mide el puente entre `turn.start` y acá.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        duration_ms: Option<u64>,
     },
 
     /// El backend falló de una forma de la que no se puede seguir.
@@ -455,6 +471,44 @@ pub struct Turn {
     pub items: Vec<Item>,
     pub status: TurnStatus,
     pub cost_usd: Option<f64>,
+    /// `None` en los hilos guardados antes de medirlo.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+}
+
+/// Mide los turnos de los backends que no informan cuánto duraron.
+///
+/// Vive en el puente, no en `Thread::apply`: aplicar un delta tiene que dar
+/// lo mismo acá y en la vista, y un reloj adentro lo rompería. El turno se
+/// empieza a contar con lo primero que llega de él —algunos backends abren el
+/// turno con un item y no con `turn.start`—.
+#[derive(Debug, Default)]
+pub struct TurnClock(std::collections::HashMap<TurnId, std::time::Instant>);
+
+impl TurnClock {
+    pub fn observe(&mut self, delta: &mut AgentDelta) {
+        self.observe_at(delta, std::time::Instant::now());
+    }
+
+    fn observe_at(&mut self, delta: &mut AgentDelta, now: std::time::Instant) {
+        match delta {
+            AgentDelta::TurnStart { turn } | AgentDelta::ItemAdd { turn, .. } => {
+                self.0.entry(turn.clone()).or_insert(now);
+            }
+            AgentDelta::TurnEnd {
+                turn, duration_ms, ..
+            } => {
+                let Some(start) = self.0.remove(turn) else {
+                    return;
+                };
+                if duration_ms.is_none() {
+                    let elapsed = now.saturating_duration_since(start).as_millis();
+                    *duration_ms = Some(u64::try_from(elapsed).unwrap_or(u64::MAX));
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 /// La conversación completa con un agente, en una carpeta.
@@ -495,6 +549,7 @@ impl Thread {
                 items: Vec::new(),
                 status: TurnStatus::Running,
                 cost_usd: None,
+                duration_ms: None,
             }),
 
             AgentDelta::ItemAdd { turn, item } => {
@@ -507,6 +562,7 @@ impl Thread {
                         items: Vec::new(),
                         status: TurnStatus::Running,
                         cost_usd: None,
+                        duration_ms: None,
                     });
                 }
                 if let Some(t) = self.turns.iter_mut().find(|t| &t.id == turn) {
@@ -550,10 +606,12 @@ impl Thread {
                 turn,
                 status,
                 cost_usd,
+                duration_ms,
             } => {
                 if let Some(t) = self.turns.iter_mut().find(|t| &t.id == turn) {
                     t.status = *status;
                     t.cost_usd = *cost_usd;
+                    t.duration_ms = *duration_ms;
                 }
             }
 
@@ -900,5 +958,55 @@ mod tests {
         assert_eq!(*status, ToolStatus::InProgress, "el estado no se tocó");
         assert_eq!(title, "src/main.rs", "el título no se tocó");
         assert_eq!(locations.len(), 1);
+    }
+
+    fn end(turn: &str, duration_ms: Option<u64>) -> AgentDelta {
+        AgentDelta::TurnEnd {
+            turn: turn.into(),
+            status: TurnStatus::Done,
+            cost_usd: None,
+            duration_ms,
+        }
+    }
+
+    fn duration(delta: &AgentDelta) -> Option<u64> {
+        match delta {
+            AgentDelta::TurnEnd { duration_ms, .. } => *duration_ms,
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn el_reloj_mide_desde_lo_primero_que_llega_del_turno() {
+        let t0 = std::time::Instant::now();
+        let mut clock = TurnClock::default();
+        // Sin `turn.start`: el turno se abre con un item.
+        clock.observe_at(&mut tool("a"), t0);
+        let mut fin = end("t1", None);
+        clock.observe_at(&mut fin, t0 + std::time::Duration::from_millis(1500));
+        assert_eq!(duration(&fin), Some(1500));
+    }
+
+    #[test]
+    fn el_reloj_no_pisa_la_duracion_que_informa_el_backend() {
+        let t0 = std::time::Instant::now();
+        let mut clock = TurnClock::default();
+        clock.observe_at(&mut AgentDelta::TurnStart { turn: "t1".into() }, t0);
+        let mut fin = end("t1", Some(33_000));
+        clock.observe_at(&mut fin, t0 + std::time::Duration::from_millis(10));
+        assert_eq!(duration(&fin), Some(33_000));
+    }
+
+    #[test]
+    fn la_duracion_queda_en_el_turno_y_los_hilos_viejos_cargan() {
+        let mut h = thread();
+        h.apply(&AgentDelta::TurnStart { turn: "t1".into() });
+        h.apply(&end("t1", Some(900)));
+        assert_eq!(h.turns[0].duration_ms, Some(900));
+
+        let viejo: Turn =
+            serde_json::from_str(r#"{"id":"t","items":[],"status":"done","costUsd":null}"#)
+                .expect("un turno guardado sin duración sigue cargando");
+        assert_eq!(viejo.duration_ms, None);
     }
 }

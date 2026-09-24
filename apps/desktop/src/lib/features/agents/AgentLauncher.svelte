@@ -12,6 +12,7 @@
     AGENTS_PATH_CHANGED,
     AGENTS_REVEAL_CONSOLE,
     AGENTS_ISLAND_LAUNCH,
+    agentThread,
     agentsEnsureWindow,
     cliOnPath,
     consoleBeginTransfer,
@@ -41,6 +42,8 @@
   import { config } from "$domain/config.svelte";
   import { sessionEffect } from "$domain/session";
   import { t } from "$domain/i18n.svelte";
+  import { agents } from "$lib/agentSessions.svelte";
+  import { chatTabsKey, loadChatTabs, saveChatTabs, type ChatTabRecord } from "./chatTabs";
 
   type LauncherView = "setup" | "console";
 
@@ -110,6 +113,8 @@
    * (quedaría duplicando las adoptadas). Se resetea al terminar de recibir.
    */
   let incomingTransfer = $state(false);
+  /** Chats retomados que siembran el panel al montarlo; se vacía al usarse. */
+  let restoredChats = $state<ChatTabRecord[]>([]);
   /**
    * La ventana está a la vista. Oculta (cerrada a la bandeja) no es destino de
    * pegado: el historial debe caer donde el usuario mira.
@@ -159,7 +164,15 @@
   // Con el CLI ausente la consola se siembra con su instalador oficial, la
   // misma mecánica que el botón "Instalar" del menú "+" de ConsolePanel.
   const seeds = $derived(
-    missingCli
+    restoredChats.length > 0
+      ? restoredChats.map((record) => ({
+          kind: "local" as const,
+          label: record.label || undefined,
+          command: record.command ?? undefined,
+          hubSession: record.session,
+          chat: true,
+        }))
+      : missingCli
       ? [
           {
             kind: "local" as const,
@@ -228,6 +241,52 @@
      (`end` + ack), y recién ahí la emisora suelta sin matar. Si el ack no
      llega, se levanta la protección y todo se queda donde estaba. */
   const myLabel = currentWindowLabel();
+
+  /**
+   * Dónde guarda este lanzador sus chats. La isla y el float comparten
+   * webview —y storage—: con la misma clave, uno retomaría los del otro.
+   */
+  function chatKey(): string {
+    return chatTabsKey(island ? "island" : myLabel);
+  }
+
+  /**
+   * Vuelve a mostrar los chats que esta vista tenía antes de recargarse. La
+   * sesión siguió viva en Rust; el hilo se relee de la base, porque el store
+   * de esta webview arrancó vacío.
+   */
+  async function restoreChats(stored: ChatTabRecord[]) {
+    if (stored.length === 0) return;
+    await agents.init();
+    const alive = stored.filter((record) => agents.byId(record.session));
+    saveChatTabs(chatKey(), alive);
+    if (alive.length === 0) return;
+    await Promise.all(
+      alive.map(async (record) => {
+        if ((agents.byId(record.session)?.turns.length ?? 0) > 0) return;
+        try {
+          const thread = await agentThread(record.session);
+          if (!thread) return;
+          agents.hydrate(record.session, {
+            turns: thread.turns,
+            cwd: thread.cwd,
+            model: thread.model,
+            providerSession: thread.providerSession,
+          });
+        } catch {
+          /* sin hilo guardado la ficha vuelve igual, vacía */
+        }
+      }),
+    );
+    if (hasConsole) {
+      panel?.adoptChats(alive);
+      return;
+    }
+    restoredChats = alive;
+    setHasConsole(true);
+    await tick();
+    restoredChats = [];
+  }
   /** Fuera del float, el hogar es la ventana dedicada; desde ella, la pill. */
   const otherLabel = myLabel === OVERLAY_LABEL ? AGENTS_WINDOW_LABEL : OVERLAY_LABEL;
   const DETACH_ACK_MS = 4000;
@@ -257,6 +316,13 @@
 
   /** Suelta las adoptadas sin matarlas; si no queda nada, vuelve al setup. */
   function settleAfterDetach(adopted: string[]): void {
+    // Los chats mudados ya son de la otra vista. Se sacan a mano: si el panel
+    // se desmonta abajo, no llega a guardar su lista nueva, y al recargar esta
+    // vista los retomaría duplicados.
+    saveChatTabs(
+      chatKey(),
+      loadChatTabs(chatKey()).filter((r) => !adopted.includes(`hub:${r.session}`)),
+    );
     const remaining = panel?.clearTransferred(adopted) ?? 0;
     if (remaining === 0) {
       // Sin fichas no hay consola que mostrar: vuelve al setup. Las sesiones
@@ -535,6 +601,12 @@
   }
 
   function resetSessions() {
+    // Cerrar consolas termina también los chats: su sesión vive en Rust y,
+    // sin esto, quedaba viva y volvía sola en la próxima apertura.
+    for (const record of loadChatTabs(chatKey())) {
+      void agents.stop(record.session).catch(() => {});
+    }
+    saveChatTabs(chatKey(), []);
     // Al desmontar ConsolePanel su onDestroy cierra todas las PTYs.
     setHasConsole(false);
     showView("setup");
@@ -608,6 +680,8 @@
         saveCwd();
       });
     }
+    // Leído ya, antes de que un panel que monte primero guarde su lista vacía.
+    void restoreChats(loadChatTabs(chatKey()));
     refreshPath();
     // Re-sincronizar la vista con el host: una recarga puede dejar del otro
     // lado una vista/tamaño viejos (la isla quedaba grande con el setup y
@@ -825,6 +899,7 @@
         localCwd={cwd}
         onBack={backToSetup}
         onEmpty={resetSessions}
+        onChatTabsChange={(tabs) => saveChatTabs(chatKey(), tabs)}
         onPickFolder={requestFolder}
         onToggleMaximize={island ? undefined : onToggleMaximize}
         onToggleMinimize={island ? undefined : onToggleMinimize}

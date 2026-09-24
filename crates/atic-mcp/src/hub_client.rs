@@ -238,6 +238,13 @@ impl Hub {
         self.post("/v1/cancel", cuerpo, 30).await
     }
 
+    pub async fn permission(
+        &self,
+        cuerpo: &crate::payload::PermissionRequest,
+    ) -> Result<serde_json::Value, HubFallo> {
+        self.post("/v1/permission", cuerpo, 30).await
+    }
+
     pub async fn close(
         &self,
         cuerpo: &crate::payload::CloseRequest,

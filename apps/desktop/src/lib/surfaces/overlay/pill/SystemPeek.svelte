@@ -11,7 +11,8 @@
   import { t } from "$domain/i18n.svelte";
   import { formatBytes, formatPercent } from "$features/system/systemFormat";
 
-  let { onopen }: { onopen: () => void } = $props();
+  let { onopen, vertical = false }: { onopen: () => void; vertical?: boolean } =
+    $props();
 
   /** Mismo ritmo que la pestaña de recursos del panel. */
   const REFRESH_MS = 1500;
@@ -40,7 +41,7 @@
   }
 </script>
 
-<div class="sp">
+<div class="sp" class:is-vertical={vertical}>
   <div class="sp-meter is-{tone(cpu, system.alerts.cpu)}">
     <span class="sp-label">{t("pill.peek.cpu")}</span>
     <span class="sp-track"
@@ -96,6 +97,28 @@
 
   .sp-label {
     color: var(--muted);
+  }
+
+  /* Al costado de la tira: etiqueta y valor arriba, la barra entera debajo.
+     En una columna angosta la barra en línea quedaba de un dedo de largo. */
+  .sp.is-vertical .sp-meter {
+    grid-template-areas:
+      "label val"
+      "track track";
+    grid-template-columns: 1fr auto;
+    gap: 0.25rem 0.5rem;
+  }
+
+  .sp.is-vertical .sp-label {
+    grid-area: label;
+  }
+
+  .sp.is-vertical .sp-val {
+    grid-area: val;
+  }
+
+  .sp.is-vertical .sp-track {
+    grid-area: track;
   }
 
   .sp-track {

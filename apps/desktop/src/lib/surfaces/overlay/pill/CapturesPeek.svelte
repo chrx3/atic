@@ -15,7 +15,11 @@
   import { surfaces } from "$surfaces/overlay/surfaces.svelte";
   import type { CaptureItem } from "$core/types";
 
-  let { ondone, onnew }: { ondone: () => void; onnew: () => void } = $props();
+  let {
+    ondone,
+    onnew,
+    vertical = false,
+  }: { ondone: () => void; onnew: () => void; vertical?: boolean } = $props();
 
   const LAST = 3;
   const DRAG_THRESHOLD = 4;
@@ -88,7 +92,7 @@
   $effect(() => () => cleanup());
 </script>
 
-<div class="kp">
+<div class="kp" class:is-vertical={vertical}>
   {#if items.length === 0}
     <p class="kp-empty">{t("pill.peek.capturesEmpty")}</p>
   {:else}
@@ -142,6 +146,15 @@
     margin: 0;
     padding: 0;
     list-style: none;
+  }
+
+  /* Al costado de la tira: una captura debajo de la otra, a lo ancho. */
+  .kp.is-vertical .kp-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .kp.is-vertical .kp-shot img {
+    aspect-ratio: 16 / 9;
   }
 
   .kp-shot {

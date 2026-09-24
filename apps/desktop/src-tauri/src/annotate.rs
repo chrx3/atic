@@ -38,16 +38,16 @@ static PENDING: Mutex<Option<AnnotateOpen>> = Mutex::new(None);
 /// Está acá y no medido del DOM porque la ventana tiene que nacer con el
 /// tamaño correcto: medir después obligaría a redimensionar con el editor ya
 /// visible, que se ve como un salto.
-const CHROME_H: f64 = 60.0;
+const CHROME_H: f64 = 44.0;
 
 /// Aire alrededor del lienzo, en píxeles lógicos.
-const PADDING: f64 = 16.0;
+const PADDING: f64 = 10.0;
 
 /// Cuánto del área útil puede ocupar la ventana como mucho.
 const MAX_FILL: f64 = 0.92;
 
 /// Ventana mínima usable: por debajo, la barra no entra.
-const MIN_W: f64 = 420.0;
+const MIN_W: f64 = 560.0;
 const MIN_H: f64 = 260.0;
 
 /// Tope al pasar la captura al lienzo. Un monitor 4K completo ronda los 5 MiB;

@@ -96,6 +96,7 @@ fn handshake_lista_y_errores_hablan_espanol() {
         "atic_prompt",
         "atic_delegate",
         "atic_wait",
+        "atic_permission",
         "atic_cancel",
         "atic_close",
     ] {

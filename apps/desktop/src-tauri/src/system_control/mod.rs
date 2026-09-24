@@ -179,6 +179,23 @@ pub fn system_set_muted(muted: bool) -> Result<(), String> {
     audio::set_muted(muted)
 }
 
+/// Volumen del reproductor de la pill (`crate::media`): el de la app que
+/// suena si tiene sesión propia, si no el del equipo. `true` = de la app.
+pub fn media_volume(exe: Option<&str>) -> Result<(f32, bool), String> {
+    if let Some((_, level)) = exe.and_then(audio::session_by_exe) {
+        return Ok((level, true));
+    }
+    audio::read().map(|a| (a.volume, false))
+}
+
+pub fn set_media_volume(exe: Option<&str>, volume: f32) -> Result<(), String> {
+    let volume = volume.clamp(0.0, 1.0);
+    match exe.and_then(audio::session_by_exe) {
+        Some((id, _)) => audio::set_session(&id, volume),
+        None => audio::set_master(volume),
+    }
+}
+
 #[tauri::command]
 pub fn system_set_session_volume(id: String, volume: f32) -> Result<(), String> {
     audio::set_session(&id, volume.clamp(0.0, 1.0))

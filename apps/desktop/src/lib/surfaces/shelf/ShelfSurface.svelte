@@ -36,7 +36,7 @@
   import { getConfig, openDataDir } from "$ipc/config";
   import { setOverlayItemDrag, overlayCursorOverHit } from "$ipc/overlay";
   import Icon from "$ui/Icon.svelte";
-  import { Folder, Pencil, ScanText, X } from "$lib/icons";
+  import { Copy, Folder, Pencil, ScanText, X } from "$lib/icons";
   import {
     coverShelfMonitor,
     hideWindow,
@@ -72,6 +72,8 @@
   const THUMB_H = 120;
   const SHELF_PAD = 8;
   const FOREIGN_CHECK_MS = 80;
+  /** Lo justo para leer «Copiada» antes de que la tarjeta se vaya. */
+  const COPIED_MS = 900;
 
   type DiscardDir = "x" | "y";
 
@@ -527,6 +529,30 @@
     }
   }
 
+  /**
+   * Copia la imagen y se va: es lo que más se hace con una captura recién
+   * tomada, y antes obligaba a arrastrarla o a abrirla.
+   */
+  async function copy(event: MouseEvent) {
+    event.stopPropagation();
+    if (!current || busy) return;
+    busy = true;
+    clearTimer();
+    try {
+      await copyCaptureImage(current.path);
+      note = t("shelf.copied");
+      noteTone = "ok";
+      await wait(COPIED_MS);
+      hide();
+    } catch {
+      note = t("page.captures.copyFail");
+      noteTone = "error";
+      scheduleDismiss();
+    } finally {
+      busy = false;
+    }
+  }
+
   /** Abre el editor de anotaciones sin depender de la config del clic. */
   async function annotate(event: MouseEvent) {
     event.stopPropagation();
@@ -784,6 +810,7 @@
     class:is-expanded={shelfSlot !== null}
     class:is-dragging={drag !== null || covering}
     class:is-covering={covering}
+    class:has-note={note !== null}
     style={shelfSlot ? `left:${shelfSlot.left}px;top:${shelfSlot.top}px` : ""}
     onmouseenter={() => {
       hovering = true;
@@ -832,22 +859,35 @@
       </button>
 
       <div class="shelf-center">
-        <button type="button" class="shelf-sub" onclick={(e) => void annotate(e)}>
+        <button
+          type="button"
+          class="shelf-sub"
+          disabled={busy}
+          onclick={(e) => void copy(e)}
+        >
+          <Icon icon={Copy} size={13} />
+          {t("shelf.copy")}
+        </button>
+        <button
+          type="button"
+          class="shelf-sub"
+          disabled={busy}
+          onclick={(e) => void annotate(e)}
+        >
           <Icon icon={Pencil} size={13} />
           {t("shelf.draw")}
         </button>
+        <button
+          type="button"
+          class="shelf-sub"
+          disabled={ocrBusy}
+          aria-busy={ocrBusy}
+          onclick={(e) => void ocr(e)}
+        >
+          <Icon icon={ScanText} size={13} />
+          {ocrBusy ? t("shelf.reading") : t("shelf.text")}
+        </button>
       </div>
-
-      <button
-        type="button"
-        class="shelf-dot is-bl"
-        disabled={ocrBusy}
-        aria-busy={ocrBusy}
-        onclick={(e) => void ocr(e)}
-        aria-label={t("shelf.text")}
-      >
-        <Icon icon={ScanText} size={14} />
-      </button>
     </div>
 
     {#if note}
@@ -927,6 +967,7 @@
     --shelf-chip-soft: rgb(18 18 16 / 78%);
     --shelf-strip: rgb(8 8 7 / 94%);
     --shelf-strip-soft: rgb(8 8 7 / 90%);
+    --shelf-veil: rgb(0 0 0 / 38%);
     --shelf-ok: rgb(157 255 196);
     --shelf-error: rgb(255 180 173);
 
@@ -994,15 +1035,29 @@
     height: 120px;
     padding: 0;
     border: 0;
-    background: transparent;
+
+    /*
+     * La tarjeta pone el marco, no la imagen.
+     *
+     * Con el marco en la imagen, una captura alta o angosta dejaba franjas
+     * transparentes dentro de un borde que no tocaba a nada. Así el formato es
+     * siempre el mismo y la captura se centra adentro, como en una diapositiva.
+     */
+    background: var(--shelf-strip);
     cursor: grab;
     border-radius: 8px;
+    box-shadow: 0 4px 12px rgb(0 0 0 / 38%);
+    outline: 1px solid rgb(255 255 255 / 16%);
+    outline-offset: -1px;
+    overflow: hidden;
     touch-action: none;
     transform-origin: center center;
+    transition: transform var(--duration-quick, 75ms) var(--ease-out, ease-out);
   }
 
   .shelf-thumb:active {
     cursor: grabbing;
+    transform: scale(0.98);
   }
 
   .shelf-thumb.is-parked {
@@ -1019,22 +1074,13 @@
 
   .shelf-thumb-img {
     display: block;
-    width: 192px;
-    height: 120px;
+    width: 100%;
+    height: 100%;
     object-fit: contain;
-    border-radius: 8px;
-    background: transparent;
-    outline: 1px solid rgb(255 255 255 / 16%);
-    outline-offset: -1px;
-    box-shadow: 0 4px 8px rgb(0 0 0 / 38%);
   }
 
-  .shelf-thumb:active .shelf-thumb-img {
-    transform: scale(0.96);
-  }
-
-  .shelf.is-dragging .shelf-thumb:active .shelf-thumb-img,
-  .shelf-thumb.is-parked:active .shelf-thumb-img {
+  .shelf.is-dragging .shelf-thumb:active,
+  .shelf-thumb.is-parked:active {
     transform: none;
   }
 
@@ -1050,13 +1096,14 @@
     transition: none;
   }
 
+  /* El mismo marco que la tarjeta: lo que se arrastra es la misma pieza. */
   .shelf-ghost img {
     display: block;
     width: 100%;
     height: 100%;
     object-fit: contain;
     border-radius: 8px;
-    background: transparent;
+    background: var(--shelf-strip, rgb(8 8 7 / 94%));
     outline: 1px solid rgb(255 255 255 / 16%);
     outline-offset: -1px;
   }
@@ -1088,7 +1135,10 @@
     inset: var(--shelf-pad);
     z-index: 2;
     border-radius: 8px;
-    background: transparent;
+
+    /* Oscurece la captura bajo los botones: sobre una captura clara, los chips
+       se perdían. */
+    background: var(--shelf-veil);
     opacity: 0;
     pointer-events: none;
     transition: opacity var(--duration-quick, 75ms) var(--ease-out, ease-out);
@@ -1097,6 +1147,17 @@
   .shelf:hover .shelf-veil,
   .shelf:focus-within .shelf-veil {
     opacity: 1;
+    pointer-events: none;
+  }
+
+  /* Con un aviso a la vista, los botones se apartan para que se lea. */
+  .shelf.has-note .shelf-veil,
+  .shelf.has-note:hover .shelf-veil {
+    opacity: 0;
+  }
+
+  .shelf.has-note .shelf-dot,
+  .shelf.has-note .shelf-sub {
     pointer-events: none;
   }
 
@@ -1138,11 +1199,6 @@
     right: 8px;
   }
 
-  .shelf-dot.is-bl {
-    bottom: 8px;
-    left: 8px;
-  }
-
   .shelf:hover .shelf-dot,
   .shelf:focus-within .shelf-dot {
     opacity: 1;
@@ -1174,7 +1230,7 @@
     display: flex;
     flex-direction: column;
     align-items: stretch;
-    gap: 8px;
+    gap: 5px;
     min-width: 5.5rem;
     transform: translate(-50%, -50%) translateY(4px);
     opacity: 0;
@@ -1194,7 +1250,7 @@
     align-items: center;
     justify-content: center;
     gap: 0.35rem;
-    min-height: 28px;
+    min-height: 26px;
     border: 0;
     border-radius: 8px;
     padding: 0 12px;
@@ -1211,8 +1267,13 @@
       transform var(--duration-quick, 150ms) var(--ease-out, ease-out);
   }
 
-  .shelf-sub:hover {
+  .shelf-sub:hover:not(:disabled) {
     background: var(--shelf-strip-soft);
+  }
+
+  .shelf-sub:disabled {
+    opacity: 0.6;
+    cursor: default;
   }
 
   .shelf-sub:focus-visible {
@@ -1220,25 +1281,33 @@
     outline-offset: 2px;
   }
 
-  .shelf-sub:active {
+  .shelf-sub:active:not(:disabled) {
     transform: scale(0.96);
   }
 
+  /* Chip centrado sobre la captura: se lee sobre cualquier fondo. */
   .shelf-note {
     position: absolute;
-    right: 10px;
-    bottom: 10px;
+    top: 50%;
+    left: 50%;
     z-index: 3;
-    max-width: calc(100% - 48px);
+    max-width: calc(100% - 40px);
+    box-sizing: border-box;
     margin: 0;
+    padding: 5px 10px;
+    border-radius: 999px;
     overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    background: var(--shelf-chip);
+    box-shadow: 0 1px 2px rgb(0 0 0 / 40%);
     color: var(--shelf-ink);
     font-size: 11px;
     font-weight: 650;
-    text-shadow: 0 1px 2px rgb(0 0 0 / 80%);
+    outline: 1px solid rgb(255 255 255 / 16%);
+    outline-offset: -1px;
     pointer-events: none;
+    text-overflow: ellipsis;
+    transform: translate(-50%, -50%);
+    white-space: nowrap;
   }
 
   .shelf-note.is-ok {
@@ -1293,7 +1362,6 @@
     .shelf-dot,
     .shelf-center,
     .shelf-sub,
-    .shelf-note,
     .shelf-ttl {
       transition: none !important;
       filter: none !important;

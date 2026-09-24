@@ -19,6 +19,8 @@
  */
 import {
   agentInterrupt,
+  agentAnswer,
+  agentSetMode,
   agentPermission,
   agentSend,
   agentSessions,
@@ -26,11 +28,17 @@ import {
   agentSkills,
   agentStart,
   agentStop,
+  announceAgentSeen,
+  onAgentStopped,
+  announcePermissionResolved,
   onAgentDelta,
+  onAgentSeen,
+  onPermissionResolved,
 } from "$lib/api";
 import type {
   AgentDeltaPayload,
   AgentItem,
+  AgentMode,
   AgentModel,
   AgentOrigin,
   AgentTurn,
@@ -158,6 +166,11 @@ export interface AgentSessionView {
   model: string;
   /** Modo de permisos efectivo informado por el backend. */
   mode: string;
+  /**
+   * Los modos que ofrece el agente (ACP). Vacío en Claude, cuyos modos de
+   * permiso son otra cosa y los conoce la vista.
+   */
+  modes: AgentMode[];
   /** Id con el que el backend reanuda esta conversación. */
   providerSession: string | null;
   /**
@@ -318,6 +331,15 @@ class AgentSessionStore {
     if (this.#started) return;
     this.#started = true;
     this.#unlisten = onAgentDelta((payload) => this.#receive(payload));
+    // Cada ventana tiene su propio store: lo leído y lo contestado en una
+    // tiene que dejar de figurar en las otras (la pill y la ventana).
+    void onAgentSeen(({ session }) => {
+      const s = this.byId(session);
+      if (s) s.unread = 0;
+    });
+    void onPermissionResolved(({ session, id }) => this.#dropPending(session, id));
+    // Cerrada en otra ventana (o por el hub): acá también deja de existir.
+    void onAgentStopped(({ session }) => this.#forget(session));
     try {
       const live = await agentSessions();
       for (const info of live)
@@ -477,18 +499,23 @@ class AgentSessionStore {
   async stop(id: string): Promise<void> {
     // Sacarla de la lista antes de esperar: `stop` puede tardar en matar el
     // proceso, y la UI no debería quedarse mostrando una sesión que el usuario
-    // ya cerró. `#stopped` evita que un delta en vuelo la recree con `#ensure`.
+    // ya cerró.
+    this.#forget(id);
+    await agentStop(id);
+  }
+
+  /**
+   * La saca de esta ventana. `#stopped` evita que un delta en vuelo la recree
+   * con `#ensure`; se libera tras un rato: el id es un UUID, no se reutiliza,
+   * pero el set no tiene por qué crecer sin techo.
+   */
+  #forget(id: string): void {
+    if (this.#stopped.has(id)) return;
     this.#stopped.add(id);
     this.#clearWorkingTimeout(id);
     this.sessions = this.sessions.filter((s) => s.id !== id);
     if (this.watching === id) this.watching = null;
-    try {
-      await agentStop(id);
-    } finally {
-      // Liberar tras un rato: el id es un UUID, no se reutiliza, pero el set
-      // no tiene por qué crecer sin techo a lo largo de la sesión de la app.
-      window.setTimeout(() => this.#stopped.delete(id), 30_000);
-    }
+    window.setTimeout(() => this.#stopped.delete(id), 30_000);
   }
 
   byId(id: string | null): AgentSessionView | undefined {
@@ -521,12 +548,33 @@ class AgentSessionStore {
   watch(id: string | null): void {
     this.watching = id;
     const session = this.byId(id);
-    if (session) session.unread = 0;
+    if (!session) return;
+    if (session.unread > 0) announceAgentSeen(session.id);
+    session.unread = 0;
+  }
+
+  /** Un permiso que ya no espera: contestado acá o en otra ventana. */
+  #dropPending(sessionId: string, permissionId: string): void {
+    const session = this.byId(sessionId);
+    if (!session || !session.pending.some((p) => p.id === permissionId)) return;
+    session.pending = session.pending.filter((p) => p.id !== permissionId);
+    if (session.pending.length === 0 && session.status === "waiting") {
+      session.status = "working";
+      this.#armWorkingTimeout(sessionId);
+    }
   }
 
   /** Cerrar o achicar el globo: esos mensajes ya no son un aviso en la pill. */
   markAllRead(): void {
     for (const s of this.sessions) s.unread = 0;
+  }
+
+  /** Una sola sesión como leída, también en las otras ventanas. */
+  markRead(id: string): void {
+    const s = this.byId(id);
+    if (!s || s.unread === 0) return;
+    s.unread = 0;
+    announceAgentSeen(id);
   }
 
   /**
@@ -600,6 +648,7 @@ class AgentSessionStore {
       cwd: "",
       model: "",
       mode: "",
+      modes: [],
       providerSession: null,
       commands: [],
       mcpServers: [],
@@ -746,6 +795,7 @@ class AgentSessionStore {
         if (p.cwd !== undefined) s.cwd = p.cwd;
         if (p.model !== undefined) s.model = p.model;
         if (p.mode !== undefined) s.mode = p.mode;
+        if (p.modes !== undefined) s.modes = p.modes;
         if (p.tokens !== undefined) s.contextTokens = p.tokens;
         if (p.contextSize !== undefined) s.contextSize = p.contextSize;
         if (p.models !== undefined) s.models = p.models;
@@ -766,6 +816,7 @@ class AgentSessionStore {
         if (turn) {
           turn.status = payload.status;
           turn.costUsd = payload.costUsd;
+          if (payload.durationMs !== undefined) turn.durationMs = payload.durationMs;
         }
         if (payload.costUsd !== null) s.costUsd += payload.costUsd;
         s.status = payload.status === "failed" ? "failed" : "ready";
@@ -883,6 +934,31 @@ class AgentSessionStore {
       this.#armWorkingTimeout(sessionId);
     }
     await agentPermission(sessionId, permissionId, decision);
+    announcePermissionResolved(sessionId, permissionId);
+  }
+
+  /**
+   * Contesta una pregunta del agente: aprueba su herramienta con las
+   * respuestas agregadas al input. Igual que `decide`, la sesión vuelve a
+   * «trabajando» sin esperar el siguiente evento.
+   */
+  /** Cambia el modo (ACP). Se anota ya: la confirmación llega en un parche. */
+  async setMode(sessionId: string, mode: string): Promise<void> {
+    const session = this.byId(sessionId);
+    if (session) session.mode = mode;
+    await agentSetMode(sessionId, mode);
+  }
+
+  async answer(sessionId: string, permissionId: string, updatedInput: unknown) {
+    const session = this.byId(sessionId);
+    if (!session) return;
+    session.pending = session.pending.filter((p) => p.id !== permissionId);
+    if (session.pending.length === 0) {
+      session.status = "working";
+      this.#armWorkingTimeout(sessionId);
+    }
+    await agentAnswer(sessionId, permissionId, updatedInput);
+    announcePermissionResolved(sessionId, permissionId);
   }
 
   /**

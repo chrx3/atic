@@ -27,10 +27,17 @@
 
   let {
     initialPath = "",
+    contained = true,
     onPick,
     onClose,
   }: {
     initialPath?: string;
+    /**
+     * Anclado a su contenedor, para el overlay. En una ventana normal va
+     * `false`: si no, queda debajo de lo que flota encima (la entrada de la
+     * pizarra).
+     */
+    contained?: boolean;
     onPick: (path: string) => void;
     onClose: () => void;
   } = $props();
@@ -190,7 +197,7 @@
     title={t("page.agents.folderPick.title")}
     subtitle={listing?.path || initialPath || undefined}
     size="xl"
-    contained
+    {contained}
     fill
     scrollBody={false}
     {onClose}

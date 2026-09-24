@@ -31,11 +31,15 @@ disco del usuario. Dos cosas lo acotan:
 - **Se puede apagar** desde Ajustes (`clipboard_history`, encendido por
   defecto). Apagado, el vigilante deja de mirar el portapapeles en la vuelta
   siguiente, sin reiniciar la app.
-- **Respeta los marcadores de contenido efímero de Windows**
-  (`ExcludeClipboardContentFromMonitorProcessing` y
-  `CanIncludeInClipboardHistory`). Los ponen los gestores de contraseñas
-  justamente para que su copia no sobreviva al pegado; `arboard` no los mira,
-  así que la comprobación es propia (`clipboard_is_sensitive`).
+- **Respeta los marcadores de contenido efímero** que ponen los gestores de
+  contraseñas justamente para que su copia no sobreviva al pegado:
+  - Windows: `ExcludeClipboardContentFromMonitorProcessing` y
+    `CanIncludeInClipboardHistory`.
+  - macOS: `org.nspasteboard.ConcealedType` y `org.nspasteboard.TransientType`
+    (convención de nspasteboard.org).
+
+  `arboard` no los mira en ninguno de los dos, así que la comprobación es
+  propia (`clipboard_is_sensitive`).
 
 ## Código
 

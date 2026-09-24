@@ -80,6 +80,11 @@ export const onAgentsComposerInsert = (
   cb: (payload: AgentsComposerInsert) => void,
 ): Promise<UnlistenFn> => on("agents-composer-insert", cb);
 
+/** Texto del historial soltado sobre la ventana de agentes, con el punto donde cayó. */
+export const onAgentsWindowInsert = (
+  cb: (payload: AgentsComposerInsert) => void,
+): Promise<UnlistenFn> => on("agents-window-insert", cb);
+
 /** Inserta un ítem del historial en agentes (abierto; no cierra clipboard). */
 export const insertClipboardIntoAgents = (id: string) =>
   invoke<void>("insert_clipboard_into_agents", { id });

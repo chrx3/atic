@@ -95,6 +95,39 @@ describe("contentFor", () => {
     });
   });
 
+  it("la letra cuelga de la pestaña cerrada solo arriba/abajo", () => {
+    const lyrics = { w: PILL.islandLyricHangW, h: PILL.islandLyricHangH };
+    const withLyrics = (edge: "top" | "left", expanded: boolean) =>
+      contentFor(
+        "edge",
+        180,
+        { edge, expanded },
+        "idle",
+        5,
+        true,
+        2,
+        0,
+        "tab",
+        false,
+        false,
+        false,
+        false,
+        0,
+        null,
+        lyrics,
+      );
+    expect(withLyrics("top", false)).toEqual({
+      w: Math.max(islandCueLong(2), PILL.islandLyricHangW),
+      h: PILL.islandCueThick + PILL.islandLyricHangH,
+    });
+    // Al costado no hay alto que regalar; abierta, manda la tira.
+    expect(withLyrics("left", false)).toEqual({
+      w: PILL.islandCueThick,
+      h: islandCueLong(2),
+    });
+    expect(withLyrics("top", true).h).toBe(PILL.islandTool);
+  });
+
   it("con aviso de agente, la pestaña cerrada engorda y sigue siendo pestaña", () => {
     expect(PILL.islandCueThick).toBeGreaterThan(PILL.islandThick);
     expect(PILL.islandCueThick).toBeLessThan(PILL.islandTool);
@@ -141,6 +174,33 @@ describe("contentFor", () => {
       w: long,
       h: PILL.islandTool,
     });
+  });
+
+  it("con un vistazo, la isla crece hacia adentro para abrigarlo", () => {
+    const long = islandStripLong(5);
+    const peek = { w: 256, h: 180 };
+    const at = (edge: "top" | "left") =>
+      contentFor(
+        "edge",
+        180,
+        { edge, expanded: true },
+        "idle",
+        5,
+        false,
+        0,
+        0,
+        "tab",
+        false,
+        false,
+        false,
+        false,
+        0,
+        peek,
+      );
+    // Arriba: la tira contra el techo y el vistazo debajo.
+    expect(at("top")).toEqual({ w: Math.max(long, 256), h: PILL.islandTool + 180 });
+    // Al costado: la tira contra el canto y el vistazo al lado.
+    expect(at("left")).toEqual({ w: PILL.islandTool + 256, h: Math.max(long, 180) });
   });
 
   it("la tira encoge cuando se esconden herramientas de la pill", () => {
@@ -355,7 +415,8 @@ describe("contentFor", () => {
         2,
       ),
     ).toEqual({
-      w: PILL.islandThick + PILL.islandDictW,
+      // Al costado, solo el estado de cada agente: una columna angosta.
+      w: PILL.islandThick + PILL.islandLiveSideW,
       h: Math.max(PILL.islandLong, 2 * PILL.islandLiveRow),
     });
     // Una llamada sin filas todavía reserva una fila visible.
@@ -423,6 +484,10 @@ describe("contentFor", () => {
   it("el tramo de texto del aviso alarga la pestaña solo cuando entra", () => {
     // Con varios avisos la base ya supera el piso: el tramo suma exacto.
     expect(islandCueLong(3, true)).toBe(islandCueLong(3) + PILL.islandCueMsgW);
+    // Un tramo propio (la letra) suma ese ancho en vez del de siempre.
+    expect(islandCueLong(3, PILL.islandLyricW)).toBe(
+      islandCueLong(3) + PILL.islandLyricW,
+    );
     // Con uno, el piso `islandLong` domina la base sin texto; con texto gana
     // la suma. Nada encoge al quitar el texto.
     expect(islandCueLong(1, true)).toBe(

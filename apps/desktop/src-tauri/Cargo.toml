@@ -84,6 +84,8 @@ windows-sys = { version = "0.59", features = [
     "Win32_System_Shutdown",
     # Snapshot de procesos (working set) del panel de sistema.
     "Win32_System_ProcessStatus",
+    # Qué proceso tiene abierto el rollout de Codex (su consola en la pizarra).
+    "Win32_System_RestartManager",
     # Brillo DDC de monitores externos.
     "Win32_Devices_Display",
 ] }
@@ -94,6 +96,8 @@ windows = { version = "0.61", features = [
   "Foundation",
   "Globalization",
   "Graphics_Imaging",
+  # Lo que suena en el equipo (SMTC): el reproductor de la pill.
+  "Media_Control",
   "Media_Ocr",
   "Storage",
   "Storage_Streams",

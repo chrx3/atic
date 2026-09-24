@@ -47,6 +47,8 @@ pub mod os_keychain;
 pub mod ping;
 pub mod presence;
 pub mod quota;
+#[cfg(windows)]
+pub mod resume;
 pub mod skills;
 pub mod ssh;
 pub mod store;
@@ -256,6 +258,20 @@ pub trait AgentSession: Send {
         Ok(())
     }
 
+    /// Aprueba un permiso cambiando lo que la herramienta recibe.
+    ///
+    /// Es como se contesta una pregunta del agente (`AskUserQuestion` de
+    /// Claude): la herramienta se aprueba con las respuestas agregadas a su
+    /// input. Un backend que no lo sabe hacer lo dice, en vez de aprobar sin
+    /// las respuestas.
+    fn answer_permission(
+        &mut self,
+        _id: &str,
+        _updated_input: serde_json::Value,
+    ) -> Result<(), String> {
+        Err("este agente no acepta respuestas a sus preguntas".to_string())
+    }
+
     /// Cambia el modelo, el esfuerzo y (si aplica) la variante rápida.
     ///
     /// Por defecto no hace nada: hay backends que no saben cambiarlo en
@@ -269,6 +285,14 @@ pub trait AgentSession: Send {
         _fast: Option<bool>,
     ) -> Result<(), String> {
         Ok(())
+    }
+
+    /// Cambia el modo del agente (ACP: agent / plan / ask).
+    ///
+    /// Un backend sin modos lo dice: la vista solo ofrece el selector cuando
+    /// el agente informó los suyos, así que llegar acá sin tenerlos es un error.
+    fn set_mode(&mut self, _mode: &str) -> Result<(), String> {
+        Err("este agente no cambia de modo".to_string())
     }
 
     /// Interrumpe el turno en curso sin cerrar la sesión.

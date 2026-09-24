@@ -339,24 +339,30 @@
           {compacta}
           {accionesSoloIcono}
           notaKey={view?.key ?? ""}
-          nombreArchivo={view?.title || view?.exe || "tablero"}
+          nombreArchivo={t("overlay.windowFlip.sharedTitle")}
           onpersist={persist}
           onclose={() => void beginClose()}
           onocupado={(v) => (ocupado = v)}
         >
+          <!-- El tablero es uno solo: el título es el tablero y la ventana de
+               debajo queda como referencia de dónde se abrió. -->
           {#snippet encabezado()}
-            <div class="titulos">
-              {#if view?.icon}
-                <img class="app-icon" src={view.icon} alt="" width="20" height="20" />
-              {:else}
-                <span class="app-icon hueco" aria-hidden="true">
-                  <Icon icon={AppWindow} size={13} />
+            <div class="titulos" title={t("overlay.windowFlip.sharedHint")}>
+              <h1>{t("overlay.windowFlip.sharedTitle")}</h1>
+              <p class="sobre">
+                {#if view?.icon}
+                  <img class="app-icon" src={view.icon} alt="" width="16" height="16" />
+                {:else}
+                  <span class="app-icon hueco" aria-hidden="true">
+                    <Icon icon={AppWindow} size={11} />
+                  </span>
+                {/if}
+                <span class="sobre-texto">
+                  {t("overlay.windowFlip.sharedOver", {
+                    window: view?.title || view?.exe || t("overlay.windowFlip.untitled"),
+                  })}
                 </span>
-              {/if}
-              <p class="kicker">
-                {t("overlay.windowFlip.kicker", { exe: view?.exe ?? "" })}
               </p>
-              <h1>{view?.title || t("overlay.windowFlip.untitled")}</h1>
             </div>
           {/snippet}
         </FlipBoard>
@@ -556,12 +562,12 @@
 
   .app-icon {
     display: grid;
-    width: 20px;
-    height: 20px;
+    width: 16px;
+    height: 16px;
     flex: none;
     place-items: center;
     overflow: hidden;
-    border-radius: 6px;
+    border-radius: 4px;
     background: var(--rb-surface-elevated);
     outline: 1px solid rgb(0 0 0 / 12%);
     outline-offset: -1px;
@@ -582,32 +588,46 @@
     display: flex;
     min-width: 0;
     align-items: center;
-    gap: 6px;
-  }
-
-  .kicker {
-    margin: 0;
-    font-size: 11px;
-    font-weight: 500;
-    color: color-mix(in sRGB, var(--rb-text) 72%, transparent);
+    gap: 8px;
   }
 
   .titulos h1 {
-    min-width: 0;
+    flex: none;
     margin: 0;
     font-family: var(--rb-display);
     font-size: 13px;
     font-weight: 600;
     line-height: 1.3;
+  }
 
-    /* El título es de la ventana ajena: puede ser una frase entera. */
+  .sobre {
+    display: flex;
+    min-width: 0;
+    align-items: center;
+    gap: 5px;
+    margin: 0;
+    padding: 2px 8px 2px 3px;
+    border-radius: 999px;
+    background: var(--rb-surface-2);
+    font-size: 11px;
+    font-weight: 500;
+    color: color-mix(in sRGB, var(--rb-text) 72%, transparent);
+  }
+
+  /* El título es de la ventana ajena: puede ser una frase entera. */
+  .sobre-texto {
+    min-width: 0;
     overflow: hidden;
     white-space: nowrap;
     text-overflow: ellipsis;
   }
 
-  .back.compacta .kicker {
+  .back.compacta .sobre-texto {
     display: none;
+  }
+
+  .back.compacta .sobre {
+    padding-right: 3px;
   }
 
   .back :global(.tablero) {

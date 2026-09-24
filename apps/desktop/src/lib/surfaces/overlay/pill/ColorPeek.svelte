@@ -12,7 +12,11 @@
   import { loadRecentColors } from "$features/color/colorMath";
   import { copyText } from "$ipc/clipboard";
 
-  let { ondone, onpick }: { ondone: () => void; onpick: () => void } = $props();
+  let {
+    ondone,
+    onpick,
+    vertical = false,
+  }: { ondone: () => void; onpick: () => void; vertical?: boolean } = $props();
 
   /** Cuánto se ve el «Copiado» antes de cerrar. */
   const COPIED_MS = 650;
@@ -33,7 +37,7 @@
   }
 </script>
 
-<div class="op">
+<div class="op" class:is-vertical={vertical}>
   {#if colors.length === 0}
     <p class="op-empty">{t("pill.peek.colorEmpty")}</p>
   {:else}
@@ -86,6 +90,14 @@
     margin: 0;
     padding: 0;
     list-style: none;
+  }
+
+  /* Al costado de la tira: las muestras en columnas parejas y no en una
+     fila que se corta donde caiga. */
+  .op.is-vertical .op-swatches {
+    display: grid;
+    grid-template-columns: repeat(4, 1.6rem);
+    justify-content: space-between;
   }
 
   .op-swatch {

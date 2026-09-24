@@ -167,6 +167,10 @@ export const onOverlayYieldMain = (cb: () => void): Promise<UnlistenFn> =>
 export const onOverlayReady = (cb: () => void): Promise<UnlistenFn> =>
   on("overlay-ready", cb);
 
+/** Cambió el área útil (barra de tareas movida u oculta) sin cambiar el escritorio. */
+export const onOverlayWorkArea = (cb: () => void): Promise<UnlistenFn> =>
+  on("overlay-work-area", cb);
+
 export const onOverlayItemDrag = (cb: (active: boolean) => void): Promise<UnlistenFn> =>
   on("overlay-item-drag", cb);
 

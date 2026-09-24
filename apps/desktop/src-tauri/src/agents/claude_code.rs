@@ -447,6 +447,9 @@ impl Translator {
                         })
                         .collect::<Vec<_>>()
                 });
+                // Fuera de los tests: escribe en la carpeta de datos del usuario.
+                #[cfg(not(test))]
+                super::discover::learn_claude_model(&str_at(&v, "model"));
                 out.push(AgentDelta::ThreadPatch {
                     patch: ThreadPatch {
                         provider_session: Some(str_at(&v, "session_id")),
@@ -681,6 +684,7 @@ impl Translator {
                         TurnStatus::Done
                     },
                     cost_usd: v.get("total_cost_usd").and_then(Value::as_f64),
+                    duration_ms: v.get("duration_ms").and_then(Value::as_u64),
                 });
                 // Cerrado: el próximo item abre uno nuevo.
                 end_turn(&self.turns);
@@ -1206,6 +1210,7 @@ impl AgentSession for ClaudeSession {
                     turn,
                     status: TurnStatus::Done,
                     cost_usd: None,
+                    duration_ms: None,
                 });
                 return Ok(());
             }
@@ -1216,6 +1221,7 @@ impl AgentSession for ClaudeSession {
                     turn,
                     status: TurnStatus::Done,
                     cost_usd: None,
+                    duration_ms: None,
                 });
                 return Ok(());
             }
@@ -1325,6 +1331,17 @@ impl AgentSession for ClaudeSession {
                 "subtype": "success",
                 "request_id": id,
                 "response": decision,
+            }
+        }))
+    }
+
+    fn answer_permission(&mut self, id: &str, updated_input: Value) -> Result<(), String> {
+        self.write(json!({
+            "type": "control_response",
+            "response": {
+                "subtype": "success",
+                "request_id": id,
+                "response": { "behavior": "allow", "updatedInput": updated_input },
             }
         }))
     }
@@ -1684,6 +1701,18 @@ mod tests {
             _ => None,
         });
         assert_eq!(fin, Some((&TurnStatus::Done, &Some(0.08))));
+    }
+
+    #[test]
+    fn el_evento_final_trae_la_duracion_del_turno() {
+        let ds = tr().translate(
+            r#"{"type":"result","is_error":false,"duration_ms":33012,"total_cost_usd":0.1}"#,
+        );
+        let dur = ds.iter().find_map(|d| match d {
+            AgentDelta::TurnEnd { duration_ms, .. } => Some(*duration_ms),
+            _ => None,
+        });
+        assert_eq!(dur, Some(Some(33_012)));
     }
 
     #[test]

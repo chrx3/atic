@@ -21,6 +21,8 @@ export type TransferTabDescriptor = {
   command: string | null;
   cwd: string | null;
   hubSession: string | null;
+  /** La sesión del hub es un chat del usuario. */
+  chat?: boolean;
 };
 
 /** División con hojas nombradas por sesión (`hub:<id>` para fichas del hub). */

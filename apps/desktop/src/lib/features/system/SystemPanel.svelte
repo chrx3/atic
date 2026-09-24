@@ -38,7 +38,15 @@
 
   let forceTarget = $state<SystemApp | null>(null);
   let forceBusy = $state(false);
-  let askTrash = $state(false);
+  /**
+   * La acción rápida que espera confirmación.
+   *
+   * Bloquear y suspender te sacan de lo que estabas haciendo, y la papelera no
+   * tiene vuelta atrás: un clic de paso no alcanza para ninguna de las tres.
+   * Silenciar y el café se deshacen con otro clic, así que van directo.
+   */
+  type QuickAsk = "lock" | "sleep" | "trash";
+  let ask = $state<QuickAsk | null>(null);
 
   const sessions = $derived(system.audio?.sessions ?? []);
 
@@ -108,10 +116,12 @@
     }
   }
 
-  async function confirmTrash() {
-    askTrash = false;
+  async function confirmAsk() {
+    const action = ask;
+    ask = null;
+    if (!action) return;
     try {
-      await system.runAction("trash");
+      await system.runAction(action);
     } catch (err) {
       notices.push(err instanceof Error ? err.message : String(err));
     }
@@ -135,7 +145,8 @@
     <button
       type="button"
       class="sys-quick-btn"
-      onclick={() => void system.runAction("lock")}
+      use:tip={t("overlay.system.lockHint")}
+      onclick={() => (ask = "lock")}
     >
       <Icon icon={Lock} size={13} />
       <span>{t("overlay.system.lock")}</span>
@@ -143,7 +154,8 @@
     <button
       type="button"
       class="sys-quick-btn"
-      onclick={() => void system.runAction("sleep")}
+      use:tip={t("overlay.system.sleepHint")}
+      onclick={() => (ask = "sleep")}
     >
       <Icon icon={Moon} size={13} />
       <span>{t("overlay.system.sleep")}</span>
@@ -151,12 +163,18 @@
     <button
       type="button"
       class="sys-quick-btn"
+      use:tip={t("overlay.system.muteHint")}
       onclick={() => void system.runAction("mute")}
     >
       <Icon icon={system.audio?.muted ? VolumeX : Volume2} size={13} />
       <span>{t("overlay.system.muteAction")}</span>
     </button>
-    <button type="button" class="sys-quick-btn" onclick={() => (askTrash = true)}>
+    <button
+      type="button"
+      class="sys-quick-btn"
+      use:tip={t("overlay.system.trashHint")}
+      onclick={() => (ask = "trash")}
+    >
       <Icon icon={Trash2} size={13} />
       <span>{t("overlay.system.trash")}</span>
     </button>
@@ -542,18 +560,19 @@
     />
   {/if}
 
-  {#if askTrash}
-    <!-- Vaciar la papelera es lo único irreversible del panel y era lo único
-         sin preguntar: confiaba en el aviso de Finder, que el usuario puede
-         tener apagado. -->
+  {#if ask}
+    <!-- La papelera no confía en el aviso de Finder, que el usuario puede
+         tener apagado: es lo único irreversible del panel y va en rojo. -->
     <ConfirmDialog
       contained
-      tone="danger"
-      title={t("overlay.system.trashTitle")}
-      body={t("overlay.system.trashBody")}
-      confirmLabel={t("overlay.system.trashConfirm")}
-      onConfirm={() => void confirmTrash()}
-      onCancel={() => (askTrash = false)}
+      tone={ask === "trash" ? "danger" : "default"}
+      title={t(`overlay.system.${ask}Title`)}
+      body={t(`overlay.system.${ask}Body`)}
+      confirmLabel={ask === "trash"
+        ? t("overlay.system.trashConfirm")
+        : t(`overlay.system.${ask}`)}
+      onConfirm={() => void confirmAsk()}
+      onCancel={() => (ask = null)}
     />
   {/if}
   <ToastStack

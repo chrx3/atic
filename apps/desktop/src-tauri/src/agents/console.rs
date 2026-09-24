@@ -63,6 +63,15 @@ struct LiveConsole {
     stop: Arc<AtomicBool>,
     /// PID del proceso raíz del PTY (`cmd /K` o la shell). 0 = desconocido.
     pid: u32,
+    /// El CLI que se abrió (primera palabra del comando); `None` = shell.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    cli: Option<String>,
+    /// Carpeta donde arrancó (la de inicio si no se pidió ninguna).
+    #[cfg_attr(not(windows), allow(dead_code))]
+    cwd: String,
+    /// Epoch ms del arranque: acota qué conversación es de esta consola.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    started_ms: i64,
     _askpass: Option<AskpassGuard>,
 }
 
@@ -336,13 +345,38 @@ fn is_script_env_var(name: &str) -> bool {
         || lower == "node_run_script_name"
 }
 
-/// Quita del hijo la config de scripts npm/pnpm heredada del proceso padre:
-/// la consola debe comportarse como una terminal recién abierta. No toca PATH
-/// ni el resto del entorno.
+/// ¿Marca de la terminal o del agente desde donde se lanzó Atic?
+///
+/// Si Atic arranca dentro de otra terminal (Terax, Orca, Windows Terminal) o
+/// de una sesión de Claude Code, esas marcas llegaban a cada consola: un
+/// Claude abierto acá creía estar adentro de Terax y sus hooks escribían
+/// caracteres de control crudos en el JSON («Hook output … not valid JSON»),
+/// o se daba por sesión hija y no guardaba el transcript. Solo marcas de
+/// identidad: la configuración real (`CLAUDE_CODE_USE_BEDROCK`…) se hereda.
+fn is_host_marker_var(name: &str) -> bool {
+    let upper = name.to_ascii_uppercase();
+    upper.starts_with("TERAX_")
+        || upper.starts_with("ORCA_")
+        || matches!(
+            upper.as_str(),
+            "TERM_PROGRAM"
+                | "TERM_PROGRAM_VERSION"
+                | "WT_SESSION"
+                | "WT_PROFILE_ID"
+                | "CLAUDECODE"
+                | "CLAUDE_CODE_CHILD_SESSION"
+                | "CLAUDE_CODE_ENTRYPOINT"
+                | "CLAUDE_CODE_SSE_PORT"
+        )
+}
+
+/// Quita del hijo lo heredado del proceso padre que no es de una terminal
+/// nueva: la config de scripts npm/pnpm y las marcas de la terminal o el
+/// agente desde donde se lanzó Atic. No toca PATH ni el resto del entorno.
 fn apply_clean_script_env(cmd: &mut CommandBuilder) {
     for (name, _) in std::env::vars_os() {
         if let Some(name) = name.to_str() {
-            if is_script_env_var(name) {
+            if is_script_env_var(name) || is_host_marker_var(name) {
                 cmd.env_remove(name);
             }
         }
@@ -646,6 +680,24 @@ pub fn console_open(
     }
 
     let size = pty_size(options.cols, options.rows);
+    let started_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    let cli = options
+        .command
+        .as_deref()
+        .and_then(|c| c.split_whitespace().next())
+        .filter(|_| kind == "local")
+        .map(str::to_string);
+    let cwd = options
+        .cwd
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .or_else(|| std::env::var("USERPROFILE").ok())
+        .unwrap_or_default();
     let (mut cmd, askpass) = match kind.as_str() {
         "local" => {
             let mut cmd = match options.command.as_deref().map(str::trim) {
@@ -727,6 +779,9 @@ pub fn console_open(
                 killer,
                 stop,
                 pid,
+                cli,
+                cwd,
+                started_ms,
                 _askpass: askpass,
             },
         );
@@ -744,9 +799,11 @@ pub fn console_open(
     Ok(session)
 }
 
-/// La consola de Atic donde corre esta sesión de Claude Code, si corre en una.
+/// La consola de Atic donde corre esta sesión de Claude Code o Codex, si
+/// corre en una.
 ///
-/// Del `sessionId` al PID de Claude (`~/.claude/sessions`), y de ahí hacia
+/// Del id de sesión al PID del agente —Claude lo anota en `~/.claude/sessions`;
+/// de Codex se pregunta qué proceso tiene abierto su rollout— y de ahí hacia
 /// arriba por el árbol de procesos hasta dar con el PTY de alguna consola.
 /// Así el clic en su aviso abre ESA pestaña, la haya lanzado Atic o la hayas
 /// escrito a mano en una shell.
@@ -754,7 +811,87 @@ pub fn console_open(
 pub fn console_for_presence(presence_id: String) -> Option<String> {
     #[cfg(windows)]
     {
-        let pid = super::claude_sessions::pid_for_session(&presence_id)?;
+        let consoles: Vec<(String, u32)> = with_map(|map| {
+            map.iter()
+                .filter(|(_, live)| live.pid != 0)
+                .map(|(id, live)| (id.clone(), live.pid))
+                .collect()
+        });
+        if consoles.is_empty() {
+            return None;
+        }
+        let pids = match super::claude_sessions::pid_for_session(&presence_id) {
+            Some(pid) => vec![pid],
+            None => super::watch_codex::rollout_path(&presence_id)
+                .map(|path| super::resume::pids_holding_file(&path))
+                .unwrap_or_default(),
+        };
+        let parents = super::focus::parent_map();
+        pids.into_iter()
+            .find_map(|pid| console_for_pid(pid, &parents, &consoles))
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = presence_id;
+        None
+    }
+}
+
+/// La conversación del agente que corre en esta consola, para retomarla al
+/// reabrir una sesión guardada. Ver [`super::resume`].
+#[tauri::command]
+pub fn console_agent_session(session: String) -> Option<String> {
+    #[cfg(windows)]
+    {
+        let (cli, console) = with_map(|map| {
+            let live = map.get(&session)?;
+            let cli = live.cli.clone()?;
+            let same = |other: &LiveConsole| {
+                other.cli.as_deref() == Some(cli.as_str())
+                    && other.cwd.eq_ignore_ascii_case(&live.cwd)
+            };
+            let until_ms = map
+                .values()
+                .filter(|other| same(other) && other.started_ms > live.started_ms)
+                .map(|other| other.started_ms)
+                .min();
+            Some((
+                cli,
+                super::resume::ConsoleInfo {
+                    pid: live.pid,
+                    cwd: live.cwd.clone(),
+                    started_ms: live.started_ms,
+                    until_ms,
+                },
+            ))
+        })?;
+        if console.pid == 0 {
+            return None;
+        }
+        super::resume::agent_session(&cli, &console)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = session;
+        None
+    }
+}
+
+/// La consola de Atic desde la que se pidió una sesión por el hub.
+///
+/// El hub anota a quien pide de afuera como `external:<cli>:<pid>`: el pid es
+/// el del CLI que llamó al MCP, que corre adentro de alguna consola. Se sube
+/// por el árbol de procesos hasta dar con su PTY, igual que con la presencia.
+#[tauri::command]
+pub fn console_for_parent(parent: String) -> Option<String> {
+    let pid: u32 = parent
+        .strip_prefix("external:")?
+        .rsplit(':')
+        .next()?
+        .parse()
+        .ok()?;
+    #[cfg(windows)]
+    {
         let consoles: Vec<(String, u32)> = with_map(|map| {
             map.iter()
                 .filter(|(_, live)| live.pid != 0)
@@ -768,7 +905,7 @@ pub fn console_for_presence(presence_id: String) -> Option<String> {
     }
     #[cfg(not(windows))]
     {
-        let _ = presence_id;
+        let _ = pid;
         None
     }
 }
@@ -1299,6 +1436,40 @@ mod tests {
         assert!(
             argv.iter().any(|a| a.to_string_lossy().contains("| bash")),
             "{argv:?}"
+        );
+    }
+
+    /// Las marcas de la terminal de origen no pasan; la config real, sí.
+    #[test]
+    fn las_marcas_de_la_terminal_de_origen_no_llegan_a_la_consola() {
+        for name in [
+            "TERAX_TERMINAL",
+            "terax_pane",
+            "ORCA_AGENT_HOOK_PORT",
+            "TERM_PROGRAM",
+            "WT_SESSION",
+            "CLAUDECODE",
+            "CLAUDE_CODE_CHILD_SESSION",
+        ] {
+            assert!(is_host_marker_var(name), "{name} debería quitarse");
+        }
+        for name in ["CLAUDE_CODE_USE_BEDROCK", "PATH", "TERM", "USERPROFILE"] {
+            assert!(!is_host_marker_var(name), "{name} debería heredarse");
+        }
+    }
+
+    /// Solo `external:<cli>:<pid>` apunta a una consola; lo demás, a ninguna.
+    #[test]
+    fn solo_un_pedido_externo_con_pid_apunta_a_una_consola() {
+        assert_eq!(console_for_parent("4f0c-uuid-de-atic".into()), None);
+        assert_eq!(
+            console_for_parent("external:claude-code:no-es-pid".into()),
+            None
+        );
+        // Un pid bien formado que no corre en ninguna consola de Atic.
+        assert_eq!(
+            console_for_parent("external:claude-code:4000000000".into()),
+            None
         );
     }
 

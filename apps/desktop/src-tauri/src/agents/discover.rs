@@ -13,6 +13,8 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
+use atic_core::MutexExt;
+
 use super::model::{EffortOption, ModelInfo};
 
 const CACHE_TTL: Duration = Duration::from_secs(5 * 60);
@@ -144,10 +146,10 @@ pub(crate) fn claude_fallback_models() -> Vec<ModelInfo> {
     [
         (
             "fable",
-            "Fable 5",
+            "Fable 5.1",
             "El más capaz · 1M de contexto · gasta rápido",
         ),
-        ("opus", "Opus 5", "Muy capaz · 1M de contexto"),
+        ("opus", "Opus 5.5", "Muy capaz · 1M de contexto"),
         ("sonnet", "Sonnet 5", "Equilibrado · 1M · más barato"),
         ("haiku", "Haiku 4.5", "El más rápido · 200K"),
     ]
@@ -164,10 +166,92 @@ pub(crate) fn claude_fallback_models() -> Vec<ModelInfo> {
 }
 
 fn list_claude_models() -> Vec<ModelInfo> {
-    tracing::debug!(
-        "claude-code: sin listado CLI; usando alias fallback de claude_fallback_models"
-    );
-    claude_fallback_models()
+    with_learned_names(claude_fallback_models(), &learned_claude())
+}
+
+// ── Versiones de Claude aprendidas ─────────────────────────────────────────
+//
+// Los alias (`opus`, `fable`) siempre apuntan al último modelo, pero el nombre
+// que se muestra estaba escrito a mano y envejecía con cada lanzamiento. Cada
+// sesión informa en su `init` el id real (`claude-opus-5-5`): de ahí se saca
+// la versión, se guarda en disco y el listado se corrige solo.
+
+const CLAUDE_LEARNED_FILE: &str = "claude-models.json";
+
+/// `alias → nombre visible`, cargado del disco la primera vez.
+static CLAUDE_LEARNED: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
+
+fn learned_path() -> Option<std::path::PathBuf> {
+    atic_core::AppDirs::new()
+        .ok()
+        .map(|dirs| dirs.data_dir().join(CLAUDE_LEARNED_FILE))
+}
+
+fn learned_claude() -> HashMap<String, String> {
+    let mut guard = CLAUDE_LEARNED.lock_or_recover();
+    guard
+        .get_or_insert_with(|| {
+            learned_path()
+                .and_then(|p| std::fs::read_to_string(p).ok())
+                .and_then(|raw| serde_json::from_str(&raw).ok())
+                .unwrap_or_default()
+        })
+        .clone()
+}
+
+/// `claude-opus-5-5[-fecha][1m]` → (`opus`, `Opus 5.5`). `None` si no es un id
+/// de Claude con familia y versión: un alias suelto no enseña nada.
+pub(crate) fn claude_model_name(full_id: &str) -> Option<(String, String)> {
+    let id = full_id.trim().split('[').next()?.to_ascii_lowercase();
+    let mut parts = id.strip_prefix("claude-")?.split('-');
+    let family = parts
+        .next()
+        .filter(|f| f.chars().all(|c| c.is_ascii_alphabetic()))?;
+    // La fecha (`20251001`) también es numérica: la versión son los tramos cortos.
+    let version: Vec<&str> = parts
+        .take_while(|p| !p.is_empty() && p.len() <= 2 && p.chars().all(|c| c.is_ascii_digit()))
+        .collect();
+    if family.is_empty() || version.is_empty() {
+        return None;
+    }
+    let mut name = family.to_string();
+    name[..1].make_ascii_uppercase();
+    Some((family.to_string(), format!("{name} {}", version.join("."))))
+}
+
+/// Anota la versión que informó una sesión. Solo escribe si cambió algo.
+pub fn learn_claude_model(full_id: &str) {
+    let Some((alias, name)) = claude_model_name(full_id) else {
+        return;
+    };
+    let mut map = learned_claude();
+    if map.get(&alias) == Some(&name) {
+        return;
+    }
+    map.insert(alias, name);
+    *CLAUDE_LEARNED.lock_or_recover() = Some(map.clone());
+    if let Ok(mut guard) = CACHE.lock() {
+        if let Some(cache) = guard.as_mut() {
+            cache.remove("claude-code");
+        }
+    }
+    if let (Some(path), Ok(raw)) = (learned_path(), serde_json::to_string_pretty(&map)) {
+        if let Err(err) = std::fs::write(&path, raw) {
+            tracing::warn!(%err, "no se pudo guardar las versiones de Claude");
+        }
+    }
+}
+
+fn with_learned_names(
+    mut models: Vec<ModelInfo>,
+    learned: &HashMap<String, String>,
+) -> Vec<ModelInfo> {
+    for model in &mut models {
+        if let Some(name) = learned.get(&model.id) {
+            model.name = name.clone();
+        }
+    }
+    models
 }
 
 fn list_codex_models() -> Result<Vec<ModelInfo>, String> {
@@ -996,5 +1080,36 @@ anthropic/claude-sonnet-4 El equilibrado
         assert_eq!(models[0].name, "o3");
         assert_eq!(models[0].default_effort.as_deref(), Some("medium"));
         assert_eq!(models[0].efforts.len(), 1);
+    }
+
+    #[test]
+    fn aprende_la_version_del_id_real_de_claude() {
+        let name = |id: &str| claude_model_name(id).map(|(a, n)| format!("{a}={n}"));
+        assert_eq!(name("claude-opus-5-5").as_deref(), Some("opus=Opus 5.5"));
+        assert_eq!(
+            name("claude-fable-5-1[1m]").as_deref(),
+            Some("fable=Fable 5.1")
+        );
+        assert_eq!(
+            name("claude-haiku-4-5-20251001").as_deref(),
+            Some("haiku=Haiku 4.5")
+        );
+        assert_eq!(name("claude-sonnet-5").as_deref(), Some("sonnet=Sonnet 5"));
+        // Un alias o algo que no es de Claude no enseña nada.
+        assert_eq!(name("opus"), None);
+        assert_eq!(name("gpt-5-codex"), None);
+    }
+
+    #[test]
+    fn el_nombre_aprendido_pisa_el_escrito_a_mano() {
+        let learned = HashMap::from([("opus".to_string(), "Opus 6".to_string())]);
+        let models = with_learned_names(claude_fallback_models(), &learned);
+        let opus = models.iter().find(|m| m.id == "opus").expect("opus sigue");
+        assert_eq!(opus.name, "Opus 6");
+        let fable = models
+            .iter()
+            .find(|m| m.id == "fable")
+            .expect("fable sigue");
+        assert_eq!(fable.name, "Fable 5.1");
     }
 }
