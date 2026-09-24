@@ -44,9 +44,9 @@ use agent_client_protocol::schema::v1::{
     PromptRequest, RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
     SelectedPermissionOutcome, SessionConfigKind, SessionConfigOption, SessionConfigOptionCategory,
     SessionConfigSelect, SessionConfigSelectOption, SessionConfigSelectOptions, SessionId,
-    SessionNotification, SessionUpdate, SetSessionConfigOptionRequest, StopReason, TextContent,
-    ToolCall, ToolCallStatus as AcpToolStatus, ToolCallUpdate, ToolKind as AcpToolKind,
-    UsageUpdate,
+    SessionNotification, SessionUpdate, SetSessionConfigOptionRequest, SetSessionModeRequest,
+    StopReason, TextContent, ToolCall, ToolCallStatus as AcpToolStatus, ToolCallUpdate,
+    ToolKind as AcpToolKind, UsageUpdate,
 };
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::{
@@ -58,8 +58,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::model::{
-    AgentDelta, Item, ItemId, ItemKind, ItemPatch, ModelInfo, Origin, PermissionStatus, PlanEntry,
-    PlanStatus, Role, ThreadPatch, ToolKind, ToolStatus, TurnStatus,
+    AgentDelta, Item, ItemId, ItemKind, ItemPatch, ModeInfo, ModelInfo, Origin, PermissionStatus,
+    PlanEntry, PlanStatus, Role, ThreadPatch, ToolKind, ToolStatus, TurnStatus,
 };
 use super::turns::{end_turn, ensure_turn, start_turn, Emit, Turns};
 use super::{AgentBackend, AgentSession, PermissionDecision, SlashCommand, StartOptions};
@@ -119,15 +119,45 @@ enum Cmd {
         effort: Option<String>,
         fast: Option<bool>,
     },
+    SetMode {
+        mode: String,
+    },
     Stop,
 }
 
 /// Cursor pide input estructurado y **bloquea** el turno hasta la respuesta.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonRpcRequest)]
 #[request(method = "cursor/ask_question", response = CursorAskQuestionResponse)]
+#[serde(rename_all = "camelCase")]
 struct CursorAskQuestionRequest {
     #[serde(default)]
+    tool_call_id: Option<String>,
+    #[serde(default)]
     title: Option<String>,
+    #[serde(default)]
+    questions: Vec<CursorQuestion>,
+}
+
+/// Una pregunta de Cursor: se contesta con ids de opción, no con texto.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CursorQuestion {
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    prompt: String,
+    #[serde(default)]
+    options: Vec<CursorOption>,
+    #[serde(default)]
+    allow_multiple: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CursorOption {
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    label: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonRpcResponse)]
@@ -138,16 +168,112 @@ struct CursorAskQuestionResponse {
 /// Cursor pide aprobar un plan y también bloquea hasta contestar.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonRpcRequest)]
 #[request(method = "cursor/create_plan", response = CursorCreatePlanResponse)]
+#[serde(rename_all = "camelCase")]
 struct CursorCreatePlanRequest {
+    #[serde(default)]
+    tool_call_id: Option<String>,
     #[serde(default)]
     name: Option<String>,
     #[serde(default)]
     overview: Option<String>,
+    /// El plan en markdown.
+    #[serde(default)]
+    plan: String,
+    #[serde(default)]
+    todos: Vec<CursorTodo>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CursorTodo {
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    content: String,
+    #[serde(default)]
+    status: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonRpcResponse)]
 struct CursorCreatePlanResponse {
     outcome: Value,
+}
+
+/// El plan de Cursor con la forma del `ExitPlanMode` de Claude.
+fn cursor_plan_input(req: &CursorCreatePlanRequest) -> Value {
+    let todos: Vec<Value> = req
+        .todos
+        .iter()
+        .map(|t| serde_json::json!({ "content": t.content, "status": t.status }))
+        .collect();
+    serde_json::json!({
+        "plan": req.plan,
+        "name": req.name,
+        "overview": req.overview,
+        "todos": todos,
+    })
+}
+
+/// Los modos que el agente informa al abrir la sesión.
+fn acp_modes(state: &agent_client_protocol::schema::v1::SessionModeState) -> Vec<ModeInfo> {
+    state
+        .available_modes
+        .iter()
+        .map(|m| ModeInfo {
+            id: m.id.0.to_string(),
+            name: m.name.clone(),
+            description: m.description.clone().unwrap_or_default(),
+        })
+        .collect()
+}
+
+/// Una pregunta de Cursor pendiente: sus opciones y por dónde contestar.
+struct CursorAsk {
+    questions: Vec<CursorQuestion>,
+    reply: oneshot::Sender<Option<Value>>,
+}
+
+/// Las preguntas de Cursor con la forma de las de Claude (`AskUserQuestion`).
+fn cursor_questions_input(title: &str, questions: &[CursorQuestion]) -> Value {
+    let questions: Vec<Value> = questions
+        .iter()
+        .map(|q| {
+            let options: Vec<Value> = q
+                .options
+                .iter()
+                .map(|o| serde_json::json!({ "label": o.label, "description": "" }))
+                .collect();
+            serde_json::json!({
+                "question": q.prompt,
+                "header": title,
+                "multiSelect": q.allow_multiple,
+                "options": options,
+            })
+        })
+        .collect();
+    serde_json::json!({ "questions": questions })
+}
+
+/// Lo elegido en la tarjeta (`answers`: texto de la pregunta → etiquetas
+/// separadas por coma) a lo que Cursor espera: ids de opción por pregunta.
+fn cursor_answers(questions: &[CursorQuestion], answers: Option<&Value>) -> Value {
+    let answered: Vec<Value> = questions
+        .iter()
+        .map(|q| {
+            let chosen = answers
+                .and_then(|a| a.get(&q.prompt))
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let picked: Vec<&str> = chosen.split(", ").map(str::trim).collect();
+            let ids: Vec<&str> = q
+                .options
+                .iter()
+                .filter(|o| picked.contains(&o.label.as_str()))
+                .map(|o| o.id.as_str())
+                .collect();
+            serde_json::json!({ "questionId": q.id, "selectedOptionIds": ids })
+        })
+        .collect();
+    serde_json::json!({ "outcome": "answered", "answers": answered })
 }
 
 /// Conexión + id ACP para `session/cancel` desde el hilo de la UI.
@@ -169,6 +295,9 @@ struct Shared {
     /// conteste. Sin este canal habría que contestarle algo al toque y decidir
     /// por él, que es exactamente lo que la interfaz viene a evitar.
     pending: Mutex<HashMap<String, oneshot::Sender<PermissionDecision>>>,
+    /// Preguntas de Cursor esperando respuesta, con sus opciones para
+    /// traducir lo elegido a ids. `None` en el canal es «la saltó».
+    asks: Mutex<HashMap<String, CursorAsk>>,
     /// Items de texto ya anunciados. Un chunk con id conocido continúa; uno
     /// nuevo abre.
     seen: Mutex<HashSet<ItemId>>,
@@ -236,6 +365,7 @@ impl AgentBackend for Acp {
         let shared = Arc::new(Shared {
             turns: Mutex::new(Turns::default()),
             pending: Mutex::new(HashMap::new()),
+            asks: Mutex::new(HashMap::new()),
             seen: Mutex::new(HashSet::new()),
             abiertos: Mutex::new(Vec::new()),
             cost: Mutex::new(Costo::default()),
@@ -453,29 +583,71 @@ async fn connect(
         let (emit, shared) = (emit.clone(), shared.clone());
         move |req: CursorAskQuestionRequest,
               responder: agent_client_protocol::Responder<CursorAskQuestionResponse>,
-              _cx: ConnectionTo<Agent>| {
+              cx: ConnectionTo<Agent>| {
             let (emit, shared) = (emit.clone(), shared.clone());
             async move {
                 let mut out = Vec::new();
                 let turn = ensure_turn(&shared.turns, &mut out);
                 let n = shared.seen.lock_or_recover().len();
-                let title = req.title.unwrap_or_else(|| "pregunta".into());
+                let id = format!(
+                    "ask:{}",
+                    req.tool_call_id
+                        .clone()
+                        .unwrap_or_else(|| format!("{turn}-{n}"))
+                );
+                let title = req.title.clone().unwrap_or_default();
+                let (tx, wait) = oneshot::channel();
+                shared.asks.lock_or_recover().insert(
+                    id.clone(),
+                    CursorAsk {
+                        questions: req.questions.clone(),
+                        reply: tx,
+                    },
+                );
+                // Con la forma de la pregunta de Claude: la interfaz la dibuja
+                // con la misma tarjeta, sin saber de qué agente vino.
                 out.push(AgentDelta::ItemAdd {
-                    turn: turn.clone(),
+                    turn,
                     item: Item::new(
-                        format!("{turn}-ask{n}"),
-                        ItemKind::Notice {
-                            text: format!("Cursor preguntó «{title}»; se omitió (aún sin UI)."),
+                        id.clone(),
+                        ItemKind::Permission {
+                            tool: "AskUserQuestion".to_string(),
+                            description: title.clone(),
+                            input: cursor_questions_input(&title, &req.questions),
+                            status: PermissionStatus::Pending,
                         },
                     ),
                 });
                 emit.all(out);
-                responder.respond(CursorAskQuestionResponse {
-                    outcome: serde_json::json!({
-                        "outcome": "skipped",
-                        "reason": "sin UI de preguntas en Atic"
-                    }),
-                })
+
+                // Igual que un permiso: esperar al usuario dentro del handler
+                // congela el bus ACP entero.
+                cx.spawn(async move {
+                    let answer = wait.await.ok().flatten();
+                    shared.asks.lock_or_recover().remove(&id);
+                    emit.send(AgentDelta::ItemPatch {
+                        item: id,
+                        patch: ItemPatch {
+                            status: serde_json::to_value(if answer.is_some() {
+                                PermissionStatus::Allowed
+                            } else {
+                                PermissionStatus::Denied
+                            })
+                            .ok(),
+                            ..Default::default()
+                        },
+                    });
+                    responder.respond(CursorAskQuestionResponse {
+                        outcome: answer.unwrap_or_else(|| {
+                            serde_json::json!({
+                                "outcome": "skipped",
+                                "reason": "El usuario saltó la pregunta."
+                            })
+                        }),
+                    })?;
+                    Ok(())
+                })?;
+                Ok(())
             }
         }
     };
@@ -484,26 +656,69 @@ async fn connect(
         let (emit, shared) = (emit.clone(), shared.clone());
         move |req: CursorCreatePlanRequest,
               responder: agent_client_protocol::Responder<CursorCreatePlanResponse>,
-              _cx: ConnectionTo<Agent>| {
+              cx: ConnectionTo<Agent>| {
             let (emit, shared) = (emit.clone(), shared.clone());
             async move {
                 let mut out = Vec::new();
                 let turn = ensure_turn(&shared.turns, &mut out);
                 let n = shared.seen.lock_or_recover().len();
-                let name = req.name.or(req.overview).unwrap_or_else(|| "plan".into());
+                let id = format!(
+                    "plan:{}",
+                    req.tool_call_id
+                        .clone()
+                        .unwrap_or_else(|| format!("{turn}-{n}"))
+                );
+                let (tx, wait) = oneshot::channel();
+                shared.pending.lock_or_recover().insert(id.clone(), tx);
+                // Con la forma del `ExitPlanMode` de Claude: una sola tarjeta de
+                // plan para los dos, y se contesta con los botones de permiso.
                 out.push(AgentDelta::ItemAdd {
-                    turn: turn.clone(),
+                    turn,
                     item: Item::new(
-                        format!("{turn}-planask{n}"),
-                        ItemKind::Notice {
-                            text: format!("Cursor pidió aprobar «{name}»; se aceptó (aún sin UI)."),
+                        id.clone(),
+                        ItemKind::Permission {
+                            tool: "ExitPlanMode".to_string(),
+                            description: req
+                                .name
+                                .clone()
+                                .or_else(|| req.overview.clone())
+                                .unwrap_or_default(),
+                            input: cursor_plan_input(&req),
+                            status: PermissionStatus::Pending,
                         },
                     ),
                 });
                 emit.all(out);
-                responder.respond(CursorCreatePlanResponse {
-                    outcome: serde_json::json!({ "outcome": "accepted" }),
-                })
+
+                cx.spawn(async move {
+                    let decision = wait.await.unwrap_or(PermissionDecision::Deny);
+                    shared.pending.lock_or_recover().remove(&id);
+                    let accepted = !matches!(decision, PermissionDecision::Deny);
+                    emit.send(AgentDelta::ItemPatch {
+                        item: id,
+                        patch: ItemPatch {
+                            status: serde_json::to_value(if accepted {
+                                PermissionStatus::Allowed
+                            } else {
+                                PermissionStatus::Denied
+                            })
+                            .ok(),
+                            ..Default::default()
+                        },
+                    });
+                    responder.respond(CursorCreatePlanResponse {
+                        outcome: if accepted {
+                            serde_json::json!({ "outcome": "accepted" })
+                        } else {
+                            serde_json::json!({
+                                "outcome": "rejected",
+                                "reason": "El usuario rechazó el plan."
+                            })
+                        },
+                    })?;
+                    Ok(())
+                })?;
+                Ok(())
             }
         }
     };
@@ -564,7 +779,13 @@ async fn connect(
                 ..Default::default()
             };
 
+            if let Some(modes) = &session.modes {
+                patch.mode = Some(modes.current_mode_id.0.to_string());
+                patch.modes = Some(acp_modes(modes));
+            }
+
             if let Some(config_options) = &session.config_options {
+                let effort_cfg = find_effort_config(config_options);
                 if let Some(model_cfg) = find_model_config(config_options) {
                     *shared.model_config_id.lock_or_recover() = Some(model_cfg.config_id);
                     let (models, templates) =
@@ -574,7 +795,7 @@ async fn connect(
                         let current = model_cfg.current;
                         let (group_id, effort_id, fast) =
                             resolve_grouped_selection(&models, &current);
-                        patch.models = Some(models);
+                        patch.models = Some(with_session_efforts(models, effort_cfg.as_ref()));
                         patch.model = Some(group_id);
                         if let Some(e) = effort_id {
                             patch.effort = Some(e);
@@ -586,11 +807,11 @@ async fn connect(
                         patch.model = Some(model_cfg.current);
                     }
                 }
-                if let Some((effort_id, current)) = find_effort_config(config_options) {
-                    *shared.effort_config_id.lock_or_recover() = Some(effort_id);
+                if let Some(cfg) = effort_cfg {
+                    *shared.effort_config_id.lock_or_recover() = Some(cfg.config_id);
                     // Solo pisa si no vino ya del agrupado Cursor.
                     if patch.effort.is_none() {
-                        patch.effort = Some(current);
+                        patch.effort = Some(cfg.current);
                     }
                 }
             }
@@ -633,6 +854,20 @@ async fn connect(
                             &emit,
                         )
                         .await?;
+                    }
+                    Cmd::SetMode { mode } => {
+                        conn.send_request(SetSessionModeRequest::new(
+                            session.session_id.clone(),
+                            mode.clone(),
+                        ))
+                        .block_task()
+                        .await?;
+                        emit.send(AgentDelta::ThreadPatch {
+                            patch: ThreadPatch {
+                                mode: Some(mode),
+                                ..Default::default()
+                            },
+                        });
                     }
                     Cmd::Prompt {
                         turn,
@@ -715,6 +950,7 @@ async fn prompt_turn(
         turn,
         status,
         cost_usd: shared.cost.lock_or_recover().del_turno(),
+        duration_ms: None,
     });
     end_turn(&shared.turns);
     done?;
@@ -974,7 +1210,16 @@ fn find_model_config(options: &[SessionConfigOption]) -> Option<ModelConfig> {
     None
 }
 
-fn find_effort_config(options: &[SessionConfigOption]) -> Option<(String, String)> {
+/// El esfuerzo como opción de la sesión (OpenCode, Grok): aparte del modelo.
+struct EffortConfig {
+    config_id: String,
+    current: String,
+    /// Los niveles que ofrece. Sin ellos la UI sabe el valor actual pero no
+    /// tiene qué ofrecer, y el selector de esfuerzo no aparecía.
+    levels: Vec<super::model::EffortOption>,
+}
+
+fn find_effort_config(options: &[SessionConfigOption]) -> Option<EffortConfig> {
     for opt in options {
         if !is_effort_option(opt) {
             continue;
@@ -982,9 +1227,43 @@ fn find_effort_config(options: &[SessionConfigOption]) -> Option<(String, String
         let SessionConfigKind::Select(sel) = &opt.kind else {
             continue;
         };
-        return Some((opt.id.0.to_string(), sel.current_value.0.to_string()));
+        let levels = select_to_models(sel)
+            .into_iter()
+            .map(|level| super::model::EffortOption {
+                description: if level.description.is_empty() {
+                    level.name
+                } else {
+                    level.description
+                },
+                id: level.id,
+            })
+            .collect();
+        return Some(EffortConfig {
+            config_id: opt.id.0.to_string(),
+            current: sel.current_value.0.to_string(),
+            levels,
+        });
     }
     None
+}
+
+/// Los niveles de la sesión, en los modelos que no traen los suyos.
+///
+/// La UI lee el esfuerzo del modelo en uso (así funciona Cursor, que lo lleva
+/// en el id). En OpenCode y Grok es de la sesión y vale para cualquier modelo:
+/// se reparte a todos para que el selector lo ofrezca igual.
+fn with_session_efforts(
+    mut models: Vec<ModelInfo>,
+    effort: Option<&EffortConfig>,
+) -> Vec<ModelInfo> {
+    let Some(cfg) = effort.filter(|cfg| !cfg.levels.is_empty()) else {
+        return models;
+    };
+    for model in models.iter_mut().filter(|m| m.efforts.is_empty()) {
+        model.efforts = cfg.levels.clone();
+        model.default_effort = Some(cfg.current.clone());
+    }
+    models
 }
 
 async fn apply_config(
@@ -1551,6 +1830,12 @@ impl AgentSession for AcpSession {
     }
 
     fn respond_permission(&mut self, id: &str, decision: PermissionDecision) -> Result<(), String> {
+        // Una pregunta de Cursor contestada con los botones de permiso: sin
+        // respuestas elegidas, cuenta como saltada.
+        if let Some(ask) = self.shared.asks.lock_or_recover().remove(id) {
+            let _ = ask.reply.send(None);
+            return Ok(());
+        }
         let tx = self.shared.pending.lock_or_recover().remove(id);
         match tx {
             Some(tx) => tx
@@ -1561,6 +1846,27 @@ impl AgentSession for AcpSession {
             // resolviera.
             None => Ok(()),
         }
+    }
+
+    fn set_mode(&mut self, mode: &str) -> Result<(), String> {
+        self.tx
+            .unbounded_send(Cmd::SetMode {
+                mode: mode.to_string(),
+            })
+            .map_err(|_| "la sesión ya está cerrada".to_string())
+    }
+
+    fn answer_permission(&mut self, id: &str, updated_input: Value) -> Result<(), String> {
+        let ask = self
+            .shared
+            .asks
+            .lock_or_recover()
+            .remove(id)
+            .ok_or_else(|| "esa pregunta ya no está esperando respuesta".to_string())?;
+        let outcome = cursor_answers(&ask.questions, updated_input.get("answers"));
+        ask.reply
+            .send(Some(outcome))
+            .map_err(|_| "el agente dejó de esperar esa respuesta".to_string())
     }
 
     fn interrupt(&mut self) -> Result<(), String> {
@@ -1694,6 +2000,7 @@ mod tests {
         Shared {
             turns: Mutex::new(Turns::default()),
             pending: Mutex::new(HashMap::new()),
+            asks: Mutex::new(HashMap::new()),
             seen: Mutex::new(HashSet::new()),
             abiertos: Mutex::new(Vec::new()),
             cost: Mutex::new(Costo::default()),
@@ -1753,5 +2060,105 @@ mod tests {
             shared.abiertos.lock_or_recover().as_slice(),
             ["r:m1", "m:m1"]
         );
+    }
+
+    #[test]
+    fn niveles_de_sesion_van_a_los_modelos_sin_los_suyos() {
+        let model = |id: &str, efforts: &[&str]| ModelInfo {
+            id: id.into(),
+            name: id.into(),
+            description: String::new(),
+            efforts: efforts
+                .iter()
+                .map(|e| super::super::model::EffortOption {
+                    id: (*e).into(),
+                    description: String::new(),
+                })
+                .collect(),
+            default_effort: None,
+            supports_fast: false,
+        };
+        let cfg = EffortConfig {
+            config_id: "thought_level".into(),
+            current: "medium".into(),
+            levels: vec![
+                super::super::model::EffortOption {
+                    id: "low".into(),
+                    description: "Low".into(),
+                },
+                super::super::model::EffortOption {
+                    id: "medium".into(),
+                    description: "Medium".into(),
+                },
+            ],
+        };
+        let out = with_session_efforts(vec![model("a", &[]), model("b", &["high"])], Some(&cfg));
+        let ids = |m: &ModelInfo| m.efforts.iter().map(|e| e.id.clone()).collect::<Vec<_>>();
+        assert_eq!(ids(&out[0]), ["low", "medium"]);
+        assert_eq!(out[0].default_effort.as_deref(), Some("medium"));
+        // El que ya trae los suyos no se toca.
+        assert_eq!(ids(&out[1]), ["high"]);
+        // Sin opción de esfuerzo, todo queda igual.
+        assert!(with_session_efforts(vec![model("c", &[])], None)[0]
+            .efforts
+            .is_empty());
+    }
+
+    #[test]
+    fn las_preguntas_de_cursor_se_contestan_con_ids() {
+        let option = |id: &str, label: &str| CursorOption {
+            id: id.into(),
+            label: label.into(),
+        };
+        let questions = vec![
+            CursorQuestion {
+                id: "q1".into(),
+                prompt: "¿Color?".into(),
+                options: vec![option("r", "Rojo"), option("a", "Azul")],
+                allow_multiple: false,
+            },
+            CursorQuestion {
+                id: "q2".into(),
+                prompt: "¿Tests?".into(),
+                options: vec![option("u", "Unitarios"), option("e", "E2E")],
+                allow_multiple: true,
+            },
+        ];
+        let input = cursor_questions_input("Título", &questions);
+        assert_eq!(input["questions"][0]["question"], "¿Color?");
+        assert_eq!(input["questions"][1]["multiSelect"], true);
+        assert_eq!(input["questions"][0]["options"][1]["label"], "Azul");
+
+        let answers = serde_json::json!({ "¿Color?": "Azul", "¿Tests?": "Unitarios, E2E" });
+        let out = cursor_answers(&questions, Some(&answers));
+        assert_eq!(out["outcome"], "answered");
+        assert_eq!(out["answers"][0]["questionId"], "q1");
+        assert_eq!(
+            out["answers"][0]["selectedOptionIds"],
+            serde_json::json!(["a"])
+        );
+        assert_eq!(
+            out["answers"][1]["selectedOptionIds"],
+            serde_json::json!(["u", "e"])
+        );
+    }
+
+    #[test]
+    fn el_plan_de_cursor_llega_como_el_de_claude() {
+        let req = CursorCreatePlanRequest {
+            tool_call_id: Some("t1".into()),
+            name: Some("Migrar".into()),
+            overview: None,
+            plan: "# Pasos\n1. Uno".into(),
+            todos: vec![CursorTodo {
+                id: "a".into(),
+                content: "Uno".into(),
+                status: "pending".into(),
+            }],
+        };
+        let input = cursor_plan_input(&req);
+        assert_eq!(input["plan"], "# Pasos\n1. Uno");
+        assert_eq!(input["name"], "Migrar");
+        assert_eq!(input["todos"][0]["content"], "Uno");
     }
 }

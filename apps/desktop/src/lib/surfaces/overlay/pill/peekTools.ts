@@ -13,6 +13,9 @@ export const PEEK_TOOLS = [
   "captures",
   "color",
   "snippets",
+  // No es un gajo de la rueda: su botón aparece en la tira solo mientras
+  // suena algo (ver `PillSurface`).
+  "media",
 ] as const;
 export type PeekTool = (typeof PEEK_TOOLS)[number];
 

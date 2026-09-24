@@ -7,7 +7,7 @@
 
 use serde_json::json;
 
-use super::api::{HubError, Kind};
+use super::api::{HubError, Kind, PendingPermission};
 
 /// Se rechaza el spawn cuando `depth >= MAX_DEPTH`: el hijo sería el tercer salto.
 pub const MAX_DEPTH: u8 = 2;
@@ -137,6 +137,63 @@ pub fn route(kind: Option<Kind>, available: &[(&str, bool)]) -> Option<&'static 
         }
     }
     disponibles.first().copied()
+}
+
+/// ¿Puede `from` contestar los permisos de `session`?
+///
+/// Solo quien la abrió o alguien más arriba en su cadena: el que encargó el
+/// trabajo es quien responde por lo que el hijo hace. Una sesión hermana o
+/// ajena no, aunque tenga el token del hub. `parent_of` da el padre de una
+/// sesión de Atic; el tope de saltos corta un ciclo si el registro lo tuviera.
+pub fn may_answer_permission(
+    from: &str,
+    session: &str,
+    parent_of: impl Fn(&str) -> Option<String>,
+) -> bool {
+    let from = from.trim();
+    if from.is_empty() || from == session {
+        return false;
+    }
+    let mut actual = parent_of(session);
+    for _ in 0..8 {
+        match actual {
+            Some(p) if p == from => return true,
+            Some(p) => actual = parent_of(&p),
+            None => return false,
+        }
+    }
+    false
+}
+
+/// Qué permiso contestar: el pedido, o el único pendiente si no se nombró.
+pub fn pick_permission(
+    pending: &[PendingPermission],
+    id: Option<&str>,
+) -> Result<String, HubError> {
+    let lista = || json!({ "permissions": pending });
+    match id.map(str::trim).filter(|i| !i.is_empty()) {
+        Some(id) if pending.iter().any(|p| p.id == id) => Ok(id.to_string()),
+        Some(id) => Err(HubError::con_datos(
+            "unknown_permission",
+            format!("La sesión no tiene ningún permiso pendiente con id «{id}». Puede que ya se haya contestado."),
+            lista(),
+        )),
+        None => match pending {
+            [] => Err(HubError::nueva(
+                "no_pending_permission",
+                "La sesión no tiene permisos pendientes. Sigue con atic_wait.".into(),
+            )),
+            [uno] => Ok(uno.id.clone()),
+            _ => Err(HubError::con_datos(
+                "ambiguous_permission",
+                format!(
+                    "La sesión tiene {} permisos pendientes. Pasa permissionId.",
+                    pending.len()
+                ),
+                lista(),
+            )),
+        },
+    }
 }
 
 /// Recorta cualquier espera pedida al tope del hub.
@@ -306,6 +363,70 @@ mod tests {
     fn ninguno_disponible_no_rutea() {
         assert_eq!(route(Some(Kind::Plan), &disponible(&[])), None);
         assert_eq!(route(None, &disponible(&[])), None);
+    }
+
+    fn permiso(id: &str) -> PendingPermission {
+        PendingPermission {
+            id: id.into(),
+            tool: "Bash".into(),
+            description: "correr un comando".into(),
+            input: String::new(),
+        }
+    }
+
+    #[test]
+    fn sin_id_se_elige_el_unico_permiso_pendiente() {
+        assert_eq!(pick_permission(&[permiso("p1")], None).unwrap(), "p1");
+        let err = pick_permission(&[], None).expect_err("no hay nada que contestar");
+        assert_eq!(err.code, "no_pending_permission");
+        let err = pick_permission(&[permiso("p1"), permiso("p2")], None)
+            .expect_err("con dos hay que elegir");
+        assert_eq!(err.code, "ambiguous_permission");
+    }
+
+    #[test]
+    fn un_id_que_no_esta_pendiente_se_rechaza() {
+        let pendientes = [permiso("p1"), permiso("p2")];
+        assert_eq!(pick_permission(&pendientes, Some("p2")).unwrap(), "p2");
+        let err = pick_permission(&pendientes, Some("p9")).expect_err("no existe");
+        assert_eq!(err.code, "unknown_permission");
+    }
+
+    fn padres(pares: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
+        let mapa: std::collections::HashMap<String, String> = pares
+            .iter()
+            .map(|(h, p)| (h.to_string(), p.to_string()))
+            .collect();
+        move |s| mapa.get(s).cloned()
+    }
+
+    #[test]
+    fn solo_el_padre_o_un_ancestro_contesta_permisos() {
+        // external → a → b: el CLI externo y `a` responden por `b`.
+        let padre_de = padres(&[("a", "external:claude-code:7"), ("b", "a")]);
+        assert!(may_answer_permission("a", "b", &padre_de));
+        assert!(may_answer_permission(
+            "external:claude-code:7",
+            "b",
+            &padre_de
+        ));
+        // Otro proceso del mismo host, una hermana o el propio hijo, no.
+        assert!(!may_answer_permission(
+            "external:claude-code:8",
+            "b",
+            &padre_de
+        ));
+        assert!(!may_answer_permission("c", "b", &padre_de));
+        assert!(!may_answer_permission("b", "b", &padre_de));
+        assert!(!may_answer_permission("", "b", &padre_de));
+        // Un hijo no contesta por su padre.
+        assert!(!may_answer_permission("b", "a", &padre_de));
+    }
+
+    #[test]
+    fn un_ciclo_en_el_registro_no_cuelga_la_autorizacion() {
+        let padre_de = padres(&[("a", "b"), ("b", "a")]);
+        assert!(!may_answer_permission("x", "a", &padre_de));
     }
 
     #[test]

@@ -248,6 +248,7 @@ fn new_turn(seq: &mut u64) -> Turn {
         items: Vec::new(),
         status: TurnStatus::Running,
         cost_usd: None,
+        duration_ms: None,
     }
 }
 

@@ -116,7 +116,7 @@
     accionesSoloIcono?: boolean;
     /** Icono y título de la ventana: comparten la fila de la barra. */
     encabezado?: SvelteSnippet;
-    /** `exe|título`: cada reverso es independiente del resto. */
+    /** Cambia con cada ventana: al abrir sobre otra se suelta la sesión. */
     notaKey?: string;
     onpersist: () => void;
     onclose?: () => void;
@@ -149,6 +149,14 @@
   let menuExport = $state(false);
   let exportando = $state(false);
   let avisoExport = $state("");
+  let avisoExportTimer: ReturnType<typeof setTimeout> | undefined;
+
+  /** El aviso ocupa una fila sobre el tablero: se va solo para devolverla. */
+  function avisar(texto: string, ms: number) {
+    avisoExport = texto;
+    if (avisoExportTimer) clearTimeout(avisoExportTimer);
+    avisoExportTimer = setTimeout(() => (avisoExport = ""), ms);
+  }
 
   const ETIQUETA_EXPORT: Record<FormatoTablero, string> = {
     png: "exportPng",
@@ -189,13 +197,18 @@
       );
       if (!path) return;
       await exportWindowFlip(formato, path, paginas, PAGINA_W, PAGINA_H);
-      avisoExport = fallos.length
-        ? t("overlay.windowFlip.exportMissing", { n: String(fallos.length) })
-        : t("overlay.windowFlip.exportOk");
+      if (fallos.length) {
+        avisar(t("overlay.windowFlip.exportMissing", { n: String(fallos.length) }), 6000);
+      } else {
+        avisar(t("overlay.windowFlip.exportOk"), 2400);
+      }
     } catch (err) {
-      avisoExport = t("overlay.windowFlip.exportFail", {
-        error: err instanceof Error ? err.message : String(err),
-      });
+      avisar(
+        t("overlay.windowFlip.exportFail", {
+          error: err instanceof Error ? err.message : String(err),
+        }),
+        8000,
+      );
     } finally {
       exportando = false;
       onocupado?.(false);
@@ -367,15 +380,15 @@
     if (herramienta !== "draw" && herramienta !== "highlight") paletaAbierta = false;
   });
 
-  // Cada reverso es independiente: al cambiar de nota se sueltan páginas,
-  // historial, selección y vista. Sin esto, las páginas (y el undo) de una
-  // ventana se filtraban a la siguiente. La tinta se conserva.
+  // Al abrir sobre otra ventana se sueltan historial, selección y vista. El
+  // papel se mide con lo que ya hay: con una celda fija, lo guardado de la
+  // segunda página en adelante quedaba fuera del tablero al volver a abrir.
   // Solo notaKey dispara el reset: el resto va en untrack para que paginar
   // (que cambia papelW, leído por encuadrar) no lo reactive al instante.
   $effect(() => {
     void notaKey;
     untrack(() => {
-      papelW = PAGINA_W;
+      papelW = anchoParaBloques(bloques);
       pasado = [];
       futuro = [];
       sesionAntes = null;
@@ -1486,6 +1499,12 @@
         preview = null;
         return;
       }
+      // Esc cierra lo que esté abierto encima antes de voltear la tarjeta.
+      if (event.key === "Escape" && menuExport) {
+        event.stopImmediatePropagation();
+        menuExport = false;
+        return;
+      }
       if (event.key === "Escape" && paletaAbierta) {
         event.stopImmediatePropagation();
         paletaAbierta = false;
@@ -1560,6 +1579,7 @@
     return () => {
       window.removeEventListener("keydown", onKey);
       window.removeEventListener("pointerdown", onDown);
+      if (avisoExportTimer) clearTimeout(avisoExportTimer);
     };
   });
 </script>
@@ -1782,7 +1802,7 @@
     </div>
   </div>
   {#if avisoExport}
-    <p class="aviso-export" aria-live="polite">{avisoExport}</p>
+    <p class="aviso-export" aria-live="polite" transition:emerge>{avisoExport}</p>
   {/if}
 
   <div class="cuerpo" class:con-cajon={cajonAbierto}>

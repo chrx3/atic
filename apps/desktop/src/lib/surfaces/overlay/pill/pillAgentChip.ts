@@ -3,6 +3,8 @@ import type { PresenceView } from "$lib/agentPresenceReduce";
 
 export type ChipTone = "waiting" | "working" | "ready" | "count" | "off";
 export type ChipTarget =
+  /** Una sesión de chat: se enfoca en la ventana de agentes. */
+  | { kind: "chat"; session: string }
   | { kind: "console"; presenceId?: string }
   | { kind: "focus"; presenceId: string }
   | { kind: "none"; presenceId?: string };
@@ -83,6 +85,52 @@ function fromChat(
       id: "chat",
       tone: "ready",
       label: chat.readyLabel ?? "Listo",
+      target,
+      logoId,
+    };
+  }
+  return OFF;
+}
+
+/** Una sesión de chat, para su propio chip. */
+export type ChatChipSession = {
+  id: string;
+  backendId: string;
+  status: string;
+  /** Permisos o preguntas esperando respuesta. */
+  pending: number;
+  unread: number;
+  /** Última línea del agente. */
+  lastText: string | null;
+  answering: boolean;
+  /** Epoch secs de lo último que dijo. */
+  updatedAt: number;
+};
+
+/** Un chip por sesión de chat: cada uno sabe a cuál llevar al tocarlo. */
+function fromChatSession(c: ChatChipSession, labels: ChipLabels): AgentChip {
+  const target: ChipTarget = { kind: "chat", session: c.id };
+  const logoId = agentLogoKey(c.backendId);
+  const id = `chat:${c.id}`;
+  if (c.pending > 0) return { id, tone: "waiting", label: "permiso", target, logoId };
+  if (c.status === "working") {
+    return {
+      id,
+      tone: "working",
+      label: c.lastText?.trim()
+        ? clipChipPreview(c.lastText)
+        : c.answering
+          ? labels.answering
+          : labels.working,
+      target,
+      logoId,
+    };
+  }
+  if (c.unread > 0) {
+    return {
+      id,
+      tone: "ready",
+      label: c.lastText?.trim() ? clipChipPreview(c.lastText) : "Listo",
       target,
       logoId,
     };
@@ -186,6 +234,11 @@ type ChipInput = {
     providerSessions?: Array<string | null | undefined>;
   };
   presence: PresenceView[];
+  /**
+   * Las sesiones de chat, una por una. Con esto hay un chip por sesión (y el
+   * clic sabe a cuál ir); sin esto, el chip único de `chat` de antes.
+   */
+  chats?: ChatChipSession[];
   chatEnabled: boolean;
   pagerEnabled: boolean;
   consoles?: Array<string | null | undefined>;
@@ -216,13 +269,17 @@ export function agentChips(state: ChipInput): AgentChip[] {
     working: state.workingLabel ?? DEFAULT_LABELS.working,
     answering: state.answeringLabel ?? DEFAULT_LABELS.answering,
   };
-  const chatResult = state.chatEnabled
-    ? chatForLiveConsoles(state.chat, liveLogos, labels)
-    : OFF;
-  const chatAt = state.chat.updatedAt ?? 0;
   const ranked: { chip: AgentChip; at: number }[] = [];
-  if (chatResult.tone !== "off") {
-    ranked.push({ chip: chatResult, at: chatAt });
+  if (state.chatEnabled && state.chats) {
+    for (const c of state.chats) {
+      const chip = fromChatSession(c, labels);
+      if (chip.tone !== "off") ranked.push({ chip, at: c.updatedAt });
+    }
+  } else if (state.chatEnabled) {
+    const chatResult = chatForLiveConsoles(state.chat, liveLogos, labels);
+    if (chatResult.tone !== "off") {
+      ranked.push({ chip: chatResult, at: state.chat.updatedAt ?? 0 });
+    }
   }
   if (state.pagerEnabled) {
     const live = new Set(

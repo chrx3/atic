@@ -36,11 +36,11 @@ export function islandStripLong(n: number): number {
  * adentro), así que la cuenta sobra unos píxeles. Sobrar no recorta nada;
  * quedarse corto sí.
  */
-export function islandCueLong(n: number, msg = false): number {
+export function islandCueLong(n: number, msg: boolean | number = false): number {
   const marks = Math.max(1, Math.floor(n) || 1);
   const cues = marks * PILL.islandCueBtn + (marks - 1) * PILL.islandGap;
-  const inner =
-    PILL.islandMark + PILL.islandGap + cues + (msg ? PILL.islandCueMsgW : 0) + 12;
+  const msgW = msg === true ? PILL.islandCueMsgW : typeof msg === "number" ? msg : 0;
+  const inner = PILL.islandMark + PILL.islandGap + cues + msgW + 12;
   return Math.max(PILL.islandLong, inner);
 }
 
@@ -179,11 +179,23 @@ export function contentFor(
   side: boolean = false,
   /**
    * El primer aviso de la pestaña lleva texto (preview / «permiso»): la
-   * pestaña reserva el tramo fijo `islandCueMsgW`. Solo notches del eje y.
+   * pestaña reserva el tramo fijo `islandCueMsgW` a lo largo del canto (al
+   * costado, el texto va girado y el tramo suma alto). Un número reserva ese
+   * tramo en px en vez del de siempre: la letra del tema pide más.
    */
-  islandCueMsg: boolean = false,
+  islandCueMsg: boolean | number = false,
   /** Filas de la cara ambiental de agentes. */
   liveRows: number = 0,
+  /**
+   * Vistazo abierto DENTRO de la tira, ya medido. La isla crece hacia adentro
+   * para abrigarlo: debajo de la tira arriba, al costado en los laterales.
+   */
+  peek: Size | null = null,
+  /**
+   * Letra del tema que suena, colgando de la pestaña cerrada (arriba/abajo):
+   * la caja crece hacia adentro y se ensancha a lo menos `lyrics.w`.
+   */
+  lyrics: Size | null = null,
 ): Size {
   if (surface === "wheel") {
     const wheelSide = PILL.wheel - PILL.pad * 2;
@@ -215,7 +227,7 @@ export function contentFor(
       const rows = Math.max(1, Math.floor(liveRows) || 1);
       const liveH = rows * PILL.islandLiveRow;
       return dockAxis(dock.edge) === "x"
-        ? { w: thick + PILL.islandDictW, h: Math.max(long, liveH) }
+        ? { w: thick + PILL.islandLiveSideW, h: Math.max(long, liveH) }
         : { w: Math.max(long, PILL.islandDictW), h: thick + liveH };
     }
     if (face === "agents") {
@@ -270,11 +282,23 @@ export function contentFor(
         islandStripLong(toolCount + islandLiveSlots(activity)),
         islandCue ? islandCueLong(islandCueCount, islandCueMsg) : PILL.islandLong,
       );
+      // El vistazo es parte de la isla, no un panel aparte: la tira queda
+      // contra el canto y el vistazo ocupa el tramo de adentro. Nunca más
+      // corta que la tira, por lo mismo de arriba: el cursor está en ella.
+      if (peek && peek.w > 0 && peek.h > 0) {
+        return dockAxis(dock.edge) === "x"
+          ? { w: PILL.islandTool + peek.w, h: Math.max(long, peek.h) }
+          : { w: Math.max(long, peek.w), h: PILL.islandTool + peek.h };
+      }
       return dockAxis(dock.edge) === "x"
         ? { w: PILL.islandTool, h: long }
         : { w: long, h: PILL.islandTool };
     }
-    return dockAxis(dock.edge) === "x" ? { w: thick, h: long } : { w: long, h: thick };
+    if (dockAxis(dock.edge) === "x") return { w: thick, h: long };
+    if (face === "tab" && lyrics) {
+      return { w: Math.max(long, lyrics.w), h: thick + lyrics.h };
+    }
+    return { w: long, h: thick };
   }
   return {
     w: Math.max(barW, PILL.bar),

@@ -17,7 +17,10 @@ export const launcherSearch = (query: string) =>
 export const launcherRun = (id: string) => invoke<void>("launcher_run", { id });
 /** Cierra la app del resultado con WM_CLOSE (graceful). Devuelve cuántas ventanas. */
 export const launcherQuit = (id: string) => invoke<number>("launcher_quit", { id });
-export const launcherReindex = () => invoke<number>("launcher_reindex");
+/** Cierra la barra y pega `text` en la app de antes (`paste: false` = solo copia). */
+export const launcherPasteText = (text: string, paste: boolean) =>
+  invoke<void>("launcher_paste_text", { text, paste });
+export const launcherReindex =() => invoke<number>("launcher_reindex");
 export const launcherListFavorites = () =>
   invoke<LauncherHit[]>("launcher_list_favorites");
 export const launcherListRecents = () => invoke<LauncherHit[]>("launcher_list_recents");

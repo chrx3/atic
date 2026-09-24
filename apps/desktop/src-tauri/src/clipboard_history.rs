@@ -400,8 +400,51 @@ fn clipboard_is_sensitive() -> bool {
     }
 }
 
-/// Fuera de Windows no existen esos formatos, así que no hay nada que consultar.
-#[cfg(not(windows))]
+/// En macOS la señal equivalente son los tipos de la convención nspasteboard.org
+/// que agrega quien copia (1Password, Bitwarden, KeePassXC):
+///
+/// - `org.nspasteboard.ConcealedType` — es una contraseña.
+/// - `org.nspasteboard.TransientType` — es efímero, no lo archives.
+///
+/// `arboard` tampoco los mira acá.
+#[cfg(target_os = "macos")]
+fn clipboard_is_sensitive() -> bool {
+    use objc2::rc::autoreleasepool;
+    use objc2::runtime::AnyObject;
+    use objc2_foundation::{NSArray, NSString};
+
+    // AppKit tiene que estar cargado para que `class!(NSPasteboard)` resuelva.
+    #[link(name = "AppKit", kind = "framework")]
+    extern "C" {}
+
+    const SENSITIVE_TYPES: [&str; 2] = [
+        "org.nspasteboard.ConcealedType",
+        "org.nspasteboard.TransientType",
+    ];
+
+    autoreleasepool(|_| {
+        // SAFETY: mensajes a AppKit; `generalPasteboard` y `types` son +0 y
+        // viven en este pool.
+        unsafe {
+            let pasteboard: *mut AnyObject =
+                objc2::msg_send![objc2::class!(NSPasteboard), generalPasteboard];
+            if pasteboard.is_null() {
+                return false;
+            }
+            let types: *mut AnyObject = objc2::msg_send![pasteboard, types];
+            if types.is_null() {
+                return false;
+            }
+            let types: &NSArray<NSString> = &*types.cast();
+            types
+                .iter()
+                .any(|kind| SENSITIVE_TYPES.contains(&kind.to_string().as_str()))
+        }
+    })
+}
+
+/// En el resto de plataformas no hay una convención que consultar.
+#[cfg(not(any(windows, target_os = "macos")))]
 fn clipboard_is_sensitive() -> bool {
     false
 }
@@ -711,6 +754,45 @@ impl AgentsComposerInsert {
     fn image_drop(path: String) -> Self {
         Self::at(ClipboardKind::Image, None, Some(path), true)
     }
+
+    /// Texto soltado sobre la ventana de agentes, en px CSS de su webview.
+    fn text_in_window(text: String, (x, y): (f64, f64)) -> Self {
+        Self {
+            kind: ClipboardKind::Text,
+            text: Some(text),
+            image_path: None,
+            x: Some(x),
+            y: Some(y),
+        }
+    }
+}
+
+/// Dónde está el puntero sobre la ventana de agentes (px CSS de su webview),
+/// si está sobre ella y no tapado por otra.
+#[cfg(windows)]
+fn cursor_in_agents_window(app: &AppHandle) -> Option<(f64, f64)> {
+    use windows_sys::Win32::Foundation::POINT;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetAncestor, GetCursorPos, WindowFromPoint, GA_ROOT,
+    };
+    let window = app.get_webview_window(crate::agents_window::LABEL)?;
+    if !window.is_visible().unwrap_or(false) {
+        return None;
+    }
+    let hwnd = window.hwnd().ok()?.0 as windows_sys::Win32::Foundation::HWND;
+    let mut pt = POINT { x: 0, y: 0 };
+    // SAFETY: solo lecturas del puntero y del árbol de ventanas.
+    unsafe {
+        if GetCursorPos(&mut pt) == 0 || GetAncestor(WindowFromPoint(pt), GA_ROOT) != hwnd {
+            return None;
+        }
+    }
+    let origin = window.inner_position().ok()?;
+    let scale = window.scale_factor().ok()?;
+    Some((
+        f64::from(pt.x - origin.x) / scale,
+        f64::from(pt.y - origin.y) / scale,
+    ))
 }
 
 /// True si la burbuja de agentes está a la vista (crate-interno).
@@ -934,6 +1016,18 @@ pub async fn start_clipboard_text_drag(
             web_terminal,
             "arrastre de texto terminado"
         );
+        // Soltado sobre la ventana de agentes sin que nadie lo tomara: la
+        // pizarra decide si va a la entrada de texto o a la consola de debajo.
+        // El respaldo de más abajo no sirve ahí: no pega en ventanas propias.
+        if drop_needs_paste_fallback(outcome.dropped, outcome.effect, false) {
+            if let Some(at) = cursor_in_agents_window(&app) {
+                let _ = app.emit(
+                    "agents-window-insert",
+                    AgentsComposerInsert::text_in_window(text, at),
+                );
+                return Ok(());
+            }
+        }
         // CANCEL sobre agentes (QueryContinueDrag): insertar en composer/consola.
         if agents_visible(&app) && over_agents {
             let _ = app.emit(

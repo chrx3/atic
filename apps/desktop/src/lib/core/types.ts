@@ -807,6 +807,13 @@ export interface AgentModel {
   supportsFast?: boolean;
 }
 
+/** Un modo del agente, tal como lo informa (ACP: agent / plan / ask). */
+export interface AgentMode {
+  id: string;
+  name: string;
+  description: string;
+}
+
 export interface ThreadPatch {
   /** Los modelos del agente. Llega una vez, al arrancar la sesión. */
   models?: AgentModel[];
@@ -819,6 +826,8 @@ export interface ThreadPatch {
   cwd?: string;
   model?: string;
   mode?: string;
+  /** Los modos del agente (ACP: agent / plan / ask). El actual va en `mode`. */
+  modes?: AgentMode[];
   /** Contexto consumido. Llega durante el turno, no al final. */
   tokens?: number;
   /**
@@ -848,7 +857,13 @@ export type AgentDelta =
   | { t: "item.chunk"; item: string; text: string }
   | { t: "item.patch"; item: string; patch: ItemPatch }
   | { t: "thread.patch"; patch: ThreadPatch }
-  | { t: "turn.end"; turn: string; status: TurnStatus; costUsd: number | null }
+  | {
+      t: "turn.end";
+      turn: string;
+      status: TurnStatus;
+      costUsd: number | null;
+      durationMs?: number;
+    }
   | { t: "failed"; message: string };
 
 /**
@@ -910,6 +925,8 @@ export interface AgentTurn {
   items: AgentItem[];
   status: TurnStatus;
   costUsd: number | null;
+  /** Cuánto duró. Ausente mientras corre y en hilos guardados antes de medirlo. */
+  durationMs?: number;
 }
 
 /** Una sesión viva. El proceso lo tiene Rust, no la ventana que lo abrió. */

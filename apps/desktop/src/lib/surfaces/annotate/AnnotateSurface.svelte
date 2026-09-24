@@ -22,6 +22,7 @@
    * `annotateDraw.ts`. Acá queda el estado, los eventos y los viajes a Rust.
    */
   import {
+    ChevronDown,
     Circle,
     Copy,
     Crop,
@@ -117,6 +118,17 @@
   let tool = $state<AnnotateTool>("arrow");
   let color = $state<string>(COLORS[0]);
   let level = $state<WidthLevel>(2);
+  /**
+   * El selector de color y grosor, abierto o no.
+   *
+   * Va plegado en un botón y no suelto en la barra: con los seis colores y los
+   * tres grosores a la vista, la barra no entraba en la ventana de una captura
+   * chica y se partía en dos filas, que le quitaban alto al lienzo.
+   */
+  let styleOpen = $state(false);
+  let styleEl = $state<HTMLElement | null>(null);
+  /** El recorte no pinta: color y grosor no le dicen nada. */
+  const usesStyle = $derived(tool !== "crop");
 
   /**
    * Panel o pizarra.
@@ -387,6 +399,7 @@
     error = null;
     note = null;
     confirmDiscard = false;
+    styleOpen = false;
     loadedPath = null;
     mode = "panel";
     focus = null;
@@ -454,6 +467,7 @@
   function onPointerDown(event: PointerEvent) {
     if (!ready || busy || event.button !== 0) return;
     confirmDiscard = false;
+    styleOpen = false;
     const at = pointFor(event);
 
     // Con un cuadro abierto, el primer clic afuera lo cierra y no abre otro:
@@ -673,6 +687,12 @@
     if (editing) return;
     if (event.key === "Escape") {
       event.preventDefault();
+      // Con el selector abierto, Escape lo pliega: cerrar el editor entero por
+      // querer cerrar un menú sería perder el dibujo por un malentendido.
+      if (styleOpen) {
+        styleOpen = false;
+        return;
+      }
       requestClose();
       return;
     }
@@ -717,11 +737,33 @@
     if (next) {
       event.preventDefault();
       tool = next;
+      if (next === "crop") styleOpen = false;
     }
   }
+
+  /** Un clic fuera del selector lo pliega, como cualquier menú. */
+  function onWindowPointerDown(event: PointerEvent) {
+    if (!styleOpen) return;
+    if (event.target instanceof Node && styleEl?.contains(event.target)) return;
+    styleOpen = false;
+  }
+
+  /*
+   * La ayuda se va con el primer trazo: a esa altura ya se sabe dibujar, y
+   * encima del lienzo solo estorba. Los avisos y errores sí se quedan.
+   */
+  const statusText = $derived(
+    error ??
+      note ??
+      (!ready
+        ? t("page.annotate.loading")
+        : doc.shapes.length === 0 && !live && !editing
+          ? t("page.annotate.help")
+          : null),
+  );
 </script>
 
-<svelte:window onkeydown={onKeydown} />
+<svelte:window onkeydown={onKeydown} onpointerdown={onWindowPointerDown} />
 
 <div class="editor" class:is-board={mode === "board"}>
   <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -748,35 +790,63 @@
       {/each}
     </div>
 
-    <div class="group" role="radiogroup" aria-label={t("page.annotate.color")}>
-      {#each COLORS as swatch (swatch)}
-        <button
-          type="button"
-          class="swatch"
-          class:is-on={color === swatch}
-          style="--swatch: {swatch}"
-          role="radio"
-          aria-checked={color === swatch}
-          aria-label={t("page.annotate.colorSwatch", { swatch })}
-          onclick={() => (color = swatch)}
-        ></button>
-      {/each}
-    </div>
+    <!-- Color y grosor, plegados en un botón que muestra cómo va a salir el
+         trazo: el punto tiene el color y el tamaño elegidos. -->
+    <div class="group style" bind:this={styleEl}>
+      <button
+        type="button"
+        class="tool style-toggle"
+        class:is-on={styleOpen}
+        disabled={!usesStyle}
+        aria-haspopup="true"
+        aria-expanded={styleOpen}
+        title={t("page.annotate.styleTitle")}
+        aria-label={t("page.annotate.style")}
+        onclick={() => (styleOpen = !styleOpen)}
+      >
+        <span
+          class="style-dot"
+          style="--swatch: {color}; --dot: {6 + level * 2}px"
+        ></span>
+        <Icon icon={ChevronDown} size={11} />
+      </button>
 
-    <div class="group" role="radiogroup" aria-label={t("page.annotate.width")}>
-      {#each WIDTH_LEVELS as value (value)}
-        <button
-          type="button"
-          class="width"
-          class:is-on={level === value}
-          role="radio"
-          aria-checked={level === value}
-          aria-label={t("page.annotate.widthValue", { value })}
-          onclick={() => (level = value)}
-        >
-          <span class="width-dot" style="--dot: {2 + value * 2}px"></span>
-        </button>
-      {/each}
+      {#if styleOpen && usesStyle}
+        <div class="popover">
+          <div class="row" role="radiogroup" aria-label={t("page.annotate.color")}>
+            {#each COLORS as swatch (swatch)}
+              <button
+                type="button"
+                class="swatch"
+                class:is-on={color === swatch}
+                style="--swatch: {swatch}"
+                role="radio"
+                aria-checked={color === swatch}
+                aria-label={t("page.annotate.colorSwatch", { swatch })}
+                onclick={() => (color = swatch)}
+              ></button>
+            {/each}
+          </div>
+          <div class="row" role="radiogroup" aria-label={t("page.annotate.width")}>
+            {#each WIDTH_LEVELS as value (value)}
+              <button
+                type="button"
+                class="width"
+                class:is-on={level === value}
+                role="radio"
+                aria-checked={level === value}
+                aria-label={t("page.annotate.widthValue", { value })}
+                onclick={() => (level = value)}
+              >
+                <span
+                  class="width-line"
+                  style="--swatch: {color}; --line-w: {value * 2}px"
+                ></span>
+              </button>
+            {/each}
+          </div>
+        </div>
+      {/if}
     </div>
 
     <div class="group">
@@ -826,21 +896,22 @@
         onclick={() => void copy()}
       >
         <Icon icon={Copy} size={14} />
-        <span>{t("page.annotate.copy")}</span>
+        <span class="action-label">{t("page.annotate.copy")}</span>
       </button>
       <button
         type="button"
-        class="action"
+        class="action is-icon"
         disabled={!ready || busy}
         title={t("page.annotate.saveTitle")}
+        aria-label={t("page.annotate.save")}
         onclick={() => void save()}
       >
         <Icon icon={Save} size={14} />
-        <span>{t("page.annotate.save")}</span>
       </button>
       <button
         type="button"
         class="action"
+        class:is-icon={!confirmDiscard}
         class:is-danger={confirmDiscard}
         title={t("page.annotate.closeTitle")}
         aria-label={confirmDiscard
@@ -892,17 +963,21 @@
     ></div>
   {/if}
 
+  <!-- Flota sobre el lienzo en vez de ocupar una fila: en el panel, esa fila
+       era alto que se le quitaba a la captura. Sin lienzo listo NO se muestra
+       la ayuda de dibujo: decir «arrastra para dibujar» sobre un editor que
+       todavía no acepta el puntero es lo que hizo que un fallo de carga se
+       leyera como «no anda el dibujo». -->
   <p
     class="status"
+    class:is-shown={statusText !== null}
     class:is-note={Boolean(note)}
     class:is-error={Boolean(error)}
     style={mode === "board" ? boardStatusStyle : undefined}
-    data-tauri-drag-region={mode === "panel" ? "" : undefined}
+    role="status"
+    aria-live="polite"
   >
-    <!-- Sin lienzo listo NO se muestra la ayuda de dibujo: decir «arrastrá para
-         dibujar» sobre un editor que todavía no acepta el puntero es lo que
-         hizo que un fallo de carga se leyera como «no anda el dibujo». -->
-    {error ?? note ?? (ready ? t("page.annotate.help") : t("page.annotate.loading"))}
+    {statusText ?? ""}
   </p>
 
   <!--
@@ -954,7 +1029,7 @@
     display: flex;
     align-items: center;
     flex-wrap: wrap;
-    gap: 10px;
+    gap: 8px;
   }
 
   .group {
@@ -1020,11 +1095,69 @@
     cursor: default;
   }
 
-  .width-dot {
+  .style {
+    position: relative;
+  }
+
+  .style-toggle {
+    width: 36px;
+    gap: 3px;
+  }
+
+  /* El trazo tal como va a salir: color y tamaño a la vez. */
+  .style-dot {
     width: var(--dot);
     height: var(--dot);
+    flex: none;
     border-radius: var(--radius-pill);
+    background: var(--swatch);
+    box-shadow: 0 0 0 1px rgb(0 0 0 / 25%) inset;
+  }
+
+  .style-toggle:disabled .style-dot {
     background: currentColor;
+  }
+
+  .popover {
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 0;
+    z-index: 4;
+    display: flex;
+    flex-direction: column;
+    padding: 6px;
+    border-radius: var(--radius-md);
+    background: var(--surface-2);
+    box-shadow: var(--shadow-float);
+    gap: 4px;
+    outline: 1px solid var(--line);
+    outline-offset: -1px;
+    animation: popover-in var(--duration-quick) var(--ease-out);
+  }
+
+  @keyframes popover-in {
+    from {
+      opacity: 0;
+      transform: translateY(-4px);
+    }
+  }
+
+  .row {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+  }
+
+  .width {
+    width: 32px;
+  }
+
+  .width-line {
+    width: 18px;
+    height: var(--line-w);
+    border-radius: var(--radius-pill);
+    background: var(--swatch);
+    box-shadow: 0 0 0 1px rgb(0 0 0 / 25%);
   }
 
   /*
@@ -1034,8 +1167,8 @@
    */
   .swatch {
     position: relative;
-    width: 20px;
-    height: 22px;
+    width: 26px;
+    height: 26px;
     padding: 0;
     border: 0;
     border-radius: var(--radius-xs);
@@ -1077,6 +1210,12 @@
     transition:
       background var(--duration-quick) var(--ease-out),
       color var(--duration-quick) var(--ease-out);
+  }
+
+  .action.is-icon {
+    width: 26px;
+    justify-content: center;
+    padding: 0;
   }
 
   .action:hover:not(:disabled) {
@@ -1161,11 +1300,49 @@
     opacity: 1;
   }
 
+  /* Aviso flotante sobre el pie del lienzo. No toma el puntero: está encima
+     del dibujo y no puede robarle un trazo. */
   .status {
+    position: absolute;
+    bottom: 20px;
+    left: 50%;
+    z-index: 2;
+    max-width: calc(100% - 48px);
     margin: 0;
+    padding: 5px 10px;
+    border-radius: var(--radius-pill);
+    background: var(--surface-2);
+    box-shadow: var(--shadow-float);
     color: var(--muted);
     font-size: 11px;
+    opacity: 0;
+    outline: 1px solid var(--line);
+    outline-offset: -1px;
+    overflow: hidden;
+    pointer-events: none;
     text-align: center;
+    text-overflow: ellipsis;
+    transform: translate(-50%, 4px);
+    transition:
+      opacity var(--duration-fast) var(--ease-out),
+      transform var(--duration-fast) var(--ease-out);
+    white-space: nowrap;
+  }
+
+  .status.is-shown {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+
+  /* Ventana angosta: Copiar queda como ícono, igual que Guardar. */
+  @media (width <= 600px) {
+    .action-label {
+      display: none;
+    }
+
+    .action.is-primary {
+      padding: 0 7px;
+    }
   }
 
   /*
@@ -1223,15 +1400,10 @@
     cursor: grabbing;
   }
 
-  .editor.is-board .status {
-    position: absolute;
-    z-index: 2;
-    padding: 5px 10px;
-    border-radius: var(--radius-pill);
-    background: var(--surface-2);
+  .editor.is-board .status,
+  .editor.is-board .status.is-shown {
+    bottom: auto;
     transform: translate(-50%, calc(-100% - 14px));
-    outline: 1px solid var(--line);
-    outline-offset: -1px;
   }
 
   /* Diagonal de dos rayas, como el asa de cualquier ventana redimensionable. */
@@ -1278,8 +1450,13 @@
     .width,
     .action,
     .canvas,
+    .status,
     .swatch::after {
       transition: none;
+    }
+
+    .popover {
+      animation: none;
     }
 
     .tool:active:not(:disabled),

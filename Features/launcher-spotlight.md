@@ -50,6 +50,23 @@ Enter lo copia al portapapeles:
 Sin red y sin dependencias: lo que no se puede resolver con certeza **no se
 muestra** (nada de números dudosos). Divisas y cripto quedan afuera a propósito.
 
+### Emojis (modo `:`)
+
+Escribir `:` con la barra vacía (o elegir la acción «Emojis») cambia el float a
+una grilla estilo Raycast: chip «Emojis» en la barra, recientes arriba,
+categorías con salto directo y un botón de tono de piel (se recuerda).
+
+- Busca por nombre y palabras clave en español **e** inglés, sin tildes
+  («corazon rojo», «fire», «like»). Todas las palabras de la query tienen que calzar.
+- Flechas navegan la grilla en 2D; **Enter pega** en la app que tenía el foco
+  al abrir el launcher; `Ctrl/Cmd+Enter` solo copia. Sin destino externo, el
+  texto va a la cola de pegado (mismo camino que los fragmentos).
+- `Esc` o `Backspace` con la barra vacía vuelven al launcher.
+- Catálogo local: `emojiData.json` (CLDR vía emojibase), generado con
+  `node scripts/gen-emoji-data.mjs` y cargado con `import()` solo al entrar
+  al modo. En Windows se ocultan las banderas de país (Segoe las dibuja como
+  letras) y lo posterior a Emoji 15.0.
+
 ### Acciones de sistema
 
 `Bloquear pantalla`, `Suspender`, `Silenciar o activar sonido` y `Vaciar
@@ -69,6 +86,7 @@ Ver [system-actions.md](system-actions.md).
 - [`apps/desktop/src-tauri/src/launcher_recents.rs`](../apps/desktop/src-tauri/src/launcher_recents.rs) — apps corriendo/al frente + cierre graceful (`WM_CLOSE` en Windows; `NSRunningApplication.terminate` en macOS)
 - [`apps/desktop/src-tauri/src/launcher_icons.rs`](../apps/desktop/src-tauri/src/launcher_icons.rs) — iconos: shell en Windows, `NSWorkspace.iconForFile` → PNG en macOS
 - [`apps/desktop/src/lib/surfaces/overlay/launcher/LauncherFloat.svelte`](../apps/desktop/src/lib/surfaces/overlay/launcher/LauncherFloat.svelte) — UI en el overlay
+- [`apps/desktop/src/lib/features/emoji/emoji.ts`](../apps/desktop/src/lib/features/emoji/emoji.ts) — catálogo, búsqueda, navegación de la grilla, recientes y tono; pega vía `launcher_paste_text`
 - Atajo: `launcher_shortcut` en config + [`shortcuts.rs`](../apps/desktop/src-tauri/src/shortcuts.rs)
 
 ## Pendiente / siguiente
@@ -91,6 +109,8 @@ Ver [system-actions.md](system-actions.md).
       `Utilities`), iconos reales (AppKit `iconForFile` → PNG), Recientes
       (`NSWorkspace.runningApplications`) y cierre graceful
       (`NSRunningApplication.terminate`)
+- [x] Buscador de emojis (modo `:`, grilla, tonos, pegar en la app activa)
+- [ ] Emojis sugeridos inline en la búsqueda normal
 - [ ] Divisas y cripto en vivo (necesita red: entra solo con opt-in explícito)
 - [ ] Force quit / matar procesos (hoy es graceful por decisión de producto)
 - [ ] Gestión de ventanas estilo Rectangle (mitades, cuartos, mover de monitor)

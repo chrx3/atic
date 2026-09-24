@@ -41,7 +41,7 @@
   import { INFLUENCE, REACH } from "$lib/liquid/constants";
   import ToolIcon, { type IconId } from "$lib/ToolIcon.svelte";
   import AgentLogo from "$features/agents/AgentLogo.svelte";
-  import { agents } from "$lib/agentSessions.svelte";
+  import { agents, sessionAnswering } from "$lib/agentSessions.svelte";
   import { presence } from "$lib/agentPresence.svelte";
   import ParticleWheel from "$lib/ParticleWheel.svelte";
   import {
@@ -66,7 +66,20 @@
   import { localizeTool, t } from "$domain/i18n.svelte";
   import { formatShortcut } from "$lib/format";
   import Icon from "$ui/Icon.svelte";
-  import { Check, Cpu, Download, MemoryStick, Volume2, VolumeX, X } from "$lib/icons";
+  import {
+    Check,
+    Cpu,
+    Download,
+    MemoryStick,
+    Pause,
+    Play,
+    Volume2,
+    VolumeX,
+    X,
+  } from "$lib/icons";
+  import { media } from "$domain/media.svelte";
+  import { lyricIndex } from "$domain/lyrics";
+  import { mediaPosition } from "$domain/mediaTime";
   import type { IconNode } from "morphicons/svelte";
   import { PILL, windowFor, type Size } from "$surfaces/overlay/pillStage";
   import { createCssStage } from "$surfaces/overlay/pillCssStage";
@@ -124,7 +137,6 @@
   import { agentsDock } from "$surfaces/overlay/agents/agentsDock.svelte";
   import { retachPreview } from "$surfaces/overlay/retachPreview.svelte";
   import { pushRecentColor } from "$features/color/colorMath";
-  import { requestConsoleFocus } from "$features/agents/consoleFocus";
   import {
     isPeekTool,
     leavePeekPanel,
@@ -149,7 +161,9 @@
     type PillHome,
   } from "$surfaces/overlay/edgeDock";
   import { clearPillHome, readPillHome, writePillHome } from "./pillHomeStore";
-  import AgentAuthCard from "$surfaces/overlay/pill/AgentAuthCard.svelte";
+  import PillPending, { type PendingItem } from "$surfaces/overlay/pill/PillPending.svelte";
+  import { isWorking } from "$features/agents/chatStatus";
+  import IslandPeek from "$surfaces/overlay/pill/IslandPeek.svelte";
   import {
     afterTransition,
     MOTION,
@@ -173,7 +187,8 @@
     agentPresenceFocus,
     agentPresenceBind,
     consoleForPresence,
-    revealAgentsConsole,
+    agentsEnsureWindow,
+    focusAgentSession,
     setAgentsConsoleOpen,
   } from "$ipc/agents";
   import {
@@ -244,6 +259,7 @@
     onOverlayDismiss,
     onOverlayYieldMain,
     onOverlayReady,
+    onOverlayWorkArea,
     onPillRadialPress,
     onPillRadialRelease,
     onPillReset,
@@ -353,6 +369,20 @@
       providerSessions: agents.sessions.map((s) => s.providerSession),
     },
     presence: presence.view,
+    // Un chip por chat propio (los que abre otro agente por MCP no avisan en
+    // la pill): tocar uno lleva a esa sesión en la ventana de agentes.
+    chats: agents.sessions
+      .filter((s) => !s.parent)
+      .map((s) => ({
+        id: s.id,
+        backendId: s.backendId,
+        status: s.status === "working" && !isWorking(s) ? "ready" : s.status,
+        pending: s.pending.length,
+        unread: s.unread,
+        lastText: s.lastText,
+        answering: sessionAnswering(s),
+        updatedAt: s.lastTextAt,
+      })),
     chatEnabled: AGENTS_ENABLED,
     pagerEnabled: AGENT_PAGER_ENABLED,
     consoles: consoleCue.clis,
@@ -397,12 +427,14 @@
    * El primer aviso dice qué pasa: preview del agente («Refactorizando el
    * hub»), «permiso» en espera, o el estado («Trabajando…»). Solo en notch
    * del eje y —a los lados no hay largo que regalar— y solo el chip primero,
-   * el urgente; el resto queda logo solo. En línea el eje: `peekEdgeAxis`
-   * se declara más abajo y el `target` de acá arriba lo necesita.
+   * el urgente; el resto queda logo solo.
+   *
+   * También a los lados: ahí el texto va girado a lo largo del canto, y el
+   * tramo que reserva `islandCueLong` se suma al alto en vez de al ancho.
+   * Esconderlo dejaba al notch lateral diciendo menos que el de arriba.
    */
   const islandCueMsg = $derived.by(() => {
-    if (!islandCue) return false;
-    if (!dock || dockAxis(dock.edge) !== "y") return false;
+    if (!islandCue || !dock) return false;
     if (chips.length === 0) return false;
     return chips[0].tone !== "count" && chips[0].label != null;
   });
@@ -575,9 +607,76 @@
    *
    * La actividad NO cuenta: su control es la propia marca, que ya estaba ahí.
    */
+  /**
+   * Lo que suena, en la pestaña en reposo: carátula chica y un ecualizador.
+   *
+   * Solo sonando —en pausa la pestaña vuelve a estar limpia— y cede ante los
+   * avisos que piden algo (un agente, una actualización): la música se mira,
+   * no se atiende. Lee `media.now` directo y no `mediaCell`, que se declara
+   * más abajo.
+   */
+  const mediaRest = $derived(
+    surface === "edge" && media.now?.playing && !showAgentTab && !updateChip
+      ? media.now
+      : null,
+  );
+  /**
+   * Tema nuevo: la pestaña se alarga unos segundos con el título y vuelve a
+   * carátula + ecualizador. Mismo tramo que el texto de los avisos de agentes.
+   */
+  const MEDIA_TITLE_MS = 4_000;
+  let mediaTitleKey: string | null = null;
+  let mediaTitleShown = $state(false);
+  /*
+   * El temporizador vive fuera del efecto a propósito: el sondeo trae un
+   * objeto nuevo cada segundo y medio, el efecto se vuelve a correr y su
+   * limpieza se llevaría el temporizador — el título quedaba pegado.
+   */
+  let mediaTitleTimer = 0;
+  $effect(() => {
+    const key = mediaRest?.thumb_key ?? null;
+    if (!key || key === mediaTitleKey) return;
+    mediaTitleKey = key;
+    mediaTitleShown = true;
+    window.clearTimeout(mediaTitleTimer);
+    mediaTitleTimer = window.setTimeout(() => (mediaTitleShown = false), MEDIA_TITLE_MS);
+  });
+  $effect(() => () => window.clearTimeout(mediaTitleTimer));
+  const mediaTitleOn = $derived(
+    mediaRest != null && mediaTitleShown && Boolean(mediaRest.title),
+  );
+  /**
+   * La línea de letra que suena, si el tema tiene letra sincronizada: `""`
+   * entre versos (el tramo se queda, así la caja no salta en cada pausa
+   * instrumental). Arriba/abajo cuelga de la pestaña, grande, con el verso
+   * siguiente (`lyricHang`); al costado va girada en la fila, tras el título.
+   */
+  let lyricClock = $state(Date.now());
+  $effect(() => {
+    if (!mediaRest || !media.lyrics) return;
+    const timer = window.setInterval(() => (lyricClock = Date.now()), 250);
+    return () => window.clearInterval(timer);
+  });
+  const mediaLyricAt = $derived.by(() => {
+    const lines = media.lyrics;
+    if (!mediaRest || !lines) return null;
+    const position = mediaPosition(mediaRest, lyricClock);
+    return position == null ? null : lyricIndex(lines, position);
+  });
+  const mediaLyric = $derived(
+    mediaLyricAt == null ? null : (media.lyrics?.[mediaLyricAt]?.text ?? ""),
+  );
+  const mediaLyricNext = $derived(
+    mediaLyricAt == null ? "" : (media.lyrics?.[mediaLyricAt + 1]?.text ?? ""),
+  );
+
   const edgeCue = $derived(
     surface === "edge" &&
-      (showAgentTab || updateChip != null || systemChip != null || volumeChip != null),
+      (showAgentTab ||
+        updateChip != null ||
+        systemChip != null ||
+        volumeChip != null ||
+        mediaRest != null),
   );
   /**
    * Celdas del aviso de la consola minimizada (sin chip propio).
@@ -594,7 +693,9 @@
       ? Math.max(chips.length, agentsDock.minimized ? dockCueCells : 0)
       : 0) +
       (updateChip ? 1 : 0) +
-      (systemChip || volumeChip ? 1 : 0),
+      (systemChip || volumeChip ? 1 : 0) +
+      // Carátula + ecualizador: dos celdas.
+      (mediaRest ? 2 : 0),
   );
 
   /**
@@ -681,7 +782,9 @@
 
   /** «Ya lo vi»: solo los avisos de listo; trabajar o pedir permiso siguen. */
   function dismissLive(c: AgentChip): void {
-    if (c.id === "chat") agents.markAllRead();
+    // Cada chat trae su fila (`chat:<id>`); `chat` a secas es el resumen.
+    if (c.target.kind === "chat") agents.markRead(c.target.session);
+    else if (c.id === "chat") agents.markAllRead();
     else presence.markSeen(c.id);
   }
 
@@ -697,6 +800,20 @@
 
   const agentChipAria = $derived(chipAria(chip));
   const authRequest = $derived(agents.primaryPending);
+  /**
+   * Todo lo que los agentes esperan, de todos a la vez: la tarjeta pagina entre
+   * ellos. `authRequest` sigue siendo el primero, para la cara del borde.
+   */
+  const pendingItems = $derived<PendingItem[]>(
+    agents.sessions.flatMap((s) =>
+      s.pending.map((permission) => ({
+        sessionId: s.id,
+        backendId: s.backendId,
+        agentName: s.label?.trim() || s.backendName,
+        permission,
+      })),
+    ),
+  );
   /** Consola abierta: el permiso se decide ahí; no duplicar el diálogo. */
   let agentsConsoleOpen = $state(false);
   const showAuthCard = $derived(
@@ -1491,6 +1608,60 @@
   const sideInBox = $derived(sidePanel !== null);
   const faceOpen = $derived(islandFace !== "tab");
 
+  /*
+   * El reproductor: una celda más de la tira, solo mientras algo suena o está
+   * en pausa. El clic pausa o reanuda; el resto (saltos, qué suena) está en
+   * su vistazo. Se sondea solo acoplada: es el único lugar donde se muestra.
+   */
+  $effect(() => {
+    if (surface !== "edge") return;
+    return media.watch();
+  });
+  const mediaCell = $derived(surface === "edge" ? media.now : null);
+  const mediaLabel = $derived(
+    mediaCell
+      ? mediaCell.playing
+        ? t("pill.peek.mediaPause")
+        : t("pill.peek.mediaPlay")
+      : "",
+  );
+
+  /*
+   * El vistazo, dentro de la tira.
+   *
+   * Con la tira acoplada abierta, la isla se transforma en el vistazo en vez
+   * de sacar un panel al lado (ver `IslandPeek`). Flotando o con la rueda
+   * sigue el panel de `PillPeekHost`: ahí no hay isla que crezca.
+   */
+  const peekInIsland = $derived(
+    surface === "edge" && dock?.expanded === true && islandFace === "tab",
+  );
+  $effect(() => {
+    toolPeekState.inIsland = peekInIsland;
+  });
+  const islandPeekTool = $derived(
+    peekInIsland && toolPeekState.open ? toolPeekState.tool : null,
+  );
+  /** Medida del vistazo ya pintado. Hasta tenerla, la isla no crece. */
+  let islandPeekSize = $state<{ w: number; h: number } | null>(null);
+  const islandPeekBox = $derived(islandPeekTool ? islandPeekSize : null);
+  /**
+   * El anclaje de la tira al canto sobrevive al cierre del vistazo: la caja
+   * encoge durante `--island-open-dur` y, soltado de golpe, la tira se
+   * centraba en la caja todavía alta —los iconos caían al fondo y subían con
+   * el encogimiento—. Mismo patrón que `sideHold`.
+   */
+  let peekHold = $state(false);
+  $effect(() => {
+    if (islandPeekBox != null) {
+      peekHold = true;
+      return;
+    }
+    if (!peekHold) return;
+    const timer = setTimeout(() => (peekHold = false), ms(MOTION.islandOpen));
+    return () => clearTimeout(timer);
+  });
+
   /**
    * Hay una consola viva en la isla: a la vista, tapada por otra cara
    * (clipboard / textos) o achicada en el dock.
@@ -1963,6 +2134,12 @@
   /** Alto de la zona de pestaña cuando la tarjeta cuelga (igual que cerrada). */
   const faceTabH = $derived(islandCue ? PILL.islandCueThick : PILL.islandThick);
 
+  /** La letra cuelga de la pestaña cerrada: solo arriba/abajo, sin otra cara. */
+  const lyricHang = $derived(
+    mediaLyric != null && dock != null && dockAxis(dock.edge) === "y" && islandFace === "tab",
+  );
+  let lyricsEl = $state<HTMLElement | null>(null);
+
   /**
    * Celdas de la tira abierta: la marca, las herramientas y el aviso de update.
    *
@@ -1973,6 +2150,7 @@
   const islandSlots = $derived(
     1 +
       stripNodes.length +
+      (mediaCell ? 1 : 0) +
       (updateChip ? 1 : 0) +
       (systemChip || volumeChip ? 1 : 0) +
       islandLiveSlots(activity),
@@ -2021,9 +2199,12 @@
         // transición de cierre la tiene que encoger de una.
         sideInBox,
         // El primer aviso con texto reserva su tramo fijo en la pestaña.
-        islandCueMsg,
+        mediaLyric != null && !lyricHang ? PILL.islandLyricW : islandCueMsg || mediaTitleOn,
         // La cara live crece una fila compacta por chip.
         chips.length,
+        // El vistazo abierto dentro de la tira la hace crecer hacia adentro.
+        islandPeekBox,
+        lyricHang ? { w: PILL.islandLyricHangW, h: PILL.islandLyricHangH } : null,
       ),
     ),
   );
@@ -2040,13 +2221,14 @@
   );
 
   /**
-   * Cifra corta en el badge de la tira. En cantos laterales no cabe texto:
-   * solo el punto. Arriba/abajo (eje y) sí entra un número; waiting usa «!».
+   * Cifra corta en el badge de la tira: un número, o «!» si un agente espera.
+   * Va igual en los cuatro cantos: el botón mide lo mismo en la columna que
+   * en la fila, así que al costado también entra.
    */
   const islandAgentBadgeLabel = $derived.by(() => {
     if (!islandCue) return null;
     if (chip.tone === "count") return chip.label;
-    if (peekEdgeAxis === "y" && chip.tone === "waiting") return "!";
+    if (chip.tone === "waiting") return "!";
     return null;
   });
 
@@ -2158,14 +2340,11 @@
     void pillTrace(msg).catch(() => {});
   }
 
+  /** Las consolas de agentes viven en su ventana: abrirla es mostrarlas. */
   async function openAgentsConsole() {
-    try {
-      revealAgentsConsole();
-      await openIslandTool("agents");
-      agentsConsoleOpen = true;
-    } catch (err) {
-      console.warn("abrir consola de agentes", err);
-    }
+    await agentsEnsureWindow().catch((err) => {
+      console.warn("abrir la ventana de agentes", err);
+    });
   }
 
   /**
@@ -2184,21 +2363,22 @@
    * cambia nada si ya está a la vista.
    */
   async function openConsoleSession(session: string): Promise<void> {
-    await openAgentsConsole();
-    await tick();
-    requestConsoleFocus(session);
-    window.setTimeout(() => requestConsoleFocus(session), 200);
+    // Las consolas viven en la ventana de agentes: ahí se muestra esta PTY.
+    await focusAgentSession("terminal", session);
   }
 
   function activateAgentChip(which: AgentChip | null, preferBindFromGesture = false) {
     const current = which ?? chip;
     if (agentsDock.minimized && (current.tone === "off" || !which)) {
-      void openIslandTool("agents");
-      revealAgentsConsole();
+      void agentsEnsureWindow().catch(() => {});
       return;
     }
     const target = current.target;
     const preferBind = preferBindFromGesture;
+    if (target.kind === "chat") {
+      void focusAgentSession("chat", target.session);
+      return;
+    }
     if (target.kind === "console") {
       void openAgentsConsoleAt(target.presenceId);
       if (target.presenceId) presence.markSeen(target.presenceId);
@@ -2254,6 +2434,30 @@
     void appUpdate.advance();
   }
 
+  async function decidePending(item: PendingItem, decision: PermissionDecision) {
+    if (authBusy) return;
+    authBusy = true;
+    try {
+      await agents.decide(item.sessionId, item.permission.id, decision);
+    } catch (err) {
+      console.warn("decidir permiso de agente", err);
+    } finally {
+      authBusy = false;
+    }
+  }
+
+  async function answerPending(item: PendingItem, updatedInput: unknown) {
+    if (authBusy) return;
+    authBusy = true;
+    try {
+      await agents.answer(item.sessionId, item.permission.id, updatedInput);
+    } catch (err) {
+      console.warn("contestar pregunta de agente", err);
+    } finally {
+      authBusy = false;
+    }
+  }
+
   async function decideAuth(decision: PermissionDecision) {
     const req = authRequest;
     if (!req || authBusy) return;
@@ -2274,7 +2478,8 @@
    */
   const authAt = $derived.by(() => {
     void areasEpoch;
-    const w = 320;
+    // Ancho para leer un comando o una pregunta con sus opciones.
+    const w = 360;
     // Hueco corto: tiene que quedar dentro de REACH para que nazca el cuello.
     const gap = 8;
     const areas = stage.workAreas();
@@ -2895,6 +3100,17 @@
           return;
         }
       }
+      // Sobre la letra tampoco: la tira es más baja que la pestaña con letra,
+      // y abrirla dejaría el cursor afuera (cerrar, crecer, abrir…).
+      if (overPill && lyricHang && !dock?.expanded && lyricsEl) {
+        const cursor = await overlayCursor().catch(() => null);
+        if (!alive) return;
+        const r = lyricsEl.getBoundingClientRect();
+        if (pointInRect(cursor, { x: r.x, y: r.y, w: r.width, h: r.height })) {
+          hoveredAt = null;
+          return;
+        }
+      }
       let over = overPill;
       if (!over && liveHoverHold) {
         const cursor = await overlayCursor().catch(() => null);
@@ -3458,13 +3674,30 @@
     }, 150);
   }
 
+  /**
+   * Un cambio de pantallas llegó con la pill ocupada y quedó sin aplicar.
+   *
+   * Antes se descartaba: desenchufar un monitor con una cara abierta dejaba la
+   * pill donde estaba —a veces fuera de toda pantalla— hasta el próximo cambio.
+   * Ahora se reintenta cuando vuelve al reposo (ver el efecto de abajo).
+   */
+  let resettlePending = $state(false);
+
   async function resettleAfterGeometry() {
     await stage.loadAreas();
     const booting = bootAt > 0 && Date.now() - bootAt < BOOT_RESEAT_MS;
-    if (flying || openingWheel || slotBusy || returnHomeSuppressed) return;
-    if (surfaces.dragging || dragOrigin || anySpatialOpen()) return;
-    if (surface !== "none" && surface !== "edge") return;
-    if (dock?.expanded && !booting) return;
+    const busy =
+      flying ||
+      openingWheel ||
+      slotBusy ||
+      returnHomeSuppressed ||
+      surfaces.dragging ||
+      dragOrigin ||
+      anySpatialOpen() ||
+      (surface !== "none" && surface !== "edge") ||
+      (dock?.expanded && !booting);
+    resettlePending = Boolean(busy);
+    if (busy) return;
     const size = stage.applied() ?? restSize();
     refreshDefaultHome();
     const docked = surface === "edge" ? (dock?.edge ?? null) : null;
@@ -3486,6 +3719,14 @@
     }
     settleDock({ keep: homeChosen });
   }
+
+  $effect(() => {
+    if (!resettlePending) return;
+    // Solo lo reactivo: el resto de las condiciones las vuelve a mirar
+    // `resettleAfterGeometry`, que deja la marca puesta si aún no toca.
+    if (dock?.expanded || (surface !== "none" && surface !== "edge")) return;
+    queueResettle();
+  });
 
   /**
    * Tras cerrar un float: re-acopla solo si ya está en un canto o justo en el
@@ -3686,6 +3927,15 @@
       wheelQuick = false;
       surfaces.resetInteraction();
 
+      // Los agentes viven en su ventana (docs/PLAN_VENTANA_AGENTES.md): la
+      // rueda, el atajo y el catálogo la abren en vez de la cara de consola.
+      if (id === "agents") {
+        await agentsEnsureWindow().catch((err) => {
+          console.warn("abrir la ventana de agentes", err);
+        });
+        return;
+      }
+
       const intent = slotIntent(
         id,
         spatialToolOpen(id),
@@ -3697,7 +3947,7 @@
 
       if (intent === "close") {
         // El panel del costado se apaga solo: la isla no colapsa.
-        if (id !== "agents" && sidePanel === id) {
+        if (sidePanel === id) {
           sidePanel = null;
           // Espejo del cierre genérico: el int de la tool no puede quedar
           // colgado bloqueando la vuelta al hogar.
@@ -3745,13 +3995,7 @@
 
       if (gen !== slotGen) return;
       if (!shouldCommitShow(slotPending)) return;
-      if (
-        id === "clipboard" ||
-        id === "snippets" ||
-        id === "system" ||
-        id === "agents"
-      ) {
-        if (id === "agents" && !AGENTS_ENABLED) return;
+      if (id === "clipboard" || id === "snippets" || id === "system") {
         // Con la cara de la consola a la vista, clipboard y textos entran AL
         // COSTADO dentro de la isla: la consola no se cierra y el pegado
         // entra a su sesión. Sin consola, abren como cara, como siempre.
@@ -4519,6 +4763,7 @@
     window.addEventListener("resize", queueResettle);
     window.addEventListener(OVERLAY_GEOMETRY, queueResettle);
     unlisteners.push(onOverlayReady(() => queueResettle()));
+    unlisteners.push(onOverlayWorkArea(() => queueResettle()));
     unlisteners.push(onOverlayDismiss(onOutside));
     unlisteners.push(
       onOverlayYieldMain(() => {
@@ -4581,7 +4826,7 @@
   data-bloom={wheelBloomEdge ?? undefined}
   style="left: {at.x}px; top: {at.y}px; width: {box.w}px; height: {box.h}px; {dockedTabWindow
     ? `min-width: ${dockedTabWindow.w}px; min-height: ${dockedTabWindow.h}px; `
-    : ''}--pill-bar: {PILL.bar}px; --island-tool: {PILL.islandTool}px; --island-gap: {PILL.islandGap}px; --island-cue-btn: {PILL.islandCueBtn}px; --island-cue-mark: {PILL.islandCueMark}px; --island-cue-msg-w: {PILL.islandCueMsgW}px; --face-tab-h: {faceTabH}px; --face-card-h: {PILL.islandCardH}px; --face-dict-h: {PILL.islandDictH}px; --face-clip-w: {PILL.islandClipW}px; --face-clip-h: {PILL.islandClipH}px; --face-sys-w: {PILL.islandSysW}px; --face-sys-h: {PILL.islandSysH}px; --face-agents-w: {agentsBrowserOpen
+    : ''}--pill-bar: {PILL.bar}px; --pill-pad: {PILL.pad}px; --island-tool: {PILL.islandTool}px; --island-gap: {PILL.islandGap}px; --island-cue-btn: {PILL.islandCueBtn}px; --island-cue-mark: {PILL.islandCueMark}px; --island-cue-msg-w: {PILL.islandCueMsgW}px; --island-lyric-w: {PILL.islandLyricW}px; --face-tab-h: {faceTabH}px; --face-card-h: {PILL.islandCardH}px; --face-dict-h: {PILL.islandDictH}px; --face-clip-w: {PILL.islandClipW}px; --face-clip-h: {PILL.islandClipH}px; --face-sys-w: {PILL.islandSysW}px; --face-sys-h: {PILL.islandSysH}px; --face-agents-w: {agentsBrowserOpen
     ? PILL.islandBrowseW
     : agentsConsoleView
       ? PILL.islandAgentsW
@@ -4589,7 +4834,7 @@
     ? PILL.islandBrowseH
     : agentsConsoleView
       ? PILL.islandAgentsH
-      : PILL.islandAgentsSetupH}px; --face-live-w: {PILL.islandDictW}px; --island-live-row: {PILL.islandLiveRow}px; --island-live-rows: {Math.max(
+      : PILL.islandAgentsSetupH}px; --face-live-w: {PILL.islandDictW}px; --face-live-side-w: {PILL.islandLiveSideW}px; --island-live-row: {PILL.islandLiveRow}px; --island-live-rows: {Math.max(
     1,
     chips.length,
   )}; --island-clip-r: {PILL.islandClipR}px; --rec-drop: {PILL.recDrop}px; --rec-drop-gap: {PILL.recDropGap}px; {flightLift
@@ -4611,6 +4856,7 @@
       class="p-island"
       class:is-open={islandOpen}
       class:is-face={faceOpen}
+      class:is-peek={islandPeekBox != null || peekHold}
       class:has-side={sideApplied}
       class:is-detach-bounce={detachBounce}
       class:is-retach-cue={retachCue}
@@ -4748,9 +4994,58 @@
                   </span>
                 </button>
               {/if}
+              {#if mediaRest}
+                {@const mediaTip = mediaRest.artist
+                  ? `${mediaRest.title} — ${mediaRest.artist}`
+                  : mediaRest.title}
+                <!-- Clic: pausa, igual que la celda de la tira. -->
+                <button
+                  type="button"
+                  class="p-media-cue"
+                  class:is-msg={mediaTitleOn || (mediaLyric != null && !lyricHang)}
+                  disabled={!mediaRest.can_toggle}
+                  onclick={() => void media.control("toggle")}
+                  use:tip={mediaTip}
+                  aria-label={`${t("pill.peek.mediaPause")}: ${mediaTip}`}
+                >
+                  {#if mediaRest.thumbnail}
+                    <img class="p-media-cover" src={mediaRest.thumbnail} alt="" draggable="false" />
+                  {/if}
+                  {#if mediaTitleOn}
+                    <span class="p-island-cue-msg" class:is-lyric={mediaLyric != null && !lyricHang}
+                      >{mediaRest.title}</span
+                    >
+                  {:else if mediaLyric != null && !lyricHang}
+                    {#key mediaLyric}
+                      <span class="p-island-cue-msg is-lyric">{mediaLyric || "♪"}</span>
+                    {/key}
+                  {/if}
+                  <span class="p-media-eq" aria-hidden="true">
+                    <i></i><i></i><i></i>
+                  </span>
+                </button>
+              {/if}
             </div>
           {/if}
         </div>
+        {#if lyricHang && !islandOpen}
+          <!-- Clic: trae la app que suena. El hover acá no abre la tira. -->
+          <button
+            type="button"
+            class="p-island-lyrics"
+            data-no-drag
+            bind:this={lyricsEl}
+            onpointerdown={(e) => e.stopPropagation()}
+            onclick={() => void media.focus()}
+            aria-label={mediaLyric || t("pill.peek.mediaOpenPlayer")}
+            transition:opacityFade
+          >
+            {#key mediaLyricAt}
+              <span class="p-lyric-now">{mediaLyric || "♪"}</span>
+              <span class="p-lyric-next" aria-hidden="true">{mediaLyricNext}</span>
+            {/key}
+          </button>
+        {/if}
         <div
           class="p-island-tools"
           class:is-open={islandOpen}
@@ -4821,8 +5116,24 @@
           <!-- Abierta, la pestaña se desmonta y con ella su chip de update.
                Reaparece como celda de la tira —no colgando— para que el clic
                siga existiendo sin que la silueta cambie. -->
-          {#if updateChip}
+          {#if mediaCell}
             {@const slot = stripNodes.length + 1 + islandLiveSlots(activity)}
+            <button
+              type="button"
+              class="p-island-tool p-island-tool-media"
+              class:is-playing={mediaCell.playing}
+              style="--i: {slot}; --s: {Math.abs((islandSlots - 1) / 2 - slot)}"
+              disabled={!mediaCell.can_toggle}
+              use:toolPeek={{ tool: "media", fallback: mediaLabel }}
+              aria-label={mediaLabel}
+              onclick={() => void media.control("toggle")}
+            >
+              <Icon icon={mediaCell.playing ? Pause : Play} size={20} strokeWidth={1.7} />
+            </button>
+          {/if}
+          {#if updateChip}
+            {@const slot =
+              stripNodes.length + 1 + (mediaCell ? 1 : 0) + islandLiveSlots(activity)}
             <button
               type="button"
               class="p-island-tool p-island-tool-update"
@@ -4838,6 +5149,17 @@
             </button>
           {/if}
         </div>
+        {#if islandPeekTool}
+          <div class="p-island-peek">
+            <IslandPeek
+              tool={islandPeekTool}
+              fallback={toolPeekState.fallback}
+              shown={islandPeekBox != null}
+              vertical={peekEdgeAxis === "x"}
+              onsize={(size) => (islandPeekSize = size)}
+            />
+          </div>
+        {/if}
         {#if liveFaceOpen}
           <div
             class="p-face"
@@ -4864,6 +5186,16 @@
                     use:tip={liveTitle(c)}
                     aria-label={chipAria(c)}
                   >
+                    <!-- Al costado la fila es solo esto: el estado. -->
+                    <span class="p-live-state" aria-hidden="true">
+                      {#if c.tone === "ready"}
+                        <Icon icon={Check} size={14} strokeWidth={2.2} />
+                      {:else if c.tone === "waiting"}
+                        !
+                      {:else}
+                        <i class="p-live-spin"></i>
+                      {/if}
+                    </span>
                     <span class="p-live-row-logos" aria-hidden="true">
                       {#if logos.length > 0}
                         {#each logos as id (id)}
@@ -5692,11 +6024,12 @@
     style="left: {authAt.x}px; top: {authAt.y}px; width: {authAt.w}px; --tail: {authAt.tail}px"
     bind:this={authEl}
   >
-    <AgentAuthCard
-      permission={authView.permission}
+    <PillPending
+      items={pendingItems}
       busy={authBusy}
-      onOpenConsole={() => void openAgentsConsole()}
-      onDecide={(d) => void decideAuth(d)}
+      onDecide={(item, d) => void decidePending(item, d)}
+      onAnswer={(item, input) => void answerPending(item, input)}
+      onOpen={(item) => void focusAgentSession("chat", item.sessionId)}
     />
   </div>
 {/if}
@@ -6382,6 +6715,107 @@
     color: var(--info);
   }
 
+  /*
+   * Lo que suena, en la pestaña cerrada: carátula y ecualizador en una celda
+   * doble. Al costado se apilan, como el resto de los avisos.
+   */
+  .p-media-cue {
+    position: relative;
+    z-index: 2;
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+    height: var(--island-cue-btn);
+    gap: 5px;
+    border: 0;
+    padding: 0 4px;
+    background: transparent;
+    color: var(--text);
+    cursor: pointer;
+    pointer-events: auto;
+  }
+
+  .p-root[data-edge="left"] .p-media-cue,
+  .p-root[data-edge="right"] .p-media-cue {
+    width: var(--island-cue-btn);
+    height: auto;
+    flex-direction: column;
+    padding: 4px 0;
+  }
+
+  .p-media-cue:disabled {
+    cursor: default;
+  }
+
+  .p-media-cover {
+    width: var(--island-cue-mark);
+    height: var(--island-cue-mark);
+    flex: none;
+    border-radius: 5px;
+    object-fit: cover;
+    box-shadow: inset 0 0 0 1px color-mix(in sRGB, var(--text) 12%, transparent);
+  }
+
+  /* Tres barras que laten a destiempo: se lee «suena» sin decir nada. */
+  .p-media-eq {
+    /* Tres ritmos que no coinciden: si latieran juntas se leería un bloque. */
+    --eq-a: 0.9s;
+    --eq-b: 0.7s;
+    --eq-c: 1.1s;
+
+    display: flex;
+    width: 12px;
+    height: 12px;
+    flex: none;
+    align-items: flex-end;
+    justify-content: space-between;
+  }
+
+  .p-media-eq i {
+    width: 2.5px;
+    height: 100%;
+    border-radius: 1px;
+    background: currentColor;
+    transform-origin: bottom;
+    animation: p-media-eq var(--eq-a) var(--ease-smooth-out, ease-out) infinite alternate;
+  }
+
+  .p-media-eq i:nth-child(2) {
+    animation-delay: -0.45s;
+    animation-duration: var(--eq-b);
+  }
+
+  .p-media-eq i:nth-child(3) {
+    animation-delay: -0.2s;
+    animation-duration: var(--eq-c);
+  }
+
+  @keyframes p-media-eq {
+    from {
+      transform: scaleY(0.25);
+    }
+
+    to {
+      transform: scaleY(1);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .p-media-eq i {
+      animation: none;
+      transform: scaleY(0.6);
+    }
+  }
+
+  /* En pausa baja el tono: sonando es lo que importa ver de reojo. */
+  .p-island-tool-media {
+    color: var(--muted);
+  }
+
+  .p-island-tool-media.is-playing {
+    color: var(--text);
+  }
+
   .p-island-tool-update.is-ready {
     color: var(--ok);
   }
@@ -6424,6 +6858,79 @@
   .p-island.is-face .p-face {
     flex: 1 1 auto;
     min-height: 0;
+  }
+
+  /*
+   * Vistazo dentro de la tira: la tira queda contra el canto y el vistazo
+   * ocupa el tramo de adentro que la caja ganó (ver `contentFor`). Sin esto
+   * la tira se centraría en la caja crecida y se despegaría del borde.
+   */
+  .p-root[data-edge="top"] .p-island.is-peek .p-island-body {
+    place-items: start center;
+  }
+
+  .p-root[data-edge="bottom"] .p-island.is-peek .p-island-body {
+    place-items: end center;
+  }
+
+  .p-root[data-edge="left"] .p-island.is-peek .p-island-body {
+    place-items: center start;
+  }
+
+  .p-root[data-edge="right"] .p-island.is-peek .p-island-body {
+    place-items: center end;
+  }
+
+  /*
+   * Anclada, la tira queda a la misma distancia del canto que centrada en la
+   * tira sola: la caja suma `PILL.pad` por lado y la isla pierde uno hacia
+   * adentro, así que centrada queda a `pad / 2`. Sin esto, al soltar el
+   * anclaje tras cerrar el vistazo, la fila entera saltaba 2 px.
+   */
+  .p-root[data-edge="top"] .p-island.is-peek .p-island-tools {
+    margin-top: calc(var(--pill-pad) / 2);
+  }
+
+  .p-root[data-edge="bottom"] .p-island.is-peek .p-island-tools {
+    margin-bottom: calc(var(--pill-pad) / 2);
+  }
+
+  .p-root[data-edge="left"] .p-island.is-peek .p-island-tools {
+    margin-left: calc(var(--pill-pad) / 2);
+  }
+
+  .p-root[data-edge="right"] .p-island.is-peek .p-island-tools {
+    margin-right: calc(var(--pill-pad) / 2);
+  }
+
+  .p-island-peek {
+    position: absolute;
+    z-index: 2;
+  }
+
+  /* Debajo de la tira ya corrida `pad / 2`: el sobrante reparte igual arriba y abajo. */
+  .p-root[data-edge="top"] .p-island-peek {
+    top: calc(var(--island-tool) + var(--pill-pad) / 2);
+    left: 50%;
+    transform: translateX(-50%);
+  }
+
+  .p-root[data-edge="bottom"] .p-island-peek {
+    bottom: calc(var(--island-tool) + var(--pill-pad) / 2);
+    left: 50%;
+    transform: translateX(-50%);
+  }
+
+  .p-root[data-edge="left"] .p-island-peek {
+    top: 50%;
+    left: calc(var(--island-tool) + var(--pill-pad) / 2);
+    transform: translateY(-50%);
+  }
+
+  .p-root[data-edge="right"] .p-island-peek {
+    top: 50%;
+    right: calc(var(--island-tool) + var(--pill-pad) / 2);
+    transform: translateY(-50%);
   }
 
   .p-island.is-face .p-island-tools {
@@ -6474,6 +6981,65 @@
     align-self: stretch;
   }
 
+  /*
+   * Al costado: una columna angosta con el estado de cada agente y nada más.
+   * El texto (qué hace, en qué carpeta) queda en el tooltip; el clic sigue
+   * llevando a la consola, y un «listo» se descarta abriéndolo.
+   */
+  .p-root[data-edge="left"] .p-island.is-face .p-face[data-face="live"],
+  .p-root[data-edge="right"] .p-island.is-face .p-face[data-face="live"] {
+    width: var(--face-live-side-w);
+    padding: 0;
+  }
+
+  .p-live-state {
+    display: none;
+  }
+
+  .p-root[data-edge="left"] .p-face[data-face="live"] .p-live-state,
+  .p-root[data-edge="right"] .p-face[data-face="live"] .p-live-state {
+    display: grid;
+    width: 100%;
+    height: 100%;
+    place-items: center;
+    font-size: 0.8125rem;
+    font-weight: 750;
+  }
+
+  .p-root[data-edge="left"] .p-face[data-face="live"] :is(.p-live-row-logos, .p-live-row-label, .p-live-act, .p-live-x),
+  .p-root[data-edge="right"] .p-face[data-face="live"] :is(.p-live-row-logos, .p-live-row-label, .p-live-act, .p-live-x) {
+    display: none;
+  }
+
+  .p-root[data-edge="left"] .p-face[data-face="live"] .p-live-row,
+  .p-root[data-edge="right"] .p-face[data-face="live"] .p-live-row {
+    justify-content: center;
+    padding: 0;
+  }
+
+  /* Trabajando: un aro que gira. Sin texto, el movimiento es el mensaje. */
+  .p-live-spin {
+    width: 12px;
+    height: 12px;
+    box-sizing: border-box;
+    border: 2px solid color-mix(in sRGB, currentColor 25%, transparent);
+    border-top-color: currentColor;
+    border-radius: 999px;
+    animation: p-live-spin 0.8s linear infinite;
+  }
+
+  @keyframes p-live-spin {
+    to {
+      transform: rotate(1turn);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .p-live-spin {
+      animation: none;
+    }
+  }
+
   .p-live-list {
     display: flex;
     width: 100%;
@@ -6495,19 +7061,29 @@
     flex: 0 0 var(--island-live-row);
   }
 
+  /*
+   * Sin fondo en reposo, y el del hover concéntrico con la isla.
+   *
+   * Eran bloques tintados de radio 8, pegados uno con otro, dentro de una
+   * pill de radio 22: los radios no acompañaban y el aviso se leía como cajas
+   * apiladas sobre la pill. El estado ya lo dicen el color del texto y el
+   * logo; el fondo aparece al apuntar, 2 px más adentro que la fila para dejar
+   * aire entre una y otra, con el radio de la isla menos su margen.
+   */
   .p-live-row {
     position: relative;
     display: flex;
     width: 100%;
     min-width: 0;
-    height: 100%;
+    height: calc(100% - 4px);
     flex: 1 1 auto;
     align-items: center;
+    align-self: center;
     gap: 8px;
     border: 0;
-    border-radius: 8px;
+    border-radius: calc(var(--island-clip-r, 22px) - 8px);
     padding: 0 8px;
-    background: color-mix(in sRGB, var(--text) 5%, transparent);
+    background: transparent;
     color: var(--muted);
     text-align: left;
     cursor: pointer;
@@ -6533,23 +7109,19 @@
   }
 
   .p-live-row.is-waiting {
-    background: color-mix(in sRGB, var(--rec) 14%, transparent);
     color: var(--rec);
   }
 
   .p-live-row.is-working {
-    background: color-mix(in sRGB, var(--warn) 10%, transparent);
     color: var(--warn);
     animation: p-agent-pulse 1.8s var(--ease-liquid) infinite;
   }
 
   .p-live-row.is-ready {
-    background: color-mix(in sRGB, var(--ok) 12%, transparent);
     color: var(--ok);
   }
 
   .p-live-row.is-count {
-    background: color-mix(in sRGB, var(--accent) 12%, transparent);
     color: var(--accent);
   }
 
@@ -7311,6 +7883,144 @@
     letter-spacing: 0.02em;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  /*
+   * Al costado el aviso se apila a lo largo del canto: los logos en columna
+   * y el texto girado. El botón pasa a medir su ancho fijo y el alto que pida
+   * el contenido; con el alto fijo de la fila, varios logos apilados quedaban
+   * recortados.
+   */
+  .p-root[data-edge="left"] .p-island-cues .p-island-cue.p-agent,
+  .p-root[data-edge="right"] .p-island-cues .p-island-cue.p-agent {
+    width: var(--island-cue-btn);
+    height: auto;
+    min-height: var(--island-cue-btn);
+    padding: 4px 0;
+  }
+
+  .p-root[data-edge="left"] .p-island-cues .p-island-cue.p-agent.is-msg,
+  .p-root[data-edge="right"] .p-island-cues .p-island-cue.p-agent.is-msg {
+    flex-direction: column;
+    align-items: center;
+  }
+
+  .p-root[data-edge="left"] .p-island-cue-msg,
+  .p-root[data-edge="right"] .p-island-cue-msg {
+    max-width: none;
+    max-height: calc(var(--island-cue-msg-w, 96px) - 0.25rem);
+    writing-mode: vertical-rl;
+  }
+
+  /*
+   * La letra colgando de la pestaña, a lo Apple Music: el verso actual grande
+   * y blanco, el siguiente del mismo cuerpo pero apagado. Al cambiar, el nuevo
+   * sube desde abajo.
+   */
+  .p-island-lyrics {
+    position: absolute;
+    z-index: 2;
+    left: 0;
+    right: 0;
+    top: var(--face-tab-h);
+    bottom: 0;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 2px;
+    border: 0;
+    padding: 0 18px 8px;
+    background: transparent;
+    color: var(--text);
+    font-family: var(--font-sans);
+    font-size: 0.9375rem;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    line-height: 1.25;
+    text-align: center;
+    cursor: pointer;
+    pointer-events: auto;
+  }
+
+  .p-root[data-edge="bottom"] .p-island-lyrics {
+    top: 0;
+    bottom: var(--face-tab-h);
+    padding: 8px 18px 0;
+  }
+
+  .p-island-lyrics:focus-visible {
+    outline: none;
+    box-shadow: var(--rb-focus);
+  }
+
+  .p-lyric-now,
+  .p-lyric-next {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* Igual que en el vistazo: el verso actual parte en dos renglones en vez de
+     cortarse; el alto de la caja (`islandLyricHangH`) ya cuenta con ellos. */
+  .p-lyric-now {
+    display: flex;
+    min-height: 2.5em;
+    align-items: center;
+    justify-content: center;
+    white-space: normal;
+    text-wrap: balance;
+    animation: p-lyric-up var(--duration-slow, 200ms) var(--ease-smooth-out, ease-out);
+  }
+
+  .p-lyric-next {
+    min-height: 1.25em;
+    color: color-mix(in sRGB, var(--text) 32%, transparent);
+    animation: p-lyric-in var(--duration-slow, 200ms) var(--ease-smooth-out, ease-out);
+  }
+
+  @keyframes p-lyric-up {
+    from {
+      opacity: 0.32;
+      transform: translateY(0.6em);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .p-lyric-now,
+    .p-lyric-next {
+      animation: none;
+    }
+  }
+
+  /* Al costado, la letra tiene su propio tramo en la fila y entra con un fundido. */
+  .p-island-cue-msg.is-lyric {
+    max-width: calc(var(--island-lyric-w, 200px) - 0.25rem);
+    font-weight: 600;
+    letter-spacing: 0;
+    animation: p-lyric-in var(--duration-slow, 200ms) var(--ease-smooth-out, ease-out);
+  }
+
+  .p-root[data-edge="left"] .p-island-cue-msg.is-lyric,
+  .p-root[data-edge="right"] .p-island-cue-msg.is-lyric {
+    max-width: none;
+    max-height: calc(var(--island-lyric-w, 200px) - 0.25rem);
+  }
+
+  @keyframes p-lyric-in {
+    from {
+      opacity: 0;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .p-island-cue-msg.is-lyric {
+      animation: none;
+    }
+  }
+
+  /* A la izquierda se lee de abajo hacia arriba, mirando hacia la pantalla. */
+  .p-root[data-edge="left"] .p-island-cue-msg {
+    transform: rotate(180deg);
   }
 
   .p-island-agent-badge {

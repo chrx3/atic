@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { PresenceView } from "$lib/agentPresenceReduce";
 import {
+  type ChatChipSession,
   agentChipLogos,
   agentChip,
   agentChips,
@@ -603,5 +604,38 @@ describe("logoSlots", () => {
 
   it("sin logos ocupa igual una celda (el logo genérico)", () => {
     expect(logoSlots([]).cells).toBe(1);
+  });
+});
+
+describe("un chip por sesión de chat", () => {
+  const session = (over: Partial<ChatChipSession>): ChatChipSession => ({
+    id: "s1",
+    backendId: "claude-code",
+    status: "ready",
+    pending: 0,
+    unread: 0,
+    lastText: null,
+    answering: false,
+    updatedAt: 0,
+    ...over,
+  });
+
+  it("cada sesión su chip, y el clic lleva a esa sesión", () => {
+    const chips = agentChips({
+      chat: { ...emptyChat },
+      chats: [
+        session({ id: "a", unread: 1, lastText: "Listo el cambio", updatedAt: 1 }),
+        session({ id: "b", backendId: "codex", status: "working", updatedAt: 2 }),
+        session({ id: "c", pending: 1, updatedAt: 3 }),
+        session({ id: "d" }),
+      ],
+      chatEnabled: true,
+      pagerEnabled: false,
+      presence: [],
+    });
+    expect(chips.map((c) => c.id)).toEqual(["chat:c", "chat:b", "chat:a"]);
+    expect(chips[0].tone).toBe("waiting");
+    expect(chips[2].target).toEqual({ kind: "chat", session: "a" });
+    expect(chips[1].logoId).toBe("codex");
   });
 });

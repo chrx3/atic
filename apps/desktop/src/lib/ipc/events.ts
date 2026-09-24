@@ -90,6 +90,8 @@ export interface AticEvents {
   // Clipboard y fragmentos
   "clipboard-history-changed": void;
   "agents-composer-insert": AgentsComposerInsert;
+  /** Algo soltado sobre la ventana de agentes; `x`/`y` en px CSS de su webview. */
+  "agents-window-insert": AgentsComposerInsert;
   "snippets-changed": void;
   "clipboard-bubble-anchor": BubbleOpen;
   "clipboard-bubble-dismiss": void;
@@ -122,6 +124,8 @@ export interface AticEvents {
   "overlay-yield-main": void;
   /** El overlay ya está colocado: republicar viewport CSS y hit-rects. */
   "overlay-ready": void;
+  /** El área útil cambió (barra de tareas) sin cambiar el escritorio: reasentar. */
+  "overlay-work-area": void;
   /** Arrastre OLE/estante hacia agentes: pintar drop-target. */
   "overlay-item-drag": boolean;
 
@@ -208,7 +212,25 @@ export interface AticEvents {
   "fly-tool-slot": ToolId;
   /** Ajustes → Pill: olvidar el hogar elegido y volver arriba al centro. */
   "pill-home-reset": null;
+  /**
+   * Que la ventana de agentes muestre esta sesión (la pill, al hacer clic en
+   * un agente). `nonce` evita repetirlo: se manda dos veces por si la ventana
+   * recién se crea y su oyente todavía no existe.
+   */
+  "agents-focus": AgentsFocusRequest;
+  /** Una sesión se miró en alguna ventana: sus no leídos son cero en todas. */
+  "agents-seen": { session: string };
+  /** Rust cerró una sesión (la cerrara quien la cerrara): sale de todas las ventanas. */
+  "agent-stopped": { session: string };
+  /** Un permiso se contestó en alguna ventana: deja de estar pendiente en todas. */
+  "agents-permission-resolved": { session: string; id: string };
 }
+
+export type AgentsFocusRequest = {
+  kind: "chat" | "terminal";
+  session: string;
+  nonce: number;
+};
 
 export type AticEvent = keyof AticEvents;
 

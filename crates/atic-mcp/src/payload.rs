@@ -23,6 +23,18 @@ pub enum OutcomeStatus {
     Failed,
     Timeout,
     PermissionTimeout,
+    /// El hijo se detuvo a pedir un permiso: contéstalo con `atic_permission`.
+    PermissionRequired,
+}
+
+/// Un permiso que el hijo tiene esperando.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PendingPermission {
+    pub id: String,
+    pub tool: String,
+    pub description: String,
+    /// Input de la herramienta en JSON compacto y recortado.
+    pub input: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -33,6 +45,9 @@ pub struct Outcome {
     pub text: String,
     pub hint: Option<String>,
     pub elapsed_s: u64,
+    /// Permisos sin contestar. Un hub viejo no lo manda: por eso `default`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub permissions: Vec<PendingPermission>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -159,6 +174,28 @@ pub struct CancelRequest {
     pub session: String,
 }
 
+/// Qué se le contesta a un permiso del hijo.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PermissionAnswer {
+    Allow,
+    AllowAlways,
+    Deny,
+}
+
+/// Contestar un permiso de una sesión hija.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PermissionRequest {
+    pub session: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_id: Option<String>,
+    pub decision: PermissionAnswer,
+    /// Quién contesta: el hub solo deja al padre de la sesión o a un ancestro.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
+}
+
 /// Cerrar la sesión entera y liberar el proceso del agente.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CloseRequest {
@@ -204,5 +241,29 @@ mod tests {
         let r: Outcome = serde_json::from_str(texto).unwrap();
         assert_eq!(r.status, OutcomeStatus::Timeout);
         assert_eq!(r.session, "s1");
+        assert!(r.permissions.is_empty(), "un hub viejo no manda permisos");
+    }
+
+    #[test]
+    fn un_permiso_pendiente_llega_con_id_y_lo_que_quiere_hacer() {
+        let texto = r#"{"session":"s1","backend":"codex","status":"permission_required","text":"","hint":"contesta","elapsed_s":3,"permissions":[{"id":"p1","tool":"Bash","description":"correr ls","input":"{\"command\":\"ls\"}"}]}"#;
+        let r: Outcome = serde_json::from_str(texto).unwrap();
+        assert_eq!(r.status, OutcomeStatus::PermissionRequired);
+        assert_eq!(r.permissions[0].id, "p1");
+        assert_eq!(r.permissions[0].input, r#"{"command":"ls"}"#);
+    }
+
+    #[test]
+    fn el_pedido_de_permiso_viaja_en_el_formato_del_hub() {
+        let pedido = PermissionRequest {
+            session: "s1".into(),
+            permission_id: None,
+            decision: PermissionAnswer::AllowAlways,
+            from: Some("external:claude-code:1".into()),
+        };
+        let v = serde_json::to_value(&pedido).unwrap();
+        assert_eq!(v["decision"], "allow_always");
+        assert!(v.get("permissionId").is_none(), "sin id se omite");
+        assert_eq!(v["from"], "external:claude-code:1");
     }
 }

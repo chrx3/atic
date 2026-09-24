@@ -9,6 +9,11 @@ export type AgentDef = {
   cli: string;
   name: string;
   /**
+   * Id del backend estructurado en Rust (`bridge.rs`): con esto la ficha
+   * se abre como chat en vez de terminal.
+   */
+  backend: string;
+  /**
    * Línea oficial de instalación por sistema.
    *
    * `windows` usa `irm | iex` (los instaladores nativos) o npm cuando el
@@ -29,6 +34,7 @@ export const AGENTS: AgentDef[] = [
   {
     cli: "claude",
     name: "Claude Code",
+    backend: "claude-code",
     install: {
       windows: "irm https://claude.ai/install.ps1 | iex",
       macos: "curl -fsSL https://claude.ai/install.sh | bash",
@@ -37,6 +43,7 @@ export const AGENTS: AgentDef[] = [
   {
     cli: "opencode",
     name: "OpenCode",
+    backend: "opencode",
     install: {
       windows: "npm install -g opencode-ai",
       // v2 se instala standalone en ~/.opencode/bin (y le gana al shim npm).
@@ -46,6 +53,7 @@ export const AGENTS: AgentDef[] = [
   {
     cli: "codex",
     name: "Codex",
+    backend: "codex",
     install: {
       windows: "npm install -g @openai/codex",
       macos: "npm install -g @openai/codex",
@@ -54,6 +62,7 @@ export const AGENTS: AgentDef[] = [
   {
     cli: "cursor-agent",
     name: "Cursor",
+    backend: "cursor",
     install: {
       windows: "irm 'https://cursor.com/install?win32=true' | iex",
       macos: "curl https://cursor.com/install -fsS | bash",
@@ -63,6 +72,7 @@ export const AGENTS: AgentDef[] = [
     // Sucesor del Gemini CLI clásico, que Google retiró en jun-2026.
     cli: "agy",
     name: "Antigravity",
+    backend: "antigravity",
     install: {
       windows: "irm https://antigravity.google/cli/install.ps1 | iex",
       macos: "curl -fsSL https://antigravity.google/cli/install.sh | bash",
@@ -72,6 +82,7 @@ export const AGENTS: AgentDef[] = [
     // El instalador deja `grok` en `~/.grok/bin` y lo suma al PATH.
     cli: "grok",
     name: "Grok",
+    backend: "grok",
     install: {
       windows: "irm https://x.ai/cli/install.ps1 | iex",
       macos: "curl -fsSL https://x.ai/cli/install.sh | bash",

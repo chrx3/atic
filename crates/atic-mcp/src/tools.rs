@@ -318,6 +318,39 @@ pub struct CortarTurno {
     pub session: String,
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum DecisionPermiso {
+    Allow,
+    AllowAlways,
+    Deny,
+}
+
+impl DecisionPermiso {
+    fn into_payload(self) -> payload::PermissionAnswer {
+        match self {
+            Self::Allow => payload::PermissionAnswer::Allow,
+            Self::AllowAlways => payload::PermissionAnswer::AllowAlways,
+            Self::Deny => payload::PermissionAnswer::Deny,
+        }
+    }
+}
+
+/// Contestar un permiso que pidió una sesión que tú abriste.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ContestarPermiso {
+    /// Id de la sesión hija o el nombre que tenga.
+    pub session: String,
+    /// Id del permiso (viene en `permissions` de atic_wait / atic_delegate).
+    /// Se puede omitir si hay uno solo pendiente.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_id: Option<String>,
+    /// `allow` (esta vez), `allow_always` (esta y las parecidas, por la
+    /// sesión) o `deny`.
+    pub decision: DecisionPermiso,
+}
+
 /// Cerrar la sesión entera y liberar el proceso del agente.
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -509,7 +542,7 @@ impl AticServer {
 
     #[tool(
         name = "atic_wait",
-        description = "Espera a que termine el turno que ya está corriendo en una sesión, sin mandar nada nuevo. Úsala cuando atic_delegate o atic_prompt volvieron con status timeout."
+        description = "Espera a que termine el turno que ya está corriendo en una sesión, sin mandar nada nuevo. Úsala cuando atic_delegate o atic_prompt volvieron con status timeout. Vuelve antes con status permission_required si el agente se detiene a pedir un permiso."
     )]
     async fn atic_wait(
         &self,
@@ -536,6 +569,31 @@ impl AticServer {
             }
         })
         .await
+    }
+
+    #[tool(
+        name = "atic_permission",
+        description = "Contesta un permiso que pidió una sesión que tú abriste (allow, allow_always o deny). Úsala cuando atic_delegate, atic_prompt o atic_wait vuelven con status permission_required o permission_timeout: la lista `permissions` trae el id, la herramienta y lo que quiere hacer. Después sigue con atic_wait."
+    )]
+    async fn atic_permission(
+        &self,
+        params: Parameters<ContestarPermiso>,
+    ) -> Result<CallToolResult, McpError> {
+        let hub = match hub_client::locate().await {
+            Ok(h) => h,
+            Err(e) => return Self::error(e),
+        };
+        let p = params.0;
+        let pedido = payload::PermissionRequest {
+            session: p.session,
+            permission_id: p.permission_id,
+            decision: p.decision.into_payload(),
+            from: Some(padre(self.host.as_deref())),
+        };
+        match hub.permission(&pedido).await {
+            Ok(r) => Self::exito(&r),
+            Err(e) => Self::error(e),
+        }
     }
 
     #[tool(

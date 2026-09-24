@@ -22,6 +22,11 @@ pub fn set_session(id: &str, volume: f32) -> Result<(), String> {
     imp::set_session(id, volume)
 }
 
+/// La sesión de audio de un ejecutable (`spotify.exe`): su id y su volumen.
+pub fn session_by_exe(exe: &str) -> Option<(String, f32)> {
+    imp::session_by_exe(exe)
+}
+
 #[cfg(windows)]
 mod imp {
     use super::*;
@@ -225,6 +230,15 @@ mod imp {
         }
     }
 
+    pub fn session_by_exe(exe: &str) -> Option<(String, f32)> {
+        sessions().ok()?.into_iter().find_map(|s| {
+            let pid: u32 = s.id.parse().ok()?;
+            let path = process_path(pid)?;
+            let name = path.file_name()?.to_string_lossy().into_owned();
+            name.eq_ignore_ascii_case(exe).then_some((s.id, s.volume))
+        })
+    }
+
     // Las pruebas de `file_description` y `app_name` se mudaron a
     // `system_control::app_icons`, que es donde viven ahora esas funciones.
 }
@@ -390,6 +404,10 @@ mod imp {
     pub fn set_session(_id: &str, _volume: f32) -> Result<(), String> {
         Err("en este sistema el volumen se controla para todo el equipo".into())
     }
+
+    pub fn session_by_exe(_exe: &str) -> Option<(String, f32)> {
+        None
+    }
 }
 
 #[cfg(not(any(windows, target_os = "macos")))]
@@ -406,5 +424,8 @@ mod imp {
     }
     pub fn set_session(_: &str, _: f32) -> Result<(), String> {
         Err("no soportado".into())
+    }
+    pub fn session_by_exe(_: &str) -> Option<(String, f32)> {
+        None
     }
 }

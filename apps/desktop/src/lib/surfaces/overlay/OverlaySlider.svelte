@@ -29,6 +29,7 @@
     step = 0.01,
     label,
     onValue,
+    onCommit,
   }: {
     value: number;
     min?: number;
@@ -36,6 +37,8 @@
     step?: number;
     label?: string;
     onValue: (value: number) => void;
+    /** Valor final: al soltar el arrastre o tras cada tecla. */
+    onCommit?: (value: number) => void;
   } = $props();
 
   let track = $state<HTMLElement | null>(null);
@@ -44,6 +47,8 @@
   let domX = 0;
   let domAt = 0;
   let raf = 0;
+  /** Lo último que se mandó a `onValue` durante el gesto. */
+  let last: number | null = null;
 
   /** Sin `pointermove` del DOM en este rato, el cursor de Rust toma el relevo. */
   const DOM_STALE_MS = 32;
@@ -67,8 +72,13 @@
     return snap(min + ((clientX - box.left) / box.width) * span);
   }
 
+  function emit(next: number) {
+    last = next;
+    onValue(next);
+  }
+
   function apply(clientX: number) {
-    onValue(valueAt(clientX));
+    emit(valueAt(clientX));
   }
 
   function release() {
@@ -80,6 +90,8 @@
     window.removeEventListener("pointerup", release, true);
     window.removeEventListener("pointercancel", release, true);
     window.removeEventListener("pointermove", onDomMove, true);
+    if (last != null) onCommit?.(last);
+    last = null;
   }
 
   function onDomMove(event: PointerEvent) {
@@ -118,11 +130,13 @@
     if (event.key === "Home") {
       event.preventDefault();
       onValue(min);
+      onCommit?.(min);
       return;
     }
     if (event.key === "End") {
       event.preventDefault();
       onValue(max);
+      onCommit?.(max);
       return;
     }
     const dir =
@@ -133,7 +147,9 @@
           : 0;
     if (!dir) return;
     event.preventDefault();
-    onValue(snap(value + dir * jump));
+    const next = snap(value + dir * jump);
+    onValue(next);
+    onCommit?.(next);
   }
 </script>
 

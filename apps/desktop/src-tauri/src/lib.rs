@@ -20,9 +20,11 @@ mod launcher;
 mod launcher_icons;
 mod launcher_recents;
 mod live;
+mod lyrics;
 #[cfg(target_os = "macos")]
 mod macos_notes;
 mod mail;
+mod media;
 mod meeting_detection;
 mod mouse_bindings;
 mod notes;
@@ -314,6 +316,8 @@ pub fn run() {
             agents::bridge::agent_start,
             agents::bridge::agent_send,
             agents::bridge::agent_permission,
+            agents::bridge::agent_answer,
+            agents::bridge::agent_set_mode,
             agents::bridge::agent_skills,
             agents::bridge::agent_list_models,
             agents::bridge::agent_interrupt,
@@ -345,6 +349,8 @@ pub fn run() {
             agents::exe::cli_on_path,
             agents::console::console_open,
             agents::console::console_for_presence,
+            agents::console::console_agent_session,
+            agents::console::console_for_parent,
             agents::console::console_write,
             agents::console::console_resize,
             agents::console::console_close,
@@ -393,6 +399,13 @@ pub fn run() {
             system_control::system_alert_settings,
             system_control::set_system_alert_settings,
             system_control::system_action,
+            media::media_now,
+            media::media_control,
+            media::media_seek,
+            media::media_focus,
+            media::media_volume,
+            media::media_set_volume,
+            lyrics::media_lyrics,
             paste_queue::list_paste_queue,
             paste_queue::enqueue_paste,
             paste_queue::dismiss_paste_queue_item,
@@ -410,6 +423,7 @@ pub fn run() {
             launcher::launcher_search,
             launcher::launcher_run,
             launcher::launcher_quit,
+            launcher::launcher_paste_text,
             launcher::launcher_list_favorites,
             launcher::launcher_list_recents,
             launcher::launcher_toggle_favorite,

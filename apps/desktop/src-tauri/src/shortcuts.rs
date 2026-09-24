@@ -392,7 +392,11 @@ pub fn register_shortcuts(app: &AppHandle, bindings: ShortcutBindings<'_>) -> Re
                 let handle = app.clone();
                 let held = AtomicBool::new(false);
                 if let Err(err) = gs.on_shortcut(*sc, move |_app, _sc, event| {
-                    if take_key_press(&held, event.state()) {
+                    // Interruptor solo en el atajo: la rueda y el catálogo
+                    // siempre abren.
+                    if take_key_press(&held, event.state())
+                        && !crate::agents_window::hide_if_focused(&handle)
+                    {
                         emit_tool_slot(&handle, "activate-tool-slot", "agents");
                     }
                 }) {
@@ -474,6 +478,8 @@ pub fn register_shortcuts(app: &AppHandle, bindings: ShortcutBindings<'_>) -> Re
             let held = AtomicBool::new(false);
             if let Err(err) = gs.on_shortcut(*sc, move |_app, _sc, event| {
                 if take_key_press(&held, event.state()) {
+                    // Destino de los emojis: la app que tenía el foco antes.
+                    clipboard_history::remember_paste_target();
                     launcher::toggle_via_slot(&handle);
                 }
             }) {

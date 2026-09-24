@@ -425,6 +425,7 @@ impl Traductor {
             turn,
             status,
             cost_usd: None,
+            duration_ms: None,
         });
         end_turn(turns);
         // Los índices vuelven a empezar en cada turno.
@@ -500,6 +501,7 @@ fn cierre_por_caida(turns: &Mutex<Turns>) -> Vec<AgentDelta> {
             turn,
             status: TurnStatus::Failed,
             cost_usd: None,
+            duration_ms: None,
         });
         end_turn(turns);
     }

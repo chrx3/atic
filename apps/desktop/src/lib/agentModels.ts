@@ -327,6 +327,11 @@ function writeStringMap(key: string, map: Record<string, string>): void {
   }
 }
 
+/** El modelo guardado tal cual, sin validar contra la lista; vacío si no hay. */
+export function rememberedModelId(backendId: string): string {
+  return backendId ? (readMap()[backendId] ?? "") : "";
+}
+
 /** Último modelo recordado para este backend, si sigue en la lista. */
 export function rememberedModel(
   backendId: string,

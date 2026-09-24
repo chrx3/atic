@@ -18,6 +18,7 @@
     hideLauncher,
     launcherListFavorites,
     launcherListRecents,
+    launcherPasteText,
     launcherQuit,
     launcherRun,
     launcherSearch,
@@ -56,7 +57,22 @@
   import { afterTransition, MOTION, ms, prefersReducedMotion, wait } from "$lib/motion";
   import LauncherIcon from "$surfaces/launcher/LauncherIcon.svelte";
   import Icon from "$ui/Icon.svelte";
-  import { t } from "$domain/i18n.svelte";
+  import { t, uiLocale } from "$domain/i18n.svelte";
+  import { shortcutOs } from "$core/hotkeys";
+  import {
+    EMOJI_GROUP_ICON,
+    EMOJI_GROUPS,
+    loadEmojiCatalog,
+    loadEmojiRecents,
+    loadEmojiTone,
+    moveInGrid,
+    pushEmojiRecent,
+    saveEmojiTone,
+    searchEmojis,
+    withSkin,
+    type Emoji,
+    type GridKey,
+  } from "$features/emoji/emoji";
   import { spanFrom } from "$surfaces/overlay/pill/pillQuota";
   import Kbd from "$ui/Kbd.svelte";
   import { Star, X } from "$lib/icons";
@@ -92,6 +108,11 @@
   /** Alto ancla compacto (= pill 40px; alineado a `LAUNCHER_SHAPE` en launcher.rs). */
   const COMPACT_H = 40;
   const EXPANDED_H = 360;
+  /** Modo emoji: un poco más alto que la lista para que la grilla respire. */
+  const EMOJI_H = 404;
+  const EMOJI_COLS = 8;
+  /** Muestra de cada tono en el botón (0 = amarillo por defecto). */
+  const TONE_SAMPLES = ["✋", "✋🏻", "✋🏼", "✋🏽", "✋🏾", "✋🏿"];
   const bubble = new Bubble();
   let el = $state<HTMLElement | null>(null);
   /** Toolbar de favs: hit-rect propio (viven fuera del ancho del float). */
@@ -148,9 +169,71 @@
   const favsStaggering = $derived(revealPhase === "favs" || revealPhase === "tuck");
   const motionPhase = $derived(revealing || revealPhase === "tuck");
 
+  /**
+   * Modo emoji (estilo Raycast): se entra escribiendo «:» en la barra vacía o
+   * con la acción «Emojis»; la query pasa a buscar en el catálogo local.
+   */
+  let emojiMode = $state(false);
+  let emojiCatalog = $state<Emoji[]>([]);
+  let emojiLoading = $state(false);
+  let emojiRecents = $state<string[]>([]);
+  let emojiTone = $state(0);
+  let emojiSelected = $state(0);
+  let emojiScrollEl = $state<HTMLElement | null>(null);
+
+  type EmojiSection = { key: string; label: string; icon: string; items: Emoji[] };
+  const emojiSections = $derived.by((): EmojiSection[] => {
+    if (!emojiMode || emojiCatalog.length === 0) return [];
+    const q = query.trim();
+    if (q) {
+      return [
+        {
+          key: "results",
+          label: t("overlay.results"),
+          icon: "",
+          items: searchEmojis(emojiCatalog, q),
+        },
+      ];
+    }
+    const byChar = new Map(emojiCatalog.map((e) => [e.char, e]));
+    const recentItems = emojiRecents
+      .map((char) => byChar.get(char))
+      .filter((e): e is Emoji => Boolean(e));
+    return [
+      {
+        key: "recents",
+        label: t("overlay.emoji.recents"),
+        icon: "🕘",
+        items: recentItems,
+      },
+      ...EMOJI_GROUPS.map((group) => ({
+        key: `g${group}`,
+        label: t(`overlay.emoji.groups.${group}`),
+        icon: EMOJI_GROUP_ICON[group],
+        items: emojiCatalog.filter((e) => e.group === group),
+      })),
+    ];
+  });
+  const emojiSizes = $derived(emojiSections.map((section) => section.items.length));
+  const emojiStarts = $derived.by(() => {
+    let acc = 0;
+    return emojiSizes.map((size) => {
+      const start = acc;
+      acc += size;
+      return start;
+    });
+  });
+  const emojiFlat = $derived(emojiSections.flatMap((section) => section.items));
+  const selectedEmoji = $derived(emojiFlat[emojiSelected]);
+  const activeEmojiSection = $derived(
+    emojiStarts.findLastIndex(
+      (start, i) => emojiSizes[i] > 0 && start <= emojiSelected,
+    ),
+  );
+
   const hasQuery = $derived(query.trim().length > 0);
   const list = $derived(hasQuery ? hits : recents);
-  const showResults = $derived(hasQuery || recents.length > 0);
+  const showResults = $derived(emojiMode || hasQuery || recents.length > 0);
   /** El resultado seleccionado es una app: Ctrl+Enter la cierra. */
   const selectedIsApp = $derived(list[selected]?.kind === "app");
 
@@ -266,6 +349,7 @@
     // Panel de resultados: volver a stadium compacto antes del repliegue.
     if (query.trim() || showResults) {
       clearSearchTimer();
+      emojiMode = false;
       query = "";
       clearHits();
       await tick();
@@ -666,6 +750,10 @@
 
   $effect(() => {
     if (!bubble.alive) return;
+    if (emojiMode) {
+      fitHeight(EMOJI_H);
+      return;
+    }
     const idleRecents = !hasQuery && recents.length > 0 && revealPhase === "ready";
     const open = hasQuery || idleRecents;
     fitHeight(open ? (hasQuery ? EXPANDED_H : recentsHeight) : compactH);
@@ -858,6 +946,7 @@
 
   async function reset(select = false) {
     clearSearchTimer();
+    emojiMode = false;
     query = "";
     hits = [];
     searching = false;
@@ -907,9 +996,125 @@
     };
   });
 
+  function onQueryInput() {
+    if (emojiMode) {
+      emojiSelected = 0;
+      emojiScrollEl?.scrollTo({ top: 0 });
+      return;
+    }
+    if (query === ":") {
+      enterEmojiMode();
+      return;
+    }
+    scheduleSearch(query);
+  }
+
+  async function ensureEmojiCatalog() {
+    if (emojiCatalog.length > 0 || emojiLoading) return;
+    emojiLoading = true;
+    try {
+      emojiCatalog = await loadEmojiCatalog(shortcutOs());
+    } catch {
+      error = t("overlay.emoji.loadError");
+    } finally {
+      emojiLoading = false;
+    }
+  }
+
+  function enterEmojiMode() {
+    clearSearchTimer();
+    clearHits();
+    query = "";
+    emojiMode = true;
+    emojiSelected = 0;
+    emojiRecents = loadEmojiRecents();
+    emojiTone = loadEmojiTone();
+    void ensureEmojiCatalog();
+    void focusSearch();
+  }
+
+  function exitEmojiMode() {
+    emojiMode = false;
+    query = "";
+    emojiSelected = 0;
+    error = "";
+    void focusSearch();
+  }
+
+  function emojiName(emoji: Emoji): string {
+    return uiLocale() === "en" ? emoji.nameEn : emoji.nameEs;
+  }
+
+  function cycleTone() {
+    emojiTone = (emojiTone + 1) % TONE_SAMPLES.length;
+    saveEmojiTone(emojiTone);
+  }
+
+  function jumpToEmojiSection(index: number) {
+    emojiSelected = emojiStarts[index] ?? 0;
+    emojiScrollEl
+      ?.querySelector(`[data-emoji-section="${index}"]`)
+      ?.scrollIntoView({ block: "start" });
+  }
+
+  /** Enter pega en la app de antes; Ctrl/Cmd+Enter solo copia. Ambos cierran. */
+  async function pickEmoji(emoji: Emoji | undefined, paste: boolean) {
+    if (!emoji) return;
+    emojiRecents = pushEmojiRecent(emojiRecents, emoji.char);
+    try {
+      await launcherPasteText(withSkin(emoji, emojiTone), paste);
+    } catch (failure) {
+      error = failure instanceof Error ? failure.message : String(failure);
+    }
+  }
+
+  function onEmojiKeydown(event: KeyboardEvent) {
+    switch (event.key) {
+      case "ArrowLeft":
+      case "ArrowRight":
+      case "ArrowUp":
+      case "ArrowDown":
+        event.preventDefault();
+        emojiSelected = moveInGrid(
+          emojiSizes,
+          emojiSelected,
+          event.key as GridKey,
+          EMOJI_COLS,
+        );
+        break;
+      case "Enter":
+        event.preventDefault();
+        void pickEmoji(selectedEmoji, !(event.ctrlKey || event.metaKey));
+        break;
+      case "Backspace":
+        // Borrar con la barra vacía sale del modo, como el chip de Raycast.
+        if (query === "") {
+          event.preventDefault();
+          exitEmojiMode();
+        }
+        break;
+    }
+  }
+
+  /** La selección con teclado arrastra el scroll; con el mouse ya está a la vista. */
+  $effect(() => {
+    if (!emojiMode || !emojiScrollEl) return;
+    const index = emojiSelected;
+    void emojiSections;
+    void tick().then(() => {
+      emojiScrollEl
+        ?.querySelector(`[data-emoji-index="${index}"]`)
+        ?.scrollIntoView({ block: "nearest" });
+    });
+  });
+
   async function run(id?: string) {
     const target = id ?? list[selected]?.id;
     if (!target) return;
+    if (target === "action:emoji") {
+      enterEmojiMode();
+      return;
+    }
     try {
       await launcherRun(target);
     } catch (failure) {
@@ -1020,6 +1225,12 @@
   }
 
   function onKeydown(event: KeyboardEvent) {
+    if (event.key === "Escape" && emojiMode && bubble.shown && !closing) {
+      // Primero se vuelve al launcher; el segundo Esc cierra.
+      event.preventDefault();
+      exitEmojiMode();
+      return;
+    }
     if (event.key === "Escape") {
       // Recuperación: aunque el float esté a medias, Esc corta drag + cierra.
       event.preventDefault();
@@ -1028,6 +1239,10 @@
       return;
     }
     if (!bubble.shown) return;
+    if (emojiMode) {
+      onEmojiKeydown(event);
+      return;
+    }
     if (event.key === "ArrowDown" && list.length > 0) {
       event.preventDefault();
       selected = (selected + 1) % list.length;
@@ -1098,7 +1313,10 @@
     class="lf"
     class:is-shown={bubble.shown}
     class:is-joined={joined}
-    class:is-expanded={hasQuery || (recents.length > 0 && revealPhase === "ready")}
+    class:is-expanded={emojiMode ||
+      hasQuery ||
+      (recents.length > 0 && revealPhase === "ready")}
+    class:is-emoji={emojiMode}
     class:is-revealing={revealing}
     class:is-favs-seq={favsSequencing}
     class:is-favs-stagger={favsStaggering}
@@ -1118,16 +1336,35 @@
     <div class="lf-bar" class:has-favs={favorites.length > 0}>
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <header class="lf-head" onpointerdown={startDrag}>
-        <span class="lf-search-icon" aria-hidden="true">
-          <LauncherIcon id="" kind="" />
-        </span>
+        {#if emojiMode}
+          <button
+            type="button"
+            class="lf-mode"
+            aria-label={t("overlay.emoji.exit")}
+            use:tip={t("overlay.emoji.exit")}
+            data-no-drag
+            onpointerdown={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+            }}
+            onclick={exitEmojiMode}
+          >
+            <span aria-hidden="true">😀</span>{t("overlay.emoji.mode")}
+          </button>
+        {:else}
+          <span class="lf-search-icon" aria-hidden="true">
+            <LauncherIcon id="" kind="" />
+          </span>
+        {/if}
         <input
           bind:this={input}
           bind:value={query}
-          oninput={() => scheduleSearch(query)}
+          oninput={onQueryInput}
           onpointerdown={(e) => e.stopPropagation()}
           type="text"
-          placeholder={t("overlay.searchPlaceholder")}
+          placeholder={emojiMode
+            ? t("overlay.emoji.placeholder")
+            : t("overlay.searchPlaceholder")}
           aria-label={t("overlay.searchApps")}
           autocomplete="off"
           spellcheck="false"
@@ -1142,7 +1379,15 @@
             class="lf-icon"
             aria-label={t("overlay.clearSearch")}
             data-no-drag
-            onclick={() => void reset()}
+            onclick={() => {
+              if (emojiMode) {
+                query = "";
+                onQueryInput();
+                void focusSearch();
+              } else {
+                void reset();
+              }
+            }}
           >
             <Icon icon={X} size={12} />
           </button>
@@ -1180,7 +1425,78 @@
       <p class="lf-err" role="alert">{error}</p>
     {/if}
 
-    {#if showResults && (hasQuery || revealPhase === "ready")}
+    {#if emojiMode}
+      <nav class="lf-emoji-cats" aria-label={t("overlay.emoji.categories")}>
+        {#if !hasQuery}
+          {#each emojiSections as section, s (section.key)}
+            {#if section.items.length > 0}
+              <button
+                type="button"
+                class="lf-emoji-cat"
+                class:is-on={s === activeEmojiSection}
+                aria-label={section.label}
+                use:tip={section.label}
+                onpointerdown={(e) => e.preventDefault()}
+                onclick={() => jumpToEmojiSection(s)}>{section.icon}</button
+              >
+            {/if}
+          {/each}
+        {/if}
+        <button
+          type="button"
+          class="lf-emoji-cat lf-emoji-tone"
+          aria-label={t("overlay.emoji.tone")}
+          use:tip={t("overlay.emoji.tone")}
+          onpointerdown={(e) => e.preventDefault()}
+          onclick={cycleTone}>{TONE_SAMPLES[emojiTone]}</button
+        >
+      </nav>
+      <div class="lf-emoji-scroll" bind:this={emojiScrollEl}>
+        {#if emojiCatalog.length === 0}
+          <p class="lf-empty">{emojiLoading ? t("overlay.emoji.loading") : ""}</p>
+        {:else if emojiFlat.length === 0}
+          <p class="lf-empty">{t("overlay.noResults")}</p>
+        {:else}
+          {#each emojiSections as section, s (section.key)}
+            {#if section.items.length > 0}
+              <section class="lf-emoji-sec" data-emoji-section={s}>
+                <p class="lf-heading">{section.label}</p>
+                <div class="lf-emoji-grid" role="listbox" aria-label={section.label}>
+                  {#each section.items as emoji, j (emoji.char)}
+                    {@const i = emojiStarts[s] + j}
+                    <button
+                      type="button"
+                      role="option"
+                      class="lf-emoji"
+                      class:is-sel={i === emojiSelected}
+                      aria-selected={i === emojiSelected}
+                      aria-label={emojiName(emoji)}
+                      data-emoji-index={i}
+                      onpointerdown={(e) => e.preventDefault()}
+                      onmouseenter={() => (emojiSelected = i)}
+                      onclick={() => void pickEmoji(emoji, true)}
+                      >{withSkin(emoji, emojiTone)}</button
+                    >
+                  {/each}
+                </div>
+              </section>
+            {/if}
+          {/each}
+        {/if}
+      </div>
+      <footer class="lf-foot">
+        <span class="lf-emoji-name">
+          {#if selectedEmoji}
+            <span class="lf-emoji-big" aria-hidden="true"
+              >{withSkin(selectedEmoji, emojiTone)}</span
+            >{emojiName(selectedEmoji)}
+          {/if}
+        </span>
+        <span class="lf-hint"><Kbd combo="Enter" /> {t("overlay.emoji.paste")}</span>
+        <span class="lf-hint"><Kbd combo="Ctrl+Enter" /> {t("overlay.emoji.copy")}</span
+        >
+      </footer>
+    {:else if showResults && (hasQuery || revealPhase === "ready")}
       {#if !hasQuery}
         <p class="lf-heading">{t("overlay.recents")}</p>
       {/if}
@@ -1708,6 +2024,127 @@
     text-align: center;
   }
 
+  .lf-mode {
+    display: inline-flex;
+    flex-shrink: 0;
+    align-items: center;
+    gap: 0.3rem;
+    height: 1.6rem;
+    padding: 0 0.5rem 0 0.4rem;
+    border: none;
+    border-radius: 999px;
+    background: color-mix(in sRGB, var(--ok) 18%, transparent);
+    color: var(--ok);
+    font-size: 0.72rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background var(--duration-quick) var(--ease-smooth-out);
+  }
+
+  .lf-mode:hover {
+    background: color-mix(in sRGB, var(--ok) 26%, transparent);
+  }
+
+  .lf-emoji-cats {
+    display: flex;
+    flex-shrink: 0;
+    align-items: center;
+    gap: 0.1rem;
+    padding: 0.3rem 0.35rem 0;
+  }
+
+  .lf-emoji-cat {
+    display: grid;
+    place-items: center;
+    width: 1.75rem;
+    height: 1.75rem;
+    flex-shrink: 0;
+    border: none;
+    border-radius: 0.45rem;
+    padding: 0;
+    background: transparent;
+    font-size: 0.95rem;
+    line-height: 1;
+    cursor: pointer;
+    opacity: 0.6;
+    transition:
+      opacity var(--duration-quick) var(--ease-smooth-out),
+      background var(--duration-quick) var(--ease-smooth-out);
+  }
+
+  .lf-emoji-cat:hover,
+  .lf-emoji-cat.is-on {
+    opacity: 1;
+    background: color-mix(in sRGB, var(--text) 8%, transparent);
+  }
+
+  .lf-emoji-tone {
+    margin-left: auto;
+    opacity: 1;
+  }
+
+  .lf-emoji-scroll {
+    flex: 1;
+    min-height: 0;
+    padding: 0 0.35rem 0.35rem;
+    overflow: auto;
+    overscroll-behavior: contain;
+  }
+
+  .lf-emoji-sec {
+    content-visibility: auto;
+    contain-intrinsic-size: auto 240px;
+  }
+
+  .lf-emoji-sec .lf-heading {
+    padding-left: 0.35rem;
+  }
+
+  .lf-emoji-grid {
+    display: grid;
+    grid-template-columns: repeat(8, 1fr);
+  }
+
+  .lf-emoji {
+    display: grid;
+    place-items: center;
+    aspect-ratio: 1;
+    border: none;
+    border-radius: 0.55rem;
+    padding: 0;
+    background: transparent;
+    font-size: 1.45rem;
+    line-height: 1;
+    cursor: pointer;
+    transition: transform var(--duration-quick) var(--ease-smooth-out);
+  }
+
+  .lf-emoji.is-sel {
+    background: color-mix(in sRGB, var(--text) 10%, transparent);
+  }
+
+  .lf-emoji:active {
+    transform: scale(0.92);
+  }
+
+  .lf-emoji-name {
+    display: inline-flex;
+    flex: 1;
+    min-width: 0;
+    align-items: center;
+    gap: 0.35rem;
+    overflow: hidden;
+    color: var(--muted);
+    font-size: 0.68rem;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .lf-emoji-big {
+    font-size: 0.95rem;
+    line-height: 1;
+  }
+
   .lf-foot {
     display: flex;
     flex-shrink: 0;
@@ -1754,7 +2191,8 @@
     .lf-dot:hover,
     .lf-dot:active,
     .lf-hit-main:active,
-    .lf-star:active {
+    .lf-star:active,
+    .lf-emoji:active {
       transform: none;
     }
   }

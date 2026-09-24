@@ -320,3 +320,26 @@ igual que en `PLAN_AGENTES.md`. La orquestación entre agentes no cambia: es de
   376 tests del front, eslint limpio. **Pendiente de prueba manual**: despegue
   con sesión viva, dos vistas a la vez y recarga del overlay con consola
   abierta.
+- **2026-09-23** — Fase 1 implementada (T1–T5). La ficha de chat es
+  `hubSession` + `chat: true` (no un `source` nuevo: ya había una sesión
+  estructurada por ficha y el traspaso la llevaba). `AgentChatPanel.svelte`
+  compone `AgentConversation`, `PermissionBar` y `SlashPalette`, con modelo,
+  esfuerzo, modo (Claude), «Continuar» (Claude/Codex), adjuntos y el pegado
+  del historial ruteado al composer. `HubConversation` y `AgentsDemo`
+  borrados. Verificado: `svelte-check` 0 errores, eslint limpio, 56 tests de
+  `features/agents`. **Pendiente de prueba manual** con la app: prompt,
+  tool-calls, permiso desde la barra, minimizar/restaurar y pegado desde el
+  historial. Queda fuera: resume de sesiones del CLI, diálogo de compactar,
+  modal de uso y chat remoto por SSH.
+- **2026-09-23** — Rediseño del chat tras la primera prueba (la forma no
+  gustaba: avisos de sistema en rojo, id crudo del modelo, chips sueltos,
+  toasts fuera del float). Columna de lectura centrada; herramientas
+  agrupadas en bloques de actividad (`chatThread.ts` + test); permiso como
+  tarjeta en el hilo con el comando o diff; selector único agente · modelo
+  para los agentes instalados (`agent_list_models`). `PermissionBar` borrado.
+- **2026-09-23** — Revisión por proveedor con sesiones reales (sonda por CDP
+  sobre `agent_start`/`agent_send`): Claude, Codex, Cursor, OpenCode y
+  Antigravity responden; Grok falla por credenciales de su CLI (401).
+  Rust: `acp.rs` manda los niveles de esfuerzo de sesión con los modelos,
+  `codex.rs` suma `/compact` y `/review`, y `agent_answer` contesta
+  `AskUserQuestion` (verificado: la respuesta elegida llega al modelo).

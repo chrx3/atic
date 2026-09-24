@@ -1,7 +1,7 @@
 /** La consola de agentes: sesiones, catálogo, permisos e hilos guardados. */
 
 import { invoke } from "@tauri-apps/api/core";
-import type { UnlistenFn } from "@tauri-apps/api/event";
+import { emit, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   AgentBackendInfo,
   AgentDeltaPayload,
@@ -29,7 +29,7 @@ import type {
   SshTestResult,
   StoredThread,
 } from "$core/types";
-import { on, type AgentsWorkspaceShortcut } from "./events";
+import { on, type AgentsFocusRequest, type AgentsWorkspaceShortcut } from "./events";
 
 export type {
   BubbleOpen,
@@ -115,6 +115,14 @@ export const agentPermission = (
   id: string,
   decision: PermissionDecision,
 ) => invoke<void>("agent_permission", { session, id, decision });
+
+/** Aprueba un permiso con otro input: así se contesta una pregunta del agente. */
+export const agentAnswer = (session: string, id: string, updatedInput: unknown) =>
+  invoke<void>("agent_answer", { session, id, updatedInput });
+
+/** Cambia el modo del agente (ACP: agent / plan / ask). */
+export const agentSetMode = (session: string, mode: string) =>
+  invoke<void>("agent_set_mode", { session, mode });
 
 /** Skills visibles desde `cwd`. Se consulta cada vez: son archivos editables. */
 export const agentSkills = (cwd?: string) =>
@@ -211,9 +219,20 @@ export const sshTestHost = (host: SshHost) =>
 export const consoleOpen = (options: ConsoleOpenOptions) =>
   invoke<string>("console_open", { options });
 
-/** La consola de Atic donde corre esta sesión de Claude Code, o null. */
+/** La consola de Atic donde corre esta sesión de Claude Code o Codex, o null. */
 export const consoleForPresence = (presenceId: string) =>
   invoke<string | null>("console_for_presence", { presenceId });
+
+/** La conversación del agente que corre en esta consola, para retomarla, o null. */
+export const consoleAgentSession = (session: string) =>
+  invoke<string | null>("console_agent_session", { session });
+
+/**
+ * La consola de Atic desde la que se pidió una sesión (`external:<cli>:<pid>`
+ * del hub), subiendo por el árbol de procesos. `null` si no corre en ninguna.
+ */
+export const consoleForParent = (parent: string) =>
+  invoke<string | null>("console_for_parent", { parent });
 
 export const consoleWrite = (session: string, data: string) =>
   invoke<void>("console_write", { session, data });
@@ -297,6 +316,39 @@ export const onAgentsTransferAck = (
 
 /** Crea la ventana dedicada de consolas si no existe y la trae al frente. */
 export const agentsEnsureWindow = () => invoke<void>("agents_ensure_window");
+
+/**
+ * Abre la ventana de agentes en esta sesión. Se avisa dos veces: si la
+ * ventana recién se crea, su oyente todavía no está en el primer aviso.
+ */
+export async function focusAgentSession(kind: "chat" | "terminal", session: string) {
+  await agentsEnsureWindow();
+  const request = { kind, session, nonce: Date.now() + Math.random() };
+  await emit("agents-focus", request);
+  window.setTimeout(() => void emit("agents-focus", request).catch(() => {}), 900);
+}
+
+export const onAgentsFocus = (cb: (request: AgentsFocusRequest) => void) =>
+  on("agents-focus", cb);
+
+/** Avisa a las otras ventanas que esta sesión ya se miró. */
+export const announceAgentSeen = (session: string) =>
+  emit("agents-seen", { session }).catch(() => {});
+
+export const onAgentSeen = (cb: (payload: { session: string }) => void) =>
+  on("agents-seen", cb);
+
+/** Rust avisa a todas las ventanas que una sesión se cerró, la cierre quien la cierre. */
+export const onAgentStopped = (cb: (payload: { session: string }) => void) =>
+  on("agent-stopped", cb);
+
+/** Avisa a las otras ventanas que este permiso ya se contestó. */
+export const announcePermissionResolved = (session: string, id: string) =>
+  emit("agents-permission-resolved", { session, id }).catch(() => {});
+
+export const onPermissionResolved = (
+  cb: (payload: { session: string; id: string }) => void,
+) => on("agents-permission-resolved", cb);
 
 // --- La burbuja ---
 /** True si la burbuja de agentes está visible. */

@@ -73,6 +73,12 @@ export const PILL = {
    * recorta con elipsis. El preview vivo no puede re-medir la caja por frame.
    */
   islandCueMsgW: 96,
+  /** Tramo de la línea de letra que suena, en la pestaña en reposo al costado. */
+  islandLyricW: 200,
+  /** Letra colgando de la pestaña cerrada (arriba/abajo): verso actual y siguiente. */
+  islandLyricHangW: 340,
+  /** Verso actual (hasta dos renglones) + el siguiente. */
+  islandLyricHangH: 80,
   /** Lado del botón de herramienta dentro de la isla abierta. */
   islandTool: 44,
   /** Hueco entre botones de la tira. Chico a propósito: el clic entre iconos
@@ -126,6 +132,12 @@ export const PILL = {
   islandDictH: 72,
   /** Alto de cada fila de la cara ambiental de agentes. */
   islandLiveRow: 32,
+  /**
+   * Ancho de la cara ambiental AL COSTADO: solo el estado de cada agente
+   * (girando, listo, esperando), sin texto. Con el texto a lo ancho el notch
+   * lateral se volvía un panel de 270 px para decir «trabajando».
+   */
+  islandLiveSideW: 30,
   /** Radio de la cara con contenido: si fuera pastilla, un panel alto se lee gota. */
   islandClipR: 22,
   /** Diámetro de la gota de grabación/dictado que cuelga del chrome. */

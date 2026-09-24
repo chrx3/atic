@@ -16,6 +16,7 @@ import {
   edgeGaps,
   edgeWallRect,
   edgeWallsFor,
+  isDockableEdge,
   isOuterEdge,
   isPillHome,
   nearestOuterWorkEdge,
@@ -115,11 +116,18 @@ describe("dockCandidate", () => {
     expect(dockCandidate(at(1955, 400), DUAL)?.edge).toBe("right");
   });
 
-  it("respeta la barra de tareas: se pega al área útil", () => {
-    const c = dockCandidate(at(400, 730), SOLO_TASKBAR);
-    expect(c?.edge).toBe("bottom");
-    // 760 (fondo útil) − 40 (alto de la pill), no 800.
-    expect(c?.at.y).toBe(720);
+  it("no se cuelga de la barra de tareas: ahí queda suelta", () => {
+    expect(dockCandidate(at(400, 730), SOLO_TASKBAR)).toBeNull();
+    // Los otros cantos del mismo monitor siguen valiendo.
+    expect(dockCandidate(at(400, 5), SOLO_TASKBAR)?.edge).toBe("top");
+  });
+
+  it("un canto reservado que el SO permite (menú de macOS) sí engancha", () => {
+    const menu: Area[] = [
+      { x: 0, y: 0, w: 1000, h: 800, work: { x: 0, y: 24, w: 1000, h: 776 } },
+    ];
+    expect(isDockableEdge("top", menu[0], menu, [])).toBe(false);
+    expect(isDockableEdge("top", menu[0], menu, ["top"])).toBe(true);
   });
 
   it("se puede limitar el juego de bordes", () => {
@@ -441,10 +449,10 @@ describe("hogar elegido", () => {
     expect(pillHomePoint(home, longer, SOLO)?.at).toEqual({ x: 1000 - 34, y: 0 });
   });
 
-  it("respeta el área útil: abajo queda sobre la barra de tareas", () => {
+  it("un hogar sobre la barra de tareas no vale: manda el de por defecto", () => {
     const bar = { w: 180, h: 34 };
     const home = pillHomeFrom("bottom", { x: 410, y: 760 - 34, ...bar }, SOLO_TASKBAR)!;
-    expect(pillHomePoint(home, bar, SOLO_TASKBAR)?.at).toEqual({ x: 410, y: 726 });
+    expect(pillHomePoint(home, bar, SOLO_TASKBAR)).toBeNull();
   });
 
   it("monitor que ya no está: sin hogar elegido", () => {

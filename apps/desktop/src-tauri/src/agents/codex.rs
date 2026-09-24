@@ -50,7 +50,9 @@ use super::model::{
     Role, ThreadPatch, ToolKind, ToolStatus, TurnStatus,
 };
 use super::turns::{end_turn, ensure_turn, start_turn, Emit, Turns};
-use super::{AgentBackend, AgentSession, McpServerState, PermissionDecision, StartOptions};
+use super::{
+    AgentBackend, AgentSession, McpServerState, PermissionDecision, SlashCommand, StartOptions,
+};
 
 pub struct Codex;
 
@@ -648,6 +650,14 @@ impl Translator {
                         *slot = Some(id.to_string());
                     }
                 }
+                // Codex no anuncia comandos: los que Atic sabe traducir a su
+                // protocolo se ofrecen desde acá, como los de los demás agentes.
+                out.push(AgentDelta::ThreadPatch {
+                    patch: ThreadPatch {
+                        commands: Some(codex_commands()),
+                        ..Default::default()
+                    },
+                });
             }
 
             "turn/started" => {
@@ -675,6 +685,7 @@ impl Translator {
                     status,
                     // Codex informa tokens, no dinero.
                     cost_usd: None,
+                    duration_ms: None,
                 });
                 end_turn(&self.shared.turns);
                 if let Ok(mut slot) = self.shared.provider_turn.lock() {
@@ -883,6 +894,14 @@ impl Translator {
         };
 
         match item.get("type").and_then(Value::as_str)? {
+            // Lo que deja `/compact`: sin esto el turno terminaba sin decir nada.
+            "contextCompaction" => Some((
+                format!("cmp:{raw}"),
+                ItemKind::Notice {
+                    text: "Contexto compactado.".to_string(),
+                },
+            )),
+
             // El turno del usuario ya lo emitió `send`, que es quien lo tiene
             // completo y quien abre el turno. Tomarlo también de acá lo
             // duplicaría en la conversación y en el disco.
@@ -1248,8 +1267,97 @@ struct CodexSession {
     emit: Emit,
 }
 
+impl CodexSession {
+    /// Un comando `/` que Codex hace por su protocolo, no por el modelo.
+    ///
+    /// El turno lo abre igual quien escribe, con el comando como mensaje: el
+    /// hilo muestra qué se pidió, y el cierre llega con el `turn/completed`
+    /// que Codex emite al terminar la compactación o la revisión.
+    fn run_slash(&mut self, text: &str, slash: CodexSlash) -> Result<(), String> {
+        let thread = self
+            .shared
+            .thread_id
+            .lock()
+            .ok()
+            .and_then(|g| g.clone())
+            .ok_or_else(|| {
+                "Codex todavía está abriendo el hilo; prueba en un momento.".to_string()
+            })?;
+        let turn = start_turn(&self.shared.turns, &self.emit);
+        self.emit.send(AgentDelta::ItemAdd {
+            turn: turn.clone(),
+            item: Item::new(
+                format!("{turn}-u"),
+                ItemKind::Message {
+                    role: Role::User,
+                    text: text.trim().to_string(),
+                    streaming: false,
+                },
+            ),
+        });
+        let (method, params) = match slash {
+            CodexSlash::Compact => ("thread/compact/start", json!({ "threadId": thread })),
+            CodexSlash::Review(branch) => (
+                "review/start",
+                json!({
+                    "threadId": thread,
+                    "target": match branch {
+                        Some(branch) => json!({ "type": "baseBranch", "branch": branch }),
+                        None => json!({ "type": "uncommittedChanges" }),
+                    },
+                }),
+            ),
+        };
+        self.shared.write(&json!({
+            "jsonrpc": "2.0",
+            "id": self.shared.next_id(),
+            "method": method,
+            "params": params,
+        }))
+    }
+}
+
+/// Los comandos `/` que Codex ejecuta por su protocolo.
+#[derive(Debug, PartialEq)]
+enum CodexSlash {
+    Compact,
+    /// Contra la rama base dada; sin rama, los cambios sin commitear.
+    Review(Option<String>),
+}
+
+fn codex_slash(text: &str) -> Option<CodexSlash> {
+    let text = text.trim();
+    let (name, rest) = text.split_once(char::is_whitespace).unwrap_or((text, ""));
+    let rest = rest.trim();
+    match name {
+        "/compact" if rest.is_empty() => Some(CodexSlash::Compact),
+        "/review" => Some(CodexSlash::Review(
+            (!rest.is_empty()).then(|| rest.to_string()),
+        )),
+        _ => None,
+    }
+}
+
+fn codex_commands() -> Vec<SlashCommand> {
+    vec![
+        SlashCommand {
+            name: "compact".to_string(),
+            description: "Resume la conversación para liberar contexto".to_string(),
+            argument_hint: String::new(),
+        },
+        SlashCommand {
+            name: "review".to_string(),
+            description: "Revisa los cambios sin commitear, o contra una rama".to_string(),
+            argument_hint: "[rama base]".to_string(),
+        },
+    ]
+}
+
 impl AgentSession for CodexSession {
     fn send(&mut self, text: &str, origin: Option<Origin>) -> Result<(), String> {
+        if let Some(slash) = codex_slash(text) {
+            return self.run_slash(text, slash);
+        }
         // El turno lo abre quien escribe, y el mensaje del usuario es un item
         // más: sin esto la conversación guardada se lee como un monólogo.
         let files = origin.as_ref().map(|o| o.files.clone()).unwrap_or_default();
@@ -1911,5 +2019,20 @@ mod tests {
         let q = t.shared.queued.lock_or_recover();
         assert_eq!(q.len(), 1);
         assert_eq!(q[0].text, "hola");
+    }
+
+    #[test]
+    fn comandos_que_codex_hace_por_protocolo() {
+        assert_eq!(codex_slash("/compact"), Some(CodexSlash::Compact));
+        assert_eq!(codex_slash("  /compact  "), Some(CodexSlash::Compact));
+        assert_eq!(codex_slash("/review"), Some(CodexSlash::Review(None)));
+        assert_eq!(
+            codex_slash("/review main"),
+            Some(CodexSlash::Review(Some("main".to_string())))
+        );
+        // Lo demás es un mensaje: incluso un `/compact` con texto detrás.
+        assert_eq!(codex_slash("/compact por favor"), None);
+        assert_eq!(codex_slash("revisa /review"), None);
+        assert_eq!(codex_slash("/modelo"), None);
     }
 }

@@ -85,7 +85,9 @@
          distinto. -->
     <span class="tc-kind"><AgentIcons name={toolKind} /></span>
     <span class="tc-name">{name}</span>
-    <span class="tc-arg">{title}</span>
+    <!-- `bdi` adentro: el contenedor `rtl` pone los puntos suspensivos al
+         principio y el texto se sigue leyendo en su orden. -->
+    <span class="tc-arg"><bdi>{title}</bdi></span>
 
     {#if counts}
       <span class="tc-num">
@@ -212,15 +214,17 @@
     text-overflow: ellipsis;
     white-space: nowrap;
     /* La cola es lo informativo de una ruta larga, no la cabeza: `rtl` mueve
-       los puntos suspensivos al principio.
-       `bidi-override` y no solo `direction` porque las rutas de Windows están
-       llenas de caracteres neutros —`\`, `-`, `·`— que en contexto RTL el
-       algoritmo bidi reordena: sin esto, `…-SPA-Documentos-atic\memory\x.md`
-       salía con los tramos dados vuelta. Se recorta por donde queremos y se
-       lee en el orden en que se escribió. */
+       los puntos suspensivos al principio. El texto va en un `bdi` LTR
+       aislado: `bidi-override` invertía las letras («question» se leía
+       «noitseuq»), y sin aislar, los neutros de una ruta de Windows —`\`,
+       `-`, `·`— se reordenaban en contexto RTL. */
     direction: rtl;
-    unicode-bidi: bidi-override;
     text-align: left;
+  }
+
+  .tc-arg bdi {
+    direction: ltr;
+    unicode-bidi: isolate;
   }
 
   /* Tabulares: los contadores cambian en vivo y con cifras de ancho variable

@@ -66,11 +66,22 @@
   } from "$ipc/overlay";
   import type { AgentsWorkspaceShortcut } from "$ipc/events";
   import { CONSOLE_FOCUS_EVENT, type ConsoleFocusDetail } from "./consoleFocus";
-  import type { AgentsComposerInsert, ConsoleKind, SshHost } from "$lib/types";
+  import type {
+    AgentsComposerInsert,
+    ConsoleKind,
+    SshHost,
+    StoredThread,
+  } from "$lib/types";
   import EmptyState from "$lib/ui/EmptyState.svelte";
   import AccountUsageModal from "./AccountUsageModal.svelte";
   import AgentLogo from "./AgentLogo.svelte";
-  import HubConversation from "./HubConversation.svelte";
+  import AgentChatPanel from "./AgentChatPanel.svelte";
+  import type { ChatInsert } from "./chatInsert";
+  import { resumeThread } from "./chatResume";
+  import { chatTabStatus } from "./chatStatus";
+  import { terminalTheme } from "./terminalTheme";
+  import type { ChatTabRecord } from "./chatTabs";
+  import { rememberedMode } from "$lib/agentModels";
   import HotkeyCapture from "$ui/HotkeyCapture.svelte";
   import {
     CONSOLE_ACTION_ORDER,
@@ -110,9 +121,9 @@
     SquareTerminal,
     X,
     Keyboard,
+    MessageSquare,
   } from "$lib/icons";
   import { t } from "$lib/domain/i18n.svelte";
-  import { themeBase } from "$lib/theme";
 
   let {
     remoteHost = null,
@@ -136,6 +147,7 @@
     suppressInitialTab = false,
     windowChrome = true,
     dense = false,
+    onChatTabsChange,
   }: {
     /** Host SSH del destino actual de agentes; default de una pestaña nueva. */
     remoteHost?: SshHost | null;
@@ -203,6 +215,11 @@
      * dedicada y el float no lo usan.
      */
     dense?: boolean;
+    /**
+     * Cambiaron las fichas de chat: el lanzador las guarda para retomarlas si
+     * la vista se recarga (la sesión vive en Rust; la ficha, no).
+     */
+    onChatTabsChange?: (tabs: ChatTabRecord[]) => void;
   } = $props();
 
   /** Semilla de pestaña del lanzador: consola local corriendo un agente. */
@@ -210,6 +227,9 @@
     kind: ConsoleKind;
     label?: string;
     command?: string;
+    /** Chat retomado: la ficha muestra esa sesión en vez de abrir una PTY. */
+    hubSession?: string;
+    chat?: boolean;
   };
 
   /**
@@ -251,6 +271,12 @@
      * en lugar del xterm.
      */
     hubSession?: string | null;
+    /**
+     * La sesión de `hubSession` la abrió el usuario como chat: se le escribe
+     * desde la ficha y cerrarla la termina. Sin esto es una delegación de
+     * otro agente, que se mira y no se toca.
+     */
+    chat?: boolean;
   };
 
   type Box = { term: Terminal; fit: FitAddon; el: HTMLElement };
@@ -412,7 +438,7 @@
    * ¿Esta consola vive en la ventana del overlay?
    *
    * `ConsolePanel` también se monta en la consola de la ventana principal
-   * (`AgentsTool`, `AgentsDemo`). Importa distinguirlo porque las zonas vivas se
+   * y en la ventana dedicada de consolas. Importa distinguirlo porque las zonas vivas se
    * publican por IPC a una lista GLOBAL de Rust: publicarlas desde `main` la pisa
    * entera y la pill queda inalcanzable hasta que el overlay vuelva a publicar.
    */
@@ -1720,6 +1746,8 @@
     hostId?: string;
     /** Sesión del hub: la pestaña muestra su hilo en vez de un terminal. */
     hubSession?: string;
+    /** La sesión del hub es un chat del usuario (ver `Tab.chat`). */
+    chat?: boolean;
     splitDirection?: SplitDirection;
     splitSourceKey?: string;
   };
@@ -1734,6 +1762,7 @@
     tab.command = kind === "local" ? opts.command?.trim() || null : null;
     tab.cwd = kind === "local" ? startFolder : null;
     tab.hubSession = opts.hubSession ?? null;
+    tab.chat = opts.chat ?? false;
   }
 
   function layoutTab(
@@ -1811,15 +1840,170 @@
           command: opts.command?.trim() || null,
           cwd: kind === "local" ? startFolder : null,
           hubSession: opts.hubSession ?? null,
+          chat: opts.chat ?? false,
         },
       ];
     }
     layoutTab(key, opts, treeBefore, previousActiveKey);
     error = null;
+    // Una ficha de sesión no tiene PTY que conectar.
+    if (opts.hubSession) return;
     if (kind === "ssh") void loadSshHosts();
     // Un cuadro después el `{@attach}` ya creó el xterm. `connect` espera
     // tamaño real + listener; no spawnea en el frame del seed de 40 px.
     queueConnect(key, kind);
+  }
+
+  /**
+   * Abre el agente como chat: la sesión estructurada del puente en vez del
+   * TUI. Se arranca antes de crear la ficha para que nazca con su hilo.
+   */
+  export async function openChat(agent: (typeof AGENTS)[number], model?: string) {
+    addMenuOpen = false;
+    cmdPromptOpen = false;
+    if (!canAddTab) return;
+    error = null;
+    try {
+      const id = await startChatSession(agent, startFolder, model);
+      newTab("local", {
+        label: agent.name,
+        command: agent.cli,
+        hubSession: id,
+        chat: true,
+      });
+    } catch (err) {
+      error = err instanceof Error ? err.message : String(err);
+    }
+  }
+
+  function startChatSession(
+    agent: (typeof AGENTS)[number],
+    cwd: string | null,
+    model?: string,
+  ): Promise<string> {
+    return agents.start(agent.backend, {
+      cwd: cwd ?? undefined,
+      model,
+      // Solo Claude Code tiene modos de permiso; al resto no se le pasa.
+      permissionMode:
+        agent.backend === "claude-code" ? rememberedMode(agent.backend) : undefined,
+    });
+  }
+
+  /**
+   * Una conversación guardada, retomada. Como con el cambio de agente: un
+   * chat vacío se reemplaza en su sitio; uno con conversación se deja y la
+   * retomada abre ficha propia.
+   */
+  async function openThread(key: string, thread: StoredThread) {
+    const tab = tabOf(key);
+    const previous = tab?.hubSession ?? null;
+    const reuse = !!tab && !!previous && (agents.byId(previous)?.turns.length ?? 0) === 0;
+    if (!reuse && !canAddTab) return;
+    const agent = AGENTS.find((a) => a.backend === thread.backendId);
+    const label = agent?.name ?? thread.backendName;
+    error = null;
+    try {
+      const id = await resumeThread(thread);
+      if (reuse && tab && previous) {
+        tab.hubSession = id;
+        tab.label = label;
+        tab.command = agent?.cli ?? null;
+        tab.cwd = thread.cwd || tab.cwd;
+        void agents.stop(previous).catch(() => {});
+      } else {
+        newTab("local", { label, command: agent?.cli, hubSession: id, chat: true });
+      }
+    } catch (err) {
+      error = err instanceof Error ? err.message : String(err);
+    }
+  }
+
+  $effect(() => {
+    const chats: ChatTabRecord[] = tabs.flatMap((tab) =>
+      tab.chat && tab.hubSession
+        ? [{ session: tab.hubSession, label: tab.label ?? "", command: tab.command }]
+        : [],
+    );
+    untrack(() => onChatTabsChange?.(chats));
+  });
+
+  /**
+   * Suma chats retomados sin tocar lo que ya se muestra. Es el camino cuando
+   * el panel ya estaba montado (una terminal abierta antes de terminar de
+   * retomar); si no, llegan como semillas.
+   */
+  export function adoptChats(records: ChatTabRecord[]) {
+    for (const record of records) {
+      if (tabs.some((tab) => tab.hubSession === record.session)) continue;
+      if (tabs.length >= MAX_TABS) return;
+      tabs = [
+        ...tabs,
+        {
+          key: `t${++seq}`,
+          kind: "local",
+          sessionId: null,
+          hostId: null,
+          label: record.label || null,
+          command: record.command,
+          cwd: startFolder,
+          hubSession: record.session,
+          chat: true,
+        },
+      ];
+    }
+  }
+
+  /**
+   * El chat que se está mirando: la ficha activa, con el panel a la vista.
+   *
+   * Es lo que usa el store para decidir qué es «nuevo»: sin esto toda
+   * respuesta contaba como no leída —el punto del rail no se apagaba— y el
+   * aviso del sistema saltaba con el chat en pantalla. Al esconder el panel
+   * se suelta, solo si lo tenía esta vista: la pill también mira sesiones.
+   */
+  $effect(() => {
+    const tab = tabs.find((item) => item.key === activeKey);
+    const id = tab?.chat ? (tab.hubSession ?? null) : null;
+    const seeing = !!id && visible && !minimized && visiblePaneKeys.includes(activeKey);
+    untrack(() => {
+      if (seeing) {
+        if (agents.watching !== id) agents.watch(id);
+      } else if (agents.watching && tabs.some((item) => item.hubSession === agents.watching)) {
+        agents.watch(null);
+      }
+    });
+  });
+
+  /** Los agentes que el selector del chat ofrece: los que están instalados. */
+  const chatChoices = $derived(AGENTS.filter((agent) => agentOnPath[agent.cli] !== false));
+
+  /**
+   * Otro agente desde el selector del chat. Un chat vacío se reemplaza en su
+   * sitio; uno con conversación no se tira: el otro agente abre ficha nueva.
+   */
+  async function switchChatAgent(
+    key: string,
+    agent: (typeof AGENTS)[number],
+    model?: string,
+  ) {
+    const tab = tabOf(key);
+    const previous = tab?.hubSession;
+    if (!tab || !previous) return;
+    if ((agents.byId(previous)?.turns.length ?? 0) > 0) {
+      await openChat(agent, model);
+      return;
+    }
+    error = null;
+    try {
+      const id = await startChatSession(agent, tab.cwd, model);
+      tab.hubSession = id;
+      tab.label = agent.name;
+      tab.command = agent.cli;
+      void agents.stop(previous).catch(() => {});
+    } catch (err) {
+      error = err instanceof Error ? err.message : String(err);
+    }
   }
 
   /**
@@ -1960,7 +2144,9 @@
   async function closeTab(key: string) {
     const tab = tabs.find((t) => t.key === key);
     if (!tab) return;
-    if (tab.sessionId || pendingKeys[key]) {
+    const chatWorking =
+      tab.chat && agents.byId(tab.hubSession ?? null)?.status === "working";
+    if (tab.sessionId || pendingKeys[key] || chatWorking) {
       pendingClose = { keys: [key], label: baseLabel(tab) };
       return;
     }
@@ -1973,7 +2159,10 @@
     // Cerrar una delegación es decir «ya la vi»: sin anotarlo, el efecto la
     // vuelve a abrir en el mismo cuadro y la ficha no se deja cerrar.
     const hub = tabs[idx].hubSession;
-    if (hub) {
+    // Un chat es del usuario: cerrar la ficha termina el proceso del agente.
+    if (hub && tabs[idx].chat) {
+      void agents.stop(hub).catch(() => {});
+    } else if (hub) {
       hubCerradas.add(hub);
       hubVistos.set(hub, agents.byId(hub)?.turns.length ?? 0);
     }
@@ -2209,6 +2398,7 @@
         command: t.command,
         cwd: t.cwd,
         hubSession: t.hubSession ?? null,
+        chat: t.chat ?? false,
       });
     }
     if (descs.length === 0) return null;
@@ -2314,6 +2504,7 @@
           command: desc.command,
           cwd: desc.cwd,
           hubSession: desc.hubSession,
+          chat: desc.chat ?? false,
         },
       ];
       if (desc.session) adopted.push(desc.session);
@@ -2542,56 +2733,8 @@
    * Mira el lado de la tinta y no la paleta exacta: hay varios temas claros y
    * varios oscuros, y un terminal solo tiene estas dos versiones.
    */
-  function termTheme(): Record<string, string> {
-    const light = themeBase(document.documentElement.dataset.theme) === "light";
-    return light
-      ? {
-          background: "#fbfbf8",
-          foreground: "#24241f",
-          cursor: "#d35f45",
-          cursorAccent: "#fbfbf8",
-          selectionBackground: "rgba(218, 119, 86, 0.3)",
-          black: "#31312c",
-          red: "#b43d3d",
-          green: "#2f774d",
-          yellow: "#806000",
-          blue: "#3569a3",
-          magenta: "#7d50a1",
-          cyan: "#267580",
-          white: "#d8d8d0",
-          brightBlack: "#74746b",
-          brightRed: "#d5544f",
-          brightGreen: "#3b9360",
-          brightYellow: "#a57a00",
-          brightBlue: "#4b83c4",
-          brightMagenta: "#9a68bf",
-          brightCyan: "#3693a0",
-          brightWhite: "#ffffff",
-        }
-      : {
-          background: "#151715",
-          foreground: "#e8e8e1",
-          cursor: "#e36f52",
-          cursorAccent: "#151715",
-          selectionBackground: "rgba(218, 119, 86, 0.35)",
-          black: "#22241f",
-          red: "#e0675f",
-          green: "#73b98d",
-          yellow: "#d4ad58",
-          blue: "#78a9d4",
-          magenta: "#b18bd0",
-          cyan: "#69b5bd",
-          white: "#d9d9d2",
-          brightBlack: "#777970",
-          brightRed: "#f17b71",
-          brightGreen: "#8ed0a4",
-          brightYellow: "#e8c572",
-          brightBlue: "#94c0e5",
-          brightMagenta: "#c9a4e3",
-          brightCyan: "#83cbd2",
-          brightWhite: "#ffffff",
-        };
-  }
+  /** La paleta vive en `terminalTheme`: la comparte la ventana de agentes. */
+  const termTheme = terminalTheme;
 
   /** Re-aplica la paleta a todos los terminales vivos. */
   function applyThemeToTerms() {
@@ -2777,10 +2920,55 @@
     return agentStageImage(btoa(binary), mime);
   }
 
+  /**
+   * Fichas de chat montadas, por clave. Lo del historial que cae sobre una
+   * va a su composer; si no, un chat activo se quedaba sin dónde pegar y el
+   * texto terminaba en una PTY que no se estaba mirando.
+   */
+  // eslint-disable-next-line svelte/prefer-svelte-reactivity -- registro interno, no es estado de vista
+  const chatInserts = new Map<string, ChatInsert>();
+
+  function registerChat(key: string, api: ChatInsert | null) {
+    if (api) chatInserts.set(key, api);
+    else chatInserts.delete(key);
+  }
+
+  function chatKeyHit(x: number, y: number): string | null {
+    for (const key of visiblePaneKeys) {
+      if (!chatInserts.has(key)) continue;
+      const el = consoleEl?.querySelector<HTMLElement>(`[data-tab-key="${key}"]`);
+      if (pointInEl(el ?? null, x, y)) return key;
+    }
+    return null;
+  }
+
+  /** Destino de chat del pegado, o null si le toca a una PTY como siempre. */
+  function chatInsertKey(x: number | null | undefined, y: number | null | undefined) {
+    const hasPoint = typeof x === "number" && typeof y === "number";
+    if (hasPoint) {
+      const hit = chatKeyHit(x, y);
+      if (hit) return hit;
+      if (termKeyHit(x, y)) return null;
+      if (!pointInEl(consoleEl, x, y) && !pointInEl(bodyEl, x, y)) return null;
+    }
+    return chatInserts.has(activeKey) && visiblePaneKeys.includes(activeKey)
+      ? activeKey
+      : null;
+  }
+
   async function applyClipboardInsert(payload: AgentsComposerInsert) {
     if (!panelIsLive()) return;
     const x = payload.x;
     const y = payload.y;
+    const chatKey = chatInsertKey(x, y);
+    const chat = chatKey ? chatInserts.get(chatKey) : undefined;
+    if (chatKey && chat) {
+      activeKey = chatKey;
+      requestOverlayKeyboard(chatKey);
+      if (payload.kind === "image" && payload.imagePath) chat.attachImage(payload.imagePath);
+      else if (payload.text) chat.insertText(payload.text);
+      return;
+    }
     const key =
       typeof x === "number" && typeof y === "number"
         ? (termKeyHit(x, y) ??
@@ -3184,6 +3372,7 @@
             </button>
           </span>
         {:else if !railGroups.some((g) => g.keys.includes(tab.key))}
+          {@const chat = tab.hubSession ? chatTabStatus(agents.byId(tab.hubSession)) : null}
           <span class="rail-slot">
             <button
               type="button"
@@ -3209,15 +3398,20 @@
               <span class="rail-logo"><AgentLogo agent={tab.command} size={18} /></span>
               <span class="rail-copy">
                 <span class="rail-name">{tabLabels[i]}</span>
-                <span class="rail-status">
-                  {tab.sessionId
-                    ? t("page.agents.console.tabActive")
-                    : connecting && tab.key === activeKey
-                      ? t("page.agents.console.tabPreparing")
-                      : t("page.agents.console.tabPaused")}
+                <span class="rail-status" class:is-attn={chat === "waiting"}>
+                  {chat
+                    ? t(`page.agents.chat.tab.${chat}`)
+                    : tab.sessionId
+                      ? t("page.agents.console.tabActive")
+                      : connecting && tab.key === activeKey
+                        ? t("page.agents.console.tabPreparing")
+                        : t("page.agents.console.tabPaused")}
                 </span>
               </span>
-              {#if tab.sessionId}
+              {#if chat && chat !== "ready" && chat !== "gone"}
+                <!-- Solo lo que pide ojos: una ficha lista no necesita punto. -->
+                <span class="live is-{chat}" aria-hidden="true"></span>
+              {:else if tab.sessionId}
                 <span
                   class="live"
                   use:tip={t("page.agents.console.activeSession")}
@@ -3312,23 +3506,35 @@
                   <span class="add-install">{t("page.agents.install")}</span>
                 </button>
               {:else}
-                <button
-                  type="button"
-                  class="add-item"
-                  role="menuitem"
-                  use:tip={t("page.agents.openNamed", { name: agent.name })}
-                  onclick={() =>
-                    addFromMenu({
-                      kind: "local",
-                      label: agent.name,
-                      command: agent.cli,
-                    })}
-                >
-                  <span class="add-glyph"
-                    ><AgentLogo agent={agent.cli} size={14} /></span
+                <div class="add-row">
+                  <button
+                    type="button"
+                    class="add-item"
+                    role="menuitem"
+                    use:tip={t("page.agents.openNamed", { name: agent.name })}
+                    onclick={() =>
+                      addFromMenu({
+                        kind: "local",
+                        label: agent.name,
+                        command: agent.cli,
+                      })}
                   >
-                  {agent.name}
-                </button>
+                    <span class="add-glyph"
+                      ><AgentLogo agent={agent.cli} size={14} /></span
+                    >
+                    {agent.name}
+                  </button>
+                  <button
+                    type="button"
+                    class="add-chat"
+                    role="menuitem"
+                    aria-label={t("page.agents.chat.open", { name: agent.name })}
+                    use:tip={t("page.agents.chat.open", { name: agent.name })}
+                    onclick={() => void openChat(agent)}
+                  >
+                    <Icon icon={MessageSquare} size={12} />
+                  </button>
+                </div>
               {/if}
             {/each}
             <button
@@ -3879,14 +4085,23 @@
           data-no-drag
           data-selectable
           data-console-term
+          data-tab-key={tab.key}
           onpointerdown={() => onTermPointerDown(tab.key)}
           oncontextmenu={(e) => onTermContextMenu(tab.key, e)}
           ondragover={onClipDragOver}
           ondrop={(e) => void onClipDrop(e)}
         >
           {#if tab.hubSession}
-            <!-- Sin PTY: lo que hay que enseñar es la conversación. -->
-            <HubConversation sessionId={tab.hubSession} />
+            <!-- Sin PTY: lo que hay que enseñar es la conversación. Si la
+                 abrió otro agente, se mira sin escribirle. -->
+            <AgentChatPanel
+              sessionId={tab.hubSession}
+              readOnly={!tab.chat}
+              choices={chatChoices}
+              onOpenThread={(thread) => void openThread(tab.key, thread)}
+              onSwitchAgent={(agent, model) => void switchChatAgent(tab.key, agent, model)}
+              onRegister={(api) => registerChat(tab.key, api)}
+            />
           {:else}
             <div class="term-host" {@attach mountTerm(tab.key)}></div>
           {/if}
@@ -5069,6 +5284,31 @@
     cursor: pointer;
   }
 
+  /* Agente instalado: la fila abre la terminal; el globo, el chat. */
+  .add-row {
+    display: flex;
+    align-items: center;
+    gap: 0.1rem;
+  }
+
+  .add-chat {
+    display: grid;
+    flex: 0 0 auto;
+    place-items: center;
+    width: 1.6rem;
+    height: 1.6rem;
+    border: 0;
+    border-radius: 0.35rem;
+    background: transparent;
+    color: var(--rb-faint);
+    cursor: pointer;
+  }
+
+  .add-chat:hover {
+    background: color-mix(in sRGB, var(--rb-text) 8%, transparent);
+    color: var(--accent);
+  }
+
   .add-item:hover:not(:disabled) {
     background: color-mix(in sRGB, var(--rb-text) 8%, transparent);
   }
@@ -5320,6 +5560,39 @@
     right: 0.34rem;
     background: var(--rb-ok);
     box-shadow: 0 0 0 2px color-mix(in sRGB, var(--rb-ok) 18%, transparent);
+  }
+
+  /* Fichas de chat: el punto dice en qué anda, no solo que hay proceso. */
+  .rail-tab .live.is-working {
+    background: var(--accent);
+    box-shadow: 0 0 0 2px color-mix(in sRGB, var(--accent) 22%, transparent);
+    animation: rail-pulse 1.2s ease-in-out infinite;
+  }
+
+  .rail-tab .live.is-waiting {
+    background: var(--rb-warn);
+    box-shadow: 0 0 0 2px color-mix(in sRGB, var(--rb-warn) 25%, transparent);
+  }
+
+  .rail-tab .live.is-failed {
+    background: var(--rb-record);
+    box-shadow: 0 0 0 2px color-mix(in sRGB, var(--rb-record) 22%, transparent);
+  }
+
+  .rail-status.is-attn {
+    color: var(--rb-warn);
+  }
+
+  @keyframes rail-pulse {
+    50% {
+      opacity: 0.4;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .rail-tab .live.is-working {
+      animation: none;
+    }
   }
 
   .console-desk .tab-x {

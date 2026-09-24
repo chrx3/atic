@@ -58,13 +58,15 @@
   } from "$surfaces/overlay/floatPlace";
   import { publishMeasuredSkin, rectKey } from "$surfaces/overlay/floatEmergeSkin";
   import { surfaces } from "$surfaces/overlay/surfaces.svelte";
+  import { quotaRows } from "./pillQuota";
   import {
-    quotaRows,
-    spanFrom,
-    type QuotaBar,
-    type QuotaRow,
-    type QuotaTone,
-  } from "./pillQuota";
+    detailRowFor,
+    headline,
+    planText,
+    spanText,
+    spendText,
+    windowText,
+  } from "./quotaText";
   import {
     enterPeekPanel,
     hideToolPeek,
@@ -76,6 +78,7 @@
   import CapturesPeek from "./CapturesPeek.svelte";
   import ClipboardPeek from "./ClipboardPeek.svelte";
   import ColorPeek from "./ColorPeek.svelte";
+  import MediaPeek from "./MediaPeek.svelte";
   import SnippetsPeek from "./SnippetsPeek.svelte";
   import SystemPeek from "./SystemPeek.svelte";
 
@@ -147,32 +150,6 @@
    */
   let hover = $state<string | null>(null);
 
-  function spanText(ms: number): string {
-    const span = spanFrom(ms);
-    return `${span.value} ${t(`pill.quota.unit.${span.unit}`)}`;
-  }
-
-  function windowText(bar: QuotaBar): string {
-    if (bar.window === "model") {
-      return t("pill.quota.window.modelWeek", { model: bar.model ?? "" });
-    }
-    if (bar.window !== "custom") return t(`pill.quota.window.${bar.window}`);
-    if (bar.minutes == null) return t("pill.quota.window.unknown");
-    return spanText(bar.minutes * 60_000);
-  }
-
-  /** Plan tal como lo guarda el proveedor (`max 20x`, `pro_plus`, `plus`). */
-  function planText(plan: string | null): string {
-    return plan ? plan.replace(/_/g, " ") : "";
-  }
-
-  /** Centavos → «1.213» con la separación de miles del idioma activo. */
-  function moneyText(cents: number): string {
-    return new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 }).format(
-      cents / 100,
-    );
-  }
-
   /**
    * De dónde sale el cuello.
    *
@@ -221,36 +198,8 @@
     return body ? { body, radius: STEM_R } : null;
   }
 
-  function spendText(row: QuotaRow): string {
-    if (!row.spend) return "";
-    const amount = t("pill.quota.spend", { amount: moneyText(row.spend.cents) });
-    if (row.spend.periodEnd == null || row.spend.periodEnd <= now) return amount;
-    return `${amount} · ${t("pill.quota.periodEnds", {
-      when: spanText(row.spend.periodEnd - now),
-    })}`;
-  }
-
-  /** La ventana más apretada del agente: el anillo resume eso. */
-  function headline(row: QuotaRow): { percent: number; tone: QuotaTone } {
-    const first = row.bars[0];
-    if (!first) return { percent: 0, tone: "ok" };
-    return row.bars.reduce(
-      (best, bar) =>
-        bar.percent > best.percent ? { percent: bar.percent, tone: bar.tone } : best,
-      { percent: first.percent, tone: first.tone },
-    );
-  }
-
   /** Sin hover, el agente más apretado; con hover, el apuntado. */
-  const detailRow = $derived.by(() => {
-    const pointed = hover ? rows.find((r) => r.agent === hover) : null;
-    if (pointed) return pointed;
-    const withBars = rows.filter((row) => row.bars.length > 0);
-    if (withBars.length === 0) return rows[0] ?? null;
-    return withBars.reduce((a, b) =>
-      headline(b).percent > headline(a).percent ? b : a,
-    );
-  });
+  const detailRow = $derived(detailRowFor(rows, hover));
 
   /**
    * Isla vertical (pill acoplada a un canto) y sin rueda abierta: el panel se
@@ -273,7 +222,8 @@
    * la primera versión.
    */
   $effect(() => {
-    if (toolPeekState.open) {
+    // Con la tira de la isla abierta el vistazo vive adentro (`IslandPeek`).
+    if (toolPeekState.open && !toolPeekState.inIsland) {
       alive = true;
       return;
     }
@@ -567,6 +517,8 @@
       <CapturesPeek ondone={hideToolPeek} onnew={() => openTool("captures")} />
     {:else if toolPeekState.tool === "color"}
       <ColorPeek ondone={hideToolPeek} onpick={() => openTool("color")} />
+    {:else if toolPeekState.tool === "media"}
+      <MediaPeek />
     {:else if toolPeekState.tool === "snippets"}
       <SnippetsPeek onpasted={hideToolPeek} onopen={() => openTool("snippets")} />
     {:else if rows.length > 0}
@@ -665,7 +617,7 @@
           {/if}
 
           {#if !detailRow.error && detailRow.spend}
-            <p class="q-detail-note">{spendText(detailRow)}</p>
+            <p class="q-detail-note">{spendText(detailRow, now)}</p>
           {/if}
         </div>
       {/if}

@@ -16,7 +16,13 @@
  * posición del puntero a Rust.
  */
 
-import { overlayCursor, overlayWorkAreas, type Area, type Point } from "$ipc/overlay";
+import {
+  overlayCursor,
+  overlayWorkAreas,
+  workAreaOf,
+  type Area,
+  type Point,
+} from "$ipc/overlay";
 
 import { MARGIN } from "./contract";
 import { sameSize, type Pivot, type ResizeOutcome, type Size } from "./pillStage";
@@ -83,6 +89,37 @@ export function clampTo(
   return clampRect(area, p, size);
 }
 
+/**
+ * Encaja una isla acoplada en el área útil de SU monitor.
+ *
+ * `clampTo` usa la unión a propósito —es lo que deja arrastrar de una pantalla
+ * a otra—, pero una cara que crece desde un canto no se está arrastrando: con
+ * la unión, un notch cerca del borde entre dos pantallas abría la cara partida
+ * entre las dos, y una cara alta se metía bajo la barra de tareas.
+ *
+ * `anchor` es un punto del notch ANTES de crecer: el centro de la cara ya
+ * crecida puede caer en el monitor vecino, y ese no es el suyo.
+ */
+export function clampToMonitor(
+  areas: Area[],
+  anchor: Point,
+  p: Point,
+  size: Size,
+  view?: Size | null,
+): Point {
+  const home = areas.find(
+    (a) =>
+      anchor.x >= a.x && anchor.x <= a.x + a.w && anchor.y >= a.y && anchor.y <= a.y + a.h,
+  );
+  if (!home) return clampTo(areas, p, size, view);
+  const paint: Area =
+    view && view.w > 1 && view.h > 1
+      ? { x: 0, y: 0, w: view.w, h: view.h }
+      : { x: 0, y: 0, w: Number.POSITIVE_INFINITY, h: Number.POSITIVE_INFINITY };
+  const work = workAreaOf(home);
+  return clampRect(intersect(work, paint) ?? paint, p, size);
+}
+
 function unionAreas(areas: Area[]): Area {
   let x0 = areas[0].x;
   let y0 = areas[0].y;
@@ -111,6 +148,15 @@ export function createCssStage() {
   /** Esquina de la superficie, en px CSS del overlay. */
   let origin: Point = { x: 0, y: 0 };
   let areas: Area[] = [];
+  /**
+   * Dónde quiere estar el centro del notch a lo largo de su canto, sin clampear.
+   *
+   * Sin esto, una cara alta cerca de una esquina se corría para entrar al
+   * abrirse, y al cerrarse la pestaña se recentraba sobre ese punto ya corrido:
+   * cada apertura la arrastraba un poco más hacia el medio. Se olvida al mover
+   * la pill a mano.
+   */
+  let dockCenter: number | null = null;
 
   /**
    * Avisos cuando `areas` cambia. Las áreas viven en una closure (no en
@@ -154,6 +200,7 @@ export function createCssStage() {
 
   /** Coloca la esquina sin tocar el tamaño (arrastre, hogar). */
   function moveTo(p: Point): void {
+    dockCenter = null;
     origin = current ? clampTo(areas, p, current, visibleView()) : p;
   }
 
@@ -176,6 +223,19 @@ export function createCssStage() {
     const from = current;
     let next: Point = { ...origin };
     let up = false;
+    const docked =
+      pivot === "dockLeft" ||
+      pivot === "dockRight" ||
+      pivot === "dockTop" ||
+      pivot === "dockBottom";
+    // El notch antes de crecer: de ahí sale a qué monitor pertenece.
+    const anchor = from
+      ? { x: origin.x + from.w / 2, y: origin.y + from.h / 2 }
+      : { ...origin };
+    if (!docked) dockCenter = null;
+    else if (from && dockCenter === null) {
+      dockCenter = pivot === "dockTop" || pivot === "dockBottom" ? anchor.x : anchor.y;
+    }
 
     switch (pivot) {
       case "cursor": {
@@ -207,26 +267,26 @@ export function createCssStage() {
       // recentra. Crecer hacia afuera la sacaría de la pantalla, y crecer
       // desde una esquina la haría deslizarse a lo largo del canto.
       case "dockLeft": {
-        if (from) next = { x: origin.x, y: origin.y + (from.h - target.h) / 2 };
+        if (from) next = { x: origin.x, y: (dockCenter ?? anchor.y) - target.h / 2 };
         break;
       }
       case "dockRight": {
         if (from) {
           next = {
             x: origin.x + (from.w - target.w),
-            y: origin.y + (from.h - target.h) / 2,
+            y: (dockCenter ?? anchor.y) - target.h / 2,
           };
         }
         break;
       }
       case "dockTop": {
-        if (from) next = { x: origin.x + (from.w - target.w) / 2, y: origin.y };
+        if (from) next = { x: (dockCenter ?? anchor.x) - target.w / 2, y: origin.y };
         break;
       }
       case "dockBottom": {
         if (from) {
           next = {
-            x: origin.x + (from.w - target.w) / 2,
+            x: (dockCenter ?? anchor.x) - target.w / 2,
             y: origin.y + (from.h - target.h),
           };
         }
@@ -247,7 +307,9 @@ export function createCssStage() {
         break;
     }
 
-    origin = clampTo(areas, next, target, visibleView());
+    origin = docked
+      ? clampToMonitor(areas, anchor, next, target, visibleView())
+      : clampTo(areas, next, target, visibleView());
     current = target;
     return { ok: true, up };
   }

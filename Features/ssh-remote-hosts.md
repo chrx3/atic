@@ -40,7 +40,8 @@ principal.
 1. En **Ajustes → Agentes / Hosts SSH**: alta de host (etiqueta, `user`, host,
    puerto, auth).
 2. **Probar conexión** → ok / error legible (timeout, host key, auth).
-3. En la consola de agentes (`AgentsDemo`): chip o selector **Local | Remoto**.
+3. En la consola de agentes: chip o selector **Local | Remoto**. (Vivía en
+   `AgentsDemo`, borrado el 2026-09-23; la ficha de chat todavía no lo ofrece.)
 4. Si Remoto: elegir host; el chip de carpeta pide un **cwd remoto** (texto;
    default del host si existe).
 5. Enviar mensaje → Rust spawnea `ssh … -- claude -p --input-format stream-json

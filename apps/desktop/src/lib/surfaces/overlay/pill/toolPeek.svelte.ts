@@ -33,9 +33,11 @@
  * abierto. Por eso la gracia corta al salir del botón: cruzar el hueco no
  * puede cerrarlo.
  */
+import { emit } from "@tauri-apps/api/event";
 import { agentQuotas } from "$domain/agentQuotas.svelte";
 import { captures } from "$domain/captures.svelte";
 import { clipboard } from "$domain/clipboard.svelte";
+import { media } from "$domain/media.svelte";
 import { snippets } from "$domain/snippets.svelte";
 import { system } from "$domain/system.svelte";
 import { isSyntheticHovered } from "../syntheticHover";
@@ -61,6 +63,12 @@ class ToolPeekState {
   parts = $state<PeekAnchor[] | null>(null);
   /** Lo que dice el vistazo cuando no hay nada que mostrar. */
   fallback = $state("");
+  /**
+   * La tira de la isla acoplada está abierta: el vistazo se pinta DENTRO de
+   * ella (`IslandPeek`) y el panel flotante no se monta. La isla se transforma
+   * en el contenido en vez de sacar una cosa aparte. Lo escribe `PillSurface`.
+   */
+  inIsland = $state(false);
 
   show(spec: PeekSpec, anchor: PeekAnchor, parts?: PeekAnchor[] | null) {
     cancelHide();
@@ -90,11 +98,19 @@ export function prefetchPeek(tool: PeekTool): void {
   else if (tool === "clipboard") void clipboard.hydrate();
   else if (tool === "captures") void captures.hydrate().catch(() => {});
   else if (tool === "snippets") void snippets.hydrate().catch(() => {});
+  else if (tool === "media") void media.refresh();
   // Color lee sus recientes del almacenamiento al montar: no hay nada que pedir.
 }
 
 /** Espera antes de aparecer, en frío. Gemela de `SHOW_DELAY_MS` en `tip`. */
 const SHOW_DELAY_MS = 450;
+/**
+ * Con un vistazo ya abierto, pasar a la herramienta de al lado es seguir
+ * mirando, no un gesto nuevo: esperar otra vez los 450 ms se sentía como que
+ * la isla se trababa entre un botón y el siguiente. Mismo criterio que los
+ * tooltips del sistema en «modo caliente».
+ */
+const SWITCH_DELAY_MS = 120;
 /** Tiempo para cruzar el hueco isla→panel y llegar al pin. */
 const HIDE_GRACE_MS = 400;
 
@@ -131,6 +147,12 @@ function scheduleHide() {
     hideTimer = 0;
     hideToolPeek();
   }, HIDE_GRACE_MS);
+}
+
+/** Pasa a la herramienta completa: el mismo camino que su atajo. */
+export function openPeekTool(tool: PeekTool): void {
+  hideToolPeek();
+  void emit("activate-tool-slot", tool).catch(() => {});
 }
 
 export function enterPeekPanel() {
@@ -200,7 +222,7 @@ export function toolPeek(node: HTMLElement, spec: PeekSpec | null) {
         w: box.width,
         h: box.height,
       });
-    }, SHOW_DELAY_MS);
+    }, toolPeekState.open ? SWITCH_DELAY_MS : SHOW_DELAY_MS);
   };
 
   const close = () => {

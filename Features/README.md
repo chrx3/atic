@@ -69,7 +69,8 @@ El flujo completo del producto original: graba, transcribe local y resume.
 - Clic para pegar a la app que tenía el foco; arrastre hacia otras ventanas.
 - **Cola "pegar después"** cuando no hay destino externo listo.
 - Se apaga desde Ajustes, y **nunca archiva lo que un gestor de contraseñas
-  marcó como efímero** (respeta los marcadores de Windows que `arboard` ignora).
+  marcó como efímero** (respeta los marcadores de Windows y macOS que `arboard`
+  ignora).
 
 → [clipboard-historial.md](clipboard-historial.md)
 
@@ -232,6 +233,7 @@ Consolidado de los pendientes de cada ficha que el usuario llegaría a notar.
 | Expansión de textos por trigger tipado | [snippets.md](snippets.md) |
 | Capturas en macOS | [capturas.md](capturas.md) |
 | Companion móvil | [companion-movil.md](companion-movil.md) |
+| Sincronizar clipboard y textos entre los equipos del usuario | [sync-dispositivos.md](sync-dispositivos.md) |
 | Delegar trabajo entre Claude / Codex / Cursor / OpenCode (MCP) | [orquestacion-agentes.md](orquestacion-agentes.md) |
 
 ---
@@ -268,6 +270,7 @@ Detalle completo en el [README del repo](../README.md#privacidad).
 | hecho | Acciones de sistema | [system-actions.md](system-actions.md) |
 | idea | Companion móvil | [companion-movil.md](companion-movil.md) |
 | idea | Hosts SSH para agentes remotos | [ssh-remote-hosts.md](ssh-remote-hosts.md) |
+| idea | Sync entre dispositivos del usuario | [sync-dispositivos.md](sync-dispositivos.md) |
 | idea | Orquestación de agentes (MCP) | [orquestacion-agentes.md](orquestacion-agentes.md) |
 
 ## Cómo mantener esto
