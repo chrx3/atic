@@ -31,6 +31,10 @@ fn ensure_capture_path(state: &AppState, path: &str) -> Result<PathBuf, String> 
 /// Windows.Media.Ocr falla en recortes de una línea o de pocos píxeles de
 /// alto: el motor espera texto ~12 px y margen alrededor. Agranda y rellena
 /// con el color del borde; si el decode falla, se manda el PNG original.
+///
+/// Vision no lo necesita: recibe la captura tal cual, sin decode/encode extra
+/// ni el tope de 2400 px que achicaba las capturas Retina.
+#[cfg(windows)]
 fn prepare_ocr_png(bytes: &[u8]) -> Vec<u8> {
     use image::imageops::{self, FilterType};
     use image::{DynamicImage, GenericImageView, ImageFormat, RgbImage};
@@ -168,17 +172,81 @@ fn write_sidecar(capture_path: &Path, text: &str) -> Result<(), String> {
     std::fs::write(&sidecar, text).map_err(|e| e.to_string())
 }
 
+/// Argumento con el que la app se relanza para compilar los modelos de Vision
+/// en un proceso aparte (ver [`warm_up`]).
+#[cfg(target_os = "macos")]
+pub const WARM_UP_ARG: &str = "--atic-ocr-warmup";
+
 /// Precalienta Vision para que la primera captura no pague la carga de assets.
 ///
-/// La primera consulta al motor puede tardar decenas de segundos mientras el
-/// sistema prepara los modelos; conviene pagarlo al arrancar, en segundo plano,
-/// y no cuando el usuario pide el OCR de una captura.
+/// El modo preciso compila sus modelos de Core ML la primera vez que una app
+/// (bundle id o nombre del ejecutable) lo usa en cada build de macOS, y la
+/// caché vive en `~/Library/Caches`, que el sistema puede purgar: sin ella la
+/// primera consulta tarda minutos (~200 s medidos).
+///
+/// Mientras compila, Vision retiene cualquier otro request del mismo proceso,
+/// incluso los del modo rápido. Por eso la compilación corre en un proceso
+/// hijo (el mismo ejecutable con [`WARM_UP_ARG`]): comparte bundle id y por lo
+/// tanto la caché, y la app queda libre para responder con el modo rápido.
+/// Cuando el hijo termina, cargar el modelo acá ya es cuestión de un segundo.
 #[cfg(target_os = "macos")]
 pub fn warm_up() {
+    let started = std::time::Instant::now();
+    match warm_up_in_child() {
+        Ok(()) => tracing::info!(
+            ms = started.elapsed().as_millis() as u64,
+            "OCR: modelos de Vision compilados en proceso aparte"
+        ),
+        // Sin hijo se compila acá: el modo rápido esperará, como antes.
+        Err(error) => tracing::warn!(%error, "OCR: precalentado aparte falló; sigue en proceso"),
+    }
+
+    let started = std::time::Instant::now();
+    let result = warm_up_image()
+        .ok_or_else(|| "no se pudo generar la imagen de prueba".to_string())
+        .and_then(|png| vision::recognize_bytes(&png, vision::Level::Accurate));
+    // Listo o no, el intento terminó: si el modo preciso falla, que el OCR
+    // del usuario lo reporte en vez de quedarse para siempre en el rápido.
+    vision::mark_accurate_ready();
+    let ms = started.elapsed().as_millis() as u64;
+    match result {
+        Ok(_) => tracing::info!(ms, "OCR: motor de Vision precalentado"),
+        Err(error) => tracing::warn!(%error, ms, "OCR: no se pudo precalentar Vision"),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn warm_up_in_child() -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let status = std::process::Command::new(exe)
+        .arg(WARM_UP_ARG)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map_err(|e| e.to_string())?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("el proceso terminó con {status}"))
+    }
+}
+
+/// Punto de entrada del proceso hijo de [`warm_up`]: compila y sale, sin
+/// levantar Tauri ni tocar el single-instance.
+#[cfg(target_os = "macos")]
+pub fn warm_up_child_main() -> ! {
+    let ok = warm_up_image()
+        .is_some_and(|png| vision::recognize_bytes(&png, vision::Level::Accurate).is_ok());
+    std::process::exit(if ok { 0 } else { 1 })
+}
+
+/// Imagen mínima con una mancha oscura: no importa el contenido, importa que
+/// el pipeline completo (decode, request y modelo) quede cargado.
+#[cfg(target_os = "macos")]
+fn warm_up_image() -> Option<Vec<u8>> {
     use image::{ImageFormat, Rgb, RgbImage};
 
-    // Imagen mínima con una mancha oscura: no importa el contenido, importa
-    // que el pipeline completo (decode, request y modelo) quede cargado.
     let mut img = RgbImage::new(96, 32);
     for x in 8..88 {
         for y in 10..22 {
@@ -186,16 +254,10 @@ pub fn warm_up() {
         }
     }
     let mut out = std::io::Cursor::new(Vec::new());
-    if image::DynamicImage::ImageRgb8(img)
+    image::DynamicImage::ImageRgb8(img)
         .write_to(&mut out, ImageFormat::Png)
-        .is_err()
-    {
-        return;
-    }
-    match vision::recognize_bytes(out.get_ref()) {
-        Ok(_) => tracing::info!("OCR: motor de Vision precalentado"),
-        Err(error) => tracing::warn!(%error, "OCR: no se pudo precalentar Vision"),
-    }
+        .ok()?;
+    Some(out.into_inner())
 }
 
 /// Corre el OCR fuera del hilo principal.
@@ -258,6 +320,7 @@ pub fn read_capture_ocr_cache(state: State<AppState>, path: String) -> Option<St
 #[cfg(target_os = "macos")]
 mod vision {
     use std::path::Path;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     use objc2::msg_send;
     use objc2::rc::{autoreleasepool, Retained};
@@ -269,8 +332,39 @@ mod vision {
     #[link(name = "Vision", kind = "framework")]
     extern "C" {}
 
-    /// `VNRequestTextRecognitionLevel.accurate`.
-    const RECOGNITION_ACCURATE: isize = 0;
+    /// `VNRequestTextRecognitionLevel`.
+    #[derive(Clone, Copy, Debug)]
+    pub(super) enum Level {
+        Accurate,
+        Fast,
+    }
+
+    impl Level {
+        fn raw(self) -> isize {
+            match self {
+                Level::Accurate => 0,
+                Level::Fast => 1,
+            }
+        }
+    }
+
+    /// Si el precalentado del modo preciso ya terminó en este proceso.
+    static ACCURATE_READY: AtomicBool = AtomicBool::new(false);
+
+    pub(super) fn mark_accurate_ready() {
+        ACCURATE_READY.store(true, Ordering::Release);
+    }
+
+    /// Mientras el modo preciso compila sus modelos (minutos sin caché), el
+    /// OCR del usuario no espera: usa el rápido, que responde en <1 s aunque
+    /// reconozca algo peor.
+    fn current_level() -> Level {
+        if ACCURATE_READY.load(Ordering::Acquire) {
+            Level::Accurate
+        } else {
+            Level::Fast
+        }
+    }
 
     pub(super) fn recognize(path: &Path) -> Result<String, String> {
         let bytes = std::fs::read(path).map_err(|e| {
@@ -285,14 +379,16 @@ mod vision {
                 "The capture is empty.",
             ));
         }
-        recognize_bytes(&bytes)
+        let level = current_level();
+        if matches!(level, Level::Fast) {
+            tracing::info!("OCR: modo rápido mientras Vision prepara el preciso");
+        }
+        recognize_bytes(&bytes, level)
     }
 
     /// Igual que [`recognize`], con los bytes ya en memoria (el precalentado
     /// usa una imagen mínima generada acá).
-    pub(super) fn recognize_bytes(bytes: &[u8]) -> Result<String, String> {
-        let bytes = super::prepare_ocr_png(bytes);
-
+    pub(super) fn recognize_bytes(bytes: &[u8], level: Level) -> Result<String, String> {
         autoreleasepool(|_| {
             let Some(request_class) = AnyClass::get(c"VNRecognizeTextRequest") else {
                 return Err(vision_unavailable());
@@ -305,7 +401,7 @@ mod vision {
                 if request.is_null() {
                     return Err(vision_unavailable());
                 }
-                let result = perform(request_class, request, &bytes);
+                let result = perform(request_class, request, bytes, level);
                 // SAFETY: `request` es +1 de `alloc`/`init`.
                 drop(Retained::from_raw(request));
                 result
@@ -318,12 +414,13 @@ mod vision {
         request_class: &AnyClass,
         request: *mut AnyObject,
         bytes: &[u8],
+        level: Level,
     ) -> Result<String, String> {
         // SAFETY: los mensajes usan objetos vivos durante la llamada.
         unsafe {
-            let _: () = msg_send![request, setRecognitionLevel: RECOGNITION_ACCURATE];
+            let _: () = msg_send![request, setRecognitionLevel: level.raw()];
             let _: () = msg_send![request, setUsesLanguageCorrection: Bool::YES];
-            if let Some(languages) = recognition_languages(request_class) {
+            if let Some(languages) = recognition_languages(request_class, request, level) {
                 let refs: Vec<&NSString> = languages.iter().map(|s| &**s).collect();
                 let array = NSArray::from_slice(&refs);
                 let _: () = msg_send![request, setRecognitionLanguages: &*array];
@@ -405,18 +502,23 @@ mod vision {
 
     /// Idiomas preferidos del sistema que Vision soporta, en orden.
     ///
-    /// El selector de la lista cambió con las versiones: primero el clásico
-    /// `supportedRecognitionLanguagesAndReturnError:` y, si no está, el
-    /// moderno `supportedRecognitionLanguagesForTextRecognitionLevel:revision:error:`.
-    fn recognition_languages(request_class: &AnyClass) -> Option<Vec<Retained<NSString>>> {
+    /// La lista depende del nivel (el rápido soporta menos idiomas). Se pide al
+    /// request ya configurado con `supportedRecognitionLanguagesAndReturnError:`
+    /// (macOS 12+) y, si no está, a la clase con
+    /// `supportedRecognitionLanguagesForTextRecognitionLevel:revision:error:`.
+    fn recognition_languages(
+        request_class: &AnyClass,
+        request: *mut AnyObject,
+        level: Level,
+    ) -> Option<Vec<Retained<NSString>>> {
         // SAFETY: los selectores devuelven un array de NSString +0; si fallan,
         // nil (el NSError opcional se descarta acá).
         let supported: *mut AnyObject = unsafe {
             let mut error: *mut AnyObject = std::ptr::null_mut();
-            let legacy = objc2::sel!(supportedRecognitionLanguagesAndReturnError:);
-            let responds: Bool = msg_send![request_class, respondsToSelector: legacy];
+            let instance = objc2::sel!(supportedRecognitionLanguagesAndReturnError:);
+            let responds: Bool = msg_send![request, respondsToSelector: instance];
             if responds.as_bool() {
-                msg_send![request_class, supportedRecognitionLanguagesAndReturnError: &mut error]
+                msg_send![request, supportedRecognitionLanguagesAndReturnError: &mut error]
             } else {
                 let modern = objc2::sel!(
                     supportedRecognitionLanguagesForTextRecognitionLevel:revision:error:
@@ -427,7 +529,7 @@ mod vision {
                 }
                 msg_send![
                     request_class,
-                    supportedRecognitionLanguagesForTextRecognitionLevel: RECOGNITION_ACCURATE,
+                    supportedRecognitionLanguagesForTextRecognitionLevel: level.raw(),
                     revision: 0usize,
                     error: &mut error
                 ]
