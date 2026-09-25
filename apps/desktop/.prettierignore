@@ -17,3 +17,7 @@ src/lib/*.svelte
 src/lib/*.ts
 src/routes/**/*.svelte
 !src/routes/dev/**
+
+# Generado por `scripts/gen-emoji-data.mjs` en una sola línea: formatearlo
+# serían 11.000 líneas de diff cada vez que se regenera.
+src/lib/features/emoji/emojiData.json

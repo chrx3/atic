@@ -130,8 +130,8 @@
           onpick={() => openPeekTool("color")}
         />
       {:else if showing === "media"}
-      <MediaPeek {vertical} />
-    {:else if showing === "snippets"}
+        <MediaPeek {vertical} />
+      {:else if showing === "snippets"}
         <SnippetsPeek onpasted={hideToolPeek} onopen={() => openPeekTool("snippets")} />
       {:else}
         <AgentsPeek {fallback} {vertical} />

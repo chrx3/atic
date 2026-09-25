@@ -525,6 +525,7 @@ export const en = {
       prefs: "Preferences",
       dictation: "Dictation",
       models: "Models",
+      permissions: "Permissions",
       shortcuts: "Shortcuts",
     },
     welcomeBody:
@@ -567,6 +568,9 @@ export const en = {
       "Three shortcuts, not ten. Confirm or change them now: you'll need them next.",
     conflictBody: "Pick another combination for {names}.",
     restInSettings: "The rest is in Settings → Shortcuts.",
+    permissionsBody:
+      "macOS asks you to let Atic hear you, paste where you type and see the screen. Without them dictation won't paste and screenshots come out empty. Granting them doesn't make Atic record on its own: it only uses them when you start a tool.",
+    permissionsLater: "Continue without all",
     stepAria: "Step {current} of {total}",
     close: "Close",
     back: "Back",
@@ -611,9 +615,10 @@ export const en = {
     title: "macOS permissions",
     subtitle: "Atic needs them to record and help you",
     intro:
-      "Grant them now and it won't ask again. You can change them any time in Settings → Privacy & Security.",
+      "Some of the permissions Atic uses are missing. Grant them now and it won't ask again; you can change them any time in System Settings → Privacy & Security.",
     granted: "Granted",
     pending: "Pending",
+    optional: "Optional",
     allow: "Allow",
     openSettings: "Open Settings",
     retry: "Retry",
@@ -624,19 +629,26 @@ export const en = {
     allGrantedTitle: "All set",
     allGrantedBody: "Atic has the permissions it needs.",
     settingsGroup: "macOS permissions",
-    settingsHint: "Microphone, screen recording and accessibility.",
+    settingsHint: "Microphone, accessibility, screen recording and notifications.",
     review: "Review permissions",
     microphone: {
       label: "Microphone",
-      hint: "Record your voice in meetings and dictation.",
-    },
-    screen_recording: {
-      label: "Screen recording",
-      hint: "Screenshots, whiteboard and call audio.",
+      hint: "Dictation and recording your voice in meetings.",
     },
     accessibility: {
       label: "Accessibility",
-      hint: "Paste dictation and use the eyedropper over other apps.",
+      hint: "Paste what you dictate or pick from the history, the pill's music controls and the eyedropper over other apps.",
+      how: "It's switched on by hand: open Settings and turn on Atic's toggle in the list.",
+    },
+    screen_recording: {
+      label: "Screen recording",
+      hint: "Screenshots, whiteboard, window flip, eyedropper and the other side's audio in calls.",
+    },
+    notifications: {
+      label: "Notifications",
+      hint: "Alerts when an agent finishes or needs you.",
+      blocked:
+        "macOS has them blocked: turn them on in System Settings → Notifications → Atic.",
     },
   },
   pill: {
@@ -783,6 +795,10 @@ export const en = {
     retach: "Dock back to the pill",
     clipboardHint: "Click to paste · Drag to a console or another app",
     snippets: "Texts and notes",
+    board: "Board",
+    boardEmpty: "The board is empty. Flip a window to start taking notes.",
+    boardOpenPage: "Flip the front window and open page {n}",
+    boardPageEmpty: "Blank page",
     texts: "Texts",
     notes: "Notes",
     scratchPlaceholder: "Scratch notes…",
@@ -1253,7 +1269,8 @@ export const en = {
         placeholder: "Write to {name}…",
         noTarget: "Tap a console to write to it",
         emptyTitle: "The board is empty",
-        emptyHint: "Pick the folder and how many consoles, then tap the agent to open them.",
+        emptyHint:
+          "Pick the folder and how many consoles, then tap the agent to open them.",
         closeBody: "Its process ends and it can't be undone.",
         collapse: "Shrink the list",
         expand: "Show the list",
@@ -1299,7 +1316,8 @@ export const en = {
         recent: "Recent",
         close: "Close {name}",
         closeTitle: "Close {name}?",
-        closeBody: "It is still working. Whatever it is doing stops, and it can't be undone.",
+        closeBody:
+          "It is still working. Whatever it is doing stops, and it can't be undone.",
         closeAction: "Close",
         emptyTitle: "Who are we working with?",
         emptyHint: "Pick an agent to open a chat, or use “New” for a terminal.",
@@ -1358,7 +1376,8 @@ export const en = {
         cannotResume: "{name} can't resume conversations reliably",
         mcp: "MCP servers",
         mcpTools: "{n} tools",
-        mcpAtic: "Atic's own: this agent can open other agents and delegate work to them. Those sessions show up as read-only tabs in the rail.",
+        mcpAtic:
+          "Atic's own: this agent can open other agents and delegate work to them. Those sessions show up as read-only tabs in the rail.",
         currentAgent: "In use",
         useAgent: "Use",
         searchModels: "Search models",
@@ -1373,7 +1392,8 @@ export const en = {
         },
         fast: "Fast",
         fastHint: "Fast variant of the same model",
-        authHint: "Looks like a {name} credentials problem. Try another model or sign in again in its CLI.",
+        authHint:
+          "Looks like a {name} credentials problem. Try another model or sign in again in its CLI.",
         askTitle: "{name} is asking",
         askOwn: "Or type your answer…",
         askSkip: "Skip",

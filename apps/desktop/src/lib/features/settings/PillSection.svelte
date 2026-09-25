@@ -82,7 +82,11 @@
   }
 
   /** Un paso arriba o abajo dentro de su propio cubo. */
-  function reorder(bucket: Exclude<PillBucket, "hidden">, index: number, delta: number) {
+  function reorder(
+    bucket: Exclude<PillBucket, "hidden">,
+    index: number,
+    delta: number,
+  ) {
     const list = bucket === "ring" ? layout.ring : layout.more;
     const next = index + delta;
     if (next < 0 || next >= list.length) return;
@@ -151,7 +155,8 @@
                       onchange={(event: Event) =>
                         moveTo(
                           tool,
-                          (event.currentTarget as HTMLSelectElement).value as PillBucket,
+                          (event.currentTarget as HTMLSelectElement)
+                            .value as PillBucket,
                         )}
                     />
                   </span>
@@ -175,7 +180,10 @@
       </div>
     </SettingsGroup>
 
-    <SettingsGroup title={t("settings.pill.homeTitle")} hint={t("settings.pill.homeHint")}>
+    <SettingsGroup
+      title={t("settings.pill.homeTitle")}
+      hint={t("settings.pill.homeHint")}
+    >
       <div>
         <Button variant="soft" size="sm" onclick={resetHome}>
           {t("settings.pill.homeReset")}

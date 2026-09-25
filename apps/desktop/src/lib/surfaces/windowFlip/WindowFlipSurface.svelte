@@ -11,6 +11,7 @@
     closeWindowFlip,
     concealWindowFlip,
     onWindowFlipOpen,
+    onWindowFlipGotoPage,
     onWindowFlipRequestClose,
     presentWindowFlip,
     saveWindowFlipBlocks,
@@ -44,6 +45,8 @@
   const HUNDIDO = 0.5;
 
   let view = $state<WindowFlipView | null>(null);
+  /** Salto de página pedido desde Textos (al abrir o con la tapa abierta). */
+  let irA = $state<{ pagina: number; marca: number } | null>(null);
   let bloques = $state<NoteBlock[]>([]);
   /** Atajo vigente para el hint del pie: se lee de la config al montar. */
   /** True mientras se exporta: el diálogo nativo no debe voltear el reverso. */
@@ -115,6 +118,7 @@
     if (closeTimer) clearTimeout(closeTimer);
     view = next;
     bloques = colocarSiHaceFalta(next.blocks);
+    irA = next.page == null ? null : { pagina: next.page, marca: Date.now() };
     cajonAbierto = false;
     previewSrc = srcDe(next.previewPath);
     showBack = false;
@@ -276,6 +280,9 @@
       if (current) apply(current);
     });
     const stopOpen = onWindowFlipOpen(apply);
+    const stopGoto = onWindowFlipGotoPage((pagina) => {
+      irA = { pagina, marca: Date.now() };
+    });
     const stopClose = onWindowFlipRequestClose(() => {
       void beginClose();
     });
@@ -290,6 +297,7 @@
     return () => {
       void stopOpen.then((unlisten) => unlisten());
       void stopClose.then((unlisten) => unlisten());
+      void stopGoto.then((unlisten) => unlisten());
       window.removeEventListener("keydown", onKey);
       window.removeEventListener("blur", alPerderFoco);
       if (saveTimer) clearTimeout(saveTimer);
@@ -339,6 +347,7 @@
           {compacta}
           {accionesSoloIcono}
           notaKey={view?.key ?? ""}
+          {irA}
           nombreArchivo={t("overlay.windowFlip.sharedTitle")}
           onpersist={persist}
           onclose={() => void beginClose()}
@@ -359,7 +368,8 @@
                 {/if}
                 <span class="sobre-texto">
                   {t("overlay.windowFlip.sharedOver", {
-                    window: view?.title || view?.exe || t("overlay.windowFlip.untitled"),
+                    window:
+                      view?.title || view?.exe || t("overlay.windowFlip.untitled"),
                   })}
                 </span>
               </p>

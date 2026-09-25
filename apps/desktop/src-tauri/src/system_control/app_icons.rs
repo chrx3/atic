@@ -7,6 +7,7 @@
 //! copia que usan las dos pestañas.
 
 use std::collections::HashMap;
+#[cfg(windows)]
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
@@ -91,11 +92,24 @@ fn attach_with(apps: &mut [SystemApp], mut resolver: impl FnMut(&SystemApp) -> O
 /// La ruta se le pide al pid que el panel eligió para el grupo (el de más
 /// memoria). Si ese proceso no deja leer su ruta —normal entre los protegidos—
 /// queda `None` y se recuerda.
+#[cfg(windows)]
 fn resolve(pid: u32) -> Option<String> {
     let path = process_path(pid)?;
     crate::launcher_icons::icon_data_url(&path)
 }
 
+/// En macOS el ícono es el del `.app` más externo que contiene al proceso,
+/// el mismo que usa el panel para agrupar: así un helper de Chrome muestra el
+/// de Chrome. Lo que no vive en un bundle (`node`, `cargo`) queda sin ícono y
+/// el panel pinta su inicial.
+#[cfg(target_os = "macos")]
+fn resolve(pid: u32) -> Option<String> {
+    let path = super::snapshot::pid_path(pid)?;
+    let bundle = super::snapshot::outer_bundle(&path)?;
+    crate::launcher_icons::icon_data_url(std::path::Path::new(bundle))
+}
+
+#[cfg(windows)]
 /// Ruta del ejecutable del proceso.
 ///
 /// Mismo patrón que el resto de la app (`meeting_detection`, `apps`,
@@ -132,11 +146,13 @@ pub fn process_path(pid: u32) -> Option<PathBuf> {
 /// la app corre, así que se guarda. Acotada: si crece, se tira entera.
 ///
 /// Se cachea también el fallo (`None`): repetir la apertura no lo arregla.
+#[cfg(windows)]
 fn name_cache() -> &'static Mutex<HashMap<String, Option<String>>> {
     static CACHE: OnceLock<Mutex<HashMap<String, Option<String>>>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+#[cfg(windows)]
 /// Nombre visible del ejecutable: `FileDescription` del VERSIONINFO —el que
 /// muestra el Administrador de tareas— y, si el archivo no trae recurso, el
 /// nombre del ejecutable sin extensión.
@@ -165,6 +181,7 @@ pub fn app_name(path: &Path) -> Option<String> {
     })
 }
 
+#[cfg(windows)]
 /// `FileDescription` del VERSIONINFO del ejecutable.
 ///
 /// `GetFileVersionInfoW` lee solo el recurso de versión, no el archivo
@@ -251,6 +268,7 @@ mod tests {
         }
     }
 
+    #[cfg(windows)]
     /// El nombre visible de las apps sale del VERSIONINFO del .exe, porque
     /// `GetDisplayName()` viene vacío. `notepad.exe` es un binario que
     /// siempre trae el recurso en Windows.
@@ -264,6 +282,7 @@ mod tests {
         );
     }
 
+    #[cfg(windows)]
     /// Sin recurso de versión (o sin archivo) queda el nombre del ejecutable
     /// sin extensión, que es el último escalón antes del "App {pid}".
     #[test]

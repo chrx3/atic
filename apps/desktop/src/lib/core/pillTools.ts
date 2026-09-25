@@ -115,7 +115,8 @@ export function placePillTool(
   const more = layout.more.map((tool) => tool.id).filter((other) => other !== id);
   if (to !== "ring" && ring.length === 0) return null;
   const insert = (list: ToolId[]) => {
-    const at = index === undefined ? list.length : Math.max(0, Math.min(index, list.length));
+    const at =
+      index === undefined ? list.length : Math.max(0, Math.min(index, list.length));
     list.splice(at, 0, id);
   };
   if (to === "ring") insert(ring);

@@ -440,7 +440,10 @@ describe("hogar elegido", () => {
   it("si la caja cambia de tamaño conserva el centro, no la esquina", () => {
     // Soltada como barra de 40: la pestaña de 180 queda centrada en el mismo sitio.
     const home = pillHomeFrom("right", { x: 960, y: 300, w: 40, h: 40 }, SOLO)!;
-    expect(pillHomePoint(home, TAB, SOLO)?.at).toEqual({ x: 1000 - TAB.w, y: 320 - 90 });
+    expect(pillHomePoint(home, TAB, SOLO)?.at).toEqual({
+      x: 1000 - TAB.w,
+      y: 320 - 90,
+    });
   });
 
   it("pegada a una esquina, la caja más larga no se sale del área", () => {

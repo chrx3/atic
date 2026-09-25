@@ -8,6 +8,7 @@
    */
   import { onMount, tick } from "svelte";
   import SnippetsList from "$lib/SnippetsList.svelte";
+  import FlipPagesList from "./FlipPagesList.svelte";
   import { snippets } from "$domain/snippets.svelte";
   import { sessionEffect } from "$domain/session";
   import {
@@ -91,7 +92,8 @@
     onDrop: (info) => maybeRetachOnDrop(info.frame, info.cursor),
     onEnd: () => showRetachPreview("snippets", false),
   });
-  let tab = $state<"list" | "scratchpad">("list");
+  /** El tablero va primero: Textos es la puerta a sus páginas. */
+  let tab = $state<"board" | "list" | "scratchpad">("board");
   /** Pin always-on-top (misma semántica que agentes). */
   let pinned = $state(false);
   let workAreas = $state<Area[]>([]);
@@ -594,6 +596,16 @@
           type="button"
           role="tab"
           class="sf-tab"
+          class:active={tab === "board"}
+          aria-selected={tab === "board"}
+          onclick={() => (tab = "board")}
+        >
+          {t("overlay.board")}
+        </button>
+        <button
+          type="button"
+          role="tab"
+          class="sf-tab"
           class:active={tab === "list"}
           aria-selected={tab === "list"}
           onclick={() => (tab = "list")}
@@ -647,7 +659,11 @@
       </div>
     </header>
     <div class="sf-body">
-      {#if tab === "list"}
+      {#if tab === "board"}
+        <div class="sf-pane" in:tabPanel|local out:tabPanel|local>
+          <FlipPagesList onOpened={() => void close()} />
+        </div>
+      {:else if tab === "list"}
         <div class="sf-pane" in:tabPanel|local out:tabPanel|local>
           <SnippetsList
             items={snippets.items}

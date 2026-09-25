@@ -36,23 +36,35 @@ describe("microphoneAction", () => {
 });
 
 describe("permissionRows", () => {
-  it("ordena micrófono, pantalla y accesibilidad", () => {
+  it("ordena micrófono, accesibilidad y pantalla", () => {
     expect(permissionRows(concedido).map((row) => row.kind)).toEqual([
       "microphone",
-      "screen_recording",
       "accessibility",
+      "screen_recording",
     ]);
   });
 
   it("solo ofrece botón en lo pendiente", () => {
     const rows = permissionRows({ ...concedido, screen_recording: false });
     expect(rows[0].action).toBe("none");
-    expect(rows[1]).toMatchObject({ granted: false, action: "allow" });
-    expect(rows[2].action).toBe("none");
+    expect(rows[1].action).toBe("none");
+    expect(rows[2]).toMatchObject({ granted: false, action: "allow" });
   });
 
   it("accesibilidad siempre se resuelve en Ajustes", () => {
     const rows = permissionRows({ ...concedido, accessibility: false });
-    expect(rows[2]).toMatchObject({ granted: false, action: "settings" });
+    expect(rows[1]).toMatchObject({ granted: false, action: "settings" });
+  });
+
+  it("las notificaciones van al final, opcionales, solo si se pudo consultar", () => {
+    expect(permissionRows(concedido, null)).toHaveLength(3);
+    const rows = permissionRows(concedido, false);
+    expect(rows.at(-1)).toMatchObject({
+      kind: "notifications",
+      granted: false,
+      action: "allow",
+      optional: true,
+    });
+    expect(rows.slice(0, 3).every((row) => !row.optional)).toBe(true);
   });
 });

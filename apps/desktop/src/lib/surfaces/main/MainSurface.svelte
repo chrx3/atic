@@ -167,12 +167,15 @@
   /**
    * macOS: al arrancar, si falta algún permiso TCC, se ofrece la pantalla que
    * los pide. Se chequea una sola vez por sesión: cerrarla no la reabre hasta
-   * el próximo arranque (o desde Ajustes → Acerca de).
+   * el próximo arranque (o desde Ajustes → Acerca de). Si en esta sesión
+   * corrió el primer uso, su paso de permisos ya los mostró: no se repite
+   * encima de la práctica.
    */
   const isMac = navigator.userAgent.includes("Mac");
   let permissionsChecked = false;
 
   $effect(() => {
+    if (config.current && !onboardingDone) permissionsChecked = true;
     if (!isMac || !onboardingDone || permissionsChecked) return;
     permissionsChecked = true;
     void macPermissionsStatus()

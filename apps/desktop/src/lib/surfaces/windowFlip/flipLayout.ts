@@ -123,6 +123,79 @@ export function marcoEnPagina(
   return { x: izq - x0, y: arr, w: der - izq, h: aba - arr };
 }
 
+export interface MiniaturaPagina {
+  indice: number;
+  piezas: {
+    id: string;
+    tipo: NoteBlock["kind"];
+    x: number;
+    y: number;
+    w: number;
+    h: number;
+    filas: number;
+    asset: string;
+    renglones: number;
+  }[];
+  trazos: { puntos: string; color: string; ancho: number }[];
+}
+
+/**
+ * Lo mínimo para dibujar cada miniatura: cajas en % de la celda.
+ *
+ * Texto y listas van como barritas y no como texto: a 84px de ancho no se lee
+ * nada, y lo que hace reconocible una página es la foto y el dibujo.
+ */
+export function miniaturasTablero(
+  bloques: NoteBlock[],
+  paginas: number,
+): MiniaturaPagina[] {
+  const tinta =
+    bloques.find((b): b is Extract<NoteBlock, { kind: "ink" }> => b.kind === "ink") ??
+    null;
+  return Array.from({ length: paginas }, (_, indice) => {
+    const piezas = bloques
+      .filter((b) => b.kind !== "ink" && bloqueEnPagina(b, indice))
+      .map((b) => {
+        const m = marcoDe(b);
+        const x0 = indice * PAGINA_W;
+        const caja = {
+          id: b.id,
+          tipo: b.kind,
+          x: ((m.x - x0) / PAGINA_W) * 100,
+          y: (m.y / PAGINA_H) * 100,
+          w: (m.w / PAGINA_W) * 100,
+          h: (m.h / PAGINA_H) * 100,
+        };
+        if (b.kind === "check") {
+          return {
+            ...caja,
+            filas: Math.min(4, b.items.length),
+            asset: "",
+            renglones: 0,
+          };
+        }
+        if (b.kind === "image") {
+          return { ...caja, filas: 0, asset: b.asset, renglones: 0 };
+        }
+        return {
+          ...caja,
+          filas: 0,
+          asset: "",
+          renglones: Math.min(4, Math.max(1, Math.round(m.h / 24))),
+        };
+      });
+    const trazos =
+      tinta && bloqueEnPagina(tinta, indice)
+        ? tinta.strokes.map((trazo) => ({
+            puntos: trazo.points.map(([x, y]) => `${x},${y}`).join(" "),
+            color: trazo.color.length === 9 ? trazo.color.slice(0, 7) : trazo.color,
+            ancho: trazo.width * 2,
+          }))
+        : [];
+    return { indice, piezas, trazos };
+  });
+}
+
 /** ¿Este bloque toca la celda `indice`? La tinta se mide por sus puntos. */
 export function bloqueEnPagina(bloque: NoteBlock, indice: number): boolean {
   if (bloque.kind === "ink") {

@@ -804,9 +804,7 @@
         aria-label={t("page.annotate.style")}
         onclick={() => (styleOpen = !styleOpen)}
       >
-        <span
-          class="style-dot"
-          style="--swatch: {color}; --dot: {6 + level * 2}px"
+        <span class="style-dot" style="--swatch: {color}; --dot: {6 + level * 2}px"
         ></span>
         <Icon icon={ChevronDown} size={11} />
       </button>

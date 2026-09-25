@@ -2,12 +2,24 @@
 
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import type { UnlistenFn } from "@tauri-apps/api/event";
-import type { InkStroke, NoteBlock, WindowFlipView } from "$core/types";
+import type {
+  InkStroke,
+  NoteBlock,
+  WindowFlipBoard,
+  WindowFlipView,
+} from "$core/types";
 import { on } from "./events";
 
-export type { InkStroke, NoteBlock, WindowFlipView };
+export type { InkStroke, NoteBlock, WindowFlipBoard, WindowFlipView };
 
 export const windowFlipState = () => invoke<WindowFlipView | null>("window_flip_state");
+
+/** Bloques y carpeta de imágenes del tablero compartido. */
+export const windowFlipBoard = () => invoke<WindowFlipBoard>("window_flip_board");
+
+/** Voltea la ventana del frente y abre el tablero en esa página. */
+export const openWindowFlipPage = (page: number) =>
+  invoke<void>("window_flip_open_page", { page });
 
 export const saveWindowFlipBlocks = (blocks: NoteBlock[]) =>
   invoke<void>("window_flip_save_blocks", { blocks });
@@ -77,6 +89,10 @@ export const exportWindowFlip = (
 export const onWindowFlipOpen = (
   cb: (view: WindowFlipView) => void,
 ): Promise<UnlistenFn> => on("window-flip-open", cb);
+
+/** Con la tapa ya abierta, Textos pide ir a otra página. */
+export const onWindowFlipGotoPage = (cb: (page: number) => void): Promise<UnlistenFn> =>
+  on("window-flip-goto-page", cb);
 
 export const onWindowFlipRequestClose = (cb: () => void): Promise<UnlistenFn> =>
   on("window-flip-request-close", cb);

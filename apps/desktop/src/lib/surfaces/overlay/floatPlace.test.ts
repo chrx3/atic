@@ -224,11 +224,16 @@ describe("placeBesideAnchor", () => {
     // a los costados del gajo también la pisaba. Se pega a la rueda entera.
     const top = { x: 400, y: 10, w: 220, h: 220 };
     const petal = { x: 490, y: 10, w: 40, h: 40 };
-    const placed = placeBesideAnchor(top, petal, { w: 270, h: 150 }, {
-      gap: 14,
-      corner: 20,
-      work,
-    });
+    const placed = placeBesideAnchor(
+      top,
+      petal,
+      { w: 270, h: 150 },
+      {
+        gap: 14,
+        corner: 20,
+        work,
+      },
+    );
     const overlap = !(
       placed.x + placed.w <= top.x ||
       placed.x >= top.x + top.w ||

@@ -205,24 +205,30 @@ export function toolPeek(node: HTMLElement, spec: PeekSpec | null) {
     cancelHide();
     cancelShow();
     prefetchPeek(peek.tool);
-    timer = window.setTimeout(() => {
-      timer = 0;
-      // El overlay es click-through fuera de la pill: a veces el leave no
-      // llega y este timer abriría el vistazo sobre el escritorio. En Mac el
-      // `:hover` real no se actualiza con eventos sintéticos: alcanza con que
-      // la cadena sintética cubra el nodo.
-      if (!node.isConnected || !(node.matches(":hover") || isSyntheticHovered(node))) {
-        return;
-      }
-      owner = node;
-      const box = node.getBoundingClientRect();
-      toolPeekState.show(peek, {
-        x: box.left,
-        y: box.top,
-        w: box.width,
-        h: box.height,
-      });
-    }, toolPeekState.open ? SWITCH_DELAY_MS : SHOW_DELAY_MS);
+    timer = window.setTimeout(
+      () => {
+        timer = 0;
+        // El overlay es click-through fuera de la pill: a veces el leave no
+        // llega y este timer abriría el vistazo sobre el escritorio. En Mac el
+        // `:hover` real no se actualiza con eventos sintéticos: alcanza con que
+        // la cadena sintética cubra el nodo.
+        if (
+          !node.isConnected ||
+          !(node.matches(":hover") || isSyntheticHovered(node))
+        ) {
+          return;
+        }
+        owner = node;
+        const box = node.getBoundingClientRect();
+        toolPeekState.show(peek, {
+          x: box.left,
+          y: box.top,
+          w: box.width,
+          h: box.height,
+        });
+      },
+      toolPeekState.open ? SWITCH_DELAY_MS : SHOW_DELAY_MS,
+    );
   };
 
   const close = () => {

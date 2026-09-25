@@ -187,6 +187,7 @@ export interface AticEvents {
   /** Prototipo: tapa de notas sobre una ventana ajena. */
   "window-flip-open": WindowFlipView;
   "window-flip-request-close": void;
+  "window-flip-goto-page": number;
   /** Abrir el buscador de la ventana principal (puede emitirlo el frontend). */
   "open-search": void;
   /**

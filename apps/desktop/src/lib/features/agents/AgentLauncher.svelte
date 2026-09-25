@@ -43,7 +43,12 @@
   import { sessionEffect } from "$domain/session";
   import { t } from "$domain/i18n.svelte";
   import { agents } from "$lib/agentSessions.svelte";
-  import { chatTabsKey, loadChatTabs, saveChatTabs, type ChatTabRecord } from "./chatTabs";
+  import {
+    chatTabsKey,
+    loadChatTabs,
+    saveChatTabs,
+    type ChatTabRecord,
+  } from "./chatTabs";
 
   type LauncherView = "setup" | "console";
 
@@ -173,18 +178,18 @@
           chat: true,
         }))
       : missingCli
-      ? [
-          {
+        ? [
+            {
+              kind: "local" as const,
+              label: t("page.agents.installNamed", { name: chosen.name }),
+              command: installCommand(chosen),
+            },
+          ]
+        : Array.from({ length: Math.max(1, Math.min(count, MAX_INSTANCES)) }, () => ({
             kind: "local" as const,
-            label: t("page.agents.installNamed", { name: chosen.name }),
-            command: installCommand(chosen),
-          },
-        ]
-      : Array.from({ length: Math.max(1, Math.min(count, MAX_INSTANCES)) }, () => ({
-          kind: "local" as const,
-          label: chosen.name,
-          command: chosen.cli,
-        })),
+            label: chosen.name,
+            command: chosen.cli,
+          })),
   );
   const launchLabel = $derived(
     missingCli
