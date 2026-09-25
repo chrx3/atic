@@ -108,6 +108,12 @@ pub fn run() {
         run_color_picker_smoke();
         return;
     }
+    // Proceso hijo que compila los modelos de Vision (ver `ocr::warm_up`):
+    // sale antes del single-instance, que si no le cedería el paso a la app.
+    #[cfg(target_os = "macos")]
+    if std::env::args().any(|arg| arg == ocr::WARM_UP_ARG) {
+        ocr::warm_up_child_main();
+    }
     // macOS: una app abierta desde Finder hereda el PATH mínimo del sistema y
     // no encuentra los CLIs de los agentes. Se arma antes de que existan hilos
     // y lo heredan la consola, las sesiones ACP y el discovery.
