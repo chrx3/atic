@@ -626,8 +626,7 @@ fn open_with(app: &AppHandle, aunque_atic_al_frente: bool) -> Result<(), String>
     }
     #[cfg(windows)]
     {
-        let _ = aunque_atic_al_frente;
-        open_windows(app)
+        open_windows(app, aunque_atic_al_frente)
     }
 }
 
@@ -751,7 +750,7 @@ fn open_macos(app: &AppHandle, aunque_atic_al_frente: bool) -> Result<(), String
 }
 
 #[cfg(windows)]
-fn open_windows(app: &AppHandle) -> Result<(), String> {
+fn open_windows(app: &AppHandle, aunque_atic_al_frente: bool) -> Result<(), String> {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         GetAncestor, GetForegroundWindow, IsIconic, GA_ROOT,
     };
@@ -767,6 +766,17 @@ fn open_windows(app: &AppHandle) -> Result<(), String> {
         } else {
             root
         }
+    };
+    // Desde Textos el clic deja a Atic al frente: se voltea la ventana ajena
+    // más alta en el orden Z, igual que en macOS.
+    let hwnd = if aunque_atic_al_frente && window_pid(hwnd) == std::process::id() {
+        let monitors = atic_capture::monitors::enumerate();
+        atic_capture::windows::enumerate_candidates(std::process::id(), &monitors)
+            .first()
+            .map(|c| c.hwnd as windows_sys::Win32::Foundation::HWND)
+            .ok_or_else(|| "no hay ventana al frente".to_string())?
+    } else {
+        hwnd
     };
     if is_our_label(app, hwnd as isize, LABEL)
         || is_our_label(app, hwnd as isize, crate::overlay::LABEL)
@@ -1440,6 +1450,15 @@ unsafe fn window_title(hwnd: windows_sys::Win32::Foundation::HWND) -> String {
     }
     buffer.truncate(copied as usize);
     String::from_utf16_lossy(&buffer)
+}
+
+#[cfg(windows)]
+fn window_pid(hwnd: windows_sys::Win32::Foundation::HWND) -> u32 {
+    use windows_sys::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId;
+
+    let mut pid = 0u32;
+    unsafe { GetWindowThreadProcessId(hwnd, &mut pid) };
+    pid
 }
 
 #[cfg(windows)]
