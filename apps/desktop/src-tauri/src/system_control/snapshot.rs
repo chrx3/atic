@@ -74,6 +74,16 @@ pub fn identify(path: &str) -> ProcId {
     }
 }
 
+/// Ruta del `.app` más externo que contiene `path`, si vive en un bundle.
+///
+/// Es el mismo corte que usa [`identify`] para la clave, pero conservando la
+/// ruta completa: de ahí sale el ícono.
+#[cfg_attr(windows, allow(dead_code))]
+pub fn outer_bundle(path: &str) -> Option<&str> {
+    let corte = path.to_ascii_lowercase().find(".app/")?;
+    Some(&path[..corte + ".app".len()])
+}
+
 #[cfg_attr(windows, allow(dead_code))]
 fn en_el_so(bajo: &str) -> bool {
     if bajo.starts_with("/usr/local/") {
@@ -268,6 +278,12 @@ pub fn ram_percent(v: &Vitals) -> f32 {
 #[cfg(target_os = "macos")]
 pub fn key_of_pid(pid: u32) -> Option<String> {
     imp::key_of_pid(pid)
+}
+
+/// Ruta del ejecutable de un pid vivo.
+#[cfg(target_os = "macos")]
+pub fn pid_path(pid: u32) -> Option<String> {
+    imp::pid_path(pid as i32)
 }
 
 #[cfg(windows)]
@@ -681,11 +697,14 @@ mod imp {
 
         let (ram_used, ram_total) = memory()?;
 
+        // Igual que en Windows: íconos después del recorte y por presupuesto.
+        let mut apps = group_apps(rows, &proc_cpu);
+        autoreleasepool(|_| crate::system_control::app_icons::attach(&mut apps));
         Ok(SystemSnapshot {
             cpu,
             ram_used,
             ram_total,
-            apps: group_apps(rows, &proc_cpu),
+            apps,
         })
     }
 
@@ -846,7 +865,7 @@ mod imp {
             .collect()
     }
 
-    fn pid_path(pid: i32) -> Option<String> {
+    pub fn pid_path(pid: i32) -> Option<String> {
         let mut buf = vec![0u8; PROC_PIDPATHINFO_MAXSIZE];
         let n = unsafe { proc_pidpath(pid, buf.as_mut_ptr(), buf.len() as u32) };
         if n <= 0 {
@@ -952,6 +971,21 @@ mod tests {
         assert_eq!(app.key, "safari");
         assert_eq!(app.name, "Safari");
         assert!(!app.background);
+    }
+
+    #[test]
+    fn el_icono_sale_del_bundle_mas_externo() {
+        assert_eq!(
+            outer_bundle(
+                "/Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/1/Helpers/Google Chrome Helper (Renderer).app/Contents/MacOS/Google Chrome Helper (Renderer)",
+            ),
+            Some("/Applications/Google Chrome.app")
+        );
+        assert_eq!(
+            outer_bundle("/Applications/Visual Studio Code.APP/Contents/MacOS/Electron"),
+            Some("/Applications/Visual Studio Code.APP")
+        );
+        assert_eq!(outer_bundle("/opt/homebrew/bin/node"), None);
     }
 
     #[test]

@@ -489,6 +489,14 @@ export interface WindowFlipView {
   cardTop: number;
   cardWidth: number;
   cardHeight: number;
+  /** Página a la que abrir, si el volteo lo pidió Textos. */
+  page: number | null;
+}
+
+/** El tablero leído de disco, para listar sus páginas fuera de la tapa. */
+export interface WindowFlipBoard {
+  blocks: NoteBlock[];
+  assetsDir: string;
 }
 
 export interface Snippet {

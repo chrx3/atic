@@ -1898,7 +1898,8 @@
   async function openThread(key: string, thread: StoredThread) {
     const tab = tabOf(key);
     const previous = tab?.hubSession ?? null;
-    const reuse = !!tab && !!previous && (agents.byId(previous)?.turns.length ?? 0) === 0;
+    const reuse =
+      !!tab && !!previous && (agents.byId(previous)?.turns.length ?? 0) === 0;
     if (!reuse && !canAddTab) return;
     const agent = AGENTS.find((a) => a.backend === thread.backendId);
     const label = agent?.name ?? thread.backendName;
@@ -1969,14 +1970,19 @@
     untrack(() => {
       if (seeing) {
         if (agents.watching !== id) agents.watch(id);
-      } else if (agents.watching && tabs.some((item) => item.hubSession === agents.watching)) {
+      } else if (
+        agents.watching &&
+        tabs.some((item) => item.hubSession === agents.watching)
+      ) {
         agents.watch(null);
       }
     });
   });
 
   /** Los agentes que el selector del chat ofrece: los que están instalados. */
-  const chatChoices = $derived(AGENTS.filter((agent) => agentOnPath[agent.cli] !== false));
+  const chatChoices = $derived(
+    AGENTS.filter((agent) => agentOnPath[agent.cli] !== false),
+  );
 
   /**
    * Otro agente desde el selector del chat. Un chat vacío se reemplaza en su
@@ -2126,7 +2132,8 @@
     const logo = agentLogoKey(canonicalAgentCli(command ?? "") ?? command);
     if (!logo) return;
     const still = tabs.some(
-      (item) => agentLogoKey(canonicalAgentCli(item.command ?? "") ?? item.command) === logo,
+      (item) =>
+        agentLogoKey(canonicalAgentCli(item.command ?? "") ?? item.command) === logo,
     );
     if (still) return;
     presence.markSeenMany(
@@ -2965,7 +2972,8 @@
     if (chatKey && chat) {
       activeKey = chatKey;
       requestOverlayKeyboard(chatKey);
-      if (payload.kind === "image" && payload.imagePath) chat.attachImage(payload.imagePath);
+      if (payload.kind === "image" && payload.imagePath)
+        chat.attachImage(payload.imagePath);
       else if (payload.text) chat.insertText(payload.text);
       return;
     }
@@ -3372,7 +3380,9 @@
             </button>
           </span>
         {:else if !railGroups.some((g) => g.keys.includes(tab.key))}
-          {@const chat = tab.hubSession ? chatTabStatus(agents.byId(tab.hubSession)) : null}
+          {@const chat = tab.hubSession
+            ? chatTabStatus(agents.byId(tab.hubSession))
+            : null}
           <span class="rail-slot">
             <button
               type="button"
@@ -4099,7 +4109,8 @@
               readOnly={!tab.chat}
               choices={chatChoices}
               onOpenThread={(thread) => void openThread(tab.key, thread)}
-              onSwitchAgent={(agent, model) => void switchChatAgent(tab.key, agent, model)}
+              onSwitchAgent={(agent, model) =>
+                void switchChatAgent(tab.key, agent, model)}
               onRegister={(api) => registerChat(tab.key, api)}
             />
           {:else}

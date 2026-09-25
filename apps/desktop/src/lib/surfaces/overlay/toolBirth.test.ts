@@ -58,9 +58,7 @@ describe("nextDetachHandoff", () => {
   });
 
   it("sin reposo acepta el marco que haya (despegue sin rect medido)", () => {
-    expect(nextDetachHandoff(createDetachHandoffGate(), oldFrame, null)).toBe(
-      true,
-    );
+    expect(nextDetachHandoff(createDetachHandoffGate(), oldFrame, null)).toBe(true);
   });
 
   it("pasado el tope acepta igual para no colgar el gesto", () => {

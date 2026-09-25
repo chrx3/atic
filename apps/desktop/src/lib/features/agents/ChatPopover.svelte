@@ -157,7 +157,7 @@
     color: var(--rb-text);
     box-shadow:
       0 0 0 1px color-mix(in sRGB, var(--rb-text) 10%, transparent),
-      0 12px 32px -8px rgba(0, 0, 0, 0.45);
+      0 12px 32px -8px rgb(0 0 0 / 45%);
   }
 
   .pop.is-right {

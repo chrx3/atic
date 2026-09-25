@@ -228,7 +228,7 @@
     flex-direction: column;
     gap: 6px;
     margin: -6px -6px 4px;
-    padding: 6px 6px 6px;
+    padding: 6px;
     background: var(--rb-surface-elevated, var(--rb-surface));
     box-shadow: 0 1px 0 color-mix(in sRGB, var(--rb-text) 8%, transparent);
   }

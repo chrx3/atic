@@ -1133,7 +1133,7 @@
     background: var(--rb-surface-elevated, var(--rb-surface));
     box-shadow:
       0 0 0 1px color-mix(in sRGB, var(--rb-text) 12%, transparent),
-      0 8px 20px -8px rgba(0, 0, 0, 0.5);
+      0 8px 20px -8px rgb(0 0 0 / 50%);
     transform: translate(-50%, -100%);
   }
 
@@ -1282,7 +1282,6 @@
       )
       0 0 / 250% 100%;
     background-clip: text;
-    -webkit-background-clip: text;
     color: transparent;
     animation: shimmer 1.6s linear infinite;
   }
@@ -1291,6 +1290,7 @@
     from {
       background-position: 100% 0;
     }
+
     to {
       background-position: 0% 0;
     }
@@ -1372,14 +1372,14 @@
     background: var(--rb-surface-2);
     box-shadow:
       0 0 0 1px color-mix(in sRGB, var(--rb-text) 9%, transparent),
-      0 10px 28px -18px rgba(0, 0, 0, 0.55);
+      0 10px 28px -18px rgb(0 0 0 / 55%);
     transition: box-shadow 140ms ease;
   }
 
   .composer:focus-within {
     box-shadow:
       0 0 0 1px color-mix(in sRGB, var(--accent) 45%, transparent),
-      0 10px 28px -18px rgba(0, 0, 0, 0.55);
+      0 10px 28px -18px rgb(0 0 0 / 55%);
   }
 
   textarea {
@@ -1507,12 +1507,12 @@
     height: 100%;
     border-radius: 8px;
     object-fit: cover;
-    outline: 1px solid rgba(255, 255, 255, 0.1);
+    outline: 1px solid rgb(255 255 255 / 10%);
     outline-offset: -1px;
   }
 
   :global([data-theme-base="light"]) .attach img {
-    outline-color: rgba(0, 0, 0, 0.1);
+    outline: 1px solid rgb(0 0 0 / 10%);
   }
 
   .attach-x {

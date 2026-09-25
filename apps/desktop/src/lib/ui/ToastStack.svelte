@@ -49,10 +49,7 @@
   const usePopover = $derived(placement === "viewport");
 
   /** Alta del hit-rect del aviso (solo overlay `local` con superficie). */
-  function hitRect(
-    el: HTMLElement,
-    id: number,
-  ): { destroy?: () => void } | void {
+  function hitRect(el: HTMLElement, id: number): { destroy?: () => void } | void {
     if (placement !== "local" || !surface) return;
     const release = surface.add(`${surface.prefix}:toast-${id}`, el);
     return { destroy: release };

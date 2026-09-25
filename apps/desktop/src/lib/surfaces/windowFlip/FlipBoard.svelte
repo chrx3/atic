@@ -66,7 +66,6 @@
     ajustarFuente,
     altoEnvolvente,
     anchoParaBloques,
-    bloqueEnPagina,
     cantidadPaginas,
     BORRAR_RADIO,
     borrarLineaCercana,
@@ -79,6 +78,7 @@
     leerPayloadFlip,
     lineasPagina,
     marcoDe,
+    miniaturasTablero,
     PAGINA_H,
     PAGINA_W,
     payloadFlip,
@@ -107,6 +107,7 @@
     onclose,
     nombreArchivo = "tablero",
     onocupado,
+    irA = null,
   }: {
     bloques: NoteBlock[];
     cajonAbierto?: boolean;
@@ -123,6 +124,8 @@
     nombreArchivo?: string;
     /** El reverso no se cierra mientras el diálogo nativo tiene el foco. */
     onocupado?: (v: boolean) => void;
+    /** Página a mostrar, pedida desde Textos. `marca` repite el mismo pedido. */
+    irA?: { pagina: number; marca: number } | null;
   } = $props();
 
   const LAPICES = [
@@ -198,7 +201,10 @@
       if (!path) return;
       await exportWindowFlip(formato, path, paginas, PAGINA_W, PAGINA_H);
       if (fallos.length) {
-        avisar(t("overlay.windowFlip.exportMissing", { n: String(fallos.length) }), 6000);
+        avisar(
+          t("overlay.windowFlip.exportMissing", { n: String(fallos.length) }),
+          6000,
+        );
       } else {
         avisar(t("overlay.windowFlip.exportOk"), 2400);
       }
@@ -403,6 +409,18 @@
     });
   });
 
+  // Después del reset de arriba (va declarado antes): si no, `encuadrar` pisaba
+  // el salto al abrir sobre otra ventana. Se espera un cuadro para que la
+  // vista ya tenga su tamaño medido.
+  $effect(() => {
+    const pedido = irA;
+    if (!pedido) return;
+    untrack(() => {
+      const indice = Math.min(pedido.pagina, cantidadPaginas(papelW) - 1);
+      requestAnimationFrame(() => irAPagina(Math.max(0, indice)));
+    });
+  });
+
   /**
    * Destello en el borde afectado al paginar: como la vista queda quieta a
    * propósito, sin esto parece que el [+] no hizo nada cuando la página
@@ -427,62 +445,8 @@
     ),
   );
 
-  const tintaSuelta = $derived(
-    bloques.find((b): b is Extract<NoteBlock, { kind: "ink" }> => b.kind === "ink") ??
-      null,
-  );
-
-  /**
-   * Lo mínimo para dibujar cada miniatura: cajas en % de la celda.
-   *
-   * Texto y listas van como barritas y no como texto: a 84px de ancho no se lee
-   * nada, y lo que hace reconocible una página es la foto y el dibujo.
-   */
-  const miniaturas = $derived.by(() => {
-    const tinta = tintaSuelta;
-    return Array.from({ length: paginasTotales }, (_, indice) => {
-      const piezas = bloques
-        .filter((b) => b.kind !== "ink" && bloqueEnPagina(b, indice))
-        .map((b) => {
-          const m = marcoDe(b);
-          const x0 = indice * PAGINA_W;
-          const caja = {
-            id: b.id,
-            tipo: b.kind,
-            x: ((m.x - x0) / PAGINA_W) * 100,
-            y: (m.y / PAGINA_H) * 100,
-            w: (m.w / PAGINA_W) * 100,
-            h: (m.h / PAGINA_H) * 100,
-          };
-          if (b.kind === "check") {
-            return {
-              ...caja,
-              filas: Math.min(4, b.items.length),
-              asset: "",
-              renglones: 0,
-            };
-          }
-          if (b.kind === "image") {
-            return { ...caja, filas: 0, asset: b.asset, renglones: 0 };
-          }
-          return {
-            ...caja,
-            filas: 0,
-            asset: "",
-            renglones: Math.min(4, Math.max(1, Math.round(m.h / 24))),
-          };
-        });
-      const trazos =
-        tinta && bloqueEnPagina(tinta, indice)
-          ? tinta.strokes.map((trazo) => ({
-              puntos: trazo.points.map(([x, y]) => `${x},${y}`).join(" "),
-              color: trazo.color.length === 9 ? trazo.color.slice(0, 7) : trazo.color,
-              ancho: trazo.width * 2,
-            }))
-          : [];
-      return { indice, piezas, trazos };
-    });
-  });
+  /** Una miniatura por celda (la misma cuenta la usa Textos para listarlas). */
+  const miniaturas = $derived(miniaturasTablero(bloques, paginasTotales));
 
   /**
    * Mueve la vista con transición.

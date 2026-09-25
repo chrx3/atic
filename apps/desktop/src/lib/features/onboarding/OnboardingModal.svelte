@@ -1,13 +1,15 @@
 <script lang="ts">
   /**
-   * El primer uso: consentimiento, Groq o local, modelos, atajos y práctica.
+   * El primer uso: consentimiento, Groq o local, modelos, permisos (macOS),
+   * atajos y práctica.
    *
    * El primer uso no se cierra: el consentimiento no es decorativo. Si se
    * pidió repetir el tutorial (birrete o Ajustes), sí: Esc, la X o «Cerrar».
    *
    * La práctica no vive acá. Esta ventana atrapa el foco; los atajos reales
    * corren en el escritorio, junto a la pill. Al terminar el setup se cierra
-   * el modal y el overlay toma el coach.
+   * el modal y el overlay toma el coach. Por eso los permisos van justo
+   * antes: la práctica dicta y pega, y sin micrófono ni Accesibilidad falla.
    */
   import { formatMegabytes } from "$core/format";
   import type { ModelStatus } from "$core/types";
@@ -18,6 +20,7 @@
   import { minimizeWindow } from "$ipc/windows";
   import { tabPanel } from "$lib/motion";
   import GroqKeyField from "$features/settings/GroqKeyField.svelte";
+  import PermissionsList from "$features/permissions/PermissionsList.svelte";
   import { SETUP_SHORTCUTS } from "./practice";
   import Banner from "$ui/Banner.svelte";
   import Button from "$ui/Button.svelte";
@@ -40,22 +43,35 @@
     replay?: boolean;
   } = $props();
 
-  const STEPS = $derived([
-    t("onboarding.steps.welcome"),
-    t("onboarding.steps.consent"),
-    t("onboarding.steps.prefs"),
-    t("onboarding.steps.dictation"),
-    t("onboarding.steps.models"),
-    t("onboarding.steps.shortcuts"),
-  ]);
+  /** Los permisos son TCC de macOS; en Windows el paso no existe. */
+  const isMac = navigator.userAgent.includes("Mac");
 
-  const DICTATION_STEP = 3;
-  const MODELS_STEP = 4;
-  const SHORTCUTS_STEP = 5;
+  type StepId =
+    | "welcome"
+    | "consent"
+    | "prefs"
+    | "dictation"
+    | "models"
+    | "permissions"
+    | "shortcuts";
+
+  const STEP_IDS: StepId[] = [
+    "welcome",
+    "consent",
+    "prefs",
+    "dictation",
+    "models",
+    ...(isMac ? (["permissions"] as const) : []),
+    "shortcuts",
+  ];
+
+  const STEPS = $derived(STEP_IDS.map((id) => t(`onboarding.steps.${id}`)));
 
   const cfg = $derived(config.current);
 
   let step = $state(0);
+  const stepId = $derived(STEP_IDS[step]);
+  let permissionsMissing = $state(true);
   let saving = $state(false);
   let downloadingId = $state<string | null>(null);
   let downloadError = $state<string | null>(null);
@@ -175,7 +191,7 @@
     <div class="flex flex-col gap-4">
       {#key step}
         <div class="flex flex-col gap-4" in:tabPanel|local out:tabPanel|local>
-          {#if step === 0}
+          {#if stepId === "welcome"}
             <p class="max-w-[60ch] text-sm leading-relaxed text-muted">
               {t("onboarding.welcomeBody")}
             </p>
@@ -187,7 +203,7 @@
                 </li>
               {/each}
             </ul>
-          {:else if step === 1}
+          {:else if stepId === "consent"}
             <p class="max-w-[60ch] text-sm leading-relaxed text-muted">
               {t("onboarding.consentBody")}
             </p>
@@ -197,7 +213,7 @@
               hint={t("onboarding.beepHint")}
               onchange={(checked) => patch({ beep_on_start: checked })}
             />
-          {:else if step === 2}
+          {:else if stepId === "prefs"}
             <Field
               label={t("settings.language.label")}
               hint={t("settings.language.hint")}
@@ -257,7 +273,7 @@
             <p class="max-w-[60ch] text-xs leading-relaxed text-faint">
               {t("onboarding.trayNote")}
             </p>
-          {:else if step === DICTATION_STEP}
+          {:else if stepId === "dictation"}
             <p class="max-w-[60ch] text-sm leading-relaxed text-muted">
               {t("onboarding.dictationBody")}
             </p>
@@ -280,7 +296,7 @@
                 {t("onboarding.whisperNote")}
               </p>
             {/if}
-          {:else if step === MODELS_STEP}
+          {:else if stepId === "models"}
             <p class="max-w-[60ch] text-sm leading-relaxed text-muted">
               {#if cfg.dictation_backend === "groq"}
                 {t("onboarding.modelsGroq")}
@@ -333,7 +349,13 @@
                 {t("onboarding.pendingBytes", { size: formatMegabytes(pendingBytes) })}
               </p>
             {/if}
-          {:else if step === SHORTCUTS_STEP}
+          {:else if stepId === "permissions"}
+            <p class="max-w-[60ch] text-sm leading-relaxed text-muted">
+              {t("onboarding.permissionsBody")}
+            </p>
+
+            <PermissionsList bind:missing={permissionsMissing} />
+          {:else if stepId === "shortcuts"}
             <p class="max-w-[60ch] text-sm leading-relaxed text-muted">
               {t("onboarding.shortcutsBody")}
             </p>
@@ -425,11 +447,7 @@
             </Button>
           {/if}
 
-          {#if step < MODELS_STEP}
-            <Button variant="primary" onclick={() => (step += 1)}
-              >{t("onboarding.next")}</Button
-            >
-          {:else if step === MODELS_STEP}
+          {#if stepId === "models"}
             {#if allReady}
               <Button variant="primary" onclick={() => void leaveModels(false)}>
                 {t("onboarding.next")}
@@ -450,6 +468,14 @@
                 {t("onboarding.downloadNext")}
               </Button>
             {/if}
+          {:else if stepId === "permissions" && permissionsMissing}
+            <Button variant="ghost" onclick={() => (step += 1)}>
+              {t("onboarding.permissionsLater")}
+            </Button>
+          {:else if stepId !== "shortcuts"}
+            <Button variant="primary" onclick={() => (step += 1)}
+              >{t("onboarding.next")}</Button
+            >
           {:else}
             <Button
               variant="primary"

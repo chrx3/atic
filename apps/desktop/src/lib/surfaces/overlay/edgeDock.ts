@@ -380,7 +380,8 @@ export function pillHomePoint(
   const work = workAreaOf(area);
   const along = Math.min(1, Math.max(0, home.along));
   // El centro en su fracción, sin que la caja se salga del área útil.
-  const clamp = (v: number, lo: number, hi: number) => Math.min(Math.max(v, lo), Math.max(lo, hi));
+  const clamp = (v: number, lo: number, hi: number) =>
+    Math.min(Math.max(v, lo), Math.max(lo, hi));
   const x = Math.round(
     clamp(work.x + along * work.w - size.w / 2, work.x, work.x + work.w - size.w),
   );
@@ -409,7 +410,9 @@ export function isPillHome(value: unknown): value is PillHome {
     typeof v.along === "number" &&
     Number.isFinite(v.along) &&
     !!area &&
-    ["x", "y", "w", "h"].every((k) => typeof area[k] === "number" && Number.isFinite(area[k]))
+    ["x", "y", "w", "h"].every(
+      (k) => typeof area[k] === "number" && Number.isFinite(area[k]),
+    )
   );
 }
 

@@ -69,13 +69,20 @@ describe("clampToMonitor", () => {
   it("una cara que crece junto al borde entre pantallas no se parte en dos", () => {
     // Notch arriba, a 60 px del canto interior; la cara mide 300 de ancho.
     const anchor = { x: 940, y: 20 };
-    expect(clampToMonitor(DUAL_TASKBAR, anchor, { x: 790, y: 0 }, { w: 300, h: 250 }, view))
-      .toEqual({ x: 700, y: 0 });
+    expect(
+      clampToMonitor(DUAL_TASKBAR, anchor, { x: 790, y: 0 }, { w: 300, h: 250 }, view),
+    ).toEqual({ x: 700, y: 0 });
   });
 
   it("no se mete bajo la barra de tareas de su monitor", () => {
     const anchor = { x: 1980, y: 700 };
-    const p = clampToMonitor(DUAL_TASKBAR, anchor, { x: 1700, y: 600 }, { w: 300, h: 430 }, view);
+    const p = clampToMonitor(
+      DUAL_TASKBAR,
+      anchor,
+      { x: 1700, y: 600 },
+      { w: 300, h: 430 },
+      view,
+    );
     expect(p.y + 430).toBeLessThanOrEqual(760);
   });
 

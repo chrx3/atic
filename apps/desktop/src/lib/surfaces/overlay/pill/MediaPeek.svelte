@@ -60,7 +60,9 @@
   const canSkip = $derived(Boolean(now?.can_prev || now?.can_next));
   const canSeek = $derived(Boolean(now?.can_seek));
   const openLabel = $derived(
-    appName ? t("pill.peek.mediaOpen", { app: appName }) : t("pill.peek.mediaOpenPlayer"),
+    appName
+      ? t("pill.peek.mediaOpen", { app: appName })
+      : t("pill.peek.mediaOpenPlayer"),
   );
   /** El verso que suena y sus vecinos, si el tema tiene letra sincronizada. */
   const lyric = $derived.by(() => {

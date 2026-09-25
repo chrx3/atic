@@ -429,6 +429,8 @@ pub fn run() {
             launcher::launcher_toggle_favorite,
             launcher::launcher_icon,
             window_flip::window_flip_state,
+            window_flip::window_flip_board,
+            window_flip::window_flip_open_page,
             window_flip::window_flip_save_blocks,
             window_flip::window_flip_paste_image,
             window_flip::window_flip_focus_is_foreign,
@@ -644,6 +646,7 @@ pub fn run() {
             webview_tweaks::apply_to_all_windows(app.handle());
             if let Some(main) = app.get_webview_window("main") {
                 let _ = main.set_ignore_cursor_events(false);
+                round_main_corners(&main);
             }
 
             // Arranque silencioso: la app vive en la pill.
@@ -759,3 +762,51 @@ fn run_color_picker_smoke() {
         .run(context)
         .expect("color picker smoke runtime");
 }
+
+/// Esquinas redondeadas de la ventana principal en macOS.
+///
+/// `main` va sin decoraciones (dibuja sus propios semáforos) y AppKit solo
+/// redondea las ventanas con barra de título: sin esto quedaba un rectángulo
+/// de esquinas vivas. Se recorta la capa del contenido —que arrastra al
+/// WebView— y el fondo de la ventana pasa a transparente para que se vea lo
+/// de atrás en las esquinas. La sombra se recalcula con la forma nueva.
+#[cfg(target_os = "macos")]
+fn round_main_corners(window: &tauri::WebviewWindow) {
+    /// Radio de las ventanas estándar de macOS.
+    const RADIO: f64 = 12.0;
+
+    let inner = window.clone();
+    let _ = window.run_on_main_thread(move || {
+        let Ok(ptr) = inner.ns_window() else {
+            return;
+        };
+        let ns = ptr as *mut objc2::runtime::AnyObject;
+        if ns.is_null() {
+            return;
+        }
+        // SAFETY: `ns` es el NSWindow vivo de `main` y esto corre en el hilo
+        // principal; solo se tocan propiedades de apariencia.
+        unsafe {
+            let view: *mut objc2::runtime::AnyObject = objc2::msg_send![ns, contentView];
+            if view.is_null() {
+                return;
+            }
+            let _: () = objc2::msg_send![view, setWantsLayer: true];
+            let layer: *mut objc2::runtime::AnyObject = objc2::msg_send![view, layer];
+            if layer.is_null() {
+                return;
+            }
+            let _: () = objc2::msg_send![layer, setCornerRadius: RADIO];
+            let _: () = objc2::msg_send![layer, setMasksToBounds: true];
+            let clear: *mut objc2::runtime::AnyObject =
+                objc2::msg_send![objc2::class!(NSColor), clearColor];
+            let _: () = objc2::msg_send![ns, setOpaque: false];
+            let _: () = objc2::msg_send![ns, setBackgroundColor: clear];
+            let _: () = objc2::msg_send![ns, setHasShadow: true];
+            let _: () = objc2::msg_send![ns, invalidateShadow];
+        }
+    });
+}
+
+#[cfg(not(target_os = "macos"))]
+fn round_main_corners(_window: &tauri::WebviewWindow) {}

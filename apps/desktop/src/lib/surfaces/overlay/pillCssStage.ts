@@ -109,7 +109,10 @@ export function clampToMonitor(
 ): Point {
   const home = areas.find(
     (a) =>
-      anchor.x >= a.x && anchor.x <= a.x + a.w && anchor.y >= a.y && anchor.y <= a.y + a.h,
+      anchor.x >= a.x &&
+      anchor.x <= a.x + a.w &&
+      anchor.y >= a.y &&
+      anchor.y <= a.y + a.h,
   );
   if (!home) return clampTo(areas, p, size, view);
   const paint: Area =

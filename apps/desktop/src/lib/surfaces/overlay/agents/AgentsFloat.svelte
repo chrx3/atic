@@ -38,10 +38,7 @@
   import { createBubbleDrag } from "$surfaces/overlay/bubbleDrag";
   import { snapFrame, snapTarget } from "$surfaces/overlay/floatSnap";
   import { snapPreview } from "$surfaces/overlay/snapPreview.svelte";
-  import {
-    placePanelFusedFull,
-    placePanelResting,
-  } from "$surfaces/overlay/floatPlace";
+  import { placePanelFusedFull, placePanelResting } from "$surfaces/overlay/floatPlace";
   import { gapBetween } from "$lib/liquid/geometry";
   import {
     createRetachGesture,
@@ -53,7 +50,11 @@
   import AgentLauncher from "$features/agents/AgentLauncher.svelte";
   import { isAgentsDismissSuppressed } from "$surfaces/overlay/agents/dismissGuard";
   import { agentsDock } from "$surfaces/overlay/agents/agentsDock.svelte";
-  import { agentsIslandHost, agentsFloatHandoff, agentsFloatLive } from "./agentsIslandHost.svelte";
+  import {
+    agentsIslandHost,
+    agentsFloatHandoff,
+    agentsFloatLive,
+  } from "./agentsIslandHost.svelte";
   import { presenceIdsToDismissOnAticHide } from "$surfaces/overlay/pill/pillAgentChip";
   import {
     reuseDockedFrame,
@@ -1038,8 +1039,7 @@
     // panel nazca bajo la mano y la siga sin offset.
     const handoffGate = createDetachHandoffGate();
     agentsFloatHandoff.current = (init) => {
-      if (!nextDetachHandoff(handoffGate, bubble.anchor, toolResting()))
-        return false;
+      if (!nextDetachHandoff(handoffGate, bubble.anchor, toolResting())) return false;
       // Desde acá el panel es de la mano: ni el ancla repetida ni el expand
       // tardío lo tocan hasta soltar (ver `placeFromPill` y el expand).
       detachDragActive = true;

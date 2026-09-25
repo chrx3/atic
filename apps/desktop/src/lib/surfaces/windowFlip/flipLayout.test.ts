@@ -10,6 +10,7 @@ import {
   envolver,
   leerPayloadFlip,
   lineasPagina,
+  miniaturasTablero,
   PAGINA_H,
   PAGINA_W,
   payloadFlip,
@@ -218,5 +219,28 @@ describe("ajustarFuente", () => {
     // El textarea del navegador parte palabras largas, así que la caja angosta
     // no es motivo para encoger: lo que manda es cuántas líneas pide el cuerpo.
     expect(ajustarFuente("palabralarguisima", 60, 200, medir)).toBe(TEXTO_FUENTE);
+  });
+
+  it("reparte cada bloque en la miniatura de su página", () => {
+    const bloques: NoteBlock[] = [
+      { kind: "text", id: "t", body: "hola", x: 60, y: 90, w: 600, h: 48 },
+      {
+        kind: "image",
+        id: "i",
+        asset: "img.png",
+        width: 10,
+        height: 10,
+        x: PAGINA_W + 120,
+        y: 0,
+        w: 240,
+        h: 180,
+      },
+    ];
+    const [primera, segunda] = miniaturasTablero(bloques, 2);
+    expect(primera.piezas.map((p) => p.id)).toEqual(["t"]);
+    expect(primera.piezas[0]).toMatchObject({ x: 5, y: 10, w: 50, renglones: 2 });
+    expect(segunda.piezas).toEqual([
+      expect.objectContaining({ id: "i", asset: "img.png", x: 10, w: 20, h: 20 }),
+    ]);
   });
 });

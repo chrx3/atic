@@ -55,6 +55,18 @@
     onPath?: (path: LiquidPath, ms: number) => void;
   } = $props();
 
+  /**
+   * Aire alrededor del path para que la sombra quede DENTRO del SVG.
+   *
+   * Con el SVG del tamaño justo, el `drop-shadow` pintaba fuera de su caja
+   * (`overflow: visible`) y WebKit no repinta ese sobrante cuando la forma se
+   * achica: en macOS quedaba una sombra fantasma de cada tamaño del notch
+   * durante unos segundos. Con el margen, lo que la sombra ensucia es parte
+   * de la caja del elemento y se limpia con ella. Cubre `--shadow-goo`
+   * (0 10px 22px): desenfoque más desplazamiento, con holgura.
+   */
+  const SHADOW_PAD = 48;
+
   const tracer = new PathTracer();
   const traced = $derived.by(() => tracer.next(shapes, { blend, cell, smooth }));
   const path = $derived(traced.path);
@@ -83,9 +95,11 @@
     <svg
       class="skin-path"
       style:filter="drop-shadow({shadow})"
-      width={path.width}
-      height={path.height}
-      viewBox="{path.minX} {path.minY} {path.width} {path.height}"
+      style:margin="{-SHADOW_PAD}px"
+      width={path.width + SHADOW_PAD * 2}
+      height={path.height + SHADOW_PAD * 2}
+      viewBox="{path.minX - SHADOW_PAD} {path.minY - SHADOW_PAD} {path.width +
+        SHADOW_PAD * 2} {path.height + SHADOW_PAD * 2}"
     >
       <!-- `evenodd` porque los lazos del contorno no salen orientados de forma
            consistente: con la regla por defecto, una isla interior se rellenaría

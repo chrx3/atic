@@ -14,7 +14,7 @@ use crate::state::AppState;
 
 // Solo Windows: resolver la ruta del `.exe` y pedirle el ícono al shell es
 // Win32 + COM. En macOS la pestaña de recursos no muestra íconos.
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 mod app_icons;
 mod apps;
 mod audio;

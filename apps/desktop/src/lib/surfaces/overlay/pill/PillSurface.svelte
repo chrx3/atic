@@ -161,7 +161,9 @@
     type PillHome,
   } from "$surfaces/overlay/edgeDock";
   import { clearPillHome, readPillHome, writePillHome } from "./pillHomeStore";
-  import PillPending, { type PendingItem } from "$surfaces/overlay/pill/PillPending.svelte";
+  import PillPending, {
+    type PendingItem,
+  } from "$surfaces/overlay/pill/PillPending.svelte";
   import { isWorking } from "$features/agents/chatStatus";
   import IslandPeek from "$surfaces/overlay/pill/IslandPeek.svelte";
   import {
@@ -214,6 +216,7 @@
   } from "$ipc/system";
   import ClipboardHistoryList from "$lib/ClipboardHistoryList.svelte";
   import SnippetsList from "$lib/SnippetsList.svelte";
+  import FlipPagesList from "$surfaces/overlay/snippets/FlipPagesList.svelte";
   import SystemPanel from "$features/system/SystemPanel.svelte";
   import PillCustomize from "./PillCustomize.svelte";
   import { systemAlerts } from "$domain/systemAlerts.svelte";
@@ -639,7 +642,10 @@
     mediaTitleKey = key;
     mediaTitleShown = true;
     window.clearTimeout(mediaTitleTimer);
-    mediaTitleTimer = window.setTimeout(() => (mediaTitleShown = false), MEDIA_TITLE_MS);
+    mediaTitleTimer = window.setTimeout(
+      () => (mediaTitleShown = false),
+      MEDIA_TITLE_MS,
+    );
   });
   $effect(() => () => window.clearTimeout(mediaTitleTimer));
   const mediaTitleOn = $derived(
@@ -1383,7 +1389,11 @@
 
   /** La soltaron contra un canto: ese pasa a ser su hogar. */
   function rememberHome(edge: DockEdge, size: { w: number; h: number }): void {
-    const next = pillHomeFrom(edge, { x: at.x, y: at.y, w: size.w, h: size.h }, stage.workAreas());
+    const next = pillHomeFrom(
+      edge,
+      { x: at.x, y: at.y, w: size.w, h: size.h },
+      stage.workAreas(),
+    );
     if (!next) return;
     chosenHome = next;
     writePillHome(next);
@@ -1548,10 +1558,11 @@
   );
   let agentFaceDismissed = $state<string | null>(null);
   /** Pedido explícito de panel en la isla (clipboard, textos, agentes). */
-  let toolFace = $state<"tab" | "clipboard" | "snippets" | "system" | "agents" | "customize">(
-    "tab",
-  );
-  let snippetsTab = $state<"list" | "scratchpad">("list");
+  let toolFace = $state<
+    "tab" | "clipboard" | "snippets" | "system" | "agents" | "customize"
+  >("tab");
+  /** El tablero va primero, igual que en el float despegado. */
+  let snippetsTab = $state<"board" | "list" | "scratchpad">("board");
   const islandFace: IslandFace = $derived.by(() => {
     if (
       islandFaceAgent({
@@ -1999,9 +2010,7 @@
         const live = detachGesture;
         if (!live || !live.detached || live.pointerId !== gesture.pointerId) return;
         const handoff = agentsFloatHandoff.current;
-        if (
-          handoff?.({ pointerId: gesture.pointerId, x: live.lastX, y: live.lastY })
-        ) {
+        if (handoff?.({ pointerId: gesture.pointerId, x: live.lastX, y: live.lastY })) {
           detachHandoff = true;
           return;
         }
@@ -2136,7 +2145,10 @@
 
   /** La letra cuelga de la pestaña cerrada: solo arriba/abajo, sin otra cara. */
   const lyricHang = $derived(
-    mediaLyric != null && dock != null && dockAxis(dock.edge) === "y" && islandFace === "tab",
+    mediaLyric != null &&
+      dock != null &&
+      dockAxis(dock.edge) === "y" &&
+      islandFace === "tab",
   );
   let lyricsEl = $state<HTMLElement | null>(null);
 
@@ -2199,7 +2211,9 @@
         // transición de cierre la tiene que encoger de una.
         sideInBox,
         // El primer aviso con texto reserva su tramo fijo en la pestaña.
-        mediaLyric != null && !lyricHang ? PILL.islandLyricW : islandCueMsg || mediaTitleOn,
+        mediaLyric != null && !lyricHang
+          ? PILL.islandLyricW
+          : islandCueMsg || mediaTitleOn,
         // La cara live crece una fila compacta por chip.
         chips.length,
         // El vistazo abierto dentro de la tira la hace crecer hacia adentro.
@@ -2352,7 +2366,9 @@
    * Si Rust no la encuentra, la consola abre como siempre.
    */
   async function openAgentsConsoleAt(presenceId: string | undefined): Promise<void> {
-    const session = presenceId ? await consoleForPresence(presenceId).catch(() => null) : null;
+    const session = presenceId
+      ? await consoleForPresence(presenceId).catch(() => null)
+      : null;
     if (session) await openConsoleSession(session);
     else await openAgentsConsole();
   }
@@ -3797,7 +3813,7 @@
     toolFace = id;
     if (id === "clipboard") void clipboard.hydrate();
     if (id === "snippets") {
-      snippetsTab = "list";
+      snippetsTab = "board";
       void snippets.hydrate();
     }
     if (id === "agents") {
@@ -5009,10 +5025,17 @@
                   aria-label={`${t("pill.peek.mediaPause")}: ${mediaTip}`}
                 >
                   {#if mediaRest.thumbnail}
-                    <img class="p-media-cover" src={mediaRest.thumbnail} alt="" draggable="false" />
+                    <img
+                      class="p-media-cover"
+                      src={mediaRest.thumbnail}
+                      alt=""
+                      draggable="false"
+                    />
                   {/if}
                   {#if mediaTitleOn}
-                    <span class="p-island-cue-msg" class:is-lyric={mediaLyric != null && !lyricHang}
+                    <span
+                      class="p-island-cue-msg"
+                      class:is-lyric={mediaLyric != null && !lyricHang}
                       >{mediaRest.title}</span
                     >
                   {:else if mediaLyric != null && !lyricHang}
@@ -5128,7 +5151,11 @@
               aria-label={mediaLabel}
               onclick={() => void media.control("toggle")}
             >
-              <Icon icon={mediaCell.playing ? Pause : Play} size={20} strokeWidth={1.7} />
+              <Icon
+                icon={mediaCell.playing ? Pause : Play}
+                size={20}
+                strokeWidth={1.7}
+              />
             </button>
           {/if}
           {#if updateChip}
@@ -5173,7 +5200,11 @@
               {#each chips as c (c.id)}
                 {@const logos = chipLogos(c)}
                 {@const act = liveActivity(c)}
-                <div class="p-live-item" role="listitem" class:has-x={c.tone === "ready"}>
+                <div
+                  class="p-live-item"
+                  role="listitem"
+                  class:has-x={c.tone === "ready"}
+                >
                   <button
                     type="button"
                     class="p-live-row"
@@ -5211,7 +5242,11 @@
                     {#if c.tone === "working"}
                       <!-- La animación dice qué hace: tres gotas que piensan,
                            un trazo que edita, un cursor que ejecuta… -->
-                      <span class="p-live-act" data-act={act?.kind ?? "thinking"} aria-hidden="true">
+                      <span
+                        class="p-live-act"
+                        data-act={act?.kind ?? "thinking"}
+                        aria-hidden="true"
+                      >
                         <i></i><i></i><i></i>
                       </span>
                     {/if}
@@ -5319,6 +5354,16 @@
                 type="button"
                 role="tab"
                 class="p-face-tab"
+                class:is-on={snippetsTab === "board"}
+                aria-selected={snippetsTab === "board"}
+                onclick={() => (snippetsTab = "board")}
+              >
+                {t("overlay.board")}
+              </button>
+              <button
+                type="button"
+                role="tab"
+                class="p-face-tab"
                 class:is-on={snippetsTab === "list"}
                 aria-selected={snippetsTab === "list"}
                 onclick={() => (snippetsTab = "list")}
@@ -5336,7 +5381,11 @@
                 {t("overlay.notes")}
               </button>
             </div>
-            {#if snippetsTab === "list"}
+            {#if snippetsTab === "board"}
+              <div class="p-face-pane" in:tabPanel|local out:tabPanel|local>
+                <FlipPagesList onOpened={backToConsoleAfterPaste} />
+              </div>
+            {:else if snippetsTab === "list"}
               <div class="p-face-pane" in:tabPanel|local out:tabPanel|local>
                 <SnippetsList
                   items={snippets.items}
@@ -5518,6 +5567,16 @@
                     type="button"
                     role="tab"
                     class="p-face-tab"
+                    class:is-on={snippetsTab === "board"}
+                    aria-selected={snippetsTab === "board"}
+                    onclick={() => (snippetsTab = "board")}
+                  >
+                    {t("overlay.board")}
+                  </button>
+                  <button
+                    type="button"
+                    role="tab"
+                    class="p-face-tab"
                     class:is-on={snippetsTab === "list"}
                     aria-selected={snippetsTab === "list"}
                     onclick={() => (snippetsTab = "list")}
@@ -5535,7 +5594,11 @@
                     {t("overlay.notes")}
                   </button>
                 </div>
-                {#if snippetsTab === "list"}
+                {#if snippetsTab === "board"}
+                  <div class="p-face-pane">
+                    <FlipPagesList onOpened={backToConsoleAfterPaste} />
+                  </div>
+                {:else if snippetsTab === "list"}
                   <div class="p-face-pane">
                     <SnippetsList
                       items={snippets.items}
@@ -6201,10 +6264,6 @@
    * Vista previa del imán: la pestaña se hincha hacia afuera del canto para
    * recibir el panel. Anuncia lo que hará el soltar; no decide nada.
    */
-  .p-island-body {
-    transition: transform var(--duration-medium) var(--ease-smooth-out);
-  }
-
   .p-root[data-edge="top"] .p-island.is-retach-cue .p-island-body {
     transform-origin: center top;
     transform: scale(1.1, 1.2);
@@ -6328,6 +6387,7 @@
     transform-origin: right center;
   }
 
+  /* La `transition` anima la vista previa del imán (`is-retach-cue`). */
   .p-island-body {
     position: relative;
     display: grid;
@@ -6336,6 +6396,7 @@
     min-width: 0;
     min-height: 0;
     place-items: center;
+    transition: transform var(--duration-medium) var(--ease-smooth-out);
   }
 
   /*
@@ -6777,7 +6838,8 @@
     border-radius: 1px;
     background: currentColor;
     transform-origin: bottom;
-    animation: p-media-eq var(--eq-a) var(--ease-smooth-out, ease-out) infinite alternate;
+    animation: p-media-eq var(--eq-a) var(--ease-smooth-out, ease-out) infinite
+      alternate;
   }
 
   .p-media-eq i:nth-child(2) {
@@ -7006,8 +7068,12 @@
     font-weight: 750;
   }
 
-  .p-root[data-edge="left"] .p-face[data-face="live"] :is(.p-live-row-logos, .p-live-row-label, .p-live-act, .p-live-x),
-  .p-root[data-edge="right"] .p-face[data-face="live"] :is(.p-live-row-logos, .p-live-row-label, .p-live-act, .p-live-x) {
+  .p-root[data-edge="left"]
+    .p-face[data-face="live"]
+    :is(.p-live-row-logos, .p-live-row-label, .p-live-act, .p-live-x),
+  .p-root[data-edge="right"]
+    .p-face[data-face="live"]
+    :is(.p-live-row-logos, .p-live-row-label, .p-live-act, .p-live-x) {
     display: none;
   }
 
@@ -7920,10 +7986,7 @@
   .p-island-lyrics {
     position: absolute;
     z-index: 2;
-    left: 0;
-    right: 0;
-    top: var(--face-tab-h);
-    bottom: 0;
+    inset: var(--face-tab-h) 0 0 0;
     display: flex;
     flex-direction: column;
     justify-content: center;

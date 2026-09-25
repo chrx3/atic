@@ -144,7 +144,7 @@
     font-size: 13px;
     box-shadow:
       0 0 0 1px color-mix(in sRGB, var(--rb-text) 10%, transparent),
-      0 16px 40px -16px rgba(0, 0, 0, 0.55);
+      0 16px 40px -16px rgb(0 0 0 / 55%);
   }
 
   /* El plan se lee entero en la ventana: acá, lo justo para decidir. */

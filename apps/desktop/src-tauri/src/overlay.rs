@@ -553,8 +553,14 @@ fn create(app: &AppHandle) -> Option<tauri::WebviewWindow> {
 /// Con el overlay armado sube a `NSPopUpMenuWindowLevel` (101): a 25 AppKit
 /// se queda los clics de la franja del menú y del Dock, y el notch solo
 /// reaccionaba al hover sintético.
+///
+/// En reposo va en 26 y no en 25 (`NSStatusWindowLevel`): 25 es el nivel de
+/// los ítems de la barra (reloj, Centro de control), y a igual nivel manda
+/// quién se ordenó al frente último. Cada vez que el sistema refrescaba esos
+/// ítems, la franja de la hora quedaba encima de la pill pegada arriba. 26
+/// sigue debajo de los menús desplegados (101), que tienen que taparla.
 #[cfg(target_os = "macos")]
-const MACOS_STATUS_LEVEL: isize = 25;
+const MACOS_STATUS_LEVEL: isize = 26;
 #[cfg(target_os = "macos")]
 const MACOS_CLICK_LEVEL: isize = 101;
 

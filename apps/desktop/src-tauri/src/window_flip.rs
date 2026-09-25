@@ -26,6 +26,9 @@ static OPEN: AtomicBool = AtomicBool::new(false);
 static PRESENTED: AtomicBool = AtomicBool::new(false);
 static GEN: AtomicU64 = AtomicU64::new(0);
 static SESSION: Mutex<Option<FlipSession>> = Mutex::new(None);
+/// Página a la que abrir la próxima tapa (la eligió Textos). Se consume al
+/// armar la sesión: un volteo por atajo después vuelve a abrir sin salto.
+static PENDING_PAGE: Mutex<Option<u32>> = Mutex::new(None);
 /// Último toggle aceptado, para ignorar la repetición del atajo global.
 static LAST_TOGGLE: Mutex<Option<std::time::Instant>> = Mutex::new(None);
 /// Ventana de debajo y chrome de Atic (scratchpad, shelf, etc.).
@@ -99,6 +102,8 @@ struct FlipSession {
     card_top: f64,
     card_width: f64,
     card_height: f64,
+    /// Página que el front tiene que mostrar al abrir, si la pidió Textos.
+    page: Option<u32>,
 }
 
 #[derive(Clone, Serialize)]
@@ -115,6 +120,7 @@ pub struct WindowFlipView {
     pub card_top: f64,
     pub card_width: f64,
     pub card_height: f64,
+    pub page: Option<u32>,
 }
 
 impl From<&FlipSession> for WindowFlipView {
@@ -131,6 +137,7 @@ impl From<&FlipSession> for WindowFlipView {
             card_top: s.card_top,
             card_width: s.card_width,
             card_height: s.card_height,
+            page: s.page,
         }
     }
 }
@@ -202,6 +209,63 @@ pub fn window_flip_conceal(app: AppHandle) -> Result<(), String> {
         .unwrap_or(0);
     conceal_cover(&app, hwnd);
     Ok(())
+}
+
+/// El tablero tal como está en disco, para listarlo fuera de la tapa (Textos).
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WindowFlipBoard {
+    pub blocks: Vec<crate::notes::Block>,
+    pub assets_dir: String,
+}
+
+#[tauri::command]
+pub fn window_flip_board(state: State<AppState>) -> WindowFlipBoard {
+    let notes_dir = state.dirs.notes_dir();
+    // Con la tapa abierta manda la sesión: puede tener cambios aún sin guardar.
+    let blocks = match SESSION.lock_or_recover().as_ref() {
+        Some(session) => session.blocks.clone(),
+        None => {
+            let mut board = crate::notes::load(&notes_dir, BOARD_NOTE);
+            let page_id = board.page_for_title("");
+            board
+                .page_mut(&page_id)
+                .map(|page| page.blocks.clone())
+                .unwrap_or_default()
+        }
+    };
+    WindowFlipBoard {
+        blocks,
+        assets_dir: crate::notes::assets_dir(&notes_dir, BOARD_NOTE)
+            .to_string_lossy()
+            .into_owned(),
+    }
+}
+
+/// Voltea la ventana del frente y abre el tablero en `page`.
+///
+/// Si la tapa ya está abierta no se vuelve a voltear: solo se lleva la vista
+/// a esa página.
+#[tauri::command]
+pub fn window_flip_open_page(app: AppHandle, page: u32) -> Result<(), String> {
+    if OPEN.load(Ordering::SeqCst) {
+        let _ = app.emit("window-flip-goto-page", page);
+        return Ok(());
+    }
+    *PENDING_PAGE.lock_or_recover() = Some(page);
+    *LAST_TOGGLE.lock_or_recover() = Some(std::time::Instant::now());
+    // El clic en Textos puede dejar a Atic al frente: la ventana a voltear es
+    // la ajena más alta, que es la última que el usuario tocó.
+    let result = open_with(&app, true);
+    // Si no llegó a armarse la sesión, que el próximo atajo no herede el salto.
+    PENDING_PAGE.lock_or_recover().take();
+    match &result {
+        Ok(()) => tracing::info!(target: "window_flip", page, "tablero abierto desde Textos"),
+        Err(err) => {
+            tracing::warn!(target: "window_flip", %err, page, "no se pudo abrir el tablero desde Textos")
+        }
+    }
+    result
 }
 
 #[tauri::command]
@@ -545,30 +609,37 @@ fn conceal_cover(app: &AppHandle, hwnd: isize) {
 }
 
 fn open(app: &AppHandle) -> Result<(), String> {
+    open_with(app, false)
+}
+
+/// `aunque_atic_al_frente`: el pedido vino de una superficie de Atic (Textos),
+/// así que Atic al frente no significa «nada que voltear».
+fn open_with(app: &AppHandle, aunque_atic_al_frente: bool) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
-        return open_macos(app);
+        return open_macos(app, aunque_atic_al_frente);
     }
     #[cfg(not(any(windows, target_os = "macos")))]
     {
-        let _ = app;
+        let _ = (app, aunque_atic_al_frente);
         return Err(crate::ui_lang::capture_windows_only());
     }
     #[cfg(windows)]
     {
+        let _ = aunque_atic_al_frente;
         open_windows(app)
     }
 }
 
 /// Abre la tapa sobre la ventana ajena más al frente (CGWindowList).
 #[cfg(target_os = "macos")]
-fn open_macos(app: &AppHandle) -> Result<(), String> {
+fn open_macos(app: &AppHandle, aunque_atic_al_frente: bool) -> Result<(), String> {
     use atic_capture::windows as capwin;
 
     let pid_self = std::process::id();
     // Si Atic está al frente no hay nada que voltear: la pill es
     // non-activating, así que esto sólo pasa con la ventana principal.
-    if crate::macos_notes::frontmost_app_pid() == Some(pid_self as i32) {
+    if !aunque_atic_al_frente && crate::macos_notes::frontmost_app_pid() == Some(pid_self as i32) {
         hide(app);
         return Ok(());
     }
@@ -651,6 +722,7 @@ fn open_macos(app: &AppHandle) -> Result<(), String> {
         card_top,
         card_width,
         card_height,
+        page: PENDING_PAGE.lock_or_recover().take(),
     };
 
     *SESSION.lock_or_recover() = Some(session.clone());
@@ -774,6 +846,7 @@ fn open_windows(app: &AppHandle) -> Result<(), String> {
         card_top,
         card_width,
         card_height,
+        page: PENDING_PAGE.lock_or_recover().take(),
     };
 
     *SESSION.lock_or_recover() = Some(session.clone());

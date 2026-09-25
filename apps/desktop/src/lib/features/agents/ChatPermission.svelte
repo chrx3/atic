@@ -122,7 +122,7 @@
     background: color-mix(in sRGB, var(--accent) 8%, var(--rb-surface));
     box-shadow:
       inset 0 0 0 1px color-mix(in sRGB, var(--accent) 30%, transparent),
-      0 8px 24px -16px rgba(0, 0, 0, 0.5);
+      0 8px 24px -16px rgb(0 0 0 / 50%);
   }
 
   .top {

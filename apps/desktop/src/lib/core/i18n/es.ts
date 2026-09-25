@@ -528,6 +528,7 @@ export const es = {
       prefs: "Preferencias",
       dictation: "Dictado",
       models: "Modelos",
+      permissions: "Permisos",
       shortcuts: "Atajos",
     },
     welcomeBody:
@@ -570,6 +571,9 @@ export const es = {
       "Tres atajos, no diez. Confírmalos o cámbialos ahora: después vas a tener que usarlos.",
     conflictBody: "Elige otra combinación para {names}.",
     restInSettings: "El resto está en Ajustes → Atajos.",
+    permissionsBody:
+      "macOS te pide autorizar a Atic para que pueda oírte, pegar donde escribes y ver la pantalla. Sin ellos el dictado no se pega y las capturas salen vacías. Concederlos no hace que Atic grabe sola: solo los usa cuando tú activas una herramienta.",
+    permissionsLater: "Seguir sin todos",
     stepAria: "Paso {current} de {total}",
     close: "Cerrar",
     back: "Atrás",
@@ -614,9 +618,10 @@ export const es = {
     title: "Permisos de macOS",
     subtitle: "Atic los necesita para grabar y ayudarte",
     intro:
-      "Concédelos ahora y no vuelve a pedírtelos. Puedes cambiarlos cuando quieras en Ajustes → Privacidad y seguridad.",
+      "Falta alguno de los permisos que Atic usa. Concédelos ahora y no vuelve a pedírtelos; puedes cambiarlos cuando quieras en Ajustes del Sistema → Privacidad y seguridad.",
     granted: "Concedido",
     pending: "Pendiente",
+    optional: "Opcional",
     allow: "Permitir",
     openSettings: "Abrir Ajustes",
     retry: "Reintentar",
@@ -627,19 +632,26 @@ export const es = {
     allGrantedTitle: "Todo listo",
     allGrantedBody: "Atic ya tiene los permisos que necesita.",
     settingsGroup: "Permisos de macOS",
-    settingsHint: "Micrófono, grabación de pantalla y accesibilidad.",
+    settingsHint: "Micrófono, accesibilidad, grabación de pantalla y notificaciones.",
     review: "Revisar permisos",
     microphone: {
       label: "Micrófono",
-      hint: "Grabar tu voz en reuniones y dictado.",
-    },
-    screen_recording: {
-      label: "Grabación de pantalla",
-      hint: "Capturas, pizarra y audio de las llamadas.",
+      hint: "Dictado y grabación de tu voz en reuniones.",
     },
     accessibility: {
       label: "Accesibilidad",
-      hint: "Pegar lo dictado y usar el cuentagotas sobre otras apps.",
+      hint: "Pegar lo que dictas o eliges del historial, los controles de música de la pill y el cuentagotas sobre otras apps.",
+      how: "Se activa a mano: abre Ajustes y enciende el interruptor de Atic en la lista.",
+    },
+    screen_recording: {
+      label: "Grabación de pantalla",
+      hint: "Capturas, pizarra, voltear ventanas, cuentagotas y el audio de los demás en las llamadas.",
+    },
+    notifications: {
+      label: "Notificaciones",
+      hint: "Avisos cuando un agente termina o te necesita.",
+      blocked:
+        "macOS las tiene bloqueadas: actívalas en Ajustes del Sistema → Notificaciones → Atic.",
     },
   },
   pill: {
@@ -787,6 +799,10 @@ export const es = {
     retach: "Volver a la pill",
     clipboardHint: "Clic para pegar · Arrastra a una consola o a otra app",
     snippets: "Textos y notas",
+    board: "Tablero",
+    boardEmpty: "El tablero está vacío. Voltea una ventana para empezar a anotar.",
+    boardOpenPage: "Voltear la ventana del frente y abrir la página {n}",
+    boardPageEmpty: "Página en blanco",
     texts: "Textos",
     notes: "Notas",
     scratchPlaceholder: "Notas temporales…",
@@ -1261,7 +1277,8 @@ export const es = {
         placeholder: "Escríbele a {name}…",
         noTarget: "Toca una consola para escribirle",
         emptyTitle: "La pizarra está vacía",
-        emptyHint: "Elige la carpeta y cuántas consolas, y toca el agente para abrirlas.",
+        emptyHint:
+          "Elige la carpeta y cuántas consolas, y toca el agente para abrirlas.",
         closeBody: "Se termina su proceso y no se puede deshacer.",
         collapse: "Achicar la lista",
         expand: "Mostrar la lista",
@@ -1307,10 +1324,12 @@ export const es = {
         recent: "Recientes",
         close: "Cerrar {name}",
         closeTitle: "¿Cerrar {name}?",
-        closeBody: "Todavía está trabajando. Se corta lo que esté haciendo y no se puede deshacer.",
+        closeBody:
+          "Todavía está trabajando. Se corta lo que esté haciendo y no se puede deshacer.",
         closeAction: "Cerrar",
         emptyTitle: "¿Con quién trabajamos?",
-        emptyHint: "Elige un agente para abrir un chat, o usa «Nuevo» para una terminal.",
+        emptyHint:
+          "Elige un agente para abrir un chat, o usa «Nuevo» para una terminal.",
         booting: "Arrancando…",
         ended: "terminó · código {code}",
         terminalHere: "Abrir una terminal en esta carpeta",
@@ -1366,7 +1385,8 @@ export const es = {
         cannotResume: "{name} no permite retomar conversaciones de forma fiable",
         mcp: "Servidores MCP",
         mcpTools: "{n} herramientas",
-        mcpAtic: "El de Atic: este agente puede abrir otros agentes y delegarles trabajo. Esas sesiones aparecen como fichas de sólo lectura en el rail.",
+        mcpAtic:
+          "El de Atic: este agente puede abrir otros agentes y delegarles trabajo. Esas sesiones aparecen como fichas de sólo lectura en el rail.",
         currentAgent: "En uso",
         useAgent: "Usar",
         searchModels: "Buscar modelo",
@@ -1381,7 +1401,8 @@ export const es = {
         },
         fast: "Rápido",
         fastHint: "Variante rápida del mismo modelo",
-        authHint: "Parece un problema de credenciales de {name}. Prueba con otro modelo o vuelve a iniciar sesión en su CLI.",
+        authHint:
+          "Parece un problema de credenciales de {name}. Prueba con otro modelo o vuelve a iniciar sesión en su CLI.",
         askTitle: "{name} te pregunta",
         askOwn: "O escribe tu respuesta…",
         askSkip: "Saltar",

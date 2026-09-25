@@ -185,7 +185,9 @@
       class="sys-quick-btn"
       class:is-on={system.awake}
       aria-pressed={system.awake}
-      use:tip={system.awake ? t("overlay.system.awakeOn") : t("overlay.system.awakeHint")}
+      use:tip={system.awake
+        ? t("overlay.system.awakeOn")
+        : t("overlay.system.awakeHint")}
       onclick={() => void system.setAwake(!system.awake)}
     >
       <Icon icon={Coffee} size={13} />
@@ -691,13 +693,13 @@
     gap: 0.2rem;
     margin: 0;
     padding: 0;
+
     /* El pulgar del slider mide 14 px y va centrado sobre el riel: en los
        extremos sobresale ~7 px del riel y eso volvía scrolleable esta lista en
        horizontal (barra abajo de cada slider). El recorte horizontal cae en el
        mismo borde donde ya recorta `.sys`, que es quien encierra el panel, así
        que visualmente no se corta nada que no se cortara antes. */
-    overflow-x: hidden;
-    overflow-y: auto;
+    overflow: hidden auto;
     list-style: none;
   }
 
