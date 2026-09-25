@@ -364,7 +364,7 @@ dependencies = [
 
 [[package]]
 name = "atic-audio"
-version = "0.4.38"
+version = "0.4.39"
 dependencies = [
  "block2",
  "cpal",
@@ -384,7 +384,7 @@ dependencies = [
 
 [[package]]
 name = "atic-capture"
-version = "0.4.38"
+version = "0.4.39"
 dependencies = [
  "chrono",
  "core-foundation 0.10.1",
@@ -399,7 +399,7 @@ dependencies = [
 
 [[package]]
 name = "atic-core"
-version = "0.4.38"
+version = "0.4.39"
 dependencies = [
  "chrono",
  "directories 5.0.1",
@@ -415,7 +415,7 @@ dependencies = [
 
 [[package]]
 name = "atic-desktop"
-version = "0.4.38"
+version = "0.4.39"
 dependencies = [
  "agent-client-protocol",
  "arboard",
@@ -466,7 +466,7 @@ dependencies = [
 
 [[package]]
 name = "atic-mailer"
-version = "0.4.38"
+version = "0.4.39"
 dependencies = [
  "lettre",
  "thiserror 2.0.18",
@@ -476,7 +476,7 @@ dependencies = [
 
 [[package]]
 name = "atic-mcp"
-version = "0.4.38"
+version = "0.4.39"
 dependencies = [
  "anyhow",
  "directories 6.0.0",
@@ -491,7 +491,7 @@ dependencies = [
 
 [[package]]
 name = "atic-summarize"
-version = "0.4.38"
+version = "0.4.39"
 dependencies = [
  "atic-core",
  "chrono",
@@ -504,7 +504,7 @@ dependencies = [
 
 [[package]]
 name = "atic-transcribe"
-version = "0.4.38"
+version = "0.4.39"
 dependencies = [
  "atic-core",
  "hound",
@@ -519,7 +519,7 @@ dependencies = [
 
 [[package]]
 name = "atic-unix"
-version = "0.4.38"
+version = "0.4.39"
 dependencies = [
  "uu_basename",
  "uu_cat",
