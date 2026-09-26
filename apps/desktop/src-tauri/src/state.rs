@@ -605,25 +605,45 @@ pub fn unload_whisper_cache(state: &AppState) -> usize {
     n
 }
 
-/// Precarga los modelos configurados si estan en disco.
+/// Los modelos de Whisper que alguien va a usar de verdad.
+///
+/// Antes se precargaban los de dictado y reuniones siempre, aunque los dos
+/// fueran por Groq: un modelo `medium` ocupaba ~1,5 GB de RAM desde el
+/// arranque sin usarse nunca. Ahora solo entra el de la función que corre en
+/// local. El dictado por Groq sin key cae a Whisper local, así que cuenta
+/// como local; reuniones por Groq sin key fallan en vez de caer, así que no.
+pub(crate) fn models_to_preload(cfg: &Config, has_groq_key: bool) -> Vec<&str> {
+    let mut ids = Vec::new();
+    // Dictado primero: es el camino sensible a latencia.
+    if cfg.dictation_backend != "groq" || !has_groq_key {
+        ids.push(cfg.dictation_whisper_model.as_str());
+    }
+    if cfg.meeting_backend != "groq" {
+        ids.push(cfg.whisper_model.as_str());
+    }
+    if cfg.live_transcription && cfg.live_engine == "local" {
+        ids.push(cfg.live_whisper_model.as_str());
+    }
+    ids
+}
+
+/// Precarga los modelos que se van a usar, si están en disco.
 ///
 /// Cuando dictado y reuniones comparten modelo (el default), se carga una sola
 /// vez: reduce el arranque, el uso de RAM y la primera descarga a ~148 MB.
-/// El modelo de live solo se precarga si live local está activo.
+/// Lo que no se precarga se carga al usarlo, y `ensure_whisper_idle_unloader`
+/// lo suelta tras un rato sin uso.
 pub fn preload_whisper_async(app: &AppHandle) {
     let app2 = app.clone();
     thread::spawn(move || {
         let state = app2.state::<AppState>();
         let cfg = state.config.lock_or_recover().clone();
         let models_dir = state.dirs.models_dir();
-        // Dictado primero: es el camino sensible a latencia.
-        let mut ids: Vec<&str> = vec![
-            cfg.dictation_whisper_model.as_str(),
-            cfg.whisper_model.as_str(),
-        ];
-        if cfg.live_transcription && cfg.live_engine == "local" {
-            ids.push(cfg.live_whisper_model.as_str());
-        }
+        let has_groq_key = atic_core::secrets::get_secret(atic_core::SecretKind::GroqApiKey)
+            .ok()
+            .flatten()
+            .is_some_and(|k| !k.trim().is_empty());
+        let ids = models_to_preload(&cfg, has_groq_key);
         let mut keep = Vec::new();
         for model_id in ids {
             match atic_transcribe::models::require_downloaded(&models_dir, model_id) {
@@ -687,4 +707,39 @@ fn ensure_whisper_idle_unloader(app: &AppHandle) {
             *state.whisper_last_used.lock_or_recover() = None;
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cfg(dictation: &str, meeting: &str) -> Config {
+        Config {
+            dictation_backend: dictation.into(),
+            meeting_backend: meeting.into(),
+            dictation_whisper_model: "dict".into(),
+            whisper_model: "meet".into(),
+            live_transcription: false,
+            ..Config::default()
+        }
+    }
+
+    #[test]
+    fn con_groq_no_se_precarga_nada() {
+        assert!(models_to_preload(&cfg("groq", "groq"), true).is_empty());
+    }
+
+    #[test]
+    fn el_dictado_por_groq_sin_key_cae_a_local() {
+        assert_eq!(models_to_preload(&cfg("groq", "groq"), false), ["dict"]);
+    }
+
+    #[test]
+    fn lo_local_se_sigue_precargando() {
+        assert_eq!(
+            models_to_preload(&cfg("local", "local"), true),
+            ["dict", "meet"]
+        );
+        assert_eq!(models_to_preload(&cfg("groq", "local"), true), ["meet"]);
+    }
 }
