@@ -858,7 +858,29 @@ pub(crate) fn foreground_own_window(app: &AppHandle) -> Option<String> {
                 (hwnd.0 as isize == fg).then_some(label)
             })
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        // Atic al frente: la ventana clave es la webview con el foco. Si el
+        // frente es de otra app, no hay nada de Atic que atender.
+        if crate::macos_notes::frontmost_app_pid() != Some(std::process::id() as i32) {
+            return None;
+        }
+        // `is_focused` es `isKeyWindow` de AppKit, pero pasa por el runtime de
+        // Tauri: en el hilo principal corre inline y desde otro hilo lo
+        // contesta el event loop. Así no se toca AppKit desde el hilo del
+        // dictado — el mismo motivo por el que `main_window_focused` lo
+        // reporta el front (state.rs).
+        app.webview_windows()
+            .into_iter()
+            .find_map(|(label, window)| {
+                window
+                    .is_focused()
+                    .ok()
+                    .filter(|focused| *focused)
+                    .map(|_| label)
+            })
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         let _ = app;
         None

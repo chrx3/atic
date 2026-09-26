@@ -111,6 +111,9 @@ pub fn dictation_toggle_via_slot(app: &AppHandle) {
     if dictation_listening(app) {
         dictation::toggle_dictation(app);
     } else {
+        // Antes del `show()` del overlay: en macOS puede volverse la ventana
+        // clave y tapar la consola donde estabas (ver `dictation.rs`).
+        dictation::remember_agents_window_before_overlay(app);
         emit_tool_slot(app, "activate-tool-slot", "dictation");
     }
 }
@@ -118,6 +121,7 @@ pub fn dictation_toggle_via_slot(app: &AppHandle) {
 /// PTT down: vuela en paralelo y arranca ya (latencia del mic).
 pub fn dictation_ptt_down_via_slot(app: &AppHandle) {
     if !dictation_listening(app) {
+        dictation::remember_agents_window_before_overlay(app);
         emit_tool_slot(app, "fly-tool-slot", "dictation");
     }
     dictation::dictation_key_down(app);
