@@ -31,7 +31,9 @@ export type Block =
 function isTableSeparator(line: string): boolean {
   const t = line.trim();
   if (!t.includes("-")) return false;
-  return /^\|?[\t -:|]+\|[\t -:|]*$/.test(t);
+  // El `-` al final de la clase es literal: en medio armaba el rango espacio–`:`
+  // y una fila con números (`| 10-20 | 3.5 |`) pasaba por separador.
+  return /^\|?[\t :|-]+\|[\t :|-]*$/.test(t);
 }
 
 /** Celdas de una fila con pipes; ignora pipes vacíos de borde. */
@@ -67,7 +69,8 @@ export function inlines(line: string): Inline[] {
 }
 
 export function parse(source: string): Block[] {
-  const lines = source.split("\n");
+  // Con CRLF cada línea arrastra un `\r` y los regex con `$` no calzan.
+  const lines = source.replace(/\r\n?/g, "\n").split("\n");
   const blocks: Block[] = [];
   let paragraph: string[] = [];
 

@@ -722,7 +722,13 @@ class AgentSessionStore {
           turn = { id: payload.turn, items: [], status: "running", costUsd: null };
           s.turns = [...s.turns, turn];
         }
-        turn.items = [...turn.items, payload.item];
+        // Un id repetido rompe el `{#each}` con clave y deja de pintar el hilo:
+        // el item nuevo reemplaza al anterior.
+        const known = turn.items.findIndex((item) => item.id === payload.item.id);
+        turn.items =
+          known === -1
+            ? [...turn.items, payload.item]
+            : turn.items.map((item, index) => (index === known ? payload.item : item));
 
         const it = payload.item;
         if (it.kind === "permission") {

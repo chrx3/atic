@@ -39,6 +39,21 @@ function turn(items: AgentItem[], status: AgentTurn["status"] = "done"): AgentTu
 }
 
 describe("toBlocks", () => {
+  it("un turno cerrado reusa sus bloques hasta que cambian sus items", () => {
+    const closed = turn([msg("u", "user"), tool("a"), msg("r", "assistant")]);
+    const first = toBlocks([closed]);
+    expect(toBlocks([closed])[1]).toBe(first[1]);
+
+    closed.items = [...closed.items, msg("r2", "assistant")];
+    const next = toBlocks([closed]);
+    expect(next[next.length - 1]).toMatchObject({ kind: "text", item: { id: "r2" } });
+  });
+
+  it("un turno vivo se relee siempre", () => {
+    const live = turn([msg("u", "user"), tool("a")], "running");
+    expect(toBlocks([live])[1]).not.toBe(toBlocks([live])[1]);
+  });
+
   it("junta las herramientas seguidas en un solo bloque", () => {
     const blocks = toBlocks([
       turn([msg("u", "user"), tool("a"), tool("b", "edit"), msg("r", "assistant")]),
