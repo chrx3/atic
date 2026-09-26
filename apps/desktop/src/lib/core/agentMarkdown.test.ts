@@ -24,3 +24,15 @@ describe("agentMarkdown tables", () => {
     expect(blocks.some((b) => b.kind === "table")).toBe(false);
   });
 });
+
+describe("agentMarkdown robustez", () => {
+  it("reconoce títulos y viñetas con saltos CRLF", () => {
+    const blocks = parse("## Título\r\n- uno\r\n- dos");
+    expect(blocks.map((b) => b.kind)).toEqual(["h", "li", "li"]);
+  });
+
+  it("una fila con números no se toma como separador de tabla", () => {
+    const blocks = parse("| rango | valor |\n| 10-20 | 3.5 |");
+    expect(blocks.some((b) => b.kind === "table")).toBe(false);
+  });
+});

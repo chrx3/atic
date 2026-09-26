@@ -75,6 +75,9 @@
     gap: 0.5rem;
     font-size: 0.8125rem;
     line-height: 1.62;
+    /* Rutas, URLs y hashes sin espacios no deben ensanchar el hilo. */
+    min-width: 0;
+    overflow-wrap: anywhere;
     user-select: text;
     -webkit-user-select: text;
     cursor: text;

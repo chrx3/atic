@@ -57,8 +57,45 @@ function isActivity(item: AgentItem): item is ActivityItem {
 export function toBlocks(turns: AgentTurn[]): ChatBlock[] {
   const blocks: ChatBlock[] = [];
   for (const turn of turns) {
-    blocks.push(...foldTurn(turn, turnBlocks(turn)));
+    blocks.push(...turnView(turn));
   }
+  return blocks;
+}
+
+type TurnView = Pick<AgentTurn, "items" | "status" | "durationMs" | "costUsd"> & {
+  blocks: ChatBlock[];
+};
+
+/**
+ * Bloques de los turnos ya cerrados.
+ *
+ * El hilo entero se vuelve a leer con cada item que llega al turno vivo; sin
+ * esto, cada herramienta rehacía todos los turnos anteriores (con sus diffs)
+ * y el chat se ponía más lento mientras más largo era. Un turno cerrado solo
+ * cambia si el store le reemplaza los items o el estado, y eso invalida.
+ */
+const closedTurns = new WeakMap<AgentTurn, TurnView>();
+
+function turnView(turn: AgentTurn): ChatBlock[] {
+  if (turn.status === "running") return foldTurn(turn, turnBlocks(turn));
+  const hit = closedTurns.get(turn);
+  if (
+    hit &&
+    hit.items === turn.items &&
+    hit.status === turn.status &&
+    hit.durationMs === turn.durationMs &&
+    hit.costUsd === turn.costUsd
+  ) {
+    return hit.blocks;
+  }
+  const blocks = foldTurn(turn, turnBlocks(turn));
+  closedTurns.set(turn, {
+    items: turn.items,
+    status: turn.status,
+    durationMs: turn.durationMs,
+    costUsd: turn.costUsd,
+    blocks,
+  });
   return blocks;
 }
 

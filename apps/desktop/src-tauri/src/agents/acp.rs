@@ -36,6 +36,7 @@
 //! los argumentos por separado.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex};
 
 use agent_client_protocol::schema::v1::{
@@ -310,6 +311,19 @@ struct Shared {
     /// tapa en su rama de `result`—. Y lo que es peor, la pill nunca se entera
     /// de que el agente contestó, porque ese aviso cuelga del cierre.
     abiertos: Mutex<Vec<ItemId>>,
+    /// Sube con cada herramienta. ACP reusa el `messageId` (o no manda
+    /// ninguno) para el texto de antes y de después de una herramienta; sin
+    /// separarlos, lo de después se pegaba al primer bloque, arriba de la
+    /// herramienta y sin salto de línea.
+    tramo: AtomicUsize,
+    /// Numera los items sin id propio (avisos, preguntas sin herramienta).
+    /// `seen.len()` no servía: los avisos no se anotan ahí y dos seguidos
+    /// salían con el mismo id, lo que rompe la lista de la vista.
+    serie: AtomicUsize,
+    /// `bypassPermissions`: los permisos se aprueban sin preguntar. Es el
+    /// modo con que el hub abre las delegaciones, que no tienen a nadie
+    /// mirando para contestar.
+    auto_allow: bool,
     /// Costo de la sesión: lo último que informó el agente, y lo ya atribuido
     /// a turnos anteriores.
     ///
@@ -368,6 +382,9 @@ impl AgentBackend for Acp {
             asks: Mutex::new(HashMap::new()),
             seen: Mutex::new(HashSet::new()),
             abiertos: Mutex::new(Vec::new()),
+            tramo: AtomicUsize::new(0),
+            serie: AtomicUsize::new(0),
+            auto_allow: options.permission_mode.as_deref() == Some("bypassPermissions"),
             cost: Mutex::new(Costo::default()),
             model_config_id: Mutex::new(None),
             effort_config_id: Mutex::new(None),
@@ -516,6 +533,16 @@ async fn connect(
               cx: ConnectionTo<Agent>| {
             let (emit, shared) = (emit.clone(), shared.clone());
             async move {
+                if shared.auto_allow {
+                    let outcome = match pick_option(&req, PermissionDecision::Allow) {
+                        Some(opt) => {
+                            RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(opt))
+                        }
+                        None => RequestPermissionOutcome::Cancelled,
+                    };
+                    responder.respond(RequestPermissionResponse::new(outcome))?;
+                    return Ok(());
+                }
                 let id = format!("perm:{}", req.tool_call.tool_call_id.0);
                 let (tx, wait) = oneshot::channel();
                 shared.pending.lock_or_recover().insert(id.clone(), tx);
@@ -588,7 +615,7 @@ async fn connect(
             async move {
                 let mut out = Vec::new();
                 let turn = ensure_turn(&shared.turns, &mut out);
-                let n = shared.seen.lock_or_recover().len();
+                let n = shared.serie.fetch_add(1, AtomicOrdering::Relaxed);
                 let id = format!(
                     "ask:{}",
                     req.tool_call_id
@@ -661,7 +688,7 @@ async fn connect(
             async move {
                 let mut out = Vec::new();
                 let turn = ensure_turn(&shared.turns, &mut out);
-                let n = shared.seen.lock_or_recover().len();
+                let n = shared.serie.fetch_add(1, AtomicOrdering::Relaxed);
                 let id = format!(
                     "plan:{}",
                     req.tool_call_id
@@ -1488,7 +1515,10 @@ fn translate(update: &SessionUpdate, shared: &Shared) -> Vec<AgentDelta> {
         // agente se ignora: sumarlo lo mostraría dos veces.
         SessionUpdate::UserMessageChunk(_) => {}
 
-        SessionUpdate::ToolCall(t) => out.push(tool_added(t, shared)),
+        SessionUpdate::ToolCall(t) => {
+            close_open_text(shared, &mut out);
+            out.push(tool_added(t, shared));
+        }
         SessionUpdate::ToolCallUpdate(t) => out.push(tool_patched(t)),
 
         SessionUpdate::Plan(p) => {
@@ -1549,7 +1579,7 @@ fn translate(update: &SessionUpdate, shared: &Shared) -> Vec<AgentDelta> {
         // como si nada hubiera pasado.
         other => {
             let turn = ensure_turn(&shared.turns, &mut out);
-            let n = shared.seen.lock_or_recover().len();
+            let n = shared.serie.fetch_add(1, AtomicOrdering::Relaxed);
             out.push(AgentDelta::ItemAdd {
                 turn: turn.clone(),
                 item: Item::new(
@@ -1562,6 +1592,21 @@ fn translate(update: &SessionUpdate, shared: &Shared) -> Vec<AgentDelta> {
         }
     }
     out
+}
+
+/// Antes de una herramienta: el texto que venía escribiéndose termina ahí, y
+/// el que siga abre un bloque nuevo debajo de ella.
+fn close_open_text(shared: &Shared, out: &mut Vec<AgentDelta>) {
+    shared.tramo.fetch_add(1, AtomicOrdering::Relaxed);
+    for id in shared.abiertos.lock_or_recover().drain(..) {
+        out.push(AgentDelta::ItemPatch {
+            item: id,
+            patch: ItemPatch {
+                streaming: Some(false),
+                ..Default::default()
+            },
+        });
+    }
 }
 
 /// Un trozo de texto: abre el item la primera vez y lo continúa después.
@@ -1580,7 +1625,12 @@ fn chunk(c: &ContentChunk, prefix: &str, role: Role, shared: &Shared, out: &mut 
         .as_ref()
         .map(|m| m.0.to_string())
         .unwrap_or_else(|| turn.clone());
-    let id = format!("{prefix}:{key}");
+    let tramo = shared.tramo.load(AtomicOrdering::Relaxed);
+    let id = if tramo == 0 {
+        format!("{prefix}:{key}")
+    } else {
+        format!("{prefix}:{key}~{tramo}")
+    };
 
     if shared.seen.lock_or_recover().insert(id.clone()) {
         let kind = if prefix == "r" {
@@ -2003,6 +2053,9 @@ mod tests {
             asks: Mutex::new(HashMap::new()),
             seen: Mutex::new(HashSet::new()),
             abiertos: Mutex::new(Vec::new()),
+            tramo: AtomicUsize::new(0),
+            serie: AtomicUsize::new(0),
+            auto_allow: false,
             cost: Mutex::new(Costo::default()),
             model_config_id: Mutex::new(None),
             effort_config_id: Mutex::new(None),
@@ -2060,6 +2113,40 @@ mod tests {
             shared.abiertos.lock_or_recover().as_slice(),
             ["r:m1", "m:m1"]
         );
+    }
+
+    /// El texto de después de una herramienta va en otro bloque, debajo de
+    /// ella, aunque el agente reuse el `messageId`.
+    #[test]
+    fn el_texto_despues_de_una_herramienta_abre_otro_bloque() {
+        let shared = compartido();
+        let mut out = Vec::new();
+
+        chunk(
+            &trozo("m1", "voy a revisar"),
+            "m",
+            Role::Assistant,
+            &shared,
+            &mut out,
+        );
+        close_open_text(&shared, &mut out);
+        chunk(
+            &trozo("m1", "listo"),
+            "m",
+            Role::Assistant,
+            &shared,
+            &mut out,
+        );
+
+        let abiertos: Vec<ItemId> = out
+            .iter()
+            .filter_map(|d| match d {
+                AgentDelta::ItemAdd { item, .. } => Some(item.id.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(abiertos, ["m:m1", "m:m1~1"]);
+        assert_eq!(shared.abiertos.lock_or_recover().as_slice(), ["m:m1~1"]);
     }
 
     #[test]
