@@ -8,6 +8,8 @@
    * Achicada queda como una barra de íconos: deja la pizarra casi entera y
    * cada consola se sigue reconociendo por el logo de su agente.
    */
+  import { untrack } from "svelte";
+  import { prefersReducedMotion } from "$lib/motion";
   import { t } from "$domain/i18n.svelte";
   import Icon from "$ui/Icon.svelte";
   import {
@@ -37,6 +39,7 @@
   let {
     entries,
     spaces,
+    currentSpace = null,
     active,
     choices,
     cwd,
@@ -55,6 +58,8 @@
   }: {
     entries: Entry[];
     spaces: SavedSpace[];
+    /** El espacio que esta pizarra va guardando sola. */
+    currentSpace?: string | null;
     active: string | null;
     choices: AgentDef[];
     cwd: string;
@@ -82,9 +87,77 @@
         .pop() || path
     );
   }
+
+  /**
+   * Abrir y cerrar en dos tiempos, con el mismo ritmo en los dos sentidos.
+   *
+   * Abrir: primero sube (el alto de la lista), después se ensancha. Cerrar:
+   * al revés, primero se angosta y después baja. El alto cambia con el
+   * contenido y eso CSS no lo anima, así que se mide antes y después del
+   * cambio y se anima entre las dos cajas.
+   */
+  const MORPH_MS = 620;
+  /** Dónde termina el primer tramo y empieza el segundo. */
+  const MORPH_SPLIT = 0.48;
+  const EASE_STEP = "cubic-bezier(0.45, 0, 0.2, 1)";
+
+  let listEl = $state<HTMLElement | null>(null);
+  let before: DOMRect | null = null;
+  let shownCollapsed = untrack(() => collapsed);
+  let running: Animation[] = [];
+
+  // Antes de que el DOM cambie: la caja de donde parte.
+  $effect.pre(() => {
+    const next = collapsed;
+    if (next !== shownCollapsed && listEl) before = listEl.getBoundingClientRect();
+  });
+
+  // Con el DOM ya cambiado: la caja a la que llega, y la animación.
+  $effect(() => {
+    const next = collapsed;
+    if (next === shownCollapsed) return;
+    shownCollapsed = next;
+    const from = before;
+    before = null;
+    if (!from || !listEl || prefersReducedMotion()) return;
+    morph(listEl, from, listEl.getBoundingClientRect(), next);
+  });
+
+  function morph(el: HTMLElement, from: DOMRect, to: DOMRect, closing: boolean) {
+    for (const a of running) a.cancel();
+    const box = (w: number, h: number) => ({ width: `${w}px`, height: `${h}px` });
+    // Primer tramo: abriendo cambia el alto; cerrando, el ancho.
+    const mid = closing ? box(to.width, from.height) : box(from.width, to.height);
+    el.classList.add("is-morphing");
+    const shape = el.animate(
+      [
+        { ...box(from.width, from.height), easing: EASE_STEP },
+        { ...mid, offset: MORPH_SPLIT, easing: EASE_STEP },
+        box(to.width, to.height),
+      ],
+      { duration: MORPH_MS },
+    );
+    // El contenido nuevo aparece cuando la caja ya casi llegó: antes se
+    // vería apretado o cortado.
+    const fades = [...el.children].map((child) =>
+      child.animate(
+        [
+          { opacity: 0, transform: "translateY(4px)" },
+          { opacity: 0, transform: "translateY(4px)", offset: 0.62 },
+          { opacity: 1, transform: "none" },
+        ],
+        { duration: MORPH_MS, easing: "ease-out" },
+      ),
+    );
+    running = [shape, ...fades];
+    void shape.finished
+      .then(() => el.classList.remove("is-morphing"))
+      .catch(() => {});
+  }
 </script>
 
 <aside
+  bind:this={listEl}
   class="list"
   class:is-collapsed={collapsed}
   aria-label={t("page.agents.board.list")}
@@ -133,7 +206,10 @@
     <!-- Achicada: solo el logo de cada una, con su estado encima. -->
     <nav class="entries">
       {#each entries as entry (entry.key)}
-        <div class="row" class:is-active={entry.key === active}>
+        <div
+          class="row"
+          class:is-active={entry.key === active}
+        >
           <button
             type="button"
             class="entry"
@@ -152,17 +228,20 @@
       {/each}
     </nav>
   {:else}
+    <div class="tree-wrap">
     <BoardTree
       {entries}
       {spaces}
+      {currentSpace}
       {active}
-      defaultName={cwd ? folderName(cwd) : ""}
+      defaultName={currentSpace ?? (cwd ? folderName(cwd) : "")}
       {onSelect}
       {onClose}
       {onSaveSpace}
       {onOpenSpace}
       {onDeleteSpace}
     />
+    </div>
   {/if}
 
   <footer class="foot">
@@ -204,6 +283,19 @@
       0 0 0 1px color-mix(in sRGB, var(--rb-text) 10%, transparent),
       0 18px 40px -18px rgb(0 0 0 / 55%);
     backdrop-filter: blur(18px) saturate(1.2);
+  }
+
+  /* Mientras cambia de forma, lo que no cabe se corta en vez de asomarse. */
+  .list:global(.is-morphing) {
+    overflow: hidden;
+  }
+
+  /* El scroll de adentro también se corta durante el morph: el árbol queda
+     más chico que su contenido mientras la caja crece y su barra asomaba toda
+     la transición, para desaparecer al llegar al tamaño final. */
+  .list:global(.is-morphing) :global(.tree),
+  .list:global(.is-morphing) .entries {
+    overflow: hidden;
   }
 
   .list.is-collapsed {
@@ -417,4 +509,12 @@
     background: color-mix(in sRGB, var(--rb-text) 7%, transparent);
     color: var(--rb-text);
   }
+
+  /* Lleva la transición del árbol; deja que su scroll siga funcionando. */
+  .tree-wrap {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+
 </style>

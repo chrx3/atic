@@ -14,6 +14,8 @@
    */
   import { onMount, tick, untrack } from "svelte";
   import {
+    agentsTakeNewConsole,
+    onAgentsNewConsole,
     cliOnPath,
     consoleAgentSession,
     consoleClose,
@@ -27,13 +29,14 @@
   import { onAgentsComposerInsert, onAgentsWindowInsert } from "$ipc/clipboard";
   import { getCurrentWebview } from "@tauri-apps/api/webview";
   import type { AgentsComposerInsert } from "$core/types";
-  import { t } from "$domain/i18n.svelte";
+  import { t, uiLocale } from "$domain/i18n.svelte";
   import ConfirmDialog from "$ui/ConfirmDialog.svelte";
   import Icon from "$ui/Icon.svelte";
   import {
     ChevronRight,
     Folder,
     Forward,
+    Paperclip,
     Minus,
     Plus,
     SquareTerminal,
@@ -50,6 +53,10 @@
   import { toasts } from "$domain/toasts.svelte";
   import BoardZoom from "./BoardZoom.svelte";
   import FolderBrowser from "./FolderBrowser.svelte";
+  import FileView from "./FileView.svelte";
+  import SessionFiles from "./SessionFiles.svelte";
+  import SpaceSwitcher from "./SpaceSwitcher.svelte";
+  import { prefersReducedMotion } from "$lib/motion";
   import TerminalView from "./TerminalView.svelte";
   import { AGENTS, type AgentDef } from "./agentCatalog";
   import {
@@ -60,6 +67,7 @@
     centerOn,
     childRect,
     composerWrites,
+    GAP,
     fitRect,
     focusedByView,
     canResume,
@@ -67,6 +75,7 @@
     fullyVisible,
     parentKind,
     parseCamera,
+    parseRect,
     parseSpaces,
     placeNew,
     placeSpace,
@@ -110,6 +119,12 @@
   /** Tope de consolas de una vez, el mismo del lanzador de la pill. */
   const MAX_START = 6;
   const SPACES_KEY = "atic.agents.board.spaces";
+  /** El espacio que la pizarra va guardando sola. */
+  const CURRENT_SPACE_KEY = "atic.agents.board.currentSpace";
+  /** Quieto este rato tras un cambio, se guarda. */
+  const AUTOSAVE_AFTER_MS = 4000;
+  /** Y cada tanto igual: la conversación de cada agente nace después. */
+  const AUTOSAVE_EVERY_MS = 60_000;
   /** Más alejado que esto, tocar una consola la acerca: así no se lee. */
   const READABLE_ZOOM = 0.55;
   /** Lo que dura el vuelo de la cámara cuando se mueve sola. */
@@ -123,6 +138,32 @@
   let pendingClose = $state<TerminalItem | null>(null);
   let settingsOpen = $state(false);
   let browsingFolder = $state(false);
+  /**
+   * Consola pedida que espera su carpeta. Cada consola nueva pregunta dónde
+   * abrir —no siempre es la de las otras—, con la actual lista para Enter.
+   */
+  let pendingNew = $state<{ agent: AgentDef | null } | null>(null);
+
+  /**
+   * Archivos abiertos en la pizarra: soltados encima o elegidos de lo que
+   * generó una sesión. Viven aparte de las consolas —no son sesiones— y se
+   * guardan con la pizarra.
+   */
+  type FileCard = { key: string; path: string; rect: Rect };
+  /** De dónde nació cada tarjeta de archivo: solo para la animación. */
+  let fileOrigins = $state<Record<string, { x: number; y: number }>>({});
+  const FILES_KEY = "atic.agents.board.files";
+  const FILE_SIZE = { w: 560, h: 420 };
+  /** Más que esto de una vez es un arrastre equivocado, no una lectura. */
+  const DROP_MAX = 8;
+  let fileCards = $state<FileCard[]>([]);
+  let fileDrafts = $state<Record<string, Rect>>({});
+  /** La tarjeta que muestra su lista de archivos de la sesión. */
+  let filesOpenFor = $state<string | null>(null);
+  /** Arrastrando archivos sobre el fondo: dónde mostrar «suelta para abrir». */
+  let dropHint = $state<{ x: number; y: number } | null>(null);
+  /** Ctrl+Shift+K: buscar y abrir un espacio guardado. */
+  let switcherOpen = $state(false);
   let listCollapsed = $state(false);
   /**
    * El acomodo elegido queda puesto: con fila, columna o grilla, lo que se
@@ -135,6 +176,12 @@
   /** La vista se está moviendo: el minimapa y el zoom se muestran enteros. */
   let viewBusy = $state(false);
   let spaces = $state<SavedSpace[]>([]);
+  /**
+   * Nombre del espacio de esta pizarra. Nace solo —carpeta, fecha y hora— con
+   * la primera consola, y la pizarra lo va guardando: cerrar la app no pierde
+   * lo que se estaba haciendo. Ponerle nombre lo renombra.
+   */
+  let currentSpace = $state<string | null>(null);
 
   let boardEl = $state<HTMLElement | null>(null);
   let size = $state({ w: 0, h: 0 });
@@ -810,9 +857,47 @@
   }
 
   /** La entrada única: a la consola enfocada, como un solo mensaje. */
+  /**
+   * Un punto de luz del campo de abajo a la consola que recibe: se ve a
+   * dónde fue lo que escribiste, sobre todo con varias en la pizarra.
+   */
+  function flyToCard(key: string) {
+    if (prefersReducedMotion() || !boardEl) return;
+    const item = terminals.find((i) => i.key === key);
+    const from = document.querySelector(".composer .send")?.getBoundingClientRect();
+    if (!item || !from) return;
+    const box = boardEl.getBoundingClientRect();
+    const r = rectOf(item);
+    const to = {
+      x: box.left + cam.x + (r.x + r.w / 2) * cam.zoom,
+      y: box.top + cam.y + (r.y + Math.min(r.h / 2, 60)) * cam.zoom,
+    };
+    const start = { x: from.left + from.width / 2, y: from.top + from.height / 2 };
+    const dot = document.createElement("div");
+    dot.className = "send-spark";
+    document.body.append(dot);
+    const dx = to.x - start.x;
+    const dy = to.y - start.y;
+    dot
+      .animate(
+        [
+          { transform: `translate(${start.x}px, ${start.y}px) scale(0.6)`, opacity: 0 },
+          {
+            transform: `translate(${start.x + dx * 0.5}px, ${start.y + dy * 0.5 - 40}px) scale(1.1)`,
+            opacity: 1,
+            offset: 0.45,
+          },
+          { transform: `translate(${to.x}px, ${to.y}px) scale(0.4)`, opacity: 0 },
+        ],
+        { duration: 520, easing: "cubic-bezier(0.22, 1, 0.36, 1)" },
+      )
+      .finished.finally(() => dot.remove());
+  }
+
   function send(text: string) {
     const session = activeTerm?.session;
     if (!session) return;
+    flyToCard(activeTerm.key);
     const [body, enter] = composerWrites(text, !!activeTerm.command);
     void consoleWrite(session, body)
       // El Enter aparte y un instante después: pegado junto, el TUI lo
@@ -898,7 +983,48 @@
     return (await consoleAgentSession(item.session).catch(() => null)) ?? undefined;
   }
 
-  async function saveSpace(name: string) {
+  function setCurrentSpace(name: string | null) {
+    currentSpace = name;
+    try {
+      if (name) localStorage.setItem(CURRENT_SPACE_KEY, name);
+      else localStorage.removeItem(CURRENT_SPACE_KEY);
+    } catch {
+      /* queda en memoria */
+    }
+  }
+
+  /** «atic · 26 sep 09:41»: se reconoce en la lista sin abrirlo. */
+  function autoSpaceName(): string {
+    const folder = folderName(terminals[0]?.cwd ?? cwd);
+    const when = new Date().toLocaleString(uiLocale() === "en" ? "en-US" : "es-CL", {
+      day: "numeric",
+      month: "short",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+    return `${folder} · ${when}`;
+  }
+
+  async function autosave() {
+    if (terminals.length === 0) return;
+    const name = currentSpace ?? autoSpaceName();
+    if (!currentSpace) setCurrentSpace(name);
+    await saveSpace(name, { quiet: true });
+  }
+
+  /**
+   * Ponerle nombre desde la lista renombra el espacio de esta pizarra en vez
+   * de dejar una copia con el nombre automático.
+   */
+  async function nameSpace(name: string) {
+    const previous = currentSpace;
+    setCurrentSpace(name);
+    await saveSpace(name);
+    if (previous && previous.trim().toLowerCase() !== name.trim().toLowerCase())
+      writeSpaces(spaces.filter((s) => s.name !== previous));
+  }
+
+  async function saveSpace(name: string, opts: { quiet?: boolean } = {}) {
     const resumes = await Promise.all(terminals.map(agentSessionIn));
     const consoles = terminals.map((i, n) => {
       const resume = resumes[n];
@@ -913,8 +1039,18 @@
         ...(resume ? { resume } : {}),
       };
     });
+    // El guardado automático no reescribe lo que no cambió: así el aviso de
+    // «Guardado» significa que algo se guardó.
+    const before = spaces.find((sp) => sp.name === name);
+    if (
+      opts.quiet &&
+      before &&
+      before.layout === layout &&
+      JSON.stringify(before.consoles) === JSON.stringify(consoles)
+    )
+      return;
     writeSpaces(upsertSpace(spaces, { name, savedAt: Date.now(), layout, consoles }));
-    toasts.push(t("page.agents.board.spaceSaved", { name }), 2000);
+    if (!opts.quiet) toasts.push(t("page.agents.board.spaceSaved", { name }), 2000);
   }
 
   /**
@@ -941,7 +1077,11 @@
       });
       raise(key);
     });
-    if (empty) setLayout(space.layout);
+    if (empty) {
+      setLayout(space.layout);
+      // Retomado en una pizarra vacía, lo que se haga ahora sigue en él.
+      setCurrentSpace(space.name);
+    }
     await tick();
     const box = bounds(rects);
     if (box) setCamera(fitRect(box, size, insets), true);
@@ -949,6 +1089,130 @@
 
   function deleteSpace(space: SavedSpace) {
     writeSpaces(spaces.filter((s) => s !== space));
+    // Borrar el que se está guardando lo suelta: la pizarra no lo recrea
+    // en el próximo guardado.
+    if (space.name === currentSpace) setCurrentSpace(null);
+  }
+
+  // Cualquier cambio de consolas, lugares o acomodo guarda tras un respiro.
+  // Sin consolas no hay nada que guardar, y lo próximo arranca otro espacio.
+  $effect(() => {
+    const shape = JSON.stringify([
+      layout,
+      terminals.map((i) => [i.key, i.cli, i.cwd, i.rect]),
+    ]);
+    void shape;
+    if (terminals.length === 0) {
+      untrack(() => {
+        if (currentSpace) setCurrentSpace(null);
+      });
+      return;
+    }
+    const timer = window.setTimeout(() => void autosave(), AUTOSAVE_AFTER_MS);
+    return () => window.clearTimeout(timer);
+  });
+
+  function writeFileCards(next: FileCard[]) {
+    fileCards = next;
+    try {
+      localStorage.setItem(FILES_KEY, JSON.stringify(next));
+    } catch {
+      /* queda en memoria */
+    }
+  }
+
+  function parseFileCards(raw: string | null): FileCard[] {
+    try {
+      const value: unknown = JSON.parse(raw ?? "[]");
+      if (!Array.isArray(value)) return [];
+      return value.flatMap((v): FileCard[] => {
+        const o = v as Record<string, unknown>;
+        const rect = parseRect(o?.rect);
+        return typeof o?.key === "string" && typeof o?.path === "string" && rect
+          ? [{ key: o.key, path: o.path, rect }]
+          : [];
+      });
+    } catch {
+      return [];
+    }
+  }
+
+  function fileName(path: string): string {
+    return path.split(/[\\/]/).pop() || path;
+  }
+
+  /**
+   * Abre un archivo como tarjeta. `beside` la pone a la derecha de la
+   * consola que lo generó; `at` donde se soltó. Si ya está abierto, lo trae.
+   */
+  function openFile(path: string, place: { beside?: Rect; at?: { x: number; y: number } } = {}) {
+    const open = fileCards.find((c) => c.path === path);
+    if (open) {
+      raise(open.key);
+      showRect(open.rect);
+      return;
+    }
+    const rect: Rect = place.beside
+      ? { x: place.beside.x + place.beside.w + GAP, y: place.beside.y, ...FILE_SIZE }
+      : place.at
+        ? { x: place.at.x, y: place.at.y, ...FILE_SIZE }
+        : placeNew(
+            [...terminals.map(rectOf), ...fileCards.map((c) => c.rect)],
+            visibleArea(cam, size, insets),
+          );
+    const key = `file:${crypto.randomUUID()}`;
+    const origin = place.beside
+      ? { x: place.beside.x + place.beside.w / 2, y: place.beside.y + place.beside.h / 2 }
+      : place.at;
+    if (origin) fileOrigins = { ...fileOrigins, [key]: origin };
+    writeFileCards([...fileCards, { key, path, rect }]);
+    raise(key);
+    showRect(rect);
+  }
+
+  function showRect(rect: Rect) {
+    if (!fullyVisible(rect, cam, size, insets)) setCamera(fitRect(rect, size, insets), true);
+  }
+
+  function onFileRect(key: string, rect: Rect, commit: boolean) {
+    if (!commit) {
+      fileDrafts = { ...fileDrafts, [key]: rect };
+      return;
+    }
+    writeFileCards(fileCards.map((c) => (c.key === key ? { ...c, rect } : c)));
+    fileDrafts = Object.fromEntries(Object.entries(fileDrafts).filter(([k]) => k !== key));
+  }
+
+  function closeFile(key: string) {
+    writeFileCards(fileCards.filter((c) => c.key !== key));
+  }
+
+  /** Punto de la ventana (px CSS) → coordenadas de la pizarra. */
+  function toBoard(point: { x: number; y: number }) {
+    const box = boardEl?.getBoundingClientRect();
+    const left = box?.left ?? 0;
+    const top = box?.top ?? 0;
+    return { x: (point.x - left - cam.x) / cam.zoom, y: (point.y - top - cam.y) / cam.zoom };
+  }
+
+  /** Lo soltado sobre el fondo se abre para verlo, en cascada. */
+  function openDropped(paths: string[], point: { x: number; y: number }) {
+    const at = toBoard(point);
+    paths.slice(0, DROP_MAX).forEach((path, i) => {
+      openFile(path, { at: { x: at.x + i * 32, y: at.y + i * 32 } });
+    });
+  }
+
+  /** El launcher pidió una consola de este CLI: pregunta la carpeta y la abre. */
+  function askNewConsole(cli: string) {
+    const agent = AGENTS.find((a) => a.cli === cli) ?? null;
+    pendingNew = { agent };
+    browsingFolder = true;
+  }
+
+  async function takeNewConsole() {
+    const cli = await agentsTakeNewConsole().catch(() => null);
+    if (cli) askNewConsole(cli);
   }
 
   function pickFolder(path: string) {
@@ -980,6 +1244,13 @@
     if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
     const index = terminals.findIndex((i) => i.key === workspace.active);
     const key = event.key;
+    // Con Shift: Ctrl+K a secas es de la consola (borra la línea).
+    if ((key === "k" || key === "K") && event.shiftKey) {
+      switcherOpen = true;
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
     if (key === "n" || key === "N") {
       newOpen = true;
     } else if ((key === "w" || key === "W") && activeTerm) {
@@ -1036,6 +1307,8 @@
       cwd = localStorage.getItem(CWD_KEY) ?? "";
       listCollapsed = localStorage.getItem(LIST_KEY) === "1";
       spaces = parseSpaces(localStorage.getItem(SPACES_KEY));
+      fileCards = parseFileCards(localStorage.getItem(FILES_KEY));
+      currentSpace = localStorage.getItem(CURRENT_SPACE_KEY);
       const savedLayout = localStorage.getItem(LAYOUT_KEY);
       if (savedLayout === "row" || savedLayout === "column" || savedLayout === "grid")
         layout = savedLayout;
@@ -1085,12 +1358,29 @@
     const unlistenDrop = getCurrentWebview().onDragDropEvent(({ payload }) => {
       if (payload.type === "leave") {
         dropTarget = null;
+        dropHint = null;
       } else if (payload.type === "enter" || payload.type === "over") {
-        dropTarget = consoleUnder(toCss(payload.position));
+        const point = toCss(payload.position);
+        dropTarget = consoleUnder(point);
+        const overComposer = !!document
+          .elementFromPoint(point.x, point.y)
+          ?.closest(".composer");
+        dropHint = dropTarget === null && !overComposer ? point : null;
       } else if (payload.type === "drop") {
         dropTarget = null;
+        dropHint = null;
+        const point = toCss(payload.position);
+        const onConsole =
+          consoleUnder(point) !== null ||
+          !!document.elementFromPoint(point.x, point.y)?.closest(".composer");
+        // En una consola o en la entrada se pega la ruta, como siempre; en el
+        // fondo de la pizarra el archivo se abre para verlo.
+        if (!onConsole && payload.paths.length > 0) {
+          openDropped(payload.paths, point);
+          return;
+        }
         const text = quotePaths(payload.paths);
-        if (text) dropAt(toCss(payload.position), `${text} `);
+        if (text) dropAt(point, `${text} `);
       }
     });
 
@@ -1099,6 +1389,9 @@
       activity[session] = noteOutput(activity[session], Date.now());
     });
     const statusClock = window.setInterval(refreshStates, 500);
+    const autosaveClock = window.setInterval(() => void autosave(), AUTOSAVE_EVERY_MS);
+    void takeNewConsole();
+    const unlistenNewConsole = onAgentsNewConsole(() => void takeNewConsole());
     void presence.init();
     void agents.init();
 
@@ -1114,6 +1407,8 @@
       void unlistenDrop.then((un) => un());
       unwatchOutput();
       window.clearInterval(statusClock);
+      window.clearInterval(autosaveClock);
+      void unlistenNewConsole.then((un) => un());
       window.removeEventListener("focus", flagFocus);
       window.removeEventListener("blur", flagFocus);
       void setAgentsWindowOpen(false).catch(() => {});
@@ -1178,7 +1473,26 @@
           >
             <Icon icon={Forward} size={12} />
           </button>
+          {#if item.session}
+            <button
+              type="button"
+              class="card-action"
+              class:is-on={filesOpenFor === item.key}
+              aria-label={t("page.agents.board.filesButton")}
+              title={t("page.agents.board.filesButton")}
+              onclick={() => (filesOpenFor = filesOpenFor === item.key ? null : item.key)}
+            >
+              <Icon icon={Paperclip} size={12} />
+            </button>
+          {/if}
         {/snippet}
+        {#if filesOpenFor === item.key && item.session}
+          <SessionFiles
+            session={item.session}
+            onOpen={(path) => openFile(path, { beside: rectOf(item) })}
+            onClose={() => (filesOpenFor = null)}
+          />
+        {/if}
         <TerminalView
           bind:this={terms[item.key]}
           sessionId={item.session}
@@ -1217,9 +1531,60 @@
           onRect={(next, commit) => onChildRect(child, next, commit)}
           onClose={() => void agents.stop(child.id).catch(() => {})}
         >
-          <AgentChatPanel sessionId={child.id} readOnly decides {choices} />
+          {#snippet actions()}
+            {#if child.console}
+              <button
+                type="button"
+                class="card-action"
+                class:is-on={filesOpenFor === `child:${child.id}`}
+                aria-label={t("page.agents.board.filesButton")}
+                title={t("page.agents.board.filesButton")}
+                onclick={() =>
+                  (filesOpenFor =
+                    filesOpenFor === `child:${child.id}` ? null : `child:${child.id}`)}
+              >
+                <Icon icon={Paperclip} size={12} />
+              </button>
+            {/if}
+          {/snippet}
+          {#if child.console}
+            {#if filesOpenFor === `child:${child.id}`}
+              <SessionFiles
+                session={child.console}
+                onOpen={(path) => openFile(path, { beside: rect })}
+                onClose={() => (filesOpenFor = null)}
+              />
+            {/if}
+            <!-- Su TUI de verdad: se le escribe como a cualquier consola. -->
+            <TerminalView sessionId={child.console} />
+          {:else}
+            <AgentChatPanel sessionId={child.id} readOnly decides {choices} />
+          {/if}
         </BoardCard>
       {/if}
+    {/each}
+    {#each fileCards as card (card.key)}
+      {@const rect = fileDrafts[card.key] ?? card.rect}
+      <BoardCard
+        label={fileName(card.path)}
+        cli={null}
+        {rect}
+        zoom={cam.zoom}
+        z={zOf(card.key)}
+        active={false}
+        status="ready"
+        attention={false}
+        maximized={false}
+        dropping={false}
+        onFocus={() => raise(card.key)}
+        onActivate={() => showRect(rect)}
+        onMaximize={() => setCamera(fitRect(rect, size, insets), true)}
+        onRect={(next, commit) => onFileRect(card.key, next, commit)}
+        onClose={() => closeFile(card.key)}
+        origin={fileOrigins[card.key] ?? null}
+      >
+        <FileView path={card.path} />
+      </BoardCard>
     {/each}
   </div>
 
@@ -1324,7 +1689,8 @@
         attention: !!attention[i.key],
       }))}
       {spaces}
-      onSaveSpace={(name) => void saveSpace(name)}
+      {currentSpace}
+      onSaveSpace={(name) => void nameSpace(name)}
       onOpenSpace={(space) => void openSpace(space)}
       onDeleteSpace={deleteSpace}
       active={workspace.active}
@@ -1334,7 +1700,11 @@
       collapsed={listCollapsed}
       onCollapse={setListCollapsed}
       onNewToggle={(open) => (newOpen = open)}
-      onNew={(agent) => void openConsole(agent)}
+      onNew={(agent) => {
+        newOpen = false;
+        pendingNew = { agent };
+        browsingFolder = true;
+      }}
       onSelect={reveal}
       onClose={requestClose}
       onPickFolder={() => (browsingFolder = true)}
@@ -1400,12 +1770,45 @@
   </div>
 </div>
 
+{#if dropHint}
+  <div
+    class="drop-hint"
+    style:left={`${dropHint.x}px`}
+    style:top={`${dropHint.y}px`}
+    aria-hidden="true"
+  >
+    <span class="drop-ring"></span>
+    <span class="drop-label">{t("page.agents.board.dropHint")}</span>
+  </div>
+{/if}
+
+{#if switcherOpen}
+  <SpaceSwitcher
+    {spaces}
+    current={currentSpace}
+    onOpen={(space) => {
+      switcherOpen = false;
+      void openSpace(space);
+    }}
+    onClose={() => (switcherOpen = false)}
+  />
+{/if}
+
 {#if browsingFolder}
   <FolderBrowser
     contained={false}
     initialPath={cwd}
-    onPick={pickFolder}
-    onClose={() => (browsingFolder = false)}
+    confirmOnEnter={pendingNew !== null}
+    onPick={(path) => {
+      pickFolder(path);
+      const pending = pendingNew;
+      pendingNew = null;
+      if (pending) void openConsole(pending.agent);
+    }}
+    onClose={() => {
+      browsingFolder = false;
+      pendingNew = null;
+    }}
   />
 {/if}
 
@@ -1592,7 +1995,68 @@
       color var(--duration-fast) ease;
   }
 
-  .card-action:hover {
+  /* «Suelta para abrir»: sigue al puntero mientras arrastras archivos. */
+  .drop-hint {
+    position: fixed;
+    z-index: 50;
+    display: grid;
+    place-items: center;
+    pointer-events: none;
+    translate: -50% -50%;
+  }
+
+  .drop-ring {
+    width: 120px;
+    height: 120px;
+    border: 2px dashed color-mix(in sRGB, var(--accent) 75%, transparent);
+    border-radius: 24px;
+    background: color-mix(in sRGB, var(--accent) 10%, transparent);
+    animation: drop-breathe 1.2s var(--ease-smooth-out) infinite alternate;
+  }
+
+  .drop-label {
+    position: absolute;
+    top: calc(100% + 10px);
+    border-radius: 999px;
+    padding: 4px 10px;
+    background: color-mix(in sRGB, var(--rb-surface) 92%, transparent);
+    color: var(--rb-text);
+    font-size: 12px;
+    white-space: nowrap;
+    box-shadow: 0 8px 24px -10px rgb(0 0 0 / 50%);
+  }
+
+  @keyframes drop-breathe {
+    from {
+      scale: 0.94;
+    }
+    to {
+      scale: 1.04;
+    }
+  }
+
+  :global(.send-spark) {
+    position: fixed;
+    top: 0;
+    left: 0;
+    z-index: 70;
+    width: 10px;
+    height: 10px;
+    margin: -5px 0 0 -5px;
+    border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 14px 4px color-mix(in sRGB, var(--accent) 60%, transparent);
+    pointer-events: none;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .drop-ring {
+      animation: none;
+    }
+  }
+
+  .card-action:hover,
+  .card-action.is-on {
     background: color-mix(in sRGB, var(--rb-text) 9%, transparent);
     color: var(--rb-text);
   }

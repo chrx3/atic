@@ -386,6 +386,38 @@ fn builtin_actions(en: bool) -> Vec<LauncherEntry> {
         subtitle: subtitle.into(),
         target: EntryTarget::Action(action),
     })
+    .chain(agent_console_actions(en))
+    .collect()
+}
+
+/// «claude», «codex»… en el launcher: una consola nueva de ese agente en la
+/// pizarra, que pregunta la carpeta. Solo los que están instalados.
+fn agent_console_actions(en: bool) -> Vec<LauncherEntry> {
+    if !crate::agents::UI_ENABLED {
+        return Vec::new();
+    }
+    [
+        ("claude", "Claude Code", "agent-console:claude"),
+        ("codex", "Codex", "agent-console:codex"),
+        ("opencode", "OpenCode", "agent-console:opencode"),
+        ("cursor-agent", "Cursor", "agent-console:cursor-agent"),
+        ("agy", "Antigravity", "agent-console:agy"),
+        ("grok", "Grok", "agent-console:grok"),
+    ]
+    .into_iter()
+    .filter(|(cli, _, _)| crate::agents::exe::resolve(cli).is_some())
+    .map(|(cli, name, action)| LauncherEntry {
+        id: format!("action:{action}"),
+        kind: LauncherKind::Action,
+        title: name.into(),
+        subtitle: pick(
+            en,
+            &format!("Nueva consola de {name} ({cli}) en la pizarra"),
+            &format!("New {name} console ({cli}) on the board"),
+        )
+        .into(),
+        target: EntryTarget::Action(action),
+    })
     .collect()
 }
 
@@ -1168,6 +1200,9 @@ pub(crate) fn launch_apps_folder(_aumid: &str) -> Result<(), String> {
 }
 
 fn run_action(app: &AppHandle, action: &str) -> Result<(), String> {
+    if let Some(cli) = action.strip_prefix("agent-console:") {
+        return crate::agents::board_files::request_new_console(app, cli);
+    }
     match action {
         "dictation" => {
             crate::dictation::toggle_dictation(app);

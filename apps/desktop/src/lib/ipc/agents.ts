@@ -151,6 +151,44 @@ export const agentClaudeSessions = (cwd: string) =>
 export const agentClaudeTranscript = (cwd: string, id: string) =>
   invoke<AgentTurn[]>("agent_claude_transcript", { cwd, id });
 
+/** Un archivo que la pizarra puede mostrar (ver `board_files.rs`). */
+export type BoardFile = {
+  path: string;
+  name: string;
+  size: number;
+  kind: "image" | "video" | "audio" | "pdf" | "text" | "other";
+};
+
+/** Lo que cambió en la carpeta de una consola desde que se abrió. */
+export type ChangedFile = {
+  path: string;
+  name: string;
+  kind: BoardFile["kind"];
+  size: number;
+  modifiedMs: number;
+  /** Nació durante la sesión (no solo se modificó). */
+  created: boolean;
+};
+
+/** Deja a la pizarra mostrar el archivo y dice qué es. */
+export const boardAllowFile = (path: string) =>
+  invoke<BoardFile>("board_allow_file", { path });
+
+export const boardReveal = (path: string) => invoke<void>("board_reveal", { path });
+
+export const boardOpenExternal = (path: string) =>
+  invoke<void>("board_open_external", { path });
+
+export const consoleChangedFiles = (session: string) =>
+  invoke<ChangedFile[]>("console_changed_files", { session });
+
+/** La consola nueva que pidió el launcher, si quedó alguna esperando. */
+export const agentsTakeNewConsole = () =>
+  invoke<string | null>("agents_take_new_console");
+
+export const onAgentsNewConsole = (cb: (cli: string) => void): Promise<UnlistenFn> =>
+  on("agents-new-console", cb);
+
 /** ¿Tiene ese CLI el servidor `atic` en su config? Levanta un proceso: cachear. */
 export const agentMcpStatus = (cli: string) =>
   invoke<boolean>("agent_mcp_status", { cli });

@@ -165,21 +165,41 @@
       0 0 0 1px color-mix(in sRGB, var(--rb-text) 11%, transparent),
       0 18px 40px -16px rgb(0 0 0 / 55%);
     backdrop-filter: blur(18px) saturate(1.2);
+    /* Cerrar es tranquilo: sin rebote, y más corto que abrir. */
     transition:
-      box-shadow var(--duration-fast) ease,
-      width var(--duration-medium) var(--ease-smooth-out);
+      box-shadow var(--duration-slow) var(--ease-smooth-out),
+      width 180ms var(--ease-smooth-out),
+      translate 180ms var(--ease-smooth-out);
   }
 
-  /* En reposo y vacía ocupa poco; al escribir se abre a su ancho completo. */
+  /*
+   * En reposo y vacía ocupa poco; al escribir se abre a su ancho completo.
+   * Abrir sí rebota (la curva de la isla se pasa y vuelve) y se levanta un
+   * poco: se lee como que el campo viene a tu encuentro.
+   */
   .composer:focus-within,
   .composer:has(textarea:not(:placeholder-shown)) {
     width: min(680px, calc(100% - 32px));
+    transition:
+      box-shadow var(--duration-slow) var(--ease-smooth-out),
+      width 340ms var(--ease-island),
+      translate 340ms var(--ease-island);
   }
 
   .composer:focus-within {
+    translate: 0 -2px;
     box-shadow:
       0 0 0 1px color-mix(in sRGB, var(--accent) 55%, transparent),
-      0 18px 40px -16px rgb(0 0 0 / 55%);
+      0 24px 48px -18px rgb(0 0 0 / 60%);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .composer,
+    .composer:focus-within,
+    .composer:has(textarea:not(:placeholder-shown)) {
+      translate: none;
+      transition: box-shadow var(--duration-fast) ease;
+    }
   }
 
   .target {
@@ -242,6 +262,23 @@
 
   .send:active:not(:disabled) {
     scale: 0.94;
+  }
+
+  /* Se habilita con un saltito: ya hay algo para mandar. */
+  .send:not(:disabled) {
+    animation: send-pop 320ms var(--ease-island);
+  }
+
+  @keyframes send-pop {
+    from {
+      scale: 0.72;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .send:not(:disabled) {
+      animation: none;
+    }
   }
 
   .send:disabled {

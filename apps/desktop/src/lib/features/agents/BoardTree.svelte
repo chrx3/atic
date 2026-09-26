@@ -27,6 +27,7 @@
   let {
     entries,
     spaces,
+    currentSpace = null,
     active,
     defaultName,
     onSelect,
@@ -37,6 +38,8 @@
   }: {
     entries: Entry[];
     spaces: SavedSpace[];
+    /** El espacio que esta pizarra va guardando sola: se marca en la lista. */
+    currentSpace?: string | null;
     active: string | null;
     /** El nombre que se propone al guardar: la carpeta de inicio. */
     defaultName: string;
@@ -157,6 +160,7 @@
           <button
             type="button"
             class="entry is-space"
+            aria-current={space.name === currentSpace ? "true" : undefined}
             title={t("page.agents.board.spaceOpen", {
               consoles: space.consoles.map((c) => c.label).join(", "),
             })}
@@ -167,6 +171,12 @@
               <span class="name">{space.name}</span>
               <span class="meta">{summary(space)}</span>
             </span>
+            {#if space.name === currentSpace}
+              <!-- Una vez por guardado: la clave es la hora en que se guardó. -->
+              {#key space.savedAt}
+                <span class="saved-tick">✓ {t("page.agents.board.autosaved")}</span>
+              {/key}
+            {/if}
           </button>
           <button
             type="button"
@@ -278,7 +288,37 @@
     color: var(--rb-muted);
   }
 
-  .row:hover .entry.is-space {
+  .saved-tick {
+    flex-shrink: 0;
+    color: var(--accent);
+    font-size: 10.5px;
+    opacity: 0;
+    animation: saved-tick 1600ms var(--ease-smooth-out);
+  }
+
+  @keyframes saved-tick {
+    0% {
+      opacity: 0;
+      transform: translateY(3px) scale(0.9);
+    }
+    15%,
+    70% {
+      opacity: 1;
+      transform: none;
+    }
+    100% {
+      opacity: 0;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .saved-tick {
+      animation: none;
+    }
+  }
+
+  .row:hover .entry.is-space,
+  .entry.is-space[aria-current="true"] {
     color: var(--rb-text);
   }
 

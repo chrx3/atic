@@ -366,6 +366,11 @@ pub fn run() {
             agents::console::console_detach,
             agents::console::console_heartbeat,
             agents::console::console_tail,
+            agents::board_files::board_allow_file,
+            agents::board_files::board_reveal,
+            agents::board_files::board_open_external,
+            agents::board_files::console_changed_files,
+            agents::board_files::agents_take_new_console,
             agents::console::console_begin_transfer,
             agents::console::console_end_transfer,
             agents::console::console_transfer_deliver,
@@ -547,15 +552,15 @@ pub fn run() {
             // la carga del GGML desde disco.
             state::preload_whisper_async(app.handle());
 
+            // Conversor de divisas del launcher (opt-in): carga la caché de
+            // tasas y refresca si quedó vieja, sin bloquear el arranque.
+            fx::init(app.handle());
+
             // Precarga catálogos de modelos de agentes (Cursor, Claude, …)
             // para que el selector no espere al abrir la consola.
             agents::discover::preload_models_async();
 
             // Hub de orquestación MCP: si no arranca, los agentes siguen
-            // Conversor de divisas del launcher (opt-in): carga la caché de
-            // tasas y refresca si quedó vieja, sin bloquear el arranque.
-            fx::init(app.handle());
-
             // funcionando; solo la delegación entre ellos queda abajo.
             if agents::UI_ENABLED {
                 if let Err(e) = agents::hub::server::start(app.handle().clone()) {
