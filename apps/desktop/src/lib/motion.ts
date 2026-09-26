@@ -222,3 +222,79 @@ export function tabPanel(
     },
   };
 }
+
+/**
+ * Reloj compartido para las animaciones en bucle: `--clock` en `:root`, en
+ * segundos, ~24 veces por segundo.
+ *
+ * Una animación CSS infinita obliga a Chromium a producir un cuadro por cada
+ * refresco del monitor aunque avance por pasos. En la pill —una ventana
+ * transparente del tamaño de la pantalla— eso eran ~540 cuadros por segundo
+ * en un monitor de 180 Hz, solo para respiraciones sutiles. Con el reloj, el
+ * CSS calcula cada valor desde `var(--clock)` (`cos()`, `mod()`) y hay un
+ * cuadro por tic. Sin nadie que lo pida, no corre.
+ */
+const CLOCK_HZ = 24;
+let clockHolds = 0;
+let clockTimer = 0;
+
+function clockTick(): void {
+  // El módulo evita que el número crezca sin tope; salta cada 10 h.
+  const seconds = (performance.now() / 1000) % 36_000;
+  document.documentElement.style.setProperty("--clock", seconds.toFixed(3));
+}
+
+/** Pide el reloj; devuelve cómo soltarlo. Con menos movimiento, no corre. */
+export function holdMotionClock(): () => void {
+  if (typeof window === "undefined" || prefersReducedMotion()) return () => {};
+  clockHolds += 1;
+  if (!clockTimer) {
+    clockTick();
+    clockTimer = window.setInterval(clockTick, 1000 / CLOCK_HZ);
+  }
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    clockHolds = Math.max(0, clockHolds - 1);
+    if (clockHolds === 0 && clockTimer) {
+      window.clearInterval(clockTimer);
+      clockTimer = 0;
+    }
+  };
+}
+
+/**
+ * El reloj corre mientras haya en `root` algo que calce con `selector`.
+ * Para superficies donde lo animado aparece y desaparece en muchos lugares
+ * del markup: mirarlo desde afuera evita repartir el pedido por cada uno.
+ */
+export function clockWhilePresent(root: Element, selector: string): () => void {
+  let release: (() => void) | null = null;
+  let pending = 0;
+  const check = () => {
+    pending = 0;
+    const present = root.querySelector(selector) !== null;
+    if (present && !release) release = holdMotionClock();
+    else if (!present && release) {
+      release();
+      release = null;
+    }
+  };
+  const observer = new MutationObserver(() => {
+    if (!pending) pending = window.setTimeout(check, 50);
+  });
+  observer.observe(root, {
+    subtree: true,
+    childList: true,
+    attributes: true,
+    attributeFilter: ["class", "data-act"],
+  });
+  check();
+  return () => {
+    observer.disconnect();
+    window.clearTimeout(pending);
+    release?.();
+    release = null;
+  };
+}
