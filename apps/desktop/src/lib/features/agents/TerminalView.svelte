@@ -43,6 +43,8 @@
     subscribeConsole,
   } from "./consoleBus";
   import { terminalTheme } from "./terminalTheme";
+  import { attachScaledMouse } from "./xtermScale";
+  import { useWebglRenderer } from "./terminalRenderer";
 
   let {
     sessionId = null,
@@ -140,6 +142,9 @@
     term = instance;
     fit = addon;
     instance.open(host!);
+    useWebglRenderer(instance);
+    // En la pizarra el terminal vive bajo el zoom de la cámara.
+    const detachScaledMouse = attachScaledMouse(host!);
 
     instance.onData((data) => {
       if (live) void consoleWrite(live, data).catch(() => {});
@@ -219,6 +224,7 @@
       window.clearTimeout(fitTimer);
       observer.disconnect();
       themeWatch.disconnect();
+      detachScaledMouse();
       unsubscribe?.();
       if (live) release(live);
       instance.dispose();
