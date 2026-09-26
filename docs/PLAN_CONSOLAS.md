@@ -9,6 +9,11 @@
 > con [`PLAN_AGENTES_TUI.md`](PLAN_AGENTES_TUI.md) (el pager) y no toca
 > [`PLAN_ORQUESTACION_MCP.md`](PLAN_ORQUESTACION_MCP.md), que ya está
 > implementado.
+>
+> La capa de **experiencia de la ventana** (mando, contexto, worktrees) se
+> planea aparte en
+> [`PLAN_EXPERIENCIA_CONSOLAS.md`](PLAN_EXPERIENCIA_CONSOLAS.md): este define
+> el piso (una sola verdad del proceso y del estado), ese construye encima.
 
 ---
 

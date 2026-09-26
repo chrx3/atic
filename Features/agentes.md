@@ -125,5 +125,7 @@ usuario ve correr la instalación y Atic re-detecta el CLI al volver.
 - [dictado.md](dictado.md)
 - [liquid.md](liquid.md)
 - [ssh-remote-hosts.md](ssh-remote-hosts.md)
+- Experiencia de consolas (mando, contexto, worktrees):
+  [`docs/PLAN_EXPERIENCIA_CONSOLAS.md`](../docs/PLAN_EXPERIENCIA_CONSOLAS.md)
 - [`docs/PLAN_AGENTES.md`](../docs/PLAN_AGENTES.md)
 - Orquestación entre agentes (idea): [orquestacion-agentes.md](orquestacion-agentes.md) · [`docs/PLAN_ORQUESTACION_MCP.md`](../docs/PLAN_ORQUESTACION_MCP.md)
