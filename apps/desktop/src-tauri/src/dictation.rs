@@ -78,6 +78,21 @@ pub struct ActiveDictation {
     pub wav_path: PathBuf,
     pub temp_dir: PathBuf,
     pub handle: CaptureHandle,
+    /// Ventana de Atic con agentes donde empezaste a dictar, si fue ahí.
+    pub agents_window: Option<String>,
+    pub started_at: Instant,
+}
+
+/// Adónde va un dictado que empezó en una consola de agentes de Atic.
+///
+/// A esa misma ventana, salvo que mientras hablabas hayas pasado a otra app:
+/// entonces manda la última que tocaste, como en cualquier dictado.
+fn agents_target(started_in: Option<&str>, external_since_start: bool) -> Option<&str> {
+    if external_since_start {
+        None
+    } else {
+        started_in
+    }
 }
 
 fn emit_status(
@@ -145,6 +160,13 @@ fn start_dictation(app: &AppHandle) -> Result<(), String> {
             "You are already dictating.",
         ));
     }
+
+    // Hablándole a una consola de agentes de Atic: el texto es para ella, no
+    // para la última ventana externa (que es lo único que guarda el destino).
+    // La principal tiene su propio camino más abajo.
+    let agents_window = crate::clipboard_history::foreground_own_window(app)
+        .filter(|label| label != "main" && crate::agents::bridge::agents_open());
+    let started_at = Instant::now();
 
     // Guardar destino de pegado YA: antes de que la pill/UI robe el foco.
     crate::clipboard_history::remember_paste_target();
@@ -221,6 +243,8 @@ fn start_dictation(app: &AppHandle) -> Result<(), String> {
         wav_path,
         temp_dir,
         handle,
+        agents_window,
+        started_at,
     });
 
     let (ui_sounds, out, voice) = {
@@ -350,6 +374,14 @@ fn stop_and_paste(app: &AppHandle) {
             // Congelar el destino: de acá en más el foco lo movemos nosotros.
             crate::clipboard_history::stop_foreground_tracking();
 
+            if let Some(label) = agents_target(
+                active.agents_window.as_deref(),
+                crate::clipboard_history::external_foreground_since(active.started_at),
+            ) {
+                crate::clipboard_history::insert_text_into_agents_window(&app2, label, &text)?;
+                return Ok((text, crate::paste_queue::PasteOutcome::Pasted));
+            }
+
             // El foco está en la ventana principal: estás dictando para leerlo
             // (o para copiarlo), no para que Atic le saque el foco a la app
             // anterior. Se encola y la pantalla de Dictado lo muestra con
@@ -443,5 +475,17 @@ fn effective_dictation_noise(configured: &str) -> String {
         "high" => "high".into(),
         "medium" => "medium".into(),
         _ => "medium".into(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn el_dictado_vuelve_a_la_consola_salvo_que_cambies_de_app() {
+        assert_eq!(agents_target(Some("agents"), false), Some("agents"));
+        assert_eq!(agents_target(Some("agents"), true), None);
+        assert_eq!(agents_target(None, false), None);
     }
 }
