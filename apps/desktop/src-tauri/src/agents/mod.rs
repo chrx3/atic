@@ -23,6 +23,7 @@
 pub mod acp;
 pub mod antigravity;
 pub mod antigravity_usage;
+pub mod board_files;
 pub mod bridge;
 pub mod claude_code;
 pub mod claude_sessions;

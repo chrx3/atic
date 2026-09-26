@@ -92,6 +92,8 @@ export interface AticEvents {
   "agents-composer-insert": AgentsComposerInsert;
   /** Algo soltado sobre la ventana de agentes; `x`/`y` en px CSS de su webview. */
   "agents-window-insert": AgentsComposerInsert;
+  /** El launcher pidió una consola nueva de este CLI en la pizarra. */
+  "agents-new-console": string;
   "snippets-changed": void;
   "clipboard-bubble-anchor": BubbleOpen;
   "clipboard-bubble-dismiss": void;
@@ -190,6 +192,8 @@ export interface AticEvents {
   "window-flip-goto-page": number;
   /** Abrir el buscador de la ventana principal (puede emitirlo el frontend). */
   "open-search": void;
+  /** Abrir Ajustes en una sección concreta (id de `settingsSections`). */
+  "open-settings": string;
   /**
    * Catálogo / pestañas del workspace / atajo: el overlay vuela al slot y
    * ejecuta la tool. También lo emite Rust (p.ej. dictado toggle al empezar).

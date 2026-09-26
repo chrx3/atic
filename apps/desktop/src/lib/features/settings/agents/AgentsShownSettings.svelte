@@ -14,6 +14,7 @@
   import SettingsRow from "$patterns/SettingsRow.svelte";
   import Button from "$ui/Button.svelte";
   import { t } from "$domain/i18n.svelte";
+  import AticMcpSettings from "./AticMcpSettings.svelte";
 
   let snippet = $state("");
   let copied = $state(false);
@@ -87,6 +88,8 @@
         </SettingsRow>
       {/each}
     </SettingsGroup>
+
+    <AticMcpSettings />
   {/if}
 
   {#if AGENT_PAGER_ENABLED}

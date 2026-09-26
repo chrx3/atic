@@ -28,6 +28,7 @@
   let {
     initialPath = "",
     contained = true,
+    confirmOnEnter = false,
     onPick,
     onClose,
   }: {
@@ -38,6 +39,8 @@
      * pizarra).
      */
     contained?: boolean;
+    /** Enter confirma la carpeta abierta si no hay otra elegida. */
+    confirmOnEnter?: boolean;
     onPick: (path: string) => void;
     onClose: () => void;
   } = $props();
@@ -97,6 +100,9 @@
 
   onMount(() => {
     void load(initialPath || null);
+    // Abierto para confirmar: el teclado queda dentro del diálogo desde ya,
+    // para que Enter no dependa de un clic previo.
+    if (confirmOnEnter) requestAnimationFrame(() => searchEl?.focus());
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "f" && (event.ctrlKey || event.metaKey)) {
         event.preventDefault();
@@ -107,6 +113,19 @@
       if (event.key === "/" && !isTypingTarget(event.target)) {
         event.preventDefault();
         searchEl?.focus();
+        return;
+      }
+      // Abierto para confirmar (consola nueva): Enter sin nada elegido ni
+      // filtro usa la carpeta donde está, que ya viene puesta.
+      if (
+        event.key === "Enter" &&
+        confirmOnEnter &&
+        !activePath &&
+        !query.trim() &&
+        !(event.target instanceof HTMLButtonElement)
+      ) {
+        event.preventDefault();
+        confirm();
         return;
       }
       if (event.key === "Enter" && visible.length > 0) {
@@ -171,7 +190,9 @@
   }
 
   function confirm() {
-    const path = listing?.path?.trim() || browsePath.trim();
+    // Enter apenas se abre, antes de que la carpeta termine de cargar: vale
+    // la que venía puesta, que es justo la que se quería confirmar.
+    const path = listing?.path?.trim() || browsePath.trim() || initialPath.trim();
     if (path) onPick(path);
   }
 

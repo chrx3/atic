@@ -14,8 +14,9 @@
    * al soltar lo avisa una vez más para guardarlo. Guardar en cada cuadro
    * escribiría el storage decenas de veces por segundo.
    */
-  import type { Snippet } from "svelte";
-  import { emerge } from "$lib/motion";
+  import { untrack, type Snippet } from "svelte";
+  import { backOut, cubicIn } from "svelte/easing";
+  import { prefersReducedMotion } from "$lib/motion";
   import { t } from "$domain/i18n.svelte";
   import Icon from "$ui/Icon.svelte";
   import { Maximize2, Minimize2, X } from "$lib/icons";
@@ -40,6 +41,7 @@
     onClose,
     onMaximize,
     onActivate,
+    origin = null,
     actions,
     children,
   }: {
@@ -62,12 +64,55 @@
     onMaximize: () => void;
     /** Un clic (sin arrastre) en cualquier parte: la pizarra la encuadra si hace falta. */
     onActivate: () => void;
+    /**
+     * De dónde nace, en coordenadas de pizarra: un archivo abierto desde una
+     * consola crece desde ella y no desde su propio centro.
+     */
+    origin?: { x: number; y: number } | null;
     /** Botones propios de esta tarjeta, antes de maximizar y cerrar. */
     actions?: Snippet;
     children: Snippet;
   } = $props();
 
   const GRIPS: Handle[] = ["e", "s", "w", "se", "sw"];
+
+  /**
+   * Nacer con rebote y irse rápido: abrir es algo que pasa, cerrar es sacarlo
+   * del medio. Sin desenfoque: con una terminal adentro cuesta un cuadro.
+   */
+  function cardIn(_node: Element) {
+    if (prefersReducedMotion()) return { duration: 0, css: () => "" };
+    return {
+      duration: 320,
+      easing: backOut,
+      css: (t: number, u: number) =>
+        `opacity:${Math.min(1, t * 1.8)};transform:translateY(${u * 6}px) scale(${0.94 + 0.06 * t})`,
+    };
+  }
+
+  function cardOut(_node: Element) {
+    if (prefersReducedMotion()) return { duration: 0, css: () => "" };
+    return {
+      duration: 140,
+      easing: cubicIn,
+      css: (t: number) => `opacity:${t};transform:scale(${0.96 + 0.04 * t})`,
+    };
+  }
+
+  /**
+   * Un destello cuando pasa a pedir atención (el agente terminó y no la
+   * estabas mirando): el color del punto solo no se ve desde lejos.
+   */
+  let ping = $state(false);
+  let hadAttention = untrack(() => attention);
+  $effect(() => {
+    const now = attention;
+    if (now && !hadAttention && !prefersReducedMotion()) {
+      ping = true;
+      window.setTimeout(() => (ping = false), 1100);
+    }
+    hadAttention = now;
+  });
 
   let drag: { handle: Handle; x: number; y: number; start: Rect } | null = null;
   /** Dónde bajó el puntero, para distinguir un clic de un arrastre. */
@@ -128,13 +173,18 @@
   class:is-dragging={dragging}
   class:is-maximized={maximized}
   class:is-dropping={dropping}
+  class:is-ping={ping}
   style:left={`${rect.x}px`}
   style:top={`${rect.y}px`}
   style:width={`${rect.w}px`}
   style:height={`${rect.h}px`}
   style:z-index={z}
+  style:transform-origin={origin
+    ? `${origin.x - rect.x}px ${origin.y - rect.y}px`
+    : "50% 60%"}
   aria-label={label}
-  transition:emerge
+  in:cardIn
+  out:cardOut
   onpointerdowncapture={onPress}
   onpointerupcapture={onRelease}
 >
@@ -205,6 +255,23 @@
       0 0 0 1px color-mix(in sRGB, var(--rb-text) 12%, transparent),
       0 18px 48px -20px rgb(0 0 0 / 55%);
     transition: box-shadow var(--duration-medium) ease;
+  }
+
+  .card.is-ping {
+    animation: card-ping 1100ms var(--ease-smooth-out);
+  }
+
+  @keyframes card-ping {
+    0% {
+      box-shadow:
+        0 0 0 2px color-mix(in sRGB, var(--accent) 85%, transparent),
+        0 0 0 0 color-mix(in sRGB, var(--accent) 45%, transparent);
+    }
+    100% {
+      box-shadow:
+        0 0 0 1px color-mix(in sRGB, var(--rb-text) 12%, transparent),
+        0 0 0 18px color-mix(in sRGB, var(--accent) 0%, transparent);
+    }
   }
 
   .card.is-active {
