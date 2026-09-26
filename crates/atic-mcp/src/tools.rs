@@ -242,6 +242,13 @@ impl PermissionMode {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ListarModelos {
+    /// Id del harness (`claude-code`, `codex`, `cursor`, `opencode`).
+    pub backend: BackendId,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ListarSesiones {
     /// Id del harness (`claude-code`, `codex`, `opencode`, `cursor`, `grok`,
     /// `antigravity`). Vacío = todas.
@@ -255,8 +262,13 @@ pub struct AbrirSesion {
     pub backend: BackendId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
+    /// Id del modelo, de `atic_list_models`. Atic también reconoce el nombre
+    /// como lo diría una persona («Luna 6»); si no calza con ninguno, la
+    /// llamada falla con la lista de ids válidos. Vacío = el del agente.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// Sin valor, el agente trabaja sin pedir permisos (`bypassPermissions`):
+    /// nadie está mirando la sesión para aprobarlos. `default` los pide.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission_mode: Option<PermissionMode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -296,8 +308,13 @@ pub struct Delegar {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
     pub text: String,
+    /// Sin valor, el agente trabaja sin pedir permisos (`bypassPermissions`):
+    /// nadie está mirando la sesión para aprobarlos. `default` los pide.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission_mode: Option<PermissionMode>,
+    /// Id del modelo, de `atic_list_models`. Atic también reconoce el nombre
+    /// como lo diría una persona («Luna 6»); si no calza con ninguno, la
+    /// llamada falla con la lista de ids válidos. Vacío = el del agente.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -371,6 +388,24 @@ impl AticServer {
             Err(e) => return Self::error(e),
         };
         match hub.agents().await {
+            Ok(lista) => Self::exito(&lista),
+            Err(e) => Self::error(e),
+        }
+    }
+
+    #[tool(
+        name = "atic_list_models",
+        description = "Lista los modelos que acepta un agente (id, nombre, esfuerzos). Llámala cuando el usuario nombre un modelo, antes de pasarlo en `model` a atic_spawn o atic_delegate: el id que va en `model` es el de esta lista."
+    )]
+    async fn atic_list_models(
+        &self,
+        params: Parameters<ListarModelos>,
+    ) -> Result<CallToolResult, McpError> {
+        let hub = match hub_client::locate().await {
+            Ok(h) => h,
+            Err(e) => return Self::error(e),
+        };
+        match hub.models(params.0.backend.as_str()).await {
             Ok(lista) => Self::exito(&lista),
             Err(e) => Self::error(e),
         }

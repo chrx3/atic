@@ -220,6 +220,8 @@ pub struct SessionInfo {
     pub parent: Option<String>,
     /// El nombre que le puso quien la pidió, ya hecho único.
     pub label: Option<String>,
+    /// La consola donde corre, si es un subagente en su TUI de verdad.
+    pub console: Option<String>,
 }
 
 /// Qué sesiones siguen vivas.
@@ -239,6 +241,7 @@ pub fn agent_sessions() -> Vec<SessionInfo> {
                     backend_name: entry.display_name.clone(),
                     parent: entry.meta.parent.clone(),
                     label: entry.meta.label.clone(),
+                    console: entry.session.console(),
                 })
                 .collect()
         })
@@ -635,48 +638,56 @@ pub(crate) fn start_session(
     let emit_key = key.clone();
     let emit_backend = backend.to_string();
     let emit_name = display_name.clone();
-    let session = agent.start(
-        StartOptions {
-            cwd,
-            remote,
-            // La clave local se usa también como id de la conversación en el
-            // CLI. Son dos identidades que no tienen por qué coincidir, y
-            // hacerlas coincidir vale la pena: el id que la interfaz muestra es
-            // el mismo con el que se reanuda, sin tabla de equivalencias en el
-            // medio. Al bifurcar deja de ser cierto —ahí el CLI acuña uno
-            // nuevo— y el id real llega en `Started`.
-            session_id: Some(key.clone()),
-            resume,
-            fork,
-            model,
-            effort,
-            fast,
-            permission_mode,
-            mcp_config,
-            mcp_servers,
-            atic_mcp,
-            add_dirs,
-            env,
-        },
-        Box::new(move |mut delta| {
-            clock.lock_or_recover().observe(&mut delta);
-            // Primero al vigilante del hub, después al store y a la ventana.
-            // Quien espera un `TurnEnd` tiene que despertar aunque el emit falle.
-            watch_delta.observe(&delta);
-            if super::store::apply(&emit_key, &delta) {
-                with_db(&app, |db| super::store::flush(db, &emit_key));
-            }
-            let _ = app.emit(
-                "agent-event",
-                EventPayload {
-                    session: emit_key.clone(),
-                    backend_id: emit_backend.clone(),
-                    backend_name: emit_name.clone(),
-                    delta,
-                },
-            );
-        }),
-    )?;
+    // Un subagente que abre el hub corre en su consola de verdad, a la que
+    // también le puedes escribir tú (ver `console_agent`).
+    let en_consola =
+        spawn.parent.is_some() && remote.is_none() && super::console_agent::supported(backend);
+    let start_options = StartOptions {
+        cwd,
+        remote,
+        // La clave local se usa también como id de la conversación en el
+        // CLI. Son dos identidades que no tienen por qué coincidir, y
+        // hacerlas coincidir vale la pena: el id que la interfaz muestra es
+        // el mismo con el que se reanuda, sin tabla de equivalencias en el
+        // medio. Al bifurcar deja de ser cierto —ahí el CLI acuña uno
+        // nuevo— y el id real llega en `Started`.
+        session_id: Some(key.clone()),
+        resume,
+        fork,
+        model,
+        effort,
+        fast,
+        permission_mode,
+        mcp_config,
+        mcp_servers,
+        atic_mcp,
+        add_dirs,
+        env,
+    };
+    let app_consola = app.clone();
+    let on_delta: Box<dyn Fn(AgentDelta) + Send + Sync + 'static> = Box::new(move |mut delta| {
+        clock.lock_or_recover().observe(&mut delta);
+        // Primero al vigilante del hub, después al store y a la ventana.
+        // Quien espera un `TurnEnd` tiene que despertar aunque el emit falle.
+        watch_delta.observe(&delta);
+        if super::store::apply(&emit_key, &delta) {
+            with_db(&app, |db| super::store::flush(db, &emit_key));
+        }
+        let _ = app.emit(
+            "agent-event",
+            EventPayload {
+                session: emit_key.clone(),
+                backend_id: emit_backend.clone(),
+                backend_name: emit_name.clone(),
+                delta,
+            },
+        );
+    });
+    let session = if en_consola {
+        super::console_agent::start(&app_consola, backend, start_options, on_delta)?
+    } else {
+        agent.start(start_options, on_delta)?
+    };
 
     SESSIONS
         .lock_or_recover()

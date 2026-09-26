@@ -953,6 +953,8 @@ export interface AgentSessionInfo {
   parent?: string | null;
   /** El nombre que le puso quien la pidió, ya hecho único en Rust. */
   label?: string | null;
+  /** La consola donde corre, si es un subagente en su TUI de verdad. */
+  console?: string | null;
 }
 
 /** Hub de orquestación MCP: lo que muestra Ajustes → Agentes. */

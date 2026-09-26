@@ -182,6 +182,10 @@ impl Hub {
         self.get("/v1/agents").await
     }
 
+    pub async fn models(&self, backend: &str) -> Result<serde_json::Value, HubFallo> {
+        self.get(&format!("/v1/models?backend={backend}")).await
+    }
+
     pub async fn sessions(
         &self,
         backend: Option<&str>,

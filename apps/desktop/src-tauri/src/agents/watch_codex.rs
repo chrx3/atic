@@ -87,7 +87,7 @@ pub fn session_id_from_stem(stem: &str) -> Option<&str> {
     }
 }
 
-fn item_text(v: &Value) -> Option<&str> {
+pub(crate) fn item_text(v: &Value) -> Option<&str> {
     v.pointer("/payload/item/content")
         .and_then(Value::as_array)?
         .iter()
@@ -269,7 +269,7 @@ fn open_tail(path: &Path) -> Tail {
     }
 }
 
-fn read_new_lines(path: &Path, tail: &mut Tail) -> Vec<String> {
+pub(crate) fn read_new_lines(path: &Path, tail: &mut Tail) -> Vec<String> {
     let Ok(mut file) = File::open(path) else {
         return Vec::new();
     };

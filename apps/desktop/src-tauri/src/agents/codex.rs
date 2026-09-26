@@ -216,7 +216,7 @@ fn overrides_atic(atic: Option<&super::hub::AticMcp>) -> Vec<String> {
 /// escribe el TOML. El valor va por `serde_json` por el mismo motivo que el de
 /// `atic`: JSON es un subconjunto válido de TOML para cadenas y arrays, y así
 /// las barras de Windows no necesitan tabla de escapes propia.
-fn overrides_mcp(
+pub(crate) fn overrides_mcp(
     atic: Option<&super::hub::AticMcp>,
     extra: &[super::mcp_servers::McpServerDef],
 ) -> Vec<String> {

@@ -290,7 +290,7 @@ fn to_presence(id: &str, t: &Tracked) -> AgentPresence {
     })
 }
 
-fn read_new_lines(path: &Path, tail: &mut Tail) -> Vec<String> {
+pub(crate) fn read_new_lines(path: &Path, tail: &mut Tail) -> Vec<String> {
     let Ok(mut file) = File::open(path) else {
         return Vec::new();
     };

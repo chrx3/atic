@@ -226,6 +226,7 @@ fn rutear(pedido: Pedido, token: &str, app: Option<&AppHandle>) -> Vec<u8> {
             "pid": std::process::id(),
         })),
         ("GET", "/v1/agents") => hay_forma(serde_json::json!({ "agents": disponibles() })),
+        ("GET", "/v1/models") => modelos(&pedido),
         ("GET", "/v1/sessions") => {
             let todas = super::super::bridge::live_sessions();
             let filtradas: Vec<api::SessionInfo> = todas
@@ -455,6 +456,163 @@ fn referencias_utilizables(lista: &[api::AgentInfo]) -> Vec<(&str, bool)> {
         .collect()
 }
 
+/// Los modelos de un backend, como los ofrece su selector en Atic.
+fn modelos(pedido: &Pedido) -> Vec<u8> {
+    let Some(backend) = pedido.query.get("backend") else {
+        return no_hay_forma(
+            400,
+            HubError::nueva("bad_request", "Falta ?backend=<id>.".into()),
+        );
+    };
+    match super::super::discover::list_models(backend) {
+        Ok(lista) => hay_forma(serde_json::json!({
+            "backend": backend,
+            "models": lista
+                .iter()
+                .map(|m| serde_json::json!({
+                    "id": m.id,
+                    "name": m.name,
+                    "description": m.description,
+                    "efforts": m.efforts.iter().map(|e| e.id.as_str()).collect::<Vec<_>>(),
+                }))
+                .collect::<Vec<_>>(),
+        })),
+        Err(e) => no_hay_forma(
+            409,
+            HubError::nueva(
+                "models_unavailable",
+                format!("No se pudo leer los modelos de {backend}: {e}. Omite `model` y usará el suyo por defecto."),
+            ),
+        ),
+    }
+}
+
+/// Para comparar nombres de modelo como los dice una persona: «Luna 6»,
+/// «luna-6» y «luna6» son lo mismo.
+fn clave_modelo(texto: &str) -> String {
+    texto
+        .chars()
+        .filter(|c| c.is_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+/// Las palabras de un nombre de modelo: «GPT-6-Luna» → gpt, 6, luna.
+fn palabras_modelo(texto: &str) -> Vec<String> {
+    texto
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|p| !p.is_empty())
+        .map(str::to_lowercase)
+        .collect()
+}
+
+/// El modelo que tiene todas las palabras pedidas, en cualquier orden.
+///
+/// «luna 6» calza con `gpt-6-luna` y también con `gpt-5.6-luna`; gana el que
+/// menos palabras agrega, que es el que se nombró. Si empatan, no se adivina.
+fn por_palabras(pedido: &str, modelos: &[(String, String)]) -> Option<String> {
+    let pedidas = palabras_modelo(pedido);
+    if pedidas.is_empty() {
+        return None;
+    }
+    let mut mejor: Option<(usize, &String)> = None;
+    let mut empate = false;
+    for (id, nombre) in modelos {
+        let sobrantes = [id, nombre]
+            .iter()
+            .filter_map(|texto| {
+                let propias = palabras_modelo(texto);
+                pedidas
+                    .iter()
+                    .all(|p| propias.contains(p))
+                    .then(|| propias.len() - pedidas.len().min(propias.len()))
+            })
+            .min();
+        let Some(sobrantes) = sobrantes else {
+            continue;
+        };
+        match mejor {
+            Some((actual, _)) if sobrantes > actual => {}
+            Some((actual, _)) if sobrantes == actual => empate = true,
+            _ => {
+                mejor = Some((sobrantes, id));
+                empate = false;
+            }
+        }
+    }
+    match mejor {
+        Some((_, id)) if !empate => Some(id.clone()),
+        _ => None,
+    }
+}
+
+/// El id de modelo que el backend acepta para lo que pidió el agente.
+///
+/// Quien delega suele escribir el modelo como se lo dijo el usuario, no como
+/// el id del CLI. Se prueba el id exacto, después id o nombre sin espacios ni
+/// guiones, y al final uno solo que lo contenga. Si no hay forma de saber
+/// cuál es, devuelve los ids válidos.
+fn resolver_modelo(pedido: &str, modelos: &[(String, String)]) -> Result<String, Vec<String>> {
+    if let Some((id, _)) = modelos.iter().find(|(id, _)| id == pedido) {
+        return Ok(id.clone());
+    }
+    let clave = clave_modelo(pedido);
+    let ids = || modelos.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>();
+    if clave.is_empty() {
+        return Err(ids());
+    }
+    let iguales: Vec<&String> = modelos
+        .iter()
+        .filter(|(id, nombre)| clave_modelo(id) == clave || clave_modelo(nombre) == clave)
+        .map(|(id, _)| id)
+        .collect();
+    if let [unico] = iguales.as_slice() {
+        return Ok((*unico).clone());
+    }
+    if let Some(id) = por_palabras(pedido, modelos) {
+        return Ok(id);
+    }
+    let parecidos: Vec<&String> = modelos
+        .iter()
+        .filter(|(id, nombre)| {
+            clave_modelo(id).contains(&clave) || clave_modelo(nombre).contains(&clave)
+        })
+        .map(|(id, _)| id)
+        .collect();
+    if let [unico] = parecidos.as_slice() {
+        return Ok((*unico).clone());
+    }
+    Err(ids())
+}
+
+/// El `model` del pedido, ya traducido a un id del backend.
+///
+/// Sin lista de modelos (backend que no la publica, o que falló al leerla)
+/// se pasa tal cual: mejor que el CLI decida que bloquear la delegación.
+fn modelo_del_pedido(backend: &str, model: &Option<String>) -> Result<Option<String>, Vec<u8>> {
+    let Some(pedido) = model.as_deref().map(str::trim).filter(|m| !m.is_empty()) else {
+        return Ok(None);
+    };
+    let lista = match super::super::discover::list_models(backend) {
+        Ok(lista) if !lista.is_empty() => lista,
+        _ => return Ok(Some(pedido.to_string())),
+    };
+    let pares: Vec<(String, String)> = lista.into_iter().map(|m| (m.id, m.name)).collect();
+    resolver_modelo(pedido, &pares).map(Some).map_err(|validos| {
+        no_hay_forma(
+            400,
+            HubError::con_datos(
+                "unknown_model",
+                format!(
+                    "{backend} no tiene el modelo «{pedido}». Usa uno de estos ids (atic_list_models los describe): {}.",
+                    validos.join(", ")
+                ),
+                serde_json::json!({ "models": validos }),
+            ),
+        )
+    })
+}
+
 fn validar_modo(mode: &Option<String>) -> Result<(), Vec<u8>> {
     let Some(m) = mode.as_deref() else {
         return Ok(());
@@ -475,6 +633,18 @@ fn validar_modo(mode: &Option<String>) -> Result<(), Vec<u8>> {
             ),
         ))
     }
+}
+
+/// Modo de permisos de un agente abierto por el hub.
+///
+/// Quien delega no está mirando la sesión nueva: si el agente pide permiso,
+/// la tarea queda colgada hasta que alguien abra el chat y apruebe. Sin modo
+/// explícito, trabaja sin preguntar; el delegante puede pedir `default`.
+fn modo_delegado(mode: &Option<String>) -> Option<String> {
+    Some(
+        mode.clone()
+            .unwrap_or_else(|| "bypassPermissions".to_string()),
+    )
 }
 
 fn spawn(pedido: Pedido, app: Option<&AppHandle>) -> Vec<u8> {
@@ -503,6 +673,10 @@ fn spawn(pedido: Pedido, app: Option<&AppHandle>) -> Vec<u8> {
     if let Err(e) = exigir_disponible(&req.backend) {
         return e;
     }
+    let model = match modelo_del_pedido(&req.backend, &req.model) {
+        Ok(m) => m,
+        Err(e) => return e,
+    };
     // El grafo distingue local vs SSH; el CLI padre ya va en `parent`.
     let host = "local".to_string();
     let vivas = super::super::bridge::live_sessions();
@@ -533,10 +707,10 @@ fn spawn(pedido: Pedido, app: Option<&AppHandle>) -> Vec<u8> {
             cwd: req.cwd.clone(),
             remote_host_id: None,
             resume: None,
-            model: req.model.clone(),
+            model: model.clone(),
             effort: None,
             fast: None,
-            permission_mode: req.permission_mode.clone(),
+            permission_mode: modo_delegado(&req.permission_mode),
             mcp_config: None,
             add_dirs: Vec::new(),
             fork: false,
@@ -596,6 +770,10 @@ fn delegate(pedido: Pedido, app: Option<&AppHandle>, empezo: Instant) -> Vec<u8>
     if let Err(e) = exigir_disponible(&backend) {
         return e;
     }
+    let model = match modelo_del_pedido(&backend, &req.model) {
+        Ok(m) => m,
+        Err(e) => return e,
+    };
     let espera_s = graph::clamp_wait(req.wait_s.unwrap_or(graph::HUB_WAIT_MAX_S));
     // El grafo distingue local vs SSH; el CLI padre ya va en `parent`.
     let host = "local".to_string();
@@ -627,10 +805,10 @@ fn delegate(pedido: Pedido, app: Option<&AppHandle>, empezo: Instant) -> Vec<u8>
             cwd: req.cwd.clone(),
             remote_host_id: None,
             resume: None,
-            model: req.model.clone(),
+            model: model.clone(),
             effort: None,
             fast: None,
-            permission_mode: req.permission_mode.clone(),
+            permission_mode: modo_delegado(&req.permission_mode),
             mcp_config: None,
             add_dirs: Vec::new(),
             fork: false,
@@ -1003,6 +1181,55 @@ fn armar(codigo: u16, razon: &str, cuerpo: &str) -> Vec<u8> {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn el_modelo_se_reconoce_como_lo_escribe_una_persona() {
+        let modelos = vec![
+            ("gpt-5.5".to_string(), "GPT-5.5".to_string()),
+            ("gpt-5.5-mini".to_string(), "GPT-5.5 mini".to_string()),
+            ("luna-6".to_string(), "Luna 6".to_string()),
+        ];
+        assert_eq!(resolver_modelo("luna-6", &modelos), Ok("luna-6".into()));
+        assert_eq!(resolver_modelo("Luna 6", &modelos), Ok("luna-6".into()));
+        assert_eq!(resolver_modelo("luna", &modelos), Ok("luna-6".into()));
+        assert_eq!(resolver_modelo("gpt 5.5", &modelos), Ok("gpt-5.5".into()));
+        // «mini» no está sola en ninguno más: calza por palabra.
+        assert_eq!(resolver_modelo("mini", &modelos), Ok("gpt-5.5-mini".into()));
+        assert_eq!(
+            resolver_modelo("sol", &modelos).unwrap_err(),
+            ["gpt-5.5", "gpt-5.5-mini", "luna-6"]
+        );
+    }
+
+    #[test]
+    fn luna_6_es_gpt_6_luna_y_no_la_vieja() {
+        let modelos: Vec<(String, String)> = [
+            ("gpt-6-sol", "GPT-6-Sol"),
+            ("gpt-6-luna", "GPT-6-Luna"),
+            ("gpt-5.6-sol", "GPT-5.6-Sol"),
+            ("gpt-5.6-luna", "GPT-5.6-Luna"),
+        ]
+        .iter()
+        .map(|(a, b)| (a.to_string(), b.to_string()))
+        .collect();
+        assert_eq!(resolver_modelo("luna 6", &modelos), Ok("gpt-6-luna".into()));
+        assert_eq!(resolver_modelo("Luna-6", &modelos), Ok("gpt-6-luna".into()));
+        assert_eq!(
+            resolver_modelo("5.6 sol", &modelos),
+            Ok("gpt-5.6-sol".into())
+        );
+        // «gpt 6» calza igual con sol y con luna: se devuelve la lista.
+        assert!(resolver_modelo("gpt 6", &modelos).is_err());
+    }
+
+    #[test]
+    fn una_delegacion_sin_modo_trabaja_sin_pedir_permisos() {
+        assert_eq!(modo_delegado(&None).as_deref(), Some("bypassPermissions"));
+        assert_eq!(
+            modo_delegado(&Some("default".into())).as_deref(),
+            Some("default")
+        );
+    }
 
     #[test]
     fn quien_pide_traduce_una_app_de_fuera() {

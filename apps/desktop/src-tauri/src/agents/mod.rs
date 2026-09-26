@@ -30,6 +30,7 @@ pub mod claude_usage;
 pub mod codex;
 pub mod codex_usage;
 pub mod console;
+pub mod console_agent;
 pub mod cursor_usage;
 pub mod discover;
 pub mod exe;
@@ -300,6 +301,11 @@ pub trait AgentSession: Send {
     /// La conversación, el cwd, el modelo y el proceso del agente siguen vivos.
     /// Por defecto no hace nada: un backend sin cancelación nativa no debe
     /// tumbar la sesión solo porque la UI pidió «Detener».
+    /// La consola donde corre, si es un TUI de verdad (ver [`console_agent`]).
+    fn console(&self) -> Option<String> {
+        None
+    }
+
     fn interrupt(&mut self) -> Result<(), String> {
         Ok(())
     }
