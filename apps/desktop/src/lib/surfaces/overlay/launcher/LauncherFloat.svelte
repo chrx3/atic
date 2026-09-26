@@ -95,16 +95,29 @@
    */
   const BIRTH_SEED_PX = 40;
   /** Aparición de la gota: fade + scale, el mismo gesto que los favs. */
-  const BIRTH_DROP_DUR_MS = 120;
+  const BIRTH_DROP_DUR_MS = 260;
   /** Beat en la gota antes de estirar (ms): deja leer el nacimiento. */
-  const BIRTH_HOLD_MS = 60;
+  const BIRTH_HOLD_MS = 90;
   /**
    * Estirón: 40 → 324 px de ancho.
    *
-   * 200 ms (y no los 100 del grow de panel) porque acá el recorrido es 8× el
-   * ancho original: el nacimiento tiene que **verse**, no adivinarse.
+   * Lento a propósito: el recorrido es 8× el ancho original y el nacimiento
+   * tiene que **verse**, no adivinarse. Mismo ritmo que el panel de la
+   * pizarra de agentes, que es el que se buscaba.
    */
-  const BIRTH_DUR_MS = 200;
+  const BIRTH_DUR_MS = 420;
+  /** Cierre: el mismo ritmo que la apertura, sin arrastrarse. */
+  const CLOSE_DUR_MS = 320;
+  /** Separación entre un favorito y el siguiente. */
+  const FAV_STAGGER_MS = 110;
+  /** Lo que tarda cada favorito en desprenderse de la barra. */
+  const FAV_DUR_MS = 380;
+  /**
+   * La lista de recientes baja al ritmo del resto. La búsqueda no:
+   * animar el alto en cada tecla trabaría el layout y los hit-rects.
+   */
+  const RECENTS_MS = 520;
+  const RECENTS_EASE = "cubic-bezier(0.45, 0, 0.2, 1)";
   /** Alto ancla compacto (= pill 40px; alineado a `LAUNCHER_SHAPE` en launcher.rs). */
   const COMPACT_H = 40;
   const EXPANDED_H = 360;
@@ -242,7 +255,9 @@
   const labOpenDur = $derived(
     isDev && launcherLab.open ? launcherLab.openDur : BIRTH_DUR_MS,
   );
-  const labCloseDur = $derived(isDev && launcherLab.open ? launcherLab.closeDur : 120);
+  const labCloseDur = $derived(
+    isDev && launcherLab.open ? launcherLab.closeDur : CLOSE_DUR_MS,
+  );
   const compactH = $derived(isDev && launcherLab.open ? launcherLab.barH : COMPACT_H);
   const recentsHeight = $derived(compactH + 28 + recents.length * 44 + 10);
   const reach = $derived(
@@ -250,12 +265,12 @@
   );
 
   let openDur = $state(BIRTH_DUR_MS);
-  let closeDur = $state(120);
-  let favStaggerDur = $state(90);
+  let closeDur = $state(CLOSE_DUR_MS);
+  let favStaggerDur = $state(FAV_STAGGER_MS);
 
   function armOpenDur() {
     openDur = labOpenDur;
-    favStaggerDur = ms(MOTION.launcherFavStagger);
+    favStaggerDur = FAV_STAGGER_MS;
   }
 
   function armCloseDur() {
@@ -327,10 +342,11 @@
     favRevealCount = favorites.length;
     await tick();
     const lastDot = el?.querySelector(`.lf-dot:nth-child(${favorites.length})`);
+    const favsTotal = favStaggerDur * (favorites.length - 1) + FAV_DUR_MS;
     if (lastDot instanceof HTMLElement) {
-      await afterTransition(lastDot, "transform", favStaggerDur * favorites.length);
+      await afterTransition(lastDot, "transform", favsTotal);
     } else {
-      await wait(favStaggerDur * favorites.length);
+      await wait(favsTotal);
     }
     if (epoch !== revealEpoch) return;
     revealPhase = "ready";
@@ -361,13 +377,19 @@
       favRevealCount = 0;
       await tick();
       const firstDot = el?.querySelector(".lf-dot");
+      const tuckTotal = favStaggerDur * (favorites.length - 1) + FAV_DUR_MS;
       if (firstDot instanceof HTMLElement) {
-        await afterTransition(firstDot, "transform", favStaggerDur * favorites.length);
+        await afterTransition(firstDot, "transform", tuckTotal);
       } else {
-        await wait(favStaggerDur * favorites.length);
+        await wait(tuckTotal);
       }
       if (epoch !== revealEpoch) return;
     }
+
+    // Si la lista de recientes todavía se está recogiendo, el repliegue la
+    // espera: las dos animan la misma caja y se pisarían.
+    await heightAnim?.finished.catch(() => {});
+    if (epoch !== revealEpoch) return;
 
     // Repliegue: espejo del nacimiento, en el mismo centro (sin viaje a la pill).
     revealPhase = "recede";
@@ -607,16 +629,35 @@
   });
 
   /** Crece/achica el float sin los mínimos de la consola de agentes. */
-  function fitHeight(h: number) {
+  let heightAnim: Animation | null = null;
+
+  function fitHeight(h: number, animate = false) {
     const a = bubble.anchor;
     if (!a) return;
     const nh = Math.round(h);
     if (a.h === nh) return;
+    const prev = a.h;
     bubble.anchor = {
       ...a,
       h: nh,
       y: a.side === "bottom" ? a.y + a.h - nh : a.y,
     };
+    heightAnim?.cancel();
+    heightAnim = null;
+    // Solo al crecer. Al achicar, la barra ya volvió a su forma de cápsula
+    // (radio completo) y la silueta líquida mide la caja final: animar el
+    // alto dejaba una gota grande con el campo repetido encima.
+    if (!animate || nh < prev || !el || prefersReducedMotion()) return;
+    // Anclado abajo, el borde de arriba salta al instante: se compensa para
+    // que la lista crezca desde donde estaba y no desde su lugar final.
+    const shift = a.side === "bottom" ? nh - prev : 0;
+    heightAnim = el.animate(
+      [
+        { height: `${prev}px`, transform: `translateY(${shift}px)` },
+        { height: `${nh}px`, transform: "translateY(0)" },
+      ],
+      { duration: RECENTS_MS, easing: RECENTS_EASE },
+    );
   }
 
   const pillSkin = $derived(surfaces.live["pill-skin"]);
@@ -756,7 +797,8 @@
     }
     const idleRecents = !hasQuery && recents.length > 0 && revealPhase === "ready";
     const open = hasQuery || idleRecents;
-    fitHeight(open ? (hasQuery ? EXPANDED_H : recentsHeight) : compactH);
+    // Sin búsqueda es abrir o cerrar la lista de recientes: eso se anima.
+    fitHeight(open ? (hasQuery ? EXPANDED_H : recentsHeight) : compactH, !hasQuery);
   });
 
   /**
@@ -1165,6 +1207,14 @@
     return favoriteIds.includes(id);
   }
 
+  /**
+   * Resultados sintéticos: no viven en el índice, Enter los resuelve aparte y
+   * no se pueden marcar como favoritos.
+   */
+  function isSyntheticHit(id: string) {
+    return id.startsWith("calc:") || id === "action:fx-enable";
+  }
+
   function finishDismiss(wasShown: boolean, opts: { skipHideLauncher?: boolean } = {}) {
     clearSearchTimer();
     loadEpoch += 1;
@@ -1207,14 +1257,6 @@
     closing = true;
     const wasShown = bubble.shown;
     armCloseDur();
-  /**
-   * Resultados sintéticos: no viven en el índice, Enter los resuelve aparte y
-   * no se pueden marcar como favoritos.
-   */
-  function isSyntheticHit(id: string) {
-    return id.startsWith("calc:") || id === "action:fx-enable";
-  }
-
     clearSearchTimer();
     endDrag();
     surfaces.resetInteraction();
@@ -1336,6 +1378,7 @@
     style:--lf-fav-gap="{favGap}px"
     style:--lf-dot-gap="{dotGap}px"
     style:--launcher-fav-stagger="{favStaggerDur}ms"
+    style:--launcher-fav-dur="{FAV_DUR_MS}ms"
     style:--lf-fav-last-index={Math.max(favorites.length - 1, 0)}
     bind:this={el}
     role="dialog"
@@ -1510,11 +1553,12 @@
       {/if}
       <ul
         class="lf-list"
+        class:is-recents={!hasQuery}
         role="listbox"
         aria-label={hasQuery ? t("overlay.results") : t("overlay.recents")}
       >
         {#each list as hit, i (hit.id)}
-          <li>
+          <li style:--lf-row={Math.min(i, 10)}>
             <div class="lf-hit" class:is-sel={i === selected}>
               <button
                 type="button"
@@ -1596,7 +1640,7 @@
     /* Duraciones locales (el inline las pisa con las del lab de dev): stagger de
        los favs y entrada del chrome cuando la barra se asienta. */
     --launcher-fav-stagger: 90ms;
-    --lf-chrome-dur: 120ms;
+    --lf-chrome-dur: 240ms;
 
     position: absolute;
     z-index: calc(var(--z-overlay-float) + var(--float-stack, 0));
@@ -1618,6 +1662,25 @@
 
     /* Sin transition de height: al buscar, saltar a EXPANDED_H evita thrash
        (layout + hit-rects) en cada tecla; el nacimiento anima transform. */
+  }
+
+  /* Los recientes bajan uno tras otro, detrás del alto que se abre. */
+  .lf-list.is-recents > li {
+    animation: lf-row-in 380ms var(--ease-smooth-out) both;
+    animation-delay: calc(120ms + var(--lf-row, 0) * 45ms);
+  }
+
+  @keyframes lf-row-in {
+    from {
+      opacity: 0;
+      transform: translateY(-6px);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .lf-list.is-recents > li {
+      animation: none;
+    }
   }
 
   .lf.is-shown {
@@ -1783,8 +1846,8 @@
     transition:
       color var(--duration-quick) var(--ease-smooth-out),
       background var(--duration-quick) var(--ease-smooth-out),
-      transform var(--launcher-fav-stagger) var(--ease-smooth-out),
-      opacity var(--launcher-fav-stagger) var(--ease-smooth-out);
+      transform var(--launcher-fav-dur, 380ms) var(--ease-smooth-out),
+      opacity var(--launcher-fav-dur, 380ms) var(--ease-smooth-out);
   }
 
   .lf.is-favs-stagger .lf-dot {
