@@ -569,6 +569,9 @@ pub fn run() {
             }
 
             capture_session::prewarm_capture_overlay(app.handle());
+            if agents::UI_ENABLED {
+                agents_window::prewarm_if_used(app.handle());
+            }
 
             crate::ui_lang::set_english(ui_language == "en");
             crate::ui_lang::apply_window_titles(app.handle());
