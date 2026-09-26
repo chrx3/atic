@@ -225,6 +225,7 @@ Consolidado de los pendientes de cada ficha que el usuario llegaría a notar.
 | Audio del sistema en macOS (ScreenCaptureKit + permisos TCC) | [macos-audio-sistema.md](macos-audio-sistema.md) |
 | UI para `cursor/ask_question` y `cursor/create_plan` — hoy se auto-responden | [agentes.md](agentes.md) |
 | Paridad de UX entre backends de agentes (costos, modos, errores) | [agentes.md](agentes.md) |
+| Experiencia de consolas: mando, contexto y worktrees por agente | [PLAN_EXPERIENCIA_CONSOLAS.md](../docs/PLAN_EXPERIENCIA_CONSOLAS.md) |
 | Aviso cuando el pegado del dictado falla y queda en cola | [dictado.md](dictado.md) |
 | Feedback más claro cuando falla el micrófono | [dictado.md](dictado.md) |
 | Retención temporal / configuración del límite fijo de 100 ítems del clipboard | [clipboard-historial.md](clipboard-historial.md) |
