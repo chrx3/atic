@@ -819,6 +819,61 @@ pub(crate) fn insert_text_into_agents(app: &AppHandle, text: &str) -> Result<(),
     Ok(())
 }
 
+/// Inserta texto en la consola o el chat de agentes de UNA ventana.
+///
+/// El dictado sabe en qué ventana empezaste a hablar; mandarlo a todas lo
+/// duplicaría con la pizarra y la isla abiertas a la vez.
+pub(crate) fn insert_text_into_agents_window(
+    app: &AppHandle,
+    label: &str,
+    text: &str,
+) -> Result<(), String> {
+    if text.is_empty() {
+        return Err(crate::ui_lang::msg("Texto vacío", "Empty text"));
+    }
+    app.emit_to(
+        label,
+        "agents-composer-insert",
+        AgentsComposerInsert::text(text.to_string()),
+    )
+    .map_err(|e| e.to_string())
+}
+
+/// Etiqueta de la ventana de Atic en primer plano; `None` si es de otra app.
+///
+/// `is_own_app_hwnd` solo dice «es de Atic»; el dictado necesita saber cuál,
+/// para devolverle el texto a la consola donde estabas escribiendo.
+pub(crate) fn foreground_own_window(app: &AppHandle) -> Option<String> {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+        let fg = unsafe { GetForegroundWindow() } as isize;
+        if fg == 0 {
+            return None;
+        }
+        app.webview_windows()
+            .into_iter()
+            .find_map(|(label, window)| {
+                let hwnd = window.hwnd().ok()?;
+                (hwnd.0 as isize == fg).then_some(label)
+            })
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = app;
+        None
+    }
+}
+
+/// ¿Hubo una ventana externa en primer plano después de `since`?
+///
+/// El seguimiento del dictado sella `SAVED_AT` en cada vuelta que ve una
+/// ventana externa: si el sello es posterior, tocaste otra app mientras
+/// hablabas.
+pub(crate) fn external_foreground_since(since: std::time::Instant) -> bool {
+    SAVED_AT.lock_or_recover().is_some_and(|at| at > since)
+}
+
 /// True si la burbuja de agentes está a la vista.
 #[tauri::command]
 pub fn agents_window_visible(app: AppHandle) -> bool {
