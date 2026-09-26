@@ -5,6 +5,10 @@
 //! La decisión (a qué HWND, si el unread puede bajar) vive acá y se testea
 //! con un fake; el Win32 queda atrás del trait.
 
+use std::collections::HashMap;
+use std::time::{Duration, Instant};
+
+use atic_core::MutexExt;
 use serde::Serialize;
 
 use super::presence::{self, PresenceWindow};
@@ -171,6 +175,26 @@ pub fn attach_unique_claude() {
     attach_unique_backend("claude-code");
 }
 
+/// Cuándo volver a buscar la ventana de una presencia que no se encontró.
+///
+/// Los cuatro vigilantes llaman a `attach_unique_backend` cada segundo, y
+/// buscar la ventana es caro (foto de procesos y de ventanas). Una presencia
+/// cuya ventana no se encuentra —un agente en una terminal que Atic no
+/// reconoce— se reintentaba cada segundo para siempre: era casi todo el CPU
+/// de Atic en reposo. Ahora cada fallo duplica la espera, de 5 s a 1 min.
+static RETRY: std::sync::Mutex<Option<HashMap<String, (Instant, Duration)>>> =
+    std::sync::Mutex::new(None);
+const RETRY_MIN: Duration = Duration::from_secs(5);
+const RETRY_MAX: Duration = Duration::from_secs(60);
+
+/// La espera tras otro fallo: el doble de la anterior, entre 5 s y 1 min.
+fn next_retry_wait(previous: Option<Duration>) -> Duration {
+    previous
+        .map(|d| d.saturating_mul(2))
+        .unwrap_or(RETRY_MIN)
+        .clamp(RETRY_MIN, RETRY_MAX)
+}
+
 /// Un proceso de este backend y una presencia → se atan. Si hay más, no.
 pub fn attach_unique_backend(backend_id: &str) {
     let snap = presence::snapshot();
@@ -182,8 +206,25 @@ pub fn attach_unique_backend(backend_id: &str) {
     if p.window.as_ref().is_some_and(|w| hwnd_alive(w.hwnd)) {
         return;
     }
-    if let Some(win) = resolve_for_id(backend_id, &p.id) {
-        presence::set_window(&p.id, win);
+    let mut retry = RETRY.lock_or_recover();
+    let pending = retry.get_or_insert_with(HashMap::new);
+    let previous = pending.get(&p.id).copied();
+    if previous.is_some_and(|(at, wait)| at.elapsed() < wait) {
+        return;
+    }
+    drop(retry);
+    let found = resolve_for_id(backend_id, &p.id);
+    let mut retry = RETRY.lock_or_recover();
+    let pending = retry.get_or_insert_with(HashMap::new);
+    match found {
+        Some(win) => {
+            pending.remove(&p.id);
+            presence::set_window(&p.id, win);
+        }
+        None => {
+            let wait = next_retry_wait(previous.map(|(_, w)| w));
+            pending.insert(p.id.clone(), (Instant::now(), wait));
+        }
     }
 }
 
@@ -386,8 +427,28 @@ pub(crate) fn parent_map() -> std::collections::HashMap<u32, u32> {
         .collect()
 }
 
+/// Foto de procesos reciente, compartida.
+///
+/// Varios vigilantes la piden en la misma vuelta de un segundo y cada foto
+/// recorre todos los procesos del sistema: con una reciente alcanza.
 #[cfg(windows)]
 fn process_snapshot() -> Vec<(u32, u32, String)> {
+    type Snap = Vec<(u32, u32, String)>;
+    static CACHE: std::sync::Mutex<Option<(Instant, Snap)>> = std::sync::Mutex::new(None);
+    const FRESH: Duration = Duration::from_millis(900);
+    let mut cache = CACHE.lock_or_recover();
+    if let Some((at, snap)) = cache.as_ref() {
+        if at.elapsed() < FRESH {
+            return snap.clone();
+        }
+    }
+    let snap = process_snapshot_fresh();
+    *cache = Some((Instant::now(), snap.clone()));
+    snap
+}
+
+#[cfg(windows)]
+fn process_snapshot_fresh() -> Vec<(u32, u32, String)> {
     use std::mem::{size_of, zeroed};
     use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
     use windows_sys::Win32::System::Diagnostics::ToolHelp::{
@@ -495,6 +556,23 @@ fn hwnd_for_agent(pid: u32) -> Option<PresenceWindow> {
 mod tests {
     use super::*;
     use std::sync::Mutex;
+
+    #[test]
+    fn cada_fallo_duplica_la_espera_hasta_un_minuto() {
+        assert_eq!(next_retry_wait(None), Duration::from_secs(5));
+        assert_eq!(
+            next_retry_wait(Some(Duration::from_secs(5))),
+            Duration::from_secs(10)
+        );
+        assert_eq!(
+            next_retry_wait(Some(Duration::from_secs(40))),
+            Duration::from_secs(60)
+        );
+        assert_eq!(
+            next_retry_wait(Some(Duration::from_secs(60))),
+            Duration::from_secs(60)
+        );
+    }
 
     struct Fake {
         own: Vec<isize>,
