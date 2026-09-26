@@ -357,6 +357,13 @@ pub struct Config {
     pub window_flip_shortcut: String,
     /// Ids de entradas del launcher marcadas como favoritas (`app:…` / `action:…`).
     pub launcher_favorites: Vec<String>,
+    /// Conversión de divisas en la calculadora del launcher (tasas en línea).
+    ///
+    /// Apagado por defecto: la calculadora es local y no sale a la red sin
+    /// permiso. Encendido, Atic descarga tablas públicas de tipos de cambio
+    /// (mindicador.cl y exchangerate-api.com) y las cachea en disco. Lo que
+    /// escribes en el launcher no se envía a ningún servidor.
+    pub launcher_currency: bool,
     /// Lado del shelf de capturas: `right` | `left`.
     pub capture_shelf_side: String,
     /// Segundos sin interacción antes de que el shelf se retraiga.
@@ -475,6 +482,7 @@ impl Default for Config {
             launcher_shortcut: "CmdOrCtrl+Space".to_string(),
             window_flip_shortcut: "CmdOrCtrl+Shift+B".to_string(),
             launcher_favorites: Vec::new(),
+            launcher_currency: false,
             capture_shelf_side: "right".to_string(),
             capture_shelf_timeout_seconds: 20,
             capture_retention_hours: 24,
@@ -571,6 +579,7 @@ struct ConfigFile {
     launcher_shortcut: Option<String>,
     window_flip_shortcut: Option<String>,
     launcher_favorites: Option<Vec<String>>,
+    launcher_currency: Option<bool>,
     capture_shelf_side: Option<String>,
     capture_shelf_timeout_seconds: Option<u32>,
     capture_retention_hours: Option<u32>,
@@ -692,6 +701,7 @@ impl Default for ConfigFile {
             launcher_shortcut: None,
             window_flip_shortcut: None,
             launcher_favorites: None,
+            launcher_currency: None,
             capture_shelf_side: None,
             capture_shelf_timeout_seconds: None,
             capture_retention_hours: None,
@@ -941,6 +951,7 @@ impl From<ConfigFile> for Config {
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| "CmdOrCtrl+Shift+B".into()),
             launcher_favorites: f.launcher_favorites.unwrap_or_default(),
+            launcher_currency: f.launcher_currency.unwrap_or(false),
             capture_shelf_side: match f.capture_shelf_side.as_deref() {
                 Some("left") => "left".into(),
                 _ => "right".into(),
@@ -1175,6 +1186,14 @@ mod tests {
         let json = r#"{ "ui_language": "en" }"#;
         let cfg: Config = serde_json::from_str::<ConfigFile>(json).unwrap().into();
         assert_eq!(cfg.ui_language, "en");
+    }
+
+    #[test]
+    fn currency_conversion_is_opt_in() {
+        assert!(!Config::default().launcher_currency);
+        let json = r#"{ "launcher_currency": true }"#;
+        let cfg: Config = serde_json::from_str::<ConfigFile>(json).unwrap().into();
+        assert!(cfg.launcher_currency);
     }
 
     #[test]

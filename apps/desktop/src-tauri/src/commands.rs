@@ -151,6 +151,11 @@ pub fn set_config(
     crate::ui_lang::set_english(ui_resolved == "en");
     crate::ui_lang::apply_window_titles(&app);
     crate::launcher::refresh_language(ui_resolved == "en");
+    // El conversor del launcher es opt-in: al encenderlo, trae tasas si la
+    // caché está vieja (y si nunca hubo, también).
+    if config.launcher_currency != prev.launcher_currency {
+        crate::fx::on_toggle(&app, config.launcher_currency);
+    }
     if config.onboarding_done != prev.onboarding_done
         || config.onboarding_practice_done != prev.onboarding_practice_done
     {

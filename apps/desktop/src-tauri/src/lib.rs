@@ -15,6 +15,7 @@ mod diagnostics;
 mod dictation;
 mod export;
 mod floating;
+mod fx;
 mod import;
 mod launcher;
 mod launcher_icons;
@@ -551,6 +552,10 @@ pub fn run() {
             agents::discover::preload_models_async();
 
             // Hub de orquestación MCP: si no arranca, los agentes siguen
+            // Conversor de divisas del launcher (opt-in): carga la caché de
+            // tasas y refresca si quedó vieja, sin bloquear el arranque.
+            fx::init(app.handle());
+
             // funcionando; solo la delegación entre ellos queda abajo.
             if agents::UI_ENABLED {
                 if let Err(e) = agents::hub::server::start(app.handle().clone()) {

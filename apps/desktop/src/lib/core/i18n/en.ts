@@ -353,6 +353,10 @@ export const en = {
       nothingExpired: "Nothing had expired",
     },
     launcher: {
+      currency: "Currency conversion",
+      currencyHint:
+        "Type a conversion in the launcher (“30,000 CLP to UF”, “30 USD to CLP”) and Enter copies the result. With the switch on, Atic fetches mindicador.cl and exchangerate-api.com, shows the rate date, and never sends what you type.",
+      currencyToggle: "Enable",
       favorites: "Favorites",
       favoritesHint: "They show up as dots at the end of the launcher bar. Max 8.",
       loading: "Loading…",

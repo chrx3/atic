@@ -122,6 +122,13 @@ export interface AppConfig {
   window_flip_shortcut: string;
   /** Ids del launcher marcados como favoritos (`app:…` / `action:…`). */
   launcher_favorites: string[];
+  /**
+   * Conversión de divisas en el launcher (opt-in).
+   *
+   * Encendido, Atic descarga tablas públicas de tipos de cambio y las cachea
+   * en disco; lo escrito en el launcher no se envía a ningún servidor.
+   */
+  launcher_currency: boolean;
   capture_shelf_side: string;
   capture_shelf_timeout_seconds: number;
   capture_retention_hours: number;
