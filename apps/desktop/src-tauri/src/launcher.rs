@@ -888,8 +888,19 @@ pub async fn launcher_reindex() -> Result<usize, String> {
 
 /// Async para salir del hilo principal. Si el índice aún está vacío espera
 /// el rebuild de background (no sirve `[]` en el primer keystroke).
+///
+/// El conversor de divisas es opt-in: con el interruptor apagado no se toca
+/// ninguna tasa, y una query de dinero ofrece encenderlo. Con el interruptor
+/// encendido la búsqueda lee la tabla en RAM y, si quedó vieja, la refresca en
+/// background: acá nunca se espera a la red.
 #[tauri::command]
-pub async fn launcher_search(query: String) -> Result<Vec<LauncherHit>, String> {
+pub async fn launcher_search(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    query: String,
+) -> Result<Vec<LauncherHit>, String> {
+    let enabled = state.config.lock_or_recover().launcher_currency;
+    let rates = if enabled { crate::fx::snapshot() } else { None };
     tauri::async_runtime::spawn_blocking(move || {
         ensure_index_populated();
         let guard = index().lock_or_recover();
@@ -900,27 +911,73 @@ pub async fn launcher_search(query: String) -> Result<Vec<LauncherHit>, String> 
             return Vec::new();
         }
 
+        let en = INDEX_EN.load(Ordering::Relaxed);
+        let locale = if en {
+            crate::calc::Locale::En
+        } else {
+            crate::calc::Locale::Es
+        };
+
         // Calculadora: si la query es una cuenta o una conversión, el resultado
         // va primero y se lleva el Enter. El id es sintético: no vive en el
         // índice, `launcher_run` lo resuelve aparte.
         let mut hits: Vec<LauncherHit> = Vec::new();
-        if let Some(value) = crate::calc::evaluate(q) {
-            hits.push(LauncherHit {
-                id: format!("calc:{q}"),
-                kind: LauncherKind::Action,
-                title: value,
-                subtitle: pick(
-                    INDEX_EN.load(Ordering::Relaxed),
-                    "Enter para copiar",
-                    "Enter to copy",
-                )
-                .to_string(),
-                score: Some(u32::MAX),
-                running: None,
-                foreground: None,
-                opened_at: None,
-                last_used_at: None,
-            });
+        let calc = crate::calc::evaluate_with(
+            q,
+            rates.as_deref().map(|r| r as &dyn crate::calc::RatesLookup),
+            locale,
+        );
+        match calc {
+            Some(hit) => {
+                let copy_hint = pick(en, "Enter para copiar", "Enter to copy");
+                let subtitle = match hit.source {
+                    Some(source) => format!("{source} · {copy_hint}"),
+                    None => copy_hint.to_string(),
+                };
+                hits.push(LauncherHit {
+                    id: format!("calc:{q}"),
+                    kind: LauncherKind::Action,
+                    title: hit.value,
+                    subtitle,
+                    score: Some(u32::MAX),
+                    running: None,
+                    foreground: None,
+                    opened_at: None,
+                    last_used_at: None,
+                });
+            }
+            // Query de dinero sin resultado: o falta el opt-in, o falta la
+            // tabla. No se inventa un número.
+            None if crate::calc::money_conversion(q, locale) => {
+                if enabled {
+                    // Primera vez o caché vieja: se trae en background; el
+                    // próximo keystroke ya la tiene.
+                    crate::fx::refresh_if_stale(&app);
+                } else {
+                    hits.push(LauncherHit {
+                        id: "action:fx-enable".into(),
+                        kind: LauncherKind::Action,
+                        title: pick(
+                            en,
+                            "Activar conversión de divisas",
+                            "Enable currency conversion",
+                        )
+                        .to_string(),
+                        subtitle: pick(
+                            en,
+                            "Ajustes → Launcher · consulta tasas en línea",
+                            "Settings → Launcher · fetches online rates",
+                        )
+                        .to_string(),
+                        score: Some(u32::MAX - 1),
+                        running: None,
+                        foreground: None,
+                        opened_at: None,
+                        last_used_at: None,
+                    });
+                }
+            }
+            None => {}
         }
 
         let mut scored: Vec<(u32, &LauncherEntry)> = Vec::new();
@@ -1146,6 +1203,13 @@ fn run_action(app: &AppHandle, action: &str) -> Result<(), String> {
             crate::state::show_main(app);
             Ok(())
         }
+        // El aviso del conversor de divisas abre Ajustes en la sección del
+        // launcher, que es donde vive el interruptor.
+        "fx-enable" => {
+            crate::state::show_main(app);
+            let _ = app.emit("open-settings", "launcher");
+            Ok(())
+        }
         "quit-all" => {
             let closed = crate::launcher_recents::close_user_windows();
             tracing::info!(closed, "launcher: cerrar todas las apps");
@@ -1162,15 +1226,45 @@ fn run_action(app: &AppHandle, action: &str) -> Result<(), String> {
 /// Async: el lookup puede reconstruir el índice; eso va al pool bloqueante.
 /// Las acciones vuelven al hilo principal, que es donde siempre corrieron.
 #[tauri::command]
-pub async fn launcher_run(app: AppHandle, id: String) -> Result<(), String> {
-    // Calculadora: no está en el índice, se evalúa y se copia el valor.
+pub async fn launcher_run(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<(), String> {
+    // Calculadora: no está en el índice, se evalúa y se copia el valor. Con
+    // divisas, lo copiado es lo mismo que se mostró («35.500 CLP»).
     if let Some(expr) = id.strip_prefix("calc:") {
-        let value = crate::calc::evaluate(expr).ok_or_else(|| "cuenta inválida".to_string())?;
+        let enabled = state.config.lock_or_recover().launcher_currency;
+        let rates = if enabled { crate::fx::snapshot() } else { None };
+        let locale = if INDEX_EN.load(Ordering::Relaxed) {
+            crate::calc::Locale::En
+        } else {
+            crate::calc::Locale::Es
+        };
+        let hit = crate::calc::evaluate_with(
+            expr,
+            rates.as_deref().map(|r| r as &dyn crate::calc::RatesLookup),
+            locale,
+        )
+        .ok_or_else(|| "cuenta inválida".to_string())?;
         let mut clipboard =
             arboard::Clipboard::new().map_err(|e| format!("sin portapapeles: {e}"))?;
         clipboard
-            .set_text(value)
+            .set_text(hit.value)
             .map_err(|e| format!("no se pudo copiar: {e}"))?;
+        hide(&app);
+        return Ok(());
+    }
+
+    // El aviso para encender el conversor tampoco vive en el índice.
+    if id == "action:fx-enable" {
+        let app2 = app.clone();
+        app.run_on_main_thread(move || {
+            if let Err(err) = run_action(&app2, "fx-enable") {
+                tracing::warn!(%err, "no se pudo abrir los ajustes del launcher");
+            }
+        })
+        .map_err(|e| e.to_string())?;
         hide(&app);
         return Ok(());
     }

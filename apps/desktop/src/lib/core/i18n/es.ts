@@ -354,6 +354,10 @@ export const es = {
       nothingExpired: "No había nada vencido",
     },
     launcher: {
+      currency: "Conversión de divisas",
+      currencyHint:
+        "Escribe una conversión en el launcher («30.000 CLP a UF», «30 USD a CLP») y Enter copia el resultado. Con el interruptor encendido, Atic consulta mindicador.cl y exchangerate-api.com, muestra la fecha de la tasa y no envía lo que escribes.",
+      currencyToggle: "Activar",
       favorites: "Favoritos",
       favoritesHint:
         "Aparecen como pelotitas al final de la barra del launcher. Máximo 8.",

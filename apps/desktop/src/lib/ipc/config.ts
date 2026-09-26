@@ -24,6 +24,15 @@ export const onUiTheme = (cb: (theme: string) => void): Promise<UnlistenFn> =>
 export const onUiLanguage = (cb: (language: string) => void): Promise<UnlistenFn> =>
   on("ui-language", cb);
 
+/**
+ * Pedido de abrir Ajustes en una sección concreta (p. ej. el aviso «activar
+ * conversión de divisas» del launcher). La ventana principal también se
+ * muestra aparte: esto solo elige la sección.
+ */
+export const onOpenSettingsRequested = (
+  cb: (section: string) => void,
+): Promise<UnlistenFn> => on("open-settings", cb);
+
 export const setTrayMenu = (labels: {
   show: string;
   consoles: string;

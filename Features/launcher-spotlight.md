@@ -48,7 +48,34 @@ Enter lo copia al portapapeles:
 | `1 h to min` | tiempo (s, min, h, d) |
 
 Sin red y sin dependencias: lo que no se puede resolver con certeza **no se
-muestra** (nada de números dudosos). Divisas y cripto quedan afuera a propósito.
+muestra** (nada de números dudosos). Las divisas van aparte y son opt-in.
+
+### Divisas (opt-in)
+
+Con **Ajustes → Launcher → Conversión de divisas** encendido, la calculadora
+suma montos con tasas públicas y **siempre** muestra de dónde salen:
+
+| Escribís | Resultado |
+|---|---|
+| `30.000 CLP a UF` (`30,000 CLP to UF`) | `0,73 UF · valor oficial del 26 sep` |
+| `30 USD a CLP` | `28.971 CLP · valor oficial del 25 sep` |
+| `100 libras a clp` | `126.840 CLP · tipo de cambio del 25 sep` |
+| `uf a clp` (sin monto vale 1) | `41.024 CLP · valor oficial del 26 sep` |
+
+- Monedas: CLP, UF, UTM, USD, EUR, ARS, BRL, PEN, COP, MXN, UYU, BOB, PYG,
+  VES, CAD, GBP, CHF, JPY, CNY y AUD, con nombres en español e inglés
+  (`dólar`, `dollar`, `peso chileno`, `libra`…) y sin tildes. Cripto queda
+  afuera por ahora.
+- Montos en los dos formatos: `30.000,50` (es-CL) y `30,000.50` (inglés); el
+  caso ambiguo de un solo separador («1.234») sigue el idioma de la UI.
+- La UF y la UTM son el **valor oficial** (mindicador.cl → Banco Central);
+  los cruces que no son CLP, la tabla de mercado (exchangerate-api.com). Si
+  una fuente falla, se conserva la última tabla y el subtítulo lo dice
+  («datos antiguos» / «sin conexión»).
+- Apagado por defecto: la calculadora no sale a la red sin permiso. Con el
+  interruptor apagado, una query de dinero ofrece encenderlo (abre Ajustes).
+  Lo escrito en el launcher no se envía a los proveedores: solo se descargan
+  las tablas de tasas.
 
 ### Emojis (modo `:`)
 
@@ -81,7 +108,8 @@ Ver [system-actions.md](system-actions.md).
 ## Código
 
 - [`apps/desktop/src-tauri/src/launcher.rs`](../apps/desktop/src-tauri/src/launcher.rs) — índice, búsqueda, abrir, cerrar; float vía `panel_float`
-- [`apps/desktop/src-tauri/src/calc.rs`](../apps/desktop/src-tauri/src/calc.rs) — calculadora (aritmética + unidades), sin dependencias
+- [`apps/desktop/src-tauri/src/calc.rs`](../apps/desktop/src-tauri/src/calc.rs) — calculadora (aritmética + unidades + divisas), sin red
+- [`apps/desktop/src-tauri/src/fx.rs`](../apps/desktop/src-tauri/src/fx.rs) — tasas de cambio: fuentes, caché en disco, frescura y opt-in
 - [`apps/desktop/src-tauri/src/system_actions.rs`](../apps/desktop/src-tauri/src/system_actions.rs) — bloqueo, suspensión, mute, papelera
 - [`apps/desktop/src-tauri/src/launcher_recents.rs`](../apps/desktop/src-tauri/src/launcher_recents.rs) — apps corriendo/al frente + cierre graceful (`WM_CLOSE` en Windows; `NSRunningApplication.terminate` en macOS)
 - [`apps/desktop/src-tauri/src/launcher_icons.rs`](../apps/desktop/src-tauri/src/launcher_icons.rs) — iconos: shell en Windows, `NSWorkspace.iconForFile` → PNG en macOS
@@ -111,7 +139,8 @@ Ver [system-actions.md](system-actions.md).
       (`NSRunningApplication.terminate`)
 - [x] Buscador de emojis (modo `:`, grilla, tonos, pegar en la app activa)
 - [ ] Emojis sugeridos inline en la búsqueda normal
-- [ ] Divisas y cripto en vivo (necesita red: entra solo con opt-in explícito)
+- [x] Divisas en vivo con opt-in (CLP, UF, UTM, USD, EUR y cruces; sin cripto)
+- [ ] Cripto (BTC, ETH) en el conversor
 - [ ] Force quit / matar procesos (hoy es graceful por decisión de producto)
 - [ ] Gestión de ventanas estilo Rectangle (mitades, cuartos, mover de monitor)
 - [ ] Preferencias (raíces extra, exclusiones, favoritos) en Ajustes

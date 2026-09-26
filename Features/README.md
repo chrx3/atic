@@ -138,9 +138,10 @@ No está en la rueda pero es una herramienta más. Barra de búsqueda global tip
 Spotlight / Raycast: abre programas y acciones de Atic sin pasar por el buscador
 de Windows. Indexa los `.lnk` del menú Inicio (Windows) y `/Applications`
 (macOS), más las acciones internas como resultados de primera clase. Además:
-**calculadora inline** (aritmética + unidades), **cerrar la app del resultado**
-(`Ctrl/Cmd+Enter`) o **todas** las abiertas, y **acciones de sistema** (bloquear,
-suspender, silenciar, vaciar papelera) — [system-actions.md](system-actions.md).
+**calculadora inline** (aritmética + unidades + divisas con opt-in), **cerrar la
+app del resultado** (`Ctrl/Cmd+Enter`) o **todas** las abiertas, y **acciones de
+sistema** (bloquear, suspender, silenciar, vaciar papelera) —
+[system-actions.md](system-actions.md).
 
 **No** es un índice de todo el disco tipo Everything.
 
@@ -229,7 +230,7 @@ Consolidado de los pendientes de cada ficha que el usuario llegaría a notar.
 | Retención temporal / configuración del límite fijo de 100 ítems del clipboard | [clipboard-historial.md](clipboard-historial.md) |
 | Preferencias del launcher (raíces extra, exclusiones, favoritos) | [launcher-spotlight.md](launcher-spotlight.md) |
 | Ranking por uso y fuzzy más fino en el launcher | [launcher-spotlight.md](launcher-spotlight.md) |
-| Divisas/cripto en vivo y gestión de ventanas en el launcher | [launcher-spotlight.md](launcher-spotlight.md) |
+| Cripto en vivo y gestión de ventanas en el launcher | [launcher-spotlight.md](launcher-spotlight.md) |
 | Expansión de textos por trigger tipado | [snippets.md](snippets.md) |
 | Capturas en macOS | [capturas.md](capturas.md) |
 | Companion móvil | [companion-movil.md](companion-movil.md) |

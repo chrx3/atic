@@ -101,6 +101,15 @@ impl AppDirs {
         self.data_dir.join("paste_queue.json")
     }
 
+    /// Tasas de cambio cacheadas por el conversor del launcher.
+    ///
+    /// Se guardan aunque el opt-in esté apagado: si el usuario lo apaga, la
+    /// conversión simplemente deja de aparecer y el archivo queda de testigo
+    /// por si lo vuelve a encender sin conexión.
+    pub fn fx_rates_path(&self) -> PathBuf {
+        self.data_dir.join("fx-rates.json")
+    }
+
     /// Carpeta propia de una grabación concreta.
     pub fn recording_dir(&self, id: &str) -> PathBuf {
         self.recordings_dir().join(id)

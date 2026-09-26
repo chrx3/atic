@@ -1207,6 +1207,14 @@
     closing = true;
     const wasShown = bubble.shown;
     armCloseDur();
+  /**
+   * Resultados sintéticos: no viven en el índice, Enter los resuelve aparte y
+   * no se pueden marcar como favoritos.
+   */
+  function isSyntheticHit(id: string) {
+    return id.startsWith("calc:") || id === "action:fx-enable";
+  }
+
     clearSearchTimer();
     endDrag();
     surfaces.resetInteraction();
@@ -1533,7 +1541,7 @@
                   >
                 </span>
               </button>
-              {#if !hit.id.startsWith("calc:")}
+              {#if !isSyntheticHit(hit.id)}
                 <button
                   type="button"
                   class="lf-star"

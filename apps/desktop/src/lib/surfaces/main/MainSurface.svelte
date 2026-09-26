@@ -13,6 +13,7 @@
   import { BODIED_TOOLS, toolById, type ToolId } from "$core/tools";
   import { localizeTool, t } from "$domain/i18n.svelte";
   import type { SettingsSectionId } from "$features/settings/settingsSections";
+  import { isSettingsSection } from "$features/settings/settingsSections";
   import { LAUNCHER_LAB_OPEN_KEY } from "$lib/dev/launcherLab.svelte";
   import { capture } from "$domain/capture.svelte";
   import { config } from "$domain/config.svelte";
@@ -25,6 +26,7 @@
   import { hasMissingPermissions } from "$features/permissions/model";
   import SearchModal from "$features/search/SearchModal.svelte";
   import { onOpenSearchRequested } from "$ipc/search";
+  import { onOpenSettingsRequested } from "$ipc/config";
   import { macPermissionsStatus } from "$ipc/permissions";
   import { appUpdate } from "$domain/appUpdate.svelte";
   import {
@@ -102,6 +104,20 @@
   $effect(() => {
     let stop: (() => void) | undefined;
     void onOpenSearchRequested(() => ui.openSearch()).then((un) => {
+      stop = un;
+    });
+    return () => stop?.();
+  });
+
+  /**
+   * Ajustes en una sección puntual pedidos desde fuera (el aviso del
+   * conversor de divisas del launcher, por ejemplo).
+   */
+  $effect(() => {
+    let stop: (() => void) | undefined;
+    void onOpenSettingsRequested((section) => {
+      if (isSettingsSection(section)) ui.openSettings(section);
+    }).then((un) => {
       stop = un;
     });
     return () => stop?.();

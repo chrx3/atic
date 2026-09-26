@@ -1,7 +1,7 @@
 <script lang="ts">
   /**
-   * Favoritos del launcher (Ajustes → Launcher).
-   * El alta principal es la estrella en el float; acá se listan y se quitan.
+   * Launcher (Ajustes → Launcher): conversión de divisas y favoritos.
+   * El alta de favoritos es la estrella en el float; acá se listan y se quitan.
    */
   import { onMount } from "svelte";
   import { config } from "$domain/config.svelte";
@@ -11,12 +11,17 @@
   import SettingsGroup from "$patterns/SettingsGroup.svelte";
   import SettingsRow from "$patterns/SettingsRow.svelte";
   import Button from "$ui/Button.svelte";
+  import Switch from "$ui/Switch.svelte";
   import LauncherIcon from "$surfaces/launcher/LauncherIcon.svelte";
   import { t } from "$domain/i18n.svelte";
 
   const cfg = $derived(config.current);
   let favorites = $state<LauncherHit[]>([]);
   let loading = $state(true);
+
+  function patch(changes: Parameters<typeof config.patch>[0]) {
+    void config.patch(changes).catch(toastError);
+  }
 
   async function refresh() {
     loading = true;
@@ -55,6 +60,21 @@
 
 {#if cfg}
   <div class="flex flex-col gap-5">
+    <SettingsGroup
+      title={t("settings.launcher.currency")}
+      hint={t("settings.launcher.currencyHint")}
+    >
+      <SettingsRow bare>
+        {#snippet control()}
+          <Switch
+            checked={cfg.launcher_currency}
+            label={t("settings.launcher.currencyToggle")}
+            onchange={(v) => patch({ launcher_currency: v })}
+          />
+        {/snippet}
+      </SettingsRow>
+    </SettingsGroup>
+
     <SettingsGroup
       title={t("settings.launcher.favorites")}
       hint={t("settings.launcher.favoritesHint")}
