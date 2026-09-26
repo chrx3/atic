@@ -14,6 +14,14 @@ use tauri::{AppHandle, Manager};
 /// Etiqueta y ruta (`src/routes/agents`). Debe coincidir con el frontend.
 pub const LABEL: &str = "agents";
 
+/// Carpeta del perfil de WebView2 de esta ventana.
+fn profile_dir(app: &AppHandle) -> Option<std::path::PathBuf> {
+    app.path()
+        .app_local_data_dir()
+        .ok()
+        .map(|dir| dir.join("agents-webview"))
+}
+
 /// La crea si no existe y la trae al frente. Idempotente.
 pub fn ensure_agents_window(app: &AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window(LABEL) {
@@ -22,8 +30,47 @@ pub fn ensure_agents_window(app: &AppHandle) -> Result<(), String> {
         let _ = window.set_focus();
         return Ok(());
     }
+    let window = build(app, true)?;
+    let _ = window.show();
+    let _ = window.set_focus();
+    Ok(())
+}
+
+/// Espera tras el arranque antes de precalentar: que no compita con él.
+const PREWARM_AFTER: std::time::Duration = std::time::Duration::from_secs(8);
+
+/// Crea la ventana escondida para que la primera apertura sea inmediata.
+///
+/// La primera vez cuesta ~1,8 s: WebView2 arranca un navegador entero para
+/// el perfil propio de esta ventana, y recién después carga la pizarra. Solo
+/// se adelanta para quien ya la usó —su carpeta de perfil existe—: a quien
+/// nunca la abre no le cuesta nada. Y a quien la usa tampoco le suma, porque
+/// cerrarla solo la esconde y queda viva el resto de la sesión igual.
+pub fn prewarm_if_used(app: &AppHandle) {
+    let used = profile_dir(app).is_some_and(|dir| dir.is_dir());
+    if !used {
+        return;
+    }
+    let app = app.clone();
+    let _ = std::thread::Builder::new()
+        .name("atic-agents-prewarm".into())
+        .spawn(move || {
+            std::thread::sleep(PREWARM_AFTER);
+            if app.get_webview_window(LABEL).is_some() {
+                return;
+            }
+            if let Err(err) = build(&app, false) {
+                tracing::warn!(%err, "no se pudo precargar la ventana de consolas");
+            }
+        });
+}
+
+/// Arma la ventana. `visible: false` la deja lista sin mostrarla ni robar
+/// el foco (el precalentado).
+fn build(app: &AppHandle, visible: bool) -> Result<tauri::WebviewWindow, String> {
     let mut builder =
         tauri::WebviewWindowBuilder::new(app, LABEL, tauri::WebviewUrl::App("agents".into()))
+            .visible(visible)
             .title(crate::ui_lang::pick(
                 crate::ui_lang::english(),
                 "Consolas de agentes",
@@ -31,8 +78,8 @@ pub fn ensure_agents_window(app: &AppHandle) -> Result<(), String> {
             ))
             .inner_size(1120.0, 760.0)
             .min_inner_size(680.0, 480.0);
-    if let Ok(dir) = app.path().app_local_data_dir() {
-        builder = builder.data_directory(dir.join("agents-webview"));
+    if let Some(dir) = profile_dir(app) {
+        builder = builder.data_directory(dir);
     }
     #[cfg(windows)]
     {
@@ -44,12 +91,9 @@ pub fn ensure_agents_window(app: &AppHandle) -> Result<(), String> {
         let args = "--disable-backgrounding-occluded-windows --disable-renderer-backgrounding --disable-background-timer-throttling --disable-features=CalculateNativeWinOcclusion";
         builder = builder.additional_browser_args(args);
     }
-    let window = builder
+    builder
         .build()
-        .map_err(|err| format!("no se pudo abrir la ventana de consolas: {err}"))?;
-    let _ = window.show();
-    let _ = window.set_focus();
-    Ok(())
+        .map_err(|err| format!("no se pudo abrir la ventana de consolas: {err}"))
 }
 
 /// Mitad «esconder» del atajo: solo si la ventana está a la vista y con el
