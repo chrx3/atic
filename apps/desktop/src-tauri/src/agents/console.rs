@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use uuid::Uuid;
 
 use atic_core::{MutexExt, SshHost};
@@ -223,6 +223,128 @@ fn orphan_ready(session: &str) -> bool {
 const TAIL_MAX: usize = 256 * 1024;
 
 static TAILS: Mutex<Option<HashMap<String, Arc<Mutex<VecDeque<u8>>>>>> = Mutex::new(None);
+
+/// Consolas que no dependen de una vista: las de los subagentes que abre el
+/// hub. Viven mientras viva su sesión, aunque la pizarra esté cerrada.
+static PINNED: Mutex<Option<HashSet<String>>> = Mutex::new(None);
+
+/// Cuándo escribió por última vez cada consola y si su programa pidió pegado
+/// entre corchetes (`ESC[?2004h`). Es como se sabe que un TUI ya dibujó su
+/// entrada y se le puede escribir.
+static SIGNALS: Mutex<Option<HashMap<String, OutputSignal>>> = Mutex::new(None);
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct OutputSignal {
+    pub last_output: Instant,
+    pub bracketed_paste: bool,
+}
+
+fn with_signals<T>(f: impl FnOnce(&mut HashMap<String, OutputSignal>) -> T) -> T {
+    let mut guard = SIGNALS.lock_or_recover();
+    f(guard.get_or_insert_with(HashMap::new))
+}
+
+/// ¿El trozo prende o apaga el pegado entre corchetes? `None` si no lo toca;
+/// si hace las dos cosas, gana la última.
+fn bracketed_paste_change(data: &str) -> Option<bool> {
+    let on = data.rfind("\x1b[?2004h");
+    let off = data.rfind("\x1b[?2004l");
+    match (on, off) {
+        (Some(a), Some(b)) => Some(a > b),
+        (Some(_), None) => Some(true),
+        (None, Some(_)) => Some(false),
+        (None, None) => None,
+    }
+}
+
+fn note_output(session: &str, data: &str) {
+    with_signals(|map| {
+        let entry = map.entry(session.to_string()).or_insert(OutputSignal {
+            last_output: Instant::now(),
+            bracketed_paste: false,
+        });
+        entry.last_output = Instant::now();
+        if let Some(on) = bracketed_paste_change(data) {
+            entry.bracketed_paste = on;
+        }
+    });
+}
+
+/// Respuestas a las consultas de terminal que trae un trozo de salida.
+///
+/// ConPTY pregunta la posición del cursor (`ESC[6n`) al arrancar y no deja
+/// correr al programa hasta tener respuesta. Con una vista conectada la
+/// contesta xterm; la consola de un subagente puede no tener ninguna.
+fn terminal_query_replies(data: &str) -> Vec<&'static str> {
+    let mut out = Vec::new();
+    for _ in data.matches("\x1b[6n") {
+        out.push("\x1b[1;1R");
+    }
+    for _ in data.matches("\x1b[c").chain(data.matches("\x1b[0c")) {
+        out.push("\x1b[?1;2c");
+    }
+    out
+}
+
+/// Contesta desde Rust mientras nadie mire la consola del subagente. El
+/// lector puede ir antes de que la consola esté en el mapa: se reintenta.
+fn answer_unattended_queries(session: &str, data: &str) {
+    if !pinned(session) || claimed(session) {
+        return;
+    }
+    let replies = terminal_query_replies(data);
+    if replies.is_empty() {
+        return;
+    }
+    let session = session.to_string();
+    thread::spawn(move || {
+        for reply in replies {
+            for _ in 0..40 {
+                if console_write(session.clone(), reply.to_string()).is_ok() {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(50));
+            }
+        }
+    });
+}
+
+pub(crate) fn output_signal(session: &str) -> Option<OutputSignal> {
+    with_signals(|map| map.get(session).copied())
+}
+
+pub(crate) fn pin(session: &str) {
+    PINNED
+        .lock_or_recover()
+        .get_or_insert_with(HashSet::new)
+        .insert(session.to_string());
+}
+
+pub(crate) fn unpin(session: &str) {
+    if let Some(set) = PINNED.lock_or_recover().as_mut() {
+        set.remove(session);
+    }
+}
+
+fn pinned(session: &str) -> bool {
+    PINNED
+        .lock_or_recover()
+        .as_ref()
+        .is_some_and(|set| set.contains(session))
+}
+
+/// Carpeta y momento de arranque de una consola: desde dónde y desde cuándo
+/// mirar qué cambió (ver `board_files`).
+pub(crate) fn console_origin(session: &str) -> Option<(String, i64)> {
+    with_map(|map| {
+        map.get(session)
+            .map(|live| (live.cwd.clone(), live.started_ms))
+    })
+}
+
+pub(crate) fn is_alive(session: &str) -> bool {
+    with_map(|map| map.contains_key(session))
+}
 
 fn with_tails<T>(f: impl FnOnce(&mut HashMap<String, Arc<Mutex<VecDeque<u8>>>>) -> T) -> T {
     let mut guard = TAILS.lock_or_recover();
@@ -565,6 +687,33 @@ fn build_ssh_builder(host: &SshHost) -> Result<(CommandBuilder, Option<AskpassGu
     Ok((cmd, guard))
 }
 
+/// Cuánto de `bytes` se puede decodificar sin partir un carácter.
+///
+/// Una lectura del PTY corta donde cae, y los marcos de los TUI (`─ │ ╭`) son
+/// de 3 bytes: decodificar el trozo tal cual deja `�` que ocupan otra
+/// cantidad de columnas y descuadran la pantalla. La secuencia incompleta del
+/// final espera a la lectura siguiente.
+fn utf8_complete_len(bytes: &[u8]) -> usize {
+    let len = bytes.len();
+    for back in 1..=len.min(3) {
+        let byte = bytes[len - back];
+        if byte & 0b1100_0000 == 0b1000_0000 {
+            continue;
+        }
+        let width = match byte {
+            0xC0..=0xDF => 2,
+            0xE0..=0xEF => 3,
+            0xF0..=0xF7 => 4,
+            _ => return len,
+        };
+        return if back < width { len - back } else { len };
+    }
+    len
+}
+
+/// Tope de lo que se junta en un solo evento de salida.
+const EMIT_BATCH_MAX: usize = 256 * 1024;
+
 fn spawn_reader(
     app: AppHandle,
     session: String,
@@ -572,10 +721,39 @@ fn spawn_reader(
     stop: Arc<AtomicBool>,
     tail: Arc<Mutex<VecDeque<u8>>>,
 ) {
+    // Leer y emitir van en hilos separados: mientras un evento cruza al
+    // webview, lo que siga llegando se junta y sale en el próximo. Un TUI
+    // redibujando manda cientos de lecturas chicas por segundo, y un evento
+    // por lectura saturaba el IPC sin sumar latencia al caso tranquilo.
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
+    let emit_session = session.clone();
+    thread::Builder::new()
+        .name(format!("console-emit-{session}"))
+        .spawn(move || {
+            while let Ok(first) = rx.recv() {
+                let mut data = first;
+                while data.len() < EMIT_BATCH_MAX {
+                    match rx.try_recv() {
+                        Ok(more) => data.push_str(&more),
+                        Err(_) => break,
+                    }
+                }
+                let _ = app.emit(
+                    "console-output",
+                    ConsoleOutputPayload {
+                        session: emit_session.clone(),
+                        data,
+                    },
+                );
+            }
+        })
+        .ok();
+
     thread::Builder::new()
         .name(format!("console-read-{session}"))
         .spawn(move || {
-            let mut buf = [0u8; 4096];
+            let mut buf = [0u8; 16 * 1024];
+            let mut pending: Vec<u8> = Vec::new();
             loop {
                 if stop.load(Ordering::Relaxed) {
                     break;
@@ -583,17 +761,21 @@ fn spawn_reader(
                 match reader.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
-                        let data = String::from_utf8_lossy(&buf[..n]).into_owned();
+                        pending.extend_from_slice(&buf[..n]);
+                        let cut = utf8_complete_len(&pending);
+                        if cut == 0 {
+                            continue;
+                        }
+                        let data = String::from_utf8_lossy(&pending[..cut]).into_owned();
+                        pending.drain(..cut);
                         if let Ok(mut cola) = tail.lock() {
                             tail_push(&mut cola, data.as_bytes());
                         }
-                        let _ = app.emit(
-                            "console-output",
-                            ConsoleOutputPayload {
-                                session: session.clone(),
-                                data,
-                            },
-                        );
+                        note_output(&session, &data);
+                        answer_unattended_queries(&session, &data);
+                        if tx.send(data).is_err() {
+                            break;
+                        }
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
@@ -603,8 +785,69 @@ fn spawn_reader(
                     Err(_) => break,
                 }
             }
+            if !pending.is_empty() {
+                let _ = tx.send(String::from_utf8_lossy(&pending).into_owned());
+            }
         })
         .ok();
+}
+
+/// Lo último que mostró la consola de un subagente al cerrarse. La cola se
+/// borra con la sesión y sin esto no queda cómo saber por qué salió el CLI.
+fn log_agent_exit(session: &str, code: Option<u32>) {
+    let tail = with_tails(|tails| tails.get(session).cloned())
+        .and_then(|arc| {
+            arc.lock().ok().map(|mut cola| {
+                let bytes = cola.make_contiguous();
+                let desde = bytes.len().saturating_sub(4096);
+                String::from_utf8_lossy(&bytes[desde..]).into_owned()
+            })
+        })
+        .unwrap_or_default();
+    let visible = strip_ansi(&tail);
+    let visible: String = visible
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .rev()
+        .take(12)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<Vec<_>>()
+        .join(" | ");
+    tracing::warn!(session, ?code, pantalla = %visible, "la consola del subagente terminó");
+}
+
+/// El texto sin secuencias de escape, para leerlo en un log.
+fn strip_ansi(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '\x1b' {
+            if c != '\r' {
+                out.push(c);
+            }
+            continue;
+        }
+        match chars.next() {
+            Some('[') => {
+                for c in chars.by_ref() {
+                    if ('@'..='~').contains(&c) {
+                        break;
+                    }
+                }
+            }
+            Some(']') => {
+                for c in chars.by_ref() {
+                    if c == '\x07' {
+                        break;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
 fn spawn_wait(
@@ -621,6 +864,9 @@ fn spawn_wait(
                 Err(_) => None,
             };
             stop.store(true, Ordering::Relaxed);
+            if pinned(&session) {
+                log_agent_exit(&session, code);
+            }
             // Quitar del mapa si sigue siendo esta sesión.
             with_map(|map| {
                 map.remove(&session);
@@ -634,8 +880,12 @@ fn spawn_wait(
         .ok();
 }
 
-fn close_session(id: &str) {
+pub(crate) fn close_session(id: &str) {
     forget_claims(id);
+    unpin(id);
+    with_signals(|map| {
+        map.remove(id);
+    });
     let taken = with_map(|map| map.remove(id));
     with_tails(|tails| {
         tails.remove(id);
@@ -655,7 +905,165 @@ pub fn close_all() {
     }
 }
 
-#[tauri::command]
+/// Lo que la consola recuerda de su arranque, aparte del comando.
+struct LaunchMeta {
+    cli: Option<String>,
+    cwd: String,
+    started_ms: i64,
+    askpass: Option<AskpassGuard>,
+    /// Consola de subagente: se fija antes de arrancar el lector, porque lo
+    /// primero que manda ConPTY es una pregunta que hay que contestar.
+    pinned: bool,
+}
+
+/// Abre el PTY con `cmd`, arranca sus hilos y la deja en el mapa.
+///
+/// Lo comparten la consola que pide la vista y la del subagente que abre el
+/// hub: el reclamo de una vista (o el fijado) lo pone quien llama.
+fn launch(
+    app: AppHandle,
+    data_dir: &Path,
+    mut cmd: CommandBuilder,
+    size: PtySize,
+    meta: LaunchMeta,
+) -> Result<String, String> {
+    let LaunchMeta {
+        cli,
+        cwd,
+        started_ms,
+        askpass,
+        pinned: pin_it,
+    } = meta;
+    apply_terminal_color_env(&mut cmd);
+    apply_clean_script_env(&mut cmd);
+    apply_fresh_path(&mut cmd, Some(data_dir));
+
+    let pty_system = native_pty_system();
+    let pair = pty_system
+        .openpty(size)
+        .map_err(|e| format!("No se pudo abrir PTY: {e}"))?;
+
+    let child = pair
+        .slave
+        .spawn_command(cmd)
+        .map_err(|e| format!("No se pudo spawnear la shell: {e}"))?;
+
+    // Liberar slave explícitamente (buena práctica en Windows ConPTY).
+    drop(pair.slave);
+
+    let reader = pair
+        .master
+        .try_clone_reader()
+        .map_err(|e| format!("No se pudo leer el PTY: {e}"))?;
+    let writer = pair
+        .master
+        .take_writer()
+        .map_err(|e| format!("No se pudo escribir al PTY: {e}"))?;
+
+    let session = Uuid::new_v4().to_string();
+    if pin_it {
+        pin(&session);
+    }
+    let stop = Arc::new(AtomicBool::new(false));
+    let killer = child.clone_killer();
+    let pid = child.process_id().unwrap_or(0);
+
+    let tail = Arc::new(Mutex::new(VecDeque::new()));
+    with_tails(|tails| {
+        tails.insert(session.clone(), Arc::clone(&tail));
+    });
+    spawn_reader(
+        app.clone(),
+        session.clone(),
+        reader,
+        Arc::clone(&stop),
+        tail,
+    );
+    spawn_wait(app, session.clone(), child, Arc::clone(&stop));
+
+    with_map(|map| {
+        map.insert(
+            session.clone(),
+            LiveConsole {
+                writer: Mutex::new(writer),
+                master: pair.master,
+                killer,
+                stop,
+                pid,
+                cli,
+                cwd,
+                started_ms,
+                _askpass: askpass,
+            },
+        );
+    });
+    spawn_reaper();
+    Ok(session)
+}
+
+/// Consola para un subagente que abrió el hub: el TUI del agente, fijado.
+///
+/// Va directo al ejecutable con sus argumentos, sin `cmd /K`: la tarea viaja
+/// como argumento y partirla por espacios —lo que hace `build_local_command`—
+/// rompería comillas, `%` y saltos de línea. Tampoco la reclama ninguna
+/// vista: la sesión la cierra quien la abrió.
+pub(crate) fn spawn_agent_pty(
+    app: &AppHandle,
+    program: &Path,
+    prefix: &[String],
+    args: &[String],
+    env: &[(String, String)],
+    cwd: Option<&str>,
+    cli: &str,
+) -> Result<String, String> {
+    if with_map(|map| map.len()) >= MAX_CONSOLES {
+        return Err(format!(
+            "Ya hay {MAX_CONSOLES} consolas abiertas. Cierra alguna para abrir otra."
+        ));
+    }
+    let data_dir = app
+        .try_state::<AppState>()
+        .map(|s| s.dirs.data_dir())
+        .ok_or_else(|| "la app no está lista".to_string())?;
+    let mut cmd = CommandBuilder::new(program);
+    cmd.args(prefix);
+    cmd.args(args);
+    for (key, value) in env {
+        cmd.env(key, value);
+    }
+    apply_cwd(&mut cmd, cwd);
+    let started_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    let cwd = cwd
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .or_else(|| std::env::var("USERPROFILE").ok())
+        .unwrap_or_default();
+    let session = launch(
+        app.clone(),
+        &data_dir,
+        cmd,
+        pty_size(Some(120), Some(36)),
+        LaunchMeta {
+            cli: Some(cli.to_string()),
+            cwd,
+            started_ms,
+            askpass: None,
+            pinned: true,
+        },
+    )?;
+    Ok(session)
+}
+
+/// Escribe en la consola como si fuera el teclado.
+pub(crate) fn write_input(session: &str, data: &str) -> Result<(), String> {
+    console_write(session.to_string(), data.to_string())
+}
+
+#[tauri::command(async)]
 pub fn console_open(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -698,7 +1106,7 @@ pub fn console_open(
         .map(str::to_string)
         .or_else(|| std::env::var("USERPROFILE").ok())
         .unwrap_or_default();
-    let (mut cmd, askpass) = match kind.as_str() {
+    let (cmd, askpass) = match kind.as_str() {
         "local" => {
             let mut cmd = match options.command.as_deref().map(str::trim) {
                 Some(c) if !c.is_empty() => build_local_command(c)?,
@@ -726,66 +1134,19 @@ pub fn console_open(
         }
         _ => unreachable!("kind ya validado"),
     };
-    apply_terminal_color_env(&mut cmd);
-    apply_clean_script_env(&mut cmd);
-    apply_fresh_path(&mut cmd, Some(&state.dirs.data_dir()));
-
-    let pty_system = native_pty_system();
-    let pair = pty_system
-        .openpty(size)
-        .map_err(|e| format!("No se pudo abrir PTY: {e}"))?;
-
-    let child = pair
-        .slave
-        .spawn_command(cmd)
-        .map_err(|e| format!("No se pudo spawnear la shell: {e}"))?;
-
-    // Liberar slave explícitamente (buena práctica en Windows ConPTY).
-    drop(pair.slave);
-
-    let reader = pair
-        .master
-        .try_clone_reader()
-        .map_err(|e| format!("No se pudo leer el PTY: {e}"))?;
-    let writer = pair
-        .master
-        .take_writer()
-        .map_err(|e| format!("No se pudo escribir al PTY: {e}"))?;
-
-    let session = Uuid::new_v4().to_string();
-    let stop = Arc::new(AtomicBool::new(false));
-    let killer = child.clone_killer();
-    let pid = child.process_id().unwrap_or(0);
-
-    let tail = Arc::new(Mutex::new(VecDeque::new()));
-    with_tails(|tails| {
-        tails.insert(session.clone(), Arc::clone(&tail));
-    });
-    spawn_reader(
-        app.clone(),
-        session.clone(),
-        reader,
-        Arc::clone(&stop),
-        tail,
-    );
-    spawn_wait(app, session.clone(), child, Arc::clone(&stop));
-
-    with_map(|map| {
-        map.insert(
-            session.clone(),
-            LiveConsole {
-                writer: Mutex::new(writer),
-                master: pair.master,
-                killer,
-                stop,
-                pid,
-                cli,
-                cwd,
-                started_ms,
-                _askpass: askpass,
-            },
-        );
-    });
+    let session = launch(
+        app,
+        &state.dirs.data_dir(),
+        cmd,
+        size,
+        LaunchMeta {
+            cli,
+            cwd,
+            started_ms,
+            askpass,
+            pinned: false,
+        },
+    )?;
     if let Some(view) = options
         .view
         .as_deref()
@@ -990,7 +1351,7 @@ pub fn reap_orphans() -> u32 {
     let vivas: Vec<String> = with_map(|map| map.keys().cloned().collect());
     let stale: Vec<String> = vivas
         .into_iter()
-        .filter(|id| !claimed(id) && !transfer_guarded(id) && orphan_ready(id))
+        .filter(|id| !pinned(id) && !claimed(id) && !transfer_guarded(id) && orphan_ready(id))
         .collect();
     for id in &stale {
         close_session(id);
@@ -999,7 +1360,7 @@ pub fn reap_orphans() -> u32 {
 }
 
 /// Barrido a pedido de la UI. El de verdad lo hace el hilo de `spawn_reaper`.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn console_gc() -> Result<u32, String> {
     Ok(reap_orphans())
 }
@@ -1048,7 +1409,7 @@ pub fn console_heartbeat(view: String, sessions: Vec<String>) {
 /// vivo: esto le devuelve su scrollback reciente. Puede cortar un escape ANSI
 /// por la mitad al inicio —xterm lo tolera— y un multibyte partido sale como
 /// `�`; el resto llega intacto.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn console_tail(session: String, max_bytes: Option<usize>) -> Result<String, String> {
     let tope = max_bytes.unwrap_or(TAIL_MAX).clamp(1, TAIL_MAX);
     with_tails(|tails| {
@@ -1108,7 +1469,7 @@ pub fn console_transfer_deliver(
 /// Si abriste una consola local y después escribiste `codex`, la pestaña
 /// sigue siendo «Local» hasta que esto lo ve. `None` = solo la shell, o
 /// la sesión ya no existe.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn console_foreground_cli(session: String) -> Option<String> {
     let pid = with_map(|map| map.get(&session).map(|live| live.pid))?;
     if pid == 0 {
@@ -1250,6 +1611,58 @@ fn agent_cli_from_path(path: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn el_pegado_entre_corchetes_sigue_al_ultimo_cambio() {
+        assert_eq!(bracketed_paste_change("hola"), None);
+        assert_eq!(bracketed_paste_change("\x1b[?2004h"), Some(true));
+        assert_eq!(
+            bracketed_paste_change("\x1b[?2004h..\x1b[?2004l"),
+            Some(false)
+        );
+        assert_eq!(
+            bracketed_paste_change("\x1b[?2004l..\x1b[?2004h"),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn contesta_las_consultas_de_cursor_y_de_atributos() {
+        assert_eq!(
+            terminal_query_replies("a\x1b[6nb\x1b[6n"),
+            ["\x1b[1;1R", "\x1b[1;1R"]
+        );
+        assert_eq!(terminal_query_replies("\x1b[c"), ["\x1b[?1;2c"]);
+        assert!(terminal_query_replies("hola").is_empty());
+    }
+
+    #[test]
+    fn el_log_ve_el_texto_sin_escapes() {
+        assert_eq!(
+            strip_ansi("\x1b[31mhola\x1b[0m\r\n\x1b]0;t\x07ok"),
+            "hola\nok"
+        );
+    }
+
+    #[test]
+    fn una_consola_fijada_no_es_huerfana() {
+        pin("fijada-test");
+        assert!(pinned("fijada-test"));
+        unpin("fijada-test");
+        assert!(!pinned("fijada-test"));
+    }
+
+    #[test]
+    fn un_caracter_partido_entre_lecturas_espera_la_siguiente() {
+        let marco = "a─".as_bytes(); // `─` son 3 bytes
+        assert_eq!(utf8_complete_len(marco), marco.len());
+        assert_eq!(utf8_complete_len(&marco[..2]), 1);
+        assert_eq!(utf8_complete_len(&marco[..3]), 1);
+        assert_eq!(utf8_complete_len(b"hola"), 4);
+        assert_eq!(utf8_complete_len(&[]), 0);
+        // Basura que no es un inicio válido no se retiene para siempre.
+        assert_eq!(utf8_complete_len(&[b'a', 0xFF]), 2);
+    }
 
     #[test]
     fn claude_dentro_de_la_shell_de_una_consola_la_encuentra() {

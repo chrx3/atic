@@ -80,6 +80,7 @@
   import { resumeThread } from "./chatResume";
   import { chatTabStatus } from "./chatStatus";
   import { terminalTheme } from "./terminalTheme";
+  import { useWebglRenderer } from "./terminalRenderer";
   import type { ChatTabRecord } from "./chatTabs";
   import { rememberedMode } from "$lib/agentModels";
   import HotkeyCapture from "$ui/HotkeyCapture.svelte";
@@ -2810,6 +2811,7 @@
       untrack(() => {
         const { term, fit } = makeTerm(key);
         term.open(el);
+        useWebglRenderer(term);
         boxes.set(key, { term, fit, el });
         const id = sessionOf(key);
         if (id) flushOutput(id, key);
@@ -2963,8 +2965,33 @@
       : null;
   }
 
+  /**
+   * Un dictado que empezó en esta consola termina con la isla mostrando la
+   * cara de dictado: el panel está escondido justo cuando llega el texto.
+   * Se guarda y se entrega al volver, en vez de perderlo.
+   */
+  const HIDDEN_INSERT_WAIT_MS = 15_000;
+  let hiddenInsertTimer = 0;
+  function insertWhenLive(payload: AgentsComposerInsert) {
+    window.clearInterval(hiddenInsertTimer);
+    const until = Date.now() + HIDDEN_INSERT_WAIT_MS;
+    hiddenInsertTimer = window.setInterval(() => {
+      if (Date.now() > until) {
+        window.clearInterval(hiddenInsertTimer);
+        return;
+      }
+      if (!panelIsLive()) return;
+      window.clearInterval(hiddenInsertTimer);
+      void applyClipboardInsert(payload);
+    }, 150);
+  }
+
   async function applyClipboardInsert(payload: AgentsComposerInsert) {
-    if (!panelIsLive()) return;
+    if (!panelIsLive()) {
+      // Sin punto es texto dirigido (dictado), no un soltar sobre la pantalla.
+      if (payload.x == null && tabs.some((tab) => tab.sessionId)) insertWhenLive(payload);
+      return;
+    }
     const x = payload.x;
     const y = payload.y;
     const chatKey = chatInsertKey(x, y);
@@ -3263,6 +3290,7 @@
 
     return () => {
       window.clearInterval(probeTimer);
+      window.clearInterval(hiddenInsertTimer);
       window.removeEventListener("keydown", onGlobalKey, true);
       window.removeEventListener(CLIPBOARD_OLE_EVENT, onClipboardOle);
       window.removeEventListener(CONSOLE_FOCUS_EVENT, onConsoleFocus);
