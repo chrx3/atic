@@ -132,6 +132,12 @@ export interface AgentSessionView {
    * hecho único en Rust. null = nadie la nombró, se muestra por su backend.
    */
   label?: string | null;
+  /**
+   * La consola donde corre, si es un subagente en su TUI de verdad. Entonces
+   * se muestra la consola y no el chat, y los turnos llegan solo al empezar
+   * y al terminar.
+   */
+  console?: string | null;
   status: AgentStatus;
   /**
    * La conversación, en turnos.
@@ -349,7 +355,7 @@ class AgentSessionStore {
           info.backendName,
           info.parent ?? null,
           info.label ?? null,
-        );
+        ).console = info.console ?? null;
     } catch (err) {
       console.warn("adoptar sesiones de agente", err);
     }
@@ -538,6 +544,8 @@ class AgentSessionStore {
         if (!s) continue;
         s.parent = info.parent ?? null;
         s.label = info.label ?? null;
+        s.console = info.console ?? null;
+        if (s.console) this.#clearWorkingTimeout(s.id);
       }
     } catch (err) {
       console.warn("refrescar metadatos de sesiones", err);
@@ -587,6 +595,9 @@ class AgentSessionStore {
 
   #armWorkingTimeout(id: string): void {
     this.#clearWorkingTimeout(id);
+    // Una consola no manda nada entre el inicio y el fin del turno: su
+    // silencio no es un agente colgado.
+    if (this.byId(id)?.console) return;
     const t = setTimeout(() => {
       this.#workingTimers.delete(id);
       const s = this.byId(id);
