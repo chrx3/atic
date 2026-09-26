@@ -526,7 +526,7 @@
     fill: currentColor;
     transform-box: view-box;
     transform-origin: 12px 12px;
-    animation: am-dict-wave 0.9s ease-in-out infinite;
+    animation: am-dict-wave 0.9s steps(27) infinite;
   }
 
   .am-dict rect:nth-child(2) {
