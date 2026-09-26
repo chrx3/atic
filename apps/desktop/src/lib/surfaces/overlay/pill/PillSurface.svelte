@@ -174,6 +174,7 @@
     opacityFade,
     prefersReducedMotion,
     tabPanel,
+    clockWhilePresent,
   } from "$lib/motion";
   import { playWheelTick } from "$ipc/uiSound";
   import { launcherLab } from "$lib/dev/launcherLab.svelte";
@@ -4815,6 +4816,21 @@
       unlisteners.forEach((u) => u.then((fn) => fn()));
     };
   });
+
+  /**
+   * Lo que late, gira o respira en la pill se calcula desde `--clock`: el
+   * reloj corre solo mientras haya alguno de estos a la vista (sin agentes
+   * trabajando ni alerta, la pill no redibuja nada).
+   */
+  const CLOCK_SELECTOR = [
+    ".p-live-spin",
+    ".p-live-row.is-working",
+    ".p-live-act",
+    ".p-island-cue.is-working",
+    ".p-agent.is-working",
+    ".p-update.is-alert",
+  ].join(", ");
+  onMount(() => clockWhilePresent(document.body, CLOCK_SELECTOR));
 </script>
 
 <!-- Testigo de grabación (barra flotante). En la rueda y la isla acoplada
@@ -7096,14 +7112,9 @@
     border: 2px solid color-mix(in sRGB, currentColor 25%, transparent);
     border-top-color: currentColor;
     border-radius: 999px;
-    animation: p-live-spin 0.8s steps(24) infinite;
+    transform: rotate(calc(var(--clock, 0) / 0.8 * 1turn));
   }
 
-  @keyframes p-live-spin {
-    to {
-      transform: rotate(1turn);
-    }
-  }
 
   @media (prefers-reduced-motion: reduce) {
     .p-live-spin {
@@ -7185,7 +7196,7 @@
 
   .p-live-row.is-working {
     color: var(--warn);
-    animation: p-agent-pulse 1.8s steps(27) infinite;
+    opacity: calc(0.55 + 0.45 * (0.5 - 0.5 * cos(calc(var(--clock, 0) / 1.8 * 1turn))));
   }
 
   .p-live-row.is-ready {
@@ -7281,23 +7292,31 @@
     background: currentColor;
   }
 
+  /*
+   * Las animaciones en bucle de la pill salen del reloj compartido
+   * (`--clock`, ver `holdMotionClock`) y no de @keyframes: una animación CSS
+   * infinita hacía redibujar la pill a la frecuencia del monitor. `--ph`
+   * desfasa cada punto como antes lo hacía `animation-delay`.
+   */
   .p-live-act[data-act="thinking"] i {
-    /* Por pasos, como las otras respiraciones: ver `skin-breathe` (Skin). */
-    animation: p-act-breathe 1.2s steps(36) infinite;
+    opacity: calc(0.3 + 0.7 * (0.5 - 0.5 * cos(calc((var(--clock, 0) - var(--ph, 0)) / 1.2 * 1turn))));
+    transform: scale(calc(0.8 + 0.3 * (0.5 - 0.5 * cos(calc((var(--clock, 0) - var(--ph, 0)) / 1.2 * 1turn)))));
   }
 
   .p-live-act[data-act="writing"] i {
-    animation: p-act-hop 0.9s steps(27) infinite;
+    transform: translateY(
+      calc(-3px * max(0, sin(calc((var(--clock, 0) - var(--ph, 0)) / 0.9 * 1turn))))
+    );
   }
 
   .p-live-act[data-act="thinking"] i:nth-child(2),
   .p-live-act[data-act="writing"] i:nth-child(2) {
-    animation-delay: 0.15s;
+    --ph: 0.15;
   }
 
   .p-live-act[data-act="thinking"] i:nth-child(3),
   .p-live-act[data-act="writing"] i:nth-child(3) {
-    animation-delay: 0.3s;
+    --ph: 0.3;
   }
 
   .p-live-act[data-act="editing"] i,
@@ -7315,7 +7334,10 @@
     left: 0;
     width: 0;
     height: 2px;
-    animation: p-act-stroke 1.1s steps(33) infinite;
+    /* Se traza en el 70 % del ciclo y se apaga en el resto. */
+    --p: calc(mod(var(--clock, 0), 1.1) / 1.1);
+    width: calc(min(1, var(--p) / 0.7) * 14px);
+    opacity: calc(1 - max(0, (var(--p) - 0.7) / 0.3));
   }
 
   .p-live-act[data-act="reading"] i:first-child {
@@ -7324,7 +7346,9 @@
     left: 0;
     width: 2px;
     height: 10px;
-    animation: p-act-scan 1.1s steps(33) infinite alternate;
+    /* Ida y vuelta de 0 a 12 px en 2,2 s. */
+    --p: calc(1 - mod(var(--clock, 0), 2.2) / 1.1);
+    transform: translateX(calc(12px * (1 - max(var(--p), -1 * var(--p)))));
   }
 
   .p-live-act[data-act="running"] i:first-child {
@@ -7332,12 +7356,13 @@
     width: 6px;
     height: 9px;
     border-radius: 1px;
-    animation: p-act-blink 0.9s steps(2, jump-none) infinite;
+    /* Cursor que parpadea: encendido la mitad del ciclo, apagado la otra. */
+    opacity: calc(1 - round(down, mod(var(--clock, 0), 0.9) / 0.45, 1));
   }
 
   .p-live-act[data-act="searching"] {
     justify-content: center;
-    animation: p-act-orbit 1s steps(30) infinite;
+    transform: rotate(calc(var(--clock, 0) * 1turn));
   }
 
   .p-live-act[data-act="searching"] i:first-child {
@@ -7349,12 +7374,17 @@
     display: none;
   }
 
+  /* El testigo va y viene de 0 a 6 px en 2 s; el segundo, al revés. */
+  .p-live-act[data-act="delegating"] i {
+    --p: calc(1 - mod(var(--clock, 0), 2));
+  }
+
   .p-live-act[data-act="delegating"] i:first-child {
-    animation: p-act-pass 1s steps(30) infinite alternate;
+    transform: translateX(calc(6px * (1 - max(var(--p), -1 * var(--p)))));
   }
 
   .p-live-act[data-act="delegating"] i:nth-child(2) {
-    animation: p-act-pass 1s steps(30) infinite alternate-reverse;
+    transform: translateX(calc(6px * max(var(--p), -1 * var(--p))));
   }
 
   .p-live-act[data-act="tool"] i:first-child {
@@ -7365,88 +7395,16 @@
     border: 1.5px solid color-mix(in sRGB, currentColor 30%, transparent);
     border-top-color: currentColor;
     background: transparent;
-    animation: p-act-spin 0.9s steps(27) infinite;
+    transform: rotate(calc(var(--clock, 0) / 0.9 * 1turn));
   }
 
-  @keyframes p-act-breathe {
-    0%,
-    100% {
-      opacity: 0.3;
-      transform: scale(0.8);
-    }
 
-    50% {
-      opacity: 1;
-      transform: scale(1.1);
-    }
-  }
 
-  @keyframes p-act-hop {
-    0%,
-    60%,
-    100% {
-      transform: translateY(0);
-    }
 
-    30% {
-      transform: translateY(-3px);
-    }
-  }
 
-  @keyframes p-act-stroke {
-    0% {
-      width: 0;
-      opacity: 1;
-    }
 
-    70% {
-      width: 14px;
-      opacity: 1;
-    }
 
-    100% {
-      width: 14px;
-      opacity: 0;
-    }
-  }
 
-  @keyframes p-act-scan {
-    from {
-      transform: translateX(0);
-    }
-
-    to {
-      transform: translateX(12px);
-    }
-  }
-
-  @keyframes p-act-blink {
-    to {
-      opacity: 0;
-    }
-  }
-
-  @keyframes p-act-orbit {
-    to {
-      transform: rotate(360deg);
-    }
-  }
-
-  @keyframes p-act-pass {
-    from {
-      transform: translateX(0);
-    }
-
-    to {
-      transform: translateX(6px);
-    }
-  }
-
-  @keyframes p-act-spin {
-    to {
-      transform: rotate(360deg);
-    }
-  }
 
   .p-live-row-label {
     min-width: 0;
@@ -7886,7 +7844,7 @@
   /* Trabajando/contestando: el icono de la pestaña late suave. El latido de la
      silueta lo lleva la piel (`liquid.breathe`); acá el aviso puntual. */
   .p-island-cue.is-working {
-    animation: p-agent-pulse 1.8s steps(27) infinite;
+    opacity: calc(0.55 + 0.45 * (0.5 - 0.5 * cos(calc(var(--clock, 0) / 1.8 * 1turn))));
   }
 
   /*
@@ -8816,7 +8774,7 @@
   }
 
   .p-agent.is-working .p-agent-ico {
-    animation: p-agent-pulse 1.8s steps(27) infinite;
+    opacity: calc(0.55 + 0.45 * (0.5 - 0.5 * cos(calc(var(--clock, 0) / 1.8 * 1turn))));
   }
 
   /* Listo / respuesta sin leer: affordance clara, no solo un número. */
@@ -8903,19 +8861,13 @@
     border-color: color-mix(in sRGB, var(--warn) 55%, transparent);
     background: color-mix(in sRGB, var(--warn) 14%, transparent);
     color: var(--warn);
-    animation: p-alert-breathe 2.4s steps(24) infinite;
+    border-color: color-mix(
+      in sRGB,
+      var(--warn) calc(55% + 45% * (0.5 - 0.5 * cos(calc(var(--clock, 0) / 2.4 * 1turn)))),
+      transparent
+    );
   }
 
-  @keyframes p-alert-breathe {
-    0%,
-    100% {
-      border-color: color-mix(in sRGB, var(--warn) 55%, transparent);
-    }
-
-    50% {
-      border-color: color-mix(in sRGB, var(--warn) 100%, transparent);
-    }
-  }
 
   /* El volumen es información, no un aviso: tono normal y sin puntero. */
   .p-update.is-volume {
@@ -8963,16 +8915,6 @@
     z-index: 6;
   }
 
-  @keyframes p-agent-pulse {
-    0%,
-    100% {
-      opacity: 0.55;
-    }
-
-    50% {
-      opacity: 1;
-    }
-  }
 
   @keyframes p-agent-ready-in {
     from {

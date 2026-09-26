@@ -24,6 +24,7 @@
   import type { Shape } from "./sdf";
   import { BLEND, CELL, SMOOTH } from "./constants";
   import { PathTracer } from "./trace";
+  import { holdMotionClock } from "$lib/motion";
 
   let {
     shapes,
@@ -74,6 +75,11 @@
   // El par de `performance.now()` cuesta menos que un solo muestreo del campo,
   // así que no hace falta condicionarlo a que alguien esté escuchando.
   $effect(() => onPath?.(traced.path, traced.ms));
+
+  // La respiración sale del reloj compartido (`--clock`): ver `holdMotionClock`.
+  $effect(() => {
+    if (breathe) return holdMotionClock();
+  });
 </script>
 
 {#if path.d}
@@ -134,30 +140,12 @@
   }
 
   /*
-   * Por pasos (10 por segundo) y no continua: la pill es una ventana
-   * transparente del tamaño de la pantalla y cada cuadro redibuja y presenta
-   * la superficie entera. Continua, esta respiración de 8 % de brillo se
-   * pintaba 180 veces por segundo (monitor de 180 Hz) y era lo que más CPU y
-   * GPU gastaba Atic en reposo. A 10 pasos no se distingue.
+   * Respira con el reloj compartido y no con una animación CSS: la pill es
+   * una ventana transparente del tamaño de la pantalla y una animación
+   * infinita la hacía redibujar a la frecuencia del monitor (180 Hz). Brillo
+   * de 1 a 1,08 cada 2,4 s. Sin reloj (menos movimiento) queda quieta.
    */
   .skin.is-breathing {
-    animation: skin-breathe 2.4s steps(24) infinite;
-  }
-
-  @keyframes skin-breathe {
-    0%,
-    100% {
-      filter: brightness(1);
-    }
-
-    50% {
-      filter: brightness(1.08);
-    }
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .skin.is-breathing {
-      animation: none;
-    }
+    filter: brightness(calc(1.04 - 0.04 * cos(calc(var(--clock, 0) / 2.4 * 1turn))));
   }
 </style>
