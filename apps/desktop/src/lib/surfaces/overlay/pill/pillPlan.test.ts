@@ -30,6 +30,7 @@ import {
   shouldRecenterTopNotch,
   shouldReturnToEdgeOnActivate,
   islandHoverStay,
+  islandHoverSeed,
   islandHoverOpens,
   floatWheelHoverWatches,
   floatWheelHoverOpens,
@@ -339,7 +340,7 @@ describe("contentFor", () => {
         0,
         face,
       ),
-    ).toEqual({ w: PILL.islandThick + PILL.islandDictW, h: PILL.islandLong });
+    ).toEqual({ w: PILL.islandThick + PILL.islandDictSideW, h: PILL.islandLong });
     // Gana a la tira abierta y a la pestaña con avisos.
     expect(
       contentFor(
@@ -919,6 +920,25 @@ describe("contentFor", () => {
         lingerMs: ISLAND_COLLAPSE_MS,
       }),
     ).toEqual({ open: true, leftAt: null });
+  });
+
+  it("un sondeo nuevo con la isla cerrada no la abre por el linger", () => {
+    // Un agente trabajando alterna la cara tab/live y reinicia el sondeo.
+    const stay = islandHoverStay({
+      over: false,
+      now: 1000,
+      leftAt: islandHoverSeed(false),
+      lingerMs: ISLAND_COLLAPSE_MS,
+    });
+    expect(stay.open).toBe(false);
+    expect(
+      islandHoverStay({
+        over: false,
+        now: 1000,
+        leftAt: islandHoverSeed(true),
+        lingerMs: ISLAND_COLLAPSE_MS,
+      }).open,
+    ).toBe(true);
   });
 
   it("con aviso de update, la tira espera un toque antes de abrir", () => {

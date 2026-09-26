@@ -130,6 +130,12 @@ export const PILL = {
    */
   islandDictW: 232,
   islandDictH: 72,
+  /**
+   * La misma cara con la pill a un costado. Ahí el alto lo pone la pestaña
+   * (sus íconos en columna), así que sobra alto y no ancho: más angosta, y
+   * la onda ocupa el alto que queda.
+   */
+  islandDictSideW: 176,
   /** Alto de cada fila de la cara ambiental de agentes. */
   islandLiveRow: 32,
   /**
