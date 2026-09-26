@@ -171,6 +171,21 @@
     const now = { ...want };
     let lidHold = 0;
     let raf = 0;
+    /**
+     * Pausa entre cuadros. El logo sigue al cursor por todo el escritorio, así
+     * que mientras se usa el equipo casi nunca se estaciona: al ritmo del
+     * monitor (180 Hz) redibujaba la pill entera ~200 veces por segundo y era
+     * el mayor gasto de CPU y GPU del overlay. A 30 cuadros un dibujo de este
+     * tamaño se ve igual.
+     */
+    const FRAME_GAP_MS = 1000 / 30;
+    /**
+     * El cuadro con que se calibraron los factores del lerp (los 180 Hz donde
+     * se ajustó el movimiento). Con otro ritmo se escalan por el tiempo real,
+     * así la mirada no se vuelve 6 veces más lenta a 30 cuadros.
+     */
+    const REF_FRAME_MS = 1000 / 180;
+    let frameTimer = 0;
     let blinkTimer = 0;
     let blinkFollow = 0;
     let cancelled = false;
@@ -301,12 +316,21 @@
      */
     function wake() {
       if (cancelled) return;
-      if (!parked && raf) return;
+      if (!parked && (raf || frameTimer)) return;
       parked = false;
       window.clearTimeout(parkTimer);
       parkTimer = 0;
       last = performance.now();
-      if (!raf) raf = requestAnimationFrame(tick);
+      if (!raf && !frameTimer) raf = requestAnimationFrame(tick);
+    }
+
+    /** El próximo cuadro, tras la pausa: ver `FRAME_GAP_MS`. */
+    function nextFrame() {
+      if (raf || frameTimer) return;
+      frameTimer = window.setTimeout(() => {
+        frameTimer = 0;
+        if (!cancelled) raf = requestAnimationFrame(tick);
+      }, FRAME_GAP_MS);
     }
 
     /** Estaciona el loop y sigue mirando el cursor sin gastar frames. */
@@ -358,7 +382,9 @@
     function tick(time: number) {
       raf = 0;
       if (cancelled) return;
-      const dt = Math.min(32, time - last);
+      const dt = Math.min(50, time - last);
+      // Un factor de lerp calibrado por cuadro, llevado al tiempo que pasó.
+      const lerp = (f: number) => 1 - Math.pow(1 - f, dt / REF_FRAME_MS);
       last = time;
       // El vaivén acumula su fase mientras corre: al estacionarse se congela y
       // al volver sigue donde estaba (con `Math.sin(time)` habría un salto).
@@ -371,15 +397,18 @@
 
       const body = lagRef.current ? 0.045 : 0.08;
       const gaze = lagRef.current ? 0.055 : 0.16;
-      now.rot += (want.rot - now.rot) * body;
-      now.leanX += (want.leanX - now.leanX) * body;
-      now.leanY += (want.leanY - now.leanY) * body;
-      now.lookX += (want.lookX - now.lookX) * gaze;
-      now.lookY += (want.lookY - now.lookY) * gaze;
-      now.spread += (want.spread - now.spread) * 0.14;
-      now.rx += (want.rx - now.rx) * 0.14;
-      now.ry += (want.ry - now.ry) * 0.14;
-      now.lid += (want.lid - now.lid) * 0.42;
+      const bodyK = lerp(body);
+      const gazeK = lerp(gaze);
+      const shapeK = lerp(0.14);
+      now.rot += (want.rot - now.rot) * bodyK;
+      now.leanX += (want.leanX - now.leanX) * bodyK;
+      now.leanY += (want.leanY - now.leanY) * bodyK;
+      now.lookX += (want.lookX - now.lookX) * gazeK;
+      now.lookY += (want.lookY - now.lookY) * gazeK;
+      now.spread += (want.spread - now.spread) * shapeK;
+      now.rx += (want.rx - now.rx) * shapeK;
+      now.ry += (want.ry - now.ry) * shapeK;
+      now.lid += (want.lid - now.lid) * lerp(0.42);
       now.spread = clampSpread(now.spread);
 
       const sway = Math.sin(swayPhase / 1100) * 1.2;
@@ -410,7 +439,7 @@
       }
       // Todo asentado: se apaga el rAF hasta el próximo movimiento, parpadeo o
       // estado. Mientras tanto, el sondeo lento sigue por `setTimeout`.
-      if (needsFrames()) raf = requestAnimationFrame(tick);
+      if (needsFrames()) nextFrame();
       else park();
     }
 
@@ -423,6 +452,7 @@
     return () => {
       cancelled = true;
       cancelAnimationFrame(raf);
+      window.clearTimeout(frameTimer);
       window.clearTimeout(parkTimer);
       window.clearTimeout(blinkTimer);
       window.clearTimeout(blinkFollow);
