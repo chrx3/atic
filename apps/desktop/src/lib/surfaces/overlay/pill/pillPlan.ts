@@ -218,7 +218,7 @@ export function contentFor(
     // lado pegado), mismo blob pestaña + tarjeta. Gana a la tira abierta.
     if (face === "dictation") {
       return dockAxis(dock.edge) === "x"
-        ? { w: thick + PILL.islandDictW, h: Math.max(long, PILL.islandDictH) }
+        ? { w: thick + PILL.islandDictSideW, h: Math.max(long, PILL.islandDictH) }
         : { w: Math.max(long, PILL.islandDictW), h: thick + PILL.islandDictH };
     }
     // Cerrada: el aviso cuelga. Abierta, cede a la tira — si ganara, el hover
@@ -623,6 +623,18 @@ export function islandHoverStay(input: {
   if (input.over) return { open: true, leftAt: null };
   const leftAt = input.leftAt ?? input.now;
   return { open: input.now - leftAt < input.lingerMs, leftAt };
+}
+
+/**
+ * `leftAt` con que arranca un sondeo nuevo de la isla.
+ *
+ * El sondeo se reinicia cada vez que cambia la cara (un agente que trabaja la
+ * hace alternar entre `tab` y `live`). Con `leftAt` nulo, `islandHoverStay`
+ * lo toma como «el cursor recién salió» y abre la tira todo el linger aunque
+ * nadie la haya tocado. Cerrada, el linger ya venció; abierta, se respeta.
+ */
+export function islandHoverSeed(expanded: boolean): number | null {
+  return expanded ? null : Number.NEGATIVE_INFINITY;
 }
 
 /**

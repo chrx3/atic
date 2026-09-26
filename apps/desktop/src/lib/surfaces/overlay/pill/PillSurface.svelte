@@ -103,6 +103,7 @@
     shouldReturnToEdgeOnActivate,
     shouldMeasureBar,
     islandHoverStay,
+    islandHoverSeed,
     islandHoverOpens,
     floatWheelHoverWatches,
     floatWheelHoverOpens,
@@ -439,6 +440,10 @@
   const islandCueMsg = $derived.by(() => {
     if (!islandCue || !dock) return false;
     if (chips.length === 0) return false;
+    // Dictando a un costado, el texto girado alarga la pestaña y la tarjeta
+    // de dictado hereda ese alto: quedaba un bloque vacío con el aviso al
+    // medio. Mientras se dicta, el aviso queda en su logo.
+    if (islandFace === "dictation" && dockAxis(dock.edge) === "x") return false;
     return chips[0].tone !== "count" && chips[0].label != null;
   });
   /**
@@ -3082,7 +3087,7 @@
     void toolPeekState.open;
     void islandFace;
     let alive = true;
-    let leftAt: number | null = null;
+    let leftAt = islandHoverSeed(untrack(() => dock?.expanded === true));
     let hoveredAt: number | null = null;
     const look = async () => {
       // Arrastrando no: agrandar la caja a mitad del gesto mueve el suelo bajo
@@ -7512,6 +7517,28 @@
     display: block;
     width: 8rem;
     padding: 0 2px;
+  }
+
+  /*
+   * A un costado la isla es tan alta como la pestaña (sus íconos en
+   * columna): la cara ocupa ese alto entero, con la onda centrada y más
+   * grande, en vez de una tarjeta de 72 px pegada arriba y un hueco debajo.
+   */
+  .p-root[data-edge="left"] .p-face[data-face="dictation"],
+  .p-root[data-edge="right"] .p-face[data-face="dictation"] {
+    height: auto;
+    align-self: stretch;
+    padding: 10px 14px;
+  }
+
+  .p-root[data-edge="left"] .p-face[data-face="dictation"] .p-face-wave,
+  .p-root[data-edge="right"] .p-face[data-face="dictation"] .p-face-wave {
+    width: 100%;
+  }
+
+  .p-root[data-edge="left"] .p-face[data-face="dictation"] .p-face-wave :global(.rb-wave-voice),
+  .p-root[data-edge="right"] .p-face[data-face="dictation"] .p-face-wave :global(.rb-wave-voice) {
+    height: 1.6rem;
   }
 
   .p-face-wave :global(.rb-wave) {
