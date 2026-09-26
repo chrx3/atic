@@ -7096,7 +7096,7 @@
     border: 2px solid color-mix(in sRGB, currentColor 25%, transparent);
     border-top-color: currentColor;
     border-radius: 999px;
-    animation: p-live-spin 0.8s linear infinite;
+    animation: p-live-spin 0.8s steps(24) infinite;
   }
 
   @keyframes p-live-spin {
@@ -7185,7 +7185,7 @@
 
   .p-live-row.is-working {
     color: var(--warn);
-    animation: p-agent-pulse 1.8s var(--ease-liquid) infinite;
+    animation: p-agent-pulse 1.8s steps(27) infinite;
   }
 
   .p-live-row.is-ready {
@@ -7282,11 +7282,12 @@
   }
 
   .p-live-act[data-act="thinking"] i {
-    animation: p-act-breathe 1.2s var(--ease-smooth-out) infinite;
+    /* Por pasos, como las otras respiraciones: ver `skin-breathe` (Skin). */
+    animation: p-act-breathe 1.2s steps(36) infinite;
   }
 
   .p-live-act[data-act="writing"] i {
-    animation: p-act-hop 0.9s var(--ease-smooth-out) infinite;
+    animation: p-act-hop 0.9s steps(27) infinite;
   }
 
   .p-live-act[data-act="thinking"] i:nth-child(2),
@@ -7314,7 +7315,7 @@
     left: 0;
     width: 0;
     height: 2px;
-    animation: p-act-stroke 1.1s var(--ease-smooth-out) infinite;
+    animation: p-act-stroke 1.1s steps(33) infinite;
   }
 
   .p-live-act[data-act="reading"] i:first-child {
@@ -7323,7 +7324,7 @@
     left: 0;
     width: 2px;
     height: 10px;
-    animation: p-act-scan 1.1s var(--ease-liquid) infinite alternate;
+    animation: p-act-scan 1.1s steps(33) infinite alternate;
   }
 
   .p-live-act[data-act="running"] i:first-child {
@@ -7336,7 +7337,7 @@
 
   .p-live-act[data-act="searching"] {
     justify-content: center;
-    animation: p-act-orbit 1s linear infinite;
+    animation: p-act-orbit 1s steps(30) infinite;
   }
 
   .p-live-act[data-act="searching"] i:first-child {
@@ -7349,11 +7350,11 @@
   }
 
   .p-live-act[data-act="delegating"] i:first-child {
-    animation: p-act-pass 1s var(--ease-liquid) infinite alternate;
+    animation: p-act-pass 1s steps(30) infinite alternate;
   }
 
   .p-live-act[data-act="delegating"] i:nth-child(2) {
-    animation: p-act-pass 1s var(--ease-liquid) infinite alternate-reverse;
+    animation: p-act-pass 1s steps(30) infinite alternate-reverse;
   }
 
   .p-live-act[data-act="tool"] i:first-child {
@@ -7364,7 +7365,7 @@
     border: 1.5px solid color-mix(in sRGB, currentColor 30%, transparent);
     border-top-color: currentColor;
     background: transparent;
-    animation: p-act-spin 0.9s linear infinite;
+    animation: p-act-spin 0.9s steps(27) infinite;
   }
 
   @keyframes p-act-breathe {
@@ -7885,7 +7886,7 @@
   /* Trabajando/contestando: el icono de la pestaña late suave. El latido de la
      silueta lo lleva la piel (`liquid.breathe`); acá el aviso puntual. */
   .p-island-cue.is-working {
-    animation: p-agent-pulse 1.8s var(--ease-liquid) infinite;
+    animation: p-agent-pulse 1.8s steps(27) infinite;
   }
 
   /*
@@ -8815,7 +8816,7 @@
   }
 
   .p-agent.is-working .p-agent-ico {
-    animation: p-agent-pulse 1.8s var(--ease-liquid) infinite;
+    animation: p-agent-pulse 1.8s steps(27) infinite;
   }
 
   /* Listo / respuesta sin leer: affordance clara, no solo un número. */
@@ -8902,7 +8903,7 @@
     border-color: color-mix(in sRGB, var(--warn) 55%, transparent);
     background: color-mix(in sRGB, var(--warn) 14%, transparent);
     color: var(--warn);
-    animation: p-alert-breathe 2.4s ease-in-out infinite;
+    animation: p-alert-breathe 2.4s steps(24) infinite;
   }
 
   @keyframes p-alert-breathe {

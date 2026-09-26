@@ -133,8 +133,15 @@
     pointer-events: none;
   }
 
+  /*
+   * Por pasos (10 por segundo) y no continua: la pill es una ventana
+   * transparente del tamaño de la pantalla y cada cuadro redibuja y presenta
+   * la superficie entera. Continua, esta respiración de 8 % de brillo se
+   * pintaba 180 veces por segundo (monitor de 180 Hz) y era lo que más CPU y
+   * GPU gastaba Atic en reposo. A 10 pasos no se distingue.
+   */
   .skin.is-breathing {
-    animation: skin-breathe 2.4s ease-in-out infinite;
+    animation: skin-breathe 2.4s steps(24) infinite;
   }
 
   @keyframes skin-breathe {
