@@ -302,6 +302,7 @@ pub fn run() {
             clipboard_history::paste_system_clipboard_under_cursor,
             clipboard_history::paste_to_external_hwnd,
             clipboard_history::read_clipboard_drag_text,
+            clipboard_history::take_text_drag,
             clipboard_history::read_system_clipboard_text,
             clipboard_history::write_system_clipboard_text,
             clipboard_history::pin_clipboard_item,
