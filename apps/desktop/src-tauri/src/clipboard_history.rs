@@ -1140,6 +1140,9 @@ pub async fn start_clipboard_text_drag(
     }
     #[cfg(target_os = "macos")]
     {
+        // La pizarra recibe el soltado por el drag-drop de Tauri, que solo trae
+        // rutas: llega vacío y la pizarra pide acá el texto (`take_text_drag`).
+        *TEXT_DRAG.lock_or_recover() = Some((text.clone(), std::time::Instant::now()));
         let result = start_native_drag(&app, MacDragRequest::Text(text.clone()));
         // El overlay quedó click-through durante el arrastre: si se soltó
         // sobre la consola de agentes, insertarlo como hace Windows.
@@ -1156,6 +1159,26 @@ pub async fn start_clipboard_text_drag(
             "Text drag is not available on this platform.",
         ))
     }
+}
+
+/// Texto del último arrastre nativo de macOS y cuándo empezó.
+static TEXT_DRAG: Mutex<Option<(String, std::time::Instant)>> = Mutex::new(None);
+
+/// Cuánto vale el texto guardado: más tarde, un soltado sin rutas viene de
+/// otra app (Safari, un editor) y no debe pegar lo que arrastraste antes.
+const TEXT_DRAG_TTL: Duration = Duration::from_secs(120);
+
+/// Texto que Atic está arrastrando, para la pizarra que lo recibió.
+///
+/// En macOS el drag-drop de Tauri solo entrega rutas; un texto arrastrado
+/// desde el historial llega como un soltado vacío. Se consume una vez.
+#[tauri::command]
+pub fn take_text_drag() -> Option<String> {
+    TEXT_DRAG
+        .lock_or_recover()
+        .take()
+        .filter(|(_, at)| at.elapsed() < TEXT_DRAG_TTL)
+        .map(|(text, _)| text)
 }
 
 /// Arrastra archivos como `CF_HDROP` con nuestro propio drag source.

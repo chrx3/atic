@@ -26,7 +26,11 @@
     onAgentsFocus,
     setAgentsWindowOpen,
   } from "$ipc/agents";
-  import { onAgentsComposerInsert, onAgentsWindowInsert } from "$ipc/clipboard";
+  import {
+    onAgentsComposerInsert,
+    onAgentsWindowInsert,
+    takeTextDrag,
+  } from "$ipc/clipboard";
   import { getCurrentWebview } from "@tauri-apps/api/webview";
   import type { AgentsComposerInsert } from "$core/types";
   import { t, uiLocale } from "$domain/i18n.svelte";
@@ -116,6 +120,10 @@
   const LAYOUT_KEY = "atic.agents.board.layout";
   const START_COUNT_KEY = "atic.agents.board.startCount";
   const BACKDROP_KEY = "atic.agents.board.backdrop";
+  /** WKWebView en Mac reporta `MacIntel`; WebView2 en Windows, `Win32`. */
+  const IS_MAC =
+    typeof navigator !== "undefined" &&
+    /mac/i.test(navigator.platform || navigator.userAgent);
   /** Lo que tarda la vista en volver a esconder el minimapa tras moverse. */
   const VIEW_IDLE_MS = 1200;
   /** Tope de consolas de una vez, el mismo del lanzador de la pill. */
@@ -952,9 +960,11 @@
    * sobre una consola: sus rutas se pegan en ella, sin Enter. Los CLI de
    * agentes adjuntan lo que reciben como ruta. Tauri da la posición en
    * píxeles físicos; se pasa a coordenadas de pizarra para saber cuál está
-   * debajo.
+   * debajo. En Mac, wry la entrega ya en puntos (lógicos) aunque Tauri la
+   * rotule física: dividir ahí dejaba el drop a media distancia del cursor.
    */
   function toCss(physical: { x: number; y: number }) {
+    if (IS_MAC) return { x: physical.x, y: physical.y };
     const scale = window.devicePixelRatio || 1;
     return { x: physical.x / scale, y: physical.y / scale };
   }
@@ -1372,17 +1382,21 @@
     window.addEventListener("focus", flagFocus);
     window.addEventListener("blur", flagFocus);
 
+    // Si trae archivos: sin ellos (texto arrastrado desde el historial en
+    // Mac) no hay nada que abrir en la pizarra y no se ofrece.
+    let dragHasFiles = false;
     const unlistenDrop = getCurrentWebview().onDragDropEvent(({ payload }) => {
       if (payload.type === "leave") {
         dropTarget = null;
         dropHint = null;
       } else if (payload.type === "enter" || payload.type === "over") {
+        if (payload.type === "enter") dragHasFiles = payload.paths.length > 0;
         const point = toCss(payload.position);
         dropTarget = consoleUnder(point);
         const overComposer = !!document
           .elementFromPoint(point.x, point.y)
           ?.closest(".composer");
-        dropHint = dropTarget === null && !overComposer ? point : null;
+        dropHint = dragHasFiles && dropTarget === null && !overComposer ? point : null;
       } else if (payload.type === "drop") {
         dropTarget = null;
         dropHint = null;
@@ -1394,6 +1408,15 @@
         // fondo de la pizarra el archivo se abre para verlo.
         if (!onConsole && payload.paths.length > 0) {
           openDropped(payload.paths, point);
+          return;
+        }
+        if (payload.paths.length === 0) {
+          // Mac: Tauri solo trae rutas; el texto del historial lo guarda Rust.
+          void takeTextDrag()
+            .then((text) => {
+              if (text) dropAt(point, text);
+            })
+            .catch(() => {});
           return;
         }
         const text = quotePaths(payload.paths);

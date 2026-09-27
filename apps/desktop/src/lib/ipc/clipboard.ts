@@ -36,6 +36,8 @@ export const pasteSystemClipboardUnderCursor = () =>
   invoke<void>("paste_system_clipboard_under_cursor");
 export const pasteToExternalHwnd = (hwnd: number) =>
   invoke<void>("paste_to_external_hwnd", { hwnd });
+/** Texto que el historial está arrastrando (macOS: el soltado llega sin él). */
+export const takeTextDrag = () => invoke<string | null>("take_text_drag");
 /** Contenido de un `.atic-drag-*.txt` del historial. */
 export const readClipboardDragText = (path: string) =>
   invoke<string>("read_clipboard_drag_text", { path });
