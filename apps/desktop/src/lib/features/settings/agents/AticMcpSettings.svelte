@@ -41,7 +41,10 @@
             let next: McpState;
             if (!info?.available) next = "missing";
             else if (info.signedIn === false) next = "signedOut";
-            else next = (await agentMcpStatus(agent.cli).catch(() => false)) ? "on" : "off";
+            else
+              next = (await agentMcpStatus(agent.cli).catch(() => false))
+                ? "on"
+                : "off";
             states = { ...states, [agent.cli]: next };
           }),
         ),
@@ -80,7 +83,10 @@
   }
 </script>
 
-<SettingsGroup title={t("settings.agents.aticMcpTitle")} hint={t("settings.agents.aticMcpHint")}>
+<SettingsGroup
+  title={t("settings.agents.aticMcpTitle")}
+  hint={t("settings.agents.aticMcpHint")}
+>
   {#each AGENTS as agent (agent.cli)}
     {@const state = states[agent.cli] ?? null}
     <SettingsRow bare>

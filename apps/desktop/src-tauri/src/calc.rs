@@ -866,7 +866,7 @@ fn money_text(value: f64, decimals: usize, locale: Locale) -> String {
 fn insert_groups(digits: &str, sep: char) -> String {
     let mut out = String::with_capacity(digits.len() + digits.len() / 3);
     for (i, c) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i) % 3 == 0 {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
             out.push(sep);
         }
         out.push(c);
@@ -890,6 +890,9 @@ fn is_zero_money(text: &str, locale: Locale) -> bool {
 /// CLP es la base de la tabla: su «fecha» no es una tasa y no se muestra.
 /// Cuando participa una sola tasa con fecha (USD → CLP), manda esa fecha;
 /// cuando participan dos, se nombran las dos.
+// Dos monedas × (código, fecha, origen) más frescura e idioma: agruparlos en
+// un struct solo movería la lista de lugar.
+#[allow(clippy::too_many_arguments)]
 fn rate_source(
     from_code: &str,
     from_date: &str,

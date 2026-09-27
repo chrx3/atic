@@ -267,6 +267,7 @@
         0 0 0 2px color-mix(in sRGB, var(--accent) 85%, transparent),
         0 0 0 0 color-mix(in sRGB, var(--accent) 45%, transparent);
     }
+
     100% {
       box-shadow:
         0 0 0 1px color-mix(in sRGB, var(--rb-text) 12%, transparent),

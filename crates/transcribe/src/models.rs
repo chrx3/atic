@@ -26,6 +26,9 @@ pub struct ModelInfo {
 /// Catálogo de modelos ofrecidos.
 /// Default de producto: `base` para dictado y reuniones; es una única
 /// descarga pequeña y rápida. Modelos superiores son opt-in.
+/// Las variantes cuantizadas q5_0/q5_1 son el mismo modelo con menos disco y
+/// RAM (y algo menos de CPU por ancho de banda); la pérdida de precisión es
+/// mínima. Mismo motor y mismo formato, así que se descargan aparte.
 pub const CATALOG: &[ModelInfo] = &[
     ModelInfo {
         id: "base",
@@ -42,6 +45,13 @@ pub const CATALOG: &[ModelInfo] = &[
         approx_size_bytes: 487_601_967,
     },
     ModelInfo {
+        id: "small-q5_1",
+        display_name: "Small q5_1 — misma precisión, menos disco (~181 MB)",
+        file_name: "ggml-small-q5_1.bin",
+        url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small-q5_1.bin",
+        approx_size_bytes: 190_085_487,
+    },
+    ModelInfo {
         id: "medium",
         display_name: "Medium — más preciso, más CPU (~1.5 GB)",
         file_name: "ggml-medium.bin",
@@ -49,11 +59,26 @@ pub const CATALOG: &[ModelInfo] = &[
         approx_size_bytes: 1_533_763_059,
     },
     ModelInfo {
+        id: "medium-q5_0",
+        display_name: "Medium q5_0 — misma precisión, menos disco (~514 MB)",
+        file_name: "ggml-medium-q5_0.bin",
+        url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium-q5_0.bin",
+        approx_size_bytes: 539_212_467,
+    },
+    ModelInfo {
         id: "large-v3-turbo",
         display_name: "Large v3 Turbo — máxima calidad, mucha CPU (~1.6 GB)",
         file_name: "ggml-large-v3-turbo.bin",
         url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin",
         approx_size_bytes: 1_624_555_275,
+    },
+    ModelInfo {
+        id: "large-v3-turbo-q5_0",
+        display_name: "Large v3 Turbo q5_0 — máxima calidad, un tercio del disco (~547 MB)",
+        file_name: "ggml-large-v3-turbo-q5_0.bin",
+        url:
+            "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin",
+        approx_size_bytes: 574_041_195,
     },
 ];
 
@@ -112,4 +137,47 @@ pub fn require_downloaded(models_dir: &Path, id: &str) -> Result<PathBuf> {
         return Err(TranscribeError::ModelNotDownloaded(id.to_string()));
     }
     Ok(model_path(models_dir, info))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    #[test]
+    fn catalogo_sin_ids_ni_archivos_duplicados() {
+        let mut ids = HashSet::new();
+        let mut files = HashSet::new();
+        for info in CATALOG {
+            assert!(ids.insert(info.id), "id duplicado: {}", info.id);
+            assert!(
+                files.insert(info.file_name),
+                "archivo duplicado: {}",
+                info.file_name
+            );
+            assert!(
+                info.url.starts_with("https://"),
+                "url insegura: {}",
+                info.url
+            );
+            assert!(info.approx_size_bytes > 0, "tamaño inválido: {}", info.id);
+            assert_eq!(find(info.id).map(|m| m.id), Some(info.id));
+        }
+    }
+
+    #[test]
+    fn variantes_cuantizadas_pesan_menos_que_su_modelo_base() {
+        for (quant, base) in [
+            ("small-q5_1", "small"),
+            ("medium-q5_0", "medium"),
+            ("large-v3-turbo-q5_0", "large-v3-turbo"),
+        ] {
+            let q = find(quant).expect("existe la variante cuantizada");
+            let b = find(base).expect("existe el modelo base");
+            assert!(
+                q.approx_size_bytes < b.approx_size_bytes,
+                "{quant} debería pesar menos que {base}"
+            );
+        }
+    }
 }

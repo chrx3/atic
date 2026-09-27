@@ -7115,7 +7115,6 @@
     transform: rotate(calc(var(--clock, 0) / 0.8 * 1turn));
   }
 
-
   @media (prefers-reduced-motion: reduce) {
     .p-live-spin {
       animation: none;
@@ -7299,8 +7298,16 @@
    * desfasa cada punto como antes lo hacía `animation-delay`.
    */
   .p-live-act[data-act="thinking"] i {
-    opacity: calc(0.3 + 0.7 * (0.5 - 0.5 * cos(calc((var(--clock, 0) - var(--ph, 0)) / 1.2 * 1turn))));
-    transform: scale(calc(0.8 + 0.3 * (0.5 - 0.5 * cos(calc((var(--clock, 0) - var(--ph, 0)) / 1.2 * 1turn)))));
+    opacity: calc(
+      0.3 + 0.7 *
+        (0.5 - 0.5 * cos(calc((var(--clock, 0) - var(--ph, 0)) / 1.2 * 1turn)))
+    );
+    transform: scale(
+      calc(
+        0.8 + 0.3 *
+          (0.5 - 0.5 * cos(calc((var(--clock, 0) - var(--ph, 0)) / 1.2 * 1turn)))
+      )
+    );
   }
 
   .p-live-act[data-act="writing"] i {
@@ -7332,10 +7339,11 @@
     position: absolute;
     bottom: 1px;
     left: 0;
-    width: 0;
     height: 2px;
+
     /* Se traza en el 70 % del ciclo y se apaga en el resto. */
     --p: calc(mod(var(--clock, 0), 1.1) / 1.1);
+
     width: calc(min(1, var(--p) / 0.7) * 14px);
     opacity: calc(1 - max(0, (var(--p) - 0.7) / 0.3));
   }
@@ -7346,8 +7354,10 @@
     left: 0;
     width: 2px;
     height: 10px;
+
     /* Ida y vuelta de 0 a 12 px en 2,2 s. */
     --p: calc(1 - mod(var(--clock, 0), 2.2) / 1.1);
+
     transform: translateX(calc(12px * (1 - max(var(--p), -1 * var(--p)))));
   }
 
@@ -7356,6 +7366,7 @@
     width: 6px;
     height: 9px;
     border-radius: 1px;
+
     /* Cursor que parpadea: encendido la mitad del ciclo, apagado la otra. */
     opacity: calc(1 - round(down, mod(var(--clock, 0), 0.9) / 0.45, 1));
   }
@@ -7397,14 +7408,6 @@
     background: transparent;
     transform: rotate(calc(var(--clock, 0) / 0.9 * 1turn));
   }
-
-
-
-
-
-
-
-
 
   .p-live-row-label {
     min-width: 0;
@@ -7495,8 +7498,14 @@
     width: 100%;
   }
 
-  .p-root[data-edge="left"] .p-face[data-face="dictation"] .p-face-wave :global(.rb-wave-voice),
-  .p-root[data-edge="right"] .p-face[data-face="dictation"] .p-face-wave :global(.rb-wave-voice) {
+  .p-root[data-edge="left"]
+    .p-face[data-face="dictation"]
+    .p-face-wave
+    :global(.rb-wave-voice),
+  .p-root[data-edge="right"]
+    .p-face[data-face="dictation"]
+    .p-face-wave
+    :global(.rb-wave-voice) {
     height: 1.6rem;
   }
 
@@ -8858,16 +8867,15 @@
    * pedido de atención y tiene que distinguirse sin leerlo.
    */
   .p-update.is-alert {
-    border-color: color-mix(in sRGB, var(--warn) 55%, transparent);
     background: color-mix(in sRGB, var(--warn) 14%, transparent);
     color: var(--warn);
     border-color: color-mix(
       in sRGB,
-      var(--warn) calc(55% + 45% * (0.5 - 0.5 * cos(calc(var(--clock, 0) / 2.4 * 1turn)))),
+      var(--warn)
+        calc(55% + 45% * (0.5 - 0.5 * cos(calc(var(--clock, 0) / 2.4 * 1turn)))),
       transparent
     );
   }
-
 
   /* El volumen es información, no un aviso: tono normal y sin puntero. */
   .p-update.is-volume {
@@ -8914,7 +8922,6 @@
     position: absolute;
     z-index: 6;
   }
-
 
   @keyframes p-agent-ready-in {
     from {

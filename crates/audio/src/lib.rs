@@ -951,7 +951,10 @@ impl CaptureSession {
 }
 
 /// Pista de sistema activa: loopback WASAPI (cpal) o ScreenCaptureKit.
-#[cfg_attr(target_os = "macos", allow(dead_code))]
+///
+/// El valor no se lee nunca: tenerlo es lo que mantiene viva la captura, y
+/// soltarlo la detiene (RAII). De ahí el `allow`, en todas las plataformas.
+#[allow(dead_code)]
 enum SystemStream {
     #[cfg(not(target_os = "macos"))]
     Cpal(cpal::Stream),

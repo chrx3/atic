@@ -30,6 +30,8 @@ export function leerPayloadFlip(raw: string): { tipo: FlipFuente; id: string } |
 }
 
 export const BORRAR_RADIO = 16;
+/** Tamaños del borrador (radio en px de papel): chico, mediano y grande. */
+export const BORRAR_RADIOS = [8, 16, 32] as const;
 
 export const TEXTO_W = 280;
 export const TEXTO_H = 96;
@@ -54,8 +56,72 @@ export const TEXTO_PAD_X = 24;
 export const TEXTO_PAD_Y = 28;
 /** Alto de una caja de una línea sin encoger: un encabezado cabe con aire. */
 export const TEXTO_ALTO_MIN = 48;
+/** Ancho de una caja recién creada o casi vacía: entra el placeholder. */
+export const TEXTO_ANCHO_MIN = 160;
+/** Hasta acá se ensancha sola; de ahí en más el texto baja de renglón. */
+export const TEXTO_ANCHO_MAX = 560;
+/** Aire para el cursor al final del renglón más largo: sin él, envuelve antes. */
+const TEXTO_CURSOR = 6;
 
-export type Herramienta = "select" | "draw" | "highlight" | "eraser" | "text" | "check";
+export type Herramienta =
+  "select" | "hand" | "draw" | "highlight" | "eraser" | "text" | "check";
+
+/** Varios elementos elegidos a la vez: objetos por id, trazos por índice. */
+export interface Grupo {
+  ids: string[];
+  trazos: number[];
+}
+
+/**
+ * Lo que toca un recuadro de selección.
+ *
+ * Un objeto entra si su marco se cruza con el recuadro, aunque sea en parte;
+ * un trazo, si alguno de sus puntos cae adentro. Así no hace falta encerrar
+ * todo entero, y una caja grande casi vacía no se lleva trazos lejanos.
+ */
+export function enRecuadro(bloques: NoteBlock[], r: Marco): Grupo {
+  const x1 = r.x + r.w;
+  const y1 = r.y + r.h;
+  const ids: string[] = [];
+  const trazos: number[] = [];
+  for (const bloque of bloques) {
+    if (bloque.kind === "ink") {
+      bloque.strokes.forEach((trazo, i) => {
+        if (trazo.points.some(([x, y]) => x >= r.x && x <= x1 && y >= r.y && y <= y1)) {
+          trazos.push(i);
+        }
+      });
+      continue;
+    }
+    const m = marcoDe(bloque);
+    if (m.x < x1 && m.x + m.w > r.x && m.y < y1 && m.y + m.h > r.y) ids.push(bloque.id);
+  }
+  return { ids, trazos };
+}
+
+/** Todo el tablero como grupo: lo que elige Ctrl+A. */
+export function grupoCompleto(bloques: NoteBlock[]): Grupo {
+  const ids: string[] = [];
+  const trazos: number[] = [];
+  for (const bloque of bloques) {
+    if (bloque.kind === "ink") bloque.strokes.forEach((_, i) => trazos.push(i));
+    else ids.push(bloque.id);
+  }
+  return { ids, trazos };
+}
+
+/** El tablero sin lo del grupo. No muta la entrada. */
+export function quitarGrupo(bloques: NoteBlock[], grupo: Grupo): NoteBlock[] {
+  const fuera = new Set(grupo.ids);
+  const trazosFuera = new Set(grupo.trazos);
+  return bloques
+    .filter((b) => !fuera.has(b.id))
+    .map((b) =>
+      b.kind === "ink"
+        ? { ...b, strokes: b.strokes.filter((_, i) => !trazosFuera.has(i)) }
+        : b,
+    );
+}
 
 /**
  * Página lógica del tablero, en píxeles de papel. Todo empieza en una.
@@ -345,6 +411,43 @@ export function altoEnvolvente(
 }
 
 /**
+ * El tamaño que pide un texto para verse entero al tamaño de fuente base.
+ *
+ * Ancho: el del renglón más largo, entre el mínimo y el tope. Pasado el tope
+ * envuelve. Alto: lo que ocupan los renglones a ese ancho.
+ */
+export function medidaTexto(
+  body: string,
+  medir: (s: string, tamano: number) => number,
+  tamano = TEXTO_FUENTE,
+): { w: number; h: number } {
+  let masLargo = 0;
+  for (const linea of body.split("\n")) {
+    masLargo = Math.max(masLargo, medir(linea, tamano));
+  }
+  const w = Math.ceil(
+    Math.min(
+      TEXTO_ANCHO_MAX,
+      Math.max(TEXTO_ANCHO_MIN, masLargo + TEXTO_PAD_X + TEXTO_CURSOR),
+    ),
+  );
+  return { w, h: altoParaAncho(body, w, medir, tamano) };
+}
+
+/** Alto que pide el texto a un ancho dado, sin bajar del mínimo de una caja. */
+export function altoParaAncho(
+  body: string,
+  ancho: number,
+  medir: (s: string, tamano: number) => number,
+  tamano = TEXTO_FUENTE,
+): number {
+  return Math.max(
+    TEXTO_ALTO_MIN,
+    Math.ceil(altoEnvolvente(body, ancho, tamano, medir)),
+  );
+}
+
+/**
  * El tamaño de fuente más grande que hace entrar el cuerpo en la caja.
  *
  * Nunca sube del base ni baja del mínimo. Sirve para que encoger una nota no
@@ -394,6 +497,147 @@ export function borrarPuntos(
       else tramo.push([px, py]);
     }
     cerrar();
+  }
+  return salida;
+}
+
+/** Distancia de un punto a un segmento. */
+function distanciaSegmento(
+  x: number,
+  y: number,
+  [ax, ay]: [number, number],
+  [bx, by]: [number, number],
+): number {
+  const dx = bx - ax;
+  const dy = by - ay;
+  const largo2 = dx * dx + dy * dy;
+  const t =
+    largo2 === 0
+      ? 0
+      : Math.max(0, Math.min(1, ((x - ax) * dx + (y - ay) * dy) / largo2));
+  return Math.hypot(x - (ax + t * dx), y - (ay + t * dy));
+}
+
+/**
+ * El trazo que está bajo el punto, o -1.
+ *
+ * Mide contra los segmentos y no contra los puntos: un trazo recto y rápido
+ * tiene pocos puntos y entre ellos también es trazo. Gana el de más arriba
+ * (el último dibujado), como con los objetos.
+ */
+export function trazoEnPunto(
+  trazos: InkStroke[],
+  x: number,
+  y: number,
+  tolerancia: number,
+): number {
+  for (let i = trazos.length - 1; i >= 0; i--) {
+    const trazo = trazos[i];
+    if (!trazo) continue;
+    const alcance = tolerancia + trazo.width / 2;
+    const puntos = trazo.points;
+    if (puntos.length === 1 && puntos[0]) {
+      if (Math.hypot(x - puntos[0][0], y - puntos[0][1]) <= alcance) return i;
+      continue;
+    }
+    for (let j = 1; j < puntos.length; j++) {
+      const a = puntos[j - 1];
+      const b = puntos[j];
+      if (a && b && distanciaSegmento(x, y, a, b) <= alcance) return i;
+    }
+  }
+  return -1;
+}
+
+/** Caja de un trazo, contando su grosor. */
+export function cajaTrazo(trazo: InkStroke): Marco {
+  let x0 = Infinity;
+  let y0 = Infinity;
+  let x1 = -Infinity;
+  let y1 = -Infinity;
+  for (const [x, y] of trazo.points) {
+    x0 = Math.min(x0, x);
+    y0 = Math.min(y0, y);
+    x1 = Math.max(x1, x);
+    y1 = Math.max(y1, y);
+  }
+  if (!Number.isFinite(x0)) return { x: 0, y: 0, w: 0, h: 0 };
+  const pad = trazo.width / 2;
+  return { x: x0 - pad, y: y0 - pad, w: x1 - x0 + pad * 2, h: y1 - y0 + pad * 2 };
+}
+
+/** El trazo corrido `dx, dy`. */
+export function moverTrazo(trazo: InkStroke, dx: number, dy: number): InkStroke {
+  return { ...trazo, points: trazo.points.map(([x, y]) => [x + dx, y + dy]) };
+}
+
+/**
+ * El trazo escalado por `factor` desde la esquina de arriba a la izquierda de
+ * su caja, que queda quieta. El grosor escala con el dibujo: así se ve igual,
+ * solo más grande o más chico.
+ */
+export function escalarTrazo(trazo: InkStroke, factor: number): InkStroke {
+  const caja = cajaTrazo(trazo);
+  const f = Math.max(0.05, factor);
+  const pad = trazo.width / 2;
+  const ox = caja.x + pad;
+  const oy = caja.y + pad;
+  return {
+    ...trazo,
+    width: Math.max(0.5, trazo.width * f),
+    points: trazo.points.map(([x, y]) => [ox + (x - ox) * f, oy + (y - oy) * f]),
+  };
+}
+
+/**
+ * La página de un objeto o trazo: la de su centro.
+ *
+ * Lo que cruza el borde entre dos páginas es de una sola, así que eliminar
+ * una página nunca lo parte a la mitad.
+ */
+function paginaDe(marco: Marco): number {
+  return Math.floor((marco.x + marco.w / 2) / PAGINA_W);
+}
+
+/** Cuánto hay en la página `indice`: lo que se perdería al eliminarla. */
+export function contenidoDePagina(
+  bloques: NoteBlock[],
+  indice: number,
+): { objetos: number; trazos: number } {
+  let objetos = 0;
+  let trazos = 0;
+  for (const bloque of bloques) {
+    if (bloque.kind === "ink") {
+      trazos += bloque.strokes.filter((t) => paginaDe(cajaTrazo(t)) === indice).length;
+    } else if (paginaDe(marcoDe(bloque)) === indice) {
+      objetos++;
+    }
+  }
+  return { objetos, trazos };
+}
+
+/**
+ * El tablero sin la página `indice`: se va lo que había en ella y lo de las
+ * páginas de la derecha se corre una página a la izquierda, para que no
+ * quede un hueco. No muta la entrada.
+ */
+export function quitarPaginaDe(bloques: NoteBlock[], indice: number): NoteBlock[] {
+  const salida: NoteBlock[] = [];
+  for (const bloque of bloques) {
+    if (bloque.kind === "ink") {
+      const strokes = bloque.strokes
+        .filter((t) => paginaDe(cajaTrazo(t)) !== indice)
+        .map((t) =>
+          paginaDe(cajaTrazo(t)) > indice ? moverTrazo(t, -PAGINA_W, 0) : t,
+        );
+      salida.push({ ...bloque, strokes });
+      continue;
+    }
+    const pagina = paginaDe(marcoDe(bloque));
+    if (pagina === indice) continue;
+    salida.push(
+      pagina > indice ? { ...bloque, x: (bloque.x ?? 0) - PAGINA_W } : bloque,
+    );
   }
   return salida;
 }

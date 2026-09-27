@@ -194,7 +194,7 @@ pub(crate) fn changed_since(root: &Path, since_ms: i64) -> Vec<ChangedFile> {
             break;
         }
     }
-    out.sort_by(|a, b| b.modified_ms.cmp(&a.modified_ms));
+    out.sort_by_key(|f| std::cmp::Reverse(f.modified_ms));
     out.truncate(MAX_RESULTS);
     out
 }

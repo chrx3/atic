@@ -14,10 +14,12 @@
     tabPanel,
   } from "$lib/motion";
   import Icon from "$ui/Icon.svelte";
+  import ConfirmDialog from "$ui/ConfirmDialog.svelte";
   import {
     ListChecks,
     Minus,
     MousePointer2,
+    Hand,
     Pencil,
     Highlighter,
     Plus,
@@ -49,6 +51,7 @@
     CaptureItem,
     CheckItem,
     ClipboardItem,
+    InkStroke,
     NoteBlock,
     Recording,
     Snippet,
@@ -64,14 +67,26 @@
   import { pickBoardExportPath, safeFileName } from "$ipc/dialogs";
   import {
     ajustarFuente,
-    altoEnvolvente,
+    altoParaAncho,
     anchoParaBloques,
     cantidadPaginas,
     BORRAR_RADIO,
+    BORRAR_RADIOS,
     borrarLineaCercana,
     borrarPuntos,
+    cajaTrazo,
     clampZoom,
     conAlfa,
+    contenidoDePagina,
+    enRecuadro,
+    type Grupo,
+    grupoCompleto,
+    quitarGrupo,
+    quitarPaginaDe,
+    escalarTrazo,
+    medidaTexto,
+    moverTrazo,
+    trazoEnPunto,
     FLIP_MIME,
     type FlipFuente,
     type Herramienta,
@@ -86,7 +101,6 @@
     TABLERO_MAX,
     tamanoImagen,
     TEXTO_ALTO_MIN,
-    TEXTO_FUENTE,
     TEXTO_H,
     TEXTO_W,
     FUENTE_TABLERO,
@@ -149,6 +163,23 @@
   const esTintaLibre = $derived(!LAPICES.some((l) => l.color === tinta));
   /** Paleta flotante de colores: segundo clic en el lápiz activo la abre. */
   let paletaAbierta = $state(false);
+  /** Radio del borrador en px de papel; la paleta del borrador lo elige. */
+  let borradorRadio = $state<number>(BORRAR_RADIO);
+  /** Dónde está el puntero con el borrador, para dibujar su alcance. */
+  let punteroBorrador = $state<{ x: number; y: number } | null>(null);
+  /** Trazo elegido con la herramienta de selección (índice en la tinta). */
+  let trazoSel = $state<number | null>(null);
+  /** Recuadro de selección mientras se arrastra, en px de papel. */
+  let recuadro = $state<{ x: number; y: number; w: number; h: number } | null>(null);
+  /** Espacio mantenido: la mano, sin cambiar de herramienta. */
+  let espacio = $state(false);
+  /** Arrastrar mueve la vista: con la mano o con Espacio. */
+  const mano = $derived(herramienta === "hand" || espacio);
+
+  /** Herramientas con paleta propia: los lápices (color) y el borrador (tamaño). */
+  function conPaleta(id: Herramienta): boolean {
+    return id === "draw" || id === "highlight" || id === "eraser";
+  }
   let menuExport = $state(false);
   let exportando = $state(false);
   let avisoExport = $state("");
@@ -222,13 +253,26 @@
   }
 
   function elegirHerramienta(id: Herramienta) {
-    // Los lápices abren la paleta al primer clic; otro clic la alterna.
-    if ((id === "draw" || id === "highlight") && herramienta === id) {
+    // Lápices y borrador abren su paleta al primer clic; otro clic la alterna.
+    if (conPaleta(id) && herramienta === id) {
       paletaAbierta = !paletaAbierta;
       return;
     }
     herramienta = id;
-    paletaAbierta = id === "draw" || id === "highlight";
+    paletaAbierta = conPaleta(id);
+  }
+
+  function elegirRadio(radio: number) {
+    borradorRadio = radio;
+    paletaAbierta = false;
+  }
+
+  /** `[` y `]`: un tamaño menos o más, sin abrir la paleta. */
+  function pasoRadio(sentido: 1 | -1) {
+    const i = BORRAR_RADIOS.findIndex((r) => r >= borradorRadio);
+    const actual = i < 0 ? BORRAR_RADIOS.length - 1 : i;
+    const siguiente = Math.max(0, Math.min(BORRAR_RADIOS.length - 1, actual + sentido));
+    borradorRadio = BORRAR_RADIOS[siguiente] ?? BORRAR_RADIO;
   }
 
   function elegirColor(color: string) {
@@ -282,7 +326,20 @@
       }
     | { tipo: "pan"; px: number; py: number; ox: number; oy: number }
     | { tipo: "trazo" }
-    | { tipo: "borrar"; px: number; py: number; movido: boolean };
+    | { tipo: "borrar"; px: number; py: number; movido: boolean }
+    | { tipo: "recuadro"; x0: number; y0: number; px: number; py: number }
+    | ({ tipo: "moverTrazo" } & ArrastreTrazo)
+    | ({ tipo: "escalarTrazo" } & ArrastreTrazo);
+
+  /** Un tipo por miembro: con `tipo` como unión, TS no descarta el miembro. */
+  type ArrastreTrazo = {
+    indice: number;
+    /** El trazo como estaba al empezar: cada movimiento parte de acá. */
+    original: InkStroke;
+    px: number;
+    py: number;
+    registrado: boolean;
+  };
 
   let arrastre: Arrastre | null = null;
 
@@ -325,7 +382,8 @@
     pasado = pasado.slice(0, -1);
     futuro = [...futuro, clonar(bloques)];
     bloques = previo;
-    seleccion = "";
+    soltarSeleccion();
+    papelParaContenido();
   }
 
   function rehacer() {
@@ -335,11 +393,32 @@
     futuro = futuro.slice(0, -1);
     pasado = [...pasado, clonar(bloques)];
     bloques = siguiente;
-    seleccion = "";
+    soltarSeleccion();
+    papelParaContenido();
   }
 
   const objetos = $derived(bloques.filter((b) => b.kind !== "ink"));
   const trazos = $derived(bloques.find((b) => b.kind === "ink")?.strokes ?? []);
+  /** Caja de lo elegido con el recuadro o con Ctrl+A. */
+  const cajaGrupo = $derived.by(() => {
+    if (!grupo) return null;
+    const { ids, trazos: indices } = grupo;
+    const cajas = [
+      ...objetos.filter((b) => ids.includes(b.id)).map(marcoDe),
+      ...trazos.filter((_, i) => indices.includes(i)).map(cajaTrazo),
+    ].filter((c) => c.w > 0 && c.h > 0);
+    if (cajas.length === 0) return null;
+    const x = Math.min(...cajas.map((c) => c.x));
+    const y = Math.min(...cajas.map((c) => c.y));
+    const x1 = Math.max(...cajas.map((c) => c.x + c.w));
+    const y1 = Math.max(...cajas.map((c) => c.y + c.h));
+    return { x, y, w: x1 - x, h: y1 - y };
+  });
+  /** Caja del trazo elegido, en px de papel; `null` si no hay ninguno. */
+  const cajaSel = $derived.by(() => {
+    const trazo = trazoSel === null ? undefined : trazos[trazoSel];
+    return trazo ? cajaTrazo(trazo) : null;
+  });
   const vacio = $derived(objetos.length === 0 && trazos.length === 0 && !trazoVivo);
 
   const herramientas = $derived([
@@ -348,6 +427,12 @@
       icon: MousePointer2,
       label: t("overlay.windowFlip.toolSelect"),
       key: "V",
+    },
+    {
+      id: "hand" as const,
+      icon: Hand,
+      label: t("overlay.windowFlip.toolHand"),
+      key: "M",
     },
     {
       id: "draw" as const,
@@ -381,9 +466,16 @@
     },
   ]);
 
-  // La paleta solo vive sobre los lápices: cualquier otro destino la cierra.
+  // La paleta solo vive sobre lápices y borrador: cualquier otro destino la
+  // cierra. Fuera de selección no queda un trazo elegido; fuera del borrador,
+  // su círculo no se dibuja.
   $effect(() => {
-    if (herramienta !== "draw" && herramienta !== "highlight") paletaAbierta = false;
+    if (!conPaleta(herramienta)) paletaAbierta = false;
+    if (herramienta !== "select") {
+      trazoSel = null;
+      grupo = null;
+    }
+    if (herramienta !== "eraser") punteroBorrador = null;
   });
 
   // Al abrir sobre otra ventana se sueltan historial, selección y vista. El
@@ -399,6 +491,7 @@
       futuro = [];
       sesionAntes = null;
       seleccion = "";
+      trazoSel = null;
       herramienta = "select";
       paletaAbierta = false;
       trazoVivo = null;
@@ -693,6 +786,89 @@
     marcarPagina(papelW);
   }
 
+  /** Pedido de confirmación en curso: eliminar una página o lo elegido. */
+  let confirmar = $state<
+    | { tipo: "pagina"; indice: number; objetos: number; trazos: number }
+    | { tipo: "grupo"; n: number; todo: boolean }
+    | null
+  >(null);
+  /** Lo elegido con el recuadro o con Ctrl+A, a un Supr de borrarse. */
+  let grupo = $state<Grupo | null>(null);
+
+  function cuantos(g: Grupo): number {
+    return g.ids.length + g.trazos.length;
+  }
+
+  /** Pide confirmar el borrado de lo elegido: dice cuánto y si es todo. */
+  function pedirBorrarGrupo() {
+    if (!grupo) return;
+    const n = cuantos(grupo);
+    if (n === 0) return;
+    confirmar = { tipo: "grupo", n, todo: n === cuantos(grupoCompleto(bloques)) };
+  }
+
+  /** La ✕ de una miniatura. Con contenido pregunta antes: todo se pierde. */
+  function pedirQuitarPagina(indice: number) {
+    const { objetos, trazos } = contenidoDePagina(bloques, indice);
+    if (objetos + trazos > 0) {
+      confirmar = { tipo: "pagina", indice, objetos, trazos };
+      return;
+    }
+    if (indice === paginasTotales - 1) quitarPagina();
+    else eliminarPagina(indice);
+  }
+
+  /**
+   * Quita la página y lo que tiene; lo de la derecha se corre. Si es la única,
+   * queda vacía. Se deshace con Ctrl+Z, como todo.
+   */
+  function eliminarPagina(indice: number) {
+    registrar();
+    bloques = quitarPaginaDe(clonar(bloques), indice);
+    soltarSeleccion();
+    if (paginasTotales > 1) {
+      papelW -= PAGINA_W;
+      panX -= (PAGINA_W / 2) * zoom;
+      marcarPagina(Math.min(indice, paginasTotales - 1) * PAGINA_W);
+    }
+    tocar();
+  }
+
+  function borrarGrupo() {
+    if (!grupo) return;
+    registrar();
+    bloques = quitarGrupo(clonar(bloques), grupo);
+    soltarSeleccion();
+    // Si no quedó nada, el tablero vuelve a una página.
+    if (cuantos(grupoCompleto(bloques)) === 0 && papelW > PAGINA_W) {
+      papelW = PAGINA_W;
+      encuadrar();
+    }
+    tocar();
+  }
+
+  function soltarSeleccion() {
+    seleccion = "";
+    trazoSel = null;
+    grupo = null;
+  }
+
+  /**
+   * Tras deshacer, el papel tiene que alcanzar lo que volvió: eliminar una
+   * página achica el papel, y deshacerlo devuelve su contenido pero no el ancho.
+   */
+  function papelParaContenido() {
+    let necesario = anchoParaBloques(bloques);
+    for (const trazo of trazos) {
+      const caja = cajaTrazo(trazo);
+      necesario = Math.max(
+        necesario,
+        Math.ceil((caja.x + caja.w) / PAGINA_W) * PAGINA_W,
+      );
+    }
+    papelW = Math.max(papelW, Math.min(TABLERO_MAX, necesario));
+  }
+
   /** Punto del papel que hoy está al centro de la vista: donde cae lo pegado. */
   function centroVisible(): { x: number; y: number } {
     const r = papelRect();
@@ -720,6 +896,8 @@
 
   function elegir(id: string) {
     seleccion = id;
+    trazoSel = null;
+    grupo = null;
     alFrente(id);
   }
 
@@ -770,10 +948,8 @@
     const dest = event.target as HTMLElement;
     if (dest !== event.currentTarget && !dest.classList.contains("tinta")) return;
     const p = enPapel(event.clientX, event.clientY);
-    if (herramienta === "select") {
-      // Con select no se coloca nada: el papel vacío mueve la vista al arrastrar
-      // y un clic limpio deselecciona. Antes el papel tapaba la vista y solo se
-      // podía girar mirando el canto, que era más fácil vararse en el zoom.
+    if (mano) {
+      // La mano solo mueve la vista: ni elige ni suelta lo elegido.
       (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
       arrastre = {
         tipo: "pan",
@@ -782,18 +958,48 @@
         ox: panX,
         oy: panY,
       };
+      panSinMovimiento = false;
+      return;
+    }
+    grupo = null;
+    if (herramienta === "select") {
+      // Un trazo bajo el clic se elige y se arrastra, como un objeto.
+      const capa = bloques.find((b) => b.kind === "ink");
+      const r = papelRect();
+      const unidad = r ? r.width / Math.max(1, papelW) : 1;
+      const tocado =
+        capa?.kind === "ink" ? trazoEnPunto(capa.strokes, p.x, p.y, 6 / unidad) : -1;
+      const trazo = capa?.kind === "ink" ? capa.strokes[tocado] : undefined;
+      if (trazo) {
+        seleccion = "";
+        trazoSel = tocado;
+        (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+        arrastre = {
+          tipo: "moverTrazo",
+          indice: tocado,
+          original: $state.snapshot(trazo) as InkStroke,
+          px: event.clientX,
+          py: event.clientY,
+          registrado: false,
+        };
+        return;
+      }
+      // Papel vacío: arrastrar dibuja un recuadro que elige lo que toca; un
+      // clic limpio deselecciona. La vista se mueve con la mano (M), Espacio
+      // o el botón del medio.
+      (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+      arrastre = {
+        tipo: "recuadro",
+        x0: p.x,
+        y0: p.y,
+        px: event.clientX,
+        py: event.clientY,
+      };
       panSinMovimiento = true;
       return;
     }
     if (herramienta === "text") {
-      poner({
-        kind: "text",
-        id: nuevoId(),
-        body: "",
-        ...ubicar(280, 96, p.x, p.y),
-        w: 280,
-        h: 96,
-      });
+      insertarTexto("", p.x, p.y);
       herramienta = "select";
       return;
     }
@@ -821,6 +1027,20 @@
   }
 
   function empezarTinta(event: PointerEvent) {
+    // Con Espacio mantenido, hasta con el lápiz en la mano se mueve la vista.
+    if (espacio && event.button === 0) {
+      event.preventDefault();
+      (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+      arrastre = {
+        tipo: "pan",
+        px: event.clientX,
+        py: event.clientY,
+        ox: panX,
+        oy: panY,
+      };
+      panSinMovimiento = false;
+      return;
+    }
     if (herramienta === "eraser") empezarBorrado(event);
     else empezarTrazo(event);
   }
@@ -885,7 +1105,7 @@
     let trazos = capa.strokes;
     const pasos = Math.max(
       1,
-      Math.ceil(Math.hypot(hasta.x - desde.x, hasta.y - desde.y) / (BORRAR_RADIO / 2)),
+      Math.ceil(Math.hypot(hasta.x - desde.x, hasta.y - desde.y) / (borradorRadio / 2)),
     );
     for (let i = 1; i <= pasos; i++) {
       const t = i / pasos;
@@ -893,7 +1113,7 @@
         trazos,
         desde.x + (hasta.x - desde.x) * t,
         desde.y + (hasta.y - desde.y) * t,
-        BORRAR_RADIO,
+        borradorRadio,
       );
     }
     capa.strokes = trazos;
@@ -909,7 +1129,7 @@
       const p = enPapel(drag.px, drag.py);
       const capa = bloques.find((b) => b.kind === "ink");
       if (capa?.kind === "ink") {
-        const res = borrarLineaCercana(capa.strokes, p.x, p.y, BORRAR_RADIO);
+        const res = borrarLineaCercana(capa.strokes, p.x, p.y, borradorRadio);
         if (res.borro) {
           registrar();
           capa.strokes = res.trazos;
@@ -1003,9 +1223,95 @@
   let panSinMovimiento = false;
   const PAN_UMBRAL = 4;
 
+  /** Esquina del trazo elegido: arrastrarla lo escala. */
+  function empezarEscalarTrazo(event: PointerEvent) {
+    if (event.button !== 0 || trazoSel === null) return;
+    const capa = bloques.find((b) => b.kind === "ink");
+    const trazo = capa?.kind === "ink" ? capa.strokes[trazoSel] : undefined;
+    if (!trazo) return;
+    event.stopPropagation();
+    event.preventDefault();
+    (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+    arrastre = {
+      tipo: "escalarTrazo",
+      indice: trazoSel,
+      original: $state.snapshot(trazo) as InkStroke,
+      px: event.clientX,
+      py: event.clientY,
+      registrado: false,
+    };
+  }
+
+  function quitarTrazo() {
+    const capa = bloques.find((b) => b.kind === "ink");
+    if (capa?.kind !== "ink" || trazoSel === null || !capa.strokes[trazoSel]) return;
+    registrar();
+    const indice = trazoSel;
+    capa.strokes = capa.strokes.filter((_, i) => i !== indice);
+    trazoSel = null;
+    tocar();
+  }
+
+  function arrastrarTrazo(
+    drag: Extract<Arrastre, { tipo: "moverTrazo" | "escalarTrazo" }>,
+    event: PointerEvent,
+  ) {
+    const r = papelRect();
+    const capa = bloques.find((b) => b.kind === "ink");
+    if (!r || capa?.kind !== "ink") return;
+    const unidad = r.width / Math.max(1, papelW);
+    const dx = (event.clientX - drag.px) / unidad;
+    const dy = (event.clientY - drag.py) / unidad;
+    if (!drag.registrado) {
+      // Un clic con temblor no mueve nada ni ensucia el historial.
+      if (Math.hypot(event.clientX - drag.px, event.clientY - drag.py) <= 3) return;
+      drag.registrado = true;
+      registrar();
+    }
+    const caja = cajaTrazo(drag.original);
+    let nuevo: InkStroke;
+    if (drag.tipo === "moverTrazo") {
+      const dentro = limitar(caja.x + dx, caja.y + dy, caja.w, caja.h);
+      nuevo = moverTrazo(drag.original, dentro.x - caja.x, dentro.y - caja.y);
+    } else {
+      // Proporcional, por la diagonal: una línea recta (caja finita en un
+      // eje) no salta con un movimiento mínimo en ese eje.
+      const deseado = 1 + (dx + dy) / Math.max(1, caja.w + caja.h);
+      const tope = Math.min(
+        (origenX + papelW - caja.x) / Math.max(1, caja.w),
+        (origenY + papelH - caja.y) / Math.max(1, caja.h),
+      );
+      nuevo = escalarTrazo(drag.original, Math.min(tope, deseado));
+    }
+    capa.strokes = capa.strokes.map((t, i) => (i === drag.indice ? nuevo : t));
+  }
+
   function alMover(event: PointerEvent) {
+    if (herramienta === "eraser")
+      punteroBorrador = enPapel(event.clientX, event.clientY);
     const drag = arrastre;
     if (!drag) return;
+    if (drag.tipo === "moverTrazo" || drag.tipo === "escalarTrazo") {
+      arrastrarTrazo(drag, event);
+      return;
+    }
+    if (drag.tipo === "recuadro") {
+      if (
+        panSinMovimiento &&
+        Math.hypot(event.clientX - drag.px, event.clientY - drag.py) > PAN_UMBRAL
+      ) {
+        panSinMovimiento = false;
+      }
+      if (panSinMovimiento) return;
+      const p = enPapel(event.clientX, event.clientY);
+      recuadro = {
+        x: Math.min(drag.x0, p.x),
+        y: Math.min(drag.y0, p.y),
+        w: Math.abs(p.x - drag.x0),
+        h: Math.abs(p.y - drag.y0),
+      };
+      return;
+    }
     if (drag.tipo === "trazo") {
       extenderTrazo(event);
       return;
@@ -1057,7 +1363,39 @@
     bloque.h = h;
   }
 
+  /** Suelta el recuadro: lo que tocó queda elegido; un clic limpio, nada. */
+  function cerrarRecuadro() {
+    const r = recuadro;
+    recuadro = null;
+    arrastre = null;
+    if (panSinMovimiento || !r) {
+      soltarSeleccion();
+      panSinMovimiento = false;
+      return;
+    }
+    panSinMovimiento = false;
+    const elegido = enRecuadro(bloques, r);
+    soltarSeleccion();
+    // Uno solo se elige como siempre: con su asa y su ✕.
+    if (elegido.ids.length === 1 && elegido.trazos.length === 0) {
+      elegir(elegido.ids[0] ?? "");
+    } else if (elegido.ids.length === 0 && elegido.trazos.length === 1) {
+      trazoSel = elegido.trazos[0] ?? null;
+    } else if (cuantos(elegido) > 1) {
+      grupo = elegido;
+    }
+  }
+
   function alSoltarPuntero() {
+    if (arrastre?.tipo === "recuadro") {
+      cerrarRecuadro();
+      return;
+    }
+    if (arrastre?.tipo === "moverTrazo" || arrastre?.tipo === "escalarTrazo") {
+      if (arrastre.registrado) tocar();
+      arrastre = null;
+      return;
+    }
     if (arrastre?.tipo === "trazo") {
       cerrarTrazo();
       return;
@@ -1067,7 +1405,10 @@
       return;
     }
     if (arrastre?.tipo === "pan") {
-      if (panSinMovimiento && herramienta === "select") seleccion = "";
+      if (panSinMovimiento && herramienta === "select") {
+        seleccion = "";
+        trazoSel = null;
+      }
       arrastre = null;
       panSinMovimiento = false;
       return;
@@ -1108,30 +1449,51 @@
   }
 
   /**
-   * Le da al bloque el alto que el texto pide, hasta el fondo del papel.
+   * La caja de texto se ajusta a lo escrito, al ancho y al alto, creciendo y
+   * encogiendo: se ensancha con el renglón más largo hasta un tope y de ahí
+   * baja de renglón.
    *
-   * Sólo crece: si achicás la caja a mano queda como la dejaste y el texto se
-   * ajusta encogiéndose. Sin esto, escribir más de tres renglones en una caja de
-   * 96px dejaba el resto detrás de un scroll que ni se podía tocar — porque el
-   * bloque sin seleccionar tiene `pointer-events: none`.
+   * Si el ancho lo pusiste a mano se respeta y solo se ajusta el alto. Se
+   * reconoce sin guardar nada: una caja con el ancho que el ajuste le habría
+   * dado al texto de antes es automática; con otro, la tocaste tú. Todo se
+   * recorta al papel; si ni así entra, `ajustarFuente` achica la letra.
    */
-  function crecerTexto(bloque: Extract<NoteBlock, { kind: "text" }>) {
-    const w = bloque.w ?? TEXTO_W;
-    const h = bloque.h ?? TEXTO_H;
-    const necesario = Math.ceil(
-      altoEnvolvente(bloque.body, w, TEXTO_FUENTE, medirTexto),
-    );
+  function ajustarTexto(bloque: Extract<NoteBlock, { kind: "text" }>, antes: string) {
+    const x = bloque.x ?? origenX;
     const y = bloque.y ?? origenY;
-    const tope = Math.max(h, origenY + papelH - y);
-    const alto = Math.min(tope, Math.max(h, Math.max(necesario, TEXTO_ALTO_MIN)));
-    if (alto > h) bloque.h = alto;
+    const anchoLibre = Math.max(80, origenX + papelW - x);
+    const altoLibre = Math.max(TEXTO_ALTO_MIN, origenY + papelH - y);
+    const auto = Math.min(anchoLibre, medidaAuto(antes).w);
+    const manual = bloque.w !== undefined && Math.abs(bloque.w - auto) > 1;
+    const w = manual
+      ? (bloque.w ?? TEXTO_W)
+      : Math.min(anchoLibre, medidaAuto(bloque.body).w);
+    bloque.w = w;
+    bloque.h = Math.min(altoLibre, altoParaAncho(visible(bloque.body), w, medirTexto));
+  }
+
+  /** Lo que se ve en la caja: vacía muestra el placeholder, y tiene que entrar. */
+  function visible(body: string): string {
+    return body || t("overlay.windowFlip.placeholder");
+  }
+
+  /**
+   * La medida que el ajuste le da a un texto. Vacía, el ancho de siempre con
+   * el placeholder envuelto: medido entero, la caja nacía de medio papel.
+   */
+  function medidaAuto(body: string): { w: number; h: number } {
+    if (!body) {
+      return { w: TEXTO_W, h: altoParaAncho(visible(body), TEXTO_W, medirTexto) };
+    }
+    return medidaTexto(body, medirTexto);
   }
 
   function escribirTexto(id: string, body: string) {
     const bloque = bloques.find((b) => b.id === id);
     if (bloque?.kind !== "text") return;
+    const antes = bloque.body;
     bloque.body = body;
-    crecerTexto(bloque);
+    ajustarTexto(bloque, antes);
     tocar();
   }
 
@@ -1260,8 +1622,9 @@
   }
 
   function insertarTexto(texto: string, x: number, y: number) {
-    const w = TEXTO_W;
-    const h = TEXTO_H;
+    // Nace con la medida de lo que trae; recortada al papel si es enorme.
+    const w = Math.min(medidaAuto(texto).w, papelW - 16);
+    const h = Math.min(altoParaAncho(visible(texto), w, medirTexto), papelH - 32);
     poner({ kind: "text", id: nuevoId(), body: texto, ...ubicar(w, h, x, y), w, h });
   }
 
@@ -1458,6 +1821,9 @@
   onMount(() => {
     vivo = true;
     const onKey = (event: KeyboardEvent) => {
+      // Con el «¿seguro?» abierto, las teclas son del diálogo: un Supr acá
+      // no puede borrar nada por detrás.
+      if (confirmar) return;
       if (event.key === "Escape" && preview) {
         event.stopImmediatePropagation();
         preview = null;
@@ -1474,9 +1840,12 @@
         paletaAbierta = false;
         return;
       }
-      if (event.key === "Escape" && (seleccion || herramienta !== "select")) {
+      if (
+        event.key === "Escape" &&
+        (seleccion || trazoSel !== null || grupo || herramienta !== "select")
+      ) {
         event.stopImmediatePropagation();
-        seleccion = "";
+        soltarSeleccion();
         herramienta = "select";
         return;
       }
@@ -1496,10 +1865,31 @@
         rehacer();
         return;
       }
+      // Ctrl+A fuera de un campo marca todo el tablero; dentro, el texto.
+      if (mod && event.key.toLowerCase() === "a" && !esEdicion) {
+        event.preventDefault();
+        if (vacio) return;
+        herramienta = "select";
+        seleccion = "";
+        trazoSel = null;
+        grupo = grupoCompleto(bloques);
+        return;
+      }
       if (esEdicion) return;
+      if (event.key === " " && tag !== "BUTTON" && tag !== "LABEL") {
+        // Espacio mantenido = mano. Sobre un botón enfocado sigue siendo
+        // «apretar»; el repeat del teclado no cambia nada.
+        event.preventDefault();
+        espacio = true;
+        return;
+      }
       const tecla = event.key.toLowerCase();
       if (tecla === "v") {
         herramienta = "select";
+        return;
+      }
+      if (tecla === "m") {
+        herramienta = "hand";
         return;
       }
       if (tecla === "p" || tecla === "d") {
@@ -1516,6 +1906,11 @@
         herramienta = "eraser";
         return;
       }
+      if (herramienta === "eraser" && (event.key === "[" || event.key === "]")) {
+        event.preventDefault();
+        pasoRadio(event.key === "]" ? 1 : -1);
+        return;
+      }
       if (tecla === "t") {
         herramienta = "text";
         return;
@@ -1524,12 +1919,29 @@
         herramienta = "check";
         return;
       }
+      if ((event.key === "Delete" || event.key === "Backspace") && grupo) {
+        event.preventDefault();
+        pedirBorrarGrupo();
+        return;
+      }
+      if ((event.key === "Delete" || event.key === "Backspace") && trazoSel !== null) {
+        event.preventDefault();
+        quitarTrazo();
+        return;
+      }
       if ((event.key === "Delete" || event.key === "Backspace") && seleccion) {
         event.preventDefault();
         quitar(seleccion);
       }
     };
     window.addEventListener("keydown", onKey);
+    const onKeyUp = (event: KeyboardEvent) => {
+      if (event.key === " ") espacio = false;
+    };
+    // Soltar Espacio con la ventana sin foco no llega: se suelta al perderlo.
+    const onBlur = () => (espacio = false);
+    window.addEventListener("keyup", onKeyUp);
+    window.addEventListener("blur", onBlur);
     const onDown = (event: PointerEvent) => {
       const el = event.target as HTMLElement;
       if (paletaAbierta && !el.closest(".paleta-colores, .grupo.herramientas")) {
@@ -1542,6 +1954,8 @@
     window.addEventListener("pointerdown", onDown);
     return () => {
       window.removeEventListener("keydown", onKey);
+      window.removeEventListener("keyup", onKeyUp);
+      window.removeEventListener("blur", onBlur);
       window.removeEventListener("pointerdown", onDown);
       if (avisoExportTimer) clearTimeout(avisoExportTimer);
     };
@@ -1560,77 +1974,6 @@
     {#if encabezado}
       <div class="encabezado">{@render encabezado()}</div>
     {/if}
-    <div class="grupo herramientas" bind:this={herramientasEl}>
-      <span
-        class="pastilla"
-        class:lista={pastillaLista}
-        style:transform={`translateX(${pastillaX}px)`}
-        style:width={`${pastillaW}px`}
-        aria-hidden="true"
-      ></span>
-      {#each herramientas as item (item.id)}
-        {@const esLapiz = item.id === "draw" || item.id === "highlight"}
-        <button
-          type="button"
-          class="rb-btn rb-btn-ghost ico"
-          class:activa={herramienta === item.id}
-          title={`${item.label} (${item.key})`}
-          aria-label={item.label}
-          aria-keyshortcuts={item.key}
-          aria-pressed={herramienta === item.id}
-          aria-expanded={esLapiz && herramienta === item.id ? paletaAbierta : undefined}
-          onclick={() => elegirHerramienta(item.id)}
-        >
-          <span class="tool-icon">
-            <Icon icon={item.icon} size={15} />
-            {#if esLapiz}
-              <span class="tinta-punto" style:background={tinta} aria-hidden="true"
-              ></span>
-            {/if}
-          </span>
-          {#if !compacta}<span>{item.label}</span>{/if}
-        </button>
-        {#if esLapiz && herramienta === item.id && paletaAbierta}
-          <div
-            class="paleta-colores"
-            role="radiogroup"
-            aria-label={t("overlay.windowFlip.pens")}
-            style:left={`${pastillaX}px`}
-            transition:emerge={{ duration: vivo ? undefined : 0 }}
-          >
-            {#each LAPICES as lapiz (lapiz.color)}
-              <button
-                type="button"
-                class="lapiz"
-                class:elegido={tinta === lapiz.color}
-                style:--tinta={lapiz.color}
-                role="radio"
-                aria-checked={tinta === lapiz.color}
-                title={t(`overlay.windowFlip.${lapiz.name}`)}
-                aria-label={t(`overlay.windowFlip.${lapiz.name}`)}
-                onclick={() => elegirColor(lapiz.color)}
-              ></button>
-            {/each}
-            <label
-              class="lapiz lapiz-libre"
-              class:elegido={esTintaLibre}
-              style:--tinta={esTintaLibre ? tinta : "transparent"}
-              title={t("overlay.windowFlip.penCustom")}
-            >
-              <input
-                type="color"
-                class="sr-only"
-                value={tinta}
-                aria-label={t("overlay.windowFlip.penCustom")}
-                oninput={(event) => (tinta = event.currentTarget.value)}
-                onchange={() => (paletaAbierta = false)}
-              />
-              <span aria-hidden="true">+</span>
-            </label>
-          </div>
-        {/if}
-      {/each}
-    </div>
     <div class="grupo">
       <button
         type="button"
@@ -1688,18 +2031,6 @@
       >
         <Icon icon={Plus} size={15} />
       </button>
-      {#if seleccion}
-        <button
-          type="button"
-          class="rb-btn rb-btn-ghost rb-btn-danger ico"
-          title={t("overlay.windowFlip.removeBlock")}
-          aria-label={t("overlay.windowFlip.removeBlock")}
-          transition:emerge
-          onclick={() => quitar(seleccion)}
-        >
-          <Icon icon={Trash2} size={15} />
-        </button>
-      {/if}
       <div class="export-wrap">
         <button
           type="button"
@@ -1776,6 +2107,8 @@
       class:dibujando={herramienta === "draw" ||
         herramienta === "highlight" ||
         herramienta === "eraser"}
+      class:con-mano={mano}
+      class:eligiendo={herramienta === "select" && !espacio}
       class:soltando
       role="application"
       aria-label={t("overlay.windowFlip.board")}
@@ -1784,6 +2117,7 @@
       onpointermove={alMover}
       onpointerup={alSoltarPuntero}
       onpointercancel={alSoltarPuntero}
+      onpointerleave={() => (punteroBorrador = null)}
       onpaste={alPegar}
       ondragover={alArrastrarSobre}
       ondragleave={alDejarDrag}
@@ -1846,6 +2180,7 @@
               class:captura={herramienta === "draw" ||
                 herramienta === "highlight" ||
                 herramienta === "eraser"}
+              class:borrando={herramienta === "eraser"}
               role="img"
               aria-hidden="true"
               onpointerdown={empezarTinta}
@@ -1878,14 +2213,84 @@
                     points={puntosSvg(trazoVivo)}
                   />
                 {/if}
+                {#if herramienta === "eraser" && punteroBorrador}
+                  <!-- El alcance real del borrador: lo que toque este círculo se va. -->
+                  <circle
+                    class="alcance-borrador"
+                    cx={punteroBorrador.x}
+                    cy={punteroBorrador.y}
+                    r={borradorRadio}
+                    vector-effect="non-scaling-stroke"
+                  />
+                {/if}
               </svg>
             </div>
+
+            {#if recuadro}
+              <div
+                class="recuadro"
+                style:left={`${recuadro.x - origenX}px`}
+                style:top={`${recuadro.y - origenY}px`}
+                style:width={`${recuadro.w}px`}
+                style:height={`${recuadro.h}px`}
+                aria-hidden="true"
+              ></div>
+            {/if}
+
+            {#if cajaGrupo && grupo}
+              <div
+                class="caja-trazo caja-todo"
+                style:left={`${cajaGrupo.x - origenX - 8}px`}
+                style:top={`${cajaGrupo.y - origenY - 8}px`}
+                style:width={`${cajaGrupo.w + 16}px`}
+                style:height={`${cajaGrupo.h + 16}px`}
+              >
+                <button
+                  type="button"
+                  class="rb-btn rb-btn-soft borrar-todo"
+                  onclick={pedirBorrarGrupo}
+                >
+                  <Icon icon={Trash2} size={13} />
+                  <span
+                    >{t("overlay.windowFlip.deleteN", {
+                      n: String(cuantos(grupo)),
+                    })}</span
+                  >
+                </button>
+              </div>
+            {/if}
+
+            {#if cajaSel && herramienta === "select"}
+              <div
+                class="caja-trazo"
+                style:left={`${cajaSel.x - origenX - 4}px`}
+                style:top={`${cajaSel.y - origenY - 4}px`}
+                style:width={`${cajaSel.w + 8}px`}
+                style:height={`${cajaSel.h + 8}px`}
+              >
+                <button
+                  type="button"
+                  class="quitar-bloque"
+                  aria-label={t("overlay.windowFlip.removeBlock")}
+                  onclick={quitarTrazo}
+                >
+                  <Icon icon={X} size={11} />
+                </button>
+                <button
+                  type="button"
+                  class="asa visible"
+                  aria-label={t("overlay.windowFlip.resize")}
+                  onpointerdown={empezarEscalarTrazo}
+                ></button>
+              </div>
+            {/if}
 
             {#each objetos as bloque (bloque.id)}
               {@const m = marcoDe(bloque)}
               <div
                 class="objeto"
                 class:seleccionado={seleccion === bloque.id}
+                class:en-todo={grupo?.ids.includes(bloque.id) ?? false}
                 class:lista={bloque.kind === "check"}
                 role="option"
                 aria-selected={seleccion === bloque.id}
@@ -1996,6 +2401,137 @@
             {/each}
           </div>
         </div>
+      </div>
+      <!-- Herramientas flotando abajo, sobre el papel: la fila de arriba queda
+           para título y acciones. -->
+      <div
+        class="dock"
+        role="toolbar"
+        tabindex="-1"
+        aria-label={t("overlay.windowFlip.tools")}
+        onpointerdown={(event) => event.stopPropagation()}
+      >
+        <div class="grupo herramientas" bind:this={herramientasEl}>
+          <span
+            class="pastilla"
+            class:lista={pastillaLista}
+            style:transform={`translateX(${pastillaX}px)`}
+            style:width={`${pastillaW}px`}
+            aria-hidden="true"
+          ></span>
+          {#each herramientas as item (item.id)}
+            {@const esLapiz = item.id === "draw" || item.id === "highlight"}
+            <!-- Tres grupos: mover y elegir · dibujar · escribir. -->
+            {#if item.id === "draw" || item.id === "text"}
+              <span class="sep" aria-hidden="true"></span>
+            {/if}
+            <button
+              type="button"
+              class="rb-btn rb-btn-ghost ico"
+              class:activa={herramienta === item.id}
+              title={`${item.label} (${item.key})`}
+              aria-label={item.label}
+              aria-keyshortcuts={item.key}
+              aria-pressed={herramienta === item.id}
+              aria-expanded={esLapiz && herramienta === item.id
+                ? paletaAbierta
+                : undefined}
+              onclick={() => elegirHerramienta(item.id)}
+            >
+              <!-- Solo ícono: el nombre y la tecla van en el tooltip. -->
+              <span class="tool-icon">
+                <Icon icon={item.icon} size={17} />
+                {#if esLapiz}
+                  <span class="tinta-punto" style:background={tinta} aria-hidden="true"
+                  ></span>
+                {/if}
+              </span>
+            </button>
+            {#if esLapiz && herramienta === item.id && paletaAbierta}
+              <div
+                class="paleta-colores"
+                role="radiogroup"
+                aria-label={t("overlay.windowFlip.pens")}
+                style:left={`${pastillaX}px`}
+                transition:emerge={{ duration: vivo ? undefined : 0 }}
+              >
+                {#each LAPICES as lapiz (lapiz.color)}
+                  <button
+                    type="button"
+                    class="lapiz"
+                    class:elegido={tinta === lapiz.color}
+                    style:--tinta={lapiz.color}
+                    role="radio"
+                    aria-checked={tinta === lapiz.color}
+                    title={t(`overlay.windowFlip.${lapiz.name}`)}
+                    aria-label={t(`overlay.windowFlip.${lapiz.name}`)}
+                    onclick={() => elegirColor(lapiz.color)}
+                  ></button>
+                {/each}
+                <label
+                  class="lapiz lapiz-libre"
+                  class:elegido={esTintaLibre}
+                  style:--tinta={esTintaLibre ? tinta : "transparent"}
+                  title={t("overlay.windowFlip.penCustom")}
+                >
+                  <input
+                    type="color"
+                    class="sr-only"
+                    value={tinta}
+                    aria-label={t("overlay.windowFlip.penCustom")}
+                    oninput={(event) => (tinta = event.currentTarget.value)}
+                    onchange={() => (paletaAbierta = false)}
+                  />
+                  <span aria-hidden="true">+</span>
+                </label>
+              </div>
+            {:else if item.id === "eraser" && herramienta === "eraser" && paletaAbierta}
+              <div
+                class="paleta-colores paleta-borrador"
+                role="radiogroup"
+                aria-label={t("overlay.windowFlip.eraserSize")}
+                style:left={`${pastillaX}px`}
+                transition:emerge={{ duration: vivo ? undefined : 0 }}
+              >
+                {#each BORRAR_RADIOS as radio, i (radio)}
+                  <button
+                    type="button"
+                    class="tamano-borrador"
+                    class:elegido={borradorRadio === radio}
+                    role="radio"
+                    aria-checked={borradorRadio === radio}
+                    title={`${t(`overlay.windowFlip.eraserSize${i}`)} ([ ])`}
+                    aria-label={t(`overlay.windowFlip.eraserSize${i}`)}
+                    onclick={() => elegirRadio(radio)}
+                  >
+                    <span style:--d={`${6 + i * 6}px`} aria-hidden="true"></span>
+                  </button>
+                {/each}
+              </div>
+            {/if}
+          {/each}
+        </div>
+        {#if seleccion || trazoSel !== null || grupo}
+          <span class="sep" aria-hidden="true" transition:emerge></span>
+          <button
+            type="button"
+            class="rb-btn rb-btn-ghost rb-btn-danger ico"
+            title={grupo
+              ? t("overlay.windowFlip.deleteSelected")
+              : t("overlay.windowFlip.removeBlock")}
+            aria-label={grupo
+              ? t("overlay.windowFlip.deleteSelected")
+              : t("overlay.windowFlip.removeBlock")}
+            transition:emerge
+            onclick={() => {
+              if (grupo) pedirBorrarGrupo();
+              else if (trazoSel !== null) quitarTrazo();
+              else quitar(seleccion);
+            }}
+          >
+            <Icon icon={Trash2} size={17} />
+          </button>
+        {/if}
       </div>
     </div>
 
@@ -2229,14 +2765,20 @@
             </span>
             <span class="mini-num">{pagina.indice + 1}</span>
           </button>
-          {#if pagina.indice === paginasTotales - 1 && paginasTotales > 1 && franjaVacia()}
+          {#if paginasTotales > 1 || !vacio}
+            <!-- Cualquier página se quita; si tiene algo, pregunta antes. Con
+                 una sola página, la ✕ la vacía. -->
             <button
               type="button"
               class="mini-x"
               transition:emerge
-              title={t("overlay.windowFlip.removePage")}
-              aria-label={t("overlay.windowFlip.removePage")}
-              onclick={() => quitarPagina()}
+              title={paginasTotales > 1
+                ? t("overlay.windowFlip.removePage")
+                : t("overlay.windowFlip.clearPage")}
+              aria-label={paginasTotales > 1
+                ? t("overlay.windowFlip.removePage")
+                : t("overlay.windowFlip.clearPage")}
+              onclick={() => pedirQuitarPagina(pagina.indice)}
             >
               <Icon icon={X} size={10} />
             </button>
@@ -2256,6 +2798,52 @@
     </button>
   </div>
 </div>
+
+{#if confirmar}
+  {@const pedido = confirmar}
+  {#if pedido.tipo === "grupo"}
+    <ConfirmDialog
+      title={pedido.todo
+        ? t("overlay.windowFlip.clearAllTitle")
+        : t("overlay.windowFlip.deleteNTitle", { n: String(pedido.n) })}
+      body={pedido.todo
+        ? t("overlay.windowFlip.clearAllBody")
+        : t("overlay.windowFlip.deleteNBody")}
+      confirmLabel={pedido.todo
+        ? t("overlay.windowFlip.clearAll")
+        : t("overlay.windowFlip.deleteSelected")}
+      tone="danger"
+      onConfirm={() => {
+        confirmar = null;
+        borrarGrupo();
+      }}
+      onCancel={() => (confirmar = null)}
+    />
+  {:else}
+    {@const unica = paginasTotales === 1}
+    <ConfirmDialog
+      title={unica
+        ? t("overlay.windowFlip.clearPageTitle")
+        : t("overlay.windowFlip.removePageTitle", { n: String(pedido.indice + 1) })}
+      body={t("overlay.windowFlip.removePageBody", {
+        objetos: String(pedido.objetos),
+        trazos: String(pedido.trazos),
+      })}
+      confirmLabel={unica
+        ? t("overlay.windowFlip.clearPage")
+        : t("overlay.windowFlip.removePage")}
+      tone="danger"
+      onConfirm={() => {
+        // El índice se lee ANTES de cerrar: `pedido` es un `{@const}` que se
+        // recalcula de `confirmar`, y ya en null la lectura fallaba callada.
+        const indice = pedido.indice;
+        confirmar = null;
+        eliminarPagina(indice);
+      }}
+      onCancel={() => (confirmar = null)}
+    />
+  {/if}
+{/if}
 
 <style>
   .tablero {
@@ -2378,6 +2966,49 @@
   .herramientas {
     position: relative;
     flex-wrap: nowrap;
+  }
+
+  /* Píldora flotante abajo al centro del tablero, sobre el papel. */
+  .dock {
+    position: absolute;
+    bottom: 14px;
+    left: 50%;
+    z-index: 8;
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    padding: 4px;
+    border: 1px solid var(--rb-hairline);
+    border-radius: 999px;
+    background: color-mix(in sRGB, var(--rb-surface) 92%, transparent);
+    box-shadow:
+      0 8px 24px rgb(0 0 0 / 22%),
+      0 1px 2px rgb(0 0 0 / 12%);
+    backdrop-filter: blur(10px);
+    transform: translateX(-50%);
+    cursor: default;
+  }
+
+  .dock .ico {
+    width: 34px;
+    height: 34px;
+    justify-content: center;
+    padding: 0;
+    border-radius: 999px;
+  }
+
+  .sep {
+    flex: none;
+    width: 1px;
+    height: 20px;
+    margin: 0 4px;
+    background: var(--rb-hairline);
+  }
+
+  /* Abajo no hay lugar: las paletas abren hacia arriba. */
+  .dock .paleta-colores {
+    top: auto;
+    bottom: calc(100% + 12px);
   }
 
   .pastilla {
@@ -2550,6 +3181,40 @@
 
   .vista.dibujando .papel {
     cursor: crosshair;
+  }
+
+  /* Seleccionar: el papel vacío dibuja un recuadro, no mueve la vista. */
+  .vista.eligiendo .papel {
+    cursor: default;
+  }
+
+  /* Mano (M o Espacio): todo el tablero se arrastra, incluso sobre objetos y
+     tinta, que dejan pasar el puntero al papel. */
+  .vista.con-mano,
+  .vista.con-mano .papel,
+  .vista.con-mano .tinta.captura {
+    cursor: grab;
+  }
+
+  .vista.con-mano:active,
+  .vista.con-mano:active .papel,
+  .vista.con-mano:active .tinta.captura {
+    cursor: grabbing;
+  }
+
+  .vista.con-mano .objeto,
+  .vista.con-mano .caja-trazo * {
+    pointer-events: none;
+  }
+
+  .recuadro {
+    position: absolute;
+    z-index: 5;
+    box-sizing: border-box;
+    border: 1px solid color-mix(in sRGB, var(--accent, var(--rb-text)) 70%, transparent);
+    border-radius: 2px;
+    background: color-mix(in sRGB, var(--accent, var(--rb-text)) 10%, transparent);
+    pointer-events: none;
   }
 
   /* El marco envuelve justo el papel: el grupo [+]/[−] vive pegado a su
@@ -2728,14 +3393,45 @@
     background: var(--rb-surface);
     color: var(--rb-muted);
     cursor: pointer;
+
+    /* Está en todas las páginas: se muestra solo sobre la que apuntas. */
+    opacity: 0;
+    pointer-events: none;
     transition:
+      opacity var(--duration-fast) var(--ease-smooth-out),
       color var(--duration-fast) var(--ease-smooth-out),
       border-color var(--duration-fast) var(--ease-smooth-out);
   }
 
+  .tira-item:hover .mini-x,
+  .tira-item:focus-within .mini-x {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
   .mini-x:hover {
-    border-color: var(--rb-text);
-    color: var(--rb-text);
+    border-color: var(--color-danger, var(--rb-text));
+    color: var(--color-danger, var(--rb-text));
+  }
+
+  /* Ctrl+A: todo marcado, con la acción a mano. */
+  .objeto.en-todo {
+    outline: 1.5px solid color-mix(in sRGB, var(--rb-text) 45%, transparent);
+  }
+
+  .caja-todo {
+    border-color: color-mix(in sRGB, var(--rb-text) 55%, transparent);
+  }
+
+  /* Por dentro de la caja: por fuera la recortaría el borde del papel. */
+  .borrar-todo {
+    position: absolute;
+    top: 6px;
+    left: 6px;
+    z-index: 7;
+    gap: 6px;
+    white-space: nowrap;
+    pointer-events: auto;
   }
 
   .vacio {
@@ -2781,6 +3477,36 @@
     display: block;
     width: 100%;
     height: 100%;
+  }
+
+  /* El círculo reemplaza al cursor: con la cruz no se sabía cuánto borraba. */
+  .tinta.borrando {
+    cursor: none;
+  }
+
+  .alcance-borrador {
+    fill: color-mix(in sRGB, var(--rb-text) 8%, transparent);
+    stroke: color-mix(in sRGB, var(--rb-text) 65%, transparent);
+    stroke-width: 1.25;
+    pointer-events: none;
+  }
+
+  /* Caja del trazo elegido: solo el marco; los clics pasan al papel, que
+     decide si arrastrar el trazo o soltarlo. */
+  .caja-trazo {
+    position: absolute;
+    z-index: 3;
+    box-sizing: border-box;
+    border: 1.5px dashed color-mix(in sRGB, var(--rb-text) 45%, transparent);
+    border-radius: var(--rb-radius-xs);
+    pointer-events: none;
+  }
+
+  .caja-trazo .quitar-bloque {
+    top: -10px;
+    right: -10px;
+    opacity: 1;
+    pointer-events: auto;
   }
 
   .objeto {
@@ -3200,6 +3926,49 @@
 
   .lapiz:active {
     transform: scale(0.96);
+  }
+
+  .paleta-borrador {
+    flex-wrap: nowrap;
+  }
+
+  /* Cada tamaño se muestra como lo que borra: un círculo más chico o más grande. */
+  .tamano-borrador {
+    display: grid;
+    place-items: center;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    border: 0;
+    border-radius: var(--rb-radius-xs);
+    background: transparent;
+    cursor: pointer;
+    transition: background-color var(--duration-fast) var(--ease-smooth-out);
+  }
+
+  .tamano-borrador span {
+    width: var(--d);
+    height: var(--d);
+    border: 1.5px solid color-mix(in sRGB, var(--rb-text) 70%, transparent);
+    border-radius: 999px;
+  }
+
+  .tamano-borrador:hover {
+    background: color-mix(in sRGB, var(--rb-text) 7%, transparent);
+  }
+
+  .tamano-borrador.elegido {
+    background: color-mix(in sRGB, var(--rb-text) 12%, transparent);
+  }
+
+  .tamano-borrador.elegido span {
+    border-color: var(--rb-text);
+    background: color-mix(in sRGB, var(--rb-text) 18%, transparent);
+  }
+
+  .tamano-borrador:focus-visible {
+    outline: none;
+    box-shadow: var(--rb-focus);
   }
 
   .lapiz-libre {

@@ -175,6 +175,7 @@ impl OverlaySession {
 
 /// Escala un rect en el espacio global a píxeles de una escala dada.
 #[cfg(any(windows, target_os = "macos"))]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))] // hoy solo la usa macOS
 fn scaled_rect(rect: atic_capture::Rect, scale: f64) -> atic_capture::Rect {
     atic_capture::Rect::new(
         (f64::from(rect.x) * scale).round() as i32,

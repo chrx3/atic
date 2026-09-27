@@ -47,10 +47,12 @@ pub fn virtual_screen() -> Rect {
     }
     #[cfg(windows)]
     {
-        return windows::metrics_virtual_screen();
+        windows::metrics_virtual_screen()
     }
     #[cfg(not(windows))]
-    Rect::new(0, 0, 1280, 720)
+    {
+        Rect::new(0, 0, 1280, 720)
+    }
 }
 
 /// Enumera los monitores activos.

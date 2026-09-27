@@ -236,7 +236,10 @@ fn write_single_image(path: &Path, page: &FlipExportPage) -> Result<(), String> 
     std::fs::write(path, bytes).map_err(|e| e.to_string())
 }
 
-fn rgba_planos(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>, Option<Vec<u8>>), String> {
+/// Ancho, alto, RGB plano y, si la imagen tiene transparencia, su alfa.
+type Planos = (u32, u32, Vec<u8>, Option<Vec<u8>>);
+
+fn rgba_planos(bytes: &[u8]) -> Result<Planos, String> {
     let img = image::load_from_memory(bytes).map_err(|e| e.to_string())?;
     let rgba = img.to_rgba8();
     let (width, height) = rgba.dimensions();
@@ -716,7 +719,7 @@ const THEME_XML: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"
 fn tx_style_levels() -> String {
     let mut out = String::new();
     for lvl in 1..=9 {
-        let sz = (2000 - (lvl as i32 - 1) * 200).max(1100);
+        let sz = (2000 - (lvl - 1) * 200).max(1100);
         out.push_str(&format!(
             r#"<a:lvl{lvl}pPr marL="{mar}" indent="0" algn="l"><a:defRPr sz="{sz}" kern="1200"><a:solidFill><a:schemeClr val="tx1"/></a:solidFill><a:latin typeface="Calibri"/><a:ea typeface=""/><a:cs typeface=""/></a:defRPr></a:lvl{lvl}pPr>"#,
             mar = (lvl - 1) * 457200

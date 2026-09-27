@@ -111,7 +111,9 @@
       <button
         type="button"
         class="zoom"
-        title={actualSize ? t("page.agents.board.fileFit") : t("page.agents.board.fileActual")}
+        title={actualSize
+          ? t("page.agents.board.fileFit")
+          : t("page.agents.board.fileActual")}
         onclick={() => (actualSize = !actualSize)}
       >
         <img class="media" {src} alt={file.name} draggable="false" />
@@ -236,8 +238,7 @@
   }
 
   .markdown {
-    align-self: stretch;
-    justify-self: stretch;
+    place-self: stretch stretch;
     padding: 12px 16px;
     color: var(--rb-text);
   }
@@ -250,12 +251,13 @@
     width: 100%;
     height: 100%;
     border: 0;
-    background: #fff;
+
+    /* Hoja en blanco en cualquier tema: la página embebida trae sus colores. */
+    background: white;
   }
 
   .text {
-    align-self: stretch;
-    justify-self: stretch;
+    place-self: stretch stretch;
     margin: 0;
     padding: 10px 12px;
     color: var(--rb-text);

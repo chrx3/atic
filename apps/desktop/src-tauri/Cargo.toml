@@ -88,6 +88,10 @@ windows-sys = { version = "0.59", features = [
     "Win32_System_RestartManager",
     # Brillo DDC de monitores externos.
     "Win32_Devices_Display",
+    # Named pipes del puente de la consola de administrador.
+    "Win32_System_Pipes",
+    "Win32_System_IO",
+    "Win32_Security",
 ] }
 # Misma versión que trae Tauri/wry (desactivar Ctrl+P / atajos del navegador).
 webview2-com = "0.38"

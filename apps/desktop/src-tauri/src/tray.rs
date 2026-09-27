@@ -39,7 +39,7 @@ pub fn build_tray(app: &AppHandle) -> tauri::Result<()> {
     let labels = if en {
         TrayLabels {
             show: "Open Atic".into(),
-            consoles: "Agent consoles".into(),
+            consoles: "Atic Code".into(),
             capture: "Capture screen".into(),
             toggle_pill: "Show / hide pill".into(),
             summon_pill: "Bring pill to cursor".into(),
@@ -48,7 +48,7 @@ pub fn build_tray(app: &AppHandle) -> tauri::Result<()> {
     } else {
         TrayLabels {
             show: "Abrir Atic".into(),
-            consoles: "Consolas de agentes".into(),
+            consoles: "Atic Code".into(),
             capture: "Capturar pantalla".into(),
             toggle_pill: "Mostrar / ocultar pill".into(),
             summon_pill: "Traer pill al cursor".into(),

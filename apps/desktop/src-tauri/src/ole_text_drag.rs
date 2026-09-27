@@ -22,6 +22,7 @@
 
 #![cfg(windows)]
 
+use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 use std::sync::Once;
 
 use windows_sys::Win32::{Foundation::POINT as SysPoint, UI::Shell::DROPFILES as DropFiles};
@@ -46,6 +47,29 @@ use windows::{
         },
     },
 };
+
+/// Ventana de Atic donde el texto soltado lo inserta Atic y no OLE (0 = ninguna).
+///
+/// Es la ventana de Atic Code: su drop target es el de Tauri, que solo entiende
+/// archivos, así que rechazaba el texto y el arrastre volvía como cancelado.
+static OWN_TEXT_TARGET: AtomicIsize = AtomicIsize::new(0);
+/// Se soltó el botón sobre `OWN_TEXT_TARGET`: cancelado a propósito, no con Esc.
+static RELEASED_ON_OWN: AtomicBool = AtomicBool::new(false);
+
+fn cursor_over_own_target() -> bool {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetAncestor, GetCursorPos, WindowFromPoint, GA_ROOT,
+    };
+    let target = OWN_TEXT_TARGET.load(Ordering::SeqCst);
+    if target == 0 {
+        return false;
+    }
+    let mut pt = SysPoint { x: 0, y: 0 };
+    // SAFETY: solo lecturas del puntero y del árbol de ventanas.
+    unsafe {
+        GetCursorPos(&mut pt) != 0 && GetAncestor(WindowFromPoint(pt), GA_ROOT) as isize == target
+    }
+}
 
 static OLE_INIT: Once = Once::new();
 
@@ -225,6 +249,11 @@ impl IDropSource_Impl for DropSource_Impl {
             if crate::overlay::cursor_over_hit_id("agents") {
                 return DRAGDROP_S_CANCEL;
             }
+            // Igual sobre la ventana de Atic Code: el caller inserta donde cayó.
+            if cursor_over_own_target() {
+                RELEASED_ON_OWN.store(true, Ordering::SeqCst);
+                return DRAGDROP_S_CANCEL;
+            }
             return DRAGDROP_S_DROP;
         }
         S_OK
@@ -385,37 +414,56 @@ pub struct DragOutcome {
     pub dropped: bool,
     /// `DROPEFFECT` final. `0` = el target no se lo quedó.
     pub effect: u32,
+    /// Se soltó sobre la ventana propia pasada a `drag_unicode_text`: el OLE
+    /// se canceló a propósito y el texto lo inserta Atic.
+    pub released_on_own: bool,
 }
 
 /// Bloquea el hilo hasta soltar: llamar desde el hilo UI.
-pub fn drag_unicode_text(text: &str) -> std::result::Result<DragOutcome, String> {
+///
+/// `own_target`: HWND raíz de una ventana de Atic donde soltar no pasa por OLE
+/// (ver `OWN_TEXT_TARGET`).
+pub fn drag_unicode_text(
+    text: &str,
+    own_target: Option<isize>,
+) -> std::result::Result<DragOutcome, String> {
     if text.is_empty() {
         return Err("texto vacío".into());
     }
-    run_drag(Payload::Text(text.to_string()))
+    run_drag(Payload::Text(text.to_string()), own_target)
 }
 
 /// Arrastra archivos como `CF_HDROP`. Bloquea el hilo hasta soltar.
+///
+/// Sin ventana propia: Atic Code recibe archivos por el drop de Tauri.
 pub fn drag_files(paths: &[String]) -> std::result::Result<DragOutcome, String> {
     if paths.is_empty() {
         return Err("sin archivos que arrastrar".into());
     }
-    run_drag(Payload::Files(paths.to_vec()))
+    run_drag(Payload::Files(paths.to_vec()), None)
 }
 
-fn run_drag(payload: Payload) -> std::result::Result<DragOutcome, String> {
+fn run_drag(
+    payload: Payload,
+    own_target: Option<isize>,
+) -> std::result::Result<DragOutcome, String> {
     ensure_ole();
 
     let data: IDataObject = DragDataObject { payload }.into();
     let source: IDropSource = DropSource.into();
     let mut effect = DROPEFFECT::default();
 
+    OWN_TEXT_TARGET.store(own_target.unwrap_or(0), Ordering::SeqCst);
+    RELEASED_ON_OWN.store(false, Ordering::SeqCst);
     // SAFETY: data/source vivos durante DoDragDrop.
     let hr = unsafe { DoDragDrop(&data, &source, DROPEFFECT_COPY, &mut effect) };
+    OWN_TEXT_TARGET.store(0, Ordering::SeqCst);
+    let released_on_own = RELEASED_ON_OWN.swap(false, Ordering::SeqCst);
     if hr == DRAGDROP_S_DROP || hr == DRAGDROP_S_CANCEL || hr == S_OK {
         Ok(DragOutcome {
             dropped: hr == DRAGDROP_S_DROP,
             effect: effect.0,
+            released_on_own,
         })
     } else {
         Err(format!("DoDragDrop falló: {hr:?}"))

@@ -39,8 +39,10 @@
     Paperclip,
     Minus,
     Plus,
+    ShieldCheck,
     SquareTerminal,
   } from "$lib/icons";
+  import { shortcutOs } from "$core/hotkeys";
   import AgentLogo from "./AgentLogo.svelte";
   import AgentSettingsModal from "./AgentSettingsModal.svelte";
   import BoardCard from "./BoardCard.svelte";
@@ -142,7 +144,7 @@
    * Consola pedida que espera su carpeta. Cada consola nueva pregunta dónde
    * abrir —no siempre es la de las otras—, con la actual lista para Enter.
    */
-  let pendingNew = $state<{ agent: AgentDef | null } | null>(null);
+  let pendingNew = $state<{ agent: AgentDef | null; admin?: boolean } | null>(null);
 
   /**
    * Archivos abiertos en la pizarra: soltados encima o elegidos de lo que
@@ -723,7 +725,7 @@
    * Abre `count` consolas iguales. Sin acomodo puesto, varias nacen en
    * grilla donde se está mirando; la vista las muestra a todas.
    */
-  async function openConsole(agent: AgentDef | null, count = 1) {
+  async function openConsole(agent: AgentDef | null, count = 1, admin = false) {
     newOpen = false;
     const rects = terminals.map(rectOf);
     // Con un acomodo puesto nace con el tamaño de la última y en la esquina
@@ -746,9 +748,12 @@
       key = workspace.add({
         kind: "terminal",
         session: null,
-        label: agent?.name ?? t("page.agents.window.shellLabel"),
+        label: admin
+          ? t("page.agents.window.adminShellLabel")
+          : (agent?.name ?? t("page.agents.window.shellLabel")),
         cli: agent?.cli ?? null,
-        command: agent?.cli ?? null,
+        // Rust reconoce `atic-admin`: pide UAC y abre PowerShell elevado.
+        command: admin ? "atic-admin" : (agent?.cli ?? null),
         cwd: cwd || null,
         rect,
       });
@@ -1145,7 +1150,10 @@
    * Abre un archivo como tarjeta. `beside` la pone a la derecha de la
    * consola que lo generó; `at` donde se soltó. Si ya está abierto, lo trae.
    */
-  function openFile(path: string, place: { beside?: Rect; at?: { x: number; y: number } } = {}) {
+  function openFile(
+    path: string,
+    place: { beside?: Rect; at?: { x: number; y: number } } = {},
+  ) {
     const open = fileCards.find((c) => c.path === path);
     if (open) {
       raise(open.key);
@@ -1162,7 +1170,10 @@
           );
     const key = `file:${crypto.randomUUID()}`;
     const origin = place.beside
-      ? { x: place.beside.x + place.beside.w / 2, y: place.beside.y + place.beside.h / 2 }
+      ? {
+          x: place.beside.x + place.beside.w / 2,
+          y: place.beside.y + place.beside.h / 2,
+        }
       : place.at;
     if (origin) fileOrigins = { ...fileOrigins, [key]: origin };
     writeFileCards([...fileCards, { key, path, rect }]);
@@ -1171,7 +1182,8 @@
   }
 
   function showRect(rect: Rect) {
-    if (!fullyVisible(rect, cam, size, insets)) setCamera(fitRect(rect, size, insets), true);
+    if (!fullyVisible(rect, cam, size, insets))
+      setCamera(fitRect(rect, size, insets), true);
   }
 
   function onFileRect(key: string, rect: Rect, commit: boolean) {
@@ -1180,7 +1192,9 @@
       return;
     }
     writeFileCards(fileCards.map((c) => (c.key === key ? { ...c, rect } : c)));
-    fileDrafts = Object.fromEntries(Object.entries(fileDrafts).filter(([k]) => k !== key));
+    fileDrafts = Object.fromEntries(
+      Object.entries(fileDrafts).filter(([k]) => k !== key),
+    );
   }
 
   function closeFile(key: string) {
@@ -1192,7 +1206,10 @@
     const box = boardEl?.getBoundingClientRect();
     const left = box?.left ?? 0;
     const top = box?.top ?? 0;
-    return { x: (point.x - left - cam.x) / cam.zoom, y: (point.y - top - cam.y) / cam.zoom };
+    return {
+      x: (point.x - left - cam.x) / cam.zoom,
+      y: (point.y - top - cam.y) / cam.zoom,
+    };
   }
 
   /** Lo soltado sobre el fondo se abre para verlo, en cascada. */
@@ -1480,7 +1497,8 @@
               class:is-on={filesOpenFor === item.key}
               aria-label={t("page.agents.board.filesButton")}
               title={t("page.agents.board.filesButton")}
-              onclick={() => (filesOpenFor = filesOpenFor === item.key ? null : item.key)}
+              onclick={() =>
+                (filesOpenFor = filesOpenFor === item.key ? null : item.key)}
             >
               <Icon icon={Paperclip} size={12} />
             </button>
@@ -1667,14 +1685,28 @@
             <span>{agent.name}</span>
           </button>
         {/each}
-        <button
-          type="button"
-          class="empty-agent is-shell"
-          onclick={() => void openConsole(null, startCount)}
-        >
-          <Icon icon={SquareTerminal} size={22} />
-          <span>{t("page.agents.window.shellLabel")}</span>
-        </button>
+        <div class="shell-slot">
+          <button
+            type="button"
+            class="empty-agent is-shell"
+            onclick={() => void openConsole(null, startCount)}
+          >
+            <Icon icon={SquareTerminal} size={22} />
+            <span>{t("page.agents.window.shellLabel")}</span>
+          </button>
+          {#if shortcutOs() === "windows"}
+            <!-- Hermano y no hijo: un botón no puede ir dentro de otro. -->
+            <button
+              type="button"
+              class="admin-badge"
+              title={t("page.agents.window.adminShellTip")}
+              aria-label={t("page.agents.window.adminShell")}
+              onclick={() => void openConsole(null, 1, true)}
+            >
+              <Icon icon={ShieldCheck} size={13} />
+            </button>
+          {/if}
+        </div>
       </div>
     </div>
   {/if}
@@ -1703,6 +1735,11 @@
       onNew={(agent) => {
         newOpen = false;
         pendingNew = { agent };
+        browsingFolder = true;
+      }}
+      onNewAdmin={() => {
+        newOpen = false;
+        pendingNew = { agent: null, admin: true };
         browsingFolder = true;
       }}
       onSelect={reveal}
@@ -1803,7 +1840,7 @@
       pickFolder(path);
       const pending = pendingNew;
       pendingNew = null;
-      if (pending) void openConsole(pending.agent);
+      if (pending) void openConsole(pending.agent, 1, pending.admin);
     }}
     onClose={() => {
       browsingFolder = false;
@@ -2030,6 +2067,7 @@
     from {
       scale: 0.94;
     }
+
     to {
       scale: 1.04;
     }
@@ -2237,6 +2275,38 @@
 
   .empty-agent:active {
     scale: 0.96;
+  }
+
+  .shell-slot {
+    position: relative;
+  }
+
+  .admin-badge {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    display: grid;
+    place-items: center;
+    width: 24px;
+    height: 24px;
+    border: 0;
+    border-radius: 8px;
+    padding: 0;
+    background: transparent;
+    color: var(--rb-muted);
+    cursor: pointer;
+    transition:
+      background var(--duration-fast) ease,
+      color var(--duration-fast) ease;
+  }
+
+  .admin-badge:hover {
+    background: color-mix(in sRGB, var(--accent) 16%, transparent);
+    color: var(--accent);
+  }
+
+  .admin-badge:active {
+    scale: 0.92;
   }
 
   @media (prefers-reduced-motion: reduce) {

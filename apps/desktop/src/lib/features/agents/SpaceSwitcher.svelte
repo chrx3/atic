@@ -126,7 +126,7 @@
     display: grid;
     place-items: start center;
     padding-top: 14vh;
-    background: rgb(0 0 0 / 0.28);
+    background: color-mix(in sRGB, black 28%, transparent);
   }
 
   .switcher {
