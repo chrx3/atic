@@ -95,6 +95,50 @@ fn agents_target(started_in: Option<&str>, external_since_start: bool) -> Option
     }
 }
 
+/// Ventana de Atic con foco justo antes de que el overlay se muestre.
+///
+/// En macOS el `show()` del overlay llama a `makeKeyAndOrderFront` y, con el
+/// modo texto activo (la consola de la isla enfocada), `canBecomeKeyWindow`
+/// da true: el overlay le roba la ventana clave al panel de agentes antes de
+/// que `start_dictation` mire cuál tenía el foco. Por eso el atajo captura
+/// acá y el arranque consume esta captura.
+static PENDING_AGENTS_WINDOW: std::sync::Mutex<Option<(Option<String>, Instant)>> =
+    std::sync::Mutex::new(None);
+
+/// Vigencia de la captura: si el dictado arranca por otro camino más tarde,
+/// la foto del atajo ya no dice nada.
+const PENDING_AGENTS_WINDOW_TTL: Duration = Duration::from_secs(3);
+
+/// Guarda la ventana de Atic con foco ANTES de mostrar el overlay.
+///
+/// Solo macOS: acá el `show()` del overlay (`makeKeyAndOrderFront`) puede
+/// volverse la ventana clave y tapar a la consola donde estabas. En Windows
+/// la pill es NOACTIVATE y el primer plano no cambia, así que la lectura del
+/// arranque sigue siendo fiel y no hay nada que adelantar.
+///
+/// Se llama desde los atajos, antes de `emit_tool_slot` (ver `shortcuts.rs`).
+pub fn remember_agents_window_before_overlay(app: &AppHandle) {
+    #[cfg(target_os = "macos")]
+    {
+        let label = crate::clipboard_history::foreground_own_window(app);
+        *PENDING_AGENTS_WINDOW.lock_or_recover() = Some((label, Instant::now()));
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = app;
+    }
+}
+
+/// Captura vigente de [`remember_agents_window_before_overlay`], si la hay.
+///
+/// El `Some` de afuera distingue «no hubo captura» de «la captura no vio
+/// ninguna ventana de Atic»: cuando el atajo capturó, su respuesta manda y no
+/// se vuelve a leer el foco — el `show()` del overlay ya pudo cambiarlo.
+fn take_agents_window_before_overlay() -> Option<Option<String>> {
+    let (label, at) = PENDING_AGENTS_WINDOW.lock_or_recover().take()?;
+    (at.elapsed() < PENDING_AGENTS_WINDOW_TTL).then_some(label)
+}
+
 fn emit_status(
     app: &AppHandle,
     phase: DictationPhase,
@@ -164,8 +208,16 @@ fn start_dictation(app: &AppHandle) -> Result<(), String> {
     // Hablándole a una consola de agentes de Atic: el texto es para ella, no
     // para la última ventana externa (que es lo único que guarda el destino).
     // La principal tiene su propio camino más abajo.
-    let agents_window = crate::clipboard_history::foreground_own_window(app)
-        .filter(|label| label != "main" && crate::agents::bridge::agents_open());
+    //
+    // La captura del atajo manda sobre el foco actual: entre el apretón y
+    // este arranque, el `show()` del overlay ya pudo volverse la ventana
+    // clave (macOS). Sin captura —el botón de la UI— se mira el foco ahora.
+    let foreground = match take_agents_window_before_overlay() {
+        Some(captured) => captured,
+        None => crate::clipboard_history::foreground_own_window(app),
+    };
+    let agents_window =
+        foreground.filter(|label| label != "main" && crate::agents::bridge::agents_open());
     let started_at = Instant::now();
 
     // Guardar destino de pegado YA: antes de que la pill/UI robe el foco.
@@ -378,6 +430,9 @@ fn stop_and_paste(app: &AppHandle) {
                 active.agents_window.as_deref(),
                 crate::clipboard_history::external_foreground_since(active.started_at),
             ) {
+                // Deja rastro de por qué este dictado no salió a la app externa:
+                // sin esto, «pegado» era idéntico con y sin consola enfocada.
+                tracing::info!(label, "dictado a consola de agentes de Atic");
                 crate::clipboard_history::insert_text_into_agents_window(&app2, label, &text)?;
                 return Ok((text, crate::paste_queue::PasteOutcome::Pasted));
             }
