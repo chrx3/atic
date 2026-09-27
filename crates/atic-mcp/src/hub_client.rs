@@ -54,25 +54,6 @@ impl HubFallo {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn error_del_hub_conserva_codigo_y_datos() {
-        let fallo = HubFallo::Error(HubError {
-            code: "ambiguous_session".into(),
-            message: "Hay dos sesiones con ese nombre.".into(),
-            data: Some(serde_json::json!({"sessions": ["s1", "s2"]})),
-        });
-        let texto = fallo.mensaje();
-        assert!(texto.contains("ambiguous_session"));
-        assert!(texto.contains("Hay dos sesiones con ese nombre."));
-        assert!(texto.contains("s1"));
-        assert!(texto.contains("s2"));
-    }
-}
-
 /// Ruta de `hub.json`. En tests, `ATIC_HUB_JSON` apunta a uno de mentira.
 fn hub_json_path() -> Option<std::path::PathBuf> {
     if let Some(var) = std::env::var_os("ATIC_HUB_JSON") {
@@ -254,5 +235,24 @@ impl Hub {
         cuerpo: &crate::payload::CloseRequest,
     ) -> Result<crate::payload::Closed, HubFallo> {
         self.post("/v1/close", cuerpo, 30).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn error_del_hub_conserva_codigo_y_datos() {
+        let fallo = HubFallo::Error(HubError {
+            code: "ambiguous_session".into(),
+            message: "Hay dos sesiones con ese nombre.".into(),
+            data: Some(serde_json::json!({"sessions": ["s1", "s2"]})),
+        });
+        let texto = fallo.mensaje();
+        assert!(texto.contains("ambiguous_session"));
+        assert!(texto.contains("Hay dos sesiones con ese nombre."));
+        assert!(texto.contains("s1"));
+        assert!(texto.contains("s2"));
     }
 }

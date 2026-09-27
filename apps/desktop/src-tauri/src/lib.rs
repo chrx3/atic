@@ -104,6 +104,16 @@ fn recover_orphaned_statuses(state: &AppState) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Copia elevada de una consola de administrador (ver `agents::console`):
+    // solo hace de puente y sale. Antes que todo: nada de logs, ventanas ni
+    // single-instance, que le cederían el paso a la app ya abierta.
+    #[cfg(windows)]
+    {
+        let args: Vec<String> = std::env::args().collect();
+        if args.get(1).map(String::as_str) == Some(agents::console::ADMIN_BRIDGE_ARG) {
+            agents::console::run_admin_bridge(&args[2..]);
+        }
+    }
     #[cfg(all(debug_assertions, windows))]
     if std::env::args().any(|arg| arg == "--color-picker-smoke") {
         run_color_picker_smoke();
@@ -469,7 +479,7 @@ pub fn run() {
             }
             // La tapa se estaciona fuera de pantalla: el primer `show` de
             // WebView2 pestañea; así el compositor ya está caliente.
-            window_flip::park(&app.handle());
+            window_flip::park(app.handle());
 
             // Notas del flip: del JSON plano viejo al modelo por app. Una sola
             // vez, y si algo falla el archivo original queda donde estaba.

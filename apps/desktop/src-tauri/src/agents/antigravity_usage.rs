@@ -157,6 +157,7 @@ fn parse_credential_json(blob: &str) -> Result<Value, String> {
 }
 
 /// El access token del blob del keyring, validando que no esté vencido.
+#[cfg(test)] // solo lo ejercitan los tests; la app lee el token por otra vía
 fn access_token_from_blob(blob: &str) -> Result<String, String> {
     live_access_token(&parse_credential_json(blob)?)
 }

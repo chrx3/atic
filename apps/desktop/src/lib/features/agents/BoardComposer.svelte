@@ -165,6 +165,7 @@
       0 0 0 1px color-mix(in sRGB, var(--rb-text) 11%, transparent),
       0 18px 40px -16px rgb(0 0 0 / 55%);
     backdrop-filter: blur(18px) saturate(1.2);
+
     /* Cerrar es tranquilo: sin rebote, y más corto que abrir. */
     transition:
       box-shadow var(--duration-slow) var(--ease-smooth-out),

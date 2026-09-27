@@ -18,8 +18,10 @@
     PanelLeftOpen,
     Plus,
     Settings,
+    ShieldCheck,
     SquareTerminal,
   } from "$lib/icons";
+  import { shortcutOs } from "$core/hotkeys";
   import AgentLogo from "./AgentLogo.svelte";
   import ConsoleStateDot from "./ConsoleStateDot.svelte";
   import type { ConsoleState } from "./consoleStatus";
@@ -48,6 +50,7 @@
     onCollapse,
     onNewToggle,
     onNew,
+    onNewAdmin,
     onSelect,
     onClose,
     onPickFolder,
@@ -69,6 +72,8 @@
     onNewToggle: (open: boolean) => void;
     /** `null` = la terminal del sistema. */
     onNew: (agent: AgentDef | null) => void;
+    /** Terminal del sistema elevada (solo Windows: pide UAC). */
+    onNewAdmin?: () => void;
     onSelect: (key: string) => void;
     onClose: (key: string) => void;
     onPickFolder: () => void;
@@ -150,9 +155,7 @@
       ),
     );
     running = [shape, ...fades];
-    void shape.finished
-      .then(() => el.classList.remove("is-morphing"))
-      .catch(() => {});
+    void shape.finished.then(() => el.classList.remove("is-morphing")).catch(() => {});
   }
 </script>
 
@@ -186,6 +189,17 @@
         <Icon icon={SquareTerminal} size={15} />
         {t("page.agents.window.shell")}
       </button>
+      {#if onNewAdmin && shortcutOs() === "windows"}
+        <button
+          type="button"
+          class="pick is-shell"
+          title={t("page.agents.window.adminShellTip")}
+          onclick={onNewAdmin}
+        >
+          <Icon icon={ShieldCheck} size={15} />
+          {t("page.agents.window.adminShell")}
+        </button>
+      {/if}
     </ChatPopover>
     <button
       type="button"
@@ -206,10 +220,7 @@
     <!-- Achicada: solo el logo de cada una, con su estado encima. -->
     <nav class="entries">
       {#each entries as entry (entry.key)}
-        <div
-          class="row"
-          class:is-active={entry.key === active}
-        >
+        <div class="row" class:is-active={entry.key === active}>
           <button
             type="button"
             class="entry"
@@ -229,18 +240,18 @@
     </nav>
   {:else}
     <div class="tree-wrap">
-    <BoardTree
-      {entries}
-      {spaces}
-      {currentSpace}
-      {active}
-      defaultName={currentSpace ?? (cwd ? folderName(cwd) : "")}
-      {onSelect}
-      {onClose}
-      {onSaveSpace}
-      {onOpenSpace}
-      {onDeleteSpace}
-    />
+      <BoardTree
+        {entries}
+        {spaces}
+        {currentSpace}
+        {active}
+        defaultName={currentSpace ?? (cwd ? folderName(cwd) : "")}
+        {onSelect}
+        {onClose}
+        {onSaveSpace}
+        {onOpenSpace}
+        {onDeleteSpace}
+      />
     </div>
   {/if}
 
@@ -516,5 +527,4 @@
     flex-direction: column;
     min-height: 0;
   }
-
 </style>

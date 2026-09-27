@@ -330,7 +330,7 @@ pub fn tick_db(path: &Path, now: i64, ignore: &HashSet<String>) -> Vec<AgentPres
             Schema::V2 => match last_message_v2(&conn, &row.id) {
                 // El `idle` es el cierre del turno: el preview vive en el
                 // último `assistant`, una fila atrás.
-                Some((kind, data)) if kind == "idle" => OcStatus::Ready {
+                Some((kind, _)) if kind == "idle" => OcStatus::Ready {
                     preview: last_assistant_preview_v2(&conn, &row.id),
                 },
                 Some((kind, data)) => classify_v2(&kind, &data),

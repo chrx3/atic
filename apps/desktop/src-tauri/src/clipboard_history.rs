@@ -1053,10 +1053,15 @@ pub async fn start_clipboard_text_drag(
 
     #[cfg(windows)]
     {
+        let agents_hwnd = app
+            .get_webview_window(crate::agents_window::LABEL)
+            .filter(|w| w.is_visible().unwrap_or(false))
+            .and_then(|w| w.hwnd().ok())
+            .map(|h| h.0 as isize);
         let (tx, rx) = std::sync::mpsc::channel();
         let drag_text = text.clone();
         app.run_on_main_thread(move || {
-            let r = crate::ole_text_drag::drag_unicode_text(&drag_text);
+            let r = crate::ole_text_drag::drag_unicode_text(&drag_text, agents_hwnd);
             let _ = tx.send(r);
         })
         .map_err(|e| e.to_string())?;
@@ -1067,19 +1072,27 @@ pub async fn start_clipboard_text_drag(
             target: "clipboard",
             dropped = outcome.dropped,
             effect = outcome.effect,
+            released_on_own = outcome.released_on_own,
             over_agents,
             web_terminal,
             "arrastre de texto terminado"
         );
-        // Soltado sobre la ventana de agentes sin que nadie lo tomara: la
-        // pizarra decide si va a la entrada de texto o a la consola de debajo.
-        // El respaldo de más abajo no sirve ahí: no pega en ventanas propias.
-        if drop_needs_paste_fallback(outcome.dropped, outcome.effect, false) {
+        // Soltado sobre la ventana de agentes: la pizarra decide si va a la
+        // entrada de texto o a la consola de debajo. El respaldo de más abajo
+        // no sirve ahí: no pega en ventanas propias.
+        if outcome.released_on_own
+            || drop_needs_paste_fallback(outcome.dropped, outcome.effect, false)
+        {
             if let Some(at) = cursor_in_agents_window(&app) {
                 let _ = app.emit(
                     "agents-window-insert",
                     AgentsComposerInsert::text_in_window(text, at),
                 );
+                // Al frente: lo siguiente que escribas o pegues desde el
+                // historial tiene que ir acá y no a la app de antes.
+                if let Some(hwnd) = agents_hwnd {
+                    std::thread::spawn(move || force_foreground(hwnd as _));
+                }
                 return Ok(());
             }
         }

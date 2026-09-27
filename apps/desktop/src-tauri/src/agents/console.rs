@@ -56,9 +56,46 @@ pub struct ConsoleOpenOptions {
     pub view: Option<String>,
 }
 
+#[cfg(windows)]
+mod admin;
+#[cfg(windows)]
+pub use admin::{run_bridge as run_admin_bridge, BRIDGE_ARG as ADMIN_BRIDGE_ARG};
+
+/// Lo único que la consola viva le pide a su PTY después de abrirlo.
+///
+/// Es un trait propio y no `MasterPty` porque la consola de administrador no
+/// tiene un PTY local: redimensiona mandándole el tamaño al puente elevado.
+trait PtyResize: Send {
+    fn resize(&self, size: PtySize) -> Result<(), String>;
+}
+
+impl PtyResize for Box<dyn MasterPty + Send> {
+    fn resize(&self, size: PtySize) -> Result<(), String> {
+        MasterPty::resize(&**self, size).map_err(|e| e.to_string())
+    }
+}
+
+/// Una consola recién arrancada, lista para que `launch` la enchufe.
+struct Opened {
+    reader: Box<dyn Read + Send>,
+    writer: Box<dyn Write + Send>,
+    resize: Box<dyn PtyResize>,
+    child: Box<dyn portable_pty::Child + Send + Sync>,
+}
+
+/// Qué arrancar: un comando en un PTY propio, o PowerShell elevado detrás
+/// del puente de administrador.
+enum Spawn {
+    Pty(CommandBuilder),
+    #[cfg(windows)]
+    Admin {
+        cwd: Option<String>,
+    },
+}
+
 struct LiveConsole {
     writer: Mutex<Box<dyn Write + Send>>,
-    master: Box<dyn MasterPty + Send>,
+    master: Box<dyn PtyResize>,
     killer: Box<dyn ChildKiller + Send + Sync>,
     stop: Arc<AtomicBool>,
     /// PID del proceso raíz del PTY (`cmd /K` o la shell). 0 = desconocido.
@@ -222,7 +259,10 @@ fn orphan_ready(session: &str) -> bool {
 /// frontend (`OUTPUT_BUF_MAX`): misma ventana de historia en los dos lados.
 const TAIL_MAX: usize = 256 * 1024;
 
-static TAILS: Mutex<Option<HashMap<String, Arc<Mutex<VecDeque<u8>>>>>> = Mutex::new(None);
+/// Cola de salida reciente de una consola, compartida con su hilo lector.
+type Tail = Arc<Mutex<VecDeque<u8>>>;
+
+static TAILS: Mutex<Option<HashMap<String, Tail>>> = Mutex::new(None);
 
 /// Consolas que no dependen de una vista: las de los subagentes que abre el
 /// hub. Viven mientras viva su sesión, aunque la pizarra esté cerrada.
@@ -276,13 +316,11 @@ fn note_output(session: &str, data: &str) {
 /// correr al programa hasta tener respuesta. Con una vista conectada la
 /// contesta xterm; la consola de un subagente puede no tener ninguna.
 fn terminal_query_replies(data: &str) -> Vec<&'static str> {
-    let mut out = Vec::new();
-    for _ in data.matches("\x1b[6n") {
-        out.push("\x1b[1;1R");
-    }
-    for _ in data.matches("\x1b[c").chain(data.matches("\x1b[0c")) {
-        out.push("\x1b[?1;2c");
-    }
+    let cursor = data.matches("\x1b[6n").count();
+    let atributos = data.matches("\x1b[c").count() + data.matches("\x1b[0c").count();
+    let mut out = Vec::with_capacity(cursor + atributos);
+    out.extend(std::iter::repeat_n("\x1b[1;1R", cursor));
+    out.extend(std::iter::repeat_n("\x1b[?1;2c", atributos));
     out
 }
 
@@ -561,6 +599,15 @@ fn system_cmd_exe() -> PathBuf {
         .map(PathBuf::from)
         .filter(|p| p.is_file())
         .unwrap_or(cmd_exe)
+}
+
+/// Comando con que la vista pide una consola de administrador. No es un
+/// ejecutable: `console_open` lo reconoce y abre el puente elevado (`admin`).
+const ADMIN_COMMAND: &str = "atic-admin";
+
+/// ¿Esta consola se abrió elevada? Se reconoce por el comando con que nació.
+fn is_admin_command(command: &str) -> bool {
+    command.trim().eq_ignore_ascii_case(ADMIN_COMMAND)
 }
 
 fn quote_cmd(s: &str) -> String {
@@ -920,20 +967,7 @@ struct LaunchMeta {
 ///
 /// Lo comparten la consola que pide la vista y la del subagente que abre el
 /// hub: el reclamo de una vista (o el fijado) lo pone quien llama.
-fn launch(
-    app: AppHandle,
-    data_dir: &Path,
-    mut cmd: CommandBuilder,
-    size: PtySize,
-    meta: LaunchMeta,
-) -> Result<String, String> {
-    let LaunchMeta {
-        cli,
-        cwd,
-        started_ms,
-        askpass,
-        pinned: pin_it,
-    } = meta;
+fn open_pty(mut cmd: CommandBuilder, data_dir: &Path, size: PtySize) -> Result<Opened, String> {
     apply_terminal_color_env(&mut cmd);
     apply_clean_script_env(&mut cmd);
     apply_fresh_path(&mut cmd, Some(data_dir));
@@ -959,6 +993,38 @@ fn launch(
         .master
         .take_writer()
         .map_err(|e| format!("No se pudo escribir al PTY: {e}"))?;
+    Ok(Opened {
+        reader,
+        writer,
+        resize: Box::new(pair.master),
+        child,
+    })
+}
+
+fn launch(
+    app: AppHandle,
+    data_dir: &Path,
+    spawn: Spawn,
+    size: PtySize,
+    meta: LaunchMeta,
+) -> Result<String, String> {
+    let LaunchMeta {
+        cli,
+        cwd,
+        started_ms,
+        askpass,
+        pinned: pin_it,
+    } = meta;
+    let Opened {
+        reader,
+        writer,
+        resize,
+        child,
+    } = match spawn {
+        Spawn::Pty(cmd) => open_pty(cmd, data_dir, size)?,
+        #[cfg(windows)]
+        Spawn::Admin { cwd } => admin::open(cwd.as_deref(), size)?,
+    };
 
     let session = Uuid::new_v4().to_string();
     if pin_it {
@@ -986,7 +1052,7 @@ fn launch(
             session.clone(),
             LiveConsole {
                 writer: Mutex::new(writer),
-                master: pair.master,
+                master: resize,
                 killer,
                 stop,
                 pid,
@@ -1045,7 +1111,7 @@ pub(crate) fn spawn_agent_pty(
     let session = launch(
         app.clone(),
         &data_dir,
-        cmd,
+        Spawn::Pty(cmd),
         pty_size(Some(120), Some(36)),
         LaunchMeta {
             cli: Some(cli.to_string()),
@@ -1058,8 +1124,24 @@ pub(crate) fn spawn_agent_pty(
     Ok(session)
 }
 
-/// Escribe en la consola como si fuera el teclado.
+/// Escribe en la consola como si fuera el teclado. Es la puerta de los agentes
+/// (el hub); lo que tipeas tú entra por `console_write`.
+///
+/// Una consola de administrador queda cerrada a los agentes: lo que escriban
+/// ahí corre con permisos de administrador. Hoy ningún agente escribe en una
+/// consola que no abrió él, así que esto no se cruza en el uso normal; si
+/// algún día hace falta, este es el lugar donde pedirte permiso.
 pub(crate) fn write_input(session: &str, data: &str) -> Result<(), String> {
+    let elevated = with_map(|map| {
+        map.get(session)
+            .is_some_and(|live| live.cli.as_deref().is_some_and(is_admin_command))
+    });
+    if elevated {
+        return Err(
+            "Esa es una consola de administrador: los agentes no pueden escribir en ella."
+                .to_string(),
+        );
+    }
     console_write(session.to_string(), data.to_string())
 }
 
@@ -1106,14 +1188,29 @@ pub fn console_open(
         .map(str::to_string)
         .or_else(|| std::env::var("USERPROFILE").ok())
         .unwrap_or_default();
-    let (cmd, askpass) = match kind.as_str() {
+    let (spawn, askpass) = match kind.as_str() {
+        "local" if options.command.as_deref().is_some_and(is_admin_command) => {
+            #[cfg(windows)]
+            {
+                (
+                    Spawn::Admin {
+                        cwd: options.cwd.clone(),
+                    },
+                    None,
+                )
+            }
+            #[cfg(not(windows))]
+            {
+                return Err("La consola de administrador es solo para Windows.".to_string());
+            }
+        }
         "local" => {
             let mut cmd = match options.command.as_deref().map(str::trim) {
                 Some(c) if !c.is_empty() => build_local_command(c)?,
                 _ => resolve_local_shell(),
             };
             apply_cwd(&mut cmd, options.cwd.as_deref());
-            (cmd, None)
+            (Spawn::Pty(cmd), None)
         }
         "ssh" => {
             let host_id = options
@@ -1130,14 +1227,15 @@ pub fn console_open(
                 .find(|h| h.id == host_id)
                 .cloned()
                 .ok_or_else(|| format!("Host SSH no encontrado: {host_id}"))?;
-            build_ssh_builder(&host)?
+            let (cmd, askpass) = build_ssh_builder(&host)?;
+            (Spawn::Pty(cmd), askpass)
         }
         _ => unreachable!("kind ya validado"),
     };
     let session = launch(
         app,
         &state.dirs.data_dir(),
-        cmd,
+        spawn,
         size,
         LaunchMeta {
             cli,

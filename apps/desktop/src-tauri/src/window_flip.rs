@@ -93,6 +93,7 @@ struct FlipSession {
     assets_dir: PathBuf,
     target_hwnd: isize,
     /// PID de la app del frente (macOS; en Windows queda en 0).
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     target_pid: i32,
     overlay_x: i32,
     overlay_y: i32,

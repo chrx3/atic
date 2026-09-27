@@ -1548,6 +1548,7 @@ pub fn set_topmost(app: &AppHandle, on: bool) {
 
 /// Aplica `ignore_cursor_events` según `ARMED`. En Mac tiene que correr en
 /// el hilo principal: `NSWindow` no admite cambios de otro hilo.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))] // solo lo llama macOS
 fn apply_armed_click_through(app: &AppHandle) {
     let capturing = CAPTURING.load(Ordering::Acquire);
     let armed = ARMED.load(Ordering::Acquire);
@@ -2259,7 +2260,7 @@ fn cursor_overlay_css() -> Option<(f64, f64)> {
             return None;
         }
         let (cx, cy) = crate::floating::cursor_position()?;
-        return overlay_css_from_physical(cx, cy);
+        overlay_css_from_physical(cx, cy)
     }
     #[cfg(not(windows))]
     {
@@ -2818,6 +2819,7 @@ fn start_macos_hit_poll(app: AppHandle) {
 }
 
 /// Posición CSS del cursor si está sobre alguna zona publicada.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))] // solo lo llama macOS
 fn cursor_over_any_hit() -> Option<(f64, f64)> {
     let (x, y) = cursor_overlay_css()?;
     let rects = HIT_RECTS.try_lock().ok()?;
@@ -2863,6 +2865,7 @@ pub struct OverlayPoint {
 
 /// Clic principal en el mismo espacio que `overlay-cursor`.
 #[derive(Debug, Clone, Copy, serde::Serialize)]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))] // solo lo emite macOS
 pub struct OverlayPointer {
     pub x: f64,
     pub y: f64,

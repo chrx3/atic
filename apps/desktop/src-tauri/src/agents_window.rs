@@ -71,11 +71,7 @@ fn build(app: &AppHandle, visible: bool) -> Result<tauri::WebviewWindow, String>
     let mut builder =
         tauri::WebviewWindowBuilder::new(app, LABEL, tauri::WebviewUrl::App("agents".into()))
             .visible(visible)
-            .title(crate::ui_lang::pick(
-                crate::ui_lang::english(),
-                "Consolas de agentes",
-                "Agent consoles",
-            ))
+            .title("Atic Code")
             .inner_size(1120.0, 760.0)
             .min_inner_size(680.0, 480.0);
     if let Some(dir) = profile_dir(app) {

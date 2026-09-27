@@ -2989,7 +2989,8 @@
   async function applyClipboardInsert(payload: AgentsComposerInsert) {
     if (!panelIsLive()) {
       // Sin punto es texto dirigido (dictado), no un soltar sobre la pantalla.
-      if (payload.x == null && tabs.some((tab) => tab.sessionId)) insertWhenLive(payload);
+      if (payload.x == null && tabs.some((tab) => tab.sessionId))
+        insertWhenLive(payload);
       return;
     }
     const x = payload.x;

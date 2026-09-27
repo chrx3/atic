@@ -11,6 +11,9 @@ describe("unscalePoint", () => {
   });
 
   it("sin zoom deja el punto igual", () => {
-    expect(unscalePoint({ x: 12, y: 34 }, { left: 5, top: 6 }, 1)).toEqual({ x: 12, y: 34 });
+    expect(unscalePoint({ x: 12, y: 34 }, { left: 5, top: 6 }, 1)).toEqual({
+      x: 12,
+      y: 34,
+    });
   });
 });

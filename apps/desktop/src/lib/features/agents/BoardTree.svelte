@@ -301,11 +301,13 @@
       opacity: 0;
       transform: translateY(3px) scale(0.9);
     }
+
     15%,
     70% {
       opacity: 1;
       transform: none;
     }
+
     100% {
       opacity: 0;
     }

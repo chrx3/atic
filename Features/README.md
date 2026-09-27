@@ -132,6 +132,15 @@ El flujo completo del producto original: graba, transcribe local y resume.
 
 → [capturas.md](capturas.md)
 
+### 9. Color — cuentagotas
+
+- Lupa en vivo que sigue al cursor y lee el píxel bajo el puntero; no congela
+  la pantalla.
+- Rosa cromática para ajustar matiz, saturación y brillo, o escribir un HEX.
+- Copia en HEX, RGB o HSL, con recientes.
+
+→ [color.md](color.md)
+
 ### Y además: el launcher
 
 No está en la rueda pero es una herramienta más. Barra de búsqueda global tipo
@@ -260,6 +269,7 @@ Detalle completo en el [README del repo](../README.md#privacidad).
 | hecho | Transcripción, resumen y correo | [transcripcion-resumen.md](transcripcion-resumen.md) |
 | parcial | Dictado | [dictado.md](dictado.md) |
 | hecho | Capturas de pantalla | [capturas.md](capturas.md) |
+| hecho | Cuentagotas de color | [color.md](color.md) |
 | hecho | Historial de portapapeles | [clipboard-historial.md](clipboard-historial.md) |
 | hecho | Snippets | [snippets.md](snippets.md) |
 | parcial | Agentes multi-proveedor | [agentes.md](agentes.md) |

@@ -1200,11 +1200,25 @@ fn show_loupe(app: &AppHandle) -> Result<(), String> {
     resize_loupe(app, false)?;
     #[cfg(windows)]
     {
-        use windows_sys::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_SHOWNOACTIVATE};
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            SetWindowPos, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW,
+        };
         if let Ok(hwnd) = window.hwnd() {
             LOUPE_HWND.store(hwnd.0 as isize, Ordering::SeqCst);
+            // `ShowWindow` no reordena: con el bit topmost puesto, la lupa
+            // igual quedaba debajo de la ventana activa y solo se veía sobre el
+            // escritorio. Se sube explícitamente al frente de la banda topmost;
+            // `place_loupe_cached` mueve con `SWP_NOZORDER` y no la vuelve a subir.
             unsafe {
-                ShowWindow(hwnd.0 as _, SW_SHOWNOACTIVATE);
+                SetWindowPos(
+                    hwnd.0 as _,
+                    HWND_TOPMOST,
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+                );
             }
         } else {
             let _ = window.show();

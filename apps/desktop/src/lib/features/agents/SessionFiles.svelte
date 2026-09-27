@@ -39,7 +39,8 @@
     const list = (files ?? []).filter((f) => !onlyNew || f.created);
     if (!byFolder) return list;
     return [...list].sort(
-      (a, b) => dirOf(a.path).localeCompare(dirOf(b.path)) || b.modifiedMs - a.modifiedMs,
+      (a, b) =>
+        dirOf(a.path).localeCompare(dirOf(b.path)) || b.modifiedMs - a.modifiedMs,
     );
   });
   const reduced = prefersReducedMotion();
@@ -141,10 +142,14 @@
             <span class="stack">
               <span class="name">
                 {file.name}
-                {#if file.created}<span class="badge">{t("page.agents.board.filesNew")}</span>{/if}
+                {#if file.created}<span class="badge"
+                    >{t("page.agents.board.filesNew")}</span
+                  >{/if}
               </span>
               <span class="meta">
-                {byFolder ? ago(file.modifiedMs) : `${dirOf(file.path)} · ${ago(file.modifiedMs)}`}
+                {byFolder
+                  ? ago(file.modifiedMs)
+                  : `${dirOf(file.path)} · ${ago(file.modifiedMs)}`}
               </span>
             </span>
           </button>
@@ -175,7 +180,7 @@
     width: min(280px, 70%);
     border-left: 1px solid color-mix(in sRGB, var(--rb-text) 10%, transparent);
     background: var(--rb-bg1, var(--rb-bg0));
-    box-shadow: -8px 0 24px rgb(0 0 0 / 0.25);
+    box-shadow: -8px 0 24px rgb(0 0 0 / 25%);
   }
 
   .head {
@@ -307,8 +312,8 @@
     margin-left: 4px;
     border-radius: 4px;
     padding: 0 4px;
-    background: color-mix(in sRGB, var(--coral, #e8866a) 22%, transparent);
-    color: var(--coral, #e8866a);
+    background: color-mix(in sRGB, var(--coral, var(--accent)) 22%, transparent);
+    color: var(--coral, var(--accent));
     font-size: 9.5px;
   }
 

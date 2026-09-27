@@ -120,15 +120,15 @@ impl TurnWatch {
                     description,
                     input,
                     status,
-                } if *status == PermissionStatus::Pending => {
-                    if !st.permisos_pendientes.iter().any(|p| p.id == item.id) {
-                        st.permisos_pendientes.push(PendingPermission {
-                            id: item.id.clone(),
-                            tool: tool.clone(),
-                            description: description.clone(),
-                            input: resumen_input(input),
-                        });
-                    }
+                } if *status == PermissionStatus::Pending
+                    && !st.permisos_pendientes.iter().any(|p| p.id == item.id) =>
+                {
+                    st.permisos_pendientes.push(PendingPermission {
+                        id: item.id.clone(),
+                        tool: tool.clone(),
+                        description: description.clone(),
+                        input: resumen_input(input),
+                    });
                 }
                 _ => {}
             },

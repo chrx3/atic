@@ -10,6 +10,8 @@ use serde::Serialize;
 /// `AVAuthorizationStatus` serializado para la UI.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
+// Fuera de macOS el stub solo devuelve `Authorized`: el resto es de Mac.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub enum MicrophoneStatus {
     NotDetermined,
     Restricted,

@@ -135,6 +135,7 @@ fn store_host(sample: CpuSample) -> Option<CpuSample> {
 static LAST_PIDS: Mutex<Option<HashMap<String, Vec<u32>>>> = Mutex::new(None);
 
 /// Pids vivos de esa clave según el último barrido (solo los accionables).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))] // solo lo usa macOS
 pub fn pids_for(key: &str) -> Vec<u32> {
     let Ok(guard) = LAST_PIDS.lock() else {
         return Vec::new();
