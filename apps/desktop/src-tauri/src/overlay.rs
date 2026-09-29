@@ -164,6 +164,157 @@ fn note_overlay_origin(x: i32, y: i32, w: u32, h: u32) {
     OVERLAY_PHYS_H.store(h, Ordering::Release);
 }
 
+/// Esquina del DOCUMENTO del overlay en el espacio global (puntos en Mac).
+///
+/// En Mac no siempre es la esquina de la ventana: con Spaces por pantalla la
+/// ventana cubre un solo monitor y el webview queda corrido dentro de ella
+/// (ver `macos_fit_webview`). El CSS, el hit-test y la config trabajan contra
+/// el documento, que sigue midiendo el escritorio entero.
+#[cfg(target_os = "macos")]
+fn doc_origin() -> (f64, f64) {
+    (
+        f64::from(OVERLAY_ORIGIN_X.load(Ordering::Acquire)),
+        f64::from(OVERLAY_ORIGIN_Y.load(Ordering::Acquire)),
+    )
+}
+
+/// «Las pantallas tienen Spaces independientes» (el default de macOS).
+///
+/// Con eso activado AppKit no deja que una ventana abarque dos monitores: la
+/// muestra solo en el que cubre más y en el otro no existe. Un overlay sobre
+/// todo el escritorio desaparece —o queda visible y sordo— en una pantalla.
+#[cfg(target_os = "macos")]
+static MAC_SEPARATE_SPACES: AtomicBool = AtomicBool::new(false);
+
+/// Monitor (puntos Quartz) que cubre la ventana del overlay en Mac.
+#[cfg(target_os = "macos")]
+static MAC_WINDOW_RECT: Mutex<Option<(i32, i32, u32, u32)>> = Mutex::new(None);
+
+#[cfg(target_os = "macos")]
+fn macos_screens_have_separate_spaces() -> bool {
+    let Some(cls) = objc2::runtime::AnyClass::get(c"NSScreen") else {
+        return false;
+    };
+    unsafe { objc2::msg_send![cls, screensHaveSeparateSpaces] }
+}
+
+/// Monitor al que tiene que ir la ventana: el de la pill, o el del cursor
+/// mientras se arrastra algo (la pill cruza con el cursor, y su rectángulo no
+/// se publica durante el gesto).
+#[cfg(target_os = "macos")]
+fn macos_target_monitor() -> Option<atic_capture::Rect> {
+    let cursor = crate::floating::cursor_position();
+    let point = if POINTER_GESTURE.load(Ordering::Acquire) {
+        cursor
+    } else {
+        pill_rect()
+            .map(|r| (r.x + r.w / 2, r.y + r.h / 2))
+            .or(cursor)
+    };
+    let monitors = atic_capture::monitors::enumerate();
+    point
+        .and_then(|(x, y)| monitors.iter().find(|m| m.bounds.contains(x, y)))
+        .or_else(|| monitors.iter().find(|m| m.is_primary))
+        .or_else(|| monitors.first())
+        .map(|m| m.bounds)
+}
+
+/// Pone la ventana sobre `win` y el webview, dentro, sobre `doc`.
+///
+/// El webview deja de seguir el tamaño de la ventana: mide siempre el
+/// escritorio entero y se corre para que su esquina caiga en el origen global.
+/// Así el frontend no se entera de que la ventana cubre un solo monitor: sus
+/// coordenadas, `getBoundingClientRect` y los eventos siguen siendo los del
+/// escritorio. Lo que cae fuera de la ventana simplemente no se dibuja.
+#[cfg(target_os = "macos")]
+fn macos_fit_webview(
+    window: &tauri::WebviewWindow,
+    win: (i32, i32, u32, u32),
+    doc: (i32, i32, u32, u32),
+) {
+    use objc2_foundation::{NSPoint, NSRect, NSSize};
+
+    let _ = window.set_position(tauri::LogicalPosition::new(
+        f64::from(win.0),
+        f64::from(win.1),
+    ));
+    let _ = window.set_size(tauri::LogicalSize::new(
+        f64::from(win.2).max(1.0),
+        f64::from(win.3).max(1.0),
+    ));
+    if let Ok(mut g) = MAC_WINDOW_RECT.lock() {
+        *g = Some(win);
+    }
+    let _ = window.with_webview(move |webview| unsafe {
+        let wk = webview.inner() as *mut objc2::runtime::AnyObject;
+        if wk.is_null() {
+            return;
+        }
+        let parent: *mut objc2::runtime::AnyObject = objc2::msg_send![wk, superview];
+        if parent.is_null() {
+            return;
+        }
+        let flipped: bool = objc2::msg_send![parent, isFlipped];
+        let (x, y, w, h) = webview_frame_in_window(win, doc, flipped);
+        let _: () = objc2::msg_send![wk, setAutoresizingMask: 0usize];
+        let frame = NSRect::new(NSPoint::new(x, y), NSSize::new(w, h));
+        let _: () = objc2::msg_send![wk, setFrame: frame];
+    });
+}
+
+/// Marco del webview dentro de la ventana, en coordenadas de AppKit del padre.
+///
+/// `win` y `doc` van en puntos Quartz (Y hacia abajo). Sin voltear, AppKit
+/// mide Y desde el borde de abajo del padre.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn webview_frame_in_window(
+    win: (i32, i32, u32, u32),
+    doc: (i32, i32, u32, u32),
+    flipped: bool,
+) -> (f64, f64, f64, f64) {
+    let x = f64::from(doc.0 - win.0);
+    let y = if flipped {
+        f64::from(doc.1 - win.1)
+    } else {
+        f64::from(win.1 + win.3 as i32) - f64::from(doc.1 + doc.3 as i32)
+    };
+    (x, y, f64::from(doc.2), f64::from(doc.3))
+}
+
+/// Con Spaces por pantalla, lleva la ventana al monitor de la pill.
+#[cfg(target_os = "macos")]
+fn macos_follow_pill(app: &AppHandle) {
+    if !MAC_SEPARATE_SPACES.load(Ordering::Acquire) || CAPTURING.load(Ordering::Acquire) {
+        return;
+    }
+    let Some(target) = macos_target_monitor() else {
+        return;
+    };
+    let win = (target.x, target.y, target.width, target.height);
+    let current = MAC_WINDOW_RECT.lock().ok().and_then(|g| *g);
+    if current == Some(win) {
+        return;
+    }
+    let again = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        let Some(window) = again.get_webview_window(LABEL) else {
+            return;
+        };
+        let doc = (
+            OVERLAY_ORIGIN_X.load(Ordering::Acquire),
+            OVERLAY_ORIGIN_Y.load(Ordering::Acquire),
+            OVERLAY_PHYS_W.load(Ordering::Acquire),
+            OVERLAY_PHYS_H.load(Ordering::Acquire),
+        );
+        macos_fit_webview(&window, win, doc);
+        tracing::info!(
+            target: "overlay",
+            "overlay al monitor {},{} {}x{} (Spaces por pantalla)",
+            win.0, win.1, win.2, win.3
+        );
+    });
+}
+
 /// Topología aplicada al overlay. Si al login Windows aún no enumeró el
 /// segundo monitor, esto queda en 1 pantalla y hay que reaplicar después.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -696,21 +847,46 @@ pub fn place(app: &AppHandle) -> Option<OverlayRect> {
         let _ = window.set_max_size(Some(tauri::Size::Logical(tauri::LogicalSize::new(
             16384.0, 16384.0,
         ))));
-        let _ = window.set_position(tauri::LogicalPosition::new(
-            f64::from(vs.x),
-            f64::from(vs.y),
-        ));
-        let _ = window.set_size(tauri::LogicalSize::new(
-            f64::from(vs.width).max(1.0),
-            f64::from(vs.height).max(1.0),
-        ));
+        // El documento es siempre el escritorio entero; se anota antes de
+        // elegir monitor porque `macos_target_monitor` lee la pill contra él.
+        note_overlay_origin(vs.x, vs.y, vs.width, vs.height);
+        #[cfg(target_os = "macos")]
+        {
+            let doc = (vs.x, vs.y, vs.width, vs.height);
+            let separate = macos_screens_have_separate_spaces();
+            MAC_SEPARATE_SPACES.store(separate, Ordering::Release);
+            let win = if separate {
+                macos_target_monitor()
+                    .map(|m| (m.x, m.y, m.width, m.height))
+                    .unwrap_or(doc)
+            } else {
+                doc
+            };
+            macos_fit_webview(&window, win, doc);
+            tracing::info!(
+                target: "overlay",
+                spaces_por_pantalla = separate,
+                "ventana del overlay en {},{} {}x{}",
+                win.0, win.1, win.2, win.3
+            );
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = window.set_position(tauri::LogicalPosition::new(
+                f64::from(vs.x),
+                f64::from(vs.y),
+            ));
+            let _ = window.set_size(tauri::LogicalSize::new(
+                f64::from(vs.width).max(1.0),
+                f64::from(vs.height).max(1.0),
+            ));
+        }
         let _ = window.set_always_on_top(true);
         #[cfg(target_os = "macos")]
         macos_set_status_level(&window);
         let _ = window.show();
         // El CSS del overlay vive en el mismo espacio global: factor 1.
         OVERLAY_SCALE_BITS.store(1.0f64.to_bits(), Ordering::SeqCst);
-        note_overlay_origin(vs.x, vs.y, vs.width, vs.height);
         set_click_through(&window, true);
         tracing::info!(
             target: "overlay",
@@ -2058,6 +2234,12 @@ pub fn set_overlay_hit_rects(app: AppHandle, rects: Vec<HitRect>) {
             OVERLAY_HWND.store(hwnd.0 as isize, Ordering::Release);
         }
         // Origen del cliente (no outer): alinea PILL_RECT con el cursor.
+        #[cfg(target_os = "macos")]
+        let origin = {
+            let _ = &window;
+            doc_origin()
+        };
+        #[cfg(not(target_os = "macos"))]
         let origin = client_origin_physical().unwrap_or_else(|| {
             window
                 .outer_position()
@@ -2356,7 +2538,7 @@ fn client_origin_physical() -> Option<(f64, f64)> {
     Some((f64::from(pt.x), f64::from(pt.y)))
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 fn client_origin_physical() -> Option<(f64, f64)> {
     None
 }
@@ -2775,8 +2957,15 @@ fn start_macos_hit_poll(app: AppHandle) {
                 .checked_sub(std::time::Duration::from_secs(1))
                 .unwrap_or_else(std::time::Instant::now);
             let mut hover_at: Option<(f64, f64)> = None;
+            let mut follow_at = std::time::Instant::now();
             loop {
                 std::thread::sleep(std::time::Duration::from_millis(SAMPLE_MS as u64));
+                // Enumerar monitores no es gratis: basta unas pocas veces por
+                // segundo para que la ventana alcance a la pill.
+                if follow_at.elapsed() >= std::time::Duration::from_millis(120) {
+                    follow_at = std::time::Instant::now();
+                    macos_follow_pill(&app);
+                }
                 let sample = cursor_over_any_hit();
                 let over = sample.is_some();
                 if over {
@@ -3047,6 +3236,11 @@ fn frame(app: &AppHandle) -> Option<(f64, f64, f64)> {
     if let Ok(hwnd) = window.hwnd() {
         OVERLAY_HWND.store(hwnd.0 as isize, Ordering::Release);
     }
+    #[cfg(target_os = "macos")]
+    let _ = &window;
+    #[cfg(target_os = "macos")]
+    let (ox, oy) = doc_origin();
+    #[cfg(not(target_os = "macos"))]
     let (ox, oy) = client_origin_physical().or_else(|| {
         window.outer_position().ok().map(|p| {
             (
@@ -3307,24 +3501,41 @@ pub fn pill_home(app: AppHandle) -> Option<OverlayPoint> {
 #[tauri::command]
 pub fn overlay_rect(app: AppHandle) -> Option<OverlayRect> {
     let window = app.get_webview_window(LABEL)?;
-    let pos = window.outer_position().ok()?;
-    let size = window.outer_size().ok()?;
-    // En Mac el espacio global son puntos: se traduce la posición/size físicos
-    // de Tauri y la escala es 1 (el CSS ya está en puntos).
+    // El frontend trabaja contra el documento, que en Mac puede ser más
+    // grande que la ventana (Spaces por pantalla).
     #[cfg(target_os = "macos")]
-    let scale = 1.0;
+    {
+        let _ = window;
+        let (x, y) = doc_origin();
+        return Some(OverlayRect {
+            x: x as i32,
+            y: y as i32,
+            w: OVERLAY_PHYS_W.load(Ordering::Acquire) as i32,
+            h: OVERLAY_PHYS_H.load(Ordering::Acquire) as i32,
+            scale: 1.0,
+        });
+    }
     #[cfg(not(target_os = "macos"))]
-    let scale = {
-        let stored = f64::from_bits(OVERLAY_SCALE_BITS.load(Ordering::Acquire));
-        stored.max(window.scale_factor().unwrap_or(1.0))
-    };
-    Some(OverlayRect {
-        x: crate::floating::to_global(&window, f64::from(pos.x)).round() as i32,
-        y: crate::floating::to_global(&window, f64::from(pos.y)).round() as i32,
-        w: crate::floating::to_global(&window, f64::from(size.width)).round() as i32,
-        h: crate::floating::to_global(&window, f64::from(size.height)).round() as i32,
-        scale,
-    })
+    {
+        let pos = window.outer_position().ok()?;
+        let size = window.outer_size().ok()?;
+        // En Mac el espacio global son puntos: se traduce la posición/size físicos
+        // de Tauri y la escala es 1 (el CSS ya está en puntos).
+        #[cfg(target_os = "macos")]
+        let scale = 1.0;
+        #[cfg(not(target_os = "macos"))]
+        let scale = {
+            let stored = f64::from_bits(OVERLAY_SCALE_BITS.load(Ordering::Acquire));
+            stored.max(window.scale_factor().unwrap_or(1.0))
+        };
+        Some(OverlayRect {
+            x: crate::floating::to_global(&window, f64::from(pos.x)).round() as i32,
+            y: crate::floating::to_global(&window, f64::from(pos.y)).round() as i32,
+            w: crate::floating::to_global(&window, f64::from(size.width)).round() as i32,
+            h: crate::floating::to_global(&window, f64::from(size.height)).round() as i32,
+            scale,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -3333,6 +3544,31 @@ mod tests {
         css_viewport_usable, desired_click_through, lparam_screen_point, map_client_to_css,
         map_css_to_client, pick_css_viewport, rect_fits, resolve_physical_extent, should_arm,
     };
+
+    /// Spaces por pantalla: la ventana cubre un monitor y el webview, corrido,
+    /// sigue midiendo el escritorio. Monitores de alto distinto: el de la
+    /// derecha (864) es más bajo que el principal (900).
+    #[test]
+    fn webview_corrido_cubre_el_escritorio_desde_cada_monitor() {
+        use super::webview_frame_in_window;
+        let doc = (0, 0, 2976, 900);
+        // Monitor principal: el documento arranca en su esquina.
+        assert_eq!(
+            webview_frame_in_window((0, 0, 1440, 900), doc, false),
+            (0.0, 0.0, 2976.0, 900.0)
+        );
+        // Monitor derecho, padre sin voltear: se corre 1440 a la izquierda y
+        // baja 36 (su borde inferior queda 36 pt por encima del documento).
+        assert_eq!(
+            webview_frame_in_window((1440, 0, 1536, 864), doc, false),
+            (-1440.0, -36.0, 2976.0, 900.0)
+        );
+        // Padre volteado: Y se mide desde arriba y no hay corrimiento vertical.
+        assert_eq!(
+            webview_frame_in_window((1440, 0, 1536, 864), doc, true),
+            (-1440.0, 0.0, 2976.0, 900.0)
+        );
+    }
 
     /// Un flag de gesto sin botón apretado es INERTE.
     ///
