@@ -170,6 +170,8 @@ pub fn set_config(
     if config.pill_tools != prev.pill_tools
         || config.pill_more_tools != prev.pill_more_tools
         || config.agents_shown != prev.agents_shown
+        || config.pill_lyrics != prev.pill_lyrics
+        || config.pill_agent_text != prev.pill_agent_text
     {
         let _ = app.emit("pill-tools", ());
     }

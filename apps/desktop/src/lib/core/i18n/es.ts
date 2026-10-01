@@ -250,6 +250,12 @@ export const es = {
       homeHint:
         "La pill vuelve al último canto donde la soltaste, a la misma altura. Si ese monitor ya no está, vuelve arriba al centro.",
       homeReset: "Volver arriba al centro",
+      restTitle: "En reposo",
+      restHint: "Lo que la pill muestra sola, sin abrirla.",
+      lyrics: "Letra de la música",
+      lyricsHint: "El verso que suena, junto al título del tema.",
+      agentText: "Texto de los agentes",
+      agentTextHint: "«Pensando…» o lo que está haciendo. Apagado queda solo el logo.",
     },
     shortcuts: {
       title: "Atajos globales",

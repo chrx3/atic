@@ -23,6 +23,7 @@
   import Icon from "$ui/Icon.svelte";
   import IconButton from "$ui/IconButton.svelte";
   import Select from "$ui/Select.svelte";
+  import Switch from "$ui/Switch.svelte";
   import { emit } from "@tauri-apps/api/event";
 
   const cfg = $derived(config.current);
@@ -178,6 +179,21 @@
           {t("settings.pill.reset")}
         </Button>
       </div>
+    </SettingsGroup>
+
+    <SettingsGroup title={t("settings.pill.restTitle")} hint={t("settings.pill.restHint")}>
+      <Switch
+        checked={cfg.pill_lyrics}
+        label={t("settings.pill.lyrics")}
+        hint={t("settings.pill.lyricsHint")}
+        onchange={(on) => void config.patch({ pill_lyrics: on }).catch(toastError)}
+      />
+      <Switch
+        checked={cfg.pill_agent_text}
+        label={t("settings.pill.agentText")}
+        hint={t("settings.pill.agentTextHint")}
+        onchange={(on) => void config.patch({ pill_agent_text: on }).catch(toastError)}
+      />
     </SettingsGroup>
 
     <SettingsGroup

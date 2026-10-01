@@ -149,6 +149,10 @@ export interface AppConfig {
   pill_tools: string[];
   /** Herramientas detrás del gajo «Más». Vacío = no hay submenú. */
   pill_more_tools: string[];
+  /** La letra del tema que suena, en la pill en reposo. */
+  pill_lyrics: boolean;
+  /** El texto del agente junto a su logo en la pill. Apagado, solo el logo. */
+  pill_agent_text: boolean;
   /**
    * Agentes a la vista, en el lanzador y en el panel de cupos. Vacío = todos.
    *

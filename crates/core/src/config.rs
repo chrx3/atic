@@ -390,6 +390,11 @@ pub struct Config {
     pub pill_tools: Vec<String>,
     /// Herramientas detrás del gajo «Más», en orden. Vacío = no hay submenú.
     pub pill_more_tools: Vec<String>,
+    /// La letra del tema que suena, en la pill en reposo.
+    pub pill_lyrics: bool,
+    /// El texto del agente («Pensando…», lo que está haciendo) junto a su
+    /// logo en la pill. Apagado queda solo el logo.
+    pub pill_agent_text: bool,
     /// Agentes a la vista, en el lanzador y en el panel de cupos. Vacio = todos.
     ///
     /// Una sola lista para los dos sitios: el usuario elige «con que agentes
@@ -495,6 +500,8 @@ impl Default for Config {
             agents_shown: Vec::new(),
             pill_tools: Vec::new(),
             pill_more_tools: Vec::new(),
+            pill_lyrics: true,
+            pill_agent_text: true,
             ssh_hosts: Vec::new(),
         }
     }
@@ -592,6 +599,8 @@ struct ConfigFile {
     agents_shown: Option<Vec<String>>,
     pill_tools: Option<Vec<String>>,
     pill_more_tools: Option<Vec<String>>,
+    pill_lyrics: Option<bool>,
+    pill_agent_text: Option<bool>,
     ssh_hosts: Option<Vec<SshHost>>,
 }
 
@@ -714,6 +723,8 @@ impl Default for ConfigFile {
             agents_shown: None,
             pill_tools: None,
             pill_more_tools: None,
+            pill_lyrics: None,
+            pill_agent_text: None,
             ssh_hosts: None,
         }
     }
@@ -988,6 +999,8 @@ impl From<ConfigFile> for Config {
             ),
             pill_tools: pill_ring,
             pill_more_tools: pill_more,
+            pill_lyrics: f.pill_lyrics.unwrap_or(true),
+            pill_agent_text: f.pill_agent_text.unwrap_or(true),
             ssh_hosts: f.ssh_hosts.unwrap_or_default(),
         }
     }
