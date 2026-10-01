@@ -206,12 +206,16 @@ pub(crate) fn physical_client_px(
 
 /// Rasterización de un HWND que cubre el escritorio virtual.
 ///
-/// `user_scale` es el tamaño de Ajustes (1.0 = 1 CSS px por px físico).
+/// La base es el escalado de Windows del monitor principal, y `user_scale` (el
+/// tamaño de Ajustes) se multiplica encima. Es una sola escala para todo el
+/// escritorio: con DPI mixto, los otros monitores ven la pill a la escala del
+/// principal. Sin esta base, un 4K al 250 % la mostraba al 40 %.
 /// Si el HWND ya está en DIP, se ignora para no hacer doble zoom.
 pub(crate) fn overlay_raster_scale(
     hwnd_dpi: u32,
     tauri_scale: f64,
     max_monitor_scale: f64,
+    primary_monitor_scale: f64,
     window_w: i32,
     virtual_physical_w: u32,
     user_scale: f64,
@@ -225,7 +229,7 @@ pub(crate) fn overlay_raster_scale(
             return from_hwnd.max(tauri_scale).max(1.0);
         }
     }
-    user
+    primary_monitor_scale.max(1.0) * user
 }
 
 /// Ajusta el bounds del controlador WebView2 al cliente de la ventana.
@@ -288,14 +292,20 @@ pub fn sync_controller_bounds(window: &WebviewWindow) -> Option<f64> {
     let hwnd_dpi = unsafe { GetDpiForWindow(hwnd_sys) };
     let tauri_scale = window.scale_factor().unwrap_or(1.0);
     let spanning = window.label() == "overlay" || window.label() == "capture-overlay";
-    let (max_mon, vs_w) = if spanning {
-        let max_mon = atic_capture::monitors::enumerate()
+    let (max_mon, primary_mon, vs_w) = if spanning {
+        let monitors = atic_capture::monitors::enumerate();
+        let max_mon = monitors.iter().map(|m| m.scale).fold(1.0_f64, f64::max);
+        let primary_mon = monitors
             .iter()
-            .map(|m| m.scale)
-            .fold(1.0_f64, f64::max);
-        (max_mon, atic_capture::monitors::virtual_screen().width)
+            .find(|m| m.is_primary)
+            .map_or(1.0, |m| m.scale);
+        (
+            max_mon,
+            primary_mon,
+            atic_capture::monitors::virtual_screen().width,
+        )
     } else {
-        (1.0, 0)
+        (1.0, 1.0, 0)
     };
     let user_scale = window
         .app_handle()
@@ -313,7 +323,15 @@ pub fn sync_controller_bounds(window: &WebviewWindow) -> Option<f64> {
             .max(tauri_scale)
             .max(0.01)
     } else {
-        overlay_raster_scale(hwnd_dpi, tauri_scale, max_mon, outer_w, vs_w, user_scale)
+        overlay_raster_scale(
+            hwnd_dpi,
+            tauri_scale,
+            max_mon,
+            primary_mon,
+            outer_w,
+            vs_w,
+            user_scale,
+        )
     };
     let (phys_w, phys_h) = physical_client_px(client_w, client_h, outer_w, outer_h, scale);
     let dip_w = controller_dip_size(phys_w, scale);
@@ -573,23 +591,33 @@ mod tests {
     }
 
     #[test]
-    fn mixed_dpi_default_is_compact() {
-        assert!((overlay_raster_scale(96, 1.0, 1.5, 3840, 3840, 1.0) - 1.0).abs() < 0.001);
+    fn mixed_dpi_follows_the_primary() {
+        // Principal al 100 % y otro monitor al 150 %: manda el principal.
+        assert!((overlay_raster_scale(96, 1.0, 1.5, 1.0, 3840, 3840, 1.0) - 1.0).abs() < 0.001);
     }
 
     #[test]
-    fn user_scale_is_the_raster() {
-        assert!((overlay_raster_scale(96, 1.0, 1.5, 3840, 3840, 1.25) - 1.25).abs() < 0.001);
+    fn user_scale_multiplies_the_base() {
+        assert!((overlay_raster_scale(96, 1.0, 1.5, 1.0, 3840, 3840, 1.25) - 1.25).abs() < 0.001);
     }
 
     #[test]
     fn unaware_hwnd_does_not_double_zoom() {
         // Outer ya en DIP (2560) con escritorio físico 3840 @ 150%.
-        assert!((overlay_raster_scale(96, 1.0, 1.5, 2560, 3840, 1.25) - 1.0).abs() < 0.001);
+        assert!((overlay_raster_scale(96, 1.0, 1.5, 1.5, 2560, 3840, 1.25) - 1.0).abs() < 0.001);
     }
 
     #[test]
-    fn single_monitor_still_honors_user_scale() {
-        assert!((overlay_raster_scale(120, 1.25, 1.25, 1920, 1920, 1.0) - 1.0).abs() < 0.001);
+    fn single_scaled_monitor_is_the_base() {
+        assert!(
+            (overlay_raster_scale(120, 1.25, 1.25, 1.25, 1920, 1920, 1.0) - 1.25).abs() < 0.001
+        );
+    }
+
+    #[test]
+    fn hidpi_primary_times_user_scale() {
+        // 4K al 250 % como principal, con «Grande» en Ajustes.
+        let scale = overlay_raster_scale(240, 2.5, 2.5, 2.5, 3840, 5760, 1.25);
+        assert!((scale - 3.125).abs() < 0.001);
     }
 }
