@@ -12,7 +12,6 @@ import {
   dockCandidate,
   dockedEdgeAt,
   dockedPoint,
-  desktopBounds,
   edgeGaps,
   edgeWallRect,
   edgeWallsFor,
@@ -48,16 +47,6 @@ const DUAL: Area[] = [
 const PILL = { w: 40, h: 40 };
 const at = (x: number, y: number) => ({ x, y, ...PILL });
 
-describe("desktopBounds", () => {
-  it("une todos los monitores", () => {
-    expect(desktopBounds(DUAL)).toEqual({ x: 0, y: 0, w: 2000, h: 800 });
-  });
-
-  it("sin monitores no hay escritorio", () => {
-    expect(desktopBounds([])).toBeNull();
-  });
-});
-
 describe("isOuterEdge", () => {
   it("con una sola pantalla los cuatro bordes son exteriores", () => {
     for (const edge of ["left", "right", "top", "bottom"] as const) {
@@ -71,6 +60,26 @@ describe("isOuterEdge", () => {
     expect(isOuterEdge("right", DUAL[0], DUAL)).toBe(false);
     expect(isOuterEdge("left", DUAL[1], DUAL)).toBe(false);
     expect(isOuterEdge("right", DUAL[1], DUAL)).toBe(true);
+  });
+
+  it("el techo de una pantalla más baja al lado de otra también es exterior", () => {
+    // Laptop alta a la izquierda; monitor más bajo alineado abajo a su derecha.
+    const uneven: Area[] = [
+      { x: 0, y: 0, w: 1536, h: 960 },
+      { x: 1536, y: 300, w: 1920, h: 660 },
+    ];
+    expect(isOuterEdge("top", uneven[1], uneven)).toBe(true);
+    expect(isOuterEdge("top", uneven[0], uneven)).toBe(true);
+    expect(isOuterEdge("left", uneven[1], uneven)).toBe(false);
+  });
+
+  it("una pantalla debajo de otra no tiene techo exterior", () => {
+    const stacked: Area[] = [
+      { x: 0, y: 0, w: 1000, h: 800 },
+      { x: 200, y: 800, w: 1000, h: 800 },
+    ];
+    expect(isOuterEdge("top", stacked[1], stacked)).toBe(false);
+    expect(isOuterEdge("bottom", stacked[0], stacked)).toBe(false);
   });
 
   it("tolera el resto de convertir físicos a CSS con escala fraccionaria", () => {
