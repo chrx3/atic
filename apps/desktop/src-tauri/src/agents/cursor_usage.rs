@@ -109,6 +109,31 @@ fn auth_id_from_cli_config(text: &str) -> Option<String> {
         .map(str::to_string)
 }
 
+/// Donde el CLI guarda su token fuera del llavero: en Windows y Linux no usa
+/// llavero, deja un `auth.json` (misma ruta que arma el propio CLI).
+fn cli_auth_path() -> Option<PathBuf> {
+    #[cfg(windows)]
+    let dir = std::env::var_os("APPDATA").map(|d| PathBuf::from(d).join("Cursor"));
+    #[cfg(target_os = "macos")]
+    let dir = std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cursor"));
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let dir = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
+        .map(|d| d.join("cursor"));
+
+    Some(dir?.join("auth.json"))
+}
+
+fn token_from_cli_auth(text: &str) -> Option<String> {
+    let root: Value = serde_json::from_str(text).ok()?;
+    root.get("accessToken")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
 fn plan_from_cli_config(text: &str) -> Option<String> {
     let root: Value = serde_json::from_str(text).ok()?;
     root.pointer("/authInfo/membershipType")
@@ -187,8 +212,13 @@ fn load_creds_from_cli() -> Result<Creds, String> {
         super::os_keychain::CURSOR_KEYCHAIN_SERVICE,
         super::os_keychain::CURSOR_KEYCHAIN_ACCOUNT,
     )
+    .or_else(|| {
+        cli_auth_path()
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .and_then(|t| token_from_cli_auth(&t))
+    })
     .ok_or_else(|| {
-        "Cursor CLI no tiene token en el llavero. Abre Cursor o ejecuta `cursor-agent login`."
+        "el CLI de Cursor no tiene token guardado. Abre Cursor o ejecuta `cursor-agent login`."
             .to_string()
     })?;
     Ok(Creds {
@@ -560,6 +590,14 @@ mod tests {
         let text = r#"{"authInfo":{"email":"a@b.c","authId":"user_01ABC"}}"#;
         assert_eq!(auth_id_from_cli_config(text).as_deref(), Some("user_01ABC"));
         assert!(auth_id_from_cli_config("{}").is_none());
+    }
+
+    #[test]
+    fn el_auth_json_del_cli_entrega_el_token() {
+        let text = r#"{"accessToken":"jwt.tok.en","refreshToken":"r"}"#;
+        assert_eq!(token_from_cli_auth(text).as_deref(), Some("jwt.tok.en"));
+        assert!(token_from_cli_auth(r#"{"accessToken":"  "}"#).is_none());
+        assert!(token_from_cli_auth("no-es-json").is_none());
     }
 
     const PERIOD_JSON: &str = r#"{
