@@ -249,6 +249,12 @@ export const en = {
       homeHint:
         "The pill goes back to the last edge you dropped it on, at the same spot. If that monitor is gone, it goes back to the top center.",
       homeReset: "Back to the top center",
+      restTitle: "At rest",
+      restHint: "What the pill shows on its own, without opening it.",
+      lyrics: "Song lyrics",
+      lyricsHint: "The line that's playing, next to the song title.",
+      agentText: "Agent text",
+      agentTextHint: "“Thinking…” or what it's doing. Off leaves just the logo.",
     },
     shortcuts: {
       title: "Global shortcuts",

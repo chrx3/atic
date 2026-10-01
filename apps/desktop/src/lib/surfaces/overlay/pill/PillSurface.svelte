@@ -441,6 +441,7 @@
   const islandCueMsg = $derived.by(() => {
     if (!islandCue || !dock) return false;
     if (chips.length === 0) return false;
+    if (config.current?.pill_agent_text === false) return false;
     // Dictando a un costado, el texto girado alarga la pestaña y la tarjeta
     // de dictado hereda ese alto: quedaba un bloque vacío con el aviso al
     // medio. Mientras se dicta, el aviso queda en su logo.
@@ -672,6 +673,7 @@
   const mediaLyricAt = $derived.by(() => {
     const lines = media.lyrics;
     if (!mediaRest || !lines) return null;
+    if (config.current?.pill_lyrics === false) return null;
     const position = mediaPosition(mediaRest, lyricClock);
     return position == null ? null : lyricIndex(lines, position);
   });
@@ -1586,7 +1588,10 @@
     if (islandFacePanel({ surface, dock, requested: toolFace !== "tab" })) {
       return toolFace;
     }
-    if (islandFaceLive({ surface, dock, live: chips.length > 0 })) {
+    // Sin el texto de los agentes, la lista con una fila por agente no se
+    // abre: quedan sus logos en la pestaña.
+    const agentText = config.current?.pill_agent_text !== false;
+    if (islandFaceLive({ surface, dock, live: agentText && chips.length > 0 })) {
       return "live";
     }
     return "tab";
@@ -2165,11 +2170,23 @@
    * leerse como la misma cosa, y antes al abrir la marca desaparecía. El
    * update entra acá porque ya no cuelga.
    */
+  /**
+   * Sin el texto de los agentes no hay lista que abrir, y la pestaña con sus
+   * logos se desmonta en cuanto el hover despliega la tira: cada agente entra
+   * a la tira como una celda más, con el mismo clic que su fila.
+   */
+  const agentCells = $derived(
+    surface === "edge" && islandCue && config.current?.pill_agent_text === false
+      ? chips
+      : [],
+  );
+
   const islandSlots = $derived(
     1 +
       stripNodes.length +
       (mediaCell ? 1 : 0) +
       (updateChip ? 1 : 0) +
+      agentCells.length +
       (systemChip || volumeChip ? 1 : 0) +
       islandLiveSlots(activity),
   );
@@ -5196,6 +5213,34 @@
               <Icon icon={updateChip.icon} size={18} strokeWidth={1.8} />
             </button>
           {/if}
+          {#each agentCells as c, j (c.id || "dock")}
+            {@const slot =
+              stripNodes.length +
+              1 +
+              (mediaCell ? 1 : 0) +
+              (updateChip ? 1 : 0) +
+              j +
+              islandLiveSlots(activity)}
+            {@const logos = chipLogos(c)}
+            <button
+              type="button"
+              class="p-island-tool p-island-tool-agent"
+              class:is-waiting={c.tone === "waiting"}
+              class:is-working={c.tone === "working"}
+              class:is-ready={c.tone === "ready"}
+              style="--i: {slot}; --s: {Math.abs((islandSlots - 1) / 2 - slot)}"
+              data-chip-id={c.id}
+              onclick={(e) => onAgentChipClick(e, c.tone === "off" ? null : c)}
+              use:tip={chipTitle(c)}
+              aria-label={chipAria(c)}
+            >
+              {#if c.tone === "count"}
+                <span class="p-island-tool-agent-count">{c.label}</span>
+              {:else}
+                <AgentLogo agent={logos[0] ?? null} size={18} />
+              {/if}
+            </button>
+          {/each}
         </div>
         {#if islandPeekTool}
           <div class="p-island-peek">
@@ -6901,6 +6946,17 @@
 
   .p-island-tool-update.is-ready {
     color: var(--ok);
+  }
+
+  .p-island-tool-agent-count {
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+  }
+
+  /* Pide algo: el mismo acento que el aviso de la pestaña. */
+  .p-island-tool-agent.is-waiting {
+    box-shadow: inset 0 0 0 1.5px var(--accent);
   }
 
   .p-island-tool-update.is-busy {
