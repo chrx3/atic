@@ -52,8 +52,6 @@ const CASILLA = 10;
 const SANGRIA_CHECK = 24;
 const ALTO_CHECK = 22;
 const TINTA_TEXTO = "#1c1917";
-/** Caja translúcida detrás del texto cuando el fondo no es transparente. */
-const CAJA_TEXTO = "rgba(255,255,255,0.55)";
 
 export type ExportFoto = {
   imageBase64: string;
@@ -362,10 +360,6 @@ export async function rasterPaginas(
         }
         if (img) ctx.drawImage(img, m.x, m.y, m.w, m.h);
         continue;
-      }
-      if (!transparencia) {
-        ctx.fillStyle = CAJA_TEXTO;
-        ctx.fillRect(m.x, m.y, m.w, m.h);
       }
       ctx.fillStyle = TINTA_TEXTO;
       ctx.font = FUENTE_CSS;

@@ -939,7 +939,7 @@
   async function enfocarEditor(id: string) {
     await tick();
     const raiz = papelEl?.querySelector(`[data-id="${id}"]`);
-    const campo = raiz?.querySelector<HTMLElement>("textarea, li input[type=text]");
+    const campo = raiz?.querySelector<HTMLElement>("textarea");
     campo?.focus();
   }
 
@@ -1151,7 +1151,7 @@
     // El textarea ocupa el recuadro entero: si ya está seleccionado, se escribe.
     // Si no, el clic arrastra. El agarre de arriba mueve siempre.
     if (
-      dest.closest("textarea, input[type=text]") &&
+      dest.closest("textarea") &&
       seleccion === id &&
       !dest.closest(".agarre")
     ) {
@@ -1549,7 +1549,7 @@
       if (bloque.kind === "text") {
         raiz.querySelector<HTMLTextAreaElement>("textarea")?.focus();
       } else if (bloque.kind === "check") {
-        raiz.querySelector<HTMLInputElement>('li input[type="text"]')?.focus();
+        raiz.querySelector<HTMLTextAreaElement>("li textarea")?.focus();
       }
       return;
     }
@@ -1589,9 +1589,9 @@
     return idx;
   }
 
-  function camposDe(id: string): NodeListOf<HTMLInputElement> | undefined {
+  function camposDe(id: string): NodeListOf<HTMLTextAreaElement> | undefined {
     const raiz = papelEl?.querySelector(`[data-id="${id}"]`);
-    return raiz?.querySelectorAll<HTMLInputElement>('li input[type="text"]');
+    return raiz?.querySelectorAll<HTMLTextAreaElement>("li textarea");
   }
 
   async function alTeclaItem(event: KeyboardEvent, id: string, itemId: string) {
@@ -1604,7 +1604,7 @@
       return;
     }
     // Backspace en fila vacía al inicio: quita la fila, no el carácter.
-    const campo = event.currentTarget as HTMLInputElement;
+    const campo = event.currentTarget as HTMLTextAreaElement;
     if (
       event.key === "Backspace" &&
       campo.value === "" &&
@@ -2353,8 +2353,9 @@
                               done: event.currentTarget.checked,
                             })}
                         />
-                        <input
-                          type="text"
+                        <textarea
+                          rows="1"
+                          spellcheck="false"
                           value={item.text}
                           placeholder={t("overlay.windowFlip.checkItem")}
                           onfocus={() => elegir(bloque.id)}
@@ -2363,7 +2364,7 @@
                             escribirCheck(bloque.id, item.id, {
                               text: event.currentTarget.value,
                             })}
-                        />
+                        ></textarea>
                       </li>
                     {/each}
                   </ul>
@@ -3459,12 +3460,14 @@
     pointer-events: auto;
   }
 
+  /* Por encima de los bloques, como en el export; sin captura no toma el
+     puntero y los bloques de abajo siguen respondiendo. */
   .tinta {
     position: absolute;
     inset: 0;
     pointer-events: none;
     overflow: hidden;
-    z-index: 0;
+    z-index: 3;
   }
 
   .tinta.captura {
@@ -3514,7 +3517,7 @@
     box-sizing: border-box;
     overflow: hidden;
     border-radius: var(--rb-radius-xs);
-    background: var(--hoja, var(--rb-surface-elevated));
+    background: transparent;
     cursor: grab;
     outline: 1px solid transparent;
     z-index: 1;
@@ -3531,7 +3534,7 @@
     z-index: 2;
   }
 
-  .objeto:not(.seleccionado) textarea {
+  .objeto:not(.seleccionado) > textarea {
     pointer-events: none;
   }
 
@@ -3615,13 +3618,12 @@
 
   /* El placeholder no puede parecer texto escrito: lo vacío se confunde.
      Usa muted y no faint para no caer bajo el contraste mínimo. */
-  .objeto textarea::placeholder,
-  .objeto li input[type="text"]::placeholder {
+  .objeto textarea::placeholder {
     color: var(--rb-muted);
     font-style: italic;
   }
 
-  .objeto textarea {
+  .objeto > textarea {
     display: block;
     width: 100%;
     height: 100%;
@@ -3666,32 +3668,44 @@
     flex: 1;
   }
 
+  /* Arriba y no al centro: con un ítem de varias líneas, la casilla queda
+     junto a la primera. */
   .objeto li {
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     gap: 8px;
     min-height: 28px;
+    padding-block: 4px;
+    box-sizing: border-box;
   }
 
   .objeto li input[type="checkbox"] {
     width: 14px;
     height: 14px;
+    margin-top: 3px;
     flex: none;
     accent-color: var(--rb-ok);
   }
 
-  .objeto li input[type="text"] {
+  /* Crece con el texto: un ítem largo baja de línea en vez de cortarse. */
+  .objeto li textarea {
     flex: 1;
     min-width: 0;
+    padding: 0;
+    resize: none;
+    field-sizing: content;
+    overflow: hidden;
     border: 0;
     background: transparent;
     color: inherit;
     font: inherit;
     font-size: 13px;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
     outline: none;
   }
 
-  .objeto li input[type="checkbox"]:checked + input {
+  .objeto li input[type="checkbox"]:checked + textarea {
     color: var(--rb-faint);
     text-decoration: line-through;
   }
