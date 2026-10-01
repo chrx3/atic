@@ -263,6 +263,9 @@
     const orphanBase = all
       ? { x: all.x + all.w, y: all.y, w: 0, h: 0 }
       : { x: 0, y: 0, w: 0, h: 0 };
+    /** Lo que ya ocupa la columna de cada consola (o de los huérfanos). */
+    const stacked: Record<string, number> = {};
+    const consoles = terminals.map(rectOf);
     for (let pass = 0; pass < 4; pass++) {
       for (const child of children) {
         if (out[child.id]) continue;
@@ -275,10 +278,19 @@
           base = item ? rectOf(item) : orphanBase;
         }
         if (!base) continue;
-        const siblings = children.filter((c) => anchors[c.id] === anchor);
-        out[child.id] =
+        const column = anchor ?? "";
+        const offset = childOffsets[child.id];
+        const rect =
           childDrafts[child.id] ??
-          childRect(base, siblings.indexOf(child), childOffsets[child.id]);
+          childRect(base, offset, stacked[column] ?? 0, [
+            ...consoles,
+            // El que se está arrastrando no empuja a los demás a cada cuadro.
+            ...Object.entries(out)
+              .filter(([id]) => !childDrafts[id])
+              .map(([, r]) => r),
+          ]);
+        out[child.id] = rect;
+        stacked[column] = (stacked[column] ?? 0) + (offset?.h ?? CHILD_SIZE.h) + GAP;
       }
     }
     return out;
