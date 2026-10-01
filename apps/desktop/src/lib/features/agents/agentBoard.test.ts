@@ -376,17 +376,32 @@ describe("sub-agentes", () => {
   const parent = { x: 100, y: 200, w: 700, h: 450 };
 
   it("van a la derecha de quien los pidió, en columna", () => {
-    const first = childRect(parent, 0, undefined);
-    const second = childRect(parent, 1, undefined);
+    const first = childRect(parent, undefined);
+    const second = childRect(parent, undefined, first.h + 24);
     expect(first.x).toBe(100 + 700 + CHILD_GAP);
     expect(first.y).toBe(200);
     expect(second.y).toBeGreaterThan(first.y + first.h);
   });
 
+  it("uno agrandado empuja al de abajo en vez de quedar encima", () => {
+    const tall = childRect(parent, { dx: 0, dy: 0, w: 520, h: 900 });
+    const next = childRect(parent, undefined, tall.h + 24);
+    expect(next.y).toBeGreaterThanOrEqual(tall.y + tall.h);
+  });
+
+  it("si su lugar choca con otra tarjeta, baja hasta quedar libre", () => {
+    const first = childRect(parent, undefined);
+    // Una consola vecina justo donde iría el sub-agente.
+    const neighbour = { x: first.x + 50, y: first.y + 100, w: 600, h: 400 };
+    const placed = childRect(parent, undefined, 0, [neighbour]);
+    expect(placed.y).toBeGreaterThanOrEqual(neighbour.y + neighbour.h);
+    expect(placed.x).toBe(first.x);
+  });
+
   it("lo que el usuario los corrió se mantiene aunque la consola se mueva", () => {
     const offset = { dx: 40, dy: -20, w: 600, h: 500 };
-    const here = childRect(parent, 0, offset);
-    const moved = childRect({ ...parent, x: 1000 }, 0, offset);
+    const here = childRect(parent, offset);
+    const moved = childRect({ ...parent, x: 1000 }, offset);
     expect(moved.x - here.x).toBe(900);
     expect(moved).toMatchObject({ w: 600, h: 500 });
   });

@@ -463,24 +463,35 @@ export const CHILD_SIZE = { w: 520, h: 420 };
 /** Distancia horizontal entre quien pide y sus sub-agentes. */
 export const CHILD_GAP = 140;
 
+function intersects(a: Rect, b: Rect): boolean {
+  return a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+}
+
 /**
- * Dónde va el sub-agente número `index` de una consola: a su derecha, en
- * columna. `offset` es cuánto lo corrió el usuario (y su tamaño, si lo
- * cambió): se sigue moviendo con la consola.
+ * Dónde va un sub-agente: a la derecha de quien lo pidió, en columna.
+ *
+ * `stacked` es lo que ya ocupan sus hermanos de arriba (alto real más el
+ * hueco): uno agrandado empuja a los de abajo en vez de quedar montado
+ * encima. Si ese lugar choca con otra tarjeta de `taken`, baja hasta quedar
+ * libre. `offset` es cuánto lo corrió el usuario (y su tamaño, si lo
+ * cambió), sobre ese lugar: se sigue moviendo con la consola.
  */
 export function childRect(
   parent: Rect,
-  index: number,
   offset: { dx: number; dy: number; w?: number; h?: number } | undefined,
+  stacked = 0,
+  taken: readonly Rect[] = [],
 ): Rect {
   const w = offset?.w ?? CHILD_SIZE.w;
   const h = offset?.h ?? CHILD_SIZE.h;
-  return {
-    x: parent.x + parent.w + CHILD_GAP + (offset?.dx ?? 0),
-    y: parent.y + index * (CHILD_SIZE.h + GAP) + (offset?.dy ?? 0),
-    w,
-    h,
-  };
+  const x = parent.x + parent.w + CHILD_GAP;
+  let y = parent.y + stacked;
+  for (let i = 0; i < 40; i++) {
+    const hit = taken.find((r) => intersects({ x, y, w, h }, r));
+    if (!hit) break;
+    y = hit.y + hit.h + GAP;
+  }
+  return { x: x + (offset?.dx ?? 0), y: y + (offset?.dy ?? 0), w, h };
 }
 
 /**
