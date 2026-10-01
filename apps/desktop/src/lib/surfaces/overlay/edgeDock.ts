@@ -45,22 +45,6 @@ export const DOCK_RELEASE_PX = 64;
  */
 export const DOCK_EDGES: readonly DockEdge[] = ["left", "right", "top", "bottom"];
 
-/** Los bordes de la unión de todos los monitores. */
-export function desktopBounds(areas: readonly Area[]): Rect | null {
-  if (areas.length === 0) return null;
-  let x0 = Infinity;
-  let y0 = Infinity;
-  let x1 = -Infinity;
-  let y1 = -Infinity;
-  for (const a of areas) {
-    x0 = Math.min(x0, a.x);
-    y0 = Math.min(y0, a.y);
-    x1 = Math.max(x1, a.x + a.w);
-    y1 = Math.max(y1, a.y + a.h);
-  }
-  return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
-}
-
 /** El monitor bajo el centro del rect; si cae entre dos, el primero. */
 export function areaFor(rect: Rect, areas: readonly Area[]): Area | null {
   if (areas.length === 0) return null;
@@ -75,9 +59,11 @@ export function areaFor(rect: Rect, areas: readonly Area[]): Area | null {
 /**
  * ¿Este borde del monitor da al vacío?
  *
- * Se compara contra la unión y no contra los vecinos: alcanza con saber si el
- * canto coincide con el del escritorio. La tolerancia cubre el redondeo de
- * pasar físicos a CSS con escalas fraccionarias (1.25 deja restos de 0.4 px).
+ * Se mira si otro monitor está pegado a ese canto, no si el canto coincide con
+ * el del escritorio: con pantallas de distinto alto lado a lado, el techo de
+ * la más baja queda bajo el de la otra y también da al vacío. La tolerancia
+ * cubre el redondeo de pasar físicos a CSS con escalas fraccionarias (1.25
+ * deja restos de 0.4 px).
  */
 export function isOuterEdge(
   edge: DockEdge,
@@ -85,18 +71,33 @@ export function isOuterEdge(
   areas: readonly Area[],
   tolerance = 1,
 ): boolean {
-  const desk = desktopBounds(areas);
-  if (!desk) return false;
-  switch (edge) {
-    case "left":
-      return Math.abs(area.x - desk.x) <= tolerance;
-    case "right":
-      return Math.abs(area.x + area.w - (desk.x + desk.w)) <= tolerance;
-    case "top":
-      return Math.abs(area.y - desk.y) <= tolerance;
-    case "bottom":
-      return Math.abs(area.y + area.h - (desk.y + desk.h)) <= tolerance;
-  }
+  const overlaps = (a0: number, a1: number, b0: number, b1: number) =>
+    Math.min(a1, b1) - Math.max(a0, b0) > tolerance;
+  return !areas.some((other) => {
+    if (other === area) return false;
+    switch (edge) {
+      case "left":
+        return (
+          Math.abs(other.x + other.w - area.x) <= tolerance &&
+          overlaps(area.y, area.y + area.h, other.y, other.y + other.h)
+        );
+      case "right":
+        return (
+          Math.abs(other.x - (area.x + area.w)) <= tolerance &&
+          overlaps(area.y, area.y + area.h, other.y, other.y + other.h)
+        );
+      case "top":
+        return (
+          Math.abs(other.y + other.h - area.y) <= tolerance &&
+          overlaps(area.x, area.x + area.w, other.x, other.x + other.w)
+        );
+      case "bottom":
+        return (
+          Math.abs(other.y - (area.y + area.h)) <= tolerance &&
+          overlaps(area.x, area.x + area.w, other.x, other.x + other.w)
+        );
+    }
+  });
 }
 
 /**
