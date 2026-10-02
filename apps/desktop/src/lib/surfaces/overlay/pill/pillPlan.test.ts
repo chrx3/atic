@@ -942,6 +942,18 @@ describe("contentFor", () => {
     ).toBe(true);
   });
 
+  it("la rueda flotante cerrada no se abre sola al reiniciar el sondeo", () => {
+    // El sondeo se reinicia al terminar cada cierre. Sin hover, el primer
+    // sondeo no puede abrirla: era un bucle de abrir y cerrar.
+    const first = islandHoverStay({
+      over: floatWheelHoverOpens({ over: false, alreadyOpen: false, hoveredMs: 0 }),
+      now: 5000,
+      leftAt: islandHoverSeed(false),
+      lingerMs: ISLAND_COLLAPSE_MS,
+    });
+    expect(first.open).toBe(false);
+  });
+
   it("con aviso de update, la tira espera un toque antes de abrir", () => {
     const closed = {
       over: true,

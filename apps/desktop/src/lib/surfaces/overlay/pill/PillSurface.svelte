@@ -3196,7 +3196,11 @@
       return;
     }
     let alive = true;
-    let leftAt: number | null = null;
+    // Cerrada, el sondeo arranca con el linger vencido: con `null` lo tomaba
+    // como «el cursor recién salió» y abría la rueda sin hover. Pasaba cada
+    // vez que el efecto se reiniciaba al terminar un cierre más largo que el
+    // bloqueo: se abría y cerraba sola en bucle. Abierta, se respeta.
+    let leftAt = islandHoverSeed(untrack(() => surface === "wheel"));
     let hoveredAt: number | null = null;
     const look = async () => {
       if (dragOrigin || openingWheel || flying || bootHidden || birthing || seating) {
