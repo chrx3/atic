@@ -16,7 +16,7 @@ import {
   islandFaceBlocksHover,
   islandLiveSlots,
   liveHang,
-  islandStripLong,
+  islandOpenLong,
   morphsInPlace,
   bloomPivot,
   pivotFor,
@@ -154,19 +154,18 @@ describe("contentFor", () => {
       PILL.islandMark + PILL.islandCueBtn,
     );
     expect(islandCueLong(9)).toBeGreaterThan(islandCueLong(1));
-    // Abierta no crece por el aviso: con 5 herramientas la tira ya es más
-    // larga que cualquier pestaña, y el aviso vive en el botón de agentes.
+    // Abierta conserva los avisos: son los mismos de la pestaña, empujados
+    // hacia un lado por las herramientas, así que la tira suma su tramo.
     expect(
-      contentFor("edge", 180, { edge: "left", expanded: true }, "idle", 5, true),
-    ).toEqual(
-      contentFor("edge", 180, { edge: "left", expanded: true }, "idle", 5, false),
-    );
+      contentFor("edge", 180, { edge: "left", expanded: true }, "idle", 5, true, 1).h,
+    ).toBe(islandOpenLong(5, true, 1));
+    expect(islandOpenLong(5, true, 1)).toBeGreaterThan(islandOpenLong(5));
   });
 
   it("acoplada y abierta es la tira de herramientas, a lo largo del borde", () => {
     // Acoplada la pill deja de ser un indicador y pasa a ser el acceso. Y se
     // despliega a lo largo del canto, que es donde crecer no tapa pantalla.
-    const long = islandStripLong(WHEEL_TOOLS.length);
+    const long = islandOpenLong(WHEEL_TOOLS.length);
     expect(contentFor("edge", 180, { edge: "left", expanded: true })).toEqual({
       w: PILL.islandTool,
       h: long,
@@ -178,7 +177,7 @@ describe("contentFor", () => {
   });
 
   it("con un vistazo, la isla crece hacia adentro para abrigarlo", () => {
-    const long = islandStripLong(5);
+    const long = islandOpenLong(5);
     const peek = { w: 256, h: 180 };
     const at = (edge: "top" | "left") =>
       contentFor(
@@ -208,22 +207,24 @@ describe("contentFor", () => {
     const dock = { edge: "left" as const, expanded: true };
     const todas = contentFor("edge", 180, dock, "idle");
     const tres = contentFor("edge", 180, dock, "idle", 3);
-    expect(tres.h).toBe(islandStripLong(3));
+    expect(tres.h).toBe(islandOpenLong(3));
     expect(tres.h).toBeLessThan(todas.h);
   });
 
   it("sin decir cuántas, mide el catálogo entero", () => {
     const dock = { edge: "bottom" as const, expanded: true };
     expect(contentFor("edge", 180, dock, "idle").w).toBe(
-      islandStripLong(WHEEL_TOOLS.length),
+      islandOpenLong(WHEEL_TOOLS.length),
     );
   });
 
-  it("la tira mide los botones más los huecos entre ellos", () => {
-    expect(islandStripLong(1)).toBe(PILL.islandTool);
-    expect(islandStripLong(3)).toBe(PILL.islandTool * 3 + PILL.islandGap * 2);
-    // Sin herramientas no colapsa a cero: quedaría una isla invisible.
-    expect(islandStripLong(0)).toBe(PILL.bar);
+  it("abierta mide la pestaña más cada herramienta con su hueco", () => {
+    const tool = PILL.islandTool + PILL.islandGap;
+    expect(islandOpenLong(5)).toBe(PILL.islandMark + 12 + 5 * tool);
+    expect(islandOpenLong(6) - islandOpenLong(5)).toBe(tool);
+    // Sin herramientas queda la pestaña: nunca más corta que cerrada.
+    expect(islandOpenLong(0)).toBe(PILL.islandLong);
+    expect(islandOpenLong(0, true, 3)).toBe(islandCueLong(3));
   });
 
   it("el ancho de la barra no influye en la isla", () => {
