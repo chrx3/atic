@@ -15,14 +15,31 @@ import { dockAxis, type DockEdge } from "../edgeDock";
 import { WHEEL_TOOLS } from "$core/tools";
 
 /**
- * Largo de la tira de herramientas para `n` botones.
+ * Largo de la isla abierta con `n` herramientas.
  *
- * `n` es parámetro y no `WHEEL_TOOLS.length` directo para poder fijar la
- * cuenta en un test sin atarlo a cuántas herramientas haya hoy.
+ * Abierta y cerrada son la misma fila: la marca y los avisos de la pestaña se
+ * quedan y las herramientas aparecen ENTRE ellos, empujándolos hacia los
+ * lados. Así que la tira mide lo que medía la pestaña más el tramo de las
+ * herramientas, cada una con su hueco. `n` es parámetro y no
+ * `WHEEL_TOOLS.length` para poder fijar la cuenta en un test.
  */
-export function islandStripLong(n: number): number {
-  if (n <= 0) return PILL.bar;
-  return n * PILL.islandTool + (n - 1) * PILL.islandGap;
+export function islandOpenLong(
+  n: number,
+  cue: boolean = false,
+  cueCount: number = 0,
+  msg: boolean | number = false,
+): number {
+  const tools = Math.max(0, Math.floor(n) || 0) * (PILL.islandTool + PILL.islandGap);
+  const tab = cue ? islandCueInner(cueCount, msg) : PILL.islandMark + 12;
+  return Math.max(PILL.islandLong, tab + tools);
+}
+
+/** Lo que ocupan la marca y los avisos de la pestaña, sin el mínimo de largo. */
+function islandCueInner(n: number, msg: boolean | number): number {
+  const marks = Math.max(1, Math.floor(n) || 1);
+  const cues = marks * PILL.islandCueBtn + (marks - 1) * PILL.islandGap;
+  const msgW = msg === true ? PILL.islandCueMsgW : typeof msg === "number" ? msg : 0;
+  return PILL.islandMark + PILL.islandGap + cues + msgW + 12;
 }
 
 /**
@@ -37,11 +54,7 @@ export function islandStripLong(n: number): number {
  * quedarse corto sí.
  */
 export function islandCueLong(n: number, msg: boolean | number = false): number {
-  const marks = Math.max(1, Math.floor(n) || 1);
-  const cues = marks * PILL.islandCueBtn + (marks - 1) * PILL.islandGap;
-  const msgW = msg === true ? PILL.islandCueMsgW : typeof msg === "number" ? msg : 0;
-  const inner = PILL.islandMark + PILL.islandGap + cues + msgW + 12;
-  return Math.max(PILL.islandLong, inner);
+  return Math.max(PILL.islandLong, islandCueInner(n, msg));
 }
 
 /** Alto extra de la barra flotante cuando hay más de un aviso de consola. */
@@ -275,12 +288,13 @@ export function contentFor(
     if (dock.expanded) {
       // Nunca más corta que cerrada: la isla se abre con el puntero encima,
       // y si al abrirse encogiera, el cursor quedaría fuera y el ciclo
-      // abrir/cerrar se realimentaría a 60 Hz. Con pocas herramientas a la
-      // vista (se pueden esconder desde Ajustes) la tira puede quedar más
-      // corta que la pestaña con avisos.
-      const long = Math.max(
-        islandStripLong(toolCount + islandLiveSlots(activity)),
-        islandCue ? islandCueLong(islandCueCount, islandCueMsg) : PILL.islandLong,
+      // abrir/cerrar se realimentaría a 60 Hz. `islandOpenLong` parte del
+      // largo de la pestaña, así que solo puede crecer.
+      const long = islandOpenLong(
+        toolCount + islandLiveSlots(activity),
+        islandCue,
+        islandCueCount,
+        islandCueMsg,
       );
       // El vistazo es parte de la isla, no un panel aparte: la tira queda
       // contra el canto y el vistazo ocupa el tramo de adentro. Nunca más
@@ -542,10 +556,16 @@ export function shouldReturnToEdgeOnActivate(
   return surface === "edge" || surface === "wheel" || dock != null;
 }
 
-/** Tras salir del hit, la isla espera esto antes de volverse pestaña. */
-export const ISLAND_COLLAPSE_MS = 400;
+/**
+ * Tras salir del hit, la isla espera esto antes de volverse pestaña.
+ *
+ * Lo justo para perdonar un sondeo perdido (`ISLAND_HOVER_MS`, 100 ms): un
+ * tooltip o el borde del morph pueden dar «afuera» un instante. Con 400 ms
+ * se sentía que la isla no se enteraba de que el mouse ya se había ido.
+ */
+export const ISLAND_COLLAPSE_MS = 150;
 /** En «Más» el morph cambia el hit: hace falta un poco más. */
-export const ISLAND_COLLAPSE_MORE_MS = 700;
+export const ISLAND_COLLAPSE_MORE_MS = 400;
 /**
  * Con aviso de update, la isla no abre en el mismo cuadro del hover.
  *

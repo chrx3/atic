@@ -185,25 +185,13 @@ textarea,
   --launcher-fav-stagger: 90ms;
 
   /*
-   * Isla acoplada: los iconos brotan del canto, uno detrás de otro.
+   * Isla acoplada: abrir y cerrar la tira. La caja y las herramientas que
+   * crecen adentro usan este mismo tramo, así que se leen como un solo objeto
+   * que se estira.
    *
-   * El escalonado es corto a propósito. El del launcher (90 ms) acompaña un
-   * gesto que el usuario pidió con un atajo y mira de frente; este se dispara
-   * con solo apoyar el mouse en un borde, así que si el último icono tardara
-   * 5×90 ms la tira se sentiría perezosa justo cuando ya quieres hacer clic.
-   * Con 26 ms los cinco entran dentro de la propia apertura de la caja: se lee
-   * como un despliegue, no como una lista cargando.
-   */
-  --island-stagger: 26ms;
-  /* Cuánto asoman desde el borde antes de asentarse. */
-  --island-rise: 7px;
-  /*
-   * Más largo que `--morph-open-dur` (110 ms) a propósito.
-   *
-   * Esos 110 están bien para que una caja cambie de tamaño, pero acá lo que se
-   * mira es el CUELLO entre gotas estirándose y adelgazando hasta la cintura
-   * final. A 110 ms no se llega a leer y el efecto se pierde: parecen iconos
-   * que aparecen, que es justo lo que no queremos.
+   * Más largo que `--morph-open-dur` (110 ms) a propósito: a 110 ms no se
+   * alcanza a ver cómo las herramientas empujan la marca y los avisos, y
+   * parecen iconos que aparecen.
    */
   --island-open-dur: 240ms;
   /* Overshoot hacia el escritorio, no contra el canto.
@@ -218,17 +206,6 @@ textarea,
    * como un error. El tamaño sí puede pasarse un poco (`--ease-island`).
    */
   --ease-liquid: cubic-bezier(0.5, 0, 0.2, 1);
-  /*
-   * Cuánto se encogen y se juntan las gotas con la isla cerrada.
-   *
-   * El apretón NO es total a propósito. Si convergieran al mismo punto, el
-   * cuerpo fundido sería un botón redondo, y al terminar el cierre —cuando la
-   * silueta pasa a ser la pestaña— se vería el relevo. Repartidas en un tramo
-   * corto, ese cuerpo queda con la proporción de la pestaña y el cambio no se
-   * nota.
-   */
-  --island-shut-scale: 0.91;
-  --island-shut-squeeze: 0.22;
   --ease-smooth-out: cubic-bezier(0.22, 1, 0.36, 1);
   --ease-out: ease-out;
 

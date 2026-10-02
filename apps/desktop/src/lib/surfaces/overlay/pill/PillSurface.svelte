@@ -2164,31 +2164,22 @@
   let lyricsEl = $state<HTMLElement | null>(null);
 
   /**
-   * Celdas de la tira abierta: la marca, las herramientas y el aviso de update.
-   *
-   * La marca es una celda más y no un adorno: abierta y cerrada tienen que
-   * leerse como la misma cosa, y antes al abrir la marca desaparecía. El
-   * update entra acá porque ya no cuelga.
+   * La celda de música de la tira: solo cuando la pestaña no la muestra ya
+   * (en pausa, o cediendo ante un aviso). Si no, la carátula de la pestaña es
+   * el mismo control y quedarían dos.
    */
-  /**
-   * Sin el texto de los agentes no hay lista que abrir, y la pestaña con sus
-   * logos se desmonta en cuanto el hover despliega la tira: cada agente entra
-   * a la tira como una celda más, con el mismo clic que su fila.
-   */
-  const agentCells = $derived(
-    surface === "edge" && islandCue && config.current?.pill_agent_text === false
-      ? chips
-      : [],
-  );
+  const mediaToolCell = $derived(mediaCell != null && mediaRest == null);
 
+  /**
+   * Celdas que aparecen al abrir, ENTRE la marca y los avisos de la pestaña.
+   *
+   * Abierta y cerrada son una sola fila: la marca y los avisos son los mismos
+   * elementos en los dos estados y las herramientas crecen desde ancho cero
+   * entre ellos, empujándolos. Antes eran dos capas que se cruzaban y en la
+   * transición se veían iconos encimados.
+   */
   const islandSlots = $derived(
-    1 +
-      stripNodes.length +
-      (mediaCell ? 1 : 0) +
-      (updateChip ? 1 : 0) +
-      agentCells.length +
-      (systemChip || volumeChip ? 1 : 0) +
-      islandLiveSlots(activity),
+    stripNodes.length + (mediaToolCell ? 1 : 0) + islandLiveSlots(activity),
   );
 
   /**
@@ -4924,9 +4915,7 @@
         ></i>
         <div
           class="p-island-along"
-          class:is-hidden={islandOpen && !faceOpen}
           class:is-column={peekEdgeAxis === "x"}
-          inert={(islandOpen && !faceOpen) || undefined}
         >
           <button
             type="button"
@@ -4939,12 +4928,79 @@
             <AticMark
               size={PILL.islandMark}
               strokeWidth={1.6}
-              alive={!islandOpen}
+              alive={true}
               state={markState}
               lag={flying}
             />
           </button>
-          {#if edgeCue && !islandOpen && !liveFaceOpen}
+          <!-- Las herramientas aparecen ENTRE la marca y los avisos: cerradas
+               miden cero y abiertas crecen, empujando a los dos hacia los
+               lados. Es la misma fila abierta y cerrada, así que nada se
+               cruza en la transición. -->
+          <div
+            class="p-island-tools"
+            class:is-open={islandOpen && !faceOpen}
+            class:is-column={peekEdgeAxis === "x"}
+            class:is-swapping={stripSwapping}
+            inert={!(islandOpen && !faceOpen) || undefined}
+          >
+            {#each stripNodes as node, i (node.id)}
+              {@const help = `${node.label} — ${node.short}`}
+              <!-- Las que tienen vistazo no llevan `use:tip`: su hover abre el
+                 vistazo, y dos globos sobre el mismo botón se taparían. Sin nada
+                 que mostrar, el vistazo dice lo mismo que habría dicho el tooltip. -->
+              <button
+                type="button"
+                class="p-island-tool"
+                use:tip={isPeekTool(node.id) ? "" : help}
+                use:toolPeek={peekFor(node.id, help)}
+                aria-label={node.id === "agents" && islandCue
+                  ? agentChipAria
+                  : `${node.label}. ${node.short}`}
+                {@attach islandAttachers[i]}
+                onpointerdown={(e) => {
+                  islandPressTool = node.id;
+                  if (e.button === 0) armStripHold(node.id);
+                }}
+                oncontextmenu={(e) => {
+                  e.preventDefault();
+                  void openCustomizeFace(node.id);
+                }}
+              >
+                <ToolIcon id={node.icon} size={22} strokeWidth={1.6} />
+                {#if node.id === "agents" && islandCue}
+                  <span
+                    class="p-island-agent-badge"
+                    class:is-dock={agentsDock.minimized}
+                    class:is-waiting={chip.tone === "waiting"}
+                    class:is-working={chip.tone === "working"}
+                    class:is-ready={chip.tone === "ready"}
+                    class:is-count={chip.tone === "count"}
+                    class:is-label={islandAgentBadgeLabel != null}
+                    aria-hidden="true">{islandAgentBadgeLabel ?? ""}</span
+                  >
+                {/if}
+              </button>
+            {/each}
+            {#if mediaToolCell && mediaCell}
+              <button
+                type="button"
+                class="p-island-tool p-island-tool-media"
+                class:is-playing={mediaCell.playing}
+                disabled={!mediaCell.can_toggle}
+                use:toolPeek={{ tool: "media", fallback: mediaLabel }}
+                aria-label={mediaLabel}
+                onclick={() => void media.control("toggle")}
+              >
+                <Icon
+                  icon={mediaCell.playing ? Pause : Play}
+                  size={20}
+                  strokeWidth={1.7}
+                />
+              </button>
+            {/if}
+          </div>
+          {#if edgeCue && !liveFaceOpen}
             <div class="p-island-cues">
               {#if islandCue}
                 {#each chips.length > 0 ? chips : [chip] as c, i (c.id || "dock")}
@@ -5107,141 +5163,6 @@
             {/key}
           </button>
         {/if}
-        <div
-          class="p-island-tools"
-          class:is-open={islandOpen}
-          class:is-column={peekEdgeAxis === "x"}
-          class:is-swapping={stripSwapping}
-          style="--n: {islandSlots}"
-        >
-          <!-- La marca abre la tira igual que ocupa la pestaña: es la misma
-               pill, desplegada. Y si algo está corriendo, lo para: la cara ya
-               dice qué es, así que el clic actúa sobre eso. -->
-          <button
-            type="button"
-            class="p-island-tool p-island-tool-mark"
-            style="--i: 0; --s: {Math.abs((islandSlots - 1) / 2)}"
-            disabled={busy && markState !== "idle"}
-            use:tip={markAction.label}
-            aria-label={markAction.label}
-            onpointerdown={() => (islandPressMark = true)}
-          >
-            <AticMark
-              size={PILL.islandMark}
-              strokeWidth={1.6}
-              alive={islandOpen}
-              state={markState}
-              lag={flying}
-            />
-          </button>
-          {#each stripNodes as node, i (node.id)}
-            {@const slot = i + 1 + islandLiveSlots(activity)}
-            {@const help = `${node.label} — ${node.short}`}
-            <!-- Las que tienen vistazo no llevan `use:tip`: su hover abre el
-               vistazo, y dos globos sobre el mismo botón se taparían. Sin nada
-               que mostrar, el vistazo dice lo mismo que habría dicho el tooltip. -->
-            <button
-              type="button"
-              class="p-island-tool"
-              style="--i: {slot}; --s: {Math.abs((islandSlots - 1) / 2 - slot)}"
-              use:tip={isPeekTool(node.id) ? "" : help}
-              use:toolPeek={peekFor(node.id, help)}
-              aria-label={node.id === "agents" && islandCue
-                ? agentChipAria
-                : `${node.label}. ${node.short}`}
-              {@attach islandAttachers[i]}
-              onpointerdown={(e) => {
-                islandPressTool = node.id;
-                if (e.button === 0) armStripHold(node.id);
-              }}
-              oncontextmenu={(e) => {
-                e.preventDefault();
-                void openCustomizeFace(node.id);
-              }}
-            >
-              <ToolIcon id={node.icon} size={22} strokeWidth={1.6} />
-              {#if node.id === "agents" && islandCue}
-                <span
-                  class="p-island-agent-badge"
-                  class:is-dock={agentsDock.minimized}
-                  class:is-waiting={chip.tone === "waiting"}
-                  class:is-working={chip.tone === "working"}
-                  class:is-ready={chip.tone === "ready"}
-                  class:is-count={chip.tone === "count"}
-                  class:is-label={islandAgentBadgeLabel != null}
-                  aria-hidden="true">{islandAgentBadgeLabel ?? ""}</span
-                >
-              {/if}
-            </button>
-          {/each}
-          <!-- Abierta, la pestaña se desmonta y con ella su chip de update.
-               Reaparece como celda de la tira —no colgando— para que el clic
-               siga existiendo sin que la silueta cambie. -->
-          {#if mediaCell}
-            {@const slot = stripNodes.length + 1 + islandLiveSlots(activity)}
-            <button
-              type="button"
-              class="p-island-tool p-island-tool-media"
-              class:is-playing={mediaCell.playing}
-              style="--i: {slot}; --s: {Math.abs((islandSlots - 1) / 2 - slot)}"
-              disabled={!mediaCell.can_toggle}
-              use:toolPeek={{ tool: "media", fallback: mediaLabel }}
-              aria-label={mediaLabel}
-              onclick={() => void media.control("toggle")}
-            >
-              <Icon
-                icon={mediaCell.playing ? Pause : Play}
-                size={20}
-                strokeWidth={1.7}
-              />
-            </button>
-          {/if}
-          {#if updateChip}
-            {@const slot =
-              stripNodes.length + 1 + (mediaCell ? 1 : 0) + islandLiveSlots(activity)}
-            <button
-              type="button"
-              class="p-island-tool p-island-tool-update"
-              class:is-ready={updateChip.tone === "ready"}
-              class:is-busy={updateChip.tone === "busy"}
-              style="--i: {slot}; --s: {Math.abs((islandSlots - 1) / 2 - slot)}"
-              disabled={appUpdate.busy}
-              onclick={onUpdateChipClick}
-              use:tip={updateChip.label}
-              aria-label={updateChip.label}
-            >
-              <Icon icon={updateChip.icon} size={18} strokeWidth={1.8} />
-            </button>
-          {/if}
-          {#each agentCells as c, j (c.id || "dock")}
-            {@const slot =
-              stripNodes.length +
-              1 +
-              (mediaCell ? 1 : 0) +
-              (updateChip ? 1 : 0) +
-              j +
-              islandLiveSlots(activity)}
-            {@const logos = chipLogos(c)}
-            <button
-              type="button"
-              class="p-island-tool p-island-tool-agent"
-              class:is-waiting={c.tone === "waiting"}
-              class:is-working={c.tone === "working"}
-              class:is-ready={c.tone === "ready"}
-              style="--i: {slot}; --s: {Math.abs((islandSlots - 1) / 2 - slot)}"
-              data-chip-id={c.id}
-              onclick={(e) => onAgentChipClick(e, c.tone === "off" ? null : c)}
-              use:tip={chipTitle(c)}
-              aria-label={chipAria(c)}
-            >
-              {#if c.tone === "count"}
-                <span class="p-island-tool-agent-count">{c.label}</span>
-              {:else}
-                <AgentLogo agent={logos[0] ?? null} size={18} />
-              {/if}
-            </button>
-          {/each}
-        </div>
         {#if islandPeekTool}
           <div class="p-island-peek">
             <IslandPeek
@@ -6586,11 +6507,6 @@
     flex-direction: column;
   }
 
-  .p-island-along.is-hidden {
-    opacity: 0;
-    pointer-events: none;
-  }
-
   /*
    * La marca es el control de lo que esté corriendo: grabando o dictando lo
    * para; en reposo el clic no hace nada (la rueda va por hover o atajo).
@@ -6684,57 +6600,38 @@
     }
   }
 
+  /*
+   * Abierta y cerrada son una sola fila: marca, herramientas, avisos.
+   *
+   * Cerradas, las herramientas miden cero a lo largo del canto y la fila es
+   * la pestaña de siempre. Al abrirse crecen hasta su celda y, como ocupan
+   * lugar de verdad, empujan la marca hacia un lado y los avisos hacia el
+   * otro: se lee como un objeto que se estira, no como una capa que aparece
+   * encima de otra. Al cerrar, se encogen hasta desaparecer y los costados
+   * se vuelven a juntar.
+   *
+   * Mismo tramo y curva que la caja (`--island-open-dur`, `--ease-island`):
+   * si crecieran a otro ritmo, la caja recortaría iconos o dejaría aire.
+   */
   .p-island-tools {
     display: flex;
-    z-index: 1;
+    flex: 0 0 auto;
     flex-direction: row;
-    gap: var(--island-gap);
+    align-items: center;
   }
 
   .p-island-tools.is-column {
     flex-direction: column;
   }
 
-  .p-island-tools.is-column .p-island-tool {
-    --island-bx: 0px;
-    --island-by: var(--island-bunch);
-  }
-
-  /*
-   * La tira no aparece: se SEPARA. Y al cerrarse, se junta.
-   *
-   * Es una TRANSICIÓN y no una animación justamente por eso: una animación
-   * corre en un solo sentido, y el cierre quedaba de golpe. Con el estado de
-   * reposo puesto acá y el abierto en `.is-open`, el mismo tramo se recorre en
-   * los dos sentidos sin describirlo dos veces.
-   *
-   * Cerradas, las gotas se amontonan hacia el centro y encogen: a esa distancia
-   * el `smin` las funde y se leen como un solo cuerpo. Abiertas quedan a
-   * `--island-gap` (6 px), todavía muy por debajo de REACH, así que siguen
-   * fundidas pero con una cintura entre iconos. Lo que se ve moverse es ese
-   * cuello estirándose y adelgazando.
-   *
-   * Nada de esto se dibuja. Las gotas son estos mismos botones, y el `tracker`
-   * los mide **con su transform**, así que el campo sigue la transición cuadro
-   * a cuadro. La opacidad solo afecta al glifo: la forma sale del rect, y el
-   * rect no la mira.
-   *
-   * El escalonado va por `--s` (distancia al centro, no el índice): saliendo
-   * todas del medio, un barrido de punta a punta se leería al revés del
-   * movimiento. Se calcula en JS porque `abs()` en CSS no está garantizado en
-   * el WebView2 que nos toque.
-   */
   .p-island-tool {
-    /* Distancia de esta gota al centro de la tira: hacia ahí se amontona. */
-    --island-slot: calc(var(--island-tool) + var(--island-gap));
-    --island-bunch: calc(((var(--n) - 1) / 2 - var(--i)) * var(--island-slot));
-    --island-bx: var(--island-bunch);
-    --island-by: 0px;
-
     display: grid;
     position: relative;
-    width: var(--island-tool);
+    flex: 0 0 auto;
+    width: 0;
     height: var(--island-tool);
+    margin: 0;
+    padding: 0;
     border: 0;
     border-radius: 999px;
     overflow: visible;
@@ -6743,35 +6640,37 @@
     cursor: pointer;
     opacity: 0;
     place-items: center;
-
-    /* Reposo = cerrada. El apretón no es total: dejándolas repartidas en un
-       tramo corto, el cuerpo fundido queda parecido a la pestaña y el relevo
-       entre gotas y silueta de pestaña no se nota. */
-    transform: translate(
-        calc(var(--island-bx) * var(--island-shut-squeeze) + var(--island-from-x, 0px)),
-        calc(var(--island-by) * var(--island-shut-squeeze) + var(--island-from-y, 0px))
-      )
-      scale(var(--island-shut-scale));
+    transform: scale(0.4);
     transition:
-      transform var(--island-open-dur) var(--ease-liquid),
+      width var(--island-open-dur) var(--ease-island),
+      height var(--island-open-dur) var(--ease-island),
+      margin var(--island-open-dur) var(--ease-island),
+      transform var(--island-open-dur) var(--ease-island),
       opacity var(--island-open-dur) var(--ease-liquid),
       background var(--duration-quick) var(--ease-smooth-out),
       color var(--duration-quick) var(--ease-smooth-out);
-    transition-delay: calc(var(--s, 0) * var(--island-stagger));
+  }
+
+  .p-island-tools.is-column .p-island-tool {
+    width: var(--island-tool);
+    height: 0;
   }
 
   .p-island-tools.is-open .p-island-tool {
+    width: var(--island-tool);
+    margin: 0 calc(var(--island-gap) / 2);
     opacity: 1;
     transform: none;
   }
 
-  /*
-   * Re-deal de página: las gotas vuelven a entrar con el escalonado de `--s`.
-   * Solo opacidad del glifo; la forma la sigue midiendo el tracker del rect.
-   */
+  .p-island-tools.is-open.is-column .p-island-tool {
+    height: var(--island-tool);
+    margin: calc(var(--island-gap) / 2) 0;
+  }
+
+  /* Re-deal de página: los glifos vuelven a entrar; la fila no se mueve. */
   .p-island-tools.is-swapping.is-open .p-island-tool {
     animation: island-tool-swap var(--island-open-dur) var(--ease-liquid) backwards;
-    animation-delay: calc(var(--s, 0) * var(--island-stagger));
   }
 
   @keyframes island-tool-swap {
@@ -6783,11 +6682,7 @@
   .p-island-tools.is-open .p-island-tool:hover:not(:disabled),
   .p-island-tools.is-open .p-island-tool:focus-visible {
     color: var(--text);
-    transform: translate(
-        calc(var(--island-from-x, 0px) * -0.55),
-        calc(var(--island-from-y, 0px) * -0.55)
-      )
-      scale(1.14);
+    transform: scale(1.14);
   }
 
   /* El visor es circular; el clic no. Un filete extra cubre el hueco entre
@@ -6802,9 +6697,31 @@
     inset: calc(var(--island-gap) / -2 - 2px) -2px;
   }
 
-  /* Cerrada, las gotas no deben robar el clic: lo toma la pestaña o el aviso. */
+  /* Cerradas no deben robar el clic: lo toman la marca y los avisos. */
   .p-island-tools:not(.is-open) {
     pointer-events: none;
+  }
+
+  /* Abierta, la fila usa el grosor entero de la caja (la tira es más gruesa
+     que la pestaña) y no solo la banda de la pestaña. */
+  .p-root[data-edge="top"] .p-island.is-open:not(.is-face) .p-island-along {
+    bottom: 0;
+    height: auto;
+  }
+
+  .p-root[data-edge="bottom"] .p-island.is-open:not(.is-face) .p-island-along {
+    top: 0;
+    height: auto;
+  }
+
+  .p-root[data-edge="left"] .p-island.is-open:not(.is-face) .p-island-along {
+    right: 0;
+    width: auto;
+  }
+
+  .p-root[data-edge="right"] .p-island.is-open:not(.is-face) .p-island-along {
+    left: 0;
+    width: auto;
   }
 
   /*
@@ -6828,18 +6745,6 @@
 
   .p-island-cues > * {
     pointer-events: auto;
-  }
-
-  /* La marca encabeza la tira: misma celda que una herramienta, sin el
-     recuadro del icono — es la pill, no una herramienta más. */
-  .p-island-tool-mark {
-    color: var(--text);
-    line-height: 0;
-    overflow: visible;
-  }
-
-  .p-island-tool-update {
-    color: var(--info);
   }
 
   /*
@@ -6944,25 +6849,6 @@
     color: var(--text);
   }
 
-  .p-island-tool-update.is-ready {
-    color: var(--ok);
-  }
-
-  .p-island-tool-agent-count {
-    font-size: 12px;
-    font-variant-numeric: tabular-nums;
-    font-weight: 600;
-  }
-
-  /* Pide algo: el mismo acento que el aviso de la pestaña. */
-  .p-island-tool-agent.is-waiting {
-    box-shadow: inset 0 0 0 1.5px var(--accent);
-  }
-
-  .p-island-tool-update.is-busy {
-    color: var(--muted);
-  }
-
   /*
    * Cara expandida: tarjeta colgada de la pestaña con gap 0 —la skin llena
    * la caja entera, así que pestaña + tarjeta son un solo blob.
@@ -7026,20 +6912,28 @@
    * adentro, así que centrada queda a `pad / 2`. Sin esto, al soltar el
    * anclaje tras cerrar el vistazo, la fila entera saltaba 2 px.
    */
-  .p-root[data-edge="top"] .p-island.is-peek .p-island-tools {
-    margin-top: calc(var(--pill-pad) / 2);
+  .p-root[data-edge="top"] .p-island.is-open.is-peek:not(.is-face) .p-island-along {
+    top: calc(var(--pill-pad) / 2);
+    bottom: auto;
+    height: var(--island-tool);
   }
 
-  .p-root[data-edge="bottom"] .p-island.is-peek .p-island-tools {
-    margin-bottom: calc(var(--pill-pad) / 2);
+  .p-root[data-edge="bottom"] .p-island.is-open.is-peek:not(.is-face) .p-island-along {
+    top: auto;
+    bottom: calc(var(--pill-pad) / 2);
+    height: var(--island-tool);
   }
 
-  .p-root[data-edge="left"] .p-island.is-peek .p-island-tools {
-    margin-left: calc(var(--pill-pad) / 2);
+  .p-root[data-edge="left"] .p-island.is-open.is-peek:not(.is-face) .p-island-along {
+    left: calc(var(--pill-pad) / 2);
+    right: auto;
+    width: var(--island-tool);
   }
 
-  .p-root[data-edge="right"] .p-island.is-peek .p-island-tools {
-    margin-right: calc(var(--pill-pad) / 2);
+  .p-root[data-edge="right"] .p-island.is-open.is-peek:not(.is-face) .p-island-along {
+    left: auto;
+    right: calc(var(--pill-pad) / 2);
+    width: var(--island-tool);
   }
 
   .p-island-peek {
@@ -8187,23 +8081,6 @@
 
   .p-island-agent-badge.is-count {
     color: var(--accent);
-  }
-
-  /* De dónde nace cada uno: siempre desde el lado por el que está acoplada. */
-  .p-root[data-edge="bottom"] .p-island-tool {
-    --island-from-y: var(--island-rise);
-  }
-
-  .p-root[data-edge="top"] .p-island-tool {
-    --island-from-y: calc(var(--island-rise) * -1);
-  }
-
-  .p-root[data-edge="right"] .p-island-tool {
-    --island-from-x: var(--island-rise);
-  }
-
-  .p-root[data-edge="left"] .p-island-tool {
-    --island-from-x: calc(var(--island-rise) * -1);
   }
 
   /* Cierre acelerado: al elegir herramienta la rueda ya cumplió su función. */
