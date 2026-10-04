@@ -15,6 +15,7 @@ mod capture;
 mod clip_image;
 mod clipboard;
 mod drag;
+mod emoji;
 mod flip;
 mod flip_board;
 mod flip_export;
@@ -835,14 +836,22 @@ impl Pill {
             Some("agentes") => Some(NotchTool::Agentes),
             Some("sistema") => Some(NotchTool::Sistema),
             Some("media") => Some(NotchTool::Media),
+            // `apps`: el lanzador; `emoji`: el lanzador en su modo emoji.
+            Some("apps") | Some("emoji") => Some(NotchTool::Apps),
             _ => None,
         };
+        let emoji_on_start = open_on_start.as_deref() == Some("emoji");
         if let Some(tool) = notch_on_start {
             cx.spawn_in(window, async move |this, cx| {
                 cx.background_executor()
                     .timer(Duration::from_millis(400))
                     .await;
-                let _ = this.update_in(cx, |pill, window, cx| pill.open_notch(tool, window, cx));
+                let _ = this.update_in(cx, |pill, window, cx| {
+                    pill.open_notch(tool, window, cx);
+                    if emoji_on_start {
+                        pill.launcher.update(cx, |launcher, cx| launcher.open_emoji(cx));
+                    }
+                });
             })
             .detach();
         }

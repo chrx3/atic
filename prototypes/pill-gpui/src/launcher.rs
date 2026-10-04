@@ -25,6 +25,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::clipboard::{BAND_H, PANEL_H};
 use crate::running::{self, Running};
+use crate::emoji;
 use crate::text_input::{self, TextInput};
 
 const ROW_H: f32 = 44.0;
@@ -435,88 +436,7 @@ fn load_rates() -> Option<Rates> {
     }
 }
 
-// --- Emoji: el catálogo de Atic ---------------------------------------------------
-
-pub struct Emoji {
-    pub ch: SharedString,
-    pub name: SharedString,
-    names: String,
-    words: String,
-}
-
-/// El último dato de cada fila es la versión de Unicode del emoji. La fuente
-/// de Windows (Segoe UI Emoji) dibuja hasta la 15.0: los más nuevos salían
-/// como cuadritos.
-const NEWEST_EMOJI: f64 = 15.0;
-
-/// `emojiData.json` de Atic (CLDR vía emojibase), dentro del binario. Se
-/// arma la primera vez que se entra al modo.
-fn emojis() -> &'static Vec<Emoji> {
-    static EMOJIS: OnceLock<Vec<Emoji>> = OnceLock::new();
-    EMOJIS.get_or_init(|| {
-        let raw = include_str!("../../../apps/desktop/src/lib/features/emoji/emojiData.json");
-        let Ok(value) = serde_json::from_str::<serde_json::Value>(raw) else {
-            return Vec::new();
-        };
-        value["rows"]
-            .as_array()
-            .map(|rows| {
-                rows.iter()
-                    .filter_map(|row| {
-                        let row = row.as_array()?;
-                        let ch = row.first()?.as_str()?;
-                        let es = row.get(2)?.as_str().unwrap_or_default();
-                        let en = row.get(3)?.as_str().unwrap_or_default();
-                        let words = row.get(4)?.as_str().unwrap_or_default();
-                        let version = row.get(5).and_then(|v| v.as_f64()).unwrap_or(0.0);
-                        if version > NEWEST_EMOJI {
-                            return None;
-                        }
-                        Some(Emoji {
-                            ch: ch.to_string().into(),
-                            name: es.to_string().into(),
-                            names: fold(&format!("{es} {en}")),
-                            words: fold(words),
-                        })
-                    })
-                    .collect()
-            })
-            .unwrap_or_default()
-    })
-}
-
-/// Índices de los emoji que calzan, del mejor al peor y, a igual puntaje, en
-/// el orden del catálogo (caras primero). Sin texto, el catálogo.
-pub fn search_emoji(query: &str) -> Vec<usize> {
-    let all = emojis();
-    let q = fold(query.trim());
-    let tokens: Vec<&str> = q.split_whitespace().collect();
-    let mut scored: Vec<(u8, usize)> = all
-        .iter()
-        .enumerate()
-        .filter_map(|(i, emoji)| {
-            if tokens.is_empty() {
-                return Some((0, i));
-            }
-            let all_match = tokens
-                .iter()
-                .all(|t| emoji.names.contains(t) || emoji.words.contains(t));
-            if !all_match {
-                return None;
-            }
-            let bonus = if emoji.names.starts_with(&q) {
-                3
-            } else if emoji.names.contains(&q) {
-                2
-            } else {
-                1
-            };
-            Some((bonus, i))
-        })
-        .collect();
-    scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
-    scored.into_iter().take(160).map(|(_, i)| i).collect()
-}
+// El modo emoji (catálogo, búsqueda, secciones y tonos) vive en `emoji.rs`.
 
 // --- Favoritos y recientes ----------------------------------------------------
 
@@ -530,6 +450,11 @@ struct Store {
     /// Ctrl+M: en el centro de la pantalla, tipo Spotlight, en vez del notch.
     #[serde(default)]
     centered: bool,
+    /// Modo emoji: los últimos usados (sin tono) y el tono elegido.
+    #[serde(default)]
+    emoji_recents: Vec<String>,
+    #[serde(default)]
+    emoji_tone: u8,
 }
 
 fn store_file() -> Option<PathBuf> {
@@ -618,6 +543,8 @@ enum Mode {
 
 const EMOJI_COLS: usize = 8;
 const EMOJI_ROWS_SHOWN: usize = 6;
+/// Las categorías y los tonos, bajo el buscador.
+const EMOJI_BAR_H: f32 = 38.0;
 
 #[derive(Clone)]
 struct Hit {
@@ -644,7 +571,11 @@ pub struct LauncherPanel {
     /// Apps a las que se pidió cerrar, hasta el próximo vistazo.
     closing: HashSet<SharedString>,
     mode: Mode,
+    /// Los emojis en el orden de la grilla (todas las secciones seguidas),
+    /// las secciones y las filas para la lista.
     emoji_hits: Vec<usize>,
+    emoji_sections: Vec<emoji::Section>,
+    emoji_rows: Vec<emoji::Row>,
     emoji_selected: usize,
     emoji_scroll: UniformListScrollHandle,
     _search_changed: Subscription,
@@ -691,6 +622,8 @@ impl LauncherPanel {
             closing: HashSet::new(),
             mode: Mode::Search,
             emoji_hits: Vec::new(),
+            emoji_sections: Vec::new(),
+            emoji_rows: Vec::new(),
             emoji_selected: 0,
             emoji_scroll: UniformListScrollHandle::new(),
             _search_changed: search_changed,
@@ -706,6 +639,13 @@ impl LauncherPanel {
         self.rates = load_rates();
         self.closing.clear();
         self.set_mode(Mode::Search, cx);
+        self.search.update(cx, |search, cx| search.clear(cx));
+        self.refresh(cx);
+    }
+
+    /// Abrir directo en el modo emoji (`PILL_OPEN=emoji`).
+    pub fn open_emoji(&mut self, cx: &mut Context<Self>) {
+        self.set_mode(Mode::Emoji, cx);
         self.search.update(cx, |search, cx| search.clear(cx));
         self.refresh(cx);
     }
@@ -754,7 +694,10 @@ impl LauncherPanel {
             return;
         }
         if self.mode == Mode::Emoji {
-            self.emoji_hits = search_emoji(&raw);
+            let sections = emoji::sections(&raw, &self.store.emoji_recents);
+            self.emoji_hits = sections.iter().flat_map(|s| s.items.iter().copied()).collect();
+            self.emoji_rows = emoji::rows(&sections, EMOJI_COLS);
+            self.emoji_sections = sections;
             self.emoji_selected = 0;
             self.emoji_scroll.scroll_to_item(0, ScrollStrategy::Top);
             cx.notify();
@@ -819,8 +762,8 @@ impl LauncherPanel {
 
     pub fn desired_height(&self) -> f32 {
         if self.mode == Mode::Emoji {
-            let rows = self.emoji_hits.len().div_ceil(EMOJI_COLS).clamp(1, EMOJI_ROWS_SHOWN);
-            return (BAND_H + rows as f32 * ROW_H + FOOTER_H + PAD).min(PANEL_H);
+            let rows = self.emoji_rows.len().clamp(1, EMOJI_ROWS_SHOWN);
+            return (BAND_H + EMOJI_BAR_H + rows as f32 * ROW_H + FOOTER_H + PAD).min(PANEL_H);
         }
         let favorites = if self.favorites.is_empty() { 0.0 } else { FAVORITES_H };
         let header = if self.showing_recents && !self.hits.is_empty() {
@@ -884,9 +827,7 @@ impl LauncherPanel {
     /// el modo emoji, copiar sin pegar.
     fn quit_or_copy(&mut self, _: &QuitOrCopy, _: &mut Window, cx: &mut Context<Self>) {
         if self.mode == Mode::Emoji {
-            if let Some(&i) = self.emoji_hits.get(self.emoji_selected) {
-                cx.emit(LauncherEvent::Run(Target::Copy(emojis()[i].ch.to_string())));
-            }
+            self.pick_emoji(self.emoji_selected, true, cx);
             return;
         }
         let Some(hit) = self.hits.get(self.selected).cloned() else {
@@ -942,27 +883,156 @@ impl LauncherPanel {
         cx.notify();
     }
 
-    fn emoji_move(&mut self, delta: isize, cx: &mut Context<Self>) {
+    /// Flechas en la grilla: entre secciones conservan la columna.
+    fn emoji_move(&mut self, key: emoji::Key, cx: &mut Context<Self>) {
         if self.emoji_hits.is_empty() {
             return;
         }
-        let n = self.emoji_hits.len() as isize;
-        let next = (self.emoji_selected as isize + delta).clamp(0, n - 1);
-        self.emoji_selected = next as usize;
-        self.emoji_scroll
-            .scroll_to_item(self.emoji_selected / EMOJI_COLS, ScrollStrategy::Center);
+        let sizes: Vec<usize> = self.emoji_sections.iter().map(|s| s.items.len()).collect();
+        self.emoji_selected = emoji::move_in_grid(&sizes, self.emoji_selected, key, EMOJI_COLS);
+        if let Some(row) = self.emoji_row_of(self.emoji_selected) {
+            self.emoji_scroll.scroll_to_item(row, ScrollStrategy::Center);
+        }
         cx.notify();
+    }
+
+    /// La fila de la lista donde está una posición de la grilla.
+    fn emoji_row_of(&self, slot: usize) -> Option<usize> {
+        self.emoji_rows.iter().position(|row| {
+            matches!(row, emoji::Row::Cells { start, len } if (*start..start + len).contains(&slot))
+        })
+    }
+
+    /// El emoji de una posición, con el tono elegido.
+    fn emoji_char(&self, slot: usize) -> Option<SharedString> {
+        let &i = self.emoji_hits.get(slot)?;
+        Some(emoji::all()[i].with_skin(self.store.emoji_tone))
+    }
+
+    /// Pegar (o copiar) un emoji; queda primero en los recientes.
+    fn pick_emoji(&mut self, slot: usize, copy: bool, cx: &mut Context<Self>) {
+        let (Some(&i), Some(ch)) = (self.emoji_hits.get(slot), self.emoji_char(slot)) else {
+            return;
+        };
+        emoji::push_recent(&mut self.store.emoji_recents, &emoji::all()[i].ch);
+        self.store.save();
+        if copy {
+            cx.emit(LauncherEvent::Run(Target::Copy(ch.to_string())));
+        } else {
+            cx.emit(LauncherEvent::Paste(ch.to_string()));
+        }
+    }
+
+    /// Un chip de categoría: la lista salta a su título.
+    fn jump_to_group(&mut self, group: u8, cx: &mut Context<Self>) {
+        let mut start = 0;
+        for section in &self.emoji_sections {
+            if section.group == Some(group) {
+                self.emoji_selected = start;
+                let title = self.emoji_row_of(start).map_or(0, |row| row.saturating_sub(1));
+                self.emoji_scroll.scroll_to_item(title, ScrollStrategy::Top);
+                cx.notify();
+                return;
+            }
+            start += section.items.len();
+        }
+    }
+
+    fn set_tone(&mut self, tone: u8, cx: &mut Context<Self>) {
+        self.store.emoji_tone = tone;
+        self.store.save();
+        cx.notify();
+    }
+
+    /// La sección donde está la selección (para marcar su chip).
+    fn emoji_group_selected(&self) -> Option<u8> {
+        let mut start = 0;
+        for section in &self.emoji_sections {
+            if (start..start + section.items.len()).contains(&self.emoji_selected) {
+                return section.group;
+            }
+            start += section.items.len();
+        }
+        None
+    }
+
+    /// Bajo el buscador: los chips de categoría (sin búsqueda) y los tonos.
+    fn render_emoji_bar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let text: Hsla = rgb(0xf0f0ea).into();
+        let searching = self.emoji_sections.iter().all(|s| s.title.is_none());
+        let active = self.emoji_group_selected();
+        let tone = self.store.emoji_tone;
+        div()
+            .h(px(EMOJI_BAR_H))
+            .flex_none()
+            .px(px(PAD + 4.))
+            .flex()
+            .items_center()
+            .gap(px(2.))
+            .when(!searching, |el| {
+                el.children(emoji::GROUPS.iter().map(|&(group, icon, _)| {
+                    let on = active == Some(group);
+                    div()
+                        .id(("emoji-group", group as usize))
+                        .size(px(30.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(9.))
+                        .text_size(px(16.))
+                        .when(on, |el| el.bg(text.opacity(0.14)))
+                        .when(!on, |el| el.opacity(0.75))
+                        .hover(|el| el.bg(text.opacity(0.08)).opacity(1.0))
+                        .cursor_pointer()
+                        .on_click(cx.listener(move |panel, _: &ClickEvent, _, cx| panel.jump_to_group(group, cx)))
+                        .child(icon)
+                }))
+            })
+            .child(div().flex_1())
+            // El tono de piel: la mano en sus seis colores.
+            .children(emoji::TONES.iter().enumerate().map(|(i, hand)| {
+                let on = tone as usize == i;
+                div()
+                    .id(("emoji-tone", i))
+                    .size(px(26.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(13.))
+                    .text_size(px(14.))
+                    .when(on, |el| el.bg(text.opacity(0.16)))
+                    .when(!on, |el| el.opacity(0.6))
+                    .hover(|el| el.opacity(1.0))
+                    .cursor_pointer()
+                    .on_click(cx.listener(move |panel, _: &ClickEvent, _, cx| panel.set_tone(i as u8, cx)))
+                    .child(*hand)
+            }))
     }
 
     fn render_emoji_row(&mut self, row: usize, cx: &mut Context<Self>) -> impl IntoElement {
         let text: Hsla = rgb(0xf0f0ea).into();
-        let start = row * EMOJI_COLS;
-        let end = (start + EMOJI_COLS).min(self.emoji_hits.len());
-        let cells: Vec<_> = (start..end)
+        let muted: Hsla = rgb(0x8a8a82).into();
+        let (start, len) = match self.emoji_rows.get(row) {
+            Some(emoji::Row::Cells { start, len }) => (*start, *len),
+            Some(emoji::Row::Title(title)) => {
+                return div()
+                    .w_full()
+                    .h(px(ROW_H))
+                    .px(px(PAD + 8.))
+                    .pb(px(4.))
+                    .flex()
+                    .items_end()
+                    .text_size(px(11.))
+                    .text_color(muted)
+                    .child(*title)
+                    .into_any_element();
+            }
+            None => return div().into_any_element(),
+        };
+        let cells: Vec<_> = (start..start + len)
             .map(|slot| {
-                let emoji = &emojis()[self.emoji_hits[slot]];
                 let selected = slot == self.emoji_selected;
-                let ch = emoji.ch.to_string();
+                let ch = self.emoji_char(slot).unwrap_or_default();
                 div()
                     .id(("emoji", slot))
                     .flex_1()
@@ -975,15 +1045,13 @@ impl LauncherPanel {
                     .when(selected, |el| el.bg(text.opacity(0.14)))
                     .hover(|el| el.bg(text.opacity(0.08)))
                     .cursor_pointer()
-                    .child(emoji.ch.clone())
-                    .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
-                        cx.emit(LauncherEvent::Paste(ch.clone()))
-                    }))
+                    .child(ch)
+                    .on_click(cx.listener(move |panel, _: &ClickEvent, _, cx| panel.pick_emoji(slot, false, cx)))
                     .into_any_element()
             })
             .collect();
         // Fila incompleta: celdas vacías para que no se estiren.
-        let fillers = (end - start..EMOJI_COLS).map(|_| div().flex_1().into_any_element());
+        let fillers = (len..EMOJI_COLS).map(|_| div().flex_1().into_any_element());
         div()
             .w_full()
             .h(px(ROW_H))
@@ -992,6 +1060,7 @@ impl LauncherPanel {
             .gap(px(2.))
             .children(cells)
             .children(fillers)
+            .into_any_element()
     }
 
     fn select(&mut self, index: usize, cx: &mut Context<Self>) {
@@ -1197,17 +1266,26 @@ impl Render for LauncherPanel {
                     .child("Ningún emoji con ese nombre")
                     .into_any_element()
             } else {
-                uniform_list(
-                    "launcher-emoji",
-                    self.emoji_hits.len().div_ceil(EMOJI_COLS),
-                    cx.processor(|panel, range: std::ops::Range<usize>, _, cx| {
-                        range.map(|row| panel.render_emoji_row(row, cx)).collect::<Vec<_>>()
-                    }),
-                )
-                .track_scroll(self.emoji_scroll.clone())
-                .w_full()
-                .flex_1()
-                .into_any_element()
+                div()
+                    .w_full()
+                    .flex_1()
+                    .min_h_0()
+                    .flex()
+                    .flex_col()
+                    .child(self.render_emoji_bar(cx))
+                    .child(
+                        uniform_list(
+                            "launcher-emoji",
+                            self.emoji_rows.len(),
+                            cx.processor(|panel, range: std::ops::Range<usize>, _, cx| {
+                                range.map(|row| panel.render_emoji_row(row, cx)).collect::<Vec<_>>()
+                            }),
+                        )
+                        .track_scroll(self.emoji_scroll.clone())
+                        .w_full()
+                        .flex_1(),
+                    )
+                    .into_any_element()
             }
         } else if self.hits.is_empty() {
             div()
@@ -1249,7 +1327,10 @@ impl Render for LauncherPanel {
                 let name = self
                     .emoji_hits
                     .get(self.emoji_selected)
-                    .map(|&i| format!("{} {} · ", emojis()[i].ch, emojis()[i].name))
+                    .map(|&i| {
+                        let ch = self.emoji_char(self.emoji_selected).unwrap_or_default();
+                        format!("{ch} {} · ", emoji::all()[i].name)
+                    })
                     .unwrap_or_default();
                 format!("{name}Enter pegar · Ctrl+Enter copiar · Esc volver")
             } else {
@@ -1269,23 +1350,20 @@ impl Render for LauncherPanel {
             .key_context(KEY_CONTEXT)
             .on_action(cx.listener(|p, _: &SelectPrev, _, cx| {
                 if p.mode == Mode::Emoji {
-                    return p.emoji_move(-(EMOJI_COLS as isize), cx);
+                    return p.emoji_move(emoji::Key::Up, cx);
                 }
                 let n = p.hits.len().max(1);
                 p.select(p.selected + n - 1, cx)
             }))
             .on_action(cx.listener(|p, _: &SelectNext, _, cx| {
                 if p.mode == Mode::Emoji {
-                    return p.emoji_move(EMOJI_COLS as isize, cx);
+                    return p.emoji_move(emoji::Key::Down, cx);
                 }
                 p.select(p.selected + 1, cx)
             }))
             .on_action(cx.listener(|p, _: &Run, _, cx| {
                 if p.mode == Mode::Emoji {
-                    if let Some(&i) = p.emoji_hits.get(p.emoji_selected) {
-                        cx.emit(LauncherEvent::Paste(emojis()[i].ch.to_string()));
-                    }
-                    return;
+                    return p.pick_emoji(p.emoji_selected, false, cx);
                 }
                 p.run_hit(p.selected, cx)
             }))
@@ -1301,8 +1379,8 @@ impl Render for LauncherPanel {
             .on_action(cx.listener(Self::quit_or_copy))
             .on_action(cx.listener(Self::toggle_centered))
             // Con `pass_edges`, el campo deja pasar ←→ y Backspace vacío.
-            .on_action(cx.listener(|p, _: &text_input::Left, _, cx| p.emoji_move(-1, cx)))
-            .on_action(cx.listener(|p, _: &text_input::Right, _, cx| p.emoji_move(1, cx)))
+            .on_action(cx.listener(|p, _: &text_input::Left, _, cx| p.emoji_move(emoji::Key::Left, cx)))
+            .on_action(cx.listener(|p, _: &text_input::Right, _, cx| p.emoji_move(emoji::Key::Right, cx)))
             .on_action(cx.listener(|p, _: &text_input::Backspace, _, cx| {
                 p.set_mode(Mode::Search, cx);
                 p.refresh(cx);
@@ -1502,15 +1580,16 @@ mod tests {
 
     #[test]
     fn sin_texto_parte_por_las_caras() {
-        assert_eq!(emojis()[search_emoji("")[0]].ch.as_ref(), "😀");
+        let sections = emoji::sections("", &[]);
+        assert_eq!(emoji::all()[sections[0].items[0]].ch.as_ref(), "😀");
     }
 
     #[test]
     fn emoji_en_espanol() {
-        let hits = search_emoji("corazon rojo");
+        let hits = emoji::search(emoji::all(), "corazon rojo", 160);
         assert!(!hits.is_empty());
-        assert!(hits.iter().take(5).any(|&i| emojis()[i].ch.as_ref() == "❤️"));
-        assert!(search_emoji("zzzz qqq").is_empty());
+        assert!(hits.iter().take(5).any(|&i| emoji::all()[i].ch.as_ref() == "❤️"));
+        assert!(emoji::search(emoji::all(), "zzzz qqq", 160).is_empty());
     }
 
     #[test]
