@@ -16,8 +16,11 @@ pub enum TranscribeError {
     Wav(#[from] hound::Error),
     #[error("error decodificando audio: {0}")]
     AudioDecode(String),
+    #[cfg(feature = "local")]
     #[error("error de Whisper: {0}")]
     Whisper(#[from] whisper_rs::WhisperError),
+    #[error("esta versión de Atic no trae Whisper local: usa Groq en Ajustes")]
+    LocalDisabled,
     #[error("falta la API key de {0}")]
     MissingApiKey(String),
     #[error("{0}")]
@@ -76,9 +79,17 @@ impl TranscribeError {
                     self.to_string()
                 }
             }
+            #[cfg(feature = "local")]
             Self::Whisper(err) => {
                 if en {
                     format!("Whisper error: {err}")
+                } else {
+                    self.to_string()
+                }
+            }
+            Self::LocalDisabled => {
+                if en {
+                    "This build of Atic has no local Whisper: use Groq in Settings".to_string()
                 } else {
                     self.to_string()
                 }

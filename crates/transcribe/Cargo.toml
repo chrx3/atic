@@ -5,18 +5,22 @@ edition.workspace = true
 license.workspace = true
 
 [features]
+# Sin Whisper local por defecto: la transcripción va por Groq (BYOK).
+# whisper.cpp pide CMake, libclang y las cabeceras de MSVC para compilar.
 default = []
-# Aceleración GPU opcional (whisper.cpp). El default es CPU.
-metal = ["whisper-rs/metal"]
-cuda = ["whisper-rs/cuda"]
-vulkan = ["whisper-rs/vulkan"]
+# Whisper local (whisper.cpp). Sin esto, cargar un modelo da `LocalDisabled`.
+local = ["dep:whisper-rs"]
+# Aceleración GPU para el Whisper local. El default es CPU.
+metal = ["local", "whisper-rs/metal"]
+cuda = ["local", "whisper-rs/cuda"]
+vulkan = ["local", "whisper-rs/vulkan"]
 
 [dependencies]
 atic-core = { workspace = true }
 thiserror.workspace = true
 tracing.workspace = true
 
-whisper-rs = { version = "0.16", features = ["tracing_backend"] }
+whisper-rs = { version = "0.16", features = ["tracing_backend"], optional = true }
 hound = "3.5"
 symphonia = { version = "0.6", default-features = false, features = ["mp3", "isomp4", "aac", "pcm", "wav", "all-meta"] }
 reqwest = { version = "0.12", features = ["blocking", "multipart"] }

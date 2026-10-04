@@ -1,9 +1,20 @@
 //! Backend de transcripción basado en whisper-rs (whisper.cpp).
+//!
+//! Solo con la feature `local`. Sin ella, [`WhisperModel`] existe con la misma
+//! forma pero no carga nada: así el resto de la app compila igual y quien
+//! intente transcribir en local recibe [`TranscribeError::LocalDisabled`].
+//! Los filtros de texto (silencios, alucinaciones) no dependen de whisper.cpp
+//! y se prueban siempre.
+
+// Sin `local`, los filtros y prompts quedan sin usar fuera de las pruebas.
+#![cfg_attr(not(feature = "local"), allow(dead_code))]
 
 use std::path::Path;
+#[cfg(feature = "local")]
 use std::sync::{Arc, Mutex, Once};
 
 use atic_core::{Segment, Speaker};
+#[cfg(feature = "local")]
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
 use crate::decode::WHISPER_RATE;
@@ -26,8 +37,10 @@ pub enum TranscribeMode {
 }
 
 /// Redirige logs de whisper.cpp/GGML a `tracing` (feature `tracing_backend`).
+#[cfg(feature = "local")]
 static INIT_LOGGING: Once = Once::new();
 
+#[cfg(feature = "local")]
 fn init_logging() {
     INIT_LOGGING.call_once(whisper_rs::install_logging_hooks);
 }
@@ -166,10 +179,36 @@ fn max_consecutive_ngram_repeats(words: &[String], n: usize) -> usize {
 }
 
 /// Modelo de Whisper cargado en memoria, reutilizable entre pistas.
+#[cfg(feature = "local")]
 pub struct WhisperModel {
     ctx: WhisperContext,
 }
 
+/// Sin Whisper local: misma forma, pero no hay nada que cargar.
+#[cfg(not(feature = "local"))]
+pub struct WhisperModel {
+    _private: (),
+}
+
+#[cfg(not(feature = "local"))]
+impl WhisperModel {
+    pub fn load(_model_path: &Path) -> Result<Self> {
+        Err(TranscribeError::LocalDisabled)
+    }
+
+    pub fn transcribe_track(
+        &self,
+        _samples: &[f32],
+        _speaker: Speaker,
+        _language: Option<&str>,
+        _mode: TranscribeMode,
+        _on_progress: impl FnMut(i32) + Send + 'static,
+    ) -> Result<Vec<Segment>> {
+        Err(TranscribeError::LocalDisabled)
+    }
+}
+
+#[cfg(feature = "local")]
 impl WhisperModel {
     /// Carga un modelo GGML desde disco.
     pub fn load(model_path: &Path) -> Result<Self> {
