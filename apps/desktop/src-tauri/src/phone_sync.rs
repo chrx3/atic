@@ -860,7 +860,7 @@ fn parse_questions(input: &serde_json::Value) -> Vec<AgentQuestion> {
                 question,
                 header: str_of(q, "header"),
                 options,
-                multi_select: flag("multiSelect") || flag("multiple"),
+                multi_select: flag("multiSelect") || flag("multiple") || flag("multi_select"),
             })
         })
         .collect()

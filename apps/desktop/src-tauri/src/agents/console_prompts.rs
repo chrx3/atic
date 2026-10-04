@@ -12,6 +12,14 @@
 //! OpenCode no necesita teclas: su TUI levanta un servidor HTTP que lista lo
 //! pendiente y lo contesta (ver [`super::console_opencode`]).
 //!
+//! Kimi (1.41) avisa sus preguntas por `PreToolUse` y se contesta con
+//! teclas: ↓ y Enter; Espacio marca en las de varias; «Other» (la fila después
+//! de las opciones) abre con Enter un campo para escribir. Sus permisos no:
+//! su hook llega antes de cada herramienta, también de las ya aprobadas, y no
+//! hay cómo saber si el diálogo está en pantalla. Atic no encuentra su
+//! consola por el proceso, así que cada consola lleva una marca propia (ver
+//! [`register_console_token`]).
+//!
 //! Teclas de Codex (0.157): permiso igual que Claude (Enter / ↓ Enter / Esc);
 //! pregunta: ↓ hasta la opción y Enter; texto propio en «None of the above»
 //! (la fila después de las opciones) con Tab para abrir la nota.
@@ -55,6 +63,7 @@ pub(crate) enum Cli {
     Claude,
     Codex,
     OpenCode,
+    Kimi,
 }
 
 /// Lo que espera la consola.
@@ -83,6 +92,28 @@ struct Pending {
 
 /// Por id de sesión de Claude (el mismo que usa la presencia).
 static PENDING: Mutex<Option<HashMap<String, Pending>>> = Mutex::new(None);
+
+/// Marca de consola → id de la consola, y sesión → marca. Para los CLI cuya
+/// consola no se encuentra por el proceso (Kimi).
+static TOKENS: Mutex<Option<(HashMap<String, String>, HashMap<String, String>)>> = Mutex::new(None);
+
+/// La consola recién lanzada con esta marca en su entorno.
+pub(crate) fn register_console_token(token: &str, console: &str) {
+    let mut guard = TOKENS.lock_or_recover();
+    guard.get_or_insert_with(Default::default).0.insert(token.to_string(), console.to_string());
+}
+
+/// Un hook de la sesión llegó desde la consola con esta marca.
+pub(crate) fn link_session(session: &str, token: &str) {
+    let mut guard = TOKENS.lock_or_recover();
+    guard.get_or_insert_with(Default::default).1.insert(session.to_string(), token.to_string());
+}
+
+fn console_by_token(session: &str) -> Option<String> {
+    let guard = TOKENS.lock_or_recover();
+    let (consoles, sessions) = guard.as_ref()?;
+    consoles.get(sessions.get(session)?).cloned()
+}
 
 fn with_pending<R>(f: impl FnOnce(&mut HashMap<String, Pending>) -> R) -> R {
     let mut guard = PENDING.lock_or_recover();
@@ -160,7 +191,7 @@ pub(crate) fn sync_opencode(port: u16, live: Vec<(String, String, Prompt)>) {
 pub(crate) fn answerable(session: &str) -> bool {
     match with_pending(|map| map.get(session).map(|p| p.port)) {
         Some(Some(_)) => true,
-        Some(None) => super::console::console_for_presence(session.to_string()).is_some(),
+        Some(None) => console_of(session).is_ok(),
         None => false,
     }
 }
@@ -202,6 +233,7 @@ pub(crate) fn answer(session: &str, id: &str, answers: &[String]) -> Result<(), 
     let console = console_of(session)?;
     let steps = match pending.cli {
         Cli::Codex => codex_keystrokes(&questions, answers),
+        Cli::Kimi => kimi_keystrokes(&questions, answers),
         _ => keystrokes(&questions, answers),
     };
     type_steps(console, steps);
@@ -244,7 +276,8 @@ fn take(session: &str, id: &str) -> Result<Pending, String> {
 }
 
 fn console_of(session: &str) -> Result<String, String> {
-    super::console::console_for_presence(session.to_string())
+    console_by_token(session)
+        .or_else(|| super::console::console_for_presence(session.to_string()))
         .ok_or_else(|| "la sesión no corre en una consola de Atic".to_string())
 }
 
@@ -290,7 +323,7 @@ fn shape(input: &Value) -> Vec<(Vec<String>, bool)> {
                         })
                         .unwrap_or_default();
                     let flag = |k: &str| q.get(k).and_then(Value::as_bool).unwrap_or(false);
-                    (labels, flag("multiSelect") || flag("multiple"))
+                    (labels, flag("multiSelect") || flag("multiple") || flag("multi_select"))
                 })
                 .collect()
         })
@@ -382,6 +415,43 @@ fn codex_keystrokes(questions: &[(Vec<String>, bool)], answers: &[String]) -> Ve
             None => {
                 steps.push(Step::Keys(DOWN.repeat(labels.len())));
                 steps.push(Step::Keys("\t".into()));
+                steps.push(Step::Keys(clean(answer)));
+            }
+        }
+        steps.push(Step::Keys(ENTER.into()));
+        steps.push(Step::Pause(STEP_GAP));
+    }
+    steps.retain(|s| !matches!(s, Step::Keys(k) if k.is_empty()));
+    steps
+}
+
+/// Kimi: Enter manda cada pregunta y pasa a la siguiente (no hay revisión).
+/// Lo escrito va en el campo que abre Enter sobre «Other»; en las de varias,
+/// «Other» se marca con Espacio y se suma a lo elegido.
+fn kimi_keystrokes(questions: &[(Vec<String>, bool)], answers: &[String]) -> Vec<Step> {
+    let down = |n: usize| Step::Keys(DOWN.repeat(n));
+    let mut steps = Vec::new();
+    for (i, (labels, multi)) in questions.iter().enumerate() {
+        let answer = answers.get(i).map(String::as_str).unwrap_or("").trim();
+        let n = labels.len();
+        match (picks(labels, answer, *multi), *multi) {
+            (Some(p), false) => steps.push(down(p.first().copied().unwrap_or(0))),
+            (Some(p), true) => {
+                let mut cursor = 0;
+                for idx in p {
+                    steps.push(down(idx - cursor));
+                    steps.push(Step::Keys(SPACE.into()));
+                    cursor = idx;
+                }
+            }
+            (None, multi) => {
+                steps.push(down(n));
+                if multi {
+                    steps.push(Step::Keys(SPACE.into()));
+                }
+                steps.push(Step::Keys(ENTER.into()));
+                // El campo para escribir tarda en abrir.
+                steps.push(Step::Pause(STEP_GAP));
                 steps.push(Step::Keys(clean(answer)));
             }
         }
@@ -504,6 +574,22 @@ mod tests {
         assert!(pending("ses_a").is_some());
         sync_opencode(4599, vec![]);
         assert!(pending("ses_a").is_none());
+    }
+
+    #[test]
+    fn kimi_contesta_con_su_panel() {
+        let one = [q(&["Rojo", "Verde", "Azul"], false)];
+        assert_eq!(keys(&kimi_keystrokes(&one, &["Verde".into()])), "↓⏎");
+        assert_eq!(keys(&kimi_keystrokes(&one, &["Morado".into()])), "↓↓↓⏎Morado⏎");
+        let many = [q(&["Manzana", "Pera", "Uva"], true)];
+        assert_eq!(keys(&kimi_keystrokes(&many, &["Manzana, Uva".into()])), "␣↓↓␣⏎");
+    }
+
+    #[test]
+    fn la_marca_de_la_consola_lleva_a_su_sesion() {
+        register_console_token("tok-1", "consola-9");
+        link_session("kimi-s1", "tok-1");
+        assert_eq!(console_of("kimi-s1").as_deref(), Ok("consola-9"));
     }
 
     #[test]

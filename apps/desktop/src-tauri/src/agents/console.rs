@@ -645,6 +645,28 @@ fn with_claude_hooks(command: &str) -> String {
     }
 }
 
+/// Kimi con la config de Atic (la del usuario más los hooks, ver
+/// [`super::ping::kimi_config`]). Devuelve también la marca que la consola
+/// lleva en su entorno, para saber de qué consola es cada aviso.
+fn with_kimi_hooks(command: &str) -> (String, Option<String>) {
+    let first = command.split_whitespace().next().unwrap_or("");
+    let is_kimi = first.eq_ignore_ascii_case("kimi") || first.eq_ignore_ascii_case("kimi.exe");
+    if !is_kimi || has_shell_syntax(command) || command.contains("--config") {
+        return (command.to_string(), None);
+    }
+    match super::ping::kimi_config() {
+        Some(path) if !path.to_string_lossy().contains(' ') => {
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0);
+            let token = format!("{:x}{:04x}", nanos, std::process::id() & 0xffff);
+            (format!("{command} --config-file {}", path.display()), Some(token))
+        }
+        _ => (command.to_string(), None),
+    }
+}
+
 /// OpenCode con su servidor en un puerto conocido: así Atic ve y contesta
 /// sus preguntas y permisos (ver [`super::console_opencode`]).
 fn with_opencode_port(command: &str) -> String {
@@ -1246,6 +1268,8 @@ pub fn console_open(
         .map(str::to_string)
         .or_else(|| std::env::var("USERPROFILE").ok())
         .unwrap_or_default();
+    // Marca de la consola para los CLI que avisan por archivo propio (Kimi).
+    let mut console_token: Option<String> = None;
     let (spawn, askpass) = match kind.as_str() {
         "local" if options.command.as_deref().is_some_and(is_admin_command) => {
             #[cfg(windows)]
@@ -1267,11 +1291,19 @@ pub fn console_open(
                 .command
                 .as_deref()
                 .map(str::trim)
-                .map(|c| with_opencode_port(&with_codex_hooks(&with_claude_hooks(c))));
+                .map(|c| with_kimi_hooks(&with_opencode_port(&with_codex_hooks(&with_claude_hooks(c)))));
+            let (command, token) = match command {
+                Some((c, t)) => (Some(c), t),
+                None => (None, None),
+            };
+            console_token = token;
             let mut cmd = match command.as_deref() {
                 Some(c) if !c.is_empty() => build_local_command(c)?,
                 _ => resolve_local_shell(),
             };
+            if let Some(token) = &console_token {
+                cmd.env(super::ping::CONSOLE_TOKEN_VAR, token);
+            }
             apply_cwd(&mut cmd, options.cwd.as_deref());
             (Spawn::Pty(cmd), None)
         }
@@ -1317,6 +1349,9 @@ pub fn console_open(
         claim(&session, view);
     }
     spawn_reaper();
+    if let Some(token) = &console_token {
+        super::console_prompts::register_console_token(token, &session);
+    }
 
     Ok(session)
 }

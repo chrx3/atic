@@ -9,6 +9,7 @@ use std::io::{BufRead, BufReader, Seek, SeekFrom};
 use std::path::PathBuf;
 use std::sync::Mutex;
 
+use atic_core::MutexExt;
 use serde_json::Value;
 
 use super::presence::{self, AgentPresence, PresenceSource, PresenceStatus};
@@ -17,6 +18,12 @@ use super::console_prompts::Cli;
 
 static OFFSET: Mutex<u64> = Mutex::new(0);
 static CODEX_OFFSET: Mutex<u64> = Mutex::new(0);
+/// Un archivo por consola de Kimi (`atic-kimi-<marca>.jsonl`).
+static KIMI_OFFSETS: Mutex<Option<std::collections::HashMap<PathBuf, u64>>> = Mutex::new(None);
+
+/// La variable que lleva la marca de cada consola de Atic que lanza Kimi.
+pub const CONSOLE_TOKEN_VAR: &str = "ATIC_CONSOLE_TOKEN";
+const KIMI_PREFIX: &str = "atic-kimi-";
 
 pub fn ping_path() -> PathBuf {
     std::env::temp_dir().join("atic-agent-ping.jsonl")
@@ -111,6 +118,55 @@ pub fn codex_profile() -> Option<&'static str> {
     Some("atic")
 }
 
+/// Config de Kimi para sus consolas: la del usuario, copiada tal cual, más los
+/// hooks de Atic. Kimi no mezcla configs (`--config-file` reemplaza la suya),
+/// por eso se copia en cada lanzamiento. Va en `~/.kimi`, junto a la original.
+/// `None` si el usuario ya tiene hooks propios escritos de otra forma: mejor
+/// sin aviso que pisarle la config.
+pub fn kimi_config() -> Option<PathBuf> {
+    let dir = PathBuf::from(std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME"))?).join(".kimi");
+    let base = std::fs::read_to_string(dir.join("config.toml")).ok()?;
+    let config = with_kimi_hooks(&base, &kimi_hook_command())?;
+    let path = dir.join("atic-config.toml");
+    std::fs::write(&path, config).ok()?;
+    Some(path)
+}
+
+/// Kimi corre los hooks con `cmd`. `findstr "^"` copia stdin tal cual (UTF-8
+/// incluido) y termina la línea; cada consola anota en su propio archivo.
+fn kimi_hook_command() -> String {
+    let dir = std::env::temp_dir();
+    format!("findstr \"^\" >> \"{}\\{KIMI_PREFIX}%{CONSOLE_TOKEN_VAR}%.jsonl\"", dir.display())
+}
+
+fn with_kimi_hooks(base: &str, command: &str) -> Option<String> {
+    // Literal de TOML: el comando lleva comillas dobles pero no simples.
+    if command.contains('\'') {
+        return None;
+    }
+    let hook = |event: &str, matcher: &str| {
+        let matcher = if matcher.is_empty() { String::new() } else { format!(", matcher = \"{matcher}\"") };
+        format!("{{ event = \"{event}\"{matcher}, command = '{command}' }}")
+    };
+    let hooks = format!(
+        "hooks = [{}, {}, {}, {}]",
+        hook("PreToolUse", "AskUserQuestion"),
+        hook("PostToolUse", "AskUserQuestion"),
+        hook("UserPromptSubmit", ""),
+        hook("Stop", ""),
+    );
+    if base.lines().any(|l| l.trim() == "hooks = []") {
+        let lines: Vec<String> =
+            base.lines().map(|l| if l.trim() == "hooks = []" { hooks.clone() } else { l.to_string() }).collect();
+        return Some(lines.join("\n") + "\n");
+    }
+    if base.lines().any(|l| l.trim_start().starts_with("hooks") || l.trim_start().starts_with("[[hooks")) {
+        return None;
+    }
+    // Las claves de arriba van antes de cualquier tabla.
+    Some(format!("{hooks}\n{base}"))
+}
+
 /// Los mismos hooks en un archivo, para lanzar `claude --settings <archivo>`
 /// en las consolas de Atic sin tocar el `settings.json` del usuario. Así
 /// Atic se entera de sus preguntas y el celular las puede contestar.
@@ -197,6 +253,7 @@ pub(crate) fn apply_ping(ping: HookPing, cli: Cli) {
         Cli::Claude => ("claude-code", "Claude Code"),
         Cli::Codex => ("codex", "Codex"),
         Cli::OpenCode => ("opencode", "OpenCode"),
+        Cli::Kimi => ("kimi", "Kimi"),
     };
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -228,25 +285,36 @@ pub(crate) fn apply_ping(ping: HookPing, cli: Cli) {
 
 /// Consume lo que anotaron los hooks de Claude y de Codex desde la última vez.
 pub fn drain() {
-    drain_file(&ping_path(), &OFFSET, Cli::Claude);
-    drain_file(&codex_ping_path(), &CODEX_OFFSET, Cli::Codex);
+    for (path, lock, cli) in [(ping_path(), &OFFSET, Cli::Claude), (codex_ping_path(), &CODEX_OFFSET, Cli::Codex)] {
+        let mut offset = lock.lock_or_recover();
+        drain_file(&path, &mut offset, cli, None);
+    }
+    let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) else {
+        return;
+    };
+    let mut offsets = KIMI_OFFSETS.lock_or_recover();
+    let offsets = offsets.get_or_insert_with(Default::default);
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        let Some(token) = name.strip_prefix(KIMI_PREFIX).and_then(|t| t.strip_suffix(".jsonl")) else {
+            continue;
+        };
+        let offset = offsets.entry(entry.path()).or_insert(0);
+        drain_file(&entry.path(), offset, Cli::Kimi, Some(token));
+    }
 }
 
-fn drain_file(path: &std::path::Path, offset_lock: &Mutex<u64>, cli: Cli) {
+fn drain_file(path: &std::path::Path, offset: &mut u64, cli: Cli, token: Option<&str>) {
     let Ok(mut file) = OpenOptions::new().read(true).open(path) else {
         return;
     };
     let Ok(len) = file.metadata().map(|m| m.len()) else {
         return;
     };
-    let mut offset = offset_lock.lock().ok();
-    let start = offset.as_deref().copied().unwrap_or(0);
-    if len < start {
-        if let Some(o) = offset.as_mut() {
-            **o = 0;
-        }
+    if len < *offset {
+        *offset = 0;
     }
-    let start = offset.as_deref().copied().unwrap_or(0).min(len);
+    let start = (*offset).min(len);
     if file.seek(SeekFrom::Start(start)).is_err() {
         return;
     }
@@ -259,15 +327,16 @@ fn drain_file(path: &std::path::Path, offset_lock: &Mutex<u64>, cli: Cli) {
         consumed += line.len() as u64 + 1;
         // PowerShell abre el archivo con BOM.
         if let Ok(v) = serde_json::from_str::<Value>(line.trim_start_matches('\u{feff}')) {
+            if let (Some(token), Some(session)) = (token, v.get("session_id").and_then(Value::as_str)) {
+                super::console_prompts::link_session(session, token);
+            }
             super::console_prompts::observe(&v, cli);
             if let Some(ping) = classify_hook(&v) {
                 apply_ping(ping, cli);
             }
         }
     }
-    if let Some(mut o) = offset {
-        *o = consumed.min(len);
-    }
+    *offset = consumed.min(len);
 }
 
 #[cfg(test)]
@@ -323,6 +392,20 @@ mod tests {
             "notification_type": "auth_success"
         }))
         .is_none());
+    }
+
+    #[test]
+    fn la_config_de_kimi_suma_los_hooks_sin_pisar_la_del_usuario() {
+        let base = "default_yolo = false\nhooks = []\ntheme = \"dark\"\n\n[loop_control]\nmax = 1\n";
+        let out = with_kimi_hooks(base, "findstr \"^\" >> \"C:\\t\\x.jsonl\"").unwrap();
+        assert!(out.contains("event = \"PreToolUse\", matcher = \"AskUserQuestion\""), "{out}");
+        assert!(out.contains("theme = \"dark\"") && out.contains("[loop_control]"), "{out}");
+        assert!(!out.contains("hooks = []"), "{out}");
+        // Sin `hooks`, van arriba de las tablas.
+        let out = with_kimi_hooks("[loop_control]\nmax = 1\n", "c").unwrap();
+        assert!(out.starts_with("hooks = ["), "{out}");
+        // Hooks propios escritos de otra forma: no se toca.
+        assert!(with_kimi_hooks("[[hooks]]\nevent = \"Stop\"\ncommand = \"x\"\n", "c").is_none());
     }
 
     #[test]
