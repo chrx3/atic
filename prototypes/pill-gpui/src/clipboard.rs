@@ -1,27 +1,74 @@
-//! Panel flotante del Clipboard: buscador, filtros y lista virtualizada.
-//! Medidas y textos de `ClipboardFloat.svelte` y `ClipboardHistoryList.svelte`
-//! en modo isla. Los datos son de prueba.
+//! El Clipboard como notch: la franja del notch es el buscador, debajo va una
+//! tira con las imágenes y colores, y después los textos en una línea,
+//! agrupados por día. El alto se ajusta a lo que hay que mostrar.
+//!
+//! Lee el historial real de Atic (`history.rs`); sin él, usa entradas de
+//! prueba. Favoritos y borrados hechos aquí van a un archivo propio
+//! (`local.json`): `history.json` es de Atic.
 
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use gpui::{
-    actions, div, img, prelude::*, px, rgb, svg, uniform_list, App, ClickEvent, Context, Entity,
-    EventEmitter, FocusHandle, Focusable, FontWeight, Hsla, Image, ImageFormat, KeyBinding,
-    MouseButton, MouseDownEvent, MouseMoveEvent, Pixels, Point, ScrollStrategy, SharedString,
-    Subscription, UniformListScrollHandle, Window,
+    actions, div, img, list, prelude::*, px, rgb, svg, AnyElement, App, ClickEvent, Context,
+    Entity, EventEmitter, FocusHandle, Focusable, Hsla, Image, ImageFormat, KeyBinding,
+    ListAlignment, ListState, MouseButton, MouseDownEvent, MouseMoveEvent, Pixels, Point,
+    RenderImage, ScrollHandle, SharedString, StyledImage, Subscription, Window,
 };
+use serde::{Deserialize, Serialize};
 
+use crate::history;
+use crate::secrets;
 use crate::text_input::{self, TextInput};
 
-pub const PANEL_W: f32 = 312.0;
-pub const PANEL_H: f32 = 372.0;
-const ROW_H: f32 = 44.0;
-const ROW_GAP: f32 = 2.0;
+/// Ancho del notch abierto: con 312 px el texto se cortaba a los 30 caracteres.
+pub const PANEL_W: f32 = 440.0;
+/// Alto máximo; con menos entradas el notch crece menos.
+pub const PANEL_H: f32 = 460.0;
+/// La franja del notch, que con el panel abierto es el buscador.
+pub const BAND_H: f32 = 40.0;
+/// Hueco a la izquierda del buscador donde el notch pinta su marca.
+const MARK_GAP: f32 = 40.0;
+const STRIP_H: f32 = 52.0;
+const STRIP_PAD: f32 = 10.0;
+/// Un texto más largo que esto merece vista previa: en la fila no cabe.
+const PREVIEW_MIN_CHARS: usize = 56;
+const THUMB_W: f32 = 78.0;
+const SWATCH_W: f32 = 52.0;
+const HEADER_H: f32 = 22.0;
+const ROW_H: f32 = 30.0;
+const FOOTER_H: f32 = 26.0;
+const EMPTY_H: f32 = 90.0;
+const SIDE_PAD: f32 = 8.0;
 /// Lo que hay que mover el cursor con el botón apretado para que sea arrastre
 /// y no clic (`ClipboardHistoryList.svelte`).
 const DRAG_THRESHOLD: f32 = 6.0;
+/// Cada cuánto se mira si Atic reescribió `history.json` (su watcher corre a
+/// 450 ms).
+const RELOAD_EVERY: Duration = Duration::from_millis(1000);
 
-actions!(clipboard_panel, [SelectPrev, SelectNext, Confirm, Dismiss]);
+actions!(
+    clipboard_panel,
+    [
+        SelectPrev,
+        SelectNext,
+        Confirm,
+        Dismiss,
+        ToggleFavorite,
+        Remove,
+        Quick1,
+        Quick2,
+        Quick3,
+        Quick4,
+        Quick5,
+        Quick6,
+        Quick7,
+        Quick8,
+        Quick9
+    ]
+);
 
 const KEY_CONTEXT: &str = "ClipboardPanel";
 
@@ -32,6 +79,17 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("down", SelectNext, context),
         KeyBinding::new("enter", Confirm, context),
         KeyBinding::new("escape", Dismiss, context),
+        KeyBinding::new("ctrl-d", ToggleFavorite, context),
+        KeyBinding::new("shift-delete", Remove, context),
+        KeyBinding::new("ctrl-1", Quick1, context),
+        KeyBinding::new("ctrl-2", Quick2, context),
+        KeyBinding::new("ctrl-3", Quick3, context),
+        KeyBinding::new("ctrl-4", Quick4, context),
+        KeyBinding::new("ctrl-5", Quick5, context),
+        KeyBinding::new("ctrl-6", Quick6, context),
+        KeyBinding::new("ctrl-7", Quick7, context),
+        KeyBinding::new("ctrl-8", Quick8, context),
+        KeyBinding::new("ctrl-9", Quick9, context),
     ]);
 }
 
@@ -39,16 +97,100 @@ pub fn bind_keys(cx: &mut App) {
 pub enum Content {
     Text(SharedString),
     Color(SharedString, Hsla),
-    Image(Arc<Image>),
+    Image(Picture),
+}
+
+/// Una imagen del historial. Las de Atic se leen del disco recién al pintarlas
+/// o pegarlas: son hasta 100 PNG de hasta 8 MB.
+#[derive(Clone)]
+pub enum Picture {
+    Embedded(Arc<Image>),
+    File(Arc<Path>),
+}
+
+impl Picture {
+    pub fn load(&self) -> std::io::Result<Arc<Image>> {
+        match self {
+            Picture::Embedded(image) => Ok(image.clone()),
+            Picture::File(path) => Ok(Arc::new(Image::from_bytes(
+                ImageFormat::Png,
+                std::fs::read(path)?,
+            ))),
+        }
+    }
+
+    pub fn view(&self) -> gpui::Img {
+        match self {
+            Picture::Embedded(image) => img(image.clone()),
+            Picture::File(path) => img(path.clone()),
+        }
+    }
 }
 
 #[derive(Clone)]
 pub struct Entry {
     pub id: usize,
+    /// El `id` de Atic: sobrevive a las recargas.
+    pub key: SharedString,
     pub content: Content,
-    preview: SharedString,
-    when: SharedString,
-    pinned: bool,
+    /// Una línea para la fila; con los secretos ocultos.
+    pub preview: SharedString,
+    /// El texto completo para la vista previa; con los secretos ocultos.
+    pub shown: SharedString,
+    /// Tiene algo que parece una clave.
+    pub secret: bool,
+    /// Lo que se ve, plegado para buscar: un secreto no se encuentra por su
+    /// valor.
+    pub folded: String,
+    pub created_ms: u64,
+    pub pinned: bool,
+    /// Ícono de la app que lo copió.
+    pub source_icon: Option<Arc<RenderImage>>,
+}
+
+/// Cuánto texto entra en la vista previa.
+const SHOWN_CHARS: usize = 1200;
+
+impl Entry {
+    /// Imágenes y colores siempre; un texto, si no cabe en su fila.
+    pub fn worth_preview(&self) -> bool {
+        match self.content {
+            Content::Image(_) | Content::Color(..) => true,
+            Content::Text(_) => {
+                self.shown.chars().count() > PREVIEW_MIN_CHARS || self.shown.contains('\n')
+            }
+        }
+    }
+
+    /// Comandos, código y JSON se leen mejor en monoespaciada.
+    pub fn looks_like_code(&self) -> bool {
+        self.preview.contains(['{', ';', '$', '\\'])
+            || ["cargo ", "pnpm ", "git ", "npm "]
+                .iter()
+                .any(|prefix| self.preview.starts_with(prefix))
+    }
+
+    pub fn new(id: usize, key: SharedString, content: Content, text: &str) -> Self {
+        let (shown, secret) = secrets::mask(text);
+        let shown: String = shown.chars().take(SHOWN_CHARS).collect();
+        Self {
+            id,
+            key,
+            content,
+            preview: history::one_line(&shown),
+            folded: fold(&shown),
+            shown: shown.into(),
+            secret,
+            created_ms: 0,
+            pinned: false,
+            source_icon: None,
+        }
+    }
+
+    /// Imágenes y colores van en la tira de arriba; el resto, en la lista.
+    fn in_strip(&self) -> bool {
+        matches!(self.content, Content::Image(_) | Content::Color(..))
+    }
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -64,36 +206,85 @@ pub enum PanelEvent {
     Close,
 }
 
-struct IconButton {
-    id: &'static str,
-    icon: &'static str,
-    /// Lado del botón y del ícono.
-    size: (f32, f32),
-    active: bool,
-    idle_color: Hsla,
+/// Una fila de la lista: separador de grupo o entrada.
+#[derive(Clone, Copy)]
+enum Row {
+    Header(&'static str),
+    /// Índice en `entries` y su atajo Ctrl+1..9.
+    Item(usize, Option<usize>),
+}
+
+/// Lo que se puede elegir con las flechas, en orden: primero la tira, después
+/// la lista.
+#[derive(Clone, Copy, PartialEq)]
+enum Pick {
+    Strip(usize),
+    /// Índice en `rows`.
+    Row(usize),
+}
+
+/// Favoritos y borrados hechos en el prototipo, entre arranques.
+#[derive(Default, Serialize, Deserialize)]
+struct Local {
+    #[serde(default)]
+    pins: HashMap<String, bool>,
+    #[serde(default)]
+    hidden: Vec<String>,
+}
+
+fn local_file() -> Option<PathBuf> {
+    let base = std::env::var_os("LOCALAPPDATA")?;
+    Some(PathBuf::from(base).join("atic-gpui").join("local.json"))
+}
+
+impl Local {
+    fn load() -> Self {
+        local_file()
+            .and_then(|path| std::fs::read_to_string(path).ok())
+            .and_then(|raw| serde_json::from_str(&raw).ok())
+            .unwrap_or_default()
+    }
+
+    fn save(&self) {
+        let Some(path) = local_file() else {
+            return;
+        };
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        if let Ok(raw) = serde_json::to_string_pretty(self) {
+            let _ = std::fs::write(path, raw);
+        }
+    }
 }
 
 struct Colors {
     text: Hsla,
     muted: Hsla,
     faint: Hsla,
-    header_icon: Hsla,
 }
 
 pub struct ClipboardPanel {
     entries: Vec<Entry>,
-    visible: Vec<usize>,
+    /// Índices en `entries` de la tira.
+    strip: Vec<usize>,
+    rows: Vec<Row>,
+    picks: Vec<Pick>,
+    selected: usize,
+    list: ListState,
+    strip_scroll: ScrollHandle,
     search: Entity<TextInput>,
     filter: Filter,
     favorites_only: bool,
-    selected: usize,
     pub pinned: bool,
-    scroll: UniformListScrollHandle,
+    /// El notch pinta su marca a la izquierda del buscador.
+    pub mark_gap: bool,
     colors: Colors,
-    /// Fila apretada y dónde, hasta que se suelta o empieza el arrastre.
+    /// Entrada apretada y dónde, hasta que se suelta o empieza el arrastre.
     press: Option<(usize, Point<Pixels>)>,
     /// El último gesto terminó en arrastre: el clic que le sigue no pega.
     dragged: bool,
+    local: Local,
     _search_changed: Subscription,
 }
 
@@ -111,81 +302,297 @@ impl ClipboardPanel {
             text: rgb(0xf0f0ea).into(),
             muted: rgb(0x9a9a90).into(),
             faint: rgb(0x6e6e66).into(),
-            header_icon: rgb(0x8f8f86).into(),
         };
-        let search =
-            cx.new(|cx| TextInput::new("Buscar…", colors.text, colors.muted, colors.text, cx));
+        let search = cx.new(|cx| {
+            TextInput::new(
+                "Buscar en el portapapeles…",
+                colors.text,
+                colors.muted,
+                colors.text,
+                cx,
+            )
+        });
         let search_changed = cx.subscribe(&search, |panel, _, _: &text_input::Changed, cx| {
             panel.refilter(cx);
         });
+        let dir = history::dir();
+        let loaded = dir
+            .as_deref()
+            .and_then(|dir| history::load_if_changed(dir, None));
+        let seen = loaded.as_ref().map(|(stamp, _)| *stamp);
+        let entries = match loaded {
+            Some((_, entries)) => {
+                println!("clipboard: {} entradas de Atic", entries.len());
+                entries
+            }
+            None => {
+                println!("clipboard: sin history.json de Atic, datos de prueba");
+                mock_entries()
+            }
+        };
+        if let Some(dir) = dir {
+            Self::watch(dir, seen, cx);
+        }
         let mut panel = Self {
-            entries: mock_entries(),
-            visible: Vec::new(),
+            entries: Vec::new(),
+            strip: Vec::new(),
+            rows: Vec::new(),
+            picks: Vec::new(),
+            selected: 0,
+            list: ListState::new(0, ListAlignment::Top, px(200.)),
+            strip_scroll: ScrollHandle::new(),
             search,
             filter: Filter::All,
             favorites_only: false,
-            selected: 0,
             pinned: false,
-            scroll: UniformListScrollHandle::new(),
+            mark_gap: true,
             colors,
             press: None,
             dragged: false,
+            local: Local::load(),
             _search_changed: search_changed,
         };
-        panel.refilter(cx);
+        panel.set_entries(entries, cx);
         panel
     }
 
     /// Al abrir: buscador vacío y la lista arriba, como en Atic.
     pub fn reset(&mut self, cx: &mut Context<Self>) {
         self.search.update(cx, |search, cx| search.clear(cx));
-        self.selected = 0;
-        self.scroll.scroll_to_item(0, ScrollStrategy::Top);
+        self.refilter(cx);
     }
 
+    /// Recarga cuando Atic reescribe el historial. Leer y parsear va en otro
+    /// hilo; aquí solo se cambian las entradas.
+    fn watch(dir: PathBuf, mut seen: Option<history::Stamp>, cx: &mut Context<Self>) {
+        let dir: Arc<Path> = dir.into();
+        cx.spawn(async move |this, cx| loop {
+            cx.background_executor().timer(RELOAD_EVERY).await;
+            let dir = dir.clone();
+            let loaded = cx
+                .background_spawn(async move { history::load_if_changed(&dir, seen) })
+                .await;
+            let alive = match loaded {
+                Some((stamp, entries)) => {
+                    seen = Some(stamp);
+                    this.update(cx, |panel, cx| {
+                        println!("clipboard: recargado, {} entradas", entries.len());
+                        panel.set_entries(entries, cx)
+                    })
+                    .is_ok()
+                }
+                None => this.upgrade().is_some(),
+            };
+            if !alive {
+                break;
+            }
+        })
+        .detach();
+    }
+
+    /// Cambia las entradas sin perder la elegida.
+    fn set_entries(&mut self, mut entries: Vec<Entry>, cx: &mut Context<Self>) {
+        let selected_key = self.selected_entry().map(|index| self.entries[index].key.clone());
+        entries.retain(|entry| !self.local.hidden.iter().any(|key| key.as_str() == entry.key.as_ref()));
+        for entry in &mut entries {
+            if let Some(&pinned) = self.local.pins.get(entry.key.as_ref()) {
+                entry.pinned = pinned;
+            }
+        }
+        self.entries = entries;
+        self.rebuild(cx);
+        self.selected = selected_key
+            .and_then(|key| {
+                (0..self.picks.len()).find(|&pick| {
+                    self.entry_of(pick)
+                        .is_some_and(|index| self.entries[index].key == key)
+                })
+            })
+            .unwrap_or_else(|| self.first_pick());
+        cx.notify();
+    }
+
+    /// Filtro nuevo: la selección vuelve al primer texto (o a la primera
+    /// imagen si solo hay imágenes). Así la vista previa de imagen no empuja la
+    /// lista apenas se abre.
     fn refilter(&mut self, cx: &mut Context<Self>) {
+        self.rebuild(cx);
+        self.selected = self.first_pick();
+        self.list.scroll_to_reveal_item(0);
+        self.strip_scroll.scroll_to_item(0);
+        cx.notify();
+    }
+
+    fn first_pick(&self) -> usize {
+        if self.filter == Filter::Images {
+            return 0;
+        }
+        self.picks
+            .iter()
+            .position(|pick| matches!(pick, Pick::Row(_)))
+            .unwrap_or(0)
+    }
+
+    fn rebuild(&mut self, cx: &mut Context<Self>) {
         let query = fold(self.search.read(cx).text());
         let tokens: Vec<&str> = query.split_whitespace().collect();
-        self.visible = self
-            .entries
+        let now = chrono::Local::now();
+        let matches = |entry: &Entry| {
+            (!self.favorites_only || entry.pinned)
+                && (entry.folded.contains(query.trim())
+                    || tokens.iter().all(|token| entry.folded.contains(token)))
+        };
+
+        self.strip = if self.filter == Filter::Text {
+            Vec::new()
+        } else {
+            (0..self.entries.len())
+                .filter(|&index| self.entries[index].in_strip() && matches(&self.entries[index]))
+                .collect()
+        };
+
+        let texts: Vec<usize> = if self.filter == Filter::Images {
+            Vec::new()
+        } else {
+            (0..self.entries.len())
+                .filter(|&index| !self.entries[index].in_strip() && matches(&self.entries[index]))
+                .collect()
+        };
+        // Favoritos arriba y fijos; el resto por día. Atic ya los guarda del
+        // más nuevo al más viejo.
+        let mut rows = Vec::new();
+        let mut quick = 0;
+        let mut push = |rows: &mut Vec<Row>, index: usize| {
+            quick += 1;
+            rows.push(Row::Item(index, (quick <= 9).then_some(quick)));
+        };
+        let favorites: Vec<usize> = texts
             .iter()
-            .enumerate()
-            .filter(|(_, entry)| {
-                let kind_ok = match self.filter {
-                    Filter::All => true,
-                    Filter::Text => !matches!(entry.content, Content::Image(_)),
-                    Filter::Images => matches!(entry.content, Content::Image(_)),
-                };
-                let haystack = fold(&entry.preview);
-                let query_ok = haystack.contains(query.trim())
-                    || tokens.iter().all(|token| haystack.contains(token));
-                kind_ok && (!self.favorites_only || entry.pinned) && query_ok
-            })
-            .map(|(index, _)| index)
+            .copied()
+            .filter(|&index| self.entries[index].pinned)
             .collect();
-        self.selected = 0;
-        self.scroll.scroll_to_item(0, ScrollStrategy::Top);
+        if !favorites.is_empty() && !self.favorites_only {
+            rows.push(Row::Header("Favoritos"));
+        }
+        for &index in &favorites {
+            push(&mut rows, index);
+        }
+        let mut day = None;
+        for &index in &texts {
+            if self.entries[index].pinned {
+                continue;
+            }
+            let this_day = history::day_of(self.entries[index].created_ms, now);
+            if day != Some(this_day) {
+                rows.push(Row::Header(this_day.label()));
+                day = Some(this_day);
+            }
+            push(&mut rows, index);
+        }
+        self.rows = rows;
+        self.list.reset(self.rows.len());
+
+        self.picks = (0..self.strip.len())
+            .map(Pick::Strip)
+            .chain(
+                self.rows
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, row)| matches!(row, Row::Item(..)))
+                    .map(|(index, _)| Pick::Row(index)),
+            )
+            .collect();
+    }
+
+    /// Lo que la vista previa flotante muestra: la entrada elegida, si vale la
+    /// pena verla en grande.
+    pub fn preview(&self) -> Option<&Entry> {
+        let entry = &self.entries[self.selected_entry()?];
+        entry.worth_preview().then_some(entry)
+    }
+
+    /// Las últimas copiadas, para el vistazo.
+    pub fn recent(&self, count: usize) -> Vec<Entry> {
+        self.entries.iter().take(count).cloned().collect()
+    }
+
+    fn row_height(&self, row: usize) -> f32 {
+        match self.rows[row] {
+            Row::Header(_) => HEADER_H,
+            Row::Item(..) => ROW_H,
+        }
+    }
+
+    /// El alto que necesita el notch para mostrar lo que hay, con la franja.
+    pub fn desired_height(&self) -> f32 {
+        let strip = if self.strip.is_empty() {
+            0.0
+        } else {
+            STRIP_H + STRIP_PAD
+        };
+        let list: f32 = (0..self.rows.len()).map(|row| self.row_height(row)).sum();
+        let body = if self.picks.is_empty() {
+            EMPTY_H
+        } else {
+            strip + list
+        };
+        (BAND_H + body + FOOTER_H + SIDE_PAD).min(PANEL_H)
+    }
+
+    fn entry_of(&self, pick: usize) -> Option<usize> {
+        match *self.picks.get(pick)? {
+            Pick::Strip(slot) => self.strip.get(slot).copied(),
+            Pick::Row(row) => match self.rows[row] {
+                Row::Item(index, _) => Some(index),
+                Row::Header(_) => None,
+            },
+        }
+    }
+
+    fn selected_entry(&self) -> Option<usize> {
+        self.entry_of(self.selected)
+    }
+
+    fn select(&mut self, pick: usize, cx: &mut Context<Self>) {
+        self.select_with(pick, true, cx);
+    }
+
+    /// Con el cursor no se desplaza la lista: lo que está bajo el cursor ya se
+    /// ve, y moverla haría saltar la fila.
+    fn select_with(&mut self, pick: usize, reveal: bool, cx: &mut Context<Self>) {
+        let pick = pick.min(self.picks.len().saturating_sub(1));
+        if pick == self.selected {
+            return;
+        }
+        self.selected = pick;
+        if reveal {
+            match self.picks.get(pick) {
+                Some(Pick::Row(row)) => self.list.scroll_to_reveal_item(*row),
+                Some(Pick::Strip(slot)) => self.strip_scroll.scroll_to_item(*slot),
+                None => {}
+            }
+        }
         cx.notify();
+    }
+
+    fn hover_pick(&mut self, target: Pick, cx: &mut Context<Self>) {
+        if let Some(pick) = self.picks.iter().position(|p| *p == target) {
+            self.select_with(pick, false, cx);
+        }
     }
 
     fn select_prev(&mut self, _: &SelectPrev, _: &mut Window, cx: &mut Context<Self>) {
-        self.selected = self.selected.saturating_sub(1);
-        self.scroll
-            .scroll_to_item(self.selected, ScrollStrategy::Top);
-        cx.notify();
+        self.select(self.selected.saturating_sub(1), cx);
     }
 
     fn select_next(&mut self, _: &SelectNext, _: &mut Window, cx: &mut Context<Self>) {
-        if self.selected + 1 < self.visible.len() {
-            self.selected += 1;
-        }
-        self.scroll
-            .scroll_to_item(self.selected, ScrollStrategy::Top);
-        cx.notify();
+        self.select(self.selected + 1, cx);
     }
 
     fn confirm(&mut self, _: &Confirm, _: &mut Window, cx: &mut Context<Self>) {
-        self.paste(self.selected, cx);
+        if let Some(index) = self.selected_entry() {
+            self.paste(index, cx);
+        }
     }
 
     fn dismiss(&mut self, _: &Dismiss, _: &mut Window, cx: &mut Context<Self>) {
@@ -194,9 +601,34 @@ impl ClipboardPanel {
         }
     }
 
-    fn paste(&mut self, visible_index: usize, cx: &mut Context<Self>) {
-        if let Some(&index) = self.visible.get(visible_index) {
-            cx.emit(PanelEvent::Paste(self.entries[index].clone()));
+    fn toggle_selected(&mut self, _: &ToggleFavorite, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(index) = self.selected_entry() {
+            self.toggle_favorite(index, cx);
+        }
+    }
+
+    fn remove_selected(&mut self, _: &Remove, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(index) = self.selected_entry() {
+            let keep = self.selected;
+            self.remove(index, cx);
+            self.select(keep, cx);
+        }
+    }
+
+    /// Ctrl+N pega el N-ésimo texto de la lista.
+    fn quick(&mut self, number: usize, cx: &mut Context<Self>) {
+        let index = self.rows.iter().find_map(|row| match *row {
+            Row::Item(index, Some(n)) if n == number => Some(index),
+            _ => None,
+        });
+        if let Some(index) = index {
+            self.paste(index, cx);
+        }
+    }
+
+    fn paste(&mut self, index: usize, cx: &mut Context<Self>) {
+        if let Some(entry) = self.entries.get(index) {
+            cx.emit(PanelEvent::Paste(entry.clone()));
         }
     }
 
@@ -221,223 +653,420 @@ impl ClipboardPanel {
     }
 
     fn toggle_favorite(&mut self, index: usize, cx: &mut Context<Self>) {
-        self.entries[index].pinned = !self.entries[index].pinned;
-        if self.favorites_only {
-            self.refilter(cx);
+        let selected_key = self.entries[index].key.clone();
+        let entry = &mut self.entries[index];
+        entry.pinned = !entry.pinned;
+        self.local
+            .pins
+            .insert(entry.key.to_string(), entry.pinned);
+        self.local.save();
+        // La entrada cambia de grupo: la selección la sigue.
+        self.rebuild(cx);
+        if let Some(pick) = (0..self.picks.len()).find(|&pick| {
+            self.entry_of(pick)
+                .is_some_and(|i| self.entries[i].key == selected_key)
+        }) {
+            self.select(pick, cx);
         }
         cx.notify();
     }
 
     fn remove(&mut self, index: usize, cx: &mut Context<Self>) {
-        self.entries.remove(index);
-        self.refilter(cx);
+        let entry = self.entries.remove(index);
+        self.local.hidden.push(entry.key.to_string());
+        self.local.save();
+        self.rebuild(cx);
+        cx.notify();
     }
 
     fn set_filter(&mut self, filter: Filter, cx: &mut Context<Self>) {
-        self.filter = filter;
+        // Un segundo clic en el filtro activo lo apaga.
+        self.filter = if self.filter == filter {
+            Filter::All
+        } else {
+            filter
+        };
         self.refilter(cx);
     }
 
     fn icon_button(
         &self,
-        button: IconButton,
+        id: &'static str,
+        icon: &'static str,
+        active: bool,
         on_click: impl Fn(&mut Self, &mut Context<Self>) + 'static,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let IconButton {
-            id,
-            icon,
-            size: (box_size, icon_size),
-            active,
-            idle_color,
-        } = button;
-        let text = self.colors.text;
+        let colors = &self.colors;
+        let (text, faint) = (colors.text, colors.faint);
         div()
             .id(id)
-            .size(px(box_size))
+            .size(px(26.))
             .flex()
             .flex_none()
             .items_center()
             .justify_center()
-            .rounded(px(box_size / 2.0))
+            .rounded(px(13.))
             .when(active, |el| el.bg(text.opacity(0.14)))
             .hover(|el| el.bg(text.opacity(0.08)))
             .on_click(cx.listener(move |panel, _: &ClickEvent, _, cx| on_click(panel, cx)))
-            .child(svg().path(icon).size(px(icon_size)).text_color(if active {
-                text
-            } else {
-                idle_color
+            .child(
+                svg()
+                    .path(icon)
+                    .size(px(13.))
+                    .text_color(if active { text } else { faint }),
+            )
+    }
+
+    /// Mouse sobre una entrada: apretar arma el arrastre, soltar sin moverse
+    /// pega.
+    fn pressable<E: InteractiveElement + StatefulInteractiveElement>(
+        &self,
+        element: E,
+        index: usize,
+        cx: &mut Context<Self>,
+    ) -> E {
+        element
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |panel, event: &MouseDownEvent, _, _| {
+                    panel.press = Some((index, event.position));
+                    panel.dragged = false;
+                }),
+            )
+            .on_mouse_move(cx.listener(|panel, event: &MouseMoveEvent, _, cx| {
+                panel.maybe_start_drag(event, cx)
+            }))
+            .on_click(cx.listener(move |panel, _: &ClickEvent, _, cx| {
+                panel.press = None;
+                if !panel.dragged {
+                    panel.paste(index, cx)
+                }
             }))
     }
 
-    fn render_row(&self, visible_index: usize, cx: &mut Context<Self>) -> impl IntoElement {
-        let index = self.visible[visible_index];
-        let entry = &self.entries[index];
+    fn render_band(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .h(px(BAND_H))
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap(px(2.))
+            .pr(px(SIDE_PAD))
+            .when(self.mark_gap, |el| {
+                // El hueco de la marca también cierra, como clic en la marca.
+                el.child(
+                    div()
+                        .id("clip-mark")
+                        .w(px(MARK_GAP))
+                        .h_full()
+                        .flex_none()
+                        .cursor_pointer()
+                        .on_click(cx.listener(|_, _: &ClickEvent, _, cx| {
+                            cx.emit(PanelEvent::Close)
+                        })),
+                )
+            })
+            .when(!self.mark_gap, |el| {
+                el.pl(px(14.)).child(
+                    svg()
+                        .path("icons/search.svg")
+                        .size(px(13.))
+                        .flex_none()
+                        .mr(px(6.))
+                        .text_color(self.colors.faint),
+                )
+            })
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .text_size(px(12.))
+                    .line_height(px(16.))
+                    .child(self.search.clone()),
+            )
+            .child(self.icon_button(
+                "clip-text",
+                "icons/type.svg",
+                self.filter == Filter::Text,
+                |panel, cx| panel.set_filter(Filter::Text, cx),
+                cx,
+            ))
+            .child(self.icon_button(
+                "clip-images",
+                "icons/image.svg",
+                self.filter == Filter::Images,
+                |panel, cx| panel.set_filter(Filter::Images, cx),
+                cx,
+            ))
+            .child(self.icon_button(
+                "clip-favorites",
+                "icons/star.svg",
+                self.favorites_only,
+                |panel, cx| {
+                    panel.favorites_only = !panel.favorites_only;
+                    panel.refilter(cx);
+                },
+                cx,
+            ))
+            .child(self.icon_button(
+                "clip-pin",
+                "icons/pin.svg",
+                self.pinned,
+                |panel, cx| {
+                    panel.pinned = !panel.pinned;
+                    cx.notify();
+                },
+                cx,
+            ))
+    }
+
+    fn render_strip(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
+        if self.strip.is_empty() {
+            return None;
+        }
         let colors = &self.colors;
-        let selected = visible_index == self.selected;
-        let group = SharedString::from(format!("clip-row-{}", entry.id));
-
-        let (thumb, kind) = match &entry.content {
-            Content::Text(_) => (
-                div()
-                    .size(px(22.))
-                    .rounded(px(6.))
-                    .bg(colors.text.opacity(0.07))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(
-                        svg()
-                            .path("icons/type.svg")
-                            .size(px(13.))
-                            .text_color(colors.muted),
-                    )
-                    .into_any_element(),
-                "texto",
-            ),
-            Content::Color(_, color) => (
-                div()
-                    .size(px(22.))
-                    .rounded(px(6.))
-                    .bg(*color)
-                    .border_1()
-                    .border_color(colors.text.opacity(0.12))
-                    .into_any_element(),
-                "color",
-            ),
-            Content::Image(image) => (
-                img(image.clone())
-                    .w(px(44.))
-                    .h(px(34.))
-                    .rounded(px(6.))
-                    .object_fit(gpui::ObjectFit::Cover)
-                    .into_any_element(),
-                "imagen",
-            ),
-        };
-
-        let pinned = entry.pinned;
-        let text = colors.text;
-        let faint = colors.faint;
-        div().h(px(ROW_H + ROW_GAP)).pb(px(ROW_GAP)).child(
+        let (text, faint) = (colors.text, colors.faint);
+        let selected = self.picks.get(self.selected).copied();
+        let tiles = self
+            .strip
+            .iter()
+            .enumerate()
+            .map(|(slot, &index)| {
+                let entry = &self.entries[index];
+                let is_selected = selected == Some(Pick::Strip(slot));
+                let tile = div()
+                    .id(("clip-tile", entry.id))
+                    .h(px(STRIP_H))
+                    .flex_none()
+                    .rounded(px(8.))
+                    .overflow_hidden()
+                    .cursor_pointer()
+                    .border_2()
+                    .border_color(if is_selected {
+                        text.opacity(0.9)
+                    } else {
+                        text.opacity(0.0)
+                    })
+                    .hover(|el| el.border_color(text.opacity(0.35)))
+                    // Pasar el cursor la elige: la vista previa la sigue.
+                    .on_hover(cx.listener(move |panel, hovered: &bool, _, cx| {
+                        if *hovered {
+                            panel.hover_pick(Pick::Strip(slot), cx);
+                        }
+                    }));
+                let tile = match &entry.content {
+                    Content::Image(picture) => tile.w(px(THUMB_W)).bg(text.opacity(0.06)).child(
+                        picture
+                            .view()
+                            .size_full()
+                            .object_fit(gpui::ObjectFit::Cover)
+                            // Un PNG grande tarda en decodificarse; uno borrado
+                            // no llega nunca.
+                            .with_loading(move || div().size_full().into_any_element())
+                            .with_fallback(move || {
+                                div()
+                                    .size_full()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(
+                                        svg().path("icons/image.svg").size(px(14.)).text_color(faint),
+                                    )
+                                    .into_any_element()
+                            }),
+                    ),
+                    Content::Color(_, color) => tile.w(px(SWATCH_W)).bg(*color),
+                    Content::Text(_) => tile,
+                };
+                self.pressable(tile, index, cx).into_any_element()
+            })
+            .collect::<Vec<_>>();
+        // La rueda del mouse avanza la tira de lado: GPUI la pasa al eje x
+        // cuando solo ese tiene scroll.
+        Some(
             div()
-                .id(("clip-row", entry.id))
-                .group(group.clone())
-                .h(px(ROW_H))
+                .id("clip-strip")
+                .flex_none()
                 .flex()
-                .items_center()
-                .gap(px(6.4))
-                .px(px(6.4))
-                .py(px(3.2))
-                .rounded(px(12.))
-                .when(selected, |el| el.bg(text.opacity(0.08)))
-                .hover(|el| el.bg(text.opacity(0.08)))
-                .cursor_pointer()
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(move |panel, event: &MouseDownEvent, _, _| {
-                        panel.press = Some((index, event.position));
-                        panel.dragged = false;
-                    }),
-                )
-                .on_mouse_move(cx.listener(|panel, event: &MouseMoveEvent, _, cx| {
-                    panel.maybe_start_drag(event, cx)
-                }))
-                .on_click(cx.listener(move |panel, _: &ClickEvent, _, cx| {
-                    panel.press = None;
-                    if !panel.dragged {
-                        panel.paste(visible_index, cx)
-                    }
-                }))
-                .child(
-                    div()
-                        .w(px(44.))
-                        .flex()
-                        .flex_none()
-                        .justify_center()
-                        .child(thumb),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .flex_1()
-                        .min_w_0()
-                        .gap(px(1.))
-                        .child(
-                            div()
-                                .text_size(px(11.))
-                                .font_weight(FontWeight::MEDIUM)
-                                .truncate()
-                                .child(entry.preview.clone()),
-                        )
-                        .child(
-                            div()
-                                .text_size(px(9.))
-                                .text_color(colors.muted)
-                                .truncate()
-                                .child(format!("{kind} · {}", entry.when)),
-                        ),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .flex_none()
-                        .child(
-                            div()
-                                .id(("clip-star", entry.id))
-                                .size(px(20.))
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .rounded(px(10.))
-                                .when(!pinned, |el| {
-                                    el.invisible().group_hover(group.clone(), |el| el.visible())
-                                })
-                                .hover(|el| el.bg(text.opacity(0.08)))
-                                .on_click(cx.listener(move |panel, _: &ClickEvent, _, cx| {
-                                    cx.stop_propagation();
-                                    panel.toggle_favorite(index, cx)
-                                }))
-                                .child(
-                                    svg()
-                                        .path("icons/star.svg")
-                                        .size(px(12.))
-                                        .text_color(if pinned { text } else { faint }),
-                                ),
-                        )
-                        .child(
-                            div()
-                                .id(("clip-remove", entry.id))
-                                .size(px(20.))
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .rounded(px(10.))
-                                .invisible()
-                                .group_hover(group, |el| el.visible())
-                                .hover(|el| el.bg(text.opacity(0.08)))
-                                .on_click(cx.listener(move |panel, _: &ClickEvent, _, cx| {
-                                    cx.stop_propagation();
-                                    panel.remove(index, cx)
-                                }))
-                                .child(svg().path("icons/x.svg").size(px(12.)).text_color(faint)),
-                        ),
-                ),
+                .gap(px(6.))
+                .px(px(SIDE_PAD))
+                .mb(px(STRIP_PAD))
+                .overflow_x_scroll()
+                .track_scroll(&self.strip_scroll)
+                .children(tiles),
         )
     }
 
-    fn empty_message(&self) -> (&'static str, Option<&'static str>) {
-        if self.entries.is_empty() {
-            (
-                "El historial está vacío",
-                Some("Copia algo y aparece aquí."),
+    fn render_row(&self, row: usize, now: chrono::DateTime<chrono::Local>, cx: &mut Context<Self>) -> AnyElement {
+        let colors = &self.colors;
+        let (text, muted, faint) = (colors.text, colors.muted, colors.faint);
+        let (index, quick) = match self.rows[row] {
+            Row::Header(label) => {
+                return div()
+                    .w_full()
+                    .h(px(HEADER_H))
+                    .px(px(SIDE_PAD + 8.))
+                    .flex()
+                    .items_end()
+                    .pb(px(3.))
+                    .text_size(px(10.))
+                    .text_color(faint)
+                    .child(label)
+                    .into_any_element()
+            }
+            Row::Item(index, quick) => (index, quick),
+        };
+        let entry = &self.entries[index];
+        let selected = self.picks.get(self.selected) == Some(&Pick::Row(row));
+        let secret = entry.secret;
+        let group = SharedString::from(format!("clip-row-{}", entry.id));
+        let pinned = entry.pinned;
+        let looks_like_code = entry.looks_like_code();
+
+        let actions = div()
+            .absolute()
+            .right(px(0.))
+            .top(px(0.))
+            .h_full()
+            .flex()
+            .items_center()
+            .invisible()
+            .group_hover(group.clone(), |el| el.visible())
+            .child(
+                div()
+                    .id(("clip-star", entry.id))
+                    .size(px(22.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(11.))
+                    .hover(|el| el.bg(text.opacity(0.1)))
+                    .on_click(cx.listener(move |panel, _: &ClickEvent, _, cx| {
+                        cx.stop_propagation();
+                        panel.toggle_favorite(index, cx)
+                    }))
+                    .child(
+                        svg()
+                            .path("icons/star.svg")
+                            .size(px(12.))
+                            .text_color(if pinned { text } else { muted }),
+                    ),
             )
+            .child(
+                div()
+                    .id(("clip-remove", entry.id))
+                    .size(px(22.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(11.))
+                    .hover(|el| el.bg(text.opacity(0.1)))
+                    .on_click(cx.listener(move |panel, _: &ClickEvent, _, cx| {
+                        cx.stop_propagation();
+                        panel.remove(index, cx)
+                    }))
+                    .child(svg().path("icons/x.svg").size(px(12.)).text_color(muted)),
+            );
+
+        let row_el = div()
+            .id(("clip-row", entry.id))
+            .group(group.clone())
+            .w_full()
+            .h(px(ROW_H))
+            .px(px(8.))
+            .flex()
+            .items_center()
+            .on_hover(cx.listener(move |panel, hovered: &bool, _, cx| {
+                if *hovered {
+                    panel.hover_pick(Pick::Row(row), cx);
+                }
+            }))
+            .gap(px(8.))
+            .rounded(px(10.))
+            .when(selected, |el| el.bg(text.opacity(0.08)))
+            .hover(|el| el.bg(text.opacity(0.06)))
+            .cursor_pointer()
+            .child(
+                div()
+                    .w(px(10.))
+                    .flex_none()
+                    .text_size(px(10.))
+                    .text_color(faint)
+                    .children(quick.map(|n| n.to_string())),
+            )
+            // De dónde vino: el ícono de la app, o el de texto si Atic no lo
+            // registró (entradas anteriores a `sourceApp`).
+            .child(match entry.source_icon.clone() {
+                Some(icon) => img(icon).size(px(14.)).flex_none().into_any_element(),
+                None => svg()
+                    .path("icons/type.svg")
+                    .size(px(12.))
+                    .mx(px(1.))
+                    .flex_none()
+                    .text_color(faint)
+                    .into_any_element(),
+            })
+            .when(secret, |el| {
+                el.child(
+                    svg()
+                        .path("icons/lock.svg")
+                        .size(px(11.))
+                        .flex_none()
+                        .text_color(muted),
+                )
+            })
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .text_size(px(12.))
+                    .when(looks_like_code, |el| {
+                        el.font_family("Cascadia Mono").text_size(px(11.))
+                    })
+                    .truncate()
+                    .child(entry.preview.clone()),
+            )
+            .child(
+                div()
+                    .relative()
+                    .w(px(48.))
+                    .h_full()
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_end()
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(4.))
+                            .text_size(px(10.))
+                            .text_color(faint)
+                            .group_hover(group, |el| el.invisible())
+                            .when(pinned, |el| {
+                                el.child(svg().path("icons/star.svg").size(px(10.)).text_color(muted))
+                            })
+                            .child(history::short_when(entry.created_ms, now)),
+                    )
+                    .child(actions),
+            );
+        // `list` mide cada fila por su contenido: sin `w_full` la fila queda
+        // del ancho de su texto y la hora flota al medio.
+        div()
+            .w_full()
+            .px(px(SIDE_PAD))
+            .child(self.pressable(row_el, index, cx))
+            .into_any_element()
+    }
+
+    fn empty_message(&self) -> &'static str {
+        if self.entries.is_empty() {
+            "El historial está vacío. Copia algo y aparece aquí."
         } else if self.favorites_only && !self.entries.iter().any(|entry| entry.pinned) {
-            ("No hay favoritos. Márcalos con la estrella.", None)
+            "No hay favoritos. Márcalos con la estrella o Ctrl+D."
         } else {
-            ("Nada coincide", None)
+            "Nada coincide"
         }
     }
 }
@@ -445,175 +1074,49 @@ impl ClipboardPanel {
 impl Render for ClipboardPanel {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = &self.colors;
-        let (text, muted, header_icon) = (colors.text, colors.muted, colors.header_icon);
+        let (text, faint) = (colors.text, colors.faint);
 
-        let header = div()
-            .h(px(24.))
-            .flex_none()
-            .relative()
-            .flex()
-            .items_center()
-            .justify_center()
-            .child(
-                div()
-                    .w(px(32.))
-                    .h(px(3.))
-                    .rounded(px(2.))
-                    .bg(text.opacity(0.24)),
-            )
-            .child(
-                div()
-                    .absolute()
-                    .right(px(0.))
-                    .top(px(-2.))
-                    .flex()
-                    .child(self.icon_button(
-                        IconButton {
-                            id: "clip-pin",
-                            icon: "icons/pin.svg",
-                            size: (28., 13.),
-                            active: self.pinned,
-                            idle_color: header_icon,
-                        },
-                        |panel, cx| {
-                            panel.pinned = !panel.pinned;
-                            cx.notify();
-                        },
-                        cx,
-                    ))
-                    .child(self.icon_button(
-                        IconButton {
-                            id: "clip-close",
-                            icon: "icons/x.svg",
-                            size: (28., 14.),
-                            active: false,
-                            idle_color: header_icon,
-                        },
-                        |_, cx| cx.emit(PanelEvent::Close),
-                        cx,
-                    )),
-            );
-
-        let toolbar = div()
-            .flex()
-            .flex_none()
-            .items_center()
-            .gap(px(4.))
-            .mt(px(4.))
-            .mb(px(6.))
-            .child(
-                div()
-                    .h(px(25.6))
-                    .flex_1()
-                    .min_w_0()
-                    .flex()
-                    .items_center()
-                    .gap(px(5.))
-                    .pl(px(6.4))
-                    .pr(px(10.))
-                    .rounded_full()
-                    .bg(text.opacity(0.07))
-                    .child(
-                        svg()
-                            .path("icons/search.svg")
-                            .size(px(12.))
-                            .flex_none()
-                            .text_color(muted),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .text_size(px(10.))
-                            .line_height(px(14.))
-                            .font_weight(FontWeight::MEDIUM)
-                            .child(self.search.clone()),
-                    ),
-            )
-            .child(self.icon_button(
-                IconButton {
-                    id: "clip-all",
-                    icon: "icons/layers.svg",
-                    size: (25.6, 12.),
-                    active: self.filter == Filter::All,
-                    idle_color: muted,
-                },
-                |panel, cx| panel.set_filter(Filter::All, cx),
-                cx,
-            ))
-            .child(self.icon_button(
-                IconButton {
-                    id: "clip-text",
-                    icon: "icons/type.svg",
-                    size: (25.6, 12.),
-                    active: self.filter == Filter::Text,
-                    idle_color: muted,
-                },
-                |panel, cx| panel.set_filter(Filter::Text, cx),
-                cx,
-            ))
-            .child(self.icon_button(
-                IconButton {
-                    id: "clip-images",
-                    icon: "icons/image.svg",
-                    size: (25.6, 12.),
-                    active: self.filter == Filter::Images,
-                    idle_color: muted,
-                },
-                |panel, cx| panel.set_filter(Filter::Images, cx),
-                cx,
-            ))
-            .child(self.icon_button(
-                IconButton {
-                    id: "clip-favorites",
-                    icon: "icons/star.svg",
-                    size: (25.6, 12.),
-                    active: self.favorites_only,
-                    idle_color: muted,
-                },
-                |panel, cx| {
-                    panel.favorites_only = !panel.favorites_only;
-                    panel.refilter(cx);
-                },
-                cx,
-            ));
-
-        let body = if self.visible.is_empty() {
-            let (title, hint) = self.empty_message();
+        let body = if self.picks.is_empty() {
             div()
-                .flex_1()
+                .h(px(EMPTY_H))
                 .flex()
-                .flex_col()
                 .items_center()
                 .justify_center()
-                .gap(px(4.))
                 .text_size(px(11.))
-                .text_color(muted)
-                .child(title)
-                .when_some(hint, |el, hint| {
+                .text_color(colors.muted)
+                .child(self.empty_message())
+                .into_any_element()
+        } else {
+            div()
+                .flex_1()
+                .min_h_0()
+                .flex()
+                .flex_col()
+                .children(self.render_strip(cx))
+                .when(!self.rows.is_empty(), |el| {
                     el.child(
-                        div()
-                            .text_size(px(10.))
-                            .text_color(colors.faint)
-                            .child(hint),
+                        list(
+                            self.list.clone(),
+                            cx.processor(|panel, row: usize, _, cx| {
+                                panel.render_row(row, chrono::Local::now(), cx)
+                            }),
+                        )
+                        .w_full()
+                        .flex_1(),
                     )
                 })
                 .into_any_element()
-        } else {
-            uniform_list(
-                "clipboard-items",
-                self.visible.len(),
-                cx.processor(|panel, range: std::ops::Range<usize>, _, cx| {
-                    range
-                        .map(|index| panel.render_row(index, cx))
-                        .collect::<Vec<_>>()
-                }),
-            )
-            .track_scroll(self.scroll.clone())
-            .flex_1()
-            .pb(px(8.))
-            .into_any_element()
         };
+
+        let footer = div()
+            .h(px(FOOTER_H))
+            .flex_none()
+            .flex()
+            .items_center()
+            .px(px(SIDE_PAD + 8.))
+            .text_size(px(10.))
+            .text_color(faint)
+            .child("↵ pegar · Ctrl+1–9 directo · Ctrl+D favorito · Mayús+Supr quitar · arrastra a otra app");
 
         div()
             .key_context(KEY_CONTEXT)
@@ -621,22 +1124,31 @@ impl Render for ClipboardPanel {
             .on_action(cx.listener(Self::select_next))
             .on_action(cx.listener(Self::confirm))
             .on_action(cx.listener(Self::dismiss))
+            .on_action(cx.listener(Self::toggle_selected))
+            .on_action(cx.listener(Self::remove_selected))
+            .on_action(cx.listener(|panel, _: &Quick1, _, cx| panel.quick(1, cx)))
+            .on_action(cx.listener(|panel, _: &Quick2, _, cx| panel.quick(2, cx)))
+            .on_action(cx.listener(|panel, _: &Quick3, _, cx| panel.quick(3, cx)))
+            .on_action(cx.listener(|panel, _: &Quick4, _, cx| panel.quick(4, cx)))
+            .on_action(cx.listener(|panel, _: &Quick5, _, cx| panel.quick(5, cx)))
+            .on_action(cx.listener(|panel, _: &Quick6, _, cx| panel.quick(6, cx)))
+            .on_action(cx.listener(|panel, _: &Quick7, _, cx| panel.quick(7, cx)))
+            .on_action(cx.listener(|panel, _: &Quick8, _, cx| panel.quick(8, cx)))
+            .on_action(cx.listener(|panel, _: &Quick9, _, cx| panel.quick(9, cx)))
             .size_full()
             .flex()
             .flex_col()
-            .pt(px(7.2))
-            .px(px(8.))
-            .pb(px(8.8))
+            .pb(px(SIDE_PAD))
             .font_family("Segoe UI")
             .text_color(text)
-            .child(header)
-            .child(toolbar)
+            .child(self.render_band(cx))
             .child(body)
+            .child(footer)
     }
 }
 
 /// Minúsculas y sin tildes, como `clipboardSearch.ts`.
-fn fold(text: &str) -> String {
+pub fn fold(text: &str) -> String {
     text.to_lowercase()
         .chars()
         .map(|ch| match ch {
@@ -651,11 +1163,7 @@ fn fold(text: &str) -> String {
         .collect()
 }
 
-fn mock_image(bytes: &'static [u8]) -> Arc<Image> {
-    Arc::new(Image::from_bytes(ImageFormat::Png, bytes.to_vec()))
-}
-
-/// 100 entradas (el máximo de Atic) para probar el scroll virtualizado.
+/// 100 entradas (el máximo de Atic) para probar sin el historial real.
 fn mock_entries() -> Vec<Entry> {
     let texts = [
         "Reunión con el equipo de plataforma el jueves a las 10:30",
@@ -675,61 +1183,41 @@ fn mock_entries() -> Vec<Entry> {
         "{ \"tema\": \"atic\", \"modo\": \"oscuro\", \"rueda\": 9 }",
         "Número de seguimiento: 7AB3-55Q2-910Z",
     ];
-    let colors: [(&str, u32); 5] = [
-        ("#e85a52", 0xe85a52),
-        ("#6faf88", 0x6faf88),
-        ("rgb(212, 168, 75)", 0xd4a84b),
-        ("#8fa9b8", 0x8fa9b8),
-        ("#1a1a18", 0x1a1a18),
-    ];
+    let colors = ["#e85a52", "#6faf88", "rgb(212, 168, 75)", "#8fa9b8", "#1a1a18"];
     let images = [
         (
             "Captura · gráfico de ventas",
-            include_bytes!("../assets/mock/grafico.png").as_slice(),
+            history::embedded(include_bytes!("../assets/mock/grafico.png")),
         ),
         (
             "Captura · ventana de la app",
-            include_bytes!("../assets/mock/ventana.png").as_slice(),
+            history::embedded(include_bytes!("../assets/mock/ventana.png")),
         ),
         (
             "atardecer.png",
-            include_bytes!("../assets/mock/atardecer.png").as_slice(),
+            history::embedded(include_bytes!("../assets/mock/atardecer.png")),
         ),
         (
             "Ícono de Atic",
-            include_bytes!("../assets/mock/icono.png").as_slice(),
+            history::embedded(include_bytes!("../assets/mock/icono.png")),
         ),
     ];
-    let images: Vec<(&str, Arc<Image>)> = images
-        .into_iter()
-        .map(|(name, bytes)| (name, mock_image(bytes)))
-        .collect();
 
-    let days = ["lun", "mar", "mié", "jue", "vie", "sáb", "dom"];
-    let months = ["ago", "sep"];
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or_default();
     (0..100)
         .map(|id| {
-            let when: SharedString = match id {
-                0..=11 => format!("{:02}:{:02}", 16 - id / 4, 59 - (id * 7) % 60),
-                12..=24 => format!("ayer · {:02}:{:02}", 20 - (id - 12) / 2, (id * 13) % 60),
-                25..=59 => format!("{} · {:02}:{:02}", days[id % 7], 9 + id % 9, (id * 11) % 60),
-                _ => format!(
-                    "{} {} {:02}:{:02}",
-                    1 + id % 28,
-                    months[id % 2],
-                    8 + id % 10,
-                    (id * 17) % 60
-                ),
-            }
-            .into();
             let (content, preview): (Content, SharedString) = match id % 9 {
                 4 => {
-                    let (label, hex) = colors[id % colors.len()];
-                    (Content::Color(label.into(), rgb(hex).into()), label.into())
+                    let label = colors[id % colors.len()];
+                    let color = history::parse_color(label).unwrap_or_default();
+                    (Content::Color(label.into(), color), label.into())
                 }
                 7 => {
-                    let (name, image) = &images[id % images.len()];
-                    (Content::Image(image.clone()), (*name).into())
+                    let (name, picture) = &images[id % images.len()];
+                    (Content::Image(picture.clone()), (*name).into())
                 }
                 _ => {
                     let text: SharedString = texts[id % texts.len()].into();
@@ -737,11 +1225,10 @@ fn mock_entries() -> Vec<Entry> {
                 }
             };
             Entry {
-                id,
-                content,
-                preview,
-                when,
+                // Cada entrada, unos 37 minutos antes que la anterior.
+                created_ms: now_ms.saturating_sub(id as u64 * 37 * 60_000),
                 pinned: id % 13 == 2,
+                ..Entry::new(id, format!("mock-{id}").into(), content, &preview)
             }
         })
         .collect()

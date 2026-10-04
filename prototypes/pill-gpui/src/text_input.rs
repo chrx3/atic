@@ -67,6 +67,10 @@ pub struct TextInput {
     last_layout: Option<ShapedLine>,
     last_bounds: Option<Bounds<Pixels>>,
     is_selecting: bool,
+    /// ←→ y Backspace con el campo vacío siguen hacia el panel (las acciones
+    /// `Left`, `Right` y `Backspace` le llegan a él): en una grilla, las
+    /// flechas mueven la selección y no el cursor.
+    pub pass_edges: bool,
 }
 
 impl EventEmitter<Changed> for TextInput {}
@@ -92,6 +96,7 @@ impl TextInput {
             last_layout: None,
             last_bounds: None,
             is_selecting: false,
+            pass_edges: false,
         }
     }
 
@@ -108,7 +113,26 @@ impl TextInput {
         cx.notify();
     }
 
+    pub fn set_placeholder(&mut self, text: impl Into<SharedString>, cx: &mut Context<Self>) {
+        self.placeholder = text.into();
+        cx.notify();
+    }
+
+    /// Reemplaza el texto sin avisar `Changed`: quien lo cambia desde el
+    /// código ya sabe lo que puso.
+    pub fn set_text(&mut self, text: impl Into<SharedString>, cx: &mut Context<Self>) {
+        self.content = text.into();
+        let end = self.content.len();
+        self.selected_range = end..end;
+        self.selection_reversed = false;
+        self.marked_range = None;
+        cx.notify();
+    }
+
     fn left(&mut self, _: &Left, _: &mut Window, cx: &mut Context<Self>) {
+        if self.pass_edges {
+            return cx.propagate();
+        }
         if self.selected_range.is_empty() {
             self.move_to(self.previous_boundary(self.cursor_offset()), cx);
         } else {
@@ -117,6 +141,9 @@ impl TextInput {
     }
 
     fn right(&mut self, _: &Right, _: &mut Window, cx: &mut Context<Self>) {
+        if self.pass_edges {
+            return cx.propagate();
+        }
         if self.selected_range.is_empty() {
             self.move_to(self.next_boundary(self.selected_range.end), cx);
         } else {
@@ -146,6 +173,9 @@ impl TextInput {
     }
 
     fn backspace(&mut self, _: &Backspace, window: &mut Window, cx: &mut Context<Self>) {
+        if self.pass_edges && self.content.is_empty() {
+            return cx.propagate();
+        }
         if self.selected_range.is_empty() {
             self.select_to(self.previous_boundary(self.cursor_offset()), cx)
         }

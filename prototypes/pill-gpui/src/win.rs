@@ -11,8 +11,8 @@ use windows::Win32::Graphics::Dwm::{
 use windows::Win32::Graphics::Gdi::ClientToScreen;
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON, VK_MENU};
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetCursorPos, GetSystemMetrics, GetWindowLongPtrW, SetForegroundWindow, SetWindowLongPtrW,
-    SetWindowPos, SystemParametersInfoW, GWL_EXSTYLE, HWND_TOPMOST, SM_CXSCREEN, SM_CYSCREEN,
+    GetCursorPos, GetSystemMetrics, GetWindowLongPtrW, SetForegroundWindow,
+    SetWindowDisplayAffinity, SetWindowLongPtrW, SetWindowPos, WDA_EXCLUDEFROMCAPTURE, WDA_NONE, SystemParametersInfoW, GWL_EXSTYLE, HWND_TOPMOST, SM_CXSCREEN, SM_CYSCREEN,
     SPI_GETWORKAREA, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
     WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
 };
@@ -90,6 +90,29 @@ impl Overlay {
                 let _ = SetForegroundWindow(self.hwnd);
             }
         }
+    }
+
+    /// Invisible para las capturas de pantalla mientras se congela, para que
+    /// el notch no salga en la foto. Solo ese rato: si no, tampoco saldría en
+    /// las grabaciones ni al compartir pantalla.
+    pub fn exclude_from_capture(&self, exclude: bool) {
+        let affinity = if exclude {
+            WDA_EXCLUDEFROMCAPTURE
+        } else {
+            WDA_NONE
+        };
+        unsafe {
+            let _ = SetWindowDisplayAffinity(self.hwnd, affinity);
+        }
+    }
+
+    pub fn hwnd(&self) -> HWND {
+        self.hwnd
+    }
+
+    /// Esquina del área cliente en pantalla, en píxeles físicos.
+    pub fn origin(&self) -> Option<(i32, i32)> {
+        self.client_origin().map(|p| (p.x, p.y))
     }
 
     /// Esquina del área cliente en pantalla: es el origen de las coordenadas

@@ -88,6 +88,12 @@ impl Tween {
         self.start = now;
     }
 
+    /// Salta al valor sin animar.
+    pub fn snap(&mut self, value: f32) {
+        self.from = value;
+        self.to = value;
+    }
+
     pub fn is_running(&self, now: Instant) -> bool {
         now.saturating_duration_since(self.start) < self.duration
     }

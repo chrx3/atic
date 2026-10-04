@@ -13,24 +13,95 @@ gpui = "0.2.2"
 anyhow = "1"
 raw-window-handle = "0.6"
 unicode-segmentation = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+# La misma que ya trae gpui: para armar el ícono de la app de origen.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+# Mismas versiones que `apps/desktop/src-tauri`, de donde viene `flip_export.rs`.
+zip = { version = "4.6.1", default-features = false, features = ["deflate"] }
+base64 = "0.22"
+# El motor de capturas de Atic: monitores, congelar, ventanas, recortar y PNG.
+atic-capture = { path = "../../crates/capture" }
+# El dictado de Atic sin Tauri: configuración y llavero, micrófono (con
+# RNNoise) y transcripción por Groq. Sin el Whisper local (feature `local`).
+atic-core = { path = "../../crates/core" }
+atic-audio = { path = "../../crates/audio" }
+atic-transcribe = { path = "../../crates/transcribe" }
+# La misma que trae `atic-transcribe`: la llamada a Groq con `prompt`.
+reqwest = { version = "0.12", features = ["blocking", "multipart", "json"] }
+# Ya viene con los crates de Atic: los avisos de los lectores de uso.
+tracing = "0.1"
+# La misma que trae `atic-core`: los lectores de uso de Cursor y OpenCode (`quota/`).
+rusqlite = { version = "0.32", features = ["bundled"] }
+# Ya vienen con gpui: puntas redondas en pantalla y la composición del PNG.
+lyon = "1.0"
+# El motor de terminal de Alacritty (Apache-2.0): parser VT, grilla, scrollback
+# y ConPTY en Windows. Es lo que usa Zed por dentro.
+alacritty_terminal = "0.26"
+# Ya viene con gpui: el canal de avisos del PTY.
+futures = "0.3"
+# El Vector2 de Windows.UI.Composition (ya viene con `windows`).
+windows-numerics = "0.2"
+tiny-skia = "0.11"
 
 [target.'cfg(windows)'.dependencies]
 # Mismas versiones que `apps/desktop/src-tauri`, de donde viene `drag.rs`.
 windows-core = "0.61"
+# Ya viene con `windows`: esperar las operaciones de WinRT con límite de tiempo.
+windows-future = "0.2"
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_System_Com",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_Storage_FileSystem",
     "Win32_System_Threading",
+    # `quota/`: el PATH del registro y la credencial de Antigravity.
+    "Win32_System_Registry",
+    "Win32_Security",
+    "Win32_Security_Credentials",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }
 windows = { version = "0.61", features = [
+    "Win32_Devices_FunctionDiscovery",
+    "Win32_System_Registry",
+    "Media_Control",
+    "Win32_System_Threading",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_SystemInformation",
+    "Win32_System_ProcessStatus",
+    "Win32_Devices_Display",
+    "Win32_System_Rpc",
+    "Win32_System_Variant",
+    "Win32_System_Wmi",
+    "Win32_Media_Audio_Endpoints",
+    "Win32_Media_Audio",
+    "Foundation",
+    "System",
+    "UI_Composition",
+    "UI_Composition_Desktop",
+    "Win32_System_WinRT_Composition",
+    "Graphics_Imaging",
+    "Media_Ocr",
+    "Storage_Streams",
+    "Win32_System_WinRT",
     "Win32_Foundation",
     "Win32_Globalization",
     "Win32_Graphics_Dwm",
     "Win32_Graphics_Gdi",
     "Win32_System_Com",
     "Win32_System_Com_StructuredStorage",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Power",
+    "Win32_System_Shutdown",
+    "Win32_Storage_EnhancedStorage",
+    "Win32_UI_Shell",
+    "Win32_UI_Shell_PropertiesSystem",
+    "Win32_System_DataExchange",
     "Win32_System_Memory",
     "Win32_System_Ole",
     "Win32_System_SystemServices",

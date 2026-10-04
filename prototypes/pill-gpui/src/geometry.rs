@@ -1,15 +1,11 @@
-//! Geometría del acoplado: bordes, área de trabajo y dónde va cada cosa.
-//! Reglas de `edgeDock.ts` y `floatPlace.ts`; todo en píxeles lógicos de la
+//! Geometría del acoplado: bordes, área de trabajo y dónde va la pill.
+//! Reglas de `edgeDock.ts`; todo en píxeles lógicos de la
 //! ventana del overlay, que cubre el monitor principal.
 
 /// Lo que hay que alejarse del borde para soltar el tab (`DOCK_RELEASE_PX`).
 pub const UNDOCK_DISTANCE: f32 = 64.0;
 /// Distancia al borde a la que la gota se acopla al soltarla (`DOCK_SNAP_PX`).
 pub const DOCK_SNAP: f32 = 28.0;
-/// Separación entre la pill y un panel (`PANEL_RESTING_GAP_PX`).
-pub const PANEL_GAP: f32 = 16.0;
-/// Margen de los paneles con el borde del área de trabajo (`PANEL_MARGIN`).
-pub const PANEL_MARGIN: f32 = 8.0;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Rect {
@@ -47,15 +43,6 @@ impl Rect {
             && y <= self.bottom() + margin
     }
 
-    pub fn inset(&self, by: f32) -> Self {
-        Self::new(
-            self.x + by,
-            self.y + by,
-            self.w - by * 2.0,
-            self.h - by * 2.0,
-        )
-    }
-
     /// Mueve el rectángulo lo mínimo para que quede dentro de `bounds`.
     pub fn clamped_into(&self, bounds: &Rect) -> Self {
         let x = self.x.min(bounds.right() - self.w).max(bounds.x);
@@ -77,16 +64,6 @@ impl Edge {
     /// En los bordes izquierdo y derecho el tab va de pie.
     pub fn is_vertical(self) -> bool {
         matches!(self, Edge::Left | Edge::Right)
-    }
-
-    /// Dirección hacia el interior de la pantalla.
-    pub fn inward(self) -> (f32, f32) {
-        match self {
-            Edge::Top => (0.0, 1.0),
-            Edge::Bottom => (0.0, -1.0),
-            Edge::Left => (1.0, 0.0),
-            Edge::Right => (-1.0, 0.0),
-        }
     }
 
     /// Punto de pantalla a `along` sobre el borde y `depth` hacia adentro.
@@ -201,67 +178,6 @@ pub fn clamp_along(edge: Edge, work: &Rect, along: f32, length: f32) -> f32 {
     )
 }
 
-/// Lado hacia el que se abre un panel junto a la gota flotante: abajo, arriba,
-/// derecha, izquierda, el primero donde quepa; si no cabe en ninguno, el de
-/// más espacio (`placeBesidePill`).
-pub fn panel_side(work: &Rect, pill: &Rect, panel_w: f32, panel_h: f32) -> Edge {
-    let area = work.inset(PANEL_MARGIN);
-    // Cada opción con el espacio libre en su eje y lo que necesita.
-    let options = [
-        (
-            Edge::Top,
-            area.bottom() - pill.bottom() - PANEL_GAP,
-            panel_h,
-        ),
-        (Edge::Bottom, pill.y - area.y - PANEL_GAP, panel_h),
-        (Edge::Left, area.right() - pill.right() - PANEL_GAP, panel_w),
-        (Edge::Right, pill.x - area.x - PANEL_GAP, panel_w),
-    ];
-    // `Edge` nombra la cara del panel que toca la pill: `Top` = panel abajo.
-    options
-        .iter()
-        .find(|(_, room, need)| room >= need)
-        .or_else(|| {
-            options
-                .iter()
-                .max_by(|a, b| (a.1 - a.2).total_cmp(&(b.1 - b.2)))
-        })
-        .map(|(face, _, _)| *face)
-        .unwrap_or(Edge::Top)
-}
-
-/// Rectángulo final de un panel cuya cara `face` mira a la pill, pegado a
-/// `attach` a `gap` de distancia y metido en el área de trabajo.
-pub fn panel_rect(
-    work: &Rect,
-    face: Edge,
-    attach: (f32, f32),
-    gap: f32,
-    panel_w: f32,
-    panel_h: f32,
-) -> Rect {
-    let (nx, ny) = face.inward();
-    let near = (attach.0 + nx * gap, attach.1 + ny * gap);
-    let rect = match face {
-        Edge::Top => Rect::new(near.0 - panel_w / 2.0, near.1, panel_w, panel_h),
-        Edge::Bottom => Rect::new(near.0 - panel_w / 2.0, near.1 - panel_h, panel_w, panel_h),
-        Edge::Left => Rect::new(near.0, near.1 - panel_h / 2.0, panel_w, panel_h),
-        Edge::Right => Rect::new(near.0 - panel_w, near.1 - panel_h / 2.0, panel_w, panel_h),
-    };
-    rect.clamped_into(&work.inset(PANEL_MARGIN))
-}
-
-/// Punto medio de la cara `face` de un rectángulo.
-pub fn face_midpoint(rect: &Rect, face: Edge) -> (f32, f32) {
-    let (cx, cy) = rect.center();
-    match face {
-        Edge::Top => (cx, rect.y),
-        Edge::Bottom => (cx, rect.bottom()),
-        Edge::Left => (rect.x, cy),
-        Edge::Right => (rect.right(), cy),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -324,20 +240,5 @@ mod tests {
         assert_eq!(dock_along(Edge::Left, &WORK, (20.0, 400.0), 124.0), 400.0);
         // Pegado a la esquina, el tab no se sale del tramo.
         assert_eq!(dock_along(Edge::Right, &WORK, (1900.0, 10.0), 124.0), 62.0);
-    }
-
-    #[test]
-    fn el_panel_prefiere_abrir_abajo_y_si_no_cabe_arriba() {
-        let pill = disc_at(960.0, 300.0);
-        assert_eq!(panel_side(&WORK, &pill, 312.0, 372.0), Edge::Top);
-        let low = disc_at(960.0, 900.0);
-        assert_eq!(panel_side(&WORK, &low, 312.0, 372.0), Edge::Bottom);
-    }
-
-    #[test]
-    fn el_panel_queda_dentro_del_area() {
-        let rect = panel_rect(&WORK, Edge::Top, (10.0, 60.0), PANEL_GAP, 312.0, 372.0);
-        assert_eq!(rect.x, PANEL_MARGIN);
-        assert_eq!(rect.y, 76.0);
     }
 }
