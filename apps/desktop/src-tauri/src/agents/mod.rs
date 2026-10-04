@@ -32,6 +32,7 @@ pub mod codex;
 pub mod codex_usage;
 pub mod console;
 pub mod console_agent;
+pub mod console_questions;
 pub mod cursor_usage;
 pub mod discover;
 pub mod exe;

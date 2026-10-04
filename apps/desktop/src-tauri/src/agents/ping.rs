@@ -34,6 +34,13 @@ pub fn hook_snippet() -> String {
                 "matcher": "permission_prompt|idle_prompt|agent_needs_input",
                 "hooks": [{ "type": "command", "command": command.clone() }]
             }],
+            "PostToolUse": [{
+                "matcher": "AskUserQuestion",
+                "hooks": [{ "type": "command", "command": command.clone() }]
+            }],
+            "UserPromptSubmit": [{
+                "hooks": [{ "type": "command", "command": command.clone() }]
+            }],
             "Stop": [{
                 "hooks": [{ "type": "command", "command": command }]
             }]
@@ -42,25 +49,27 @@ pub fn hook_snippet() -> String {
     .unwrap_or_else(|_| "{}".into())
 }
 
-/// El comando que el CLI corre por cada hook, con el shell de su SO.
-///
-/// Claude Code ejecuta los hooks con el shell del sistema: un `powershell`
-/// en macOS/Linux no existe y el ping nunca llegaba —por eso el chip no
-/// podía decir «permiso»—. Los dos caminos anexan la línea JSON que el CLI
-/// manda por stdin, tal cual; Atic la drena por offset.
-#[cfg(windows)]
-fn hook_command(path: &std::path::Path) -> String {
-    let path_ps = path.to_string_lossy().replace('\\', "\\\\");
-    format!(
-        "powershell -NoProfile -NonInteractive -WindowStyle Hidden -Command \"$t=[Console]::In.ReadToEnd().Trim(); if($t){{ Add-Content -LiteralPath '{path_ps}' -Value $t -Encoding utf8 }}\""
-    )
+/// Los mismos hooks en un archivo, para lanzar `claude --settings <archivo>`
+/// en las consolas de Atic sin tocar el `settings.json` del usuario. Así
+/// Atic se entera de sus preguntas y el celular las puede contestar.
+pub fn console_settings_path() -> Option<PathBuf> {
+    let path = std::env::temp_dir().join("atic-claude-hooks.json");
+    std::fs::write(&path, hook_snippet()).ok()?;
+    Some(path)
 }
 
-#[cfg(not(windows))]
+/// El comando que el CLI corre por cada hook.
+///
+/// Claude Code corre los hooks con `sh`, también en Windows (Git Bash). Un
+/// comando de PowerShell no sobrevivía: bash expandía su `$t` a nada antes de
+/// pasárselo y el ping nunca llegaba. Anexa la línea JSON que el CLI manda por
+/// stdin, tal cual; Atic la drena por offset.
 fn hook_command(path: &std::path::Path) -> String {
+    // Git Bash entiende `C:/…`; las barras invertidas se las comería.
+    let path = path.to_string_lossy().replace('\\', "/");
     // La ruta va entre comillas dobles dentro del `sh -c`; una comilla simple
     // en el camino se escapa cerrando y reabriendo el literal.
-    let path_sh = path.to_string_lossy().replace('\'', r"'\''");
+    let path_sh = path.replace('\'', r"'\''");
     format!("sh -c 'printf \"%s\\n\" \"$(cat)\" >> \"{path_sh}\"'")
 }
 
@@ -102,6 +111,8 @@ pub fn classify_hook(v: &Value) -> Option<HookPing> {
             PresenceStatus::Waiting
         }
         "Stop" => PresenceStatus::Ready,
+        // Contestó la pregunta o mandó otro mensaje: vuelve a trabajar.
+        "PostToolUse" | "UserPromptSubmit" => PresenceStatus::Working,
         _ => return None,
     };
     let preview = v
@@ -175,6 +186,7 @@ pub fn drain() {
         };
         consumed += line.len() as u64 + 1;
         if let Ok(v) = serde_json::from_str::<Value>(&line) {
+            super::console_questions::observe(&v);
             if let Some(ping) = classify_hook(&v) {
                 apply_ping(ping);
             }
@@ -254,19 +266,9 @@ mod tests {
     fn el_comando_del_hook_usa_el_shell_de_su_so() {
         let path = ping_path();
         let command = hook_command(&path);
-        #[cfg(windows)]
-        {
-            assert!(command.contains("powershell"), "{command}");
-            let escapada = path.to_string_lossy().replace('\\', "\\\\");
-            assert!(command.contains(&escapada), "{command}");
-        }
-        #[cfg(not(windows))]
-        {
-            assert!(command.starts_with("sh -c "), "{command}");
-            assert!(
-                command.contains(&path.to_string_lossy().to_string()),
-                "{command}"
-            );
-        }
+        assert!(command.starts_with("sh -c "), "{command}");
+        let ruta = path.to_string_lossy().replace('\\', "/");
+        assert!(command.contains(&ruta), "{command}");
+        assert!(!command.contains("powershell"), "{command}");
     }
 }

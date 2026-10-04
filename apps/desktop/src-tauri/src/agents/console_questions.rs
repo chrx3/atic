@@ -1,0 +1,318 @@
+//! Preguntas de Claude Code (`AskUserQuestion`) que corren en una consola.
+//!
+//! El TUI no escribe la pregunta en su transcript hasta que se contesta, así
+//! que se sabe de ella por el hook `PermissionRequest` (ver [`super::ping`]),
+//! que llega con el input entero mientras el selector ya está en pantalla. Se
+//! contesta desde el celular escribiendo en la consola las mismas teclas que
+//! usaría uno: flechas, espacio y Enter.
+//!
+//! El orden de las teclas se probó contra el TUI (v2.1.x):
+//! - una respuesta: ↓ hasta la opción y Enter, que pasa a la pregunta siguiente;
+//! - varias: Espacio marca cada una y Enter sobre «Submit» (la fila después de
+//!   «Type something») pasa a la siguiente;
+//! - escribir sobre «Type something» la reemplaza (y en las de varias la marca);
+//! - con más de una pregunta queda una revisión cuyo Enter manda todo. Con una
+//!   sola de una respuesta, su Enter ya la manda.
+
+use std::collections::HashMap;
+use std::sync::Mutex;
+use std::thread;
+use std::time::{Duration, Instant};
+
+use atic_core::MutexExt;
+use serde_json::Value;
+
+/// Una pregunta sin contestar que sigue más de esto ya no es creíble.
+const STALE_AFTER: Duration = Duration::from_secs(30 * 60);
+/// Entre tecla y tecla: el TUI redibuja y una ráfaga se toma como pegado.
+const KEY_GAP: Duration = Duration::from_millis(90);
+/// Tras pasar de pregunta, para que la siguiente ya esté dibujada.
+const STEP_GAP: Duration = Duration::from_millis(350);
+
+const DOWN: &str = "\x1b[B";
+const ENTER: &str = "\r";
+const SPACE: &str = " ";
+const ESC: &str = "\x1b";
+
+#[derive(Debug, Clone)]
+struct Pending {
+    id: String,
+    input: Value,
+    at: Instant,
+}
+
+/// Por id de sesión de Claude (el mismo que usa la presencia).
+static PENDING: Mutex<Option<HashMap<String, Pending>>> = Mutex::new(None);
+
+fn with_pending<R>(f: impl FnOnce(&mut HashMap<String, Pending>) -> R) -> R {
+    let mut guard = PENDING.lock_or_recover();
+    f(guard.get_or_insert_with(HashMap::new))
+}
+
+/// Lo que dice un hook sobre las preguntas de su sesión.
+pub(crate) fn observe(v: &Value) {
+    let Some(session) = v.get("session_id").and_then(Value::as_str).filter(|s| !s.is_empty()) else {
+        return;
+    };
+    let event = v.get("hook_event_name").and_then(Value::as_str).unwrap_or("");
+    let tool = v.get("tool_name").and_then(Value::as_str).unwrap_or("");
+    match event {
+        "PermissionRequest" | "PreToolUse" if tool == "AskUserQuestion" => {
+            let Some(input) = v.get("tool_input").filter(|i| i.get("questions").is_some_and(Value::is_array)) else {
+                return;
+            };
+            let id = v
+                .get("tool_use_id")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                // `PermissionRequest` no trae el id de la herramienta: la misma pregunta da el mismo id.
+                .unwrap_or_else(|| {
+                    use std::hash::{Hash, Hasher};
+                    let mut h = std::collections::hash_map::DefaultHasher::new();
+                    input.to_string().hash(&mut h);
+                    format!("q-{:016x}", h.finish())
+                });
+            with_pending(|map| {
+                // PreToolUse y PermissionRequest llegan los dos: la primera vez manda.
+                if map.get(session).is_some_and(|p| p.id == id) {
+                    return;
+                }
+                map.insert(session.to_string(), Pending { id, input: input.clone(), at: Instant::now() });
+            });
+        }
+        // Se contestó (en la consola o desde acá), o la conversación siguió.
+        "PostToolUse" | "UserPromptSubmit" | "Stop" => {
+            with_pending(|map| map.remove(session));
+        }
+        _ => {}
+    }
+}
+
+/// La pregunta pendiente de una sesión: su id y el input entero.
+pub(crate) fn pending(session: &str) -> Option<(String, Value)> {
+    with_pending(|map| {
+        map.retain(|_, p| p.at.elapsed() < STALE_AFTER);
+        map.get(session).map(|p| (p.id.clone(), p.input.clone()))
+    })
+}
+
+/// Contesta tecleando en la consola donde corre la sesión.
+pub(crate) fn answer(session: &str, id: &str, answers: &[String]) -> Result<(), String> {
+    let input = take(session, id)?;
+    let questions = shape(&input);
+    if questions.is_empty() {
+        return Err("la pregunta no tiene la forma esperada".into());
+    }
+    let console = console_of(session)?;
+    let steps = keystrokes(&questions, answers);
+    type_steps(console, steps);
+    Ok(())
+}
+
+/// Descarta la pregunta, como Esc en el TUI.
+pub(crate) fn dismiss(session: &str, id: &str) -> Result<(), String> {
+    take(session, id)?;
+    let console = console_of(session)?;
+    super::console::write_input(&console, ESC)
+}
+
+fn take(session: &str, id: &str) -> Result<Value, String> {
+    with_pending(|map| match map.get(session) {
+        Some(p) if p.id == id => Ok(map.remove(session).map(|p| p.input).unwrap_or_default()),
+        _ => Err("esa pregunta ya se contestó".to_string()),
+    })
+}
+
+fn console_of(session: &str) -> Result<String, String> {
+    super::console::console_for_presence(session.to_string())
+        .ok_or_else(|| "la sesión no corre en una consola de Atic".to_string())
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum Step {
+    Keys(String),
+    Pause(Duration),
+}
+
+fn type_steps(console: String, steps: Vec<Step>) {
+    thread::spawn(move || {
+        for step in steps {
+            match step {
+                Step::Keys(k) => {
+                    if let Err(err) = super::console::write_input(&console, &k) {
+                        tracing::warn!(%err, "no se pudo contestar en la consola");
+                        return;
+                    }
+                    thread::sleep(KEY_GAP);
+                }
+                Step::Pause(d) => thread::sleep(d),
+            }
+        }
+    });
+}
+
+/// Etiquetas de cada pregunta y si admite varias respuestas.
+fn shape(input: &Value) -> Vec<(Vec<String>, bool)> {
+    input
+        .get("questions")
+        .and_then(Value::as_array)
+        .map(|list| {
+            list.iter()
+                .map(|q| {
+                    let labels = q
+                        .get("options")
+                        .and_then(Value::as_array)
+                        .map(|o| {
+                            o.iter()
+                                .filter_map(|x| x.get("label").and_then(Value::as_str))
+                                .map(str::to_string)
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    let flag = |k: &str| q.get(k).and_then(Value::as_bool).unwrap_or(false);
+                    (labels, flag("multiSelect") || flag("multiple"))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Qué opciones nombra una respuesta. `None` si es texto propio. Varias
+/// elegidas llegan separadas por coma (así las junta el celular).
+fn picks(labels: &[String], answer: &str, multi: bool) -> Option<Vec<usize>> {
+    let index = |s: &str| labels.iter().position(|l| l.trim() == s.trim());
+    if let Some(i) = index(answer) {
+        return Some(vec![i]);
+    }
+    if !multi {
+        return None;
+    }
+    let mut out: Vec<usize> = answer.split(", ").map(index).collect::<Option<_>>()?;
+    out.sort_unstable();
+    out.dedup();
+    Some(out)
+}
+
+/// Lo escrito a mano no puede traer teclas de control: un Enter o un Esc
+/// colado contestaría otra cosa.
+fn clean(text: &str) -> String {
+    text.chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
+fn keystrokes(questions: &[(Vec<String>, bool)], answers: &[String]) -> Vec<Step> {
+    let down = |n: usize| Step::Keys(DOWN.repeat(n));
+    let mut steps = Vec::new();
+    for (i, (labels, multi)) in questions.iter().enumerate() {
+        let answer = answers.get(i).map(String::as_str).unwrap_or("").trim();
+        let n = labels.len();
+        match (picks(labels, answer, *multi), *multi) {
+            (Some(p), false) => {
+                steps.push(down(p.first().copied().unwrap_or(0)));
+                steps.push(Step::Keys(ENTER.into()));
+            }
+            (None, false) => {
+                steps.push(down(n));
+                steps.push(Step::Keys(clean(answer)));
+                steps.push(Step::Keys(ENTER.into()));
+            }
+            (chosen, true) => {
+                let mut cursor = 0;
+                for idx in chosen.clone().unwrap_or_default() {
+                    steps.push(down(idx - cursor));
+                    steps.push(Step::Keys(SPACE.into()));
+                    cursor = idx;
+                }
+                if chosen.is_none() && !answer.is_empty() {
+                    steps.push(down(n - cursor));
+                    steps.push(Step::Keys(clean(answer)));
+                    cursor = n;
+                }
+                // «Submit» va justo después de «Type something».
+                steps.push(down(n + 1 - cursor));
+                steps.push(Step::Keys(ENTER.into()));
+            }
+        }
+        steps.push(Step::Pause(STEP_GAP));
+    }
+    // Con una sola pregunta de una respuesta, su Enter ya mandó. Si no, queda
+    // la revisión, con «Submit answers» elegido. Un Enter de más cae en la
+    // entrada vacía del TUI, que no hace nada.
+    let single = questions.len() == 1 && !questions[0].1;
+    if !single {
+        steps.push(Step::Keys(ENTER.into()));
+    }
+    // `down(0)` no teclea nada.
+    steps.retain(|s| !matches!(s, Step::Keys(k) if k.is_empty()));
+    steps
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn keys(steps: &[Step]) -> String {
+        steps
+            .iter()
+            .filter_map(|s| match s {
+                Step::Keys(k) if k == SPACE => Some("␣".to_string()),
+                Step::Keys(k) => Some(k.replace(DOWN, "↓").replace(ENTER, "⏎")),
+                Step::Pause(_) => None,
+            })
+            .collect::<Vec<_>>()
+            .join("")
+    }
+
+    fn q(labels: &[&str], multi: bool) -> (Vec<String>, bool) {
+        (labels.iter().map(|s| s.to_string()).collect(), multi)
+    }
+
+    #[test]
+    fn una_pregunta_de_una_respuesta_se_manda_con_su_enter() {
+        let steps = keystrokes(&[q(&["Lunes", "Martes"], false)], &["Martes".into()]);
+        assert_eq!(keys(&steps), "↓⏎");
+    }
+
+    #[test]
+    fn varias_preguntas_terminan_en_la_revision() {
+        let questions = [q(&["Rojo", "Verde", "Azul"], false), q(&["Manzana", "Pera", "Uva"], true)];
+        let steps = keystrokes(&questions, &["Verde".into(), "Manzana, Uva".into()]);
+        // Verde; marcar Manzana y Uva; bajar a Submit; mandar la revisión.
+        assert_eq!(keys(&steps), "↓⏎␣↓↓␣↓↓⏎⏎");
+    }
+
+    #[test]
+    fn lo_escrito_va_sobre_type_something_sin_teclas_de_control() {
+        let questions = [q(&["Rojo", "Verde", "Azul"], false), q(&["Manzana", "Pera", "Uva"], true)];
+        let steps = keystrokes(&questions, &["Morado\nclaro".into(), "Kiwi".into()]);
+        assert_eq!(keys(&steps), "↓↓↓Morado claro⏎↓↓↓Kiwi↓⏎⏎");
+    }
+
+    #[test]
+    fn una_etiqueta_con_coma_gana_al_corte() {
+        let labels = q(&["Sí, ahora", "No"], true);
+        assert_eq!(picks(&labels.0, "Sí, ahora", true), Some(vec![0]));
+        assert_eq!(picks(&labels.0, "No, Sí, ahora", true), None);
+        assert_eq!(picks(&labels.0, "otra cosa", false), None);
+    }
+
+    #[test]
+    fn el_hook_anota_y_borra_la_pregunta() {
+        let input = json!({ "questions": [{ "question": "¿Qué día?", "options": [{ "label": "Lunes" }] }] });
+        observe(&json!({
+            "session_id": "s-test", "hook_event_name": "PermissionRequest",
+            "tool_name": "AskUserQuestion", "tool_use_id": "t1", "tool_input": input,
+        }));
+        assert_eq!(pending("s-test").map(|p| p.0).as_deref(), Some("t1"));
+        // Otra herramienta no es una pregunta.
+        observe(&json!({ "session_id": "s-test", "hook_event_name": "PermissionRequest", "tool_name": "Bash" }));
+        assert!(pending("s-test").is_some());
+        observe(&json!({ "session_id": "s-test", "hook_event_name": "PostToolUse", "tool_name": "AskUserQuestion" }));
+        assert!(pending("s-test").is_none());
+        assert!(take("s-test", "t1").is_err());
+    }
+}

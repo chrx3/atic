@@ -521,9 +521,14 @@ async fn handle_events(app: AppHandle, mut events: tokio::sync::mpsc::UnboundedR
                     .and_then(|s| s.question)
                     .map(|q| parse_questions(&q))
                     .unwrap_or_default();
-                let result = answers_by_question(&questions, &answers)
-                    .ok_or_else(|| "la pregunta ya no está".to_string())
-                    .and_then(|map| agents::bridge::phone_answer(&agent_id, &permission_id, map));
+                let result = if questions.is_empty() {
+                    // No es una sesión que maneje Atic: quizá un Claude en una consola.
+                    agents::console_questions::answer(&agent_id, &permission_id, &answers)
+                } else {
+                    answers_by_question(&questions, &answers)
+                        .ok_or_else(|| "la pregunta ya no está".to_string())
+                        .and_then(|map| agents::bridge::phone_answer(&agent_id, &permission_id, map))
+                };
                 if let Err(err) = result {
                     tracing::info!(%err, "respuesta del celular sin efecto");
                 }
@@ -538,7 +543,18 @@ async fn handle_events(app: AppHandle, mut events: tokio::sync::mpsc::UnboundedR
                 };
                 // Si el permiso ya se contestó en el PC, esto falla y no pasa nada:
                 // la foto siguiente le muestra al celular que ya no está.
-                if let Err(err) = agents::bridge::agent_permission(agent_id, permission_id, decision) {
+                let console_question = agents::console_questions::pending(&agent_id)
+                    .is_some_and(|(id, _)| id == permission_id);
+                let result = if console_question {
+                    // «Omitir» una pregunta de consola es Esc; aprobarla no tiene sentido.
+                    match decision {
+                        PermissionDecision::Deny => agents::console_questions::dismiss(&agent_id, &permission_id),
+                        _ => Ok(()),
+                    }
+                } else {
+                    agents::bridge::agent_permission(agent_id, permission_id, decision)
+                };
+                if let Err(err) = result {
                     tracing::info!(%err, "permiso del celular sin efecto");
                 }
                 poke();
@@ -747,6 +763,8 @@ fn snapshot() -> Vec<AgentCard> {
 
     if agents::PAGER_ENABLED {
         cards.extend(presence::snapshot().into_iter().map(|p| AgentCard {
+            // Una pregunta de un Claude en consola de Atic se contesta tecleando.
+            permission: console_question(&p.id),
             project: project_name(&p.cwd),
             id: p.id,
             backend_id: p.backend_id,
@@ -771,10 +789,24 @@ fn snapshot() -> Vec<AgentCard> {
                 detail: a.detail,
             }),
             preview: p.preview,
-            permission: None,
         }));
     }
     cards
+}
+
+/// La pregunta pendiente de un Claude que corre en una consola de Atic, si
+/// la hay y la consola sigue ahí (sin consola no hay dónde teclear).
+fn console_question(session: &str) -> Option<PermissionAsk> {
+    let (id, input) = agents::console_questions::pending(session)?;
+    agents::console::console_for_presence(session.to_string())?;
+    let questions = parse_questions(&input);
+    (!questions.is_empty()).then(|| PermissionAsk {
+        id,
+        title: "Pregunta".into(),
+        detail: None,
+        can_allow_always: false,
+        questions,
+    })
 }
 
 /// Último segmento del `cwd`: el nombre que el usuario reconoce.

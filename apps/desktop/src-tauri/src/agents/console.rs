@@ -626,6 +626,25 @@ fn quote_cmd(s: &str) -> String {
 /// Si el PTY *es* el CLI, al salir —o si el shim de npm arranca y se despega—
 /// la pestaña muere y parece que “se cerró”. `cmd /K` espera al TUI y, si el
 /// proceso termina, deja el prompt.
+/// Un `claude` lanzado por la consola lleva los hooks de Atic (ver
+/// [`super::ping::console_settings_path`]): así sus preguntas y permisos se
+/// ven, y las preguntas se contestan, desde el celular. Una línea de shell
+/// (pipes, comillas) se deja tal cual.
+fn with_claude_hooks(command: &str) -> String {
+    let first = command.split_whitespace().next().unwrap_or("");
+    let is_claude = first.eq_ignore_ascii_case("claude") || first.eq_ignore_ascii_case("claude.exe");
+    if !is_claude || has_shell_syntax(command) || command.contains("--settings") {
+        return command.to_string();
+    }
+    match super::ping::console_settings_path() {
+        // Sin espacios en la ruta: `build_local_command` parte por espacios.
+        Some(path) if !path.to_string_lossy().contains(' ') => {
+            format!("{command} --settings {}", path.display())
+        }
+        _ => command.to_string(),
+    }
+}
+
 fn build_local_command(command: &str) -> Result<CommandBuilder, String> {
     // Sintaxis de shell (pipe, redirección, comillas, encadenados…): partir la
     // línea por espacios y lanzar el primer token directo le pasa `|`, `>`
@@ -1205,7 +1224,8 @@ pub fn console_open(
             }
         }
         "local" => {
-            let mut cmd = match options.command.as_deref().map(str::trim) {
+            let command = options.command.as_deref().map(str::trim).map(with_claude_hooks);
+            let mut cmd = match command.as_deref() {
                 Some(c) if !c.is_empty() => build_local_command(c)?,
                 _ => resolve_local_shell(),
             };
@@ -1985,6 +2005,17 @@ mod tests {
     }
 
     /// Un comando simple sigue yendo directo: no hay shell de por medio.
+    #[test]
+    fn claude_en_consola_lleva_los_hooks_de_atic() {
+        let line = with_claude_hooks("claude --model opus");
+        assert!(line.starts_with("claude --model opus --settings "), "{line}");
+        assert!(line.ends_with("atic-claude-hooks.json"), "{line}");
+        // Lo demás no se toca: otro CLI, una línea de shell, o settings propios.
+        assert_eq!(with_claude_hooks("codex"), "codex");
+        assert_eq!(with_claude_hooks("claude | tee x"), "claude | tee x");
+        assert_eq!(with_claude_hooks("claude --settings a.json"), "claude --settings a.json");
+    }
+
     #[test]
     fn un_comando_simple_no_pasa_por_la_shell() {
         let Some((exe, _)) = crate::agents::exe::launcher("echo") else {
