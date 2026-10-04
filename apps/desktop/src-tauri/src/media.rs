@@ -9,7 +9,25 @@
 //! través de `osascript`, y los controles van como teclas multimedia. Ver
 //! `imp` de macOS.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use serde::Serialize;
+
+/// La pill muestra la música del celular (no la del PC): los controles van allá.
+static SHOWING_PHONE: AtomicBool = AtomicBool::new(false);
+
+/// Qué mostrar si suenan las dos: lo que suena gana; entre dos pausados, el PC.
+fn pick(pc: Option<MediaNow>, phone: Option<MediaNow>) -> (Option<MediaNow>, bool) {
+    match (pc, phone) {
+        (Some(pc), _) if pc.playing => (Some(pc), false),
+        (_, Some(phone)) if phone.playing => (Some(phone), true),
+        (Some(pc), _) => (Some(pc), false),
+        (None, phone) => {
+            let is_phone = phone.is_some();
+            (phone, is_phone)
+        }
+    }
+}
 
 /// Lo que suena ahora. `None` en el comando = no hay nada (o está detenido).
 #[derive(Debug, Clone, Serialize)]
@@ -95,7 +113,10 @@ pub async fn media_now(known: Option<String>) -> Result<Option<MediaNow>, String
         #[cfg(target_os = "macos")]
         let mut now = imp::now_known(known.as_deref())?;
         #[cfg(not(target_os = "macos"))]
-        let mut now = imp::now()?;
+        let now = imp::now()?;
+        // La música del celular pareado también va a la pill (`phone_sync`).
+        let (mut now, is_phone) = pick(now, crate::phone_sync::phone_media_now());
+        SHOWING_PHONE.store(is_phone, Ordering::Relaxed);
         if let Some(now) = now.as_mut() {
             if known.as_deref() == Some(now.thumb_key.as_str()) {
                 now.thumbnail = None;
@@ -109,6 +130,10 @@ pub async fn media_now(known: Option<String>) -> Result<Option<MediaNow>, String
 
 #[tauri::command]
 pub async fn media_volume() -> Result<MediaVolume, String> {
+    // El volumen del celular no se maneja desde acá: sin slider.
+    if SHOWING_PHONE.load(Ordering::Relaxed) {
+        return Err("la música es del celular".into());
+    }
     tauri::async_runtime::spawn_blocking(|| {
         let exe = imp::source_exe();
         crate::system_control::media_volume(exe.as_deref())
@@ -131,6 +156,9 @@ pub async fn media_set_volume(volume: f32) -> Result<(), String> {
 /// Lleva el tema a `position_ms`, contado desde el inicio.
 #[tauri::command]
 pub async fn media_seek(position_ms: u64) -> Result<bool, String> {
+    if SHOWING_PHONE.load(Ordering::Relaxed) {
+        return Ok(false);
+    }
     tauri::async_runtime::spawn_blocking(move || imp::seek(position_ms))
         .await
         .map_err(|e| e.to_string())?
@@ -139,6 +167,9 @@ pub async fn media_seek(position_ms: u64) -> Result<bool, String> {
 /// Trae al frente la ventana de la app que suena. `false` si no dio con ella.
 #[tauri::command]
 pub async fn media_focus() -> Result<bool, String> {
+    if SHOWING_PHONE.load(Ordering::Relaxed) {
+        return Ok(false);
+    }
     tauri::async_runtime::spawn_blocking(imp::focus)
         .await
         .map_err(|e| e.to_string())?
@@ -146,6 +177,9 @@ pub async fn media_focus() -> Result<bool, String> {
 
 #[tauri::command]
 pub async fn media_control(action: String) -> Result<bool, String> {
+    if SHOWING_PHONE.load(Ordering::Relaxed) {
+        return Ok(crate::phone_sync::phone_media_control(&action));
+    }
     let action = MediaAction::parse(&action)?;
     tauri::async_runtime::spawn_blocking(move || imp::control(action))
         .await

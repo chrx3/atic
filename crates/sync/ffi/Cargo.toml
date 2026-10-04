@@ -1,0 +1,25 @@
+[package]
+name = "atic-sync-ffi"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+description = "Bindings UniFFI del lado celular de atic-sync, para la app Android."
+
+[lib]
+crate-type = ["cdylib", "lib"]
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+required-features = ["cli"]
+
+[features]
+cli = ["uniffi/cli"]
+
+[dependencies]
+atic-sync = { path = "..", features = ["uniffi"] }
+uniffi = "0.32"
+tokio = { version = "1", features = ["rt-multi-thread"] }
+thiserror = "2"
+anyhow = "1"

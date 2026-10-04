@@ -10,6 +10,7 @@ const SETTINGS_SECTION_IDS = [
   "audio",
   "summary",
   "agents",
+  "phone",
   "about",
 ] as const;
 

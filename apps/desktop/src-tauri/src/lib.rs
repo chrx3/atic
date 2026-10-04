@@ -36,6 +36,7 @@ mod overlay;
 mod panel_float;
 mod paste_queue;
 mod permissions;
+mod phone_sync;
 mod retention;
 mod search;
 mod shortcuts;
@@ -334,6 +335,12 @@ pub fn run() {
             agents::bridge::agent_start,
             agents::bridge::agent_send,
             agents::bridge::agent_permission,
+            phone_sync::phone_status,
+            phone_sync::phone_pair_start,
+            phone_sync::phone_pair_cancel,
+            phone_sync::phone_unpair,
+            phone_sync::phone_pair_answer,
+            phone_sync::phone_set_clipboard,
             agents::bridge::agent_answer,
             agents::bridge::agent_set_mode,
             agents::bridge::agent_skills,
@@ -647,6 +654,7 @@ pub fn run() {
             agents::watch_codex::start(app.handle());
             agents::watch_cursor::start(app.handle());
             agents::watch_opencode::start(app.handle());
+            phone_sync::start_if_paired(app.handle());
 
             // El primer OCR tarda mientras macOS prepara los modelos de Vision:
             // se paga acá, en segundo plano, para que la primera captura no

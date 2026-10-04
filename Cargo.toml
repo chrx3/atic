@@ -9,6 +9,8 @@ members = [
     "crates/mailer",
     "crates/atic-mcp",
     "crates/atic-unix",
+    "crates/sync",
+    "crates/sync/ffi",
     "apps/desktop/src-tauri",
 ]
 
@@ -27,6 +29,7 @@ atic-capture = { path = "crates/capture" }
 atic-transcribe = { path = "crates/transcribe" }
 atic-summarize = { path = "crates/summarize" }
 atic-mailer = { path = "crates/mailer" }
+atic-sync = { path = "crates/sync" }
 
 # Compartidas
 serde = { version = "1", features = ["derive"] }
@@ -54,3 +57,11 @@ opt-level = 3
 # Sin debuginfo en las dependencias: nadie pone breakpoints dentro de tauri o
 # reqwest, y el PDB de este proyecto pesa demasiado como para pagarlo dos veces.
 debug = 0
+
+# La .so de atic-sync-ffi va dentro del APK de Android: tamaño antes que
+# velocidad. `cargo ndk ... build --profile android` (atic-android/scripts/build-rust.sh).
+[profile.android]
+inherits = "release"
+opt-level = "s"
+lto = "thin"
+strip = true

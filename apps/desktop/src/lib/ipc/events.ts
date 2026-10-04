@@ -13,6 +13,7 @@
 
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { ToolId } from "$core/tools";
+import type { PhoneStatus } from "./phone";
 import type {
   AgentDeltaPayload,
   AgentPresence,
@@ -50,6 +51,9 @@ export interface AticEvents {
 
   // Dictado
   "dictation-status": DictationStatusPayload;
+
+  // Celular (`phone_sync.rs`)
+  "phone-sync": PhoneStatus;
 
   // Modelos
   "model-download-progress": DownloadProgress;

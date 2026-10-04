@@ -137,6 +137,24 @@ fn named_entry(name: &str) -> Result<Entry> {
     Entry::new(SERVICE, name).map_err(|err| Error::Secret(err.to_string()))
 }
 
+/// Identidad del PC en el canal con el celular (`atic-sync`): 32 bytes en hex.
+/// Quien la tenga se hace pasar por este PC ante los celulares pareados.
+const PHONE_SYNC_KEY: &str = "phone_sync_key";
+
+pub fn get_phone_sync_key() -> Result<Option<String>> {
+    match named_entry(PHONE_SYNC_KEY)?.get_password() {
+        Ok(value) => Ok(Some(value)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(err) => Err(Error::Secret(err.to_string())),
+    }
+}
+
+pub fn set_phone_sync_key(hex: &str) -> Result<()> {
+    named_entry(PHONE_SYNC_KEY)?
+        .set_password(hex)
+        .map_err(|err| Error::Secret(err.to_string()))
+}
+
 /// Valida el id de host antes de armar la clave del llavero.
 pub fn validate_ssh_host_id(host_id: &str) -> Result<()> {
     let ok = !host_id.is_empty()

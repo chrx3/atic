@@ -323,6 +323,7 @@ pub fn publish(app: &AppHandle) {
     };
     if should.0 {
         let _ = app.emit("agent-presence", should.1);
+        crate::phone_sync::poke();
     }
 }
 

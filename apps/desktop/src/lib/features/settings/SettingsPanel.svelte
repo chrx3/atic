@@ -18,6 +18,7 @@
   import GeneralSection from "./GeneralSection.svelte";
   import LauncherSection from "./LauncherSection.svelte";
   import MeetingsSection from "./MeetingsSection.svelte";
+  import PhoneSection from "./PhoneSection.svelte";
   import PillSection from "./PillSection.svelte";
   import ShortcutsSection from "./ShortcutsSection.svelte";
   import SummarySection from "./SummarySection.svelte";
@@ -81,6 +82,11 @@
         ]
       : []),
     {
+      value: "phone" as const,
+      label: t("settings.nav.phone"),
+      icon: "phone" as IconId,
+    },
+    {
       value: "about" as const,
       label: t("settings.nav.about"),
       icon: "about" as IconId,
@@ -135,6 +141,8 @@
           <SummarySection />
         {:else if SHOW_AGENTS && section === "agents"}
           <AgentsSection />
+        {:else if section === "phone"}
+          <PhoneSection />
         {:else if section === "about"}
           <AboutSection />
         {/if}

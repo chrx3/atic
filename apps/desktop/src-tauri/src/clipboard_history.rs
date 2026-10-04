@@ -578,6 +578,8 @@ pub fn start_watcher(app: &AppHandle) {
                     if before_fp != after_fp {
                         drop(hist);
                         let _ = handle.emit("clipboard-history-changed", ());
+                        // Lo sensible ya quedó afuera arriba: solo viaja lo que entra al historial.
+                        crate::phone_sync::clipboard_copied(trimmed);
                     }
                 }
             }
@@ -661,6 +663,167 @@ fn ingest_image(
     push_item(&mut hist, dir, item);
     let after = hist.items.first().map(|i| i.fingerprint.clone());
     Ok(before != after)
+}
+
+/// Textos e imágenes del historial, fijados primero y después del más nuevo al
+/// más viejo, para el celular (`phone_sync`).
+pub(crate) fn recent_items(limit: usize) -> Vec<ClipboardItem> {
+    let Ok(shared) = shared_history() else {
+        return Vec::new();
+    };
+    let hist = shared.lock_or_recover();
+    let mut items: Vec<ClipboardItem> = hist
+        .items
+        .iter()
+        .filter(|i| match i.kind {
+            ClipboardKind::Text => i.text.is_some(),
+            ClipboardKind::Image => i.image_path.is_some(),
+        })
+        .cloned()
+        .collect();
+    items.sort_by(|a, b| b.pinned.cmp(&a.pinned).then(b.created_at_ms.cmp(&a.created_at_ms)));
+    items.truncate(limit);
+    items
+}
+
+/// Suma al historial un ítem que trae el celular (de otro PC o del propio
+/// celular) con su id, sin tocar el portapapeles del sistema. Va en su lugar
+/// por fecha, no arriba de todo. `false` si ya estaba (por id o por contenido).
+fn insert_imported(state: &mut HistoryState, dir: &Path, item: ClipboardItem) -> bool {
+    if state.deleted_fingerprints.contains(&item.fingerprint)
+        || state.items.iter().any(|i| i.id == item.id || i.fingerprint == item.fingerprint)
+    {
+        return false;
+    }
+    let at = state
+        .items
+        .iter()
+        .position(|i| i.created_at_ms < item.created_at_ms)
+        .unwrap_or(state.items.len());
+    state.items.insert(at, item);
+    prune(state, dir);
+    save_history(dir, &state.items);
+    true
+}
+
+pub(crate) fn import_text(app: &AppHandle, id: &str, text: &str, created_at_ms: u64, pinned: bool) -> bool {
+    let (Ok(shared), Some(state)) = (shared_history(), app.try_state::<AppState>()) else {
+        return false;
+    };
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let item = ClipboardItem {
+        id: id.to_string(),
+        kind: ClipboardKind::Text,
+        preview: trimmed.chars().take(120).collect(),
+        text: Some(trimmed.to_string()),
+        image_path: None,
+        created_at_ms,
+        pinned,
+        fingerprint: fingerprint_text(trimmed),
+        source: "phone".into(),
+    };
+    let added = insert_imported(&mut shared.lock_or_recover(), &state.dirs.clipboard_dir(), item);
+    if added {
+        let _ = app.emit("clipboard-history-changed", ());
+    }
+    added
+}
+
+pub(crate) fn import_image(
+    app: &AppHandle,
+    id: &str,
+    data: &[u8],
+    created_at_ms: u64,
+    pinned: bool,
+) -> Result<bool, String> {
+    let shared = shared_history()?;
+    let state = app.try_state::<AppState>().ok_or("sin estado")?;
+    let dir = state.dirs.clipboard_dir();
+    let rgba = image::load_from_memory(data).map_err(|e| e.to_string())?.to_rgba8();
+    let (w, h) = (rgba.width() as usize, rgba.height() as usize);
+    let fingerprint = fingerprint_image(rgba.as_raw(), w, h);
+    let png = encode_png_rgba(rgba.as_raw(), w, h)?;
+    if png.len() > MAX_IMAGE_BYTES {
+        return Err("PNG demasiado grande".into());
+    }
+    let mut hist = shared.lock_or_recover();
+    if hist.items.iter().any(|i| i.id == id || i.fingerprint == fingerprint) {
+        return Ok(false);
+    }
+    let path = dir.join(format!("img-{id}.png"));
+    std::fs::write(&path, &png).map_err(|e| e.to_string())?;
+    let item = ClipboardItem {
+        id: id.to_string(),
+        kind: ClipboardKind::Image,
+        preview: image_preview_label(w, h),
+        text: None,
+        image_path: Some(path.to_string_lossy().into_owned()),
+        created_at_ms,
+        pinned,
+        fingerprint,
+        source: "phone".into(),
+    };
+    let added = insert_imported(&mut hist, &dir, item);
+    drop(hist);
+    if added {
+        let _ = app.emit("clipboard-history-changed", ());
+    } else {
+        let _ = std::fs::remove_file(&path);
+    }
+    Ok(added)
+}
+
+/// ¿Está este id en el historial?
+pub(crate) fn has_item(id: &str) -> bool {
+    shared_history().is_ok_and(|s| s.lock_or_recover().items.iter().any(|i| i.id == id))
+}
+
+/// Borra por id lo que se borró en el celular. No avisa de vuelta al celular.
+pub(crate) fn delete_ids(app: &AppHandle, ids: &[String]) -> usize {
+    let (Ok(shared), Some(state)) = (shared_history(), app.try_state::<AppState>()) else {
+        return 0;
+    };
+    let dir = state.dirs.clipboard_dir();
+    let mut hist = shared.lock_or_recover();
+    let mut removed = 0;
+    for id in ids {
+        let Some(idx) = hist.items.iter().position(|i| &i.id == id) else {
+            continue;
+        };
+        let item = hist.items.remove(idx);
+        hist.deleted_fingerprints.insert(item.fingerprint.clone());
+        if let Some(path) = item.image_path {
+            let p = PathBuf::from(path);
+            if p.starts_with(&dir) {
+                let _ = std::fs::remove_file(p);
+            }
+        }
+        removed += 1;
+    }
+    if removed > 0 {
+        hist.suppress_until = Some(SystemTime::now() + Duration::from_millis(1200));
+        hist.last_fingerprint = hist.items.first().map(|i| i.fingerprint.clone());
+        save_history(&dir, &hist.items);
+        drop(hist);
+        let _ = app.emit("clipboard-history-changed", ());
+    }
+    removed
+}
+
+/// El PNG de un ítem de imagen del historial, si sigue ahí.
+pub(crate) fn image_path(id: &str) -> Option<PathBuf> {
+    let shared = shared_history().ok()?;
+    let hist = shared.lock_or_recover();
+    let item = hist.items.iter().find(|i| i.id == id)?;
+    item.image_path.as_ref().map(PathBuf::from).filter(|p| p.exists())
+}
+
+/// Es una imagen (no texto) del historial.
+pub(crate) fn is_image(item: &ClipboardItem) -> bool {
+    matches!(item.kind, ClipboardKind::Image)
 }
 
 fn shared_history() -> Result<Arc<Mutex<HistoryState>>, String> {
@@ -1552,6 +1715,8 @@ pub fn delete_clipboard_item(
         return Err(item_missing());
     };
     let removed = hist.items.remove(idx);
+    // El celular (y desde él, los otros PCs) también lo borra.
+    crate::phone_sync::clips_deleted_on_pc(vec![removed.id.clone()]);
     hist.deleted_fingerprints
         .insert(removed.fingerprint.clone());
     if removed.fingerprint.starts_with("capture:") {
@@ -1608,6 +1773,7 @@ pub fn clear_clipboard_history(app: AppHandle, state: State<AppState>) -> Result
     let shared = shared_history()?;
     let mut hist = shared.lock_or_recover();
     let (pinned, rest): (Vec<_>, Vec<_>) = hist.items.drain(..).partition(|i| i.pinned);
+    crate::phone_sync::clips_deleted_on_pc(rest.iter().map(|i| i.id.clone()).collect());
     for item in &rest {
         hist.deleted_fingerprints.insert(item.fingerprint.clone());
     }

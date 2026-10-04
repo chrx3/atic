@@ -11,6 +11,7 @@
     | "audio"
     | "summary"
     | "settings"
+    | "phone"
     | "about";
 
   export type IconId = AppIconId;

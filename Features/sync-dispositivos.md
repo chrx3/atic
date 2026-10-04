@@ -1,6 +1,6 @@
 # Sync entre dispositivos del usuario
 
-**Estado:** `idea`
+**Estado:** `en curso` (celular ↔ PC hecho; PC ↔ PC pendiente)
 
 ## Resumen
 
@@ -100,10 +100,14 @@ carpeta que iCloud: iCloud para Windows es poco confiable.
 
 ## Código
 
+- [`crates/sync`](../crates/sync) — canal iroh, pareo por QR con confirmación,
+  portapapeles de texto. Hoy une el PC con el [companion móvil](companion-movil.md);
+  PC ↔ PC reusaría el mismo canal.
+- [`apps/desktop/src-tauri/src/phone_sync.rs`](../apps/desktop/src-tauri/src/phone_sync.rs)
+  — recibe lo que manda el celular y envía lo que entra al historial.
 - [`apps/desktop/src-tauri/src/clipboard_history.rs`](../apps/desktop/src-tauri/src/clipboard_history.rs)
-  — vigilante y `clipboard_is_sensitive` (Windows y macOS), punto de entrada
-  natural para emitir y recibir ítems.
-- Aún no hay código de sync.
+  — vigilante y `clipboard_is_sensitive`. Llama a `phone_sync::clipboard_copied`
+  solo con lo que ya pasó el filtro de sensibles.
 
 ## Pendiente / siguiente
 

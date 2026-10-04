@@ -670,6 +670,7 @@ pub(crate) fn start_session(
         // Primero al vigilante del hub, después al store y a la ventana.
         // Quien espera un `TurnEnd` tiene que despertar aunque el emit falle.
         watch_delta.observe(&delta);
+        crate::phone_sync::poke();
         if super::store::apply(&emit_key, &delta) {
             with_db(&app, |db| super::store::flush(db, &emit_key));
         }
@@ -839,6 +840,39 @@ pub(crate) fn interrupt_session(id: &str) -> Result<(), String> {
         .ok_or_else(|| "esa sesión ya no existe".to_string())?
         .session
         .interrupt()
+}
+
+/// Lo que el celular necesita de una sesión viva (ver `phone_sync`).
+pub(crate) struct PhoneSession {
+    pub id: String,
+    pub backend: String,
+    pub backend_name: String,
+    pub cwd: String,
+    pub label: Option<String>,
+    pub running: bool,
+    pub pending: Vec<api::PendingPermission>,
+}
+
+/// Las sesiones que maneja Atic, con sus permisos pendientes: son las únicas
+/// cuyos permisos se pueden contestar desde el celular.
+pub(crate) fn phone_sessions() -> Vec<PhoneSession> {
+    SESSIONS
+        .lock_or_recover()
+        .as_ref()
+        .map(|map| {
+            map.iter()
+                .map(|(id, entry)| PhoneSession {
+                    id: id.clone(),
+                    backend: entry.backend.clone(),
+                    backend_name: entry.display_name.clone(),
+                    cwd: entry.meta.cwd.clone(),
+                    label: entry.meta.label.clone(),
+                    running: entry.watch.is_running(),
+                    pending: entry.watch.pending_permissions(),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Ficha de una sesión para `atic_list_sessions`.

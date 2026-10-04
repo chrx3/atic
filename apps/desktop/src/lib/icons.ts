@@ -113,6 +113,7 @@ import {
   Minimize2,
   Palette,
   Forward,
+  Smartphone,
 } from "lucide";
 import type { ToolId } from "$lib/tools";
 
@@ -122,6 +123,7 @@ export type SettingsIconId =
   | "audio"
   | "summary"
   | "settings"
+  | "phone"
   | "about";
 
 /**
@@ -155,6 +157,7 @@ export const TOOL_ICONS: Record<AppIconId, IconNode> = {
   audio: AudioLines,
   summary: FileText,
   about: Info,
+  phone: Smartphone,
   more: Ellipsis,
   pill: Pill,
   back: ArrowLeft,
