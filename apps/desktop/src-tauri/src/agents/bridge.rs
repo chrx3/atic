@@ -851,6 +851,8 @@ pub(crate) struct PhoneSession {
     pub label: Option<String>,
     pub running: bool,
     pub pending: Vec<api::PendingPermission>,
+    /// El input entero del primer permiso pendiente, si es una pregunta.
+    pub question: Option<serde_json::Value>,
 }
 
 /// Las sesiones que maneja Atic, con sus permisos pendientes: son las únicas
@@ -868,6 +870,11 @@ pub(crate) fn phone_sessions() -> Vec<PhoneSession> {
                     cwd: entry.meta.cwd.clone(),
                     label: entry.meta.label.clone(),
                     running: entry.watch.is_running(),
+                    question: entry
+                        .watch
+                        .pending_permissions()
+                        .first()
+                        .and_then(|p| entry.watch.pending_question(&p.id)),
                     pending: entry.watch.pending_permissions(),
                 })
                 .collect()
@@ -987,6 +994,32 @@ pub fn agent_answer(
         .ok_or_else(|| "esa sesión ya no existe".to_string())?
         .session
         .answer_permission(&id, updated_input)
+}
+
+/// Contesta desde el celular una pregunta del agente: las respuestas se
+/// agregan al input entero que guardó el hub, como hace la vista.
+pub(crate) fn phone_answer(
+    session: &str,
+    id: &str,
+    answers: serde_json::Map<String, serde_json::Value>,
+) -> Result<(), String> {
+    let mut guard = SESSIONS.lock_or_recover();
+    let entry = guard
+        .as_mut()
+        .ok_or_else(|| "no hay sesiones abiertas".to_string())?
+        .get_mut(session)
+        .ok_or_else(|| "esa sesión ya no existe".to_string())?;
+    let mut input = entry
+        .watch
+        .pending_question(id)
+        .ok_or_else(|| "esa pregunta ya se contestó".to_string())?;
+    let obj = input
+        .as_object_mut()
+        .ok_or_else(|| "la pregunta no tiene la forma esperada".to_string())?;
+    obj.insert("answers".into(), serde_json::Value::Object(answers));
+    entry.session.answer_permission(id, input)?;
+    entry.watch.resolve_permission(id);
+    Ok(())
 }
 
 /// Las skills disponibles para una carpeta de trabajo.

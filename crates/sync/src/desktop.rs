@@ -58,6 +58,13 @@ pub enum DesktopEvent {
         permission_id: String,
         decision: Decision,
     },
+    /// Respuestas a una pregunta del agente (ver [`ToDesktop::Answer`]).
+    Answer {
+        device_id: String,
+        agent_id: String,
+        permission_id: String,
+        answers: Vec<String>,
+    },
     /// Texto que el usuario mandó desde el celular.
     Clip { device_id: String, item: ClipItem },
     /// Medios o grabación. Quien hospeda lo ejecuta y publica el estado nuevo.
@@ -495,6 +502,14 @@ async fn session(send: &mut SendStream, recv: RecvStream, device: EndpointId, sh
                         agent_id,
                         permission_id,
                         decision,
+                    });
+                }
+                Some(ToDesktop::Answer { agent_id, permission_id, answers }) => {
+                    shared.emit(DesktopEvent::Answer {
+                        device_id: device.to_string(),
+                        agent_id,
+                        permission_id,
+                        answers,
                     });
                 }
                 Some(ToDesktop::ClipSync { items, deleted }) => {

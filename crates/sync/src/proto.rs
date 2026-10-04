@@ -77,6 +77,31 @@ pub struct PermissionAsk {
     pub title: String,
     pub detail: Option<String>,
     pub can_allow_always: bool,
+    /// Si no está vacío, el permiso es una pregunta del agente
+    /// (`AskUserQuestion`): se contesta con [`ToDesktop::Answer`], no con
+    /// permitir o rechazar.
+    #[serde(default)]
+    pub questions: Vec<AgentQuestion>,
+}
+
+/// Una pregunta con opciones que hace el agente.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+#[serde(rename_all = "camelCase")]
+pub struct AgentQuestion {
+    pub question: String,
+    /// Un rótulo corto («BD», «Tests»).
+    pub header: String,
+    pub options: Vec<QuestionOption>,
+    /// Se puede elegir más de una opción.
+    pub multi_select: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+pub struct QuestionOption {
+    pub label: String,
+    pub description: String,
 }
 
 /// Igual que `PermissionDecision` en `agents/mod.rs` del desktop.
@@ -195,6 +220,9 @@ pub enum ToDesktop {
     Hello { device_name: String },
     #[serde(rename_all = "camelCase")]
     Decide { agent_id: String, permission_id: String, decision: Decision },
+    /// Respuestas a una pregunta del agente: una por pregunta, en orden (las
+    /// opciones elegidas o lo que se escribió). Una vacía queda sin contestar.
+    Answer { agent_id: String, permission_id: String, answers: Vec<String> },
     /// Lo que el usuario mandó desde el celular al portapapeles del PC.
     Clip { item: ClipItem },
     Command { command: PcCommand },

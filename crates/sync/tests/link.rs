@@ -24,6 +24,7 @@ fn card(id: &str, ask: Option<&str>) -> AgentCard {
             title: "Ejecutar comando".into(),
             detail: Some("cargo test".into()),
             can_allow_always: true,
+            questions: Vec::new(),
         }),
     }
 }
@@ -102,6 +103,11 @@ async fn parea_recibe_agentes_y_contesta_un_permiso() {
     let decided = next(&mut desk_events, "decisión", |e| matches!(e, DesktopEvent::Decide { .. })).await;
     let DesktopEvent::Decide { agent_id, permission_id, decision, .. } = decided else { unreachable!() };
     assert_eq!((agent_id.as_str(), permission_id.as_str(), decision), ("a", "p1", Decision::Allow));
+
+    assert!(phone.answer("a".into(), "p1".into(), vec!["SQLite".into(), String::new()]));
+    let answered = next(&mut desk_events, "respuestas", |e| matches!(e, DesktopEvent::Answer { .. })).await;
+    let DesktopEvent::Answer { permission_id, answers, .. } = answered else { unreachable!() };
+    assert_eq!((permission_id.as_str(), answers), ("p1", vec!["SQLite".to_string(), String::new()]));
 
     desktop.publish(vec![card("a", None)]);
     let PhoneEvent::Agents(agents) = next(&mut events, "foto nueva", |e| matches!(e, PhoneEvent::Agents(_))).await else {

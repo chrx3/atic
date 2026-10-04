@@ -144,6 +144,11 @@ impl Phone {
             .is_some_and(|tx| tx.send(ToDesktop::Decide { agent_id, permission_id, decision }).is_ok())
     }
 
+    /// Contesta una pregunta del agente. `false` si no hay sesión.
+    pub fn answer(&self, agent_id: String, permission_id: String, answers: Vec<String>) -> bool {
+        self.send(ToDesktop::Answer { agent_id, permission_id, answers })
+    }
+
     /// El historial guardado en el celular y lo borrado, para que el PC sume.
     pub fn sync_clips(&self, items: Vec<ClipItem>, deleted: Vec<String>) -> bool {
         self.send(ToDesktop::ClipSync { items, deleted })

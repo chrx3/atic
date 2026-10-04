@@ -119,6 +119,10 @@ async fn main() -> anyhow::Result<()> {
                     println!("→ Decisión: {decision:?} para {agent_id}/{permission_id}");
                     let _ = decisions_tx.send((permission_id, decision));
                 }
+                DesktopEvent::Answer { agent_id, permission_id, answers, .. } => {
+                    println!("→ Respuestas para {agent_id}/{permission_id}: {answers:?}");
+                    let _ = decisions_tx.send((permission_id, Decision::Allow));
+                }
             }
         }
     });
@@ -173,6 +177,7 @@ async fn script(desktop: &Desktop, mut decisions: mpsc::UnboundedReceiver<(Strin
             title: "Ejecutar comando".into(),
             detail: Some("cargo test -p atic-sync".into()),
             can_allow_always: true,
+            questions: Vec::new(),
         });
         desktop.publish(vec![claude.clone(), codex.clone()]);
         println!("Esperando la respuesta del celular…");

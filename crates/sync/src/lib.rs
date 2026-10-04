@@ -18,8 +18,8 @@ pub mod proto;
 pub mod ticket;
 
 pub use proto::{
-    ActivityKind, AgentActivity, AgentCard, AgentStatus, ClipItem, ClipKind, Decision, MediaState, PcCommand,
-    PcState, PermissionAsk, RecordingState, MAX_CLIP_BYTES, MAX_HISTORY_ITEMS, MAX_HISTORY_ITEM_BYTES,
+    ActivityKind, AgentActivity, AgentCard, AgentQuestion, AgentStatus, ClipItem, ClipKind, Decision, MediaState, PcCommand,
+    PcState, PermissionAsk, QuestionOption, RecordingState, MAX_CLIP_BYTES, MAX_HISTORY_ITEMS, MAX_HISTORY_ITEM_BYTES,
     MAX_IMAGE_BYTES, MAX_THUMB_BYTES,
 };
 

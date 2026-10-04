@@ -122,6 +122,11 @@ impl AticPhone {
         self.phone.decide(agent_id, permission_id, decision)
     }
 
+    /// Contesta una pregunta del agente: una respuesta por pregunta, en orden.
+    pub fn answer(&self, agent_id: String, permission_id: String, answers: Vec<String>) -> bool {
+        self.phone.answer(agent_id, permission_id, answers)
+    }
+
     /// El historial guardado en el celular y lo borrado (al conectarse).
     pub fn sync_clips(&self, items: Vec<ClipItem>, deleted: Vec<String>) -> bool {
         self.phone.sync_clips(items, deleted)

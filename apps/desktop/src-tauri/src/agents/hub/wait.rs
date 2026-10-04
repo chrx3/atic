@@ -26,6 +26,9 @@ struct TurnState {
     /// Permisos sin contestar, en orden de llegada: el padre los necesita con
     /// id para poder contestarlos por el hub, no solo contarlos.
     permisos_pendientes: Vec<PendingPermission>,
+    /// El input entero de los permisos que son preguntas (`AskUserQuestion`):
+    /// el resumen recorta las opciones y contestarlas exige devolverlo entero.
+    preguntas: HashMap<ItemId, serde_json::Value>,
     ultimo: Option<(TurnStatus, String)>,
     seq: u64,
 }
@@ -39,6 +42,7 @@ impl TurnState {
             orden: Vec::new(),
             asistente: HashSet::new(),
             permisos_pendientes: Vec::new(),
+            preguntas: HashMap::new(),
             ultimo: None,
             seq: 0,
         }
@@ -108,6 +112,7 @@ impl TurnWatch {
                 st.orden.clear();
                 st.asistente.clear();
                 st.permisos_pendientes.clear();
+                st.preguntas.clear();
             }
             AgentDelta::ItemAdd { item, .. } => match &item.kind {
                 ItemKind::Message { role, text, .. } if *role == Role::Assistant => {
@@ -123,6 +128,9 @@ impl TurnWatch {
                 } if *status == PermissionStatus::Pending
                     && !st.permisos_pendientes.iter().any(|p| p.id == item.id) =>
                 {
+                    if input.get("questions").is_some_and(serde_json::Value::is_array) {
+                        st.preguntas.insert(item.id.clone(), input.clone());
+                    }
                     st.permisos_pendientes.push(PendingPermission {
                         id: item.id.clone(),
                         tool: tool.clone(),
@@ -157,11 +165,13 @@ impl TurnWatch {
                 st.running = false;
                 // Con el turno cerrado ningún permiso sigue esperando.
                 st.permisos_pendientes.clear();
+                st.preguntas.clear();
                 st.ultimo = Some((*status, cap_text(&st.combinado())));
             }
             AgentDelta::Failed { message } => {
                 st.running = false;
                 st.permisos_pendientes.clear();
+                st.preguntas.clear();
                 st.ultimo = Some((TurnStatus::Failed, message.clone()));
             }
             AgentDelta::ThreadPatch { .. } => {}
@@ -237,12 +247,22 @@ impl TurnWatch {
         candado(&self.inner).permisos_pendientes.clone()
     }
 
+    /// El input entero de un permiso pendiente que es una pregunta del agente.
+    pub fn pending_question(&self, id: &str) -> Option<serde_json::Value> {
+        let st = candado(&self.inner);
+        if !st.permisos_pendientes.iter().any(|p| p.id == id) {
+            return None;
+        }
+        st.preguntas.iter().find(|(k, _)| k.as_str() == id).map(|(_, v)| v.clone())
+    }
+
     /// Saca un permiso ya contestado. Hace falta porque no todos los
     /// adaptadores mandan el parche de estado al contestar (Claude Code no),
     /// y sin esto el permiso seguiría figurando pendiente para el padre.
     pub fn resolve_permission(&self, id: &str) {
         let mut st = candado(&self.inner);
         st.permisos_pendientes.retain(|p| p.id != id);
+        st.preguntas.retain(|k, _| k.as_str() != id);
         st.seq += 1;
         self.cv.notify_all();
     }

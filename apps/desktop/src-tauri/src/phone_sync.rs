@@ -24,8 +24,8 @@ use std::{
 
 use atic_sync::{
     desktop::{Desktop, DesktopConfig, DesktopEvent},
-    ActivityKind, AgentActivity, AgentCard, AgentStatus, ClipItem, ClipKind, Decision, MediaState, PcCommand, PcState, PermissionAsk,
-    RecordingState,
+    ActivityKind, AgentActivity, AgentCard, AgentQuestion, AgentStatus, ClipItem, ClipKind, Decision, MediaState, PcCommand, PcState, PermissionAsk,
+    QuestionOption, RecordingState,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
@@ -514,6 +514,22 @@ async fn handle_events(app: AppHandle, mut events: tokio::sync::mpsc::UnboundedR
                     *phone_media = None;
                 }
             }
+            DesktopEvent::Answer { agent_id, permission_id, answers, .. } => {
+                let questions = agents::bridge::phone_sessions()
+                    .into_iter()
+                    .find(|s| s.id == agent_id)
+                    .and_then(|s| s.question)
+                    .map(|q| parse_questions(&q))
+                    .unwrap_or_default();
+                let result = answers_by_question(&questions, &answers)
+                    .ok_or_else(|| "la pregunta ya no está".to_string())
+                    .and_then(|map| agents::bridge::phone_answer(&agent_id, &permission_id, map));
+                if let Err(err) = result {
+                    tracing::info!(%err, "respuesta del celular sin efecto");
+                }
+                poke();
+                continue;
+            }
             DesktopEvent::Decide { agent_id, permission_id, decision, .. } => {
                 let decision = match decision {
                     Decision::Allow => PermissionDecision::Allow,
@@ -700,12 +716,14 @@ fn snapshot() -> Vec<AgentCard> {
     let mut cards: Vec<AgentCard> = agents::bridge::phone_sessions()
         .into_iter()
         .map(|s| {
+            let questions = s.question.as_ref().map(parse_questions).unwrap_or_default();
             let permission = s.pending.first().map(|p| PermissionAsk {
                 id: p.id.clone(),
-                title: permission_title(&p.tool),
-                detail: permission_detail(&p.description, &p.input),
+                title: if questions.is_empty() { permission_title(&p.tool) } else { "Pregunta".into() },
+                detail: if questions.is_empty() { permission_detail(&p.description, &p.input) } else { None },
                 // Solo Claude Code guarda la regla sugerida; el resto la trata como «permitir».
-                can_allow_always: s.backend == "claude-code",
+                can_allow_always: s.backend == "claude-code" && questions.is_empty(),
+                questions,
             });
             let status = if permission.is_some() {
                 AgentStatus::Waiting
@@ -767,6 +785,62 @@ fn project_name(cwd: &str) -> String {
         .filter(|s| !s.is_empty())
         .unwrap_or(cwd)
         .to_string()
+}
+
+/// Las preguntas de un `AskUserQuestion` (igual que `parseQuestions` de la
+/// vista). OpenCode dice `multiple` en vez de `multiSelect`.
+fn parse_questions(input: &serde_json::Value) -> Vec<AgentQuestion> {
+    let str_of = |v: &serde_json::Value, k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
+    let Some(list) = input.get("questions").and_then(|q| q.as_array()) else {
+        return Vec::new();
+    };
+    list.iter()
+        .filter_map(|q| {
+            let question = str_of(q, "question");
+            if question.trim().is_empty() {
+                return None;
+            }
+            let options = q
+                .get("options")
+                .and_then(|o| o.as_array())
+                .map(|opts| {
+                    opts.iter()
+                        .filter_map(|o| {
+                            let label = str_of(o, "label");
+                            (!label.trim().is_empty())
+                                .then(|| QuestionOption { label, description: str_of(o, "description") })
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            let flag = |k: &str| q.get(k).and_then(|x| x.as_bool()).unwrap_or(false);
+            Some(AgentQuestion {
+                question,
+                header: str_of(q, "header"),
+                options,
+                multi_select: flag("multiSelect") || flag("multiple"),
+            })
+        })
+        .collect()
+}
+
+/// Las respuestas del celular (una por pregunta, en orden) como las espera
+/// la herramienta: por texto de la pregunta. Las vacías no se mandan.
+fn answers_by_question(
+    questions: &[AgentQuestion],
+    answers: &[String],
+) -> Option<serde_json::Map<String, serde_json::Value>> {
+    if questions.is_empty() {
+        return None;
+    }
+    Some(
+        questions
+            .iter()
+            .zip(answers)
+            .filter(|(_, a)| !a.trim().is_empty())
+            .map(|(q, a)| (q.question.clone(), serde_json::Value::String(a.trim().to_string())))
+            .collect(),
+    )
 }
 
 fn permission_title(tool: &str) -> String {
@@ -890,6 +964,26 @@ mod tests {
         // Input recortado (JSON roto): cae a la descripción.
         assert_eq!(permission_detail("Correr tests", r#"{"command":"cargo te"#).as_deref(), Some("Correr tests"));
         assert_eq!(permission_detail("  ", "{}"), None);
+    }
+
+    #[test]
+    fn preguntas_del_agente_y_sus_respuestas() {
+        let input = serde_json::json!({ "questions": [
+            { "question": "¿Qué base?", "header": "BD", "multiSelect": false,
+              "options": [{ "label": "Postgres", "description": "Relacional" }, { "label": "SQLite" }, { "label": " " }] },
+            { "question": "¿Qué tests?", "header": "Tests", "multiple": true, "options": [] },
+            { "header": "sin texto" },
+        ]});
+        let questions = parse_questions(&input);
+        assert_eq!(questions.len(), 2);
+        assert_eq!(questions[0].options.len(), 2);
+        assert_eq!(questions[0].options[1].description, "");
+        assert!(questions[1].multi_select);
+        assert!(parse_questions(&serde_json::json!({ "command": "ls" })).is_empty());
+
+        let map = answers_by_question(&questions, &["SQLite".into(), "  ".into()]).unwrap();
+        assert_eq!(serde_json::Value::Object(map), serde_json::json!({ "¿Qué base?": "SQLite" }));
+        assert!(answers_by_question(&[], &["x".into()]).is_none());
     }
 
     #[test]
