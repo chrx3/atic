@@ -1,15 +1,19 @@
-//! Preguntas de Claude Code (`AskUserQuestion`) que corren en una consola.
+//! Lo que un Claude Code en una consola de Atic espera del usuario: un
+//! permiso («¿Ejecutar este comando?») o una pregunta (`AskUserQuestion`).
 //!
-//! El TUI no escribe la pregunta en su transcript hasta que se contesta, así
-//! que se sabe de ella por el hook `PermissionRequest` (ver [`super::ping`]),
-//! que llega con el input entero mientras el selector ya está en pantalla. Se
-//! contesta desde el celular escribiendo en la consola las mismas teclas que
-//! usaría uno: flechas, espacio y Enter.
+//! El TUI no escribe ninguno de los dos en su transcript hasta que se
+//! contesta, así que se sabe de ellos por el hook `PermissionRequest` (ver
+//! [`super::ping`]), que llega con el input entero mientras el diálogo ya está
+//! en pantalla. Se contestan desde el celular escribiendo en la consola las
+//! mismas teclas que usaría uno.
 //!
 //! El orden de las teclas se probó contra el TUI (v2.1.x):
-//! - una respuesta: ↓ hasta la opción y Enter, que pasa a la pregunta siguiente;
-//! - varias: Espacio marca cada una y Enter sobre «Submit» (la fila después de
-//!   «Type something») pasa a la siguiente;
+//! - permiso: Enter es «Yes»; ↓ y Enter, «Yes, and always allow…» (solo existe
+//!   si el hook trae sugerencias de regla); Esc lo rechaza, sin hook de vuelta;
+//! - pregunta de una respuesta: ↓ hasta la opción y Enter, que pasa a la
+//!   pregunta siguiente;
+//! - de varias: Espacio marca cada una y Enter sobre «Submit» (la fila después
+//!   de «Type something») pasa a la siguiente;
 //! - escribir sobre «Type something» la reemplaza (y en las de varias la marca);
 //! - con más de una pregunta queda una revisión cuyo Enter manda todo. Con una
 //!   sola de una respuesta, su Enter ya la manda.
@@ -22,7 +26,9 @@ use std::time::{Duration, Instant};
 use atic_core::MutexExt;
 use serde_json::Value;
 
-/// Una pregunta sin contestar que sigue más de esto ya no es creíble.
+use super::PermissionDecision;
+
+/// Algo sin contestar que sigue más de esto ya no es creíble.
 const STALE_AFTER: Duration = Duration::from_secs(30 * 60);
 /// Entre tecla y tecla: el TUI redibuja y una ráfaga se toma como pegado.
 const KEY_GAP: Duration = Duration::from_millis(90);
@@ -34,10 +40,24 @@ const ENTER: &str = "\r";
 const SPACE: &str = " ";
 const ESC: &str = "\x1b";
 
+/// Lo que espera la consola.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum Prompt {
+    /// Una pregunta con opciones; el input entero de `AskUserQuestion`.
+    Question { input: Value },
+    /// Un permiso para una herramienta.
+    Permission {
+        tool: String,
+        input: Value,
+        /// El diálogo ofrece «Yes, and always allow…».
+        can_always: bool,
+    },
+}
+
 #[derive(Debug, Clone)]
 struct Pending {
     id: String,
-    input: Value,
+    prompt: Prompt,
     at: Instant,
 }
 
@@ -49,77 +69,93 @@ fn with_pending<R>(f: impl FnOnce(&mut HashMap<String, Pending>) -> R) -> R {
     f(guard.get_or_insert_with(HashMap::new))
 }
 
-/// Lo que dice un hook sobre las preguntas de su sesión.
+/// `PermissionRequest` no trae el id de la herramienta: lo mismo pedido da el mismo id.
+fn stable_id(prefix: &str, tool: &str, input: &Value) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    tool.hash(&mut h);
+    input.to_string().hash(&mut h);
+    format!("{prefix}-{:016x}", h.finish())
+}
+
+/// Lo que dice un hook sobre lo que espera su sesión.
 pub(crate) fn observe(v: &Value) {
     let Some(session) = v.get("session_id").and_then(Value::as_str).filter(|s| !s.is_empty()) else {
         return;
     };
     let event = v.get("hook_event_name").and_then(Value::as_str).unwrap_or("");
     let tool = v.get("tool_name").and_then(Value::as_str).unwrap_or("");
-    match event {
-        "PermissionRequest" | "PreToolUse" if tool == "AskUserQuestion" => {
-            let Some(input) = v.get("tool_input").filter(|i| i.get("questions").is_some_and(Value::is_array)) else {
+    let input = v.get("tool_input").cloned().unwrap_or(Value::Null);
+    let prompt = match event {
+        "PermissionRequest" if tool == "AskUserQuestion" => {
+            if !input.get("questions").is_some_and(Value::is_array) {
                 return;
-            };
-            let id = v
-                .get("tool_use_id")
-                .and_then(Value::as_str)
-                .map(str::to_string)
-                // `PermissionRequest` no trae el id de la herramienta: la misma pregunta da el mismo id.
-                .unwrap_or_else(|| {
-                    use std::hash::{Hash, Hasher};
-                    let mut h = std::collections::hash_map::DefaultHasher::new();
-                    input.to_string().hash(&mut h);
-                    format!("q-{:016x}", h.finish())
-                });
-            with_pending(|map| {
-                // PreToolUse y PermissionRequest llegan los dos: la primera vez manda.
-                if map.get(session).is_some_and(|p| p.id == id) {
-                    return;
-                }
-                map.insert(session.to_string(), Pending { id, input: input.clone(), at: Instant::now() });
-            });
+            }
+            Prompt::Question { input }
+        }
+        "PermissionRequest" if !tool.is_empty() => {
+            let can_always = v
+                .get("permission_suggestions")
+                .and_then(Value::as_array)
+                .is_some_and(|s| !s.is_empty());
+            Prompt::Permission { tool: tool.to_string(), input, can_always }
         }
         // Se contestó (en la consola o desde acá), o la conversación siguió.
         "PostToolUse" | "UserPromptSubmit" | "Stop" => {
             with_pending(|map| map.remove(session));
+            return;
         }
-        _ => {}
-    }
+        _ => return,
+    };
+    let id = match &prompt {
+        Prompt::Question { input } => stable_id("q", "AskUserQuestion", input),
+        Prompt::Permission { tool, input, .. } => stable_id("p", tool, input),
+    };
+    with_pending(|map| {
+        map.insert(session.to_string(), Pending { id, prompt, at: Instant::now() });
+    });
 }
 
-/// La pregunta pendiente de una sesión: su id y el input entero.
-pub(crate) fn pending(session: &str) -> Option<(String, Value)> {
+/// Lo que espera una sesión: su id y qué es.
+pub(crate) fn pending(session: &str) -> Option<(String, Prompt)> {
     with_pending(|map| {
         map.retain(|_, p| p.at.elapsed() < STALE_AFTER);
-        map.get(session).map(|p| (p.id.clone(), p.input.clone()))
+        map.get(session).map(|p| (p.id.clone(), p.prompt.clone()))
     })
 }
 
-/// Contesta tecleando en la consola donde corre la sesión.
+/// Contesta una pregunta tecleando en la consola donde corre la sesión.
 pub(crate) fn answer(session: &str, id: &str, answers: &[String]) -> Result<(), String> {
-    let input = take(session, id)?;
+    let Prompt::Question { input } = take(session, id)? else {
+        return Err("eso no era una pregunta".into());
+    };
     let questions = shape(&input);
     if questions.is_empty() {
         return Err("la pregunta no tiene la forma esperada".into());
     }
     let console = console_of(session)?;
-    let steps = keystrokes(&questions, answers);
-    type_steps(console, steps);
+    type_steps(console, keystrokes(&questions, answers));
     Ok(())
 }
 
-/// Descarta la pregunta, como Esc en el TUI.
-pub(crate) fn dismiss(session: &str, id: &str) -> Result<(), String> {
-    take(session, id)?;
+/// Contesta un permiso, o descarta una pregunta (rechazar es Esc en los dos).
+pub(crate) fn decide(session: &str, id: &str, decision: PermissionDecision) -> Result<(), String> {
+    let prompt = take(session, id)?;
     let console = console_of(session)?;
-    super::console::write_input(&console, ESC)
+    let keys: &[&str] = match (&prompt, decision) {
+        (_, PermissionDecision::Deny) => &[ESC],
+        (Prompt::Question { .. }, _) => return Err("una pregunta se contesta con opciones".into()),
+        (Prompt::Permission { can_always: true, .. }, PermissionDecision::AllowAlways) => &[DOWN, ENTER],
+        (Prompt::Permission { .. }, _) => &[ENTER],
+    };
+    type_steps(console, keys.iter().map(|k| Step::Keys(k.to_string())).collect());
+    Ok(())
 }
 
-fn take(session: &str, id: &str) -> Result<Value, String> {
+fn take(session: &str, id: &str) -> Result<Prompt, String> {
     with_pending(|map| match map.get(session) {
-        Some(p) if p.id == id => Ok(map.remove(session).map(|p| p.input).unwrap_or_default()),
-        _ => Err("esa pregunta ya se contestó".to_string()),
+        Some(p) if p.id == id => Ok(map.remove(session).map(|p| p.prompt).expect("recién visto")),
+        _ => Err("eso ya se contestó".to_string()),
     })
 }
 
@@ -301,18 +337,42 @@ mod tests {
     }
 
     #[test]
-    fn el_hook_anota_y_borra_la_pregunta() {
+    fn el_hook_anota_preguntas_y_permisos_y_los_borra() {
         let input = json!({ "questions": [{ "question": "¿Qué día?", "options": [{ "label": "Lunes" }] }] });
         observe(&json!({
             "session_id": "s-test", "hook_event_name": "PermissionRequest",
-            "tool_name": "AskUserQuestion", "tool_use_id": "t1", "tool_input": input,
+            "tool_name": "AskUserQuestion", "tool_input": input,
         }));
-        assert_eq!(pending("s-test").map(|p| p.0).as_deref(), Some("t1"));
-        // Otra herramienta no es una pregunta.
-        observe(&json!({ "session_id": "s-test", "hook_event_name": "PermissionRequest", "tool_name": "Bash" }));
-        assert!(pending("s-test").is_some());
-        observe(&json!({ "session_id": "s-test", "hook_event_name": "PostToolUse", "tool_name": "AskUserQuestion" }));
+        let (id, prompt) = pending("s-test").unwrap();
+        assert!(matches!(prompt, Prompt::Question { .. }));
+        // La misma pregunta repetida da el mismo id.
+        observe(&json!({
+            "session_id": "s-test", "hook_event_name": "PermissionRequest",
+            "tool_name": "AskUserQuestion", "tool_input": input,
+        }));
+        assert_eq!(pending("s-test").unwrap().0, id);
+
+        observe(&json!({
+            "session_id": "s-test", "hook_event_name": "PermissionRequest", "tool_name": "Bash",
+            "tool_input": { "command": "mkdir x" }, "permission_suggestions": [{ "type": "addRules" }],
+        }));
+        let (pid, prompt) = pending("s-test").unwrap();
+        assert_ne!(pid, id);
+        assert_eq!(
+            prompt,
+            Prompt::Permission { tool: "Bash".into(), input: json!({ "command": "mkdir x" }), can_always: true }
+        );
+        observe(&json!({ "session_id": "s-test", "hook_event_name": "PostToolUse", "tool_name": "Bash" }));
         assert!(pending("s-test").is_none());
-        assert!(take("s-test", "t1").is_err());
+        assert!(take("s-test", &pid).is_err());
+    }
+
+    #[test]
+    fn sin_sugerencias_no_hay_permitir_siempre() {
+        observe(&json!({
+            "session_id": "s-sin", "hook_event_name": "PermissionRequest", "tool_name": "Edit",
+            "tool_input": { "file_path": "a.rs" },
+        }));
+        assert!(matches!(pending("s-sin").unwrap().1, Prompt::Permission { can_always: false, .. }));
     }
 }

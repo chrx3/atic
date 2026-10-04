@@ -523,7 +523,7 @@ async fn handle_events(app: AppHandle, mut events: tokio::sync::mpsc::UnboundedR
                     .unwrap_or_default();
                 let result = if questions.is_empty() {
                     // No es una sesión que maneje Atic: quizá un Claude en una consola.
-                    agents::console_questions::answer(&agent_id, &permission_id, &answers)
+                    agents::console_prompts::answer(&agent_id, &permission_id, &answers)
                 } else {
                     answers_by_question(&questions, &answers)
                         .ok_or_else(|| "la pregunta ya no está".to_string())
@@ -543,14 +543,10 @@ async fn handle_events(app: AppHandle, mut events: tokio::sync::mpsc::UnboundedR
                 };
                 // Si el permiso ya se contestó en el PC, esto falla y no pasa nada:
                 // la foto siguiente le muestra al celular que ya no está.
-                let console_question = agents::console_questions::pending(&agent_id)
-                    .is_some_and(|(id, _)| id == permission_id);
-                let result = if console_question {
-                    // «Omitir» una pregunta de consola es Esc; aprobarla no tiene sentido.
-                    match decision {
-                        PermissionDecision::Deny => agents::console_questions::dismiss(&agent_id, &permission_id),
-                        _ => Ok(()),
-                    }
+                let in_console = agents::console_prompts::pending(&agent_id).is_some_and(|(id, _)| id == permission_id);
+                let result = if in_console {
+                    // Un Claude en consola: la decisión se teclea en su diálogo.
+                    agents::console_prompts::decide(&agent_id, &permission_id, decision)
                 } else {
                     agents::bridge::agent_permission(agent_id, permission_id, decision)
                 };
@@ -763,8 +759,8 @@ fn snapshot() -> Vec<AgentCard> {
 
     if agents::PAGER_ENABLED {
         cards.extend(presence::snapshot().into_iter().map(|p| AgentCard {
-            // Una pregunta de un Claude en consola de Atic se contesta tecleando.
-            permission: console_question(&p.id),
+            // Un permiso o una pregunta de un Claude en consola de Atic se contesta tecleando.
+            permission: console_prompt(&p.id),
             project: project_name(&p.cwd),
             id: p.id,
             backend_id: p.backend_id,
@@ -794,19 +790,31 @@ fn snapshot() -> Vec<AgentCard> {
     cards
 }
 
-/// La pregunta pendiente de un Claude que corre en una consola de Atic, si
-/// la hay y la consola sigue ahí (sin consola no hay dónde teclear).
-fn console_question(session: &str) -> Option<PermissionAsk> {
-    let (id, input) = agents::console_questions::pending(session)?;
+/// Lo que espera un Claude que corre en una consola de Atic (un permiso o una
+/// pregunta), si la consola sigue ahí: sin consola no hay dónde teclear.
+fn console_prompt(session: &str) -> Option<PermissionAsk> {
+    use agents::console_prompts::Prompt;
+    let (id, prompt) = agents::console_prompts::pending(session)?;
     agents::console::console_for_presence(session.to_string())?;
-    let questions = parse_questions(&input);
-    (!questions.is_empty()).then(|| PermissionAsk {
-        id,
-        title: "Pregunta".into(),
-        detail: None,
-        can_allow_always: false,
-        questions,
-    })
+    match prompt {
+        Prompt::Question { input } => {
+            let questions = parse_questions(&input);
+            (!questions.is_empty()).then(|| PermissionAsk {
+                id,
+                title: "Pregunta".into(),
+                detail: None,
+                can_allow_always: false,
+                questions,
+            })
+        }
+        Prompt::Permission { tool, input, can_always } => Some(PermissionAsk {
+            id,
+            title: permission_title(&tool),
+            detail: permission_detail(input.get("description").and_then(|d| d.as_str()).unwrap_or(""), &input.to_string()),
+            can_allow_always: can_always,
+            questions: Vec::new(),
+        }),
+    }
 }
 
 /// Último segmento del `cwd`: el nombre que el usuario reconoce.
@@ -877,7 +885,7 @@ fn answers_by_question(
 
 fn permission_title(tool: &str) -> String {
     match tool {
-        "Bash" | "bash" | "shell" | "exec" => "Ejecutar comando".into(),
+        "Bash" | "bash" | "PowerShell" | "shell" | "exec" => "Ejecutar comando".into(),
         "Edit" | "MultiEdit" | "Write" | "edit" | "write" | "apply_patch" => "Editar archivo".into(),
         "WebFetch" | "WebSearch" => "Usar la web".into(),
         other => format!("Usar {other}"),

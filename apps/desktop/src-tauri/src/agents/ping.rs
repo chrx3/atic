@@ -35,7 +35,9 @@ pub fn hook_snippet() -> String {
                 "hooks": [{ "type": "command", "command": command.clone() }]
             }],
             "PostToolUse": [{
-                "matcher": "AskUserQuestion",
+                // Las que pueden pedir permiso: así se sabe que ya se contestó.
+                // Leer y buscar quedan fuera; son las más seguidas y no preguntan.
+                "matcher": "AskUserQuestion|Bash|PowerShell|Edit|MultiEdit|Write|NotebookEdit|WebFetch|WebSearch|mcp__.*",
                 "hooks": [{ "type": "command", "command": command.clone() }]
             }],
             "UserPromptSubmit": [{
@@ -186,7 +188,7 @@ pub fn drain() {
         };
         consumed += line.len() as u64 + 1;
         if let Ok(v) = serde_json::from_str::<Value>(&line) {
-            super::console_questions::observe(&v);
+            super::console_prompts::observe(&v);
             if let Some(ping) = classify_hook(&v) {
                 apply_ping(ping);
             }
