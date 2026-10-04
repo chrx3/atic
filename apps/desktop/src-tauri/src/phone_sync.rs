@@ -648,7 +648,8 @@ fn paste_phone_image(data: &[u8]) -> Result<(), String> {
 /// Lo que suena y si se está grabando, en la forma del protocolo.
 async fn pc_state(app: &AppHandle, media_key: &mut Option<String>) -> PcState {
     // `known` evita traer la carátula (cientos de KB) si no cambió: el celular no la usa.
-    let media = crate::media::media_now(media_key.clone()).await.ok().flatten();
+    // Solo el PC: con `media_now` iría también la música del celular (la de la pill).
+    let media = crate::media::pc_media_now(media_key.clone()).await;
     *media_key = media.as_ref().map(|m| m.thumb_key.clone());
     let recording = app
         .state::<AppState>()

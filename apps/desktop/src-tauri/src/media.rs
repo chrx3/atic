@@ -128,6 +128,25 @@ pub async fn media_now(known: Option<String>) -> Result<Option<MediaNow>, String
     .map_err(|e| e.to_string())?
 }
 
+/// Solo lo que suena en el PC, sin la música del celular ni tocar lo que
+/// muestra la pill. Es lo que el PC le cuenta al celular: con `media_now`, el
+/// celular recibía su propia música de vuelta como si sonara en el PC.
+pub(crate) async fn pc_media_now(known: Option<String>) -> Option<MediaNow> {
+    tauri::async_runtime::spawn_blocking(move || {
+        #[cfg(target_os = "macos")]
+        let now = imp::now_known(known.as_deref());
+        #[cfg(not(target_os = "macos"))]
+        let now = {
+            let _ = known;
+            imp::now()
+        };
+        now.ok().flatten()
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
 #[tauri::command]
 pub async fn media_volume() -> Result<MediaVolume, String> {
     // El volumen del celular no se maneja desde acá: sin slider.
