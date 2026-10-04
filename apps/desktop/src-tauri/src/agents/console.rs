@@ -645,6 +645,30 @@ fn with_claude_hooks(command: &str) -> String {
     }
 }
 
+/// Lo mismo para Codex: su perfil `atic` trae los hooks (ver
+/// [`super::ping::codex_profile`]). Los hooks que no vienen del config del
+/// usuario piden confianza en `/hooks`; el flag la da solo a esta corrida.
+fn with_codex_hooks(command: &str) -> String {
+    let mut parts = command.splitn(2, char::is_whitespace);
+    let first = parts.next().unwrap_or("");
+    let rest = parts.next().unwrap_or("").trim();
+    let is_codex = first.eq_ignore_ascii_case("codex") || first.eq_ignore_ascii_case("codex.exe");
+    let has_profile = rest.split_whitespace().any(|a| a == "-p" || a.starts_with("--profile"));
+    if !is_codex || has_shell_syntax(command) || has_profile {
+        return command.to_string();
+    }
+    let Some(profile) = super::ping::codex_profile() else {
+        return command.to_string();
+    };
+    // Las opciones globales van antes de un subcomando (`codex resume <id>`).
+    let flags = format!("-p {profile} --dangerously-bypass-hook-trust");
+    if rest.is_empty() {
+        format!("{first} {flags}")
+    } else {
+        format!("{first} {flags} {rest}")
+    }
+}
+
 fn build_local_command(command: &str) -> Result<CommandBuilder, String> {
     // Sintaxis de shell (pipe, redirección, comillas, encadenados…): partir la
     // línea por espacios y lanzar el primer token directo le pasa `|`, `>`
@@ -1224,7 +1248,11 @@ pub fn console_open(
             }
         }
         "local" => {
-            let command = options.command.as_deref().map(str::trim).map(with_claude_hooks);
+            let command = options
+                .command
+                .as_deref()
+                .map(str::trim)
+                .map(|c| with_codex_hooks(&with_claude_hooks(c)));
             let mut cmd = match command.as_deref() {
                 Some(c) if !c.is_empty() => build_local_command(c)?,
                 _ => resolve_local_shell(),
@@ -2014,6 +2042,20 @@ mod tests {
         assert_eq!(with_claude_hooks("codex"), "codex");
         assert_eq!(with_claude_hooks("claude | tee x"), "claude | tee x");
         assert_eq!(with_claude_hooks("claude --settings a.json"), "claude --settings a.json");
+    }
+
+    #[test]
+    fn codex_en_consola_lleva_el_perfil_de_atic() {
+        if super::super::ping::codex_profile().is_none() {
+            return; // sin ~/.codex no hay dónde dejar el perfil
+        }
+        assert_eq!(with_codex_hooks("codex"), "codex -p atic --dangerously-bypass-hook-trust");
+        assert_eq!(
+            with_codex_hooks("codex resume 0199"),
+            "codex -p atic --dangerously-bypass-hook-trust resume 0199"
+        );
+        assert_eq!(with_codex_hooks("codex -p otro"), "codex -p otro");
+        assert_eq!(with_codex_hooks("claude"), "claude");
     }
 
     #[test]

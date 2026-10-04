@@ -13,10 +13,10 @@ use serde_json::Value;
 
 use super::presence::{self, AgentPresence, PresenceSource, PresenceStatus};
 
-const BACKEND_ID: &str = "claude-code";
-const BACKEND_NAME: &str = "Claude Code";
+use super::console_prompts::Cli;
 
 static OFFSET: Mutex<u64> = Mutex::new(0);
+static CODEX_OFFSET: Mutex<u64> = Mutex::new(0);
 
 pub fn ping_path() -> PathBuf {
     std::env::temp_dir().join("atic-agent-ping.jsonl")
@@ -49,6 +49,66 @@ pub fn hook_snippet() -> String {
         }
     }))
     .unwrap_or_else(|_| "{}".into())
+}
+
+/// Dónde anotan los hooks de Codex. Archivo aparte: sus ids de sesión son de
+/// Codex y la presencia tiene que saber de qué CLI es cada uno.
+pub fn codex_ping_path() -> PathBuf {
+    std::env::temp_dir().join("atic-codex-ping.jsonl")
+}
+
+/// El comando de los hooks de Codex. En Windows Codex los corre con
+/// PowerShell (no con `sh` como Claude), y su `[Console]::In` lee en la página
+/// de códigos de la consola: sin fijar UTF-8 los acentos llegaban rotos.
+fn codex_hook_command(path: &std::path::Path) -> String {
+    #[cfg(windows)]
+    {
+        let path_ps = path.to_string_lossy().replace('\'', "''");
+        format!(
+            "[Console]::InputEncoding=[Text.UTF8Encoding]::new($false); [Console]::In.ReadToEnd() | Add-Content -LiteralPath '{path_ps}' -Encoding utf8"
+        )
+    }
+    #[cfg(not(windows))]
+    {
+        hook_command(path)
+    }
+}
+
+/// Perfil `atic` de Codex (`codex -p atic`): una capa con los hooks de Atic
+/// sobre la configuración del usuario, que no se toca. Solo pesa en las
+/// consolas que lanza Atic. Devuelve el nombre del perfil.
+pub fn codex_profile() -> Option<&'static str> {
+    let home = std::env::var_os("CODEX_HOME")
+        .map(PathBuf::from)
+        .or_else(|| super::watch_codex::sessions_root().and_then(|s| s.parent().map(PathBuf::from)))?;
+    if !home.is_dir() {
+        return None;
+    }
+    // Una cadena JSON es una cadena básica de TOML válida.
+    let command = serde_json::to_string(&codex_hook_command(&codex_ping_path())).ok()?;
+    let hook = |matcher: Option<&str>| {
+        let matcher = matcher.map(|m| format!("matcher = \"{m}\", ")).unwrap_or_default();
+        format!("[{{ {matcher}hooks = [{{ type = \"command\", command = {command} }}] }}]")
+    };
+    // Sin `PostToolUse` para todas las herramientas: cada hook es un PowerShell
+    // que arranca, y Codex corre muchos comandos. Un permiso contestado en el
+    // PC se borra con el `Stop` del turno.
+    let body = format!(
+        "# Lo escribe Atic para sus consolas (`codex -p atic`). Se regenera solo.\n\
+         [hooks]\n\
+         PermissionRequest = {}\n\
+         PreToolUse = {}\n\
+         PostToolUse = {}\n\
+         UserPromptSubmit = {}\n\
+         Stop = {}\n",
+        hook(None),
+        hook(Some("request_user_input")),
+        hook(Some("request_user_input")),
+        hook(None),
+        hook(None),
+    );
+    std::fs::write(home.join("atic.config.toml"), body).ok()?;
+    Some("atic")
 }
 
 /// Los mismos hooks en un archivo, para lanzar `claude --settings <archivo>`
@@ -132,15 +192,19 @@ pub fn classify_hook(v: &Value) -> Option<HookPing> {
     })
 }
 
-pub fn apply_ping(ping: HookPing) {
+pub(crate) fn apply_ping(ping: HookPing, cli: Cli) {
+    let (backend_id, backend_name) = match cli {
+        Cli::Claude => ("claude-code", "Claude Code"),
+        Cli::Codex => ("codex", "Codex"),
+    };
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
     let mut presence = presence::get(&ping.session_id).unwrap_or(AgentPresence {
         id: ping.session_id.clone(),
-        backend_id: BACKEND_ID.into(),
-        backend_name: BACKEND_NAME.into(),
+        backend_id: backend_id.into(),
+        backend_name: backend_name.into(),
         cwd: ping.cwd.clone(),
         status: ping.status,
         preview: None,
@@ -161,15 +225,20 @@ pub fn apply_ping(ping: HookPing) {
     presence::upsert(presence);
 }
 
+/// Consume lo que anotaron los hooks de Claude y de Codex desde la última vez.
 pub fn drain() {
-    let path = ping_path();
-    let Ok(mut file) = OpenOptions::new().read(true).open(&path) else {
+    drain_file(&ping_path(), &OFFSET, Cli::Claude);
+    drain_file(&codex_ping_path(), &CODEX_OFFSET, Cli::Codex);
+}
+
+fn drain_file(path: &std::path::Path, offset_lock: &Mutex<u64>, cli: Cli) {
+    let Ok(mut file) = OpenOptions::new().read(true).open(path) else {
         return;
     };
     let Ok(len) = file.metadata().map(|m| m.len()) else {
         return;
     };
-    let mut offset = OFFSET.lock().ok();
+    let mut offset = offset_lock.lock().ok();
     let start = offset.as_deref().copied().unwrap_or(0);
     if len < start {
         if let Some(o) = offset.as_mut() {
@@ -187,10 +256,11 @@ pub fn drain() {
             break;
         };
         consumed += line.len() as u64 + 1;
-        if let Ok(v) = serde_json::from_str::<Value>(&line) {
-            super::console_prompts::observe(&v);
+        // PowerShell abre el archivo con BOM.
+        if let Ok(v) = serde_json::from_str::<Value>(line.trim_start_matches('\u{feff}')) {
+            super::console_prompts::observe(&v, cli);
             if let Some(ping) = classify_hook(&v) {
-                apply_ping(ping);
+                apply_ping(ping, cli);
             }
         }
     }
@@ -252,6 +322,17 @@ mod tests {
             "notification_type": "auth_success"
         }))
         .is_none());
+    }
+
+    #[test]
+    fn el_hook_de_codex_es_powershell_en_utf8() {
+        let command = codex_hook_command(&codex_ping_path());
+        #[cfg(windows)]
+        {
+            assert!(command.contains("UTF8Encoding"), "{command}");
+            assert!(command.contains("Add-Content"), "{command}");
+        }
+        assert!(command.contains("atic-codex-ping.jsonl"), "{command}");
     }
 
     #[test]
