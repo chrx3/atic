@@ -795,7 +795,9 @@ fn snapshot() -> Vec<AgentCard> {
 fn console_prompt(session: &str) -> Option<PermissionAsk> {
     use agents::console_prompts::Prompt;
     let (id, prompt) = agents::console_prompts::pending(session)?;
-    agents::console::console_for_presence(session.to_string())?;
+    if !agents::console_prompts::answerable(session) {
+        return None;
+    }
     match prompt {
         Prompt::Question { input } => {
             let questions = parse_questions(&input);

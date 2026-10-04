@@ -196,6 +196,7 @@ pub(crate) fn apply_ping(ping: HookPing, cli: Cli) {
     let (backend_id, backend_name) = match cli {
         Cli::Claude => ("claude-code", "Claude Code"),
         Cli::Codex => ("codex", "Codex"),
+        Cli::OpenCode => ("opencode", "OpenCode"),
     };
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

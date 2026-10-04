@@ -645,6 +645,21 @@ fn with_claude_hooks(command: &str) -> String {
     }
 }
 
+/// OpenCode con su servidor en un puerto conocido: así Atic ve y contesta
+/// sus preguntas y permisos (ver [`super::console_opencode`]).
+fn with_opencode_port(command: &str) -> String {
+    let first = command.split_whitespace().next().unwrap_or("");
+    let is_opencode = first.eq_ignore_ascii_case("opencode") || first.eq_ignore_ascii_case("opencode.exe");
+    if !is_opencode || has_shell_syntax(command) || command.contains("--port") {
+        return command.to_string();
+    }
+    let Some(port) = super::console_opencode::free_port() else {
+        return command.to_string();
+    };
+    super::console_opencode::watch(port);
+    format!("{command} --port {port}")
+}
+
 /// Lo mismo para Codex: su perfil `atic` trae los hooks (ver
 /// [`super::ping::codex_profile`]). Los hooks que no vienen del config del
 /// usuario piden confianza en `/hooks`; el flag la da solo a esta corrida.
@@ -1252,7 +1267,7 @@ pub fn console_open(
                 .command
                 .as_deref()
                 .map(str::trim)
-                .map(|c| with_codex_hooks(&with_claude_hooks(c)));
+                .map(|c| with_opencode_port(&with_codex_hooks(&with_claude_hooks(c))));
             let mut cmd = match command.as_deref() {
                 Some(c) if !c.is_empty() => build_local_command(c)?,
                 _ => resolve_local_shell(),

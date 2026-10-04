@@ -9,6 +9,9 @@
 //! Claude avisa los dos por `PermissionRequest`; Codex, los permisos igual y
 //! sus preguntas (`request_user_input`) por `PreToolUse`.
 //!
+//! OpenCode no necesita teclas: su TUI levanta un servidor HTTP que lista lo
+//! pendiente y lo contesta (ver [`super::console_opencode`]).
+//!
 //! Teclas de Codex (0.157): permiso igual que Claude (Enter / ↓ Enter / Esc);
 //! pregunta: ↓ hasta la opción y Enter; texto propio en «None of the above»
 //! (la fila después de las opciones) con Tab para abrir la nota.
@@ -51,6 +54,7 @@ const ESC: &str = "\x1b";
 pub(crate) enum Cli {
     Claude,
     Codex,
+    OpenCode,
 }
 
 /// Lo que espera la consola.
@@ -71,6 +75,8 @@ pub(crate) enum Prompt {
 struct Pending {
     id: String,
     cli: Cli,
+    /// OpenCode: el puerto de su servidor, por donde se contesta.
+    port: Option<u16>,
     prompt: Prompt,
     at: Instant,
 }
@@ -131,8 +137,32 @@ pub(crate) fn observe(v: &Value, cli: Cli) {
         Prompt::Permission { tool, input, .. } => stable_id("p", tool, input),
     };
     with_pending(|map| {
-        map.insert(session.to_string(), Pending { id, cli, prompt, at: Instant::now() });
+        map.insert(session.to_string(), Pending { id, cli, port: None, prompt, at: Instant::now() });
     });
+}
+
+/// Lo pendiente que lista el servidor de un OpenCode (ver
+/// [`super::console_opencode`]). Lo que ese puerto ya no lista, se contestó.
+pub(crate) fn sync_opencode(port: u16, live: Vec<(String, String, Prompt)>) {
+    with_pending(|map| {
+        map.retain(|_, p| p.port != Some(port) || live.iter().any(|(_, id, _)| *id == p.id));
+        for (session, id, prompt) in live {
+            if map.get(&session).is_some_and(|p| p.id == id) {
+                continue;
+            }
+            map.insert(session, Pending { id, cli: Cli::OpenCode, port: Some(port), prompt, at: Instant::now() });
+        }
+    });
+}
+
+/// ¿Se puede contestar desde acá? Por HTTP (OpenCode) siempre; con teclas,
+/// solo si la sesión corre en una consola de Atic.
+pub(crate) fn answerable(session: &str) -> bool {
+    match with_pending(|map| map.get(session).map(|p| p.port)) {
+        Some(Some(_)) => true,
+        Some(None) => super::console::console_for_presence(session.to_string()).is_some(),
+        None => false,
+    }
 }
 
 /// Lo que espera una sesión: su id y qué es.
@@ -145,18 +175,34 @@ pub(crate) fn pending(session: &str) -> Option<(String, Prompt)> {
 
 /// Contesta una pregunta tecleando en la consola donde corre la sesión.
 pub(crate) fn answer(session: &str, id: &str, answers: &[String]) -> Result<(), String> {
-    let (cli, prompt) = take(session, id)?;
-    let Prompt::Question { input } = prompt else {
+    let pending = take(session, id)?;
+    let Prompt::Question { input } = &pending.prompt else {
         return Err("eso no era una pregunta".into());
     };
-    let questions = shape(&input);
+    let questions = shape(input);
     if questions.is_empty() {
         return Err("la pregunta no tiene la forma esperada".into());
     }
+    if let Some(port) = pending.port {
+        // Por pregunta, las opciones elegidas o lo escrito.
+        let lists = questions
+            .iter()
+            .enumerate()
+            .map(|(i, (labels, multi))| {
+                let answer = answers.get(i).map(String::as_str).unwrap_or("").trim();
+                match picks(labels, answer, *multi) {
+                    Some(p) => p.into_iter().map(|i| labels[i].clone()).collect(),
+                    None if answer.is_empty() => Vec::new(),
+                    None => vec![clean(answer)],
+                }
+            })
+            .collect();
+        return super::console_opencode::reply_question(port, id, lists);
+    }
     let console = console_of(session)?;
-    let steps = match cli {
-        Cli::Claude => keystrokes(&questions, answers),
+    let steps = match pending.cli {
         Cli::Codex => codex_keystrokes(&questions, answers),
+        _ => keystrokes(&questions, answers),
     };
     type_steps(console, steps);
     Ok(())
@@ -164,7 +210,21 @@ pub(crate) fn answer(session: &str, id: &str, answers: &[String]) -> Result<(), 
 
 /// Contesta un permiso, o descarta una pregunta (rechazar es Esc en los dos).
 pub(crate) fn decide(session: &str, id: &str, decision: PermissionDecision) -> Result<(), String> {
-    let (_, prompt) = take(session, id)?;
+    let pending = take(session, id)?;
+    let prompt = pending.prompt;
+    if let Some(port) = pending.port {
+        return match prompt {
+            Prompt::Question { .. } => super::console_opencode::reject_question(port, id),
+            Prompt::Permission { .. } => {
+                let reply = match decision {
+                    PermissionDecision::Allow => "once",
+                    PermissionDecision::AllowAlways => "always",
+                    PermissionDecision::Deny => "reject",
+                };
+                super::console_opencode::reply_permission(port, id, reply)
+            }
+        };
+    }
     let console = console_of(session)?;
     let keys: &[&str] = match (&prompt, decision) {
         (_, PermissionDecision::Deny) => &[ESC],
@@ -176,9 +236,9 @@ pub(crate) fn decide(session: &str, id: &str, decision: PermissionDecision) -> R
     Ok(())
 }
 
-fn take(session: &str, id: &str) -> Result<(Cli, Prompt), String> {
+fn take(session: &str, id: &str) -> Result<Pending, String> {
     with_pending(|map| match map.get(session) {
-        Some(p) if p.id == id => Ok(map.remove(session).map(|p| (p.cli, p.prompt)).expect("recién visto")),
+        Some(p) if p.id == id => Ok(map.remove(session).expect("recién visto")),
         _ => Err("eso ya se contestó".to_string()),
     })
 }
@@ -431,6 +491,19 @@ mod tests {
         // Otra herramienta antes de contestar no es una pregunta ni la borra.
         observe(&json!({ "session_id": "s-codex", "hook_event_name": "PreToolUse", "tool_name": "Bash" }), Cli::Codex);
         assert!(pending("s-codex").is_some());
+    }
+
+    #[test]
+    fn opencode_lo_que_su_servidor_deja_de_listar_se_contesto() {
+        let q = Prompt::Question { input: json!({ "questions": [{ "question": "¿Día?", "options": [] }] }) };
+        sync_opencode(4599, vec![("ses_a".into(), "que_1".into(), q.clone())]);
+        assert!(answerable("ses_a"));
+        assert_eq!(pending("ses_a").unwrap().0, "que_1");
+        // Otro puerto no la toca; el suyo, sin listarla, la borra.
+        sync_opencode(4600, vec![]);
+        assert!(pending("ses_a").is_some());
+        sync_opencode(4599, vec![]);
+        assert!(pending("ses_a").is_none());
     }
 
     #[test]
