@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { lyricIndex, parseLrc } from "./lyrics";
+import { lyricIndex, parseLrc, withoutTranslation } from "./lyrics";
 
 describe("parseLrc", () => {
   it("lee marcas, ignora cabeceras y ordena versos repetidos", () => {
@@ -23,5 +23,27 @@ describe("lyricIndex", () => {
     expect(lyricIndex(lines, 1000)).toBe(0);
     expect(lyricIndex(lines, 4999)).toBe(1);
     expect(lyricIndex(lines, 90_000)).toBe(2);
+  });
+});
+
+describe("withoutTranslation", () => {
+  it("una letra con la traducción en cada verso queda en el original", () => {
+    // Así viene NUEVAYoL en LRCLIB.
+    const lines = parseLrc(
+      "[00:00.12] ¡NUEVAYoL!^NEW YORK!\n[00:20.75] Si te quieres divertir^If you want to have fun",
+    );
+    expect(lines.map((l) => l.text)).toEqual(["¡NUEVAYoL!", "Si te quieres divertir"]);
+    const semicolon = parseLrc(
+      "[00:01.00]Hola mi amor; Hello my love\n[00:02.00]Te extraño; I miss you\n[00:03.00]",
+    );
+    expect(semicolon.map((l) => l.text)).toEqual(["Hola mi amor", "Te extraño", ""]);
+  });
+
+  it("un «;» de puntuación en algunos versos no la toca", () => {
+    const lines = parseLrc(
+      "[00:01.00]Por la mañana, café; por la tarde, ron\n[00:02.00]Otra\n[00:03.00]Más",
+    );
+    expect(withoutTranslation(lines)).toEqual(lines);
+    expect(lines[0].text).toBe("Por la mañana, café; por la tarde, ron");
   });
 });

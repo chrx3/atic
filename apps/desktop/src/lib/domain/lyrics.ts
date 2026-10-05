@@ -18,7 +18,33 @@ export function parseLrc(lrc: string): LyricLine[] {
       if (Number.isFinite(at)) lines.push({ at: Math.round(at), text });
     }
   }
-  return lines.sort((a, b) => a.at - b.at);
+  return withoutTranslation(lines.sort((a, b) => a.at - b.at));
+}
+
+/**
+ * Hay letras subidas con la traducción en el mismo verso: «original^
+ * traducción» (NUEVAYoL en LRCLIB) o con «;». Si así viene la mayoría de los
+ * versos, queda el original; un «;» de puntuación en algunos versos no
+ * alcanza para tocarla. Igual que `Lyrics.withoutTranslation` del celular.
+ */
+export function withoutTranslation(lines: LyricLine[]): LyricLine[] {
+  const sung = lines.filter((l) => l.text.trim() !== "");
+  if (sung.length === 0) return lines;
+  for (const sep of ["^", ";"]) {
+    const split = (text: string): string | null => {
+      const i = text.indexOf(sep);
+      if (i < 0) return null;
+      const original = text.slice(0, i).trim();
+      return original && text.slice(i + 1).trim() ? original : null;
+    };
+    if (sung.filter((l) => split(l.text) !== null).length * 2 > sung.length) {
+      return lines.map((l) => {
+        const original = split(l.text);
+        return original === null ? l : { ...l, text: original };
+      });
+    }
+  }
+  return lines;
 }
 
 /** La línea que suena en `position` (ms), o -1 antes de la primera. */
