@@ -450,6 +450,8 @@ export interface ClipboardItem {
   pinned: boolean;
   fingerprint: string;
   source: string;
+  /** Ruta del ejecutable que copió; solo en entradas del watcher. */
+  sourceApp?: string | null;
 }
 
 export interface InkStroke {

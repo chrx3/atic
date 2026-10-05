@@ -91,6 +91,11 @@ pub struct ClipboardItem {
     /// Origen: watcher | capture
     #[serde(default)]
     pub source: String,
+    /// Ruta del ejecutable que copió: el dueño del portapapeles o, si no lo
+    /// declara, la ventana activa. Solo lo llena el watcher; las entradas
+    /// anteriores no lo tienen.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_app: Option<String>,
 }
 
 /// Una captura recién copiada al portapapeles, esperando que el watcher la vea.
@@ -510,6 +515,8 @@ pub fn start_watcher(app: &AppHandle) {
                 }
             }
 
+            // Antes de leer: mientras leemos, el portapapeles es nuestro.
+            let source_app = clipboard_source_app();
             let Some(poll) = try_clipboard_read(|| {
                 // Lo que el dueño del contenido pidió no archivar no se
                 // archiva. Es la única señal que existe: los gestores de
@@ -545,7 +552,7 @@ pub fn start_watcher(app: &AppHandle) {
                         height,
                         bytes: Cow::Owned(bytes),
                     };
-                    match ingest_image(&shared, &dir, &img) {
+                    match ingest_image(&shared, &dir, &img, source_app) {
                         Ok(changed) if changed => {
                             let _ = handle.emit("clipboard-history-changed", ());
                         }
@@ -570,6 +577,7 @@ pub fn start_watcher(app: &AppHandle) {
                         pinned: false,
                         fingerprint: fp,
                         source: "watcher".into(),
+                        source_app,
                     };
                     let mut hist = shared.lock_or_recover();
                     let before_fp = hist.items.first().map(|i| i.fingerprint.clone());
@@ -591,6 +599,7 @@ fn ingest_image(
     shared: &Arc<Mutex<HistoryState>>,
     dir: &Path,
     img: &ImageData<'_>,
+    source_app: Option<String>,
 ) -> Result<bool, String> {
     let w = img.width;
     let h = img.height;
@@ -657,6 +666,7 @@ fn ingest_image(
         pinned: false,
         fingerprint: fp,
         source: "watcher".into(),
+        source_app,
     };
     let mut hist = shared.lock_or_recover();
     let before = hist.items.first().map(|i| i.fingerprint.clone());
@@ -724,6 +734,7 @@ pub(crate) fn import_text(app: &AppHandle, id: &str, text: &str, created_at_ms: 
         pinned,
         fingerprint: fingerprint_text(trimmed),
         source: "phone".into(),
+        source_app: None,
     };
     let added = insert_imported(&mut shared.lock_or_recover(), &state.dirs.clipboard_dir(), item);
     if added {
@@ -765,6 +776,7 @@ pub(crate) fn import_image(
         pinned,
         fingerprint,
         source: "phone".into(),
+        source_app: None,
     };
     let added = insert_imported(&mut hist, &dir, item);
     drop(hist);
@@ -855,6 +867,7 @@ fn find_item(state: &AppState, id: &str) -> Option<ClipboardItem> {
             pinned: false,
             fingerprint: format!("capture:{}", cap.id),
             source: "capture".into(),
+            source_app: None,
         })
 }
 
@@ -1670,6 +1683,7 @@ pub fn pin_clipboard_item(state: State<AppState>, id: String, pinned: bool) -> R
         } else {
             virtual_item.source
         },
+        source_app: virtual_item.source_app,
     };
 
     let mut hist = shared.lock_or_recover();
@@ -1896,6 +1910,7 @@ fn push_capture_item(app: &AppHandle, cap: &crate::capture::CaptureItem, announc
         pinned: false,
         fingerprint: format!("capture:{}", cap.id),
         source: "capture".into(),
+        source_app: None,
     };
     {
         let mut hist = shared.lock_or_recover();
@@ -1954,6 +1969,7 @@ pub(crate) fn record_copied_png(app: &AppHandle, png: &[u8], width: u32, height:
         pinned: false,
         fingerprint: format!("annotate:{id}"),
         source: "annotate".into(),
+        source_app: None,
     };
     {
         let mut hist = shared.lock_or_recover();
@@ -2005,6 +2021,7 @@ pub(crate) fn collect_clipboard_items(state: &AppState) -> Result<Vec<ClipboardI
             pinned: false,
             fingerprint: fp,
             source: "capture".into(),
+            source_app: None,
         });
     }
     items.sort_by(|a, b| {
@@ -2301,6 +2318,44 @@ fn exe_needs_ctrl_shift_v(exe: &str) -> bool {
 
 #[cfg(windows)]
 fn process_exe_name(hwnd: windows_sys::Win32::Foundation::HWND) -> Option<String> {
+    let path = process_exe_path(hwnd)?;
+    Some(
+        path.rsplit(['\\', '/'])
+            .next()
+            .unwrap_or(&path)
+            .to_ascii_lowercase(),
+    )
+}
+
+/// Quién copió lo que hay en el portapapeles.
+///
+/// `GetClipboardOwner` es la ventana que lo escribió, aunque ya no esté al
+/// frente. Algunas apps lo escriben sin ventana; para esas, la activa es la
+/// mejor pista.
+#[cfg(windows)]
+fn clipboard_source_app() -> Option<String> {
+    use windows_sys::Win32::System::DataExchange::GetClipboardOwner;
+    use windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+
+    let owner = unsafe { GetClipboardOwner() };
+    let hwnd = if owner.is_null() {
+        unsafe { GetForegroundWindow() }
+    } else {
+        owner
+    };
+    if hwnd.is_null() {
+        return None;
+    }
+    process_exe_path(hwnd)
+}
+
+#[cfg(not(windows))]
+fn clipboard_source_app() -> Option<String> {
+    None
+}
+
+#[cfg(windows)]
+fn process_exe_path(hwnd: windows_sys::Win32::Foundation::HWND) -> Option<String> {
     use windows_sys::Win32::Foundation::CloseHandle;
     use windows_sys::Win32::System::Threading::{
         OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
@@ -2324,13 +2379,7 @@ fn process_exe_name(hwnd: windows_sys::Win32::Foundation::HWND) -> Option<String
         if ok == 0 || path_len == 0 {
             return None;
         }
-        let path = String::from_utf16_lossy(&path_buf[..path_len as usize]);
-        Some(
-            path.rsplit(['\\', '/'])
-                .next()
-                .unwrap_or(&path)
-                .to_ascii_lowercase(),
-        )
+        Some(String::from_utf16_lossy(&path_buf[..path_len as usize]))
     }
 }
 
