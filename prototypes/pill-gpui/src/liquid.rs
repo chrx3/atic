@@ -43,6 +43,20 @@ impl Silhouette {
         b.close();
     }
 
+    /// Un contorno cerrado ya armado (el tab de un costado con su bloque,
+    /// `geometry::side_outline`), en el mismo sentido que lo demás.
+    pub fn polygon(&mut self, points: &[(f32, f32)]) {
+        let Some((&first, rest)) = points.split_first() else {
+            return;
+        };
+        let b = &mut self.builder;
+        b.move_to(pt(first));
+        for &p in rest {
+            b.line_to(pt(p));
+        }
+        b.close();
+    }
+
     /// Rectángulo redondeado en sentido horario.
     pub fn rounded_rect(&mut self, left: f32, top: f32, width: f32, height: f32, radius: f32) {
         let r = radius.min(width / 2.0).min(height / 2.0);

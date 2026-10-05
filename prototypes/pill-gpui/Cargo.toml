@@ -28,6 +28,16 @@ atic-capture = { path = "../../crates/capture" }
 atic-core = { path = "../../crates/core" }
 atic-audio = { path = "../../crates/audio" }
 atic-transcribe = { path = "../../crates/transcribe" }
+# Reuniones: resumir con el proveedor de Atic y mandar el resumen por correo.
+atic-summarize = { path = "../../crates/summarize" }
+atic-mailer = { path = "../../crates/mailer" }
+# La misma que trae `atic-audio`: el aviso audible al grabar (`meetings/chime.rs`).
+cpal = "0.15"
+# La misma que trae `atic-audio`: leer las pistas WAV en el reproductor de Reuniones.
+hound = "3.5"
+# La misma que trae `atic-transcribe`: solo para encenderle ogg/vorbis y flac,
+# así «Importar audio» de Reuniones (`meetings/import.rs`) también los lee.
+symphonia = { version = "0.6", default-features = false, features = ["ogg", "vorbis", "flac"] }
 # La misma que trae `atic-transcribe`: la llamada a Groq con `prompt`.
 reqwest = { version = "0.12", features = ["blocking", "multipart", "json"] }
 # Ya viene con los crates de Atic: los avisos de los lectores de uso.

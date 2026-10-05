@@ -15,7 +15,7 @@
 //! `SPACE_DEMO=1` abre 6 consolas (4 escupiendo 30 líneas/s, como la prueba
 //! del diagnóstico) y `SPACE_BENCH=1` mueve la cámara sola y mide.
 
-mod chrome;
+pub(crate) mod chrome;
 mod console;
 mod input;
 mod mando;

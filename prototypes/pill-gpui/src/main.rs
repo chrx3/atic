@@ -25,9 +25,13 @@ mod glass;
 mod dictation;
 mod hang;
 mod history;
+mod hover;
 mod liquid;
 mod paste;
+mod peeks;
+use hover::HoverExt;
 mod launcher;
+mod meetings;
 mod running;
 mod meter;
 mod ocr;
@@ -98,17 +102,31 @@ const PANEL_CORNER: f32 = 20.0;
 /// Distancia a la que se corta el cuello de la burbuja.
 const PANEL_NECK_REACH: f32 = 12.0;
 // Notch: una herramienta no sale de la pill sino que la pill misma se estira
-// hasta su tamaño, siempre arriba al centro. La franja de `TAB_THICK` junto al
-// borde queda para la marca y el contenido va debajo, en el mismo cuerpo.
+// hasta su tamaño, en el borde donde está acoplada (arriba, al centro). La
+// franja de `TAB_THICK` de arriba del panel queda para la marca y el contenido
+// va debajo, en el mismo cuerpo. En un costado el panel es alto y angosto,
+// pegado a ese borde (`geometry::notch_rect`).
 const NOTCH_MORPH_MS: f32 = 300.0;
+/// El panel en un costado: más angosto que arriba y tan alto como pida su
+/// contenido, hasta casi todo el alto del área de trabajo (`SIDE_PANEL_MARGIN`
+/// arriba y abajo).
+const SIDE_PANEL_W: f32 = 380.0;
+const SIDE_PANEL_MARGIN: f32 = 12.0;
+/// Un costado más bajo que esto no tiene notch: la pill vuela al de arriba.
+const NOTCH_MIN_SIDE_H: f32 = 420.0;
+/// El bloque que sale al lado de la columna en un costado (vistazos, aviso,
+/// letra, dictado, uso): angosto, con el contenido en columna.
+pub(crate) const SIDE_W: f32 = 300.0;
+/// La esquina cóncava donde ese bloque se une a la columna.
+const SIDE_JOIN_R: f32 = 14.0;
 /// Hueco a la izquierda del buscador donde va la marca (`clipboard::MARK_GAP`).
 const MARK_GAP: f32 = 40.0;
 const NOTCH_CONTENT_START_MS: f32 = 190.0;
 const NOTCH_CONTENT_MS: f32 = 130.0;
 const NOTCH_OPEN_MS: f32 = NOTCH_CONTENT_START_MS + NOTCH_CONTENT_MS;
 const NOTCH_CLOSE_SPEED: f32 = 1.8;
-/// Vuelo de la gota hasta el notch (y de vuelta) cuando la pill no está
-/// acoplada arriba: el notch es uno solo.
+/// Vuelo de la gota hasta el notch de arriba (y de vuelta) cuando la pill
+/// flota, o cuando el panel no cabe en el costado donde está.
 const FLIGHT_MS: f32 = 340.0;
 const FLIGHT_BACK_MS: f32 = 300.0;
 
@@ -127,7 +145,9 @@ const PREVIEW_PAD: f32 = 12.0;
 const PEEK_COUNT: usize = 3;
 const PEEK_DELAY: Duration = Duration::from_millis(350);
 const PEEK_GRACE: Duration = Duration::from_millis(150);
-const PEEK_PAD: f32 = 4.0;
+/// Lo de arriba del vistazo del portapapeles: el título, como en los de
+/// las otras herramientas (`peeks.rs`).
+const PEEK_PAD: f32 = 30.0;
 const PEEK_ROW: f32 = 36.0;
 const PEEK_FOOTER: f32 = 30.0;
 const PEEK_BOTTOM: f32 = 6.0;
@@ -135,6 +155,7 @@ const PEEK_DRAG: f32 = 6.0;
 
 const PASTE_FOCUS_DELAY: Duration = Duration::from_millis(220);
 const PASTE_KEY_DELAY: Duration = Duration::from_millis(80);
+const REUNIONES_TOOL: usize = 0;
 const CLIPBOARD_TOOL: usize = 1;
 const TEXTOS_TOOL: usize = 2;
 const AGENTES_TOOL: usize = 3;
@@ -205,6 +226,11 @@ const BLINK_MS: f32 = 140.0;
 /// Opacidad del tinte de la pill sobre el vidrio: casi nada, el acrylic ya
 /// oscurece y pone el grano.
 const GLASS_TINT: f32 = 0.6;
+/// El tinte cuando el notch muestra algo para leer (un panel, la bandeja,
+/// la letra, el dictado, el uso): casi opaco, para que el texto se lea sobre
+/// cualquier fondo. Es el mismo en todo el cuerpo: nada pinta su propio
+/// fondo encima (se notaba el corte y unas partes eran de vidrio y otras no).
+const CONTENT_TINT: f32 = 0.93;
 
 struct Tool {
     name: &'static str,
@@ -313,6 +339,7 @@ impl AssetSource for Assets {
             "icons/ellipsis.svg" => include_bytes!("../assets/icons/ellipsis.svg"),
             "icons/x.svg" => include_bytes!("../assets/icons/x.svg"),
             "icons/search.svg" => include_bytes!("../assets/icons/search.svg"),
+            "icons/import.svg" => include_bytes!("../assets/icons/import.svg"),
             "icons/layers.svg" => include_bytes!("../assets/icons/layers.svg"),
             "icons/type.svg" => include_bytes!("../assets/icons/type.svg"),
             "icons/mic-vocal.svg" => include_bytes!("../assets/icons/mic-vocal.svg"),
@@ -372,6 +399,9 @@ impl AssetSource for Assets {
                 include_bytes!("../assets/icons/agents/antigravity.svg")
             }
             "icons/agents/grok.svg" => include_bytes!("../assets/icons/agents/grok.svg"),
+            "icons/mail.svg" => include_bytes!("../assets/icons/mail.svg"),
+            "icons/sparkles.svg" => include_bytes!("../assets/icons/sparkles.svg"),
+            "icons/settings-2.svg" => include_bytes!("../assets/icons/settings-2.svg"),
             _ => return Ok(None),
         };
         Ok(Some(Cow::Borrowed(bytes)))
@@ -411,6 +441,10 @@ enum PillShape {
         rect: Rect,
         along: f32,
         thick: f32,
+        /// En un costado, el bloque al lado de la columna con lo que cuelga
+        /// del tab (`geometry::side_block`). Arriba lo que cuelga va dentro de
+        /// `rect`.
+        block: Option<Rect>,
     },
     Disc {
         center: (f32, f32),
@@ -510,6 +544,10 @@ struct Pill {
     /// El vistazo de uso de los agentes (`usage.rs`), al pasar sobre Agentes.
     usage: usage::Usage,
     usage_peek: Tween,
+    /// En un costado, la altura a la que sale el bloque de lo que cuelga.
+    block_along: Tween,
+    /// Los vistazos de Color, Capturas, Textos, Flip y Sistema (`peeks.rs`).
+    tool_peek: peeks::ToolPeek,
     usage_hover_since: Option<Instant>,
     usage_leave_at: Option<Instant>,
     /// El nivel de la salida, suavizado para la onda.
@@ -539,6 +577,8 @@ struct Pill {
     peek: Tween,
     peek_entries: Vec<clipboard::Entry>,
     peek_hover_since: Option<Instant>,
+    /// Cuándo bajó el vistazo: el reloj de su entrada (letras, filas).
+    peek_shown_at: Instant,
     peek_leave_at: Option<Instant>,
     peek_hovered: Option<PeekHit>,
     /// Botón apretado en el vistazo: clic pega, mover arrastra.
@@ -592,6 +632,9 @@ struct PanelShape {
     /// El panel es el cuerpo estirado del notch: no tiene silueta, sombra ni
     /// cuello propios.
     notch: bool,
+    /// El borde del notch: el contenido se recorta con las esquinas del lado
+    /// que mira al escritorio.
+    edge: Edge,
     /// Círculo de la pill y círculo del panel que une el cuello.
     anchor: Circle,
     near: Circle,
@@ -624,8 +667,14 @@ struct Frame {
     panel: Option<PanelShape>,
     preview: Option<PreviewShape>,
     walls: Vec<Circle>,
+    /// En un costado con su bloque: la columna y el bloque en un solo
+    /// contorno (`geometry::side_outline`).
+    outline: Option<Vec<(f32, f32)>>,
     /// La pill es de vidrio: tinte translúcido sobre el blur de `glass.rs`.
     glass: bool,
+    /// Cuánto tapa ese tinte: más con contenido (`content_amount`), parejo
+    /// en todo el tab para que no se vea un corte bajo la franja.
+    tint: f32,
     /// Lo que suena: cuánto se ve (0..1), la carátula y dónde va.
     live: f32,
     art: Option<std::sync::Arc<gpui::RenderImage>>,
@@ -749,8 +798,9 @@ impl Pill {
             hover_since: None,
             strip: Tween::new(0.0, Duration::from_millis(240), ease_island),
             strip_leave_at: None,
+            // Como `.p-island-tool` en la web: crece con un leve rebote.
             strip_hover: (0..TOOLS.len())
-                .map(|_| Tween::new(0.0, Duration::from_millis(120), ease_smooth_out))
+                .map(|_| Tween::new(0.0, Duration::from_millis(240), ease_island))
                 .collect(),
             strip_pulse: None,
             wheel_target_open: false,
@@ -763,7 +813,7 @@ impl Pill {
             shortcut_was_down: false,
             notch_h: Tween::new(
                 panel.read(cx).desired_height(),
-                Duration::from_millis(180),
+                Duration::from_millis(280),
                 ease_smooth_out,
             ),
             preview: Tween::new(0.0, Duration::from_millis(280), ease_smooth_out),
@@ -771,6 +821,7 @@ impl Pill {
             peek: Tween::new(0.0, Duration::from_millis(260), ease_island),
             peek_entries: Vec::new(),
             peek_hover_since: None,
+            peek_shown_at: now,
             peek_leave_at: None,
             peek_hovered: None,
             peek_press: None,
@@ -806,6 +857,8 @@ impl Pill {
             dict_key_was_down: false,
             usage: usage::Usage::default(),
             usage_peek: Tween::new(0.0, Duration::from_millis(300), ease_island),
+            block_along: Tween::new(0.0, Duration::from_millis(240), ease_island),
+            tool_peek: peeks::ToolPeek::new(),
             usage_hover_since: None,
             usage_leave_at: None,
             level: 0.0,
@@ -830,16 +883,33 @@ impl Pill {
         // `PILL_OPEN=clipboard` abre el panel al arrancar: para revisar el
         // diseño con una captura sin tener que mover el mouse.
         let open_on_start = std::env::var("PILL_OPEN").ok();
-        let notch_on_start = match open_on_start.as_deref() {
-            Some("clipboard") => Some(NotchTool::Clipboard),
-            Some("textos") => Some(NotchTool::Textos),
-            Some("agentes") => Some(NotchTool::Agentes),
-            Some("sistema") => Some(NotchTool::Sistema),
-            Some("media") => Some(NotchTool::Media),
-            // `apps`: el lanzador; `emoji`: el lanzador en su modo emoji.
-            Some("apps") | Some("emoji") => Some(NotchTool::Apps),
-            _ => None,
-        };
+        let notch_on_start = open_on_start.as_deref().and_then(notch_tool_named);
+        // `PILL_OPEN_SEQ=clipboard,textos,cerrar`: abre esas herramientas una
+        // tras otra con el notch abierto (cada `PILL_OPEN_STEP_MS`, 1500 por
+        // omisión) y «cerrar» lo cierra: para ver el cambio de contenido y
+        // el cierre en un borde sin teclas ni clics.
+        if let Ok(seq) = std::env::var("PILL_OPEN_SEQ") {
+            let step = std::env::var("PILL_OPEN_STEP_MS")
+                .ok()
+                .and_then(|ms| ms.parse().ok())
+                .unwrap_or(1500);
+            cx.spawn_in(window, async move |this, cx| {
+                for name in seq.split(',').map(str::trim).filter(|n| !n.is_empty()) {
+                    cx.background_executor()
+                        .timer(Duration::from_millis(step))
+                        .await;
+                    let name = name.to_string();
+                    let alive = this.update_in(cx, |pill, window, cx| match notch_tool_named(&name) {
+                        Some(tool) => pill.open_notch(tool, window, cx),
+                        None => pill.close_panel(true, cx),
+                    });
+                    if alive.is_err() {
+                        break;
+                    }
+                }
+            })
+            .detach();
+        }
         let emoji_on_start = open_on_start.as_deref() == Some("emoji");
         if let Some(tool) = notch_on_start {
             cx.spawn_in(window, async move |this, cx| {
@@ -969,12 +1039,101 @@ impl Pill {
         ease_island(segment(self.panel_time, 0.0, NOTCH_MORPH_MS))
     }
 
-    /// La pill está acoplada arriba, donde vive el notch.
+    /// La pill está acoplada donde el notch se abre en su lugar: arriba
+    /// siempre; en otro borde, si el panel cabe ahí (`geometry::notch_fits`).
     fn at_notch(&self) -> bool {
-        self.flight.is_none() && matches!(self.home, Home::Docked { edge: Edge::Top, .. })
+        self.flight.is_none()
+            && match self.home {
+                Home::Docked { edge, .. } => {
+                    geometry::notch_fits(edge, &self.work, SIDE_PANEL_W, NOTCH_MIN_SIDE_H)
+                }
+                Home::Floating { .. } => false,
+            }
     }
 
-    /// Dónde se abre el notch: arriba, al centro del área de trabajo.
+    /// Acoplada a cualquier borde y quieta: ahí salen la tira, los vistazos,
+    /// la letra y el dictado (en la gota no hay franja de donde colgarlos).
+    pub(crate) fn docked_still(&self) -> bool {
+        self.flight.is_none() && matches!(self.home, Home::Docked { .. })
+    }
+
+    /// Acoplada a un costado: lo que cuelga del tab va en un bloque angosto
+    /// al lado de la columna, con su contenido en columna (`SIDE_W`).
+    pub(crate) fn side_drawers(&self) -> bool {
+        matches!(self.home, Home::Docked { edge, .. } if edge.is_vertical())
+    }
+
+    /// El ancho del panel en `edge`: arriba el de siempre, en un costado
+    /// angosto.
+    fn panel_w(edge: Edge) -> f32 {
+        if edge.is_vertical() {
+            SIDE_PANEL_W
+        } else {
+            PANEL_W
+        }
+    }
+
+    /// Dónde puede estirarse el notch en `edge`: el área de trabajo; en un
+    /// costado, sin los márgenes de arriba y abajo (el panel alto no toca las
+    /// esquinas).
+    fn notch_area(&self, edge: Edge) -> Rect {
+        if edge.is_vertical() {
+            let m = SIDE_PANEL_MARGIN;
+            Rect::new(self.work.x, self.work.y + m, self.work.w, self.work.h - m * 2.0)
+        } else {
+            self.work
+        }
+    }
+
+    /// El alto máximo del panel: arriba el de cada herramienta; en un
+    /// costado, casi todo el alto del área de trabajo.
+    pub(crate) fn panel_max_height(&self) -> Option<f32> {
+        self.side_drawers().then(|| self.work.h - SIDE_PANEL_MARGIN * 2.0)
+    }
+
+    /// A qué altura sale el bloque de un costado: junto a la herramienta del
+    /// vistazo abierto (con la tira abierta), o junto a la marca.
+    fn block_anchor(&self, now: Instant) -> Option<f32> {
+        if !self.side_drawers() {
+            return None;
+        }
+        let tool = if let Some(tool) = self.tool_peek_owner() {
+            Some(tool)
+        } else if self.peek.target() == 1.0 {
+            Some(CLIPBOARD_TOOL)
+        } else if self.usage_peek.target() == 1.0 || self.tray.is_open() {
+            Some(AGENTES_TOOL)
+        } else {
+            None
+        };
+        match tool {
+            Some(tool) if self.strip.target() == 1.0 => Some(self.strip_tool_along(tool, now)),
+            _ => self.mark_along(now),
+        }
+    }
+
+    /// Lleva el bloque de un costado a la altura que toca. Recién abierto
+    /// aparece ahí mismo; abierto, se desliza (mismo tiempo y curva que el
+    /// alto de los vistazos). Mientras se recoge se queda donde estaba.
+    fn update_block(&mut self, now: Instant) {
+        let opening = self.peek.target() == 1.0
+            || self.tool_peek_owner().is_some()
+            || self.usage_peek.target() == 1.0
+            || self.tray.is_open()
+            || self.hang.target() == 1.0
+            || self.dict.target() == 1.0;
+        let Some(anchor) = self.block_anchor(now).filter(|_| opening) else {
+            return;
+        };
+        if self.drawers_stack(now) < 1.0 {
+            self.block_along.snap(anchor);
+        } else if (self.block_along.target() - anchor).abs() > 0.5 {
+            self.block_along.set(anchor, now);
+        }
+    }
+
+    /// Adónde vuela la gota cuando el notch no se puede abrir donde está:
+    /// arriba, al centro del área de trabajo.
     fn notch_home(&self) -> Home {
         Home::Docked {
             edge: Edge::Top,
@@ -982,9 +1141,10 @@ impl Pill {
         }
     }
 
-    /// Largo y grosor del notch estirado: la franja es parte del panel.
-    fn notch_size(&self, now: Instant) -> (f32, f32) {
-        (PANEL_W, self.notch_h.value(now))
+    /// Largo y grosor del notch estirado en `edge` (la franja es parte del
+    /// panel): el panel va de pie, así que a un costado se mide al revés.
+    fn notch_size(&self, edge: Edge, now: Instant) -> (f32, f32) {
+        edge.extent(Self::panel_w(edge), self.notch_h.value(now))
     }
 
     fn shape(&self, now: Instant) -> PillShape {
@@ -996,43 +1156,70 @@ impl Pill {
         match self.home {
             Home::Docked { edge, along } => {
                 let morph = self.notch_morph();
-                let (full_length, full_thick) = self.notch_size(now);
-                let peek = if edge.is_vertical() {
-                    0.0
-                } else {
-                    self.peek.value(now)
-                };
-                let base_thick = lerp(
-                    TAB_THICK * self.seat_scale(now),
-                    TAB_THICK + self.peek_height(),
-                    peek,
-                );
+                let (full_length, full_thick) = self.notch_size(edge, now);
+                let base = self.tab_length(now);
+                // El vistazo del portapapeles va al ancho del tab (arriba es el
+                // de la tira abierta: no lo cambia).
+                let peek = self.peek.value(now);
                 // El vistazo de la bandeja ensancha el tab y baja unas filas.
-                let (tray, tray_h) = self.tray_stretch(edge, now);
+                let (tray, tray_h) = self.tray_stretch(now);
                 // La letra cuelga del tab igual: más ancho y una franja abajo.
-                let hang = self.hang_amount(edge, now);
+                let hang = self.hang_amount(now);
                 // El dictado también: su franja con la onda del micrófono.
-                let dict = self.dict_amount(edge, now);
-                let length = Self::hang_length(self.tray_length(self.tab_length(now), tray), hang);
-                let length = Self::dict_length(length, dict);
+                let dict = self.dict_amount(now);
                 // Y el vistazo de uso de los agentes, al ancho de un panel.
-                let usage = self.usage_amount(edge, now);
-                let length = Self::usage_length(length, usage);
+                let usage = self.usage_amount(now);
+                // Y el vistazo de una herramienta, al ancho de la tira.
+                let tool = self.tool_peek_amount(now);
+                let (length, thick, block) = if edge.is_vertical() {
+                    // En un costado lo que cuelga no ensancha la columna: sale
+                    // en un bloque angosto al lado, a la altura de la
+                    // herramienta bajo el cursor, que mide solo lo que ocupa
+                    // su contenido (puesto en columna). Crece desde la
+                    // columna a medida que bajan las franjas.
+                    let open = [peek, tray, hang, dict, usage, tool]
+                        .into_iter()
+                        .fold(0.0, |open: f32, a| open + (1.0 - open) * a.max(0.0));
+                    let (w, h) = (SIDE_W * open, self.drawers_stack(now));
+                    let band = TAB_THICK * self.seat_scale(now);
+                    let block = (w > 1.0 && h > 1.0 && morph <= 0.0).then(|| {
+                        geometry::side_block(edge, &self.work, band, self.block_along.value(now), w, h)
+                    });
+                    (base, band, block)
+                } else {
+                    let widen = |w: f32| {
+                        let w = w + (base.max(w) - w) * peek;
+                        let w = Self::hang_length(self.tray_length(w, tray), hang);
+                        let w = Self::dict_length(w, dict);
+                        let w = Self::usage_length(w, usage);
+                        Self::tool_peek_length(w, tool)
+                    };
+                    let usage_h = if usage > 0.0 { self.usage_height() * usage } else { 0.0 };
+                    let tool_h = if tool > 0.0 { self.tool_peek_height(now) * tool } else { 0.0 };
+                    let stack = self.peek_height() * peek
+                        + tray_h * tray
+                        + hang::HANG_H * hang
+                        + dictation::DICT_H * dict
+                        + usage_h
+                        + tool_h;
+                    // El aplastón de acoplado achica la franja; con el vistazo
+                    // abierto vuelve a su grosor.
+                    let band = lerp(TAB_THICK * self.seat_scale(now), TAB_THICK, peek);
+                    (widen(base), band + stack, None)
+                };
                 let length = lerp(length, full_length, morph);
-                let usage_h = if usage > 0.0 { self.usage_height() * usage } else { 0.0 };
-                let thick = lerp(
-                    base_thick + tray_h * tray + hang::HANG_H * hang + dictation::DICT_H * dict + usage_h,
-                    full_thick,
-                    morph,
-                );
+                let thick = lerp(thick, full_thick, morph);
                 // Al abrirse la tira crece hacia los dos lados; si no cabe, se
-                // corre para no salirse del borde.
-                let along = geometry::clamp_along(edge, &self.work, along, length);
+                // corre para no salirse del borde (estirándose hacia el panel,
+                // también de los márgenes de un costado).
+                let area = if morph > 0.0 { self.notch_area(edge) } else { self.work };
+                let along = geometry::clamp_along(edge, &area, along, length);
                 PillShape::Tab {
                     edge,
                     rect: edge.tab_rect(&self.work, along, length, thick),
                     along,
                     thick,
+                    block,
                 }
             }
             Home::Floating { center } => PillShape::Disc { center },
@@ -1041,29 +1228,34 @@ impl Pill {
 
     /// Posición de la marca a lo largo del tab (o el centro de la gota).
     fn mark_along(&self, now: Instant) -> Option<f32> {
-        let PillShape::Tab {
-            rect, edge, along, ..
-        } = self.shape(now)
-        else {
-            return None;
-        };
-        let open = self.strip.value(now).clamp(0.0, 1.0);
-        let start = if edge.is_vertical() { rect.y } else { rect.x };
-        let along = lerp(along, start + 6.0 + MARK_SIZE / 2.0, open);
-        if edge == Edge::Top {
-            let morph = self.notch_morph().clamp(0.0, 1.0);
-            return Some(lerp(along, rect.x + MARK_GAP / 2.0, morph));
+        match self.shape(now) {
+            PillShape::Tab { edge, .. } => Some(edge.along_of(self.mark_center(now))),
+            PillShape::Disc { .. } => None,
         }
-        Some(along)
     }
 
     fn mark_center(&self, now: Instant) -> (f32, f32) {
         match self.shape(now) {
-            PillShape::Tab { edge, thick, .. } => {
-                // La marca se queda en la franja junto al borde aunque el notch
-                // se estire.
-                let along = self.mark_along(now).unwrap_or_default();
-                edge.point(&self.work, along, thick.min(TAB_THICK) / 2.0)
+            PillShape::Tab {
+                edge,
+                rect,
+                along,
+                thick,
+                ..
+            } => {
+                // En reposo, al medio del tab; con la tira abierta, al
+                // principio. Siempre en la franja junto al borde.
+                let open = self.strip.value(now).clamp(0.0, 1.0);
+                let start = edge.along_of((rect.x, rect.y));
+                let along = lerp(along, start + 6.0 + MARK_SIZE / 2.0, open);
+                let resting = edge.point(&self.work, along, thick.min(TAB_THICK) / 2.0);
+                // Con el notch abierto va a la izquierda de la franja de
+                // arriba del panel (el hueco `MARK_GAP` de los buscadores), en
+                // cualquier borde: el panel va de pie. Arriba esa franja es la
+                // del tab y la marca solo se corre a lo largo.
+                let morph = self.notch_morph().clamp(0.0, 1.0);
+                let band = (rect.x + MARK_GAP / 2.0, rect.y + rect.h.min(TAB_THICK) / 2.0);
+                (lerp(resting.0, band.0, morph), lerp(resting.1, band.1, morph))
             }
             PillShape::Disc { center } => center,
         }
@@ -1077,7 +1269,9 @@ impl Pill {
 
     fn over_pill(&self, p: (f32, f32), now: Instant, margin: f32) -> bool {
         match self.shape(now) {
-            PillShape::Tab { rect, .. } => rect.contains(p, margin),
+            PillShape::Tab { rect, block, .. } => {
+                rect.contains(p, margin) || block.is_some_and(|block| block.contains(p, margin))
+            }
             PillShape::Disc { center } => distance(p, center) <= DISC_R + margin,
         }
     }
@@ -1100,10 +1294,11 @@ impl Pill {
         if self.strip.value(now) < 0.85 || !rect.contains(p, 0.0) {
             return None;
         }
-        // Solo en la franja: lo que cuelga debajo (vistazos, uso, letra) no
-        // es la herramienta de arriba. Si no, cruzar los anillos del uso de
-        // lado «pasaba» por otras herramientas y cerraba el vistazo.
-        if edge == Edge::Top && p.1 > rect.y + TAB_THICK {
+        // Solo en la franja: lo que cuelga de ella (vistazos, uso, letra; al
+        // lado de la columna en un costado) no es la herramienta de al lado.
+        // Si no, cruzar los anillos del uso «pasaba» por otras herramientas
+        // y cerraba el vistazo.
+        if edge.depth_of(&self.work, p) > TAB_THICK {
             return None;
         }
         let along = edge.along_of(p);
@@ -1215,6 +1410,7 @@ impl Pill {
                 rect,
                 content: segment(self.panel_time, NOTCH_CONTENT_START_MS, NOTCH_CONTENT_MS),
                 notch: false,
+                edge: Edge::Top,
                 anchor: far,
                 near: ((rect.x, rect.y), 1.0),
             });
@@ -1222,23 +1418,18 @@ impl Pill {
         // El notch: el contenido va donde termina, no donde va pasando; se
         // muestra recién cuando el cuerpo ya casi llegó. Mientras la gota
         // vuela todavía no hay notch.
-        let Home::Docked {
-            edge: Edge::Top,
-            along,
-        } = self.home
-        else {
+        let Home::Docked { edge, along } = self.home else {
             return None;
         };
-        if self.flight.is_some() {
+        if !self.at_notch() {
             return None;
         }
-        let (length, thick) = self.notch_size(now);
-        let along = geometry::clamp_along(Edge::Top, &self.work, along, length);
         let dummy = ((0.0, 0.0), 0.0);
         Some(PanelShape {
-            rect: Edge::Top.tab_rect(&self.work, along, length, thick),
+            rect: geometry::notch_rect(edge, &self.notch_area(edge), along, Self::panel_w(edge), self.notch_h.value(now)),
             content: segment(self.panel_time, NOTCH_CONTENT_START_MS, NOTCH_CONTENT_MS),
             notch: true,
+            edge,
             anchor: dummy,
             near: dummy,
         })
@@ -1249,15 +1440,13 @@ impl Pill {
         PEEK_PAD + rows * PEEK_ROW + PEEK_FOOTER + PEEK_BOTTOM
     }
 
-    /// Lo que el vistazo ocupa bajo la franja, con el notch estirado.
+    /// Lo que el vistazo ocupa bajo la franja (al lado de la columna en un
+    /// costado), con el notch estirado.
     fn peek_rect(&self, now: Instant) -> Option<Rect> {
-        let PillShape::Tab { edge, rect, .. } = self.shape(now) else {
-            return None;
-        };
-        if edge.is_vertical() || self.panel_visible() || self.peek.value(now) <= 0.01 {
+        if self.panel_visible() || self.peek.value(now) <= 0.01 {
             return None;
         }
-        Some(beyond_band(&rect, edge, TAB_THICK))
+        self.drawers_area(now)
     }
 
     fn peek_hit(&self, p: (f32, f32), now: Instant) -> Option<PeekHit> {
@@ -1299,8 +1488,10 @@ impl Pill {
         if t <= 0.001 || self.preview_entry.is_none() {
             return None;
         }
+        // Se desprende del cuerpo, o del bloque de un costado hacia el lado
+        // libre.
         let body = match (self.home, self.shape(now)) {
-            (Home::Docked { .. }, PillShape::Tab { rect, .. }) => rect,
+            (Home::Docked { .. }, PillShape::Tab { rect, block, .. }) => block.unwrap_or(rect),
             _ => self.panel_shape(now)?.rect,
         };
         let right = self.work.right() - body.right() >= PREVIEW_W + PREVIEW_GAP + 8.0;
@@ -1345,8 +1536,9 @@ impl Pill {
     }
 
     /// Abre una herramienta en el notch. Con otra ya abierta solo cambia el
-    /// contenido: el notch no se vuelve a abrir. Si la pill no está acoplada
-    /// arriba, primero vuela hasta allá (`tick` lleva el vuelo).
+    /// contenido: el notch no se vuelve a abrir. Acoplada a un borde, el notch
+    /// se estira ahí mismo; flotando (o si el panel no cabe en ese costado),
+    /// primero vuela arriba (`tick` lleva el vuelo).
     pub(crate) fn open_notch(&mut self, tool: NotchTool, window: &mut Window, cx: &mut Context<Self>) {
         self.close_wheel();
         self.peek.set(0.0, Instant::now());
@@ -1366,6 +1558,7 @@ impl Pill {
             NotchTool::Sistema => self.system.update(cx, |panel, cx| panel.reset(cx)),
             NotchTool::Media => self.media_panel.update(cx, |panel, cx| panel.reset(cx)),
         }
+        self.sync_panel_limits(cx);
         self.notch_h.snap(self.panel_desired_height(cx));
         self.panel_open = true;
         if let Some(overlay) = self.overlay.as_mut() {
@@ -1377,13 +1570,36 @@ impl Pill {
     }
 
     fn panel_desired_height(&self, cx: &Context<Self>) -> f32 {
-        match self.notch_tool {
+        let desired = match self.notch_tool {
             NotchTool::Clipboard => self.panel.read(cx).desired_height(),
             NotchTool::Textos => self.snippets.read(cx).desired_height(),
             NotchTool::Apps => self.launcher.read(cx).desired_height(),
             NotchTool::Agentes => self.agents.read(cx).desired_height(),
             NotchTool::Sistema => self.system.read(cx).desired_height(),
             NotchTool::Media => self.media_panel.read(cx).desired_height(),
+        };
+        desired.min(self.panel_max_height().unwrap_or(f32::MAX))
+    }
+
+    /// Les dice a los paneles con lista hasta dónde pueden crecer: en un
+    /// costado el panel es alto y angosto, y muestra todo lo que quepa en
+    /// casi toda la altura (sin pasarse de lo que tiene: no queda espacio
+    /// muerto abajo). El lanzador centrado sigue con su tope.
+    fn sync_panel_limits(&mut self, cx: &mut Context<Self>) {
+        let max = self.panel_max_height();
+        let centered = self.launcher_centered;
+        if self.panel.read(cx).max_height != max {
+            self.panel.update(cx, |panel, _| panel.max_height = max);
+        }
+        if self.snippets.read(cx).max_height != max {
+            self.snippets.update(cx, |panel, _| panel.max_height = max);
+        }
+        let launcher_max = max.filter(|_| !centered);
+        if self.launcher.read(cx).max_height != launcher_max {
+            self.launcher.update(cx, |panel, _| panel.max_height = launcher_max);
+        }
+        if self.agents.read(cx).max_height != max {
+            self.agents.update(cx, |panel, _| panel.max_height = max);
         }
     }
 
@@ -1420,6 +1636,7 @@ impl Pill {
             board::TOOL => self.start_board(window, cx),
             flip::TOOL => self.start_flip(window, cx),
             color::TOOL => self.start_color(window, cx),
+            REUNIONES_TOOL => meetings::show(cx),
             _ => {}
         }
     }
@@ -1452,7 +1669,8 @@ impl Pill {
         }
         let wants_notch = self.panel_open && !self.centered_launcher();
         if wants_notch && !self.at_notch() {
-            // Sale de donde esté (gota o tab de un costado) hacia arriba.
+            // Sale de donde esté (la gota, o un costado donde el panel no
+            // cabe) hacia arriba.
             let from = self.mark_center(now);
             if self.away.is_none() {
                 self.away = Some(self.home);
@@ -1967,17 +2185,27 @@ impl Pill {
         });
         if on_tool {
             let since = *self.peek_hover_since.get_or_insert(now);
-            if now.duration_since(since) >= PEEK_DELAY {
+            // Con otro vistazo abierto, el relevo es rápido (`peeks.rs`).
+            let wait = if self.other_peek_open(peeks::PeekKind::Clipboard) {
+                peeks::SWITCH_DELAY
+            } else {
+                PEEK_DELAY
+            };
+            if now.duration_since(since) >= wait && self.peek.target() != 1.0 {
+                self.peek_shown_at = now;
                 self.peek.set(1.0, now);
+                self.hand_off_peeks(peeks::PeekKind::Clipboard, now);
             }
         } else {
             self.peek_hover_since = None;
         }
         if self.peek.target() == 1.0 {
-            let other_tool = strip_hovered.is_some_and(|tool| tool != CLIPBOARD_TOOL);
-            if other_tool || self.panel_visible() || !docked {
+            // Sobre otra herramienta con vistazo se espera el relevo; sobre
+            // una sin vistazo, el margen de siempre.
+            let relay_to = strip_hovered.is_some_and(|tool| tool != CLIPBOARD_TOOL && peeks::any_peek(tool));
+            if self.panel_visible() || !docked {
                 self.peek.set(0.0, now);
-            } else if on_tool || on_peek || self.peek_press.is_some() {
+            } else if on_tool || on_peek || relay_to || self.peek_press.is_some() {
                 self.peek_leave_at = None;
             } else {
                 let since = *self.peek_leave_at.get_or_insert(now);
@@ -1988,6 +2216,8 @@ impl Pill {
             }
         }
         self.update_usage_peek(now, cursor, strip_hovered, docked);
+        self.update_tool_peek(now, cursor, strip_hovered, docked, cx);
+        self.update_block(now);
         if self.demo_peek_until.is_some_and(|until| now < until) && docked {
             self.peek_entries = self.panel.read(cx).recent(PEEK_COUNT);
             self.strip.set(1.0, now);
@@ -2147,6 +2377,11 @@ impl Pill {
             || self.dict.is_running(now)
             || self.usage_peek.is_running(now)
             || self.usage_animating(now)
+            || self.tool_peek_animating(now)
+            || self.block_along.is_running(now)
+            // La entrada del vistazo del portapapeles (letras y filas).
+            || (self.peek.target() == 1.0
+                && now.duration_since(self.peek_shown_at) < Duration::from_millis(1200))
             || self.flight.is_some()
             || self.press.is_some()
             || wheel_moving
@@ -2182,6 +2417,26 @@ impl Pill {
     }
 
     // --- Cuadro -------------------------------------------------------------
+
+    /// Cuánto contenido muestra el tab (0..1): lo más abierto entre el panel
+    /// del notch y las franjas que bajan. En reposo es vidrio.
+    fn content_amount(&self, pill: PillShape, now: Instant) -> f32 {
+        let PillShape::Tab { .. } = pill else {
+            return 0.0;
+        };
+        [
+            self.notch_morph(),
+            self.peek.value(now),
+            self.tray_stretch(now).0,
+            self.hang_amount(now),
+            self.dict_amount(now),
+            self.usage_amount(now),
+            self.tool_peek_amount(now),
+        ]
+        .into_iter()
+        .fold(0.0, f32::max)
+        .clamp(0.0, 1.0)
+    }
 
     fn frame(&self, now: Instant) -> Frame {
         let palette = Palette::dark();
@@ -2220,7 +2475,8 @@ impl Pill {
                             thick.min(TAB_THICK) / 2.0,
                         ),
                         size: TOOL_ICON * scale,
-                        color: mix(palette.muted, palette.text, hover).opacity(reveal),
+                        // El rebote es solo del tamaño: el color no se pasa.
+                        color: mix(palette.muted, palette.text, hover.clamp(0.0, 1.0)).opacity(reveal),
                     }
                 })
                 .collect(),
@@ -2258,7 +2514,17 @@ impl Pill {
             panel: self.panel_shape(now),
             preview: self.preview_shape(now),
             walls,
+            outline: match pill {
+                PillShape::Tab {
+                    edge,
+                    rect,
+                    block: Some(block),
+                    ..
+                } => Some(geometry::side_outline(edge, &self.work, &rect, &block, TAB_RADIUS, SIDE_JOIN_R)),
+                _ => None,
+            },
             glass: self.glass.is_some(),
+            tint: GLASS_TINT + (CONTENT_TINT - GLASS_TINT) * self.content_amount(pill, now),
             live: self.live_shown(now),
             art: self.media.track().and_then(|t| t.art),
             art_center: self.art_center(now),
@@ -2290,6 +2556,33 @@ impl Pill {
             return;
         };
         let shape = match pill {
+            PillShape::Tab {
+                edge,
+                rect,
+                block: Some(block),
+                ..
+            } => {
+                // Dos piezas: la columna y el bloque. Las esquinas de la
+                // columna que el bloque tapa van vivas (si no, quedaría un
+                // rincón sin vidrio bajo la piel); el rincón cóncavo de la
+                // unión no lleva vidrio, casi no se nota bajo el tinte.
+                let r = TAB_RADIUS.min(rect.w.min(rect.h) / 2.0);
+                let mut column = tab_corners(edge, r);
+                let (top, bottom) = match edge {
+                    Edge::Right => (0, 3),
+                    _ => (1, 2),
+                };
+                if block.y <= rect.y + 1.0 {
+                    column[top] = 0.0;
+                }
+                if block.bottom() >= rect.bottom() - 1.0 {
+                    column[bottom] = 0.0;
+                }
+                glass::Shape::Pair {
+                    a: (grow_outward(&rect, edge, 1.0), column),
+                    b: (block, tab_corners(edge, TAB_RADIUS.min(block.w.min(block.h) / 2.0))),
+                }
+            }
             PillShape::Tab { edge, rect, .. } => glass::Shape::Rounded {
                 rect: grow_outward(&rect, edge, 1.0),
                 radii: tab_corners(edge, TAB_RADIUS.min(rect.w.min(rect.h) / 2.0)),
@@ -2359,6 +2652,20 @@ impl Pill {
             Some((core_x, core_y, extent, shadow_alpha)),
         )
     }
+}
+
+/// La herramienta del notch por su nombre en `PILL_OPEN` y `PILL_OPEN_SEQ`.
+fn notch_tool_named(name: &str) -> Option<NotchTool> {
+    Some(match name {
+        "clipboard" => NotchTool::Clipboard,
+        "textos" => NotchTool::Textos,
+        "agentes" => NotchTool::Agentes,
+        "sistema" => NotchTool::Sistema,
+        "media" => NotchTool::Media,
+        // `apps`: el lanzador; `emoji`: el lanzador en su modo emoji.
+        "apps" | "emoji" => NotchTool::Apps,
+        _ => return None,
+    })
 }
 
 /// Mismo orden que `paste_clipboard_item` en Atic: dar el foco al destino,
@@ -2478,16 +2785,6 @@ fn bounds_of(rect: &Rect) -> Bounds<gpui::Pixels> {
     Bounds::new(point(px(rect.x), px(rect.y)), size(px(rect.w), px(rect.h)))
 }
 
-/// Lo que queda de `rect` al quitarle la franja de `band` pegada al borde.
-fn beyond_band(rect: &Rect, edge: Edge, band: f32) -> Rect {
-    match edge {
-        Edge::Top => Rect::new(rect.x, rect.y + band, rect.w, rect.h - band),
-        Edge::Bottom => Rect::new(rect.x, rect.y, rect.w, rect.h - band),
-        Edge::Left => Rect::new(rect.x + band, rect.y, rect.w - band, rect.h),
-        Edge::Right => Rect::new(rect.x, rect.y, rect.w - band, rect.h),
-    }
-}
-
 /// Esquinas redondeadas del tab: solo las del lado que mira al escritorio.
 fn tab_corners(edge: Edge, radius: f32) -> [f32; 4] {
     match edge {
@@ -2515,11 +2812,16 @@ impl Frame {
         // vidrio no lleva: se vería por transparencia como una mancha.
         match self.pill {
             _ if self.glass => {}
-            PillShape::Tab { edge, rect, .. } => window.paint_shadows(
-                bounds_of(&grow_outward(&rect, edge, TAB_RADIUS)),
-                Corners::all(px(TAB_RADIUS)),
-                &[pill_shadow(1.0)],
-            ),
+            PillShape::Tab { edge, rect, block, .. } => {
+                window.paint_shadows(
+                    bounds_of(&grow_outward(&rect, edge, TAB_RADIUS)),
+                    Corners::all(px(TAB_RADIUS)),
+                    &[pill_shadow(1.0)],
+                );
+                if let Some(block) = block {
+                    window.paint_shadows(bounds_of(&block), Corners::all(px(TAB_RADIUS)), &[pill_shadow(1.0)]);
+                }
+            }
             PillShape::Disc { center } => window.paint_shadows(
                 bounds_of(&Rect::centered(center, DISC_R * 2.0, DISC_R * 2.0)),
                 Corners::all(px(DISC_R)),
@@ -2555,6 +2857,9 @@ impl Frame {
         let mut skin = liquid::Silhouette::new();
         let target = if self.glass { &mut pill_skin } else { &mut skin };
         match self.pill {
+            PillShape::Tab { .. } if self.outline.is_some() => {
+                target.polygon(self.outline.as_deref().unwrap_or_default());
+            }
             PillShape::Tab { edge, rect, .. } => {
                 let radius = TAB_RADIUS.min(rect.w.min(rect.h) / 2.0);
                 target.rounded_rect_corners(
@@ -2570,7 +2875,7 @@ impl Frame {
             }
         }
         if let Some(path) = pill_skin.build() {
-            window.paint_path(path, self.skin.opacity(GLASS_TINT));
+            window.paint_path(path, self.skin.opacity(self.tint));
         }
         if let Some(panel) = self.panel.as_ref().filter(|panel| !panel.notch) {
             let r = &panel.rect;
@@ -2794,6 +3099,7 @@ impl Render for Pill {
                 self.fps = (now, 0);
             }
         }
+        self.sync_panel_limits(cx);
         let desired = self.panel_desired_height(cx);
         if self.panel_visible() {
             self.notch_h.set(desired, now);
@@ -2855,7 +3161,9 @@ impl Render for Pill {
                 &self.peek_entries,
                 self.peek_hovered,
                 rect,
+                self.side_drawers(),
                 segment(self.peek.value(now), 0.55, 0.45),
+                now.duration_since(self.peek_shown_at).as_secs_f32(),
                 &frame.palette,
             )
         });
@@ -2868,7 +3176,7 @@ impl Render for Pill {
         let panel_content = frame
             .panel
             .as_ref()
-            .map(|shape| (shape.rect, shape.content, shape.notch));
+            .map(|shape| (shape.rect, shape.content, shape.notch, shape.edge));
 
         div()
             .size_full()
@@ -2890,10 +3198,13 @@ impl Render for Pill {
                 )
                 .size_full(),
             )
-            .when_some(panel_content, |root, (rect, alpha, notch)| {
+            .when_some(panel_content, |root, (rect, alpha, notch, edge)| {
                 // El contenido queda recortado a la forma del notch: mientras
-                // crece (al desplegar algo) no se sale por abajo.
+                // crece (al desplegar algo) no se sale por abajo. Las esquinas
+                // redondas son las del lado que mira al escritorio, como el
+                // tab (arriba, las de abajo).
                 let radius = TAB_RADIUS.min(rect.w.min(rect.h) / 2.0);
+                let [tl, tr, br, bl] = tab_corners(edge, radius);
                 root.child(
                     div()
                         .absolute()
@@ -2902,7 +3213,12 @@ impl Render for Pill {
                         .w(px(rect.w))
                         .h(px(rect.h))
                         .overflow_hidden()
-                        .when(notch, |el| el.rounded_b(px(radius)))
+                        .when(notch, |el| {
+                            el.rounded_tl(px(tl))
+                                .rounded_tr(px(tr))
+                                .rounded_br(px(br))
+                                .rounded_bl(px(bl))
+                        })
                         .when(!notch, |el| el.rounded(px(PANEL_CORNER)))
                         .opacity(alpha)
                         .child(match self.notch_tool {
@@ -2934,6 +3250,7 @@ impl Render for Pill {
             .children(self.hang_element(now))
             .children(self.dict_element(now, cx))
             .children(self.usage_element(now, cx))
+            .children(self.tool_peek_element(now, cx))
             .children(preview_content)
             .children(self.render_shelf(now, cx))
             .into_any_element()
@@ -2960,17 +3277,16 @@ fn render_peek(
     entries: &[clipboard::Entry],
     hovered: Option<PeekHit>,
     rect: Rect,
+    // En el bloque angosto de un costado la ayuda junto al título no cabe.
+    narrow: bool,
     alpha: f32,
+    // Segundos desde que bajó: el mismo reloj que los vistazos de
+    // `peeks.rs`, así las letras y las filas se toman su tiempo.
+    intro: f32,
     palette: &Palette,
 ) -> gpui::AnyElement {
     let now = chrono::Local::now();
-    let row_bg = |on: bool| {
-        if on {
-            palette.text.opacity(0.08)
-        } else {
-            palette.text.opacity(0.0)
-        }
-    };
+    let text = palette.text;
     let rows = entries.iter().enumerate().map(|(index, entry)| {
         let leading = match &entry.content {
             Content::Image(picture) => div()
@@ -3015,7 +3331,13 @@ fn render_peek(
             history::Day::Yesterday => format!("ayer {}", history::short_when(entry.created_ms, now)),
             _ => history::short_when(entry.created_ms, now).to_string(),
         };
+        // Las filas caen a su sitio una tras otra mientras el vistazo baja,
+        // como en los de las otras herramientas (`peeks.rs`).
+        let enter = anim::ease_smooth_out(segment(intro, 0.10 + index as f32 * 0.055, 0.42));
         div()
+            .relative()
+            .top(px(-7.0 * (1.0 - enter)))
+            .opacity(enter)
             .h(px(PEEK_ROW))
             .mx(px(6.))
             .px(px(8.))
@@ -3023,7 +3345,6 @@ fn render_peek(
             .items_center()
             .gap(px(10.))
             .rounded(px(10.))
-            .bg(row_bg(hovered == Some(PeekHit::Row(index))))
             .child(leading)
             .when(entry.secret, |el| {
                 el.child(
@@ -3052,24 +3373,67 @@ fn render_peek(
                     .text_color(palette.muted.opacity(0.7))
                     .child(when),
             )
+            // El realce se funde (los clics los decide `peek_hit`; esto es
+            // solo cómo se ve).
+            .fx(("clip-peek-row-fx", index), move |el, h| {
+                el.bg(h.mix(text.opacity(0.0), text.opacity(0.08)))
+            })
+            .lit(hovered == Some(PeekHit::Row(index)))
     });
+    let faint: Hsla = rgb(0x8f8f86).into();
+    let title = div()
+        .h(px(PEEK_PAD))
+        .flex_none()
+        .px(px(14.))
+        .flex()
+        .items_center()
+        .gap(px(7.))
+        .child(
+            svg()
+                .path("icons/clipboard.svg")
+                .size(px(13.))
+                .text_color(palette.muted)
+                .opacity(anim::ease_smooth_out(segment(intro, 0.10, 0.42))),
+        )
+        .child(
+            div()
+                .text_size(px(12.))
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .child(peeks::falling("Portapapeles", intro)),
+        )
+        .child(div().flex_1())
+        .when(!narrow, |el| {
+            el.child(
+                div()
+                    .text_size(px(10.5))
+                    .text_color(faint)
+                    .opacity(anim::ease_smooth_out(segment(intro, 0.35, 0.25)))
+                    .child("clic pega · arrastra a otra app"),
+            )
+        });
+    let footer_on = hovered == Some(PeekHit::Footer);
     let footer = div()
         .h(px(PEEK_FOOTER))
         .mx(px(6.))
-        .px(px(10.))
+        .px(px(8.))
         .flex()
         .items_center()
-        .justify_between()
         .rounded(px(10.))
-        .bg(row_bg(hovered == Some(PeekHit::Footer)))
         .text_size(px(11.))
-        .child(div().text_color(palette.text).child("Ver todo el portapapeles"))
-        .child(
-            div()
-                .text_size(px(10.))
-                .text_color(palette.muted.opacity(0.7))
-                .child("clic pega · arrastra a otra app"),
-        );
+        .opacity(anim::ease_smooth_out(segment(intro, 0.30, 0.3)))
+        .fx("clip-peek-footer-fx", move |el, h| {
+            let fg = h.mix(faint, text);
+            el.text_color(fg)
+                .child("Ver todo el portapapeles")
+                .child(
+                    svg()
+                        .path("icons/arrow-up-right.svg")
+                        .size(px(11.))
+                        .text_color(fg)
+                        .ml(px(5. + 2.0 * h.t)),
+                )
+        })
+        .lit(footer_on);
     div()
         .absolute()
         .left(px(rect.x))
@@ -3078,11 +3442,11 @@ fn render_peek(
         .h(px(rect.h))
         .overflow_hidden()
         .opacity(alpha)
-        .pt(px(PEEK_PAD))
         .flex()
         .flex_col()
         .font_family("Segoe UI")
         .text_color(palette.text)
+        .child(title)
         .when(entries.is_empty(), |el| {
             el.child(
                 div()
@@ -3178,6 +3542,12 @@ fn main() {
         media::bind_keys(cx);
         color::bind_keys(cx);
         snippets::bind_keys(cx);
+        meetings::bind_keys(cx);
+        // `MEETINGS_ALONE=1`: solo la ventana de Reuniones, sin la pill.
+        if std::env::var_os("MEETINGS_ALONE").is_some() {
+            meetings::open_window(cx).expect("no se pudo abrir Reuniones");
+            return;
+        }
         // `SPACE_ALONE=1`: solo el espacio, sin la pill (para medirlo sin el
         // overlay compartiendo el hilo).
         if std::env::var_os("SPACE_ALONE").is_some() {

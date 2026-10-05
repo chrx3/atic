@@ -16,6 +16,7 @@ use gpui::{
     ImageFormat, MouseButton, MouseDownEvent, SharedString,
 };
 
+use crate::hover::HoverExt;
 use crate::anim::{ease_smooth_out, lerp, segment};
 use crate::capture::Saved;
 use crate::geometry::Rect;
@@ -305,8 +306,6 @@ impl crate::Pill {
                 .flex()
                 .items_center()
                 .justify_center()
-                .bg(chip_bg)
-                .hover(|el| el.bg(gpui::black().opacity(0.8)))
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .child(svg().path(icon).size(px(14.)).text_color(text))
         };
@@ -321,10 +320,8 @@ impl crate::Pill {
                 .justify_center()
                 .gap(px(6.))
                 .rounded(px(8.))
-                .bg(gpui::black().opacity(0.55))
                 .border_1()
                 .border_color(gpui::white().opacity(0.16))
-                .hover(|el| el.bg(gpui::black().opacity(0.8)))
                 .text_size(px(12.))
                 .font_weight(gpui::FontWeight::SEMIBOLD)
                 .text_color(text)
@@ -377,18 +374,22 @@ impl crate::Pill {
                 el.bg(gpui::black().opacity(0.4))
                     .child(
                         dot("shelf-dismiss", "icons/x.svg")
+                            .tooltip(crate::hover::tip("Descartar"))
                             .left(px(6.))
                             .top(px(6.))
                             .on_click(cx.listener(|pill, _: &ClickEvent, _, cx| {
                                 pill.shelf = None;
                                 cx.notify();
-                            })),
+                            }))
+                            .hover_bg("shelf-dismiss-fx", chip_bg, gpui::black().opacity(0.8)),
                     )
                     .child(
                         dot("shelf-folder", "icons/folder.svg")
+                            .tooltip(crate::hover::tip("Abrir la carpeta"))
                             .right(px(6.))
                             .top(px(6.))
-                            .on_click(cx.listener(|pill, _: &ClickEvent, _, _| pill.shelf_folder())),
+                            .on_click(cx.listener(|pill, _: &ClickEvent, _, _| pill.shelf_folder()))
+                            .hover_bg("shelf-folder-fx", chip_bg, gpui::black().opacity(0.8)),
                     )
                     .child(
                         // `.shelf-center`: una columna al centro de la foto.
@@ -400,17 +401,23 @@ impl crate::Pill {
                             .flex()
                             .flex_col()
                             .gap(px(5.))
-                            .child(action("shelf-copy", "icons/copy.svg", "Copiar").on_click(
-                                cx.listener(|pill, _: &ClickEvent, _, cx| pill.shelf_copy(cx)),
-                            ))
-                            .child(action("shelf-draw", "icons/pencil.svg", "Dibujar").on_click(
-                                cx.listener(|pill, _: &ClickEvent, window, cx| {
-                                    pill.shelf_draw(window, cx)
-                                }),
-                            ))
-                            .child(action("shelf-text", "icons/scan-text.svg", "Texto").on_click(
-                                cx.listener(|pill, _: &ClickEvent, _, cx| pill.shelf_text(cx)),
-                            )),
+                            .child(
+                                action("shelf-copy", "icons/copy.svg", "Copiar")
+                                    .on_click(cx.listener(|pill, _: &ClickEvent, _, cx| pill.shelf_copy(cx)))
+                                    .hover_bg("shelf-copy-fx", chip_bg, gpui::black().opacity(0.8)),
+                            )
+                            .child(
+                                action("shelf-draw", "icons/pencil.svg", "Dibujar")
+                                    .on_click(cx.listener(|pill, _: &ClickEvent, window, cx| {
+                                        pill.shelf_draw(window, cx)
+                                    }))
+                                    .hover_bg("shelf-draw-fx", chip_bg, gpui::black().opacity(0.8)),
+                            )
+                            .child(
+                                action("shelf-text", "icons/scan-text.svg", "Texto")
+                                    .on_click(cx.listener(|pill, _: &ClickEvent, _, cx| pill.shelf_text(cx)))
+                                    .hover_bg("shelf-text-fx", chip_bg, gpui::black().opacity(0.8)),
+                            ),
                     )
             })
             .when_some(shelf.note.as_ref(), |el, (note, _)| {

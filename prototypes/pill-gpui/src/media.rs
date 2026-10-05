@@ -26,14 +26,18 @@ use gpui::{
     SharedString, Window,
 };
 
+use crate::hover::HoverExt;
 use crate::clipboard::BAND_H;
 
 pub mod lyrics;
-use crate::system::os::{Backend, Cmd, Snapshot, Want};
+use crate::system::os::{AppAudio, Backend, Cmd, Snapshot, Want};
 
 /// Lo que suena ahora.
 #[derive(Clone, Default)]
 pub struct Track {
+    /// Qué sesión de Windows es (su AppUserModelID, con `#2`, `#3`… si una
+    /// app abre varias).
+    pub id: String,
     pub title: String,
     pub artist: String,
     /// La app que reproduce (su AppUserModelID, para el nombre).
@@ -71,12 +75,25 @@ pub enum Control {
     Seek(f32),
     /// Adelantar o retroceder tantos segundos.
     Jump(f32),
+    /// Detener (las apps que no saben detenerse, se pausan).
+    Stop,
+    /// Nada: solo despierta la consulta (al elegir otra fuente).
+    Refresh,
 }
 
 /// El estado que comparte el hilo con la pill.
 #[derive(Clone)]
 pub struct Media {
+    /// La fuente principal: la de la portada, el tab y la letra.
     track: Arc<Mutex<Option<Track>>>,
+    /// Las demás fuentes que tiene Windows (otra app sonando o en pausa), y
+    /// el orden de todas, como las lista Windows.
+    others: Arc<Mutex<(Vec<String>, Vec<Track>)>>,
+    /// La carátula chica de cada fuente que no es la principal.
+    minis: Arc<Mutex<std::collections::HashMap<String, Arc<RenderImage>>>>,
+    /// La fuente que eligió el usuario y cuándo. Manda hasta que otra
+    /// empiece a sonar después.
+    pin: Arc<Mutex<Option<(String, Instant)>>>,
     /// Sube cada vez que cambia la pista o su estado.
     version: Arc<AtomicU64>,
     /// Nivel pico de la salida (0..1), como bits de `f32`.
@@ -99,7 +116,7 @@ pub struct Media {
     /// Mostrar la letra, en el notch y en el panel (se elige en Ahora suena y
     /// se guarda en `%LOCALAPPDATA%\atic-gpui\media.txt`).
     show_lyrics: Arc<std::sync::atomic::AtomicBool>,
-    tx: mpsc::Sender<Control>,
+    tx: mpsc::Sender<(Option<String>, Control)>,
 }
 
 /// Carátula chica (para la pill), fondo difuminado y portada.
@@ -118,6 +135,9 @@ impl Media {
         let (tx, rx) = mpsc::channel();
         let media = Self {
             track: Default::default(),
+            others: Default::default(),
+            minis: Default::default(),
+            pin: Default::default(),
             version: Default::default(),
             level: Default::default(),
             hold: Default::default(),
@@ -140,6 +160,7 @@ impl Media {
         // bandeja con música sin tocar el reproductor de verdad.
         if std::env::var_os("PILL_MEDIA_DEMO").is_some() {
             media.publish(Some(Track {
+                id: "Spotify.exe".into(),
                 title: "Luz de neón".into(),
                 artist: "Marea Alta".into(),
                 source: "Spotify".into(),
@@ -159,6 +180,28 @@ impl Media {
             if let Ok(mut slot) = media.lyrics.lock() {
                 *slot = lyrics::Slot { key: "Luz de neón\u{1}Marea Alta".into(), lines: Some(Arc::new(lyrics::parse(&demo))) };
             }
+            // Y otras dos fuentes, para ver la lista: un video en pausa y un podcast.
+            let others = vec![
+                Track {
+                    id: "F0DC299D809B9700".into(),
+                    title: "Cómo se hace un sintetizador desde cero".into(),
+                    artist: "Taller Analógico".into(),
+                    source: "F0DC299D809B9700".into(),
+                    position: Some((431.0, 1260.0)),
+                    read_at: Some(Instant::now()),
+                    ..Default::default()
+                },
+                Track {
+                    id: "Chrome".into(),
+                    title: "Episodio 112: la ciudad de noche".into(),
+                    artist: "Radio Ruido".into(),
+                    source: "Chrome".into(),
+                    playing: true,
+                    ..Default::default()
+                },
+            ];
+            let order = vec!["Spotify.exe".into(), "F0DC299D809B9700".into(), "Chrome".into()];
+            media.publish_others(order, others);
             return media;
         }
         let shared = media.clone();
@@ -177,6 +220,62 @@ impl Media {
             track.hero = set.hero.clone();
         }
         Some(track)
+    }
+
+    /// Todas las fuentes, en el orden de Windows: la principal con su
+    /// carátula, las demás con la chica.
+    pub fn sources(&self) -> Vec<Track> {
+        let primary = self.track();
+        let Ok(others) = self.others.lock() else {
+            return primary.into_iter().collect();
+        };
+        let minis = self.minis.lock().ok();
+        let (order, list) = &*others;
+        let mut out: Vec<Track> = order
+            .iter()
+            .filter_map(|id| {
+                if primary.as_ref().is_some_and(|p| &p.id == id) {
+                    return primary.clone();
+                }
+                let mut track = list.iter().find(|t| &t.id == id)?.clone();
+                track.art = minis.as_ref().and_then(|m| m.get(id).cloned());
+                Some(track)
+            })
+            .collect();
+        // La principal recién elegida puede no estar todavía en el orden.
+        if let Some(p) = primary.filter(|p| !out.iter().any(|t| t.id == p.id)) {
+            out.insert(0, p);
+        }
+        out
+    }
+
+    /// Mostrar esta fuente en la portada. Se ve al tiro: la pista pasa a ser
+    /// la principal mientras Windows confirma.
+    pub fn focus(&self, id: &str) {
+        if let Ok(mut pin) = self.pin.lock() {
+            *pin = Some((id.to_string(), Instant::now()));
+        }
+        {
+            let (Ok(mut slot), Ok(mut others)) = (self.track.lock(), self.others.lock()) else {
+                return;
+            };
+            if slot.as_ref().is_some_and(|t| t.id == id) {
+                return;
+            }
+            let Some(i) = others.1.iter().position(|t| t.id == id) else {
+                return;
+            };
+            let chosen = others.1.remove(i);
+            if let Some(old) = slot.replace(chosen) {
+                others.1.push(old);
+            }
+        }
+        // La portada vieja no le corresponde: queda la chica hasta que llegue la suya.
+        if let (Ok(mut set), Ok(minis)) = (self.art.lock(), self.minis.lock()) {
+            *set = ArtSet { art: minis.get(id).cloned(), ..Default::default() };
+        }
+        self.version.fetch_add(1, Ordering::Relaxed);
+        let _ = self.tx.send((None, Control::Refresh));
     }
 
     /// El panel avisa la escala de su pantalla; si cambia, la portada se rehace.
@@ -218,6 +317,22 @@ impl Media {
     }
 
     pub fn control(&self, control: Control) {
+        self.control_on(None, control);
+    }
+
+    /// Un control para una fuente; `None` es la principal.
+    pub fn control_on(&self, id: Option<&str>, control: Control) {
+        let primary = self.track.lock().ok().and_then(|t| t.as_ref().map(|t| t.id.clone()));
+        if let Some(id) = id.filter(|id| primary.as_deref() != Some(*id)) {
+            if let (Control::Toggle | Control::Stop, Ok(mut others)) = (&control, self.others.lock()) {
+                if let Some(track) = others.1.iter_mut().find(|t| t.id == id) {
+                    track.playing = matches!(control, Control::Toggle) && !track.playing;
+                }
+            }
+            self.version.fetch_add(1, Ordering::Relaxed);
+            let _ = self.tx.send((Some(id.to_string()), control));
+            return;
+        }
         // Que se vea al tiro: la posición cambia antes de que Windows confirme.
         if let Ok(mut slot) = self.track.lock() {
             if let Some(track) = slot.as_mut() {
@@ -235,16 +350,31 @@ impl Media {
                     }
                 }
                 match (&control, now) {
-                    (Control::Toggle, _) => {
+                    (Control::Toggle | Control::Stop, _) => {
                         track.position = now;
                         track.read_at = Some(Instant::now());
-                        track.playing = !track.playing;
+                        track.playing = matches!(control, Control::Toggle) && !track.playing;
                     }
                     _ => {}
                 }
             }
         }
-        let _ = self.tx.send(control);
+        let _ = self.tx.send((None, control));
+    }
+
+    /// Las demás fuentes y el orden de todas.
+    fn publish_others(&self, order: Vec<String>, others: Vec<Track>) {
+        if let Ok(mut minis) = self.minis.lock() {
+            minis.retain(|id, _| order.contains(id));
+        }
+        if let Ok(mut slot) = self.others.lock() {
+            *slot = (order, others);
+        }
+        self.version.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn pinned(&self) -> Option<(String, Instant)> {
+        self.pin.lock().ok()?.clone()
     }
 
     fn publish(&self, mut track: Option<Track>) {
@@ -303,6 +433,26 @@ fn save_show_lyrics(on: bool) {
     let _ = std::fs::write(path, if on { "letra=si\n" } else { "letra=no\n" });
 }
 
+/// La fuente principal: la última que empezó a sonar, salvo que el usuario
+/// haya elegido otra (`pin`) después. Con dos que empezaron juntas (al
+/// abrir), la primera de la lista. `None` si nada suena ni hay elegida.
+fn choose(states: &[(String, Option<Instant>)], pin: Option<(String, Instant)>) -> Option<String> {
+    let mut newest: Option<(&String, Instant)> = None;
+    for (id, since) in states {
+        if let Some(since) = *since {
+            if newest.is_none_or(|(_, n)| since > n) {
+                newest = Some((id, since));
+            }
+        }
+    }
+    match (pin, newest) {
+        (Some((pinned, at)), Some((id, since))) => Some(if since > at { id.clone() } else { pinned }),
+        (Some((pinned, _)), None) => Some(pinned),
+        (None, Some((id, _))) => Some(id.clone()),
+        (None, None) => None,
+    }
+}
+
 /// Qué pista es: título y artista.
 fn track_key(track: &Track) -> String {
     format!("{}\u{1}{}", track.title, track.artist)
@@ -342,6 +492,68 @@ pub fn source_name(aumid: &str) -> String {
     let base = base.split('_').next().unwrap_or(base);
     let base = base.trim_end_matches(".exe");
     base.rsplit('.').next().unwrap_or(base).to_string()
+}
+
+/// El nombre para mostrar: el de `source_name` o, si la app se presenta con
+/// un código (Zen, Firefox), el de su carpeta.
+pub fn source_label(aumid: &str) -> String {
+    let name = source_name(aumid);
+    if !name.is_empty() {
+        return name;
+    }
+    app_dir(aumid)
+        .and_then(|dir| std::path::Path::new(&dir).file_name().map(|n| n.to_string_lossy().into_owned()))
+        .unwrap_or_default()
+}
+
+/// La carpeta de una app que se presenta con un código. Firefox y sus
+/// derivados (Zen) lo sacan de su carpeta y lo anotan en el registro
+/// (`Software\Mozilla\Firefox\TaskBarIDs`: carpeta → código).
+pub fn app_dir(aumid: &str) -> Option<String> {
+    static CACHE: Mutex<Option<std::collections::HashMap<String, Option<String>>>> = Mutex::new(None);
+    let lower = aumid.to_lowercase();
+    if lower.len() < 12 || !lower.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    let mut cache = CACHE.lock().ok()?;
+    cache
+        .get_or_insert_with(Default::default)
+        .entry(aumid.to_string())
+        .or_insert_with(|| imp::taskbar_dir(aumid))
+        .clone()
+}
+
+/// Si el proceso `path` es de la app que reproduce `aumid` (`dir`: su
+/// carpeta, si se sabe). Así se encuentra su volumen en el mezclador.
+pub fn same_app(aumid: &str, dir: Option<&str>, path: &str) -> bool {
+    let path = path.to_lowercase().replace('/', "\\");
+    if let Some(dir) = dir {
+        let dir = dir.to_lowercase();
+        return path.starts_with(&format!("{}\\", dir.trim_end_matches('\\')));
+    }
+    let exe = path.rsplit('\\').next().unwrap_or(&path).trim_end_matches(".exe").to_string();
+    let lower = aumid.to_lowercase();
+    let known = [
+        ("spotify", "spotify"),
+        ("msedge", "msedge"),
+        ("chrome", "chrome"),
+        ("firefox", "firefox"),
+        ("zen", "zen"),
+        ("vlc", "vlc"),
+        ("zunemusic", "microsoft.media.player"),
+        ("brave", "brave"),
+        ("opera", "opera"),
+    ];
+    if let Some((_, stem)) = known.iter().find(|(key, _)| lower.contains(key)) {
+        return exe == *stem;
+    }
+    let base = lower.split('!').next().unwrap_or(&lower);
+    // Una app de la Tienda: `Empresa.App_xxxx!App` vive en `WindowsApps\Empresa.App_…`.
+    if let Some((family, _)) = base.split_once('_') {
+        return path.contains(&format!("\\windowsapps\\{family}_"));
+    }
+    let base = base.rsplit(['\\', '/']).next().unwrap_or(base).trim_end_matches(".exe");
+    !base.is_empty() && exe == base
 }
 
 #[cfg(windows)]
@@ -418,9 +630,9 @@ mod imp {
         }
     }
 
-    /// Lo último leído de la pista, para saber cuándo releer la carátula.
-    #[derive(Default)]
-    struct Seen {
+    /// Lo último leído de una pista, para saber cuándo releer la carátula.
+    #[derive(Clone, Default)]
+    struct ArtSeen {
         key: String,
         changed_at: Option<Instant>,
         /// Huella de los bytes de la carátula enviada al hilo de imágenes.
@@ -428,6 +640,43 @@ mod imp {
         /// Consultas desde la última vez que se miró la carátula.
         since_art: u32,
     }
+
+    impl ArtSeen {
+        /// Si toca releer la carátula de esta pista, y si la pista es nueva.
+        fn due(&mut self, key: &str) -> (bool, bool) {
+            let new_track = self.key != key;
+            if new_track {
+                self.key = key.to_string();
+                self.changed_at = Some(Instant::now());
+            }
+            self.since_art += 1;
+            let settling = self.changed_at.is_some_and(|at| at.elapsed() < ART_SETTLE) && self.since_art >= 4;
+            if new_track || settling {
+                self.since_art = 0;
+            }
+            (new_track || settling, new_track)
+        }
+    }
+
+    /// Lo que la consulta recuerda entre vueltas.
+    #[derive(Clone, Default)]
+    struct Seen {
+        /// La carátula de la fuente principal.
+        art: ArtSeen,
+        /// Desde cuándo suena cada fuente: la última que empezó es la principal.
+        since: std::collections::HashMap<String, Instant>,
+    }
+
+    /// Lo que devuelve una consulta, por partes: la principal primero, así
+    /// una fuente secundaria que no contesta no frena la portada.
+    enum Part {
+        /// `None` si la lectura falló (se queda lo último).
+        Primary(Option<Option<Track>>, Seen, Vec<String>),
+        Others(Vec<Track>),
+    }
+
+    /// Las demás fuentes se esperan menos: si no vuelven, quedan las de antes.
+    const OTHERS_LIMIT: Duration = Duration::from_millis(700);
 
     fn open_meter() -> Option<IAudioMeterInformation> {
         unsafe {
@@ -440,7 +689,7 @@ mod imp {
 
     /// Mide el nivel de la salida para la onda de la pill. La sesión se
     /// consulta en otro hilo (`poll`), que nunca toca a Windows directo.
-    pub fn run(media: Media, rx: mpsc::Receiver<Control>) {
+    pub fn run(media: Media, rx: mpsc::Receiver<(Option<String>, Control)>) {
         unsafe {
             let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
         }
@@ -471,22 +720,25 @@ mod imp {
     /// hilo propio, con el administrador y la sesión pedidos de nuevo (una
     /// sesión vieja puede no contestar más). Si una no vuelve a tiempo se
     /// abandona: queda colgada sola y la siguiente ya trae la pista nueva.
-    fn poll(media: Media, rx: mpsc::Receiver<Control>, art_tx: mpsc::Sender<ArtJob>) {
+    fn poll(media: Media, rx: mpsc::Receiver<(Option<String>, Control)>, art_tx: mpsc::Sender<ArtJob>) {
         let mut seen = Seen::default();
-        let mut pending: Vec<Control> = Vec::new();
+        // La carátula chica de cada fuente secundaria. Se toca un instante
+        // por fuente: una consulta colgada no la deja tomada.
+        let minis = Arc::new(Mutex::new(std::collections::HashMap::<String, ArtSeen>::new()));
+        let mut pending: Vec<(Option<String>, Control)> = Vec::new();
         loop {
             let controls = std::mem::take(&mut pending);
             let controlled = !controls.is_empty();
             let stage = Arc::new(AtomicU32::new(MANAGER));
             let (done_tx, done_rx) = mpsc::channel();
-            let (art, probe) = (art_tx.clone(), stage.clone());
+            let (art, probe, job_minis) = (art_tx.clone(), stage.clone(), minis.clone());
             let mut job_seen = std::mem::take(&mut seen);
+            let pin = media.pinned();
             let spawned = std::thread::Builder::new().name("medios-consulta".into()).spawn(move || {
                 unsafe {
                     let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
                 }
-                let track = query(controls, &mut job_seen, &art, &probe);
-                let _ = done_tx.send((track, job_seen));
+                query(controls, &mut job_seen, pin, &job_minis, &art, &probe, &done_tx);
             });
             if spawned.is_err() {
                 std::thread::sleep(POLL);
@@ -495,11 +747,20 @@ mod imp {
             match done_rx.recv_timeout(QUERY_LIMIT) {
                 // Una lectura fallida no es «nada suena»: se queda lo último.
                 // Si no, el tab con música parpadea y la letra se recoge.
-                Ok((Some(track), back)) => {
+                Ok(Part::Primary(track, back, order)) => {
                     seen = back;
-                    media.publish(track);
+                    if let Some(track) = track {
+                        let none = track.is_none();
+                        media.publish(track);
+                        if none {
+                            media.publish_others(Vec::new(), Vec::new());
+                        }
+                    }
+                    if let Ok(Part::Others(others)) = done_rx.recv_timeout(OTHERS_LIMIT) {
+                        media.publish_others(order, others);
+                    }
                 }
-                Ok((None, back)) => seen = back,
+                Ok(Part::Others(_)) => {}
                 Err(_) => {
                     // Lo visto se perdió con la consulta: la próxima vuelve a
                     // mirar la carátula (se descarta si es la misma).
@@ -518,146 +779,221 @@ mod imp {
         }
     }
 
-    /// Una consulta: la sesión, los controles pendientes y la pista.
-    /// `None` si la consulta falló (se queda lo último); `Some(None)` si de
-    /// verdad no hay nada.
+    /// Una consulta: las sesiones, los controles pendientes y las pistas.
+    /// Manda primero la principal (`Part::Primary`) y después las demás.
     fn query(
-        controls: Vec<Control>,
+        controls: Vec<(Option<String>, Control)>,
         seen: &mut Seen,
+        pin: Option<(String, Instant)>,
+        minis: &Mutex<std::collections::HashMap<String, ArtSeen>>,
         art_tx: &mpsc::Sender<ArtJob>,
         probe: &AtomicU32,
-    ) -> Option<Option<Track>> {
+        out: &mpsc::Sender<Part>,
+    ) {
         let at = |stage: u32| probe.store(stage, Ordering::Relaxed);
         at(MANAGER);
-        let manager = wait(Manager::RequestAsync())?;
-        let Some(session) = pick(&manager, &at) else {
-            return Some(None);
+        let Some(manager) = wait(Manager::RequestAsync()) else {
+            let _ = out.send(Part::Primary(None, seen.clone(), Vec::new()));
+            return;
         };
+        let listed = list(&manager, &at);
+        let order: Vec<String> = listed.iter().map(|(id, ..)| id.clone()).collect();
+        let Some(primary) = pick(&manager, &listed, seen, pin, &at) else {
+            let _ = out.send(Part::Primary(Some(None), seen.clone(), order));
+            return;
+        };
+        let session_of = |id: &str| listed.iter().find(|(i, ..)| i == id).map(|(_, s, _)| s);
         let controlled = !controls.is_empty();
-        for control in controls {
-            at(CONTROL);
-            // La línea de tiempo puede no empezar en cero: las posiciones
-            // son relativas a su inicio, igual que las que se leen.
-            let timeline = || session.GetTimelineProperties().ok();
-            let start = || timeline().and_then(|t| t.StartTime().ok()).map_or(0, |t| t.Duration);
-            let op = match control {
-                Control::Toggle => session.TryTogglePlayPauseAsync(),
-                Control::Next => session.TrySkipNextAsync(),
-                Control::Previous => session.TrySkipPreviousAsync(),
-                Control::Seek(to) => session.TryChangePlaybackPositionAsync(start() + ticks(to)),
-                Control::Jump(by) => {
-                    let t = timeline();
-                    let start = t.as_ref().and_then(|t| t.StartTime().ok()).map_or(0, |t| t.Duration);
-                    let now = t.and_then(|t| t.Position().ok()).map_or(start, |p| p.Duration);
-                    session.TryChangePlaybackPositionAsync((now + ticks(by.abs()) * by.signum() as i64).max(start))
-                }
+        for (target, control) in controls {
+            let Some(session) = session_of(target.as_deref().unwrap_or(&primary)) else {
+                continue;
             };
-            let _ = wait(op);
+            at(CONTROL);
+            apply(session, control);
         }
         if controlled {
             // Darle un respiro a la app antes de leer.
             std::thread::sleep(Duration::from_millis(120));
         }
-        read(&session, seen, art_tx, &at)
+        let track = session_of(&primary).and_then(|session| {
+            let (track, props) = read(session, primary.clone(), &at)?;
+            let Some(mut track) = track else {
+                return Some(None);
+            };
+            if let Some(props) = props {
+                let key = track_key(&track);
+                let (due, new_track) = seen.art.due(&key);
+                if due {
+                    at(THUMBNAIL);
+                    if let Some(bytes) = thumb_if_changed(&props, &mut seen.art, new_track) {
+                        let _ = art_tx.send(ArtJob::Thumb {
+                            key,
+                            title: track.title.clone(),
+                            artist: track.artist.clone(),
+                            bytes,
+                        });
+                    }
+                }
+            }
+            track.id = primary.clone();
+            Some(Some(track))
+        });
+        let _ = out.send(Part::Primary(track, seen.clone(), order.clone()));
+
+        // Las demás, con su carátula chica.
+        let mut others = Vec::new();
+        for (id, session, _) in listed.iter().filter(|(id, ..)| *id != primary) {
+            let Some((Some(track), props)) = read(session, id.clone(), &at) else {
+                continue;
+            };
+            if let Some(props) = props {
+                let key = track_key(&track);
+                let mut state = minis.lock().ok().and_then(|m| m.get(id).cloned()).unwrap_or_default();
+                let (due, new_track) = state.due(&key);
+                if due {
+                    at(THUMBNAIL);
+                    if let Some(bytes) = thumb_if_changed(&props, &mut state, new_track) {
+                        let _ = art_tx.send(ArtJob::Mini { id: id.clone(), bytes });
+                    }
+                }
+                if let Ok(mut m) = minis.lock() {
+                    m.retain(|k, _| order.contains(k));
+                    m.insert(id.clone(), state);
+                }
+            }
+            others.push(track);
+        }
+        let _ = out.send(Part::Others(others));
+    }
+
+    /// Manda un control a una sesión.
+    fn apply(session: &Session, control: Control) {
+        // La línea de tiempo puede no empezar en cero: las posiciones
+        // son relativas a su inicio, igual que las que se leen.
+        let timeline = || session.GetTimelineProperties().ok();
+        let start = || timeline().and_then(|t| t.StartTime().ok()).map_or(0, |t| t.Duration);
+        let op = match control {
+            Control::Refresh => return,
+            Control::Toggle => session.TryTogglePlayPauseAsync(),
+            Control::Next => session.TrySkipNextAsync(),
+            Control::Previous => session.TrySkipPreviousAsync(),
+            // Muchas apps (los navegadores) no saben detenerse: se pausan.
+            Control::Stop => {
+                let can_stop = session
+                    .GetPlaybackInfo()
+                    .and_then(|info| info.Controls())
+                    .and_then(|c| c.IsStopEnabled())
+                    .unwrap_or(false);
+                if can_stop {
+                    session.TryStopAsync()
+                } else {
+                    session.TryPauseAsync()
+                }
+            }
+            Control::Seek(to) => session.TryChangePlaybackPositionAsync(start() + ticks(to)),
+            Control::Jump(by) => {
+                let t = timeline();
+                let start = t.as_ref().and_then(|t| t.StartTime().ok()).map_or(0, |t| t.Duration);
+                let now = t.and_then(|t| t.Position().ok()).map_or(start, |p| p.Duration);
+                session.TryChangePlaybackPositionAsync((now + ticks(by.abs()) * by.signum() as i64).max(start))
+            }
+        };
+        let _ = wait(op);
     }
 
     fn ticks(seconds: f32) -> i64 {
         (seconds.max(0.0) as f64 * 1e7) as i64
     }
 
-    /// La sesión a mostrar: la primera que esté sonando. Windows llama
-    /// «actual» a la última que tomó el control, que puede ser una pestaña
-    /// en pausa mientras la música suena en otra app.
-    fn pick(manager: &Manager, at: &dyn Fn(u32)) -> Option<Session> {
+    /// Todas las sesiones con su identificador y si suenan. El identificador
+    /// es el AppUserModelID; si una app abre varias, `#2`, `#3`…
+    fn list(manager: &Manager, at: &dyn Fn(u32)) -> Vec<(String, Session, bool)> {
         at(SESSIONS);
-        let sessions = manager.GetSessions().ok()?;
+        let Ok(sessions) = manager.GetSessions() else {
+            return Vec::new();
+        };
         let count = sessions.Size().unwrap_or(0);
-        let all: Vec<Session> = (0..count).filter_map(|i| sessions.GetAt(i).ok()).collect();
-        let states: Vec<bool> = all
-            .iter()
-            .map(|s| {
-                at(SESSION_STATUS);
-                s.GetPlaybackInfo()
-                    .and_then(|info| info.PlaybackStatus())
-                    .is_ok_and(|status| status == Status::Playing)
-            })
-            .collect();
+        let mut out: Vec<(String, Session, bool)> = Vec::new();
+        for session in (0..count).filter_map(|i| sessions.GetAt(i).ok()) {
+            at(SESSION_STATUS);
+            let playing = session
+                .GetPlaybackInfo()
+                .and_then(|info| info.PlaybackStatus())
+                .is_ok_and(|status| status == Status::Playing);
+            let aumid = session.SourceAppUserModelId().map(|a| a.to_string()).unwrap_or_default();
+            let repeats = out.iter().filter(|(id, ..)| id.split('#').next() == Some(aumid.as_str())).count();
+            let id = if repeats == 0 { aumid } else { format!("{aumid}#{}", repeats + 1) };
+            out.push((id, session, playing));
+        }
         if std::env::var_os("PILL_DEBUG").is_some() {
             static LAST: Mutex<String> = Mutex::new(String::new());
-            let list: Vec<String> = all
-                .iter()
-                .zip(&states)
-                .map(|(s, on)| {
-                    format!(
-                        "{}{}",
-                        s.SourceAppUserModelId().map(|a| a.to_string()).unwrap_or_default(),
-                        if *on { " (suena)" } else { "" }
-                    )
-                })
-                .collect();
+            let names: Vec<String> =
+                out.iter().map(|(id, _, on)| format!("{id}{}", if *on { " (suena)" } else { "" })).collect();
             // Solo cuando cambia: si no, llena el log.
-            let list = format!("{list:?}");
+            let names = format!("{names:?}");
             if let Ok(mut last) = LAST.lock() {
-                if *last != list {
-                    eprintln!("[medios] sesiones: {list}");
-                    *last = list;
+                if *last != names {
+                    eprintln!("[medios] sesiones: {names}");
+                    *last = names;
                 }
             }
         }
-        if let Some(i) = states.iter().position(|on| *on) {
-            return all.into_iter().nth(i);
-        }
-        at(CURRENT);
-        manager.GetCurrentSession().ok()
+        out
     }
 
-    /// Cuánto tapa el fondo arriba, donde es más fuerte.
-    const BACKDROP_ALPHA: f32 = 0.9;
-    /// La portada en puntos: el ancho del notch por el alto de la portada.
-    const HERO_PT: (f32, f32) = (440.0, HERO_H);
+    /// La fuente principal (la de la portada). Windows llama «actual» a la
+    /// última que tomó el control, que puede ser una pestaña en pausa
+    /// mientras la música suena en otra app; por eso manda la última que
+    /// empezó a sonar, salvo que el usuario haya elegido otra después.
+    fn pick(
+        manager: &Manager,
+        listed: &[(String, Session, bool)],
+        seen: &mut Seen,
+        pin: Option<(String, Instant)>,
+        at: &dyn Fn(u32),
+    ) -> Option<String> {
+        let now = Instant::now();
+        seen.since.retain(|id, _| listed.iter().any(|(i, _, on)| i == id && *on));
+        for (id, _, on) in listed {
+            if *on {
+                seen.since.entry(id.clone()).or_insert(now);
+            }
+        }
+        let states: Vec<(String, Option<Instant>)> =
+            listed.iter().map(|(id, ..)| (id.clone(), seen.since.get(id).copied())).collect();
+        let pin = pin.filter(|(id, _)| listed.iter().any(|(i, ..)| i == id));
+        if let Some(id) = choose(&states, pin) {
+            return Some(id);
+        }
+        at(CURRENT);
+        let current = manager.GetCurrentSession().ok()?.SourceAppUserModelId().ok()?.to_string();
+        listed
+            .iter()
+            .find(|(id, ..)| id.split('#').next() == Some(current.as_str()))
+            .or(listed.first())
+            .map(|(id, ..)| id.clone())
+    }
 
-    fn read(session: &Session, seen: &mut Seen, art_tx: &mpsc::Sender<ArtJob>, at: &dyn Fn(u32)) -> Option<Option<Track>> {
+    /// Lee una sesión: la pista (`None` si no informa título) y sus
+    /// propiedades, para la carátula. `None` si la lectura falló.
+    fn read(
+        session: &Session,
+        id: String,
+        at: &dyn Fn(u32),
+    ) -> Option<(Option<Track>, Option<windows::Media::Control::GlobalSystemMediaTransportControlsSessionMediaProperties>)>
+    {
         at(PROPERTIES);
         let props = wait(session.TryGetMediaPropertiesAsync())?;
         let title = props.Title().map(|t| t.to_string()).unwrap_or_default();
         let artist = props.Artist().map(|a| a.to_string()).unwrap_or_default();
         if title.is_empty() {
-            return Some(None);
+            return Some((None, None));
         }
         at(PLAYBACK);
         let playing = session
             .GetPlaybackInfo()
             .and_then(|info| info.PlaybackStatus())
             .is_ok_and(|status| status == Status::Playing);
-        // La carátula se relee al cambiar de pista y, una vez por segundo,
-        // durante unos segundos después: muchas apps (el navegador) mandan el
-        // título nuevo antes que la imagen. Solo se decodifica si los bytes
-        // cambiaron, y en otro hilo.
-        let key = format!("{title}\u{1}{artist}");
-        let new_track = seen.key != key;
-        if new_track {
-            seen.key = key.clone();
-            seen.changed_at = Some(Instant::now());
-        }
-        seen.since_art += 1;
-        let settling = seen.changed_at.is_some_and(|at| at.elapsed() < ART_SETTLE) && seen.since_art >= 4;
-        if new_track || settling {
-            seen.since_art = 0;
-            at(THUMBNAIL);
-            let bytes = props.Thumbnail().ok().and_then(|thumb| read_all(&thumb));
-            let hash = bytes.as_ref().map(|b| {
-                use std::hash::{Hash, Hasher};
-                let mut h = std::collections::hash_map::DefaultHasher::new();
-                b.hash(&mut h);
-                h.finish()
-            });
-            // Sin imagen en una pista nueva se borra la anterior; una lectura
-            // fallida a medio camino no borra la que ya hay.
-            if hash != seen.art && (hash.is_some() || new_track) {
-                seen.art = hash;
-                let _ = art_tx.send(ArtJob::Thumb { key, title: title.clone(), artist: artist.clone(), bytes });
-            }
-        }
         // La app informa la posición de cuando la midió (`LastUpdatedTime`),
         // que puede ser hace varios segundos: se adelanta hasta ahora. Todo
         // relativo al inicio de la línea de tiempo, que no siempre es cero.
@@ -680,7 +1016,8 @@ mod imp {
         });
         at(SOURCE);
         let source = session.SourceAppUserModelId().map(|s| s.to_string()).unwrap_or_default();
-        Some(Some(Track {
+        let track = Track {
+            id,
             title,
             artist,
             source,
@@ -688,8 +1025,38 @@ mod imp {
             position,
             read_at: Some(Instant::now()),
             ..Default::default()
-        }))
+        };
+        Some((Some(track), Some(props)))
     }
+
+    /// Los bytes de la carátula si cambiaron desde la última vez
+    /// (`Some(None)`: la pista nueva no trae). La carátula se relee al cambiar
+    /// de pista y, una vez por segundo, durante unos segundos después: muchas
+    /// apps (el navegador) mandan el título nuevo antes que la imagen.
+    fn thumb_if_changed(
+        props: &windows::Media::Control::GlobalSystemMediaTransportControlsSessionMediaProperties,
+        seen: &mut ArtSeen,
+        new_track: bool,
+    ) -> Option<Option<Vec<u8>>> {
+        let bytes = props.Thumbnail().ok().and_then(|thumb| read_all(&thumb));
+        let hash = bytes.as_ref().map(|b| {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            b.hash(&mut h);
+            h.finish()
+        });
+        // Sin imagen en una pista nueva se borra la anterior; una lectura
+        // fallida a medio camino no borra la que ya hay.
+        (hash != seen.art && (hash.is_some() || new_track)).then(|| {
+            seen.art = hash;
+            bytes
+        })
+    }
+
+    /// Cuánto tapa el fondo arriba, donde es más fuerte.
+    const BACKDROP_ALPHA: f32 = 0.9;
+    /// La portada en puntos: el ancho del notch por el alto de la portada.
+    const HERO_PT: (f32, f32) = (440.0, HERO_H);
 
     /// Lo que recibe el hilo de imágenes.
     pub(super) enum ArtJob {
@@ -697,6 +1064,8 @@ mod imp {
         Thumb { key: String, title: String, artist: String, bytes: Option<Vec<u8>> },
         /// Una versión grande hallada en línea para la pista `key`.
         HiRes { key: String, bytes: Vec<u8> },
+        /// La carátula de una fuente secundaria, para su fila.
+        Mini { id: String, bytes: Option<Vec<u8>> },
     }
 
     /// Bajo este lado (en px) la carátula de Windows se busca más grande en
@@ -772,6 +1141,16 @@ mod imp {
                                     changed = true;
                                 }
                             }
+                            ArtJob::Mini { id, bytes: b } => {
+                                let art = b.as_deref().and_then(mini);
+                                if let Ok(mut minis) = media.minis.lock() {
+                                    match art {
+                                        Some(art) => minis.insert(id, art),
+                                        None => minis.remove(&id),
+                                    };
+                                }
+                                media.version.fetch_add(1, Ordering::Relaxed);
+                            }
                             ArtJob::HiRes { key: k, bytes: b } => {
                                 if found.len() > 40 {
                                     found.clear();
@@ -803,6 +1182,18 @@ mod imp {
             })
             .expect("hilo de carátulas");
         tx
+    }
+
+    /// La carátula chica de una fila: cuadrada, 96 px, en BGRA.
+    fn mini(bytes: &[u8]) -> Option<Arc<RenderImage>> {
+        let decoded = image::load_from_memory(bytes).ok()?;
+        let side = decoded.width().min(decoded.height());
+        let square = decoded.crop_imm((decoded.width() - side) / 2, (decoded.height() - side) / 2, side, side);
+        let mut rgba = square.resize_exact(96, 96, image::imageops::FilterType::Triangle).to_rgba8();
+        for pixel in rgba.pixels_mut() {
+            pixel.0.swap(0, 2);
+        }
+        Some(Arc::new(RenderImage::new([image::Frame::new(rgba)])))
     }
 
     /// La carátula (cuadrada, 160 px) y su versión difuminada para el fondo,
@@ -886,6 +1277,57 @@ mod imp {
             backdrop: Some(to_render(backdrop)),
             hero: Some(to_render(hero)),
         }
+    }
+
+    /// La carpeta anotada para `aumid` en `TaskBarIDs` (usuario o equipo).
+    pub fn taskbar_dir(aumid: &str) -> Option<String> {
+        use windows::core::{HSTRING, PWSTR};
+        use windows::Win32::System::Registry::{
+            RegCloseKey, RegEnumValueW, RegOpenKeyExW, HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ,
+        };
+        for root in [HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE] {
+            unsafe {
+                let mut key = HKEY::default();
+                let path = HSTRING::from("Software\\Mozilla\\Firefox\\TaskBarIDs");
+                if RegOpenKeyExW(root, &path, Some(0), KEY_READ, &mut key).is_err() {
+                    continue;
+                }
+                let mut found = None;
+                for index in 0.. {
+                    let mut name = [0u16; 1024];
+                    let mut name_len = name.len() as u32;
+                    let mut data = [0u8; 256];
+                    let mut data_len = data.len() as u32;
+                    let status = RegEnumValueW(
+                        key,
+                        index,
+                        Some(PWSTR(name.as_mut_ptr())),
+                        &mut name_len,
+                        None,
+                        None,
+                        Some(data.as_mut_ptr()),
+                        Some(&mut data_len),
+                    );
+                    if status.is_err() {
+                        break;
+                    }
+                    let wide: Vec<u16> = data[..data_len as usize]
+                        .chunks_exact(2)
+                        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                        .take_while(|&c| c != 0)
+                        .collect();
+                    if String::from_utf16_lossy(&wide).eq_ignore_ascii_case(aumid) {
+                        found = Some(String::from_utf16_lossy(&name[..name_len as usize]));
+                        break;
+                    }
+                }
+                let _ = RegCloseKey(key);
+                if found.is_some() {
+                    return found;
+                }
+            }
+        }
+        None
     }
 
     fn read_all(reference: &IRandomAccessStreamReference) -> Option<Vec<u8>> {
@@ -1078,7 +1520,10 @@ mod itunes {
 #[cfg(not(windows))]
 mod imp {
     use super::*;
-    pub fn run(_: Media, _: mpsc::Receiver<Control>) {}
+    pub fn run(_: Media, _: mpsc::Receiver<(Option<String>, Control)>) {}
+    pub fn taskbar_dir(_: &str) -> Option<String> {
+        None
+    }
     pub(super) enum ArtJob {
         HiRes { key: String, bytes: Vec<u8> },
     }
@@ -1128,13 +1573,25 @@ const TITLE_H: f32 = 46.0;
 const LYRIC_SIDE_H: f32 = 18.0;
 const LYRIC_NOW_H: f32 = 46.0;
 const LYRICS_H: f32 = LYRIC_SIDE_H * 2.0 + LYRIC_NOW_H + 12.0;
+/// La lista de fuentes (con dos o más): el título y una fila por fuente.
+const SOURCES_HEAD_H: f32 = 26.0;
+const SOURCE_ROW_H: f32 = 50.0;
+const SOURCE_GAP: f32 = 4.0;
+const SOURCE_ART: f32 = 36.0;
+/// Las filas que caben; las demás fuentes no se listan.
+const MAX_SOURCES: usize = 5;
+/// El volumen de cada fuente: un slider chico como el de abajo.
+const APP_VOLUME_W: f32 = 84.0;
+const APP_VOLUME_H: f32 = 26.0;
 
 /// Qué barra se arrastra.
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, PartialEq)]
 enum Drag {
     /// La canción: la fracción donde va el dedo (se aplica al soltar).
     Seek(f32),
     Volume,
+    /// El volumen de la app de una fuente (su `source`).
+    App(String),
 }
 
 pub struct MediaPanel {
@@ -1149,6 +1606,8 @@ pub struct MediaPanel {
     drag: Option<Drag>,
     progress_bounds: Rc<Cell<Bounds<Pixels>>>,
     volume_bounds: Rc<Cell<Bounds<Pixels>>>,
+    /// Dónde quedó el slider de volumen de cada fuente (por su `source`).
+    app_bounds: Rc<std::cell::RefCell<std::collections::HashMap<String, Bounds<Pixels>>>>,
     pub pinned: bool,
     seen: u64,
 }
@@ -1198,6 +1657,7 @@ impl MediaPanel {
             drag: None,
             progress_bounds: Default::default(),
             volume_bounds: Default::default(),
+            app_bounds: Default::default(),
             pinned: false,
             seen: 0,
         }
@@ -1231,11 +1691,12 @@ impl MediaPanel {
     }
 
     fn refresh(&mut self, cx: &mut Context<Self>) {
-        let reply = self.backend.read(Want::default());
+        // Con las apps que suenan: el volumen de cada fuente.
+        let reply = self.backend.read(Want { audio: true, ..Want::default() });
         cx.spawn(async move |this, cx| {
             if let Ok(snapshot) = reply.await {
                 let _ = this.update(cx, |panel, cx| {
-                    if panel.drag != Some(Drag::Volume) {
+                    if !matches!(panel.drag, Some(Drag::Volume | Drag::App(_))) {
                         panel.sound = Some(snapshot);
                         cx.notify();
                     }
@@ -1254,7 +1715,295 @@ impl MediaPanel {
         // Sin posición (YouTube en el navegador no la informa) no hay barra.
         let progress = if self.timeline() { PROGRESS_H + 6.0 } else { 0.0 };
         let lyrics = if self.lyric().is_some() { LYRICS_H } else { 0.0 };
-        BAND_H + HERO_SPACER + TITLE_H + 12.0 + progress + CONTROLS_H + lyrics + 10.0 + BOTTOM_H + outputs + 14.0
+        let sources = Self::sources_height(self.media.sources().len());
+        BAND_H + HERO_SPACER + TITLE_H + 12.0 + progress + CONTROLS_H + lyrics + sources + 10.0 + BOTTOM_H + outputs + 14.0
+    }
+
+    /// El alto de la lista de fuentes: nada con una sola.
+    fn sources_height(count: usize) -> f32 {
+        if count < 2 {
+            return 0.0;
+        }
+        let rows = count.min(MAX_SOURCES) as f32;
+        8.0 + SOURCES_HEAD_H + rows * SOURCE_ROW_H + (rows - 1.0) * SOURCE_GAP
+    }
+
+    /// Las sesiones del mezclador que son de la app de esta fuente.
+    fn app_audio(&self, source: &str) -> Vec<AppAudio> {
+        let Some(sound) = self.sound.as_ref() else {
+            return Vec::new();
+        };
+        let dir = app_dir(source);
+        sound
+            .audio
+            .iter()
+            .filter(|a| a.path.as_ref().is_some_and(|p| same_app(source, dir.as_deref(), &p.to_string_lossy())))
+            .cloned()
+            .collect()
+    }
+
+    /// Cambia el volumen de la app de una fuente: todas sus sesiones (un
+    /// navegador tiene varias).
+    fn set_app_volume(&mut self, source: &str, value: f32, cx: &mut Context<Self>) {
+        let pids: Vec<u32> = self.app_audio(source).iter().map(|a| a.pid).collect();
+        if let Some(sound) = self.sound.as_mut() {
+            for app in sound.audio.iter_mut().filter(|a| pids.contains(&a.pid)) {
+                app.volume = value;
+            }
+        }
+        for pid in pids {
+            self.backend.send(Cmd::AppVolume(pid, value));
+        }
+        cx.notify();
+    }
+
+    /// Del cursor al valor de un slider con punta redonda de `knob` px.
+    fn slider_value(bounds: Bounds<Pixels>, knob: f32, x: Pixels) -> f32 {
+        let w = f32::from(bounds.size.width).max(knob + 1.0);
+        ((f32::from(x - bounds.origin.x) - knob / 2.0) / (w - knob)).clamp(0.0, 1.0)
+    }
+
+    /// Todas las fuentes que tiene Windows, una fila cada una: la principal
+    /// (la de la portada) con un relleno más claro. Un clic en la fila la
+    /// lleva a la portada; a la derecha, su volumen, pausa y detener.
+    fn render_sources(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
+        let sources = self.media.sources();
+        if sources.len() < 2 {
+            return None;
+        }
+        let primary = self.media.track().map(|t| t.id);
+        let muted: Hsla = rgb(0xb8b8ae).into();
+        let text: Hsla = rgb(0xf0f0ea).into();
+        let ink: Hsla = rgb(0x1a1a18).into();
+        let playing = sources.iter().filter(|t| t.playing).count();
+        let head = div()
+            .h(px(SOURCES_HEAD_H))
+            .px(px(6.))
+            .flex()
+            .items_center()
+            .gap(px(6.))
+            .text_size(px(11.))
+            .text_color(muted)
+            .child("Fuentes")
+            .child(div().flex_1())
+            .when(playing > 1, |el| el.child(format!("{playing} suenan a la vez")));
+        let rows = sources.into_iter().take(MAX_SOURCES).enumerate().map(|(i, track)| {
+            let is_primary = primary.as_deref() == Some(track.id.as_str());
+            let id = track.id.clone();
+            let app = source_label(&track.source);
+            let by = [app.as_str(), track.artist.as_str()]
+                .into_iter()
+                .filter(|part| !part.is_empty())
+                .collect::<Vec<_>>()
+                .join(" · ");
+            let art = div()
+                .size(px(SOURCE_ART))
+                .flex_none()
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(10.))
+                .bg(white(0.08))
+                .child(match track.art.clone() {
+                    Some(image) => img(image)
+                        .size(px(SOURCE_ART))
+                        .rounded(px(10.))
+                        .object_fit(ObjectFit::Cover)
+                        .into_any_element(),
+                    None => svg()
+                        .path(if track.position.is_some_and(|(_, end)| end > 600.0) {
+                            "icons/video.svg"
+                        } else {
+                            "icons/audio-lines.svg"
+                        })
+                        .size(px(16.))
+                        .text_color(white(0.45))
+                        .into_any_element(),
+                });
+            // El volumen de su app, si está en el mezclador.
+            let apps = self.app_audio(&track.source);
+            let volume = (!apps.is_empty()).then(|| {
+                let value = apps.iter().map(|a| a.volume).fold(0.0f32, f32::max).clamp(0.0, 1.0);
+                let source = track.source.clone();
+                let bounds = self.app_bounds.clone();
+                let key = track.source.clone();
+                let width = self.app_bounds.borrow().get(&key).map_or(APP_VOLUME_W, |b| f32::from(b.size.width));
+                let fill = APP_VOLUME_H + (width - APP_VOLUME_H).max(0.0) * value;
+                let dragging = self.drag.as_ref() == Some(&Drag::App(source.clone()));
+                let icon = if value <= 0.001 {
+                    "icons/volume-x.svg"
+                } else if value < 0.5 {
+                    "icons/volume-1.svg"
+                } else {
+                    "icons/volume-2.svg"
+                };
+                div()
+                    .id(SharedString::from(format!("media-src-vol-{i}")))
+                    .relative()
+                    .w(px(APP_VOLUME_W))
+                    .h(px(APP_VOLUME_H))
+                    .flex_none()
+                    .rounded(px(APP_VOLUME_H / 2.0))
+                    .bg(white(0.10))
+                    .overflow_hidden()
+                    .cursor_pointer()
+                    .child(
+                        canvas(
+                            move |b, _, _| {
+                                bounds.borrow_mut().insert(key.clone(), b);
+                            },
+                            |_, _, _, _| {},
+                        )
+                        .absolute()
+                        .size_full(),
+                    )
+                    .child(
+                        div()
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .h_full()
+                            .w(px(fill))
+                            .rounded(px(APP_VOLUME_H / 2.0))
+                            .bg(if dragging { gpui::white() } else { rgb(0xe8e8e0).into() }),
+                    )
+                    .child(
+                        div()
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .size(px(APP_VOLUME_H))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(svg().path(icon).size(px(12.)).text_color(ink)),
+                    )
+                    .child(
+                        div()
+                            .absolute()
+                            .right(px(9.))
+                            .top_0()
+                            .h_full()
+                            .flex()
+                            .items_center()
+                            .text_size(px(9.5))
+                            .text_color(if value > 0.8 { ink } else { muted })
+                            .child(format!("{:.0}", value * 100.0)),
+                    )
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |panel, event: &MouseDownEvent, _, cx| {
+                            cx.stop_propagation();
+                            let Some(b) = panel.app_bounds.borrow().get(&source).copied() else {
+                                return;
+                            };
+                            panel.drag = Some(Drag::App(source.clone()));
+                            let value = Self::slider_value(b, APP_VOLUME_H, event.position.x);
+                            panel.set_app_volume(&source, value, cx);
+                        }),
+                    )
+            });
+            let small_button = |name: &str, icon: &'static str, size: f32, control: fn() -> Control, cx: &mut Context<Self>| {
+                let id = track.id.clone();
+                div()
+                    .id(SharedString::from(format!("media-src-{name}-{i}")))
+                    .size(px(size))
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(size / 2.0))
+                    .cursor_pointer()
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_click(cx.listener(move |panel, _: &ClickEvent, _, cx| {
+                        cx.stop_propagation();
+                        panel.media.control_on(Some(&id), control());
+                        cx.notify();
+                    }))
+                    .fx(SharedString::from(format!("media-src-{name}-{i}-fx")), move |el, h| {
+                        el.bg(h.mix(white(0.0), white(0.14 + 0.06 * h.press)))
+                            .child(svg().path(icon).size(px(size * (0.5 - 0.04 * h.press))).text_color(text))
+                    })
+            };
+            let toggle = small_button(
+                "toggle",
+                if track.playing { "icons/pause.svg" } else { "icons/play.svg" },
+                30.0,
+                || Control::Toggle,
+                cx,
+            );
+            let stop = small_button("stop", "icons/square.svg", 26.0, || Control::Stop, cx);
+            div()
+                .id(SharedString::from(format!("media-src-{i}")))
+                .h(px(SOURCE_ROW_H))
+                .flex_none()
+                .pl(px(7.))
+                .pr(px(6.))
+                .flex()
+                .items_center()
+                .gap(px(10.))
+                .rounded(px(14.))
+                .when(!is_primary, |el| el.cursor_pointer())
+                .on_click(cx.listener(move |panel, _: &ClickEvent, _, cx| {
+                    panel.media.focus(&id);
+                    cx.notify();
+                }))
+                .child(art)
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .gap(px(2.))
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(6.))
+                                .min_w_0()
+                                // Un punto chico y plano: suena.
+                                .when(track.playing, |el| {
+                                    el.child(div().size(px(6.)).flex_none().rounded(px(3.)).bg(rgb(0x7ed69a)))
+                                })
+                                .child(
+                                    div()
+                                        .min_w_0()
+                                        .truncate()
+                                        .text_size(px(12.5))
+                                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                                        .child(SharedString::from(track.title.clone())),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .truncate()
+                                .text_size(px(10.5))
+                                .text_color(muted)
+                                .child(SharedString::from(by)),
+                        ),
+                )
+                .children(volume)
+                .child(toggle)
+                .child(stop)
+                .fx(SharedString::from(format!("media-src-{i}-fx")), move |el, h| {
+                    if is_primary {
+                        el.bg(white(0.10))
+                    } else {
+                        el.bg(h.mix(white(0.0), white(0.06)))
+                    }
+                })
+        });
+        Some(
+            div()
+                .mt(px(8.))
+                .px(px(SIDE - 6.))
+                .flex()
+                .flex_col()
+                .gap(px(SOURCE_GAP))
+                .child(head)
+                .children(rows),
+        )
     }
 
     /// El verso que suena y sus vecinos, si la pista tiene letra
@@ -1336,18 +2085,20 @@ impl MediaPanel {
             .items_center()
             .gap(px(5.))
             .rounded(px(12.))
-            .bg(white(if on { 0.16 } else { 0.06 }))
-            .hover(|el| el.bg(white(0.22)))
             .cursor_pointer()
             .text_size(px(11.))
-            .text_color(fg)
             .on_click(cx.listener(|panel, _: &ClickEvent, _, cx| {
                 let on = !panel.media.show_lyrics();
                 panel.media.set_show_lyrics(on);
                 cx.notify();
             }))
-            .child(svg().path("icons/mic-vocal.svg").size(px(13.)).text_color(fg))
-            .child(if on { "Letra" } else { "Sin letra" })
+            .fx("media-hang-toggle-fx", move |el, h| {
+                let fg = if on { fg } else { h.mix(fg, rgb(0xf0f0ea).into()) };
+                el.bg(h.mix(white(if on { 0.16 } else { 0.06 }), white(0.22)))
+                    .text_color(fg)
+                    .child(svg().path("icons/mic-vocal.svg").size(px(13.)).text_color(fg))
+                    .child(if on { "Letra" } else { "Sin letra" })
+            })
     }
 
     /// La app informa posición y duración: se puede mover la canción.
@@ -1392,14 +2143,21 @@ impl MediaPanel {
             .items_center()
             .justify_center()
             .rounded(px(size / 2.0))
-            .when(big, |el| el.bg(rgb(0xf0f0ea)))
-            .when(!big, |el| el.hover(|el| el.bg(white(0.12))))
             .cursor_pointer()
             .on_click(cx.listener(move |panel, _: &ClickEvent, _, cx| {
                 panel.media.control(control());
                 cx.notify();
             }))
-            .child(svg().path(icon).size(px(if big { 22. } else { 19. })).text_color(fg))
+            .when_some(
+                match id {
+                    "media-back" => Some("Atrás 10 s"),
+                    "media-forward" => Some("Adelante 10 s"),
+                    "media-prev" => Some("Anterior"),
+                    "media-next" => Some("Siguiente"),
+                    _ => None,
+                },
+                |el, label| el.tooltip(crate::hover::tip(label)),
+            )
             .children(badge.map(|text| {
                 div()
                     .absolute()
@@ -1412,6 +2170,18 @@ impl MediaPanel {
                     .text_color(fg)
                     .child(text)
             }))
+            .fx(SharedString::from(format!("{id}-fx")), move |el, h| {
+                // Como `.mp-btn` en la web: fondo al pasar y se hunde al
+                // apretar (el ícono se achica un poco).
+                let cream: Hsla = rgb(0xf0f0ea).into();
+                let bg = if big {
+                    h.mix(cream, cream.opacity(0.85))
+                } else {
+                    h.mix(white(0.0), white(0.12 + 0.06 * h.press))
+                };
+                let icon_size = if big { 22. } else { 19. } * (1.0 - 0.08 * h.press);
+                el.bg(bg).child(svg().path(icon).size(px(icon_size)).text_color(fg))
+            })
     }
 
     fn render_progress(&self, track: &Track, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1519,6 +2289,7 @@ impl MediaPanel {
             .map(|o| o.name.split(" (").next().unwrap_or(&o.name).chars().take(22).collect::<String>())
             .unwrap_or_else(|| "Salida".into());
         let lower = output.to_lowercase();
+        let open = self.outputs_open;
         let headphones = ["auricular", "headphone", "headset", "airpods", "buds"]
             .iter()
             .any(|k| lower.contains(k));
@@ -1595,8 +2366,6 @@ impl MediaPanel {
                     .items_center()
                     .gap(px(6.))
                     .rounded(px(VOLUME_H / 2.0))
-                    .bg(white(if self.outputs_open { 0.2 } else { 0.12 }))
-                    .hover(|el| el.bg(white(0.2)))
                     .cursor_pointer()
                     .text_size(px(11.))
                     .on_click(cx.listener(|panel, _: &ClickEvent, _, cx| {
@@ -1616,7 +2385,10 @@ impl MediaPanel {
                             .path(if self.outputs_open { "icons/chevron-up.svg" } else { "icons/chevron-down.svg" })
                             .size(px(12.))
                             .text_color(muted),
-                    ),
+                    )
+                    .fx("media-output-fx", move |el, h| {
+                        el.bg(h.mix(white(if open { 0.2 } else { 0.12 }), white(0.2 + 0.04 * h.press)))
+                    }),
             )
     }
 
@@ -1638,6 +2410,7 @@ impl MediaPanel {
                         None => (output.name.clone(), String::new()),
                     };
                     let id = output.id.clone();
+                    let key = output.id.clone();
                     div()
                         .id(SharedString::from(format!("media-out-{}", output.id)))
                         .h(px(OUTPUT_ROW_H))
@@ -1646,7 +2419,6 @@ impl MediaPanel {
                         .items_center()
                         .gap(px(10.))
                         .rounded(px(10.))
-                        .hover(|el| el.bg(white(0.1)))
                         .cursor_pointer()
                         .on_click(cx.listener(move |panel, _: &ClickEvent, _, cx| {
                             if let Some(sound) = panel.sound.as_mut() {
@@ -1678,6 +2450,11 @@ impl MediaPanel {
                                     .text_color(rgb(0xf0f0ea)),
                             )
                         })
+                        .hover_bg(
+                            SharedString::from(format!("media-out-{key}-fx")),
+                            white(0.0),
+                            white(0.1),
+                        )
                 })),
         )
     }
@@ -1694,7 +2471,7 @@ impl Render for MediaPanel {
         let text: Hsla = rgb(0xf0f0ea).into();
         let muted: Hsla = rgb(0xb8b8ae).into();
         let track = self.media.track();
-        let source = track.as_ref().map(|t| source_name(&t.source)).unwrap_or_default();
+        let source = track.as_ref().map(|t| source_label(&t.source)).unwrap_or_default();
 
         // Fondo: la carátula difuminada, y encima un degradado que oscurece
         // hacia abajo para que los controles se lean sobre cualquier imagen.
@@ -1726,10 +2503,10 @@ impl Render for MediaPanel {
                         .top_0()
                         .left_0()
                         .right_0()
-                        .h(px(90.))
+                        .h(px(110.))
                         .bg(linear_gradient(
                             180.,
-                            linear_color_stop(gpui::black().opacity(0.45), 0.0),
+                            linear_color_stop(gpui::black().opacity(0.72), 0.0),
                             linear_color_stop(gpui::black().opacity(0.0), 1.0),
                         )),
                 )
@@ -1840,6 +2617,7 @@ impl Render for MediaPanel {
 
         let progress = timeline.then(|| self.render_progress(t, cx));
         let lyrics_block = self.render_lyrics();
+        let sources = self.render_sources(cx);
         let bottom = self.render_bottom(cx);
         let outputs = self.render_outputs(cx);
 
@@ -1865,7 +2643,7 @@ impl Render for MediaPanel {
                 if event.pressed_button != Some(MouseButton::Left) {
                     return;
                 }
-                match panel.drag {
+                match panel.drag.clone() {
                     Some(Drag::Seek(_)) => {
                         let f = Self::fraction(&panel.progress_bounds, event.position.x);
                         panel.drag = Some(Drag::Seek(f));
@@ -1875,6 +2653,13 @@ impl Render for MediaPanel {
                         let value = panel.volume_at(event.position.x);
                         panel.set_volume(value, cx);
                     }
+                    Some(Drag::App(source)) => {
+                        let bounds = panel.app_bounds.borrow().get(&source).copied();
+                        if let Some(b) = bounds {
+                            let value = Self::slider_value(b, APP_VOLUME_H, event.position.x);
+                            panel.set_app_volume(&source, value, cx);
+                        }
+                    }
                     None => {}
                 }
             }))
@@ -1883,7 +2668,7 @@ impl Render for MediaPanel {
                 cx.listener(|panel, _: &MouseUpEvent, _, cx| {
                     // La canción se mueve al soltar: arrastrando no se manda
                     // un salto por cada píxel.
-                    if let Some(Drag::Seek(f)) = panel.drag {
+                    if let Some(Drag::Seek(f)) = panel.drag.clone() {
                         if let Some((_, end)) = panel.media.track().and_then(|t| t.position_now()) {
                             panel.media.control(Control::Seek(f * end));
                         }
@@ -1916,6 +2701,7 @@ impl Render for MediaPanel {
                     .children(progress.map(|p| div().pb(px(6.)).child(p)))
                     .child(controls)
                     .children(lyrics_block)
+                    .children(sources)
                     .child(div().h(px(10.)))
                     .child(bottom)
                     .children(outputs),
@@ -1950,6 +2736,47 @@ mod tests {
         let paused = Track { playing: false, ..track };
         assert_eq!(paused.position_now().unwrap().0, 10.0);
     }
+    #[test]
+    fn la_principal_es_la_ultima_que_empezo_salvo_que_se_elija_otra() {
+        let t0 = Instant::now();
+        let at = |s: u64| t0 + Duration::from_secs(s);
+        let music = ("Spotify.exe".to_string(), Some(at(1)));
+        let video = ("Zen".to_string(), Some(at(5)));
+        let paused = ("Chrome".to_string(), None);
+        let states = vec![music.clone(), video.clone(), paused.clone()];
+        // El video empezó después de la música: va a la portada.
+        assert_eq!(choose(&states, None).as_deref(), Some("Zen"));
+        // El usuario eligió la música después: manda la música…
+        assert_eq!(choose(&states, Some(("Spotify.exe".into(), at(6)))).as_deref(), Some("Spotify.exe"));
+        // …hasta que algo empiece a sonar después de elegir.
+        let later = vec![music, ("Zen".to_string(), Some(at(9)))];
+        assert_eq!(choose(&later, Some(("Spotify.exe".into(), at(6)))).as_deref(), Some("Zen"));
+        // Elegida una en pausa y nada sonando: se queda la elegida.
+        assert_eq!(choose(&[paused.clone()], Some(("Chrome".into(), at(2)))).as_deref(), Some("Chrome"));
+        assert_eq!(choose(&[paused], None), None);
+        // Dos que empezaron juntas (al abrir): la primera de la lista.
+        let same = vec![("A".to_string(), Some(at(1))), ("B".to_string(), Some(at(1)))];
+        assert_eq!(choose(&same, None).as_deref(), Some("A"));
+    }
+
+    #[test]
+    fn cada_fuente_encuentra_su_app_en_el_mezclador() {
+        let zen = Some(r"C:\Program Files\Zen Browser");
+        assert!(same_app("F0DC299D809B9700", zen, r"C:\Program Files\Zen Browser\zen.exe"));
+        assert!(!same_app("F0DC299D809B9700", zen, r"C:\Program Files\Zen Browser Beta\zen.exe"));
+        assert!(same_app("Spotify.exe", None, r"C:\Users\x\AppData\Roaming\Spotify\Spotify.exe"));
+        assert!(same_app(
+            "SpotifyAB.SpotifyMusic_zpdnekdrzrea0!Spotify",
+            None,
+            r"C:\Program Files\WindowsApps\SpotifyAB.SpotifyMusic_1.2.3.0_x64__zpdnekdrzrea0\Spotify.exe"
+        ));
+        assert!(same_app("Chrome", None, r"C:\Program Files\Google\Chrome\Application\chrome.exe"));
+        assert!(!same_app("Chrome", None, r"C:\Program Files\Microsoft\Edge\Application\msedge.exe"));
+        assert!(same_app("MSEdge", None, r"C:\Program Files\Microsoft\Edge\Application\msedge.exe"));
+        assert!(same_app(r"C:\Apps\foobar2000\foobar2000.exe", None, r"C:\Apps\foobar2000\foobar2000.exe"));
+        assert!(!same_app("foobar2000.exe", None, r"C:\Apps\otro\otro.exe"));
+    }
+
     #[test]
     fn titulos_y_artistas_para_buscar_en_itunes() {
         use itunes::*;

@@ -31,7 +31,7 @@ use gpui::{div, prelude::*, px, rgb, svg, AnyElement, Div, FontWeight, Hsla, Sha
 
 use crate::agents::{self, Session, Status, AGENTS};
 use crate::anim::{ease_smooth_out, segment, Tween};
-use crate::geometry::Rect;
+use crate::geometry::{Edge, Rect};
 
 // --- Colores: los del panel de Agentes ------------------------------------------------
 
@@ -338,18 +338,22 @@ fn chip_w(glyph: Glyph, n: usize) -> f32 {
     CHIP_PAD * 2.0 + glyph_w(glyph) + CHIP_GAP + count_text(n).chars().count() as f32 * CHIP_DIGIT
 }
 
-/// Dónde cae cada contador, dado el centro de la marca. Lo usan el dibujo y el
-/// clic.
-pub fn chip_rects(chips: Chips, mark: (f32, f32)) -> [Option<Rect>; 2] {
-    let y = mark.1 - CHIP_H / 2.0;
-    let left = chips.left.map(|(glyph, n)| {
+/// Dónde cae cada contador, dado el centro de la marca y el borde del tab. Lo
+/// usan el dibujo y el clic. «Izquierda» y «derecha» son antes y después de
+/// la marca a lo largo del tab: en un costado, el tab va de pie y quedan
+/// arriba y abajo, centrados en la columna (el texto sigue derecho).
+pub fn chip_rects(chips: Chips, mark: (f32, f32), edge: Edge) -> [Option<Rect>; 2] {
+    let place = |(glyph, n): (Glyph, usize), before: bool| {
         let w = chip_w(glyph, n);
-        Rect::new(mark.0 - CHIP_FROM_MARK - w, y, w, CHIP_H)
-    });
-    let right = chips
-        .right
-        .map(|(glyph, n)| Rect::new(mark.0 + CHIP_FROM_MARK, y, chip_w(glyph, n), CHIP_H));
-    [left, right]
+        if edge.is_vertical() {
+            let y = if before { mark.1 - CHIP_FROM_MARK - CHIP_H } else { mark.1 + CHIP_FROM_MARK };
+            Rect::new(mark.0 - w / 2.0, y, w, CHIP_H)
+        } else {
+            let x = if before { mark.0 - CHIP_FROM_MARK - w } else { mark.0 + CHIP_FROM_MARK };
+            Rect::new(x, mark.1 - CHIP_H / 2.0, w, CHIP_H)
+        }
+    };
+    [chips.left.map(|chip| place(chip, true)), chips.right.map(|chip| place(chip, false))]
 }
 
 fn glyph_element(glyph: Glyph) -> AnyElement {
@@ -382,8 +386,8 @@ fn glyph_element(glyph: Glyph) -> AnyElement {
 
 /// Los contadores como elementos, ya en su sitio. `alpha` los desvanece cuando
 /// la tira o un panel los tapan.
-pub fn chip_elements(chips: Chips, mark: (f32, f32), hovered: Option<Side>, alpha: f32) -> Vec<AnyElement> {
-    let rects = chip_rects(chips, mark);
+pub fn chip_elements(chips: Chips, mark: (f32, f32), edge: Edge, hovered: Option<Side>, alpha: f32) -> Vec<AnyElement> {
+    let rects = chip_rects(chips, mark, edge);
     [(Side::Left, chips.left, rects[0]), (Side::Right, chips.right, rects[1])]
         .into_iter()
         .filter_map(|(side, chip, rect)| {
@@ -596,16 +600,25 @@ pub struct RowRect {
     pub right: Rect,
 }
 
+/// Lo que crece una fila angosta: los botones van en su propio renglón.
+const NARROW_EXTRA: f32 = BTN_H + 8.0;
+
+/// El alto de una fila: en el bloque angosto de un costado (`narrow`) los
+/// botones van bajo el texto, no a su lado.
+fn row_h(kind: Kind, narrow: bool) -> f32 {
+    row_height(kind) + if narrow { NARROW_EXTRA } else { 0.0 }
+}
+
 /// Dónde cae cada fila (y su par de botones) bajo la franja, en el rectángulo
 /// del vistazo `area`; y el pie, si lo hay.
-pub fn layout(area: Rect, kinds: &[Kind], more: bool) -> (Vec<RowRect>, Option<Rect>) {
+pub fn layout(area: Rect, kinds: &[Kind], more: bool, narrow: bool) -> (Vec<RowRect>, Option<Rect>) {
     let mut y = area.y + PAD_TOP;
     let mut rows = Vec::new();
     for &kind in kinds {
-        let h = row_height(kind);
+        let h = row_h(kind, narrow);
         let row = Rect::new(area.x + ROW_MX, y, area.w - ROW_MX * 2.0, h);
         let (wl, wr) = button_widths(kind);
-        let by = row.y + (h - BTN_H) / 2.0;
+        let by = if narrow { row.bottom() - 8.0 - BTN_H } else { row.y + (h - BTN_H) / 2.0 };
         let right = Rect::new(row.right() - ROW_PX - wr, by, wr, BTN_H);
         let left = Rect::new(right.x - BTN_GAP - wl, by, wl, BTN_H);
         rows.push(RowRect { row, left, right });
@@ -616,15 +629,15 @@ pub fn layout(area: Rect, kinds: &[Kind], more: bool) -> (Vec<RowRect>, Option<R
 }
 
 /// Lo que mide el vistazo bajo la franja con estas filas.
-pub fn banner_height(kinds: &[Kind], more: bool) -> f32 {
+pub fn banner_height(kinds: &[Kind], more: bool, narrow: bool) -> f32 {
     if kinds.is_empty() {
         return 0.0;
     }
-    PAD_TOP + kinds.iter().map(|&k| row_height(k)).sum::<f32>() + if more { FOOTER } else { 0.0 } + PAD_BOTTOM
+    PAD_TOP + kinds.iter().map(|&k| row_h(k, narrow)).sum::<f32>() + if more { FOOTER } else { 0.0 } + PAD_BOTTOM
 }
 
-pub fn hit_test(area: Rect, kinds: &[Kind], more: bool, p: (f32, f32)) -> Option<Hit> {
-    let (rows, footer) = layout(area, kinds, more);
+pub fn hit_test(area: Rect, kinds: &[Kind], more: bool, narrow: bool, p: (f32, f32)) -> Option<Hit> {
+    let (rows, footer) = layout(area, kinds, more, narrow);
     for (index, rect) in rows.iter().enumerate() {
         if rect.left.contains(p, 0.0) {
             return Some(Hit::Left(index));
@@ -641,9 +654,17 @@ pub fn hit_test(area: Rect, kinds: &[Kind], more: bool, p: (f32, f32)) -> Option
 
 /// Las filas del vistazo, dentro del notch estirado. `area` es lo que queda bajo
 /// la franja.
-pub fn banner_element(area: Rect, items: &[Item], more: usize, hovered: Option<Hit>, alpha: f32, now: i64) -> AnyElement {
+pub fn banner_element(
+    area: Rect,
+    items: &[Item],
+    more: usize,
+    hovered: Option<Hit>,
+    alpha: f32,
+    now: i64,
+    narrow: bool,
+) -> AnyElement {
     let kinds: Vec<Kind> = items.iter().map(|item| item.kind).collect();
-    let (rows, footer) = layout(area, &kinds, more > 0);
+    let (rows, footer) = layout(area, &kinds, more > 0, narrow);
     let mut root = div()
         .absolute()
         .left(px(area.x))
@@ -664,6 +685,37 @@ pub fn banner_element(area: Rect, items: &[Item], more: usize, hovered: Option<H
         } else {
             None
         };
+        let left = button(left_label(item.kind), wl, left_is_primary(item.kind), hovered == Some(Hit::Left(index)));
+        let right = button(right_label(item.kind), wr, !left_is_primary(item.kind), hovered == Some(Hit::Right(index)));
+        if narrow {
+            // Angosta: el texto arriba, a todo el ancho, y los botones abajo
+            // a la derecha, justo donde los pone `layout` (el clic los busca
+            // ahí).
+            let at = |r: &Rect| (px(r.x - rect.row.x), px(r.y - rect.row.y));
+            let (lx, ly) = at(&rect.left);
+            let (rx, ry) = at(&rect.right);
+            root = root.child(
+                div()
+                    .absolute()
+                    .left(px(rect.row.x - area.x))
+                    .top(px(rect.row.y - area.y))
+                    .w(px(rect.row.w))
+                    .h(px(rect.row.h))
+                    .rounded(px(10.))
+                    .when_some(fill, |el, fill| el.bg(fill))
+                    .child(
+                        div()
+                            .h(px(row_height(item.kind)))
+                            .px(px(ROW_PX))
+                            .flex()
+                            .items_center()
+                            .child(row_body(item, now)),
+                    )
+                    .child(left.absolute().left(lx).top(ly))
+                    .child(right.absolute().left(rx).top(ry)),
+            );
+            continue;
+        }
         root = root.child(
             div()
                 .absolute()
@@ -678,18 +730,8 @@ pub fn banner_element(area: Rect, items: &[Item], more: usize, hovered: Option<H
                 .rounded(px(10.))
                 .when_some(fill, |el, fill| el.bg(fill))
                 .child(row_body(item, now))
-                .child(button(
-                    left_label(item.kind),
-                    wl,
-                    left_is_primary(item.kind),
-                    hovered == Some(Hit::Left(index)),
-                ))
-                .child(button(
-                    right_label(item.kind),
-                    wr,
-                    !left_is_primary(item.kind),
-                    hovered == Some(Hit::Right(index)),
-                )),
+                .child(left)
+                .child(right),
         );
     }
     if let Some(rect) = footer {
@@ -770,6 +812,9 @@ pub struct Banner {
     /// leen sin pedirle nada a la bandeja).
     pub chips: Chips,
     pub chip_hover: Option<Side>,
+    /// En el bloque angosto de un costado: filas más altas, con los botones
+    /// abajo (`layout`).
+    pub narrow: bool,
 }
 
 impl Banner {
@@ -788,6 +833,7 @@ impl Banner {
             press: None,
             chips: Chips::default(),
             chip_hover: None,
+            narrow: false,
         }
     }
 
@@ -814,7 +860,7 @@ impl Banner {
 
     /// Lo que gana el notch en alto con el vistazo abierto del todo.
     pub fn height(&self) -> f32 {
-        banner_height(&self.kinds(), self.more > 0)
+        banner_height(&self.kinds(), self.more > 0, self.narrow)
     }
 
     pub fn is_running(&self, now: Instant) -> bool {
@@ -923,7 +969,7 @@ pub fn banner_hit(banner: &Banner, area: Rect, now: Instant, p: (f32, f32)) -> O
     if banner.amount(now) < 0.85 || !area.contains(p, 0.0) {
         return None;
     }
-    hit_test(area, &banner.kinds(), banner.more > 0, p)
+    hit_test(area, &banner.kinds(), banner.more > 0, banner.narrow, p)
 }
 
 /// La opacidad del contenido: aparece cuando el notch ya casi llegó.
@@ -938,15 +984,15 @@ pub fn banner_alpha(banner: &Banner, now: Instant) -> f32 {
 
 use gpui::{Context, Window};
 
-use crate::geometry::Edge;
-use crate::{beyond_band, Home, NotchTool, Pill, PillShape, AGENTES_TOOL, PANEL_W, TAB_THICK};
+use crate::{NotchTool, Pill, PillShape, AGENTES_TOOL, PANEL_W};
 
 impl Pill {
-    /// El tab de arriba con su marca: ahí viven los contadores y el vistazo.
-    fn tray_tab(&self, now: Instant) -> Option<(Rect, (f32, f32))> {
+    /// El tab acoplado (a cualquier borde) con su marca: ahí viven los
+    /// contadores y el vistazo.
+    fn tray_tab(&self, now: Instant) -> Option<(Edge, (f32, f32))> {
         match self.shape(now) {
-            PillShape::Tab { edge: Edge::Top, rect, .. } => Some((rect, self.mark_center(now))),
-            _ => None,
+            PillShape::Tab { edge, .. } => Some((edge, self.mark_center(now))),
+            PillShape::Disc { .. } => None,
         }
     }
 
@@ -962,8 +1008,8 @@ impl Pill {
         if !self.tray.chips.any() || self.tray_chip_alpha(now) < 0.5 {
             return None;
         }
-        let (_, mark) = self.tray_tab(now)?;
-        let [left, right] = chip_rects(self.tray.chips, mark);
+        let (edge, mark) = self.tray_tab(now)?;
+        let [left, right] = chip_rects(self.tray.chips, mark, edge);
         if left.is_some_and(|rect| rect.contains(p, 2.0)) {
             Some(Side::Left)
         } else if right.is_some_and(|rect| rect.contains(p, 2.0)) {
@@ -973,11 +1019,9 @@ impl Pill {
         }
     }
 
-    /// Cuánto se estiró el tab con el vistazo (0 a 1) y cuánto alto gana.
-    pub(crate) fn tray_stretch(&self, edge: Edge, now: Instant) -> (f32, f32) {
-        if edge != Edge::Top {
-            return (0.0, 0.0);
-        }
+    /// Cuánto se estiró el tab con el vistazo (0 a 1) y cuánto alto gana (a
+    /// lo largo de la columna, en un costado).
+    pub(crate) fn tray_stretch(&self, now: Instant) -> (f32, f32) {
         (self.tray.amount(now), self.tray.height())
     }
 
@@ -994,15 +1038,13 @@ impl Pill {
         self.tray_area(now).is_some_and(|area| area.contains(p, 0.0))
     }
 
-    /// El rectángulo bajo la franja donde caen las filas del vistazo.
+    /// El rectángulo donde caen las filas del vistazo: bajo la franja (al
+    /// lado de la columna en un costado).
     fn tray_area(&self, now: Instant) -> Option<Rect> {
         if self.tray.amount(now) <= 0.01 {
             return None;
         }
-        match self.shape(now) {
-            PillShape::Tab { edge: Edge::Top, rect, .. } => Some(beyond_band(&rect, Edge::Top, TAB_THICK)),
-            _ => None,
-        }
+        self.drawers_area(now)
     }
 
     pub(crate) fn tray_animating(&self, now: Instant) -> bool {
@@ -1015,8 +1057,7 @@ impl Pill {
             let inbox = self.agents.read(cx).inbox();
             (inbox.ordered(), inbox.counts())
         };
-        let top = matches!(self.home, Home::Docked { edge: Edge::Top, .. }) && self.flight.is_none();
-        let busy = !top
+        let busy = !self.docked_still()
             || self.panel_visible()
             || self.dragging()
             || self.press.is_some()
@@ -1038,6 +1079,7 @@ impl Pill {
             on_tool,
             items: &items,
         };
+        self.tray.narrow = self.side_drawers();
         self.tray.update(now, input);
         self.tray.chips = Chips::from_counts(counts);
         let area = self.tray_area(now);
@@ -1103,15 +1145,17 @@ impl Pill {
     /// Contadores, vistazo e insignia de la tira, ya en su sitio.
     pub(crate) fn tray_elements(&self, now: Instant, cx: &Context<Self>) -> Vec<AnyElement> {
         let mut out = Vec::new();
-        if let Some((_, mark)) = self.tray_tab(now) {
+        if let Some((edge, mark)) = self.tray_tab(now) {
             let alpha = self.tray_chip_alpha(now);
             if alpha > 0.01 && self.tray.chips.any() {
-                out.extend(chip_elements(self.tray.chips, mark, self.tray.chip_hover, alpha));
+                out.extend(chip_elements(self.tray.chips, mark, edge, self.tray.chip_hover, alpha));
             }
-            // La insignia sobre el ícono de Agentes, con la tira abierta.
+            // La insignia sobre el ícono de Agentes, con la tira abierta:
+            // arriba a la derecha del ícono, en la franja de cualquier borde.
             let strip = self.strip.value(now).clamp(0.0, 1.0);
             if let (true, Some((glyph, n))) = (strip > 0.6, self.tray.chips.right) {
-                let center = (self.strip_tool_along(AGENTES_TOOL, now) + 9.0, mark.1 - 8.0);
+                let icon = edge.point(&self.work, self.strip_tool_along(AGENTES_TOOL, now), edge.depth_of(&self.work, mark));
+                let center = (icon.0 + 9.0, icon.1 - 8.0);
                 out.push(badge_element(center, glyph, n, segment(strip, 0.6, 0.4)));
             }
         }
@@ -1126,6 +1170,7 @@ impl Pill {
                     self.tray.hovered,
                     banner_alpha(&self.tray, now),
                     agents::now_secs(),
+                    self.tray.narrow,
                 ));
             }
         }
@@ -1266,7 +1311,7 @@ mod tests {
     fn los_contadores_se_pegan_a_la_marca_sin_taparla() {
         let chips = Chips::from_counts(Counts { working: 2, review: 1, decide: 0 });
         let mark = (62.0, 20.0);
-        let [left, right] = chip_rects(chips, mark);
+        let [left, right] = chip_rects(chips, mark, Edge::Top);
         let (left, right) = (left.unwrap(), right.unwrap());
         // La marca mide 32: de 46 a 78.
         assert!(left.right() <= 46.0 + 2.0, "izquierda: {left:?}");
@@ -1274,21 +1319,40 @@ mod tests {
         // En el tab de reposo (124) caben sin salirse.
         assert!(left.x >= 0.0 && right.right() <= 124.0, "{left:?} {right:?}");
         // Y con música (212) no pisan la carátula (9..33) ni la onda (desde ~163).
-        let [left, right] = chip_rects(chips, (106.0, 20.0));
+        let [left, right] = chip_rects(chips, (106.0, 20.0), Edge::Top);
         assert!(left.unwrap().x >= 33.0 && right.unwrap().right() <= 163.0);
+    }
+
+    #[test]
+    fn en_un_costado_los_contadores_van_arriba_y_abajo_de_la_marca() {
+        let chips = Chips::from_counts(Counts { working: 2, review: 1, decide: 0 });
+        // Tab de pie a la izquierda: columna de 0 a 40, marca al medio (62).
+        let [above, below] = chip_rects(chips, (20.0, 62.0), Edge::Left);
+        let (above, below) = (above.unwrap(), below.unwrap());
+        // La marca va de 46 a 78: no la pisan.
+        assert!(above.bottom() <= 46.0 + 2.0 && below.y >= 78.0 - 2.0, "{above:?} {below:?}");
+        // Caben en la columna y en el tab de reposo (124).
+        for chip in [above, below] {
+            assert!(chip.x >= 0.0 && chip.right() <= 40.0, "{chip:?}");
+            assert_eq!(chip.center().0, 20.0);
+        }
+        assert!(above.y >= 0.0 && below.bottom() <= 124.0);
+        // A la derecha, el mismo orden (el texto no se da vuelta).
+        let [above_r, _] = chip_rects(chips, (1900.0, 62.0), Edge::Right);
+        assert_eq!(above_r.unwrap().y, above.y);
     }
 
     #[test]
     fn el_clic_y_el_dibujo_usan_las_mismas_medidas() {
         let area = Rect::new(100.0, 40.0, 440.0, 200.0);
         let kinds = [Kind::Decision, Kind::Review, Kind::Review];
-        let (rows, footer) = layout(area, &kinds, true);
+        let (rows, footer) = layout(area, &kinds, true, false);
         assert_eq!(rows.len(), 3);
         // Las filas se apilan sin huecos y el pie va debajo de la última.
         assert_eq!(rows[0].row.bottom(), rows[1].row.y);
         assert_eq!(rows[2].row.bottom(), footer.unwrap().y);
         assert_eq!(
-            banner_height(&kinds, true),
+            banner_height(&kinds, true, false),
             PAD_TOP + ROW_DECIDE + ROW_REVIEW * 2.0 + FOOTER + PAD_BOTTOM
         );
         // Cada botón cae dentro de su fila, a la derecha, sin tocarse.
@@ -1300,11 +1364,29 @@ mod tests {
             assert_eq!((row.left.w, row.right.w), (wl, wr));
         }
         let center = |r: &Rect| r.center();
-        assert_eq!(hit_test(area, &kinds, true, center(&rows[0].right)), Some(Hit::Right(0)));
-        assert_eq!(hit_test(area, &kinds, true, center(&rows[0].left)), Some(Hit::Left(0)));
-        assert_eq!(hit_test(area, &kinds, true, (rows[1].row.x + 20.0, rows[1].row.y + 4.0)), Some(Hit::Row(1)));
-        assert_eq!(hit_test(area, &kinds, true, center(&footer.unwrap())), Some(Hit::Footer));
-        assert_eq!(hit_test(area, &kinds, false, (area.x + 2.0, area.y + 1.0)), None);
+        assert_eq!(hit_test(area, &kinds, true, false, center(&rows[0].right)), Some(Hit::Right(0)));
+        assert_eq!(hit_test(area, &kinds, true, false, center(&rows[0].left)), Some(Hit::Left(0)));
+        assert_eq!(hit_test(area, &kinds, true, false, (rows[1].row.x + 20.0, rows[1].row.y + 4.0)), Some(Hit::Row(1)));
+        assert_eq!(hit_test(area, &kinds, true, false, center(&footer.unwrap())), Some(Hit::Footer));
+        assert_eq!(hit_test(area, &kinds, false, false, (area.x + 2.0, area.y + 1.0)), None);
+    }
+
+    #[test]
+    fn en_el_bloque_angosto_los_botones_van_bajo_el_texto() {
+        // El bloque de un costado (`SIDE_W`).
+        let area = Rect::new(40.0, 300.0, 300.0, 300.0);
+        let kinds = [Kind::Decision, Kind::Review];
+        let (rows, _) = layout(area, &kinds, false, true);
+        for (row, kind) in rows.iter().zip(kinds) {
+            // Bajo el renglón del texto, a la derecha y dentro de la fila.
+            assert!(row.left.y >= row.row.y + row_height(kind) - 2.0, "{:?}", row.left);
+            assert!(row.right.right() <= row.row.right() && row.right.bottom() <= row.row.bottom());
+            assert!(row.left.right() < row.right.x);
+        }
+        assert_eq!(rows[0].row.bottom(), rows[1].row.y);
+        assert_eq!(banner_height(&kinds, false, true), PAD_TOP + ROW_DECIDE + ROW_REVIEW + 2.0 * NARROW_EXTRA + PAD_BOTTOM);
+        assert_eq!(hit_test(area, &kinds, false, true, rows[1].right.center()), Some(Hit::Right(1)));
+        assert_eq!(hit_test(area, &kinds, false, true, (rows[1].row.x + 20.0, rows[1].row.y + 10.0)), Some(Hit::Row(1)));
     }
 
     #[test]
@@ -1386,7 +1468,7 @@ mod tests {
         banner.update(t0, quiet(&items));
         assert_eq!(banner.ids().len(), MAX_SHOWN);
         assert_eq!(banner.more(), 2);
-        assert_eq!(banner.height(), banner_height(&[Kind::Review; 3], true));
+        assert_eq!(banner.height(), banner_height(&[Kind::Review; 3], true, false));
     }
 
     #[test]

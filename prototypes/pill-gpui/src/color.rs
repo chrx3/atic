@@ -22,6 +22,7 @@ use gpui::{
     MouseMoveEvent, MouseUpEvent, SharedString, Subscription, Window,
 };
 
+use crate::hover::HoverExt;
 use crate::text_input::{self, TextInput};
 
 /// «Color» en la tira y la rueda.
@@ -558,24 +559,39 @@ impl ColorView {
                 .justify_center()
                 .rounded(px(8.))
                 .text_size(px(11.))
-                .when(active, |el| el.bg(text.opacity(0.16)))
-                .hover(|el| el.bg(text.opacity(0.09)))
+                .cursor_pointer()
                 .child(fmt.label())
                 .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
                     view.format = fmt;
                     cx.notify();
                 }))
+                .hover_bg(
+                    SharedString::from(format!("{id}-fx")),
+                    text.opacity(if active { 0.16 } else { 0.0 }),
+                    text.opacity(if active { 0.18 } else { 0.09 }),
+                )
         };
         let swatch = |id: (&'static str, usize), c: u32| {
+            // Como `.op-swatch` en la web: crece con el cursor sin mover a
+            // las vecinas (el círculo se sale de su casilla).
             div()
                 .id(id)
                 .size(px(18.))
-                .rounded(px(9.))
-                .bg(rgb(c))
-                .border_1()
-                .border_color(gpui::white().opacity(0.25))
+                .relative()
                 .cursor_pointer()
                 .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| view.set_rose_color(c, cx)))
+                .fx((id.0, id.1 + 10_000), move |el, h| {
+                    let grow = 1.3 * h.t - 1.0 * h.press;
+                    el.child(
+                        div()
+                            .absolute()
+                            .inset(px(-grow))
+                            .rounded(px(9. + grow))
+                            .bg(rgb(c))
+                            .border_1()
+                            .border_color(gpui::white().opacity(0.25 + 0.2 * h.t)),
+                    )
+                })
         };
         let hues: Vec<_> = (0..12)
             .map(|i| swatch(("color-hue", i), hsv_to_rgb(i as f32 * 30.0, 0.85, 0.95)).into_any_element())
@@ -619,8 +635,16 @@ impl ColorView {
                     .text_color(ink_on(color))
                     .cursor_pointer()
                     .child(div().text_size(px(14.)).child(format(color, self.format)))
-                    .child(div().text_size(px(11.)).opacity(0.75).child("Enter copia"))
-                    .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| view.pick(color, cx))),
+                    .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| view.pick(color, cx)))
+                    .fx("color-big-fx", move |el, h| {
+                        // Con el cursor encima dice que el clic también copia.
+                        el.opacity(1.0 - 0.1 * h.press).child(
+                            div()
+                                .text_size(px(11.))
+                                .opacity(0.75 + 0.25 * h.t)
+                                .child(if h.t > 0.5 { "Clic para copiar" } else { "Enter copia" }),
+                        )
+                    }),
             )
             .child(
                 div()

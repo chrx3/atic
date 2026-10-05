@@ -23,6 +23,7 @@ use gpui::{
 use lyon::tessellation::{LineCap, LineJoin, StrokeOptions};
 use serde::{Deserialize, Serialize};
 
+use crate::hover::{tip, HoverExt};
 use crate::text_area::TextArea;
 use crate::text_input;
 
@@ -239,6 +240,83 @@ pub(crate) fn notes_dir() -> Option<PathBuf> {
             .join("data")
             .join("notes"),
     )
+}
+
+/// La página con la que abre el próximo Flip (`usize::MAX`: la primera).
+pub(crate) static OPEN_PAGE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(usize::MAX);
+
+/// Lo que se ve de una página del tablero, para el vistazo de Flip.
+#[derive(Clone, Default, PartialEq)]
+pub(crate) struct PageGlance {
+    /// La primera línea con texto, o vacía.
+    pub(crate) summary: String,
+    /// Los bloques de la página, en proporción a ella (0..1): para dibujar
+    /// una miniatura. El `u8` dice qué es: 0 texto, 1 imagen, 2 lista.
+    pub(crate) shapes: Vec<(f32, f32, f32, f32, u8)>,
+    /// Los trazos a mano que caen en la página, en proporción (0..1), con su
+    /// color.
+    pub(crate) ink: Vec<(Vec<(f32, f32)>, (u8, u8, u8, u8))>,
+}
+
+/// Las páginas del tablero de Atic, leídas del disco.
+pub(crate) fn board_glance() -> Vec<PageGlance> {
+    let blocks = load_blocks();
+    let count = pages_for(&blocks).max(1);
+    (0..count)
+        .map(|page| {
+            let left = page as f32 * PAGE_W;
+            let on_page: Vec<&Block> = blocks
+                .iter()
+                .filter(|b| b.x >= left && b.x < left + PAGE_W)
+                .collect();
+            let summary = on_page
+                .iter()
+                .find_map(|b| match &b.body {
+                    Body::Text { body } => body.lines().map(str::trim).find(|l| !l.is_empty()).map(str::to_string),
+                    Body::Check { items } => items.iter().map(|i| i.text.trim()).find(|t| !t.is_empty()).map(str::to_string),
+                    _ => None,
+                })
+                .unwrap_or_default();
+            let shapes = on_page
+                .iter()
+                .filter(|b| b.has_frame() && !b.is_ink())
+                .map(|b| {
+                    let kind = match b.body {
+                        Body::Text { .. } => 0,
+                        Body::Image { .. } => 1,
+                        _ => 2,
+                    };
+                    (
+                        ((b.x - left) / PAGE_W).clamp(0.0, 1.0),
+                        (b.y / PAGE_H).clamp(0.0, 1.0),
+                        (b.w / PAGE_W).clamp(0.0, 1.0),
+                        (b.h / PAGE_H).clamp(0.0, 1.0),
+                        kind,
+                    )
+                })
+                .collect();
+            // Los trazos van en coordenadas del lienzo entero: los que tocan
+            // esta página, corridos a ella.
+            let ink = blocks
+                .iter()
+                .filter_map(|b| match &b.body {
+                    Body::Ink { strokes, .. } => Some(strokes),
+                    _ => None,
+                })
+                .flatten()
+                .filter(|s| s.points.len() >= 2 && s.points.iter().any(|p| p[0] >= left && p[0] < left + PAGE_W))
+                .map(|s| {
+                    let points = s
+                        .points
+                        .iter()
+                        .map(|p| ((p[0] - left) / PAGE_W, p[1] / PAGE_H))
+                        .collect();
+                    (points, parse_rgba(&s.color))
+                })
+                .collect();
+            PageGlance { summary, shapes, ink }
+        })
+        .collect()
 }
 
 pub(crate) fn board_dir() -> Option<PathBuf> {
@@ -582,9 +660,12 @@ impl PaperView {
         });
         let mut blocks = load_blocks();
         place_if_needed(&mut blocks);
+        // El vistazo de Flip puede pedir una página.
+        let page = OPEN_PAGE.swap(usize::MAX, std::sync::atomic::Ordering::Relaxed);
+        let page = if page == usize::MAX { 0 } else { page.min(pages_for(&blocks).max(1) - 1) };
         let mut paper = Self {
             blocks,
-            page: 0,
+            page,
             extra_pages: 1,
             selected: None,
             editing: None,
@@ -1417,7 +1498,17 @@ impl PaperView {
         on_click: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let (text, faint) = (self.colors.text, self.colors.faint);
+        let (text, muted) = (self.colors.text, self.colors.muted);
+        // Los botones de un solo signo dicen qué hacen al quedarse encima.
+        let tip_text = match id {
+            "undo" => Some("Deshacer · Ctrl+Z"),
+            "redo" => Some("Rehacer · Ctrl+Y"),
+            "page-prev" => Some("Página anterior"),
+            "page-next" => Some("Página siguiente"),
+            "page-add" => Some("Nueva página"),
+            "close" => Some("Cerrar"),
+            _ => None,
+        };
         div()
             .id(id)
             .h(px(26.))
@@ -1427,13 +1518,15 @@ impl PaperView {
             .items_center()
             .rounded(px(13.))
             .text_size(px(11.))
-            .text_color(if active { text } else { self.colors.muted })
-            .when(active, |el| el.bg(text.opacity(0.14)))
-            .hover(|el| el.bg(text.opacity(0.08)).text_color(text))
             .cursor_pointer()
+            .when_some(tip_text, |el, label| el.tooltip(tip(label)))
             .on_click(cx.listener(move |paper, _, window, cx| on_click(paper, window, cx)))
             .child(label)
-            .when(false, |el| el.text_color(faint))
+            .fx(SharedString::from(format!("{id}-fx")), move |el, h| {
+                let (rest, over) = if active { (0.14, 0.16) } else { (0.0, 0.08) };
+                el.bg(h.mix(text.opacity(rest), text.opacity(over + 0.05 * h.press)))
+                    .text_color(if active { text } else { h.mix(muted, text) })
+            })
     }
 
     fn swatch(&self, index: usize, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1446,16 +1539,15 @@ impl PaperView {
             .rounded(px(8.))
             .bg(color)
             .border_2()
-            .border_color(if active {
-                self.colors.text
-            } else {
-                self.colors.text.opacity(0.0)
-            })
             .cursor_pointer()
             .on_click(cx.listener(move |paper, _, _, cx| {
                 paper.color = index;
                 cx.notify();
             }))
+            .fx(("swatch-fx", index), {
+                let text = self.colors.text;
+                move |el, h| el.border_color(text.opacity(if active { 1.0 } else { 0.45 * h.t }))
+            })
     }
 
     fn render_toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1507,10 +1599,13 @@ impl PaperView {
                     .mr(px(6.))
                     .when_some(shown_file, |el, file| {
                         el.cursor_pointer()
-                            .hover(|el| el.text_color(colors.text))
                             .on_click(cx.listener(move |_, _, _, _| show_in_folder(&file)))
                     })
-                    .child(status),
+                    .child(status)
+                    .fx("status-fx", {
+                        let (faint, text) = (colors.faint, colors.text);
+                        move |el, h| el.text_color(h.mix(faint, text))
+                    }),
             )
             .child(self.button("page-prev", "‹", false,
                 |paper, window, cx| paper.go_page(paper.page.saturating_sub(1), window, cx), cx))
@@ -1583,11 +1678,11 @@ impl PaperView {
                     .text_size(px(12.))
                     .text_color(colors.text)
                     .cursor_pointer()
-                    .hover(|el| el.bg(colors.text.opacity(0.08)))
                     .on_click(cx.listener(move |paper, _, window, cx| {
                         paper.start_export(format, window, cx)
                     }))
                     .child(format.label())
+                    .hover_bg(("export-fx", format as usize), colors.text.opacity(0.0), colors.text.opacity(0.08))
             }))
     }
 
@@ -1674,12 +1769,14 @@ impl PaperView {
                 .items_center()
                 .rounded(px(12.))
                 .text_size(px(10.5))
-                .text_color(if active { text } else { muted })
-                .when(active, |el| el.bg(text.opacity(0.14)))
-                .hover(|el| el.bg(text.opacity(0.08)))
                 .cursor_pointer()
                 .on_click(cx.listener(move |paper, _, _, cx| paper.set_drawer_tab(which, cx)))
                 .child(label)
+                .fx(SharedString::from(format!("{id}-fx")), move |el, h| {
+                    let (rest, over) = if active { (0.14, 0.16) } else { (0.0, 0.08) };
+                    el.bg(h.mix(text.opacity(rest), text.opacity(over)))
+                        .text_color(if active { text } else { h.mix(muted, text) })
+                })
         };
         let empty = match self.drawer_tab {
             DrawerTab::Clip => "El historial está vacío.",
@@ -1693,10 +1790,11 @@ impl PaperView {
                 .flex_none()
                 .rounded(px(8.))
                 .cursor_pointer()
-                .hover(|el| el.bg(text.opacity(0.08)))
                 .on_click(cx.listener(move |paper, _, window, cx| {
                     paper.insert_item(i, window, cx)
                 }));
+            let fx = ("drawer-item-fx", i);
+            let (rest, over) = (text.opacity(0.0), text.opacity(0.08));
             match item {
                 DrawerItem::Text { label, .. } => row
                     .h(px(46.))
@@ -1707,6 +1805,7 @@ impl PaperView {
                     .line_height(px(14.))
                     .text_color(text)
                     .child(label.clone())
+                    .hover_bg(fx, rest, over)
                     .into_any_element(),
                 DrawerItem::Image { path } => row
                     .p(px(4.))
@@ -1728,6 +1827,7 @@ impl PaperView {
                                     .into_any_element()
                             }),
                     )
+                    .hover_bg(fx, rest, over)
                     .into_any_element(),
             }
         }).collect();
@@ -2168,7 +2268,7 @@ fn show_in_folder(path: &std::path::Path) {
 }
 
 /// Las capturas más recientes: las de Atic y las del prototipo.
-fn recent_captures() -> Vec<PathBuf> {
+pub(crate) fn recent_captures() -> Vec<PathBuf> {
     let mut folders = Vec::new();
     if let Some(data) = notes_dir().and_then(|notes| notes.parent().map(|p| p.to_path_buf())) {
         folders.push(data.join("captures"));

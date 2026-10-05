@@ -6,7 +6,9 @@
 //! - **Audio**: la salida (parlantes, audífonos…), quién usa el micrófono o
 //!   la cámara, y el volumen de cada app que tiene sonido.
 //! - **Pantallas**: el brillo de cada pantalla.
-//! - **Procesos**: CPU, RAM y lo que más consume, para cerrarlo.
+//! - **Procesos**: CPU, RAM y lo que más consume, para cerrarlo. Un buscador
+//!   filtra por nombre, y mientras el cursor está sobre la lista el orden se
+//!   congela: las filas no cambian de lugar justo antes del clic.
 //!
 //! Lo que no se deshace con un clic (bloquear, suspender, forzar el cierre)
 //! pide confirmación: el primer clic arma el botón y el segundo lo ejecuta;
@@ -24,12 +26,15 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    actions, canvas, div, img, prelude::*, px, rgb, svg, AnyElement, App, Bounds, ClickEvent,
+    actions, canvas, div, img, prelude::*, px, rgb, svg, Animation, AnimationExt, AnyElement, App, Entity,
+    Bounds, ClickEvent,
     Context, EventEmitter, FocusHandle, Focusable, Hsla, KeyBinding, MouseButton, MouseDownEvent,
     MouseMoveEvent, MouseUpEvent, Pixels, RenderImage, ScrollWheelEvent, SharedString, Window,
 };
 
 use crate::clipboard::BAND_H;
+use crate::text_input::{self, TextInput};
+use crate::hover::{hover_fx, pin_button, HoverExt};
 use os::{Backend, Cmd, DisplayId, Snapshot, Want};
 
 const MARK_GAP: f32 = 40.0;
@@ -41,6 +46,8 @@ const TILE_H: f32 = 58.0;
 const TABS_H: f32 = 30.0;
 const ROW_H: f32 = 34.0;
 const PROCS_HEADER_H: f32 = 28.0;
+/// El buscador de Procesos.
+const SEARCH_H: f32 = 30.0;
 const NOTICE_H: f32 = 22.0;
 /// El título de una sección dentro de una pestaña («Salida», «Apps»).
 const SECTION_H: f32 = 22.0;
@@ -54,7 +61,7 @@ const WHEEL_STEP: f32 = 0.05;
 const ARM_FOR: Duration = Duration::from_secs(3);
 const NOTICE_FOR: Duration = Duration::from_secs(4);
 
-actions!(system_panel, [Dismiss, ToggleMute]);
+actions!(system_panel, [Dismiss, ToggleMute, FindApp]);
 
 const KEY_CONTEXT: &str = "SystemPanel";
 
@@ -63,6 +70,7 @@ pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("escape", Dismiss, context),
         KeyBinding::new("m", ToggleMute, context),
+        KeyBinding::new("ctrl-f", FindApp, context),
     ]);
 }
 
@@ -124,6 +132,18 @@ pub struct SystemPanel {
     privacy: crate::privacy::Privacy,
     pending_icons: HashSet<PathBuf>,
     pub pinned: bool,
+    /// El vistazo de la tira lo está mostrando: mide los procesos aunque la
+    /// pestaña no esté abierta.
+    peek: bool,
+    /// Buscar una app de Procesos por nombre.
+    search: Entity<TextInput>,
+    _search_changed: gpui::Subscription,
+    /// Lo buscado, ya plegado (sin tildes ni mayúsculas).
+    query: String,
+    /// El cursor está sobre la lista de Procesos: el orden queda quieto.
+    list_hovered: bool,
+    /// El orden de la lista la última vez que se movió (por `stem`).
+    order: Vec<String>,
     colors: Colors,
 }
 
@@ -137,7 +157,25 @@ impl Focusable for SystemPanel {
 
 impl SystemPanel {
     pub fn new(privacy: crate::privacy::Privacy, backend: Backend, cx: &mut Context<Self>) -> Self {
+        let search = cx.new(|cx| {
+            TextInput::new(
+                "Buscar una app…",
+                rgb(0xf0f0ea).into(),
+                rgb(0x6e6e66).into(),
+                rgb(0xf0f0ea).into(),
+                cx,
+            )
+        });
+        let _search_changed = cx.subscribe(&search, |panel, search, _: &text_input::Changed, cx| {
+            panel.query = crate::clipboard::fold(search.read(cx).text().trim());
+            cx.notify();
+        });
         Self {
+            search,
+            _search_changed,
+            query: String::new(),
+            list_hovered: false,
+            order: Vec::new(),
             privacy,
             focus: cx.focus_handle(),
             backend,
@@ -158,6 +196,7 @@ impl SystemPanel {
             icons: Default::default(),
             pending_icons: HashSet::new(),
             pinned: false,
+            peek: false,
             colors: Colors {
                 text: rgb(0xf0f0ea).into(),
                 muted: rgb(0x9a9a90).into(),
@@ -199,8 +238,31 @@ impl SystemPanel {
     fn want(&self) -> Want {
         Want {
             audio: self.tab == Some(Tab::Audio),
-            procs: self.tab == Some(Tab::Procs),
+            procs: self.tab == Some(Tab::Procs) || self.peek,
         }
+    }
+
+    /// El vistazo de Sistema empieza (lee y sigue leyendo) o termina.
+    /// `keep` deja la lectura andando: el panel quedó abierto.
+    pub fn set_peek(&mut self, on: bool, keep: bool, cx: &mut Context<Self>) {
+        if on == self.peek {
+            return;
+        }
+        self.peek = on;
+        if on {
+            self.reset(cx);
+        } else if !keep {
+            self.active = false;
+        }
+    }
+
+    pub fn snapshot(&self) -> &Snapshot {
+        &self.state
+    }
+
+    /// El ícono de una app para el vistazo (se carga aparte y repinta).
+    pub fn app_image(&mut self, path: Option<&PathBuf>, cx: &mut Context<Self>) -> Option<Arc<RenderImage>> {
+        self.icon(path, cx)
     }
 
     fn refresh(&mut self, cx: &mut Context<Self>) {
@@ -237,16 +299,26 @@ impl SystemPanel {
         }
     }
 
+    /// Las apps de Procesos que se ven: las que coinciden con la búsqueda y,
+    /// con el cursor encima, en el orden de antes (las nuevas al final).
+    fn shown_apps(&self) -> Vec<os::App> {
+        let Some(procs) = self.state.procs.as_ref() else {
+            return Vec::new();
+        };
+        let order = (self.list_hovered && !self.order.is_empty()).then_some(self.order.as_slice());
+        pick_apps(&procs.apps, &self.query, order)
+    }
+
+    fn searching(&self) -> bool {
+        !self.query.is_empty()
+    }
+
     fn rows(&self) -> usize {
         match self.tab {
             None => 0,
             Some(Tab::Audio) => self.state.audio.len().clamp(1, MAX_ROWS) + self.state.outputs.len(),
             Some(Tab::Displays) => self.state.displays.len().max(1),
-            Some(Tab::Procs) => self
-                .state
-                .procs
-                .as_ref()
-                .map_or(1, |p| p.apps.len().clamp(1, MAX_ROWS)),
+            Some(Tab::Procs) => self.shown_apps().len().clamp(1, MAX_ROWS),
         }
     }
 
@@ -254,7 +326,7 @@ impl SystemPanel {
         let base = BAND_H + 4.0 + SLIDER_H * 2.0 + GAP + 12.0 + TILE_H + 10.0 + TABS_H + SIDE;
         let content = match self.tab {
             None => 0.0,
-            Some(Tab::Procs) => GAP + PROCS_HEADER_H + self.rows() as f32 * ROW_H,
+            Some(Tab::Procs) => GAP + SEARCH_H + PROCS_HEADER_H + self.rows() as f32 * ROW_H,
             Some(Tab::Audio) => {
                 let uses = if self.privacy.uses().is_empty() { 0.0 } else { ROW_H };
                 GAP + uses + SECTION_H * 2.0 + self.rows() as f32 * ROW_H
@@ -382,6 +454,7 @@ impl SystemPanel {
 
     fn pick_tab(&mut self, tab: Tab, cx: &mut Context<Self>) {
         self.tab = if self.tab == Some(tab) { None } else { Some(tab) };
+        self.list_hovered = false;
         self.refresh(cx);
         cx.notify();
     }
@@ -460,28 +533,16 @@ impl SystemPanel {
                     .child(svg().path(icon).size(px(14.)).text_color(color))
                     .child(label)
             }))
-            .child(
-                div()
-                    .id("system-pin")
-                    .size(px(26.))
-                    .flex()
-                    .flex_none()
-                    .items_center()
-                    .justify_center()
-                    .rounded(px(13.))
-                    .when(self.pinned, |el| el.bg(text.opacity(0.14)))
-                    .hover(|el| el.bg(text.opacity(0.08)))
-                    .on_click(cx.listener(|panel, _: &ClickEvent, _, cx| {
-                        panel.pinned = !panel.pinned;
-                        cx.notify();
-                    }))
-                    .child(
-                        svg()
-                            .path("icons/pin.svg")
-                            .size(px(13.))
-                            .text_color(if self.pinned { text } else { faint }),
-                    ),
-            )
+            .child(pin_button(
+                "system-pin",
+                self.pinned,
+                text,
+                faint,
+                cx.listener(|panel, _: &ClickEvent, _, cx| {
+                    panel.pinned = !panel.pinned;
+                    cx.notify();
+                }),
+            ))
     }
 
     /// Un slider de relleno: crece desde la izquierda y su punta redonda es
@@ -601,68 +662,78 @@ impl SystemPanel {
         let c = &self.colors;
         let bg = if armed { Some(c.danger) } else { active };
         let fg = if bg.is_some() { c.ink } else { c.text };
-        div()
-            .id(id)
-            .flex_1()
-            .h(px(TILE_H))
-            .flex()
-            .flex_col()
-            .items_center()
-            .justify_center()
-            .gap(px(5.))
-            .rounded(px(16.))
-            .bg(bg.unwrap_or(c.track))
-            .when(bg.is_none(), |el| el.hover(|el| el.bg(gpui::white().opacity(0.14))))
-            .cursor_pointer()
-            .on_click(cx.listener(move |panel, _: &ClickEvent, _, cx| on_click(panel, cx)))
-            .child(svg().path(icon).size(px(18.)).text_color(fg))
-            .child(
-                div()
-                    .text_size(px(10.))
-                    .text_color(if bg.is_some() { c.ink } else { c.muted })
-                    .child(if armed { armed_label } else { label }),
-            )
+        let (track, muted, ink) = (c.track, c.muted, c.ink);
+        let click = cx.listener(move |panel, _: &ClickEvent, _, cx| on_click(panel, cx));
+        let label = if armed { armed_label } else { label };
+        hover_fx(SharedString::from(format!("{id}-fx")), move |h| {
+            // Encendida no cambia de color con el cursor: se aclara apenas.
+            let surface = match bg {
+                Some(bg) => h.mix(bg, bg.opacity(0.86)),
+                None => h.mix(track, gpui::white().opacity(0.14)),
+            };
+            // Al apretar se hunde un poco, como el `scale(.96)` de la web.
+            let inset = 2.5 * h.press;
+            div()
+                .id(id)
+                .flex_1()
+                .h(px(TILE_H))
+                .relative()
+                .cursor_pointer()
+                .on_click(click)
+                .child(
+                    div()
+                        .absolute()
+                        .inset(px(inset))
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .justify_center()
+                        .gap(px(5.))
+                        .rounded(px(16. - inset))
+                        .bg(surface)
+                        .child(svg().path(icon).size(px(18.)).text_color(fg))
+                        .child(
+                            div()
+                                .text_size(px(10.))
+                                .text_color(if bg.is_some() { ink } else { h.mix(muted, fg) })
+                                .child(label),
+                        ),
+                )
+                .into_any_element()
+        })
     }
 
     fn tab_button(&self, tab: Tab, icon: &'static str, label: &'static str, cx: &mut Context<Self>) -> impl IntoElement {
         let c = &self.colors;
         let selected = self.tab == Some(tab);
-        div()
-            .id(label)
-            .flex_1()
-            .h(px(TABS_H))
-            .flex()
-            .items_center()
-            .justify_center()
-            .gap(px(6.))
-            .rounded(px(TABS_H / 2.0))
-            .text_size(px(11.))
-            .text_color(if selected { c.text } else { c.muted })
-            .when(selected, |el| el.bg(gpui::white().opacity(0.12)))
-            .hover(|el| el.bg(gpui::white().opacity(0.07)))
-            .cursor_pointer()
-            .on_click(cx.listener(move |panel, _: &ClickEvent, _, cx| panel.pick_tab(tab, cx)))
-            .child(svg().path(icon).size(px(13.)).text_color(if selected { c.text } else { c.muted }))
-            .child(label)
+        let (text, muted) = (c.text, c.muted);
+        let click = cx.listener(move |panel, _: &ClickEvent, _, cx| panel.pick_tab(tab, cx));
+        hover_fx(SharedString::from(format!("system-tab-btn-{label}")), move |h| {
+            let (rest, over) = if selected { (0.12, 0.15) } else { (0.0, 0.07) };
+            let fg = if selected { text } else { h.mix(muted, text) };
+            div()
+                .id(label)
+                .flex_1()
+                .h(px(TABS_H))
+                .flex()
+                .items_center()
+                .justify_center()
+                .gap(px(6.))
+                .rounded(px(TABS_H / 2.0))
+                .text_size(px(11.))
+                .text_color(fg)
+                .bg(h.mix(gpui::white().opacity(rest), gpui::white().opacity(over)))
+                .cursor_pointer()
+                .on_click(click)
+                .child(svg().path(icon).size(px(13.)).text_color(fg))
+                .child(label)
+                .into_any_element()
+        })
     }
 
     /// Una fila de las pestañas: ícono, nombre, y lo que va a la derecha.
     fn row(&self, leading: AnyElement, name: SharedString, trailing: AnyElement) -> gpui::Div {
-        div()
-            .h(px(ROW_H))
-            .flex()
-            .items_center()
-            .gap(px(10.))
-            .child(div().size(px(20.)).flex_none().flex().items_center().justify_center().child(leading))
-            .child(
-                div()
-                    .w(px(118.))
-                    .flex_none()
-                    .truncate()
-                    .text_size(px(12.))
-                    .child(name),
-            )
-            .child(trailing)
+        row(leading, name, trailing)
     }
 
     fn glyph(&self, path: &'static str) -> AnyElement {
@@ -803,22 +874,27 @@ impl SystemPanel {
                                 .child(card),
                         )
                         .child(div().flex_none().pr(px(6.)).child(check));
+                    let click = cx.listener(move |panel, _: &ClickEvent, _, cx| {
+                        for o in &mut panel.state.outputs {
+                            o.default = o.id == id;
+                        }
+                        panel.backend.send(Cmd::Output(id.clone()));
+                        panel.refresh(cx);
+                        cx.notify();
+                    });
+                    let row_id = SharedString::from(format!("output-{}", output.id));
                     sections.push(
-                        div()
-                            .id(SharedString::from(format!("output-{}", output.id)))
-                            .rounded(px(10.))
-                            .hover(|el| el.bg(gpui::white().opacity(0.06)))
-                            .cursor_pointer()
-                            .on_click(cx.listener(move |panel, _: &ClickEvent, _, cx| {
-                                for o in &mut panel.state.outputs {
-                                    o.default = o.id == id;
-                                }
-                                panel.backend.send(Cmd::Output(id.clone()));
-                                panel.refresh(cx);
-                                cx.notify();
-                            }))
-                            .child(line)
-                            .into_any_element(),
+                        hover_fx(SharedString::from(format!("{row_id}-fx")), move |h| {
+                            div()
+                                .id(row_id)
+                                .rounded(px(10.))
+                                .bg(h.mix(gpui::white().opacity(0.0), gpui::white().opacity(0.06)))
+                                .cursor_pointer()
+                                .on_click(click)
+                                .child(line)
+                                .into_any_element()
+                        })
+                        .into_any_element(),
                     );
                 }
                 sections.push(self.section("Apps"));
@@ -870,11 +946,23 @@ impl SystemPanel {
             }
             Tab::Procs => self.render_procs(cx),
         };
+        let key = match tab {
+            Tab::Audio => "audio",
+            Tab::Displays => "pantallas",
+            Tab::Procs => "procesos",
+        };
+        // Aparece mientras el notch crece: se funde y baja un poco a su sitio.
         Some(
             div()
+                .relative()
                 .px(px(SIDE + 4.))
                 .pt(px(GAP))
                 .child(body)
+                .with_animation(
+                    SharedString::from(format!("system-tab-{key}")),
+                    Animation::new(Duration::from_millis(260)).with_easing(gpui::ease_out_quint()),
+                    |el, t| el.opacity(t).top(px(-6.0 * (1.0 - t))),
+                )
                 .into_any_element(),
         )
     }
@@ -883,6 +971,14 @@ impl SystemPanel {
         let Some(procs) = self.state.procs.clone() else {
             return self.empty("Midiendo…").into_any_element();
         };
+        let shown = self.shown_apps();
+        // Lo que se ve queda como el orden a mantener mientras el cursor
+        // entre a la lista.
+        if !self.list_hovered {
+            self.order = shown.iter().map(|app| app.stem.clone()).collect();
+        }
+        let searching = self.searching();
+        let paused = self.list_hovered && !searching;
         let c = &self.colors;
         let gb = |bytes: u64| bytes as f64 / 1024.0 / 1024.0 / 1024.0;
         let ram_pct = if procs.ram_total > 0 {
@@ -924,13 +1020,51 @@ impl SystemPanel {
                 ram_pct,
                 rgb(0x6fa3e0).into(),
             ));
-        let apps = procs.apps.clone();
-        let rows: Vec<AnyElement> = apps
+        let (text, muted, faint) = (c.text, c.muted, c.faint);
+        let search_row = div()
+            .id("procs-search")
+            .h(px(SEARCH_H - 4.))
+            .mb(px(4.))
+            .px(px(10.))
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .rounded(px(13.))
+            .cursor_text()
+            .on_click({
+                let search = self.search.clone();
+                move |_, window, cx| window.focus(&search.focus_handle(cx))
+            })
+            .child(svg().path("icons/search.svg").size(px(13.)).text_color(muted))
+            .child(div().flex_1().min_w_0().text_size(px(12.)).child(self.search.clone()))
+            .when(paused, |el| {
+                el.child(div().flex_none().text_size(px(10.)).text_color(faint).child("orden en pausa"))
+            })
+            .when(searching, |el| {
+                el.child(
+                    div()
+                        .id("procs-search-clear")
+                        .size(px(20.))
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(10.))
+                        .cursor_pointer()
+                        .on_click(cx.listener(|panel, _: &ClickEvent, _, cx| {
+                            panel.search.update(cx, |s, cx| s.clear(cx));
+                        }))
+                        .child(svg().path("icons/x.svg").size(px(11.)).text_color(muted))
+                        .hover_bg("procs-search-clear-fx", text.opacity(0.0), text.opacity(0.1)),
+                )
+            })
+            .hover_bg("procs-search-fx", text.opacity(0.06), text.opacity(0.09));
+        let empty_search = searching && shown.is_empty();
+        let rows: Vec<AnyElement> = shown
             .iter()
-            .take(MAX_ROWS)
             .map(|app| {
                 let leading = self.app_icon(app.path.as_ref(), "icons/activity.svg", cx);
-                let group: SharedString = format!("proc-{}", app.stem).into();
+                let row_id: SharedString = format!("proc-{}", app.stem).into();
                 let armed = self.is_armed(&Arm::Force(app.stem.clone()));
                 let ram = if app.ram >= 1 << 30 {
                     format!("{:.1} GB", gb(app.ram))
@@ -940,75 +1074,119 @@ impl SystemPanel {
                 let stem = app.stem.clone();
                 let stem_force = app.stem.clone();
                 let c = &self.colors;
-                let action = |id: SharedString, label: &'static str, color: Hsla, filled: bool| {
-                    div()
-                        .id(id)
-                        .h(px(22.))
-                        .px(px(9.))
+                let (text, muted, amber, danger, ink) = (c.text, c.muted, c.amber, c.danger, c.ink);
+                let close = cx.listener(move |panel, _: &ClickEvent, _, cx| {
+                    panel.backend.send(Cmd::Close(stem.clone()));
+                    panel.refresh(cx);
+                });
+                let force = cx.listener(move |panel, _: &ClickEvent, _, cx| {
+                    if panel.confirm(Arm::Force(stem_force.clone()), cx) {
+                        panel.backend.send(Cmd::Force(stem_force.clone()));
+                        panel.refresh(cx);
+                    }
+                });
+                let (cpu, name) = (app.cpu, SharedString::from(app.name.clone()));
+                let id = row_id.clone();
+                hover_fx(row_id, move |h| {
+                    // Las acciones se funden con el cursor (o se quedan si
+                    // «Forzar» está armado esperando el segundo clic).
+                    let reveal = if armed { 1.0 } else { h.t };
+                    let trailing = div()
+                        .flex_1()
                         .flex()
                         .items_center()
-                        .rounded(px(11.))
-                        .text_size(px(10.))
-                        .text_color(if filled { c.ink } else { color })
-                        .when(filled, |el| el.bg(color))
-                        .when(!filled, |el| el.hover(|el| el.bg(gpui::white().opacity(0.1))))
-                        .cursor_pointer()
-                        .child(label)
-                };
-                let trailing = div()
-                    .flex_1()
-                    .flex()
-                    .items_center()
-                    .gap(px(6.))
-                    .child(
-                        div()
-                            .w(px(44.))
-                            .text_size(px(11.))
-                            .text_color(if app.cpu >= 20.0 { c.amber } else { c.muted })
-                            .child(format!("{:.0} %", app.cpu)),
-                    )
-                    .child(div().w(px(56.)).text_size(px(11.)).text_color(c.muted).child(ram))
-                    .child(div().flex_1())
-                    .child(
-                        div()
-                            .flex()
-                            .gap(px(4.))
-                            .when(!armed, |el| el.invisible().group_hover(group.clone(), |el| el.visible()))
-                            .child(
-                                action(format!("close-{stem}").into(), "Cerrar", c.text, false).on_click(
-                                    cx.listener(move |panel, _: &ClickEvent, _, cx| {
-                                        panel.backend.send(Cmd::Close(stem.clone()));
-                                        panel.refresh(cx);
-                                    }),
-                                ),
-                            )
-                            .child(
-                                action(
-                                    format!("force-{stem_force}").into(),
+                        .gap(px(6.))
+                        .child(
+                            div()
+                                .w(px(44.))
+                                .text_size(px(11.))
+                                .text_color(if cpu >= 20.0 { amber } else { muted })
+                                .child(format!("{cpu:.0} %")),
+                        )
+                        .child(div().w(px(56.)).text_size(px(11.)).text_color(muted).child(ram))
+                        .child(div().flex_1())
+                        .child(
+                            div()
+                                .flex()
+                                .gap(px(4.))
+                                .opacity(reveal)
+                                // Mientras no se ven, que no se puedan apretar.
+                                .when(reveal < 0.05, |el| el.invisible())
+                                .child(proc_action(
+                                    format!("close-{id}").into(),
+                                    "Cerrar",
+                                    text,
+                                    ink,
+                                    false,
+                                    close,
+                                ))
+                                .child(proc_action(
+                                    format!("force-{id}").into(),
                                     if armed { "¿Forzar?" } else { "Forzar" },
-                                    c.danger,
+                                    danger,
+                                    ink,
                                     armed,
-                                )
-                                .on_click(cx.listener(move |panel, _: &ClickEvent, _, cx| {
-                                    if panel.confirm(Arm::Force(stem_force.clone()), cx) {
-                                        panel.backend.send(Cmd::Force(stem_force.clone()));
-                                        panel.refresh(cx);
-                                    }
-                                })),
-                            ),
-                    )
-                    .into_any_element();
-                self.row(leading, app.name.clone().into(), trailing)
-                    .group(group)
-                    .into_any_element()
+                                    force,
+                                )),
+                        )
+                        .into_any_element();
+                    row(leading, name, trailing)
+                        .mx(px(-6.))
+                        .px(px(6.))
+                        .rounded(px(10.))
+                        .bg(h.mix(gpui::white().opacity(0.0), gpui::white().opacity(0.05)))
+                        .into_any_element()
+                })
+                .into_any_element()
             })
             .collect();
         div()
             .flex()
             .flex_col()
+            .child(search_row)
             .child(header)
-            .children(rows)
+            .child(
+                div()
+                    .id("procs-list")
+                    .flex()
+                    .flex_col()
+                    // Con el cursor encima la lista no se reordena.
+                    .on_hover(cx.listener(|panel, hovered: &bool, _, cx| {
+                        panel.list_hovered = *hovered;
+                        cx.notify();
+                    }))
+                    .children(rows)
+                    .when(empty_search, |el| el.child(self.empty("Ninguna app coincide."))),
+            )
             .into_any_element()
+    }
+
+    /// Esc: con algo buscado, primero borra la búsqueda.
+    fn dismiss(&mut self, cx: &mut Context<Self>) {
+        if self.tab == Some(Tab::Procs) && self.searching() {
+            self.search.update(cx, |s, cx| s.clear(cx));
+        } else {
+            cx.emit(SystemEvent::Close);
+        }
+    }
+
+    /// La «m» silencia, salvo que se esté escribiendo en el buscador.
+    fn mute_key(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.search.focus_handle(cx).is_focused(window) {
+            let text = format!("{}m", self.search.read(cx).text());
+            self.query = crate::clipboard::fold(text.trim());
+            self.search.update(cx, |s, cx| s.set_text(text, cx));
+            cx.notify();
+        } else {
+            self.toggle_mute(cx);
+        }
+    }
+
+    fn find_app(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.tab != Some(Tab::Procs) {
+            self.pick_tab(Tab::Procs, cx);
+        }
+        window.focus(&self.search.focus_handle(cx));
     }
 }
 
@@ -1070,8 +1248,9 @@ impl Render for SystemPanel {
         div()
             .key_context(KEY_CONTEXT)
             .track_focus(&self.focus)
-            .on_action(cx.listener(|_, _: &Dismiss, _, cx| cx.emit(SystemEvent::Close)))
-            .on_action(cx.listener(|panel, _: &ToggleMute, _, cx| panel.toggle_mute(cx)))
+            .on_action(cx.listener(|panel, _: &Dismiss, _, cx| panel.dismiss(cx)))
+            .on_action(cx.listener(|panel, _: &ToggleMute, window, cx| panel.mute_key(window, cx)))
+            .on_action(cx.listener(|panel, _: &FindApp, window, cx| panel.find_app(window, cx)))
             .on_mouse_move(cx.listener(|panel, event: &MouseMoveEvent, _, cx| {
                 if let Some((key, big)) = panel.drag {
                     if event.pressed_button == Some(MouseButton::Left) {
@@ -1090,7 +1269,12 @@ impl Render for SystemPanel {
                     cx.notify();
                 }),
             )
-            .size_full()
+            // Su altura final, no la del notch: mientras el notch crece o se
+            // achica, el recorte destapa o tapa por abajo en vez de aplastar
+            // lo de arriba.
+            .w_full()
+            .h(px(self.desired_height()))
+            .flex_none()
             .flex()
             .flex_col()
             .font_family("Segoe UI")
@@ -1191,5 +1375,113 @@ impl Render for SystemPanel {
             )
             .children(tab)
             .children(notice)
+    }
+}
+
+/// Las apps de Procesos que se muestran: las que coinciden con `query` (ya
+/// plegada) y, si hay `order`, en ese orden (las que no estaban, al final).
+fn pick_apps(apps: &[os::App], query: &str, order: Option<&[String]>) -> Vec<os::App> {
+    let mut picked: Vec<os::App> = apps
+        .iter()
+        .filter(|app| {
+            query.is_empty() || crate::clipboard::fold(&app.name).contains(query) || app.stem.contains(query)
+        })
+        .cloned()
+        .collect();
+    if let Some(order) = order {
+        // `sort_by_key` es estable: las nuevas quedan al final en su orden.
+        picked.sort_by_key(|app| order.iter().position(|s| *s == app.stem).unwrap_or(usize::MAX));
+    }
+    picked.truncate(MAX_ROWS);
+    picked
+}
+
+/// Una fila de las pestañas: ícono, nombre, y lo que va a la derecha.
+fn row(leading: AnyElement, name: SharedString, trailing: AnyElement) -> gpui::Div {
+    div()
+        .h(px(ROW_H))
+        .flex()
+        .items_center()
+        .gap(px(10.))
+        .child(div().size(px(20.)).flex_none().flex().items_center().justify_center().child(leading))
+        .child(
+            div()
+                .w(px(118.))
+                .flex_none()
+                .truncate()
+                .text_size(px(12.))
+                .child(name),
+        )
+        .child(trailing)
+}
+
+/// «Cerrar» y «Forzar» en una fila de Procesos.
+fn proc_action(
+    id: SharedString,
+    label: &'static str,
+    color: Hsla,
+    ink: Hsla,
+    filled: bool,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    hover_fx(SharedString::from(format!("{id}-fx")), move |h| {
+        let bg = if filled {
+            h.mix(color, color.opacity(0.85))
+        } else {
+            h.mix(gpui::white().opacity(0.0), gpui::white().opacity(0.1 + 0.06 * h.press))
+        };
+        div()
+            .id(id)
+            .h(px(22.))
+            .px(px(9.))
+            .flex()
+            .items_center()
+            .rounded(px(11.))
+            .text_size(px(10.))
+            .text_color(if filled { ink } else { color })
+            .bg(bg)
+            .cursor_pointer()
+            .on_click(on_click)
+            .child(label)
+            .into_any_element()
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn app(stem: &str, name: &str) -> os::App {
+        os::App {
+            stem: stem.into(),
+            name: name.into(),
+            path: None,
+            cpu: 0.0,
+            ram: 0,
+        }
+    }
+
+    #[test]
+    fn busca_por_nombre_sin_tildes() {
+        let apps = [app("code", "Visual Studio Code"), app("winword", "Microsoft Word"), app("zen", "Zen")];
+        let names = |q: &str| -> Vec<String> {
+            pick_apps(&apps, &crate::clipboard::fold(q), None).into_iter().map(|a| a.stem).collect()
+        };
+        assert_eq!(names("word"), ["winword"]);
+        assert_eq!(names("VISUAL"), ["code"]);
+        // Por el ejecutable también.
+        assert_eq!(names("winw"), ["winword"]);
+        assert_eq!(names(""), ["code", "winword", "zen"]);
+        assert!(names("nada").is_empty());
+    }
+
+    #[test]
+    fn con_el_cursor_encima_el_orden_no_cambia() {
+        // La lectura nueva trae a Zen primero; la lista mantiene el orden
+        // anterior y lo nuevo va al final.
+        let fresh = [app("zen", "Zen"), app("new", "Nueva"), app("code", "Code")];
+        let order = vec!["code".to_string(), "zen".to_string()];
+        let stems: Vec<String> = pick_apps(&fresh, "", Some(&order)).into_iter().map(|a| a.stem).collect();
+        assert_eq!(stems, ["code", "zen", "new"]);
     }
 }

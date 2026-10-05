@@ -6,15 +6,55 @@ Experimento para evaluar portar la pill de Atic de Svelte/WebView2 a
 ## El modelo: un solo notch
 
 La pill es un solo objeto que cambia de forma. Las herramientas con panel
-(Clipboard, Textos, Apps y Agentes) **no abren tarjetas aparte**: el notch de
-arriba al centro se estira hasta el tamaño de la herramienta, y su franja de
-40 px queda para la marca y el buscador o el título. Cambiar de herramienta con
-el notch abierto solo cambia el contenido.
+(Clipboard, Textos, Apps, Agentes, Sistema y Ahora suena) **no abren tarjetas
+aparte**: el notch se estira hasta el tamaño de la herramienta, y la franja de
+40 px de arriba del panel queda para la marca y el buscador o el título.
+Cambiar de herramienta con el notch abierto solo cambia el contenido.
 
-Si la pill está en otro lugar (flotando o acoplada a un costado), al abrir una
-herramienta **vuela como gota hasta el notch** (340 ms, en arco), se estira
-ahí, y al cerrarse vuelve a su lugar (300 ms) con el aplastón de acoplado. La
-posición guardada no cambia.
+**El notch se abre en el borde donde está la pill.** Arriba, al centro, como
+siempre. En un costado el tab se estira ahí mismo, con la misma curva y el
+mismo tiempo (`ease_island`, 300 ms), el mismo vidrio y el mismo tinte, y al
+cerrarse vuelve a ser el tab en su lugar. Ahí todo se ordena en vertical:
+
+- **Todo va de pie.** Los paneles y los vistazos no se giran con el borde: el
+  texto va siempre derecho. `src/geometry.rs` mide todo como tab (largo a lo
+  largo del borde, grosor hacia adentro), así que en un costado el ancho de un
+  panel es grosor y su alto es largo (`Edge::extent`, `notch_rect`).
+- **Paneles altos y angostos.** En un costado el panel mide `SIDE_PANEL_W`
+  (380) de ancho y crece hasta casi todo el alto del área de trabajo
+  (`SIDE_PANEL_MARGIN` arriba y abajo): las listas (Clipboard, Textos, Apps,
+  Agentes) muestran todo lo que quepa (`max_height` de cada panel) y los que
+  tienen poco (Sistema, Ahora suena) miden lo suyo, sin espacio muerto. Va
+  pegado al borde, centrado en la altura del tab y corrido para no salirse.
+- **La marca** se corre a la izquierda de la franja del panel en cualquier
+  borde (el hueco de los buscadores). Las esquinas redondas son las del lado
+  que mira al escritorio, como en el tab.
+- **Lo que cuelga del tab** (los vistazos, el aviso de la bandeja, el uso, la
+  letra y el dictado) va bajo la franja arriba. En un costado sale en un
+  **bloque angosto al lado de la herramienta bajo el cursor, a su altura**
+  (`geometry::side_block`, `SIDE_W` = 300), y mide solo lo que ocupa: lo que
+  arriba va en fila ahí va en columna (los colores, las capturas y las páginas
+  de Flip, una por fila con su miniatura; los anillos del uso, de a tres; las
+  filas de la bandeja, con los botones bajo el texto). En reposo (la letra, el
+  aviso de la bandeja, el dictado) sale junto a la marca. Al pasar de una
+  herramienta a otra el bloque se desliza a la nueva altura (240 ms,
+  `ease_island`, como el alto de los vistazos).
+- **El cuerpo es una L.** La columna de la tira y el bloque son una sola piel
+  (`geometry::side_outline`): esquinas redondas hacia el escritorio y una
+  esquina cóncava donde el bloque se une a la columna, que se achica sola
+  cuando los bordes de los dos casi coinciden (no salta al deslizarse). El
+  vidrio recorta las dos piezas (`glass::Shape::Pair`: dos visuales con el
+  mismo fondo en la misma ventana); el rincón cóncavo queda sin vidrio, bajo
+  el tinte casi opaco no se nota.
+- Los contadores de la bandeja van antes y después de la marca a lo largo del
+  tab: en un costado, arriba y abajo de ella.
+- **Solo vuela si donde está no hay notch**: flotando, o en un costado más
+  bajo que `NOTCH_MIN_SIDE_H` (un monitor muy bajo), la gota
+  **vuela hasta el notch de arriba** (340 ms, en arco), se estira ahí, y al
+  cerrarse vuelve a su lugar (300 ms) con el aplastón de acoplado. La posición
+  guardada no cambia.
+- Abajo usa lo mismo (el panel crece hacia arriba, con su franja arriba), pero
+  no se ha visto: en esta máquina la barra de tareas ocupa ese borde.
 
 Las herramientas de pantalla completa (Capturas, Pizarra, Color y Flip) usan
 la misma ventana del overlay, encima de todo.
@@ -39,7 +79,8 @@ La rueda y la burbuja de vista previa siguen opacas: detrás no tienen blur.
 
 - El tab acoplado (124 × 40) a cualquier borde sin barra de tareas, con la
   marca de Atic: sus ojos siguen al cursor y parpadea. En los bordes laterales
-  va de pie y la tira de herramientas se abre en columna.
+  va de pie y la tira de herramientas se abre en columna; los vistazos salen
+  al lado de la columna (ver «El modelo: un solo notch»).
 - Arrastrar la pill (`src/geometry.rs`, reglas de `edgeDock.ts`):
   - Se arrastra desde cualquier parte del tab o de la gota pasados 4 px; un
     movimiento menor cuenta como clic.
@@ -181,7 +222,7 @@ Lo que los agentes dejan para ti, dentro del mismo notch y sin ventanas aparte.
   `PILL_TRAY_DEMO=1`); las consolas del espacio que no son Claude Code o Codex
   (OpenCode, Cursor…) no dejan filas, porque no tienen JSONL y habría que leer su
   estado de la salida del PTY, como el Mando; el reproductor no abre «Ahora
-  suena»; los contadores no se ven en la gota ni en los bordes laterales; y el
+  suena»; los contadores no se ven en la gota; y el
   mensaje rápido con la ventana del espacio cerrada escribe en las consolas
   guardadas, pero esa vía no se ha probado.
 
@@ -359,6 +400,7 @@ Variables para probar:
 | --- | --- |
 | `PILL_OPEN=clipboard\|textos\|agentes` | Abre esa herramienta en el notch al arrancar |
 | `PILL_OPEN=peek` | Deja abierto el vistazo 12 s |
+| `PILL_OPEN_SEQ=clipboard,textos,cerrar` | Abre esas herramientas una tras otra con el notch abierto, cada `PILL_OPEN_STEP_MS` (1500 por omisión); `cerrar` lo cierra |
 | `PILL_OPEN=capture\|board\|flip\|shelf` | Abre esa herramienta de pantalla completa |
 | `PILL_OPEN=space` | Abre el espacio al arrancar |
 | `SPACE_DEMO=1` | Abre 6 consolas de prueba (4 escribiendo 30 líneas/s) |

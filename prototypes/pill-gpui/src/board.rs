@@ -23,6 +23,7 @@ use gpui::{
 use lyon::tessellation::{LineCap, LineJoin, StrokeOptions};
 
 use crate::capture::{self, Frozen, Saved};
+use crate::hover::{tip, HoverExt};
 
 /// «Pizarra» en la tira y la rueda.
 pub const TOOL: usize = 6;
@@ -696,16 +697,16 @@ impl BoardView {
             .items_center()
             .justify_center()
             .rounded(px(BUTTON / 2.0))
-            .when(active, |el| el.bg(text.opacity(0.16)))
-            .hover(|el| el.bg(text.opacity(0.09)))
+            .cursor_pointer()
+            .when_some(button_tip(id), |el, label| el.tooltip(tip(label)))
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| on_click(view, cx)))
-            .child(
-                svg()
-                    .path(icon)
-                    .size(px(15.))
-                    .text_color(if active { text } else { text.opacity(0.62) }),
-            )
+            .fx(SharedString::from(format!("{id}-fx")), move |el, h| {
+                let (rest, over) = if active { (0.16, 0.18) } else { (0.0, 0.09) };
+                let fg = if active { text } else { h.mix(text.opacity(0.62), text) };
+                el.bg(h.mix(text.opacity(rest), text.opacity(over + 0.05 * h.press)))
+                    .child(svg().path(icon).size(px(15. - 1.5 * h.press)).text_color(fg))
+            })
     }
 
     fn separator() -> impl IntoElement {
@@ -742,6 +743,7 @@ impl BoardView {
                 .items_center()
                 .justify_center()
                 .rounded(px(11.))
+                .cursor_pointer()
                 .when(active, |el| el.border_2().border_color(gpui::white().opacity(0.85)))
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
@@ -751,14 +753,18 @@ impl BoardView {
                     }
                     cx.notify();
                 }))
-                .child(
-                    div()
-                        .size(px(14.))
-                        .rounded(px(7.))
-                        .bg(rgb(color))
-                        .border_1()
-                        .border_color(gpui::white().opacity(0.25)),
-                )
+                .fx(("board-color-fx", i), move |el, h| {
+                    // El color crece con el cursor y se achica al apretar.
+                    let size = 14. + 3. * h.t - 2. * h.press;
+                    el.child(
+                        div()
+                            .size(px(size))
+                            .rounded(px(size / 2.))
+                            .bg(rgb(color))
+                            .border_1()
+                            .border_color(gpui::white().opacity(0.25 + 0.2 * h.t)),
+                    )
+                })
                 .into_any_element()
         })
         .collect::<Vec<_>>();
@@ -771,8 +777,7 @@ impl BoardView {
                 .items_center()
                 .justify_center()
                 .rounded(px(12.))
-                .when(active, |el| el.bg(gpui::white().opacity(0.16)))
-                .hover(|el| el.bg(gpui::white().opacity(0.09)))
+                .cursor_pointer()
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
                     view.width = i;
@@ -783,6 +788,11 @@ impl BoardView {
                         .size(px(width + 2.0))
                         .rounded(px(width))
                         .bg(gpui::white().opacity(0.85)),
+                )
+                .hover_bg(
+                    ("board-width-fx", i),
+                    gpui::white().opacity(if active { 0.16 } else { 0.0 }),
+                    gpui::white().opacity(if active { 0.18 } else { 0.09 }),
                 )
                 .into_any_element()
         })
@@ -820,6 +830,25 @@ impl BoardView {
             .child(Self::separator())
             .child(self.button("board-done", "icons/check.svg", false, |view, cx| view.finish(cx), cx))
             .child(self.button("board-close", "icons/x.svg", false, |_, cx| cx.emit(BoardEvent::Closed), cx))
+    }
+}
+
+/// El nombre de cada botón de la barra, con su atajo.
+fn button_tip(id: &str) -> Option<&'static str> {
+    let tool = |tool: Tool| TOOLS.iter().find(|t| t.0 == tool).map(|t| t.2);
+    match id {
+        "board-pen" => tool(Tool::Pen),
+        "board-highlight" => tool(Tool::Highlight),
+        "board-arrow" => tool(Tool::Arrow),
+        "board-rect" => tool(Tool::Rect),
+        "board-ellipse" => tool(Tool::Ellipse),
+        "board-eraser" => tool(Tool::Eraser),
+        "board-undo" => Some("Deshacer · Ctrl+Z"),
+        "board-redo" => Some("Rehacer · Ctrl+Y"),
+        "board-clear" => Some("Borrar todo"),
+        "board-done" => Some("Listo"),
+        "board-close" => Some("Cerrar · Esc"),
+        _ => None,
     }
 }
 

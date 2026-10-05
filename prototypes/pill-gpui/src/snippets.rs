@@ -23,6 +23,7 @@ use gpui::{
 };
 use serde::{Deserialize, Serialize};
 
+use crate::hover::{round_button, HoverExt};
 use crate::clipboard::{fold, BAND_H, PANEL_H};
 use crate::secrets;
 use crate::text_area::TextArea;
@@ -203,7 +204,7 @@ const VARIABLES: [(&str, &str); 4] = [
 ];
 
 /// Reemplaza las variables; lo que no se reconoce queda tal cual.
-fn expand(body: &str, clipboard: &str) -> String {
+pub(crate) fn expand(body: &str, clipboard: &str) -> String {
     let now = Now::now();
     body.replace("{fecha_hora}", &now.format("%d-%m-%Y %H:%M").to_string())
         .replace("{fecha}", &now.format("%d-%m-%Y").to_string())
@@ -431,6 +432,9 @@ pub struct SnippetsPanel {
     pub pinned: bool,
     /// El notch pinta su marca a la izquierda del buscador.
     pub mark_gap: bool,
+    /// El tope de alto del panel: en un costado, casi toda la pantalla (lo
+    /// pone la pill); si no, el de siempre.
+    pub max_height: Option<f32>,
     from_atic: bool,
     tab: Tab,
     area: Entity<TextArea>,
@@ -486,6 +490,7 @@ impl SnippetsPanel {
             search,
             pinned: false,
             mark_gap: true,
+            max_height: None,
             from_atic: false,
             tab: Tab::Textos,
             area,
@@ -625,7 +630,7 @@ impl SnippetsPanel {
         } else {
             self.shown.len() as f32 * ROW_H
         };
-        (BAND_H + body + FOOTER_H + SIDE_PAD).min(PANEL_H)
+        (BAND_H + body + FOOTER_H + SIDE_PAD).min(self.max_height.unwrap_or(PANEL_H))
     }
 
     fn select(&mut self, index: usize, reveal: bool, cx: &mut Context<Self>) {
@@ -737,28 +742,21 @@ impl SnippetsPanel {
         &self,
         id: &'static str,
         icon: &'static str,
+        tip: &'static str,
         active: bool,
         on_click: impl Fn(&mut Self, &mut Context<Self>) + 'static,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let (text, faint) = (self.colors.text, self.colors.faint);
-        div()
-            .id(id)
-            .size(px(26.))
-            .flex()
-            .flex_none()
-            .items_center()
-            .justify_center()
-            .rounded(px(13.))
-            .when(active, |el| el.bg(text.opacity(0.14)))
-            .hover(|el| el.bg(text.opacity(0.08)))
-            .on_click(cx.listener(move |panel, _: &ClickEvent, _, cx| on_click(panel, cx)))
-            .child(
-                svg()
-                    .path(icon)
-                    .size(px(13.))
-                    .text_color(if active { text } else { faint }),
-            )
+        round_button(
+            id,
+            icon,
+            tip,
+            active,
+            text,
+            faint,
+            cx.listener(move |panel, _: &ClickEvent, _, cx| on_click(panel, cx)),
+        )
     }
 
     fn tab_button(
@@ -770,25 +768,20 @@ impl SnippetsPanel {
     ) -> impl IntoElement {
         let (text, faint) = (self.colors.text, self.colors.faint);
         let active = self.tab == tab;
-        div()
-            .id(id)
-            .size(px(26.))
-            .flex()
-            .flex_none()
-            .items_center()
-            .justify_center()
-            .rounded(px(13.))
-            .when(active, |el| el.bg(text.opacity(0.14)))
-            .hover(|el| el.bg(text.opacity(0.08)))
-            .on_click(cx.listener(move |panel, _: &ClickEvent, window, cx| {
-                panel.set_tab(tab, window, cx)
-            }))
-            .child(
-                svg()
-                    .path(icon)
-                    .size(px(13.))
-                    .text_color(if active { text } else { faint }),
-            )
+        let tip = match tab {
+            Tab::Textos => "Textos",
+            Tab::Bloc => "Bloc",
+            Tab::Tablero => "Notas del tablero",
+        };
+        round_button(
+            id,
+            icon,
+            tip,
+            active,
+            text,
+            faint,
+            cx.listener(move |panel, _: &ClickEvent, window, cx| panel.set_tab(tab, window, cx)),
+        )
     }
 
     fn render_band(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -842,6 +835,7 @@ impl SnippetsPanel {
                 el.child(self.icon_button(
                     "snip-new",
                     "icons/plus.svg",
+                    "Guardar lo copiado (Ctrl+N)",
                     false,
                     |panel, cx| panel.create_from_clipboard(cx),
                     cx,
@@ -853,6 +847,7 @@ impl SnippetsPanel {
             .child(self.icon_button(
                 "snip-pin",
                 "icons/pin.svg",
+                if self.pinned { "Soltar: se cierra al salir" } else { "Fijar: queda abierto" },
                 self.pinned,
                 |panel, cx| {
                     panel.pinned = !panel.pinned;
@@ -866,7 +861,6 @@ impl SnippetsPanel {
         let (text, muted, faint) = (self.colors.text, self.colors.muted, self.colors.faint);
         let snippet = &self.all[self.shown[row]];
         let selected = row == self.selected;
-        let group = SharedString::from(format!("snip-row-{row}"));
         let aliases = snippet.stored.aliases.first().cloned();
 
         let remove = div()
@@ -876,18 +870,15 @@ impl SnippetsPanel {
             .items_center()
             .justify_center()
             .rounded(px(11.))
-            .invisible()
-            .group_hover(group.clone(), |el| el.visible())
-            .hover(|el| el.bg(text.opacity(0.1)))
             .on_click(cx.listener(move |panel, _: &ClickEvent, _, cx| {
                 cx.stop_propagation();
                 panel.remove(row, cx)
             }))
-            .child(svg().path("icons/x.svg").size(px(12.)).text_color(muted));
+            .child(svg().path("icons/x.svg").size(px(12.)).text_color(muted))
+            .hover_bg(("snip-remove-fx", row), text.opacity(0.0), text.opacity(0.1));
 
         let row_el = div()
             .id(("snip-row", row))
-            .group(group)
             .w_full()
             .h(px(ROW_H))
             .px(px(8.))
@@ -895,8 +886,6 @@ impl SnippetsPanel {
             .items_center()
             .gap(px(8.))
             .rounded(px(10.))
-            .when(selected, |el| el.bg(text.opacity(0.08)))
-            .hover(|el| el.bg(text.opacity(0.06)))
             .cursor_pointer()
             .on_hover(cx.listener(move |panel, hovered: &bool, _, cx| {
                 if *hovered {
@@ -951,7 +940,18 @@ impl SnippetsPanel {
                     .text_color(muted)
                     .child(alias)
             }))
-            .child(remove);
+            // La fila elegida (con el cursor o las flechas) se realza con
+            // transición; la × aparece fundiéndose solo con el cursor encima.
+            .fx(("snip-row-fx", row), move |el, h| {
+                el.bg(h.mix(text.opacity(0.0), text.opacity(0.08))).child(
+                    div()
+                        .flex_none()
+                        .opacity(h.over)
+                        .when(h.over < 0.05, |el| el.invisible())
+                        .child(remove),
+                )
+            })
+            .lit(selected);
         div()
             .w_full()
             .px(px(SIDE_PAD))

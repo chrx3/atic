@@ -10,18 +10,20 @@
 //! la ventana y queda un cuadrado detrás de la gota. Por eso se usa
 //! Windows.UI.Composition, como el acrylic de WinUI: un visual pintado con el
 //! fondo ya desenfocado que da DWM (`HostBackdropBrush`) y un recorte
-//! geométrico con antialias (rectángulo redondeado o círculo).
+//! geométrico con antialias (rectángulo redondeado o círculo). El tab de un
+//! costado con su bloque al lado es una forma de dos piezas: dos visuales con
+//! el mismo fondo, cada uno con su recorte, dentro de la misma ventana.
 //!
 //! Necesita los «Efectos de transparencia» de Windows; sin ellos DWM no da
 //! fondo y la pill queda con su tinte. `PILL_GLASS=off` lo apaga.
 
 use windows::core::{w, Interface};
-use windows_numerics::Vector2;
+use windows_numerics::{Vector2, Vector3};
 use windows::System::{DispatcherQueue, DispatcherQueueController};
 use windows::UI::Composition::Desktop::DesktopWindowTarget;
 use windows::UI::Composition::{
     CompositionEllipseGeometry, CompositionGeometricClip, CompositionRoundedRectangleGeometry,
-    Compositor, SpriteVisual,
+    Compositor, ContainerVisual, SpriteVisual,
 };
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWINDOWATTRIBUTE};
@@ -44,6 +46,9 @@ pub enum Shape {
     /// Esquinas en orden: arriba-izquierda, arriba-derecha, abajo-derecha,
     /// abajo-izquierda (como `liquid::rounded_rect_corners`).
     Rounded { rect: Rect, radii: [f32; 4] },
+    /// Dos rectángulos redondeados que se tocan: la columna de la tira y el
+    /// bloque que sale a su lado en un costado.
+    Pair { a: (Rect, [f32; 4]), b: (Rect, [f32; 4]) },
     Circle { center: (f32, f32), r: f32 },
 }
 
@@ -59,17 +64,60 @@ struct Placed {
     y: i32,
     w: i32,
     h: i32,
-    radii: [i32; 4],
+    /// La primera pieza (o la única), relativa a la ventana.
+    a: Piece,
+    /// La segunda, si la forma es de dos piezas.
+    b: Option<Piece>,
     circle: bool,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+struct Piece {
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    radii: [i32; 4],
+}
+
+/// Un rectángulo redondeado con su visual, su geometría y su recorte.
+struct Layer {
+    visual: SpriteVisual,
+    rounded: CompositionRoundedRectangleGeometry,
+    clip: CompositionGeometricClip,
+}
+
+impl Layer {
+    fn new(compositor: &Compositor, root: &ContainerVisual) -> windows::core::Result<Self> {
+        let visual = compositor.CreateSpriteVisual()?;
+        visual.SetBrush(&compositor.CreateHostBackdropBrush()?)?;
+        let rounded = compositor.CreateRoundedRectangleGeometry()?;
+        let clip = compositor.CreateGeometricClipWithGeometry(&rounded)?;
+        visual.SetClip(&clip)?;
+        root.Children()?.InsertAtTop(&visual)?;
+        Ok(Self { visual, rounded, clip })
+    }
+
+    fn shape(&self, piece: &Piece) -> windows::core::Result<()> {
+        let (w, h) = (piece.w as f32, piece.h as f32);
+        self.visual.SetOffset(Vector3 { X: piece.x as f32, Y: piece.y as f32, Z: 0.0 })?;
+        self.visual.SetSize(Vector2 { X: w, Y: h })?;
+        let (offset, size, r) = extended(w, h, piece.radii);
+        self.rounded.SetOffset(offset)?;
+        self.rounded.SetSize(size)?;
+        self.rounded.SetCornerRadius(Vector2 { X: r, Y: r })?;
+        Ok(())
+    }
 }
 
 pub struct Glass {
     hwnd: HWND,
     placed: Option<Placed>,
-    visual: SpriteVisual,
-    rounded: CompositionRoundedRectangleGeometry,
+    /// La primera pieza; también es la gota (con el recorte de elipse).
+    main: Layer,
+    /// La segunda pieza, escondida si la forma es de una.
+    second: Layer,
     ellipse: CompositionEllipseGeometry,
-    rounded_clip: CompositionGeometricClip,
     ellipse_clip: CompositionGeometricClip,
     _target: DesktopWindowTarget,
     _queue: Option<DispatcherQueueController>,
@@ -141,21 +189,19 @@ impl Glass {
         let compositor = Compositor::new()?;
         let interop: ICompositorDesktopInterop = compositor.cast()?;
         let target = interop.CreateDesktopWindowTarget(hwnd, true)?;
-        let visual = compositor.CreateSpriteVisual()?;
-        visual.SetBrush(&compositor.CreateHostBackdropBrush()?)?;
-        let rounded = compositor.CreateRoundedRectangleGeometry()?;
+        let root = compositor.CreateContainerVisual()?;
+        let main = Layer::new(&compositor, &root)?;
+        let second = Layer::new(&compositor, &root)?;
+        second.visual.SetIsVisible(false)?;
         let ellipse = compositor.CreateEllipseGeometry()?;
-        let rounded_clip = compositor.CreateGeometricClipWithGeometry(&rounded)?;
         let ellipse_clip = compositor.CreateGeometricClipWithGeometry(&ellipse)?;
-        visual.SetClip(&rounded_clip)?;
-        target.SetRoot(&visual)?;
+        target.SetRoot(&root)?;
         Ok(Self {
             hwnd,
             placed: None,
-            visual,
-            rounded,
+            main,
+            second,
             ellipse,
-            rounded_clip,
             ellipse_clip,
             _target: target,
             _queue: queue,
@@ -174,25 +220,44 @@ impl Glass {
     /// overlay). `origin` es la esquina del área cliente del overlay en
     /// pantalla y `scale` su escala.
     pub fn place(&mut self, shape: Shape, above: HWND, origin: (i32, i32), scale: f32) {
-        let (rect, radii, circle) = match shape {
-            Shape::Rounded { rect, radii } => (rect, radii, false),
-            Shape::Circle { center, r } => (Rect::centered(center, r * 2.0, r * 2.0), [r; 4], true),
+        let (a, b, circle) = match shape {
+            Shape::Rounded { rect, radii } => ((rect, radii), None, false),
+            Shape::Pair { a, b } => (a, Some(b), false),
+            Shape::Circle { center, r } => ((Rect::centered(center, r * 2.0, r * 2.0), [r; 4]), None, true),
         };
+        // La ventana cubre las dos piezas; cada una va relativa a ella. Todo
+        // se redondea en píxeles físicos desde el mismo origen, así las
+        // piezas se tocan sin una raya entre ellas.
         let px = |v: f32| (v * scale).round() as i32;
-        let placed = Placed {
-            x: origin.0 + px(rect.x),
-            y: origin.1 + px(rect.y),
-            w: px(rect.w).max(1),
-            h: px(rect.h).max(1),
+        let (x0, y0) = (px(a.0.x.min(b.map_or(a.0.x, |b| b.0.x))), px(a.0.y.min(b.map_or(a.0.y, |b| b.0.y))));
+        let (x1, y1) = match b {
+            Some(b) => (px(a.0.right().max(b.0.right())), px(a.0.bottom().max(b.0.bottom()))),
+            None => (x0 + px(a.0.w), y0 + px(a.0.h)),
+        };
+        let pair = b.is_some();
+        let piece = |(rect, radii): (Rect, [f32; 4])| Piece {
+            x: px(rect.x) - x0,
+            y: px(rect.y) - y0,
+            // Sola, como siempre; de a dos, de borde a borde para que se toquen.
+            w: if pair { px(rect.right()) - px(rect.x) } else { px(rect.w) }.max(1),
+            h: if pair { px(rect.bottom()) - px(rect.y) } else { px(rect.h) }.max(1),
             radii: radii.map(px),
+        };
+        let placed = Placed {
+            x: origin.0 + x0,
+            y: origin.1 + y0,
+            w: (x1 - x0).max(1),
+            h: (y1 - y0).max(1),
+            a: piece(a),
+            b: b.map(piece),
             circle,
         };
         if self.placed == Some(placed) {
             return;
         }
-        let reshaped = self.placed.is_none_or(|old| {
-            old.w != placed.w || old.h != placed.h || old.radii != placed.radii || old.circle != circle
-        });
+        let reshaped = self
+            .placed
+            .is_none_or(|old| old.a != placed.a || old.b != placed.b || old.circle != circle);
         let switched = self.placed.is_none_or(|old| old.circle != circle);
         self.placed = Some(placed);
         if reshaped {
@@ -215,25 +280,31 @@ impl Glass {
 
     /// El recorte con antialias. El rectángulo redondeado de Composition
     /// tiene un solo radio: para el tab, con las esquinas del borde rectas,
-    /// el rectángulo se alarga hacia ese lado y la ventana corta lo que sobra.
+    /// el rectángulo se alarga hacia ese lado y el visual corta lo que sobra.
     fn reshape(&self, placed: &Placed, switched: bool) -> windows::core::Result<()> {
-        let (w, h) = (placed.w as f32, placed.h as f32);
-        self.visual.SetSize(Vector2 { X: w, Y: h })?;
+        let a = &placed.a;
         if placed.circle {
             if switched {
-                self.visual.SetClip(&self.ellipse_clip)?;
+                self.main.visual.SetClip(&self.ellipse_clip)?;
             }
+            let (w, h) = (a.w as f32, a.h as f32);
+            self.main.visual.SetOffset(Vector3 { X: a.x as f32, Y: a.y as f32, Z: 0.0 })?;
+            self.main.visual.SetSize(Vector2 { X: w, Y: h })?;
             self.ellipse.SetCenter(Vector2 { X: w / 2.0, Y: h / 2.0 })?;
             self.ellipse.SetRadius(Vector2 { X: w / 2.0, Y: h / 2.0 })?;
-            return Ok(());
+        } else {
+            if switched {
+                self.main.visual.SetClip(&self.main.clip)?;
+            }
+            self.main.shape(a)?;
         }
-        if switched {
-            self.visual.SetClip(&self.rounded_clip)?;
+        match &placed.b {
+            Some(b) => {
+                self.second.shape(b)?;
+                self.second.visual.SetIsVisible(true)?;
+            }
+            None => self.second.visual.SetIsVisible(false)?,
         }
-        let (offset, size, r) = extended(w, h, placed.radii);
-        self.rounded.SetOffset(offset)?;
-        self.rounded.SetSize(size)?;
-        self.rounded.SetCornerRadius(Vector2 { X: r, Y: r })?;
         Ok(())
     }
 }

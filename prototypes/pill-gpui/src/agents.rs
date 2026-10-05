@@ -31,6 +31,7 @@ use gpui::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::hover::{pin_button, HoverExt};
 use crate::clipboard::{BAND_H, PANEL_H};
 use crate::text_input::TextInput;
 use crate::tray;
@@ -959,6 +960,9 @@ pub struct AgentsPanel {
     /// Lo último que pasó (un error, «no sé cuál ventana es»), en el pie.
     notice: Option<SharedString>,
     pub pinned: bool,
+    /// El tope de alto del panel: en un costado, casi toda la pantalla (lo
+    /// pone la pill); si no, el de siempre.
+    pub max_height: Option<f32>,
     /// Lo que espera al usuario: turnos terminados y permisos (`tray.rs`).
     inbox: crate::tray::Inbox,
     /// «Nuevo» desplegado aunque haya filas por revisar.
@@ -1019,6 +1023,7 @@ impl AgentsPanel {
             folder: prefs.folder,
             notice: None,
             pinned: false,
+            max_height: None,
             inbox: crate::tray::Inbox::from_env(),
             nuevo_open: false,
             media: None,
@@ -1266,8 +1271,6 @@ impl AgentsPanel {
                 .items_center()
                 .justify_center()
                 .rounded(px(size / 2.))
-                .when(big, |el| el.bg(cream))
-                .when(!big, |el| el.hover(|el| el.bg(text.opacity(0.1))))
                 .cursor_pointer()
                 .on_click(cx.listener(move |panel, _: &ClickEvent, _, cx| {
                     cx.stop_propagation();
@@ -1277,13 +1280,18 @@ impl AgentsPanel {
                     cx.notify();
                 }))
                 .child(svg().path(icon).size(px(15.)).text_color(if big { ink } else { text }))
+                .hover_bg(
+                    id,
+                    if big { cream } else { text.opacity(0.0) },
+                    if big { cream.opacity(0.86) } else { text.opacity(0.1) },
+                )
         };
         let progress = track
             .position_now()
             .map(|(pos, end)| (pos / end.max(1.0)).clamp(0.0, 1.0))
             .unwrap_or(0.0);
         // El artista y la app que suena; lo que no se sepa, no deja un « · » colgando.
-        let source = crate::media::source_name(&track.source);
+        let source = crate::media::source_label(&track.source);
         let by = [track.artist.as_str(), source.as_str()]
             .into_iter()
             .filter(|part| !part.is_empty())
@@ -1416,7 +1424,7 @@ impl AgentsPanel {
         } else {
             rows as f32 * ROW_H
         };
-        (self.fixed_height() + running).min(MAX_HEIGHT)
+        (self.fixed_height() + running).min(self.max_height.unwrap_or(MAX_HEIGHT))
     }
 
     fn save_prefs(&self) {
@@ -1590,34 +1598,20 @@ impl AgentsPanel {
                     .items_center()
                     .rounded(px(12.))
                     .text_size(px(11.))
-                    .text_color(muted)
-                    .hover(|el| el.bg(text.opacity(0.08)))
                     .cursor_pointer()
                     .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(AgentsEvent::Space)))
-                    .child("Espacio"),
+                    .child("Espacio")
+                    .fx("agents-space", move |el, h| {
+                        el.text_color(h.mix(muted, text))
+                            .bg(h.mix(text.opacity(0.0), text.opacity(0.08)))
+                    }),
             )
-            .child(
-                div()
-                    .id("agents-pin")
-                    .size(px(26.))
-                    .flex()
-                    .flex_none()
-                    .items_center()
-                    .justify_center()
-                    .rounded(px(13.))
-                    .when(self.pinned, |el| el.bg(text.opacity(0.14)))
-                    .hover(|el| el.bg(text.opacity(0.08)))
-                    .on_click(cx.listener(|panel, _: &ClickEvent, _, cx| {
-                        panel.pinned = !panel.pinned;
-                        cx.notify();
-                    }))
-                    .child(
-                        svg()
-                            .path("icons/pin.svg")
-                            .size(px(13.))
-                            .text_color(if self.pinned { text } else { self.colors.faint }),
-                    ),
-            )
+            .child(pin_button("agents-pin", self.pinned, text, self.colors.faint, cx.listener(
+                |panel, _: &ClickEvent, _, cx| {
+                    panel.pinned = !panel.pinned;
+                    cx.notify();
+                },
+            )))
     }
 
     fn header(&self, label: &'static str) -> impl IntoElement {
@@ -1642,11 +1636,13 @@ impl AgentsPanel {
         } else {
             session.preview.clone().unwrap_or_else(|| "Listo".into())
         };
-        let group = SharedString::from(format!("agent-row-{row}"));
         let can_resume = AGENTS[session.agent].resume.is_some();
+        let resume = cx.listener(move |panel, _: &ClickEvent, _, cx| {
+            cx.stop_propagation();
+            panel.resume_session(row, cx)
+        });
         div()
             .id(("agent-row", row))
-            .group(group.clone())
             .h(px(ROW_H))
             .mx(px(SIDE_PAD))
             .px(px(8.))
@@ -1654,7 +1650,6 @@ impl AgentsPanel {
             .items_center()
             .gap(px(10.))
             .rounded(px(10.))
-            .hover(|el| el.bg(text.opacity(0.06)))
             .cursor_pointer()
             .on_click(cx.listener(move |panel, _: &ClickEvent, _, cx| panel.focus_session(row, cx)))
             .child(self.logo(session.agent, 16., muted))
@@ -1701,30 +1696,30 @@ impl AgentsPanel {
                     .text_color(faint)
                     .child(ago(now - session.updated)),
             )
-            .when(can_resume, |el| {
-                el.child(
-                    div()
-                        .id(("agent-resume", row))
-                        .size(px(24.))
-                        .flex()
-                        .flex_none()
-                        .items_center()
-                        .justify_center()
-                        .rounded(px(12.))
-                        .invisible()
-                        .group_hover(group, |el| el.visible())
-                        .hover(|el| el.bg(text.opacity(0.1)))
-                        .on_click(cx.listener(move |panel, _: &ClickEvent, _, cx| {
-                            cx.stop_propagation();
-                            panel.resume_session(row, cx)
-                        }))
-                        .child(
-                            svg()
-                                .path("icons/arrow-up-right.svg")
-                                .size(px(12.))
-                                .text_color(muted),
-                        ),
-                )
+            .fx(("agent-row-fx", row), move |el, h| {
+                // Retomar aparece con el cursor sobre la fila, fundiéndose.
+                el.bg(h.mix(text.opacity(0.0), text.opacity(0.06))).when(can_resume, |el| {
+                    el.child(
+                        div()
+                            .id(("agent-resume", row))
+                            .size(px(24.))
+                            .flex()
+                            .flex_none()
+                            .items_center()
+                            .justify_center()
+                            .rounded(px(12.))
+                            .opacity(h.t)
+                            .when(h.t < 0.05, |el| el.invisible())
+                            .on_click(resume)
+                            .child(
+                                svg()
+                                    .path("icons/arrow-up-right.svg")
+                                    .size(px(12.))
+                                    .text_color(muted),
+                            )
+                            .hover_bg(("agent-resume-fx", row), text.opacity(0.0), text.opacity(0.1)),
+                    )
+                })
             })
     }
 
@@ -1740,7 +1735,6 @@ impl AgentsPanel {
         let left = tray::button(tray::left_label(kind), wl, tray::left_is_primary(kind), false)
             .id(("tray-left", index))
             .cursor_pointer()
-            .hover(|el| el.opacity(0.85))
             .on_click(cx.listener(move |panel, _: &ClickEvent, _, cx| {
                 cx.stop_propagation();
                 if review {
@@ -1748,11 +1742,11 @@ impl AgentsPanel {
                 } else {
                     panel.tray_decide(id, false, cx);
                 }
-            }));
+            }))
+            .fx(("tray-left-fx", index), |el, h| el.opacity(1.0 - 0.15 * h.t - 0.1 * h.press));
         let right = tray::button(tray::right_label(kind), wr, !tray::left_is_primary(kind), false)
             .id(("tray-right", index))
             .cursor_pointer()
-            .hover(|el| el.opacity(0.85))
             .on_click(cx.listener(move |panel, _: &ClickEvent, _, cx| {
                 cx.stop_propagation();
                 if review {
@@ -1760,7 +1754,8 @@ impl AgentsPanel {
                 } else {
                     panel.tray_decide(id, true, cx);
                 }
-            }));
+            }))
+            .fx(("tray-right-fx", index), |el, h| el.opacity(1.0 - 0.15 * h.t - 0.1 * h.press));
         div()
             .id(("tray-item", index))
             .h(px(tray::row_height(kind)))
@@ -1770,17 +1765,21 @@ impl AgentsPanel {
             .items_center()
             .gap(px(10.))
             .rounded(px(10.))
-            .when(!review, |el| el.bg(blue.opacity(0.10)))
             .when(review, |el| {
-                el.hover(|el| el.bg(text.opacity(0.06)))
-                    .cursor_pointer()
-                    .on_click(cx.listener(move |panel, _: &ClickEvent, _, cx| {
-                        panel.tray_view(id, cx);
-                    }))
+                el.cursor_pointer().on_click(cx.listener(move |panel, _: &ClickEvent, _, cx| {
+                    panel.tray_view(id, cx);
+                }))
             })
             .child(tray::row_body(item, now))
             .child(left)
             .child(right)
+            .fx(("tray-item-fx", index), move |el, h| {
+                if review {
+                    el.bg(h.mix(text.opacity(0.0), text.opacity(0.06)))
+                } else {
+                    el.bg(h.mix(blue.opacity(0.10), blue.opacity(0.14)))
+                }
+            })
     }
 
     /// «Nuevo» plegado: una fila que lo despliega.
@@ -1798,15 +1797,18 @@ impl AgentsPanel {
             .gap(px(8.))
             .rounded(px(10.))
             .text_size(px(12.))
-            .text_color(muted)
-            .hover(|el| el.bg(text.opacity(0.06)))
             .cursor_pointer()
             .on_click(cx.listener(|panel, _: &ClickEvent, _, cx| {
                 panel.nuevo_open = true;
                 cx.notify();
             }))
-            .child(svg().path("icons/plus.svg").size(px(14.)).text_color(muted))
-            .child("Nuevo agente…")
+            .fx("agents-nuevo-fx", move |el, h| {
+                let fg = h.mix(muted, text);
+                el.text_color(fg)
+                    .bg(h.mix(text.opacity(0.0), text.opacity(0.06)))
+                    .child(svg().path("icons/plus.svg").size(px(14.)).text_color(fg))
+                    .child("Nuevo agente…")
+            })
     }
 
     fn render_picker(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1819,6 +1821,10 @@ impl AgentsPanel {
             .px(px(SIDE_PAD))
             .children((0..AGENTS.len()).map(|index| {
                 let selected = index == self.agent;
+                let (logo_on, logo_off) = (
+                    self.logo(index, 20., text).into_any_element(),
+                    self.logo(index, 20., self.colors.muted).into_any_element(),
+                );
                 div()
                     .id(("agent-pick", index))
                     .flex_1()
@@ -1827,16 +1833,18 @@ impl AgentsPanel {
                     .items_center()
                     .justify_center()
                     .rounded(px(10.))
-                    .when(selected, |el| {
-                        el.bg(text.opacity(0.12)).border_1().border_color(text.opacity(0.18))
-                    })
+                    .when(selected, |el| el.border_1().border_color(text.opacity(0.18)))
                     .when(!self.available[index], |el| el.opacity(0.42))
-                    .hover(|el| el.bg(text.opacity(0.08)))
                     .cursor_pointer()
                     .on_click(cx.listener(move |panel, _: &ClickEvent, _, cx| {
                         panel.pick_agent(index, cx)
                     }))
-                    .child(self.logo(index, 20., if selected { text } else { self.colors.muted }))
+                    .fx(("agent-pick-fx", index), move |el, h| {
+                        let (rest, over) = if selected { (0.12, 0.14) } else { (0.0, 0.08) };
+                        // El logo se enciende con el cursor, como en la web.
+                        el.bg(h.mix(text.opacity(rest), text.opacity(over)))
+                            .child(if selected || h.t > 0.5 { logo_on } else { logo_off })
+                    })
             }))
     }
 
@@ -1863,14 +1871,16 @@ impl AgentsPanel {
                     .rounded(px(13.))
                     .text_size(px(11.))
                     .truncate()
-                    .text_color(if selected { text } else { muted })
-                    .when(selected, |el| el.bg(text.opacity(0.12)))
-                    .hover(|el| el.bg(text.opacity(0.08)))
                     .cursor_pointer()
                     .on_click(cx.listener(move |panel, _: &ClickEvent, _, cx| {
                         panel.pick_folder(dir.clone(), cx)
                     }))
                     .child(name)
+                    .fx(("agent-folder-fx", index), move |el, h| {
+                        let (rest, over) = if selected { (0.12, 0.14) } else { (0.0, 0.08) };
+                        el.text_color(if selected { text } else { h.mix(muted, text) })
+                            .bg(h.mix(text.opacity(rest), text.opacity(over)))
+                    })
             }))
             .child(
                 div()
@@ -1882,12 +1892,15 @@ impl AgentsPanel {
                     .gap(px(6.))
                     .rounded(px(13.))
                     .text_size(px(11.))
-                    .text_color(muted)
-                    .hover(|el| el.bg(text.opacity(0.08)))
                     .cursor_pointer()
                     .on_click(cx.listener(|panel, _: &ClickEvent, _, cx| panel.browse_folder(cx)))
-                    .child(svg().path("icons/folder.svg").size(px(12.)).text_color(muted))
-                    .child("Otra…"),
+                    .fx("agent-browse-fx", move |el, h| {
+                        let fg = h.mix(muted, text);
+                        el.text_color(fg)
+                            .bg(h.mix(text.opacity(0.0), text.opacity(0.08)))
+                            .child(svg().path("icons/folder.svg").size(px(12.)).text_color(fg))
+                            .child("Otra…")
+                    }),
             )
     }
 
@@ -1915,13 +1928,17 @@ impl AgentsPanel {
             .justify_center()
             .gap(px(8.))
             .rounded(px(12.))
-            .bg(text.opacity(0.92))
-            .hover(|el| el.bg(text))
             .cursor_pointer()
             .text_size(px(12.))
             .text_color(rgb(0x1a1a18))
             .on_click(cx.listener(|panel, _: &ClickEvent, _, cx| panel.launch(cx)))
             .child(div().truncate().child(label))
+            .fx("agent-launch-fx", move |el, h| {
+                // Como `.launch` en la web: se aclara y sube un pixel; al
+                // apretar vuelve a su sitio.
+                let lift = (h.t - h.press).max(0.0);
+                el.bg(h.mix(text.opacity(0.92), text)).mt(px(6. - lift)).mb(px(lift))
+            })
     }
 }
 

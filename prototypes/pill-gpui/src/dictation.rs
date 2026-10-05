@@ -21,7 +21,6 @@ use std::time::{Duration, Instant};
 use gpui::{div, prelude::*, px, AnyElement, Context, FontWeight, MouseButton, MouseDownEvent, SharedString};
 
 use crate::anim::segment;
-use crate::geometry::Edge;
 use crate::paste::Target;
 use crate::Pill;
 
@@ -479,7 +478,7 @@ impl Pill {
             cx.spawn(async move |_, cx| crate::paste_into(target, item, cx).await).detach();
         }
 
-        let on = self.at_notch() && self.dictation.phase().0 != Phase::Idle;
+        let on = self.docked_still() && self.dictation.phase().0 != Phase::Idle;
         self.dict.set(if on { 1.0 } else { 0.0 }, now);
     }
 
@@ -488,13 +487,10 @@ impl Pill {
         self.dict.target() == 1.0
     }
 
-    /// Cuánto se ve la franja del dictado (0 a 1): solo arriba.
-    pub(crate) fn dict_amount(&self, edge: Edge, now: Instant) -> f32 {
-        if edge == Edge::Top {
-            self.dict.value(now).clamp(0.0, 1.2)
-        } else {
-            0.0
-        }
+    /// Cuánto se ve la franja del dictado (0 a 1): bajo el tab arriba, al
+    /// lado en un costado.
+    pub(crate) fn dict_amount(&self, now: Instant) -> f32 {
+        self.dict.value(now).clamp(0.0, 1.2)
     }
 
     pub(crate) fn dict_length(length: f32, amount: f32) -> f32 {
@@ -560,7 +556,7 @@ impl Pill {
                 div().w(px(3.)).h(px(h)).rounded(px(2.)).bg(palette.text.opacity(0.85))
             }))
         });
-        let skin = palette.skin;
+        // Sin fondo propio: el tab entero se vuelve casi opaco (`CONTENT_TINT`).
         Some(
             div()
                 .id("dictation-face")
@@ -570,12 +566,6 @@ impl Pill {
                 .w(px(area.w))
                 .h(px(area.h))
                 .overflow_hidden()
-                .rounded_b(px(crate::TAB_RADIUS))
-                .bg(gpui::linear_gradient(
-                    180.,
-                    gpui::linear_color_stop(skin.opacity(0.0), 0.0),
-                    gpui::linear_color_stop(skin.opacity(0.95), 0.25),
-                ))
                 .opacity(segment(amount, 0.5, 0.5))
                 .px(px(18.))
                 .flex()

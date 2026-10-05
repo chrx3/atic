@@ -24,7 +24,7 @@ use gpui::{point, px, Hsla};
 use crate::anim::segment;
 
 mod view;
-use crate::geometry::{Edge, Rect};
+use crate::geometry::Rect;
 use crate::quota::{self, AgentQuota, QuotaOverview};
 use crate::{Pill, PillShape, PANEL_W, TAB_THICK};
 
@@ -615,9 +615,11 @@ fn arc(cx: f32, cy: f32, r: f32, fraction: f32, width: f32) -> Option<gpui::Path
     builder.build().ok()
 }
 
-/// Lo que cuelga bajo la franja del tab, de arriba abajo. Cada uno empieza
-/// donde termina el anterior: si coinciden (el aviso de la bandeja y el uso,
-/// al pasar sobre Agentes; el dictado con un aviso) se apilan, no se tapan.
+/// Lo que cuelga de la franja del tab (bajo ella arriba, al lado de la
+/// columna en un costado), de arriba abajo: el contenido va siempre de pie.
+/// Cada uno empieza donde termina el anterior: si coinciden (el aviso de la
+/// bandeja y el uso, al pasar sobre Agentes; el dictado con un aviso) se
+/// apilan, no se tapan.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Drawer {
     /// El vistazo del portapapeles (`peek` en `main.rs`).
@@ -630,52 +632,71 @@ pub(crate) enum Drawer {
     Dictation,
     /// El uso de los agentes (este archivo).
     Usage,
+    /// El vistazo de Color, Capturas, Textos, Flip o Sistema (`peeks.rs`).
+    Tool,
 }
+
+/// Todas, en el orden en que se apilan.
+const DRAWERS: [Drawer; 6] =
+    [Drawer::Clipboard, Drawer::Tray, Drawer::Lyrics, Drawer::Dictation, Drawer::Usage, Drawer::Tool];
 
 impl Pill {
     /// Cuánto ocupa cada franja ahora (su alto por cuánto bajó).
-    fn drawer_height(&self, drawer: Drawer, edge: Edge, now: Instant) -> f32 {
-        if edge != Edge::Top {
-            return 0.0;
-        }
+    fn drawer_height(&self, drawer: Drawer, now: Instant) -> f32 {
         match drawer {
             Drawer::Clipboard => self.peek_height() * self.peek.value(now).max(0.0),
             Drawer::Tray => {
-                let (amount, height) = self.tray_stretch(edge, now);
+                let (amount, height) = self.tray_stretch(now);
                 height * amount.max(0.0)
             }
-            Drawer::Lyrics => crate::hang::HANG_H * self.hang_amount(edge, now).max(0.0),
-            Drawer::Dictation => crate::dictation::DICT_H * self.dict_amount(edge, now).max(0.0),
+            Drawer::Lyrics => crate::hang::hang_height(self.side_drawers()) * self.hang_amount(now).max(0.0),
+            // En un costado cabe igual, en una fila: el bloque (`SIDE_W`) es
+            // más ancho que la franja de arriba (`DICT_W`).
+            Drawer::Dictation => crate::dictation::DICT_H * self.dict_amount(now).max(0.0),
             Drawer::Usage => {
-                let amount = self.usage_amount(edge, now).max(0.0);
+                let amount = self.usage_amount(now).max(0.0);
                 if amount > 0.0 {
                     self.usage_height() * amount
                 } else {
                     0.0
                 }
             }
+            Drawer::Tool => self.tool_peek_height(now) * self.tool_peek_amount(now).max(0.0),
         }
     }
 
-    /// Dónde empieza una franja bajo la franja del tab: tras las de arriba.
-    pub(crate) fn drawer_top(&self, drawer: Drawer, edge: Edge, now: Instant) -> f32 {
-        [Drawer::Clipboard, Drawer::Tray, Drawer::Lyrics, Drawer::Dictation, Drawer::Usage]
+    /// Dónde empieza una franja dentro de `drawers_area`: tras las de arriba.
+    pub(crate) fn drawer_top(&self, drawer: Drawer, now: Instant) -> f32 {
+        DRAWERS
             .into_iter()
             .take_while(|d| *d < drawer)
-            .map(|d| self.drawer_height(d, edge, now))
+            .map(|d| self.drawer_height(d, now))
             .sum()
     }
 
-    /// El rectángulo de una franja: bajo la franja del tab y las de arriba.
+    /// Lo que ocupan todas las franjas, una sobre otra.
+    pub(crate) fn drawers_stack(&self, now: Instant) -> f32 {
+        DRAWERS.into_iter().map(|d| self.drawer_height(d, now)).sum()
+    }
+
+    /// Donde cuelgan las franjas: arriba, bajo la franja del tab estirado; en
+    /// un costado, el bloque al lado de la columna (`geometry::side_block`).
+    pub(crate) fn drawers_area(&self, now: Instant) -> Option<Rect> {
+        match self.shape(now) {
+            PillShape::Tab { block: Some(block), .. } => Some(block),
+            PillShape::Tab { edge, rect, .. } if !edge.is_vertical() => Some(edge.beyond_band(&rect, TAB_THICK)),
+            _ => None,
+        }
+    }
+
+    /// El rectángulo de una franja: tras la franja del tab y las de arriba.
     pub(crate) fn drawer_rect(&self, drawer: Drawer, now: Instant) -> Option<Rect> {
-        let PillShape::Tab { rect, edge: Edge::Top, .. } = self.shape(now) else {
-            return None;
-        };
-        let h = self.drawer_height(drawer, Edge::Top, now);
+        let area = self.drawers_area(now)?;
+        let h = self.drawer_height(drawer, now);
         (h > 4.0).then(|| Rect {
-            x: rect.x,
-            y: rect.y + TAB_THICK + self.drawer_top(drawer, Edge::Top, now),
-            w: rect.w,
+            x: area.x,
+            y: area.y + self.drawer_top(drawer, now),
+            w: area.w,
             h,
         })
     }
@@ -690,7 +711,8 @@ impl Pill {
         strip_hovered: Option<usize>,
         docked: bool,
     ) {
-        let on_tool = strip_hovered == Some(crate::AGENTES_TOOL) && !self.panel_visible() && self.at_notch();
+        let on_tool = strip_hovered == Some(crate::AGENTES_TOOL) && !self.panel_visible() && self.docked_still();
+        let relay = self.other_peek_open(crate::peeks::PeekKind::Usage);
         // El aviso de la bandeja se apila arriba del uso (los dos salen al pasar
         // sobre Agentes): estar en él también es estar en el vistazo. Si no,
         // ir a «Ver» cerraba el uso.
@@ -699,9 +721,12 @@ impl Pill {
             // Apenas llega el cursor se piden los datos: al bajar ya están.
             self.usage.refresh();
             let since = *self.usage_hover_since.get_or_insert(now);
-            if now.duration_since(since) >= HOVER_DELAY {
+            // Con otro vistazo abierto, el relevo es rápido.
+            let wait = if relay { crate::peeks::SWITCH_DELAY } else { HOVER_DELAY };
+            if now.duration_since(since) >= wait {
                 if self.usage_peek.target() != 1.0 {
                     self.usage.mark_opened();
+                    self.hand_off_peeks(crate::peeks::PeekKind::Usage, now);
                 }
                 self.usage_peek.set(1.0, now);
             }
@@ -713,13 +738,13 @@ impl Pill {
         let open = std::env::var("PILL_OPEN").unwrap_or_default();
         let demo = open == "uso" || open == "uso-editar";
         if self.usage_peek.target() == 1.0 && !demo {
-            let other = strip_hovered.is_some_and(|t| t != crate::AGENTES_TOOL);
+            // Sobre otra herramienta con vistazo se espera el relevo; sobre
+            // una sin vistazo, el mismo margen que al salir.
+            let relay_to = strip_hovered.is_some_and(|t| t != crate::AGENTES_TOOL && crate::peeks::any_peek(t));
             let closed = self.strip.target() == 0.0 || self.dictation_shown();
-            if other || closed || self.panel_visible() || !docked || !self.at_notch() {
-                self.usage_peek.set(0.0, now);
-                self.usage_leave_at = None;
-                self.usage.reset_view();
-            } else if on_tool || on_panel {
+            if closed || self.panel_visible() || !docked || !self.docked_still() {
+                self.close_usage_peek(now);
+            } else if on_tool || on_panel || relay_to {
                 self.usage_leave_at = None;
             } else {
                 let since = *self.usage_leave_at.get_or_insert(now);
@@ -732,7 +757,7 @@ impl Pill {
         }
         // `PILL_OPEN=uso` (o `uso-editar`, con el personalizador): abierto al
         // arrancar, para revisar el diseño.
-        if demo && docked && self.at_notch() && !self.panel_visible() {
+        if demo && docked && self.docked_still() && !self.panel_visible() {
             self.usage.refresh();
             self.strip.set(1.0, now);
             if self.usage_peek.target() != 1.0 {
@@ -745,19 +770,21 @@ impl Pill {
         }
     }
 
+    pub(crate) fn close_usage_peek(&mut self, now: Instant) {
+        self.usage_peek.set(0.0, now);
+        self.usage_leave_at = None;
+        self.usage.reset_view();
+    }
+
     /// Las animaciones del vistazo (anillos que se llenan, el detalle que
     /// baja, el alto) piden cuadros mientras duran.
     pub(crate) fn usage_animating(&self, now: Instant) -> bool {
         self.usage_peek.value(now) > 0.01 && self.usage.animating()
     }
 
-    /// Cuánto bajó el vistazo de uso (0 a 1): solo arriba.
-    pub(crate) fn usage_amount(&self, edge: Edge, now: Instant) -> f32 {
-        if edge == Edge::Top {
-            self.usage_peek.value(now).clamp(0.0, 1.2)
-        } else {
-            0.0
-        }
+    /// Cuánto bajó el vistazo de uso (0 a 1), en cualquier borde.
+    pub(crate) fn usage_amount(&self, now: Instant) -> f32 {
+        self.usage_peek.value(now).clamp(0.0, 1.2)
     }
 
     /// El ancho del tab con el vistazo: el de un panel.

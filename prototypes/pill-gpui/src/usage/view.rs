@@ -13,6 +13,7 @@ use gpui::{
 };
 
 use super::*;
+use crate::hover::HoverExt;
 
 /// Mantener presionado un agente abre el personalizador.
 const HOLD: Duration = Duration::from_millis(450);
@@ -39,6 +40,21 @@ fn chip_width(width: f32) -> f32 {
     ((width - SIDE * 2.0 - (per - 1.0) * CHIP_GAP) / per).max(CHIP_W)
 }
 
+/// En el bloque angosto de un costado (`SIDE_W`) los anillos van de a tres
+/// por fila y las tarjetas del detalle, una por fila.
+const SIDE_RINGS: usize = 3;
+const RING_ROW_GAP: f32 = 4.0;
+
+/// Cuántos anillos o tarjetas van por fila.
+fn per_row(narrow: bool, simple: bool) -> usize {
+    match (narrow, simple) {
+        (true, true) => SIDE_RINGS,
+        (true, false) => 1,
+        (false, true) => usize::MAX,
+        (false, false) => 2,
+    }
+}
+
 fn lane_height(count: usize, per: usize) -> f32 {
     let lines = count.max(1).div_ceil(per) as f32;
     LANE_LABEL + lines * CHIP_H + (lines - 1.0) * CHIP_GAP
@@ -47,7 +63,8 @@ fn lane_height(count: usize, per: usize) -> f32 {
 impl Pill {
     /// El alto que gana el tab: depende del modo, de cuántos agentes se ven y
     /// de si hay un detalle o el personalizador abierto. No mira `shape()`
-    /// (que lo usa): el ancho es el de la tira abierta.
+    /// (que lo usa): el ancho es el de la tira abierta, o el del bloque
+    /// angosto en un costado.
     pub(crate) fn usage_height(&self) -> f32 {
         self.usage.animated_height(self.usage_target_height())
     }
@@ -57,8 +74,10 @@ impl Pill {
         let snap = self.usage.snapshot();
         let prefs = self.usage.prefs();
         let view = self.usage.view();
+        let narrow = self.side_drawers();
         if view.editing {
-            let per = per_line(crate::strip_open_length().max(PANEL_W));
+            let width = if narrow { crate::SIDE_W } else { crate::strip_open_length().max(PANEL_W) };
+            let per = per_line(width);
             let (shown, out) = arranged(&snap, &prefs);
             let note = if view.refused { NOTE_H } else { 0.0 };
             return HEADER_H + lane_height(shown.len(), per) + LANE_GAP + lane_height(out.len(), per) + note + BOTTOM;
@@ -66,9 +85,10 @@ impl Pill {
         let shown = visible(&snap, &prefs);
         if prefs.simple {
             let detail = if view.focus.is_some() { GAP + CARD_H } else { 0.0 };
-            return HEADER_H + SIMPLE_H + detail + BOTTOM;
+            let rows = shown.len().max(1).div_ceil(per_row(narrow, true)) as f32;
+            return HEADER_H + rows * SIMPLE_H + (rows - 1.0) * RING_ROW_GAP + detail + BOTTOM;
         }
-        let lines = shown.len().max(1).div_ceil(2) as f32;
+        let lines = shown.len().max(1).div_ceil(per_row(narrow, false)) as f32;
         HEADER_H + lines * CARD_H + (lines - 1.0) * GAP + BOTTOM
     }
 
@@ -87,6 +107,7 @@ impl Pill {
     pub(crate) fn usage_element(&self, now: Instant, cx: &mut Context<Self>) -> Option<AnyElement> {
         let amount = self.usage_peek.value(now);
         let area = self.usage_rect(now)?;
+        let narrow = self.side_drawers();
         let palette = crate::Palette::dark();
         let snap = self.usage.snapshot();
         let prefs = self.usage.prefs();
@@ -136,13 +157,23 @@ impl Pill {
                 .flex_col()
                 .gap(px(GAP))
                 .child(
-                    div()
-                        .h(px(SIMPLE_H))
-                        .flex()
-                        .gap(px(4.))
-                        .children(shown.iter().enumerate().map(|(i, row)| {
-                            simple_item(row, view.focus == Some(row.family.id), enter(i), &palette, cx)
-                        })),
+                    div().flex().flex_col().gap(px(RING_ROW_GAP)).children(
+                        shown.chunks(per_row(narrow, true)).enumerate().map(|(line, chunk)| {
+                            let per = per_row(narrow, true);
+                            div()
+                                .h(px(SIMPLE_H))
+                                .flex()
+                                .gap(px(4.))
+                                .children(chunk.iter().enumerate().map(|(j, row)| {
+                                    let i = line.saturating_mul(per) + j;
+                                    simple_item(row, view.focus == Some(row.family.id), enter(i), &palette, cx)
+                                }))
+                                // La última fila incompleta no estira sus anillos.
+                                .when(narrow && chunk.len() < per, |el| {
+                                    el.children((chunk.len()..per).map(|_| div().flex_1()))
+                                })
+                        }),
+                    ),
                 )
                 .children(focus.map(|row| {
                     // El detalle baja con un fundido; sus barras crecen.
@@ -156,15 +187,16 @@ impl Pill {
         } else {
             // Dos columnas que se reparten todo el ancho del notch.
             let shown = visible(&snap, &prefs);
+            let per = per_row(narrow, false);
             let lines: Vec<AnyElement> = shown
-                .chunks(2)
+                .chunks(per)
                 .enumerate()
                 .map(|(line, pair)| {
                     div()
                         .flex()
                         .gap(px(GAP))
                         .children(pair.iter().enumerate().map(|(j, row)| {
-                            let p = enter(line * 2 + j);
+                            let p = enter(line * per + j);
                             div()
                                 .relative()
                                 .top(px(8.0 * (1.0 - p)))
@@ -173,7 +205,7 @@ impl Pill {
                                 .min_w_0()
                                 .child(card(row, p, &palette, cx))
                         }))
-                        .when(pair.len() == 1, |el| el.child(div().flex_1()))
+                        .when(pair.len() < per, |el| el.child(div().flex_1()))
                         .into_any_element()
                 })
                 .collect();
@@ -201,14 +233,8 @@ impl Pill {
                 .w(px(area.w))
                 .h(px(area.h))
                 .overflow_hidden()
-                .rounded_b(px(crate::TAB_RADIUS))
-                // Casi opaco, como la franja de la letra: las tarjetas no se
-                // mezclan con lo que hay detrás. Arriba se funde con la tira.
-                .bg(gpui::linear_gradient(
-                    180.,
-                    gpui::linear_color_stop(palette.skin.opacity(0.0), 0.0),
-                    gpui::linear_color_stop(palette.skin.opacity(0.94), 0.06),
-                ))
+                // Sin fondo propio: el tab entero se vuelve casi opaco
+                // (`CONTENT_TINT`), como con la letra.
                 .opacity(segment(amount, 0.55, 0.45))
                 .font_family("Segoe UI")
                 .flex()
@@ -324,7 +350,7 @@ impl Usage {
 }
 
 /// Un botón chico del encabezado.
-fn pill_button(id: &'static str, label: &str, on: bool, palette: &crate::Palette) -> gpui::Stateful<gpui::Div> {
+fn pill_button(id: &'static str, label: &str) -> gpui::Stateful<gpui::Div> {
     div()
         .id(id)
         .h(px(22.))
@@ -333,11 +359,19 @@ fn pill_button(id: &'static str, label: &str, on: bool, palette: &crate::Palette
         .items_center()
         .rounded(px(11.))
         .text_size(px(11.))
-        .bg(palette.text.opacity(if on { 0.16 } else { 0.0 }))
-        .text_color(if on { palette.text } else { palette.muted })
-        .hover(|el| el.bg(palette.text.opacity(0.12)))
         .cursor_pointer()
         .child(SharedString::from(label.to_string()))
+}
+
+/// El realce de `pill_button`, con transición. Va después de `on_press`.
+fn pill_fx(el: gpui::Stateful<gpui::Div>, id: &'static str, on: bool, palette: &crate::Palette) -> AnyElement {
+    let (text, muted) = (palette.text, palette.muted);
+    el.fx(SharedString::from(format!("{id}-fx")), move |el, h| {
+        let (rest, over) = if on { (0.16, 0.18) } else { (0.0, 0.12) };
+        el.bg(h.mix(text.opacity(rest), text.opacity(over)))
+            .text_color(if on { text } else { h.mix(muted, text) })
+    })
+    .into_any_element()
 }
 
 /// Un clic que no llega a la pill de abajo (que lo tomaría como arrastrar
@@ -386,24 +420,40 @@ fn header(
             .flex()
             .items_center()
             .gap(px(2.))
-            .child(on_press(pill_button("usage-reset", "Restablecer", false, palette), cx, |pill, _| {
-                pill.usage.reset_prefs()
-            }))
-            .child(on_press(pill_button("usage-done", "Listo", true, palette), cx, |pill, _| {
-                pill.usage.set_editing(false)
-            }))
+            .child(pill_fx(
+                on_press(pill_button("usage-reset", "Restablecer"), cx, |pill, _| pill.usage.reset_prefs()),
+                "usage-reset",
+                false,
+                palette,
+            ))
+            .child(pill_fx(
+                on_press(pill_button("usage-done", "Listo"), cx, |pill, _| pill.usage.set_editing(false)),
+                "usage-done",
+                true,
+                palette,
+            ))
             .into_any_element()
     } else {
         div()
             .flex()
             .items_center()
             .gap(px(2.))
-            .child(on_press(pill_button("usage-simple", "Simple", prefs.simple, palette), cx, |pill, _| {
-                pill.usage.set_simple(true)
-            }))
-            .child(on_press(pill_button("usage-detail", "Detalle", !prefs.simple, palette), cx, |pill, _| {
-                pill.usage.set_simple(false)
-            }))
+            .child(pill_fx(
+                on_press(pill_button("usage-simple", "Simple"), cx, |pill, _| {
+                    pill.usage.set_simple(true)
+                }),
+                "usage-simple",
+                prefs.simple,
+                palette,
+            ))
+            .child(pill_fx(
+                on_press(pill_button("usage-detail", "Detalle"), cx, |pill, _| {
+                    pill.usage.set_simple(false)
+                }),
+                "usage-detail",
+                !prefs.simple,
+                palette,
+            ))
             .child(on_press(
                 div()
                     .id("usage-edit")
@@ -413,12 +463,13 @@ fn header(
                     .items_center()
                     .justify_center()
                     .rounded(px(11.))
-                    .hover(|el| el.bg(palette.text.opacity(0.12)))
                     .cursor_pointer()
+                    .tooltip(crate::hover::tip("Elegir qué agentes se ven"))
                     .child(svg().path("icons/pencil.svg").size(px(13.)).text_color(palette.muted)),
                 cx,
                 |pill, _| pill.usage.set_editing(true),
-            ))
+            )
+            .hover_bg("usage-edit-fx", palette.text.opacity(0.0), palette.text.opacity(0.12)))
             .into_any_element()
     };
     div()
@@ -449,7 +500,7 @@ fn header(
 }
 
 /// La × que aparece al pasar el cursor: quitar de la vista.
-fn hide_button(id: &'static str, group: &SharedString, palette: &crate::Palette, cx: &mut Context<Pill>) -> AnyElement {
+fn hide_button(id: &'static str, palette: &crate::Palette, cx: &mut Context<Pill>) -> AnyElement {
     on_press(
         div()
             .id(SharedString::from(format!("usage-hide-{id}")))
@@ -461,16 +512,27 @@ fn hide_button(id: &'static str, group: &SharedString, palette: &crate::Palette,
             .items_center()
             .justify_center()
             .rounded(px(9.))
-            .bg(palette.text.opacity(0.1))
-            .hover(|el| el.bg(palette.text.opacity(0.22)))
             .cursor_pointer()
-            .invisible()
-            .group_hover(group.clone(), |el| el.visible())
             .child(svg().path("icons/x.svg").size(px(10.)).text_color(palette.text)),
         cx,
         move |pill, _| pill.usage.hide(id),
     )
+    .hover_bg(
+        SharedString::from(format!("usage-hide-{id}-fx")),
+        palette.text.opacity(0.1),
+        palette.text.opacity(0.22),
+    )
     .into_any_element()
+}
+
+/// La × de la esquina aparece fundiéndose con el cursor sobre la tarjeta.
+fn reveal_hide(hide: AnyElement, over: f32) -> impl IntoElement {
+    div()
+        .absolute()
+        .inset_0()
+        .opacity(over)
+        .when(over < 0.05, |el| el.invisible())
+        .child(hide)
 }
 
 /// La peor ventana vigente de un agente, en porcentaje.
@@ -527,9 +589,10 @@ fn simple_item(row: &Row, focused: bool, progress: f32, palette: &crate::Palette
     let id = row.family.id;
     let worst = worst(row);
     let group = SharedString::from(format!("usage-simple-{id}"));
+    let text = palette.text;
+    let hide = hide_button(id, palette, cx);
     div()
         .id(group.clone())
-        .group(group.clone())
         .relative()
         .flex_1()
         .min_w_0()
@@ -540,8 +603,6 @@ fn simple_item(row: &Row, focused: bool, progress: f32, palette: &crate::Palette
         .justify_center()
         .gap(px(2.))
         .rounded(px(12.))
-        .bg(palette.text.opacity(if focused { 0.08 } else { 0.0 }))
-        .hover(|el| el.bg(palette.text.opacity(0.06)))
         .cursor_pointer()
         .on_hover(cx.listener(move |pill, hovered: &bool, _, cx| {
             if *hovered && !pill.usage.view().editing {
@@ -570,7 +631,10 @@ fn simple_item(row: &Row, focused: bool, progress: f32, palette: &crate::Palette
         )
         // El nombre, chico: algunos logos se parecen (Antigravity y Grok).
         .child(div().max_w_full().truncate().text_size(px(9.5)).text_color(palette.muted).child(row.family.name))
-        .child(hide_button(id, &group, palette, cx))
+        .fx(SharedString::from(format!("{group}-fx")), move |el, h| {
+            el.bg(h.mix(text.opacity(0.0), text.opacity(0.08))).child(reveal_hide(hide, h.over))
+        })
+        .lit(focused)
         .into_any_element()
 }
 
@@ -639,14 +703,14 @@ fn card(row: &Row, progress: f32, palette: &crate::Palette, cx: &mut Context<Pil
     };
 
     let group = SharedString::from(format!("usage-card-{id}"));
+    let text = palette.text;
+    let hide = hide_button(id, palette, cx);
     div()
         .id(group.clone())
-        .group(group.clone())
         .relative()
         .h(px(CARD_H))
         .p(px(10.))
         .rounded(px(14.))
-        .bg(palette.text.opacity(0.055))
         .flex()
         .gap(px(10.))
         .on_mouse_down(
@@ -703,7 +767,9 @@ fn card(row: &Row, progress: f32, palette: &crate::Palette, cx: &mut Context<Pil
                 )
                 .child(body),
         )
-        .child(hide_button(id, &group, palette, cx))
+        .fx(SharedString::from(format!("{group}-fx")), move |el, h| {
+            el.bg(h.mix(text.opacity(0.055), text.opacity(0.085))).child(reveal_hide(hide, h.over))
+        })
         .into_any_element()
 }
 
@@ -846,7 +912,6 @@ fn editor(
                                 .id(SharedString::from(format!("usage-chip-{id}")))
                                 .relative()
                                 .cursor_grab()
-                                .hover(|el| el.opacity(0.85))
                                 .on_mouse_down(
                                     MouseButton::Left,
                                     cx.listener(move |pill, event: &MouseDownEvent, _, cx| {
@@ -866,6 +931,9 @@ fn editor(
                                     .inset_0(),
                                 )
                                 .child(chip_face(&row, !hidden, chip_w, palette))
+                                .fx(SharedString::from(format!("usage-chip-{id}-fx")), |el, h| {
+                                    el.opacity(1.0 - 0.15 * h.t)
+                                })
                                 .into_any_element()
                         }
                     }))

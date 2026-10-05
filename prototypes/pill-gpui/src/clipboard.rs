@@ -19,6 +19,7 @@ use gpui::{
 };
 use serde::{Deserialize, Serialize};
 
+use crate::hover::{round_button, HoverExt};
 use crate::history;
 use crate::secrets;
 use crate::text_input::{self, TextInput};
@@ -279,6 +280,9 @@ pub struct ClipboardPanel {
     pub pinned: bool,
     /// El notch pinta su marca a la izquierda del buscador.
     pub mark_gap: bool,
+    /// El tope de alto del panel: en un costado, casi toda la pantalla (lo
+    /// pone la pill); si no, el de siempre.
+    pub max_height: Option<f32>,
     colors: Colors,
     /// Entrada apretada y dónde, hasta que se suelta o empieza el arrastre.
     press: Option<(usize, Point<Pixels>)>,
@@ -346,6 +350,7 @@ impl ClipboardPanel {
             favorites_only: false,
             pinned: false,
             mark_gap: true,
+            max_height: None,
             colors,
             press: None,
             dragged: false,
@@ -536,7 +541,7 @@ impl ClipboardPanel {
         } else {
             strip + list
         };
-        (BAND_H + body + FOOTER_H + SIDE_PAD).min(PANEL_H)
+        (BAND_H + body + FOOTER_H + SIDE_PAD).min(self.max_height.unwrap_or(PANEL_H))
     }
 
     fn entry_of(&self, pick: usize) -> Option<usize> {
@@ -693,29 +698,22 @@ impl ClipboardPanel {
         &self,
         id: &'static str,
         icon: &'static str,
+        tip: &'static str,
         active: bool,
         on_click: impl Fn(&mut Self, &mut Context<Self>) + 'static,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let colors = &self.colors;
         let (text, faint) = (colors.text, colors.faint);
-        div()
-            .id(id)
-            .size(px(26.))
-            .flex()
-            .flex_none()
-            .items_center()
-            .justify_center()
-            .rounded(px(13.))
-            .when(active, |el| el.bg(text.opacity(0.14)))
-            .hover(|el| el.bg(text.opacity(0.08)))
-            .on_click(cx.listener(move |panel, _: &ClickEvent, _, cx| on_click(panel, cx)))
-            .child(
-                svg()
-                    .path(icon)
-                    .size(px(13.))
-                    .text_color(if active { text } else { faint }),
-            )
+        round_button(
+            id,
+            icon,
+            tip,
+            active,
+            text,
+            faint,
+            cx.listener(move |panel, _: &ClickEvent, _, cx| on_click(panel, cx)),
+        )
     }
 
     /// Mouse sobre una entrada: apretar arma el arrastre, soltar sin moverse
@@ -788,6 +786,7 @@ impl ClipboardPanel {
             .child(self.icon_button(
                 "clip-text",
                 "icons/type.svg",
+                "Solo texto",
                 self.filter == Filter::Text,
                 |panel, cx| panel.set_filter(Filter::Text, cx),
                 cx,
@@ -795,6 +794,7 @@ impl ClipboardPanel {
             .child(self.icon_button(
                 "clip-images",
                 "icons/image.svg",
+                "Solo imágenes",
                 self.filter == Filter::Images,
                 |panel, cx| panel.set_filter(Filter::Images, cx),
                 cx,
@@ -802,6 +802,7 @@ impl ClipboardPanel {
             .child(self.icon_button(
                 "clip-favorites",
                 "icons/star.svg",
+                "Favoritos",
                 self.favorites_only,
                 |panel, cx| {
                     panel.favorites_only = !panel.favorites_only;
@@ -812,6 +813,7 @@ impl ClipboardPanel {
             .child(self.icon_button(
                 "clip-pin",
                 "icons/pin.svg",
+                if self.pinned { "Soltar: se cierra al salir" } else { "Fijar: queda abierto" },
                 self.pinned,
                 |panel, cx| {
                     panel.pinned = !panel.pinned;
@@ -843,12 +845,6 @@ impl ClipboardPanel {
                     .overflow_hidden()
                     .cursor_pointer()
                     .border_2()
-                    .border_color(if is_selected {
-                        text.opacity(0.9)
-                    } else {
-                        text.opacity(0.0)
-                    })
-                    .hover(|el| el.border_color(text.opacity(0.35)))
                     // Pasar el cursor la elige: la vista previa la sigue.
                     .on_hover(cx.listener(move |panel, hovered: &bool, _, cx| {
                         if *hovered {
@@ -879,7 +875,12 @@ impl ClipboardPanel {
                     Content::Color(_, color) => tile.w(px(SWATCH_W)).bg(*color),
                     Content::Text(_) => tile,
                 };
-                self.pressable(tile, index, cx).into_any_element()
+                self.pressable(tile, index, cx)
+                    .fx(("clip-tile-fx", entry.id), move |el, h| {
+                        // Elegida, borde lleno; con el cursor encima, a medias.
+                        el.border_color(text.opacity(if is_selected { 0.9 } else { 0.35 * h.over }))
+                    })
+                    .into_any_element()
             })
             .collect::<Vec<_>>();
         // La rueda del mouse avanza la tira de lado: GPUI la pasa al eje x
@@ -920,7 +921,6 @@ impl ClipboardPanel {
         let entry = &self.entries[index];
         let selected = self.picks.get(self.selected) == Some(&Pick::Row(row));
         let secret = entry.secret;
-        let group = SharedString::from(format!("clip-row-{}", entry.id));
         let pinned = entry.pinned;
         let looks_like_code = entry.looks_like_code();
 
@@ -931,8 +931,6 @@ impl ClipboardPanel {
             .h_full()
             .flex()
             .items_center()
-            .invisible()
-            .group_hover(group.clone(), |el| el.visible())
             .child(
                 div()
                     .id(("clip-star", entry.id))
@@ -941,7 +939,6 @@ impl ClipboardPanel {
                     .items_center()
                     .justify_center()
                     .rounded(px(11.))
-                    .hover(|el| el.bg(text.opacity(0.1)))
                     .on_click(cx.listener(move |panel, _: &ClickEvent, _, cx| {
                         cx.stop_propagation();
                         panel.toggle_favorite(index, cx)
@@ -951,7 +948,8 @@ impl ClipboardPanel {
                             .path("icons/star.svg")
                             .size(px(12.))
                             .text_color(if pinned { text } else { muted }),
-                    ),
+                    )
+                    .hover_bg(("clip-star-fx", entry.id), text.opacity(0.0), text.opacity(0.1)),
             )
             .child(
                 div()
@@ -961,17 +959,16 @@ impl ClipboardPanel {
                     .items_center()
                     .justify_center()
                     .rounded(px(11.))
-                    .hover(|el| el.bg(text.opacity(0.1)))
                     .on_click(cx.listener(move |panel, _: &ClickEvent, _, cx| {
                         cx.stop_propagation();
                         panel.remove(index, cx)
                     }))
-                    .child(svg().path("icons/x.svg").size(px(12.)).text_color(muted)),
+                    .child(svg().path("icons/x.svg").size(px(12.)).text_color(muted))
+                    .hover_bg(("clip-remove-fx", entry.id), text.opacity(0.0), text.opacity(0.1)),
             );
 
         let row_el = div()
             .id(("clip-row", entry.id))
-            .group(group.clone())
             .w_full()
             .h(px(ROW_H))
             .px(px(8.))
@@ -984,8 +981,6 @@ impl ClipboardPanel {
             }))
             .gap(px(8.))
             .rounded(px(10.))
-            .when(selected, |el| el.bg(text.opacity(0.08)))
-            .hover(|el| el.bg(text.opacity(0.06)))
             .cursor_pointer()
             .child(
                 div()
@@ -1026,37 +1021,44 @@ impl ClipboardPanel {
                     })
                     .truncate()
                     .child(entry.preview.clone()),
-            )
-            .child(
-                div()
-                    .relative()
-                    .w(px(48.))
-                    .h_full()
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .justify_end()
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(4.))
-                            .text_size(px(10.))
-                            .text_color(faint)
-                            .group_hover(group, |el| el.invisible())
-                            .when(pinned, |el| {
-                                el.child(svg().path("icons/star.svg").size(px(10.)).text_color(muted))
-                            })
-                            .child(history::short_when(entry.created_ms, now)),
-                    )
-                    .child(actions),
             );
+        let when = div()
+            .flex()
+            .items_center()
+            .gap(px(4.))
+            .text_size(px(10.))
+            .text_color(faint)
+            .when(pinned, |el| el.child(svg().path("icons/star.svg").size(px(10.)).text_color(muted)))
+            .child(history::short_when(entry.created_ms, now));
         // `list` mide cada fila por su contenido: sin `w_full` la fila queda
         // del ancho de su texto y la hora flota al medio.
         div()
             .w_full()
             .px(px(SIDE_PAD))
-            .child(self.pressable(row_el, index, cx))
+            .child(
+                self.pressable(row_el, index, cx)
+                    .fx(("clip-row-fx", entry.id), move |el, h| {
+                        // La hora se va y las acciones llegan cruzándose,
+                        // como `.clip-quick` en la web.
+                        el.bg(h.mix(text.opacity(0.0), text.opacity(0.08))).child(
+                            div()
+                                .relative()
+                                .w(px(48.))
+                                .h_full()
+                                .flex_none()
+                                .flex()
+                                .items_center()
+                                .justify_end()
+                                .child(when.opacity(1.0 - h.over))
+                                .child(
+                                    actions
+                                        .opacity(h.over)
+                                        .when(h.over < 0.05, |el| el.invisible()),
+                                ),
+                        )
+                    })
+                    .lit(selected),
+            )
             .into_any_element()
     }
 

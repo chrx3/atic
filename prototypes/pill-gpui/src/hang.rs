@@ -3,26 +3,40 @@
 //! sincronizada, el tab se ensancha y baja una franja con el verso que suena
 //! (grande, hasta dos renglones) y el siguiente apagado.
 //!
-//! Solo arriba (el notch) y con el tab en reposo: la tira, el vistazo del
-//! portapapeles o el de la bandeja la recogen. Un clic abre Ahora suena (es
+//! Con el tab acoplado (a cualquier borde) y en reposo: la tira, el vistazo
+//! del portapapeles o el de la bandeja la recogen. Arriba cuelga bajo la
+//! franja; en un costado va como una banda al lado del tab. Un clic abre Ahora suena (es
 //! parte de la carátula: `over_art`). Se apaga desde Ahora suena (botón
 //! «Letra», que también oculta los versos del panel) o con `PILL_LYRICS=0`.
 
 use std::time::{Duration, Instant};
 
 use gpui::{
-    div, linear_color_stop, linear_gradient, prelude::*, px, Animation, AnimationExt, AnyElement, FontWeight,
+    div, prelude::*, px, Animation, AnimationExt, AnyElement, FontWeight,
     SharedString,
 };
 
 use crate::anim::segment;
-use crate::geometry::Edge;
 use crate::media::lyrics;
 use crate::Pill;
 
 /// El ancho del tab con la letra y el alto que gana bajo la franja.
 pub(crate) const HANG_W: f32 = 340.0;
 pub(crate) const HANG_H: f32 = 74.0;
+/// En un costado la banda es angosta (`SIDE_W`): el verso entra en hasta tres
+/// renglones.
+const HANG_H_SIDE: f32 = 98.0;
+const CURRENT_H: f32 = 40.0;
+const CURRENT_H_SIDE: f32 = 58.0;
+
+/// El alto de la banda: bajo el tab arriba, al lado en un costado.
+pub(crate) fn hang_height(side: bool) -> f32 {
+    if side {
+        HANG_H_SIDE
+    } else {
+        HANG_H
+    }
+}
 
 /// El verso que suena: (índice, actual, siguiente).
 type Verse = (Option<usize>, String, String);
@@ -41,7 +55,7 @@ impl Pill {
 
     /// Cuelga la letra si el tab está en reposo con música que la trae.
     pub(crate) fn update_hang(&mut self, now: Instant) {
-        let quiet = self.at_notch()
+        let quiet = self.docked_still()
             && self.live.target() == 1.0
             && self.strip.target() == 0.0
             && self.peek.target() == 0.0
@@ -51,13 +65,9 @@ impl Pill {
         self.hang.set(if on { 1.0 } else { 0.0 }, now);
     }
 
-    /// Cuánto cuelga la letra (0 a 1): solo arriba.
-    pub(crate) fn hang_amount(&self, edge: Edge, now: Instant) -> f32 {
-        if edge == Edge::Top {
-            self.hang.value(now).clamp(0.0, 1.2)
-        } else {
-            0.0
-        }
+    /// Cuánto cuelga la letra (0 a 1).
+    pub(crate) fn hang_amount(&self, now: Instant) -> f32 {
+        self.hang.value(now).clamp(0.0, 1.2)
     }
 
     /// El largo del tab con la letra: al menos `HANG_W`.
@@ -85,10 +95,11 @@ impl Pill {
         let (index, now_text, next) = self.hang_verse()?;
         let key = index.map_or(0, |i| i + 1);
         let text = crate::Palette::dark().text;
+        let side = self.side_drawers();
         let current = div()
             .id(SharedString::from(format!("hang-lyric-{key}")))
             .relative()
-            .h(px(40.))
+            .h(px(if side { CURRENT_H_SIDE } else { CURRENT_H }))
             .w_full()
             .flex()
             .items_center()
@@ -97,7 +108,7 @@ impl Pill {
                 div()
                     .w_full()
                     .text_center()
-                    .line_clamp(2)
+                    .line_clamp(if side { 3 } else { 2 })
                     .text_size(px(14.5))
                     .line_height(px(18.))
                     .font_weight(FontWeight::BOLD)
@@ -109,9 +120,7 @@ impl Pill {
                 Animation::new(Duration::from_millis(220)).with_easing(gpui::ease_out_quint()),
                 |el, t| el.opacity(0.32 + 0.68 * t).top(px(7.0 * (1.0 - t))),
             );
-        // La franja de la letra casi opaca, para leerla sobre cualquier cosa;
-        // arriba se funde con el tab para que no se vea un corte.
-        let skin = crate::Palette::dark().skin;
+        // Sin fondo propio: el tab entero se vuelve casi opaco (`CONTENT_TINT`).
         Some(
             div()
                 .absolute()
@@ -120,13 +129,8 @@ impl Pill {
                 .w(px(area.w))
                 .h(px(area.h))
                 .overflow_hidden()
-                .rounded_b(px(crate::TAB_RADIUS))
-                .bg(linear_gradient(
-                    180.,
-                    linear_color_stop(skin.opacity(0.0), 0.0),
-                    linear_color_stop(skin.opacity(0.95), 0.22),
-                ))
                 .px(px(18.))
+                .when(side, |el| el.pt(px(10.)))
                 .flex()
                 .flex_col()
                 .opacity(segment(amount, 0.5, 0.5))

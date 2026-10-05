@@ -23,6 +23,7 @@ use gpui::{
 };
 use serde::{Deserialize, Serialize};
 
+use crate::hover::HoverExt;
 use crate::clipboard::{BAND_H, PANEL_H};
 use crate::running::{self, Running};
 use crate::emoji;
@@ -565,6 +566,9 @@ pub struct LauncherPanel {
     icons: Arc<Mutex<HashMap<SharedString, Option<Arc<RenderImage>>>>>,
     pending: HashSet<SharedString>,
     pub mark_gap: bool,
+    /// El tope de alto del panel: en un costado, casi toda la pantalla (lo
+    /// pone la pill); si no, el de siempre.
+    pub max_height: Option<f32>,
     pub pinned: bool,
     running: Running,
     rates: Option<Rates>,
@@ -616,6 +620,7 @@ impl LauncherPanel {
             icons: Arc::new(Mutex::new(HashMap::new())),
             pending: HashSet::new(),
             mark_gap: true,
+            max_height: None,
             pinned: false,
             running: running::scan(),
             rates: load_rates(),
@@ -763,7 +768,7 @@ impl LauncherPanel {
     pub fn desired_height(&self) -> f32 {
         if self.mode == Mode::Emoji {
             let rows = self.emoji_rows.len().clamp(1, EMOJI_ROWS_SHOWN);
-            return (BAND_H + EMOJI_BAR_H + rows as f32 * ROW_H + FOOTER_H + PAD).min(PANEL_H);
+            return (BAND_H + EMOJI_BAR_H + rows as f32 * ROW_H + FOOTER_H + PAD).min(self.max_height.unwrap_or(PANEL_H));
         }
         let favorites = if self.favorites.is_empty() { 0.0 } else { FAVORITES_H };
         let header = if self.showing_recents && !self.hits.is_empty() {
@@ -776,7 +781,7 @@ impl LauncherPanel {
         } else {
             self.hits.len() as f32 * ROW_H
         };
-        (BAND_H + favorites + header + rows + FOOTER_H + PAD).min(PANEL_H)
+        (BAND_H + favorites + header + rows + FOOTER_H + PAD).min(self.max_height.unwrap_or(PANEL_H))
     }
 
     fn icon(&mut self, item: &Item, cx: &mut Context<Self>) -> Option<Arc<RenderImage>> {
@@ -979,13 +984,15 @@ impl LauncherPanel {
                         .items_center()
                         .justify_center()
                         .rounded(px(9.))
-                        .text_size(px(16.))
-                        .when(on, |el| el.bg(text.opacity(0.14)))
-                        .when(!on, |el| el.opacity(0.75))
-                        .hover(|el| el.bg(text.opacity(0.08)).opacity(1.0))
                         .cursor_pointer()
                         .on_click(cx.listener(move |panel, _: &ClickEvent, _, cx| panel.jump_to_group(group, cx)))
                         .child(icon)
+                        .fx(("emoji-group-fx", group as usize), move |el, h| {
+                            let (rest, over) = if on { (0.14, 0.16) } else { (0.0, 0.08) };
+                            el.bg(h.mix(text.opacity(rest), text.opacity(over)))
+                                .opacity(if on { 1.0 } else { 0.75 + 0.25 * h.t })
+                                .text_size(px(16. + 1.5 * h.t - 1.5 * h.press))
+                        })
                 }))
             })
             .child(div().flex_1())
@@ -999,13 +1006,14 @@ impl LauncherPanel {
                     .items_center()
                     .justify_center()
                     .rounded(px(13.))
-                    .text_size(px(14.))
                     .when(on, |el| el.bg(text.opacity(0.16)))
-                    .when(!on, |el| el.opacity(0.6))
-                    .hover(|el| el.opacity(1.0))
                     .cursor_pointer()
                     .on_click(cx.listener(move |panel, _: &ClickEvent, _, cx| panel.set_tone(i as u8, cx)))
                     .child(*hand)
+                    .fx(("emoji-tone-fx", i), move |el, h| {
+                        el.opacity(if on { 1.0 } else { 0.6 + 0.4 * h.t })
+                            .text_size(px(14. + 1.5 * h.t - 1.5 * h.press))
+                    })
             }))
     }
 
@@ -1041,12 +1049,16 @@ impl LauncherPanel {
                     .items_center()
                     .justify_center()
                     .rounded(px(10.))
-                    .text_size(px(22.))
-                    .when(selected, |el| el.bg(text.opacity(0.14)))
-                    .hover(|el| el.bg(text.opacity(0.08)))
                     .cursor_pointer()
                     .child(ch)
                     .on_click(cx.listener(move |panel, _: &ClickEvent, _, cx| panel.pick_emoji(slot, false, cx)))
+                    .fx(("emoji-fx", slot), move |el, h| {
+                        // El emoji crece un poco con el cursor y se achica al
+                        // apretarlo (`.lf-emoji:active` en la web).
+                        let rest = if selected { 0.14 } else { 0.0 };
+                        el.bg(text.opacity(rest + (0.08_f32.max(rest) - rest) * h.over))
+                            .text_size(px(22. + 2. * h.over - 3. * h.press))
+                    })
                     .into_any_element()
             })
             .collect();
@@ -1134,8 +1146,6 @@ impl LauncherPanel {
                     .items_center()
                     .gap(px(10.))
                     .rounded(px(10.))
-                    .when(selected, |el| el.bg(text.opacity(0.09)))
-                    .hover(|el| el.bg(text.opacity(0.06)))
                     .cursor_pointer()
                     .on_click(cx.listener(move |panel, _: &ClickEvent, _, cx| panel.run_hit(index, cx)))
                     .child(
@@ -1178,7 +1188,11 @@ impl LauncherPanel {
                             .child(hit.note.clone())
                             .when(index < 9 && !selected, |el| el.child(format!("Ctrl+{}", index + 1)))
                             .when(selected, |el| el.child(div().text_color(text).child("↵"))),
-                    ),
+                    )
+                    .fx(("launcher-row-fx", index), move |el, h| {
+                        el.bg(h.mix(text.opacity(0.0), text.opacity(0.09)))
+                    })
+                    .lit(selected),
             )
     }
 }
@@ -1238,17 +1252,23 @@ impl Render for LauncherPanel {
                     .items_center()
                     .justify_center()
                     .rounded(px(12.))
-                    .bg(text.opacity(0.06))
-                    .hover(|el| el.bg(text.opacity(0.12)))
                     .cursor_pointer()
-                    .child(match icon {
-                        Some(icon) => img(icon).size(px(26.)).into_any_element(),
-                        None => div()
-                            .text_size(px(13.))
-                            .child(item.title.chars().next().unwrap_or('·').to_string())
-                            .into_any_element(),
+                    .on_click({
+                        let item = item.clone();
+                        cx.listener(move |panel, _: &ClickEvent, _, cx| panel.run_item(&item, cx))
                     })
-                    .on_click(cx.listener(move |panel, _: &ClickEvent, _, cx| panel.run_item(&item, cx)))
+                    .fx(("launcher-fav-fx", i), move |el, h| {
+                        // Como los favoritos de la web: el ícono crece un
+                        // poco con el cursor y se hunde al apretar.
+                        let size = 26. + 2. * h.t - 2.5 * h.press;
+                        el.bg(h.mix(text.opacity(0.06), text.opacity(0.12))).child(match icon {
+                            Some(icon) => img(icon).size(px(size)).into_any_element(),
+                            None => div()
+                                .text_size(px(13. + h.t))
+                                .child(item.title.chars().next().unwrap_or('·').to_string())
+                                .into_any_element(),
+                        })
+                    })
                     .into_any_element()
             })
             .collect();
