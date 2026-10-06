@@ -11,8 +11,8 @@ use windows::Win32::Graphics::Dwm::{
 use windows::Win32::Graphics::Gdi::ClientToScreen;
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON, VK_MENU};
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetCursorPos, GetSystemMetrics, GetWindowLongPtrW, SetForegroundWindow,
-    SetWindowDisplayAffinity, SetWindowLongPtrW, SetWindowPos, WDA_EXCLUDEFROMCAPTURE, WDA_NONE, SystemParametersInfoW, GWL_EXSTYLE, HWND_TOPMOST, SM_CXSCREEN, SM_CYSCREEN,
+    GetCursorPos, GetSystemMetrics, GetWindow, GetWindowLongPtrW, SetForegroundWindow,
+    SetWindowDisplayAffinity, SetWindowLongPtrW, SetWindowPos, WDA_EXCLUDEFROMCAPTURE, WDA_NONE, SystemParametersInfoW, GWL_EXSTYLE, GW_HWNDPREV, HWND_TOPMOST, SM_CXSCREEN, SM_CYSCREEN,
     SPI_GETWORKAREA, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
     WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
 };
@@ -104,6 +104,43 @@ impl Overlay {
         unsafe {
             let _ = SetWindowDisplayAffinity(self.hwnd, affinity);
         }
+    }
+
+    /// Lo que deja la ventana «siempre visible» es su lugar en el orden de
+    /// apilamiento, no el estilo `WS_EX_TOPMOST`. Windows a veces la saca de
+    /// esa capa sin quitarle el estilo (al cerrar Fotos abierto desde el
+    /// estante) y entonces cualquier ventana maximizada la tapa entera. Si
+    /// quedó alguna ventana normal encima, la devuelve arriba. Devuelve si
+    /// tuvo que hacerlo.
+    pub fn keep_topmost(&self) -> bool {
+        let topmost = WS_EX_TOPMOST.0 as isize;
+        let mut demoted = false;
+        let mut above = unsafe { GetWindow(self.hwnd, GW_HWNDPREV) };
+        // Tope por si el orden cambia mientras se recorre.
+        for _ in 0..2000 {
+            let Ok(hwnd) = above else {
+                break;
+            };
+            if unsafe { GetWindowLongPtrW(hwnd, GWL_EXSTYLE) } & topmost == 0 {
+                demoted = true;
+                break;
+            }
+            above = unsafe { GetWindow(hwnd, GW_HWNDPREV) };
+        }
+        if demoted {
+            unsafe {
+                let _ = SetWindowPos(
+                    self.hwnd,
+                    Some(HWND_TOPMOST),
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                );
+            }
+        }
+        demoted
     }
 
     pub fn hwnd(&self) -> HWND {

@@ -302,6 +302,30 @@ fn debug(message: impl FnOnce() -> String) {
     }
 }
 
+/// Con `PILL_DEBUG=1`, los avisos y errores de GPUI van a stderr. Sin esto se
+/// pierden: un error al dibujar deja la pill invisible sin decir por qué.
+struct GpuiLog;
+
+impl log::Log for GpuiLog {
+    fn enabled(&self, metadata: &log::Metadata) -> bool {
+        metadata.level() <= log::Level::Warn
+    }
+
+    fn log(&self, record: &log::Record) {
+        if self.enabled(record.metadata()) {
+            eprintln!("[{} {}] {}", record.level(), record.target(), record.args());
+        }
+    }
+
+    fn flush(&self) {}
+}
+
+fn init_gpui_log() {
+    if std::env::var_os("PILL_DEBUG").is_some() && log::set_logger(&GpuiLog).is_ok() {
+        log::set_max_level(log::LevelFilter::Warn);
+    }
+}
+
 fn distance(a: (f32, f32), b: (f32, f32)) -> f32 {
     (a.0 - b.0).hypot(a.1 - b.1)
 }
@@ -2075,6 +2099,16 @@ impl Pill {
     fn tick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let now = Instant::now();
         self.ticks += 1;
+        // Cada ~medio segundo: que ninguna ventana normal haya quedado encima.
+        if self.ticks.is_multiple_of(30) && self.overlay.as_ref().is_some_and(|overlay| overlay.keep_topmost()) {
+            debug(|| "la ventana había salido de «siempre visible»: vuelve arriba".into());
+            // El vidrio quedó abajo con ella: escondido, el próximo cuadro lo
+            // pone de nuevo justo debajo de la pill.
+            if let Some(glass) = self.glass.as_mut() {
+                glass.hide();
+            }
+            cx.notify();
+        }
         let cursor = self
             .overlay
             .as_ref()
@@ -3528,6 +3562,7 @@ fn render_preview(
 }
 
 fn main() {
+    init_gpui_log();
     Application::new().with_assets(Assets).run(|cx: &mut App| {
         text_input::bind_keys(cx);
         text_area::bind_keys(cx);

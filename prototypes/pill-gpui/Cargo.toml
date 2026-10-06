@@ -42,6 +42,7 @@ symphonia = { version = "0.6", default-features = false, features = ["ogg", "vor
 reqwest = { version = "0.12", features = ["blocking", "multipart", "json"] }
 # Ya viene con los crates de Atic: los avisos de los lectores de uso.
 tracing = "0.1"
+log = "0.4"
 # La misma que trae `atic-core`: los lectores de uso de Cursor y OpenCode (`quota/`).
 rusqlite = { version = "0.32", features = ["bundled"] }
 # Ya vienen con gpui: puntas redondas en pantalla y la composición del PNG.

@@ -4529,6 +4529,7 @@ dependencies = [
  "gpui",
  "hound",
  "image",
+ "log",
  "lyon",
  "raw-window-handle",
  "reqwest",
