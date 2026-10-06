@@ -79,6 +79,9 @@ pub enum Control {
     Stop,
     /// Nada: solo despierta la consulta (al elegir otra fuente).
     Refresh,
+    /// Windows avisó un cambio: despierta la consulta, sin la prisa de un
+    /// control del usuario.
+    Changed,
 }
 
 /// El estado que comparte el hilo con la pill.
@@ -561,10 +564,13 @@ mod imp {
     use super::*;
     use windows_core::Interface;
     use windows_future::{AsyncStatus, IAsyncOperation};
+    use std::sync::atomic::AtomicBool;
+    use windows::Foundation::TypedEventHandler;
     use windows::Media::Control::{
-        GlobalSystemMediaTransportControlsSession as Session,
+        CurrentSessionChangedEventArgs, GlobalSystemMediaTransportControlsSession as Session,
         GlobalSystemMediaTransportControlsSessionManager as Manager,
-        GlobalSystemMediaTransportControlsSessionPlaybackStatus as Status,
+        GlobalSystemMediaTransportControlsSessionPlaybackStatus as Status, MediaPropertiesChangedEventArgs,
+        PlaybackInfoChangedEventArgs, SessionsChangedEventArgs, TimelinePropertiesChangedEventArgs,
     };
     use windows::Storage::Streams::{DataReader, IRandomAccessStreamReference};
     use windows::Win32::Media::Audio::Endpoints::IAudioMeterInformation;
@@ -573,9 +579,15 @@ mod imp {
 
     /// El nivel de la salida se mide a ~30 veces por segundo.
     const TICK: Duration = Duration::from_millis(33);
-    /// Cada cuánto se consulta la sesión si nadie apura (un control
-    /// despierta al tiro).
+    /// Cada cuánto se consulta la sesión mientras se asienta una pista nueva.
     const POLL: Duration = Duration::from_millis(250);
+    /// Cada cuánto se consulta si nadie apura. Lo normal es que despierte
+    /// antes: por un control o por un aviso de Windows (`wake`). Esto queda
+    /// por si una app no avisa o un aviso se pierde.
+    const IDLE_POLL: Duration = Duration::from_secs(2);
+    /// Tras un aviso se espera un instante a que lleguen los que vienen
+    /// juntos (un cambio de pista avisa título, estado y posición).
+    const COALESCE: Duration = Duration::from_millis(40);
     /// Tras cambiar de pista la carátula se sigue releyendo un rato (una
     /// vez por segundo): el navegador cambia el título primero y la imagen
     /// después.
@@ -588,7 +600,7 @@ mod imp {
     const ASYNC_LIMIT: Duration = Duration::from_millis(1000);
 
     /// En qué llamada va una consulta: si no vuelve, el log dice dónde.
-    const STAGES: [&str; 10] = [
+    const STAGES: [&str; 11] = [
         "pedir el administrador",
         "listar sesiones",
         "estado de una sesión",
@@ -599,6 +611,7 @@ mod imp {
         "carátula",
         "posición",
         "app de origen",
+        "suscribirse a los avisos",
     ];
     const MANAGER: u32 = 0;
     const SESSIONS: u32 = 1;
@@ -610,6 +623,7 @@ mod imp {
     const THUMBNAIL: u32 = 7;
     const TIMELINE: u32 = 8;
     const SOURCE: u32 = 9;
+    const WATCH: u32 = 10;
 
     /// Espera una operación asíncrona de WinRT con límite de tiempo; si no
     /// termina, la cancela.
@@ -716,11 +730,126 @@ mod imp {
         }
     }
 
-    /// Lanza una consulta tras otra, como la pill de Atic: cada una en un
-    /// hilo propio, con el administrador y la sesión pedidos de nuevo (una
-    /// sesión vieja puede no contestar más). Si una no vuelve a tiempo se
-    /// abandona: queda colgada sola y la siguiente ya trae la pista nueva.
+    /// El administrador de sesiones, pedido una sola vez. Pedir uno nuevo en
+    /// cada consulta (cuatro por segundo) dejaba al servicio de Windows que
+    /// los atiende (`NPSMSvc`) consumiendo CPU sin parar.
+    static CACHED_MANAGER: Mutex<Option<Manager>> = Mutex::new(None);
+
+    fn manager() -> Option<Manager> {
+        if let Some(manager) = CACHED_MANAGER.lock().ok()?.as_ref() {
+            return Some(manager.clone());
+        }
+        // Sin tomar el candado mientras se espera: la consulta puede colgarse.
+        let manager = wait(Manager::RequestAsync())?;
+        let _ = manager.SessionsChanged(&TypedEventHandler::<Manager, SessionsChangedEventArgs>::new(|_, _| {
+            SESSIONS_CHANGED.store(true, Ordering::Relaxed);
+            wake();
+            Ok(())
+        }));
+        let _ = manager.CurrentSessionChanged(&TypedEventHandler::<Manager, CurrentSessionChangedEventArgs>::new(
+            |_, _| {
+                wake();
+                Ok(())
+            },
+        ));
+        *CACHED_MANAGER.lock().ok()? = Some(manager.clone());
+        Some(manager)
+    }
+
+    /// Por dónde los avisos de Windows despiertan a `poll`.
+    static WAKE: Mutex<Option<mpsc::Sender<(Option<String>, Control)>>> = Mutex::new(None);
+    /// Windows avisó que se abrió o cerró una sesión: hay que suscribirse de nuevo.
+    static SESSIONS_CHANGED: AtomicBool = AtomicBool::new(false);
+
+    fn wake() {
+        if let Some(tx) = WAKE.lock().ok().as_ref().and_then(|tx| tx.as_ref()) {
+            let _ = tx.send((None, Control::Changed));
+        }
+    }
+
+    /// Las sesiones a cuyos avisos se está suscrito, para soltarlos cuando
+    /// cambian.
+    struct Watched {
+        manager: Manager,
+        ids: Vec<String>,
+        /// Cada sesión con sus fichas: datos de la pista, estado y posición.
+        sessions: Vec<(Session, [Option<i64>; 3])>,
+    }
+
+    static WATCHED: Mutex<Option<Watched>> = Mutex::new(None);
+
+    /// Se suscribe a los avisos de cada sesión, solo si cambiaron las sesiones.
+    fn watch(manager: &Manager, listed: &[(String, Session, bool)]) {
+        // Otra consulta (quizá colgada) lo está haciendo: le toca a la próxima.
+        let Ok(mut watched) = WATCHED.try_lock() else {
+            return;
+        };
+        let ids: Vec<String> = listed.iter().map(|(id, ..)| id.clone()).collect();
+        let changed = SESSIONS_CHANGED.swap(false, Ordering::Relaxed);
+        if !changed && watched.as_ref().is_some_and(|w| &w.manager == manager && w.ids == ids) {
+            return;
+        }
+        if let Some(old) = watched.take() {
+            for (session, [props, playback, timeline]) in old.sessions {
+                if let Some(token) = props {
+                    let _ = session.RemoveMediaPropertiesChanged(token);
+                }
+                if let Some(token) = playback {
+                    let _ = session.RemovePlaybackInfoChanged(token);
+                }
+                if let Some(token) = timeline {
+                    let _ = session.RemoveTimelinePropertiesChanged(token);
+                }
+            }
+        }
+        let sessions = listed
+            .iter()
+            .map(|(_, session, _)| {
+                let props = session
+                    .MediaPropertiesChanged(&TypedEventHandler::<Session, MediaPropertiesChangedEventArgs>::new(
+                        |_, _| {
+                            wake();
+                            Ok(())
+                        },
+                    ))
+                    .ok();
+                let playback = session
+                    .PlaybackInfoChanged(&TypedEventHandler::<Session, PlaybackInfoChangedEventArgs>::new(|_, _| {
+                        wake();
+                        Ok(())
+                    }))
+                    .ok();
+                let timeline = session
+                    .TimelinePropertiesChanged(&TypedEventHandler::<Session, TimelinePropertiesChangedEventArgs>::new(
+                        |_, _| {
+                            wake();
+                            Ok(())
+                        },
+                    ))
+                    .ok();
+                (session.clone(), [props, playback, timeline])
+            })
+            .collect();
+        *watched = Some(Watched { manager: manager.clone(), ids, sessions });
+    }
+
+    /// Descarta el administrador guardado (p. ej. si el servicio se reinició
+    /// y quedó desconectado): la próxima consulta pide uno nuevo.
+    fn forget_manager() {
+        if let Ok(mut cached) = CACHED_MANAGER.lock() {
+            *cached = None;
+        }
+    }
+
+    /// Lanza una consulta cada vez que Windows avisa un cambio, el usuario
+    /// toca un control o pasa `IDLE_POLL` sin nada: cada una en un hilo
+    /// propio, con las sesiones pedidas de nuevo (una sesión vieja puede no
+    /// contestar más). Si una no vuelve a tiempo se abandona: queda colgada
+    /// sola y la siguiente ya trae la pista nueva.
     fn poll(media: Media, rx: mpsc::Receiver<(Option<String>, Control)>, art_tx: mpsc::Sender<ArtJob>) {
+        if let Ok(mut wake) = WAKE.lock() {
+            *wake = Some(media.tx.clone());
+        }
         let mut seen = Seen::default();
         // La carátula chica de cada fuente secundaria. Se toca un instante
         // por fuente: una consulta colgada no la deja tomada.
@@ -764,6 +893,10 @@ mod imp {
                 Err(_) => {
                     // Lo visto se perdió con la consulta: la próxima vuelve a
                     // mirar la carátula (se descarta si es la misma).
+                    // Colgada en el administrador mismo: se pide otro.
+                    if stage.load(Ordering::Relaxed) <= SESSIONS {
+                        forget_manager();
+                    }
                     if std::env::var_os("PILL_DEBUG").is_some() {
                         let at = STAGES.get(stage.load(Ordering::Relaxed) as usize).unwrap_or(&"?");
                         eprintln!("[medios] una consulta no volvió (en «{at}»); sigue otra");
@@ -771,10 +904,23 @@ mod imp {
                 }
             }
             // Después de un control, otra consulta pronto para ver el efecto.
-            let wait_for = if controlled { Duration::from_millis(150) } else { POLL };
+            // Con una pista nueva, seguido mientras se asienta la carátula.
+            let settling = seen.art.changed_at.is_some_and(|at| at.elapsed() < ART_SETTLE);
+            let wait_for = if controlled {
+                Duration::from_millis(150)
+            } else if settling {
+                POLL
+            } else {
+                IDLE_POLL
+            };
             if let Ok(first) = rx.recv_timeout(wait_for) {
+                if matches!(first.1, Control::Changed) {
+                    std::thread::sleep(COALESCE);
+                }
                 pending.push(first);
                 pending.extend(std::iter::from_fn(|| rx.try_recv().ok()));
+                // Los avisos solo despiertan: no son controles que aplicar.
+                pending.retain(|(_, control)| !matches!(control, Control::Changed));
             }
         }
     }
@@ -792,11 +938,13 @@ mod imp {
     ) {
         let at = |stage: u32| probe.store(stage, Ordering::Relaxed);
         at(MANAGER);
-        let Some(manager) = wait(Manager::RequestAsync()) else {
+        let Some(manager) = manager() else {
             let _ = out.send(Part::Primary(None, seen.clone(), Vec::new()));
             return;
         };
         let listed = list(&manager, &at);
+        at(WATCH);
+        watch(&manager, &listed);
         let order: Vec<String> = listed.iter().map(|(id, ..)| id.clone()).collect();
         let Some(primary) = pick(&manager, &listed, seen, pin, &at) else {
             let _ = out.send(Part::Primary(Some(None), seen.clone(), order));
@@ -873,7 +1021,7 @@ mod imp {
         let timeline = || session.GetTimelineProperties().ok();
         let start = || timeline().and_then(|t| t.StartTime().ok()).map_or(0, |t| t.Duration);
         let op = match control {
-            Control::Refresh => return,
+            Control::Refresh | Control::Changed => return,
             Control::Toggle => session.TryTogglePlayPauseAsync(),
             Control::Next => session.TrySkipNextAsync(),
             Control::Previous => session.TrySkipPreviousAsync(),
@@ -910,6 +1058,7 @@ mod imp {
     fn list(manager: &Manager, at: &dyn Fn(u32)) -> Vec<(String, Session, bool)> {
         at(SESSIONS);
         let Ok(sessions) = manager.GetSessions() else {
+            forget_manager();
             return Vec::new();
         };
         let count = sessions.Size().unwrap_or(0);

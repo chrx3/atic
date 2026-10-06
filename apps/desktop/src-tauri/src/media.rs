@@ -234,6 +234,21 @@ mod imp {
         e.message().to_string()
     }
 
+    /// El administrador de sesiones, pedido una sola vez. Pedir uno nuevo en
+    /// cada sondeo (cada segundo y medio) dejaba al servicio de Windows que
+    /// los atiende (`NPSMSvc`) consumiendo CPU sin parar.
+    static MANAGER: Mutex<Option<Manager>> = Mutex::new(None);
+
+    fn manager() -> Result<Manager, String> {
+        let mut cached = MANAGER.lock().map_err(|e| e.to_string())?;
+        if let Some(manager) = cached.as_ref() {
+            return Ok(manager.clone());
+        }
+        let manager = Manager::RequestAsync().map_err(err)?.get().map_err(err)?;
+        *cached = Some(manager.clone());
+        Ok(manager)
+    }
+
     fn session() -> Result<Option<Session>, String> {
         // Los hilos de `spawn_blocking` no tienen COM: sin esto WinRT falla.
         // Repetirlo en un hilo ya inicializado devuelve S_FALSE y no hace nada.
@@ -241,9 +256,19 @@ mod imp {
         unsafe {
             let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
         }
-        let manager = Manager::RequestAsync().map_err(err)?.get().map_err(err)?;
-        // Sin sesión el SO devuelve null, que acá llega como error.
-        Ok(manager.GetCurrentSession().ok())
+        match manager()?.GetCurrentSession() {
+            Ok(session) => Ok(Some(session)),
+            // Sin sesión el SO devuelve null, que acá llega como error vacío.
+            Err(e) if e.code() == windows::core::Error::empty().code() => Ok(None),
+            // Otro error: el servicio se reinició y el administrador guardado
+            // quedó desconectado. Se pide uno nuevo en el próximo sondeo.
+            Err(e) => {
+                if let Ok(mut cached) = MANAGER.lock() {
+                    *cached = None;
+                }
+                Err(err(e))
+            }
+        }
     }
 
     fn read_thumbnail(reference: &IRandomAccessStreamReference) -> Option<String> {
