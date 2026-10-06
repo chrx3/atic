@@ -18,7 +18,7 @@ pub struct Paths {
 }
 
 impl Paths {
-    fn resolve() -> anyhow::Result<Self> {
+    pub(crate) fn resolve() -> anyhow::Result<Self> {
         if let Some(root) = std::env::var_os("MEETINGS_DATA_DIR").map(PathBuf::from) {
             std::fs::create_dir_all(root.join("recordings"))?;
             return Ok(Self { db: root.join("atic.db3"), root });

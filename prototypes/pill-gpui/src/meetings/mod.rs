@@ -9,7 +9,7 @@ mod data;
 mod actions;
 mod export;
 mod pipeline;
-mod settings;
+pub(crate) mod settings;
 mod player;
 mod player_view;
 mod stretch;
@@ -92,6 +92,13 @@ const LILAC: u32 = 0xc4a3f0;
 
 fn hsla(color: u32) -> Hsla {
     gpui::rgb(color).into()
+}
+
+/// Los ajustes de Reuniones, para la sección de la ventana de Ajustes.
+/// `None` si no se encuentra la carpeta de datos de Atic.
+pub fn settings_pane(cx: &mut App) -> Option<gpui::AnyView> {
+    let paths = data::Paths::resolve().ok()?;
+    Some(cx.new(|cx| settings::SettingsView::new_embedded(paths, cx)).into())
 }
 
 /// Muestra la ventana de Reuniones; la abre si no está.

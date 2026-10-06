@@ -11,11 +11,13 @@
 use std::path::PathBuf;
 
 use gpui::{
-    div, prelude::*, px, size, svg, App, Bounds, ClickEvent, Context, Entity, FontWeight, Hsla,
+    div, prelude::*, px, size, svg, AnyView, App, Bounds, ClickEvent, Context, Entity, FontWeight, Hsla,
     SharedString, TitlebarOptions, Window, WindowBounds, WindowKind, WindowOptions,
 };
 
 use crate::appearance::AppearancePane;
+use crate::dictation_settings::{self, DictationPane};
+use crate::pill_settings::{self, ClipboardPane, PillPane};
 use crate::hover::HoverExt;
 use crate::space::chrome;
 
@@ -48,15 +50,30 @@ pub(crate) fn hsla(color: u32) -> Hsla {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Section {
     Appearance,
+    Pill,
+    Clipboard,
+    Dictation,
+    Meetings,
     About,
 }
 
 impl Section {
-    const ALL: [Section; 2] = [Section::Appearance, Section::About];
+    const ALL: [Section; 6] = [
+        Section::Appearance,
+        Section::Pill,
+        Section::Clipboard,
+        Section::Dictation,
+        Section::Meetings,
+        Section::About,
+    ];
 
     fn label(self) -> &'static str {
         match self {
             Section::Appearance => "Apariencia",
+            Section::Pill => "Pill",
+            Section::Clipboard => "Portapapeles",
+            Section::Dictation => "Dictado",
+            Section::Meetings => "Reuniones",
             Section::About => "Acerca de",
         }
     }
@@ -64,6 +81,10 @@ impl Section {
     fn hint(self) -> &'static str {
         match self {
             Section::Appearance => "Cuánto se ve el vidrio y cuánto se tapa para leer.",
+            Section::Pill => "Qué herramientas muestra y qué cuelga del notch.",
+            Section::Clipboard => "Lo que copias, para pegarlo después.",
+            Section::Dictation => "Se comparten con Atic. Cada cambio se guarda al tiro.",
+            Section::Meetings => "Se comparten con Atic. Cada cambio se guarda al tiro.",
             Section::About => "Versión y dónde guarda sus datos.",
         }
     }
@@ -71,6 +92,10 @@ impl Section {
     fn icon(self) -> &'static str {
         match self {
             Section::Appearance => "icons/sparkles.svg",
+            Section::Pill => "icons/layers.svg",
+            Section::Clipboard => "icons/clipboard.svg",
+            Section::Dictation => "icons/mic.svg",
+            Section::Meetings => "icons/audio-lines.svg",
             Section::About => "icons/circle-dot.svg",
         }
     }
@@ -78,6 +103,10 @@ impl Section {
     fn id(self) -> &'static str {
         match self {
             Section::Appearance => "settings-appearance",
+            Section::Pill => "settings-pill",
+            Section::Clipboard => "settings-clipboard",
+            Section::Dictation => "settings-dictation",
+            Section::Meetings => "settings-meetings",
             Section::About => "settings-about",
         }
     }
@@ -120,6 +149,12 @@ pub fn open(cx: &mut App) {
 pub struct SettingsView {
     section: Section,
     appearance: Entity<AppearancePane>,
+    /// Se crean al elegir la sección: Reuniones pide la lista de modelos a
+    /// la red, y nada de eso hace falta para ver la Apariencia.
+    pill: Entity<PillPane>,
+    clipboard: Option<Entity<ClipboardPane>>,
+    dictation: Option<Entity<DictationPane>>,
+    meetings: Option<AnyView>,
 }
 
 impl SettingsView {
@@ -127,7 +162,22 @@ impl SettingsView {
         Self {
             section: Section::Appearance,
             appearance: cx.new(|_| AppearancePane::default()),
+            pill: cx.new(|_| PillPane),
+            clipboard: None,
+            dictation: None,
+            meetings: None,
         }
+    }
+
+    fn select(&mut self, section: Section, cx: &mut Context<Self>) {
+        match section {
+            Section::Clipboard if self.clipboard.is_none() => self.clipboard = pill_settings::clipboard_pane(cx),
+            Section::Dictation if self.dictation.is_none() => self.dictation = dictation_settings::pane(cx),
+            Section::Meetings if self.meetings.is_none() => self.meetings = crate::meetings::settings_pane(cx),
+            _ => {}
+        }
+        self.section = section;
+        cx.notify();
     }
 
     fn top_bar(&self, maximized: bool) -> impl IntoElement {
@@ -164,10 +214,7 @@ impl SettingsView {
             .text_size(px(13.))
             .text_color(hsla(if selected { TEXT } else { MUTED }))
             .when(compact, |el| el.flex_none())
-            .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
-                view.section = section;
-                cx.notify();
-            }))
+            .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| view.select(section, cx)))
             .child(
                 svg()
                     .path(section.icon())
@@ -182,6 +229,19 @@ impl SettingsView {
     fn body(&self) -> gpui::AnyElement {
         match self.section {
             Section::Appearance => self.appearance.clone().into_any_element(),
+            Section::Pill => self.pill.clone().into_any_element(),
+            Section::Clipboard => match &self.clipboard {
+                Some(pane) => pane.clone().into_any_element(),
+                None => missing_data().into_any_element(),
+            },
+            Section::Dictation => match &self.dictation {
+                Some(pane) => pane.clone().into_any_element(),
+                None => missing_data().into_any_element(),
+            },
+            Section::Meetings => match &self.meetings {
+                Some(pane) => pane.clone().into_any_element(),
+                None => missing_data().into_any_element(),
+            },
             Section::About => about().into_any_element(),
         }
     }
@@ -369,6 +429,16 @@ pub(crate) fn text_button(
         .on_click(on_click)
         .child(label)
         .hover_bg(SharedString::from(format!("{id}-fx")), hsla(TEXT).opacity(0.08), hsla(TEXT).opacity(0.14))
+}
+
+/// Sin la carpeta de Atic no hay `config.json` que editar.
+fn missing_data() -> impl IntoElement {
+    card().child(
+        div()
+            .text_size(px(13.))
+            .text_color(hsla(MUTED))
+            .child("No se encontró la carpeta de datos de Atic."),
+    )
 }
 
 // --- Acerca de ----------------------------------------------------------------------

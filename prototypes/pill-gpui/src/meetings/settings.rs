@@ -36,6 +36,27 @@ pub enum SettingsEvent {
     Close,
 }
 
+/// Una vista de ajustes que edita `config.json` y las llaves del llavero.
+/// Las piezas de abajo (`segmented`, `key_row`…) sirven a cualquiera que la
+/// implemente: Reuniones y Dictado en la ventana de Ajustes.
+pub(crate) trait ConfigPane: Sized + 'static {
+    /// Relee, cambia y guarda: Atic puede haber escrito la config entre medio.
+    fn edit_config(&mut self, cx: &mut Context<Self>, apply: impl FnOnce(&mut Config));
+    /// El aviso bajo la llave que se acaba de tocar.
+    fn key_notice(&self) -> Option<&(SecretKind, String, bool)>;
+    fn set_key_notice(&mut self, notice: (SecretKind, String, bool), cx: &mut Context<Self>);
+}
+
+/// Relee `config.json`, aplica el cambio y lo guarda. Devuelve lo guardado.
+pub(crate) fn save_config(path: &std::path::Path, apply: impl FnOnce(&mut Config)) -> Config {
+    let mut cfg = Config::load(path);
+    apply(&mut cfg);
+    if let Err(error) = cfg.save(path) {
+        eprintln!("ajustes: no se pudo guardar la configuración: {error}");
+    }
+    cfg
+}
+
 /// El proveedor guardado o, si no se conoce, el primero (Claude).
 fn provider(id: &str) -> &'static ProviderInfo {
     atic_summarize::find_provider(id).unwrap_or(&PROVIDERS[0])
@@ -136,7 +157,26 @@ pub struct SettingsView {
     /// Un aviso corto bajo la llave que se acaba de tocar.
     notice: Option<(SecretKind, String, bool)>,
     models: Models,
+    /// Dentro de la ventana de Ajustes: sin título ni cerrar, y sin su propio
+    /// desplazamiento (lo pone la ventana).
+    embedded: bool,
     _subscriptions: Vec<Subscription>,
+}
+
+impl ConfigPane for SettingsView {
+    fn edit_config(&mut self, cx: &mut Context<Self>, apply: impl FnOnce(&mut Config)) {
+        self.update(cx, apply);
+    }
+
+    fn key_notice(&self) -> Option<&(SecretKind, String, bool)> {
+        self.notice.as_ref()
+    }
+
+    fn set_key_notice(&mut self, notice: (SecretKind, String, bool), cx: &mut Context<Self>) {
+        let kind = notice.0;
+        self.notice = Some(notice);
+        self.key_changed(kind, cx);
+    }
 }
 
 impl EventEmitter<SettingsEvent> for SettingsView {}
@@ -216,10 +256,16 @@ impl SettingsView {
             smtp_from,
             notice: None,
             models: Models::default(),
+            embedded: false,
             _subscriptions: subscriptions,
         };
         view.refresh_models(cx);
         view
+    }
+
+    /// La misma vista, para la sección Reuniones de la ventana de Ajustes.
+    pub fn new_embedded(paths: Paths, cx: &mut Context<Self>) -> Self {
+        Self { embedded: true, ..Self::new(paths, cx) }
     }
 
     fn refresh_models(&mut self, cx: &mut Context<Self>) {
@@ -253,13 +299,7 @@ impl SettingsView {
 
     /// Relee, cambia y guarda: Atic puede haber escrito la config entre medio.
     fn update(&mut self, cx: &mut Context<Self>, apply: impl FnOnce(&mut Config)) {
-        let path = self.paths.config_path();
-        let mut cfg = Config::load(&path);
-        apply(&mut cfg);
-        if let Err(error) = cfg.save(&path) {
-            eprintln!("reuniones: no se pudo guardar la configuración: {error}");
-        }
-        self.cfg = cfg;
+        self.cfg = save_config(&self.paths.config_path(), apply);
         cx.notify();
     }
 
@@ -282,20 +322,6 @@ impl SettingsView {
         self.refresh_models(cx);
     }
 
-    fn paste_key(&mut self, kind: SecretKind, cx: &mut Context<Self>) {
-        let text = cx.read_from_clipboard().and_then(|item| item.text()).unwrap_or_default();
-        let (message, ok) = if !looks_like_key(&text) {
-            ("El portapapeles no tiene una llave.".to_string(), false)
-        } else {
-            match secrets::set_secret(kind, text.trim()) {
-                Ok(()) => ("Llave guardada.".to_string(), true),
-                Err(error) => (format!("No se pudo guardar: {error}"), false),
-            }
-        };
-        self.notice = Some((kind, message, ok));
-        self.key_changed(kind, cx);
-    }
-
     /// Con otra llave, otra lista: la de antes pudo salir del catálogo por falta de ella.
     fn key_changed(&mut self, kind: SecretKind, cx: &mut Context<Self>) {
         if provider_key(provider(&self.cfg.summary_backend)) == Some(kind) {
@@ -303,15 +329,27 @@ impl SettingsView {
         }
         cx.notify();
     }
+}
 
-    fn remove_key(&mut self, kind: SecretKind, cx: &mut Context<Self>) {
-        let (message, ok) = match secrets::delete_secret(kind) {
-            Ok(()) => ("Llave quitada.".to_string(), true),
-            Err(error) => (format!("No se pudo quitar: {error}"), false),
-        };
-        self.notice = Some((kind, message, ok));
-        self.key_changed(kind, cx);
-    }
+fn paste_key<V: ConfigPane>(view: &mut V, kind: SecretKind, cx: &mut Context<V>) {
+    let text = cx.read_from_clipboard().and_then(|item| item.text()).unwrap_or_default();
+    let (message, ok) = if !looks_like_key(&text) {
+        ("El portapapeles no tiene una llave.".to_string(), false)
+    } else {
+        match secrets::set_secret(kind, text.trim()) {
+            Ok(()) => ("Llave guardada.".to_string(), true),
+            Err(error) => (format!("No se pudo guardar: {error}"), false),
+        }
+    };
+    view.set_key_notice((kind, message, ok), cx);
+}
+
+fn remove_key<V: ConfigPane>(view: &mut V, kind: SecretKind, cx: &mut Context<V>) {
+    let (message, ok) = match secrets::delete_secret(kind) {
+        Ok(()) => ("Llave quitada.".to_string(), true),
+        Err(error) => (format!("No se pudo quitar: {error}"), false),
+    };
+    view.set_key_notice((kind, message, ok), cx);
 }
 
 impl Render for SettingsView {
@@ -441,7 +479,7 @@ impl Render for SettingsView {
                     cx,
                 ),
             ))
-            .child(self.key_row("Llave de Groq", SecretKind::GroqApiKey, cx));
+            .child(key_row(self, "Llave de Groq", SecretKind::GroqApiKey, cx));
 
         // --- Resumen
         let mut summary = card().child(row(
@@ -539,7 +577,7 @@ impl Render for SettingsView {
             summary = summary.child(row("Dirección", "", field(&self.base_url)));
         }
         if let Some(kind) = provider_key(p) {
-            summary = summary.child(self.key_row("Llave", kind, cx));
+            summary = summary.child(key_row(self, "Llave", kind, cx));
         }
 
         // --- Correo
@@ -568,10 +606,22 @@ impl Render for SettingsView {
                         v.update(cx, |cfg| cfg.smtp_use_tls = !cfg.smtp_use_tls)
                     })),
                 ))
-                .child(self.key_row("Contraseña", SecretKind::SmtpPassword, cx));
+                .child(key_row(self, "Contraseña", SecretKind::SmtpPassword, cx));
         }
 
-        div()
+        let sections = div()
+            .flex()
+            .flex_col()
+            .child(heading("Grabación"))
+            .child(recording)
+            .child(heading("Transcripción"))
+            .child(transcription)
+            .child(heading("Resumen"))
+            .child(summary)
+            .child(heading("Correo"))
+            .child(mail);
+
+        let root = div()
             .id("meetings-settings")
             .key_context(KEY_CONTEXT)
             .track_focus(&self.focus)
@@ -581,7 +631,12 @@ impl Render for SettingsView {
                 } else {
                     cx.emit(SettingsEvent::Close);
                 }
-            }))
+            }));
+        if self.embedded {
+            return root.child(sections);
+        }
+
+        root
             .size_full()
             .overflow_y_scroll()
             .child(
@@ -623,70 +678,68 @@ impl Render for SettingsView {
                             .text_color(hsla(MUTED))
                             .child("Se comparten con Atic. Cada cambio se guarda al tiro."),
                     )
-                    .child(heading("Grabación"))
-                    .child(recording)
-                    .child(heading("Transcripción"))
-                    .child(transcription)
-                    .child(heading("Resumen"))
-                    .child(summary)
-                    .child(heading("Correo"))
-                    .child(mail),
+                    .child(sections),
             )
     }
 }
 
-impl SettingsView {
-    fn key_row(&self, title: &'static str, kind: SecretKind, cx: &mut Context<Self>) -> impl IntoElement {
-        let stored = secrets::get_secret(kind).ok().flatten();
-        let hint: SharedString = match (&self.notice, &stored) {
-            (Some((k, message, _)), _) if *k == kind => message.clone().into(),
-            (_, Some(key)) => format!("Guardada en el llavero · {}", key_preview(key)).into(),
-            (_, None) => "Copia la llave y pégala aquí.".into(),
-        };
-        let tone = match &self.notice {
-            Some((k, _, ok)) if *k == kind => if *ok { GREEN } else { RED },
-            _ => MUTED,
-        };
-        let id = kind.as_str();
-        div()
-            .flex()
-            .items_center()
-            .gap(px(16.))
-            .px(px(16.))
-            .py(px(12.))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .flex()
-                    .flex_col()
-                    .gap(px(2.))
-                    .child(div().text_size(px(13.)).font_weight(FontWeight::MEDIUM).child(title))
-                    .child(div().text_size(px(12.)).text_color(hsla(tone)).child(hint)),
-            )
-            .child(
-                div()
-                    .flex()
-                    .gap(px(6.))
-                    .when(stored.is_some(), |el| {
-                        el.child(button(
-                            SharedString::from(format!("{id}-remove")),
-                            "Quitar",
-                            cx.listener(move |v, _: &ClickEvent, _, cx| v.remove_key(kind, cx)),
-                        ))
-                    })
-                    .child(button(
-                        SharedString::from(format!("{id}-paste")),
-                        if stored.is_some() { "Reemplazar" } else { "Pegar llave" },
-                        cx.listener(move |v, _: &ClickEvent, _, cx| v.paste_key(kind, cx)),
-                    )),
-            )
-    }
+/// Una llave del llavero: si está, su vista previa; pegarla o quitarla.
+pub(crate) fn key_row<V: ConfigPane>(
+    view: &V,
+    title: &'static str,
+    kind: SecretKind,
+    cx: &mut Context<V>,
+) -> impl IntoElement {
+    let stored = secrets::get_secret(kind).ok().flatten();
+    let notice = view.key_notice();
+    let hint: SharedString = match (notice, &stored) {
+        (Some((k, message, _)), _) if *k == kind => message.clone().into(),
+        (_, Some(key)) => format!("Guardada en el llavero · {}", key_preview(key)).into(),
+        (_, None) => "Copia la llave y pégala aquí.".into(),
+    };
+    let tone = match notice {
+        Some((k, _, ok)) if *k == kind => if *ok { GREEN } else { RED },
+        _ => MUTED,
+    };
+    let id = kind.as_str();
+    div()
+        .flex()
+        .items_center()
+        .gap(px(16.))
+        .px(px(16.))
+        .py(px(12.))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap(px(2.))
+                .child(div().text_size(px(13.)).font_weight(FontWeight::MEDIUM).child(title))
+                .child(div().text_size(px(12.)).text_color(hsla(tone)).child(hint)),
+        )
+        .child(
+            div()
+                .flex()
+                .gap(px(6.))
+                .when(stored.is_some(), |el| {
+                    el.child(button(
+                        SharedString::from(format!("{id}-remove")),
+                        "Quitar",
+                        cx.listener(move |v, _: &ClickEvent, _, cx| remove_key(v, kind, cx)),
+                    ))
+                })
+                .child(button(
+                    SharedString::from(format!("{id}-paste")),
+                    if stored.is_some() { "Reemplazar" } else { "Pegar llave" },
+                    cx.listener(move |v, _: &ClickEvent, _, cx| paste_key(v, kind, cx)),
+                )),
+        )
 }
 
 // --- Piezas --------------------------------------------------------------------------
 
-fn heading(text: &'static str) -> impl IntoElement {
+pub(crate) fn heading(text: &'static str) -> impl IntoElement {
     div()
         .pt(px(22.))
         .pb(px(8.))
@@ -697,11 +750,11 @@ fn heading(text: &'static str) -> impl IntoElement {
         .child(text)
 }
 
-fn card() -> gpui::Div {
+pub(crate) fn card() -> gpui::Div {
     div().py(px(4.)).rounded(px(16.)).bg(hsla(SURFACE)).flex().flex_col()
 }
 
-fn row(title: &'static str, hint: impl Into<SharedString>, control: impl IntoElement) -> impl IntoElement {
+pub(crate) fn row(title: &'static str, hint: impl Into<SharedString>, control: impl IntoElement) -> impl IntoElement {
     let hint: SharedString = hint.into();
     div()
         .flex()
@@ -725,12 +778,12 @@ fn row(title: &'static str, hint: impl Into<SharedString>, control: impl IntoEle
 }
 
 /// Opciones de una sola elección, la encendida en claro (como las pestañas).
-fn segmented(
+pub(crate) fn segmented<V: ConfigPane>(
     id: &'static str,
     options: &[(&'static str, &'static str)],
     current: &str,
     apply: fn(&mut Config, &str),
-    cx: &mut Context<SettingsView>,
+    cx: &mut Context<V>,
 ) -> impl IntoElement {
     let mut group = div().flex().flex_none().items_center().gap(px(2.)).p(px(3.)).rounded(px(15.)).bg(hsla(FIELD));
     for (ix, &(label, value)) in options.iter().enumerate() {
@@ -749,7 +802,7 @@ fn segmented(
                 .when(on, |el| el.bg(hsla(0xe9e9e2)))
                 .when(!on, |el| el.cursor_pointer())
                 .on_click(cx.listener(move |v, _: &ClickEvent, _, cx| {
-                    v.update(cx, |cfg| apply(cfg, value))
+                    v.edit_config(cx, |cfg| apply(cfg, value))
                 }))
                 .child(label)
                 .fx((id, ix), move |el, h| {
@@ -764,7 +817,7 @@ fn segmented(
     group
 }
 
-fn switch(
+pub(crate) fn switch(
     id: &'static str,
     on: bool,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
@@ -787,7 +840,7 @@ fn switch(
         })
 }
 
-fn dropdown(
+pub(crate) fn dropdown(
     id: &'static str,
     label: String,
     open: bool,
@@ -817,7 +870,7 @@ fn dropdown(
 
 /// Las opciones de un desplegable se abren dentro de la tarjeta, bajo su
 /// fila: nada flota encima de otra cosa.
-fn menu_list() -> gpui::Div {
+pub(crate) fn menu_list() -> gpui::Div {
     div()
         .mx(px(12.))
         .mb(px(8.))
@@ -829,7 +882,7 @@ fn menu_list() -> gpui::Div {
         .gap(px(2.))
 }
 
-fn menu_item(
+pub(crate) fn menu_item(
     id: (&'static str, usize),
     label: String,
     on: bool,
@@ -850,7 +903,7 @@ fn menu_item(
         .hover_bg(id, hsla(FIELD), hsla(ITEM))
 }
 
-fn field(input: &Entity<TextInput>) -> impl IntoElement {
+pub(crate) fn field(input: &Entity<TextInput>) -> impl IntoElement {
     div()
         .w(px(FIELD_W))
         .h(px(32.))
@@ -864,7 +917,7 @@ fn field(input: &Entity<TextInput>) -> impl IntoElement {
         .child(input.clone())
 }
 
-fn button(
+pub(crate) fn button(
     id: SharedString,
     label: &'static str,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,

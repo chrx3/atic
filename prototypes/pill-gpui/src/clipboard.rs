@@ -676,6 +676,28 @@ impl ClipboardPanel {
         cx.notify();
     }
 
+    /// Cuántas entradas se borraron aquí (siguen en `history.json`).
+    pub fn hidden_count(&self) -> usize {
+        self.local.hidden.len()
+    }
+
+    /// Vuelve a mostrar lo borrado aquí, releyendo el historial de Atic.
+    pub fn unhide_all(&mut self, cx: &mut Context<Self>) {
+        self.local.hidden.clear();
+        self.local.save();
+        let Some(dir) = history::dir() else {
+            cx.notify();
+            return;
+        };
+        cx.spawn(async move |this, cx| {
+            let loaded = cx.background_spawn(async move { history::load_if_changed(&dir, None) }).await;
+            if let Some((_, entries)) = loaded {
+                this.update(cx, |panel, cx| panel.set_entries(entries, cx)).ok();
+            }
+        })
+        .detach();
+    }
+
     fn remove(&mut self, index: usize, cx: &mut Context<Self>) {
         let entry = self.entries.remove(index);
         self.local.hidden.push(entry.key.to_string());
