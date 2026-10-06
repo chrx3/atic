@@ -10,6 +10,8 @@
 //!   estabas.
 //! - **Flip**: las páginas del tablero en miniatura; un clic abre esa.
 //! - **Sistema**: CPU, memoria y lo que más consume.
+//! - **Reuniones**: grabar (o la llamada detectada), lo que se graba y las
+//!   últimas reuniones con su estado (ver `meetings/pill.rs`).
 //!
 //! Aparece a los 450 ms (120 ms si ya había otro abierto: pasar de una
 //! herramienta a la vecina), se queda mientras el cursor esté en la
@@ -82,8 +84,15 @@ pub(crate) fn any_peek(tool: usize) -> bool {
 
 /// Las herramientas con vistazo aquí.
 fn has_peek(tool: usize) -> bool {
-    [crate::TEXTOS_TOOL, crate::SISTEMA_TOOL, crate::capture::TOOL, crate::color::TOOL, crate::flip::TOOL]
-        .contains(&tool)
+    [
+        crate::TEXTOS_TOOL,
+        crate::SISTEMA_TOOL,
+        crate::REUNIONES_TOOL,
+        crate::capture::TOOL,
+        crate::color::TOOL,
+        crate::flip::TOOL,
+    ]
+    .contains(&tool)
 }
 
 #[derive(Clone)]
@@ -126,6 +135,9 @@ pub(crate) struct ToolPeek {
     /// valor nuevo en vez de saltar.
     cpu: Tween,
     ram: Tween,
+    /// El alto del cuerpo de Reuniones: depende de la grabadora, que se lee
+    /// en cada sondeo (`meetings::peek_height`).
+    meetings_h: f32,
 }
 
 /// El reloj de la entrada del vistazo: cada cosa aparece un poco después
@@ -179,6 +191,7 @@ impl ToolPeek {
             press: None,
             cpu: Tween::new(0.0, Duration::from_millis(600), ease_smooth_out),
             ram: Tween::new(0.0, Duration::from_millis(600), ease_smooth_out),
+            meetings_h: 0.0,
         }
     }
 
@@ -235,6 +248,7 @@ impl ToolPeek {
             t if t == crate::flip::TOOL && narrow => self.data.pages.len().clamp(1, MAX_PAGES) as f32 * PAGE_ROW_H,
             t if t == crate::flip::TOOL => page_size(width).1 + PAGE_LABEL_H,
             t if t == crate::SISTEMA_TOOL => METER_H * 2.0 + 6.0 + SECTION_H + APP_ROW_H * 3.0,
+            t if t == crate::REUNIONES_TOOL => self.meetings_h,
             _ => 0.0,
         };
         TITLE_H + body + FOOTER_H + BOTTOM
@@ -243,7 +257,7 @@ impl ToolPeek {
 
 /// El ancho del vistazo: el de la tira abierta.
 fn peek_width() -> f32 {
-    crate::strip_open_length()
+    crate::strip_max_length()
 }
 
 fn shot_height(width: f32) -> f32 {
@@ -350,6 +364,10 @@ impl Pill {
                 if tool == crate::SISTEMA_TOOL {
                     self.system.update(cx, |panel, cx| panel.set_peek(true, false, cx));
                 }
+                // Atic puede haber grabado o resumido algo mientras tanto.
+                if tool == crate::REUNIONES_TOOL {
+                    self.studio.update(cx, |studio, _| studio.refresh_recent());
+                }
             }
             (None, _) => self.tool_peek.hover = None,
         }
@@ -419,6 +437,7 @@ impl Pill {
             }
         }
 
+        self.tool_peek.meetings_h = crate::meetings::peek_height(self.studio.read(cx));
         let narrow = self.side_drawers();
         let width = if narrow { crate::SIDE_W } else { peek_width() };
         if let Some(tool) = self.tool_peek.tool {
@@ -511,6 +530,11 @@ impl Pill {
             t if t == crate::TEXTOS_TOOL => ("Textos", "icons/text-align-start.svg", self.texts_body(&c, m, cx), "Ver todos los textos"),
             t if t == crate::flip::TOOL => ("Tablero", "icons/flip.svg", self.pages_body(width, narrow, &c, m, cx), "Abrir Flip"),
             t if t == crate::SISTEMA_TOOL => ("Sistema", "icons/cpu.svg", self.system_body(&c, m, now, cx), "Abrir Sistema"),
+            t if t == crate::REUNIONES_TOOL => {
+                let ink = crate::meetings::Ink { text: c.text, muted: c.muted, faint: c.faint };
+                let body = crate::meetings::peek_body(&self.studio, ink, cx);
+                ("Reuniones", crate::pill_tools::icon(crate::REUNIONES_TOOL), body, "Abrir Reuniones")
+            }
             _ => return None,
         };
         let hint = match tool {
@@ -518,6 +542,7 @@ impl Pill {
             t if t == crate::capture::TOOL => "clic copia · arrastra a otra app",
             t if t == crate::TEXTOS_TOOL => "clic pega donde estabas",
             t if t == crate::flip::TOOL => "clic abre la página",
+            t if t == crate::REUNIONES_TOOL => crate::meetings::MEET_TOOL_HINT,
             _ => "",
         };
         // El contenido entra cuando la franja ya casi bajó, y al cambiar de

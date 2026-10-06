@@ -25,7 +25,7 @@ use windows::UI::Composition::{
     CompositionEllipseGeometry, CompositionGeometricClip, CompositionRoundedRectangleGeometry,
     Compositor, ContainerVisual, SpriteVisual,
 };
-use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWINDOWATTRIBUTE};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::WinRT::Composition::ICompositorDesktopInterop;
@@ -33,9 +33,11 @@ use windows::Win32::System::WinRT::{
     CreateDispatcherQueueController, DispatcherQueueOptions, DQTAT_COM_NONE, DQTYPE_THREAD_CURRENT,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, RegisterClassW, SetWindowPos, ShowWindow, HTTRANSPARENT,
+    CreateWindowExW, DefWindowProcW, GetClientRect, RegisterClassW, SetWindowDisplayAffinity, SetWindowPos,
+    ShowWindow, HTTRANSPARENT, WDA_EXCLUDEFROMCAPTURE,
     SWP_NOACTIVATE, SWP_SHOWWINDOW, SW_HIDE, WM_NCHITTEST, WNDCLASSW, WS_EX_NOACTIVATE,
-    WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    WS_EX_LAYERED, WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
+    WS_POPUP,
 };
 
 use crate::geometry::Rect;
@@ -54,6 +56,27 @@ pub enum Shape {
 
 pub fn enabled() -> bool {
     std::env::var("PILL_GLASS").as_deref() != Ok("off")
+}
+
+/// Si Windows da el fondo desenfocado. Con los «Efectos de transparencia»
+/// apagados (o con el ahorro de energía) `HostBackdropBrush` sale negro, y la
+/// pill tiene que usar su piel sin vidrio. Se relee cada segundo: se puede
+/// cambiar con la pill abierta.
+pub fn backdrop_available() -> bool {
+    static CACHE: std::sync::Mutex<Option<(std::time::Instant, bool)>> = std::sync::Mutex::new(None);
+    let Ok(mut cache) = CACHE.lock() else {
+        return true;
+    };
+    if let Some((at, on)) = *cache {
+        if at.elapsed() < std::time::Duration::from_secs(1) {
+            return on;
+        }
+    }
+    let on = windows::UI::ViewManagement::UISettings::new()
+        .and_then(|settings| settings.AdvancedEffectsEnabled())
+        .unwrap_or(true);
+    *cache = Some((std::time::Instant::now(), on));
+    on
 }
 
 /// Lo que se le pidió a Windows la última vez, en píxeles físicos: si no
@@ -165,7 +188,15 @@ impl Glass {
             ..Default::default()
         });
         let hwnd = CreateWindowExW(
-            WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST | WS_EX_NOREDIRECTIONBITMAP,
+            // Cubre todo el overlay: `LAYERED | TRANSPARENT` deja pasar los
+            // clics a cualquier ventana de abajo (`HTTRANSPARENT` solo llega a
+            // las del mismo hilo).
+            WS_EX_TOOLWINDOW
+                | WS_EX_NOACTIVATE
+                | WS_EX_TOPMOST
+                | WS_EX_NOREDIRECTIONBITMAP
+                | WS_EX_LAYERED
+                | WS_EX_TRANSPARENT,
             class,
             w!(""),
             WS_POPUP,
@@ -185,6 +216,9 @@ impl Glass {
             &on as *const i32 as *const _,
             std::mem::size_of::<i32>() as u32,
         )?;
+        // Siempre fuera de capturas, grabaciones y pantalla compartida: no
+        // tiene contenido propio, y ahí el fondo desenfocado sale negro.
+        let _ = SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE);
 
         let compositor = Compositor::new()?;
         let interop: ICompositorDesktopInterop = compositor.cast()?;
@@ -225,29 +259,31 @@ impl Glass {
             Shape::Pair { a, b } => (a, Some(b), false),
             Shape::Circle { center, r } => ((Rect::centered(center, r * 2.0, r * 2.0), [r; 4]), None, true),
         };
-        // La ventana cubre las dos piezas; cada una va relativa a ella. Todo
-        // se redondea en píxeles físicos desde el mismo origen, así las
-        // piezas se tocan sin una raya entre ellas.
+        // La ventana queda fija sobre el área cliente del overlay y solo se
+        // mueven los recortes: mover la ventana y cambiar el recorte en el
+        // mismo cuadro no llegaban juntos a la pantalla, y el vidrio quedaba
+        // corrido de la piel. Los cambios de Composition sí salen todos en un
+        // mismo lote. Cada pieza va en píxeles físicos desde el origen del
+        // overlay, así las dos se tocan sin una raya entre ellas.
+        let mut client = RECT::default();
+        if unsafe { GetClientRect(above, &mut client) }.is_err() {
+            return;
+        }
         let px = |v: f32| (v * scale).round() as i32;
-        let (x0, y0) = (px(a.0.x.min(b.map_or(a.0.x, |b| b.0.x))), px(a.0.y.min(b.map_or(a.0.y, |b| b.0.y))));
-        let (x1, y1) = match b {
-            Some(b) => (px(a.0.right().max(b.0.right())), px(a.0.bottom().max(b.0.bottom()))),
-            None => (x0 + px(a.0.w), y0 + px(a.0.h)),
-        };
         let pair = b.is_some();
         let piece = |(rect, radii): (Rect, [f32; 4])| Piece {
-            x: px(rect.x) - x0,
-            y: px(rect.y) - y0,
+            x: px(rect.x),
+            y: px(rect.y),
             // Sola, como siempre; de a dos, de borde a borde para que se toquen.
             w: if pair { px(rect.right()) - px(rect.x) } else { px(rect.w) }.max(1),
             h: if pair { px(rect.bottom()) - px(rect.y) } else { px(rect.h) }.max(1),
             radii: radii.map(px),
         };
         let placed = Placed {
-            x: origin.0 + x0,
-            y: origin.1 + y0,
-            w: (x1 - x0).max(1),
-            h: (y1 - y0).max(1),
+            x: origin.0,
+            y: origin.1,
+            w: (client.right - client.left).max(1),
+            h: (client.bottom - client.top).max(1),
             a: piece(a),
             b: b.map(piece),
             circle,
@@ -259,22 +295,29 @@ impl Glass {
             .placed
             .is_none_or(|old| old.a != placed.a || old.b != placed.b || old.circle != circle);
         let switched = self.placed.is_none_or(|old| old.circle != circle);
+        // La ventana solo se toca al mostrarse o si el overlay cambió de
+        // monitor o de tamaño.
+        let moved = self
+            .placed
+            .is_none_or(|old| (old.x, old.y, old.w, old.h) != (placed.x, placed.y, placed.w, placed.h));
         self.placed = Some(placed);
         if reshaped {
             if let Err(error) = self.reshape(&placed, switched) {
                 eprintln!("vidrio: {error}");
             }
         }
-        unsafe {
-            let _ = SetWindowPos(
-                self.hwnd,
-                Some(above),
-                placed.x,
-                placed.y,
-                placed.w,
-                placed.h,
-                SWP_NOACTIVATE | SWP_SHOWWINDOW,
-            );
+        if moved {
+            unsafe {
+                let _ = SetWindowPos(
+                    self.hwnd,
+                    Some(above),
+                    placed.x,
+                    placed.y,
+                    placed.w,
+                    placed.h,
+                    SWP_NOACTIVATE | SWP_SHOWWINDOW,
+                );
+            }
         }
     }
 

@@ -19,6 +19,14 @@ mod chime;
 mod live;
 mod motion;
 mod recorder;
+mod detect;
+mod pill;
+
+pub use recorder::{stopwatch, studio, Stage, Studio};
+pub use pill::{peek_body, peek_height, Ink, MEET_TOOL_HINT};
+
+/// El rojo de grabar: el punto del tab y el de la ventana.
+pub const RECORD_RED: u32 = RED;
 mod row_peek;
 mod search;
 mod import;
@@ -105,6 +113,20 @@ pub fn show(cx: &mut App) {
     }
 }
 
+/// Muestra la ventana con esa reunión elegida.
+pub fn show_meeting(id: String, cx: &mut App) {
+    show(cx);
+    let Some(handle) = cx.windows().into_iter().find_map(|w| w.downcast::<MeetingsView>()) else {
+        return;
+    };
+    let _ = handle.update(cx, |view, _, cx| {
+        view.reload(cx);
+        if let Some(ix) = view.items.iter().position(|r| r.id == id) {
+            view.select(ix, cx);
+        }
+    });
+}
+
 pub fn open_window(cx: &mut App) -> anyhow::Result<WindowHandle<MeetingsView>> {
     let options = gpui::WindowOptions {
         titlebar: Some(gpui::TitlebarOptions {
@@ -155,7 +177,8 @@ pub struct MeetingsView {
     detail: Option<Detail>,
     focus: FocusHandle,
     detail_scroll: ScrollHandle,
-    recorder: recorder::Recorder,
+    /// La grabadora de la app (`recorder::Studio`), compartida con la pill.
+    studio: gpui::Entity<recorder::Studio>,
     player: player_view::PlayerUi,
     ops: actions::Ops,
     /// Los ajustes abiertos en lugar de la lista y el detalle.
@@ -195,7 +218,7 @@ impl MeetingsView {
             detail: None,
             focus,
             detail_scroll: ScrollHandle::new(),
-            recorder: Default::default(),
+            studio: recorder::studio(cx),
             player: Default::default(),
             ops: Default::default(),
             settings: None,

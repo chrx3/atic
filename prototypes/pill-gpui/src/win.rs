@@ -3,19 +3,84 @@
 
 use gpui::Window;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-use windows::Win32::Foundation::{HWND, POINT, RECT};
+use windows::core::BOOL;
+use windows::Win32::Foundation::{HWND, LPARAM, POINT, RECT};
 use windows::Win32::Graphics::Dwm::{
     DwmSetWindowAttribute, DWMNCRP_DISABLED, DWMWA_BORDER_COLOR, DWMWA_COLOR_NONE,
     DWMWA_NCRENDERING_POLICY, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND,
 };
-use windows::Win32::Graphics::Gdi::ClientToScreen;
+use windows::Win32::Graphics::Gdi::{
+    ClientToScreen, EnumDisplayMonitors, GetMonitorInfoW, MonitorFromPoint, MonitorFromWindow,
+    HDC, HMONITOR, MONITORINFO, MONITOR_DEFAULTTONEAREST, MONITOR_DEFAULTTONULL,
+};
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON, VK_MENU};
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetCursorPos, GetSystemMetrics, GetWindow, GetWindowLongPtrW, SetForegroundWindow,
-    SetWindowDisplayAffinity, SetWindowLongPtrW, SetWindowPos, WDA_EXCLUDEFROMCAPTURE, WDA_NONE, SystemParametersInfoW, GWL_EXSTYLE, GW_HWNDPREV, HWND_TOPMOST, SM_CXSCREEN, SM_CYSCREEN,
-    SPI_GETWORKAREA, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
-    WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
+    GetClientRect, GetCursorPos, GetWindow, GetWindowLongPtrW, GetWindowRect, SetForegroundWindow,
+    SetWindowDisplayAffinity, SetWindowLongPtrW, SetWindowPos, WDA_EXCLUDEFROMCAPTURE, WDA_NONE, GWL_EXSTYLE,
+    GW_HWNDPREV, HWND_TOPMOST,
+    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOPMOST,
+    WS_EX_TRANSPARENT,
 };
+
+use crate::geometry::{Edge, Rect};
+
+/// Un monitor, en píxeles físicos de pantalla.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Screen {
+    pub monitor: RECT,
+    /// Sin la barra de tareas.
+    pub work: RECT,
+}
+
+impl Screen {
+    fn of(monitor: HMONITOR) -> Option<Self> {
+        let mut info = MONITORINFO {
+            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
+        unsafe { GetMonitorInfoW(monitor, &mut info) }
+            .as_bool()
+            .then_some(Self {
+                monitor: info.rcMonitor,
+                work: info.rcWork,
+            })
+    }
+
+    /// El monitor cuya esquina de arriba a la izquierda es `(x, y)`.
+    pub fn at_origin(x: i32, y: i32) -> Option<Self> {
+        let screen = Self::of(unsafe { MonitorFromPoint(POINT { x, y }, MONITOR_DEFAULTTONULL) })?;
+        (screen.monitor.left == x && screen.monitor.top == y).then_some(screen)
+    }
+
+    /// Bordes que dan al vacío, sin otro monitor pegado.
+    pub fn outer_edges(&self) -> Vec<Edge> {
+        let all: Vec<Rect> = all_monitors().iter().map(physical).collect();
+        crate::geometry::outer_edges(&physical(&self.monitor), &all)
+    }
+}
+
+fn physical(rect: &RECT) -> Rect {
+    Rect::new(
+        rect.left as f32,
+        rect.top as f32,
+        (rect.right - rect.left) as f32,
+        (rect.bottom - rect.top) as f32,
+    )
+}
+
+/// Todos los monitores, en píxeles físicos.
+fn all_monitors() -> Vec<RECT> {
+    unsafe extern "system" fn push(_: HMONITOR, _: HDC, rect: *mut RECT, data: LPARAM) -> BOOL {
+        let list = unsafe { &mut *(data.0 as *mut Vec<RECT>) };
+        list.push(unsafe { *rect });
+        true.into()
+    }
+    let mut list: Vec<RECT> = Vec::new();
+    unsafe {
+        let _ = EnumDisplayMonitors(None, None, Some(push), LPARAM(&mut list as *mut _ as isize));
+    }
+    list
+}
 
 pub struct Overlay {
     hwnd: HWND,
@@ -162,39 +227,50 @@ impl Overlay {
             .then_some(origin)
     }
 
-    /// El monitor principal entero, en coordenadas lógicas de la ventana.
-    pub fn monitor_area(&self, scale_factor: f32) -> Option<crate::geometry::Rect> {
-        let origin = self.client_origin()?;
-        let (width, height) =
-            unsafe { (GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)) };
-        Some(crate::geometry::Rect::new(
-            -origin.x as f32 / scale_factor,
-            -origin.y as f32 / scale_factor,
-            width as f32 / scale_factor,
-            height as f32 / scale_factor,
-        ))
+    /// El monitor en que está la ventana.
+    pub fn screen(&self) -> Option<Screen> {
+        Screen::of(unsafe { MonitorFromWindow(self.hwnd, MONITOR_DEFAULTTONEAREST) })
     }
 
-    /// Área de trabajo del monitor principal (sin la barra de tareas), en
-    /// coordenadas lógicas de la ventana. GPUI no la expone.
-    pub fn work_area(&self, scale_factor: f32) -> Option<crate::geometry::Rect> {
-        unsafe {
-            let mut work = RECT::default();
-            SystemParametersInfoW(
-                SPI_GETWORKAREA,
-                0,
-                Some(&mut work as *mut RECT as *mut _),
-                SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
-            )
-            .ok()?;
-            let origin = self.client_origin()?;
-            Some(crate::geometry::Rect::new(
-                (work.left - origin.x) as f32 / scale_factor,
-                (work.top - origin.y) as f32 / scale_factor,
-                (work.right - work.left) as f32 / scale_factor,
-                (work.bottom - work.top) as f32 / scale_factor,
-            ))
-        }
+    /// El monitor bajo el cursor.
+    pub fn screen_under_cursor(&self) -> Option<Screen> {
+        let mut cursor = POINT::default();
+        unsafe { GetCursorPos(&mut cursor) }.ok()?;
+        Screen::of(unsafe { MonitorFromPoint(cursor, MONITOR_DEFAULTTONULL) })
+    }
+
+    /// Pasa la ventana a cubrir `screen` entero.
+    ///
+    /// Desde otro hilo: si el monitor tiene otra escala, Windows le manda a la
+    /// ventana `WM_DPICHANGED` y GPUI la redimensiona y avisa a la app, que
+    /// ahora mismo está ocupada en este cuadro. Así lo atiende su propio hilo
+    /// después. Ese cambio de escala llega más tarde y GPUI le pone a la
+    /// ventana el rectángulo que sugiere Windows, escalado desde el monitor
+    /// anterior: por eso se reintenta hasta que el área cliente calce.
+    pub fn move_to(&self, screen: &Screen) {
+        let hwnd = self.hwnd.0 as isize;
+        let target = screen.monitor;
+        std::thread::spawn(move || {
+            let hwnd = HWND(hwnd as *mut _);
+            for _ in 0..10 {
+                if client_rect(hwnd) == Some(target) {
+                    break;
+                }
+                place_client(hwnd, &target);
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        });
+    }
+
+    /// Un rectángulo de pantalla en coordenadas lógicas de la ventana.
+    pub fn to_logical(&self, rect: &RECT, scale_factor: f32) -> Option<Rect> {
+        let origin = self.client_origin()?;
+        Some(Rect::new(
+            (rect.left - origin.x) as f32 / scale_factor,
+            (rect.top - origin.y) as f32 / scale_factor,
+            (rect.right - rect.left) as f32 / scale_factor,
+            (rect.bottom - rect.top) as f32 / scale_factor,
+        ))
     }
 
     /// Cursor global en coordenadas lógicas de la ventana.
@@ -208,6 +284,48 @@ impl Overlay {
                 (cursor.y - origin.y) as f32 / scale_factor,
             ))
         }
+    }
+}
+
+/// El área cliente en pantalla, en píxeles físicos.
+fn client_rect(hwnd: HWND) -> Option<RECT> {
+    let mut origin = POINT::default();
+    let mut size = RECT::default();
+    unsafe {
+        if !ClientToScreen(hwnd, &mut origin).as_bool() {
+            return None;
+        }
+        GetClientRect(hwnd, &mut size).ok()?;
+    }
+    Some(RECT {
+        left: origin.x,
+        top: origin.y,
+        right: origin.x + size.right,
+        bottom: origin.y + size.bottom,
+    })
+}
+
+/// Mueve la ventana para que su área cliente (lo que dibuja GPUI) sea
+/// `target`. La ventana tiene bordes invisibles alrededor; si se ubicara el
+/// rectángulo de la ventana, todo quedaría corrido unos píxeles.
+fn place_client(hwnd: HWND, target: &RECT) {
+    let mut outer = RECT::default();
+    if unsafe { GetWindowRect(hwnd, &mut outer) }.is_err() {
+        return;
+    }
+    let Some(client) = client_rect(hwnd) else {
+        return;
+    };
+    unsafe {
+        let _ = SetWindowPos(
+            hwnd,
+            Some(HWND_TOPMOST),
+            target.left - (client.left - outer.left),
+            target.top - (client.top - outer.top),
+            (target.right - target.left) + (outer.right - outer.left) - (client.right - client.left),
+            (target.bottom - target.top) + (outer.bottom - outer.top) - (client.bottom - client.top),
+            SWP_NOACTIVATE,
+        );
     }
 }
 

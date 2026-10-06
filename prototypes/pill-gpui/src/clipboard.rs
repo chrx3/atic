@@ -31,7 +31,7 @@ pub const PANEL_H: f32 = 460.0;
 /// La franja del notch, que con el panel abierto es el buscador.
 pub const BAND_H: f32 = 40.0;
 /// Hueco a la izquierda del buscador donde el notch pinta su marca.
-const MARK_GAP: f32 = 40.0;
+pub(crate) const MARK_GAP: f32 = 40.0;
 const STRIP_H: f32 = 52.0;
 const STRIP_PAD: f32 = 10.0;
 /// Un texto más largo que esto merece vista previa: en la fila no cabe.

@@ -1,6 +1,6 @@
 //! Geometría del acoplado: bordes, área de trabajo y dónde va la pill.
 //! Reglas de `edgeDock.ts`; todo en píxeles lógicos de la
-//! ventana del overlay, que cubre el monitor principal.
+//! ventana del overlay, que cubre el monitor donde está la pill.
 
 /// Lo que hay que alejarse del borde para soltar el tab (`DOCK_RELEASE_PX`).
 pub const UNDOCK_DISTANCE: f32 = 64.0;
@@ -280,6 +280,40 @@ pub fn dockable_edges(monitor: &Rect, work: &Rect) -> Vec<Edge> {
     edges
 }
 
+/// Bordes de `monitor` que dan al vacío: los que no tienen otro monitor
+/// pegado (`isOuterEdge` en Atic). Con dos pantallas lado a lado, el canto
+/// entre ellas es la mitad del escritorio, no un borde donde acoplar. Todo en
+/// píxeles físicos, para que escalas distintas no descuadren los cantos.
+pub fn outer_edges(monitor: &Rect, all: &[Rect]) -> Vec<Edge> {
+    const TOLERANCE: f32 = 1.0;
+    let touches = |a: f32, b: f32| (a - b).abs() <= TOLERANCE;
+    let overlaps = |a0: f32, a1: f32, b0: f32, b1: f32| a1.min(b1) - a0.max(b0) > TOLERANCE;
+    let blocked = |edge: Edge| {
+        all.iter().filter(|other| *other != monitor).any(|other| match edge {
+            Edge::Left => {
+                touches(other.right(), monitor.x)
+                    && overlaps(monitor.y, monitor.bottom(), other.y, other.bottom())
+            }
+            Edge::Right => {
+                touches(other.x, monitor.right())
+                    && overlaps(monitor.y, monitor.bottom(), other.y, other.bottom())
+            }
+            Edge::Top => {
+                touches(other.bottom(), monitor.y)
+                    && overlaps(monitor.x, monitor.right(), other.x, other.right())
+            }
+            Edge::Bottom => {
+                touches(other.y, monitor.bottom())
+                    && overlaps(monitor.x, monitor.right(), other.x, other.right())
+            }
+        })
+    };
+    [Edge::Left, Edge::Right, Edge::Top, Edge::Bottom]
+        .into_iter()
+        .filter(|&edge| !blocked(edge))
+        .collect()
+}
+
 /// Al soltar la gota: el borde más cercano a `DOCK_SNAP` o menos. En una
 /// esquina ganan izquierda y derecha, porque se revisan primero y el empate
 /// no reemplaza (`dockCandidate`).
@@ -348,6 +382,26 @@ mod tests {
         let edges = dockable_edges(&MONITOR, &WORK);
         assert!(!edges.contains(&Edge::Bottom));
         assert!(edges.contains(&Edge::Top) && edges.contains(&Edge::Left));
+    }
+
+    #[test]
+    fn el_canto_entre_dos_pantallas_no_es_exterior() {
+        // El notebook a la izquierda (1920 físicos al 125 %) y el principal.
+        let laptop = Rect::new(-1920.0, 0.0, 1920.0, 1080.0);
+        let main = Rect::new(0.0, 0.0, 1920.0, 1080.0);
+        let all = [laptop, main];
+        assert_eq!(outer_edges(&main, &all), vec![Edge::Right, Edge::Top, Edge::Bottom]);
+        assert_eq!(outer_edges(&laptop, &all), vec![Edge::Left, Edge::Top, Edge::Bottom]);
+        // Solo, los cuatro.
+        assert_eq!(outer_edges(&main, &[main]).len(), 4);
+    }
+
+    #[test]
+    fn el_techo_de_una_pantalla_mas_baja_al_lado_es_exterior() {
+        let tall = Rect::new(0.0, 0.0, 1536.0, 960.0);
+        let low = Rect::new(1536.0, 240.0, 1280.0, 720.0);
+        let edges = outer_edges(&low, &[tall, low]);
+        assert!(edges.contains(&Edge::Top) && !edges.contains(&Edge::Left));
     }
 
     #[test]

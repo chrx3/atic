@@ -363,10 +363,32 @@ un tamaño de letra nuevo y hay que rasterizarlo.
   - GPUI no tiene 3D: la tarjeta son 120 tiras verticales de la captura, cada
     una con su escala y sombra según la profundidad.
   - Esc o clic fuera la vuelve a poner en su sitio.
-  - El reverso es el tablero de Atic (`src/flip_board.rs`): hojas de
-    1200×900 que leen y escriben el mismo `notes/atic-tablero/note.json`
-    (`ATIC_NOTES_DIR`). Tiene cajas de texto, listas, imágenes, tinta,
-    deshacer/rehacer, páginas y autoguardado.
+  - El reverso es el tablero de Atic (`src/flip_board.rs`): un papel continuo
+    de páginas de 1200×900 que lee y escribe el mismo
+    `notes/atic-tablero/note.json` (`ATIC_NOTES_DIR`). Tiene cajas de texto,
+    listas, imágenes, tinta, deshacer/rehacer y autoguardado. Se maneja como
+    `FlipBoard.svelte`:
+    - Zoom de 30 a 240 % con Ctrl+rueda (hacia el cursor) o con − % + arriba
+      (el % vuelve a encuadrar). La rueda sola mueve el papel; también la mano
+      (M), Espacio y el botón del medio.
+    - La tira de miniaturas abajo: cada página con su contenido, clic para ir,
+      ✕ para eliminarla (pregunta si tiene algo) y + para añadir.
+    - El dock flotante abajo: Mover (V), Mano (M), Lápiz (P), Resaltador (H),
+      Borrador (E), Texto (T) y Lista (L). Texto y lista se ponen donde haces
+      clic. Lápices y borrador abren su paleta; el borrador tiene tres tamaños
+      (`[` `]`), muestra su alcance y un clic sin arrastrar borra la línea
+      entera.
+    - Recuadro desde el papel vacío y Ctrl+A eligen varios; «Borrar N» o Supr
+      piden confirmar. Las flechas mueven lo elegido (Shift: de a 1 px).
+    - Las cajas de texto se ajustan solas a lo escrito (ancho de 160 a 560 y
+      alto) y, si no entra, la letra se achica hasta 8,5.
+    - Falta respecto de Atic: elegir, mover y escalar trazos sueltos, editar
+      listas ítem por ítem, el agarre y la ✕ de cada bloque, la pestaña
+      Reuniones del cajón, la vista previa antes de insertar y arrastrar del
+      cajón al papel.
+    - Al guardar no pierde nada: conserva los bloques que no reconoce, deja una
+      nota ilegible al lado como `note.roto.json` y, al cerrar, borra las
+      imágenes que ya no usa ninguna página.
   - **Cajón**: historial, textos y capturas recientes para insertar.
   - **Exportar**: PNG, JPEG, PDF, Word y PowerPoint a
     `Documentos\Tableros de Atic\` (`src/flip_export.rs`, copiado de Atic).
@@ -375,8 +397,9 @@ Reuniones, Sistema y Más todavía solo imprimen su nombre.
 
 ## Limitaciones conocidas
 
-- Solo el monitor principal; Atic acopla en los bordes exteriores de cualquier
-  monitor.
+- La pill vive en un monitor a la vez: al arrastrarla a otro, la ventana del
+  overlay se va con ella, y se acopla solo en bordes exteriores (como Atic).
+  `flip.rs` todavía mide la pantalla principal (`SM_CXSCREEN`).
 - No hay fuente Aptos en esta máquina; se usa Segoe UI.
 - En el vuelo al notch la gota viaja como círculo y al llegar pasa a tab de
   golpe (lo suaviza el aplastón). No hay morph continuo entre las formas.

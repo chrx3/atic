@@ -76,7 +76,7 @@ impl Pill {
         let view = self.usage.view();
         let narrow = self.side_drawers();
         if view.editing {
-            let width = if narrow { crate::SIDE_W } else { crate::strip_open_length().max(PANEL_W) };
+            let width = if narrow { crate::SIDE_W } else { crate::strip_max_length().max(PANEL_W) };
             let per = per_line(width);
             let (shown, out) = arranged(&snap, &prefs);
             let note = if view.refused { NOTE_H } else { 0.0 };

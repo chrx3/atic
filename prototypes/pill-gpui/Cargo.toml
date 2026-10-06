@@ -95,6 +95,7 @@ windows = { version = "0.61", features = [
     "System",
     "UI_Composition",
     "UI_Composition_Desktop",
+    "UI_ViewManagement",
     "Win32_System_WinRT_Composition",
     "Graphics_Imaging",
     "Media_Ocr",

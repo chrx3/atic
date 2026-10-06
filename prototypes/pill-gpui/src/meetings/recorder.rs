@@ -1,27 +1,37 @@
-//! Grabar desde la ventana de Reuniones, como `start_capture`/`stop_capture`
-//! de `apps/desktop/src-tauri/src/state.rs`: la misma configuración de Atic
+//! Grabar, como `start_capture`/`stop_capture` de
+//! `apps/desktop/src-tauri/src/state.rs`: la misma configuración de Atic
 //! (`config.json`: pistas, micrófono, supresión de ruido, subtítulos), los
 //! mismos WAV (`recordings/<id>/{mic,system}.wav`) y la misma fila en la base.
+//!
+//! La grabadora es una sola para toda la app (`Studio`, un global): la usan la
+//! ventana de Reuniones y la pill, y sigue grabando aunque la ventana se
+//! cierre. Al detenerla, si la ventana está abierta, ella elige la reunión y la
+//! transcribe; si no, lo hace la grabadora, para que la pill muestre el avance.
 //!
 //! Abrir y cerrar el audio (enumerar dispositivos, esperar a que el stream
 //! arranque, cerrar los WAV, escribir la base) va fuera del hilo de UI. Lo que
 //! se mueve mientras se graba (cronómetro, niveles, el punto que late) pide
 //! cuadros a ~20 fps solo mientras hay grabación; quieto, nada.
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use atic_audio::{CaptureConfig, CaptureEvent, CaptureHandle, CaptureSession, CaptureSummary};
 use atic_core::{Recording, RecordingStatus};
+use atic_summarize::SummaryTemplate;
 use chrono::{DateTime, Local, Utc};
+use futures::StreamExt;
 use gpui::{
-    actions, div, prelude::*, px, AnyElement, App, ClickEvent, Context, FontWeight,
-    KeyBinding, SharedString,
+    actions, div, prelude::*, px, AnyElement, App, ClickEvent, Context, Entity, EventEmitter,
+    FontWeight, Global, KeyBinding, SharedString,
 };
 
-use super::data::Paths;
+use super::data::{Paths, Source};
+use super::detect::{self, Call};
 use super::live::{self, Plan};
+use super::pipeline::{self, Job, Update};
 use super::{chime, hsla, text, MeetingsView};
 use super::{BLUE, FAINT, ITEM, LILAC, MUTED, R_PANEL, RED, SURFACE_ON, TEXT};
 use crate::hover::{self, HoverExt};
@@ -45,17 +55,58 @@ const SEGMENTS: usize = 22;
 const CAPTION_LINES: usize = 3;
 /// Bajo este RMS de pico una pista se considera muda (el umbral de Atic).
 const SILENT_RMS: f32 = 0.0015;
+/// Reuniones recientes que se guardan para la pill.
+const RECENT: usize = 3;
 
-/// Cómo va la grabación de esta ventana.
-#[derive(Default)]
-pub struct Recorder {
+/// La grabadora de la app y lo que pasó después: los trabajos que lanzó ella
+/// (sin la ventana abierta), las reuniones recientes y la llamada detectada.
+pub struct Studio {
+    paths: Option<Paths>,
     phase: Phase,
     /// Lo que quedó de la última grabación (pista muda) o por qué no empezó.
     notice: Option<Notice>,
     /// Los niveles a la vista, suavizados (0..1).
     shown: (f32, f32),
     ticking: bool,
+    /// Trabajos lanzados por la grabadora: id → trabajo y avance (0..1).
+    jobs: HashMap<String, (Job, f32)>,
+    /// Las últimas reuniones, con la primera línea de su resumen si tienen.
+    recent: Vec<(Recording, Option<String>)>,
+    call: detect::Seen,
     _quit: Option<gpui::Subscription>,
+}
+
+/// Lo que avisa la grabadora.
+pub enum StudioEvent {
+    /// Se guardó una grabación nueva.
+    Saved(String),
+}
+
+impl EventEmitter<StudioEvent> for Studio {}
+
+struct GlobalStudio(Entity<Studio>);
+
+impl Global for GlobalStudio {}
+
+/// La grabadora de la app; se crea la primera vez que alguien la pide.
+pub fn studio(cx: &mut App) -> Entity<Studio> {
+    if let Some(global) = cx.try_global::<GlobalStudio>() {
+        return global.0.clone();
+    }
+    let entity = cx.new(Studio::new);
+    cx.set_global(GlobalStudio(entity.clone()));
+    entity
+}
+
+/// En qué está la grabadora, para dibujarla.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Stage {
+    Idle,
+    /// Pregunta por el Bluetooth.
+    Confirm,
+    Starting,
+    Recording,
+    Stopping,
 }
 
 #[derive(Default)]
@@ -210,6 +261,14 @@ fn ease(shown: f32, target: f32) -> f32 {
     shown + (target - shown) * k
 }
 
+/// La primera línea con texto de un resumen, sin marcas de Markdown.
+fn first_line(body: &str) -> Option<String> {
+    body.lines()
+        .map(|l| l.trim().trim_start_matches(['#', '-', '*', '•']).trim())
+        .find(|l| !l.is_empty())
+        .map(str::to_string)
+}
+
 fn first_upper(text: String) -> String {
     let mut chars = text.chars();
     match chars.next() {
@@ -348,11 +407,228 @@ fn begin(paths: Paths, allow_bluetooth: bool) -> Result<Active, StartError> {
     })
 }
 
-// --- La vista ---------------------------------------------------------------------
+// --- La grabadora -----------------------------------------------------------------
 
-impl Recorder {
+impl Studio {
+    fn new(cx: &mut Context<Self>) -> Self {
+        let paths = Source::open().ok().and_then(|source| source.paths().cloned());
+        // Si la app se cierra grabando, se guarda antes de salir.
+        let quit = cx.on_app_quit(|studio: &mut Studio, _| {
+            if let Phase::Recording(active) = &mut studio.phase {
+                active.finish();
+            }
+            async {}
+        });
+        let mut studio = Self {
+            call: detect::spawn(paths.clone()),
+            paths,
+            phase: Phase::Idle,
+            notice: None,
+            shown: (0.0, 0.0),
+            ticking: false,
+            jobs: HashMap::new(),
+            recent: Vec::new(),
+            _quit: Some(quit),
+        };
+        studio.refresh_recent();
+        studio
+    }
+
+    // --- Lo que se lee para dibujar ---
+
+    pub fn can_record(&self) -> bool {
+        self.paths.is_some()
+    }
+
     pub fn recording(&self) -> bool {
         matches!(self.phase, Phase::Recording(_))
+    }
+
+    pub fn stage(&self) -> Stage {
+        match self.phase {
+            Phase::Idle => Stage::Idle,
+            Phase::Confirm(_) => Stage::Confirm,
+            Phase::Starting => Stage::Starting,
+            Phase::Recording(_) => Stage::Recording,
+            Phase::Stopping(_) => Stage::Stopping,
+        }
+    }
+
+    /// Lo grabado hasta ahora (quieto mientras se guarda).
+    pub fn elapsed(&self) -> Option<Duration> {
+        match &self.phase {
+            Phase::Recording(active) => Some(active.started.elapsed()),
+            Phase::Stopping(elapsed) => Some(*elapsed),
+            _ => None,
+        }
+    }
+
+    /// Los niveles a la vista (0..1) y qué pistas se graban.
+    pub fn levels(&self) -> Option<((f32, f32), Tracks)> {
+        match &self.phase {
+            Phase::Recording(active) => Some((self.shown, active.tracks)),
+            _ => None,
+        }
+    }
+
+    /// El aviso de la grabación en curso: una pista que falla, subtítulos que
+    /// no corren o el Bluetooth aceptado.
+    pub fn live_note(&self) -> Option<String> {
+        let Phase::Recording(active) = &self.phase else {
+            return None;
+        };
+        let warning = active.levels.warning.lock().ok().and_then(|w| w.clone());
+        warning.or_else(|| active.note.clone())
+    }
+
+    pub fn title(&self) -> Option<&str> {
+        match &self.phase {
+            Phase::Recording(active) => Some(&active.recording.title),
+            _ => None,
+        }
+    }
+
+    /// Las últimas `n` líneas de los subtítulos, la parcial y el error.
+    pub fn captions(&self, n: usize) -> Option<(Vec<live::Line>, Option<live::Line>, Option<String>)> {
+        let Phase::Recording(active) = &self.phase else {
+            return None;
+        };
+        let worker = active.live.as_ref()?;
+        let captions = worker.captions.lock().ok()?;
+        let skip = captions.lines.len().saturating_sub(n);
+        Some((
+            captions.lines.iter().skip(skip).cloned().collect(),
+            captions.partial.clone(),
+            captions.error.clone(),
+        ))
+    }
+
+    pub fn confirm_message(&self) -> Option<&str> {
+        match &self.phase {
+            Phase::Confirm(message) => Some(message),
+            _ => None,
+        }
+    }
+
+    /// El aviso de la última grabación y si es un error.
+    pub fn notice(&self) -> Option<(&str, bool)> {
+        self.notice.as_ref().map(|n| (n.text.as_str(), n.error))
+    }
+
+    /// El punto rojo late suave mientras se graba; si no, quieto y entero.
+    pub fn pulse(&self) -> f32 {
+        match &self.phase {
+            Phase::Recording(active) => {
+                let t = active.started.elapsed().as_secs_f32();
+                0.55 + 0.45 * (0.5 + 0.5 * (t * std::f32::consts::TAU / 1.6).cos())
+            }
+            _ => 1.0,
+        }
+    }
+
+    /// Un trabajo que lanzó la grabadora sobre esa reunión, con su avance.
+    pub fn job(&self, id: &str) -> Option<(Job, f32)> {
+        self.jobs.get(id).copied()
+    }
+
+    /// Las últimas reuniones y la primera línea de su resumen, para la pill.
+    pub fn recent(&self) -> &[(Recording, Option<String>)] {
+        &self.recent
+    }
+
+    /// La llamada que se ve en pantalla, si la detección está activada.
+    pub fn call(&self) -> Option<Call> {
+        self.call.lock().ok().and_then(|c| c.clone())
+    }
+
+    /// Relee las reuniones recientes: Atic puede haber grabado o resumido algo.
+    pub fn refresh_recent(&mut self) {
+        let Some(paths) = self.paths.clone() else {
+            return;
+        };
+        let source = Source::Atic(paths);
+        if let Ok(mut items) = source.list() {
+            items.truncate(RECENT);
+            self.recent = items
+                .into_iter()
+                .map(|rec| {
+                    let line = source.summary(&rec.id).ok().flatten().and_then(|s| first_line(&s.body));
+                    (rec, line)
+                })
+                .collect();
+        }
+    }
+
+    // --- Grabar ---
+
+    pub fn toggle_recording(&mut self, cx: &mut Context<Self>) {
+        match self.phase {
+            Phase::Idle | Phase::Confirm(_) => self.start_recording(false, cx),
+            Phase::Recording(_) => self.stop_recording(cx),
+            Phase::Starting | Phase::Stopping(_) => {}
+        }
+    }
+
+    pub fn start_recording(&mut self, allow_bluetooth: bool, cx: &mut Context<Self>) {
+        if !matches!(self.phase, Phase::Idle | Phase::Confirm(_)) {
+            return;
+        }
+        let Some(paths) = self.paths.clone() else {
+            return;
+        };
+        self.phase = Phase::Starting;
+        self.notice = None;
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = cx.background_spawn(async move { begin(paths, allow_bluetooth) }).await;
+            // Si la grabadora ya no está, `result` se suelta aquí y `Active`
+            // detiene y guarda lo poco que alcanzó a grabar.
+            let _ = this.update(cx, |studio, cx| studio.started(result, cx));
+        })
+        .detach();
+    }
+
+    /// «Cancelar» la pregunta del Bluetooth.
+    pub fn cancel_confirm(&mut self, cx: &mut Context<Self>) {
+        if matches!(self.phase, Phase::Confirm(_)) {
+            self.phase = Phase::Idle;
+            cx.notify();
+        }
+    }
+
+    pub fn dismiss_notice(&mut self, cx: &mut Context<Self>) {
+        self.notice = None;
+        cx.notify();
+    }
+
+    fn started(&mut self, result: Result<Active, StartError>, cx: &mut Context<Self>) {
+        self.phase = match result {
+            Ok(active) => Phase::Recording(Box::new(active)),
+            Err(StartError::Bluetooth(message)) => Phase::Confirm(message),
+            Err(StartError::Failed(text)) => {
+                self.notice = Some(Notice { text, error: true });
+                Phase::Idle
+            }
+        };
+        if self.recording() && !self.ticking {
+            self.ticking = true;
+            cx.spawn(async move |this, cx| loop {
+                cx.background_executor().timer(FRAME).await;
+                let go = this
+                    .update(cx, |studio, cx| {
+                        let go = studio.tick();
+                        studio.ticking = go;
+                        cx.notify();
+                        go
+                    })
+                    .unwrap_or(false);
+                if !go {
+                    break;
+                }
+            })
+            .detach();
+        }
+        cx.notify();
     }
 
     /// Un cuadro mientras se graba: los niveles a la vista se acercan a los
@@ -367,89 +643,13 @@ impl Recorder {
         self.shown = (ease(self.shown.0, mic), ease(self.shown.1, system));
         true
     }
-}
 
-impl MeetingsView {
-    /// Lo que hay que hacer al abrir la ventana: si la app se cierra
-    /// grabando, se guarda antes de salir.
-    pub(super) fn install_recorder(&mut self, cx: &mut Context<Self>) {
-        self.recorder._quit = Some(cx.on_app_quit(|view, _| {
-            if let Phase::Recording(active) = &mut view.recorder.phase {
-                active.finish();
-            }
-            async {}
-        }));
-    }
-
-    fn can_record(&self) -> bool {
-        self.source.as_ref().is_some_and(|s| s.paths().is_some())
-    }
-
-    pub(super) fn toggle_recording(&mut self, cx: &mut Context<Self>) {
-        match self.recorder.phase {
-            Phase::Idle | Phase::Confirm(_) => self.start_recording(false, cx),
-            Phase::Recording(_) => self.stop_recording(cx),
-            Phase::Starting | Phase::Stopping(_) => {}
-        }
-    }
-
-    fn start_recording(&mut self, allow_bluetooth: bool, cx: &mut Context<Self>) {
-        if !matches!(self.recorder.phase, Phase::Idle | Phase::Confirm(_)) {
-            return;
-        }
-        let Some(paths) = self.source.as_ref().and_then(|s| s.paths()).cloned() else {
-            return;
-        };
-        self.recorder.phase = Phase::Starting;
-        self.recorder.notice = None;
-        cx.notify();
-        cx.spawn(async move |this, cx| {
-            let result = cx.background_spawn(async move { begin(paths, allow_bluetooth) }).await;
-            // Si la ventana ya no está, `result` se suelta aquí y `Active`
-            // detiene y guarda lo poco que alcanzó a grabar.
-            let _ = this.update(cx, |view, cx| view.started(result, cx));
-        })
-        .detach();
-    }
-
-    fn started(&mut self, result: Result<Active, StartError>, cx: &mut Context<Self>) {
-        self.recorder.phase = match result {
-            Ok(active) => Phase::Recording(Box::new(active)),
-            Err(StartError::Bluetooth(message)) => Phase::Confirm(message),
-            Err(StartError::Failed(text)) => {
-                self.recorder.notice = Some(Notice { text, error: true });
-                Phase::Idle
-            }
-        };
-        if self.recorder.recording() && !self.recorder.ticking {
-            self.recorder.ticking = true;
-            cx.spawn(async move |this, cx| loop {
-                cx.background_executor().timer(FRAME).await;
-                let go = this
-                    .update(cx, |view, cx| {
-                        let go = view.recorder.tick();
-                        view.recorder.ticking = go;
-                        cx.notify();
-                        go
-                    })
-                    .unwrap_or(false);
-                if !go {
-                    break;
-                }
-            })
-            .detach();
-        }
-        cx.notify();
-    }
-
-    fn stop_recording(&mut self, cx: &mut Context<Self>) {
-        let elapsed = match &self.recorder.phase {
+    pub fn stop_recording(&mut self, cx: &mut Context<Self>) {
+        let elapsed = match &self.phase {
             Phase::Recording(active) => active.started.elapsed(),
             _ => return,
         };
-        let Phase::Recording(mut active) =
-            std::mem::replace(&mut self.recorder.phase, Phase::Stopping(elapsed))
-        else {
+        let Phase::Recording(mut active) = std::mem::replace(&mut self.phase, Phase::Stopping(elapsed)) else {
             return;
         };
         cx.notify();
@@ -457,28 +657,127 @@ impl MeetingsView {
             let result = cx
                 .background_spawn(async move { active.finish().unwrap_or(Err("ya estaba detenida".into())) })
                 .await;
-            let _ = this.update(cx, |view, cx| view.saved(result, cx));
+            let _ = this.update(cx, |studio, cx| studio.saved(result, cx));
         })
         .detach();
     }
 
     fn saved(&mut self, result: Result<Saved, String>, cx: &mut Context<Self>) {
-        self.recorder.phase = Phase::Idle;
+        self.phase = Phase::Idle;
         match result {
             Ok(saved) => {
-                self.recorder.notice =
-                    saved.warning.map(|text| Notice { text: text.into(), error: false });
-                self.reload(cx);
-                self.after_recording(&saved.id, cx);
+                self.notice = saved.warning.map(|text| Notice { text: text.into(), error: false });
+                self.refresh_recent();
+                // Con la ventana abierta, ella elige la reunión y la
+                // transcribe (con su avance a la vista). Si no, lo hace la
+                // grabadora, como Atic al detener (`auto_transcribe_after_recording`).
+                let window_open = cx.windows().iter().any(|w| w.downcast::<MeetingsView>().is_some());
+                if !window_open && self.auto_transcribe() {
+                    self.run(Job::Transcribe, saved.id.clone(), cx);
+                }
+                cx.emit(StudioEvent::Saved(saved.id));
             }
             Err(error) => {
-                self.recorder.notice = Some(Notice {
+                self.notice = Some(Notice {
                     text: format!("El audio quedó en su carpeta, pero no se pudo guardar en la lista: {error}"),
                     error: true,
                 });
             }
         }
         cx.notify();
+    }
+
+    fn auto_transcribe(&self) -> bool {
+        self.paths
+            .as_ref()
+            .is_some_and(|p| atic_core::Config::load(&p.config_path()).auto_transcribe_after_recording)
+    }
+
+    // --- Después de grabar ---
+
+    /// Transcribir una reunión desde la pill.
+    pub fn transcribe(&mut self, id: String, cx: &mut Context<Self>) {
+        self.run(Job::Transcribe, id, cx);
+    }
+
+    /// Resumir una reunión desde la pill, con la plantilla por omisión.
+    pub fn summarize(&mut self, id: String, cx: &mut Context<Self>) {
+        self.run(Job::Summarize, id, cx);
+    }
+
+    fn run(&mut self, job: Job, id: String, cx: &mut Context<Self>) {
+        let Some(paths) = self.paths.clone() else {
+            return;
+        };
+        if self.jobs.contains_key(&id) {
+            return;
+        }
+        let mut rx = match job {
+            Job::Transcribe => pipeline::transcribe(paths, id.clone(), false),
+            Job::Summarize => pipeline::summarize(paths, id.clone(), SummaryTemplate::SummaryKeyPoints),
+        };
+        self.jobs.insert(id.clone(), (job, 0.0));
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            while let Some(update) = rx.next().await {
+                let done = matches!(update, Update::Done(_));
+                let alive = this
+                    .update(cx, |studio, cx| {
+                        match &update {
+                            Update::Progress(p) => {
+                                if let Some(entry) = studio.jobs.get_mut(&id) {
+                                    entry.1 = *p;
+                                }
+                            }
+                            Update::Started => studio.refresh_recent(),
+                            Update::Done(result) => {
+                                studio.jobs.remove(&id);
+                                if let Err(failure) = result {
+                                    studio.notice = Some(Notice { text: failure.text(), error: true });
+                                }
+                                studio.refresh_recent();
+                            }
+                            Update::Stage(_) | Update::Delta(_) => {}
+                        }
+                        cx.notify();
+                    })
+                    .is_ok();
+                if !alive || done {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+}
+
+// --- En la ventana ----------------------------------------------------------------
+
+impl MeetingsView {
+    /// La ventana se engancha a la grabadora de la app: se redibuja con ella y,
+    /// al guardarse una grabación, la elige (y la transcribe si corresponde).
+    pub(super) fn install_recorder(&mut self, cx: &mut Context<Self>) {
+        let studio = self.studio.clone();
+        cx.observe(&studio, |_, _, cx| cx.notify()).detach();
+        cx.subscribe(&studio, |view, _, event: &StudioEvent, cx| match event {
+            StudioEvent::Saved(id) => {
+                view.reload(cx);
+                view.after_recording(id, cx);
+            }
+        })
+        .detach();
+    }
+
+    fn can_record(&self, cx: &App) -> bool {
+        self.studio.read(cx).can_record()
+    }
+
+    pub(super) fn recording(&self, cx: &App) -> bool {
+        self.studio.read(cx).recording()
+    }
+
+    pub(super) fn toggle_recording(&mut self, cx: &mut Context<Self>) {
+        self.studio.update(cx, |studio, cx| studio.toggle_recording(cx));
     }
 
     /// Recién guardada una grabación: se elige y, si así está configurado
@@ -492,7 +791,10 @@ impl MeetingsView {
             .as_ref()
             .and_then(|s| s.paths())
             .is_some_and(|p| atic_core::Config::load(&p.config_path()).auto_transcribe_after_recording);
-        if auto {
+        // Si la grabadora ya la está transcribiendo (se detuvo con la ventana
+        // cerrada), no se lanza otra vez.
+        let busy = self.studio.read(cx).job(id).is_some();
+        if auto && !busy {
             self.start_transcribe(id.to_string(), cx);
         }
     }
@@ -501,16 +803,20 @@ impl MeetingsView {
 
     /// El botón de la barra de arriba: «Grabar» o «Detener · 03:12».
     pub(super) fn record_button(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        if !self.can_record() {
+        if !self.can_record(cx) {
             return None;
         }
-        let (label, clock, live, busy) = match &self.recorder.phase {
-            Phase::Idle | Phase::Confirm(_) => ("Grabar", None, false, false),
-            Phase::Starting => ("Preparando…", None, false, true),
-            Phase::Recording(active) => ("Detener", Some(stopwatch(active.started.elapsed())), true, false),
-            Phase::Stopping(_) => ("Guardando…", None, true, true),
+        let studio = self.studio.read(cx);
+        let (label, live, busy) = match studio.stage() {
+            Stage::Idle | Stage::Confirm => ("Grabar", false, false),
+            Stage::Starting => ("Preparando…", false, true),
+            Stage::Recording => ("Detener", true, false),
+            Stage::Stopping => ("Guardando…", true, true),
         };
-        let pulse = self.pulse();
+        let clock = (studio.stage() == Stage::Recording)
+            .then(|| studio.elapsed().map(stopwatch))
+            .flatten();
+        let pulse = studio.pulse();
         let (rest, over) = if live {
             (hsla(RED).opacity(0.16), hsla(RED).opacity(0.24))
         } else {
@@ -548,17 +854,6 @@ impl MeetingsView {
         )
     }
 
-    /// El punto rojo late suave mientras se graba; si no, quieto y entero.
-    fn pulse(&self) -> f32 {
-        match &self.recorder.phase {
-            Phase::Recording(active) => {
-                let t = active.started.elapsed().as_secs_f32();
-                0.55 + 0.45 * (0.5 + 0.5 * (t * std::f32::consts::TAU / 1.6).cos())
-            }
-            _ => 1.0,
-        }
-    }
-
     /// Lo de arriba de la lista: la grabación en curso, la pregunta del
     /// Bluetooth o el aviso de la última.
     pub(super) fn live_card(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -574,11 +869,12 @@ impl MeetingsView {
                 .flex_col()
                 .gap(px(12.))
         };
-        match &self.recorder.phase {
-            Phase::Recording(active) => Some(self.recording_card(card(), active).into_any_element()),
-            Phase::Starting | Phase::Stopping(_) => {
-                let (title, clock) = match &self.recorder.phase {
-                    Phase::Stopping(elapsed) => ("Guardando…", stopwatch(*elapsed)),
+        let studio = self.studio.read(cx);
+        match studio.stage() {
+            Stage::Recording => Some(recording_card(card(), studio).into_any_element()),
+            Stage::Starting | Stage::Stopping => {
+                let (title, clock) = match studio.stage() {
+                    Stage::Stopping => ("Guardando…", stopwatch(studio.elapsed().unwrap_or_default())),
                     _ => ("Abriendo el audio…", stopwatch(Duration::ZERO)),
                 };
                 Some(
@@ -588,40 +884,38 @@ impl MeetingsView {
                         .into_any_element(),
                 )
             }
-            Phase::Confirm(message) => Some(
-                card()
-                    .child(div().text_size(px(13.)).font_weight(FontWeight::MEDIUM).child("¿Grabar con Bluetooth?"))
-                    .child(
-                        div()
-                            .text_size(px(12.))
-                            .line_height(px(18.))
-                            .text_color(hsla(MUTED))
-                            .child(SharedString::from(message.clone())),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .gap(px(8.))
-                            .child(small_button(
-                                "bt-go",
-                                "Grabar igual",
-                                true,
-                                cx.listener(|v, _: &ClickEvent, _, cx| v.start_recording(true, cx)),
-                            ))
-                            .child(small_button(
-                                "bt-cancel",
-                                "Cancelar",
-                                false,
-                                cx.listener(|v, _: &ClickEvent, _, cx| {
-                                    v.recorder.phase = Phase::Idle;
-                                    cx.notify();
-                                }),
-                            )),
-                    )
-                    .into_any_element(),
-            ),
-            Phase::Idle => {
-                let notice = self.recorder.notice.as_ref()?;
+            Stage::Confirm => {
+                let message = studio.confirm_message().unwrap_or_default().to_string();
+                let go = self.studio.clone();
+                let cancel = self.studio.clone();
+                Some(
+                    card()
+                        .child(div().text_size(px(13.)).font_weight(FontWeight::MEDIUM).child("¿Grabar con Bluetooth?"))
+                        .child(
+                            div()
+                                .text_size(px(12.))
+                                .line_height(px(18.))
+                                .text_color(hsla(MUTED))
+                                .child(SharedString::from(message)),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .gap(px(8.))
+                                .child(small_button("bt-go", "Grabar igual", true, move |_, _, cx| {
+                                    go.update(cx, |s, cx| s.start_recording(true, cx))
+                                }))
+                                .child(small_button("bt-cancel", "Cancelar", false, move |_, _, cx| {
+                                    cancel.update(cx, |s, cx| s.cancel_confirm(cx))
+                                })),
+                        )
+                        .into_any_element(),
+                )
+            }
+            Stage::Idle => {
+                let (text, error) = studio.notice()?;
+                let text = text.to_string();
+                let dismiss = self.studio.clone();
                 Some(
                     card()
                         .py(px(12.))
@@ -635,7 +929,7 @@ impl MeetingsView {
                                 .size(px(6.))
                                 .flex_none()
                                 .rounded_full()
-                                .bg(hsla(if notice.error { RED } else { super::AMBER })),
+                                .bg(hsla(if error { RED } else { super::AMBER })),
                         )
                         .child(
                             div()
@@ -644,7 +938,7 @@ impl MeetingsView {
                                 .text_size(px(12.))
                                 .line_height(px(18.))
                                 .text_color(hsla(super::BODY))
-                                .child(SharedString::from(notice.text.clone())),
+                                .child(SharedString::from(text)),
                         )
                         .child(hover::round_button(
                             "notice-close",
@@ -653,10 +947,7 @@ impl MeetingsView {
                             false,
                             hsla(TEXT),
                             hsla(FAINT),
-                            cx.listener(|v, _: &ClickEvent, _, cx| {
-                                v.recorder.notice = None;
-                                cx.notify();
-                            }),
+                            move |_, _, cx| dismiss.update(cx, |s, cx| s.dismiss_notice(cx)),
                         ))
                         .into_any_element(),
                 )
@@ -664,49 +955,10 @@ impl MeetingsView {
         }
     }
 
-    fn recording_card(&self, card: gpui::Div, active: &Active) -> gpui::Div {
-        let (mic, system) = self.recorder.shown;
-        let warning = active.levels.warning.lock().ok().and_then(|w| w.clone());
-        let note = warning.or_else(|| active.note.clone());
-        let mut card = card
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(8.))
-                    .child(div().size(px(8.)).flex_none().rounded_full().bg(hsla(RED).opacity(self.pulse())))
-                    .child(div().text_size(px(12.)).font_weight(FontWeight::MEDIUM).child("Grabando"))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .text_size(px(12.))
-                            .text_color(hsla(FAINT))
-                            .child(SharedString::from(active.recording.title.clone())),
-                    ),
-            )
-            .child(big_clock(stopwatch(active.started.elapsed()), hsla(TEXT)))
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(7.))
-                    .child(meter_row("Yo", mic, active.tracks.mic, BLUE))
-                    .child(meter_row("Los demás", system, active.tracks.system, LILAC)),
-            );
-        if let Some(note) = note {
-            card = card.child(div().text_size(px(12.)).line_height(px(17.)).text_color(hsla(FAINT)).child(note));
-        }
-        if let Some(worker) = &active.live {
-            card = card.child(captions(worker));
-        }
-        card
-    }
-
     /// Sin reuniones todavía: invita a grabar la primera.
     pub(super) fn invite(&self, cx: &mut Context<Self>) -> AnyElement {
-        let can = self.can_record();
+        let can = self.can_record(cx);
+        let recording = self.recording(cx);
         div()
             .flex_1()
             .py(px(48.))
@@ -721,13 +973,13 @@ impl MeetingsView {
                 div()
                     .text_size(px(13.))
                     .text_color(hsla(MUTED))
-                    .child(match (can, self.recorder.recording()) {
+                    .child(match (can, recording) {
                         (true, true) => "Aparecerá aquí al detenerla.",
                         (true, false) => "Graba la primera; Ctrl+R también sirve.",
                         (false, _) => "Graba una desde Atic y aparecerá aquí.",
                     }),
             )
-            .when(can && !self.recorder.recording(), |el| {
+            .when(can && !recording, |el| {
                 el.child(div().pt(px(10.)).child(small_button(
                     "invite-record",
                     "Grabar",
@@ -737,6 +989,44 @@ impl MeetingsView {
             })
             .into_any_element()
     }
+}
+
+fn recording_card(card: gpui::Div, studio: &Studio) -> gpui::Div {
+    let ((mic, system), tracks) = studio.levels().unwrap_or(((0.0, 0.0), Tracks { mic: false, system: false }));
+    let mut card = card
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .child(div().size(px(8.)).flex_none().rounded_full().bg(hsla(RED).opacity(studio.pulse())))
+                .child(div().text_size(px(12.)).font_weight(FontWeight::MEDIUM).child("Grabando"))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_size(px(12.))
+                        .text_color(hsla(FAINT))
+                        .child(SharedString::from(studio.title().unwrap_or_default().to_string())),
+                ),
+        )
+        .child(big_clock(stopwatch(studio.elapsed().unwrap_or_default()), hsla(TEXT)))
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(7.))
+                .child(meter_row("Yo", mic, tracks.mic, BLUE))
+                .child(meter_row("Los demás", system, tracks.system, LILAC)),
+        );
+    if let Some(note) = studio.live_note() {
+        card = card.child(div().text_size(px(12.)).line_height(px(17.)).text_color(hsla(FAINT)).child(note));
+    }
+    if let Some(captions) = studio.captions(CAPTION_LINES) {
+        card = card.child(captions_column(captions));
+    }
+    card
 }
 
 fn big_clock(clock: String, color: gpui::Hsla) -> impl IntoElement {
@@ -781,14 +1071,9 @@ fn meter_row(label: &'static str, level: f32, on: bool, color: u32) -> impl Into
 }
 
 /// Las últimas líneas; la parcial, atenuada.
-fn captions(worker: &live::Worker) -> impl IntoElement {
-    let (lines, partial, error) = match worker.captions.lock() {
-        Ok(c) => {
-            let skip = c.lines.len().saturating_sub(CAPTION_LINES);
-            (c.lines.iter().skip(skip).cloned().collect::<Vec<_>>(), c.partial.clone(), c.error.clone())
-        }
-        Err(_) => (Vec::new(), None, None),
-    };
+fn captions_column(
+    (lines, partial, error): (Vec<live::Line>, Option<live::Line>, Option<String>),
+) -> impl IntoElement {
     let mut column = div().flex().flex_col().gap(px(6.)).pt(px(2.));
     if lines.is_empty() && partial.is_none() {
         column = column.child(

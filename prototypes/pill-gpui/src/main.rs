@@ -3,6 +3,8 @@
 //! líquidas y el panel del Clipboard.
 
 mod anim;
+mod appearance;
+mod settings;
 mod app_icon;
 mod board;
 /// La calculadora del lanzador de Atic, el mismo archivo: es Rust puro.
@@ -14,6 +16,7 @@ mod color;
 mod capture;
 mod clip_image;
 mod clipboard;
+mod customize;
 mod drag;
 mod emoji;
 mod flip;
@@ -30,6 +33,8 @@ mod liquid;
 mod paste;
 mod peeks;
 use hover::HoverExt;
+mod pill_tools;
+use pill_tools::{Layout, Page, StripId};
 mod launcher;
 mod meetings;
 mod running;
@@ -63,7 +68,7 @@ use gpui::{
     WindowBackgroundAppearance, WindowBounds, WindowKind, WindowOptions,
 };
 
-use anim::{ease_back_out, ease_island, ease_smooth_out, lerp, segment, Tween};
+use anim::{cubic_bezier, ease_back_out, ease_island, ease_smooth_out, lerp, segment, Tween};
 use snippets::{SnippetEvent, SnippetsPanel};
 use clipboard::{ClipboardPanel, Content, PanelEvent, Picture, BAND_H, PANEL_W};
 
@@ -112,6 +117,11 @@ const NOTCH_MORPH_MS: f32 = 300.0;
 /// arriba y abajo).
 const SIDE_PANEL_W: f32 = 380.0;
 const SIDE_PANEL_MARGIN: f32 = 12.0;
+/// El ancho con el que el editor mide sus filas. Es el del panel más ancho
+/// (arriba), para que la grilla no cambie de forma según el borde.
+pub(crate) const CUSTOMIZE_W: f32 = PANEL_W;
+/// El margen del contenido del panel dentro de su ancho.
+pub(crate) const CUSTOMIZE_INSET: f32 = 12.0;
 /// Un costado más bajo que esto no tiene notch: la pill vuela al de arriba.
 const NOTCH_MIN_SIDE_H: f32 = 420.0;
 /// El bloque que sale al lado de la columna en un costado (vistazos, aviso,
@@ -155,11 +165,13 @@ const PEEK_DRAG: f32 = 6.0;
 
 const PASTE_FOCUS_DELAY: Duration = Duration::from_millis(220);
 const PASTE_KEY_DELAY: Duration = Duration::from_millis(80);
+/// Índices en `pill_tools::CATALOG`. El nivel de cada una lo elige el editor
+/// (`pill_tools.rs`), así que ninguno de estos dice dónde se ve: solo cuál es.
 const REUNIONES_TOOL: usize = 0;
-const CLIPBOARD_TOOL: usize = 1;
-const TEXTOS_TOOL: usize = 2;
-const AGENTES_TOOL: usize = 3;
-const SISTEMA_TOOL: usize = 4;
+pub(crate) const CLIPBOARD_TOOL: usize = 1;
+pub(crate) const TEXTOS_TOOL: usize = 2;
+pub(crate) const AGENTES_TOOL: usize = 3;
+pub(crate) const SISTEMA_TOOL: usize = 4;
 /// Largo del tab con algo sonando: carátula a la izquierda, onda a la derecha.
 const LIVE_LENGTH: f32 = 212.0;
 const LIVE_ART: f32 = 24.0;
@@ -179,6 +191,8 @@ pub(crate) enum NotchTool {
     Agentes,
     Sistema,
     Media,
+    /// El editor de los niveles de la pill (`customize.rs`).
+    Personalizar,
 }
 
 /// La gota en camino hacia el notch o de vuelta a su lugar.
@@ -211,6 +225,18 @@ impl Flight {
 
 /// Movimiento con el botón apretado a partir del cual es arrastre y no clic.
 const DRAG_THRESHOLD: f32 = 4.0;
+/// Presión larga sobre una ficha de la tira: abre el editor de los niveles.
+/// El mismo plazo que en Atic (`STRIP_HOLD_MS`).
+const STRIP_HOLD_MS: f32 = 480.0;
+/// Lo que espera la cara antes de empezar a volverse engranaje: un clic
+/// normal no alcanza a mostrarlo.
+const GEAR_DELAY_MS: f32 = 120.0;
+/// Cuánto tarda la piel de GPUI en llegar a la pantalla después del vidrio
+/// (unos dos cuadros).
+const GLASS_LAG: Duration = Duration::from_millis(34);
+/// Cada cuánto se mira si el monitor cambió de resolución, escala o barra de
+/// tareas (arrastrando, en cada cuadro).
+const SCREEN_POLL: Duration = Duration::from_millis(500);
 /// "Aplastón" al acoplarse: el grosor baja a 86 % al 38 % del tramo.
 const SEAT_MS: f32 = 125.0;
 const SEAT_DEPTH: f32 = 0.14;
@@ -223,73 +249,34 @@ const WHEEL_HOVER_DELAY: Duration = Duration::from_millis(180);
 const WHEEL_HOVER_GRACE: Duration = Duration::from_millis(150);
 const WHEEL_CLICK_GRACE: Duration = Duration::from_millis(400);
 const BLINK_MS: f32 = 140.0;
-/// Opacidad del tinte de la pill sobre el vidrio: casi nada, el acrylic ya
-/// oscurece y pone el grano.
+/// Opacidad del tinte de la pill sobre el vidrio, por omisión (se cambia en
+/// Apariencia).
 const GLASS_TINT: f32 = 0.6;
 /// El tinte cuando el notch muestra algo para leer (un panel, la bandeja,
 /// la letra, el dictado, el uso): casi opaco, para que el texto se lea sobre
 /// cualquier fondo. Es el mismo en todo el cuerpo: nada pinta su propio
 /// fondo encima (se notaba el corte y unas partes eran de vidrio y otras no).
+/// Por omisión: se cambia en Apariencia.
 const CONTENT_TINT: f32 = 0.93;
 
-struct Tool {
-    name: &'static str,
-    icon: &'static str,
+fn wheel_open_ms(gajos: usize) -> f32 {
+    BLOB_START_MS + BLOB_STAGGER_MS * (gajos.max(1) - 1) as f32 + ICON_DELAY_MS + ICON_MS
 }
 
-const TOOLS: [Tool; 10] = [
-    Tool {
-        name: "Reuniones",
-        icon: "icons/circle-dot.svg",
-    },
-    Tool {
-        name: "Clipboard",
-        icon: "icons/clipboard.svg",
-    },
-    Tool {
-        name: "Textos",
-        icon: "icons/text-align-start.svg",
-    },
-    Tool {
-        name: "Agentes",
-        icon: "icons/square-terminal.svg",
-    },
-    Tool {
-        name: "Sistema",
-        icon: "icons/cpu.svg",
-    },
-    Tool {
-        name: "Capturas",
-        icon: "icons/crop.svg",
-    },
-    Tool {
-        name: "Pizarra",
-        icon: "icons/pencil.svg",
-    },
-    Tool {
-        name: "Color",
-        icon: "icons/pipette.svg",
-    },
-    Tool {
-        name: "Flip",
-        icon: "icons/flip.svg",
-    },
-    Tool {
-        name: "Más",
-        icon: "icons/ellipsis.svg",
-    },
-];
-
-fn wheel_open_ms() -> f32 {
-    BLOB_START_MS + BLOB_STAGGER_MS * (TOOLS.len() - 1) as f32 + ICON_DELAY_MS + ICON_MS
+/// El largo del tab con la tira abierta. Es el del paso que se está viendo,
+/// menos nunca que el del tab en reposo.
+fn strip_open_length(gajos: usize) -> f32 {
+    TAB_LENGTH.max(MARK_SIZE + 12.0 + gajos as f32 * (TOOL_W + TOOL_GAP))
 }
 
-fn strip_open_length() -> f32 {
-    TAB_LENGTH.max(MARK_SIZE + 12.0 + TOOLS.len() as f32 * (TOOL_W + TOOL_GAP))
+/// El largo del paso más largo que puede verse. Lo que cuelga del tab (los
+/// vistazos, el uso) se mide con esto, no con el paso de ahora.
+fn strip_max_length() -> f32 {
+    strip_open_length(pill_tools::STRIP_MAX)
 }
 
-fn wheel_angle(index: usize) -> f32 {
-    index as f32 / TOOLS.len() as f32 * TAU - PI / 2.0
+fn wheel_angle(index: usize, gajos: usize) -> f32 {
+    index as f32 / gajos.max(1) as f32 * TAU - PI / 2.0
 }
 
 /// Centro y radio.
@@ -426,7 +413,10 @@ impl AssetSource for Assets {
             "icons/mail.svg" => include_bytes!("../assets/icons/mail.svg"),
             "icons/sparkles.svg" => include_bytes!("../assets/icons/sparkles.svg"),
             "icons/settings-2.svg" => include_bytes!("../assets/icons/settings-2.svg"),
-            _ => return Ok(None),
+            other => match flip_board::icon(other) {
+                Some(bytes) => bytes,
+                None => return Ok(None),
+            },
         };
         Ok(Some(Cow::Borrowed(bytes)))
     }
@@ -487,7 +477,9 @@ enum PressTarget {
     Mark,
     /// La carátula de lo que suena: abre Ahora suena.
     Art,
-    Tool(usize),
+    /// Una ficha de la tira, del nivel que sea: herramienta, «Más», «Atrás» o
+    /// «Personalizar».
+    Tool(StripId),
     /// Un contador de la bandeja: abre Agentes.
     Tray,
     Body,
@@ -524,6 +516,15 @@ struct Pill {
     monitor: Rect,
     work: Rect,
     dockable: Vec<Edge>,
+    /// El monitor, la escala y la esquina de la ventana con que se calcularon
+    /// `monitor` y `work`.
+    screen: Option<(win::Screen, f32, Option<(i32, i32)>)>,
+    screen_checked: Instant,
+    /// La ventana va camino al monitor guardado: al llegar, `home` se vuelve
+    /// a leer del archivo en vez de reubicarse desde el principal.
+    restore_home: bool,
+    /// El monitor al que va la ventana, mientras no llega.
+    moving_to: Option<win::Screen>,
     home: Home,
     press: Option<Press>,
     seat_started: Option<Instant>,
@@ -533,9 +534,24 @@ struct Pill {
     strip_leave_at: Option<Instant>,
     strip_hover: Vec<Tween>,
     strip_pulse: Option<(usize, Instant)>,
+    /// Qué herramientas están a la vista, cuáles detrás de «Más» y cuáles
+    /// fuera (`pill_tools.rs`). Lo elige el editor del notch.
+    layout: Layout,
+    /// Qué paso de la tira se está viendo. Cambia al tocar «Más», «Atrás» o
+    /// «Personalizar».
+    strip_page: Page,
+    /// El cambio de paso en curso, mientras se anima.
+    page_switch: Option<PageSwitch>,
+    /// El reloj de la presión larga sobre una ficha: abre el editor.
+    hold: Option<(PressTarget, Instant)>,
 
     wheel_target_open: bool,
     wheel_time: f32,
+    /// El nivel que muestra la rueda: el suyo, aparte del de la tira.
+    wheel_page: Page,
+    /// Cuánto se corrió el brote de los gajos al cambiar de nivel: vuelven a
+    /// salir del núcleo sin que este se recoja.
+    wheel_bloom: f32,
     wheel_opener: WheelOpener,
     wheel_leave_at: Option<Instant>,
     wheel_hover: Vec<Tween>,
@@ -550,11 +566,17 @@ struct Pill {
     agents: Entity<agents::AgentsPanel>,
     /// Sistema (`system.rs`).
     system: Entity<system::SystemPanel>,
+    /// El editor de los niveles de la pill (`customize.rs`).
+    customize: Entity<customize::CustomizePanel>,
     /// Lo que suena (`media.rs`) y su panel.
     media: media::Media,
     media_panel: Entity<media::MediaPanel>,
     /// Quién usa el micrófono o la cámara (`privacy.rs`).
     privacy: privacy::Privacy,
+    /// La grabadora de Reuniones: la misma de la ventana (`meetings::Studio`).
+    studio: Entity<meetings::Studio>,
+    /// Grabando: el reloj que muestra el tab. Cambia una vez por segundo.
+    rec_clock: Option<String>,
     /// El tab con lo que suena: 0 normal, 1 con carátula y onda.
     live: Tween,
     /// La letra que cuelga del tab con lo que suena (`hang.rs`).
@@ -562,6 +584,9 @@ struct Pill {
     /// El dictado (`dictation.rs`): el motor, su franja en el notch, el
     /// atajo de Atic y si estaba apretado en el cuadro anterior.
     dictation: dictation::Dictation,
+    /// La cara hecha engranaje (0..1): crece mientras se mantiene presionada
+    /// y, completa, al soltar abre los Ajustes.
+    gear: Tween,
     dict: Tween,
     dict_watch: dictation::Watch,
     dict_key_was_down: bool,
@@ -682,6 +707,8 @@ struct Frame {
     mark: (f32, f32),
     eyes: (f32, f32),
     blink: f32,
+    /// Cuánto de la cara es engranaje (0..1).
+    gear: f32,
     strip_tools: Vec<IconDraw>,
     core: Option<(f32, f32, f32)>,
     core_anchor: Circle,
@@ -711,6 +738,8 @@ struct Frame {
     time: f32,
     /// Color del punto de privacidad, si algo usa el micrófono o la cámara.
     privacy: Option<u32>,
+    /// Grabando una reunión: el reloj. Va donde iría la carátula.
+    recording: Option<String>,
 }
 
 struct IconDraw {
@@ -718,6 +747,43 @@ struct IconDraw {
     center: (f32, f32),
     size: f32,
     color: Hsla,
+}
+
+/// El cambio de paso de la tira («Más», «Atrás»), con el ritmo de los paneles
+/// de Atic: las fichas que se van salen en el primer tramo, el tab se estira
+/// entre medio y las nuevas entran al final, escalonadas, desde el lado al
+/// que se avanza.
+const PAGE_SWITCH_MS: f32 = 620.0;
+/// Hasta dónde (de 0 a 1) salen las fichas viejas.
+const PAGE_OUT_END: f32 = 0.42;
+/// El tramo en que el tab cambia de largo.
+const PAGE_LENGTH_START: f32 = 0.14;
+const PAGE_LENGTH_SPAN: f32 = 0.72;
+/// Desde dónde entran las nuevas, cuánto dura cada una y su escalón máximo.
+const PAGE_IN_START: f32 = 0.48;
+const PAGE_IN_SPAN: f32 = 0.34;
+const PAGE_IN_STAGGER: f32 = 0.03;
+/// Cuánto se corren las fichas al salir y al entrar.
+const PAGE_SLIDE: f32 = 8.0;
+
+fn ease_page(t: f32) -> f32 {
+    cubic_bezier(0.45, 0.0, 0.2, 1.0, t)
+}
+
+struct PageSwitch {
+    at: Instant,
+    /// Las fichas del paso que se deja, para dibujarlas saliendo.
+    from: Vec<StripId>,
+    /// El largo del tab abierto al empezar.
+    from_length: f32,
+    /// 1 hacia «Más» (las nuevas llegan desde el final), -1 de vuelta.
+    dir: f32,
+}
+
+impl PageSwitch {
+    fn progress(&self, now: Instant) -> f32 {
+        (now.duration_since(self.at).as_secs_f32() * 1000.0 / PAGE_SWITCH_MS).clamp(0.0, 1.0)
+    }
 }
 
 impl Pill {
@@ -737,7 +803,27 @@ impl Pill {
         let backend = system::os::Backend::start();
         let media_panel = cx.new(|cx| media::MediaPanel::new(media.clone(), backend.clone(), cx));
         let system = cx.new(|cx| system::SystemPanel::new(privacy.clone(), backend, cx));
+        let customize = cx.new(customize::CustomizePanel::new);
+        let studio = meetings::studio(cx);
         let subscriptions = vec![
+            // La grabadora avisa a ~20 fps mientras graba. El tab solo cambia
+            // cuando cambia el segundo; el vistazo de Reuniones, con sus
+            // medidores, cada vez.
+            cx.observe(&studio, |pill, studio, cx| {
+                let s = studio.read(cx);
+                let clock = matches!(s.stage(), meetings::Stage::Recording | meetings::Stage::Stopping)
+                    .then(|| s.elapsed().map(meetings::stopwatch))
+                    .flatten();
+                let peek = pill.tool_peek_owner() == Some(REUNIONES_TOOL);
+                if clock != pill.rec_clock || peek {
+                    pill.rec_clock = clock;
+                    cx.notify();
+                }
+            }),
+            cx.subscribe(&customize, |pill, _, event: &customize::CustomizeEvent, cx| match event {
+                customize::CustomizeEvent::Close => pill.close_panel(true, cx),
+                customize::CustomizeEvent::Placed(layout) => pill.layout_changed(layout.clone(), cx),
+            }),
             cx.subscribe(&media_panel, |pill, _, event: &media::MediaEvent, cx| match event {
                 media::MediaEvent::Close => pill.close_panel(true, cx),
             }),
@@ -782,26 +868,31 @@ impl Pill {
         let scale_factor = window.scale_factor();
         let viewport = window.viewport_size();
         let overlay = win::Overlay::attach(window);
-        let monitor = overlay
+        let viewport = Rect::new(
+            0.0,
+            0.0,
+            f32::from(viewport.width),
+            f32::from(viewport.height),
+        );
+        let (monitor, work, dockable) = overlay
             .as_ref()
-            .and_then(|overlay| overlay.monitor_area(scale_factor))
-            .unwrap_or_else(|| {
-                Rect::new(
-                    0.0,
-                    0.0,
-                    f32::from(viewport.width),
-                    f32::from(viewport.height),
-                )
-            });
-        let work = overlay
-            .as_ref()
-            .and_then(|overlay| overlay.work_area(scale_factor))
-            .unwrap_or(monitor);
-        let dockable = geometry::dockable_edges(&monitor, &work);
-        let home = load_home(&work, &dockable).unwrap_or(Home::Docked {
-            edge: Edge::Top,
-            along: work.x + work.w / 2.0,
+            .and_then(|overlay| screen_geometry(overlay, scale_factor))
+            .unwrap_or((viewport, viewport, geometry::dockable_edges(&viewport, &viewport)));
+        let screen = overlay.as_ref().and_then(|overlay| {
+            Some((overlay.screen()?, scale_factor, overlay.origin()))
         });
+        // Si la pill quedó en otro monitor, la ventana se va allá y, al
+        // llegar, `refresh_screen` vuelve a leer dónde estaba. Si no, igual
+        // se calza al suyo: GPUI la abre en lógicos y puede quedar corrida.
+        let mut restore_home = false;
+        let mut moving_to = None;
+        if let Some((overlay, (current, _, _))) = overlay.as_ref().zip(screen) {
+            let saved = saved_screen().filter(|saved| *saved != current);
+            restore_home = saved.is_some();
+            moving_to = saved;
+            overlay.move_to(&saved.unwrap_or(current));
+        }
+        let home = load_home(&work, &dockable).unwrap_or_else(|| default_home(&work));
 
         let glass = glass::enabled().then(glass::Glass::new).flatten();
         let mut pill = Self {
@@ -816,6 +907,10 @@ impl Pill {
             monitor,
             work,
             dockable,
+            screen,
+            screen_checked: now,
+            restore_home,
+            moving_to,
             home,
             press: None,
             seat_started: None,
@@ -823,15 +918,23 @@ impl Pill {
             strip: Tween::new(0.0, Duration::from_millis(240), ease_island),
             strip_leave_at: None,
             // Como `.p-island-tool` en la web: crece con un leve rebote.
-            strip_hover: (0..TOOLS.len())
+            // El hover es por posición en el paso que se está viendo, así que
+            // hay uno por ficha del paso más largo.
+            strip_hover: (0..pill_tools::STRIP_MAX)
                 .map(|_| Tween::new(0.0, Duration::from_millis(240), ease_island))
                 .collect(),
             strip_pulse: None,
+            layout: pill_tools::load(),
+            strip_page: Page::Ring,
+            page_switch: None,
+            hold: None,
             wheel_target_open: false,
             wheel_time: 0.0,
+            wheel_page: Page::Ring,
+            wheel_bloom: 0.0,
             wheel_opener: WheelOpener::Click,
             wheel_leave_at: None,
-            wheel_hover: (0..TOOLS.len())
+            wheel_hover: (0..pill_tools::STRIP_MAX)
                 .map(|_| Tween::new(0.0, Duration::from_millis(120), ease_smooth_out))
                 .collect(),
             shortcut_was_down: false,
@@ -869,13 +972,17 @@ impl Pill {
             launcher,
             agents,
             system,
+            customize,
             media,
             media_panel,
             privacy,
+            studio,
+            rec_clock: None,
             tray: tray::Banner::new(),
             live: Tween::new(0.0, Duration::from_millis(320), ease_island),
             hang: Tween::new(0.0, Duration::from_millis(320), ease_island),
             dictation: dictation::Dictation::new(),
+            gear: Tween::new(0.0, Duration::from_millis(260), ease_island),
             dict: Tween::new(0.0, Duration::from_millis(320), ease_island),
             dict_watch: dictation::Watch::spawn(),
             dict_key_was_down: false,
@@ -1012,8 +1119,22 @@ impl Pill {
         1.0 - SEAT_DEPTH * amount
     }
 
+    /// El largo del tab con la tira abierta: el del paso que se ve o, mientras
+    /// se cambia de paso, camino a él.
+    fn strip_open_now(&self, now: Instant) -> f32 {
+        let target = strip_open_length(self.strip_slots().len());
+        match &self.page_switch {
+            Some(switch) => {
+                let t = segment(switch.progress(now), PAGE_LENGTH_START, PAGE_LENGTH_SPAN);
+                lerp(switch.from_length, target, ease_page(t))
+            }
+            None => target,
+        }
+    }
+
     fn tab_length(&self, now: Instant) -> f32 {
-        let strip = lerp(TAB_LENGTH, strip_open_length(), self.strip.value(now));
+        let open = self.strip_open_now(now);
+        let strip = lerp(TAB_LENGTH, open, self.strip.value(now));
         let live = lerp(TAB_LENGTH, LIVE_LENGTH, self.live.value(now));
         strip.max(live).max(TAB_LENGTH * 0.96)
     }
@@ -1130,8 +1251,15 @@ impl Pill {
         } else {
             None
         };
-        match tool {
-            Some(tool) if self.strip.target() == 1.0 => Some(self.strip_tool_along(tool, now)),
+        // `tool` es su lugar en el catálogo; en la tira va donde la puso el
+        // editor, o en otro paso (entonces el bloque sale junto a la marca).
+        let index = tool.and_then(|tool| {
+            self.strip_slots()
+                .iter()
+                .position(|&slot| slot == StripId::Tool(tool))
+        });
+        match index {
+            Some(index) if self.strip.target() == 1.0 => Some(self.strip_tool_along(index, now)),
             _ => self.mark_along(now),
         }
     }
@@ -1270,7 +1398,18 @@ impl Pill {
                 // En reposo, al medio del tab; con la tira abierta, al
                 // principio. Siempre en la franja junto al borde.
                 let open = self.strip.value(now).clamp(0.0, 1.0);
-                let start = edge.along_of((rect.x, rect.y));
+                // El principio de la tira sola, sin lo que la ensancha
+                // (vistazos, bandeja, uso): el tab crece hacia los dos lados y
+                // las fichas se quedan donde están. Si se corrieran, la de
+                // debajo del cursor perdería el hover y el vistazo se cerraría.
+                let start = match self.home {
+                    Home::Docked { along: home, .. } => {
+                        let length = self.tab_length(now);
+                        let area = if self.notch_morph() > 0.0 { self.notch_area(edge) } else { self.work };
+                        geometry::clamp_along(edge, &area, home, length) - length / 2.0
+                    }
+                    Home::Floating { .. } => edge.along_of((rect.x, rect.y)),
+                };
                 let along = lerp(along, start + 6.0 + MARK_SIZE / 2.0, open);
                 let resting = edge.point(&self.work, along, thick.min(TAB_THICK) / 2.0);
                 // Con el notch abierto va a la izquierda de la franja de
@@ -1311,7 +1450,8 @@ impl Pill {
         }
     }
 
-    fn strip_tool_at(&self, p: (f32, f32), now: Instant) -> Option<usize> {
+    /// La ficha del paso que se está viendo bajo el cursor, si la hay.
+    fn strip_slot_at(&self, p: (f32, f32), now: Instant) -> Option<(usize, StripId)> {
         let PillShape::Tab { edge, rect, .. } = self.shape(now) else {
             return None;
         };
@@ -1326,9 +1466,23 @@ impl Pill {
             return None;
         }
         let along = edge.along_of(p);
-        (0..TOOLS.len()).find(|&index| {
-            (along - self.strip_tool_along(index, now)).abs() <= (TOOL_W + TOOL_GAP) / 2.0
-        })
+        let slots = self.strip_slots();
+        (0..slots.len())
+            .find(|&index| {
+                (along - self.strip_tool_along(index, now)).abs() <= (TOOL_W + TOOL_GAP) / 2.0
+            })
+            .map(|index| (index, slots[index]))
+    }
+
+    /// Las fichas del paso que se está viendo.
+    fn strip_slots(&self) -> Vec<StripId> {
+        pill_tools::strip_page(&self.layout, self.strip_page)
+    }
+
+    /// La herramienta bajo el cursor, sea del nivel que sea. `Más`, «Atrás» y
+    /// «Personalizar» no son herramientas: no devuelven ninguna.
+    fn strip_tool_at(&self, p: (f32, f32), now: Instant) -> Option<usize> {
+        self.strip_slot_at(p, now).and_then(|(_, slot)| slot.tool())
     }
 
     // --- Rueda --------------------------------------------------------------
@@ -1362,11 +1516,14 @@ impl Pill {
     }
 
     fn wheel_fully_open(&self) -> bool {
-        self.wheel_target_open && self.wheel_time >= BLOB_START_MS + BLOB_MS
+        self.wheel_target_open && self.wheel_time >= self.wheel_bloom + BLOB_START_MS + BLOB_MS
     }
 
     /// `None` fuera de la rueda, `Some(None)` en el centro, `Some(Some(i))` en
-    /// el gajo de la herramienta `i`.
+    /// el gajo número `i` del nivel a la vista.
+    ///
+    /// La rueda muestra solo el primer nivel (más la puerta a «Más»), como la
+    /// tira antes de las dos páginas: el segundo nivel se abre desde la tira.
     fn wheel_target_at(&self, p: (f32, f32), now: Instant) -> Option<Option<usize>> {
         let center = self.wheel_place(now).center;
         let (dx, dy) = (p.0 - center.0, p.1 - center.1);
@@ -1377,12 +1534,36 @@ impl Pill {
         if distance <= WHEEL_CORE_R {
             return Some(None);
         }
-        let slice = TAU / TOOLS.len() as f32;
+        let gajos = self.wheel_slots().len();
+        let slice = TAU / gajos as f32;
         let angle = (dy.atan2(dx) + PI / 2.0 + slice / 2.0).rem_euclid(TAU);
-        Some(Some((angle / slice) as usize % TOOLS.len()))
+        Some(Some((angle / slice) as usize % gajos))
+    }
+
+    /// Los gajos de la rueda: el nivel a la vista más la puerta a «Más» (o
+    /// «Atrás»). «Personalizar» no: el editor solo se abre acoplada.
+    fn wheel_slots(&self) -> Vec<StripId> {
+        pill_tools::strip_page(&self.layout, self.wheel_page)
+            .into_iter()
+            .filter(|&slot| slot != StripId::Customize)
+            .collect()
+    }
+
+    /// Cambia el nivel de la rueda sin cerrarla: los gajos nuevos brotan del
+    /// núcleo como al abrirla.
+    fn go_to_wheel_page(&mut self, page: Page, now: Instant) {
+        self.wheel_page = page;
+        self.wheel_bloom = (self.wheel_time - BLOB_START_MS).max(0.0);
+        for tween in self.wheel_hover.iter_mut() {
+            tween.set(0.0, now);
+        }
     }
 
     fn open_wheel(&mut self, opener: WheelOpener) {
+        if self.wheel_time <= 0.0 {
+            self.wheel_page = Page::Ring;
+            self.wheel_bloom = 0.0;
+        }
         self.wheel_target_open = true;
         self.wheel_opener = opener;
         self.wheel_leave_at = None;
@@ -1397,6 +1578,9 @@ impl Pill {
     }
 
     fn close_wheel(&mut self) {
+        // El brote corrido no se deshace: el cierre parte de la rueda entera.
+        self.wheel_time = (self.wheel_time - self.wheel_bloom).max(0.0);
+        self.wheel_bloom = 0.0;
         self.wheel_target_open = false;
         self.wheel_leave_at = None;
     }
@@ -1581,6 +1765,7 @@ impl Pill {
             NotchTool::Agentes => self.agents.update(cx, |panel, cx| panel.reset(cx)),
             NotchTool::Sistema => self.system.update(cx, |panel, cx| panel.reset(cx)),
             NotchTool::Media => self.media_panel.update(cx, |panel, cx| panel.reset(cx)),
+            NotchTool::Personalizar => {}
         }
         self.sync_panel_limits(cx);
         self.notch_h.snap(self.panel_desired_height(cx));
@@ -1601,6 +1786,7 @@ impl Pill {
             NotchTool::Agentes => self.agents.read(cx).desired_height(),
             NotchTool::Sistema => self.system.read(cx).desired_height(),
             NotchTool::Media => self.media_panel.read(cx).desired_height(),
+            NotchTool::Personalizar => self.customize.read(cx).desired_height(),
         };
         desired.min(self.panel_max_height().unwrap_or(f32::MAX))
     }
@@ -1635,6 +1821,7 @@ impl Pill {
             NotchTool::Agentes => self.agents.read(cx).pinned,
             NotchTool::Sistema => self.system.read(cx).pinned,
             NotchTool::Media => self.media_panel.read(cx).pinned,
+            NotchTool::Personalizar => false,
         }
     }
 
@@ -1646,23 +1833,76 @@ impl Pill {
             NotchTool::Agentes => self.agents.focus_handle(cx),
             NotchTool::Sistema => self.system.focus_handle(cx),
             NotchTool::Media => self.media_panel.focus_handle(cx),
+            NotchTool::Personalizar => self.customize.focus_handle(cx),
         }
     }
 
     /// La herramienta `index` de la tira o la rueda.
     fn run_tool(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
-        match index {
-            CLIPBOARD_TOOL => self.open_notch(NotchTool::Clipboard, window, cx),
-            TEXTOS_TOOL => self.open_notch(NotchTool::Textos, window, cx),
-            AGENTES_TOOL => self.open_notch(NotchTool::Agentes, window, cx),
-            SISTEMA_TOOL => self.open_notch(NotchTool::Sistema, window, cx),
-            capture::TOOL => self.start_capture(window, cx),
-            board::TOOL => self.start_board(window, cx),
-            flip::TOOL => self.start_flip(window, cx),
-            color::TOOL => self.start_color(window, cx),
-            REUNIONES_TOOL => meetings::show(cx),
-            _ => {}
+        self.run_slot(StripId::Tool(index), window, cx)
+    }
+
+    /// Qué hace cada ficha de la tira. Las de segundo nivel son las mismas
+    /// herramientas; solo cambian dónde están.
+    fn run_slot(&mut self, slot: StripId, window: &mut Window, cx: &mut Context<Self>) {
+        match slot {
+            StripId::More => self.go_to_strip_page(Page::More),
+            StripId::Back => self.go_to_strip_page(Page::Ring),
+            StripId::Customize => self.open_customize(window, cx),
+            StripId::Tool(CLIPBOARD_TOOL) => self.open_notch(NotchTool::Clipboard, window, cx),
+            StripId::Tool(TEXTOS_TOOL) => self.open_notch(NotchTool::Textos, window, cx),
+            StripId::Tool(AGENTES_TOOL) => self.open_notch(NotchTool::Agentes, window, cx),
+            StripId::Tool(SISTEMA_TOOL) => self.open_notch(NotchTool::Sistema, window, cx),
+            StripId::Tool(capture::TOOL) => self.start_capture(window, cx),
+            StripId::Tool(board::TOOL) => self.start_board(window, cx),
+            StripId::Tool(flip::TOOL) => self.start_flip(window, cx),
+            StripId::Tool(color::TOOL) => self.start_color(window, cx),
+            StripId::Tool(REUNIONES_TOOL) => meetings::show(cx),
+            StripId::Tool(_) => {}
         }
+    }
+
+    fn go_to_strip_page(&mut self, page: Page) {
+        let now = Instant::now();
+        if page != self.strip_page {
+            self.page_switch = Some(PageSwitch {
+                at: now,
+                from: self.strip_slots(),
+                from_length: self.strip_open_now(now),
+                dir: if page == Page::More { 1.0 } else { -1.0 },
+            });
+        }
+        self.strip_page = page;
+        // Las fichas cambian de lugar: el hover y el pulso son de la posición,
+        // no de la herramienta.
+        for tween in self.strip_hover.iter_mut() {
+            tween.set(0.0, now);
+        }
+        self.strip_pulse = None;
+    }
+
+    /// El editor de los niveles, como cara del notch.
+    ///
+    /// Solo acoplada: es donde vive la tira que se edita. La gota flotante
+    /// no tiene tira.
+    fn open_customize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !matches!(self.home, Home::Docked { .. }) {
+            return;
+        }
+        self.open_notch(NotchTool::Personalizar, window, cx);
+    }
+
+    /// Deja la disposición como quedó y lo guarda en el acto: no hay
+    /// «Guardar», la tira ya queda así.
+    fn layout_changed(&mut self, layout: Layout, cx: &mut Context<Self>) {
+        pill_tools::save(&layout);
+        self.layout = layout;
+        // Si ya no hay nada en «Más», el segundo paso no tiene a quién mostrar.
+        if !pill_tools::more_open(&self.layout) && self.strip_page == Page::More {
+            self.strip_page = Page::Ring;
+        }
+        self.customize.update(cx, |panel, cx| panel.reset(cx));
+        cx.notify();
     }
 
     /// El vuelo al notch y de vuelta. Corre en cada sondeo: abrir solo marca
@@ -1936,14 +2176,24 @@ impl Pill {
                 PressTarget::Art
             } else if self.over_mark(position, now) {
                 PressTarget::Mark
-            } else if let Some(index) = self.strip_tool_at(position, now) {
-                PressTarget::Tool(index)
+            } else if let Some(slot) = self.strip_slot_at(position, now).map(|(_, slot)| slot) {
+                PressTarget::Tool(slot)
             } else {
                 PressTarget::Body
             };
             let anchor = match self.home {
                 Home::Docked { along, .. } => (along, 0.0),
                 Home::Floating { center } => center,
+            };
+            // La presión larga sobre una ficha abre el editor: el reloj corre
+            // mientras el botón siga abajo y sin moverse.
+            self.hold = match (target, self.home) {
+                (PressTarget::Tool(StripId::Tool(_)), Home::Docked { .. }) => {
+                    Some((target, now))
+                }
+                // Sobre la cara, la presión larga la vuelve engranaje (Ajustes).
+                (PressTarget::Mark, _) => Some((target, now)),
+                _ => None,
             };
             self.press = Some(Press {
                 cursor: position,
@@ -1954,9 +2204,16 @@ impl Pill {
         } else if self.wheel_fully_open() {
             match self.wheel_target_at(position, now) {
                 Some(Some(index)) => {
-                    println!("rueda → {}", TOOLS[index].name);
-                    self.close_wheel();
-                    self.run_tool(index, window, cx);
+                    let slot = self.wheel_slots()[index];
+                    println!("rueda → {}", slot.label());
+                    match slot {
+                        StripId::More => self.go_to_wheel_page(Page::More, now),
+                        StripId::Back => self.go_to_wheel_page(Page::Ring, now),
+                        _ => {
+                            self.close_wheel();
+                            self.run_slot(slot, window, cx);
+                        }
+                    }
                 }
                 Some(None) => self.close_wheel(),
                 None => {}
@@ -1984,10 +2241,18 @@ impl Pill {
             cx.notify();
             return;
         }
+        let now = Instant::now();
         let Some(press) = self.press.take() else {
             return;
         };
-        let now = Instant::now();
+        // Si la presión larga ya abrió el editor, `press` quedó en `None` y no
+        // se llega acá: lo que se suelta antes del plazo es un clic normal.
+        // La cara ya hecha engranaje abre los Ajustes al soltarla.
+        let gear_ready = matches!(
+            self.hold,
+            Some((PressTarget::Mark, since)) if now.duration_since(since).as_secs_f32() * 1000.0 >= STRIP_HOLD_MS
+        );
+        self.hold = None;
         debug(|| {
             format!(
                 "release arrastrando={} home={:?}",
@@ -1998,6 +2263,11 @@ impl Pill {
             self.settle(now);
         } else {
             match press.target {
+                PressTarget::Mark if gear_ready => {
+                    self.close_wheel();
+                    debug(|| "presión larga en la cara → Ajustes".into());
+                    cx.defer(|cx| settings::open(cx));
+                }
                 // En Atic el clic en la gota no hace nada; la rueda se abre al
                 // pasar el cursor. En el tab el clic en la marca la abre.
                 PressTarget::Mark if matches!(self.home, Home::Docked { .. }) => {
@@ -2005,10 +2275,11 @@ impl Pill {
                 }
                 PressTarget::Art => self.open_notch(NotchTool::Media, window, cx),
                 PressTarget::Tray => self.open_notch(NotchTool::Agentes, window, cx),
-                PressTarget::Tool(index) => {
-                    println!("tira → {}", TOOLS[index].name);
+                PressTarget::Tool(slot) => {
+                    let index = self.strip_slots().iter().position(|&id| id == slot).unwrap_or(0);
+                    println!("tira → {}", slot.label());
                     self.strip_pulse = Some((index, now));
-                    self.run_tool(index, window, cx);
+                    self.run_slot(slot, window, cx);
                 }
                 _ => {}
             }
@@ -2033,7 +2304,11 @@ impl Pill {
                 return false;
             }
             press.dragging = true;
+            // Se movió: el gesto es arrastre de la pill, no presión larga.
+            self.hold = None;
             self.wheel_target_open = false;
+            self.wheel_time = (self.wheel_time - self.wheel_bloom).max(0.0);
+            self.wheel_bloom = 0.0;
             self.strip.set(0.0, now);
         }
 
@@ -2087,11 +2362,76 @@ impl Pill {
                 self.seat_started = Some(now);
             }
         }
-        save_home(&self.home, &self.work);
+        save_home(&self.home, &self.work, self.screen.as_ref().map(|(screen, _, _)| screen));
     }
 
     fn dragging(&self) -> bool {
         self.press.as_ref().is_some_and(|press| press.dragging)
+    }
+
+    /// Sigue al monitor: si se arrastra la pill a otro, la ventana se va con
+    /// ella; y si el monitor cambia de resolución, escala o barra de tareas,
+    /// rehace la geometría. GPUI ya escala el dibujo con el monitor (100 %,
+    /// 125 %…), así que la pill se ve del mismo tamaño que el resto de
+    /// Windows en cada pantalla.
+    fn refresh_screen(&mut self, now: Instant, window: &Window) {
+        let dragging = self.dragging();
+        if !dragging && now.duration_since(self.screen_checked) < SCREEN_POLL {
+            return;
+        }
+        self.screen_checked = now;
+        let Some(overlay) = self.overlay.as_ref() else {
+            return;
+        };
+        let Some(current) = overlay.screen() else {
+            return;
+        };
+        if self.moving_to == Some(current) {
+            self.moving_to = None;
+        }
+        if dragging {
+            let target = overlay
+                .screen_under_cursor()
+                .filter(|s| *s != current && self.moving_to != Some(*s));
+            if let Some(target) = target {
+                overlay.move_to(&target);
+                self.moving_to = Some(target);
+            }
+        }
+        let scale_factor = window.scale_factor();
+        let key = (current, scale_factor, overlay.origin());
+        if self.screen == Some(key) {
+            return;
+        }
+        let Some((monitor, work, dockable)) = screen_geometry(overlay, scale_factor) else {
+            return;
+        };
+        // Otra resolución en el mismo monitor: la ventana vuelve a cubrirlo.
+        if !dragging && self.moving_to.is_none() {
+            overlay.move_to(&current);
+        }
+        debug(|| format!("pantalla {current:?} escala={scale_factor} trabajo={work:?}"));
+        let cursor = overlay.cursor(scale_factor);
+        let old_work = self.work;
+        self.screen = Some(key);
+        self.scale_factor = scale_factor;
+        self.monitor = monitor;
+        self.work = work;
+        self.dockable = dockable;
+
+        if let (Some(press), Some(cursor)) = (self.press.as_mut().filter(|p| p.dragging), cursor) {
+            // Llegó a otro monitor arrastrándose: sigue como gota bajo el
+            // cursor, ya en las coordenadas de la ventana nueva.
+            self.home = Home::Floating { center: cursor };
+            press.cursor = cursor;
+            press.anchor = cursor;
+        } else if std::mem::take(&mut self.restore_home) {
+            self.home = load_home(&self.work, &self.dockable)
+                .unwrap_or_else(|| default_home(&self.work));
+        } else {
+            self.home = parse_home(&home_line(&self.home, &old_work), &self.work, &self.dockable)
+                .unwrap_or_else(|| default_home(&self.work));
+        }
     }
 
     // --- Sondeo -------------------------------------------------------------
@@ -2099,6 +2439,7 @@ impl Pill {
     fn tick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let now = Instant::now();
         self.ticks += 1;
+        self.refresh_screen(now, window);
         // Cada ~medio segundo: que ninguna ventana normal haya quedado encima.
         if self.ticks.is_multiple_of(30) && self.overlay.as_ref().is_some_and(|overlay| overlay.keep_topmost()) {
             debug(|| "la ventana había salido de «siempre visible»: vuelve arriba".into());
@@ -2129,6 +2470,35 @@ impl Pill {
                 overlay.set_passthrough(false);
             }
             return;
+        }
+
+        // La presión larga sobre una ficha abre el editor de los niveles. El
+        // plazo corre en cada cuadro: si la pill se movió, `hold` ya está en
+        // `None` y esto no hace nada.
+        if let Some((PressTarget::Tool(slot), since)) = self.hold {
+            let elapsed = now.duration_since(since).as_secs_f32() * 1000.0;
+            let still = self.press.as_ref().is_some_and(|press| !press.dragging);
+            if elapsed >= STRIP_HOLD_MS && still {
+                self.hold = None;
+                self.press = None;
+                debug(|| format!("presión larga → {}", slot.label()));
+                self.run_slot(StripId::Customize, window, cx);
+            }
+        }
+        // La presión larga sobre la cara: se vuelve engranaje mientras dura
+        // (completo al plazo). Suelta o arrastrada, vuelve a ser cara.
+        match self.hold {
+            Some((PressTarget::Mark, since)) if self.press.as_ref().is_some_and(|press| !press.dragging) => {
+                let elapsed = now.duration_since(since).as_secs_f32() * 1000.0;
+                self.gear.snap(segment(elapsed, GEAR_DELAY_MS, STRIP_HOLD_MS - GEAR_DELAY_MS));
+                cx.notify();
+            }
+            _ => {
+                self.gear.set(0.0, now);
+                if self.gear.is_running(now) {
+                    cx.notify();
+                }
+            }
         }
 
         self.fly(now, window, cx);
@@ -2205,14 +2575,18 @@ impl Pill {
             self.hover_since = None;
         }
 
-        let strip_hovered = cursor.and_then(|c| self.strip_tool_at(c, now));
+        let strip_slots = self.strip_slots();
+        let strip_hovered = cursor
+            .and_then(|c| self.strip_slot_at(c, now))
+            .map(|(index, _)| index);
+        let strip_tool = strip_hovered.and_then(|index| strip_slots[index].tool());
 
         // El vistazo: tras `PEEK_DELAY` sobre Clipboard; se queda mientras el
         // cursor esté en él o en la herramienta, y otra herramienta lo cierra.
-        if self.peek.target() == 1.0 || strip_hovered == Some(CLIPBOARD_TOOL) {
+        if self.peek.target() == 1.0 || strip_tool == Some(CLIPBOARD_TOOL) {
             self.peek_entries = self.panel.read(cx).recent(PEEK_COUNT);
         }
-        let on_tool = strip_hovered == Some(CLIPBOARD_TOOL) && !self.panel_visible();
+        let on_tool = strip_tool == Some(CLIPBOARD_TOOL) && !self.panel_visible();
         let on_peek = cursor.is_some_and(|c| {
             self.peek_rect(now)
                 .is_some_and(|rect| rect.contains(c, 4.0))
@@ -2236,7 +2610,7 @@ impl Pill {
         if self.peek.target() == 1.0 {
             // Sobre otra herramienta con vistazo se espera el relevo; sobre
             // una sin vistazo, el margen de siempre.
-            let relay_to = strip_hovered.is_some_and(|tool| tool != CLIPBOARD_TOOL && peeks::any_peek(tool));
+            let relay_to = strip_tool.is_some_and(|tool| tool != CLIPBOARD_TOOL && peeks::any_peek(tool));
             if self.panel_visible() || !docked {
                 self.peek.set(0.0, now);
             } else if on_tool || on_peek || relay_to || self.peek_press.is_some() {
@@ -2249,8 +2623,8 @@ impl Pill {
                 }
             }
         }
-        self.update_usage_peek(now, cursor, strip_hovered, docked);
-        self.update_tool_peek(now, cursor, strip_hovered, docked, cx);
+        self.update_usage_peek(now, cursor, strip_tool, docked);
+        self.update_tool_peek(now, cursor, strip_tool, docked, cx);
         self.update_block(now);
         if self.demo_peek_until.is_some_and(|until| now < until) && docked {
             self.peek_entries = self.panel.read(cx).recent(PEEK_COUNT);
@@ -2264,7 +2638,7 @@ impl Pill {
         } else {
             None
         };
-        for index in 0..TOOLS.len() {
+        for index in 0..pill_tools::STRIP_MAX {
             let strip_on = if strip_hovered == Some(index) {
                 1.0
             } else {
@@ -2338,7 +2712,7 @@ impl Pill {
 
         let dragging = self.follow_drag(now);
 
-        let wheel_end = wheel_open_ms();
+        let wheel_end = self.wheel_bloom + wheel_open_ms(self.wheel_slots().len());
         let wheel_moving = if self.wheel_target_open {
             self.wheel_time = (self.wheel_time + dt_ms).min(wheel_end);
             self.wheel_time < wheel_end
@@ -2404,8 +2778,12 @@ impl Pill {
         {
             self.strip_pulse = None;
         }
+        if self.page_switch.as_ref().is_some_and(|switch| switch.progress(now) >= 1.0) {
+            self.page_switch = None;
+        }
 
         dragging
+            || self.page_switch.is_some()
             || self.live.is_running(now)
             || self.hang.is_running(now)
             || self.dict.is_running(now)
@@ -2458,11 +2836,14 @@ impl Pill {
         let PillShape::Tab { .. } = pill else {
             return 0.0;
         };
+        // La letra y los contadores del tab se tapan como un panel solo si así
+        // se eligió en Apariencia.
+        let cover_hang = appearance::current().cover_hang;
         [
             self.notch_morph(),
             self.peek.value(now),
-            self.tray_stretch(now).0,
-            self.hang_amount(now),
+            if cover_hang { self.tray_stretch(now).0 } else { 0.0 },
+            if cover_hang { self.hang_amount(now) } else { 0.0 },
             self.dict_amount(now),
             self.usage_amount(now),
             self.tool_peek_amount(now),
@@ -2473,6 +2854,7 @@ impl Pill {
     }
 
     fn frame(&self, now: Instant) -> Frame {
+        let look = appearance::current();
         let palette = Palette::dark();
         let breath_t = now.duration_since(self.born).as_secs_f32() / 2.4 * TAU;
         let brightness = 1.04 - 0.04 * breath_t.cos();
@@ -2483,39 +2865,79 @@ impl Pill {
         let open = self.strip.value(now);
         let reveal = open.clamp(0.0, 1.0);
 
-        let strip_tools = match pill {
-            PillShape::Tab { edge, thick, .. } if reveal > 0.02 => TOOLS
-                .iter()
-                .enumerate()
-                .map(|(index, tool)| {
-                    let mut hover = self.strip_hover[index].value(now);
-                    // Con el vistazo abierto su herramienta queda encendida.
-                    if index == CLIPBOARD_TOOL {
-                        hover = hover.max(self.peek.value(now).clamp(0.0, 1.0));
-                    }
-                    let pulse = match self.strip_pulse {
-                        Some((pulsed, at)) if pulsed == index => {
-                            let t = now.duration_since(at).as_secs_f32() / 0.26;
-                            1.0 - 0.18 * (t.clamp(0.0, 1.0) * PI).sin()
+        // Cambio de paso: cuánto salió cada ficha vieja (0..1) y cuánto entró
+        // cada nueva, con el lado hacia el que se corren.
+        let switch = self.page_switch.as_ref().map(|switch| (switch.progress(now), switch.dir));
+        let page_in = |index: usize, count: usize| -> f32 {
+            let Some((p, _)) = switch else {
+                return 1.0;
+            };
+            let room = (1.0 - PAGE_IN_START - PAGE_IN_SPAN) / count.saturating_sub(1).max(1) as f32;
+            let start = PAGE_IN_START + index as f32 * PAGE_IN_STAGGER.min(room);
+            ease_page(segment(p, start, PAGE_IN_SPAN))
+        };
+        let slide = switch.map_or(0.0, |(_, dir)| dir * PAGE_SLIDE);
+
+        let mut strip_tools: Vec<IconDraw> = match pill {
+            PillShape::Tab { edge, thick, .. } if reveal > 0.02 => {
+                let slots = self.strip_slots();
+                let count = slots.len();
+                slots
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, slot)| {
+                        let entered = page_in(index, count);
+                        let mut hover = self.strip_hover[index].value(now);
+                        // Con el vistazo abierto su herramienta queda encendida.
+                        if slot.tool() == Some(CLIPBOARD_TOOL) {
+                            hover = hover.max(self.peek.value(now).clamp(0.0, 1.0));
                         }
-                        _ => 1.0,
-                    };
-                    let scale = (0.4 + 0.6 * open.max(0.0)) * (1.0 + 0.14 * hover) * pulse;
-                    IconDraw {
-                        path: tool.icon,
-                        center: edge.point(
-                            &self.work,
-                            self.strip_tool_along(index, now),
-                            thick.min(TAB_THICK) / 2.0,
-                        ),
-                        size: TOOL_ICON * scale,
-                        // El rebote es solo del tamaño: el color no se pasa.
-                        color: mix(palette.muted, palette.text, hover.clamp(0.0, 1.0)).opacity(reveal),
-                    }
-                })
-                .collect(),
+                        let pulse = match self.strip_pulse {
+                            Some((pulsed, at)) if pulsed == index => {
+                                let t = now.duration_since(at).as_secs_f32() / 0.26;
+                                1.0 - 0.18 * (t.clamp(0.0, 1.0) * PI).sin()
+                            }
+                            _ => 1.0,
+                        };
+                        let scale = (0.4 + 0.6 * open.max(0.0))
+                            * (1.0 + 0.14 * hover)
+                            * pulse
+                            * (0.8 + 0.2 * entered);
+                        IconDraw {
+                            path: slot.icon(),
+                            center: edge.point(
+                                &self.work,
+                                self.strip_tool_along(index, now) + slide * (1.0 - entered),
+                                thick.min(TAB_THICK) / 2.0,
+                            ),
+                            size: TOOL_ICON * scale,
+                            // El rebote es solo del tamaño: el color no se pasa.
+                            color: mix(palette.muted, palette.text, hover.clamp(0.0, 1.0))
+                                .opacity(reveal * entered),
+                        }
+                    })
+                    .collect()
+            }
             _ => Vec::new(),
         };
+        // Las del paso que se deja salen hacia atrás, en sus mismos lugares.
+        if let (Some(switch), PillShape::Tab { edge, thick, .. }) = (&self.page_switch, pill) {
+            let gone = ease_page(segment(switch.progress(now), 0.0, PAGE_OUT_END));
+            if gone < 1.0 && reveal > 0.02 {
+                for (index, slot) in switch.from.iter().enumerate() {
+                    strip_tools.push(IconDraw {
+                        path: slot.icon(),
+                        center: edge.point(
+                            &self.work,
+                            self.strip_tool_along(index, now) - slide * gone,
+                            thick.min(TAB_THICK) / 2.0,
+                        ),
+                        size: TOOL_ICON * (0.4 + 0.6 * open.max(0.0)) * (1.0 - 0.2 * gone),
+                        color: palette.muted.opacity(reveal * (1.0 - gone)),
+                    });
+                }
+            }
+        }
 
         let place = self.wheel_place(now);
         let (core, blobs, wheel_icons, wheel_shadow) = self.wheel_frame(&place, &palette, now);
@@ -2539,6 +2961,7 @@ impl Pill {
             mark: self.mark_center(now),
             eyes: self.eyes,
             blink: self.blink_amount(now),
+            gear: self.gear.value(now),
             strip_tools,
             core,
             core_anchor: place.anchor,
@@ -2557,8 +2980,8 @@ impl Pill {
                 } => Some(geometry::side_outline(edge, &self.work, &rect, &block, TAB_RADIUS, SIDE_JOIN_R)),
                 _ => None,
             },
-            glass: self.glass.is_some(),
-            tint: GLASS_TINT + (CONTENT_TINT - GLASS_TINT) * self.content_amount(pill, now),
+            glass: self.glass.is_some() && glass::backdrop_available() && look.glass,
+            tint: look.rest_tint + (look.read_tint - look.rest_tint) * self.content_amount(pill, now),
             live: self.live_shown(now),
             art: self.media.track().and_then(|t| t.art),
             art_center: self.art_center(now),
@@ -2575,17 +2998,37 @@ impl Pill {
                     Some(PRIVACY_MIC)
                 }
             },
+            recording: self.rec_clock.clone(),
             palette,
         }
     }
 
     /// Lleva el vidrio a la forma de la pill en este cuadro, o lo esconde.
     fn update_glass(&mut self, now: Instant, shown: bool) {
-        let pill = self.shape(now);
+        // El vidrio se ve al tiro y la piel de GPUI un par de cuadros
+        // después: mientras crece, el vidrio se adelantaba y asomaba negro
+        // fuera de ella. Va con lo que tienen en común la forma de ahora y la
+        // de hace `GLASS_LAG`, así nunca se sale de la piel que está a la vista.
+        let pill = match (self.shape(now), self.shape(now.checked_sub(GLASS_LAG).unwrap_or(now))) {
+            (
+                PillShape::Tab { edge, rect, along, thick, block },
+                PillShape::Tab { edge: before_edge, rect: before_rect, block: before_block, .. },
+            ) if edge == before_edge => PillShape::Tab {
+                edge,
+                rect: overlap(&rect, &before_rect),
+                along,
+                thick,
+                block: block.zip(before_block).map(|(now, before)| overlap(&now, &before)),
+            },
+            (pill, _) => pill,
+        };
         let (Some(glass), Some(overlay)) = (self.glass.as_mut(), self.overlay.as_ref()) else {
             return;
         };
-        let Some(origin) = overlay.origin().filter(|_| shown) else {
+        let Some(origin) = overlay
+            .origin()
+            .filter(|_| shown && glass::backdrop_available() && appearance::current().glass)
+        else {
             glass.hide();
             return;
         };
@@ -2612,9 +3055,24 @@ impl Pill {
                 if block.bottom() >= rect.bottom() - 1.0 {
                     column[bottom] = 0.0;
                 }
+                // Las esquinas del bloque junto a la columna van vivas, salvo
+                // las que se asoman más allá de ella: ahí la piel las redondea
+                // y un vidrio de esquina viva se veía como un cuadro negro.
+                let rb = TAB_RADIUS.min(block.w.min(block.h) / 2.0);
+                let mut block_corners = tab_corners(edge, rb);
+                let (inner_top, inner_bottom) = match edge {
+                    Edge::Right => (1, 2),
+                    _ => (0, 3),
+                };
+                if block.y < rect.y - 1.0 {
+                    block_corners[inner_top] = rb;
+                }
+                if block.bottom() > rect.bottom() + 1.0 {
+                    block_corners[inner_bottom] = rb;
+                }
                 glass::Shape::Pair {
                     a: (grow_outward(&rect, edge, 1.0), column),
-                    b: (block, tab_corners(edge, TAB_RADIUS.min(block.w.min(block.h) / 2.0))),
+                    b: (block, block_corners),
                 }
             }
             PillShape::Tab { edge, rect, .. } => glass::Shape::Rounded {
@@ -2653,13 +3111,14 @@ impl Pill {
         let mut blobs = Vec::new();
         let mut icons = Vec::new();
         let mut extent = core_r;
-        for (index, tool) in TOOLS.iter().enumerate() {
-            let start = BLOB_START_MS + BLOB_STAGGER_MS * index as f32;
+        let slots = self.wheel_slots();
+        for (index, slot) in slots.iter().enumerate() {
+            let start = self.wheel_bloom + BLOB_START_MS + BLOB_STAGGER_MS * index as f32;
             let progress = segment(time, start, BLOB_MS);
             if progress <= 0.0 {
                 continue;
             }
-            let angle = wheel_angle(index);
+            let angle = wheel_angle(index, slots.len());
             let reach = WHEEL_RING * ease_back_out(progress);
             let radius = lerp(12.0, WHEEL_BLOB_R, ease_smooth_out(progress));
             let (bx, by) = (core_x + angle.cos() * reach, core_y + angle.sin() * reach);
@@ -2671,7 +3130,7 @@ impl Pill {
                 let hover = self.wheel_hover[index].value(now);
                 let scale = lerp(0.35, 1.0, ease_smooth_out(shown)) * (1.0 + 0.05 * hover);
                 icons.push(IconDraw {
-                    path: tool.icon,
+                    path: slot.icon(),
                     center: (bx, by),
                     size: WHEEL_ICON * scale,
                     color: mix(palette.muted, palette.text, hover).opacity(shown),
@@ -2698,6 +3157,7 @@ fn notch_tool_named(name: &str) -> Option<NotchTool> {
         "media" => NotchTool::Media,
         // `apps`: el lanzador; `emoji`: el lanzador en su modo emoji.
         "apps" | "emoji" => NotchTool::Apps,
+        "personalizar" => NotchTool::Personalizar,
         _ => return None,
     })
 }
@@ -2740,12 +3200,25 @@ fn home_file() -> Option<std::path::PathBuf> {
     )
 }
 
-fn save_home(home: &Home, work: &Rect) {
-    let Some(path) = home_file() else {
-        return;
-    };
+/// El monitor de la ventana en sus coordenadas lógicas: entero, sin la barra
+/// de tareas y los bordes donde se puede acoplar (los exteriores sin barra).
+fn screen_geometry(overlay: &win::Overlay, scale_factor: f32) -> Option<(Rect, Rect, Vec<Edge>)> {
+    let screen = overlay.screen()?;
+    let monitor = overlay.to_logical(&screen.monitor, scale_factor)?;
+    let work = overlay.to_logical(&screen.work, scale_factor)?;
+    let outer = screen.outer_edges();
+    let dockable = geometry::dockable_edges(&monitor, &work)
+        .into_iter()
+        .filter(|edge| outer.contains(edge))
+        .collect();
+    Some((monitor, work, dockable))
+}
+
+/// `home` guardado como fracciones del área de trabajo, para que sobreviva a
+/// otro monitor, otra resolución u otra escala.
+fn home_line(home: &Home, work: &Rect) -> String {
     let fraction = |value: f32, start: f32, length: f32| ((value - start) / length).clamp(0.0, 1.0);
-    let line = match *home {
+    match *home {
         Home::Docked { edge, along } => {
             let (start, end) = edge.span(work);
             format!("{edge:?} {}", fraction(along, start, end - start))
@@ -2755,15 +3228,46 @@ fn save_home(home: &Home, work: &Rect) {
             fraction(center.0, work.x, work.w),
             fraction(center.1, work.y, work.h)
         ),
+    }
+}
+
+/// Tras el `home`, la esquina del monitor en píxeles físicos:
+/// `Top 0.5 @ -1920 0`.
+fn save_home(home: &Home, work: &Rect, screen: Option<&win::Screen>) {
+    let Some(path) = home_file() else {
+        return;
     };
+    let mut line = home_line(home, work);
+    if let Some(screen) = screen {
+        line.push_str(&format!(" @ {} {}", screen.monitor.left, screen.monitor.top));
+    }
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
     let _ = std::fs::write(path, line);
 }
 
-fn load_home(work: &Rect, dockable: &[Edge]) -> Option<Home> {
+/// El monitor donde quedó la pill, si sigue conectado.
+fn saved_screen() -> Option<win::Screen> {
     let text = std::fs::read_to_string(home_file()?).ok()?;
+    let mut corner = text.split_once('@')?.1.split_whitespace();
+    let x = corner.next()?.parse().ok()?;
+    let y = corner.next()?.parse().ok()?;
+    win::Screen::at_origin(x, y)
+}
+
+fn load_home(work: &Rect, dockable: &[Edge]) -> Option<Home> {
+    parse_home(&std::fs::read_to_string(home_file()?).ok()?, work, dockable)
+}
+
+fn default_home(work: &Rect) -> Home {
+    Home::Docked {
+        edge: Edge::Top,
+        along: work.x + work.w / 2.0,
+    }
+}
+
+fn parse_home(text: &str, work: &Rect, dockable: &[Edge]) -> Option<Home> {
     let mut parts = text.split_whitespace();
     let kind = parts.next()?;
     let a: f32 = parts.next()?.parse().ok()?;
@@ -2827,6 +3331,12 @@ fn tab_corners(edge: Edge, radius: f32) -> [f32; 4] {
         Edge::Left => [0.0, radius, radius, 0.0],
         Edge::Right => [radius, 0.0, 0.0, radius],
     }
+}
+
+/// La parte común de dos rectángulos (vacía si no se tocan).
+fn overlap(a: &Rect, b: &Rect) -> Rect {
+    let (x, y) = (a.x.max(b.x), a.y.max(b.y));
+    Rect::new(x, y, (a.right().min(b.right()) - x).max(0.0), (a.bottom().min(b.bottom()) - y).max(0.0))
 }
 
 /// El tab se extiende 1 px fuera de la pantalla para que el antialias no deje
@@ -2941,7 +3451,10 @@ impl Frame {
         }
 
         self.paint_mark(window);
-        self.paint_live(window);
+        match &self.recording {
+            Some(clock) => self.paint_recording(clock, window, cx),
+            None => self.paint_live(window),
+        }
         self.paint_privacy(window);
         for icon in self.strip_tools.iter().chain(&self.wheel_icons) {
             let _ = window.paint_svg(
@@ -3018,6 +3531,43 @@ impl Frame {
         }
     }
 
+    /// Grabando una reunión: un punto rojo y el reloj donde iría la carátula.
+    /// En un costado o en la gota no cabe el reloj: solo el punto.
+    fn paint_recording(&self, clock: &str, window: &mut Window, cx: &mut App) {
+        let red: Hsla = rgb(meetings::RECORD_RED).into();
+        let dot = |window: &mut Window, center: (f32, f32)| {
+            window.paint_quad(
+                gpui::fill(bounds_of(&Rect::centered(center, 8.0, 8.0)), red).corner_radii(Corners::all(px(4.))),
+            );
+        };
+        match self.pill {
+            PillShape::Tab { edge, rect, .. } if !edge.is_vertical() => {
+                let y = self.mark.1;
+                let x = rect.x + 16.0;
+                dot(window, (x, y));
+                let size = 11.0;
+                let run = gpui::TextRun {
+                    len: clock.len(),
+                    font: gpui::font("Cascadia Mono"),
+                    color: self.palette.text,
+                    background_color: None,
+                    underline: None,
+                    strikethrough: None,
+                };
+                let line = window
+                    .text_system()
+                    .shape_line(clock.to_string().into(), px(size), &[run], None);
+                let height = size * 1.3;
+                let _ = line.paint(point(px(x + 8.0), px(y - height / 2.0)), px(height), window, cx);
+            }
+            _ => {
+                if let Some(center) = self.art_center {
+                    dot(window, center);
+                }
+            }
+        }
+    }
+
     /// El punto de privacidad, como en macOS: arriba a la derecha de la pill.
     fn paint_privacy(&self, window: &mut Window) {
         let Some(color) = self.privacy else {
@@ -3039,38 +3589,84 @@ impl Frame {
 
     /// Marca de Atic: una "a" minúscula con ojos que siguen al cursor.
     fn paint_mark(&self, window: &mut Window) {
-        paint_mark_at(window, self.mark, self.eyes, self.blink, self.palette.text);
+        paint_mark_at(window, self.mark, self.eyes, self.blink, self.gear, self.palette.text);
     }
 }
 
 /// Marca de Atic: una "a" minúscula con ojos que siguen al cursor.
-fn paint_mark_at(window: &mut Window, mark: (f32, f32), eyes: (f32, f32), blink: f32, color: Hsla) {
+///
+/// Con `gear` > 0 se vuelve engranaje (presión larga sobre la cara): el palo
+/// de la "a" se recoge hacia el centro, los ojos se juntan en el eje y del
+/// anillo salen los dientes mientras gira.
+fn paint_mark_at(
+    window: &mut Window,
+    mark: (f32, f32),
+    eyes: (f32, f32),
+    blink: f32,
+    gear: f32,
+    color: Hsla,
+) {
     let unit = MARK_SIZE / 24.0;
     let origin = (mark.0 - 12.0 * unit, mark.1 - 12.0 * unit);
     let at = |x: f32, y: f32| (origin.0 + x * unit, origin.1 + y * unit);
     let stroke = 1.5 * unit;
+    let gear = gear.clamp(0.0, 1.0);
 
     let (cx, cy) = at(12.0, 12.0);
-    if let Some(ring) = ring_path(cx, cy, 5.5 * unit, stroke) {
+    let ring_r = 5.5 * unit;
+    if let Some(ring) = ring_path(cx, cy, ring_r, stroke) {
         window.paint_path(ring, color);
     }
-    let (sx, top) = at(17.5, 6.5);
-    let (_, bottom) = at(17.5, 17.5);
-    let mut stem = gpui::PathBuilder::stroke(px(stroke));
-    stem.move_to(point(px(sx), px(top)));
-    stem.line_to(point(px(sx), px(bottom)));
-    if let Ok(path) = stem.build() {
-        window.paint_path(path, color);
-    }
-    for y in [top, bottom] {
-        if let Some(cap) = liquid::ellipse(sx, y, stroke / 2.0, stroke / 2.0) {
-            window.paint_path(cap, color);
+
+    // El palo de la "a": se encoge hacia su centro y se apaga.
+    let stem_left = 1.0 - segment(gear, 0.0, 0.6);
+    if stem_left > 0.0 {
+        let (sx, top) = at(17.5, 6.5);
+        let (_, bottom) = at(17.5, 17.5);
+        let middle = (top + bottom) / 2.0;
+        let top = lerp(middle, top, stem_left);
+        let bottom = lerp(middle, bottom, stem_left);
+        let ink = color.opacity(stem_left);
+        let mut stem = gpui::PathBuilder::stroke(px(stroke));
+        stem.move_to(point(px(sx), px(top)));
+        stem.line_to(point(px(sx), px(bottom)));
+        if let Ok(path) = stem.build() {
+            window.paint_path(path, ink);
+        }
+        for y in [top, bottom] {
+            if let Some(cap) = liquid::ellipse(sx, y, stroke / 2.0, stroke / 2.0) {
+                window.paint_path(cap, ink);
+            }
         }
     }
 
+    // Los dientes: ocho, que crecen desde el anillo mientras gira.
+    let teeth = segment(gear, 0.25, 0.75);
+    if teeth > 0.0 {
+        let turn = gear * std::f32::consts::FRAC_PI_4;
+        let inner = ring_r;
+        let outer = ring_r + 2.6 * unit * teeth;
+        let width = 2.4 * unit;
+        for i in 0..8 {
+            let angle = i as f32 * std::f32::consts::FRAC_PI_4 + turn;
+            let (dx, dy) = (angle.cos(), angle.sin());
+            let mut tooth = gpui::PathBuilder::stroke(px(width));
+            tooth.move_to(point(px(cx + dx * inner), px(cy + dy * inner)));
+            tooth.line_to(point(px(cx + dx * outer), px(cy + dy * outer)));
+            if let Ok(path) = tooth.build() {
+                window.paint_path(path, color);
+            }
+        }
+    }
+
+    // Los ojos se juntan en el centro y pasan a ser el eje del engranaje.
     for eye_x in [10.3, 13.7] {
-        let (ex, ey) = at(eye_x + eyes.0 * 1.1, 11.6 + eyes.1 * 1.1);
-        if let Some(eye) = liquid::ellipse(ex, ey, 0.88 * unit, 1.32 * unit * blink) {
+        let x = lerp(eye_x + eyes.0 * 1.1, 12.0, gear);
+        let y = lerp(11.6 + eyes.1 * 1.1, 12.0, gear);
+        let (ex, ey) = at(x, y);
+        let rx = lerp(0.88, 1.7, gear) * unit;
+        let ry = lerp(1.32 * blink, 1.7, gear) * unit;
+        if let Some(eye) = liquid::ellipse(ex, ey, rx, ry) {
             window.paint_path(eye, color);
         }
     }
@@ -3206,7 +3802,7 @@ impl Render for Pill {
         // El contenido se monta apenas se abre (para que el buscador reciba el
         // foco) y aparece cuando el panel ya tiene su tamaño.
         let mark_on_top = self.panel_visible();
-        let mark = (frame.mark, frame.eyes, frame.blink, frame.palette.text);
+        let mark = (frame.mark, frame.eyes, frame.blink, frame.gear, frame.palette.text);
         let panel_content = frame
             .panel
             .as_ref()
@@ -3262,6 +3858,7 @@ impl Render for Pill {
                             NotchTool::Agentes => self.agents.clone().into_any_element(),
                             NotchTool::Sistema => self.system.clone().into_any_element(),
                             NotchTool::Media => self.media_panel.clone().into_any_element(),
+                            NotchTool::Personalizar => self.customize.clone().into_any_element(),
                         }),
                 )
             })
@@ -3272,7 +3869,7 @@ impl Render for Pill {
                     canvas(
                         |_, _, _| {},
                         move |_, _, window, _| {
-                            paint_mark_at(window, mark.0, mark.1, mark.2, mark.3)
+                            paint_mark_at(window, mark.0, mark.1, mark.2, mark.3, mark.4)
                         },
                     )
                     .absolute()
@@ -3578,6 +4175,7 @@ fn main() {
         color::bind_keys(cx);
         snippets::bind_keys(cx);
         meetings::bind_keys(cx);
+        customize::bind_keys(cx);
         // `MEETINGS_ALONE=1`: solo la ventana de Reuniones, sin la pill.
         if std::env::var_os("MEETINGS_ALONE").is_some() {
             meetings::open_window(cx).expect("no se pudo abrir Reuniones");
@@ -3611,5 +4209,9 @@ fn main() {
         };
         cx.open_window(options, |window, cx| cx.new(|cx| Pill::new(window, cx)))
             .expect("no se pudo abrir la ventana de la pill");
+        // `PILL_OPEN=settings`: los Ajustes junto a la pill.
+        if matches!(std::env::var("PILL_OPEN").as_deref(), Ok("settings" | "appearance")) {
+            settings::open(cx);
+        }
     });
 }
