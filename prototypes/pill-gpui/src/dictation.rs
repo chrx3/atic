@@ -329,6 +329,11 @@ fn groq_key() -> Result<String, String> {
     }
 }
 
+/// Botón lateral «atrás» del mouse (`MouseX1`).
+pub(crate) const VK_XBUTTON1: i32 = 0x05;
+/// Botón lateral «adelante» del mouse (`MouseX2`).
+pub(crate) const VK_XBUTTON2: i32 = 0x06;
+
 /// El atajo de Atic (`Alt+X`, `CmdOrCtrl+Shift+D`…) como teclas virtuales.
 /// Se sondea, como el de la rueda: la ventana de la pill nunca tiene el foco.
 #[derive(Clone, Debug, PartialEq)]
@@ -354,6 +359,9 @@ impl Shortcut {
                 "shift" => 0x10,
                 "super" | "win" | "meta" | "cmd" | "command" => 0x5B,
                 "space" => 0x20,
+                // Los botones laterales del mouse, como los escribe Atic.
+                "mousex1" => VK_XBUTTON1,
+                "mousex2" => VK_XBUTTON2,
                 p if p.len() == 1 && p.as_bytes()[0].is_ascii_alphanumeric() => p.to_ascii_uppercase().as_bytes()[0] as i32,
                 p if p.starts_with('f') && p[1..].parse::<u8>().is_ok_and(|n| (1..=24).contains(&n)) => {
                     0x6F + p[1..].parse::<i32>().ok()?

@@ -12,7 +12,7 @@
 
 use std::sync::mpsc::Receiver;
 
-use crate::dictation::{Shortcut, Watch};
+use crate::dictation::{Shortcut, Watch, VK_XBUTTON1, VK_XBUTTON2};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
@@ -54,6 +54,8 @@ fn chord(text: &str) -> Option<Chord> {
             0x11 => mods |= MOD_CONTROL,
             0x10 => mods |= MOD_SHIFT,
             0x5B => mods |= MOD_WIN,
+            // `RegisterHotKey` no sabe de botones del mouse (`mouse_button`).
+            VK_XBUTTON1 | VK_XBUTTON2 => return None,
             other => {
                 if key.replace(other as u32).is_some() {
                     return None;
@@ -64,7 +66,15 @@ fn chord(text: &str) -> Option<Chord> {
     Some(Chord { mods, key: key? })
 }
 
-fn wanted(cfg: &atic_core::Config) -> Vec<(Action, Chord)> {
+/// `MouseX1` o `MouseX2` solo, sin teclas: su tecla virtual.
+fn mouse_button(text: &str) -> Option<i32> {
+    match Shortcut::parse(text)?.keys.as_slice() {
+        [vk @ (VK_XBUTTON1 | VK_XBUTTON2)] => Some(*vk),
+        _ => None,
+    }
+}
+
+fn shortcuts(cfg: &atic_core::Config) -> [(Action, &String); 10] {
     [
         (Action::Clipboard, &cfg.clipboard_shortcut),
         (Action::Snippets, &cfg.snippets_shortcut),
@@ -77,16 +87,29 @@ fn wanted(cfg: &atic_core::Config) -> Vec<(Action, Chord)> {
         (Action::Record, &cfg.global_shortcut),
         (Action::Summon, &cfg.summon_pill_shortcut),
     ]
-    .into_iter()
-    .filter_map(|(action, text)| chord(text).map(|chord| (action, chord)))
-    .collect()
+}
+
+fn wanted(cfg: &atic_core::Config) -> Vec<(Action, Chord)> {
+    shortcuts(cfg)
+        .into_iter()
+        .filter_map(|(action, text)| chord(text).map(|chord| (action, chord)))
+        .collect()
+}
+
+/// Las herramientas atadas a un botón lateral del mouse. No se registran: se
+/// mira el botón en cada vuelta, como el atajo del dictado.
+fn wanted_mouse(cfg: &atic_core::Config) -> Vec<(Action, i32)> {
+    shortcuts(cfg)
+        .into_iter()
+        .filter_map(|(action, text)| mouse_button(text).map(|vk| (action, vk)))
+        .collect()
 }
 
 #[cfg(windows)]
 pub fn spawn(watch: Watch) -> Receiver<Action> {
     use std::time::{Duration, Instant};
     use windows::Win32::UI::Input::KeyboardAndMouse::{
-        RegisterHotKey, UnregisterHotKey, HOT_KEY_MODIFIERS, MOD_NOREPEAT,
+        GetAsyncKeyState, RegisterHotKey, UnregisterHotKey, HOT_KEY_MODIFIERS, MOD_NOREPEAT,
     };
     use windows::Win32::UI::WindowsAndMessaging::{PeekMessageW, MSG, PM_REMOVE, WM_HOTKEY};
 
@@ -102,18 +125,27 @@ pub fn spawn(watch: Watch) -> Receiver<Action> {
         let mut current: Vec<(Action, Chord)> = Vec::new();
         let mut ok: Vec<bool> = Vec::new();
         let mut checked: Option<Instant> = None;
+        // Los botones del mouse y si estaban apretados en la vuelta anterior.
+        let mut mouse: Vec<(Action, i32, bool)> = Vec::new();
         loop {
             // Hasta la primera revisión no se sabe si Atic los tiene: registrar
             // antes fallaría con los suyos.
             if watch.checked() && checked.is_none_or(|at| at.elapsed() >= RECHECK) {
                 checked = Some(Instant::now());
-                let next = if watch.atic_owns_shortcuts() {
-                    chord(FALLBACK_LAUNCHER).map(|c| vec![(Action::Launcher, c)]).unwrap_or_default()
-                } else {
-                    atic_core::AppDirs::new()
-                        .map(|dirs| wanted(&atic_core::Config::load(&dirs.config_path())))
-                        .unwrap_or_default()
+                let cfg = (!watch.atic_owns_shortcuts())
+                    .then(|| atic_core::AppDirs::new().ok())
+                    .flatten()
+                    .map(|dirs| atic_core::Config::load(&dirs.config_path()));
+                let next = match &cfg {
+                    Some(cfg) => wanted(cfg),
+                    None => chord(FALLBACK_LAUNCHER).map(|c| vec![(Action::Launcher, c)]).unwrap_or_default(),
                 };
+                let next_mouse = cfg.as_ref().map(wanted_mouse).unwrap_or_default();
+                if next_mouse.len() != mouse.len()
+                    || next_mouse.iter().zip(&mouse).any(|(a, b)| (a.0, a.1) != (b.0, b.1))
+                {
+                    mouse = next_mouse.into_iter().map(|(action, vk)| (action, vk, true)).collect();
+                }
                 // Un atajo que otra app tenía puede haber quedado libre (Atic
                 // que se reinicia sin los suyos): se reintenta.
                 if next != current || ok.contains(&false) {
@@ -142,6 +174,15 @@ pub fn spawn(watch: Watch) -> Receiver<Action> {
                     }
                     current = next;
                 }
+            }
+            // Un botón del mouse cuenta al bajar. Empieza como «apretado» para
+            // no disparar con el botón ya abajo al cambiar la config.
+            for (action, vk, was_down) in mouse.iter_mut() {
+                let down = unsafe { GetAsyncKeyState(*vk) } < 0;
+                if down && !*was_down && tx.send(*action).is_err() {
+                    return;
+                }
+                *was_down = down;
             }
             let mut msg = MSG::default();
             while unsafe { PeekMessageW(&mut msg, None, WM_HOTKEY, WM_HOTKEY, PM_REMOVE) }.as_bool() {
@@ -187,6 +228,18 @@ mod tests {
         assert_eq!(chord("Ctrl+A+B"), None);
         assert_eq!(chord("Mouse4"), None);
         assert_eq!(chord(""), None);
+    }
+
+    #[test]
+    fn los_botones_del_mouse_van_aparte() {
+        assert_eq!(chord("MouseX1"), None);
+        assert_eq!(mouse_button("MouseX1"), Some(VK_XBUTTON1));
+        assert_eq!(mouse_button("MouseX2"), Some(VK_XBUTTON2));
+        assert_eq!(mouse_button("Ctrl+MouseX1"), None);
+        let mut cfg = atic_core::Config::default();
+        cfg.screenshot_shortcut = "MouseX2".into();
+        assert_eq!(wanted_mouse(&cfg), vec![(Action::Capture, VK_XBUTTON2)]);
+        assert!(!wanted(&cfg).iter().any(|(action, _)| *action == Action::Capture));
     }
 
     #[test]
