@@ -142,6 +142,22 @@ acoplado.
 - La pill duplica la vigilancia de JSONL de Claude y Codex
   (`pill-gpui/src/agents.rs`): al adoptar el crate hay que quedarse con una.
 
+## Estado al cerrar la sesión (2026-10-07)
+
+- Tests: pill 321 ok; `atic-core` 56, `atic-clipboard` 8 y `atic-calc` 23
+  ok; Tauri 521 de 522. El que falla
+  (`agents::console::tests::un_comando_simple_no_pasa_por_la_shell`) no es de
+  esta rama: `console.rs` no cambió; desde Git Bash encuentra el `echo.exe`
+  de Git y el comando pasa por `cmd /K`.
+- `cargo check` de Tauri y de la pill sin avisos nuevos. La pill compila en
+  release (subsistema GUI). No se probó nada en pantalla.
+- **No verificado:** la build de macOS de Tauri. Se movió código con partes
+  `cfg(target_os = "macos")` (contenido sensible del portapapeles, `fx`,
+  `calc`) sin poder compilarlo aquí.
+- La Fase 1 queda parada en agentes y `phone_sync` hasta las decisiones de
+  arriba. También falta decidir si Tauri se cierra al cerrar su ventana y
+  aprobar la dependencia para el ícono del exe.
+
 ## Para probar a mano
 
 Compilar la pill del worktree y abrirla cerrando antes la que corre

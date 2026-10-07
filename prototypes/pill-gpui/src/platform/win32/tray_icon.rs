@@ -15,7 +15,7 @@ use windows_sys::Win32::UI::Shell::{
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreateIconFromResourceEx, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
-    DestroyMenu, DispatchMessageW, GetCursorPos, GetMessageW, PostMessageW, RegisterClassW,
+    DestroyMenu, DispatchMessageW, FindWindowW, GetCursorPos, GetMessageW, PostMessageW, RegisterClassW,
     RegisterWindowMessageW, SetForegroundWindow, TrackPopupMenu, TranslateMessage, HICON,
     LR_DEFAULTCOLOR, MF_SEPARATOR, MF_STRING, MSG, TPM_BOTTOMALIGN, TPM_RETURNCMD,
     TPM_RIGHTBUTTON, WM_APP, WM_CONTEXTMENU, WM_LBUTTONUP, WM_NULL, WM_RBUTTONUP, WNDCLASSW,
@@ -34,7 +34,11 @@ pub enum Command {
 }
 
 const CALLBACK: u32 = WM_APP + 1;
+/// Otra pill que no arrancó (instancia única) pide abrir Atic, como cuando se
+/// vuelve a abrir la app de Tauri con ella corriendo.
+const WAKE: u32 = WM_APP + 2;
 const ICON_ID: u32 = 1;
+const CLASS: &str = "AticPillTray";
 
 /// Las entradas del menú, en orden: id, clave de texto y orden.
 const ITEMS: &[(usize, &str, Command)] = &[
@@ -66,8 +70,19 @@ pub fn spawn() -> Receiver<Command> {
     rx
 }
 
+/// Desde una segunda pill: le pide a la que corre que abra Atic. `false` si no
+/// encontró su ícono.
+pub fn wake_running() -> bool {
+    let class = wide(CLASS);
+    // SAFETY: cadena terminada en 0; mensaje sin punteros.
+    unsafe {
+        let hwnd = FindWindowW(class.as_ptr(), std::ptr::null());
+        !hwnd.is_null() && PostMessageW(hwnd, WAKE, 0, 0) != 0
+    }
+}
+
 fn run() {
-    let class = wide("AticPillTray");
+    let class = wide(CLASS);
     // SAFETY: llamadas Win32 en un hilo dedicado, con cadenas terminadas en 0
     // que viven durante la llamada; la ventana vive lo que el hilo.
     unsafe {
@@ -249,6 +264,10 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             WM_RBUTTONUP | WM_CONTEXTMENU => show_menu(hwnd),
             _ => {}
         }
+        return 0;
+    }
+    if msg == WAKE {
+        send(Command::OpenAtic);
         return 0;
     }
     if TASKBAR_CREATED.get() == Some(&msg) {

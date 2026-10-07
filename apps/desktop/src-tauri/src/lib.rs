@@ -74,7 +74,8 @@ fn launch_native_pill() {
         else {
             return;
         };
-        if let Err(error) = std::process::Command::new(&pill).spawn() {
+        // `--from-atic`: si la pill ya corre, que no vuelva a abrir Atic.
+        if let Err(error) = std::process::Command::new(&pill).arg("--from-atic").spawn() {
             tracing::warn!(%error, "no se pudo abrir la pill nativa");
         }
     }

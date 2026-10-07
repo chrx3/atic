@@ -4362,6 +4362,11 @@ fn main() {
     let _log_guard = init_log();
     let Some(_instance) = single_instance::acquire() else {
         tracing::info!("ya hay una pill corriendo en esta sesión");
+        // Abrirla otra vez (menú Inicio) abre Atic, como en Tauri. No cuando
+        // la lanza la propia app de Tauri al arrancar: ya está abriéndose.
+        if !std::env::args().any(|arg| arg == "--from-atic") {
+            tray_icon::wake_running();
+        }
         return;
     };
     // Antes de que cualquier herramienta lea sus preferencias.
