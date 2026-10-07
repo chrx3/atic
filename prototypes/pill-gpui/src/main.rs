@@ -16,6 +16,7 @@ mod color;
 mod capture;
 mod clip_image;
 mod clipboard;
+mod clipboard_owner;
 mod customize;
 mod emoji;
 mod flip;
@@ -4324,6 +4325,7 @@ fn main() {
     // Antes de que cualquier herramienta lea sus preferencias.
     paths::migrate();
     i18n::init();
+    clipboard_owner::start();
     Application::new().with_assets(Assets).run(|cx: &mut App| {
         text_input::bind_keys(cx);
         text_area::bind_keys(cx);

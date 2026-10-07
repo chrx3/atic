@@ -93,7 +93,12 @@ pub fn start_watcher(app: &AppHandle) {
             enabled: Box::new(move || {
                 enabled
                     .try_state::<AppState>()
-                    .is_some_and(|state| state.config.lock_or_recover().clipboard_history)
+                    .is_some_and(|state| {
+                        let cfg = state.config.lock_or_recover();
+                        // Con la pill nativa el historial es de ella: dos
+                        // dueños de `history.json` se pisarían.
+                        cfg.clipboard_history && !cfg.native_pill
+                    })
             }),
             image_label: image_preview_label,
             on_change: Box::new(move |change| {

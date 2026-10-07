@@ -23,6 +23,8 @@ zip = { version = "4.6.1", default-features = false, features = ["deflate"] }
 base64 = "0.22"
 # El motor de capturas de Atic: monitores, congelar, ventanas, recortar y PNG.
 atic-capture = { path = "../../crates/capture" }
+# El historial del portapapeles: la pill es su dueña con `native_pill`.
+atic-clipboard = { path = "../../crates/clipboard" }
 # El dictado de Atic sin Tauri: configuración y llavero, micrófono (con
 # RNNoise) y transcripción por Groq. Sin el Whisper local (feature `local`).
 atic-core = { path = "../../crates/core", features = ["diagnostics"] }

@@ -652,7 +652,10 @@ pub fn run() {
             }
 
             launcher::start_indexing(ui_language == "en");
-            clipboard_history::start_watcher(app.handle());
+            // Con la pill nativa, el historial lo lleva ella (`atic-clipboard`).
+            if !config_watch::native_pill() {
+                clipboard_history::start_watcher(app.handle());
+            }
             config_watch::start(app.handle());
             agents::watch_claude::start(app.handle());
             agents::watch_codex::start(app.handle());

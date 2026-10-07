@@ -24,7 +24,7 @@ pub enum Change<'a> {
 pub struct Hooks {
     /// Se consulta en cada vuelta: apagar el historial en Ajustes tiene que
     /// dejar de guardar en el acto, no en el próximo arranque.
-    pub enabled: Box<dyn Fn() -> bool + Send>,
+    pub enabled: Box<dyn FnMut() -> bool + Send>,
     /// La etiqueta de una imagen («Imagen 640×480»), en el idioma de la UI.
     pub image_label: fn(usize, usize) -> String,
     /// Algo nuevo quedó arriba del historial (y ya está en `history.json`).
@@ -44,7 +44,7 @@ enum ClipPoll {
 
 /// Arranca el hilo que mira el portapapeles y llena `shared`, guardando en
 /// `dir`. El hilo vive lo que el proceso.
-pub fn spawn_watcher(shared: Arc<Mutex<History>>, dir: PathBuf, hooks: Hooks) {
+pub fn spawn_watcher(shared: Arc<Mutex<History>>, dir: PathBuf, mut hooks: Hooks) {
     thread::spawn(move || {
         let Ok(mut clipboard) = Clipboard::new() else {
             tracing::warn!("clipboard watcher: no se pudo abrir el portapapeles");

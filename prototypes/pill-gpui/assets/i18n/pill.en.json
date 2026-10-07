@@ -1,4 +1,5 @@
 {
  "pill.clipboard.hiddenSecret": "Hidden on screen · pastes in full",
+ "pill.clipboard.imageLabel": "Image {w}×{h}",
  "pill.clipboard.yesterdayAt": "yesterday {time}"
 }
