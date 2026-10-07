@@ -3,8 +3,9 @@
 //! agrupados por día. El alto se ajusta a lo que hay que mostrar.
 //!
 //! Lee el historial real de Atic (`history.rs`); sin él, usa entradas de
-//! prueba. Favoritos y borrados hechos aquí van a un archivo propio
-//! (`local.json`): `history.json` es de Atic.
+//! prueba. Con la pill nativa, favoritos y borrados van a `history.json`
+//! (`clipboard_owner`); si no, a un archivo propio (`local.json`), porque el
+//! historial es de la app de Tauri.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -770,10 +771,12 @@ impl ClipboardPanel {
         let selected_key = self.entries[index].key.clone();
         let entry = &mut self.entries[index];
         entry.pinned = !entry.pinned;
-        self.local
-            .pins
-            .insert(entry.key.to_string(), entry.pinned);
-        self.local.save();
+        if !crate::clipboard_owner::set_pinned(&entry.key, entry.pinned) {
+            self.local
+                .pins
+                .insert(entry.key.to_string(), entry.pinned);
+            self.local.save();
+        }
         // La entrada cambia de grupo: la selección la sigue.
         self.rebuild(cx);
         if let Some(pick) = (0..self.picks.len()).find(|&pick| {
@@ -809,8 +812,10 @@ impl ClipboardPanel {
 
     fn remove(&mut self, index: usize, cx: &mut Context<Self>) {
         let entry = self.entries.remove(index);
-        self.local.hidden.push(entry.key.to_string());
-        self.local.save();
+        if !crate::clipboard_owner::delete(&entry.key) {
+            self.local.hidden.push(entry.key.to_string());
+            self.local.save();
+        }
         self.rebuild(cx);
         cx.notify();
     }
