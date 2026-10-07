@@ -29,8 +29,29 @@ const GROQ_CHUNK_SAMPLES: usize = 10 * 60 * WHISPER_RATE as usize;
 const GROQ_OVERLAP_SAMPLES: usize = 10 * WHISPER_RATE as usize;
 const GROQ_OVERLAP_MS: i64 = (GROQ_OVERLAP_SAMPLES as i64 * 1000) / WHISPER_RATE as i64;
 
-const GROQ_DICTATION_TIMEOUT: Duration = Duration::from_secs(60);
-const GROQ_MEETING_TIMEOUT: Duration = Duration::from_secs(180);
+/// Timeout por request y cuánto esperar ante un 429 antes de rendirse.
+#[derive(Clone, Copy)]
+struct CallPolicy {
+    timeout: Duration,
+    max_wait: Duration,
+    max_retries: u32,
+}
+
+/// Dictado y live: el usuario espera en vivo; mejor fallar pronto.
+const DICTATION_CALL: CallPolicy = CallPolicy {
+    timeout: Duration::from_secs(60),
+    max_wait: Duration::from_secs(5),
+    max_retries: 2,
+};
+
+/// Reuniones largas: el cupo de audio por hora (ASPH) del plan free se agota
+/// a mitad de la grabación; esperar a que se libere vale más que fallar.
+/// Un `retry-after` mayor (cupo diario) no se espera.
+const MEETING_CALL: CallPolicy = CallPolicy {
+    timeout: Duration::from_secs(180),
+    max_wait: Duration::from_secs(15 * 60),
+    max_retries: 6,
+};
 
 /// Devuelve un id válido del catálogo; desconocidos → turbo.
 pub fn normalize_groq_whisper_model(model: &str) -> &'static str {
@@ -196,7 +217,7 @@ fn transcribe_groq_samples(
             language,
             model,
             GroqFormat::VerboseJson,
-            GROQ_MEETING_TIMEOUT,
+            MEETING_CALL,
         )?;
         let (segs, lang) = segments_from_verbose_json(&body, speaker, offset_ms, duration_ms)?;
         if detected_lang.is_none() {
@@ -223,7 +244,7 @@ fn transcribe_groq_wav_bytes(
         language,
         model,
         GroqFormat::Json,
-        GROQ_DICTATION_TIMEOUT,
+        DICTATION_CALL,
     )?;
     let parsed: GroqTranscriptResponse = serde_json::from_str(&body)
         .map_err(|e| TranscribeError::BadResponse(format!("JSON Groq inválido: {e}")))?;
@@ -243,7 +264,7 @@ fn post_groq_transcription(
     language: Option<&str>,
     model: &str,
     format: GroqFormat,
-    timeout: Duration,
+    policy: CallPolicy,
 ) -> Result<String> {
     let model = normalize_groq_whisper_model(model).to_string();
     let file_name = file_name.to_string();
@@ -253,11 +274,12 @@ fn post_groq_transcription(
         .map(str::to_string);
 
     let client = reqwest::blocking::Client::builder()
-        .timeout(timeout)
+        .timeout(policy.timeout)
         .build()?;
 
-    let mut last_err = TranscribeError::BadResponse("Groq STT: sin respuesta".into());
-    for attempt in 0..3 {
+    let mut rate_retries = 0u32;
+    let mut server_retries = 0u32;
+    loop {
         let form = groq_form(
             wav_bytes.clone(),
             &file_name,
@@ -271,24 +293,88 @@ fn post_groq_transcription(
             .multipart(form)
             .send()?;
         let status = resp.status();
+        let retry_after = resp
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string);
         let body = resp.text()?;
-        if status.as_u16() == 429 && attempt < 2 {
-            tracing::warn!(attempt, "Groq STT 429, reintento");
-            std::thread::sleep(Duration::from_secs(2 * (attempt as u64 + 1)));
-            continue;
+        if status.is_success() {
+            return Ok(body);
         }
-        if !status.is_success() {
-            let snippet: String = body.chars().take(280).collect();
-            last_err = TranscribeError::BadResponse(format!("Groq STT {status}: {snippet}"));
-            if status.is_server_error() && attempt < 2 {
-                std::thread::sleep(Duration::from_secs(2));
+
+        let snippet: String = body.chars().take(280).collect();
+        if status.as_u16() == 429 {
+            let wait = groq_retry_wait(retry_after.as_deref(), &body)
+                .unwrap_or_else(|| Duration::from_secs(2 * (rate_retries as u64 + 1)));
+            if rate_retries < policy.max_retries && wait <= policy.max_wait {
+                rate_retries += 1;
+                tracing::warn!(
+                    attempt = rate_retries,
+                    wait_secs = wait.as_secs(),
+                    "Groq STT 429, espera el cupo y reintenta"
+                );
+                // Margen para no llegar justo antes de que se libere el cupo.
+                std::thread::sleep(wait + Duration::from_secs(1));
                 continue;
             }
-            return Err(last_err);
+            return Err(TranscribeError::BadResponse(format!(
+                "Groq STT {status}: {snippet}"
+            )));
         }
-        return Ok(body);
+        if status.is_server_error() && server_retries < 2 {
+            server_retries += 1;
+            std::thread::sleep(Duration::from_secs(2));
+            continue;
+        }
+        return Err(TranscribeError::BadResponse(format!(
+            "Groq STT {status}: {snippet}"
+        )));
     }
-    Err(last_err)
+}
+
+/// Espera pedida por Groq: header `retry-after` (segundos) o el texto
+/// `Please try again in 1m54.5s` del cuerpo.
+fn groq_retry_wait(retry_after: Option<&str>, body: &str) -> Option<Duration> {
+    if let Some(secs) = retry_after
+        .and_then(|v| v.trim().parse::<f64>().ok())
+        .filter(|s| s.is_finite() && *s > 0.0)
+    {
+        return Some(Duration::from_secs_f64(secs));
+    }
+    let marker = "try again in ";
+    let idx = body.to_ascii_lowercase().find(marker)?;
+    let token = body[idx + marker.len()..]
+        .split(|c: char| c.is_whitespace() || c == '"' || c == ',')
+        .next()?
+        .trim_end_matches('.');
+    parse_go_duration(token)
+}
+
+/// `1h2m3.5s`, `54.2s`, `750ms`.
+fn parse_go_duration(text: &str) -> Option<Duration> {
+    let mut total = 0.0f64;
+    let mut rest = text;
+    while !rest.is_empty() {
+        let num_len = rest
+            .find(|c: char| !(c.is_ascii_digit() || c == '.'))
+            .unwrap_or(rest.len());
+        let value: f64 = rest[..num_len].parse().ok()?;
+        rest = &rest[num_len..];
+        let unit_len = rest
+            .find(|c: char| c.is_ascii_digit() || c == '.')
+            .unwrap_or(rest.len());
+        let factor = match &rest[..unit_len] {
+            "h" => 3600.0,
+            "m" => 60.0,
+            "s" => 1.0,
+            "ms" => 0.001,
+            _ => return None,
+        };
+        total += value * factor;
+        rest = &rest[unit_len..];
+    }
+    (total > 0.0).then(|| Duration::from_secs_f64(total))
 }
 
 fn groq_form(
@@ -535,6 +621,29 @@ mod tests {
         assert_eq!(starts.len(), 3);
         assert_eq!(starts[0], 0);
         assert_eq!(starts[1], GROQ_CHUNK_SAMPLES - GROQ_OVERLAP_SAMPLES);
+    }
+
+    #[test]
+    fn retry_wait_prefers_header() {
+        let wait = groq_retry_wait(Some("12"), "please try again in 5m").unwrap();
+        assert_eq!(wait, Duration::from_secs(12));
+    }
+
+    #[test]
+    fn retry_wait_reads_audio_quota_copy() {
+        let body = r#"{"error":{"message":"Rate limit reached for model `whisper-large-v3-turbo` on seconds of audio per hour (ASPH): Limit 7200, Used 7023, Requested 600. Please try again in 4m54.5s.","type":"seconds"}}"#;
+        let wait = groq_retry_wait(None, body).unwrap();
+        assert_eq!(wait, Duration::from_millis(294_500));
+        assert!(wait <= MEETING_CALL.max_wait);
+        assert!(wait > DICTATION_CALL.max_wait);
+    }
+
+    #[test]
+    fn retry_wait_parses_go_durations() {
+        assert_eq!(parse_go_duration("750ms"), Some(Duration::from_millis(750)));
+        assert_eq!(parse_go_duration("1h2m3s"), Some(Duration::from_secs(3723)));
+        assert_eq!(parse_go_duration("abc"), None);
+        assert_eq!(groq_retry_wait(None, "sin pista"), None);
     }
 
     #[test]

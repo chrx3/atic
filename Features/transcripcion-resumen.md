@@ -12,6 +12,8 @@ o abrir borrador por correo.
 
 - Tras grabar: transcribir en la app principal (Local o Groq).
 - Local no sale del PC. Groq trocea el audio (~10 min) y pide marcas de tiempo.
+  Si se agota el cupo de audio por hora, espera lo que pide Groq (hasta
+  15 min) y sigue; el dictado y el live fallan rápido.
 - Live transcription si está activada en ajustes, con Whisper local o Groq.
 - Si se selecciona Groq, el audio se envía a su API. Los proveedores de resumen
   reciben texto, no audio.
