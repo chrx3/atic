@@ -15,6 +15,7 @@ mod capture;
 mod clip_image;
 mod clipboard;
 mod clipboard_owner;
+mod config_watch;
 mod customize;
 mod emoji;
 mod flip;
@@ -4328,6 +4329,7 @@ fn main() {
     clipboard_owner::start();
     paste_queue::start();
     housekeeping::spawn();
+    config_watch::spawn();
     Application::new().with_assets(Assets).run(|cx: &mut App| {
         text_input::bind_keys(cx);
         text_area::bind_keys(cx);

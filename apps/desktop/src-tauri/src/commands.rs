@@ -193,6 +193,10 @@ pub(crate) fn apply_config(app: &AppHandle, mut config: Config, persist: bool) -
 }
 
 fn sync_autostart(app: &AppHandle, enabled: bool) {
+    // Con la pill nativa, el inicio automático es de ella: abre su exe.
+    if crate::config_watch::native_pill() {
+        return;
+    }
     use tauri_plugin_autostart::ManagerExt;
     let manager = app.autolaunch();
     let result = if enabled {

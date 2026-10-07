@@ -21,6 +21,7 @@
 //! - `ocr`: leer el texto de una captura.
 //! - `privacy`: quién usa el micrófono o la cámara.
 //! - `running`: qué apps tienen ventanas abiertas y cerrarlas.
+//! - `autostart`: iniciar con el sistema (`sync`). En Mac, un LaunchAgent.
 //!
 //! Pendiente: `capture.rs` todavía mezcla la mira (UI) con llamadas a Win32;
 //! la parte nativa tiene que pasar aquí antes de portar Capturas.
@@ -28,4 +29,4 @@
 #[cfg(windows)]
 mod win32;
 #[cfg(windows)]
-pub use win32::{drag, glass, hotkeys, ocr, paste, privacy, running, win};
+pub use win32::{autostart, drag, glass, hotkeys, ocr, paste, privacy, running, win};

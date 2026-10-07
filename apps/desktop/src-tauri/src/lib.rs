@@ -574,7 +574,9 @@ pub fn run() {
             // estuviera deshabilitado, y eso falla con "no se encuentra el
             // archivo" (os error 2) porque no hay entrada que borrar: un aviso
             // en cada inicio que no significaba nada y tapaba los reales.
-            {
+            //
+            // Con la pill nativa no: la entrada apunta al exe de la pill.
+            if !config_watch::native_pill() {
                 use tauri_plugin_autostart::ManagerExt;
                 let manager = app.autolaunch();
                 match manager.is_enabled() {
