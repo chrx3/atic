@@ -4,6 +4,8 @@
 
 pub mod config;
 pub mod db;
+#[cfg(feature = "diagnostics")]
+pub mod diagnostics;
 pub mod error;
 pub mod fs_atomic;
 pub mod locale;

@@ -25,7 +25,7 @@ base64 = "0.22"
 atic-capture = { path = "../../crates/capture" }
 # El dictado de Atic sin Tauri: configuración y llavero, micrófono (con
 # RNNoise) y transcripción por Groq. Sin el Whisper local (feature `local`).
-atic-core = { path = "../../crates/core" }
+atic-core = { path = "../../crates/core", features = ["diagnostics"] }
 atic-audio = { path = "../../crates/audio" }
 atic-transcribe = { path = "../../crates/transcribe" }
 # Reuniones: resumir con el proveedor de Atic y mandar el resumen por correo.

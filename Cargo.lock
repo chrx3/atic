@@ -524,6 +524,8 @@ dependencies = [
  "sys-locale",
  "thiserror 2.0.18",
  "tracing",
+ "tracing-appender",
+ "tracing-subscriber",
  "uuid",
 ]
 
@@ -571,8 +573,6 @@ dependencies = [
  "tauri-plugin-updater",
  "tokio",
  "tracing",
- "tracing-appender",
- "tracing-subscriber",
  "uuid",
  "webview2-com",
  "windows 0.61.3",

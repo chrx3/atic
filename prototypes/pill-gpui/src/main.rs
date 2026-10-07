@@ -303,28 +303,13 @@ fn debug(message: impl FnOnce() -> String) {
     }
 }
 
-/// Con `PILL_DEBUG=1`, los avisos y errores de GPUI van a stderr. Sin esto se
-/// pierden: un error al dibujar deja la pill invisible sin decir por qué.
-struct GpuiLog;
-
-impl log::Log for GpuiLog {
-    fn enabled(&self, metadata: &log::Metadata) -> bool {
-        metadata.level() <= log::Level::Warn
-    }
-
-    fn log(&self, record: &log::Record) {
-        if self.enabled(record.metadata()) {
-            eprintln!("[{} {}] {}", record.level(), record.target(), record.args());
-        }
-    }
-
-    fn flush(&self) {}
-}
-
-fn init_gpui_log() {
-    if std::env::var_os("PILL_DEBUG").is_some() && log::set_logger(&GpuiLog).is_ok() {
-        log::set_max_level(log::LevelFilter::Warn);
-    }
+/// El log a consola y a `pill.<fecha>.log` en la carpeta de logs de Atic, con
+/// los pánicos. Los avisos y errores de GPUI (que usa `log`) también llegan:
+/// sin eso, un error al dibujar deja la pill invisible sin decir por qué.
+#[must_use = "si se descarta el guard, las últimas líneas antes del cierre se pierden"]
+fn init_log() -> Option<atic_core::diagnostics::WorkerGuard> {
+    let dir = paths::logs_dir().unwrap_or_else(|| std::env::temp_dir().join("atic-logs"));
+    atic_core::diagnostics::init(&dir, "pill", "info,gpui=warn")
 }
 
 fn distance(a: (f32, f32), b: (f32, f32)) -> f32 {
@@ -4323,8 +4308,16 @@ fn render_preview(
     .into_any_element()
 }
 
+/// Sin su ventana la app no sirve: deja el motivo en el log y sale, en vez de
+/// entrar en pánico.
+fn quit_on_error(what: &str, error: anyhow::Error, cx: &mut App) {
+    tracing::error!(error = format!("{error:#}"), "{what}");
+    cx.quit();
+}
+
 fn main() {
-    init_gpui_log();
+    // Vive hasta que `main` termina: soltarlo antes pierde las últimas líneas.
+    let _log_guard = init_log();
     // Antes de que cualquier herramienta lea sus preferencias.
     paths::migrate();
     Application::new().with_assets(Assets).run(|cx: &mut App| {
@@ -4345,13 +4338,17 @@ fn main() {
         customize::bind_keys(cx);
         // `MEETINGS_ALONE=1`: solo la ventana de Reuniones, sin la pill.
         if std::env::var_os("MEETINGS_ALONE").is_some() {
-            meetings::open_window(cx).expect("no se pudo abrir Reuniones");
+            if let Err(error) = meetings::open_window(cx) {
+                quit_on_error("no se pudo abrir Reuniones", error, cx);
+            }
             return;
         }
         // `SPACE_ALONE=1`: solo el espacio, sin la pill (para medirlo sin el
         // overlay compartiendo el hilo).
         if std::env::var_os("SPACE_ALONE").is_some() {
-            space::open_window(None, cx).expect("no se pudo abrir el espacio");
+            if let Err(error) = space::open_window(None, cx) {
+                quit_on_error("no se pudo abrir el espacio", error, cx);
+            }
             return;
         }
         let display = cx.primary_display();
@@ -4374,8 +4371,9 @@ fn main() {
             window_background: WindowBackgroundAppearance::Transparent,
             ..Default::default()
         };
-        cx.open_window(options, |window, cx| cx.new(|cx| Pill::new(window, cx)))
-            .expect("no se pudo abrir la ventana de la pill");
+        if let Err(error) = cx.open_window(options, |window, cx| cx.new(|cx| Pill::new(window, cx))) {
+            return quit_on_error("no se pudo abrir la ventana de la pill", error, cx);
+        }
         // `PILL_OPEN=settings`: los Ajustes junto a la pill.
         if matches!(std::env::var("PILL_OPEN").as_deref(), Ok("settings" | "appearance")) {
             settings::open(cx);

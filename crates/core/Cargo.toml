@@ -10,8 +10,14 @@ serde_json.workspace = true
 thiserror.workspace = true
 chrono.workspace = true
 tracing.workspace = true
+tracing-subscriber = { workspace = true, optional = true }
+tracing-appender = { workspace = true, optional = true }
 rusqlite = { version = "0.32", features = ["bundled"] }
 directories = "5"
 uuid = { version = "1", features = ["v4"] }
 keyring = { version = "3", features = ["windows-native", "apple-native", "sync-secret-service"] }
 sys-locale = "0.3"
+
+[features]
+# El log a archivo con rotación y los pánicos (`diagnostics`).
+diagnostics = ["dep:tracing-subscriber", "dep:tracing-appender"]

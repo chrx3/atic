@@ -12,7 +12,6 @@ mod clipboard_history;
 mod color_picker;
 mod commands;
 mod config_watch;
-mod diagnostics;
 mod dictation;
 mod export;
 mod floating;
@@ -140,7 +139,7 @@ pub fn run() {
         .unwrap_or_else(|_| std::env::temp_dir().join("atic-logs"));
     // El guard vive hasta el final de `run()`. Soltarlo antes se lleva puestas
     // las últimas líneas, que son las del cierre.
-    let _log_guard = diagnostics::init(&logs_dir);
+    let _log_guard = atic_core::diagnostics::init(&logs_dir, "atic", "info");
 
     // El estado se construye ANTES del Builder, no dentro de `setup()`.
     //

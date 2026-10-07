@@ -20,12 +20,14 @@
 //! La escritura es no bloqueante: hay un hilo aparte que vacía el buffer, y
 //! [`init`] devuelve un guard que lo mantiene vivo. Si se descarta, el hilo
 //! muere y **las últimas líneas antes del cierre se pierden** — que son
-//! siempre las interesantes. Por eso el guard vive en `run()` hasta que la app
-//! termina.
+//! siempre las interesantes. Por eso el guard vive hasta que la app termina.
+//!
+//! Lo usan la app de Tauri (`atic.*.log`) y la pill GPUI (`pill.*.log`), cada
+//! una con su prefijo en la misma carpeta de logs.
 
 use std::path::Path;
 
-use tracing_appender::non_blocking::WorkerGuard;
+pub use tracing_appender::non_blocking::WorkerGuard;
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
@@ -35,19 +37,21 @@ use tracing_subscriber::EnvFilter;
 /// sin que la carpeta crezca sola para siempre.
 const DIAS_DE_LOG: usize = 7;
 
-/// Arranca el log a consola y a archivo, y engancha los pánicos.
+/// Arranca el log a consola y a archivo (`<prefix>.<fecha>.log`), y engancha
+/// los pánicos. `default_filter` vale cuando no hay `RUST_LOG`.
 ///
 /// Devuelve el guard del escritor no bloqueante: **hay que conservarlo**. Si
 /// no se pudo abrir el archivo (disco lleno, permisos), el log a consola se
 /// instala igual y se devuelve `None`: quedarse sin app por no poder escribir
 /// un log sería peor que la falta del log.
 #[must_use = "si se descarta el guard, las últimas líneas antes del cierre se pierden"]
-pub fn init(logs_dir: &Path) -> Option<WorkerGuard> {
-    let filter = || EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+pub fn init(logs_dir: &Path, prefix: &str, default_filter: &str) -> Option<WorkerGuard> {
+    let filter =
+        || EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_filter));
 
     let archivo = RollingFileAppender::builder()
         .rotation(Rotation::DAILY)
-        .filename_prefix("atic")
+        .filename_prefix(prefix)
         .filename_suffix("log")
         .max_log_files(DIAS_DE_LOG)
         .build(logs_dir);
@@ -141,7 +145,7 @@ mod tests {
     fn sin_carpeta_escribible_no_tumba_la_app() {
         // Una ruta que no se puede crear: init tiene que devolver None, no
         // entrar en pánico.
-        let guard = init(Path::new("\0ruta imposible"));
+        let guard = init(Path::new("\0ruta imposible"), "atic", "info");
         assert!(guard.is_none());
     }
 }
