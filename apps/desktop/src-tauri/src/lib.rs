@@ -61,6 +61,25 @@ use atic_core::{AppDirs, Config, Db};
 use crate::state::AppState;
 use atic_core::MutexExt;
 
+/// Abre la pill GPUI (`atic-pill.exe`, junto a este exe en la instalación).
+/// Si ya corre, su instancia única la cierra al instante. En desarrollo no
+/// está junto al exe y no se hace nada.
+fn launch_native_pill() {
+    #[cfg(windows)]
+    {
+        let Some(pill) = std::env::current_exe()
+            .ok()
+            .and_then(|exe| Some(exe.parent()?.join("atic-pill.exe")))
+            .filter(|pill| pill.is_file())
+        else {
+            return;
+        };
+        if let Err(error) = std::process::Command::new(&pill).spawn() {
+            tracing::warn!(%error, "no se pudo abrir la pill nativa");
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Copia elevada de una consola de administrador (ver `agents::console`):
@@ -565,8 +584,12 @@ pub fn run() {
             crate::ui_lang::set_english(ui_language == "en");
             crate::ui_lang::apply_window_titles(app.handle());
 
-            // Con la pill nativa, el ícono de bandeja es de ella.
-            if !config_watch::native_pill() {
+            // Con la pill nativa, el ícono de bandeja es de ella. Y tiene que
+            // estar corriendo: tras una actualización el instalador relanza
+            // este exe, no el de la pill.
+            if config_watch::native_pill() {
+                launch_native_pill();
+            } else {
                 tray::build_tray(app.handle())?;
             }
 

@@ -56,10 +56,11 @@ Detalles:
 | Inicio automático | listo | `54b2227` |
 | Ícono de bandeja | listo | `bb4618a` |
 | Tauri bajo demanda (`--open`, sin bandeja) | parcial | `b326753` |
-| `mouse_bindings` (botones laterales) | pendiente | |
-| `phone_sync` | pendiente | |
-| Hub MCP, hooks y watchers de agentes | pendiente | |
-| Instalador | pendiente | |
+| Botones laterales del mouse (en la pill, sin tocar `mouse_bindings` de Tauri) | listo | `82d8a28` |
+| Instalador (configuración y hooks, sin generar) | listo | `ad2de80` |
+| `hub.json`: no borrar el de otro proceso | listo | `430f30b` |
+| Hub MCP, hooks y watchers de agentes | **necesita decisión** (ver abajo) | |
+| `phone_sync` | pendiente (depende de agentes) | |
 
 Cómo queda el reparto con `native_pill: true`:
 
@@ -78,6 +79,68 @@ Cómo queda el reparto con `native_pill: true`:
 Crates nuevos: `atic-clipboard` (modelo, guardado, candado, contenido
 sensible, watcher y cola de pegado), `atic-calc` (calculadora y `fx`) y los
 módulos `atic_core::diagnostics` (feature) y `atic_core::housekeeping`.
+
+## Instalador con la pill
+
+`pnpm --dir apps/desktop tauri:build:pill` (= `tauri build --config
+src-tauri/tauri.pill.conf.json`). No se generó ninguno.
+
+- `pnpm pill:build` (`scripts/build-pill.ps1`) compila la pill en release en
+  `target/pill-gpui` y la copia a `binaries/atic-pill-<triple>.exe`.
+- `tauri.pill.conf.json` la suma a `externalBin` (queda como
+  `atic-pill.exe` junto a `atic-desktop.exe`) y agrega
+  `windows/pill-hooks.nsh`. Es aparte para que `pnpm dev` y el build normal
+  no necesiten compilar la pill ni existan en macOS.
+- Hooks: cierran la pill antes de instalar o desinstalar (si no, su exe no se
+  puede reemplazar), apuntan el acceso del menú Inicio a `atic-pill.exe
+  --native` y la abren al terminar. `--native` enciende `native_pill` en
+  `config.json`. Al desinstalar se borra el valor `Atic` de `Run`.
+- **Sin verificar:** el orden en que la plantilla NSIS de Tauri crea su acceso
+  del menú Inicio respecto de `NSIS_HOOK_POSTINSTALL` (si lo crea después, el
+  acceso vuelve a apuntar a Tauri). Revisar al generar el primero.
+- El actualizador relanza `atic-desktop.exe`: con `native_pill`, Tauri abre
+  `atic-pill.exe` si está junto a su exe (la instancia única evita una
+  segunda pill).
+- Falta el ícono embebido en `atic-pill.exe` (necesita un `build.rs` con un
+  crate de recursos: hay que aprobar la dependencia).
+
+## Agentes: plan y decisiones pendientes
+
+Hay cuatro caminos de permisos (mapa completo en la conversación del
+2026-10-07):
+
+1. **Sesiones de chat que lanza Atic** (`bridge.rs`): Claude por stream-json,
+   Codex por app-server, OpenCode/Cursor/Grok por ACP. La UI contesta con
+   `agent_permission`. Es lo de la ventana de agentes de Tauri.
+2. **Consolas PTY de Atic** con hooks inyectados (`ping.rs`: los hooks anexan
+   JSON a `%TEMP%tic-*-ping.jsonl`; `watch_claude` los vacía y
+   `console_prompts` los cruza con la consola). Hoy solo se contestan desde
+   el celular, escribiendo teclas en el PTY.
+3. **CLIs en una terminal externa**: solo presencia.
+4. **Hub y `atic-mcp`**: un agente padre contesta el permiso de un hijo.
+
+Frontera propuesta para un crate `atic-agents`: mover tal cual `model`,
+`turns`, `hub/{api,graph,wait}`, `ping`, `console_prompts`,
+`console_opencode`, `mcp_servers`, `mcp_install`, los adaptadores
+(`claude_code`, `codex`, `acp`, …), los `tick` de `watch_*`, `resume`,
+`presence` y `store`; `hub::server` sin el emit. Lo de Tauri (`AppHandle`,
+eventos `agent-event`, `agent-presence`, `agents-permission-resolved`,
+`console-output`) pasa a un trait `AgentsHost`. `console.rs` es lo más
+acoplado.
+
+**Decisiones que necesito antes de seguir:**
+
+- **¿Quién es dueño de las consolas y las sesiones?** La pill ya tiene su
+  espacio de consolas (`space/`). Si las consolas de agentes pasan a la pill,
+  el camino 2 se mueve con ellas y Tauri deja de vaciar los pings (dos
+  procesos leyendo los mismos `%TEMP%\*.jsonl` contestarían dos veces). Si
+  siguen en Tauri, la pill solo muestra lo que Tauri le pase (habría que
+  exponer presencia y eventos en el hub, que hoy no los tiene).
+- **¿Tauri se cierra al cerrar su ventana?** Es lo que pide la Fase 1 (sin
+  WebView2 con la ventana cerrada), pero hoy mataría las consolas y sesiones
+  abiertas ahí.
+- La pill duplica la vigilancia de JSONL de Claude y Codex
+  (`pill-gpui/src/agents.rs`): al adoptar el crate hay que quedarse con una.
 
 ## Para probar a mano
 
