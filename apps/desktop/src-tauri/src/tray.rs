@@ -101,6 +101,10 @@ pub fn build_tray(app: &AppHandle) -> tauri::Result<()> {
 
 #[tauri::command]
 pub fn set_tray_menu(app: AppHandle, labels: TrayLabels) -> Result<(), String> {
+    // Con la pill nativa el ícono es de ella: aquí no hay nada que rotular.
+    if crate::config_watch::native_pill() {
+        return Ok(());
+    }
     let menu = tray_menu(&app, &labels).map_err(|e| e.to_string())?;
     let tray = app.tray_by_id("main-tray").ok_or_else(|| {
         crate::ui_lang::msg("No hay icono de bandeja.", "The tray icon is missing.")

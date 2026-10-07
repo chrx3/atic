@@ -565,7 +565,10 @@ pub fn run() {
             crate::ui_lang::set_english(ui_language == "en");
             crate::ui_lang::apply_window_titles(app.handle());
 
-            tray::build_tray(app.handle())?;
+            // Con la pill nativa, el ícono de bandeja es de ella.
+            if !config_watch::native_pill() {
+                tray::build_tray(app.handle())?;
+            }
 
             // Sincronizar autostart con la preferencia guardada.
             //
@@ -678,7 +681,10 @@ pub fn run() {
                 let cfg = state.config.lock_or_recover();
                 (!cfg.onboarding_done, cfg.show_pill || cfg.native_pill)
             };
-            if primera_vez || !hay_pill {
+            // `--open`: la pill nativa pide la ventana (biblioteca, Ajustes,
+            // agentes) y Atic no estaba corriendo.
+            let pedida = std::env::args().any(|arg| arg == "--open");
+            if primera_vez || !hay_pill || pedida {
                 state::show_main(app.handle());
             }
 
