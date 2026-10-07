@@ -33,8 +33,8 @@ Detalles:
   `pill.<fecha>.log` en `data\logs\`. Los avisos de GPUI entran al log; ya no
   hace falta `PILL_DEBUG` para verlos (sigue sirviendo para las trazas
   `debug()`).
-- **Instancia única:** mutex `Local\atic-pill-gpui`; la segunda pill registra
-  «ya hay una pill corriendo» y sale. Todavía no le avisa a la primera.
+- **Instancia única:** mutex `Local\atic-pill-gpui`; la segunda pill le pide a
+  la primera que abra Atic (salvo con `--from-atic`, que usa Tauri) y sale.
 - **Traducción:** `src/i18n.rs`, `t("clave")` y `tf("clave", &[("var", &valor)])`.
   `assets/i18n/atic.{es,en}.json` se generan con
   `node prototypes/pill-gpui/scripts/i18n-export.mjs` (1.678 claves) y
