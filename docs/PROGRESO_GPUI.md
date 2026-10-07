@@ -171,9 +171,10 @@ pruebas con un exe de desarrollo, después vuelve a apuntarla al instalado.
   WebView2 en memoria). Hacer que salga al cerrar mataría las consolas de
   agentes abiertas en Tauri. Decidir cuando las consolas y el hub vivan en la
   pill.
-- **Pegar desde el historial de la pill lo vuelve a subir** al tope: Tauri
-  usaba `suppress_until` al pegar y la pill todavía no. Lo mismo para borrar y
-  fijar: la pill los guarda en su `local.json`, no en `history.json`.
+- **Borrar y fijar en el portapapeles de la pill** se guardan en su
+  `local.json`, no en `history.json`: la app de Tauri no los ve, y un ítem
+  borrado en la pill puede volver si se copia de nuevo. Pasar esas acciones al
+  `History` compartido de `clipboard_owner`.
 - **«Mostrar / ocultar pill»** no está en el menú de la bandeja: ocultar el
   overlay con `ShowWindow` rompe `hide()`/`set_focus()` (ver memoria).
 - La pill vieja que sigue corriendo escribe en `%LOCALAPPDATA%tic-gpui`.
