@@ -56,52 +56,10 @@ use std::sync::Mutex;
 
 use tauri::{Manager, RunEvent, WindowEvent};
 
-use atic_core::{AppDirs, Config, Db, RecordingStatus, Summary, Transcript};
+use atic_core::{AppDirs, Config, Db};
 
 use crate::state::AppState;
 use atic_core::MutexExt;
-
-/// Repara estados transitorios huérfanos tras un cierre abrupto.
-///
-/// Si la app se cerró mientras transcribía o resumía, la fila quedó en
-/// `transcribing`/`summarizing` sin ningún hilo que la avance. Al arrancar no
-/// hay trabajo en curso, así que degradamos cada fila a un estado consistente
-/// con lo que exista en disco para que el usuario pueda reintentar.
-fn recover_orphaned_statuses(state: &AppState) {
-    let recs = match state.db.lock_or_recover().list_recordings() {
-        Ok(recs) => recs,
-        Err(err) => {
-            tracing::warn!(%err, "no se pudieron revisar estados huérfanos al iniciar");
-            return;
-        }
-    };
-    for rec in recs {
-        let next = match rec.status {
-            RecordingStatus::Transcribing => {
-                match Transcript::load(&state.dirs.transcript_path(&rec.id)) {
-                    Ok(Some(t)) if !t.segments.is_empty() => RecordingStatus::Transcribed,
-                    _ => RecordingStatus::Recorded,
-                }
-            }
-            RecordingStatus::Summarizing => {
-                match Summary::load(&state.dirs.summary_path(&rec.id)) {
-                    Ok(Some(_)) => RecordingStatus::Summarized,
-                    _ => RecordingStatus::Transcribed,
-                }
-            }
-            _ => continue,
-        };
-        match state.db.lock_or_recover().update_status(&rec.id, next) {
-            Ok(()) => tracing::info!(
-                id = %rec.id, from = ?rec.status, to = ?next,
-                "estado huérfano recuperado al iniciar"
-            ),
-            Err(err) => {
-                tracing::warn!(%err, id = %rec.id, "no se pudo recuperar el estado huérfano")
-            }
-        }
-    }
-}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -564,10 +522,20 @@ pub fn run() {
             // `getConfig()`).
 
             // Repara estados transitorios huérfanos de un cierre abrupto anterior.
-            recover_orphaned_statuses(&app.state::<AppState>());
-            retention::run_auto_cleanup(app.handle());
-            capture::run_capture_cleanup(app.handle());
-            meeting_detection::spawn_detector(app.handle().clone());
+            // Con la pill nativa, esto lo hace ella al arrancar: si Tauri se
+            // abre mientras la pill transcribe, «repararía» un trabajo en curso.
+            if !config_watch::native_pill() {
+                {
+                    let state = app.state::<AppState>();
+                    atic_core::housekeeping::recover_orphaned_statuses(
+                        &state.db.lock_or_recover(),
+                        &state.dirs,
+                    );
+                }
+                retention::run_auto_cleanup(app.handle());
+                capture::run_capture_cleanup(app.handle());
+                meeting_detection::spawn_detector(app.handle().clone());
+            }
 
             // Precarga Whisper en background para que el primer dictado no espere
             // la carga del GGML desde disco.

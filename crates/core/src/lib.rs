@@ -8,6 +8,7 @@ pub mod db;
 pub mod diagnostics;
 pub mod error;
 pub mod fs_atomic;
+pub mod housekeeping;
 pub mod locale;
 pub mod models;
 pub mod paths;

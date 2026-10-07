@@ -28,6 +28,7 @@ mod dictation;
 mod dictation_settings;
 mod hang;
 mod history;
+mod housekeeping;
 mod hover;
 mod i18n;
 mod liquid;
@@ -4328,6 +4329,7 @@ fn main() {
     i18n::init();
     clipboard_owner::start();
     paste_queue::start();
+    housekeeping::spawn();
     Application::new().with_assets(Assets).run(|cx: &mut App| {
         text_input::bind_keys(cx);
         text_area::bind_keys(cx);
