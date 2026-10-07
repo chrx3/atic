@@ -53,11 +53,15 @@ class ConfigStore implements DomainStore {
     const unPillTools = await on("pill-tools", () => {
       void this.hydrate().catch(() => {});
     });
+    const unReloaded = await on("config-reloaded", () => {
+      void this.hydrate().catch(() => {});
+    });
     return () => {
       unConflicts();
       unShared();
       unPractice();
       unPillTools();
+      unReloaded();
     };
   }
 

@@ -153,6 +153,8 @@ export interface AppConfig {
   pill_lyrics: boolean;
   /** El texto del agente junto a su logo en la pill. Apagado, solo el logo. */
   pill_agent_text: boolean;
+  /** La pill es la app nativa: Atic no crea su overlay ni registra atajos. */
+  native_pill: boolean;
   /**
    * Agentes a la vista, en el lanzador y en el panel de cupos. Vacío = todos.
    *

@@ -72,11 +72,16 @@ pub fn get_config(state: State<AppState>) -> Config {
 }
 
 #[tauri::command]
-pub fn set_config(
-    app: AppHandle,
-    state: State<AppState>,
-    mut config: Config,
-) -> Result<(), String> {
+pub fn set_config(app: AppHandle, config: Config) -> Result<(), String> {
+    apply_config(&app, config, true)
+}
+
+/// Deja `config` como la vigente y aplica lo que cambió (atajos, pill, tema,
+/// idioma…). Con `persist` la guarda en disco; sin él viene de disco: otra app
+/// (la pill nativa) escribió `config.json` y Atic solo se pone al día.
+pub(crate) fn apply_config(app: &AppHandle, mut config: Config, persist: bool) -> Result<(), String> {
+    let app = app.clone();
+    let state = app.state::<AppState>();
     let show_pill = config.show_pill;
     let ui_theme = config.ui_theme.clone();
     let ui_resolved = config.resolved_ui_language();
@@ -137,9 +142,14 @@ pub fn set_config(
     {
         *state.config.lock_or_recover() = config.clone();
     }
-    config
-        .save(&state.dirs.config_path())
-        .map_err(|e| e.to_string())?;
+    if persist {
+        config
+            .save(&state.dirs.config_path())
+            .map_err(|e| e.to_string())?;
+    } else {
+        // La ventana principal tiene su propia copia: que la relea.
+        let _ = app.emit("config-reloaded", ());
+    }
     if models_changed {
         state::preload_whisper_async(&app);
     }

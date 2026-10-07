@@ -11,6 +11,7 @@ mod capture_shelf;
 mod clipboard_history;
 mod color_picker;
 mod commands;
+mod config_watch;
 mod diagnostics;
 mod dictation;
 mod export;
@@ -475,6 +476,9 @@ pub fn run() {
         .setup(move |app| {
             // El estado ya está registrado por el Builder: acá solo se lee.
             let dirs = app.state::<AppState>().dirs.clone();
+            // Con la pill nativa, Atic queda para los Ajustes y los servicios
+            // de fondo: sin overlay ni atajos globales (los registra la pill).
+            config_watch::set_native_pill(app.state::<AppState>().config.lock_or_recover().native_pill);
 
             // Ocultar YA las ventanas auxiliares: nacen con el Builder, antes
             // de este `setup`, y si quedan visibles un instante se ve el
@@ -650,6 +654,7 @@ pub fn run() {
 
             launcher::start_indexing(ui_language == "en");
             clipboard_history::start_watcher(app.handle());
+            config_watch::start(app.handle());
             agents::watch_claude::start(app.handle());
             agents::watch_codex::start(app.handle());
             agents::watch_cursor::start(app.handle());
@@ -677,7 +682,9 @@ pub fn run() {
 
             // El overlay va DESPUÉS de la pill: elige monitor mirando dónde
             // quedó ella.
-            overlay::setup(app.handle());
+            if !config_watch::native_pill() {
+                overlay::setup(app.handle());
+            }
 
             // Sin Ctrl+P / Find / zoom del WebView2, también en `main`.
             // Después de crear el overlay: si no, esa ventana no existe aún.
@@ -697,7 +704,7 @@ pub fn run() {
             let (primera_vez, hay_pill) = {
                 let state = app.state::<AppState>();
                 let cfg = state.config.lock_or_recover();
-                (!cfg.onboarding_done, cfg.show_pill)
+                (!cfg.onboarding_done, cfg.show_pill || cfg.native_pill)
             };
             if primera_vez || !hay_pill {
                 state::show_main(app.handle());

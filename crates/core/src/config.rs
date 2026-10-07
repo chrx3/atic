@@ -395,6 +395,10 @@ pub struct Config {
     /// El texto del agente («Pensando…», lo que está haciendo) junto a su
     /// logo en la pill. Apagado queda solo el logo.
     pub pill_agent_text: bool,
+    /// La pill es la app nativa (GPUI): Atic no crea su overlay ni registra
+    /// atajos globales, y deja esas herramientas a la pill. Se aplica al
+    /// reiniciar Atic.
+    pub native_pill: bool,
     /// Agentes a la vista, en el lanzador y en el panel de cupos. Vacio = todos.
     ///
     /// Una sola lista para los dos sitios: el usuario elige «con que agentes
@@ -502,6 +506,7 @@ impl Default for Config {
             pill_more_tools: Vec::new(),
             pill_lyrics: true,
             pill_agent_text: true,
+            native_pill: false,
             ssh_hosts: Vec::new(),
         }
     }
@@ -601,6 +606,7 @@ struct ConfigFile {
     pill_more_tools: Option<Vec<String>>,
     pill_lyrics: Option<bool>,
     pill_agent_text: Option<bool>,
+    native_pill: Option<bool>,
     ssh_hosts: Option<Vec<SshHost>>,
 }
 
@@ -725,6 +731,7 @@ impl Default for ConfigFile {
             pill_more_tools: None,
             pill_lyrics: None,
             pill_agent_text: None,
+            native_pill: None,
             ssh_hosts: None,
         }
     }
@@ -1001,6 +1008,7 @@ impl From<ConfigFile> for Config {
             pill_more_tools: pill_more,
             pill_lyrics: f.pill_lyrics.unwrap_or(true),
             pill_agent_text: f.pill_agent_text.unwrap_or(true),
+            native_pill: f.native_pill.unwrap_or(false),
             ssh_hosts: f.ssh_hosts.unwrap_or_default(),
         }
     }

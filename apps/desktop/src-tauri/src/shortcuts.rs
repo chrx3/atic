@@ -198,6 +198,23 @@ pub fn register_shortcuts(app: &AppHandle, bindings: ShortcutBindings<'_>) -> Re
         return Ok(());
     }
 
+    // Con la pill nativa los atajos son de ella: si Atic también los tomara,
+    // el SO se los daría al primero que los registre y cada tecla haría dos
+    // cosas o ninguna. Se validan igual (arriba) para no guardar uno roto.
+    if crate::config_watch::native_pill() {
+        if let Err(err) = app.global_shortcut().unregister_all() {
+            tracing::debug!(%err, "unregister_all con la pill nativa (puede estar vacío)");
+        }
+        mouse_bindings::set_bindings(app, Vec::new());
+        if let Some(app_state) = app.try_state::<state::AppState>() {
+            app_state.shortcut_failures.lock_or_recover().clear();
+            app_state.shortcut_shared.lock_or_recover().clear();
+        }
+        let _ = app.emit("shortcuts-failed", Vec::<String>::new());
+        let _ = app.emit("shortcuts-shared", Vec::<Vec<String>>::new());
+        return Ok(());
+    }
+
     // Claves de config por binding. La UI marca las filas con esto: los nombres
     // visibles dependen del idioma y no cruzan bien la frontera.
     let mut named: Vec<(&str, &Binding)> = vec![

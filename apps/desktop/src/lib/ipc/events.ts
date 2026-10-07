@@ -183,6 +183,11 @@ export interface AticEvents {
    * config y no se entera de que `main` la guardó.
    */
   "pill-tools": void;
+  /**
+   * Otra app (la pill nativa) cambió `config.json` y Atic ya lo aplicó.
+   * La copia de cada ventana se queda vieja hasta que la relea.
+   */
+  "config-reloaded": void;
   /** Float launcher: ancla / dismiss (sale de la pill). */
   "launcher-bubble-anchor": BubbleOpen;
   "launcher-bubble-dismiss": void;
