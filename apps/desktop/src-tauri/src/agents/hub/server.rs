@@ -95,7 +95,8 @@ pub fn start(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-/// Para el hub: deja de aceptar, borra `hub.json` (best-effort) y limpia el estado.
+/// Para el hub: deja de aceptar, borra `hub.json` si sigue siendo el suyo
+/// (best-effort) y limpia el estado.
 pub fn stop() {
     if let Some(vivo) = ACEPTADOR.lock_or_recover().take() {
         vivo.store(false, Ordering::SeqCst);
@@ -109,9 +110,25 @@ pub fn stop() {
     }
     *PUERTO.lock_or_recover() = None;
     if let Some(ruta) = HUB_JSON.lock_or_recover().take() {
-        let _ = std::fs::remove_file(ruta);
+        // Otro proceso (la pill GPUI, otra instancia) puede haberlo reescrito
+        // con su propio hub: borrarlo lo dejaría sin sidecars.
+        if hub_json_es_de(&ruta, std::process::id()) {
+            let _ = std::fs::remove_file(ruta);
+        }
     }
     set_stopped();
+}
+
+/// ¿`hub.json` lo escribió el proceso `pid`? Si no se puede leer, sí: un
+/// archivo roto no le sirve a nadie.
+fn hub_json_es_de(ruta: &std::path::Path, pid: u32) -> bool {
+    let Ok(raw) = std::fs::read_to_string(ruta) else {
+        return true;
+    };
+    serde_json::from_str::<serde_json::Value>(&raw)
+        .ok()
+        .and_then(|json| json.get("pid")?.as_u64())
+        .is_none_or(|dueño| dueño == u64::from(pid))
 }
 
 fn aceptar(listener: TcpListener, token: String, app: Option<AppHandle>, vivo: Arc<AtomicBool>) {
@@ -1181,6 +1198,18 @@ fn armar(codigo: u16, razon: &str, cuerpo: &str) -> Vec<u8> {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn solo_se_borra_el_hub_json_propio() {
+        let ruta = std::env::temp_dir().join(format!("atic-hub-json-{}.json", std::process::id()));
+        std::fs::write(&ruta, r#"{"port":1,"token":"t","pid":42}"#).unwrap();
+        assert!(hub_json_es_de(&ruta, 42));
+        assert!(!hub_json_es_de(&ruta, 7));
+        std::fs::write(&ruta, "roto").unwrap();
+        assert!(hub_json_es_de(&ruta, 7));
+        let _ = std::fs::remove_file(&ruta);
+        assert!(hub_json_es_de(&ruta, 7));
+    }
 
     #[test]
     fn el_modelo_se_reconoce_como_lo_escribe_una_persona() {
