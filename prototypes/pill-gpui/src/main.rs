@@ -31,6 +31,7 @@ mod hang;
 mod hotkeys;
 mod history;
 mod hover;
+mod i18n;
 mod liquid;
 mod paste;
 mod peeks;
@@ -4110,7 +4111,10 @@ fn render_peek(
             },
         };
         let when = match history::day_of(entry.created_ms, now) {
-            history::Day::Yesterday => format!("ayer {}", history::short_when(entry.created_ms, now)),
+            history::Day::Yesterday => i18n::tf(
+                "pill.clipboard.yesterdayAt",
+                &[("time", &history::short_when(entry.created_ms, now))],
+            ),
             _ => history::short_when(entry.created_ms, now).to_string(),
         };
         // Las filas caen a su sitio una tras otra mientras el vistazo baja,
@@ -4303,7 +4307,7 @@ fn render_preview(
                     .child(entry.shown.clone()),
             )
             .when(entry.secret, |el| {
-                el.child(caption("Oculto en pantalla · se pega completo".into()))
+                el.child(caption(i18n::t("pill.clipboard.hiddenSecret").into()))
             }),
     }
     .into_any_element()
@@ -4325,6 +4329,7 @@ fn main() {
     };
     // Antes de que cualquier herramienta lea sus preferencias.
     paths::migrate();
+    i18n::init();
     Application::new().with_assets(Assets).run(|cx: &mut App| {
         text_input::bind_keys(cx);
         text_area::bind_keys(cx);
