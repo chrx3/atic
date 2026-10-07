@@ -131,6 +131,40 @@ impl History {
         }
     }
 
+    /// Fija o suelta un ítem y lo guarda. `false` si no está.
+    pub fn set_pinned(&mut self, dir: &Path, id: &str, pinned: bool) -> bool {
+        let Some(item) = self.items.iter_mut().find(|item| item.id == id) else {
+            return false;
+        };
+        item.pinned = pinned;
+        save_history(dir, &self.items);
+        true
+    }
+
+    /// Saca un ítem: no vuelve aunque siga en el portapapeles, y su PNG (si es
+    /// del historial) se borra. `None` si no está.
+    pub fn delete(&mut self, dir: &Path, id: &str) -> Option<ClipboardItem> {
+        let idx = self.items.iter().position(|item| item.id == id)?;
+        let removed = self.items.remove(idx);
+        self.deleted_fingerprints.insert(removed.fingerprint.clone());
+        if removed.fingerprint.starts_with("capture:") {
+            save_dismissed_captures(dir, &self.deleted_fingerprints);
+        }
+        // Evita carrera con la vuelta inmediata del watcher.
+        self.suppress_until = Some(SystemTime::now() + Duration::from_millis(1200));
+        if let Some(path) = &removed.image_path {
+            let path = PathBuf::from(path);
+            if path.starts_with(dir) {
+                let _ = std::fs::remove_file(path);
+            }
+        }
+        if self.last_fingerprint.as_deref() == Some(&removed.fingerprint) {
+            self.last_fingerprint = self.items.first().map(|i| i.fingerprint.clone());
+        }
+        save_history(dir, &self.items);
+        Some(removed)
+    }
+
     /// Suma al historial un ítem que trae el celular (de otro PC o del propio
     /// celular) con su id, sin tocar el portapapeles del sistema. Va en su lugar
     /// por fecha, no arriba de todo. `false` si ya estaba (por id o por contenido).
@@ -283,6 +317,26 @@ mod tests {
         history.push_item(&dir, text("y", 2));
         history.push_item(&dir, text("x", 3));
         assert_eq!(history.items.len(), 2);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn fijar_y_borrar_quedan_guardados() {
+        let dir = temp_dir("fijar-borrar");
+        let mut history = History::default();
+        history.push_item(&dir, text("a", 1));
+        history.push_item(&dir, text("b", 2));
+        assert!(history.set_pinned(&dir, "id-a", true));
+        assert!(!history.set_pinned(&dir, "no-existe", true));
+        assert!(History::load(&dir).items.iter().any(|i| i.id == "id-a" && i.pinned));
+
+        assert!(history.delete(&dir, "id-b").is_some());
+        assert!(history.delete(&dir, "id-b").is_none());
+        assert_eq!(History::load(&dir).items.len(), 1);
+        // Lo borrado no vuelve aunque siga en el portapapeles.
+        history.suppress_until = None;
+        history.push_item(&dir, text("b", 3));
+        assert_eq!(history.items.len(), 1);
         let _ = std::fs::remove_dir_all(dir);
     }
 
