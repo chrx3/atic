@@ -58,6 +58,7 @@ mod usage;
 mod text_area;
 mod text_input;
 mod paths;
+mod single_instance;
 mod win;
 
 use std::borrow::Cow;
@@ -4318,6 +4319,10 @@ fn quit_on_error(what: &str, error: anyhow::Error, cx: &mut App) {
 fn main() {
     // Vive hasta que `main` termina: soltarlo antes pierde las últimas líneas.
     let _log_guard = init_log();
+    let Some(_instance) = single_instance::acquire() else {
+        tracing::info!("ya hay una pill corriendo en esta sesión");
+        return;
+    };
     // Antes de que cualquier herramienta lea sus preferencias.
     paths::migrate();
     Application::new().with_assets(Assets).run(|cx: &mut App| {
