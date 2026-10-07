@@ -2,26 +2,19 @@
 
 use std::sync::{Mutex, OnceLock};
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::clipboard_history;
 use crate::state::AppState;
+pub use atic_clipboard::PasteQueueItem;
+use atic_clipboard::{PasteQueue, MAX_QUEUED};
 use atic_core::MutexExt;
 
-const MAX_ITEMS: usize = 20;
 const POLL_MS: u64 = 400;
 const FOCUS_SETTLE_MS: u64 = 220;
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PasteQueueItem {
-    pub id: String,
-    pub text: String,
-    pub created_at_ms: u64,
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -30,40 +23,13 @@ pub enum PasteOutcome {
     Queued,
 }
 
-struct QueueState {
-    items: Vec<PasteQueueItem>,
-}
-
-static QUEUE: Mutex<Option<QueueState>> = Mutex::new(None);
+static QUEUE: Mutex<Option<PasteQueue>> = Mutex::new(None);
 static POLLER: OnceLock<()> = OnceLock::new();
 
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
-}
-
-fn load_from_disk(path: &std::path::Path) -> Vec<PasteQueueItem> {
-    let Ok(raw) = std::fs::read_to_string(path) else {
-        return Vec::new();
-    };
-    serde_json::from_str(&raw).unwrap_or_default()
-}
-
-fn save_to_disk(path: &std::path::Path, items: &[PasteQueueItem]) {
-    if let Ok(raw) = serde_json::to_string_pretty(items) {
-        let _ = std::fs::write(path, raw);
-    }
-}
-
 fn ensure_queue_loaded(state: &AppState) {
-    let path = state.dirs.paste_queue_path();
     let mut guard = QUEUE.lock_or_recover();
     if guard.is_none() {
-        *guard = Some(QueueState {
-            items: load_from_disk(&path),
-        });
+        *guard = Some(PasteQueue::load(&state.dirs.paste_queue_path()));
     }
 }
 
@@ -74,12 +40,11 @@ fn with_queue<R>(state: &AppState, f: impl FnOnce(&[PasteQueueItem]) -> R) -> R 
 }
 
 fn with_queue_mut<R>(state: &AppState, f: impl FnOnce(&mut Vec<PasteQueueItem>) -> R) -> R {
-    let path = state.dirs.paste_queue_path();
     ensure_queue_loaded(state);
     let mut guard = QUEUE.lock_or_recover();
-    let items = &mut guard.as_mut().unwrap().items;
-    let result = f(items);
-    save_to_disk(&path, items);
+    let queue = guard.as_mut().unwrap();
+    let result = f(&mut queue.items);
+    queue.save();
     result
 }
 
@@ -134,20 +99,14 @@ fn ensure_poller(app: &AppHandle) {
 
 /// Encola texto y notifica al frontend.
 pub(crate) fn enqueue(app: &AppHandle, text: &str) -> Result<PasteQueueItem, String> {
-    let trimmed = text.trim();
-    if trimmed.is_empty() {
+    let Some(item) = PasteQueueItem::new(text) else {
         return Err(crate::ui_lang::msg("Texto vacío", "Empty text"));
-    }
-    let state = app.state::<AppState>();
-    let preview: String = trimmed.chars().take(120).collect();
-    let item = PasteQueueItem {
-        id: uuid::Uuid::new_v4().to_string(),
-        text: trimmed.to_string(),
-        created_at_ms: now_ms(),
     };
+    let state = app.state::<AppState>();
+    let preview: String = item.text.chars().take(120).collect();
     with_queue_mut(&state, |items| {
         items.push(item.clone());
-        while items.len() > MAX_ITEMS {
+        while items.len() > MAX_QUEUED {
             items.remove(0);
         }
     });

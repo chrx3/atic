@@ -52,6 +52,7 @@ mod tray;
 mod usage;
 mod text_area;
 mod text_input;
+mod paste_queue;
 mod paths;
 mod platform;
 use platform::{drag, glass, hotkeys, ocr, paste, privacy, running, win};
@@ -4326,6 +4327,7 @@ fn main() {
     paths::migrate();
     i18n::init();
     clipboard_owner::start();
+    paste_queue::start();
     Application::new().with_assets(Assets).run(|cx: &mut App| {
         text_input::bind_keys(cx);
         text_area::bind_keys(cx);

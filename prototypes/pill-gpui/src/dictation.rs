@@ -537,11 +537,17 @@ impl Pill {
         self.dict_key_was_down = down;
 
         // Se pega donde está el foco ahora si es otra app; si quedó en la
-        // pill, en la app donde se empezó a dictar.
+        // pill, en la app donde se empezó a dictar. Sin ninguna, queda en
+        // «pegar después».
         if let Some((text, target)) = self.dictation.take_ready() {
-            let target = crate::paste::foreground_target().or(target);
-            let item = gpui::ClipboardItem::new_string(text);
-            cx.spawn(async move |_, cx| crate::paste_into(target, item, cx).await).detach();
+            match crate::paste::foreground_target().or(target) {
+                Some(target) => {
+                    let item = gpui::ClipboardItem::new_string(text);
+                    cx.spawn(async move |_, cx| crate::paste_into(Some(target), item, cx).await)
+                        .detach();
+                }
+                None => crate::paste_queue::enqueue(&text),
+            }
         }
 
         let on = self.docked_still() && self.dictation.phase().0 != Phase::Idle;
