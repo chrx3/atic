@@ -512,6 +512,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "atic-clipboard"
+version = "0.4.44"
+dependencies = [
+ "arboard",
+ "atic-core",
+ "image",
+ "objc2",
+ "objc2-foundation",
+ "serde",
+ "serde_json",
+ "tracing",
+ "uuid",
+ "windows-sys 0.59.0",
+]
+
+[[package]]
 name = "atic-core"
 version = "0.4.44"
 dependencies = [
@@ -537,6 +553,7 @@ dependencies = [
  "arboard",
  "atic-audio",
  "atic-capture",
+ "atic-clipboard",
  "atic-core",
  "atic-mailer",
  "atic-summarize",
