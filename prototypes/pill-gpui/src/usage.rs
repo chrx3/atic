@@ -249,7 +249,7 @@ impl Prefs {
 }
 
 fn prefs_file() -> Option<PathBuf> {
-    Some(local_app_data()?.join("atic-gpui").join("usage.txt"))
+    crate::paths::file("usage.txt")
 }
 
 /// El estado de la vista mientras el vistazo está abierto.

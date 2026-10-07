@@ -162,8 +162,7 @@ fn ink_on(color: u32) -> Hsla {
 // --- Recientes ----------------------------------------------------------------
 
 fn recents_file() -> Option<PathBuf> {
-    let base = std::env::var_os("LOCALAPPDATA")?;
-    Some(PathBuf::from(base).join("atic-gpui").join("colors.json"))
+    crate::paths::file("colors.json")
 }
 
 pub fn load_recents() -> Vec<u32> {

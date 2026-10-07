@@ -57,6 +57,7 @@ mod tray;
 mod usage;
 mod text_area;
 mod text_input;
+mod paths;
 mod win;
 
 use std::borrow::Cow;
@@ -3329,15 +3330,10 @@ fn write_drag_image(id: usize, bytes: &[u8]) -> std::io::Result<String> {
 // --- Posición guardada -------------------------------------------------------
 //
 // Atic guarda borde y posición relativa (0..1) para sobrevivir a cambios de
-// resolución (`atic.pill.home`). Aquí, un archivo de texto en LOCALAPPDATA.
+// resolución (`atic.pill.home`). Aquí, `home.txt` en la carpeta de la pill.
 
 fn home_file() -> Option<std::path::PathBuf> {
-    let base = std::env::var_os("LOCALAPPDATA")?;
-    Some(
-        std::path::PathBuf::from(base)
-            .join("atic-gpui")
-            .join("home.txt"),
-    )
+    crate::paths::file("home.txt")
 }
 
 /// El monitor de la ventana en sus coordenadas lógicas: entero, sin la barra
@@ -4329,6 +4325,8 @@ fn render_preview(
 
 fn main() {
     init_gpui_log();
+    // Antes de que cualquier herramienta lea sus preferencias.
+    paths::migrate();
     Application::new().with_assets(Assets).run(|cx: &mut App| {
         text_input::bind_keys(cx);
         text_area::bind_keys(cx);

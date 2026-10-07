@@ -316,10 +316,10 @@ pub(crate) fn more_open(layout: &Layout) -> bool {
 }
 
 fn prefs_file() -> Option<PathBuf> {
-    Some(PathBuf::from(std::env::var_os("LOCALAPPDATA")?).join("atic-gpui").join("tools.json"))
+    crate::paths::file("tools.json")
 }
 
-/// Lo elegido la última vez, en `%LOCALAPPDATA%\atic-gpui\tools.json`.
+/// Lo elegido la última vez, en `<datos de Atic>\pill\tools.json`.
 pub(crate) fn load() -> Layout {
     let prefs = prefs_file()
         .and_then(|path| std::fs::read(path).ok())

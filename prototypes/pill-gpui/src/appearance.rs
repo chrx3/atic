@@ -4,7 +4,7 @@
 //! desenfoque, con mucho se lee bien el texto sobre fondos claros. Se elige en
 //! la sección Apariencia de los Ajustes (`settings.rs`), con la pill a la
 //! vista: los cambios se aplican en el cuadro siguiente y se guardan al soltar
-//! el deslizador (`%LOCALAPPDATA%\atic-gpui\appearance.json`).
+//! el deslizador (`<datos de Atic>\pill\appearance.json`).
 
 use std::cell::Cell;
 use std::path::PathBuf;
@@ -67,8 +67,7 @@ fn apply(look: Appearance, persist: bool) {
 }
 
 fn file() -> Option<PathBuf> {
-    let base = std::env::var_os("LOCALAPPDATA")?;
-    Some(PathBuf::from(base).join("atic-gpui").join("appearance.json"))
+    crate::paths::file("appearance.json")
 }
 
 fn load() -> Appearance {

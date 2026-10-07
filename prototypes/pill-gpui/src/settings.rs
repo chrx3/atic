@@ -444,7 +444,7 @@ fn missing_data() -> impl IntoElement {
 // --- Acerca de ----------------------------------------------------------------------
 
 fn data_dir() -> Option<PathBuf> {
-    Some(PathBuf::from(std::env::var_os("LOCALAPPDATA")?).join("atic-gpui"))
+    crate::paths::data_dir()
 }
 
 fn about() -> impl IntoElement {

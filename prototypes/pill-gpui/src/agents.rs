@@ -729,7 +729,7 @@ pub(crate) fn folder_name(path: &str) -> String {
         .to_string()
 }
 
-/// Lo elegido la última vez, en `%LOCALAPPDATA%\atic-gpui\agents.json`.
+/// Lo elegido la última vez, en `<datos de Atic>\pill\agents.json`.
 #[derive(Default, Serialize, Deserialize)]
 struct Prefs {
     agent: Option<String>,
@@ -737,7 +737,7 @@ struct Prefs {
 }
 
 fn prefs_file() -> Option<PathBuf> {
-    Some(PathBuf::from(std::env::var_os("LOCALAPPDATA")?).join("atic-gpui").join("agents.json"))
+    crate::paths::file("agents.json")
 }
 
 impl Prefs {

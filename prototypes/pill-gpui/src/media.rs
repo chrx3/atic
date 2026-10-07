@@ -118,7 +118,7 @@ pub struct Media {
     /// La última pista cuya letra se pidió.
     asked: Arc<Mutex<String>>,
     /// Mostrar la letra, en el notch y en el panel (se elige en Ahora suena y
-    /// se guarda en `%LOCALAPPDATA%\atic-gpui\media.txt`).
+    /// se guarda en `<datos de Atic>\pill\media.txt`).
     show_lyrics: Arc<std::sync::atomic::AtomicBool>,
     tx: mpsc::Sender<(Option<String>, Control)>,
 }
@@ -418,7 +418,7 @@ impl Media {
 }
 
 fn media_file() -> Option<std::path::PathBuf> {
-    Some(std::path::PathBuf::from(std::env::var_os("LOCALAPPDATA")?).join("atic-gpui").join("media.txt"))
+    crate::paths::file("media.txt")
 }
 
 /// Por omisión hay letra; `letra=no` la apaga (en el notch y en el panel).

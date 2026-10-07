@@ -221,12 +221,7 @@ struct Local {
 }
 
 fn local_file() -> Option<PathBuf> {
-    let base = std::env::var_os("LOCALAPPDATA")?;
-    Some(
-        PathBuf::from(base)
-            .join("atic-gpui")
-            .join("snippets-local.json"),
-    )
+    crate::paths::file("snippets-local.json")
 }
 
 impl Local {

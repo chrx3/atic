@@ -128,8 +128,7 @@ pub struct Session {
 
 /// El modo con que abre la mira: el último que se usó.
 fn mode_file() -> Option<PathBuf> {
-    let base = std::env::var_os("LOCALAPPDATA")?;
-    Some(PathBuf::from(base).join("atic-gpui").join("capture-mode.txt"))
+    crate::paths::file("capture-mode.txt")
 }
 
 pub fn remembered_live() -> bool {
@@ -272,8 +271,7 @@ pub struct Saved {
 }
 
 fn captures_dir() -> Option<PathBuf> {
-    let base = std::env::var_os("LOCALAPPDATA")?;
-    Some(PathBuf::from(base).join("atic-gpui").join("captures"))
+    crate::paths::captures_dir()
 }
 
 /// Recorta, guarda el PNG y lo deja en el portapapeles. Corre en un hilo de

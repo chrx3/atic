@@ -459,8 +459,7 @@ struct Store {
 }
 
 fn store_file() -> Option<PathBuf> {
-    let base = std::env::var_os("LOCALAPPDATA")?;
-    Some(PathBuf::from(base).join("atic-gpui").join("launcher.json"))
+    crate::paths::file("launcher.json")
 }
 
 impl Store {

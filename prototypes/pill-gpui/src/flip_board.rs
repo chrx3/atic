@@ -4350,9 +4350,6 @@ pub(crate) fn recent_captures() -> Vec<PathBuf> {
     if let Some(data) = notes_dir().and_then(|notes| notes.parent().map(|p| p.to_path_buf())) {
         folders.push(data.join("captures"));
     }
-    if let Some(local) = std::env::var_os("LOCALAPPDATA") {
-        folders.push(PathBuf::from(local).join("atic-gpui").join("captures"));
-    }
     let mut files: Vec<(SystemTime, PathBuf)> = folders
         .iter()
         .filter_map(|folder| std::fs::read_dir(folder).ok())

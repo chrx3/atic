@@ -115,9 +115,7 @@ impl crate::Pill {
     /// `PILL_OPEN=shelf`: el estante con la última captura guardada, para
     /// revisarlo sin capturar.
     pub(crate) fn demo_shelf(&mut self, cx: &mut Context<Self>) {
-        let Some(dir) = std::env::var_os("LOCALAPPDATA")
-            .map(|base| PathBuf::from(base).join("atic-gpui").join("captures"))
-        else {
+        let Some(dir) = crate::paths::captures_dir() else {
             return;
         };
         let newest = std::fs::read_dir(&dir).ok().and_then(|entries| {
