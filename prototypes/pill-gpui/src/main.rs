@@ -4328,6 +4328,25 @@ fn render_preview(
     .into_any_element()
 }
 
+/// `--native` (lo pasa el instalador): la pill es la principal. Enciende
+/// `native_pill` en `config.json` para que la app de Tauri deje su overlay,
+/// sus atajos y lo demás en manos de la pill.
+fn claim_native_pill() {
+    let Ok(dirs) = atic_core::AppDirs::new() else {
+        return;
+    };
+    let path = dirs.config_path();
+    let mut cfg = atic_core::Config::load(&path);
+    if cfg.native_pill {
+        return;
+    }
+    cfg.native_pill = true;
+    match cfg.save(&path) {
+        Ok(()) => tracing::info!("native_pill encendido: la pill es la principal"),
+        Err(error) => tracing::warn!(%error, "no se pudo encender native_pill"),
+    }
+}
+
 /// Sin su ventana la app no sirve: deja el motivo en el log y sale, en vez de
 /// entrar en pánico.
 fn quit_on_error(what: &str, error: anyhow::Error, cx: &mut App) {
@@ -4344,6 +4363,9 @@ fn main() {
     };
     // Antes de que cualquier herramienta lea sus preferencias.
     paths::migrate();
+    if std::env::args().any(|arg| arg == "--native") {
+        claim_native_pill();
+    }
     i18n::init();
     clipboard_owner::start();
     paste_queue::start();

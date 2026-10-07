@@ -1,0 +1,13 @@
+{
+  "build": {
+    "beforeBuildCommand": "pnpm mcp:build && pnpm unix:build && pnpm pill:build && pnpm build"
+  },
+  "bundle": {
+    "externalBin": ["binaries/atic-mcp", "binaries/atic-unix", "binaries/atic-pill"],
+    "windows": {
+      "nsis": {
+        "installerHooks": "windows/pill-hooks.nsh"
+      }
+    }
+  }
+}
