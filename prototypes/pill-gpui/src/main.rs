@@ -4,6 +4,7 @@
 
 mod anim;
 mod appearance;
+mod atic_window;
 mod settings;
 mod app_icon;
 mod board;
@@ -55,7 +56,7 @@ mod text_input;
 mod paste_queue;
 mod paths;
 mod platform;
-use platform::{drag, glass, hotkeys, ocr, paste, privacy, running, win};
+use platform::{drag, glass, hotkeys, ocr, paste, privacy, running, tray_icon, win};
 mod single_instance;
 
 use std::borrow::Cow;
@@ -615,6 +616,8 @@ struct Pill {
     launcher_centered: bool,
     /// Los atajos globales de las herramientas (`hotkeys.rs`).
     hotkeys: std::sync::mpsc::Receiver<hotkeys::Action>,
+    /// Lo pedido desde el ícono de la bandeja (`tray_icon.rs`).
+    tray_icon: std::sync::mpsc::Receiver<tray_icon::Command>,
     snippets: Entity<SnippetsPanel>,
     panel_open: bool,
     /// Alto del contenido del notch: sigue a lo que el panel necesita
@@ -1018,6 +1021,7 @@ impl Pill {
             away: None,
             launcher_centered: false,
             hotkeys,
+            tray_icon: tray_icon::spawn(),
             snippets,
             panel_open: false,
             panel_time: 0.0,
@@ -1942,6 +1946,18 @@ impl Pill {
         }
     }
 
+    /// Una entrada del menú de la bandeja.
+    fn run_tray_command(&mut self, command: tray_icon::Command, window: &mut Window, cx: &mut Context<Self>) {
+        use tray_icon::Command;
+        match command {
+            Command::OpenAtic => atic_window::open(),
+            Command::Consoles => self.open_space(None, cx),
+            Command::Capture => self.run_hotkey(hotkeys::Action::Capture, window, cx),
+            Command::Summon => self.summon_to_cursor(cx),
+            Command::Quit => cx.quit(),
+        }
+    }
+
     /// «Traer pill»: la gota queda bajo el cursor y ese es su lugar nuevo.
     /// Solo en el monitor donde ya está: llevar la ventana a otro es lo que
     /// hace el arrastre y aquí no se repite.
@@ -2572,6 +2588,9 @@ impl Pill {
         // Los atajos globales (llegan desde su propio hilo).
         while let Ok(action) = self.hotkeys.try_recv() {
             self.run_hotkey(action, window, cx);
+        }
+        while let Ok(command) = self.tray_icon.try_recv() {
+            self.run_tray_command(command, window, cx);
         }
 
         // Con la mira, la pizarra o el flip abiertos la ventana recibe todo;

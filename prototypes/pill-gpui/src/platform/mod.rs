@@ -22,6 +22,8 @@
 //! - `privacy`: quién usa el micrófono o la cámara.
 //! - `running`: qué apps tienen ventanas abiertas y cerrarlas.
 //! - `autostart`: iniciar con el sistema (`sync`). En Mac, un LaunchAgent.
+//! - `tray_icon`: el ícono de la bandeja y su menú (`spawn` y `Command`). En
+//!   Mac, un `NSStatusItem`.
 //!
 //! Pendiente: `capture.rs` todavía mezcla la mira (UI) con llamadas a Win32;
 //! la parte nativa tiene que pasar aquí antes de portar Capturas.
@@ -29,4 +31,4 @@
 #[cfg(windows)]
 mod win32;
 #[cfg(windows)]
-pub use win32::{autostart, drag, glass, hotkeys, ocr, paste, privacy, running, win};
+pub use win32::{autostart, drag, glass, hotkeys, ocr, paste, privacy, running, tray_icon, win};

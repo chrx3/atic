@@ -8,4 +8,5 @@ pub mod ocr;
 pub mod paste;
 pub mod privacy;
 pub mod running;
+pub mod tray_icon;
 pub mod win;
