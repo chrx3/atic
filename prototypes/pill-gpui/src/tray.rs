@@ -338,6 +338,13 @@ fn chip_w(glyph: Glyph, n: usize) -> f32 {
     CHIP_PAD * 2.0 + glyph_w(glyph) + CHIP_GAP + count_text(n).chars().count() as f32 * CHIP_DIGIT
 }
 
+/// Hasta dónde llega cada contador desde el centro de la marca (antes,
+/// después), o 0 si no está: el largo del tab los tiene en cuenta.
+pub fn chip_reach(chips: Chips) -> (f32, f32) {
+    let reach = |chip: Option<(Glyph, usize)>| chip.map_or(0.0, |(glyph, n)| CHIP_FROM_MARK + chip_w(glyph, n));
+    (reach(chips.left), reach(chips.right))
+}
+
 /// Dónde cae cada contador, dado el centro de la marca y el borde del tab. Lo
 /// usan el dibujo y el clic. «Izquierda» y «derecha» son antes y después de
 /// la marca a lo largo del tab: en un costado, el tab va de pie y quedan

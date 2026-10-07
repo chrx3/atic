@@ -141,8 +141,9 @@ Tres pestañas en la franja:
 
 ### Apps (`src/launcher.rs`)
 
-El lanzador, con Ctrl+Shift+Espacio (`PILL_LAUNCHER_KEY=ctrl-space` usa el
-Ctrl+Espacio de Atic). La franja es el buscador. Sin texto muestra favoritos y
+El lanzador, con el atajo de Atic (`launcher_shortcut`) cuando los atajos son
+de la pill, o Ctrl+Shift+Espacio mientras los tenga Atic (ver «Atajos»). La
+franja es el buscador. Sin texto muestra favoritos y
 recientes; con texto, los resultados:
 
 - Accesos del menú Inicio, apps de Store por AUMID y acciones del sistema, con
@@ -395,6 +396,22 @@ un tamaño de letra nuevo y hay que rasterizarlo.
 
 Reuniones, Sistema y Más todavía solo imprimen su nombre.
 
+## Atajos (`src/hotkeys.rs`)
+
+Son los de `config.json`, los mismos de Atic. Los tiene una sola app a la vez:
+
+- **Atic**, si está abierta y la pill no es la nativa. La pill se queda con
+  Ctrl+Shift+Espacio para el lanzador y Alt+Z para la rueda, si ningún atajo
+  de Atic es Alt+Z (por omisión lo es su rueda; entonces la pill no tiene).
+- **La pill**, si Atic está cerrada o si en Ajustes → Pill se elige «Usar esta
+  pill» (`native_pill`). Atic, al reiniciarse, deja de crear su pill y de
+  registrar atajos, y queda para sus Ajustes y los servicios de fondo.
+
+Portapapeles, Textos, Captura, Pizarra, Color, Flip, el lanzador, Agentes,
+Grabar reunión y Traer pill se registran con `RegisterHotKey`. Traer pill deja
+la gota bajo el cursor solo si está en el mismo monitor que la pill. El dictado y la rueda se sondean, porque se mantienen
+apretados y `RegisterHotKey` no avisa al soltar.
+
 ## Limitaciones conocidas
 
 - La pill vive en un monitor a la vez: al arrastrarla a otro, la ventana del
@@ -443,4 +460,3 @@ Variables para probar:
 | `PILL_FLIP_NOHIDE=1` | No esconde la ventana volteada |
 | `PILL_PAPER_DEMO=1` | Llena la hoja con ejemplos sin guardarlos |
 | `PILL_PAPER_DRAWER=clip\|texts\|caps` | Abre el cajón |
-| `PILL_LAUNCHER_KEY=ctrl-space` | Usa el atajo de Atic para el lanzador |

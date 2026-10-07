@@ -57,6 +57,9 @@ impl Pill {
     pub(crate) fn update_hang(&mut self, now: Instant) {
         let quiet = self.docked_still()
             && self.live.target() == 1.0
+            // En pausa o grabando, la letra no tiene qué seguir.
+            && self.music_playing
+            && self.rec_clock.is_none()
             && self.strip.target() == 0.0
             && self.peek.target() == 0.0
             && self.tray.amount(now) <= 0.01

@@ -626,9 +626,12 @@ impl crate::Pill {
             overlay.exclude_from_capture(true);
         }
         let scale = self.scale_factor;
+        let Some(area) = self.pill_area() else {
+            return;
+        };
         cx.spawn_in(window, async move |this, cx| {
             let frozen = cx
-                .background_spawn(async move { crate::capture::freeze(scale) })
+                .background_spawn(async move { crate::capture::freeze(scale, area) })
                 .await;
             let _ = this.update_in(cx, |pill, window, cx| {
                 pill.capture_pending = false;

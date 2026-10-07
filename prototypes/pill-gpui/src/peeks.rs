@@ -50,6 +50,9 @@ const TITLE_H: f32 = 30.0;
 const FOOTER_H: f32 = 32.0;
 const BOTTOM: f32 = 6.0;
 const EMPTY_H: f32 = 30.0;
+/// «Ahora suena»: la carátula, el título y los controles en una fila.
+const MEDIA_ROW_H: f32 = 60.0;
+const MEDIA_ART: f32 = 48.0;
 const SWATCH: f32 = 30.0;
 const TEXT_ROW_H: f32 = 40.0;
 const METER_H: f32 = 24.0;
@@ -91,6 +94,7 @@ fn has_peek(tool: usize) -> bool {
         crate::capture::TOOL,
         crate::color::TOOL,
         crate::flip::TOOL,
+        crate::MEDIA_TOOL,
     ]
     .contains(&tool)
 }
@@ -138,6 +142,8 @@ pub(crate) struct ToolPeek {
     /// El alto del cuerpo de Reuniones: depende de la grabadora, que se lee
     /// en cada sondeo (`meetings::peek_height`).
     meetings_h: f32,
+    /// Hay una pista (sonando o en pausa) para el vistazo de «Ahora suena».
+    has_track: bool,
 }
 
 /// El reloj de la entrada del vistazo: cada cosa aparece un poco después
@@ -192,6 +198,7 @@ impl ToolPeek {
             cpu: Tween::new(0.0, Duration::from_millis(600), ease_smooth_out),
             ram: Tween::new(0.0, Duration::from_millis(600), ease_smooth_out),
             meetings_h: 0.0,
+            has_track: false,
         }
     }
 
@@ -249,6 +256,13 @@ impl ToolPeek {
             t if t == crate::flip::TOOL => page_size(width).1 + PAGE_LABEL_H,
             t if t == crate::SISTEMA_TOOL => METER_H * 2.0 + 6.0 + SECTION_H + APP_ROW_H * 3.0,
             t if t == crate::REUNIONES_TOOL => self.meetings_h,
+            t if t == crate::MEDIA_TOOL => {
+                if self.has_track {
+                    MEDIA_ROW_H
+                } else {
+                    EMPTY_H
+                }
+            }
             _ => 0.0,
         };
         TITLE_H + body + FOOTER_H + BOTTOM
@@ -438,6 +452,7 @@ impl Pill {
         }
 
         self.tool_peek.meetings_h = crate::meetings::peek_height(self.studio.read(cx));
+        self.tool_peek.has_track = self.media.track().is_some();
         let narrow = self.side_drawers();
         let width = if narrow { crate::SIDE_W } else { peek_width() };
         if let Some(tool) = self.tool_peek.tool {
@@ -535,6 +550,9 @@ impl Pill {
                 let body = crate::meetings::peek_body(&self.studio, ink, cx);
                 ("Reuniones", crate::pill_tools::icon(crate::REUNIONES_TOOL), body, "Abrir Reuniones")
             }
+            t if t == crate::MEDIA_TOOL => {
+                ("Ahora suena", crate::pill_tools::icon(crate::MEDIA_TOOL), self.media_body(&c, m, cx), "Abrir Ahora suena")
+            }
             _ => return None,
         };
         let hint = match tool {
@@ -543,6 +561,7 @@ impl Pill {
             t if t == crate::TEXTOS_TOOL => "clic pega donde estabas",
             t if t == crate::flip::TOOL => "clic abre la página",
             t if t == crate::REUNIONES_TOOL => crate::meetings::MEET_TOOL_HINT,
+            t if t == crate::MEDIA_TOOL => "clic en la carátula: play o pausa",
             _ => "",
         };
         // El contenido entra cuando la franja ya casi bajó, y al cambiar de
@@ -918,6 +937,88 @@ impl Pill {
     }
 
     // --- Textos -------------------------------------------------------------
+
+    /// La pista de ahora, aunque esté en pausa: carátula (clic, play o
+    /// pausa), título y artista, y anterior / play-pausa / siguiente.
+    fn media_body(&self, c: &Colors, m: Motion, cx: &mut Context<Self>) -> AnyElement {
+        let Some(track) = self.media.track() else {
+            return empty("No suena nada", c);
+        };
+        let e = m.enter(0);
+        let control = |id: &'static str, icon: &'static str, size: f32, control: crate::media::Control| {
+            div()
+                .id(id)
+                .size(px(30.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(15.))
+                .cursor_pointer()
+                .hover(|style| style.bg(gpui::white().opacity(0.1)))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |pill, _: &MouseDownEvent, _, cx| {
+                        cx.stop_propagation();
+                        pill.media.control(control);
+                        cx.notify();
+                    }),
+                )
+                .child(svg().path(icon).size(px(size)).text_color(c.text))
+        };
+        let art = div()
+            .id("peek-media-art")
+            .size(px(MEDIA_ART))
+            .flex_none()
+            .rounded(px(8.))
+            .overflow_hidden()
+            .bg(c.text.opacity(0.08))
+            .cursor_pointer()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|pill, _: &MouseDownEvent, _, cx| {
+                    cx.stop_propagation();
+                    pill.media.control(crate::media::Control::Toggle);
+                    cx.notify();
+                }),
+            )
+            .children(track.art.clone().map(|art| img(art).size_full().object_fit(gpui::ObjectFit::Cover)));
+        div()
+            .relative()
+            .top(px(-7.0 * (1.0 - e)))
+            .opacity(e)
+            .h(px(MEDIA_ROW_H))
+            .px(px(8.))
+            .flex()
+            .items_center()
+            .gap(px(10.))
+            .child(art)
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.))
+                    .child(
+                        div()
+                            .truncate()
+                            .text_size(px(12.))
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(c.text)
+                            .child(track.title.clone()),
+                    )
+                    .child(div().truncate().text_size(px(11.)).text_color(c.faint).child(track.artist.clone())),
+            )
+            .child(control("peek-media-prev", "icons/skip-back.svg", 13.0, crate::media::Control::Previous))
+            .child(control(
+                "peek-media-toggle",
+                if track.playing { "icons/pause.svg" } else { "icons/play.svg" },
+                15.0,
+                crate::media::Control::Toggle,
+            ))
+            .child(control("peek-media-next", "icons/skip-forward.svg", 13.0, crate::media::Control::Next))
+            .into_any_element()
+    }
 
     fn texts_body(&self, c: &Colors, m: Motion, cx: &mut Context<Self>) -> AnyElement {
         let texts = self.tool_peek.data.texts.clone();

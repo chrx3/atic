@@ -333,13 +333,13 @@ fn groq_key() -> Result<String, String> {
 /// Se sondea, como el de la rueda: la ventana de la pill nunca tiene el foco.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Shortcut {
-    keys: Vec<i32>,
+    /// Teclas virtuales; las de Alt, Ctrl, Shift y Win, con sus códigos genéricos.
+    pub(crate) keys: Vec<i32>,
     pub push_to_talk: bool,
 }
 
 impl Shortcut {
-    pub fn from_config() -> Option<Self> {
-        let (cfg, _) = config().ok()?;
+    fn dictation(cfg: &atic_core::Config) -> Option<Self> {
         let mut shortcut = Self::parse(&cfg.dictation_shortcut)?;
         shortcut.push_to_talk = cfg.dictation_mode != "toggle";
         Some(shortcut)
@@ -377,12 +377,20 @@ impl Shortcut {
     }
 }
 
-/// El atajo vigente y si la app de Atic está abierta, releídos cada 5 s en
-/// su propio hilo (leer la config y listar procesos no va en un cuadro).
+/// Los atajos vigentes (dictado y rueda) y si los tiene la app de Atic,
+/// releídos cada 5 s en su propio hilo (leer la config y listar procesos no va
+/// en un cuadro). Atic los tiene si está abierta y la pill no es la nativa
+/// (`native_pill`): con la nativa, Atic ya no los registra.
 #[derive(Clone, Default)]
 pub struct Watch {
     shortcut: Arc<Mutex<Option<Shortcut>>>,
+    wheel: Arc<Mutex<Option<Shortcut>>>,
+    /// Alt+Z no es de ningún atajo de Atic: la rueda puede usarlo mientras
+    /// Atic tiene los suyos.
+    wheel_fallback_free: Arc<std::sync::atomic::AtomicBool>,
     atic: Arc<std::sync::atomic::AtomicBool>,
+    /// Ya se miró una vez: antes no se sabe de quién son los atajos.
+    checked: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Watch {
@@ -394,16 +402,25 @@ impl Watch {
             .spawn(move || {
                 let mut was_atic = false;
                 loop {
-                    let shortcut = Shortcut::from_config();
-                    let atic = atic_running();
+                    let cfg = config().ok().map(|(cfg, _)| cfg);
+                    let shortcut = cfg.as_ref().and_then(Shortcut::dictation);
+                    let wheel = cfg.as_ref().and_then(|cfg| Shortcut::parse(&cfg.pill_radial_shortcut));
+                    let native = cfg.as_ref().is_some_and(|cfg| cfg.native_pill);
+                    let atic = !native && atic_running();
                     if atic && !was_atic {
-                        eprintln!("[dictado] la app de Atic está abierta: el atajo queda para ella");
+                        eprintln!("[atajos] la app de Atic está abierta: los atajos quedan para ella");
                     }
                     was_atic = atic;
                     if let Ok(mut slot) = shared.shortcut.lock() {
                         *slot = shortcut;
                     }
+                    if let Ok(mut slot) = shared.wheel.lock() {
+                        *slot = wheel;
+                    }
+                    let fallback_free = cfg.as_ref().is_some_and(|cfg| !uses_wheel_fallback(cfg));
+                    shared.wheel_fallback_free.store(fallback_free, Ordering::Relaxed);
                     shared.atic.store(atic, Ordering::Relaxed);
+                    shared.checked.store(true, Ordering::Release);
                     std::thread::sleep(Duration::from_secs(5));
                 }
             })
@@ -418,11 +435,60 @@ impl Watch {
             let toggle = self.shortcut.lock().ok()?.as_ref().is_some_and(|s| !s.push_to_talk);
             return Some(Shortcut { push_to_talk: !toggle, ..own });
         }
-        if self.atic.load(Ordering::Relaxed) {
+        if self.atic_owns_shortcuts() {
             return None;
         }
         self.shortcut.lock().ok()?.clone()
     }
+
+    /// Si ya se sabe de quién son los atajos (la primera revisión terminó).
+    pub fn checked(&self) -> bool {
+        self.checked.load(Ordering::Acquire)
+    }
+
+    /// Atic tiene los atajos: está abierta y la pill no es la nativa.
+    pub fn atic_owns_shortcuts(&self) -> bool {
+        self.atic.load(Ordering::Relaxed)
+    }
+
+    /// La rueda: el atajo de `config.json` si los atajos son de la pill; si
+    /// no, Alt+Z, salvo que Atic lo use para otra cosa (sería doble).
+    pub fn wheel_down(&self) -> bool {
+        if self.atic_owns_shortcuts() {
+            return self.wheel_fallback_free.load(Ordering::Relaxed) && crate::win::wheel_shortcut_down();
+        }
+        match self.wheel.lock().ok().and_then(|slot| slot.clone()) {
+            Some(wheel) => wheel.down(),
+            None => crate::win::wheel_shortcut_down(),
+        }
+    }
+}
+
+/// Algún atajo de Atic es Alt+Z, el que usa la rueda mientras Atic tiene los
+/// suyos.
+fn uses_wheel_fallback(cfg: &atic_core::Config) -> bool {
+    const ALT_Z: [i32; 2] = [0x12, 'Z' as i32];
+    [
+        &cfg.global_shortcut,
+        &cfg.dictation_shortcut,
+        &cfg.summon_pill_shortcut,
+        &cfg.pill_radial_shortcut,
+        &cfg.clipboard_shortcut,
+        &cfg.snippets_shortcut,
+        &cfg.agents_shortcut,
+        &cfg.screenshot_shortcut,
+        &cfg.board_shortcut,
+        &cfg.color_shortcut,
+        &cfg.launcher_shortcut,
+        &cfg.window_flip_shortcut,
+    ]
+    .into_iter()
+    .filter_map(|text| Shortcut::parse(text))
+    .any(|shortcut| {
+        let mut keys = shortcut.keys;
+        keys.sort_unstable();
+        keys == ALT_Z
+    })
 }
 
 /// La app de Atic (Tauri) corriendo: tiene el mismo atajo y dictaría dos
@@ -624,5 +690,16 @@ mod tests {
         assert_eq!(Shortcut::parse("CmdOrCtrl+Shift+D").unwrap().keys, vec![0x11, 0x10, 'D' as i32]);
         assert_eq!(Shortcut::parse("Ctrl+F9").unwrap().keys, vec![0x11, 0x78]);
         assert!(Shortcut::parse("Alt+Flecha").is_none());
+    }
+
+    #[test]
+    fn la_rueda_no_toma_alt_z_si_atic_lo_usa() {
+        let mut cfg = atic_core::Config::default();
+        assert!(uses_wheel_fallback(&cfg), "la rueda de Atic es Alt+Z por omisión");
+        cfg.pill_radial_shortcut = "Alt+Q".into();
+        cfg.color_shortcut = "Z+Alt".into();
+        assert!(uses_wheel_fallback(&cfg));
+        cfg.color_shortcut = "Alt+Shift+Z".into();
+        assert!(!uses_wheel_fallback(&cfg));
     }
 }

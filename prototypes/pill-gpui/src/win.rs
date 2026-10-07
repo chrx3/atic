@@ -248,8 +248,13 @@ impl Overlay {
     /// ventana el rectángulo que sugiere Windows, escalado desde el monitor
     /// anterior: por eso se reintenta hasta que el área cliente calce.
     pub fn move_to(&self, screen: &Screen) {
+        self.cover(screen.monitor);
+    }
+
+    /// Como `move_to`, pero a cualquier rectángulo de pantalla (físico): la
+    /// mira lo usa para cubrir todos los monitores.
+    pub fn cover(&self, target: RECT) {
         let hwnd = self.hwnd.0 as isize;
-        let target = screen.monitor;
         std::thread::spawn(move || {
             let hwnd = HWND(hwnd as *mut _);
             for _ in 0..10 {
@@ -260,6 +265,11 @@ impl Overlay {
                 std::thread::sleep(std::time::Duration::from_millis(50));
             }
         });
+    }
+
+    /// El área cliente ya es `target`.
+    pub fn covers(&self, target: &RECT) -> bool {
+        client_rect(self.hwnd) == Some(*target)
     }
 
     /// Un rectángulo de pantalla en coordenadas lógicas de la ventana.
@@ -348,8 +358,9 @@ pub fn left_button_down() -> bool {
     unsafe { GetAsyncKeyState(VK_LBUTTON.0 as i32) < 0 }
 }
 
-/// Alt+Z, el atajo de la rueda en Atic. Se sondea porque la ventana nunca
-/// tiene el foco; un prototipo no justifica registrar un hotkey global.
+/// Alt+Z: la rueda mientras Atic tiene los atajos (el de `config.json` es de
+/// ella) o si no hay uno válido. Se sondea porque la ventana nunca tiene el
+/// foco y `RegisterHotKey` no avisa al soltar.
 pub fn wheel_shortcut_down() -> bool {
     unsafe { GetAsyncKeyState(VK_MENU.0 as i32) < 0 && GetAsyncKeyState('Z' as i32) < 0 }
 }

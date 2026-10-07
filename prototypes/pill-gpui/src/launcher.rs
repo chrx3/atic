@@ -1518,48 +1518,6 @@ pub fn system_action(_: Action) -> Result<(), String> {
     Ok(())
 }
 
-// --- Atajo global -------------------------------------------------------------------
-
-/// Registra el atajo en un hilo propio con su bucle de mensajes. Recibir el
-/// `WM_HOTKEY` le da al proceso permiso para tomar el foco, que es lo que el
-/// lanzador necesita para recibir lo que se escribe.
-///
-/// Ctrl+Shift+Space por defecto, para no chocar con el Ctrl+Space de Atic;
-/// `PILL_LAUNCHER_KEY=ctrl-space` usa el de Atic si este no corre.
-#[cfg(windows)]
-pub fn hotkey() -> std::sync::mpsc::Receiver<()> {
-    use windows::Win32::UI::Input::KeyboardAndMouse::{
-        RegisterHotKey, HOT_KEY_MODIFIERS, MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT, VK_SPACE,
-    };
-    use windows::Win32::UI::WindowsAndMessaging::{GetMessageW, MSG, WM_HOTKEY};
-
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || unsafe {
-        let atic_key = std::env::var("PILL_LAUNCHER_KEY").is_ok_and(|key| key == "ctrl-space");
-        let mods: HOT_KEY_MODIFIERS = if atic_key {
-            MOD_CONTROL | MOD_NOREPEAT
-        } else {
-            MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT
-        };
-        if let Err(error) = RegisterHotKey(None, 1, mods, VK_SPACE.0 as u32) {
-            eprintln!("lanzador: no se pudo registrar el atajo (¿lo usa otra app?): {error}");
-            return;
-        }
-        let mut msg = MSG::default();
-        while GetMessageW(&mut msg, None, 0, 0).as_bool() {
-            if msg.message == WM_HOTKEY && tx.send(()).is_err() {
-                break;
-            }
-        }
-    });
-    rx
-}
-
-#[cfg(not(windows))]
-pub fn hotkey() -> std::sync::mpsc::Receiver<()> {
-    std::sync::mpsc::channel().1
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1665,7 +1623,7 @@ impl crate::Pill {
             Target::Action(action) => {
                 self.close_panel(false, cx);
                 match action {
-                    Action::Capture => self.start_capture(window, cx),
+                    Action::Capture => self.start_capture(false, window, cx),
                     Action::Board => self.start_board(window, cx),
                     Action::Color => self.start_color(window, cx),
                     Action::Clipboard => self.open_notch(crate::NotchTool::Clipboard, window, cx),

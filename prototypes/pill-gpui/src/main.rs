@@ -28,6 +28,7 @@ mod glass;
 mod dictation;
 mod dictation_settings;
 mod hang;
+mod hotkeys;
 mod history;
 mod hover;
 mod liquid;
@@ -174,9 +175,19 @@ pub(crate) const CLIPBOARD_TOOL: usize = 1;
 pub(crate) const TEXTOS_TOOL: usize = 2;
 pub(crate) const AGENTES_TOOL: usize = 3;
 pub(crate) const SISTEMA_TOOL: usize = 4;
+/// «Ahora suena»: también en pausa o sin nada sonando, para reanudar.
+pub(crate) const MEDIA_TOOL: usize = 9;
 /// Largo del tab con algo sonando: carátula a la izquierda, onda a la derecha.
 const LIVE_LENGTH: f32 = 212.0;
 const LIVE_ART: f32 = 24.0;
+/// En pausa, la carátula queda atenuada con un ▶ este rato: para reanudar
+/// sin buscar el reproductor.
+const PAUSED_ART_FOR: Duration = Duration::from_secs(10 * 60);
+/// Margen entre el borde del tab y lo que va en sus extremos (carátula,
+/// reloj, onda).
+const SLOT_PAD: f32 = 9.0;
+/// La onda: cuatro barras de 3 px separadas 6.
+const BARS_W: f32 = 22.0;
 /// La carátula como insignia de la gota flotante.
 const LIVE_BADGE: f32 = 20.0;
 /// El punto de privacidad: micrófono (naranja) o cámara (verde).
@@ -375,6 +386,7 @@ impl AssetSource for Assets {
             "icons/folder.svg" => include_bytes!("../assets/icons/folder.svg"),
             "icons/copy.svg" => include_bytes!("../assets/icons/copy.svg"),
             "icons/scan-text.svg" => include_bytes!("../assets/icons/scan-text.svg"),
+            "icons/external-link.svg" => include_bytes!("../assets/icons/external-link.svg"),
             "icons/volume-2.svg" => include_bytes!("../assets/icons/volume-2.svg"),
             "icons/volume-1.svg" => include_bytes!("../assets/icons/volume-1.svg"),
             "icons/volume-x.svg" => include_bytes!("../assets/icons/volume-x.svg"),
@@ -579,8 +591,14 @@ struct Pill {
     studio: Entity<meetings::Studio>,
     /// Grabando: el reloj que muestra el tab. Cambia una vez por segundo.
     rec_clock: Option<String>,
-    /// El tab con lo que suena: 0 normal, 1 con carátula y onda.
+    /// El tab con lo que suena: 0 normal, 1 con carátula (y onda si suena).
     live: Tween,
+    /// Lo que suena está sonando (no en pausa).
+    music_playing: bool,
+    /// Desde cuándo está en pausa lo que sonaba.
+    paused_since: Option<Instant>,
+    /// El largo que necesita el tab para que quepa lo que muestra (`fit_length`).
+    fit: Tween,
     /// La letra que cuelga del tab con lo que suena (`hang.rs`).
     hang: Tween,
     /// El dictado (`dictation.rs`): el motor, su franja en el notch, el
@@ -611,8 +629,8 @@ struct Pill {
     away: Option<Home>,
     /// El lanzador en el centro de la pantalla (Ctrl+M), no en el notch.
     launcher_centered: bool,
-    /// Llega un `()` cada vez que se aprieta el atajo global.
-    launcher_key: std::sync::mpsc::Receiver<()>,
+    /// Los atajos globales de las herramientas (`hotkeys.rs`).
+    hotkeys: std::sync::mpsc::Receiver<hotkeys::Action>,
     snippets: Entity<SnippetsPanel>,
     panel_open: bool,
     /// Alto del contenido del notch: sigue a lo que el panel necesita
@@ -653,8 +671,12 @@ struct Pill {
     /// Algo que cuelga del notch un rato con la burbuja (la captura recién
     /// hecha) y hasta cuándo.
     toast: Option<(clipboard::Entry, Instant)>,
-    /// La última captura, en su tarjeta abajo a la derecha (`shelf.rs`).
-    shelf: Option<shelf::Shelf>,
+    /// La ventana estirada a todas las pantallas para la mira (`capture.rs`).
+    span: Option<capture::Span>,
+    /// Las capturas recientes, apiladas abajo a la derecha (`shelf.rs`).
+    shelves: Vec<shelf::Shelf>,
+    /// El id de la última foto del estante.
+    shelf_seq: u64,
     panel_time: f32,
     paste_target: Option<paste::Target>,
 
@@ -742,6 +764,10 @@ struct Frame {
     privacy: Option<u32>,
     /// Grabando una reunión: el reloj. Va donde iría la carátula.
     recording: Option<String>,
+    /// En pausa: carátula atenuada con ▶ y sin onda.
+    paused: bool,
+    /// La onda a la derecha (`bars_shown`).
+    bars: bool,
 }
 
 struct IconDraw {
@@ -797,6 +823,8 @@ impl Pill {
         let launcher = cx.new(launcher::LauncherPanel::new);
         let agents = cx.new(agents::AgentsPanel::new);
         let media = media::Media::start();
+        let dict_watch = dictation::Watch::spawn();
+        let hotkeys = hotkeys::spawn(dict_watch.clone());
         // Agentes lleva un mini reproductor al pie con lo mismo que suena.
         agents.update(cx, |panel, _| panel.media = Some(media.clone()));
         let privacy = privacy::Privacy::start();
@@ -849,9 +877,10 @@ impl Pill {
                     pill.launcher_event(event, window, cx)
                 },
             ),
-            cx.subscribe(&panel, |pill, _, event: &PanelEvent, cx| match event {
+            cx.subscribe_in(&panel, window, |pill, _, event: &PanelEvent, window, cx| match event {
                 PanelEvent::Paste(entry) => pill.paste(entry.clone(), cx),
                 PanelEvent::Drag(entry) => pill.start_drag(entry.clone(), cx),
+                PanelEvent::Draw(entry) => pill.draw_entry(entry, window, cx),
                 PanelEvent::Close => pill.close_panel(true, cx),
             }),
             cx.subscribe(&snippets, |pill, _, event: &SnippetEvent, cx| match event {
@@ -968,7 +997,9 @@ impl Pill {
             color: None,
             color_events: None,
             toast: None,
-            shelf: None,
+            span: None,
+            shelves: Vec::new(),
+            shelf_seq: 0,
             panel,
             notch_tool: NotchTool::Clipboard,
             launcher,
@@ -982,11 +1013,14 @@ impl Pill {
             rec_clock: None,
             tray: tray::Banner::new(),
             live: Tween::new(0.0, Duration::from_millis(320), ease_island),
+            music_playing: false,
+            paused_since: None,
+            fit: Tween::new(TAB_LENGTH, Duration::from_millis(320), ease_island),
             hang: Tween::new(0.0, Duration::from_millis(320), ease_island),
             dictation: dictation::Dictation::new(),
             gear: Tween::new(0.0, Duration::from_millis(260), ease_island),
             dict: Tween::new(0.0, Duration::from_millis(320), ease_island),
-            dict_watch: dictation::Watch::spawn(),
+            dict_watch,
             dict_key_was_down: false,
             usage: usage::Usage::default(),
             usage_peek: Tween::new(0.0, Duration::from_millis(300), ease_island),
@@ -999,7 +1033,7 @@ impl Pill {
             flight: None,
             away: None,
             launcher_centered: false,
-            launcher_key: launcher::hotkey(),
+            hotkeys,
             snippets,
             panel_open: false,
             panel_time: 0.0,
@@ -1076,7 +1110,7 @@ impl Pill {
                     } else if tool == "shelf" {
                         pill.demo_shelf(cx)
                     } else {
-                        pill.start_capture(window, cx)
+                        pill.start_capture(false, window, cx)
                     }
                 });
             })
@@ -1138,7 +1172,37 @@ impl Pill {
         let open = self.strip_open_now(now);
         let strip = lerp(TAB_LENGTH, open, self.strip.value(now));
         let live = lerp(TAB_LENGTH, LIVE_LENGTH, self.live.value(now));
-        strip.max(live).max(TAB_LENGTH * 0.96)
+        strip.max(live).max(self.fit.value(now)).max(TAB_LENGTH * 0.96)
+    }
+
+    /// Lo que va en el tab en reposo: a la izquierda el reloj de la grabación
+    /// o la carátula; junto a la cara, los contadores de la bandeja; a la
+    /// derecha la onda y el punto de privacidad. La cara va al centro, así que
+    /// el tab mide el doble del lado más largo.
+    fn fit_length(&self) -> f32 {
+        let (left_chip, right_chip) = tray::chip_reach(self.tray.chips);
+        let left_slot = match &self.rec_clock {
+            // El punto (8) y el reloj, en Cascadia Mono de 11 px.
+            Some(clock) => Some(15.0 + clock.chars().count() as f32 * 7.0),
+            None => (self.live.target() == 1.0).then_some(LIVE_ART),
+        };
+        let privacy = !self.privacy.uses().is_empty();
+        let right_slot = match (self.bars_shown(), privacy) {
+            (true, true) => Some(BARS_W + 12.0),
+            (true, false) => Some(BARS_W),
+            (false, true) => Some(8.0),
+            (false, false) => None,
+        };
+        let side = |chip: f32, slot: Option<f32>| {
+            (MARK_SIZE / 2.0).max(chip) + slot.map_or(0.0, |w| 8.0 + w + SLOT_PAD)
+        };
+        (2.0 * side(left_chip, left_slot).max(side(right_chip, right_slot))).max(TAB_LENGTH)
+    }
+
+    /// La onda: solo con música sonando, y no grabando ni dictando (cada uno
+    /// trae lo suyo; dos ondas confunden).
+    fn bars_shown(&self) -> bool {
+        self.music_playing && self.rec_clock.is_none() && !self.dictation_shown()
     }
 
     /// Cuánto se ve la actividad en vivo (la tira abierta la tapa).
@@ -1164,7 +1228,7 @@ impl Pill {
     /// La carátula o la onda: todo el tab menos la marca; en la gota, la
     /// insignia de la carátula.
     fn over_art(&self, p: (f32, f32), now: Instant) -> bool {
-        if self.live_shown(now) <= 0.5 {
+        if self.live_shown(now) <= 0.5 || self.rec_clock.is_some() {
             return false;
         }
         match self.shape(now) {
@@ -1855,13 +1919,65 @@ impl Pill {
             StripId::Tool(TEXTOS_TOOL) => self.open_notch(NotchTool::Textos, window, cx),
             StripId::Tool(AGENTES_TOOL) => self.open_notch(NotchTool::Agentes, window, cx),
             StripId::Tool(SISTEMA_TOOL) => self.open_notch(NotchTool::Sistema, window, cx),
-            StripId::Tool(capture::TOOL) => self.start_capture(window, cx),
+            StripId::Tool(MEDIA_TOOL) => self.open_notch(NotchTool::Media, window, cx),
+            StripId::Tool(capture::TOOL) => self.start_capture(false, window, cx),
             StripId::Tool(board::TOOL) => self.start_board(window, cx),
             StripId::Tool(flip::TOOL) => self.start_flip(window, cx),
             StripId::Tool(color::TOOL) => self.start_color(window, cx),
             StripId::Tool(REUNIONES_TOOL) => meetings::show(cx),
             StripId::Tool(_) => {}
         }
+    }
+
+    /// Un atajo global: abre su herramienta, o la cierra si ya está abierta.
+    fn run_hotkey(&mut self, action: hotkeys::Action, window: &mut Window, cx: &mut Context<Self>) {
+        use hotkeys::Action;
+        // La mira, la pizarra, el color y el flip se cierran con Escape; otro
+        // atajo encima los dejaría a medias.
+        if self.capture.is_some() || self.board.is_some() || self.color.is_some() || self.flip.is_some() {
+            return;
+        }
+        let notch = |pill: &mut Self, tool: NotchTool, window: &mut Window, cx: &mut Context<Self>| {
+            if pill.panel_open && pill.notch_tool == tool {
+                pill.close_panel(true, cx);
+            } else {
+                pill.open_notch(tool, window, cx);
+            }
+        };
+        match action {
+            Action::Launcher => self.toggle_launcher(window, cx),
+            Action::Clipboard => notch(self, NotchTool::Clipboard, window, cx),
+            Action::Snippets => notch(self, NotchTool::Textos, window, cx),
+            Action::Capture => self.start_capture(true, window, cx),
+            Action::Board => self.start_board(window, cx),
+            Action::Color => self.start_color(window, cx),
+            Action::Flip => self.start_flip(window, cx),
+            Action::Agents => notch(self, NotchTool::Agentes, window, cx),
+            Action::Record => self.studio.update(cx, |studio, cx| studio.toggle_recording(cx)),
+            Action::Summon => self.summon_to_cursor(cx),
+        }
+    }
+
+    /// «Traer pill»: la gota queda bajo el cursor y ese es su lugar nuevo.
+    /// Solo en el monitor donde ya está: llevar la ventana a otro es lo que
+    /// hace el arrastre y aquí no se repite.
+    fn summon_to_cursor(&mut self, cx: &mut Context<Self>) {
+        let Some(cursor) = self.cursor else {
+            eprintln!("[atajos] traer pill: no se sabe dónde está el cursor");
+            return;
+        };
+        println!("[atajos] traer pill → {cursor:?} (monitor {:?})", self.monitor);
+        if !self.monitor.contains(cursor, 0.0) {
+            eprintln!("[atajos] traer pill: el cursor está en otro monitor, todavía no se trae");
+            return;
+        }
+        if self.panel_open {
+            self.close_panel(false, cx);
+        }
+        let disc = Rect::centered(cursor, DISC_R * 2.0, DISC_R * 2.0).clamped_into(&self.monitor);
+        self.home = Home::Floating { center: disc.center() };
+        save_home(&self.home, &self.work, self.screen.as_ref().map(|(screen, _, _)| screen));
+        cx.notify();
     }
 
     fn go_to_strip_page(&mut self, page: Page) {
@@ -2275,6 +2391,8 @@ impl Pill {
                 PressTarget::Mark if matches!(self.home, Home::Docked { .. }) => {
                     self.toggle_wheel(WheelOpener::Click)
                 }
+                // En pausa, la carátula atenuada lleva un ▶: la reanuda.
+                PressTarget::Art if !self.music_playing => self.media.control(media::Control::Toggle),
                 PressTarget::Art => self.open_notch(NotchTool::Media, window, cx),
                 PressTarget::Tray => self.open_notch(NotchTool::Agentes, window, cx),
                 PressTarget::Tool(slot) => {
@@ -2378,13 +2496,21 @@ impl Pill {
     /// Windows en cada pantalla.
     fn refresh_screen(&mut self, now: Instant, window: &Window) {
         let dragging = self.dragging();
-        if !dragging && now.duration_since(self.screen_checked) < SCREEN_POLL {
+        if !dragging && self.span.is_none() && now.duration_since(self.screen_checked) < SCREEN_POLL {
             return;
         }
         self.screen_checked = now;
         let Some(overlay) = self.overlay.as_ref() else {
             return;
         };
+        // Estirada para la mira, la ventana no sigue al monitor; y volviendo,
+        // hasta que llegue.
+        match self.span {
+            Some(capture::Span::Covering(_)) => return,
+            Some(capture::Span::Restoring(home)) if !overlay.covers(&home) => return,
+            Some(capture::Span::Restoring(_)) => self.span = None,
+            None => {}
+        }
         let Some(current) = overlay.screen() else {
             return;
         };
@@ -2459,10 +2585,9 @@ impl Pill {
         let moved = cursor != self.cursor;
         self.cursor = cursor;
 
-        // El atajo global del lanzador (llega desde su propio hilo).
-        if self.launcher_key.try_recv().is_ok() {
-            while self.launcher_key.try_recv().is_ok() {}
-            self.toggle_launcher(window, cx);
+        // Los atajos globales (llegan desde su propio hilo).
+        while let Ok(action) = self.hotkeys.try_recv() {
+            self.run_hotkey(action, window, cx);
         }
 
         // Con la mira, la pizarra o el flip abiertos la ventana recibe todo;
@@ -2521,7 +2646,7 @@ impl Pill {
             }
         }
 
-        let shortcut_down = win::wheel_shortcut_down();
+        let shortcut_down = self.dict_watch.wheel_down();
         if shortcut_down && !self.shortcut_was_down {
             self.toggle_wheel(WheelOpener::Shortcut);
         }
@@ -2688,10 +2813,19 @@ impl Pill {
 
         // Lo que suena: el tab se alarga con la carátula y la onda. Solo
         // acoplado arriba, con el notch cerrado.
-        let playing = self.media.track().is_some_and(|t| t.playing);
+        let track = self.media.track();
+        let playing = track.as_ref().is_some_and(|t| t.playing);
+        if playing || track.is_none() {
+            self.paused_since = None;
+        } else if self.paused_since.is_none() {
+            self.paused_since = Some(now);
+        }
+        let paused = self.paused_since.is_some_and(|at| now.duration_since(at) < PAUSED_ART_FOR);
+        self.music_playing = playing;
         // En cualquier borde y flotando; no con el notch abierto ni volando.
         let shown = !self.panel_visible() && self.flight.is_none() && !self.dragging();
-        self.live.set(if playing && shown { 1.0 } else { 0.0 }, now);
+        self.live.set(if (playing || paused) && shown { 1.0 } else { 0.0 }, now);
+        self.fit.set(self.fit_length(), now);
         self.update_dictation(now, cx);
         self.update_hang(now);
         self.level += (self.media.level() - self.level) * 0.35;
@@ -3000,7 +3134,11 @@ impl Pill {
                     Some(PRIVACY_MIC)
                 }
             },
-            recording: self.rec_clock.clone(),
+            // Con la tira o el notch abiertos la cara se corre al extremo:
+            // el punto de la grabación caería encima.
+            recording: self.rec_clock.clone().filter(|_| self.strip.value(now) < 0.5 && !self.panel_visible()),
+            paused: !self.music_playing,
+            bars: self.bars_shown(),
             palette,
         }
     }
@@ -3455,7 +3593,7 @@ impl Frame {
         self.paint_mark(window);
         match &self.recording {
             Some(clock) => self.paint_recording(clock, window, cx),
-            None => self.paint_live(window),
+            None => self.paint_live(window, cx),
         }
         self.paint_privacy(window);
         for icon in self.strip_tools.iter().chain(&self.wheel_icons) {
@@ -3470,7 +3608,7 @@ impl Frame {
     }
 
     /// Carátula a la izquierda y onda a la derecha del tab, con lo que suena.
-    fn paint_live(&self, window: &mut Window) {
+    fn paint_live(&self, window: &mut Window, cx: &mut App) {
         if self.live <= 0.02 {
             return;
         }
@@ -3491,12 +3629,30 @@ impl Frame {
         }
         match self.art.clone() {
             Some(art) => {
-                let _ = window.paint_image(bounds, Corners::all(px(corner)), art, 0, false);
+                // En pausa, en gris.
+                let _ = window.paint_image(bounds, Corners::all(px(corner)), art, 0, self.paused);
             }
             None => window.paint_quad(
                 gpui::fill(bounds, self.palette.text.opacity(0.15 * self.live))
                     .corner_radii(Corners::all(px(corner))),
             ),
+        }
+        if self.paused {
+            // Atenuada y con ▶: un clic la reanuda.
+            window.paint_quad(
+                gpui::fill(bounds, self.skin.opacity(0.45 * self.live)).corner_radii(Corners::all(px(corner))),
+            );
+            let icon = side * 0.6;
+            let _ = window.paint_svg(
+                bounds_of(&Rect::centered(center, icon, icon)),
+                "icons/play.svg".into(),
+                TransformationMatrix::unit(),
+                self.palette.text.opacity(self.live),
+                cx,
+            );
+        }
+        if !self.bars {
+            return;
         }
         let level = (self.level * 1.6).clamp(0.08, 1.0);
         match self.pill {
@@ -3545,8 +3701,6 @@ impl Frame {
         match self.pill {
             PillShape::Tab { edge, rect, .. } if !edge.is_vertical() => {
                 let y = self.mark.1;
-                let x = rect.x + 16.0;
-                dot(window, (x, y));
                 let size = 11.0;
                 let run = gpui::TextRun {
                     len: clock.len(),
@@ -3559,8 +3713,17 @@ impl Frame {
                 let line = window
                     .text_system()
                     .shape_line(clock.to_string().into(), px(size), &[run], None);
+                // Grabando, el tab toma el largo del de música (`tab_length`) y
+                // el reloj va donde la carátula; si aun así no cabe antes de la
+                // cara, solo el punto.
+                let dot_x = rect.x + 16.0;
+                dot(window, (dot_x, y));
+                let text_x = dot_x + 8.0;
+                if text_x + f32::from(line.width) > self.mark.0 - MARK_SIZE / 2.0 {
+                    return;
+                }
                 let height = size * 1.3;
-                let _ = line.paint(point(px(x + 8.0), px(y - height / 2.0)), px(height), window, cx);
+                let _ = line.paint(point(px(text_x), px(y - height / 2.0)), px(height), window, cx);
             }
             _ => {
                 if let Some(center) = self.art_center {
@@ -3715,6 +3878,10 @@ impl Render for Pill {
         }
         if let Some(view) = self.flip.clone() {
             return div().size_full().child(view).into_any_element();
+        }
+        // Con la ventana todavía estirada o volviendo, la pill caería corrida.
+        if self.span.is_some() {
+            return div().size_full().into_any_element();
         }
         let now = Instant::now();
         let animating = self.advance(now);

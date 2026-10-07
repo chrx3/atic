@@ -53,18 +53,13 @@ impl Frozen {
 }
 
 /// Congela el monitor principal. Corre en un hilo de fondo.
-pub fn freeze(scale: f32) -> Result<Frozen, String> {
+/// Congela `area` (píxeles físicos de pantalla): un monitor o, con todos a la
+/// misma escala, el escritorio entero.
+pub fn freeze(scale: f32, area: PhysRect) -> Result<Frozen, String> {
     let started = Instant::now();
     let all = monitors::enumerate();
-    let monitor = all
-        .iter()
-        .find(|monitor| monitor.is_primary)
-        .or(all.first())
-        .ok_or("no hay monitores")?
-        .clone();
-    let frame = atic_capture::engine::capture_rect(monitor.bounds, false)
-        .map_err(|error| error.to_string())?;
-    let origin = (monitor.bounds.x, monitor.bounds.y);
+    let frame = atic_capture::engine::capture_rect(area, false).map_err(|error| error.to_string())?;
+    let origin = (area.x, area.y);
     let to_logical = |rect: &PhysRect| {
         Rect::new(
             (rect.x - origin.0) as f32 / scale,
@@ -77,18 +72,14 @@ pub fn freeze(scale: f32) -> Result<Frozen, String> {
     let windows = atic_capture::windows::enumerate_candidates(std::process::id(), &all)
         .into_iter()
         .filter_map(|candidate| {
-            let visible = candidate.visual_bounds.intersection(&monitor.bounds)?;
+            let visible = candidate.visual_bounds.intersection(&area)?;
             Some(Candidate {
                 rect: to_logical(&visible),
                 title: candidate.title.into(),
             })
         })
         .collect();
-    // GPUI dibuja BGRA tal cual: el buffer del frame sirve sin convertir.
-    let buffer =
-        image::RgbaImage::from_raw(frame.width(), frame.height(), frame.bgra.clone())
-            .ok_or("frame con tamaño inválido")?;
-    let image = Arc::new(RenderImage::new([image::Frame::new(buffer)]));
+    let image = image_of(&frame).ok_or("frame con tamaño inválido")?;
     Ok(Frozen {
         frame,
         image,
@@ -97,6 +88,12 @@ pub fn freeze(scale: f32) -> Result<Frozen, String> {
         took: started.elapsed(),
         offset: (0.0, 0.0),
     })
+}
+
+/// GPUI dibuja BGRA tal cual: el buffer del frame sirve sin convertir.
+fn image_of(frame: &Frame) -> Option<Arc<RenderImage>> {
+    let buffer = image::RgbaImage::from_raw(frame.width(), frame.height(), frame.bgra.clone())?;
+    Some(Arc::new(RenderImage::new([image::Frame::new(buffer)])))
 }
 
 /// Qué se captura si se suelta ahora.
@@ -120,6 +117,11 @@ pub struct Session {
     /// D: al soltar, la región se queda y se abre la pizarra encima en vez de
     /// copiar al tiro (como Flameshot). Shift al soltar hace lo mismo.
     pub draw: bool,
+    /// La foto congelada muestra la pill tal como estaba (se abrió con el
+    /// atajo). P la vuelve a congelar sin ella.
+    pub pill_shown: bool,
+    /// La foto con la pill mientras se ve la que no la tiene, para volver a ella.
+    with_pill: Option<(Frame, Arc<RenderImage>)>,
     /// En vivo, los píxeles bajo el cursor para la lupa, recién leídos.
     loupe: Option<Frame>,
 }
@@ -151,8 +153,28 @@ impl Session {
             previous,
             live: false,
             draw: false,
+            pill_shown: false,
+            with_pill: None,
             loupe: None,
         }
+    }
+
+    /// Hay una foto con la pill para alternar (solo congelada).
+    pub fn can_toggle_pill(&self) -> bool {
+        !self.live && (self.pill_shown || self.with_pill.is_some())
+    }
+
+    /// Congela de nuevo la pantalla: el overlay ya está excluido de las
+    /// capturas, así que sale sin la pill ni la mira.
+    fn refreeze(&mut self) -> Result<(), String> {
+        let started = Instant::now();
+        let frame = atic_capture::engine::capture_rect(self.frozen.frame.bounds, false)
+            .map_err(|error| error.to_string())?;
+        let image = image_of(&frame).ok_or("frame con tamaño inválido")?;
+        self.frozen.image = image;
+        self.frozen.frame = frame;
+        self.frozen.took = started.elapsed();
+        Ok(())
     }
 
     /// En vivo: relee los píxeles alrededor del cursor para la lupa. Es un
@@ -275,7 +297,7 @@ pub fn save(frame: &Frame, region: PhysRect) -> Result<Saved, String> {
 
 // --- La mira --------------------------------------------------------------
 
-actions!(capture, [Cancel, WholeScreen, ToggleLive, ToggleDraw]);
+actions!(capture, [Cancel, WholeScreen, ToggleLive, ToggleDraw, TogglePill]);
 
 const KEY_CONTEXT: &str = "Capture";
 
@@ -287,6 +309,7 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("space", WholeScreen, context),
         KeyBinding::new("f", ToggleLive, context),
         KeyBinding::new("d", ToggleDraw, context),
+        KeyBinding::new("p", TogglePill, context),
     ]);
 }
 
@@ -357,18 +380,12 @@ impl CaptureView {
     fn toggle_live(&mut self, _: &ToggleLive, _: &mut Window, cx: &mut Context<Self>) {
         let session = &mut self.session;
         if session.live {
-            let started = Instant::now();
-            match atic_capture::engine::capture_rect(session.frozen.frame.bounds, false) {
-                Ok(frame) => {
-                    if let Some(buffer) =
-                        image::RgbaImage::from_raw(frame.width(), frame.height(), frame.bgra.clone())
-                    {
-                        session.frozen.image =
-                            Arc::new(RenderImage::new([image::Frame::new(buffer)]));
-                        session.frozen.frame = frame;
-                        session.frozen.took = started.elapsed();
-                        session.live = false;
-                    }
+            match session.refreeze() {
+                Ok(()) => {
+                    session.live = false;
+                    // La foto nueva es de ahora y sin la pill: la de antes ya no vale.
+                    session.pill_shown = false;
+                    session.with_pill = None;
                 }
                 Err(error) => eprintln!("captura: no se pudo congelar: {error}"),
             }
@@ -377,6 +394,29 @@ impl CaptureView {
             session.refresh_loupe();
         }
         remember_live(session.live);
+        cx.notify();
+    }
+
+    /// P: la foto con la pill o sin ella.
+    fn toggle_pill(&mut self, _: &TogglePill, _: &mut Window, cx: &mut Context<Self>) {
+        let session = &mut self.session;
+        if !session.can_toggle_pill() {
+            return;
+        }
+        if session.pill_shown {
+            let with = (session.frozen.frame.clone(), session.frozen.image.clone());
+            match session.refreeze() {
+                Ok(()) => {
+                    session.with_pill = Some(with);
+                    session.pill_shown = false;
+                }
+                Err(error) => eprintln!("captura: no se pudo congelar sin la pill: {error}"),
+            }
+        } else if let Some((frame, image)) = session.with_pill.take() {
+            session.frozen.frame = frame;
+            session.frozen.image = image;
+            session.pill_shown = true;
+        }
         cx.notify();
     }
 
@@ -566,6 +606,7 @@ impl Render for CaptureView {
             .on_action(cx.listener(Self::cancel))
             .on_action(cx.listener(Self::whole_screen))
             .on_action(cx.listener(Self::toggle_live))
+            .on_action(cx.listener(Self::toggle_pill))
             .on_action(cx.listener(|view, _: &ToggleDraw, _, cx| {
                 view.session.draw = !view.session.draw;
                 cx.notify();
@@ -591,6 +632,11 @@ impl Render for CaptureView {
                 MouseButton::Left,
                 cx.listener(|view, event: &MouseUpEvent, _, cx| {
                     view.session.cursor = view.session.frozen.local(event.position);
+                    // El soltar del clic que abrió la captura (desde la gota, que
+                    // abre al presionar) no es una elección: capturaba al tiro.
+                    if view.session.press.is_none() {
+                        return;
+                    }
                     let pick = view.session.pick();
                     view.session.press = None;
                     let draw = view.session.draw || event.modifiers.shift;
@@ -640,7 +686,14 @@ impl Render for CaptureView {
                         } else {
                             "D o Shift al soltar: dibujar antes de copiar"
                         };
-                        format!("{mode} · {draw} · Espacio: pantalla completa · Esc")
+                        let pill = if !session.can_toggle_pill() {
+                            ""
+                        } else if session.pill_shown {
+                            "P: ocultar la pill · "
+                        } else {
+                            "P: mostrar la pill · "
+                        };
+                        format!("{mode} · {pill}{draw} · Espacio: pantalla completa · Esc")
                     })),
             )
     }
@@ -655,35 +708,143 @@ impl Render for CaptureView {
 /// «Capturas» en la tira y la rueda.
 pub const TOOL: usize = 5;
 
+/// Todos los monitores juntos, si comparten escala: una sola ventana los
+/// cubre sin deformar ninguno. Con uno solo o con escalas distintas, `None`.
+fn whole_desktop() -> Option<PhysRect> {
+    let all = monitors::enumerate();
+    let first = all.first()?;
+    if all.len() < 2 || all.iter().any(|monitor| (monitor.scale - first.scale).abs() > 0.001) {
+        return None;
+    }
+    let left = all.iter().map(|m| m.bounds.x).min()?;
+    let top = all.iter().map(|m| m.bounds.y).min()?;
+    let right = all.iter().map(|m| m.bounds.right()).max()?;
+    let bottom = all.iter().map(|m| m.bounds.bottom()).max()?;
+    Some(PhysRect::new(left, top, (right - left) as u32, (bottom - top) as u32))
+}
+
+fn to_win_rect(rect: PhysRect) -> windows::Win32::Foundation::RECT {
+    windows::Win32::Foundation::RECT {
+        left: rect.x,
+        top: rect.y,
+        right: rect.right(),
+        bottom: rect.bottom(),
+    }
+}
+
+/// La ventana de la pill, estirada a todo el escritorio para la mira.
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) enum Span {
+    /// Cubre el escritorio entero.
+    Covering(PhysRect),
+    /// Volviendo a su monitor: hasta que llegue no se sigue al monitor.
+    Restoring(windows::Win32::Foundation::RECT),
+}
+
 impl crate::Pill {
-    pub(crate) fn start_capture(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// El monitor de la pill, en píxeles físicos: lo que congelan la pizarra
+    /// y el flip.
+    pub(crate) fn pill_area(&self) -> Option<PhysRect> {
+        let monitor = self.screen.as_ref()?.0.monitor;
+        Some(PhysRect::new(
+            monitor.left,
+            monitor.top,
+            (monitor.right - monitor.left) as u32,
+            (monitor.bottom - monitor.top) as u32,
+        ))
+    }
+
+    /// Lo que se puede capturar: todas las pantallas si comparten escala; si
+    /// no, la de la pill.
+    fn capture_area(&self) -> Option<(PhysRect, bool)> {
+        match whole_desktop() {
+            Some(area) => Some((area, true)),
+            None => self.pill_area().map(|area| (area, false)),
+        }
+    }
+
+    /// La ventana vuelve a su monitor tras la mira (o la pizarra que salió de
+    /// ella).
+    pub(crate) fn end_span(&mut self) {
+        if !matches!(self.span, Some(Span::Covering(_))) {
+            return;
+        }
+        let home = self.screen.as_ref().map(|(screen, _, _)| *screen);
+        match (self.overlay.as_ref(), home) {
+            (Some(overlay), Some(home)) => {
+                overlay.move_to(&home);
+                self.span = Some(Span::Restoring(home.monitor));
+            }
+            _ => self.span = None,
+        }
+    }
+
+    /// `with_pill`: la foto congelada sale con la pill tal como está (para
+    /// mostrar lo que tiene), y P la quita. Desde la rueda o la tira no: la
+    /// foto saldría con ellas abiertas.
+    pub(crate) fn start_capture(&mut self, with_pill: bool, window: &mut Window, cx: &mut Context<Self>) {
         if self.capture.is_some() || self.capture_pending {
             return;
         }
         self.capture_pending = true;
-        let now = Instant::now();
-        self.close_wheel();
-        self.close_panel(false, cx);
-        self.peek.set(0.0, now);
-        self.strip.set(0.0, now);
-        let previous = crate::paste::foreground_target();
-        // El notch no debe salir en la foto.
-        if let Some(overlay) = self.overlay.as_ref() {
-            overlay.exclude_from_capture(true);
+        let with_pill = with_pill && !remembered_live();
+        if !with_pill {
+            self.hide_for_capture(cx);
         }
+        let previous = crate::paste::foreground_target();
         let scale = self.scale_factor;
+        let Some((area, whole)) = self.capture_area() else {
+            self.capture_pending = false;
+            return;
+        };
         cx.spawn_in(window, async move |this, cx| {
-            let frozen = cx.background_spawn(async move { freeze(scale) }).await;
+            let frozen = cx.background_spawn(async move { freeze(scale, area) }).await;
+            // Con todas las pantallas, la ventana se estira a cubrirlas recién
+            // ahora (la foto ya se tomó) y la mira espera a que llegue.
+            if whole && frozen.is_ok() {
+                let _ = this.update(cx, |pill, _| {
+                    if let Some(overlay) = pill.overlay.as_ref() {
+                        overlay.cover(to_win_rect(area));
+                        pill.span = Some(Span::Covering(area));
+                    }
+                });
+                for _ in 0..40 {
+                    let covered = this
+                        .update(cx, |pill, _| pill.overlay.as_ref().is_some_and(|o| o.covers(&to_win_rect(area))))
+                        .unwrap_or(true);
+                    if covered {
+                        break;
+                    }
+                    cx.background_executor().timer(std::time::Duration::from_millis(15)).await;
+                }
+            }
             let _ = this.update_in(cx, |pill, window, cx| {
-                pill.show_capture(frozen, previous, window, cx)
+                if with_pill {
+                    pill.hide_for_capture(cx);
+                }
+                pill.show_capture(frozen, area, with_pill, previous, window, cx)
             });
         })
         .detach();
     }
 
+    /// Recoge la pill y la saca de las capturas: la mira vive en su ventana.
+    fn hide_for_capture(&mut self, cx: &mut Context<Self>) {
+        let now = Instant::now();
+        self.close_wheel();
+        self.close_panel(false, cx);
+        self.peek.set(0.0, now);
+        self.strip.set(0.0, now);
+        if let Some(overlay) = self.overlay.as_ref() {
+            overlay.exclude_from_capture(true);
+        }
+    }
+
     fn show_capture(
         &mut self,
         frozen: Result<Frozen, String>,
+        area: PhysRect,
+        with_pill: bool,
         previous: Option<crate::paste::Target>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -696,21 +857,32 @@ impl crate::Pill {
                 if let Some(overlay) = self.overlay.as_ref() {
                     overlay.exclude_from_capture(false);
                 }
+                self.end_span();
                 return;
             }
         };
-        frozen.offset = (self.monitor.x, self.monitor.y);
+        // Dónde cae el área congelada en la ventana: el monitor de la pill o,
+        // estirada, todo el escritorio.
+        frozen.offset = self
+            .overlay
+            .as_ref()
+            .and_then(|overlay| overlay.to_logical(&to_win_rect(area), self.scale_factor))
+            .map_or((self.monitor.x, self.monitor.y), |rect| (rect.x, rect.y));
         println!(
             "captura: congelada en {} ms, {} ventanas",
             frozen.took.as_millis(),
             frozen.windows.len()
         );
+        // El cursor, leído ahora: la ventana pudo haberse estirado.
         let cursor = self
-            .cursor
+            .overlay
+            .as_ref()
+            .and_then(|overlay| overlay.cursor(self.scale_factor))
             .map(|(x, y)| (x - frozen.offset.0, y - frozen.offset.1))
             .unwrap_or_default();
         let mut session = Session::new(frozen, cursor, previous);
         session.live = remembered_live();
+        session.pill_shown = with_pill && !session.live;
         session.refresh_loupe();
         let view = cx.new(|cx| CaptureView::new(session, cx));
         self.capture_events = Some(cx.subscribe_in(
@@ -736,33 +908,22 @@ impl crate::Pill {
         if let Some(overlay) = self.overlay.as_ref() {
             overlay.exclude_from_capture(false);
         }
-        // Dibujar antes de copiar: la pizarra se abre sobre la región, en su
-        // lugar, y el foco sigue en el overlay.
+        // Dibujar antes de copiar: la región, centrada en la pizarra sobre
+        // fondo oscuro (en su lugar quedaba chica o tapada). El foco sigue en
+        // el overlay; si estaba estirado, vuelve al cerrar la pizarra.
         if let CaptureEvent::Chosen {
             frame,
             region,
             draw: true,
         } = event
         {
-            let session = &view.read(cx).session;
-            let (monitor, scale, offset) = (
-                session.frozen.frame.bounds,
-                session.frozen.scale,
-                session.frozen.offset,
-            );
-            let origin = (
-                (region.x - monitor.x) as f32 / scale,
-                (region.y - monitor.y) as f32 / scale,
-            );
-            let frozen = frame
-                .crop(*region)
-                .and_then(|cropped| crate::board::frozen_for(cropped, scale, offset));
-            if let Some(frozen) = frozen {
-                self.open_board(frozen, origin, previous, window, cx);
-                cx.notify();
+            if let Some(cropped) = frame.crop(*region) {
+                self.open_board_centered(cropped, previous, window, cx);
                 return;
             }
         }
+        // La pizarra no se abrió: la ventana vuelve a su monitor.
+        self.end_span();
         if let Some(overlay) = self.overlay.as_mut() {
             overlay.set_focusable(false);
         }

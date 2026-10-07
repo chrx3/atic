@@ -943,7 +943,7 @@ impl Render for BoardView {
                 cx.listener(|view, _: &MouseUpEvent, _, cx| view.up(cx)),
             )
             .when(framed, |el| {
-                el.child(div().absolute().size_full().bg(gpui::black().opacity(0.55)))
+                el.child(div().absolute().size_full().bg(gpui::black().opacity(0.7)))
             })
             .child(
                 img(self.frozen.image.clone())
@@ -1057,8 +1057,11 @@ impl crate::Pill {
             overlay.exclude_from_capture(true);
         }
         let scale = self.scale_factor;
+        let Some(area) = self.pill_area() else {
+            return;
+        };
         cx.spawn_in(window, async move |this, cx| {
-            let frozen = cx.background_spawn(async move { capture::freeze(scale) }).await;
+            let frozen = cx.background_spawn(async move { capture::freeze(scale, area) }).await;
             let _ = this.update_in(cx, |pill, window, cx| {
                 pill.capture_pending = false;
                 if let Some(overlay) = pill.overlay.as_ref() {
@@ -1106,11 +1109,90 @@ impl crate::Pill {
         cx.notify();
     }
 
+    /// Una imagen del historial, en la pizarra: centrada en el monitor y
+    /// achicada si no cabe. Al terminar se copia y se guarda como una captura.
+    pub(crate) fn draw_entry(&mut self, entry: &crate::clipboard::Entry, window: &mut Window, cx: &mut Context<Self>) {
+        let crate::clipboard::Content::Image(picture) = &entry.content else {
+            return;
+        };
+        if self.board.is_some() || self.capture.is_some() {
+            return;
+        }
+        let decoded = picture
+            .load()
+            .map_err(|error| error.to_string())
+            .and_then(|image| image::load_from_memory(&image.bytes).map_err(|error| error.to_string()));
+        let image = match decoded {
+            Ok(image) => image,
+            Err(error) => {
+                eprintln!("pizarra: no se pudo abrir la imagen: {error}");
+                return;
+            }
+        };
+        let mut bgra = image.to_rgba8().into_raw();
+        for pixel in bgra.chunks_exact_mut(4) {
+            pixel.swap(0, 2);
+        }
+        let bounds = atic_capture::Rect {
+            x: 0,
+            y: 0,
+            width: image.width(),
+            height: image.height(),
+        };
+        let frame = atic_capture::Frame::new(bounds, bgra);
+        let previous = crate::paste::foreground_target();
+        self.close_panel(false, cx);
+        self.open_board_centered(frame, previous, window, cx);
+    }
+
+    /// Dibujar sobre una imagen suelta (una captura, una del estante o del
+    /// portapapeles): centrada en el monitor de la pill sobre fondo oscuro, y
+    /// agrandada o achicada para que se dibuje cómodo. El zoom es solo de la
+    /// vista: lo dibujado se compone a la resolución de la imagen.
+    pub(crate) fn open_board_centered(
+        &mut self,
+        frame: atic_capture::Frame,
+        previous: Option<crate::paste::Target>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        /// Lo que puede ocupar del monitor, y cuánto se agranda una chica.
+        const FILL: f32 = 0.8;
+        const MAX_ZOOM: f32 = 3.0;
+        let scale = self.scale_factor;
+        // El monitor de la pill en la ventana de ahora: tras la mira puede
+        // seguir estirada a todas las pantallas.
+        let monitor = match (self.overlay.as_ref(), self.screen.as_ref()) {
+            (Some(overlay), Some((screen, _, _))) => overlay.to_logical(&screen.monitor, scale).unwrap_or(self.monitor),
+            _ => self.monitor,
+        };
+        let (w, h) = (frame.width() as f32 / scale, frame.height() as f32 / scale);
+        if w <= 0.0 || h <= 0.0 {
+            return;
+        }
+        let zoom = (monitor.w * FILL / w).min(monitor.h * FILL / h).min(MAX_ZOOM);
+        // La pizarra muestra la imagen a `frame / view_scale` px lógicos.
+        let view_scale = scale / zoom;
+        let (shown_w, shown_h) = (w * zoom, h * zoom);
+        // Nunca (0, 0): ese origen es el de la pantalla entera, sin fondo oscuro.
+        let origin = (
+            ((monitor.w - shown_w) / 2.0).max(1.0),
+            ((monitor.h - shown_h) / 2.0).max(1.0),
+        );
+        let Some(frozen) = frozen_for(frame, view_scale, (monitor.x, monitor.y)) else {
+            return;
+        };
+        self.open_board(frozen, origin, previous, window, cx);
+        cx.notify();
+    }
+
     fn end_board(&mut self, event: &BoardEvent, cx: &mut Context<Self>) {
         let Some(view) = self.board.take() else {
             return;
         };
         self.board_events = None;
+        // Si venía de la mira con todas las pantallas, la ventana vuelve.
+        self.end_span();
         let previous = view.read(cx).previous;
         if let Some(overlay) = self.overlay.as_mut() {
             overlay.set_focusable(false);

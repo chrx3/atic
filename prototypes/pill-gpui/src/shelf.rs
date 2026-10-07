@@ -1,10 +1,12 @@
-//! El estante: la tarjeta que aparece abajo a la derecha tras una captura,
-//! como en Atic (`ShelfSurface.svelte`, `capture_shelf.rs`).
+//! El estante: las capturas recientes, flotando abajo a la derecha, como en
+//! Atic (`ShelfSurface.svelte`, `capture_shelf.rs`).
 //!
-//! La captura vuela desde donde se tomó hasta la tarjeta. Encima de la tarjeta
-//! aparecen las opciones: descartar, carpeta, Copiar, Dibujar y Texto. Clic en
-//! la miniatura la abre; arrastrarla la suelta en otra app. Se va sola a los
-//! 20 s, y la cuenta se pausa con el cursor encima.
+//! La captura vuela desde donde se tomó hasta su lugar. Las nuevas entran
+//! abajo y empujan a las anteriores hacia arriba. Con el cursor encima de una
+//! aparecen sus opciones: descartar, carpeta, Copiar, Dibujar y Texto. Clic en
+//! la foto la abre; arrastrarla la suelta en otra app. Cada una se va
+//! achicando durante 20 s y al vencer hace «pop»; con el cursor encima vuelve
+//! a su tamaño y la cuenta se pausa.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -12,31 +14,47 @@ use std::time::{Duration, Instant};
 
 use atic_capture::Frame;
 use gpui::{
-    div, img, prelude::*, px, rgb, svg, AnyElement, ClickEvent, Context, Hsla, Image,
-    ImageFormat, MouseButton, MouseDownEvent, SharedString,
+    div, img, point, prelude::*, px, rgb, svg, AnyElement, BoxShadow, ClickEvent, Context, Hsla,
+    Image, ImageFormat, MouseButton, MouseDownEvent, SharedString,
 };
 
-use crate::hover::HoverExt;
-use crate::anim::{ease_smooth_out, lerp, segment};
+use crate::anim::{ease_island, ease_smooth_out, lerp, segment, Tween};
 use crate::capture::Saved;
 use crate::geometry::Rect;
+use crate::hover::HoverExt;
 
-const CARD_W: f32 = 208.0;
-const CARD_H: f32 = 136.0;
-const PAD: f32 = 8.0;
+const THUMB_W: f32 = 192.0;
+const THUMB_H: f32 = 120.0;
+/// Entre una foto y la de arriba.
+const GAP: f32 = 10.0;
 const MARGIN: f32 = 16.0;
 const FLY_MS: f32 = 340.0;
+/// Lo que tarda una foto en subir cuando entra otra o se va una.
+const SLIDE: Duration = Duration::from_millis(320);
 const LIFETIME: Duration = Duration::from_secs(20);
+/// Hasta dónde se achica al acercarse el vencimiento.
+const END_SCALE: f32 = 0.6;
+/// El «pop» del final: crece un poco y se desvanece.
+const POP: Duration = Duration::from_millis(200);
+const POP_GROW: f32 = 0.18;
 /// Mover esto con el botón apretado sobre la miniatura es arrastrarla.
 const DRAG_START: f32 = 6.0;
 
 pub struct Shelf {
+    /// Identifica la foto aunque cambie de lugar en la pila.
+    id: u64,
     image: Arc<Image>,
     path: PathBuf,
     frame: Frame,
     /// Dónde se tomó, en la ventana: de ahí sale volando.
     from: Rect,
     born: Instant,
+    /// Su lugar en la pila (0 abajo), animado al subir.
+    slot: Tween,
+    /// Con el cursor encima vuelve a su tamaño (0 achicada, 1 entera).
+    grow: Tween,
+    /// Venció: desde cuándo hace «pop».
+    popped: Option<Instant>,
     /// Tiempo de vida que queda; solo corre sin el cursor encima.
     left: Duration,
     last_tick: Instant,
@@ -49,28 +67,49 @@ pub struct Shelf {
 impl crate::Pill {
     pub(crate) fn show_shelf(&mut self, saved: Saved, from: Rect) {
         let now = Instant::now();
-        crate::debug(|| {
-            format!(
-                "estante: {}×{} desde {from:?} a {:?} (trabajo {:?})",
-                saved.width,
-                saved.height,
-                self.card_rect(),
-                self.work
-            )
-        });
-        self.shelf = Some(Shelf {
-            image: Arc::new(Image::from_bytes(ImageFormat::Png, saved.png)),
-            path: saved.path,
-            frame: saved.frame,
-            from,
-            born: now,
-            left: LIFETIME,
-            last_tick: now,
-            hovered: false,
-            press: None,
-            note: None,
-            busy: false,
-        });
+        crate::debug(|| format!("estante: {}×{} desde {from:?}", saved.width, saved.height));
+        self.shelf_seq += 1;
+        self.shelves.insert(
+            0,
+            Shelf {
+                id: self.shelf_seq,
+                image: Arc::new(Image::from_bytes(ImageFormat::Png, saved.png)),
+                path: saved.path,
+                frame: saved.frame,
+                from,
+                born: now,
+                slot: Tween::new(0.0, SLIDE, ease_island),
+                grow: Tween::new(0.0, Duration::from_millis(200), ease_smooth_out),
+                popped: None,
+                left: LIFETIME,
+                last_tick: now,
+                hovered: false,
+                press: None,
+                note: None,
+                busy: false,
+            },
+        );
+        // Las que no caben en la altura de la pantalla se van.
+        let fits = ((self.work.h - MARGIN) / (THUMB_H + GAP)).floor().max(1.0) as usize;
+        self.shelves.truncate(fits);
+        self.restack(now);
+    }
+
+    /// Cada foto, a su lugar en la pila.
+    fn restack(&mut self, now: Instant) {
+        for (index, shelf) in self.shelves.iter_mut().enumerate() {
+            shelf.slot.set(index as f32, now);
+        }
+    }
+
+    fn remove_shelf(&mut self, id: u64, cx: &mut Context<Self>) {
+        self.shelves.retain(|shelf| shelf.id != id);
+        self.restack(Instant::now());
+        cx.notify();
+    }
+
+    fn shelf_mut(&mut self, id: u64) -> Option<&mut Shelf> {
+        self.shelves.iter_mut().find(|shelf| shelf.id == id)
     }
 
     /// `PILL_OPEN=shelf`: el estante con la última captura guardada, para
@@ -121,81 +160,120 @@ impl crate::Pill {
         cx.notify();
     }
 
-    fn card_rect(&self) -> Rect {
+    /// La foto en el lugar `slot` de la pila (0 abajo; fraccionario al subir).
+    fn thumb_rect(&self, slot: f32) -> Rect {
         Rect::new(
-            self.work.right() - CARD_W - MARGIN,
-            self.work.bottom() - CARD_H - MARGIN,
-            CARD_W,
-            CARD_H,
+            self.work.right() - THUMB_W - MARGIN,
+            self.work.bottom() - THUMB_H - MARGIN - slot * (THUMB_H + GAP),
+            THUMB_W,
+            THUMB_H,
         )
     }
 
-    fn thumb_rect(&self) -> Rect {
-        let card = self.card_rect();
-        Rect::new(card.x + PAD, card.y + PAD, CARD_W - PAD * 2.0, CARD_H - PAD * 2.0)
+    /// Cuánto mide ahora: se achica con el tiempo, vuelve con el cursor
+    /// encima y al vencer crece un poco mientras se desvanece.
+    fn photo_scale(shelf: &Shelf, now: Instant) -> f32 {
+        let life = shelf.left.as_secs_f32() / LIFETIME.as_secs_f32();
+        let aged = lerp(END_SCALE, 1.0, life);
+        let scale = lerp(aged, 1.0, shelf.grow.value(now));
+        match shelf.popped {
+            Some(at) => scale * (1.0 + POP_GROW * Self::pop_progress(at, now)),
+            None => scale,
+        }
+    }
+
+    fn pop_progress(at: Instant, now: Instant) -> f32 {
+        (now.duration_since(at).as_secs_f32() / POP.as_secs_f32()).clamp(0.0, 1.0)
+    }
+
+    /// La foto en su lugar, a su tamaño de ahora: pegada a la derecha y
+    /// centrada en el alto de su lugar.
+    fn photo_rect(&self, shelf: &Shelf, now: Instant) -> Rect {
+        let slot = self.thumb_rect(shelf.slot.value(now));
+        let scale = Self::photo_scale(shelf, now);
+        let (w, h) = (slot.w * scale, slot.h * scale);
+        Rect::new(slot.right() - w, slot.y + (slot.h - h) / 2.0, w, h)
     }
 
     /// Cada sondeo: cuenta regresiva, hover y arrastre. Devuelve si el cursor
-    /// está sobre la tarjeta (la ventana tiene que recibir los clics).
+    /// está sobre alguna foto (la ventana tiene que recibir los clics).
     pub(crate) fn shelf_tick(&mut self, cursor: Option<(f32, f32)>, cx: &mut Context<Self>) -> bool {
-        let card = self.card_rect();
-        let Some(shelf) = self.shelf.as_mut() else {
+        if self.shelves.is_empty() {
             return false;
-        };
-        let now = Instant::now();
-        let over = cursor.is_some_and(|c| card.contains(c, 0.0));
-        let elapsed = now.duration_since(shelf.last_tick);
-        shelf.last_tick = now;
-        shelf.hovered = over;
-        if !over && shelf.press.is_none() && !shelf.busy {
-            shelf.left = shelf.left.saturating_sub(elapsed);
         }
-        // Arrastrar la miniatura a otra app: el PNG como archivo.
-        if let (Some(origin), Some(c)) = (shelf.press, cursor) {
-            if (c.0 - origin.0).hypot(c.1 - origin.1) >= DRAG_START {
-                shelf.press = None;
-                let path = shelf.path.to_string_lossy().into_owned();
-                cx.spawn(async move |this, cx| {
-                    match crate::drag::drag_files(&[path]) {
+        let now = Instant::now();
+        let rects: Vec<Rect> = self.shelves.iter().map(|shelf| self.photo_rect(shelf, now)).collect();
+        let button_down = crate::win::left_button_down();
+        let mut over_any = false;
+        let mut expired = Vec::new();
+        for (shelf, rect) in self.shelves.iter_mut().zip(rects) {
+            if let Some(at) = shelf.popped {
+                if Self::pop_progress(at, now) >= 1.0 {
+                    expired.push(shelf.id);
+                }
+                continue;
+            }
+            let over = cursor.is_some_and(|c| rect.contains(c, 0.0));
+            over_any |= over;
+            let elapsed = now.duration_since(shelf.last_tick);
+            shelf.last_tick = now;
+            shelf.hovered = over;
+            shelf.grow.set(if over { 1.0 } else { 0.0 }, now);
+            if !over && shelf.press.is_none() && !shelf.busy {
+                shelf.left = shelf.left.saturating_sub(elapsed);
+            }
+            // Arrastrar la miniatura a otra app: el PNG como archivo.
+            if let (Some(origin), Some(c)) = (shelf.press, cursor) {
+                if (c.0 - origin.0).hypot(c.1 - origin.1) >= DRAG_START {
+                    shelf.press = None;
+                    let (id, path) = (shelf.id, shelf.path.to_string_lossy().into_owned());
+                    cx.spawn(async move |this, cx| match crate::drag::drag_files(&[path]) {
                         Ok(outcome) if outcome.dropped => {
-                            let _ = this.update(cx, |pill, cx| {
-                                pill.shelf = None;
-                                cx.notify();
-                            });
+                            let _ = this.update(cx, |pill, cx| pill.remove_shelf(id, cx));
                         }
                         Ok(_) => {}
                         Err(error) => eprintln!("estante: arrastre: {error}"),
-                    }
-                })
-                .detach();
+                    })
+                    .detach();
+                }
+            }
+            if !button_down {
+                shelf.press = None;
+            }
+            if shelf.left.is_zero() {
+                shelf.popped = Some(now);
+                shelf.hovered = false;
             }
         }
-        if !crate::win::left_button_down() {
-            shelf.press = None;
-        }
-        if shelf.left.is_zero() {
-            self.shelf = None;
+        if !expired.is_empty() {
+            self.shelves.retain(|shelf| !expired.contains(&shelf.id));
+            self.restack(now);
             cx.notify();
-            return false;
         }
-        over
+        over_any
     }
 
+    /// Solo lo rápido pide cuadros: el vuelo, la subida, el crecer con el
+    /// cursor y el «pop». El achique es tan lento (unos 4 px/s) que le bastan
+    /// los ~20 cuadros/s con que la pill ya respira.
     pub(crate) fn shelf_animating(&self, now: Instant) -> bool {
-        self.shelf
-            .as_ref()
-            .is_some_and(|shelf| now.duration_since(shelf.born).as_secs_f32() * 1000.0 < FLY_MS)
+        self.shelves.iter().any(|shelf| {
+            now.duration_since(shelf.born).as_secs_f32() * 1000.0 < FLY_MS
+                || shelf.slot.is_running(now)
+                || shelf.grow.is_running(now)
+                || shelf.popped.is_some()
+        })
     }
 
-    fn shelf_note(&mut self, text: &str, cx: &mut Context<Self>) {
-        if let Some(shelf) = self.shelf.as_mut() {
+    fn shelf_note(&mut self, id: u64, text: &str, cx: &mut Context<Self>) {
+        if let Some(shelf) = self.shelf_mut(id) {
             shelf.note = Some((text.to_string().into(), Instant::now()));
         }
         cx.notify();
     }
 
-    fn shelf_copy(&mut self, cx: &mut Context<Self>) {
-        let Some(shelf) = self.shelf.as_ref() else {
+    fn shelf_copy(&mut self, id: u64, cx: &mut Context<Self>) {
+        let Some(shelf) = self.shelf_mut(id) else {
             return;
         };
         let frame = shelf.frame.clone();
@@ -203,29 +281,26 @@ impl crate::Pill {
         match crate::clip_image::write(frame.width(), frame.height(), &frame.bgra, &png) {
             Ok(()) => {
                 // Copiar es lo que más se hace: copia y se va.
-                self.shelf = None;
+                self.remove_shelf(id, cx);
                 println!("estante: copiada");
             }
-            Err(error) => self.shelf_note(&format!("No se pudo copiar: {error}"), cx),
+            Err(error) => self.shelf_note(id, &format!("No se pudo copiar: {error}"), cx),
         }
         cx.notify();
     }
 
-    fn shelf_draw(&mut self, window: &mut gpui::Window, cx: &mut Context<Self>) {
-        let Some(shelf) = self.shelf.take() else {
+    fn shelf_draw(&mut self, id: u64, window: &mut gpui::Window, cx: &mut Context<Self>) {
+        let Some(index) = self.shelves.iter().position(|shelf| shelf.id == id) else {
             return;
         };
-        let offset = (self.monitor.x, self.monitor.y);
-        let origin = (shelf.from.x - offset.0, shelf.from.y - offset.1);
-        let Some(frozen) = crate::board::frozen_for(shelf.frame, self.scale_factor, offset) else {
-            return;
-        };
+        let shelf = self.shelves.remove(index);
+        self.restack(Instant::now());
         let previous = crate::paste::foreground_target();
-        self.open_board(frozen, origin, previous, window, cx);
+        self.open_board_centered(shelf.frame, previous, window, cx);
     }
 
-    fn shelf_text(&mut self, cx: &mut Context<Self>) {
-        let Some(shelf) = self.shelf.as_mut() else {
+    fn shelf_text(&mut self, id: u64, cx: &mut Context<Self>) {
+        let Some(shelf) = self.shelf_mut(id) else {
             return;
         };
         if shelf.busy {
@@ -241,18 +316,18 @@ impl crate::Pill {
                 })
                 .await;
             let _ = this.update(cx, |pill, cx| {
-                if let Some(shelf) = pill.shelf.as_mut() {
+                if let Some(shelf) = pill.shelf_mut(id) {
                     shelf.busy = false;
                 }
                 match text {
                     Ok(text) if !text.trim().is_empty() => {
                         cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
-                        pill.shelf_note("Texto copiado", cx);
+                        pill.shelf_note(id, "Texto copiado", cx);
                     }
-                    Ok(_) => pill.shelf_note("No encontré texto", cx),
+                    Ok(_) => pill.shelf_note(id, "No encontré texto", cx),
                     Err(error) => {
                         eprintln!("estante: OCR: {error}");
-                        pill.shelf_note("No se pudo leer el texto", cx);
+                        pill.shelf_note(id, "No se pudo leer el texto", cx);
                     }
                 }
             });
@@ -261,14 +336,14 @@ impl crate::Pill {
         cx.notify();
     }
 
-    fn shelf_open(&mut self) {
-        if let Some(shelf) = self.shelf.as_ref() {
+    fn shelf_open(&mut self, id: u64) {
+        if let Some(shelf) = self.shelf_mut(id) {
             let _ = std::process::Command::new("explorer").arg(&shelf.path).spawn();
         }
     }
 
-    fn shelf_folder(&mut self) {
-        if let Some(shelf) = self.shelf.as_ref() {
+    fn shelf_folder(&mut self, id: u64) {
+        if let Some(shelf) = self.shelf_mut(id) {
             let _ = std::process::Command::new("explorer")
                 .arg(format!("/select,{}", shelf.path.display()))
                 .spawn();
@@ -276,30 +351,47 @@ impl crate::Pill {
     }
 
     pub(crate) fn render_shelf(&self, now: Instant, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let shelf = self.shelf.as_ref()?;
-        let card = self.card_rect();
-        let thumb = self.thumb_rect();
+        if self.shelves.is_empty() {
+            return None;
+        }
+        let photos: Vec<AnyElement> = self.shelves.iter().map(|shelf| self.render_photo(shelf, now, cx)).collect();
+        Some(
+            // Sin `top`/`left`, un absoluto queda donde iría en el flujo: bajo el
+            // canvas de pantalla completa, o sea fuera de la vista.
+            div()
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full()
+                .font_family("Segoe UI")
+                .children(photos)
+                .into_any_element(),
+        )
+    }
+
+    fn render_photo(&self, shelf: &Shelf, now: Instant, cx: &mut Context<Self>) -> AnyElement {
+        let id = shelf.id;
+        let thumb = self.photo_rect(shelf, now);
+        let fade = shelf.popped.map_or(1.0, |at| 1.0 - ease_smooth_out(Self::pop_progress(at, now)));
         let t = ease_smooth_out(segment(
             now.duration_since(shelf.born).as_secs_f32() * 1000.0,
             0.0,
             FLY_MS,
         ));
-        // La foto viaja de la selección a la miniatura; la tarjeta aparece al
-        // final, cuando la foto ya llegó.
+        // La foto viaja de la selección a su lugar en la pila.
         let fly = Rect::new(
             lerp(shelf.from.x, thumb.x, t),
             lerp(shelf.from.y, thumb.y, t),
             lerp(shelf.from.w, thumb.w, t),
             lerp(shelf.from.h, thumb.h, t),
         );
-        let card_alpha = segment(t, 0.7, 0.3);
         let text: Hsla = rgb(0xf0f0ea).into();
         let chip_bg = gpui::black().opacity(0.55);
         let veil = shelf.hovered && shelf.note.is_none() && t >= 1.0;
 
-        let dot = |id: &'static str, icon: &'static str| {
+        let dot = |name: &'static str, icon: &'static str| {
             div()
-                .id(id)
+                .id((name, id as usize))
                 .absolute()
                 .size(px(28.))
                 .rounded(px(14.))
@@ -309,10 +401,10 @@ impl crate::Pill {
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .child(svg().path(icon).size(px(14.)).text_color(text))
         };
-        let action = |id: &'static str, icon: &'static str, label: &'static str| {
+        let action = |name: &'static str, icon: &'static str, label: &'static str| {
             // `.shelf-sub` de Atic: botón de 26 px con un filo claro.
             div()
-                .id(id)
+                .id((name, id as usize))
                 .h(px(26.))
                 .px(px(12.))
                 .flex()
@@ -330,39 +422,56 @@ impl crate::Pill {
                 .child(label)
         };
 
-        let frame = div()
-            .absolute()
-            .left(px(card.x))
-            .top(px(card.y))
-            .w(px(CARD_W))
-            .h(px(CARD_H))
-            .rounded(px(14.))
-            .bg(rgb(0x1a1a18))
-            .shadow_lg()
-            .opacity(card_alpha);
-        let photo = div()
-            .id("shelf-thumb")
+        // Sin tarjeta: solo la foto, flotando. La sombra va en una capa propia:
+        // la foto recorta lo que tiene dentro.
+        let radius = px(lerp(2.0, 8.0, t));
+        let shadow = div()
             .absolute()
             .left(px(fly.x))
             .top(px(fly.y))
             .w(px(fly.w))
             .h(px(fly.h))
-            .rounded(px(lerp(2.0, 8.0, t)))
+            .rounded(radius)
+            .opacity(fade)
+            .shadow(vec![
+                BoxShadow {
+                    color: gpui::black().opacity(0.45 * t),
+                    offset: point(px(0.), px(10.)),
+                    blur_radius: px(28.),
+                    spread_radius: px(0.),
+                },
+                BoxShadow {
+                    color: gpui::black().opacity(0.35 * t),
+                    offset: point(px(0.), px(2.)),
+                    blur_radius: px(6.),
+                    spread_radius: px(0.),
+                },
+            ]);
+        let photo = div()
+            .id(("shelf-thumb", id as usize))
+            .absolute()
+            .left(px(fly.x))
+            .top(px(fly.y))
+            .w(px(fly.w))
+            .h(px(fly.h))
+            .rounded(radius)
             .overflow_hidden()
+            .border_1()
+            .border_color(gpui::white().opacity(0.14 * t))
+            .opacity(fade)
             .cursor_pointer()
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(|pill, event: &MouseDownEvent, _, cx| {
+                cx.listener(move |pill, event: &MouseDownEvent, _, cx| {
                     cx.stop_propagation();
-                    if let Some(shelf) = pill.shelf.as_mut() {
+                    if let Some(shelf) = pill.shelf_mut(id) {
                         shelf.press = Some((f32::from(event.position.x), f32::from(event.position.y)));
                     }
                 }),
             )
-            .on_click(cx.listener(|pill, _: &ClickEvent, _, _| pill.shelf_open()))
+            .on_click(cx.listener(move |pill, _: &ClickEvent, _, _| pill.shelf_open(id)))
             .child(img(shelf.image.clone()).size_full().object_fit(gpui::ObjectFit::Cover));
 
-        let progress = shelf.left.as_secs_f32() / LIFETIME.as_secs_f32();
         let overlay = div()
             .absolute()
             .left(px(thumb.x))
@@ -377,19 +486,16 @@ impl crate::Pill {
                             .tooltip(crate::hover::tip("Descartar"))
                             .left(px(6.))
                             .top(px(6.))
-                            .on_click(cx.listener(|pill, _: &ClickEvent, _, cx| {
-                                pill.shelf = None;
-                                cx.notify();
-                            }))
-                            .hover_bg("shelf-dismiss-fx", chip_bg, gpui::black().opacity(0.8)),
+                            .on_click(cx.listener(move |pill, _: &ClickEvent, _, cx| pill.remove_shelf(id, cx)))
+                            .hover_bg(("shelf-dismiss-fx", id as usize), chip_bg, gpui::black().opacity(0.8)),
                     )
                     .child(
                         dot("shelf-folder", "icons/folder.svg")
                             .tooltip(crate::hover::tip("Abrir la carpeta"))
                             .right(px(6.))
                             .top(px(6.))
-                            .on_click(cx.listener(|pill, _: &ClickEvent, _, _| pill.shelf_folder()))
-                            .hover_bg("shelf-folder-fx", chip_bg, gpui::black().opacity(0.8)),
+                            .on_click(cx.listener(move |pill, _: &ClickEvent, _, _| pill.shelf_folder(id)))
+                            .hover_bg(("shelf-folder-fx", id as usize), chip_bg, gpui::black().opacity(0.8)),
                     )
                     .child(
                         // `.shelf-center`: una columna al centro de la foto.
@@ -403,20 +509,20 @@ impl crate::Pill {
                             .gap(px(5.))
                             .child(
                                 action("shelf-copy", "icons/copy.svg", "Copiar")
-                                    .on_click(cx.listener(|pill, _: &ClickEvent, _, cx| pill.shelf_copy(cx)))
-                                    .hover_bg("shelf-copy-fx", chip_bg, gpui::black().opacity(0.8)),
+                                    .on_click(cx.listener(move |pill, _: &ClickEvent, _, cx| pill.shelf_copy(id, cx)))
+                                    .hover_bg(("shelf-copy-fx", id as usize), chip_bg, gpui::black().opacity(0.8)),
                             )
                             .child(
                                 action("shelf-draw", "icons/pencil.svg", "Dibujar")
-                                    .on_click(cx.listener(|pill, _: &ClickEvent, window, cx| {
-                                        pill.shelf_draw(window, cx)
+                                    .on_click(cx.listener(move |pill, _: &ClickEvent, window, cx| {
+                                        pill.shelf_draw(id, window, cx)
                                     }))
-                                    .hover_bg("shelf-draw-fx", chip_bg, gpui::black().opacity(0.8)),
+                                    .hover_bg(("shelf-draw-fx", id as usize), chip_bg, gpui::black().opacity(0.8)),
                             )
                             .child(
                                 action("shelf-text", "icons/scan-text.svg", "Texto")
-                                    .on_click(cx.listener(|pill, _: &ClickEvent, _, cx| pill.shelf_text(cx)))
-                                    .hover_bg("shelf-text-fx", chip_bg, gpui::black().opacity(0.8)),
+                                    .on_click(cx.listener(move |pill, _: &ClickEvent, _, cx| pill.shelf_text(id, cx)))
+                                    .hover_bg(("shelf-text-fx", id as usize), chip_bg, gpui::black().opacity(0.8)),
                             ),
                     )
             })
@@ -432,23 +538,15 @@ impl crate::Pill {
                         .child(note.clone()),
                 )
             });
-        let countdown = div()
-            .absolute()
-            .left(px(card.x + 14.0))
-            .top(px(card.bottom() - 4.0))
-            .w(px((CARD_W - 28.0) * progress))
-            .h(px(2.))
-            .rounded(px(1.))
-            .bg(text.opacity(0.35))
-            .opacity(card_alpha);
-        let tip = (veil).then(|| {
+        // La ayuda, a la izquierda de la foto: arriba la taparía la de encima.
+        let tip = veil.then(|| {
             div()
                 .absolute()
-                .left(px(card.x))
-                .top(px(card.y - 26.0))
-                .w(px(CARD_W))
+                .left(px(thumb.x - 178.0))
+                .top(px(thumb.y + thumb.h / 2.0 - 10.0))
+                .w(px(170.))
                 .flex()
-                .justify_center()
+                .justify_end()
                 .child(
                     div()
                         .px(px(8.))
@@ -460,20 +558,15 @@ impl crate::Pill {
                         .child("Clic: abrir · Arrastra para soltar"),
                 )
         });
-        Some(
-            // Sin `top`/`left`, un absoluto queda donde iría en el flujo: bajo el
-            // canvas de pantalla completa, o sea fuera de la vista.
-            div()
-                .absolute()
-                .top_0()
-                .left_0()
-                .size_full()
-                .font_family("Segoe UI")
-                .child(frame)
-                .child(photo)
-                .when(t >= 1.0, |el| el.child(overlay).child(countdown))
-                .children(tip)
-                .into_any_element(),
-        )
+        div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+            .child(shadow)
+            .child(photo)
+            .when(t >= 1.0 && shelf.popped.is_none(), |el| el.child(overlay))
+            .children(tip)
+            .into_any_element()
     }
 }

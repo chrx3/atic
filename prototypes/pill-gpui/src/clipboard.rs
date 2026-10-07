@@ -59,6 +59,9 @@ actions!(
         Dismiss,
         ToggleFavorite,
         Remove,
+        DrawImage,
+        OpenImage,
+        ReadText,
         Quick1,
         Quick2,
         Quick3,
@@ -82,6 +85,9 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("escape", Dismiss, context),
         KeyBinding::new("ctrl-d", ToggleFavorite, context),
         KeyBinding::new("shift-delete", Remove, context),
+        KeyBinding::new("ctrl-e", DrawImage, context),
+        KeyBinding::new("ctrl-o", OpenImage, context),
+        KeyBinding::new("ctrl-t", ReadText, context),
         KeyBinding::new("ctrl-1", Quick1, context),
         KeyBinding::new("ctrl-2", Quick2, context),
         KeyBinding::new("ctrl-3", Quick3, context),
@@ -204,6 +210,8 @@ enum Filter {
 pub enum PanelEvent {
     Paste(Entry),
     Drag(Entry),
+    /// Dibujar sobre una imagen en la pizarra.
+    Draw(Entry),
     Close,
 }
 
@@ -288,6 +296,10 @@ pub struct ClipboardPanel {
     press: Option<(usize, Point<Pixels>)>,
     /// El último gesto terminó en arrastre: el clic que le sigue no pega.
     dragged: bool,
+    /// Un aviso en el pie («Texto copiado»), con cuándo apareció.
+    note: Option<(SharedString, std::time::Instant)>,
+    /// Leyendo el texto de una imagen: no se lanza otra lectura.
+    reading: bool,
     local: Local,
     _search_changed: Subscription,
 }
@@ -354,6 +366,8 @@ impl ClipboardPanel {
             colors,
             press: None,
             dragged: false,
+            note: None,
+            reading: false,
             local: Local::load(),
             _search_changed: search_changed,
         };
@@ -609,6 +623,102 @@ impl ClipboardPanel {
     fn toggle_selected(&mut self, _: &ToggleFavorite, _: &mut Window, cx: &mut Context<Self>) {
         if let Some(index) = self.selected_entry() {
             self.toggle_favorite(index, cx);
+        }
+    }
+
+    /// Ctrl+E: la imagen elegida, a la pizarra.
+    fn draw_selected(&mut self, _: &DrawImage, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(index) = self.selected_entry() {
+            self.draw(index, cx);
+        }
+    }
+
+    /// Ctrl+O: la imagen elegida, en el visor de imágenes del sistema.
+    fn open_selected(&mut self, _: &OpenImage, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(index) = self.selected_entry() {
+            self.open_image(index, cx);
+        }
+    }
+
+    fn open_image(&mut self, index: usize, cx: &mut Context<Self>) {
+        let Some(Content::Image(Picture::File(path))) = self.entries.get(index).map(|e| &e.content) else {
+            return;
+        };
+        // `explorer <archivo>` lo abre con la app predeterminada.
+        if let Err(error) = std::process::Command::new("explorer").arg(path.as_ref()).spawn() {
+            eprintln!("portapapeles: no se pudo abrir la imagen: {error}");
+            self.show_note("No se pudo abrir la imagen", cx);
+        }
+    }
+
+    /// Ctrl+T: el texto de la imagen elegida, al portapapeles.
+    fn read_selected(&mut self, _: &ReadText, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(index) = self.selected_entry() {
+            self.read_text(index, cx);
+        }
+    }
+
+    fn read_text(&mut self, index: usize, cx: &mut Context<Self>) {
+        let Some(Content::Image(picture)) = self.entries.get(index).map(|e| e.content.clone()) else {
+            return;
+        };
+        if self.reading {
+            return;
+        }
+        self.reading = true;
+        self.show_note("Leyendo el texto…", cx);
+        cx.spawn(async move |this, cx| {
+            let text = cx
+                .background_spawn(async move {
+                    let image = picture.load().map_err(|error| error.to_string())?;
+                    let mut bgra = image::load_from_memory(&image.bytes)
+                        .map_err(|error| error.to_string())?
+                        .to_rgba8();
+                    let (width, height) = bgra.dimensions();
+                    for pixel in bgra.chunks_exact_mut(4) {
+                        pixel.swap(0, 2);
+                    }
+                    crate::ocr::recognize(width, height, &bgra)
+                })
+                .await;
+            let _ = this.update(cx, |panel, cx| {
+                panel.reading = false;
+                match text {
+                    Ok(text) if !text.trim().is_empty() => {
+                        cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
+                        panel.show_note("Texto copiado", cx);
+                    }
+                    Ok(_) => panel.show_note("No encontré texto en la imagen", cx),
+                    Err(error) => {
+                        eprintln!("portapapeles: OCR: {error}");
+                        panel.show_note("No se pudo leer el texto", cx);
+                    }
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Un aviso en el pie por unos segundos.
+    fn show_note(&mut self, text: &'static str, cx: &mut Context<Self>) {
+        const NOTE_FOR: std::time::Duration = std::time::Duration::from_secs(3);
+        self.note = Some((text.into(), std::time::Instant::now()));
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(NOTE_FOR).await;
+            let _ = this.update(cx, |panel, cx| {
+                if panel.note.as_ref().is_some_and(|(_, at)| at.elapsed() >= NOTE_FOR) {
+                    panel.note = None;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    fn draw(&mut self, index: usize, cx: &mut Context<Self>) {
+        if let Some(entry) = self.entries.get(index).filter(|e| matches!(e.content, Content::Image(_))) {
+            cx.emit(PanelEvent::Draw(entry.clone()));
         }
     }
 
@@ -873,6 +983,7 @@ impl ClipboardPanel {
                             panel.hover_pick(Pick::Strip(slot), cx);
                         }
                     }));
+                let is_image = matches!(entry.content, Content::Image(_));
                 let tile = match &entry.content {
                     Content::Image(picture) => tile.w(px(THUMB_W)).bg(text.opacity(0.06)).child(
                         picture
@@ -897,6 +1008,38 @@ impl ClipboardPanel {
                     Content::Color(_, color) => tile.w(px(SWATCH_W)).bg(*color),
                     Content::Text(_) => tile,
                 };
+                // Con el cursor encima: abrir en el visor (Ctrl+O), leer el
+                // texto (Ctrl+T) y dibujar en la pizarra (Ctrl+E).
+                let button = |id: &'static str, icon: &'static str, action: fn(&mut Self, usize, &mut Context<Self>)| {
+                    div()
+                        .id((id, entry.id))
+                        .size(px(22.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(11.))
+                        .bg(gpui::black().opacity(0.6))
+                        .hover(|style| style.bg(gpui::black().opacity(0.85)))
+                        .on_click(cx.listener(move |panel, _: &ClickEvent, _, cx| {
+                            cx.stop_propagation();
+                            action(panel, index, cx)
+                        }))
+                        .child(svg().path(icon).size(px(12.)).text_color(gpui::white()))
+                };
+                let buttons = is_image.then(|| {
+                    div()
+                        .absolute()
+                        .top(px(4.))
+                        .right(px(4.))
+                        .flex()
+                        .gap(px(3.))
+                        .opacity(0.0)
+                        .group_hover("clip-tile", |style| style.opacity(1.0))
+                        .child(button("clip-open", "icons/external-link.svg", Self::open_image))
+                        .child(button("clip-text", "icons/scan-text.svg", Self::read_text))
+                        .child(button("clip-draw", "icons/pencil.svg", Self::draw))
+                });
+                let tile = tile.relative().group("clip-tile").children(buttons);
                 self.pressable(tile, index, cx)
                     .fx(("clip-tile-fx", entry.id), move |el, h| {
                         // Elegida, borde lleno; con el cursor encima, a medias.
@@ -1140,7 +1283,16 @@ impl Render for ClipboardPanel {
             .px(px(SIDE_PAD + 8.))
             .text_size(px(10.))
             .text_color(faint)
-            .child("↵ pegar · Ctrl+1–9 directo · Ctrl+D favorito · Mayús+Supr quitar · arrastra a otra app");
+            .child(match &self.note {
+                Some((note, _)) => note.clone(),
+                None if self
+                    .selected_entry()
+                    .is_some_and(|index| matches!(self.entries[index].content, Content::Image(_))) =>
+                {
+                    "↵ pegar · Ctrl+O abrir · Ctrl+T texto · Ctrl+E dibujar · arrastra a otra app".into()
+                }
+                None => "↵ pegar · Ctrl+1–9 directo · Ctrl+D favorito · Mayús+Supr quitar · arrastra a otra app".into(),
+            });
 
         div()
             .key_context(KEY_CONTEXT)
@@ -1149,6 +1301,9 @@ impl Render for ClipboardPanel {
             .on_action(cx.listener(Self::confirm))
             .on_action(cx.listener(Self::dismiss))
             .on_action(cx.listener(Self::toggle_selected))
+            .on_action(cx.listener(Self::draw_selected))
+            .on_action(cx.listener(Self::open_selected))
+            .on_action(cx.listener(Self::read_selected))
             .on_action(cx.listener(Self::remove_selected))
             .on_action(cx.listener(|panel, _: &Quick1, _, cx| panel.quick(1, cx)))
             .on_action(cx.listener(|panel, _: &Quick2, _, cx| panel.quick(2, cx)))

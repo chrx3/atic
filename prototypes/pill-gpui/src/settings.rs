@@ -162,7 +162,7 @@ impl SettingsView {
         Self {
             section: Section::Appearance,
             appearance: cx.new(|_| AppearancePane::default()),
-            pill: cx.new(|_| PillPane),
+            pill: cx.new(|_| PillPane::new()),
             clipboard: None,
             dictation: None,
             meetings: None,

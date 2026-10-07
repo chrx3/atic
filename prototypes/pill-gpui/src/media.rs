@@ -67,6 +67,7 @@ impl Track {
     }
 }
 
+#[derive(Clone, Copy)]
 pub enum Control {
     Toggle,
     Next,
@@ -1161,7 +1162,9 @@ mod imp {
                     }
                 }
             }
-            (end > 1.0).then_some((pos.clamp(0.0, end), end))
+            // `then`, no `then_some`: algunas apps dan un fin negativo y el
+            // `clamp` entra en pánico si se evalúa antes de revisarlo.
+            (end > 1.0).then(|| (pos.clamp(0.0, end), end))
         });
         at(SOURCE);
         let source = session.SourceAppUserModelId().map(|s| s.to_string()).unwrap_or_default();

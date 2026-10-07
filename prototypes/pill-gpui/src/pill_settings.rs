@@ -29,7 +29,20 @@ fn no_pill() -> impl IntoElement {
 
 // --- Pill ----------------------------------------------------------------------------
 
-pub struct PillPane;
+pub struct PillPane {
+    /// `None` sin la carpeta de datos de Atic: no se ofrece usar la nativa.
+    config: Option<(PathBuf, Config)>,
+}
+
+impl PillPane {
+    pub fn new() -> Self {
+        let config = AppDirs::new().ok().map(|dirs| {
+            let path = dirs.config_path();
+            (path.clone(), Config::load(&path))
+        });
+        Self { config }
+    }
+}
 
 impl Render for PillPane {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -39,7 +52,22 @@ impl Render for PillPane {
         let Ok(lyrics) = handle.read(cx).map(|pill| pill.media.show_lyrics()) else {
             return no_pill().into_any_element();
         };
+        let native = self.config.as_ref().map(|(_, cfg)| cfg.native_pill);
         card()
+            .when_some(native, |card, native| {
+                card.child(switch_row(
+                    "pill-native",
+                    "Usar esta pill en lugar de la de Atic",
+                    "Atic deja de mostrar su pill y de tomar los atajos: quedan para esta. Se aplica al reiniciar Atic.",
+                    native,
+                    cx.listener(move |pane, _: &ClickEvent, _, cx| {
+                        if let Some((path, cfg)) = pane.config.as_mut() {
+                            *cfg = save_config(path, |cfg| cfg.native_pill = !native);
+                        }
+                        cx.notify();
+                    }),
+                ))
+            })
             .child(row(
                 "Herramientas",
                 "Cuáles se ven, cuáles van detrás de «Más» y cuáles no. Se ordenan en la pill, acoplada a un borde.",

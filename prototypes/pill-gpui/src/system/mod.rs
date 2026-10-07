@@ -1091,8 +1091,11 @@ impl SystemPanel {
                     // Las acciones se funden con el cursor (o se quedan si
                     // «Forzar» está armado esperando el segundo clic).
                     let reveal = if armed { 1.0 } else { h.t };
+                    // Las acciones toman el lugar de CPU y RAM, ancladas a la
+                    // derecha: al lado no caben en un panel angosto.
                     let trailing = div()
                         .flex_1()
+                        .relative()
                         .flex()
                         .items_center()
                         .gap(px(6.))
@@ -1101,13 +1104,25 @@ impl SystemPanel {
                                 .w(px(44.))
                                 .text_size(px(11.))
                                 .text_color(if cpu >= 20.0 { amber } else { muted })
+                                .opacity(1.0 - reveal)
                                 .child(format!("{cpu:.0} %")),
                         )
-                        .child(div().w(px(56.)).text_size(px(11.)).text_color(muted).child(ram))
-                        .child(div().flex_1())
                         .child(
                             div()
+                                .w(px(56.))
+                                .text_size(px(11.))
+                                .text_color(muted)
+                                .opacity(1.0 - reveal)
+                                .child(ram),
+                        )
+                        .child(
+                            div()
+                                .absolute()
+                                .right(px(0.))
+                                .top_0()
+                                .bottom_0()
                                 .flex()
+                                .items_center()
                                 .gap(px(4.))
                                 .opacity(reveal)
                                 // Mientras no se ven, que no se puedan apretar.
