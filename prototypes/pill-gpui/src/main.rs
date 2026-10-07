@@ -2,6 +2,9 @@
 //! flotante, tira de herramientas al pasar el cursor, rueda con gotas
 //! líquidas y el panel del Clipboard.
 
+// En release, sin consola: el log va a archivo (`init_log`).
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 mod anim;
 mod appearance;
 mod atic_window;

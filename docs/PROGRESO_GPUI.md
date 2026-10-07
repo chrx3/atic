@@ -113,7 +113,7 @@ Hay cuatro caminos de permisos (mapa completo en la conversación del
    Codex por app-server, OpenCode/Cursor/Grok por ACP. La UI contesta con
    `agent_permission`. Es lo de la ventana de agentes de Tauri.
 2. **Consolas PTY de Atic** con hooks inyectados (`ping.rs`: los hooks anexan
-   JSON a `%TEMP%tic-*-ping.jsonl`; `watch_claude` los vacía y
+   JSON a `%TEMP%\atic-*-ping.jsonl`; `watch_claude` los vacía y
    `console_prompts` los cruza con la consola). Hoy solo se contestan desde
    el celular, escribiendo teclas en el PTY.
 3. **CLIs en una terminal externa**: solo presencia.
@@ -151,7 +151,7 @@ pill reescribe la entrada `Atic` de `Run` para que apunte a **su** exe; si
 pruebas con un exe de desarrollo, después vuelve a apuntarla al instalado.
 
 1. **Datos:** aparece donde estaba (`home.txt` migrado), con tus colores,
-   herramientas y apariencia. Existe `%APPDATA%\ciattic\data\pill\`.
+   herramientas y apariencia. Existe `%APPDATA%\ciat\atic\data\pill\`.
 2. **Log:** `data\logs\pill.<fecha>.log` con «log iniciado».
 3. **Instancia única:** abrir una segunda pill no crea otra.
 4. **Idioma:** `ui_language: en` → «yesterday» en el portapapeles, y el menú
@@ -177,10 +177,9 @@ pruebas con un exe de desarrollo, después vuelve a apuntarla al instalado.
   `History` compartido de `clipboard_owner`.
 - **«Mostrar / ocultar pill»** no está en el menú de la bandeja: ocultar el
   overlay con `ShowWindow` rompe `hide()`/`set_focus()` (ver memoria).
-- La pill vieja que sigue corriendo escribe en `%LOCALAPPDATA%tic-gpui`.
+- La pill vieja que sigue corriendo escribe en `%LOCALAPPDATA%\atic-gpui`.
   Lo que cambies ahí después de la primera vez que arranque la nueva no se
   copia (la migración corre una sola vez).
-- El exe de la pill todavía es de consola (sin `windows_subsystem`) y sin
-  ícono embebido; se resuelve con el instalador.
+- El exe de la pill no tiene ícono embebido (en release ya no abre consola).
 - `phone_sync` y el portapapeles: con la pill como dueña, lo copiado ya no
   viaja al celular hasta mover `phone_sync`.
