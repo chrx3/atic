@@ -4,7 +4,7 @@ pub mod agents;
 mod agents_window;
 mod annotate;
 mod beep;
-mod calc;
+use atic_calc::calc;
 mod capture;
 mod capture_session;
 mod capture_shelf;

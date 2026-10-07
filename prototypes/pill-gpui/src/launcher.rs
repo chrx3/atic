@@ -3,8 +3,8 @@
 //!
 //! Lo de Atic (`launcher.rs`, `LauncherFloat.svelte`): accesos del menú Inicio,
 //! apps de Store por AUMID, acciones, el mismo puntaje (prefijo, contiene, un
-//! error de tipeo, letras en orden) y la calculadora (`calc.rs` de Atic, el
-//! mismo archivo, con las tasas que Atic deja en `fx-rates.json`). Lo que
+//! error de tipeo, letras en orden) y la calculadora (`atic-calc`, con las
+//! tasas de `fx-rates.json`). Lo que
 //! cambia: Atic espera 120 ms por tecla y viaja por IPC; aquí se busca en el
 //! mismo cuadro. Además Ctrl+1–9 abre directo y Ctrl+M lo pasa al centro de la
 //! pantalla, tipo Spotlight.
@@ -374,68 +374,25 @@ fn item_score(query: &str, item: &Item) -> Option<u32> {
     title.max(subtitle)
 }
 
-// --- Divisas: las tasas que Atic ya bajó --------------------------------------
+// --- Divisas -------------------------------------------------------------------
 
-#[derive(Deserialize)]
-struct RateEntry {
-    clp_per_unit: f64,
-    date: String,
-    origin: String,
-}
-
-/// `fx-rates.json` de Atic (`fx.rs`), solo lectura: el prototipo no va a la red.
-#[derive(Deserialize)]
-pub struct Rates {
-    entries: HashMap<String, RateEntry>,
-    fetched_at: i64,
-    #[serde(default)]
-    last_error: bool,
-}
-
-impl crate::calc::RatesLookup for Rates {
-    fn clp_per_unit(&self, code: &str) -> Option<(f64, &str, &str)> {
-        self.entries
-            .get(code)
-            .map(|entry| (entry.clp_per_unit, entry.date.as_str(), entry.origin.as_str()))
+/// Las tasas de `atic_calc::fx` (`fx-rates.json`), solo con el conversor
+/// encendido en Ajustes (`launcher_currency`), como en Atic. Si la tabla quedó
+/// vieja se refresca en segundo plano; la búsqueda nunca espera a la red.
+fn load_rates() -> Option<Arc<atic_calc::fx::Rates>> {
+    let dirs = atic_core::AppDirs::new().ok()?;
+    if !atic_core::Config::load(&dirs.config_path()).launcher_currency {
+        return None;
     }
-
-    fn freshness(&self) -> crate::calc::Freshness {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or_default();
-        if self.last_error {
-            crate::calc::Freshness::Offline
-        } else if now - self.fetched_at > 24 * 3600 {
-            crate::calc::Freshness::Stale
-        } else {
-            crate::calc::Freshness::Fresh
-        }
+    let path = dirs.fx_rates_path();
+    if atic_calc::fx::snapshot().is_none() {
+        atic_calc::fx::init(&path, true);
+    } else {
+        atic_calc::fx::refresh_if_stale(path);
     }
+    atic_calc::fx::snapshot()
 }
 
-fn load_rates() -> Option<Rates> {
-    let base = std::env::var_os("APPDATA")?;
-    let path = PathBuf::from(base)
-        .join("ciat")
-        .join("atic")
-        .join("data")
-        .join("fx-rates.json");
-    let raw = match std::fs::read_to_string(&path) {
-        Ok(raw) => raw,
-        Err(error) => {
-            eprintln!("lanzador: sin tasas en {}: {error}", path.display());
-            return None;
-        }
-    };
-    match serde_json::from_str(&raw) {
-        Ok(rates) => Some(rates),
-        Err(error) => {
-            eprintln!("lanzador: {} ilegible: {error}", path.display());
-            None
-        }
-    }
-}
 
 // El modo emoji (catálogo, búsqueda, secciones y tonos) vive en `emoji.rs`.
 
@@ -570,7 +527,7 @@ pub struct LauncherPanel {
     pub max_height: Option<f32>,
     pub pinned: bool,
     running: Running,
-    rates: Option<Rates>,
+    rates: Option<Arc<atic_calc::fx::Rates>>,
     /// Apps a las que se pidió cerrar, hasta el próximo vistazo.
     closing: HashSet<SharedString>,
     mode: Mode,
@@ -729,7 +686,7 @@ impl LauncherPanel {
             // La calculadora va primero y se lleva el Enter.
             let rates = self
                 .rates
-                .as_ref()
+                .as_deref()
                 .map(|rates| rates as &dyn crate::calc::RatesLookup);
             if let Some(result) = crate::calc::evaluate_with(&query, rates, crate::calc::Locale::Es) {
                 let subtitle = match &result.source {

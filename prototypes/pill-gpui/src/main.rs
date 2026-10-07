@@ -7,10 +7,8 @@ mod appearance;
 mod settings;
 mod app_icon;
 mod board;
-/// La calculadora del lanzador de Atic, el mismo archivo: es Rust puro.
-#[path = "../../../apps/desktop/src-tauri/src/calc.rs"]
-#[allow(dead_code)]
-mod calc;
+/// La calculadora del lanzador de Atic.
+use atic_calc::calc;
 mod agents;
 mod color;
 mod capture;

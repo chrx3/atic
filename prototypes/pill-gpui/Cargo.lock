@@ -521,6 +521,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "atic-calc"
+version = "0.4.44"
+dependencies = [
+ "atic-core",
+ "chrono",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tracing",
+]
+
+[[package]]
 name = "atic-capture"
 version = "0.4.44"
 dependencies = [
@@ -4610,6 +4622,7 @@ dependencies = [
  "alacritty_terminal",
  "anyhow",
  "atic-audio",
+ "atic-calc",
  "atic-capture",
  "atic-clipboard",
  "atic-core",

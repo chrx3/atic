@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/core",
     "crates/audio",
+    "crates/calc",
     "crates/capture",
     "crates/clipboard",
     "crates/transcribe",
@@ -26,6 +27,7 @@ repository = "https://github.com/chrx3/atic"
 # Crates internos
 atic-core = { path = "crates/core" }
 atic-audio = { path = "crates/audio" }
+atic-calc = { path = "crates/calc" }
 atic-capture = { path = "crates/capture" }
 atic-clipboard = { path = "crates/clipboard" }
 atic-transcribe = { path = "crates/transcribe" }
