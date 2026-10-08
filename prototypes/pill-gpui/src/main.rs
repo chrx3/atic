@@ -14,6 +14,7 @@ mod board;
 use atic_calc::calc;
 mod agent_prompts;
 mod agents;
+mod agents_settings;
 mod color;
 mod capture;
 mod clip_image;
