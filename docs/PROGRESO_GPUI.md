@@ -173,13 +173,50 @@ no funciona sin Tauri.
 En Windows ya no queda Tauri: el instalador trae `atic-pill.exe`,
 `atic-mcp.exe` y `atic-unix.exe`. macOS sigue con Tauri.
 
+Pendiente: ver «Ajustes del 2026-10-08, tarde», más abajo.
+
+## Ajustes del 2026-10-08, tarde
+
+Para probar: `powershell -File scripts/pill-dev.ps1` compila la pill de
+desarrollo y la deja corriendo en lugar de la instalada (no toca el inicio con
+Windows).
+
+| Cambio | Commit |
+| --- | --- |
+| Arrastrar una captura del estante desde cualquier parte de la foto (los botones tapaban el centro) | `62ee701` |
+| Sondeo del cursor lento en calma (50 ms) y rápido cerca de la pill | `42396e7` |
+| Release con `lto = "fat"` y `codegen-units = 1`: 49,3 → 41,9 MB, 11 min de compilación | `2cf0124` |
+| La mira cubre pantallas de resolución muy distinta (se ignora el tamaño sugerido de `WM_DPICHANGED`) | `6e95676` |
+| Sin «respiración»: los ojos siguen al mouse y miran a un costado con el cursor quieto | `b063ff5` |
+| El atajo de captura la cancela; la ayuda va en la pantalla del cursor; P muestra la pill también desde en vivo | `49784a3` |
+| Favoritos del portapapeles al final (el filtro ☆ los muestra solos) | `4859684` |
+| Barras de Apariencia en escala 0–100 % | `50b7762` |
+| Agentes y sus permisos en el celular | `783ef16` |
+| Ajustes, Reuniones y el espacio se traen al frente | `7a37d32` |
+| Bandeja: clic izquierdo abre Ajustes; menú oscuro, con versión y atajo, sin «Traer pill» | `1f3ef28` |
+
+Medido: CPU en reposo con GPU 0,82 % → 0,4 % (de 16 núcleos). Por software
+(WARP, sin GPU) 5,6 %. El piso que queda es el hilo `VSyncProvider` de GPUI,
+que invalida todas las ventanas en cada refresco; bajarlo exige una copia
+propia de GPUI (decidido: después).
+
 Pendiente:
 
 1. **La música del celular en la pill** (llega por el canal; la pill no la
    muestra todavía).
 2. **Ajustes que la pill no usa todavía:** lado y tiempo del estante de
    capturas, puntero en la captura, temas, sonidos de la UI, alertas del
-   sistema. La pill no los lee; se agregan cuando los use.
+   sistema.
+3. **Atic Code** (el espacio de consolas): al usuario no le gusta cómo está;
+   ver con él qué cambiar.
+4. **Notificaciones de Android en el PC** con el celular vinculado. Idea del
+   usuario; necesita la app del celular (no está en este equipo): leerlas con
+   un `NotificationListenerService` y mandarlas por `atic-sync` como un evento
+   nuevo, y que la pill las muestre.
+5. Revisar el `RefCell already borrowed` que deja en el log cada arrastre
+   (GPUI reentra durante el loop modal de `DoDragDrop`).
+6. Sin probar en pantalla: la mira entre resoluciones distintas, los agentes
+   en el celular, una actualización completa con el actualizador propio.
 
 Decisiones tomadas sin el usuario:
 
