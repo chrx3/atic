@@ -103,8 +103,7 @@ src-tauri/tauri.pill.conf.json`). No se generó ninguno.
 - El actualizador relanza `atic-desktop.exe`: con `native_pill`, Tauri abre
   `atic-pill.exe` si está junto a su exe (la instancia única evita una
   segunda pill).
-- Falta el ícono embebido en `atic-pill.exe` (necesita un `build.rs` con un
-  crate de recursos: hay que aprobar la dependencia).
+- `atic-pill.exe` lleva el ícono de Atic (`build.rs`).
 
 ## Agentes (decidido el 2026-10-07: lo justo y necesario)
 
@@ -152,8 +151,10 @@ Queda:
 - **No verificado:** la build de macOS de Tauri. Se movió código con partes
   `cfg(target_os = "macos")` (contenido sensible del portapapeles, `fx`,
   `calc`) sin poder compilarlo aquí.
-- Pendiente de decisión: si Tauri se cierra al cerrar su ventana, y aprobar
-  la dependencia para el ícono del exe de la pill.
+- Decidido: con `native_pill`, cerrar la ventana de Tauri termina el proceso
+  salvo que queden consolas o sesiones de agentes (`cd8eaf8`). El exe de la
+  pill lleva el ícono de Atic con `tauri-winres`, el mismo crate que usa
+  Tauri (`24c9a81`).
 
 ## Para probar a mano
 
@@ -184,10 +185,8 @@ pruebas con un exe de desarrollo, después vuelve a apuntarla al instalado.
 
 ## Trabas y decisiones
 
-- **Cerrar la ventana de Tauri no termina el proceso** (sigue oculta, con
-  WebView2 en memoria). Hacer que salga al cerrar mataría las consolas de
-  agentes abiertas en Tauri. Decidir cuando las consolas y el hub vivan en la
-  pill.
+- **Cerrar la ventana de Tauri** termina el proceso con la pill nativa, salvo
+  que tenga consolas o sesiones de agentes vivas: entonces solo se oculta.
 - **Borrar y fijar en el portapapeles de la pill:** con `native_pill` van a
   `history.json` (`clipboard_owner`); sin ella, a su `local.json` como antes.
   Lo que ya estaba en `local.json` se sigue respetando.
@@ -196,6 +195,5 @@ pruebas con un exe de desarrollo, después vuelve a apuntarla al instalado.
 - La pill vieja que sigue corriendo escribe en `%LOCALAPPDATA%\atic-gpui`.
   Lo que cambies ahí después de la primera vez que arranque la nueva no se
   copia (la migración corre una sola vez).
-- El exe de la pill no tiene ícono embebido (en release ya no abre consola).
 - `phone_sync` y el portapapeles: con la pill como dueña, lo copiado ya no
   viaja al celular hasta mover `phone_sync`.
