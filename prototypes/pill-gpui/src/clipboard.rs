@@ -517,8 +517,10 @@ impl ClipboardPanel {
                 .filter(|&index| !self.entries[index].in_strip() && matches(&self.entries[index]))
                 .collect()
         };
-        // Favoritos arriba y fijos; el resto por día. Atic ya los guarda del
-        // más nuevo al más viejo.
+        // Lo reciente por día y los favoritos al final: arriba quedan los que
+        // se acaban de copiar (y Ctrl+1–9 los toma). Para ir directo a los
+        // favoritos está el filtro de la estrella. Atic ya los guarda del más
+        // nuevo al más viejo.
         let mut rows = Vec::new();
         let mut quick = 0;
         let mut push = |rows: &mut Vec<Row>, index: usize| {
@@ -530,12 +532,6 @@ impl ClipboardPanel {
             .copied()
             .filter(|&index| self.entries[index].pinned)
             .collect();
-        if !favorites.is_empty() && !self.favorites_only {
-            rows.push(Row::Header("Favoritos"));
-        }
-        for &index in &favorites {
-            push(&mut rows, index);
-        }
         let mut day = None;
         for &index in &texts {
             if self.entries[index].pinned {
@@ -546,6 +542,12 @@ impl ClipboardPanel {
                 rows.push(Row::Header(this_day.label()));
                 day = Some(this_day);
             }
+            push(&mut rows, index);
+        }
+        if !favorites.is_empty() && !self.favorites_only {
+            rows.push(Row::Header("Favoritos"));
+        }
+        for &index in &favorites {
             push(&mut rows, index);
         }
         self.rows = rows;
