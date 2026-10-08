@@ -154,10 +154,12 @@ impl AppearancePane {
         if width <= 0.0 {
             return;
         }
+        // La barra va de 0 a 100 %, como el número de al lado; cada tinte
+        // solo se queda dentro de su rango.
         let t = ((f32::from(x - bounds.origin.x) - SLIDER_H / 2.0) / width).clamp(0.0, 1.0);
         let (lo, hi) = knob.range();
         let mut look = current();
-        knob.set(&mut look, lo + (hi - lo) * t);
+        knob.set(&mut look, t.clamp(lo, hi));
         apply(look, false);
         cx.notify();
     }
@@ -265,8 +267,7 @@ impl AppearancePane {
     }
 
     fn slider(&self, knob: Knob, look: &Appearance, cx: &mut Context<Self>) -> impl IntoElement {
-        let (lo, hi) = knob.range();
-        let t = ((knob.get(look) - lo) / (hi - lo)).clamp(0.0, 1.0);
+        let t = knob.get(look).clamp(0.0, 1.0);
         let store = self.track(knob);
         let width = f32::from(store.get().size.width);
         let fill = if width > SLIDER_H {
