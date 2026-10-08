@@ -259,6 +259,12 @@ const GLASS_LAG: Duration = Duration::from_millis(34);
 /// Cada cuánto se mira si el monitor cambió de resolución, escala o barra de
 /// tareas (arrastrando, en cada cuadro).
 const SCREEN_POLL: Duration = Duration::from_millis(500);
+/// El sondeo del cursor: ~60/s con algo cerca o en marcha, ~20/s en calma.
+const TICK_ACTIVE: Duration = Duration::from_millis(16);
+const TICK_CALM: Duration = Duration::from_millis(50);
+/// A cuántos px de la pill el sondeo vuelve a ir rápido: a 50 ms por vuelta,
+/// un cursor rápido recorre menos que esto antes de llegar.
+const CALM_DISTANCE: f32 = 160.0;
 /// "Aplastón" al acoplarse: el grosor baja a 86 % al 38 % del tramo.
 const SEAT_MS: f32 = 125.0;
 const SEAT_DEPTH: f32 = 0.14;
@@ -519,6 +525,8 @@ struct Pill {
     born: Instant,
     last_frame: Instant,
     ticks: u64,
+    /// Nada cerca ni en marcha: el sondeo va lento (`tick_every`).
+    calm: bool,
     fps: (Instant, u32),
 
     monitor: Rect,
@@ -937,6 +945,7 @@ impl Pill {
             born: now,
             last_frame: now,
             ticks: 0,
+            calm: false,
             fps: (now, 0),
             monitor,
             work,
@@ -1124,15 +1133,17 @@ impl Pill {
 
         // Sondeo del cursor global: la ventana deja pasar los clics casi siempre,
         // así que no recibe eventos de mouse mientras el cursor está afuera.
-        cx.spawn_in(window, async move |this, cx| loop {
-            cx.background_executor()
-                .timer(Duration::from_millis(16))
-                .await;
-            if this
-                .update_in(cx, |pill, window, cx| pill.tick(window, cx))
-                .is_err()
-            {
-                break;
+        cx.spawn_in(window, async move |this, cx| {
+            let mut every = TICK_ACTIVE;
+            loop {
+                cx.background_executor().timer(every).await;
+                match this.update_in(cx, |pill, window, cx| {
+                    pill.tick(window, cx);
+                    pill.tick_every()
+                }) {
+                    Ok(next) => every = next,
+                    Err(_) => break,
+                }
             }
         })
         .detach();
@@ -2621,6 +2632,7 @@ impl Pill {
         // Con la mira, la pizarra o el flip abiertos la ventana recibe todo;
         // lo demás espera.
         if self.capture.is_some() || self.board.is_some() || self.flip.is_some() || self.color.is_some() {
+            self.calm = false;
             if let Some(overlay) = self.overlay.as_mut() {
                 overlay.set_passthrough(false);
             }
@@ -2862,8 +2874,37 @@ impl Pill {
 
         // Fuera de las animaciones basta con ~20 cuadros/s para la respiración;
         // con la onda, ~30.
-        if moved || self.ticks.is_multiple_of(3) || (live_on && self.ticks.is_multiple_of(2)) {
+        // En calma el sondeo ya va lento: un cuadro de cada dos (~10/s) basta
+        // para la respiración, que cambia menos de un tono por cuadro.
+        let breath_every = if self.calm { 2 } else { 3 };
+        if moved || self.ticks.is_multiple_of(breath_every) || (live_on && self.ticks.is_multiple_of(2)) {
             cx.notify();
+        }
+        self.calm = !live_on
+            && !dragging
+            && self.press.is_none()
+            && self.peek_press.is_none()
+            && self.tray.press.is_none()
+            && self.hold.is_none()
+            && self.flight.is_none()
+            && self.span.is_none()
+            && self.shelves.is_empty()
+            && !self.panel_visible()
+            && !self.wheel_target_open
+            && self.wheel_time == 0.0
+            && self.peek.target() == 0.0
+            && self.tool_peek_amount(now) == 0.0
+            && !cursor.is_some_and(|c| self.over_pill(c, now, CALM_DISTANCE));
+    }
+
+    /// Cada cuánto sondear: rápido con el cursor cerca o algo en marcha; si
+    /// no, lento, para no gastar CPU ni batería en reposo. Lento sigue
+    /// alcanzando a ver un atajo apretado (dura más de 50 ms).
+    fn tick_every(&self) -> Duration {
+        if self.calm {
+            TICK_CALM
+        } else {
+            TICK_ACTIVE
         }
     }
 
