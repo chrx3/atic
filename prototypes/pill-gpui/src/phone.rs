@@ -53,6 +53,8 @@ static THUMBS: Mutex<Option<HashMap<String, Option<(Vec<u8>, u32, u32)>>>> = Mut
 static RECORDING: Mutex<Option<i64>> = Mutex::new(None);
 static MEDIA: OnceLock<Media> = OnceLock::new();
 static COMMANDS: OnceLock<Sender<Command>> = OnceLock::new();
+/// El celular cuya música se muestra: a él van los controles.
+static PHONE_MEDIA_DEVICE: Mutex<Option<String>> = Mutex::new(None);
 /// Los agentes tal como los ve el notch de Agentes; se publican si cambian.
 static AGENTS: Mutex<Option<Vec<AgentCard>>> = Mutex::new(None);
 
@@ -286,6 +288,10 @@ async fn handle_events(mut events: tokio::sync::mpsc::UnboundedReceiver<DesktopE
                 if let Some(running) = RUNNING.lock_or_recover().as_mut() {
                     running.connected.remove(&device_id);
                 }
+                // Lo que sonaba en ese celular ya no se puede controlar.
+                if PHONE_MEDIA_DEVICE.lock_or_recover().as_deref() == Some(device_id.as_str()) {
+                    show_phone_media(device_id, None, None);
+                }
             }
             DesktopEvent::Clip { item, .. } if CLIPBOARD_ON.load(Ordering::Relaxed) => {
                 let text = item.text.trim().to_string();
@@ -353,10 +359,44 @@ async fn handle_events(mut events: tokio::sync::mpsc::UnboundedReceiver<DesktopE
                     tracing::warn!(%error, "celular: no se pudo contestar el permiso");
                 }
             }
-            // Las preguntas con opciones se contestan en la consola, y la
-            // música del celular la pill todavía no la muestra.
+            DesktopEvent::PhoneMedia { device_id, media, art } => show_phone_media(device_id, media, art),
+            // Las preguntas con opciones se contestan en la consola.
             _ => {}
         }
+    }
+}
+
+/// Lo que suena en el celular, como una fuente más de `media`.
+fn show_phone_media(device_id: String, media: Option<MediaState>, art: Option<Vec<u8>>) {
+    let Some(player) = MEDIA.get() else {
+        return;
+    };
+    let track = media.filter(|m| !m.title.trim().is_empty()).map(|m| crate::media::Track {
+        id: crate::media::PHONE_SOURCE.to_string(),
+        title: m.title,
+        artist: m.artist,
+        source: "Celular".to_string(),
+        playing: m.playing,
+        art: art.as_deref().and_then(crate::media::mini_art),
+        ..Default::default()
+    });
+    *PHONE_MEDIA_DEVICE.lock_or_recover() = track.as_ref().map(|_| device_id);
+    player.set_phone(track);
+}
+
+/// Pausa, siguiente o anterior en el celular que suena.
+pub fn media_control(control: Control) {
+    let command = match control {
+        Control::Toggle => PcCommand::MediaToggle,
+        Control::Next => PcCommand::MediaNext,
+        Control::Previous => PcCommand::MediaPrev,
+        _ => return,
+    };
+    let Some(device) = PHONE_MEDIA_DEVICE.lock_or_recover().clone() else {
+        return;
+    };
+    if let Some(running) = RUNNING.lock_or_recover().as_ref() {
+        running.desktop.phone_media_command(&device, command);
     }
 }
 
@@ -518,7 +558,7 @@ fn paste_image(data: &[u8]) -> Result<(), String> {
 
 /// Lo que suena en el PC y si la pill está grabando.
 fn pc_state() -> PcState {
-    let media = MEDIA.get().and_then(|media| media.track()).filter(|t| !t.title.trim().is_empty()).map(|t| MediaState {
+    let media = MEDIA.get().and_then(|media| media.pc_track()).filter(|t| !t.title.trim().is_empty()).map(|t| MediaState {
         title: t.title,
         artist: t.artist,
         app: crate::media::source_name(&t.source),

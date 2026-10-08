@@ -121,6 +121,17 @@ pub struct Media {
     /// se guarda en `<datos de Atic>\pill\media.txt`).
     show_lyrics: Arc<std::sync::atomic::AtomicBool>,
     tx: mpsc::Sender<(Option<String>, Control)>,
+    /// Lo que suena en el celular vinculado (`phone.rs`): una fuente más, y
+    /// la del tab si en el PC no suena nada.
+    phone: Arc<Mutex<Option<Track>>>,
+}
+
+/// El id de la fuente del celular.
+pub const PHONE_SOURCE: &str = "atic-phone";
+
+/// Una carátula chica para una fila de fuentes (la del celular).
+pub(crate) fn mini_art(bytes: &[u8]) -> Option<Arc<RenderImage>> {
+    imp::mini(bytes)
 }
 
 /// Carátula chica (para la pill), fondo difuminado y portada.
@@ -147,6 +158,7 @@ impl Media {
             hold: Default::default(),
             art: Default::default(),
             scale: Arc::new(AtomicU32::new(1f32.to_bits())),
+            phone: Default::default(),
             lyrics: Default::default(),
             lyrics_tx: None,
             asked: Default::default(),
@@ -216,7 +228,25 @@ impl Media {
         media
     }
 
+    /// La fuente principal: la del PC o, si no suena nada ahí, la del celular.
     pub fn track(&self) -> Option<Track> {
+        self.pc_track().or_else(|| self.phone_track())
+    }
+
+    fn phone_track(&self) -> Option<Track> {
+        self.phone.lock().ok()?.clone()
+    }
+
+    /// Lo que suena en el celular, o `None`. Lo fija `phone.rs`.
+    pub fn set_phone(&self, track: Option<Track>) {
+        if let Ok(mut slot) = self.phone.lock() {
+            *slot = track;
+        }
+        self.version.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Solo lo del PC (lo que se le cuenta al celular, que no debe volver).
+    pub fn pc_track(&self) -> Option<Track> {
         let mut track = self.track.lock().ok()?.clone()?;
         if let Ok(set) = self.art.lock() {
             track.art = set.art.clone();
@@ -250,12 +280,19 @@ impl Media {
         if let Some(p) = primary.filter(|p| !out.iter().any(|t| t.id == p.id)) {
             out.insert(0, p);
         }
+        if let Some(phone) = self.phone_track().filter(|t| !out.iter().any(|o| o.id == t.id)) {
+            out.push(phone);
+        }
         out
     }
 
     /// Mostrar esta fuente en la portada. Se ve al tiro: la pista pasa a ser
     /// la principal mientras Windows confirma.
     pub fn focus(&self, id: &str) {
+        // El celular ya es la principal cuando el PC calla; si no, no compite.
+        if id == PHONE_SOURCE {
+            return;
+        }
         if let Ok(mut pin) = self.pin.lock() {
             *pin = Some((id.to_string(), Instant::now()));
         }
@@ -326,6 +363,15 @@ impl Media {
 
     /// Un control para una fuente; `None` es la principal.
     pub fn control_on(&self, id: Option<&str>, control: Control) {
+        // El celular: la orden viaja por el canal, Windows no lo conoce.
+        let to_phone = match id {
+            Some(id) => id == PHONE_SOURCE,
+            None => self.pc_track().is_none() && self.phone_track().is_some(),
+        };
+        if to_phone {
+            crate::phone::media_control(control);
+            return;
+        }
         let primary = self.track.lock().ok().and_then(|t| t.as_ref().map(|t| t.id.clone()));
         if let Some(id) = id.filter(|id| primary.as_deref() != Some(*id)) {
             if let (Control::Toggle | Control::Stop, Ok(mut others)) = (&control, self.others.lock()) {
@@ -1337,7 +1383,7 @@ mod imp {
     }
 
     /// La carátula chica de una fila: cuadrada, 96 px, en BGRA.
-    fn mini(bytes: &[u8]) -> Option<Arc<RenderImage>> {
+    pub(super) fn mini(bytes: &[u8]) -> Option<Arc<RenderImage>> {
         let decoded = image::load_from_memory(bytes).ok()?;
         let side = decoded.width().min(decoded.height());
         let square = decoded.crop_imm((decoded.width() - side) / 2, (decoded.height() - side) / 2, side, side);
