@@ -165,6 +165,95 @@ impl History {
         Some(removed)
     }
 
+    /// Textos e imágenes, fijados primero y después del más nuevo al más
+    /// viejo (lo que se le muestra al celular).
+    pub fn recent(&self, limit: usize) -> Vec<ClipboardItem> {
+        let mut items: Vec<ClipboardItem> = self
+            .items
+            .iter()
+            .filter(|i| match i.kind {
+                crate::ClipboardKind::Text => i.text.is_some(),
+                crate::ClipboardKind::Image => i.image_path.is_some(),
+            })
+            .cloned()
+            .collect();
+        items.sort_by(|a, b| b.pinned.cmp(&a.pinned).then(b.created_at_ms.cmp(&a.created_at_ms)));
+        items.truncate(limit);
+        items
+    }
+
+    /// Un texto que trae el celular, con su id. `false` si ya estaba.
+    pub fn import_text(&mut self, dir: &Path, id: &str, text: &str, created_at_ms: u64, pinned: bool) -> bool {
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            return false;
+        }
+        self.insert_imported(
+            dir,
+            ClipboardItem {
+                id: id.to_string(),
+                kind: crate::ClipboardKind::Text,
+                preview: trimmed.chars().take(120).collect(),
+                text: Some(trimmed.to_string()),
+                image_path: None,
+                created_at_ms,
+                pinned,
+                fingerprint: crate::fingerprint_text(trimmed),
+                source: "phone".into(),
+                source_app: None,
+            },
+        )
+    }
+
+    /// Una imagen que trae el celular (PNG o JPEG), guardada como PNG en
+    /// `dir`. `Ok(false)` si ya estaba.
+    pub fn import_image(
+        &mut self,
+        dir: &Path,
+        id: &str,
+        data: &[u8],
+        created_at_ms: u64,
+        pinned: bool,
+        label: fn(usize, usize) -> String,
+    ) -> Result<bool, String> {
+        let rgba = image::load_from_memory(data).map_err(|e| e.to_string())?.to_rgba8();
+        let (w, h) = (rgba.width() as usize, rgba.height() as usize);
+        let fingerprint = crate::fingerprint_image(rgba.as_raw(), w, h);
+        if self.items.iter().any(|i| i.id == id || i.fingerprint == fingerprint) {
+            return Ok(false);
+        }
+        let png = crate::encode_png_rgba(rgba.as_raw(), w, h)?;
+        if png.len() > crate::MAX_IMAGE_BYTES {
+            return Err("PNG demasiado grande".into());
+        }
+        let path = dir.join(format!("img-{id}.png"));
+        std::fs::write(&path, &png).map_err(|e| e.to_string())?;
+        let added = self.insert_imported(
+            dir,
+            ClipboardItem {
+                id: id.to_string(),
+                kind: crate::ClipboardKind::Image,
+                preview: label(w, h),
+                text: None,
+                image_path: Some(path.to_string_lossy().into_owned()),
+                created_at_ms,
+                pinned,
+                fingerprint,
+                source: "phone".into(),
+                source_app: None,
+            },
+        );
+        if !added {
+            let _ = std::fs::remove_file(&path);
+        }
+        Ok(added)
+    }
+
+    /// Borra por id lo que se borró en el celular. Devuelve cuántos.
+    pub fn delete_ids(&mut self, dir: &Path, ids: &[String]) -> usize {
+        ids.iter().filter(|id| self.delete(dir, id).is_some()).count()
+    }
+
     /// Suma al historial un ítem que trae el celular (de otro PC o del propio
     /// celular) con su id, sin tocar el portapapeles del sistema. Va en su lugar
     /// por fecha, no arriba de todo. `false` si ya estaba (por id o por contenido).
@@ -337,6 +426,21 @@ mod tests {
         history.suppress_until = None;
         history.push_item(&dir, text("b", 3));
         assert_eq!(history.items.len(), 1);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn lo_del_celular_entra_por_id_y_se_borra_por_id() {
+        let dir = temp_dir("celular");
+        let mut history = History::default();
+        assert!(history.import_text(&dir, "c1", " hola ", 5, true));
+        assert!(!history.import_text(&dir, "c1", "hola", 5, true));
+        assert!(!history.import_text(&dir, "c2", "   ", 6, false));
+        history.push_item(&dir, text("pc", 10));
+        let recent = history.recent(10);
+        assert_eq!(recent[0].id, "c1", "lo fijado va primero");
+        assert_eq!(history.delete_ids(&dir, &["c1".into(), "no-existe".into()]), 1);
+        assert_eq!(History::load(&dir).items.len(), 1);
         let _ = std::fs::remove_dir_all(dir);
     }
 
