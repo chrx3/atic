@@ -17,6 +17,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use atic_capture::{monitors, Frame, Rect as PhysRect};
+use atic_core::{AppDirs, Config};
 use gpui::{
     actions, canvas, div, fill, img, outline, point, prelude::*, px, rgb, size, App, Bounds,
     BorderStyle, Context, CursorStyle, EventEmitter, FocusHandle, Focusable, Hsla, KeyBinding,
@@ -74,7 +75,7 @@ impl Frozen {
 pub fn freeze(scale: f32, area: PhysRect) -> Result<Frozen, String> {
     let started = Instant::now();
     let all = monitors::enumerate();
-    let frame = atic_capture::engine::capture_rect(area, false).map_err(|error| error.to_string())?;
+    let frame = atic_capture::engine::capture_rect(area, include_cursor()).map_err(|error| error.to_string())?;
     let origin = (area.x, area.y);
     let to_logical = |rect: &PhysRect| {
         Rect::new(
@@ -149,6 +150,11 @@ fn mode_file() -> Option<PathBuf> {
     crate::paths::file("capture-mode.txt")
 }
 
+/// `capture_include_cursor`: el puntero sale en la foto.
+fn include_cursor() -> bool {
+    AppDirs::new().is_ok_and(|dirs| Config::load(&dirs.config_path()).capture_include_cursor)
+}
+
 pub fn remembered_live() -> bool {
     mode_file()
         .and_then(|path| std::fs::read_to_string(path).ok())
@@ -214,7 +220,7 @@ impl Session {
     /// capturas, así que sale sin la pill ni la mira.
     fn refreeze(&mut self) -> Result<(), String> {
         let started = Instant::now();
-        let frame = atic_capture::engine::capture_rect(self.frozen.frame.bounds, false)
+        let frame = atic_capture::engine::capture_rect(self.frozen.frame.bounds, include_cursor())
             .map_err(|error| error.to_string())?;
         let image = image_of(&frame).ok_or("frame con tamaño inválido")?;
         self.frozen.image = image;
@@ -404,7 +410,7 @@ impl CaptureView {
         // En vivo la foto es de ahora: el overlay está excluido de las
         // capturas, así que no hace falta esconderlo antes.
         let frame = if self.session.live {
-            match atic_capture::engine::capture_rect(region, false) {
+            match atic_capture::engine::capture_rect(region, include_cursor()) {
                 Ok(frame) => frame,
                 Err(error) => {
                     eprintln!("captura en vivo: {error}");

@@ -57,6 +57,11 @@ pub struct Shelf {
     popped: Option<Instant>,
     /// Tiempo de vida que queda; solo corre sin el cursor encima.
     left: Duration,
+    /// Cuánto vive en total (`capture_shelf_timeout_seconds`); `None` = hasta
+    /// cerrarla.
+    lifetime: Option<Duration>,
+    /// A la izquierda de la pantalla (`capture_shelf_side`).
+    on_left: bool,
     last_tick: Instant,
     hovered: bool,
     press: Option<(f32, f32)>,
@@ -70,6 +75,13 @@ impl crate::Pill {
     pub(crate) fn show_shelf(&mut self, saved: Saved, from: Rect) {
         let now = Instant::now();
         crate::debug(|| format!("estante: {}×{} desde {from:?}", saved.width, saved.height));
+        let cfg = atic_core::AppDirs::new().ok().map(|dirs| atic_core::Config::load(&dirs.config_path()));
+        let lifetime = match cfg.as_ref().map(|cfg| cfg.capture_shelf_timeout_seconds) {
+            Some(0) => None,
+            Some(seconds) => Some(Duration::from_secs(u64::from(seconds))),
+            None => Some(LIFETIME),
+        };
+        let on_left = cfg.is_some_and(|cfg| cfg.capture_shelf_side == "left");
         self.shelf_seq += 1;
         self.shelves.insert(
             0,
@@ -83,7 +95,9 @@ impl crate::Pill {
                 slot: Tween::new(0.0, SLIDE, ease_island),
                 grow: Tween::new(0.0, Duration::from_millis(200), ease_smooth_out),
                 popped: None,
-                left: LIFETIME,
+                left: lifetime.unwrap_or(LIFETIME),
+                lifetime,
+                on_left,
                 last_tick: now,
                 hovered: false,
                 press: None,
@@ -162,9 +176,9 @@ impl crate::Pill {
     }
 
     /// La foto en el lugar `slot` de la pila (0 abajo; fraccionario al subir).
-    fn thumb_rect(&self, slot: f32) -> Rect {
+    fn thumb_rect(&self, slot: f32, on_left: bool) -> Rect {
         Rect::new(
-            self.work.right() - THUMB_W - MARGIN,
+            if on_left { self.work.x + MARGIN } else { self.work.right() - THUMB_W - MARGIN },
             self.work.bottom() - THUMB_H - MARGIN - slot * (THUMB_H + GAP),
             THUMB_W,
             THUMB_H,
@@ -174,7 +188,7 @@ impl crate::Pill {
     /// Cuánto mide ahora: se achica con el tiempo, vuelve con el cursor
     /// encima y al vencer crece un poco mientras se desvanece.
     fn photo_scale(shelf: &Shelf, now: Instant) -> f32 {
-        let life = shelf.left.as_secs_f32() / LIFETIME.as_secs_f32();
+        let life = shelf.lifetime.map_or(1.0, |total| shelf.left.as_secs_f32() / total.as_secs_f32());
         let aged = lerp(END_SCALE, 1.0, life);
         let scale = lerp(aged, 1.0, shelf.grow.value(now));
         match shelf.popped {
@@ -187,13 +201,14 @@ impl crate::Pill {
         (now.duration_since(at).as_secs_f32() / POP.as_secs_f32()).clamp(0.0, 1.0)
     }
 
-    /// La foto en su lugar, a su tamaño de ahora: pegada a la derecha y
-    /// centrada en el alto de su lugar.
+    /// La foto en su lugar, a su tamaño de ahora: pegada al borde de su lado
+    /// y centrada en el alto de su lugar.
     fn photo_rect(&self, shelf: &Shelf, now: Instant) -> Rect {
-        let slot = self.thumb_rect(shelf.slot.value(now));
+        let slot = self.thumb_rect(shelf.slot.value(now), shelf.on_left);
         let scale = Self::photo_scale(shelf, now);
         let (w, h) = (slot.w * scale, slot.h * scale);
-        Rect::new(slot.right() - w, slot.y + (slot.h - h) / 2.0, w, h)
+        let x = if shelf.on_left { slot.x } else { slot.right() - w };
+        Rect::new(x, slot.y + (slot.h - h) / 2.0, w, h)
     }
 
     /// Cada sondeo: cuenta regresiva, hover y arrastre. Devuelve si el cursor
@@ -220,7 +235,7 @@ impl crate::Pill {
             shelf.last_tick = now;
             shelf.hovered = over;
             shelf.grow.set(if over { 1.0 } else { 0.0 }, now);
-            if !over && shelf.press.is_none() && !shelf.busy {
+            if !over && shelf.press.is_none() && !shelf.busy && shelf.lifetime.is_some() {
                 shelf.left = shelf.left.saturating_sub(elapsed);
             }
             // Apretar en cualquier parte de la foto, también sobre Copiar,
@@ -546,15 +561,18 @@ impl crate::Pill {
                         .child(note.clone()),
                 )
             });
-        // La ayuda, a la izquierda de la foto: arriba la taparía la de encima.
+        // La ayuda, al lado de la foto que da a la pantalla: arriba la taparía
+        // la de encima.
+        let on_left = shelf.on_left;
         let tip = veil.then(|| {
             div()
                 .absolute()
-                .left(px(thumb.x - 178.0))
+                .left(px(if on_left { thumb.right() + 8.0 } else { thumb.x - 178.0 }))
                 .top(px(thumb.y + thumb.h / 2.0 - 10.0))
                 .w(px(170.))
                 .flex()
-                .justify_end()
+                .when(on_left, |el| el.justify_start())
+                .when(!on_left, |el| el.justify_end())
                 .child(
                     div()
                         .px(px(8.))

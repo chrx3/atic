@@ -56,6 +56,8 @@ pub fn general_pane(cx: &mut App) -> Option<Entity<GeneralPane>> {
 /// «siempre», que va traducido.
 const KEEP_DAYS: [(&str, &str); 4] = [("7 d", "7"), ("30 d", "30"), ("90 d", "90"), ("365 d", "365")];
 const KEEP_HOURS: [(&str, &str); 4] = [("24 h", "24"), ("3 d", "72"), ("7 d", "168"), ("30 d", "720")];
+/// Cuánto se queda la foto del estante; «siempre» = hasta cerrarla.
+const SHELF_SECONDS: [(&str, &str); 3] = [("10 s", "10"), ("20 s", "20"), ("60 s", "60")];
 
 fn with_forever(options: &[(&'static str, &'static str)]) -> Vec<(&'static str, &'static str)> {
     let mut all = options.to_vec();
@@ -202,7 +204,46 @@ impl Render for CapturesPane {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let hours = with_forever(&KEEP_HOURS);
         let current = self.shared.cfg.capture_retention_hours.to_string();
-        card()
+        let seconds = with_forever(&SHELF_SECONDS);
+        let shelf_seconds = self.shared.cfg.capture_shelf_timeout_seconds.to_string();
+        let sides = [(t("settings.captures.left"), "left"), (t("settings.captures.right"), "right")];
+        let side = self.shared.cfg.capture_shelf_side.clone();
+        let cursor = self.shared.cfg.capture_include_cursor;
+        let shelf = card()
+            .child(row(
+                t("settings.captures.side"),
+                t("settings.captures.shelfHint"),
+                segmented(
+                    "captures-side",
+                    &sides,
+                    &side,
+                    |cfg, v| cfg.capture_shelf_side = v.to_string(),
+                    cx,
+                ),
+            ))
+            .child(row(
+                t("settings.captures.timeout"),
+                t("settings.captures.timeoutHint"),
+                segmented(
+                    "captures-shelf-seconds",
+                    &seconds,
+                    &shelf_seconds,
+                    |cfg, v| cfg.capture_shelf_timeout_seconds = v.parse().unwrap_or(cfg.capture_shelf_timeout_seconds),
+                    cx,
+                ),
+            ));
+        let image = card()
+            .child(row(
+                t("settings.captures.cursor"),
+                "",
+                switch(
+                    "captures-cursor",
+                    cursor,
+                    cx.listener(move |pane, _: &ClickEvent, _, cx| {
+                        pane.edit_config(cx, |cfg| cfg.capture_include_cursor = !cursor)
+                    }),
+                ),
+            ))
             .child(row(
                 t("settings.captures.keep"),
                 t("settings.captures.keepHint"),
@@ -225,7 +266,14 @@ impl Render for CapturesPane {
                         cx.notify();
                     }),
                 ),
-            ))
+            ));
+        div()
+            .flex()
+            .flex_col()
+            .child(heading(t("settings.captures.shelf")))
+            .child(shelf)
+            .child(heading(t("settings.captures.image")))
+            .child(image)
     }
 }
 
