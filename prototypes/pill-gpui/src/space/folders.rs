@@ -56,12 +56,20 @@ impl Folders {
         }
     }
 
+    pub fn list(&self) -> &[PathBuf] {
+        &self.list
+    }
+
+    pub fn active_index(&self) -> usize {
+        self.active
+    }
+
     /// Donde se abren las consolas nuevas.
     pub fn active(&self) -> Option<&PathBuf> {
         self.list.get(self.active)
     }
 
-    fn add(&mut self, paths: Vec<PathBuf>) {
+    pub fn add(&mut self, paths: Vec<PathBuf>) {
         let mut last = None;
         for path in paths {
             match self.list.iter().position(|known| same(known, &path)) {
@@ -78,7 +86,7 @@ impl Folders {
         self.save();
     }
 
-    fn remove(&mut self, index: usize) {
+    pub fn remove(&mut self, index: usize) {
         if index >= self.list.len() {
             return;
         }
@@ -89,7 +97,7 @@ impl Folders {
         self.save();
     }
 
-    fn select(&mut self, index: usize) {
+    pub fn select(&mut self, index: usize) {
         if index < self.list.len() {
             self.active = index;
             self.save();
@@ -106,7 +114,7 @@ impl Folders {
     }
 }
 
-fn same(a: &Path, b: &Path) -> bool {
+pub fn same(a: &Path, b: &Path) -> bool {
     a.to_string_lossy().trim_end_matches(['\\', '/']).eq_ignore_ascii_case(b.to_string_lossy().trim_end_matches(['\\', '/']))
 }
 
@@ -123,7 +131,7 @@ pub fn with_add_dirs(agent: &str, line: &str, dirs: &[PathBuf]) -> String {
     out
 }
 
-fn name(path: &Path) -> String {
+pub fn name(path: &Path) -> String {
     let name = path
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
@@ -136,7 +144,7 @@ fn name(path: &Path) -> String {
 }
 
 impl SpaceView {
-    fn browse_folders(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn browse_folders(&mut self, cx: &mut Context<Self>) {
         let picked = cx.prompt_for_paths(PathPromptOptions {
             files: false,
             directories: true,

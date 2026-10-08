@@ -15,11 +15,14 @@
 //! `SPACE_DEMO=1` abre 6 consolas (4 escupiendo 30 líneas/s, como la prueba
 //! del diagnóstico) y `SPACE_BENCH=1` mueve la cámara sola y mide.
 
+mod changes;
 pub(crate) mod chrome;
 pub(crate) mod console;
 mod folders;
+mod identity;
 mod input;
 mod mando;
+mod panes;
 mod persist;
 
 /// Lo que el notch necesita del espacio: cuántos agentes hay vivos y escribirles.
@@ -60,6 +63,8 @@ const MIN_ZOOM: f32 = 0.12;
 const MAX_ZOOM: f32 = 2.0;
 /// Sin salida por este tiempo, la consola está «lista».
 const WORKING_FOR: Duration = Duration::from_millis(1500);
+/// Cada cuánto se miran los archivos modificados de los agentes.
+const CHANGES_EVERY: Duration = Duration::from_secs(3);
 /// Es también la barra de la ventana (la nativa se esconde): mide lo mismo que
 /// la del Mando.
 const TOOLBAR_H: f32 = 48.0;
@@ -133,9 +138,13 @@ pub struct Card {
     agent: Option<&'static str>,
     /// La carpeta donde trabaja: el Mando la dice bajo el nombre.
     cwd: Option<PathBuf>,
-    /// Sigue trabajando pero no se muestra en el Mando: se dejó «en segundo
-    /// plano» y vuelve desde la bandeja. La pizarra las muestra todas.
-    background: bool,
+    /// `cwd` y las otras carpetas del espacio que recibió al abrirse.
+    dirs: Vec<PathBuf>,
+    /// Su nombre y su color, para distinguirla de las otras (`identity`).
+    name: &'static str,
+    color: u32,
+    /// Los archivos que cambiaron en sus carpetas desde que se abrió.
+    changes: changes::Tracked,
     /// La marca de una consola de agente con los hooks de Atic
     /// (`agent_prompts`): sus permisos se contestan desde la bandeja.
     token: Option<String>,
@@ -329,6 +338,33 @@ impl SpaceView {
             }
         })
         .detach();
+        // Los archivos que tocó cada agente: `git status` en segundo plano.
+        cx.spawn(async move |this, cx| loop {
+            cx.background_executor().timer(CHANGES_EVERY).await;
+            let Ok(jobs) = this.update(cx, |view, _| {
+                view.cards.iter().filter(|c| !c.dirs.is_empty()).map(|c| (c.id, c.dirs.clone())).collect::<Vec<_>>()
+            }) else {
+                break;
+            };
+            let scans = cx
+                .background_spawn(async move {
+                    jobs.into_iter().map(|(id, dirs)| (id, changes::scan(&dirs))).collect::<Vec<_>>()
+                })
+                .await;
+            let updated = this.update(cx, |view, cx| {
+                for (id, scan) in scans {
+                    if let Some(card) = view.card_mut(id) {
+                        let cwd = card.cwd.clone().unwrap_or_default();
+                        card.changes.update(scan, &cwd);
+                    }
+                }
+                cx.notify();
+            });
+            if updated.is_err() {
+                break;
+            }
+        })
+        .detach();
         let focus = cx.focus_handle();
         window.focus(&focus);
         let mut view = Self {
@@ -481,11 +517,16 @@ impl SpaceView {
         // Un agente en una carpeta del espacio trabaja también en las otras.
         // Va después de los hooks: con comillas en la línea, `prepare` la
         // tomaría por sintaxis de shell y no los pondría.
-        if let (Some(agent), Some(dir), [flag, line]) = (open.agent, cwd.as_ref(), args.as_mut_slice()) {
+        let extras = cwd.as_deref().map(|dir| self.folders.extras(dir)).unwrap_or_default();
+        if let (Some(agent), [flag, line]) = (open.agent, args.as_mut_slice()) {
             if flag.eq_ignore_ascii_case("/K") {
-                *line = folders::with_add_dirs(agent, line, &self.folders.extras(dir));
+                *line = folders::with_add_dirs(agent, line, &extras);
             }
         }
+        let dirs: Vec<PathBuf> = cwd.iter().cloned().chain(extras).collect();
+        let names: Vec<&str> = self.cards.iter().map(|c| c.name).collect();
+        let colors: Vec<u32> = self.cards.iter().map(|c| c.color).collect();
+        let (name, color) = identity::pick(&names, &colors);
         let launch = Launch {
             program: open.program,
             args,
@@ -511,7 +552,10 @@ impl SpaceView {
                     label: open.label.into(),
                     agent: open.agent,
                     cwd,
-                    background: false,
+                    dirs,
+                    name,
+                    color,
+                    changes: changes::Tracked::default(),
                     token,
                 });
                 self.focused = Some(id);
@@ -997,7 +1041,7 @@ impl SpaceView {
                     bounds,
                     zoom: self.camera.zoom,
                     font_size,
-                    label: card.label.clone(),
+                    label: format!("{} · {}", card.name, card.label).into(),
                     title: title.into(),
                     agent: card.agent,
                     focused: self.focused == Some(card.id),
