@@ -4,7 +4,11 @@
 use gpui::Window;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use windows::core::BOOL;
-use windows::Win32::Foundation::{HWND, LPARAM, POINT, RECT};
+use std::sync::atomic::{AtomicIsize, Ordering};
+use std::sync::Mutex;
+
+use atic_core::MutexExt;
+use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Dwm::{
     DwmSetWindowAttribute, DWMNCRP_DISABLED, DWMWA_BORDER_COLOR, DWMWA_COLOR_NONE,
     DWMWA_NCRENDERING_POLICY, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND,
@@ -15,9 +19,9 @@ use windows::Win32::Graphics::Gdi::{
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON, VK_MENU};
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetClientRect, GetCursorPos, GetWindow, GetWindowLongPtrW, GetWindowRect, SetForegroundWindow,
+    CallWindowProcW, GetClientRect, GetCursorPos, GetWindow, GetWindowLongPtrW, GetWindowRect, SetForegroundWindow,
     SetWindowDisplayAffinity, SetWindowLongPtrW, SetWindowPos, WDA_EXCLUDEFROMCAPTURE, WDA_NONE, GWL_EXSTYLE,
-    GW_HWNDPREV, HWND_TOPMOST,
+    GWLP_WNDPROC, GW_HWNDPREV, HWND_TOPMOST, WM_DPICHANGED, WNDPROC,
     SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOPMOST,
     WS_EX_TRANSPARENT,
 };
@@ -113,6 +117,7 @@ impl Overlay {
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
             );
         }
+        keep_size_on_dpi_change(hwnd);
         let mut overlay = Self {
             hwnd,
             passthrough: false,
@@ -254,6 +259,7 @@ impl Overlay {
     /// Como `move_to`, pero a cualquier rectángulo de pantalla (físico): la
     /// mira lo usa para cubrir todos los monitores.
     pub fn cover(&self, target: RECT) {
+        *COVER_TARGET.lock_or_recover() = Some(target);
         let hwnd = self.hwnd.0 as isize;
         std::thread::spawn(move || {
             let hwnd = HWND(hwnd as *mut _);
@@ -312,6 +318,54 @@ fn client_rect(hwnd: HWND) -> Option<RECT> {
         top: origin.y,
         right: origin.x + size.right,
         bottom: origin.y + size.bottom,
+    })
+}
+
+/// El área cliente que la ventana tiene que ocupar (lo último de `cover`).
+static COVER_TARGET: Mutex<Option<RECT>> = Mutex::new(None);
+/// El procedimiento de ventana de GPUI, al que se le pasa todo lo demás.
+static GPUI_WNDPROC: AtomicIsize = AtomicIsize::new(0);
+
+/// Al estirarse sobre pantallas de otra escala, Windows manda
+/// `WM_DPICHANGED` con un tamaño sugerido (el actual multiplicado por el
+/// cambio de escala) y GPUI lo aplica. Con resoluciones muy distintas ese
+/// tamaño ya no cubre la pantalla grande y la mira queda corta. Aquí el
+/// sugerido se reemplaza por el destino de `cover`: GPUI igual toma la escala
+/// nueva, pero la ventana queda donde tiene que estar.
+fn keep_size_on_dpi_change(hwnd: HWND) {
+    unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+        if msg == WM_DPICHANGED && lparam.0 != 0 {
+            if let Some(target) = *COVER_TARGET.lock_or_recover() {
+                if let Some(outer) = outer_for_client(hwnd, &target) {
+                    // SAFETY: con WM_DPICHANGED, `lparam` apunta al RECT sugerido.
+                    unsafe { *(lparam.0 as *mut RECT) = outer };
+                }
+            }
+        }
+        let original = GPUI_WNDPROC.load(Ordering::Relaxed);
+        // SAFETY: `original` es el WNDPROC que tenía la ventana.
+        unsafe { CallWindowProcW(std::mem::transmute::<isize, WNDPROC>(original), hwnd, msg, wparam, lparam) }
+    }
+    if GPUI_WNDPROC.load(Ordering::Relaxed) != 0 {
+        return;
+    }
+    let ours: unsafe extern "system" fn(HWND, u32, WPARAM, LPARAM) -> LRESULT = proc;
+    // SAFETY: se guarda el original antes de que llegue el primer mensaje al
+    // nuestro (todo corre en el hilo de la ventana).
+    let original = unsafe { SetWindowLongPtrW(hwnd, GWLP_WNDPROC, ours as isize) };
+    GPUI_WNDPROC.store(original, Ordering::Relaxed);
+}
+
+/// El rectángulo de ventana cuya área cliente es `target`.
+fn outer_for_client(hwnd: HWND, target: &RECT) -> Option<RECT> {
+    let mut outer = RECT::default();
+    unsafe { GetWindowRect(hwnd, &mut outer) }.ok()?;
+    let client = client_rect(hwnd)?;
+    Some(RECT {
+        left: target.left - (client.left - outer.left),
+        top: target.top - (client.top - outer.top),
+        right: target.right + (outer.right - client.right),
+        bottom: target.bottom + (outer.bottom - client.bottom),
     })
 }
 
