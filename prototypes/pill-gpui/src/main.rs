@@ -26,6 +26,7 @@ mod flip;
 mod flip_board;
 mod flip_export;
 mod flip_pages;
+mod general_settings;
 mod geometry;
 mod dictation;
 mod dictation_settings;

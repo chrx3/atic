@@ -3,5 +3,13 @@
  "pill.clipboard.hiddenSecret": "Oculto en pantalla · se pega completo",
  "pill.clipboard.imageLabel": "Imagen {w}×{h}",
  "pill.clipboard.yesterdayAt": "ayer {time}",
+ "pill.settings.autoCleanupHint": "Al abrir la pill, borra las grabaciones más viejas que lo elegido.",
+ "pill.settings.autostartHint": "Abre la pill al iniciar sesión, lista para los atajos.",
+ "pill.settings.capturesHint": "Cuánto se guardan las capturas antes de borrarse solas.",
+ "pill.settings.detectMeetings": "Detectar reuniones",
+ "pill.settings.detectMeetingsHint": "Mira el título de las ventanas de Zoom, Teams, Meet y Webex. Todo local.",
+ "pill.settings.forever": "Siempre",
+ "pill.settings.generalHint": "Idioma, arranque y datos. Se comparten con Atic.",
+ "pill.settings.launcherHint": "El buscador de apps de la pill.",
  "pill.tray.settings": "Ajustes"
 }

@@ -16,6 +16,7 @@ use gpui::{
 };
 
 use crate::appearance::AppearancePane;
+use crate::general_settings::{CapturesPane, GeneralPane, LauncherPane};
 use crate::dictation_settings::{self, DictationPane};
 use crate::pill_settings::{self, ClipboardPane, PillPane};
 use crate::hover::HoverExt;
@@ -49,26 +50,35 @@ pub(crate) fn hsla(color: u32) -> Hsla {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Section {
+    General,
     Appearance,
     Pill,
     Clipboard,
     Dictation,
     Meetings,
+    Captures,
+    Launcher,
     About,
 }
 
 impl Section {
-    const ALL: [Section; 6] = [
+    const ALL: [Section; 9] = [
+        Section::General,
         Section::Appearance,
         Section::Pill,
         Section::Clipboard,
         Section::Dictation,
         Section::Meetings,
+        Section::Captures,
+        Section::Launcher,
         Section::About,
     ];
 
     fn label(self) -> &'static str {
         match self {
+            Section::General => crate::i18n::t("settings.nav.general"),
+            Section::Captures => crate::i18n::t("settings.nav.captures"),
+            Section::Launcher => crate::i18n::t("settings.nav.launcher"),
             Section::Appearance => "Apariencia",
             Section::Pill => "Pill",
             Section::Clipboard => "Portapapeles",
@@ -80,6 +90,9 @@ impl Section {
 
     fn hint(self) -> &'static str {
         match self {
+            Section::General => crate::i18n::t("pill.settings.generalHint"),
+            Section::Captures => crate::i18n::t("pill.settings.capturesHint"),
+            Section::Launcher => crate::i18n::t("pill.settings.launcherHint"),
             Section::Appearance => "Cuánto se ve el vidrio y cuánto se tapa para leer.",
             Section::Pill => "Qué herramientas muestra y qué cuelga del notch.",
             Section::Clipboard => "Lo que copias, para pegarlo después.",
@@ -91,6 +104,9 @@ impl Section {
 
     fn icon(self) -> &'static str {
         match self {
+            Section::General => "icons/settings-2.svg",
+            Section::Captures => "icons/crop.svg",
+            Section::Launcher => "icons/search.svg",
             Section::Appearance => "icons/sparkles.svg",
             Section::Pill => "icons/layers.svg",
             Section::Clipboard => "icons/clipboard.svg",
@@ -102,6 +118,9 @@ impl Section {
 
     fn id(self) -> &'static str {
         match self {
+            Section::General => "settings-general",
+            Section::Captures => "settings-captures",
+            Section::Launcher => "settings-launcher",
             Section::Appearance => "settings-appearance",
             Section::Pill => "settings-pill",
             Section::Clipboard => "settings-clipboard",
@@ -155,17 +174,23 @@ pub struct SettingsView {
     clipboard: Option<Entity<ClipboardPane>>,
     dictation: Option<Entity<DictationPane>>,
     meetings: Option<AnyView>,
+    general: Option<Entity<GeneralPane>>,
+    captures: Option<Entity<CapturesPane>>,
+    launcher: Option<Entity<LauncherPane>>,
 }
 
 impl SettingsView {
     fn new(cx: &mut Context<Self>) -> Self {
         Self {
-            section: Section::Appearance,
+            section: Section::General,
             appearance: cx.new(|_| AppearancePane::default()),
             pill: cx.new(|_| PillPane::new()),
             clipboard: None,
             dictation: None,
             meetings: None,
+            general: crate::general_settings::general_pane(cx),
+            captures: None,
+            launcher: None,
         }
     }
 
@@ -174,6 +199,9 @@ impl SettingsView {
             Section::Clipboard if self.clipboard.is_none() => self.clipboard = pill_settings::clipboard_pane(cx),
             Section::Dictation if self.dictation.is_none() => self.dictation = dictation_settings::pane(cx),
             Section::Meetings if self.meetings.is_none() => self.meetings = crate::meetings::settings_pane(cx),
+            Section::General if self.general.is_none() => self.general = crate::general_settings::general_pane(cx),
+            Section::Captures if self.captures.is_none() => self.captures = crate::general_settings::captures_pane(cx),
+            Section::Launcher if self.launcher.is_none() => self.launcher = crate::general_settings::launcher_pane(cx),
             _ => {}
         }
         self.section = section;
@@ -242,6 +270,9 @@ impl SettingsView {
                 Some(pane) => pane.clone().into_any_element(),
                 None => missing_data().into_any_element(),
             },
+            Section::General => pane_or_missing(&self.general),
+            Section::Captures => pane_or_missing(&self.captures),
+            Section::Launcher => pane_or_missing(&self.launcher),
             Section::About => about().into_any_element(),
         }
     }
@@ -429,6 +460,13 @@ pub(crate) fn text_button(
         .on_click(on_click)
         .child(label)
         .hover_bg(SharedString::from(format!("{id}-fx")), hsla(TEXT).opacity(0.08), hsla(TEXT).opacity(0.14))
+}
+
+fn pane_or_missing<V: Render>(pane: &Option<Entity<V>>) -> gpui::AnyElement {
+    match pane {
+        Some(pane) => pane.clone().into_any_element(),
+        None => missing_data().into_any_element(),
+    }
 }
 
 /// Sin la carpeta de Atic no hay `config.json` que editar.
