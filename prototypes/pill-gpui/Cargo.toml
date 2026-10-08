@@ -62,6 +62,10 @@ futures = "0.3"
 windows-numerics = "0.2"
 tiny-skia = "0.11"
 
+[build-dependencies]
+# El ícono del exe (`build.rs`); la misma versión que usa Tauri.
+tauri-winres = "0.3.6"
+
 [target.'cfg(windows)'.dependencies]
 # Mismas versiones que `apps/desktop/src-tauri`, de donde viene `drag.rs`.
 windows-core = "0.61"

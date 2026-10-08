@@ -4654,6 +4654,7 @@ dependencies = [
  "serde",
  "serde_json",
  "symphonia",
+ "tauri-winres",
  "tiny-skia",
  "tracing",
  "unicode-segmentation",
@@ -6579,6 +6580,17 @@ dependencies = [
  "core-foundation-sys",
  "libc",
  "objc",
+]
+
+[[package]]
+name = "tauri-winres"
+version = "0.3.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cc65d45c68858bfe420dd29e834b5d15dbecf8a07a8a16cf4d532c7b1f69d4b6"
+dependencies = [
+ "dunce",
+ "embed-resource",
+ "toml 1.1.6+spec-1.1.0",
 ]
 
 [[package]]
