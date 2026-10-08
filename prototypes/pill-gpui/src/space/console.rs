@@ -148,6 +148,11 @@ impl Console {
         let listener = Listener {
             shared: shared.clone(),
         };
+        // `cmd /K <línea>` lee la línea tal cual: escapada, las comillas de
+        // una ruta con espacios le llegarían como `\"` y la ruta no sirve.
+        #[cfg(windows)]
+        let escape_args = !(launch.program.to_ascii_lowercase().ends_with("cmd.exe")
+            && launch.args.first().is_some_and(|flag| flag.eq_ignore_ascii_case("/K")));
         let options = tty::Options {
             shell: Some(tty::Shell::new(launch.program, launch.args)),
             working_directory: launch.cwd,
@@ -157,7 +162,7 @@ impl Console {
                 .chain(launch.env)
                 .collect(),
             #[cfg(windows)]
-            escape_args: true,
+            escape_args,
         };
         let window = window_size(size, cell);
         let pty = tty::new(&options, window, 0)?;

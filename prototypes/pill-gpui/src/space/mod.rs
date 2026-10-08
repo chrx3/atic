@@ -467,12 +467,6 @@ impl SpaceView {
             .or_else(|| std::env::current_dir().ok());
         let mut args = open.args;
         let mut env = Vec::new();
-        // Un agente en una carpeta del espacio trabaja también en las otras.
-        if let (Some(agent), Some(dir), [flag, line]) = (open.agent, cwd.as_ref(), args.as_mut_slice()) {
-            if flag.eq_ignore_ascii_case("/K") {
-                *line = folders::with_add_dirs(agent, line, &self.folders.extras(dir));
-            }
-        }
         // Agentes con hooks: la línea los lleva y el entorno, la marca.
         let token = match (open.agent, args.as_slice()) {
             (Some(agent), [flag, line]) if flag.eq_ignore_ascii_case("/K") => {
@@ -484,6 +478,14 @@ impl SpaceView {
             }
             _ => None,
         };
+        // Un agente en una carpeta del espacio trabaja también en las otras.
+        // Va después de los hooks: con comillas en la línea, `prepare` la
+        // tomaría por sintaxis de shell y no los pondría.
+        if let (Some(agent), Some(dir), [flag, line]) = (open.agent, cwd.as_ref(), args.as_mut_slice()) {
+            if flag.eq_ignore_ascii_case("/K") {
+                *line = folders::with_add_dirs(agent, line, &self.folders.extras(dir));
+            }
+        }
         let launch = Launch {
             program: open.program,
             args,
