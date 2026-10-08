@@ -43,21 +43,23 @@ $tag = "v$ver"
 $env:TAURI_SIGNING_PRIVATE_KEY = Get-Content -Raw $keyPath
 $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = (Get-Content -Raw $passPath).Trim()
 
+# En Windows la app es la pill GPUI: instalador NSIS propio, sin Tauri
+# (scripts/build-installer.ps1). La firma minisign es la misma de siempre; se
+# hace con el firmador del CLI de Tauri, que solo se usa como herramienta.
+& (Join-Path $PSScriptRoot "build-installer.ps1")
+if ($LASTEXITCODE -ne 0) { throw "build-installer falló ($LASTEXITCODE)" }
+
+$nsis = Join-Path $repo "target\installer"
+$exe = Get-ChildItem -Path $nsis -Filter "Atic_${ver}_x64-setup.exe" | Select-Object -First 1
+if (-not $exe) { throw "No encontré Atic_${ver}_x64-setup.exe en $nsis" }
 Push-Location (Join-Path $repo "apps\desktop")
 try {
-    # El sidecar MCP lo exige tauri-build al compilar (además va en beforeBuildCommand).
-    pnpm mcp:build
-    if ($LASTEXITCODE -ne 0) { throw "pnpm mcp:build falló ($LASTEXITCODE)" }
-    pnpm tauri build --bundles nsis
-    if ($LASTEXITCODE -ne 0) { throw "pnpm tauri build falló ($LASTEXITCODE)" }
+    pnpm tauri signer sign $exe.FullName
+    if ($LASTEXITCODE -ne 0) { throw "la firma falló ($LASTEXITCODE)" }
 }
 finally {
     Pop-Location
 }
-
-$nsis = Join-Path $repo "target\release\bundle\nsis"
-$exe = Get-ChildItem -Path $nsis -Filter "Atic_${ver}_x64-setup.exe" | Select-Object -First 1
-if (-not $exe) { throw "No encontré Atic_${ver}_x64-setup.exe en $nsis" }
 $sigPath = "$($exe.FullName).sig"
 if (-not (Test-Path $sigPath)) {
     throw "No se generó $($exe.Name).sig. Revisa la clave y la contraseña."
