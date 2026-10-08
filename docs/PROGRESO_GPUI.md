@@ -139,6 +139,47 @@ Queda:
 - Hub MCP, consolas de Tauri, `phone_sync` y si Tauri se cierra al cerrar su
   ventana: para el final.
 
+## Sin WebView2 (2026-10-08)
+
+Objetivo del usuario: que WebView2 no aparezca nunca. Hecho en el día:
+
+| Paso | Commit |
+| --- | --- |
+| La bandeja abre Reuniones y Ajustes de la pill, nunca Tauri | `1722b68` |
+| Ajustes: General (idioma, arranque, detectar reuniones, datos), Capturas, Lanzador | `72b86e6` |
+| Ajustes: Atajos con editor que graba la combinación (pausa atajos, dictado y rueda) | `cfd2ef3` |
+| Ajustes: Agentes, conexión MCP por CLI (`exe` y `mcp_install` a `atic-agents`) | `b17116b`, `f9b7c36` |
+| Abrir `atic-desktop.exe` con la pill nativa abre la pill y sale (sin ventana ni WebView2); `--open` la muestra | `d05141b` |
+| Tauri no crea la ventana de captura con la pill nativa (fallaba en WebView2) | `e32afdd` |
+| Actualizador propio: mismo `latest.json`, instalador y firma minisign; verificado contra el release 0.4.44 publicado | `4599997` |
+| Captura en pantallas con distinta escala (125 % + 100 %) | `8d38458` |
+| Bienvenida la primera vez (Ajustes → General) | `545aa2b` |
+
+Con esto, en el uso diario no corre WebView2: nada de la pill abre la ventana
+de Tauri. `atic-desktop.exe` sigue en el instalador solo como puente (abre la
+pill y sale).
+
+Falta para quitar Tauri del todo:
+
+1. **Instalador propio (NSIS)** sin `atic-desktop.exe`, compatible con las
+   instalaciones existentes (misma carpeta y misma entrada de desinstalación) y
+   con el actualizador de Tauri de las versiones viejas.
+2. **Hub MCP en la pill** para delegar entre agentes (~15 mil líneas de
+   `bridge` y adaptadores; los adaptadores no dependen de Tauri).
+3. **Celular** (`phone_sync`).
+4. **Ajustes que la pill no usa todavía:** lado y tiempo del estante de
+   capturas, puntero en la captura, temas, sonidos de la UI, alertas del
+   sistema. La pill no los lee; se agregan cuando los use.
+
+Decisiones tomadas sin el usuario:
+
+- Retención en Ajustes con opciones fijas (7/30/90/365 días, 24 h/3/7/30 días
+  para capturas, o «Siempre») en vez de un campo numérico.
+- La versión de la pill sale de `tauri.conf.json` (`build.rs`): una sola
+  fuente, el script de release no cambia.
+- Instalar una actualización corre el instalador con `/P` y cierra la pill; el
+  hook del instalador la vuelve a abrir.
+
 ## Estado (2026-10-07, tarde)
 
 - Tests: pill 327 ok; `atic-core` 56, `atic-clipboard` 8, `atic-calc` 23 y
