@@ -1,14 +1,13 @@
-//! Watcher de Cursor TUI (`cursor-agent`).
+//! Watcher de Cursor TUI (`cursor-agent`). Las reglas viven en
+//! `atic_agents::cursor` (las comparte la pill GPUI).
 //!
 //! `~/.cursor/chats` es el IDE: no se mira. `acp-sessions` es un store de
 //! blobs (a veces cifrado) sin marcador de fin de turno, así que el estado
 //! honesto es «proceso vivo». Un `cursor-agent` hijo de `Cursor.exe` se ignora.
 
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use serde_json::Value;
 use tauri::AppHandle;
 
 use super::presence::{self, AgentPresence, PresenceSource, PresenceStatus};
@@ -24,48 +23,7 @@ fn now_secs() -> i64 {
         .unwrap_or(0)
 }
 
-pub fn acp_root() -> Option<PathBuf> {
-    std::env::var_os("USERPROFILE")
-        .or_else(|| std::env::var_os("HOME"))
-        .map(|h| PathBuf::from(h).join(".cursor").join("acp-sessions"))
-}
-
-pub fn cwd_from_meta(v: &Value) -> Option<String> {
-    v.get("cwd")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-}
-
-/// Sesiones ACP con `store.db` (las carpetas vacías son inicios fallidos).
-pub fn recent_cwd(root: &Path) -> Option<String> {
-    let Ok(entries) = std::fs::read_dir(root) else {
-        return None;
-    };
-    let mut best: Option<(u64, String)> = None;
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if !path.is_dir() {
-            continue;
-        }
-        let store = path.join("store.db");
-        if !store.exists() {
-            continue;
-        }
-        let mtime = super::claude_sessions::mtime_secs(&store);
-        let meta_path = path.join("meta.json");
-        let cwd = std::fs::read_to_string(&meta_path)
-            .ok()
-            .and_then(|s| serde_json::from_str::<Value>(&s).ok())
-            .and_then(|v| cwd_from_meta(&v))
-            .unwrap_or_default();
-        if best.as_ref().is_none_or(|(t, _)| mtime >= *t) {
-            best = Some((mtime, cwd));
-        }
-    }
-    best.map(|(_, cwd)| cwd).filter(|s| !s.is_empty())
-}
+pub use atic_agents::cursor::{acp_root, recent_cwd};
 
 pub fn tick(pids: &[u32], cwd: Option<&str>, now: i64) -> Vec<AgentPresence> {
     pids.iter()
@@ -121,12 +79,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn meta_saca_cwd() {
-        let v = serde_json::json!({ "schemaVersion": 1, "cwd": "C:\\\\repo" });
-        assert_eq!(cwd_from_meta(&v).as_deref(), Some("C:\\\\repo"));
-    }
-
-    #[test]
     fn sin_proceso_no_hay_presencia() {
         assert!(tick(&[], Some("/x"), 10).is_empty());
     }
@@ -139,23 +91,5 @@ mod tests {
         assert_eq!(list[0].status, PresenceStatus::Working);
         assert_eq!(list[0].source, PresenceSource::Process);
         assert_eq!(list[0].cwd, "/repo");
-    }
-
-    #[test]
-    fn recent_cwd_ignora_sin_store() {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!("atic-watch-cursor-{nonce}"));
-        let empty = root.join("empty-uuid");
-        std::fs::create_dir_all(&empty).unwrap();
-        std::fs::write(empty.join("meta.json"), r#"{"cwd":"/skip"}"#).unwrap();
-        let live = root.join("live-uuid");
-        std::fs::create_dir_all(&live).unwrap();
-        std::fs::write(live.join("meta.json"), r#"{"cwd":"/tui"}"#).unwrap();
-        std::fs::write(live.join("store.db"), b"x").unwrap();
-        assert_eq!(recent_cwd(&root).as_deref(), Some("/tui"));
-        let _ = std::fs::remove_dir_all(&root);
     }
 }

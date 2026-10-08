@@ -391,31 +391,7 @@ pub fn exclude_ide_children(
     processes: &[(u32, u32, String)],
     skip_exe: &[&str],
 ) -> Vec<u32> {
-    let tree: std::collections::HashMap<u32, (u32, String)> = processes
-        .iter()
-        .map(|(pid, ppid, name)| (*pid, (*ppid, name.clone())))
-        .collect();
-    agent_pids
-        .iter()
-        .copied()
-        .filter(|pid| {
-            let mut current = *pid;
-            let mut seen = std::collections::HashSet::new();
-            while seen.insert(current) {
-                let Some((ppid, name)) = tree.get(&current) else {
-                    break;
-                };
-                if current != *pid && skip_exe.contains(&name.as_str()) {
-                    return false;
-                }
-                if *ppid == 0 || *ppid == current {
-                    break;
-                }
-                current = *ppid;
-            }
-            true
-        })
-        .collect()
+    atic_agents::cursor::exclude_ide_children(agent_pids, processes, skip_exe)
 }
 
 /// Padre de cada proceso vivo (pid → ppid). Para subir por el árbol.
