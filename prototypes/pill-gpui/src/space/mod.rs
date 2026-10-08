@@ -16,7 +16,7 @@
 //! del diagnóstico) y `SPACE_BENCH=1` mueve la cámara sola y mide.
 
 pub(crate) mod chrome;
-mod console;
+pub(crate) mod console;
 mod input;
 mod mando;
 mod persist;
@@ -135,6 +135,9 @@ pub struct Card {
     /// Sigue trabajando pero no se muestra en el Mando: se dejó «en segundo
     /// plano» y vuelve desde la bandeja. La pizarra las muestra todas.
     background: bool,
+    /// La marca de una consola de agente con los hooks de Atic
+    /// (`agent_prompts`): sus permisos se contestan desde la bandeja.
+    token: Option<String>,
 }
 
 /// Qué se está arrastrando.
@@ -455,10 +458,24 @@ impl SpaceView {
             .cwd
             .or_else(|| self.default_cwd.clone())
             .or_else(|| std::env::current_dir().ok());
+        let mut args = open.args;
+        let mut env = Vec::new();
+        // Agentes con hooks: la línea los lleva y el entorno, la marca.
+        let token = match (open.agent, args.as_slice()) {
+            (Some(agent), [flag, line]) if flag.eq_ignore_ascii_case("/K") => {
+                crate::agent_prompts::prepare(agent, line).map(|(hooked, token)| {
+                    args[1] = hooked;
+                    env.push((crate::agent_prompts::token_var().to_string(), token.clone()));
+                    token
+                })
+            }
+            _ => None,
+        };
         let launch = Launch {
             program: open.program,
-            args: open.args,
+            args,
             cwd: cwd.clone(),
+            env,
         };
         match Console::spawn(
             launch,
@@ -467,6 +484,9 @@ impl SpaceView {
             self.wake.clone(),
         ) {
             Ok(console) => {
+                if let (Some(token), Some(agent)) = (&token, open.agent) {
+                    crate::agent_prompts::register(token, agent, console.writer());
+                }
                 let id = self.next_id;
                 self.next_id += 1;
                 self.cards.push(Card {
@@ -477,6 +497,7 @@ impl SpaceView {
                     agent: open.agent,
                     cwd,
                     background: false,
+                    token,
                 });
                 self.focused = Some(id);
                 // Que se vea entera si quedó fuera.
@@ -575,6 +596,9 @@ impl SpaceView {
     }
 
     fn close(&mut self, id: u64, cx: &mut Context<Self>) {
+        if let Some(token) = self.card(id).and_then(|c| c.token.clone()) {
+            crate::agent_prompts::unregister(&token);
+        }
         self.cards.retain(|c| c.id != id);
         if self.focused == Some(id) {
             self.focused = self.cards.last().map(|c| c.id);

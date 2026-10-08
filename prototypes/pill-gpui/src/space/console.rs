@@ -111,6 +111,21 @@ pub struct Launch {
     pub program: String,
     pub args: Vec<String>,
     pub cwd: Option<PathBuf>,
+    /// Variables de entorno extra (la marca de las consolas de agentes).
+    pub env: Vec<(String, String)>,
+}
+
+/// Escribe en la consola desde otro lado (contestar un permiso desde la
+/// bandeja). Sigue sirviendo mientras la consola viva.
+#[derive(Clone)]
+pub struct Writer(EventLoopSender);
+
+impl Writer {
+    pub fn write(&self, text: &str) -> Result<(), String> {
+        self.0
+            .send(Msg::Input(Cow::Owned(text.as_bytes().to_vec())))
+            .map_err(|error| format!("la consola ya no recibe: {error:?}"))
+    }
 }
 
 impl Console {
@@ -139,6 +154,7 @@ impl Console {
             drain_on_exit: true,
             env: [("TERM".to_string(), "xterm-256color".to_string()), ("COLORTERM".to_string(), "truecolor".to_string())]
                 .into_iter()
+                .chain(launch.env)
                 .collect(),
             #[cfg(windows)]
             escape_args: true,
@@ -161,6 +177,10 @@ impl Console {
             shared,
             size,
         })
+    }
+
+    pub fn writer(&self) -> Writer {
+        Writer(self.sender.clone())
     }
 
     pub fn write(&self, bytes: impl Into<Cow<'static, [u8]>>) {

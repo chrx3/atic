@@ -17,8 +17,8 @@
 //!   decisión se queda más. También sale al pasar el cursor por Agentes en la
 //!   tira.
 //!
-//! Los permisos necesitan los hooks de Atic, que este prototipo no tiene: sus
-//! filas existen pero hoy solo las alimenta `PILL_TRAY_DEMO=1`.
+//! Los permisos salen de los hooks de Atic en las consolas de la pill
+//! (`agent_prompts.rs`); `PILL_TRAY_DEMO=1` agrega filas inventadas.
 //!
 //! El vistazo no toma el foco (el notch aparece solo, mientras escribes en otra
 //! app), así que sus clics se resuelven a mano, como los del vistazo de
@@ -63,6 +63,8 @@ pub enum Kind {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Origin {
     Session(String),
+    /// Un permiso de una consola de la pill (`agent_prompts`).
+    Prompt { session: String, id: String },
     Demo,
 }
 
@@ -220,6 +222,35 @@ impl Inbox {
         self.primed = true;
         self.items
             .retain(|item| item.kind == Kind::Decision || now - item.at < EXPIRE_SECS);
+    }
+
+    /// Una fila de decisión por cada permiso que espera en una consola de la
+    /// pill; las de los que ya se contestaron (aquí o en la consola) se van.
+    pub fn sync_prompts(&mut self, waiting: &[crate::agent_prompts::Waiting], now: i64) {
+        self.items.retain(|item| match &item.origin {
+            Origin::Prompt { session, id } => waiting.iter().any(|w| &w.session == session && &w.id == id),
+            _ => true,
+        });
+        for w in waiting {
+            let origin = Origin::Prompt { session: w.session.clone(), id: w.id.clone() };
+            if self.items.iter().any(|item| item.origin == origin) {
+                continue;
+            }
+            let agent = AGENTS.iter().position(|a| a.cli == w.agent).unwrap_or(0);
+            self.push(Item {
+                id: 0,
+                kind: Kind::Decision,
+                agent,
+                title: crate::i18n::tf(
+                    "pill.agents.wantsTool",
+                    &[("agent", &AGENTS[agent].name), ("tool", &w.tool)],
+                ),
+                detail: w.detail.clone(),
+                mono: true,
+                at: now,
+                origin,
+            });
+        }
     }
 
     /// Con `PILL_TRAY_DEMO=1` el mensaje rápido se ve aunque el espacio esté
@@ -1216,6 +1247,30 @@ mod tests {
 
     fn decision(id: u64) -> Item {
         Item { kind: Kind::Decision, ..review(id) }
+    }
+
+    #[test]
+    fn los_permisos_de_las_consolas_son_decisiones_mientras_esperan() {
+        let waiting = |id: &str| crate::agent_prompts::Waiting {
+            session: "s1".into(),
+            id: id.into(),
+            agent: "codex",
+            tool: "Bash".into(),
+            detail: "cargo test".into(),
+        };
+        let mut inbox = Inbox::default();
+        inbox.sync_prompts(&[waiting("p-1")], 100);
+        inbox.sync_prompts(&[waiting("p-1")], 101);
+        let items = inbox.ordered();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].kind, Kind::Decision);
+        assert_eq!(items[0].agent, AGENTS.iter().position(|a| a.cli == "codex").unwrap());
+        assert!(items[0].title.contains("Bash"));
+        // Otro permiso de la misma sesión reemplaza al contestado.
+        inbox.sync_prompts(&[waiting("p-2")], 102);
+        assert_eq!(inbox.ordered().len(), 1);
+        inbox.sync_prompts(&[], 103);
+        assert!(inbox.is_empty());
     }
 
     fn quiet<'a>(items: &'a [Item]) -> Inputs<'a> {

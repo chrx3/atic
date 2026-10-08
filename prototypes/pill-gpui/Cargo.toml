@@ -27,6 +27,8 @@ atic-capture = { path = "../../crates/capture" }
 atic-clipboard = { path = "../../crates/clipboard" }
 # La calculadora del lanzador y las tasas de cambio.
 atic-calc = { path = "../../crates/calc" }
+# Hooks de las consolas de agentes y cómo contestar sus permisos.
+atic-agents = { path = "../../crates/agents" }
 # El dictado de Atic sin Tauri: configuración y llavero, micrófono (con
 # RNNoise) y transcripción por Groq. Sin el Whisper local (feature `local`).
 atic-core = { path = "../../crates/core", features = ["diagnostics"] }

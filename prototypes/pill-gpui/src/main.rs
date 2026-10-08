@@ -13,6 +13,7 @@ mod app_icon;
 mod board;
 /// La calculadora del lanzador de Atic.
 use atic_calc::calc;
+mod agent_prompts;
 mod agents;
 mod color;
 mod capture;

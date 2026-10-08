@@ -501,6 +501,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "atic-agents"
+version = "0.4.44"
+dependencies = [
+ "serde_json",
+ "tracing",
+]
+
+[[package]]
 name = "atic-audio"
 version = "0.4.44"
 dependencies = [
@@ -4621,6 +4629,7 @@ version = "0.1.0"
 dependencies = [
  "alacritty_terminal",
  "anyhow",
+ "atic-agents",
  "atic-audio",
  "atic-calc",
  "atic-capture",

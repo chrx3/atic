@@ -1053,6 +1053,7 @@ impl AgentsPanel {
             if this
                 .update(cx, |panel, cx| {
                     panel.inbox.observe(&sessions, now_secs(), &agent_in_front);
+                    panel.inbox.sync_prompts(&crate::agent_prompts::waiting(), now_secs());
                     panel.sessions = sessions;
                     panel.consoles = crate::space::agent_consoles(cx).max(panel.inbox.demo_consoles());
                     cx.notify();
@@ -1391,11 +1392,13 @@ impl AgentsPanel {
         cx.notify();
     }
 
-    /// «Permitir» o «Negar». Los permisos necesitan los hooks de Atic, que este
-    /// prototipo no tiene: por ahora solo existen en `PILL_TRAY_DEMO=1`.
+    /// «Permitir» o «Negar»: se teclea en la consola del agente
+    /// (`agent_prompts`). Si ya no se puede, el motivo queda en el pie.
     pub fn tray_decide(&mut self, id: u64, allow: bool, cx: &mut Context<Self>) {
-        if let Some(item) = self.inbox.get(id) {
-            println!("bandeja → {}: {}", if allow { "permitir" } else { "negar" }, item.title);
+        if let Some(tray::Origin::Prompt { session, id: prompt }) = self.inbox.get(id).map(|item| item.origin.clone()) {
+            if let Err(error) = crate::agent_prompts::decide(&session, &prompt, allow) {
+                self.notice = Some(error.into());
+            }
         }
         self.inbox.accept(id);
         cx.notify();
