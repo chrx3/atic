@@ -30,6 +30,11 @@ impl SpaceView {
         if text.is_empty() {
             return;
         }
+        // Con el selector de carpetas abierto, lo que se escribe lo filtra.
+        if let Some(picker) = &mut self.picker {
+            picker.type_text(text);
+            return;
+        }
         if let Some(card) = self.focused.and_then(|id| self.card(id)) {
             // Escribir vuelve al final si se estaba mirando el historial.
             card.console.scroll(i32::MIN / 2);

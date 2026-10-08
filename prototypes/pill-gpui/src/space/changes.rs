@@ -1,5 +1,4 @@
-//! Los archivos que cambiaron en las carpetas de un agente desde que se abrió,
-//! y cómo abrirlos.
+//! Los archivos que cambiaron en las carpetas de un agente desde que se abrió.
 //!
 //! Sale de `git status`: al empezar se anota lo que ya estaba modificado (con
 //! su fecha) y después cuenta lo nuevo o lo que se volvió a tocar. No sabe
@@ -153,25 +152,6 @@ fn shown(path: &Path, cwd: &Path) -> String {
         path.strip_prefix(parent).ok().map(Path::to_path_buf)
     });
     rel.unwrap_or_else(|| path.to_path_buf()).to_string_lossy().replace('\\', "/")
-}
-
-/// Abre en VS Code: las carpetas como un espacio de trabajo o un archivo.
-pub fn open_in_code(paths: &[PathBuf], goto: bool) {
-    let mut command = hidden("cmd");
-    command.args(["/C", "code"]);
-    if goto {
-        command.arg("-g");
-    }
-    command.args(paths);
-    if let Err(error) = command.spawn() {
-        tracing::warn!(%error, "espacio: no se pudo abrir VS Code");
-    }
-}
-
-pub fn open_folder(path: &Path) {
-    if let Err(error) = Command::new("explorer.exe").arg(path).spawn() {
-        tracing::warn!(%error, "espacio: no se pudo abrir la carpeta");
-    }
 }
 
 #[cfg(test)]

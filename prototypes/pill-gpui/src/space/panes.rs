@@ -69,6 +69,11 @@ impl Panes {
         self.slots.iter().find(|(_, c)| *c == Some(card)).map(|(p, _)| *p)
     }
 
+    /// Cada panel con lo que tiene, en el orden en que se crearon.
+    pub fn slots(&self) -> &[(usize, Option<u64>)] {
+        &self.slots
+    }
+
     pub fn shown(&self) -> Vec<u64> {
         self.slots.iter().filter_map(|(_, card)| *card).collect()
     }

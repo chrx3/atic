@@ -16,14 +16,17 @@
 //! del diagnóstico) y `SPACE_BENCH=1` mueve la cámara sola y mide.
 
 mod changes;
+mod explorer;
 pub(crate) mod chrome;
 pub(crate) mod console;
-mod folders;
 mod identity;
 mod input;
 mod mando;
 mod panes;
 mod persist;
+mod picker;
+mod viewer;
+mod workspaces;
 
 /// Lo que el notch necesita del espacio: cuántos agentes hay vivos y escribirles.
 pub use persist::{agent_consoles, send_to_agents};
@@ -140,6 +143,8 @@ pub struct Card {
     cwd: Option<PathBuf>,
     /// `cwd` y las otras carpetas del espacio que recibió al abrirse.
     dirs: Vec<PathBuf>,
+    /// El espacio de trabajo donde se abrió (`workspaces`).
+    workspace: Option<u64>,
     /// Su nombre y su color, para distinguirla de las otras (`identity`).
     name: &'static str,
     color: u32,
@@ -204,8 +209,16 @@ pub struct SpaceView {
     build_ms: f32,
     fonts: [Font; 4],
     pub default_cwd: Option<PathBuf>,
-    /// Las carpetas del espacio y la activa (`folders.rs`).
-    folders: folders::Folders,
+    /// Los espacios de trabajo y el activo (`workspaces.rs`).
+    spaces: workspaces::Workspaces,
+    /// El espacio donde se abre la próxima consola, si se pidió uno.
+    opening_in: Option<u64>,
+    /// Los agentes de `agents::AGENTS` instalados en este equipo.
+    available: Vec<usize>,
+    /// El selector de carpetas, si está abierto (`picker.rs`).
+    picker: Option<picker::Picker>,
+    /// Los archivos abiertos en paneles del Mando (`viewer.rs`).
+    docs: Vec<viewer::Doc>,
     /// Ajustar todo en el primer cuadro, cuando ya se conoce el tamaño.
     fit_pending: bool,
     /// Mando (cartas, consola enfocada y bandeja) o pizarra.
@@ -365,6 +378,21 @@ impl SpaceView {
             }
         })
         .detach();
+        // Qué agentes hay instalados, para ofrecer solo esos.
+        cx.spawn(async move |this, cx| {
+            let available = cx
+                .background_spawn(async {
+                    (0..crate::agents::AGENTS.len())
+                        .filter(|&index| crate::agents::on_path(crate::agents::AGENTS[index].cli))
+                        .collect::<Vec<_>>()
+                })
+                .await;
+            let _ = this.update(cx, |view, cx| {
+                view.available = available;
+                cx.notify();
+            });
+        })
+        .detach();
         let focus = cx.focus_handle();
         window.focus(&focus);
         let mut view = Self {
@@ -400,7 +428,11 @@ impl SpaceView {
             build_ms: 0.0,
             fonts: fonts(),
             default_cwd: None,
-            folders: folders::Folders::load(),
+            spaces: workspaces::Workspaces::load(),
+            opening_in: None,
+            available: Vec::new(),
+            picker: None,
+            docs: Vec::new(),
             fit_pending: false,
             // El Mando es la vista de siempre; `SPACE_VIEW=pizarra` abre la otra.
             view: match std::env::var("SPACE_VIEW").as_deref() {
@@ -493,12 +525,20 @@ impl SpaceView {
 
     fn open_at(&mut self, open: Open, area: Area, cx: &mut Context<Self>) {
         let cell = self.cell();
-        // Si no se pidió carpeta, la del proceso: es donde el PTY ya arrancaba.
-        // Sin carpeta pedida: la activa del espacio, la de quien lo abrió o la
-        // del proceso, donde el PTY ya arrancaba.
+        // El espacio donde se abre: el que se pidió con `opening_in`, el que
+        // tiene la carpeta pedida o, sin carpeta, el activo.
+        let workspace = match (self.opening_in.take(), &open.cwd) {
+            (Some(id), _) => Some(id),
+            (None, Some(cwd)) => self.spaces.find_for(cwd),
+            (None, None) => self.spaces.active_id(),
+        }
+        .and_then(|id| self.spaces.get(id))
+        .cloned();
+        // Sin carpeta pedida: la principal del espacio, la de quien lo abrió o
+        // la del proceso, donde el PTY ya arrancaba.
         let cwd = open
             .cwd
-            .or_else(|| self.folders.active().cloned())
+            .or_else(|| workspace.as_ref().and_then(|w| w.main().cloned()))
             .or_else(|| self.default_cwd.clone())
             .or_else(|| std::env::current_dir().ok());
         let mut args = open.args;
@@ -517,10 +557,13 @@ impl SpaceView {
         // Un agente en una carpeta del espacio trabaja también en las otras.
         // Va después de los hooks: con comillas en la línea, `prepare` la
         // tomaría por sintaxis de shell y no los pondría.
-        let extras = cwd.as_deref().map(|dir| self.folders.extras(dir)).unwrap_or_default();
+        let extras = match (&workspace, &cwd) {
+            (Some(space), Some(dir)) => space.extras(dir),
+            _ => Vec::new(),
+        };
         if let (Some(agent), [flag, line]) = (open.agent, args.as_mut_slice()) {
             if flag.eq_ignore_ascii_case("/K") {
-                *line = folders::with_add_dirs(agent, line, &extras);
+                *line = workspaces::with_add_dirs(agent, line, &extras);
             }
         }
         let dirs: Vec<PathBuf> = cwd.iter().cloned().chain(extras).collect();
@@ -553,6 +596,7 @@ impl SpaceView {
                     agent: open.agent,
                     cwd,
                     dirs,
+                    workspace: workspace.map(|w| w.id),
                     name,
                     color,
                     changes: changes::Tracked::default(),
@@ -975,7 +1019,6 @@ impl SpaceView {
             .child(button("space-shell", "+ PowerShell").on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
                 view.open(Open::shell(None), cx)
             })))
-            .child(folders::bar(self, cx))
             .child(chrome::drag(TOOLBAR_H))
             .child(
                 div()

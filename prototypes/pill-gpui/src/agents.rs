@@ -405,7 +405,7 @@ fn sort_sessions(sessions: &mut [Session]) {
     });
 }
 
-fn home() -> Option<PathBuf> {
+pub(crate) fn home() -> Option<PathBuf> {
     std::env::var_os("USERPROFILE")
         .or_else(|| std::env::var_os("HOME"))
         .map(PathBuf::from)
@@ -684,7 +684,7 @@ fn read_new_lines(path: &Path, tail: &mut Tail) -> Vec<String> {
 
 /// Las carpetas donde se usaron agentes hace poco: el `cwd` de la sesión más
 /// reciente de cada proyecto de Claude Code, de la más nueva a la más vieja.
-fn recent_folders(limit: usize) -> Vec<PathBuf> {
+pub(crate) fn recent_folders(limit: usize) -> Vec<PathBuf> {
     let Some(root) = claude_root() else {
         return Vec::new();
     };
@@ -768,7 +768,7 @@ impl Prefs {
 // --- Terminal -----------------------------------------------------------------
 
 /// Si el CLI está en el PATH (o donde lo dejan los instaladores nativos).
-fn on_path(cli: &str) -> bool {
+pub(crate) fn on_path(cli: &str) -> bool {
     let mut dirs: Vec<PathBuf> = std::env::var_os("PATH")
         .map(|path| std::env::split_paths(&path).collect())
         .unwrap_or_default();

@@ -24,8 +24,9 @@
 //! Todo el estado propio vive en `State`; este módulo solo toca `SpaceView`
 //! por sus campos y por los ganchos `tick_mando`, `render` y `key_down`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui::{
@@ -37,7 +38,10 @@ use gpui::{
 use super::changes::{self, Kind};
 use super::chrome;
 use super::console::{self, hsla, GridSize};
-use super::folders;
+use super::explorer::Explorer;
+use super::picker::Purpose;
+use super::viewer::{Doc, LineKind};
+use super::workspaces::{self, short_name};
 use super::panes::{Axis, Dir, Panes};
 use super::{paint_grid, Area, Cell, Open, SpaceView, FONT_FAMILY, FONT_SIZE, PAD, TOOLBAR_H, WORKING_FOR};
 
@@ -203,6 +207,30 @@ pub struct State {
     closing: Option<u64>,
     panes: Panes,
     split_drag: Option<SplitDrag>,
+    /// El menú de «nuevo agente», abierto donde se hizo clic.
+    menu: Option<Menu>,
+    /// La pestaña del panel de la derecha.
+    tab: Tab,
+    explorer: Explorer,
+    /// El último agente enfocado: el panel de la derecha lo sigue mostrando
+    /// mientras se mira un archivo.
+    agent: Option<u64>,
+}
+
+/// Lo que muestra el panel de la derecha.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum Tab {
+    #[default]
+    Changes,
+    Files,
+    Review,
+}
+
+/// El menú para abrir un agente: dónde se dibuja y en qué espacio abre.
+struct Menu {
+    x: f32,
+    y: f32,
+    workspace: Option<u64>,
 }
 
 impl State {
@@ -308,7 +336,7 @@ impl SpaceView {
     /// Los paneles y `focused` dicen lo mismo. Lo que se abre o se elige en
     /// otra parte (`open`, la pizarra) pone `focused`: aquí encuentra panel.
     fn sync_panes(&mut self) {
-        let alive: Vec<u64> = self.cards.iter().map(|c| c.id).collect();
+        let alive: Vec<u64> = self.cards.iter().map(|c| c.id).chain(self.docs.iter().map(|d| d.id)).collect();
         let panes = &mut self.mando.panes;
         panes.forget(&alive);
         match self.focused.filter(|id| alive.contains(id)) {
@@ -322,22 +350,69 @@ impl SpaceView {
             },
             None => {}
         }
-        self.focused = panes.card_in(panes.focused);
+        // `focused` es siempre una consola: un panel con un archivo no recibe
+        // lo que se escribe.
+        let content = panes.card_in(panes.focused);
+        self.focused = content.filter(|id| self.cards.iter().any(|c| c.id == *id));
+        if self.focused.is_some() {
+            self.mando.agent = self.focused;
+        }
+        if self.mando.agent.is_some_and(|id| self.card(id).is_none()) {
+            self.mando.agent = None;
+        }
+        // Un archivo vive mientras está en un panel.
+        let shown = self.mando.panes.shown();
+        self.docs.retain(|doc| shown.contains(&doc.id));
     }
 
-    /// Las consolas en el orden de la barra lateral: por carpeta, y al final
-    /// las que no están en ninguna. Es el orden de Ctrl+1…9.
-    fn side_groups(&self) -> (Vec<(usize, Vec<u64>)>, Vec<u64>) {
+    /// Abre un archivo en un panel: el que ya muestra un archivo, uno vacío o
+    /// uno nuevo al lado del enfocado. El foco se queda donde estaba.
+    fn open_doc(&mut self, path: &Path, show_diff: bool, cx: &mut Context<Self>) {
+        if let Some(doc) = self.docs.iter_mut().find(|d| workspaces::same(&d.path, path)) {
+            doc.reload();
+            doc.show_diff = show_diff && doc.diff.is_some();
+            cx.notify();
+            return;
+        }
+        let id = self.next_id;
+        self.next_id += 1;
+        let doc = Doc::load(id, path, show_diff);
+        let is_doc = |content: Option<u64>| content.is_some_and(|id| self.docs.iter().any(|d| d.id == id));
+        let slots = self.mando.panes.slots();
+        let target = slots
+            .iter()
+            .find(|(_, content)| is_doc(*content))
+            .or_else(|| slots.iter().find(|(_, content)| content.is_none()))
+            .map(|(pane, _)| *pane);
+        let panes = &mut self.mando.panes;
+        let pane = match target {
+            Some(pane) => pane,
+            None => {
+                let back = panes.focused;
+                let pane = panes.split(back, Axis::Row);
+                panes.focused = back;
+                pane
+            }
+        };
+        panes.put(pane, Some(id));
+        self.docs.push(doc);
+        self.sync_panes();
+        cx.notify();
+    }
+
+    /// Las consolas en el orden de la barra lateral: por espacio, y al final
+    /// las que no están en ninguno. Es el orden de Ctrl+1…9.
+    fn side_groups(&self) -> (Vec<(u64, Vec<u64>)>, Vec<u64>) {
         let mut sorted: Vec<&super::Card> = self.cards.iter().collect();
         sorted.sort_by_key(|c| c.id);
-        let list = self.folders.list();
-        let folder_of = |card: &super::Card| {
-            card.cwd.as_deref().and_then(|cwd| list.iter().position(|f| folders::same(f, cwd)))
-        };
-        let groups = (0..list.len())
-            .map(|index| (index, sorted.iter().filter(|c| folder_of(c) == Some(index)).map(|c| c.id).collect()))
+        let known = |card: &super::Card| card.workspace.filter(|id| self.spaces.get(*id).is_some());
+        let groups = self
+            .spaces
+            .list()
+            .iter()
+            .map(|space| (space.id, sorted.iter().filter(|c| known(c) == Some(space.id)).map(|c| c.id).collect()))
             .collect();
-        let others = sorted.iter().filter(|c| folder_of(c).is_none()).map(|c| c.id).collect();
+        let others = sorted.iter().filter(|c| known(c).is_none()).map(|c| c.id).collect();
         (groups, others)
     }
 
@@ -386,13 +461,6 @@ impl SpaceView {
         cx.notify();
     }
 
-    /// Ctrl+W: el panel se va y su consola sigue corriendo en la barra lateral.
-    fn close_pane(&mut self, pane: usize, cx: &mut Context<Self>) {
-        self.mando.closing = None;
-        self.mando.panes.close(pane);
-        self.focused = self.mando.panes.card_in(self.mando.panes.focused);
-        cx.notify();
-    }
 
     fn split(&mut self, axis: Axis, cx: &mut Context<Self>) {
         let pane = self.mando.panes.focused;
@@ -452,13 +520,44 @@ impl SpaceView {
         cx.notify();
     }
 
-    fn open_here(&mut self, cli: Option<&'static str>, cwd: Option<PathBuf>, cx: &mut Context<Self>) {
-        let open = match cli {
-            Some("claude") => Open::agent("claude", "Claude Code", "claude", cwd),
-            Some("codex") => Open::agent("codex", "Codex", "codex", cwd),
-            _ => Open::shell(cwd),
+    /// Abre un agente (o PowerShell, sin `cli`) en un espacio; sin espacio, en
+    /// el activo.
+    fn open_here(&mut self, cli: Option<&'static str>, workspace: Option<u64>, cx: &mut Context<Self>) {
+        self.mando.menu = None;
+        if let Some(id) = workspace {
+            self.spaces.select(id);
+        }
+        self.opening_in = workspace.or_else(|| self.spaces.active_id());
+        let open = match cli.and_then(|cli| crate::agents::AGENTS.iter().find(|a| a.cli == cli)) {
+            Some(agent) => Open::agent(agent.cli, agent.name, agent.cli, None),
+            None => Open::shell(None),
         };
         self.open(open, cx);
+    }
+
+    /// Ctrl+W: termina la consola del panel (o cierra el archivo) y, si hay
+    /// otros paneles, quita este.
+    fn kill_pane(&mut self, pane: usize, cx: &mut Context<Self>) {
+        if let Some(id) = self.mando.panes.card_in(pane).filter(|id| self.card(*id).is_some()) {
+            self.mando.closing = None;
+            self.close(id, cx);
+        }
+        self.mando.panes.put(pane, None);
+        self.mando.panes.close(pane);
+        self.focused = self.mando.panes.card_in(self.mando.panes.focused);
+        cx.notify();
+    }
+
+    /// Los agentes que se pueden abrir: los instalados y PowerShell.
+    fn launchers(&self) -> Vec<(Option<&'static str>, &'static str)> {
+        self.available
+            .iter()
+            .map(|&index| {
+                let agent = &crate::agents::AGENTS[index];
+                (Some(agent.cli), agent.name)
+            })
+            .chain(std::iter::once((None, "PowerShell")))
+            .collect()
     }
 }
 
@@ -468,9 +567,9 @@ impl SpaceView {
 ///   Claude Code, no se puede tocar.)
 /// - `Ctrl+1…9`: la consola número N de la barra lateral.
 /// - `Ctrl+Shift+M`: cambia entre Mando y pizarra.
-/// - En el Mando: `Ctrl+W` quita el panel (la consola sigue corriendo),
-///   `Ctrl+Shift+W` pregunta si terminarla, `Alt+Shift+=` / `Ctrl+\` divide
-///   hacia el lado, `Alt+Shift+-` hacia abajo y `Alt+flechas` cambia de panel.
+/// - En el Mando: `Ctrl+W` termina la consola del panel (y quita el panel si
+///   hay otros), `Alt+Shift+=` / `Ctrl+\` divide hacia el lado,
+///   `Alt+Shift+-` hacia abajo y `Alt+flechas` cambia de panel.
 pub(super) fn key_down(
     view: &mut SpaceView,
     event: &KeyDownEvent,
@@ -482,10 +581,22 @@ pub(super) fn key_down(
     let key = ks.key.as_str();
     let only = |control: bool, alt: bool, shift: bool| m.control == control && m.alt == alt && m.shift == shift;
     let mut handled = true;
-    // Esc cancela la pregunta de terminar. Solo mientras está ahí: el resto
-    // del tiempo Esc es del agente.
-    if view.mando.closing.is_some() && key == "escape" && only(false, false, false) {
+    // El selector de carpetas se queda con el teclado mientras está abierto.
+    if let Some(picker) = &mut view.picker {
+        match picker.key(key, m.control) {
+            super::picker::KeyResult::Close => view.picker = None,
+            super::picker::KeyResult::Confirm => view.confirm_picker(cx),
+            _ => {}
+        }
+        cx.notify();
+        cx.stop_propagation();
+        return;
+    }
+    // Esc cancela la pregunta de terminar o el menú. Solo mientras están ahí:
+    // el resto del tiempo Esc es del agente.
+    if (view.mando.closing.is_some() || view.mando.menu.is_some()) && key == "escape" && only(false, false, false) {
         view.mando.closing = None;
+        view.mando.menu = None;
         cx.notify();
     } else if only(false, true, false) && key == "j" {
         view.next_attention(window, cx);
@@ -510,11 +621,7 @@ pub(super) fn key_down(
         }
     } else if view.view == View::Mando {
         match key {
-            "w" if only(true, false, false) => view.close_pane(view.mando.panes.focused, cx),
-            "w" if only(true, false, true) => {
-                view.mando.closing = view.focused;
-                cx.notify();
-            }
+            "w" if only(true, false, false) => view.kill_pane(view.mando.panes.focused, cx),
             "=" | "+" if only(false, true, true) => view.split(Axis::Row, cx),
             "\\" if only(true, false, false) => view.split(Axis::Row, cx),
             "-" | "_" if only(false, true, true) => view.split(Axis::Column, cx),
@@ -582,31 +689,12 @@ fn dot(color: u32) -> impl IntoElement {
     div().size(px(7.)).flex_none().rounded(px(4.)).bg(hsla(color))
 }
 
-/// La etiqueta chica de color de «para revisar» y del conteo de la bandeja.
-fn badge(text: impl Into<SharedString>) -> impl IntoElement {
-    div()
-        .min_w(px(18.))
-        .h(px(18.))
-        .px(px(7.))
-        .flex()
-        .flex_none()
-        .items_center()
-        .justify_center()
-        .rounded(px(9.))
-        .bg(hsla(READY_DOT))
-        .text_size(px(10.5))
-        .font_weight(FontWeight::SEMIBOLD)
-        .text_color(hsla(INK))
-        .child(text.into())
-}
-
 /// Sobre qué está un botón: su color es el único borde que tiene.
 #[derive(Clone, Copy)]
 enum Tone {
     /// El botón principal: claro sobre lo oscuro.
     Light,
-    /// Sobre el fondo de la ventana.
-    Window,
+
     /// Sobre un panel.
     Surface,
     /// Sobre un elemento de la bandeja.
@@ -620,7 +708,6 @@ impl Tone {
     fn fill(self) -> (u32, u32) {
         match self {
             Tone::Light => (0xe9e9e2, 0xffffff),
-            Tone::Window => (0x1f1f1d, 0x2a2a28),
             Tone::Surface => (0x2a2a28, 0x353532),
             Tone::Item => (0x33332f, 0x3e3e39),
             Tone::Danger => (0x3b2321, 0x4a2b28),
@@ -765,16 +852,27 @@ struct PaneData {
     card: Option<AgentData>,
     grid: Option<super::Grid>,
     closing: bool,
-    cwd: Option<PathBuf>,
-    dirs: Vec<PathBuf>,
+    doc: Option<DocView>,
+}
+
+/// Lo que se dibuja de un archivo abierto en un panel.
+struct DocView {
+    name: String,
+    dir: String,
+    lines: Arc<Vec<String>>,
+    diff: Option<Arc<Vec<super::viewer::DiffLine>>>,
+    show_diff: bool,
+    note: Option<String>,
 }
 
 struct Detail {
-    data: AgentData,
-    cwd: Option<PathBuf>,
+    agent: Option<AgentData>,
     dirs: Vec<PathBuf>,
     files: Vec<changes::Change>,
     closing: bool,
+    tab: Tab,
+    tree: Vec<super::explorer::Row>,
+    changed: HashSet<PathBuf>,
 }
 
 /// La línea de abajo del nombre: lo que el agente dice de sí (su título, que
@@ -887,8 +985,18 @@ pub(super) fn render(view: &mut SpaceView, _window: &mut Window, cx: &mut Contex
                 card: id.and_then(|id| agents.get(&id).cloned()),
                 grid: card.map(|card| view.grid_rows(card)),
                 closing: id.is_some() && view.mando.closing == id,
-                cwd: card.and_then(|c| c.cwd.clone()),
-                dirs: card.map(|c| c.dirs.clone()).unwrap_or_default(),
+                doc: id.and_then(|id| view.docs.iter().find(|d| d.id == id)).map(|doc| {
+                    let shown = doc.path.display().to_string();
+                    let (dir, name) = shown.rsplit_once(['\\', '/']).unwrap_or(("", &shown));
+                    DocView {
+                        name: name.to_string(),
+                        dir: dir.to_string(),
+                        lines: doc.lines.clone(),
+                        diff: doc.diff.clone(),
+                        show_diff: doc.show_diff,
+                        note: doc.note.clone(),
+                    }
+                }),
             }
         })
         .collect();
@@ -897,15 +1005,22 @@ pub(super) fn render(view: &mut SpaceView, _window: &mut Window, cx: &mut Contex
     }
     let dividers = view.mando.panes.dividers(layout.panes, GAP);
 
-    let detail = view.focused.and_then(|id| view.card(id)).and_then(|card| {
-        Some(Detail {
-            data: agents.get(&card.id)?.clone(),
-            cwd: card.cwd.clone(),
-            dirs: card.dirs.clone(),
-            files: card.changes.list.iter().take(MAX_FILES).cloned().collect(),
-            closing: view.mando.closing == Some(card.id),
-        })
-    });
+    // El panel de la derecha sigue al último agente enfocado; sin agente, el
+    // árbol muestra las carpetas del espacio activo.
+    let agent_card = view.mando.agent.and_then(|id| view.card(id));
+    let dirs: Vec<PathBuf> = agent_card
+        .map(|c| c.dirs.clone())
+        .filter(|d| !d.is_empty())
+        .or_else(|| view.spaces.active().map(|s| s.folders.clone()))
+        .unwrap_or_default();
+    let files: Vec<changes::Change> =
+        agent_card.map(|c| c.changes.list.iter().take(MAX_FILES).cloned().collect()).unwrap_or_default();
+    let changed: HashSet<PathBuf> = files.iter().map(|f| f.path.clone()).collect();
+    let agent = agent_card.and_then(|c| agents.get(&c.id).cloned());
+    let closing = agent.as_ref().is_some_and(|a| view.mando.closing == Some(a.id));
+    let tab = view.mando.tab;
+    let tree = if tab == Tab::Files && layout.detail.is_some() { view.mando.explorer.rows(&dirs) } else { Vec::new() };
+    let detail = Detail { agent, dirs, files, closing, tab, tree, changed };
 
     // Los estados cuentan a todas las consolas, también a las que no están en
     // un panel: siguen trabajando.
@@ -919,7 +1034,8 @@ pub(super) fn render(view: &mut SpaceView, _window: &mut Window, cx: &mut Contex
         list
     };
     let (groups, others) = view.side_groups();
-    let active_folder = view.folders.active().map(|p| folders::name(p));
+    let launchers = view.launchers();
+    let active_space = view.spaces.active().map(|s| s.name.clone());
 
     let mut root = div()
         .id("space")
@@ -961,9 +1077,9 @@ pub(super) fn render(view: &mut SpaceView, _window: &mut Window, cx: &mut Contex
         .bg(hsla(WINDOW))
         .font_family("Segoe UI")
         .child(super::input::layer(cx.weak_entity(), view.focus.clone()))
-        .child(top_bar(maximized, active_folder, cx))
+        .child(top_bar(maximized, active_space, cx))
         .child(side_bar(layout.side, view, &groups, &others, &agents, cx))
-        .children(panes.into_iter().map(|p| pane_panel(p, cell, &hidden, cx).into_any_element()))
+        .children(panes.into_iter().map(|p| pane_panel(p, cell, &hidden, &launchers, cx).into_any_element()))
         .children(dividers.into_iter().enumerate().map(|(index, d)| {
             let cursor = match d.axis {
                 Axis::Row => CursorStyle::ResizeLeftRight,
@@ -990,13 +1106,16 @@ pub(super) fn render(view: &mut SpaceView, _window: &mut Window, cx: &mut Contex
     if let Some(area) = layout.detail {
         root = root.child(detail_panel(area, detail, &inbox, cx));
     }
+    if let Some(menu) = &view.mando.menu {
+        root = root.child(agent_menu(menu, &view.launchers(), (vw, vh), cx));
+    }
+    if let Some(picker) = super::picker::render(view, vw, vh, cx) {
+        root = root.child(picker);
+    }
     root.into_any_element()
 }
 
-fn top_bar(maximized: bool, folder: Option<String>, cx: &mut Context<SpaceView>) -> impl IntoElement {
-    let opens = |id: &'static str, label: &'static str, cli: Option<&'static str>, cx: &mut Context<SpaceView>| {
-        pill(id, label, Tone::Window).on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.open_here(cli, None, cx)))
-    };
+fn top_bar(maximized: bool, space: Option<String>, cx: &mut Context<SpaceView>) -> impl IntoElement {
     div()
         .absolute()
         .top_0()
@@ -1024,7 +1143,7 @@ fn top_bar(maximized: bool, folder: Option<String>, cx: &mut Context<SpaceView>)
                 .items_center()
                 .gap(px(8.))
                 .mr(px(10.))
-                .when_some(folder, |el, folder| {
+                .when_some(space, |el, space| {
                     el.child(
                         div()
                             .flex()
@@ -1033,28 +1152,97 @@ fn top_bar(maximized: bool, folder: Option<String>, cx: &mut Context<SpaceView>)
                             .mr(px(4.))
                             .text_size(px(11.5))
                             .text_color(hsla(MUTED))
-                            .child(svg().path("icons/folder.svg").size(px(12.)).text_color(hsla(MUTED)))
-                            .child(format!("Nuevas en {folder}")),
+                            .child(svg().path("icons/layers.svg").size(px(12.)).text_color(hsla(MUTED)))
+                            .child(format!("Nuevos en {space}")),
                     )
                 })
-                .child(opens("mando-claude", "+ Claude", Some("claude"), cx))
-                .child(opens("mando-codex", "+ Codex", Some("codex"), cx))
-                .child(opens("mando-shell", "+ PowerShell", None, cx)),
+                .child(
+                    pill("mando-new", "Nuevo agente", Tone::Light)
+                        .child(svg().path("icons/chevron-down.svg").size(px(12.)).text_color(hsla(INK)))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|v, event: &MouseDownEvent, _, cx| {
+                                cx.stop_propagation();
+                                let (x, y) = (f32::from(event.position.x), f32::from(event.position.y));
+                                v.mando.menu = Some(Menu { x: x - 120.0, y: y + 16.0, workspace: None });
+                                cx.notify();
+                            }),
+                        ),
+                ),
         )
         .child(chrome::controls(maximized, TOP_H))
 }
 
-/// Las carpetas del espacio y, bajo cada una, los agentes que trabajan ahí.
+/// El menú con los agentes instalados, para abrir uno en un espacio.
+fn agent_menu(
+    menu: &Menu,
+    launchers: &[(Option<&'static str>, &'static str)],
+    (vw, vh): (f32, f32),
+    cx: &mut Context<SpaceView>,
+) -> impl IntoElement {
+    const W: f32 = 220.0;
+    let h = launchers.len() as f32 * 34.0 + 12.0;
+    let x = menu.x.clamp(8.0, vw - W - 8.0);
+    let y = menu.y.min(vh - h - 8.0).max(8.0);
+    let workspace = menu.workspace;
+    div()
+        .id("menu-veil")
+        .absolute()
+        .inset_0()
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(|v, _: &MouseDownEvent, _, cx| {
+                v.mando.menu = None;
+                cx.notify();
+            }),
+        )
+        .child(
+            div()
+                .id("agent-menu")
+                .absolute()
+                .left(px(x))
+                .top(px(y))
+                .w(px(W))
+                .p(px(6.))
+                .flex()
+                .flex_col()
+                .gap(px(2.))
+                .rounded(px(14.))
+                .bg(hsla(0x252523))
+                .shadow_lg()
+                .occlude()
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .children(launchers.iter().enumerate().map(|(index, &(cli, name))| {
+                    div()
+                        .id(("menu-item", index))
+                        .h(px(32.))
+                        .px(px(8.))
+                        .flex()
+                        .items_center()
+                        .gap(px(10.))
+                        .rounded(px(9.))
+                        .text_size(px(12.5))
+                        .text_color(hsla(TEXT))
+                        .hover(|el| el.bg(hsla(0x323230)))
+                        .cursor_pointer()
+                        .on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.open_here(cli, workspace, cx)))
+                        .child(svg().path(agent_icon(cli)).size(px(15.)).flex_none().text_color(hsla(MUTED)))
+                        .child(name)
+                        .into_any_element()
+                })),
+        )
+}
+
+/// Los espacios y, bajo cada uno, sus carpetas y los agentes que trabajan ahí.
 fn side_bar(
     area: Area,
     view: &SpaceView,
-    groups: &[(usize, Vec<u64>)],
+    groups: &[(u64, Vec<u64>)],
     others: &[u64],
     agents: &HashMap<u64, AgentData>,
     cx: &mut Context<SpaceView>,
 ) -> impl IntoElement {
-    let list = view.folders.list();
-    let active = view.folders.active_index();
+    let active = view.spaces.active_id();
     let mut side = div()
         .id("mando-side")
         .absolute()
@@ -1071,102 +1259,170 @@ fn side_bar(
                 .flex()
                 .items_center()
                 .pr(px(2.))
-                .child(section("CARPETAS").flex_1())
+                .child(section("ESPACIOS").flex_1())
                 .child(
-                    icon_button("side-add", "icons/folder-plus.svg", "Agregar carpetas", SURFACE_HOVER)
+                    icon_button("side-add", "icons/plus.svg", "Nuevo espacio", SURFACE_HOVER)
                         .mt(px(6.))
-                        .on_click(cx.listener(|v, _: &ClickEvent, _, cx| v.browse_folders(cx))),
+                        .on_click(cx.listener(|v, _: &ClickEvent, _, cx| v.open_picker(Purpose::NewWorkspace, cx))),
                 ),
         );
-    if list.is_empty() {
+    if view.spaces.list().is_empty() {
         side = side.child(
             div()
                 .px(px(8.))
+                .flex()
+                .flex_col()
+                .gap(px(10.))
                 .text_size(px(12.))
                 .text_color(hsla(MUTED))
-                .child("Agrega las carpetas de tu proyecto. Cada agente nuevo trabaja en la carpeta elegida y puede leer las demás."),
+                .child("Un espacio junta las carpetas de un proyecto (por ejemplo el frontend y el backend). Cada agente que abras ahí trabaja en todas.")
+                .child(
+                    pill("side-first", "Crear un espacio", Tone::Surface)
+                        .on_click(cx.listener(|v, _: &ClickEvent, _, cx| v.open_picker(Purpose::NewWorkspace, cx))),
+                ),
         );
     }
-    for (index, ids) in groups {
-        let path = list[*index].clone();
-        side = side.child(folder_row(*index, &path, *index == active, cx));
-        for id in ids {
-            if let Some(agent) = agents.get(id) {
-                side = side.child(agent_row(agent, cx));
+    for (id, ids) in groups {
+        let Some(space) = view.spaces.get(*id) else {
+            continue;
+        };
+        side = side.child(space_row(space, active == Some(*id), ids.len(), cx));
+        if !space.collapsed {
+            for (index, folder) in space.folders.iter().enumerate() {
+                side = side.child(folder_line(*id, index, folder, cx));
             }
+        }
+        for agent in ids.iter().filter_map(|id| agents.get(id)) {
+            side = side.child(agent_row(agent, cx));
         }
     }
     if !others.is_empty() {
-        side = side.child(section(if list.is_empty() { "CONSOLAS" } else { "EN OTRAS CARPETAS" }));
-        for id in others {
-            if let Some(agent) = agents.get(id) {
-                side = side.child(agent_row(agent, cx));
-            }
+        side = side.child(section("SIN ESPACIO"));
+        for agent in others.iter().filter_map(|id| agents.get(id)) {
+            side = side.child(agent_row(agent, cx));
         }
     }
     side
 }
 
-fn folder_row(index: usize, path: &Path, active: bool, cx: &mut Context<SpaceView>) -> impl IntoElement {
-    let group: SharedString = format!("folder-{index}").into();
-    let open = |suffix: &'static str, cli: Option<&'static str>, tip: &'static str, cx: &mut Context<SpaceView>| {
-        let path = path.to_path_buf();
-        mini_button(SharedString::from(format!("folder-{index}-{suffix}")), agent_icon(cli), tip).on_click(cx.listener(
-            move |v, _: &ClickEvent, _, cx| {
-                cx.stop_propagation();
-                v.folders.select(index);
-                v.open_here(cli, Some(path.clone()), cx);
-            },
-        ))
-    };
+/// Un espacio: su nombre y, al pasar el mouse, abrir un agente, agregar
+/// carpetas o quitarlo.
+fn space_row(space: &workspaces::Workspace, active: bool, agents: usize, cx: &mut Context<SpaceView>) -> impl IntoElement {
+    let id = space.id;
+    let group: SharedString = format!("space-{id}").into();
+    let chevron = if space.collapsed { "icons/chevron-down.svg" } else { "icons/chevron-up.svg" };
     div()
-        .id(("folder-row", index))
+        .id(("space-row", id as usize))
         .group(group.clone())
-        .mt(px(4.))
-        .h(px(32.))
-        .pl(px(8.))
+        .mt(px(6.))
+        .h(px(34.))
+        .pl(px(4.))
         .pr(px(4.))
         .flex()
         .flex_none()
         .items_center()
-        .gap(px(8.))
+        .gap(px(6.))
         .rounded(px(R_ITEM))
         .when(active, |el| el.bg(hsla(SURFACE)))
         .hover(|el| el.bg(hsla(SURFACE_HOVER)))
         .cursor_pointer()
-        .tooltip(crate::hover::tip_text(format!("{}\nLas consolas nuevas se abren aquí", path.display()).into()))
+        .tooltip(crate::hover::tip_text(
+            if active { "Los agentes nuevos se abren en este espacio" } else { "Clic para abrir aquí los agentes nuevos" }.into(),
+        ))
         .on_click(cx.listener(move |v, _: &ClickEvent, _, cx| {
-            v.folders.select(index);
+            v.spaces.select(id);
             cx.notify();
         }))
-        .child(svg().path("icons/folder.svg").size(px(14.)).flex_none().text_color(hsla(if active { TEXT } else { MUTED })))
+        .child(
+            mini_button(("space-toggle", id as usize), chevron, "Mostrar u ocultar las carpetas").on_click(cx.listener(
+                move |v, _: &ClickEvent, _, cx| {
+                    cx.stop_propagation();
+                    v.spaces.toggle(id);
+                    cx.notify();
+                },
+            )),
+        )
         .child(
             div()
                 .flex_1()
                 .min_w(px(0.))
                 .truncate()
-                .text_size(px(12.5))
-                .font_weight(if active { FontWeight::SEMIBOLD } else { FontWeight::MEDIUM })
+                .text_size(px(13.))
+                .font_weight(FontWeight::SEMIBOLD)
                 .text_color(hsla(if active { TEXT } else { MUTED }))
-                .child(folders::name(path)),
+                .child(space.name.clone()),
         )
+        .when(agents > 0, |el| el.child(div().flex_none().text_size(px(11.)).text_color(hsla(FAINT)).child(agents.to_string())))
         .child(
             div()
                 .flex()
                 .items_center()
                 .opacity(0.)
                 .group_hover(group, |s| s.opacity(1.))
-                .child(open("claude", Some("claude"), "Claude aquí", cx))
-                .child(open("codex", Some("codex"), "Codex aquí", cx))
-                .child(open("shell", None, "PowerShell aquí", cx))
                 .child(
-                    mini_button(("folder-remove", index), "icons/x.svg", "Quitar del espacio")
+                    mini_button(("space-new", id as usize), "icons/plus.svg", "Abrir un agente aquí").on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |v, event: &MouseDownEvent, _, cx| {
+                            cx.stop_propagation();
+                            let (x, y) = (f32::from(event.position.x), f32::from(event.position.y));
+                            v.mando.menu = Some(Menu { x: x - 10.0, y: y + 14.0, workspace: Some(id) });
+                            cx.notify();
+                        }),
+                    ),
+                )
+                .child(
+                    mini_button(("space-add", id as usize), "icons/folder-plus.svg", "Agregar carpetas").on_click(
+                        cx.listener(move |v, _: &ClickEvent, _, cx| {
+                            cx.stop_propagation();
+                            v.open_picker(Purpose::AddTo(id), cx);
+                        }),
+                    ),
+                )
+                .child(
+                    mini_button(("space-remove", id as usize), "icons/x.svg", "Quitar el espacio (no borra nada)")
                         .on_click(cx.listener(move |v, _: &ClickEvent, _, cx| {
                             cx.stop_propagation();
-                            v.folders.remove(index);
+                            v.spaces.remove(id);
                             cx.notify();
                         })),
                 ),
+        )
+}
+
+/// Una carpeta de un espacio. La primera es donde arrancan los agentes.
+fn folder_line(space: u64, index: usize, path: &Path, cx: &mut Context<SpaceView>) -> impl IntoElement {
+    let group: SharedString = format!("folder-{space}-{index}").into();
+    div()
+        .id(SharedString::from(format!("folder-{space}-{index}")))
+        .group(group.clone())
+        .ml(px(24.))
+        .h(px(26.))
+        .pl(px(6.))
+        .pr(px(4.))
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(px(7.))
+        .rounded(px(8.))
+        .hover(|el| el.bg(hsla(SURFACE_HOVER)))
+        .tooltip(crate::hover::tip_text(
+            if index == 0 {
+                format!("{}\nLos agentes arrancan aquí y ven las demás", path.display())
+            } else {
+                path.display().to_string()
+            }
+            .into(),
+        ))
+        .child(svg().path("icons/folder.svg").size(px(12.)).flex_none().text_color(hsla(FAINT)))
+        .child(div().flex_1().min_w(px(0.)).truncate().text_size(px(12.)).text_color(hsla(MUTED)).child(short_name(path)))
+        .child(
+            div().opacity(0.).group_hover(group, |s| s.opacity(1.)).child(
+                mini_button(SharedString::from(format!("folder-x-{space}-{index}")), "icons/x.svg", "Quitar del espacio")
+                    .on_click(cx.listener(move |v, _: &ClickEvent, _, cx| {
+                        v.spaces.remove_folder(space, index);
+                        cx.notify();
+                    })),
+            ),
         )
 }
 
@@ -1231,7 +1487,13 @@ fn agent_row(agent: &AgentData, cx: &mut Context<SpaceView>) -> impl IntoElement
         .when(agent.unseen, |el| el.child(dot(READY_DOT)))
 }
 
-fn pane_panel(p: PaneData, cell: Cell, hidden: &[AgentData], cx: &mut Context<SpaceView>) -> impl IntoElement {
+fn pane_panel(
+    p: PaneData,
+    cell: Cell,
+    hidden: &[AgentData],
+    launchers: &[(Option<&'static str>, &'static str)],
+    cx: &mut Context<SpaceView>,
+) -> impl IntoElement {
     let pane = p.pane;
     let area = p.area;
     let mut panel = div()
@@ -1261,15 +1523,16 @@ fn pane_panel(p: PaneData, cell: Cell, hidden: &[AgentData], cx: &mut Context<Sp
             }
             cx.notify();
         }));
+    if let Some(doc) = p.doc {
+        return panel.child(doc_pane(pane, area, doc, cx));
+    }
     let Some(agent) = p.card else {
-        return panel.child(empty_pane(pane, hidden, cx));
+        return panel.child(empty_pane(pane, hidden, launchers, cx));
     };
     let id = agent.id;
     let term = term_area(area);
     let wide = area.w >= 600.0;
     let grid = p.grid;
-    let dirs = p.dirs;
-    let cwd = p.cwd;
     let head = div()
         .absolute()
         .left(px(PANEL_PAD))
@@ -1317,15 +1580,14 @@ fn pane_panel(p: PaneData, cell: Cell, hidden: &[AgentData], cx: &mut Context<Sp
                 .when(wide, |el| el.child(phase_text(agent.phase))),
         )
         .child(
-            icon_button(("pane-code", pane), "icons/code.svg", "Abrir sus carpetas en VS Code", SURFACE_HOVER)
-                .on_click(move |_, _, _| changes::open_in_code(&dirs, false)),
+            icon_button(("pane-files", pane), "icons/folder-open.svg", "Ver sus archivos", SURFACE_HOVER).on_click(
+                cx.listener(move |v, _: &ClickEvent, _, cx| {
+                    v.mando.agent = Some(id);
+                    v.mando.tab = Tab::Files;
+                    cx.notify();
+                }),
+            ),
         )
-        .when_some(cwd, |el, cwd| {
-            el.child(
-                icon_button(("pane-folder", pane), "icons/folder-open.svg", "Abrir la carpeta", SURFACE_HOVER)
-                    .on_click(move |_, _, _| changes::open_folder(&cwd)),
-            )
-        })
         .child(
             icon_button(("pane-split-r", pane), "icons/columns-2.svg", "Dividir hacia el lado (Alt+Shift+=)", SURFACE_HOVER)
                 .on_click(cx.listener(move |v, _: &ClickEvent, window, cx| {
@@ -1341,8 +1603,8 @@ fn pane_panel(p: PaneData, cell: Cell, hidden: &[AgentData], cx: &mut Context<Sp
                 })),
         )
         .child(
-            icon_button(("pane-close", pane), "icons/x.svg", "Quitar del panel; sigue corriendo (Ctrl+W)", SURFACE_HOVER)
-                .on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.close_pane(pane, cx))),
+            icon_button(("pane-close", pane), "icons/x.svg", "Terminar (Ctrl+W)", SURFACE_HOVER)
+                .on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.kill_pane(pane, cx))),
         )
     };
     panel = panel.child(head).child(
@@ -1376,15 +1638,27 @@ fn pane_panel(p: PaneData, cell: Cell, hidden: &[AgentData], cx: &mut Context<Sp
 }
 
 /// Un panel sin consola: elegir una de las que corren sin panel o abrir otra.
-fn empty_pane(pane: usize, hidden: &[AgentData], cx: &mut Context<SpaceView>) -> impl IntoElement {
-    let opens = |suffix: &'static str, label: &'static str, cli: Option<&'static str>, cx: &mut Context<SpaceView>| {
-        pill(SharedString::from(format!("empty-{pane}-{suffix}")), label, Tone::Surface).on_click(cx.listener(
-            move |v, _: &ClickEvent, window, cx| {
-                v.focus_pane(pane, window, cx);
-                v.open_here(cli, None, cx);
-            },
-        ))
-    };
+fn empty_pane(
+    pane: usize,
+    hidden: &[AgentData],
+    launchers: &[(Option<&'static str>, &'static str)],
+    cx: &mut Context<SpaceView>,
+) -> impl IntoElement {
+    let opens = launchers
+        .iter()
+        .enumerate()
+        .map(|(index, &(cli, name))| {
+            pill(SharedString::from(format!("empty-{pane}-open-{index}")), name, Tone::Surface)
+                .pl(px(10.))
+                .child(svg().path(agent_icon(cli)).size(px(13.)).text_color(hsla(MUTED)))
+                .flex_row_reverse()
+                .on_click(cx.listener(move |v, _: &ClickEvent, window, cx| {
+                    v.focus_pane(pane, window, cx);
+                    v.open_here(cli, None, cx);
+                }))
+                .into_any_element()
+        })
+        .collect::<Vec<_>>();
     div()
         .absolute()
         .inset_0()
@@ -1421,18 +1695,13 @@ fn empty_pane(pane: usize, hidden: &[AgentData], cx: &mut Context<SpaceView>) ->
                 )
         })
         .child(div().text_size(px(12.)).text_color(hsla(MUTED)).child("O abre una nueva:"))
-        .child(
-            div()
-                .flex()
-                .gap(px(8.))
-                .child(opens("claude", "+ Claude", Some("claude"), cx))
-                .child(opens("codex", "+ Codex", Some("codex"), cx))
-                .child(opens("shell", "+ PowerShell", None, cx)),
-        )
+        .child(div().max_w(px(560.)).flex().flex_wrap().justify_center().gap(px(8.)).children(opens))
 }
 
-/// El agente enfocado (sus carpetas y lo que cambió) y la bandeja de revisión.
-fn detail_panel(area: Area, detail: Option<Detail>, inbox: &[TrayItem], cx: &mut Context<SpaceView>) -> impl IntoElement {
+/// El agente (sus carpetas, lo que cambió y su árbol de archivos) y la
+/// bandeja de revisión, en pestañas.
+fn detail_panel(area: Area, detail: Detail, inbox: &[TrayItem], cx: &mut Context<SpaceView>) -> impl IntoElement {
+    let Detail { agent, dirs, files, closing, tab, tree, changed } = detail;
     let mut panel = div()
         .id("mando-detail")
         .absolute()
@@ -1442,127 +1711,144 @@ fn detail_panel(area: Area, detail: Option<Detail>, inbox: &[TrayItem], cx: &mut
         .h(px(area.h))
         .rounded(px(R_PANEL))
         .bg(hsla(SURFACE))
-        .p(px(14.))
+        .p(px(12.))
         .flex()
         .flex_col()
-        .gap(px(8.))
-        .overflow_y_scroll();
-    if let Some(Detail { data, cwd, dirs, files, closing }) = detail {
+        .gap(px(8.));
+    if let Some(data) = &agent {
         let id = data.id;
-        let code_dirs = dirs.clone();
-        panel = panel
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(10.))
-                    .child(logo_tile(data.agent, data.color, 30.0))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w(px(0.))
-                            .flex()
-                            .flex_col()
-                            .child(
-                                div()
-                                    .text_size(px(14.))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(hsla(data.color))
-                                    .child(data.name.clone()),
-                            )
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(6.))
-                                    .text_size(px(11.5))
-                                    .text_color(hsla(MUTED))
-                                    .child(data.label.clone())
-                                    .child(dot(phase_dot(data.phase)))
-                                    .child(phase_text(data.phase)),
-                            ),
-                    ),
-            )
-            .children(dirs.iter().enumerate().map(|(index, dir)| {
-                div()
-                    .id(("detail-dir", index))
-                    .flex()
-                    .items_center()
-                    .gap(px(7.))
-                    .text_size(px(12.))
-                    .text_color(hsla(if index == 0 { TEXT } else { MUTED }))
-                    .tooltip(crate::hover::tip_text(dir.display().to_string().into()))
-                    .child(svg().path("icons/folder.svg").size(px(13.)).flex_none().text_color(hsla(MUTED)))
-                    .child(div().truncate().child(folders::name(dir)))
-                    .when(index > 0, |el| el.child(div().flex_none().text_size(px(11.)).text_color(hsla(FAINT)).child("también")))
-                    .into_any_element()
-            }))
-            .child(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .gap(px(6.))
-                    .mt(px(2.))
-                    .when(!code_dirs.is_empty(), |el| {
-                        el.child(
-                            pill("detail-code", "Ver código", Tone::Surface)
-                                .child(svg().path("icons/code.svg").size(px(13.)).text_color(hsla(MUTED)))
-                                .on_click(move |_, _, _| changes::open_in_code(&code_dirs, false)),
+        panel = panel.child(
+            div()
+                .flex()
+                .flex_none()
+                .items_center()
+                .gap(px(10.))
+                .child(logo_tile(data.agent, data.color, 30.0))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .flex()
+                        .flex_col()
+                        .child(
+                            div()
+                                .text_size(px(14.))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(hsla(data.color))
+                                .child(data.name.clone()),
                         )
-                    })
-                    .when_some(cwd, |el, cwd| {
-                        el.child(
-                            pill("detail-folder", "Carpeta", Tone::Surface)
-                                .child(svg().path("icons/folder-open.svg").size(px(13.)).text_color(hsla(MUTED)))
-                                .on_click(move |_, _, _| changes::open_folder(&cwd)),
-                        )
-                    })
-                    .when(!closing, |el| {
-                        el.child(pill("detail-end", "Terminar", Tone::Danger).on_click(cx.listener(
-                            move |v, _: &ClickEvent, _, cx| {
-                                v.mando.closing = Some(id);
-                                cx.notify();
-                            },
-                        )))
-                    }),
-            )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(8.))
-                    .child(section("ARCHIVOS MODIFICADOS").px(px(0.)).flex_1())
-                    .when(!files.is_empty(), |el| el.child(div().mt(px(6.)).child(badge(files.len().to_string())))),
-            )
-            .when(files.is_empty(), |el| {
-                el.child(div().text_size(px(12.)).text_color(hsla(MUTED)).child(if dirs.is_empty() {
-                    "Sin carpeta."
-                } else {
-                    "Nada todavía. Aquí aparece lo que cambie en sus carpetas desde que empezó."
-                }))
-            })
-            .children(files.into_iter().enumerate().map(|(index, file)| file_row(index, file).into_any_element()));
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(6.))
+                                .text_size(px(11.5))
+                                .text_color(hsla(MUTED))
+                                .child(data.label.clone())
+                                .child(dot(phase_dot(data.phase)))
+                                .child(phase_text(data.phase)),
+                        ),
+                )
+                .when(!closing, |el| {
+                    el.child(pill("detail-end", "Terminar", Tone::Danger).on_click(cx.listener(
+                        move |v, _: &ClickEvent, _, cx| {
+                            v.mando.closing = Some(id);
+                            cx.notify();
+                        },
+                    )))
+                })
+                .when(closing, |el| {
+                    el.child(
+                        pill("detail-end-yes", "¿Seguro?", Tone::Danger)
+                            .on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.terminate(id, cx))),
+                    )
+                }),
+        );
     }
+    let tab_button = |id: &'static str, label: String, this: Tab, cx: &mut Context<SpaceView>| {
+        let on = tab == this;
+        div()
+            .id(id)
+            .h(px(26.))
+            .px(px(11.))
+            .flex()
+            .items_center()
+            .rounded(px(13.))
+            .text_size(px(12.))
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(hsla(if on { INK } else { MUTED }))
+            .when(on, |el| el.bg(hsla(0xe9e9e2)))
+            .when(!on, |el| el.cursor_pointer().hover(|el| el.text_color(hsla(TEXT))))
+            .on_click(cx.listener(move |v, _: &ClickEvent, _, cx| {
+                v.mando.tab = this;
+                cx.notify();
+            }))
+            .child(label)
+    };
+    let count = |label: &str, n: usize| if n > 0 { format!("{label} {n}") } else { label.to_string() };
     panel = panel.child(
         div()
             .flex()
+            .flex_none()
             .items_center()
-            .gap(px(8.))
-            .child(section("PARA REVISAR").px(px(0.)).flex_1())
-            .when(!inbox.is_empty(), |el| el.child(div().mt(px(6.)).child(badge(inbox.len().to_string())))),
+            .gap(px(2.))
+            .p(px(3.))
+            .rounded(px(16.))
+            .bg(hsla(0x161615))
+            .child(tab_button("tab-changes", count("Cambios", files.len()), Tab::Changes, cx))
+            .child(tab_button("tab-files", "Archivos".into(), Tab::Files, cx))
+            .child(tab_button("tab-review", count("Revisar", inbox.len()), Tab::Review, cx))
+            .child(div().flex_1())
+            .when(tab == Tab::Files, |el| {
+                el.child(
+                    icon_button("tree-refresh", "icons/rotate-cw.svg", "Volver a leer las carpetas", SURFACE_HOVER)
+                        .on_click(cx.listener(|v, _: &ClickEvent, _, cx| {
+                            v.mando.explorer.refresh();
+                            cx.notify();
+                        })),
+                )
+            }),
     );
-    if inbox.is_empty() {
-        panel = panel.child(
-            div()
-                .text_size(px(12.))
-                .text_color(hsla(MUTED))
-                .child("Nada que revisar. Cuando un agente termine un turno o se detenga y no lo estés mirando, aparece aquí."),
-        );
-    }
-    panel.children(inbox.iter().map(|item| inbox_item(item, cx).into_any_element()))
+    let note = |text: &'static str| div().px(px(4.)).text_size(px(12.)).text_color(hsla(MUTED)).child(text);
+    let body = div().id("detail-body").flex_1().min_h(px(0.)).flex().flex_col().gap(px(1.)).overflow_y_scroll();
+    let body = match tab {
+        Tab::Changes => {
+            if agent.is_none() {
+                body.child(note("Elige un agente para ver lo que cambió en sus carpetas."))
+            } else if files.is_empty() {
+                body.child(note(if dirs.is_empty() {
+                    "Este agente no tiene carpeta."
+                } else {
+                    "Nada todavía. Aquí aparece lo que cambie en sus carpetas desde que empezó."
+                }))
+            } else {
+                body.children(files.into_iter().enumerate().map(|(index, file)| file_row(index, file, cx).into_any_element()))
+            }
+        }
+        Tab::Files => {
+            if tree.is_empty() {
+                body.child(note("Crea un espacio con carpetas, o elige un agente, para ver sus archivos."))
+            } else {
+                let full = tree.len() >= super::explorer::MAX_ROWS;
+                body.children(tree.into_iter().enumerate().map(|(index, row)| {
+                    let edited = changed.contains(&row.path);
+                    tree_row(index, row, edited, cx).into_any_element()
+                }))
+                .when(full, |el| el.child(note("Hay más; cierra alguna carpeta para verlos.")))
+            }
+        }
+        Tab::Review => {
+            if inbox.is_empty() {
+                body.child(note("Nada que revisar. Cuando un agente termine un turno o se detenga y no lo estés mirando, aparece aquí."))
+            } else {
+                body.gap(px(8.)).children(inbox.iter().map(|item| inbox_item(item, cx).into_any_element()))
+            }
+        }
+    };
+    panel.child(body)
 }
 
-fn file_row(index: usize, file: changes::Change) -> impl IntoElement {
+fn file_row(index: usize, file: changes::Change, cx: &mut Context<SpaceView>) -> impl IntoElement {
     let (letter, color) = match file.kind {
         Kind::Added => ("A", READY_DOT),
         Kind::Deleted => ("D", DELETED),
@@ -1588,7 +1874,7 @@ fn file_row(index: usize, file: changes::Change) -> impl IntoElement {
         .when(!deleted, |el| {
             el.cursor_pointer()
                 .hover(|el| el.bg(hsla(SURFACE_HOVER)))
-                .on_click(move |_, _, _| changes::open_in_code(std::slice::from_ref(&path), true))
+                .on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.open_doc(&path, true, cx)))
         })
         .child(
             div()
@@ -1602,6 +1888,215 @@ fn file_row(index: usize, file: changes::Change) -> impl IntoElement {
         )
         .child(div().flex_none().text_color(hsla(if deleted { MUTED } else { TEXT })).child(name))
         .child(div().flex_1().min_w(px(0.)).truncate().text_size(px(11.)).text_color(hsla(FAINT)).child(dir))
+}
+
+/// Una fila del árbol: una carpeta se abre o cierra, un archivo se abre en un
+/// panel. Lo que el agente cambió va en amarillo.
+fn tree_row(index: usize, row: super::explorer::Row, edited: bool, cx: &mut Context<SpaceView>) -> impl IntoElement {
+    let path = row.path.clone();
+    let (dir, root) = (row.dir, row.depth == 0);
+    let icon = if !row.dir {
+        "icons/text-align-start.svg"
+    } else if row.open {
+        "icons/folder-open.svg"
+    } else {
+        "icons/folder.svg"
+    };
+    div()
+        .id(("tree-row", index))
+        .h(px(24.))
+        .pl(px(4.0 + row.depth as f32 * 14.0))
+        .pr(px(6.))
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(px(7.))
+        .rounded(px(7.))
+        .text_size(px(12.))
+        .cursor_pointer()
+        .hover(|el| el.bg(hsla(SURFACE_HOVER)))
+        .on_click(cx.listener(move |v, _: &ClickEvent, _, cx| {
+            if dir {
+                v.mando.explorer.toggle(&path, root);
+                cx.notify();
+            } else {
+                v.open_doc(&path, false, cx);
+            }
+        }))
+        .child(svg().path(icon).size(px(13.)).flex_none().text_color(hsla(if row.dir { MUTED } else { FAINT })))
+        .child(
+            div()
+                .flex_1()
+                .min_w(px(0.))
+                .truncate()
+                .when(root, |el| el.font_weight(FontWeight::SEMIBOLD))
+                .text_color(hsla(if edited {
+                    WORKING_DOT
+                } else if row.dir {
+                    TEXT
+                } else {
+                    MUTED
+                }))
+                .child(row.name),
+        )
+}
+
+/// Un archivo abierto en un panel: su contenido o lo que cambió.
+fn doc_pane(pane: usize, area: Area, doc: DocView, cx: &mut Context<SpaceView>) -> impl IntoElement {
+    const LINE_H: f32 = 19.0;
+    let has_diff = doc.diff.is_some();
+    let show_diff = doc.show_diff && has_diff;
+    let toggle = |id: &'static str, label: &'static str, diff: bool, cx: &mut Context<SpaceView>| {
+        let on = show_diff == diff;
+        div()
+            .id((id, pane))
+            .h(px(24.))
+            .px(px(10.))
+            .flex()
+            .items_center()
+            .rounded(px(12.))
+            .text_size(px(11.5))
+            .text_color(hsla(if on { INK } else { MUTED }))
+            .when(on, |el| el.bg(hsla(0xe9e9e2)))
+            .when(!on, |el| el.cursor_pointer().hover(|el| el.text_color(hsla(TEXT))))
+            .on_click(cx.listener(move |v, _: &ClickEvent, _, cx| {
+                if let Some(doc) = v.mando.panes.card_in(pane).and_then(|id| v.docs.iter_mut().find(|d| d.id == id)) {
+                    doc.show_diff = diff;
+                    cx.notify();
+                }
+            }))
+            .child(label)
+    };
+    let head = div()
+        .absolute()
+        .left(px(PANEL_PAD))
+        .top(px(PANEL_PAD))
+        .w(px(area.w - PANEL_PAD * 2.0))
+        .h(px(HEAD_H))
+        .pl(px(8.))
+        .flex()
+        .items_center()
+        .gap(px(8.))
+        .child(svg().path("icons/text-align-start.svg").size(px(15.)).flex_none().text_color(hsla(MUTED)))
+        .child(div().flex_none().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).text_color(hsla(TEXT)).child(doc.name.clone()))
+        .child(div().flex_1().min_w(px(0.)).truncate().text_size(px(11.5)).text_color(hsla(FAINT)).child(doc.dir.clone()))
+        .when(has_diff, |el| {
+            el.child(
+                div()
+                    .flex()
+                    .flex_none()
+                    .p(px(2.))
+                    .rounded(px(14.))
+                    .bg(hsla(0x161615))
+                    .child(toggle("doc-file", "Archivo", false, cx))
+                    .child(toggle("doc-diff", "Cambios", true, cx)),
+            )
+        })
+        .child(
+            icon_button(("doc-reload", pane), "icons/rotate-cw.svg", "Volver a leer", SURFACE_HOVER).on_click(cx.listener(
+                move |v, _: &ClickEvent, _, cx| {
+                    if let Some(doc) = v.mando.panes.card_in(pane).and_then(|id| v.docs.iter_mut().find(|d| d.id == id)) {
+                        doc.reload();
+                        cx.notify();
+                    }
+                },
+            )),
+        )
+        .child(
+            icon_button(("doc-close", pane), "icons/x.svg", "Cerrar (Ctrl+W)", SURFACE_HOVER)
+                .on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.kill_pane(pane, cx))),
+        );
+    let term = term_area(area);
+    let body = div()
+        .absolute()
+        .left(px(term.x))
+        .top(px(term.y))
+        .w(px(term.w))
+        .h(px(term.h))
+        .rounded(px(R_INSET))
+        .bg(hsla(TERMINAL))
+        .pt(px(6.))
+        .font_family(FONT_FAMILY)
+        .text_size(px(12.5));
+    let body = if let Some(note) = doc.note.clone() {
+        body.p(px(16.)).text_color(hsla(MUTED)).child(note).into_any_element()
+    } else if show_diff {
+        let lines = doc.diff.clone().unwrap_or_default();
+        let digits = lines.iter().filter_map(|l| l.number).max().unwrap_or(1).to_string().len();
+        let gutter = digits as f32 * 8.0 + 22.0;
+        body.child(
+            gpui::uniform_list(("doc-lines", pane), lines.len(), move |range, _, _| {
+                range
+                    .map(|index| {
+                        let line = &lines[index];
+                        let (bg, fg, mark) = match line.kind {
+                            LineKind::Added => (Some(0x1d3324), 0xc8f0d2, "+"),
+                            LineKind::Removed => (Some(0x3a2020), 0xf2c4bd, "-"),
+                            LineKind::Hunk => (Some(0x1f2430), 0x8fa6d6, ""),
+                            LineKind::Context => (None, console::FOREGROUND, ""),
+                        };
+                        div()
+                            .h(px(LINE_H))
+                            .flex()
+                            .items_center()
+                            .when_some(bg, |el, bg| el.bg(hsla(bg)))
+                            .child(
+                                div()
+                                    .w(px(gutter))
+                                    .flex_none()
+                                    .pr(px(10.))
+                                    .flex()
+                                    .justify_end()
+                                    .text_color(hsla(FAINT))
+                                    .child(line.number.map(|n| n.to_string()).unwrap_or_default()),
+                            )
+                            .child(div().w(px(14.)).flex_none().text_color(hsla(fg)).child(mark))
+                            .child(div().flex_1().min_w(px(0.)).truncate().text_color(hsla(fg)).child(line.text.clone()))
+                            .into_any_element()
+                    })
+                    .collect()
+            })
+            .size_full(),
+        )
+        .into_any_element()
+    } else {
+        let lines = doc.lines.clone();
+        let gutter = lines.len().max(1).to_string().len() as f32 * 8.0 + 22.0;
+        body.child(
+            gpui::uniform_list(("doc-lines", pane), lines.len(), move |range, _, _| {
+                range
+                    .map(|index| {
+                        div()
+                            .h(px(LINE_H))
+                            .flex()
+                            .items_center()
+                            .child(
+                                div()
+                                    .w(px(gutter))
+                                    .flex_none()
+                                    .pr(px(12.))
+                                    .flex()
+                                    .justify_end()
+                                    .text_color(hsla(FAINT))
+                                    .child((index + 1).to_string()),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w(px(0.))
+                                    .truncate()
+                                    .text_color(hsla(console::FOREGROUND))
+                                    .child(lines[index].clone()),
+                            )
+                            .into_any_element()
+                    })
+                    .collect()
+            })
+            .size_full(),
+        )
+        .into_any_element()
+    };
+    div().absolute().inset_0().child(head).child(body)
 }
 
 fn inbox_item(item: &TrayItem, cx: &mut Context<SpaceView>) -> impl IntoElement {
