@@ -1,0 +1,269 @@
+{
+  "bpm": 150.0,
+  "beatSec": 0.4,
+  "barSec": 1.6,
+  "durationSec": 28.8,
+  "bars": [
+    {
+      "bar": 1,
+      "startSec": 0.0,
+      "section": "HOOK",
+      "energy0to10": 4
+    },
+    {
+      "bar": 2,
+      "startSec": 1.6,
+      "section": "BUILD",
+      "energy0to10": 6
+    },
+    {
+      "bar": 3,
+      "startSec": 3.2,
+      "section": "DROP A",
+      "energy0to10": 8
+    },
+    {
+      "bar": 4,
+      "startSec": 4.8,
+      "section": "DROP A",
+      "energy0to10": 8
+    },
+    {
+      "bar": 5,
+      "startSec": 6.4,
+      "section": "DROP B",
+      "energy0to10": 8
+    },
+    {
+      "bar": 6,
+      "startSec": 8.0,
+      "section": "DROP B",
+      "energy0to10": 8
+    },
+    {
+      "bar": 7,
+      "startSec": 9.6,
+      "section": "DROP C",
+      "energy0to10": 8
+    },
+    {
+      "bar": 8,
+      "startSec": 11.2,
+      "section": "DROP C",
+      "energy0to10": 8
+    },
+    {
+      "bar": 9,
+      "startSec": 12.8,
+      "section": "DROP D",
+      "energy0to10": 8
+    },
+    {
+      "bar": 10,
+      "startSec": 14.4,
+      "section": "DROP D",
+      "energy0to10": 8
+    },
+    {
+      "bar": 11,
+      "startSec": 16.0,
+      "section": "LIFT",
+      "energy0to10": 8
+    },
+    {
+      "bar": 12,
+      "startSec": 17.6,
+      "section": "CLIMAX",
+      "energy0to10": 8
+    },
+    {
+      "bar": 13,
+      "startSec": 19.2,
+      "section": "CLIMAX",
+      "energy0to10": 8
+    },
+    {
+      "bar": 14,
+      "startSec": 20.8,
+      "section": "BREAKDOWN",
+      "energy0to10": 8
+    },
+    {
+      "bar": 15,
+      "startSec": 22.4,
+      "section": "BREAKDOWN",
+      "energy0to10": 8
+    },
+    {
+      "bar": 16,
+      "startSec": 24.0,
+      "section": "BREAKDOWN",
+      "energy0to10": 8
+    },
+    {
+      "bar": 17,
+      "startSec": 25.6,
+      "section": "FINAL",
+      "energy0to10": 8
+    },
+    {
+      "bar": 18,
+      "startSec": 27.2,
+      "section": "FINAL",
+      "energy0to10": 6
+    }
+  ],
+  "kicks": [
+    0.0,
+    3.2,
+    3.6,
+    4.0,
+    4.4,
+    4.8,
+    5.2,
+    5.6,
+    6.0,
+    6.4,
+    6.8,
+    7.2,
+    7.6,
+    8.0,
+    8.4,
+    8.8,
+    9.2,
+    9.6,
+    10.0,
+    10.4,
+    10.8,
+    11.2,
+    11.6,
+    12.0,
+    12.4,
+    12.8,
+    13.2,
+    13.6,
+    14.0,
+    14.4,
+    14.8,
+    15.2,
+    15.6,
+    16.0,
+    16.4,
+    16.8,
+    17.2,
+    17.7,
+    18.1,
+    18.5,
+    18.9,
+    19.2,
+    19.6,
+    20.0,
+    20.4,
+    25.6,
+    26.0,
+    26.4,
+    26.8
+  ],
+  "snares": [
+    2.8,
+    2.9,
+    3.0,
+    3.1,
+    3.6,
+    4.4,
+    5.2,
+    6.0,
+    6.8,
+    7.6,
+    8.4,
+    9.2,
+    10.0,
+    10.8,
+    11.6,
+    12.4,
+    13.2,
+    14.0,
+    14.1,
+    14.2,
+    14.3,
+    14.8,
+    15.6,
+    15.7,
+    15.8,
+    15.9,
+    16.0,
+    16.1,
+    16.2,
+    16.3,
+    16.4,
+    16.5,
+    16.6,
+    16.7,
+    16.8,
+    16.9,
+    17.0,
+    17.1,
+    17.2,
+    17.3,
+    17.4,
+    17.5,
+    18.1,
+    18.9,
+    19.6,
+    20.4,
+    26.0,
+    26.4,
+    26.8,
+    27.2
+  ],
+  "hits": [
+    {
+      "t": 0.0,
+      "kind": "kick+sub"
+    },
+    {
+      "t": 3.2,
+      "kind": "crash+sub"
+    },
+    {
+      "t": 17.7,
+      "kind": "crash"
+    },
+    {
+      "t": 19.2,
+      "kind": "crash"
+    },
+    {
+      "t": 20.8,
+      "kind": "sub"
+    },
+    {
+      "t": 21.6,
+      "kind": "sub"
+    },
+    {
+      "t": 22.4,
+      "kind": "sub"
+    },
+    {
+      "t": 23.2,
+      "kind": "sub"
+    },
+    {
+      "t": 24.0,
+      "kind": "sub"
+    },
+    {
+      "t": 24.8,
+      "kind": "sub"
+    },
+    {
+      "t": 25.6,
+      "kind": "final-crash"
+    },
+    {
+      "t": 25.6,
+      "kind": "final-kick"
+    }
+  ]
+}

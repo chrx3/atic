@@ -1,0 +1,12 @@
+import { connect, sleep } from "../cdp.mjs";
+import fs from "node:fs";
+const [file, out, mode, sel] = process.argv.slice(2);
+const p = await connect();
+await p.send("Emulation.setDeviceMetricsOverride", { width: 1080, height: 1080, deviceScaleFactor: 2, mobile: false });
+const html = fs.readFileSync(file, "utf8").replace("__MODE__", mode);
+const f = await p.send("Page.getFrameTree");
+await p.send("Page.setDocumentContent", { frameId: f.frameTree.frame.id, html });
+await sleep(800);
+if (sel) console.log(JSON.stringify(await p.eval(`(()=>{const e=document.querySelector(${JSON.stringify(sel)});const r=e.getBoundingClientRect();const cs=getComputedStyle(e);return {x:r.x,y:r.y,w:r.width,h:r.height,font:cs.font,color:cs.color,lh:cs.lineHeight}})()`)));
+await p.shot(out);
+await p.close();

@@ -1,0 +1,5 @@
+node_modules
+out
+out-render.log
+public/clips
+capture/config.json

@@ -13,6 +13,13 @@ apps/desktop/.svelte-kit
 apps/web/build
 apps/web/.svelte-kit
 
+# Videos (Remotion): el código va al repo; lo renderizado y el audio no
+video/out
+video/**/*.wav
+video/**/*.mp3
+video-herramientas/**/*.wav
+video-herramientas/**/*.mp3
+
 # Tauri (generado)
 apps/desktop/src-tauri/gen
 # Firma local de macOS: cada máquina pone su identidad (ver docs/MACOS.md)
@@ -67,5 +74,7 @@ skills-lock.json
 
 # Worktrees temporales de agentes
 .claude/worktrees/
+# Índice local de codegraph (cada máquina arma el suyo)
+.codegraph/
 # Local Pi runtime state
 .atl/

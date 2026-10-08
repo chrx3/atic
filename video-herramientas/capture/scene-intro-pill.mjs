@@ -1,0 +1,18 @@
+import { open } from "./session.mjs";
+import { WALL, extra, ICON } from "./common-a.mjs";
+const p = await open({ route: "/overlay", label: "overlay", css: WALL("wall.png"), extra: extra("system", "colors") });
+await p.move(560, 780); await p.wait(500);
+const dir = "frames/intro-pill";
+p.startRec(dir);
+await p.hold(200);
+await p.glide(ICON.clipboard, 30, 850);
+await p.hold(150);
+await p.glide(ICON.clipboard, 26, 100);
+await p.hold(800);
+await p.glide(ICON.system, 26, 300);
+await p.hold(700);
+await p.glide(ICON.color, 26, 300);
+await p.hold(900);
+console.log("frames", p.stopRec());
+await p.encode(dir, "clips/intro-pill.mp4");
+await p.close();

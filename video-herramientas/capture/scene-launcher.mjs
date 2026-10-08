@@ -1,0 +1,25 @@
+import { open } from "./session.mjs";
+import fs from "node:fs";
+const WALL = "html{background:url(http://127.0.0.1:1431/wall-work.png) 0 0/100% 100% !important} body{background:transparent !important}";
+const extra = fs.readFileSync("data-launcher.js", "utf8").replace("__ICONS__", fs.readFileSync("assets-b/icons.json", "utf8"));
+const p = await open({ route: "/overlay", label: "overlay", css: WALL, extra });
+const REC = process.argv[2] === "rec";
+await p.move(760, 820); await p.wait(500);
+const dir = "frames/launcher";
+if (REC) p.startRec(dir); else p.startRec("frames/launcher-probe");
+const t = Date.now();
+await p.hold(150);
+await p.eval("window.__openLauncher()");
+await p.hold(450);
+await p.type("c"); await p.hold(45); await p.type("o");
+await p.hold(450);
+await p.key("ArrowDown", "ArrowDown", 40); await p.hold(230);
+await p.key("ArrowDown", "ArrowDown", 40); await p.hold(450);
+await p.send("Input.dispatchKeyEvent", { type: "rawKeyDown", key: "a", code: "KeyA", windowsVirtualKeyCode: 65, modifiers: 2, commands: ["selectAll"] });
+await p.send("Input.dispatchKeyEvent", { type: "keyUp", key: "a", code: "KeyA", windowsVirtualKeyCode: 65, modifiers: 2 });
+await p.hold(40);
+for (const ch of "250 usd a clp") { await p.type(ch); await p.hold(50); }
+await p.hold(1500);
+console.log("frames", p.stopRec(), (Date.now() - t) / 1000);
+if (REC) await p.encode(dir, "clips/launcher.mp4");
+await p.close();

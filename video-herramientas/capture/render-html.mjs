@@ -1,0 +1,11 @@
+import { connect, sleep } from "./cdp.mjs";
+import fs from "node:fs";
+const [file, out, w = 1080, h = 1080, dpr = 2, mode = ""] = process.argv.slice(2);
+const p = await connect();
+await p.send("Emulation.setDeviceMetricsOverride", { width: +w, height: +h, deviceScaleFactor: +dpr, mobile: false });
+const html = fs.readFileSync(file, "utf8").replace("__MODE__", mode);
+const f = await p.send("Page.getFrameTree");
+await p.send("Page.setDocumentContent", { frameId: f.frameTree.frame.id, html });
+await sleep(800);
+await p.shot(out);
+await p.close();

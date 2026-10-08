@@ -1,0 +1,28 @@
+import { open } from "./session.mjs";
+import { WALL, ICON } from "./common-a.mjs";
+const p = await open({ route: "/overlay", label: "overlay", css: WALL() });
+await p.move(470, 200); await p.wait(500);
+const dir = "frames/clipboard-a";
+p.startRec(dir);
+await p.hold(60);
+await p.glide(ICON.clipboard + 4, 30, 380);
+await p.hold(420);
+await p.move(ICON.clipboard, 26);
+await p.hold(120);
+await p.down(); await p.hold(60); await p.up();
+await p.hold(40);
+await p.glide(560, 200, 300);
+await p.hold(250);
+await p.glide(470, 156, 300);
+await p.hold(550);
+await p.glide(452, 70, 320);
+await p.down(); await p.hold(60); await p.up();
+await p.hold(200);
+for (const ch of "reu") { await p.type(ch); await p.hold(130); }
+await p.hold(250);
+await p.glide(540, 118, 350);
+await p.hold(900);
+console.log("frames", p.stopRec());
+await p.snap("a-cb-end.png");
+await p.encode(dir, "clips/clipboard-a.mp4");
+await p.close();

@@ -1,0 +1,22 @@
+{
+  "name": "atic-video-herramientas",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "preview": "remotion studio src/index.ts",
+    "render": "remotion render src/index.ts",
+    "still": "remotion still src/index.ts"
+  },
+  "dependencies": {
+    "@remotion/cli": "4.0.530",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "remotion": "4.0.530"
+  },
+  "devDependencies": {
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "typescript": "^5.9.3"
+  }
+}
