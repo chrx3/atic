@@ -10,6 +10,14 @@ $raiz = Split-Path -Parent $PSScriptRoot
 $pill = Join-Path $raiz "prototypes\pill-gpui"
 $target = Join-Path $env:LOCALAPPDATA "atic-gpui"
 
+# La pill que corre bloquea su exe; renombrado, cargo puede escribir el nuevo
+# y la vieja sigue andando hasta que se cierra abajo.
+$exe = Join-Path $target "debug\pill-gpui.exe"
+if (Test-Path $exe) {
+    Remove-Item "$exe.old" -Force -ErrorAction SilentlyContinue
+    Move-Item $exe "$exe.old" -Force
+}
+
 cargo build --manifest-path (Join-Path $pill "Cargo.toml") --target-dir $target
 if ($LASTEXITCODE -ne 0) { throw "la pill no compiló ($LASTEXITCODE)" }
 
@@ -20,7 +28,6 @@ Start-Sleep -Milliseconds 400
 # Desacoplada de esta consola: sobrevive aunque se cierre la terminal. La
 # consola de `cmd` va oculta; la pill de dev escribe su log en
 # %APPDATA%\ciat\atic\data\logs\pill.<fecha>.log.
-$exe = Join-Path $target "debug\pill-gpui.exe"
 $startup = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{ ShowWindow = [uint16]0 }
 $result = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{
     CommandLine = "cmd /c `"`"$exe`" >nul 2>&1`""
