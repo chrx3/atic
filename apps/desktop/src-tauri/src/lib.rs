@@ -577,7 +577,11 @@ pub fn run() {
                 }
             }
 
-            capture_session::prewarm_capture_overlay(app.handle());
+            // Con la pill nativa, las capturas las hace ella: esta ventana no
+            // se usa, y crearla en cada apertura de Atic fallaba en WebView2.
+            if !config_watch::native_pill() {
+                capture_session::prewarm_capture_overlay(app.handle());
+            }
             if agents::UI_ENABLED {
                 agents_window::prewarm_if_used(app.handle());
             }
