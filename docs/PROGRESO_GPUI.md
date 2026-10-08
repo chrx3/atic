@@ -202,11 +202,10 @@ propia de GPUI (decidido: después).
 
 Pendiente:
 
-1. **La música del celular en la pill** (llega por el canal; la pill no la
-   muestra todavía).
-2. **Ajustes que la pill no usa todavía:** lado y tiempo del estante de
-   capturas, puntero en la captura, temas, sonidos de la UI, alertas del
-   sistema.
+1. Hecho después: la música del celular como una fuente más (`535956d`) y el
+   lado, el tiempo del estante y el puntero en la captura (`1e63716`).
+2. **Ajustes que la pill no usa todavía:** temas, sonidos de la UI, alertas
+   del sistema.
 3. **Atic Code** (el espacio de consolas): al usuario no le gusta cómo está;
    ver con él qué cambiar.
 4. **Notificaciones de Android en el PC** con el celular vinculado. Idea del
