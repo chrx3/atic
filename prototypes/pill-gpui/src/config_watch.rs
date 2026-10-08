@@ -33,7 +33,8 @@ pub fn spawn() {
 
 fn apply(cfg: &Config) {
     crate::i18n::set_language(&cfg.resolved_ui_language());
-    if cfg.native_pill {
+    // En desarrollo no: apuntaría el inicio con Windows al exe de `target/`.
+    if cfg.native_pill && !cfg!(debug_assertions) {
         crate::platform::autostart::sync(cfg.autostart);
     }
 }
