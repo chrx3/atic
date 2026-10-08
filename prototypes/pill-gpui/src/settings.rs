@@ -153,7 +153,13 @@ impl Section {
 pub fn open(cx: &mut App) {
     let existing = cx.windows().into_iter().find_map(|w| w.downcast::<SettingsView>());
     if let Some(handle) = existing {
-        if handle.update(cx, |_, window, _| window.activate_window()).is_ok() {
+        if handle
+            .update(cx, |_, window, _| {
+                window.activate_window();
+                crate::win::bring_to_front(window);
+            })
+            .is_ok()
+        {
             return;
         }
     }
@@ -178,8 +184,11 @@ pub fn open(cx: &mut App) {
         chrome::setup(window);
         cx.new(SettingsView::new)
     });
-    if let Err(error) = opened {
-        eprintln!("ajustes: no se pudo abrir la ventana: {error}");
+    match opened {
+        Ok(handle) => {
+            let _ = handle.update(cx, |_, window, _| crate::win::bring_to_front(window));
+        }
+        Err(error) => eprintln!("ajustes: no se pudo abrir la ventana: {error}"),
     }
 }
 

@@ -86,6 +86,18 @@ fn all_monitors() -> Vec<RECT> {
     list
 }
 
+/// Trae una ventana de la pill al frente de las demás apps. La pill no toma
+/// el foco (`WS_EX_NOACTIVATE`), así que Windows no la deja activar ventanas
+/// por las buenas: `activate_window` solo la hace parpadear en la barra.
+pub fn bring_to_front(window: &Window) {
+    let Ok(handle) = HasWindowHandle::window_handle(window) else {
+        return;
+    };
+    if let RawWindowHandle::Win32(win32) = handle.as_raw() {
+        crate::paste::force_foreground(win32.hwnd.get());
+    }
+}
+
 pub struct Overlay {
     hwnd: HWND,
     passthrough: bool,

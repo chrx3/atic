@@ -2182,6 +2182,7 @@ impl Pill {
             let alive = handle
                 .update(cx, |view, window, cx| {
                     window.activate_window();
+                    win::bring_to_front(window);
                     if let Some(open) = open.clone() {
                         view.open(open, cx);
                     }

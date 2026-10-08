@@ -108,6 +108,7 @@ pub fn show(cx: &mut App) {
         let alive = handle
             .update(cx, |view, window, cx| {
                 window.activate_window();
+                crate::win::bring_to_front(window);
                 view.reload(cx);
             })
             .is_ok();
@@ -115,8 +116,11 @@ pub fn show(cx: &mut App) {
             return;
         }
     }
-    if let Err(error) = open_window(cx) {
-        eprintln!("reuniones: no se pudo abrir la ventana: {error}");
+    match open_window(cx) {
+        Ok(handle) => {
+            let _ = handle.update(cx, |_, window, _| crate::win::bring_to_front(window));
+        }
+        Err(error) => eprintln!("reuniones: no se pudo abrir la ventana: {error}"),
     }
 }
 
