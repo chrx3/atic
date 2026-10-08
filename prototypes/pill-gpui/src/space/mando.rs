@@ -211,6 +211,10 @@ pub struct State {
     menu: Option<Menu>,
     /// La pestaña del panel de la derecha.
     tab: Tab,
+    /// En la pizarra: la barra de espacios se ocultó, el panel de la derecha
+    /// se mostró.
+    board_side_hidden: bool,
+    board_detail: bool,
     explorer: Explorer,
     /// El último agente enfocado: el panel de la derecha lo sigue mostrando
     /// mientras se mira un archivo.
@@ -360,15 +364,21 @@ impl SpaceView {
         if self.mando.agent.is_some_and(|id| self.card(id).is_none()) {
             self.mando.agent = None;
         }
-        // Un archivo vive mientras está en un panel.
+        // Un archivo del Mando vive mientras está en un panel; uno de la
+        // pizarra, hasta que se cierra.
         let shown = self.mando.panes.shown();
-        self.docs.retain(|doc| shown.contains(&doc.id));
+        self.docs.retain(|doc| doc.area.is_some() || shown.contains(&doc.id));
     }
 
     /// Abre un archivo en un panel: el que ya muestra un archivo, uno vacío o
     /// uno nuevo al lado del enfocado. El foco se queda donde estaba.
     fn open_doc(&mut self, path: &Path, show_diff: bool, cx: &mut Context<Self>) {
-        if let Some(doc) = self.docs.iter_mut().find(|d| workspaces::same(&d.path, path)) {
+        if self.view == View::Pizarra {
+            let anchor = self.focused;
+            self.board_doc(path, show_diff, anchor, cx);
+            return;
+        }
+        if let Some(doc) = self.docs.iter_mut().find(|d| d.area.is_none() && workspaces::same(&d.path, path)) {
             doc.reload();
             doc.show_diff = show_diff && doc.diff.is_some();
             cx.notify();
@@ -377,7 +387,7 @@ impl SpaceView {
         let id = self.next_id;
         self.next_id += 1;
         let doc = Doc::load(id, path, show_diff);
-        let is_doc = |content: Option<u64>| content.is_some_and(|id| self.docs.iter().any(|d| d.id == id));
+        let is_doc = |content: Option<u64>| content.is_some_and(|id| self.docs.iter().any(|d| d.id == id && d.area.is_none()));
         let slots = self.mando.panes.slots();
         let target = slots
             .iter()
@@ -631,6 +641,12 @@ pub(super) fn key_down(
             "down" if only(false, true, false) => view.move_focus(Dir::Down, window, cx),
             _ => handled = false,
         }
+    } else if key == "w" && only(true, false, false) {
+        // En la pizarra, Ctrl+W termina la tarjeta enfocada.
+        match view.focused {
+            Some(id) => view.terminate(id, cx),
+            None => handled = false,
+        }
     } else {
         handled = false;
     }
@@ -644,7 +660,7 @@ pub(super) fn key_down(
 // --- Piezas ---------------------------------------------------------------------
 
 /// El logo de cada agente; sin agente, una terminal.
-fn agent_icon(agent: Option<&str>) -> &'static str {
+pub(super) fn agent_icon(agent: Option<&str>) -> &'static str {
     match agent {
         Some("claude") => "icons/agents/claude.svg",
         Some("codex") => "icons/agents/openai.svg",
@@ -894,34 +910,11 @@ pub(super) fn card_sub(card: &super::Card) -> String {
 
 // --- Dibujo ----------------------------------------------------------------------
 
-pub(super) fn render(view: &mut SpaceView, _window: &mut Window, cx: &mut Context<SpaceView>) -> AnyElement {
-    let (vw, vh) = view.viewport;
-    let cell = view.cell();
-    let layout = Layout::new(vw, vh);
-    let now = Instant::now();
-    let maximized = view.mando.maximized;
-    view.sync_panes();
-
-    // Cada consola a la vista ocupa justo la terminal de su panel. Mientras se
-    // arrastra una raya no: cada cambio de tamaño hace repintar a la TUI.
-    let rects = view.mando.panes.layout(layout.panes, GAP);
-    if view.mando.split_drag.is_none() {
-        for (pane, area) in &rects {
-            let Some(id) = view.mando.panes.card_in(*pane) else {
-                continue;
-            };
-            let grid = term_grid(*area, cell);
-            let resized = view.card_mut(id).is_some_and(|card| {
-                let before = card.console.size;
-                card.console.resize(grid, (cell.w.round() as u16, cell.h as u16));
-                card.console.size != before
-            });
-            if resized {
-                view.mando.settle(id, now);
-            }
-        }
-    }
-
+/// Lo que se muestra de cada consola y lo que espera en la bandeja, para
+/// las dos vistas.
+fn agents_and_inbox(view: &SpaceView, now: Instant) -> (HashMap<u64, AgentData>, Vec<TrayItem>) {
+    // En la pizarra se ven todas; en el Mando, las que están en un panel.
+    let pizarra = view.view == View::Pizarra;
     let shown = view.mando.panes.shown();
     let agents: HashMap<u64, AgentData> = view
         .cards
@@ -942,7 +935,7 @@ pub(super) fn render(view: &mut SpaceView, _window: &mut Window, cx: &mut Contex
                 phase: phase_now,
                 since,
                 unseen: watch.is_some_and(|w| w.unseen.is_some()),
-                shown: shown.contains(&card.id),
+                shown: pizarra || shown.contains(&card.id),
                 focused: view.focused == Some(card.id),
                 changes: card.changes.list.len(),
             };
@@ -971,6 +964,60 @@ pub(super) fn render(view: &mut SpaceView, _window: &mut Window, cx: &mut Contex
         .collect();
     inbox.sort_by_key(|(at, _)| *at);
     let inbox: Vec<TrayItem> = inbox.into_iter().map(|(_, item)| item).collect();
+    (agents, inbox)
+}
+
+/// El panel de la derecha: el agente que se sigue, sus cambios y su árbol.
+fn detail_data(view: &mut SpaceView, agents: &HashMap<u64, AgentData>, visible: bool) -> Detail {
+    // El panel de la derecha sigue al último agente enfocado; sin agente, el
+    // árbol muestra las carpetas del espacio activo.
+    // En la pizarra, el enfocado.
+    let followed = if view.view == View::Pizarra { view.focused } else { view.mando.agent };
+    let agent_card = followed.and_then(|id| view.card(id));
+    let dirs: Vec<PathBuf> = agent_card
+        .map(|c| c.dirs.clone())
+        .filter(|d| !d.is_empty())
+        .or_else(|| view.spaces.active().map(|s| s.folders.clone()))
+        .unwrap_or_default();
+    let files: Vec<changes::Change> =
+        agent_card.map(|c| c.changes.list.iter().take(MAX_FILES).cloned().collect()).unwrap_or_default();
+    let changed: HashSet<PathBuf> = files.iter().map(|f| f.path.clone()).collect();
+    let agent = agent_card.and_then(|c| agents.get(&c.id).cloned());
+    let closing = agent.as_ref().is_some_and(|a| view.mando.closing == Some(a.id));
+    let tab = view.mando.tab;
+    let tree = if tab == Tab::Files && visible { view.mando.explorer.rows(&dirs) } else { Vec::new() };
+    Detail { agent, dirs, files, closing, tab, tree, changed }
+}
+
+pub(super) fn render(view: &mut SpaceView, _window: &mut Window, cx: &mut Context<SpaceView>) -> AnyElement {
+    let (vw, vh) = view.viewport;
+    let cell = view.cell();
+    let layout = Layout::new(vw, vh);
+    let now = Instant::now();
+    let maximized = view.mando.maximized;
+    view.sync_panes();
+
+    // Cada consola a la vista ocupa justo la terminal de su panel. Mientras se
+    // arrastra una raya no: cada cambio de tamaño hace repintar a la TUI.
+    let rects = view.mando.panes.layout(layout.panes, GAP);
+    if view.mando.split_drag.is_none() {
+        for (pane, area) in &rects {
+            let Some(id) = view.mando.panes.card_in(*pane) else {
+                continue;
+            };
+            let grid = term_grid(*area, cell);
+            let resized = view.card_mut(id).is_some_and(|card| {
+                let before = card.console.size;
+                card.console.resize(grid, (cell.w.round() as u16, cell.h as u16));
+                card.console.size != before
+            });
+            if resized {
+                view.mando.settle(id, now);
+            }
+        }
+    }
+
+    let (agents, inbox) = agents_and_inbox(view, now);
 
     let multi = view.mando.panes.count() > 1;
     let panes: Vec<PaneData> = rects
@@ -1005,22 +1052,7 @@ pub(super) fn render(view: &mut SpaceView, _window: &mut Window, cx: &mut Contex
     }
     let dividers = view.mando.panes.dividers(layout.panes, GAP);
 
-    // El panel de la derecha sigue al último agente enfocado; sin agente, el
-    // árbol muestra las carpetas del espacio activo.
-    let agent_card = view.mando.agent.and_then(|id| view.card(id));
-    let dirs: Vec<PathBuf> = agent_card
-        .map(|c| c.dirs.clone())
-        .filter(|d| !d.is_empty())
-        .or_else(|| view.spaces.active().map(|s| s.folders.clone()))
-        .unwrap_or_default();
-    let files: Vec<changes::Change> =
-        agent_card.map(|c| c.changes.list.iter().take(MAX_FILES).cloned().collect()).unwrap_or_default();
-    let changed: HashSet<PathBuf> = files.iter().map(|f| f.path.clone()).collect();
-    let agent = agent_card.and_then(|c| agents.get(&c.id).cloned());
-    let closing = agent.as_ref().is_some_and(|a| view.mando.closing == Some(a.id));
-    let tab = view.mando.tab;
-    let tree = if tab == Tab::Files && layout.detail.is_some() { view.mando.explorer.rows(&dirs) } else { Vec::new() };
-    let detail = Detail { agent, dirs, files, closing, tab, tree, changed };
+    let detail = detail_data(view, &agents, layout.detail.is_some());
 
     // Los estados cuentan a todas las consolas, también a las que no están en
     // un panel: siguen trabajando.
@@ -1078,7 +1110,7 @@ pub(super) fn render(view: &mut SpaceView, _window: &mut Window, cx: &mut Contex
         .font_family("Segoe UI")
         .child(super::input::layer(cx.weak_entity(), view.focus.clone()))
         .child(top_bar(maximized, active_space, cx))
-        .child(side_bar(layout.side, view, &groups, &others, &agents, cx))
+        .child(side_bar(layout.side, view, &groups, &others, &agents, false, cx))
         .children(panes.into_iter().map(|p| pane_panel(p, cell, &hidden, &launchers, cx).into_any_element()))
         .children(dividers.into_iter().enumerate().map(|(index, d)| {
             let cursor = match d.axis {
@@ -1156,21 +1188,173 @@ fn top_bar(maximized: bool, space: Option<String>, cx: &mut Context<SpaceView>) 
                             .child(format!("Nuevos en {space}")),
                     )
                 })
-                .child(
-                    pill("mando-new", "Nuevo agente", Tone::Light)
-                        .child(svg().path("icons/chevron-down.svg").size(px(12.)).text_color(hsla(INK)))
-                        .on_mouse_down(
+                .child(new_agent_button(cx)),
+        )
+        .child(chrome::controls(maximized, TOP_H))
+}
+
+/// «Nuevo agente»: abre el menú con los agentes instalados. Lo comparten el
+/// Mando y la pizarra.
+pub(super) fn new_agent_button(cx: &mut Context<SpaceView>) -> impl IntoElement {
+    pill("mando-new", "Nuevo agente", Tone::Light)
+        .child(svg().path("icons/chevron-down.svg").size(px(12.)).text_color(hsla(INK)))
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(|v, event: &MouseDownEvent, _, cx| {
+                cx.stop_propagation();
+                let (x, y) = (f32::from(event.position.x), f32::from(event.position.y));
+                v.mando.menu = Some(Menu { x: x - 120.0, y: y + 16.0, workspace: None });
+                cx.notify();
+            }),
+        )
+}
+
+/// Los botones de la pizarra que muestran u ocultan las barras de los lados.
+pub(super) fn board_toggles(view: &SpaceView, cx: &mut Context<SpaceView>) -> impl IntoElement {
+    let toggle = |id: &'static str, icon: &'static str, tip: &'static str, on: bool| {
+        icon_button(id, icon, tip, SURFACE_HOVER).when(on, |el| el.bg(hsla(SURFACE_ON)))
+    };
+    div()
+        .flex()
+        .items_center()
+        .gap(px(2.))
+        .child(
+            toggle("board-side", "icons/panel-left.svg", "Espacios", !view.mando.board_side_hidden).on_click(cx.listener(
+                |v, _: &ClickEvent, _, cx| {
+                    v.mando.board_side_hidden = !v.mando.board_side_hidden;
+                    cx.notify();
+                },
+            )),
+        )
+        .child(
+            toggle("board-detail", "icons/panel-right.svg", "Cambios, archivos y revisión", view.mando.board_detail)
+                .on_click(cx.listener(|v, _: &ClickEvent, _, cx| {
+                    v.mando.board_detail = !v.mando.board_detail;
+                    cx.notify();
+                })),
+        )
+}
+
+/// Lo que la pizarra dibuja encima del plano: las barras de los lados, el
+/// menú de agentes y el selector de carpetas.
+pub(super) fn board_overlays(view: &mut SpaceView, cx: &mut Context<SpaceView>) -> Vec<AnyElement> {
+    let (vw, vh) = view.viewport;
+    let (agents, inbox) = agents_and_inbox(view, Instant::now());
+    let y = TOP_H + 8.0;
+    let h = (vh - y - 8.0).max(160.0);
+    let mut out = Vec::new();
+    if !view.mando.board_side_hidden {
+        let (groups, others) = view.side_groups();
+        let area = Area { x: 8.0, y, w: SIDE_W + 16.0, h };
+        out.push(side_bar(area, view, &groups, &others, &agents, true, cx).into_any_element());
+    }
+    if view.mando.board_detail {
+        let detail = detail_data(view, &agents, true);
+        let area = Area { x: vw - DETAIL_W - 8.0, y, w: DETAIL_W, h };
+        out.push(detail_panel(area, detail, &inbox, cx).into_any_element());
+    }
+    if let Some(menu) = &view.mando.menu {
+        out.push(agent_menu(menu, &view.launchers(), (vw, vh), cx).into_any_element());
+    }
+    if let Some(picker) = super::picker::render(view, vw, vh, cx) {
+        out.push(picker.into_any_element());
+    }
+    out
+}
+
+/// El encabezado de cada zona de la pizarra: el nombre del espacio, sus
+/// carpetas y cómo andan sus agentes. Se arrastra para mover la zona entera.
+pub(super) fn zone_headers(view: &SpaceView, zones: &[super::zones::Zone], cx: &mut Context<SpaceView>) -> Vec<AnyElement> {
+    let (vw, vh) = view.viewport;
+    zones
+        .iter()
+        .filter_map(|zone| {
+            let space = view.spaces.get(zone.id)?;
+            let b = view.camera.area(&zone.area);
+            let (x, y, w) = (f32::from(b.origin.x), f32::from(b.origin.y), f32::from(b.size.width));
+            if x > vw || y > vh || x + w < 0.0 || y + f32::from(b.size.height) < TOP_H {
+                return None;
+            }
+            let id = zone.id;
+            let mine = view.cards.iter().filter(|c| c.workspace == Some(id));
+            let (mut working, mut ready) = (0, 0);
+            for card in mine {
+                match phase(card.console.exited(), card.console.quiet_for()) {
+                    Phase::Working => working += 1,
+                    Phase::Ready => ready += 1,
+                    Phase::Ended => {}
+                }
+            }
+            let folders = space.folders.iter().map(|f| short_name(f)).collect::<Vec<_>>().join(" · ");
+            let head_h = 34.0;
+            let top = y + ((super::zones::HEAD * view.camera.zoom - head_h) / 2.0).max(4.0);
+            let active = view.spaces.active_id() == Some(id);
+            Some(
+                div()
+                    .id(("zone-head", id as usize))
+                    .absolute()
+                    .left(px(x + 8.0))
+                    .top(px(top))
+                    .w(px((w - 16.0).max(260.0)))
+                    .h(px(head_h))
+                    .px(px(8.))
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .rounded(px(12.))
+                    .cursor(CursorStyle::OpenHand)
+                    .hover(|el| el.bg(hsla(0x1b1b19)))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |v, event: &MouseDownEvent, window, cx| {
+                            cx.stop_propagation();
+                            window.focus(&v.focus);
+                            v.spaces.select(id);
+                            v.start_zone_drag(id, (f32::from(event.position.x), f32::from(event.position.y)));
+                            cx.notify();
+                        }),
+                    )
+                    .child(svg().path("icons/layers.svg").size(px(14.)).flex_none().text_color(hsla(if active { TEXT } else { MUTED })))
+                    .child(
+                        div()
+                            .flex_none()
+                            .text_size(px(13.5))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(hsla(if active { TEXT } else { MUTED }))
+                            .child(space.name.clone()),
+                    )
+                    .child(div().flex_1().min_w(px(0.)).truncate().text_size(px(11.5)).text_color(hsla(FAINT)).child(folders))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_none()
+                            .items_center()
+                            .gap(px(5.))
+                            .text_size(px(11.5))
+                            .text_color(hsla(MUTED))
+                            .when(working > 0, |el| el.child(dot(WORKING_DOT)).child(format!("{working} trabajando")))
+                            .when(ready > 0, |el| el.child(dot(READY_DOT)).child(plural(ready, "listo", "listos"))),
+                    )
+                    .child(
+                        mini_button(("zone-new", id as usize), "icons/plus.svg", "Abrir un agente aquí").on_mouse_down(
                             MouseButton::Left,
-                            cx.listener(|v, event: &MouseDownEvent, _, cx| {
+                            cx.listener(move |v, event: &MouseDownEvent, _, cx| {
                                 cx.stop_propagation();
                                 let (x, y) = (f32::from(event.position.x), f32::from(event.position.y));
-                                v.mando.menu = Some(Menu { x: x - 120.0, y: y + 16.0, workspace: None });
+                                v.mando.menu = Some(Menu { x: x - 10.0, y: y + 14.0, workspace: Some(id) });
                                 cx.notify();
                             }),
                         ),
-                ),
-        )
-        .child(chrome::controls(maximized, TOP_H))
+                    )
+                    .child(
+                        mini_button(("zone-arrange", id as usize), "icons/layout-grid.svg", "Ordenar en grilla")
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                            .on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.arrange_zone(id, cx))),
+                    )
+                    .into_any_element(),
+            )
+        })
+        .collect()
 }
 
 /// El menú con los agentes instalados, para abrir uno en un espacio.
@@ -1240,6 +1424,7 @@ fn side_bar(
     groups: &[(u64, Vec<u64>)],
     others: &[u64],
     agents: &HashMap<u64, AgentData>,
+    boxed: bool,
     cx: &mut Context<SpaceView>,
 ) -> impl IntoElement {
     let active = view.spaces.active_id();
@@ -1250,6 +1435,8 @@ fn side_bar(
         .top(px(area.y))
         .w(px(area.w))
         .h(px(area.h))
+        // En la pizarra va sobre el plano: con fondo y sin dejar pasar el mouse.
+        .when(boxed, |el| el.p(px(8.)).rounded(px(R_PANEL)).bg(hsla(SURFACE)).occlude())
         .flex()
         .flex_col()
         .gap(px(2.))
@@ -1705,6 +1892,7 @@ fn detail_panel(area: Area, detail: Detail, inbox: &[TrayItem], cx: &mut Context
     let mut panel = div()
         .id("mando-detail")
         .absolute()
+        .occlude()
         .left(px(area.x))
         .top(px(area.y))
         .w(px(area.w))

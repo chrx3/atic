@@ -27,6 +27,7 @@ mod persist;
 mod picker;
 mod viewer;
 mod workspaces;
+mod zones;
 
 /// Lo que el notch necesita del espacio: cuántos agentes hay vivos y escribirles.
 pub use persist::{agent_consoles, send_to_agents};
@@ -57,6 +58,13 @@ const PAD: f32 = 8.0;
 const RADIUS: f32 = 14.0;
 /// Esquina para cambiar el tamaño.
 const GRIP: f32 = 14.0;
+/// En el encabezado de un archivo de la pizarra, lo que ocupa «Archivo» /
+/// «Cambios», antes de la ×.
+const DOC_TOGGLE: f32 = 78.0;
+/// Desde este zoom, una consola con archivos cambiados muestra el botón que
+/// los abre; su ancho en pantalla.
+const CHIP_ZOOM: f32 = 0.45;
+const CHIP_W: f32 = 96.0;
 /// Zoom semántico. Desde `TEXT_ZOOM` la terminal es texto (letra de 8,5 px
 /// o más); entre `LIVE_ZOOM` y `TEXT_ZOOM`, la silueta de su salida en vivo;
 /// por debajo, una tarjeta con el agente y sus últimas líneas.
@@ -81,6 +89,8 @@ const MUTED: u32 = 0x9a9a90;
 const FAINT: u32 = 0x5a5a54;
 /// El encabezado de la tarjeta enfocada: se distingue por ser más claro, sin marco.
 const HEADER_ON: u32 = 0x2d2d2a;
+/// El fondo de la zona de un espacio en la pizarra: apenas más claro que el plano.
+const ZONE: u32 = 0x131312;
 const WORKING: u32 = 0xe8b04b;
 const READY: u32 = 0x6cc48a;
 
@@ -219,6 +229,9 @@ pub struct SpaceView {
     picker: Option<picker::Picker>,
     /// Los archivos abiertos en paneles del Mando (`viewer.rs`).
     docs: Vec<viewer::Doc>,
+    /// Se está arrastrando una zona de la pizarra: desde dónde y dónde
+    /// estaban sus consolas.
+    zone_drag: Option<((f32, f32), Vec<(u64, Area)>)>,
     /// Ajustar todo en el primer cuadro, cuando ya se conoce el tamaño.
     fit_pending: bool,
     /// Mando (cartas, consola enfocada y bandeja) o pizarra.
@@ -433,6 +446,7 @@ impl SpaceView {
             available: Vec::new(),
             picker: None,
             docs: Vec::new(),
+            zone_drag: None,
             fit_pending: false,
             // El Mando es la vista de siempre; `SPACE_VIEW=pizarra` abre la otra.
             view: match std::env::var("SPACE_VIEW").as_deref() {
@@ -509,9 +523,18 @@ impl SpaceView {
     /// hay otra (como `agentBoard.ts`).
     pub fn open(&mut self, open: Open, cx: &mut Context<Self>) {
         let mut area = self.area_for(100, 28);
-        let center = self.camera.to_board((self.viewport.0 / 2.0, (self.viewport.1 + TOOLBAR_H) / 2.0));
-        area.x = center.0 - area.w / 2.0;
-        area.y = center.1 - area.h / 2.0;
+        // En la pizarra va dentro de la zona de su espacio (`zones`); con el
+        // plano vacío, al centro de lo que se ve.
+        let placed = self.board_items();
+        let workspace = self.workspace_for(&open);
+        if let Some((x, y)) = zones::place(workspace, &placed) {
+            area.x = x;
+            area.y = y;
+        } else {
+            let center = self.camera.to_board((self.viewport.0 / 2.0, (self.viewport.1 + TOOLBAR_H) / 2.0));
+            area.x = center.0 - area.w / 2.0;
+            area.y = center.1 - area.h / 2.0;
+        }
         while self
             .cards
             .iter()
@@ -523,17 +546,20 @@ impl SpaceView {
         self.open_at(open, area, cx);
     }
 
-    fn open_at(&mut self, open: Open, area: Area, cx: &mut Context<Self>) {
-        let cell = self.cell();
-        // El espacio donde se abre: el que se pidió con `opening_in`, el que
-        // tiene la carpeta pedida o, sin carpeta, el activo.
-        let workspace = match (self.opening_in.take(), &open.cwd) {
+    /// El espacio donde se abre: el que se pidió con `opening_in`, el que
+    /// tiene la carpeta pedida o, sin carpeta, el activo.
+    fn workspace_for(&self, open: &Open) -> Option<u64> {
+        match (self.opening_in, &open.cwd) {
             (Some(id), _) => Some(id),
             (None, Some(cwd)) => self.spaces.find_for(cwd),
             (None, None) => self.spaces.active_id(),
         }
-        .and_then(|id| self.spaces.get(id))
-        .cloned();
+    }
+
+    fn open_at(&mut self, open: Open, area: Area, cx: &mut Context<Self>) {
+        let cell = self.cell();
+        let workspace = self.workspace_for(&open).and_then(|id| self.spaces.get(id)).cloned();
+        self.opening_in = None;
         // Sin carpeta pedida: la principal del espacio, la de quien lo abrió o
         // la del proceso, donde el PTY ya arrancaba.
         let cwd = open
@@ -655,10 +681,13 @@ impl SpaceView {
 
     /// Mueve la cámara lo justo para que la tarjeta se vea.
     fn reveal(&mut self, id: u64) {
-        let Some(card) = self.card(id) else {
-            return;
-        };
-        let bounds = self.camera.area(&card.area);
+        if let Some(area) = self.card(id).map(|c| c.area) {
+            self.reveal_area(area);
+        }
+    }
+
+    fn reveal_area(&mut self, area: Area) {
+        let bounds = self.camera.area(&area);
         let (left, top) = (f32::from(bounds.origin.x), f32::from(bounds.origin.y));
         let (w, h) = (f32::from(bounds.size.width), f32::from(bounds.size.height));
         let (vw, vh) = self.viewport;
@@ -724,6 +753,29 @@ impl SpaceView {
         }
         window.focus(&self.focus);
         let board = self.camera.to_board(p);
+        // Los archivos van encima de las consolas: se miran primero.
+        if let Some((id, area)) = self.doc_at(p) {
+            if let Some(index) = self.docs.iter().position(|d| d.id == id) {
+                let doc = self.docs.remove(index);
+                self.docs.push(doc);
+            }
+            let local = (board.0 - area.x, board.1 - area.y);
+            if local.1 <= HEADER && local.0 >= area.w - HEADER {
+                self.docs.retain(|d| d.id != id);
+            } else if local.1 <= HEADER && local.0 >= area.w - HEADER - DOC_TOGGLE {
+                // «Archivo» / «Cambios».
+                if let Some(doc) = self.docs.last_mut().filter(|d| d.diff.is_some()) {
+                    doc.show_diff = !doc.show_diff;
+                    doc.scroll = 0;
+                }
+            } else if local.0 >= area.w - GRIP && local.1 >= area.h - GRIP {
+                self.drag = Some(Drag::Resize { id, from: p, area });
+            } else if local.1 <= HEADER || self.camera.zoom < LIVE_ZOOM {
+                self.drag = Some(Drag::Move { id, from: p, area });
+            }
+            cx.notify();
+            return;
+        }
         if let Some(card) = self.card_at(p) {
             let (id, area) = (card.id, card.area);
             self.raise(id);
@@ -766,6 +818,23 @@ impl SpaceView {
     }
 
     fn mouse_move(&mut self, event: &MouseMoveEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some((from, start)) = &self.zone_drag {
+            if event.pressed_button != Some(MouseButton::Left) {
+                return self.release(cx);
+            }
+            let zoom = self.camera.zoom;
+            let dx = (f32::from(event.position.x) - from.0) / zoom;
+            let dy = (f32::from(event.position.y) - from.1) / zoom;
+            let moves = start.clone();
+            for (id, area) in moves {
+                if let Some(target) = self.area_mut(id) {
+                    target.x = area.x + dx;
+                    target.y = area.y + dy;
+                }
+            }
+            cx.notify();
+            return;
+        }
         let Some(drag) = self.drag else {
             return;
         };
@@ -781,23 +850,139 @@ impl SpaceView {
                 self.moved();
             }
             Drag::Move { id, from, area } => {
-                if let Some(card) = self.card_mut(id) {
-                    card.area.x = area.x + (p.0 - from.0) / zoom;
-                    card.area.y = area.y + (p.1 - from.1) / zoom;
+                if let Some(target) = self.area_mut(id) {
+                    target.x = area.x + (p.0 - from.0) / zoom;
+                    target.y = area.y + (p.1 - from.1) / zoom;
                 }
             }
             Drag::Resize { id, from, area } => {
                 let min = self.area_for(40, 8);
-                if let Some(card) = self.card_mut(id) {
-                    card.area.w = (area.w + (p.0 - from.0) / zoom).max(min.w);
-                    card.area.h = (area.h + (p.1 - from.1) / zoom).max(min.h);
+                if let Some(target) = self.area_mut(id) {
+                    target.w = (area.w + (p.0 - from.0) / zoom).max(min.w);
+                    target.h = (area.h + (p.1 - from.1) / zoom).max(min.h);
                 }
             }
         }
         cx.notify();
     }
 
+    /// Empieza a mover la zona de un espacio: todas sus consolas juntas.
+    fn start_zone_drag(&mut self, workspace: u64, from: (f32, f32)) {
+        let mut moving: Vec<(u64, Area)> =
+            self.cards.iter().filter(|c| c.workspace == Some(workspace)).map(|c| (c.id, c.area)).collect();
+        // Los archivos abiertos junto a esas consolas se mueven con ellas.
+        let anchors: Vec<u64> = moving.iter().map(|(id, _)| *id).collect();
+        for doc in &self.docs {
+            if let (Some(area), true) = (doc.area, doc.anchor.is_some_and(|a| anchors.contains(&a))) {
+                moving.push((doc.id, area));
+            }
+        }
+        self.zone_drag = Some((from, moving));
+    }
+
+    /// Las zonas de los espacios con consolas.
+    fn zone_list(&self) -> Vec<zones::Zone> {
+        let ids: Vec<u64> = self.spaces.list().iter().map(|s| s.id).collect();
+        zones::zones(&ids, &self.board_items())
+    }
+
+    /// Lo que ocupa lugar en la pizarra, con su espacio: las consolas y los
+    /// archivos abiertos junto a ellas (del espacio de su consola).
+    fn board_items(&self) -> Vec<(Option<u64>, Area)> {
+        let docs = self.docs.iter().filter_map(|doc| {
+            let workspace = doc.anchor.and_then(|id| self.card(id)).and_then(|c| c.workspace);
+            doc.area.map(|area| (workspace, area))
+        });
+        self.cards.iter().map(|c| (c.workspace, c.area)).chain(docs).collect()
+    }
+
+    /// El área de una consola o de un archivo de la pizarra.
+    fn area_mut(&mut self, id: u64) -> Option<&mut Area> {
+        if let Some(card) = self.cards.iter_mut().find(|c| c.id == id) {
+            return Some(&mut card.area);
+        }
+        self.docs.iter_mut().find(|d| d.id == id).and_then(|d| d.area.as_mut())
+    }
+
+    /// El archivo de la pizarra de más arriba bajo el punto de pantalla.
+    fn doc_at(&self, p: (f32, f32)) -> Option<(u64, Area)> {
+        let board = self.camera.to_board(p);
+        self.docs.iter().rev().find_map(|d| d.area.filter(|a| a.contains(board)).map(|a| (d.id, a)))
+    }
+
+    /// Abre un archivo como tarjeta de la pizarra, en columna a la derecha de
+    /// la consola `anchor` (con una línea que los une). Si ya estaba, lo trae.
+    fn board_doc(&mut self, path: &std::path::Path, show_diff: bool, anchor: Option<u64>, cx: &mut Context<Self>) {
+        if let Some(index) = self.docs.iter().position(|d| d.area.is_some() && workspaces::same(&d.path, path)) {
+            let mut doc = self.docs.remove(index);
+            doc.reload();
+            doc.show_diff = show_diff && doc.diff.is_some();
+            let area = doc.area;
+            self.docs.push(doc);
+            if let Some(area) = area {
+                self.reveal_area(area);
+            }
+            cx.notify();
+            return;
+        }
+        let id = self.next_id;
+        self.next_id += 1;
+        let mut doc = viewer::Doc::load(id, path, show_diff);
+        let size = self.area_for(84, 24);
+        let anchor = anchor.and_then(|id| self.card(id)).map(|c| (c.id, c.area));
+        let (x, y) = match anchor {
+            Some((anchor_id, a)) => {
+                let stacked = self.docs.iter().filter(|d| d.anchor == Some(anchor_id) && d.area.is_some()).count();
+                (a.x + a.w + 60.0, a.y + stacked as f32 * (size.h + 24.0))
+            }
+            None => {
+                let center = self.camera.to_board((self.viewport.0 / 2.0, (self.viewport.1 + TOOLBAR_H) / 2.0));
+                (center.0 - size.w / 2.0, center.1 - size.h / 2.0)
+            }
+        };
+        let area = Area { x, y, ..size };
+        doc.area = Some(area);
+        doc.anchor = anchor.map(|(id, _)| id);
+        self.docs.push(doc);
+        self.reveal_area(area);
+        cx.notify();
+    }
+
+    /// Los archivos que cambió una consola, como tarjetas a su lado (los
+    /// primeros cuatro: más no se alcanzan a leer).
+    fn open_changed(&mut self, id: u64, cx: &mut Context<Self>) {
+        let paths: Vec<std::path::PathBuf> = self
+            .card(id)
+            .map(|c| c.changes.list.iter().filter(|f| f.kind != changes::Kind::Deleted).take(4).map(|f| f.path.clone()).collect())
+            .unwrap_or_default();
+        for path in paths {
+            self.board_doc(&path, true, Some(id), cx);
+        }
+    }
+
+    /// «Ordenar»: las consolas del espacio en una grilla, desde donde empieza
+    /// la zona.
+    fn arrange_zone(&mut self, workspace: u64, cx: &mut Context<Self>) {
+        let mut mine: Vec<(u64, Area)> =
+            self.cards.iter().filter(|c| c.workspace == Some(workspace)).map(|c| (c.id, c.area)).collect();
+        mine.sort_by_key(|(id, _)| *id);
+        let areas: Vec<Area> = mine.iter().map(|(_, a)| *a).collect();
+        let origin = (
+            areas.iter().map(|a| a.x).fold(f32::MAX, f32::min),
+            areas.iter().map(|a| a.y).fold(f32::MAX, f32::min),
+        );
+        for ((id, _), (x, y)) in mine.iter().zip(zones::arrange(&areas, origin)) {
+            if let Some(card) = self.card_mut(*id) {
+                card.area.x = x;
+                card.area.y = y;
+            }
+        }
+        self.moved();
+        cx.notify();
+    }
+
     fn release(&mut self, cx: &mut Context<Self>) {
+        self.zone_drag = None;
         if let Some(Drag::Resize { id, .. }) = self.drag.take() {
             // El PTY cambia de tamaño al soltar, no en cada movimiento: cada
             // cambio hace que la TUI se redibuje entera.
@@ -820,6 +1005,13 @@ impl SpaceView {
             let factor = (dy / 400.0).exp();
             self.camera.zoom_at(self.camera.zoom * factor, p);
             self.moved();
+        } else if let Some((id, _)) = self.doc_at(p).filter(|_| self.camera.zoom >= LIVE_ZOOM) {
+            // La rueda sobre un archivo lo recorre.
+            let lines = (dy / (self.cell().h * self.camera.zoom)).round() as i64;
+            if let Some(doc) = self.docs.iter_mut().find(|d| d.id == id) {
+                let last = doc.rows().saturating_sub(1) as i64;
+                doc.scroll = (doc.scroll as i64 - lines).clamp(0, last) as usize;
+            }
         } else if let Some(card) = self
             .card_at(p)
             .filter(|_| self.camera.zoom >= LIVE_ZOOM)
@@ -1010,15 +1202,7 @@ impl SpaceView {
             .font_family("Segoe UI")
             .child(chrome::logo(28.0))
             .child(div().mx(px(4.)).child(mando::tabs(self.view, cx)))
-            .child(button("space-claude", "+ Claude").on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
-                view.open(Open::agent("claude", "Claude Code", "claude", None), cx)
-            })))
-            .child(button("space-codex", "+ Codex").on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
-                view.open(Open::agent("codex", "Codex", "codex", None), cx)
-            })))
-            .child(button("space-shell", "+ PowerShell").on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
-                view.open(Open::shell(None), cx)
-            })))
+            .child(mando::board_toggles(self, cx))
             .child(chrome::drag(TOOLBAR_H))
             .child(
                 div()
@@ -1032,6 +1216,7 @@ impl SpaceView {
             .child(button("space-fit", "Ajustar").on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
                 view.fit_notify(cx)
             })))
+            .child(mando::new_agent_button(cx))
             .child(
                 div()
                     .w(px(48.))
@@ -1087,6 +1272,8 @@ impl SpaceView {
                     label: format!("{} · {}", card.name, card.label).into(),
                     title: title.into(),
                     agent: card.agent,
+                    color: card.color,
+                    changes: card.changes.list.len(),
                     focused: self.focused == Some(card.id),
                     status,
                     body,
@@ -1281,6 +1468,9 @@ struct CardDraw {
     label: SharedString,
     title: SharedString,
     agent: Option<&'static str>,
+    /// El color de la consola (`identity`): pinta el fondo de su logo.
+    color: u32,
+    changes: usize,
     focused: bool,
     status: Status,
     body: Body,
@@ -1337,9 +1527,37 @@ impl CardDraw {
         };
         let cy = f32::from(b.origin.y) + header_h / 2.0;
         let x0 = f32::from(b.origin.x);
+        // El logo del agente sobre su color, como en el Mando.
+        let logo = 18. * z;
+        let logo_bounds = Bounds::new(point(px(x0 + 8. * z), px(cy - logo / 2.)), size(px(logo), px(logo)));
+        window.paint_quad(quad(
+            logo_bounds,
+            Corners::all(px(logo * 0.28)),
+            console::hsla(self.color),
+            px(0.),
+            gpui::transparent_black(),
+            gpui::BorderStyle::Solid,
+        ));
+        if logo >= 8.0 {
+            let glyph = logo * 0.62;
+            let _ = window.paint_svg(
+                Bounds::new(
+                    point(px(x0 + 8. * z + (logo - glyph) / 2.), px(cy - glyph / 2.)),
+                    size(px(glyph), px(glyph)),
+                ),
+                mando::agent_icon(self.agent).into(),
+                gpui::TransformationMatrix::unit(),
+                console::hsla(0x141413),
+                cx,
+            );
+        }
+        // El estado, junto a la × de cerrar.
         let dot_r = 3.5 * z;
         window.paint_quad(quad(
-            Bounds::new(point(px(x0 + 12. * z - dot_r), px(cy - dot_r)), size(px(dot_r * 2.), px(dot_r * 2.))),
+            Bounds::new(
+                point(px(f32::from(b.right()) - 40. * z - dot_r), px(cy - dot_r)),
+                size(px(dot_r * 2.), px(dot_r * 2.)),
+            ),
             Corners::all(px(dot_r)),
             console::hsla(dot),
             px(0.),
@@ -1347,8 +1565,14 @@ impl CardDraw {
             gpui::BorderStyle::Solid,
         ));
         let label_size = (12.0 * z).max(1.0);
+        // De cerca, los archivos cambiados son un botón aparte (`change_chips`):
+        // el texto le deja su lugar.
+        let chip = self.changes > 0 && z >= CHIP_ZOOM;
         if label_size >= 4.0 {
             let mut text = self.label.to_string();
+            if self.changes > 0 && !chip {
+                text = format!("{text}  ·  {}", mando::plural(self.changes, "archivo", "archivos"));
+            }
             if !self.title.is_empty() {
                 text = format!("{text}  ·  {}", self.title);
             }
@@ -1359,8 +1583,8 @@ impl CardDraw {
                 &text,
                 label_size,
                 if self.focused { TEXT } else { MUTED },
-                (x0 + 24. * z, cy - label_size * 0.65),
-                Some(f32::from(b.size.width) - 60. * z),
+                (x0 + 34. * z, cy - label_size * 0.65),
+                Some(f32::from(b.size.width) - 90. * z - if chip { CHIP_W + 8.0 } else { 0.0 }),
                 window,
                 cx,
             );
@@ -1578,6 +1802,242 @@ fn paint_backdrop(camera: Camera, viewport: (f32, f32), window: &mut Window) {
     }
 }
 
+/// Una fila de un archivo de la pizarra.
+struct DocRow {
+    number: Option<usize>,
+    text: String,
+    background: Option<u32>,
+    color: u32,
+}
+
+/// Lo que se dibuja de un archivo abierto en la pizarra.
+struct DocDraw {
+    bounds: Bounds<Pixels>,
+    zoom: f32,
+    title: String,
+    /// `Some(viendo los cambios)` si hay cambios que mirar.
+    toggle: Option<bool>,
+    note: Option<String>,
+    rows: Vec<DocRow>,
+    digits: usize,
+}
+
+impl SpaceView {
+    fn doc_snapshot(&self) -> Vec<DocDraw> {
+        let viewport = Bounds::new(
+            point(px(0.), px(TOOLBAR_H)),
+            size(px(self.viewport.0), px(self.viewport.1 - TOOLBAR_H)),
+        );
+        let cell = self.cell();
+        self.docs
+            .iter()
+            .filter_map(|doc| {
+                let area = doc.area?;
+                let bounds = self.camera.area(&area);
+                if !bounds.intersects(&viewport) {
+                    return None;
+                }
+                let fits = ((area.h - HEADER - PAD) / cell.h).floor().max(1.0) as usize;
+                let (rows, digits): (Vec<DocRow>, usize) = match (&doc.diff, doc.show_diff) {
+                    (Some(diff), true) => (
+                        diff.iter()
+                            .skip(doc.scroll)
+                            .take(fits)
+                            .map(|line| {
+                                let (background, color) = match line.kind {
+                                    viewer::LineKind::Added => (Some(0x1d3324), 0xc8f0d2),
+                                    viewer::LineKind::Removed => (Some(0x3a2020), 0xf2c4bd),
+                                    viewer::LineKind::Hunk => (Some(0x1f2430), 0x8fa6d6),
+                                    viewer::LineKind::Context => (None, console::FOREGROUND),
+                                };
+                                DocRow { number: line.number, text: line.text.clone(), background, color }
+                            })
+                            .collect(),
+                        diff.iter().filter_map(|l| l.number).max().unwrap_or(1).to_string().len(),
+                    ),
+                    _ => (
+                        doc.lines
+                            .iter()
+                            .enumerate()
+                            .skip(doc.scroll)
+                            .take(fits)
+                            .map(|(index, text)| DocRow {
+                                number: Some(index + 1),
+                                text: text.clone(),
+                                background: None,
+                                color: console::FOREGROUND,
+                            })
+                            .collect(),
+                        doc.lines.len().max(1).to_string().len(),
+                    ),
+                };
+                let path = doc.path.display().to_string();
+                let (dir, name) = path.rsplit_once(['\\', '/']).unwrap_or(("", &path));
+                let dir = dir.rsplit(['\\', '/']).next().unwrap_or("");
+                Some(DocDraw {
+                    bounds,
+                    zoom: self.camera.zoom,
+                    title: if dir.is_empty() { name.to_string() } else { format!("{name}  ·  {dir}") },
+                    toggle: doc.diff.as_ref().map(|_| doc.show_diff),
+                    note: doc.note.clone(),
+                    rows,
+                    digits,
+                })
+            })
+            .collect()
+    }
+
+    /// De la consola al archivo: del borde derecho de una al encabezado del otro.
+    fn doc_links(&self) -> Vec<((f32, f32), (f32, f32))> {
+        self.docs
+            .iter()
+            .filter_map(|doc| {
+                let area = doc.area?;
+                let anchor = self.card(doc.anchor?)?.area;
+                let from = self.camera.to_screen((anchor.x + anchor.w, anchor.y + HEADER / 2.0));
+                let to = self.camera.to_screen((area.x, area.y + HEADER / 2.0));
+                Some((from, to))
+            })
+            .collect()
+    }
+
+    /// «N archivos» en el encabezado de cada consola que cambió algo: abre
+    /// esos archivos a su lado.
+    fn change_chips(&self, cx: &mut Context<Self>) -> Vec<gpui::AnyElement> {
+        let z = self.camera.zoom;
+        if z < CHIP_ZOOM {
+            return Vec::new();
+        }
+        self.cards
+            .iter()
+            .filter(|c| !c.changes.list.is_empty())
+            .filter_map(|card| {
+                let b = self.camera.area(&card.area);
+                let (right, top) = (f32::from(b.right()), f32::from(b.origin.y));
+                if right < 0.0 || top > self.viewport.1 || top + HEADER * z < TOOLBAR_H {
+                    return None;
+                }
+                let id = card.id;
+                Some(
+                    div()
+                        .id(("change-chip", id as usize))
+                        .absolute()
+                        .left(px(right - 52. * z - CHIP_W))
+                        .top(px(top + (HEADER * z - 22.) / 2.))
+                        .w(px(CHIP_W))
+                        .h(px(22.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(11.))
+                        .bg(console::hsla(0x2a2a28))
+                        .hover(|el| el.bg(console::hsla(0x353532)))
+                        .cursor_pointer()
+                        .font_family("Segoe UI")
+                        .text_size(px(11.5))
+                        .text_color(console::hsla(WORKING))
+                        .tooltip(crate::hover::tip("Abrir a su lado los archivos que cambió"))
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| view.open_changed(id, cx)))
+                        .child(mando::plural(card.changes.list.len(), "archivo", "archivos"))
+                        .into_any_element(),
+                )
+            })
+            .collect()
+    }
+}
+
+/// Una línea de código, con la letra de las consolas.
+fn paint_mono(text: &str, font_size: f32, color: u32, (x, y): (f32, f32), window: &mut Window, cx: &mut App) {
+    if text.is_empty() {
+        return;
+    }
+    let run = TextRun {
+        len: text.len(),
+        font: font(),
+        color: console::hsla(color),
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    let line = window.text_system().shape_line(text.to_string().into(), px(font_size), &[run], None);
+    let _ = line.paint(point(px(x), px(y)), px(font_size * LINE_HEIGHT), window, cx);
+}
+
+impl DocDraw {
+    fn paint(self, cell: Cell, window: &mut Window, cx: &mut App) {
+        let z = self.zoom;
+        let b = self.bounds;
+        let radius = px(RADIUS * z);
+        window.paint_shadows(b, Corners::all(radius), &[shadow(0.35, z)]);
+        window.paint_quad(quad(b, Corners::all(radius), console::hsla(CARD), px(0.), gpui::transparent_black(), gpui::BorderStyle::Solid));
+        let header_h = HEADER * z;
+        window.paint_quad(quad(
+            Bounds::new(b.origin, size(b.size.width, px(header_h))),
+            Corners { top_left: radius, top_right: radius, bottom_left: px(0.), bottom_right: px(0.) },
+            console::hsla(HEADER_BG),
+            px(0.),
+            gpui::transparent_black(),
+            gpui::BorderStyle::Solid,
+        ));
+        let x0 = f32::from(b.origin.x);
+        let right = f32::from(b.right());
+        let cy = f32::from(b.origin.y) + header_h / 2.0;
+        let icon = 14. * z;
+        if icon >= 5.0 {
+            let _ = window.paint_svg(
+                Bounds::new(point(px(x0 + 10. * z), px(cy - icon / 2.)), size(px(icon), px(icon))),
+                "icons/text-align-start.svg".into(),
+                gpui::TransformationMatrix::unit(),
+                console::hsla(MUTED),
+                cx,
+            );
+        }
+        let label = (12.0 * z).max(1.0);
+        if label >= 4.0 {
+            let toggle_w = if self.toggle.is_some() { DOC_TOGGLE * z } else { 0.0 };
+            paint_text(&self.title, label, TEXT, (x0 + 32. * z, cy - label * 0.65), Some(f32::from(b.size.width) - 70. * z - toggle_w), window, cx);
+            if let Some(diff) = self.toggle {
+                // Lo que se está viendo; un clic cambia al otro.
+                let text = if diff { "Cambios ⇄" } else { "Archivo ⇄" };
+                paint_text(text, label * 0.95, if diff { WORKING } else { MUTED }, (right - HEADER * z - DOC_TOGGLE * z + 6. * z, cy - label * 0.62), None, window, cx);
+            }
+            paint_text("×", label * 1.3, FAINT, (right - 22. * z, cy - label * 0.85), None, window, cx);
+        }
+        let content = Bounds::new(
+            point(b.origin.x, b.origin.y + px(header_h)),
+            size(b.size.width, b.size.height - px(header_h)),
+        );
+        let font_size = FONT_SIZE * z;
+        window.with_content_mask(Some(ContentMask { bounds: content }), |window| {
+            if z < LIVE_ZOOM || font_size < 4.0 {
+                return;
+            }
+            let (left, top) = (x0 + PAD * z, f32::from(content.origin.y) + 4. * z);
+            if let Some(note) = &self.note {
+                paint_text(note, label, MUTED, (left, top + 8. * z), None, window, cx);
+                return;
+            }
+            let lh = cell.h * z;
+            let gutter = (self.digits as f32 + 2.0) * cell.w * z;
+            for (index, row) in self.rows.iter().enumerate() {
+                let y = top + index as f32 * lh;
+                if let Some(color) = row.background {
+                    window.paint_quad(gpui::fill(
+                        Bounds::new(point(b.origin.x, px(y)), size(b.size.width, px(lh))),
+                        console::hsla(color),
+                    ));
+                }
+                if let Some(number) = row.number {
+                    let text = format!("{number:>width$}", width = self.digits);
+                    paint_mono(&text, font_size, FAINT, (left, y), window, cx);
+                }
+                paint_mono(&row.text, font_size, row.color, (left + gutter, y), window, cx);
+            }
+        });
+    }
+}
+
 impl Render for SpaceView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let started = Instant::now();
@@ -1603,6 +2063,14 @@ impl Render for SpaceView {
         let viewport = self.viewport;
         let paint_ms = self.paint_ms.clone();
         let empty = self.cards.is_empty();
+        let zone_list = self.zone_list();
+        let frames: Vec<Bounds<Pixels>> = zone_list.iter().map(|z| self.camera.area(&z.area)).collect();
+        let zone_radius = 22. * camera.zoom;
+        let headers = mando::zone_headers(self, &zone_list, cx);
+        let chips = self.change_chips(cx);
+        let docs = self.doc_snapshot();
+        let links = self.doc_links();
+        let overlays = mando::board_overlays(self, cx);
         self.meter.frame(started);
 
         div()
@@ -1623,8 +2091,31 @@ impl Render for SpaceView {
                     move |_, _, window, cx| {
                         let started = Instant::now();
                         paint_backdrop(camera, viewport, window);
+                        // Las zonas de los espacios, debajo de sus consolas.
+                        for frame in frames {
+                            window.paint_quad(quad(
+                                frame,
+                                Corners::all(px(zone_radius)),
+                                console::hsla(ZONE),
+                                px(0.),
+                                gpui::transparent_black(),
+                                gpui::BorderStyle::Solid,
+                            ));
+                        }
                         for card in cards {
                             card.paint(cell, window, cx);
+                        }
+                        // Cada archivo, unido con una línea a la consola que lo abrió.
+                        for (from, to) in links {
+                            let mut path = gpui::PathBuilder::stroke(px(1.5));
+                            path.move_to(point(px(from.0), px(from.1)));
+                            path.line_to(point(px(to.0), px(to.1)));
+                            if let Ok(path) = path.build() {
+                                window.paint_path(path, console::hsla(FAINT));
+                            }
+                        }
+                        for doc in docs {
+                            doc.paint(cell, window, cx);
                         }
                         paint_ms.set(started.elapsed().as_secs_f32() * 1000.0);
                     },
@@ -1642,11 +2133,14 @@ impl Render for SpaceView {
                         .font_family("Segoe UI")
                         .text_size(px(13.))
                         .text_color(console::hsla(MUTED))
-                        .child("Abre una consola desde la barra o desde Agentes en el notch."),
+                        .child("Abre un agente con «Nuevo agente» o desde Agentes en el notch."),
                 )
             })
+            .children(headers)
+            .children(chips)
             .child(input::layer(cx.weak_entity(), self.focus.clone()))
             .child(self.toolbar(cx))
+            .children(overlays)
             .into_any_element()
     }
 }

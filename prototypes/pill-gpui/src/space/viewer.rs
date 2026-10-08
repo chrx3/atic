@@ -38,6 +38,11 @@ pub struct Doc {
     pub show_diff: bool,
     /// Por qué no se ve el contenido (binario, muy grande, no se pudo leer).
     pub note: Option<String>,
+    /// En la pizarra: dónde está la tarjeta (sin esto, vive en un panel del
+    /// Mando), junto a qué consola se abrió y la primera fila a la vista.
+    pub area: Option<super::Area>,
+    pub anchor: Option<u64>,
+    pub scroll: usize,
 }
 
 fn hidden(program: &str) -> Command {
@@ -57,7 +62,17 @@ fn clean(line: &str) -> String {
 
 impl Doc {
     pub fn load(id: u64, path: &Path, show_diff: bool) -> Self {
-        let mut doc = Self { id, path: path.to_path_buf(), lines: Arc::default(), diff: None, show_diff: false, note: None };
+        let mut doc = Self {
+            id,
+            path: path.to_path_buf(),
+            lines: Arc::default(),
+            diff: None,
+            show_diff: false,
+            note: None,
+            area: None,
+            anchor: None,
+            scroll: 0,
+        };
         doc.reload();
         doc.show_diff = show_diff && doc.diff.is_some();
         doc
@@ -82,6 +97,15 @@ impl Doc {
         self.diff = diff(&self.path, &self.lines).map(Arc::new);
         if self.diff.is_none() {
             self.show_diff = false;
+        }
+        self.scroll = self.scroll.min(self.rows().saturating_sub(1));
+    }
+
+    /// Cuántas filas tiene lo que se está mirando.
+    pub fn rows(&self) -> usize {
+        match (&self.diff, self.show_diff) {
+            (Some(diff), true) => diff.len(),
+            _ => self.lines.len(),
         }
     }
 }
