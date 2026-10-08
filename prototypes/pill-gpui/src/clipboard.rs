@@ -127,11 +127,51 @@ impl Picture {
         }
     }
 
+    /// Para dibujar: la miniatura si ya existe. La imagen completa solo se
+    /// lee al pegarla o arrastrarla (`load`).
     pub fn view(&self) -> gpui::Img {
         match self {
             Picture::Embedded(image) => img(image.clone()),
-            Picture::File(path) => img(path.clone()),
+            Picture::File(path) => match thumbnail_path(path).filter(|thumb| thumb.exists()) {
+                Some(thumb) => img(Arc::<Path>::from(thumb)),
+                None => img(path.clone()),
+            },
         }
+    }
+}
+
+/// Lado máximo de una miniatura del historial, en píxeles.
+const THUMB_PX: u32 = 480;
+
+/// Dónde va la miniatura de una imagen del historial. GPUI guarda decodificada
+/// cada imagen que dibuja y no la suelta: con 100 capturas de pantalla
+/// completas eran cientos de MB. La miniatura pesa una fracción.
+fn thumbnail_path(full: &Path) -> Option<PathBuf> {
+    let stem = full.file_stem()?.to_string_lossy();
+    let size = std::fs::metadata(full).ok()?.len();
+    Some(crate::paths::data_dir()?.join("thumbs").join(format!("{stem}-{size}.png")))
+}
+
+/// Crea la miniatura si falta. Lenta (decodifica la imagen entera): solo en un
+/// hilo de fondo, como la lectura del historial.
+pub fn ensure_thumbnail(full: &Path) {
+    let Some(thumb) = thumbnail_path(full) else {
+        return;
+    };
+    if thumb.exists() {
+        return;
+    }
+    let made = image::open(full).map(|picture| picture.thumbnail(THUMB_PX, THUMB_PX));
+    match made {
+        Ok(small) => {
+            if let Some(dir) = thumb.parent() {
+                let _ = std::fs::create_dir_all(dir);
+            }
+            if let Err(error) = small.save_with_format(&thumb, image::ImageFormat::Png) {
+                tracing::debug!(%error, "no se pudo guardar la miniatura");
+            }
+        }
+        Err(error) => tracing::debug!(%error, path = %full.display(), "no se pudo leer la imagen para la miniatura"),
     }
 }
 

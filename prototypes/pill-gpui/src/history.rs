@@ -114,6 +114,7 @@ fn entry(id: usize, item: Item) -> Option<Entry> {
             if !Path::new(&path).exists() {
                 return None;
             }
+            crate::clipboard::ensure_thumbnail(Path::new(&path));
             Entry::new(
                 id,
                 item.id.into(),
