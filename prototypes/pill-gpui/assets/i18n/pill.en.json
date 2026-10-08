@@ -25,5 +25,7 @@
  "pill.settings.launcherHint": "The pill's app launcher.",
  "pill.settings.pressShortcut": "Press the combination…",
  "pill.settings.updatesHint": "Checks the latest GitHub release at startup and every 6 hours. Install downloads, verifies the signature and restarts.",
+ "pill.tray.meetings": "Meetings",
+ "pill.tray.quit": "Quit Atic",
  "pill.tray.settings": "Settings"
 }

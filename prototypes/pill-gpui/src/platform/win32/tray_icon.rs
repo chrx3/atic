@@ -9,7 +9,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::OnceLock;
 
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
-use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress, LoadLibraryW};
 use windows_sys::Win32::UI::Shell::{
     Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW,
 };
@@ -17,7 +17,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreateIconFromResourceEx, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
     DestroyMenu, DispatchMessageW, FindWindowW, GetCursorPos, GetMessageW, PostMessageW, RegisterClassW,
     RegisterWindowMessageW, SetForegroundWindow, TrackPopupMenu, TranslateMessage, HICON,
-    LR_DEFAULTCOLOR, MF_SEPARATOR, MF_STRING, MSG, TPM_BOTTOMALIGN, TPM_RETURNCMD,
+    LR_DEFAULTCOLOR, MF_GRAYED, MF_SEPARATOR, MF_STRING, MSG, SetMenuDefaultItem, TPM_BOTTOMALIGN, TPM_RETURNCMD,
     TPM_RIGHTBUTTON, WM_APP, WM_CONTEXTMENU, WM_LBUTTONUP, WM_NULL, WM_RBUTTONUP, WNDCLASSW,
 };
 
@@ -31,7 +31,6 @@ pub enum Command {
     /// El espacio de consolas.
     Consoles,
     Capture,
-    Summon,
     Quit,
 }
 
@@ -42,15 +41,20 @@ const WAKE: u32 = WM_APP + 2;
 const ICON_ID: u32 = 1;
 const CLASS: &str = "AticPillTray";
 
-/// Las entradas del menú, en orden: id, clave de texto y orden.
-const ITEMS: &[(usize, &str, Command)] = &[
-    (1, "tray.show", Command::OpenAtic),
-    (5, "pill.tray.settings", Command::Settings),
-    (2, "tray.consoles", Command::Consoles),
-    (3, "tray.capture", Command::Capture),
-    (4, "tray.summonPill", Command::Summon),
-];
+/// Las entradas del menú: id, clave de texto y orden. Ajustes va primero y en
+/// negrita: es lo que abre el clic izquierdo.
+const SETTINGS_ID: usize = 1;
+const CAPTURE_ID: usize = 2;
+const MEETINGS_ID: usize = 3;
+const CONSOLES_ID: usize = 4;
 const QUIT_ID: usize = 9;
+const ITEMS: &[(usize, Command)] = &[
+    (SETTINGS_ID, Command::Settings),
+    (CAPTURE_ID, Command::Capture),
+    (MEETINGS_ID, Command::OpenAtic),
+    (CONSOLES_ID, Command::Consoles),
+    (QUIT_ID, Command::Quit),
+];
 
 static SENDER: OnceLock<Sender<Command>> = OnceLock::new();
 static TASKBAR_CREATED: OnceLock<u32> = OnceLock::new();
@@ -127,6 +131,7 @@ fn run() {
             return;
         }
         let _ = TASKBAR_CREATED.set(RegisterWindowMessageW(wide("TaskbarCreated").as_ptr()));
+        follow_dark_mode();
         add_icon(hwnd);
 
         let mut msg: MSG = std::mem::zeroed();
@@ -222,19 +227,69 @@ fn send(command: Command) {
     }
 }
 
+/// Que el menú siga el tema de Windows (oscuro si Windows está en oscuro).
+/// Es lo que hacen el Explorador y Chrome: `SetPreferredAppMode` y
+/// `FlushMenuThemes` de `uxtheme.dll`, que Windows exporta solo por número
+/// (135 y 136). Si no están, el menú queda claro como siempre.
+fn follow_dark_mode() {
+    const ALLOW_DARK: i32 = 1;
+    // SAFETY: las dos funciones existen desde Windows 10 1903 con esas firmas;
+    // si `GetProcAddress` no las encuentra, no se llaman.
+    unsafe {
+        let uxtheme = LoadLibraryW(wide("uxtheme.dll").as_ptr());
+        if uxtheme.is_null() {
+            return;
+        }
+        if let Some(set_mode) = GetProcAddress(uxtheme, 135 as *const u8) {
+            let set_mode: unsafe extern "system" fn(i32) -> i32 = std::mem::transmute(set_mode);
+            set_mode(ALLOW_DARK);
+        }
+        if let Some(flush) = GetProcAddress(uxtheme, 136 as *const u8) {
+            let flush: unsafe extern "system" fn() = std::mem::transmute(flush);
+            flush();
+        }
+    }
+}
+
+/// El atajo de la captura, como se lee: «Ctrl+Shift+4».
+fn capture_shortcut() -> Option<String> {
+    let cfg = atic_core::AppDirs::new().ok().map(|dirs| atic_core::Config::load(&dirs.config_path()))?;
+    let text = cfg.screenshot_shortcut.trim();
+    (!text.is_empty()).then(|| text.replace("CommandOrControl", "Ctrl").replace("CmdOrCtrl", "Ctrl"))
+}
+
 /// El menú del clic derecho, con los textos en el idioma actual.
 fn show_menu(hwnd: HWND) {
+    let label = |id: usize| -> String {
+        match id {
+            SETTINGS_ID => crate::i18n::t("pill.tray.settings").to_string(),
+            CAPTURE_ID => match capture_shortcut() {
+                // El tab alinea el atajo a la derecha, como en cualquier menú.
+                Some(keys) => format!("{}\t{keys}", crate::i18n::t("tray.capture")),
+                None => crate::i18n::t("tray.capture").to_string(),
+            },
+            MEETINGS_ID => crate::i18n::t("pill.tray.meetings").to_string(),
+            CONSOLES_ID => crate::i18n::t("tray.consoles").to_string(),
+            _ => crate::i18n::t("pill.tray.quit").to_string(),
+        }
+    };
     // SAFETY: menú propio, destruido al salir; la ventana es de este hilo.
     unsafe {
         let menu = CreatePopupMenu();
         if menu.is_null() {
             return;
         }
-        for (id, key, _) in ITEMS {
-            AppendMenuW(menu, MF_STRING, *id, wide(crate::i18n::t(key)).as_ptr());
+        let version = format!("Atic {}", env!("ATIC_VERSION"));
+        AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, wide(&version).as_ptr());
+        AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
+        AppendMenuW(menu, MF_STRING, SETTINGS_ID, wide(&label(SETTINGS_ID)).as_ptr());
+        SetMenuDefaultItem(menu, SETTINGS_ID as u32, 0);
+        AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
+        for id in [CAPTURE_ID, MEETINGS_ID, CONSOLES_ID] {
+            AppendMenuW(menu, MF_STRING, id, wide(&label(id)).as_ptr());
         }
         AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
-        AppendMenuW(menu, MF_STRING, QUIT_ID, wide(crate::i18n::t("tray.quit")).as_ptr());
+        AppendMenuW(menu, MF_STRING, QUIT_ID, wide(&label(QUIT_ID)).as_ptr());
 
         let mut point = POINT { x: 0, y: 0 };
         GetCursorPos(&mut point);
@@ -252,9 +307,7 @@ fn show_menu(hwnd: HWND) {
         PostMessageW(hwnd, WM_NULL, 0, 0);
         DestroyMenu(menu);
 
-        if chosen == QUIT_ID {
-            send(Command::Quit);
-        } else if let Some((_, _, command)) = ITEMS.iter().find(|(id, _, _)| *id == chosen) {
+        if let Some((_, command)) = ITEMS.iter().find(|(id, _)| *id == chosen) {
             send(*command);
         }
     }
@@ -263,14 +316,14 @@ fn show_menu(hwnd: HWND) {
 unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     if msg == CALLBACK {
         match lparam as u32 {
-            WM_LBUTTONUP => send(Command::OpenAtic),
+            WM_LBUTTONUP => send(Command::Settings),
             WM_RBUTTONUP | WM_CONTEXTMENU => show_menu(hwnd),
             _ => {}
         }
         return 0;
     }
     if msg == WAKE {
-        send(Command::OpenAtic);
+        send(Command::Settings);
         return 0;
     }
     if TASKBAR_CREATED.get() == Some(&msg) {

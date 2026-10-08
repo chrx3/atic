@@ -2020,7 +2020,6 @@ impl Pill {
             Command::Settings => settings::open(cx),
             Command::Consoles => self.open_space(None, cx),
             Command::Capture => self.run_hotkey(hotkeys::Action::Capture, window, cx),
-            Command::Summon => self.summon_to_cursor(cx),
             Command::Quit => cx.quit(),
         }
     }
