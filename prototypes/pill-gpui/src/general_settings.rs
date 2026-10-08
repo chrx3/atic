@@ -5,7 +5,7 @@
 use std::path::PathBuf;
 
 use atic_core::{AppDirs, Config, SecretKind};
-use gpui::{div, prelude::*, App, ClickEvent, Context, Entity, SharedString, Window};
+use gpui::{div, prelude::*, px, App, ClickEvent, Context, Entity, SharedString, Window};
 
 use crate::i18n::{t, tf};
 use crate::meetings::settings::{button, card, heading, row, save_config, segmented, switch, ConfigPane};
@@ -75,9 +75,11 @@ impl Render for GeneralPane {
         let autostart = cfg.autostart;
         let detect = cfg.detect_meetings;
         let cleanup = cfg.retention_auto_cleanup;
+        let welcome = !cfg.onboarding_done;
         div()
             .flex()
             .flex_col()
+            .when(welcome, |el| el.child(self.welcome(cx)).child(heading(t("settings.language.label"))))
             .child(
                 card().child(row(
                     t("settings.language.label"),
@@ -146,6 +148,38 @@ impl Render for GeneralPane {
                         }),
                     )),
             )
+    }
+}
+
+impl GeneralPane {
+    /// La primera vez: qué es Atic, qué hacer antes de usarla y «Empezar».
+    fn welcome(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        use crate::settings::{hsla, MUTED, TEXT};
+        let line = |text: &'static str| div().text_size(px(12.)).text_color(hsla(MUTED)).child(text);
+        card().child(
+            div()
+                .p(px(16.))
+                .flex()
+                .flex_col()
+                .gap(px(8.))
+                .child(div().text_size(px(16.)).text_color(hsla(TEXT)).child(t("pill.onboarding.title")))
+                .child(line(t("onboarding.claim1")))
+                .child(line(t("onboarding.claim2")))
+                .child(line(t("onboarding.claim3")))
+                .child(div().pt(px(6.)).text_size(px(13.)).text_color(hsla(TEXT)).child(t("pill.onboarding.steps")))
+                .child(line(t("pill.onboarding.step1")))
+                .child(line(t("pill.onboarding.step2")))
+                .child(line(t("pill.onboarding.step3")))
+                .child(
+                    div().pt(px(6.)).flex().child(button(
+                        "onboarding-start".into(),
+                        t("pill.onboarding.start"),
+                        cx.listener(|pane, _: &ClickEvent, _, cx| {
+                            pane.edit_config(cx, |cfg| cfg.onboarding_done = true)
+                        }),
+                    )),
+                ),
+        )
     }
 }
 

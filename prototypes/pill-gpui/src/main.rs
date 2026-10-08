@@ -4439,8 +4439,11 @@ fn main() {
         if let Err(error) = cx.open_window(options, |window, cx| cx.new(|cx| Pill::new(window, cx))) {
             return quit_on_error("no se pudo abrir la ventana de la pill", error, cx);
         }
-        // `PILL_OPEN=settings`: los Ajustes junto a la pill.
-        if matches!(std::env::var("PILL_OPEN").as_deref(), Ok("settings" | "appearance")) {
+        // `PILL_OPEN=settings`: los Ajustes junto a la pill. La primera vez
+        // también, con la bienvenida en General.
+        let first_run = atic_core::AppDirs::new()
+            .is_ok_and(|dirs| !atic_core::Config::load(&dirs.config_path()).onboarding_done);
+        if first_run || matches!(std::env::var("PILL_OPEN").as_deref(), Ok("settings" | "appearance")) {
             settings::open(cx);
         }
     });
