@@ -60,6 +60,8 @@ pub struct Shelf {
     last_tick: Instant,
     hovered: bool,
     press: Option<(f32, f32)>,
+    /// El botón izquierdo en el sondeo anterior: para ver cuándo se aprieta.
+    was_down: bool,
     note: Option<(SharedString, Instant)>,
     busy: bool,
 }
@@ -85,6 +87,7 @@ impl crate::Pill {
                 last_tick: now,
                 hovered: false,
                 press: None,
+                was_down: false,
                 note: None,
                 busy: false,
             },
@@ -220,6 +223,13 @@ impl crate::Pill {
             if !over && shelf.press.is_none() && !shelf.busy {
                 shelf.left = shelf.left.saturating_sub(elapsed);
             }
+            // Apretar en cualquier parte de la foto, también sobre Copiar,
+            // Dibujar o Texto, que tapan casi todo el centro: esos botones
+            // detienen el evento y la foto nunca se enteraba.
+            if over && button_down && !shelf.was_down && shelf.press.is_none() {
+                shelf.press = cursor;
+            }
+            shelf.was_down = button_down;
             // Arrastrar la miniatura a otra app: el PNG como archivo.
             if let (Some(origin), Some(c)) = (shelf.press, cursor) {
                 if (c.0 - origin.0).hypot(c.1 - origin.1) >= DRAG_START {
@@ -230,7 +240,7 @@ impl crate::Pill {
                             let _ = this.update(cx, |pill, cx| pill.remove_shelf(id, cx));
                         }
                         Ok(_) => {}
-                        Err(error) => eprintln!("estante: arrastre: {error}"),
+                        Err(error) => tracing::warn!(%error, "estante: arrastre"),
                     })
                     .detach();
                 }
