@@ -98,6 +98,11 @@ static SESSIONS: Mutex<Option<HashMap<String, Entry>>> = Mutex::new(None);
 ///
 /// Incluye la clave local y el `provider_session` del CLI: `claude --resume`
 /// escribe el mismo JSONL que una TUI, y sin este filtro el chip contaría dos veces.
+/// ¿Hay alguna sesión de agente corriendo en esta app?
+pub(crate) fn any_running() -> bool {
+    SESSIONS.lock().is_ok_and(|guard| guard.as_ref().is_some_and(|map| !map.is_empty()))
+}
+
 pub(crate) fn live_session_ids() -> HashSet<String> {
     let mut ids = super::store::live_provider_sessions();
     if let Ok(guard) = SESSIONS.lock() {

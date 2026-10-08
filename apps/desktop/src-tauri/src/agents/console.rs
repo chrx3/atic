@@ -412,6 +412,11 @@ fn transfer_guarded(id: &str) -> bool {
     }
 }
 
+/// ¿Hay alguna consola abierta? Cerrar la app la mataría.
+pub(crate) fn any_open() -> bool {
+    with_map(|map| !map.is_empty())
+}
+
 fn with_map<T>(f: impl FnOnce(&mut HashMap<String, LiveConsole>) -> T) -> T {
     let mut guard = CONSOLES.lock_or_recover();
     let map = guard.get_or_insert_with(HashMap::new);

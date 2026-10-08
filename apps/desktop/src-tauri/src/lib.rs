@@ -720,6 +720,22 @@ pub fn run() {
                 color_picker::stop(window.app_handle());
                 let _ = window.hide();
             }
+            // Con la pill nativa, Atic se abre solo para esta ventana: al
+            // cerrarla se va el proceso (y WebView2 con él). Si quedan
+            // consolas o sesiones de agentes, solo se oculta para no matarlas.
+            WindowEvent::CloseRequested { api, .. }
+                if window.label() == "main" && config_watch::native_pill() =>
+            {
+                api.prevent_close();
+                let _ = window.hide();
+                let agents_visible = window
+                    .app_handle()
+                    .get_webview_window(agents_window::LABEL)
+                    .is_some_and(|w| w.is_visible().unwrap_or(false));
+                if !agents_visible && !agents::console::any_open() && !agents::bridge::any_running() {
+                    window.app_handle().exit(0);
+                }
+            }
             // Cerrar oculta, no destruye.
             WindowEvent::CloseRequested { api, .. }
                 if window.label() == "main"
