@@ -705,9 +705,11 @@ pub fn run() {
                 let cfg = state.config.lock_or_recover();
                 (!cfg.onboarding_done, cfg.show_pill || cfg.native_pill)
             };
-            // `--open`: la pill nativa pide la ventana (biblioteca, Ajustes,
-            // agentes) y Atic no estaba corriendo.
-            let pedida = std::env::args().any(|arg| arg == "--open");
+            // Con la pill nativa, Atic existe solo para su ventana: la pide la
+            // pill (`--open`) o la abre alguien directo (el instalador al
+            // terminar, el actualizador). Oculto sería WebView2 en memoria sin
+            // nada que mostrar; al cerrar la ventana, el proceso termina.
+            let pedida = std::env::args().any(|arg| arg == "--open") || config_watch::native_pill();
             if primera_vez || !hay_pill || pedida {
                 state::show_main(app.handle());
             }
