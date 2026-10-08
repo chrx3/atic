@@ -165,6 +165,16 @@ pub struct Card {
     token: Option<String>,
 }
 
+/// Un movimiento suave de la cámara de un lugar a otro.
+struct Flight {
+    from: Camera,
+    to: Camera,
+    start: Instant,
+}
+
+/// Lo que dura un vuelo de la cámara: el ritmo de las animaciones de Atic.
+const FLIGHT: Duration = Duration::from_millis(620);
+
 /// Qué se está arrastrando.
 #[derive(Clone, Copy)]
 enum Drag {
@@ -232,6 +242,11 @@ pub struct SpaceView {
     /// Se está arrastrando una zona de la pizarra: desde dónde y dónde
     /// estaban sus consolas.
     zone_drag: Option<((f32, f32), Vec<(u64, Area)>)>,
+    /// La cámara va camino a otro lugar (`fly`).
+    flight: Option<Flight>,
+    /// Un clic que empezó en una tarjeta de lejos: si no se arrastra, la
+    /// cámara vuela a ella al soltar.
+    tap: Option<(u64, (f32, f32))>,
     /// Ajustar todo en el primer cuadro, cuando ya se conoce el tamaño.
     fit_pending: bool,
     /// Mando (cartas, consola enfocada y bandeja) o pizarra.
@@ -447,6 +462,8 @@ impl SpaceView {
             picker: None,
             docs: Vec::new(),
             zone_drag: None,
+            flight: None,
+            tap: None,
             fit_pending: false,
             // El Mando es la vista de siempre; `SPACE_VIEW=pizarra` abre la otra.
             view: match std::env::var("SPACE_VIEW").as_deref() {
@@ -686,41 +703,106 @@ impl SpaceView {
         }
     }
 
+    /// Si el área no se ve entera, la cámara vuela hasta dejarla al centro
+    /// (alejándose si no cabe).
     fn reveal_area(&mut self, area: Area) {
         let bounds = self.camera.area(&area);
         let (left, top) = (f32::from(bounds.origin.x), f32::from(bounds.origin.y));
         let (w, h) = (f32::from(bounds.size.width), f32::from(bounds.size.height));
         let (vw, vh) = self.viewport;
         if left < 0.0 || top < TOOLBAR_H || left + w > vw || top + h > vh {
-            if w > vw || h > vh - TOOLBAR_H {
-                self.fit();
-            } else {
-                self.camera.x += (vw - w) / 2.0 - left;
-                self.camera.y += (vh + TOOLBAR_H - h) / 2.0 - top;
-            }
+            let zoom = self.camera.zoom.min(self.fit_zoom(area));
+            self.fly(self.centered(area, zoom));
         }
     }
 
-    /// Todas las tarjetas a la vista.
-    fn fit(&mut self) {
-        if self.cards.is_empty() {
-            return;
+    /// «Auto foco»: la cámara vuela a la tarjeta y la deja al centro, a un
+    /// tamaño en que se lee.
+    fn focus_on(&mut self, id: u64) {
+        if let Some(area) = self.card(id).map(|c| c.area) {
+            let zoom = self.fit_zoom(area).min(1.0);
+            self.fly(self.centered(area, zoom));
         }
-        let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
-        for card in &self.cards {
-            x0 = x0.min(card.area.x);
-            y0 = y0.min(card.area.y);
-            x1 = x1.max(card.area.x + card.area.w);
-            y1 = y1.max(card.area.y + card.area.h);
-        }
+    }
+
+    /// El zoom con que el área cabe en lo que se ve, con margen.
+    fn fit_zoom(&self, area: Area) -> f32 {
         let (vw, vh) = (self.viewport.0 - 60.0, self.viewport.1 - TOOLBAR_H - 60.0);
-        let zoom = (vw / (x1 - x0)).min(vh / (y1 - y0)).clamp(MIN_ZOOM, 1.0);
-        self.camera = Camera {
+        (vw / area.w).min(vh / area.h).clamp(MIN_ZOOM, MAX_ZOOM)
+    }
+
+    /// La cámara con el centro del área al centro de lo que se ve.
+    fn centered(&self, area: Area, zoom: f32) -> Camera {
+        let center = (self.viewport.0 / 2.0, (self.viewport.1 + TOOLBAR_H) / 2.0);
+        Camera {
             zoom,
-            x: (self.viewport.0 - (x1 - x0) * zoom) / 2.0 - x0 * zoom,
-            y: TOOLBAR_H + (self.viewport.1 - TOOLBAR_H - (y1 - y0) * zoom) / 2.0 - y0 * zoom,
-        };
+            x: center.0 - (area.x + area.w / 2.0) * zoom,
+            y: center.1 - (area.y + area.h / 2.0) * zoom,
+        }
+    }
+
+    /// Lleva la cámara a `to` en un movimiento suave (ver `step_flight`).
+    fn fly(&mut self, to: Camera) {
+        self.flight = Some(Flight { from: self.camera, to, start: Instant::now() });
         self.moved();
+    }
+
+    /// Avanza el vuelo de la cámara. Dice si sigue en curso.
+    ///
+    /// El centro de lo que se ve va en línea recta y el zoom cambia en escala
+    /// logarítmica: así acercarse y alejarse se sienten parejos. La curva
+    /// acelera y frena por igual, sin rebote.
+    fn step_flight(&mut self, now: Instant) -> bool {
+        let Some(flight) = &self.flight else {
+            return false;
+        };
+        let t = (now.duration_since(flight.start).as_secs_f32() / FLIGHT.as_secs_f32()).min(1.0);
+        let eased = if t < 0.5 { 4.0 * t * t * t } else { 1.0 - (-2.0 * t + 2.0).powi(3) / 2.0 };
+        let view = (self.viewport.0 / 2.0, (self.viewport.1 + TOOLBAR_H) / 2.0);
+        let (a, b) = (flight.from.to_board(view), flight.to.to_board(view));
+        let zoom = (flight.from.zoom.ln() + (flight.to.zoom.ln() - flight.from.zoom.ln()) * eased).exp();
+        let center = (a.0 + (b.0 - a.0) * eased, a.1 + (b.1 - a.1) * eased);
+        self.camera = Camera { zoom, x: view.0 - center.0 * zoom, y: view.1 - center.1 * zoom };
+        if t >= 1.0 {
+            self.camera = flight.to;
+            self.flight = None;
+        }
+        self.moved();
+        true
+    }
+
+    /// Todas las tarjetas a la vista, de una vez (al abrir la ventana).
+    fn fit(&mut self) {
+        if let Some(camera) = self.fit_camera() {
+            self.camera = camera;
+            self.moved();
+        }
+    }
+
+    /// La cámara que deja todas las tarjetas a la vista.
+    fn fit_camera(&self) -> Option<Camera> {
+        if self.cards.is_empty() {
+            return None;
+        }
+        // Con las zonas y sus encabezados: también son parte de lo que se ve.
+        let mut areas: Vec<Area> = self.board_items().into_iter().map(|(_, a)| a).collect();
+        areas.extend(self.zone_list().into_iter().map(|z| z.area));
+        let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+        for area in &areas {
+            x0 = x0.min(area.x);
+            y0 = y0.min(area.y);
+            x1 = x1.max(area.x + area.w);
+            y1 = y1.max(area.y + area.h);
+        }
+        let all = Area { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+        Some(self.centered(all, self.fit_zoom(all).min(1.0)))
+    }
+
+    /// «Ajustar» y Ctrl+0: todo a la vista, con vuelo.
+    fn fly_fit(&mut self) {
+        if let Some(camera) = self.fit_camera() {
+            self.fly(camera);
+        }
     }
 
     fn moved(&mut self) {
@@ -752,6 +834,8 @@ impl SpaceView {
             return;
         }
         window.focus(&self.focus);
+        // Tocar el plano detiene cualquier vuelo de la cámara.
+        self.flight = None;
         let board = self.camera.to_board(p);
         // Los archivos van encima de las consolas: se miran primero.
         if let Some((id, area)) = self.doc_at(p) {
@@ -787,15 +871,23 @@ impl SpaceView {
             if local.0 >= area.w - GRIP && local.1 >= area.h - GRIP {
                 self.drag = Some(Drag::Resize { id, from: p, area });
             } else if local.1 <= HEADER || self.camera.zoom < LIVE_ZOOM {
-                // De lejos la tarjeta entera se arrastra; doble clic acerca.
+                // De lejos la tarjeta entera se arrastra; doble clic acerca, y
+                // también un clic sin arrastrar si no se alcanza a leer.
                 if event.click_count == 2 {
                     self.zoom_to(id);
                 } else {
                     self.drag = Some(Drag::Move { id, from: p, area });
+                    if self.camera.zoom < TEXT_ZOOM {
+                        self.tap = Some((id, p));
+                    }
                 }
+            } else {
+                // Clic en la terminal: queda para escribir y, si está a medias
+                // fuera de la vista, la cámara la trae.
+                self.reveal(id);
             }
         } else if event.click_count == 2 {
-            self.fit();
+            self.fly_fit();
         } else {
             self.drag = Some(Drag::Pan {
                 from: p,
@@ -805,16 +897,9 @@ impl SpaceView {
         cx.notify();
     }
 
-    /// Acerca la cámara a una tarjeta, a zoom 1.
+    /// Acerca la cámara a una tarjeta, hasta que se lee.
     fn zoom_to(&mut self, id: u64) {
-        let Some(card) = self.card(id) else {
-            return;
-        };
-        let area = card.area;
-        self.camera.zoom = 1.0;
-        self.camera.x = (self.viewport.0 - area.w) / 2.0 - area.x;
-        self.camera.y = (self.viewport.1 + TOOLBAR_H - area.h) / 2.0 - area.y;
-        self.moved();
+        self.focus_on(id);
     }
 
     fn mouse_move(&mut self, event: &MouseMoveEvent, _: &mut Window, cx: &mut Context<Self>) {
@@ -842,6 +927,10 @@ impl SpaceView {
             return self.release(cx);
         }
         let p = (f32::from(event.position.x), f32::from(event.position.y));
+        // Moverse más que un temblor ya no es un clic: es arrastrar.
+        if self.tap.is_some_and(|(_, from)| (p.0 - from.0).abs() + (p.1 - from.1).abs() > 4.0) {
+            self.tap = None;
+        }
         let zoom = self.camera.zoom;
         match drag {
             Drag::Pan { from, camera } => {
@@ -983,6 +1072,10 @@ impl SpaceView {
 
     fn release(&mut self, cx: &mut Context<Self>) {
         self.zone_drag = None;
+        // Un clic sin arrastrar en una tarjeta lejana: la cámara va a ella.
+        if let Some((id, _)) = self.tap.take() {
+            self.focus_on(id);
+        }
         if let Some(Drag::Resize { id, .. }) = self.drag.take() {
             // El PTY cambia de tamaño al soltar, no en cada movimiento: cada
             // cambio hace que la TUI se redibuje entera.
@@ -1078,7 +1171,7 @@ impl SpaceView {
     }
 
     fn fit_notify(&mut self, cx: &mut Context<Self>) {
-        self.fit();
+        self.fly_fit();
         cx.notify();
     }
 
@@ -1101,7 +1194,7 @@ impl SpaceView {
             .unwrap_or(0) as i32;
         let next = ids[(at + step).rem_euclid(ids.len() as i32) as usize];
         self.raise(next);
-        self.reveal(next);
+        self.focus_on(next);
         cx.notify();
     }
 
@@ -2052,7 +2145,8 @@ impl Render for SpaceView {
             self.fit();
         }
         let now = Instant::now();
-        if self.bench_step(now) || now < self.moving_until {
+        let flying = self.step_flight(now);
+        if flying || self.bench_step(now) || now < self.moving_until {
             window.request_animation_frame();
         }
         let built = Instant::now();

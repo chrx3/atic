@@ -30,7 +30,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    canvas, div, point, prelude::*, px, size, svg, AnyElement, Bounds, ClickEvent, Context,
+    canvas, div, ease_in_out, point, prelude::*, Animation, AnimationExt, px, size, svg, AnyElement, Bounds, ClickEvent, Context,
     CursorStyle, Div, ElementId, FontWeight, KeyDownEvent, MouseButton, MouseDownEvent,
     MouseMoveEvent, MouseUpEvent, ScrollWheelEvent, SharedString, Stateful, Window,
 };
@@ -73,6 +73,8 @@ const TERM_BOTTOM: f32 = 8.0;
 const TURN: Duration = Duration::from_secs(3);
 /// Lo que se muestra de la lista de archivos: más no se alcanza a leer.
 const MAX_FILES: usize = 200;
+/// Lo que tarda en aparecer un menú.
+const APPEAR: Duration = Duration::from_millis(140);
 
 // Radios: cada capa de adentro tiene menos que la de afuera.
 const R_PANEL: f32 = 18.0;
@@ -444,8 +446,10 @@ impl SpaceView {
                 self.sync_panes();
             }
             View::Pizarra => {
+                // Desde la barra lateral, Ctrl+1…9 o Alt+J: la cámara vuela a
+                // ella y la deja legible.
                 self.raise(id);
-                self.reveal(id);
+                self.focus_on(id);
             }
         }
         if let Some(watch) = self.mando.watch.get_mut(&id) {
@@ -1413,7 +1417,13 @@ fn agent_menu(
                         .child(svg().path(agent_icon(cli)).size(px(15.)).flex_none().text_color(hsla(MUTED)))
                         .child(name)
                         .into_any_element()
-                })),
+                }))
+                // Aparece bajando un poco, sin rebote.
+                .with_animation(
+                    "agent-menu-in",
+                    Animation::new(APPEAR).with_easing(ease_in_out),
+                    move |el, t| el.opacity(t).top(px(y - 6.0 * (1.0 - t))),
+                ),
         )
 }
 
@@ -1694,11 +1704,8 @@ fn pane_panel(
         .bg(hsla(if p.focused { SURFACE_ON } else { SURFACE }))
         .on_mouse_down(
             MouseButton::Left,
-            cx.listener(move |v, _: &MouseDownEvent, window, cx| {
-                if v.mando.panes.focused != pane {
-                    v.focus_pane(pane, window, cx);
-                }
-            }),
+            // Un clic en cualquier parte del panel le da el teclado.
+            cx.listener(move |v, _: &MouseDownEvent, window, cx| v.focus_pane(pane, window, cx)),
         )
         .on_scroll_wheel(cx.listener(move |v, event: &ScrollWheelEvent, _, cx| {
             let lines = event.delta.pixel_delta(px(v.cell().h)).y;

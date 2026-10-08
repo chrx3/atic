@@ -8,8 +8,9 @@
 //! lista; las flechas y Enter navegan, Retroceso sube, Esc cierra.
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
-use gpui::{div, prelude::*, px, svg, ClickEvent, Context, Div, FontWeight, MouseButton, MouseDownEvent, SharedString};
+use gpui::{ease_in_out, div, prelude::*, px, svg, Animation, AnimationExt, ClickEvent, Context, Div, FontWeight, MouseButton, MouseDownEvent, SharedString};
 
 use super::console::hsla;
 use super::workspaces::{same, short_name};
@@ -647,7 +648,12 @@ pub fn render(view: &SpaceView, vw: f32, vh: f32, cx: &mut Context<SpaceView>) -
                     .occlude()
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .child(side)
-                    .child(main),
+                    .child(main)
+                    .with_animation(
+                        "picker-in",
+                        Animation::new(Duration::from_millis(180)).with_easing(ease_in_out),
+                        |el, t| el.opacity(t).mt(px(10.0 * (1.0 - t))),
+                    ),
             ),
     )
 }
