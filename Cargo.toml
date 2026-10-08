@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/core",
+    "crates/agents",
     "crates/audio",
     "crates/calc",
     "crates/capture",
@@ -26,6 +27,7 @@ repository = "https://github.com/chrx3/atic"
 [workspace.dependencies]
 # Crates internos
 atic-core = { path = "crates/core" }
+atic-agents = { path = "crates/agents" }
 atic-audio = { path = "crates/audio" }
 atic-calc = { path = "crates/calc" }
 atic-capture = { path = "crates/capture" }

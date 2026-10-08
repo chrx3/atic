@@ -38,6 +38,7 @@ tracing = { workspace = true }
 atic-core = { workspace = true, features = ["diagnostics"] }
 atic-clipboard = { workspace = true }
 atic-calc = { workspace = true }
+atic-agents = { workspace = true }
 atic-sync = { workspace = true }
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 tokio = { version = "1", features = ["sync", "time"] }
