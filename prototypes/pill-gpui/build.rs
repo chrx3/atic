@@ -4,6 +4,16 @@
 
 fn main() {
     println!("cargo:rerun-if-changed=../../apps/desktop/src-tauri/icons/icon.ico");
+    // La versión de la app: la de `tauri.conf.json`, la misma que sube el
+    // script de release y que publica `latest.json`.
+    println!("cargo:rerun-if-changed=../../apps/desktop/src-tauri/tauri.conf.json");
+    let conf = std::fs::read_to_string("../../apps/desktop/src-tauri/tauri.conf.json").unwrap_or_default();
+    let version = conf
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("\"version\":"))
+        .map(|rest| rest.trim().trim_end_matches(',').trim_matches('"').to_string())
+        .unwrap_or_else(|| std::env::var("CARGO_PKG_VERSION").unwrap_or_default());
+    println!("cargo:rustc-env=ATIC_VERSION={version}");
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
         return;
     }

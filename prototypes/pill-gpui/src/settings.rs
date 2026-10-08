@@ -272,7 +272,7 @@ impl SettingsView {
             .hover_bg(SharedString::from(format!("{}-fx", section.id())), rest, over)
     }
 
-    fn body(&self) -> gpui::AnyElement {
+    fn body(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
         match self.section {
             Section::Appearance => self.appearance.clone().into_any_element(),
             Section::Pill => self.pill.clone().into_any_element(),
@@ -293,7 +293,7 @@ impl SettingsView {
             Section::Launcher => pane_or_missing(&self.launcher),
             Section::Shortcuts => pane_or_missing(&self.shortcuts),
             Section::Agents => pane_or_missing(&self.agents),
-            Section::About => about().into_any_element(),
+            Section::About => about(cx).into_any_element(),
         }
     }
 }
@@ -331,7 +331,7 @@ impl Render for SettingsView {
                             )
                             .child(div().text_size(px(12.)).text_color(hsla(MUTED)).child(section.hint())),
                     )
-                    .child(self.body()),
+                    .child(self.body(cx)),
             );
 
         let nav: Vec<_> = Section::ALL.iter().map(|&s| self.nav_item(s, !wide, cx)).collect();
@@ -501,11 +501,61 @@ fn missing_data() -> impl IntoElement {
 
 // --- Acerca de ----------------------------------------------------------------------
 
+/// Buscar e instalar actualizaciones (`updater.rs`).
+fn updates(cx: &mut Context<SettingsView>) -> impl IntoElement {
+    use crate::i18n::{t, tf};
+    use crate::updater::{self, Status};
+    let status = updater::status();
+    let value: Option<SharedString> = match &status {
+        Status::Checking => Some(t("about.checking").into()),
+        Status::UpToDate => Some(t("about.upToDate").into()),
+        Status::Available(update) => Some(tf("about.availableTitle", &[("version", &update.version)]).into()),
+        Status::Installing => Some(t("about.installingBody").into()),
+        Status::Failed(_) => Some(t("about.checkFailed").into()),
+        Status::Unknown => None,
+    };
+    let control = match status {
+        Status::Available(update) => div().flex().child(text_button(
+            "settings-update-install",
+            t("pill.settings.installUpdate"),
+            cx.listener(move |_, _: &ClickEvent, _, cx| {
+                let update = update.clone();
+                cx.spawn(async move |view, cx| {
+                    let restart = cx.background_spawn(async move { updater::install(&update) }).await;
+                    let _ = view.update(cx, |_, cx| {
+                        if restart {
+                            cx.quit();
+                        } else {
+                            cx.notify();
+                        }
+                    });
+                })
+                .detach();
+                cx.notify();
+            }),
+        )),
+        Status::Checking | Status::Installing => div(),
+        _ => div().flex().child(text_button(
+            "settings-update-check",
+            t("about.check"),
+            cx.listener(|_, _: &ClickEvent, _, cx| {
+                cx.spawn(async move |view, cx| {
+                    cx.background_spawn(async { updater::check_now() }).await;
+                    let _ = view.update(cx, |_, cx| cx.notify());
+                })
+                .detach();
+                cx.notify();
+            }),
+        )),
+    };
+    row(t("about.updates"), t("pill.settings.updatesHint"), value, control)
+}
+
 fn data_dir() -> Option<PathBuf> {
     crate::paths::data_dir()
 }
 
-fn about() -> impl IntoElement {
+fn about(cx: &mut Context<SettingsView>) -> impl IntoElement {
     let folder: SharedString = data_dir()
         .map(|dir| dir.display().to_string())
         .unwrap_or_else(|| "—".into())
@@ -513,10 +563,11 @@ fn about() -> impl IntoElement {
     card()
         .child(row(
             "Versión",
-            "La pill nativa de Atic (prototipo GPUI).",
-            Some(env!("CARGO_PKG_VERSION").into()),
+            "La pill nativa de Atic.",
+            Some(crate::updater::VERSION.into()),
             div(),
         ))
+        .child(updates(cx))
         .child(
             div()
                 .flex()

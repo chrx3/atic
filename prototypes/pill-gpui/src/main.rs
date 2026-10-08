@@ -56,6 +56,7 @@ mod media;
 #[allow(dead_code)]
 mod quota;
 mod tray;
+mod updater;
 mod usage;
 mod text_area;
 mod text_input;
@@ -4383,6 +4384,7 @@ fn main() {
     paste_queue::start();
     housekeeping::spawn();
     config_watch::spawn();
+    updater::spawn();
     Application::new().with_assets(Assets).run(|cx: &mut App| {
         text_input::bind_keys(cx);
         text_area::bind_keys(cx);

@@ -12,7 +12,9 @@
  "pill.settings.detectMeetingsHint": "Mira el título de las ventanas de Zoom, Teams, Meet y Webex. Todo local.",
  "pill.settings.forever": "Siempre",
  "pill.settings.generalHint": "Idioma, arranque y datos. Se comparten con Atic.",
+ "pill.settings.installUpdate": "Instalar y reiniciar",
  "pill.settings.launcherHint": "El buscador de apps de la pill.",
  "pill.settings.pressShortcut": "Aprieta la combinación…",
+ "pill.settings.updatesHint": "Revisa el último release de GitHub al abrir y cada 6 horas. Instalar descarga, comprueba la firma y reinicia.",
  "pill.tray.settings": "Ajustes"
 }

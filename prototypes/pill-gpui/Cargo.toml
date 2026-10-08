@@ -21,6 +21,8 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg"]
 # Mismas versiones que `apps/desktop/src-tauri`, de donde viene `flip_export.rs`.
 zip = { version = "4.6.1", default-features = false, features = ["deflate"] }
 base64 = "0.22"
+# Las firmas de las actualizaciones (`updater.rs`): la misma que usa Tauri.
+minisign-verify = "0.2.5"
 # El motor de capturas de Atic: monitores, congelar, ventanas, recortar y PNG.
 atic-capture = { path = "../../crates/capture" }
 # El historial del portapapeles: la pill es su dueña con `native_pill`.
