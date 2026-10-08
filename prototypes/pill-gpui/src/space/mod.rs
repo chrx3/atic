@@ -17,6 +17,7 @@
 
 pub(crate) mod chrome;
 pub(crate) mod console;
+mod folders;
 mod input;
 mod mando;
 mod persist;
@@ -194,6 +195,8 @@ pub struct SpaceView {
     build_ms: f32,
     fonts: [Font; 4],
     pub default_cwd: Option<PathBuf>,
+    /// Las carpetas del espacio y la activa (`folders.rs`).
+    folders: folders::Folders,
     /// Ajustar todo en el primer cuadro, cuando ya se conoce el tamaño.
     fit_pending: bool,
     /// Mando (cartas, consola enfocada y bandeja) o pizarra.
@@ -361,6 +364,7 @@ impl SpaceView {
             build_ms: 0.0,
             fonts: fonts(),
             default_cwd: None,
+            folders: folders::Folders::load(),
             fit_pending: false,
             // El Mando es la vista de siempre; `SPACE_VIEW=pizarra` abre la otra.
             view: match std::env::var("SPACE_VIEW").as_deref() {
@@ -454,12 +458,21 @@ impl SpaceView {
     fn open_at(&mut self, open: Open, area: Area, cx: &mut Context<Self>) {
         let cell = self.cell();
         // Si no se pidió carpeta, la del proceso: es donde el PTY ya arrancaba.
+        // Sin carpeta pedida: la activa del espacio, la de quien lo abrió o la
+        // del proceso, donde el PTY ya arrancaba.
         let cwd = open
             .cwd
+            .or_else(|| self.folders.active().cloned())
             .or_else(|| self.default_cwd.clone())
             .or_else(|| std::env::current_dir().ok());
         let mut args = open.args;
         let mut env = Vec::new();
+        // Un agente en una carpeta del espacio trabaja también en las otras.
+        if let (Some(agent), Some(dir), [flag, line]) = (open.agent, cwd.as_ref(), args.as_mut_slice()) {
+            if flag.eq_ignore_ascii_case("/K") {
+                *line = folders::with_add_dirs(agent, line, &self.folders.extras(dir));
+            }
+        }
         // Agentes con hooks: la línea los lleva y el entorno, la marca.
         let token = match (open.agent, args.as_slice()) {
             (Some(agent), [flag, line]) if flag.eq_ignore_ascii_case("/K") => {
@@ -916,6 +929,7 @@ impl SpaceView {
             .child(button("space-shell", "+ PowerShell").on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
                 view.open(Open::shell(None), cx)
             })))
+            .child(folders::bar(self, cx))
             .child(chrome::drag(TOOLBAR_H))
             .child(
                 div()

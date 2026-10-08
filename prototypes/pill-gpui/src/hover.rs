@@ -219,6 +219,11 @@ pub fn tip(text: &'static str) -> impl Fn(&mut Window, &mut App) -> gpui::AnyVie
     move |_, cx| gpui::AppContext::new(cx, |_| Tip(text.into())).into()
 }
 
+/// Como `tip`, con un texto armado en el momento (una ruta, por ejemplo).
+pub fn tip_text(text: gpui::SharedString) -> impl Fn(&mut Window, &mut App) -> gpui::AnyView + 'static {
+    move |_, cx| gpui::AppContext::new(cx, |_| Tip(text.clone())).into()
+}
+
 struct Tip(gpui::SharedString);
 
 impl gpui::Render for Tip {

@@ -793,7 +793,7 @@ pub(super) fn render(
         .bg(hsla(WINDOW))
         .font_family("Segoe UI")
         .child(super::input::layer(cx.weak_entity(), view.focus.clone()))
-        .child(top_bar(maximized, cx))
+        .child(top_bar(maximized, super::folders::bar(view, cx), cx))
         .child(
             div()
                 .absolute()
@@ -812,7 +812,7 @@ pub(super) fn render(
         .into_any_element()
 }
 
-fn top_bar(maximized: bool, cx: &mut Context<SpaceView>) -> impl IntoElement {
+fn top_bar(maximized: bool, folders: impl IntoElement, cx: &mut Context<SpaceView>) -> impl IntoElement {
     div()
         .absolute()
         .top_0()
@@ -833,6 +833,7 @@ fn top_bar(maximized: bool, cx: &mut Context<SpaceView>) -> impl IntoElement {
                 .child("Agentes"),
         )
         .child(tabs(View::Mando, cx))
+        .child(folders)
         .child(chrome::drag(TOP_H))
         .child(
             div()
