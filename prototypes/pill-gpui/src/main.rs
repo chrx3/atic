@@ -7,7 +7,6 @@
 
 mod anim;
 mod appearance;
-mod atic_window;
 mod settings;
 mod app_icon;
 mod board;
@@ -1954,7 +1953,8 @@ impl Pill {
     fn run_tray_command(&mut self, command: tray_icon::Command, window: &mut Window, cx: &mut Context<Self>) {
         use tray_icon::Command;
         match command {
-            Command::OpenAtic => atic_window::open(),
+            Command::OpenAtic => meetings::show(cx),
+            Command::Settings => settings::open(cx),
             Command::Consoles => self.open_space(None, cx),
             Command::Capture => self.run_hotkey(hotkeys::Action::Capture, window, cx),
             Command::Summon => self.summon_to_cursor(cx),

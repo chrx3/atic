@@ -24,8 +24,10 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 /// Lo que se pidió desde el ícono.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Command {
-    /// La ventana principal de Atic (biblioteca, Ajustes).
+    /// La ventana principal: Reuniones.
     OpenAtic,
+    /// Los Ajustes de la pill.
+    Settings,
     /// El espacio de consolas.
     Consoles,
     Capture,
@@ -43,6 +45,7 @@ const CLASS: &str = "AticPillTray";
 /// Las entradas del menú, en orden: id, clave de texto y orden.
 const ITEMS: &[(usize, &str, Command)] = &[
     (1, "tray.show", Command::OpenAtic),
+    (5, "pill.tray.settings", Command::Settings),
     (2, "tray.consoles", Command::Consoles),
     (3, "tray.capture", Command::Capture),
     (4, "tray.summonPill", Command::Summon),

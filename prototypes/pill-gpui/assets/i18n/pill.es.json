@@ -2,5 +2,6 @@
  "pill.agents.wantsTool": "{agent} pide usar {tool}",
  "pill.clipboard.hiddenSecret": "Oculto en pantalla · se pega completo",
  "pill.clipboard.imageLabel": "Imagen {w}×{h}",
- "pill.clipboard.yesterdayAt": "ayer {time}"
+ "pill.clipboard.yesterdayAt": "ayer {time}",
+ "pill.tray.settings": "Ajustes"
 }
