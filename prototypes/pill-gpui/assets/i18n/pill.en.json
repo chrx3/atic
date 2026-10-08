@@ -5,11 +5,14 @@
  "pill.clipboard.yesterdayAt": "yesterday {time}",
  "pill.settings.autoCleanupHint": "When the pill opens, deletes recordings older than the chosen age.",
  "pill.settings.autostartHint": "Opens the pill when you sign in, ready for shortcuts.",
+ "pill.settings.cancel": "Cancel",
  "pill.settings.capturesHint": "How long captures are kept before they are deleted.",
+ "pill.settings.change": "Change",
  "pill.settings.detectMeetings": "Detect meetings",
  "pill.settings.detectMeetingsHint": "Looks at Zoom, Teams, Meet and Webex window titles. All local.",
  "pill.settings.forever": "Forever",
  "pill.settings.generalHint": "Language, startup and data. Shared with Atic.",
  "pill.settings.launcherHint": "The pill's app launcher.",
+ "pill.settings.pressShortcut": "Press the combination…",
  "pill.tray.settings": "Settings"
 }

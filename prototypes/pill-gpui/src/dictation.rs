@@ -462,6 +462,9 @@ impl Watch {
     /// La rueda: el atajo de `config.json` si los atajos son de la pill; si
     /// no, Alt+Z, salvo que Atic lo use para otra cosa (sería doble).
     pub fn wheel_down(&self) -> bool {
+        if crate::hotkeys::paused() {
+            return false;
+        }
         if self.atic_owns_shortcuts() {
             return self.wheel_fallback_free.load(Ordering::Relaxed) && crate::win::wheel_shortcut_down();
         }
@@ -531,7 +534,8 @@ impl Pill {
     /// Lee el atajo y empieza o termina el dictado; pega lo transcrito.
     pub(crate) fn update_dictation(&mut self, now: Instant, cx: &mut Context<Self>) {
         let shortcut = self.dict_watch.shortcut();
-        let down = shortcut.as_ref().is_some_and(|s| s.down());
+        // Grabando un atajo en Ajustes: las teclas son para el editor.
+        let down = !crate::hotkeys::paused() && shortcut.as_ref().is_some_and(|s| s.down());
         let push_to_talk = shortcut.as_ref().is_none_or(|s| s.push_to_talk);
         if down && !self.dict_key_was_down {
             if self.dictation.recording() {

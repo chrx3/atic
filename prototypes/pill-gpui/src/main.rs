@@ -46,6 +46,7 @@ mod meetings;
 mod meter;
 mod secrets;
 mod shelf;
+mod shortcuts_settings;
 mod snippets;
 mod space;
 mod system;

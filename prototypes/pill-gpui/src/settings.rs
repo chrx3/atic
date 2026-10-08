@@ -58,11 +58,12 @@ pub enum Section {
     Meetings,
     Captures,
     Launcher,
+    Shortcuts,
     About,
 }
 
 impl Section {
-    const ALL: [Section; 9] = [
+    const ALL: [Section; 10] = [
         Section::General,
         Section::Appearance,
         Section::Pill,
@@ -71,6 +72,7 @@ impl Section {
         Section::Meetings,
         Section::Captures,
         Section::Launcher,
+        Section::Shortcuts,
         Section::About,
     ];
 
@@ -79,6 +81,7 @@ impl Section {
             Section::General => crate::i18n::t("settings.nav.general"),
             Section::Captures => crate::i18n::t("settings.nav.captures"),
             Section::Launcher => crate::i18n::t("settings.nav.launcher"),
+            Section::Shortcuts => crate::i18n::t("settings.nav.shortcuts"),
             Section::Appearance => "Apariencia",
             Section::Pill => "Pill",
             Section::Clipboard => "Portapapeles",
@@ -93,6 +96,7 @@ impl Section {
             Section::General => crate::i18n::t("pill.settings.generalHint"),
             Section::Captures => crate::i18n::t("pill.settings.capturesHint"),
             Section::Launcher => crate::i18n::t("pill.settings.launcherHint"),
+            Section::Shortcuts => crate::i18n::t("settings.shortcuts.title"),
             Section::Appearance => "Cuánto se ve el vidrio y cuánto se tapa para leer.",
             Section::Pill => "Qué herramientas muestra y qué cuelga del notch.",
             Section::Clipboard => "Lo que copias, para pegarlo después.",
@@ -107,6 +111,7 @@ impl Section {
             Section::General => "icons/settings-2.svg",
             Section::Captures => "icons/crop.svg",
             Section::Launcher => "icons/search.svg",
+            Section::Shortcuts => "icons/type.svg",
             Section::Appearance => "icons/sparkles.svg",
             Section::Pill => "icons/layers.svg",
             Section::Clipboard => "icons/clipboard.svg",
@@ -121,6 +126,7 @@ impl Section {
             Section::General => "settings-general",
             Section::Captures => "settings-captures",
             Section::Launcher => "settings-launcher",
+            Section::Shortcuts => "settings-shortcuts",
             Section::Appearance => "settings-appearance",
             Section::Pill => "settings-pill",
             Section::Clipboard => "settings-clipboard",
@@ -177,6 +183,7 @@ pub struct SettingsView {
     general: Option<Entity<GeneralPane>>,
     captures: Option<Entity<CapturesPane>>,
     launcher: Option<Entity<LauncherPane>>,
+    shortcuts: Option<Entity<crate::shortcuts_settings::ShortcutsPane>>,
 }
 
 impl SettingsView {
@@ -191,6 +198,7 @@ impl SettingsView {
             general: crate::general_settings::general_pane(cx),
             captures: None,
             launcher: None,
+            shortcuts: None,
         }
     }
 
@@ -202,6 +210,7 @@ impl SettingsView {
             Section::General if self.general.is_none() => self.general = crate::general_settings::general_pane(cx),
             Section::Captures if self.captures.is_none() => self.captures = crate::general_settings::captures_pane(cx),
             Section::Launcher if self.launcher.is_none() => self.launcher = crate::general_settings::launcher_pane(cx),
+            Section::Shortcuts if self.shortcuts.is_none() => self.shortcuts = crate::shortcuts_settings::shortcuts_pane(cx),
             _ => {}
         }
         self.section = section;
@@ -273,6 +282,7 @@ impl SettingsView {
             Section::General => pane_or_missing(&self.general),
             Section::Captures => pane_or_missing(&self.captures),
             Section::Launcher => pane_or_missing(&self.launcher),
+            Section::Shortcuts => pane_or_missing(&self.shortcuts),
             Section::About => about().into_any_element(),
         }
     }

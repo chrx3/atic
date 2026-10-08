@@ -10,6 +10,7 @@
 //! que se escribe. El dictado y la rueda no pasan por aquí: se mantienen
 //! apretados y `RegisterHotKey` no avisa al soltar (`dictation.rs` los sondea).
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Receiver;
 
 use crate::dictation::{Shortcut, Watch, VK_XBUTTON1, VK_XBUTTON2};
@@ -26,6 +27,18 @@ pub enum Action {
     Agents,
     Record,
     Summon,
+}
+
+/// Grabando un atajo en Ajustes: sueltos los registrados y sin sondear.
+static PAUSED: AtomicBool = AtomicBool::new(false);
+
+/// Suelta (o vuelve a tomar) todos los atajos, para grabar uno nuevo.
+pub fn set_paused(paused: bool) {
+    PAUSED.store(paused, Ordering::Relaxed);
+}
+
+pub fn paused() -> bool {
+    PAUSED.load(Ordering::Relaxed)
 }
 
 /// El del lanzador mientras Atic tiene los atajos.
@@ -128,6 +141,20 @@ pub fn spawn(watch: Watch) -> Receiver<Action> {
         // Los botones del mouse y si estaban apretados en la vuelta anterior.
         let mut mouse: Vec<(Action, i32, bool)> = Vec::new();
         loop {
+            if paused() {
+                for id in 1..=current.len() {
+                    unsafe {
+                        let _ = UnregisterHotKey(None, id as i32);
+                    }
+                }
+                current.clear();
+                ok.clear();
+                mouse.clear();
+                // Al volver se revisa en el acto: puede haber un atajo nuevo.
+                checked = None;
+                std::thread::sleep(POLL);
+                continue;
+            }
             // Hasta la primera revisión no se sabe si Atic los tiene: registrar
             // antes fallaría con los suyos.
             if watch.checked() && checked.is_none_or(|at| at.elapsed() >= RECHECK) {
