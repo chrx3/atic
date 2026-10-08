@@ -31,6 +31,10 @@ atic-clipboard = { path = "../../crates/clipboard" }
 atic-calc = { path = "../../crates/calc" }
 # Hooks de las consolas de agentes y cómo contestar sus permisos.
 atic-agents = { path = "../../crates/agents" }
+# El canal con la app del celular (`phone.rs`) y su QR.
+atic-sync = { path = "../../crates/sync" }
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
+qrcode = { version = "0.14", default-features = false, features = ["image"] }
 # El dictado de Atic sin Tauri: configuración y llavero, micrófono (con
 # RNNoise) y transcripción por Groq. Sin el Whisper local (feature `local`).
 atic-core = { path = "../../crates/core", features = ["diagnostics"] }

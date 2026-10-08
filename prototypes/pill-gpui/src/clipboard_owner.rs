@@ -37,7 +37,13 @@ pub fn start() {
         Hooks {
             enabled: Box::new(move || owner.capturing()),
             image_label,
-            on_change: Box::new(|_| {}),
+            on_change: Box::new(|change| {
+                // Lo nuevo viaja al celular si el portapapeles compartido está
+                // encendido (`phone.rs`).
+                if let atic_clipboard::Change::Text(text) = change {
+                    crate::phone::clipboard_copied(text);
+                }
+            }),
         },
     );
 }
@@ -66,7 +72,14 @@ pub fn delete(id: &str) -> bool {
     shared.lock_or_recover().delete(dir, id).is_some()
 }
 
-fn image_label(width: usize, height: usize) -> String {
+/// El historial compartido y su carpeta, si la pill es la dueña: para lo que
+/// trae y borra el celular.
+pub fn with_history<R>(f: impl FnOnce(&mut History, &std::path::Path) -> R) -> Option<R> {
+    let (shared, dir) = SHARED.get().filter(|_| owns())?;
+    Some(f(&mut shared.lock_or_recover(), dir))
+}
+
+pub(crate) fn image_label(width: usize, height: usize) -> String {
     crate::i18n::tf("pill.clipboard.imageLabel", &[("w", &width), ("h", &height)])
 }
 

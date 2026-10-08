@@ -21,7 +21,7 @@ mod store;
 mod watcher;
 
 pub use queue::{PasteQueue, PasteQueueItem, MAX_QUEUED};
-pub use gate::{set_system_text, try_clipboard_read, with_clipboard_write};
+pub use gate::{set_system_image, set_system_text, try_clipboard_read, with_clipboard_write};
 pub use sensitive::clipboard_is_sensitive;
 pub use source::clipboard_source_app;
 #[cfg(windows)]

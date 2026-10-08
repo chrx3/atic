@@ -754,7 +754,12 @@ pub(crate) fn card() -> gpui::Div {
     div().py(px(4.)).rounded(px(16.)).bg(hsla(SURFACE)).flex().flex_col()
 }
 
-pub(crate) fn row(title: &'static str, hint: impl Into<SharedString>, control: impl IntoElement) -> impl IntoElement {
+pub(crate) fn row(
+    title: impl Into<SharedString>,
+    hint: impl Into<SharedString>,
+    control: impl IntoElement,
+) -> impl IntoElement {
+    let title: SharedString = title.into();
     let hint: SharedString = hint.into();
     div()
         .flex()

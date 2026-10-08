@@ -1,6 +1,6 @@
 use std::sync::{Mutex, TryLockError};
 
-use arboard::Clipboard;
+use arboard::{Clipboard, ImageData};
 use atic_core::MutexExt;
 
 /// Un solo hilo a la vez puede tener el portapapeles de Windows abierto.
@@ -26,6 +26,16 @@ pub fn set_system_text(text: impl Into<String>) -> Result<(), String> {
     with_clipboard_write(|| {
         let mut clipboard = Clipboard::new().map_err(|e| e.to_string())?;
         clipboard.set_text(text).map_err(|e| e.to_string())
+    })
+}
+
+/// Una imagen RGBA al portapapeles del sistema, por el mismo candado.
+pub fn set_system_image(width: usize, height: usize, rgba: Vec<u8>) -> Result<(), String> {
+    with_clipboard_write(|| {
+        let mut clipboard = Clipboard::new().map_err(|e| e.to_string())?;
+        clipboard
+            .set_image(ImageData { width, height, bytes: rgba.into() })
+            .map_err(|e| e.to_string())
     })
 }
 

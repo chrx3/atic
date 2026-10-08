@@ -60,11 +60,12 @@ pub enum Section {
     Launcher,
     Shortcuts,
     Agents,
+    Phone,
     About,
 }
 
 impl Section {
-    const ALL: [Section; 11] = [
+    const ALL: [Section; 12] = [
         Section::General,
         Section::Appearance,
         Section::Pill,
@@ -75,6 +76,7 @@ impl Section {
         Section::Launcher,
         Section::Shortcuts,
         Section::Agents,
+        Section::Phone,
         Section::About,
     ];
 
@@ -85,6 +87,7 @@ impl Section {
             Section::Launcher => crate::i18n::t("settings.nav.launcher"),
             Section::Shortcuts => crate::i18n::t("settings.nav.shortcuts"),
             Section::Agents => crate::i18n::t("settings.nav.agents"),
+            Section::Phone => crate::i18n::t("settings.nav.phone"),
             Section::Appearance => "Apariencia",
             Section::Pill => "Pill",
             Section::Clipboard => "Portapapeles",
@@ -101,6 +104,7 @@ impl Section {
             Section::Launcher => crate::i18n::t("pill.settings.launcherHint"),
             Section::Shortcuts => crate::i18n::t("settings.shortcuts.title"),
             Section::Agents => crate::i18n::t("settings.agents.aticMcpTitle"),
+            Section::Phone => crate::i18n::t("pill.phone.sectionHint"),
             Section::Appearance => "Cuánto se ve el vidrio y cuánto se tapa para leer.",
             Section::Pill => "Qué herramientas muestra y qué cuelga del notch.",
             Section::Clipboard => "Lo que copias, para pegarlo después.",
@@ -117,6 +121,7 @@ impl Section {
             Section::Launcher => "icons/search.svg",
             Section::Shortcuts => "icons/type.svg",
             Section::Agents => "icons/square-terminal.svg",
+            Section::Phone => "icons/laptop.svg",
             Section::Appearance => "icons/sparkles.svg",
             Section::Pill => "icons/layers.svg",
             Section::Clipboard => "icons/clipboard.svg",
@@ -133,6 +138,7 @@ impl Section {
             Section::Launcher => "settings-launcher",
             Section::Shortcuts => "settings-shortcuts",
             Section::Agents => "settings-agents",
+            Section::Phone => "settings-phone",
             Section::Appearance => "settings-appearance",
             Section::Pill => "settings-pill",
             Section::Clipboard => "settings-clipboard",
@@ -191,6 +197,7 @@ pub struct SettingsView {
     launcher: Option<Entity<LauncherPane>>,
     shortcuts: Option<Entity<crate::shortcuts_settings::ShortcutsPane>>,
     agents: Option<Entity<crate::agents_settings::AgentsPane>>,
+    phone: Option<Entity<crate::phone_settings::PhonePane>>,
 }
 
 impl SettingsView {
@@ -207,6 +214,7 @@ impl SettingsView {
             launcher: None,
             shortcuts: None,
             agents: None,
+            phone: None,
         }
     }
 
@@ -220,6 +228,7 @@ impl SettingsView {
             Section::Launcher if self.launcher.is_none() => self.launcher = crate::general_settings::launcher_pane(cx),
             Section::Shortcuts if self.shortcuts.is_none() => self.shortcuts = crate::shortcuts_settings::shortcuts_pane(cx),
             Section::Agents if self.agents.is_none() => self.agents = Some(crate::agents_settings::agents_pane(cx)),
+            Section::Phone if self.phone.is_none() => self.phone = Some(crate::phone_settings::phone_pane(cx)),
             _ => {}
         }
         self.section = section;
@@ -293,6 +302,7 @@ impl SettingsView {
             Section::Launcher => pane_or_missing(&self.launcher),
             Section::Shortcuts => pane_or_missing(&self.shortcuts),
             Section::Agents => pane_or_missing(&self.agents),
+            Section::Phone => pane_or_missing(&self.phone),
             Section::About => about(cx).into_any_element(),
         }
     }

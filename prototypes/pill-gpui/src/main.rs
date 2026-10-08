@@ -38,6 +38,8 @@ mod hover;
 mod i18n;
 mod liquid;
 mod peeks;
+mod phone;
+mod phone_settings;
 use hover::HoverExt;
 mod pill_settings;
 mod pill_tools;
@@ -625,6 +627,8 @@ struct Pill {
     hotkeys: std::sync::mpsc::Receiver<hotkeys::Action>,
     /// Lo pedido desde el ícono de la bandeja (`tray_icon.rs`).
     tray_icon: std::sync::mpsc::Receiver<tray_icon::Command>,
+    /// Lo que pide el celular (`phone.rs`).
+    phone: std::sync::mpsc::Receiver<phone::Command>,
     snippets: Entity<SnippetsPanel>,
     panel_open: bool,
     /// Alto del contenido del notch: sigue a lo que el panel necesita
@@ -817,6 +821,7 @@ impl Pill {
         let launcher = cx.new(launcher::LauncherPanel::new);
         let agents = cx.new(agents::AgentsPanel::new);
         let media = media::Media::start();
+        let phone = phone::start(media.clone());
         let dict_watch = dictation::Watch::spawn();
         let hotkeys = hotkeys::spawn(dict_watch.clone());
         // Agentes lleva un mini reproductor al pie con lo mismo que suena.
@@ -835,6 +840,10 @@ impl Pill {
             // medidores, cada vez.
             cx.observe(&studio, |pill, studio, cx| {
                 let s = studio.read(cx);
+                // El celular muestra el cronómetro y puede detenerla.
+                phone::set_recording(s.recording().then(|| s.elapsed()).flatten().map(|elapsed| {
+                    chrono::Utc::now().timestamp_millis() - elapsed.as_millis() as i64
+                }));
                 let clock = matches!(s.stage(), meetings::Stage::Recording | meetings::Stage::Stopping)
                     .then(|| s.elapsed().map(meetings::stopwatch))
                     .flatten();
@@ -1029,6 +1038,7 @@ impl Pill {
             launcher_centered: false,
             hotkeys,
             tray_icon: tray_icon::spawn(),
+            phone,
             snippets,
             panel_open: false,
             panel_time: 0.0,
@@ -2596,6 +2606,13 @@ impl Pill {
         // Los atajos globales (llegan desde su propio hilo).
         while let Ok(action) = self.hotkeys.try_recv() {
             self.run_hotkey(action, window, cx);
+        }
+        while let Ok(phone::Command::StopRecording) = self.phone.try_recv() {
+            self.studio.update(cx, |studio, cx| {
+                if studio.recording() {
+                    studio.toggle_recording(cx);
+                }
+            });
         }
         while let Ok(command) = self.tray_icon.try_recv() {
             self.run_tray_command(command, window, cx);
