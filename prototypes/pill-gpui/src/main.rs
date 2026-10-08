@@ -262,6 +262,8 @@ const SCREEN_POLL: Duration = Duration::from_millis(500);
 /// El sondeo del cursor: ~60/s con algo cerca o en marcha, ~20/s en calma.
 const TICK_ACTIVE: Duration = Duration::from_millis(16);
 const TICK_CALM: Duration = Duration::from_millis(50);
+/// Con el cursor quieto este rato, la pill empieza a mirar a los costados.
+const GLANCE_AFTER: Duration = Duration::from_secs(6);
 /// A cuántos px de la pill el sondeo vuelve a ir rápido: a 50 ms por vuelta,
 /// un cursor rápido recorre menos que esto antes de llegar.
 const CALM_DISTANCE: f32 = 160.0;
@@ -687,6 +689,11 @@ struct Pill {
     paste_target: Option<paste::Target>,
 
     eyes: (f32, f32),
+    /// Desde cuándo el cursor no se mueve.
+    still_since: Instant,
+    /// Una mirada al costado: hacia dónde y hasta cuándo.
+    glance: Option<((f32, f32), Instant)>,
+    next_glance: Instant,
     next_blink: Instant,
     blink_started: Option<Instant>,
     double_blink: bool,
@@ -1053,6 +1060,9 @@ impl Pill {
             panel_time: 0.0,
             paste_target: None,
             eyes: (0.0, 0.0),
+            still_since: now,
+            glance: None,
+            next_glance: now,
             next_blink: now,
             blink_started: None,
             double_blink: false,
@@ -1149,6 +1159,34 @@ impl Pill {
         .detach();
 
         pill
+    }
+
+    /// Que se vea viva sin dibujar de más: con el cursor quieto un rato, de
+    /// vez en cuando mira a un costado y vuelve. Los cuadros los pide solo el
+    /// movimiento (los ojos y el parpadeo), no un reloj.
+    fn look_around(&mut self, moved: bool, now: Instant, cx: &mut Context<Self>) {
+        if moved {
+            self.still_since = now;
+            self.glance = None;
+        } else if self.glance.is_some_and(|(_, until)| now >= until) {
+            self.glance = None;
+            cx.notify();
+        } else if self.glance.is_none()
+            && now.duration_since(self.still_since) >= GLANCE_AFTER
+            && now >= self.next_glance
+        {
+            let angle = self.rng.next() * TAU;
+            // Más hacia los lados que arriba o abajo.
+            let direction = (angle.cos() * 0.7, angle.sin() * 0.35);
+            let hold = 0.8 + self.rng.next() * 1.2;
+            self.glance = Some((direction, now + Duration::from_secs_f32(hold)));
+            self.next_glance = now + Duration::from_secs_f32(5.0 + self.rng.next() * 9.0);
+            cx.notify();
+        }
+        // El parpadeo arranca en el cuadro: sin cuadros, hay que pedirlo.
+        if self.blink_started.is_none() && now >= self.next_blink {
+            cx.notify();
+        }
     }
 
     fn schedule_blink(&mut self, now: Instant) {
@@ -2613,6 +2651,7 @@ impl Pill {
             .and_then(|overlay| overlay.cursor(self.scale_factor));
         let moved = cursor != self.cursor;
         self.cursor = cursor;
+        self.look_around(moved, now, cx);
 
         // Los atajos globales (llegan desde su propio hilo).
         while let Ok(action) = self.hotkeys.try_recv() {
@@ -2874,10 +2913,10 @@ impl Pill {
 
         // Fuera de las animaciones basta con ~20 cuadros/s para la respiración;
         // con la onda, ~30.
-        // En calma el sondeo ya va lento: un cuadro de cada dos (~10/s) basta
-        // para la respiración, que cambia menos de un tono por cuadro.
-        let breath_every = if self.calm { 2 } else { 3 };
-        if moved || self.ticks.is_multiple_of(breath_every) || (live_on && self.ticks.is_multiple_of(2)) {
+        // Lo que se mueve pide sus cuadros; esto solo refresca lo que cambia
+        // sin animarse (relojes, contadores). En calma, una vez por segundo.
+        let refresh_every = if self.calm { 20 } else { 3 };
+        if moved || self.ticks.is_multiple_of(refresh_every) || (live_on && self.ticks.is_multiple_of(2)) {
             cx.notify();
         }
         self.calm = !live_on
@@ -2945,15 +2984,16 @@ impl Pill {
             self.seat_started = None;
         }
 
-        let target = match self.cursor {
-            Some((x, y)) => {
+        let target = match (self.glance, self.cursor) {
+            (Some((direction, _)), _) => direction,
+            (None, Some((x, y))) => {
                 let (mx, my) = self.mark_center(now);
                 let (dx, dy) = (x - mx, y - my);
                 let distance = dx.hypot(dy).max(1.0);
                 let reach = (distance / 240.0).min(1.0);
                 (dx / distance * reach, dy / distance * reach)
             }
-            None => (0.0, 0.0),
+            (None, None) => (0.0, 0.0),
         };
         let follow = 1.0 - (-dt * 14.0).exp();
         self.eyes.0 += (target.0 - self.eyes.0) * follow;
@@ -3061,10 +3101,7 @@ impl Pill {
     fn frame(&self, now: Instant) -> Frame {
         let look = appearance::current();
         let palette = Palette::dark();
-        let breath_t = now.duration_since(self.born).as_secs_f32() / 2.4 * TAU;
-        let brightness = 1.04 - 0.04 * breath_t.cos();
-        let mut skin = palette.skin;
-        skin.l = (skin.l * brightness).min(1.0);
+        let skin = palette.skin;
 
         let pill = self.shape(now);
         let open = self.strip.value(now);
