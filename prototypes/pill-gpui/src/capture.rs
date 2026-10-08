@@ -140,6 +140,8 @@ pub struct Session {
     with_pill: Option<(Frame, Arc<RenderImage>)>,
     /// En vivo, los píxeles bajo el cursor para la lupa, recién leídos.
     loupe: Option<Frame>,
+    /// Cada monitor, en coordenadas de la foto: la ayuda va en el del cursor.
+    screens: Vec<Rect>,
 }
 
 /// El modo con que abre la mira: el último que se usó.
@@ -171,12 +173,41 @@ impl Session {
             pill_shown: false,
             with_pill: None,
             loupe: None,
+            screens: Vec::new(),
         }
+        .with_screens()
     }
 
-    /// Hay una foto con la pill para alternar (solo congelada).
+    fn with_screens(mut self) -> Self {
+        let (area, scale) = (self.frozen.frame.bounds, self.frozen.scale);
+        self.screens = monitors::enumerate()
+            .iter()
+            .map(|monitor| {
+                let m = monitor.bounds;
+                Rect::new(
+                    (m.x - area.x) as f32 / scale,
+                    (m.y - area.y) as f32 / scale,
+                    m.width as f32 / scale,
+                    m.height as f32 / scale,
+                )
+            })
+            .collect();
+        self
+    }
+
+    /// El monitor bajo el cursor (o toda la foto si no se sabe).
+    fn cursor_screen(&self) -> Rect {
+        self.screens
+            .iter()
+            .copied()
+            .find(|screen| screen.contains(self.cursor, 0.0))
+            .unwrap_or_else(|| self.screen())
+    }
+
+    /// Hay una foto con la pill para alternar. En vivo también: P congela
+    /// con la foto del arranque, la que muestra la pill y el notch abierto.
     pub fn can_toggle_pill(&self) -> bool {
-        !self.live && (self.pill_shown || self.with_pill.is_some())
+        self.pill_shown || self.with_pill.is_some()
     }
 
     /// Congela de nuevo la pantalla: el overlay ya está excluido de las
@@ -430,6 +461,9 @@ impl CaptureView {
             session.frozen.frame = frame;
             session.frozen.image = image;
             session.pill_shown = true;
+            // Desde en vivo queda congelada en esa foto, sin cambiar el modo
+            // con que abre la próxima vez.
+            session.live = false;
         }
         cx.notify();
     }
@@ -546,6 +580,7 @@ impl Render for CaptureView {
         self.session.refresh_loupe();
         let session = &self.session;
         let screen = session.screen();
+        let help = session.cursor_screen();
         let pick = session.pick();
         let selection = match &pick {
             Pick::Screen => None,
@@ -685,8 +720,9 @@ impl Render for CaptureView {
             .child(
                 div()
                     .absolute()
-                    .top(px(10.))
-                    .w_full()
+                    .left(px(help.x + offset.0))
+                    .top(px(help.y + 10.0 + offset.1))
+                    .w(px(help.w))
                     .flex()
                     .justify_center()
                     .child(chip({
@@ -797,11 +833,15 @@ impl crate::Pill {
     /// mostrar lo que tiene), y P la quita. Desde la rueda o la tira no: la
     /// foto saldría con ellas abiertas.
     pub(crate) fn start_capture(&mut self, with_pill: bool, window: &mut Window, cx: &mut Context<Self>) {
-        if self.capture.is_some() || self.capture_pending {
+        // Con la mira abierta, el mismo atajo la cierra.
+        if self.capture.is_some() {
+            self.end_capture(&CaptureEvent::Cancelled, window, cx);
+            return;
+        }
+        if self.capture_pending {
             return;
         }
         self.capture_pending = true;
-        let with_pill = with_pill && !remembered_live();
         if !with_pill {
             self.hide_for_capture(cx);
         }
@@ -900,7 +940,12 @@ impl crate::Pill {
             .unwrap_or_default();
         let mut session = Session::new(frozen, cursor, previous);
         session.live = remembered_live();
-        session.pill_shown = with_pill && !session.live;
+        if with_pill && session.live {
+            // En vivo la foto del arranque (con la pill) queda para P.
+            session.with_pill = Some((session.frozen.frame.clone(), session.frozen.image.clone()));
+        } else {
+            session.pill_shown = with_pill;
+        }
         session.refresh_loupe();
         let view = cx.new(|cx| CaptureView::new(session, cx));
         self.capture_events = Some(cx.subscribe_in(
