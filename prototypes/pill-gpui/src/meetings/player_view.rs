@@ -649,7 +649,7 @@ impl MeetingsView {
             .cursor_pointer()
             .on_click(cx.listener(|v, _: &ClickEvent, _, cx| v.play_pause(cx)))
             .fx("player-play-fx", move |el, h| {
-                el.bg(mix(hsla(0xe9e9e2), gpui::white(), h.t * 0.8))
+                el.bg(mix(hsla(0xe9e9e2), hsla(0xffffff), h.t * 0.8))
                     .child(
                         svg()
                             .path(if playing { "icons/pause.svg" } else { "icons/play.svg" })

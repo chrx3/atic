@@ -28,7 +28,7 @@ pub fn bind_keys(cx: &mut App) {
 }
 
 /// Un campo de texto más oscuro que la tarjeta, como un pozo.
-const FIELD: u32 = 0x161615;
+const FIELD: u32 = crate::theme::SUNKEN;
 const FIELD_W: f32 = 300.0;
 const SWITCH_OFF: u32 = 0x3a3a37;
 

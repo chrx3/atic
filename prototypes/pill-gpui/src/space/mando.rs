@@ -83,21 +83,21 @@ const R_INSET: f32 = 11.0;
 
 // Colores, de más oscuro a más claro. Sin bordes: lo único que separa dos
 // cosas es que una es de otro color.
-const WINDOW: u32 = 0x0f0f0e;
+const WINDOW: u32 = crate::theme::WINDOW;
 /// La terminal: el fondo con el que ya se dibujan sus celdas.
 const TERMINAL: u32 = console::BACKGROUND;
-const SURFACE: u32 = 0x1d1d1b;
-const SURFACE_HOVER: u32 = 0x252523;
+const SURFACE: u32 = crate::theme::SURFACE;
+const SURFACE_HOVER: u32 = crate::theme::SURFACE_HOVER;
 /// El panel enfocado (con más de uno) y lo seleccionado: más claro, sin marco.
 const SURFACE_ON: u32 = 0x2b2b28;
 /// Un elemento dentro de un panel (los de la bandeja).
-const ITEM: u32 = 0x262624;
-const TEXT: u32 = 0xf0f0ea;
-const MUTED: u32 = 0x9a9a90;
-const FAINT: u32 = 0x6a6a64;
-const INK: u32 = 0x141413;
-const WORKING_DOT: u32 = 0xe8b04b;
-const READY_DOT: u32 = 0x6cc48a;
+const ITEM: u32 = crate::theme::ITEM;
+const TEXT: u32 = crate::theme::TEXT;
+const MUTED: u32 = crate::theme::MUTED;
+const FAINT: u32 = crate::theme::FAINT;
+const INK: u32 = crate::theme::INK;
+const WORKING_DOT: u32 = crate::theme::AMBER;
+const READY_DOT: u32 = crate::theme::GREEN;
 const DELETED: u32 = 0xf07b6e;
 
 // --- Estados ------------------------------------------------------------------
@@ -820,7 +820,7 @@ pub(super) fn tabs(current: View, cx: &mut Context<SpaceView>) -> impl IntoEleme
             .text_size(px(12.))
             .font_weight(FontWeight::MEDIUM)
             .text_color(hsla(if on { INK } else { MUTED }))
-            .when(on, |el| el.bg(hsla(0xe9e9e2)))
+            .when(on, |el| el.bg(hsla(crate::theme::FILL)))
             .when(!on, |el| el.cursor_pointer().hover(|el| el.text_color(hsla(TEXT))))
             .on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.set_view(view, cx)))
             .child(label)
@@ -1972,7 +1972,7 @@ fn detail_panel(area: Area, detail: Detail, inbox: &[TrayItem], cx: &mut Context
             .text_size(px(12.))
             .font_weight(FontWeight::MEDIUM)
             .text_color(hsla(if on { INK } else { MUTED }))
-            .when(on, |el| el.bg(hsla(0xe9e9e2)))
+            .when(on, |el| el.bg(hsla(crate::theme::FILL)))
             .when(!on, |el| el.cursor_pointer().hover(|el| el.text_color(hsla(TEXT))))
             .on_click(cx.listener(move |v, _: &ClickEvent, _, cx| {
                 v.mando.tab = this;
@@ -1989,7 +1989,7 @@ fn detail_panel(area: Area, detail: Detail, inbox: &[TrayItem], cx: &mut Context
             .gap(px(2.))
             .p(px(3.))
             .rounded(px(16.))
-            .bg(hsla(0x161615))
+            .bg(hsla(crate::theme::SUNKEN))
             .child(tab_button("tab-changes", count("Cambios", files.len()), Tab::Changes, cx))
             .child(tab_button("tab-files", "Archivos".into(), Tab::Files, cx))
             .child(tab_button("tab-review", count("Revisar", inbox.len()), Tab::Review, cx))
@@ -2152,7 +2152,7 @@ fn doc_pane(pane: usize, area: Area, doc: DocView, cx: &mut Context<SpaceView>) 
             .rounded(px(12.))
             .text_size(px(11.5))
             .text_color(hsla(if on { INK } else { MUTED }))
-            .when(on, |el| el.bg(hsla(0xe9e9e2)))
+            .when(on, |el| el.bg(hsla(crate::theme::FILL)))
             .when(!on, |el| el.cursor_pointer().hover(|el| el.text_color(hsla(TEXT))))
             .on_click(cx.listener(move |v, _: &ClickEvent, _, cx| {
                 if let Some(doc) = v.mando.panes.card_in(pane).and_then(|id| v.docs.iter_mut().find(|d| d.id == id)) {
@@ -2182,7 +2182,7 @@ fn doc_pane(pane: usize, area: Area, doc: DocView, cx: &mut Context<SpaceView>) 
                     .flex_none()
                     .p(px(2.))
                     .rounded(px(14.))
-                    .bg(hsla(0x161615))
+                    .bg(hsla(crate::theme::SUNKEN))
                     .child(toggle("doc-file", "Archivo", false, cx))
                     .child(toggle("doc-diff", "Cambios", true, cx)),
             )

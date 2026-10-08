@@ -301,7 +301,7 @@ impl AppearancePane {
                     .h_full()
                     .w(px(fill))
                     .rounded(px(SLIDER_H / 2.0))
-                    .bg(if dragging { gpui::white() } else { hsla(FILL) }),
+                    .bg(if dragging { hsla(0xffffff) } else { hsla(FILL) }),
             )
             .on_mouse_down(
                 MouseButton::Left,

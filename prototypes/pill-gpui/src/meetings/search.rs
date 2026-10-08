@@ -50,7 +50,7 @@ pub fn bind_keys(cx: &mut App) {
 }
 
 /// El pozo del buscador: más oscuro que el panel (como los campos de Ajustes).
-const FIELD: u32 = 0x161615;
+const FIELD: u32 = crate::theme::SUNKEN;
 const FIELD_H: f32 = 34.0;
 
 // --- Texto -------------------------------------------------------------------------

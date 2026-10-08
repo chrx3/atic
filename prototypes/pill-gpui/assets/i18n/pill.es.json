@@ -25,6 +25,11 @@
  "pill.settings.launcherHint": "El buscador de apps de la pill.",
  "pill.settings.pressShortcut": "Aprieta la combinación…",
  "pill.settings.updatesHint": "Revisa el último release de GitHub al abrir y cada 6 horas. Instalar descarga, comprueba la firma y reinicia.",
+ "pill.settings.theme": "Tema de las ventanas",
+ "pill.settings.themeDark": "Oscuro",
+ "pill.settings.themeHint": "Atic Code, Ajustes y Reuniones. La pill y las terminales siguen oscuras.",
+ "pill.settings.themeLight": "Claro",
+ "pill.settings.themeSystem": "Según Windows",
  "pill.tray.meetings": "Reuniones",
  "pill.tray.quit": "Salir de Atic",
  "pill.tray.settings": "Ajustes"

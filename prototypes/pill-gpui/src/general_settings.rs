@@ -73,6 +73,17 @@ impl Render for GeneralPane {
             (t("settings.language.es"), "es"),
             (t("settings.language.en"), "en"),
         ];
+        let themes = [
+            (t("pill.settings.themeSystem"), "system"),
+            (t("pill.settings.themeLight"), "light"),
+            (t("pill.settings.themeDark"), "dark"),
+        ];
+        // Los temas finos de Atic (sepia, midnight…) se muestran como su lado.
+        let theme = match cfg.ui_theme.as_str() {
+            "system" | "custom" => "system",
+            other if crate::theme::wants_light(other) => "light",
+            _ => "dark",
+        };
         let days = with_forever(&KEEP_DAYS);
         let autostart = cfg.autostart;
         let detect = cfg.detect_meetings;
@@ -87,6 +98,21 @@ impl Render for GeneralPane {
                     t("settings.language.label"),
                     t("settings.language.hint"),
                     segmented("general-language", &languages, &cfg.ui_language, |cfg, v| cfg.ui_language = v.into(), cx),
+                ))
+                .child(row(
+                    t("pill.settings.theme"),
+                    t("pill.settings.themeHint"),
+                    segmented(
+                        "general-theme",
+                        &themes,
+                        theme,
+                        |cfg, v| {
+                            cfg.ui_theme = v.into();
+                            // Al tiro, sin esperar a que `config_watch` lo vea.
+                            crate::theme::set_light(crate::theme::wants_light(v));
+                        },
+                        cx,
+                    ),
                 )),
             )
             .child(heading(t("settings.startup.title")))

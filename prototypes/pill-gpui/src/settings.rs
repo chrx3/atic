@@ -32,20 +32,13 @@ const SIDEBAR_MIN_W: f32 = 700.0;
 /// El contenido no se estira más que esto en ventanas anchas.
 const CONTENT_MAX_W: f32 = 640.0;
 
-pub(crate) const WINDOW: u32 = 0x0f0f0e;
-pub(crate) const SURFACE: u32 = 0x1d1d1b;
-pub(crate) const SURFACE_ON: u32 = 0x2d2d2a;
-pub(crate) const TRACK: u32 = 0x2d2d2a;
-pub(crate) const FILL: u32 = 0xe9e9e2;
-pub(crate) const TEXT: u32 = 0xf0f0ea;
-pub(crate) const MUTED: u32 = 0x9a9a90;
-pub(crate) const FAINT: u32 = 0x6a6a64;
-pub(crate) const INK: u32 = 0x141413;
-pub(crate) const AMBER: u32 = 0xe8b04b;
+// Los colores son los del tema (`theme`): cambian con él.
+pub(crate) use crate::theme::{AMBER, FAINT, FILL, INK, MUTED, SURFACE, SURFACE_ON, TEXT, WINDOW};
+pub(crate) const TRACK: u32 = crate::theme::SURFACE_ON;
 const SWITCH_OFF: u32 = 0x3a3a37;
 
 pub(crate) fn hsla(color: u32) -> Hsla {
-    gpui::rgb(color).into()
+    crate::theme::hsla(color)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]

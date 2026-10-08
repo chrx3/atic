@@ -20,7 +20,7 @@ use alacritty_terminal::term::{Config, TermMode};
 use alacritty_terminal::tty;
 use alacritty_terminal::vte::ansi::{Color, NamedColor, Rgb};
 use alacritty_terminal::Term;
-use gpui::{Hsla, Keystroke, Rgba};
+use gpui::{Hsla, Keystroke};
 
 /// Tamaño de la grilla: columnas y filas visibles.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -359,14 +359,15 @@ pub fn dim(color: u32) -> u32 {
     ch(16) | ch(8) | ch(0)
 }
 
+/// Un color de la interfaz del espacio: cambia con el tema (`theme`).
 pub fn hsla(color: u32) -> Hsla {
-    Rgba {
-        r: (color >> 16 & 0xff) as f32 / 255.0,
-        g: (color >> 8 & 0xff) as f32 / 255.0,
-        b: (color & 0xff) as f32 / 255.0,
-        a: 1.0,
-    }
-    .into()
+    crate::theme::hsla(color)
+}
+
+/// Un color de lo que pinta el programa en la terminal: igual en los dos
+/// temas, porque la terminal siempre es oscura.
+pub fn term(color: u32) -> Hsla {
+    crate::theme::raw(color)
 }
 
 // --- Teclado ---------------------------------------------------------------

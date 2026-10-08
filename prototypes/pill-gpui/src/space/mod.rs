@@ -42,7 +42,7 @@ use alacritty_terminal::vte::ansi::CursorShape;
 use futures::StreamExt;
 use gpui::{
     canvas, div, point, prelude::*, px, quad, size, App, Bounds, BoxShadow, ClickEvent, Context,
-    ContentMask, Corners, FocusHandle, Focusable, Font, FontStyle, FontWeight, KeyDownEvent,
+    ContentMask, Corners, FocusHandle, Focusable, Font, FontStyle, FontWeight, Hsla, KeyDownEvent,
     MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, ScrollWheelEvent,
     SharedString, TextRun, Window,
 };
@@ -81,18 +81,18 @@ const CHANGES_EVERY: Duration = Duration::from_secs(3);
 const TOOLBAR_H: f32 = 48.0;
 const FONT_FAMILY: &str = "Cascadia Mono";
 
-const BG: u32 = 0x0f0f0e;
+const BG: u32 = crate::theme::WINDOW;
 const CARD: u32 = console::BACKGROUND;
-const HEADER_BG: u32 = 0x1d1d1b;
-const TEXT: u32 = 0xf0f0ea;
-const MUTED: u32 = 0x9a9a90;
+const HEADER_BG: u32 = crate::theme::SURFACE;
+const TEXT: u32 = crate::theme::TEXT;
+const MUTED: u32 = crate::theme::MUTED;
 const FAINT: u32 = 0x5a5a54;
 /// El encabezado de la tarjeta enfocada: se distingue por ser más claro, sin marco.
-const HEADER_ON: u32 = 0x2d2d2a;
+const HEADER_ON: u32 = crate::theme::SURFACE_ON;
 /// El fondo de la zona de un espacio en la pizarra: apenas más claro que el plano.
 const ZONE: u32 = 0x131312;
-const WORKING: u32 = 0xe8b04b;
-const READY: u32 = 0x6cc48a;
+const WORKING: u32 = crate::theme::AMBER;
+const READY: u32 = crate::theme::GREEN;
 
 /// Un rectángulo en unidades del plano.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1493,7 +1493,7 @@ fn extend_run(slot: &mut Row, len: usize, fg: u32, style: u8, fonts: &[Font; 4])
     slot.runs.push(TextRun {
         len,
         font: fonts[style as usize & 3].clone(),
-        color: console::hsla(fg),
+        color: console::term(fg),
         background_color: None,
         underline: None,
         strikethrough: None,
@@ -1745,7 +1745,7 @@ fn paint_grid(
         for &(col, len, color) in &row.backgrounds {
             window.paint_quad(gpui::fill(
                 Bounds::new(point(px(origin.0 + col as f32 * cw), px(y)), size(px(len as f32 * cw), px(lh))),
-                console::hsla(color),
+                console::term(color),
             ));
         }
         if row.text.trim_end().is_empty() {
@@ -1765,7 +1765,7 @@ fn paint_grid(
                                     point(px(origin.0 + from as f32 * cw), px(y + lh * 0.3)),
                                     size(px((to - from + 1) as f32 * cw), px(lh * 0.45)),
                                 ),
-                                console::hsla(c).opacity(0.55),
+                                console::term(c).opacity(0.55),
                             ));
                         }
                         start = (col != usize::MAX).then_some((col, col, color));
@@ -1790,7 +1790,7 @@ fn paint_grid(
                     point(px(origin.0 + col as f32 * cw), px(y + baseline + 2. * z)),
                     size(px(cw), px(z.max(1.0))),
                 ),
-                console::hsla(color),
+                console::term(color),
             ));
         }
     }
@@ -1800,9 +1800,9 @@ fn paint_grid(
             size(px(cw), px(lh)),
         );
         if focused {
-            window.paint_quad(gpui::fill(bounds, console::hsla(console::FOREGROUND).opacity(0.75)));
+            window.paint_quad(gpui::fill(bounds, console::term(console::FOREGROUND).opacity(0.75)));
         } else {
-            window.paint_quad(gpui::outline(bounds, console::hsla(MUTED), gpui::BorderStyle::Solid));
+            window.paint_quad(gpui::outline(bounds, console::term(MUTED), gpui::BorderStyle::Solid));
         }
     }
 }
@@ -1821,14 +1821,14 @@ fn paint_summary(
     let name = agent.unwrap_or("consola");
     let big = 34. * z;
     if big >= 3.0 {
-        paint_text(name, big, TEXT, (x, y), None, window, cx);
+        paint_text_in(name, big, console::term(TEXT), (x, y), None, window, cx);
         y += big * 1.6;
     }
     let small = 22. * z;
     if small >= 3.0 {
         for line in lines {
             let line: String = line.trim().chars().take(70).collect();
-            paint_text(&line, small, MUTED, (x, y), Some(f32::from(content.size.width) - 32. * z), window, cx);
+            paint_text_in(&line, small, console::term(MUTED), (x, y), Some(f32::from(content.size.width) - 32. * z), window, cx);
             y += small * 1.45;
         }
     }
@@ -1838,6 +1838,19 @@ fn paint_text(
     text: &str,
     font_size: f32,
     color: u32,
+    at: (f32, f32),
+    max_width: Option<f32>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    paint_text_in(text, font_size, console::hsla(color), at, max_width, window, cx);
+}
+
+/// `paint_text` con el color ya resuelto: sobre una terminal va sin tema.
+fn paint_text_in(
+    text: &str,
+    font_size: f32,
+    color: Hsla,
     (x, y): (f32, f32),
     max_width: Option<f32>,
     window: &mut Window,
@@ -1857,7 +1870,7 @@ fn paint_text(
     let run = TextRun {
         len: text.len(),
         font: gpui::font("Segoe UI"),
-        color: console::hsla(color),
+        color,
         background_color: None,
         underline: None,
         strikethrough: None,
@@ -2048,7 +2061,7 @@ fn paint_mono(text: &str, font_size: f32, color: u32, (x, y): (f32, f32), window
     let run = TextRun {
         len: text.len(),
         font: font(),
-        color: console::hsla(color),
+        color: console::term(color),
         background_color: None,
         underline: None,
         strikethrough: None,
@@ -2108,7 +2121,7 @@ impl DocDraw {
             }
             let (left, top) = (x0 + PAD * z, f32::from(content.origin.y) + 4. * z);
             if let Some(note) = &self.note {
-                paint_text(note, label, MUTED, (left, top + 8. * z), None, window, cx);
+                paint_text_in(note, label, console::term(MUTED), (left, top + 8. * z), None, window, cx);
                 return;
             }
             let lh = cell.h * z;

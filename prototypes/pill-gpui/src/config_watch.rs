@@ -1,6 +1,7 @@
 //! Lo que la pill aplica de `config.json` cuando cambia, lo cambie quien lo
-//! cambie (sus Ajustes o la ventana de Tauri): el idioma y, con la pill
-//! nativa, el inicio con Windows. Mira la fecha del archivo cada 2 s.
+//! cambie (sus Ajustes o la ventana de Tauri): el idioma, el tema de las
+//! ventanas y, con la pill nativa, el inicio con Windows. Mira la fecha del
+//! archivo cada 2 s.
 
 use std::time::{Duration, SystemTime};
 
@@ -17,12 +18,17 @@ pub fn spawn() {
         .name("config-json".into())
         .spawn(move || {
             let mut seen: Option<SystemTime> = None;
+            let mut ui_theme = String::from("system");
             loop {
                 let modified = std::fs::metadata(&path).and_then(|meta| meta.modified()).ok();
                 if modified.is_some() && modified != seen {
                     seen = modified;
-                    apply(&Config::load(&path));
+                    let cfg = Config::load(&path);
+                    ui_theme = cfg.ui_theme.clone();
+                    apply(&cfg);
                 }
+                // «Según Windows» sigue al sistema aunque el archivo no cambie.
+                crate::theme::set_light(crate::theme::wants_light(&ui_theme));
                 std::thread::sleep(EVERY);
             }
         });

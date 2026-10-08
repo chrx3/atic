@@ -53,6 +53,7 @@ mod shortcuts_settings;
 mod snippets;
 mod space;
 mod system;
+mod theme;
 mod media;
 // Copiado de Atic: lo que la pill no usa todavía se queda igual que allá.
 #[allow(dead_code)]
@@ -1157,6 +1158,9 @@ impl Pill {
                 cx.background_executor().timer(every).await;
                 match this.update_in(cx, |pill, window, cx| {
                     pill.tick(window, cx);
+                    if theme::take_changed() {
+                        cx.refresh_windows();
+                    }
                     pill.tick_every()
                 }) {
                     Ok(next) => every = next,

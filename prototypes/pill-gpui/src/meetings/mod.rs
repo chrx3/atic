@@ -74,24 +74,14 @@ const R_PANEL: f32 = 20.0;
 const R_CARD: f32 = 16.0;
 const R_ITEM: f32 = 14.0;
 
-const WINDOW: u32 = 0x0f0f0e;
-const SURFACE: u32 = 0x1d1d1b;
-const SURFACE_HOVER: u32 = 0x252523;
-const SURFACE_ON: u32 = 0x2d2d2a;
-const ITEM: u32 = 0x262624;
-const TEXT: u32 = 0xf0f0ea;
-const BODY: u32 = 0xd9d9d1;
-const MUTED: u32 = 0x9a9a90;
-const FAINT: u32 = 0x6a6a64;
-const INK: u32 = 0x141413;
-const AMBER: u32 = 0xe8b04b;
-const GREEN: u32 = 0x6cc48a;
+// Los colores son los del tema (`theme`): cambian con él.
+use crate::theme::{AMBER, BODY, FAINT, GREEN, INK, ITEM, MUTED, SURFACE, SURFACE_HOVER, SURFACE_ON, TEXT, WINDOW};
 const BLUE: u32 = 0x7fa8f0;
 const RED: u32 = 0xe5705f;
 const LILAC: u32 = 0xc4a3f0;
 
 fn hsla(color: u32) -> Hsla {
-    gpui::rgb(color).into()
+    crate::theme::hsla(color)
 }
 
 /// Los ajustes de Reuniones, para la sección de la ventana de Ajustes.
@@ -650,7 +640,7 @@ impl MeetingsView {
                 .gap(px(2.))
                 .p(px(3.))
                 .rounded(px(15.))
-                .bg(hsla(0x161615))
+                .bg(hsla(crate::theme::SUNKEN))
                 .on_children_prepainted(self.ops.slide.recorder())
                 .children(sliding.as_ref().map(|s| s.pill(3., hsla(0xe9e9e2), 13.)))
                 .child(tab_el(0, "tab-summary", "Resumen".into(), Tab::Summary, cx))

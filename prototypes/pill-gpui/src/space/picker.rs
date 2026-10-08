@@ -16,15 +16,15 @@ use super::console::hsla;
 use super::workspaces::{same, short_name};
 use super::SpaceView;
 
-const TEXT: u32 = 0xf0f0ea;
-const MUTED: u32 = 0x9a9a90;
-const FAINT: u32 = 0x6a6a64;
-const INK: u32 = 0x141413;
+const TEXT: u32 = crate::theme::TEXT;
+const MUTED: u32 = crate::theme::MUTED;
+const FAINT: u32 = crate::theme::FAINT;
+const INK: u32 = crate::theme::INK;
 const MODAL: u32 = 0x1b1b19;
-const SIDE: u32 = 0x161615;
-const ROW_HOVER: u32 = 0x262624;
+const SIDE: u32 = crate::theme::SUNKEN;
+const ROW_HOVER: u32 = crate::theme::ITEM;
 const ROW_ON: u32 = 0x2e2e2b;
-const ACCENT: u32 = 0x6cc48a;
+const ACCENT: u32 = crate::theme::GREEN;
 /// Una carpeta con miles de subcarpetas no se lista entera.
 const MAX_ENTRIES: usize = 800;
 
@@ -539,7 +539,7 @@ pub fn render(view: &SpaceView, vw: f32, vh: f32, cx: &mut Context<SpaceView>) -
                 .text_size(px(12.))
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(hsla(if count > 0 { INK } else { FAINT }))
-                .bg(hsla(if count > 0 { 0xe9e9e2 } else { 0x2a2a28 }))
+                .bg(hsla(if count > 0 { crate::theme::FILL } else { 0x2a2a28 }))
                 .when(count > 0, |el| el.cursor_pointer().hover(|el| el.bg(hsla(0xffffff))))
                 .on_click(cx.listener(|view: &mut SpaceView, _: &ClickEvent, _, cx| view.confirm_picker(cx)))
                 .child(if count > 0 { format!("{action} ({count})") } else { action.to_string() }),
