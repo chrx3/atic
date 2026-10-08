@@ -6,9 +6,11 @@
 //! directo a una textura y se dibuja en la ventana del overlay que ya existe:
 //! sin JPEG, sin disco, sin ventana nueva.
 //!
-//! Solo el monitor principal, como el resto del prototipo. La ventana elegida
-//! se recorta del frame congelado (Atic la re-renderiza con `PrintWindow` para
-//! las tapadas).
+//! Con varias pantallas la ventana se estira a cubrirlas todas, aunque tengan
+//! escalas distintas: todo se calcula en píxeles físicos con la escala que la
+//! ventana tenga al mostrar la mira (Windows puede cambiársela al estirarla).
+//! La ventana elegida se recorta del frame congelado (Atic la re-renderiza con
+//! `PrintWindow` para las tapadas).
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -46,6 +48,20 @@ pub struct Frozen {
 }
 
 impl Frozen {
+    /// Pasa lo lógico a otra escala de la ventana (las ventanas candidatas;
+    /// la foto y los recortes usan `scale`, que también cambia).
+    pub fn rescale(&mut self, scale: f32) {
+        if (scale - self.scale).abs() < f32::EPSILON || scale <= 0.0 {
+            return;
+        }
+        let ratio = self.scale / scale;
+        for candidate in &mut self.windows {
+            let r = candidate.rect;
+            candidate.rect = Rect::new(r.x * ratio, r.y * ratio, r.w * ratio, r.h * ratio);
+        }
+        self.scale = scale;
+    }
+
     /// Un punto de la ventana, en coordenadas de la foto.
     pub fn local(&self, p: gpui::Point<gpui::Pixels>) -> (f32, f32) {
         (f32::from(p.x) - self.offset.0, f32::from(p.y) - self.offset.1)
@@ -706,12 +722,12 @@ impl Render for CaptureView {
 /// «Capturas» en la tira y la rueda.
 pub const TOOL: usize = 5;
 
-/// Todos los monitores juntos, si comparten escala: una sola ventana los
-/// cubre sin deformar ninguno. Con uno solo o con escalas distintas, `None`.
+/// Todos los monitores juntos: una sola ventana los cubre. Con uno solo,
+/// `None`. Las escalas pueden ser distintas: la ventana tiene una sola y la
+/// foto se dibuja 1:1 en píxeles físicos, así que calza en todas.
 fn whole_desktop() -> Option<PhysRect> {
     let all = monitors::enumerate();
-    let first = all.first()?;
-    if all.len() < 2 || all.iter().any(|monitor| (monitor.scale - first.scale).abs() > 0.001) {
+    if all.len() < 2 {
         return None;
     }
     let left = all.iter().map(|m| m.bounds.x).min()?;
@@ -859,12 +875,16 @@ impl crate::Pill {
                 return;
             }
         };
+        // Al estirarse sobre pantallas de otra escala, Windows le cambia la
+        // suya a la ventana: lo lógico se recalcula con la que tiene ahora.
+        let scale = window.scale_factor();
+        frozen.rescale(scale);
         // Dónde cae el área congelada en la ventana: el monitor de la pill o,
         // estirada, todo el escritorio.
         frozen.offset = self
             .overlay
             .as_ref()
-            .and_then(|overlay| overlay.to_logical(&to_win_rect(area), self.scale_factor))
+            .and_then(|overlay| overlay.to_logical(&to_win_rect(area), scale))
             .map_or((self.monitor.x, self.monitor.y), |rect| (rect.x, rect.y));
         println!(
             "captura: congelada en {} ms, {} ventanas",
@@ -875,7 +895,7 @@ impl crate::Pill {
         let cursor = self
             .overlay
             .as_ref()
-            .and_then(|overlay| overlay.cursor(self.scale_factor))
+            .and_then(|overlay| overlay.cursor(scale))
             .map(|(x, y)| (x - frozen.offset.0, y - frozen.offset.1))
             .unwrap_or_default();
         let mut session = Session::new(frozen, cursor, previous);
@@ -1006,6 +1026,17 @@ mod tests {
         let phys = s.physical(&Rect::new(10.0, 10.0, 20.0, 5.0));
         assert_eq!((phys.x, phys.y, phys.width, phys.height), (120, 70, 40, 10));
         assert_eq!(s.pixel_at((10.4, 3.0)), (20, 6));
+    }
+
+    #[test]
+    fn otra_escala_conserva_los_pixeles_fisicos() {
+        // Estirada sobre una pantalla al 125 %, la ventana pasa de 2 a 1,25.
+        let mut s = session(vec![Candidate { rect: Rect::new(10.0, 10.0, 20.0, 5.0), title: "Notas".into() }]);
+        let before = s.physical(&s.frozen.windows[0].rect);
+        s.frozen.rescale(1.25);
+        let after = s.physical(&s.frozen.windows[0].rect);
+        assert_eq!((before.x, before.y, before.width, before.height), (after.x, after.y, after.width, after.height));
+        assert_eq!(s.screen(), Rect::new(0.0, 0.0, 160.0, 80.0));
     }
 
     #[test]
