@@ -59,8 +59,10 @@ Detalles:
 | Botones laterales del mouse (en la pill, sin tocar `mouse_bindings` de Tauri) | listo | `82d8a28` |
 | Instalador (configuración y hooks, sin generar) | listo | `ad2de80` |
 | `hub.json`: no borrar el de otro proceso | listo | `430f30b` |
-| Hub MCP, hooks y watchers de agentes | **necesita decisión** (ver abajo) | |
-| `phone_sync` | pendiente (depende de agentes) | |
+| Permisos de agentes en la bandeja (hooks en las consolas de la pill) | listo | `d766efd` |
+| OpenCode y Cursor en «En curso» | listo | `86fb504` |
+| Hub MCP y consolas de Tauri | para el final (decisión del usuario) | |
+| `phone_sync` | para el final (decisión del usuario) | |
 
 Cómo queda el reparto con `native_pill: true`:
 
@@ -104,48 +106,44 @@ src-tauri/tauri.pill.conf.json`). No se generó ninguno.
 - Falta el ícono embebido en `atic-pill.exe` (necesita un `build.rs` con un
   crate de recursos: hay que aprobar la dependencia).
 
-## Agentes: plan y decisiones pendientes
+## Agentes (decidido el 2026-10-07: lo justo y necesario)
 
-Hay cuatro caminos de permisos (mapa completo en la conversación del
-2026-10-07):
+Decisión del usuario: permisos en la bandeja y OpenCode/Cursor en «En
+curso». El hub MCP (delegar entre agentes), las consolas de la ventana de
+Tauri y el celular quedan para el final: no son lo principal.
 
-1. **Sesiones de chat que lanza Atic** (`bridge.rs`): Claude por stream-json,
-   Codex por app-server, OpenCode/Cursor/Grok por ACP. La UI contesta con
-   `agent_permission`. Es lo de la ventana de agentes de Tauri.
-2. **Consolas PTY de Atic** con hooks inyectados (`ping.rs`: los hooks anexan
-   JSON a `%TEMP%\atic-*-ping.jsonl`; `watch_claude` los vacía y
-   `console_prompts` los cruza con la consola). Hoy solo se contestan desde
-   el celular, escribiendo teclas en el PTY.
-3. **CLIs en una terminal externa**: solo presencia.
-4. **Hub y `atic-mcp`**: un agente padre contesta el permiso de un hijo.
+Hecho:
 
-Frontera propuesta para un crate `atic-agents`: mover tal cual `model`,
-`turns`, `hub/{api,graph,wait}`, `ping`, `console_prompts`,
-`console_opencode`, `mcp_servers`, `mcp_install`, los adaptadores
-(`claude_code`, `codex`, `acp`, …), los `tick` de `watch_*`, `resume`,
-`presence` y `store`; `hub::server` sin el emit. Lo de Tauri (`AppHandle`,
-eventos `agent-event`, `agent-presence`, `agents-permission-resolved`,
-`console-output`) pasa a un trait `AgentsHost`. `console.rs` es lo más
-acoplado.
+- **Crate `atic-agents`** (`9647e2e`, `c17b05f`): hooks de las consolas
+  (`hooks`), lo pendiente y las teclas que lo contestan (`prompts`), las
+  sesiones de OpenCode (`opencode`) y Cursor (`cursor`) con un tipo neutro
+  (`seen::Seen`). Tauri lo usa sin cambiar su comportamiento: sus consolas
+  siguen con los archivos compartidos (`atic-agent-ping.jsonl`,
+  `atic-codex-ping.jsonl`, `atic-kimi-*`).
+- **Permisos en la bandeja de la pill** (`d766efd`): las consolas de Claude y
+  Codex del espacio se lanzan con los hooks y una marca
+  (`ATIC_CONSOLE_TOKEN`); sus hooks escriben en `atic-pill-<marca>.jsonl`. La
+  pill lee esos archivos (`agent_prompts.rs`), muestra cada permiso como
+  decisión y al permitir o negar teclea la respuesta en esa consola. Tauri no
+  lee esos archivos, así que nada se contesta dos veces.
+- **OpenCode y Cursor en «En curso»** (`86fb504`).
 
-**Decisiones que necesito antes de seguir:**
+Queda:
 
-- **¿Quién es dueño de las consolas y las sesiones?** La pill ya tiene su
-  espacio de consolas (`space/`). Si las consolas de agentes pasan a la pill,
-  el camino 2 se mueve con ellas y Tauri deja de vaciar los pings (dos
-  procesos leyendo los mismos `%TEMP%\*.jsonl` contestarían dos veces). Si
-  siguen en Tauri, la pill solo muestra lo que Tauri le pase (habría que
-  exponer presencia y eventos en el hub, que hoy no los tiene).
-- **¿Tauri se cierra al cerrar su ventana?** Es lo que pide la Fase 1 (sin
-  WebView2 con la ventana cerrada), pero hoy mataría las consolas y sesiones
-  abiertas ahí.
-- La pill duplica la vigilancia de JSONL de Claude y Codex
-  (`pill-gpui/src/agents.rs`): al adoptar el crate hay que quedarse con una.
+- Las preguntas con opciones (`AskUserQuestion`) no salen en la bandeja: se
+  contestan en la consola.
+- Permitir «siempre» no está en la bandeja (solo Permitir / Negar).
+- «Ver» sobre una fila de permiso intenta traer al frente una terminal externa;
+  para las consolas de la pill debería traer el espacio y esa tarjeta.
+- Sin hooks: OpenCode, Cursor y los demás CLIs lanzados desde la pill (sus
+  permisos se contestan en la consola).
+- Hub MCP, consolas de Tauri, `phone_sync` y si Tauri se cierra al cerrar su
+  ventana: para el final.
 
-## Estado al cerrar la sesión (2026-10-07)
+## Estado (2026-10-07, tarde)
 
-- Tests: pill 321 ok; `atic-core` 56, `atic-clipboard` 8 y `atic-calc` 23
-  ok; Tauri 521 de 522. El que falla
+- Tests: pill 327 ok; `atic-core` 56, `atic-clipboard` 8, `atic-calc` 23 y
+  `atic-agents` 39 ok; Tauri 490 de 491. El que falla
   (`agents::console::tests::un_comando_simple_no_pasa_por_la_shell`) no es de
   esta rama: `console.rs` no cambió; desde Git Bash encuentra el `echo.exe`
   de Git y el comando pasa por `cmd /K`.
@@ -154,9 +152,8 @@ acoplado.
 - **No verificado:** la build de macOS de Tauri. Se movió código con partes
   `cfg(target_os = "macos")` (contenido sensible del portapapeles, `fx`,
   `calc`) sin poder compilarlo aquí.
-- La Fase 1 queda parada en agentes y `phone_sync` hasta las decisiones de
-  arriba. También falta decidir si Tauri se cierra al cerrar su ventana y
-  aprobar la dependencia para el ícono del exe.
+- Pendiente de decisión: si Tauri se cierra al cerrar su ventana, y aprobar
+  la dependencia para el ícono del exe de la pill.
 
 ## Para probar a mano
 
@@ -180,6 +177,10 @@ pruebas con un exe de desarrollo, después vuelve a apuntarla al instalado.
    consolas, captura, trae la pill y sale.
 8. **Tauri del worktree con `native_pill`:** sin ícono propio, sin capturar
    el portapapeles, y `atic-desktop.exe --open` muestra la ventana.
+9. **Permisos de agentes:** abrir Claude o Codex desde Agentes → Nuevo, pedirle
+   algo que necesite permiso (un comando): aparece la decisión en la bandeja;
+   Permitir lo deja seguir y Negar lo rechaza en la consola.
+10. **OpenCode y Cursor:** con uno trabajando, aparece en «En curso».
 
 ## Trabas y decisiones
 
