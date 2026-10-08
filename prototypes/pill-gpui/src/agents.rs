@@ -1102,7 +1102,9 @@ impl AgentsPanel {
             if this
                 .update(cx, |panel, cx| {
                     panel.inbox.observe(&sessions, now_secs(), &agent_in_front);
-                    panel.inbox.sync_prompts(&crate::agent_prompts::waiting(), now_secs());
+                    let waiting = crate::agent_prompts::waiting();
+                    panel.inbox.sync_prompts(&waiting, now_secs());
+                    crate::phone::set_agents(&sessions, &waiting);
                     panel.sessions = sessions;
                     panel.consoles = crate::space::agent_consoles(cx).max(panel.inbox.demo_consoles());
                     cx.notify();

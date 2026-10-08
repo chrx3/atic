@@ -1,7 +1,7 @@
 //! El canal con la app del celular (`atic-sync`), como `phone_sync.rs` de la
-//! app de Tauri pero sin agentes: vincular, el portapapeles compartido en los
-//! dos sentidos, lo que suena en el PC y detener una grabación desde el
-//! celular.
+//! app de Tauri: vincular, el portapapeles compartido en los dos sentidos, lo
+//! que suena en el PC, detener una grabación desde el celular y los agentes
+//! en curso, con sus permisos para contestarlos desde ahí.
 //!
 //! Usa los mismos archivos y la misma clave que Atic (`phone.json`,
 //! `phone-deleted.json` y el llavero), así que los celulares ya vinculados
@@ -18,7 +18,10 @@ use std::time::{Duration, Instant};
 
 use atic_core::{AppDirs, Config, MutexExt};
 use atic_sync::desktop::{Desktop, DesktopConfig, DesktopEvent};
-use atic_sync::{ClipItem, ClipKind, MediaState, PcCommand, PcState, RecordingState};
+use atic_sync::{
+    ActivityKind, AgentActivity, AgentCard, AgentStatus, ClipItem, ClipKind, Decision, MediaState, PcCommand,
+    PcState, PermissionAsk, RecordingState,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::media::{Control, Media};
@@ -50,6 +53,8 @@ static THUMBS: Mutex<Option<HashMap<String, Option<(Vec<u8>, u32, u32)>>>> = Mut
 static RECORDING: Mutex<Option<i64>> = Mutex::new(None);
 static MEDIA: OnceLock<Media> = OnceLock::new();
 static COMMANDS: OnceLock<Sender<Command>> = OnceLock::new();
+/// Los agentes tal como los ve el notch de Agentes; se publican si cambian.
+static AGENTS: Mutex<Option<Vec<AgentCard>>> = Mutex::new(None);
 
 struct Running {
     desktop: Arc<Desktop>,
@@ -339,8 +344,17 @@ async fn handle_events(mut events: tokio::sync::mpsc::UnboundedReceiver<DesktopE
                 run_command(command);
                 PC_DIRTY.store(true, Ordering::Relaxed);
             }
-            // Agentes (permisos y preguntas) y la música del celular: la pill
-            // todavía no los muestra.
+            DesktopEvent::Decide { agent_id, permission_id, decision, .. } => {
+                let allow = decision != Decision::Deny;
+                let decided =
+                    tokio::task::spawn_blocking(move || crate::agent_prompts::decide(&agent_id, &permission_id, allow))
+                        .await;
+                if let Ok(Err(error)) = decided {
+                    tracing::warn!(%error, "celular: no se pudo contestar el permiso");
+                }
+            }
+            // Las preguntas con opciones se contestan en la consola, y la
+            // música del celular la pill todavía no la muestra.
             _ => {}
         }
     }
@@ -517,13 +531,73 @@ fn pc_state() -> PcState {
     PcState { media, recording }
 }
 
+/// Lo que muestra el notch de Agentes, para el celular: las sesiones en curso
+/// y los permisos que esperan. Lo llama el notch en cada barrido.
+pub fn set_agents(sessions: &[crate::agents::Session], waiting: &[crate::agent_prompts::Waiting]) {
+    let mut cards: Vec<AgentCard> = sessions
+        .iter()
+        .map(|session| {
+            let agent = &crate::agents::AGENTS[session.agent];
+            AgentCard {
+                id: session.id.clone(),
+                backend_id: agent.cli.to_string(),
+                backend_name: agent.name.to_string(),
+                project: crate::agents::folder_name(&session.cwd),
+                status: match session.status {
+                    crate::agents::Status::Working => AgentStatus::Working,
+                    crate::agents::Status::Ready => AgentStatus::Ready,
+                },
+                activity: session.activity.clone().map(|detail| AgentActivity {
+                    kind: ActivityKind::Tool,
+                    detail: Some(detail),
+                }),
+                preview: session.preview.clone(),
+                permission: None,
+            }
+        })
+        .collect();
+    for ask in waiting {
+        let permission = PermissionAsk {
+            id: ask.id.clone(),
+            title: ask.tool.clone(),
+            detail: Some(ask.detail.clone()).filter(|detail| !detail.is_empty()),
+            can_allow_always: false,
+            questions: Vec::new(),
+        };
+        match cards.iter_mut().find(|card| card.id == ask.session) {
+            Some(card) => {
+                card.status = AgentStatus::Waiting;
+                card.permission = Some(permission);
+            }
+            None => {
+                let agent = crate::agents::AGENTS.iter().find(|agent| agent.cli == ask.agent);
+                cards.push(AgentCard {
+                    id: ask.session.clone(),
+                    backend_id: ask.agent.to_string(),
+                    backend_name: agent.map_or(ask.agent, |agent| agent.name).to_string(),
+                    project: String::new(),
+                    status: AgentStatus::Waiting,
+                    activity: None,
+                    preview: None,
+                    permission: Some(permission),
+                });
+            }
+        }
+    }
+    *AGENTS.lock_or_recover() = Some(cards);
+}
+
 async fn publish_loop(desktop: Arc<Desktop>) {
-    // Sin agentes: el celular los muestra vacíos.
-    desktop.publish(Vec::new());
     let mut last_pc = Instant::now() - PC_REFRESH;
     let mut last_state: Option<PcState> = None;
+    let mut last_agents: Option<Vec<AgentCard>> = None;
     loop {
         tokio::time::sleep(TICK).await;
+        let agents = AGENTS.lock_or_recover().clone().unwrap_or_default();
+        if last_agents.as_ref() != Some(&agents) {
+            desktop.publish(agents.clone());
+            last_agents = Some(agents);
+        }
         if PC_DIRTY.swap(false, Ordering::Relaxed) || last_pc.elapsed() >= PC_REFRESH {
             last_pc = Instant::now();
             let state = pc_state();
