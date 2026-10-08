@@ -119,6 +119,19 @@ pub fn run() {
     // las últimas líneas, que son las del cierre.
     let _log_guard = atic_core::diagnostics::init(&logs_dir, "atic", "info");
 
+    // Con la pill nativa (Windows), la app es la pill: abrir este exe (el
+    // instalador al terminar, el actualizador, un acceso viejo) la abre a ella
+    // y sale, sin crear ninguna ventana ni WebView2. `--open` sigue mostrando
+    // la ventana, por si hace falta algo que la pill todavía no tiene.
+    #[cfg(windows)]
+    {
+        let native = AppDirs::new().is_ok_and(|dirs| Config::load(&dirs.config_path()).native_pill);
+        if native && !std::env::args().any(|arg| arg == "--open") {
+            launch_native_pill();
+            return;
+        }
+    }
+
     // El estado se construye ANTES del Builder, no dentro de `setup()`.
     //
     // Las ventanas declaradas en `tauri.conf.json` nacen antes de que corra
