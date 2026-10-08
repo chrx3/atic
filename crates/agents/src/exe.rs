@@ -1,6 +1,3 @@
-// Copiado de `apps/desktop/src-tauri/src/agents/exe.rs` (Atic) sin cambios de
-// lógica: solo las rutas entre módulos. Si Atic lo cambia, copiar de nuevo.
-
 //! Encontrar el ejecutable de un agente.
 //!
 //! # Por qué esto existe
@@ -82,7 +79,7 @@ fn preferred_standalone(program: &str) -> Option<PathBuf> {
 /// En macOS una app abierta desde Finder hereda el PATH mínimo del sistema, así
 /// que además se suman las carpetas donde instaladores y gestores de paquetes
 /// dejan los CLIs (Homebrew, `~/.local/bin`, `~/.opencode/bin`…).
-pub(crate) fn search_dirs() -> Vec<PathBuf> {
+pub fn search_dirs() -> Vec<PathBuf> {
     #[cfg(windows)]
     {
         merge_path_dirs(dirs_from_env(), dirs_from_registry())
@@ -267,7 +264,6 @@ pub fn launcher(program: &str) -> Option<(PathBuf, Vec<String>)> {
     }
     Some((path, Vec::new()))
 }
-
 
 /// El núcleo, con el entorno inyectado.
 ///

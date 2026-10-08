@@ -8,7 +8,9 @@
 //! contestan dos veces.
 
 pub mod cursor;
+pub mod exe;
 pub mod hooks;
+pub mod mcp_install;
 pub mod opencode;
 pub mod prompts;
 pub mod seen;

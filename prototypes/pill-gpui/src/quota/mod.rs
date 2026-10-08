@@ -31,7 +31,8 @@ pub mod antigravity_usage;
 pub mod claude_usage;
 pub mod codex_usage;
 pub mod cursor_usage;
-pub mod exe;
+/// Encontrar los CLIs: el mismo código que Atic (`atic_agents::exe`).
+pub use atic_agents::exe;
 pub mod grok_usage;
 pub mod opencode_usage;
 pub mod os_keychain;

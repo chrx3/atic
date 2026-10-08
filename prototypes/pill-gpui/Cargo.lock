@@ -504,9 +504,11 @@ dependencies = [
 name = "atic-agents"
 version = "0.4.44"
 dependencies = [
+ "atic-core",
  "rusqlite",
  "serde_json",
  "tracing",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
