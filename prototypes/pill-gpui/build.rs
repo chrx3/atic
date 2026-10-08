@@ -19,6 +19,12 @@ fn main() {
     }
     let mut res = tauri_winres::WindowsResource::new();
     res.set_icon("../../apps/desktop/src-tauri/icons/icon.ico");
+    // Lo que muestran el Administrador de tareas y el Explorador.
+    res.set("FileDescription", "Atic");
+    res.set("ProductName", "Atic");
+    res.set("CompanyName", "chrx3");
+    res.set("FileVersion", &version);
+    res.set("ProductVersion", &version);
     if let Err(error) = res.compile() {
         // Sin ícono el exe funciona igual: que no frene la compilación.
         println!("cargo:warning=pill-gpui sin ícono: {error}");
