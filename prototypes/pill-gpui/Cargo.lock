@@ -504,6 +504,7 @@ dependencies = [
 name = "atic-agents"
 version = "0.4.44"
 dependencies = [
+ "rusqlite",
  "serde_json",
  "tracing",
 ]

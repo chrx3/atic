@@ -6,7 +6,8 @@
 //! (`~/.codex/sessions/AAAA/MM/DD/rollout-*.jsonl`). Un prompt abre trabajo y
 //! el fin de turno lo cierra con su última línea como vista previa. Las mismas
 //! reglas: solo archivos tocados en los últimos 15 min, y lo listo desaparece
-//! a los 30 min.
+//! a los 30 min. OpenCode (su SQLite) y Cursor (sus procesos) salen de
+//! `atic_agents`, igual que en Atic.
 //!
 //! Clic en una fila trae al frente la terminal del agente si se puede saber
 //! cuál es sin adivinar (como `focus.rs` de Atic: el JSONL no trae pid). Con
@@ -136,7 +137,9 @@ pub const AGENTS: [Agent; 6] = [
 ];
 
 const CLAUDE: usize = 0;
+const OPENCODE: usize = 1;
 const CODEX: usize = 2;
+const CURSOR: usize = 3;
 
 actions!(agents_panel, [Dismiss, Launch, PrevAgent, NextAgent]);
 
@@ -301,6 +304,7 @@ impl Watch {
                 })
             })
             .collect();
+        sessions.extend(others(now));
         sort_sessions(&mut sessions);
         sessions
     }
@@ -869,6 +873,51 @@ fn ancestors<'a>(
         }
         Some((pid, name))
     })
+}
+
+/// OpenCode (su SQLite) y Cursor (sus procesos), con las reglas de Atic
+/// (`atic_agents`). No tienen JSONL que seguir línea a línea.
+fn others(now: i64) -> Vec<Session> {
+    use atic_agents::seen::{Seen, SeenStatus};
+    let session = |agent: usize, seen: Seen| {
+        let status = match seen.status {
+            SeenStatus::Working => Status::Working,
+            SeenStatus::Ready => Status::Ready,
+            SeenStatus::Idle => return None,
+        };
+        Some(Session {
+            id: seen.id,
+            agent,
+            cwd: seen.cwd,
+            status,
+            preview: seen.preview,
+            activity: None,
+            updated: seen.updated,
+        })
+    };
+    let mut out = Vec::new();
+    if let Some(db) = atic_agents::opencode::db_path().filter(|path| path.exists()) {
+        out.extend(
+            atic_agents::opencode::sessions(&db, now, &HashSet::new())
+                .into_iter()
+                .filter_map(|seen| session(OPENCODE, seen)),
+        );
+    }
+    #[cfg(windows)]
+    {
+        use atic_agents::cursor;
+        // Un `cursor-agent` hijo del IDE no es el TUI.
+        let pids = cursor::pids_outside(&process_snapshot(), cursor::EXE, &["cursor.exe"]);
+        if !pids.is_empty() {
+            let cwd = cursor::acp_root().and_then(|root| cursor::recent_cwd(&root));
+            out.extend(
+                cursor::sessions(&pids, cwd.as_deref(), now)
+                    .into_iter()
+                    .filter_map(|seen| session(CURSOR, seen)),
+            );
+        }
+    }
+    out
 }
 
 /// (pid, ppid, ejecutable en minúsculas) de todos los procesos.
