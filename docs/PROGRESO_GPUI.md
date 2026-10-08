@@ -159,15 +159,25 @@ Con esto, en el uso diario no corre WebView2: nada de la pill abre la ventana
 de Tauri. `atic-desktop.exe` sigue en el instalador solo como puente (abre la
 pill y sale).
 
-Falta para quitar Tauri del todo:
+Después, el mismo día:
 
-1. **Instalador propio (NSIS)** sin `atic-desktop.exe`, compatible con las
-   instalaciones existentes (misma carpeta y misma entrada de desinstalación) y
-   con el actualizador de Tauri de las versiones viejas.
-2. **Hub MCP en la pill** para delegar entre agentes (~15 mil líneas de
-   `bridge` y adaptadores; los adaptadores no dependen de Tauri).
-3. **Celular** (`phone_sync`).
-4. **Ajustes que la pill no usa todavía:** lado y tiempo del estante de
+| Paso | Commit |
+| --- | --- |
+| Instalador NSIS propio sin Tauri (`installer/atic.nsi`, `scripts/build-installer.ps1`); el release de Windows lo usa | `fdc3bf1` |
+| Celular en la pill: vincular con QR, portapapeles compartido, música del PC, detener grabación | `cc587dc` |
+
+Decisión del usuario: **los agentes no le interesan** (hub MCP, chat con
+agentes); el celular sí. El hub MCP queda sin migrar: delegar entre agentes
+no funciona sin Tauri.
+
+En Windows ya no queda Tauri: el instalador trae `atic-pill.exe`,
+`atic-mcp.exe` y `atic-unix.exe`. macOS sigue con Tauri.
+
+Pendiente:
+
+1. **La música del celular en la pill** (llega por el canal; la pill no la
+   muestra todavía).
+2. **Ajustes que la pill no usa todavía:** lado y tiempo del estante de
    capturas, puntero en la captura, temas, sonidos de la UI, alertas del
    sistema. La pill no los lee; se agregan cuando los use.
 
