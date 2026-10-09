@@ -33,6 +33,10 @@ pub enum Action {
     Summon,
 }
 
+/// Mantener el atajo de Capturas para grabar la pantalla. Apagado: el
+/// usuario lo dejó para retomarlo otro día (ver `docs/PROGRESO_GPUI.md`).
+const HOLD_TO_RECORD: bool = false;
+
 /// Grabando un atajo en Ajustes: sueltos los registrados y sin sondear.
 static PAUSED: AtomicBool = AtomicBool::new(false);
 
@@ -253,7 +257,7 @@ pub fn spawn(watch: Watch) -> Receiver<Action> {
                     held_since = Some(Instant::now());
                 }
             }
-            if let Some(since) = held_since {
+            if let Some(since) = held_since.filter(|_| HOLD_TO_RECORD) {
                 let held = !hold_keys.is_empty()
                     && hold_keys.iter().all(|vk| unsafe { GetAsyncKeyState(*vk) } < 0);
                 if !held {

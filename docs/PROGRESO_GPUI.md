@@ -228,6 +228,11 @@ Decisiones tomadas sin el usuario:
 
 ## Grabar la pantalla (2026-10-09)
 
+**En pausa por decisión del usuario (2026-10-09):** el código queda, pero
+mantener el atajo ya no graba (`HOLD_TO_RECORD = false` en
+`platform/win32/hotkeys.rs`). Lo retoma otro día. El último paso (pausar,
+descartar y el estante) pasó los tests pero no se probó en la pill.
+
 Mantener el atajo de Capturas (400 ms) pasa la mira a grabar; un toque la
 detiene. Captura de Windows + Media Foundation (H.264), en `Videos\Atic`.
 Maqueta aprobada por el usuario: https://claude.ai/artifact/7bALYtYdh58rDCjYothjxz
@@ -237,8 +242,8 @@ Maqueta aprobada por el usuario: https://claude.ai/artifact/7bALYtYdh58rDCjYothj
 | Grabar ventana, zona o pantalla a MP4, sin audio | Hecho, `484f583` |
 | Audio: micrófono y sistema en el MP4 (AAC, alineado al reloj del video: ~30 ms medidos) | Hecho |
 | En la mira: M micrófono, A sonido, P la pill en el video (pedido 1); cuenta de 3 s; clic en el reloj del tab detiene | Hecho |
-| Pausar y descartar mientras graba | Pendiente |
-| Al terminar, al estante en vez de abrir el reproductor | Pendiente |
+| Pausar y descartar desde el vistazo de Capturas | Hecho, sin probar en la pill |
+| Al terminar, al estante (primer cuadro; Copiar copia el archivo) | Hecho, sin probar en la pill |
 | Mini editor: recortar, cortar tramos, exportar | Pendiente |
 | Extras: subtítulos, seguir la ventana, cámara, GIF, zoom al cursor | Pendiente |
 | macOS (ScreenCaptureKit) | Pendiente |

@@ -50,6 +50,8 @@ const TITLE_H: f32 = 30.0;
 const FOOTER_H: f32 = 32.0;
 const BOTTOM: f32 = 6.0;
 const EMPTY_H: f32 = 30.0;
+/// Grabando la pantalla: la fila del reloj y la de los botones, las de Reuniones.
+const RECORDING_H: f32 = 30.0 + 40.0;
 /// «Ahora suena»: la carátula, el título y los controles en una fila.
 const MEDIA_ROW_H: f32 = 60.0;
 const MEDIA_ART: f32 = 48.0;
@@ -142,6 +144,8 @@ pub(crate) struct ToolPeek {
     /// El alto del cuerpo de Reuniones: depende de la grabadora, que se lee
     /// en cada sondeo (`meetings::peek_height`).
     meetings_h: f32,
+    /// Grabando la pantalla: el de Capturas muestra los controles.
+    recording: bool,
     /// Hay una pista (sonando o en pausa) para el vistazo de «Ahora suena».
     has_track: bool,
 }
@@ -198,6 +202,7 @@ impl ToolPeek {
             cpu: Tween::new(0.0, Duration::from_millis(600), ease_smooth_out),
             ram: Tween::new(0.0, Duration::from_millis(600), ease_smooth_out),
             meetings_h: 0.0,
+            recording: false,
             has_track: false,
         }
     }
@@ -236,6 +241,7 @@ impl ToolPeek {
                     SWATCH + 10.0 + 22.0
                 }
             }
+            t if t == crate::capture::TOOL && self.recording => RECORDING_H,
             t if t == crate::capture::TOOL => {
                 if self.data.shots.is_empty() {
                     EMPTY_H
@@ -452,6 +458,7 @@ impl Pill {
         }
 
         self.tool_peek.meetings_h = crate::meetings::peek_height(self.studio.read(cx));
+        self.tool_peek.recording = self.screen_rec.active();
         self.tool_peek.has_track = self.media.track().is_some();
         let narrow = self.side_drawers();
         let width = if narrow { crate::SIDE_W } else { peek_width() };
@@ -541,6 +548,9 @@ impl Pill {
         };
         let (title, icon, body, footer) = match tool {
             t if t == crate::color::TOOL => ("Colores recientes", "icons/pipette.svg", self.color_body(narrow, &c, m, cx), "Tomar un color"),
+            t if t == crate::capture::TOOL && self.screen_rec.active() => {
+                ("Grabando la pantalla", "icons/crop.svg", self.recording_body(&c, now, cx), "Detener y guardar")
+            }
             t if t == crate::capture::TOOL => ("Capturas recientes", "icons/crop.svg", self.shots_body(width, narrow, &c, m, cx), "Nueva captura"),
             t if t == crate::TEXTOS_TOOL => ("Textos", "icons/text-align-start.svg", self.texts_body(&c, m, cx), "Ver todos los textos"),
             t if t == crate::flip::TOOL => ("Tablero", "icons/flip.svg", self.pages_body(width, narrow, &c, m, cx), "Abrir Flip"),
@@ -557,6 +567,7 @@ impl Pill {
         };
         let hint = match tool {
             t if t == crate::color::TOOL => "clic copia el código",
+            t if t == crate::capture::TOOL && self.screen_rec.active() => "también con el atajo",
             t if t == crate::capture::TOOL => "clic copia · arrastra a otra app",
             t if t == crate::TEXTOS_TOOL => "clic pega donde estabas",
             t if t == crate::flip::TOOL => "clic abre la página",
@@ -679,6 +690,49 @@ impl Pill {
 
     fn is_copied(&self, key: &str) -> bool {
         self.tool_peek.copied.as_ref().is_some_and(|(k, _)| k == key)
+    }
+
+    // --- Grabando la pantalla ---------------------------------------------------
+
+    /// El reloj y Detener, Pausar (o Reanudar) y Descartar.
+    fn recording_body(&self, c: &Colors, now: Instant, cx: &mut Context<Self>) -> AnyElement {
+        let ink = crate::meetings::Ink { text: c.text, muted: c.muted, faint: c.faint };
+        let paused = self.screen_rec.paused();
+        // El punto late como el de Reuniones; en pausa queda apagado.
+        let pulse = if paused {
+            0.35
+        } else {
+            0.65 + 0.35 * (now.duration_since(self.tool_peek.shown_at).as_secs_f32() * 3.0).cos().abs()
+        };
+        let pill = cx.entity();
+        let (stop, pause, discard) = (pill.clone(), pill.clone(), pill);
+        div()
+            .flex()
+            .flex_col()
+            .w_full()
+            .child(crate::meetings::head_row(
+                if paused { "En pausa" } else { "Grabando" },
+                self.screen_rec.clock(),
+                pulse,
+                ink,
+            ))
+            .child(
+                crate::meetings::actions_row()
+                    .child(crate::meetings::button("rec-stop", "Detener", true, ink, move |cx| {
+                        stop.update(cx, |pill, cx| pill.stop_screen_recording(cx))
+                    }))
+                    .child(crate::meetings::button(
+                        "rec-pause",
+                        if paused { "Reanudar" } else { "Pausar" },
+                        false,
+                        ink,
+                        move |cx| pause.update(cx, |pill, cx| pill.toggle_screen_pause(cx)),
+                    ))
+                    .child(crate::meetings::button("rec-discard", "Descartar", false, ink, move |cx| {
+                        discard.update(cx, |pill, cx| pill.discard_screen_recording(cx))
+                    })),
+            )
+            .into_any_element()
     }
 
     // --- Color --------------------------------------------------------------

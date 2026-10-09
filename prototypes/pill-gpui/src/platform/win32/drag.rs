@@ -170,7 +170,7 @@ fn hglobal_for(text: &str, cf: u16) -> Result<HGLOBAL> {
 /// La cabecera sale de `windows-sys` (que ya trae `Win32_UI_Shell`) en vez de
 /// `windows`, para no sumarle ese módulo entero al build por una struct de
 /// datos: acá solo se necesita su layout.
-fn hdrop_bytes(paths: &[String]) -> Vec<u8> {
+pub(crate) fn hdrop_bytes(paths: &[String]) -> Vec<u8> {
     let mut list: Vec<u16> = Vec::new();
     for path in paths {
         list.extend(path.encode_utf16());

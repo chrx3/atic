@@ -4,7 +4,8 @@
 //! La captura vuela desde donde se tomó hasta su lugar. Las nuevas entran
 //! abajo y empujan a las anteriores hacia arriba. Con el cursor encima de una
 //! aparecen sus opciones: descartar, carpeta, Copiar, Dibujar y Texto. Clic en
-//! la foto la abre; arrastrarla la suelta en otra app. Cada una se va
+//! la foto la abre; arrastrarla la suelta en otra app. Las grabaciones de
+//! pantalla llegan igual, con su primer cuadro y solo Copiar (el archivo). Cada una se va
 //! achicando durante 20 s y al vencer hace «pop»; con el cursor encima vuelve
 //! a su tamaño y la cuenta se pausa.
 
@@ -69,6 +70,9 @@ pub struct Shelf {
     was_down: bool,
     note: Option<(SharedString, Instant)>,
     busy: bool,
+    /// Una grabación de pantalla: la foto es su primer cuadro; Copiar copia
+    /// el archivo y no hay Dibujar ni Texto.
+    video: bool,
 }
 
 impl crate::Pill {
@@ -83,6 +87,7 @@ impl crate::Pill {
         };
         let on_left = cfg.is_some_and(|cfg| cfg.capture_shelf_side == "left");
         self.shelf_seq += 1;
+        let video = saved.path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("mp4"));
         self.shelves.insert(
             0,
             Shelf {
@@ -104,6 +109,7 @@ impl crate::Pill {
                 was_down: false,
                 note: None,
                 busy: false,
+                video,
             },
         );
         // Las que no caben en la altura de la pantalla se van.
@@ -301,7 +307,12 @@ impl crate::Pill {
         };
         let frame = shelf.frame.clone();
         let png = shelf.image.bytes().to_vec();
-        match crate::clip_image::write(frame.width(), frame.height(), &frame.bgra, &png) {
+        let copied = if shelf.video {
+            crate::clip_image::write_files(&[shelf.path.to_string_lossy().into_owned()])
+        } else {
+            crate::clip_image::write(frame.width(), frame.height(), &frame.bgra, &png)
+        };
+        match copied {
             Ok(()) => {
                 // Copiar es lo que más se hace: copia y se va.
                 self.remove_shelf(id, cx);
@@ -493,7 +504,24 @@ impl crate::Pill {
                 }),
             )
             .on_click(cx.listener(move |pill, _: &ClickEvent, _, _| pill.shelf_open(id)))
-            .child(img(shelf.image.clone()).size_full().object_fit(gpui::ObjectFit::Cover));
+            .child(img(shelf.image.clone()).size_full().object_fit(gpui::ObjectFit::Cover))
+            .when(shelf.video, |el| {
+                el.child(
+                    div()
+                        .absolute()
+                        .left(px(8.))
+                        .bottom(px(8.))
+                        .size(px(24.))
+                        .rounded_full()
+                        .bg(gpui::black().opacity(0.6))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(svg().path("icons/play.svg").size(px(11.)).text_color(gpui::white())),
+                )
+            });
+        // Un video solo tiene Copiar al centro.
+        let actions = if shelf.video { 1.0 } else { 3.0 };
 
         let overlay = div()
             .absolute()
@@ -524,7 +552,7 @@ impl crate::Pill {
                         // `.shelf-center`: una columna al centro de la foto.
                         div()
                             .absolute()
-                            .top(px((thumb.h - (26.0 * 3.0 + 5.0 * 2.0)) / 2.0))
+                            .top(px((thumb.h - (26.0 * actions + 5.0 * (actions - 1.0))) / 2.0))
                             .left(px((thumb.w - 100.0) / 2.0))
                             .w(px(100.))
                             .flex()
@@ -535,18 +563,20 @@ impl crate::Pill {
                                     .on_click(cx.listener(move |pill, _: &ClickEvent, _, cx| pill.shelf_copy(id, cx)))
                                     .hover_bg(("shelf-copy-fx", id as usize), chip_bg, gpui::black().opacity(0.8)),
                             )
-                            .child(
-                                action("shelf-draw", "icons/pencil.svg", "Dibujar")
-                                    .on_click(cx.listener(move |pill, _: &ClickEvent, window, cx| {
-                                        pill.shelf_draw(id, window, cx)
-                                    }))
-                                    .hover_bg(("shelf-draw-fx", id as usize), chip_bg, gpui::black().opacity(0.8)),
-                            )
-                            .child(
-                                action("shelf-text", "icons/scan-text.svg", "Texto")
-                                    .on_click(cx.listener(move |pill, _: &ClickEvent, _, cx| pill.shelf_text(id, cx)))
-                                    .hover_bg(("shelf-text-fx", id as usize), chip_bg, gpui::black().opacity(0.8)),
-                            ),
+                            .when(!shelf.video, |el| {
+                                el.child(
+                                    action("shelf-draw", "icons/pencil.svg", "Dibujar")
+                                        .on_click(cx.listener(move |pill, _: &ClickEvent, window, cx| {
+                                            pill.shelf_draw(id, window, cx)
+                                        }))
+                                        .hover_bg(("shelf-draw-fx", id as usize), chip_bg, gpui::black().opacity(0.8)),
+                                )
+                                .child(
+                                    action("shelf-text", "icons/scan-text.svg", "Texto")
+                                        .on_click(cx.listener(move |pill, _: &ClickEvent, _, cx| pill.shelf_text(id, cx)))
+                                        .hover_bg(("shelf-text-fx", id as usize), chip_bg, gpui::black().opacity(0.8)),
+                                )
+                            }),
                     )
             })
             .when_some(shelf.note.as_ref(), |el, (note, _)| {

@@ -24,6 +24,7 @@ mod pill;
 
 pub use recorder::{stopwatch, studio, Stage, Studio};
 pub use pill::{peek_body, peek_height, Ink, MEET_TOOL_HINT};
+pub(crate) use pill::{actions_row, button, head_row};
 
 /// El rojo de grabar: el punto del tab y el de la ventana.
 pub const RECORD_RED: u32 = RED;

@@ -20,7 +20,7 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use atic_capture::Rect as PhysRect;
+use atic_capture::{Frame, Rect as PhysRect};
 use std::fs::File;
 use std::io::BufReader;
 use windows::core::{Interface, HSTRING};
@@ -54,7 +54,7 @@ use windows::Win32::System::WinRT::Direct3D11::{CreateDirect3D11DeviceFromDXGIDe
 use windows::Win32::System::WinRT::Graphics::Capture::IGraphicsCaptureItemInterop;
 use windows::Win32::UI::Shell::{FOLDERID_Videos, SHGetKnownFolderPath, KNOWN_FOLDER_FLAG};
 
-use crate::screen_audio::{read_up_to, ScreenAudio, Tracks, FRAME_BYTES, RATE};
+use crate::screen_audio::{read_up_to, RecordClock, ScreenAudio, Tracks, FRAME_BYTES, RATE};
 
 const FPS: u32 = 30;
 /// Unidades de Media Foundation: 100 ns.
@@ -62,29 +62,51 @@ const TICKS_PER_SECOND: i64 = 10_000_000;
 /// Lo más chico que vale la pena grabar, en píxeles físicos.
 const MIN_SIDE: u32 = 16;
 
-/// Una grabación en curso. `stop` la termina; el archivo queda listo cuando
-/// `finished` lo devuelve.
+/// Lo que queda al terminar: el archivo y su primer cuadro, para mostrarlo.
+pub struct Saved {
+    pub path: PathBuf,
+    pub thumb: Option<Frame>,
+}
+
+/// Una grabación en curso. `stop` la termina (o `discard`, sin guardar); el
+/// archivo queda listo cuando `finished` lo devuelve.
 pub struct Recording {
     stop: Arc<AtomicBool>,
-    done: Receiver<Result<PathBuf, String>>,
-    started: Instant,
+    discard: Arc<AtomicBool>,
+    clock: Arc<RecordClock>,
+    done: Receiver<Result<Option<Saved>, String>>,
 }
 
 impl Recording {
+    /// Lo grabado, sin las pausas.
     pub fn elapsed(&self) -> Duration {
-        self.started.elapsed()
+        self.clock.recorded()
     }
 
     pub fn stop(&self) {
         self.stop.store(true, Ordering::Relaxed);
     }
 
+    /// Termina sin guardar nada.
+    pub fn discard(&self) {
+        self.discard.store(true, Ordering::Relaxed);
+        self.stop();
+    }
+
     pub fn stopping(&self) -> bool {
         self.stop.load(Ordering::Relaxed)
     }
 
-    /// El resultado, cuando el hilo ya cerró el archivo.
-    pub fn finished(&self) -> Option<Result<PathBuf, String>> {
+    pub fn paused(&self) -> bool {
+        self.clock.paused()
+    }
+
+    pub fn set_paused(&self, paused: bool) {
+        self.clock.set_paused(paused);
+    }
+
+    /// El resultado, cuando el hilo ya cerró el archivo: `None` si se descartó.
+    pub fn finished(&self) -> Option<Result<Option<Saved>, String>> {
         match self.done.try_recv() {
             Ok(result) => Some(result),
             Err(TryRecvError::Empty) => None,
@@ -98,9 +120,15 @@ impl Recording {
 /// están listos, o con el error. Si el audio no abre, graba sin él.
 pub fn start(region: PhysRect, path: PathBuf, audio: Option<Tracks>) -> Result<Recording, String> {
     let stop = Arc::new(AtomicBool::new(false));
+    let discard = Arc::new(AtomicBool::new(false));
+    let clock = Arc::new(RecordClock::default());
     let (ready_tx, ready_rx) = mpsc::sync_channel(1);
     let (done_tx, done) = mpsc::channel();
-    let flag = stop.clone();
+    let flags = Flags {
+        stop: stop.clone(),
+        discard: discard.clone(),
+        clock: clock.clone(),
+    };
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |since| since.as_nanos());
@@ -108,14 +136,19 @@ pub fn start(region: PhysRect, path: PathBuf, audio: Option<Tracks>) -> Result<R
     std::thread::Builder::new()
         .name("grabar pantalla".into())
         .spawn(move || {
-            let result = with_media_foundation(|| record(region, &path, &temp, audio, &flag, &ready_tx))
-                .map(|()| path);
+            let result = with_media_foundation(|| record(region, &path, &temp, audio, &flags, &ready_tx))
+                .map(|kept| kept.map(|thumb| Saved { path, thumb }));
             let _ = std::fs::remove_dir_all(&temp);
             let _ = done_tx.send(result);
         })
         .map_err(|error| error.to_string())?;
     match ready_rx.recv_timeout(Duration::from_secs(5)) {
-        Ok(Ok(())) => Ok(Recording { stop, done, started: Instant::now() }),
+        Ok(Ok(())) => Ok(Recording {
+            stop,
+            discard,
+            clock,
+            done,
+        }),
         Ok(Err(error)) => Err(error),
         Err(_) => {
             stop.store(true, Ordering::Relaxed);
@@ -150,17 +183,27 @@ fn with_media_foundation<T>(run: impl FnOnce() -> Result<T, String>) -> Result<T
     }
 }
 
+/// Lo que el hilo de la grabación comparte con la UI.
+struct Flags {
+    stop: Arc<AtomicBool>,
+    discard: Arc<AtomicBool>,
+    clock: Arc<RecordClock>,
+}
+
+/// Graba hasta que se pida parar. Devuelve el primer cuadro, o `None` si se
+/// descartó (no quedó archivo).
 fn record(
     region: PhysRect,
     path: &Path,
     temp: &Path,
     tracks: Option<Tracks>,
-    stop: &AtomicBool,
+    flags: &Flags,
     ready: &mpsc::SyncSender<Result<(), String>>,
-) -> Result<(), String> {
+) -> Result<Option<Option<Frame>>, String> {
+    let clock = &flags.clock;
     // El audio abre antes que el video; lo que llegue antes de empezar se
     // descarta.
-    let audio = tracks.and_then(|tracks| match ScreenAudio::start(tracks, temp.to_path_buf()) {
+    let audio = tracks.and_then(|tracks| match ScreenAudio::start(tracks, temp.to_path_buf(), clock.clone()) {
         Ok(audio) => Some(audio),
         Err(error) => {
             eprintln!("grabar: sin audio ({error})");
@@ -186,15 +229,17 @@ fn record(
         }
     };
     let started = Instant::now();
-    if let Some(audio) = &audio {
-        audio.begin(started);
-    }
+    clock.begin(started);
     let tick = Duration::from_secs(1) / FPS;
     let mut next = started;
     let recorded = (|| {
-        while !stop.load(Ordering::Relaxed) {
+        while !flags.stop.load(Ordering::Relaxed) {
+            // En pausa los cuadros se leen igual (para no juntarlos) pero no van.
+            let at = clock.now();
             if capture.grab()? {
-                encoder.push(&capture.nv12, started.elapsed())?;
+                if let Some(at) = at {
+                    encoder.push(&capture.nv12, at)?;
+                }
             }
             next += tick;
             let now = Instant::now();
@@ -205,17 +250,25 @@ fn record(
                 next = now;
             }
         }
-        let duration = started.elapsed();
+        let duration = clock.recorded();
+        if flags.discard.load(Ordering::Relaxed) {
+            return Ok(duration);
+        }
         encoder.finish(duration).map(|()| duration)
     })();
+    let thumb = capture.thumb.take();
     drop(capture);
     // El audio se cierra siempre: si no, el micrófono queda abierto.
     let duration = recorded.as_ref().copied().unwrap_or_default();
     let mixed = audio.map(|audio| audio.finish(duration));
     recorded?;
+    if flags.discard.load(Ordering::Relaxed) {
+        // La carpeta temporal se borra entera al salir.
+        return Ok(None);
+    }
     match mixed {
         Some(Ok(Some(mixed))) => match mux(&video, &mixed.path, mixed.frames, path) {
-            Ok(()) => return Ok(()),
+            Ok(()) => return Ok(Some(thumb)),
             Err(error) => {
                 eprintln!("grabar: no se pudo juntar el audio ({error}); queda sin él");
                 let _ = std::fs::remove_file(path);
@@ -224,7 +277,7 @@ fn record(
         Some(Err(error)) => eprintln!("grabar: el audio falló ({error}); queda sin él"),
         Some(Ok(None)) | None => {}
     }
-    move_file(&video, path)
+    move_file(&video, path).map(|()| Some(thumb))
 }
 
 /// Mueve el temporal a su lugar; si están en discos distintos, lo copia.
@@ -256,6 +309,8 @@ struct Capture {
     width: u32,
     height: u32,
     nv12: Vec<u8>,
+    /// El primer cuadro en BGRA: la foto del estante.
+    thumb: Option<Frame>,
 }
 
 impl Capture {
@@ -353,6 +408,7 @@ impl Capture {
             width,
             height,
             nv12: Vec::new(),
+            thumb: None,
         })
     }
 
@@ -382,6 +438,11 @@ impl Capture {
             let pitch = mapped.RowPitch as usize;
             let bgra = std::slice::from_raw_parts(mapped.pData as *const u8, pitch * self.height as usize);
             bgra_to_nv12(bgra, pitch, self.width as usize, self.height as usize, &mut self.nv12);
+            if self.thumb.is_none() {
+                let row = self.width as usize * 4;
+                let pixels = bgra.chunks(pitch).flat_map(|line| &line[..row]).copied().collect();
+                self.thumb = Some(Frame::new(PhysRect::new(0, 0, self.width, self.height), pixels));
+            }
             self.context.Unmap(&self.staging, 0);
         }
         let _ = frame.Close();
@@ -698,6 +759,13 @@ mod tests {
             let played = unsafe { PlaySoundW(&HSTRING::from(tone), None, SND_FILENAME | SND_ASYNC) };
             assert!(played.as_bool());
             std::thread::sleep(Duration::from_secs(2));
+        } else if std::env::var("ATIC_REC_PAUSE").is_ok() {
+            // 1 s, pausa de 1,5 s, 1 s más: el video debe durar 2 s.
+            std::thread::sleep(Duration::from_secs(1));
+            recording.set_paused(true);
+            std::thread::sleep(Duration::from_millis(1500));
+            recording.set_paused(false);
+            std::thread::sleep(Duration::from_secs(1));
         } else {
             std::thread::sleep(Duration::from_secs(2));
         }
@@ -708,7 +776,9 @@ mod tests {
             }
             std::thread::sleep(Duration::from_millis(20));
         };
-        assert_eq!(result.expect("terminar"), path);
+        let saved = result.expect("terminar").expect("guardada");
+        assert_eq!(saved.path, path);
+        assert!(saved.thumb.is_some());
         assert!(std::fs::metadata(&path).expect("archivo").len() > 1000);
     }
 

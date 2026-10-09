@@ -13,6 +13,7 @@ use windows::Win32::System::DataExchange::{
 use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
 
 const CF_DIB: u32 = 8;
+const CF_HDROP: u32 = 15;
 
 pub fn write(width: u32, height: u32, bgra: &[u8], png: &[u8]) -> Result<(), String> {
     let stride = width as usize * 4;
@@ -39,6 +40,21 @@ pub fn write(width: u32, height: u32, bgra: &[u8], png: &[u8]) -> Result<(), Str
         dib.extend_from_slice(row);
     }
 
+    with_clipboard(|| unsafe {
+        set(CF_DIB, &dib)?;
+        set(RegisterClipboardFormatW(w!("PNG")), png)
+    })
+}
+
+/// Archivos al portapapeles (`CF_HDROP`): pegarlos en una carpeta, un chat o
+/// un correo los adjunta.
+pub fn write_files(paths: &[String]) -> Result<(), String> {
+    let bytes = crate::drag::hdrop_bytes(paths);
+    with_clipboard(|| unsafe { set(CF_HDROP, &bytes) })
+}
+
+/// Abre el portapapeles, lo vacía, corre `fill` y lo cierra.
+fn with_clipboard(fill: impl FnOnce() -> Result<(), String>) -> Result<(), String> {
     unsafe {
         // Otra app puede tenerlo abierto un instante.
         let mut opened = false;
@@ -52,11 +68,7 @@ pub fn write(width: u32, height: u32, bgra: &[u8], png: &[u8]) -> Result<(), Str
         if !opened {
             return Err("el portapapeles está ocupado".into());
         }
-        let result = (|| {
-            EmptyClipboard().map_err(|error| error.to_string())?;
-            set(CF_DIB, &dib)?;
-            set(RegisterClipboardFormatW(w!("PNG")), png)
-        })();
+        let result = EmptyClipboard().map_err(|error| error.to_string()).and_then(|()| fill());
         let _ = CloseClipboard();
         result
     }

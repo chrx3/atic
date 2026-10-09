@@ -13,7 +13,7 @@ use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, RecvTimeoutError};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -25,6 +25,66 @@ pub const FRAME_BYTES: usize = 4;
 /// Un hueco más largo que esto se rellena con silencio; lo menor es el
 /// vaivén normal de los bloques.
 const GAP_FRAMES: u64 = RATE as u64 / 10;
+
+/// El reloj de una grabación: corre desde que empieza el video y se para en
+/// las pausas. Lo comparten el video y el audio, así lo pausado no queda en
+/// ninguno de los dos.
+#[derive(Default)]
+pub struct RecordClock {
+    start: OnceLock<Instant>,
+    pause: Mutex<Pause>,
+}
+
+#[derive(Default)]
+struct Pause {
+    /// Lo que duraron las pausas ya terminadas.
+    total: Duration,
+    /// La pausa en curso.
+    since: Option<Instant>,
+}
+
+impl RecordClock {
+    pub fn begin(&self, at: Instant) {
+        let _ = self.start.set(at);
+    }
+
+    pub fn set_paused(&self, paused: bool) {
+        let mut pause = self.pause.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        match (paused, pause.since) {
+            (true, None) => pause.since = Some(Instant::now()),
+            (false, Some(since)) => {
+                pause.total += since.elapsed();
+                pause.since = None;
+            }
+            _ => {}
+        }
+    }
+
+    pub fn paused(&self) -> bool {
+        self.pause.lock().map(|pause| pause.since.is_some()).unwrap_or(false)
+    }
+
+    /// Lo grabado hasta ahora, sin las pausas. `None` antes de empezar o en
+    /// pausa: lo que llegue entonces no va.
+    pub fn now(&self) -> Option<Duration> {
+        let start = self.start.get()?;
+        let pause = self.pause.lock().ok()?;
+        if pause.since.is_some() {
+            return None;
+        }
+        Some(start.elapsed().saturating_sub(pause.total))
+    }
+
+    /// Lo grabado, también en pausa (queda fijo): el reloj del tab y el largo
+    /// final.
+    pub fn recorded(&self) -> Duration {
+        let (Some(start), Ok(pause)) = (self.start.get(), self.pause.lock()) else {
+            return Duration::ZERO;
+        };
+        let end = pause.since.unwrap_or_else(Instant::now);
+        end.saturating_duration_since(*start).saturating_sub(pause.total)
+    }
+}
 
 /// Qué pistas grabar.
 #[derive(Clone, Copy, Debug)]
@@ -41,16 +101,15 @@ pub struct Mixed {
 
 pub struct ScreenAudio {
     capture: CaptureHandle,
-    /// Cuándo empezó el video: lo de antes se descarta.
-    start: Arc<OnceLock<Instant>>,
     worker: JoinHandle<std::io::Result<Vec<(PathBuf, u64)>>>,
     dir: PathBuf,
 }
 
 impl ScreenAudio {
     /// Abre las pistas pedidas en `dir` (una carpeta temporal propia). Con
-    /// los dispositivos de Ajustes, los mismos de Reuniones.
-    pub fn start(tracks: Tracks, dir: PathBuf) -> Result<Self, String> {
+    /// los dispositivos de Ajustes, los mismos de Reuniones. Lo que llegue
+    /// antes de que `clock` empiece, o en pausa, se descarta.
+    pub fn start(tracks: Tracks, dir: PathBuf, clock: Arc<RecordClock>) -> Result<Self, String> {
         std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
         let config = atic_core::AppDirs::new()
             .map(|dirs| atic_core::Config::load(&dirs.config_path()))
@@ -74,25 +133,14 @@ impl ScreenAudio {
             events,
         )
         .map_err(|error| error.to_ui(false))?;
-        let start = Arc::new(OnceLock::new());
         let worker = {
-            let (start, dir) = (start.clone(), dir.clone());
+            let dir = dir.clone();
             std::thread::Builder::new()
                 .name("grabar audio".into())
-                .spawn(move || align(chunks, &start, &dir))
+                .spawn(move || align(chunks, &clock, &dir))
                 .map_err(|error| error.to_string())?
         };
-        Ok(Self {
-            capture,
-            start,
-            worker,
-            dir,
-        })
-    }
-
-    /// El video empezó: desde aquí cuenta el audio.
-    pub fn begin(&self, at: Instant) {
-        let _ = self.start.set(at);
+        Ok(Self { capture, worker, dir })
     }
 
     /// Cierra las pistas y las mezcla, sin pasar de `duration` (lo que duró
@@ -169,7 +217,7 @@ fn to_i16(sample: f32) -> i16 {
 /// Recibe los bloques de las dos pistas hasta que la captura se cierra.
 fn align(
     chunks: mpsc::Receiver<AudioTapChunk>,
-    start: &OnceLock<Instant>,
+    clock: &RecordClock,
     dir: &Path,
 ) -> std::io::Result<Vec<(PathBuf, u64)>> {
     let mut mic: Option<Aligned> = None;
@@ -181,7 +229,7 @@ fn align(
             Err(RecvTimeoutError::Timeout) => continue,
             Err(RecvTimeoutError::Disconnected) => break,
         };
-        let Some(start) = start.get() else {
+        let Some(now) = clock.now() else {
             continue;
         };
         let channels = chunk.channels.max(1) as usize;
@@ -196,7 +244,7 @@ fn align(
         }));
         // El bloque terminó al llegar: empezó su duración antes.
         let rate = chunk.sample_rate as f64;
-        let began = start.elapsed().as_secs_f64() - frames.len() as f64 / rate;
+        let began = now.as_secs_f64() - frames.len() as f64 / rate;
         // Lo de antes de que empezara el video no va.
         let skip = ((-began).max(0.0) * rate) as usize;
         if skip >= frames.len() {
@@ -351,6 +399,23 @@ mod tests {
             resampler.push(&vec![[0.25, 0.25]; 441], &mut out);
         }
         assert!((47_995..=48_005).contains(&out.len()), "{}", out.len());
+    }
+
+    #[test]
+    fn el_reloj_no_cuenta_las_pausas() {
+        let clock = RecordClock::default();
+        assert_eq!(clock.now(), None);
+        clock.begin(Instant::now() - Duration::from_secs(10));
+        assert!(clock.now().unwrap() >= Duration::from_secs(10));
+        clock.set_paused(true);
+        assert!(clock.paused());
+        assert_eq!(clock.now(), None);
+        let frozen = clock.recorded();
+        std::thread::sleep(Duration::from_millis(30));
+        assert_eq!(clock.recorded(), frozen);
+        clock.set_paused(false);
+        let after = clock.now().unwrap();
+        assert!(after >= frozen && after < frozen + Duration::from_millis(20), "{after:?} {frozen:?}");
     }
 
     #[test]

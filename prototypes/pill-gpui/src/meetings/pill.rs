@@ -282,7 +282,7 @@ fn meeting_row(
         .hover_bg(("meet-row-fx", i), ink.text.opacity(0.0), ink.text.opacity(0.06))
 }
 
-fn head_row(label: &'static str, clock: Option<String>, pulse: f32, ink: Ink) -> impl IntoElement {
+pub(crate) fn head_row(label: &'static str, clock: Option<String>, pulse: f32, ink: Ink) -> impl IntoElement {
     div()
         .h(px(HEAD_H))
         .px(px(SIDE))
@@ -328,7 +328,7 @@ fn meter(label: &'static str, level: f32, on: bool, color: u32, ink: Ink) -> imp
     })))
 }
 
-fn actions_row() -> gpui::Div {
+pub(crate) fn actions_row() -> gpui::Div {
     div().h(px(ACTION_H)).px(px(SIDE)).flex().items_center().gap(px(8.))
 }
 
@@ -343,7 +343,7 @@ fn empty_row(text: &'static str, ink: Ink) -> impl IntoElement {
         .child(text)
 }
 
-fn button(
+pub(crate) fn button(
     id: impl Into<gpui::ElementId>,
     label: &'static str,
     primary: bool,
