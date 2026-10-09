@@ -67,6 +67,24 @@ fn side_bg() -> Hsla {
 fn center_bg() -> Hsla {
     t().editor
 }
+/// La marca de cambio de modelo: una línea con el nombre al centro, como en
+/// la referencia. Pendiente, más tenue (se grabará con el próximo mensaje).
+fn model_mark(label: String, pending: bool) -> AnyElement {
+    let rule = || div().flex_1().h(px(1.)).bg(line());
+    div()
+        .flex()
+        .items_center()
+        .gap(px(8.))
+        .text_size(px(12.))
+        .text_color(faint())
+        .when(pending, |el| el.opacity(0.7))
+        .child(rule())
+        .child(svg().path("icons/cpu.svg").size(px(12.)).text_color(faint()))
+        .child(label)
+        .child(rule())
+        .into_any_element()
+}
+
 fn line() -> Hsla {
     t().border
 }
@@ -900,6 +918,10 @@ impl CodeView {
                 for (index, item) in chat.items.iter().enumerate() {
                     thread = thread.child(self.item(&chat.key, index, item, cx));
                 }
+                // Se eligió otro modelo con la conversación empezada: se grabará con el próximo mensaje.
+                if let Some(pending) = chat.pending_model(&self.models, &self.configs.get(chat.workspace)) {
+                    thread = thread.child(model_mark(format!("{pending} en el próximo mensaje"), true));
+                }
                 // En Expressive, como en la referencia, las solicitudes van al final del hilo, todas.
                 if expressive() && !chat.permissions.is_empty() {
                     thread = thread.child(self.permission_cards_m3(chat, cx));
@@ -1243,6 +1265,7 @@ impl CodeView {
                 .child(svg().path("icons/check.svg").size(px(12.)).text_color(faint()))
                 .child(summary.clone())
                 .into_any_element(),
+            Item::Model(name) => model_mark(format!("Cambiado a {name}"), false),
             Item::Notice { text, error } => div()
                 .px(px(12.))
                 .py(px(9.))
@@ -1422,12 +1445,15 @@ impl CodeView {
     fn composer_box(&self, busy: bool, hero: bool, cx: &mut Context<Self>) -> Div {
         let t = t();
         let config = self.config();
-        let model = if config.model.is_empty() {
+        // El modelo y el esfuerzo de la conversación visible (cada una tiene los suyos).
+        let chat_model = self.chat_model();
+        let model = if chat_model.is_empty() {
             self.active_chat().and_then(|c| c.model.clone()).map(|m| self.model_label(&m)).unwrap_or_else(|| "Predeterminado".into())
         } else {
-            self.model_label(&config.model)
+            self.model_label(&chat_model)
         };
-        let effort = (!config.effort.is_empty()).then(|| config::effort_label(&config.effort));
+        let chat_effort = self.chat_effort();
+        let effort = (!chat_effort.is_empty()).then(|| config::effort_label(&chat_effort));
         let mode_color = match config.permission_mode.as_str() {
             "acceptEdits" => accent(),
             "plan" => green(),
@@ -1737,7 +1763,7 @@ impl CodeView {
             })
             .children(self.agent_chips(cx))
             .when(self.configs.status_line, |el| {
-                let mut line = self.model_label(&config.model);
+                let mut line = self.model_label(&self.chat_model());
                 if let Some(turn) = last_turn {
                     line = format!("{line} · {turn}");
                 }
@@ -2060,7 +2086,7 @@ impl CodeView {
             models = models.child(chip_action(("set-model", index), name.clone(), config.model == id, cx.listener(
                 move |view, _: &ClickEvent, _, cx| {
                     let id = id.clone();
-                    view.set_config(|c| c.model = id, cx)
+                    view.set_defaults(|c| c.model = id, cx)
                 },
             )));
         }
@@ -2092,11 +2118,11 @@ impl CodeView {
             );
         }
         let mut efforts = div().child(
-            chip_action("set-effort-default", "Predeterminado", config.effort.is_empty(), cx.listener(|view, _: &ClickEvent, _, cx| view.set_config(|c| c.effort = String::new(), cx))),
+            chip_action("set-effort-default", "Predeterminado", config.effort.is_empty(), cx.listener(|view, _: &ClickEvent, _, cx| view.set_defaults(|c| c.effort = String::new(), cx))),
         );
         for (id, label) in config::EFFORTS {
             efforts = efforts.child(
-                chip_action(SharedString::from(format!("set-effort-{id}")), label, config.effort == id, cx.listener(move |view, _: &ClickEvent, _, cx| view.set_config(|c| c.effort = id.into(), cx))),
+                chip_action(SharedString::from(format!("set-effort-{id}")), label, config.effort == id, cx.listener(move |view, _: &ClickEvent, _, cx| view.set_defaults(|c| c.effort = id.into(), cx))),
             );
         }
         let thinking = if expressive() {

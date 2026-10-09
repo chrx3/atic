@@ -64,6 +64,66 @@ pub fn split_models(list: &[(String, String)], current: &str) -> (Vec<usize>, Ve
     (main, more)
 }
 
+/// El nombre de un modelo: el de la lista de Claude Code (`list`, con
+/// «Default (recommended)» como «Predeterminado») o el del id
+/// («claude-haiku-4-5-2025…» → «Haiku 4.5»). Como `modelName` de la referencia.
+pub fn model_name(list: &[(String, String)], id: &str) -> String {
+    if let Some((_, name)) = list.iter().find(|(model, _)| model == id) {
+        return if name.eq_ignore_ascii_case("Default (recommended)") { "Predeterminado".into() } else { name.clone() };
+    }
+    if let Some(name) = short_model(id) {
+        return name;
+    }
+    if id == "default" {
+        return "Predeterminado".into();
+    }
+    let mut chars = id.chars();
+    chars.next().map(|first| first.to_uppercase().chain(chars).collect()).unwrap_or_default()
+}
+
+/// `claude-<familia>-<mayor>[-<menor>][-<fecha>]`, como la expresión de la referencia.
+fn short_model(id: &str) -> Option<String> {
+    let rest = id.strip_prefix("claude-")?;
+    let mut parts = rest.split('-');
+    let family = parts.next().filter(|f| !f.is_empty() && f.chars().all(|c| c.is_ascii_lowercase()))?;
+    let major = parts.next().filter(|m| !m.is_empty() && m.chars().all(|c| c.is_ascii_digit()))?;
+    let digits = |p: &str| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit());
+    let mut minor = None;
+    let mut date = None;
+    for part in parts {
+        if !digits(part) {
+            return None;
+        }
+        match (minor, date) {
+            (None, None) if part.len() <= 2 => minor = Some(part),
+            (_, None) if part.len() == 8 => date = Some(part),
+            _ => return None,
+        }
+    }
+    let mut name = family.to_string();
+    name[..1].make_ascii_uppercase();
+    Some(match minor {
+        Some(minor) => format!("{name} {major}.{minor}"),
+        None => format!("{name} {major}"),
+    })
+}
+
+/// El mismo modelo aunque uno venga como alias del selector («opus») y otro
+/// como id («claude-opus-4-5»). Como `sameModel` de la referencia.
+pub fn same_model(list: &[(String, String)], a: &str, b: &str) -> bool {
+    a == b || model_name(list, a) == model_name(list, b)
+}
+
+/// El modelo de `list` que corresponde a `current`: el mismo valor o, si
+/// `current` no está en la lista (el id de una sesión retomada), el del mismo
+/// nombre. Como `isCurrent` del submenú de modelos de la referencia.
+pub fn current_model<'a>(list: &'a [(String, String)], current: &str) -> Option<&'a str> {
+    list.iter()
+        .find(|(id, _)| id == current)
+        .or_else(|| list.iter().find(|(id, _)| same_model(list, current, id)))
+        .map(|(id, _)| id.as_str())
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ClaudeConfig {
@@ -123,13 +183,11 @@ impl ClaudeConfig {
     }
 
     /// Los ajustes de Claude Code que van por `applyFlags`, como en la referencia: todos
-    /// (al abrir una sesión) o solo los que cambiaron respecto de `before`.
+    /// (al abrir una sesión) o solo los que cambiaron respecto de `before`. El
+    /// esfuerzo no: es de cada conversación (`sync_chat_settings`).
     pub fn flags(&self, before: Option<&ClaudeConfig>) -> Value {
         let mut flags = serde_json::Map::new();
         let changed = |pick: fn(&ClaudeConfig) -> Value| before.is_none_or(|b| pick(b) != pick(self));
-        if before.is_some() && changed(|c| json!(c.effort)) && !self.effort.is_empty() {
-            flags.insert("effortLevel".into(), json!(self.effort));
-        }
         if changed(|c| json!(c.thinking)) {
             flags.insert("alwaysThinkingEnabled".into(), json!(self.thinking));
         }
@@ -219,7 +277,8 @@ mod tests {
     fn en_vivo_solo_van_los_ajustes_que_cambiaron() {
         let before = ClaudeConfig::default();
         let after = ClaudeConfig { effort: "max".into(), sandbox: true, ..before.clone() };
-        assert_eq!(after.flags(Some(&before)), json!({ "effortLevel": "max", "sandbox": { "enabled": true } }));
+        // El esfuerzo no se difunde: va a la conversación visible.
+        assert_eq!(after.flags(Some(&before)), json!({ "sandbox": { "enabled": true } }));
         // Al abrir, todos menos el sandbox apagado y el esfuerzo (que va aparte).
         let all = before.flags(None);
         assert!(all.get("sandbox").is_none() && all.get("effortLevel").is_none());
@@ -235,5 +294,43 @@ mod tests {
         assert_eq!(split_models(&list, ""), (vec![0, 2, 3], vec![1, 4]));
         // El elegido se ve aunque sea viejo.
         assert_eq!(split_models(&list, "opus-41"), (vec![0, 1, 2, 3], vec![4]));
+    }
+
+    fn models(list: &[(&str, &str)]) -> Vec<(String, String)> {
+        list.iter().map(|(id, name)| (id.to_string(), name.to_string())).collect()
+    }
+
+    #[test]
+    fn el_nombre_del_modelo_sale_de_la_lista_o_del_id() {
+        let list = models(&[("", "Default (recommended)"), ("opus", "Opus 4.5")]);
+        assert_eq!(model_name(&list, ""), "Predeterminado");
+        assert_eq!(model_name(&list, "opus"), "Opus 4.5");
+        assert_eq!(model_name(&[], "claude-haiku-4-5-20251001"), "Haiku 4.5");
+        assert_eq!(model_name(&[], "claude-opus-4-20250514"), "Opus 4");
+        assert_eq!(model_name(&[], "claude-sonnet-4-5"), "Sonnet 4.5");
+        assert_eq!(model_name(&[], "default"), "Predeterminado");
+        assert_eq!(model_name(&[], "sonnet"), "Sonnet");
+        // Lo que no es un id de Claude se deja como viene, con mayúscula.
+        assert_eq!(model_name(&[], "claude-opus-4-5[1m]"), "Claude-opus-4-5[1m]");
+    }
+
+    #[test]
+    fn el_submenu_marca_el_alias_del_modelo_retomado() {
+        let list = models(&[("", "Predeterminado"), ("opus", "Opus 4.5"), ("sonnet", "Sonnet 4.5")]);
+        assert_eq!(current_model(&list, "sonnet"), Some("sonnet"));
+        assert_eq!(current_model(&list, ""), Some(""));
+        assert_eq!(current_model(&list, "claude-opus-4-5-20251101"), Some("opus"));
+        assert_eq!(current_model(&list, "claude-haiku-4-5"), None);
+    }
+
+    #[test]
+    fn el_alias_y_el_id_son_el_mismo_modelo() {
+        let list = models(&[("", "Predeterminado"), ("opus", "Opus 4.5"), ("sonnet", "Sonnet 4.5")]);
+        assert!(same_model(&list, "opus", "claude-opus-4-5-20251101"));
+        assert!(same_model(&list, "opus", "opus"));
+        assert!(!same_model(&list, "sonnet", "claude-opus-4-5"));
+        assert!(!same_model(&list, "", "opus"));
+        // Sin lista, el alias no tiene versión y no se confunde con un id.
+        assert!(!same_model(&[], "opus", "claude-opus-4-5"));
     }
 }

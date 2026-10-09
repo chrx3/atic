@@ -326,6 +326,38 @@ async function lastMessageTime(file) {
   return null;
 }
 
+/** Modelo y nivel de la última respuesta de la conversación principal (para retomarla con los mismos). */
+async function lastSettings(file) {
+  let fh;
+  try {
+    fh = await openFile(file, "r");
+    const { size } = await fh.stat();
+    for (const span of [256 * 1024, 4 * 1024 * 1024]) {
+      const len = Math.min(span, size);
+      const buf = Buffer.alloc(len);
+      await fh.read(buf, 0, len, size - len);
+      const lines = buf.toString("utf8").split("\n");
+      for (let i = lines.length - 1; i >= 0; i--) {
+        const l = lines[i];
+        if (!l.includes('"type":"assistant"')) continue;
+        try {
+          const r = JSON.parse(l);
+          const model = r.message?.model;
+          if (r.type === "assistant" && !r.isSidechain && model && !model.startsWith("<")) return { model, effort: r.effort ?? null };
+        } catch {
+          /* línea cortada al inicio del bloque */
+        }
+      }
+      if (len === size) break;
+    }
+  } catch {
+    /* sin archivo */
+  } finally {
+    await fh?.close();
+  }
+  return null;
+}
+
 async function withLastActivity(list, dir) {
   await Promise.all(
     list.map(async (s) => {
@@ -479,6 +511,7 @@ const methods = {
   sessionMessages: ({ sessionId, dir }) => getSessionMessages(sessionId, { dir }),
   sessionInfo: ({ sessionId, dir }) => getSessionInfo(sessionId, { dir }),
   renameSession: ({ sessionId, title, dir }) => renameSession(sessionId, title, { dir }),
+  sessionSettings: ({ sessionId, dir }) => lastSettings(join(projectDir(dir), `${sessionId}.jsonl`)),
   claudeInfo: () => claudeInfo(),
   claudeUpdate: () => claudeUpdate(),
 };

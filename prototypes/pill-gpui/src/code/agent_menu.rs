@@ -114,7 +114,8 @@ impl CodeView {
         } else {
             config.output_style.clone()
         };
-        let model = if config.model.is_empty() { "Predeterminado".to_string() } else { self.model_label(&config.model) };
+        let chat_model = self.chat_model();
+        let model = if chat_model.is_empty() { "Predeterminado".to_string() } else { self.model_label(&chat_model) };
         match tab {
             0 => vec![
                 row("clip", "Adjuntar archivo…", Trailing::Kbd("Ctrl+U"), Act::Attach),
@@ -159,8 +160,8 @@ impl CodeView {
     }
 
     fn effort_slider(&self, cx: &mut Context<Self>) -> StopSlider {
-        let config = self.config();
-        let stop = config::EFFORTS.iter().position(|(id, _)| *id == config.effort);
+        let effort = self.chat_effort();
+        let stop = config::EFFORTS.iter().position(|(id, _)| *id == effort);
         let set = cx.listener(|view, pick: &usize, _, cx| {
             let effort = config::EFFORTS[*pick].0.to_string();
             view.set_config(|c| c.effort = effort, cx);
@@ -177,7 +178,7 @@ impl CodeView {
             Trailing::Kbd(kbd) => item.shortcut(kbd),
             Trailing::Switch(on) => item.trailing(Switch::new(("act-switch", id), on).compact(true)),
             Trailing::Effort => {
-                let label = config::effort_label(&self.config().effort);
+                let label = config::effort_label(&self.chat_effort());
                 item.static_row(true).inline_sublabel(true).sublabel(label).trailing(self.effort_slider(cx))
             }
         };
@@ -278,16 +279,21 @@ impl CodeView {
         let empty = |text: &'static str| div().p(px(16.)).text_center().text_color(muted).child(text);
         match sub {
             Sub::Model => {
-                let label = config::effort_label(&config.effort);
+                let label = config::effort_label(&self.chat_effort());
                 menu = menu
                     .item(MenuItem::new("sub-effort", "Esfuerzo").dense(true).icon("gauge").static_row(true).inline_sublabel(true).sublabel(label).trailing(self.effort_slider(cx)))
                     .separator();
-                let (shown, more) = config::split_models(&self.models, &config.model);
+                // El modelo de la conversación visible (puede venir como id de una
+                // sesión retomada: se compara por nombre, como `isCurrent` de la referencia).
+                let current = self.chat_model();
+                let selected = self.current_model(&current);
+                let (shown, more) = config::split_models(&self.models, selected.unwrap_or(&current));
                 let visible: Vec<usize> = if self.more_models { (0..self.models.len()).collect() } else { shown };
                 for index in visible {
                     let (id, name) = &self.models[index];
+                    let on = selected == Some(id.as_str());
                     let id = id.clone();
-                    let mut item = MenuItem::new(("model", index), name.clone()).dense(true).radio(config.model == id);
+                    let mut item = MenuItem::new(("model", index), name.clone()).dense(true).radio(on);
                     if let Some(description) = self.model_info.get(&id) {
                         item = item.sublabel(description.clone());
                     }

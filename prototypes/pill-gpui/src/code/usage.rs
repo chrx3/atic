@@ -91,19 +91,6 @@ fn duration(ms: Option<u64>) -> String {
     if seconds < 60 { format!("{seconds} s") } else { format!("{} min {} s", seconds / 60, seconds % 60) }
 }
 
-/// «claude-haiku-4-5-2025…» → «Haiku 4.5».
-fn short_model(id: &str) -> String {
-    let parts: Vec<&str> = id.trim_start_matches("claude-").split('-').collect();
-    match parts.as_slice() {
-        [family, major, minor, ..] if major.chars().all(|c| c.is_ascii_digit()) && minor.len() <= 2 => {
-            let mut name = family.to_string();
-            name[..1].make_ascii_uppercase();
-            format!("{name} {major}.{minor}")
-        }
-        _ => id.to_string(),
-    }
-}
-
 impl Chat {
     /// Lo que la vista guarda de los eventos del agente: tokens y costo del
     /// turno, tareas y el estado de Remote Control.
@@ -421,7 +408,7 @@ impl CodeView {
             )
             .child(Self::close_button("agents-close", cx));
         let title = chat.map(|c| c.title.clone()).filter(|t| t != "Nueva conversación").unwrap_or_else(|| "Conversación principal".into());
-        let model = chat.and_then(|c| c.model.clone()).map(|m| short_model(&m)).unwrap_or_default();
+        let model = chat.and_then(|c| c.model.clone()).map(|m| super::config::model_name(&[], &m)).unwrap_or_default();
         let main = div()
             .flex()
             .items_center()

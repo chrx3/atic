@@ -14,6 +14,8 @@ use std::path::PathBuf;
 
 use serde_json::Value;
 
+use super::config::{model_name, same_model, ClaudeConfig};
+
 /// Lo que se guarda del resultado de una herramienta.
 const MAX_RESULT: usize = 6000;
 
@@ -56,6 +58,8 @@ pub enum Item {
     Tool(ToolCall),
     /// El cierre de un turno: cuánto tardó y cuánto costó.
     Turn(String),
+    /// La marca de cambio de modelo («Cambiado a Opus 4.5»).
+    Model(String),
     Notice { text: String, error: bool },
 }
 
@@ -92,6 +96,14 @@ impl Permission {
     }
 }
 
+/// El modelo y el esfuerzo aplicados al proceso de una conversación (vacío:
+/// los de Claude Code).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Applied {
+    pub model: String,
+    pub effort: String,
+}
+
 pub struct Chat {
     /// La clave de la sesión en el sidecar.
     pub key: String,
@@ -106,6 +118,16 @@ pub struct Chat {
     pub live: bool,
     pub permissions: Vec<Permission>,
     pub model: Option<String>,
+    /// Modelo y esfuerzo elegidos para esta conversación (cada chat tiene los
+    /// suyos, como en la referencia). Sin elegir, los del espacio.
+    pub want_model: Option<String>,
+    pub want_effort: Option<String>,
+    /// Lo que tiene de verdad el proceso de esta conversación: `None` mientras
+    /// no esté abierto o `start` no haya respondido.
+    pub applied: Option<Applied>,
+    /// El modelo elegido con el que se envió el último mensaje: si cambia,
+    /// aparece la marca.
+    pub sent_model: Option<String>,
     /// Contexto usado y máximo, según Claude Code.
     pub context: Option<(u64, u64)>,
     /// Costo y tokens (entrada, salida, caché) de toda la conversación.
@@ -129,6 +151,8 @@ pub struct Chat {
     nested: HashSet<String>,
     /// id de la herramienta → fila.
     tools: HashMap<String, usize>,
+    /// Avisos de «responde otro modelo» ya dados (respondido, elegido).
+    model_warned: HashSet<(String, String)>,
 }
 
 fn text_of(content: &Value) -> String {
@@ -187,6 +211,10 @@ impl Chat {
             live: false,
             permissions: Vec::new(),
             model: None,
+            want_model: None,
+            want_effort: None,
+            applied: None,
+            sent_model: None,
             context: None,
             total_cost: 0.,
             tokens: (0, 0, 0),
@@ -199,7 +227,51 @@ impl Chat {
             streamed: HashSet::new(),
             nested: HashSet::new(),
             tools: HashMap::new(),
+            model_warned: HashSet::new(),
         }
+    }
+
+    /// El modelo de esta conversación: el elegido en ella o, si no, el del espacio.
+    pub fn chosen_model(&self, config: &ClaudeConfig) -> String {
+        self.want_model.clone().unwrap_or_else(|| config.model.clone())
+    }
+
+    /// El esfuerzo de esta conversación: el elegido en ella o, si no, el del espacio.
+    pub fn chosen_effort(&self, config: &ClaudeConfig) -> String {
+        self.want_effort.clone().unwrap_or_else(|| config.effort.clone())
+    }
+
+    /// Al enviar con otro modelo que el del último mensaje, deja la marca
+    /// «Cambiado a X» y recuerda el nuevo (`noteModelForSend` de la referencia).
+    pub fn note_model_for_send(&mut self, list: &[(String, String)], model: &str) {
+        if !self.items.is_empty() && self.sent_model.as_deref().is_some_and(|sent| !same_model(list, sent, model)) {
+            self.items.push(Item::Model(model_name(list, model)));
+        }
+        self.sent_model = Some(model.to_string());
+    }
+
+    /// Se eligió otro modelo con la conversación ya empezada: el nombre que
+    /// usará el próximo mensaje (`pendingModel` de la referencia).
+    pub fn pending_model(&self, list: &[(String, String)], config: &ClaudeConfig) -> Option<String> {
+        let sent = self.sent_model.as_deref()?;
+        let chosen = self.chosen_model(config);
+        (!self.items.is_empty() && !self.busy && !same_model(list, &chosen, sent)).then(|| model_name(list, &chosen))
+    }
+
+    /// Una respuesta de la conversación principal con otro modelo que el
+    /// aplicado: avisa una vez y devuelve el modelo que hay que volver a
+    /// aplicar (`checkModel` de la referencia).
+    pub fn check_model(&mut self, list: &[(String, String)], model: &str) -> Option<String> {
+        let want = self.applied.as_ref().map(|a| a.model.clone()).filter(|m| !m.is_empty() && m != "default")?;
+        if model.is_empty() || model.starts_with('<') || same_model(list, model, &want) {
+            return None;
+        }
+        if !self.model_warned.insert((model.to_string(), want.clone())) {
+            return None;
+        }
+        let (got, chosen) = (model_name(list, model), model_name(list, &want));
+        self.notice(format!("Esta respuesta la está dando {got}, no {chosen} (el elegido). Se volvió a aplicar {chosen} para lo que sigue."), true);
+        Some(want)
     }
 
     pub fn push_user(&mut self, text: &str) {
@@ -242,6 +314,7 @@ impl Chat {
             }
             "closed" => {
                 self.live = false;
+                self.applied = None;
                 self.busy = false;
                 self.permissions.clear();
                 if let Some(error) = data.get("error").and_then(Value::as_str) {
@@ -444,6 +517,59 @@ mod tests {
 
     fn chat() -> Chat {
         Chat::new("c1".into(), 0, PathBuf::from(r"C:\repo"))
+    }
+
+    fn models() -> Vec<(String, String)> {
+        [("", "Predeterminado"), ("opus", "Opus 4.5"), ("sonnet", "Sonnet 4.5")].iter().map(|(id, name)| (id.to_string(), name.to_string())).collect()
+    }
+
+    #[test]
+    fn cada_conversacion_usa_su_modelo_o_el_del_espacio() {
+        let config = ClaudeConfig { model: "sonnet".into(), effort: "high".into(), ..Default::default() };
+        let mut chat = chat();
+        assert_eq!((chat.chosen_model(&config), chat.chosen_effort(&config)), ("sonnet".into(), "high".into()));
+        chat.want_model = Some("opus".into());
+        chat.want_effort = Some("low".into());
+        assert_eq!((chat.chosen_model(&config), chat.chosen_effort(&config)), ("opus".into(), "low".into()));
+        // Elegir «Predeterminado» en la conversación no vuelve al del espacio.
+        chat.want_model = Some(String::new());
+        assert_eq!(chat.chosen_model(&config), "");
+    }
+
+    #[test]
+    fn la_marca_de_modelo_aparece_al_enviar_con_otro() {
+        let list = models();
+        let config = ClaudeConfig::default();
+        let mut chat = chat();
+        chat.note_model_for_send(&list, "opus");
+        assert!(chat.items.is_empty(), "el primer mensaje no lleva marca");
+        chat.push_user("hola");
+        chat.busy = false;
+        // El id de la sesión retomada y el alias son el mismo modelo.
+        chat.sent_model = Some("claude-opus-4-5-20251101".into());
+        chat.want_model = Some("opus".into());
+        assert_eq!(chat.pending_model(&list, &config), None);
+        chat.note_model_for_send(&list, "opus");
+        assert!(!chat.items.iter().any(|i| matches!(i, Item::Model(_))));
+        chat.want_model = Some("sonnet".into());
+        assert_eq!(chat.pending_model(&list, &config).as_deref(), Some("Sonnet 4.5"));
+        chat.note_model_for_send(&list, "sonnet");
+        assert_eq!(chat.items.last(), Some(&Item::Model("Sonnet 4.5".into())));
+        assert_eq!(chat.pending_model(&list, &config), None);
+    }
+
+    #[test]
+    fn otro_modelo_respondiendo_avisa_una_vez() {
+        let list = models();
+        let mut chat = chat();
+        // Sin modelo aplicado (o el predeterminado) no hay con qué comparar.
+        assert_eq!(chat.check_model(&list, "claude-sonnet-4-5"), None);
+        chat.applied = Some(Applied { model: "opus".into(), effort: String::new() });
+        assert_eq!(chat.check_model(&list, "claude-opus-4-5-20251101"), None);
+        assert_eq!(chat.check_model(&list, "<synthetic>"), None);
+        assert_eq!(chat.check_model(&list, "claude-sonnet-4-5").as_deref(), Some("opus"));
+        assert_eq!(chat.check_model(&list, "claude-sonnet-4-5"), None);
+        assert_eq!(chat.items.iter().filter(|i| matches!(i, Item::Notice { error: true, .. })).count(), 1);
     }
 
     #[test]

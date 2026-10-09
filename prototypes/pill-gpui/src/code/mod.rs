@@ -50,7 +50,7 @@ use crate::space::viewer::Doc;
 use crate::space::workspaces::Workspaces;
 use crate::text_area::TextArea;
 
-use chat::Chat;
+use chat::{Applied, Chat};
 use config::{ClaudeConfig, Configs};
 use sidecar::{Incoming, Reply, Sidecar};
 
@@ -457,6 +457,12 @@ impl CodeView {
                 }
                 chat.apply(&event, &data);
                 let workspace = chat.workspace;
+                if event == "assistant" && data.get("parent").is_none_or(Value::is_null) {
+                    let model = data.get("model").and_then(Value::as_str).unwrap_or_default();
+                    if let Some(want) = chat.check_model(&self.models, model) {
+                        self.fire("setModel", json!({ "key": key, "model": want }), cx);
+                    }
+                }
                 if event == "permission" {
                     self.prepare_permission(&key, cx);
                 }
@@ -678,7 +684,8 @@ impl CodeView {
         if let Some(chat) = self.chats.iter_mut().find(|c| c.key == key) {
             chat.unread = false;
         }
-        self.active = Some(key);
+        self.active = Some(key.clone());
+        self.sync_chat_settings(&key, cx);
         self.follow = true;
         self.thread.scroll_to_bottom();
         self.focus_composer(window, cx);
@@ -702,6 +709,26 @@ impl CodeView {
         self.chats.push(chat);
         self.select_chat(key.clone(), window, cx);
         let params = json!({ "sessionId": info.session_id, "dir": cwd });
+        // Retoma el modelo y el esfuerzo con los que terminó (`adoptSessionSettings` de la referencia).
+        let settings_key = key.clone();
+        self.request("sessionSettings", params.clone(), cx, move |view, reply, cx| {
+            let Ok(last) = reply else {
+                return;
+            };
+            let Some(model) = last.get("model").and_then(Value::as_str).filter(|m| !m.is_empty()) else {
+                return;
+            };
+            let Some(chat) = view.chats.iter_mut().find(|c| c.key == settings_key) else {
+                return;
+            };
+            chat.want_model = Some(model.to_string());
+            if let Some(effort) = last.get("effort").and_then(Value::as_str).filter(|e| !e.is_empty()) {
+                chat.want_effort = Some(effort.to_string());
+            }
+            chat.sent_model = Some(model.to_string());
+            view.sync_chat_settings(&settings_key, cx);
+            cx.notify();
+        });
         self.request("sessionMessages", params, cx, move |view, reply, _| {
             let Some(chat) = view.chats.iter_mut().find(|c| c.key == key) else {
                 return;
@@ -752,13 +779,36 @@ impl CodeView {
             params["resume"] = json!(session);
         }
         self.configs.get(chat.workspace).start_params(&mut params);
+        // Con el modelo y el esfuerzo de esta conversación, no los del espacio.
+        for (field, want) in [("model", &chat.want_model), ("effort", &chat.want_effort)] {
+            match want.as_deref() {
+                Some("") => {
+                    if let Some(params) = params.as_object_mut() {
+                        params.remove(field);
+                    }
+                }
+                Some(value) => params[field] = json!(value),
+                None => {}
+            }
+        }
+        let text = |field: &str| params.get(field).and_then(Value::as_str).unwrap_or_default().to_string();
+        let started = Applied { model: text("model"), effort: text("effort") };
         let key = key.to_string();
         if let Some(chat) = self.chats.iter_mut().find(|c| c.key == key) {
             chat.live = true;
+            chat.applied = None;
         }
-        self.request("start", params, cx, move |view, reply, _| {
-            if let Err(error) = reply {
-                if let Some(chat) = view.chats.iter_mut().find(|c| c.key == key) {
+        self.request("start", params, cx, move |view, reply, cx| {
+            let Some(chat) = view.chats.iter_mut().find(|c| c.key == key) else {
+                return;
+            };
+            match reply {
+                Ok(_) => {
+                    chat.applied = Some(started);
+                    // Si se eligió otro modelo mientras abría, se le aplica ahora.
+                    view.sync_chat_settings(&key, cx);
+                }
+                Err(error) => {
                     chat.live = false;
                     chat.busy = false;
                     chat.notice(format!("No se pudo abrir la sesión: {error}"), true);
@@ -802,6 +852,11 @@ impl CodeView {
                 key
             }
         };
+        // Si se cambió de modelo desde el último mensaje, la marca queda en la conversación.
+        if let Some(chat) = self.chats.iter_mut().find(|c| c.key == key) {
+            let model = chat.chosen_model(&self.configs.get(chat.workspace));
+            chat.note_model_for_send(&self.models, &model);
+        }
         self.ensure_live(&key, cx);
         if let Some(chat) = self.chats.iter_mut().find(|c| c.key == key) {
             chat.push_user(&text);
@@ -1046,24 +1101,117 @@ impl CodeView {
         self.active_workspace().map(|id| self.configs.get(id)).unwrap_or_default()
     }
 
-    /// Guarda la configuración del espacio activo y la aplica a sus sesiones abiertas.
+    /// El modelo de la conversación visible (cada una tiene el suyo); sin
+    /// conversación, el predeterminado del espacio.
+    fn chat_model(&self) -> String {
+        match self.active_chat() {
+            Some(chat) => chat.chosen_model(&self.configs.get(chat.workspace)),
+            None => self.config().model,
+        }
+    }
+
+    /// El esfuerzo de la conversación visible o, sin conversación, el del espacio.
+    fn chat_effort(&self) -> String {
+        match self.active_chat() {
+            Some(chat) => chat.chosen_effort(&self.configs.get(chat.workspace)),
+            None => self.config().effort,
+        }
+    }
+
+    /// Aplica al proceso de una conversación abierta su modelo y su esfuerzo si
+    /// tiene otros (`syncChatSettings` de la referencia). Se marca como aplicado antes
+    /// de pedirlo y se revierte si falla.
+    fn sync_chat_settings(&mut self, key: &str, cx: &mut Context<Self>) {
+        let Some(chat) = self.chats.iter_mut().find(|c| c.key == key) else {
+            return;
+        };
+        let Some(before) = chat.applied.clone().filter(|_| chat.live) else {
+            return;
+        };
+        let config = self.configs.get(chat.workspace);
+        let want = Applied { model: chat.chosen_model(&config), effort: chat.chosen_effort(&config) };
+        let model = !config::same_model(&self.models, &want.model, &before.model);
+        let effort = !want.effort.is_empty() && want.effort != before.effort;
+        if !model && !effort {
+            return;
+        }
+        chat.applied = Some(Applied {
+            model: if model { want.model.clone() } else { before.model.clone() },
+            effort: if effort { want.effort.clone() } else { before.effort.clone() },
+        });
+        let revert = |key: String, before: Applied| {
+            move |view: &mut Self, reply: Reply, _: &mut Context<Self>| {
+                if let Err(error) = reply {
+                    if let Some(chat) = view.chats.iter_mut().find(|c| c.key == key) {
+                        chat.applied = Some(before);
+                    }
+                    view.error = Some(format!("No se pudo aplicar el modelo o el esfuerzo: {error}"));
+                }
+            }
+        };
+        if model {
+            let id = (!want.model.is_empty()).then(|| want.model.clone());
+            self.request("setModel", json!({ "key": key, "model": id }), cx, revert(key.to_string(), before.clone()));
+        }
+        if effort {
+            let settings = json!({ "effortLevel": want.effort });
+            self.request("applyFlags", json!({ "key": key, "settings": settings }), cx, revert(key.to_string(), before));
+        }
+    }
+
+    /// Cambia la configuración desde el chat (menús y composer): el modelo y el
+    /// esfuerzo son los de la conversación visible y quedan además como
+    /// predeterminados del espacio; lo demás se guarda en el espacio y se aplica
+    /// a sus sesiones abiertas.
     fn set_config(&mut self, change: impl FnOnce(&mut ClaudeConfig), cx: &mut Context<Self>) {
+        self.update_config(change, true, cx);
+    }
+
+    /// Cambia los valores por defecto del espacio (la página de ajustes): el
+    /// modelo y el esfuerzo valen para las conversaciones nuevas, no la visible.
+    fn set_defaults(&mut self, change: impl FnOnce(&mut ClaudeConfig), cx: &mut Context<Self>) {
+        self.update_config(change, false, cx);
+    }
+
+    fn update_config(&mut self, change: impl FnOnce(&mut ClaudeConfig), for_chat: bool, cx: &mut Context<Self>) {
         let Some(workspace) = self.active_workspace() else {
             return;
         };
         let before = self.configs.get(workspace);
-        let mut after = before.clone();
+        let chat = self.active.clone().filter(|_| for_chat).filter(|key| self.chats.iter().any(|c| &c.key == key && c.workspace == workspace));
+        // Lo que se ve en los menús: el modelo y el esfuerzo de la conversación.
+        let mut shown = before.clone();
+        if let Some(chat) = chat.as_ref().and_then(|key| self.chats.iter().find(|c| &c.key == key)) {
+            shown.model = chat.chosen_model(&before);
+            shown.effort = chat.chosen_effort(&before);
+        }
+        let mut after = shown.clone();
         change(&mut after);
+        let (model, effort) = (after.model != shown.model, after.effort != shown.effort);
+        if !model {
+            after.model = before.model.clone();
+        }
+        if !effort {
+            after.effort = before.effort.clone();
+        }
+        if let Some(chat) = chat.as_ref().and_then(|key| self.chats.iter_mut().find(|c| &c.key == key)) {
+            if model {
+                chat.want_model = Some(after.model.clone());
+            }
+            if effort {
+                chat.want_effort = Some(after.effort.clone());
+            }
+        }
+        if let Some(key) = chat.filter(|_| model || effort) {
+            self.sync_chat_settings(&key, cx);
+            cx.notify();
+        }
         if after == before {
             return;
         }
         self.configs.set(workspace, after.clone());
         let live: Vec<String> = self.chats.iter().filter(|c| c.live && c.workspace == workspace).map(|c| c.key.clone()).collect();
         for key in live {
-            if after.model != before.model {
-                let model = (!after.model.is_empty()).then(|| after.model.clone());
-                self.fire("setModel", json!({ "key": key, "model": model }), cx);
-            }
             if after.permission_mode != before.permission_mode {
                 self.fire("setPermissionMode", json!({ "key": key, "mode": after.permission_mode }), cx);
             }
@@ -1083,15 +1231,12 @@ impl CodeView {
     }
 
     fn model_label(&self, id: &str) -> String {
-        self.models
-            .iter()
-            .find(|(model, _)| model == id)
-            .map(|(_, name)| name.clone())
-            .unwrap_or_else(|| {
-                // Hasta que llegue la lista de Claude Code: el id con mayúscula.
-                let mut chars = id.chars();
-                chars.next().map(|first| first.to_uppercase().chain(chars).collect()).unwrap_or_default()
-            })
+        config::model_name(&self.models, id)
+    }
+
+    /// El modelo de la lista que corresponde a `current` (para el radio de los menús).
+    fn current_model(&self, current: &str) -> Option<&str> {
+        config::current_model(&self.models, current)
     }
 
     // --- Archivos y cambios -----------------------------------------------------------

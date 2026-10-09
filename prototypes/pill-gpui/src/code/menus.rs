@@ -161,8 +161,8 @@ impl CodeView {
 
     fn model_menu(&self, cx: &mut Context<Self>) -> AnyElement {
         let t = t();
-        let config = self.config();
-        let level = config::EFFORTS.iter().position(|(id, _)| *id == config.effort);
+        let chat_effort = self.chat_effort();
+        let level = config::EFFORTS.iter().position(|(id, _)| *id == chat_effort);
         let mut effort = div().flex().gap(px(4.)).flex_none();
         for (index, (id, label)) in config::EFFORTS.iter().enumerate() {
             let filled = level.is_some_and(|level| index <= level);
@@ -178,18 +178,20 @@ impl CodeView {
                     .hover(|el| el.opacity(0.85))
                     .tooltip(crate::hover::tip(label))
                     .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
-                        let pick = if view.config().effort == id { String::new() } else { id.to_string() };
+                        let pick = if view.chat_effort() == id { String::new() } else { id.to_string() };
                         view.set_config(|c| c.effort = pick, cx);
                     })),
             );
         }
-        let (shown, more) = config::split_models(&self.models, &config.model);
+        let current = self.chat_model();
+        let selected = self.current_model(&current);
+        let (shown, more) = config::split_models(&self.models, selected.unwrap_or(&current));
         let visible: Vec<usize> = if self.more_models { (0..self.models.len()).collect() } else { shown };
         let mut list = div().id("model-list").max_h(px(260.)).overflow_y_scroll().flex().flex_col();
         for index in visible {
             let (id, name) = &self.models[index];
+            let on = selected == Some(id.as_str());
             let id = id.clone();
-            let on = config.model == id;
             list = list.child(item(("model", index), name.clone(), None, Some(on)).on_click(cx.listener(
                 move |view, _: &ClickEvent, _, cx| {
                     let id = id.clone();
@@ -233,7 +235,7 @@ impl CodeView {
                             .flex()
                             .flex_col()
                             .child("Esfuerzo")
-                            .child(div().text_size(px(12.)).text_color(t.faint).child(config::effort_label(&config.effort))),
+                            .child(div().text_size(px(12.)).text_color(t.faint).child(config::effort_label(&chat_effort))),
                     )
                     .child(effort),
             )
@@ -254,7 +256,7 @@ impl CodeView {
                     }))
                     .child(svg().path("icons/brain.svg").size(px(16.)).text_color(t.muted))
                     .child(div().flex_1().child("Razonamiento visible"))
-                    .child(switch(config.thinking)),
+                    .child(switch(self.config().thinking)),
             )
             .child(divider())
             .child(list)
@@ -297,7 +299,8 @@ impl CodeView {
                 .child(div().flex_1().child(label))
                 .when_some(value, |el, value| el.child(div().text_size(px(12.5)).text_color(t.faint).child(value)))
         };
-        let model_label = if config.model.is_empty() { "Predeterminado".to_string() } else { self.model_label(&config.model) };
+        let chat_model = self.chat_model();
+        let model_label = if chat_model.is_empty() { "Predeterminado".to_string() } else { self.model_label(&chat_model) };
         let mut commands = div().flex().flex_col();
         for (index, (name, description)) in self.command_names().into_iter().enumerate() {
             let insert = name.clone();
