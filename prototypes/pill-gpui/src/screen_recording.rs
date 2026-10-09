@@ -4,13 +4,15 @@
 //! grabar (`capture.rs`): una ventana, una zona arrastrada o, con Enter, la
 //! pantalla. Mientras graba, el tab muestra el punto rojo con el reloj (el de
 //! Reuniones) y el mismo atajo la detiene. La pill queda excluida de las
-//! capturas para no salir en el video. El MP4 queda en `Videos\Atic` y se abre
-//! con el reproductor del sistema.
+//! capturas para no salir en el video. El MP4, con el micrófono y el sonido del
+//! sistema (`screen_audio.rs`), queda en `Videos\Atic` y se abre con el
+//! reproductor del sistema.
 
 use atic_capture::Rect as PhysRect;
 use gpui::Context;
 
 use crate::platform::screen_record;
+use crate::screen_audio::Tracks;
 
 #[derive(Default)]
 pub struct ScreenRecording {
@@ -52,7 +54,10 @@ impl crate::Pill {
         if let Some(overlay) = self.overlay.as_ref() {
             overlay.exclude_from_capture(true);
         }
-        match screen_record::start(region, dir.join(name)) {
+        // Por ahora siempre con micrófono y sonido del sistema; elegirlos en la
+        // mira viene después.
+        let audio = Some(Tracks { mic: true, system: true });
+        match screen_record::start(region, dir.join(name), audio) {
             Ok(recording) => {
                 println!("grabar: {}×{} en ({}, {})", region.width, region.height, region.x, region.y);
                 self.screen_rec.recording = Some(recording);

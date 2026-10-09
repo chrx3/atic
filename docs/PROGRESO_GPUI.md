@@ -226,6 +226,31 @@ Decisiones tomadas sin el usuario:
 - Instalar una actualización corre el instalador con `/P` y cierra la pill; el
   hook del instalador la vuelve a abrir.
 
+## Grabar la pantalla (2026-10-09)
+
+Mantener el atajo de Capturas (400 ms) pasa la mira a grabar; un toque la
+detiene. Captura de Windows + Media Foundation (H.264), en `Videos\Atic`.
+Maqueta aprobada por el usuario: https://claude.ai/artifact/7bALYtYdh58rDCjYothjxz
+
+| Paso | Estado |
+| --- | --- |
+| Grabar ventana, zona o pantalla a MP4, sin audio | Hecho, `484f583` |
+| Audio: micrófono y sistema en el MP4 (AAC, alineado al reloj del video: ~30 ms medidos) | Hecho |
+| Controles en la pill: pausar, detener, descartar; cuenta regresiva; mic/audio en la mira | Pendiente |
+| Al terminar, al estante en vez de abrir el reproductor | Pendiente |
+| Mini editor: recortar, cortar tramos, exportar | Pendiente |
+| Extras: subtítulos, seguir la ventana, cámara, GIF, zoom al cursor | Pendiente |
+| macOS (ScreenCaptureKit) | Pendiente |
+
+Pedidos del usuario para meter entre medio:
+
+1. **Grabar la pill y la UI de Atic**, o que sea configurable. Hoy la ventana
+   del overlay se excluye de la captura (`WDA_EXCLUDEFROMCAPTURE`) mientras
+   graba.
+2. **Captura en vivo con la pill**: al sacar un screenshot, poder estar en el
+   modo en movimiento (en vivo) y que la pill salga en la foto. Hoy P solo
+   alterna la pill sobre la foto congelada del arranque.
+
 ## Estado (2026-10-07, tarde)
 
 - Tests: pill 327 ok; `atic-core` 56, `atic-clipboard` 8, `atic-calc` 23 y

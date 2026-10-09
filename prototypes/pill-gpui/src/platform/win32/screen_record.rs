@@ -9,6 +9,10 @@
 //!
 //! Las ventanas excluidas de las capturas (`WDA_EXCLUDEFROMCAPTURE`, la pill)
 //! no salen en el video.
+//!
+//! Con audio (`screen_audio`), el video se escribe primero a un temporal y al
+//! terminar se junta con la mezcla en el MP4 final: el video pasa tal cual y
+//! el audio se codifica en AAC (`mux`).
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -17,6 +21,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use atic_capture::Rect as PhysRect;
+use std::fs::File;
+use std::io::BufReader;
 use windows::core::{Interface, HSTRING};
 use windows::Graphics::Capture::{Direct3D11CaptureFramePool, GraphicsCaptureItem, GraphicsCaptureSession};
 use windows::Graphics::DirectX::Direct3D11::IDirect3DDevice;
@@ -32,8 +38,12 @@ use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SA
 use windows::Win32::Graphics::Dxgi::{IDXGIAdapter, IDXGIDevice};
 use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTONEAREST};
 use windows::Win32::Media::MediaFoundation::{
-    IMFAttributes, IMFByteStream, IMFSample, IMFSinkWriter, MFCreateAttributes, MFCreateMediaType,
-    MFCreateMemoryBuffer, MFCreateSample, MFCreateSinkWriterFromURL, MFMediaType_Video, MFNominalRange_16_235,
+    IMFAttributes, IMFByteStream, IMFSample, IMFSinkWriter, IMFSourceReader, MFAudioFormat_AAC, MFAudioFormat_PCM,
+    MFCreateAttributes, MFCreateMediaType, MFCreateMemoryBuffer, MFCreateSample, MFCreateSinkWriterFromURL,
+    MFCreateSourceReaderFromURL, MFMediaType_Audio, MFMediaType_Video, MFNominalRange_16_235,
+    MF_MT_AUDIO_AVG_BYTES_PER_SECOND, MF_MT_AUDIO_BITS_PER_SAMPLE, MF_MT_AUDIO_BLOCK_ALIGNMENT,
+    MF_MT_AUDIO_NUM_CHANNELS, MF_MT_AUDIO_SAMPLES_PER_SECOND, MF_SOURCE_READERF_ENDOFSTREAM,
+    MF_SOURCE_READER_ALL_STREAMS, MF_SOURCE_READER_FIRST_VIDEO_STREAM,
     MFShutdown, MFStartup, MFVideoFormat_H264, MFVideoFormat_NV12, MFVideoInterlace_Progressive,
     MFVideoTransferMatrix_BT709, MFSTARTUP_FULL, MF_MT_AVG_BITRATE, MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE,
     MF_MT_INTERLACE_MODE, MF_MT_MAJOR_TYPE, MF_MT_PIXEL_ASPECT_RATIO, MF_MT_SUBTYPE, MF_MT_VIDEO_NOMINAL_RANGE,
@@ -43,6 +53,8 @@ use windows::Win32::System::Com::{CoInitializeEx, CoTaskMemFree, CoUninitialize,
 use windows::Win32::System::WinRT::Direct3D11::{CreateDirect3D11DeviceFromDXGIDevice, IDirect3DDxgiInterfaceAccess};
 use windows::Win32::System::WinRT::Graphics::Capture::IGraphicsCaptureItemInterop;
 use windows::Win32::UI::Shell::{FOLDERID_Videos, SHGetKnownFolderPath, KNOWN_FOLDER_FLAG};
+
+use crate::screen_audio::{read_up_to, ScreenAudio, Tracks, FRAME_BYTES, RATE};
 
 const FPS: u32 = 30;
 /// Unidades de Media Foundation: 100 ns.
@@ -81,17 +93,24 @@ impl Recording {
     }
 }
 
-/// Empieza a grabar `region` (físico, del escritorio virtual) en `path`.
-/// Vuelve cuando la captura y el codificador están listos, o con el error.
-pub fn start(region: PhysRect, path: PathBuf) -> Result<Recording, String> {
+/// Empieza a grabar `region` (físico, del escritorio virtual) en `path`,
+/// con las pistas de audio pedidas. Vuelve cuando la captura y el codificador
+/// están listos, o con el error. Si el audio no abre, graba sin él.
+pub fn start(region: PhysRect, path: PathBuf, audio: Option<Tracks>) -> Result<Recording, String> {
     let stop = Arc::new(AtomicBool::new(false));
     let (ready_tx, ready_rx) = mpsc::sync_channel(1);
     let (done_tx, done) = mpsc::channel();
     let flag = stop.clone();
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_nanos());
+    let temp = std::env::temp_dir().join(format!("atic-grabar-{stamp}"));
     std::thread::Builder::new()
         .name("grabar pantalla".into())
         .spawn(move || {
-            let result = with_media_foundation(|| record(region, &path, &flag, &ready_tx)).map(|()| path);
+            let result = with_media_foundation(|| record(region, &path, &temp, audio, &flag, &ready_tx))
+                .map(|()| path);
+            let _ = std::fs::remove_dir_all(&temp);
             let _ = done_tx.send(result);
         })
         .map_err(|error| error.to_string())?;
@@ -134,11 +153,23 @@ fn with_media_foundation<T>(run: impl FnOnce() -> Result<T, String>) -> Result<T
 fn record(
     region: PhysRect,
     path: &Path,
+    temp: &Path,
+    tracks: Option<Tracks>,
     stop: &AtomicBool,
     ready: &mpsc::SyncSender<Result<(), String>>,
 ) -> Result<(), String> {
+    // El audio abre antes que el video; lo que llegue antes de empezar se
+    // descarta.
+    let audio = tracks.and_then(|tracks| match ScreenAudio::start(tracks, temp.to_path_buf()) {
+        Ok(audio) => Some(audio),
+        Err(error) => {
+            eprintln!("grabar: sin audio ({error})");
+            None
+        }
+    });
+    let video = temp.join("video.mp4");
     let setup = Capture::open(region).and_then(|capture| {
-        let encoder = Encoder::create(path, capture.width, capture.height)?;
+        let encoder = Encoder::create(&video, capture.width, capture.height)?;
         Ok((capture, encoder))
     });
     let (mut capture, mut encoder) = match setup {
@@ -148,30 +179,65 @@ fn record(
         }
         Err(error) => {
             let _ = ready.send(Err(error.clone()));
+            if let Some(audio) = audio {
+                let _ = audio.finish(Duration::ZERO);
+            }
             return Err(error);
         }
     };
     let started = Instant::now();
+    if let Some(audio) = &audio {
+        audio.begin(started);
+    }
     let tick = Duration::from_secs(1) / FPS;
     let mut next = started;
-    while !stop.load(Ordering::Relaxed) {
-        if capture.grab()? {
-            encoder.push(&capture.nv12, started.elapsed())?;
+    let recorded = (|| {
+        while !stop.load(Ordering::Relaxed) {
+            if capture.grab()? {
+                encoder.push(&capture.nv12, started.elapsed())?;
+            }
+            next += tick;
+            let now = Instant::now();
+            if next > now {
+                std::thread::sleep(next - now);
+            } else {
+                // Atrasado (el codificador tardó): no se intenta recuperar.
+                next = now;
+            }
         }
-        next += tick;
-        let now = Instant::now();
-        if next > now {
-            std::thread::sleep(next - now);
-        } else {
-            // Atrasado (el codificador tardó): no se intenta recuperar.
-            next = now;
-        }
+        let duration = started.elapsed();
+        encoder.finish(duration).map(|()| duration)
+    })();
+    drop(capture);
+    // El audio se cierra siempre: si no, el micrófono queda abierto.
+    let duration = recorded.as_ref().copied().unwrap_or_default();
+    let mixed = audio.map(|audio| audio.finish(duration));
+    recorded?;
+    match mixed {
+        Some(Ok(Some(mixed))) => match mux(&video, &mixed.path, mixed.frames, path) {
+            Ok(()) => return Ok(()),
+            Err(error) => {
+                eprintln!("grabar: no se pudo juntar el audio ({error}); queda sin él");
+                let _ = std::fs::remove_file(path);
+            }
+        },
+        Some(Err(error)) => eprintln!("grabar: el audio falló ({error}); queda sin él"),
+        Some(Ok(None)) | None => {}
     }
-    let result = encoder.finish(started.elapsed());
-    if result.is_err() {
-        let _ = std::fs::remove_file(path);
+    move_file(&video, path)
+}
+
+/// Mueve el temporal a su lugar; si están en discos distintos, lo copia.
+fn move_file(from: &Path, to: &Path) -> Result<(), String> {
+    if let Some(dir) = to.parent() {
+        std::fs::create_dir_all(dir).map_err(|error| error.to_string())?;
     }
-    result
+    if std::fs::rename(from, to).is_ok() {
+        return Ok(());
+    }
+    std::fs::copy(from, to).map_err(|error| error.to_string())?;
+    let _ = std::fs::remove_file(from);
+    Ok(())
 }
 
 fn win(error: windows::core::Error) -> String {
@@ -423,19 +489,8 @@ impl Encoder {
 
     fn push(&mut self, nv12: &[u8], at: Duration) -> Result<(), String> {
         let time = ticks(at);
-        let sample = unsafe {
-            let len = nv12.len() as u32;
-            let buffer = MFCreateMemoryBuffer(len).map_err(win)?;
-            let mut data = std::ptr::null_mut();
-            buffer.Lock(&mut data, None, None).map_err(win)?;
-            std::ptr::copy_nonoverlapping(nv12.as_ptr(), data, nv12.len());
-            buffer.Unlock().map_err(win)?;
-            buffer.SetCurrentLength(len).map_err(win)?;
-            let sample = MFCreateSample().map_err(win)?;
-            sample.AddBuffer(&buffer).map_err(win)?;
-            sample.SetSampleTime(time).map_err(win)?;
-            sample
-        };
+        let sample = memory_sample(nv12)?;
+        unsafe { sample.SetSampleTime(time) }.map_err(win)?;
         if let Some((previous, started)) = self.pending.take() {
             self.write(previous, started, time)?;
         }
@@ -463,6 +518,115 @@ impl Encoder {
         }
         println!("grabar: {} cuadros de {}×{}", self.written, self.width, self.height);
         unsafe { self.writer.Finalize() }.map_err(win)
+    }
+}
+
+// --- Juntar el audio ----------------------------------------------------------
+
+/// Bits por segundo del AAC: 192 kbps estéreo (el codificador de Windows
+/// acepta 96, 128, 160 y 192).
+const AAC_BYTES_PER_SECOND: u32 = 24_000;
+/// El audio se escribe en bloques de 100 ms.
+const AUDIO_BLOCK: u64 = RATE as u64 / 10;
+
+/// `video` (H.264 en MP4) y `audio` (crudo de `screen_audio`) en `out`. El
+/// video se copia sin volver a codificar. Las dos pistas se escriben
+/// intercaladas por tiempo: el escritor frena la que se adelanta mucho.
+fn mux(video: &Path, audio: &Path, frames: u64, out: &Path) -> Result<(), String> {
+    let video_stream = MF_SOURCE_READER_FIRST_VIDEO_STREAM.0 as u32;
+    let mut raw = BufReader::new(File::open(audio).map_err(|error| error.to_string())?);
+    unsafe {
+        let reader = MFCreateSourceReaderFromURL(&HSTRING::from(video.as_os_str()), None::<&IMFAttributes>)
+            .map_err(win)?;
+        reader.SetStreamSelection(MF_SOURCE_READER_ALL_STREAMS.0 as u32, false).map_err(win)?;
+        reader.SetStreamSelection(video_stream, true).map_err(win)?;
+        let video_type = reader.GetNativeMediaType(video_stream, 0).map_err(win)?;
+
+        let writer =
+            MFCreateSinkWriterFromURL(&HSTRING::from(out.as_os_str()), None::<&IMFByteStream>, None::<&IMFAttributes>)
+                .map_err(win)?;
+        let video_out = writer.AddStream(&video_type).map_err(win)?;
+
+        let aac = MFCreateMediaType().map_err(win)?;
+        aac.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Audio).map_err(win)?;
+        aac.SetGUID(&MF_MT_SUBTYPE, &MFAudioFormat_AAC).map_err(win)?;
+        aac.SetUINT32(&MF_MT_AUDIO_BITS_PER_SAMPLE, 16).map_err(win)?;
+        aac.SetUINT32(&MF_MT_AUDIO_SAMPLES_PER_SECOND, RATE).map_err(win)?;
+        aac.SetUINT32(&MF_MT_AUDIO_NUM_CHANNELS, 2).map_err(win)?;
+        aac.SetUINT32(&MF_MT_AUDIO_AVG_BYTES_PER_SECOND, AAC_BYTES_PER_SECOND).map_err(win)?;
+        let audio_out = writer.AddStream(&aac).map_err(win)?;
+
+        let pcm = MFCreateMediaType().map_err(win)?;
+        pcm.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Audio).map_err(win)?;
+        pcm.SetGUID(&MF_MT_SUBTYPE, &MFAudioFormat_PCM).map_err(win)?;
+        pcm.SetUINT32(&MF_MT_AUDIO_BITS_PER_SAMPLE, 16).map_err(win)?;
+        pcm.SetUINT32(&MF_MT_AUDIO_SAMPLES_PER_SECOND, RATE).map_err(win)?;
+        pcm.SetUINT32(&MF_MT_AUDIO_NUM_CHANNELS, 2).map_err(win)?;
+        pcm.SetUINT32(&MF_MT_AUDIO_BLOCK_ALIGNMENT, FRAME_BYTES as u32).map_err(win)?;
+        pcm.SetUINT32(&MF_MT_AUDIO_AVG_BYTES_PER_SECOND, RATE * FRAME_BYTES as u32).map_err(win)?;
+        writer.SetInputMediaType(audio_out, &pcm, None::<&IMFAttributes>).map_err(win)?;
+        writer.BeginWriting().map_err(win)?;
+
+        let mut next_video = read_video(&reader, video_stream)?;
+        let mut written = 0u64;
+        let mut bytes = vec![0u8; AUDIO_BLOCK as usize * FRAME_BYTES];
+        loop {
+            let audio_time = written as i64 * TICKS_PER_SECOND / RATE as i64;
+            let audio_left = written < frames;
+            match next_video.take() {
+                Some((sample, time)) if !audio_left || time <= audio_time => {
+                    writer.WriteSample(video_out, &sample).map_err(win)?;
+                    next_video = read_video(&reader, video_stream)?;
+                }
+                pending if audio_left => {
+                    next_video = pending;
+                    let n = (frames - written).min(AUDIO_BLOCK);
+                    let block = &mut bytes[..n as usize * FRAME_BYTES];
+                    let got = read_up_to(&mut raw, block).map_err(|error| error.to_string())?;
+                    block[got..].fill(0);
+                    let sample = memory_sample(block)?;
+                    sample.SetSampleTime(audio_time).map_err(win)?;
+                    sample
+                        .SetSampleDuration(n as i64 * TICKS_PER_SECOND / RATE as i64)
+                        .map_err(win)?;
+                    writer.WriteSample(audio_out, &sample).map_err(win)?;
+                    written += n;
+                }
+                _ => break,
+            }
+        }
+        writer.Finalize().map_err(win)
+    }
+}
+
+/// El próximo cuadro comprimido del video, o `None` al final.
+unsafe fn read_video(reader: &IMFSourceReader, stream: u32) -> Result<Option<(IMFSample, i64)>, String> {
+    loop {
+        let (mut flags, mut time, mut sample) = (0u32, 0i64, None);
+        unsafe { reader.ReadSample(stream, 0, None, Some(&mut flags), Some(&mut time), Some(&mut sample)) }
+            .map_err(win)?;
+        if flags & MF_SOURCE_READERF_ENDOFSTREAM.0 as u32 != 0 {
+            return Ok(None);
+        }
+        if let Some(sample) = sample {
+            return Ok(Some((sample, time)));
+        }
+    }
+}
+
+/// Una muestra de Media Foundation con una copia de `data`.
+fn memory_sample(data: &[u8]) -> Result<IMFSample, String> {
+    unsafe {
+        let len = data.len() as u32;
+        let buffer = MFCreateMemoryBuffer(len).map_err(win)?;
+        let mut ptr = std::ptr::null_mut();
+        buffer.Lock(&mut ptr, None, None).map_err(win)?;
+        std::ptr::copy_nonoverlapping(data.as_ptr(), ptr, data.len());
+        buffer.Unlock().map_err(win)?;
+        buffer.SetCurrentLength(len).map_err(win)?;
+        let sample = MFCreateSample().map_err(win)?;
+        sample.AddBuffer(&buffer).map_err(win)?;
+        Ok(sample)
     }
 }
 
@@ -515,13 +679,28 @@ mod tests {
     }
 
     /// Graba de verdad la esquina del monitor principal. A mano:
-    /// `ATIC_REC_OUT=<archivo.mp4> cargo test graba_la_pantalla -- --ignored`.
+    /// `ATIC_REC_OUT=<archivo.mp4> cargo test graba_la_pantalla -- --ignored`;
+    /// con `ATIC_REC_AUDIO=1` (o `mic`, `system`), también el audio.
     #[test]
     #[ignore]
     fn graba_la_pantalla() {
         let path = PathBuf::from(std::env::var("ATIC_REC_OUT").expect("ATIC_REC_OUT"));
-        let recording = start(PhysRect::new(0, 0, 801, 601), path.clone()).expect("arrancar");
-        std::thread::sleep(Duration::from_secs(2));
+        let audio = std::env::var("ATIC_REC_AUDIO").ok().map(|which| Tracks {
+            mic: which != "system",
+            system: which != "mic",
+        });
+        let recording = start(PhysRect::new(0, 0, 801, 601), path.clone(), audio).expect("arrancar");
+        // `ATIC_REC_TONE=<archivo.wav>`: suena al segundo exacto, para medir
+        // en el audio grabado cuánto se corre.
+        if let Ok(tone) = std::env::var("ATIC_REC_TONE") {
+            use windows::Win32::Media::Audio::{PlaySoundW, SND_ASYNC, SND_FILENAME};
+            std::thread::sleep(Duration::from_secs(1));
+            let played = unsafe { PlaySoundW(&HSTRING::from(tone), None, SND_FILENAME | SND_ASYNC) };
+            assert!(played.as_bool());
+            std::thread::sleep(Duration::from_secs(2));
+        } else {
+            std::thread::sleep(Duration::from_secs(2));
+        }
         recording.stop();
         let result = loop {
             if let Some(result) = recording.finished() {

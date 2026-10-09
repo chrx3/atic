@@ -48,6 +48,7 @@ mod launcher;
 mod meetings;
 mod meter;
 mod secrets;
+mod screen_audio;
 mod screen_recording;
 mod shelf;
 mod shortcuts_settings;
