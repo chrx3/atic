@@ -1422,7 +1422,7 @@ pub fn launch(target: &Target) -> Result<(), String> {
 }
 
 #[cfg(windows)]
-fn shell_open(file: &str) -> Result<(), String> {
+pub(crate) fn shell_open(file: &str) -> Result<(), String> {
     use windows::core::HSTRING;
     use windows::Win32::UI::Shell::ShellExecuteW;
     use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
@@ -1437,7 +1437,7 @@ fn shell_open(file: &str) -> Result<(), String> {
 }
 
 #[cfg(not(windows))]
-fn shell_open(_: &str) -> Result<(), String> {
+pub(crate) fn shell_open(_: &str) -> Result<(), String> {
     Err("solo Windows".into())
 }
 

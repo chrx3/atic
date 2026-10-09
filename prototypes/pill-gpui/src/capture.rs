@@ -137,6 +137,9 @@ pub struct Session {
     /// La foto congelada muestra la pill tal como estaba (se abrió con el
     /// atajo). P la vuelve a congelar sin ella.
     pub pill_shown: bool,
+    /// Se mantuvo el atajo: lo elegido se graba en vez de fotografiarse
+    /// (`screen_recording.rs`).
+    pub record: bool,
     /// La foto con la pill mientras se ve la que no la tiene, para volver a ella.
     with_pill: Option<(Frame, Arc<RenderImage>)>,
     /// En vivo, los píxeles bajo el cursor para la lupa, recién leídos.
@@ -177,6 +180,7 @@ impl Session {
             live: false,
             draw: false,
             pill_shown: false,
+            record: false,
             with_pill: None,
             loupe: None,
             screens: Vec::new(),
@@ -369,6 +373,8 @@ const LOUPE_PIXELS: i32 = 13;
 const LOUPE_CELL: f32 = 9.0;
 const LOUPE_OFFSET: f32 = 22.0;
 const DIM: f32 = 0.42;
+/// El borde de lo elegido para grabar: el rojo de grabar de Reuniones.
+const RECORD_EDGE: u32 = crate::meetings::RECORD_RED;
 
 pub enum CaptureEvent {
     /// Lo elegido, en físico, con el frame para recortarlo fuera de la UI.
@@ -378,6 +384,8 @@ pub enum CaptureEvent {
         region: PhysRect,
         draw: bool,
     },
+    /// Grabar lo elegido, en físico.
+    Record(PhysRect),
     Cancelled,
 }
 
@@ -407,6 +415,10 @@ impl CaptureView {
     fn choose(&mut self, pick: Pick, draw: bool, cx: &mut Context<Self>) {
         let rect = self.session.pick_rect(&pick);
         let region = self.session.physical(&rect);
+        if self.session.record {
+            cx.emit(CaptureEvent::Record(region));
+            return;
+        }
         // En vivo la foto es de ahora: el overlay está excluido de las
         // capturas, así que no hace falta esconderlo antes.
         let frame = if self.session.live {
@@ -474,6 +486,11 @@ impl CaptureView {
         cx.notify();
     }
 
+    pub fn set_record(&mut self, cx: &mut Context<Self>) {
+        self.session.record = true;
+        cx.notify();
+    }
+
     fn cancel(&mut self, _: &Cancel, _: &mut Window, cx: &mut Context<Self>) {
         cx.emit(CaptureEvent::Cancelled);
     }
@@ -490,6 +507,7 @@ struct Paint {
     screen: Rect,
     selection: Option<Rect>,
     window_hint: bool,
+    record: bool,
     cursor: (f32, f32),
     crosshair: bool,
     loupe: Vec<Hsla>,
@@ -521,7 +539,9 @@ impl Paint {
                 for band in bands {
                     window.paint_quad(fill(self.b(&band), shade));
                 }
-                let edge: Hsla = if self.window_hint {
+                let edge: Hsla = if self.record {
+                    rgb(RECORD_EDGE).into()
+                } else if self.window_hint {
                     rgb(0x7aa2ff).into()
                 } else {
                     gpui::white().opacity(0.95)
@@ -625,6 +645,7 @@ impl Render for CaptureView {
             screen,
             selection,
             window_hint: matches!(pick, Pick::Window(..)),
+            record: session.record,
             cursor,
             crosshair: session.press.is_none(),
             loupe,
@@ -731,7 +752,9 @@ impl Render for CaptureView {
                     .w(px(help.w))
                     .flex()
                     .justify_center()
-                    .child(chip({
+                    .child(chip(if session.record {
+                        "● Grabar · clic en una ventana o arrastra una zona · Espacio: pantalla completa · Esc".to_string()
+                    } else {
                         let mode = if session.live {
                             "En vivo · F: congelar".to_string()
                         } else {
@@ -839,6 +862,11 @@ impl crate::Pill {
     /// mostrar lo que tiene), y P la quita. Desde la rueda o la tira no: la
     /// foto saldría con ellas abiertas.
     pub(crate) fn start_capture(&mut self, with_pill: bool, window: &mut Window, cx: &mut Context<Self>) {
+        // Grabando la pantalla, el atajo la detiene.
+        if self.screen_rec.active() {
+            self.stop_screen_recording(cx);
+            return;
+        }
         // Con la mira abierta, el mismo atajo la cierra.
         if self.capture.is_some() {
             self.end_capture(&CaptureEvent::Cancelled, window, cx);
@@ -946,6 +974,7 @@ impl crate::Pill {
             .unwrap_or_default();
         let mut session = Session::new(frozen, cursor, previous);
         session.live = remembered_live();
+        session.record = std::mem::take(&mut self.screen_rec.requested);
         if with_pill && session.live {
             // En vivo la foto del arranque (con la pill) queda para P.
             session.with_pill = Some((session.frozen.frame.clone(), session.frozen.image.clone()));
@@ -998,6 +1027,9 @@ impl crate::Pill {
         }
         if let Some(target) = previous {
             crate::paste::force_foreground(target);
+        }
+        if let CaptureEvent::Record(region) = event {
+            self.start_screen_recording(*region, cx);
         }
         if let CaptureEvent::Chosen { frame, region, .. } = event {
             // De dónde sale volando hacia el estante, en la ventana.

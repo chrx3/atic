@@ -9,6 +9,8 @@
 //! proceso permiso para tomar el foco, que el lanzador necesita para recibir lo
 //! que se escribe. El dictado y la rueda no pasan por aquí: se mantienen
 //! apretados y `RegisterHotKey` no avisa al soltar (`dictation.rs` los sondea).
+//! Lo mismo para mantener el de Capturas: tras el aviso de siempre se mira si
+//! sigue apretado y, pasado `HOLD`, llega `CaptureHold` (grabar la pantalla).
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Receiver;
@@ -20,6 +22,8 @@ pub enum Action {
     Clipboard,
     Snippets,
     Capture,
+    /// El atajo de Capturas sigue apretado: la mira pasa a grabar.
+    CaptureHold,
     Board,
     Color,
     Flip,
@@ -102,6 +106,20 @@ fn shortcuts(cfg: &atic_core::Config) -> [(Action, &String); 10] {
     ]
 }
 
+/// Las teclas del atajo de Capturas que hay que mantener: la principal (o el
+/// botón del mouse), no los modificadores, que se sueltan sin querer.
+fn capture_hold_keys(cfg: &atic_core::Config) -> Vec<i32> {
+    Shortcut::parse(&cfg.screenshot_shortcut)
+        .map(|shortcut| {
+            shortcut
+                .keys
+                .into_iter()
+                .filter(|vk| !matches!(vk, 0x10 | 0x11 | 0x12 | 0x5B))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 fn wanted(cfg: &atic_core::Config) -> Vec<(Action, Chord)> {
     shortcuts(cfg)
         .into_iter()
@@ -131,6 +149,8 @@ pub fn spawn(watch: Watch) -> Receiver<Action> {
     const RECHECK: Duration = Duration::from_secs(3);
     /// Cada cuánto se miran los mensajes: un atajo no necesita más.
     const POLL: Duration = Duration::from_millis(25);
+    /// Cuánto hay que mantener el atajo de Capturas para grabar.
+    const HOLD: Duration = Duration::from_millis(400);
 
     let (tx, rx) = std::sync::mpsc::channel();
     let spawned = std::thread::Builder::new().name("atajos".into()).spawn(move || {
@@ -140,6 +160,9 @@ pub fn spawn(watch: Watch) -> Receiver<Action> {
         let mut checked: Option<Instant> = None;
         // Los botones del mouse y si estaban apretados en la vuelta anterior.
         let mut mouse: Vec<(Action, i32, bool)> = Vec::new();
+        let mut hold_keys: Vec<i32> = Vec::new();
+        // Desde cuándo está apretado el atajo de Capturas, tras dispararse.
+        let mut held_since: Option<Instant> = None;
         loop {
             if paused() {
                 for id in 1..=current.len() {
@@ -150,6 +173,7 @@ pub fn spawn(watch: Watch) -> Receiver<Action> {
                 current.clear();
                 ok.clear();
                 mouse.clear();
+                held_since = None;
                 // Al volver se revisa en el acto: puede haber un atajo nuevo.
                 checked = None;
                 std::thread::sleep(POLL);
@@ -168,6 +192,7 @@ pub fn spawn(watch: Watch) -> Receiver<Action> {
                     None => chord(FALLBACK_LAUNCHER).map(|c| vec![(Action::Launcher, c)]).unwrap_or_default(),
                 };
                 let next_mouse = cfg.as_ref().map(wanted_mouse).unwrap_or_default();
+                hold_keys = cfg.as_ref().map(capture_hold_keys).unwrap_or_default();
                 if next_mouse.len() != mouse.len()
                     || next_mouse.iter().zip(&mouse).any(|(a, b)| (a.0, a.1) != (b.0, b.1))
                 {
@@ -206,8 +231,13 @@ pub fn spawn(watch: Watch) -> Receiver<Action> {
             // no disparar con el botón ya abajo al cambiar la config.
             for (action, vk, was_down) in mouse.iter_mut() {
                 let down = unsafe { GetAsyncKeyState(*vk) } < 0;
-                if down && !*was_down && tx.send(*action).is_err() {
-                    return;
+                if down && !*was_down {
+                    if tx.send(*action).is_err() {
+                        return;
+                    }
+                    if *action == Action::Capture {
+                        held_since = Some(Instant::now());
+                    }
                 }
                 *was_down = down;
             }
@@ -218,6 +248,21 @@ pub fn spawn(watch: Watch) -> Receiver<Action> {
                 };
                 if tx.send(*action).is_err() {
                     return;
+                }
+                if *action == Action::Capture {
+                    held_since = Some(Instant::now());
+                }
+            }
+            if let Some(since) = held_since {
+                let held = !hold_keys.is_empty()
+                    && hold_keys.iter().all(|vk| unsafe { GetAsyncKeyState(*vk) } < 0);
+                if !held {
+                    held_since = None;
+                } else if since.elapsed() >= HOLD {
+                    held_since = None;
+                    if tx.send(Action::CaptureHold).is_err() {
+                        return;
+                    }
                 }
             }
             std::thread::sleep(POLL);
@@ -267,6 +312,15 @@ mod tests {
         cfg.screenshot_shortcut = "MouseX2".into();
         assert_eq!(wanted_mouse(&cfg), vec![(Action::Capture, VK_XBUTTON2)]);
         assert!(!wanted(&cfg).iter().any(|(action, _)| *action == Action::Capture));
+    }
+
+    #[test]
+    fn mantener_capturas_mira_la_tecla_principal() {
+        let mut cfg = atic_core::Config::default();
+        cfg.screenshot_shortcut = "CmdOrCtrl+Shift+4".into();
+        assert_eq!(capture_hold_keys(&cfg), vec!['4' as i32]);
+        cfg.screenshot_shortcut = "MouseX2".into();
+        assert_eq!(capture_hold_keys(&cfg), vec![VK_XBUTTON2]);
     }
 
     #[test]

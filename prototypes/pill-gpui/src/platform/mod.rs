@@ -31,4 +31,4 @@
 #[cfg(windows)]
 mod win32;
 #[cfg(windows)]
-pub use win32::{autostart, drag, glass, hotkeys, ocr, paste, privacy, running, tray_icon, win};
+pub use win32::{autostart, drag, glass, hotkeys, ocr, paste, privacy, running, screen_record, tray_icon, win};

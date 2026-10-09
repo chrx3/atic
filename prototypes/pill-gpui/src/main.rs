@@ -48,6 +48,7 @@ mod launcher;
 mod meetings;
 mod meter;
 mod secrets;
+mod screen_recording;
 mod shelf;
 mod shortcuts_settings;
 mod snippets;
@@ -604,6 +605,8 @@ struct Pill {
     studio: Entity<meetings::Studio>,
     /// Grabando: el reloj que muestra el tab. Cambia una vez por segundo.
     rec_clock: Option<String>,
+    /// Grabar la pantalla desde Capturas (`screen_recording.rs`).
+    screen_rec: screen_recording::ScreenRecording,
     /// El tab con lo que suena: 0 normal, 1 con carátula (y onda si suena).
     live: Tween,
     /// Lo que suena está sonando (no en pausa).
@@ -870,7 +873,8 @@ impl Pill {
                 }));
                 let clock = matches!(s.stage(), meetings::Stage::Recording | meetings::Stage::Stopping)
                     .then(|| s.elapsed().map(meetings::stopwatch))
-                    .flatten();
+                    .flatten()
+                    .or_else(|| pill.screen_rec.clock());
                 let peek = pill.tool_peek_owner() == Some(REUNIONES_TOOL);
                 if clock != pill.rec_clock || peek {
                     pill.rec_clock = clock;
@@ -1039,6 +1043,7 @@ impl Pill {
             privacy,
             studio,
             rec_clock: None,
+            screen_rec: Default::default(),
             tray: tray::Banner::new(),
             live: Tween::new(0.0, Duration::from_millis(320), ease_island),
             music_playing: false,
@@ -1998,6 +2003,11 @@ impl Pill {
     /// Un atajo global: abre su herramienta, o la cierra si ya está abierta.
     fn run_hotkey(&mut self, action: hotkeys::Action, window: &mut Window, cx: &mut Context<Self>) {
         use hotkeys::Action;
+        // Mantener el de Capturas llega con la mira ya abierta.
+        if action == Action::CaptureHold {
+            self.capture_held(cx);
+            return;
+        }
         // La mira, la pizarra, el color y el flip se cierran con Escape; otro
         // atajo encima los dejaría a medias.
         if self.capture.is_some() || self.board.is_some() || self.color.is_some() || self.flip.is_some() {
@@ -2015,6 +2025,7 @@ impl Pill {
             Action::Clipboard => notch(self, NotchTool::Clipboard, window, cx),
             Action::Snippets => notch(self, NotchTool::Textos, window, cx),
             Action::Capture => self.start_capture(true, window, cx),
+            Action::CaptureHold => {}
             Action::Board => self.start_board(window, cx),
             Action::Color => self.start_color(window, cx),
             Action::Flip => self.start_flip(window, cx),
@@ -2669,6 +2680,7 @@ impl Pill {
         while let Ok(action) = self.hotkeys.try_recv() {
             self.run_hotkey(action, window, cx);
         }
+        self.poll_screen_recording(cx);
         while let Ok(phone::Command::StopRecording) = self.phone.try_recv() {
             self.studio.update(cx, |studio, cx| {
                 if studio.recording() {
