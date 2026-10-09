@@ -16,7 +16,7 @@
 //! del diagnóstico) y `SPACE_BENCH=1` mueve la cámara sola y mide.
 
 mod changes;
-mod explorer;
+pub(crate) mod explorer;
 pub(crate) mod chrome;
 pub(crate) mod console;
 mod identity;
@@ -25,8 +25,8 @@ mod mando;
 mod panes;
 mod persist;
 mod picker;
-mod viewer;
-mod workspaces;
+pub(crate) mod viewer;
+pub(crate) mod workspaces;
 mod zones;
 
 /// Lo que el notch necesita del espacio: cuántos agentes hay vivos y escribirles.

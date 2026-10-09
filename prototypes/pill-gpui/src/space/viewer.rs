@@ -40,7 +40,7 @@ pub struct Doc {
     pub note: Option<String>,
     /// En la pizarra: dónde está la tarjeta (sin esto, vive en un panel del
     /// Mando), junto a qué consola se abrió y la primera fila a la vista.
-    pub area: Option<super::Area>,
+    pub(super) area: Option<super::Area>,
     pub anchor: Option<u64>,
     pub scroll: usize,
 }

@@ -11,6 +11,16 @@ pub struct Guard {
     handle: windows_sys::Win32::Foundation::HANDLE,
 }
 
+impl Guard {
+    /// Sin mutex: para una ventana sola que no compite con la pill.
+    pub fn none() -> Self {
+        Self {
+            #[cfg(windows)]
+            handle: std::ptr::null_mut(),
+        }
+    }
+}
+
 #[cfg(windows)]
 const NAME: &str = "Local\\atic-pill-gpui";
 

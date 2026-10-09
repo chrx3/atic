@@ -107,15 +107,21 @@ pub fn drag(height: f32) -> Div {
 /// Minimizar, maximizar y cerrar, a ras de la esquina de arriba a la derecha.
 /// Windows hace la acción; aquí solo se dibujan.
 pub fn controls(maximized: bool, height: f32) -> impl IntoElement {
+    controls_colored(maximized, height, hsla(TEXT), hsla(0x2a2a28))
+}
+
+/// Como `controls`, con los colores de quien los pone (Atic Code tiene sus
+/// propios estilos y modos).
+pub fn controls_colored(maximized: bool, height: f32, text: gpui::Hsla, hover: gpui::Hsla) -> impl IntoElement {
     // Los glifos de «Segoe Fluent Icons», la fuente de íconos de Windows 11.
     let max_glyph = if maximized { "\u{E923}" } else { "\u{E922}" };
     div()
         .flex()
         .flex_none()
         .h(px(height))
-        .child(control("win-min", "\u{E921}", WindowControlArea::Min, height, false))
-        .child(control("win-max", max_glyph, WindowControlArea::Max, height, false))
-        .child(control("win-close", "\u{E8BB}", WindowControlArea::Close, height, true))
+        .child(control("win-min", "\u{E921}", WindowControlArea::Min, height, false, text, hover))
+        .child(control("win-max", max_glyph, WindowControlArea::Max, height, false, text, hover))
+        .child(control("win-close", "\u{E8BB}", WindowControlArea::Close, height, true, text, hover))
 }
 
 fn control(
@@ -124,6 +130,8 @@ fn control(
     area: WindowControlArea,
     height: f32,
     danger: bool,
+    text: gpui::Hsla,
+    hover: gpui::Hsla,
 ) -> Stateful<Div> {
     div()
         .id(id)
@@ -134,12 +142,12 @@ fn control(
         .justify_center()
         .font_family("Segoe Fluent Icons")
         .text_size(px(10.))
-        .text_color(hsla(TEXT))
+        .text_color(text)
         .hover(move |el| {
             if danger {
                 el.bg(hsla(0xc42b1c)).text_color(hsla(0xffffff))
             } else {
-                el.bg(hsla(0x2a2a28))
+                el.bg(hover)
             }
         })
         .window_control_area(area)

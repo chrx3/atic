@@ -67,6 +67,9 @@ futures = "0.3"
 # El Vector2 de Windows.UI.Composition (ya viene con `windows`).
 windows-numerics = "0.2"
 tiny-skia = "0.11"
+# Los componentes de Material 3 Expressive de Atic Code (`code/`), solo para
+# ese estilo. Misma gpui 0.2.2; pasará a git cuando esté publicada.
+gpui-m3 = { path = "../../../gpui-m3" }
 
 [build-dependencies]
 # El ícono del exe (`build.rs`); la misma versión que usa Tauri.

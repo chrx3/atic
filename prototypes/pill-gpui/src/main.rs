@@ -53,6 +53,7 @@ mod screen_recording;
 mod shelf;
 mod shortcuts_settings;
 mod snippets;
+mod code;
 mod space;
 mod system;
 mod theme;
@@ -367,6 +368,13 @@ impl AssetSource for Assets {
             "icons/pipette.svg" => include_bytes!("../assets/icons/pipette.svg"),
             "icons/ellipsis.svg" => include_bytes!("../assets/icons/ellipsis.svg"),
             "icons/x.svg" => include_bytes!("../assets/icons/x.svg"),
+            "icons/chevron-right.svg" => include_bytes!("../assets/icons/chevron-right.svg"),
+            "icons/gauge.svg" => include_bytes!("../assets/icons/gauge.svg"),
+            "icons/brain.svg" => include_bytes!("../assets/icons/brain.svg"),
+            "icons/file.svg" => include_bytes!("../assets/icons/file.svg"),
+            "icons/git-branch.svg" => include_bytes!("../assets/icons/git-branch.svg"),
+            "icons/history.svg" => include_bytes!("../assets/icons/history.svg"),
+            "icons/circle-x.svg" => include_bytes!("../assets/icons/circle-x.svg"),
             "icons/search.svg" => include_bytes!("../assets/icons/search.svg"),
             "icons/import.svg" => include_bytes!("../assets/icons/import.svg"),
             "icons/layers.svg" => include_bytes!("../assets/icons/layers.svg"),
@@ -440,7 +448,8 @@ impl AssetSource for Assets {
             "icons/mail.svg" => include_bytes!("../assets/icons/mail.svg"),
             "icons/sparkles.svg" => include_bytes!("../assets/icons/sparkles.svg"),
             "icons/settings-2.svg" => include_bytes!("../assets/icons/settings-2.svg"),
-            other => match flip_board::icon(other) {
+            // Los de gpui-m3 van bajo `m3/icons/`, así que no chocan con estos.
+            other => match gpui_m3::Assets::load_icon(other).or_else(|| flip_board::icon(other)) {
                 Some(bytes) => bytes,
                 None => return Ok(None),
             },
@@ -640,6 +649,8 @@ struct Pill {
     level: f32,
     /// La ventana del espacio de consolas (`space`), si está abierta.
     space: Option<gpui::WindowHandle<space::SpaceView>>,
+    /// La ventana de Atic Code (`code`), si está abierta.
+    code: Option<gpui::WindowHandle<code::CodeView>>,
     /// La gota volando hacia el notch o de vuelta.
     flight: Option<Flight>,
     /// Dónde vivía la pill antes de volar al notch; vuelve ahí al cerrarlo.
@@ -1064,6 +1075,7 @@ impl Pill {
             usage_leave_at: None,
             level: 0.0,
             space: None,
+            code: None,
             flight: None,
             away: None,
             launcher_centered: false,
@@ -1133,7 +1145,7 @@ impl Pill {
         }
         // `PILL_OPEN=capture` o `board`: la mira o la pizarra al arrancar.
         if let Some(tool) = open_on_start.filter(|tool| {
-            tool == "capture" || tool == "board" || tool == "flip" || tool == "shelf" || tool == "space"
+            tool == "capture" || tool == "board" || tool == "flip" || tool == "shelf" || tool == "space" || tool == "code"
         }) {
             cx.spawn_in(window, async move |this, cx| {
                 cx.background_executor()
@@ -1142,6 +1154,8 @@ impl Pill {
                 let _ = this.update_in(cx, |pill, window, cx| {
                     if tool == "space" {
                         pill.open_space(None, cx)
+                    } else if tool == "code" {
+                        pill.open_code(cx)
                     } else if tool == "board" {
                         pill.start_board(window, cx)
                     } else if tool == "flip" {
@@ -2042,7 +2056,7 @@ impl Pill {
         match command {
             Command::OpenAtic => meetings::show(cx),
             Command::Settings => settings::open(cx),
-            Command::Consoles => self.open_space(None, cx),
+            Command::Consoles => self.open_code(cx),
             Command::Capture => self.run_hotkey(hotkeys::Action::Capture, window, cx),
             Command::Quit => cx.quit(),
         }
@@ -2218,6 +2232,25 @@ impl Pill {
         match space::open_window(open, cx) {
             Ok(handle) => self.space = Some(handle),
             Err(error) => eprintln!("espacio: no se pudo abrir la ventana: {error}"),
+        }
+    }
+
+    /// Muestra Atic Code (lo abre si hace falta).
+    fn open_code(&mut self, cx: &mut Context<Self>) {
+        if let Some(handle) = self.code {
+            let alive = handle
+                .update(cx, |_, window, _| {
+                    window.activate_window();
+                    win::bring_to_front(window);
+                })
+                .is_ok();
+            if alive {
+                return;
+            }
+        }
+        match code::open_window(cx) {
+            Ok(handle) => self.code = Some(handle),
+            Err(error) => eprintln!("atic code: no se pudo abrir la ventana: {error}"),
         }
     }
 
@@ -4490,7 +4523,10 @@ fn quit_on_error(what: &str, error: anyhow::Error, cx: &mut App) {
 fn main() {
     // Vive hasta que `main` termina: soltarlo antes pierde las últimas líneas.
     let _log_guard = init_log();
-    let Some(_instance) = single_instance::acquire() else {
+    // `CODE_ALONE=1` abre solo la ventana de Atic Code: no pelea atajos ni
+    // portapapeles con la pill que ya esté corriendo.
+    let alone = std::env::var_os("CODE_ALONE").is_some();
+    let Some(_instance) = single_instance::acquire().or_else(|| alone.then_some(single_instance::Guard::none())) else {
         tracing::info!("ya hay una pill corriendo en esta sesión");
         // Abrirla otra vez (menú Inicio) abre Atic, como en Tauri. No cuando
         // la lanza la propia app de Tauri al arrancar: ya está abriéndose.
@@ -4513,6 +4549,8 @@ fn main() {
     Application::new().with_assets(Assets).run(|cx: &mut App| {
         text_input::bind_keys(cx);
         text_area::bind_keys(cx);
+        gpui_m3::init(cx);
+        code::bind_keys(cx);
         clipboard::bind_keys(cx);
         capture::bind_keys(cx);
         flip::bind_keys(cx);
@@ -4530,6 +4568,13 @@ fn main() {
         if std::env::var_os("MEETINGS_ALONE").is_some() {
             if let Err(error) = meetings::open_window(cx) {
                 quit_on_error("no se pudo abrir Reuniones", error, cx);
+            }
+            return;
+        }
+        // `CODE_ALONE=1`: solo Atic Code, sin la pill.
+        if std::env::var_os("CODE_ALONE").is_some() {
+            if let Err(error) = code::open_window(cx) {
+                quit_on_error("no se pudo abrir Atic Code", error, cx);
             }
             return;
         }

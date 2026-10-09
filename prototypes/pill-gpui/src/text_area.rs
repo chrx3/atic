@@ -65,6 +65,8 @@ pub struct TextArea {
     /// Columna que ↑/↓ intentan conservar.
     goal_x: Option<Pixels>,
     is_selecting: bool,
+    /// Filas que ocupa el texto ya distribuido, para que la caja crezca con él.
+    rows: usize,
 }
 
 impl EventEmitter<Changed> for TextArea {}
@@ -94,7 +96,22 @@ impl TextArea {
             reveal_cursor: false,
             goal_x: None,
             is_selecting: false,
+            rows: 1,
         }
+    }
+
+    pub fn set_placeholder(&mut self, placeholder: impl Into<SharedString>, cx: &mut Context<Self>) {
+        self.placeholder = placeholder.into();
+        cx.notify();
+    }
+
+    pub fn placeholder(&self) -> &str {
+        &self.placeholder
+    }
+
+    /// El alto del texto en el último cuadro dibujado, con un mínimo de filas.
+    pub fn content_height(&self, min_rows: usize) -> Pixels {
+        self.line_height * self.rows.max(min_rows) as f32
     }
 
     pub fn text(&self) -> &str {
@@ -649,7 +666,10 @@ impl gpui::Element for AreaElement {
             .collect();
 
         // Se guarda el diseño para ratón y teclado, y se ajusta el scroll.
-        let (selected, cursor_offset, scroll_y) = self.input.update(cx, |input, _| {
+        let rows = lines.iter().map(|(_, line)| line.wrap_boundaries().len() + 1).sum::<usize>().max(1);
+        let (selected, cursor_offset, scroll_y, rows_changed) = self.input.update(cx, |input, _| {
+            let rows_changed = input.rows != rows;
+            input.rows = rows;
             if !content.is_empty() {
                 input.layout = lines.clone();
             } else {
@@ -671,8 +691,13 @@ impl gpui::Element for AreaElement {
                 input.selected_range.clone(),
                 input.cursor_offset(),
                 input.scroll_y,
+                rows_changed,
             )
         });
+        // La caja que la contiene toma su alto del cuadro anterior.
+        if rows_changed {
+            window.refresh();
+        }
 
         let origin = point(bounds.left(), bounds.top() - scroll_y);
         let mut selection = Vec::new();
