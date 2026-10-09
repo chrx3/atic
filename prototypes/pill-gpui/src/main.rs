@@ -2378,6 +2378,11 @@ impl Pill {
             cx.notify();
             return;
         }
+        // Grabando la pantalla, el reloj del tab la detiene.
+        if self.over_rec_clock(position, now) {
+            self.stop_screen_recording(cx);
+            return;
+        }
         if self.over_pill(position, now, 0.0) {
             let target = if self.tray_chip_at(position, now).is_some() {
                 PressTarget::Tray

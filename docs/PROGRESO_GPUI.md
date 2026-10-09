@@ -236,7 +236,8 @@ Maqueta aprobada por el usuario: https://claude.ai/artifact/7bALYtYdh58rDCjYothj
 | --- | --- |
 | Grabar ventana, zona o pantalla a MP4, sin audio | Hecho, `484f583` |
 | Audio: micrófono y sistema en el MP4 (AAC, alineado al reloj del video: ~30 ms medidos) | Hecho |
-| Controles en la pill: pausar, detener, descartar; cuenta regresiva; mic/audio en la mira | Pendiente |
+| En la mira: M micrófono, A sonido, P la pill en el video (pedido 1); cuenta de 3 s; clic en el reloj del tab detiene | Hecho |
+| Pausar y descartar mientras graba | Pendiente |
 | Al terminar, al estante en vez de abrir el reproductor | Pendiente |
 | Mini editor: recortar, cortar tramos, exportar | Pendiente |
 | Extras: subtítulos, seguir la ventana, cámara, GIF, zoom al cursor | Pendiente |
@@ -244,9 +245,8 @@ Maqueta aprobada por el usuario: https://claude.ai/artifact/7bALYtYdh58rDCjYothj
 
 Pedidos del usuario para meter entre medio:
 
-1. **Grabar la pill y la UI de Atic**, o que sea configurable. Hoy la ventana
-   del overlay se excluye de la captura (`WDA_EXCLUDEFROMCAPTURE`) mientras
-   graba.
+1. ~~**Grabar la pill y la UI de Atic**, o que sea configurable~~: hecho, P
+   en la mira en modo grabar.
 2. **Captura en vivo con la pill**: al sacar un screenshot, poder estar en el
    modo en movimiento (en vivo) y que la pill salga en la foto. Hoy P solo
    alterna la pill sobre la foto congelada del arranque.

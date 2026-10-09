@@ -25,6 +25,7 @@ use gpui::{
 };
 
 use crate::geometry::Rect;
+use crate::screen_recording::RecordOptions;
 
 /// Lo que mide la mira para distinguir un clic de un arrastre.
 const DRAG_MIN: f32 = 4.0;
@@ -140,6 +141,9 @@ pub struct Session {
     /// Se mantuvo el atajo: lo elegido se graba en vez de fotografiarse
     /// (`screen_recording.rs`).
     pub record: bool,
+    pub record_options: RecordOptions,
+    /// Lo elegido para grabar (lógico y físico) y desde cuándo corre la cuenta.
+    countdown: Option<(Rect, PhysRect, Instant)>,
     /// La foto con la pill mientras se ve la que no la tiene, para volver a ella.
     with_pill: Option<(Frame, Arc<RenderImage>)>,
     /// En vivo, los píxeles bajo el cursor para la lupa, recién leídos.
@@ -171,6 +175,12 @@ fn remember_live(live: bool) {
 }
 
 impl Session {
+    /// La mira pasa a grabar, con las opciones de la última vez.
+    pub fn enter_record(&mut self) {
+        self.record = true;
+        self.record_options = RecordOptions::load();
+    }
+
     pub fn new(frozen: Frozen, cursor: (f32, f32), previous: Option<crate::paste::Target>) -> Self {
         Self {
             frozen,
@@ -181,6 +191,8 @@ impl Session {
             draw: false,
             pill_shown: false,
             record: false,
+            record_options: RecordOptions::default(),
+            countdown: None,
             with_pill: None,
             loupe: None,
             screens: Vec::new(),
@@ -352,7 +364,7 @@ pub fn save(frame: &Frame, region: PhysRect) -> Result<Saved, String> {
 
 // --- La mira --------------------------------------------------------------
 
-actions!(capture, [Cancel, WholeScreen, ToggleLive, ToggleDraw, TogglePill]);
+actions!(capture, [Cancel, WholeScreen, ToggleLive, ToggleDraw, TogglePill, ToggleMic, ToggleSystem]);
 
 const KEY_CONTEXT: &str = "Capture";
 
@@ -365,6 +377,8 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("f", ToggleLive, context),
         KeyBinding::new("d", ToggleDraw, context),
         KeyBinding::new("p", TogglePill, context),
+        KeyBinding::new("m", ToggleMic, context),
+        KeyBinding::new("a", ToggleSystem, context),
     ]);
 }
 
@@ -373,6 +387,10 @@ const LOUPE_PIXELS: i32 = 13;
 const LOUPE_CELL: f32 = 9.0;
 const LOUPE_OFFSET: f32 = 22.0;
 const DIM: f32 = 0.42;
+/// La cuenta antes de grabar.
+const COUNTDOWN: std::time::Duration = std::time::Duration::from_secs(3);
+/// El círculo con el número de la cuenta.
+const COUNTDOWN_SIZE: f32 = 112.0;
 /// El borde de lo elegido para grabar: el rojo de grabar de Reuniones.
 const RECORD_EDGE: u32 = crate::meetings::RECORD_RED;
 
@@ -385,7 +403,7 @@ pub enum CaptureEvent {
         draw: bool,
     },
     /// Grabar lo elegido, en físico.
-    Record(PhysRect),
+    Record { region: PhysRect, options: RecordOptions },
     Cancelled,
 }
 
@@ -416,7 +434,7 @@ impl CaptureView {
         let rect = self.session.pick_rect(&pick);
         let region = self.session.physical(&rect);
         if self.session.record {
-            cx.emit(CaptureEvent::Record(region));
+            self.start_countdown(rect, region, cx);
             return;
         }
         // En vivo la foto es de ahora: el overlay está excluido de las
@@ -462,6 +480,10 @@ impl CaptureView {
 
     /// P: la foto con la pill o sin ella.
     fn toggle_pill(&mut self, _: &TogglePill, _: &mut Window, cx: &mut Context<Self>) {
+        if self.session.record {
+            self.toggle_option(|options| options.show_pill = !options.show_pill, cx);
+            return;
+        }
         let session = &mut self.session;
         if !session.can_toggle_pill() {
             return;
@@ -487,7 +509,55 @@ impl CaptureView {
     }
 
     pub fn set_record(&mut self, cx: &mut Context<Self>) {
-        self.session.record = true;
+        self.session.enter_record();
+        cx.notify();
+    }
+
+    /// Lo elegido queda marcado sobre la pantalla viva mientras cuenta.
+    fn start_countdown(&mut self, rect: Rect, region: PhysRect, cx: &mut Context<Self>) {
+        if self.session.countdown.is_some() {
+            return;
+        }
+        self.session.countdown = Some((rect, region, Instant::now()));
+        cx.spawn(async move |view, cx| loop {
+            cx.background_executor().timer(std::time::Duration::from_millis(100)).await;
+            let done = view
+                .update(cx, |view, cx| {
+                    let Some((_, _, since)) = view.session.countdown else {
+                        return true;
+                    };
+                    if since.elapsed() >= COUNTDOWN {
+                        view.record_now(cx);
+                        return true;
+                    }
+                    cx.notify();
+                    false
+                })
+                .unwrap_or(true);
+            if done {
+                break;
+            }
+        })
+        .detach();
+        cx.notify();
+    }
+
+    fn record_now(&mut self, cx: &mut Context<Self>) {
+        if let Some((_, region, _)) = self.session.countdown.take() {
+            cx.emit(CaptureEvent::Record {
+                region,
+                options: self.session.record_options,
+            });
+        }
+    }
+
+    /// M, A y P en modo grabar: qué entra al video. Se recuerda.
+    fn toggle_option(&mut self, flip: impl FnOnce(&mut RecordOptions), cx: &mut Context<Self>) {
+        if !self.session.record || self.session.countdown.is_some() {
+            return;
+        }
+        flip(&mut self.session.record_options);
+        self.session.record_options.save();
         cx.notify();
     }
 
@@ -496,6 +566,10 @@ impl CaptureView {
     }
 
     fn whole_screen(&mut self, _: &WholeScreen, _: &mut Window, cx: &mut Context<Self>) {
+        if self.session.countdown.is_some() {
+            self.record_now(cx);
+            return;
+        }
         let draw = self.session.draw;
         self.choose(Pick::Screen, draw, cx);
     }
@@ -559,6 +633,9 @@ impl Paint {
         }
 
         // La lupa: los píxeles reales alrededor del cursor, en cuadritos.
+        if self.loupe.is_empty() {
+            return;
+        }
         let (lx, ly) = self.loupe_origin;
         let side = LOUPE_PIXELS as f32 * LOUPE_CELL;
         window.paint_quad(fill(
@@ -601,6 +678,9 @@ fn chip(text: impl Into<SharedString>) -> gpui::Div {
 impl Render for CaptureView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.meter.frame(Instant::now());
+        if let Some((rect, _, since)) = self.session.countdown {
+            return self.countdown_view(rect, since, cx);
+        }
         // Una lectura por cuadro, no por evento: el mouse manda cientos por
         // segundo y cada `BitBlt` le cuesta al compositor.
         self.session.refresh_loupe();
@@ -683,6 +763,12 @@ impl Render for CaptureView {
             .on_action(cx.listener(Self::whole_screen))
             .on_action(cx.listener(Self::toggle_live))
             .on_action(cx.listener(Self::toggle_pill))
+            .on_action(cx.listener(|view, _: &ToggleMic, _, cx| {
+                view.toggle_option(|options| options.mic = !options.mic, cx)
+            }))
+            .on_action(cx.listener(|view, _: &ToggleSystem, _, cx| {
+                view.toggle_option(|options| options.system = !options.system, cx)
+            }))
             .on_action(cx.listener(|view, _: &ToggleDraw, _, cx| {
                 view.session.draw = !view.session.draw;
                 cx.notify();
@@ -753,7 +839,14 @@ impl Render for CaptureView {
                     .flex()
                     .justify_center()
                     .child(chip(if session.record {
-                        "● Grabar · clic en una ventana o arrastra una zona · Espacio: pantalla completa · Esc".to_string()
+                        let yes = |on: bool| if on { "sí" } else { "no" };
+                        let options = session.record_options;
+                        format!(
+                            "● Grabar · M: micrófono {} · A: sonido {} · P: pill {} · clic en una ventana o arrastra una zona · Espacio: pantalla · Esc",
+                            yes(options.mic),
+                            yes(options.system),
+                            yes(options.show_pill),
+                        )
                     } else {
                         let mode = if session.live {
                             "En vivo · F: congelar".to_string()
@@ -775,6 +868,82 @@ impl Render for CaptureView {
                         format!("{mode} · {pill}{draw} · Espacio: pantalla completa · Esc")
                     })),
             )
+            .into_any_element()
+    }
+}
+
+impl CaptureView {
+    /// La cuenta antes de grabar: la pantalla viva, oscura salvo lo elegido,
+    /// con el número encima. Espacio empieza ya; Esc o clic derecho, nada.
+    fn countdown_view(&self, rect: Rect, since: Instant, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let session = &self.session;
+        let (screen, offset) = (session.screen(), session.frozen.offset);
+        let left = COUNTDOWN.saturating_sub(since.elapsed());
+        let number = (left.as_secs_f32().ceil() as u32).max(1);
+        let help = session.cursor_screen();
+        let paint = Paint {
+            offset,
+            screen,
+            selection: Some(rect),
+            window_hint: false,
+            record: true,
+            cursor: (0.0, 0.0),
+            crosshair: false,
+            loupe: Vec::new(),
+            loupe_origin: (0.0, 0.0),
+        };
+        div()
+            .id("capture")
+            .track_focus(&self.focus)
+            .key_context(KEY_CONTEXT)
+            .on_action(cx.listener(Self::cancel))
+            .on_action(cx.listener(Self::whole_screen))
+            .size_full()
+            .relative()
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(|_, _: &MouseDownEvent, _, cx| cx.emit(CaptureEvent::Cancelled)),
+            )
+            .child(
+                canvas(|_, _, _| {}, move |_, _, window, _| paint.paint(window))
+                    .absolute()
+                    .size_full(),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .left(px(rect.x + offset.0))
+                    .top(px(rect.y + offset.1))
+                    .w(px(rect.w))
+                    .h(px(rect.h))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        div()
+                            .size(px(COUNTDOWN_SIZE))
+                            .rounded_full()
+                            .bg(gpui::black().opacity(0.6))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .text_color(gpui::white())
+                            .text_size(px(COUNTDOWN_SIZE * 0.55))
+                            .font_family("Segoe UI")
+                            .child(number.to_string()),
+                    ),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .left(px(help.x + offset.0))
+                    .top(px(help.y + 10.0 + offset.1))
+                    .w(px(help.w))
+                    .flex()
+                    .justify_center()
+                    .child(chip("● Grabando en un momento · Espacio: ya · Esc: cancelar")),
+            )
+            .into_any_element()
     }
 }
 
@@ -974,7 +1143,9 @@ impl crate::Pill {
             .unwrap_or_default();
         let mut session = Session::new(frozen, cursor, previous);
         session.live = remembered_live();
-        session.record = std::mem::take(&mut self.screen_rec.requested);
+        if std::mem::take(&mut self.screen_rec.requested) {
+            session.enter_record();
+        }
         if with_pill && session.live {
             // En vivo la foto del arranque (con la pill) queda para P.
             session.with_pill = Some((session.frozen.frame.clone(), session.frozen.image.clone()));
@@ -1028,8 +1199,8 @@ impl crate::Pill {
         if let Some(target) = previous {
             crate::paste::force_foreground(target);
         }
-        if let CaptureEvent::Record(region) = event {
-            self.start_screen_recording(*region, cx);
+        if let CaptureEvent::Record { region, options } = event {
+            self.start_screen_recording(*region, *options, cx);
         }
         if let CaptureEvent::Chosen { frame, region, .. } = event {
             // De dónde sale volando hacia el estante, en la ventana.
