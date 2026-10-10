@@ -793,10 +793,25 @@ impl CodeView {
                 );
                 continue;
             }
+            // Clic derecho: Abrir, Renombrar, Marcador y Eliminar (solo con la sesión ya creada).
+            let target = chat.session_id.clone().map(|session_id| super::sidebar::SessionRef { workspace, session_id, title: chat.title.clone() });
+            if target.as_ref().is_some_and(|t| self.renaming.as_ref().is_some_and(|r| !self.rename_in_header && r.session_id == t.session_id)) {
+                rows.push(div().ml(px(indent)).child(self.rename_field.clone()).into_any_element());
+                continue;
+            }
             rows.push(
                 row(row_id, chat.title.clone(), on)
                     .group("chat-row")
                     .on_click(select)
+                    .when_some(target, |el, target| {
+                        el.on_mouse_down(
+                            gpui::MouseButton::Right,
+                            cx.listener(move |view, event: &gpui::MouseDownEvent, _, cx| {
+                                view.session_menu = Some((target.clone(), event.position));
+                                cx.notify();
+                            }),
+                        )
+                    })
                     .children(dot)
                     .child(
                         div().invisible().group_hover("chat-row", |el| el.visible()).child(
@@ -839,7 +854,22 @@ impl CodeView {
                     .child(gpui_m3::NavItem::new(id, info.title.clone()).dense(true).on_click(on_open))
                     .into_any_element()
             } else {
-                row(id, info.title.clone(), false).text_color(muted()).on_click(on_open).into_any_element()
+                let target = super::sidebar::SessionRef { workspace, session_id: info.session_id.clone(), title: info.title.clone() };
+                if self.renaming.as_ref().is_some_and(|r| !self.rename_in_header && r.session_id == target.session_id) {
+                    div().ml(px(indent)).child(self.rename_field.clone()).into_any_element()
+                } else {
+                    row(id, info.title.clone(), false)
+                        .text_color(muted())
+                        .on_click(on_open)
+                        .on_mouse_down(
+                            gpui::MouseButton::Right,
+                            cx.listener(move |view, event: &gpui::MouseDownEvent, _, cx| {
+                                view.session_menu = Some((target.clone(), event.position));
+                                cx.notify();
+                            }),
+                        )
+                        .into_any_element()
+                }
             });
         }
         rows
