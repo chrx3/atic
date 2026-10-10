@@ -236,6 +236,9 @@ pub struct Configs {
     /// acentos de proyecto de la referencia. Sin entrada, el del estilo.
     #[serde(default)]
     pub accents: HashMap<u64, HashMap<String, String>>,
+    /// El alto de la terminal integrada, como lo dejó el usuario al arrastrar.
+    #[serde(default)]
+    pub terminal_height: Option<f32>,
 }
 
 /// Los espacios en el orden de la barra: los favoritos primero y, dentro de
@@ -312,6 +315,11 @@ impl Configs {
             }
             None => self.favorites.push(workspace),
         }
+        self.save();
+    }
+
+    pub fn set_terminal_height(&mut self, height: f32) {
+        self.terminal_height = Some(height.round());
         self.save();
     }
 

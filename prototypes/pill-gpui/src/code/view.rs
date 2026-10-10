@@ -234,6 +234,7 @@ impl Render for CodeView {
             .on_action(cx.listener(Self::show_changes_action))
             .on_action(cx.listener(Self::open_folder_action))
             .on_action(cx.listener(Self::clear_conversation_action))
+            .on_action(cx.listener(Self::toggle_terminal_action))
             .on_action(cx.listener(Self::submit_answers_action))
             .on_action(cx.listener(Self::paste))
             .size_full()
@@ -790,6 +791,7 @@ impl CodeView {
             .child(title_el)
             .when_some(project, |el, project| el.child(div().flex_none().text_color(faint()).child(project)))
             .child(chrome::drag(HEAD_H))
+            .child(self.terminal_button(cx))
             .when(has_workspace && !loose, |el| {
                 el.child(
                     div()
@@ -988,6 +990,43 @@ impl CodeView {
                 el.child(self.permission_card(&chat.key, &chat.permissions[0], cx))
             })
             .when((has_workspace || loose) && !hero && !history, |el| el.child(self.composer_box(chat.is_some_and(|c| c.busy), false, cx)))
+            // La terminal va bajo el chat, como en la referencia (`Chat.tsx`).
+            .child(self.terminals.clone())
+    }
+
+    /// «Terminal» en la barra superior, con cuántas hay si son varias (`Chat.tsx:82`).
+    fn terminal_button(&self, cx: &mut Context<Self>) -> AnyElement {
+        let terminals = self.terminals.read(cx);
+        let (on, count) = (terminals.shown(), terminals.count());
+        if expressive() {
+            let mut button = gpui_m3::Button::new("tab-terminal", "Terminal")
+                .icon("terminal")
+                .text()
+                .size(gpui_m3::ButtonSize::Small)
+                .selected(on)
+                .on_click(cx.listener(|view, _: &ClickEvent, window, cx| view.toggle_terminal(window, cx)));
+            if count > 1 {
+                button = button.trailing(gpui_m3::Badge::new(count.to_string()));
+            }
+            return button.into_any_element();
+        }
+        div()
+            .id("tab-terminal")
+            .h(px(34.))
+            .px(px(12.))
+            .flex()
+            .items_center()
+            .gap(px(7.))
+            .rounded(px(r_btn().min(17.)))
+            .cursor_pointer()
+            .tooltip(crate::hover::tip("Terminal (Ctrl+J)"))
+            .when(on, |el| el.bg(accent_soft()).text_color(on_accent_soft()))
+            .when(!on, |el| el.text_color(fg()).hover(|el| el.bg(hover_bg())))
+            .child(svg().path("icons/square-terminal.svg").size(px(15.)).text_color(if on { on_accent_soft() } else { muted() }))
+            .child("Terminal")
+            .when(count > 1, |el| el.child(div().text_size(px(11.)).text_color(faint()).child(count.to_string())))
+            .on_click(cx.listener(|view, _: &ClickEvent, window, cx| view.toggle_terminal(window, cx)))
+            .into_any_element()
     }
 
     /// El inicio de Expressive: las formas, «¿Qué construimos hoy?», el proyecto,

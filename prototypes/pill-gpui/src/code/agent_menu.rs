@@ -608,7 +608,7 @@ impl CodeView {
                     Some(id) => format!("--resume {id} --remote-control"),
                     None => "--remote-control".into(),
                 };
-                self.open_terminal(&command, cwd, cx);
+                self.open_terminal(&command, "remote", cwd, window, cx);
             }
             Act::Design => {
                 if self.commands.iter().any(|(name, _)| name == "design") {
@@ -632,9 +632,9 @@ impl CodeView {
             }
             Act::Terminal => {
                 let command = session.map(|id| format!("--resume {id}")).unwrap_or_default();
-                self.open_terminal(&command, cwd, cx);
+                self.open_terminal(&command, "claude", cwd, window, cx);
             }
-            Act::Plugins => self.open_terminal("plugin list", cwd, cx),
+            Act::Plugins => self.open_terminal("plugin list", "plugins", cwd, window, cx),
             Act::ReloadPlugins => match self.live_key() {
                 Some(key) => self.request("reloadPlugins", json!({ "key": key }), cx, |view, reply, cx| match reply {
                     Ok(_) => view.show_toast("Plugins recargados", cx),
@@ -642,8 +642,8 @@ impl CodeView {
                 }),
                 None => self.show_toast("Empieza una conversación primero", cx),
             },
-            Act::Login => self.open_terminal("auth login", cwd, cx),
-            Act::Logout => self.open_terminal("auth logout", cwd, cx),
+            Act::Login => self.open_terminal("auth login", "cuenta", cwd, window, cx),
+            Act::Logout => self.open_terminal("auth logout", "cuenta", cwd, window, cx),
         }
         cx.notify();
     }
@@ -668,18 +668,13 @@ impl CodeView {
         }
     }
 
-    /// Corre `claude {args}` en una terminal aparte, en la carpeta del proyecto.
-    fn open_terminal(&mut self, args: &str, cwd: Option<PathBuf>, cx: &mut Context<Self>) {
-        let claude = self.claude_path.as_ref().map(|p| format!("\"{}\"", p.display())).unwrap_or_else(|| "claude".into());
+    /// Corre `claude {args}` en una pestaña de la terminal integrada, en la
+    /// carpeta del proyecto (`inTerminal` de la referencia). El shell es PowerShell:
+    /// una ruta entre comillas se llama con `&`.
+    fn open_terminal(&mut self, args: &str, name: &str, cwd: Option<PathBuf>, window: &mut Window, cx: &mut Context<Self>) {
+        let claude = self.claude_path.as_ref().map(|p| format!("& \"{}\"", p.display())).unwrap_or_else(|| "claude".into());
         let command = format!("{claude} {args}").trim().to_string();
-        let dir = cwd.or_else(home).unwrap_or_else(|| PathBuf::from("."));
-        let terminal = std::process::Command::new("wt.exe").arg("-d").arg(&dir).args(["cmd", "/k", &command]).spawn();
-        if terminal.is_err() {
-            let fallback = std::process::Command::new("cmd").current_dir(&dir).args(["/c", "start", "", "cmd", "/k", &command]).spawn();
-            if let Err(error) = fallback {
-                self.show_toast(format!("No se pudo abrir la terminal: {error}"), cx);
-            }
-        }
+        self.run_in_terminal(command, name, cwd.or_else(home), window, cx);
     }
 
     /// Guarda la conversación activa como Markdown.

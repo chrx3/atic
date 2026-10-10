@@ -34,6 +34,7 @@ mod settings_m3;
 mod sidebar;
 mod sidecar;
 mod style;
+mod terminal;
 mod tools;
 mod usage;
 mod view;
@@ -74,6 +75,7 @@ const COMPOSER: &str = "CodeComposer";
 const CHANGES_EVERY: Duration = Duration::from_secs(3);
 
 pub fn bind_keys(cx: &mut App) {
+    terminal::bind_keys(cx);
     let context = Some("CodeComposer > TextArea");
     cx.bind_keys([
         KeyBinding::new("enter", Send, context),
@@ -401,6 +403,8 @@ pub struct CodeView {
     history_marked: bool,
     /// Un error del agente que no es de una conversación.
     error: Option<String>,
+    /// La terminal integrada, bajo el chat.
+    terminals: Entity<terminal::Terminals>,
     next_key: u64,
     next_doc: u64,
 }
@@ -541,6 +545,13 @@ impl CodeView {
             gpui_m3::TextFieldEvent::Changed(_) => {}
         })
         .detach();
+        let terminals = cx.new(|cx| terminal::Terminals::new(configs.terminal_height, cx));
+        cx.subscribe_in(&terminals, window, |view: &mut Self, _, event: &terminal::TerminalEvent, window, cx| match event {
+            terminal::TerminalEvent::Height(height) => view.configs.set_terminal_height(*height),
+            terminal::TerminalEvent::Hidden => view.focus_composer(window, cx),
+            terminal::TerminalEvent::Error(error) => view.show_toast(error.clone(), cx),
+        })
+        .detach();
         let space_name_field = cx.new(|cx| gpui_m3::TextField::new(cx).placeholder("Nombre del espacio"));
         cx.subscribe(&space_name_field, |view: &mut Self, _, event: &gpui_m3::TextFieldEvent, cx| match event {
             gpui_m3::TextFieldEvent::Submitted(_) => view.create_space(cx),
@@ -668,6 +679,7 @@ impl CodeView {
             error: None,
             next_key: 0,
             next_doc: 0,
+            terminals,
         };
         if let Some(id) = view.active_workspace() {
             view.expand_first_open(id);
@@ -1041,6 +1053,45 @@ impl CodeView {
         self.active = Some(key);
         self.follow = true;
         self.focus_composer(window, cx);
+        cx.notify();
+    }
+
+    /// Dónde abre la terminal: la carpeta de la conversación a la vista o, si
+    /// no hay, la primera del proyecto abierto.
+    fn terminal_dir(&self) -> Option<PathBuf> {
+        match self.active_chat() {
+            Some(chat) => self.workspace_dir(chat.workspace),
+            None => self.workspaces.active().and_then(|w| w.main().cloned()),
+        }
+    }
+
+    /// Ctrl+J, Ctrl+` y el botón Terminal: la muestra u oculta (`toggleTerminal`).
+    fn toggle_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let cwd = self.terminal_dir();
+        let result = self.terminals.update(cx, |terminals, cx| {
+            terminals.cwd = cwd;
+            terminals.toggle(window, cx)
+        });
+        if let Err(error) = result {
+            self.show_toast(error, cx);
+        }
+        cx.notify();
+    }
+
+    fn toggle_terminal_action(&mut self, _: &terminal::ToggleTerminal, window: &mut Window, cx: &mut Context<Self>) {
+        self.toggle_terminal(window, cx);
+    }
+
+    /// Corre `command` en una pestaña nueva de la terminal integrada (`inTerminal` de la referencia).
+    fn run_in_terminal(&mut self, command: String, name: &str, cwd: Option<PathBuf>, window: &mut Window, cx: &mut Context<Self>) {
+        let cwd = cwd.or_else(|| self.terminal_dir());
+        let result = self.terminals.update(cx, |terminals, cx| {
+            terminals.cwd = cwd;
+            terminals.open(Some(command), Some(name.to_string()), window, cx)
+        });
+        if let Err(error) = result {
+            self.show_toast(error, cx);
+        }
         cx.notify();
     }
 

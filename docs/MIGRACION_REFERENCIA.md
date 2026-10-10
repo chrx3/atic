@@ -323,21 +323,21 @@ Este documento sirve para traspasar el trabajo entre agentes. Con él se puede r
 
 ## 9. Terminal (`src/components/Terminal.tsx`, `src/lib/terminals.ts`, `src/styles/terminal.css`)
 
-En Atic Code no hay terminal integrada: «Abrir Claude en la terminal» lanza `wt.exe` (`agent_menu.rs:569`). Las consolas de `src/space/console.rs` (alacritty + ConPTY, teclado con AltGr y tildes, paleta ANSI, scroll, título y «terminó») ya cubren casi todo. Se decidió reutilizarlas (Decisiones).
+Hecho (tanda 10): `src/code/terminal.rs` (`Terminals`, una entidad aparte con su foco y su manejador de texto) reutiliza las consolas del Mando: `space::console` (alacritty + ConPTY) con `Palette`, `space::grid_of`/`paint_grid` con `GridLook` y `space::input::layer` genérico. Validado con `cargo check` y `cargo test code::`/`space::`; **no se probó en la app**.
 
 | Función de la referencia | Estado en Atic Code | gpui-m3 | Nota |
 | --- | --- | --- | --- |
-| Panel bajo el chat (`Terminal.tsx:184-288`, `Chat.tsx:359`) | Falta (existe `space::console::Console`, `console.rs:102`) | No aplica (la consola es de Atic) | |
-| Pestañas: nueva «+», cerrar/matar, número (`terminals.ts:11-35`, `Terminal.tsx:217-273`) | Falta | existe `TabStrip` (`on_close`) | |
-| Renombrar la pestaña con doble clic (máx. 40) (`Terminal.tsx:226-264`) | Falta | `TabStrip` (`editing`/`on_rename`) | |
-| «[proceso terminado]» y título según el shell (`Terminal.tsx:126-131`) | Falta (existe `console.rs:236,240`) | — | |
-| Ejecutar un comando al abrir (`claude --resume`) (`terminals.ts:18`) | Parcial: `wt.exe` externo | — | |
-| Mostrar/ocultar con ⌃\` y ⌘J (`terminals.ts:50`, `App.tsx:21,37`) | Falta | — | |
-| Botón Terminal con contador en la barra superior (`Chat.tsx:82`) | Falta | `Button` + `Badge` | |
-| Alto ajustable y recordado (`Terminal.tsx:182-209`) | Falta | falta: `ResizeHandle`/`Splitter` | `space::panes` tiene divisores |
-| Paleta ANSI por estilo y modo (`Terminal.tsx:19-88`) | Falta en code (existe `console.rs:310-369`) | — | |
-| Cursor, scrollback de 5000, reajuste y foco (`Terminal.tsx:94-157`) | Falta en code (existe `console.rs:218,227`) | — | |
-| Entrada por estilo: `m3-rise`, `glass-condense` (`terminal.css:176,217`) | Falta | `entrance` | |
+| Panel bajo el chat (`Terminal.tsx:184-288`, `Chat.tsx:359`) | Hecho (tanda 10): `Terminals` como último hijo de `center` | No aplica (la consola es de Atic) | Expressive: contenedor tonal con margen; Glass: tarjeta; Formal: borde arriba |
+| Pestañas: nueva «+», cerrar/matar, número (`terminals.ts:11-35`, `Terminal.tsx:217-273`) | Hecho (tanda 10): `Terminals::head` con `TabStrip`; cerrar suelta la consola (`Shutdown`) | `TabStrip` | El número va pegado al nombre cuando hay varias sin nombre propio |
+| Renombrar la pestaña con doble clic (máx. 40) (`Terminal.tsx:226-264`) | Hecho (tanda 10): `start_rename`/`commit_rename`, `clean_name` (con test); guarda al perder el foco | `TabStrip` (`editing`/`on_rename`) | |
+| «[proceso terminado]» y título según el shell (`Terminal.tsx:126-131`) | Hecho (tanda 10): `Console::note` escribe el aviso en la pantalla; la pestaña lleva el nombre del shell (`shell_name`) | — | |
+| Ejecutar un comando al abrir (`claude --resume`) (`terminals.ts:18`) | Hecho (tanda 10): `run_in_terminal`; «Abrir Claude en la terminal», Remote Control, plugins y cuenta abren una pestaña con nombre en vez de `wt.exe` | — | PowerShell: la ruta de `claude` entre comillas va con `&` |
+| Mostrar/ocultar con ⌃\` y ⌘J (`terminals.ts:50`, `App.tsx:21,37`) | Hecho (tanda 10): `ToggleTerminal` con Ctrl+J y Ctrl+\`; sin pestañas abre una | — | Dentro de la terminal Ctrl+J es del shell (`SHELL_KEYS`) |
+| Botón Terminal con contador en la barra superior (`Chat.tsx:82`) | Hecho (tanda 10): `terminal_button` en los tres estilos | `Button` + `Badge` | |
+| Alto ajustable y recordado (`Terminal.tsx:182-209`) | Hecho (tanda 10): `ResizeHandle` arriba del panel; el alto va en `code-claude.json` (`terminal_height`) | `ResizeHandle` | Entre 120 px y lo que deja 220 px al chat (`clamp_height`, con test) |
+| Paleta ANSI por estilo y modo (`Terminal.tsx:19-88`) | Hecho (tanda 10): `terminal::ansi` (con test) + `console::Palette`; texto del estilo, cursor del acento | — | |
+| Cursor, scrollback de 5000, reajuste y foco (`Terminal.tsx:94-157`) | Hecho (tanda 10): `Terminals::sync` ajusta las consolas al tamaño del panel; rueda, clic para enfocar, Ctrl+V pega | — | Cursor de bloque, no de barra; sin seleccionar con el ratón |
+| Entrada por estilo: `m3-rise`, `glass-condense` (`terminal.css:176,217`) | Falta | `entrance` | Con la tanda 20 |
 
 ## 10. Editor de código (`src/components/CodeEditor.tsx`, `src/lib/editor.ts`)
 
@@ -488,7 +488,7 @@ Sin contar `3cd87bb`, los dos sidecars son idénticos línea a línea, comentari
 | `user_name` (`lib.rs:77`) | Hecho `sidebar.rs:585` | — | |
 | `git_status` (`lib.rs:97`) | Hecho `src/code/git.rs:55` | — | |
 | `git_at_head` (`lib.rs:114`) | Hecho de otra forma: `git diff HEAD` (`viewer.rs:115`) | — | |
-| `terminal_spawn`/`write`/`resize`/`kill`, `kill_all` (`lib.rs:119-182`, `terminal.rs`) | Falta en code; existe `space::console` | — | |
+| `terminal_spawn`/`write`/`resize`/`kill`, `kill_all` (`lib.rs:119-182`, `terminal.rs`) | Hecho con `space::console` (tanda 10) | — | |
 | Chats sueltos: `createCwd`, `~/.referencia/chats` (`store.ts:453-583`) | Hecho (tanda 3): `LOOSE`, `loose_dir` (`<datos de Atic>\pill\code-chats`), `LOOSE_CONTEXT` | — | |
 
 ## 17. Atajos
@@ -499,7 +499,7 @@ Sin contar `3cd87bb`, los dos sidecars son idénticos línea a línea, comentari
 | ⌘L nueva conversación, salvo en el editor (`App.tsx:39`) | Hecho (tanda 3) con Ctrl+L | — | Cuando haya terminal y editor, no debe actuar dentro de ellos |
 | ⌘O abrir workspace (`App.tsx:33`) | Hecho (tanda 3) con Ctrl+O: abre carpetas como espacio nuevo | — | |
 | ⌘E Archivos / ⌘G Cambios (`App.tsx:35-36`) | Hecho (tanda 3) con Ctrl+E y Ctrl+G | — | |
-| ⌘J y ⌃\` terminal (`App.tsx:21,37`) | Falta | — | Junto con la terminal |
+| ⌘J y ⌃\` terminal (`App.tsx:21,37`) | Hecho (tanda 10) con Ctrl+J y Ctrl+\` | — | |
 | Esc cierra la paleta, la apariencia y la configuración (`App.tsx:26`) | Hecho `mod.rs:952` | — | |
 | Esc con un permiso pendiente lo rechaza (`Permission.tsx:92`) | **En curso** (tanda 2) | — | Decisión tomada |
 | Esc Esc abre Rewind (`Agent.tsx:1342`) | **En curso** (tanda 2) | — | |
@@ -539,7 +539,7 @@ Prioridad de arriba hacia abajo. Cada tanda es chica y se prueba sola. **[m3]** 
 
 **Para retomar, en este orden:** terminal (10, con `Splitter`); editor (11, `CodeEditor` + `SyntaxLines::for_path`); `ReorderList` en la barra (13); motion de la 20; luego 19, 21, 22 y 23. Ninguna de las tandas [code] desde la 2 se probó en la app.
 
-**Terminal integrada (tanda 10), a medias:** el agente se detuvo a pedido del usuario el 2026-10-10. Lo que alcanzó (refactor de `space/console.rs`, `input.rs`, `mando.rs` y `mod.rs` para reutilizar las consolas del Mando) está en `git stash` con el mensaje «WIP terminal integrada…», sin compilar ni probar. Retomarlo con `git stash list` / `git stash apply`, o descartarlo y empezar de nuevo.
+**Hecho, tanda 10 [code]** (rama `dev`): terminal integrada (ver sección 9). El refactor de `space` que estaba en el stash se retomó tal cual (paleta, grilla e `input::layer` compartidos con el Mando). Dentro de la terminal, los atajos de Atic Code con Ctrl+letra y Esc no actúan: son del shell (Decisiones). Falta: seleccionar y copiar texto con el ratón, la entrada animada del panel, y que una terminal sobreviva a cerrar la ventana de Atic Code (hoy muere con ella).
 
 **Pendientes:**
 
@@ -608,6 +608,12 @@ Decisiones tomadas sin el usuario (2026-10-09). Hay que confirmarlas con él cua
 - **Valores por defecto de Claude: los de Atic.** El modelo vacío es el de Claude Code, igual que el esfuerzo vacío («Predeterminado»). Además `thinking: false` y el modo `default`. No se copian opus/medium/acceptEdits de la referencia.
 - **Marcadores y flags en un json propio de Atic Code**, aparte de `space-workspaces.json`.
 
+Decisiones de la tanda 10 (2026-10-10), también por confirmar:
+
+- **Shell:** PowerShell 7 si está, si no Windows PowerShell (`space::powershell`, el mismo del Mando). Abre en la carpeta de la conversación a la vista.
+- **Teclas dentro de la terminal:** Ctrl+K, P, N, B, U, E, G, O, L, J, V, Ctrl+Enter, Esc y Tab van al shell (`NoAction` en `CodeTerminal`). Ctrl+\` y Ctrl+, siguen siendo de Atic Code.
+- **Acciones del menú del agente** que antes abrían `wt.exe` (Claude, Remote Control, plugins, cuenta) ahora abren una pestaña con nombre, como en la referencia.
+
 Decisiones de las tandas 6-8 y 14 (2026-10-10), también por confirmar:
 
 - **Formal y Glass también usan los componentes de código de gpui-m3** (`Markdown`, `DiffView`, `CodeOutput`, `DiffBar`): `style::apply_m3` les fija un esquema hecho con sus tokens (`style::scheme_of`) en vez de dejar el último de Expressive. Efecto: el tema global de gpui-m3 sigue ahora a Formal/Glass cuando se eligen.
@@ -637,7 +643,7 @@ Decisiones de la tanda 3 (2026-10-09), también por confirmar:
 - **Movimiento reducido:** `MotionSettings` es global de la app, así que también afecta a la pill.
 - **Índice de archivos:** respeta `.gitignore` también fuera de un repo (`require_git(false)`). Se rehace en la búsqueda siguiente a cada respuesta.
 - **Panel de cambios:** «Todo al día» solo si alguna carpeta es un repo. Si ninguna lo es, se listan con «No es un repositorio git».
-- **Ctrl+L** abre siempre una conversación nueva, porque todavía no hay editor ni terminal.
+- **Ctrl+L** abre una conversación nueva, salvo con el foco en la terminal (ahí limpia la pantalla del shell).
 
 Cosas que no aplican o que Atic ya tiene de otra forma:
 
