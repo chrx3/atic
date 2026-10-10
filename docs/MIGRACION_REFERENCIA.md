@@ -58,7 +58,7 @@ Este documento sirve para traspasar el trabajo entre agentes. Con él se puede r
 | Aviso «responde otro modelo» y reaplicarlo (`agent.ts:782`) | Hecho (`b1a3efc`, `Chat::check_model`) | — | |
 | Seguir el final, soltarlo al subir y retomarlo cerca del fondo (`Thread.tsx:16,194,206`) | Hecho `view.rs:967`, `mod.rs:471` | — | |
 | Ir al final al cambiar de conversación (`Thread.tsx:220`) | Hecho `mod.rs:682` | — | |
-| Animación al cambiar de conversación (`Thread.tsx:227`) | Falta | falta: `motion::swap`/FadeThrough | |
+| Animación al cambiar de conversación (`Thread.tsx:227`) | Hecho (tanda 20): `Enter::on_change` en el hilo, sube 14 px (`view.rs`: `center`, `key_hash`) | no hay `swap`: se hace con `motion::replay` (`enter.rs`) | Solo Expressive |
 | Entrada animada de cada parte nueva (`src/lib/motion.ts:43-57`) | Hecho (tanda 4): `Bubble::entrance` en el mensaje del usuario y los avisos, solo las últimas 3 partes (`ENTER_MAX`) | `Bubble::entrance` | Texto, razonamiento y herramientas no son burbujas: sin entrada |
 | Indicador «Trabajando…» (`Thread.tsx:241,253`) | Hecho (tanda 4): `Chat::working` lo oculta mientras llega texto o razonamiento (con test) | `LoadingIndicator` | |
 | Permisos apilados al final del hilo (`Thread.tsx:261`) | Hecho `view.rs:904` | — | Formal y Glass muestran solo el primero |
@@ -86,7 +86,7 @@ Este documento sirve para traspasar el trabajo entre agentes. Con él se puede r
 | Renombrar desde el título de la barra superior (`src/components/Chat.tsx:42-75`) | Hecho (tanda 3): `start_header_rename` (`sidebar.rs`), título con lápiz en `view.rs` | `TextField::inline` | Solo con la sesión creada; guarda al perder el foco |
 | Barra superior: proyecto, pestañas Cambios (badge) y Archivos (`Chat.tsx:76-111`) | Hecho `view.rs:830-858` | `Button` + `Badge` | Falta el botón Terminal |
 | Pantalla de inicio: formas, «¿Qué construimos hoy?», proyecto, sugerencias (`Chat.tsx:180-222`) | Hecho `view.rs` (`hero`) | `Shape`, `Chip` | «Chat sin proyecto» en el selector (tanda 3) |
-| Subida escalonada de los hijos de la pantalla de inicio (`src/styles/motion.css:391-408`) | Falta | `entrance` con retardo | |
+| Subida escalonada de los hijos de la pantalla de inicio (`src/styles/motion.css:391-408`) | Hecho (tanda 20): `rise` en `hero` (`view.rs`), retardos 0 / 0,06 / 0,12 / 0,18 s | `motion::entrance` vía `enter::Enter` | la referencia solo retrasa 2 y 3; aquí se escalona todo (Decisiones) |
 | Conversación de demo (`agent.ts:873`) | Hecho `src/code/demo.rs:11` | — | |
 | Simulación de Tauri para el navegador (`src/lib/preview.ts`) | No aplica | — | |
 
@@ -151,7 +151,7 @@ Este documento sirve para traspasar el trabajo entre agentes. Con él se puede r
 | Salida animada de los popovers (`Presence`, `src/components/ui.tsx:10`) | Hecho (tanda 4): `overlay::Last` + `motion::presence` en el menú del agente, «Cuenta y uso», menús de sesión y espacio, tarjeta de perfil, @-menciones y toasts | `Presence`/`motion::presence`, `Exit` | |
 | Oferta del Artifact publicado (`Agent.tsx:1438-1492`) | Hecho (`c820b5d`): `banners` | `Banner` | |
 | Aviso de conversación larga (`Agent.tsx:1494-1545`) | Hecho (`c820b5d`): `banners` y `Chat::long_level` | `Banner` | |
-| Entrada de los chips (`m3-chip-in`, `motion.css:706`) | Falta | parcial: `Chip::input` sin entrada | |
+| Entrada de los chips (`m3-chip-in`, `motion.css:706`) | Hecho (tanda 20): `chip_in` (`view.rs`) | `Enter` | Sube 8 px y se funde; sin escala |
 
 ## 3. Menú del agente (`AgentMenu`, `Agent.tsx:225-667`)
 
@@ -188,7 +188,7 @@ Este documento sirve para traspasar el trabajo entre agentes. Con él se puede r
 | Submenús Subagentes y Comandos (`Agent.tsx:432-435`) | Hecho (tanda 3): agregan con `insert()` | — | |
 | Submenú MCP: estado, Reconectar, Activar/Desactivar (`Agent.tsx:347,608`) | Hecho `agent_menu.rs:361-442` | `Chip` | |
 | Menú en Formal y Glass | Parcial: versión reducida (`menus.rs:282-361`) | — | |
-| Ítems de menú escalonados de a 25 ms (`motion.css:628`) | Parcial (por grupo, 35 ms) | `surfaces.rs:386`; falta escalonar por ítem | |
+| Ítems de menú escalonados de a 25 ms (`motion.css:628`) | Hecho (tanda 20): `Menu` lo hace solo (`stagger` por defecto) y ningún menú de Atic usa `grouped` | `Menu::stagger` | Sin cambios en Atic Code |
 
 ## 4. Modelos y esfuerzo
 
@@ -239,11 +239,11 @@ Este documento sirve para traspasar el trabajo entre agentes. Con él se puede r
 | --- | --- | --- | --- |
 | Armazón: estado, verbo, objetivo, meta, chevron (`Tools.tsx:124`) | Hecho `tools.rs:162-238` | `ExpandableCard` | |
 | Girando / ✓ / ✗ (`Tools.tsx:102`) | Hecho `tools.rs:170` | `LoadingIndicator` | |
-| Ícono de «terminado» que salta (`motion.ts:87`) | Falta | falta: `Icon::pop` (base en `Badge::pop`) | |
+| Ícono de «terminado» que salta (`motion.ts:87`) | Hecho (tanda 20): `Icon::pop` en `tool_m3` (`tools.rs`), solo en las últimas 3 partes | `Icon::pop` | |
 | El objetivo abre el archivo (`Tools.tsx:176`) | Hecho (tanda 4): `target_file` + `open_doc` (Read, Edit, MultiEdit, Write, NotebookEdit) | — | |
 | Tooltip con la ruta, el comando o la URL completos (`Tools.tsx:171`) | Hecho (tanda 4): `target_tip` (con test) | `hover::tip_text` | |
 | Enter/Espacio despliega la tarjeta (`Tools.tsx:158`) | Falta | **En curso**: teclado en `ExpandableCard` | |
-| Despliegue con resorte en altura (`motion.ts:68-83`) | Parcial: solo se funde (`tools.rs:298`) | falta: altura animada en `ExpandableCard` | |
+| Despliegue con resorte en altura (`motion.ts:68-83`) | Hecho (tanda 20): lo da `ExpandableCard` de gpui-m3 sin cambios en Atic (`tools.rs`, razonamiento, grupos de cambios) | `ExpandableCard` | Sin ver en la app |
 | Tarjeta fija y abierta de entrada (`Tools.tsx:136,143`) | Hecho `tools.rs:290` | `.fixed()`/`.open()` | |
 | Badges y +/− (`Tools.tsx:207`) | Hecho `tools.rs:190` | `Badge` | |
 | Quitar `<system-reminder>` (`Tools.tsx:28`) | Hecho `tools.rs:16` | — | |
@@ -279,11 +279,11 @@ Este documento sirve para traspasar el trabajo entre agentes. Con él se puede r
 | Estrella de favorito animada (`Sidebar.tsx:152-176`) | Hecho (tanda 3), en la fila y en el menú contextual del espacio | `FavStar` | Favoritos en `code-claude.json` |
 | Plegar el proyecto y recordarlo (`store.ts:145`) | Hecho `sidebar.rs:156`, `src/space/workspaces.rs:184` | `NavItem` | |
 | Desplegar al abrir el proyecto la primera vez (`store.ts:153`) | Hecho (tanda 3): `expand_first_open` + `Configs::opened` | — | |
-| Avatar del proyecto que gira 40° al hover (`Sidebar.tsx:212`, `motion.css:770`) | Parcial: avatar sin giro (`sidebar.rs:152`) | falta: `Avatar::hover_spin` | |
+| Avatar del proyecto que gira 40° al hover (`Sidebar.tsx:212`, `motion.css:770`) | Hecho (tanda 20): `project_m3` (`sidebar.rs`) con `hover_spin` + `hovered` según toda la fila | `Avatar::hover_spin` | |
 | «+» al pasar el cursor, carga diferida, últimas 3 y «Ver todas (n)» (`Sidebar.tsx:184-258`) | Hecho `sidebar.rs:21,143-187` | `IconButton` | |
 | Conversaciones vivas primero; fila activa; indicador «respondiendo»; punto de no leído; «hace X» (`Sidebar.tsx:55-137`) | Hecho `sidebar.rs:172-233` | `LoadingIndicator`, `Badge::dot` | |
 | No leído cuando otro cliente retoma la conversación (`store.ts:508`) | **En curso** (tanda 2: resync) | — | |
-| Entrada escalonada de las conversaciones (`motion.css:727`) | Falta | `entrance` | |
+| Entrada escalonada de las conversaciones (`motion.css:727`) | Hecho (tanda 20): `session_row` (`sidebar.rs`), 30 ms entre filas, desde la izquierda | `Enter` | |
 | Ícono de marcador en la fila (`Sidebar.tsx:125`) | **En curso** (tanda 2: marcadores) | — | |
 | Menú contextual: Abrir, Renombrar en el sitio, Eliminar con confirmación (`Sidebar.tsx:89-115`) | Hecho; guarda al perder el foco (tanda 3, `commit_renames_on_blur`) | `MenuItem::danger().confirm()`, `TextField::inline` | |
 | Menú contextual: Agregar/Quitar marcador (`Sidebar.tsx:91`) | **En curso** (tanda 2) | — | |
@@ -293,7 +293,7 @@ Este documento sirve para traspasar el trabajo entre agentes. Con él se puede r
 | Página Historial con búsqueda (`Chat.tsx:316-346`) | Hecho `sidebar.rs:345` | `TextField` | |
 | Historial: filtro «Marcadores» (`Chat.tsx:335`) | **En curso** (tanda 2) | `Chip` (filtro) | |
 | Historial: rama git de cada sesión (`Chat.tsx:274`) | Hecho (tanda 3): `SessionInfo::branch` de `gitBranch` | — | «hace X · rama» |
-| Página y filas del historial escalonadas (`motion.css:784`) | Falta | `entrance` | |
+| Página y filas del historial escalonadas (`motion.css:784`) | Hecho (tanda 20): `history_view` (`sidebar.rs`), 25 ms entre filas, tope 8 | `Enter` | |
 | Máximo 4 procesos vivos; cierra los inactivos (`store.ts:462`) | Hecho (tanda 3): `limit_live` + `idle_to_close` (con test) | — | Cierra el proceso, no la conversación (Decisiones) |
 | Cerrar las conversaciones precalentadas vacías (`store.ts:599`) | No aplica (Atic no precalienta) | — | |
 | Título de la ventana «proyecto — Atic Code» (`store.ts:101`) | Hecho (tanda 3), en `render`; «Chats — Atic Code» en un chat suelto | — | |
@@ -338,7 +338,7 @@ Hecho (tanda 10): `src/code/terminal.rs` (`Terminals`, una entidad aparte con su
 | Alto ajustable y recordado (`Terminal.tsx:182-209`) | Hecho (tanda 10): `ResizeHandle` arriba del panel; el alto va en `code-claude.json` (`terminal_height`) | `ResizeHandle` | Entre 120 px y lo que deja 220 px al chat (`clamp_height`, con test) |
 | Paleta ANSI por estilo y modo (`Terminal.tsx:19-88`) | Hecho (tanda 10): `terminal::ansi` (con test) + `console::Palette`; texto del estilo, cursor del acento | — | |
 | Cursor, scrollback de 5000, reajuste y foco (`Terminal.tsx:94-157`) | Hecho (tanda 10): `Terminals::sync` ajusta las consolas al tamaño del panel; rueda, clic para enfocar, Ctrl+V pega | — | Cursor de bloque, no de barra; sin seleccionar con el ratón |
-| Entrada por estilo: `m3-rise`, `glass-condense` (`terminal.css:176,217`) | Falta | `entrance` | Con la tanda 20 |
+| Entrada por estilo: `m3-rise`, `glass-condense` (`terminal.css:176,217`) | Parcial (tanda 20): `m3-rise` en Expressive (`Terminals::render`); Glass no | `Enter` | |
 
 ## 10. Editor de código (`src/components/CodeEditor.tsx`, `src/lib/editor.ts`)
 
@@ -372,7 +372,7 @@ Hecho (tanda 11): `src/code/editor.rs` (estado de pestañas, guardar, recargar, 
 | Toast de 3,2 s (`store.ts:39`) | Hecho `agent_menu.rs:613`, `view.rs:193` | `Toast` | |
 | Menú contextual ajustado a la ventana, que cierra con Esc, clic fuera o blur (`ContextMenu.tsx:17-84`) | Hecho `sidebar.rs:468` | `context_menu()` (Atic usa `anchored` a mano) | No cierra cuando la ventana pierde el foco |
 | Salidas animadas de menús, diálogos y toasts (`motion.css:548-595`) | Hecho (tanda 4): ver «Salida animada de los popovers»; los diálogos usan `Dialog::exit` (commit propio en gpui-m3, porque un `Presence` no atenúa lo diferido) | `Presence`, `Dialog::exit` | La paleta de comandos no sale animada |
-| Diálogo: velo y crecimiento desde el centro con radio 56 (`motion.css:598`) | Parcial `settings_m3.rs:147` | `Dialog` (solo `pop_in` de 12 px) | Falta la escala con cambio de forma |
+| Diálogo: velo y crecimiento desde el centro con radio 56 (`motion.css:598`) | Hecho (tanda 20): los `Dialog` de Atic usan la entrada nueva de gpui-m3 sin cambios | `Dialog` | Sin ver en la app |
 | Snackbar que sube y crece (`motion.css:615`) | Hecho (tanda 4): entra con `Toast` y sale con `Exit::Sink` | `Toast` | |
 
 ## 12. Perfil y uso (`src/components/Profile.tsx`, `src/lib/profile.ts`, `Agent.tsx:676-979`)
@@ -429,13 +429,13 @@ Hecho (tanda 11): `src/code/editor.rs` (estado de pestañas, guardar, recargar, 
 | Despegue al enviar; radio del botón 18→12→8 (`motion.css:468`, `expressive.css:373`) | Hecho `view.rs:1641` | `button.rs:468,506` | |
 | Burbujas con cola; superficies de 28 px; menú en una sola superficie; botón de modelo que se cuadra (`expressive.css:497-708`) | Hecho | `Bubble`, `Menu`, `Button::open` | |
 | Botón dividido del modelo (`expressive.css:311-370`) | Parcial: usa `Button::open` | existe `SplitButton` | |
-| Configuración: cajón, lista segmentada, tarjeta de Claude (`expressive.css:914-1131`) | Hecho `settings_m3.rs` | `ListGroup`, `NavItem::large` | Falta el contenido escalonado (`expressive.css:989`) |
+| Configuración: cajón, lista segmentada, tarjeta de Claude (`expressive.css:914-1131`) | Hecho `settings_m3.rs` | `ListGroup`, `NavItem::large` | Contenido: sube la pestaña entera (tanda 20), no sección por sección |
 | Punto de no leído que salta; pulgar del switch (`motion.css:694,809`) | Hecho | `Badge::pop`, `Switch` | |
-| Interpolación de colores al cambiar tema o acento (`motion.css:9-84`) | Falta | falta: `motion::animate_scheme` | |
-| Transición de tema: revelado circular M3 (650 ms) y fundidos de Formal y Glass (`theme.ts:137`, `app.css:4842-4902`) | Falta | falta: `theme_reveal` (en la hoja de ruta) | |
+| Interpolación de colores al cambiar tema o acento (`motion.css:9-84`) | Hecho (tanda 20), solo Expressive: `sync_style` (`mod.rs`) llama `animate_scheme` y `style::begin_blend`/`mix_tokens` mezcla los tokens propios (`style.rs`) 0,45 s | `animate_scheme` | Sin ver en la app |
+| Transición de tema: revelado circular M3 (650 ms) y fundidos de Formal y Glass (`theme.ts:137`, `app.css:4842-4902`) | Parcial (tanda 20): revelado circular al cambiar estilo/modo hacia Expressive (`set_appearance`, `apply_pending_look`, `ThemeReveal` en `view.rs`); sin fundidos de Formal y Glass | `theme_reveal`, `ThemeReveal` | Atic cambia sus colores al cubrirse la ventana |
 | Composer que «respira» al enfocar (`motion.css:411`, `expressive.css:502-560`) | Parcial: cambia el fondo sin animar (`view.rs:1680`) | `animate_color` | |
 | Burbujas con resorte desde su esquina (`motion.css:425`) | Hecho (tanda 4): ver «Entrada animada de cada parte nueva» | `Bubble::entrance` | |
-| Panel y barra lateral con resorte (`motion.css:444`) | Falta | falta: `slide_in(dir)` | |
+| Panel y barra lateral con resorte (`motion.css:444`) | Hecho (tanda 20): `Enter` desde la derecha (32 px) en `right_panel` y desde la izquierda (24 px) en `sidebar_m3` | no hay `slide_in`: `enter.rs` | Sin escala 0,97 |
 | Muestras de color que giran a rombo; pulso de la tarjeta de estilo (`motion.css:495-532`) | Hecho con los componentes (tanda 3) | `ColorSwatches`/`SelectCard` | Lo que animen viene de gpui-m3 |
 | Separador de compactación (`motion.css:673`) | **En curso** | `DividerLabel` | |
 | Filas que se encogen al presionar (`motion.css:752`) | Parcial: solo redondean | — | GPUI no escala |
@@ -541,6 +541,8 @@ Prioridad de arriba hacia abajo. Cada tanda es chica y se prueba sola. **[m3]** 
 
 **Para retomar, en este orden:** terminal (10, con `Splitter`); editor (11, `CodeEditor` + `SyntaxLines::for_path`); `ReorderList` en la barra (13); motion de la 20; luego 19, 21, 22 y 23. Ninguna de las tandas [code] desde la 2 se probó en la app.
 
+**Hecho, tanda 20 [code]** (rama `dev`): motion M3 en Atic Code, solo Expressive. Nuevo `src/code/enter.rs` (`Enter`, `stagger`) sobre `motion::entrance`/`replay` para lo que gpui-m3 no trae (`slide_in`, `swap`). Revelado de tema, mezcla de acento/modo, `Icon::pop`, `hover_spin`, entradas del hero, barra, historial, chips, panel derecho, terminal, configuración y cambio de conversación. Menú escalonado, altura de `ExpandableCard`, `Dialog` y `Toast` ya llegan solos con gpui-m3. Validado con `cargo check` y `cargo test code::` (89 tests); **no se probó en la app**. Lo que quedó: fundidos de Formal y Glass; las secciones de la configuración no entran una por una; la paleta de comandos y Glass sin entradas; sin escala (GPUI no escala).
+
 **Hecho, tanda 10 [code]** (rama `dev`): terminal integrada (ver sección 9). El refactor de `space` que estaba en el stash se retomó tal cual (paleta, grilla e `input::layer` compartidos con el Mando). Dentro de la terminal, los atajos de Atic Code con Ctrl+letra y Esc no actúan: son del shell (Decisiones). Falta: seleccionar y copiar texto con el ratón, la entrada animada del panel, y que una terminal sobreviva a cerrar la ventana de Atic Code (hoy muere con ella).
 
 **Hecho, tanda 11 [code]** (rama `dev`): el editor de código (ver sección 10). `src/code/editor.rs` guarda las pestañas, guarda con Ctrl+S, recarga o avisa cuando Claude edita, y arma el contexto del composer; `mod.rs` y `view.rs` solo lo enganchan. Validado con `cargo check` y `cargo test code::` (88 tests, 8 nuevos); **no se probó en la app**. Lo que quedó:
@@ -592,7 +594,7 @@ Prioridad de arriba hacia abajo. Cada tanda es chica y se prueba sola. **[m3]** 
 17. **[code] Cuenta y uso, mapa de agentes**: formato `rate_limits.limits`, evento `rate_limit`, secciones «Trabajando ahora» y «Terminados», contadores, `TASK_KINDS`, reloj de 1 s, Detener en la fila.
 18. **[code] Notificaciones del sistema** (terminó, falló, pide permiso) cuando la ventana no está al frente: **Hecho** (tanda 4) con el globo del ícono de la pill. Falta probarlo y, si se quiere, mandarlas también a la bandeja del notch (`tray::Inbox`, que ya avisa los turnos que terminan por las sesiones de `~/.claude`).
 19. **[code] Atajos que faltan:** Ctrl+L (sin efecto en la terminal y el editor), Ctrl+O, Ctrl+E, Ctrl+G; teclado en las filas de proyecto.
-20. **[m3] Motion M3 que falta:** `theme_reveal` + `animate_scheme`, altura animada en `ExpandableCard`, ítems de menú escalonados uno por uno, `Icon::pop`, `Avatar::hover_spin`, `slide_in`, entrada fiel de `Dialog` y `Toast`.
+20. **Hecho (tanda 20, ver arriba).** **[m3] Motion M3 que falta:** `theme_reveal` + `animate_scheme`, altura animada en `ExpandableCard`, ítems de menú escalonados uno por uno, `Icon::pop`, `Avatar::hover_spin`, `slide_in`, entrada fiel de `Dialog` y `Toast`.
     **[code]** Usarlos, junto con las entradas escalonadas del hero, la barra lateral, el historial y la configuración.
 21. **[code] Formal y Glass, primero la funcionalidad:**
     - Tarjeta de permiso completa.
@@ -617,6 +619,13 @@ Decisiones tomadas sin el usuario (2026-10-09). Hay que confirmarlas con él cua
 - **Los atajos ⌘ pasan a Ctrl**, salvo los que chocan dentro de la terminal y el editor (Ctrl+L, Ctrl+J, Ctrl+W…). Esos no actúan cuando el foco está en la terminal o el editor.
 - **Valores por defecto de Claude: los de Atic.** El modelo vacío es el de Claude Code, igual que el esfuerzo vacío («Predeterminado»). Además `thinking: false` y el modo `default`. No se copian opus/medium/acceptEdits de la referencia.
 - **Marcadores y flags en un json propio de Atic Code**, aparte de `space-workspaces.json`.
+
+Decisiones de la tanda 20 (2026-10-10), también por confirmar:
+
+- **Revelado circular solo hacia Expressive** y solo si cambia el estilo o el claro/oscuro; el resto (acento, «Sistema» en vivo) se mezcla 0,45 s. Con movimiento reducido, todo es inmediato.
+- **Hero escalonado 0 / 0,06 / 0,12 / 0,18 s** (la referencia solo retrasa dos hijos).
+- **Entradas con desplazamiento y opacidad** (`Enter`), sin escala, porque GPUI no escala.
+- **El ícono de «terminado» salta solo en las últimas 3 partes**, para que un historial abierto no salte entero.
 
 Decisiones de la tanda 11 (2026-10-10), también por confirmar:
 
