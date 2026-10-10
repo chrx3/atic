@@ -819,6 +819,31 @@ impl CodeView {
         cx.notify();
     }
 
+    /// Elige un `.code-workspace` de VS Code y deja sus carpetas en el diálogo
+    /// «Nuevo espacio», con el nombre del archivo, para revisarlas y crear.
+    pub(super) fn import_vscode(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let paths = cx.prompt_for_paths(gpui::PathPromptOptions { files: true, directories: false, multiple: false, prompt: Some("Importar".into()) });
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(paths))) = paths.await else {
+                return;
+            };
+            let Some(file) = paths.into_iter().next() else {
+                return;
+            };
+            let _ = this.update_in(cx, |view, window, cx| match super::vscode::read(&file) {
+                Ok(imported) => {
+                    let note = super::vscode::missing_note(&imported.folders);
+                    view.new_space = Some(imported.folders);
+                    view.space_name_field.update(cx, |field, cx| field.set_text(&imported.name, cx));
+                    view.space_name_field.read(cx).focus(window);
+                    view.show_toast(note.map_or_else(|| "Importado desde VS Code".to_string(), |n| format!("Importado desde VS Code. {n}")), cx);
+                }
+                Err(error) => view.show_toast(error, cx),
+            });
+        })
+        .detach();
+    }
+
     fn add_new_space_folders(&mut self, cx: &mut Context<Self>) {
         let paths = cx.prompt_for_paths(gpui::PathPromptOptions { files: false, directories: true, multiple: true, prompt: Some("Agregar".into()) });
         cx.spawn(async move |this, cx| {
@@ -911,12 +936,22 @@ impl CodeView {
                 .child(div().text_size(px(14.)).font_weight(FontWeight::BOLD).text_color(t.accent).child("Carpetas"))
                 .child(list)
                 .child(
-                    div().flex().child(
-                        Button::new("new-space-add", "Agregar carpetas…")
-                            .tonal()
-                            .icon("folder-plus")
-                            .on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.add_new_space_folders(cx))),
-                    ),
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .gap(px(8.))
+                        .child(
+                            Button::new("new-space-add", "Agregar carpetas…")
+                                .tonal()
+                                .icon("folder-plus")
+                                .on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.add_new_space_folders(cx))),
+                        )
+                        .child(
+                            Button::new("new-space-vscode", "Importar de VS Code…")
+                                .tonal()
+                                .icon("import")
+                                .on_click(cx.listener(|view, _: &ClickEvent, window, cx| view.import_vscode(window, cx))),
+                        ),
                 )
                 .action(Button::new("new-space-cancel", "Cancelar").text().on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
                     view.new_space = None;

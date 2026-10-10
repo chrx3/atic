@@ -14,6 +14,7 @@ pub enum PaletteAct {
     NewLoose,
     NewSpace,
     OpenFolder,
+    ImportVscode,
     History,
     Settings,
     Changes,
@@ -46,6 +47,7 @@ impl CodeView {
             (Command::new("chat", "Nuevo chat sin proyecto"), PaletteAct::NewLoose),
             (Command::new("folder-plus", "Nuevo espacio…"), PaletteAct::NewSpace),
             (Command::new("folder", "Abrir carpeta…").hint("Ctrl+O"), PaletteAct::OpenFolder),
+            (Command::new("import", "Importar workspace de VS Code…"), PaletteAct::ImportVscode),
             (Command::new("history", "Historial de conversaciones"), PaletteAct::History),
             (Command::new("gear", "Configuración").hint("Ctrl+,"), PaletteAct::Settings),
             (Command::new("refresh", "Actualizar Claude Code"), PaletteAct::Settings),
@@ -84,6 +86,7 @@ impl CodeView {
             PaletteAct::NewLoose => self.new_loose_chat(window, cx),
             PaletteAct::NewSpace => self.open_new_space(window, cx),
             PaletteAct::OpenFolder => self.pick_folders(None, cx),
+            PaletteAct::ImportVscode => self.import_vscode(window, cx),
             PaletteAct::History => {
                 self.history_page = true;
                 self.load_history(cx);

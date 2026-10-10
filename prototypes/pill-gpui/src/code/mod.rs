@@ -41,6 +41,7 @@ mod terminal;
 mod tools;
 mod usage;
 mod view;
+mod vscode;
 
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
@@ -712,6 +713,7 @@ impl CodeView {
         };
         if let Some(id) = view.active_workspace() {
             view.expand_first_open(id);
+            view.warn_missing_folders(id, cx);
         }
         view.load_history(cx);
         view.load_history_for(LOOSE, cx);
@@ -985,7 +987,16 @@ impl CodeView {
         self.explorer.refresh();
         self.load_history_for(id, cx);
         self.refresh_changes(cx);
+        self.warn_missing_folders(id, cx);
         cx.notify();
+    }
+
+    /// Avisa de las carpetas del espacio que ya no existen (`store.ts:102` de la referencia).
+    fn warn_missing_folders(&mut self, id: u64, cx: &mut Context<Self>) {
+        let note = self.workspaces.get(id).and_then(|w| vscode::missing_note(&w.folders));
+        if let Some(note) = note {
+            self.show_toast(note, cx);
+        }
     }
 
     fn pick_folders(&mut self, add_to: Option<u64>, cx: &mut Context<Self>) {
@@ -1808,11 +1819,15 @@ impl CodeView {
             model: if model { want.model.clone() } else { before.model.clone() },
             effort: if effort { want.effort.clone() } else { before.effort.clone() },
         });
-        let revert = |key: String, before: Applied| {
+        // Si una petición falla se revierte solo lo que pedía: la otra puede
+        // haberse aplicado (`agent.ts:770`).
+        let revert = |key: String, before: Applied, field: Setting| {
             move |view: &mut Self, reply: Reply, _: &mut Context<Self>| {
                 if let Err(error) = reply {
                     if let Some(chat) = view.chats.iter_mut().find(|c| c.key == key) {
-                        chat.applied = Some(before);
+                        if let Some(applied) = chat.applied.as_mut() {
+                            field.revert(applied, &before);
+                        }
                     }
                     view.error = Some(format!("No se pudo aplicar el modelo o el esfuerzo: {error}"));
                 }
@@ -1820,11 +1835,11 @@ impl CodeView {
         };
         if model {
             let id = (!want.model.is_empty()).then(|| want.model.clone());
-            self.request("setModel", json!({ "key": key, "model": id }), cx, revert(key.to_string(), before.clone()));
+            self.request("setModel", json!({ "key": key, "model": id }), cx, revert(key.to_string(), before.clone(), Setting::Model));
         }
         if effort {
             let settings = json!({ "effortLevel": want.effort });
-            self.request("applyFlags", json!({ "key": key, "settings": settings }), cx, revert(key.to_string(), before));
+            self.request("applyFlags", json!({ "key": key, "settings": settings }), cx, revert(key.to_string(), before, Setting::Effort));
         }
     }
 
@@ -2027,9 +2042,37 @@ impl CodeView {
     }
 }
 
+/// Qué parte de lo aplicado pide una petición de `sync_chat_settings`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Setting {
+    Model,
+    Effort,
+}
+
+impl Setting {
+    /// Devuelve a `applied` solo el valor de esta parte.
+    fn revert(self, applied: &mut Applied, before: &Applied) {
+        match self {
+            Setting::Model => applied.model = before.model.clone(),
+            Setting::Effort => applied.effort = before.effort.clone(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn una_peticion_fallida_revierte_solo_su_parte() {
+        let before = Applied { model: "opus".into(), effort: "low".into() };
+        // El modelo se aplicó y el esfuerzo falló: el modelo nuevo se conserva.
+        let mut applied = Applied { model: "sonnet".into(), effort: "high".into() };
+        Setting::Effort.revert(&mut applied, &before);
+        assert_eq!(applied, Applied { model: "sonnet".into(), effort: "low".into() });
+        Setting::Model.revert(&mut applied, &before);
+        assert_eq!(applied, before);
+    }
 
     #[test]
     fn el_texto_que_se_manda_con_adjuntos() {
