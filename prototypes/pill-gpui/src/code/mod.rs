@@ -76,6 +76,25 @@ actions!(
     [Send, PasteAttach, CloseMenu, OpenPalette, NewConversation, ToggleSidebar, ToggleSettings, Attach, SubmitAnswers, ShowFiles, ShowChanges, OpenFolder, ClearConversation]
 );
 
+/// La CPU que lleva usada el hilo actual (el de GPUI), en milisegundos.
+#[cfg(windows)]
+fn main_thread_cpu_ms() -> f64 {
+    use windows_sys::Win32::Foundation::FILETIME;
+    use windows_sys::Win32::System::Threading::{GetCurrentThread, GetThreadTimes};
+    let zero = FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
+    let (mut created, mut exited, mut kernel, mut user) = (zero, zero, zero, zero);
+    if unsafe { GetThreadTimes(GetCurrentThread(), &mut created, &mut exited, &mut kernel, &mut user) } == 0 {
+        return 0.;
+    }
+    let ticks = |t: FILETIME| ((t.dwHighDateTime as u64) << 32 | t.dwLowDateTime as u64) as f64;
+    (ticks(kernel) + ticks(user)) / 10_000.
+}
+
+#[cfg(not(windows))]
+fn main_thread_cpu_ms() -> f64 {
+    0.
+}
+
 /// El contexto de teclas de la caja del chat: Enter manda, Mayús+Enter baja de línea.
 const COMPOSER: &str = "CodeComposer";
 /// Cada cuánto se mira qué cambió en git.
@@ -415,7 +434,11 @@ pub struct CodeView {
     /// Cuántas veces se dibujó la ventana desde `frames_since`, y cuántos tramos
     /// seguidos fueron de más (ver `note_frame`).
     frames: u32,
+    /// Partes de más que se dibujan en cada hilo (`first_shown` en `view.rs`).
+    older: HashMap<String, usize>,
     frames_since: std::time::Instant,
+    /// CPU del hilo principal (ms) al empezar el tramo.
+    frames_cpu: f64,
     hot_spells: u32,
     /// La conversación que se ve al lado de la activa (`split.rs`), de qué lado va,
     /// su desplazamiento y los borradores de las que no tienen la caja.
@@ -722,7 +745,9 @@ impl CodeView {
             hero_hover: false,
             history_loading: HashSet::new(),
             frames: 0,
+            older: HashMap::new(),
             frames_since: std::time::Instant::now(),
+            frames_cpu: main_thread_cpu_ms(),
             hot_spells: 0,
             split: None,
             split_left: false,
@@ -1000,9 +1025,10 @@ impl CodeView {
         });
     }
 
-    /// Cuenta los cuadros. Si la ventana se dibuja más de 30 veces por segundo durante
-    /// 4 s seguidos, deja en el registro el ritmo y quién pide los cuadros (las animaciones
-    /// de gpui-m3, por archivo y línea): así se encuentra lo que la mantiene ocupada.
+    /// Cuenta los cuadros. Si la ventana se dibuja más de 30 veces por segundo, o el hilo
+    /// principal pasa más del 60 % ocupado, durante 4 s seguidos, deja en el registro el
+    /// ritmo, cuánta CPU cuesta cada cuadro, cuántas partes tienen los hilos a la vista y
+    /// quién pide los cuadros (las animaciones de gpui-m3, por archivo y línea).
     pub(super) fn note_frame(&mut self) {
         self.frames += 1;
         let elapsed = self.frames_since.elapsed().as_secs_f32();
@@ -1010,18 +1036,26 @@ impl CodeView {
             return;
         }
         let rate = self.frames as f32 / elapsed;
+        let cpu = main_thread_cpu_ms();
+        let busy = ((cpu - self.frames_cpu) / (elapsed as f64 * 1000.)) as f32;
+        let per_frame = (cpu - self.frames_cpu) / self.frames as f64;
         let requests = gpui_m3::motion::take_frame_requests();
         self.frames = 0;
         self.frames_since = std::time::Instant::now();
-        if rate < 30. {
+        self.frames_cpu = cpu;
+        if rate < 30. && busy < 0.6 {
             self.hot_spells = 0;
             return;
         }
+        let shown = |key: Option<&String>| key.and_then(|k| self.chats.iter().find(|c| &c.key == k)).map_or(0, |c| c.items.len());
         self.hot_spells += 1;
         if self.hot_spells == 2 || self.hot_spells % 15 == 0 {
             let top: Vec<String> = requests.iter().take(8).map(|(at, n)| format!("{at} ×{n}")).collect();
             tracing::warn!(
                 cuadros_por_s = format!("{rate:.0}"),
+                hilo_ocupado = format!("{:.0} %", busy * 100.),
+                ms_por_cuadro = format!("{per_frame:.0}"),
+                partes = format!("{} + {}", shown(self.active.as_ref()), shown(self.split.as_ref())),
                 mezcla = style::blending(),
                 dividido = self.split.is_some(),
                 trabajando = self.chats.iter().filter(|c| c.busy).count(),

@@ -35,6 +35,8 @@ const THREAD_W: f32 = 860.0;
 const HERO_W: f32 = 720.0;
 /// Cuántas partes del final del hilo entran animadas.
 const ENTER_MAX: usize = 3;
+/// Cuántas partes del final de cada hilo se dibujan (ver `first_shown`).
+const THREAD_WINDOW: usize = 60;
 const HERO_PLACEHOLDER: &str = "Pregunta lo que quieras · @ para mencionar · / para acciones";
 /// Sin proyecto no hay archivos que mencionar.
 const HERO_PLACEHOLDER_LOOSE: &str = "Pregunta lo que quieras · / para acciones";
@@ -1035,7 +1037,11 @@ impl CodeView {
                 // Las partes nuevas entran con resorte: solo las últimas tres, para que un
                 // historial recién abierto no se anime entero (`motion.ts` de la referencia).
                 let total = chat.items.len();
-                for (index, item) in chat.items.iter().enumerate() {
+                let first = self.first_shown(chat);
+                if first > 0 {
+                    thread = thread.child(self.show_older(chat, first, cx));
+                }
+                for (index, item) in chat.items.iter().enumerate().skip(first) {
                     if chat.hidden(index) {
                         continue;
                     }
@@ -1228,7 +1234,11 @@ impl CodeView {
             .when(controls, |el| el.child(chrome::controls_colored(maximized, HEAD_H, fg(), hover_bg())));
         let mut thread = div().w_full().px(px(32.)).pt(px(16.)).pb(px(20.)).flex().flex_col().gap(px(if expressive() { 12. } else { 16. }));
         let total = chat.items.len();
-        for (index, item) in chat.items.iter().enumerate() {
+        let first = self.first_shown(chat);
+        if first > 0 {
+            thread = thread.child(self.show_older(chat, first, cx));
+        }
+        for (index, item) in chat.items.iter().enumerate().skip(first) {
             if chat.hidden(index) {
                 continue;
             }
@@ -1271,6 +1281,40 @@ impl CodeView {
             .child(header)
             .child(div().id("split-thread").flex_1().min_h(px(0.)).overflow_y_scroll().track_scroll(&self.split_thread).child(thread))
             .child(reply)
+            .into_any_element()
+    }
+
+    /// La primera parte del hilo que se dibuja: las últimas `THREAD_WINDOW` más las que se
+    /// pidieron con «Mostrar anteriores». Dibujar cientos de herramientas y mensajes en cada
+    /// cuadro (dos veces, con la vista dividida) dejaba el hilo de la ventana siempre ocupado.
+    fn first_shown(&self, chat: &super::Chat) -> usize {
+        let shown = THREAD_WINDOW + self.older.get(&chat.key).copied().unwrap_or(0);
+        chat.items.len().saturating_sub(shown)
+    }
+
+    /// «Mostrar N anteriores» arriba del hilo.
+    fn show_older(&self, chat: &super::Chat, hidden: usize, cx: &mut Context<Self>) -> AnyElement {
+        let key = chat.key.clone();
+        let label = format!("Mostrar {} anteriores ({hidden} ocultas)", hidden.min(THREAD_WINDOW));
+        div()
+            .flex()
+            .justify_center()
+            .child(
+                div()
+                    .id(SharedString::from(format!("older-{}", chat.key)))
+                    .px(px(14.))
+                    .py(px(6.))
+                    .rounded(px(16.))
+                    .text_size(px(12.5))
+                    .text_color(muted())
+                    .cursor_pointer()
+                    .hover(|el| el.bg(hover_bg()))
+                    .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
+                        *view.older.entry(key.clone()).or_insert(0) += THREAD_WINDOW;
+                        cx.notify();
+                    }))
+                    .child(label),
+            )
             .into_any_element()
     }
 
