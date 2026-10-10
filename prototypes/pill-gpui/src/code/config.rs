@@ -345,6 +345,21 @@ impl Configs {
     }
 }
 
+/// Tapa a medias los correos de `text`: se ven las dos primeras letras y el dominio
+/// (`ca•••@example.com`), lo justo para reconocer la cuenta en una captura.
+pub fn mask_emails(text: &str) -> String {
+    text.split(' ')
+        .map(|word| match word.find('@') {
+            Some(at) if at > 0 && word[at + 1..].contains('.') => {
+                let shown: String = word[..at].chars().take(2).collect();
+                format!("{shown}•••{}", &word[at..])
+            }
+            _ => word.to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -382,6 +397,14 @@ mod tests {
         assert_eq!(before.flags(None)["switchModelsOnFlag"], true);
         let after = ClaudeConfig { switch_model_on_flag: false, ..before.clone() };
         assert_eq!(after.flags(Some(&before)), json!({ "switchModelsOnFlag": false }));
+    }
+
+    #[test]
+    fn los_correos_se_tapan_a_medias() {
+        assert_eq!(mask_emails("ana@example.com"), "ca•••@example.com");
+        assert_eq!(mask_emails("ana@example.com's Organization"), "ca•••@example.com's Organization");
+        assert_eq!(mask_emails("Claude Max"), "Claude Max");
+        assert_eq!(mask_emails("a@b"), "a@b");
     }
 
     #[test]

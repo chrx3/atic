@@ -384,7 +384,7 @@ impl CodeView {
             let info = view.usage.get_or_insert_with(UsageInfo::default);
             match reply {
                 Ok(account) => {
-                    info.email = account.get("email").and_then(Value::as_str).map(str::to_string);
+                    info.email = account.get("email").and_then(Value::as_str).map(super::config::mask_emails);
                     if info.plan.is_none() {
                         info.plan = account.get("subscriptionType").and_then(Value::as_str).map(plan_name);
                     }

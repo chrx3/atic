@@ -433,6 +433,8 @@ pub struct CodeView {
     terminals: Entity<terminal::Terminals>,
     /// La sesión de sondeo (`PROBE`) está abierta o abriéndose.
     probe_live: bool,
+    /// El cursor está sobre las formas del inicio (se vuelven formas M3).
+    hero_hover: bool,
     next_key: u64,
     next_doc: u64,
 }
@@ -715,6 +717,7 @@ impl CodeView {
             next_doc: 0,
             terminals,
             probe_live: false,
+            hero_hover: false,
         };
         if let Some(id) = view.active_workspace() {
             view.expand_first_open(id);
@@ -869,7 +872,9 @@ impl CodeView {
             self.agents = list.iter().map(|a| (text(a, "name"), text(a, "description"))).filter(|(name, _)| !name.is_empty()).collect();
         }
         if let Some(account) = meta.get("account") {
-            let field = |name: &str| account.get(name).and_then(Value::as_str).filter(|v| !v.is_empty()).map(str::to_string);
+            // Los correos van tapados a medias: la configuración se muestra en pantalla
+            // (capturas, llamadas) y basta con reconocer la cuenta.
+            let field = |name: &str| account.get(name).and_then(Value::as_str).filter(|v| !v.is_empty()).map(config::mask_emails);
             self.account = Some((field("email"), field("subscriptionType"), field("organization")));
         }
         if let Some(list) = meta.get("available_output_styles").and_then(Value::as_array) {
