@@ -39,13 +39,13 @@ Este documento sirve para traspasar el trabajo entre agentes. Con él se puede r
 | Burbuja del usuario (`src/components/chat/Thread.tsx:100`) | Hecho `src/code/view.rs:1098` | existe `Bubble` (`gpui-m3/src/components/surfaces.rs:1039`) | |
 | Miniaturas de las imágenes adjuntas en el mensaje del usuario (`Thread.tsx:105`) | Hecho (`c820b5d`): `Item::User` guarda las imágenes | `ImageThumb` | |
 | Copiar y Marcar en el mensaje del usuario (`Thread.tsx:112`) | Hecho (tanda 4): Copiar con «Copiado» y Marcar, al pasar el cursor (`message`, `view.rs`) | `Button` (`confirm`, `label_on_hover`) | |
-| Markdown del asistente (`Thread.tsx:116`) | Parcial `view.rs:405` | falta crearlo: `Markdown` | Solo títulos, viñetas, código, `código` en línea y negrita |
+| Markdown del asistente (`Thread.tsx:116`) | Hecho (tanda 6-8): `view::markdown` con `gpui_m3::Markdown` en respuestas, razonamiento, plan de ExitPlanMode y resultado de Task, en los tres estilos | `Markdown` | Formal y Glass le pasan a gpui-m3 un esquema armado con sus tokens (`style::scheme_of`). El razonamiento va con opacidad 0,75 en vez de gris y con la fuente de gpui-m3 |
 | Copiar la respuesta («Copiado» durante 1,4 s) (`Thread.tsx:69`) | Hecho `view.rs:1130` | `Button::confirm` | Solo cuando la respuesta terminó |
 | Marcar mensaje (flag por sesión) (`Thread.tsx:82`, `src/lib/flags.ts:21`) | **En curso** (tanda 2) | existe `Button::selected` | Se guarda en un json propio (ver Decisiones) |
 | Fondo de mensaje marcado (`Thread.tsx:103,123`) | **En curso** (tanda 2) | — | |
 | «Siguiente marcado» con scroll y destello (`flags.ts:44-54`) | **En curso** (tanda 2) | falta: `FlashHighlight` | |
 | Contador de marcas (`flags.ts:29`) | **En curso** (tanda 2) | — | |
-| Ruta en `código` en línea que se puede abrir con un clic (`Thread.tsx:44,124`) | Falta | falta: rangos clicables en StyledText (`InteractiveText`/`LinkText`) | `open_doc` ya existe (`mod.rs:1109`) |
+| Ruta en `código` en línea que se puede abrir con un clic (`Thread.tsx:44,124`) | Hecho (tanda 6-8): `Markdown::on_path` → `CodeView::open_ref` → `files::resolve_ref` (con test) | `Markdown::on_path` | Relativa a las carpetas del espacio de la conversación (o `carpeta/ruta`); si no existe, un aviso «No encontré…» |
 | Razonamiento plegable (`Thread.tsx:18`) | Hecho `view.rs:1142` | `ExpandableCard::plain` | |
 | «Razonando…» en vivo, con la última línea (`Thread.tsx:21,29`) | Hecho (tanda 4): `Chat::is_streaming` + `ExpandableCard::preview` con `last_line` (con test) | `ExpandableCard::preview` | |
 | Ocultar el razonamiento vacío o cifrado (`Thread.tsx:137`) | Hecho (tanda 4): `Chat::hidden`; el hilo se lo salta | — | |
@@ -94,17 +94,17 @@ Este documento sirve para traspasar el trabajo entre agentes. Con él se puede r
 
 | Función de la referencia | Estado en Atic Code | gpui-m3 | Nota |
 | --- | --- | --- | --- |
-| GFM con `marked` (`Markdown.tsx:141`) | Parcial `view.rs:405` | falta: `Markdown` | Faltan listas numeradas o anidadas, citas, `---`, cursiva y tachado |
-| Tablas | Falta | falta: `Markdown` (tablas) | |
-| Enlaces que abren el navegador (`Markdown.tsx:160`) | Falta | falta: rangos clicables | |
-| Imágenes | Falta | falta | |
-| Bloque de código con lenguaje y «Copiar» (`Markdown.tsx:144-155`) | Parcial `view.rs:469` | falta: `CodeBlock` | Muestra la etiqueta cruda y no cambia a «Copiado» |
-| Resaltado de sintaxis (rust/ts/js/json/md/css/html/py) (`Markdown.tsx:14-37,97`) | Falta | falta: `SyntaxHighlighter` (lo comparte con `CodeEditor`) | No hay syntect ni tree-sitter en `Cargo.toml` |
-| Alias de lenguaje a nombre legible (`Markdown.tsx:43-88`) | Falta | dentro de `CodeBlock` | |
+| GFM con `marked` (`Markdown.tsx:141`) | Hecho (tanda 6-8) | `Markdown` | Listas numeradas y anidadas, citas, `---`, cursiva y tachado |
+| Tablas | Hecho (tanda 6-8) | `Markdown` | |
+| Enlaces que abren el navegador (`Markdown.tsx:160`) | Hecho (tanda 6-8): `Markdown::on_link` + `cx.open_url`, solo `http`, `https` y `mailto` (`files::is_safe_link`, con test) | `Markdown::on_link` | |
+| Imágenes | Parcial: sin `on_image`, gpui-m3 muestra una fila con la descripción que abre el enlace | `Markdown::on_image` | |
+| Bloque de código con lenguaje y «Copiar» (`Markdown.tsx:144-155`) | Hecho (tanda 6-8): `CodeBlock` dentro de `Markdown` | `CodeBlock` | |
+| Resaltado de sintaxis (rust/ts/js/json/md/css/html/py) (`Markdown.tsx:14-37,97`) | Hecho (tanda 6-8): `SyntaxHighlighter` (syntect) dentro de `CodeBlock` | `SyntaxHighlighter` | Colores de `SyntaxPalette::from_scheme` con el esquema del estilo; no se llamó a `SyntaxPalette::set` |
+| Alias de lenguaje a nombre legible (`Markdown.tsx:43-88`) | Hecho (tanda 6-8) | dentro de `CodeBlock` | |
 | `código` en línea y **negrita** | Hecho `view.rs:356,385` | — | Con tests |
-| Títulos por nivel | Parcial `view.rs:453` | — | Todos de 15 px |
+| Títulos por nivel | Hecho (tanda 6-8) | `Markdown` | |
 | Saneado de HTML (`Markdown.tsx:159`) | No aplica | — | |
-| Caché durante el streaming (`Markdown.tsx:94,190`) | No aplica | — | |
+| Caché durante el streaming (`Markdown.tsx:94,190`) | Hecho (tanda 6-8): `parse_markdown_cached` por texto y `highlight_cached` por bloque | `Markdown` | |
 | Seleccionar texto | Falta (GPUI no la trae) | falta: `SelectableText` | Se compensa con «Copiar» |
 
 ## 2. Composer
@@ -216,7 +216,7 @@ Este documento sirve para traspasar el trabajo entre agentes. Con él se puede r
 | Título por herramienta (`Permission.tsx:14`) | Hecho `permissions.rs:337` | — | |
 | Cuerpo Bash `$ comando` (`Permission.tsx:115`) | Hecho `view.rs:2362` | — | |
 | Cuerpo NotebookEdit `new_source` (`Permission.tsx:121`) | Hecho (tanda 4): `tool_input` muestra `new_source` | — | |
-| Cuerpo Edit/MultiEdit/Write con diff (`Permission.tsx:124`) | Parcial `permissions.rs:523` | falta: `Diff` | El diff es falso (líneas − y +); MultiEdit ya muestra un bloque por cambio (tanda 4) |
+| Cuerpo Edit/MultiEdit/Write con diff (`Permission.tsx:124`) | Hecho (tanda 6-8): `tool_input` usa `DiffView` (mismo cuerpo que la tarjeta de la herramienta) | `DiffView` | Los números de línea son los del fragmento, no los del archivo |
 | Notas: descripción, motivo, ruta bloqueada (`Permission.tsx:129`) | Hecho `permissions.rs:463` | — | |
 | «Decirle a Claude qué hacer en cambio» (`Permission.tsx:140`) | Hecho `permissions.rs:525` | `TextField` | Solo en la primera tarjeta |
 | Permitir / Permitir siempre / Permitir todo / Rechazar y responder (`Permission.tsx:74-160`) | Hecho `permissions.rs:461-514` | `Button` | |
@@ -246,11 +246,11 @@ Este documento sirve para traspasar el trabajo entre agentes. Con él se puede r
 | Tarjeta fija y abierta de entrada (`Tools.tsx:136,143`) | Hecho `tools.rs:290` | `.fixed()`/`.open()` | |
 | Badges y +/− (`Tools.tsx:207`) | Hecho `tools.rs:190` | `Badge` | |
 | Quitar `<system-reminder>` (`Tools.tsx:28`) | Hecho `tools.rs:16` | — | |
-| Salida recortada con «Mostrar todo» (`Tools.tsx:79`) | Hecho `tools.rs:111` | falta: `CodeOutput` | Atic recorta a 40 000 caracteres y lo avisa (`MAX_RESULT`, antes 6000); ver Decisiones |
+| Salida recortada con «Mostrar todo» (`Tools.tsx:79`) | Hecho (tanda 6-8): `tools::output` con `CodeOutput`; los errores en rojo | `CodeOutput` | Atic recorta a 40 000 caracteres y lo avisa (`MAX_RESULT`, antes 6000); ver Decisiones |
 | Read con rango L… (`Tools.tsx:396`) | Hecho (tanda 4): `read_range`, `desde + limit − 1`, también con solo `limit` (con test) | — | |
-| Edit con «todas» y diff (`Tools.tsx:420`) | Parcial `tools.rs:188`; diff falso (`view.rs:2376`) | falta: `Diff` | Se corta en 40 líneas sin avisar |
-| MultiEdit: un diff por edición (`Tools.tsx:67`) | Parcial (tanda 4): un bloque − / + por cambio con «Cambio N de M» | `Diff` | Con números de línea cuando se integre `DiffView` |
-| Write: todo agregado, abierta si tiene ≤ 40 líneas (`Tools.tsx:64,424`) | Parcial `tools.rs:36` | `Diff` | |
+| Edit con «todas» y diff (`Tools.tsx:420`) | Hecho (tanda 6-8): `DiffView` | `DiffView` | |
+| MultiEdit: un diff por edición (`Tools.tsx:67`) | Hecho (tanda 6-8): `edits::edit_diffs`, un `DiffView` por edición con «Cambio N de M» (con test) | `DiffView` | |
+| Write: todo agregado, abierta si tiene ≤ 40 líneas (`Tools.tsx:64,424`) | Hecho (tanda 6-8): `DiffView` con `max_rows(40)` y «Mostrar todo» | `DiffView` | |
 | NotebookEdit (`Tools.tsx:313`) | Hecho (tanda 4): badge del modo y `new_source` con «Mostrar todo» | — | |
 | Bash/PowerShell: descripción, en segundo plano, `$`, salida en rojo (`Tools.tsx:454`) | Hecho `tools.rs:42,203,251` | `Badge` | |
 | Grep/Glob, WebFetch, WebSearch (`Tools.tsx:328-364`) | Hecho `tools.rs:47-54,257-264` | — | |
@@ -259,9 +259,9 @@ Este documento sirve para traspasar el trabajo entre agentes. Con él se puede r
 | ExitPlanMode y AskUserQuestion como tarjetas (`Tools.tsx:375,380`) | Hecho `tools.rs:270,274` | — | |
 | Artifact: verbo, título, «Abrir» (`Tools.tsx:261`, `src/lib/artifacts.ts`) | Falta | `Button` | |
 | MCP «servidor · acción» y genérica JSON (`Tools.tsx:538-554`) | Hecho `tools.rs:70,275` | — | |
-| Diff: números de línea viejo/nuevo (`Diff.tsx:14,116`) | Falta en el chat (el visor git sí, `view.rs:1974`) | falta: `Diff` | Reutilizar `space::viewer::parse_diff` |
-| Diff: «⋯ N líneas sin cambios», «Mostrar todo» pasadas 400 filas, encabezado, archivo nuevo (`Diff.tsx:42,97-128`) | Falta | `Diff` | |
-| Diff: estadísticas con un diff de líneas real (`Diff.tsx:31`) | Parcial: aproxima (`tools.rs:102`) | — | Sumar el crate `similar` |
+| Diff: números de línea viejo/nuevo (`Diff.tsx:14,116`) | Hecho (tanda 6-8): en el chat y en el visor de cambios (`doc_diff` con `Diff::from_unified`) | `DiffView` | El visor de cambios ya no es virtual: `DiffView` dibuja 400 filas y «Mostrar todo» las demás |
+| Diff: «⋯ N líneas sin cambios», «Mostrar todo» pasadas 400 filas, encabezado, archivo nuevo (`Diff.tsx:42,97-128`) | Hecho (tanda 6-8) | `DiffView` | |
+| Diff: estadísticas con un diff de líneas real (`Diff.tsx:31`) | Hecho (tanda 6-8): `edits::edit_stats` (con test) usa el diff de líneas de gpui-m3 | `diff_cached(..).stats()` | Es el mismo conteo que `diff_stats`, pero reutiliza el diff que dibuja `DiffView` |
 
 ## 7. Sidebar, espacios y sesiones (`src/components/Sidebar.tsx`)
 
@@ -308,15 +308,15 @@ Este documento sirve para traspasar el trabajo entre agentes. Con él se puede r
 | Actualizar con spinner (`ContextPanel.tsx:361`) | Hecho (tanda 3): `refreshing` + `LoadingIndicator` | `LoadingIndicator` | Al pedirlo y al terminar cada respuesta, no en el sondeo |
 | Árbol con las raíces como carpetas, carga diferida (`ContextPanel.tsx:27-69`) | Hecho `view.rs` (`file_tree`), `src/space/explorer.rs:80` | `TreeRow` en Expressive (tanda 3) | |
 | Color del nombre según el tipo; dotfiles atenuados; archivo activo resaltado (`ContextPanel.tsx:18-60`) | Hecho (tanda 3): `files::kind_of` + `kind_color`; el activo es el último abierto (`active_file`) | `TreeRow` | Como la referencia, se pinta el ícono. Formal/Glass: solo los dotfiles atenuados |
-| Ocultar node_modules, target y dist (`src-tauri/src/fs.rs`) | Parcial: solo oculta `.git` (`explorer.rs:47`) | — | |
+| Ocultar node_modules, target y dist (`src-tauri/src/fs.rs`) | Hecho (tanda 6-8): `Explorer::for_code` (con test) | — | Solo el árbol de Atic Code; el del Mando sigue ocultando solo `.git` |
 | Buscar archivos con índice (120 resultados) (`ContextPanel.tsx:71-131`) | Hecho (tanda 3): `src/code/files.rs` (`index`, `search`, con tests) | `TextField`, `TreeRow` | El índice se reutilizará en las @-menciones; Esc limpia |
 | Cambios agrupados por repo, con rama (`ContextPanel.tsx:267-305`) | Hecho `view.rs:2218,2242`, `src/code/git.rs:55` | `Card`/`ListGroup` | |
 | Grupo plegable; «Al día»; «No es un repositorio git» (`ContextPanel.tsx:268-297`) | Hecho (tanda 3): `repo_group` (`view.rs`), `Repo::is_repo` (`git.rs`) | `ExpandableCard` en Expressive | Formal/Glass: encabezado propio que se pliega |
 | «Todo al día» con ícono (`ContextPanel.tsx:318`) | Hecho (tanda 3) | — | Solo si alguna carpeta es un repo (Decisiones) |
 | Resumen n archivos +a −r (`ContextPanel.tsx:330`) | Hecho `view.rs:1946` | — | |
 | Fila de cambio: estado, nombre, carpeta, +/− (`ContextPanel.tsx:239`) | Hecho `view.rs` (`change_row`) | `ListItem` | Los no seguidos salen como `N` (tanda 3) |
-| Barra de 5 bloques del diff (`ContextPanel.tsx:225`) | Falta | falta: `DiffBar` | |
-| Ver el diff de un cambio y «Abrir» el archivo (`ContextPanel.tsx:190-222`) | Hecho `view.rs:1820,1974,2285` (`space::viewer`) | `Diff` cuando exista | |
+| Barra de 5 bloques del diff (`ContextPanel.tsx:225`) | Hecho (tanda 6-8): `DiffBar` en `change_row` | `DiffBar` | |
+| Ver el diff de un cambio y «Abrir» el archivo (`ContextPanel.tsx:190-222`) | Hecho `view.rs` (`doc_body`, `doc_diff`) y `space::viewer` | `DiffView` | |
 | Volver del diff a la lista (`ContextPanel.tsx:153,202`) | Parcial: la X cierra el archivo | `IconButton` | |
 | Panel más ancho al editar (`ContextPanel.tsx:351`) | Hecho `view.rs:1784` | — | |
 | Commit, ramas, stage, descartar | No aplica (la referencia tampoco los tiene) | — | |
@@ -350,7 +350,7 @@ Hoy hay solo un visor de solo lectura (`src/space/viewer.rs`). Se decidió const
 | Confirmar al cerrar si hay cambios sin guardar (`ContextPanel.tsx:135`) | Falta | `Dialog` | |
 | Editar (CodeMirror) (`CodeEditor.tsx:86-191`) | Falta | falta: `CodeEditor` | Es lo más grande |
 | Números de línea (`CodeEditor.tsx:113`) | Hecho en el visor (`view.rs:2012`) | — | |
-| Resaltado por lenguaje (`CodeEditor.tsx:40-84`) y colores `--sx-*` (`src/styles/tokens.css:55`) | Falta | falta: `SyntaxHighlighter` | |
+| Resaltado por lenguaje (`CodeEditor.tsx:40-84`) y colores `--sx-*` (`src/styles/tokens.css:55`) | Hecho en el visor de solo lectura (tanda 6-8): `highlight.rs` con `SyntaxLines`, filas de `uniform_list` | `SyntaxHighlighter` | Colores del esquema (no los `--sx-*`) |
 | Guardar con Mod-S (`CodeEditor.tsx:96`) | Falta | dentro de `CodeEditor` | |
 | Deshacer, plegado, multicursor, corchetes, sangría (`CodeEditor.tsx:113-129`) | Falta | dentro de `CodeEditor` | |
 | Recargar si Claude editó y no hay cambios propios (`editor.ts:28`) | **En curso** (tanda 2: recarga del visor) | — | |
@@ -520,7 +520,6 @@ Prioridad de arriba hacia abajo. Cada tanda es chica y se prueba sola. **[m3]** 
 **Hecho, tanda 3 [code]** (rama `dev`, un commit por letra): A composer, B chats sueltos, C barra lateral, D panel de cambios y archivos, E apariencia y F cuenta y uso con el mapa de agentes. Cubre las tandas 12, 14, 15 y 17 de abajo, casi toda la 13 y parte de la 5 y la 19. Validado con `cargo check` y `cargo test code::` (51 tests); **no se probó en la app** (`CODE_ALONE=1`). Lo que quedó de esas tandas:
 - Tanda 5: el popover hacia donde haya más espacio.
 - Tanda 13: reordenar arrastrando (`TODO(gpui-m3)`: `ReorderList`/`DragHandle`).
-- Tanda 14: **[m3]** `DiffBar`.
 - Tanda 15: el menú rápido de Apariencia como popover propio; `SelectCard` y el árbol con `TreeRow` solo en Expressive.
 - Tanda 17: el evento `rate_limit` en vivo (sigue en la tanda 23).
 - Tanda 19: el teclado en las filas de proyecto.
@@ -533,11 +532,12 @@ Prioridad de arriba hacia abajo. Cada tanda es chica y se prueba sola. **[m3]** 
 **Hecho, tanda 4 [code]** (rama `dev`, un commit por grupo; gpui-m3 tiene un commit aparte, `Dialog::exit`, sin push): `c820b5d` (`DividerLabel`, `ImageThumb`, `DropZone`, `Banner`), salida animada con `Presence` y @-menciones (tanda 9), pulido del hilo y las herramientas (tanda 4), perfil editable con recorte (16) y avisos del sistema (18). Validado con `cargo check` y `cargo test code::` (71 tests) y `cargo test tray_icon`; **no se probó en la app**. Lo que quedó de la tanda 4:
 - Formal y Glass: sus menús sí salen animados (comparten `menu_layer`), pero sin burbujas con entrada ni «Razonando…» en vivo.
 - La paleta de comandos (`CommandPalette`) no sale animada.
-- MultiEdit y los permisos siguen sin `DiffView` (tanda 6).
 - Los avisos del sistema usan el globo de la bandeja: no distinguen el tono con sonido ni agrupan. El clic abre Atic Code, no la conversación.
 - «Nuevo espacio» y la configuración son diálogos de Expressive; el recorte del perfil no tiene versión Formal/Glass.
 
-**Para retomar, en este orden:** integrar `Markdown`/`CodeBlock` (7) y `DiffView`/`CodeOutput`/`DiffBar` (6 y 14); terminal (10, con `Splitter`); editor (11, `CodeEditor` + `SyntaxLines::for_path`); `ReorderList` en la barra (13); motion de la 20; luego 19, 21, 22 y 23. Ninguna de las tandas [code] desde la 2 se probó en la app.
+**Hecho, tandas 6, 7, 8 y 14 [code]** (rama `dev`, un commit por grupo): `Markdown` (con enlaces y rutas que se abren), `DiffView` en Edit, MultiEdit, Write, los permisos y el visor de cambios, `CodeOutput`, `DiffBar`, resaltado en el visor de solo lectura y árbol sin `node_modules`, `target` ni `dist`. Validado con `cargo check` y `cargo test code::`; **no se probó en la app**. Lo que quedó: imágenes del markdown (`Markdown::on_image`); `SyntaxPalette::set` con los `--sx-*` de la referencia; el visor del Mando (`space::mando`) sigue con su resaltado y diff antiguos; los números de línea del diff de Edit son los del fragmento.
+
+**Para retomar, en este orden:** terminal (10, con `Splitter`); editor (11, `CodeEditor` + `SyntaxLines::for_path`); `ReorderList` en la barra (13); motion de la 20; luego 19, 21, 22 y 23. Ninguna de las tandas [code] desde la 2 se probó en la app.
 
 **Pendientes:**
 
@@ -549,12 +549,12 @@ Prioridad de arriba hacia abajo. Cada tanda es chica y se prueba sola. **[m3]** 
    - Que `insert()` agregue al final (subagentes, comandos y Claude Design).
    - Línea de estado con contexto % y $.
    - «Cuenta y uso…» y «Reanudar…» en el menú; el popover hacia donde haya más espacio.
-6. **[m3] `Diff` + `CodeOutput`**: números de línea viejo/nuevo, tramos plegados, «Mostrar todo» y encabezado con +/−. Partir de `space::viewer::parse_diff`.
+6. **Hecho** (tanda 6-8, ver arriba). **[m3] `Diff` + `CodeOutput`**: números de línea viejo/nuevo, tramos plegados, «Mostrar todo» y encabezado con +/−. Partir de `space::viewer::parse_diff`.
    **[code]** Usarlo en Edit, MultiEdit, Write y en las tarjetas de permiso; estadísticas con el crate `similar`; NotebookEdit.
-7. **[m3] `Markdown` + `CodeBlock`**: listas numeradas y anidadas, citas, tablas, enlaces y rangos clicables, cursiva y tachado; bloque con el nombre del lenguaje y «Copiado».
+7. **Hecho** (tanda 6-8). **[m3] `Markdown` + `CodeBlock`**: listas numeradas y anidadas, citas, tablas, enlaces y rangos clicables, cursiva y tachado; bloque con el nombre del lenguaje y «Copiado».
    **[code]** Reemplazar `view.rs:405`; las rutas en `código` abren el archivo.
-8. **[m3] `SyntaxHighlighter`** (syntect o tree-sitter, con los colores `--sx-*` por estilo). Usarlo primero en `CodeBlock` y en el visor de solo lectura.
-9. **[code] @-menciones y búsqueda de archivos:** **Hecho** (índice con `.gitignore` en la tanda 3; lista, teclas y «Mencionar archivo… @» en la tanda 4). Falta ocultar node_modules, target y dist en el árbol de Archivos (el índice ya respeta `.gitignore`).
+8. **Hecho** (tanda 6-8: `CodeBlock` y visor). **[m3] `SyntaxHighlighter`** (syntect o tree-sitter, con los colores `--sx-*` por estilo). Usarlo primero en `CodeBlock` y en el visor de solo lectura.
+9. **[code] @-menciones y búsqueda de archivos:** **Hecho** (índice con `.gitignore` en la tanda 3; lista, teclas y «Mencionar archivo… @» en la tanda 4). El árbol de Archivos ya oculta node_modules, target y dist (tanda 6-8).
 10. **[code] Terminal integrada**: panel bajo el chat con `space::console` + `TabStrip` (nueva, cerrar, renombrar, «terminado», título); Ctrl+J y Ctrl+\`; botón con contador en la barra superior; «Abrir Claude en la terminal» y Remote Control dentro de ella.
     **[m3]** `ResizeHandle`/`Splitter` para el alto.
 11. **[m3] `CodeEditor`** (sobre `SyntaxHighlighter`): edición, deshacer, Tab, Mod-S, plegado, selección.
@@ -568,7 +568,7 @@ Prioridad de arriba hacia abajo. Cada tanda es chica y se prueba sola. **[m3]** 
     - Título de la ventana con el proyecto.
     - Diálogo «Nuevo espacio» con nombre y `space::picker`.
     **[m3]** `ReorderList`/`DragHandle`.
-14. **[code] Panel de cambios:** grupos plegables, «Al día» y «No es un repositorio git», `N` para lo no seguido, spinner al actualizar, árbol con `TreeRow`, colores por tipo y archivo activo.
+14. **[code] Panel de cambios:** **Hecho**, con `DiffBar` (tanda 6-8). grupos plegables, «Al día» y «No es un repositorio git», `N` para lo no seguido, spinner al actualizar, árbol con `TreeRow`, colores por tipo y archivo activo.
     **[m3]** `DiffBar`.
 15. **[code] Apariencia:**
     - «Sistema» sigue al sistema operativo, también en vivo.
@@ -605,6 +605,14 @@ Decisiones tomadas sin el usuario (2026-10-09). Hay que confirmarlas con él cua
 - **Los atajos ⌘ pasan a Ctrl**, salvo los que chocan dentro de la terminal y el editor (Ctrl+L, Ctrl+J, Ctrl+W…). Esos no actúan cuando el foco está en la terminal o el editor.
 - **Valores por defecto de Claude: los de Atic.** El modelo vacío es el de Claude Code, igual que el esfuerzo vacío («Predeterminado»). Además `thinking: false` y el modo `default`. No se copian opus/medium/acceptEdits de la referencia.
 - **Marcadores y flags en un json propio de Atic Code**, aparte de `space-workspaces.json`.
+
+Decisiones de las tandas 6-8 y 14 (2026-10-10), también por confirmar:
+
+- **Formal y Glass también usan los componentes de código de gpui-m3** (`Markdown`, `DiffView`, `CodeOutput`, `DiffBar`): `style::apply_m3` les fija un esquema hecho con sus tokens (`style::scheme_of`) en vez de dejar el último de Expressive. Efecto: el tema global de gpui-m3 sigue ahora a Formal/Glass cuando se eligen.
+- **Estadísticas +/−** con `diff_cached(..).stats()` (el diff que ya usa `DiffView`) y no con `similar` directo.
+- **Rutas del chat:** `código` que parece ruta se abre contra las carpetas del espacio de la conversación; si no existe, un toast.
+- **Enlaces:** solo `http`, `https` y `mailto`.
+- **Árbol:** solo Atic Code oculta `node_modules`, `target`, `dist` y `.DS_Store`.
 
 Decisiones de la tanda 4 (2026-10-10), también por confirmar:
 
