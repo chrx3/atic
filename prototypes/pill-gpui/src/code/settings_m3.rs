@@ -147,6 +147,10 @@ impl CodeView {
             .gap(px(2.))
             .px(px(12.))
             .py(px(22.))
+            // GPUI recorta a los hijos con un rectángulo, no con las esquinas de la tarjeta:
+            // sin estas esquinas, el fondo de la columna asomaba cuadrado a la izquierda.
+            .rounded_tl(px(28.))
+            .rounded_bl(px(28.))
             .bg(scheme.primary.opacity(0.05))
             .child(div().px(px(16.)).pb(px(16.)).text_size(px(22.)).font_weight(FontWeight::BOLD).text_color(t.text).child("Configuración"));
         for (index, (icon, label)) in TABS.iter().enumerate() {

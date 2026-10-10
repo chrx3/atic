@@ -88,6 +88,9 @@ impl CodeView {
             .flex_col()
             .gap(px(2.))
             .p(px(12.))
+            // Las esquinas de la tarjeta: GPUI recorta a los hijos con un rectángulo.
+            .rounded_tl(px(t.r_pop))
+            .rounded_bl(px(t.r_pop))
             .bg(if t.style == Style::Glass { t.control } else { t.pane })
             .child(div().px(px(10.)).pt(px(6.)).pb(px(14.)).text_size(px(16.)).font_weight(FontWeight::SEMIBOLD).child("Configuración"));
         for (index, (icon, label)) in TABS.iter().enumerate() {
