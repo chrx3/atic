@@ -247,7 +247,7 @@ impl Render for CodeView {
             // Con paneles flotantes, aire alrededor del chat y del panel derecho.
             .when(t.gap > 0., |el| el.py(px(t.gap)).pr(px(t.gap)))
             .map(|el| if expressive() { el.child(self.sidebar_m3(window, cx)) } else { el.child(self.sidebar(cx)) })
-            .child(self.center(window, maximized && !right_open, !right_open, cx))
+            .child(self.chat_area(window, maximized && !right_open, !right_open, cx))
             .when(right_open, |el| el.child(self.right_panel(window, maximized, cx)))
             .when_some(self.menu_layer(window, cx), |el, menu| el.child(menu))
             .when_some(self.session_menu_layer(window, cx), |el, menu| el.child(menu))
@@ -778,8 +778,10 @@ impl CodeView {
                     .child(div().invisible().group_hover("chat-row", |el| el.visible()).child(
                         gpui_m3::IconButton::new(close_id, "x").size(px(22.)).tooltip("Cerrar").on_click(close),
                     ));
+                let drag = super::split::ChatDrag { key: Some(chat.key.clone()), session: None, workspace, title: chat.title.clone().into() };
+                let wrap = div().id(SharedString::from(format!("drag-chat-{}", chat.key)));
                 rows.push(
-                    div()
+                    self.chat_drag(wrap, drag, cx)
                         .ml(px(indent))
                         .child(
                             gpui_m3::NavItem::new(row_id, chat.title.clone())
@@ -799,8 +801,9 @@ impl CodeView {
                 rows.push(div().ml(px(indent)).child(self.rename_field.clone()).into_any_element());
                 continue;
             }
+            let drag = super::split::ChatDrag { key: Some(chat.key.clone()), session: None, workspace, title: chat.title.clone().into() };
             rows.push(
-                row(row_id, chat.title.clone(), on)
+                self.chat_drag(row(row_id, chat.title.clone(), on), drag, cx)
                     .group("chat-row")
                     .on_click(select)
                     .when_some(target, |el, target| {
@@ -848,8 +851,9 @@ impl CodeView {
             let session = info.clone();
             let id = SharedString::from(format!("hist-{}", info.session_id));
             let on_open = cx.listener(move |view, _: &ClickEvent, window, cx| view.open_session(workspace, session.clone(), window, cx));
+            let drag = super::split::ChatDrag { key: None, session: Some(info.clone()), workspace, title: info.title.clone().into() };
             rows.push(if expressive() {
-                div()
+                self.chat_drag(div().id(SharedString::from(format!("drag-hist-{}", info.session_id))), drag, cx)
                     .ml(px(indent))
                     .child(gpui_m3::NavItem::new(id, info.title.clone()).dense(true).on_click(on_open))
                     .into_any_element()
@@ -858,7 +862,7 @@ impl CodeView {
                 if self.renaming.as_ref().is_some_and(|r| !self.rename_in_header && r.session_id == target.session_id) {
                     div().ml(px(indent)).child(self.rename_field.clone()).into_any_element()
                 } else {
-                    row(id, info.title.clone(), false)
+                    self.chat_drag(row(id, info.title.clone(), false), drag, cx)
                         .text_color(muted())
                         .on_click(on_open)
                         .on_mouse_down(
@@ -1142,6 +1146,130 @@ impl CodeView {
             .when((has_workspace || loose) && !hero && !history, |el| el.child(self.composer_box(chat.is_some_and(|c| c.busy), false, window, cx)))
             // La terminal va bajo el chat, como en la referencia (`Chat.tsx`).
             .child(self.terminals.clone())
+    }
+
+    /// El chat, con la conversación de al lado si hay una (`split.rs`) y, mientras se
+    /// arrastra una de la barra, las dos mitades donde soltarla.
+    fn chat_area(&mut self, window: &mut Window, maximized: bool, controls: bool, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.dragging_chat && !cx.has_active_drag() {
+            self.dragging_chat = false;
+        }
+        let gap = t().gap.max(6.);
+        let split = self.split_chat().map(|c| c.key.clone());
+        let mut area = div().id("chat-area").relative().flex_1().min_w(px(0.)).flex();
+        area = match split {
+            None => area.child(self.center(window, maximized, controls, cx)),
+            // Los botones de la ventana van en el panel de la derecha.
+            Some(key) if self.split_left => {
+                area.child(self.split_pane(&key, false, false, window, cx)).child(div().w(px(gap)).flex_none()).child(self.center(window, maximized, controls, cx))
+            }
+            Some(key) => area.child(self.center(window, false, false, cx)).child(div().w(px(gap)).flex_none()).child(self.split_pane(&key, controls, maximized, window, cx)),
+        };
+        if self.dragging_chat {
+            let half = |left: bool, cx: &mut Context<Self>| {
+                let label = if left { "Abrir a la izquierda" } else { "Abrir a la derecha" };
+                div()
+                    .id(if left { "drop-left" } else { "drop-right" })
+                    .flex_1()
+                    .h_full()
+                    .p(px(10.))
+                    .child(
+                        div()
+                            .size_full()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded(px(t().r_pane.max(12.)))
+                            .border_2()
+                            .border_color(accent().opacity(0.35))
+                            .text_color(accent())
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(label),
+                    )
+                    .drag_over::<super::split::ChatDrag>(|style, _, _, _| style.bg(accent().opacity(0.10)))
+                    .on_drop(cx.listener(move |view, drag: &super::split::ChatDrag, window, cx| view.open_split(drag, left, window, cx)))
+            };
+            area = area.child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .flex()
+                    .rounded(px(t().r_pane))
+                    .child(half(true, cx))
+                    .child(half(false, cx)),
+            );
+        }
+        area
+    }
+
+    /// La conversación de al lado: su título, el hilo entero y una caja que, con
+    /// un clic, la vuelve la activa.
+    fn split_pane(&self, key: &str, controls: bool, maximized: bool, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = t();
+        let Some(chat) = self.chats.iter().find(|c| c.key == key) else {
+            return div().into_any_element();
+        };
+        let header = div()
+            .h(px(HEAD_H))
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap(px(10.))
+            .pl(px(22.))
+            .child(div().max_w(px(320.)).truncate().font_weight(FontWeight::SEMIBOLD).text_color(muted()).child(chat.title.clone()))
+            .child(chrome::drag(HEAD_H))
+            .child(
+                div()
+                    .mr(px(if controls { 4. } else { 14. }))
+                    .child(icon_action("split-close", "icons/x.svg", "Cerrar este lado", cx.listener(|view, _: &ClickEvent, _, cx| view.close_split(cx)))),
+            )
+            .when(controls, |el| el.child(chrome::controls_colored(maximized, HEAD_H, fg(), hover_bg())));
+        let mut thread = div().w_full().px(px(32.)).pt(px(16.)).pb(px(20.)).flex().flex_col().gap(px(if expressive() { 12. } else { 16. }));
+        let total = chat.items.len();
+        for (index, item) in chat.items.iter().enumerate() {
+            if chat.hidden(index) {
+                continue;
+            }
+            let flagged = self.is_flagged(chat, index);
+            thread = thread.child(self.item(chat, index, item, flagged, index + ENTER_MAX >= total, cx));
+        }
+        if !chat.permissions.is_empty() {
+            thread = thread.child(self.permission_cards(chat, cx));
+        }
+        if chat.working() {
+            thread = thread.child(
+                div().flex().items_center().gap(px(8.)).text_size(px(12.5)).text_color(muted()).child(gpui_m3::LoadingIndicator::new().size(px(16.))).child("Trabajando…"),
+            );
+        }
+        let _ = window;
+        // La caja de la otra: un clic la vuelve la activa y la caja de verdad pasa aquí.
+        let reply = div()
+            .id("split-reply")
+            .mx(px(16.))
+            .mb(px(14.))
+            .h(px(52.))
+            .px(px(18.))
+            .flex()
+            .flex_none()
+            .items_center()
+            .rounded(px(if expressive() { 26. } else { r_card() }))
+            .bg(t.control)
+            .text_color(faint())
+            .cursor_text()
+            .hover(|el| el.bg(t.control2))
+            .on_click(cx.listener(|view, _: &ClickEvent, window, cx| view.focus_split(window, cx)))
+            .child(if chat.busy { "Claude está trabajando… · clic para escribir aquí" } else { "Responde a Claude… · clic para escribir aquí" });
+        div()
+            .flex_1()
+            .min_w(px(0.))
+            .flex()
+            .flex_col()
+            .bg(center_bg())
+            .when(t.gap > 0., |el| el.rounded(px(t.r_pane)).overflow_hidden().when(t.style == Style::Glass, |el| el.border_1().border_color(t.highlight.opacity(0.35))))
+            .child(header)
+            .child(div().id("split-thread").flex_1().min_h(px(0.)).overflow_y_scroll().track_scroll(&self.split_thread).child(thread))
+            .child(reply)
+            .into_any_element()
     }
 
     /// «Terminal» en la barra superior, con cuántas hay si son varias (`Chat.tsx:82`).

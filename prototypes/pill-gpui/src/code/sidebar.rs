@@ -110,7 +110,8 @@ impl CodeView {
             )));
 
         // Arrastrar reordena dentro del grupo: los favoritos (0) se quedan con los favoritos.
-        let mut projects = ReorderList::new("projects").gap(px(0.));
+        // Solo el encabezado del proyecto lo mueve: sus conversaciones se arrastran al chat.
+        let mut projects = ReorderList::new("projects").gap(px(0.)).grab_height(px(44.));
         for id in self.sidebar_ids() {
             if let Some(workspace) = self.workspaces.get(id) {
                 let group = usize::from(!self.configs.favorites.contains(&id));
@@ -368,13 +369,14 @@ impl CodeView {
         if renaming {
             return div().child(self.rename_field.clone()).into_any_element();
         }
+        let drag = super::split::ChatDrag { key: key.clone(), session: session.clone(), workspace, title: title.clone().into() };
         let target = session.map(|s| SessionRef { workspace, session_id: s.session_id, title });
         // La entrada se ata a la conversación abierta si la hay (su clave no cambia cuando le
         // llega el id de sesión) y, si no, al id de la sesión guardada.
         Enter::new(SharedString::from(format!("conv-in-{enter_key}")))
             .from(-12., 0.)
             .delay(stagger(index, 0.03, 6))
-            .apply(div(), window, cx)
+            .apply(self.chat_drag(div().id(SharedString::from(format!("drag-{row_id}"))), drag, cx), window, cx)
             .when_some(target, |el, target| {
                 el.on_mouse_down(
                     MouseButton::Right,

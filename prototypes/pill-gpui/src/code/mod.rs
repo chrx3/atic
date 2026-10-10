@@ -36,6 +36,7 @@ mod settings_flat;
 mod settings_m3;
 mod sidebar;
 mod sidecar;
+mod split;
 mod style;
 mod terminal;
 mod tools;
@@ -435,6 +436,14 @@ pub struct CodeView {
     probe_live: bool,
     /// El cursor está sobre las formas del inicio (se vuelven formas M3).
     hero_hover: bool,
+    /// La conversación que se ve al lado de la activa (`split.rs`), de qué lado va,
+    /// su desplazamiento y los borradores de las que no tienen la caja.
+    split: Option<String>,
+    split_left: bool,
+    split_thread: ScrollHandle,
+    drafts: HashMap<String, String>,
+    /// Se está arrastrando una conversación de la barra (se ven las mitades para soltarla).
+    dragging_chat: bool,
     next_key: u64,
     next_doc: u64,
 }
@@ -718,6 +727,11 @@ impl CodeView {
             terminals,
             probe_live: false,
             hero_hover: false,
+            split: None,
+            split_left: false,
+            split_thread: ScrollHandle::new(),
+            drafts: HashMap::new(),
+            dragging_chat: false,
         };
         if let Some(id) = view.active_workspace() {
             view.expand_first_open(id);
@@ -845,6 +859,10 @@ impl CodeView {
                 self.system_alert(&key, &event, &data, interrupted);
                 if self.active.as_deref() == Some(key.as_str()) && self.follow {
                     self.thread.scroll_to_bottom();
+                }
+                // La de al lado también sigue el final mientras escribe.
+                if self.split.as_deref() == Some(key.as_str()) {
+                    self.split_thread.scroll_to_bottom();
                 }
             }
         }
@@ -1174,6 +1192,11 @@ impl CodeView {
     }
 
     fn select_chat(&mut self, key: String, window: &mut Window, cx: &mut Context<Self>) {
+        // La de al lado: pasa a ser la activa sin dejar de verse la otra.
+        if self.split.as_deref() == Some(key.as_str()) {
+            self.focus_split(window, cx);
+            return;
+        }
         if let Some(chat) = self.chats.iter_mut().find(|c| c.key == key) {
             chat.unread = false;
             chat.used_at = std::time::Instant::now();
@@ -1268,6 +1291,9 @@ impl CodeView {
         self.chats.retain(|c| c.key != key);
         if self.active.as_deref() == Some(key) {
             self.active = None;
+        }
+        if self.split.as_deref() == Some(key) {
+            self.split = None;
         }
         cx.notify();
     }
