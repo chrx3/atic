@@ -107,6 +107,16 @@ Este documento sirve para traspasar el trabajo entre agentes. Con él se puede r
 | Caché durante el streaming (`Markdown.tsx:94,190`) | Hecho (tanda 6-8): `parse_markdown_cached` por texto y `highlight_cached` por bloque | `Markdown` | |
 | Seleccionar texto | Falta (GPUI no la trae) | falta: `SelectableText` | Se compensa con «Copiar» |
 
+### Extras de Atic Code
+
+| Función | Estado | gpui-m3 | Nota |
+| --- | --- | --- | --- |
+| Dos conversaciones lado a lado arrastrando desde la barra | Hecho (`28f209d`): `src/code/split.rs` (`ChatDrag`, `open_split`, `focus_split`, borradores por conversación), `chat_area` y `split_pane` en `view.rs` | `ReorderList::grab_height` (solo el encabezado del proyecto reordena) | La otra se ve entera con sus permisos; un clic en su caja la vuelve la activa. Máximo dos. Sin probar en la app |
+| Correos tapados a medias en la cuenta | Hecho (`8dd44de`): `config::mask_emails` (con test) | — | `ca•••@dominio` |
+| Formas del inicio blandas que se vuelven M3 al pasar el cursor | Hecho (`fa6f860` en gpui-m3, `52ee62f`) | `ShapeName::Blob`, `Blob2`, `Pebble` | |
+| Fila del turno con tok/s en vez del costo | Hecho (`bb12662`): `chat::turn_summary` (con test) | — | El sidecar manda `durationApiMs` |
+| Sesión de sondeo para modelos y uso sin conversación | Hecho (`573a4d5`): `PROBE`, `ensure_probe`, `info_key` | — | El precalentado de la referencia |
+
 ## 2. Composer
 
 | Función de la referencia | Estado en Atic Code | gpui-m3 | Nota |
