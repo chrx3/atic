@@ -51,8 +51,8 @@ impl CodeView {
             (Command::new("refresh", "Actualizar Claude Code"), PaletteAct::Settings),
         ];
         if let Some(workspace) = self.workspaces.active_id() {
-            commands.push((Command::new("diff", "Ver cambios"), PaletteAct::Changes));
-            commands.push((Command::new("files", "Ver archivos"), PaletteAct::Files));
+            commands.push((Command::new("diff", "Ver cambios").hint("Ctrl+G"), PaletteAct::Changes));
+            commands.push((Command::new("files", "Ver archivos").hint("Ctrl+E"), PaletteAct::Files));
             for info in self.history.get(&workspace).into_iter().flatten().take(30) {
                 commands.push((Command::new("spark", info.title.clone()).hint("Conversación"), PaletteAct::Session(workspace, info.clone())));
             }

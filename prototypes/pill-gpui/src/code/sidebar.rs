@@ -105,6 +105,8 @@ impl CodeView {
             )));
 
         let mut projects = div().flex().flex_col();
+        // TODO(gpui-m3): ReorderList/DragHandle para reordenar los espacios arrastrando
+        // (Sidebar.tsx:313-351 de la referencia); por ahora, favoritos primero y el orden de la lista.
         let ids: Vec<u64> = self.workspaces.list().iter().map(|w| w.id).collect();
         for id in super::config::sidebar_order(&ids, &self.configs.favorites) {
             if let Some(workspace) = self.workspaces.get(id) {
