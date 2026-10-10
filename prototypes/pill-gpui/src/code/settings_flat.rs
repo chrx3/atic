@@ -418,7 +418,7 @@ impl CodeView {
     }
 
     /// «Apariencia»: las tarjetas de estilo, el modo de color y el acento.
-    fn appearance_tab_flat(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn appearance_tab_flat(&self, cx: &mut Context<Self>) -> AnyElement {
         let t = t();
         let hints = ["Sobrio, denso y rápido", "Color, formas y movimiento", "Vidrio, luz y profundidad"];
         let mut cards = div().flex().gap(px(8.));

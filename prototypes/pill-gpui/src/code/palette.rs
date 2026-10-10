@@ -1,6 +1,8 @@
 //! La paleta de comandos (Ctrl+K), como la de la referencia: acciones de la app, las
 //! conversaciones del proyecto, el estilo y el modo de color.
 
+use std::path::PathBuf;
+
 use gpui::{AppContext, Context, Window};
 use gpui_m3::{Command, CommandPalette, CommandPaletteEvent};
 
@@ -19,6 +21,8 @@ pub enum PaletteAct {
     Settings,
     Changes,
     Files,
+    /// Una pestaña de archivo del editor que ya está abierta.
+    Tab(PathBuf),
     Session(u64, SessionInfo),
     Style(Style),
     Mode(Mode),
@@ -55,6 +59,11 @@ impl CodeView {
         if let Some(workspace) = self.workspaces.active_id() {
             commands.push((Command::new("diff", "Ver cambios").hint("Ctrl+G"), PaletteAct::Changes));
             commands.push((Command::new("files", "Ver archivos").hint("Ctrl+E"), PaletteAct::Files));
+            // Las pestañas abiertas del editor, como en la referencia (`Overlays.tsx:513`).
+            for tab in &self.tabs.files {
+                let name = tab.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| tab.path.display().to_string());
+                commands.push((Command::new("file", format!("Abrir {name}")).hint("Pestaña"), PaletteAct::Tab(tab.path.clone())));
+            }
             for info in self.history.get(&workspace).into_iter().flatten().take(30) {
                 commands.push((Command::new("spark", info.title.clone()).hint("Conversación"), PaletteAct::Session(workspace, info.clone())));
             }
@@ -94,6 +103,7 @@ impl CodeView {
             PaletteAct::Settings => self.settings_open = true,
             PaletteAct::Changes => self.toggle_side(Side::Changes, cx),
             PaletteAct::Files => self.toggle_side(Side::Files, cx),
+            PaletteAct::Tab(path) => self.open_file(path, cx),
             PaletteAct::Session(workspace, info) => {
                 self.history_page = false;
                 self.open_session(workspace, info, window, cx);

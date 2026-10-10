@@ -355,7 +355,7 @@ impl CodeView {
             .into_any_element()
     }
 
-    fn appearance_tab(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn appearance_tab(&self, cx: &mut Context<Self>) -> AnyElement {
         let t = t();
         let scheme = *gpui_m3::Theme::of(cx);
         let group = |title: &'static str| {

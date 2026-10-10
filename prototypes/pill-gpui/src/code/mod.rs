@@ -403,6 +403,9 @@ pub struct CodeView {
     profile: profile::Profile,
     profile_card: Option<Point<Pixels>>,
     profile_last: overlay::Last<Point<Pixels>>,
+    /// El menú rápido de Apariencia (junto al botón de la barra).
+    style_menu: Option<Point<Pixels>>,
+    style_menu_last: overlay::Last<Point<Pixels>>,
     profile_field: Entity<gpui_m3::TextField>,
     cropper: Option<Entity<gpui_m3::ImageCropper>>,
     cropper_last: overlay::Last<Entity<gpui_m3::ImageCropper>>,
@@ -693,6 +696,8 @@ impl CodeView {
             profile: profile::Profile::load(),
             profile_card: None,
             profile_last: Default::default(),
+            style_menu: None,
+            style_menu_last: Default::default(),
             profile_field: profile::name_field(cx),
             cropper: None,
             cropper_last: Default::default(),
@@ -1567,7 +1572,7 @@ impl CodeView {
         let now = std::time::Instant::now();
         let double = self.last_esc.is_some_and(|last| now.duration_since(last) < DOUBLE_ESC);
         self.last_esc = Some(now);
-        if self.menu.take().is_some() || self.pop.take().is_some() || self.profile_card.take().is_some() || self.settings_open {
+        if self.menu.take().is_some() || self.pop.take().is_some() || self.profile_card.take().is_some() || self.style_menu.take().is_some() || self.settings_open {
             self.settings_open = false;
             self.last_esc = None;
             cx.notify();

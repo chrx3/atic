@@ -414,8 +414,8 @@ impl CodeView {
                     .child(self.profile_avatar("side-avatar", px(30.), cx))
                     .child(div().min_w(px(0.)).truncate().font_weight(FontWeight::MEDIUM).child(name)),
             )
-            .child(IconButton::new("side-style", "palette").size(px(32.)).tooltip("Apariencia").on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
-                view.open_appearance(cx);
+            .child(IconButton::new("side-style", "palette").size(px(32.)).tooltip("Apariencia").on_click(cx.listener(|view, event: &ClickEvent, _, cx| {
+                view.toggle_style_menu(event.position(), cx);
             })))
             .child(IconButton::new("side-settings", "gear").size(px(32.)).tooltip("Configuración (Ctrl+,)").on_click(cx.listener(
                 |view, _: &ClickEvent, _, cx| {
@@ -462,8 +462,8 @@ impl CodeView {
                 |view, _: &ClickEvent, window, cx| view.open_palette(window, cx),
             )))
             .child(div().flex_1().w_full().child(crate::space::chrome::drag(200.)))
-            .child(IconButton::new("rail-style", "palette").size(px(40.)).tooltip("Apariencia").on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
-                view.open_appearance(cx);
+            .child(IconButton::new("rail-style", "palette").size(px(40.)).tooltip("Apariencia").on_click(cx.listener(|view, event: &ClickEvent, _, cx| {
+                view.toggle_style_menu(event.position(), cx);
             })))
             .child(IconButton::new("rail-settings", "gear").size(px(40.)).tooltip("Configuración (Ctrl+,)").on_click(cx.listener(
                 |view, _: &ClickEvent, _, cx| {
@@ -980,11 +980,66 @@ impl CodeView {
         self.rename_in_header = true;
     }
 
-    /// Apariencia abre la configuración en su pestaña.
-    pub(super) fn open_appearance(&mut self, cx: &mut Context<Self>) {
-        self.settings_tab = 1;
-        self.settings_open = true;
+    /// Abre o cierra el menú rápido de Apariencia (`StyleMenu` de la referencia).
+    pub(super) fn toggle_style_menu(&mut self, at: Point<Pixels>, cx: &mut Context<Self>) {
+        self.style_menu = if self.style_menu.is_some() { None } else { Some(at) };
         cx.notify();
+    }
+
+    /// El menú rápido de Apariencia: estilo, modo y acento en un popover junto
+    /// al botón; es el mismo contenido de la pestaña de Configuración.
+    pub(super) fn style_menu_layer(&self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let shown = self.style_menu_last.show("style-menu-presence", self.style_menu, window, cx)?;
+        let (at, leaving) = (shown.value, shown.leaving);
+        let t = t();
+        let content = if super::view::expressive() { self.appearance_tab(cx) } else { self.appearance_tab_flat(cx) };
+        let card = gpui_m3::Popover::new("style-menu")
+            .width(px(500.))
+            .padding(px(18.))
+            .radius(px(28.))
+            .gap(px(14.))
+            .max_h(px(620.))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .child(div().flex_1().text_size(px(20.)).font_weight(FontWeight(750.)).text_color(t.text).child("Apariencia"))
+                    .child(IconButton::new("style-menu-close", "x").size(px(32.)).tooltip("Cerrar").on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
+                        view.style_menu = None;
+                        cx.notify();
+                    }))),
+            )
+            .child(content);
+        Some(
+            deferred(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .when(!leaving, |el| {
+                        el.on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|view, _, _, cx| {
+                                view.style_menu = None;
+                                cx.notify();
+                            }),
+                        )
+                    })
+                    .child(
+                        anchored()
+                            .position(point(at.x - px(16.), at.y + px(18.)))
+                            .anchor(Corner::BottomLeft)
+                            .snap_to_window_with_margin(px(8.))
+                            .child(
+                                div()
+                                    .id("style-menu-wrap")
+                                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                                    .child(shown.wrap(gpui_m3::Exit::Rise, card)),
+                            ),
+                    ),
+            )
+            .with_priority(1)
+            .into_any_element(),
+        )
     }
 
     fn start_rename(&mut self, target: SessionRef, window: &mut Window, cx: &mut Context<Self>) {

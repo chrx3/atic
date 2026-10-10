@@ -257,6 +257,7 @@ impl Render for CodeView {
             .when_some(self.pop_layer(window, cx), |el, pop| el.child(pop))
             .when_some(self.mention_layer(window, cx), |el, list| el.child(list))
             .when_some(self.profile_layer(window, cx), |el, card| el.child(card))
+            .when_some(self.style_menu_layer(window, cx), |el, card| el.child(card))
             .when_some(self.crop_dialog(window, cx), |el, dialog| el.child(dialog))
             .when(self.palette_open, |el| el.child(self.palette.clone()))
             .when(!expressive() && self.settings_open, |el| el.child(self.settings_flat(cx)))
