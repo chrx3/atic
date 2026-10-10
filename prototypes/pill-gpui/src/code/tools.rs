@@ -2,10 +2,10 @@
 //! objetivo y su meta en la cabecera, y al abrir el detalle de cada una.
 
 use gpui::{div, prelude::*, px, AnyElement, ClickEvent, Context, FontWeight, SharedString};
-use gpui_m3::{Badge, CodeOutput, ExpandableCard, Icon, LoadingIndicator, Tone};
+use gpui_m3::{Badge, Button, CodeOutput, ExpandableCard, Icon, LoadingIndicator, Tone};
 use serde_json::Value;
 
-use super::chat::ToolCall;
+use super::chat::{artifact_is_publish, artifact_title, artifact_url, artifact_verb, ToolCall};
 use super::style::t;
 use super::CodeView;
 
@@ -57,6 +57,10 @@ fn describe(tool: &ToolCall) -> (String, String, bool, bool) {
         "Task" | "Agent" => {
             let kind = field("subagent_type");
             ("Subagente".into(), if kind.is_empty() { "general".into() } else { kind }, false, true)
+        }
+        "Artifact" => {
+            let input = tool.input.as_ref();
+            (artifact_verb(input), if artifact_is_publish(input) { artifact_title(input) } else { String::new() }, false, false)
         }
         "TodoWrite" => ("Tareas".into(), String::new(), true, true),
         "ExitPlanMode" => ("Plan".into(), String::new(), true, true),
@@ -202,6 +206,18 @@ impl CodeView {
                     meta = meta.child(Badge::tonal(Tone::Secondary, format!("{} herramientas", tool.child_total)));
                 }
             }
+            "Artifact" => {
+                // Publicado: «Abrir» lo lleva al navegador sin desplegar la tarjeta.
+                let url = tool.input.as_ref().filter(|i| artifact_is_publish(Some(i))).and_then(|_| tool.result.as_deref()).and_then(artifact_url);
+                if let Some(url) = url {
+                    meta = meta.child(div().flex_none().ml_auto().on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation()).child(
+                        Button::new(SharedString::from(format!("{}-open", tool.id)), "Abrir").text().icon("export").on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
+                            cx.stop_propagation();
+                            cx.open_url(&url);
+                        })),
+                    ));
+                }
+            }
             "TodoWrite" => {
                 let list = super::view::todos(tool);
                 let done = list.iter().filter(|(_, s)| s == "completed").count();
@@ -281,6 +297,7 @@ impl CodeView {
                 body = body.child(super::view::markdown(&format!("{id}-plan"), &field("plan"), cx));
                 shows_result = false;
             }
+            "Artifact" => body = body.when(!result.is_empty(), |el| el.child(output(format!("{id}-r"), &result, 12, None, tool.is_error))),
             "AskUserQuestion" => body = body.when(!result.is_empty(), |el| el.child(div().text_color(t.muted).child(clean(&result).to_string()))),
             _ => {
                 if !input.is_null() {

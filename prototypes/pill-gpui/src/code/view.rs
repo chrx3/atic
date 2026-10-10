@@ -502,6 +502,7 @@ fn tool_label(tool: &ToolCall) -> (&'static str, String) {
         "TodoWrite" => "Tareas",
         "ExitPlanMode" => "Plan",
         "AskUserQuestion" => "Pregunta",
+        "Artifact" => "Artifact",
         _ => "",
     };
     let mut summary = tool.summary();

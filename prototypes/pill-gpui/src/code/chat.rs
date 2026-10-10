@@ -90,6 +90,16 @@ pub fn artifact_is_publish(input: Option<&Value>) -> bool {
     action.is_none_or(|a| a == "publish") && input.and_then(|i| i.get("asset")).is_none_or(Value::is_null)
 }
 
+/// El verbo de la tarjeta de un Artifact según su acción (`ArtifactCard` de la referencia).
+pub fn artifact_verb(input: Option<&Value>) -> String {
+    match input.and_then(|i| i.get("action")).and_then(Value::as_str) {
+        None | Some("") | Some("publish") => "Artifact".into(),
+        Some("read") => "Leer artifact".into(),
+        Some("list") => "Listar artifacts".into(),
+        Some(other) => format!("Artifact · {other}"),
+    }
+}
+
 /// El título de un Artifact: el que se le dio o el nombre del archivo publicado.
 pub fn artifact_title(input: Option<&Value>) -> String {
     let field = |name: &str| input.and_then(|i| i.get(name)).and_then(Value::as_str).unwrap_or_default().trim().to_string();
@@ -1340,6 +1350,15 @@ mod tests {
         assert_eq!(chat.flag_session(), "c1");
         chat.apply("session", &json!({ "sessionId": "s1" }));
         assert_eq!(chat.flag_session(), "s1");
+    }
+
+    #[test]
+    fn el_verbo_de_la_tarjeta_del_artifact() {
+        assert_eq!(artifact_verb(None), "Artifact");
+        assert_eq!(artifact_verb(Some(&json!({ "action": "publish" }))), "Artifact");
+        assert_eq!(artifact_verb(Some(&json!({ "action": "read" }))), "Leer artifact");
+        assert_eq!(artifact_verb(Some(&json!({ "action": "list" }))), "Listar artifacts");
+        assert_eq!(artifact_verb(Some(&json!({ "action": "delete" }))), "Artifact · delete");
     }
 
     #[test]
