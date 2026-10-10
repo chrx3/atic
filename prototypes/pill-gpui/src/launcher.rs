@@ -1421,19 +1421,29 @@ pub fn launch(target: &Target) -> Result<(), String> {
     shell_open(&file)
 }
 
+/// Abre `file` con su programa, en un hilo aparte. `ShellExecuteW` puede quedarse
+/// esperando en su propio bucle de mensajes (el «¿Con qué quieres abrirlo?» de un tipo
+/// sin programa, un aviso de seguridad): en el hilo de GPUI ese bucle despierta las
+/// animaciones mientras la app sigue tomada por el clic, y la pill se cae («RefCell
+/// already borrowed»). Por eso no se espera la respuesta: un error va al registro.
 #[cfg(windows)]
 pub(crate) fn shell_open(file: &str) -> Result<(), String> {
-    use windows::core::HSTRING;
-    use windows::Win32::UI::Shell::ShellExecuteW;
-    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
-    let result = crate::app_icon::with_com(|| unsafe {
-        ShellExecuteW(None, &HSTRING::from("open"), &HSTRING::from(file), None, None, SW_SHOWNORMAL)
-    });
-    if result.0 as isize > 32 {
-        Ok(())
-    } else {
-        Err(format!("no se pudo abrir ({})", result.0 as isize))
-    }
+    let file = file.to_string();
+    std::thread::Builder::new()
+        .name("shell-open".into())
+        .spawn(move || {
+            use windows::core::HSTRING;
+            use windows::Win32::UI::Shell::ShellExecuteW;
+            use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+            let result = crate::app_icon::with_com(|| unsafe {
+                ShellExecuteW(None, &HSTRING::from("open"), &HSTRING::from(file.as_str()), None, None, SW_SHOWNORMAL)
+            });
+            if result.0 as isize <= 32 {
+                tracing::warn!(archivo = %file, codigo = result.0 as isize, "no se pudo abrir");
+            }
+        })
+        .map(|_| ())
+        .map_err(|error| format!("no se pudo abrir: {error}"))
 }
 
 #[cfg(not(windows))]
