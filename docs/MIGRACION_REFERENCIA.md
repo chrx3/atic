@@ -47,7 +47,7 @@ Este documento sirve para traspasar el trabajo entre agentes. Con él se puede r
 | Contador de marcas (`flags.ts:29`) | **En curso** (tanda 2) | — | |
 | Ruta en `código` en línea que se puede abrir con un clic (`Thread.tsx:44,124`) | Hecho (tanda 6-8): `Markdown::on_path` → `CodeView::open_ref` → `files::resolve_ref` (con test) | `Markdown::on_path` | Relativa a las carpetas del espacio de la conversación (o `carpeta/ruta`); si no existe, un aviso «No encontré…» |
 | Razonamiento plegable (`Thread.tsx:18`) | Hecho `view.rs:1142` | `ExpandableCard::plain` | |
-| «Razonando…» en vivo, con la última línea (`Thread.tsx:21,29`) | Hecho (tanda 4): `Chat::is_streaming` + `ExpandableCard::preview` con `last_line` (con test) | `ExpandableCard::preview` | |
+| «Razonando…» en vivo, con la última línea (`Thread.tsx:21,29`) | Hecho (tanda 4): `Chat::is_streaming` + `ExpandableCard::preview` con `last_line` (con test). Tanda 21: también en Formal/Glass (`other_item`, `view.rs`: encabezado con la última línea y cuerpo en `markdown`) | `ExpandableCard::preview` | |
 | Ocultar el razonamiento vacío o cifrado (`Thread.tsx:137`) | Hecho (tanda 4): `Chat::hidden`; el hilo se lo salta | — | |
 | Aviso informativo (`Thread.tsx:146`) | Hecho `view.rs:1103` | `Bubble` Notice | |
 | Aviso de error (`Thread.tsx:146`) | Hecho (tanda 4): `BubbleKind::Error` en Expressive | `BubbleKind::Error` | |
@@ -61,7 +61,7 @@ Este documento sirve para traspasar el trabajo entre agentes. Con él se puede r
 | Animación al cambiar de conversación (`Thread.tsx:227`) | Hecho (tanda 20): `Enter::on_change` en el hilo, sube 14 px (`view.rs`: `center`, `key_hash`) | no hay `swap`: se hace con `motion::replay` (`enter.rs`) | Solo Expressive |
 | Entrada animada de cada parte nueva (`src/lib/motion.ts:43-57`) | Hecho (tanda 4): `Bubble::entrance` en el mensaje del usuario y los avisos, solo las últimas 3 partes (`ENTER_MAX`) | `Bubble::entrance` | Texto, razonamiento y herramientas no son burbujas: sin entrada |
 | Indicador «Trabajando…» (`Thread.tsx:241,253`) | Hecho (tanda 4): `Chat::working` lo oculta mientras llega texto o razonamiento (con test) | `LoadingIndicator` | |
-| Permisos apilados al final del hilo (`Thread.tsx:261`) | Hecho `view.rs:904` | — | Formal y Glass muestran solo el primero |
+| Permisos apilados al final del hilo (`Thread.tsx:261`) | Hecho `view.rs:904` | — | Formal y Glass también apilan todos (tanda 21, `permission_cards` en `permissions.rs`) |
 | Streaming start/delta/stop (`agent.ts:215`) | Hecho `chat.rs:282` | — | |
 | Cambiar el texto del stream por el del mensaje final (`agent.ts:285-291`) | Parcial `chat.rs:366` | — | Si llegó por stream, el texto final se ignora |
 | Ignorar ecos y mensajes internos (`agent.ts:332`) | Hecho `chat.rs:148,402` | — | |
@@ -111,7 +111,7 @@ Este documento sirve para traspasar el trabajo entre agentes. Con él se puede r
 
 | Función de la referencia | Estado en Atic Code | gpui-m3 | Nota |
 | --- | --- | --- | --- |
-| Caja que crece hasta 240 px (`Agent.tsx:1098,1311`) | Hecho en Expressive `view.rs:1625`; Parcial en Formal/Glass (fija en 60 px, `view.rs:1524`) | existe `TextArea` | Atic usa su propio `crate::text_area` |
+| Caja que crece hasta 240 px (`Agent.tsx:1098,1311`) | Hecho (tanda 21, `9348cb1`): `composer_box` (`view.rs`) usa `content_height(3).min(240)` en los tres estilos; Expressive, `composer_m3` | existe `TextArea` | Atic usa su propio `crate::text_area` |
 | Placeholder «Pregunta… · @ · /» (`Agent.tsx:1314`) | Hecho (tanda 4): la «@» solo se anuncia con un proyecto abierto (`HERO_PLACEHOLDER_LOOSE`) | — | |
 | «/» solo abre el menú (`Agent.tsx:1319`) | Hecho `mod.rs:1000` | — | |
 | Enter envía y Mayús+Enter baja de línea (`Agent.tsx:1352`) | Hecho `mod.rs:67` | — | |
@@ -187,7 +187,7 @@ Este documento sirve para traspasar el trabajo entre agentes. Con él se puede r
 | Submenús Permisos y Estilo de salida (`Agent.tsx:422-431`) | Hecho `agent_menu.rs:309-330` | — | |
 | Submenús Subagentes y Comandos (`Agent.tsx:432-435`) | Hecho (tanda 3): agregan con `insert()` | — | |
 | Submenú MCP: estado, Reconectar, Activar/Desactivar (`Agent.tsx:347,608`) | Hecho `agent_menu.rs:361-442` | `Chip` | |
-| Menú en Formal y Glass | Parcial: versión reducida (`menus.rs:282-361`) | — | |
+| Menú en Formal y Glass | Hecho (tanda 21, `f2793f0`): `menu_entries` (`agent_menu.rs`) arma filas neutras (`Line`, `Entry`) y `flat_entries`/`flat_line` (`menus.rs`) las dibujan con filtro y pestañas; Expressive las pasa a `MenuItem` | — | |
 | Ítems de menú escalonados de a 25 ms (`motion.css:628`) | Hecho (tanda 20): `Menu` lo hace solo (`stagger` por defecto) y ningún menú de Atic usa `grouped` | `Menu::stagger` | Sin cambios en Atic Code |
 
 ## 4. Modelos y esfuerzo
@@ -205,7 +205,7 @@ Este documento sirve para traspasar el trabajo entre agentes. Con él se puede r
 | `noteModelForSend` / `sentModel` (`agent.ts:808`) | Hecho (`b1a3efc`) | — | |
 | `reviveFor`/`forkAt` con `want` (`store.ts:567,689`) | `reviveFor`: Hecho (`b1a3efc`). `forkAt`: **En curso** (Rewind) | — | |
 | PERMISSIONS y EFFORTS (`Agent.tsx:66`, `ui.tsx:90`) | Hecho `config.rs:12,20` | — | |
-| `EffortControl` por estilo: puntos, paradas, perilla (`ui.tsx:101`) | Parcial: `StopSlider` en M3 y puntos en Formal (`menus.rs:165`) | `StopSlider` | Glass no tiene la perilla |
+| `EffortControl` por estilo: puntos, paradas, perilla (`ui.tsx:101`) | Hecho (tanda 21): `StopSlider` en M3, puntos en Formal (`effort_dots`) y riel con perilla blanca y paradas en Glass (`effort_knob`, `menus.rs`) | `StopSlider` | La perilla no es circular ni se arrastra libre: la referencia tampoco; se mueve por paradas (clic o arrastre) y no se anima el desplazamiento |
 | `ClaudeSettings` global o por proyecto (`src/lib/api.ts:11`, `store.ts:348`) | Hecho por espacio (`config.rs:155`) | — | Sin espacio activo no se guarda nada |
 | Valores por defecto: opus / medium / thinking / acceptEdits (`store.ts:334`, `src-tauri/src/workspace.rs:97`) | No aplica: se siguen los de Atic (Decisiones) | — | |
 
@@ -231,7 +231,7 @@ Este documento sirve para traspasar el trabajo entre agentes. Con él se puede r
 | Plan: «Claude terminó de planificar» y sus tres opciones con campo (`Permission.tsx:316-337`) | Hecho `permissions.rs:533-568` | `Card`, `Button` | |
 | Teclado en el plan (`Permission.tsx:303`) | **En curso** (tanda 2) | — | |
 | `permission_cancel` y responder (`agent.ts:421,670`) | Hecho `chat.rs:233`, `permissions.rs:401` | — | |
-| Tarjeta en Formal/Glass (`view.rs:1343`) | Parcial | — | Sin «Permitir todo», sin campo y solo la primera |
+| Tarjeta en Formal/Glass (`view.rs:1343`) | Hecho (tanda 21, `9348cb1`): `permission_cards`, `general_card`, `plan_card`, `ask_card` (`permissions.rs`) con «Permitir todo», campo de respuesta, diffs, preguntas y plan, todas apiladas | — | |
 
 ## 6. Herramientas y diffs (`src/components/chat/Tools.tsx`, `Diff.tsx`)
 
@@ -272,7 +272,7 @@ Este documento sirve para traspasar el trabajo entre agentes. Con él se puede r
 | Botón buscar/comandos (`Sidebar.tsx:369`) | Hecho `sidebar.rs:80` | `IconButton` | |
 | «Nueva conversación» con ⌘N a la vista (`Sidebar.tsx:375`) | Parcial: no muestra el atajo (`sidebar.rs:96`) | `Fab` | |
 | Historial (`Sidebar.tsx:380`) | Hecho `sidebar.rs:97` | `NavItem` | |
-| Menú «Proyectos +»: nuevo, abrir, carpeta, importar VS Code (`Sidebar.tsx:387`, `src/components/Overlays.tsx:37-63`) | Parcial: el botón abre «Nuevo espacio» (tanda 3); abrir carpeta va por Ctrl+O y la paleta | `Menu` | Falta importar VS Code. Ver Decisiones (espacios) |
+| Menú «Proyectos +»: nuevo, abrir, carpeta, importar VS Code (`Sidebar.tsx:387`, `src/components/Overlays.tsx:37-63`) | Parcial: el botón abre «Nuevo espacio» (tanda 3; tanda 21: también en Formal y Glass, `new_space_dialog`); abrir carpeta va por Ctrl+O y la paleta | `Menu` | Falta importar VS Code. Ver Decisiones (espacios) |
 | Diálogo «Nuevo workspace» con nombre y carpetas (`Overlays.tsx:411-483`) | Hecho (tanda 3): `new_space_dialog` (`sidebar.rs`) | `Dialog`, `TextField`, `Button` | Las carpetas con el diálogo nativo, no `space/picker.rs` (Decisiones) |
 | Orden: favoritos primero y luego el del usuario (`store.ts:130-144`) | Hecho (tanda 3 y 13): `config::sidebar_order(ids, favoritos, orden)` (con tests) | — | «El del usuario» es `Configs::order` (tanda 13), el orden de la lista para los espacios sin lugar guardado |
 | Reordenar arrastrando (`Sidebar.tsx:313-351`) | Hecho (tanda 13): `ReorderList` en `sidebar_m3`, `reorder_spaces` (`sidebar.rs`); el orden va a `Configs::order` (`code-claude.json`, no al Mando) con `set_order` (`config.rs`) | `ReorderList` (no hay `DragHandle`: se arrastra desde toda la fila) | Dos grupos: favoritos (0) y el resto (1). **No se probó en la app.** Solo en la barra de Expressive |
@@ -287,8 +287,8 @@ Este documento sirve para traspasar el trabajo entre agentes. Con él se puede r
 | Ícono de marcador en la fila (`Sidebar.tsx:125`) | **En curso** (tanda 2: marcadores) | — | |
 | Menú contextual: Abrir, Renombrar en el sitio, Eliminar con confirmación (`Sidebar.tsx:89-115`) | Hecho; guarda al perder el foco (tanda 3, `commit_renames_on_blur`) | `MenuItem::danger().confirm()`, `TextField::inline` | |
 | Menú contextual: Agregar/Quitar marcador (`Sidebar.tsx:91`) | **En curso** (tanda 2) | — | |
-| Chats sueltos, sin proyecto (`Sidebar.tsx:277-305`, `store.ts:453,575`) | Hecho (tanda 3): sección «Chats» (`loose_chats`, cinco y «Ver todos») | — | Solo en la barra de Expressive (Decisiones) |
-| Pie: perfil, Apariencia, Configuración (`Sidebar.tsx:423`) | Hecho (tanda 3 y 4): Apariencia abre su pestaña; el perfil abre su tarjeta | `IconButton` | |
+| Chats sueltos, sin proyecto (`Sidebar.tsx:277-305`, `store.ts:453,575`) | Hecho (tanda 3): sección «Chats» (`loose_chats`, cinco y «Ver todos») | — | Tanda 21: también en Formal y Glass (`chat_rows(LOOSE, …)` en `sidebar`, `view.rs`) |
+| Pie: perfil, Apariencia, Configuración (`Sidebar.tsx:423`) | Hecho (tanda 3 y 4): Apariencia abre su pestaña; el perfil abre su tarjeta | `IconButton` | Tanda 21: Formal y Glass tienen la fila de perfil (avatar y nombre, `toggle_profile`) sobre Configuración; el recorte de la foto es el mismo diálogo de gpui-m3 |
 | Riel M3 con su avatar, que abre la barra (`Sidebar.tsx:434-467`) | Hecho (el avatar abre la barra desde la tanda 3) | `RailItem`, `Fab`, `Avatar` | |
 | Página Historial con búsqueda (`Chat.tsx:316-346`) | Hecho `sidebar.rs:345` | `TextField` | |
 | Historial: filtro «Marcadores» (`Chat.tsx:335`) | **En curso** (tanda 2) | `Chip` (filtro) | |
@@ -298,7 +298,7 @@ Este documento sirve para traspasar el trabajo entre agentes. Con él se puede r
 | Cerrar las conversaciones precalentadas vacías (`store.ts:599`) | No aplica (Atic no precalienta) | — | |
 | Título de la ventana «proyecto — Atic Code» (`store.ts:101`) | Hecho (tanda 3), en `render`; «Chats — Atic Code» en un chat suelto | — | |
 | Avisos al abrir: importado, carpetas que faltan (`store.ts:102`) | Falta | `Toast` | |
-| Quitar un espacio y agregarle carpetas | Hecho (tanda 3): menú contextual del espacio en Expressive (`space_menu_layer`) | `Menu`, `MenuItem::confirm` | También Renombrar y Favorito |
+| Quitar un espacio y agregarle carpetas | Hecho (tanda 3): menú contextual del espacio (`space_menu_layer`); tanda 21: también con el clic derecho en la barra de Formal y Glass | `Menu`, `MenuItem::confirm` | También Renombrar (campo en la fila) y Favorito |
 | `listSessions`, `renameSession`, `deleteSession` (`agent.ts:833`) | Hecho `mod.rs:556`, `sidebar.rs:537,559` | — | Límite de 40 (la referencia usa 50) |
 
 ## 8. Panel de contexto, archivos y git (`src/components/ContextPanel.tsx`)
@@ -308,7 +308,7 @@ Este documento sirve para traspasar el trabajo entre agentes. Con él se puede r
 | Panel derecho con Cambios/Archivos, título, contador y cerrar (`ContextPanel.tsx:347-383`) | Hecho `view.rs:1782-1841` | `Badge` | |
 | Actualizar con spinner (`ContextPanel.tsx:361`) | Hecho (tanda 3): `refreshing` + `LoadingIndicator` | `LoadingIndicator` | Al pedirlo y al terminar cada respuesta, no en el sondeo |
 | Árbol con las raíces como carpetas, carga diferida (`ContextPanel.tsx:27-69`) | Hecho `view.rs` (`file_tree`), `src/space/explorer.rs:80` | `TreeRow` en Expressive (tanda 3) | |
-| Color del nombre según el tipo; dotfiles atenuados; archivo activo resaltado (`ContextPanel.tsx:18-60`) | Hecho (tanda 3): `files::kind_of` + `kind_color`; el activo es el último abierto (`active_file`) | `TreeRow` | Como la referencia, se pinta el ícono. Formal/Glass: solo los dotfiles atenuados |
+| Color del nombre según el tipo; dotfiles atenuados; archivo activo resaltado (`ContextPanel.tsx:18-60`) | Hecho (tanda 3): `files::kind_of` + `kind_color`; el activo es el último abierto (`active_file`) | `TreeRow` | Como la referencia, se pinta el ícono. Formal/Glass (tanda 21): ícono por tipo, dotfiles atenuados y archivo abierto resaltado en `file_tree` y `file_results` (`view.rs`) |
 | Ocultar node_modules, target y dist (`src-tauri/src/fs.rs`) | Hecho (tanda 6-8): `Explorer::for_code` (con test) | — | Solo el árbol de Atic Code; el del Mando sigue ocultando solo `.git` |
 | Buscar archivos con índice (120 resultados) (`ContextPanel.tsx:71-131`) | Hecho (tanda 3): `src/code/files.rs` (`index`, `search`, con tests) | `TextField`, `TreeRow` | El índice se reutilizará en las @-menciones; Esc limpia |
 | Cambios agrupados por repo, con rama (`ContextPanel.tsx:267-305`) | Hecho `view.rs:2218,2242`, `src/code/git.rs:55` | `Card`/`ListGroup` | |
@@ -397,14 +397,14 @@ Hecho (tanda 11): `src/code/editor.rs` (estado de pestañas, guardar, recargar, 
 | Elegir el estilo Formal, M3 o Glass (`src/lib/theme.ts:160`) | Hecho `style.rs:18`, `mod.rs:1016` | — | Atic parte en Expressive |
 | Modo claro/oscuro/sistema (`theme.ts:166`) | Hecho (tanda 3): «Sistema» sigue a Windows (`style::set_system_light`) | — | |
 | Seguir en vivo el cambio del sistema (`theme.ts:118`) | Hecho (tanda 3): `observe_window_appearance` | — | Sin probar en la app |
-| Tarjetas de estilo con miniatura (`Overlays.tsx:68`) | Hecho (tanda 3) en Expressive | `SelectCard` | Formal/Glass siguen con chips |
-| Segmentado «Modo de color» (`Overlays.tsx:219`) | Hecho en M3 (`settings_m3.rs:359`); chips en Formal y Glass | `SegmentedButtons` | |
+| Tarjetas de estilo con miniatura (`Overlays.tsx:68`) | Hecho (tanda 3) en Expressive | `SelectCard` | Formal/Glass: también tarjetas (`appearance_tab_flat`, `settings_flat.rs`, tanda 21) |
+| Segmentado «Modo de color» (`Overlays.tsx:219`) | Hecho en M3 (`settings_m3.rs:359`); Formal y Glass (`appearance_tab_flat`) | `SegmentedButtons` | |
 | Acento: 9 sugeridos, propio, restablecer (`Overlays.tsx:97-136`, `theme.ts:46`) | Hecho (tanda 3): `accent_picker_ui` (`settings_m3.rs`), también en la Configuración de Formal/Glass | `ColorSwatches`, `HsvPicker`, `Button` | |
 | Acento por proyecto (`Overlays.tsx:138`, `store.ts:316`) | Hecho (tanda 3): `Configs::accents` por espacio y estilo | — | No hay acento global de la app (Decisiones) |
 | Esquema M3 desde la semilla (`theme.ts:72`) | Hecho (tanda 3): `style::with_accent` y `apply_m3` | `Scheme::from_seed` | gpui-m3 usa la especificación de color de 2021 y la referencia la de 2025 |
 | Acento simple de Formal/Glass: tono HCT 62/52, `accent-soft`, `sel` (`theme.ts:57`) | Hecho (tanda 3): `style::simple_accent` (con test, crate `material-colors`) | — | |
 | Menú rápido de Apariencia (`Overlays.tsx:157`) | Parcial: abre Configuración en la pestaña Apariencia (tanda 3) | `Popover` | Falta el popover propio |
-| Configuración con pestañas Claude y Apariencia (`Overlays.tsx:173-229`) | Hecho en M3 (`settings_m3.rs:86`); Parcial en Formal/Glass (otra pantalla, `view.rs:2043`) | `Dialog`, `NavItem::large` | |
+| Configuración con pestañas Claude y Apariencia (`Overlays.tsx:173-229`) | Hecho en M3 (`settings_m3.rs:86`); Hecho en Formal/Glass (tanda 21, `9e2818d`): `settings_flat` con `claude_tab_flat`, `project_defaults_flat` y `appearance_tab_flat` (`settings_flat.rs`) | `Dialog`, `NavItem::large` | El estado de la instalación (`claude_health`) se comparte con Expressive y tiene test |
 | Tarjeta de Claude Code: versión, estado, actualizar, registro (`Overlays.tsx:249-356`) | Hecho `settings_m3.rs:159-290` | `Shape`, `Card` | Usa `v != l` en vez de `newer(a,b)`; no reinicia el chat vacío después de actualizar |
 | Instalación y Cuenta (`Overlays.tsx:358-398`) | Hecho `settings_m3.rs:257,294` | `ListGroup` | |
 | Movimiento reducido según el sistema (`motion.ts:11`, `motion.css:1374`) | Hecho (tanda 3): `set_reduced_motion` con `UISettings.AnimationsEnabled` | `MotionSettings.reduced` | Global de la app (Decisiones) |
@@ -525,23 +525,25 @@ Prioridad de arriba hacia abajo. Cada tanda es chica y se prueba sola. **[m3]** 
 - Tanda 15: el menú rápido de Apariencia como popover propio; `SelectCard` y el árbol con `TreeRow` solo en Expressive.
 - Tanda 17: el evento `rate_limit` en vivo (sigue en la tanda 23).
 - Tanda 19: el teclado en las filas de proyecto, hecho (Enter y Espacio, ver sección 17); falta probarlo en la app y las demás filas (conversaciones) siguen sin foco.
-- Chats sueltos en Formal y Glass: sin sección en su barra (se abren desde la paleta).
+- Chats sueltos en Formal y Glass: resuelto en la tanda 21 (sección «Chats» en su barra).
 
 **Hecho, tanda 2 [code]** (`1c6a237`): uuids y Rewind, marcas y marcadores (`code-marks.json`), resync `external`, «Detenido.», cola de envío, teclado en permisos (Esc rechaza), compactación, «Conectando…» y recarga del visor.
 
 **Hecho, gpui-m3 main** (sin push): tanda 1 (`777021d`: `DividerLabel`, `Banner`, `Presence`, `DropZone`, `ImageThumb`, `Avatar::image`, `SuggestionList`, foco en `ExpandableCard`, ratón en `CommandPalette`), tanda 2 (`936aded`: `Diff`/`DiffView`/`DiffBar`, `CodeOutput`, `SyntaxHighlighter` con syntect, `CodeBlock`, `Markdown`) y tanda 3 (`d7b6387`: `CodeEditor` + `SyntaxLines`, `ResizeHandle`/`Splitter`, `ReorderList`, `ImageCropper`, `theme_reveal`/`animate_theme`, altura con resorte en `ExpandableCard`, `Icon::pop`, `Avatar::hover_spin`, menú escalonado, entradas de `Dialog`/`Toast`, `MenuItem` de dos líneas). Con eso están hechos todos los **[m3]** de las tandas 6, 7, 8, 10, 11, 13, 14, 16 y 20.
 
 **Hecho, tanda 4 [code]** (rama `dev`, un commit por grupo; gpui-m3 tiene un commit aparte, `Dialog::exit`, sin push): `c820b5d` (`DividerLabel`, `ImageThumb`, `DropZone`, `Banner`), salida animada con `Presence` y @-menciones (tanda 9), pulido del hilo y las herramientas (tanda 4), perfil editable con recorte (16) y avisos del sistema (18). Validado con `cargo check` y `cargo test code::` (71 tests) y `cargo test tray_icon`; **no se probó en la app**. Lo que quedó de la tanda 4:
-- Formal y Glass: sus menús sí salen animados (comparten `menu_layer`), pero sin burbujas con entrada ni «Razonando…» en vivo.
+- Formal y Glass: sus menús sí salen animados (comparten `menu_layer`); «Razonando…» en vivo resuelto en la tanda 21; siguen sin burbujas con entrada (motion, tanda 22).
 - La paleta de comandos (`CommandPalette`) no sale animada.
 - Los avisos del sistema usan el globo de la bandeja: no distinguen el tono con sonido ni agrupan. El clic abre Atic Code, no la conversación.
-- «Nuevo espacio» y la configuración son diálogos de Expressive; el recorte del perfil no tiene versión Formal/Glass.
+- «Nuevo espacio», la configuración y el recorte del perfil: en Formal y Glass resueltos en la tanda 21 (los diálogos de gpui-m3 siguen el esquema del estilo).
 
 **Hecho, tandas 6, 7, 8 y 14 [code]** (rama `dev`, un commit por grupo): `Markdown` (con enlaces y rutas que se abren), `DiffView` en Edit, MultiEdit, Write, los permisos y el visor de cambios, `CodeOutput`, `DiffBar`, resaltado en el visor de solo lectura y árbol sin `node_modules`, `target` ni `dist`. Validado con `cargo check` y `cargo test code::`; **no se probó en la app**. Lo que quedó: imágenes del markdown (`Markdown::on_image`); `SyntaxPalette::set` con los `--sx-*` de la referencia; el visor del Mando (`space::mando`) sigue con su resaltado y diff antiguos; los números de línea del diff de Edit son los del fragmento.
 
 **Para retomar, en este orden:** terminal (10, con `Splitter`); editor (11, `CodeEditor` + `SyntaxLines::for_path`); `ReorderList` en la barra (13); motion de la 20; luego 19, 21, 22 y 23. Ninguna de las tandas [code] desde la 2 se probó en la app.
 
 **Hecho, tanda 20 [code]** (rama `dev`): motion M3 en Atic Code, solo Expressive. Nuevo `src/code/enter.rs` (`Enter`, `stagger`) sobre `motion::entrance`/`replay` para lo que gpui-m3 no trae (`slide_in`, `swap`). Revelado de tema, mezcla de acento/modo, `Icon::pop`, `hover_spin`, entradas del hero, barra, historial, chips, panel derecho, terminal, configuración y cambio de conversación. Menú escalonado, altura de `ExpandableCard`, `Dialog` y `Toast` ya llegan solos con gpui-m3. Validado con `cargo check` y `cargo test code::` (89 tests); **no se probó en la app**. Lo que quedó: fundidos de Formal y Glass; las secciones de la configuración no entran una por una; la paleta de comandos y Glass sin entradas; sin escala (GPUI no escala).
+
+**Hecho, tanda 21 [code]** (rama `dev`; `9348cb1`, `f2793f0`, `9e2818d` y cuatro commits más): funcionalidad de la referencia en Formal y Glass, sin su motion. `9348cb1`: tarjetas de permiso completas y apiladas (`permissions.rs`) y composer que crece hasta 240 px (`composer_box`). `f2793f0`: menú del agente con filas neutras (`agent_menu.rs`) que cada estilo dibuja (`menus.rs`). `9e2818d`: Configuración con pestañas Claude y Apariencia (`settings_flat.rs`). Después: perilla de esfuerzo de Glass (`effort_knob`, `menus.rs`); «Razonando…» en vivo con última línea y markdown, y sección «Chats» (`other_item` y `sidebar`/`chat_rows`, `view.rs`); «Nuevo espacio», menú contextual del espacio (con renombrar en la fila), favoritos primero y fila de perfil con tarjeta y recorte en la barra de Formal y Glass (los diálogos y menús de gpui-m3 siguen el esquema del estilo, así que son los mismos que en Expressive); y árbol de archivos con ícono por tipo y archivo abierto resaltado. Validado con `cargo check` y `cargo test code::` (90 tests); **no se probó en la app**. Lo que quedó: la perilla no se anima ni se arrastra fuera de las paradas; el menú contextual de las conversaciones y el arrastre para reordenar proyectos no están en Formal y Glass; el diálogo de «Nuevo espacio», la tarjeta de perfil y el recorte salen con la forma de gpui-m3 (esquinas y botones M3), no con controles propios de Formal; el motion propio sigue en la tanda 22.
 
 **Hecho, tanda 10 [code]** (rama `dev`): terminal integrada (ver sección 9). El refactor de `space` que estaba en el stash se retomó tal cual (paleta, grilla e `input::layer` compartidos con el Mando). Dentro de la terminal, los atajos de Atic Code con Ctrl+letra y Esc no actúan: son del shell (Decisiones). Falta: seleccionar y copiar texto con el ratón, la entrada animada del panel, y que una terminal sobreviva a cerrar la ventana de Atic Code (hoy muere con ella).
 
@@ -596,12 +598,7 @@ Prioridad de arriba hacia abajo. Cada tanda es chica y se prueba sola. **[m3]** 
 19. **[code] Atajos que faltan:** Ctrl+L (sin efecto en la terminal y el editor), Ctrl+O, Ctrl+E, Ctrl+G; teclado en las filas de proyecto.
 20. **Hecho (tanda 20, ver arriba).** **[m3] Motion M3 que falta:** `theme_reveal` + `animate_scheme`, altura animada en `ExpandableCard`, ítems de menú escalonados uno por uno, `Icon::pop`, `Avatar::hover_spin`, `slide_in`, entrada fiel de `Dialog` y `Toast`.
     **[code]** Usarlos, junto con las entradas escalonadas del hero, la barra lateral, el historial y la configuración.
-21. **[code] Formal y Glass, primero la funcionalidad:**
-    - Tarjeta de permiso completa.
-    - Menú del agente completo.
-    - La Configuración de la referencia.
-    - Composer que crece.
-    - Perilla de esfuerzo en Glass.
+21. **Hecho, funcionalidad (tanda 21, ver arriba).** **[code] Formal y Glass, primero la funcionalidad:** tarjeta de permiso completa, menú del agente completo, Configuración de la referencia, composer que crece, perilla de esfuerzo en Glass, «Razonando…» en vivo, chats sueltos, «Nuevo espacio», perfil con recorte, menú contextual del espacio y árbol de archivos con colores. Falta: ver todo en la app y los menús contextuales de las conversaciones de Formal y Glass.
 22. **[code] Motion propio de Formal y Glass**, al final: el de Glass en un módulo aparte de Atic, no en gpui-m3 (luz ambiental, reflejo que sigue al cursor, gota de selección, gelatina, materializar, borde especular, `ScrollFade`, segmentado deslizante).
 23. **[code] Baja prioridad:** importar `.code-workspace`, `rate_limit` en vivo, reversión si falla `syncChatSettings`, marcas de modelo al cargar el historial, Chrome que reinicia el chat vacío, reinicio después de actualizar Claude.
 
@@ -663,7 +660,7 @@ Decisiones de la tanda 4 (2026-10-10), también por confirmar:
 
 Decisiones de la tanda 3 (2026-10-09), también por confirmar:
 
-- **Chats sueltos** en `<datos de Atic>\pill\code-chats` (con `paths.rs`), no en `~/.referencia`. Van con un espacio ficticio `LOOSE` (`u64::MAX`) que tiene su propia configuración de Claude y su propio acento en `code-claude.json`. Solo la barra de Expressive tiene la sección «Chats»; en Formal y Glass se abren desde la paleta.
+- **Chats sueltos** en `<datos de Atic>\pill\code-chats` (con `paths.rs`), no en `~/.referencia`. Van con un espacio ficticio `LOOSE` (`u64::MAX`) que tiene su propia configuración de Claude y su propio acento en `code-claude.json`. La sección «Chats» está en la barra de los tres estilos (en Formal y Glass desde la tanda 21).
 - **Favoritos y «ya se abrió»** se guardan en `code-claude.json`, no en `space-workspaces.json`, que comparte el Mando.
 - **Máximo de 4 procesos:** se cierra el proceso de Claude, no la conversación. Queda en la lista y se retoma al escribirle. Solo se cierran las que tienen sesión y no trabajan ni esperan un permiso.
 - **Pegar archivos:** en Windows el Explorador copia rutas (`CF_HDROP`). Se adjuntan por ruta, sin copiarlos aparte como `savePasted`.
@@ -694,3 +691,9 @@ Dudas abiertas para el usuario:
 4. Remote Control: la referencia lo activa en todas las conversaciones vivas y Atic solo en las del espacio activo.
 5. Glass tiene `raised` en 0.92 (la referencia usa 0.82). ¿Se hizo más denso a propósito porque no hay desenfoque?
 6. La especificación de color: gpui-m3 usa la de 2021 y la referencia la de 2025. Con semillas propias, los colores no van a coincidir del todo.
+
+Decisiones de la tanda 21 (2026-10-10), por confirmar:
+
+- **La perilla de Glass sigue a la referencia**: riel con relleno, perilla blanca de 20 px y una parada por nivel (no una perilla circular de ángulo). Sin nivel elegido («Predeterminado») no se dibuja la perilla; un clic en la parada actual vuelve al predeterminado, como los puntos de Formal.
+- **Formal y Glass reutilizan los diálogos y menús de gpui-m3** («Nuevo espacio», menú del espacio, tarjeta de perfil, recorte) porque `apply_m3` ya les fija su esquema, en vez de rehacerlos con controles propios. Si se quiere una cara más «Formal», es trabajo de la tanda 22.
+- **El menú de acciones se arma una vez** como filas neutras (`Line`/`Entry`) y cada estilo las dibuja, para no duplicar la lógica.
