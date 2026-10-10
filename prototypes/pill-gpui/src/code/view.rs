@@ -14,7 +14,7 @@ use std::path::PathBuf;
 
 use gpui::{
     canvas, div, prelude::*, px, svg, AnyElement, ClickEvent, ClipboardItem, Context, Div, Focusable, FontWeight,
-    Hsla, MouseButton, ScrollWheelEvent, SharedString, Stateful, Window,
+    Hsla, ScrollWheelEvent, SharedString, Stateful, Window,
 };
 use serde_json::Value;
 
@@ -167,9 +167,6 @@ fn r_btn() -> f32 {
 fn r_chip() -> f32 {
     t().r_chip
 }
-fn r_pop() -> f32 {
-    t().r_pop
-}
 /// Tarjetas del chat: herramientas, bloques de código, grupos de cambios.
 pub(super) fn r_card() -> f32 {
     match t().style {
@@ -187,7 +184,7 @@ impl Render for CodeView {
         self.sync_style(window, cx);
         self.run_palette(window, cx);
         self.ensure_probe(cx);
-        if self.settings_open && self.claude_info.is_none() && expressive() {
+        if self.settings_open && self.claude_info.is_none() {
             self.check_claude(cx);
         }
         let t = t();
@@ -262,7 +259,7 @@ impl Render for CodeView {
             .when_some(self.profile_layer(window, cx), |el, card| el.child(card))
             .when_some(self.crop_dialog(window, cx), |el, dialog| el.child(dialog))
             .when(self.palette_open, |el| el.child(self.palette.clone()))
-            .when(!expressive() && self.settings_open, |el| el.child(self.settings(cx)))
+            .when(!expressive() && self.settings_open, |el| el.child(self.settings_flat(cx)))
             .when_some(settings_exit.filter(|_| expressive()), |el, progress| el.child(self.settings_m3(progress, window, cx)))
             .when_some(self.toast_last.show("toast-presence", self.toast.clone(), window, cx), |el, shown| {
                 let text = shown.value.clone();
@@ -300,7 +297,7 @@ fn key_hash(key: &str) -> u64 {
     hasher.finish()
 }
 
-fn icon_button(id: impl Into<gpui::ElementId>, icon: &'static str, tip: &'static str) -> Stateful<Div> {
+pub(super) fn icon_button(id: impl Into<gpui::ElementId>, icon: &'static str, tip: &'static str) -> Stateful<Div> {
     div()
         .id(id)
         .size(px(28.))
@@ -315,7 +312,7 @@ fn icon_button(id: impl Into<gpui::ElementId>, icon: &'static str, tip: &'static
         .child(svg().path(icon).size(px(15.)).text_color(muted()))
 }
 
-fn chip(id: impl Into<gpui::ElementId>, label: impl Into<SharedString>, on: bool) -> Stateful<Div> {
+pub(super) fn chip(id: impl Into<gpui::ElementId>, label: impl Into<SharedString>, on: bool) -> Stateful<Div> {
     div()
         .id(id)
         .px(px(12.))
@@ -384,20 +381,6 @@ fn icon_action(
         gpui_m3::IconButton::new(id, m3_icon(icon)).size(px(28.)).tooltip(tip).on_click(on_click).into_any_element()
     } else {
         icon_button(id, icon, tip).on_click(on_click).into_any_element()
-    }
-}
-
-/// `chip` con su acción; en Expressive, el chip de filtro de gpui-m3.
-fn chip_action(
-    id: impl Into<gpui::ElementId>,
-    label: impl Into<SharedString>,
-    on: bool,
-    on_click: impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static,
-) -> AnyElement {
-    if expressive() {
-        gpui_m3::Chip::new(id, label).filter(on).on_click(on_click).into_any_element()
-    } else {
-        chip(id, label, on).on_click(on_click).into_any_element()
     }
 }
 
@@ -2542,183 +2525,6 @@ impl CodeView {
             })
             .size_full(),
         )
-    }
-
-    // --- Configuración de Claude ----------------------------------------------------
-
-    fn settings(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let config = self.config();
-        let workspace = self.workspaces.active().map(|w| w.name.clone());
-        let row = |label: &'static str, chips: Div| {
-            div()
-                .flex()
-                .flex_col()
-                .gap(px(8.))
-                .child(div().text_size(px(13.)).font_weight(FontWeight::MEDIUM).text_color(fg()).child(label))
-                .child(chips.flex().flex_wrap().gap(px(6.)))
-        };
-        let (shown, more) = config::split_models(&self.models, &config.model);
-        let visible: Vec<usize> = if self.more_models { (0..self.models.len()).collect() } else { shown };
-        let mut models = div();
-        for index in visible {
-            let (id, name) = &self.models[index];
-            let id = id.clone();
-            models = models.child(chip_action(("set-model", index), name.clone(), config.model == id, cx.listener(
-                move |view, _: &ClickEvent, _, cx| {
-                    let id = id.clone();
-                    view.set_defaults(|c| c.model = id, cx)
-                },
-            )));
-        }
-        if !more.is_empty() {
-            let label = if self.more_models { "Menos modelos".to_string() } else { format!("Más modelos ({})", more.len()) };
-            models = models.child(
-                div()
-                    .id("set-more-models")
-                    .px(px(10.))
-                    .h(px(30.))
-                    .flex()
-                    .items_center()
-                    .rounded(px(8.))
-                    .cursor_pointer()
-                    .text_size(px(13.))
-                    .text_color(accent())
-                    .hover(|el| el.bg(hover_bg()))
-                    .on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
-                        view.more_models = !view.more_models;
-                        cx.notify();
-                    }))
-                    .child(label),
-            );
-        }
-        let mut modes = div();
-        for (id, label) in config::MODES {
-            modes = modes.child(
-                chip_action(SharedString::from(format!("set-mode-{id}")), label, config.permission_mode == id, cx.listener(move |view, _: &ClickEvent, _, cx| view.set_config(|c| c.permission_mode = id.into(), cx))),
-            );
-        }
-        let mut efforts = div().child(
-            chip_action("set-effort-default", "Predeterminado", config.effort.is_empty(), cx.listener(|view, _: &ClickEvent, _, cx| view.set_defaults(|c| c.effort = String::new(), cx))),
-        );
-        for (id, label) in config::EFFORTS {
-            efforts = efforts.child(
-                chip_action(SharedString::from(format!("set-effort-{id}")), label, config.effort == id, cx.listener(move |view, _: &ClickEvent, _, cx| view.set_defaults(|c| c.effort = id.into(), cx))),
-            );
-        }
-        let thinking = if expressive() {
-            let toggle = cx.listener(|view, on: &bool, _, cx| view.set_config(|c| c.thinking = *on, cx));
-            div().items_center().child(gpui_m3::Switch::new("set-think", config.thinking).on_toggle(move |on, window, cx| toggle(&on, window, cx))).child(
-                div().text_size(px(13.)).text_color(muted()).child(if config.thinking { "Se muestra" } else { "Oculto" }),
-            )
-        } else {
-            div()
-                .child(chip_action("set-think-on", "Mostrar", config.thinking, cx.listener(|view, _: &ClickEvent, _, cx| view.set_config(|c| c.thinking = true, cx))))
-                .child(chip_action("set-think-off", "Ocultar", !config.thinking, cx.listener(|view, _: &ClickEvent, _, cx| view.set_config(|c| c.thinking = false, cx))))
-        };
-        let (style_now, mode_now) = (self.configs.style, self.configs.mode);
-        let mut styles = div();
-        for (style, label) in super::style::Style::ALL {
-            styles = styles.child(
-                chip_action(SharedString::from(format!("set-style-{label}")), label, style_now == style, cx.listener(
-                    move |view, _: &ClickEvent, window, cx| {
-                        let mode = view.configs.mode;
-                        view.set_appearance(style, mode, window, cx)
-                    },
-                )),
-            );
-        }
-        let mut modes_ui = div();
-        for (mode, label) in super::style::Mode::ALL {
-            modes_ui = modes_ui.child(
-                chip_action(SharedString::from(format!("set-ui-mode-{label}")), label, mode_now == mode, cx.listener(
-                    move |view, _: &ClickEvent, window, cx| {
-                        let style = view.configs.style;
-                        view.set_appearance(style, mode, window, cx)
-                    },
-                )),
-            );
-        }
-        let appearance = div()
-            .flex()
-            .flex_col()
-            .gap(px(14.))
-            .pb(px(16.))
-            .border_b_1()
-            .border_color(line())
-            .child(row("Estilo", styles))
-            .child(row("Modo de color", modes_ui))
-            .child(row("Color de acento", div().child(self.accent_picker_ui(cx))));
-        let claude = match &self.claude_path {
-            Some(path) => format!("Claude Code: {}", path.display()),
-            None => "No se encontró Claude Code. Instálalo e inicia sesión con `claude`.".into(),
-        };
-        let body: AnyElement = if workspace.is_some() {
-            div()
-                .flex()
-                .flex_col()
-                .gap(px(18.))
-                .child(row("Modelo", models))
-                .child(row("Permisos", modes))
-                .child(row("Esfuerzo", efforts))
-                .child(row("Razonamiento", thinking))
-                .child(div().text_size(px(12.5)).line_height(px(19.)).text_color(muted()).child(
-                    "Vale para las conversaciones nuevas del proyecto. Modelo, permisos y razonamiento se aplican también a las abiertas; el esfuerzo, desde la próxima.",
-                ))
-                .into_any_element()
-        } else {
-            div().text_color(muted()).child("Crea un proyecto para configurarlo.").into_any_element()
-        };
-        div()
-            .id("settings-backdrop")
-            .absolute()
-            .inset_0()
-            .bg(gpui::black().opacity(0.35))
-            .flex()
-            .items_center()
-            .justify_center()
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|view, _, _, cx| {
-                    view.settings_open = false;
-                    cx.notify();
-                }),
-            )
-            .child(
-                div()
-                    .id("settings-card")
-                    .w(px(560.))
-                    .p(px(22.))
-                    .rounded(px(r_pop()))
-                    .shadow(float_shadow())
-                    .border_1()
-                    .border_color(line())
-                    .bg(card_bg())
-                    .flex()
-                    .flex_col()
-                    .gap(px(20.))
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .child(div().flex_1().text_size(px(16.)).font_weight(FontWeight::SEMIBOLD).child(match &workspace {
-                                Some(name) => format!("Configuración · {name}"),
-                                None => "Configuración".into(),
-                            }))
-                            .child(icon_action(
-                                "settings-close",
-                                "icons/x.svg",
-                                "Cerrar",
-                                cx.listener(|view, _: &ClickEvent, _, cx| {
-                                    view.settings_open = false;
-                                    cx.notify();
-                                }),
-                            )),
-                    )
-                    .child(appearance)
-                    .child(body)
-                    .child(div().pt(px(4.)).border_t_1().border_color(line()).text_size(px(12.)).text_color(faint()).child(claude)),
-            )
     }
 }
 

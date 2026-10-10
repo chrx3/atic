@@ -26,7 +26,51 @@ pub struct ClaudeInfo {
     pub error: Option<String>,
 }
 
-fn plan_label(plan: &str) -> String {
+/// Cómo está la instalación de Claude Code.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum Health {
+    Checking,
+    Failed,
+    Missing,
+    Unchecked,
+    Outdated,
+    Current,
+}
+
+impl Health {
+    pub(super) fn color(self, t: &super::style::Tokens) -> gpui::Hsla {
+        match self {
+            Health::Checking | Health::Unchecked => t.faint,
+            Health::Failed | Health::Missing => t.bad,
+            Health::Outdated => t.warn,
+            Health::Current => t.ok,
+        }
+    }
+}
+
+/// Hay una versión publicada distinta de la instalada.
+pub(super) fn is_outdated(info: &ClaudeInfo) -> bool {
+    matches!((&info.version, &info.latest), (Some(v), Some(l)) if v != l)
+}
+
+/// El estado de la instalación y su texto (el mismo en los tres estilos).
+pub(super) fn claude_health(info: &ClaudeInfo) -> (Health, String) {
+    if info.checking {
+        (Health::Checking, "Comprobando…".into())
+    } else if let Some(error) = &info.error {
+        (Health::Failed, error.clone())
+    } else if info.version.is_none() {
+        (Health::Missing, "No se encontró Claude Code".into())
+    } else if info.latest.is_none() {
+        (Health::Unchecked, "No se pudo comprobar si hay versión nueva".into())
+    } else if is_outdated(info) {
+        (Health::Outdated, format!("Hay una versión nueva: {}", info.latest.clone().unwrap_or_default()))
+    } else {
+        (Health::Current, "Al día".into())
+    }
+}
+
+pub(super) fn plan_label(plan: &str) -> String {
     match plan {
         "max" => "Max".into(),
         "pro" => "Pro".into(),
@@ -38,7 +82,7 @@ fn plan_label(plan: &str) -> String {
 }
 
 /// `C:\Users\x\…` → `~\…`.
-fn short_home(path: &str) -> String {
+pub(super) fn short_home(path: &str) -> String {
     match std::env::var("USERPROFILE") {
         Ok(home) if path.starts_with(&home) => format!("~{}", &path[home.len()..]),
         _ => path.to_string(),
@@ -65,7 +109,7 @@ impl CodeView {
         });
     }
 
-    fn update_claude(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn update_claude(&mut self, cx: &mut Context<Self>) {
         self.updating_claude = true;
         self.update_log.clear();
         self.update_result = None;
@@ -172,22 +216,11 @@ impl CodeView {
         let t = t();
         let scheme = *gpui_m3::Theme::of(cx);
         let info = self.claude_info.clone().unwrap_or_default();
-        let outdated = matches!((&info.version, &info.latest), (Some(v), Some(l)) if v != l);
+        let outdated = is_outdated(&info);
         let (bg, fg, mark) =
             if outdated { (scheme.tertiary_container, scheme.on_tertiary_container, scheme.tertiary) } else { (scheme.primary_container, scheme.on_primary_container, scheme.primary) };
-        let (status_color, status) = if info.checking {
-            (t.faint, "Comprobando…".to_string())
-        } else if let Some(error) = &info.error {
-            (t.bad, error.clone())
-        } else if info.version.is_none() {
-            (t.bad, "No se encontró Claude Code".to_string())
-        } else if info.latest.is_none() {
-            (t.faint, "No se pudo comprobar si hay versión nueva".to_string())
-        } else if outdated {
-            (t.warn, format!("Hay una versión nueva: {}", info.latest.clone().unwrap_or_default()))
-        } else {
-            (t.ok, "Al día".to_string())
-        };
+        let (health, status) = claude_health(&info);
+        let status_color = health.color(&t);
         let mut shape = Shape::new(ShapeName::Sunny).size(px(64.)).color(mark).child(gpui_m3::Icon::new("spark").size(px(26.)).color(scheme.on_primary));
         if self.updating_claude {
             shape = shape.breathe(ShapeName::Cookie9, 1.6);
@@ -422,7 +455,7 @@ impl CodeView {
 }
 
 /// La muestra de cada estilo, como en la referencia: tres bloques que lo imitan.
-fn style_swatch(style: Style) -> AnyElement {
+pub(super) fn style_swatch(style: Style) -> AnyElement {
     let hex = |c: u32| gpui::rgb(c);
     let block = |color: gpui::Rgba, radius: f32| div().h_full().flex_1().rounded(px(radius)).bg(color);
     let base = div().h(px(52.)).mb(px(4.)).p(px(6.)).flex().gap(px(5.));
@@ -448,5 +481,27 @@ fn style_swatch(style: Style) -> AnyElement {
             .child(div().h_full().flex_grow().rounded(px(8.)).bg(gpui::white().opacity(0.16)))
             .child(div().h_full().flex_grow().rounded(px(8.)).bg(gpui::white().opacity(0.16)))
             .into_any_element(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn info(version: Option<&str>, latest: Option<&str>) -> ClaudeInfo {
+        ClaudeInfo { version: version.map(str::to_string), latest: latest.map(str::to_string), ..Default::default() }
+    }
+
+    #[test]
+    fn el_estado_de_claude_code() {
+        assert_eq!(claude_health(&ClaudeInfo { checking: true, ..Default::default() }).0, Health::Checking);
+        assert_eq!(claude_health(&ClaudeInfo { error: Some("falló".into()), ..Default::default() }), (Health::Failed, "falló".into()));
+        assert_eq!(claude_health(&info(None, None)).0, Health::Missing);
+        assert_eq!(claude_health(&info(Some("2.1.0"), None)).0, Health::Unchecked);
+        assert_eq!(claude_health(&info(Some("2.1.0"), Some("2.1.0"))), (Health::Current, "Al día".into()));
+        let (health, text) = claude_health(&info(Some("2.1.0"), Some("2.2.0")));
+        assert_eq!((health, text.as_str()), (Health::Outdated, "Hay una versión nueva: 2.2.0"));
+        assert!(is_outdated(&info(Some("2.1.0"), Some("2.2.0"))));
+        assert!(!is_outdated(&info(Some("2.1.0"), Some("2.1.0"))));
     }
 }

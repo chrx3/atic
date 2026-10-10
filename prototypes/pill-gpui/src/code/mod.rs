@@ -32,6 +32,7 @@ mod palette;
 mod permissions;
 mod profile;
 mod rewind;
+mod settings_flat;
 mod settings_m3;
 mod sidebar;
 mod sidecar;
