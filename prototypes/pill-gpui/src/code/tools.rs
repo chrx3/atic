@@ -1,7 +1,7 @@
 //! Las tarjetas de herramienta de Expressive, como las de la referencia: un verbo, el
 //! objetivo y su meta en la cabecera, y al abrir el detalle de cada una.
 
-use gpui::{div, prelude::*, px, AnyElement, ClickEvent, Context, Div, FontWeight, SharedString};
+use gpui::{div, prelude::*, px, AnyElement, ClickEvent, Context, FontWeight, SharedString};
 use gpui_m3::{Badge, CodeOutput, ExpandableCard, Icon, LoadingIndicator, Tone};
 use serde_json::Value;
 

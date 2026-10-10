@@ -2477,11 +2477,19 @@ impl CodeView {
             );
         }
         let lines = doc.lines.clone();
+        let syntax = super::highlight::doc_syntax(&doc.lines, &doc.path);
         let gutter = lines.len().max(1).to_string().len() as f32 * 8.0 + 24.0;
         body.child(
-            gpui::uniform_list(("code-doc", doc.id as usize), lines.len(), move |range, _, _| {
+            gpui::uniform_list(("code-doc", doc.id as usize), lines.len(), move |range, _, cx| {
+                // Los colores del resaltado, solo de las filas a la vista.
+                let palette = gpui_m3::SyntaxPalette::of(cx);
                 range
                     .map(|index| {
+                        let text = lines[index].clone();
+                        let styled = match syntax.borrow_mut().as_mut() {
+                            Some(syntax) => gpui::StyledText::new(text).with_highlights(super::highlight::line_styles(syntax, &lines, index, &palette)),
+                            None => gpui::StyledText::new(text),
+                        };
                         div()
                             .h(px(LINE_H))
                             .flex()
@@ -2496,7 +2504,7 @@ impl CodeView {
                                     .text_color(faint())
                                     .child((index + 1).to_string()),
                             )
-                            .child(div().flex_1().min_w(px(0.)).truncate().text_color(code_text()).child(lines[index].clone()))
+                            .child(div().flex_1().min_w(px(0.)).truncate().text_color(code_text()).child(styled))
                             .into_any_element()
                     })
                     .collect()

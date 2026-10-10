@@ -20,6 +20,7 @@ mod demo;
 mod edits;
 mod files;
 mod git;
+mod highlight;
 mod marks;
 mod mention;
 mod menus;
