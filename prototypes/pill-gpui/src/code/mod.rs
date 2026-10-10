@@ -1388,31 +1388,6 @@ impl CodeView {
         }
     }
 
-    /// Responde un permiso: permitir, permitir siempre (con las sugerencias de
-    /// Claude Code) o rechazar.
-    fn answer(&mut self, key: &str, request_id: &str, allow: bool, always: bool, cx: &mut Context<Self>) {
-        let Some(chat) = self.chats.iter_mut().find(|c| c.key == key) else {
-            return;
-        };
-        let Some(index) = chat.permissions.iter().position(|p| p.request_id == request_id) else {
-            return;
-        };
-        let permission = chat.permissions.remove(index);
-        let result = if allow {
-            let mut result = json!({ "behavior": "allow", "updatedInput": permission.input });
-            if always {
-                if let Some(suggestions) = permission.suggestions {
-                    result["updatedPermissions"] = suggestions;
-                }
-            }
-            result
-        } else {
-            json!({ "behavior": "deny", "message": "El usuario rechazó este paso." })
-        };
-        self.fire("permission", json!({ "key": key, "requestId": request_id, "result": result }), cx);
-        cx.notify();
-    }
-
     // --- Adjuntos y menús -----------------------------------------------------------
 
     fn attach_paths(&mut self, paths: Vec<PathBuf>) {

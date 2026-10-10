@@ -2,12 +2,12 @@
 //! final del hilo. La general (permitir, siempre, todo, rechazar con una
 //! indicación), la de preguntas (AskUserQuestion) y la del plan (ExitPlanMode).
 
-use gpui::{div, prelude::*, px, AnyElement, ClickEvent, Context, Div, Entity, FontWeight, SharedString};
-use gpui_m3::{Button, ButtonSize, Card, ChoiceRow, TextField, Tone};
+use gpui::{div, prelude::*, px, svg, AnyElement, ClickEvent, Context, Div, Entity, FontWeight, SharedString};
+use gpui_m3::{Badge, Button, ButtonSize, Card, ChoiceRow, TextField, Tone};
 use serde_json::{json, Value};
 
 use super::chat::{Chat, Permission, ToolCall};
-use super::style::t;
+use super::style::{t, Style};
 use super::CodeView;
 
 const DENIED: &str = "El usuario rechazó esta acción.";
@@ -137,6 +137,156 @@ pub fn permission_key(tool: &str, default_to_no: bool, key: PermKey, at: PermAt,
     }
 }
 
+// --- Piezas de la tarjeta: Expressive con gpui-m3; Formal y Glass con los tokens -------
+
+/// Qué tanto destaca un botón de la tarjeta. Formal y Glass no distinguen
+/// entre tonal y con borde más que por el fondo.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Weight {
+    Filled,
+    Tonal,
+    Outlined,
+}
+
+/// Un botón de la tarjeta.
+fn action(
+    id: SharedString,
+    label: &'static str,
+    weight: Weight,
+    disabled: bool,
+    on_click: impl Fn(&ClickEvent, &mut gpui::Window, &mut gpui::App) + 'static,
+) -> AnyElement {
+    let tokens = t();
+    if tokens.style == Style::Expressive {
+        let button = Button::new(id, label).size(ButtonSize::Comfortable).disabled(disabled).on_click(on_click);
+        return match weight {
+            Weight::Filled => button.filled(),
+            Weight::Tonal => button.tonal(),
+            Weight::Outlined => button.outlined(),
+        }
+        .into_any_element();
+    }
+    div()
+        .id(id)
+        .px(px(16.))
+        .h(px(34.))
+        .flex()
+        .flex_none()
+        .items_center()
+        .rounded(px(tokens.r_btn.min(18.)))
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_size(px(13.))
+        .map(|el| match weight {
+            Weight::Filled => el.bg(tokens.accent).text_color(tokens.on_accent),
+            Weight::Tonal => el.bg(tokens.control).text_color(tokens.on_attention).hover(|el| el.bg(tokens.control2)),
+            Weight::Outlined => el.border_1().border_color(tokens.border).text_color(tokens.on_attention).hover(|el| el.bg(tokens.hover)),
+        })
+        .map(|el| if disabled { el.opacity(0.45) } else { el.cursor_pointer().on_click(on_click) })
+        .child(label)
+        .into_any_element()
+}
+
+/// El chip con el encabezado de una pregunta.
+fn header_badge(header: String) -> AnyElement {
+    let tokens = t();
+    if tokens.style == Style::Expressive {
+        return Badge::tonal(Tone::Secondary, header).height(px(20.)).into_any_element();
+    }
+    div()
+        .h(px(20.))
+        .px(px(8.))
+        .flex()
+        .items_center()
+        .rounded(px(tokens.r_chip.min(10.)))
+        .bg(tokens.accent_soft)
+        .text_color(tokens.on_accent_soft)
+        .text_size(px(11.5))
+        .child(header)
+        .into_any_element()
+}
+
+/// Una opción de una pregunta: radio, o casilla si admite varias. `trailing` es
+/// el campo de «Otro».
+fn choice(
+    id: SharedString,
+    label: String,
+    description: Option<String>,
+    on: bool,
+    multi: bool,
+    trailing: Option<AnyElement>,
+    on_click: impl Fn(&ClickEvent, &mut gpui::Window, &mut gpui::App) + 'static,
+) -> AnyElement {
+    let tokens = t();
+    if tokens.style == Style::Expressive {
+        let mut row = if multi { ChoiceRow::checkbox(id, label, on) } else { ChoiceRow::radio(id, label, on) };
+        if let Some(description) = description {
+            row = row.description(description);
+        }
+        if let Some(trailing) = trailing {
+            row = row.trailing(trailing);
+        }
+        return row.on_click(on_click).into_any_element();
+    }
+    let mark = div()
+        .size(px(16.))
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(if multi { 4. } else { 8. }))
+        .border_1()
+        .border_color(if on { tokens.accent } else { tokens.muted })
+        .when(on && multi, |el| el.bg(tokens.accent).child(svg().path("icons/check.svg").size(px(11.)).text_color(tokens.on_accent)))
+        .when(on && !multi, |el| el.child(div().size(px(8.)).rounded_full().bg(tokens.accent)));
+    div()
+        .id(id)
+        .px(px(8.))
+        .py(px(6.))
+        .flex()
+        .items_center()
+        .gap(px(10.))
+        .rounded(px(tokens.r_ctl))
+        .cursor_pointer()
+        .hover(|el| el.bg(tokens.hover))
+        .on_click(on_click)
+        .child(mark)
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .child(div().text_size(px(13.5)).child(label))
+                .when_some(description, |el, text| el.child(div().text_size(px(12.)).opacity(0.7).child(text))),
+        )
+        .when_some(trailing, |el, trailing| el.child(trailing))
+        .into_any_element()
+}
+
+/// El armazón de una tarjeta de solicitud. Expressive: tonal terciaria. Formal:
+/// con borde y la franja de acento a la izquierda, como la referencia. Glass: con el
+/// borde de luz y la sombra de lo que flota.
+fn shell(id: SharedString, title: String, body: Vec<AnyElement>) -> AnyElement {
+    let tokens = t();
+    let title = div().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).child(title);
+    if tokens.style == Style::Expressive {
+        let card = Card::tonal(Tone::Tertiary).id(id).entrance(true).padding_xy(px(18.), px(16.)).gap(px(10.)).child(title);
+        return body.into_iter().fold(card, |card, part| card.child(part)).into_any_element();
+    }
+    div()
+        .id(id)
+        .rounded(px(super::view::r_card()))
+        .bg(tokens.attention)
+        .text_color(tokens.on_attention)
+        .flex()
+        .overflow_hidden()
+        .map(|el| match tokens.style {
+            Style::Formal => el.border_1().border_color(tokens.border).child(div().w(px(3.)).flex_none().bg(tokens.accent)),
+            Style::Glass => el.border_1().border_color(tokens.highlight.opacity(0.4)).shadow(super::view::float_shadow()),
+            Style::Expressive => el,
+        })
+        .child(div().flex_1().min_w(px(0.)).p(px(16.)).flex().flex_col().gap(px(10.)).child(title).children(body))
+        .into_any_element()
+}
+
 impl CodeView {
     /// Responde un permiso con el resultado que arma `result`.
     fn reply_permission(&mut self, key: &str, request_id: &str, result: impl FnOnce(&Permission) -> Value, cx: &mut Context<Self>) {
@@ -239,8 +389,9 @@ impl CodeView {
         if text.is_empty() { fallback.to_string() } else { text }
     }
 
-    /// Las tarjetas de las solicitudes pendientes de `chat`, al final del hilo.
-    pub(super) fn permission_cards_m3(&self, chat: &Chat, cx: &mut Context<Self>) -> Div {
+    /// Las tarjetas de las solicitudes pendientes de `chat`, al final del hilo, en
+    /// el estilo de ahora (la misma lógica en los tres).
+    pub(super) fn permission_cards(&self, chat: &Chat, cx: &mut Context<Self>) -> Div {
         let mut list = div().flex().flex_col().gap(px(10.));
         for (index, permission) in chat.permissions.iter().enumerate() {
             // El campo de respuesta es uno: va en la primera tarjeta.
@@ -252,15 +403,6 @@ impl CodeView {
             });
         }
         list
-    }
-
-    fn card_shell(id: SharedString, title: String) -> Card {
-        Card::tonal(Tone::Tertiary)
-            .id(id)
-            .entrance(true)
-            .padding_xy(px(18.), px(16.))
-            .gap(px(10.))
-            .child(div().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).child(title))
     }
 
     fn general_card(&self, key: &str, permission: &Permission, first: bool, cx: &mut Context<Self>) -> AnyElement {
@@ -317,27 +459,25 @@ impl CodeView {
         let id = |name: &str| SharedString::from(format!("perm-{name}-{request}"));
         // Con `defaultToNo`, lo destacado es rechazar y Enter no permite.
         let no_first = permission.default_to_no;
-        let allow_button = Button::new(id("allow"), "Permitir").size(ButtonSize::Comfortable).on_click(allow);
         let deny_label = if feedback.is_empty() { "Rechazar" } else { "Rechazar y responder" };
-        let deny_button = Button::new(id("deny"), deny_label).size(ButtonSize::Comfortable).on_click(deny);
         let actions = div()
             .flex()
             .flex_wrap()
             .items_center()
             .gap(px(6.))
-            .child(if no_first { allow_button.tonal() } else { allow_button.filled() })
-            .when(rules.is_some(), |el| el.child(Button::new(id("always"), "Permitir siempre").tonal().size(ButtonSize::Comfortable).on_click(always)))
-            .child(Button::new(id("all"), "Permitir todo").tonal().size(ButtonSize::Comfortable).on_click(all))
-            .child(if no_first { deny_button.filled() } else { deny_button.outlined() })
+            .child(action(id("allow"), "Permitir", if no_first { Weight::Tonal } else { Weight::Filled }, false, allow))
+            .when(rules.is_some(), |el| el.child(action(id("always"), "Permitir siempre", Weight::Tonal, false, always)))
+            .child(action(id("all"), "Permitir todo", Weight::Tonal, false, all))
+            .child(action(id("deny"), deny_label, if no_first { Weight::Filled } else { Weight::Outlined }, false, deny))
             .when_some(rules, |el, rules| {
                 el.child(div().flex_1().min_w(px(0.)).truncate().font_family(mono).text_size(px(11.)).text_color(t().faint).child(rules))
             });
-        Self::card_shell(id("card"), title_for(permission))
-            .child(super::view::tool_input(&tool))
-            .child(notes)
-            .when(first, |card| card.child(self.perm_feedback.clone()))
-            .child(actions)
-            .into_any_element()
+        let mut body = vec![super::view::tool_input(&tool), notes.into_any_element()];
+        if first {
+            body.push(self.perm_feedback.clone().into_any_element());
+        }
+        body.push(actions.into_any_element());
+        shell(id("card"), title_for(permission), body)
     }
 
     fn plan_card(&self, key: &str, permission: &Permission, first: bool, cx: &mut Context<Self>) -> AnyElement {
@@ -365,23 +505,23 @@ impl CodeView {
             .overflow_y_scroll()
             .px(px(12.))
             .py(px(10.))
-            .rounded(px(16.))
+            .rounded(px(super::view::r_card().min(16.)))
             .bg(t().editor)
             .text_color(t().text)
             .child(plan_md);
-        Self::card_shell(id("card"), "Claude terminó de planificar. ¿Continuar?".into())
-            .child(body)
-            .when(first, |card| card.child(self.plan_feedback.clone()))
-            .child(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .gap(px(6.))
-                    .child(Button::new(id("edits"), "Sí, y aceptar ediciones").filled().size(ButtonSize::Comfortable).on_click(accept("acceptEdits")))
-                    .child(Button::new(id("review"), "Sí, revisando cada edición").tonal().size(ButtonSize::Comfortable).on_click(accept("default")))
-                    .child(Button::new(id("keep"), "No, seguir planificando").outlined().size(ButtonSize::Comfortable).on_click(keep)),
-            )
-            .into_any_element()
+        let actions = div()
+            .flex()
+            .flex_wrap()
+            .gap(px(6.))
+            .child(action(id("edits"), "Sí, y aceptar ediciones", Weight::Filled, false, accept("acceptEdits")))
+            .child(action(id("review"), "Sí, revisando cada edición", Weight::Tonal, false, accept("default")))
+            .child(action(id("keep"), "No, seguir planificando", Weight::Outlined, false, keep));
+        let mut parts = vec![body.into_any_element()];
+        if first {
+            parts.push(self.plan_feedback.clone().into_any_element());
+        }
+        parts.push(actions.into_any_element());
+        shell(id("card"), "Claude terminó de planificar. ¿Continuar?".into(), parts)
     }
 
     fn ask_card(&self, key: &str, permission: &Permission, cx: &mut Context<Self>) -> AnyElement {
@@ -407,50 +547,61 @@ impl CodeView {
                     .gap(px(8.))
                     .mb(px(6.))
                     .font_weight(FontWeight::SEMIBOLD)
-                    .when(!header.is_empty(), |el| el.child(gpui_m3::Badge::tonal(Tone::Secondary, header).height(px(20.))))
+                    .when(!header.is_empty(), |el| el.child(header_badge(header)))
                     .child(text),
             );
             for (o, (label, description)) in options(question).into_iter().enumerate() {
                 let on = chosen.contains(&o);
                 let row_id = SharedString::from(format!("ask-{request}-{q}-{o}"));
-                let mut row = if multi { ChoiceRow::checkbox(row_id, label, on) } else { ChoiceRow::radio(row_id, label, on) };
-                if let Some(description) = description {
-                    row = row.description(description);
-                }
                 let request = request.clone();
-                block = block.child(row.on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
-                    let entry = view.asks.entry(request.clone()).or_default();
-                    entry.picks.resize(entry.picks.len().max(q + 1), Vec::new());
-                    entry.other.resize(entry.other.len().max(q + 1), false);
-                    let picked = &mut entry.picks[q];
-                    if multi {
-                        match picked.iter().position(|p| *p == o) {
-                            Some(at) => {
-                                picked.remove(at);
+                block = block.child(choice(
+                    row_id,
+                    label,
+                    description,
+                    on,
+                    multi,
+                    None,
+                    cx.listener(move |view, _: &ClickEvent, _, cx| {
+                        let entry = view.asks.entry(request.clone()).or_default();
+                        entry.picks.resize(entry.picks.len().max(q + 1), Vec::new());
+                        entry.other.resize(entry.other.len().max(q + 1), false);
+                        let picked = &mut entry.picks[q];
+                        if multi {
+                            match picked.iter().position(|p| *p == o) {
+                                Some(at) => {
+                                    picked.remove(at);
+                                }
+                                None => picked.push(o),
                             }
-                            None => picked.push(o),
+                        } else {
+                            *picked = vec![o];
+                            entry.other[q] = false;
                         }
-                    } else {
-                        *picked = vec![o];
-                        entry.other[q] = false;
-                    }
-                    cx.notify();
-                })));
+                        cx.notify();
+                    }),
+                ));
             }
             if let Some(field) = self.ask_other.get(&(request.clone(), q)) {
                 let row_id = SharedString::from(format!("ask-{request}-{q}-other"));
-                let row = if multi { ChoiceRow::checkbox(row_id, "Otro", other_on) } else { ChoiceRow::radio(row_id, "Otro", other_on) };
                 let request = request.clone();
-                block = block.child(row.trailing(div().flex_1().child(field.clone())).on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
-                    let entry = view.asks.entry(request.clone()).or_default();
-                    entry.picks.resize(entry.picks.len().max(q + 1), Vec::new());
-                    entry.other.resize(entry.other.len().max(q + 1), false);
-                    entry.other[q] = !entry.other[q] || !multi;
-                    if !multi {
-                        entry.picks[q].clear();
-                    }
-                    cx.notify();
-                })));
+                block = block.child(choice(
+                    row_id,
+                    "Otro".into(),
+                    None,
+                    other_on,
+                    multi,
+                    Some(div().flex_1().child(field.clone()).into_any_element()),
+                    cx.listener(move |view, _: &ClickEvent, _, cx| {
+                        let entry = view.asks.entry(request.clone()).or_default();
+                        entry.picks.resize(entry.picks.len().max(q + 1), Vec::new());
+                        entry.other.resize(entry.other.len().max(q + 1), false);
+                        entry.other[q] = !entry.other[q] || !multi;
+                        if !multi {
+                            entry.picks[q].clear();
+                        }
+                        cx.notify();
+                    }),
+                ));
             }
             body = body.child(block);
         }
@@ -464,16 +615,12 @@ impl CodeView {
         };
         let id = |name: &str| SharedString::from(format!("ask-{name}-{request}"));
         let title = permission.title.clone().unwrap_or_else(|| "Claude tiene preguntas".into());
-        Self::card_shell(id("card"), title)
-            .child(body)
-            .child(
-                div()
-                    .flex()
-                    .gap(px(6.))
-                    .child(Button::new(id("send"), "Enviar respuestas").filled().size(ButtonSize::Comfortable).disabled(!complete).on_click(submit))
-                    .child(Button::new(id("cancel"), "Cancelar").outlined().size(ButtonSize::Comfortable).on_click(cancel)),
-            )
-            .into_any_element()
+        let actions = div()
+            .flex()
+            .gap(px(6.))
+            .child(action(id("send"), "Enviar respuestas", Weight::Filled, !complete, submit))
+            .child(action(id("cancel"), "Cancelar", Weight::Outlined, false, cancel));
+        shell(id("card"), title, vec![body.into_any_element(), actions.into_any_element()])
     }
 
     /// Manda las respuestas de AskUserQuestion: `answers` con «a, b, texto de Otro» por pregunta.

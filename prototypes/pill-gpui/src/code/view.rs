@@ -18,7 +18,7 @@ use gpui::{
 };
 use serde_json::Value;
 
-use super::chat::{Item, Permission, ToolCall};
+use super::chat::{Item, ToolCall};
 use super::config;
 use super::enter::Enter;
 use super::git::{FileChange, Repo};
@@ -171,7 +171,7 @@ fn r_pop() -> f32 {
     t().r_pop
 }
 /// Tarjetas del chat: herramientas, bloques de código, grupos de cambios.
-fn r_card() -> f32 {
+pub(super) fn r_card() -> f32 {
     match t().style {
         Style::Formal => 8.,
         Style::Expressive => 16.,
@@ -960,9 +960,9 @@ impl CodeView {
                 if let Some(pending) = chat.pending_model(&self.models, &self.configs.get(chat.workspace)) {
                     thread = thread.child(model_mark(format!("model-next-{}", chat.key), format!("{pending} en el próximo mensaje"), true));
                 }
-                // En Expressive, como en la referencia, las solicitudes van al final del hilo, todas.
-                if expressive() && !chat.permissions.is_empty() {
-                    thread = thread.child(self.permission_cards_m3(chat, cx));
+                // Como en la referencia, las solicitudes van al final del hilo, todas.
+                if !chat.permissions.is_empty() {
+                    thread = thread.child(self.permission_cards(chat, cx));
                 }
                 if chat.working() {
                     thread = thread.child(
@@ -1057,9 +1057,6 @@ impl CodeView {
                             .child(format!("{error}  ·  clic para cerrar")),
                     ),
                 )
-            })
-            .when_some(chat.filter(|c| !c.permissions.is_empty() && !expressive()), |el, chat| {
-                el.child(self.permission_card(&chat.key, &chat.permissions[0], cx))
             })
             .when((has_workspace || loose) && !hero && !history, |el| el.child(self.composer_box(chat.is_some_and(|c| c.busy), false, window, cx)))
             // La terminal va bajo el chat, como en la referencia (`Chat.tsx`).
@@ -1611,78 +1608,6 @@ impl CodeView {
         card.into_any_element()
     }
 
-    fn permission_card(&self, key: &str, permission: &Permission, cx: &mut Context<Self>) -> impl IntoElement {
-        let tool = ToolCall::new(permission.request_id.clone(), permission.tool.clone(), Some(permission.input.clone()));
-        let title = permission.title.clone().unwrap_or_else(|| {
-            let (verb, summary) = tool_label(&tool);
-            if verb.is_empty() {
-                format!("Claude quiere usar {}", permission.tool)
-            } else {
-                format!("Claude quiere {}: {summary}", verb.to_lowercase())
-            }
-        });
-        let button = |id: &'static str, label: &'static str, primary: bool| {
-            div()
-                .id(id)
-                .px(px(16.))
-                .h(px(36.))
-                .flex()
-                .items_center()
-                .rounded(px(r_btn().min(18.)))
-                .cursor_pointer()
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_size(px(13.5))
-                .when(primary, |el| el.bg(accent()).text_color(on_accent()))
-                .when(!primary, |el| el.border_1().border_color(line()).text_color(t().on_attention).hover(|el| el.bg(hover_bg())))
-                .child(label)
-        };
-        let (k1, r1) = (key.to_string(), permission.request_id.clone());
-        let (k2, r2) = (k1.clone(), r1.clone());
-        let (k3, r3) = (k1.clone(), r1.clone());
-        let allow = cx.listener(move |view, _: &ClickEvent, _, cx| view.answer(&k1, &r1, true, false, cx));
-        let always = cx.listener(move |view, _: &ClickEvent, _, cx| view.answer(&k2, &r2, true, true, cx));
-        let deny = cx.listener(move |view, _: &ClickEvent, _, cx| view.answer(&k3, &r3, false, false, cx));
-        let wrap = div().w_full().max_w(px(THREAD_W)).mx_auto().px(px(32.)).mb(px(10.));
-        wrap.child(
-            div()
-                .rounded(px(r_card()))
-                .bg(t().attention)
-                .text_color(t().on_attention)
-                .flex()
-                .overflow_hidden()
-                .map(|el| match t().style {
-                    // Formal: borde y la franja de acento a la izquierda, como la referencia.
-                    Style::Formal => el.border_1().border_color(line()).child(div().w(px(3.)).flex_none().bg(accent())),
-                    Style::Expressive => el,
-                    Style::Glass => el.border_1().border_color(t().highlight.opacity(0.4)).shadow(float_shadow()),
-                })
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w(px(0.))
-                        .p(px(16.))
-                        .flex()
-                        .flex_col()
-                        .gap(px(12.))
-                        .child(div().font_weight(FontWeight::SEMIBOLD).child(title))
-                        .child(tool_input(&tool))
-                        .when_some(permission.description.clone(), |el, text| {
-                            el.child(div().text_size(px(13.)).text_color(muted()).child(text))
-                        })
-                        .child(
-                            div()
-                                .flex()
-                                .gap(px(8.))
-                                .child(button("perm-allow", "Permitir", true).on_click(allow))
-                                .when(permission.suggestions.is_some(), |el| {
-                                    el.child(button("perm-always", "Permitir siempre", false).on_click(always))
-                                })
-                                .child(button("perm-deny", "Rechazar", false).on_click(deny)),
-                        ),
-                ),
-        )
-    }
-
     fn composer_box(&self, busy: bool, hero: bool, window: &mut Window, cx: &mut Context<Self>) -> Div {
         let t = t();
         let starting = self.active_chat().is_some_and(|c| c.starting);
@@ -1751,6 +1676,8 @@ impl CodeView {
             attachments = attachments.child(chip_in(format!("chip-in-context-{label}"), chip, window, cx));
         }
         let ready = !self.attachments.is_empty() || !self.composer.read(cx).text().trim().is_empty();
+        // La caja crece con el texto hasta 240 px, como la de Expressive.
+        let input_h = self.composer.read(cx).content_height(3).min(px(240.));
         let has_chips = !self.attachments.is_empty() || self.editor_context(cx).is_some();
         if t.style == Style::Expressive {
             let composer = self.composer_m3(busy, ready, attachments, model, effort, branch, cx);
@@ -1772,7 +1699,7 @@ impl CodeView {
                 Style::Glass => el.rounded(px(24.)).border_1().border_color(t.highlight.opacity(0.5)).bg(t.raised).shadow(float_shadow()),
             })
             .when(has_chips, |el| el.child(attachments))
-            .child(super::mention::with_keys(div().key_context(COMPOSER).on_action(cx.listener(Self::send)).h(px(60.)), cx).child(self.composer.clone()))
+            .child(super::mention::with_keys(div().key_context(COMPOSER).on_action(cx.listener(Self::send)).h(input_h), cx).child(self.composer.clone()))
             .child(
                 div()
                     .flex()
