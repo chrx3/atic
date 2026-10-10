@@ -86,7 +86,7 @@ impl CodeView {
         });
     }
 
-    pub(super) fn settings_m3(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn settings_m3(&self, progress: f32, cx: &mut Context<Self>) -> AnyElement {
         let t = t();
         let scheme = *gpui_m3::Theme::of(cx);
         let mut nav = div()
@@ -148,6 +148,7 @@ impl CodeView {
                     .child(content),
             );
         Dialog::new("settings")
+            .exit(progress)
             .sized(px(820.), px(600.))
             .padding(px(0.))
             .radius(px(28.))

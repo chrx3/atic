@@ -387,9 +387,11 @@ impl CodeView {
     }
 
     /// «Cuenta y uso» o el mapa de agentes, sobre la caja de texto a la derecha.
-    pub(super) fn pop_layer(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let pop = self.pop?;
+    pub(super) fn pop_layer(&self, window: &mut gpui::Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let shown = self.pop_last.show("pop-presence", self.pop.filter(|_| self.composer_bounds.get().is_some()), window, cx)?;
+        let pop = shown.value;
         let bounds = self.composer_bounds.get()?;
+        let leaving = shown.leaving;
         let content = match pop {
             Pop::Usage => self.usage_popover(cx),
             Pop::Agents => self.agent_map(cx),
@@ -399,19 +401,26 @@ impl CodeView {
                 div()
                     .absolute()
                     .inset_0()
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|view, _, _, cx| {
-                            view.pop = None;
-                            cx.notify();
-                        }),
-                    )
+                    .when(!leaving, |el| {
+                        el.on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|view, _, _, cx| {
+                                view.pop = None;
+                                cx.notify();
+                            }),
+                        )
+                    })
                     .child(
                         anchored()
                             .position(point(bounds.right(), bounds.top() - px(8.)))
                             .anchor(Corner::BottomRight)
                             .snap_to_window_with_margin(px(8.))
-                            .child(div().id("pop-card").on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation()).child(content)),
+                            .child(
+                                div()
+                                    .id("pop-card")
+                                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                                    .child(shown.wrap(gpui_m3::Exit::Rise, content)),
+                            ),
                     ),
             )
             .with_priority(1)

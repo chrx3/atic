@@ -35,6 +35,8 @@ const THREAD_W: f32 = 860.0;
 /// La columna de la pantalla de inicio de Expressive.
 const HERO_W: f32 = 720.0;
 const HERO_PLACEHOLDER: &str = "Pregunta lo que quieras · @ para mencionar · / para acciones";
+/// Sin proyecto no hay archivos que mencionar.
+const HERO_PLACEHOLDER_LOOSE: &str = "Pregunta lo que quieras · / para acciones";
 /// Las sugerencias del inicio: ícono, etiqueta y lo que dejan escrito.
 const SUGGESTIONS: [(&str, &str, &str); 4] = [
     ("layers", "Explícame el proyecto", "Explícame cómo está organizado este proyecto y por dónde empezar."),
@@ -192,6 +194,10 @@ impl Render for CodeView {
         }
         let t = t();
         self.composer_focused = self.composer.read(cx).focus_handle(cx).is_focused(window);
+        // Si la caja pierde el foco, la lista de @-menciones se cierra.
+        if self.mention.is_some() && !self.composer_focused {
+            self.close_mention(cx);
+        }
         self.pick_focused_other(window, cx);
         self.commit_renames_on_blur(window, cx);
         // El título de la ventana, como en la referencia: «espacio — Atic Code».
@@ -204,12 +210,21 @@ impl Render for CodeView {
             window.set_window_title(&window_title);
             self.window_title = window_title;
         }
-        let placeholder = if self.active_chat().is_none() && t.style == Style::Expressive { HERO_PLACEHOLDER } else { "Responde a Claude…" };
+        // Sin conversación empezada (el inicio), la caja invita a escribir; la «@»
+        // solo se anuncia donde funciona: con un proyecto abierto.
+        let hero = self.active_chat().is_none_or(|c| c.workspace == LOOSE && c.items.is_empty() && c.session_id.is_none());
+        let placeholder = match (hero && t.style == Style::Expressive, self.mentions_enabled()) {
+            (true, true) => HERO_PLACEHOLDER,
+            (true, false) => HERO_PLACEHOLDER_LOOSE,
+            _ => "Responde a Claude…",
+        };
         if self.composer.read(cx).placeholder() != placeholder {
             self.composer.update(cx, |area, cx| area.set_placeholder(placeholder, cx));
         }
         let maximized = window.is_maximized();
         let right_open = self.side.is_some() || self.doc.is_some();
+        // La configuración de Expressive es un diálogo: sale animado.
+        let settings_exit = gpui_m3::motion::presence("settings-presence", self.settings_open, window, cx);
         div()
             .id("atic-code")
             .key_context("AticCode")
@@ -237,23 +252,22 @@ impl Render for CodeView {
             .map(|el| if expressive() { el.child(self.sidebar_m3(cx)) } else { el.child(self.sidebar(cx)) })
             .child(self.center(maximized && !right_open, !right_open, cx))
             .when(right_open, |el| el.child(self.right_panel(maximized, cx)))
-            .when_some(self.menu_layer(cx), |el, menu| el.child(menu))
-            .when_some(self.session_menu_layer(cx), |el, menu| el.child(menu))
-            .when_some(self.space_menu_layer(cx), |el, menu| el.child(menu))
-            .when_some(self.new_space_dialog(cx), |el, dialog| el.child(dialog))
-            .when_some(self.pop_layer(cx), |el, pop| el.child(pop))
+            .when_some(self.menu_layer(window, cx), |el, menu| el.child(menu))
+            .when_some(self.session_menu_layer(window, cx), |el, menu| el.child(menu))
+            .when_some(self.space_menu_layer(window, cx), |el, menu| el.child(menu))
+            .when_some(self.new_space_dialog(window, cx), |el, dialog| el.child(dialog))
+            .when_some(self.pop_layer(window, cx), |el, pop| el.child(pop))
+            .when_some(self.mention_layer(window, cx), |el, list| el.child(list))
             .when(self.palette_open, |el| el.child(self.palette.clone()))
-            .when(self.settings_open, |el| if expressive() { el.child(self.settings_m3(cx)) } else { el.child(self.settings(cx)) })
-            .when_some(self.toast.clone(), |el, text| {
+            .when(!expressive() && self.settings_open, |el| el.child(self.settings(cx)))
+            .when_some(settings_exit.filter(|_| expressive()), |el, progress| el.child(self.settings_m3(progress, cx)))
+            .when_some(self.toast_last.show("toast-presence", self.toast.clone(), window, cx), |el, shown| {
+                let text = shown.value.clone();
                 el.child(
-                    div()
-                        .absolute()
-                        .bottom(px(24.))
-                        .left_0()
-                        .right_0()
-                        .flex()
-                        .justify_center()
-                        .child(gpui_m3::Toast::new(("toast", self.toast_gen as usize), text)),
+                    div().absolute().bottom(px(24.)).left_0().right_0().flex().justify_center().child(shown.wrap(
+                        gpui_m3::Exit::Sink,
+                        gpui_m3::Toast::new(("toast", self.toast_gen as usize), text),
+                    )),
                 )
             })
     }
@@ -1763,7 +1777,7 @@ impl CodeView {
                 Style::Glass => el.rounded(px(24.)).border_1().border_color(t.highlight.opacity(0.5)).bg(t.raised).shadow(float_shadow()),
             })
             .when(!self.attachments.is_empty(), |el| el.child(attachments))
-            .child(div().key_context(COMPOSER).on_action(cx.listener(Self::send)).h(px(60.)).child(self.composer.clone()))
+            .child(super::mention::with_keys(div().key_context(COMPOSER).on_action(cx.listener(Self::send)).h(px(60.)), cx).child(self.composer.clone()))
             .child(
                 div()
                     .flex()
@@ -1927,9 +1941,7 @@ impl CodeView {
             .child(canvas(move |b, _, _| bounds.set(Some(b)), |_, _, _, _| {}).absolute().top_0().left_0().size_full())
             .when(!self.attachments.is_empty(), |el| el.child(attachments.px(px(12.)).pt(px(10.))))
             .child(
-                div()
-                    .key_context(COMPOSER)
-                    .on_action(cx.listener(Self::send))
+                super::mention::with_keys(div().key_context(COMPOSER).on_action(cx.listener(Self::send)), cx)
                     .px(px(20.))
                     .pt(px(15.))
                     .pb(px(2.))

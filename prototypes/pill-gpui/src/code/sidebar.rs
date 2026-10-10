@@ -579,8 +579,10 @@ impl CodeView {
     }
 
     /// El menú del clic derecho sobre una conversación.
-    pub(super) fn session_menu_layer(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let (target, at): (SessionRef, Point<Pixels>) = self.session_menu.clone()?;
+    pub(super) fn session_menu_layer(&self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let shown = self.session_menu_last.show("session-menu-presence", self.session_menu.clone(), window, cx)?;
+        let (target, at): (SessionRef, Point<Pixels>) = shown.value.clone();
+        let leaving = shown.leaving;
         let (open, rename, mark, delete) = (target.clone(), target.clone(), target.clone(), target);
         let bookmarked = self.is_bookmarked(&mark.session_id);
         let menu = gpui_m3::Menu::new("session-menu")
@@ -614,16 +616,21 @@ impl CodeView {
                 div()
                     .absolute()
                     .inset_0()
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|view, _, _, cx| {
-                            view.session_menu = None;
-                            cx.notify();
-                        }),
-                    )
+                    .when(!leaving, |el| {
+                        el.on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|view, _, _, cx| {
+                                view.session_menu = None;
+                                cx.notify();
+                            }),
+                        )
+                    })
                     .child(
                         anchored().position(point(at.x, at.y)).anchor(Corner::TopLeft).snap_to_window_with_margin(px(8.)).child(
-                            div().id("session-menu-card").on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation()).child(menu),
+                            div()
+                                .id("session-menu-card")
+                                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                                .child(shown.wrap(gpui_m3::Exit::Sink, menu)),
                         ),
                     ),
             )
@@ -633,8 +640,10 @@ impl CodeView {
     }
 
     /// El menú del clic derecho sobre un espacio: renombrar, agregar carpetas, quitar.
-    pub(super) fn space_menu_layer(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let (id, at) = self.space_menu?;
+    pub(super) fn space_menu_layer(&self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let shown = self.space_menu_last.show("space-menu-presence", self.space_menu, window, cx)?;
+        let (id, at) = shown.value;
+        let leaving = shown.leaving;
         let favorite = self.configs.favorites.contains(&id);
         let menu = gpui_m3::Menu::new("space-menu")
             .width(220.)
@@ -668,16 +677,21 @@ impl CodeView {
                 div()
                     .absolute()
                     .inset_0()
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|view, _, _, cx| {
-                            view.space_menu = None;
-                            cx.notify();
-                        }),
-                    )
+                    .when(!leaving, |el| {
+                        el.on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|view, _, _, cx| {
+                                view.space_menu = None;
+                                cx.notify();
+                            }),
+                        )
+                    })
                     .child(
                         anchored().position(point(at.x, at.y)).anchor(Corner::TopLeft).snap_to_window_with_margin(px(8.)).child(
-                            div().id("space-menu-card").on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation()).child(menu),
+                            div()
+                                .id("space-menu-card")
+                                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                                .child(shown.wrap(gpui_m3::Exit::Sink, menu)),
                         ),
                     ),
             )
@@ -774,8 +788,10 @@ impl CodeView {
         self.select_workspace(id, cx);
     }
 
-    pub(super) fn new_space_dialog(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let folders = self.new_space.as_ref()?;
+    pub(super) fn new_space_dialog(&self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let shown = self.new_space_last.show("new-space-presence", self.new_space.clone(), window, cx)?;
+        let folders = &shown.value;
+        let progress = shown.progress;
         let t = t();
         let auto = crate::space::workspaces::name_for(folders);
         let mut list = div().flex().flex_col().gap(px(2.));
@@ -818,6 +834,7 @@ impl CodeView {
         let hint = if folders.is_empty() { "Sin nombre, se usa el de las carpetas.".to_string() } else { format!("Sin nombre, se llama «{auto}».") };
         Some(
             Dialog::new("new-space")
+                .exit(progress)
                 .title("Nuevo espacio")
                 .width(px(460.))
                 .on_dismiss(cx.listener(|view, _: &ClickEvent, _, cx| {

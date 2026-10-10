@@ -50,6 +50,7 @@ impl Sub {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Act {
     Attach,
+    Mention,
     Clear,
     Bookmark,
     NextFlag,
@@ -130,6 +131,7 @@ impl CodeView {
         match tab {
             0 => vec![
                 row("clip", "Adjuntar archivo…", Trailing::Kbd("Ctrl+U"), Act::Attach),
+                row("at", "Mencionar archivo del proyecto…", Trailing::Kbd("@"), Act::Mention),
                 row("trash", "Limpiar conversación", Trailing::None, Act::Clear),
                 row("history", "Rewind", Trailing::Kbd("Esc Esc"), Act::Open(Sub::Rewind)),
                 row("bookmark", "Marcador", Trailing::Value(bookmark.into()), Act::Bookmark),
@@ -511,8 +513,8 @@ impl CodeView {
     }
 
     pub(super) fn close_menus(&mut self, cx: &mut Context<Self>) {
+        // `menu_sub` se queda: el menú sale con lo que mostraba. Al abrirse se reinicia.
         self.menu = None;
-        self.menu_sub = None;
         cx.notify();
     }
 
@@ -528,6 +530,7 @@ impl CodeView {
         let session = self.active_chat().and_then(|c| c.session_id.clone());
         match act {
             Act::Attach => self.pick_attachments(cx),
+            Act::Mention => self.start_mention(window, cx),
             Act::Clear => {
                 if let Some(workspace) = self.active_workspace() {
                     self.new_chat(workspace, window, cx);

@@ -21,6 +21,8 @@ use crate::text_input::{
 actions!(text_area, [Newline, Up, Down, SelectUp, SelectDown]);
 
 pub const KEY_CONTEXT: &str = "TextArea";
+/// El mismo contexto con la marca `suggesting`: las @-menciones lo usan para tomar las flechas.
+const SUGGESTING_CONTEXT: &str = "TextArea suggesting";
 
 pub fn bind_keys(cx: &mut App) {
     let context = Some(KEY_CONTEXT);
@@ -67,6 +69,9 @@ pub struct TextArea {
     is_selecting: bool,
     /// Filas que ocupa el texto ya distribuido, para que la caja crezca con él.
     rows: usize,
+    /// Hay una lista de sugerencias abierta (@-menciones): el contexto de teclas
+    /// lleva `suggesting` y la vista puede quedarse con ↑ ↓ Enter Tab Esc.
+    suggesting: bool,
 }
 
 impl EventEmitter<Changed> for TextArea {}
@@ -97,7 +102,32 @@ impl TextArea {
             goal_x: None,
             is_selecting: false,
             rows: 1,
+            suggesting: false,
         }
+    }
+
+    /// Avisa que hay una lista de sugerencias abierta para esta caja (o que se cerró).
+    pub fn set_suggesting(&mut self, on: bool, cx: &mut Context<Self>) {
+        if self.suggesting != on {
+            self.suggesting = on;
+            cx.notify();
+        }
+    }
+
+    /// Dónde está el cursor (byte del texto).
+    pub fn cursor(&self) -> usize {
+        self.cursor_offset()
+    }
+
+    /// Cambia el texto y deja el cursor en `cursor` (sin avisar, como `set_text`).
+    pub fn set_text_at(&mut self, text: &str, cursor: usize, cx: &mut Context<Self>) {
+        self.set_text(text, cx);
+        let mut at = cursor.min(self.content.len());
+        while !self.content.is_char_boundary(at) {
+            at -= 1;
+        }
+        self.selected_range = at..at;
+        self.reveal_cursor = true;
     }
 
     pub fn set_placeholder(&mut self, placeholder: impl Into<SharedString>, cx: &mut Context<Self>) {
@@ -802,7 +832,7 @@ impl Render for TextArea {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .size_full()
-            .key_context(KEY_CONTEXT)
+            .key_context(if self.suggesting { SUGGESTING_CONTEXT } else { KEY_CONTEXT })
             .track_focus(&self.focus_handle(cx))
             .cursor(CursorStyle::IBeam)
             .on_action(cx.listener(Self::backspace))

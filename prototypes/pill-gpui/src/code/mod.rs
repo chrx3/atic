@@ -20,7 +20,9 @@ mod demo;
 mod files;
 mod git;
 mod marks;
+mod mention;
 mod menus;
+mod overlay;
 mod palette;
 mod permissions;
 mod rewind;
@@ -89,6 +91,16 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("ctrl-g", ShowChanges, Some("AticCode")),
         KeyBinding::new("ctrl-o", OpenFolder, Some("AticCode")),
         KeyBinding::new("ctrl-l", ClearConversation, Some("AticCode")),
+    ]);
+    // Con la lista de @-menciones abierta, las flechas, Enter, Tab y Esc son de la lista.
+    // Van después de las de arriba: a igual profundidad gana la última.
+    let open = Some("CodeComposer > TextArea && suggesting");
+    cx.bind_keys([
+        KeyBinding::new("up", gpui_m3::SuggestionPrevious, open),
+        KeyBinding::new("down", gpui_m3::SuggestionNext, open),
+        KeyBinding::new("enter", gpui_m3::SuggestionAccept, open),
+        KeyBinding::new("tab", gpui_m3::SuggestionAccept, open),
+        KeyBinding::new("escape", gpui_m3::SuggestionDismiss, open),
     ]);
 }
 
@@ -258,6 +270,9 @@ pub struct CodeView {
     /// El último archivo abierto: queda resaltado en el árbol.
     active_file: Option<PathBuf>,
     composer: Entity<TextArea>,
+    /// La lista de @-menciones abierta (y lo último que mostró, para su salida).
+    mention: Option<mention::Mention>,
+    mention_last: overlay::Last<mention::MentionShown>,
     thread: ScrollHandle,
     /// Seguir el final del chat mientras llega texto (se suelta al subir).
     follow: bool,
@@ -271,6 +286,13 @@ pub struct CodeView {
     claude_path: Option<PathBuf>,
     /// El menú abierto y dónde se pidió.
     menu: Option<(Menu, Point<Pixels>)>,
+    /// Lo último que mostraron las capas flotantes, para que salgan animadas.
+    menu_last: overlay::Last<(Menu, Point<Pixels>)>,
+    session_menu_last: overlay::Last<(sidebar::SessionRef, Point<Pixels>)>,
+    space_menu_last: overlay::Last<(u64, Point<Pixels>)>,
+    pop_last: overlay::Last<usage::Pop>,
+    new_space_last: overlay::Last<Vec<PathBuf>>,
+    toast_last: overlay::Last<gpui::SharedString>,
     attachments: Vec<Attachment>,
     /// Los comandos de Claude Code (de `meta`): nombre y descripción.
     commands: Vec<(String, String)>,
@@ -547,6 +569,8 @@ impl CodeView {
             doc: None,
             active_file: None,
             composer,
+            mention: None,
+            mention_last: Default::default(),
             thread: ScrollHandle::new(),
             follow: true,
             expanded: HashSet::new(),
@@ -555,6 +579,12 @@ impl CodeView {
             more_models: false,
             claude_path: sidecar::claude_path(),
             menu: None,
+            menu_last: Default::default(),
+            session_menu_last: Default::default(),
+            space_menu_last: Default::default(),
+            pop_last: Default::default(),
+            new_space_last: Default::default(),
+            toast_last: Default::default(),
             attachments: Vec::new(),
             commands: Vec::new(),
             composer_style: (t.style, t.light, style::accent()),
@@ -1240,6 +1270,7 @@ impl CodeView {
             }
         });
         self.composer.update(cx, |area, cx| area.set_text("", cx));
+        self.close_mention(cx);
         self.follow = true;
         self.thread.scroll_to_bottom();
         self.focus_composer(window, cx);
@@ -1419,7 +1450,6 @@ impl CodeView {
         self.last_esc = Some(now);
         if self.menu.take().is_some() || self.pop.take().is_some() || self.settings_open {
             self.settings_open = false;
-            self.menu_sub = None;
             self.last_esc = None;
             cx.notify();
             return;
@@ -1500,6 +1530,7 @@ impl CodeView {
     /// Deja un texto en la caja, listo para seguir escribiendo (las sugerencias del inicio).
     fn prefill(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.composer.update(cx, |area, cx| area.set_text(text, cx));
+        self.close_mention(cx);
         self.focus_composer(window, cx);
         cx.notify();
     }
@@ -1509,7 +1540,9 @@ impl CodeView {
         if area.read(cx).text() == "/" {
             area.update(cx, |area, cx| area.set_text("", cx));
             self.toggle_menu(Menu::Actions, Point::default(), cx);
+            return;
         }
+        self.update_mention(cx);
     }
 
     /// Escribe `/comando ` al final de la caja, listo para completar o mandar.
@@ -1795,6 +1828,10 @@ impl CodeView {
                 view.indexing = false;
                 if view.workspaces.active().is_some_and(|w| w.folders == roots) {
                     view.file_index = Some((roots, Arc::new(found)));
+                    // Una @ escrita mientras se armaba el índice ya puede mostrar archivos.
+                    if view.mention.is_some() {
+                        view.update_mention(cx);
+                    }
                 }
                 cx.notify();
             });

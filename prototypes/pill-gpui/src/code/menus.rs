@@ -97,8 +97,10 @@ pub(super) fn switch(on: bool) -> Div {
 }
 
 impl CodeView {
-    pub(super) fn menu_layer(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let (menu, at) = self.menu?;
+    pub(super) fn menu_layer(&self, window: &mut gpui::Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        // Al cerrarse, el menú se sigue dibujando mientras se desvanece (`Presence`).
+        let shown = self.menu_last.show("menu-presence", self.menu, window, cx)?;
+        let (menu, at) = shown.value;
         let expressive = super::view::expressive();
         let content = match (menu, expressive) {
             (Menu::Model, false) => self.model_menu(cx),
@@ -119,18 +121,23 @@ impl CodeView {
             (Menu::Project, _, _) => (point(at.x - px(20.), at.y + px(22.)), Corner::TopLeft),
             _ => (point(at.x - px(18.), at.y - px(22.)), Corner::BottomLeft),
         };
+        // Los que abren hacia arriba se van hacia el ancla; el del proyecto, hacia abajo.
+        let exit = if matches!(menu, Menu::Project) { gpui_m3::Exit::Sink } else { gpui_m3::Exit::Rise };
+        let leaving = shown.leaving;
         Some(
             deferred(
                 div()
                     .absolute()
                     .inset_0()
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|view, _, _, cx| {
-                            view.menu = None;
-                            cx.notify();
-                        }),
-                    )
+                    .when(!leaving, |el| {
+                        el.on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|view, _, _, cx| {
+                                view.menu = None;
+                                cx.notify();
+                            }),
+                        )
+                    })
                     .child(
                         anchored()
                             .position(position)
@@ -140,7 +147,7 @@ impl CodeView {
                                 div()
                                     .id("menu-card")
                                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                                    .child(content),
+                                    .child(shown.wrap(exit, content)),
                             ),
                     ),
             )
@@ -324,6 +331,14 @@ impl CodeView {
                     .child(
                         action("act-attach", "icons/plus.svg", "Adjuntar archivo…", Some("Ctrl+V pega imágenes".into()))
                             .on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.pick_attachments(cx))),
+                    )
+                    .child(
+                        action("act-mention", "icons/file.svg", "Mencionar archivo del proyecto…", Some("@".into())).on_click(cx.listener(
+                            |view, _: &ClickEvent, window, cx| {
+                                view.close_menus(cx);
+                                view.start_mention(window, cx);
+                            },
+                        )),
                     )
                     .child(
                         action("act-rewind", "icons/history.svg", "Rewind", Some("Esc Esc".into()))
