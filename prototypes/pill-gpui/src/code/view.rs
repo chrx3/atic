@@ -14,8 +14,8 @@ use std::path::PathBuf;
 
 use gpui::{
     canvas, div, prelude::*, px, svg, AnyElement, ClickEvent, ClipboardItem, Context, CursorStyle, Div, DragMoveEvent,
-    Focusable, FontWeight, Hsla, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ScrollWheelEvent,
-    ScrollHandle, SharedString, Stateful, Window,
+    Focusable, FontWeight, Hsla, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    SharedString, Stateful, Window,
 };
 use serde_json::Value;
 
@@ -33,13 +33,11 @@ const HEAD_H: f32 = 52.0;
 const SIDE_W: f32 = 264.0;
 const RIGHT_W: f32 = 380.0;
 const DOC_W: f32 = 600.0;
-const THREAD_W: f32 = 860.0;
+pub(super) const THREAD_W: f32 = 860.0;
 /// La columna de la pantalla de inicio de Expressive.
 const HERO_W: f32 = 720.0;
 /// Cuántas partes del final del hilo entran animadas.
-const ENTER_MAX: usize = 3;
-/// Cuántas partes del final de cada hilo se dibujan (ver `first_shown`).
-const THREAD_WINDOW: usize = 60;
+pub(super) const ENTER_MAX: usize = 3;
 const HERO_PLACEHOLDER: &str = "Pregunta lo que quieras · @ para mencionar · / para acciones";
 /// Sin proyecto no hay archivos que mencionar.
 const HERO_PLACEHOLDER_LOOSE: &str = "Pregunta lo que quieras · / para acciones";
@@ -1057,93 +1055,23 @@ impl CodeView {
             .child(div().flex_none().w(px(if controls { 4. } else { 10. })))
             .when(controls, |el| el.child(chrome::controls_colored(maximized, HEAD_H, fg(), hover_bg())));
 
-        // En Expressive el texto usa todo el ancho, como en la referencia; solo la caja se limita.
-        // Al cambiar de conversación, la otra entra subiendo 14 px con resorte (`animateIn(.., "swap")`,
-        // `Thread.tsx:227`); no se anima al abrir la aplicación.
-        let swap = Enter::new("thread-swap").from(0., 14.).on_change(chat.map_or(0, |c| key_hash(&c.key)));
-        let mut thread = if expressive() { swap.apply(div(), window, cx) } else { div() }
-            .w_full()
-            .when(!expressive(), |el| el.max_w(px(THREAD_W)).mx_auto())
-            .px(px(ctx.side_pad()))
-            .pt(px(if expressive() { 20. } else { 12. }))
-            .pb(px(if expressive() { 24. } else { 28. }))
-            .flex()
-            .flex_col()
-            .gap(px(if expressive() { 12. } else { 16. }));
-        match chat {
-            Some(chat) => {
-                self.flag_bounds.borrow_mut().clear();
-                if loose && chat.items.is_empty() {
-                    thread = thread.child(
-                        div()
-                            .pt(px(140.))
-                            .flex()
-                            .flex_col()
-                            .items_center()
-                            .gap(px(14.))
-                            .child(svg().path("icons/agents/claude.svg").size(px(40.)).text_color(faint()))
-                            .child(div().text_size(px(15.)).text_color(muted()).child("Chat sin proyecto: una conversación general, fuera de tus carpetas.")),
-                    );
-                }
-                // Las partes nuevas entran con resorte: solo las últimas tres, para que un
-                // historial recién abierto no se anime entero (`motion.ts` de la referencia).
-                let total = chat.items.len();
-                let first = self.first_shown(chat);
-                if first > 0 {
-                    thread = thread.child(self.show_older(chat, first, cx));
-                }
-                for (index, item) in chat.items.iter().enumerate().skip(first) {
-                    if chat.hidden(index) {
-                        continue;
-                    }
-                    let flagged = self.is_flagged(chat, index);
-                    let fresh = index + ENTER_MAX >= total;
-                    thread = thread.child(self.item(chat, index, item, flagged, fresh, cx));
-                }
-                // Se eligió otro modelo con la conversación empezada: se grabará con el próximo mensaje.
-                if let Some(pending) = chat.pending_model(&self.models, &self.configs.get(chat.workspace)) {
-                    thread = thread.child(model_mark(format!("model-next-{}", chat.key), format!("{pending} en el próximo mensaje"), true));
-                }
-                // Como en la referencia, las solicitudes van al final del hilo, todas.
-                if !chat.permissions.is_empty() {
-                    thread = thread.child(self.permission_cards(chat, cx));
-                }
-                if chat.working() {
-                    thread = thread.child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(8.))
-                            .text_size(px(13.))
-                            .text_color(muted())
-                            .map(|el| {
-                                if expressive() {
-                                    el.text_size(px(12.5)).child(gpui_m3::LoadingIndicator::new().size(px(16.))).child("Trabajando…")
-                                } else {
-                                    el.child(div().size(px(7.)).rounded_full().bg(accent())).child("Claude está trabajando…")
-                                }
-                            }),
-                    );
-                }
-            }
-            None => {
-                let text = if has_workspace {
-                    "¿En qué trabajamos? Claude Code tiene acceso a las carpetas de este proyecto."
-                } else {
-                    "Crea un proyecto con el botón de carpeta, junto a «Proyectos»."
-                };
-                thread = thread.child(
-                    div()
-                        .pt(px(140.))
-                        .flex()
-                        .flex_col()
-                        .items_center()
-                        .gap(px(14.))
-                        .child(svg().path("icons/agents/claude.svg").size(px(40.)).text_color(faint()))
-                        .child(div().text_size(px(15.)).text_color(muted()).child(text)),
-                );
-            }
-        }
+        // Sin conversación: la invitación a empezar (el hilo de verdad es una lista virtual,
+        // `thread_list.rs`).
+        let empty = chat.is_none().then(|| {
+            let text = if has_workspace {
+                "¿En qué trabajamos? Claude Code tiene acceso a las carpetas de este proyecto."
+            } else {
+                "Crea un proyecto con el botón de carpeta, junto a «Proyectos»."
+            };
+            div()
+                .pt(px(140.))
+                .flex()
+                .flex_col()
+                .items_center()
+                .gap(px(14.))
+                .child(svg().path("icons/agents/claude.svg").size(px(40.)).text_color(faint()))
+                .child(div().text_size(px(15.)).text_color(muted()).child(text))
+        });
         let error = self.error.clone();
         let t = t();
         // Sin conversación, Expressive muestra el inicio de la referencia con la caja al centro.
@@ -1163,8 +1091,15 @@ impl CodeView {
             .when(hero, |el| el.child(self.hero(has_workspace, ctx.fit, window, cx)))
             .when(history, |el| el.child(self.history_view(window, cx)))
             .when(!hero && !history, |el| {
-                let scroller = div().id(("pane-thread", pane)).flex_1().min_h(px(0.)).overflow_y_scroll().track_scroll(&self.active_thread());
-                el.child(self.follow_wheel(scroller, chat.map(|c| c.key.clone()), cx).child(thread))
+                // Al cambiar de conversación, la otra entra subiendo 14 px con resorte
+                // (`animateIn(.., "swap")`, `Thread.tsx:227`).
+                let swap = Enter::new(("thread-swap", pane)).from(0., 14.).on_change(chat.map_or(0, |c| key_hash(&c.key)));
+                let body = match (chat, empty) {
+                    (Some(chat), _) => self.thread_list(chat, loose && chat.items.is_empty(), ctx.side_pad(), !expressive(), cx),
+                    (None, Some(empty)) => empty.into_any_element(),
+                    (None, None) => div().into_any_element(),
+                };
+                el.child(swap.apply(div().id(("pane-thread", pane)).flex_1().min_h(px(0.)), window, cx).child(body))
             })
             .when_some(error, |el, error| {
                 el.child(
@@ -1369,23 +1304,6 @@ impl CodeView {
         overlay
     }
 
-    /// Un hilo que suelta el final al subir con la rueda y lo vuelve a seguir al llegar abajo.
-    fn follow_wheel(&self, scroller: Stateful<Div>, key: Option<String>, cx: &mut Context<Self>) -> Stateful<Div> {
-        scroller.on_scroll_wheel(cx.listener(move |view, event: &ScrollWheelEvent, window, cx| {
-            let Some(key) = &key else {
-                return;
-            };
-            let delta = event.delta.pixel_delta(window.line_height()).y;
-            let thread = view.thread_of(key);
-            if delta > px(0.) || -thread.offset().y < thread.max_offset().height - px(24.) {
-                view.unfollow.insert(key.clone());
-            } else {
-                view.unfollow.remove(key);
-            }
-            cx.notify();
-        }))
-    }
-
     /// Un panel que no es el activo: su título, el hilo entero y una caja que, con un
     /// clic en cualquier parte del panel, lo vuelve el activo.
     fn split_pane(&self, ctx: PaneCtx, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
@@ -1411,35 +1329,10 @@ impl CodeView {
                 cx.listener(move |view, _: &ClickEvent, window, cx| view.close_pane(pane, window, cx)),
             )))
             .when(ctx.controls, |el| el.child(chrome::controls_colored(ctx.maximized, HEAD_H, fg(), hover_bg())));
-        let side = ctx.side_pad();
-        let mut thread = div().w_full().px(px(side)).pt(px(16.)).pb(px(20.)).flex().flex_col().gap(px(if expressive() { 12. } else { 16. }));
-        match chat {
-            Some(chat) => {
-                let total = chat.items.len();
-                let first = self.first_shown(chat);
-                if first > 0 {
-                    thread = thread.child(self.show_older(chat, first, cx));
-                }
-                for (index, item) in chat.items.iter().enumerate().skip(first) {
-                    if chat.hidden(index) {
-                        continue;
-                    }
-                    let flagged = self.is_flagged(chat, index);
-                    thread = thread.child(self.item(chat, index, item, flagged, index + ENTER_MAX >= total, cx));
-                }
-                if !chat.permissions.is_empty() {
-                    thread = thread.child(self.permission_cards(chat, cx));
-                }
-                if chat.working() {
-                    thread = thread.child(
-                        div().flex().items_center().gap(px(8.)).text_size(px(12.5)).text_color(muted()).child(gpui_m3::LoadingIndicator::new().size(px(16.))).child("Trabajando…"),
-                    );
-                }
-            }
-            None => {
-                thread = thread.child(div().pt(px(80.)).text_center().text_color(faint()).child("Sin conversación: arrastra una desde la barra o haz clic para escribir aquí."));
-            }
-        }
+        let body = match chat {
+            Some(chat) => self.thread_list(chat, false, ctx.side_pad(), !expressive(), cx),
+            None => div().pt(px(80.)).px(px(16.)).text_center().text_color(faint()).child("Sin conversación: arrastra una desde la barra o haz clic para escribir aquí.").into_any_element(),
+        };
         let _ = window;
         // La caja de este panel: al enfocarlo, la caja de verdad pasa aquí.
         let reply = div()
@@ -1462,10 +1355,6 @@ impl CodeView {
             } else {
                 "Responde a Claude… · clic para escribir aquí"
             }));
-        let scroller = div().id(("pane-thread", pane)).flex_1().min_h(px(0.)).overflow_y_scroll().track_scroll(&match &key {
-            Some(key) => self.thread_of(key),
-            None => ScrollHandle::new(),
-        });
         div()
             .flex_1()
             .min_w(px(0.))
@@ -1474,43 +1363,40 @@ impl CodeView {
             .bg(center_bg())
             .when(t.gap > 0., |el| el.rounded(px(t.r_pane)).overflow_hidden().when(t.style == Style::Glass, |el| el.border_1().border_color(t.highlight.opacity(0.35))))
             .child(header)
-            .child(self.follow_wheel(scroller, key, cx).child(thread))
+            .child(div().id(("pane-thread", pane)).flex_1().min_h(px(0.)).child(body))
             .child(reply)
             .into_any_element()
     }
 
-    /// La primera parte del hilo que se dibuja: las últimas `THREAD_WINDOW` más las que se
-    /// pidieron con «Mostrar anteriores». Dibujar cientos de herramientas y mensajes en cada
-    /// cuadro (dos veces, con la vista dividida) dejaba el hilo de la ventana siempre ocupado.
-    fn first_shown(&self, chat: &super::Chat) -> usize {
-        let shown = THREAD_WINDOW + self.older.get(&chat.key).copied().unwrap_or(0);
-        chat.items.len().saturating_sub(shown)
-    }
-
-    /// «Mostrar N anteriores» arriba del hilo.
-    fn show_older(&self, chat: &super::Chat, hidden: usize, cx: &mut Context<Self>) -> AnyElement {
-        let key = chat.key.clone();
-        let label = format!("Mostrar {} anteriores ({hidden} ocultas)", hidden.min(THREAD_WINDOW));
-        div()
-            .flex()
-            .justify_center()
-            .child(
+    /// Lo que va al final del hilo: el modelo del próximo mensaje, las solicitudes de
+    /// permiso (todas, como en la referencia) y «Trabajando…».
+    pub(super) fn thread_footer(&self, chat: &super::Chat, cx: &mut Context<Self>) -> AnyElement {
+        let mut footer = div().flex().flex_col().gap(px(if expressive() { 12. } else { 16. }));
+        // Se eligió otro modelo con la conversación empezada: se grabará con el próximo mensaje.
+        if let Some(pending) = chat.pending_model(&self.models, &self.configs.get(chat.workspace)) {
+            footer = footer.child(model_mark(format!("model-next-{}", chat.key), format!("{pending} en el próximo mensaje"), true));
+        }
+        if !chat.permissions.is_empty() {
+            footer = footer.child(self.permission_cards(chat, cx));
+        }
+        if chat.working() {
+            footer = footer.child(
                 div()
-                    .id(SharedString::from(format!("older-{}", chat.key)))
-                    .px(px(14.))
-                    .py(px(6.))
-                    .rounded(px(16.))
-                    .text_size(px(12.5))
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .text_size(px(13.))
                     .text_color(muted())
-                    .cursor_pointer()
-                    .hover(|el| el.bg(hover_bg()))
-                    .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
-                        *view.older.entry(key.clone()).or_insert(0) += THREAD_WINDOW;
-                        cx.notify();
-                    }))
-                    .child(label),
-            )
-            .into_any_element()
+                    .map(|el| {
+                        if expressive() {
+                            el.text_size(px(12.5)).child(gpui_m3::LoadingIndicator::new().size(px(16.))).child("Trabajando…")
+                        } else {
+                            el.child(div().size(px(7.)).rounded_full().bg(accent())).child("Claude está trabajando…")
+                        }
+                    }),
+            );
+        }
+        footer.into_any_element()
     }
 
     /// «Terminal» en la barra superior, con cuántas hay si son varias (`Chat.tsx:82`).
@@ -1722,7 +1608,7 @@ impl CodeView {
             .into_any_element()
     }
 
-    fn item(&self, chat: &super::Chat, index: usize, item: &Item, flagged: bool, fresh: bool, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn item(&self, chat: &super::Chat, index: usize, item: &Item, flagged: bool, fresh: bool, cx: &mut Context<Self>) -> AnyElement {
         let key = chat.key.as_str();
         let row = match item {
             Item::User { .. } | Item::Text(_) => self.message(key, index, item, flagged, fresh, cx),
@@ -3194,4 +3080,17 @@ mod tests {
         assert_eq!(last_line(&long), "final con ñ");
         assert!(!last_line(&"ñ".repeat(300)).is_empty());
     }
+}
+
+/// El aviso de un chat suelto todavía vacío.
+pub(super) fn loose_notice() -> AnyElement {
+    div()
+        .pt(px(140.))
+        .flex()
+        .flex_col()
+        .items_center()
+        .gap(px(14.))
+        .child(svg().path("icons/agents/claude.svg").size(px(40.)).text_color(faint()))
+        .child(div().text_size(px(15.)).text_color(muted()).child("Chat sin proyecto: una conversación general, fuera de tus carpetas."))
+        .into_any_element()
 }

@@ -9,11 +9,10 @@
 //! cualquier parte de ellos los vuelve el activo. El borrador de cada conversación
 //! se guarda al cambiar de panel.
 
-use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::cell::Cell;
 use std::rc::Rc;
 
-use gpui::{div, prelude::*, px, Bounds, Context, Pixels, Render, ScrollHandle, SharedString, Window};
+use gpui::{div, prelude::*, px, Bounds, Context, Pixels, Render, SharedString, Window};
 
 use super::{CodeView, SessionInfo};
 use crate::space::panes::{Axis, Divider, Panes};
@@ -220,8 +219,6 @@ pub struct ResizeDrag {
 pub struct PaneState {
     /// El rectángulo del área de paneles en la ventana (lo anota un `canvas`).
     pub bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
-    /// Un desplazamiento por conversación: cada panel sigue el suyo.
-    threads: RefCell<HashMap<String, ScrollHandle>>,
     /// Sobre qué zona de qué panel está lo que se arrastra.
     pub hint: Option<(usize, Zone)>,
     pub resizing: Option<ResizeDrag>,
@@ -229,7 +226,7 @@ pub struct PaneState {
 
 impl Default for PaneState {
     fn default() -> Self {
-        Self { bounds: Rc::new(Cell::new(None)), threads: RefCell::new(HashMap::new()), hint: None, resizing: None }
+        Self { bounds: Rc::new(Cell::new(None)), hint: None, resizing: None }
     }
 }
 
@@ -249,32 +246,6 @@ impl CodeView {
             });
             cx.new(|_| DragChip::new(drag.title.clone()))
         })
-    }
-
-    /// El desplazamiento del hilo de una conversación.
-    pub(super) fn thread_of(&self, key: &str) -> ScrollHandle {
-        self.pane_state.threads.borrow_mut().entry(key.to_string()).or_default().clone()
-    }
-
-    /// El del hilo del panel activo.
-    pub(super) fn active_thread(&self) -> ScrollHandle {
-        match &self.active {
-            Some(key) => self.thread_of(key),
-            None => self.thread.clone(),
-        }
-    }
-
-    /// Una conversación sigue el final mientras llega texto, salvo que se haya
-    /// subido en su hilo.
-    pub(super) fn following(&self, key: &str) -> bool {
-        !self.unfollow.contains(key)
-    }
-
-    /// Baja al final el hilo de la conversación `key` si lo sigue.
-    pub(super) fn follow_bottom(&self, key: &str) {
-        if self.following(key) {
-            self.thread_of(key).scroll_to_bottom();
-        }
     }
 
     /// El tamaño del área de paneles: el último medido, o una estimación el

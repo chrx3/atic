@@ -41,6 +41,7 @@ mod sidecar;
 mod split;
 mod style;
 mod terminal;
+mod thread_list;
 mod tools;
 mod usage;
 mod view;
@@ -57,7 +58,7 @@ use futures::StreamExt;
 use base64::Engine;
 use gpui::{
     actions, prelude::*, px, size, App, Bounds, ClipboardEntry, Context, Entity, EntityInputHandler, FocusHandle,
-    Focusable, ImageFormat, KeyBinding, PathPromptOptions, Pixels, Point, ScrollHandle, Window,
+    Focusable, ImageFormat, KeyBinding, PathPromptOptions, Pixels, Point, Window,
     WindowBackgroundAppearance,
 };
 use serde_json::{json, Value};
@@ -285,11 +286,6 @@ pub struct CodeView {
     /// La lista de @-menciones abierta (y lo último que mostró, para su salida).
     mention: Option<mention::Mention>,
     mention_last: overlay::Last<mention::MentionShown>,
-    /// El desplazamiento cuando no hay conversación; cada una tiene el suyo (`thread_of`).
-    thread: ScrollHandle,
-    /// Las conversaciones que dejaron de seguir el final del chat al subir en su hilo
-    /// (por omisión lo siguen mientras llega texto).
-    unfollow: HashSet<String>,
     /// Herramientas abiertas para ver su detalle.
     expanded: HashSet<String>,
     /// Los modelos que ofrece Claude Code (de `meta`), id y nombre.
@@ -436,8 +432,8 @@ pub struct CodeView {
     /// Cuántas veces se dibujó la ventana desde `frames_since`, y cuántos tramos
     /// seguidos fueron de más (ver `note_frame`).
     frames: u32,
-    /// Partes de más que se dibujan en cada hilo (`first_shown` en `view.rs`).
-    older: HashMap<String, usize>,
+    /// La lista virtual del hilo de cada conversación (`thread_list.rs`).
+    lists: std::cell::RefCell<HashMap<String, thread_list::ThreadList>>,
     frames_since: std::time::Instant,
     /// CPU del hilo principal (ms) al empezar el tramo.
     frames_cpu: f64,
@@ -652,8 +648,6 @@ impl CodeView {
             composer,
             mention: None,
             mention_last: Default::default(),
-            thread: ScrollHandle::new(),
-            unfollow: HashSet::new(),
             expanded: HashSet::new(),
             models: config::MODELS.iter().map(|(id, name)| (id.to_string(), name.to_string())).collect(),
             settings_open: false,
@@ -746,7 +740,7 @@ impl CodeView {
             hero_hover: false,
             history_loading: HashSet::new(),
             frames: 0,
-            older: HashMap::new(),
+            lists: Default::default(),
             frames_since: std::time::Instant::now(),
             frames_cpu: main_thread_cpu_ms(),
             hot_spells: 0,
@@ -879,10 +873,6 @@ impl CodeView {
                 }
                 // Terminó, falló o pide un permiso con la ventana atrás: aviso del sistema.
                 self.system_alert(&key, &event, &data, interrupted);
-                // Cada conversación a la vista sigue el final de su hilo mientras escribe.
-                if self.panes.pane_of(key.clone()).is_some() || self.active.as_deref() == Some(key.as_str()) {
-                    self.follow_bottom(&key);
-                }
             }
         }
         cx.notify();
@@ -1205,7 +1195,6 @@ impl CodeView {
         }
         let key = self.new_key();
         self.chats.push(Chat::new(key.clone(), LOOSE, dir));
-        self.unfollow.remove(&key);
         self.active = Some(key);
         self.focus_composer(window, cx);
         cx.notify();
@@ -1291,8 +1280,7 @@ impl CodeView {
         self.panes.put(focused, Some(key.clone()));
         self.limit_live(cx);
         self.sync_chat_settings(&key, cx);
-        self.unfollow.remove(&key);
-        self.thread_of(&key).scroll_to_bottom();
+        self.scroll_to_end(&key);
         self.focus_composer(window, cx);
         cx.notify();
     }
@@ -1343,7 +1331,7 @@ impl CodeView {
                 Err(error) => chat.notice(format!("No se pudo leer la conversación: {error}"), true),
             }
             if view.panes.pane_of(key.clone()).is_some() {
-                view.thread_of(&key).scroll_to_bottom();
+                view.scroll_to_end(&key);
             }
         });
     }
@@ -1376,10 +1364,10 @@ impl CodeView {
             }
         }
         self.chats.retain(|c| c.key != key);
+        self.drop_list(key);
         if self.active.as_deref() == Some(key) {
             self.active = None;
         }
-        self.unfollow.remove(key);
         self.forget_in_panes(key);
         cx.notify();
     }
@@ -1560,8 +1548,7 @@ impl CodeView {
         });
         self.composer.update(cx, |area, cx| area.set_text("", cx));
         self.close_mention(cx);
-        self.unfollow.remove(&key);
-        self.thread_of(&key).scroll_to_bottom();
+        self.scroll_to_end(&key);
         self.focus_composer(window, cx);
         cx.notify();
     }

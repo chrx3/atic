@@ -97,7 +97,7 @@ impl CodeView {
                 Err(error) => chat.notice(format!("No se pudo leer la conversación: {error}"), true),
             }
             if view.panes.pane_of(key.clone()).is_some() {
-                view.thread_of(&key).scroll_to_bottom();
+                view.scroll_to_end(&key);
             }
         });
     }
@@ -137,7 +137,7 @@ impl CodeView {
             }
             if seen {
                 view.ensure_live(&key, cx);
-                view.follow_bottom(&key);
+                view.scroll_to_end(&key);
             } else {
                 chat.unread = true;
             }

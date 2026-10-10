@@ -190,22 +190,14 @@ impl super::CodeView {
         if flagged.is_empty() {
             return false;
         }
-        let thread = self.active_thread();
-        let view = thread.bounds();
-        let bounds = self.flag_bounds.borrow().clone();
-        let below = flagged.iter().copied().find(|i| bounds.get(i).is_some_and(|b| b.top() > view.top() + gpui::px(24.)));
-        let target = below.unwrap_or(flagged[0]);
-        if let Some(item) = bounds.get(&target) {
-            let offset = thread.offset();
-            let max = thread.max_offset().height;
-            // Centrado en la vista: el desplazamiento es negativo hacia abajo.
-            let delta = (item.top() - view.top()) - (view.size.height - item.size.height.min(view.size.height)) / 2.;
-            let y = (offset.y - delta).min(gpui::px(0.)).max(-max);
-            thread.set_offset(gpui::point(offset.x, y));
-            if let Some(key) = self.active.clone() {
-                self.unfollow.insert(key);
-            }
-        }
+        // El siguiente bajo la primera fila que se ve (o el primero, al llegar al final).
+        let key = chat.key.clone();
+        let top = self.top_row(&key);
+        let rows: Vec<(usize, usize)> = flagged.iter().filter_map(|&i| self.row_of_item(&key, i).map(|row| (i, row))).collect();
+        let Some(&(target, row)) = rows.iter().find(|(_, row)| *row > top).or(rows.first()) else {
+            return false;
+        };
+        self.reveal_row(&key, row);
         self.flash_gen += 1;
         let generation = self.flash_gen;
         self.flash = Some(target);
