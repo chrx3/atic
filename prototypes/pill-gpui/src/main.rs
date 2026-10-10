@@ -2205,6 +2205,10 @@ impl Pill {
                 self.close_panel(false, cx);
                 self.open_space(None, cx);
             }
+            agents::AgentsEvent::Code => {
+                self.close_panel(false, cx);
+                self.open_code(cx);
+            }
             agents::AgentsEvent::Open(open) => {
                 self.close_panel(false, cx);
                 self.open_space(Some(open.clone()), cx);

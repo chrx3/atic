@@ -164,6 +164,8 @@ pub enum AgentsEvent {
     Open(crate::space::Open),
     /// Mostrar el espacio.
     Space,
+    /// Mostrar Atic Code.
+    Code,
 }
 
 // --- Sesiones en curso --------------------------------------------------------
@@ -1656,6 +1658,24 @@ impl AgentsPanel {
                     .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(AgentsEvent::Space)))
                     .child("Espacio")
                     .fx("agents-space", move |el, h| {
+                        el.text_color(h.mix(muted, text))
+                            .bg(h.mix(text.opacity(0.0), text.opacity(0.08)))
+                    }),
+            )
+            .child(
+                div()
+                    .id("agents-code")
+                    .h(px(24.))
+                    .px(px(10.))
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .rounded(px(12.))
+                    .text_size(px(11.))
+                    .cursor_pointer()
+                    .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(AgentsEvent::Code)))
+                    .child("Atic Code")
+                    .fx("agents-code", move |el, h| {
                         el.text_color(h.mix(muted, text))
                             .bg(h.mix(text.opacity(0.0), text.opacity(0.08)))
                     }),
