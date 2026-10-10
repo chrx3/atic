@@ -526,9 +526,13 @@ Prioridad de arriba hacia abajo. Cada tanda es chica y se prueba sola. **[m3]** 
 - Tanda 19: el teclado en las filas de proyecto.
 - Chats sueltos en Formal y Glass: sin sección en su barra (se abren desde la paleta).
 
-**En curso ahora:**
-- **Tanda 2 [code]:** uuids y Rewind (Código/Conversación/Ambos, Esc Esc, `forkAt` con `want`); marcas y marcadores (json propio de Atic Code, fila, historial, «Siguiente marcado»); resync `external` (con no leído); «Detenido.»; cola de envío; teclado en permisos, preguntas y plan (Esc rechaza); compactación (`compact_boundary` + separador); «Conectando…»; recarga del visor cuando Claude edita.
-- **Tanda m3-1 [m3]:** teclado en `ExpandableCard`, ratón en `CommandPalette`, `DividerLabel`, `Banner`, `Presence`, `DropZone`, `Avatar` con imagen y hover-morph, `ImageThumb` y `Autocomplete`.
+**Hecho, tanda 2 [code]** (`1c6a237`): uuids y Rewind, marcas y marcadores (`code-marks.json`), resync `external`, «Detenido.», cola de envío, teclado en permisos (Esc rechaza), compactación, «Conectando…» y recarga del visor.
+
+**Hecho, gpui-m3 main** (sin push): tanda 1 (`777021d`: `DividerLabel`, `Banner`, `Presence`, `DropZone`, `ImageThumb`, `Avatar::image`, `SuggestionList`, foco en `ExpandableCard`, ratón en `CommandPalette`), tanda 2 (`936aded`: `Diff`/`DiffView`/`DiffBar`, `CodeOutput`, `SyntaxHighlighter` con syntect, `CodeBlock`, `Markdown`) y tanda 3 (`d7b6387`: `CodeEditor` + `SyntaxLines`, `ResizeHandle`/`Splitter`, `ReorderList`, `ImageCropper`, `theme_reveal`/`animate_theme`, altura con resorte en `ExpandableCard`, `Icon::pop`, `Avatar::hover_spin`, menú escalonado, entradas de `Dialog`/`Toast`, `MenuItem` de dos líneas). Con eso están hechos todos los **[m3]** de las tandas 6, 7, 8, 10, 11, 13, 14, 16 y 20.
+
+**Tanda 4 [code], a medias** (`c820b5d`): hecho el punto 3 de abajo salvo `Presence` en menús/diálogos/toasts. Falta del brief de la tanda 4: @-menciones (tanda 9), el pulido del hilo y las herramientas (tanda 4), perfil editable (16) y notificaciones (18).
+
+**Para retomar, en este orden:** terminar la tanda 4 [code]; integrar `Markdown`/`CodeBlock` (7) y `DiffView`/`CodeOutput`/`DiffBar` (6 y 14); terminal (10, con `Splitter`); editor (11, `CodeEditor` + `SyntaxLines::for_path`); `ReorderList` en la barra (13); `ImageCropper` en el perfil (16); motion de la 20; luego 19, 21, 22 y 23. Ninguna de las tandas [code] desde la 2 se probó en la app.
 
 **Pendientes:**
 
