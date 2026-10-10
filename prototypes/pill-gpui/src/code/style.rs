@@ -463,17 +463,21 @@ pub fn current() -> (Style, Mode) {
 /// que el markdown, los diffs y la salida de herramientas (que son de gpui-m3) se vean
 /// como el resto de esos estilos.
 pub fn apply_m3(cx: &mut gpui::App) {
-    let t = t();
+    let t = settled();
+    gpui_m3::Theme::set_scheme(m3_scheme(&t), !t.light, cx);
+}
+
+/// El esquema de gpui-m3 que corresponde a unos tokens (con el acento de ahora).
+pub fn m3_scheme(t: &Tokens) -> gpui_m3::Scheme {
     if t.style == Style::Expressive {
         // Sin acento, la paleta base de M3, igual que en la referencia; con acento, su esquema.
-        let scheme = match accent() {
+        match accent() {
             Some(rgb) => gpui_m3::Scheme::from_seed(hex(rgb), !t.light),
             None if t.light => gpui_m3::Scheme::baseline_light(),
             None => gpui_m3::Scheme::baseline_dark(),
-        };
-        gpui_m3::Theme::set_scheme(scheme, !t.light, cx);
+        }
     } else {
-        gpui_m3::Theme::set_scheme(scheme_of(&t), !t.light, cx);
+        scheme_of(t)
     }
 }
 
@@ -511,7 +515,31 @@ pub fn scheme_of(t: &Tokens) -> gpui_m3::Scheme {
 
 /// Los tokens de ahora.
 pub fn t() -> Tokens {
+    let now = settled();
+    // Al cambiar de acento o de modo en Expressive, los colores se mezclan del anterior al
+    // nuevo en vez de saltar (`motion.css:9-84`): mientras dura, `t()` da la mezcla.
+    let Ok(mut blend) = BLEND.lock() else {
+        return now;
+    };
+    let Some(running) = *blend else {
+        return now;
+    };
+    let progress = running.start.elapsed().as_secs_f32() / running.secs;
+    if progress >= 1. {
+        *blend = None;
+        return now;
+    }
+    mix_tokens(&now, &running.from, gpui_m3::motion::cubic_bezier(0.2, 0., 0., 1.)(progress))
+}
+
+/// Los tokens del estilo y el modo de ahora, sin mezcla.
+pub fn settled() -> Tokens {
     let (style, mode) = current();
+    resolved(style, mode)
+}
+
+/// Los tokens de un estilo y un modo (con el acento de ahora; «Sistema» según Windows).
+pub fn resolved(style: Style, mode: Mode) -> Tokens {
     let light = match mode {
         Mode::System => SYSTEM_LIGHT.load(Ordering::Relaxed),
         Mode::Light => true,
@@ -535,6 +563,49 @@ pub fn t() -> Tokens {
         return tokens;
     }
     with_accent(base, rgb)
+}
+
+/// Una mezcla de colores en curso: de dónde viene, cuándo empezó y cuánto dura.
+#[derive(Clone, Copy)]
+struct Blend {
+    from: Tokens,
+    start: std::time::Instant,
+    secs: f32,
+}
+
+static BLEND: std::sync::Mutex<Option<Blend>> = std::sync::Mutex::new(None);
+
+/// Empieza a mezclar desde `from` hacia los tokens de ahora durante `secs` segundos.
+pub fn begin_blend(from: Tokens, secs: f32) {
+    if let Ok(mut blend) = BLEND.lock() {
+        *blend = Some(Blend { from, start: std::time::Instant::now(), secs: secs.max(0.01) });
+    }
+}
+
+/// Corta la mezcla de colores en curso (un cambio de estilo no se mezcla).
+pub fn end_blend() {
+    if let Ok(mut blend) = BLEND.lock() {
+        *blend = None;
+    }
+}
+
+/// Si los colores se están mezclando (la vista pide cuadros mientras tanto).
+pub fn blending() -> bool {
+    BLEND.lock().is_ok_and(|blend| blend.is_some_and(|b| b.start.elapsed().as_secs_f32() < b.secs))
+}
+
+/// Cada color entre `from` (con `p = 0`) y `to` (con `p = 1`); la forma y las medidas son las de `to`.
+fn mix_tokens(to: &Tokens, from: &Tokens, p: f32) -> Tokens {
+    use gpui_m3::theme::mix;
+    let mut out = *to;
+    macro_rules! blend {
+        ($($field:ident),* $(,)?) => { $(out.$field = mix(to.$field, from.$field, p);)* };
+    }
+    blend!(
+        bg, pane, editor, raised, control, control2, border, text, muted, faint, accent, on_accent, accent_soft,
+        on_accent_soft, attention, on_attention, hover, sel, ok, bad, warn, add, del, highlight, shadow
+    );
+    out
 }
 
 /// `#rrggbb` → `0xRRGGBB`.

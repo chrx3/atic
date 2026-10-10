@@ -314,6 +314,11 @@ pub struct CodeView {
     commands: Vec<(String, String)>,
     /// Con qué estilo, modo y acento se armó la caja de texto (cambian sus colores).
     composer_style: (style::Style, bool, Option<u32>),
+    /// Un cambio de estilo o modo esperando al revelado circular: se aplica cuando el círculo
+    /// cubre la ventana y gpui-m3 cambia su esquema (`theme_reveal`).
+    pending_look: Option<(style::Style, style::Mode, gpui_m3::Scheme)>,
+    /// El cambio de colores que viene ya se animó (el revelado): no mezclar otra vez.
+    skip_blend: bool,
     /// En Apariencia: el selector de color propio abierto.
     accent_picker: bool,
     /// El menú de acciones de Expressive: pestaña, submenú y filtro.
@@ -624,6 +629,8 @@ impl CodeView {
             attachments: Vec::new(),
             commands: Vec::new(),
             composer_style: (t.style, t.light, style::accent()),
+            pending_look: None,
+            skip_blend: false,
             accent_picker: false,
             menu_tab: 0,
             menu_sub: None,
@@ -1653,24 +1660,71 @@ impl CodeView {
     }
 
     fn set_appearance(&mut self, style: style::Style, mode: style::Mode, window: &mut Window, cx: &mut Context<Self>) {
+        let shown = style::settled();
+        let target = style::resolved(style, mode);
         self.configs.style = style;
         self.configs.mode = mode;
         self.configs.save();
-        style::set(style, mode);
-        window.set_background_appearance(background(style));
+        // En Expressive, cambiar de tema o de modo se revela con un círculo desde el puntero
+        // (`theme.ts:137`): Atic cambia sus colores cuando el círculo cubre la ventana. Si ya
+        // hay un revelado en curso, el nuevo lo reemplaza para que no aplique uno viejo.
+        let changes_look = (shown.style, shown.light) != (target.style, target.light);
+        let reveal = !gpui_m3::MotionSettings::get(cx).reduced
+            && ((target.style == style::Style::Expressive && changes_look) || self.pending_look.is_some());
+        if reveal {
+            let scheme = style::m3_scheme(&target);
+            self.pending_look = Some((style, mode, scheme));
+            gpui_m3::theme_reveal(scheme, !target.light, window, cx);
+        } else {
+            self.pending_look = None;
+            self.skip_blend = false;
+            style::set(style, mode);
+            window.set_background_appearance(background(style));
+        }
         cx.notify();
     }
 
-    /// Si cambió el estilo o el modo, la caja de texto se rehace con sus colores
-    /// (conserva lo escrito y el foco).
+    /// Cuando el revelado circular ya cambió el esquema de gpui-m3, Atic cambia sus colores.
+    fn apply_pending_look(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((style, mode, scheme)) = self.pending_look else {
+            return;
+        };
+        if gpui_m3::Theme::get(cx).scheme != scheme {
+            return;
+        }
+        self.pending_look = None;
+        self.skip_blend = true;
+        style::set(style, mode);
+        window.set_background_appearance(background(style));
+    }
+
+    /// Si cambió el estilo, el modo o el acento, la caja de texto se rehace con sus colores
+    /// (conserva lo escrito y el foco). En Expressive, un cambio de acento o de modo sin
+    /// revelado mezcla los colores del anterior al nuevo (`animate_scheme` en gpui-m3 y
+    /// `style::begin_blend` en los colores propios de Atic).
     fn sync_style(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.apply_pending_look(window, cx);
+        let shown = style::t();
         style::set_accent(self.configs.active_accent(self.config_workspace()));
-        let t = style::t();
+        let t = style::settled();
         if self.composer_style == (t.style, t.light, style::accent()) {
+            if style::blending() {
+                window.request_animation_frame();
+            }
             return;
         }
         self.composer_style = (t.style, t.light, style::accent());
-        style::apply_m3(cx);
+        let motion = gpui_m3::MotionSettings::get(cx);
+        let animate = !self.skip_blend && !motion.reduced && self.pending_look.is_none() && t.style == style::Style::Expressive && shown.style == t.style;
+        self.skip_blend = false;
+        if animate {
+            style::begin_blend(shown, gpui_m3::SCHEME_BLEND * motion.time_scale);
+            gpui_m3::animate_scheme(style::m3_scheme(&t), !t.light, cx);
+            window.request_animation_frame();
+        } else {
+            style::end_blend();
+            style::apply_m3(cx);
+        }
         self.refresh_editor_colors(cx);
         let text = self.composer.read(cx).text().to_string();
         let focused = self.composer.read(cx).focus_handle(cx).is_focused(window);
@@ -1679,7 +1733,6 @@ impl CodeView {
             self.focus_composer(window, cx);
         }
     }
-
 
     /// Cambia el acento del espacio (o del chat suelto) en el estilo de ahora;
     /// `None` vuelve al del estilo.

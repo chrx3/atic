@@ -271,6 +271,8 @@ impl Render for CodeView {
                     )),
                 )
             })
+            // El círculo del cambio de tema (`theme_reveal`); no dibuja nada si no hay uno en curso.
+            .child(gpui_m3::ThemeReveal::new())
     }
 }
 
