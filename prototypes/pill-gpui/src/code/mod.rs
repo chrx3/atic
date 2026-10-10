@@ -573,7 +573,7 @@ impl CodeView {
             chats: Vec::new(),
             active: None,
             history: HashMap::new(),
-            explorer: Explorer::default(),
+            explorer: Explorer::for_code(),
             repos: Vec::new(),
             collapsed_repos: HashSet::new(),
             refreshing: false,
