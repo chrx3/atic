@@ -141,6 +141,12 @@ Section "Atic"
   ; `--native` enciende native_pill en config.json si estaba apagado. El inicio
   ; con Windows lo escribe la pill al arrancar.
   CreateShortcut "$SMPROGRAMS\${PRODUCT}.lnk" "$INSTDIR\${MAIN}" "--native" "$INSTDIR\${MAIN}" 0
+  ; El instalador de Tauri dejaba un acceso directo en el escritorio que apunta a
+  ; atic-desktop.exe, que acabamos de borrar: si existe, se apunta a la pill.
+  ; No se crea uno nuevo si el usuario no lo tenía.
+  ${If} ${FileExists} "$DESKTOP\${PRODUCT}.lnk"
+    CreateShortcut "$DESKTOP\${PRODUCT}.lnk" "$INSTDIR\${MAIN}" "--native" "$INSTDIR\${MAIN}" 0
+  ${EndIf}
 
   ; Pasivo o silencioso (actualización): no hay página final, así que se
   ; reabre aquí.
