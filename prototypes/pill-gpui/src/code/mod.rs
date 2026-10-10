@@ -109,7 +109,8 @@ pub enum Menu {
 /// archivo (se manda su ruta, para que Claude lo lea).
 #[derive(Clone)]
 pub enum Attachment {
-    Image { name: String, media_type: &'static str, data: String },
+    /// `image` es la misma imagen ya lista para su miniatura.
+    Image { name: String, media_type: &'static str, data: String, image: Arc<gpui::Image> },
     File(PathBuf),
 }
 
@@ -1184,10 +1185,14 @@ impl CodeView {
                 .unwrap_or_default(),
         };
         let mut images = Vec::new();
+        let mut thumbs = Vec::new();
         let mut files = Vec::new();
         for attachment in &self.attachments {
             match attachment {
-                Attachment::Image { media_type, data, .. } => images.push(json!({ "mediaType": media_type, "data": data })),
+                Attachment::Image { media_type, data, image, .. } => {
+                    images.push(json!({ "mediaType": media_type, "data": data }));
+                    thumbs.push(image.clone());
+                }
                 Attachment::File(path) => files.push(relative_to(path, &roots)),
             }
         }
@@ -1219,7 +1224,7 @@ impl CodeView {
         }
         self.ensure_live(&key, cx);
         if let Some(chat) = self.chats.iter_mut().find(|c| c.key == key) {
-            chat.push_user(&text);
+            chat.push_user(&text, thumbs);
             chat.used_at = std::time::Instant::now();
         }
         self.limit_live(cx);
@@ -1286,7 +1291,8 @@ impl CodeView {
                 Some(Attachment::Image {
                     name: path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
                     media_type,
-                    data: base64::engine::general_purpose::STANDARD.encode(bytes),
+                    data: base64::engine::general_purpose::STANDARD.encode(&bytes),
+                    image: chat::image_from(media_type, bytes)?,
                 })
             });
             let attachment = image.unwrap_or(Attachment::File(path));
@@ -1304,6 +1310,18 @@ impl CodeView {
             }
             self.attachments.push(attachment);
         }
+    }
+
+    /// Archivos pegados o soltados sobre la caja: las imágenes van como
+    /// imagen (hasta `MAX_IMAGES`) y el resto como ruta (`takeFiles` de la referencia).
+    fn take_files(&mut self, files: Vec<PathBuf>, cx: &mut Context<Self>) {
+        let before = self.image_count();
+        let images = files.iter().filter(|p| image_type(p).is_some()).count();
+        self.attach_paths(files);
+        if before + images > MAX_IMAGES {
+            self.show_toast(format!("Como mucho {MAX_IMAGES} imágenes por mensaje"), cx);
+        }
+        cx.notify();
     }
 
     fn image_count(&self) -> usize {
@@ -1336,13 +1354,7 @@ impl CodeView {
         // resto como ruta (el `savePasted` de la referencia, que en Windows trae la ruta).
         let files = crate::clip_image::read_files();
         if !files.is_empty() {
-            let before = self.image_count();
-            let images = files.iter().filter(|p| image_type(p).is_some()).count();
-            self.attach_paths(files);
-            if before + images > MAX_IMAGES {
-                self.show_toast(format!("Como mucho {MAX_IMAGES} imágenes por mensaje"), cx);
-            }
-            cx.notify();
+            self.take_files(files, cx);
             return;
         }
         let Some(item) = cx.read_from_clipboard() else {
@@ -1362,10 +1374,14 @@ impl CodeView {
                     self.show_toast(format!("Como mucho {MAX_IMAGES} imágenes por mensaje"), cx);
                     return;
                 }
+                let Some(thumb) = chat::image_from(media_type, image.bytes().to_vec()) else {
+                    continue;
+                };
                 self.attachments.push(Attachment::Image {
                     name: format!("Imagen {n}"),
                     media_type,
                     data: base64::engine::general_purpose::STANDARD.encode(image.bytes()),
+                    image: thumb,
                 });
                 cx.notify();
                 return;

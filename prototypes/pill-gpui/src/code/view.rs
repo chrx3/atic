@@ -68,13 +68,24 @@ fn center_bg() -> Hsla {
     t().editor
 }
 /// La marca de cambio de modelo: una línea con el nombre al centro, como en
-/// la referencia. Pendiente, más tenue (se grabará con el próximo mensaje).
-fn model_mark(label: String, pending: bool) -> AnyElement {
+/// la referencia. Pendiente, más tenue (se grabará con el próximo mensaje). En
+/// Expressive, el `DividerLabel` de gpui-m3 con ondas y su píldora.
+fn model_mark(id: String, label: String, pending: bool) -> AnyElement {
+    if expressive() {
+        return gpui_m3::DividerLabel::new(SharedString::from(id), label).pill().icon("cpu").pending(pending).into_any_element();
+    }
     rule_mark("icons/cpu.svg", label, pending)
 }
 
-/// Un separador con su etiqueta al centro: el cambio de modelo y «Contexto compactado».
-// TODO(gpui-m3): Divider con etiqueta (inset, con ícono); por ahora, el de aquí.
+/// «Contexto compactado»: en Expressive, el `DividerLabel` sencillo.
+fn compact_mark(id: String) -> AnyElement {
+    if expressive() {
+        return gpui_m3::DividerLabel::new(SharedString::from(id), "Contexto compactado").into_any_element();
+    }
+    rule_mark("icons/layers.svg", "Contexto compactado".into(), false)
+}
+
+/// Un separador con su etiqueta al centro, para Formal y Liquid Glass.
 fn rule_mark(icon: &'static str, label: String, pending: bool) -> AnyElement {
     let rule = || div().flex_1().h(px(1.)).bg(line());
     div()
@@ -987,7 +998,7 @@ impl CodeView {
                 }
                 // Se eligió otro modelo con la conversación empezada: se grabará con el próximo mensaje.
                 if let Some(pending) = chat.pending_model(&self.models, &self.configs.get(chat.workspace)) {
-                    thread = thread.child(model_mark(format!("{pending} en el próximo mensaje"), true));
+                    thread = thread.child(model_mark(format!("model-next-{}", chat.key), format!("{pending} en el próximo mensaje"), true));
                 }
                 // En Expressive, como en la referencia, las solicitudes van al final del hilo, todas.
                 if expressive() && !chat.permissions.is_empty() {
@@ -1252,7 +1263,7 @@ impl CodeView {
     fn item(&self, key: &str, index: usize, item: &Item, flagged: bool, cx: &mut Context<Self>) -> AnyElement {
         let row = match item {
             Item::User { .. } | Item::Text(_) => self.message(key, index, item, flagged, cx),
-            Item::Compact => rule_mark("icons/layers.svg", "Contexto compactado".into(), false),
+            Item::Compact => compact_mark(format!("compact-{key}-{index}")),
             _ => self.other_item(key, index, item, cx),
         };
         self.flag_frame(index, flagged, row)
@@ -1265,16 +1276,28 @@ impl CodeView {
         let actions = |el: Div| {
             el.when(!flagged, |el| el.invisible().group_hover(group.clone(), |el| el.visible()))
         };
+        // Las imágenes que llevó el mensaje, como miniaturas sobre su texto.
+        let thumbs = |images: &[std::sync::Arc<gpui::Image>]| {
+            (!images.is_empty()).then(|| {
+                div().flex().flex_wrap().gap(px(6.)).children(images.iter().enumerate().map(|(n, image)| {
+                    gpui_m3::ImageThumb::new(SharedString::from(format!("thumb-{key}-{index}-{n}")), image.clone()).size(px(64.))
+                }))
+            })
+        };
         match item {
-            Item::User { text, .. } if expressive() => div()
+            Item::User { text, images, .. } if expressive() => div()
                 .group(group.clone())
                 .flex()
                 .flex_col()
                 .items_end()
-                .child(gpui_m3::Bubble::new(gpui_m3::BubbleKind::User, text.clone()))
+                .child(
+                    gpui_m3::Bubble::custom(gpui_m3::BubbleKind::User)
+                        .when_some(thumbs(images), |el, row| el.child(row.mb(px(if text.is_empty() { 0. } else { 8. }))))
+                        .child(text.clone()),
+                )
                 .child(actions(div().mt(px(2.)).mb(px(-4.)).child(flag)))
                 .into_any_element(),
-            Item::User { text, .. } => div()
+            Item::User { text, images, .. } => div()
                 .group(group.clone())
                 .relative()
                 .flex()
@@ -1289,6 +1312,7 @@ impl CodeView {
                         .border_1()
                         .border_color(accent_line())
                         .line_height(px(22.))
+                        .when_some(thumbs(images), |el, row| el.child(row.mb(px(8.))))
                         .child(text.clone()),
                 )
                 .child(actions(div().absolute().right(px(-6.)).bottom(px(-24.)).child(flag)))
@@ -1444,7 +1468,7 @@ impl CodeView {
                 .child(svg().path("icons/check.svg").size(px(12.)).text_color(faint()))
                 .child(summary.clone())
                 .into_any_element(),
-            Item::Model(name) => model_mark(format!("Cambiado a {name}"), false),
+            Item::Model(name) => model_mark(format!("model-{key}-{index}"), format!("Cambiado a {name}"), false),
             Item::Notice { text, error } => div()
                 .px(px(12.))
                 .py(px(9.))
@@ -1664,13 +1688,21 @@ impl CodeView {
                 .tooltip(crate::hover::tip(tip))
                 .child(svg().path(icon).size(px(16.)).text_color(muted()))
         };
-        let mut attachments = div().flex().flex_wrap().gap(px(6.));
+        let mut attachments = div().flex().flex_wrap().items_center().gap(px(6.));
         for (index, attachment) in self.attachments.iter().enumerate() {
+            let remove = cx.listener(move |view, _: &ClickEvent, _, cx| view.remove_attachment(index, cx));
+            // Las imágenes, con su miniatura y la «×» al pasar el cursor (como en la referencia).
             let (icon, name) = match attachment {
-                Attachment::Image { name, .. } => ("icons/image.svg", name.clone()),
+                Attachment::Image { name, image, .. } => {
+                    attachments = attachments.child(
+                        gpui_m3::ImageThumb::new(("attachment-thumb", index), image.clone())
+                            .remove_label(format!("Quitar {name}"))
+                            .on_remove(remove),
+                    );
+                    continue;
+                }
                 Attachment::File(path) => ("icons/file.svg", file_name(path)),
             };
-            let remove = cx.listener(move |view, _: &ClickEvent, _, cx| view.remove_attachment(index, cx));
             if expressive() {
                 attachments = attachments.child(
                     gpui_m3::Chip::input(("attachment", index), name)
@@ -1803,7 +1835,7 @@ impl CodeView {
             .flex()
             .flex_col()
             .gap(px(8.))
-            .child(card)
+            .child(self.drop_zone("composer-drop", px(if t.style == Style::Glass { 24. } else { r_card() }), card, cx))
             .child(
                 div()
                     .flex()
@@ -1946,7 +1978,92 @@ impl CodeView {
             .when_some(self.status_text().filter(|_| self.configs.status_line), |el, line| {
                 el.child(div().ml_auto().min_w(px(0.)).truncate().font_family(gpui_m3::theme::MONO_FONT_FAMILY).text_size(px(11.)).text_color(t.faint).child(line))
             });
-        div().flex().flex_col().child(card).child(under)
+        div().flex().flex_col().child(self.banners(cx)).child(self.drop_zone("composer-drop", px(26.), card, cx)).child(under)
+    }
+
+    /// Los avisos sobre la caja (Expressive): el Artifact recién publicado y la
+    /// conversación larga (`ArtifactOffer` y `LongChatNotice` de la referencia). Cada uno
+    /// se queda en pantalla mientras sale.
+    fn banners(&self, cx: &mut Context<Self>) -> Div {
+        use gpui_m3::{Banner, Button, Chip, Exit, Icon, Presence};
+        let Some(chat) = self.active_chat() else {
+            return div();
+        };
+        let key = chat.key.clone();
+        let mut column = div().flex().flex_col().gap(px(8.)).pb(px(8.));
+        if let Some((offer, shown)) = chat.artifact.clone() {
+            let close = |key: String| {
+                cx.listener(move |view, _: &ClickEvent, _, cx| {
+                    if let Some(chat) = view.chats.iter_mut().find(|c| c.key == key) {
+                        if let Some((_, shown)) = chat.artifact.as_mut() {
+                            *shown = false;
+                        }
+                    }
+                    cx.notify();
+                })
+            };
+            let url = offer.url.clone();
+            let open = cx.listener({
+                let key = key.clone();
+                move |view, _: &ClickEvent, _, cx| {
+                    cx.open_url(&url);
+                    if let Some(chat) = view.chats.iter_mut().find(|c| c.key == key) {
+                        if let Some((_, shown)) = chat.artifact.as_mut() {
+                            *shown = false;
+                        }
+                    }
+                    cx.notify();
+                }
+            });
+            let url = offer.url.clone();
+            let copy = cx.listener(move |view, _: &ClickEvent, _, cx| {
+                cx.write_to_clipboard(gpui::ClipboardItem::new_string(url.clone()));
+                view.show_toast("Enlace copiado", cx);
+            });
+            column = column.child(
+                Presence::new(SharedString::from(format!("offer-{key}")), shown).exit(Exit::Sink).child(
+                    Banner::new(SharedString::from(format!("offer-{key}-{}", offer.serial)))
+                        .icon("spark")
+                        .title(offer.title.clone())
+                        .text("Artifact publicado · ¿abrirlo en el navegador?")
+                        .action(Button::new("offer-open", "Abrir").filled().trailing(Icon::new("export").size(px(13.))).on_click(open))
+                        .action(Button::new("offer-copy", "Copiar enlace").text().on_click(copy))
+                        .dismiss_label("Cerrar")
+                        .on_dismiss(close(key.clone())),
+                ),
+            );
+        }
+        let level = chat.long_level();
+        let mut notice = Banner::new(SharedString::from(format!("long-{key}-{level:?}")))
+            .icon("gauge")
+            .text(level.map(|l| l.text()).unwrap_or_default())
+            .action(Chip::new("long-new", "Chat nuevo").on_click(cx.listener(|view, _: &ClickEvent, window, cx| view.new_conversation(window, cx))))
+            .action(Chip::new("long-compact", "Compactar").on_click(cx.listener(|view, _: &ClickEvent, window, cx| {
+                view.composer.update(cx, |area, cx| area.set_text("/compact", cx));
+                view.send(&super::Send, window, cx);
+            })))
+            .dismiss_label("Ocultar aviso")
+            .on_dismiss(cx.listener(move |view, _: &ClickEvent, _, cx| {
+                if let Some(chat) = view.chats.iter_mut().find(|c| c.key == key) {
+                    if let Some(level) = chat.long_level() {
+                        chat.long_dismissed.push(level);
+                    }
+                }
+                cx.notify();
+            }));
+        notice = if matches!(level, Some(super::chat::LongLevel::Soft)) { notice.subtle() } else { notice.warning() };
+        column.child(Presence::new(SharedString::from(format!("long-{}", chat.key)), level.is_some()).exit(Exit::Sink).child(notice))
+    }
+
+    /// La caja de texto acepta archivos arrastrados desde el Explorador, con
+    /// «Suelta para adjuntar» encima mientras pasan (como en la referencia).
+    fn drop_zone(&self, id: &'static str, radius: gpui::Pixels, card: Div, cx: &mut Context<Self>) -> AnyElement {
+        gpui_m3::DropZone::new(id)
+            .label("Suelta para adjuntar")
+            .radius(radius)
+            .on_drop(cx.listener(|view, paths: &gpui::ExternalPaths, _, cx| view.take_files(paths.paths().to_vec(), cx)))
+            .child(card)
+            .into_any_element()
     }
 
     /// La barra de estado de Formal y Liquid Glass.

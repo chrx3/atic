@@ -10,7 +10,7 @@ use super::chat::Chat;
 
 pub fn chat(key: String, workspace: u64, cwd: PathBuf) -> Chat {
     let mut chat = Chat::new(key, workspace, cwd);
-    chat.push_user("Agrega soporte para importar archivos .code-workspace de VS Code al abrir un workspace.");
+    chat.push_user("Agrega soporte para importar archivos .code-workspace de VS Code al abrir un workspace.", Vec::new());
     chat.apply(
         "assistant",
         &json!({ "id": "d1", "parent": null, "content": [

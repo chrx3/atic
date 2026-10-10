@@ -15,13 +15,90 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::Arc;
 
+use base64::Engine;
 use serde_json::Value;
 
 use super::config::{model_name, same_model, ClaudeConfig};
 
 /// Lo que se guarda del resultado de una herramienta.
 const MAX_RESULT: usize = 6000;
+/// El aviso de conversación larga (`LONG_CHAT` de la referencia): la calidad baja
+/// mucho antes de llenar la ventana y cada turno reenvía todo el contexto.
+const LONG_SOFT: f64 = 0.5;
+const LONG_STRONG: f64 = 0.8;
+const LONG_TOKENS: u64 = 150_000;
+const LONG_COMPACTIONS: usize = 2;
+
+/// Qué tan larga es una conversación, para el aviso sobre la caja.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LongLevel {
+    Soft,
+    Strong,
+    Compacted,
+}
+
+impl LongLevel {
+    pub fn text(self) -> &'static str {
+        match self {
+            LongLevel::Soft => "Esta conversación ya es larga. Para mejores resultados y menos consumo, abre un chat nuevo.",
+            LongLevel::Strong => "El contexto está casi lleno: Claude pronto compactará y puede perder detalles. Te recomiendo un chat nuevo.",
+            LongLevel::Compacted => "Esta conversación ya se compactó varias veces y puede haber perdido detalles. Te recomiendo un chat nuevo.",
+        }
+    }
+}
+
+/// Un Artifact recién publicado que se ofrece abrir en el navegador.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ArtifactOffer {
+    pub title: String,
+    pub url: String,
+    /// Cuál es (cada oferta entra con su animación).
+    pub serial: u64,
+}
+
+/// El enlace de un Artifact en el resultado de su herramienta
+/// (`https://claude.ai/[code/]artifact/<id>`, el `artifactUrl` de la referencia).
+pub fn artifact_url(text: &str) -> Option<String> {
+    const BASE: &str = "https://claude.ai/";
+    let mut rest = text;
+    while let Some(at) = rest.find(BASE) {
+        let after = &rest[at + BASE.len()..];
+        let path = after.strip_prefix("code/").unwrap_or(after);
+        if let Some(id) = path.strip_prefix("artifact/") {
+            let len = id.find(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '-')).unwrap_or(id.len());
+            if len > 0 {
+                let end = text.len() - id.len() + len;
+                let start = text.len() - rest.len() + at;
+                return Some(text[start..end].to_string());
+            }
+        }
+        rest = after;
+    }
+    None
+}
+
+/// Solo publicar (no leer, listar ni subir recursos) deja un Artifact nuevo.
+pub fn artifact_is_publish(input: Option<&Value>) -> bool {
+    let action = input.and_then(|i| i.get("action")).and_then(Value::as_str);
+    action.is_none_or(|a| a == "publish") && input.and_then(|i| i.get("asset")).is_none_or(Value::is_null)
+}
+
+/// El título de un Artifact: el que se le dio o el nombre del archivo publicado.
+pub fn artifact_title(input: Option<&Value>) -> String {
+    let field = |name: &str| input.and_then(|i| i.get(name)).and_then(Value::as_str).unwrap_or_default().trim().to_string();
+    let title = field("title");
+    if !title.is_empty() {
+        return title;
+    }
+    let file = field("file_path");
+    let base = file.rsplit(['/', '\\']).next().unwrap_or_default();
+    let lower = base.to_lowercase();
+    let base = [".html", ".htm", ".md"].iter().find_map(|ext| lower.ends_with(ext).then(|| &base[..base.len() - ext.len()])).unwrap_or(base);
+    if base.is_empty() { "Artifact".into() } else { base.to_string() }
+}
+
 /// Las herramientas que editan archivos: si el visor tiene uno abierto, se recarga.
 const EDIT_TOOLS: [&str; 4] = ["Edit", "MultiEdit", "Write", "NotebookEdit"];
 
@@ -61,7 +138,8 @@ impl ToolCall {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Item {
     /// Un mensaje del usuario; `uuid` llega con su eco (lo necesita el Rewind).
-    User { text: String, uuid: Option<String> },
+    /// Las imágenes que llevó se ven como miniaturas en su burbuja.
+    User { text: String, uuid: Option<String>, images: Vec<Arc<gpui::Image>> },
     Text(String),
     Thinking(String),
     Tool(ToolCall),
@@ -75,8 +153,9 @@ pub enum Item {
 }
 
 impl Item {
+    #[cfg(test)]
     pub fn user(text: impl Into<String>) -> Self {
-        Item::User { text: text.into(), uuid: None }
+        Item::User { text: text.into(), uuid: None, images: Vec::new() }
     }
 
     /// El tipo y el texto con que se marca (`flagId` de la referencia); solo los
@@ -191,6 +270,11 @@ pub struct Chat {
     pub edited: Vec<PathBuf>,
     /// Desde cuándo la ve Atic Code (el chip de duración, como en la referencia).
     pub seen_at: std::time::Instant,
+    /// El último Artifact publicado aquí y si se sigue ofreciendo (se
+    /// conserva mientras su aviso sale).
+    pub artifact: Option<(ArtifactOffer, bool)>,
+    /// Los niveles del aviso de conversación larga que se cerraron.
+    pub long_dismissed: Vec<LongLevel>,
     /// (mensaje, índice del bloque) → fila.
     blocks: HashMap<(String, u64), usize>,
     /// Los bloques de texto y razonamiento de cada mensaje, en orden: (es
@@ -220,6 +304,35 @@ fn text_of(content: &Value) -> String {
             .join("\n"),
         _ => String::new(),
     }
+}
+
+/// Una imagen de un mensaje para su miniatura, si se puede leer.
+pub fn image_from(media_type: &str, bytes: Vec<u8>) -> Option<Arc<gpui::Image>> {
+    let format = match media_type {
+        "image/png" => gpui::ImageFormat::Png,
+        "image/jpeg" | "image/jpg" => gpui::ImageFormat::Jpeg,
+        "image/gif" => gpui::ImageFormat::Gif,
+        "image/webp" => gpui::ImageFormat::Webp,
+        _ => return None,
+    };
+    Some(Arc::new(gpui::Image::from_bytes(format, bytes)))
+}
+
+/// Las imágenes (en base64) de un mensaje del historial o de otro cliente.
+fn images_of(content: &Value) -> Vec<Arc<gpui::Image>> {
+    content
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|b| b.get("type").and_then(Value::as_str) == Some("image"))
+        .filter_map(|b| {
+            let source = b.get("source")?;
+            let media = source.get("media_type").and_then(Value::as_str)?;
+            let data = source.get("data").and_then(Value::as_str)?;
+            let bytes = base64::engine::general_purpose::STANDARD.decode(data).ok()?;
+            image_from(media, bytes)
+        })
+        .collect()
 }
 
 /// Lo que Claude Code mete como mensaje del usuario sin que lo haya escrito.
@@ -284,6 +397,8 @@ impl Chat {
             fork: None,
             edited: Vec::new(),
             seen_at: std::time::Instant::now(),
+            artifact: None,
+            long_dismissed: Vec::new(),
             blocks: HashMap::new(),
             msg_blocks: HashMap::new(),
             nested: HashSet::new(),
@@ -344,12 +459,12 @@ impl Chat {
 
     /// Un mensaje escrito aquí. Con un turno en curso queda en la cola del
     /// sidecar y se responde después.
-    pub fn push_user(&mut self, text: &str) {
+    pub fn push_user(&mut self, text: &str, images: Vec<Arc<gpui::Image>>) {
         if self.items.iter().all(|i| !matches!(i, Item::User { .. })) {
             self.title = title_for(text);
         }
         self.pending_echo.push(self.items.len());
-        self.items.push(Item::user(text));
+        self.items.push(Item::User { text: text.to_string(), uuid: None, images });
         self.busy = true;
     }
 
@@ -366,7 +481,7 @@ impl Chat {
             .iter()
             .rev()
             .filter_map(|i| match i {
-                Item::User { text, uuid: Some(uuid) } => Some((uuid.clone(), text.clone())),
+                Item::User { text, uuid: Some(uuid), .. } => Some((uuid.clone(), text.clone())),
                 _ => None,
             })
             .collect()
@@ -384,6 +499,25 @@ impl Chat {
         self.tools.clear();
         self.chain.clear();
         self.pending_echo.clear();
+    }
+
+    /// El aviso de conversación larga que toca, si no se cerró (`LongChatNotice`
+    /// de la referencia): se cierra por nivel, así que vuelve si la conversación crece.
+    pub fn long_level(&self) -> Option<LongLevel> {
+        let level = if self.items.iter().filter(|i| matches!(i, Item::Compact)).count() >= LONG_COMPACTIONS {
+            LongLevel::Compacted
+        } else {
+            let (used, max) = self.context.filter(|(_, max)| *max > 0)?;
+            let share = used as f64 / max as f64;
+            if share >= LONG_STRONG {
+                LongLevel::Strong
+            } else if share >= LONG_SOFT || used >= LONG_TOKENS {
+                LongLevel::Soft
+            } else {
+                return None;
+            }
+        };
+        (!self.long_dismissed.contains(&level)).then_some(level)
     }
 
     pub fn notice(&mut self, text: impl Into<String>, error: bool) {
@@ -623,6 +757,13 @@ impl Chat {
                     let result = block.get("content").map(text_of).unwrap_or_default();
                     tool.result = Some(clip(result));
                     tool.is_error = block.get("is_error").and_then(Value::as_bool).unwrap_or(false);
+                    // Un Artifact recién publicado: se ofrece abrirlo (como la extensión de VS Code).
+                    if !history && !tool.is_error && tool.name == "Artifact" && artifact_is_publish(tool.input.as_ref()) {
+                        if let Some(url) = tool.result.as_deref().and_then(artifact_url) {
+                            let serial = self.artifact.as_ref().map_or(0, |(o, _)| o.serial + 1);
+                            self.artifact = Some((ArtifactOffer { title: artifact_title(tool.input.as_ref()), url, serial }, true));
+                        }
+                    }
                     // Claude editó un archivo: si está abierto en el visor, se recarga.
                     if !history && !tool.is_error && EDIT_TOOLS.contains(&tool.name.as_str()) {
                         let input = tool.input.as_ref();
@@ -643,7 +784,7 @@ impl Chat {
             return;
         }
         if history {
-            self.items.push(Item::User { text, uuid });
+            self.items.push(Item::User { text, uuid, images: images_of(&content) });
             return;
         }
         // El eco de lo que se escribió aquí: se le pone su uuid (lo necesita el
@@ -671,7 +812,7 @@ impl Chat {
         if uuid.is_some() && self.items.iter().any(|i| matches!(i, Item::User { uuid: u, .. } if *u == uuid)) {
             return;
         }
-        self.items.push(Item::User { text, uuid });
+        self.items.push(Item::User { text, uuid, images: images_of(&content) });
         self.busy = true;
     }
 
@@ -760,7 +901,7 @@ mod tests {
         let mut chat = chat();
         chat.note_model_for_send(&list, "opus");
         assert!(chat.items.is_empty(), "el primer mensaje no lleva marca");
-        chat.push_user("hola");
+        chat.push_user("hola", Vec::new());
         chat.busy = false;
         // El id de la sesión retomada y el alias son el mismo modelo.
         chat.sent_model = Some("claude-opus-4-5-20251101".into());
@@ -792,7 +933,7 @@ mod tests {
     #[test]
     fn el_texto_final_reemplaza_al_de_los_trozos() {
         let mut chat = chat();
-        chat.push_user("hola");
+        chat.push_user("hola", Vec::new());
         chat.apply(
             "stream",
             &json!([
@@ -835,13 +976,13 @@ mod tests {
     #[test]
     fn el_eco_le_da_su_uuid_y_arma_la_cadena() {
         let mut chat = chat();
-        chat.push_user("hola");
+        chat.push_user("hola", Vec::new());
         chat.apply("user", &json!({ "uuid": "u1", "parent": null, "isReplay": true, "content": [{ "type": "text", "text": "hola" }] }));
         chat.apply("assistant", &json!({ "id": "m1", "uuid": "a1", "parent": null, "content": [{ "type": "text", "text": "Hola" }] }));
         // Los subagentes no entran en la cadena.
         chat.apply("assistant", &json!({ "id": "s1", "uuid": "x1", "parent": "t9", "content": [] }));
         chat.apply("result", &json!({ "subtype": "success" }));
-        chat.push_user("sigue");
+        chat.push_user("sigue", Vec::new());
         chat.apply("user", &json!({ "uuid": "u2", "parent": null, "isReplay": true, "content": "sigue" }));
         assert_eq!(uuid_of(&chat.items[0]), Some("u1"));
         assert_eq!(chat.uuid_before("u2").as_deref(), Some("a1"));
@@ -856,10 +997,10 @@ mod tests {
     #[test]
     fn la_cola_recibe_sus_ecos_en_orden() {
         let mut chat = chat();
-        chat.push_user("uno");
+        chat.push_user("uno", Vec::new());
         // Mientras responde se escriben dos más: quedan en la cola del sidecar.
-        chat.push_user("dos");
-        chat.push_user("tres");
+        chat.push_user("dos", Vec::new());
+        chat.push_user("tres", Vec::new());
         assert!(chat.busy);
         chat.apply("user", &json!({ "uuid": "u1", "parent": null, "isReplay": true, "content": "uno" }));
         chat.apply("result", &json!({ "subtype": "success" }));
@@ -877,7 +1018,7 @@ mod tests {
     fn un_mensaje_de_otro_cliente_aparece_y_responde() {
         let mut chat = chat();
         chat.apply("user", &json!({ "uuid": "r1", "parent": null, "content": "desde el móvil" }));
-        assert_eq!(chat.items, vec![Item::User { text: "desde el móvil".into(), uuid: Some("r1".into()) }]);
+        assert_eq!(chat.items, vec![Item::User { text: "desde el móvil".into(), uuid: Some("r1".into()), images: Vec::new() }]);
         assert!(chat.busy);
         chat.apply("user", &json!({ "uuid": "r1", "parent": null, "content": "desde el móvil" }));
         assert_eq!(chat.items.len(), 1);
@@ -918,7 +1059,7 @@ mod tests {
     #[test]
     fn al_detener_se_ve_detenido_y_lo_que_corria_falla() {
         let mut chat = chat();
-        chat.push_user("hola");
+        chat.push_user("hola", Vec::new());
         chat.apply("assistant", &json!({ "id": "m1", "parent": null, "content": [
             { "type": "tool_use", "id": "t1", "name": "Bash", "input": { "command": "sleep 99" } }
         ] }));
@@ -1036,5 +1177,30 @@ mod tests {
         assert_eq!(chat.flag_session(), "c1");
         chat.apply("session", &json!({ "sessionId": "s1" }));
         assert_eq!(chat.flag_session(), "s1");
+    }
+
+    #[test]
+    fn enlace_y_titulo_del_artifact() {
+        let text = "Publicado en https://claude.ai/code/artifact/abc_12-x. Listo.";
+        assert_eq!(artifact_url(text).as_deref(), Some("https://claude.ai/code/artifact/abc_12-x"));
+        assert_eq!(artifact_url("https://claude.ai/artifact/").as_deref(), None);
+        assert_eq!(artifact_title(Some(&json!({ "file_path": r"C:\docs\Notas.HTML" }))), "Notas");
+        assert_eq!(artifact_title(Some(&json!({ "title": " Plan " }))), "Plan");
+        assert!(artifact_is_publish(Some(&json!({ "action": "publish" }))));
+        assert!(!artifact_is_publish(Some(&json!({ "action": "read" }))));
+    }
+
+    #[test]
+    fn aviso_de_conversacion_larga_por_nivel() {
+        let mut chat = chat();
+        assert_eq!(chat.long_level(), None);
+        chat.context = Some((60_000, 100_000));
+        assert_eq!(chat.long_level(), Some(LongLevel::Soft));
+        chat.long_dismissed.push(LongLevel::Soft);
+        assert_eq!(chat.long_level(), None);
+        chat.context = Some((85_000, 100_000));
+        assert_eq!(chat.long_level(), Some(LongLevel::Strong));
+        chat.items.extend([Item::Compact, Item::Compact]);
+        assert_eq!(chat.long_level(), Some(LongLevel::Compacted));
     }
 }
