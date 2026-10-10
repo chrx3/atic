@@ -237,7 +237,9 @@ impl Dictation {
         std::thread::Builder::new()
             .name("dictado-texto".into())
             .spawn(move || {
+                let stopping = Instant::now();
                 let summary = active.handle.stop();
+                let stop_ms = stopping.elapsed().as_millis();
                 let result = (|| {
                     if !summary.mic_written || !active.wav.exists() {
                         return Err("No se capturó audio. Intenta de nuevo.".to_string());
@@ -251,10 +253,14 @@ impl Dictation {
                     let started = Instant::now();
                     let model = std::env::var("PILL_DICTATION_MODEL").unwrap_or(cfg.dictation_groq_model.clone());
                     let text = groq(&key, &active.wav, language.as_deref(), &model)?;
-                    eprintln!(
-                        "[dictado] {:.1} s de audio, {model} tardó {} ms",
-                        summary.duration_secs,
-                        started.elapsed().as_millis()
+                    // Al registro (la pill de dev descarta stderr): cerrar el micrófono
+                    // y Groq son las dos esperas antes de pegar.
+                    tracing::info!(
+                        audio_s = format!("{:.1}", summary.duration_secs),
+                        cerrar_mic_ms = stop_ms as u64,
+                        groq_ms = started.elapsed().as_millis() as u64,
+                        modelo = %model,
+                        "dictado transcrito"
                     );
                     let text = text.trim().to_string();
                     if text.is_empty() {
@@ -541,18 +547,18 @@ impl Pill {
             if self.dictation.recording() {
                 self.dictation.stop();
             } else {
-                self.dictation.start(crate::paste::foreground_target());
+                self.dictation.start(crate::paste::dictation_target());
             }
         } else if !down && self.dict_key_was_down && push_to_talk && self.dictation.recording() {
             self.dictation.stop();
         }
         self.dict_key_was_down = down;
 
-        // Se pega donde está el foco ahora si es otra app; si quedó en la
-        // pill, en la app donde se empezó a dictar. Sin ninguna, queda en
+        // Se pega donde está el foco ahora si es otra app o una ventana de la pill
+        // (Atic Code); si quedó en el notch, en la app donde se empezó a dictar. Sin ninguna, queda en
         // «pegar después».
         if let Some((text, target)) = self.dictation.take_ready() {
-            match crate::paste::foreground_target().or(target) {
+            match crate::paste::dictation_target().or(target) {
                 Some(target) => {
                     let item = gpui::ClipboardItem::new_string(text);
                     cx.spawn(async move |_, cx| crate::paste_into(Some(target), item, cx).await)

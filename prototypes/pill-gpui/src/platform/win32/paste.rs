@@ -26,6 +26,23 @@ pub fn foreground_target() -> Option<Target> {
     usable(hwnd).then_some(hwnd as Target)
 }
 
+/// Dónde pega el dictado: la ventana con el foco, aunque sea de este proceso si es
+/// una ventana normal (Atic Code, el Espacio, Reuniones). Solo se descartan el
+/// notch y las capas flotantes, que no toman el foco (`WS_EX_NOACTIVATE`) o son
+/// de herramienta (`WS_EX_TOOLWINDOW`).
+pub fn dictation_target() -> Option<Target> {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GetWindowLongPtrW, GWL_EXSTYLE, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW};
+    let hwnd = unsafe { GetForegroundWindow() };
+    if hwnd.is_null() || unsafe { IsWindow(hwnd) } == 0 {
+        return None;
+    }
+    if !is_own(hwnd) {
+        return Some(hwnd as Target);
+    }
+    let style = unsafe { GetWindowLongPtrW(hwnd, GWL_EXSTYLE) } as u32;
+    (style & (WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW) == 0).then_some(hwnd as Target)
+}
+
 /// La ventana raíz bajo el cursor, si no es de este proceso.
 pub fn target_under_cursor() -> Option<Target> {
     let hwnd = unsafe {
