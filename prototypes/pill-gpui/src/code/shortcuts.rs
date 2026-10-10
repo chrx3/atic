@@ -11,9 +11,10 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use gpui::{div, prelude::*, px, AnyElement, App, ClickEvent, Context, FontWeight, KeyBinding, Keystroke, Subscription, Window};
+use gpui::{div, prelude::*, px, AnyElement, App, ClickEvent, Context, KeyBinding, Keystroke, SharedString, Subscription, Window};
+use gpui_m3::{Badge, Banner, Button, ButtonSize, IconButton, KeyCombo, KeyNames, ListGroup, SettingRow};
 
-use super::style::{t, Style};
+use super::style::t;
 use super::{editor, terminal, CodeView};
 
 /// Los contextos de teclas.
@@ -386,7 +387,7 @@ impl CodeView {
             return false;
         };
         // Si se cerró la configuración o se cambió de pestaña, la captura ya no vale.
-        if !self.settings_open || self.settings_tab != TAB {
+        if !self.settings_open || !(self.settings_tab == TAB || !self.settings_query(cx).is_empty()) {
             self.stop_capture();
             return false;
         }
@@ -431,155 +432,131 @@ impl CodeView {
         cx.notify();
     }
 
-    /// La pestaña «Atajos»; `m3` la dibuja con las esquinas de Expressive.
-    pub(super) fn shortcuts_tab(&self, m3: bool, cx: &mut Context<Self>) -> AnyElement {
-        let t = t();
-        let radius = if m3 { 20. } else { t.r_btn.min(16.) };
-        let chip_radius = if m3 { 8. } else { t.r_chip.min(8.) };
-        let saved = &self.configs.shortcuts;
-        let changed = !saved.is_empty();
-        let ui = &self.shortcuts_ui;
+    /// El aviso de la captura (tecla inválida o en uso), si hay.
+    pub(super) fn shortcut_notice(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let why = self.shortcuts_ui.notice.clone()?;
+        Some(
+            Banner::new("shortcut-notice")
+                .warning()
+                .icon("x")
+                .title(why)
+                .on_dismiss(cx.listener(|view, _: &ClickEvent, _, cx| {
+                    view.shortcuts_ui.notice = None;
+                    cx.notify();
+                }))
+                .into_any_element(),
+        )
+    }
 
-        let chips = |keys: &[String], dim: bool| -> gpui::Div {
-            let mut row = div().flex().flex_wrap().justify_end().items_center().gap(px(4.));
-            for name in keys {
-                row = row.child(
-                    div()
-                        .min_w(px(26.))
-                        .h(px(24.))
-                        .px(px(8.))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .rounded(px(chip_radius))
-                        .bg(t.control)
-                        .border_1()
-                        .border_color(t.border)
-                        .text_size(px(12.))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(if dim { t.muted } else { t.text })
-                        .child(name.clone()),
-                );
-            }
-            row
+    /// Una fila de la lista: la descripción a la izquierda y, alineada a la derecha, la
+    /// combinación (clic para cambiarla) con «Restablecer» al lado, que aparece al pasar el
+    /// cursor o cuando la tecla no es la de fábrica. Las filas fijas y las informativas no
+    /// tienen acción y se ven más tenues.
+    pub(super) fn shortcut_row(&self, row: &'static Shortcut, key: &str, cx: &mut Context<Self>) -> AnyElement {
+        let id = row.id;
+        let waiting = self.shortcuts_ui.capturing == Some(id);
+        let custom = self.configs.shortcuts.contains_key(id);
+        let editable = row.kind == Kind::Edit;
+        let mut combo = KeyCombo::new(SharedString::from(format!("shortcut-key-{id}")), key.to_string()).names(KeyNames::spanish());
+        if editable {
+            combo = combo
+                .capturing(waiting)
+                .prompt("Presiona la nueva combinación…")
+                .tooltip("Cambiar la combinación")
+                .on_click(cx.listener(move |view, _: &ClickEvent, window, cx| view.start_capture(id, window, cx)));
+        } else {
+            combo = combo.muted(true);
+        }
+        let description = if waiting {
+            Some("Esc cancela".to_string())
+        } else if custom {
+            Some(format!("De fábrica: {}", label(row.key)))
+        } else {
+            None
         };
+        let mut control = div().flex().items_center().gap(px(6.));
+        match row.kind {
+            Kind::Edit => {}
+            Kind::Fixed => control = control.child(Badge::new("Fijo")),
+            Kind::Info => control = control.child(Badge::new("Info")),
+        }
+        control = control.child(combo);
+        if editable {
+            // El hueco del botón es fijo: las combinaciones quedan alineadas con o sin él.
+            let group = SharedString::from(format!("shortcut-group-{id}"));
+            control = control.child(
+                div().w(px(32.)).flex_none().child(
+                    div()
+                        .opacity(if custom && !waiting { 1. } else { 0. })
+                        .group_hover(group, |style| style.opacity(1.))
+                        .child(
+                            IconButton::new(SharedString::from(format!("shortcut-reset-{id}")), "refresh")
+                                .size(px(28.))
+                                .tooltip("Restablecer")
+                                .disabled(!custom || waiting)
+                                .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| view.reset_shortcut(id, cx))),
+                        ),
+                ),
+            );
+        } else {
+            control = control.child(div().w(px(32.)).flex_none());
+        }
+        let mut item = SettingRow::new(SharedString::from(format!("shortcut-row-{id}")), row.desc).muted(!editable).control(control);
+        if let Some(description) = description {
+            item = item.description(description);
+        }
+        div().id(SharedString::from(format!("shortcut-wrap-{id}"))).group(SharedString::from(format!("shortcut-group-{id}"))).child(item).into_any_element()
+    }
 
+    /// Un grupo de atajos: su título y una fila por atajo. En la pestaña, «Terminal» y
+    /// «Editor» cierran con las teclas que no actúan dentro de ellos.
+    fn shortcut_group(&self, group: &'static str, cx: &mut Context<Self>) -> ListGroup {
+        let saved = &self.configs.shortcuts;
+        let mut list = ListGroup::new().title(group);
+        for (row, key) in effective(saved).into_iter().filter(|(row, _)| row.group == group) {
+            list = list.custom_row(self.shortcut_row(row, &key, cx));
+        }
+        // Lo que pasa al shell o al editor no es de la tabla: se muestra como nota.
+        let inner = match group {
+            "Terminal" => Some(("Dentro de la terminal no actúan y pasan al shell:", terminal_keys(saved))),
+            "Editor" => Some(("Dentro del editor no actúan:", editor_keys(saved))),
+            _ => None,
+        };
+        if let Some((text, keys)) = inner {
+            let t = t();
+            let mut wrap = div().flex().flex_wrap().gap(px(8.));
+            for (index, key) in keys.into_iter().enumerate() {
+                wrap = wrap.child(KeyCombo::new(SharedString::from(format!("inner-{group}-{index}")), key).names(KeyNames::spanish()).small(true).muted(true));
+            }
+            list = list.custom_row(div().flex().flex_col().gap(px(6.)).child(div().text_size(px(12.5)).text_color(t.muted).child(text)).child(wrap));
+        }
+        list
+    }
+
+    /// La pestaña «Atajos»: una lista por grupo, y «Restablecer todos» arriba.
+    pub(super) fn shortcuts_tab(&self, cx: &mut Context<Self>) -> AnyElement {
+        let t = t();
+        let changed = !self.configs.shortcuts.is_empty();
         let header = div()
             .flex()
             .items_center()
             .justify_between()
             .gap(px(16.))
-            .child(div().text_size(px(13.)).text_color(t.muted).child("Haz clic en un atajo para cambiarlo. Esc cancela."))
+            .child(div().flex_1().text_size(px(13.)).text_color(t.muted).child("Haz clic en una combinación para cambiarla. Esc cancela."))
             .child(
-                div()
-                    .id("shortcuts-reset-all")
-                    .h(px(32.))
-                    .px(px(14.))
-                    .flex()
-                    .flex_none()
-                    .items_center()
-                    .rounded(px(t.r_btn.min(16.)))
-                    .text_size(px(13.))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .border_1()
-                    .border_color(t.border)
-                    .text_color(t.text)
-                    .when(changed, |el| el.cursor_pointer().hover(|el| el.bg(t.hover)).on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.reset_all_shortcuts(cx))))
-                    .when(!changed, |el| el.opacity(0.45))
-                    .child("Restablecer todos"),
+                Button::new("shortcuts-reset-all", "Restablecer todos")
+                    .tonal()
+                    .icon("refresh")
+                    .size(ButtonSize::Small)
+                    .disabled(!changed)
+                    .on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.reset_all_shortcuts(cx))),
             );
-
         let mut page = div().flex().flex_col().gap(px(14.)).child(header);
-        if let Some(why) = &ui.notice {
-            page = page.child(div().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).text_color(t.bad).child(why.clone()));
+        if let Some(notice) = self.shortcut_notice(cx) {
+            page = page.child(notice);
         }
-
         for group in GROUPS {
-            let mut card = div()
-                .p(px(12.))
-                .rounded(px(radius))
-                .when(t.style == Style::Glass || m3, |el| el.bg(if t.style == Style::Glass { t.control } else { t.pane }))
-                .when(!(t.style == Style::Glass || m3), |el| el.bg(t.pane).border_1().border_color(t.border))
-                .flex()
-                .flex_col()
-                .gap(px(2.))
-                .child(div().px(px(6.)).pb(px(6.)).text_size(px(12.5)).font_weight(FontWeight::SEMIBOLD).text_color(t.accent).child(group));
-            for (index, (row, key)) in effective(saved).into_iter().enumerate().filter(|(_, (row, _))| row.group == group) {
-                let id = row.id;
-                let waiting = ui.capturing == Some(id);
-                let custom = saved.contains_key(id);
-                let editable = row.kind == Kind::Edit;
-                let keys = format_key(&key);
-                let field: AnyElement = if waiting {
-                    div()
-                        .id(("shortcut-key", index))
-                        .h(px(30.))
-                        .px(px(12.))
-                        .flex()
-                        .items_center()
-                        .rounded(px(chip_radius + 2.))
-                        .bg(t.accent_soft)
-                        .text_color(t.on_accent_soft)
-                        .text_size(px(12.5))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child("Presiona la nueva combinación…")
-                        .into_any_element()
-                } else if editable {
-                    div()
-                        .id(("shortcut-key", index))
-                        .p(px(3.))
-                        .rounded(px(chip_radius + 2.))
-                        .cursor_pointer()
-                        .hover(|el| el.bg(t.hover))
-                        .on_click(cx.listener(move |view, _: &ClickEvent, window, cx| view.start_capture(id, window, cx)))
-                        .child(chips(&keys, false))
-                        .into_any_element()
-                } else {
-                    div().p(px(3.)).child(chips(&keys, true)).into_any_element()
-                };
-                let reset = div().w(px(72.)).flex().flex_none().justify_end().when(custom && !waiting, |el| {
-                    el.child(
-                        div()
-                            .id(("shortcut-reset", index))
-                            .px(px(8.))
-                            .h(px(24.))
-                            .flex()
-                            .items_center()
-                            .rounded(px(chip_radius))
-                            .cursor_pointer()
-                            .text_size(px(12.))
-                            .text_color(t.accent)
-                            .hover(|el| el.bg(t.hover))
-                            .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| view.reset_shortcut(id, cx)))
-                            .child("Restablecer"),
-                    )
-                });
-                card = card.child(
-                    div()
-                        .min_h(px(38.))
-                        .px(px(6.))
-                        .flex()
-                        .items_center()
-                        .justify_between()
-                        .gap(px(12.))
-                        .child(div().flex_1().min_w(px(0.)).text_size(px(13.)).text_color(if editable { t.text } else { t.muted }).child(row.desc))
-                        .child(div().flex().flex_none().items_center().gap(px(6.)).child(field).child(reset)),
-                );
-            }
-            // Lo que pasa al shell o al editor no es de la tabla: se muestra como nota.
-            let inner = match group {
-                "Terminal" => Some(("Dentro de la terminal no actúan y pasan al shell:", terminal_keys(saved))),
-                "Editor" => Some(("Dentro del editor no actúan:", editor_keys(saved))),
-                _ => None,
-            };
-            if let Some((text, keys)) = inner {
-                let mut wrap = div().flex().flex_wrap().gap(px(4.));
-                for key in keys {
-                    wrap = wrap.child(chips(&format_key(&key), true));
-                }
-                card = card.child(div().px(px(6.)).pt(px(8.)).flex().flex_col().gap(px(6.)).child(div().text_size(px(12.5)).text_color(t.muted).child(text)).child(wrap));
-            }
-            page = page.child(card);
+            page = page.child(self.shortcut_group(group, cx));
         }
         page.into_any_element()
     }

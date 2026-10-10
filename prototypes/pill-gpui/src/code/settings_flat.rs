@@ -107,16 +107,24 @@ impl CodeView {
                     .when(!on, |el| el.hover(|el| el.bg(t.hover)))
                     .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
                         view.settings_tab = index;
+                        view.clear_settings_search(cx);
                         cx.notify();
                     }))
                     .child(svg().path(*icon).size(px(16.)).text_color(if on { t.on_accent_soft } else { t.muted }))
                     .child(*label),
             );
         }
-        let content = match self.settings_tab {
-            0 => self.claude_tab_flat(cx),
-            1 => self.appearance_tab_flat(cx),
-            _ => self.shortcuts_tab(false, cx),
+        // Con algo escrito en el buscador, los resultados de todas las pestañas reemplazan la pestaña.
+        let query = self.settings_query(cx);
+        let searching = !query.is_empty();
+        let content = if searching {
+            self.settings_results(&query, false, cx)
+        } else {
+            match self.settings_tab {
+                0 => self.claude_tab_flat(cx),
+                1 => self.appearance_tab_flat(cx),
+                _ => self.shortcuts_tab(cx),
+            }
         };
         let body = div()
             .flex_1()
@@ -133,12 +141,13 @@ impl CodeView {
                     .flex()
                     .items_center()
                     .justify_between()
-                    .child(div().text_size(px(20.)).font_weight(FontWeight::SEMIBOLD).child(TABS[self.settings_tab].1))
+                    .child(div().text_size(px(20.)).font_weight(FontWeight::SEMIBOLD).child(if searching { "Resultados" } else { TABS[self.settings_tab].1 }))
                     .child(super::view::icon_button("settings-close", "icons/x.svg", "Cerrar (Esc)").on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
                         view.settings_open = false;
                         cx.notify();
                     }))),
             )
+            .child(div().pl(px(22.)).pr(px(18.)).pt(px(2.)).pb(px(6.)).child(self.settings_search.clone()))
             .child(
                 div()
                     .id("settings-content")

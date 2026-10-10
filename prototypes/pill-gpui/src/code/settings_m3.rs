@@ -154,19 +154,27 @@ impl CodeView {
                 NavItem::new(("settings-tab", index), *label).icon(*icon).large(true).tone(Tone::Primary).selected(self.settings_tab == index).on_click(
                     cx.listener(move |view, _: &ClickEvent, _, cx| {
                         view.settings_tab = index;
+                        view.clear_settings_search(cx);
                         cx.notify();
                     }),
                 ),
             );
         }
-        let content = match self.settings_tab {
-            0 => self.claude_tab(cx),
-            1 => self.appearance_tab(cx),
-            _ => self.shortcuts_tab(true, cx),
+        // Con algo escrito en el buscador, los resultados de todas las pestañas reemplazan la pestaña.
+        let query = self.settings_query(cx);
+        let searching = !query.is_empty();
+        let content = if searching {
+            self.settings_results(&query, true, cx)
+        } else {
+            match self.settings_tab {
+                0 => self.claude_tab(cx),
+                1 => self.appearance_tab(cx),
+                _ => self.shortcuts_tab(cx),
+            }
         };
         // El contenido de cada pestaña sube al abrirla (`expressive.css:989`); en la referencia cada
         // sección entra con su retardo, aquí entra la pestaña entera.
-        let content = Enter::new(SharedString::from(format!("settings-in-{}", self.settings_tab)))
+        let content = Enter::new(SharedString::from(format!("settings-in-{}", if searching { 9 } else { self.settings_tab })))
             .from(0., 12.)
             .delay(0.04)
             .apply(div(), window, cx)
@@ -186,12 +194,13 @@ impl CodeView {
                     .flex()
                     .items_center()
                     .justify_between()
-                    .child(div().text_size(px(26.)).font_weight(FontWeight::BOLD).text_color(t.text).child(TABS[self.settings_tab].1))
+                    .child(div().text_size(px(26.)).font_weight(FontWeight::BOLD).text_color(t.text).child(if searching { "Resultados" } else { TABS[self.settings_tab].1 }))
                     .child(IconButton::new("settings-close", "x").size(px(32.)).tooltip("Cerrar (Esc)").on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
                         view.settings_open = false;
                         cx.notify();
                     }))),
             )
+            .child(div().pl(px(26.)).pr(px(22.)).pt(px(4.)).pb(px(6.)).child(self.settings_search.clone()))
             .child(
                 div()
                     .id("settings-content")

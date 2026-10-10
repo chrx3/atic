@@ -34,6 +34,7 @@ mod profile;
 mod rewind;
 mod settings_flat;
 mod settings_m3;
+mod settings_search;
 mod shortcuts;
 mod sidebar;
 mod sidecar;
@@ -329,6 +330,8 @@ pub struct CodeView {
     settings_tab: usize,
     /// La pestaña «Atajos»: qué atajo espera tecla y el último aviso.
     shortcuts_ui: shortcuts::Ui,
+    /// El buscador de la Configuración: filtra los ajustes de todas las pestañas.
+    settings_search: Entity<gpui_m3::TextField>,
     claude_info: Option<settings_m3::ClaudeInfo>,
     updating_claude: bool,
     update_log: String,
@@ -588,6 +591,16 @@ impl CodeView {
         let history_search = cx.new(|cx| gpui_m3::TextField::new(cx).placeholder("Buscar conversaciones").icon("search"));
         cx.subscribe(&history_search, |_, _, _: &gpui_m3::TextFieldEvent, cx| cx.notify()).detach();
 
+        let settings_search = cx.new(|cx| gpui_m3::TextField::new(cx).placeholder("Buscar en la configuración…").icon("search"));
+        cx.subscribe(&settings_search, |_, field, event: &gpui_m3::TextFieldEvent, cx| {
+            // Esc borra la búsqueda y vuelve a la pestaña.
+            if matches!(event, gpui_m3::TextFieldEvent::Cancelled) {
+                field.update(cx, |field, cx| field.set_text("", cx));
+            }
+            cx.notify();
+        })
+        .detach();
+
         let mut view = Self {
             focus,
             workspaces: Workspaces::load(),
@@ -646,6 +659,7 @@ impl CodeView {
             asks: HashMap::new(),
             settings_tab: 0,
             shortcuts_ui: Default::default(),
+            settings_search,
             claude_info: None,
             updating_claude: false,
             update_log: String::new(),
